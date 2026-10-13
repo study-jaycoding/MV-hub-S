@@ -29,6 +29,7 @@ vi.mock("../src/lib/useEditSequence", async () => {
 });
 
 import { EditTab } from "../src/components/timeline/EditTab";
+import { trimPopPlace } from "../src/components/timeline/EditTrimPop";
 import { clearUndo, keepUnsavedEditDoc } from "../src/lib/editTimelineStore";
 
 let host: HTMLDivElement;
@@ -360,6 +361,54 @@ it("길이 조절 창이 떠 있는 동안 다른 창의 저장 알림이 먼저
   act(() => { window.dispatchEvent(new StorageEvent("storage", { key: docKey })); });
   expect(document.querySelector(".ed-trim")).toBeNull();
   expect(localStorage.getItem(docKey)).toBe(THEIRS);
+});
+
+// Jay 2026-10-14 — 창은 누른 클립의 바로 위에 뜬다(그 전날은 화면 오른쪽 위). 클립 자체는 덮지 않는다.
+it("길이 조절 창의 자리 — 누른 클립의 바로 위, 위에 자리가 없으면 옆, 그것도 안 되면 화면 오른쪽 위", () => {
+  const panel = { width: 560, height: 516 };
+  const view = { width: 1584, height: 905 };
+  expect(trimPopPlace({ x: 936, y: 794, width: 200, height: 52 }, panel, view)).toEqual({ x: 756, y: 268 }); // 가로는 클립의 가운데, 창 아래 끝이 클립 위 10px
+  expect(trimPopPlace({ x: 20, y: 794, width: 80, height: 52 }, panel, view)).toEqual({ x: 8, y: 268 }); // 화면 왼쪽 끝의 클립 — 창은 화면 안으로
+  const low = { width: 1280, height: 600 }; // 낮은 창 — 클립 위에 창이 들어갈 자리가 없다
+  expect(trimPopPlace({ x: 300, y: 500, width: 100, height: 52 }, panel, low)).toEqual({ x: 410, y: 36 }); // 오른쪽 옆, 아래 끝을 클립의 아래 끝에
+  expect(trimPopPlace({ x: 900, y: 500, width: 300, height: 52 }, panel, low)).toEqual({ x: 330, y: 36 }); // 오른쪽에 자리가 없으면 왼쪽 옆
+  expect(trimPopPlace({ x: 100, y: 500, width: 1100, height: 52 }, panel, low)).toEqual({ x: 704, y: 64 }); // 양옆에도 없으면 화면 오른쪽 위
+  expect(trimPopPlace(null, panel, view)).toEqual({ x: 1008, y: 64 }); // 그 클립의 자리를 못 쟀다
+});
+
+it("길이 조절 창은 누른 클립 위에 뜨고, 머리를 끌어 옮긴 뒤로는 그 자리에 뜬다 — 열기만 해서 적힌 자리는 기억으로 치지 않는다", () => {
+  localStorage.setItem("mvhub.editDoc:local:p1:e070", JSON.stringify(TRIM_DOC));
+  localStorage.setItem("ch.editTrim.pos", JSON.stringify({ x: 400, y: 64 })); // 전날 판은 열기만 해도 자리를 적었다 — 끌어 옮긴 것이 아니다
+  mount();
+  const rect = (x: number, y: number, width: number, height: number) =>
+    ({ x, y, left: x, top: y, width, height, right: x + width, bottom: y + height, toJSON: () => ({}) }) as DOMRect;
+  const clip = document.querySelector<HTMLElement>(".ed-clip")!;
+  let clipAt = rect(300, 700, 100, 52);
+  clip.getBoundingClientRect = () => clipAt;
+  document.querySelector<HTMLElement>(".ed-scroll")!.getBoundingClientRect = () => rect(200, 600, 824, 168);
+  const open = () => act(() => { clip.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1, clientX: 350, clientY: 720 })); });
+  const pop = () => document.querySelector<HTMLElement>(".ed-trim")!;
+  const at = () => [pop().style.left, pop().style.top];
+  const close = () => act(() => pop().querySelector<HTMLButtonElement>(".ed-trim-head button")!.click());
+  open();
+  expect(at()).toEqual(["70px", "170px"]); // 클립(300~400, 위 700)의 가운데 위 — 적혀 있던 (400, 64) 가 아니다
+  expect(localStorage.getItem("ch.editTrim.moved")).toBeNull();
+  close();
+  clipAt = rect(500, 700, 100, 52); // 다른 자리의 클립을 누르면 그 위에
+  open();
+  expect(at()).toEqual(["270px", "170px"]);
+
+  // 머리를 끌어 옮긴다 — 그 자리가 기억이다
+  const head = pop().querySelector<HTMLElement>(".ed-trim-head")!;
+  act(() => { head.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: 500, clientY: 180 })); });
+  act(() => { window.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, buttons: 1, clientX: 600, clientY: 300 })); });
+  act(() => { window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: 600, clientY: 300 })); });
+  expect(at()).toEqual(["370px", "290px"]); // 잡은 자리에서 (+100, +120)
+  expect(localStorage.getItem("ch.editTrim.moved")).toBe("1");
+  close();
+  clipAt = rect(300, 700, 100, 52);
+  open();
+  expect(at()).toEqual(["370px", "290px"]); // 누른 클립이 어디든 끌어 둔 자리
 });
 
 // 휠 단추가 없는 마우스·트랙패드의 길 — 클립 우클릭 메뉴에서도 같은 창을 연다.

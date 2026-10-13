@@ -376,6 +376,7 @@ export const EditTimeline = memo(function EditTimeline({
         className={"ed-clip" + (selected.has(key) ? " ed-sel" : "") + (off ? " ed-off" : "") +
           (state !== "ok" ? ` ed-${state}` : "") + (locked ? " ed-locked" : "") + (thin ? " ed-thin" : "")}
         style={{ left: start * zoom + pad, width: clipWidth }}
+        data-clip={key} // 길이 조절 창이 이 클립의 화면 자리를 잰다(EditTab.openTrim)
         title={link?.gen?.prompt?.slice(0, 80) || undefined}
         // 휠 클릭(가운데 단추) = 길이 조절 창(Jay 2026-10-13). 누름의 자동 스크롤은 줄 뿌리의 keepFocus 가 이미 막는다.
         onAuxClick={(event) => {

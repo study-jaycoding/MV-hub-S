@@ -92,7 +92,7 @@ import { EditSidebar } from "./EditSidebar";
 import { EditSoloViewer } from "./EditSoloViewer";
 import { dropLabel, EditTimeline, ZOOM_MAX, ZOOM_MIN, type ClipLink, type DropHint } from "./EditTimeline";
 import { EditClipMenu, EditListMenu, EditTrackHeadMenu, EditTrackMenu, type TrackAct, type TrackRow } from "./EditTrackMenu";
-import { EditTrimPop } from "./EditTrimPop";
+import { EditTrimPop, type TrimAnchor } from "./EditTrimPop";
 import { EditTrimView } from "./EditTrimView";
 import { EditViewer, writeText, type ViewerControls, type ViewerMarking, type ViewOption } from "./EditViewer";
 import { ResizableSidebar } from "../common/ResizableSidebar";
@@ -634,7 +634,8 @@ function EditTabInner({
   //  그대로 쓴다. 떠 있는 채 다른 클립을 휠 클릭하면 창이 그 클립으로 바뀐다(새 group). 닫는 것: ✕ · 창 안의 Esc · 아래의 셋.
   //  문서가 갈리면(rev) 닫는다 — 아래 효과. **저장 충돌을 알게 됐을 때도 닫는다**(edit.conflict): 슬라이더를 끄는 도중이면 같은 끌기의
   //  다음 걸음이 '알고 이어 가는 편집'으로 저장돼, 알림을 읽기도 전에 다른 창의 저장을 덮는다(Codex 코드 리뷰 2회째 P1).
-  const [trimPop, setTrimPop] = useState<{ key: string; group: string; rev: number } | null>(null);
+  //  anchor = 연 순간의 그 클립의 화면 자리(보이는 부분) — 창이 그 근처에 뜬다(Jay 2026-10-14). 창이 새로 뜰 때만 쓰인다.
+  const [trimPop, setTrimPop] = useState<{ key: string; group: string; rev: number; anchor: TrimAnchor | null } | null>(null);
   const trimSerial = useRef(0);
   const openTrim = useCallback((key: string) => {
     const clip = doc.clips.find((item) => clipKey(item) === key);
@@ -643,7 +644,14 @@ function EditTabInner({
     // 그림인지는 이어진 생성물로 먼저 본다 — kind 가 안 적힌 옛 클립은 문서만으로는 영상으로 보인다
     if ((links.get(key)?.gen?.assets[0]?.type ?? clip.kind) === "image") return flash(t("그림은 길이를 줄일 수 없습니다 — 영상 클립만 됩니다."));
     stopBoth(); // 창을 열면 초점(키)이 창으로 간다 — Space 는 창 안의 재생이 되므로 뒤에서 도는 재생은 멈춰 둔다
-    setTrimPop({ key, group: `trim:${key}:${++trimSerial.current}`, rev });
+    // 휠 클릭도 메뉴의 '길이 조절'도 그 클립 요소에서 잰다. 타임라인의 보이는 칸 밖(트랙 머리 밑·옆으로 넘긴 부분)은 뺀다
+    const view = scrollRef.current?.getBoundingClientRect();
+    const box = [...(scrollRef.current?.querySelectorAll<HTMLElement>(".ed-clip") ?? [])]
+      .find((item) => item.dataset.clip === key)?.getBoundingClientRect();
+    const left = box && view ? Math.max(box.left, view.left) : 0;
+    const right = box && view ? Math.min(box.right, view.right) : 0;
+    const anchor = box && right > left ? { x: left, y: box.top, width: right - left, height: box.height } : null;
+    setTrimPop({ key, group: `trim:${key}:${++trimSerial.current}`, rev, anchor });
   }, [doc, links, flash, t, stopBoth, rev]);
   const editConflict = edit.conflict;
   useEffect(() => {
@@ -1518,6 +1526,7 @@ function EditTabInner({
       {trimPop && trimClip && (
         <EditTrimPop
           openId={trimPop.group}
+          anchor={trimPop.anchor}
           title={`${trimClip.cut.slice(trimClip.cut.lastIndexOf("/") + 1)} · V${trimClip.track}`}
           full={trimClip.full}
           value={trimClip.len}

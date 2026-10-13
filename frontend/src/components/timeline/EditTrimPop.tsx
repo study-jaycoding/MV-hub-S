@@ -1,8 +1,8 @@
 // 편집 탭 — 클립 길이 조절 창(Jay 2026-10-13: 타임라인의 클립을 휠 클릭 → 같은 날 밤 "플로팅창으로 더 제대로 편집할 수 있게").
 //  뒤를 자른다 — 줄인 뒤의 구간에는 아래 트랙이 보인다.
-//  · **떠 있는 창**이다(lib/useFloatingPanel): 머리를 끌어 옮기고 자리를 기억한다(처음에는 화면 오른쪽 위 — 큰 화면에서는 타임라인을
-//    가리지 않는다. 안쪽 높이가 약 865px 보다 낮으면 타임라인의 위쪽을 덮고, 어느 크기에서든 뷰어의 오른쪽을 덮는다 — 끌어 옮긴 자리를
-//    기억한다). 밖을 눌러도 닫히지 않는다 — ✕ 나 Esc(초점이 창 안일 때).
+//  · **떠 있는 창**이다(lib/useFloatingPanel): 머리를 끌어 옮기고, 끌어 옮긴 자리를 기억한다. 옮긴 적이 없으면 **누른 클립의 바로 위**에
+//    뜬다(Jay 2026-10-14 — 그 전날은 화면 오른쪽 위였다). 뷰어의 아래쪽과 타임라인의 윗줄을 덮지만 누른 클립은 덮지 않는다(trimPopPlace).
+//    밖을 눌러도 닫히지 않는다 — ✕ 나 Esc(초점이 창 안일 때).
 //    창이 떠 있어도 타임라인은 그대로 쓴다: Esc 겹·키 주인으로 올리지 않는다(lib/keyGate 의 '올리지 않는 것' — 코멘트 패널과 같다).
 //  · **키는 초점을 따른다.** 창은 body 에 그린다(createPortal) — 편집 키(EditTab.onKey)는 편집 화면 밖에서 난 키를 듣지 않으므로
 //    초점이 창 안이면 ←/→·Space·Delete 가 뒤의 재생헤드·클립에 먹지 않고, 초점이 타임라인이면 키는 타임라인의 것이다.
@@ -14,7 +14,7 @@
 //  · ←/→ = 1프레임, Shift+←/→ = 10프레임, Space = 재생·멈춤, Ctrl+Z = 되돌리기. 숫자 칸(초·프레임)에 직접 친다(Enter·칸을 떠날 때 적용).
 //    끝까지 늘리면 '원본 길이로'와 같다(줄임을 지운다).
 import {
-  useCallback, useEffect, useRef, useState,
+  useCallback, useEffect, useLayoutEffect, useRef, useState,
   type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createPortal } from "react-dom";
@@ -27,10 +27,36 @@ import { clampFloatingPanelPosition, useFloatingPanel } from "../../lib/useFloat
 
 const LS = makeStore("ch.editTrim.");
 const WIDTH = 560;
-const HEIGHT = 520; // 처음 놓을 자리를 잡는 데만 쓴다(그 뒤로는 끌어 둔 자리)
+const HEIGHT = 520; // 처음 놓을 자리를 잡는 데만 쓴다(그려진 뒤에는 실제 크기로 다시 잡는다)
+const GAP = 10; // 누른 클립과 창 사이
+const EDGE = 8; // 화면 가장자리에 남기는 여백(clampFloatingPanelPosition 의 기본과 같다)
+
+export interface TrimAnchor { x: number; y: number; width: number; height: number }
+
+// 창을 놓을 자리(Jay 2026-10-14: 누른 클립 근처) — 그 클립의 **바로 위**, 가로는 클립의 보이는 부분 가운데.
+//  클립은 덮지 않는다: 덮으면 방금 누른 클립과 옆 클립을 다시 누를 수 없다(2026-10-13 격리 실측 — 그때는 누른 자리 위에 띄웠다).
+//  위에 자리가 없으면(낮은 창) 클립의 옆(오른쪽, 안 되면 왼쪽)에 아래 끝을 맞춰 놓고, 그것도 안 되면 화면 오른쪽 위다.
+//  anchor 가 없으면(그 클립이 화면에 안 보인다) 화면 오른쪽 위.
+export function trimPopPlace(
+  anchor: TrimAnchor | null,
+  panel: { width: number; height: number },
+  viewport: { width: number; height: number },
+): { x: number; y: number } {
+  const fit = (x: number, y: number) => clampFloatingPanelPosition({ x: Math.round(x), y: Math.round(y) }, panel, viewport);
+  const corner = fit(viewport.width - panel.width - 16, 64);
+  if (!anchor || anchor.width <= 0) return corner;
+  const right = anchor.x + anchor.width;
+  const above = anchor.y - GAP - panel.height;
+  if (above >= EDGE) return fit(anchor.x + anchor.width / 2 - panel.width / 2, above);
+  const y = anchor.y + anchor.height - panel.height;
+  if (right + GAP + panel.width <= viewport.width - EDGE) return fit(right + GAP, y);
+  if (anchor.x - GAP - panel.width >= EDGE) return fit(anchor.x - GAP - panel.width, y);
+  return corner;
+}
 
 export function EditTrimPop({
   openId,
+  anchor,
   title,
   full,
   value,
@@ -42,6 +68,7 @@ export function EditTrimPop({
   onClose,
 }: {
   openId: string; // 열 때마다(다른 클립으로 바뀔 때도) 새 값 — 초점을 창으로 데려오고 재생을 멈춘다
+  anchor: TrimAnchor | null; // 연 순간의 누른 클립의 화면 자리 — 창이 새로 뜰 때만 본다(떠 있는 채 다른 클립으로 바뀌어도 창은 그 자리다)
   title: string; // 'C0110 · V2'
   full: number; // 원본 길이(초)
   value: number; // 지금 쓰는 길이(초)
@@ -62,23 +89,55 @@ export function EditTrimPop({
     } else if (to !== frames || !trimmed) onChange(to / EDIT_FPS);
   };
 
-  // 자리 — 끌어 둔 자리(저장). 아직 없으면 화면 오른쪽 위(상단바 아래): 누른 자리 위에 띄우면 방금 누른 클립과 타임라인을 가렸다
-  //  (2026-10-13 격리 실측 — 그리고 그 자리가 그대로 기억됐다). 화면 밖으로 나가지 않게 잡는 것은 훅이 한다.
-  const { pos, panelRef, onHeadMouseDown } = useFloatingPanel(LS, "pos", "size", true);
-  const first = useRef(clampFloatingPanelPosition(
-    { x: window.innerWidth - WIDTH - 16, y: 64 },
-    { width: WIDTH, height: HEIGHT },
-    { width: window.innerWidth, height: window.innerHeight },
-  )).current;
-  const at = pos ?? first;
+  // 자리 — 끌어 옮긴 적이 있으면 그 자리(저장), 없으면 **열 때마다** 누른 클립의 바로 위(trimPopPlace). 화면 밖으로 나가지 않게 잡는
+  //  것은 훅이 한다. 훅은 열기만 해도 자리를 적어 둔다(화면 밖 보정용) — 그래서 '끌어 옮겼다'는 표(moved)를 따로 둔다: 표가 없으면
+  //  적힌 자리를 쓰지 않는다(전날 판이 적어 둔 오른쪽 위 자리도 그렇게 지나간다).
+  const { pos, setPos, panelRef, onHeadMouseDown } = useFloatingPanel(LS, "pos", "size", true);
+  const [moved, setMoved] = useState(() => LS.get("moved", "") === "1");
+  const opened = useRef({ anchor, moved }).current; // 창이 뜬 순간의 것
+  const first = useRef(trimPopPlace(anchor, { width: WIDTH, height: HEIGHT }, { width: window.innerWidth, height: window.innerHeight })).current;
+  const [placed, setPlaced] = useState(false); // 이 열림의 자리를 훅에 알렸다 — 그 뒤로는 훅의 자리(pos)가 화면의 자리다
+  const at = (moved || placed) && pos ? pos : first;
   const panel = useRef<HTMLDivElement | null>(null);
   const setPanel = useCallback((node: HTMLDivElement | null) => {
     panel.current = node;
     panelRef(node);
   }, [panelRef]);
+  // 그려진 크기로 한 번 더 잡는다 — 낮은 창에서는 큰 화면이 줄어 창이 520px 보다 낮다(그때 '위에 자리가 없다'고 잘못 보지 않게).
+  //  열 때 한 번이다: 떠 있는 동안 다른 클립으로 바뀌어도 옮기지 않는다.
+  useLayoutEffect(() => {
+    if (opened.moved) return;
+    const box = panel.current?.getBoundingClientRect();
+    const size = box && box.height > 0 ? { width: box.width, height: box.height } : { width: WIDTH, height: HEIGHT };
+    setPos(trimPopPlace(opened.anchor, size, { width: window.innerWidth, height: window.innerHeight }));
+    setPlaced(true);
+  }, [opened, setPos]);
+  // 머리를 실제로 끌었을 때만 '옮겼다'로 적는다(누르기만 한 것은 아니다)
+  const dragWatch = useRef<(() => void) | null>(null);
+  useEffect(() => () => dragWatch.current?.(), []);
   const onHead = (event: ReactMouseEvent) => {
     if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
-    onHeadMouseDown(event, first);
+    onHeadMouseDown(event, at);
+    if (moved) return;
+    const from = { x: event.clientX, y: event.clientY };
+    const stop = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", stop);
+      window.removeEventListener("blur", stop);
+      dragWatch.current = null;
+    };
+    const move = (next: MouseEvent) => {
+      if (next.buttons === 0) return stop(); // 놓는 이벤트를 놓쳤다 — 그 끌기는 이미 끝났다(lib/windowDrag 와 같은 판정)
+      if (Math.abs(next.clientX - from.x) + Math.abs(next.clientY - from.y) < 3) return;
+      setMoved(true);
+      LS.set("moved", "1");
+      stop();
+    };
+    dragWatch.current?.();
+    dragWatch.current = stop;
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", stop);
+    window.addEventListener("blur", stop);
   };
 
   // 큰 화면 — 재생 중이 아니면 그 길이의 마지막 프레임에 선다. 길이·클립이 바뀌면 재생을 멈춘다.
