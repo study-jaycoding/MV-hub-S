@@ -365,7 +365,7 @@ updated: 2026-10-13
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
 | `resolve_transfer.py`(759줄) | 생성물 원본을 `Render/<folder>` 로 모으고 manifest 기록 — 파일 이름 `<폴더 경로>_davinci_<번호>`(이름 장부 `export_names`), 같은 생성물은 있는 파일을 그대로 쓴다 | `resolve_integration`·`release_update`·`selection_monitor` |
-| `resolve_bridge.py`(1377줄) | Media Pool 조작 계층 — 상대 import 0(자식 프로세스 겸용, §5-a) | `probe`·`import_worker`·`status_runner`·`selection_worker`·`diagnostics` |
+| `resolve_bridge.py`(1418줄) | Media Pool 조작 계층 — 상대 import 0(자식 프로세스 겸용, §5-a) | `probe`·`import_worker`·`status_runner`·`selection_worker`·`diagnostics` |
 | `resolve_status_runner.py` | fusionscript 상태·가져오기·프로젝트 열기를 자식 프로세스로 격리·인터프리터 폴백. **켜기 창**: 앱이 Resolve 를 켜는 동안(최대 90초) 모든 Resolve API 호출을 `_select_interpreter` 한 곳에서 막고, 켤 때 받은 `launch_id` 를 가진 열기만 통과시킨다 — 새 Resolve 호출 경로도 반드시 여기를 지나야 관문이 적용된다 | `resolve_integration`·`diagnostics`·`selection_monitor`·`project_library`·`routers/assets` |
 | `resolve_probe.py` | 연결 상태 검사 자식 프로세스 진입점(`-m`, §2.6) | `resolve_status_runner` |
 | `resolve_import_worker.py` | 가져오기 자식 프로세스 진입점(§2.6) + `AttemptJournal` | `resolve_status_runner` |
