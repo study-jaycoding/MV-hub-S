@@ -4,7 +4,7 @@ import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { clipKey, insertClip, removeClips, setClipDurs } from "../src/lib/editTimeline";
-import { clearUndo, editDocKey, readEditDoc } from "../src/lib/editTimelineStore";
+import { clearUndo, editDocKey, keepUnsavedEditDoc, migrateEditDocs, readEditDoc } from "../src/lib/editTimelineStore";
 import { useEditDoc } from "../src/lib/useEditDoc";
 
 let host: HTMLDivElement;
@@ -30,8 +30,8 @@ const storageEvent = (key: string) => act(() => { window.dispatchEvent(new Stora
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   localStorage.clear();
-  KEY_A = `ch.editTimeline:test:p${++serial}:e070`;
-  KEY_B = `ch.editTimeline:test:p${serial}:e071`;
+  KEY_A = `mvhub.editDoc:test:p${++serial}:e070`;
+  KEY_B = `mvhub.editDoc:test:p${serial}:e071`;
   clearUndo(KEY_A);
   clearUndo(KEY_B);
   flash.mockClear();
@@ -43,6 +43,9 @@ afterEach(() => {
   act(() => root.unmount());
   host.remove();
   vi.restoreAllMocks();
+  // 저장 못 한 채 끝난 시험의 문서 — 남으면 '나갈 때 묻기'가 다음 시험에도 걸려 있다
+  keepUnsavedEditDoc(KEY_A, null);
+  keepUnsavedEditDoc(KEY_B, null);
 });
 
 it("바꿀 때마다 저장하고, 다른 문서로 넘어가도 옛 문서가 새 키에 써지지 않는다", () => {
@@ -148,8 +151,44 @@ it("저장 실패 중에는 다른 창의 문서를 받아들이지 않고 알�
   expect(flash).toHaveBeenCalledTimes(1);
 });
 
-it("문서 키는 계정·프로젝트·폴더로 정해지고 서버 주소는 들어가지 않는다", () => {
-  expect(editDocKey("p1", "e070")).toBe("ch.editTimeline:local:p1:e070");
+it("문서 키는 계정·프로젝트·폴더로 정해지고 서버 주소는 들어가지 않는다 — `ch.` 로 시작하지 않는다(옛 판의 계정 전환 정리가 지운다)", () => {
+  expect(editDocKey("p1", "e070")).toBe("mvhub.editDoc:local:p1:e070");
+});
+
+// 배포 전 점검(2026-10-13): 문서의 옛 자리(`ch.editTimeline:<계정>:…`)는 편집 탭이 없던 옛 판의 계정 전환 정리가 지운다 — 새 판을 쓰다 옛 판으로
+//  되돌린 뒤 계정을 바꾸면 편집본이 사라졌다. 모듈이 실릴 때 새 자리로 옮긴다(이 시험은 그 함수를 직접 부른다).
+it("옛 자리의 문서를 새 자리로 옮긴다 — 보관본(.bad)도 같이, 화면 설정·마지막으로 연 시퀀스는 그대로, 새 자리에 이미 있으면 그것을 남긴다", () => {
+  const old = (rest: string) => `ch.editTimeline:${rest}`;
+  const now = (rest: string) => `mvhub.editDoc:${rest}`;
+  localStorage.setItem(old("me@x:p1:e070"), theirs("a"));
+  localStorage.setItem(old("me@x:p1:e070.bad"), "{깨진 원문");
+  localStorage.setItem(old("other@x:p2:e071"), theirs("b")); // 다른 계정 · 열어 보지 않은 시퀀스도
+  localStorage.setItem(old("me@x:p1:e080"), theirs("old"));
+  localStorage.setItem(now("me@x:p1:e080"), theirs("newer")); // 새 자리에 이미 있다 = 더 새것
+  localStorage.setItem("ch.editTimeline.last:me@x", "{}");
+  localStorage.setItem("ch.editTimeline.ui", "{}");
+  migrateEditDocs();
+  expect(localStorage.getItem(now("me@x:p1:e070"))).toBe(theirs("a"));
+  expect(localStorage.getItem(now("me@x:p1:e070.bad"))).toBe("{깨진 원문");
+  expect(localStorage.getItem(now("other@x:p2:e071"))).toBe(theirs("b"));
+  expect(localStorage.getItem(now("me@x:p1:e080"))).toBe(theirs("newer"));
+  expect(Object.keys(localStorage).filter((key) => key.startsWith("ch.editTimeline")).sort()).toEqual(["ch.editTimeline.last:me@x", "ch.editTimeline.ui"]);
+  migrateEditDocs(); // 두 번 불러도 같다
+  expect(localStorage.getItem(now("me@x:p1:e070"))).toBe(theirs("a"));
+});
+
+it("옮기지 못한 문서(용량 부족)는 옛 자리에 남고 그대로 읽힌다 — 다음에 저장되면 새 자리로 가고 옛것은 지운다", () => {
+  const OLD_A = KEY_A.replace("mvhub.editDoc:", "ch.editTimeline:");
+  localStorage.setItem(OLD_A, theirs("kept"));
+  const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
+  migrateEditDocs();
+  expect([localStorage.getItem(OLD_A), localStorage.getItem(KEY_A)]).toEqual([theirs("kept"), null]);
+  render(KEY_A);
+  expect(gens()).toEqual(["kept"]); // 옛 자리의 것을 읽는다 — 빈 문서로 열리지 않는다
+  setItem.mockRestore();
+  add("more");
+  expect(stored()).toEqual(["kept", "more"]);
+  expect([localStorage.getItem(OLD_A), localStorage.getItem(KEY_A) !== null]).toEqual([null, true]);
 });
 
 const theirs = (...ids: string[]) => JSON.stringify({
@@ -263,6 +302,60 @@ it("저장 실패 중에 다른 창의 알림이 와도 자동 길이 기록이 
   storageEvent(KEY_A);
   act(() => { edit.applyEdit((doc) => setClipDurs(doc, new Map([[clipKey({ cut: "e070/c1", gen: "unsaved" }), 7]])), { undo: false }); });
   expect(stored()).toEqual(["theirs"]);
+});
+
+// 배포 전 점검(2026-10-13, Codex): 다른 창의 저장 알림(storage 이벤트)은 늦게 온다. 그 전에 이 창이 바꾸면 이 창의 낡은 문서 전체가 저장돼
+//  다른 창의 편집이 사라졌다 — 바꾸기 직전에 저장소를 먼저 본다.
+it("알림이 오기 전에 이 창이 바꿔도 다른 창의 편집을 덮지 않는다 — 다른 창의 문서를 먼저 받아들이고 그 위에 바꾼다", () => {
+  render(KEY_A);
+  add("mine");
+  const before = edit.rev;
+  localStorage.setItem(KEY_A, theirs("mine", "theirs")); // 다른 창이 저장했다 — 알림은 아직 안 왔다
+  add("more");
+  expect(stored().sort()).toEqual(["mine", "more", "theirs"]); // 다른 창의 것이 남아 있다
+  expect(gens().sort()).toEqual(["mine", "more", "theirs"]);
+  expect(flash).toHaveBeenCalledTimes(1); // '다른 창에서 바꾼 편집을 불러왔습니다'
+  expect(edit.rev).not.toBe(before);
+  act(() => edit.undo()); // 되돌리기는 받아들인 뒤의 이 창 편집만 되돌린다
+  expect(stored().sort()).toEqual(["mine", "theirs"]);
+  storageEvent(KEY_A); // 늦게 온 그 알림 — 이미 받아들였다
+  expect(flash).toHaveBeenCalledTimes(1);
+
+  // 받아들이기 전에 시작한 지연 콜백(길이 기록·끌기 확정)은 그 문서의 것이 아니다 — 버린다(알림이 먼저 왔을 때와 같다).
+  const stale = edit.rev;
+  localStorage.setItem(KEY_A, theirs("replaced"));
+  let applied = true;
+  act(() => { applied = edit.applyEdit((doc) => removeClips(doc, [clipKey({ cut: "e070/c1", gen: "mine" })]), { rev: stale }); });
+  expect(applied).toBe(false);
+  expect([stored(), gens()]).toEqual([["replaced"], ["replaced"]]);
+});
+
+it("알림이 오기 전의 되돌리기도 다른 창의 저장을 덮지 않는다", () => {
+  render(KEY_A);
+  add("a1");
+  add("a2");
+  localStorage.setItem(KEY_A, theirs("theirs"));
+  act(() => edit.undo());
+  expect([stored(), gens(), edit.canUndo]).toEqual([["theirs"], ["theirs"], false]);
+});
+
+it("저장하지 못한 편집이 있는 동안에는 창을 닫거나 새로고침할 때 브라우저가 묻는다 — 저장되면 묻지 않는다", () => {
+  const leaving = () => {
+    const event = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  };
+  render(KEY_A);
+  add("saved");
+  expect(leaving()).toBe(false);
+  const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
+  add("unsaved");
+  expect(leaving()).toBe(true);
+  render(KEY_B); // 다른 시퀀스로 옮겨도 그 편집은 메모리에만 있다
+  expect(leaving()).toBe(true);
+  setItem.mockRestore();
+  render(KEY_A); // 돌아와 저장에 성공하면 풀린다
+  expect([edit.dirty, leaving()]).toEqual([false, false]);
 });
 
 it("StrictMode — 저장 못 한 편집을 들고 돌아와 저장에 성공해도 되돌리기는 남는다", () => {

@@ -97,12 +97,12 @@ it("시퀀스를 바꾼 그 박자의 D 는 재생헤드가 옮겨 간 새 시�
   expect(current()).toMatch(/^c[12]$/); // 재생헤드는 e070 의 컷에 있다(앞 시험이 남긴 자리일 수 있다)
   stale(() => folderRow("e080").click());
   expect(cuts()).toEqual(["k9"]);
-  expect(cutsOffIn("ch.editTimeline:local:p1:e080")).toEqual(["e080/k9"]); // 전엔 ["e070/c1"] 같은, 이 시퀀스에 없는 컷이 적혔다
+  expect(cutsOffIn("mvhub.editDoc:local:p1:e080")).toEqual(["e080/k9"]); // 전엔 ["e070/c1"] 같은, 이 시퀀스에 없는 컷이 적혔다
 });
 
 // Codex 코드 리뷰: '지금 배치에 있는 컷인가'만 봐서는 모자란다 — 다른 프로젝트에 같은 이름의 컷이 있으면 그 검사를 통과해, 재생헤드가 없는 컷이 꺼진다.
 it("다른 프로젝트의 같은 이름 시퀀스로 바꾼 그 박자의 D 도 재생헤드의 컷에 걸린다(앞 프로젝트에서 보던 컷과 이름이 같은 컷이 아니다)", () => {
-  localStorage.setItem("ch.editTimeline:local:p2:e070", JSON.stringify({ v: 1, tracksOff: [], tracksLocked: [], clips: [
+  localStorage.setItem("mvhub.editDoc:local:p2:e070", JSON.stringify({ v: 1, tracksOff: [], tracksLocked: [], clips: [
     { cut: "e070/c1", gen: "g1", track: 1, kind: "video", dur: 5 }, { cut: "e070/c2", gen: "g2", track: 1, kind: "video", dur: 5 },
   ] }));
   mount();
@@ -111,7 +111,7 @@ it("다른 프로젝트의 같은 이름 시퀀스로 바꾼 그 박자의 D 도
   act(() => projectRow(1).click()); // P2 를 펼친다 — 같은 이름의 시퀀스 e070 이 있다
   stale(() => folderRow("e070").click());
   expect(current()).toBe("c1"); // 새 시퀀스에서 재생헤드는 처음 컷에 있다
-  expect(cutsOffIn("ch.editTimeline:local:p2:e070")).toEqual(["e070/c1"]); // 전엔 ["e070/c2"]
+  expect(cutsOffIn("mvhub.editDoc:local:p2:e070")).toEqual(["e070/c1"]); // 전엔 ["e070/c2"]
 });
 
 it("편집 키 — 쓴 키만 기본 동작을 막고, 입력칸·다른 창·위에 뜬 창이 있을 때는 듣지 않는다", () => {
@@ -164,7 +164,7 @@ it("편집 키 — 위에 Esc 로 닫히는 창·메뉴가 떠 있으면 쉰다(
       resolve={{ send: () => {}, busy: false, pendingCount: 0 }} />
   </>));
   // 시퀀스에 클립 둘을 놓아 둔다(문서는 localStorage — 계정 local · p1 · e070)
-  localStorage.setItem("ch.editTimeline:local:p1:e070", JSON.stringify({ v: 1, tracksOff: [], tracksLocked: [], clips: [
+  localStorage.setItem("mvhub.editDoc:local:p1:e070", JSON.stringify({ v: 1, tracksOff: [], tracksLocked: [], clips: [
     { cut: "e070/c1", gen: "g1", track: 1, kind: "video", dur: 5 }, { cut: "e070/c2", gen: "g2", track: 1, kind: "video", dur: 5 },
   ] }));
   draw(true);
@@ -190,7 +190,7 @@ it("편집 키 — 위에 Esc 로 닫히는 창·메뉴가 떠 있으면 쉰다(
 // 11회차(조작 규칙 38): 편집 키의 토글·찍기(Space·D·I·O·M·W·L·J)가 길게 누르면 반복 keydown 마다 다시 실행됐다 — 비활성이 뒤집히고,
 //  재생 중의 I·O·M 은 지나가는 프레임마다 찍혔다.
 it("편집 키 — 길게 눌러도 토글은 한 번만 한다(D). 기본 동작은 반복에도 막고, 반복이 뜻인 이동 키는 그대로다", () => {
-  localStorage.setItem("ch.editTimeline:local:p1:e070", JSON.stringify({ v: 1, tracksOff: [], tracksLocked: [], clips: [
+  localStorage.setItem("mvhub.editDoc:local:p1:e070", JSON.stringify({ v: 1, tracksOff: [], tracksLocked: [], clips: [
     { cut: "e070/c1", gen: "g1", track: 1, kind: "video", dur: 5 }, { cut: "e070/c2", gen: "g2", track: 1, kind: "video", dur: 5 },
   ] }));
   mount();
@@ -223,7 +223,7 @@ it("편집 키 — 길게 눌러도 토글은 한 번만 한다(D). 기본 동�
 
 // 2026-10-12 격리 실측(두 빌드 3/3): 클립을 끌다 놓는 이벤트를 놓치면 클립이 translateY 를 단 채 남았다 — 그 클립을 다시 눌러야 풀렸다.
 it("클립을 끌다 놓는 이벤트를 놓치면(포인터 쥐기를 잃음) 끌던 만큼 어긋난 채 남지 않는다 — 옮기지도 않는다", () => {
-  const docKey = "ch.editTimeline:local:p1:e070";
+  const docKey = "mvhub.editDoc:local:p1:e070";
   localStorage.setItem(docKey, JSON.stringify({ v: 1, tracksOff: [], tracksLocked: [], clips: [
     { cut: "e070/c1", gen: "g1", track: 1, kind: "video", dur: 5 }, { cut: "e070/c2", gen: "g2", track: 1, kind: "video", dur: 5 },
   ] }));
