@@ -1628,19 +1628,33 @@ it("풀 머리줄의 첫 단추로 왼쪽 폴더 목록을 여닫는다 — 닫�
   mount();
   act(() => cutCell("c1").click()); // 재생헤드 자리는 시험 사이에 남는다 — 이 시험의 컷으로
   const toggle = () => document.querySelector<HTMLButtonElement>(".ed-pool-head > .ed-side-toggle")!;
-  const side = () => document.querySelector(".ed-side");
-  const handles = () => document.querySelectorAll(".sidebar-resize-handle").length; // 폴더 목록의 폭 손잡이 + 풀의 폭 손잡이
-  const look = () => [side() !== null, handles(), toggle().title, toggle().getAttribute("aria-pressed"), toggle().querySelector("rect") ? "▢" : "▷"];
+  // 닫으면 없애지 않고 감춘다(감싸는 칸의 hidden) — 보이는 것만 센다
+  const shown = (selector: string) => [...document.querySelectorAll(selector)].filter((el) => !el.closest("[hidden]")).length;
+  const handles = () => shown(".sidebar-resize-handle"); // 폴더 목록의 폭 손잡이 + 풀의 폭 손잡이
+  const look = () => [shown(".ed-side") === 1, handles(), toggle().title, toggle().getAttribute("aria-pressed"), toggle().querySelector("rect") ? "▢" : "▷"];
   expect(document.querySelector(".ed-pool-head")!.firstElementChild).toBe(toggle()); // 사이드바 바로 옆 줄의 첫 단추(공유 탭과 같은 자리 관계)
   expect(toggle().className).toContain("lib-filter-ic"); // 공유 탭의 그 단추와 같은 모양
   expect(look()).toEqual([true, 2, "필터 사이드바 닫기", "true", "▢"]);
   const before = [cuts(), clips().length, localStorage.getItem(DOC_KEY)];
 
   act(() => toggle().click());
-  expect(look()).toEqual([false, 1, "필터 사이드바 열기", "false", "▷"]); // 목록과 그 손잡이가 사라지고, 단추는 제자리에서 다시 연다
+  expect(look()).toEqual([false, 1, "필터 사이드바 열기", "false", "▷"]); // 목록과 그 손잡이가 감춰지고, 단추는 제자리에서 다시 연다
   expect(JSON.parse(localStorage.getItem(UI_KEY)!).sideHidden).toBe(true);
   expect([cuts(), clips().length, localStorage.getItem(DOC_KEY)]).toEqual(before); // 타임라인·편집 문서는 그대로
   expect(document.querySelector(".ed-pool-side > .ed-pool h3")!.textContent).toBe("e070 / c1"); // 지금 컷은 풀 머리줄에 계속 보인다
+
+  // 닫았다 열어도 목록은 닫기 전 그대로다 — 접어 둔 폴더가 다시 펼쳐지지 않는다(없앴다 새로 그리면 고른 시퀀스까지 다시 펼친다, Codex 코드 리뷰)
+  const names = () => [...document.querySelectorAll(".ed-side .folder-tree-name")].map((el) => el.textContent);
+  const caret = () => document.querySelector<HTMLElement>(".ed-side .folder-tree-row.root .folder-tree-caret")!;
+  act(() => toggle().click());
+  expect(names()).toEqual(["e070", "c1", "c2", "c3"]);
+  act(() => caret().click());
+  expect(names()).toEqual(["e070"]);
+  act(() => toggle().click());
+  act(() => toggle().click());
+  expect(names()).toEqual(["e070"]);
+  act(() => caret().click());
+  act(() => toggle().click()); // 다시 닫아 둔다 — 아래는 닫힌 채 떠났다 돌아오는 길
 
   act(() => root.unmount()); // 편집 탭을 떠났다 다시 — 닫힌 채
   root = createRoot(host);
