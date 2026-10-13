@@ -438,6 +438,53 @@ def test_episode_cards_carry_the_numbers_and_cut_strip_of_the_episode_screen(cat
     assert (nested["subfolders"], [child["path"] for child in nested["children"]]) == (1, ["e020/c0020/takeB"])
 
 
+def test_cut_cards_carry_recent_takes_and_workers_for_the_list_view(catalog):
+    """컷 화면의 리스트용 — 하위 폴더가 없는 카드는 생성물 미리보기(대표 먼저, 그 뒤 최신 순)를, 모든 카드는 작업자별 건수를 싣는다."""
+    def asset(gen_id, kind="video"):
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO asset(id, generation_id, type, file_path) VALUES(?, ?, ?, ?)",
+                ("asset-" + gen_id, gen_id, kind, f"/media/{gen_id}.bin"),
+            )
+
+    for index in range(12):                                   # 한 컷에 열둘 — 미리보기는 열 개까지
+        seed(f"t{index:02d}", "e035/c0010", creator="river" if index % 3 else "ozzy")
+        asset(f"t{index:02d}")
+    seed("private", "e035/c0010", shared=False)               # 안 보이는 것은 미리보기에도 작업자 수에도 안 든다
+    seed("sub", "e035/c0020/takeB", creator="river")          # 하위 폴더가 있는 카드(c0020)는 생성물 미리보기를 싣지 않는다
+    with db.get_connection() as conn:
+        conn.execute("UPDATE generation SET is_final = 1 WHERE id IN ('t11', 't05')")
+        conn.execute("UPDATE generation SET is_held = 1 WHERE id IN ('t10', 't05')")  # t05 = 둘 다 켜진 옛 행 → 최종
+    repo.identity.set_creator_name("river", "리버")           # ozzy 는 이름을 모른다
+    choose("e035/c0010", "t01")                               # 대표 — 최근 열 개 밖이어도 맨 앞에 선다
+
+    cut = cards("e035")[1]["e035/c0010"]
+    takes = cut["takes"]
+    assert [take["cover"]["id"] for take in takes] == ["t01", "t11", "t10", "t09", "t08", "t07", "t06", "t05", "t04", "t03"]
+    assert cut["cover"]["id"] == "t01" and cut["rep"] is True and cut["count"] == 12
+    assert [(take["final"], take["held"]) for take in takes[1:3]] == [(True, False), (False, True)]
+    assert (takes[7]["final"], takes[7]["held"]) == (True, False)  # 둘 다 켜진 행은 최종으로만
+    assert set(takes[0]) == {"cover", "final", "held", "by"} and set(takes[0]["cover"]) == {"id", "assets"}
+    assert [a["type"] for a in takes[0]["cover"]["assets"]] == ["video"]
+    assert (takes[0]["by"], takes[2]["by"], takes[3]["by"]) == ("리버", "리버", None)  # t01·t10 = river, t09 = ozzy(이름 모름)
+    # 작업자별 건수 — 많은 순, 이름을 모르면 이름 없이(uid 를 내보내지 않는다)
+    assert cut["workers"] == [{"name": "리버", "count": 8}, {"name": None, "count": 4}]
+
+    nested = cards("e035")[1]["e035/c0020"]
+    assert (nested["subfolders"], nested["takes"], nested["workers"]) == (1, [], [{"name": "리버", "count": 1}])
+    episode = cards("")[1]["e035"]                            # 묶음(에피소드) — 컷 띠를 싣고 생성물 미리보기는 없다
+    assert (episode["takes"], episode["workers"]) == ([], [{"name": "리버", "count": 9}, {"name": None, "count": 4}])
+    # 작업자는 많은 순 네 명까지
+    for index, who in enumerate(("a", "b", "b", "c", "d", "e")):
+        seed(f"w{index}", "e040/c0010", creator=who)
+    crowd = cards("e040")[1]["e040/c0010"]["workers"]
+    assert (len(crowd), crowd[0]["count"], sum(one["count"] for one in crowd)) == (4, 2, 5)
+    # 대표가 없으면 최신 순 그대로
+    with db.get_connection() as conn:
+        conn.execute("DELETE FROM folder_cover")
+    assert [take["cover"]["id"] for take in cards("e035")[1]["e035/c0010"]["takes"]][:3] == ["t11", "t10", "t09"]
+
+
 def test_cards_count_final_and_held_like_the_sidebar_numbers(catalog):
     """모아보기 카드의 검토 줄 — 그 폴더(하위 포함)의 최종·보류 수. 사이드바 숫자와 같은 규칙: 최종이 먼저다."""
     for gen_id, folder in (("plain", "e035/c0010"), ("fin", "e035/c0010"), ("both", "e035/c0010"),
