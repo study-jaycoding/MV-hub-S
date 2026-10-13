@@ -61,7 +61,7 @@ import {
   type ReleaseUpdateStatus,
 } from "../lib/releaseUpdate";
 import { CloseIcon } from "./common/ViewIcons";
-import { reloadNow } from "../lib/unloadGuard"; // 앱이 스스로 하는 새로고침 — 서버 상태를 바꾼 뒤라 묻지 않고 진행한다
+import { reloadIfFree, reloadNow, unsavedNote } from "../lib/unloadGuard"; // 앱이 스스로 하는 새로고침 — 서버 상태를 바꾼 뒤라 묻지 않고 진행한다
 
 export function SettingsPanel({
   onClose,
@@ -240,7 +240,14 @@ export function SettingsPanel({
           } catch {
             // ignore
           }
-          window.setTimeout(() => reloadNow(), 500);
+          // 저장하지 못한 편집이 있으면 스스로 새로고침하지 않는다 — 업데이트 덮개가 [지금 새로고침]·[닫기]를 내준다(같은 판정:
+          //  lib/unloadGuard). 여기서 묻지 않고 새로고침하면 덮개가 묻기도 전에 그 편집이 사라졌다(Codex 재검토 3회째).
+          window.setTimeout(() => {
+            if (reloadIfFree() || cancelled) return;
+            setReleaseUpdateMsg("업데이트가 끝났습니다 — 편집 탭에 저장하지 못한 변경이 있어 자동으로 새로고침하지 않았습니다.");
+            setReleaseUpdateBusy(false);
+            setReleaseUpdatePolling(false);
+          }, 500);
           return;
         }
       } catch {
@@ -424,7 +431,7 @@ export function SettingsPanel({
   // 내 DB 가져오기(통째 교체) — 성공하면 라이브러리를 새로 읽도록 전체 새로고침.
   const importDb = async (file: File | null | undefined) => {
     if (!file) return;
-    if (!window.confirm("현재 로컬 DB를 이 파일로 통째 교체합니다. (현재 DB는 자동 백업)\n계속할까요?")) {
+    if (!window.confirm("현재 로컬 DB를 이 파일로 통째 교체합니다. (현재 DB는 자동 백업)\n계속할까요?" + unsavedNote())) {
       return;
     }
     setDbBusy(true);
@@ -485,7 +492,7 @@ export function SettingsPanel({
     const device = backup.device?.device_name || "알 수 없는 PC";
     if (
       !window.confirm(
-        `${device}에서 만든 ${when} 메타데이터를 적용합니다.\n현재 로컬 데이터는 먼저 안전하게 보관되며, 적용 후 재로그인합니다.\n계속할까요?`,
+        `${device}에서 만든 ${when} 메타데이터를 적용합니다.\n현재 로컬 데이터는 먼저 안전하게 보관되며, 적용 후 재로그인합니다.\n계속할까요?` + unsavedNote(),
       )
     ) {
       setDbMsg("메타데이터 동기화를 취소했습니다.");

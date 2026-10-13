@@ -191,6 +191,41 @@ it("저장하지 못한 편집이 있으면 로그아웃 전에 묻는다 — �
   }
 });
 
+// Codex 재검토 3회째: 위의 확인은 요청 전에 한 번뿐이다. 응답을 기다리는 동안 한 편집이 저장에 실패하면 묻지 못한 채 새로고침에 사라진다 —
+//  그사이는 '떠나는 중'이라 편집 문서가 조작을 받지 않는다(useEditDoc 이 isLeaving 을 본다 — editDocStore 시험). 실패하면 풀린다.
+it("AUTH-off 로그아웃 — 응답을 기다리는 동안은 '떠나는 중'이고, 실패하면 풀린다", async () => {
+  const reloadPage = vi.fn();
+  vi.stubGlobal("location", { href: "http://localhost:3000/", origin: "http://localhost:3000", protocol: "http:", host: "localhost:3000",
+    hostname: "localhost", port: "3000", pathname: "/", search: "", hash: "", reload: reloadPage });
+  const answer = deferred<Response>();
+  vi.stubGlobal("fetch", vi.fn((url: string) => {
+    if (url === "/api/auth/config") return Promise.resolve(response({ auth_enabled: false, has_accounts: false }));
+    if (url === "/api/shared-server/status") return Promise.resolve(response({ configured: true, has_token: false, url: "http://127.0.0.1:9" }));
+    if (url === "/api/projects/my-finalize-roles") return Promise.resolve(response({ project_ids: [] }));
+    if (url === "/api/shared-server/logout") return answer.promise;
+    throw new Error(`Unexpected request: ${url}`);
+  }));
+  const { useHubAuth } = await import("../src/lib/useHubAuth");
+  const { isLeaving } = await import("../src/lib/unloadGuard");
+  let logout!: () => Promise<boolean>;
+  function Host() {
+    logout = useHubAuth().logout;
+    return null;
+  }
+  await act(async () => root!.render(<Host />));
+  await act(async () => {});
+  expect(isLeaving()).toBe(false);
+  let pending!: Promise<boolean>;
+  await act(async () => { pending = logout(); });
+  expect(isLeaving()).toBe(true);
+  let loggedOut: boolean | undefined;
+  await act(async () => {
+    answer.resolve(new Response(JSON.stringify({ detail: "boom" }), { status: 500 }));
+    loggedOut = await pending;
+  });
+  expect([loggedOut, isLeaving(), reloadPage.mock.calls.length]).toEqual([false, false, 0]);
+});
+
 it("AUTH-on: 설정이 오기 전 참이었다가 거짓으로 출렁이지 않는다(로그인 전에는 거짓)", async () => {
   const config = deferred<Response>();
   const { ready } = await mount({ "/api/auth/config": () => config.promise });
