@@ -132,11 +132,17 @@ it("컷 정보 — 2000건을 넘으면 '최근 2000건 기준'. 목록을 못 �
 });
 
 it("모아보기 — 개별은 큰 카드 + 정보(크레딧은 표지마다), 연결은 재생기. 토글·닫기", async () => {
-  const folders = [card("C0050", false, "image"), card("C0080", true), card("C0110")];
+  // 검토 줄 = 그 폴더 안의 개수(Jay 2026-10-13): 첫 카드는 서버가 수를 안 준 것(옛 공유 서버), 둘째는 공유·최종·보류가 다 있는 것, 셋째는 공유뿐
+  const folders = [
+    card("C0050", false, "image"),
+    { ...card("C0080", true), count: 12, final_count: 2, held_count: 1 },
+    { ...card("C0110"), count: 5, final_count: 0, held_count: 0 },
+  ];
   const onModeChange = vi.fn();
   const onClose = vi.fn();
   const onPreview = vi.fn();
-  act(() => root.render(<CutReel folders={folders} mode="grid" onModeChange={onModeChange} previewOpen={false} onClose={onClose} onPreview={onPreview} />));
+  const onEnter = vi.fn();
+  act(() => root.render(<CutReel folders={folders} mode="grid" onModeChange={onModeChange} previewOpen={false} onClose={onClose} onPreview={onPreview} onEnter={onEnter} />));
   await settle();
   expect(host.querySelector(".reel-sub")!.textContent).toBe("3컷 · 대표 1 · 최신 2");
   const cards = [...host.querySelectorAll(".reel-card")];
@@ -144,6 +150,19 @@ it("모아보기 — 개별은 큰 카드 + 정보(크레딧은 표지마다), �
   expect(cards.map((c) => c.querySelector(".reel-rep")!.textContent)).toEqual(["최신 것", "★ 대표", "최신 것"]);
   expect(cards.map((c) => c.querySelector(".reel-order")!.textContent)).toEqual(["1", "2", "3"]);
   expect(cards[1].querySelector(".reel-info")!.textContent).toContain("1.5 credits");
+  // 정보 줄의 순서 — 모델이 맨 위 한 줄(전엔 이름 오른쪽에 작게), 길이는 그 옆에
+  const info = (c: Element) => [...c.querySelectorAll(".reel-info > .k")].map((k) => [k.textContent, k.nextElementSibling!.textContent]);
+  expect(info(cards[1]).map(([k]) => k)).toEqual(["모델", "작업자", "크레딧", "생성일", "검토"]);
+  expect([info(cards[1])[0][1]!.endsWith(" · 5.0s"), cards[1].querySelector(".reel-info i")!.textContent, cards[1].querySelector(".reel-ttl > span")]).toEqual([true, "5.0s", null]);
+  // 검토 — 0 인 것은 감추고 끝에 전체. 수가 없으면(옛 서버) 전처럼 표지 한 장의 상태
+  const review = (c: Element) => [...c.querySelectorAll(".reel-rv > span")].map((s) => `${s.className}|${s.textContent}`);
+  expect(review(cards[1])).toEqual(["|공유 9", "fin|★ 최종 2", "held|R 1", "all|전체 12"]);
+  expect(review(cards[2])).toEqual(["|공유 5", "all|전체 5"]);
+  expect([cards[0].querySelector(".reel-rv"), info(cards[0])[4][1]]).toEqual([null, "공유"]);
+  // [폴더로] — 그 컷 폴더를 넘긴다(크게 보기는 열지 않는다)
+  act(() => cards[1].querySelector<HTMLButtonElement>(".reel-go")!.click());
+  expect(onEnter).toHaveBeenCalledExactlyOnceWith(folders[1]);
+  expect(onPreview).not.toHaveBeenCalled();
   act(() => cards[1].querySelector<HTMLButtonElement>(".reel-face")!.click());
   expect(onPreview).toHaveBeenCalledWith(expect.objectContaining({ url: "/m/C0080.mp4", index: 1 }));
   act(() => host.querySelector<HTMLButtonElement>(".reel-seg button:nth-child(2)")!.click());
@@ -151,7 +170,7 @@ it("모아보기 — 개별은 큰 카드 + 정보(크레딧은 표지마다), �
   act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })); });
   expect(onClose).toHaveBeenCalledTimes(1);
   // 크게 보기가 위에 떠 있으면 Esc 는 그쪽 몫
-  act(() => root.render(<CutReel folders={folders} mode="grid" onModeChange={onModeChange} previewOpen onClose={onClose} onPreview={onPreview} />));
+  act(() => root.render(<CutReel folders={folders} mode="grid" onModeChange={onModeChange} previewOpen onClose={onClose} onPreview={onPreview} onEnter={onEnter} />));
   act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })); });
   expect(onClose).toHaveBeenCalledTimes(1);
 });
@@ -315,7 +334,7 @@ it("모아보기 연결 — 같은 주소의 영상은 길이를 한 번만 읽�
     dup.cover = gen("cover-C0090", { folder_path: "e035/C0090", assets: [{ type: "video", file_path: "/m/C0080.mp4", thumbnail_path: null }] });
     const folders = [card("C0080"), dup, card("C0110")];
     const draw = (list: FolderCard[]) => act(() => root.render(
-      <CutReel folders={list} mode="linked" onModeChange={() => {}} previewOpen={false} onClose={() => {}} onPreview={() => {}} />,
+      <CutReel folders={list} mode="linked" onModeChange={() => {}} previewOpen={false} onClose={() => {}} onPreview={() => {}} onEnter={() => {}} />,
     ));
     draw(folders);
     const probes = created.filter((v) => !v.isConnected); // 화면에 붙지 않은 것 = 미리 읽기

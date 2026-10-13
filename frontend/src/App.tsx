@@ -2966,6 +2966,8 @@ export default function App() {
         <CutReel
           folders={cutReelFolders} mode={reelMode} onModeChange={setReelMode} previewOpen={!!preview}
           onClose={() => setCutReel(null)} onPreview={openPreview}
+          // [폴더로] = 그 컷 폴더로 이동(사이드바에서 누른 것과 같다 — 기록 한 칸). 창을 먼저 닫는다(컷 정보 창의 [폴더 열기]와 같은 순서)
+          onEnter={(folder) => { setCutReel(null); enterFolderCard(folder); }}
         />
       )}
       {/* 지연 로딩 창 — 틀(막·빈 창·Esc 겹)은 연 순간에 서고 본문만 늦게 온다(AppOverlays 의 LazyModalShell). */}

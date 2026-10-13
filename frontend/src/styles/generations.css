@@ -1124,13 +1124,26 @@
   background: rgba(15, 17, 19, 0.85); color: #c9cdd2; font-size: 11.5px; font-weight: 800;
 }
 .reel-rep.rep { color: #ffd24a; }
-.reel-ttl { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 10px 12px 6px; }
-.reel-ttl > b { font-size: 14px; color: #fff; }
-.reel-ttl > span { font-size: 12px; color: var(--muted); white-space: nowrap; }
-.reel-ttl i { font-style: normal; color: var(--accent); font-weight: 800; }
+.reel-ttl { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 12px 6px; }
+.reel-ttl > b { min-width: 0; font-size: 14px; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* [폴더로] — 그 컷 폴더로 이동(Jay 2026-10-13). 전역 button 값(패딩·눌림)을 덮는다 */
+.reel-go {
+  flex: none; padding: 3px 10px; border: 1px solid #3c3f45; border-radius: 8px; background: #111315; color: #d7dae0;
+  font-size: 12px; font-weight: 800; line-height: 1.5; white-space: nowrap; cursor: pointer;
+}
+.reel-go:hover, .reel-go:focus-visible { border-color: var(--accent); color: var(--accent); }
+.reel-go:active { transform: none; }
 .reel-info { display: grid; grid-template-columns: 54px 1fr; column-gap: 8px; row-gap: 5px; padding: 0 12px 12px; font-size: 12.5px; }
 .reel-info .k { color: var(--muted); }
-.reel-info .v { color: #d7dae0; }
+.reel-info .v { color: #d7dae0; min-width: 0; }
+.reel-info i { font-style: normal; color: var(--accent); font-weight: 800; }
+/* 검토 = 그 폴더 안의 개수 — 색은 사이드바 폴더 숫자(project-sidebar.css 의 .folder-review-final/held)와 같다 */
+.reel-rv { display: flex; align-items: baseline; flex-wrap: wrap; column-gap: 6px; font-variant-numeric: tabular-nums; }
+.reel-rv > span + span:not(.all)::before { content: "·"; margin-right: 6px; color: var(--muted); font-weight: 400; }
+.reel-rv b { color: #fff; font-weight: 800; }
+.reel-rv .fin { color: #e8b62c; font-weight: 700; }
+.reel-rv .held { color: #ef7d8c; font-weight: 700; }
+.reel-rv .all { margin-left: auto; color: var(--muted); }
 /* 연결 — 편집 탭 뷰어의 아래 판과 같은 값(가는 타임바·빨간 자리·44px 조작 줄) */
 .reel-player { display: flex; flex-direction: column; min-height: 0; }
 .reel-screen { position: relative; flex: none; height: min(62vh, 760px); background: #000; display: flex; align-items: center; justify-content: center; }

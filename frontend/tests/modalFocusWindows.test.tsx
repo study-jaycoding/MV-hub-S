@@ -147,7 +147,7 @@ const windows: [string, (onClose: () => void) => ReactElement, string][] = [
   ["등급 확인(GradeStepModal)", (onClose) => <GradeStepModal pending={computeGradeStep([gen("g")], "down", () => true)} busy={false} onConfirm={noop} onCancel={onClose} />, ".gradestep-modal"],
   ["부분 수정(PartialEditModal)", (onClose) => <PartialEditModal gen={gen("g")} workspace={{ scope: "personal", id: null, name: null } as never} onQueued={noop} onClose={onClose} />, ".partial-edit-modal"],
   ["컷 정보(CutInfoPopup)", (onClose) => <CutInfoPopup folder={folder} x={100} y={100} query={query} savingRep={false} previewOpen={false} onClose={onClose} onOpen={noop} onPreview={noop} onPickCover={noop} />, ".info-popup.cutinfo"],
-  ["모아보기(CutReel)", (onClose) => <CutReel folders={[folder]} mode="each" onModeChange={noop} previewOpen={false} onClose={onClose} onPreview={noop} />, ".reel"],
+  ["모아보기(CutReel)", (onClose) => <CutReel folders={[folder]} mode="each" onModeChange={noop} previewOpen={false} onClose={onClose} onPreview={noop} onEnter={noop} />, ".reel"],
   ["이름 입력(FloatingPrompt)", (onClose) => <FloatingPrompt title="이름" onSubmit={noop} onCancel={onClose} />, ".fp-panel"],
   ["내 계정(ManageAccount)", (onClose) => <ManageAccount provider={null} account={null} onClose={onClose} onProviderUpdated={noop} />, ".manage-float"],
   ["폴더 등록(MountManager)", (onClose) => <MountManager onClose={onClose} onChanged={noop} />, ".mount-float"],

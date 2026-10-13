@@ -1424,6 +1424,21 @@ it("App 공유·리뷰: 컷 두 번 클릭 = 모아보기 · 우클릭 = 폴더 
   expect(pill("neighbour")).toMatchObject({ type: "button", props: { disabled: false } });
 });
 
+// 2026-10-13 오후(Jay): 모아보기 [개별] 카드의 [폴더로] = 그 컷 폴더로 이동 — 창이 닫히고, 사이드바에서 그 폴더를 누른 것처럼 기록 한 칸이 쌓인다.
+it("App 공유·리뷰: 모아보기 카드의 [폴더로] = 창을 닫고 그 컷 폴더로 이동(기록 한 칸)", { timeout: 20_000 }, async () => {
+  const generationMetrics = vi.fn().mockResolvedValue({ real_credits: 1, est_credits: null, credit_source: null, elapsed_seconds: null });
+  localStorage.setItem("ch.lib.cutView", "1");
+  await mountTeamFolder({ folderCards: byParent(() => false), setFolderCover: vi.fn(), generationMetrics });
+  const reel = () => document.querySelector<HTMLElement>(".reel");
+  act(() => { cutTile("shot").dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); });
+  await settle();
+  expect([reel() !== null, librarySnapshot!.filters.folder_path]).toEqual([true, "episode"]);
+  const before = window.history.length;
+  act(() => { reel()!.querySelector<HTMLButtonElement>(".reel-go")!.click(); });
+  await settle();
+  expect([reel(), librarySnapshot!.filters.folder_path, window.history.length - before, cutGrid()]).toEqual([null, "episode/shot", 1, null]);
+});
+
 // 2026-10-13 ③(Jay): 사이드바로 폴더를 옮기면 묶음 응답이 오기 전에 낱장 격자(옛 폴더의 카드)가 한 번 보였다가 컷 카드로 바뀌었다 → 응답 전엔 격자 자리를
 //  비운다(전환 단추는 그동안 남는다). 조회가 실패하면 낱장으로 돌아간다(영영 빈 화면이 아니다).
 it("App 공유·리뷰: 폴더를 옮기면 묶음 응답 전엔 낱장 격자를 그리지 않는다 — 오면 컷 카드(잎이면 낱장), 실패하면 낱장", { timeout: 20_000 }, async () => {
