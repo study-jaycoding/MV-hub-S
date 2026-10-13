@@ -38,7 +38,7 @@ import {
   placeClip,
   placeState,
   posAt,
-  setClipTrim,
+  setClipRange,
   removeClips,
   removeMarker,
   resetCutOrder,
@@ -628,7 +628,7 @@ function EditTabInner({
     menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setClipMenu({ keys: selected.has(key) ? [...selected] : [key], x, y });
   }, [selected]);
-  // 클립 길이 조절 창(Jay 2026-10-13) — 타임라인의 클립을 휠 클릭. 영상만이고 잠긴 트랙은 안 된다(setClipTrim 의 거부와 같다 — 창을
+  // 클립 길이 조절 창(Jay 2026-10-13) — 타임라인의 클립을 휠 클릭. 영상만이고 잠긴 트랙은 안 된다(setClipRange 의 거부와 같다 — 창을
   //  띄우기 전에 까닭을 알린다). group = 이 창을 한 번 연 동안의 걸음들을 되돌리기 한 단계로 묶는 이름(useEditDoc).
   //  **떠 있는 창이다**(같은 날 밤 Jay: "플로팅창으로") — 메뉴가 아니라서 다른 메뉴를 여닫아도(closeMenu) 떠 있고, 떠 있는 동안 타임라인을
   //  그대로 쓴다. 떠 있는 채 다른 클립을 휠 클릭하면 창이 그 클립으로 바뀐다(새 group). 닫는 것: ✕ · 창 안의 Esc · 아래의 셋.
@@ -1535,7 +1535,9 @@ function EditTabInner({
           // 바꿀 것이 없었던 걸음(none)은 조용히 넘긴다. 버린 걸음(stopped — 다른 창의 저장·떠나는 중)에는 창을 닫는다: 그 알림이 이미
           //  떴고, 이 조절은 여기서 끝이다(다시 열어 조절하면 그때는 알고 하는 편집이다).
           onChange={(seconds) => {
-            const done = applyEdit((current) => setClipTrim(current, trimPop.key, seconds), { group: trimPop.group, rev: trimPop.rev });
+            const done = applyEdit((current) => setClipRange(current, trimPop.key, {
+              head: current.clips.find((item) => clipKey(item) === trimPop.key)?.head ?? 0, trim: seconds,
+            }), { group: trimPop.group, rev: trimPop.rev });
             if (done === "stopped") closeTrim();
           }}
           onUndo={edit.undo}

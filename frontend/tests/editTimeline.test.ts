@@ -42,7 +42,9 @@ import {
   removeMarker,
   resetCutOrder,
   setClipDurs,
-  setClipTrim,
+  setClipRange,
+  clipHead,
+  clipFrames,
   setMark,
   settlePos,
   setTrackColor,
@@ -247,6 +249,10 @@ describe("배치와 보이는 클립", () => {
     expect(visibleClip(locked, layout.cuts[0], 0)?.gen).toBe("top");
   });
 
+  // 뒤만 자르는 걸음(시작점은 그대로 둔다) — 10-13 의 시험들이 쓰던 모양
+  const setClipTrim = (d: EditDoc, k: string, seconds: number | null) =>
+    setClipRange(d, k, { head: d.clips.find((item) => clipKey(item) === k)?.head ?? 0, trim: seconds });
+
   // Jay 2026-10-13 — 타임라인 클립 휠 클릭 = 길이 조절(뒤를 자른다). 영상만이고 원본보다 길게는 안 된다.
   it("줄인 길이(trim) — 쓰는 길이는 줄인 값, 원본은 full 에 남는다. 그림은 줄이지 않는다", () => {
     const v = clip("c1", "v", 1, { dur: 5, kind: "video", trim: 3 });
@@ -304,6 +310,58 @@ describe("배치와 보이는 클립", () => {
     // 옮겨도(트랙) 줄인 길이는 따라간다. 다른 카드로 교체하면 새 클립이라 없다.
     expect(moveClipToTrack(d2, k, 2)!.clips[0]).toMatchObject({ track: 2, trim: 4 });
     expect("trim" in placeClip(d2, { cut: "e070/c1", gen: "new", kind: "video", dur: 5 }, 1)!.clips[0]).toBe(false);
+  });
+
+  // Jay 2026-10-14 — 길이 조절에서 앞도 자른다(head). trim 은 그대로 '쓰는 길이'(시작점부터)다.
+  it("앞 자르기(head) — 쓰는 길이는 시작점부터 남은 만큼, 유효 시작은 프레임에 맞춰 원본 안으로 자른다", () => {
+    const v = clip("c1", "v", 1, { dur: 5, kind: "video", head: 1 });
+    expect([clipHead(v), clipLen(v), clipFull(v)]).toEqual([1, 4, 5]);
+    expect(clipLen({ ...v, trim: 2 })).toBe(2); // 1초부터 2초
+    expect(clipLen({ ...v, trim: 9 })).toBe(4); // 남은 만큼까지만
+    const still = clip("c1", "i", 1, { dur: 5, kind: "image", head: 2 });
+    expect([clipHead(still), clipLen(still)]).toEqual([0, 5]); // 그림은 자르지 않는다
+    // 원본보다 긴 값(실측이 짧아졌다) — 적힌 값은 남고, 쓰는 값은 마지막 프레임의 시작이다(프레임 경계 — 71.48프레임 같은 값이 아니다)
+    const long = clip("c1", "v", 1, { dur: 3.02, kind: "video", head: 4 });
+    expect(clipFrames(3.02)).toBe(72);
+    expect(clipHead(long)).toBe(71 / 24);
+    expect(clipLen(long)).toBeCloseTo(3.02 - 71 / 24);
+    expect(clipHead(clip("c1", "v", 1, { dur: 5, kind: "video", head: 1.01 }))).toBe(1); // 프레임에 맞춘다
+    // 한 프레임도 안 되는 영상은 자를 수 없다
+    const tiny = clip("c1", "v", 1, { dur: 0.02, kind: "video", head: 1 });
+    expect([clipHead(tiny), clipLen(tiny)]).toEqual([0, 0.02]);
+    // 배치에 유효 시작이 실린다(없으면 0). 컷 길이는 켜진 클립의 쓰는 길이 중 가장 긴 것 그대로다
+    const slot = buildLayout(["e070/c1"], doc([clip("c1", "low", 1, { dur: 5 }), clip("c1", "top", 2, { dur: 5, head: 2, trim: 1 })])).cuts[0];
+    expect(slot.clips.map((c) => [c.gen, c.head, c.len, c.full])).toEqual([["low", 0, 5, 5], ["top", 2, 1, 5]]);
+    expect(slot.len).toBe(5);
+    // 원본 길이가 바뀌면(실측) 쓰는 값만 다시 잘린다 — 5초 → 1.5초 → 5초면 시작은 2 → 35프레임 → 2
+    const k = key("c1", "v");
+    let d2 = doc([clip("c1", "v", 1, { dur: 5, kind: "video", head: 2 })]);
+    const head = () => buildLayout(["e070/c1"], d2).cuts[0].clips[0].head;
+    d2 = setClipDurs(d2, new Map([[k, 1.5]]))!;
+    expect([head(), d2.clips[0].head]).toEqual([35 / 24, 2]);
+    d2 = setClipDurs(d2, new Map([[k, 5]]))!;
+    expect(head()).toBe(2);
+  });
+
+  it("구간 정하기(setClipRange) — 앞·뒤를 한 번에 적고, 0·null 은 그 칸을 지운다. 거부는 길이 줄이기와 같다", () => {
+    const k = key("c1", "v");
+    const d2 = doc([clip("c1", "v", 1, { dur: 5, kind: "video" }), clip("c1", "i", 2, { kind: "image" }),
+      clip("c2", "k", 3, { dur: 5 })], { tracksLocked: [3] });
+    const both = setClipRange(d2, k, { head: 1, trim: 2 })!;
+    expect(both.clips[0]).toEqual(clip("c1", "v", 1, { dur: 5, kind: "video", trim: 2, head: 1 }));
+    expect(both.clips[1]).toBe(d2.clips[1]); // 다른 클립은 그대로
+    expect(setClipRange(both, k, { head: 1, trim: 2 })).toBeNull(); // 바뀐 것이 없다
+    expect(setClipRange(both, k, { head: 0, trim: 2 })!.clips[0]).toEqual(clip("c1", "v", 1, { dur: 5, kind: "video", trim: 2 })); // 앞만 되돌린다
+    expect(setClipRange(both, k, { head: 1, trim: null })!.clips[0]).toEqual(clip("c1", "v", 1, { dur: 5, kind: "video", head: 1 })); // 끝은 원본 끝까지
+    expect(setClipRange(both, k, { head: 0, trim: null })!.clips[0]).toEqual(clip("c1", "v", 1, { dur: 5, kind: "video" })); // 원본 길이로
+    for (const bad of [-1, NaN, Infinity]) expect(setClipRange(d2, k, { head: bad, trim: null })).toBeNull();
+    expect(setClipRange(d2, key("c1", "i"), { head: 1, trim: null })).toBeNull(); // 그림
+    expect(setClipRange(d2, key("c2", "k"), { head: 1, trim: null })).toBeNull(); // 잠긴 트랙
+    expect(parseEditDoc(JSON.parse(JSON.stringify(both)))).toEqual(both);
+    // 옮겨도(트랙) 따라가고, 다른 카드로 교체하면 새 클립이라 없다
+    const solo = setClipRange(doc([clip("c1", "v", 1, { dur: 5, kind: "video" })]), k, { head: 1, trim: 2 })!;
+    expect(moveClipToTrack(solo, k, 2)!.clips[0]).toMatchObject({ track: 2, trim: 2, head: 1 });
+    expect("head" in placeClip(solo, { cut: "e070/c1", gen: "new", kind: "video", dur: 5 }, 1)!.clips[0]).toBe(false);
   });
 
   it("편집점은 컷 경계와 컷 안에서 끝나는 클립의 끝이다", () => {
@@ -503,6 +561,7 @@ describe("저장된 문서 읽기", () => {
       { v: 1, clips: [{ ...c, cut: "" }] }, { v: 1, clips: [{ ...c, cut: "e070\\c1" }] },
       { v: 1, clips: [{ ...c, dur: 0 }] }, { v: 1, clips: [{ ...c, dur: "8" }] },
       { v: 1, clips: [{ ...c, kind: "audio" }] }, { v: 1, clips: [], tracksOff: [0] },
+      { v: 1, clips: [{ ...c, head: 0 }] }, { v: 1, clips: [{ ...c, head: -1 }] }, { v: 1, clips: [{ ...c, head: "1" }] },
       { v: 1, clips: [c, { ...c, gen: "other" }] }, // 같은 (컷, 트랙)
       { v: 1, clips: [c, { ...c, track: 3 }] }, // 같은 (컷, 생성물)
       { v: 1, clips: [], muted: "yes" },

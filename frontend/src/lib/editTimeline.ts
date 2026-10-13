@@ -20,6 +20,10 @@ export interface EditClip {
   // 사용자가 줄인 길이(초) — 뒤를 자른다(Jay 2026-10-13: 타임라인 클립 휠 클릭 = 길이 조절). 영상만이고 원본(dur)보다 길게는 못 한다.
   //  dur 과 따로 둔다: dur 은 실측이 오면 고쳐 적히고 되돌리기 대상이 아니다. 이것은 사용자의 편집이라 되돌리기 대상이다.
   trim?: number;
+  // 앞에서 잘라 낸 길이(초, Jay 2026-10-14: 길이 조절에서 앞도 자른다) — 그 클립은 원본의 이 시각에서 시작한다. 영상만. 없으면 0.
+  //  trim 은 그대로 '쓰는 길이'다(시작점부터 센다). 실제로 쓰는 값(유효 시작)은 clipHead 가 프레임에 맞춰 원본 안으로 자른다 —
+  //  적힌 값은 남긴다(trim 과 같은 까닭: 실측 전의 dur 은 추정값이다).
+  head?: number;
 }
 
 // 북마크(다빈치의 마커) — 자리는 (컷, 컷 안 시각). (컷, 프레임)에 하나뿐이다(markerKey).
@@ -222,6 +226,7 @@ export function parseEditDoc(value: unknown): EditDoc | null {
     if (c.dur !== undefined && (typeof c.dur !== "number" || validSeconds(c.dur) === null)) return null;
     if (c.kind !== undefined && c.kind !== "video" && c.kind !== "image") return null;
     if (c.trim !== undefined && (typeof c.trim !== "number" || validSeconds(c.trim) === null)) return null;
+    if (c.head !== undefined && (typeof c.head !== "number" || validSeconds(c.head) === null)) return null;
     const slotKey = `${c.cut}\t${c.track}`;
     const genKey = clipKey({ cut: c.cut, gen: c.gen });
     if (seen.has(slotKey) || seen.has(genKey)) return null; // (컷, 트랙)·(컷, 생성물)은 하나뿐
@@ -233,6 +238,7 @@ export function parseEditDoc(value: unknown): EditDoc | null {
       ...(c.dur !== undefined ? { dur: c.dur as number } : {}),
       ...(c.kind ? { kind: c.kind as "video" | "image" } : {}),
       ...(c.trim !== undefined ? { trim: c.trim as number } : {}),
+      ...(c.head !== undefined ? { head: c.head as number } : {}),
     });
   }
   return {
@@ -272,8 +278,11 @@ export function toggleCutOff(doc: EditDoc, cut: string, autoOff: boolean): EditD
 // ── 배치 ────────────────────────────────────────────────────────────────────────────────────────
 
 export interface SlotClip extends EditClip {
-  len: number; // 쓰는 길이 — 사용자가 줄였으면(trim) 그 길이
+  len: number; // 쓰는 길이 — 사용자가 줄였으면(trim·head) 그 길이
   full: number; // 줄이기 전의 길이(원본) — 화면이 '3.0s / 5.0s' 처럼 둘 다 보여 준다
+  // 유효 시작(초) — 그 클립이 원본의 어디에서 시작하는가(clipHead). 문서에 적힌 값(EditClip.head)이 아니라 프레임에 맞추고 원본
+  //  안으로 자른 값이다. **영상 시각 = 컷 안 시각 + 이 값**(재생·다이나믹 트림 모드·길이 조절 창·Resolve 계획이 같이 쓴다).
+  head: number;
 }
 export interface CutSlot {
   path: string;
@@ -293,12 +302,30 @@ export function clipFull(clip: EditClip, fallback?: unknown): number {
   return validSeconds(clip.dur) ?? validSeconds(fallback) ?? DEFAULT_SEC;
 }
 
-// 쓰는 길이 — 사용자가 줄였으면(trim) 그 길이. 영상만이고 원본보다 길게는 안 된다(재생 엔진이 영상의 실제 끝에서 건너뛴다).
+// 원본을 넘지 않는 가장 긴 프레임 수 — 길이 조절의 눈금 끝. **내림**한다: 올리면 3.02초 영상이 73프레임(3.0417초)으로 잡혀 원본을 넘는다.
+export function clipFrames(full: number): number {
+  return Math.floor(full * EDIT_FPS + 1e-6);
+}
+
+// 유효 시작(초) — 앞에서 잘라 낸 길이(head)를 프레임에 맞추고, 원본에 한 프레임은 남게 자른 값. 그림은 0 이다.
+//  한 프레임도 안 되는 영상은 자를 수 없다(0). 창·재생·그리기·Resolve 계획이 전부 이 값을 쓴다 — 초로만 자르면(full − 1/24)
+//  프레임 사이의 시각이 나와, 브라우저는 그 시각을 틀고 창과 Resolve 의 정수 프레임은 그것을 적지 못한다(Codex 설계 검토).
+export function clipHead(clip: EditClip, fallback?: unknown): number {
+  const head = clip.kind === "image" ? null : validSeconds(clip.head);
+  if (head === null) return 0;
+  const top = clipFrames(clipFull(clip, fallback));
+  return top < 1 ? 0 : Math.min(Math.round(head * EDIT_FPS), top - 1) / EDIT_FPS;
+}
+
+// 쓰는 길이 — 사용자가 줄였으면(trim) 그 길이, 앞을 잘랐으면(head) 시작점부터 남은 만큼까지. 영상만이고 원본 밖으로는 안 된다
+//  (재생 엔진이 영상의 실제 끝에서 건너뛴다). trim 이 없으면 원본 끝까지다(프레임에 못 미치는 나머지도 쓴다 — 전과 같다).
 //  그림은 줄이지 않는다: Resolve 가 스틸을 준 길이와 무관하게 5초로 놓아, 줄이면 다음 컷과 겹친다. kind 가 없는 옛 클립은 영상으로 본다.
 export function clipLen(clip: EditClip, fallback?: unknown): number {
   const full = clipFull(clip, fallback);
-  const trim = clip.kind === "image" ? null : validSeconds(clip.trim);
-  return trim === null ? full : Math.min(trim, full);
+  if (clip.kind === "image") return full;
+  const rest = full - clipHead(clip, fallback);
+  const trim = validSeconds(clip.trim);
+  return trim === null ? rest : Math.min(trim, rest);
 }
 
 // 켜져 있는 클립인가 — 클립을 껐거나 그 트랙을 껐으면 아니다. 보이는 것(visibleClip)과 컷 길이(buildLayout)가 같은 기준을 쓴다.
@@ -325,7 +352,10 @@ export function buildLayout(
     const clips = doc.clips
       .filter((clip) => clip.cut === path)
       .sort((a, b) => a.track - b.track)
-      .map((clip) => ({ ...clip, len: clipLen(clip, fallbackOf?.(clip)), full: clipFull(clip, fallbackOf?.(clip)) }));
+      .map((clip) => {
+        const fallback = fallbackOf?.(clip);
+        return { ...clip, len: clipLen(clip, fallback), full: clipFull(clip, fallback), head: clipHead(clip, fallback) };
+      });
     const on = clips.filter((clip) => clipIsOn(doc, clip));
     const len = on.length ? Math.max(...on.map((clip) => clip.len)) : DEFAULT_SEC;
     const slot: CutSlot = { path, name: leaf(path), start, len, clips };
@@ -446,7 +476,7 @@ export function nearestPoint(points: readonly number[], time: number): number {
 
 export interface EditShot {
   slot: CutSlot;
-  local: number; // 컷 안 시각(클립은 컷의 처음에서 시작하므로 그 영상의 시각이기도 하다)
+  local: number; // 컷 안 시각. 클립은 컷의 처음에서 시작한다 — 그 영상의 시각은 여기에 clip.head(앞을 자른 만큼)를 더한 값이다
   clip: SlotClip | null; // 그 순간 보이는 클립(위 트랙 우선·끔 반영 — 타임라인 뷰어와 같다). 없으면 빈 화면
 }
 
@@ -542,22 +572,27 @@ export function placeState(doc: EditDoc, cut: string, own: Pick<EditClip, "track
   return doc.clips.some((clip) => clip.cut === cut && clip.track === track) ? "taken" : "empty";
 }
 
-// 클립의 길이를 줄인다(Jay 2026-10-13 — 뒤를 자른다. seconds = null 이면 원본 길이로 되돌린다). 영상만이다 — 그림과 잠긴 트랙의
-//  클립은 거부한다. 바뀐 것이 없으면 null. 값은 호출부가 프레임에 맞춰 준다(snapTrim).
-//  원본보다 긴 값도 그대로 적는다 — 쓰는 길이는 clipLen 이 원본에서 자른다. 원본 길이를 아직 모를 때(실측 전의 dur 은 추정값이다)
+// 클립이 쓰는 구간을 정한다(Jay 2026-10-13 뒤를 자른다 · 10-14 앞도 자른다). head = 앞에서 잘라 내는 길이(초, 0 = 원본의 처음부터),
+//  trim = 쓰는 길이(초, null = 원본 끝까지). 영상만이다 — 그림과 잠긴 트랙의 클립은 거부한다. 바뀐 것이 없으면 null.
+//  값은 호출부(길이 조절 창)가 프레임에 맞춰 준다.
+//  원본보다 긴 값도 그대로 적는다 — 쓰는 값은 clipHead·clipLen 이 원본에서 자른다. 원본 길이를 아직 모를 때(실측 전의 dur 은 추정값이다)
 //  정한 값을 '원본 이상'이라고 지우면, 실측이 온 뒤 사용자가 정한 길이가 원본 길이로 늘어난다(Codex 설계 검토).
-export function setClipTrim(doc: EditDoc, key: string, seconds: number | null): EditDoc | null {
+export function setClipRange(doc: EditDoc, key: string, range: { head: number; trim: number | null }): EditDoc | null {
   const clip = doc.clips.find((item) => clipKey(item) === key);
   if (!clip || clip.kind === "image" || isLocked(doc, clip.track)) return null;
-  const trim = seconds === null ? undefined : validSeconds(seconds) ?? undefined;
-  if ((seconds !== null && trim === undefined) || trim === clip.trim) return null;
+  if (!Number.isFinite(range.head) || range.head < 0) return null;
+  const head = range.head > 0 ? range.head : undefined;
+  const trim = range.trim === null ? undefined : validSeconds(range.trim) ?? undefined;
+  if ((range.trim !== null && trim === undefined) || (trim === clip.trim && head === clip.head)) return null;
   return {
     ...doc,
     clips: doc.clips.map((item) => {
       if (item !== clip) return item;
       const next = { ...item };
       delete next.trim;
+      delete next.head;
       if (trim !== undefined) next.trim = trim;
+      if (head !== undefined) next.head = head;
       return next;
     }),
   };

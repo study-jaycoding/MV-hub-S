@@ -3,7 +3,7 @@
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { clipKey, insertClip, removeClips, setClipDurs, setClipTrim } from "../src/lib/editTimeline";
+import { clipKey, insertClip, removeClips, setClipDurs, setClipRange } from "../src/lib/editTimeline";
 import { clearUndo, editDocKey, keepUnsavedEditDoc, readEditDoc } from "../src/lib/editTimelineStore";
 import { useEditDoc } from "../src/lib/useEditDoc";
 import { setLeaving } from "../src/lib/unloadGuard";
@@ -416,7 +416,7 @@ it("같은 이름으로 잇달아 한 편집은 되돌리기 한 단계다 — �
   render(KEY_A);
   add("a1");
   const k = clipKey({ cut: "e070/c1", gen: "a1" });
-  const trim = (seconds: number, group: string) => act(() => { edit.applyEdit((doc) => setClipTrim(doc, k, seconds), { group }); });
+  const trim = (seconds: number, group: string) => act(() => { edit.applyEdit((doc) => setClipRange(doc, k, { head: 0, trim: seconds }), { group }); });
   trim(4, "g1");
   trim(3, "g1");
   act(() => { edit.applyEdit((doc) => setClipDurs(doc, new Map([[k, 6]])), { undo: false }); }); // 창을 연 사이 실측이 왔다
