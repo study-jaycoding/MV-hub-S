@@ -14,6 +14,7 @@ import {
   addTrack,
   buildLayout,
   clearMarkers,
+  clipIsOn,
   clipKey,
   cutIsOff,
   cutPaths,
@@ -63,6 +64,7 @@ import { buildTimelineExport, timelineExportName } from "../../lib/editResolveEx
 import type { FolderMenuKind } from "../../lib/folderContextMenu";
 import { generationListMeta } from "../../lib/generationDisplay";
 import { previewTargetFromGenerations } from "../../lib/generationGrid";
+import { reviewTargets, type ReviewAction } from "../../lib/generationReview";
 import { TEAM_SCOPE } from "../../lib/generationViews";
 import { useT } from "../../lib/i18n";
 import { thumbOf } from "../../lib/media";
@@ -124,6 +126,13 @@ interface Props {
   };
   // 왼쪽 폴더 트리의 폴더 메뉴(공유 저장 · 최종 저장 · 원본 위치 열기) — 앱의 것 그대로(공유 & 리뷰 탭과 같은 길)
   onFolderAction: (kind: FolderMenuKind, projectId: string, path: string, name: string) => void | Promise<void>;
+  // 최종 확정(Jay 2026-10-13 — 클립 메뉴의 '최종 선택' · 목록 단추의 '모두 최종으로 확정') — 앱의 것 그대로(공유 & 리뷰의 여러 장
+  //  등급 처리와 같은 길: 바꿀 수 있는 것만 거르고, 요청하고, 결과를 알리고, 목록을 다시 받는다. 서버가 권한을 다시 확인한다).
+  //  canFinalize = 그 생성물에 내가 최종을 줄 수 있나(그 프로젝트의 supervisor·PM). 안 주면 두 줄 모두 없다.
+  review?: {
+    canFinalize: (gen: Generation) => boolean;
+    apply: (gens: Generation[], action: ReviewAction) => void | Promise<void>;
+  };
 }
 
 export type EditCardMenu = (gen: Pick<Generation, "id">, x: number, y: number) => void;
@@ -161,7 +170,7 @@ const isTyping = (target: EventTarget | null) => {
 
 function EditTabInner({
   authKey, workspace, keysActive, flash, onOpenCutFolder, reloadSignal, peekPath, onPeekMarks, cardMenuRef, onPreview, onCompare,
-  resolve, onFolderAction,
+  resolve, onFolderAction, review,
 }: Props) {
   const t = useT();
   const [target, setTarget] = useState<EditTarget | null>(loadEditTarget);
@@ -924,6 +933,73 @@ function EditTabInner({
       .replace("{finals}", String(finals)).replace("{rest}", String(picks.length - finals)));
   };
 
+  // 최종 확정(Jay 2026-10-13) — 클립 메뉴의 '최종 선택'과 목록 단추의 '모두 최종으로 확정'. 편집 문서를 바꾸지 않는다(되돌리기 단계가
+  //  아니다): 생성물의 검수 상태를 바꾸는 것이고, 길은 앱의 것이다(review.apply). 무엇이 바뀔 수 있는지는 앱과 같은 판정으로 미리
+  //  본다(reviewTargets — 공유된 완료본이고 내가 그 프로젝트에서 최종을 줄 수 있는 것). 그런 것이 하나도 없으면 줄을 보이지 않는다.
+  //  메뉴가 떠 있을 때만 센다(떠 있지 않은 동안의 렌더에 얹지 않는다).
+  // · 클립 메뉴: 줄 수 있는 것이 전부 최종이면 ✓ — 누르면 해제(공유로). 아니면 누르면 전부 최종으로.
+  const clipFinal = (() => {
+    if (!clipMenu || !review) return undefined;
+    const raise = reviewTargets(clipMenuGens, "final", review.canFinalize);
+    const lower = reviewTargets(clipMenuGens.filter((gen) => gen.is_final), "shared", review.canFinalize);
+    if (!raise.length && !lower.length) return undefined;
+    const checked = !raise.length;
+    return {
+      checked,
+      count: checked ? lower.length : raise.length,
+      onToggle: () => {
+        closeMenu();
+        // 해제는 최종인 것만 넘긴다 — 고른 것 전부를 '공유로' 넘기면 보류(R)해 둔 것까지 풀린다
+        void review.apply(checked ? lower : clipMenuGens, checked ? "shared" : "final");
+      },
+    };
+  })();
+  // · 목록 단추: '타임라인에 있는 것' = 보이는 컷(layout)의 켜진 클립이 가리키는 생성물. 숨긴 컷·꺼진 클립·꺼진 트랙은 뺀다 —
+  //   최종은 집계·'최종 저장'에 쓰이고 잘못 올리면 하나씩 풀어야 해서 좁게 잡았다(숨기지 않은 비활성 컷은 재생되므로 든다 —
+  //   Resolve 보내기와 같은 기준). 공유 목록을 다시 받는 중에는 누르지 못한다(빈 곳 채우기와 같다 — 그동안 든 목록은 옛 것이다).
+  const [finalBusy, setFinalBusy] = useState(false);
+  const finalAll = (() => {
+    if (!listMenu || !review) return null;
+    const shown = layout.cuts.flatMap((slot) => slot.clips);
+    const on = shown.filter((clip) => clipIsOn(doc, clip));
+    const found = new Map<string, Generation>();
+    for (const clip of on) {
+      const gen = links.get(clipKey(clip))?.gen;
+      if (gen) found.set(gen.id, gen);
+    }
+    const gens = [...found.values()];
+    const targets = reviewTargets(gens, "final", review.canFinalize);
+    const finals = gens.filter((gen) => gen.is_final);
+    if (!targets.length && !reviewTargets(finals, "shared", review.canFinalize).length) return null; // 내가 최종을 줄 수 있는 것이 없다
+    return {
+      gens, targets, clips: on.length, finals: finals.length, denied: gens.length - targets.length - finals.length,
+      off: shown.length - on.length, hidden: doc.clips.length - shown.length,
+      unlinked: on.filter((clip) => !links.get(clipKey(clip))?.gen).length,
+    };
+  })();
+  const finalizeAll = () => {
+    const plan = finalAll;
+    closeMenu();
+    if (!review || !plan || finalBusy || !listFresh) return;
+    if (!plan.targets.length) return flash(t("최종으로 확정할 것이 없습니다."));
+    stopBoth(); // 확인 창이 떠 있는 동안 뒤에서 도는 재생을 멈출 길이 없다
+    const skipped = ([
+      [plan.off, t("꺼진 클립·트랙 {count}개")], [plan.hidden, t("숨긴 컷의 클립 {count}개")],
+      [plan.denied, t("권한이 없거나 공유가 풀린 것 {count}개")], [plan.unlinked, t("공유 목록에서 못 찾은 클립 {count}개")],
+    ] as const).filter(([value]) => value > 0).map(([value, text]) => text.replace("{count}", String(value)));
+    const asked = [
+      t("타임라인의 생성물 {count}개를 최종으로 확정할까요?").replace("{count}", String(plan.targets.length)),
+      "",
+      t("· 보이는 컷의 켜진 클립 {clips}개 기준 — 이미 최종인 {finals}개는 그대로 둡니다")
+        .replace("{clips}", String(plan.clips)).replace("{finals}", String(plan.finals)),
+      ...(skipped.length ? [`${t("· 빼는 것:")} ${skipped.join(" · ")}`] : []),
+      t("· 되돌리기(Ctrl+Z)로는 돌아가지 않습니다 — 풀려면 클립 우클릭의 '최종 선택'으로 하나씩 해제합니다"),
+    ].join("\n");
+    if (!window.confirm(asked)) return;
+    setFinalBusy(true);
+    void Promise.resolve(review.apply(plan.gens, "final")).finally(() => setFinalBusy(false));
+  };
+
   const fit = useCallback(() => {
     const width = scrollRef.current?.clientWidth ?? 0;
     if (layout.total > 0 && width > 160) setZoom(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, (width - 140) / layout.total)));
@@ -1450,6 +1526,7 @@ function EditTabInner({
           title={clipMenuOne ? `${clipMenuOne.cut.slice(clipMenuOne.cut.lastIndexOf("/") + 1)} · V${clipMenuOne.track}`
             : t("클립 {count}개").replace("{count}", String(clipMenu.keys.length))}
           count={clipMenuGens.length}
+          final={clipFinal}
           busy={resolve.busy}
           pendingCount={resolve.pendingCount}
           onSend={() => {
@@ -1503,6 +1580,7 @@ function EditTabInner({
           hideOff={!!doc.hideOff}
           offCount={offCuts.size}
           fillCount={fillPicks.length}
+          finalAll={finalAll ? { count: listFresh ? finalAll.targets.length : 0, busy: finalBusy, onRun: finalizeAll } : undefined}
           trigger={listBtnRef}
           onHide={() => {
             closeMenu();
