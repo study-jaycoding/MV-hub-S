@@ -282,18 +282,23 @@ const TIMELINE_OUTCOME_UNKNOWN = new Set(["child_crashed", "invalid_child_result
 export function resolveTimelineSummary(result: ResolveTimelineResult): string {
   const built = result.timeline;
   const name = built.timeline_name;
+  // 목록 칸이 빠진 응답에도 죽지 않는다 — 여기서 던지면 이미 지은 타임라인이 '보내기 실패'로 읽힌다
+  const warnings = built.warnings ?? [];
+  const mismatches = built.mismatches ?? [];
   if (built.status === "complete") {
     const markers = built.markers_added ? ` · 북마크 ${built.markers_added}` : "";
-    return `Resolve 에 타임라인 '${name}' 을 만들었습니다 · 클립 ${built.video}${markers}`;
+    // 타임라인은 계획대로다. 그래도 경고(전송 기록을 저장하지 못함 — 서버가 짓고 난 뒤의 일)는 빼지 않는다
+    const after = warnings.length ? ` · ${warnings.join(" · ")}` : "";
+    return `Resolve 에 타임라인 '${name}' 을 만들었습니다 · 클립 ${built.video}${markers}${after}`;
   }
   if (name) {
-    const short = built.mismatches.filter((item) => item.short).length;
-    const moved = built.mismatches.length - short;
+    const short = mismatches.filter((item) => item.short).length;
+    const moved = mismatches.length - short;
     const reasons = [
       moved ? `자리가 다른 클립 ${moved}개` : "",
       short ? `원본이 짧아 끝이 비는 클립 ${short}개` : "",
       built.error || "",
-      ...built.warnings,
+      ...warnings,
     ].filter(Boolean);
     return `Resolve 에 타임라인 '${name}' 을 만들었지만 확인이 필요합니다 · ${reasons.join(" · ") || "일부를 적용하지 못했습니다"}`;
   }

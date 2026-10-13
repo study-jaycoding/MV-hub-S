@@ -238,6 +238,15 @@ def _same_fps(left: float, right: float) -> bool:
     return abs(left - right) < 0.001
 
 
+def _frame(value: float) -> int:
+    """프레임으로 반올림 — **반은 올린다**(계획을 짓는 프런트의 Math.round 와 같다).
+
+    파이썬의 round 는 반을 짝수로 보낸다(round(121.5) = 122, round(238.5) = 238) — 양끝을 따로 반올림하면 반 프레임 경계에서
+    한 프레임이 사라진다(Codex 코드 리뷰).
+    """
+    return math.floor(value + 0.5)
+
+
 def _timeline_names(project: Any) -> set[str]:
     names: set[str] = set()
     for index in range(1, int(project.GetTimelineCount() or 0) + 1):
@@ -356,7 +365,7 @@ def _build_locked(manifest: dict[str, Any], plan: dict[str, Any], resolve: Any, 
         if not fact["still"]:
             if fact["fps"] <= 0 or fact["frames"] <= 0:
                 raise ResolveBridgeError("Resolve 가 영상의 길이를 알려 주지 않았습니다", code="clip_unreadable")
-            wanted = round(length / TIMELINE_FPS * fact["fps"])
+            wanted = _frame(length / TIMELINE_FPS * fact["fps"])
             if wanted > fact["frames"]:
                 missing = (wanted - fact["frames"]) / fact["fps"] * TIMELINE_FPS
                 if missing > 1.0:
@@ -382,10 +391,16 @@ def _build_locked(manifest: dict[str, Any], plan: dict[str, Any], resolve: Any, 
         fact = facts[audio_plan["gen_id"]]
         if fact["still"] or not fact["audio"] or fact["fps"] <= 0:
             continue  # 소리가 없는 영상 — 넣을 것이 없다(아래 트랙의 소리를 대신 넣지 않는다)
-        first = round(audio_plan["offset"] * fact["fps"])
+        # 소스 안의 시작 = **그 영상 클립이 놓인 자리에서 센 것**이다. 화면은 클립의 처음(소스 0)부터 타임라인 프레임대로 흐르므로,
+        #  소리도 같은 프레임 차이만큼 들어가야 그림과 맞는다(초로 적힌 offset 을 따로 반올림하면 한 프레임 어긋날 수 있다).
+        #  그 클립을 계획에서 못 찾으면(없어야 한다) 적힌 offset 을 쓴다.
+        carrier = next((row for row in plan["clips"] if row["gen_id"] == audio_plan["gen_id"]
+                        and row["start"] <= audio_plan["start"] < row["end"]), None)
+        lead = (audio_plan["start"] - carrier["start"]) / TIMELINE_FPS if carrier else audio_plan["offset"]
+        first = _frame(lead * fact["fps"])
         # 끝도 소스 좌표다(30fps 영상의 5~10초 = [150, 300)). **끝 시각을 한 번** 반올림한다 — 시작 + 반올림한 길이는 한 프레임
         #  어긋날 수 있다(계획을 짓는 쪽과 같은 규칙). 원본이 모자라 줄인 것은 영상과 같이 되읽을 때 알린다(short).
-        wanted = round((audio_plan["offset"] + (audio_plan["end"] - audio_plan["start"]) / TIMELINE_FPS) * fact["fps"])
+        wanted = _frame((lead + (audio_plan["end"] - audio_plan["start"]) / TIMELINE_FPS) * fact["fps"])
         last = min(wanted, fact["frames"])
         if last <= first:  # 넣을 소리가 한 프레임도 없다 — 조용히 빼지 않는다
             result["mismatches"].append({
@@ -446,6 +461,10 @@ def _build_locked(manifest: dict[str, Any], plan: dict[str, Any], resolve: Any, 
                 #  원본이 모자라 줄여 넣은 것(short)은 fps 가 달라도 봐주지 않는다 — 그 한 프레임이 바로 빈 끝이다.
                 slack = 0 if fact["still"] or row_plan["short"] or _same_fps(fact["fps"], TIMELINE_FPS) else 1
                 found = actual.pop(row_plan["start"], None)
+                if found is not None and kind == "video":
+                    # 그 자리에 놓인 클립이다 — 길이가 달라도(short) 끄기는 해야 한다. 길이가 맞을 때만 쥐면 짧게 들어간 꺼 둔
+                    #  클립이 켜진 채 남는다(Codex 코드 리뷰).
+                    row_plan["item"] = found["item"]
                 wrong_source = kind == "audio" and found is not None and found["left"] is not None and found["left"] != info["startFrame"]
                 if found is None or abs(found["dur"] - expected) > slack or wrong_source:
                     result["mismatches"].append({
@@ -454,8 +473,6 @@ def _build_locked(manifest: dict[str, Any], plan: dict[str, Any], resolve: Any, 
                         # 원본이 짧아 끝만 빈 것 — 자리가 틀어진 것과 구분해 알린다
                         "short": bool(row_plan["short"] and found is not None and not wrong_source and found["dur"] < expected),
                     })
-                elif kind == "video":
-                    row_plan["item"] = found["item"]
             for start in actual:  # 계획에 없는 자리에 놓인 것
                 result["mismatches"].append({
                     "track": f"{'V' if kind == 'video' else 'A'}{index}", "gen_id": "", "start": start,

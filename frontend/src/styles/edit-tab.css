@@ -261,6 +261,7 @@
 .ed-export-btn:disabled { opacity: 0.7; cursor: default; }
 .ed-msep { flex: none; width: 1px; height: 16px; margin: 0 6px; background: var(--border2); }
 /* 그 확인 창 — 틀은 .gradestep-modal(등급 확인 창과 같은 가운데 창), 여기는 안의 줄들 */
+.ed-export .gradestep-body { word-break: keep-all; } /* 한글이 낱말 가운데서 꺾이지 않게("않 / 습니다") */
 .ed-export p { margin: 0 0 6px; }
 .ed-export-rows { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 10px 0; }
 .ed-export-rows dt { white-space: nowrap; }

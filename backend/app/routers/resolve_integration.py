@@ -328,8 +328,15 @@ async def create_resolve_timeline(body: ResolveTimelineIn, request: Request):
                 async with resolve_selection_monitor.suspended():
                     result = await asyncio.to_thread(run_resolve_timeline_isolated, manifest, plan)
                 manifest["resolve_import"] = result["import"]
-                await save_manifest(manifest)
-                return {"transfer": manifest, "timeline": result["timeline"]}
+                timeline = result["timeline"]
+                try:
+                    await save_manifest(manifest)
+                except (ResolveTransferError, OSError) as exc:
+                    # ★여기서부터는 Resolve 가 이미 바뀌었을 수 있다 — 기록 저장 실패를 400 으로 올리면 화면은 '시작 전에
+                    #  거절됐다(만든 것이 없다)'로 읽고, 사용자는 다시 눌러 타임라인이 둘이 된다(Codex 코드 리뷰). 지은 결과는
+                    #  그대로 돌려주고 저장 실패는 경고로 싣는다. 이 뒤로 4xx 를 내는 길을 더하지 말 것.
+                    timeline = {**timeline, "warnings": [*(timeline.get("warnings") or []), f"전송 기록을 저장하지 못했습니다: {exc}"]}
+                return {"transfer": manifest, "timeline": timeline}
 
             try:
                 return await resolve_queue.run_non_abandon(_transfer_and_build())

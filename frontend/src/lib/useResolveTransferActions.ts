@@ -74,8 +74,9 @@ export function useResolveTransferActions({ flash }: UseResolveTransferActionsAr
             result = await createResolveTimeline(task.genIds, task.target, task.plan);
             flashRef.current(resolveTimelineSummary(result));
           } catch (error) {
-            // 4xx = 서버가 시작하기 전에 거절했다(만든 것이 없다). 그 밖(끊김·5xx)은 서버가 끝까지 돌았을 수 있다 — 요청이 끊겨도
-            //  서버는 작업을 버리지 않는다(run_non_abandon). 만들어졌는지 모르는 채 '실패'라고만 하면 다시 눌러 둘이 된다.
+            // 4xx = 서버가 시작하기 전에 거절했다(만든 것이 없다 — 서버는 Resolve 를 바꾼 뒤로는 4xx 를 내지 않는다:
+            //  routers/resolve_integration 의 create_resolve_timeline). 그 밖(끊김·5xx)은 서버가 끝까지 돌았을 수 있다 — 요청이
+            //  끊겨도 서버는 작업을 버리지 않는다(run_non_abandon). 만들어졌는지 모르는 채 '실패'라고만 하면 다시 눌러 둘이 된다.
             const refused = error instanceof HttpError && error.status >= 400 && error.status < 500;
             flashRef.current(
               `타임라인 보내기 실패: ${readableError(error)}`

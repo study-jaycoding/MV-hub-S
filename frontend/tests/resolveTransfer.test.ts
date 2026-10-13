@@ -297,6 +297,9 @@ describe("타임라인 Resolve 보내기", () => {
   it("결과 한 줄 — 계획대로 · 만들었지만 다르다 · 만들지 못했다를 구분한다", () => {
     expect(resolveTimelineSummary({ transfer: result(), timeline: built({ markers_added: 2 }) }))
       .toBe("Resolve 에 타임라인 'P1_e070' 을 만들었습니다 · 클립 3 · 북마크 2");
+    // 계획대로 지었어도 그 뒤의 경고(서버가 전송 기록을 저장하지 못함)는 빼지 않는다
+    expect(resolveTimelineSummary({ transfer: result(), timeline: built({ warnings: ["전송 기록을 저장하지 못했습니다: 디스크"] }) }))
+      .toBe("Resolve 에 타임라인 'P1_e070' 을 만들었습니다 · 클립 3 · 전송 기록을 저장하지 못했습니다: 디스크");
     // 다른 점은 하나도 빼지 않는다 — 자리가 틀어진 것 · 원본이 짧아 끝만 빈 것 · 적용하지 못한 것(Codex 코드 리뷰: 경고를 버리면 완료로 읽힌다)
     const moved = built({
       status: "partial",
