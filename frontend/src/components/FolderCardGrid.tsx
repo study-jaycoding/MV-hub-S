@@ -23,6 +23,7 @@ import { mediaThumbUrl, thumbOf } from "../lib/media";
 import { matchShortcut } from "../lib/shortcuts";
 import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { FolderCard, FolderCardTake, PreviewItem, PreviewTarget } from "../types";
+import { CoverInfo } from "./CoverInfo";
 import { EpisodeCardBody } from "./EpisodeCardBody";
 import { MediaThumbnail } from "./MediaThumbnail";
 
@@ -317,7 +318,9 @@ export function FolderCardGrid({
       actionCoveredRef.current = pressStartedCovered();
       return;
     }
-    const card = target.closest(".cut-card[data-path]") as HTMLElement | null;
+    // 컷 카드 아래의 정보판을 누른 것도 그 카드를 누른 것이다(카드와 한 칸 — .cut-slot)
+    const card = (target.closest(".cut-card[data-path]")
+      ?? target.closest(".cut-slot")?.querySelector(".cut-card[data-path]") ?? null) as HTMLElement | null;
     e.preventDefault(); // 끌 때 글자·그림이 긁히지 않게(카드 위에서 시작해도 마퀴)
     if (pressStartedCovered()) return; // 위에 뜬 메뉴를 닫는 누름 — 고른 것을 바꾸지 않는다
     gridRef.current?.focus();
@@ -415,8 +418,11 @@ export function FolderCardGrid({
                 />
               </div>
             );
+          // 컷 카드 + 아래 정보판(모델·작업자·크레딧·생성일·검토 — 모아보기 카드와 같은 줄, Jay 2026-10-13). 고르기·마퀴·키의 대상은 전처럼
+          //  카드(.cut-card[data-path])다 — 정보판은 그 카드의 일부처럼 듣는다(누름은 위 onGridMouseDown, 두 번 클릭·우클릭·휠 클릭은 같은 처리).
           return (
-            <button key={folder.path} type="button" className={"cut-card" + (isSelected ? " sel" : "")} {...card}>
+            <div key={folder.path} className="cut-slot">
+            <button type="button" className={"cut-card" + (isSelected ? " sel" : "")} {...card}>
               <span className={"cut-face" + (fill ? "" : " contain")}>
                 {/* 생성물 카드와 같은 그림 분기(깨진 뒤 새 대표로 바뀌면 다시 보이고, 포스터 없는 영상은 첫 프레임) */}
                 <MediaThumbnail
@@ -435,6 +441,11 @@ export function FolderCardGrid({
               </span>
               {!folder.rep && <span className="cut-pill">{t("대표 미정")}</span>}
             </button>
+            <CoverInfo
+              folder={folder} className={"cut-meta" + (isSelected ? " sel" : "")}
+              onDoubleClick={card.onDoubleClick} onAuxClick={card.onAuxClick} onContextMenu={card.onContextMenu}
+            />
+            </div>
           );
         })}
         {outside > 0 && (
