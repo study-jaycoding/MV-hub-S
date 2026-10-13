@@ -501,9 +501,10 @@ export default function App() {
     composeListEnabled: folderPeek, // 창이 열려 있을 때만 compose 탭에서 목록 조회·추가 로드
   });
   // ── 폴더 묶음 보기(공유 & 리뷰 탭, Jay 2026-10-08) ──
-  //  폴더를 고르면 그 바로 아래 폴더(컷)마다 카드 한 장으로 보인다. 컷 카드를 두 번 누르면 그 폴더로 들어가고(2026-10-13 ②), 들어간
-  //  낱장 목록의 카드 위 [대표] 로 그 폴더의 대표(팀이 같이 보는 값 — 공유 서버가 권위)를 정한다. 묶어 보일 수 있는 조회인지는
-  //  lib/folderCards 가 정한다(무엇을 찾는 조건이 켜져 있으면 지금처럼 한 장씩).
+  //  폴더를 고르면 그 바로 아래 폴더(컷)마다 카드 한 장으로 보인다. 컷 카드 두 번 클릭 = 모아보기, 우클릭 = 그 폴더의 창(Jay 2026-10-13 낮 —
+  //  아침의 ② '두 번 클릭 = 들어가기' 를 뒤집음), 에피소드 카드 두 번 클릭 = 들어가기. 창 안·들어간 낱장 목록의 카드 위 [대표] 로 그 폴더의
+  //  대표(팀이 같이 보는 값 — 공유 서버가 권위)를 정한다. 묶어 보일 수 있는 조회인지는 lib/folderCards 가 정한다(무엇을 찾는 조건이 켜져
+  //  있으면 지금처럼 한 장씩).
   //  ponytail: 묶어 보이는 동안에도 본 목록(한 장씩)은 지금처럼 받는다 — 그 요청까지 줄이려면 목록 훅에 '목록 끄기'가 필요하다.
   const [cutView, setCutViewState] = useState(() => LS.get("cutView", "1") === "1");
   const cutScope = useMemo(() => folderCardsScope(genQuery, grayOn), [genQuery, grayOn]);
@@ -515,7 +516,7 @@ export default function App() {
     const workspaceId = singleTeamWorkspace(genQuery);
     return { projectId: listPeek.projectId, parent: parentFolder(listPeek.path), ...(workspaceId ? { workspaceId } : {}) };
   }, [filters.tab, authReady, workspaceQueryReady, listPeek, cutView, cutScope, genQuery]);
-  const { cards: folderCards, unsupported: folderCardsUnsupported, reload: reloadFolderCards } = useFolderCards({
+  const { cards: folderCards, unsupported: folderCardsUnsupported, loading: folderCardsLoading, reload: reloadFolderCards } = useFolderCards({
     scope: cardsScope, authKey: libraryAuthKey, reloadKey: listRevision,
   });
   // 본문에 그릴 묶음 — 받아 온 카드가 '지금 고른 폴더'의 것이고 하위 폴더가 하나라도 있을 때만. 창이 떠 있어도 뒤에 그대로 둔다.
@@ -526,11 +527,14 @@ export default function App() {
       ? folderCards
       : null;
   const cutMode = cutCards !== null;
+  // 묶음 응답을 기다리는 중 — 낱장 격자를 그리지 않는다(사이드바로 폴더를 옮기면 낱장(옛 폴더 것)이 한 번 보였다가 컷 카드로 바뀌던
+  //  깜빡임, Jay 2026-10-13 ③). 조회가 실패하면 꺼져 낱장으로(옛 서버는 unsupported). 창이 떠 있으면 격자는 창의 것이라 무관.
+  const cutPending = cutView && !listPeek && cardsScope !== null && !folderCardsUnsupported && folderCardsLoading;
   // 창이 보여 주는 폴더의 지금 대표 — 표지가 '가장 최근 것' 일 뿐이면 대표가 아니다(null).
   const peekFolderCard = listPeek ? folderCards?.folders.find((folder) => folder.path === listPeek.path) : undefined;
   const peekCoverId = peekFolderCard?.rep ? peekFolderCard.cover.id : null;
-  // 들어간 폴더의 지금 대표 — 본 목록의 카드 위에 [대표]를 그린다(Jay 2026-10-13 ② A안: 컷 카드 두 번 클릭이 폴더 창 대신 그 폴더로 들어가므로
-  //  대표 지정도 들어간 화면에서). 그 폴더 자신은 **부모**의 컷 카드 목록에 한 줄로 든다 — 부모 범위를 따로 받는다(위 cardsScope 는 하위 묶음용
+  // 들어간 폴더의 지금 대표 — 본 목록의 카드 위에 [대표]를 그린다(Jay 2026-10-13 ② A안: 사이드바로 컷에 들어가도 대표를 정할 수 있게 —
+  //  낮에 두 번 클릭은 모아보기로 바뀌었지만 이것은 남긴다). 그 폴더 자신은 **부모**의 컷 카드 목록에 한 줄로 든다 — 부모 범위를 따로 받는다(위 cardsScope 는 하위 묶음용
   //  그대로, 저장 뒤엔 둘 다 다시 읽는다). 프로젝트 맨 위·휴지통·폴더 창이 떠 있는 동안은 없다. ponytail: 폴더에 들어가면 조회가 하나 더 간다(부모).
   const ownScope = useMemo<FolderCardsScope | null>(() => {
     if (filters.tab !== "team" || !authReady || !workspaceQueryReady || listPeek || filters.deleted_only) return null;
@@ -962,8 +966,15 @@ export default function App() {
     if (!g.folder_path) return;
     openFolderPath({ projectId: g.project_id, path: g.folder_path, projectName: g.project_name ?? "", genId: g.id });
   }, [openFolderPath]);
-  // 컷 카드(에피소드·컷 모두) 두 번 클릭 → 그 폴더로 들어간다 = 사이드바에서 그 폴더를 누른 것과 같다(생성 위치도 그 폴더, Jay 2026-10-09).
-  //  컷(잎)은 낱장 목록이 되고 그 카드 위에 [대표]가 뜬다(아래 ownScope — Jay 2026-10-13 ② A안. 전엔 컷이 폴더 창을 열었다).
+  // 컷 카드 우클릭·컷 정보 창의 [폴더 열기] → 그 폴더의 창. 누른 생성물 카드가 없으니 '방금 누른 카드'·이동 없이 맨 위부터 연다.
+  //  (2026-10-13 낮 — 아침엔 두 번 클릭이 들어가기였고 창은 없었다. 그 전엔 컷 두 번 클릭이 이 창이었다.)
+  const openFolderCard = useCallback((folder: FolderCard) => {
+    openFolderPath({
+      projectId: folder.cover.project_id, path: folder.path, projectName: folder.cover.project_name ?? "", genId: null,
+    });
+  }, [openFolderPath]);
+  // 에피소드 카드(하위 폴더 있음) 두 번 클릭 → 그 폴더로 들어간다 = 사이드바에서 그 폴더를 누른 것과 같다(생성 위치도 그 폴더, Jay 2026-10-09).
+  //  컷(잎) 카드의 두 번 클릭은 모아보기(FolderCardGrid 가 가른다) — 컷에 들어가는 길은 사이드바다.
   const enterFolderCard = useCallback((folder: FolderCard) => {
     const projectId = folder.cover.project_id;
     if (!projectId) return;
@@ -2029,13 +2040,13 @@ export default function App() {
   useEffect(() => {
     if (refocusGridRef.current !== null && refocusGridRef.current !== "*" && refocusGridRef.current !== listPeekCtx) refocusGridRef.current = null;
     if (refocusGridRef.current === null || staleList || loading) return;
-    // 컷 카드로 들어간 뒤("*")는 그 폴더의 묶음 응답이 와서 **최종 격자가 정해진 뒤**에 — 응답 전엔 낱장 격자가 잠깐 서는데 거기에 초점을 주면
-    //  곧 컷 격자로 바뀌며 초점이 BODY 로 떨어진다(Codex 코드 리뷰). 옛 서버(응답 없음)면 낱장 격자가 최종이다.
-    if (refocusGridRef.current === "*" && cardsScope && !folderCards && !folderCardsUnsupported) return;
+    // 컷 카드로 들어간 뒤("*")는 그 폴더의 묶음 응답이 와서 **최종 격자가 정해진 뒤**에 — 응답 전엔 격자가 비어 있다(③ cutPending). 옛 서버·실패면
+    //  낱장 격자가 최종이다(실패 뒤에도 기다리던 것 — Codex 설계 검토).
+    if (refocusGridRef.current === "*" && cutPending) return;
     refocusGridRef.current = null; // 한 번만 — 격자가 없으면(빈 목록·실패) 그대로 끝낸다
     // 묶음 보기면 컷 카드 격자가 그 자리다(둘 중 하나만 떠 있다)
     document.querySelector<HTMLElement>("main.main .gen-grid, main.main .cut-grid")?.focus({ preventScroll: true });
-  }, [staleList, loading, listPeekCtx, cardsScope, folderCards, folderCardsUnsupported]);
+  }, [staleList, loading, listPeekCtx, cutPending]);
   useEffect(() => {
     const cancel = () => { refocusGridRef.current = null; };
     document.addEventListener("focusin", cancel);
@@ -2200,10 +2211,10 @@ export default function App() {
       onToggleFilters={() => setShowFilters((v) => !v)}
       count={gridGens.length}
       countMore={hasMore}
-      // 전환 단추는 묶어 보일 수 있을 때만(창 안의 툴바에는 없다). 켜 둔 채로는 실제로 묶어 보이는 동안에만 보인다 —
-      //  하위 폴더가 없는 폴더에서는 바꿀 것이 없다.
+      // 전환 단추는 묶어 보일 수 있을 때만(창 안의 툴바에는 없다). 켜 둔 채로는 실제로 묶어 보이는 동안(응답을 기다리는 동안 포함 —
+      //  사라졌다 다시 나타나지 않게, ③)에만 보인다 — 하위 폴더가 없는 폴더에서는 바꿀 것이 없다.
       folderCards={
-        !listPeek && cutScope && !folderCardsUnsupported && (cutMode || !cutView)
+        !listPeek && cutScope && !folderCardsUnsupported && (cutMode || !cutView || cutPending)
           ? {
               on: cutView,
               onChange: setCutView,
@@ -2721,15 +2732,17 @@ export default function App() {
               {/* 묶음 보기 — 격자 자리에 컷 카드. 폴더 창이 떠 있어도 뒤에 그대로 둔다(body 가 inert 라 눌리지 않는다). */}
               {cutCards ? (
                 <FolderCardGrid
-                  folders={cutCards.folders} scale={scale} fill={fill} onEnter={enterFolderCard}
+                  folders={cutCards.folders} scale={scale} fill={fill} onEnter={enterFolderCard} onOpen={openFolderCard}
                   top={!cutScope?.parent} selected={cutSel} onSelect={setCutSel}
                   onInfo={(folder, x, y) => {
                     if (cutScope) setCutInfo({ projectId: cutScope.projectId, path: folder.path, x, y, ctx: listPeekCtx });
                   }}
-                  onReel={(paths) => setCutReel({ paths, ctx: listPeekCtx })} // 우클릭 = 모아보기(Jay 2026-10-13) — 막대의 단추와 같은 창
+                  onReel={(paths) => setCutReel({ paths, ctx: listPeekCtx })} // 컷 두 번 클릭 = 모아보기(Jay 2026-10-13 낮) — 막대의 단추와 같은 창
                   outside={cutCards.own_count} onShowAll={() => setCutView(false)}
                 />
-              ) : listPeek ? null : !workspaceQueryReady ? (
+              ) : listPeek ? null : cutPending ? (
+                <div className="grid-wrap" aria-busy="true" /> // 묶음 응답 전 — 낱장을 잠깐 보이지 않는다(③)
+              ) : !workspaceQueryReady ? (
                 <div className="grid-wrap"><div className="empty" role="status">
                   <p>{t("워크스페이스를 확인한 뒤 공유물을 표시합니다.")}</p>
                   <button className="settings-action" onClick={() => workspaceFollow?.onChange("all")}>
@@ -2865,7 +2878,7 @@ export default function App() {
         <CutInfoPopup
           folder={cutInfoFolder} x={cutInfo.x} y={cutInfo.y} query={cutInfoQuery} savingRep={savingRep} previewOpen={!!preview}
           onClose={() => setCutInfo(null)}
-          onOpen={(folder) => { setCutInfo(null); enterFolderCard(folder); }} // [폴더 열기] = 그 폴더로 들어가기(컷 카드 두 번 클릭과 같다, 2026-10-13 ②)
+          onOpen={(folder) => { setCutInfo(null); openFolderCard(folder); }} // [폴더 열기] = 그 폴더의 창(컷 카드 우클릭과 같다, 2026-10-13 낮)
           onPreview={openPreview}
           onPickCover={(folder, g) => void pickFolderCover(g, { projectId: cutInfo.projectId, path: folder.path })}
         />

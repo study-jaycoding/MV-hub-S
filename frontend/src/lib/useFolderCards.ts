@@ -12,6 +12,10 @@
 //    조회·다시 그리던 것을 막는다.
 //  · 옛 공유 서버(경로 없음)는 그 계정·서버 문맥에서만 '지원 안 함' 으로 기억한다 — 그때는 받아 둔 카드도 내놓지 않는다(낡은 묶음 화면이
 //    [전체]로 돌아갈 길 없이 남는다). 다른 오류는 기억하지 않고, 받아 둔 카드도 그대로 둔다.
+//  · loading = 지금 문맥의 카드가 아직 없고 그 문맥의 조회가 실패하지도 않은 동안 — 그동안 App 이 낱장 격자를 그리지 않는다(낱장이 한 번
+//    보였다가 컷 카드로 바뀌던 깜빡임, Jay 2026-10-13 ③). 받아 둔 카드가 있는 문맥으로 돌아오면 바로 그 카드(다시 받기는 뒤에서). 실패하면
+//    꺼진다(영영 빈 화면이 안 되게) — 그 실패 표식은 문맥을 떠나면 버린다: 남기면 실패한 폴더로 빠르게 되돌아올 때 첫 렌더부터 낱장이 선다
+//    (Codex 설계 검토). 문맥이 바뀐 바로 그 렌더에서 버린다(렌더 중 setState = React 의 '이전 렌더 값 기억' 방식).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { FolderCards } from "../types";
@@ -41,6 +45,12 @@ export function useFolderCards({ scope, authKey, reloadKey }: Options) {
   const workspaceId = scope?.workspaceId;
   const key = projectId === undefined ? null : JSON.stringify([authKey, projectId, parent, workspaceId ?? null]);
   const [loaded, setLoaded] = useState<{ key: string; cards: FolderCards } | null>(null);
+  const [failedKey, setFailedKey] = useState<string | null>(null); // 조회가 실패한(옛 서버 아님) 문맥 — 떠나면 버린다
+  const [seenKey, setSeenKey] = useState(key);
+  if (seenKey !== key) {
+    setSeenKey(key);
+    setFailedKey(null);
+  }
   const [unsupportedFor, setUnsupportedFor] = useState<string | null>(null);
   const unsupported = unsupportedFor === authKey;
   const seqRef = useRef(0);
@@ -65,6 +75,7 @@ export function useFolderCards({ scope, authKey, reloadKey }: Options) {
     } catch (error) {
       if (seq !== seqRef.current) return false;
       if (isRouteMissing(error)) setUnsupportedFor(auth);
+      else setFailedKey(nowKey);
     }
     return true;
   }, []);
@@ -106,5 +117,6 @@ export function useFolderCards({ scope, authKey, reloadKey }: Options) {
   //  약속은 '이 요구 뒤에 출발한 조회의 응답이 적용됐을 때' 풀린다 — 받는 중이던 응답은 버린다.
   const reload = useCallback((): Promise<void> => request(true), [request]);
 
-  return { cards: !unsupported && loaded !== null && loaded.key === key ? loaded.cards : null, unsupported, reload };
+  const cards = !unsupported && loaded !== null && loaded.key === key ? loaded.cards : null;
+  return { cards, unsupported, loading: key !== null && !unsupported && cards === null && failedKey !== key, reload };
 }
