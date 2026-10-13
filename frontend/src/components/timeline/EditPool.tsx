@@ -142,6 +142,9 @@ export function EditPool({
     },
     // event 가 없거나 mouseup 이 아니면(단추가 떼어진 채 온 움직임·창이 초점을 잃음) 놓친 끝이다 — 카드는 넣지 않는다
     up: (event?: Event) => {
+      // 끌기를 시작한 왼쪽 단추의 놓기만 끝이다 — 끄는 중에 다른 단추(휠)를 눌렀다 떼면 그 mouseup 도 여기로 온다. 그것으로 카드가
+      //  놓이지 않게, 끌기 상태·리스너를 걷기 전에 거른다(끌기는 이어진다. Codex 코드 리뷰 2회째)
+      if (event instanceof MouseEvent && event.type === "mouseup" && event.button !== 0) return;
       const state = dragRef.current;
       dragRef.current = null;
       removeWindowMouseDrag(drag.move, drag.up);
@@ -206,6 +209,7 @@ export function EditPool({
     onAuxClick: (event) => {
       if (event.button !== 1) return;
       event.preventDefault();
+      if (dragRef.current?.moved) return; // 끄는 중의 휠 클릭은 메뉴가 아니다(끌기는 이어진다)
       onMenu(item.gen, event.clientX, event.clientY);
     },
   });
