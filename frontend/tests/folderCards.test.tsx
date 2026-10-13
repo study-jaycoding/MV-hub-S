@@ -595,6 +595,14 @@ it("두 번 클릭 = 모아보기(고른 컷 전부·격자 순서) · 우클릭
   expect([reels, [...selected].sort()]).toEqual([[["e035/C0010", "e035/C0030"]], ["e035/C0010", "e035/C0030"]]);
   dbl(tile("C0020"));
   expect([reels[1], [...selected], opened]).toEqual([["e035/C0020"], ["e035/C0020"], []]);
+  // 실제 누름 순서 — 일반 두 번 클릭의 첫 클릭이 고르기를 그 카드 하나로 줄이므로 결국 그 컷만(탐색기와 같다). Ctrl 로 고른 뒤 두 번 클릭하면 전부(Codex 코드 리뷰)
+  selected = new Set(["e035/C0030", "e035/C0010"]); draw();
+  mouse("mousedown", tile("C0010")); mouse("mouseup", window);
+  dbl(tile("C0010"));
+  expect([reels[2], [...selected]]).toEqual([["e035/C0010"], ["e035/C0010"]]);
+  mouse("mousedown", tile("C0030"), { ctrlKey: true }); mouse("mouseup", window, { ctrlKey: true });
+  dbl(tile("C0030"));
+  expect([reels[3], [...selected].sort()]).toEqual([["e035/C0010", "e035/C0030"], ["e035/C0010", "e035/C0030"]]);
   selected = new Set(["e035/C0030", "e035/C0010"]); draw();
   // jsdom 에는 PointerEvent 가 없다 — lib/keyGate 가 보는 것은 이벤트 이름뿐이라 Event 로 보낸다(round7Grid 의 press 와 같다)
   const rightClick = (el: HTMLElement) => {
@@ -608,7 +616,7 @@ it("두 번 클릭 = 모아보기(고른 컷 전부·격자 순서) · 우클릭
   };
   // 고른 카드 위 — 그 폴더의 창. 고르기는 그대로, 모아보기는 열지 않는다
   expect(rightClick(tile("C0010"))).toBe(true); // 브라우저 메뉴는 막는다
-  expect([opened, reels.length]).toEqual([["e035/C0010"], 2]);
+  expect([opened, reels.length]).toEqual([["e035/C0010"], 4]);
   expect([...selected].sort()).toEqual(["e035/C0010", "e035/C0030"]);
   // 고르지 않은 카드 — 그것만 골라서 연다
   rightClick(tile("C0020"));
@@ -654,7 +662,7 @@ it("두 번 클릭 = 모아보기(고른 컷 전부·격자 순서) · 우클릭
   act(() => { grid.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 })); });
   expect(opened).toHaveLength(4);
   act(() => { tile("C0020").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); });
-  expect([opened.length, reels.length]).toEqual([5, 2]); // 우클릭은 끝까지 모아보기를 열지 않았다
+  expect([opened.length, reels.length]).toEqual([5, 4]); // 우클릭은 끝까지 모아보기를 열지 않았다
   act(() => owner.unmount());
 });
 

@@ -60,6 +60,8 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onEnt
   const t = useT();
   // 두 번 클릭·Enter — 컷이면 모아보기(고른 카드 위면 고른 컷 전부(격자 순서), 아니면 그 컷만 골라서), 에피소드면 들어가기.
   //  열 경로를 먼저 정한다 — 고르기를 바꾼 뒤의 낡은 선택을 읽지 않게. 최신 props 는 ref 로(두 번 클릭의 첫 클릭이 고르기를 바꾼 직후다).
+  //  일반 두 번 클릭은 첫 클릭이 고르기를 그 카드 하나로 줄이므로 결국 그 컷만 연다(탐색기와 같다) — 여러 컷은 Ctrl 로 고른 뒤 두 번 클릭하거나
+  //  Shift+방향키로 고른 뒤 Enter, 또는 선택 막대의 단추(Codex 코드 리뷰 — 숨은 규칙이 아니라 의도).
   const activate = (folder: FolderCard) => {
     if (folder.subfolders) {
       onEnter(folder);
