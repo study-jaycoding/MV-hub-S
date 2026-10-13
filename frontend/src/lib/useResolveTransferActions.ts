@@ -7,7 +7,9 @@ import {
   createResolveTransfer,
   getResolveConnectionStatus,
   retryResolveTransfer,
+  resolveTimelineNeedsCheck,
   resolveTimelineSummary,
+  resolveTransferNeedsCheck,
   resolveTransferSummary,
   type ResolveProjectTarget,
   type ResolveTimelineResult,
@@ -48,6 +50,13 @@ function retryableFromResult(result: ResolveTransferResult): RetryableResolveTra
   };
 }
 
+// 닫을 때까지 남는 안내 한 줄(components/app/ResolveNotices) — 보내기 결과 가운데 확인이 필요한 것
+export interface ResolveNotice {
+  id: number;
+  text: string;
+}
+export const RESOLVE_NOTICE_LIMIT = 3; // 넘으면 오래된 것부터 빠진다(Jay 2026-10-14)
+
 function sameResolveProject(left: ResolveProjectTarget, right: ResolveProjectTarget): boolean {
   if (left.project_id && right.project_id) return left.project_id === right.project_id;
   return !!left.project_name && left.project_name === right.project_name;
@@ -63,6 +72,18 @@ export function useResolveTransferActions({ flash }: UseResolveTransferActionsAr
   const [retryable, setRetryable] = useState<RetryableResolveTransfer | null>(null);
   const flashRef = useRef(flash);
   flashRef.current = flash;
+  // 보내기의 **결과**를 알린다. 확인이 필요한 것(keep — 부분 성공·실패·결과 불명)은 알림에 더해 닫을 때까지 남긴다(Jay 2026-10-14):
+  //  알림은 한 칸이고 2.5초라, 줄 서 있던 다음 작업의 '처리 중' 글이 앞의 결과를 덮었다 — 못 보고 다시 보내면 타임라인이 한 벌 더
+  //  생긴다(Codex 배포 전 검토 E4). 정상 결과와 진행 글(처리 중·대기열·연결 확인)은 전처럼 알림에만 뜬다.
+  const [notices, setNotices] = useState<ResolveNotice[]>([]);
+  const noticeSerial = useRef(0);
+  const report = useRef((text: string, keep: boolean) => {
+    flashRef.current(text);
+    if (!keep) return;
+    const id = ++noticeSerial.current;
+    setNotices((list) => [...list, { id, text }].slice(-RESOLVE_NOTICE_LIMIT));
+  }).current;
+  const dismissNotice = useCallback((id: number) => setNotices((list) => list.filter((item) => item.id !== id)), []);
   const queueRef = useRef<SerialTaskQueue<ResolveQueueTask> | null>(null);
   if (!queueRef.current) {
     queueRef.current = new SerialTaskQueue(
@@ -72,15 +93,16 @@ export function useResolveTransferActions({ flash }: UseResolveTransferActionsAr
           let result: ResolveTimelineResult | null = null;
           try {
             result = await createResolveTimeline(task.genIds, task.target, task.plan);
-            flashRef.current(resolveTimelineSummary(result));
+            report(resolveTimelineSummary(result), resolveTimelineNeedsCheck(result));
           } catch (error) {
             // 4xx = 서버가 시작하기 전에 거절했다(만든 것이 없다 — 서버는 Resolve 를 바꾼 뒤로는 4xx 를 내지 않는다:
             //  routers/resolve_integration 의 create_resolve_timeline). 그 밖(끊김·5xx)은 서버가 끝까지 돌았을 수 있다 — 요청이
             //  끊겨도 서버는 작업을 버리지 않는다(run_non_abandon). 만들어졌는지 모르는 채 '실패'라고만 하면 다시 눌러 둘이 된다.
             const refused = error instanceof HttpError && error.status >= 400 && error.status < 500;
-            flashRef.current(
+            report(
               `타임라인 보내기 실패: ${readableError(error)}`
               + (refused ? "" : " — 만들어졌을 수 있습니다. 다시 보내기 전에 Resolve 를 확인하세요"),
+              true,
             );
           } finally {
             task.done(result); // 실패해도 알린다 — 단추가 '보내는 중'에 남지 않게
@@ -95,7 +117,7 @@ export function useResolveTransferActions({ flash }: UseResolveTransferActionsAr
         const result = task.kind === "transfer"
           ? await createResolveTransfer(task.genIds, task.target)
           : await retryResolveTransfer(task.projectId, task.transferId);
-        flashRef.current(resolveTransferSummary(result));
+        report(resolveTransferSummary(result), resolveTransferNeedsCheck(result));
         const nextRetryable = retryableFromResult(result);
         if (nextRetryable) {
           setRetryable(nextRetryable);
@@ -107,7 +129,7 @@ export function useResolveTransferActions({ flash }: UseResolveTransferActionsAr
       },
       setQueueState,
       (error) => {
-        flashRef.current(`Resolve 전송 실패: ${readableError(error)}`);
+        report(`Resolve 전송 실패: ${readableError(error)}`, true);
       },
     );
   }
@@ -205,6 +227,8 @@ export function useResolveTransferActions({ flash }: UseResolveTransferActionsAr
 
   return {
     busy: queueState.total > 0 || connectionChecks > 0,
+    notices,
+    dismissNotice,
     pendingCount: queueState.total + connectionChecks,
     retryable,
     retryPreparedTransfer,

@@ -22,6 +22,7 @@ import { TopBar } from "./components/TopBar";
 import { SceneBar } from "./components/scene/SceneBar";
 import { SceneBoard } from "./components/scene/SceneBoard";
 import { AppOverlays, VideoCompareOverlay } from "./components/app/AppOverlays";
+import { ResolveNotices } from "./components/app/ResolveNotices";
 const EditTab = lazy(() =>
   import("./components/timeline/EditTab").then((m) => ({ default: m.EditTab })),
 );
@@ -3145,6 +3146,8 @@ export default function App() {
         onOpenInBoardFromPreview={onOpenInBoardFromPreview}
         onPreview={openPreview}
       />
+      {/* Resolve 보내기 결과 가운데 확인이 필요한 것 — 알림 바로 아래에 닫을 때까지 남는다(겹이 아니다 — 뒤 화면을 그대로 쓴다) */}
+      <ResolveNotices items={resolveTransfer.notices} onDismiss={resolveTransfer.dismissNotice} />
       {/* 컷 정보(휠 클릭)·모아보기 — 크게 보기(AppOverlays)보다 아래 층. 크게 보기가 떠 있는 동안은 Esc 를 그쪽에 넘긴다. */}
       {cutInfo && cutInfoFolder && cutInfoQuery && (
         <CutInfoPopup
