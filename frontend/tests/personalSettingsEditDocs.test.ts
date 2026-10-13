@@ -19,7 +19,8 @@ it("편집 문서·못 읽은 원문의 보관본·마지막으로 연 시퀀스
     "ch.auth.token": "t",
   };
   const drop = { "ch.editTimeline.ui": "{}", "ch.filtersV2": "{}", "ch.promptHistory": "[]" };
-  const untouched = { "other.app": "1" };
+  // 문서의 새 자리(2026-10-13)는 `ch.` 로 시작하지 않아 애초에 정리 대상이 아니다 — 편집 탭이 없던 옛 판의 정리도 건드리지 않는다
+  const untouched = { "other.app": "1", "mvhub.editDoc:me@x:p1:e070": "{\"clips\":[3]}", "mvhub.editDoc:me@x:p1:e070.bad": "broken" };
   for (const [key, value] of Object.entries({ ...keep, ...drop, ...untouched })) localStorage.setItem(key, value);
   clearPersonalSettings();
   for (const [key, value] of Object.entries({ ...keep, ...untouched })) expect(localStorage.getItem(key), key).toBe(value);

@@ -10,7 +10,10 @@ export const STORAGE_KEYS = {
   historyDisabled: "ch.history.disabled",
   historyDisabledLegacy: "ch.lineage.disabled",
   disabledFolders: "ch.lib.disabledFolders", // 폴더 단위 비활성화(생략) — projectId→폴더경로[]
-  editTimeline: "ch.editTimeline", // 편집 탭 문서 — `:<계정>:<project_id>:<폴더>` 를 붙여 시퀀스마다 하나(docs/EDIT_TAB.md)
+  editTimeline: "ch.editTimeline", // 편집 탭의 화면 설정(`.ui`)·마지막으로 연 시퀀스(`.last:<계정>`) + 문서의 **옛 자리**(`:<계정>:…` — 아래로 옮긴다)
+  // 편집 탭 문서 — `:<계정>:<project_id>:<폴더>` 를 붙여 시퀀스마다 하나(docs/EDIT_TAB.md). **`ch.` 로 시작하지 않는다**: 편집 탭이 없던
+  //  옛 판의 계정 전환 정리가 보존 목록 밖의 `ch.*` 를 전부 지워, 새 판을 쓰다 옛 판으로 되돌린 뒤 계정을 바꾸면 편집본이 사라졌다.
+  editDocs: "mvhub.editDoc",
 
   historyPos: "ch.history.pos",
   historyPosLegacy: "ch.lineage.pos",

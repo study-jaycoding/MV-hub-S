@@ -7,7 +7,48 @@ import { STORAGE_KEYS } from "./storageKeys";
 // 서버 주소는 키에 넣지 않는다 — 서버 이사는 DB 를 통째로 옮겨 project_id·생성물 id 가 유지되므로
 // 주소가 바뀌어도 같은 편집 문서가 이어져야 한다(DB 복제본 서버도 같은 문서를 본다 — 의도한 동작).
 export function editDocKey(projectId: string, seq: string): string {
-  return `${STORAGE_KEYS.editTimeline}:${getAccountNamespace()}:${projectId}:${seq}`;
+  return `${STORAGE_KEYS.editDocs}:${getAccountNamespace()}:${projectId}:${seq}`;
+}
+
+// 문서의 옛 자리(`ch.editTimeline:<계정>:…`) → 새 자리(`mvhub.editDoc:<계정>:…`). 옛 자리는 `ch.` 로 시작해, 편집 탭이 없던 옛 판으로 되돌린 뒤
+//  계정을 바꾸면 그 판의 정리가 전부 지웠다(lib/storageKeys 의 editDocs). 이 모듈이 실릴 때 한 번 옮긴다 — 열어 보지 않은 시퀀스의 문서와
+//  못 읽은 원문의 보관본(`.bad`)도 같이. 새 자리에 이미 있으면 그쪽이 더 새것이라 옛것만 지운다. 옮기지 못한 것(용량 부족)은 옛 자리에
+//  남고, 읽기가 옛 자리도 본다(아래 readEditRaw) — 다음에 저장되면 새 자리로 간다.
+const OLD_DOCS = `${STORAGE_KEYS.editTimeline}:`;
+const NEW_DOCS = `${STORAGE_KEYS.editDocs}:`;
+const oldKeyOf = (key: string): string | null => (key.startsWith(NEW_DOCS) ? OLD_DOCS + key.slice(NEW_DOCS.length) : null);
+
+export function migrateEditDocs(): void {
+  let old: string[] = [];
+  try {
+    old = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)).filter((k): k is string => !!k?.startsWith(OLD_DOCS));
+  } catch {
+    return; // 저장소 접근 불가
+  }
+  for (const from of old) {
+    try {
+      const to = NEW_DOCS + from.slice(OLD_DOCS.length);
+      const raw = localStorage.getItem(from);
+      if (raw === null) continue;
+      if (localStorage.getItem(to) === null) localStorage.setItem(to, raw);
+      if (localStorage.getItem(to) !== null) localStorage.removeItem(from); // 새 자리에 있는 것을 확인한 뒤에만 지운다
+    } catch {
+      /* 이 문서는 옛 자리에 남는다 */
+    }
+  }
+}
+migrateEditDocs();
+
+/** 저장돼 있는 원문 — 새 자리, 없으면 아직 못 옮긴 옛 자리. */
+export function readEditRaw(key: string): string | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw !== null) return raw;
+    const old = oldKeyOf(key);
+    return old ? localStorage.getItem(old) : null;
+  } catch {
+    return null; // 저장소 접근 불가 = 저장된 것 없음으로 본다
+  }
 }
 
 export interface StoredEditDoc {
@@ -17,12 +58,7 @@ export interface StoredEditDoc {
 }
 
 export function readEditDoc(key: string): StoredEditDoc {
-  let raw: string | null = null;
-  try {
-    raw = localStorage.getItem(key);
-  } catch {
-    /* 저장소 접근 불가 = 저장된 것 없음으로 본다 */
-  }
+  const raw = readEditRaw(key);
   if (raw === null) return { doc: emptyEditDoc(), raw, bad: false };
   let doc: EditDoc | null = null;
   try {
@@ -43,10 +79,16 @@ export function writeEditDoc(key: string, doc: EditDoc, keepBad: string | null =
       if (localStorage.getItem(`${key}.bad`) !== keepBad) return null;
     }
     localStorage.setItem(key, raw);
-    return raw;
   } catch {
     return null;
   }
+  try {
+    const old = oldKeyOf(key);
+    if (old) localStorage.removeItem(old); // 못 옮겼던 옛 자리의 것은 이제 낡았다
+  } catch {
+    /* 남아도 읽기는 새 자리를 먼저 본다 */
+  }
+  return raw;
 }
 
 // Undo/Redo — 문서(키)별 메모리 스택. 탭을 오가도 남고, 새로고침하면 사라진다.
@@ -95,9 +137,18 @@ export function unsavedEditDoc(key: string): UnsavedEditDoc | undefined {
   return unsaved.get(key);
 }
 
+// 저장하지 못한 편집이 있는 동안에는 창을 닫거나 새로고침할 때 브라우저가 한 번 묻는다 — 업데이트 뒤의 자동 새로고침도 같은 길이다
+//  (메모리에만 남은 편집이 말없이 사라졌다 — Codex 배포 전 검토). 묻는 글은 브라우저의 것이다.
+const warnUnload = (event: BeforeUnloadEvent) => {
+  event.preventDefault();
+  event.returnValue = "";
+};
+
 export function keepUnsavedEditDoc(key: string, entry: UnsavedEditDoc | null): void {
   if (entry) unsaved.set(key, entry);
   else unsaved.delete(key);
+  if (unsaved.size) window.addEventListener("beforeunload", warnUnload); // 같은 함수라 여러 번 걸어도 하나다
+  else window.removeEventListener("beforeunload", warnUnload);
 }
 
 // 마지막으로 연 시퀀스(프로젝트·폴더) — 탭을 다시 열 때 그 자리로 돌아간다.

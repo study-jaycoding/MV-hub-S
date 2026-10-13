@@ -920,6 +920,10 @@ https·포트 생략·경로·따옴표·공백이 섞인 값은 `tools\refresh_
   `clickCount` 2 의 누름·뗌(크롬이 dblclick 을 만든다). 우클릭은 `button: "right"` 의 누름·뗌이면 contextmenu 가 뗄 때 온다. 늦은 응답은 guard 의
   `arm(…, "hold")` 로 쥐었다가 조작 뒤 `release(rule, "continue")` 로 서버에 보내면 된다(읽기 전용 POST 만 — `/api/generations/locate` 는 `READ_POSTS` 에 없어
   대조 실험 땐 더해 준다).
+- ㊲ **도구의 두 번 클릭은 첫 누름부터 보낸다**(2026-10-13 배포 전 점검): `cdp.Page.click(…, count=2)` 가 `clickCount=2` 한 쌍만 보내던 때, 앱이
+  그것을 '첫 누름이 없는 둘째 누름'으로 버려(조작 규칙 61 — `lib/useStaleMultiClick`) smoke 024(더블클릭 = 미리보기)가 실패했다. 제품 결함이
+  아니었다 — 실제 브라우저의 둘째 누름에는 언제나 방금 전의 첫 누름이 있다. 이제 `click_xy` 가 1번째 누름·뗌 뒤 2번째 누름·뗌을 보낸다.
+  직접 `Input.dispatchMouseEvent` 를 쓰는 스크립트도 같은 순서로 보낸다.
 
 캔버스 성능 요령(2026-09-29, 기록: [status/캔버스_버벅임_2026-09-29.md](status/캔버스_버벅임_2026-09-29.md)):
 - ⑤ 복사본은 프로젝트 폴더 경로를 비워, 씬 그림(`asset:` 썸네일)이 **전부 404** 다. 그림이 뜬 상태로 재려면 다음처럼 한다.

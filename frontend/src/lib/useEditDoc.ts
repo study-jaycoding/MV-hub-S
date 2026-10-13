@@ -9,6 +9,7 @@ import {
   noteEditRaw,
   pushUndo,
   readEditDoc,
+  readEditRaw,
   undoStack,
   unsavedEditDoc,
   writeEditDoc,
@@ -99,9 +100,34 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
     flashRef.current(t(CHANGED_ELSEWHERE));
   }, [key, commit]);
 
+  // 다른 창이 저장했는가 — 그 알림(storage 이벤트)이 왔을 때, 그리고 **이 창이 문서를 바꾸기 직전**에 본다. 알림은 늦게 온다(비동기):
+  //  그 전에 이 창이 저장하면 이 창의 낡은 문서 전체가 다른 창의 편집을 덮었다(Codex 배포 전 검토 — 바꾸기 직전에 보면 그 틈이 읽고 쓰는
+  //  사이로 줄어든다). 이벤트 본문이 아니라 지금 저장소의 값을 읽는다(늦게 온 옛 알림을 받아들이면 그 뒤 이 창이 저장한 것을 되돌린다).
+  //  원문이 같으면 문서를 풀어 읽지 않는다 — 편집마다 부른다.
+  const pull = useCallback((announced: boolean) => {
+    const cur = held.current!;
+    if (!cur.key || readEditRaw(cur.key) === cur.savedRaw) return; // 이 창의 마지막 저장과 같다 = 바뀐 것 없음(낡은 알림 포함)
+    if (cur.dirty) {
+      // 저장 못 한 편집이 있다 — 받아들이지 않고, 자동 저장으로 덮지도 않는다. 알림이 올 때마다, 편집 직전에는 처음 알았을 때만 알린다.
+      if (announced || !cur.conflict) flashRef.current(t(CHANGED_ELSEWHERE));
+      cur.conflict = true;
+      return;
+    }
+    clearUndo(cur.key);
+    held.current = open(cur.key);
+    noteEditRaw(cur.key, held.current.openRaw);
+    held.current.checked = true; // 방금 읽은 것이 기준이다 — 연 직후의 확인을 다시 하지 않는다
+    flashRef.current(t("다른 창에서 바꾼 편집을 불러왔습니다."));
+    bump();
+  }, []);
+
   const applyEdit = useCallback(
     (change: (doc: EditDoc) => EditDoc | null, options: EditOptions = {}): boolean => {
+      const before = held.current!;
+      if (!before.key || (options.rev !== undefined && options.rev !== before.rev)) return false;
+      pull(false);
       const cur = held.current!;
+      // 방금 다른 창의 문서를 받아들였다 — 그 전에 시작한 지연 콜백은 버린다(알림이 먼저 왔을 때와 같다)
       if (!cur.key || (options.rev !== undefined && options.rev !== cur.rev)) return false;
       const next = change(cur.doc);
       if (!next || next === cur.doc) return false;
@@ -109,11 +135,12 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
       commit(next, options.undo !== false);
       return true;
     },
-    [commit],
+    [commit, pull],
   );
 
   const step = useCallback(
     (from: "past" | "future") => {
+      pull(false); // 받아들였으면 되돌리기 기록이 비워져 아래에서 할 일이 없다 — 되돌리기가 다른 창의 저장을 덮지 않는다
       const cur = held.current!;
       if (!cur.key) return;
       const stack = undoStack(cur.key);
@@ -122,31 +149,17 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
       stack[from === "past" ? "future" : "past"].push(cur.doc);
       commit(keepClipDurs(next, cur.doc), true); // 확정된 길이는 되돌리기 대상이 아니다
     },
-    [commit],
+    [commit, pull],
   );
 
-  // 다른 창의 저장은 '바뀌었다'는 알림으로만 쓴다 — 이벤트 본문이 아니라 지금 저장소의 값을 다시 읽는다.
-  // (늦게 온 옛 알림을 그대로 받아들이면 그 뒤 이 창이 저장한 것을 되돌린다.)
+  // 다른 창의 저장은 '바뀌었다'는 알림으로만 쓴다(위 pull).
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
-      const cur = held.current!;
-      if (!cur.key || event.key !== cur.key) return;
-      const stored = readEditDoc(cur.key);
-      if (stored.raw === cur.savedRaw) return; // 이 창의 마지막 저장과 같다 = 낡은 알림
-      if (cur.dirty) {
-        cur.conflict = true; // 저장 못 한 편집이 있다 — 받아들이지 않고, 자동 저장으로 덮지도 않는다
-        flashRef.current(t(CHANGED_ELSEWHERE));
-        return;
-      }
-      clearUndo(cur.key);
-      noteEditRaw(cur.key, stored.raw);
-      held.current = open(cur.key);
-      flashRef.current(t("다른 창에서 바꾼 편집을 불러왔습니다."));
-      bump();
+      if (event.key === held.current!.key) pull(true);
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, []);
+  }, [pull]);
 
   const cur = held.current;
   const stack = cur.key ? undoStack(cur.key) : null;

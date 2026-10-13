@@ -117,6 +117,7 @@ class NameBook:
         self._owners: dict[int, dict] = {}
         self._mine: dict[str, dict] = {}
         self._done: set[int] = set()
+        self._disk: dict[Path, int] = {}  # 대상 폴더에 이미 있는 가장 큰 번호 — 폴더마다 한 번만 훑는다(allocate)
         self.reload()
 
     # ── 읽기 ──────────────────────────────────────────────────────────────
@@ -213,7 +214,13 @@ class NameBook:
             self.dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise RegistryError(f"이름 장부 폴더를 만들지 못했습니다: {exc}") from exc
-        seq = max([*self._owners, *disk_numbers(dest_dir, self.base, self.token)], default=0)
+        # 대상 폴더는 이 장부를 든 동안(저장·전송 한 번) 한 번만 훑는다 — 파일마다 훑으면 NAS 열거가 '새 파일 수 × 폴더의 파일 수'다
+        # (Codex 배포 전 검토 2026-10-13). 내가 준 번호는 _owners 에, 다른 PC 가 준 번호는 장부에 있다(겹치면 아래에서 다시 읽는다).
+        # ponytail: 훑은 뒤 누가 장부 없이 다음 번호 이름의 파일을 놓으면 못 보고 그 이름을 준다 — 덮어쓰지는 않는다(부르는 쪽이
+        # '같은 이름의 다른 파일'로 그 건만 실패시키고, 확정은 commit_new 다). 다음 저장·전송은 새 장부라 다시 훑는다.
+        if dest_dir not in self._disk:
+            self._disk[dest_dir] = max(disk_numbers(dest_dir, self.base, self.token), default=0)
+        seq = max([*self._owners, self._disk[dest_dir]])
         for _probe in range(_MAX_PROBES):
             seq += 1
             name = numbered_name(self.base, self.token, seq, ext)

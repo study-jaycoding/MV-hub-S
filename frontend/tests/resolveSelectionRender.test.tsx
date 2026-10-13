@@ -1410,7 +1410,10 @@ const cutGrid = () => document.querySelector<HTMLElement>("main.main .cut-grid")
 // 컷 카드는 이름표(.cut-tab), 에피소드 화면의 카드는 표지 위 이름(.ep-cap > b · 리스트는 .ep-name) — 2026-10-13
 const cutTile = (name: string) => [...document.querySelectorAll<HTMLElement>("main.main .cut-card:not(.cut-out)")]
   .find((tile) => tile.querySelector(".cut-tab > span, .ep-cap > b, .ep-name")!.textContent === name)!;
-type Pill = { type: string; props: { className: string; disabled?: boolean; onMouseDown?: (event: { preventDefault: () => void; button: number }) => void } };
+type Pill = { type: string; props: {
+  className: string; disabled?: boolean; onMouseDown?: (event: { preventDefault: () => void; button: number }) => void;
+  onClick?: (event: { detail: number }) => void;
+} };
 const pill = (id: string) => gridSnapshot!.cellHeader!(withAsset(id)) as unknown as Pill | null;
 
 async function mountTeamFolder(api: Record<string, unknown>, more: Partial<Filters> = {}) {
@@ -1503,6 +1506,14 @@ it("App 공유·리뷰: 폴더를 고르면 바로 아래 폴더마다 카드 �
   expect(folderCards.mock.calls.length).toBeGreaterThan(requests);
   expect(pill("target")).toMatchObject({ type: "span", props: { className: "scene-varpop-cur" } });
   expect(pill("sibling")).toMatchObject({ type: "button", props: { disabled: false } });
+  // 키보드로도 정한다(Tab 으로 와서 Enter·Space — 키보드가 만든 click 은 detail 0). 마우스가 만든 click(detail 1)은 mousedown 에서 이미
+  //  했으니 다시 하지 않는다(조작 규칙 51 — mousedown 에만 건 실행은 키보드에 없다. Codex 배포 전 검토)
+  act(() => pill("sibling")!.props.onClick!({ detail: 1 }));
+  expect(setFolderCover).toHaveBeenCalledTimes(1);
+  act(() => pill("sibling")!.props.onClick!({ detail: 0 }));
+  expect(setFolderCover).toHaveBeenLastCalledWith("resolve-project", "episode/shot", "sibling");
+  await act(async () => { saved(); });
+  await settle();
 
   // 닫으면 뒤 목록이 조작 가능해질 때까지 잠근다(목록 훅처럼: 닫을 때(restore) 옛 첫 쪽을 먼저 보인다). 다시 [컷별]로 보면 새 대표를 안다
   beginList.mockImplementationOnce((back?: { restore?: string }) => { if (back?.restore !== undefined) setStaleList(true); });

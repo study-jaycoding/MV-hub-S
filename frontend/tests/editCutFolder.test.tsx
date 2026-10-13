@@ -90,7 +90,7 @@ const mount = (reloadSignal = 0, peekPath: string | null = null, ws: typeof work
       peekPath={peekPath} onPeekMarks={onPeekMarks} cardMenuRef={cardMenuRef} onPreview={onPreview} onCompare={onCompare}
       resolve={{ send: sendToResolve, sendTimeline, ...resolveState }} onFolderAction={onFolderAction} />,
   ));
-const DOC_KEY = "ch.editTimeline:local:p1:e070";
+const DOC_KEY = "mvhub.editDoc:local:p1:e070";
 type Seed = { cut: string; gen: string; track: number; job?: string; off?: boolean; kind?: "image" | "video" };
 // 타임라인에 미리 넣어 둔 상태로 시작한다(넣기는 풀·폴더 창의 트랙 메뉴로만 한다 — 아래 시험이 그 길을 본다).
 const seed = (clips: Seed[], extra: Record<string, unknown> = {}) => localStorage.setItem(DOC_KEY, JSON.stringify({

@@ -190,8 +190,11 @@ class Page:
         path.write_bytes(base64.b64decode(r["data"]))
 
     async def click_xy(self, x: float, y: float, button: str = "left", count: int = 1, modifiers: int = 0) -> None:
-        for kind in ("mousePressed", "mouseReleased"):
-            await self.send("Input.dispatchMouseEvent", type=kind, x=x, y=y, button=button, clickCount=count, modifiers=modifiers)
+        # 두 번 클릭(count=2)은 브라우저가 하듯 1번째 누름·뗌 뒤에 2번째 누름·뗌을 보낸다. clickCount=2 한 쌍만 보내면 '첫 누름이 없는
+        #  둘째 누름'이라 앱이 버린다(조작 규칙 61 — lib/useStaleMultiClick. 2026-10-13 smoke 024 가 이것으로 실패했다 — 제품 결함이 아니었다).
+        for n in range(1, count + 1):
+            for kind in ("mousePressed", "mouseReleased"):
+                await self.send("Input.dispatchMouseEvent", type=kind, x=x, y=y, button=button, clickCount=n, modifiers=modifiers)
 
     async def click(self, js_element: str, button: str = "left", count: int = 1, modifiers: int = 0) -> bool:
         """js_element = Element 로 평가되는 JS 식. 요소 중앙에 진짜 마우스 이벤트를 보낸다. modifiers: Alt=1 Ctrl=2 Meta=4 Shift=8.

@@ -180,6 +180,10 @@ export function SceneVariantPopup({
           //  이어서 방향키·태그 키가 듣는다(2026-10-07 실측: 대표를 누른 뒤 초점이 .scene-board 에 남았다).
           windowRef.current?.querySelector<HTMLElement>(".gen-grid")?.focus({ preventScroll: true });
         }}
+        // Tab 으로 와서 Enter·Space 로 누른 것(키보드가 만든 click 은 detail 0) — mousedown 에만 걸면 키보드로는 못 정한다(조작 규칙 51).
+        onClick={(e) => {
+          if (e.detail === 0) actions.setCardVariant(card.id, g.id);
+        }}
       >
         대표
       </button>
