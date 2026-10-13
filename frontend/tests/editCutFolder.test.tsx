@@ -91,7 +91,7 @@ const mount = (reloadSignal = 0, peekPath: string | null = null, ws: typeof work
       resolve={{ send: sendToResolve, sendTimeline, ...resolveState }} onFolderAction={onFolderAction} />,
   ));
 const DOC_KEY = "mvhub.editDoc:local:p1:e070";
-type Seed = { cut: string; gen: string; track: number; job?: string; off?: boolean; kind?: "image" | "video" };
+type Seed = { cut: string; gen: string; track: number; job?: string; off?: boolean; kind?: "image" | "video"; head?: number };
 // 타임라인에 미리 넣어 둔 상태로 시작한다(넣기는 풀·폴더 창의 트랙 메뉴로만 한다 — 아래 시험이 그 길을 본다).
 const seed = (clips: Seed[], extra: Record<string, unknown> = {}) => localStorage.setItem(DOC_KEY, JSON.stringify({
   v: 1, tracksOff: [], tracksLocked: [], ...extra,
@@ -1315,6 +1315,22 @@ it("다이나믹 트림 모드: W 로 켜면 나뉜 뷰어가 한 창이 되고 
   act(() => trimButton().click());
   expect(paneModes()).toEqual(["source", "timeline"]);
   expect(localStorage.getItem(DOC_KEY)).toBe(docBefore); // 보기일 뿐이다 — 편집 문서는 그대로다
+});
+
+// 앞 자르기(Jay 2026-10-14) — 두 칸에 서 있는 프레임도 영상 시각이다(컷 안 시각 + 그 클립의 시작점)
+it("다이나믹 트림 모드: 앞을 자른 클립은 시작점을 더한 프레임으로 선다", () => {
+  world.gens = [...world.gens, videoGen()];
+  seed([{ cut: "c1", gen: "v", track: 1, kind: "video", head: 1 }, { cut: "c2", gen: "x", track: 1 }]); // c1: 원본 5초의 앞 1초를 잘랐다 → 0~4초
+  mount();
+  act(() => cutCell("c1").click());
+  press({ key: "w", code: "KeyW" });
+  press({ key: "ArrowDown", code: "ArrowDown" }); // 다음 편집점(4초 — c1 | c2)
+  expect(timecode()).toBe("00:00:04:00");
+  const before = document.querySelectorAll<HTMLElement>(".ed-split .ed-half")[0].querySelector("video")!;
+  const sent = vi.spyOn(before, "currentTime", "set");
+  act(() => { before.dispatchEvent(new Event("loadedmetadata")); });
+  expect(sent.mock.calls[0][0]).toBeCloseTo(4 - 0.25 / 24 + 1); // 컷 안의 마지막 프레임(4초 직전) + 시작점 1초 = 영상의 끝 직전
+  press({ key: "w", code: "KeyW" });
 });
 
 it("다이나믹 트림 모드: 타임라인 판이 안 보이던 화면에서도 한 창으로 뜨고, 끄면 그 화면으로 돌아온다", () => {
