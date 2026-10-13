@@ -18,6 +18,7 @@ export function SpotlightRefRoleMenu({ x, y, enabled, onChoose, onClose }: Props
   // Esc 는 맨 위 겹으로 닫는다(lib/useEscapeClose) — 겹이어야 떠 있는 동안 뒤 화면의 키가 쉰다. 전엔 document 에 직접 걸어, 메뉴가 뜬 채
   //  Ctrl+K 를 누르면 메뉴 뒤에서 프롬프트가 숨었다(2026-10-11 Codex 통합 검토).
   useEscapeClose(onClose, true, true, true);
+  // 바깥 누름은 pointerdown 만 본다(공용 훅으로 옮기면 mousedown 도 들어 트레이 칩을 끄는 동안 닫힌다 — tests/seedanceRoleMenuRender). 초점 이탈 닫기는 보류(30회차).
   useEffect(() => {
     const down = (event: PointerEvent) => {
       if (!menuRef.current?.contains(event.target as Node)) onClose();

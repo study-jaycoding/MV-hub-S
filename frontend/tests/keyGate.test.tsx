@@ -239,6 +239,16 @@ it("입력칸 밖의 Ctrl+A 는 언제나 막는다 — 위에 창이 떠 뒤 �
   expect(press("a").defaultPrevented).toBe(false); // 그냥 a
 });
 
+it("단추 위에서 길게 눌린 Enter 는 기본 동작(반복 click)을 막는다 — 처음 누름·Space·단추 아닌 곳은 그대로(30회차: 목록/격자 보기 토글이 반복마다 뒤집혔다)", () => {
+  function App() { usePageSelectAllGuard(); return <><button className="probe-btn">토글</button><div className="probe-div" tabIndex={0} /></>; }
+  act(() => root.render(<App />));
+  const btn = host.querySelector(".probe-btn")!;
+  expect(press("Enter", btn).defaultPrevented).toBe(false); // 처음 누름
+  expect(press("Enter", btn, { repeat: true }).defaultPrevented).toBe(true); // 길게 눌림
+  expect(press(" ", btn, { repeat: true }).defaultPrevented).toBe(false); // Space 의 click 은 keyup 에 한 번
+  expect(press("Enter", host.querySelector(".probe-div")!, { repeat: true }).defaultPrevented).toBe(false); // 단추가 아니다
+});
+
 it("격자 밖에서 시작하는 끌기 선택은 위에 메뉴·창이 떠 있으면 시작하지 않는다 — 그 클릭은 메뉴를 닫는 클릭이다", () => {
   const start = vi.fn();
   function Page({ menu }: { menu: boolean }) {
@@ -312,6 +322,23 @@ it("메뉴의 바깥 누름은 pointerdown 으로도 닫힌다 — 누름을 poi
   host.addEventListener("pointerdown", stop);
   fire(".probe-blank", "pointerdown"); // mousedown 은 오지 않는다
   host.removeEventListener("pointerdown", stop);
+  expect(onOutside).toHaveBeenCalledTimes(1);
+});
+
+it("메뉴는 초점이 밖으로 옮겨 가도(Tab) 닫힌다 — 안에서 옮기는 것·BODY 로 떨어지는 것은 아니다(30회차: 열린 채 남은 메뉴가 뒤 화면의 단축키를 막았다)", () => {
+  const onOutside = vi.fn();
+  function Menu() {
+    const ref = useRef<HTMLDivElement>(null);
+    useOutsideMouseDown(ref, onOutside);
+    return <><div ref={ref} className="probe-menu"><button className="probe-a">가</button><button className="probe-b">나</button></div><button className="probe-out">바깥</button></>;
+  }
+  act(() => root.render(<Menu />));
+  act(() => host.querySelector<HTMLButtonElement>(".probe-a")!.focus());
+  act(() => host.querySelector<HTMLButtonElement>(".probe-b")!.focus()); // 메뉴 안에서 옮김
+  expect(onOutside).not.toHaveBeenCalled();
+  act(() => host.querySelector<HTMLButtonElement>(".probe-b")!.blur()); // BODY 로 떨어짐 — focusin 이 없다
+  expect(onOutside).not.toHaveBeenCalled();
+  act(() => host.querySelector<HTMLButtonElement>(".probe-out")!.focus()); // Tab 으로 밖에 닿음
   expect(onOutside).toHaveBeenCalledTimes(1);
 });
 
