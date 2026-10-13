@@ -552,6 +552,50 @@ it("에피소드 화면: 위에 뜬 메뉴를 닫는 누름은 카드 안 단추
   act(() => owner.unmount());
 });
 
+// 조작 규칙 61(33회차): 브라우저는 연속 누름 수를 시간·거리로만 센다 — 줄 안의 [열기]를 습관대로 두 번 누르면 둘째 누름(detail 2)이 들어간
+//  화면의 **같은 자리**에 mousedown·click·dblclick 으로 닿는다(헤드리스 크롬 실측). 리스트에서는 그 자리가 컷 줄의 [폴더로]라 두 단계를
+//  들어갔고, 줄의 몸통이면 그 컷이 골라지고 모아보기가 열렸다. 첫 누름 뒤로 자리가 바뀐 둘째 누름은 버린다.
+it("두 번 누름: 첫 누름([열기])이 자리를 옮기면 둘째 누름은 들어간 화면에서 아무 일도 하지 않는다 — 같은 자리의 두 번 클릭은 그대로", () => {
+  const entered: string[] = [];
+  const reels: string[][] = [];
+  let selected = new Set<string>();
+  const episode: FolderCard = { ...card("e035", 14), path: "e035", subfolders: 2, children: [] };
+  const cuts: FolderCard[] = [{ ...card("C0010", 3), subfolders: 0 }, { ...card("C0020", 5), subfolders: 0 }];
+  let screen: { place: string; folders: FolderCard[]; top: boolean } = { place: "p1", folders: [episode], top: true };
+  const draw = () => act(() => root.render(
+    <FolderCardGrid {...gridProps} layout="list" folders={screen.folders} top={screen.top} placeKey={screen.place} selected={selected}
+      onSelect={(next) => { selected = next; draw(); }} onEnter={(folder) => entered.push(folder.path)} onReel={(paths) => reels.push(paths)} outside={0} />,
+  ));
+  draw();
+  const enter = () => host.querySelector<HTMLButtonElement>(".ep-enter")!; // 맨 위 줄의 단추 — 에피소드 줄은 [열기], 컷 줄은 [폴더로]
+  const body = () => host.querySelector<HTMLElement>('.cut-card[data-path="e035/C0010"] .ep-name')!;
+  // 브라우저의 순서 그대로: mousedown → mouseup → click, 둘째 누름이면 dblclick 까지
+  const press = (el: HTMLElement, detail: number) => {
+    mouse("mousedown", el, { detail });
+    mouse("mouseup", window, { detail });
+    mouse("click", el, { detail });
+    if (detail === 2) mouse("dblclick", el, { detail });
+  };
+
+  press(enter(), 1); // 첫 누름 — 에피소드로 들어간다
+  expect(entered).toEqual(["e035"]);
+  screen = { place: "p1/e035", folders: cuts, top: false }; // 들어간 화면 — 같은 자리에 컷 줄이 서 있다
+  draw();
+  expect(enter().textContent).toContain("폴더로");
+  press(enter(), 2); // 둘째 누름이 그 자리의 [폴더로]에 닿는다
+  expect(entered).toEqual(["e035"]); // 두 단계를 들어가지 않는다
+  press(body(), 2); // 줄의 몸통에 닿은 경우 — 고르지도, 모아보기를 열지도 않는다
+  expect([[...selected], reels]).toEqual([[], []]);
+
+  // 이 화면에서 새로 시작한 누름은 전과 같다: 한 번 = 고르기 · 같은 줄을 두 번 = 모아보기 · [폴더로] = 들어가기
+  press(body(), 1);
+  expect([...selected]).toEqual(["e035/C0010"]);
+  press(body(), 2);
+  expect(reels).toEqual([["e035/C0010"]]);
+  press(enter(), 1);
+  expect(entered).toEqual(["e035", "e035/C0010"]);
+});
+
 // 2026-10-13 오후(Jay): 컷 화면도 리스트를 누르면 다르게 — 한 번 = 프로젝트 화면과 같은 줄(띠에는 그 컷의 생성물), 한 번 더(table) = 표.
 //  그리드는 겹친 종이 카드 그대로다. 줄·표의 줄도 같은 .cut-card[data-path] 라 고르기·두 번 클릭(모아보기)·키는 격자의 것 그대로.
 it("컷 화면: 그리드는 겹친 종이 카드 그대로 · 리스트 = 줄(생성물 띠 = 크게 보기, [폴더로] = 그 컷으로) · 리스트 한 번 더 = 표", () => {

@@ -117,6 +117,9 @@
 .ep-table-head .n { text-align: right; }
 .cut-card.ep-card.ep-table {
   min-height: 48px; border-radius: 0; border-top: 0; font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums;
+  /* 방향키로 위로 옮길 때(scrollIntoView nearest) 줄이 붙박인 머리줄 밑으로 들어가지 않게(Codex 33회차). 머리줄은 격자의 위 여백(.cut-grid 의
+     padding-top 14px) 아래에 붙는다 — 14 + 머리줄 30 = 44px(실측: 30px 이면 줄이 14px 가린다). 그 둘 중 하나를 바꾸면 이 값도 같이 */
+  scroll-margin-top: 44px;
 }
 .cut-card.ep-card.ep-table:last-of-type { border-radius: 0 0 12px 12px; }
 .cut-card.ep-card.ep-table.sel { position: relative; z-index: 1; background: rgba(var(--accent-rgb), 0.08); }
