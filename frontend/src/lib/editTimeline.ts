@@ -532,11 +532,14 @@ export function deleteTrack(doc: EditDoc, track: number): EditDoc | null {
   return { ...renumberTracks(doc, (item) => (item === track ? null : item > track ? item - 1 : item)), tracks: count - 1 };
 }
 
-// 클립이 하나도 없는 트랙을 모두 지운다(숨긴 컷의 클립도 있는 것으로 센다). 한 줄은 남긴다. 지울 것이 없으면 null.
+// 클립이 하나도 없는 트랙을 모두 지운다(숨긴 컷의 클립도 있는 것으로 센다). 잠긴 트랙은 비어 있어도 남긴다 — 트랙 삭제(deleteTrack)와
+// 같은 규칙이다(Codex 배포 전 검토 2026-10-13: 하나씩은 못 지우는데 한꺼번에는 지워졌다). 한 줄은 남긴다. 지울 것이 없으면 null.
 export function deleteEmptyTracks(doc: EditDoc): EditDoc | null {
-  const used = [...new Set(doc.clips.map((clip) => clip.track))].sort((a, b) => a - b);
+  const count = trackCount(doc);
+  const locked = doc.tracksLocked.filter((track) => track <= count); // 없는 번호의 잠금은 줄을 만들지 않는다
+  const used = [...new Set([...doc.clips.map((clip) => clip.track), ...locked])].sort((a, b) => a - b);
   const keep = used.length ? used : [1];
-  if (keep.length === trackCount(doc)) return null;
+  if (keep.length === count) return null;
   return { ...renumberTracks(doc, (track) => (keep.includes(track) ? keep.indexOf(track) + 1 : null)), tracks: keep.length };
 }
 

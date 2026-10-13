@@ -533,11 +533,23 @@ function EditTabInner({
     if (tapeOn && src.byId.has(gen.id)) srcSeekPos({ cut: `${SRC_CUT}/${gen.id}`, local: 0 });
   };
 
+  // 크게 보기·비교·폴더 창으로 넘길 때는 두 시계를 다 멈춘다 — 그 창이 떠 있는 동안 편집 키는 막혀 있어(backgroundKeysBlocked)
+  //  뒤에서 도는 재생을 멈출 길이 없고, 크게 보기의 소리와 겹친다(Codex 배포 전 검토 2026-10-13).
+  const stopBoth = useCallback(() => {
+    stop();
+    stopSrc();
+  }, [stop, stopSrc]);
   // 더블클릭 = 크게 보기(재생) — 앱의 크게 보기 창. 앞뒤 넘기기는 풀에 지금 보이는 순서, '마지막으로 본'은 공유 & 리뷰 칸에 남는다.
   const openGen = useCallback((gen: Generation, shown: Generation[]) => {
     const target = previewTargetFromGenerations(shown, gen, 512);
-    if (target) onPreview({ ...target, sceneId: TEAM_SCOPE });
-  }, [onPreview]);
+    if (!target) return;
+    stopBoth();
+    onPreview({ ...target, sceneId: TEAM_SCOPE });
+  }, [onPreview, stopBoth]);
+  const openCompare = useCallback((gens: Generation[]) => {
+    stopBoth();
+    onCompare(gens);
+  }, [onCompare, stopBoth]);
   // 카드의 트랙 메뉴(Jay 2026-10-08 — 10-13 부터 우클릭이 아니라 **휠 클릭**: 풀 카드의 우클릭은 폴더 창을 연다) — 미디어 풀의
   //  카드, 폴더 창의 카드를 휠 클릭하면 지금 있는 트랙을 보여 주고, 고르면 그 트랙에 넣는다(찬 트랙은 교체). 넣을 컷은 여는 순간에 정한다(풀 = 재생헤드가 있는 컷, 창 = 그 창의 컷). 편집 탭의 그 컷
   //  공유 목록에 있는 카드만 받는다 — 창에서 W 를 '전체'로 바꿔 보이는 다른 공간의 카드 등은 넣어도 '미디어 없음'으로 본다.
@@ -688,13 +700,13 @@ function EditTabInner({
   //  미디어 풀의 카드를 우클릭해도 같은 창이다(Jay 2026-10-13) — 그때는 누른 카드가 보이게 연다(focusId).
   const openCut = useCallback((path: string, focusId?: string) => {
     if (!target || !layout.cuts.some((item) => item.path === path)) return;
-    stop();
+    stopBoth();
     if (view.cut !== path) seekPos({ cut: path, local: 0 });
     onOpenCutFolder({
       projectId: target.projectId, projectName: projects.find((item) => item.id === target.projectId)?.name ?? "",
       path, ...cutMarks(path), ...(focusId ? { focusId } : null),
     });
-  }, [layout, target, stop, view.cut, seekPos, cutMarks, onOpenCutFolder, projects]);
+  }, [layout, target, stopBoth, view.cut, seekPos, cutMarks, onOpenCutFolder, projects]);
   // 창이 떠 있는 동안 표를 살려 둔다 — 창에서 트랙 메뉴(휠 클릭)로 넣고 바꾸면 그 자리에서 표가 바뀐다. 글로 비교해, 내용이 바뀔
   //  때만 알린다(알릴 때마다 App 이 다시 그려지므로 객체로 비교하면 끝없이 돈다).
   const peekMarks = peekPath ? JSON.stringify(cutMarks(peekPath).marks) : null;
@@ -1037,7 +1049,7 @@ function EditTabInner({
               onPick={pickInPool}
               onPickMany={setPickedIds}
               onOpen={openGen}
-              onCompare={onCompare}
+              onCompare={openCompare}
               resolve={resolve}
               onClearPicked={clearPicked}
               onMenu={(gen, x, y) => openMenu(gen, cut, x, y)}
