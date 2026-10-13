@@ -21,7 +21,7 @@ from fastapi import HTTPException, Request
 from app.routers import resolve_integration
 from app.services import resolve_status_runner, resolve_timeline, resolve_timeline_worker
 from app.services.resolve_bridge import _normal_path
-from app.services.resolve_timeline import TimelinePlanError, build_timeline, validate_plan
+from app.services.resolve_timeline import TimelinePlanError, _frame, build_timeline, validate_plan
 
 FPS = 24
 COLORS = set(resolve_timeline.MARKER_COLORS)
@@ -492,6 +492,41 @@ class BuildTimelineTests(unittest.TestCase):
         )
         self.assertEqual((result["error"], result["saved"]), (None, True))  # 멈춘 것이 아니다 — 끝까지 짓고 다른 점을 알린다
 
+    def test_a_disabled_clip_that_went_in_short_is_still_disabled(self):
+        # 길이가 맞을 때만 클립을 쥐면, 짧게 들어간 꺼 둔 클립이 켜진 채 남는다(Codex 코드 리뷰)
+        self.add("near", frames=119)
+        result = self.build(plan([clip("near", 1, 0, 120, enabled=False)], tracks=1))
+        item = self.project.timelines[0].GetItemListInTrack("video", 1)[0]
+        self.assertFalse(item.enabled)
+        self.assertEqual((result["status"], result["warnings"]), ("partial", []))  # 다른 점은 길이뿐 — 끄기는 됐다
+        self.assertEqual([(row["gen_id"], row["short"]) for row in result["mismatches"]], [("near", True)])
+
+    def test_frames_round_half_up_like_the_planner(self):
+        # 파이썬의 round 는 반을 짝수로 보낸다(121.5 → 122, 238.5 → 238) — 프런트의 Math.round 와 달라 반 프레임 경계에서 한 프레임이 사라졌다
+        self.assertEqual([_frame(121.5), _frame(238.5), _frame(0.49), _frame(120.0)], [122, 239, 0, 120])
+        # Codex 의 반례: 위 = 48fps 243프레임(5.0625초), 아래 = 24fps 239프레임. 아래 소리 [122, 239) 는 117프레임이어야 한다
+        self.add("upper", fps=48.0, frames=243)
+        self.add("lower", "e035/C0020", frames=239)
+        result = self.build(plan(
+            [clip("lower", 1, 0, 239), clip("upper", 2, 0, 122)],
+            audio=[{"gen_id": "upper", "start": 0, "end": 122, "offset": 0}, {"gen_id": "lower", "start": 122, "end": 239, "offset": 5.0625}],
+        ))
+        self.assertEqual(self.lane(self.project.timelines[0], "audio", 1), [("upper.mp4", 0, 122, 0), ("lower.mp4", 122, 117, 122)])
+        self.assertEqual((result["status"], result["mismatches"]), ("complete", []))
+
+    def test_audio_starts_where_its_picture_is_on_the_timeline(self):
+        # 소리의 소스 시작은 그 영상 클립이 놓인 프레임에서 센다 — 초로 적힌 offset(4.98초 → 119.52 → 120)을 따로 반올림하면
+        #  그림(타임라인 119프레임째 = 소스 119)과 한 프레임 어긋난다
+        self.add("a", frames=240)
+        result = self.build(plan([clip("a", 1, 0, 240)], audio=[{"gen_id": "a", "start": 119, "end": 240, "offset": 4.98}], tracks=1))
+        self.assertEqual(self.lane(self.project.timelines[0], "audio", 1), [("a.mp4", 119, 121, 119)])
+        self.assertEqual(result["status"], "complete")
+        # 그 클립을 계획에서 못 찾으면 적힌 offset 으로 — 양끝을 같은 규칙으로 반올림한다([122, 239) = 117프레임)
+        self.setUp()
+        self.add("a", frames=600)
+        self.build(plan([clip("a", 1, 300, 540)], audio=[{"gen_id": "a", "start": 122, "end": 239, "offset": 5.0625}], tracks=1))
+        self.assertEqual(self.lane(self.project.timelines[0], "audio", 1), [("a.mp4", 122, 117, 122)])
+
     def test_a_marker_resolve_refuses_is_not_called_complete(self):
         self.add("a", frames=120)
         original = FakeTimeline.AddMarker
@@ -731,7 +766,7 @@ class TimelineRouteTests(unittest.IsolatedAsyncioTestCase):
             timeline=timeline if timeline is not None else plan([clip("g1", 1, 0, 120)], tracks=1),
         )
 
-    async def call(self, body, *, built=None, events=None):
+    async def call(self, body, *, built=None, events=None, save_error_after_build=None):
         manifest = {"transfer_id": "t-1", "project_id": "p1", "items": [], "total": 1}
         built = built or {"import": {"status": "complete"}, "timeline": {"status": "complete", "timeline_name": "뻘뻘뻘_e035"}}
         events = events if events is not None else []
@@ -750,6 +785,8 @@ class TimelineRouteTests(unittest.IsolatedAsyncioTestCase):
 
         async def save(manifest_arg):
             events.append("save:" + ("timeline" if "timeline" in manifest_arg else "plain"))
+            if save_error_after_build is not None and "worker" in events:
+                raise save_error_after_build
 
         with (
             mock.patch.object(resolve_integration.repo, "get_generations_batch", return_value={"g1": self.GENERATION}),
@@ -778,6 +815,14 @@ class TimelineRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((plan_arg["format"], plan_arg["clips"][0]["gen_id"]), ("mvhub.edit-timeline", "g1"))
         # 대상 프로젝트를 먼저 적고 → 선택 감시를 멈춘 채 자식을 돌리고 → 결과를 적는다
         self.assertEqual(events, ["save:plain", "suspend+", "worker", "suspend-", "save:plain"])
+
+    async def test_a_record_save_failure_after_the_build_is_not_a_400(self):
+        # Resolve 가 이미 바뀐 뒤다 — 400 으로 올리면 화면은 '시작 전에 거절됐다(만든 것이 없다)'로 읽고 다시 눌러 둘이 된다(Codex 코드 리뷰)
+        for error in (resolve_integration.ResolveTransferError("전송 목록 저장 경로가 안전하지 않습니다"), OSError("디스크가 사라졌다")):
+            response, _transfer, _worker, _events = await self.call(self.body(), save_error_after_build=error)
+            self.assertEqual((response["timeline"]["status"], response["timeline"]["timeline_name"]), ("complete", "뻘뻘뻘_e035"))
+            self.assertEqual(response["timeline"]["warnings"], [f"전송 기록을 저장하지 못했습니다: {error}"])
+            self.assertEqual(response["transfer"]["resolve_import"], {"status": "complete"})
 
     async def test_a_bad_plan_is_rejected_before_any_file_is_prepared(self):
         for bad in ({"format": "nope"}, plan([clip("stranger", 1, 0, 120)], tracks=1), plan([clip("g1", 1, 0, 120), clip("g1", 1, 100, 200)], tracks=1)):

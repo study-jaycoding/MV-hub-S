@@ -43,7 +43,9 @@ export interface TimelineExportAudio {
   gen_id: string;
   start: number;
   end: number;
-  offset: number; // 그 영상 안에서의 시작(초) — 소스 프레임은 받는 쪽이 그 클립의 fps 로 센다
+  // 그 영상 안에서의 시작(초). 받는 쪽은 **그 영상 클립이 놓인 프레임에서 센 차이**를 먼저 쓰고(그림과 프레임 단위로 맞게),
+  //  이 값은 그 클립을 계획에서 못 찾았을 때의 예비다(services/resolve_timeline.py)
+  offset: number;
 }
 
 export interface TimelineExportMarker {
