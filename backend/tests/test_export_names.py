@@ -84,6 +84,29 @@ def test_numbers_on_disk_are_skipped_even_without_a_registry(tmp_path):
     assert book(tmp_path).allocate("gen-a", ".mp4", folder) == "e020_c0010_fin_008.mp4"
 
 
+def test_the_destination_folder_is_listed_once_per_book(tmp_path, monkeypatch):
+    """파일마다 대상 폴더를 다시 훑지 않는다 — 장부 하나(저장·전송 한 번)에 폴더마다 한 번. 다음 요청의 새 장부는 다시 훑는다."""
+    folder = dest_dir(tmp_path)
+    (folder / "shared").mkdir(parents=True)
+    (folder / "e020_c0010_fin_007.mov").write_bytes(b"x")  # 장부에 없는 파일
+    listed = []
+    real = export_names.disk_numbers
+
+    def counting(target, base, token):
+        listed.append(target)
+        return real(target, base, token)
+
+    monkeypatch.setattr(export_names, "disk_numbers", counting)
+    fin = book(tmp_path)
+    assert [fin.allocate(f"gen-{i}", ".mp4", folder) for i in range(4)] == [f"e020_c0010_fin_{n:03d}.mp4" for n in range(8, 12)]
+    assert listed == [folder]
+    (folder / "shared" / "e020_c0010_fin_050.mp4").write_bytes(b"x")
+    assert fin.allocate("gen-s", ".mp4", folder / "shared") == "e020_c0010_fin_051.mp4"  # 다른 폴더는 따로 한 번 훑는다
+    assert listed == [folder, folder / "shared"]
+    (folder / "e020_c0010_fin_070.mp4").write_bytes(b"x")  # 훑은 뒤에 장부 없이 놓인 파일 — 든 장부는 모르고, 새 장부가 건너뛴다
+    assert book(tmp_path).allocate("gen-new", ".mp4", folder) == "e020_c0010_fin_071.mp4"
+
+
 def test_done_mark_is_tied_to_the_owner(tmp_path):
     fin = book(tmp_path)
     fin.allocate("gen-a", ".mp4", dest_dir(tmp_path))

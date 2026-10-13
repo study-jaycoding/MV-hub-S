@@ -680,6 +680,34 @@ class SaveFinalsKindTests(unittest.TestCase):
         self.assertEqual(foreign.read_bytes(), b"someone-put-this-here")
         self.assertEqual(sorted(f.name for f in (cut / "shared").iterdir()), ["ep_c1_share_001.png", "ep_c1_share_002.png", "ep_c1_share_003.png"])
 
+    def test_a_file_dropped_in_after_the_folder_was_listed_fails_that_item_and_is_never_overwritten(self):
+        """대상 폴더는 저장 한 번에 한 번만 훑는다(파일마다 훑지 않는다). 그 뒤 장부 없이 다음 번호 이름으로 놓인 파일은 건너뛰지 못한다 —
+        덮어쓰지 않고 그 건만 실패하며, 그 파일을 치우면 같은 이름으로 저장된다."""
+        render, cut, patches = self._numbered_fixture()
+        dropped = cut / "shared" / "ep_c1_share_002.png"
+        real = manage_router.export_names.disk_numbers
+        listed = []
+
+        def listed_then_dropped(folder, base, token):
+            found = real(folder, base, token)
+            listed.append(folder)
+            dropped.write_bytes(b"dropped-in-mid-save")
+            return found
+
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            stack.enter_context(mock.patch.object(file_stamp, "read_stamp", return_value={}))
+            with mock.patch.object(manage_router.export_names, "disk_numbers", side_effect=listed_then_dropped):
+                out = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="shared"))
+            self.assertEqual(len(listed), 1)  # 두 건을 저장해도 폴더 열거는 한 번
+            self.assertEqual((out["saved"], [e["reason"] for e in out["errors"]]), (1, [manage_router._DEST_CONFLICT]))
+            self.assertEqual(dropped.read_bytes(), b"dropped-in-mid-save")
+            dropped.unlink()
+            again = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="shared"))
+        self.assertEqual((again["saved"], again["skipped"], again["errors"]), (1, 1, []))
+        self.assertEqual(sorted(f.name for f in (cut / "shared").iterdir()), ["ep_c1_share_001.png", "ep_c1_share_002.png"])
+
     def test_a_file_that_appears_at_the_reserved_name_is_not_overwritten(self):
         render, cut, patches = self._numbered_fixture()
         real = manage_router.export_names.commit_new
