@@ -26,7 +26,10 @@ export function usePromptCreatedActions({
     created?: Generation[],
     dragParentId?: string | null,
   ) => {
-    if (created?.length) {
+    // 새 생성물은 내 로컬 카드다 — 공유 & 리뷰 목록에는 넣지 않는다(공유 전이라 그 목록의 것이 아니다). 제출해 놓고 응답이
+    //  오기 전에 그 탭으로 가거나 편집 탭에서 폴더 창을 열면(목록은 공유 & 리뷰의 것), 로컬 카드가 팀 카드 사이에 끼어
+    //  로컬 id 로 팀 요청(폴더 담기 등)이 나갈 수 있었다(Codex 코드 리뷰 2026-10-08). 아래 reload 가 제자리를 찾아 준다.
+    if (created?.length && filtersRef.current.tab !== "team") {
       setGens((prev) => {
         const ids = new Set(prev.map((g) => g.id));
         const fresh = created.filter((g) => !ids.has(g.id));

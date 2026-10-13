@@ -1,5 +1,5 @@
 import { backgroundKeysBlocked, isTypingTarget } from "./keyGate";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type MutableRefObject } from "react";
 import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
 import { getBinding, matchShortcut } from "./shortcuts";
 import type { Store } from "./storage";
@@ -12,7 +12,8 @@ interface UsePromptDockResult {
   toggleComposerExpanded: () => void;
 }
 
-export function usePromptDock(store: Store): UsePromptDockResult {
+// inactiveRef — 프롬프트 도크가 화면에 없는 동안(편집 탭)에는 표시/숨김 단축키를 듣지 않는다.
+export function usePromptDock(store: Store, inactiveRef?: MutableRefObject<boolean>): UsePromptDockResult {
   const [promptVisible, setPromptVisibleState] = useState(true);
   const [composerExpanded, setComposerExpanded] = useState(
     () => store.get("composerExpanded", "0") === "1",
@@ -25,14 +26,14 @@ export function usePromptDock(store: Store): UsePromptDockResult {
       // 수식키 없는 글자로 재지정했다면 글자를 치는 중에는 그 글자다(프롬프트에 그 글자를 칠 때마다 도크가 숨었다).
       const binding = getBinding("focusPrompt");
       if (!binding.startsWith("mod+") && !binding.startsWith("alt+") && isTypingTarget(e.target)) return;
-      if (matchShortcut(e, "focusPrompt")) {
+      if (!inactiveRef?.current && matchShortcut(e, "focusPrompt")) {
         e.preventDefault();
         if (!e.repeat) setPromptVisibleState((v) => !v); // 길게 눌러 반복된 키는 막기만 — 도크가 반복마다 열렸다 닫힌다(조작 규칙 38)
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [inactiveRef]);
 
   useEffect(() => {
     if (promptVisible) dispatchAppEvent(APP_EVENTS.focusPrompt);

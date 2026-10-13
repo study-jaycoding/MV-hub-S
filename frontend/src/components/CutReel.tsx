@@ -5,19 +5,15 @@
 //  재생 논리는 캔버스 View 노드의 ViewTimeline 과 같은 원리(가상 시간 = 앞 클립 길이 합 + 지금 위치)지만 그 창과는 요구가 달라
 //  (반복 끔·컷 이동·길이를 다 알기 전 이동 잠금·깨진 영상) 따로 둔다 — 잘 도는 창을 고치지 않는다.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../api";
 import { fmtReelTime, reelClips, reelLocate, reelStarts, REEL_IMAGE_SEC, type ReelClip } from "../lib/cutReel";
-import { workerLabel } from "../lib/cutSummary";
-import { formatCredits } from "../lib/formatCredits";
-import { formatGenerationDateTime, generationListMeta } from "../lib/generationDisplay";
 import { useT } from "../lib/i18n";
 import { thumbOf } from "../lib/media";
 import { activationKeyOwned, useModalFocus } from "../lib/keyGate";
-import { useModelDisplayName } from "../lib/modelCatalog";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { FolderCard, PreviewItem, PreviewTarget } from "../types";
 import { CloseIcon } from "./common/ViewIcons";
+import { CoverInfo } from "./CoverInfo";
 import { MediaThumbnail } from "./MediaThumbnail";
 
 export type ReelMode = "grid" | "linked";
@@ -104,24 +100,9 @@ export function CutReel({ folders, mode, onModeChange, previewOpen, onClose, onP
 // ── 개별 — 큰 카드 + 정보 ──
 function ReelCard({ folder, order, onPreview, onEnter }: { folder: FolderCard; order: number; onPreview: () => void; onEnter: () => void }) {
   const t = useT();
-  const modelName = useModelDisplayName();
   const g = folder.cover;
   const asset = g.assets?.[0];
   const isVideo = asset?.type === "video";
-  // undefined = 받는 중, null = 모름. 카드가 다른 표지로 바뀌면(id) 다시 받는다.
-  const [credits, setCredits] = useState<number | null | undefined>(undefined);
-  useEffect(() => {
-    let cancelled = false;
-    setCredits(undefined);
-    api.generationMetrics(g.id)
-      .then((m) => { if (!cancelled) setCredits(m.real_credits); })
-      .catch(() => { if (!cancelled) setCredits(null); });
-    return () => { cancelled = true; };
-  }, [g.id]);
-  const duration = generationListMeta((g.params || {}) as Record<string, unknown>).duration;
-  // 검토 = 그 폴더 안의 개수. 서버가 안 주면(옛 공유 서버) 전처럼 표지 한 장의 상태만 보인다.
-  const { final_count: finals, held_count: held } = folder;
-  const shared = finals != null && held != null ? Math.max(0, folder.count - finals - held) : null;
   return (
     <div className="reel-card">
       <button type="button" className="reel-face" title={t("크게 보기")} onClick={onPreview}>
@@ -134,25 +115,8 @@ function ReelCard({ folder, order, onPreview, onEnter }: { folder: FolderCard; o
         <b>{folder.name}</b>
         <button type="button" className="reel-go" title={`${folder.path} — ${t("이 폴더로 이동합니다")}`} onClick={onEnter}>{t("폴더로")} ▸</button>
       </div>
-      <div className="reel-info">
-        <span className="k">{t("모델")}</span><span className="v">{modelName(g.model)}{duration ? <> · <i>{duration}</i></> : null}</span>
-        <span className="k">{t("작업자")}</span><span className="v">{workerLabel(g)}</span>
-        <span className="k">{t("크레딧")}</span>
-        <span className="v">{credits === undefined ? "…" : credits != null ? `${formatCredits(credits)} credits` : t("미상")}</span>
-        <span className="k">{t("생성일")}</span><span className="v">{formatGenerationDateTime(g.created_at)}</span>
-        <span className="k">{t("검토")}</span>
-        {shared === null ? (
-          <span className="v">{g.is_final ? t("최종") : g.is_held ? t("보류") : t("공유")}</span>
-        ) : (
-          // 0 인 것은 감춘다(사이드바와 같다). 조각 사이의 '·' 은 CSS 가 그린다
-          <span className="v reel-rv">
-            {shared > 0 && <span>{t("공유")} <b>{shared}</b></span>}
-            {finals! > 0 && <span className="fin">★ {t("최종")} {finals}</span>}
-            {held! > 0 && <span className="held" title={t("보류")}>R {held}</span>}
-            <span className="all">{t("전체")} {folder.count}</span>
-          </span>
-        )}
-      </div>
+      {/* 정보 줄(모델·작업자·크레딧·생성일·검토) — 컷 카드·컷 줄과 같은 부품 */}
+      <CoverInfo folder={folder} />
     </div>
   );
 }

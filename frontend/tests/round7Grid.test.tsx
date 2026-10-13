@@ -14,6 +14,7 @@ import type { Store } from "../src/lib/storage";
 import { useEscapeClose } from "../src/lib/useEscapeClose";
 import { useGenerationSelection } from "../src/lib/useGenerationSelection";
 import { useLibraryFilters } from "../src/lib/useLibraryFilters";
+import { ackTeamFresh } from "../src/lib/teamSeen";
 import type { Generation } from "../src/types";
 
 vi.mock("virtua", async () => {
@@ -53,9 +54,11 @@ const comments: string[] = [];
 function Overlay() { useEscapeClose(noop); return null; } // Esc 로 닫히는 창 하나(메뉴·확인 덮개)
 type LibraryOptions = {
   overlay?: boolean; toolbar?: React.ReactNode; canvas?: boolean; varwin?: boolean; list?: Generation[]; layout?: "grid" | "list";
+  place?: string; // 격자가 보여 주는 자리의 열쇠(33회차 규칙 61)
+  openFolder?: (g: Generation) => void; // 카드의 폴더 창 열기(폴더 이름표·우클릭)
 };
 // 앱의 배선 그대로: 선택 훅 → 격자. 툴바·선택 막대·그 밖의 단추는 격자 밖의 것들이다.
-function Library({ overlay, toolbar, canvas, varwin, list = generations, layout = "grid" }: LibraryOptions) {
+function Library({ overlay, toolbar, canvas, varwin, list = generations, layout = "grid", place, openFolder }: LibraryOptions) {
   select = useGenerationSelection({ resetKey: "k" });
   // 캔버스 '생성 결과' 창의 선택은 App 의 훅이 아니라 창의 주인(SceneBoard)이 쥔다 — 훅은 앱에 늘 켜져 있고 창은 자기 선택을 격자에 준다.
   const [own, setOwn] = useState<Set<string>>(new Set());
@@ -64,7 +67,7 @@ function Library({ overlay, toolbar, canvas, varwin, list = generations, layout 
     <>
       {toolbar ?? <div className="lib-toolbar"><button className="bar-button">보기</button></div>}
       <ThumbnailGrid
-        generations={list} tab="my" scale={1} fill layout={layout} groupByDate={false}
+        generations={list} tab="my" scale={1} fill layout={layout} groupByDate={false} placeKey={place} onOpenFolder={openFolder}
         selectedIds={shown} onSelectedChange={varwin ? setOwn : select.setSelected} onToggleSelect={select.toggleSelect}
         onSetSource={noop} onSetTags={noop} onOpenComments={(g) => comments.push(g.id)} onRegenerate={noop}
         onPublish={noop} onUnpublish={noop} onFinalize={noop} onUnfinalize={noop}
@@ -368,4 +371,82 @@ it("R14 태그 패널의 단추에 초점이 남아 있어도 초점 잃은 키�
   act(() => pill().focus());
   key("ArrowRight", pill());
   expect(chosen()).toEqual(["g2"]);
+});
+
+// 33회차(조작 규칙 61): 컷 줄의 [폴더로]·컷 띠를 두 번 누르면 둘째 누름(detail 2)이 들어온 낱장 목록의 같은 자리 카드에 닿는다 — 브라우저는
+//  연속 누름 수를 시간·거리로만 세어, 첫 누름이 화면을 바꿔도 새 요소에 mousedown·click·dblclick 을 보낸다(헤드리스 크롬 실측).
+//  첫 누름 뒤로 자리가 바뀐 둘째 누름은 버린다: 고르지 않고, 크게 보기를 열지 않고, 카드 안의 것도 누르지 않는다.
+// 2026-10-13 저녁(Jay): 작업 공간에서도 카드를 우클릭하면 그 카드가 속한 폴더를 보여 준다 — 폴더 이름표를 누른 것과 같은 창.
+it("낱장 카드 우클릭 = 그 카드가 속한 폴더의 창 — 폴더가 없는 카드·열 수 없는 격자는 그대로, 메뉴를 닫는 우클릭은 열지 않고 고르기는 바꾸지 않는다", () => {
+  const opened: string[] = [];
+  const list = [{ ...generation("g1"), project_id: "p1", folder_path: "e035/C0010" } as Generation, generation("g2")];
+  const openFolder = (g: Generation) => { opened.push(g.id); };
+  const context = (id: string, init: MouseEventInit = {}) => {
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, ...init });
+    act(() => { cell(id).dispatchEvent(event); });
+    return event.defaultPrevented;
+  };
+  mount({ list, openFolder });
+  click("g2"); // 다른 카드를 골라 둔다
+  mouse("mousedown", cell("g1"), { button: 2 });
+  expect([context("g1"), opened, chosen()]).toEqual([true, ["g1"], ["g2"]]); // 브라우저 메뉴를 막고 창을 연다 — 고른 것은 그대로
+  // 폴더가 없는 카드 — 아무 일도 없다(브라우저 메뉴 그대로)
+  mouse("mousedown", cell("g2"), { button: 2 });
+  expect([context("g2"), opened.length]).toEqual([false, 1]);
+  // 위에 뜬 메뉴를 닫는 우클릭(누름의 시작에 가려져 있었다) — 열지 않는다. 그다음 우클릭은 연다(기록이 남지 않는다)
+  mount({ list, openFolder, overlay: true });
+  act(() => { cell("g1").dispatchEvent(new Event("pointerdown", { bubbles: true })); });
+  mount({ list, openFolder });
+  mouse("mousedown", cell("g1"), { button: 2 });
+  act(() => { cell("g1").dispatchEvent(new Event("pointerup", { bubbles: true })); });
+  expect([context("g1"), opened.length]).toEqual([true, 1]);
+  act(() => { cell("g1").dispatchEvent(new Event("pointerdown", { bubbles: true })); });
+  mouse("mousedown", cell("g1"), { button: 2 });
+  act(() => { cell("g1").dispatchEvent(new Event("pointerup", { bubbles: true })); });
+  expect([context("g1"), opened.length]).toEqual([true, 2]);
+  // 키보드의 메뉴 키(button 0) — 그 순간의 가림을 본다
+  mount({ list, openFolder, overlay: true });
+  expect([context("g1", { button: 0 }), opened.length]).toEqual([true, 2]);
+  mount({ list, openFolder });
+  expect([context("g1", { button: 0 }), opened.length]).toEqual([true, 3]);
+  // 리스트 보기의 줄도 같다
+  mount({ list, openFolder, layout: "list" });
+  mouse("mousedown", cell("g1"), { button: 2 });
+  expect([context("g1"), opened.length]).toEqual([true, 4]);
+  // 폴더 창을 열 수 없는 격자(폴더 창 안·휴지통·캔버스) — 우클릭은 아무 일도 없다
+  mount({ list });
+  mouse("mousedown", cell("g1"), { button: 2 });
+  expect([context("g1"), opened.length]).toEqual([false, 4]);
+});
+
+it("규칙 61 두 번 누름의 둘째가 '첫 누름으로 바뀐 화면'의 카드에 닿으면 아무 일도 없다 — 같은 자리의 두 번 클릭은 크게 보기", () => {
+  mount({ place: "e035" });
+  flushFrames();
+  const down = (id: string, detail: number) => { mouse("mousedown", cell(id), { detail }); mouse("mouseup", window, { detail }); };
+  down("g1", 1); // 첫 누름 — 이 누름이 자리를 옮긴다(컷 줄의 [폴더로]였다)
+  expect(chosen()).toEqual(["g1"]);
+  mount({ place: "e035/C0010" }); // 들어온 낱장 목록 — 같은 자리에 다른 카드가 서 있다
+  flushFrames();
+  const clicks: number[] = [];
+  const seen = (event: Event) => clicks.push((event as MouseEvent).detail);
+  host.addEventListener("click", seen); // 카드 안의 단추들이 듣는 것과 같은 길(React 뿌리를 지난 뒤)
+  const acked = vi.mocked(ackTeamFresh);
+  acked.mockClear();
+  down("g2", 2);
+  // 그 누름을 쥔 채 끌어도 카드가 실리지 않는다 — 카드는 끌 수 있는 요소라 격자의 누름 처리와 따로 dragstart 가 난다(Codex 코드 리뷰)
+  const drag = new Event("dragstart", { bubbles: true, cancelable: true });
+  act(() => { cell("g2").dispatchEvent(drag); });
+  mouse("click", cell("g2"), { detail: 2 });
+  mouse("dblclick", cell("g2"), { detail: 2 });
+  expect([chosen(), previews, clicks]).toEqual([["g1"], [], []]); // 고르기 그대로 · 크게 보기 없음 · click 은 안으로 가지 않았다
+  expect([acked.mock.calls.length, drag.defaultPrevented]).toEqual([0, true]); // '새 항목 확인'도 저장하지 않는다(카드가 누름의 잡는 단계에서 한다)
+
+  down("g3", 1); // 이 화면에서 새로 시작한 누름 — 전과 같다
+  mouse("click", cell("g3"), { detail: 1 });
+  expect([chosen(), clicks, acked.mock.calls.length]).toEqual([["g3"], [1], 1]);
+  down("g3", 2);
+  mouse("click", cell("g3"), { detail: 2 });
+  mouse("dblclick", cell("g3"), { detail: 2 });
+  expect([previews.length, clicks]).toEqual([1, [1, 2]]);
+  host.removeEventListener("click", seen);
 });

@@ -1,0 +1,154 @@
+// 편집 탭 왼쪽 — 프로젝트와 폴더 트리에서 시퀀스(컷 폴더들을 담은 폴더)를 고른다.
+// 라이브러리 사이드바(ProjectSection)를 쓰지 않는다: 그쪽은 폴더 클릭이 '생성 목적지'를 서버에 저장한다.
+import { useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
+import type { Project } from "../../types";
+import { folderConfirmText, type FolderMenuKind } from "../../lib/folderContextMenu";
+import { useT } from "../../lib/i18n";
+import type { EditTree } from "../../lib/useEditSequence";
+import { FolderTreeView } from "../common/FolderTreeView";
+import { ResizableSidebar } from "../common/ResizableSidebar";
+import { EditFolderMenu } from "./EditTrackMenu";
+
+// 고른 폴더까지 가는 길은 펼쳐 둔다.
+function ancestors(path: string): string[] {
+  const parts = path.split("/");
+  return parts.map((_, i) => parts.slice(0, i + 1).join("/"));
+}
+
+export function EditSidebar({
+  projects,
+  projectsState,
+  openProject,
+  onOpenProject,
+  tree,
+  seq,
+  cut,
+  offCuts,
+  freshByProject,
+  onPickFolder,
+  onReload,
+  onGrabFocus,
+  onFolderAction,
+}: {
+  projects: Project[];
+  projectsState: "loading" | "ok" | "error";
+  openProject: string | null;
+  onOpenProject: (projectId: string | null) => void;
+  tree: EditTree;
+  seq: string; // 열린 프로젝트에서 고른 시퀀스 폴더(없으면 "")
+  cut: string; // 재생헤드가 있는 컷(없으면 "")
+  offCuts: ReadonlySet<string>; // 비활성 컷(폴더) — 다른 탭의 사이드바처럼 회색으로
+  // 프로젝트 행의 +N — 공유 & 리뷰 사이드바와 같은 표시다(폴더 행의 +N·★최종·R보류는 트리 노드에 실려 온다).
+  freshByProject: Readonly<Record<string, number>>;
+  onPickFolder: (path: string) => void;
+  onReload: () => void;
+  onGrabFocus: () => void; // 여기를 누르면 편집 화면이 키를 받게 초점을 옮긴다
+  // 폴더 우클릭 메뉴의 실행 — 공유 저장 · 최종 저장 · 원본 위치 열기(앱의 것 그대로: 공유 & 리뷰 탭의 폴더 메뉴와 같은 길)
+  onFolderAction: (kind: FolderMenuKind, projectId: string, path: string, name: string) => void | Promise<void>;
+}) {
+  const t = useT();
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(ancestors(seq)));
+  useEffect(() => {
+    if (seq) setExpanded((prev) => (prev.has(seq) ? prev : new Set([...prev, ...ancestors(seq)])));
+  }, [seq]);
+  // 폴더 우클릭 메뉴(Jay 2026-10-08) — 펼쳐 둔 프로젝트의 폴더다. 프로젝트를 바꾸면 닫는다. 닫히면 편집 화면이 다시 키를 받는다.
+  const [folderMenu, setFolderMenu] = useState<{ path: string; name: string; depth: number; x: number; y: number } | null>(null);
+  useEffect(() => setFolderMenu(null), [openProject]);
+  const closeFolderMenu = () => {
+    setFolderMenu(null);
+    onGrabFocus();
+  };
+  const folderAct = (kind: FolderMenuKind) => {
+    const menu = folderMenu;
+    closeFolderMenu();
+    if (!menu || !openProject) return;
+    // 저장은 묻고 한다(공유 & 리뷰 탭과 같은 물음) — 원본 위치 열기는 바로
+    if (kind !== "open-folder" && !window.confirm(folderConfirmText(kind, menu.name))) return;
+    void onFolderAction(kind, openProject, menu.path, menu.name);
+  };
+  // 단추가 초점을 가져가지 않게 한다 — 누른 뒤에도 Space·J·K·L 이 재생으로 간다.
+  const keepFocus = (event: ReactMouseEvent) => event.preventDefault();
+
+  return (
+    <ResizableSidebar>
+      <div className="sidebar-main ed-side" onMouseDownCapture={onGrabFocus} onMouseDown={keepFocus}>
+        <section className="project-section">
+          <div className="project-tree-section">
+            <h4>{t("프로젝트")}</h4>
+            <div className="project-tree-scroll">
+              <div className="proj-list">
+                {projectsState === "loading" && !projects.length && (
+                  <div className="side-folder-note">{t("프로젝트 로딩...")}</div>
+                )}
+                {projectsState === "error" && (
+                  <div className="side-folder-note error">
+                    {t("프로젝트를 불러오지 못했습니다.")}{" "}
+                    <button type="button" className="ed-link" onClick={onReload}>{t("다시 시도")}</button>
+                  </div>
+                )}
+                {projects.map((project) => {
+                  const open = project.id === openProject;
+                  return (
+                    <div key={project.id} className={"proj-tree-wrap" + (open ? " on" : "")}>
+                      <button
+                        type="button"
+                        className={"proj-row" + (open ? " on" : "")}
+                        onClick={() => onOpenProject(open ? null : project.id)}
+                      >
+                        <span className="proj-fold">{open ? "▾" : "▸"}</span>
+                        <span className="proj-drag-handle" />
+                        <span className="proj-name">{project.name}</span>
+                        {(freshByProject[project.id] || 0) > 0 && (
+                          <span className="proj-newcount" title={t("마지막 확인 이후 새로 공유됨")}>
+                            +{freshByProject[project.id]}
+                          </span>
+                        )}
+                      </button>
+                      {open && tree.state === "loading" && <div className="side-folder-note">{t("폴더 로딩...")}</div>}
+                      {open && tree.note && (
+                        <div className={"side-folder-note" + (tree.state === "error" ? " error" : "")}>
+                          {tree.note}{" "}
+                          <button type="button" className="ed-link" onClick={onReload}>{t("다시 시도")}</button>
+                        </div>
+                      )}
+                      {open && tree.state === "ready" && (
+                        tree.roots.length ? (
+                          <FolderTreeView
+                            nodes={tree.roots}
+                            selectedPath={seq}
+                            viewedPath={cut || undefined}
+                            expanded={expanded}
+                            onToggle={(path) =>
+                              setExpanded((prev) => {
+                                const next = new Set(prev);
+                                if (!next.delete(path)) next.add(path);
+                                return next;
+                              })
+                            }
+                            onSelect={onPickFolder}
+                            isDisabled={(path) => offCuts.has(path)}
+                            onContextMenu={(path, name, depth, event) =>
+                              setFolderMenu({ path, name, depth, x: event.clientX, y: event.clientY })}
+                            className="sidebar-folder-tree"
+                          />
+                        ) : (
+                          <div className="side-folder-note">{t("폴더가 없습니다.")}</div>
+                        )
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+      {folderMenu && (
+        <EditFolderMenu x={folderMenu.x} y={folderMenu.y} name={folderMenu.name} path={folderMenu.path} depth={folderMenu.depth}
+          // 원격 접속에서 서버 PC 의 탐색기를 열지 않는다(공유 & 리뷰 탭과 같은 기준 — 최종 판정은 백엔드가 한다)
+          canOpen={["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname)}
+          onAct={folderAct} onClose={closeFolderMenu} />
+      )}
+    </ResizableSidebar>
+  );
+}

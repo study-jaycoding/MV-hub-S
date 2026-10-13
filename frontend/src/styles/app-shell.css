@@ -789,6 +789,9 @@
   display: flex; flex-direction: column; min-height: 0;
   background: var(--panel, #14161c); border: 1px solid var(--border2); border-radius: 14px;
   box-shadow: 0 24px 70px rgba(0,0,0,0.65); overflow: hidden;
+  /* 열릴 때 키가 창으로 가게 창 자신에 초점을 준다 — 그때 브라우저가 창 둘레에 그리는 흰 초점 테두리는 뜻이 없다
+     (카드를 누르면 사라진다). 캔버스 '생성 결과' 창(.scene-varwin)과 같게 끈다(Jay 2026-10-08). */
+  outline: none;
 }
 /* 폴더 창이 뜬 동안 하단 프롬프트는 막 앞에 온다 — 창을 연 채 프롬프트를 누르고, 창 안 카드를 프롬프트로 끌어 놓을 수 있다
    ('생성 결과' 창 .scene-varwin 과 같은 원칙. 전엔 막(150)과 창(151)이 프롬프트(60)를 덮어 누를 수도 놓을 수도 없었다).

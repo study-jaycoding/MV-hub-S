@@ -67,9 +67,15 @@
 
 /* ── 컷 줄(하위 폴더가 없는 카드의 리스트 — Jay 2026-10-13 오후): 같은 줄 모양, 띠에는 컷 대신 그 컷의 생성물 ── */
 .cut-card.ep-card.ep-list.leaf {
-  grid-template-columns: var(--ep-num-w, 50px) calc(236px * var(--ep-scale, 1)) minmax(0, 1fr) minmax(0, 380px);
+  grid-template-columns: var(--ep-num-w, 50px) calc(236px * var(--ep-scale, 1)) minmax(110px, 170px) minmax(0, 300px) minmax(0, 1fr);
 }
-.ep-list .ep-strip.takes { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.ep-list .ep-strip.takes { grid-template-columns: repeat(5, minmax(0, 1fr)); width: 100%; max-width: 380px; justify-self: end; }
+/* 가운데 정보판 — 그 그림의 모델·작업자·크레딧·생성일 + 폴더 안의 검토 개수(.reel-info 의 줄을 그대로 쓴다) */
+.ep-meta {
+  padding: 0 0 0 14px; border-left: 1px solid #262830; grid-template-columns: 44px minmax(0, 1fr); row-gap: 3px; font-size: 12px;
+}
+.ep-meta .v { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ep-meta .reel-rv { flex-wrap: nowrap; }
 /* 표지 위의 대표 표시(그리드의 컷 카드 위 '대표 미정'과 같은 뜻) */
 .ep-pchip {
   position: absolute; left: 6px; top: 6px; z-index: 1; padding: 1px 8px; border-radius: 999px; white-space: nowrap;
@@ -111,6 +117,9 @@
 .ep-table-head .n { text-align: right; }
 .cut-card.ep-card.ep-table {
   min-height: 48px; border-radius: 0; border-top: 0; font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums;
+  /* 방향키로 위로 옮길 때(scrollIntoView nearest) 줄이 붙박인 머리줄 밑으로 들어가지 않게(Codex 33회차). 머리줄은 격자의 위 여백(.cut-grid 의
+     padding-top 14px) 아래에 붙는다 — 14 + 머리줄 30 = 44px(실측: 30px 이면 줄이 14px 가린다). 그 둘 중 하나를 바꾸면 이 값도 같이 */
+  scroll-margin-top: 44px;
 }
 .cut-card.ep-card.ep-table:last-of-type { border-radius: 0 0 12px 12px; }
 .cut-card.ep-card.ep-table.sel { position: relative; z-index: 1; background: rgba(var(--accent-rgb), 0.08); }
@@ -127,10 +136,17 @@
 .ep-table .ep-enter { margin-top: 0; justify-self: end; }
 .ep-board.ep-table .cut-card.cut-out { margin-top: 8px; border-radius: 12px; }
 
+/* 컷 줄은 칸이 다섯이라 더 넓어야 한다 — 그보다 좁으면 생성물 띠를 아래 줄로 내린다(앞의 네 칸이 폭을 먼저 가져가 띠가 사라졌다, Codex 코드 리뷰).
+   기준은 창 폭이다(사이드바를 뺀 본문은 그보다 200px 쯤 좁다). */
+@media (max-width: 1400px) {
+  .cut-card.ep-card.ep-list.leaf { grid-template-columns: var(--ep-num-w, 50px) calc(236px * var(--ep-scale, 1)) minmax(110px, 170px) minmax(0, 1fr); }
+  .ep-list .ep-strip.takes { grid-column: 1 / -1; grid-template-columns: repeat(10, minmax(0, 1fr)); max-width: none; }
+}
 /* 좁은 창 — 띠를 아래 줄로 내린다(한 줄 8칸). 표는 가로로 민다(위 min-width) */
 @media (max-width: 1000px) {
-  .cut-card.ep-card.ep-list, .cut-card.ep-card.ep-list.leaf { grid-template-columns: var(--ep-num-w, 50px) calc(200px * var(--ep-scale, 1)) minmax(0, 1fr); }
-  .ep-list .ep-strip, .ep-list .ep-strip.takes { grid-column: 1 / -1; grid-template-columns: repeat(8, minmax(0, 1fr)); }
+  .cut-card.ep-card.ep-list { grid-template-columns: var(--ep-num-w, 50px) calc(200px * var(--ep-scale, 1)) minmax(0, 1fr); }
+  .cut-card.ep-card.ep-list.leaf { grid-template-columns: var(--ep-num-w, 50px) calc(200px * var(--ep-scale, 1)) minmax(110px, 170px) minmax(0, 1fr); }
+  .ep-list .ep-strip, .ep-list .ep-strip.takes { grid-column: 1 / -1; grid-template-columns: repeat(8, minmax(0, 1fr)); max-width: none; }
 }
 
 /* ── 그리드: 큰 표지 + 컷 띠 + 진행 막대 ── */

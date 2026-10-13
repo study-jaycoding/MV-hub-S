@@ -76,7 +76,7 @@ git sparse-checkout set backend frontend tools
 
 | 기능 | 어떻게 동작하나 | 계약·절차 문서 |
 |---|---|---|
-| **Resolve로 보내기** | 고른 원본을 누르면 **그 요청 한 건 안에서 준비·반입·결과 저장까지 끝낸다**. 브라우저가 짧게 직렬화해 Resolve API 를 동시에 호출하지 않는다. 서버 영구 큐는 쓰지 않는다(2026-08-25 `aa0985b9` 로 복원). | 코드가 현행 기준 — `backend/app/routers/resolve_integration.py` |
+| **Resolve 보내기** | 고른 원본을 누르면 **그 요청 한 건 안에서 준비·반입·결과 저장까지 끝낸다**. 브라우저가 짧게 직렬화해 Resolve API 를 동시에 호출하지 않는다. 서버 영구 큐는 쓰지 않는다(2026-08-25 `aa0985b9` 로 복원). | 코드가 현행 기준 — `backend/app/routers/resolve_integration.py` |
 | **공유 서버 이사** | 서버 PC·IP가 바뀌면 관리자가 관리자 창에서 **[팀에 공지]** 를 누른다. 작업자에게 알림이 뜨고 **알림을 한 번 누르면 새 주소로 전환**된다(옛 토큰은 그때 지워진다). | [docs/SERVER_RELOCATION.md](docs/SERVER_RELOCATION.md) |
 | **프로그램 업데이트** | 설정 → 프로그램 업데이트. 진행 중 생성·Resolve 전송이 없을 때만 종료·교체·재시작한다. | [release/README.md](release/README.md) |
 

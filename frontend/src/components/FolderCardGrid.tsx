@@ -21,8 +21,10 @@ import { backgroundKeysBlocked, isTypingTarget, pressStartedCovered, useLooseKey
 import { computeMarquee, marqueeHits, type MarqueeRect } from "../lib/marquee";
 import { mediaThumbUrl, thumbOf } from "../lib/media";
 import { matchShortcut } from "../lib/shortcuts";
+import { useStaleMultiClick } from "../lib/useStaleMultiClick";
 import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { FolderCard, FolderCardTake, PreviewItem, PreviewTarget } from "../types";
+import { CoverInfo } from "./CoverInfo";
 import { EpisodeCardBody } from "./EpisodeCardBody";
 import { MediaThumbnail } from "./MediaThumbnail";
 
@@ -43,6 +45,7 @@ interface Props {
   top: boolean; // 프로젝트 맨 위(에피소드 단계)인가 — '컷 밖' 대신 '에피소드 밖'
   outside: number; // 고른 폴더에 직접 든 수 — 어느 카드에도 들지 않아 맨 끝 칸으로 알린다
   onShowAll: () => void; // 그 칸을 누르면 한 장씩 보기로
+  placeKey?: string; // 지금 보여 주는 자리의 열쇠 — 바뀌면 다른 화면이다(두 번 누름의 둘째가 새 화면에 닿는 것을 버리는 근거, lib/useStaleMultiClick)
 }
 
 // 한 줄에 놓인 카드 수 — 화면에 놓인 자리로 센다(열 수는 CSS 가 폭에 맞춰 정한다).
@@ -72,7 +75,7 @@ function inCardAction(target: EventTarget | null): boolean {
 }
 
 export function FolderCardGrid({
-  folders, scale, fill, layout, table, selected, onSelect, onEnter, onOpen, onInfo, onReel, onPreview, top, outside, onShowAll,
+  folders, scale, fill, layout, table, selected, onSelect, onEnter, onOpen, onInfo, onReel, onPreview, top, outside, onShowAll, placeKey = "",
 }: Props) {
   const t = useT();
   const view = boardView(folders, layout, table); // 줄·카드·표 — 모양만 다르다(머리말). null = 겹친 종이 카드(컷 화면의 그리드)
@@ -131,7 +134,11 @@ export function FolderCardGrid({
     const { rect, b } = computeMarquee(grid, d, e);
     setMarquee(rect);
     const base = d.additive || d.range ? d.base : [];
-    opsRef.current.onSelect(marqueeHits<string>(grid, ".cut-card[data-path]", b, base, (el) => el.dataset.path || null));
+    // 걸친 것 — 컷 카드는 아래 정보판까지가 한 칸(.cut-slot)이다: 정보판만 걸쳐도 그 카드를 고른다(Codex 코드 리뷰). 줄·에피소드 카드는 카드 자신.
+    opsRef.current.onSelect(marqueeHits<string>(
+      grid, ".cut-slot, .cut-card.ep-card[data-path]", b, base,
+      (el) => (el.matches(".cut-slot") ? el.querySelector<HTMLElement>(".cut-card[data-path]")?.dataset.path : el.dataset.path) || null,
+    ));
   }, []);
   // 카드 위에서 시작한 끌기도 마퀴다 — 카드가 꽉 찬 격자에는 빈 곳이 없어 달리 시작할 데가 없다(10-09 실측: 100장에서 0장 고름).
   //  생성물 카드와 달리 컷 카드에는 끌어 놓을 데(프롬프트 재사용)가 없어 겹칠 것이 없다. 5px 안이면 클릭.
@@ -293,6 +300,10 @@ export function FolderCardGrid({
   const rightPressCoveredRef = useRef<boolean | null>(null);
   // 카드 안 단추(에피소드 카드의 컷 띠·[열기])의 누름이 가려진 채 시작됐나. 마우스 클릭(detail > 0)은 늘 같은 단추의 누름이 앞서 새로 적으므로
   //  낡은 기록이 쓰일 길이 없고, 키보드로 누른 것(Enter·Space — detail 0)은 기록을 보지 않고 그 순간의 가림을 본다.
+  // 줄·카드 안의 이동 단추([열기]·[폴더로]·컷 띠)를 두 번 누르면 둘째 누름이 들어간 화면의 같은 자리에 닿는다 — 그 누름은 버린다(조작 규칙 61).
+  //  자리의 열쇠는 App 이 준다(프로젝트·부모 폴더·공간). 격자가 그 사이 새로 섰어도(자리를 비웠다 다시) 첫 누름을 못 본 격자라 버린다.
+  //  버리는 누름은 뿌리의 잡는 단계에서 삼켜, 아래 onGridMouseDown·카드의 두 번 클릭·안 단추의 click 에 닿지 않는다.
+  const multiClick = useStaleMultiClick(placeKey);
   const actionCoveredRef = useRef(false);
   const actionCovered = (e: React.MouseEvent): boolean => {
     const covered = e.detail > 0 ? actionCoveredRef.current : backgroundKeysBlocked();
@@ -317,7 +328,9 @@ export function FolderCardGrid({
       actionCoveredRef.current = pressStartedCovered();
       return;
     }
-    const card = target.closest(".cut-card[data-path]") as HTMLElement | null;
+    // 컷 카드 아래의 정보판을 누른 것도 그 카드를 누른 것이다(카드와 한 칸 — .cut-slot)
+    const card = (target.closest(".cut-card[data-path]")
+      ?? target.closest(".cut-slot")?.querySelector(".cut-card[data-path]") ?? null) as HTMLElement | null;
     e.preventDefault(); // 끌 때 글자·그림이 긁히지 않게(카드 위에서 시작해도 마퀴)
     if (pressStartedCovered()) return; // 위에 뜬 메뉴를 닫는 누름 — 고른 것을 바꾸지 않는다
     gridRef.current?.focus();
@@ -342,6 +355,7 @@ export function FolderCardGrid({
             ? ({ "--ep-scale": String(scale), "--ep-num-w": `${numbers.width}px`, "--ep-num-size": `${numbers.size}px` } as React.CSSProperties)
             : {}),
         }}
+        {...multiClick}
         onMouseDown={onGridMouseDown}
         onKeyDown={(e) => onGridKey(e.nativeEvent)}
       >
@@ -415,8 +429,11 @@ export function FolderCardGrid({
                 />
               </div>
             );
+          // 컷 카드 + 아래 정보판(모델·작업자·크레딧·생성일·검토 — 모아보기 카드와 같은 줄, Jay 2026-10-13). 고르기·마퀴·키의 대상은 전처럼
+          //  카드(.cut-card[data-path])다 — 정보판은 그 카드의 일부처럼 듣는다(누름은 위 onGridMouseDown, 두 번 클릭·우클릭·휠 클릭은 같은 처리).
           return (
-            <button key={folder.path} type="button" className={"cut-card" + (isSelected ? " sel" : "")} {...card}>
+            <div key={folder.path} className="cut-slot">
+            <button type="button" className={"cut-card" + (isSelected ? " sel" : "")} {...card}>
               <span className={"cut-face" + (fill ? "" : " contain")}>
                 {/* 생성물 카드와 같은 그림 분기(깨진 뒤 새 대표로 바뀌면 다시 보이고, 포스터 없는 영상은 첫 프레임) */}
                 <MediaThumbnail
@@ -435,6 +452,11 @@ export function FolderCardGrid({
               </span>
               {!folder.rep && <span className="cut-pill">{t("대표 미정")}</span>}
             </button>
+            <CoverInfo
+              folder={folder} className={"cut-meta" + (isSelected ? " sel" : "")}
+              onDoubleClick={card.onDoubleClick} onAuxClick={card.onAuxClick} onContextMenu={card.onContextMenu}
+            />
+            </div>
           );
         })}
         {outside > 0 && (

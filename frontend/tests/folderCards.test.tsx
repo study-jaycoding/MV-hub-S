@@ -6,12 +6,19 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { FolderCard, FolderCards, GenQuery, Generation } from "../src/types";
 
 const folderCardsApi = vi.hoisted(() => vi.fn());
-vi.mock("../src/api", () => ({ api: { folderCards: folderCardsApi, thumbOrRaw: (path: string) => path } }));
+const generationMetrics = vi.hoisted(() => vi.fn(async () => ({ real_credits: 54, est_credits: null, credit_source: null, elapsed_seconds: null })));
+vi.mock("../src/api", () => ({ api: { folderCards: folderCardsApi, generationMetrics, thumbOrRaw: (path: string) => path } }));
+// 카드 아래 정보판(CoverInfo)이 모델 이름을 읽는다 — 카탈로그 조회 없이 코드 그대로
+vi.mock("../src/lib/modelCatalog", () => ({
+  useModelDisplayName: () => (code?: string | null) => code ?? "—",
+  modelDisplayName: (code?: string | null) => code ?? "—",
+}));
 
 import { FolderCardGrid } from "../src/components/FolderCardGrid";
-import { folderCardsScope, parentFolder, singleTeamWorkspace, type FolderCardsScope } from "../src/lib/folderCards";
+import { folderCardsPlace, folderCardsScope, hasFindFilters, parentFolder, singleTeamWorkspace, type FolderCardsScope } from "../src/lib/folderCards";
 import { HttpError } from "../src/lib/http";
 import { forgetFolderCards, useFolderCards } from "../src/lib/useFolderCards";
+import { forgetCoverCredits } from "../src/lib/coverCredits";
 
 const base: GenQuery = { tab: "team", project_id: "p1", folder_path: "e035", colors: [], tags: [], auto_tags: [] };
 const cover = (id: string, type: "image" | "video" = "image") => ({
@@ -40,6 +47,27 @@ it("묶어 보일 수 있는 조회 — 공유 탭에서 프로젝트(또는 그
   ];
   for (const change of flat) expect([change, folderCardsScope({ ...base, ...change }, false)]).toEqual([change, null]);
   expect(folderCardsScope(base, true)).toBeNull(); // 회색 숨김은 이 PC 에만 있는 조건이라 서버가 못 센다
+});
+
+// 2026-10-13 저녁(Jay): 묶인 상태에서 태그·작성자·종류를 눌러도 묶음이 풀리지 않게 — '자리'와 '찾는 조건'을 가른다.
+//  찾는 조건이 켜져 있어도 자리는 자리다(그때는 걸러진 목록을 화면이 직접 묶는다). 공간 조건·휴지통만 자리를 없앤다.
+it("묶어 보일 자리 — 찾는 조건이 켜져 있어도 자리는 그대로, 자리가 아닌 것은 공유 탭 밖·프로젝트 없음·휴지통·서버가 못 거르는 공간 조건", () => {
+  const finds: Partial<GenQuery>[] = [
+    { search: "cat" }, { creator_uid: "u" }, { worker_id: "w" }, { share_dir: "mine" }, { local_only: true }, { color: "r" }, { tag: "x" },
+    { media_type: "video" }, { review_filter: "held" }, { shared_only: true }, { comment_only: true }, { final_only: true },
+    { colors: ["r"] }, { tags: ["x"] }, { auto_tags: ["y"] },
+  ];
+  for (const change of finds) {
+    const query = { ...base, ...change };
+    expect([change, folderCardsPlace(query), hasFindFilters(query, false)]).toEqual([change, { projectId: "p1", parent: "e035" }, true]);
+  }
+  expect([hasFindFilters(base, false), hasFindFilters(base, true)]).toEqual([false, true]); // 회색 숨김도 찾는 조건
+  expect(hasFindFilters({ ...base, workspace_ids: ["ws-1"] }, false)).toBe(false); // 팀 공간 하나는 자리의 일부(서버가 같은 식으로 거른다)
+  const noPlace: Partial<GenQuery>[] = [
+    { tab: "my" }, { project_id: undefined }, { project_id: "none" }, { include_deleted: true }, { deleted_only: true },
+    { workspace_ids: ["ws-1", "ws-2"] }, { workspace_scope: "personal" },
+  ];
+  for (const change of noPlace) expect([change, folderCardsPlace({ ...base, ...change })]).toEqual([change, null]);
 });
 
 it("부모 폴더와 팀 공간 하나", () => {
@@ -524,6 +552,50 @@ it("에피소드 화면: 위에 뜬 메뉴를 닫는 누름은 카드 안 단추
   act(() => owner.unmount());
 });
 
+// 조작 규칙 61(33회차): 브라우저는 연속 누름 수를 시간·거리로만 센다 — 줄 안의 [열기]를 습관대로 두 번 누르면 둘째 누름(detail 2)이 들어간
+//  화면의 **같은 자리**에 mousedown·click·dblclick 으로 닿는다(헤드리스 크롬 실측). 리스트에서는 그 자리가 컷 줄의 [폴더로]라 두 단계를
+//  들어갔고, 줄의 몸통이면 그 컷이 골라지고 모아보기가 열렸다. 첫 누름 뒤로 자리가 바뀐 둘째 누름은 버린다.
+it("두 번 누름: 첫 누름([열기])이 자리를 옮기면 둘째 누름은 들어간 화면에서 아무 일도 하지 않는다 — 같은 자리의 두 번 클릭은 그대로", () => {
+  const entered: string[] = [];
+  const reels: string[][] = [];
+  let selected = new Set<string>();
+  const episode: FolderCard = { ...card("e035", 14), path: "e035", subfolders: 2, children: [] };
+  const cuts: FolderCard[] = [{ ...card("C0010", 3), subfolders: 0 }, { ...card("C0020", 5), subfolders: 0 }];
+  let screen: { place: string; folders: FolderCard[]; top: boolean } = { place: "p1", folders: [episode], top: true };
+  const draw = () => act(() => root.render(
+    <FolderCardGrid {...gridProps} layout="list" folders={screen.folders} top={screen.top} placeKey={screen.place} selected={selected}
+      onSelect={(next) => { selected = next; draw(); }} onEnter={(folder) => entered.push(folder.path)} onReel={(paths) => reels.push(paths)} outside={0} />,
+  ));
+  draw();
+  const enter = () => host.querySelector<HTMLButtonElement>(".ep-enter")!; // 맨 위 줄의 단추 — 에피소드 줄은 [열기], 컷 줄은 [폴더로]
+  const body = () => host.querySelector<HTMLElement>('.cut-card[data-path="e035/C0010"] .ep-name')!;
+  // 브라우저의 순서 그대로: mousedown → mouseup → click, 둘째 누름이면 dblclick 까지
+  const press = (el: HTMLElement, detail: number) => {
+    mouse("mousedown", el, { detail });
+    mouse("mouseup", window, { detail });
+    mouse("click", el, { detail });
+    if (detail === 2) mouse("dblclick", el, { detail });
+  };
+
+  press(enter(), 1); // 첫 누름 — 에피소드로 들어간다
+  expect(entered).toEqual(["e035"]);
+  screen = { place: "p1/e035", folders: cuts, top: false }; // 들어간 화면 — 같은 자리에 컷 줄이 서 있다
+  draw();
+  expect(enter().textContent).toContain("폴더로");
+  press(enter(), 2); // 둘째 누름이 그 자리의 [폴더로]에 닿는다
+  expect(entered).toEqual(["e035"]); // 두 단계를 들어가지 않는다
+  press(body(), 2); // 줄의 몸통에 닿은 경우 — 고르지도, 모아보기를 열지도 않는다
+  expect([[...selected], reels]).toEqual([[], []]);
+
+  // 이 화면에서 새로 시작한 누름은 전과 같다: 한 번 = 고르기 · 같은 줄을 두 번 = 모아보기 · [폴더로] = 들어가기
+  press(body(), 1);
+  expect([...selected]).toEqual(["e035/C0010"]);
+  press(body(), 2);
+  expect(reels).toEqual([["e035/C0010"]]);
+  press(enter(), 1);
+  expect(entered).toEqual(["e035", "e035/C0010"]);
+});
+
 // 2026-10-13 오후(Jay): 컷 화면도 리스트를 누르면 다르게 — 한 번 = 프로젝트 화면과 같은 줄(띠에는 그 컷의 생성물), 한 번 더(table) = 표.
 //  그리드는 겹친 종이 카드 그대로다. 줄·표의 줄도 같은 .cut-card[data-path] 라 고르기·두 번 클릭(모아보기)·키는 격자의 것 그대로.
 it("컷 화면: 그리드는 겹친 종이 카드 그대로 · 리스트 = 줄(생성물 띠 = 크게 보기, [폴더로] = 그 컷으로) · 리스트 한 번 더 = 표", () => {
@@ -561,14 +633,19 @@ it("컷 화면: 그리드는 겹친 종이 카드 그대로 · 리스트 = 줄(�
   const text = (el: Element, selector: string) => el.querySelector(selector)?.textContent ?? null;
   expect([text(row("C0010"), ".ep-num"), text(row("C0010"), ".ep-name"), text(row("C0010"), ".ep-pchip"), text(row("C0010"), ".ep-line"), text(row("C0010"), ".ep-enter")])
     .toEqual(["0010", "C0010", "★ 대표", "14건 · 영상 13", "폴더로 ▸"]);
-  expect([...row("C0010").querySelectorAll(".ep-rv > span")].map((one) => `${one.className}|${one.textContent}`)).toEqual(["|공유 11", "fin|★ 최종 2", "held|R 1"]);
+  // 가운데 정보판 — 그 그림(대표)의 모델·작업자·크레딧·생성일 + 폴더 안의 검토 개수(모아보기 카드와 같은 줄)
+  const meta = (el: Element) => [...el.querySelectorAll(".ep-meta > .k")].map((k) => [k.textContent, k.nextElementSibling!.textContent]);
+  expect(meta(row("C0010")).map(([k]) => k)).toEqual(["모델", "작업자", "크레딧", "생성일", "검토"]);
+  expect([...row("C0010").querySelectorAll(".ep-meta .reel-rv > span")].map((one) => `${one.className}|${one.textContent}`))
+    .toEqual(["|공유 11", "fin|★ 최종 2", "held|R 1", "all|전체 14"]);
+  expect(meta(row("C0020"))[4][1]).toBe("공유"); // 개수를 모르면(옛 서버) 그 그림의 상태
   // 생성물 띠 — 열 개가 다 못 실리면(14건) 아홉 장 + '+5'. 대표는 테두리, 최종·보류는 표시, 만든 사람은 이름
   const tiles = () => [...row("C0010").querySelectorAll<HTMLButtonElement>(".ep-strip.takes > .ep-take")];
   expect([tiles().length, text(row("C0010"), ".ep-cut.more"), tiles()[0].className, text(tiles()[1], ".ep-take-m.fin"), text(tiles()[2], ".ep-take-m.held"), text(tiles()[0], ".ep-take-by"), tiles()[2].querySelector(".ep-take-by")])
     .toEqual([9, "+5", "ep-cut ep-take rep", "★", "R", "리버", null]);
   // 옛 서버의 컷 — 번호·표지·이름·건수·단추만(띠·검토·대표 표시 중 서버 값이 필요한 것은 빠진다)
-  expect([text(row("C0020"), ".ep-line"), row("C0020").querySelector(".ep-rv"), row("C0020").querySelector(".ep-strip"), text(row("C0020"), ".ep-pchip"), text(row("C0020"), ".ep-enter")])
-    .toEqual(["2건", null, null, "대표 미정", "폴더로 ▸"]);
+  expect([text(row("C0020"), ".ep-line"), row("C0020").querySelector(".ep-strip"), text(row("C0020"), ".ep-pchip"), text(row("C0020"), ".ep-enter")])
+    .toEqual(["2건", null, "대표 미정", "폴더로 ▸"]);
   // 띠의 그림 = 크게 보기(띠에 실린 것끼리 넘겨 본다) — 카드를 고르거나 모아보기를 열지 않는다
   mouse("mousedown", tiles()[3]);
   mouse("mouseup", window);
@@ -608,6 +685,44 @@ it("컷 화면: 그리드는 겹친 종이 카드 그대로 · 리스트 = 줄(�
   expect(entered[2]).toBe("e035/C0020");
 });
 
+// 2026-10-13 저녁(Jay, 시안 mock_cut_card_info.png): 그리드의 컷 카드 아래에도 모아보기 카드 같은 정보 — 모델·작업자·크레딧·생성일은 그 카드에
+//  보이는 그림 한 장의 것, 검토는 폴더 안의 개수. 정보판은 카드의 일부처럼 듣는다(누르면 그 카드를 고르고, 두 번 클릭·우클릭은 카드와 같다).
+it("컷 카드(그리드) 아래 정보판 — 모델·작업자·크레딧·생성일·검토. 누르면 그 카드를 고르고 두 번 클릭은 모아보기, 고르기·키의 대상은 여전히 카드다", async () => {
+  const cut: FolderCard = {
+    ...card("C0010", 12, true, "video"), final_count: 2, held_count: 1,
+    cover: { ...cover("cover-C0010", "video"), model: "seedance-2.0", params: { duration: "6" }, creator_name: "리버", created_at: "2026-08-31 02:22:08" } as Generation,
+  };
+  const old = card("C0020", 2); // 옛 서버 — 검토 개수를 모른다
+  forgetCoverCredits(); // 앞 시험들이 받아 둔 크레딧을 비운다(모듈에 기억된다)
+  generationMetrics.mockClear();
+  const reels: string[][] = [];
+  let selected = new Set<string>();
+  const draw = () => act(() => root.render(
+    <FolderCardGrid {...gridProps} folders={[cut, old]} selected={selected} onSelect={(next) => { selected = next; draw(); }} onReel={(paths) => reels.push(paths)} outside={0} />,
+  ));
+  draw();
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); }); // 크레딧 응답
+  const slots = [...host.querySelectorAll<HTMLElement>(".cut-grid > .cut-slot")];
+  expect(slots.map((slot) => [slot.querySelector(".cut-card")!.getAttribute("data-path"), slot.querySelector(".cut-meta") !== null]))
+    .toEqual([["e035/C0010", true], ["e035/C0020", true]]);
+  const meta = (slot: Element) => [...slot.querySelectorAll(".cut-meta > .k")].map((k) => [k.textContent, k.nextElementSibling!.textContent]);
+  const lines = meta(slots[0]);
+  expect(lines.map(([k]) => k)).toEqual(["모델", "작업자", "크레딧", "생성일", "검토"]);
+  expect([lines[0][1], lines[1][1], lines[2][1], lines[4][1]]).toEqual(["seedance-2.0 · 6.0s", "리버", "54 credits", "공유 9★ 최종 2R 1전체 12"]);
+  expect(meta(slots[1])[4][1]).toBe("공유");
+  expect(generationMetrics.mock.calls.map((call) => call[0])).toEqual(["cover-C0010", "cover-C0020"]); // 카드마다 한 번
+  // 정보판을 누르면 그 카드를 고른다(빈 곳을 누른 것이 아니다) — 두 번 클릭은 카드와 같이 모아보기
+  const panel = slots[0].querySelector<HTMLElement>(".cut-meta")!;
+  mouse("mousedown", panel);
+  mouse("mouseup", window);
+  expect([[...selected], host.querySelector('.cut-card[data-path="e035/C0010"]')!.classList.contains("sel")]).toEqual([["e035/C0010"], true]);
+  dbl(host.querySelector(".cut-meta")!);
+  expect(reels).toEqual([["e035/C0010"]]);
+  // 다시 그려도 크레딧은 다시 묻지 않는다(한 번 받은 것은 기억한다)
+  draw();
+  expect(generationMetrics).toHaveBeenCalledTimes(2);
+});
+
 it("에피소드 화면의 표 — '컷' 열이 생기고 대표는 정한 컷 수, 단추는 [열기]", () => {
   const episode: FolderCard = { ...card("e035", 201), path: "e035", name: "e035", subfolders: 31, rep_count: 1, video_count: 40, final_count: 5, held_count: 9, children: [], takes: [], workers: [] };
   act(() => root.render(<FolderCardGrid {...gridProps} layout="list" table top folders={[episode]} outside={0} />));
@@ -619,7 +734,11 @@ it("에피소드 화면의 표 — '컷' 열이 생기고 대표는 정한 컷 �
 // jsdom 은 자리를 안 재 준다 — 카드마다 가짜 네모(가로로 한 줄, 200px 간격)
 function placeTiles() {
   [...host.querySelectorAll<HTMLElement>(".cut-card[data-path]")].forEach((tile, i) => {
-    tile.getBoundingClientRect = () => ({ left: i * 200, right: i * 200 + 180, top: 0, bottom: 180, width: 180, height: 180, x: i * 200, y: 0, toJSON: () => ({}) });
+    const rect = (bottom: number) => () => ({ left: i * 200, right: i * 200 + 180, top: 0, bottom, width: 180, height: bottom, x: i * 200, y: 0, toJSON: () => ({}) });
+    tile.getBoundingClientRect = rect(180);
+    // 컷 카드는 아래 정보판까지가 한 칸이다(.cut-slot — 걸침 판정의 사각형). 카드 180 + 정보판 100
+    const slot = tile.closest<HTMLElement>(".cut-slot");
+    if (slot) slot.getBoundingClientRect = rect(280);
   });
   host.querySelector<HTMLElement>(".cut-grid")!.getBoundingClientRect = () => ({ left: 0, right: 1000, top: 0, bottom: 400, width: 1000, height: 400, x: 0, y: 0, toJSON: () => ({}) });
 }

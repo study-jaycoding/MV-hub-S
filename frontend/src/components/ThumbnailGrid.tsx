@@ -20,10 +20,11 @@ import { useT } from "../lib/i18n";
 import { isKeyHandled, markKeyHandled } from "../lib/keyHandled";
 import { computeMarquee, marqueeHits } from "../lib/marquee";
 import { useOutsideDragSelect } from "../lib/useOutsideDragSelect";
+import { useStaleMultiClick } from "../lib/useStaleMultiClick";
 import { onSelectionOutsidePress } from "../lib/useGenerationSelection";
 import { matchShortcut } from "../lib/shortcuts";
 import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../lib/windowDrag";
-import type { Generation, InfoTarget, PreviewTarget } from "../types";
+import type { CardMark, Generation, InfoTarget, PreviewTarget } from "../types";
 import type { GradeMode } from "../lib/gradeStep";
 import type { ReviewAction } from "../lib/generationReview";
 import { GenerationCard } from "./GenerationCard";
@@ -81,6 +82,8 @@ interface Props {
   onShowHistory?: (g: Generation) => void; // 히스토리 뱃지 → 가계 패널
   onOpenFolder?: (g: Generation) => void; // 카드의 폴더 이름표 → 그 폴더의 생성물 창(안 주면 이름표 없음)
   openedFromId?: string | null; // 폴더 창을 연 카드 — 그 카드에 '방금 누른 카드' 표시
+  cardMarks?: Readonly<Record<string, CardMark>>; // 편집 탭이 연 폴더 창 — 타임라인에 넣은 카드의 표(같은 자리)
+  onCardMenu?: (g: Generation, x: number, y: number) => void; // 그 창 — 카드 휠 클릭(넣을 트랙 메뉴). 안 주면 휠 클릭 = 정보 그대로
   // ── 캔버스 '생성 결과' 창이 쓰는 선택 기능(안 주면 종전 그대로) ──
   cellHeader?: (g: Generation) => React.ReactNode; // 카드 위(셀 안)에 그리는 칸 — '대표' 단추
   lastViewedId?: string | null; // 주면(null 포함) '마지막으로 본' 표시를 이 값으로 — 라이브러리 칸 대신 호출자의 칸
@@ -94,6 +97,7 @@ interface Props {
   loadError?: string | null; // 목록 첫 로드 실패 사유 — 빈 상태와 구분해 재시도 UI 를 띄운다
   loading?: boolean; // 목록을 받는 중 — 비어 있을 때 "항목이 없습니다" 대신 "불러오는 중…"(받는 중인데 없다고 말하지 않는다)
   selectLocked?: boolean; // 바깥(상단바·사이드바 여백)에서 시작하는 끌기 선택을 끈다 — 낡은 사본을 보이는 동안
+  placeKey?: string; // 지금 보여 주는 자리의 열쇠 — 바뀌면 다른 화면이다(두 번 누름의 둘째가 새 화면에 닿는 것을 버리는 근거, lib/useStaleMultiClick)
   onRetryLoad?: () => void; // 로드 실패 시 "다시 시도"
 }
 
@@ -377,6 +381,8 @@ export function ThumbnailGrid(props: Props) {
       onShowHistory={props.onShowHistory ? cb.onShowHistory : undefined}
       onOpenFolder={props.onOpenFolder ? cb.onOpenFolder : undefined}
       openedHere={generation.id === props.openedFromId}
+      mark={props.cardMarks?.[generation.id]}
+      wheelMenu={!!props.onCardMenu}
       showFolder={props.showFolder}
       dimmed={props.dimIds?.has(generation.id)}
     />
@@ -661,9 +667,35 @@ export function ThumbnailGrid(props: Props) {
     beginDrag(e, null);
   }, !props.selectLocked);
 
+  // 컷 줄의 [폴더로]·컷 띠를 두 번 누르면 둘째 누름이 들어온 이 목록의 같은 자리 카드에 닿는다(카드가 골라지고 크게 보기가 열리거나, 그 자리의
+  //  S·T·C 단추가 눌린다) — 첫 누름 뒤로 자리가 바뀐 둘째 누름은 버린다(조작 규칙 61, lib/useStaleMultiClick). 자리의 열쇠가 없는 격자(캔버스의
+  //  '생성 결과' 창)는 '이 격자가 첫 누름을 보지 못했다'만 본다. 뿌리의 잡는 단계에서 누름부터 삼킨다 — 카드의 '새 항목 확인'(누름의 잡는
+  //  단계에서 저장한다)과 카드 끌기(프롬프트 재사용)가 그 누름으로 일어나지 않게.
+  const multiClick = useStaleMultiClick(props.placeKey ?? "");
+  // 우클릭 = 그 카드가 속한 폴더의 창 — 카드의 폴더 이름표를 누른 것과 같다(Jay 2026-10-13: 작업 공간에서도. 공유 탭의 컷 카드 우클릭과 같은
+  //  뜻이다). 폴더가 없는 카드·폴더 창을 열 수 없는 격자(onOpenFolder 없음 — 폴더 창 안·휴지통·캔버스)에서는 아무 일도 없다(브라우저 메뉴 그대로).
+  //  위에 뜬 메뉴를 닫는 우클릭은 열지 않는다 — contextmenu 는 단추를 뗀 뒤 오므로(윈도) 가림은 누름의 시작에 적어 둔다(FolderCardGrid 와 같은
+  //  이유). 키보드의 메뉴 키(button 0)는 기록을 보지 않고 그 순간의 가림을 본다.
+  const rightPressCoveredRef = useRef<boolean | null>(null);
+  const onGridContextMenu = (e: React.MouseEvent) => {
+    const open = props.onOpenFolder;
+    if (!open || props.selectLocked) return;
+    if ((e.target as HTMLElement).closest("input, textarea, a, [contenteditable]")) return; // 글 칸·링크 위는 브라우저 메뉴
+    const cellEl = (e.target as HTMLElement).closest(".gen-cell") as HTMLElement | null;
+    const g = cellEl && opsRef.current.generations.find((x) => x.id === cellEl.dataset.id);
+    if (!g?.folder_path) return;
+    e.preventDefault(); // 폴더에 속한 카드 위에서만 브라우저 메뉴를 막는다
+    const covered = e.button === 2 ? (rightPressCoveredRef.current ?? backgroundKeysBlocked()) : backgroundKeysBlocked();
+    rightPressCoveredRef.current = null;
+    if (!covered) open(g);
+  };
   const onGridMouseDown = (e: React.MouseEvent) => {
     if (e.button === 1) {
       e.preventDefault(); // 미들클릭 자동스크롤 방지(정보는 카드 auxclick 에서)
+      return;
+    }
+    if (e.button === 2) {
+      rightPressCoveredRef.current = pressStartedCovered(); // 고르기는 바꾸지 않는다
       return;
     }
     if (e.button !== 0) return;
@@ -685,6 +717,22 @@ export function ThumbnailGrid(props: Props) {
     if (!cellEl) return;
     const g = opsRef.current.generations.find((x) => x.id === cellEl.dataset.id);
     if (g) onPreviewCell(g);
+  };
+
+  // 카드 휠 클릭(onCardMenu 를 준 화면만 — 편집 탭이 연 폴더 창의 '넣을 트랙' 메뉴, Jay 2026-10-13: 그 전에는 우클릭이었다).
+  //  잡는 단계에서 받아 전파를 막는다 — 안 막으면 카드의 휠 클릭(정보 창)이 같이 뜬다. 그 창에서 정보는 카드의 ⓘ 단추로 본다.
+  //  글자를 넣는 칸 위는 건드리지 않는다(체크박스는 카드의 일부다 — 목록 보기의 선택 칸 위에서도 같은 메뉴, Codex 코드 리뷰).
+  //  키보드의 메뉴 키(누름 없이 오는 contextmenu — button 이 2 가 아니다)는 전처럼 그 카드의 메뉴를 연다: 휠 클릭은 키보드로 할 수
+  //  없다. 마우스 우클릭(button 2)은 건드리지 않는다 — 브라우저 메뉴 그대로.
+  const onGridCardMenu = (e: React.MouseEvent) => {
+    if (e.type === "auxclick" ? e.button !== 1 : e.button === 2) return;
+    if ((e.target as HTMLElement).closest("textarea, [contenteditable], input:not([type=checkbox])")) return;
+    const cellEl = (e.target as HTMLElement).closest(".gen-cell") as HTMLElement | null;
+    const g = cellEl && opsRef.current.generations.find((x) => x.id === cellEl.dataset.id);
+    if (!g) return;
+    e.preventDefault();
+    e.stopPropagation();
+    props.onCardMenu?.(g, e.clientX, e.clientY);
   };
 
   // 카드 네이티브 드래그(프롬프트 재사용) 시작 → 진행 중이던 마퀴 추적 취소.
@@ -791,8 +839,12 @@ export function ThumbnailGrid(props: Props) {
           (isList ? " as-list" : "")
         }
         tabIndex={0}
+        {...multiClick}
         onMouseDown={onGridMouseDown}
         onDoubleClick={onGridDblClick}
+        onAuxClickCapture={props.onCardMenu ? onGridCardMenu : undefined}
+        // onCardMenu 를 준 화면(편집 탭이 연 폴더 창)은 메뉴 키만 그 메뉴 · 그 밖은 우클릭 = 폴더 창. 두 속성은 겹치지 않는다(그 창에는 onOpenFolder 가 없다)
+        onContextMenu={props.onCardMenu ? onGridCardMenu : onGridContextMenu}
         onDragStart={onGridDragStart}
         onKeyDown={(e) => onGridKey(e.nativeEvent)}
         onScroll={onGridScroll}

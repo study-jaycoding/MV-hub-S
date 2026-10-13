@@ -1230,6 +1230,165 @@ it("App 작업 공간: 바깥 막·✕ 로 닫히고, 보던 위치가 바뀌거
   expect(gridSnapshot!.onOpenFolder).toBeUndefined();
 });
 
+it("App 편집 탭: 들어가면 폴더 창이 닫히고 다빈치 선택이 숨은 목록을 옮기지 않는다 — 나와도 창은 되살아나지 않는다", async () => {
+  vi.doMock("../src/components/timeline/EditTab", () => ({ EditTab: () => <div data-testid="edit-tab" /> }));
+  const send = await mountApp("my");
+  const body = () => document.querySelector<HTMLElement>(".body")!;
+  // 편집은 filters.tab 의 값이 아니라 내비 기록의 '보기'다 — 뒤로/앞으로 가기로도 들어오고 나간다.
+  const editView = (edit: boolean) => act(() => {
+    window.dispatchEvent(new PopStateEvent("popstate", { state: { chv: { tab: "my", focusId: null, ov: null, key: 0, edit } } }));
+  });
+  act(() => gridSnapshot!.onOpenFolder!(libraryGeneration("target")));
+  await settle();
+  expect(peekWindow()).not.toBeNull();
+  expect(body().hasAttribute("inert")).toBe(true);
+
+  editView(true);
+  await settle();
+  await settle();
+  expect(document.querySelector('[data-testid="edit-tab"]')).not.toBeNull();
+  expect(peekWindow()).toBeNull();
+  expect(body().hasAttribute("inert")).toBe(false); // 편집 화면이 조작 불가가 되지 않는다
+  expect(document.querySelector('[data-testid="tab"]')!.textContent).toBe("my"); // 밑의 탭은 그대로
+
+  const filtersInEdit = librarySnapshot!.filters;
+  act(() => send(["other", "other-target"])); // 편집 중의 다빈치 선택은 숨은 목록의 위치를 옮기지 않는다
+  await settle();
+  expect(librarySnapshot!.filters).toBe(filtersInEdit);
+
+  editView(false);
+  await settle();
+  expect(document.querySelector('[data-testid="edit-tab"]')).toBeNull();
+  expect(peekWindow()).toBeNull();
+  expect(gridSnapshot!.selectedIds.size).toBe(0);
+  act(() => send(["other", "other-target"])); // 나온 뒤에는 다시 따라간다
+  await settle();
+  expect(librarySnapshot!.filters).toMatchObject({ project_id: "other-project", folder_path: "episode/shot" });
+});
+
+// 편집 탭의 컷 더블클릭(Jay 2026-10-08) — 공유 & 리뷰의 폴더 창을 그대로 쓴다. 창이 떠 있는 동안 목록·카드·액션만 공유 & 리뷰로
+//  보고, 저장된 탭·다음 생성 위치·뒤로가기 기록은 건드리지 않는다(탭을 실제로 바꿨다 되돌리면 기록·저장에 임시 상태가 샌다).
+it.each(["my", "compose"])("App 편집 탭(밑의 탭 %s): 컷을 더블클릭하면 공유 & 리뷰의 폴더 창이 그 컷 폴더로 뜬다 — 닫으면 밑의 탭은 그대로다", async (tab) => {
+  type EditProps = ComponentProps<typeof import("../src/components/timeline/EditTab").EditTab>;
+  let editProps: EditProps | null = null;
+  vi.doMock("../src/components/timeline/EditTab", () => ({
+    EditTab: (props: EditProps) => { editProps = props; return <div data-testid="edit-tab" />; },
+  }));
+  localStorage.setItem("ch.lib.generationScopeV1", JSON.stringify({ project_id: "generation-project", folder_path: "next/clip" }));
+  await mountApp(tab);
+  const body = () => document.querySelector<HTMLElement>(".body")!;
+  const editView = (edit: boolean) => act(() => {
+    window.dispatchEvent(new PopStateEvent("popstate", { state: { chv: { tab, focusId: null, ov: null, key: 0, edit } } }));
+  });
+  const storedTab = () => JSON.parse(localStorage.getItem("ch.lib.filtersV2")!).tab;
+  const marks = { g1: { label: "V1 - 선택 카드", lead: false }, g2: { label: "V2 - 선택 카드", lead: true } };
+  const openCut = () => act(() => editProps!.onOpenCutFolder({
+    projectId: "edit-project", projectName: "Edit project", path: "e035/C0050", focusId: "g2", marks,
+  }));
+  editView(true);
+  await settle();
+  await settle();
+  beginList.mockClear();
+  const filtersInEdit = librarySnapshot!.filters;
+  const scopeBefore = localStorage.getItem("ch.lib.generationScopeV1");
+  expect(editProps!.keysActive).toBe(true);
+  expect(editProps!.reloadSignal).toBe(0);
+
+  openCut();
+  await settle();
+  expect(peekWindow()!.querySelector(".folder-peek-title")!.textContent).toBe("Edit project / e035/C0050");
+  expect(librarySnapshot!.filters.tab).toBe("team"); // 목록 훅·액션은 공유 & 리뷰로 본다
+  expect(librarySnapshot!.genQuery).toMatchObject({ tab: "team", project_id: "edit-project", folder_path: "e035/C0050" });
+  expect(gridSnapshot!.tab).toBe("team");
+  expect(gridSnapshot!.cardMarks).toEqual(marks); // 타임라인에 넣은 카드의 표
+  expect(gridSnapshot!.openedFromId).toBeUndefined(); // '방금 누른 카드'가 아니다
+  expect(gridSnapshot!.resolveScrollRequest).toEqual({ generationId: "g2", nonce: 0 }); // 지금 보이는 카드로 내려간다
+  expect(gridSnapshot!.onOpenFolder).toBeUndefined();
+  expect(body().hasAttribute("inert")).toBe(true);
+  expect(editProps!.keysActive).toBe(false); // 편집 키는 쉬고, 창 안에서는 라이브러리 키가 듣는다
+  expect(beginList).toHaveBeenCalledTimes(1);
+  expect(beginList).toHaveBeenLastCalledWith(); // 밑의 탭 목록은 숨어 있다 — 사본을 담지 않는다
+  expect(storedTab()).toBe(tab); // 저장된 탭은 그대로
+  expect(localStorage.getItem("ch.lib.generationScopeV1")).toBe(scopeBefore);
+  expect(promptSnapshot?.activeProjectId).toBe("generation-project");
+
+  // 창의 카드를 휠 클릭하면 편집 탭의 트랙 메뉴로 간다(편집 탭이 ref 에 걸어 둔다). 편집 탭이 표를 다시 알리면 창의 카드 표만
+  //  바뀐다 — 창은 그대로다(열릴 때의 '그 카드로 내려가기'를 다시 하지 않는다).
+  expect(editProps!.peekPath).toBe("e035/C0050");
+  const cardMenu = vi.fn();
+  editProps!.cardMenuRef.current = cardMenu;
+  gridSnapshot!.onCardMenu!({ id: "g1" } as never, 5, 6);
+  expect(cardMenu).toHaveBeenCalledExactlyOnceWith({ id: "g1" }, 5, 6);
+  const scrollAtOpen = gridSnapshot!.resolveScrollRequest;
+  const moved = { g1: { label: "V1 - 선택 카드", lead: true } };
+  act(() => editProps!.onPeekMarks(moved));
+  expect(gridSnapshot!.cardMarks).toEqual(moved);
+  expect(gridSnapshot!.resolveScrollRequest).toBe(scrollAtOpen);
+  expect(beginList).toHaveBeenCalledTimes(1);
+
+  // 창에서 크게 보기를 열면 뒤로가기 기록이 하나 쌓인다 — 그 기록의 탭은 저장된 탭이다(임시 '공유 & 리뷰'가 남으면, 창을 닫은
+  //  뒤 앞으로 가기로 그 기록에 돌아왔을 때 밑의 탭이 바뀐다).
+  act(() => gridSnapshot!.onPreview({ url: "/media/x.png", type: "image", name: "x" }));
+  expect(window.history.state.chv).toMatchObject({ tab, edit: true, ov: "preview" });
+  // 크게 보기를 닫고 편집 기록으로 돌아와도(뒤로가기) 창은 그대로다 — 기록의 탭이 창을 깨지 않는다.
+  editView(true);
+  await settle();
+  expect(peekWindow()).not.toBeNull();
+  expect(librarySnapshot!.filters.tab).toBe("team");
+
+  pressEscapeInPeek();
+  await settle();
+  expect(peekWindow()).toBeNull();
+  expect(body().hasAttribute("inert")).toBe(false);
+  expect(librarySnapshot!.filters).toBe(filtersInEdit); // 밑의 탭·필터가 그대로 돌아온다
+  expect(document.querySelector('[data-testid="tab"]')!.textContent).toBe(tab);
+  expect(beginList).toHaveBeenCalledTimes(2);
+  expect(beginList).toHaveBeenLastCalledWith(); // 창의 카드가 밑의 탭 목록에 남지 않게 비운다
+  expect(editProps!.keysActive).toBe(true);
+  expect(editProps!.reloadSignal).toBe(1); // 편집 탭은 공유 목록을 다시 받는다(창에서 공유를 풀거나 지웠을 수 있다)
+  expect(editProps!.peekPath).toBeNull();
+  expect(storedTab()).toBe(tab);
+  expect(localStorage.getItem("ch.lib.generationScopeV1")).toBe(scopeBefore);
+
+  // 창이 뜬 채 편집을 떠나면(뒤로가기) 창은 닫히고, 떠난 탭이 공유 & 리뷰로 그려지지 않는다.
+  openCut();
+  await settle();
+  expect(peekWindow()).not.toBeNull();
+  editView(false);
+  expect(document.querySelector('[data-testid="tab"]')!.textContent).toBe(tab); // 그 렌더부터
+  await settle();
+  expect(peekWindow()).toBeNull();
+  expect(librarySnapshot!.filters.tab).toBe(tab);
+  expect(beginList).toHaveBeenCalledTimes(3); // 문맥이 바뀌어 닫힌 창은 목록을 비우지 않는다 — 바뀐 문맥의 조회가 채운다
+  editView(true); // 다시 들어와도 창이 되살아나지 않는다
+  await settle();
+  await settle();
+  expect(peekWindow()).toBeNull();
+  expect(librarySnapshot!.filters.tab).toBe(tab);
+});
+
+it("App 편집 탭(캔버스에서 들어옴): 편집 중의 다빈치 선택은 씬을 바꾸거나 창을 열지 않는다 — 나온 뒤의 선택은 다시 따른다", async () => {
+  vi.doMock("../src/components/timeline/EditTab", () => ({ EditTab: () => <div data-testid="edit-tab" /> }));
+  const send = await mountApp();
+  const editView = (edit: boolean) => act(() => {
+    window.dispatchEvent(new PopStateEvent("popstate", { state: { chv: { tab: "compose", focusId: null, ov: null, key: 0, edit } } }));
+  });
+  editView(true);
+  await settle();
+  await settle();
+  expect(document.querySelector('[data-testid="edit-tab"]')).not.toBeNull();
+  act(() => send(["other-target"])); // 다른 씬의 결과 — 캔버스였다면 그 씬으로 옮기고 '생성 결과' 창을 연다
+  await settle();
+  editView(false);
+  await settle();
+  expect(view.container.querySelector(".scene-varwin")).toBeNull();
+  expect(tile("other-target")).toBeNull();
+  act(() => send(["other-target"]));
+  await settle();
+  expect(tile("other-target")).toBeTruthy();
+  expect(resolveHighlightedIds()).toEqual(["other-target"]);
+});
+
 // ── 공유 & 리뷰 탭의 폴더 묶음 보기(2026-10-08) ──
 type ToolbarProps = ComponentProps<typeof import("../src/components/LibraryToolbar").LibraryToolbar>;
 let toolbarSnapshot: ToolbarProps | null = null;
@@ -1457,6 +1616,144 @@ it("App 공유·리뷰: 모아보기 카드의 [폴더로] = 창을 닫고 그 �
     .toEqual(["episode", true, { projectId: "resolve-project", path: "episode" }]);
 });
 
+// 2026-10-13 저녁(Jay): 컷 카드로 묶인 상태에서 종류·작성자·태그를 누르면 묶음이 풀려 낱장이 됐다 → 찾는 조건이 켜져도 묶음은 그대로,
+//  걸러진 목록을 **따로 끝까지** 받아 화면이 묶는다. 받는 동안 낱장이 서지 않고(앞 카드 그대로 + '거르는 중…') 고른 것이 남으며, 답이 오면
+//  화면에 없는 폴더만 고른 것에서 뺀다. 회색 숨김은 다시 받지 않고 다시 묶는다. 폴더 창을 여닫아도 뒤 카드는 그대로다.
+it("App 공유·리뷰: 찾는 조건을 켜도 묶음이 풀리지 않는다 — 걸러진 목록을 끝까지 받아 묶고, 받는 동안 낱장이 서지 않으며 고른 것이 남는다", { timeout: 20_000 }, async () => {
+  const at = (id: string, folder: string, extra: Partial<Generation> = {}): Generation => ({ ...withAsset(id), folder_path: folder, sort_ts: 1, ...extra } as Generation);
+  const waiting: Array<(rows: Generation[]) => void> = [];
+  // 안 거른 조회(옛 서버의 빈 칸을 채우려고 받는다)는 바로, 종류를 건 조회는 붙잡아 둔다
+  const listGenerations = vi.fn((query: GenQuery) => (query.media_type
+    ? new Promise<Generation[]>((resolve) => { waiting.push(resolve); })
+    : Promise.resolve([at("o1", "episode/other"), at("s1", "episode/shot", { is_final: true }), at("s2", "episode/shot")])));
+  localStorage.setItem("ch.lib.cutView", "1");
+  await mountTeamFolder({ folderCards: byParent(() => false), setFolderCover: vi.fn(), listGenerations });
+  const names = () => [...(cutGrid()?.querySelectorAll(".cut-tab > span") ?? [])].map((name) => name.textContent);
+  const picked = () => [...document.querySelectorAll('main.main .cut-card[aria-pressed="true"]')].map((tile) => tile.querySelector(".cut-tab > span")!.textContent);
+  const pick = (name: string, init: MouseEventInit = {}) => {
+    act(() => { cutTile(name).dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, ...init })); });
+    act(() => { window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); });
+  };
+  expect([names(), toolbarSnapshot!.folderCards!.summary]).toEqual([["other", "shot"], { top: false, folders: 2, items: 9, note: undefined }]);
+  // 옛 공유 서버(카드에 새 집계 칸이 없다) — 그 자리의 목록을 따로 끝까지 받아 없는 칸을 채운다. 건수·표지는 서버 것 그대로
+  expect(listGenerations.mock.calls.map((call) => [call[0].folder_path, call[0].media_type ?? null, call[2]])).toEqual([["episode", null, 500]]);
+  pick("other");
+  pick("shot", { ctrlKey: true });
+  expect(picked()).toEqual(["other", "shot"]);
+
+  // 종류 = 영상 — 받는 동안: 묶음 그대로(안 거른 카드), 낱장 격자는 서지 않는다, 도구 줄이 '거르는 중…', 고른 것도 남는다
+  act(() => toolbarSnapshot!.onTypeFilter("video"));
+  await settle();
+  expect([names(), gridOutputs().length, toolbarSnapshot!.folderCards!.summary!.note, picked(), waiting.length])
+    .toEqual([["other", "shot"], 0, "거르는 중…", ["other", "shot"], 1]);
+  // 답 — shot 에만 둘. 걸러진 것으로 묶이고, 화면에 없는 폴더(other)만 고른 것에서 빠진다
+  await act(async () => { waiting[0]([at("v1", "episode/shot"), at("v2", "episode/shot"), at("mine", "episode")]); });
+  await settle();
+  expect([names(), gridOutputs().length, toolbarSnapshot!.folderCards!.summary, picked()])
+    .toEqual([["shot"], 0, { top: false, folders: 1, items: 3, note: undefined }, ["shot"]]);
+  expect(cutGrid()!.querySelector(".cut-tab > b")!.textContent).toBe("2"); // 건수는 걸러진 수
+  expect(cutGrid()!.querySelector(".cut-out-count")!.textContent).toBe("컷 밖 1건");
+  // 전환 단추는 걸러 보는 중에도 그대로다(전엔 사라졌다)
+  expect(toolbarSnapshot!.folderCards!.on).toBe(true);
+
+  // 회색 숨김 — 이 PC 에만 있는 조건: 다시 받지 않고 받은 것 위에서 다시 묶는다
+  const calls = listGenerations.mock.calls.length;
+  act(() => toolbarSnapshot!.onToggleGray!());
+  await settle();
+  expect([names(), listGenerations.mock.calls.length - calls]).toEqual([["shot"], 0]);
+  act(() => toolbarSnapshot!.onToggleGray!());
+  await settle();
+
+  // 폴더 창을 열고 닫아도 뒤의 걸러진 카드는 그대로다(목록 훅의 목록은 창이 빌려 가지만, 묶음의 자료는 따로 받는다)
+  act(() => { cutTile("shot").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); });
+  await settle();
+  expect([peekWindow() !== null, names()]).toEqual([true, ["shot"]]);
+  pressEscapeInPeek();
+  await settle();
+  expect([peekWindow(), names()]).toEqual([null, ["shot"]]);
+
+  // 조건을 풀면 서버 카드로 돌아온다(걸러진 건수가 남지 않는다)
+  act(() => toolbarSnapshot!.onTypeFilter("all"));
+  await settle();
+  expect([names(), toolbarSnapshot!.folderCards!.summary]).toEqual([["other", "shot"], { top: false, folders: 2, items: 9, note: undefined }]);
+});
+
+// 2026-10-13 저녁(Jay): "각 폴더별로 내가 봤던 게 리스트인지 그리드인지도 기억하게 한다." 모양은 **보는 폴더**의 것이다 — 폴더 창이 떠 있으면 그 창의
+//  폴더. 처음엔 창 안에서 바꾼 모양이 뒤 화면의 폴더에 적혀, 창을 닫으면 뒤 화면까지 바뀌었다(Codex 코드 리뷰).
+it("App 공유·리뷰: 모양은 보는 폴더마다 기억한다 — 폴더 창 안에서 바꾼 모양은 그 폴더 것이고, 닫으면 뒤 화면은 제 모양 그대로다", { timeout: 20_000 }, async () => {
+  localStorage.setItem("ch.lib.cutView", "1");
+  await mountTeamFolder({ folderCards: byParent(() => false), setFolderCover: vi.fn() });
+  const openWindow = async (name: string) => {
+    act(() => { cutTile(name).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); });
+    await settle();
+  };
+  const closeWindow = async () => { pressEscapeInPeek(); await settle(); };
+  const stored = () => JSON.parse(localStorage.getItem("ch.lib.placeViews") ?? "{}") as Record<string, { layout: string; group: boolean }>;
+  const key = (folder: string) => JSON.stringify(["team", "resolve-project", folder]);
+  expect(toolbarSnapshot!.layout).toBe("grid");
+
+  await openWindow("shot"); // 처음 보는 폴더 — 방금 보던 그리드를 물려받는다
+  expect([peekWindow() !== null, toolbarSnapshot!.layout, gridSnapshot!.layout]).toEqual([true, "grid", "grid"]);
+  act(() => toolbarSnapshot!.onLayout("list")); // 창 안에서 리스트로
+  await settle();
+  expect([toolbarSnapshot!.layout, gridSnapshot!.layout]).toEqual(["list", "list"]);
+  await closeWindow();
+  expect([peekWindow(), toolbarSnapshot!.layout]).toEqual([null, "grid"]); // 뒤 화면(episode)은 그대로다
+  expect([stored()[key("episode")], stored()[key("episode/shot")]]).toEqual([{ layout: "grid", group: false }, { layout: "list", group: false }]);
+
+  await openWindow("other"); // 다른 폴더의 창 — 방금 보던 것(뒤 화면의 그리드)을 물려받는다
+  expect(gridSnapshot!.layout).toBe("grid");
+  await closeWindow();
+  await openWindow("shot"); // 다시 연 그 폴더는 본 모양 그대로
+  expect([toolbarSnapshot!.layout, gridSnapshot!.layout]).toEqual(["list", "list"]);
+  await closeWindow();
+  // 그 폴더로 들어가도(창이 아니라 자리로) 같은 폴더다 — 리스트
+  act(() => sidebarSnapshot!.onChange({ folder_path: "episode/shot" }));
+  await settle();
+  expect(toolbarSnapshot!.layout).toBe("list");
+  act(() => sidebarSnapshot!.onChange({ folder_path: "episode" }));
+  await settle();
+  expect(toolbarSnapshot!.layout).toBe("grid");
+});
+
+// 걸러 보는 중의 경계(Codex 코드 리뷰) — 받지 못하면 그렇다고 알린다(앞 카드가 완료처럼 보이지 않게) · 상한에서 잘리면 '최근 2000건 기준'.
+it("App 공유·리뷰: 걸러 받지 못하면 '걸러 보기 실패', 상한에서 잘리면 '최근 2000건 기준' — 어느 때도 낱장이 서지 않는다", { timeout: 20_000 }, async () => {
+  let serial = 0;
+  const many = () => Array.from({ length: 500 }, () => {
+    serial += 1;
+    return { ...withAsset("m" + serial), folder_path: "episode/shot", sort_ts: 100_000 - serial } as Generation;
+  });
+  const listGenerations = vi.fn(async (query: GenQuery) => {
+    if (query.media_type === "video") throw new Error("502: 공유 서버 연결 실패");
+    return query.media_type === "image" ? many() : [];
+  });
+  localStorage.setItem("ch.lib.cutView", "1");
+  await mountTeamFolder({ folderCards: byParent(() => false), setFolderCover: vi.fn(), listGenerations });
+  const names = () => [...(cutGrid()?.querySelectorAll(".cut-tab > span") ?? [])].map((name) => name.textContent);
+  act(() => toolbarSnapshot!.onTypeFilter("video"));
+  await settle();
+  await settle();
+  expect([names(), gridOutputs().length, toolbarSnapshot!.folderCards!.summary!.note]).toEqual([["other", "shot"], 0, "걸러 보기 실패"]);
+  // 다른 조건 — 2000건(4쪽)에서 잘린다
+  act(() => toolbarSnapshot!.onTypeFilter("image"));
+  for (let round = 0; round < 6; round++) await settle();
+  expect(listGenerations.mock.calls.filter((call) => call[0].media_type === "image")).toHaveLength(4);
+  expect([names(), gridOutputs().length, toolbarSnapshot!.folderCards!.summary]).toEqual([["shot"], 0, { top: false, folders: 1, items: 2000, note: "최근 2000건 기준" }]);
+});
+
+// 옛 공유 서버(폴더 카드 경로 자체가 없다)는 걸러 보는 중에도 전처럼 한 장씩이다 — 목록에서 묶는 것은 서버 카드(구조·대표)를 알 때만 한다.
+it("App 공유·리뷰: 폴더 카드 경로가 없는 옛 서버는 찾는 조건을 켜도 낱장 그대로 — 걸러 받기를 보내지 않는다", { timeout: 20_000 }, async () => {
+  const { HttpError } = await import("../src/lib/http");
+  const missing = vi.fn().mockRejectedValue(new HttpError(404, "404: Not Found", "Not Found"));
+  const listGenerations = vi.fn(async () => []);
+  localStorage.setItem("ch.lib.cutView", "1");
+  await mountTeamFolder({ folderCards: missing, setFolderCover: vi.fn(), listGenerations });
+  await settle();
+  act(() => toolbarSnapshot!.onTypeFilter("video"));
+  await settle();
+  expect([cutGrid(), gridOutputs().length, toolbarSnapshot!.folderCards, listGenerations.mock.calls.length]).toEqual([null, 1, undefined, 0]);
+});
+
 // 2026-10-13 ③(Jay): 사이드바로 폴더를 옮기면 묶음 응답이 오기 전에 낱장 격자(옛 폴더의 카드)가 한 번 보였다가 컷 카드로 바뀌었다 → 응답 전엔 격자 자리를
 //  비운다(전환 단추는 그동안 남는다). 조회가 실패하면 낱장으로 돌아간다(영영 빈 화면이 아니다).
 it("App 공유·리뷰: 폴더를 옮기면 묶음 응답 전엔 낱장 격자를 그리지 않는다 — 오면 컷 카드(잎이면 낱장), 실패하면 낱장", { timeout: 20_000 }, async () => {
@@ -1574,12 +1871,13 @@ it("App 공유·리뷰: 자리를 옮긴 뒤 새 목록 전에는 옛 자리의 
   act(() => { setLibraryGens([at("a", "episode/shot")]); setListBehind(false); }); // A 의 목록이 왔다
   await settle();
   expect([busy(), shown(), main().hasAttribute("inert")]).toEqual([null, ["a"], false]);
-  // ② 다른 폴더로 옮기고 기다리는 사이 검색어를 쳤다 — 묶어 보이지 않게 돼 옛 목록이 그려지지만, 새 목록이 올 때까지 잠겨 있다
+  // ② 다른 폴더로 옮기고 기다리는 사이 검색어를 쳤다 — 찾는 조건이 켜져도 묶음 보기의 자리다(2026-10-13 저녁: 걸러도 묶음이 풀리지 않는다).
+  //  새 목록이 올 때까지 옛 자리의 카드를 그리지도 누르게 두지도 않는다(전엔 묶음 조건이 풀려 옛 목록이 잠긴 채 그려졌다)
   act(() => { sidebarSnapshot!.onChange({ folder_path: "episode/other" }); setListBehind(true); });
   await settle();
   act(() => { sidebarSnapshot!.onChange({ search: "cat" }); });
   await settle();
-  expect([shown(), main().hasAttribute("inert"), gridSnapshot!.selectLocked, gridSnapshot!.hasMore]).toEqual([["a"], true, true, false]);
+  expect([busy() !== null, gridOutputs().length, main().hasAttribute("inert")]).toEqual([true, 0, true]);
   act(() => { setLibraryGens([at("found", "episode/other")]); setListBehind(false); });
   await settle();
   expect([shown(), main().hasAttribute("inert"), gridSnapshot!.selectLocked]).toEqual([["found"], false, false]);

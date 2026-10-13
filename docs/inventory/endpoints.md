@@ -433,7 +433,7 @@
 | `POST` | `/api/release-update/start` | `release_update_start` | 로컬 예외 | — |
 | `GET` | `/api/release-update/status` | `release_update_status` | 로컬 예외 | — |
 
-## `backend/app/routers/resolve_integration.py` — 10개
+## `backend/app/routers/resolve_integration.py` — 11개
 
 | 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
 | --- | --- | --- | --- | --- |
@@ -443,6 +443,7 @@
 | `POST` | `/api/resolve/script/install` | `post_resolve_script_install` | 로컬 예외 | — |
 | `GET` | `/api/resolve/script` | `get_resolve_script_status` | 로컬 예외 | — |
 | `GET` | `/api/resolve/status` | `get_resolve_connection_status` | 로컬 예외 | — |
+| `POST` | `/api/resolve/timelines` | `create_resolve_timeline` | 로컬 예외 | — |
 | `POST` | `/api/resolve/transfers/manual-result` | `record_manual_resolve_result` | 로컬 예외 | — |
 | `GET` | `/api/resolve/transfers/pending` | `pending_resolve_transfers` | 로컬 예외 | — |
 | `POST` | `/api/resolve/transfers/retry` | `retry_resolve_transfer` | 로컬 예외 | — |

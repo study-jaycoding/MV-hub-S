@@ -5,8 +5,6 @@ import { loadJSON, saveJSON } from "../../lib/storage";
 const WIDTH_KEY = "ch.sidebarWidth";
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 480;
-const maxVisibleWidth = () => Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, Math.floor(window.innerWidth / 2)));
-const clamp = (width: number, max: number) => Math.max(MIN_WIDTH, Math.min(max, Math.round(width)));
 
 interface Drag {
   pointerId: number;
@@ -18,15 +16,27 @@ interface Drag {
 }
 
 // 세 탭의 폴더 사이드바 폭만 공유한다. 카드/폴더 데이터와 상위 App은 드래그마다 갱신하지 않는다.
-export function ResizableSidebar({ children }: { children: ReactNode }) {
+//  편집 탭의 미디어 풀도 같은 손잡이를 쓴다 — 그때는 자기 칸(className)·저장 키·폭 범위를 넘긴다(안 주면 사이드바 그대로).
+export function ResizableSidebar({
+  children, className = "sidebar", widthKey = WIDTH_KEY, min = MIN_WIDTH, max = MAX_WIDTH, base = min,
+}: {
+  children: ReactNode;
+  className?: string;
+  widthKey?: string;
+  min?: number;
+  max?: number;
+  base?: number; // 저장된 폭이 없을 때·더블클릭으로 되돌릴 때의 폭
+}) {
+  const maxVisibleWidth = useCallback(() => Math.max(min, Math.min(max, Math.floor(window.innerWidth / 2))), [min, max]);
+  const clamp = useCallback((width: number, limit: number) => Math.max(min, Math.min(limit, Math.round(width))), [min]);
   const t = useT();
   const id = useId();
   const sidebar = useRef<HTMLElement>(null);
   const handle = useRef<HTMLDivElement>(null);
   const drag = useRef<Drag | null>(null);
   const [preferredWidth, setPreferredWidth] = useState(() => {
-    const saved = loadJSON<unknown>(WIDTH_KEY);
-    return typeof saved === "number" && Number.isFinite(saved) ? clamp(saved, MAX_WIDTH) : MIN_WIDTH;
+    const saved = loadJSON<unknown>(widthKey);
+    return typeof saved === "number" && Number.isFinite(saved) ? clamp(saved, max) : base;
   });
   const [maxWidth, setMaxWidth] = useState(maxVisibleWidth);
   const width = Math.min(preferredWidth, maxWidth);
@@ -52,8 +62,8 @@ export function ResizableSidebar({ children }: { children: ReactNode }) {
       else handle.current?.blur();
     }
     if (!unmount) setPreferredWidth(next);
-    if (changed) saveJSON(WIDTH_KEY, next);
-  }, [showWidth]);
+    if (changed) saveJSON(widthKey, next);
+  }, [showWidth, maxVisibleWidth, widthKey]);
 
   useEffect(() => {
     const cancel = () => finishDrag(true);
@@ -65,22 +75,22 @@ export function ResizableSidebar({ children }: { children: ReactNode }) {
       window.removeEventListener("blur", cancel);
       finishDrag(true, true);
     };
-  }, [finishDrag]);
+  }, [finishDrag, maxVisibleWidth]);
 
   const commitWidth = (next: number) => {
     finishDrag(true);
     next = clamp(next, maxVisibleWidth());
     setPreferredWidth(next);
     showWidth(next);
-    saveJSON(WIDTH_KEY, next);
+    saveJSON(widthKey, next);
   };
   return <>
-    <aside id={id} ref={sidebar} className="sidebar" style={{ "--sidebar-w": `${width}px` } as CSSProperties}>
+    <aside id={id} ref={sidebar} className={className} style={{ "--sidebar-w": `${width}px` } as CSSProperties}>
       {children}
     </aside>
     <div ref={handle} className="sidebar-resize-handle" role="separator" tabIndex={0}
       aria-label={t("사이드바 너비 조절")} aria-controls={id} aria-orientation="vertical"
-      aria-valuemin={MIN_WIDTH} aria-valuemax={maxWidth} aria-valuenow={width}
+      aria-valuemin={min} aria-valuemax={maxWidth} aria-valuenow={width}
       title={t("드래그하여 너비 조절 · 더블클릭하여 기본 너비로 복원")}
       onPointerDown={event => {
         if (event.button !== 0 || !event.isPrimary || drag.current) return;
@@ -100,10 +110,10 @@ export function ResizableSidebar({ children }: { children: ReactNode }) {
       onPointerUp={event => { if (drag.current?.pointerId === event.pointerId) finishDrag(false); }}
       onPointerCancel={event => { if (drag.current?.pointerId === event.pointerId) finishDrag(true); }}
       onLostPointerCapture={event => { if (drag.current?.pointerId === event.pointerId) finishDrag(true); }}
-      onDoubleClick={event => { event.preventDefault(); event.stopPropagation(); commitWidth(MIN_WIDTH); }}
+      onDoubleClick={event => { event.preventDefault(); event.stopPropagation(); commitWidth(base); }}
       onKeyDown={event => {
         const next = event.key === "ArrowLeft" ? width - 8 : event.key === "ArrowRight" ? width + 8
-          : event.key === "Home" ? MIN_WIDTH : event.key === "End" ? maxWidth : null;
+          : event.key === "Home" ? min : event.key === "End" ? maxWidth : null;
         if (next !== null || (event.key === "Escape" && drag.current)) {
           event.preventDefault(); event.stopPropagation();
           if (event.key === "Escape") finishDrag(true); else commitWidth(next!);

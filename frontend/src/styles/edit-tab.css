@@ -1,0 +1,418 @@
+/* ── 편집 탭(docs/EDIT_TAB.md) — 위 미디어 풀·뷰어(싱글/듀얼)·아래 트랙 타임라인 ──
+   클래스는 전부 `ed-` 로 시작한다(.empty·.main 같은 흔한 이름은 앱의 다른 규칙에 먹힌다).
+   단추는 전역 button 규칙(배경·테두리·padding 6px 12px)을 여기서 하나씩 지운다. */
+.ed-root { background: var(--bg2); outline: none; min-height: 0; }
+.ed-top { flex: 1; min-height: 0; display: flex; }
+
+/* 왼쪽 폴더 목록 — 재생헤드가 있는 컷은 라임으로(다빈치 확인 표시의 빨간 테두리는 여기서 쓰지 않는다). */
+.ed-side .project-tree-scroll .viewed-resolve { box-shadow: none; background: rgba(var(--accent-rgb), 0.08); }
+.ed-side .folder-tree.sidebar-folder-tree .folder-tree-row.viewed-resolve .folder-tree-name { color: var(--accent); font-weight: 700; }
+.ed-link {
+  background: none; border: 0; padding: 0; border-radius: 0; font-size: inherit;
+  color: var(--accent); text-decoration: underline; text-underline-offset: 2px;
+}
+
+/* 뷰어 판 — 위 줄(시각·무엇을 볼지·전체 길이·싱글/듀얼) · 무대 · 아래 줄(타임바·버튼). 타임라인·소스·한 트랙만이 같은 판이다.
+   자리는 order 로 정한다(영상 요소를 떼지 않으려고 판은 늘 붙어 있다 — 안 보이는 판은 hidden). */
+.ed-view { flex: 1; min-width: 0; display: flex; flex-direction: column; border-left: 1px solid var(--border); }
+.ed-view[hidden] { display: none; }
+.ed-vtop {
+  flex: none; position: relative; height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 12px;
+  background: var(--panel); border-bottom: 1px solid var(--border); border-top: 2px solid transparent; user-select: none;
+}
+.ed-view-on .ed-vtop { border-top-color: var(--accent); } /* 재생 키가 이 판의 시계로 간다 */
+.ed-vtc { flex: none; min-width: 84px; font: 600 12.5px ui-monospace, Consolas, monospace; letter-spacing: 0.3px; font-variant-numeric: tabular-nums; }
+.ed-vtotal { text-align: right; color: var(--muted); font-weight: 500; }
+.ed-vspeed { flex: none; font: 600 11.5px ui-monospace, Consolas, monospace; color: var(--accent); }
+.ed-vpick { flex: 1; min-width: 0; position: relative; display: flex; justify-content: center; }
+.ed-vpick-btn {
+  max-width: 100%; height: 24px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text);
+  display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden;
+}
+.ed-vpick-btn:hover, .ed-vpick-btn.ed-on { background: rgba(255, 255, 255, 0.08); }
+.ed-vpick-btn svg.ed-caret { flex: none; width: 8px; height: 5px; fill: currentColor; opacity: 0.8; }
+.ed-view[data-view="timeline"] .ed-vpick-btn { color: var(--accent); }
+.ed-pop.ed-vpop { left: 50%; right: auto; top: 28px; transform: translateX(-50%); min-width: 220px; overflow-y: auto; } /* 상한은 EditViewer 가 남은 높이로 잰다 */
+.ed-vpop > * { flex: none; } /* 스크롤될 때 항목이 눌리지 않게 */
+.ed-pop-item i { margin-left: auto; padding-left: 14px; font-style: normal; font-size: 11px; color: var(--muted); }
+.ed-stage { flex: 1; min-height: 0; position: relative; background: #000; overflow: hidden; }
+.ed-media { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+.ed-media[hidden] { display: none; }
+/* 영상 요소 둘 중 뒤의 것 — 다음 영상을 미리 받아 둔다(editVideoPair). 자리는 차지한 채 가리기만 한다: 넘어가는 순간
+   디코딩된 프레임이 바로 나온다(display:none 이면 프레임을 내보내지 않는다). */
+.ed-media[data-spare] { visibility: hidden; }
+.ed-notice {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: 80%;
+  padding: 10px 16px; border-radius: 10px; font-size: 13px; line-height: 1.6; text-align: center;
+  background: rgba(8, 9, 12, 0.72); color: #d7dae0;
+}
+.ed-chip {
+  position: absolute; top: 12px; max-width: 46%; padding: 4px 10px; border-radius: 7px;
+  font-size: 12px; font-weight: 700; background: rgba(8, 9, 12, 0.62); color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none;
+}
+.ed-chip-l { left: 12px; }
+.ed-chip-r { right: 12px; font-weight: 500; color: #d7dae0; }
+/* 다이나믹 트림 모드 — 무대를 덮는 두 칸(편집점의 앞 | 뒤). 재생헤드가 있는 쪽 칸에는 엔진의 화면(무대의 .ed-media)이
+   올라온다(data-side — 시계가 프레임마다 적는다): 앞 컷이 왼쪽에서 가다가 편집점을 넘으면 뒤 컷이 오른쪽에서 이어진다.
+   반대쪽 칸은 그 편집점의 프레임으로 서 있다. 무대의 꼬리표·안내는 칸의 것으로 갈음한다. */
+.ed-split { position: absolute; inset: 0; display: flex; gap: 2px; background: #2c303b; }
+.ed-half { position: relative; flex: 1; min-width: 0; overflow: hidden; background: #000; }
+.ed-half .ed-chip { z-index: 2; max-width: calc(100% - 24px); font-weight: 700; color: var(--text); }
+.ed-half .ed-notice { z-index: 2; } /* 엔진의 화면(썸네일) 위에 — 재생하지 못한 영상의 안내 */
+.ed-stage:has(> .ed-split) > .ed-media { z-index: 1; width: calc(50% - 1px); background: #000; }
+.ed-stage:has(> .ed-split[data-side="r"]) > .ed-media { left: auto; right: 0; }
+.ed-stage:has(> .ed-split) > .ed-notice, .ed-stage:has(> .ed-split) > .ed-chip { display: none; }
+.ed-split-close {
+  position: absolute; left: 10px; top: 10px; z-index: 3; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%;
+  background: rgba(8, 9, 12, 0.5); display: flex; align-items: center; justify-content: center;
+}
+.ed-split-close svg { display: block; fill: none; stroke: #d7dae0; stroke-width: 1.4; stroke-linecap: round; }
+.ed-split-close:hover svg { stroke: #fff; }
+.ed-vbot { flex: none; background: var(--panel); border-top: 1px solid var(--border); user-select: none; }
+/* 타임바(다빈치의 재생바) — 누르는 자리는 넉넉하게(높이 28px), 보이는 줄은 4px. 빨강 = 지금 자리, 위의 색 꼬리표 = 북마크,
+   밝은 선과 아래의 회색 꼬리표 = 마크 인/아웃, 얇은 줄 = 소스 테이프의 클립 경계. */
+.ed-scrub { height: 28px; padding: 0 16px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
+.ed-scrub-track { position: relative; flex: 1; height: 4px; border-radius: 2px; background: #2c303b; }
+.ed-scrub-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 2px; background: #555b6b; }
+.ed-scrub-track i { position: absolute; top: -3px; bottom: -3px; width: 1px; background: rgba(255, 255, 255, 0.4); pointer-events: none; }
+.ed-scrub-range { position: absolute; top: 0; bottom: 0; border-radius: 2px; background: #b9bdc6; pointer-events: none; } /* 마크 인/아웃 구간 */
+.ed-scrub-mk { position: absolute; top: -9px; width: 7px; height: 8px; margin-left: -3.5px; border-radius: 2px 2px 3.5px 3.5px; background: #1287ff; pointer-events: none; } /* 북마크 */
+.ed-scrub-io { position: absolute; top: 7px; width: 7px; height: 8px; margin-left: -3.5px; border-radius: 3.5px 3.5px 2px 2px; background: #9aa0ae; pointer-events: none; } /* 인·아웃 */
+.ed-scrub-io::before { content: ""; position: absolute; left: 3px; top: -7px; width: 1px; height: 7px; background: #9aa0ae; }
+.ed-scrub-head { position: absolute; left: 0; top: -9px; width: 10px; height: 10px; margin-left: -5px; border-radius: 2px 2px 5px 5px; background: #ff4d4f; pointer-events: none; }
+.ed-scrub-head::after { content: ""; position: absolute; left: 4px; top: 9px; width: 2px; height: 8px; background: #ff4d4f; }
+.ed-trans { position: relative; height: 44px; display: flex; align-items: center; justify-content: center; gap: 12px; }
+.ed-tbtn {
+  flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: transparent;
+  display: flex; align-items: center; justify-content: center;
+}
+.ed-tbtn svg { display: block; fill: #c9ccd3; }
+.ed-tbtn:hover svg { fill: #fff; }
+.ed-tbtn svg.ed-line { fill: none; stroke: #c9ccd3; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.ed-tbtn:hover svg.ed-line { fill: none; stroke: #fff; }
+.ed-tbtn.ed-on { background: rgba(var(--accent-rgb), 0.14); } /* 반복이 켜져 있다 */
+.ed-tbtn.ed-on svg.ed-line, .ed-tbtn.ed-on:hover svg.ed-line { stroke: var(--accent); }
+.ed-tbtn:disabled { opacity: 0.35; } /* 구간 반복 — 인/아웃이 없다 */
+.ed-tbtn.ed-t-range { width: 32px; border-radius: 7px; }
+/* 배속 — 글자 단추. 1x 가 아니면 라임(.ed-on) */
+.ed-tbtn.ed-t-speed {
+  width: 40px; border-radius: 7px; font: 600 11.5px ui-monospace, Consolas, monospace; color: #c9ccd3;
+}
+.ed-tbtn.ed-t-speed:hover { color: #fff; }
+.ed-tbtn.ed-t-speed.ed-on, .ed-tbtn.ed-t-speed.ed-on:hover { color: var(--accent); }
+.ed-tbtn.ed-play { width: 30px; height: 30px; background: var(--accent); }
+.ed-tbtn.ed-play svg, .ed-tbtn.ed-play:hover svg { fill: var(--accent-ink); }
+.ed-tside { position: absolute; right: 12px; display: flex; align-items: center; gap: 2px; } /* 구간 반복 · 마크 인 · 마크 아웃 */
+.ed-tside svg { fill: #9aa0ae; }
+.ed-tside svg.ed-line { fill: none; stroke: #9aa0ae; }
+.ed-tbtn.ed-dual { margin-left: 2px; border-radius: 6px; width: 30px; height: 24px; }
+.ed-tbtn.ed-dual svg { fill: none; stroke: #c9ccd3; stroke-width: 1.3; }
+.ed-tbtn.ed-dual:hover svg, .ed-tbtn.ed-dual.ed-on svg { stroke: var(--accent); fill: none; }
+.ed-tbtn.ed-dual.ed-on { background: rgba(var(--accent-rgb), 0.1); }
+/* 좁은 판(듀얼) — 폭 기준은 판 자신이다. 오른쪽 단추들이 가운데 단추와 겹치기 전에 숨긴다: 먼저 마크 인/아웃(I·O 키가
+   있다), 더 좁아지면 구간 반복까지(Alt+/ 가 있다 — 켜 둔 것을 끌 길은 남는다). */
+.ed-vbot { container-type: inline-size; }
+@container (max-width: 520px) { .ed-tside .ed-t-in, .ed-tside .ed-t-out { display: none; } }
+@container (max-width: 400px) { .ed-tside { display: none; } }
+
+/* 미디어 풀 — 왼쪽 폴더 목록 바로 옆(다빈치의 Bins | 클립). 머리줄 = 컷 이름 + 보기 방식·검색·정렬. */
+/* 폭은 끌어서 바꾼다(ResizableSidebar — 프로젝트 칸과 같은 손잡이). */
+.ed-pool-side { flex: 0 0 var(--sidebar-w, 392px); width: var(--sidebar-w, 392px); min-width: 0; min-height: 0; display: flex; }
+.ed-pool {
+  flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column;
+  background: var(--panel); border-right: 1px solid var(--border); user-select: none;
+}
+.ed-pool-head { flex: none; display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--border); }
+.ed-pool-head h3 { flex: 1; min-width: 0; margin: 0; font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 왼쪽 폴더 목록 여닫기 — 공유 탭 도구 줄의 단추(.lib-filter-ic, 30px)를 그대로 쓴다. 머리줄의 왼쪽 여백(14px)과 간격(8px)을 줄여
+   단추가 가장자리에 붙고 제목이 단추 바로 옆에 오게 한다(시안 mock_edit_sidebar_toggle.png 의 A). */
+.ed-pool-head .ed-side-toggle { flex: none; margin: 0 -4px 0 -9px; }
+/* 왼쪽 폴더 목록을 감싸는 칸 — 닫으면 없애지 않고 감춘다(펼친 폴더·스크롤 자리 유지). 열려 있을 때는 배치에 끼지 않는다 */
+.ed-side-wrap { display: contents; }
+.ed-side-wrap[hidden] { display: none; }
+.ed-pool-tools { flex: none; position: relative; display: flex; align-items: center; gap: 2px; }
+.ed-pbtn {
+  height: 26px; min-width: 28px; padding: 0 6px; border: 0; border-radius: 6px; background: transparent;
+  display: flex; align-items: center; justify-content: center; gap: 4px;
+}
+.ed-pbtn svg { display: block; width: 15px; height: 15px; fill: #b9bdc6; }
+.ed-pbtn svg.ed-caret { width: 7px; height: 5px; fill: var(--muted); }
+.ed-pbtn:hover, .ed-pbtn.ed-on { background: rgba(255, 255, 255, 0.08); }
+.ed-pbtn:hover svg, .ed-pbtn.ed-on svg { fill: #fff; }
+.ed-pop {
+  position: absolute; right: 0; top: 30px; z-index: 30; min-width: 178px; padding: 6px; display: flex; flex-direction: column; gap: 2px;
+  background: var(--panel, #1c1c22); border: 1px solid var(--border2); border-radius: 10px; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+}
+.ed-pop-item {
+  height: 28px; padding: 0 10px 0 4px; border: 0; border-radius: 6px; background: transparent; color: var(--muted);
+  display: flex; align-items: center; gap: 8px; font-size: 12px; text-align: left; white-space: nowrap;
+}
+.ed-pop-item b { width: 14px; text-align: center; font-weight: 700; color: var(--accent); }
+.ed-pop-item svg { width: 14px; height: 14px; fill: currentColor; }
+.ed-pop-item:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+.ed-pop-item.ed-on { color: var(--text); }
+.ed-pop-sep { height: 1px; margin: 4px 2px; background: var(--border); }
+.ed-pop-size { width: calc(100% - 12px); margin: 4px 6px 6px; accent-color: var(--accent); }
+.ed-pop-size:disabled { opacity: 0.35; }
+.ed-pool-search {
+  flex: none; margin: 8px 12px 0; height: 28px; padding: 0 10px; border-radius: 7px; font-size: 12px;
+  background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border2); color: var(--text); outline: none;
+}
+.ed-pool-search:focus { border-color: rgba(var(--accent-rgb), 0.6); }
+.ed-pool-sub { flex: none; padding: 8px 14px; font-size: 11.5px; line-height: 1.5; color: var(--muted); }
+.ed-pool-note { padding: 4px 14px 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
+/* position: relative = 끌어서 고르는 상자(.assets-marquee)의 기준 칸. */
+.ed-pbody { position: relative; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 12px 12px; }
+.ed-pgrid { display: grid; gap: 10px; align-content: start; }
+/* 생성물 카드(EditCard) — 모양은 라이브러리 카드의 클래스(generations.css 의 .card·.card-thumb·.card-sf·.creator-badge·
+   .play-badge·.card-bottom·.card-here)를 그대로 쓴다. 여기에는 단추 껍데기와 편집 탭에서만 다른 점만 둔다.
+   넣은 카드는 .card.selected(굵은 상태색 테두리), 지금 보이는 카드는 아래 변의 라임 표(.card-here),
+   풀에서 고른 카드(소스)는 바깥의 흰 테두리(.ed-picked). */
+.ed-card {
+  display: block; width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 14px;
+  background: transparent; text-align: left; font: inherit; color: inherit; container-type: inline-size;
+}
+/* 작은 썸네일(다빈치의 작은 크기쯤) — 그림만 남긴다: 작성자·▶ 는 숨기고, 표는 "V1" 로 줄인다. */
+@container (max-width: 120px) {
+  .ed-card .creator-badge, .ed-card .play-badge { display: none; }
+  .ed-card .card, .ed-card .card-clip { border-radius: 8px; }
+  .ed-card .card-sf { transform: scale(0.72); transform-origin: top left; }
+  .ed-card .card-bottom span[data-short] { font-size: 0; }
+  .ed-card .card-bottom span[data-short]::after { content: attr(data-short); font-size: 10px; }
+}
+.ed-card:active, .ed-prow:active { transform: none; }
+.ed-card.ed-picked { outline: 2px solid #fff; outline-offset: 2px; }
+.ed-card .card { height: auto; }
+.ed-card .card-thumb { flex: 0 0 auto; aspect-ratio: 1; } /* 라이브러리 격자와 같은 정사각 */
+.ed-card .card-sf { pointer-events: none; } /* 표시만 — 누르면 카드가 받는다 */
+.ed-card .card-thumb:hover .play-badge { opacity: 0.85; } /* 여기서는 호버 재생이 없다 — ▶ 를 숨기지 않는다 */
+/* 메타데이터·목록 보기의 줄 */
+.ed-prow {
+  width: 100%; min-width: 0; border: 0; border-radius: 8px; background: transparent; color: var(--muted);
+  font: inherit; font-size: 12px; text-align: left;
+}
+.ed-prow:hover { background: rgba(255, 255, 255, 0.05); }
+.ed-prow.ed-picked { background: rgba(255, 255, 255, 0.1); color: var(--text); }
+.ed-prow-meta { display: flex; align-items: flex-start; gap: 12px; padding: 6px; margin-bottom: 4px; }
+.ed-pthumb { flex: none; position: relative; aspect-ratio: 16 / 9; border-radius: 8px; overflow: hidden; background: #000; }
+.ed-pthumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ed-pthumb i { position: absolute; left: 6px; bottom: 4px; font-style: normal; font-size: 11px; color: #fff; text-shadow: 0 1px 3px #000; }
+.ed-prow.ed-placed .ed-pthumb { box-shadow: 0 0 0 2px var(--accent); }
+.ed-pinfo { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; padding-top: 2px; line-height: 1.45; }
+.ed-pinfo b { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-weight: 700; color: var(--text); }
+.ed-pprompt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-pinfo .ed-pprompt { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal; }
+.ed-pstate { flex: none; font-size: 11px; font-weight: 800; color: var(--accent); }
+.ed-pstate-held { color: #ef7d8c; }
+.ed-pstate-final { color: #e8b62c; }
+.ed-prow-list {
+  display: grid; grid-template-columns: 14px minmax(0, 3fr) minmax(0, 1.2fr) minmax(0, 1.5fr) 44px 28px;
+  align-items: center; gap: 8px; height: 28px; padding: 0 6px; border-radius: 6px;
+}
+.ed-prow-list > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-prow-list.ed-placed > span:last-child { color: var(--accent); font-weight: 700; }
+.ed-prow-head { position: sticky; top: 0; z-index: 1; height: 26px; font-size: 11px; color: var(--muted2); background: var(--panel); border-bottom: 1px solid var(--border); border-radius: 0; }
+.ed-prow-head:hover { background: var(--panel); }
+
+/* 여러 장을 골랐을 때 — 풀 아래의 막대(비교) */
+.ed-pool-sel {
+  flex: none; display: flex; align-items: center; gap: 10px; margin: 0 12px 12px; padding: 7px 10px; border-radius: 10px;
+  font-size: 12px; color: var(--text); background: rgba(var(--accent-rgb), 0.08); border: 1px solid rgba(var(--accent-rgb), 0.45);
+}
+.ed-pool-sel { flex-wrap: wrap; }
+.ed-pool-sel > span { flex: 1; font-weight: 700; white-space: nowrap; }
+.ed-psel-btn { height: 26px; padding: 0 10px; border-radius: 7px; font-size: 12px; white-space: nowrap; }
+.ed-psel-resolve { border-color: rgba(92, 160, 255, 0.55); }
+.ed-pool-sel .ed-link { color: var(--muted); font-size: 11.5px; }
+
+/* 타임라인 위 막대 */
+.ed-bar {
+  flex: none; height: 44px; display: flex; align-items: center; gap: 14px; padding: 0 16px; user-select: none;
+  border-top: 1px solid var(--border2); border-bottom: 1px solid var(--border); background: var(--panel2);
+}
+.ed-tc { flex: none; width: 150px; font: 600 19px ui-monospace, Consolas, monospace; letter-spacing: 0.5px; font-variant-numeric: tabular-nums; }
+.ed-seq { min-width: 0; font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-seq b { color: var(--text); font-weight: 700; }
+.ed-seq i { font-style: normal; color: var(--muted2); margin: 0 7px; }
+.ed-mine, .ed-warn { flex: none; padding: 3px 9px; border-radius: 999px; font-size: 11.5px; border: 1px solid var(--border2); color: var(--muted); }
+.ed-warn { color: #ffb37a; border-color: rgba(255, 150, 80, 0.45); }
+/* 마크 인/아웃·북마크 — 재생헤드 자리에 찍는 단추. 찍혀 있으면 라임. 옆 글자는 구간 길이(누르면 지운다). */
+.ed-marks { margin-left: auto; flex: none; display: flex; align-items: center; gap: 4px; }
+.ed-marks + .ed-zoom { margin-left: 0; }
+.ed-mbtn {
+  height: 24px; min-width: 24px; padding: 0 6px; border: 0; border-radius: 6px; background: rgba(255, 255, 255, 0.05);
+  display: flex; align-items: center; justify-content: center; gap: 5px; font-size: 11px; color: var(--muted);
+}
+.ed-mbtn svg { display: block; fill: none; stroke: #c9ccd3; stroke-width: 1.7; stroke-linejoin: round; }
+.ed-mbtn:hover svg { stroke: #fff; }
+.ed-mbtn.ed-on { background: rgba(var(--accent-rgb), 0.14); }
+.ed-mbtn.ed-on svg { stroke: var(--accent); }
+.ed-mbtn-mk { margin-left: 6px; }
+.ed-mbtn-trim { min-width: 36px; } /* 다이나믹 트림 모드 */
+.ed-mbtn-trim svg { stroke-width: 1.5; stroke-linecap: round; }
+.ed-mbtn-trim circle { fill: currentColor; stroke: none; color: #c9ccd3; }
+.ed-mbtn-trim.ed-on circle { color: var(--accent); }
+.ed-mbtn-mk svg, .ed-mbtn-mk:hover svg { stroke: var(--mk, #1287ff); fill: var(--mk, #1287ff); fill-opacity: 0.3; } /* 새 북마크의 색 */
+.ed-mbtn-color { min-width: 16px; padding: 0 4px; }
+.ed-mbtn-color svg.ed-caret, .ed-mbtn-color:hover svg.ed-caret { stroke: none; fill: var(--muted); }
+.ed-mbtn i, .ed-mclear i { font-style: normal; font-variant-numeric: tabular-nums; }
+/* 타임라인 Resolve 보내기 — 오른쪽 도구들의 맨 앞, 라임 테두리의 글자 단추 · 뒤에 가름선(Jay 2026-10-13 A안) */
+.ed-export-btn {
+  padding: 0 10px; gap: 6px; font-size: 11.5px; font-weight: 700; white-space: nowrap; color: var(--accent);
+  border: 1px solid rgba(var(--accent-rgb), 0.55); background: rgba(var(--accent-rgb), 0.08);
+}
+.ed-export-btn svg, .ed-export-btn:hover svg { stroke: var(--accent); stroke-linecap: round; }
+.ed-export-btn:hover:not(:disabled) { background: rgba(var(--accent-rgb), 0.16); }
+.ed-export-btn:disabled { opacity: 0.7; cursor: default; }
+.ed-msep { flex: none; width: 1px; height: 16px; margin: 0 6px; background: var(--border2); }
+/* 그 확인 창 — 틀은 .gradestep-modal(등급 확인 창과 같은 가운데 창), 여기는 안의 줄들 */
+.ed-export .gradestep-body { word-break: keep-all; } /* 한글이 낱말 가운데서 꺾이지 않게("않 / 습니다") */
+.ed-export p { margin: 0 0 6px; }
+.ed-export-rows { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 10px 0; }
+.ed-export-rows dt { white-space: nowrap; }
+.ed-export-rows dd { margin: 0; min-width: 0; color: var(--text); overflow-wrap: anywhere; }
+.ed-export .ed-export-bad { color: #ff9a9a; }
+.ed-export-note { font-size: 12px; }
+.ed-mclear {
+  height: 24px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--muted);
+  display: flex; align-items: center; gap: 6px; font: 11.5px ui-monospace, Consolas, monospace;
+}
+.ed-mclear:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+.ed-zoom { margin-left: auto; flex: none; display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.ed-zoom .ed-link { color: var(--muted); text-decoration: none; }
+.ed-zoom .ed-link:hover { color: var(--text); }
+.ed-zbtn {
+  width: 24px; height: 24px; padding: 0; border-radius: 6px; font-size: 13px; line-height: 1;
+  display: flex; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.05);
+}
+/* 목록 단추 — 비활성 숨기기 · 빈 곳 채우기. 숨기기가 켜져 있으면 라임, 옆 숫자는 숨긴 폴더 수. */
+.ed-listbtn { margin-right: 6px; }
+.ed-listbtn svg { stroke-linecap: round; }
+.ed-listbtn.ed-on { color: var(--accent); }
+
+/* 카드 휠 클릭 메뉴 — 넣을 트랙 고르기. 틀(자리·배경·그림자)은 폴더 우클릭 메뉴(.folder-ctx-menu)의 것. */
+/* 줄이 많으면(트랙 20개 남짓 + 낮은 창) 화면보다 길어진다 — 메뉴 안에서 스크롤한다(전엔 아래 줄에 마우스로 닿을 수 없었다). 줄은 줄어들지 않는다. */
+.folder-ctx-menu.ed-tmenu { min-width: 0; width: 190px; gap: 2px; max-height: calc(100vh - 8px); overflow-y: auto; }
+.ed-tmenu > * { flex: none; }
+/* 폴더 트리의 폴더 메뉴 — 공유 & 리뷰 탭의 폴더 메뉴와 같은 모양(단추 사이 간격) */
+.folder-ctx-menu.ed-tmenu.ed-fmenu { gap: 6px; }
+.ed-tmenu-head { height: 22px; padding: 0 8px; display: flex; align-items: center; font-size: 11px; color: var(--muted); }
+.ed-tmenu-item {
+  height: 28px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text);
+  display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 12px; text-align: left; cursor: pointer;
+}
+.ed-tmenu-item b { font-weight: 800; }
+.ed-tmenu-item i { font-style: normal; font-size: 11px; color: var(--muted); }
+.ed-tmenu-item:hover:not(:disabled), .ed-tmenu-item:focus-visible { background: rgba(255, 255, 255, 0.08); outline: none; }
+.ed-tmenu-item:disabled { cursor: default; opacity: 0.5; }
+.ed-tmenu-item.ed-here { opacity: 1; }
+.ed-tmenu-item.ed-here i { color: var(--accent); }
+.ed-tmenu-sep { flex: none; height: 1px; margin: 4px 2px; background: var(--border); }
+/* 색 견본(트랙 색·북마크 색) — 고른 색은 흰 테두리 */
+.ed-swatches { display: flex; align-items: center; gap: 4px; height: 28px; padding: 0 6px; }
+.ed-swatch {
+  flex: none; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 4px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; font-size: 12px; line-height: 1; color: var(--muted);
+}
+.ed-swatch:hover, .ed-swatch:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.5); outline-offset: 1px; }
+.ed-swatch.ed-on { outline: 2px solid #fff; outline-offset: 1px; }
+.ed-swatch-none { margin-left: auto; background: rgba(255, 255, 255, 0.08); }
+.ed-swatch-none:disabled { opacity: 0.4; cursor: default; }
+.ed-mmenu .ed-swatches { display: grid; grid-template-columns: repeat(8, 16px); gap: 6px; height: auto; padding: 6px; } /* 16색 = 두 줄 */
+/* 북마크 색 메뉴(막대의 ▾) — 다빈치의 마커 색 메뉴: 이름 왼쪽, 색 꼬리표 오른쪽 */
+.folder-ctx-menu.ed-cmenu { max-height: calc(100vh - 8px); overflow-y: auto; }
+.ed-cmenu .ed-tmenu-item { flex: none; height: 24px; }
+.ed-cmenu-tag { flex: none; width: 9px; height: 11px; border-radius: 2px 2px 4.5px 4.5px; }
+.ed-mmenu-name {
+  height: 28px; margin: 0 2px 2px; padding: 0 8px; border-radius: 6px; font-size: 12px; outline: none;
+  background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border2); color: var(--text);
+}
+.ed-mmenu-name:focus { border-color: rgba(var(--accent-rgb), 0.6); }
+
+/* 타임라인 — 왼쪽 트랙 머리 + 오른쪽 가로 스크롤. 줄 높이는 머리와 줄이 같아야 한다. */
+.ed-tl { flex: none; max-height: 52%; display: flex; overflow-y: auto; background: #0b0c0e; user-select: none; }
+.ed-heads { flex: none; width: 108px; border-right: 1px solid var(--border); }
+.ed-head {
+  box-sizing: border-box; display: flex; align-items: center; gap: 8px; padding-left: 12px;
+  font-size: 11.5px; color: var(--muted); border-bottom: 1px solid var(--border);
+}
+.ed-head b {
+  min-width: 28px; height: 19px; padding: 0 4px; border-radius: 4px; font-size: 10.5px; font-weight: 800;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255, 255, 255, 0.09); color: #e6e8ec; border: 1px solid rgba(255, 255, 255, 0.16);
+}
+.ed-h-v { box-shadow: inset 3px 0 0 var(--trk, transparent); } /* 트랙 색 — 머리 왼쪽 띠와 그 트랙 클립의 위쪽 띠 */
+.ed-h-ruler, .ed-ruler { height: 28px; }
+.ed-h-cut, .ed-l-cut { height: 26px; }
+.ed-h-v, .ed-l-v { height: 58px; }
+.ed-h-a, .ed-l-a { height: 46px; }
+.ed-hbtn {
+  width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent;
+  display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 800; color: #aeb3bd;
+}
+.ed-hbtn svg { display: block; fill: #8b909c; stroke: #8b909c; }
+.ed-hbtn:hover { background: rgba(255, 255, 255, 0.08); }
+.ed-hbtn.ed-on { background: rgba(var(--accent-rgb), 0.16); color: var(--accent); }
+.ed-hbtn.ed-on svg { fill: var(--accent); stroke: var(--accent); }
+.ed-hbtn.ed-dim svg { fill: #4b505a; stroke: #4b505a; }
+.ed-hbtn.ed-mute { background: rgba(255, 255, 255, 0.07); }
+.ed-hbtn.ed-mute.ed-on { background: rgba(var(--accent-rgb), 0.16); }
+
+.ed-scroll { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; }
+.ed-lanes { position: relative; min-width: 100%; }
+.ed-ruler {
+  position: relative; box-sizing: border-box; border-bottom: 1px solid var(--border); background: var(--panel);
+  cursor: ew-resize; touch-action: none;
+}
+.ed-tick { position: absolute; bottom: 0; width: 1px; height: 12px; background: rgba(255, 255, 255, 0.34); pointer-events: none; }
+.ed-tick span { position: absolute; left: 5px; bottom: 8px; font: 10.5px ui-monospace, Consolas, monospace; color: var(--muted); white-space: nowrap; }
+/* 마크 인/아웃(다빈치) — 눈금자 아래쪽의 구간 막대와 양 끝의 둥근 점, 줄 전체의 옅은 음영. 표시만 한다. */
+.ed-inout { position: absolute; bottom: 1px; height: 4px; border-radius: 2px; background: #9aa0ae; pointer-events: none; }
+.ed-mark { position: absolute; bottom: -1px; width: 8px; height: 8px; margin-left: -4px; border-radius: 50%; background: #cfd3da; pointer-events: none; }
+.ed-inout-shade { position: absolute; top: 28px; bottom: 0; background: rgba(255, 255, 255, 0.045); pointer-events: none; }
+/* 북마크 — 눈금자 위쪽의 색 꼬리표. 누르면 그 자리로, 더블클릭·우클릭하면 이름·색·지우기 */
+.ed-mk {
+  position: absolute; top: 1px; width: 11px; height: 13px; margin-left: -5.5px; padding: 0; border: 0; border-radius: 2px 2px 0 0;
+  background: var(--mk, #1287ff); clip-path: polygon(0 0, 100% 0, 100% 68%, 50% 100%, 0 68%); cursor: pointer; z-index: 2;
+}
+.ed-mk:hover { filter: brightness(1.25); }
+.ed-mk:active { transform: none; }
+.ed-lane { position: relative; box-sizing: border-box; border-bottom: 1px solid var(--border); }
+.ed-lane-off { opacity: 0.45; }
+.ed-cutline { position: absolute; top: 28px; bottom: 0; width: 1px; background: rgba(255, 255, 255, 0.07); pointer-events: none; }
+.ed-cutcell {
+  position: absolute; top: 4px; height: 18px; padding: 0; border: 0; border-radius: 0; background: transparent;
+  font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: clip; white-space: nowrap;
+}
+.ed-cutcell:hover { color: var(--text); }
+.ed-cutcell:active { transform: none; }
+.ed-cutcell.ed-nopick { color: var(--muted2); }
+.ed-cutcell.ed-cur { color: var(--accent); font-weight: 800; }
+/* 비활성 컷(폴더) — 이름에 줄을 긋고 흐리게. 재생헤드가 있으면 라임은 남되 줄은 그대로다. */
+.ed-cutcell.ed-cutoff { text-decoration: line-through; opacity: 0.55; }
+
+.ed-clip, .ed-slot { position: absolute; top: 3px; height: 52px; box-sizing: border-box; border-radius: 5px; overflow: hidden; display: flex; }
+.ed-clip { border: 1px solid rgba(255, 255, 255, 0.2); background: #1a1c20; cursor: pointer; touch-action: none; }
+.ed-clip i { flex: 1; min-width: 0; background: center / cover no-repeat; pointer-events: none; }
+.ed-clip i + i { border-left: 1px solid rgba(0, 0, 0, 0.45); }
+.ed-clip b {
+  position: absolute; left: 4px; bottom: 3px; padding: 1px 5px; border-radius: 4px; pointer-events: none;
+  font-size: 10px; font-weight: 600; background: rgba(8, 9, 12, 0.66); color: #e6e8ec;
+}
+.ed-clip::after { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px; background: var(--trk, transparent); pointer-events: none; }
+.ed-clip.ed-sel { border: 2px solid var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.18); }
+.ed-clip.ed-off { opacity: 0.4; filter: grayscale(1); } /* 끈 클립·끈 트랙만 흐리다 — 쌓인 클립은 흐리게 하지 않는다 */
+.ed-clip.ed-locked { cursor: default; }
+.ed-clip.ed-missing { background: repeating-linear-gradient(135deg, #3a1218 0 8px, #2a0d12 8px 16px); border-color: rgba(255, 90, 100, 0.6); }
+.ed-clip.ed-unknown { background: repeating-linear-gradient(135deg, #24262b 0 8px, #1b1d21 8px 16px); }
+.ed-clip-msg { flex: 1; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #d7dae0; pointer-events: none; }
+.ed-slot {
+  border: 1px dashed rgba(255, 255, 255, 0.22); align-items: center; justify-content: center; pointer-events: none;
+  font-size: 11px; color: var(--muted2);
+  background: repeating-linear-gradient(135deg, transparent 0 7px, rgba(255, 255, 255, 0.025) 7px 14px);
+}
+.ed-slot.ed-slot-off { border-style: dotted; opacity: 0.5; }
+.ed-aud { position: absolute; top: 5px; height: 36px; box-sizing: border-box; border-radius: 5px; background: #1f5a3a; border: 1px solid #2f7d53; pointer-events: none; }
+.ed-phead { position: absolute; left: -1px; top: 0; bottom: 0; width: 2px; background: #ff4d4f; z-index: 5; pointer-events: none; will-change: transform; }
+.ed-phead::before { content: ""; position: absolute; left: -6px; top: 0; border: 7px solid transparent; border-top: 10px solid #ff4d4f; }

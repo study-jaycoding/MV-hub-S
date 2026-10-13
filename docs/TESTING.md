@@ -956,7 +956,7 @@ https·포트 생략·경로·따옴표·공백이 섞인 값은 `tools\refresh_
   bind 오류(0x271D)로 못 연다. 기동 실패 시 도구가 띄운 크롬은 스스로 종료한다.
   `Page.javascriptDialogOpening` 을 처리하지 않으면 삭제의 `confirm()` 에서 모든 명령이 멈춘다. 비-GET 요청을 전부 기록해
   `/api/gen-requests` POST 가 0건임을 증거로 남긴다.
-- **누르지 않는 것**: Generate · 도크의 `Alt+Enter` · 카드의 ↻ 재생성 · Comfy 실행 · Resolve로 보내기 · 프로그램 업데이트 · HF 체크 ·
+- **누르지 않는 것**: Generate · 도크의 `Alt+Enter` · 카드의 ↻ 재생성 · Comfy 실행 · Resolve 보내기 · 프로그램 업데이트 · HF 체크 ·
   Assets 의 **폴더 등록**.
 
 > [!WARNING]

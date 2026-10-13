@@ -13,7 +13,8 @@ export type NavLocation = {
   include_deleted?: boolean;
   ctx: string;
 };
-type NavView = { tab: Filters["tab"]; focusId: string | null; ov: NavOverlay | null; key: number; sid?: string; loc?: NavLocation };
+// edit = 편집 탭(오버레이가 아니라 '보기'). Filters["tab"] 의 값이 아니다 — 밑의 탭 상태는 그대로 둔 채 본문만 바꾼다.
+type NavView = { tab: Filters["tab"]; focusId: string | null; ov: NavOverlay | null; key: number; edit?: boolean; sid?: string; loc?: NavLocation };
 const sameLocation = (a: NavLocation | undefined, b: NavLocation) =>
   !!a && a.project_id === b.project_id && a.folder_path === b.folder_path &&
   !!a.deleted_only === !!b.deleted_only && !!a.include_deleted === !!b.include_deleted && a.ctx === b.ctx;
@@ -31,6 +32,7 @@ export function useAppNavigation({
   setBoardFocusId,
   setBoardArrange,
   setFilters,
+  setEditOpen,
   previewScopeKey,
   currentLocation,
   restoreLocation,
@@ -45,6 +47,7 @@ export function useAppNavigation({
   setBoardFocusId: Dispatch<SetStateAction<string | null>>;
   setBoardArrange: Dispatch<SetStateAction<number>>;
   setFilters: Dispatch<SetStateAction<Filters>>;
+  setEditOpen?: Dispatch<SetStateAction<boolean>>;
   previewScopeKey?: string;
   /** 지금 보는 자리 — 모든 기록이 완전한 자리 스냅샷을 갖는다(없으면 자리를 싣지 않는 옛 호출자). */
   currentLocation?: NavLocation;
@@ -83,6 +86,7 @@ export function useAppNavigation({
       setPreview(v.ov === "preview" ? ((payload as PreviewTarget) ?? null) : null);
       // 코멘트 패널은 nav 뷰(탭 전환)에 묶지 않는다 — 태그창처럼 X 로 닫을 때까지 유지(독립 상태).
       setAdminOpen(v.ov === "admin");
+      setEditOpen?.(!!v.edit); // 옛 기록(칸 없음)은 편집이 아니다
       setInfo(null);
       if (v.tab === "compose") {
         setBoardFocusId(v.focusId);
@@ -102,6 +106,7 @@ export function useAppNavigation({
       setBoardArrange,
       setBoardFocusId,
       setCommentGenId,
+      setEditOpen,
       setFilters,
       setInfo,
       setPreview,
@@ -136,7 +141,8 @@ export function useAppNavigation({
         }
       }
       const cur = viewRef.current;
-      navigate({ tab: cur.tab, focusId: cur.focusId, ov, key, sid: NAV_SESSION, loc: cur.loc }); // 겹을 열 때도 지금 자리를 싣는다
+      // 편집 위에 뜬 창을 닫으면 편집으로 돌아온다 · 겹을 열 때도 지금 자리를 싣는다
+      navigate({ tab: cur.tab, focusId: cur.focusId, ov, key, edit: cur.edit, sid: NAV_SESSION, loc: cur.loc });
     },
     [navigate],
   );
@@ -161,6 +167,11 @@ export function useAppNavigation({
     (genId: string) => navigate({ tab: "compose", focusId: genId, ov: null, key: 0, loc: viewRef.current.loc }),
     [navigate],
   );
+
+  const openEdit = useCallback(() => {
+    const cur = viewRef.current;
+    if (!cur.edit) navigate({ tab: cur.tab, focusId: cur.focusId, ov: null, key: 0, edit: true, loc: cur.loc }); // 편집 기록도 지금 자리를 싣는다
+  }, [navigate]);
 
   // 보는 자리가 바뀌었다(App 의 effect — 렌더마다) — 명시적 이동(컷 카드·사이드바 폴더를 눌러 들어감)이면 기록을 한 칸 **쌓고**, 그 밖(따라가기·
   //  탭을 누른 뒤의 지움·되살림·지워진 프로젝트 정리·공간 전환)은 지금 기록의 자리를 **고쳐 적는다** — 모든 기록이 완전한 자리를 갖는다. 같은
@@ -194,6 +205,7 @@ export function useAppNavigation({
     closeOverlay,
     navTab,
     enterBoard,
+    openEdit,
     openPreview,
     openComment,
     openAdmin,
