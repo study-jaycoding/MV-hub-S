@@ -278,6 +278,95 @@ it("컷 머리 끌기: 제자리면 아무 일도 없고, Esc·놓친 놓기는 
   expect(flashed).toEqual([]); // 제자리에 놓은 것·버린 것은 '바꾸지 못했습니다'가 아니다
 });
 
+// Codex 코드 리뷰 2회째(2026-10-13)의 셋 — 휠 단추의 놓기 · 멈춘 포인터 밑에서 바뀐 배치 · 끄는 중의 Space·Enter.
+it("카드를 끄는 중에 휠 단추를 눌렀다 떼도 놓이지 않는다 — 끌기를 시작한 왼쪽 단추를 놓아야 들어간다", () => {
+  seed([{ cut: "c1", gen: "b", track: 2 }]);
+  mountOn("c1");
+  dragCard(poolCards()[0], lane(2)); // 찬 트랙 위
+  expect(drops()).toEqual([["2", "V2 교체"]]);
+  fire(window, "mouseup", { button: 1, buttons: 1, clientX: 60, clientY: 80 }); // 왼쪽은 누른 채 휠 단추만 뗐다
+  expect(storedTracks()).toEqual([["b", 2]]); // 교체되지 않았다
+  expect(drops()).toEqual([["2", "V2 교체"]]); // 끌기는 이어진다
+  fire(poolCards()[1], "auxclick", { button: 1, buttons: 1 }); // 그 휠 클릭은 '넣을 트랙' 메뉴도 아니다
+  expect(document.querySelector(".ed-tmenu")).toBeNull();
+  under = lane(1);
+  fire(window, "mousemove", { clientX: 62, clientY: 80 }); // 리스너도 그대로다 — 움직임을 계속 받는다
+  expect(drops()).toEqual([["1", "V1 에 넣기"]]);
+  dropCard();
+  expect(storedTracks()).toEqual([["b", 2], ["a", 1]]);
+  expect(flashed).toEqual([]);
+});
+
+it("컷을 끌다 포인터를 멈춘 사이 밑의 컷이 바뀌면(휠로 넘김·배치가 밀림) 놓는 순간의 자리에 끼운다 — 끼울 자리 줄도 따라온다", () => {
+  mount();
+  const lanes = document.querySelector<HTMLElement>(".ed-lanes")!;
+  const rect = vi.spyOn(lanes, "getBoundingClientRect");
+  const scrollBy = (px: number) => rect.mockReturnValue({ left: -px } as DOMRect); // 타임라인의 가로 자리 = (clientX − 줄의 왼쪽) / 배율
+  // 스크롤 칸은 넓다 — 포인터는 가장자리(저절로 넘기는 곳)가 아니다. jsdom 의 0 크기 그대로면 늘 가장자리로 읽힌다
+  vi.spyOn(document.querySelector<HTMLElement>(".ed-scroll")!, "getBoundingClientRect").mockReturnValue({ left: 0, right: 5000 } as DOMRect);
+  const at = left("c2") + 2; // c2 의 앞쪽 — 끼울 자리는 c2 앞(= c1 의 제자리)
+  const one = right("c1") - left("c1"); // 컷 한 칸의 폭
+
+  let cell = dragCut("c1", at);
+  expect(document.querySelector(".ed-cutdrop")).toBeNull();
+  scrollBy(one * 2); // 포인터는 그대로 — 그 밑은 이제 c3 의 뒤쪽이다(끼울 자리 = 맨 뒤)
+  fire(cell, "pointerup", { clientX: at, buttons: 0 }); // 프레임이 돌기 전에 놓아도 놓는 순간에 다시 잰다
+  expect(cuts()).toEqual(["c2", "c3", "c1"]);
+
+  press({ key: "z", code: "KeyZ", ctrlKey: true });
+  scrollBy(0);
+  cell = dragCut("c1", at);
+  scrollBy(one); // c2 의 가운데를 넘었다 — 끼울 자리 = c3 앞
+  act(() => { vi.advanceTimersToNextFrame(); });
+  expect(document.querySelector<HTMLElement>(".ed-cutdrop")!.style.left).toBe(`${left("c3")}px`);
+  scrollBy(0); // 되돌아왔다 — 제자리(줄이 사라진다)
+  act(() => { vi.advanceTimersToNextFrame(); });
+  expect(document.querySelector(".ed-cutdrop")).toBeNull();
+  fire(cell, "pointerup", { clientX: at, buttons: 0 });
+  expect(cuts()).toEqual(["c1", "c2", "c3"]);
+  expect(flashed).toEqual([]);
+});
+
+it("컷 끌기도 왼쪽 단추의 놓기만 확정이다 — 왼쪽을 뗀 뒤 남은 휠 단추를 떼는 것은 놓기가 아니다", () => {
+  mount();
+  let cell = dragCut("c1", right("c3") + 4);
+  fire(cell, "pointermove", { clientX: right("c3") + 4, buttons: 4 }); // 휠 단추를 누른 채 왼쪽을 뗐다(pointerup 은 오지 않는다)
+  expect(document.querySelector(".ed-cutdrop")).toBeNull();
+  fire(cell, "pointerup", { button: 1, buttons: 0 });
+  expect(cuts()).toEqual(["c1", "c2", "c3"]);
+
+  cell = dragCut("c1", right("c3") + 4);
+  fire(cell, "pointerup", { button: 1, buttons: 0 }); // 다른 단추의 놓기로 끝났다 — 버린다
+  expect(cuts()).toEqual(["c1", "c2", "c3"]);
+  expect(stored()).toBeNull();
+});
+
+it("끄는 동안 Space·Enter 는 초점이 남은 뒤의 단추를 누르지 않는다 — 그 키의 기본 동작을 막고, 끌기가 끝나면 푼다", () => {
+  mountOn("c1");
+  const play = document.querySelector<HTMLButtonElement>('.ed-top > .ed-view[data-view="timeline"] .ed-play')!;
+  play.focus(); // 재생 단추에 초점 — 풀·타임라인의 누름은 초점을 옮기지 않는다
+  const held = () => (["keydown", "keyup"] as const).flatMap((type) => [" ", "Enter"].map((key) => {
+    const event = new KeyboardEvent(type, { key, bubbles: true, cancelable: true });
+    act(() => { play.dispatchEvent(event); });
+    return event.defaultPrevented;
+  }));
+  const free = [false, false, false, false];
+  const blocked = [true, true, true, true];
+  expect(held()).toEqual(free); // 끌지 않을 때는 그 단추의 키다
+
+  dragCard(poolCards()[0], lane(1));
+  expect(document.activeElement).toBe(play);
+  expect(held()).toEqual(blocked);
+  expect(playing()).toBe(false);
+  dropCard();
+  expect(held()).toEqual(free);
+
+  const cell = dragCut("c1", right("c3") + 4);
+  expect(held()).toEqual(blocked);
+  fire(cell, "pointerup", { buttons: 0 });
+  expect(held()).toEqual(free);
+});
+
 // 끄는 사이 다른 창이 이 편집을 저장했다(이 창은 그것을 받아들인다 — 문서의 rev 가 바뀐다). 끌기를 시작한 문서가 아니므로 버린다.
 //  클립 끌기는 놓을 때 낡은 rev 로 오는데, 그것을 '잠긴 트랙이 있거나 옮길 자리가 없습니다'로 알리던 것도 여기서 본다(Codex 3회째 P3).
 it("끄는 사이 다른 창이 이 편집을 바꾸면 카드·컷·클립 끌기를 말없이 버린다", () => {

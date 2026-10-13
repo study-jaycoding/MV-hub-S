@@ -27,6 +27,7 @@ import {
   type SlotClip,
 } from "../../lib/editTimeline";
 import { useT } from "../../lib/i18n";
+import { useDragKeyHold } from "../../lib/keyGate";
 import { thumbOf } from "../../lib/media";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 
@@ -196,6 +197,9 @@ export const EditTimeline = memo(function EditTimeline({
   const clipMove = (event: ReactPointerEvent<HTMLElement>) => {
     const current = drag.current;
     if (!current || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    // 왼쪽 단추가 떼어진 채 온 움직임 — 그 놓기는 오지 않았다. 다른 단추(휠)를 같이 누른 채 왼쪽만 떼면 pointerup 은 마지막 단추가
+    //  떼일 때에야 온다: 그때까지 끌기가 이어지고, 나중에 휠을 떼는 것이 놓기가 됐다(같은 종류 — 컷 순서 끌기·카드 끌기, Codex 코드 리뷰 2회째).
+    if (!(event.buttons & 1)) return clipUp(event, true);
     const dy = event.clientY - current.y;
     if (!current.moved && Math.abs(dy) < DRAG_START) return;
     current.moved = true;
@@ -229,11 +233,15 @@ export const EditTimeline = memo(function EditTimeline({
     const index = layout.cuts.findIndex((slot) => slot.path === path);
     return before === path || before === (layout.cuts[index + 1]?.path ?? null);
   };
+  // 포인터 밑의 끼울 자리 — **지금의** 스크롤·배율·배치로 잰다
+  const cutBefore = (clientX: number) => {
+    const time = timeAt(clientX);
+    return layout.cuts.find((slot) => time < slot.start + slot.len / 2)?.path ?? null;
+  };
   const placeCutDrag = (clientX: number) => {
     const press = cutPress.current;
     if (!press) return;
-    const time = timeAt(clientX);
-    press.before = layout.cuts.find((slot) => time < slot.start + slot.len / 2)?.path ?? null;
+    press.before = cutBefore(clientX);
     setCutDrag((old) => (old && old.before === press.before ? old : { path: press.path, before: press.before }));
   };
   const endCutDrag = (drop: boolean) => {
@@ -245,21 +253,24 @@ export const EditTimeline = memo(function EditTimeline({
     cutDragEnded.current = performance.now();
     setCutDrag(null);
     if (press.el.hasPointerCapture(press.id)) press.el.releasePointerCapture(press.id);
-    if (drop && !cutStays(press.path, press.before)) onMoveCut(press.path, press.before, press.rev);
+    if (!drop) return;
+    // 놓는 순간에 다시 잰다 — 적어 둔 자리(press.before)는 마지막으로 움직였을 때의 것이라, 포인터를 멈춘 채 휠로 넘겼거나 그사이
+    //  길이가 고쳐 적혀 배치가 밀렸으면 포인터 밑의 컷이 아니다(Codex 코드 리뷰 2회째)
+    const before = cutBefore(press.at);
+    if (!cutStays(press.path, before)) onMoveCut(press.path, before, press.rev);
   };
   const cutLive = useRef({ place: placeCutDrag, end: endCutDrag });
   cutLive.current = { place: placeCutDrag, end: endCutDrag };
-  // 가장자리에서 저절로 넘기기 — 포인터가 멈춰 있어도 밑의 컷은 지나가므로 프레임마다 끼울 자리를 다시 잡는다
+  // 끄는 동안 프레임마다 끼울 자리를 다시 잡는다 — 포인터가 멈춰 있어도 밑의 컷은 바뀐다(가장자리에서 저절로 넘기기 · 휠로 넘기기·
+  //  확대 · 실측 길이가 와서 배치가 밀림). 자리가 같으면 다시 그리지 않는다(placeCutDrag)
   const edgeScroll: () => void = useRef(() => {
     const press = cutPress.current;
     const scroll = scrollRef.current;
     if (!press?.moved || !scroll) return;
     const rect = scroll.getBoundingClientRect();
     const step = press.at < rect.left + EDGE_PX ? -EDGE_STEP : press.at > rect.right - EDGE_PX ? EDGE_STEP : 0;
-    if (step) {
-      scroll.scrollLeft += step;
-      cutLive.current.place(press.at);
-    }
+    if (step) scroll.scrollLeft += step;
+    cutLive.current.place(press.at);
     edgeFrame.current = requestAnimationFrame(edgeScroll);
   }).current;
   const cutDown = (event: ReactPointerEvent<HTMLElement>, path: string) => {
@@ -274,7 +285,9 @@ export const EditTimeline = memo(function EditTimeline({
   const cutMove = (event: ReactPointerEvent<HTMLElement>) => {
     const press = cutPress.current;
     if (!press || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
-    if (event.buttons === 0) return endCutDrag(false); // 놓는 이벤트를 놓쳤다(조작 규칙 21)
+    // 왼쪽 단추가 떼어진 채 온 움직임 — 놓는 이벤트를 놓쳤다(조작 규칙 21). 다른 단추(휠)가 아직 눌려 있어도 같다: 그때는
+    //  pointerup 없이 움직임만 온다 — 뒤에 그 단추를 떼는 것이 놓기가 되지 않게 여기서 버린다
+    if (!(event.buttons & 1)) return endCutDrag(false);
     press.at = event.clientX;
     if (!press.moved) {
       if (Math.abs(event.clientX - press.x) < DRAG_START) return;
@@ -285,6 +298,7 @@ export const EditTimeline = memo(function EditTimeline({
   };
   const cutDragging = !!cutDrag;
   useEscapeClose(() => endCutDrag(false), cutDragging, true, true);
+  useDragKeyHold(cutDragging); // 초점이 남은 뒤의 단추(누른 컷 칸 포함)를 Space·Enter 가 누르지 않게
   useEffect(() => {
     if (!cutDragging) return;
     const cancel = () => cutLive.current.end(false);
@@ -335,17 +349,19 @@ export const EditTimeline = memo(function EditTimeline({
         onAuxClick={(event) => {
           if (event.button !== 1) return;
           event.preventDefault();
+          if (drag.current?.moved) return; // 끄는 중의 휠 클릭은 창을 열지 않는다(끌기는 이어진다)
           onClipTrim(key, event.clientX, event.clientY);
         }}
         onPointerDown={(event) => clipDown(event, key, clip.track, locked, clip.cut)}
         onPointerMove={clipMove}
-        onPointerUp={(event) => clipUp(event)}
+        onPointerUp={(event) => clipUp(event, event.button !== 0)} // 끌기를 시작한 왼쪽 단추의 놓기만 확정이다
         onPointerCancel={(event) => clipUp(event, true)}
         // 놓는 이벤트를 놓쳤다(창 밖에서 뗌 등) — 브라우저가 쥐기를 거두며 이것만 보낸다. 안 들으면 클립이 끌던 만큼 어긋난 채 남았다
         //  (2026-10-12 격리 실측 3/3 — 그 클립을 다시 눌러야 풀렸다). 끝점이 없으니 옮기지 않는다. 보통의 놓기 뒤에도 오지만 그때는 할 일이 없다.
         onLostPointerCapture={(event) => clipUp(event, true)}
         onContextMenu={(event) => {
           event.preventDefault();
+          if (drag.current?.moved) return; // 끄는 중의 우클릭은 메뉴를 열지 않는다
           onClipMenu(key, event.clientX, event.clientY);
         }}
       >
@@ -436,7 +452,7 @@ export const EditTimeline = memo(function EditTimeline({
                 title={`${offCuts.has(slot.path) ? `${slot.path} — ${t("비활성 폴더")}` : slot.path} · ${t("끌어서 순서 바꾸기")}`}
                 onPointerDown={(event) => cutDown(event, slot.path)}
                 onPointerMove={cutMove}
-                onPointerUp={() => endCutDrag(true)}
+                onPointerUp={(event) => endCutDrag(event.button === 0)}
                 onPointerCancel={() => endCutDrag(false)}
                 onLostPointerCapture={() => endCutDrag(false)}
                 onClick={() => {

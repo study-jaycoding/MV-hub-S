@@ -46,6 +46,25 @@ export function useKeyOwner(active = true): void {
   }, [active]);
 }
 
+/** 마우스로 끄는 동안(active) Enter·Space 가 초점이 남아 있는 뒤의 단추를 누르지 않게 한다. 끌기의 누름은 초점을 옮기지 않아
+ *  그 전에 초점이 있던 단추(재생·트랙 눈)에 그대로 남고, 끄는 동안 뒤 화면의 키 처리는 쉬어도(backgroundKeysBlocked) **브라우저가
+ *  단추를 누르는 기본 동작**은 남는다(Codex 코드 리뷰 2026-10-13). 그 기본 동작만 막는다 — 누르는 시점이 keydown 인지 keyup 인지는
+ *  브라우저·키마다 달라 둘 다 막는다. 전파는 두어 Esc 겹 등 다른 처리는 그대로다. */
+export function useDragKeyHold(active: boolean): void {
+  useEffect(() => {
+    if (!active) return;
+    const hold = (e: KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") e.preventDefault();
+    };
+    window.addEventListener("keydown", hold, true);
+    window.addEventListener("keyup", hold, true);
+    return () => {
+      window.removeEventListener("keydown", hold, true);
+      window.removeEventListener("keyup", hold, true);
+    };
+  }, [active]);
+}
+
 const NON_TEXT_INPUT = new Set(["checkbox", "radio", "range", "button", "submit", "reset", "color", "file", "image"]);
 
 /** 글자를 치는 자리인가 — 단축키가 양보할 대상. 체크박스·슬라이더처럼 글자 없는 입력은 아니다(초점이 남아도 단축키는 먹는다). */
