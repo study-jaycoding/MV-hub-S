@@ -969,14 +969,16 @@ function EditTabInner({
       },
     };
   })();
-  // · 목록 단추: '타임라인에 있는 것' = 보이는 컷(layout)의 켜진 클립이 가리키는 생성물. 숨긴 컷·꺼진 클립·꺼진 트랙은 뺀다 —
-  //   최종은 집계·'최종 저장'에 쓰이고 잘못 올리면 하나씩 풀어야 해서 좁게 잡았다(숨기지 않은 비활성 컷은 재생되므로 든다 —
-  //   Resolve 보내기와 같은 기준). 공유 목록을 다시 받는 중에는 누르지 못한다(빈 곳 채우기와 같다 — 그동안 든 목록은 옛 것이다).
+  // · 목록 단추: '타임라인에 있는 것' = **켜진 컷**의 켜진 클립이 가리키는 생성물. 숨긴 컷·꺼 둔 컷·꺼진 클립·꺼진 트랙은 뺀다 —
+  //   최종은 집계·'최종 저장'에 쓰이고 잘못 올리면 하나씩 풀어야 해서 좁게 잡았다. 꺼 두기만 한(숨기지 않은) 컷은 2026-10-13 에는
+  //   들었다(재생되고 Resolve 로도 나가서). Jay 2026-10-14: 뺀다 — 그 클립은 타임라인에서 회색인데 최종이 되면 놀란다(회색으로
+  //   보이는 것은 전부 빠진다 = EditTimeline 의 off 와 같은 셋). 공유 목록을 다시 받는 중에는 누르지 못한다(빈 곳 채우기와 같다).
   const [finalBusy, setFinalBusy] = useState(false);
   const finalAll = (() => {
     if (!listMenu || !review) return null;
     const shown = layout.cuts.flatMap((slot) => slot.clips);
-    const on = shown.filter((clip) => clipIsOn(doc, clip));
+    const live = shown.filter((clip) => !offCuts.has(clip.cut)); // 꺼 둔 컷의 클립은 뺀다
+    const on = live.filter((clip) => clipIsOn(doc, clip));
     const found = new Map<string, Generation>();
     for (const clip of on) {
       const gen = links.get(clipKey(clip))?.gen;
@@ -988,7 +990,7 @@ function EditTabInner({
     if (!targets.length && !reviewTargets(finals, "shared", review.canFinalize).length) return null; // 내가 최종을 줄 수 있는 것이 없다
     return {
       gens, targets, clips: on.length, finals: finals.length, denied: gens.length - targets.length - finals.length,
-      off: shown.length - on.length, hidden: doc.clips.length - shown.length,
+      off: live.length - on.length, cutOff: shown.length - live.length, hidden: doc.clips.length - shown.length,
       unlinked: on.filter((clip) => !links.get(clipKey(clip))?.gen).length,
     };
   })();
@@ -999,13 +1001,13 @@ function EditTabInner({
     if (!plan.targets.length) return flash(t("최종으로 확정할 것이 없습니다."));
     stopBoth(); // 확인 창이 떠 있는 동안 뒤에서 도는 재생을 멈출 길이 없다
     const skipped = ([
-      [plan.off, t("꺼진 클립·트랙 {count}개")], [plan.hidden, t("숨긴 컷의 클립 {count}개")],
+      [plan.off, t("꺼진 클립·트랙 {count}개")], [plan.cutOff, t("꺼 둔 컷의 클립 {count}개")], [plan.hidden, t("숨긴 컷의 클립 {count}개")],
       [plan.denied, t("권한이 없거나 공유가 풀린 것 {count}개")], [plan.unlinked, t("공유 목록에서 못 찾은 클립 {count}개")],
     ] as const).filter(([value]) => value > 0).map(([value, text]) => text.replace("{count}", String(value)));
     const asked = [
       t("타임라인의 생성물 {count}개를 최종으로 확정할까요?").replace("{count}", String(plan.targets.length)),
       "",
-      t("· 보이는 컷의 켜진 클립 {clips}개 기준 — 이미 최종인 {finals}개는 그대로 둡니다")
+      t("· 켜진 컷의 켜진 클립 {clips}개 기준 — 이미 최종인 {finals}개는 그대로 둡니다")
         .replace("{clips}", String(plan.clips)).replace("{finals}", String(plan.finals)),
       ...(skipped.length ? [`${t("· 빼는 것:")} ${skipped.join(" · ")}`] : []),
       t("· 되돌리기(Ctrl+Z)로는 돌아가지 않습니다 — 풀려면 클립 우클릭의 '최종 선택'으로 하나씩 해제합니다"),

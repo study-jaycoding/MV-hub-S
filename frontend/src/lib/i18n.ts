@@ -92,8 +92,8 @@ const EN: Record<string, string> = {
   "비활성 숨기기": "Hide off folders",
   "빈 곳 채우기": "Fill empty cuts",
   "모두 최종으로 확정": "Mark all as final",
-  "타임라인에 있는 생성물을 모두 최종으로 확정합니다 — 보이는 컷의 켜진 클립만(숨긴 컷·꺼진 클립·꺼진 트랙은 뺍니다). 누르면 무엇이 바뀌는지 먼저 묻습니다.":
-    "Marks everything on the timeline as final — only enabled clips in the cuts you can see (hidden cuts, disabled clips and disabled tracks are left out). It asks before changing anything.",
+  "타임라인에 있는 생성물을 모두 최종으로 확정합니다 — 켜진 컷의 켜진 클립만(숨긴 컷·꺼 둔 컷·꺼진 클립·꺼진 트랙은 뺍니다). 누르면 무엇이 바뀌는지 먼저 묻습니다.":
+    "Marks everything on the timeline as final — only enabled clips in enabled cuts (hidden cuts, disabled cuts, disabled clips and disabled tracks are left out). It asks before changing anything.",
   "최종 선택": "Final",
   "최종 확정을 해제합니다(공유 상태로 돌아갑니다).": "Removes the final mark (back to shared).",
   "이 생성물을 최종으로 확정합니다 — 공유 & 리뷰의 최종(★)과 같은 것입니다.": "Marks this as final — the same final (★) as in Share & Review.",
@@ -101,11 +101,12 @@ const EN: Record<string, string> = {
     "The shared list is reloading or failed to load — try again once it has loaded.",
   "최종으로 확정할 것이 없습니다.": "Nothing to mark as final.",
   "타임라인의 생성물 {count}개를 최종으로 확정할까요?": "Mark {count} item(s) on the timeline as final?",
-  "· 보이는 컷의 켜진 클립 {clips}개 기준 — 이미 최종인 {finals}개는 그대로 둡니다":
-    "· From {clips} enabled clip(s) in the visible cuts — {finals} already final stay as they are",
+  "· 켜진 컷의 켜진 클립 {clips}개 기준 — 이미 최종인 {finals}개는 그대로 둡니다":
+    "· From {clips} enabled clip(s) in the enabled cuts — {finals} already final stay as they are",
   "· 빼는 것:": "· Left out:",
   "꺼진 클립·트랙 {count}개": "{count} disabled clip(s)/track(s)",
   "숨긴 컷의 클립 {count}개": "{count} clip(s) in hidden cuts",
+  "꺼 둔 컷의 클립 {count}개": "{count} clip(s) in disabled cuts",
   "권한이 없거나 공유가 풀린 것 {count}개": "{count} you can't finalize or no longer shared",
   "공유 목록에서 못 찾은 클립 {count}개": "{count} clip(s) not found in the shared list",
   "· 되돌리기(Ctrl+Z)로는 돌아가지 않습니다 — 풀려면 클립 우클릭의 '최종 선택'으로 하나씩 해제합니다":

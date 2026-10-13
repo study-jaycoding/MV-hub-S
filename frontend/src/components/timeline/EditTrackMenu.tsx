@@ -271,7 +271,7 @@ export function EditListMenu({
       </button>
       {finalAll && (
         <button type="button" role="menuitem" className="ed-tmenu-item" disabled={!finalAll.count || finalAll.busy} aria-busy={finalAll.busy}
-          title={t("타임라인에 있는 생성물을 모두 최종으로 확정합니다 — 보이는 컷의 켜진 클립만(숨긴 컷·꺼진 클립·꺼진 트랙은 뺍니다). 누르면 무엇이 바뀌는지 먼저 묻습니다.")}
+          title={t("타임라인에 있는 생성물을 모두 최종으로 확정합니다 — 켜진 컷의 켜진 클립만(숨긴 컷·꺼 둔 컷·꺼진 클립·꺼진 트랙은 뺍니다). 누르면 무엇이 바뀌는지 먼저 묻습니다.")}
           onClick={finalAll.onRun}>
           {t("모두 최종으로 확정")}
           <i>{finalAll.count || ""}</i>

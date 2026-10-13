@@ -198,7 +198,7 @@ it("공유 목록을 다시 받는 중·받지 못한 뒤에는 '최종 선택'�
   expect(applied).toEqual([{ ids: ["a"], action: "final" }]);
 });
 
-it("'모두 최종으로 확정' — 보이는 컷의 켜진 클립만 센다. 확인 창에 숫자를 보이고, 아니오면 아무것도 넘기지 않는다", async () => {
+it("'모두 최종으로 확정' — 켜진 컷의 켜진 클립만 센다. 확인 창에 숫자를 보이고, 아니오면 아무것도 넘기지 않는다", async () => {
   world.gens = [gen("a", "c1"), gen("b", "c1"), gen("n", "c1"), gen("t", "c1"), gen("f", "c2", { is_final: true }), gen("x", "c2"), gen("h", "c3")];
   denied = new Set(["n"]);
   seed([
@@ -238,6 +238,22 @@ it("'모두 최종으로 확정' — 보이는 컷의 켜진 클립만 센다. �
   expect(row("모두 최종으로 확정")!.disabled).toBe(false);
   expect(confirm).toHaveBeenCalledTimes(2);
   expect(flashed).toEqual([]);
+});
+
+// Jay 2026-10-14: 꺼 두기만 한(숨기지 않은) 컷의 클립은 타임라인에서 회색이다 — 그것이 최종이 되면 놀란다. 전날에는 들었다(재생되므로).
+it("'모두 최종으로 확정' — 꺼 두기만 한 컷(숨기지 않음)의 클립도 뺀다. 확인 창이 그 수를 따로 적는다", () => {
+  world.gens = [gen("a", "c1"), gen("k", "c2"), gen("m", "c3")];
+  seed([{ cut: "c1", gen: "a", track: 1 }, { cut: "c2", gen: "k", track: 1 }, { cut: "c3", gen: "m", track: 1 }], { cutsOff: ["e070/c2"] });
+  mount();
+  expect(clipOf("k").className).toContain("ed-off"); // 화면에서 회색인 바로 그 클립이다
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  openListMenu();
+  expect(row("모두 최종으로 확정")!.textContent).toBe("모두 최종으로 확정2"); // a · m — 꺼 둔 컷의 k 는 세지 않는다
+  act(() => row("모두 최종으로 확정")!.click());
+  const asked = String(confirm.mock.calls[0][0]);
+  for (const part of ["생성물 2개를 최종으로 확정할까요?", "켜진 컷의 켜진 클립 2개", "꺼 둔 컷의 클립 1개"]) expect(asked).toContain(part);
+  expect(asked).not.toContain("숨긴 컷"); // 숨긴 것은 없다 — 꺼 둔 것과 따로 센다
+  expect(applied).toEqual([{ ids: ["a", "m"], action: "final" }]);
 });
 
 it("'모두 최종으로 확정' — 올릴 것이 없거나(전부 최종) 공유 목록을 다시 받는 중이면 흐리다", () => {
