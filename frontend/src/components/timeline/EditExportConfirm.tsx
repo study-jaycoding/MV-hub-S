@@ -50,12 +50,14 @@ export function EditExportConfirm({ exported, onSend, onClose }: {
     return () => { turn.current += 1; };
   }, [ask]);
 
-  const { plan, gens, unresolved, perTrack, disabled, markersDropped, end, tailEmpty } = exported;
+  const { plan, gens, unresolved, zeroCuts, perTrack, disabled, markersDropped, end, tailEmpty } = exported;
   const checked = checkResolveSelection(gens);
   // 보낼 수 없는 까닭 — 못 이은 클립을 빼고 보내면 '그대로'가 아니다(lib/editResolveExport)
   const problem = unresolved > 0
     ? t("공유 목록에서 찾지 못한 클립이 {count}개 있습니다 — 목록을 다 받았는지 확인하고, 없어진 클립은 빼거나 바꿔 주세요.")
       .replace("{count}", String(unresolved))
+    : zeroCuts > 0
+      ? t("한 프레임보다 짧은 컷이 {count}개 있어 보낼 수 없습니다 — 그 컷에 켜 둔 영상의 길이를 확인해 주세요.").replace("{count}", String(zeroCuts))
     : !plan.clips.length ? t("타임라인에 넣은 클립이 없습니다.")
       : checked.ok ? null : t(checked.message);
   const tracks = perTrack.map((count, index) => ({ count, track: index + 1 })).filter((item) => item.count > 0);

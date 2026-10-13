@@ -53,8 +53,10 @@ let time = 0; // 타임라인의 지금 시각
 let clock = 0;
 let frames: ((stamp: number) => void)[] = [];
 
-function Harness({ track = 1, playing = false, rate = 1 }: { track?: number; playing?: boolean; rate?: number }) {
-  shown = useEditFollow({ videoRef, layout: LAYOUT, track, sourceOf, now: () => time, playing, rate });
+function Harness({ track = 1, playing = false, rate = 1, layout = LAYOUT }: {
+  track?: number; playing?: boolean; rate?: number; layout?: typeof LAYOUT;
+}) {
+  shown = useEditFollow({ videoRef, layout, track, sourceOf, now: () => time, playing, rate });
   return null;
 }
 const render = (props: Parameters<typeof Harness>[0] = {}) => act(() => root.render(<Harness {...props} />));
@@ -101,6 +103,29 @@ it("그 트랙의 클립만 보인다 — 위 트랙에 가려져 있어도, 꺼
   expect(shown.clip?.gen).toBe("pic");
   expect(shown.source?.type).toBe("image");
   expect(video.src).toBe("");
+});
+
+// 컷 길이는 켜진 클립만 센다(2026-10-13) — 꺼 둔 클립은 컷보다 길 수 있다. 그 트랙을 보고 있어도 컷이 끝나면 다음 컷으로 넘어간다
+//  (꺼 둔 8초 클립이 3초짜리 컷의 뒤 5초 동안 다음 컷 위에 남지 않는다).
+it("꺼 둔 클립이 컷보다 길어도, 그 트랙의 보기는 컷의 끝에서 다음 컷의 것으로 넘어간다", () => {
+  const doc: EditDoc = {
+    ...emptyEditDoc(),
+    clips: [
+      { cut: "e070/c1", gen: "long", track: 1, dur: 8, kind: "video", off: true },
+      { cut: "e070/c1", gen: "top", track: 2, dur: 3, kind: "video" },
+      { cut: "e070/c2", gen: "after", track: 1, dur: 5, kind: "video" },
+    ],
+  };
+  const layout = buildLayout(["e070/c1", "e070/c2"], doc); // c1 0~3(켜진 top 의 길이) · c2 3~8
+  expect(layout.cuts.map((cut) => cut.len)).toEqual([3, 5]);
+  time = 2;
+  render({ track: 1, layout });
+  frame();
+  expect(shown.clip?.gen).toBe("long");
+  time = 4; // c1 의 꺼 둔 클립은 8초까지지만, 여기는 이미 c2 다
+  render({ track: 1, layout });
+  frame();
+  expect(shown.clip?.gen).toBe("after");
 });
 
 it("멈춰 있으면 그 자리에 정확히 맞춘다 — 한 프레임 이동도 보이고, 탐색 중에는 새 탐색을 걸지 않는다", () => {

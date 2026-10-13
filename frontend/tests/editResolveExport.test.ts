@@ -97,6 +97,23 @@ describe("buildTimelineExport", () => {
     expect(out.plan.total).toBe(288);
   });
 
+  // Codex 코드 리뷰 2026-10-13: 켜진 클립이 반 프레임도 안 되는 컷(깨진 영상의 실측 길이 등)은 0프레임이다 — 그 컷의 클립은 최소 한
+  //  프레임이라 다음 컷의 같은 트랙과 겹치고, 그런 계획은 받는 쪽이 거부한다. 보내기 전에 세어 막는다.
+  it("한 프레임도 안 되는 컷은 따로 센다(0 이 아니면 보내지 않는다) — 보통 컷의 아주 짧은 클립은 한 프레임으로 싣는다", () => {
+    const zero: EditDoc = {
+      ...emptyEditDoc(),
+      clips: [clip("C0010", "long-off", 1, 8, { off: true }), clip("C0010", "blip", 2, 0.01), clip("C0020", "next", 1, 5)],
+    };
+    expect(build(zero, ["C0010", "C0020"]).zeroCuts).toBe(1);
+    const tiny: EditDoc = {
+      ...emptyEditDoc(),
+      clips: [clip("C0010", "low", 1, 5), clip("C0010", "blip", 2, 0.01), clip("C0020", "next", 2, 5)],
+    };
+    const out = build(tiny, ["C0010", "C0020"]);
+    expect(out.zeroCuts).toBe(0);
+    expect(out.plan.clips.map((item) => [item.gen_id, item.start, item.end])).toEqual([["low", 0, 120], ["blip", 0, 1], ["next", 120, 240]]);
+  });
+
   it("소리는 그 순간 보이는 영상 하나의 것 — 위 클립이 끝나면 아래 클립의 소리가 그 자리(소스의 그 시각)부터", () => {
     const doc: EditDoc = {
       ...emptyEditDoc(),

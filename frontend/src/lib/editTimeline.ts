@@ -122,13 +122,14 @@ export function cutPaths(seq: string, folderPaths: Iterable<string>, doc: EditDo
 }
 
 // 순서를 바꾼 뒤 마크 인이 아웃보다 뒤의 컷에 놓이면 둘을 맞바꾼다 — 그대로 두면 구간(띠·구간 반복)이 말없이 사라진다.
-//  order = 숨긴 컷까지 든 전체 순서. 같은 컷 안의 앞뒤는 순서와 무관하니 건드리지 않는다.
-function marksInOrder(doc: EditDoc, order: readonly string[]): EditDoc {
+//  known = 아는 컷 전부(숨긴 컷·정한 순서에만 남은 없는 컷 포함). 순서는 doc.cutOrder(방금 정한 것)로 다시 세운다.
+//  표시가 놓인 컷이 지금 없어도(폴더가 사라짐) **돌아올 자리**로 앞뒤를 본다 — 안 보면 그 폴더가 돌아왔을 때 인이 아웃 뒤에 놓인다
+//  (Codex 코드 리뷰 2026-10-13). 같은 컷 안의 앞뒤는 순서와 무관하니 건드리지 않는다.
+function marksInOrder(doc: EditDoc, known: readonly string[]): EditDoc {
   const { markIn, markOut } = doc;
   if (!markIn || !markOut || markIn.cut === markOut.cut) return doc;
-  const from = order.indexOf(markIn.cut);
-  const to = order.indexOf(markOut.cut);
-  return from >= 0 && to >= 0 && from > to ? { ...doc, markIn: markOut, markOut: markIn } : doc;
+  const order = orderCuts([...new Set([...known, markIn.cut, markOut.cut])].sort(byName), doc.cutOrder);
+  return order.indexOf(markIn.cut) > order.indexOf(markOut.cut) ? { ...doc, markIn: markOut, markOut: markIn } : doc;
 }
 
 // 컷(폴더) 하나를 before 앞으로 옮긴다(before = null 이면 맨 뒤). all = 지금의 전체 순서(cutPaths — 숨긴 컷 포함).
@@ -137,6 +138,11 @@ function marksInOrder(doc: EditDoc, order: readonly string[]): EditDoc {
 //  마크 인/아웃이 뒤집히면 같이 맞바꾼다(같은 되돌리기 한 단계).
 export function moveCut(doc: EditDoc, all: readonly string[], path: string, before: string | null): EditDoc | null {
   if (!all.includes(path) || before === path || (before !== null && !all.includes(before))) return null;
+  // 지금 순서에서 제자리면 바뀐 것이 없다 — 아래의 전체 목록으로만 견주면, 바로 뒤 컷 앞에 놓은 것(제자리)이 그 사이의 '지금 없는 컷'을
+  //  넘어간 것으로 적혀 그 폴더의 돌아올 자리가 바뀐다(Codex 코드 리뷰 2026-10-13).
+  const after = all.filter((cut) => cut !== path);
+  after.splice(before === null ? after.length : after.indexOf(before), 0, path);
+  if (after.every((cut, index) => cut === all[index])) return null;
   // 저장된 순서(없는 컷 포함)에 아직 안 적힌 지금 컷을, 화면의 바로 앞 컷 뒤에 끼워 넣어 전체 목록을 만든다.
   const full = [...(doc.cutOrder ?? [])];
   all.forEach((cut, index) => {
@@ -157,7 +163,7 @@ export function resetCutOrder(doc: EditDoc, natural: readonly string[]): EditDoc
   if (!doc.cutOrder?.length) return null;
   const next: EditDoc = { ...doc };
   delete next.cutOrder;
-  return marksInOrder(next, [...natural].sort(byName));
+  return marksInOrder(next, natural);
 }
 
 const positiveInt = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
@@ -573,7 +579,7 @@ export function setClipTrim(doc: EditDoc, key: string, seconds: number | null): 
 //  한 프레임도 안 되는 영상이면 null(줄일 수 없다).
 export function snapTrim(seconds: number, max: number): number | null {
   const top = Math.floor(max * EDIT_FPS + 1e-6);
-  if (top < 1 || !Number.isFinite(seconds)) return null;
+  if (!(top >= 1) || !Number.isFinite(seconds)) return null; // 상한이 숫자가 아니어도(NaN) null
   return Math.min(Math.max(Math.round(seconds * EDIT_FPS), 1), top) / EDIT_FPS;
 }
 
