@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
 import type { CardMark, Generation, PreviewTarget, WorkspaceContext } from "../../types";
 import { APP_EVENTS, isLibraryPollTick } from "../../lib/appEvents";
-import { backgroundKeysBlocked, focusCameByTab } from "../../lib/keyGate";
+import { backgroundKeysBlocked, focusCameByTab, useDragKeyHold } from "../../lib/keyGate";
 import { isKeyHandled, markKeyHandled } from "../../lib/keyHandled";
 import { isFolderDisabled } from "../../lib/deactivated";
 import {
@@ -750,6 +750,7 @@ function EditTabInner({
   };
   const cardDragging = !!cardDrag;
   useEscapeClose(() => setCardDrag(null), cardDragging, true, true);
+  useDragKeyHold(cardDragging); // 초점이 남은 뒤의 단추(재생·트랙 눈)를 Space·Enter 가 누르지 않게
   const cardDragGone = !!cardDrag && (cardDrag.rev !== rev || cardDrag.cut !== cut || !byCut.get(cardDrag.cut)?.some((item) => item.id === cardDrag.id));
   useEffect(() => {
     if (cardDragGone) setCardDrag(null);
