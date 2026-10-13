@@ -390,3 +390,49 @@ def test_an_existing_database_gets_the_table_and_applying_twice_is_harmless(tmp_
     finally:
         conn.close()
     assert columns == ["project_id", "folder_path", "generation_id", "set_by", "set_at"]
+
+
+def test_episode_cards_carry_the_numbers_and_cut_strip_of_the_episode_screen(catalog):
+    """에피소드 화면용 집계 — 건수와 같은 범위에서 센다: 영상 수 · 대표 정한 컷 수 · 마지막 공유(표지의 것이 아니다) · 컷 미리보기."""
+    def asset(gen_id, kind):
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO asset(id, generation_id, type, file_path) VALUES(?, ?, ?, ?)",
+                ("asset-" + gen_id, gen_id, kind, f"/media/{gen_id}.bin"),
+            )
+
+    seed("img", "e020/c0010")
+    asset("img", "image")
+    seed("vid", "e020/c0010")
+    asset("vid", "video")
+    seed("take", "e020/c0020/takeB", creator="river")   # 손자 폴더의 것도 그 컷(c0020)에 든다
+    asset("take", "video")
+    for index in range(3, 10):                           # 컷 아홉 — 미리보기는 이름순 앞 일곱만
+        seed(f"cut{index}", f"e020/c00{index}0")
+    seed("private", "e020/c0010", shared=False)          # 안 보이는 것은 어느 숫자에도 안 든다
+    asset("private", "video")
+    seed("elsewhere", "e001/c0010")
+    choose("e020/c0010", "img")                          # 컷의 대표
+    choose("e020", "img")                                # 에피소드 표지를 옛 것으로 고정 — 마지막 공유는 표지와 따로다
+    repo.identity.set_creator_name("river", "리버")
+    with db.get_connection() as conn:
+        conn.execute("UPDATE share SET shared_at = '2026-10-01 00:00:00'")
+        conn.execute("UPDATE share SET shared_at = '2026-10-13 09:00:00' WHERE generation_id = 'take'")
+
+    episode = cards("")[1]["e020"]
+    assert (episode["count"], episode["subfolders"], episode["video_count"], episode["rep_count"]) == (10, 9, 2, 1)
+    assert episode["cover"]["id"] == "img" and episode["rep"] is True
+    assert (episode["last_shared_at"], episode["last_shared_by"]) == ("2026-10-13 09:00:00", "리버")
+    strip = episode["children"]
+    assert [child["name"] for child in strip] == ["c0010", "c0020", "c0030", "c0040", "c0050", "c0060", "c0070"]
+    assert (strip[0]["path"], strip[0]["count"], strip[0]["rep"], strip[0]["cover"]["id"]) == ("e020/c0010", 2, True, "img")
+    assert (strip[1]["count"], strip[1]["rep"], strip[1]["cover"]["id"]) == (1, False, "take")
+    # 미리보기의 표지는 그림에 필요한 것만 — 목록 행 전체(프롬프트 등)를 컷마다 싣지 않는다
+    assert set(strip[1]["cover"]) == {"id", "assets"} and [a["type"] for a in strip[1]["cover"]["assets"]] == ["video"]
+    assert cards("")[1]["e001"]["last_shared_by"] is None  # 이름을 모르는 사람은 비운다(uid 를 내보내지 않는다)
+
+    # 컷 단계의 카드에도 같은 칸이 온다 — 하위 폴더가 없으면 0 · 빈 띠
+    cut = cards("e020")[1]["e020/c0010"]
+    assert (cut["count"], cut["subfolders"], cut["video_count"], cut["rep_count"], cut["children"]) == (2, 0, 1, 0, [])
+    nested = cards("e020")[1]["e020/c0020"]
+    assert (nested["subfolders"], [child["path"] for child in nested["children"]]) == (1, ["e020/c0020/takeB"])
