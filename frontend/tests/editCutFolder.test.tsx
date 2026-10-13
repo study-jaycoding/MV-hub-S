@@ -1596,6 +1596,45 @@ it("타임라인 Resolve 보내기: 공유 목록에서 찾지 못한 클립이 
   expect(modal()!.querySelector<HTMLButtonElement>(".gradestep-btn.confirm")!.disabled).toBe(true);
 });
 
+// 왼쪽 폴더 목록 여닫기(Jay 2026-10-13 — "편집 탭에도 필터 사이드바 닫기를 넣자", 시안 A): 풀 머리줄의 첫 단추. 모양·글은 공유 탭 도구 줄의
+//  단추 그대로(열림 ▢ · 닫힘 ▷). 닫힘은 편집 탭의 화면 설정에만 적는다(공유 탭의 닫힘과 따로).
+it("풀 머리줄의 첫 단추로 왼쪽 폴더 목록을 여닫는다 — 닫아도 단추는 남고, 닫힘은 이 브라우저에 남으며, 고른 시퀀스가 없으면 연다", () => {
+  seed([{ cut: "c1", gen: "a", track: 1 }]);
+  mount();
+  act(() => cutCell("c1").click()); // 재생헤드 자리는 시험 사이에 남는다 — 이 시험의 컷으로
+  const toggle = () => document.querySelector<HTMLButtonElement>(".ed-pool-head > .ed-side-toggle")!;
+  const side = () => document.querySelector(".ed-side");
+  const handles = () => document.querySelectorAll(".sidebar-resize-handle").length; // 폴더 목록의 폭 손잡이 + 풀의 폭 손잡이
+  const look = () => [side() !== null, handles(), toggle().title, toggle().getAttribute("aria-pressed"), toggle().querySelector("rect") ? "▢" : "▷"];
+  expect(document.querySelector(".ed-pool-head")!.firstElementChild).toBe(toggle()); // 사이드바 바로 옆 줄의 첫 단추(공유 탭과 같은 자리 관계)
+  expect(toggle().className).toContain("lib-filter-ic"); // 공유 탭의 그 단추와 같은 모양
+  expect(look()).toEqual([true, 2, "필터 사이드바 닫기", "true", "▢"]);
+  const before = [cuts(), clips().length, localStorage.getItem(DOC_KEY)];
+
+  act(() => toggle().click());
+  expect(look()).toEqual([false, 1, "필터 사이드바 열기", "false", "▷"]); // 목록과 그 손잡이가 사라지고, 단추는 제자리에서 다시 연다
+  expect(JSON.parse(localStorage.getItem(UI_KEY)!).sideHidden).toBe(true);
+  expect([cuts(), clips().length, localStorage.getItem(DOC_KEY)]).toEqual(before); // 타임라인·편집 문서는 그대로
+  expect(document.querySelector(".ed-pool-side > .ed-pool h3")!.textContent).toBe("e070 / c1"); // 지금 컷은 풀 머리줄에 계속 보인다
+
+  act(() => root.unmount()); // 편집 탭을 떠났다 다시 — 닫힌 채
+  root = createRoot(host);
+  mount();
+  expect(look()).toEqual([false, 1, "필터 사이드바 열기", "false", "▷"]);
+  act(() => toggle().click());
+  expect(look()).toEqual([true, 2, "필터 사이드바 닫기", "true", "▢"]);
+  expect(JSON.parse(localStorage.getItem(UI_KEY)!).sideHidden).toBe(false);
+
+  // 고른 시퀀스가 없으면 닫아 두었어도 연다 — 닫힌 채로는 폴더를 고를 길이 없다(빈 화면의 안내가 '왼쪽에서 … 고르세요')
+  act(() => toggle().click());
+  act(() => root.unmount());
+  localStorage.removeItem("ch.editTimeline.last:local");
+  root = createRoot(host);
+  mount();
+  expect(JSON.parse(localStorage.getItem(UI_KEY)!).sideHidden).toBe(true);
+  expect(look()).toEqual([true, 2, "필터 사이드바 닫기", "true", "▢"]);
+});
+
 it("왼쪽 폴더를 우클릭하면 폴더 메뉴가 뜬다 — 공유 저장 · 최종 저장은 묻고 하고, 원본 위치 열기는 바로 한다", () => {
   mount();
   const row = (name: string) =>
