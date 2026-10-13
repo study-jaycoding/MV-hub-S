@@ -2,13 +2,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Generation } from "../src/types";
 import {
   checkResolveSelection,
+  createResolveTimeline,
   createResolveTransfer,
   getResolveConnectionStatus,
   getResolveEnvironmentDiagnostics,
   getResolveScriptStatus,
   installResolveScript,
   retryResolveTransfer,
+  resolveTimelineSummary,
   resolveTransferSummary,
+  type ResolveTimelineBuild,
   type ResolveTransferResult,
 } from "../src/lib/resolveTransfer";
 
@@ -267,6 +270,41 @@ describe("Resolve 전송 API와 결과 안내", () => {
         }),
       ),
     ).toContain("Resolve 프로젝트 저장을 확인하지 못했습니다");
+  });
+});
+
+// 타임라인 Resolve 보내기(편집 탭) — 원본 전송 요청에 계획(timeline)이 붙는다. 결과 한 줄은 '만들었다'로 끝내지 않는다.
+describe("타임라인 Resolve 보내기", () => {
+  const built = (overrides: Partial<ResolveTimelineBuild> = {}): ResolveTimelineBuild => ({
+    status: "complete", timeline_name: "P1_e070", timeline_id: "tl-1", step: "done", video: 3, audio: 2,
+    markers_added: 0, markers_skipped: 0, mark: false, saved: true, mismatches: [], short_sources: [], warnings: [],
+    error: null, error_code: null, ...overrides,
+  });
+
+  it("계획을 받는 Resolve 프로젝트와 함께 전용 로컬 API 로 보낸다", async () => {
+    const answer = { transfer: result(), timeline: built() };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: vi.fn().mockResolvedValue(answer) });
+    vi.stubGlobal("fetch", fetchMock);
+    const plan = { format: "mvhub.edit-timeline", version: 1, name: "P1_e070" };
+
+    await expect(createResolveTimeline(["g1"], { project_id: "rp", project_name: "편집" }, plan)).resolves.toEqual(answer);
+    expect(fetchMock).toHaveBeenCalledWith("/api/resolve/timelines", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ gen_ids: ["g1"], resolve_project_id: "rp", resolve_project_name: "편집", timeline: plan }),
+    }));
+  });
+
+  it("결과 한 줄 — 계획대로 · 만들었지만 다르다 · 만들지 못했다를 구분한다", () => {
+    expect(resolveTimelineSummary({ transfer: result(), timeline: built({ markers_added: 2 }) }))
+      .toBe("Resolve 에 타임라인 'P1_e070' 을 만들었습니다 · 클립 3 · 북마크 2");
+    const moved = built({ status: "partial", mismatches: [{ track: "V1", gen_id: "g1", start: 0, expected: 120, actual: 96 }] });
+    expect(resolveTimelineSummary({ transfer: result(), timeline: moved }))
+      .toBe("Resolve 에 타임라인 'P1_e070' 을 만들었지만 확인이 필요합니다 · 자리가 다른 클립 1개");
+    const stopped = built({ status: "partial", step: "audio", error: "소리 클립을 넣지 못했습니다" }); // 만들다 멈췄다 — 타임라인은 남아 있다
+    expect(resolveTimelineSummary({ transfer: result(), timeline: stopped })).toContain("확인이 필요합니다 · 소리 클립을 넣지 못했습니다");
+    const none = built({ status: "unavailable", timeline_name: "", timeline_id: "", error: "DaVinci Resolve가 실행 중이지 않습니다" });
+    expect(resolveTimelineSummary({ transfer: result({ error_count: 1 }), timeline: none }))
+      .toBe("타임라인을 만들지 못했습니다 · DaVinci Resolve가 실행 중이지 않습니다 · 원본 준비 실패 1개");
   });
 });
 

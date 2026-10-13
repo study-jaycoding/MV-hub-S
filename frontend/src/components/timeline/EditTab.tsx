@@ -55,6 +55,7 @@ import {
   EDIT_SPEEDS, editDocKey, isSourceView, loadEditTarget, loadEditUi, saveEditTarget, saveEditUi,
   type EditTarget, type EditUi, type ViewMode,
 } from "../../lib/editTimelineStore";
+import { buildTimelineExport, timelineExportName } from "../../lib/editResolveExport";
 import type { FolderMenuKind } from "../../lib/folderContextMenu";
 import { generationListMeta } from "../../lib/generationDisplay";
 import { previewTargetFromGenerations } from "../../lib/generationGrid";
@@ -67,6 +68,7 @@ import { useEditDoc } from "../../lib/useEditDoc";
 import { useEditPlayback, type EditSource } from "../../lib/useEditPlayback";
 import { useVideoPair } from "../../lib/editVideoPair";
 import { workspaceViewKey } from "../../lib/libraryWorkspaceScope";
+import type { ResolveProjectTarget, ResolveTimelineResult } from "../../lib/resolveTransfer";
 import {
   allFolderPaths,
   editWorkspaceReady,
@@ -76,6 +78,7 @@ import {
 } from "../../lib/useEditSequence";
 import { dropQueuedVideoMeasures, knownVideoSeconds, measureVideoSeconds } from "../../lib/videoDuration";
 import { editMarkLabel } from "./EditCard";
+import { EditExportConfirm } from "./EditExportConfirm";
 import { EditMarkerColorMenu, EditMarkerMenu } from "./EditMarkerMenu";
 import { arrangePool, EditPool, type PoolItem } from "./EditPool";
 import { EditSidebar } from "./EditSidebar";
@@ -104,7 +107,15 @@ interface Props {
   onPreview: (target: PreviewTarget) => void;
   onCompare: (gens: Generation[]) => void;
   // 풀에서 고른 것·타임라인의 클립을 Resolve 보내기 — 앱의 보내기 줄(대기열·연결 확인)을 그대로 쓴다.
-  resolve: { send: (gens: Generation[]) => void; busy: boolean; pendingCount: number };
+  //  sendTimeline = 막대의 [타임라인 Resolve 보내기] — 원본을 보내고 그 프로젝트에 새 타임라인을 짓는다(같은 줄에 선다).
+  //  끝나면 결과로 풀린다(보내지 못했으면 null). timelineBusy = 그 일이 줄에 있다(탭을 떠났다 와도 남는다).
+  resolve: {
+    send: (gens: Generation[]) => void;
+    busy: boolean;
+    pendingCount: number;
+    sendTimeline: (plan: unknown, gens: Generation[], target: ResolveProjectTarget) => Promise<ResolveTimelineResult | null>;
+    timelineBusy: boolean;
+  };
   // 왼쪽 폴더 트리의 폴더 메뉴(공유 저장 · 최종 저장 · 원본 위치 열기) — 앱의 것 그대로(공유 & 리뷰 탭과 같은 길)
   onFolderAction: (kind: FolderMenuKind, projectId: string, path: string, name: string) => void | Promise<void>;
 }
@@ -903,6 +914,34 @@ function EditTabInner({
   }, [applyEdit]);
 
   const project = projects.find((item) => item.id === target?.projectId);
+  // 막대의 [타임라인 Resolve 보내기](Jay 2026-10-13) — 누르면 확인 창(무엇이 어디로 가는지 · Resolve 가 켜져 있는지), 거기서
+  //  [보내기]를 눌러야 간다. 계획은 창이 떠 있는 동안의 **지금 배치**로 짓는다(lib/editResolveExport). 누를 때마다 새 타임라인이다.
+  //  exportDone = 방금 계획대로 끝났다(잠깐 보이는 표시). 다르게 놓였거나 실패한 것은 안내 줄이 말한다.
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportDone, setExportDone] = useState(false);
+  const exportName = timelineExportName(project?.name ?? "", seq);
+  const exported = useMemo(
+    () => (exportOpen ? buildTimelineExport({ layout, doc, links, name: exportName }) : null),
+    [exportOpen, layout, doc, links, exportName],
+  );
+  const doneTimer = useRef<number | null>(null);
+  useEffect(() => {
+    doneTimer.current = null; // 개발 화면(StrictMode)은 effect 를 한 번 걷었다 다시 돌린다 — 다시 살린다
+    return () => {
+      if (doneTimer.current !== null) window.clearTimeout(doneTimer.current);
+      doneTimer.current = -1; // 떠난 뒤에 끝난 보내기는 표시를 켜지 않는다
+    };
+  }, []);
+  const sendTimeline = (to: ResolveProjectTarget) => {
+    if (!exported) return;
+    setExportOpen(false);
+    void resolve.sendTimeline(exported.plan, exported.gens, to).then((result) => {
+      if (result?.timeline.status !== "complete" || doneTimer.current === -1) return;
+      setExportDone(true);
+      if (doneTimer.current !== null) window.clearTimeout(doneTimer.current);
+      doneTimer.current = window.setTimeout(() => setExportDone(false), 3000);
+    });
+  };
   const slot = layout.cuts.find((item) => item.path === cut);
   const empty = !target ? t("왼쪽에서 컷 폴더가 들어 있는 폴더를 고르세요.")
     : !layout.cuts.length ? (treePaths === null && list.state === "loading" ? t("불러오는 중...") : t("이 폴더 안에 컷 폴더가 없습니다."))
@@ -1095,6 +1134,20 @@ function EditTabInner({
           {/* 인/아웃 구간의 길이(누르면 지운다)와 북마크 — 마크 인/아웃 단추는 뷰어 오른쪽 아래에 있다(다빈치) */}
           {target && (
             <span className="ed-marks">
+              {/* 타임라인 Resolve 보내기 — 오른쪽 도구들의 맨 앞(다빈치의 Quick Export 자리). 누르면 확인 창이 뜬다 */}
+              <button type="button" className={"ed-mbtn ed-export-btn" + (exportDone ? " ed-export-done" : "")}
+                disabled={resolve.timelineBusy} aria-busy={resolve.timelineBusy || undefined}
+                title={t("지금 타임라인을 DaVinci Resolve 의 새 타임라인으로 보냅니다 — 누르면 확인 창이 뜹니다")}
+                onClick={() => {
+                  closeMenu();
+                  setExportOpen(true);
+                }}>
+                {!resolve.timelineBusy && !exportDone && (
+                  <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true"><path d="M6.5 8.5v-7M3.8 3.8 6.5 1.2l2.7 2.6M1.5 8.5v3h10v-3" /></svg>
+                )}
+                {resolve.timelineBusy ? t("보내는 중…") : exportDone ? t("✓ Resolve 에 보냄") : t("타임라인 Resolve 보내기")}
+              </button>
+              <i className="ed-msep" aria-hidden="true" />
               {/* 다빈치의 Dynamic Trim Mode 단추 — [ ‹ | › ] */}
               <button type="button" className={"ed-mbtn ed-mbtn-trim" + (trim ? " ed-on" : "")} aria-pressed={trim} onClick={toggleTrim}
                 title={t("다이나믹 트림 모드 (W) — 나뉜 뷰어를 한 창으로 합쳐 편집점의 앞 컷 | 뒤 컷을 이어 봅니다 · ↑↓ 편집점 · Space 앞뒤 2초 재생")}
@@ -1179,6 +1232,7 @@ function EditTabInner({
           onClipMenu={openClipMenu}
         />
       </main>
+      {exported && target && <EditExportConfirm exported={exported} onSend={sendTimeline} onClose={() => setExportOpen(false)} />}
       {menu && <EditTrackMenu x={menu.x} y={menu.y} rows={menuRows} onPick={placeTo} onClose={closeMenu} />}
       {clipMenu && (
         <EditClipMenu

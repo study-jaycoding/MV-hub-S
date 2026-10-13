@@ -233,6 +233,67 @@ export function createResolveTransfer(
   });
 }
 
+// ── 타임라인 Resolve 보내기(편집 탭) ── 원본 전송에 이어 새 타임라인을 짓는다. 계획은 lib/editResolveExport 가 만든다.
+export interface ResolveTimelineBuild {
+  // complete = 계획대로 · partial = 타임라인은 생겼지만 계획과 다르다(또는 만들다 멈췄다) · failed·unavailable = 만들지 않았다
+  status: "complete" | "partial" | "failed" | "unavailable";
+  timeline_name: string;
+  timeline_id: string;
+  step: string;
+  video: number;
+  audio: number;
+  markers_added: number;
+  markers_skipped: number;
+  mark: boolean;
+  saved: boolean;
+  mismatches: Array<{ track: string; gen_id: string; start: number; expected: number | null; actual: number | null }>;
+  short_sources: Array<{ gen_id: string; track: number; start: number; planned: number; actual: number }>;
+  warnings: string[];
+  error: string | null;
+  error_code: string | null;
+}
+
+export interface ResolveTimelineResult {
+  transfer: ResolveTransferResult;
+  timeline: ResolveTimelineBuild;
+}
+
+export function createResolveTimeline(
+  genIds: string[],
+  target: ResolveProjectTarget,
+  timeline: unknown,
+): Promise<ResolveTimelineResult> {
+  return jsonFetch<ResolveTimelineResult>("/api/resolve/timelines", {
+    method: "POST",
+    body: jsonBody({
+      gen_ids: genIds,
+      resolve_project_id: target.project_id || "",
+      resolve_project_name: target.project_name || "",
+      timeline,
+    }),
+  });
+}
+
+/** 한 줄 결과 — '만들었다'고만 말하면 계획과 다르게 놓인 것이 조용히 묻힌다. 다른 점·못 한 것을 같이 적는다. */
+export function resolveTimelineSummary(result: ResolveTimelineResult): string {
+  const built = result.timeline;
+  const name = built.timeline_name;
+  if (built.status === "complete") {
+    const markers = built.markers_added ? ` · 북마크 ${built.markers_added}` : "";
+    return `Resolve 에 타임라인 '${name}' 을 만들었습니다 · 클립 ${built.video}${markers}`;
+  }
+  if (name) {
+    const reason = built.mismatches.length
+      ? `자리가 다른 클립 ${built.mismatches.length}개`
+      : built.error || built.warnings[0] || "일부를 적용하지 못했습니다";
+    return `Resolve 에 타임라인 '${name}' 을 만들었지만 확인이 필요합니다 · ${reason}`;
+  }
+  const prepareFailed = result.transfer.error_count
+    ? ` · 원본 준비 실패 ${result.transfer.error_count}개`
+    : "";
+  return `타임라인을 만들지 못했습니다 · ${built.error || "Resolve 연결 실패"}${prepareFailed}`;
+}
+
 export function getResolveConnectionStatus(): Promise<ResolveConnectionStatus> {
   return jsonFetch<ResolveConnectionStatus>("/api/resolve/status", { cache: "no-store" });
 }
