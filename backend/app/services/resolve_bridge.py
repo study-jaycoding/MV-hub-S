@@ -386,13 +386,26 @@ def _assert_expected_project(manifest: dict[str, Any], project: Any) -> None:
         )
 
 
-def _assert_still_current(project_manager: Any, started: tuple[str, str]) -> None:
-    """Resolve 를 바꾸거나 저장하기 직전마다 — 지금 열린 프로젝트가 이 가져오기를 시작한 그 프로젝트인가.
+class _ProjectChanged(ResolveBridgeError):
+    """가져오는 도중 Resolve 에서 다른 프로젝트가 열렸다(code = project_changed).
 
+    fact = 무슨 일이 있었나, hint = 무엇을 하면 되나 — 글은 둘을 이은 것이다. 따로 두는 까닭: Bin 순서를 다시 짓다 멈춘 때는
+    '다시 가져오기'가 아니라 **복구가 먼저**라, 같은 사실에 다른 안내를 붙인다(leftover = 그때 남은 임시 Bin·백업)."""
+
+    def __init__(self, fact: str, hint: str, leftover: dict[str, str] | None = None):
+        super().__init__(f"{fact} — {hint}", code="project_changed")
+        self.fact = fact
+        self.leftover = leftover or {}
+
+
+def _assert_still_current(project_manager: Any, started: tuple[str, str]) -> None:
+    """Resolve 에 **쓰는 호출 바로 앞마다** — 지금 열린 프로젝트가 이 가져오기를 시작한 그 프로젝트인가.
+
+    쓰는 호출 = Bin 만들기·클립 옮기기·Bin 지우기 하나하나, 가져오기 묶음, 저장(정렬 백업·복구의 저장 포함).
     **ProjectManager 에서 다시 물어** 본다(resolve_timeline 의 guard 와 같은 확인): 처음 받은 project 객체만 보면 그사이 다른
     프로젝트를 연 것을 놓치고, SaveProject 는 **그때 열려 있는** 프로젝트를 저장한다(Codex 배포 전 검토 2026-10-13).
     started = 시작할 때의 (ID, 이름) — ID 를 못 읽는 Resolve 는 이름으로 견준다. 사람의 조작과 API 호출 사이의 틈까지
-    막지는 못한다(묶음 하나를 가져오는 도중에 바꾸면 그 묶음은 끝난다 — 그 뒤로 멈추고 저장하지 않는다)."""
+    막지는 못한다(호출 하나 — 가져오기 묶음이면 그 묶음 — 가 도는 도중에 바꾸면 그 호출은 끝난다. 그 뒤로 멈추고 저장하지 않는다)."""
     current = project_manager.GetCurrentProject()
     current_id, current_name = _project_identity(current) if current else ("", "")
     started_id, started_name = started
@@ -400,12 +413,11 @@ def _assert_still_current(project_manager: Any, started: tuple[str, str]) -> Non
         current_id == started_id if started_id and current_id else current_name == started_name
     )
     if not same:
-        raise ResolveBridgeError(
+        raise _ProjectChanged(
             "가져오는 도중 Resolve 프로젝트가 바뀌어 멈췄습니다 "
             f"(시작: {started_name or started_id}, 현재: {current_name or current_id or '없음'}). "
-            "지금 열린 프로젝트는 저장하지 않았습니다 — 시작한 프로젝트를 다시 연 뒤 "
-            "준비된 원본 다시 가져오기를 실행하세요",
-            code="project_changed",
+            "지금 열린 프로젝트는 저장하지 않았습니다",
+            "시작한 프로젝트를 다시 연 뒤 준비된 원본 다시 가져오기를 실행하세요",
         )
 
 
@@ -860,8 +872,9 @@ def _clip_identity(clip: Any) -> str:
 
 
 def _create_tree(
-    media_pool: Any, root: Any, paths: set[tuple[str, ...]]
+    media_pool: Any, root: Any, paths: set[tuple[str, ...]], guard: Any
 ) -> dict[tuple[str, ...], Any]:
+    """paths 의 Bin 을 (없으면) 만든다. guard() 는 Bin 하나마다 — 긴 조회 뒤의 첫 쓰기 앞과 만드는 사이사이에서 프로젝트를 다시 본다."""
     nodes: dict[tuple[str, ...], Any] = {(): root}
     all_nodes = {
         parts[:depth]
@@ -872,18 +885,20 @@ def _create_tree(
         all_nodes, key=lambda value: (len(value), _folder_path_sort_key(value))
     ):
         parent = nodes[parts[:-1]]
+        guard()
         nodes[parts] = _subfolder(parent, _folder_name(parts[-1], "미분류"), media_pool)
     return nodes
 
 
-def _delete_empty_children(media_pool: Any, parent: Any) -> None:
+def _delete_empty_children(media_pool: Any, parent: Any, guard: Any) -> None:
     delete_folders = getattr(media_pool, "DeleteFolders", None)
     if not callable(delete_folders):
         raise ResolveBridgeError("현재 Resolve가 빈 Bin 삭제를 지원하지 않습니다")
     for child in list(parent.GetSubFolderList() or []):
-        _delete_empty_children(media_pool, child)
+        _delete_empty_children(media_pool, child, guard)
         if (child.GetClipList() or []) or (child.GetSubFolderList() or []):
             raise ResolveBridgeError(f"비어 있지 않은 Bin은 정리하지 않습니다: {child.GetName()}")
+        guard()  # 지우기 하나마다 — 바뀐 프로젝트에서 이어 지우지 않는다
         if not delete_folders([child]):
             raise ResolveBridgeError(f"빈 Bin을 정리하지 못했습니다: {child.GetName()}")
         _refresh_folders(media_pool)
@@ -927,7 +942,9 @@ def _reconcile_folder_tree_visible(
     guard: Any,
 ) -> tuple[bool, str]:
     """MoveFolders 없이 클립을 보존하며 MV Hub Bin을 카탈로그 순서로 맞춘다.
-    guard() = 지금 열린 프로젝트가 시작한 그 프로젝트가 아니면 예외(_assert_still_current) — 저장·옮기기·지우기 직전에 부른다."""
+    guard() = 지금 열린 프로젝트가 시작한 그 프로젝트가 아니면 예외(_assert_still_current) — 저장 직전과, Bin 만들기·클립
+    옮기기·Bin 지우기 **하나마다** 부른다(Codex 재검토 2026-10-13: 묶음 경계만 보면 그 사이의 여러 쓰기가 바뀐 프로젝트로 간다).
+    다시 짓는 도중에 바뀌면 되돌리지도 저장하지도 않고, 남은 임시 Bin·백업을 담은 _ProjectChanged 로 끝낸다."""
     actual_nodes, actual_children = _scan_actual_tree(managed_root)
     # 과거 목록 파일은 읽지 않는다. Resolve에 이미 있는 Bin은 보존하고,
     # 이번에 선택한 경로만 더해 자연 정렬 대상을 만든다.
@@ -947,7 +964,7 @@ def _reconcile_folder_tree_visible(
 
     if not rebuild_needed:
         before_count = len(actual_nodes)
-        _create_tree(media_pool, managed_root, desired_paths)
+        _create_tree(media_pool, managed_root, desired_paths, guard)
         return len(desired_nodes) > before_count, ""
 
     move_clips = getattr(media_pool, "MoveClips", None)
@@ -979,20 +996,23 @@ def _reconcile_folder_tree_visible(
     staged_nodes: dict[tuple[str, ...], Any] = {(): staging}
     try:
         _journal("rebuild_to_staging", staging_bin=staging_name)
-        staged_nodes = _create_tree(media_pool, staging, set(snapshots))
+        staged_nodes = _create_tree(media_pool, staging, set(snapshots), guard)
         for path, (clips, _identities) in snapshots.items():
+            if clips:
+                guard()
             if clips and not move_clips(clips, staged_nodes[path]):
                 raise ResolveBridgeError(f"클립을 정렬용 공간으로 옮기지 못했습니다: {'/'.join(path)}")
         for identity, (_path, folder) in actual_nodes.items():
             if identity and (folder.GetClipList() or []):
                 raise ResolveBridgeError(f"기존 Bin에 클립이 남아 있습니다: {folder.GetName()}")
 
-        guard()
         _journal("rebuild_to_final", staging_bin=staging_name)
-        _delete_empty_children(media_pool, managed_root)
-        final_nodes = _create_tree(media_pool, managed_root, desired_paths)
+        _delete_empty_children(media_pool, managed_root, guard)
+        final_nodes = _create_tree(media_pool, managed_root, desired_paths, guard)
         for path, (_clips, expected) in snapshots.items():
             staged_clips = list(staged_nodes[path].GetClipList() or [])
+            if staged_clips:
+                guard()
             if staged_clips and not move_clips(staged_clips, final_nodes[path]):
                 raise ResolveBridgeError(f"클립을 정렬된 Bin으로 되돌리지 못했습니다: {'/'.join(path)}")
             actual = Counter(map(_clip_identity, final_nodes[path].GetClipList() or []))
@@ -1000,7 +1020,8 @@ def _reconcile_folder_tree_visible(
                 raise ResolveBridgeError(f"정렬 후 클립 검증이 일치하지 않습니다: {'/'.join(path)}")
 
         _journal("rebuild_verified", staging_bin=staging_name)
-        _delete_empty_children(media_pool, staging)
+        _delete_empty_children(media_pool, staging, guard)
+        guard()
         if not media_pool.DeleteFolders([staging]):
             raise ResolveBridgeError("Resolve 정렬용 임시 Bin을 정리하지 못했습니다")
         _refresh_folders(media_pool)
@@ -1016,8 +1037,10 @@ def _reconcile_folder_tree_visible(
         return True, backup_path
     except Exception as exc:
         recovery_errors: list[str] = []
+        changed = exc if isinstance(exc, _ProjectChanged) else None
         try:
-            guard()  # 프로젝트가 바뀌었으면 되돌리기도 저장도 하지 않는다(지금 열린 것은 다른 프로젝트다)
+            # 되돌리기의 쓰기(Bin 만들기·클립 옮기기·지우기·저장)도 하나마다 프로젝트를 본다 — 바뀌었으면 첫 쓰기 앞에서 손을 뗀다
+            #  (지금 열린 것은 다른 프로젝트다).
             remaining: dict[tuple[str, ...], list[Any]] = {}
             if staging:
                 staged_actual, _children = _scan_actual_tree(staging)
@@ -1025,12 +1048,14 @@ def _reconcile_folder_tree_visible(
                     if path and (clips := list(folder.GetClipList() or [])):
                         remaining[path] = clips
             if remaining:
-                recovery_nodes = _create_tree(media_pool, managed_root, set(remaining))
+                recovery_nodes = _create_tree(media_pool, managed_root, set(remaining), guard)
                 for path, clips in remaining.items():
+                    guard()
                     if clips and not move_clips(clips, recovery_nodes[path]):
                         recovery_errors.append(f"클립 복구 실패: {'/'.join(path)}")
             if staging and not recovery_errors:
-                _delete_empty_children(media_pool, staging)
+                _delete_empty_children(media_pool, staging, guard)
+                guard()
                 if not media_pool.DeleteFolders([staging]):
                     recovery_errors.append("임시 Bin 정리 실패")
                 else:
@@ -1038,8 +1063,22 @@ def _reconcile_folder_tree_visible(
                     _journal("rebuild_staging_deleted", staging_bin="")
             guard()
             project_manager.SaveProject()
+        except _ProjectChanged as gone:  # 되돌리기 전이나 되돌리는 사이에 바뀌었다 — 여기서 손을 뗀다
+            changed = gone
         except Exception as recovery_exc:  # noqa: BLE001 - 복구 결과를 원인과 함께 보고한다.
             recovery_errors.append(str(recovery_exc))
+        if changed is not None:
+            # 다시 짓다 멈췄다 — 시작한 프로젝트에 임시 Bin 이 남았을 수 있다. 이 사실과 백업 자리를 버리지 않는다: 부르는 쪽이
+            #  정렬 실패로 삼켜 '다시 가져오기'만 안내하면, 다시 가져오기는 MV Hub Bin 만 보므로 임시 Bin 의 클립을 못 되살린다
+            #  (Codex 재검토 2026-10-13 P1).
+            first = "" if exc is changed else f" 처음 실패: {exc}."
+            raise _ProjectChanged(
+                changed.fact,
+                f"Bin 순서를 다시 짓던 중이었습니다.{first} 시작한 프로젝트에는 기존 클립 일부가 임시 Bin '{staging_name}' 에 "
+                "남아 있을 수 있습니다 — 다시 가져오기 **전에** 그 프로젝트를 열어 그 클립을 원래 Bin 으로 옮기거나 "
+                f"백업을 불러오세요. 백업: {backup_path}",
+                {"folder_order_backup": backup_path, "rebuild_staging_bin": staging_name},
+            ) from exc
         suffix = f" 백업: {backup_path}"
         if recovery_errors:
             suffix += "; 자동 복구 확인 필요: " + ", ".join(recovery_errors)
@@ -1152,9 +1191,6 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
         ordering_errors: list[str] = []
         ordering_error_codes: list[str] = []
         reordered = False
-        # 프로젝트가 바뀌었으면 여기서 통째로 멈춘다(import_manifest_to_current_project 가 project_changed 로 돌려준다) —
-        # 아래 try 는 정렬 실패를 삼키고 가져오기를 이어 가므로, 확인은 그 밖에서 한다.
-        guard()
         try:
             reordered, backup_path = _reconcile_folder_tree(
                 manifest,
@@ -1167,14 +1203,18 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
                 guard,
             )
             result["folder_order_backup"] = backup_path
+        except _ProjectChanged:
+            # 정렬 실패로 삼키지 않는다 — 통째로 멈춘다(import_manifest_to_current_project 가 project_changed 로 돌려준다).
+            #  다시 짓다 멈춘 것이면 남은 임시 Bin·백업이 그 글에 있다: 삼키고 뒤의 확인이 새 글을 내면 그것이 사라진다.
+            raise
         except Exception as exc:  # noqa: BLE001 - 가져오기는 유지하고 정렬 실패를 보고한다.
             ordering_errors.append(str(exc))
             ordering_error_codes.append(getattr(exc, "code", None) or "unexpected_error")
-        guard()  # 정렬(백업 내보내기 포함)이 끝난 뒤 — Bin 을 더 만들기 전에
 
         prepared_targets = {(): managed_root}
         folder_errors: dict[tuple[str, ...], str] = {}
         for parts_key in sorted(folder_paths, key=_folder_path_sort_key):
+            guard()  # 아래 try 는 그 경로의 항목만 실패시키고 이어 간다 — 프로젝트 확인은 그 밖에서(Bin 을 만드는 일이다)
             try:
                 prepared_targets[parts_key] = _destination_folder(
                     media_pool, managed_root, list(parts_key)
@@ -1372,6 +1412,7 @@ def import_manifest_to_current_project(
     except ResolveBridgeError as exc:
         # ★ 먼저 잡아 code 를 보존한다(명세 §C). 종전엔 아래 일반 catch 가 삼켜
         # project_changed 같은 판정 근거가 API 까지 전달되지 않았다.
-        return _unavailable_import(str(exc), exc.code)
+        # Bin 순서를 다시 짓다 멈춘 것이면 남은 임시 Bin·백업 자리도 결과에 싣는다(글에도 있다 — 복구가 먼저인 상태).
+        return {**_unavailable_import(str(exc), exc.code), **getattr(exc, "leftover", {})}
     except Exception as exc:  # noqa: BLE001 - Resolve 외부 API 오류가 HTTP 500으로 번지지 않게 한다.
         return _unavailable_import(str(exc), "unexpected_error")
