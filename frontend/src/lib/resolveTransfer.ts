@@ -246,7 +246,8 @@ export interface ResolveTimelineBuild {
   markers_skipped: number;
   mark: boolean;
   saved: boolean;
-  mismatches: Array<{ track: string; gen_id: string; start: number; expected: number | null; actual: number | null }>;
+  // 되읽어 보니 계획과 다른 자리. short = 자리는 맞고 원본이 짧아 끝만 비었다(한 프레임 이내)
+  mismatches: Array<{ track: string; gen_id: string; start: number; expected: number | null; actual: number | null; short: boolean }>;
   short_sources: Array<{ gen_id: string; track: number; start: number; planned: number; actual: number }>;
   warnings: string[];
   error: string | null;
@@ -274,7 +275,10 @@ export function createResolveTimeline(
   });
 }
 
-/** 한 줄 결과 — '만들었다'고만 말하면 계획과 다르게 놓인 것이 조용히 묻힌다. 다른 점·못 한 것을 같이 적는다. */
+// 자식 프로세스가 결과 없이 끝났다 — 타임라인을 만들었는지 알 수 없다(만든 뒤에 죽었을 수 있다)
+const TIMELINE_OUTCOME_UNKNOWN = new Set(["child_crashed", "invalid_child_result"]);
+
+/** 한 줄 결과 — '만들었다'고만 말하면 계획과 다르게 놓인 것이 조용히 묻힌다. 다른 점·못 한 것을 모두 같이 적는다. */
 export function resolveTimelineSummary(result: ResolveTimelineResult): string {
   const built = result.timeline;
   const name = built.timeline_name;
@@ -283,10 +287,18 @@ export function resolveTimelineSummary(result: ResolveTimelineResult): string {
     return `Resolve 에 타임라인 '${name}' 을 만들었습니다 · 클립 ${built.video}${markers}`;
   }
   if (name) {
-    const reason = built.mismatches.length
-      ? `자리가 다른 클립 ${built.mismatches.length}개`
-      : built.error || built.warnings[0] || "일부를 적용하지 못했습니다";
-    return `Resolve 에 타임라인 '${name}' 을 만들었지만 확인이 필요합니다 · ${reason}`;
+    const short = built.mismatches.filter((item) => item.short).length;
+    const moved = built.mismatches.length - short;
+    const reasons = [
+      moved ? `자리가 다른 클립 ${moved}개` : "",
+      short ? `원본이 짧아 끝이 비는 클립 ${short}개` : "",
+      built.error || "",
+      ...built.warnings,
+    ].filter(Boolean);
+    return `Resolve 에 타임라인 '${name}' 을 만들었지만 확인이 필요합니다 · ${reasons.join(" · ") || "일부를 적용하지 못했습니다"}`;
+  }
+  if (TIMELINE_OUTCOME_UNKNOWN.has(built.error_code || "")) {
+    return `타임라인을 만들었는지 확인하지 못했습니다 — 다시 보내기 전에 Resolve 를 확인하세요 · ${built.error || "결과를 받지 못했습니다"}`;
   }
   const prepareFailed = result.transfer.error_count
     ? ` · 원본 준비 실패 ${result.transfer.error_count}개`

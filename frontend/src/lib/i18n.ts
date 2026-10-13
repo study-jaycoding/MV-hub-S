@@ -169,6 +169,8 @@ const EN: Record<string, string> = {
     "{count} clips were not found in the shared list — make sure the list finished loading, and remove or replace clips that are gone.",
   "타임라인에 넣은 클립이 없습니다.": "There are no clips on the timeline.",
   "같은 프레임에 겹친 북마크 {count}개는 빠집니다.": "{count} bookmarks sharing a frame are left out.",
+  "끝의 빈 컷({time})은 Resolve 타임라인에 남지 않습니다 — Resolve 의 타임라인은 마지막 클립에서 끝납니다.":
+    "The empty cuts at the end ({time}) are not kept in Resolve — a Resolve timeline ends at its last clip.",
   "누를 때마다 새 타임라인을 만듭니다 — 앞서 만든 타임라인은 바꾸지 않습니다. 소리는 맨 위에 보이는 영상의 것만 가고, 트랙 색과 위쪽 컷 이름 줄은 넘어가지 않습니다.":
     "Each send creates a new timeline — earlier ones are left untouched. Only the audio of the topmost visible video is sent; track colors and the cut-name row are not.",
   "보내기": "Send",

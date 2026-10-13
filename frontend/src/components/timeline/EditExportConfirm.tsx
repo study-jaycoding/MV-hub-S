@@ -2,6 +2,7 @@
 //  편집 탭은 Resolve 가 켜져 있는지 늘 알고 있지 않다(상태를 물어 두지 않는다) — 창이 열릴 때 한 번 묻고, [다시 확인]으로 또 묻는다.
 //  [보내기]는 그때 열려 있던 Resolve 프로젝트를 받는 곳으로 넘긴다. 그사이 프로젝트가 바뀌면 받는 쪽(서버)이 멈춘다.
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { TimelineExport } from "../../lib/editResolveExport";
 import { timecode } from "../../lib/editTimeline";
 import { useT } from "../../lib/i18n";
@@ -49,7 +50,7 @@ export function EditExportConfirm({ exported, onSend, onClose }: {
     return () => { turn.current += 1; };
   }, [ask]);
 
-  const { plan, gens, unresolved, perTrack, disabled, markersDropped } = exported;
+  const { plan, gens, unresolved, perTrack, disabled, markersDropped, end, tailEmpty } = exported;
   const checked = checkResolveSelection(gens);
   // 보낼 수 없는 까닭 — 못 이은 클립을 빼고 보내면 '그대로'가 아니다(lib/editResolveExport)
   const problem = unresolved > 0
@@ -59,7 +60,8 @@ export function EditExportConfirm({ exported, onSend, onClose }: {
       : checked.ok ? null : t(checked.message);
   const tracks = perTrack.map((count, index) => ({ count, track: index + 1 })).filter((item) => item.count > 0);
 
-  return (
+  // body 에 그린다(편집 탭의 메뉴들과 같다) — 편집 화면(.body) 안에 두면 그 칸의 쌓임·inert 에 묶인다
+  return createPortal(
     <>
       <div className="gradestep-catcher" onMouseDown={onClose} />
       <div ref={modalRef} className="gradestep-modal ed-export" role="dialog" aria-modal="true" aria-label={t("타임라인 Resolve 보내기")}>
@@ -72,7 +74,7 @@ export function EditExportConfirm({ exported, onSend, onClose }: {
             <dt>{t("내용")}</dt>
             <dd>
               {tracks.map((item) => `V${item.track} ${item.count}`).join(" · ") || "—"}
-              {" · "}{timecode(plan.total / plan.fps)}
+              {" · "}{timecode(end / plan.fps)}
               {disabled > 0 && <>{" · "}{t("끈 클립 {count}").replace("{count}", String(disabled))}</>}
               {plan.markers.length > 0 && <>{" · "}{t("북마크 {count}").replace("{count}", String(plan.markers.length))}</>}
               {plan.mark && <>{" · "}{t("인/아웃")}</>}
@@ -90,6 +92,13 @@ export function EditExportConfirm({ exported, onSend, onClose }: {
             </dd>
           </dl>
           {problem && <p className="ed-export-bad" role="alert">{problem}</p>}
+          {/* 길이는 마지막 클립의 끝까지다 — 그 뒤의 빈 컷을 길이에 넣어 보이면 없는 것을 약속한다(Codex 코드 리뷰) */}
+          {tailEmpty > 0 && (
+            <p className="ed-export-tail">
+              {t("끝의 빈 컷({time})은 Resolve 타임라인에 남지 않습니다 — Resolve 의 타임라인은 마지막 클립에서 끝납니다.")
+                .replace("{time}", timecode(tailEmpty / plan.fps))}
+            </p>
+          )}
           {markersDropped > 0 && (
             <p>{t("같은 프레임에 겹친 북마크 {count}개는 빠집니다.").replace("{count}", String(markersDropped))}</p>
           )}
@@ -105,6 +114,7 @@ export function EditExportConfirm({ exported, onSend, onClose }: {
           </button>
         </div>
       </div>
-    </>
+    </>,
+    document.body,
   );
 }

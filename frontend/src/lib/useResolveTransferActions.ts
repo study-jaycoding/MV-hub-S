@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import type { Generation } from "../types";
+import { HttpError } from "./http";
 import {
   checkResolveSelection,
   createResolveTimeline,
@@ -72,8 +73,16 @@ export function useResolveTransferActions({ flash }: UseResolveTransferActionsAr
           try {
             result = await createResolveTimeline(task.genIds, task.target, task.plan);
             flashRef.current(resolveTimelineSummary(result));
+          } catch (error) {
+            // 4xx = 서버가 시작하기 전에 거절했다(만든 것이 없다). 그 밖(끊김·5xx)은 서버가 끝까지 돌았을 수 있다 — 요청이 끊겨도
+            //  서버는 작업을 버리지 않는다(run_non_abandon). 만들어졌는지 모르는 채 '실패'라고만 하면 다시 눌러 둘이 된다.
+            const refused = error instanceof HttpError && error.status >= 400 && error.status < 500;
+            flashRef.current(
+              `타임라인 보내기 실패: ${readableError(error)}`
+              + (refused ? "" : " — 만들어졌을 수 있습니다. 다시 보내기 전에 Resolve 를 확인하세요"),
+            );
           } finally {
-            task.done(result); // 실패(예외)도 알린다 — 단추가 '보내는 중'에 남지 않게. 안내는 아래 onError 가 띄운다
+            task.done(result); // 실패해도 알린다 — 단추가 '보내는 중'에 남지 않게
           }
           return;
         }

@@ -12,6 +12,7 @@ vi.mock("../src/lib/resolveTransfer", async () => ({
   createResolveTimeline: api.timeline,
 }));
 
+import { HttpError } from "../src/lib/http";
 import { useResolveTransferActions } from "../src/lib/useResolveTransferActions";
 
 const gen = (id: string, extra: Partial<Generation> = {}) => ({
@@ -65,14 +66,22 @@ it("보내면 줄에 서고, 끝나면 결과로 풀리며 '보내는 중'이 �
 });
 
 it("요청이 실패해도 풀린다(null) — 단추가 '보내는 중'에 남지 않고, 실패를 알린다", async () => {
-  api.timeline.mockRejectedValue(new Error("409: 다른 Resolve 프로젝트가 열려 있습니다"));
+  api.timeline.mockRejectedValue(new HttpError(409, "409: 다른 Resolve 프로젝트가 열려 있습니다", "다른 Resolve 프로젝트가 열려 있습니다"));
   let answer: unknown = "대기";
   await act(async () => {
     void hook.sendTimelineToResolve(plan, [gen("a")], target).then((value) => { answer = value; });
   });
   expect(answer).toBeNull();
-  expect(hook.timelineBusy).toBe(false);
-  expect(flashed.at(-1)).toBe("Resolve 전송 실패: 다른 Resolve 프로젝트가 열려 있습니다");
+  expect([hook.timelineBusy, hook.busy]).toEqual([false, false]);
+  expect(flashed.at(-1)).toBe("타임라인 보내기 실패: 다른 Resolve 프로젝트가 열려 있습니다"); // 서버가 시작 전에 거절했다 — 만든 것이 없다
+
+  // 끊김·5xx — 서버는 요청이 끊겨도 작업을 끝까지 한다. 만들어졌는지 모르는 채 '실패'라고만 하면 다시 눌러 둘이 된다(Codex 코드 리뷰)
+  for (const failure of [new TypeError("Failed to fetch"), new HttpError(502, "502: Bad Gateway", "Bad Gateway")]) {
+    api.timeline.mockRejectedValue(failure);
+    await act(async () => { void hook.sendTimelineToResolve(plan, [gen("a")], target); });
+    expect(flashed.at(-1)).toContain("만들어졌을 수 있습니다. 다시 보내기 전에 Resolve 를 확인하세요");
+    expect(hook.timelineBusy).toBe(false);
+  }
 });
 
 it("보낼 수 없는 것이 섞여 있으면 요청하지 않는다", async () => {

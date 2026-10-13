@@ -42,6 +42,14 @@ describe("buildTimelineExport", () => {
     expect(out.plan).toMatchObject({ format: "mvhub.edit-timeline", version: 1, name: "뻘뻘뻘_e035", fps: 24, video_tracks: 3, total: 415 });
     expect(out.gens.map((item) => item.id)).toEqual(["a", "b", "c"]);
     expect([out.unresolved, out.perTrack, out.disabled]).toEqual([0, [3, 0, 0], 0]);
+    expect([out.end, out.tailEmpty]).toEqual([415, 0]); // 마지막 컷에 클립이 있다 — 끝이 전체 길이와 같다
+  });
+
+  // Resolve 의 타임라인은 마지막 클립에서 끝난다(실측) — 끝의 빈 컷은 남지 않는다. 확인 창이 그 길이를 약속하지 않게 따로 센다.
+  it("끝의 빈 컷은 따로 센다 — 타임라인의 끝은 마지막 클립의 끝이다", () => {
+    const doc: EditDoc = { ...emptyEditDoc(), clips: [clip("C0010", "a", 1, 5), clip("C0010", "b", 2, 3)] };
+    const out = build(doc, ["C0010", "C0020", "C0030"]); // 뒤의 두 컷이 비었다(5초씩)
+    expect([out.plan.total, out.end, out.tailEmpty]).toEqual([360, 120, 240]);
   });
 
   it("쌓은 클립 — 위 트랙도 컷의 처음에서 시작하고, 꺼진 클립·꺼진 트랙·잠금은 그대로 싣는다", () => {

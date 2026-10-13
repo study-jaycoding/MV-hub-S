@@ -75,6 +75,8 @@ export interface TimelineExport {
   perTrack: number[]; // perTrack[n - 1] = Vn 의 클립 수
   disabled: number; // 꺼진 채 들어가는 클립 수
   markersDropped: number; // 같은 프레임에 겹쳐 뺀 북마크 수(Resolve 는 프레임마다 하나)
+  end: number; // 마지막 클립의 끝(프레임) — Resolve 의 타임라인은 여기서 끝난다
+  tailEmpty: number; // 그 뒤에 남는 빈 컷의 길이(프레임, plan.total − end) — Resolve 에 남지 않는다(실측: 끝의 빈 구간은 보존되지 않는다)
 }
 
 export interface ExportLink {
@@ -157,6 +159,8 @@ export function buildTimelineExport(args: {
 
   const range = markRange(layout, doc);
   const mark = range && frame(range.to) > frame(range.from) ? { in: frame(range.from), out: frame(range.to) } : null;
+  const total = frame(layout.total);
+  const end = clips.reduce((latest, clip) => Math.max(latest, clip.end), 0);
 
   return {
     plan: {
@@ -172,12 +176,14 @@ export function buildTimelineExport(args: {
       audio,
       markers,
       mark,
-      total: frame(layout.total),
+      total,
     },
     gens: [...gens.values()],
     unresolved,
     perTrack,
     disabled,
     markersDropped,
+    end,
+    tailEmpty: Math.max(0, total - end),
   };
 }

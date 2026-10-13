@@ -1523,8 +1523,9 @@ it("막대의 [타임라인 Resolve 보내기] — 확인 창이 무엇이 어�
   act(() => button().click());
   expect(timelineSent).toEqual([]); // 누르는 것만으로는 가지 않는다
   expect(modal()!.querySelector(".ed-export-name")!.textContent).toBe("P1_e070");
-  expect(modal()!.querySelector(".ed-export-rows")!.textContent).toContain("V1 2 · V2 1");
+  expect(modal()!.querySelector(".ed-export-rows")!.textContent).toContain("V1 2 · V2 1 · 00:00:10:00"); // 길이 = 마지막 클립의 끝까지
   expect(modal()!.querySelector(".ed-export-rows")!.textContent).toContain("끈 클립 1");
+  expect(modal()!.querySelector(".ed-export-tail")!.textContent).toContain("끝의 빈 컷(00:00:05:00)"); // 빈 컷 c3 — Resolve 에 남지 않는다고 미리 말한다
   expect(backgroundKeysBlocked()).toBe(true); // 떠 있는 동안 편집 키는 쉰다
   expect(to().textContent).toBe("Resolve 연결을 확인하는 중…");
   expect(confirm().disabled).toBe(true);

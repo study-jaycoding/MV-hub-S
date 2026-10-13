@@ -297,14 +297,28 @@ describe("타임라인 Resolve 보내기", () => {
   it("결과 한 줄 — 계획대로 · 만들었지만 다르다 · 만들지 못했다를 구분한다", () => {
     expect(resolveTimelineSummary({ transfer: result(), timeline: built({ markers_added: 2 }) }))
       .toBe("Resolve 에 타임라인 'P1_e070' 을 만들었습니다 · 클립 3 · 북마크 2");
-    const moved = built({ status: "partial", mismatches: [{ track: "V1", gen_id: "g1", start: 0, expected: 120, actual: 96 }] });
-    expect(resolveTimelineSummary({ transfer: result(), timeline: moved }))
-      .toBe("Resolve 에 타임라인 'P1_e070' 을 만들었지만 확인이 필요합니다 · 자리가 다른 클립 1개");
+    // 다른 점은 하나도 빼지 않는다 — 자리가 틀어진 것 · 원본이 짧아 끝만 빈 것 · 적용하지 못한 것(Codex 코드 리뷰: 경고를 버리면 완료로 읽힌다)
+    const moved = built({
+      status: "partial",
+      mismatches: [
+        { track: "V1", gen_id: "g1", start: 0, expected: 120, actual: 96, short: false },
+        { track: "V1", gen_id: "g2", start: 120, expected: 120, actual: 119, short: true },
+        { track: "A1", gen_id: "g2", start: 120, expected: 120, actual: 119, short: true },
+      ],
+      warnings: ["북마크 1개는 Resolve 가 받지 않았습니다"],
+    });
+    expect(resolveTimelineSummary({ transfer: result(), timeline: moved })).toBe(
+      "Resolve 에 타임라인 'P1_e070' 을 만들었지만 확인이 필요합니다 · 자리가 다른 클립 1개 · 원본이 짧아 끝이 비는 클립 2개 · 북마크 1개는 Resolve 가 받지 않았습니다",
+    );
     const stopped = built({ status: "partial", step: "audio", error: "소리 클립을 넣지 못했습니다" }); // 만들다 멈췄다 — 타임라인은 남아 있다
     expect(resolveTimelineSummary({ transfer: result(), timeline: stopped })).toContain("확인이 필요합니다 · 소리 클립을 넣지 못했습니다");
     const none = built({ status: "unavailable", timeline_name: "", timeline_id: "", error: "DaVinci Resolve가 실행 중이지 않습니다" });
     expect(resolveTimelineSummary({ transfer: result({ error_count: 1 }), timeline: none }))
       .toBe("타임라인을 만들지 못했습니다 · DaVinci Resolve가 실행 중이지 않습니다 · 원본 준비 실패 1개");
+    // 자식 프로세스가 결과 없이 끝났다 — 만든 뒤에 죽었을 수 있다. '만들지 못했다'고 단정하면 다시 눌러 둘이 된다
+    const crashed = built({ status: "unavailable", timeline_name: "", timeline_id: "", error: "결과를 읽을 수 없습니다", error_code: "child_crashed" });
+    expect(resolveTimelineSummary({ transfer: result(), timeline: crashed }))
+      .toBe("타임라인을 만들었는지 확인하지 못했습니다 — 다시 보내기 전에 Resolve 를 확인하세요 · 결과를 읽을 수 없습니다");
   });
 });
 

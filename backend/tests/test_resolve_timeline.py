@@ -473,10 +473,35 @@ class BuildTimelineTests(unittest.TestCase):
         self.assertEqual((result["status"], result["error_code"], result["step"]), ("failed", "source_shorter", "measure"))
         self.assertEqual(result["short_sources"], [{"gen_id": "short", "track": 2, "start": 0, "planned": 240, "actual": 144}])
         self.assertEqual(self.project.timelines, [])
-        # 한 프레임 이내의 차이는 그냥 넣는다(반올림)
-        self.items.clear()
+
+    def test_a_source_one_frame_short_is_placed_but_not_called_complete(self):
+        # 한 프레임 이내로 모자란 원본은 있는 만큼 넣는다(막으면 보낼 길이 없다) — 다만 끝이 비므로 '계획대로'가 아니다(Codex 코드 리뷰:
+        #  줄여 넣은 길이를 기대값으로 삼아 complete 라고 했다).
         self.add("near", "e035/C0020", frames=239)
-        self.assertEqual(self.build(plan([clip("near", 1, 0, 240)], tracks=1))["status"], "complete")
+        self.add("ntsc", "e035/C0030", fps=30.0, frames=149)  # 5초(150프레임)에 한 프레임 모자란다 — fps 가 달라도 봐주지 않는다
+        result = self.build(plan(
+            [clip("near", 1, 0, 240), clip("ntsc", 1, 240, 360)],
+            audio=[{"gen_id": "near", "start": 0, "end": 240, "offset": 0}], tracks=1,
+        ))
+        timeline = self.project.timelines[0]
+        self.assertEqual(self.lane(timeline, "video", 1), [("near.mp4", 0, 239, 0), ("ntsc.mp4", 240, 119, 0)])
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(
+            [(row["track"], row["gen_id"], row["start"], row["expected"], row["actual"], row["short"]) for row in result["mismatches"]],
+            [("V1", "near", 0, 240, 239, True), ("V1", "ntsc", 240, 120, 119, True), ("A1", "near", 0, 240, 239, True)],
+        )
+        self.assertEqual((result["error"], result["saved"]), (None, True))  # 멈춘 것이 아니다 — 끝까지 짓고 다른 점을 알린다
+
+    def test_a_marker_resolve_refuses_is_not_called_complete(self):
+        self.add("a", frames=120)
+        original = FakeTimeline.AddMarker
+        FakeTimeline.AddMarker = lambda timeline, *args: False
+        try:
+            result = self.build(plan([clip("a", 1, 0, 120)], markers=[{"frame": 12, "color": "Blue", "name": ""}], tracks=1))
+        finally:
+            FakeTimeline.AddMarker = original
+        self.assertEqual((result["status"], result["markers_added"], result["markers_skipped"]), ("partial", 0, 1))
+        self.assertEqual(result["warnings"], ["북마크 1개는 Resolve 가 받지 않았습니다"])
 
     def test_audio_source_range_uses_the_clip_fps(self):
         self.add("ntsc", fps=30.0, frames=450)  # 15초
@@ -501,8 +526,9 @@ class BuildTimelineTests(unittest.TestCase):
         finally:
             FakeMediaPool.AppendToTimeline = original
         self.assertEqual(result["status"], "partial")
-        self.assertEqual([(row["track"], row["gen_id"], row["start"], row["expected"], row["actual"]) for row in result["mismatches"]],
-                         [("V1", "b", 240, 240, None), ("V1", "", 247, None, 240)])
+        # 자리가 틀어진 것은 '원본이 짧아 끝만 빈 것'(short)이 아니다
+        self.assertEqual([(row["track"], row["gen_id"], row["start"], row["expected"], row["actual"], row["short"]) for row in result["mismatches"]],
+                         [("V1", "b", 240, 240, None, False), ("V1", "", 247, None, 240, False)])
         self.assertEqual(result["timeline_name"], "뻘뻘뻘_e035")
 
     def test_reports_partial_when_required_state_is_not_applied(self):
