@@ -586,19 +586,19 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
         건너뛰지 못한다 — 덮지 않고 그 건만 오류로 남기며, 나머지는 다음 번호로 간다."""
         folder = self.render / "ep001" / "c0010"
         folder.mkdir(parents=True)
-        dropped = folder / "ep001_c0010_davinci_002.mp4"
-        real = resolve_transfer.export_names.disk_numbers
+        dropped = folder / dv("ep001_c0010", 2)
+        real = resolve_transfer.export_names.disk_numbers2
         listed = []
 
-        def listed_then_dropped(target, base, token):
-            found = real(target, base, token)
-            listed.append(target)
+        def listed_then_dropped(folders, project, base, worker):
+            found = real(folders, project, base, worker)
+            listed.append(folders)
             dropped.write_bytes(b"dropped-in-mid-transfer")
             return found
 
         generations = [self._generation(index, "ep001/c0010") for index in (1, 2, 3)]
         with (
-            mock.patch.object(resolve_transfer.export_names, "disk_numbers", side_effect=listed_then_dropped),
+            mock.patch.object(resolve_transfer.export_names, "disk_numbers2", side_effect=listed_then_dropped),
             mock.patch.object(resolve_transfer.time, "sleep"),
         ):
             result = await self._transfer(generations, "dropped")
@@ -609,7 +609,7 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dropped.read_bytes(), b"dropped-in-mid-transfer")
         self.assertEqual(
             [result["items"][0]["filename"], result["items"][2]["filename"]],
-            ["ep001_c0010_davinci_001.mp4", "ep001_c0010_davinci_003.mp4"],
+            [dv("ep001_c0010", 1), dv("ep001_c0010", 3)],
         )
 
     async def test_a_file_at_my_name_without_a_done_mark_is_trusted_only_if_bytes_match(self):

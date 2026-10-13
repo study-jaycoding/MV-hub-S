@@ -461,6 +461,7 @@ class NameBook2:
         self._done: dict[tuple[str, str, int], dict] = {}
         self._confirmed: dict[tuple[str, str], Optional[dict]] = {}
         self._moved: dict[tuple[str, int], tuple[str, int]] = {}
+        self._disk: dict[tuple, int] = {}  # (대상 폴더들, 프로젝트, 작업자) → 거기 이미 있는 가장 큰 번호 — 한 번만 훑는다(allocate)
         self._seen = 0  # 내가 아는 장부 항목 수(읽은 수 + 내가 적은 수) — 항목은 지워지지 않으므로 수가 다르면 남이 적은 것이다
         self.reload()
 
@@ -700,7 +701,11 @@ class NameBook2:
         except OSError as exc:
             raise RegistryError(f"이름 장부 폴더를 만들지 못했습니다: {exc}") from exc
         taken = [seq for (owner_line, seq) in self._owners if owner_line == line]
-        seq = max([*taken, *disk_numbers2(dest_dirs, project, self.base, worker)], default=0)
+        # 대상 폴더는 이 장부를 든 동안 작업자 줄마다 한 번만 훑는다 — 까닭과 천장(ponytail)은 NameBook.allocate 와 같다.
+        slot = (tuple(dest_dirs), project, worker)
+        if slot not in self._disk:
+            self._disk[slot] = max(disk_numbers2(dest_dirs, project, self.base, worker), default=0)
+        seq = max([*taken, self._disk[slot]])
         for _probe in range(_MAX_PROBES):
             seq += 1
             # 번호의 주인으로 적는 열쇠 = 맨 먼저 겨루는 열쇠(`id`)

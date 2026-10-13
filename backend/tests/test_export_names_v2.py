@@ -133,6 +133,27 @@ def test_numbers_already_on_disk_are_skipped_whatever_the_kind(tmp_path):
     assert book(tmp_path).allocate(ident("gen-b", "제이"), "work", ".mp4", [cut, shared]).endswith("_제이_021.mp4")
 
 
+def test_the_destination_folders_are_listed_once_per_worker_line(tmp_path, monkeypatch):
+    """파일마다 대상 폴더를 다시 훑지 않는다 — 장부 하나(저장·전송 한 번)에 작업자 줄마다 한 번. 다음 요청의 새 장부는 다시 훑는다."""
+    cut, shared = dirs(tmp_path)
+    shared.mkdir(parents=True)
+    (cut / "뻘뻘뻘_e035_C0050_fin_리버_004.mp4").write_bytes(b"x")  # 장부에 없는 파일
+    listed = []
+    real = export_names.disk_numbers2
+
+    def counting(folders, project, base, worker):
+        listed.append(worker)
+        return real(folders, project, base, worker)
+
+    monkeypatch.setattr(export_names, "disk_numbers2", counting)
+    names = book(tmp_path)
+    assert [names.allocate(ident(f"gen-{i}"), "share", ".mp4", [cut, shared])[-8:] for i in range(3)] == ["_005.mp4", "_006.mp4", "_007.mp4"]
+    assert names.allocate(ident("gen-j", "제이"), "work", ".mp4", [cut, shared]).endswith("_제이_001.mp4")
+    assert listed == ["리버", "제이"]
+    (shared / "뻘뻘뻘_e035_C0050_share_리버_030.mp4").write_bytes(b"x")  # 훑은 뒤에 장부 없이 놓인 파일 — 든 장부는 모르고, 새 장부가 건너뛴다
+    assert book(tmp_path).allocate(ident("gen-new"), "work", ".mp4", [cut, shared]).endswith("_리버_031.mp4")
+
+
 def test_done_marks_are_per_kind(tmp_path):
     names = book(tmp_path)
     a = ident("gen-a")
