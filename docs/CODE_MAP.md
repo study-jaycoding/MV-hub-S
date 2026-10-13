@@ -736,7 +736,8 @@ updated: 2026-10-13
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `useGenerationLibraryData.ts` | 훅 | 목록 로드·페이징·seq 가드·동기화 판정(§6 계약 지점). `beginComposeList` = 목록을 비우고 다시 받기(캔버스·목록 탭의 '폴더 보기' 창이 열고 닫을 때 — 지금 탭 캐시를 지우고 진행 중 응답을 버린다). 목록 탭 창은 `{ keep }`/`{ restore }` 로 본 목록 첫 쪽 사본을 담았다 먼저 보인다(`backListRef` — 탭 캐시와 별개 칸, 출처는 탭 캐시의 sig 로 확인). `staleList` = 그 사본을 보이는 중 — **지금 문맥의 첫 쪽 응답을 적용한 순간**(성공·실패)에만 꺼진다(버려진 응답·메타 종료로는 안 꺼짐). `listRevision` = 새 첫 쪽을 적용할 때마다 오르는 값(목록과 같은 때에 다시 받을 것 — 폴더 카드 — 의 신호. 목록 배열은 내용이 같으면 그대로라 쓸 수 없다). **다시 받기는 줄이 둘**이다 — 목록 줄(`inflightRef`·대기 병합)은 한 실행의 목록 구간(첫 쪽 + 위치 확인)까지만 잡고, 메타(통계·태그·폴더)는 메타 줄(`sendMeta`/`requestMeta` — 한 번에 한 묶음, 그동안의 요구는 하나로 합쳐 앞 묶음이 끝난 뒤 그때의 문맥으로)이 받아 적용한다. 줄이 비어 있으면 목록과 메타는 같은 순간에 출발한다. 다음 실행의 목록은 앞 실행의 메타를 기다리지 않는다. `reload()` 의 약속은 자기 실행과 맡긴 메타가 **처리**된 뒤에 풀린다(적용 보장은 아니다). 전체 메타 요구는 seq 로 버려져도 다음 묶음이 이어받는다(`metaOwedRef` — 빚만으로 스스로 다시 보내지는 않는다). 시험 `tests/libraryReloadLanes.test.tsx` |
-| `useLibraryFilters.ts` | 훅 | 필터·뷰 상태(localStorage 백업) + 파생 쿼리. `sharedView` 의 시작 키 = 저장된 `__view` 가 지금 공간이면 지금 공간(공유 탭의 프로젝트·폴더를 되살린다), 아니면 `""`(지운다) — `restoreViewKey` |
+| `useLibraryFilters.ts` | 훅 | 필터·뷰 상태(localStorage 백업) + 파생 쿼리. `sharedView` 의 시작 키 = 저장된 `__view` 가 지금 공간이면 지금 공간(공유 탭의 프로젝트·폴더를 되살린다), 아니면 `""`(지운다) — `restoreViewKey`. 모양(`layout`·`groupByDate`)은 **자리마다** 기억한다 — 렌더에서 '그 자리에 적힌 것 ?? 방금 보던 것'으로 정한다(`lib/placeViews`) |
+| `placeViews.ts` | 순수 | 자리(탭·프로젝트·폴더)마다 마지막으로 본 모양(리스트/그리드 · 리스트 한 번 더) — 열쇠 `placeViewKey` · 저장 읽기 `parsePlaceViews` · 적기 `withPlaceView`(같은 값이면 같은 객체 · 400 자리 상한). 본 자리는 본 모양으로 적히고, 처음 들어간 자리는 방금 보던 모양을 물려받는다(Jay 2026-10-13) |
 | `useLibraryPersistence.ts` | 훅 | 필터 저장 포맷·키·마이그레이션. `FILTERS_VIEW_KEY`(`__view`) = 자동 범위 공간 키(전체 보기 중이면 안 남김) |
 | `appGenerationQuery.ts` | 순수 | 필터 → 서버 쿼리 객체·캐시 키 · 목록 탭 '폴더 보기' 창의 조회(`folderPeekQuery` — 탭·공간 범위·창 툴바 조건만 따른다) |
 | `useLibraryCreators.ts` | 훅 | 생성자(작성자) 목록 조회 |
