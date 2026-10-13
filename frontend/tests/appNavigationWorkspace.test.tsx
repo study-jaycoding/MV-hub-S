@@ -116,6 +116,7 @@ it("새로 고침 전의 기록으로 돌아가면 미리보기는 닫힌 채다
 // ── 보는 자리(폴더 위치)의 기록 — 2026-10-13 ②: 뒤로·앞으로 가기가 폴더 위치를 되살린다 ──
 type Loc = { project_id?: string; folder_path?: string; ctx: string };
 let restored: Loc[] = [];
+let adopts: boolean[] = []; // 되살릴 때마다 — 브라우저 뒤로·앞으로 가기(생성 위치도 옮긴다)인가
 let nav2: ReturnType<typeof useAppNavigation>;
 function LocHarness({ loc, ctx = "ctx-a", ctxFor }: { loc: { project_id?: string; folder_path?: string }; ctx?: string; ctxFor?: (tab: Filters["tab"]) => string }) {
   const [filters, setFilters] = useState<Filters>({ tab: "team" });
@@ -129,7 +130,7 @@ function LocHarness({ loc, ctx = "ctx-a", ctxFor }: { loc: { project_id?: string
   nav2 = useAppNavigation({ currentTab: filters.tab, lastBoardFocusRef,
     setPreview, setCommentGenId, setAdminOpen, setInfo, setBoardFocusId, setBoardArrange, setFilters,
     currentLocation: { project_id: loc.project_id, folder_path: loc.folder_path, ctx },
-    restoreLocation: (next) => restored.push(next), locationCtxFor: ctxFor });
+    restoreLocation: (next, adopt) => { restored.push(next); adopts.push(!!adopt); }, locationCtxFor: ctxFor });
   return <div>{filters.tab}</div>;
 }
 const stateLoc = () => (window.history.state as { chv: { loc?: Loc; ov?: string | null } }).chv;
@@ -180,12 +181,19 @@ it("자리 기록 — 문맥은 지금 탭이 아니라 **그 기록의 탭**이
 });
 
 it("자리 기록 — 겹(미리보기)을 열 때도 지금 자리를 싣고, 탭을 누른 기록도 자리를 싣는다", () => {
-  restored = [];
+  restored = []; adopts = [];
   showLoc({ project_id: "p1", folder_path: "e035" });
   act(() => nav2.openPreview(targetA));
   expect([stateLoc().ov, stateLoc().loc?.folder_path]).toEqual(["preview", "e035"]);
+  const previewEntry = window.history.state;
   act(() => nav2.navTab("my"));
   expect([stateLoc().ov, stateLoc().loc?.folder_path]).toEqual([null, "e035"]);
+  // 겹·탭을 여는 것은 '기록으로 돌아온 것'이 아니다 — 생성 위치를 옮기라고 하지 않는다. 브라우저 뒤로·앞으로 가기(popstate)만 옮기라고 한다
+  //  (2026-10-13 오후: 뒤로 가면 사이드바의 표시도 그 자리로. 자리가 같으면 받는 쪽이 아무것도 하지 않는다 — lib/useLibraryFilters)
+  expect([adopts.length > 0, adopts.every((one) => !one)]).toEqual([true, true]);
+  adopts = [];
+  pop(previewEntry);
+  expect(adopts).toEqual([true]);
   act(() => nav2.syncLocation({ project_id: undefined, folder_path: undefined, ctx: "ctx-a" }, false)); // App 이 탭을 누른 뒤 자리를 지운다
   expect(stateLoc().loc).toEqual({ project_id: undefined, folder_path: undefined, ctx: "ctx-a" });
 });
