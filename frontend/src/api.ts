@@ -451,13 +451,13 @@ export const api = {
     ),
 
   // 생성물의 실제 크레딧·소요시간(정보 팝업) — generation_metrics(매칭 실제값·허브 소요시간)
-  generationMetrics: (id: string) =>
+  generationMetrics: (id: string, signal?: AbortSignal) =>
     jsonFetch<{
       est_credits: number | null;
       real_credits: number | null;
       credit_source: string | null;
       elapsed_seconds: number | null;
-    }>(`/api/generations/${pathPart(id)}/metrics`),
+    }>(`/api/generations/${pathPart(id)}/metrics`, signal ? { signal } : undefined),
 
   // Comfy 실행 대상의 구독 정보(크레딧 표시용) — Cloud 는 건별 크레딧 API 미노출(정액 구독제)이라 등급만.
   comfySubscription: () =>

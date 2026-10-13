@@ -21,6 +21,11 @@ export type ReelMode = "grid" | "linked";
 // 영상 길이(초)는 주소마다 한 번만 읽는다 — 모아보기를 다시 열 때마다 모든 영상의 메타데이터를 다시 받지 않게(10-09 실측: 열고
 //  닫기 5번에 영상 요청 +334). 깨진 영상은 담지 않는다(다음에 다시 시도).
 const DURATION_CACHE = new Map<string, number>();
+const DURATION_KEEP_MAX = 2000; // 넘치면 가장 먼저 적은 것부터 버린다(창을 오래 켜 두면 끝없이 자란다 — Codex 코드 리뷰)
+function rememberDuration(url: string, seconds: number): void {
+  DURATION_CACHE.set(url, seconds);
+  if (DURATION_CACHE.size > DURATION_KEEP_MAX) DURATION_CACHE.delete(DURATION_CACHE.keys().next().value as string);
+}
 const PRELOAD_AT_ONCE = 2; // 한꺼번에 읽으면 첫 클립의 재생과 대역폭을 다툰다(10-09 실측: 28개 동시 → 첫 재생 6.2초)
 // 영상 요소 둘(앞·뒤): 뒤의 것에 다음 영상을 미리 받아 두고 컷이 넘어갈 때 자리만 바꾼다 — 요소 하나에 주소만 갈면 받는 시간만큼
 //  화면이 선다(10-09 실측: 컷마다 130~200ms). 넘어가기 ROLL_AHEAD 초 전부터 뒤의 것을 소리 없이 굴려 둔다 — 다 받아 둔 영상도
@@ -195,7 +200,7 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
       v.onloadedmetadata = () => {
         if (cancelled) return;
         const seconds = isFinite(v.duration) && v.duration > 0 ? v.duration : REEL_IMAGE_SEC;
-        DURATION_CACHE.set(url, seconds);
+        rememberDuration(url, seconds);
         setDurations((d) => {
           const next = [...d];
           for (const i of indexes) if (!st.current.failed.has(i)) next[i] = seconds;
@@ -270,7 +275,7 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
   // 영상 길이를 알게 되면(어느 요소든) 캐시와 길이 배열에 적는다 — 따로 읽을 필요가 없다.
   const learnDuration = useCallback((url: string, seconds: number) => {
     if (!url || !isFinite(seconds) || seconds <= 0 || DURATION_CACHE.has(url)) return;
-    DURATION_CACHE.set(url, seconds);
+    rememberDuration(url, seconds);
     setDurations((d) => {
       const next = [...d];
       clips.forEach((clip, i) => { if (clip.url === url && !next[i]) next[i] = seconds; });

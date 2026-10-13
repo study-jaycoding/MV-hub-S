@@ -892,7 +892,7 @@ updated: 2026-10-13
 | `useEditFollow.ts` | 훅 | 편집 탭 '한 트랙만 보기' — 타임라인의 시각을 프레임마다 읽어 그 트랙의 클립을 맞춰 보인다(시계에 영향 없음) |
 | `videoDuration.ts` | 브라우저 | 영상 길이 재기(메타데이터만·주소별 한 번·동시에 4개) |
 | `folderLabel.ts` | 순수 | 카드 폴더 이름표 글자(끝 두 칸)·전체 경로 표기 |
-| `coverCredits.ts` | 훅 | 폴더 카드의 크레딧(그 그림 한 장의 실제 크레딧 — `api.generationMetrics`) — 한 번 받은 것은 모듈에 기억하고(다시 묻지 않는다) 한꺼번에 넷만 묻는다. 기다리는 화면이 있는 것만 — `wanted` 가 거짓이면 안 묻고, 기다리는 화면이 없어진 요청은 출발 전이면 줄에서 뺀다(`useCoverCredits` · 시험용 `forgetCoverCredits`) |
+| `coverCredits.ts` | 훅 | 폴더 카드의 크레딧(그 그림 한 장의 실제 크레딧 — `api.generationMetrics`) — 한 번 받은 것은 모듈에 기억하고(다시 묻지 않는다) 한꺼번에 넷만 묻는다. 기다리는 화면이 있는 것만 — `wanted` 가 거짓이면 안 묻고, 기다리는 화면이 없어진 요청은 출발 전이면 줄에서 뺀다. 멎은 요청은 20초 뒤 끊고 '모름'(`useCoverCredits` · 시험용 `forgetCoverCredits`) |
 | `folderCards.ts` | 순수 | 공유 & 리뷰 탭의 폴더 묶음 보기 규칙 — `folderCardsPlace`(묶어 보일 **자리**: 공유 탭 + 프로젝트 + 휴지통 아님 + 서버가 거를 수 있는 공간 조건)·`hasFindFilters`(찾는 조건이 켜져 있나 — 켜져 있어도 자리는 자리다, 10-13 저녁)·`folderCardsScope`(자리 && 찾는 조건 없음 — 서버 카드만으로 묶을 수 있는 조회)·`parentFolder`·`singleTeamWorkspace` |
 | `folderCardsLocal.ts` | 순수 | 폴더 카드를 **목록에서 직접** 묶기 — `groupGenerations`(최신 순 목록을 부모 바로 아래 폴더마다 한 장: 건수·표지·검토 개수·영상 수·마지막 공유·작업자·컷 띠·생성물 띠 — 서버 `folder_cards` 와 같은 규칙, 팀 대표는 서버 카드에서 읽는다)·`fillFolderCards`(옛 서버의 카드에 없는 칸만 채운다)·`lacksCounts` |
 | `fetchAllGenerations.ts` | 순수(비동기) | 한 조회의 목록을 커서로 끝까지(쪽 500 · 상한 2000 — `truncated`) — 컷 정보 창과 `useLocalFolderCards` 가 같이 쓴다 |
