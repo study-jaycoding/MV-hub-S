@@ -220,7 +220,8 @@ export function ProjectSection({
     if (restoreFocus) folderMenuAnchorRef.current?.focus();
   };
   useEscapeClose(() => closeFolderMenu(true), !!folderMenu, true, true);
-  useOutsideMouseDown(folderMenuRef, () => closeFolderMenu(false), !!folderMenu);
+  // Tab 으로 빠져나가도 닫는다(규칙 58). Esc 의 초점 복귀(앵커 줄)는 밖이라 한 번 더 닫히지만 restoreFocus 없는 닫기라 같은 결과다.
+  useOutsideMouseDown(folderMenuRef, () => closeFolderMenu(false), !!folderMenu, undefined, true);
   useEffect(() => {
     setFolderMenu(null);
   }, [tab]);

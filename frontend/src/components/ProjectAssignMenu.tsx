@@ -61,7 +61,7 @@ export function ProjectAssignMenu({
     folderState,
     folderExpanded,
   ]);
-  useOutsideMouseDown(ref, closeMenu, open);
+  useOutsideMouseDown(ref, closeMenu, open, undefined, true); // Tab 으로 빠져나가도 닫는다(규칙 58) — 단추·메뉴가 ref 안이라 Esc 의 초점 복귀는 '안'이다
   // 메뉴만 닫고 현재 카드 선택은 유지 — 전역 라이브러리 Esc 보다 캡처 단계에서 먼저 처리한다.
   useEscapeClose(closeMenuOnEscape, open, true, true);
 

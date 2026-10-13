@@ -53,7 +53,7 @@ export function AssetSortMenu<F extends string = AssetSortField>({
 
   // 바깥 누름·초점 이탈(Tab) → 닫기(메뉴 안 클릭은 field/dir 만 바꾸고 열린 채 유지 → 기준·방향을 한 번에 고름). 공용 훅(30회차 — 전엔 제 mousedown 만).
   const close = useCallback(() => setOpen(false), []);
-  useOutsideMouseDown(ref, close, open);
+  useOutsideMouseDown(ref, close, open, undefined, true);
   // Esc 는 메뉴만 닫는다(맨 위 겹) — 떠 있는 동안 뒤 카드의 단축키(r/g/b/d·선택 해제)도 쉰다.
   useEscapeClose(
     () => {

@@ -325,12 +325,15 @@ it("메뉴의 바깥 누름은 pointerdown 으로도 닫힌다 — 누름을 poi
   expect(onOutside).toHaveBeenCalledTimes(1);
 });
 
-it("메뉴는 초점이 밖으로 옮겨 가도(Tab) 닫힌다 — 안에서 옮기는 것·BODY 로 떨어지는 것은 아니다(30회차: 열린 채 남은 메뉴가 뒤 화면의 단축키를 막았다)", () => {
+it("메뉴는 초점이 밖으로 옮겨 가도(Tab) 닫힌다 — 켠 메뉴만(규칙 58). 안에서 옮기는 것·BODY 로 떨어지는 것은 아니다(30회차: 열린 채 남은 메뉴가 뒤 화면의 단축키를 막았다)", () => {
   const onOutside = vi.fn();
+  const onQuiet = vi.fn();
   function Menu() {
     const ref = useRef<HTMLDivElement>(null);
-    useOutsideMouseDown(ref, onOutside);
-    return <><div ref={ref} className="probe-menu"><button className="probe-a">가</button><button className="probe-b">나</button></div><button className="probe-out">바깥</button></>;
+    const quiet = useRef<HTMLDivElement>(null);
+    useOutsideMouseDown(ref, onOutside, true, undefined, true);
+    useOutsideMouseDown(quiet, onQuiet); // 기본은 꺼짐 — 닫으면서 초점을 밖으로 되돌리는 메뉴(편집 탭 북마크 메뉴)가 저장 닫기를 두 번 부르지 않게
+    return <><div ref={ref} className="probe-menu"><button className="probe-a">가</button><button className="probe-b">나</button></div><div ref={quiet} className="probe-quiet" /><button className="probe-out">바깥</button></>;
   }
   act(() => root.render(<Menu />));
   act(() => host.querySelector<HTMLButtonElement>(".probe-a")!.focus());
@@ -340,6 +343,7 @@ it("메뉴는 초점이 밖으로 옮겨 가도(Tab) 닫힌다 — 안에서 옮
   expect(onOutside).not.toHaveBeenCalled();
   act(() => host.querySelector<HTMLButtonElement>(".probe-out")!.focus()); // Tab 으로 밖에 닿음
   expect(onOutside).toHaveBeenCalledTimes(1);
+  expect(onQuiet).not.toHaveBeenCalled(); // 안 켠 쪽은 초점 이동에 반응하지 않는다(누름에만)
 });
 
 it("슬라이더는 마우스 조작이 끝나면 초점을 내려놓는다 — 격자를 품은 창 안이면 그 창으로(캔버스에서 BODY 로 떨어지면 키가 뒤 보드로 간다)", () => {
