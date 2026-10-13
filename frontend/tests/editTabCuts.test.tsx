@@ -50,6 +50,8 @@ beforeEach(() => {
   localStorage.clear();
   localStorage.setItem("ch.editTimeline.last:local", JSON.stringify({ projectId: "p1", seq: "e070" }));
   for (const method of ["load", "pause"] as const) vi.spyOn(HTMLMediaElement.prototype, method).mockImplementation(() => {});
+  // jsdom 에는 ResizeObserver 가 없다 — 길이 조절 창(떠 있는 창, lib/useFloatingPanel)이 쓴다
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -292,16 +294,17 @@ it("클립을 휠 클릭하면 길이 조절 창이 뜬다 — 걸음마다 저�
   wheelClick(clipOn("1"));
   const pop = document.querySelector<HTMLElement>(".ed-trim")!;
   expect(pop.textContent).toContain("c1 · V1");
-  const button = (label: string) => [...pop.querySelectorAll("button")].find((item) => item.textContent === label)!;
-  expect(button("원본 길이로").disabled).toBe(true); // 아직 줄이지 않았다
+  const button = (label: string) => [...pop.querySelectorAll("button")]
+    .find((item) => item.textContent === label || item.getAttribute("aria-label") === label)!;
+  expect(button("원본 길이로").getAttribute("aria-disabled")).toBe("true"); // 아직 줄이지 않았다(꺼진 단추도 초점은 받는다 — disabled 가 아니다)
   act(() => button("−10f").click());
   act(() => button("−1f").click());
   expect(trimOf()).toBeCloseTo(109 / 24);
   press({ key: "ArrowLeft", shiftKey: true }, pop.querySelector("input")!); // Shift+← = 10프레임
   expect(trimOf()).toBeCloseTo(99 / 24);
   expect(clipOn("1").textContent).toContain("4.1s / 5.0s"); // 타임라인의 클립에 쓰는 길이 / 원본 길이
-  press({ key: "Delete" }); // 창이 떠 있는 동안 뒤의 편집 키는 쉰다
-  expect(document.querySelectorAll(".ed-clip")).toHaveLength(2);
+  press({ key: "Delete", code: "Delete" }, pop); // 창 안에서 난 키는 뒤의 편집 키가 듣지 않는다(창은 편집 화면 밖 — body 에 그려진다)
+  expect([document.querySelectorAll(".ed-clip").length, pop.parentElement]).toEqual([2, document.body]);
   act(() => button("닫기").click());
   expect(document.querySelector(".ed-trim")).toBeNull();
   press({ key: "z", code: "KeyZ", ctrlKey: true }); // 창을 한 번 연 동안의 걸음 셋이 되돌리기 한 단계다
@@ -327,7 +330,8 @@ const openTrimOn = (docKey: string) => {
       .dispatchEvent(new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1, clientX: 50, clientY: 50 }));
   });
   const pop = document.querySelector<HTMLElement>(".ed-trim")!;
-  return (label: string) => act(() => [...pop.querySelectorAll("button")].find((item) => item.textContent === label)!.click());
+  return (label: string) => act(() => [...pop.querySelectorAll("button")]
+    .find((item) => item.textContent === label || item.getAttribute("aria-label") === label)!.click());
 };
 
 it("길이 조절 중에 저장 못 한 편집과 다른 창의 저장이 겹치면 창을 닫는다 — 같은 조절의 다음 걸음이 그 저장을 덮지 않는다", () => {
@@ -471,25 +475,79 @@ it("충돌을 알고 길이 조절을 다시 연 뒤에도, 그 조절 도중 �
   expect(localStorage.getItem(docKey)).toBe(T2);
 });
 
-// 2026-10-13 격리 실측: 방금 누른 단추가 꺼지면(끝까지 늘림 · 원본 길이로) 초점이 body 로 빠지고, 그 뒤의 ←/→ 가 죽었다(창 밖에서 난 키는
-//  껍데기가 버린다). 화살표는 초점이 어디에 있든 듣는다 — 그리고 창이 닫히면 뒤 화면의 화살표(재생헤드 이동)로 돌아간다.
-it("길이 조절 창의 ←/→ 는 초점이 창 밖(body)에 있어도 듣는다 — 뒤의 재생헤드는 움직이지 않는다", () => {
+// Jay 2026-10-13 밤: 길이 조절은 **떠 있는 창**이다 — 떠 있어도 타임라인을 쓴다. 키는 초점을 따른다: 창 안이면 창의 것(←/→ = 길이),
+//  타임라인이면 타임라인의 것(←/→ = 재생헤드). 끝에 닿은 단추는 꺼지지 않고(aria-disabled) 초점을 지킨다 — disabled 로 끄면 초점이 body 로
+//  떨어져 키가 창을 떠난다(같은 날 격리 실측: 그때 ←/→ 가 죽었다).
+it("길이 조절 창은 떠 있는 창이다 — 키는 초점을 따르고, 밖을 눌러도·다른 메뉴를 여닫아도 떠 있고, 숫자를 직접 친다", () => {
   const docKey = "mvhub.editDoc:local:p1:e070";
   const press1f = openTrimOn(docKey);
+  const pop = () => document.querySelector<HTMLElement>(".ed-trim");
+  const button = (label: string) => [...pop()!.querySelectorAll("button")].find((item) => item.textContent === label)!;
   const trim = () => (JSON.parse(localStorage.getItem(docKey)!) as { clips: { trim?: number }[] }).clips[0].trim;
   const code = timecode();
+  expect(pop()!.contains(document.activeElement)).toBe(true); // 열면 초점이 창으로 온다
   press1f("−1f");
-  press1f("+1f"); // 끝까지 — 줄임이 지워지고 [+1f]·[원본 길이로]는 꺼진다
+  press1f("+1f"); // 끝까지 — 줄임이 지워진다
   expect(trim()).toBeUndefined();
-  (document.activeElement as HTMLElement | null)?.blur(); // 꺼진 단추에서 초점이 빠졌다(크롬) — 키는 body 에서 난다
-  const left = press({ key: "ArrowLeft", code: "ArrowLeft" });
-  expect([trim(), left.defaultPrevented]).toEqual([119 / 24, true]);
-  press({ key: "ArrowLeft", code: "ArrowLeft", shiftKey: true });
+  expect([button("+1f").disabled, button("+1f").getAttribute("aria-disabled")]).toEqual([false, "true"]);
+  button("+1f").focus(); // 끝에 닿은 단추에 초점이 그대로 있다
+  const left = press({ key: "ArrowLeft", code: "ArrowLeft" }, button("+1f"));
+  expect([trim(), left.defaultPrevented, timecode()]).toEqual([119 / 24, true, code]);
+  press({ key: "ArrowLeft", code: "ArrowLeft", shiftKey: true }, pop()!);
   expect(trim()).toBeCloseTo(109 / 24);
+  // 초점이 타임라인(여기서는 body)이면 화살표는 재생헤드의 것이다 — 길이는 그대로
   press({ key: "ArrowRight", code: "ArrowRight" });
-  expect(trim()).toBeCloseTo(110 / 24);
-  expect(timecode()).toBe(code); // 뒤 화면의 화살표(재생헤드 한 프레임)는 먹지 않았다
-  press1f("닫기");
-  press({ key: "ArrowRight", code: "ArrowRight" }); // 창이 닫히면 뒤 화면의 것이다
-  expect([trim(), timecode() === code]).toEqual([110 / 24, false]);
+  expect(trim()).toBeCloseTo(109 / 24);
+  expect(timecode()).not.toBe(code);
+  // 밖을 눌러도 닫히지 않는다 · 다른 메뉴(클립 우클릭)를 여닫아도 떠 있다
+  act(() => { document.querySelector(".ed-root")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
+  act(() => {
+    document.querySelector<HTMLElement>(".ed-clip")!
+      .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: 40, clientY: 40 }));
+  });
+  expect(document.querySelector(".ed-tmenu")).not.toBeNull();
+  press({ key: "Escape", code: "Escape" });
+  expect([document.querySelector(".ed-tmenu"), !!pop()]).toEqual([null, true]);
+  // 숫자 칸 — 초 칸에 2 를 치고 Enter = 48프레임. 칸 안의 화살표는 칸의 것이다(길이를 건드리지 않는다)
+  const seconds = pop()!.querySelector<HTMLInputElement>(".ed-trim-num")!;
+  act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(seconds, "2");
+    seconds.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  press({ key: "ArrowLeft", code: "ArrowLeft" }, seconds);
+  expect(trim()).toBeCloseTo(109 / 24);
+  press({ key: "Enter", code: "Enter" }, seconds);
+  expect(trim()).toBeCloseTo(2);
+  // 창 안의 Ctrl+Z — 창을 연 뒤의 걸음들이 되돌리기 한 단계다
+  press({ key: "z", code: "KeyZ", ctrlKey: true }, pop()!);
+  expect(trim()).toBeUndefined();
+  // 창 안의 Esc 로 닫는다 — 초점은 편집 화면으로 돌아가 키가 바로 타임라인의 것이다
+  press({ key: "Escape", code: "Escape" }, pop()!);
+  expect([pop(), document.activeElement]).toEqual([null, document.querySelector(".ed-root")]);
+});
+
+// 떠 있는 채 다른 클립을 휠 클릭하면 창이 그 클립으로 바뀐다(창은 하나) — 걸음은 새 클립의 것이고, 되돌리기 묶음도 따로다.
+it("길이 조절 창이 떠 있는 채 다른 클립을 휠 클릭하면 창이 그 클립으로 바뀐다", () => {
+  const docKey = "mvhub.editDoc:local:p1:e070";
+  localStorage.setItem(docKey, JSON.stringify({ v: 1, tracksOff: [], tracksLocked: [], clips: [
+    { cut: "e070/c1", gen: "g1", track: 1, kind: "video", dur: 5 }, { cut: "e070/c2", gen: "g2", track: 1, kind: "video", dur: 5 },
+  ] }));
+  mount();
+  const wheel = (index: number) => act(() => {
+    document.querySelectorAll<HTMLElement>(".ed-clip")[index]
+      .dispatchEvent(new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1, clientX: 50, clientY: 50 }));
+  });
+  const step = () => act(() => {
+    [...document.querySelector<HTMLElement>(".ed-trim")!.querySelectorAll("button")].find((item) => item.textContent === "−1f")!.click();
+  });
+  const trims = () => (JSON.parse(localStorage.getItem(docKey)!) as { clips: { trim?: number }[] }).clips.map((clip) => clip.trim);
+  wheel(0);
+  step();
+  wheel(1);
+  expect(document.querySelectorAll(".ed-trim")).toHaveLength(1);
+  expect(document.querySelector(".ed-trim")!.textContent).toContain("c2 · V1");
+  step();
+  expect(trims()).toEqual([119 / 24, 119 / 24]);
+  press({ key: "z", code: "KeyZ", ctrlKey: true }, document.querySelector<HTMLElement>(".ed-trim")!); // 둘째 클립의 걸음만 되돌린다
+  expect(trims()).toEqual([119 / 24, undefined]);
 });
