@@ -12,6 +12,7 @@ import {
   type ReleaseUpdateState,
   type ReleaseUpdateStatus,
 } from "../src/lib/releaseUpdate";
+import { holdUnload } from "../src/lib/unloadGuard";
 
 const mocks = vi.hoisted(() => ({ jsonFetch: vi.fn() }));
 vi.mock("../src/lib/http", async (orig) => ({
@@ -121,26 +122,51 @@ describe("덮개", () => {
     expect(window.sessionStorage.getItem(UPDATE_WAIT_VERSION_KEY)).toBeNull();
   });
 
-  // 배포 전 재검토(2026-10-13, Codex): 저장하지 못한 편집이 있으면 브라우저가 새로고침 전에 묻는다(lib/unloadGuard). 사용자가 머무르면
-  //  이 덮개가 남아, 제한 시간(5분)까지 화면과 키보드를 막았다.
-  it("새 버전이 됐는데 새로고침이 일어나지 않으면 덮개를 걷는다 — 머무르기를 골라도 화면을 막지 않는다", async () => {
+  // 배포 전 검토(2026-10-13, Codex): 저장하지 못한 편집이 있는데 업데이트가 끝나 자동으로 새로고침하면 메모리에만 남은 그 편집이 사라진다.
+  //  새 판은 이미 깔렸다 — 알리고 사용자가 고르게 한다(지금 새로고침 / 닫고 편집으로 돌아가기).
+  it("저장하지 못한 편집이 있으면 새 버전이 돼도 스스로 새로고침하지 않는다 — 알리고, 새로고침과 닫기를 내준다", async () => {
     vi.useFakeTimers();
-    const reload = vi.fn(); // 브라우저가 묻고 사용자가 머물렀다 = 새로고침이 일어나지 않았다
+    const reload = vi.fn();
     vi.stubGlobal("location", { href: "http://localhost:3000/", origin: "http://localhost:3000", protocol: "http:", host: "localhost:3000",
       hostname: "localhost", port: "3000", pathname: "/", search: "", hash: "", reload });
+    holdUnload("edit-docs", true); // 편집 탭의 '저장 안 됨' 문서가 쥐고 있다
     window.sessionStorage.setItem(UPDATE_WAIT_VERSION_KEY, "2026.09.28-1438");
     mocks.jsonFetch.mockResolvedValue(status({ state: "complete", current_version: "2026.09.28-1438", percent: 100 }));
     mount();
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(5000);
     });
-    expect(reload).toHaveBeenCalledTimes(1);
-    expect(veil()).not.toBeNull(); // 새로고침을 기다리는 잠깐은 그대로다
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3000);
-    });
+    expect(reload).not.toHaveBeenCalled();
+    expect(text()).toContain("업데이트가 끝났습니다");
+    expect(text()).toContain("저장하지 못한 변경");
+    expect(window.sessionStorage.getItem(UPDATE_WAIT_VERSION_KEY)).toBeNull(); // 다시 켜도 덮개가 또 뜨지 않는다
+    expect(vi.getTimerCount()).toBe(0); // 상태를 더 묻지 않고, 5분 제한도 걷혔다
+    // 닫으면 편집으로 돌아간다(새로고침은 사용자가 나중에)
+    act(() => (document.querySelector(".upd-close") as HTMLButtonElement).click());
     expect(veil()).toBeNull();
-    expect(vi.getTimerCount()).toBe(0); // 5분 제한 타이머도 같이 걷힌다
+    expect(reload).not.toHaveBeenCalled();
+    holdUnload("edit-docs", false);
+    vi.unstubAllGlobals();
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  });
+
+  it("그 안내에서 [지금 새로고침]을 누르면 묻지 않고 새로고침한다", async () => {
+    vi.useFakeTimers();
+    const reload = vi.fn();
+    vi.stubGlobal("location", { href: "http://localhost:3000/", origin: "http://localhost:3000", protocol: "http:", host: "localhost:3000",
+      hostname: "localhost", port: "3000", pathname: "/", search: "", hash: "", reload });
+    holdUnload("edit-docs", true);
+    window.sessionStorage.setItem(UPDATE_WAIT_VERSION_KEY, "2026.09.28-1438");
+    mocks.jsonFetch.mockResolvedValue(status({ state: "complete", current_version: "2026.09.28-1438", percent: 100 }));
+    mount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    act(() => (document.querySelector(".upd-force") as HTMLButtonElement).click());
+    expect(reload).toHaveBeenCalledTimes(1);
+    const leaving = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(leaving);
+    expect(leaving.defaultPrevented).toBe(false); // 문지기를 풀고 새로고침했다 — 브라우저가 다시 묻지 않는다
     vi.unstubAllGlobals();
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   });

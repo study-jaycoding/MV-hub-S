@@ -61,6 +61,7 @@ import {
   type ReleaseUpdateStatus,
 } from "../lib/releaseUpdate";
 import { CloseIcon } from "./common/ViewIcons";
+import { reloadNow } from "../lib/unloadGuard"; // 앱이 스스로 하는 새로고침 — 서버 상태를 바꾼 뒤라 묻지 않고 진행한다
 
 export function SettingsPanel({
   onClose,
@@ -239,7 +240,7 @@ export function SettingsPanel({
           } catch {
             // ignore
           }
-          window.setTimeout(() => window.location.reload(), 500);
+          window.setTimeout(() => reloadNow(), 500);
           return;
         }
       } catch {
@@ -431,7 +432,7 @@ export function SettingsPanel({
     try {
       await api.importDb(file);
       setDbMsg("가져오기 완료 — 라이브러리를 새로고침합니다…");
-      setTimeout(() => window.location.reload(), 800);
+      setTimeout(() => reloadNow(), 800);
     } catch (e) {
       setDbMsg("가져오기 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
     } finally {
@@ -495,7 +496,7 @@ export function SettingsPanel({
     try {
       await api.serverRestore(backupSetId);
       setDbMsg("복원 완료 — 다시 로그인해 주세요…");
-      setTimeout(() => window.location.reload(), 900);
+      setTimeout(() => reloadNow(), 900);
       return true;
     } catch (e) {
       setDbMsg("가져오기 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));

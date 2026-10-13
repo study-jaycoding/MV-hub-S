@@ -52,6 +52,11 @@ export interface EditOptions {
   rev?: number; // 지연 콜백이 시작할 때 본 rev — 그 사이 문서가 갈렸으면 버린다
 }
 
+/** 바꾸기의 결과. `none` 과 `stopped` 를 가른다 — 부르는 쪽이 `none` 에 띄우는 안내("바꾸지 못했습니다 — 잠긴 트랙…")가 `stopped` 의 알림
+ *  ("다른 창에서 바꾼 편집을 불러왔습니다…")을 덮지 않게(알림 칸은 하나다 — Codex 재검토).
+ *  done = 바꿨다 · none = 바꿀 것이 없었다(변경 함수가 거부했거나, 옛 rev 의 지연 콜백) · stopped = 다른 창의 저장 때문에 이번 조작을 버렸다. */
+export type EditOutcome = "done" | "none" | "stopped";
+
 const CHANGED_ELSEWHERE = "다른 창에서 이 편집이 바뀌었습니다. 이 창의 변경은 아직 저장되지 않았습니다.";
 
 export function useEditDoc(key: string | null, flash: (message: string) => void) {
@@ -67,7 +72,7 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
     const cur = held.current!;
     if (!cur.key) return;
     cur.doc = next;
-    const raw = cur.conflict && !user ? null : writeEditDoc(cur.key, next, cur.bad ? cur.badRaw : null, cur.savedRaw);
+    const raw = cur.conflict && !user ? null : writeEditDoc(cur.key, next, cur.bad ? cur.badRaw : null);
     if (raw !== null) {
       Object.assign(cur, { savedRaw: raw, dirty: false, bad: false, badRaw: null, conflict: false });
       noteEditRaw(cur.key, raw);
@@ -131,15 +136,15 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
   }, []);
 
   const applyEdit = useCallback(
-    (change: (doc: EditDoc) => EditDoc | null, options: EditOptions = {}): boolean => {
+    (change: (doc: EditDoc) => EditDoc | null, options: EditOptions = {}): EditOutcome => {
       const cur = held.current!;
-      if (!cur.key || (options.rev !== undefined && options.rev !== cur.rev)) return false;
-      if (pull(false)) return false;
+      if (!cur.key || (options.rev !== undefined && options.rev !== cur.rev)) return "none";
+      if (pull(false)) return "stopped";
       const next = change(cur.doc);
-      if (!next || next === cur.doc) return false;
+      if (!next || next === cur.doc) return "none";
       if (options.undo !== false) pushUndo(cur.key, cur.doc);
       commit(next, options.undo !== false);
-      return true;
+      return "done";
     },
     [commit, pull],
   );

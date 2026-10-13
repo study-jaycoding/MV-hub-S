@@ -367,7 +367,8 @@ function EditTabInner({
   }, [shownKeys]);
 
   const act = useCallback((change: (current: EditDoc) => EditDoc | null, options?: { rev?: number }) => {
-    if (!applyEdit(change, options)) flash(t("바꾸지 못했습니다 — 잠긴 트랙이 있거나 옮길 자리가 없습니다."));
+    // 'stopped'(다른 창의 저장 때문에 버림)에는 그 알림이 이미 떴다 — 덮지 않는다
+    if (applyEdit(change, options) === "none") flash(t("바꾸지 못했습니다 — 잠긴 트랙이 있거나 옮길 자리가 없습니다."));
   }, [applyEdit, flash, t]);
 
   const cut = view.cut;
@@ -774,7 +775,9 @@ function EditTabInner({
     }));
     // 고른 것은 이 렌더의 문서·비활성 판정으로 만든 것이다 — 그 사이 다른 창이 문서를 바꿨으면(rev) 넣지 않는다: 방금 꺼진
     //  컷에 들어가고, 채운 수도 틀리게 알린다(Codex 코드 리뷰).
-    if (!applyEdit((current) => fillEmptyCuts(current, picks), { rev })) return flash(t("채울 빈 곳이 없습니다."));
+    const filled = applyEdit((current) => fillEmptyCuts(current, picks), { rev });
+    if (filled === "stopped") return; // 다른 창의 저장을 받아들였다 — 그 알림이 떠 있다
+    if (filled === "none") return flash(t("채울 빈 곳이 없습니다."));
     const finals = fillPicks.filter(({ gen }) => gen.is_final).length;
     flash(t("빈 곳 {count}개를 채웠습니다 — 최종 {finals}개 · 최신 {rest}개").replace("{count}", String(picks.length))
       .replace("{finals}", String(finals)).replace("{rest}", String(picks.length - finals)));
@@ -803,7 +806,7 @@ function EditTabInner({
       return;
     }
     const pos = posAt(layout, now());
-    if (!pos || !applyEdit((current) => addMarker(current, pos, ui.markerColor))) flash(t("이 자리에 북마크를 넣지 못했습니다."));
+    if (!pos || applyEdit((current) => addMarker(current, pos, ui.markerColor)) === "none") flash(t("이 자리에 북마크를 넣지 못했습니다."));
   };
   const removeBookmarkHere = () => {
     const found = markerAt(layout, bookmarks, now());

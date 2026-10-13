@@ -6,6 +6,7 @@
 // 평소에는 아무 요청도 하지 않는다.
 import { useKeyOwner } from "../lib/keyGate";
 import { useEscapeClose } from "../lib/useEscapeClose";
+import { reloadNow, unloadHeld } from "../lib/unloadGuard";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -25,7 +26,6 @@ import {
 
 const POLL_MS = 1500;
 const DEADLINE_MS = 5 * 60 * 1000;
-const RELOAD_GRACE_MS = 3000; // 새로고침을 건 뒤 이만큼 지나도 이 화면이 살아 있으면 새로고침이 일어나지 않은 것이다
 
 function waitVersion(): string {
   try {
@@ -48,6 +48,9 @@ export function UpdateProgressOverlay() {
   const [status, setStatus] = useState<ReleaseUpdateStatus | null>(null);
   const [note, setNote] = useState("");
   const [done, setDone] = useState(false); // 실패·시간초과 — 폴링을 멈추고 단추를 내준다
+  // 새 판이 됐는데 새로고침하지 않았다 — 저장하지 못한 편집이 있어서다(lib/unloadGuard). 말없이 새로고침하면 메모리에만 남은 그 편집이
+  //  사라진다(Codex 배포 전 검토 2026-10-13). 알리고 사용자가 고르게 한다.
+  const [finished, setFinished] = useState(false);
   const [forcing, setForcing] = useState(false);
   const [forceError, setForceError] = useState("");
   const [confirmForce, setConfirmForce] = useState(false);
@@ -64,6 +67,7 @@ export function UpdateProgressOverlay() {
         setStatus(null);
         setNote("");
         setDone(false);
+        setFinished(false);
         setForcing(false);
         setForceError("");
         setConfirmForce(false);
@@ -129,12 +133,12 @@ export function UpdateProgressOverlay() {
           && next.current_version === target
         ) {
           clearWait();
+          if (unloadHeld()) {
+            setFinished(true);
+            setDone(true); // 폴링을 멈춘다 — 단추는 아래 finished 가 따로 그린다
+            return;
+          }
           window.setTimeout(() => window.location.reload(), 600);
-          // 새로고침이 일어나지 않았으면 덮개를 걷는다 — 저장하지 못한 편집이 있으면 브라우저가 묻고(lib/unloadGuard), 사용자가 머무르기를
-          //  고르면 이 화면이 그대로 남는다. 안 걷으면 제한 시간(5분)까지 화면과 키보드를 막는다(Codex 배포 전 재검토 2026-10-13).
-          timer = window.setTimeout(() => {
-            if (!cancelled) setOpen(false);
-          }, RELOAD_GRACE_MS);
           return;
         }
         // 업데이트가 아니면 덮개를 걷는다. 앱이 강제 종료되면 대기 표시가 남고, 그대로 두면
@@ -192,6 +196,30 @@ export function UpdateProgressOverlay() {
   const percent = typeof status?.percent === "number" ? Math.min(100, Math.max(0, status.percent)) : null;
   const stepText = note || releaseUpdateMessage(status) || "업데이트 실행기를 준비하는 중…";
   const blockers = updateBlockersText(status); // 강제로 끊기게 될 작업을 확인 화면에 그대로 보여준다
+
+  // 새 판은 깔렸고, 이 화면만 옛 것이다 — 저장하지 못한 편집이 있어 새로고침을 사용자에게 맡긴다.
+  if (finished) {
+    return createPortal(
+      <div className="upd-veil" role="alertdialog" aria-modal="true" aria-label="업데이트 완료">
+        <div className="upd-box" ref={boxRef} tabIndex={-1}>
+          <h3 className="upd-title">업데이트가 끝났습니다</h3>
+          <p className="upd-step">
+            편집 탭에 저장하지 못한 변경이 있어 자동으로 새로고침하지 않았습니다. 새로고침하면 그 변경은 사라집니다.
+          </p>
+          {status?.current_version && <p className="upd-ver">v<b>{status.current_version}</b></p>}
+          <div className="upd-actions">
+            <button type="button" className="upd-force" onClick={() => reloadNow()}>
+              지금 새로고침
+            </button>
+            <button type="button" className="upd-close" onClick={() => setOpen(false)}>
+              닫기
+            </button>
+          </div>
+        </div>
+      </div>,
+      document.body,
+    );
+  }
 
   return createPortal(
     <div className="upd-veil" role="alertdialog" aria-modal="true" aria-label="업데이트 진행">

@@ -11,52 +11,18 @@ export function editDocKey(projectId: string, seq: string): string {
   return `${STORAGE_KEYS.editDocs}:${getAccountNamespace()}:${projectId}:${seq}`;
 }
 
-// 문서의 옛 자리(`ch.editTimeline:<계정>:…`) → 새 자리(`mvhub.editDoc:<계정>:…`). 옛 자리는 `ch.` 로 시작해, 편집 탭이 없던 옛 판으로 되돌린 뒤
-//  계정을 바꾸면 그 판의 정리가 전부 지웠다(lib/storageKeys 의 editDocs). 이 모듈이 실릴 때 한 번 옮긴다 — 열어 보지 않은 시퀀스의 문서와
-//  못 읽은 원문의 보관본(`.bad`)도 같이. 옮기지 못한 것(용량 부족)은 옛 자리에 남고, 읽기가 옛 자리도 본다(아래 readEditRaw) — 다음에
-//  저장되면 새 자리로 간다.
+// 문서의 자리가 바뀌었다: 옛 자리 `ch.editTimeline:<계정>:…` → 새 자리 `mvhub.editDoc:<계정>:…`. 옛 자리는 `ch.` 로 시작해, 편집 탭이 없던
+//  옛 판으로 되돌린 뒤 계정을 바꾸면 그 판의 정리가 전부 지웠다(lib/storageKeys 의 editDocs).
+//  **옮기지 않는다 — 읽을 때 새 자리에 없으면 옛 자리의 것을 읽고, 쓸 때는 새 자리에만 쓴다. 옛 자리는 지우지도 고치지도 않는다.**
+//  처음엔 실릴 때 한 번에 옮겼다(복사 → 옛것 삭제). 두 창이 엇갈려 옮기면 한 창의 늦은 복사가 다른 창이 방금 저장한 편집을 덮고, 옛 자리만
+//  아는 빌드가 그 뒤에 저장한 것을 지울 수 있었다(Codex 재검토 P1 두 번) — 복사와 삭제가 없으면 그 경쟁도 없다.
+//  옛 자리에 문서가 있는 곳은 이 판 전의 개발 화면뿐이다(배포판에는 편집 탭이 없었다). 그 문서는 처음 저장할 때 새 자리에 생기고,
+//  옛 자리의 것은 그때의 내용으로 남는다(옛 자리만 아는 빌드로 돌아가면 그 옛 내용이 보인다 — 새 자리의 편집은 지워진 것이 아니다).
 const OLD_DOCS = `${STORAGE_KEYS.editTimeline}:`;
 const NEW_DOCS = `${STORAGE_KEYS.editDocs}:`;
 const oldKeyOf = (key: string): string | null => (key.startsWith(NEW_DOCS) ? OLD_DOCS + key.slice(NEW_DOCS.length) : null);
 
-// 옛 자리의 원문을 치운다 — **same(새 자리의 것, 또는 이 창이 저장소에 있다고 알던 것)과 같을 때만 그냥 지운다.** 다르면 누가(옛 자리만 아는
-//  빌드·옮기기 전에 열려 있던 창) 그 뒤에 저장한 것일 수 있다. 처음엔 '새 자리에 있으면 그쪽이 새것'이라 보고 지웠다 — 그 편집이 사라진다
-//  (Codex 재검토 P1). 다른 것은 `<새 키>.old` 보관본으로 옮겨진 것을 확인한 뒤에만 치우고, 보관하지 못하면(이미 다른 보관본이 있다·용량)
-//  옛 자리에 그대로 둔다. 어느 쪽이 새것인지는 알 수 없어 화면의 문서는 새 자리의 것 그대로다 — 보관본을 되살리는 화면은 없다(이 PC 의
-//  개발 브라우저에서만 생길 수 있는 경우다. 배포판에는 옛 자리에 쓰는 빌드가 없다).
-function retireOld(from: string, to: string, same: string | null): void {
-  const old = localStorage.getItem(from);
-  if (old === null) return;
-  if (old !== same) {
-    const keep = `${to}.old`;
-    if (localStorage.getItem(keep) === null) localStorage.setItem(keep, old);
-    if (localStorage.getItem(keep) !== old) return;
-  }
-  localStorage.removeItem(from);
-}
-
-export function migrateEditDocs(): void {
-  let old: string[] = [];
-  try {
-    old = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)).filter((k): k is string => !!k?.startsWith(OLD_DOCS));
-  } catch {
-    return; // 저장소 접근 불가
-  }
-  for (const from of old) {
-    try {
-      const to = NEW_DOCS + from.slice(OLD_DOCS.length);
-      const raw = localStorage.getItem(from);
-      if (raw === null) continue;
-      if (localStorage.getItem(to) === null) localStorage.setItem(to, raw);
-      retireOld(from, to, localStorage.getItem(to)); // 새 자리의 것과 같을 때만 지운다(방금 옮겼으면 같다) — 다르면 보관본으로
-    } catch {
-      /* 이 문서는 옛 자리에 남는다 */
-    }
-  }
-}
-migrateEditDocs();
-
-/** 저장돼 있는 원문 — 새 자리, 없으면 아직 못 옮긴 옛 자리. */
+/** 저장돼 있는 원문 — 새 자리, 없으면 옛 자리. */
 export function readEditRaw(key: string): string | null {
   try {
     const raw = localStorage.getItem(key);
@@ -87,9 +53,8 @@ export function readEditDoc(key: string): StoredEditDoc {
 }
 
 // 저장에 성공하면 쓴 원문, 실패하면 null. keepBad 는 읽지 못한 옛 원문 — `<키>.bad` 로 옮겨 적힌 것을
-// 확인한 뒤에만 원래 키를 덮는다. known = 이 창이 저장소에 있다고 알던 원문 — 못 옮겨 옛 자리에 남아 있던 것이 그것과 같으면
-// 이제 낡은 사본이라 지우고, 다르면 보관본으로 옮긴다(retireOld).
-export function writeEditDoc(key: string, doc: EditDoc, keepBad: string | null = null, known: string | null = null): string | null {
+// 확인한 뒤에만 원래 키를 덮는다. 새 자리에만 쓴다 — 옛 자리의 것은 건드리지 않는다(위).
+export function writeEditDoc(key: string, doc: EditDoc, keepBad: string | null = null): string | null {
   const raw = JSON.stringify(doc);
   try {
     if (keepBad !== null) {
@@ -97,16 +62,10 @@ export function writeEditDoc(key: string, doc: EditDoc, keepBad: string | null =
       if (localStorage.getItem(`${key}.bad`) !== keepBad) return null;
     }
     localStorage.setItem(key, raw);
+    return raw;
   } catch {
     return null;
   }
-  try {
-    const old = oldKeyOf(key);
-    if (old) retireOld(old, key, known);
-  } catch {
-    /* 남아도 읽기는 새 자리를 먼저 본다 */
-  }
-  return raw;
 }
 
 // Undo/Redo — 문서(키)별 메모리 스택. 탭을 오가도 남고, 새로고침하면 사라진다.

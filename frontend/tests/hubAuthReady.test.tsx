@@ -148,6 +148,49 @@ it("AUTH-off 로그아웃 — 허브가 실패를 답하면 새로 고치지 않
   }
 });
 
+// 배포 전 재검토(2026-10-13, Codex): 저장하지 못한 편집(편집 탭 — lib/unloadGuard 가 쥔다)이 있는데 로그아웃하면 새로고침으로 그 편집이
+//  사라진다. 계정·서버의 상태를 바꾸기 전에 묻는다 — 바꾼 뒤에 새로고침만 막으면 화면이 옛 계정의 것으로 남는다.
+it("저장하지 못한 편집이 있으면 로그아웃 전에 묻는다 — 취소하면 아무것도 하지 않고, 계속하면 묻지 않고 새로 고친다", async () => {
+  const reloadPage = vi.fn();
+  vi.stubGlobal("location", { href: "http://localhost:3000/", origin: "http://localhost:3000", protocol: "http:", host: "localhost:3000",
+    hostname: "localhost", port: "3000", pathname: "/", search: "", hash: "", reload: reloadPage });
+  const asked: string[] = [];
+  let answer = false;
+  vi.stubGlobal("confirm", (message: string) => { asked.push(message); return answer; });
+  const requests: string[] = [];
+  vi.stubGlobal("fetch", vi.fn((url: string) => {
+    requests.push(url);
+    if (url === "/api/auth/config") return Promise.resolve(response({ auth_enabled: false, has_accounts: false }));
+    if (url === "/api/shared-server/status") return Promise.resolve(response({ configured: true, has_token: false, url: "http://127.0.0.1:9" }));
+    if (url === "/api/projects/my-finalize-roles") return Promise.resolve(response({ project_ids: [] }));
+    if (url === "/api/shared-server/logout") return Promise.resolve(response({ ok: true, has_token: false }));
+    throw new Error(`Unexpected request: ${url}`);
+  }));
+  const { useHubAuth } = await import("../src/lib/useHubAuth");
+  const { holdUnload } = await import("../src/lib/unloadGuard");
+  let logout!: () => Promise<boolean>;
+  function Host() {
+    logout = useHubAuth().logout;
+    return null;
+  }
+  await act(async () => root!.render(<Host />));
+  await act(async () => {});
+  holdUnload("edit-docs", true);
+  try {
+    let loggedOut: boolean | undefined;
+    await act(async () => { loggedOut = await logout(); });
+    expect([loggedOut, asked.length, requests.includes("/api/shared-server/logout"), reloadPage.mock.calls.length]).toEqual([false, 1, false, 0]);
+    answer = true;
+    await act(async () => { loggedOut = await logout(); });
+    expect([loggedOut, asked.length, reloadPage.mock.calls.length]).toEqual([true, 2, 1]);
+    const leaving = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(leaving);
+    expect(leaving.defaultPrevented).toBe(false); // 새로고침은 문지기를 풀고 한다 — 브라우저가 한 번 더 묻지 않는다
+  } finally {
+    holdUnload("edit-docs", false);
+  }
+});
+
 it("AUTH-on: 설정이 오기 전 참이었다가 거짓으로 출렁이지 않는다(로그인 전에는 거짓)", async () => {
   const config = deferred<Response>();
   const { ready } = await mount({ "/api/auth/config": () => config.promise });

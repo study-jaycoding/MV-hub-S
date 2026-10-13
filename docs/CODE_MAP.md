@@ -722,7 +722,7 @@ updated: 2026-10-13
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `useHubAuth.ts` | 훅 | 로컬 허브·공유 서버 로그인 상태 통합 |
-| `unloadGuard.ts` | 유틸 | 저장 못 한 것이 있는 동안 창을 닫거나 새로고침하면 브라우저가 묻게(`holdUnload` — 지금은 편집 탭의 '저장 안 됨' 문서) · 계정이 바뀌는 길은 풀고 새로고침(`reloadNow`) |
+| `unloadGuard.ts` | 유틸 | 저장 못 한 것이 있는 동안 사용자가 창을 닫거나 새로고침하면 브라우저가 묻게(`holdUnload` — 지금은 편집 탭의 '저장 안 됨' 문서) · 앱이 스스로 하는 새로고침은 풀고 진행(`reloadNow`) · 그 전에 물을 자리(로그아웃·업데이트 완료)는 `unloadHeld` |
 | `accountIdentity.ts` | 순수 | 계정 표시명·역할·시스템 계정 판정 |
 | `useAccountStatus.ts` | 훅 | 하단 상태줄용 계정·CLI 연결·크레딧 |
 | `workspaceContext.ts` | 저장 | 현재 워크스페이스 컨텍스트 보관·조정 |
