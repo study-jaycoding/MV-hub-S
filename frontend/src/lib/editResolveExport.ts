@@ -122,7 +122,9 @@ export function buildTimelineExport(args: {
         unresolved += 1;
         continue;
       }
-      const end = Math.max(start + 1, frame(slot.start + clip.len));
+      // 꺼진 클립은 컷보다 길 수 있다(컷 길이는 켜진 클립만 센다 — buildLayout) → 컷의 끝에서 자른다. 안 자르면 다음 컷의 같은
+      //  트랙 클립과 겹쳐 받는 쪽이 계획을 거부한다. 줄인 길이(trim)는 clip.len 에 이미 들어 있다.
+      const end = Math.max(start + 1, frame(slot.start + Math.min(clip.len, slot.len)));
       gens.set(gen.id, gen);
       clips.push({
         gen_id: gen.id,
