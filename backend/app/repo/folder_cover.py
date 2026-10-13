@@ -14,11 +14,15 @@ from typing import Any, Optional
 from ..db import get_connection
 from ._common import clean_folder_path
 from .generations_query import list_generations
+from .identity import resolve_display_names
 from .projects import _folder_counts_where
 
 __all__ = ["folder_cards", "set_folder_cover"]
 
 _COVER_CHUNK = 500  # 표지 행을 한 번에 받는 개수(SQL 변수 상한 아래)
+_STRIP = 7  # 카드마다 싣는 바로 아래 폴더(컷) 미리보기 수 — 이름순 앞에서부터. 그 뒤는 화면이 `subfolders` 와의 차로 '+N' 을 그린다
+_TAKES = 10  # 하위 폴더가 없는 카드(컷)가 싣는 생성물 미리보기 수 — 대표가 있으면 맨 앞, 그 뒤는 최신 순. 그 뒤는 화면이 `count` 와의 차로 '+N'
+_WORKERS = 4  # 카드마다 싣는 작업자 수(건수 많은 순)
 
 
 def _under(path: str) -> tuple[str, list[str]]:
@@ -58,6 +62,14 @@ def folder_cards(
 
     count 는 그 폴더와 하위 전부(폴더 창이 보여 주는 것과 같다). cover 는 목록 행과 같은 모양이고, 유효한
     대표가 있으면 그것(rep=True), 없으면 가장 최근 것이다. own_count = parent 에 직접 든 것(어느 카드에도 안 든다).
+    에피소드 화면용 집계(2026-10-13 — 건수와 **같은 범위**에서 센다. 이 값들이 없는 옛 서버면 화면이 그 표시를 숨긴다):
+    video_count = 그 폴더(하위 포함)의 영상 수 · rep_count = 바로 아래 폴더 중 유효한 대표가 있는 수 ·
+    last_shared_at/by = 그 폴더에서 가장 늦게 공유된 것의 시각과 만든 사람 이름(표지의 것이 아니다 — 대표를 정해 둔
+    폴더의 표지는 최신이 아니다) · children = 바로 아래 폴더의 미리보기(이름순 앞 `_STRIP` 개, 표지는 그림에 필요한 것만) ·
+    final_count/held_count = 그 폴더(하위 포함)의 최종·보류 수 — 사이드바 숫자(`folder_review_counts_batch`)와 같은 규칙
+    (최종이 먼저 — 둘 다 켜진 옛 행을 두 번 세지 않는다). 일반 공유 수 = count - final_count - held_count.
+    컷 화면의 리스트용(2026-10-13 오후): workers = 그 폴더(하위 포함)의 만든 사람별 건수(많은 순 `_WORKERS` 명, 이름을 모르면 null) ·
+    takes = **하위 폴더가 없는 카드만** — 그 컷의 생성물 미리보기 `_TAKES` 개(유효한 대표가 맨 앞, 그 뒤 최신 순. 그림 한 장 + 최종/보류 + 만든 사람).
     team_member_projects=None 은 전체 공유물(read_all·단독)이지만 viewer_uid 는 그래도 넘긴다 — 표지 행의
     개인 메타 가림은 조회 범위와 별개다.
     """
@@ -73,7 +85,11 @@ def folder_cards(
         args += under_args
     with get_connection() as conn:
         rows = conn.execute(
-            f"SELECT g.id, g.folder_path FROM generation g WHERE {where} "
+            "SELECT g.id, g.folder_path, g.creator_uid, "
+            "COALESCE(g.is_final, 0) AS is_final, COALESCE(g.is_held, 0) AS is_held, "
+            "EXISTS (SELECT 1 FROM asset a WHERE a.generation_id = g.id AND a.type = 'video') AS is_video, "
+            "(SELECT MAX(s.shared_at) FROM share s WHERE s.generation_id = g.id) AS shared_at "
+            f"FROM generation g WHERE {where} "
             "ORDER BY g.sort_ts DESC, g.id DESC",
             args,
         ).fetchall()
@@ -99,14 +115,51 @@ def folder_cards(
         path = prefix + head
         entry = folders.get(path)
         if entry is None:
-            entry = folders[path] = {"count": 0, "cover_id": row["id"], "rep": False, "subs": set()}
+            entry = folders[path] = {
+                "count": 0, "cover_id": row["id"], "rep": False, "subs": {}, "videos": 0, "last": ("", None), "final": 0, "held": 0,
+                "by": {}, "takes": [],
+            }
         entry["count"] += 1
+        entry["by"][row["creator_uid"]] = entry["by"].get(row["creator_uid"], 0) + 1
+        if len(entry["takes"]) < _TAKES:  # 최신 순이라 앞에서부터가 가장 최근 것이다(대표는 아래에서 따로 앞세운다)
+            entry["takes"].append(row)
+        if row["is_final"]:
+            entry["final"] += 1
+        elif row["is_held"]:
+            entry["held"] += 1
+        entry["videos"] += 1 if row["is_video"] else 0
+        if (row["shared_at"] or "") > entry["last"][0]:
+            entry["last"] = (row["shared_at"], row["creator_uid"])
         if below:  # 그 폴더 바로 아래 폴더(컷) — 화면은 이것이 있는 카드를 '들어가는' 묶음으로 본다(Jay 2026-10-09)
-            entry["subs"].add(below.split("/", 1)[0])
+            name = below.split("/", 1)[0]
+            sub = entry["subs"].get(name)
+            if sub is None:  # 최신 순이라 처음 만난 것이 그 컷의 가장 최근 것이다
+                sub = entry["subs"][name] = {"count": 0, "cover_id": row["id"], "rep": False}
+            sub["count"] += 1
+            if saved.get(f"{path}/{name}") == row["id"]:  # 그 컷 아래에 지금 보이는 공유물일 때만 유효한 대표다(위 카드와 같은 기준)
+                sub["cover_id"], sub["rep"] = row["id"], True
         if saved.get(path) == row["id"]:
             entry["cover_id"], entry["rep"] = row["id"], True
+            entry["rep_row"] = row
 
-    cover_ids = [entry["cover_id"] for entry in folders.values()]
+    # 컷(하위 폴더 없음)의 생성물 미리보기 — 대표를 맨 앞에 세우고(최근 것에 없어도 싣는다) `_TAKES` 개로 자른다.
+    takes: dict[str, list[Any]] = {}
+    for path, entry in folders.items():
+        if entry["subs"]:
+            continue  # 묶음(에피소드)은 컷 띠(children)를 싣는다
+        rep_row = entry.get("rep_row")
+        rows_of = ([rep_row] if rep_row is not None else []) + [one for one in entry["takes"] if rep_row is None or one["id"] != rep_row["id"]]
+        takes[path] = rows_of[:_TAKES]
+
+    strips = {
+        path: sorted(entry["subs"], key=lambda one: (one.casefold(), one))[:_STRIP]
+        for path, entry in folders.items()
+    }
+    cover_ids = list(dict.fromkeys(
+        [entry["cover_id"] for entry in folders.values()]
+        + [folders[path]["subs"][name]["cover_id"] for path, names in strips.items() for name in names]
+        + [one["id"] for rows_of in takes.values() for one in rows_of]
+    ))
     covers: dict[str, dict[str, Any]] = {}
     for start in range(0, len(cover_ids), _COVER_CHUNK):
         chunk = cover_ids[start:start + _COVER_CHUNK]
@@ -117,15 +170,52 @@ def folder_cards(
         ):
             covers[cover["id"]] = cover
 
+    with get_connection() as conn:
+        names = resolve_display_names(
+            conn, {entry["last"][1] for entry in folders.values()} | {uid for entry in folders.values() for uid in entry["by"]},
+        )
+
     out = []
     for path in sorted(folders, key=lambda one: (one.casefold(), one)):
         entry = folders[path]
         cover = covers.get(entry["cover_id"])
         if cover is None:
             continue  # 집계와 표지 조회 사이에 지워졌거나 옮겨졌다 — 다음 조회에 바로잡힌다
+        children = []
+        for name in strips[path]:
+            sub = entry["subs"][name]
+            child_cover = covers.get(sub["cover_id"])
+            if child_cover is not None:  # 미리보기는 그림만 쓴다 — 목록 행 전체를 컷마다 싣지 않는다(주기 조회의 응답 크기)
+                children.append({
+                    "path": f"{path}/{name}", "name": name, "count": sub["count"], "rep": sub["rep"],
+                    "cover": {"id": child_cover["id"], "assets": (child_cover.get("assets") or [])[:1]},
+                })
         out.append({
             "path": path, "name": path[len(prefix):], "count": entry["count"],
             "subfolders": len(entry["subs"]), "rep": entry["rep"], "cover": cover,
+            "video_count": entry["videos"],
+            "rep_count": sum(1 for sub in entry["subs"].values() if sub["rep"]),
+            "last_shared_at": entry["last"][0] or None,
+            "last_shared_by": names.get(entry["last"][1]) if entry["last"][1] else None,
+            "children": children,
+            "final_count": entry["final"], "held_count": entry["held"],
+            # 이름을 모르는 사람은 이름 없이 건수만(uid 를 내보내지 않는다). 많은 순, 같으면 이름순
+            "workers": [
+                {"name": name, "count": count}
+                for name, count in sorted(
+                    ((names.get(uid) if uid else None, count) for uid, count in entry["by"].items()),
+                    key=lambda one: (-one[1], one[0] or ""),
+                )[:_WORKERS]
+            ],
+            # 미리보기는 그림만 쓴다(목록 행 전체를 싣지 않는다 — 주기 조회의 응답 크기). 만든 사람은 목록 행의 값 그대로(가림 규칙이 같다)
+            "takes": [
+                {
+                    "cover": {"id": one["id"], "assets": (covers[one["id"]].get("assets") or [])[:1]},
+                    "final": bool(one["is_final"]), "held": bool(not one["is_final"] and one["is_held"]),
+                    "by": covers[one["id"]].get("creator_name") or None,
+                }
+                for one in takes.get(path, []) if one["id"] in covers
+            ],
         })
     return {"parent": parent_path, "own_count": own_count, "folders": out}
 

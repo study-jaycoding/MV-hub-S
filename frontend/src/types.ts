@@ -154,6 +154,35 @@ export interface FolderCard {
   subfolders?: number; // 바로 아래 폴더 수 — 카드 이름표의 "컷 N" 표시용(두 번 클릭은 있든 없든 그 폴더로 들어간다, 2026-10-13 ②). 옛 서버는 안 준다(= 0)
   rep: boolean; // 표지가 팀이 정한 대표인가(아니면 가장 최근 것)
   cover: Generation;
+  // 에피소드 화면용 집계(2026-10-13) — 건수와 같은 범위에서 센다. 옛 공유 서버는 안 준다(화면이 그 표시만 뺀다).
+  video_count?: number; // 그 폴더(하위 포함)의 영상 수
+  rep_count?: number; // 바로 아래 폴더 중 대표를 정한 수
+  last_shared_at?: string | null; // 그 폴더에서 가장 늦게 공유된 것의 시각(UTC) — 표지의 것이 아니다
+  last_shared_by?: string | null; // 그것을 만든 사람의 표시 이름(모르면 null)
+  children?: FolderCardChild[]; // 바로 아래 폴더 미리보기 — 이름순 앞 몇 개(나머지 수 = subfolders − 길이)
+  // 그 폴더(하위 포함)의 최종·보류 수 — 사이드바 폴더 숫자와 같은 규칙. 일반 공유 수 = count - final_count - held_count.
+  final_count?: number;
+  held_count?: number;
+  // 컷 화면의 리스트용(2026-10-13 오후). 옛 공유 서버는 안 준다.
+  workers?: { name: string | null; count: number }[]; // 만든 사람별 건수(많은 순 몇 명) — 이름을 모르면 null
+  takes?: FolderCardTake[]; // 하위 폴더가 없는 카드만 — 그 컷의 생성물 미리보기(대표가 맨 앞, 그 뒤 최신 순). 나머지 수 = count − 길이
+}
+
+// 컷 줄의 생성물 띠 한 칸. 표지는 그림에 필요한 것만 온다.
+export interface FolderCardTake {
+  cover: Pick<Generation, "id" | "assets">;
+  final: boolean;
+  held: boolean;
+  by: string | null; // 만든 사람의 표시 이름(모르면 null)
+}
+
+// 에피소드 카드의 컷 띠 한 칸. 표지는 그림에 필요한 것만 온다.
+export interface FolderCardChild {
+  path: string;
+  name: string;
+  count: number;
+  rep: boolean;
+  cover: Pick<Generation, "id" | "assets">;
 }
 
 export interface FolderCards {

@@ -498,7 +498,7 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
 
 // 2026-10-13 Jay ①②(공유 탭 컷 카드 요청): 공유 탭을 떠났다 **직접 눌러** 돌아오면 같은 문맥(계정·서버·확정된 자동 공간)의 마지막 자리로. 사이드바·컷 카드로
 //  들어간 자리는 브라우저 기록 한 칸 — 뒤로 가기가 들어가기 전 목록으로 돌아온다. 보는 자리만 되살린다(다음 생성 위치는 그대로).
-it("공유 탭을 떠났다 직접 눌러 돌아오면 마지막 자리로, 사이드바로 들어간 폴더는 뒤로 가기로 돌아온다 — 첫 기록부터 자리를 싣고 생성 위치는 그대로", async () => {
+it("공유 탭을 떠났다 직접 눌러 돌아오면 마지막 자리로, 사이드바로 들어간 폴더는 뒤로 가기로 돌아온다 — 첫 기록부터 자리를 싣고, 뒤로 가면 생성 위치도 그 자리로", async () => {
   // 틀의 프로젝트 목록에는 사이드바로 들어갈 프로젝트만 둔다 — 목록에 없는 "archived-project" 는 기억에서 그대로 되살아나야 한다(아래)
   installAppBoundaries([fixture], fixture.id, [{ id: "resolve-project", name: "Resolve" } as unknown as Project]);
   localStorage.setItem("ch.workspaceContext", JSON.stringify({ scope: "team", id: "view-workspace", name: "View workspace" }));
@@ -530,6 +530,8 @@ it("공유 탭을 떠났다 직접 눌러 돌아오면 마지막 자리로, 사�
   act(() => window.dispatchEvent(new PopStateEvent("popstate", { state: top }))); // 뒤로 — 폴더에 들어가기 전의 기록
   await settle();
   expect([librarySnapshot!.filters.tab, librarySnapshot!.filters.project_id, librarySnapshot!.filters.folder_path]).toEqual(["team", "resolve-project", undefined]);
+  // 뒤로 가기로 자리가 바뀌면 다음 생성 위치도 그 자리로 — 눌러 들어간 것과 같다(Jay 2026-10-13 오후: 화면은 e035 인데 사이드바 표시는 C0110 이던 것)
+  expect(JSON.parse(localStorage.getItem("ch.lib.generationScopeV1")!)).toEqual({ project_id: "resolve-project" });
   // 다른 문맥(공간)의 기록은 자리를 되살리지 않는다
   act(() => window.dispatchEvent(new PopStateEvent("popstate", { state: { chv: { tab: "team", focusId: null, ov: null, key: 0, loc: { project_id: "other", folder_path: "x", ctx: "다른 문맥" } } } })));
   await settle();
@@ -552,19 +554,28 @@ it("공유 탭을 떠났다 직접 눌러 돌아오면 마지막 자리로, 사�
   act(() => topBarOnTab!("my")); await settle();
   expect([librarySnapshot!.filters.tab, librarySnapshot!.filters.project_id]).toEqual(["my", undefined]);
   // 기억의 프로젝트가 사이드바 목록에 없어도 그대로 되살린다 — 목록은 보관·공간 제한이라 삭제의 증거가 아니다(Codex 코드 리뷰). 정말 사라졌으면 빈 목록.
-  //  생성 위치가 우연히 같은 프로젝트여도(작업 공간 탭에서 눌러 골랐다가 뒤로 가 맨 위) '낡은 프로젝트' 효과가 되살린 자리를 지우지 않는다(Codex 3차 P2)
   const myTop = window.history.state;
   act(() => sidebarSnapshot!.onChange({ project_id: "archived-project", folder_path: "ep" })); await settle(); // 눌러 고름 — 생성 위치도
   expect(JSON.parse(localStorage.getItem("ch.lib.generationScopeV1")!)).toEqual({ project_id: "archived-project", folder_path: "ep" });
-  act(() => window.dispatchEvent(new PopStateEvent("popstate", { state: myTop }))); await settle(); // 뒤로 — 맨 위(생성 위치는 그대로)
+  const archivedEntry = window.history.state; // 목록에 없는 프로젝트에 들어간 기록
+  act(() => window.dispatchEvent(new PopStateEvent("popstate", { state: myTop }))); await settle(); // 뒤로 — 맨 위(생성 위치도 맨 위로)
   expect(librarySnapshot!.filters.project_id).toBeUndefined();
+  expect(JSON.parse(localStorage.getItem("ch.lib.generationScopeV1")!)).toEqual({});
   const saved = JSON.parse(localStorage.getItem("ch.lib.teamLocationV1")!) as { ctx: string };
   localStorage.setItem("ch.lib.teamLocationV1", JSON.stringify({ ...saved, project_id: "archived-project", folder_path: "ep" }));
   act(() => topBarOnTab!("team")); await settle();
   expect([librarySnapshot!.filters.tab, librarySnapshot!.filters.project_id, librarySnapshot!.filters.folder_path]).toEqual(["team", "archived-project", "ep"]);
   act(() => refreshProjects()); await settle(); // 프로젝트 목록 갱신 — 목록에 없지만 되살린 자리는 둔다
   expect([librarySnapshot!.filters.project_id, librarySnapshot!.filters.folder_path]).toEqual(["archived-project", "ep"]);
-  expect(JSON.parse(localStorage.getItem("ch.lib.generationScopeV1")!)).toEqual({ project_id: "archived-project", folder_path: "ep" }); // 생성 위치는 여전히 그대로
+  expect(JSON.parse(localStorage.getItem("ch.lib.generationScopeV1")!)).toEqual({}); // 기억 되살림은 보는 자리만 — 생성 위치는 건드리지 않는다
+  // 기록으로 돌아온 자리도 지우지 않는다 — 이때는 생성 위치가 같은 프로젝트가 되지만(뒤로·앞으로 가기는 생성 위치도 옮긴다) '낡은 프로젝트' 효과가
+  //  되살린 자리를 지우지 않는다(되살린 자리 표식을 생성 위치를 옮긴 **뒤에** 켠다 — Codex 3차 P2 의 경우가 이제 이 길로 난다)
+  act(() => topBarOnTab!("my")); await settle(); // 다른 자리(맨 위)로 — 같은 자리의 기록이면 생성 위치를 옮기지 않는다(자리가 바뀔 때만)
+  act(() => window.dispatchEvent(new PopStateEvent("popstate", { state: archivedEntry }))); await settle();
+  expect([librarySnapshot!.filters.tab, librarySnapshot!.filters.project_id, librarySnapshot!.filters.folder_path]).toEqual(["my", "archived-project", "ep"]);
+  expect(JSON.parse(localStorage.getItem("ch.lib.generationScopeV1")!)).toEqual({ project_id: "archived-project", folder_path: "ep" });
+  act(() => refreshProjects()); await settle();
+  expect([librarySnapshot!.filters.project_id, librarySnapshot!.filters.folder_path]).toEqual(["archived-project", "ep"]);
   act(() => sidebarSnapshot!.onChange({ project_id: "archived-project", folder_path: "ep" })); await settle(); // 눌러서 고른 자리는 전처럼 — 목록에 없으면 지운다
   act(() => refreshProjects()); await settle();
   expect(librarySnapshot!.filters.project_id).toBeUndefined();
@@ -707,6 +718,11 @@ it("App 공유·리뷰: 공간 미확인은 안내와 전체 보기 버튼을 �
   const send = await mountApp("team");
   expect(gridSnapshot).toBeNull();
   expect(view.container.querySelector('[role="status"]')?.textContent).toContain("워크스페이스를 확인한 뒤");
+  // 조회를 보낼 수 없는 화면이다 — 자리를 옮겼고 목록이 '아직 옛것'이어도(받은 적이 없다) 잠그지 않는다: 잠그면 여기서 나가는 [전체 보기]가
+  //  안 눌린다(Codex 31회차 코드 리뷰). 자리를 옮겨야 '옮긴 뒤' 조건이 선다 — 프로젝트를 골랐다가 푼다.
+  act(() => { sidebarSnapshot!.onChange({ project_id: "resolve-project" }); setListBehind(true); });
+  expect(document.querySelector("main.main")!.hasAttribute("inert")).toBe(false);
+  act(() => { sidebarSnapshot!.onChange({ project_id: undefined }); setListBehind(false); });
   act(() => send(["target"]));
   await settle();
   expect(locateGenerations).not.toHaveBeenCalled();
@@ -1229,17 +1245,19 @@ const topCards = { parent: "", own_count: 0, folders: [{ path: "episode", name: 
 const byParent = (rep: () => boolean) => vi.fn((_pid: string, parent: string) =>
   Promise.resolve(parent === "episode" ? cutCards(rep()) : parent === "" ? topCards : { parent, own_count: 3, folders: [] }));
 const cutGrid = () => document.querySelector<HTMLElement>("main.main .cut-grid");
-const cutTile = (name: string) => [...document.querySelectorAll<HTMLButtonElement>("main.main .cut-card:not(.cut-out)")]
-  .find((tile) => tile.querySelector(".cut-tab > span")!.textContent === name)!;
+// 컷 카드는 이름표(.cut-tab), 에피소드 화면의 카드는 표지 위 이름(.ep-cap > b · 리스트는 .ep-name) — 2026-10-13
+const cutTile = (name: string) => [...document.querySelectorAll<HTMLElement>("main.main .cut-card:not(.cut-out)")]
+  .find((tile) => tile.querySelector(".cut-tab > span, .ep-cap > b, .ep-name")!.textContent === name)!;
 type Pill = { type: string; props: { className: string; disabled?: boolean; onMouseDown?: (event: { preventDefault: () => void; button: number }) => void } };
 const pill = (id: string) => gridSnapshot!.cellHeader!(withAsset(id)) as unknown as Pill | null;
 
 async function mountTeamFolder(api: Record<string, unknown>, more: Partial<Filters> = {}) {
   installAppBoundaries([fixture, otherScene]);
   toolbarSnapshot = null;
+  // 마지막에 그린 것이 남는다 — 폴더 창이 뜨면 뒤의 사본을 먼저, 창의 툴바를 나중에 그리므로 창의 것이 남는다. 그린 자리는 표식으로 본다.
   vi.doMock("../src/components/LibraryToolbar", () => ({ LibraryToolbar: (props: ToolbarProps) => {
     toolbarSnapshot = props;
-    return null;
+    return <i data-toolbar="" data-cut={props.folderCards ? "1" : "0"} data-tags={props.tagPanelOpen ? "1" : "0"} />;
   } }));
   Object.assign(boundary.api, api);
   localStorage.setItem("ch.lib.filtersV2", JSON.stringify({ tab: "team", __v: "2" }));
@@ -1287,9 +1305,17 @@ it("App 공유·리뷰: 폴더를 고르면 바로 아래 폴더마다 카드 �
   // 카드의 폴더 이름표 → 그 폴더의 창(컷 카드 두 번 클릭은 창이 아니라 이동 — 아래 시험). 창 안 카드 위의 [대표] — 대표가 아직 없으니 모두 지정 단추. 그림이 없는 것에는 없다.
   const backKey = JSON.stringify(librarySnapshot!.genQuery);
   beginList.mockClear();
+  const behindToolbar = () => document.querySelector("main.main .lib-toolbar-behind [data-toolbar]");
+  expect([behindToolbar(), document.querySelectorAll("main.main [data-toolbar]").length]).toEqual([null, 1]); // 창이 없을 때는 도구 줄 하나
   act(() => gridSnapshot!.onOpenFolder!(libraryGeneration("target")));
   await settle();
   expect(peekWindow()!.querySelector(".folder-peek-title")!.textContent).toBe("Resolve project / episode/shot");
+  // 창 뒤의 도구 줄 자리에는 사본이 남는다(Jay 2026-10-13 — 창을 열어도 뒤 화면이 그대로, 흐리게만). 전환 단추는 사본에만 있고,
+  //  창 밖에 뜨는 태그 패널은 사본이 그리지 않는다. 눌리는 것은 창의 툴바 하나다(뒤 화면은 inert)
+  expect([behindToolbar()?.getAttribute("data-cut"), behindToolbar()?.getAttribute("data-tags"), behindToolbar()?.closest("[aria-hidden]") !== null])
+    .toEqual(["1", "0", true]);
+  expect(peekWindow()!.querySelector("[data-toolbar]")!.getAttribute("data-cut")).toBe("0");
+  expect(document.querySelector<HTMLElement>(".body")!.hasAttribute("inert")).toBe(true);
   expect(librarySnapshot!.genQuery).toMatchObject({ tab: "team", project_id: "resolve-project", folder_path: "episode/shot" });
   expect(beginList).toHaveBeenLastCalledWith({ keep: backKey });
   expect(peekWindow()!.contains(gridOutputs()[0])).toBe(true);
@@ -1409,6 +1435,28 @@ it("App 공유·리뷰: 컷 두 번 클릭 = 모아보기 · 우클릭 = 폴더 
   expect(pill("neighbour")).toMatchObject({ type: "button", props: { disabled: false } });
 });
 
+// 2026-10-13 오후(Jay): 모아보기 [개별] 카드의 [폴더로] = 그 컷 폴더로 이동 — 창이 닫히고, 사이드바에서 그 폴더를 누른 것처럼 기록 한 칸이 쌓인다.
+it("App 공유·리뷰: 모아보기 카드의 [폴더로] = 창을 닫고 그 컷 폴더로 이동(기록 한 칸)", { timeout: 20_000 }, async () => {
+  const generationMetrics = vi.fn().mockResolvedValue({ real_credits: 1, est_credits: null, credit_source: null, elapsed_seconds: null });
+  localStorage.setItem("ch.lib.cutView", "1");
+  await mountTeamFolder({ folderCards: byParent(() => false), setFolderCover: vi.fn(), generationMetrics });
+  const reel = () => document.querySelector<HTMLElement>(".reel");
+  act(() => { cutTile("shot").dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); });
+  await settle();
+  expect([reel() !== null, librarySnapshot!.filters.folder_path]).toEqual([true, "episode"]);
+  const before = window.history.length;
+  const episodeEntry = window.history.state; // 들어가기 전(episode 의 컷 카드)의 기록
+  act(() => { reel()!.querySelector<HTMLButtonElement>(".reel-go")!.click(); });
+  await settle();
+  expect([reel(), librarySnapshot!.filters.folder_path, window.history.length - before, cutGrid()]).toEqual([null, "episode/shot", 1, null]);
+  expect(sidebarSnapshot!.armedFolder).toEqual({ projectId: "resolve-project", path: "episode/shot" });
+  // 뒤로 가기 — 화면은 컷 카드(episode)로, 사이드바의 분홍 표시(무장 폴더 = 다음 생성 위치)도 같이 돌아온다(Jay 2026-10-13 오후: 표시만 shot 에 남았다)
+  act(() => { window.dispatchEvent(new PopStateEvent("popstate", { state: episodeEntry })); });
+  await settle();
+  expect([librarySnapshot!.filters.folder_path, cutGrid() !== null, sidebarSnapshot!.armedFolder])
+    .toEqual(["episode", true, { projectId: "resolve-project", path: "episode" }]);
+});
+
 // 2026-10-13 ③(Jay): 사이드바로 폴더를 옮기면 묶음 응답이 오기 전에 낱장 격자(옛 폴더의 카드)가 한 번 보였다가 컷 카드로 바뀌었다 → 응답 전엔 격자 자리를
 //  비운다(전환 단추는 그동안 남는다). 조회가 실패하면 낱장으로 돌아간다(영영 빈 화면이 아니다).
 it("App 공유·리뷰: 폴더를 옮기면 묶음 응답 전엔 낱장 격자를 그리지 않는다 — 오면 컷 카드(잎이면 낱장), 실패하면 낱장", { timeout: 20_000 }, async () => {
@@ -1495,6 +1543,63 @@ it("App 공유·리뷰: 에피소드에서 컷으로 들어가면 받아 둔 목
   // 에피소드로 돌아오면 받아 둔 컷 카드가 바로 — 목록이 아직 옛것이어도 컷 카드는 눌린다(잠그지 않는다)
   act(() => { sidebarSnapshot!.onChange({ folder_path: "episode" }); setListBehind(true); });
   expect([cutGrid() !== null, main().hasAttribute("inert")]).toEqual([true, false]); // settle 전 — 응답을 기다리지 않았다
+});
+
+// 31회차(Codex 빈틈 점검 — 둘 다 '옛 자리의 카드가 잠금 없이 선다'):
+//  ① 빠른 A→B→A — B 는 목록만 오고 묶음 답은 아직인 채 A 로 되돌아오면, A 가 '이미 선 자리'로 남아 B 의 목록이 A 에 그대로 섰다 → 자리를 떠나면 그 표식을 지운다.
+//  ② 자리를 옮기고 기다리는 사이 검색어를 치면 묶음 조건이 풀리며 잠금까지 풀렸다 → 잠금은 묶어 보일 수 있는지와 무관하게 건다.
+it("App 공유·리뷰: 자리를 옮긴 뒤 새 목록 전에는 옛 자리의 카드가 눌리지 않는다 — 빠르게 되돌아와도, 기다리는 사이 검색어를 쳐도", { timeout: 20_000 }, async () => {
+  const leafCards = { parent: "episode", own_count: 0, folders: cutCards(false).folders.map((folder) => ({ ...folder, subfolders: 0 })) };
+  const folderCards = vi.fn((_pid: string, parent: string) => (parent === "slow"
+    ? new Promise<never>(() => {}) // 묶음 답이 끝내 안 오는 폴더
+    : Promise.resolve(parent === "episode" ? leafCards : parent === "" ? topCards : { parent, own_count: 0, folders: [] })));
+  localStorage.setItem("ch.lib.cutView", "1");
+  await mountTeamFolder({ folderCards, setFolderCover: vi.fn() });
+  const at = (id: string, folder: string): Generation => ({ ...libraryGeneration(id), folder_path: folder });
+  const main = () => document.querySelector<HTMLElement>("main.main")!;
+  const shown = () => gridSnapshot!.generations.map((item) => item.id);
+  const busy = () => document.querySelector("main.main .grid-wrap[aria-busy='true']:empty");
+  // A(episode/shot)에 선다 — 목록이 지금 조회의 것이고 묶음 답도 안다
+  act(() => { sidebarSnapshot!.onChange({ folder_path: "episode/shot" }); setLibraryGens([at("a", "episode/shot")]); });
+  await settle();
+  expect([shown(), main().hasAttribute("inert")]).toEqual([["a"], false]);
+  // B(slow, 처음 가는 폴더) — 목록은 왔는데 묶음 답은 아직: 자리를 비운 채다
+  act(() => { sidebarSnapshot!.onChange({ folder_path: "slow" }); setLibraryGens([at("b1", "slow")]); });
+  await settle();
+  expect([busy() !== null, gridOutputs().length]).toEqual([true, 0]);
+  // ① A 로 되돌아왔다 — 화면의 목록은 아직 B 의 것. A 에 그리지도, 누르게 두지도 않는다(받아 둔 것에서 고를 것도 없으니 자리를 비운다)
+  act(() => { sidebarSnapshot!.onChange({ folder_path: "episode/shot" }); setListBehind(true); });
+  await settle();
+  expect([busy() !== null, gridOutputs().length, main().hasAttribute("inert")]).toEqual([true, 0, true]);
+  act(() => { setLibraryGens([at("a", "episode/shot")]); setListBehind(false); }); // A 의 목록이 왔다
+  await settle();
+  expect([busy(), shown(), main().hasAttribute("inert")]).toEqual([null, ["a"], false]);
+  // ② 다른 폴더로 옮기고 기다리는 사이 검색어를 쳤다 — 묶어 보이지 않게 돼 옛 목록이 그려지지만, 새 목록이 올 때까지 잠겨 있다
+  act(() => { sidebarSnapshot!.onChange({ folder_path: "episode/other" }); setListBehind(true); });
+  await settle();
+  act(() => { sidebarSnapshot!.onChange({ search: "cat" }); });
+  await settle();
+  expect([shown(), main().hasAttribute("inert"), gridSnapshot!.selectLocked, gridSnapshot!.hasMore]).toEqual([["a"], true, true, false]);
+  act(() => { setLibraryGens([at("found", "episode/other")]); setListBehind(false); });
+  await settle();
+  expect([shown(), main().hasAttribute("inert"), gridSnapshot!.selectLocked]).toEqual([["found"], false, false]);
+  // ③ 응답이 실패도 없이 매달린다 — 기다림은 4초까지. 그 뒤엔 전처럼 화면의 목록을 보이고 누르게 둔다(비우거나 잠근 채로 남지 않는다)
+  act(() => { sidebarSnapshot!.onChange({ search: undefined }); });
+  await settle();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    act(() => { sidebarSnapshot!.onChange({ folder_path: "slow" }); setListBehind(true); }); // 묶음 답도 목록도 안 온다
+    expect([busy() !== null, gridOutputs().length]).toEqual([true, 0]);
+    act(() => { vi.advanceTimersByTime(3999); });
+    expect(busy() !== null).toBe(true);
+    act(() => { vi.advanceTimersByTime(1); });
+    expect([busy(), shown(), main().hasAttribute("inert"), gridSnapshot!.selectLocked]).toEqual([null, ["found"], false, false]);
+    // 다른 자리로 옮기면 다시 잰다 — 앞 자리에서 넘긴 시간이 새 자리의 기다림을 건너뛰게 하지 않는다
+    act(() => { sidebarSnapshot!.onChange({ folder_path: "episode/shot" }); });
+    expect(main().hasAttribute("inert")).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("App 공유·리뷰: 묶어 보이지 않는 경우 — 하위 폴더가 없는 폴더, 무엇을 찾는 중", { timeout: 20_000 }, async () => {

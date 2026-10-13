@@ -170,6 +170,16 @@ export function useGenerationLibraryData({
   const inflightRef = useRef<Promise<void> | null>(null);
   const pendingArgsRef = useRef<{ silent: boolean; light: boolean } | null>(null);
   const pendingResolversRef = useRef<Array<() => void>>([]);
+  // **앞지르기**(2026-10-13 Jay "아직 폴더 이동할 때 딜레이") — 조회(자리·필터·탭)가 바뀌었는데 앞 실행의 목록이 아직 안 왔으면, 그것이 끝나길
+  //  기다리지 않고 줄을 바로 넘겨받는다. 앞 실행의 목록은 어차피 seq 로 버려진다 — 기다리면 새 폴더의 목록이 에피소드의 첫 쪽(200장)이나
+  //  주기 조회만큼 늦는다. **같은 조회를 다시 받는 것은 전처럼 줄을 선다**(동시 요청 하나로 합치기는 그대로).
+  //  줄을 잡은 실행의 조회(sig)와 그 실행을 앞지르는 길을 적어 둔다. 앞지른 요청은 취소하지 못한다(api 에 signal 이 없다) — 그래서
+  //  **동시에 떠 있는 목록 요청은 둘까지**(낡은 것 하나 + 지금 것): 낡은 요청이 아직 떠 있는 동안 또 옮기면 전처럼 줄을 선다. 느린 서버에서
+  //  폴더를 연달아 옮겨 낡은 요청이 연결을 차지하면 정작 마지막 조회가 늦는다(Codex 31회차 설계 검토). 낡은 요청 수는 줄을 넘길 때가 아니라
+  //  그 목록 구간이 **실제로 끝날 때** 내린다.
+  const laneSigRef = useRef<string | null>(null);
+  const laneOvertakeRef = useRef<(() => void) | null>(null);
+  const overtakenFlightsRef = useRef(0);
   // **메타 줄** — 메타 묶음(통계·태그·폴더)은 따로 줄을 선다. 목록 줄이 메타까지 잡고 있으면 다음 실행의 목록이 앞 실행의
   //  메타가 끝날 때까지 출발하지 못한다(폴더 창을 닫은 뒤 카드가 한참 안 눌리던 원인 — 메타가 느린 순간에만 드러난다).
   //  한 번에 한 묶음만 떠 있고, 그동안 들어온 요구는 하나로 합쳐 앞 묶음이 끝난 뒤 **그때의 문맥**으로 보낸다.
@@ -406,6 +416,7 @@ export function useGenerationLibraryData({
       const query = listQuery();
       const trashMode = !!filtersRef.current.deleted_only;
       const sig = JSON.stringify([trashMode, query]);
+      laneSigRef.current = sig; // 이 실행이 줄을 잡은 조회 — 조회가 바뀌면 reload 가 앞지른다(여기까지 await 가 없다)
       // 탭 전환의 '즉시 표시'는 위 filters.tab effect가 담당 — 여기(비동기 실행 시점)는 최신본 fetch만.
       // 1) 목록과 메타를 **함께 시작**한다(2026-09-12, C-6). 종전에는 목록을 다 받은 **뒤에야**
       //    메타를 시작해, 왼쪽 폴더·태그·배지가 목록 왕복(로컬 47ms·3.38MB)만큼 늦게 왔다.
@@ -494,10 +505,20 @@ export function useGenerationLibraryData({
       // 줄 넘기기는 실행마다 한 번 — 목록 구간 끝(runReload 가 부른다)과 실행 종료 중 먼저 온 쪽. 이미 넘긴 옛 실행의
       //  종료가 그 뒤에 출발한 실행의 줄·스피너를 건드리지 않는다.
       let handed = false;
+      let overtaken = false; // 앞지름당했다 — 줄은 넘겼지만 이 실행의 목록 요청은 아직 떠 있다
       const handOver = () => {
-        if (handed) return;
+        if (handed) {
+          // 앞지름당한 실행의 목록 구간이 실제로 끝났다(runReload 의 listSettled) — 떠 있는 낡은 요청 수를 내린다(한 번만)
+          if (overtaken) {
+            overtaken = false;
+            overtakenFlightsRef.current -= 1;
+          }
+          return;
+        }
         handed = true;
         inflightRef.current = null;
+        laneSigRef.current = null;
+        laneOvertakeRef.current = null;
         const next = pendingArgsRef.current;
         if (next) {
           pendingArgsRef.current = null;
@@ -515,7 +536,14 @@ export function useGenerationLibraryData({
       };
       const p = runReload(silent, light, handOver).finally(handOver);
       // 목록이 없는 실행(캔버스)은 호출 도중에 이미 줄을 넘겼다 — 넘긴 줄에 자기를 다시 세우면 뒤의 요청이 영영 못 나간다.
-      if (!handed) inflightRef.current = p;
+      if (!handed) {
+        inflightRef.current = p;
+        laneOvertakeRef.current = () => {
+          overtaken = true;
+          overtakenFlightsRef.current += 1;
+          handOver();
+        };
+      }
       return p;
     },
     [runReload],
@@ -532,7 +560,14 @@ export function useGenerationLibraryData({
       pendingArgsRef.current = prev
         ? { silent: prev.silent && silent, light: prev.light && light }
         : { silent, light };
-      return new Promise<void>((res) => pendingResolversRef.current.push(res));
+      const waiting = new Promise<void>((res) => pendingResolversRef.current.push(res));
+      // 조회가 바뀌었다 — 줄을 잡은 실행의 목록을 기다리지 않는다(위 '앞지르기'). 줄을 넘기면 방금 세운 실행이 그 자리에서 출발한다.
+      //  이미 앞지른 낡은 요청이 떠 있으면 줄을 선다(동시에 둘까지).
+      const held = laneSigRef.current;
+      if (held !== null && overtakenFlightsRef.current < 1 && held !== JSON.stringify([!!filtersRef.current.deleted_only, listQuery()])) {
+        laneOvertakeRef.current?.();
+      }
+      return waiting;
     },
     [launch],
   );

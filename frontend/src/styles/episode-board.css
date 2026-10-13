@@ -1,0 +1,157 @@
+/* ── 에피소드 화면(공유 & 리뷰 탭 — '들어가는' 폴더가 놓인 단계) ─────────────────────────────
+   컷 화면(겹친 종이 카드 .cut-card)과 확실히 다르게: 리스트 = 에피소드마다 가로 한 줄, 그리드 = 컷 띠가 붙은 큰 카드(Jay 2026-10-13).
+   카드는 같은 .cut-card[data-path] 다 — 고르기·마퀴·키는 FolderCardGrid 의 것 그대로이고, 여기는 모양만 덮는다.
+   크기는 격자가 주는 --ep-scale(크기 슬라이더)을 따른다. */
+.cut-grid.ep-board { gap: 12px; }
+.cut-card.ep-card {
+  aspect-ratio: auto; margin-top: 0; overflow: hidden; text-align: left; cursor: default;
+  color: var(--text, #e6e7ea); background: #15161b; border: 1px solid #262830; border-radius: 12px;
+}
+.cut-card.ep-card::before, .cut-card.ep-card::after { content: none; } /* 겹친 종이는 컷 카드의 것 */
+.cut-card.ep-card:hover, .cut-card.ep-card:focus-visible { border-color: var(--accent); outline: none; }
+.cut-card.ep-card.sel { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 0 14px 2px rgba(var(--accent-rgb), 0.35); }
+.ep-card .play-badge { z-index: 1; }
+/* '에피소드 밖 N건' 칸 — 정사각 대신 줄/카드 높이에 맞춘다 */
+.ep-board .cut-card.cut-out { aspect-ratio: auto; margin-top: 0; min-height: 64px; }
+
+/* 표지(리스트의 포스터 · 그리드의 큰 표지) */
+.ep-poster, .ep-cover { position: relative; display: block; overflow: hidden; background: #000; }
+.ep-poster > img, .ep-poster > video, .ep-cover > img, .ep-cover > video {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+}
+.ep-poster.contain > img, .ep-poster.contain > video, .ep-cover.contain > img, .ep-cover.contain > video { object-fit: contain; }
+
+/* 대표 진행 막대 */
+.ep-bar { position: relative; display: block; height: 5px; border-radius: 4px; background: #23252c; }
+.ep-bar > i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--accent); }
+.ep-bar.none { background: none; }
+
+/* 컷 띠 — 카드 안의 단추(전역 button 모양을 덮는다) */
+.ep-strip { display: grid; gap: 6px; }
+.ep-cut {
+  position: relative; display: block; height: 54px; min-width: 0; padding: 0; overflow: hidden;
+  border: 1px solid #2a2c34; border-radius: 6px; background: #1d2029; color: #e6e7ea;
+  font-size: 10px; font-weight: 600; line-height: 1.2; cursor: pointer;
+}
+.ep-cut:active { transform: none; }
+.ep-cut:hover, .ep-cut:focus-visible { border-color: var(--accent); outline: none; }
+.ep-cut > img, .ep-cut > video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.ep-cut-name, .ep-cut-n { position: absolute; text-shadow: 0 1px 2px #000; pointer-events: none; }
+.ep-cut-name { left: 5px; top: 3px; max-width: calc(100% - 20px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ep-cut-n { right: 4px; bottom: 2px; color: var(--accent); font-weight: 700; }
+.ep-cut.rep { border-color: var(--accent); }
+.ep-cut.rep::after { content: "★"; position: absolute; right: 4px; top: 2px; color: var(--accent); font-size: 10px; text-shadow: 0 1px 2px #000; }
+.ep-cut.more { display: flex; align-items: center; justify-content: center; background: #161820; color: var(--accent); font-size: 11.5px; white-space: nowrap; }
+
+/* ── 리스트: 번호 · 표지 · 이름과 숫자 · 컷 띠 ── */
+.cut-card.ep-card.ep-list {
+  display: grid; align-items: center; gap: 14px; padding: 10px 14px 10px 6px;
+  grid-template-columns: var(--ep-num-w, 50px) calc(236px * var(--ep-scale, 1)) minmax(0, 1fr) minmax(0, 300px);
+}
+/* 번호 — 이름의 숫자 그대로(003 · 0010). 칸의 폭과 글자 크기는 이 화면에서 가장 긴 번호에 맞춘다(격자가 --ep-num-* 로 준다) */
+.ep-list .ep-num, .ep-table .ep-num { font-weight: 900; color: #3b3f4b; text-align: center; letter-spacing: -1px; white-space: nowrap; }
+.ep-list .ep-num { font-size: var(--ep-num-size, 34px); }
+.ep-list .ep-poster { height: calc(132px * var(--ep-scale, 1)); border-radius: 9px; border: 2px solid #2a2c34; }
+.ep-info { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; }
+.ep-name { font-size: 21px; font-weight: 800; color: #fff; line-height: 1.2; }
+.ep-sub { font-size: 11px; color: var(--muted); }
+.ep-line { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.ep-list .ep-bar { width: 100%; max-width: 260px; height: 6px; margin: 7px 0 2px; }
+.ep-rep { font-size: 11px; color: var(--muted); }
+.ep-enter {
+  margin-top: 6px; padding: 3px 10px; border: 0; border-radius: 7px; background: var(--accent); color: #111;
+  font-size: 11px; font-weight: 700; line-height: 1.5; cursor: pointer;
+}
+.ep-enter:active { transform: none; }
+.ep-list .ep-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+/* ── 컷 줄(하위 폴더가 없는 카드의 리스트 — Jay 2026-10-13 오후): 같은 줄 모양, 띠에는 컷 대신 그 컷의 생성물 ── */
+.cut-card.ep-card.ep-list.leaf {
+  grid-template-columns: var(--ep-num-w, 50px) calc(236px * var(--ep-scale, 1)) minmax(0, 1fr) minmax(0, 380px);
+}
+.ep-list .ep-strip.takes { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+/* 표지 위의 대표 표시(그리드의 컷 카드 위 '대표 미정'과 같은 뜻) */
+.ep-pchip {
+  position: absolute; left: 6px; top: 6px; z-index: 1; padding: 1px 8px; border-radius: 999px; white-space: nowrap;
+  background: rgba(0, 0, 0, 0.62); color: #c9cbd2; border: 1px solid rgba(255, 255, 255, 0.18); font-size: 10.5px; font-weight: 600;
+}
+.ep-pchip.rep { background: var(--accent); color: #111; border-color: transparent; font-weight: 800; } /* 라임 위 어두운 글자 */
+/* 검토 개수 — 색은 사이드바 폴더 숫자·모아보기 카드와 같다 */
+.ep-rv { display: flex; align-items: baseline; flex-wrap: wrap; column-gap: 6px; margin-top: 1px; font-size: 12px; color: #d7dae0; font-variant-numeric: tabular-nums; }
+.ep-rv > span + span::before { content: "·"; margin-right: 6px; color: var(--muted); font-weight: 400; }
+.ep-rv b { color: #fff; font-weight: 800; }
+.ep-rv .fin, .ep-t-n.fin { color: #e8b62c; font-weight: 700; }
+.ep-rv .held, .ep-t-n.held { color: #ef7d8c; font-weight: 700; }
+/* 생성물 띠의 칸 — 왼쪽 위 = 최종(★)·보류(R), 왼쪽 아래 = 만든 사람. 대표는 컷 띠와 같은 테두리·오른쪽 위 ★(.ep-cut.rep) */
+.ep-take-m, .ep-take-by { position: absolute; left: 5px; text-shadow: 0 1px 2px #000; pointer-events: none; }
+.ep-take-m { top: 3px; font-size: 10px; font-weight: 900; }
+.ep-take-m.fin { color: #ffd24a; }
+.ep-take-m.held { color: #ff9aa6; }
+.ep-take-by { bottom: 2px; max-width: calc(100% - 10px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9.5px; color: #fff; }
+
+/* ── 표(리스트 단추 한 번 더): 번호 · 작은 그림 · 이름 · 숫자 열 · 단추. 줄은 같은 .cut-card[data-path] 다 ── */
+.cut-grid.ep-board.ep-table {
+  gap: 0; align-content: start;
+  /* 열 폭은 고정·비율만 쓴다(auto 금지) — 머리줄과 줄이 저마다의 격자라, 내용에 따라 달라지는 폭이 있으면 열이 어긋난다 */
+  --ep-t-cols: var(--ep-num-w, 50px) 76px minmax(72px, 1.1fr) 78px 52px 52px 52px 62px 62px minmax(76px, 0.8fr) minmax(110px, 1.6fr) 86px;
+}
+.cut-grid.ep-board.ep-table.has-cuts {
+  --ep-t-cols: var(--ep-num-w, 50px) 76px minmax(72px, 1.1fr) 46px 78px 52px 52px 52px 62px 62px minmax(76px, 0.8fr) minmax(110px, 1.6fr) 86px;
+}
+.ep-table-head, .cut-card.ep-card.ep-table {
+  display: grid; grid-template-columns: var(--ep-t-cols); align-items: center; column-gap: 12px; padding: 0 12px 0 4px;
+  /* 좁은 창 — 열을 더 줄이지 않고 가로로 민다(격자가 스크롤 칸이다). 줄이면 줄의 overflow:hidden 이 오른쪽 열과 단추를 잘라 낸다(Codex 코드 리뷰) */
+  min-width: 1010px;
+}
+.ep-table.has-cuts > .ep-table-head, .ep-table.has-cuts > .cut-card.ep-card.ep-table { min-width: 1070px; }
+.ep-table-head {
+  position: sticky; top: 0; z-index: 2; height: 30px; border: 1px solid #262830; border-radius: 12px 12px 0 0; background: #101116;
+  font-size: 11.5px; font-weight: 700; color: var(--muted); white-space: nowrap;
+}
+.ep-table-head .n { text-align: right; }
+.cut-card.ep-card.ep-table {
+  min-height: 48px; border-radius: 0; border-top: 0; font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.cut-card.ep-card.ep-table:last-of-type { border-radius: 0 0 12px 12px; }
+.cut-card.ep-card.ep-table.sel { position: relative; z-index: 1; background: rgba(var(--accent-rgb), 0.08); }
+.ep-table .ep-num { font-size: calc(var(--ep-num-size, 34px) * 0.62); }
+.ep-thumb { position: relative; display: block; height: 39px; border-radius: 6px; overflow: hidden; background: #000; border: 1px solid #2a2c34; }
+.ep-thumb > img, .ep-thumb > video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.ep-thumb.contain > img, .ep-thumb.contain > video { object-fit: contain; }
+.ep-t-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 14.5px; font-weight: 800; color: #fff; }
+.ep-t-n { text-align: right; }
+.ep-t-rep { color: #4a4e57; }
+.ep-t-rep.rep { color: var(--accent); font-weight: 800; }
+.ep-t-ago, .ep-t-workers { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ep-t-none { color: #4a4e57; font-weight: 400; }
+.ep-table .ep-enter { margin-top: 0; justify-self: end; }
+.ep-board.ep-table .cut-card.cut-out { margin-top: 8px; border-radius: 12px; }
+
+/* 좁은 창 — 띠를 아래 줄로 내린다(한 줄 8칸). 표는 가로로 민다(위 min-width) */
+@media (max-width: 1000px) {
+  .cut-card.ep-card.ep-list, .cut-card.ep-card.ep-list.leaf { grid-template-columns: var(--ep-num-w, 50px) calc(200px * var(--ep-scale, 1)) minmax(0, 1fr); }
+  .ep-list .ep-strip, .ep-list .ep-strip.takes { grid-column: 1 / -1; grid-template-columns: repeat(8, minmax(0, 1fr)); }
+}
+
+/* ── 그리드: 큰 표지 + 컷 띠 + 진행 막대 ── */
+.cut-card.ep-card.ep-grid { display: flex; flex-direction: column; }
+.ep-grid .ep-cover { aspect-ratio: 16 / 9; }
+.ep-grid .ep-num {
+  position: absolute; left: 14px; top: 4px; z-index: 1; font-size: calc(44px * var(--ep-scale, 1)); font-weight: 900;
+  color: #fff; letter-spacing: -2px; line-height: 1.2; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.7); pointer-events: none;
+}
+.ep-chip {
+  position: absolute; right: 10px; top: 10px; z-index: 1; padding: 2px 10px; border-radius: 999px;
+  background: var(--accent); color: #111; font-size: 11.5px; font-weight: 800; white-space: nowrap;
+}
+.ep-chip.none { background: rgba(0, 0, 0, 0.6); color: #c9cbd2; font-weight: 600; border: 1px solid rgba(255, 255, 255, 0.18); }
+.ep-cap {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 1; display: flex; align-items: baseline; gap: 8px;
+  padding: 26px 14px 9px; background: linear-gradient(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.85)); white-space: nowrap; overflow: hidden;
+}
+.ep-cap > b { font-size: 20px; color: #fff; }
+.ep-cap > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12px; color: #c9cbd2; }
+.ep-grid .ep-strip { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 5px; padding: 9px 10px 6px; }
+.ep-grid .ep-cut { height: 44px; }
+.ep-foot { display: flex; align-items: center; gap: 10px; padding: 3px 12px 11px; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.ep-foot .ep-bar { flex: 1; min-width: 20px; }

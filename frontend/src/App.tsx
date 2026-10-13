@@ -162,6 +162,8 @@ import { hasWorkspaceFilter } from "./lib/libraryWorkspaceScope";
 
 // 마지막으로 보던 라이브러리 상태 영속화(탭·서브탭·필터·크기·레이아웃 등)
 const LS = makeStore("ch.lib.");
+// 폴더를 옮긴 뒤 격자 자리를 비우거나 잠가 두는 최대 시간 — 응답이 매달려도 이 뒤엔 전처럼 화면의 목록을 보이고 누르게 둔다(아래 waitExpired).
+const LIST_WAIT_MAX_MS = 4000;
 
 // 3색(빨강·초록·파랑) 필터 도트 — 툴바 여러 곳에 같은 값이라 모듈 상수로(매 렌더 배열 재생성 제거).
 const COLOR_DOTS = [
@@ -543,15 +545,43 @@ export default function App() {
   //  안다 — 둘 중 하나만 온 때에 풀면 그 자리의 낱장이 잠깐 섰다가 컷 카드로 바뀐다(③).
   const cutWaiting = cutView && !listPeek && cardsScope !== null && !folderCardsUnsupported;
   const hereKey = JSON.stringify([filters.tab, filters.project_id ?? null, filters.folder_path ?? null, !!filters.deleted_only]);
+  const seenHereRef = useRef(hereKey);
   const settledHereRef = useRef<string | null>(null);
+  if (seenHereRef.current !== hereKey) {
+    // 자리를 떠났다 — 되돌아와도 다시 서야 한다. 남기면 빠른 A→B→A 에서(B 는 목록만 오고 묶음 답은 아직) A 가 '선 자리'로 보여 B 의 목록이
+    //  A 에 그대로, 잠금 없이 선다(Codex 31회차). 렌더 중 ref 갱신 — 같은 값이면 아무 일도 없어 두 번 그려도 같다.
+    seenHereRef.current = hereKey;
+    settledHereRef.current = null;
+  }
   useEffect(() => {
     // 창이 떠 있으면 목록은 창의 것이다 — 적지 않는다(창은 자리를 바꾸지 않는다)
     if (!listBehind && !listPeek && !(cutWaiting && folderCardsLoading)) settledHereRef.current = hereKey;
   });
   const moved = settledHereRef.current !== hereKey;
-  const cutLoading = cutWaiting && folderCardsLoading && moved;
-  const narrowing = cutWaiting && !!listBehind && moved && !staleList && !isLocatedView && !loadError;
-  const listLocked = staleList || (narrowing && !cutMode); // 낱장 격자를 보이는 중일 때만 — 컷 카드는 목록과 무관하게 눌린다
+  const cutLoadingRaw = cutWaiting && folderCardsLoading && moved;
+  // 자리를 옮긴 뒤 새 목록이 오기 전(공유 탭) — 화면의 낱장은 옛 자리의 것이거나 아래에서 먼저 고른 것이다. **잠금은 묶어 보일 수 있는지와
+  //  무관하다**: 기다리는 사이 검색어를 치면 묶음 조건이 풀리는데, 그때 잠금까지 풀면 옛 자리의 카드가 눌린다(Codex 31회차).
+  //  먼저 골라 그리기(narrowing)·자리 비우기만 묶음 보기의 것이다. **조회를 보낼 수 있을 때만** — 공간을 아직 모르면(workspaceQueryReady 거짓)
+  //  조회가 나가지 않아 목록이 영영 안 오고, 그 화면의 [전체 보기](main 안)까지 잠긴다(Codex 31회차 코드 리뷰).
+  const behindRaw = authReady && workspaceQueryReady && filters.tab === "team" && !listPeek && moved && !!listBehind
+    && !staleList && !isLocatedView && !loadError;
+  // 기다림은 길어야 LIST_WAIT_MAX_MS — 응답이 실패도 없이 매달리면(허브가 멎는 등) 자리를 비우거나 잠근 채로 남는다. 그 뒤엔 오늘 고치기 전처럼
+  //  화면의 목록을 그대로 보이고 누르게 둔다(Codex 31회차 코드 리뷰 — 요청 자체의 제한 시간은 없다, 기록만). 자리마다 따로 잰다.
+  const waitingAfterMove = cutLoadingRaw || behindRaw;
+  const [waitExpiredAt, setWaitExpiredAt] = useState<string | null>(null);
+  useEffect(() => {
+    if (!waitingAfterMove) {
+      setWaitExpiredAt(null);
+      return;
+    }
+    const timer = window.setTimeout(() => setWaitExpiredAt(hereKey), LIST_WAIT_MAX_MS);
+    return () => window.clearTimeout(timer);
+  }, [waitingAfterMove, hereKey]);
+  const waitExpired = waitExpiredAt === hereKey;
+  const cutLoading = cutLoadingRaw && !waitExpired;
+  const behindAfterMove = behindRaw && !waitExpired;
+  const narrowing = cutWaiting && behindAfterMove;
+  const listLocked = staleList || (behindAfterMove && !cutMode); // 낱장 격자를 보이는 중일 때만 — 컷 카드는 목록과 무관하게 눌린다
   // 창이 보여 주는 폴더의 지금 대표 — 표지가 '가장 최근 것' 일 뿐이면 대표가 아니다(null).
   const peekFolderCard = listPeek ? folderCards?.folders.find((folder) => folder.path === listPeek.path) : undefined;
   const peekCoverId = peekFolderCard?.rep ? peekFolderCard.cover.id : null;
@@ -2234,6 +2264,22 @@ export default function App() {
     ) : librarySelectionBar;
 
   // 라이브러리 툴바 — 라이브러리 탭 본문과 캔버스 '폴더 보기' 창이 같은 요소를 쓴다(창에서도 워크스페이스처럼 조작).
+  // 도구 줄의 [컷별 | 전체] 전환 — 묶어 보일 수 있을 때만. 켜 둔 채로는 실제로 묶어 보이는 동안(응답을 기다리는 동안 포함 — 사라졌다 다시
+  //  나타나지 않게, ③)에만 보인다 — 하위 폴더가 없는 폴더에서는 바꿀 것이 없다.
+  const cutToggle =
+    cutScope && !folderCardsUnsupported && (cutMode || !cutView || cutPending)
+      ? {
+          on: cutView,
+          onChange: setCutView,
+          summary: cutCards
+            ? {
+                top: cutScope.parent === "",
+                folders: cutCards.folders.length,
+                items: cutCards.folders.reduce((sum, folder) => sum + folder.count, cutCards.own_count),
+              }
+            : undefined,
+        }
+      : undefined;
   const libraryToolbar = (
     <LibraryToolbar
       workspaceFilter={workspaceFilter}
@@ -2250,24 +2296,8 @@ export default function App() {
       filtersOpen={showFilters}
       onToggleFilters={() => setShowFilters((v) => !v)}
       count={gridGens.length}
-      countMore={hasMore && !narrowing}
-      // 전환 단추는 묶어 보일 수 있을 때만(창 안의 툴바에는 없다). 켜 둔 채로는 실제로 묶어 보이는 동안(응답을 기다리는 동안 포함 —
-      //  사라졌다 다시 나타나지 않게, ③)에만 보인다 — 하위 폴더가 없는 폴더에서는 바꿀 것이 없다.
-      folderCards={
-        !listPeek && cutScope && !folderCardsUnsupported && (cutMode || !cutView || cutPending)
-          ? {
-              on: cutView,
-              onChange: setCutView,
-              summary: cutCards
-                ? {
-                    top: cutScope.parent === "",
-                    folders: cutCards.folders.length,
-                    items: cutCards.folders.reduce((sum, folder) => sum + folder.count, cutCards.own_count),
-                  }
-                : undefined,
-            }
-          : undefined
-      }
+      countMore={hasMore && !behindAfterMove}
+      folderCards={listPeek ? undefined : cutToggle} // 창 안의 툴바에는 전환 단추가 없다
       grayOn={grayOn}
       onToggleGray={toggleGray}
       loading={loading}
@@ -2366,7 +2396,7 @@ export default function App() {
             ? coverHeader(ownCoverId, (g) => void pickFolderCover(g, { projectId: ownScope.projectId, path: filters.folder_path ?? "" }))
             : undefined
       }
-      hasMore={hasMore && !narrowing} // 먼저 보이는 동안은 더 받지 않는다 — 커서가 옛 조회의 것이다
+      hasMore={hasMore && !behindAfterMove} // 자리를 옮긴 뒤 새 목록 전에는 더 받지 않는다 — 커서가 옛 조회의 것이다
       loadingMore={loadingMore}
       onLoadMore={loadMore}
       resetKey={serverFilterKey}
@@ -2767,12 +2797,22 @@ export default function App() {
             )}
             {/* staleList = 폴더 창을 닫은 직후 옛 첫 쪽을 먼저 보이는 중 — 새 목록이 올 때까지 조작을 막는다(낡은 카드에 삭제·공유가 걸리지 않게) */}
             <main className="main" aria-busy={listLocked || undefined} {...(listLocked ? { inert: "" } : {})}>
-              {/* 폴더 창이 떠 있으면 툴바·격자는 창에 그린다(하나뿐인 격자) — 뒤 목록 자리는 닫을 때까지 비워 둔다. */}
-              {!listPeek && libraryToolbar}
+              {/* 폴더 창이 떠 있으면 툴바·격자는 창에 그린다(하나뿐인 격자) — 뒤 목록 자리는 닫을 때까지 비워 둔다.
+                  도구 줄 자리에는 **눌리지 않는 사본**을 남긴다 — 창을 열 때 도구 줄이 사라져 뒤 화면이 위로 당겨지지 않고, 모아보기처럼
+                  뒤가 그대로 흐려 보이게(Jay 2026-10-13). 뒤 화면은 통째로 inert 다(behindInert) — 사본은 그림일 뿐이다: 창 밖에 뜨는
+                  태그 패널은 창의 툴바만 그린다. 사본을 먼저 그리므로 창의 툴바가 뒤에 온다(둘은 같은 값을 받는다 — 전환 단추만 사본에). */}
+              {listPeek ? (
+                <div className="lib-toolbar-behind" aria-hidden="true">
+                  {cloneElement(libraryToolbar, { folderCards: cutToggle, tagPanelOpen: false })}
+                </div>
+              ) : (
+                libraryToolbar
+              )}
               {/* 묶음 보기 — 격자 자리에 컷 카드. 폴더 창이 떠 있어도 뒤에 그대로 둔다(body 가 inert 라 눌리지 않는다). */}
               {cutCards ? (
                 <FolderCardGrid
-                  folders={cutCards.folders} scale={scale} fill={fill} onEnter={enterFolderCard} onOpen={openFolderCard}
+                  folders={cutCards.folders} scale={scale} fill={fill} layout={layout} onEnter={enterFolderCard} onOpen={openFolderCard}
+                  table={groupByDate} onPreview={openPreview} // 리스트 단추 한 번 더(낱장 목록의 '날짜별 구분' 자리) = 표 · 컷 줄의 생성물 띠 = 크게 보기
                   top={!cutScope?.parent} selected={cutSel} onSelect={setCutSel}
                   onInfo={(folder, x, y) => {
                     if (cutScope) setCutInfo({ projectId: cutScope.projectId, path: folder.path, x, y, ctx: listPeekCtx });
@@ -2927,6 +2967,8 @@ export default function App() {
         <CutReel
           folders={cutReelFolders} mode={reelMode} onModeChange={setReelMode} previewOpen={!!preview}
           onClose={() => setCutReel(null)} onPreview={openPreview}
+          // [폴더로] = 그 컷 폴더로 이동(사이드바에서 누른 것과 같다 — 기록 한 칸). 창을 먼저 닫는다(컷 정보 창의 [폴더 열기]와 같은 순서)
+          onEnter={(folder) => { setCutReel(null); enterFolderCard(folder); }}
         />
       )}
       {/* 지연 로딩 창 — 틀(막·빈 창·Esc 겹)은 연 순간에 서고 본문만 늦게 온다(AppOverlays 의 LazyModalShell). */}
