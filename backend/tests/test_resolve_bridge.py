@@ -648,6 +648,118 @@ class ResolveBridgeTests(unittest.TestCase):
         self.assertIn("전송 시작 때와 달라졌습니다", result["error"])
         self.assertEqual(self.pool.root.children, [])
 
+    # ── 가져오는 도중 Resolve 에서 다른 프로젝트를 열었다 ─────────────────────────────────────────────
+    # SaveProject 는 '지금 열린' 프로젝트를 저장한다 — 시작한 프로젝트가 아니면 멈추고 저장하지 않는다.
+    # 대역(가짜 Resolve)으로만 본다: 바뀐 뒤 옛 Media Pool 객체가 실제로 어떻게 구는지는 재지 않았다.
+    def _switch_after(self, owner, method):
+        """owner.method 가 한 번 돈 직후 다른 프로젝트가 열린 것으로 만든다 — 그 다른 프로젝트를 돌려준다."""
+        other = FakeProject(FakeMediaPool())
+        other.unique_id = "resolve-project-2"
+        real = getattr(owner, method)
+
+        def then_switch(*args, **kwargs):
+            done = real(*args, **kwargs)
+            self.manager.project = other
+            return done
+
+        setattr(owner, method, then_switch)
+        return other
+
+    def _assert_stopped_without_touching(self, result, other, saved):
+        self.assertEqual((result["status"], result["error_code"]), ("unavailable", "project_changed"))
+        self.assertIn("저장하지 않았습니다", result["error"])
+        self.assertEqual(self.manager.saved, saved)
+        self.assertEqual((other.media_pool.root.children, other.media_pool.import_calls), ([], []))
+
+    def test_switching_projects_mid_import_stops_before_the_next_batch_and_never_saves(self):
+        other = self._switch_after(self.pool, "ImportMedia")  # 첫 묶음을 가져오는 사이에 바꿨다
+        result = import_manifest_to_current_project(self._manifest(), resolve=self.resolve)
+
+        self._assert_stopped_without_touching(result, other, saved=0)
+        self.assertEqual(len(self.pool.import_calls), 1)  # 둘째 묶음은 부르지 않았다
+
+    def test_switching_projects_during_the_last_batch_skips_the_save(self):
+        manifest = self._manifest()
+        manifest["items"] = manifest["items"][:1]  # 묶음 하나 — 다음 묶음의 확인이 없어도 저장 직전에 걸린다
+        other = self._switch_after(self.pool, "ImportMedia")
+        result = import_manifest_to_current_project(manifest, resolve=self.resolve)
+
+        self._assert_stopped_without_touching(result, other, saved=0)
+
+    def test_switching_projects_right_after_the_start_creates_no_more_bins(self):
+        other = self._switch_after(self.pool, "AddSubFolder")  # 첫 Bin('MV Hub')을 만드는 사이에 바꿨다
+        result = import_manifest_to_current_project(self._manifest(), resolve=self.resolve)
+
+        self._assert_stopped_without_touching(result, other, saved=0)
+        project = self._child(self._child(self.pool.root, "MV Hub"), "프로젝트_테스트")
+        self.assertEqual((project.children, self.pool.import_calls), ([], []))  # 폴더 구조를 맞추러 들어가지 않았다
+
+    def _reorder_manifests(self):
+        """둘째를 가져오면 Bin 순서가 깨져 '백업 → 임시 Bin → 다시 짓기'가 도는 두 manifest."""
+        manifest = self._manifest()
+        first_item, second_item = manifest["items"]
+        first_item["folder_path"], second_item["folder_path"] = "ep001/c0015", "ep001/c0010"
+        return (
+            {**manifest, "folder_paths": ["ep001/c0015"], "items": [first_item]},
+            {**manifest, "folder_paths": ["ep001/c0010"], "items": [second_item]},
+        )
+
+    def test_switching_projects_during_the_reorder_backup_stops_before_moving_clips(self):
+        first, second = self._reorder_manifests()
+        import_manifest_to_current_project(first, resolve=self.resolve)
+        other = self._switch_after(self.manager, "ExportProject")  # 백업을 내보내는 사이에 바꿨다
+        result = import_manifest_to_current_project(second, resolve=self.resolve)
+
+        # 저장 2번 = 첫 가져오기 + 백업 직전(그때는 아직 시작한 프로젝트였다). 그 뒤로는 저장하지 않는다.
+        self._assert_stopped_without_touching(result, other, saved=2)
+        self.assertEqual([folder.name for folder in self.pool.root.children], ["MV Hub"])  # 임시 Bin 을 만들지 않았다
+        episode = self._child(self._child(self._child(self.pool.root, "MV Hub"), "프로젝트_테스트"), "ep001")
+        self.assertEqual([folder.name for folder in episode.children], ["c0015"])  # 새 컷의 Bin 도 만들지 않았다
+        self.assertEqual(len(self.pool.import_calls), 1)
+
+    def test_switching_projects_mid_reorder_skips_the_recovery_and_its_save(self):
+        first, second = self._reorder_manifests()
+        import_manifest_to_current_project(first, resolve=self.resolve)
+        other = self._switch_after(self.pool, "MoveClips")  # 클립을 임시 Bin 으로 옮기는 사이에 바꿨다
+        result = import_manifest_to_current_project(second, resolve=self.resolve)
+
+        # 다시 짓기(Bin 지우기)도, 되돌리기(클립을 다시 옮기고 저장)도 하지 않는다 — 지금 열린 프로젝트에 하는 일이 된다.
+        # 옮기다 만 상태(임시 Bin)는 시작한 프로젝트에 저장되지 않은 채 남고, 백업(.drp)이 있다.
+        self._assert_stopped_without_touching(result, other, saved=2)
+        self.assertEqual(len(self.pool.import_calls), 1)
+        self.assertTrue(any(folder.name.startswith("__MVHUB_REBUILD_") for folder in self.pool.root.children))
+
+    def test_switching_projects_before_the_reorder_backup_skips_its_save(self):
+        first, second = self._reorder_manifests()
+        import_manifest_to_current_project(first, resolve=self.resolve)
+        with mock.patch.object(resolve_bridge, "_scan_actual_tree", wraps=resolve_bridge._scan_actual_tree):
+            other = self._switch_after(resolve_bridge, "_scan_actual_tree")  # 지금 Bin 구조를 읽는 사이에 바꿨다
+            result = import_manifest_to_current_project(second, resolve=self.resolve)
+
+        self._assert_stopped_without_touching(result, other, saved=1)  # 백업 직전의 저장도 하지 않는다
+
+    def test_switching_projects_during_the_recovery_skips_its_save(self):
+        first, second = self._reorder_manifests()
+        import_manifest_to_current_project(first, resolve=self.resolve)
+        self.pool.MoveClips = lambda clips, target: False  # 다시 짓기가 프로젝트와 무관한 까닭으로 실패해 되돌리기가 돈다
+        other = self._switch_after(self.pool, "DeleteFolders")  # 되돌리는 사이에 바꿨다
+        result = import_manifest_to_current_project(second, resolve=self.resolve)
+
+        self._assert_stopped_without_touching(result, other, saved=2)  # 되돌린 뒤의 저장을 하지 않는다
+
+    def test_still_current_compares_names_when_ids_are_unreadable(self):
+        self.manager.project.unique_id = ""
+        resolve_bridge._assert_still_current(self.manager, ("", "임시 테스트"))  # 같은 이름 — 통과
+        resolve_bridge._assert_still_current(self.manager, ("resolve-project-1", "임시 테스트"))  # 한쪽 ID 만 없어도 이름으로
+        for started in (("", "다른 프로젝트"), ("resolve-project-1", "다른 프로젝트")):
+            with self.assertRaises(resolve_bridge.ResolveBridgeError) as ctx:
+                resolve_bridge._assert_still_current(self.manager, started)
+            self.assertEqual(ctx.exception.code, "project_changed")
+        self.manager.project = None  # 프로젝트가 닫혔다
+        with self.assertRaises(resolve_bridge.ResolveBridgeError) as ctx:
+            resolve_bridge._assert_still_current(self.manager, ("resolve-project-1", "임시 테스트"))
+        self.assertEqual(ctx.exception.code, "project_changed")
+
     def test_unexpected_resolve_api_error_does_not_escape(self):
         class BrokenResolve:
             def GetProjectManager(self):

@@ -386,6 +386,29 @@ def _assert_expected_project(manifest: dict[str, Any], project: Any) -> None:
         )
 
 
+def _assert_still_current(project_manager: Any, started: tuple[str, str]) -> None:
+    """Resolve 를 바꾸거나 저장하기 직전마다 — 지금 열린 프로젝트가 이 가져오기를 시작한 그 프로젝트인가.
+
+    **ProjectManager 에서 다시 물어** 본다(resolve_timeline 의 guard 와 같은 확인): 처음 받은 project 객체만 보면 그사이 다른
+    프로젝트를 연 것을 놓치고, SaveProject 는 **그때 열려 있는** 프로젝트를 저장한다(Codex 배포 전 검토 2026-10-13).
+    started = 시작할 때의 (ID, 이름) — ID 를 못 읽는 Resolve 는 이름으로 견준다. 사람의 조작과 API 호출 사이의 틈까지
+    막지는 못한다(묶음 하나를 가져오는 도중에 바꾸면 그 묶음은 끝난다 — 그 뒤로 멈추고 저장하지 않는다)."""
+    current = project_manager.GetCurrentProject()
+    current_id, current_name = _project_identity(current) if current else ("", "")
+    started_id, started_name = started
+    same = bool(current) and (
+        current_id == started_id if started_id and current_id else current_name == started_name
+    )
+    if not same:
+        raise ResolveBridgeError(
+            "가져오는 도중 Resolve 프로젝트가 바뀌어 멈췄습니다 "
+            f"(시작: {started_name or started_id}, 현재: {current_name or current_id or '없음'}). "
+            "지금 열린 프로젝트는 저장하지 않았습니다 — 시작한 프로젝트를 다시 연 뒤 "
+            "준비된 원본 다시 가져오기를 실행하세요",
+            code="project_changed",
+        )
+
+
 def _folder_name(value: str, fallback: str) -> str:
     cleaned = _UNSAFE_FOLDER_CHARS.sub("_", value.strip()).strip(" .")
     return cleaned or fallback
@@ -867,7 +890,7 @@ def _delete_empty_children(media_pool: Any, parent: Any) -> None:
 
 
 def _export_rebuild_backup(
-    manifest: dict[str, Any], project_manager: Any, project: Any
+    manifest: dict[str, Any], project_manager: Any, project: Any, guard: Any
 ) -> str:
     manifest_root_raw = str(manifest.get("manifest_root") or "").strip()
     if not manifest_root_raw:
@@ -882,6 +905,7 @@ def _export_rebuild_backup(
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     project_name = str(project.GetName() or "Resolve")
     backup_path = backup_dir / f"resolve-{stamp}-{uuid.uuid4().hex[:8]}.drp"
+    guard()  # 다른 프로젝트가 열려 있으면 그것을 저장하지 않는다
     if not project_manager.SaveProject():
         raise ResolveBridgeError("Resolve 구조 변경 전 프로젝트를 저장하지 못했습니다")
     export_project = getattr(project_manager, "ExportProject", None)
@@ -900,8 +924,10 @@ def _reconcile_folder_tree_visible(
     root: Any,
     managed_root: Any,
     desired_paths: set[tuple[str, ...]],
+    guard: Any,
 ) -> tuple[bool, str]:
-    """MoveFolders 없이 클립을 보존하며 MV Hub Bin을 카탈로그 순서로 맞춘다."""
+    """MoveFolders 없이 클립을 보존하며 MV Hub Bin을 카탈로그 순서로 맞춘다.
+    guard() = 지금 열린 프로젝트가 시작한 그 프로젝트가 아니면 예외(_assert_still_current) — 저장·옮기기·지우기 직전에 부른다."""
     actual_nodes, actual_children = _scan_actual_tree(managed_root)
     # 과거 목록 파일은 읽지 않는다. Resolve에 이미 있는 Bin은 보존하고,
     # 이번에 선택한 경로만 더해 자연 정렬 대상을 만든다.
@@ -928,8 +954,9 @@ def _reconcile_folder_tree_visible(
     if not callable(move_clips):
         raise ResolveBridgeError("현재 Resolve가 클립을 보존한 Bin 재정렬을 지원하지 않습니다")
     _journal("rebuild_backup_started", side_effects_started=True)
-    backup_path = _export_rebuild_backup(manifest, project_manager, project)
+    backup_path = _export_rebuild_backup(manifest, project_manager, project, guard)
     _journal("rebuild_backup_complete", drp_path=backup_path)
+    guard()  # 백업을 내보내는 동안(프로젝트가 크면 길다) 바뀌었으면 옮기기를 시작하지 않는다
     snapshots: dict[tuple[str, ...], tuple[list[Any], Counter[str]]] = {}
     for identity, desired_path in desired_nodes.items():
         if not identity or identity not in actual_nodes:
@@ -960,6 +987,7 @@ def _reconcile_folder_tree_visible(
             if identity and (folder.GetClipList() or []):
                 raise ResolveBridgeError(f"기존 Bin에 클립이 남아 있습니다: {folder.GetName()}")
 
+        guard()
         _journal("rebuild_to_final", staging_bin=staging_name)
         _delete_empty_children(media_pool, managed_root)
         final_nodes = _create_tree(media_pool, managed_root, desired_paths)
@@ -989,6 +1017,7 @@ def _reconcile_folder_tree_visible(
     except Exception as exc:
         recovery_errors: list[str] = []
         try:
+            guard()  # 프로젝트가 바뀌었으면 되돌리기도 저장도 하지 않는다(지금 열린 것은 다른 프로젝트다)
             remaining: dict[tuple[str, ...], list[Any]] = {}
             if staging:
                 staged_actual, _children = _scan_actual_tree(staging)
@@ -1007,6 +1036,7 @@ def _reconcile_folder_tree_visible(
                 else:
                     # 자동 복구가 임시 Bin 을 치웠다 — 고아 Bin 격리 대상에서 뺀다.
                     _journal("rebuild_staging_deleted", staging_bin="")
+            guard()
             project_manager.SaveProject()
         except Exception as recovery_exc:  # noqa: BLE001 - 복구 결과를 원인과 함께 보고한다.
             recovery_errors.append(str(recovery_exc))
@@ -1024,6 +1054,7 @@ def _reconcile_folder_tree(
     root: Any,
     managed_root: Any,
     desired_paths: set[tuple[str, ...]],
+    guard: Any,
 ) -> tuple[bool, str]:
     """카탈로그 구조를 현재 Resolve Media Pool에 적용한다."""
     return _reconcile_folder_tree_visible(
@@ -1034,6 +1065,7 @@ def _reconcile_folder_tree(
         root,
         managed_root,
         desired_paths,
+        guard,
     )
 
 
@@ -1046,6 +1078,10 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
         )
     _assert_expected_project(manifest, project)
     _current_id, _current_name = _project_identity(project)
+
+    def guard() -> None:
+        _assert_still_current(project_manager, (_current_id, _current_name))
+
     _journal(
         "project_verified",
         resolve_project={
@@ -1116,6 +1152,9 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
         ordering_errors: list[str] = []
         ordering_error_codes: list[str] = []
         reordered = False
+        # 프로젝트가 바뀌었으면 여기서 통째로 멈춘다(import_manifest_to_current_project 가 project_changed 로 돌려준다) —
+        # 아래 try 는 정렬 실패를 삼키고 가져오기를 이어 가므로, 확인은 그 밖에서 한다.
+        guard()
         try:
             reordered, backup_path = _reconcile_folder_tree(
                 manifest,
@@ -1125,11 +1164,13 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
                 root,
                 managed_root,
                 folder_paths,
+                guard,
             )
             result["folder_order_backup"] = backup_path
         except Exception as exc:  # noqa: BLE001 - 가져오기는 유지하고 정렬 실패를 보고한다.
             ordering_errors.append(str(exc))
             ordering_error_codes.append(getattr(exc, "code", None) or "unexpected_error")
+        guard()  # 정렬(백업 내보내기 포함)이 끝난 뒤 — Bin 을 더 만들기 전에
 
         prepared_targets = {(): managed_root}
         folder_errors: dict[tuple[str, ...], str] = {}
@@ -1216,6 +1257,7 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
             for start in range(0, len(entries), _MEDIA_IMPORT_BATCH_SIZE):
                 batch = entries[start : start + _MEDIA_IMPORT_BATCH_SIZE]
                 batch_index += 1
+                guard()  # 묶음마다 — 바뀐 프로젝트에 이어서 가져오지 않는다
                 # 호출 직전 calling, 경로 검증 뒤 verified (§부속 A batch 규칙).
                 batch_journal = {
                     "index": batch_index,
@@ -1273,6 +1315,7 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
 
         actual_project_change = bool(result["imported"] or reordered)
         if actual_project_change or metadata_changed:
+            guard()  # SaveProject 는 지금 열린 프로젝트를 저장한다 — 시작한 그 프로젝트일 때만
             _journal("saving_project")
         if actual_project_change or metadata_changed:
             save_ok = project_manager.SaveProject()
