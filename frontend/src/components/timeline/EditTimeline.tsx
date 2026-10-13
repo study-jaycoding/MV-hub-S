@@ -367,8 +367,9 @@ export const EditTimeline = memo(function EditTimeline({
     const thin = clipWidth < 6;
     const thumb = link?.gen ? thumbOf(link.gen, 256) : null;
     const frames = Math.min(16, Math.max(1, Math.round(clipWidth / ((LANE_H - 6) * (16 / 9)))));
-    // 줄인 클립의 '원본의 나머지' — 그 컷 안에 남는 만큼만 빗금으로 보인다(아래 트랙이 드러나는 구간이다). 누를 수 없다.
-    const rest = (Math.min(clip.full, span) - clip.len) * zoom;
+    // 줄인 클립의 '원본의 나머지'(뒤) — 그 컷 안에 남는 만큼만 빗금으로 보인다(아래 트랙이 드러나는 구간이다). 누를 수 없다.
+    //  앞을 자른 만큼(clip.head)은 나머지가 아니다 — 원본에서 시작점 뒤로 남은 길이(full − head)로 센다.
+    const rest = (Math.min(clip.full - clip.head, span) - clip.len) * zoom;
     return (
       <Fragment key={key}>
       {rest > 4 && <div className="ed-clip-rest" style={{ left: (start + clip.len) * zoom, width: rest - 1 }} />}
@@ -403,6 +404,8 @@ export const EditTimeline = memo(function EditTimeline({
         {state === "ok" && thumb
           ? Array.from({ length: frames }, (_, i) => <i key={i} style={{ backgroundImage: `url("${thumb}")` }} />)
           : <span className="ed-clip-msg">{state === "missing" ? t("미디어 없음") : state === "unknown" ? t("확인 못 함") : ""}</span>}
+        {/* 앞을 자른 클립(Jay 2026-10-14) — 왼쪽 가장자리의 빗금: 원본의 처음에서 시작하지 않는다. 표시만 한다 */}
+        {clip.head > 0 && <span className="ed-clip-head" aria-hidden="true" />}
         {/* 길이를 줄였으면(휠 클릭) 쓰는 길이 / 원본 길이 */}
         <b>{clip.len.toFixed(1)}s{clip.len < clip.full ? ` / ${clip.full.toFixed(1)}s` : ""}</b>
         {/* 최종(★) — 풀의 카드와 같은 금색 표(Jay 2026-10-14). 표시만 한다(누름은 클립이 받는다). 표보다 좁은 클립에는 그리지 않는다 */}

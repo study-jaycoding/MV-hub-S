@@ -1529,15 +1529,14 @@ function EditTabInner({
           anchor={trimPop.anchor}
           title={`${trimClip.cut.slice(trimClip.cut.lastIndexOf("/") + 1)} · V${trimClip.track}`}
           full={trimClip.full}
+          head={trimClip.head}
           value={trimClip.len}
-          trimmed={trimClip.trim !== undefined}
+          cutEnd={trimClip.trim !== undefined}
           src={trimSrc}
           // 바꿀 것이 없었던 걸음(none)은 조용히 넘긴다. 버린 걸음(stopped — 다른 창의 저장·떠나는 중)에는 창을 닫는다: 그 알림이 이미
           //  떴고, 이 조절은 여기서 끝이다(다시 열어 조절하면 그때는 알고 하는 편집이다).
-          onChange={(seconds) => {
-            const done = applyEdit((current) => setClipRange(current, trimPop.key, {
-              head: current.clips.find((item) => clipKey(item) === trimPop.key)?.head ?? 0, trim: seconds,
-            }), { group: trimPop.group, rev: trimPop.rev });
+          onChange={(range) => {
+            const done = applyEdit((current) => setClipRange(current, trimPop.key, range), { group: trimPop.group, rev: trimPop.rev });
             if (done === "stopped") closeTrim();
           }}
           onUndo={edit.undo}
