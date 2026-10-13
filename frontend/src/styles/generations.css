@@ -1163,12 +1163,13 @@
 .reel-rep.rep { color: #ffd24a; }
 .reel-ttl { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 12px 6px; }
 .reel-ttl > b { min-width: 0; font-size: 14px; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* [폴더로] — 그 컷 폴더로 이동(Jay 2026-10-13). 전역 button 값(패딩·눌림)을 덮는다 */
+/* [폴더로] — 그 컷 폴더로 이동(Jay 2026-10-13). 전역 button 값(패딩·눌림)을 덮는다.
+   색은 리스트 줄의 [폴더로 ▸]·[열기 ▸](episode-board.css 의 .ep-enter)와 같다 — 라임 바탕에 검은 글자(Jay 2026-10-13 밤) */
 .reel-go {
-  flex: none; padding: 3px 10px; border: 1px solid #3c3f45; border-radius: 8px; background: #111315; color: #d7dae0;
+  flex: none; padding: 3px 10px; border: 0; border-radius: 8px; background: var(--accent); color: #111;
   font-size: 12px; font-weight: 800; line-height: 1.5; white-space: nowrap; cursor: pointer;
 }
-.reel-go:hover, .reel-go:focus-visible { border-color: var(--accent); color: var(--accent); }
+.reel-go:hover, .reel-go:focus-visible { filter: brightness(1.1); }
 .reel-go:active { transform: none; }
 .reel-info { display: grid; grid-template-columns: 54px 1fr; column-gap: 8px; row-gap: 5px; padding: 0 12px 12px; font-size: 12.5px; }
 .reel-info .k { color: var(--muted); }
