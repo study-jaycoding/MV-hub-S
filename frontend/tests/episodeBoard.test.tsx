@@ -6,7 +6,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EpisodeCardBody } from "../src/components/EpisodeCardBody";
-import { episodeNumber, isEpisodeLevel, repProgress, sharedAgo, stripOf } from "../src/lib/episodeBoard";
+import { boardView, episodeNumber, isEpisodeLevel, numberColumn, repProgress, reviewCounts, sharedAgo, stripOf, takesOf } from "../src/lib/episodeBoard";
 import type { FolderCard, FolderCardChild, Generation } from "../src/types";
 
 vi.mock("../src/lib/i18n", () => ({ useT: () => (text: string) => text }));
@@ -31,9 +31,33 @@ describe("에피소드 화면의 규칙", () => {
     expect(isEpisodeLevel([])).toBe(false);
   });
 
-  it("번호는 이름의 마지막 숫자 덩어리 — 두 자리로", () => {
-    expect([episodeNumber("e003"), episodeNumber("e020"), episodeNumber("ep2_s035"), episodeNumber("e1000"), episodeNumber("intro")])
-      .toEqual(["03", "20", "35", "1000", ""]);
+  it("번호는 이름의 마지막 숫자 덩어리를 쓴 그대로(003 · 0010) — 번호 칸은 이 화면에서 가장 긴 번호에 맞춘다", () => {
+    expect([episodeNumber("e003"), episodeNumber("e020"), episodeNumber("ep2_s035"), episodeNumber("C0010"), episodeNumber("e1000"), episodeNumber("intro")])
+      .toEqual(["003", "020", "035", "0010", "1000", ""]);
+    const named = (...names: string[]) => names.map((name) => episode({ name }));
+    expect([numberColumn(named("e1", "intro")), numberColumn(named("e003", "e20")), numberColumn(named("C0010", "e003")), numberColumn([])])
+      .toEqual([{ width: 50, size: 34 }, { width: 66, size: 30 }, { width: 74, size: 22 }, { width: 50, size: 34 }]);
+  });
+
+  it("어느 모양으로 그리나 — 리스트 한 번 = 줄, 한 번 더 = 표(어느 단계든). 그리드는 에피소드 화면만 카드, 컷 화면은 겹친 종이(null)", () => {
+    const cuts = [episode({ subfolders: 0 })];
+    expect([boardView([episode()], "list", false), boardView([episode()], "list", true), boardView([episode()], "grid", true)]).toEqual(["list", "table", "grid"]);
+    expect([boardView(cuts, "list", false), boardView(cuts, "list", true), boardView(cuts, "grid", false), boardView(cuts, "grid", true)]).toEqual(["list", "table", null, null]);
+  });
+
+  it("컷의 생성물 띠는 열 칸 — 다 실리면 그대로, 못 실으면 아홉 장 + '+N'. 묶음(하위 폴더 있음)·옛 서버는 띠가 없다", () => {
+    const takes = Array.from({ length: 10 }, (_, index) => ({ cover: { id: "t" + index, assets: [] }, final: false, held: false, by: null }));
+    const leaf = (count: number, list = takes) => episode({ subfolders: 0, count, takes: list });
+    expect([takesOf(leaf(10))!.takes.length, takesOf(leaf(10))!.more]).toEqual([10, 0]);
+    expect([takesOf(leaf(14))!.takes.length, takesOf(leaf(14))!.more]).toEqual([9, 5]);
+    expect([takesOf(leaf(3, takes.slice(0, 3)))!.takes.length, takesOf(leaf(3, takes.slice(0, 3)))!.more]).toEqual([3, 0]);
+    expect([takesOf(episode({ takes })), takesOf(episode({ subfolders: 0, takes: undefined }))]).toEqual([null, null]);
+  });
+
+  it("검토 개수는 서버가 최종·보류 수를 줄 때만 — 일반 공유 = 건수 − 둘", () => {
+    expect(reviewCounts(episode({ count: 12, final_count: 2, held_count: 1 }))).toEqual({ shared: 9, final: 2, held: 1 });
+    expect(reviewCounts(episode({ count: 1, final_count: 2, held_count: 0 }))!.shared).toBe(0); // 음수가 되지 않는다
+    expect(reviewCounts(episode({ final_count: undefined, held_count: 0 }))).toBeNull();
   });
 
   it("컷 띠는 리스트 7칸·그리드 5칸, 못 실은 수는 '+N' — 미리보기가 없으면(옛 서버) 띠가 없다", () => {
@@ -79,7 +103,7 @@ describe("에피소드 카드의 안쪽 그림", () => {
   const draw = (layout: "list" | "grid", folder: FolderCard) => {
     const onEnter = vi.fn();
     const onEnterCut = vi.fn();
-    act(() => root.render(<EpisodeCardBody folder={folder} layout={layout} thumbSize={512} fill now={NOW} onEnter={onEnter} onEnterCut={onEnterCut} />));
+    act(() => root.render(<EpisodeCardBody folder={folder} layout={layout} thumbSize={512} fill now={NOW} onEnter={onEnter} onEnterCut={onEnterCut} onPreviewTake={() => {}} />));
     return { onEnter, onEnterCut };
   };
   const text = (selector: string) => host.querySelector(selector)?.textContent ?? null;
@@ -88,7 +112,7 @@ describe("에피소드 카드의 안쪽 그림", () => {
   it("리스트 = 번호 · 표지 · 이름과 숫자 · 컷 띠(7칸 + '+N')", () => {
     draw("list", episode());
     expect([text(".ep-num"), text(".ep-name"), text(".ep-sub"), text(".ep-line"), text(".ep-rep")])
-      .toEqual(["20", "e020", "마지막 공유 어제 · 리버", "컷 16 · 73건 · 영상 9", "대표 정한 컷 3 / 16"]);
+      .toEqual(["020", "e020", "마지막 공유 어제 · 리버", "컷 16 · 73건 · 영상 9", "대표 정한 컷 3 / 16"]);
     expect((host.querySelector(".ep-bar > i") as HTMLElement).style.width).toBe("19%");
     expect(host.querySelector(".ep-poster .play-badge")).not.toBeNull(); // 표지가 영상이면 재생 표시
     expect(texts(".ep-cut-name")).toEqual(NAMES);
@@ -100,7 +124,7 @@ describe("에피소드 카드의 안쪽 그림", () => {
   it("그리드 = 큰 표지(번호·대표 표시·이름) + 컷 띠(5칸 + '+N') + 진행 막대", () => {
     draw("grid", episode());
     expect([text(".ep-cover .ep-num"), text(".ep-chip"), text(".ep-cap > b"), text(".ep-cap > span")])
-      .toEqual(["20", "★ 대표 3/16", "e020", "컷 16 · 73건 · 영상 9"]);
+      .toEqual(["020", "★ 대표 3/16", "e020", "컷 16 · 73건 · 영상 9"]);
     expect(texts(".ep-cut-name")).toEqual(NAMES.slice(0, 5));
     expect(text(".ep-cut.more")).toBe("+11");
     expect(texts(".ep-foot > span:not(.ep-bar)")).toEqual(["대표 3 / 16", "어제 · 리버"]);

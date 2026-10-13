@@ -349,7 +349,10 @@ it("옛 문맥의 조회가 끝나며 새 문맥에 얹힌 요구를 가져가�
 });
 
 // ── 컷 카드 격자 ──
-const gridProps = { scale: 1, fill: true, layout: "grid" as const, selected: new Set<string>(), onSelect: () => {}, onInfo: () => {}, onReel: () => {}, onShowAll: () => {}, onEnter: () => {}, onOpen: () => {}, top: false };
+const gridProps = {
+  scale: 1, fill: true, layout: "grid" as const, table: false, selected: new Set<string>(), onSelect: () => {}, onInfo: () => {}, onReel: () => {},
+  onPreview: () => {}, onShowAll: () => {}, onEnter: () => {}, onOpen: () => {}, top: false,
+};
 const dbl = (el: Element) => act(() => { el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); });
 
 it("폴더마다 카드 한 장 — 이름·건수, 대표가 없으면 '대표 미정', 영상이면 재생 표시. 컷을 두 번 누르면 모아보기", () => {
@@ -444,6 +447,8 @@ it("에피소드 화면: 리스트는 한 줄에 하나·그리드는 폭에 맞
   const grid = () => host.querySelector<HTMLElement>(".cut-grid")!;
   const tile = () => host.querySelector<HTMLElement>('.cut-card[data-path="e035"]')!;
   expect([grid().className, grid().style.gridTemplateColumns, grid().style.getPropertyValue("--ep-scale")]).toEqual(["cut-grid ep-board ep-list", "minmax(0, 1fr)", "1.2"]);
+  // 번호는 이름의 숫자 그대로(035) — 번호 칸은 가장 긴 번호에 맞춘다(세 자리 = 66px·30px)
+  expect([host.querySelector(".ep-num")!.textContent, grid().style.getPropertyValue("--ep-num-w"), grid().style.getPropertyValue("--ep-num-size")]).toEqual(["035", "66px", "30px"]);
   // 카드는 같은 .cut-card[data-path] — 안에 단추가 들어 있어 div(role=button)다
   expect([tile().tagName, tile().getAttribute("role"), tile().tabIndex, tile().className]).toEqual(["DIV", "button", 0, "cut-card ep-card ep-list"]);
   expect(host.querySelector(".cut-out-count")!.textContent).toBe("에피소드 밖 2건");
@@ -519,13 +524,97 @@ it("에피소드 화면: 위에 뜬 메뉴를 닫는 누름은 카드 안 단추
   act(() => owner.unmount());
 });
 
-it("컷 화면(하위 폴더를 가진 카드가 없다)에서는 보기 방식을 바꿔도 겹친 종이 카드 그대로다", () => {
-  for (const layout of ["list", "grid"] as const) {
-    act(() => root.render(<FolderCardGrid {...gridProps} layout={layout} folders={[card("C0010", 1), card("C0020", 2)]} outside={0} />));
-    const grid = host.querySelector<HTMLElement>(".cut-grid")!;
-    expect([grid.className, grid.style.gridTemplateColumns, grid.querySelector(".cut-card")!.tagName, grid.querySelectorAll(".cut-tab").length])
-      .toEqual(["cut-grid", "repeat(auto-fill, minmax(180px, 1fr))", "BUTTON", 2]);
-  }
+// 2026-10-13 오후(Jay): 컷 화면도 리스트를 누르면 다르게 — 한 번 = 프로젝트 화면과 같은 줄(띠에는 그 컷의 생성물), 한 번 더(table) = 표.
+//  그리드는 겹친 종이 카드 그대로다. 줄·표의 줄도 같은 .cut-card[data-path] 라 고르기·두 번 클릭(모아보기)·키는 격자의 것 그대로.
+it("컷 화면: 그리드는 겹친 종이 카드 그대로 · 리스트 = 줄(생성물 띠 = 크게 보기, [폴더로] = 그 컷으로) · 리스트 한 번 더 = 표", () => {
+  const take = (id: string, extra: object = {}) =>
+    ({ cover: { id, assets: [{ id: "a-" + id, type: "video", file_path: `/m/${id}.mp4`, thumbnail_path: `/m/${id}.png` }] }, final: false, held: false, by: "리버", ...extra });
+  const takes = Array.from({ length: 10 }, (_, index) => take("t" + index, index === 1 ? { final: true } : index === 2 ? { held: true, by: null } : {}));
+  takes[5] = { ...takes[5], cover: { id: "t5", assets: [] } }; // 그림이 없는 것 — 띠에는 칸이 서지만 크게 보기의 넘겨 보기에서는 빠진다
+  const cut: FolderCard = {
+    ...card("C0010", 14), rep: true, cover: { ...card("C0010", 14).cover, id: "t0" }, subfolders: 0, video_count: 13, final_count: 2, held_count: 1,
+    last_shared_at: null, workers: [{ name: "리버", count: 12 }, { name: null, count: 2 }], takes,
+  } as FolderCard;
+  const old = card("C0020", 2); // 옛 공유 서버 — 새 집계가 없다
+  const entered: string[] = [];
+  const reels: string[][] = [];
+  const previews: Array<{ url: string; index?: number; items?: Array<{ genId?: string }> }> = [];
+  let selected = new Set<string>();
+  let view: { layout: "list" | "grid"; table: boolean } = { layout: "grid", table: true };
+  const draw = () => act(() => root.render(
+    <FolderCardGrid {...gridProps} {...view} folders={[cut, old]} selected={selected} onSelect={(next) => { selected = next; draw(); }}
+      onEnter={(folder) => entered.push(folder.path)} onReel={(paths) => reels.push(paths)} onPreview={(target) => previews.push(target)} outside={0} />,
+  ));
+  const grid = () => host.querySelector<HTMLElement>(".cut-grid")!;
+  const row = (name: string) => host.querySelector<HTMLElement>(`.cut-card[data-path="e035/${name}"]`)!;
+
+  // 그리드 — 겹친 종이 카드(리스트 단추의 두 번째 상태(table)는 그리드에 아무 영향이 없다)
+  draw();
+  expect([grid().className, grid().style.gridTemplateColumns, row("C0010").tagName, grid().querySelectorAll(".cut-tab").length])
+    .toEqual(["cut-grid", "repeat(auto-fill, minmax(180px, 1fr))", "BUTTON", 2]);
+
+  // 리스트 한 번 — 줄. 번호는 이름의 숫자 그대로(0010), 번호 칸은 네 자리에 맞춘다
+  view = { layout: "list", table: false };
+  draw();
+  expect([grid().className, grid().style.gridTemplateColumns, grid().style.getPropertyValue("--ep-num-w"), row("C0010").className])
+    .toEqual(["cut-grid ep-board ep-list", "minmax(0, 1fr)", "74px", "cut-card ep-card ep-list leaf"]);
+  const text = (el: Element, selector: string) => el.querySelector(selector)?.textContent ?? null;
+  expect([text(row("C0010"), ".ep-num"), text(row("C0010"), ".ep-name"), text(row("C0010"), ".ep-pchip"), text(row("C0010"), ".ep-line"), text(row("C0010"), ".ep-enter")])
+    .toEqual(["0010", "C0010", "★ 대표", "14건 · 영상 13", "폴더로 ▸"]);
+  expect([...row("C0010").querySelectorAll(".ep-rv > span")].map((one) => `${one.className}|${one.textContent}`)).toEqual(["|공유 11", "fin|★ 최종 2", "held|R 1"]);
+  // 생성물 띠 — 열 개가 다 못 실리면(14건) 아홉 장 + '+5'. 대표는 테두리, 최종·보류는 표시, 만든 사람은 이름
+  const tiles = () => [...row("C0010").querySelectorAll<HTMLButtonElement>(".ep-strip.takes > .ep-take")];
+  expect([tiles().length, text(row("C0010"), ".ep-cut.more"), tiles()[0].className, text(tiles()[1], ".ep-take-m.fin"), text(tiles()[2], ".ep-take-m.held"), text(tiles()[0], ".ep-take-by"), tiles()[2].querySelector(".ep-take-by")])
+    .toEqual([9, "+5", "ep-cut ep-take rep", "★", "R", "리버", null]);
+  // 옛 서버의 컷 — 번호·표지·이름·건수·단추만(띠·검토·대표 표시 중 서버 값이 필요한 것은 빠진다)
+  expect([text(row("C0020"), ".ep-line"), row("C0020").querySelector(".ep-rv"), row("C0020").querySelector(".ep-strip"), text(row("C0020"), ".ep-pchip"), text(row("C0020"), ".ep-enter")])
+    .toEqual(["2건", null, null, "대표 미정", "폴더로 ▸"]);
+  // 띠의 그림 = 크게 보기(띠에 실린 것끼리 넘겨 본다) — 카드를 고르거나 모아보기를 열지 않는다
+  mouse("mousedown", tiles()[3]);
+  mouse("mouseup", window);
+  act(() => tiles()[3].click());
+  expect([selected.size, reels.length, previews.length, previews[0].url, previews[0].index, previews[0].items!.map((item) => item.genId).join()])
+    .toEqual([0, 0, 1, "/m/t3.mp4", 3, "t0,t1,t2,t3,t4,t6,t7,t8"]);
+  // 크게 보기를 닫으면 초점이 그 띠 단추로 돌아온다 — 거기서 Enter·Space 는 그 단추의 키지만 방향키·Ctrl+A 는 격자의 것이다(Codex 코드 리뷰:
+  //  전엔 단추에 초점이 있으면 격자의 키가 모두 죽었다). 출발 자리는 그 단추가 든 줄
+  const key = (init: KeyboardEventInit) => act(() => { tiles()[3].dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init })); });
+  tiles()[3].focus();
+  key({ key: "Enter" });
+  expect([selected.size, reels.length]).toEqual([0, 0]);
+  key({ key: "ArrowRight" });
+  expect([...selected]).toEqual(["e035/C0020"]);
+  tiles()[3].focus();
+  key({ key: "a", ctrlKey: true });
+  expect(selected.size).toBe(2);
+  // [폴더로]·'+N' = 그 컷 폴더로. 줄 자체는 컷 카드와 같다 — 한 번 클릭 = 고르기, 두 번 클릭 = 모아보기
+  act(() => row("C0010").querySelector<HTMLButtonElement>(".ep-enter")!.click());
+  act(() => row("C0010").querySelector<HTMLButtonElement>(".ep-cut.more")!.click());
+  expect(entered).toEqual(["e035/C0010", "e035/C0010"]);
+  mouse("mousedown", row("C0010").querySelector(".ep-name")!);
+  mouse("mouseup", window);
+  dbl(row("C0010").querySelector(".ep-name")!);
+  expect([[...selected], reels, entered.length]).toEqual([["e035/C0010"], [["e035/C0010"]], 2]);
+
+  // 리스트 한 번 더 — 표. 머리줄은 카드가 아니고(고르기·키의 대상이 아님), 줄은 같은 .cut-card[data-path]
+  view = { layout: "list", table: true };
+  draw();
+  expect([grid().className, grid().style.gridTemplateColumns, row("C0010").className]).toEqual(["cut-grid ep-board ep-table", "minmax(0, 1fr)", "cut-card ep-card ep-table leaf sel"]);
+  const cells = (el: Element) => [...el.children].map((one) => one.textContent);
+  expect(cells(host.querySelector(".ep-table-head")!)).toEqual(["", "", "컷", "대표", "건수", "영상", "공유", "★ 최종", "R 보류", "마지막 공유", "작업자", ""]);
+  expect(host.querySelector(".ep-table-head")!.matches(".cut-card, [data-path]")).toBe(false);
+  expect(cells(row("C0010"))).toEqual(["0010", "", "C0010", "★ 대표", "14", "13", "11", "2", "1", "-", "리버 12 · 팀원 2", "폴더로 ▸"]);
+  expect(cells(row("C0020"))).toEqual(["0020", "", "C0020", "미정", "2", "-", "-", "-", "-", "-", "-", "폴더로 ▸"]); // 옛 서버 — 모르는 칸은 '-'
+  act(() => row("C0020").querySelector<HTMLButtonElement>(".ep-enter")!.click());
+  expect(entered[2]).toBe("e035/C0020");
+});
+
+it("에피소드 화면의 표 — '컷' 열이 생기고 대표는 정한 컷 수, 단추는 [열기]", () => {
+  const episode: FolderCard = { ...card("e035", 201), path: "e035", name: "e035", subfolders: 31, rep_count: 1, video_count: 40, final_count: 5, held_count: 9, children: [], takes: [], workers: [] };
+  act(() => root.render(<FolderCardGrid {...gridProps} layout="list" table top folders={[episode]} outside={0} />));
+  expect(host.querySelector(".cut-grid")!.className).toBe("cut-grid ep-board ep-table has-cuts");
+  const cells = (el: Element) => [...el.children].map((one) => one.textContent);
+  expect(cells(host.querySelector(".ep-table-head")!)).toEqual(["", "", "에피소드", "컷", "대표", "건수", "영상", "공유", "★ 최종", "R 보류", "마지막 공유", "작업자", ""]);
+  expect(cells(host.querySelector(".cut-card[data-path]")!)).toEqual(["035", "", "e035", "31", "★ 1/31", "201", "40", "187", "5", "9", "-", "-", "열기 ▸"]);
 });
 // jsdom 은 자리를 안 재 준다 — 카드마다 가짜 네모(가로로 한 줄, 200px 간격)
 function placeTiles() {

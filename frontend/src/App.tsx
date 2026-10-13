@@ -2812,6 +2812,7 @@ export default function App() {
               {cutCards ? (
                 <FolderCardGrid
                   folders={cutCards.folders} scale={scale} fill={fill} layout={layout} onEnter={enterFolderCard} onOpen={openFolderCard}
+                  table={groupByDate} onPreview={openPreview} // 리스트 단추 한 번 더(낱장 목록의 '날짜별 구분' 자리) = 표 · 컷 줄의 생성물 띠 = 크게 보기
                   top={!cutScope?.parent} selected={cutSel} onSelect={setCutSel}
                   onInfo={(folder, x, y) => {
                     if (cutScope) setCutInfo({ projectId: cutScope.projectId, path: folder.path, x, y, ctx: listPeekCtx });
