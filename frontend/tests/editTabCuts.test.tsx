@@ -360,3 +360,56 @@ it("클립 우클릭 메뉴의 '길이 조절'로도 같은 창이 열린다", (
   const pop = document.querySelector<HTMLElement>(".ed-trim")!;
   expect([pop.getAttribute("role"), pop.textContent?.includes("c1 · V1")]).toEqual(["dialog", true]);
 });
+
+// Codex 코드 리뷰 2회째(끌기 공통): 왼쪽으로 끄는 중에 휠 단추를 같이 누르면 pointerup 은 **마지막 단추가 떼일 때에야** 온다 —
+//  왼쪽만 떼도 끌기가 이어지고, 나중에 휠을 떼는 것이 놓기가 됐다. 왼쪽이 떼어진 채 온 움직임에서 끌기를 버린다.
+it("클립 끌기는 왼쪽 단추의 놓기만 확정이다 — 휠을 같이 누른 채 왼쪽을 떼면 버리고, 끄는 중의 휠 클릭·우클릭은 창을 열지 않는다", () => {
+  const docKey = "mvhub.editDoc:local:p1:e070";
+  localStorage.setItem(docKey, JSON.stringify(TRIM_DOC));
+  let held: Element | null = null;
+  const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
+  const saved = { set: proto.setPointerCapture, has: proto.hasPointerCapture };
+  proto.setPointerCapture = function (this: Element) { held = this; };
+  proto.hasPointerCapture = function (this: Element) { return held === this; };
+  const pointDoc = document as unknown as { elementsFromPoint?: unknown };
+  const savedPoint = pointDoc.elementsFromPoint;
+  try {
+    mount();
+    const clip = document.querySelector<HTMLElement>(".ed-clip")!;
+    const other = [...document.querySelectorAll<HTMLElement>("[data-track]")].find((lane) => lane.dataset.track !== "1")!;
+    pointDoc.elementsFromPoint = () => [other]; // 마우스 밑은 다른 트랙 — 놓기로 치면 클립이 그리로 간다
+    const send = (type: string, init: MouseEventInit) => act(() => {
+      clip.dispatchEvent(Object.assign(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 10, ...init }), { pointerId: 1 }));
+    });
+    const before = localStorage.getItem(docKey);
+    send("pointerdown", { button: 0, buttons: 1, clientY: 100 });
+    send("pointermove", { buttons: 1, clientY: 42 });
+    expect(clip.style.transform).toBe("translateY(-58px)");
+    // 끄는 중의 휠 클릭·우클릭 — 길이 조절 창도 클립 메뉴도 뜨지 않는다
+    send("auxclick", { button: 1, buttons: 1, clientY: 42 });
+    send("contextmenu", { button: 2, buttons: 1, clientY: 42 });
+    expect([document.querySelector(".ed-trim"), document.querySelector(".ed-tmenu")]).toEqual([null, null]);
+    expect(clip.style.transform).toBe("translateY(-58px)"); // 끌기는 이어진다
+    send("pointermove", { buttons: 5, clientY: 40 }); // 휠을 같이 눌렀다
+    send("pointermove", { buttons: 4, clientY: 40 }); // 왼쪽만 뗐다(pointerup 은 아직 안 온다) — 여기서 버린다
+    expect(clip.style.transform).toBe("");
+    send("pointerup", { button: 1, buttons: 0, clientY: 40 }); // 나중에 휠을 뗀 것은 놓기가 아니다
+    expect(localStorage.getItem(docKey)).toBe(before);
+    // 왼쪽을 누른 채 끝까지 끌다가, 놓는 순간의 단추가 왼쪽이 아니면(다른 단추의 pointerup) 그것도 놓기가 아니다
+    held = null;
+    send("pointerdown", { button: 0, buttons: 1, clientY: 100 });
+    send("pointermove", { buttons: 1, clientY: 42 });
+    send("pointerup", { button: 1, buttons: 0, clientY: 42 });
+    expect([clip.style.transform, localStorage.getItem(docKey)]).toEqual(["", before]);
+    // 보통의 놓기는 그대로 옮긴다
+    held = null;
+    send("pointerdown", { button: 0, buttons: 1, clientY: 100 });
+    send("pointermove", { buttons: 1, clientY: 42 });
+    send("pointerup", { button: 0, buttons: 0, clientY: 42 });
+    expect(JSON.parse(localStorage.getItem(docKey)!).clips[0].track).toBe(Number(other.dataset.track));
+  } finally {
+    proto.setPointerCapture = saved.set;
+    proto.hasPointerCapture = saved.has;
+    pointDoc.elementsFromPoint = savedPoint;
+  }
+});

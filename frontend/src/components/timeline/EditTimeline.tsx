@@ -197,6 +197,9 @@ export const EditTimeline = memo(function EditTimeline({
   const clipMove = (event: ReactPointerEvent<HTMLElement>) => {
     const current = drag.current;
     if (!current || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    // 왼쪽 단추가 떼어진 채 온 움직임 — 그 놓기는 오지 않았다. 다른 단추(휠)를 같이 누른 채 왼쪽만 떼면 pointerup 은 마지막 단추가
+    //  떼일 때에야 온다: 그때까지 끌기가 이어지고, 나중에 휠을 떼는 것이 놓기가 됐다(같은 종류 — 컷 순서 끌기·카드 끌기, Codex 코드 리뷰 2회째).
+    if (!(event.buttons & 1)) return clipUp(event, true);
     const dy = event.clientY - current.y;
     if (!current.moved && Math.abs(dy) < DRAG_START) return;
     current.moved = true;
@@ -346,17 +349,19 @@ export const EditTimeline = memo(function EditTimeline({
         onAuxClick={(event) => {
           if (event.button !== 1) return;
           event.preventDefault();
+          if (drag.current?.moved) return; // 끄는 중의 휠 클릭은 창을 열지 않는다(끌기는 이어진다)
           onClipTrim(key, event.clientX, event.clientY);
         }}
         onPointerDown={(event) => clipDown(event, key, clip.track, locked, clip.cut)}
         onPointerMove={clipMove}
-        onPointerUp={(event) => clipUp(event)}
+        onPointerUp={(event) => clipUp(event, event.button !== 0)} // 끌기를 시작한 왼쪽 단추의 놓기만 확정이다
         onPointerCancel={(event) => clipUp(event, true)}
         // 놓는 이벤트를 놓쳤다(창 밖에서 뗌 등) — 브라우저가 쥐기를 거두며 이것만 보낸다. 안 들으면 클립이 끌던 만큼 어긋난 채 남았다
         //  (2026-10-12 격리 실측 3/3 — 그 클립을 다시 눌러야 풀렸다). 끝점이 없으니 옮기지 않는다. 보통의 놓기 뒤에도 오지만 그때는 할 일이 없다.
         onLostPointerCapture={(event) => clipUp(event, true)}
         onContextMenu={(event) => {
           event.preventDefault();
+          if (drag.current?.moved) return; // 끄는 중의 우클릭은 메뉴를 열지 않는다
           onClipMenu(key, event.clientX, event.clientY);
         }}
       >
