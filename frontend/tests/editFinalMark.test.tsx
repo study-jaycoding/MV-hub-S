@@ -64,7 +64,7 @@ const mount = (withReview: typeof review | undefined = review) => act(() => root
     onFolderAction={() => {}} review={withReview} />,
 ));
 const DOC_KEY = "mvhub.editDoc:local:p1:e070";
-const seed = (clips: { cut: string; gen: string; track: number; off?: boolean }[], extra: Record<string, unknown> = {}) =>
+const seed = (clips: { cut: string; gen: string; track: number; off?: boolean; dur?: number }[], extra: Record<string, unknown> = {}) =>
   localStorage.setItem(DOC_KEY, JSON.stringify({
     v: 1, tracksOff: [], tracksLocked: [], ...extra,
     clips: clips.map((clip) => ({ kind: "image", dur: 5, ...clip, cut: `e070/${clip.cut}` })),
@@ -129,6 +129,17 @@ it("최종을 줄 권한이 없으면 두 줄 모두 없다 — 다른 줄은 �
   openListMenu();
   expect(row("모두 최종으로 확정")).toBeUndefined();
   expect(applied).toEqual([]);
+});
+
+// Jay 2026-10-14: 타임라인의 클립에도 최종 ★ — 그 전에는 풀의 카드와 왼쪽 폴더 목록에만 보여, '모두 확정'을 눌러도 타임라인은 그대로였다.
+it("최종인 생성물의 클립에는 ★ 표가 붙는다 — 최종이 아닌 클립·표보다 좁은 클립에는 없다", () => {
+  world.gens = [gen("a", "c1"), gen("f", "c2", { is_final: true }), gen("n", "c3", { is_final: true })];
+  seed([{ cut: "c1", gen: "a", track: 1 }, { cut: "c2", gen: "f", track: 1 }, { cut: "c3", gen: "n", track: 1, dur: 1 }]); // 20px/초 — 1초 클립은 18px
+  mount();
+  const star = (id: string) => clipOf(id).querySelector(".ed-clip-final");
+  expect([!!star("a"), !!star("f"), !!star("n")]).toEqual([false, true, false]);
+  expect(star("f")!.getAttribute("aria-label")).toBe("최종");
+  expect(star("f")!.querySelector("svg.card-final-star")).not.toBeNull(); // 풀의 카드와 같은 별
 });
 
 it("클립 메뉴의 '최종 선택' — 누르면 그 생성물이 최종으로, 이미 최종이면 ✓ 이고 누르면 해제(공유로)", () => {

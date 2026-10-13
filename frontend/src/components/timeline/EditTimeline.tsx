@@ -39,6 +39,7 @@ const RULER_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
 const EDGE_PX = 48; // 컷을 끄는 중 — 타임라인의 이만큼 안쪽 가장자리에 오면 그쪽으로 저절로 넘긴다
 const EDGE_STEP = 14; // 한 프레임에 넘기는 px
 const DBLCLICK_MS = 500; // 끈 직후의 더블클릭으로 치는 간격(운영체제 기본 더블클릭 시간쯤)
+const FINAL_MARK_MIN = 28; // 최종 ★ 표(19px + 양옆 여백)가 들어가는 클립의 최소 폭(px)
 
 export interface ClipLink {
   state: MediaState;
@@ -403,6 +404,14 @@ export const EditTimeline = memo(function EditTimeline({
           : <span className="ed-clip-msg">{state === "missing" ? t("미디어 없음") : state === "unknown" ? t("확인 못 함") : ""}</span>}
         {/* 길이를 줄였으면(휠 클릭) 쓰는 길이 / 원본 길이 */}
         <b>{clip.len.toFixed(1)}s{clip.len < clip.full ? ` / ${clip.full.toFixed(1)}s` : ""}</b>
+        {/* 최종(★) — 풀의 카드와 같은 금색 표(Jay 2026-10-14). 표시만 한다(누름은 클립이 받는다). 표보다 좁은 클립에는 그리지 않는다 */}
+        {link?.gen?.is_final && clipWidth >= FINAL_MARK_MIN && (
+          <span className="ed-clip-final" role="img" aria-label={t("최종")}>
+            <svg className="card-final-star" viewBox="2 0 96 91" aria-hidden="true" focusable="false">
+              <polygon points="50,0 61,35 98,35 68,57 79,91 50,70 21,91 32,57 2,35 39,35" />
+            </svg>
+          </span>
+        )}
       </div>
       </Fragment>
     );
