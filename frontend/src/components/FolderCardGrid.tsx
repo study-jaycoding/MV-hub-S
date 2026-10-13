@@ -134,7 +134,11 @@ export function FolderCardGrid({
     const { rect, b } = computeMarquee(grid, d, e);
     setMarquee(rect);
     const base = d.additive || d.range ? d.base : [];
-    opsRef.current.onSelect(marqueeHits<string>(grid, ".cut-card[data-path]", b, base, (el) => el.dataset.path || null));
+    // 걸친 것 — 컷 카드는 아래 정보판까지가 한 칸(.cut-slot)이다: 정보판만 걸쳐도 그 카드를 고른다(Codex 코드 리뷰). 줄·에피소드 카드는 카드 자신.
+    opsRef.current.onSelect(marqueeHits<string>(
+      grid, ".cut-slot, .cut-card.ep-card[data-path]", b, base,
+      (el) => (el.matches(".cut-slot") ? el.querySelector<HTMLElement>(".cut-card[data-path]")?.dataset.path : el.dataset.path) || null,
+    ));
   }, []);
   // 카드 위에서 시작한 끌기도 마퀴다 — 카드가 꽉 찬 격자에는 빈 곳이 없어 달리 시작할 데가 없다(10-09 실측: 100장에서 0장 고름).
   //  생성물 카드와 달리 컷 카드에는 끌어 놓을 데(프롬프트 재사용)가 없어 겹칠 것이 없다. 5px 안이면 클릭.

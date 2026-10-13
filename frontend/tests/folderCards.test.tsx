@@ -734,7 +734,11 @@ it("에피소드 화면의 표 — '컷' 열이 생기고 대표는 정한 컷 �
 // jsdom 은 자리를 안 재 준다 — 카드마다 가짜 네모(가로로 한 줄, 200px 간격)
 function placeTiles() {
   [...host.querySelectorAll<HTMLElement>(".cut-card[data-path]")].forEach((tile, i) => {
-    tile.getBoundingClientRect = () => ({ left: i * 200, right: i * 200 + 180, top: 0, bottom: 180, width: 180, height: 180, x: i * 200, y: 0, toJSON: () => ({}) });
+    const rect = (bottom: number) => () => ({ left: i * 200, right: i * 200 + 180, top: 0, bottom, width: 180, height: bottom, x: i * 200, y: 0, toJSON: () => ({}) });
+    tile.getBoundingClientRect = rect(180);
+    // 컷 카드는 아래 정보판까지가 한 칸이다(.cut-slot — 걸침 판정의 사각형). 카드 180 + 정보판 100
+    const slot = tile.closest<HTMLElement>(".cut-slot");
+    if (slot) slot.getBoundingClientRect = rect(280);
   });
   host.querySelector<HTMLElement>(".cut-grid")!.getBoundingClientRect = () => ({ left: 0, right: 1000, top: 0, bottom: 400, width: 1000, height: 400, x: 0, y: 0, toJSON: () => ({}) });
 }

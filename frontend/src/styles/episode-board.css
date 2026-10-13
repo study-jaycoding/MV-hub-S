@@ -136,6 +136,12 @@
 .ep-table .ep-enter { margin-top: 0; justify-self: end; }
 .ep-board.ep-table .cut-card.cut-out { margin-top: 8px; border-radius: 12px; }
 
+/* 컷 줄은 칸이 다섯이라 더 넓어야 한다 — 그보다 좁으면 생성물 띠를 아래 줄로 내린다(앞의 네 칸이 폭을 먼저 가져가 띠가 사라졌다, Codex 코드 리뷰).
+   기준은 창 폭이다(사이드바를 뺀 본문은 그보다 200px 쯤 좁다). */
+@media (max-width: 1400px) {
+  .cut-card.ep-card.ep-list.leaf { grid-template-columns: var(--ep-num-w, 50px) calc(236px * var(--ep-scale, 1)) minmax(110px, 170px) minmax(0, 1fr); }
+  .ep-list .ep-strip.takes { grid-column: 1 / -1; grid-template-columns: repeat(10, minmax(0, 1fr)); max-width: none; }
+}
 /* 좁은 창 — 띠를 아래 줄로 내린다(한 줄 8칸). 표는 가로로 민다(위 min-width) */
 @media (max-width: 1000px) {
   .cut-card.ep-card.ep-list { grid-template-columns: var(--ep-num-w, 50px) calc(200px * var(--ep-scale, 1)) minmax(0, 1fr); }
