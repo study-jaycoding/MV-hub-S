@@ -145,7 +145,7 @@ import type {
 import type { EditCardMenu, EditCutFolder } from "./components/timeline/EditTab";
 import { api } from "./api";
 import { FolderCardGrid } from "./components/FolderCardGrid";
-import { folderCardsScope, parentFolder, singleTeamWorkspace, type FolderCardsScope } from "./lib/folderCards";
+import { folderCardsScope, folderUnder, parentFolder, singleTeamWorkspace, type FolderCardsScope } from "./lib/folderCards";
 import { useFolderCards } from "./lib/useFolderCards";
 import { CutInfoPopup } from "./components/CutInfoPopup";
 import { CutReel, type ReelMode } from "./components/CutReel";
@@ -520,6 +520,7 @@ export default function App() {
     beginComposeList,
     colorLedger,
     staleList,
+    listBehind,
     stats,
     unassignedCount,
   } = useGenerationLibraryData({
@@ -559,9 +560,19 @@ export default function App() {
       ? folderCards
       : null;
   const cutMode = cutCards !== null;
-  // 묶음 응답을 기다리는 중 — 낱장 격자를 그리지 않는다(사이드바로 폴더를 옮기면 낱장(옛 폴더 것)이 한 번 보였다가 컷 카드로 바뀌던
-  //  깜빡임, Jay 2026-10-13 ③). 조회가 실패하면 꺼져 낱장으로(옛 서버는 unsupported). 창이 떠 있으면 격자는 창의 것이라 무관.
-  const cutPending = cutView && !listPeek && cardsScope !== null && !folderCardsUnsupported && folderCardsLoading;
+  // ── 폴더를 옮기는 동안(Jay 2026-10-13 ③ 깜빡임 → "아직 딜레이") ──
+  //  묶음 보기에서 자리(프로젝트·폴더)를 옮기면 서버 답 둘(묶음·목록)이 오기 전의 화면이 문제다. 낱장 격자는 옛 자리의 목록을 들고 있어
+  //  그대로 그리면 '전체 카드가 한 번 보였다가' 바뀐다. 그래서:
+  //   · 묶음 답을 모르는 동안(cutLoading)은 격자 자리를 비운다 — 다시 온 폴더·컷은 `useFolderCards` 의 기억이 바로 답해 이 구간이 없다.
+  //   · 목록이 아직 옛 조회의 것인 동안(narrowing)은 **이미 받아 둔 더 넓은 목록**(에피소드의 첫 쪽 — 아래 widePoolRef)에서 새 자리에 드는
+  //     것만 골라 먼저 보인다(컷으로 들어갈 때 서버를 기다리지 않는다). 고른 것은 새 목록의 앞부분이다(둘 다 최신 순). 낡았을 수 있어 그동안은
+  //     격자를 잠근다(staleList 와 같은 잠금 — listLocked)·더 받기도 쉰다. 고를 것이 없으면 자리를 비운다(cutPending).
+  //  조회가 실패하면 꺼져 낱장으로(옛 서버는 unsupported). 창이 떠 있으면 격자는 창의 것이라 무관. 위치 주입(다빈치 따라가기)·사본·실패 화면은
+  //  목록 훅이 캐시를 지운 구간이라 listBehind 가 참이어도 건드리지 않는다.
+  const cutWaiting = cutView && !listPeek && cardsScope !== null && !folderCardsUnsupported;
+  const cutLoading = cutWaiting && folderCardsLoading;
+  const narrowing = cutWaiting && !!listBehind && !staleList && !isLocatedView && !loadError;
+  const listLocked = staleList || (narrowing && !cutMode); // 낱장 격자를 보이는 중일 때만 — 컷 카드는 목록과 무관하게 눌린다
   // 창이 보여 주는 폴더의 지금 대표 — 표지가 '가장 최근 것' 일 뿐이면 대표가 아니다(null).
   const peekFolderCard = listPeek ? folderCards?.folders.find((folder) => folder.path === listPeek.path) : undefined;
   const peekCoverId = peekFolderCard?.rep ? peekFolderCard.cover.id : null;
@@ -1184,7 +1195,22 @@ export default function App() {
   const [comfyRunning, setComfyRunning] = useState<{ id: string; name: string }[]>([]);
   // 로컬 우선: 내 작업(tab=my)은 로컬 DB 를 그대로 읽으므로 로드된 페이지가 곧 화면 결과
   // (진행중·실패 placeholder 포함). 별도 머지 불필요.
-  const visibleGens = gens;
+  // 넓은 목록 하나 — **컷 카드를 보이는 자리**(하위 폴더가 있는 폴더)의 첫 쪽이 적용돼 있는 동안 든다. 컷(잎)에서는 바꾸지 않는다: 에피소드 →
+  //  컷 → 형제 컷 동안 에피소드의 것이 남아, 형제 컷으로 옮길 때도 거기서 고른다. 문맥(계정·서버·공간·프로젝트)이 다르면 쓰지 않는다.
+  //  ponytail: 하나뿐이라 새로 고친 뒤 컷에서 형제 컷으로 바로 가면 고를 것이 없다(목록 응답을 기다린다) — 에피소드를 한 번 보면 채워진다.
+  const widePoolRef = useRef<{ ctx: string; folder: string; gens: Generation[] } | null>(null);
+  const poolCtx = cutScope ? JSON.stringify([libraryAuthKey, cutScope.workspaceId ?? null, cutScope.projectId]) : null;
+  useEffect(() => {
+    if (!cutMode || !cutScope || poolCtx === null || listPeek || listBehind || staleList || isLocatedView || loadError) return;
+    widePoolRef.current = { ctx: poolCtx, folder: cutScope.parent, gens };
+  }, [gens, cutMode, cutScope, poolCtx, listPeek, listBehind, staleList, isLocatedView, loadError]);
+  const narrowed = useMemo(() => {
+    if (!narrowing || !cutScope) return null;
+    const pool = widePoolRef.current;
+    if (!pool || pool.ctx !== poolCtx || !folderUnder(cutScope.parent, pool.folder)) return [];
+    return pool.gens.filter((g) => !g.deleted && g.project_id === cutScope.projectId && folderUnder(g.folder_path ?? "", cutScope.parent));
+  }, [narrowing, cutScope, poolCtx]);
+  const visibleGens = narrowed ?? gens;
   // comfy 실행 중이면 '내 작업' 탭 그리드 맨 앞에 임시 생성중 카드(Comfy 로고). 서버 미저장 — 실행 끝나면 사라지고
   //  실제 저장물이 reload 로 들어온다. tab=my 에서만(내 로컬 실행이므로 팀 탭엔 안 띄운다).
   const comfyPlaceholders = useMemo<Generation[]>(() => {
@@ -1245,6 +1271,8 @@ export default function App() {
     () => [...comfyPlaceholders, ...filterDisabledGenerations(visibleGens, effectiveDisabled, grayOn)],
     [comfyPlaceholders, visibleGens, effectiveDisabled, grayOn],
   );
+  // 격자 자리를 비우는 동안 — 묶음 답을 모르거나, 낱장이 될 자리인데 먼저 보일 것이 없다(위 '폴더를 옮기는 동안').
+  const cutPending = cutLoading || (narrowing && !cutMode && gridGens.length === 0);
   // 회색 숨김을 켜면 가려지는 카드는 선택에서 뺀다(29회차 Jay "검색과 같게" — 보이는 것만 남긴다). 숨김은 gridGens 만 줄이고 gens 는 그대로라
   //  위 규칙 42 효과가 걷지 못한다(Codex 코드 리뷰 P2 — 전엔 숨김 전환이 선택을 통째로 비웠다). 숨긴 채 Ctrl+A 로 고른 가려진 카드는 전처럼
   //  남는다(재제안 금지 — Ctrl+A 는 숨긴 카드까지 고른다).
@@ -2108,7 +2136,7 @@ export default function App() {
   //  (메뉴에서 설정 창을 연 직후 등)에 남이 시작한 일 뒤의 격자로 초점을 보내게 된다(Codex 코드 리뷰).
   useEffect(() => {
     if (refocusGridRef.current !== null && refocusGridRef.current !== "*" && refocusGridRef.current !== listPeekCtx) refocusGridRef.current = null;
-    if (refocusGridRef.current === null || staleList || loading) return;
+    if (refocusGridRef.current === null || listLocked || loading) return;
     // 묶음 응답을 기다리는 동안(③ cutPending)은 격자가 비어 있다 — 어느 복원이든 **최종 격자가 선 뒤**에. 에피소드로 들어간 뒤("*")만이 아니라
     //  폴더 창을 닫은 뒤도(낱장 조회가 묶음 조회보다 먼저 끝나면 빈 격자에서 표식이 소비돼 초점이 안 돌아왔다 — Codex 코드 리뷰). 옛 서버·실패면
     //  낱장 격자가 최종이다(실패 뒤에도 기다리던 것 — Codex 설계 검토).
@@ -2116,7 +2144,7 @@ export default function App() {
     refocusGridRef.current = null; // 한 번만 — 격자가 없으면(빈 목록·실패) 그대로 끝낸다
     // 묶음 보기면 컷 카드 격자가 그 자리다(둘 중 하나만 떠 있다)
     document.querySelector<HTMLElement>("main.main .gen-grid, main.main .cut-grid")?.focus({ preventScroll: true });
-  }, [staleList, loading, listPeekCtx, cutPending]);
+  }, [listLocked, loading, listPeekCtx, cutPending]);
   useEffect(() => {
     const cancel = () => { refocusGridRef.current = null; };
     document.addEventListener("focusin", cancel);
@@ -2280,7 +2308,7 @@ export default function App() {
       filtersOpen={showFilters}
       onToggleFilters={() => setShowFilters((v) => !v)}
       count={gridGens.length}
-      countMore={hasMore}
+      countMore={hasMore && !narrowing}
       // 전환 단추는 묶어 보일 수 있을 때만(창 안의 툴바에는 없다). 켜 둔 채로는 실제로 묶어 보이는 동안(응답을 기다리는 동안 포함 —
       //  사라졌다 다시 나타나지 않게, ③)에만 보인다 — 하위 폴더가 없는 폴더에서는 바꿀 것이 없다.
       folderCards={
@@ -2350,10 +2378,10 @@ export default function App() {
           // 창을 닫은 직후 옛 사본을 보이는 동안은 고를 수 없다 — 새 목록이 올 때까지(보통 0.5초 미만) 보이기만 한다.
           //  카드의 클릭·키는 <main inert> 가, 바깥에서 시작하는 끌기 선택과 그 결과는 여기서 막는다. 선택은 닫을 때 비웠고
           //  새로 생길 길이 이 둘뿐이라, 선택 막대·전역 단축키(선택이 있어야 움직인다)는 따로 막지 않아도 된다.
-          selectLocked={staleList}
+          selectLocked={listLocked}
           loading={loading}
           onSelectedChange={(next) => {
-            if (staleList) return;
+            if (listLocked) return;
             // comfy 임시 카드(가짜 id)는 선택에서 제외 — 전체선택/범위선택으로 삭제·배정 API 에 흘러가지 않게.
             const clean = [...next].some((id) => id.startsWith("comfy-pending:"))
               ? new Set([...next].filter((id) => !id.startsWith("comfy-pending:")))
@@ -2398,7 +2426,7 @@ export default function App() {
             ? coverHeader(ownCoverId, (g) => void pickFolderCover(g, { projectId: ownScope.projectId, path: filters.folder_path ?? "" }))
             : undefined
       }
-      hasMore={hasMore}
+      hasMore={hasMore && !narrowing} // 먼저 보이는 동안은 더 받지 않는다 — 커서가 옛 조회의 것이다
       loadingMore={loadingMore}
       onLoadMore={loadMore}
       resetKey={serverFilterKey}
@@ -2821,7 +2849,7 @@ export default function App() {
               />
             )}
             {/* staleList = 폴더 창을 닫은 직후 옛 첫 쪽을 먼저 보이는 중 — 새 목록이 올 때까지 조작을 막는다(낡은 카드에 삭제·공유가 걸리지 않게) */}
-            <main className="main" aria-busy={staleList || undefined} {...(staleList ? { inert: "" } : {})}>
+            <main className="main" aria-busy={listLocked || undefined} {...(listLocked ? { inert: "" } : {})}>
               {/* 폴더 창이 떠 있으면 툴바·격자는 창에 그린다(하나뿐인 격자) — 뒤 목록 자리는 닫을 때까지 비워 둔다. */}
               {!listPeek && libraryToolbar}
               {/* 묶음 보기 — 격자 자리에 컷 카드. 폴더 창이 떠 있어도 뒤에 그대로 둔다(body 가 inert 라 눌리지 않는다). */}

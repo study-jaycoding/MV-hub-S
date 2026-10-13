@@ -667,6 +667,9 @@ export function useGenerationLibraryData({
     revealLocated,
     locatedVisibleIds,
     isLocatedView: !!locatedRef.current && isLocatedQuery(genQuery, locatedRef.current.tab, locatedRef.current.location),
+    // 화면의 목록이 아직 지금 조회의 것이 아니다 — 조회(자리·필터)가 바뀐 뒤 새 첫 쪽이 적용되기 전. 탭 캐시의 sig = 마지막으로 **적용된**
+    //  목록의 조회다(beginComposeList 의 출처 확인과 같은 기준). 캐시를 지운 구간(위치 주입·폴더 창·실패)에도 참이라 쓰는 쪽이 그것을 가린다.
+    listBehind: filters.tab !== "compose" && tabCacheRef.current[filters.tab]?.sig !== JSON.stringify([!!filters.deleted_only, genQuery]),
     setFacets,
     setGens: editGens,
     beginComposeList,

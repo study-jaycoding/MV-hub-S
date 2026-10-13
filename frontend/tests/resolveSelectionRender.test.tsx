@@ -41,6 +41,7 @@ const relinkOnWorkspaceChange = vi.fn();
 const beginList = vi.fn(); // 목록 훅의 beginComposeList — 폴더 창을 열고 닫을 때 목록을 비우는지 본다
 let setStaleList: (on: boolean) => void; // 목록 훅의 staleList(닫은 직후 옛 첫 쪽을 보이는 중)를 시험이 켜고 끈다
 let setLoadingList: (on: boolean) => void; // 목록 훅의 loading(받는 중)
+let setListBehind: (on: boolean) => void; // 목록 훅의 listBehind(화면의 목록이 아직 옛 조회의 것)
 let setLibraryGens: (next: Generation[]) => void; // 목록 훅의 gens — 다시 받아 목록이 바뀐 것을 시험이 만든다
 let startAuthPending = false; // 인증 훅을 '확인 중'으로 시작한다(새로 고친 직후) — 기본은 처음부터 끝난 상태
 let setAuthPending: (on: boolean) => void; // 인증 확인이 끝났다고 알린다
@@ -473,6 +474,8 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
       setStaleList = setStale;
       const [loading, setLoad] = useState(false);
       setLoadingList = setLoad;
+      const [listBehind, setBehind] = useState(false);
+      setListBehind = setBehind;
       refreshProjects = () => setProjects((previous) => [...previous]);
       const revealLocated = useCallback((tab: "my" | "team", value: GenerationLocation) => {
         setLocation({ tab, value }); setGens(value.items);
@@ -486,7 +489,7 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
       isLocatedView: !!location && isLocatedQuery(args.genQuery, location.tab, location.value),
       stats: { has_unread: false, failed_count: 0, unread_count: 0 }, loading, loadingMore: false,
       hasMore: false, loadError: null, archivedCount: 0, unassignedCount: 0, loadMore: noop, beginComposeList: beginList,
-      reload: noop, reloadIfStale: noop, staleList,
+      reload: noop, reloadIfStale: noop, staleList, listBehind,
     };
     },
   }));
@@ -1592,13 +1595,56 @@ it("App 공유·리뷰: 폴더를 옮기면 묶음 응답 전엔 낱장 격자�
   await act(async () => { held.get("episode/other")!.reject(new Error("502: 공유 서버 연결 실패")); });
   await settle();
   expect([gridOutputs().length, busy()]).toEqual([1, null]);
-  // 다시 에피소드로 — 응답 전엔 비우고(낱장을 보이지 않는다), 오면 컷 카드
+  // 다시 에피소드로 — 한 번 본 폴더는 받아 둔 컷 카드가 응답 전부터 선다(기다리지 않는다, "아직 딜레이"). 조회는 다시 가고, 답이 오면 그것으로 바뀐다
+  held.delete("episode");
   act(() => sidebarSnapshot!.onChange({ folder_path: "episode" }));
   await settle();
-  expect([cutGrid(), gridOutputs().length, busy() !== null, toolbarSnapshot!.folderCards?.on]).toEqual([null, 0, true, true]);
-  await act(async () => { held.get("episode")!.resolve(cutCards(false)); });
+  expect([cutGrid() !== null, gridOutputs().length, busy(), toolbarSnapshot!.folderCards?.on]).toEqual([true, 0, null, true]);
+  expect(cutTile("shot").querySelector(".cut-pill")!.textContent).toBe("대표 미정");
+  await act(async () => { held.get("episode")!.resolve(cutCards(true)); });
   await settle();
-  expect([cutGrid() !== null, gridOutputs().length, busy()]).toEqual([true, 0, null]);
+  expect([cutGrid() !== null, cutTile("shot").querySelector(".cut-pill")]).toEqual([true, null]);
+});
+
+// 2026-10-13(Jay "아직 폴더 이동할 때 딜레이"): 에피소드(컷 카드)에서 컷으로 들어갈 때 서버 답 둘(묶음·목록)을 기다리지 않는다 — 컷의 묶음 답은 에피소드의
+//  카드가 이미 알려 줬고(`subfolders` 0), 목록은 에피소드의 첫 쪽에서 그 컷에 드는 것만 골라 먼저 보인다. 그동안 격자는 잠그고(낡았을 수 있다) 더 받지 않는다.
+it("App 공유·리뷰: 에피소드에서 컷으로 들어가면 받아 둔 목록에서 그 컷의 것만 먼저 보인다 — 형제 컷도, 고를 것이 없으면 자리를 비운다", { timeout: 20_000 }, async () => {
+  const leafCards = { parent: "episode", own_count: 0, folders: cutCards(false).folders.map((folder) => ({ ...folder, subfolders: 0 })) };
+  const folderCards = vi.fn((_pid: string, parent: string) =>
+    Promise.resolve(parent === "episode" ? leafCards : parent === "" ? topCards : { parent, own_count: 0, folders: [] }));
+  localStorage.setItem("ch.lib.cutView", "1");
+  await mountTeamFolder({ folderCards, setFolderCover: vi.fn() });
+  const at = (id: string, folder: string, more: Partial<Generation> = {}): Generation => ({ ...libraryGeneration(id), folder_path: folder, ...more });
+  const episodeList = [at("a", "episode/shot"), at("b", "episode/other"), at("c", "episode/shot/takeB"), at("gone", "episode/shot", { deleted: true }), at("shotgun", "episode/shotgun")];
+  act(() => setLibraryGens(episodeList)); // 에피소드의 첫 쪽(컷 카드 뒤에서 받아 둔 것)
+  await settle();
+  expect(cutGrid()).not.toBeNull();
+  const main = () => document.querySelector<HTMLElement>("main.main")!;
+  const shown = () => gridSnapshot!.generations.map((item) => item.id);
+  const busy = () => document.querySelector("main.main .grid-wrap[aria-busy='true']:empty");
+  // 컷으로 — 새 목록이 오기 전(listBehind): 그 컷(하위 포함)의 것만, 지운 것·이름만 비슷한 폴더는 빼고. 격자는 잠기고 더 받지 않는다
+  act(() => { sidebarSnapshot!.onChange({ folder_path: "episode/shot" }); setListBehind(true); });
+  await settle();
+  expect([cutGrid(), busy(), gridOutputs().length, shown()]).toEqual([null, null, 1, ["a", "c"]]);
+  expect([main().hasAttribute("inert"), gridSnapshot!.selectLocked, gridSnapshot!.hasMore]).toEqual([true, true, false]);
+  // 새 목록이 왔다 — 그것으로 바뀌고 잠금이 풀린다
+  act(() => { setLibraryGens([at("a", "episode/shot"), at("c", "episode/shot/takeB"), at("late", "episode/shot")]); setListBehind(false); });
+  await settle();
+  expect([shown(), main().hasAttribute("inert"), gridSnapshot!.selectLocked]).toEqual([["a", "c", "late"], false, false]);
+  // 형제 컷으로 — 컷에 있는 동안에도 에피소드의 목록을 들고 있다
+  act(() => { sidebarSnapshot!.onChange({ folder_path: "episode/other" }); setListBehind(true); });
+  await settle();
+  expect([busy(), shown(), main().hasAttribute("inert")]).toEqual([null, ["b"], true]);
+  // 받아 둔 목록 밖의 폴더 — 고를 것이 없으니 자리를 비운다(옛 폴더의 낱장을 그리지 않는다). 목록이 오면 그린다
+  act(() => { sidebarSnapshot!.onChange({ folder_path: "elsewhere" }); });
+  await settle();
+  expect([busy() !== null, gridOutputs().length]).toEqual([true, 0]);
+  act(() => { setLibraryGens([at("far", "elsewhere")]); setListBehind(false); });
+  await settle();
+  expect([busy(), shown(), main().hasAttribute("inert")]).toEqual([null, ["far"], false]);
+  // 에피소드로 돌아오면 받아 둔 컷 카드가 바로 — 목록이 아직 옛것이어도 컷 카드는 눌린다(잠그지 않는다)
+  act(() => { sidebarSnapshot!.onChange({ folder_path: "episode" }); setListBehind(true); });
+  expect([cutGrid() !== null, main().hasAttribute("inert")]).toEqual([true, false]); // settle 전 — 응답을 기다리지 않았다
 });
 
 it("App 공유·리뷰: 묶어 보이지 않는 경우 — 하위 폴더가 없는 폴더, 무엇을 찾는 중", { timeout: 20_000 }, async () => {

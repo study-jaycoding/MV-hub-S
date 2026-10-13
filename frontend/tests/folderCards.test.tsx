@@ -11,7 +11,7 @@ vi.mock("../src/api", () => ({ api: { folderCards: folderCardsApi, thumbOrRaw: (
 import { FolderCardGrid } from "../src/components/FolderCardGrid";
 import { folderCardsScope, parentFolder, singleTeamWorkspace, type FolderCardsScope } from "../src/lib/folderCards";
 import { HttpError } from "../src/lib/http";
-import { useFolderCards } from "../src/lib/useFolderCards";
+import { forgetFolderCards, useFolderCards } from "../src/lib/useFolderCards";
 
 const base: GenQuery = { tab: "team", project_id: "p1", folder_path: "e035", colors: [], tags: [], auto_tags: [] };
 const cover = (id: string, type: "image" | "video" = "image") => ({
@@ -73,6 +73,7 @@ beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   folderCardsApi.mockReset();
   folderCardsApi.mockResolvedValue(cards());
+  forgetFolderCards(); // 받아 둔 카드의 기억은 모듈에 있다 — 시험끼리 섞이지 않게
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -191,6 +192,51 @@ it("loading — 새 문맥의 첫 응답 전엔 true, 받아 둔 카드가 있�
   expect(seen.loading).toBe(true);
   await settle();
   expect([seen.loading, seen.unsupported]).toEqual([false, true]);
+});
+
+// 2026-10-13(Jay "아직 폴더 이동할 때 딜레이"): 다시 온 폴더는 받아 둔 카드부터, 하위 폴더가 없다고 알려 준 컷은 물어보기 전에 답(빈 묶음)을 안다.
+it("받아 둔 카드를 기억한다 — 다시 온 폴더는 응답 전에 그 카드, 하위 폴더 없는 컷은 미리 '빈 묶음', 훅 둘이 같이 쓴다. 조회는 늘 다시 보낸다", async () => {
+  const leaf = { ...card("C0010", 8), subfolders: 0 };
+  const deep = { ...card("C0040", 14), subfolders: 3 };
+  const old = card("C0090", 2); // 옛 서버 — subfolders 없음: 미리 적지 않는다
+  folderCardsApi.mockResolvedValueOnce(cards(leaf, deep, old));
+  show({ scope: e035 });
+  await settle();
+  const first = seen.cards;
+  // 컷(잎)으로 — 응답 전부터 빈 묶음(기다리지 않는다). 조회는 그래도 간다
+  const real = hold();
+  show({ scope: { projectId: "p1", parent: "e035/C0010" } });
+  expect([seen.loading, seen.cards]).toEqual([false, { parent: "e035/C0010", own_count: 8, folders: [] }]);
+  expect(folderCardsApi).toHaveBeenLastCalledWith("p1", "e035/C0010", undefined);
+  const seeded = seen.cards;
+  await real.release({ parent: "e035/C0010", own_count: 8, folders: [] });
+  expect(seen.cards).toBe(seeded); // 답이 미리 적은 것과 같다 — 같은 객체(다시 그리지 않는다)
+  // 하위 폴더가 있는 컷·옛 서버의 카드는 미리 모른다 — 기다린다
+  for (const name of ["C0040", "C0090"]) {
+    const wait = hold();
+    show({ scope: { projectId: "p1", parent: `e035/${name}` } });
+    expect([name, seen.loading, seen.cards]).toEqual([name, true, null]);
+    await wait.release({ parent: `e035/${name}`, own_count: 0, folders: [] });
+  }
+  // 에피소드로 돌아오면 응답 전부터 받아 둔 카드(같은 객체), 답이 오면 바뀐다
+  const again = hold();
+  show({ scope: e035 });
+  expect([seen.loading, seen.cards]).toEqual([false, first]);
+  expect(seen.cards).toBe(first);
+  // 그사이 C0010 에 하위 폴더가 생겼다 → 미리 적은 '빈 묶음'은 지운다(다음에 들어가면 기다린다)
+  await again.release(cards({ ...leaf, subfolders: 2 }, deep, old));
+  expect(seen.cards?.folders[0].subfolders).toBe(2);
+  const grown = hold();
+  show({ scope: { projectId: "p1", parent: "e035/C0010" } });
+  expect([seen.loading, seen.cards]).toEqual([true, null]);
+  await grown.release({ parent: "e035/C0010", own_count: 0, folders: [card("takeB", 8)] });
+  // 다른 계정·공간은 기억을 같이 쓰지 않는다
+  hold();
+  show({ scope: e035, authKey: "account-b" });
+  expect([seen.loading, seen.cards]).toEqual([true, null]);
+  hold();
+  show({ scope: { ...e035, workspaceId: "ws-1" } });
+  expect([seen.loading, seen.cards]).toEqual([true, null]);
 });
 
 it("reload 는 서버 값을 다시 읽고 끝난 뒤에 풀린다 — 그 앞에 출발한 조회는 버리고 그 뒤 한 번만 더 보낸다(같은 문맥은 합친다)", async () => {

@@ -28,6 +28,11 @@ export function singleTeamWorkspace(query: GenQuery): string | undefined {
   return !query.workspace_scope && query.workspace_ids?.length === 1 ? query.workspace_ids[0] : undefined;
 }
 
+// path 가 base 안에 드는가(같은 폴더 포함) — base "" 는 프로젝트 맨 위라 모두 든다. 글자 그대로 견준다(서버의 폴더 카드와 같은 기준).
+export function folderUnder(path: string, base: string): boolean {
+  return !base || path === base || path.startsWith(base + "/");
+}
+
 // 그 폴더의 부모 경로 — 맨 위 폴더의 부모는 ""(프로젝트의 맨 위 폴더들).
 export function parentFolder(path: string): string {
   const cut = path.lastIndexOf("/");
