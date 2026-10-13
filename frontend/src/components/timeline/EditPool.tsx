@@ -101,7 +101,9 @@ export function EditPool({
   useEffect(() => {
     if (searching) searchRef.current?.focus();
   }, [searching]);
-  useOutsideMouseDown(toolsRef, () => setOpen(null), open !== null);
+  // 초점이 도구 줄 밖에 생겨도 닫는다(Jay 2026-10-14) — 마우스로 연 메뉴는 단추가 초점을 받지 않아(keepFocus) 아래 onBlur 가 볼 것이
+  //  없었다: Tab 한 번에 초점만 옆 단추로 가고 메뉴는 열린 채 남아 편집 키를 막았다(2026-10-14 격리 실측).
+  useOutsideMouseDown(toolsRef, () => setOpen(null), open !== null, undefined, true);
   useEscapeClose(() => setOpen(null), open !== null, true, true);
   const shown = useMemo(() => arrangePool(items, searching ? query : "", ui.sort), [items, searching, query, ui.sort]);
   const placed = items.filter((item) => item.track !== null).length;

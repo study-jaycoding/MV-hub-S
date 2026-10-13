@@ -1800,6 +1800,21 @@ it("뷰어의 '무엇을 볼지' 메뉴·풀의 보기 메뉴: Tab 으로 메뉴
   expect(tools.querySelector(".ed-pop")).not.toBeNull();
   leave(poolButton("검색"), cutCell("c1"));
   expect(tools.querySelector(".ed-pop")).toBeNull();
+
+  // 마우스로 열면 단추가 초점을 받지 않는다(누름의 기본 동작을 막는다) — 초점은 메뉴 밖에 그대로 있고, Tab 한 번에 밖의 다른 단추로
+  //  간다. 떠나는 쪽(focusout)은 도구 줄이 볼 수 없으니 **들어가는 쪽**(focusin)으로 닫는다(Jay 2026-10-14 — 전엔 열린 채 남았다).
+  const land = (on: Element) => act(() => { on.dispatchEvent(new FocusEvent("focusin", { bubbles: true })); });
+  act(() => poolButton("정렬").click());
+  expect(tools.querySelector(".ed-pop")).not.toBeNull();
+  land(popItem("오래된순")); // 메뉴 안으로 들어간 초점은 닫지 않는다
+  expect(tools.querySelector(".ed-pop")).not.toBeNull();
+  land(document.querySelector(".ed-side-toggle")!); // Tab — 옆의 [필터 사이드바 닫기]
+  expect(tools.querySelector(".ed-pop")).toBeNull();
+  expect(backgroundKeysBlocked()).toBe(false);
+  act(() => pick.querySelector<HTMLButtonElement>(".ed-vpick-btn")!.click()); // 뷰어의 메뉴도 같다
+  expect(pick.querySelector(".ed-vpop")).not.toBeNull();
+  land(pane("timeline").querySelector(".ed-play")!);
+  expect(pick.querySelector(".ed-vpop")).toBeNull();
 });
 
 // 24회차 격리 실측(900×600 · 트랙 20개 = 23항목): 메뉴 아래 7항목이 화면 밖이었고 안쪽 스크롤이 없었다. 페이지가 늘어나 스크롤되면 상태 알약이 마지막 항목을 덮는다.

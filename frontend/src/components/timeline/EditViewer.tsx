@@ -87,7 +87,8 @@ export function EditViewer({
   const trackRef = useRef<HTMLDivElement>(null);
   const headRef = useRef<HTMLDivElement>(null);
   const fillRef = useRef<HTMLDivElement>(null);
-  useOutsideMouseDown(pickRef, () => setOpen(false), open);
+  // 초점이 밖에 생겨도 닫는다 — 마우스로 열면 단추가 초점을 받지 않아(keepFocus) 아래 onBlur 만으로는 Tab 에 안 닫혔다(풀의 메뉴와 같다)
+  useOutsideMouseDown(pickRef, () => setOpen(false), open, undefined, true);
   // 판이 숨겨지면(order < 0) 메뉴도 닫는다 — 판은 숨겨도 마운트돼 있어, 열림이 남으면 보이지 않는 겹이 뒤 화면의 키를 전부 막는다
   //  (lib/keyGate: 켜진 Esc 겹 = 키의 주인).
   useEffect(() => {
