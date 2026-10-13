@@ -723,6 +723,36 @@ it("컷 카드(그리드) 아래 정보판 — 모델·작업자·크레딧·생
   expect(generationMetrics).toHaveBeenCalledTimes(2);
 });
 
+// 2026-10-13 밤(배포 전 점검): 컷 화면은 카드를 다 그린다(가상화 없음) — 크레딧은 카드마다 요청 한 건이라, 화면에 들어온 카드만 묻는다.
+it("정보판의 크레딧은 화면에 들어온 카드만 묻는다 — 안 보이는 카드는 들어올 때 묻는다", async () => {
+  const fire = new Map<Element, (on: boolean) => void>();
+  const g = globalThis as { IntersectionObserver?: unknown };
+  const before = g.IntersectionObserver;
+  g.IntersectionObserver = class {
+    constructor(private readonly report: (entries: { isIntersecting: boolean }[]) => void) {}
+    observe(el: Element) { fire.set(el, (on) => this.report([{ isIntersecting: on }])); }
+    disconnect() {}
+    unobserve() {}
+  };
+  try {
+    forgetCoverCredits();
+    generationMetrics.mockClear();
+    act(() => root.render(<FolderCardGrid {...gridProps} folders={[card("C0010", 3), card("C0020", 2)]} outside={0} />));
+    const flush = () => act(async () => { for (let i = 0; i < 4; i++) await Promise.resolve(); });
+    await flush();
+    const panels = [...host.querySelectorAll<HTMLElement>(".cut-meta")];
+    const credit = (panel: Element) => panel.querySelectorAll(".v")[2].textContent;
+    expect([generationMetrics.mock.calls.length, panels.map(credit)]).toEqual([0, ["…", "…"]]);
+    act(() => fire.get(panels[1])!(true));
+    await flush();
+    expect([generationMetrics.mock.calls.map((call) => call[0]), panels.map(credit)]).toEqual([["cover-C0020"], ["…", "54 credits"]]);
+    act(() => fire.get(panels[1])!(false)); // 다시 화면을 벗어나도 받은 값은 그대로 보인다
+    expect(credit(panels[1])).toBe("54 credits");
+  } finally {
+    g.IntersectionObserver = before;
+  }
+});
+
 it("에피소드 화면의 표 — '컷' 열이 생기고 대표는 정한 컷 수, 단추는 [열기]", () => {
   const episode: FolderCard = { ...card("e035", 201), path: "e035", name: "e035", subfolders: 31, rep_count: 1, video_count: 40, final_count: 5, held_count: 9, children: [], takes: [], workers: [] };
   act(() => root.render(<FolderCardGrid {...gridProps} layout="list" table top folders={[episode]} outside={0} />));
