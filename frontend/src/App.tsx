@@ -162,6 +162,8 @@ import { hasWorkspaceFilter } from "./lib/libraryWorkspaceScope";
 
 // 마지막으로 보던 라이브러리 상태 영속화(탭·서브탭·필터·크기·레이아웃 등)
 const LS = makeStore("ch.lib.");
+// 폴더를 옮긴 뒤 격자 자리를 비우거나 잠가 두는 최대 시간 — 응답이 매달려도 이 뒤엔 전처럼 화면의 목록을 보이고 누르게 둔다(아래 waitExpired).
+const LIST_WAIT_MAX_MS = 4000;
 
 // 3색(빨강·초록·파랑) 필터 도트 — 툴바 여러 곳에 같은 값이라 모듈 상수로(매 렌더 배열 재생성 제거).
 const COLOR_DOTS = [
@@ -556,11 +558,28 @@ export default function App() {
     if (!listBehind && !listPeek && !(cutWaiting && folderCardsLoading)) settledHereRef.current = hereKey;
   });
   const moved = settledHereRef.current !== hereKey;
-  const cutLoading = cutWaiting && folderCardsLoading && moved;
+  const cutLoadingRaw = cutWaiting && folderCardsLoading && moved;
   // 자리를 옮긴 뒤 새 목록이 오기 전(공유 탭) — 화면의 낱장은 옛 자리의 것이거나 아래에서 먼저 고른 것이다. **잠금은 묶어 보일 수 있는지와
   //  무관하다**: 기다리는 사이 검색어를 치면 묶음 조건이 풀리는데, 그때 잠금까지 풀면 옛 자리의 카드가 눌린다(Codex 31회차).
-  //  먼저 골라 그리기(narrowing)·자리 비우기만 묶음 보기의 것이다. 공유 탭만 — 주기 조회(15초)가 있어 목록이 영영 안 오는 일이 없다.
-  const behindAfterMove = filters.tab === "team" && !listPeek && moved && !!listBehind && !staleList && !isLocatedView && !loadError;
+  //  먼저 골라 그리기(narrowing)·자리 비우기만 묶음 보기의 것이다. **조회를 보낼 수 있을 때만** — 공간을 아직 모르면(workspaceQueryReady 거짓)
+  //  조회가 나가지 않아 목록이 영영 안 오고, 그 화면의 [전체 보기](main 안)까지 잠긴다(Codex 31회차 코드 리뷰).
+  const behindRaw = authReady && workspaceQueryReady && filters.tab === "team" && !listPeek && moved && !!listBehind
+    && !staleList && !isLocatedView && !loadError;
+  // 기다림은 길어야 LIST_WAIT_MAX_MS — 응답이 실패도 없이 매달리면(허브가 멎는 등) 자리를 비우거나 잠근 채로 남는다. 그 뒤엔 오늘 고치기 전처럼
+  //  화면의 목록을 그대로 보이고 누르게 둔다(Codex 31회차 코드 리뷰 — 요청 자체의 제한 시간은 없다, 기록만). 자리마다 따로 잰다.
+  const waitingAfterMove = cutLoadingRaw || behindRaw;
+  const [waitExpiredAt, setWaitExpiredAt] = useState<string | null>(null);
+  useEffect(() => {
+    if (!waitingAfterMove) {
+      setWaitExpiredAt(null);
+      return;
+    }
+    const timer = window.setTimeout(() => setWaitExpiredAt(hereKey), LIST_WAIT_MAX_MS);
+    return () => window.clearTimeout(timer);
+  }, [waitingAfterMove, hereKey]);
+  const waitExpired = waitExpiredAt === hereKey;
+  const cutLoading = cutLoadingRaw && !waitExpired;
+  const behindAfterMove = behindRaw && !waitExpired;
   const narrowing = cutWaiting && behindAfterMove;
   const listLocked = staleList || (behindAfterMove && !cutMode); // 낱장 격자를 보이는 중일 때만 — 컷 카드는 목록과 무관하게 눌린다
   // 창이 보여 주는 폴더의 지금 대표 — 표지가 '가장 최근 것' 일 뿐이면 대표가 아니다(null).

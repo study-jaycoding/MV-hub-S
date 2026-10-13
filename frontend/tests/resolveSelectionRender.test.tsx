@@ -707,6 +707,11 @@ it("App 공유·리뷰: 공간 미확인은 안내와 전체 보기 버튼을 �
   const send = await mountApp("team");
   expect(gridSnapshot).toBeNull();
   expect(view.container.querySelector('[role="status"]')?.textContent).toContain("워크스페이스를 확인한 뒤");
+  // 조회를 보낼 수 없는 화면이다 — 자리를 옮겼고 목록이 '아직 옛것'이어도(받은 적이 없다) 잠그지 않는다: 잠그면 여기서 나가는 [전체 보기]가
+  //  안 눌린다(Codex 31회차 코드 리뷰). 자리를 옮겨야 '옮긴 뒤' 조건이 선다 — 프로젝트를 골랐다가 푼다.
+  act(() => { sidebarSnapshot!.onChange({ project_id: "resolve-project" }); setListBehind(true); });
+  expect(document.querySelector("main.main")!.hasAttribute("inert")).toBe(false);
+  act(() => { sidebarSnapshot!.onChange({ project_id: undefined }); setListBehind(false); });
   act(() => send(["target"]));
   await settle();
   expect(locateGenerations).not.toHaveBeenCalled();
@@ -1535,6 +1540,23 @@ it("App 공유·리뷰: 자리를 옮긴 뒤 새 목록 전에는 옛 자리의 
   act(() => { setLibraryGens([at("found", "episode/other")]); setListBehind(false); });
   await settle();
   expect([shown(), main().hasAttribute("inert"), gridSnapshot!.selectLocked]).toEqual([["found"], false, false]);
+  // ③ 응답이 실패도 없이 매달린다 — 기다림은 4초까지. 그 뒤엔 전처럼 화면의 목록을 보이고 누르게 둔다(비우거나 잠근 채로 남지 않는다)
+  act(() => { sidebarSnapshot!.onChange({ search: undefined }); });
+  await settle();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    act(() => { sidebarSnapshot!.onChange({ folder_path: "slow" }); setListBehind(true); }); // 묶음 답도 목록도 안 온다
+    expect([busy() !== null, gridOutputs().length]).toEqual([true, 0]);
+    act(() => { vi.advanceTimersByTime(3999); });
+    expect(busy() !== null).toBe(true);
+    act(() => { vi.advanceTimersByTime(1); });
+    expect([busy(), shown(), main().hasAttribute("inert"), gridSnapshot!.selectLocked]).toEqual([null, ["found"], false, false]);
+    // 다른 자리로 옮기면 다시 잰다 — 앞 자리에서 넘긴 시간이 새 자리의 기다림을 건너뛰게 하지 않는다
+    act(() => { sidebarSnapshot!.onChange({ folder_path: "episode/shot" }); });
+    expect(main().hasAttribute("inert")).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("App 공유·리뷰: 묶어 보이지 않는 경우 — 하위 폴더가 없는 폴더, 무엇을 찾는 중", { timeout: 20_000 }, async () => {
