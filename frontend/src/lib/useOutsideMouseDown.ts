@@ -21,9 +21,16 @@ export function useOutsideMouseDown<T extends HTMLElement, U extends HTMLElement
     //  (편집 탭 재실측: 메뉴 8종이 손잡이 누름에 하나도 안 닫혔다).
     document.addEventListener("pointerdown", onDoc, true);
     document.addEventListener("mousedown", onDoc);
+    // 초점이 밖으로 옮겨 가도(Tab·Shift+Tab) 닫는다 — 전엔 바깥 누름·Esc 만 닫아서, Tab 으로 빠져나간 뒤에도 메뉴가 열린 채 남아
+    //  뒤 화면의 단축키를 계속 막았다(Esc 겹, 30회차 Codex 점검). focusin 은 초점이 **생길 때**만 온다 — BODY 로 떨어지는 blur 는 안 닫는다.
+    //  body 로 옮겨 그리는 메뉴(alsoInside — 알림 패널·계정 메뉴)는 뺀다: 키보드로 열면 다음 Tab 이 패널이 아니라 DOM 순서의 다음 단추로 가서
+    //  닿기도 전에 닫힌다(Codex 코드 리뷰). 그쪽은 열릴 때 패널 안으로 초점을 옮긴 뒤에 합칠 것 — 지금은 전처럼 둔다.
+    const onFocus = (e: FocusEvent) => onDoc(e as unknown as MouseEvent);
+    if (!alsoInside) document.addEventListener("focusin", onFocus);
     return () => {
       document.removeEventListener("pointerdown", onDoc, true);
       document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("focusin", onFocus);
     };
   }, [alsoInside, enabled, onOutside, ref]);
 }

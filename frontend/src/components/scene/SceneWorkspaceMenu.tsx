@@ -73,6 +73,8 @@ export function SceneWorkspaceMenu({
   // 바깥 클릭·Esc 로 닫기. Esc 는 맨 위 겹으로 삼켜(lib/useEscapeClose) 캔버스 전역 Esc(선택 해제)까지 가지 않게 한다.
   //  이름 칸에서의 Esc 는 고치던 이름만 되돌린다(메뉴는 그대로) — 캡처 단계의 닫기가 먼저 돌아 되돌리기에 닿지 못했다.
   //  고친 것이 없으면 메뉴를 닫는다 — 안 그러면 초점이 이름 칸에 있는 동안 Esc 로 메뉴를 닫을 길이 없다(Codex 코드 리뷰).
+  //  초점 이탈(Tab) 닫기는 보류(30회차): 씬 탭에서 Shift+F10 으로 열면 다음 Tab 이 메뉴가 아니라 옆 단추로 가 닿기 전에 닫힌다(Codex 코드 리뷰) —
+  //  열릴 때 이름 칸으로 초점을 옮긴 뒤에 공용 훅(useOutsideMouseDown)으로 합칠 것.
   useEffect(() => {
     const onDown = (event: MouseEvent) => {
       if (!ref.current?.contains(event.target as Node)) onClose();

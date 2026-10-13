@@ -121,7 +121,7 @@ export function useLooseKeys(gridRef: RefObject<HTMLElement | null>, onKey: (e: 
   }, [gridRef]);
 }
 
-/** 앱이 한 번 거는 키 지킴이 둘 — ① 조합 중 Enter ② 입력칸 밖 Ctrl/⌘+A.
+/** 앱이 한 번 거는 키 지킴이 셋 — ① 조합 중 Enter ② 입력칸 밖 Ctrl/⌘+A ③ 단추 위의 길게 눌린 Enter.
  *  글자 입력칸 밖의 Ctrl/⌘+A 는 브라우저가 화면 글자를 통째로 긁는다 — 언제나 막는다(전체 선택은 격자·보드가 직접 한다).
  *  뒤 화면의 키 처리가 쉬는 동안(위에 창이 떠 있을 때)에도 막아야 한다: 긁힌 글자는 창을 닫아도 남고, 그 위에서 시작한 카드 끌기를
  *  브라우저가 '글자 끌기'로 가로채 끌기가 멈춘다(2026-10-10 재실측 3/3). 앱이 한 번 건다. 재지정과 무관하게 브라우저의 키(A)를 본다. */
@@ -136,6 +136,10 @@ export function usePageSelectAllGuard(): void {
         return;
       }
       if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "a" && !isTypingTarget(e.target)) e.preventDefault();
+      // ③ 단추 위에서 길게 눌린 Enter — 브라우저는 반복 keydown 마다 click 을 만든다. 이 앱의 단추는 대개 토글(목록/격자·날짜별 묶기·S 칩·회색 숨김…)
+      //  이라 반복마다 뒤집혔다(조작 규칙 38 — 카드·사이드바 줄은 제 keydown 에서 repeat 를 걸렀지만 평범한 <button> 은 못 걸렀다, 30회차).
+      //  기본 동작(click)만 막는다 — 처음 누름은 그대로, Space 는 keyup 에 한 번만 click 이라 둔다.
+      if (e.key === "Enter" && e.repeat && (e.target as HTMLElement | null)?.tagName === "BUTTON") e.preventDefault();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
