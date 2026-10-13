@@ -16,11 +16,27 @@
 //    보였다가 컷 카드로 바뀌던 깜빡임, Jay 2026-10-13 ③). 받아 둔 카드가 있는 문맥으로 돌아오면 바로 그 카드(다시 받기는 뒤에서). 실패하면
 //    꺼진다(영영 빈 화면이 안 되게) — 그 실패 표식은 문맥을 떠나면 버린다: 남기면 실패한 폴더로 빠르게 되돌아올 때 첫 렌더부터 낱장이 선다
 //    (Codex 설계 검토). 문맥이 바뀐 바로 그 렌더에서 버린다(렌더 중 setState = React 의 '이전 렌더 값 기억' 방식).
+//  · **받아 둔 카드는 문맥마다 기억한다**(Jay 2026-10-13 "아직 폴더 이동할 때 딜레이") — 다시 온 폴더는 응답을 기다리지 않고 받아 둔 것부터
+//    그리고, 뒤에서 다시 받아 바꾼다(남의 문맥의 카드는 여전히 그리지 않는다 — 키에 계정·서버·프로젝트·폴더·공간이 다 들어 있다).
+//    하위 폴더가 없다고 알려 준 카드(`subfolders` 0)는 **그 폴더의 답(빈 묶음)을 미리 적어 둔다** — 에피소드에서 컷으로 들어갈 때 물어볼 것이
+//    없다. 그 뒤 하위 폴더가 생겼다고 알려 오면 미리 적은 답은 지운다. 기억은 모듈 하나를 두 훅(하위 묶음·들어간 폴더의 부모)이 같이 쓴다.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { FolderCards } from "../types";
 import type { FolderCardsScope } from "./folderCards";
 import { isRouteMissing } from "./http";
+
+const remembered = new Map<string, FolderCards>();
+const REMEMBER_MAX = 400; // 에피소드 하나가 컷 수십 개의 답을 미리 적는다 — 넘치면 가장 오래 안 쓴 것부터 버린다
+function remember(key: string, cards: FolderCards): void {
+  remembered.delete(key);
+  remembered.set(key, cards);
+  if (remembered.size > REMEMBER_MAX) remembered.delete(remembered.keys().next().value as string);
+}
+/** 시험용 — 모듈에 든 기억을 비운다. */
+export function forgetFolderCards(): void {
+  remembered.clear();
+}
 
 interface Options {
   scope: FolderCardsScope | null; // null = 받지 않는다
@@ -65,13 +81,21 @@ export function useFolderCards({ scope, authKey, reloadKey }: Options) {
     const { key: nowKey, projectId: pid, parent: dir, workspaceId: ws, authKey: auth, unsupported: off } = argsRef.current;
     if (nowKey === null || pid === undefined || dir === undefined || off) return true;
     try {
-      const cards = await api.folderCards(pid, dir, ws);
+      const fresh = await api.folderCards(pid, dir, ws);
       if (seq !== seqRef.current) return false;
-      setLoaded((previous) =>
-        previous !== null && previous.key === nowKey && JSON.stringify(previous.cards) === JSON.stringify(cards)
-          ? previous // 내용이 같다 — 같은 객체를 돌려줘 아래가 다시 그리지 않게
-          : { key: nowKey, cards },
-      );
+      const kept = remembered.get(nowKey);
+      // 내용이 같다 — 같은 객체를 돌려줘 아래가 다시 그리지 않게
+      const cards = kept !== undefined && JSON.stringify(kept) === JSON.stringify(fresh) ? kept : fresh;
+      remember(nowKey, cards);
+      for (const folder of cards.folders) {
+        const child = JSON.stringify([auth, pid, folder.path, ws ?? null]);
+        if (folder.subfolders === 0) {
+          if (!remembered.has(child)) remember(child, { parent: folder.path, own_count: folder.count, folders: [] });
+        } else if (remembered.get(child)?.folders.length === 0) {
+          remembered.delete(child); // 하위 폴더가 생겼다(또는 옛 서버라 모른다) — 미리 적은 '빈 묶음'을 믿지 않는다
+        }
+      }
+      setLoaded((previous) => (previous !== null && previous.key === nowKey && previous.cards === cards ? previous : { key: nowKey, cards }));
     } catch (error) {
       if (seq !== seqRef.current) return false;
       if (isRouteMissing(error)) setUnsupportedFor(auth);
@@ -117,6 +141,7 @@ export function useFolderCards({ scope, authKey, reloadKey }: Options) {
   //  약속은 '이 요구 뒤에 출발한 조회의 응답이 적용됐을 때' 풀린다 — 받는 중이던 응답은 버린다.
   const reload = useCallback((): Promise<void> => request(true), [request]);
 
-  const cards = !unsupported && loaded !== null && loaded.key === key ? loaded.cards : null;
+  // 이 훅이 받은 것이 지금 문맥의 것이면 그것, 아니면 기억해 둔 것(다시 온 폴더·미리 적은 컷) — 조회는 위 effect 가 늘 다시 보낸다.
+  const cards = unsupported || key === null ? null : loaded !== null && loaded.key === key ? loaded.cards : remembered.get(key) ?? null;
   return { cards, unsupported, loading: key !== null && !unsupported && cards === null && failedKey !== key, reload };
 }

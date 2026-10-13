@@ -532,3 +532,25 @@ it("폴더 창: 여는 조회의 메타가 멈춰 있어도, 닫으면 본 목�
   await act(async () => { openMeta.resolve(folders(0)); });
   await settle();
 });
+
+// 2026-10-13(Jay "아직 폴더 이동할 때 딜레이"): 화면의 목록이 지금 조회의 것인지 알려 준다 — App 이 자리를 옮긴 직후 옛 자리의 목록을 그대로 그리지 않고,
+//  받아 둔 넓은 목록에서 새 자리의 것만 골라 먼저 보이게(App 의 narrowing).
+it("listBehind — 조회가 바뀌면 새 첫 쪽이 적용될 때까지 참, 같은 조회를 다시 받는 동안은 거짓", async () => {
+  const EP: GenQuery = { tab: "team", project_id: "p1", folder_path: "e035" };
+  const CUT: GenQuery = { tab: "team", project_id: "p1", folder_path: "e035/C0010" };
+  show({ query: EP });
+  expect(data.listBehind).toBe(true); // 아직 아무것도 못 받았다
+  await settle();
+  expect(data.listBehind).toBe(false);
+  const again = hold<Generation[]>(api.listGenerations);
+  act(() => { void data.reload(true); }); // 같은 조회를 다시 받는 중(주기 조회)
+  expect(data.listBehind).toBe(false);
+  await act(async () => { again.resolve(folderRows); });
+  await settle();
+  const next = hold<Generation[]>(api.listGenerations);
+  show({ query: CUT }); // 자리를 옮겼다 — 새 첫 쪽 전에는 화면의 목록이 옛 자리의 것이다
+  expect([data.listBehind, ids()]).toEqual([true, ["f1"]]);
+  await act(async () => { next.resolve(folderRows); });
+  await settle();
+  expect(data.listBehind).toBe(false);
+});
