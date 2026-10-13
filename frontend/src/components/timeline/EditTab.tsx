@@ -36,6 +36,7 @@ import {
   placeClip,
   placeState,
   posAt,
+  setClipTrim,
   removeClips,
   removeMarker,
   setClipDurs,
@@ -86,6 +87,7 @@ import { EditSidebar } from "./EditSidebar";
 import { EditSoloViewer } from "./EditSoloViewer";
 import { EditTimeline, ZOOM_MAX, ZOOM_MIN, type ClipLink } from "./EditTimeline";
 import { EditClipMenu, EditListMenu, EditTrackHeadMenu, EditTrackMenu, type TrackAct, type TrackRow } from "./EditTrackMenu";
+import { EditTrimPop } from "./EditTrimPop";
 import { EditTrimView } from "./EditTrimView";
 import { EditViewer, type ViewerControls, type ViewerMarking, type ViewOption } from "./EditViewer";
 import { ResizableSidebar } from "../common/ResizableSidebar";
@@ -588,6 +590,21 @@ function EditTabInner({
     menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setClipMenu({ keys: selected.has(key) ? [...selected] : [key], x, y });
   }, [selected]);
+  // 클립 길이 조절 창(Jay 2026-10-13) — 타임라인의 클립을 휠 클릭. 영상만이고 잠긴 트랙은 안 된다(setClipTrim 의 거부와 같다 — 창을
+  //  띄우기 전에 까닭을 알린다). group = 이 창을 한 번 연 동안의 걸음들을 되돌리기 한 단계로 묶는 이름(useEditDoc).
+  //  문서가 갈리면(rev) 닫는다 — 아래 효과.
+  const [trimPop, setTrimPop] = useState<{ key: string; x: number; y: number; group: string } | null>(null);
+  const trimSerial = useRef(0);
+  const openTrim = useCallback((key: string, x: number, y: number) => {
+    const clip = doc.clips.find((item) => clipKey(item) === key);
+    if (!clip) return;
+    if (doc.tracksLocked.includes(clip.track)) return flash(t("잠긴 트랙의 클립은 길이를 바꿀 수 없습니다."));
+    // 그림인지는 이어진 생성물로 먼저 본다 — kind 가 안 적힌 옛 클립은 문서만으로는 영상으로 보인다
+    if ((links.get(key)?.gen?.assets[0]?.type ?? clip.kind) === "image") return flash(t("그림은 길이를 줄일 수 없습니다 — 영상 클립만 됩니다."));
+    stopBoth(); // 창이 떠 있는 동안 편집 키는 막혀 있다 — 뒤에서 도는 재생을 멈출 길이 없다
+    menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setTrimPop({ key, x, y, group: `trim:${key}:${++trimSerial.current}` });
+  }, [doc, links, flash, t, stopBoth]);
   const openTrackMenu = useCallback((track: number, x: number, y: number) => {
     menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setTrackMenu({ track, x, y, rev });
@@ -602,6 +619,7 @@ function EditTabInner({
     setColorMenu(null);
     setListMenu(null);
     setClipMenu(null);
+    setTrimPop(null);
   }, [rev]);
   const closeMenu = useCallback(() => {
     setMenu(null);
@@ -610,6 +628,7 @@ function EditTabInner({
     setColorMenu(null);
     setListMenu(null);
     setClipMenu(null);
+    setTrimPop(null);
     const back = menuBackRef.current;
     menuBackRef.current = null;
     if (back?.isConnected) back.focus({ preventScroll: true });
@@ -636,6 +655,10 @@ function EditTabInner({
     return [...found.values()];
   }, [clipMenu, links]);
   const clipMenuOne = clipMenu?.keys.length === 1 ? doc.clips.find((clip) => clipKey(clip) === clipMenu.keys[0]) : undefined;
+  // 길이 조절 창이 보는 클립 — 지금 배치의 것(쓰는 길이·원본 길이가 걸음마다 새로 온다). 작은 화면은 틀 수 있는 영상일 때만.
+  const trimClip = trimPop ? layout.cuts.flatMap((slot) => slot.clips).find((clip) => clipKey(clip) === trimPop.key) : undefined;
+  const trimSource = trimClip ? sourceOf(trimClip) : null;
+  const trimSrc = trimSource?.state === "ok" && trimSource.type === "video" ? trimSource.url : null;
   const menuOwn = menu && doc.clips.find((clip) => clip.cut === menu.cut && links.get(clipKey(clip))?.gen?.id === menu.gen.id);
   const menuRows: TrackRow[] = !menu ? [] : Array.from({ length: layout.tracks }, (_, i) => layout.tracks - i).map((track) => ({
     track,
@@ -1255,10 +1278,27 @@ function EditTabInner({
           onTrackMenu={openTrackMenu}
           onMarkerMenu={openMarkerMenu}
           onClipMenu={openClipMenu}
+          onClipTrim={openTrim}
         />
       </main>
       {exported && target && <EditExportConfirm exported={exported} onSend={sendTimeline} onClose={() => setExportOpen(false)} />}
       {menu && <EditTrackMenu x={menu.x} y={menu.y} rows={menuRows} onPick={placeTo} onClose={closeMenu} />}
+      {trimPop && trimClip && (
+        <EditTrimPop
+          x={trimPop.x}
+          y={trimPop.y}
+          title={`${trimClip.cut.slice(trimClip.cut.lastIndexOf("/") + 1)} · V${trimClip.track}`}
+          full={trimClip.full}
+          value={trimClip.len}
+          trimmed={trimClip.trim !== undefined}
+          src={trimSrc}
+          // 바꿀 것이 없었던 걸음(none)은 조용히 넘긴다. 다른 창의 저장 때문에 버린 것(stopped)은 그 알림이 뜨고 rev 가 갈려 창이 닫힌다.
+          onChange={(seconds) => {
+            applyEdit((current) => setClipTrim(current, trimPop.key, seconds), { group: trimPop.group });
+          }}
+          onClose={closeMenu}
+        />
+      )}
       {clipMenu && (
         <EditClipMenu
           x={clipMenu.x}

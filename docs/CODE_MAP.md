@@ -611,6 +611,7 @@ updated: 2026-10-13
 | `timeline/EditTrackMenu.tsx`(약 320줄) | 편집 탭의 메뉴들 — 껍데기 `EditMenu`(body 포털·자리·바깥 누르기·Esc/Tab·↑↓·뒤 화면 키 차단) 위에 카드 휠 클릭 메뉴(지금 있는 트랙을 보여 주고 고르면 그 트랙에 넣는다 — 미디어 풀과 편집 탭이 연 폴더 창 공용)와 트랙 머리 메뉴(트랙 추가·위/아래로·삭제·빈 트랙 삭제·색), 막대의 목록 메뉴(비활성 숨기기·빈 곳 채우기), 클립 우클릭 메뉴(Resolve 보내기), 왼쪽 폴더 트리의 폴더 메뉴(공유 저장·최종 저장·원본 위치 열기 — 공유 & 리뷰 탭의 폴더 메뉴와 같은 규칙·모양) | `EditMenu`, `EditTrackMenu`, `EditTrackHeadMenu`, `EditListMenu`, `EditClipMenu`, `EditFolderMenu`, `EditSwatches`, `TrackRow`, `TrackAct` |
 | `timeline/EditExportConfirm.tsx`(약 105줄) | 편집 탭 막대의 [타임라인 Resolve 보내기] 확인 창 — 이름·트랙별 클립 수·길이·받는 곳을 보여 주고, Resolve 연결을 열릴 때 묻는다([다시 확인]). 못 이은 클립·빈 타임라인·원본 전송 조건에 걸리면 [보내기]가 안 눌린다. 틀은 `GradeStepModal` 의 것(`gradestep-*`) | `EditExportConfirm` |
 | `timeline/EditMarkerMenu.tsx`(약 100줄) | 북마크의 메뉴 둘 — 편집 창(이름: Enter·바깥 = 저장, Esc = 버림 · 색 16개 · 지우기)과 막대의 색 메뉴(새 북마크의 색·모두 지우기 — 다빈치의 마커 색 메뉴). 껍데기는 `EditMenu` | `EditMarkerMenu`, `EditMarkerColorMenu` |
+| `timeline/EditTrimPop.tsx`(약 100줄) | 클립 길이 조절 창 — 타임라인의 클립을 휠 클릭하면 뜬다. 작은 화면(그 길이의 마지막 프레임 — 타임라인 재생헤드와 무관)·슬라이더·`±1f`/`±10f`·원본 길이로. 값은 24fps 프레임, 걸음마다 부르는 쪽(`EditTab`)이 `setClipTrim` 으로 적고 창 한 번이 되돌리기 한 단계. 껍데기는 `EditMenu` | `EditTrimPop` |
 | `timeline/EditCard.tsx`(약 65줄) | 편집 탭 미디어 풀(썸네일 보기)의 생성물 카드 — 라이브러리 카드의 CSS 클래스를 그대로 써서 같은 모양으로 '보이기만' 한다. 아래 변의 표 = "V1 - 선택 카드"(폴더 창의 표와 같은 글) | `EditCard`, `PoolItem`, `editMarkLabel` |
 | `timeline/EditSidebar.tsx`(약 150줄) | 프로젝트·폴더에서 시퀀스 고르기(`FolderTreeView` 만 쓴다 — `ProjectSection` 아님). 폴더 우클릭 = 폴더 메뉴(`EditFolderMenu` — 실행은 App 의 `onFolderAction`) | `EditSidebar` |
 | `FloatingPrompt.tsx`(104줄) | `window.prompt` 대체 플로팅 입력 | `FloatingPrompt` |
@@ -722,7 +723,7 @@ updated: 2026-10-13
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `useHubAuth.ts` | 훅 | 로컬 허브·공유 서버 로그인 상태 통합 |
-| `unloadGuard.ts` | 유틸 | 저장 못 한 것이 있는 동안 사용자가 창을 닫거나 새로고침하면 브라우저가 묻게(`holdUnload` — 지금은 편집 탭의 '저장 안 됨' 문서) · 앱이 스스로 하는 새로고침은 풀고 진행(`reloadNow`) · 그 전에 물을 자리(로그아웃·업데이트 완료)는 `unloadHeld` |
+| `unloadGuard.ts` | 유틸 | 저장 못 한 것이 있는 동안 사용자가 창을 닫거나 새로고침하면 브라우저가 묻게(`holdUnload` — 지금은 편집 탭의 '저장 안 됨' 문서) · 앱이 스스로 하는 새로고침은 풀고 진행(`reloadNow`) · 그 전에 물을 자리(로그아웃·업데이트 완료)는 `unloadHeld` · 끝났으니 새 화면을 여는 새로고침은 그 순간에 보고(`reloadIfFree`) · 확인 창에 붙이는 한 줄(`unsavedNote`) · 로그아웃 응답을 기다리는 동안 편집을 받지 않게(`setLeaving`/`isLeaving`) |
 | `accountIdentity.ts` | 순수 | 계정 표시명·역할·시스템 계정 판정 |
 | `useAccountStatus.ts` | 훅 | 하단 상태줄용 계정·CLI 연결·크레딧 |
 | `workspaceContext.ts` | 저장 | 현재 워크스페이스 컨텍스트 보관·조정 |
