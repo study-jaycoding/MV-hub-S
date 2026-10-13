@@ -237,6 +237,13 @@
 .ed-seq i { font-style: normal; color: var(--muted2); margin: 0 7px; }
 .ed-mine, .ed-warn { flex: none; padding: 3px 9px; border-radius: 999px; font-size: 11.5px; border: 1px solid var(--border2); color: var(--muted); }
 .ed-warn { color: #ffb37a; border-color: rgba(255, 150, 80, 0.45); }
+/* 폴더 순서를 바꿔 둔 상태의 알약 — 누르면 이름순으로 되돌린다(단추라 전역 button 의 안쪽 여백·배경을 여기서 다시 정한다) */
+.ed-orderchip {
+  height: auto; padding: 3px 9px; background: transparent; font: inherit; font-size: 11.5px; line-height: inherit; cursor: pointer;
+  color: var(--accent); border-color: rgba(var(--accent-rgb), 0.45);
+}
+.ed-orderchip:hover { background: rgba(var(--accent-rgb), 0.1); }
+.ed-orderchip:active { transform: none; }
 /* 마크 인/아웃·북마크 — 재생헤드 자리에 찍는 단추. 찍혀 있으면 라임. 옆 글자는 구간 길이(누르면 지운다). */
 .ed-marks { margin-left: auto; flex: none; display: flex; align-items: center; gap: 4px; }
 .ed-marks + .ed-zoom { margin-left: 0; }
@@ -413,6 +420,31 @@
   background: repeating-linear-gradient(135deg, transparent 0 7px, rgba(255, 255, 255, 0.025) 7px 14px);
 }
 .ed-slot.ed-slot-off { border-style: dotted; opacity: 0.5; }
+/* 풀의 카드를 끌어 트랙 줄 위에 올렸다 — 들어갈 칸(그 카드의 컷). 클립 위에 겹쳐 그린다. 넣기·교체 = 라임, 지금 여기·잠김 = 흐리게 */
+.ed-drop {
+  position: absolute; top: 3px; height: 52px; box-sizing: border-box; border-radius: 5px; z-index: 5; pointer-events: none;
+  display: flex; align-items: center; justify-content: center; overflow: hidden; white-space: nowrap;
+  font-size: 11px; font-weight: 700; color: var(--accent-ink);
+  border: 2px solid var(--accent); background: rgba(var(--accent-rgb), 0.82);
+}
+.ed-drop-here, .ed-drop-locked { color: #d7dae0; border: 2px dashed rgba(255, 255, 255, 0.45); background: rgba(8, 9, 12, 0.72); }
+/* 끄는 카드(유령) — 포인터를 따라간다. 자리는 transform 으로 옮긴다(EditTab) */
+.ed-ghost {
+  position: fixed; left: 0; top: 0; z-index: 900; pointer-events: none; display: flex; align-items: center; gap: 8px;
+  padding: 5px 10px 5px 5px; border-radius: 9px; font-size: 12px; font-weight: 600; white-space: nowrap; color: var(--text);
+  background: var(--glass); backdrop-filter: blur(14px); border: 1px solid var(--border2); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+}
+.ed-ghost img { width: 56px; height: 32px; border-radius: 5px; object-fit: cover; }
+.ed-ghost > span:first-child { padding-left: 5px; }
+.ed-ghost-empty, .ed-ghost-taken { border-color: rgba(var(--accent-rgb), 0.7); }
+.ed-ghost-empty > span, .ed-ghost-taken > span { color: var(--accent); }
+/* 컷(폴더) 순서 끌기 — 끄는 칸은 흐리게, 끼워질 자리에는 세로 줄 */
+.ed-cutcell { touch-action: none; }
+.ed-cutcell.ed-cutdrag { opacity: 0.45; cursor: grabbing; }
+.ed-cutdrop {
+  position: absolute; top: 28px; bottom: 0; width: 2px; margin-left: -1px; z-index: 6; pointer-events: none;
+  background: var(--accent); box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.35), 0 0 10px rgba(var(--accent-rgb), 0.6);
+}
 .ed-aud { position: absolute; top: 5px; height: 36px; box-sizing: border-box; border-radius: 5px; background: #1f5a3a; border: 1px solid #2f7d53; pointer-events: none; }
 .ed-phead { position: absolute; left: -1px; top: 0; bottom: 0; width: 2px; background: #ff4d4f; z-index: 5; pointer-events: none; will-change: transform; }
 .ed-phead::before { content: ""; position: absolute; left: -6px; top: 0; border: 7px solid transparent; border-top: 10px solid #ff4d4f; }
