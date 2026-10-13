@@ -163,6 +163,17 @@ export interface FolderCard {
   // 그 폴더(하위 포함)의 최종·보류 수 — 사이드바 폴더 숫자와 같은 규칙. 일반 공유 수 = count - final_count - held_count.
   final_count?: number;
   held_count?: number;
+  // 컷 화면의 리스트용(2026-10-13 오후). 옛 공유 서버는 안 준다.
+  workers?: { name: string | null; count: number }[]; // 만든 사람별 건수(많은 순 몇 명) — 이름을 모르면 null
+  takes?: FolderCardTake[]; // 하위 폴더가 없는 카드만 — 그 컷의 생성물 미리보기(대표가 맨 앞, 그 뒤 최신 순). 나머지 수 = count − 길이
+}
+
+// 컷 줄의 생성물 띠 한 칸. 표지는 그림에 필요한 것만 온다.
+export interface FolderCardTake {
+  cover: Pick<Generation, "id" | "assets">;
+  final: boolean;
+  held: boolean;
+  by: string | null; // 만든 사람의 표시 이름(모르면 null)
 }
 
 // 에피소드 카드의 컷 띠 한 칸. 표지는 그림에 필요한 것만 온다.
