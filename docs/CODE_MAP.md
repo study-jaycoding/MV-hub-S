@@ -717,11 +717,12 @@ updated: 2026-10-13
 | `shortcuts.ts` | 저장 | 사용자 지정 단축키 레지스트리 — 충돌은 같이 켜지는 화면끼리만(`scope`), 고정 키는 지정 불가(`isReservedBinding`), Shift 는 Ctrl·Alt 와 함께일 때만 센다, 저장 직전 다시 읽기 + storage 이벤트(다른 탭) |
 | `downloadDir.ts` | 저장 | File System Access 다운로드 폴더 핸들 |
 
-**4. 계정·인증·워크스페이스(13)**
+**4. 계정·인증·워크스페이스(14)**
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `useHubAuth.ts` | 훅 | 로컬 허브·공유 서버 로그인 상태 통합 |
+| `unloadGuard.ts` | 유틸 | 저장 못 한 것이 있는 동안 창을 닫거나 새로고침하면 브라우저가 묻게(`holdUnload` — 지금은 편집 탭의 '저장 안 됨' 문서) · 계정이 바뀌는 길은 풀고 새로고침(`reloadNow`) |
 | `accountIdentity.ts` | 순수 | 계정 표시명·역할·시스템 계정 판정 |
 | `useAccountStatus.ts` | 훅 | 하단 상태줄용 계정·CLI 연결·크레딧 |
 | `workspaceContext.ts` | 저장 | 현재 워크스페이스 컨텍스트 보관·조정 |

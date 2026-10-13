@@ -67,7 +67,7 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
     const cur = held.current!;
     if (!cur.key) return;
     cur.doc = next;
-    const raw = cur.conflict && !user ? null : writeEditDoc(cur.key, next, cur.bad ? cur.badRaw : null);
+    const raw = cur.conflict && !user ? null : writeEditDoc(cur.key, next, cur.bad ? cur.badRaw : null, cur.savedRaw);
     if (raw !== null) {
       Object.assign(cur, { savedRaw: raw, dirty: false, bad: false, badRaw: null, conflict: false });
       noteEditRaw(cur.key, raw);
@@ -104,31 +104,37 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
   //  그 전에 이 창이 저장하면 이 창의 낡은 문서 전체가 다른 창의 편집을 덮었다(Codex 배포 전 검토 — 바꾸기 직전에 보면 그 틈이 읽고 쓰는
   //  사이로 줄어든다). 이벤트 본문이 아니라 지금 저장소의 값을 읽는다(늦게 온 옛 알림을 받아들이면 그 뒤 이 창이 저장한 것을 되돌린다).
   //  원문이 같으면 문서를 풀어 읽지 않는다 — 편집마다 부른다.
-  const pull = useCallback((announced: boolean) => {
+  //  돌려주는 값 = **이번 조작을 멈춰야 하는가**(announced = 알림으로 불렸다 — 멈출 조작이 없다):
+  //   · 다른 창의 문서를 방금 받아들였다 → 멈춘다. 그 조작은 옛 화면을 보고 고른 것이다(비어 있던 트랙에 넣기로 했는데 그사이 다른 창이
+  //     그 트랙에 넣은 클립을 밀어내는 식 — Codex 재검토). 화면이 새 문서로 바뀌고 알림이 뜬다 — 사용자가 다시 한다.
+  //   · 저장 못 한 편집이 있는데 다른 창이 저장한 것을 **방금 알았다** → 멈춘다(알림이 뜨기도 전에 그 저장을 덮지 않게). 알고 난 뒤의
+  //     편집은 전처럼 저장한다(사용자가 알고 이어 가는 것이다).
+  const pull = useCallback((announced: boolean): boolean => {
     const cur = held.current!;
-    if (!cur.key || readEditRaw(cur.key) === cur.savedRaw) return; // 이 창의 마지막 저장과 같다 = 바뀐 것 없음(낡은 알림 포함)
+    if (!cur.key || readEditRaw(cur.key) === cur.savedRaw) return false; // 이 창의 마지막 저장과 같다 = 바뀐 것 없음(낡은 알림 포함)
     if (cur.dirty) {
       // 저장 못 한 편집이 있다 — 받아들이지 않고, 자동 저장으로 덮지도 않는다. 알림이 올 때마다, 편집 직전에는 처음 알았을 때만 알린다.
-      if (announced || !cur.conflict) flashRef.current(t(CHANGED_ELSEWHERE));
+      const known = cur.conflict;
       cur.conflict = true;
-      return;
+      if (announced || !known) flashRef.current(t(CHANGED_ELSEWHERE));
+      return !known;
     }
     clearUndo(cur.key);
     held.current = open(cur.key);
     noteEditRaw(cur.key, held.current.openRaw);
     held.current.checked = true; // 방금 읽은 것이 기준이다 — 연 직후의 확인을 다시 하지 않는다
-    flashRef.current(t("다른 창에서 바꾼 편집을 불러왔습니다."));
+    flashRef.current(t(announced
+      ? "다른 창에서 바꾼 편집을 불러왔습니다."
+      : "다른 창에서 바꾼 편집을 불러왔습니다. 방금 한 조작은 적용하지 않았습니다 — 다시 해 주세요."));
     bump();
+    return true;
   }, []);
 
   const applyEdit = useCallback(
     (change: (doc: EditDoc) => EditDoc | null, options: EditOptions = {}): boolean => {
-      const before = held.current!;
-      if (!before.key || (options.rev !== undefined && options.rev !== before.rev)) return false;
-      pull(false);
       const cur = held.current!;
-      // 방금 다른 창의 문서를 받아들였다 — 그 전에 시작한 지연 콜백은 버린다(알림이 먼저 왔을 때와 같다)
       if (!cur.key || (options.rev !== undefined && options.rev !== cur.rev)) return false;
+      if (pull(false)) return false;
       const next = change(cur.doc);
       if (!next || next === cur.doc) return false;
       if (options.undo !== false) pushUndo(cur.key, cur.doc);
@@ -140,7 +146,7 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
 
   const step = useCallback(
     (from: "past" | "future") => {
-      pull(false); // 받아들였으면 되돌리기 기록이 비워져 아래에서 할 일이 없다 — 되돌리기가 다른 창의 저장을 덮지 않는다
+      if (pull(false)) return; // 되돌리기도 다른 창의 저장을 덮지 않는다
       const cur = held.current!;
       if (!cur.key) return;
       const stack = undoStack(cur.key);
