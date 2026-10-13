@@ -713,6 +713,15 @@ function EditTabInner({
   useEffect(() => {
     if (trimGone) setTrimPop(null);
   }, [trimGone]);
+  // 창이 스스로 닫힐 때(다른 창의 저장 · 저장 충돌 · 클립이 빠짐·트랙 잠김)도 초점을 편집 화면으로 돌린다 — 창은 body 에 그려져 있어,
+  //  초점을 쥔 채 사라지면 초점이 body 로 떨어진다(✕·Esc 의 closeTrim 은 스스로 돌린다). 초점을 다른 곳(풀·폴더 창)에 둔 채였다면
+  //  건드리지 않는다(2026-10-14 두 창 실측).
+  const trimOpen = !!trimPop;
+  const trimWasOpen = useRef(false);
+  useEffect(() => {
+    if (trimWasOpen.current && !trimOpen && document.activeElement === document.body) rootRef.current?.focus({ preventScroll: true });
+    trimWasOpen.current = trimOpen;
+  }, [trimOpen]);
   const menuOwn = menu && doc.clips.find((clip) => clip.cut === menu.cut && links.get(clipKey(clip))?.gen?.id === menu.gen.id);
   const menuRows: TrackRow[] = !menu ? [] : Array.from({ length: layout.tracks }, (_, i) => layout.tracks - i).map((track) => ({
     track,
