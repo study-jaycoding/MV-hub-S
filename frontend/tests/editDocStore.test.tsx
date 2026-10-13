@@ -3,7 +3,7 @@
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { clipKey, insertClip, removeClips, setClipDurs } from "../src/lib/editTimeline";
+import { clipKey, insertClip, removeClips, setClipDurs, setClipTrim } from "../src/lib/editTimeline";
 import { clearUndo, editDocKey, keepUnsavedEditDoc, readEditDoc } from "../src/lib/editTimelineStore";
 import { useEditDoc } from "../src/lib/useEditDoc";
 import { setLeaving } from "../src/lib/unloadGuard";
@@ -397,12 +397,42 @@ it("떠나는 중(로그아웃 응답 대기)에는 편집·되돌리기를 받�
     let outcome = "";
     act(() => { outcome = edit.applyEdit((doc) => insertClip(doc, clip("late"))); });
     act(() => edit.undo());
-    expect([outcome, gens(), stored(), flash.mock.calls.length]).toEqual(["stopped", ["a1"], ["a1"], 0]);
+    expect([outcome, gens(), stored()]).toEqual(["stopped", ["a1"], ["a1"]]);
+    expect(flash.mock.calls).toEqual([["로그아웃하는 중입니다 — 지금 한 조작은 적용하지 않았습니다."]]); // 까닭을 알린다(되돌리기는 조용히)
+    // 자동 기록(확정 길이)은 조용히 버린다 — 영상마다 알림이 뜨지 않게
+    act(() => { edit.applyEdit((doc) => setClipDurs(doc, new Map([[clipKey({ cut: "e070/c1", gen: "a1" }), 7]])), { undo: false }); });
+    expect([edit.doc.clips[0].dur, flash.mock.calls.length]).toEqual([5, 1]);
   } finally {
     setLeaving(false);
   }
   add("a2");
   expect([gens(), stored()]).toEqual([["a1", "a2"], ["a1", "a2"]]);
+});
+
+// 길이 조절 창(Jay 2026-10-13) — 창을 한 번 연 동안의 여러 걸음이 되돌리기 한 단계다(EditOptions.group).
+it("같은 이름으로 잇달아 한 편집은 되돌리기 한 단계다 — 자동 길이 기록은 묶음을 끊지 않고, 다른 이름·되돌리기는 끊는다", () => {
+  render(KEY_A);
+  add("a1");
+  const k = clipKey({ cut: "e070/c1", gen: "a1" });
+  const trim = (seconds: number, group: string) => act(() => { edit.applyEdit((doc) => setClipTrim(doc, k, seconds), { group }); });
+  trim(4, "g1");
+  trim(3, "g1");
+  act(() => { edit.applyEdit((doc) => setClipDurs(doc, new Map([[k, 6]])), { undo: false }); }); // 창을 연 사이 실측이 왔다
+  trim(2, "g1");
+  expect(readEditDoc(KEY_A).doc.clips[0].trim).toBe(2); // 걸음마다 저장한다
+  act(() => edit.undo());
+  expect([edit.doc.clips[0].trim, edit.doc.clips[0].dur]).toEqual([undefined, 6]); // 한 번에 줄이기 전으로 — 길이 기록은 남는다
+  act(() => edit.undo());
+  expect(gens()).toEqual([]); // 그 앞 단계는 클립을 넣은 것
+  act(() => edit.redo());
+  act(() => edit.redo());
+  expect(edit.doc.clips[0].trim).toBe(2);
+  trim(1, "g1"); // 되돌리기·다시 하기를 거쳤다 — 같은 이름이어도 새 단계
+  trim(0.5, "g2"); // 창을 다시 열었다(다른 이름) — 새 단계
+  act(() => edit.undo());
+  expect(edit.doc.clips[0].trim).toBe(1);
+  act(() => edit.undo());
+  expect(edit.doc.clips[0].trim).toBe(2);
 });
 
 it("StrictMode — 저장 못 한 편집을 들고 돌아와 저장에 성공해도 되돌리기는 남는다", () => {

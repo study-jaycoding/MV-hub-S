@@ -155,20 +155,59 @@ describe("내가 정한 컷 순서", () => {
     expect(moveCut(moved, withNew, `${SEQ}/c1`, `${SEQ}/c3`)!.cutOrder).toEqual(p("c1", "c3", "c9", "c2", "c2b"));
   });
 
-  it("순서를 바꿔 마크 인이 아웃보다 뒤의 컷에 놓이면 둘을 맞바꾼다 — 이름순으로 되돌릴 때도", () => {
+  // Codex 코드 리뷰 2026-10-13: 지금 순서에서 제자리인 놓기가, 그 사이의 '지금 없는 폴더'를 넘어간 것으로 적혀 그 폴더의 돌아올
+  //  자리를 바꿨다.
+  it("지금 순서에서 제자리면 바뀐 것이 없다 — 그 사이에 지금 없는 폴더의 자리가 있어도", () => {
+    const d = doc([], { cutOrder: p("c3", "c9", "c1") }); // c9 는 지금 없다 — 화면은 c3 c1
+    const now = cutPaths(SEQ, p("c1", "c3"), d);
+    expect(now).toEqual(p("c3", "c1"));
+    expect(moveCut(d, now, `${SEQ}/c3`, `${SEQ}/c1`)).toBeNull(); // c3 을 바로 뒤 컷 앞에 = 제자리
+    expect(moveCut(doc([], { cutOrder: p("c3", "c1", "c9") }), now, `${SEQ}/c1`, null)).toBeNull(); // 맨 뒤 컷을 맨 뒤로(뒤에 없는 폴더의 자리)
+    // 진짜 옮기기는 된다 — c1 을 앞으로: c1 c3 (c9). 이름순이 되어 적어 둔 순서가 지워진다
+    expect("cutOrder" in moveCut(d, now, `${SEQ}/c1`, `${SEQ}/c3`)!).toBe(false);
+    const more = doc([], { cutOrder: p("c3", "c9", "c1", "c2") }); // 화면은 c3 c1 c2
+    expect(moveCut(more, p("c3", "c1", "c2"), `${SEQ}/c2`, `${SEQ}/c3`)!.cutOrder).toEqual(p("c2", "c3", "c9", "c1"));
+  });
+
+  // 컷 순서가 바뀌거나 사라졌던 폴더가 돌아오면 문서의 인/아웃이 뒤집혀 있을 수 있다. 순서를 바꾸는 순간에 미리 맞바꾸지 않는다
+  //  (없는 폴더 가운데 일부만 돌아오면 그때의 예측과 달라진다 — Codex 코드 리뷰 2회째). 그릴 때·찍을 때 같은 눈으로 바로잡는다.
+  it("순서를 바꿔 인이 아웃보다 뒤의 컷에 놓이면 — 문서는 그대로 두고, 그리는 구간과 찍기·지우기가 보이는 앞뒤를 따른다", () => {
     const marked = doc([], { markIn: { cut: natural[0], local: 1 }, markOut: { cut: natural[2], local: 2 } });
     const moved = moveCut(marked, natural, natural[2], natural[0])!; // c3 c1 c2 c4 — 인(c1)이 아웃(c3)의 뒤
-    expect(moved).toMatchObject({ markIn: { cut: natural[2], local: 2 }, markOut: { cut: natural[0], local: 1 } });
-    const reset = resetCutOrder(moved, natural)!;
+    expect(moved).toMatchObject({ markIn: marked.markIn, markOut: marked.markOut }); // 문서의 표시는 건드리지 않는다
+    const layout = buildLayout(cutPaths(SEQ, natural, moved), moved); // c3 0~5 · c1 5~10 · c2 · c4
+    expect(marksOf(layout, moved)).toEqual({ in: 2, out: 6, band: { from: 2, to: 6 } }); // 앞의 것이 인, 뒤의 것이 아웃
+    // 인 지우기(Alt+I)는 화면의 인(문서의 markOut — c3 의 2초)을 지운다. 문서는 그때 바로잡힌 모양으로 남는다.
+    const cleared = setMark(moved, layout, "markIn", null)!;
+    expect([cleared.markIn, cleared.markOut]).toEqual([undefined, { cut: natural[0], local: 1 }]);
+    expect(marksOf(layout, cleared)).toEqual({ in: null, out: 6, band: { from: 0, to: 6 } });
+    // 아웃을 인 앞에 찍으면 화면의 인이 지워진다(다빈치) — 뒤집힌 문서에서도
+    const outFirst = setMark(moved, layout, "markOut", { cut: natural[2], local: 1 })!;
+    expect([outFirst.markIn, outFirst.markOut]).toEqual([undefined, { cut: natural[2], local: 1 }]);
+    // 이름순으로 되돌리면 원래 앞뒤다
+    const reset = resetCutOrder(moved)!;
     expect("cutOrder" in reset).toBe(false);
-    expect(reset).toMatchObject({ markIn: marked.markIn, markOut: marked.markOut });
-    expect(resetCutOrder(reset, natural)).toBeNull(); // 정한 순서가 없다
+    expect(marksOf(buildLayout(natural, reset), reset)).toMatchObject({ in: 1, out: 12 });
+    expect(resetCutOrder(reset)).toBeNull(); // 정한 순서가 없다
     // 같은 컷 안의 인·아웃은 순서와 무관하다
     const same = doc([], { markIn: { cut: natural[2], local: 1 }, markOut: { cut: natural[2], local: 2 } });
-    expect(moveCut(same, natural, natural[2], natural[0])).toMatchObject({ markIn: same.markIn, markOut: same.markOut });
+    const sameMoved = moveCut(same, natural, natural[2], natural[0])!;
+    expect(marksOf(buildLayout(cutPaths(SEQ, natural, sameMoved), sameMoved), sameMoved)).toMatchObject({ in: 1, out: 2 });
+  });
+
+  // Codex 코드 리뷰 2회째의 입력: 정한 순서 c4 (c2) c1 c5, 인 = 없는 c3, 아웃 = c1. c5 를 맨 앞으로 옮긴 뒤 c3 만 돌아온다(c2 는 그대로 없다).
+  //  c3 는 '이름순으로 바로 앞인 컷의 뒤'에 서는데, 그 앞 컷(c2)이 없어 c1 의 뒤다 → 인(c3)이 아웃(c1)의 뒤. 그래도 구간은 살아 있다.
+  it("없는 폴더 가운데 일부만 돌아와 인/아웃이 뒤집혀도 구간이 사라지지 않는다", () => {
+    const d = doc([], { cutOrder: p("c4", "c2", "c1", "c5"), markIn: { cut: `${SEQ}/c3`, local: 0 }, markOut: { cut: `${SEQ}/c1`, local: 1 } });
+    const moved = moveCut(d, cutPaths(SEQ, p("c1", "c4", "c5"), d), `${SEQ}/c5`, `${SEQ}/c4`)!;
+    const back = cutPaths(SEQ, p("c1", "c3", "c4", "c5"), moved);
+    expect(back).toEqual(p("c5", "c4", "c1", "c3"));
+    const layout = buildLayout(back, moved); // c5 0~5 · c4 5~10 · c1 10~15 · c3 15~20
+    expect(marksOf(layout, moved)).toEqual({ in: 11, out: 15, band: { from: 11, to: 15 } });
+    // 한쪽이 아직 안 보이는 동안(c3 가 돌아오기 전)은 구간이 아니다 — 넓히지 않는다
+    expect(marksOf(buildLayout(p("c5", "c4", "c1"), moved), moved)).toEqual({ in: null, out: 11, band: null });
   });
 });
-
 describe("배치와 보이는 클립", () => {
   const d = doc([clip("c1", "low", 1, { dur: 8 }), clip("c1", "top", 2, { dur: 3 }), clip("c3", "solo", 1)]);
   const layout = buildLayout(["e070/c1", "e070/c2", "e070/c3"], d, (c) => (c.gen === "solo" ? "6" : undefined));
@@ -249,6 +288,22 @@ describe("배치와 보이는 클립", () => {
     expect(snapTrim(99, 3.02)).toBe(72 / 24); // 원본 3.02초 — 73프레임(3.0417초)으로 올리지 않는다
     expect(snapTrim(1, 0.03)).toBeNull(); // 한 프레임도 안 되는 영상
     expect(snapTrim(NaN, 5)).toBeNull();
+    expect(snapTrim(2, NaN)).toBeNull(); // 길이를 아직 모르는 영상(상한이 숫자가 아니다)
+  });
+
+  // 실측이 오면 dur 은 고쳐 적히고(되돌리기 대상 아님) trim 은 그대로다 — 쓰는 길이만 그때의 원본에서 다시 잘린다.
+  it("줄인 길이는 원본 길이가 바뀌어도 적어 둔 값이 남는다 — 5초 → 3초 → 6초면 쓰는 길이는 4 → 3 → 4", () => {
+    const k = key("c1", "v");
+    let d2 = setClipTrim(doc([clip("c1", "v", 1, { dur: 5, kind: "video" })]), k, 4)!;
+    const len = () => buildLayout(["e070/c1"], d2).cuts[0].clips[0].len;
+    expect(len()).toBe(4);
+    d2 = setClipDurs(d2, new Map([[k, 3]]))!;
+    expect([len(), d2.clips[0].trim]).toEqual([3, 4]);
+    d2 = setClipDurs(d2, new Map([[k, 6]]))!;
+    expect([len(), d2.clips[0].trim]).toEqual([4, 4]);
+    // 옮겨도(트랙) 줄인 길이는 따라간다. 다른 카드로 교체하면 새 클립이라 없다.
+    expect(moveClipToTrack(d2, k, 2)!.clips[0]).toMatchObject({ track: 2, trim: 4 });
+    expect("trim" in placeClip(d2, { cut: "e070/c1", gen: "new", kind: "video", dur: 5 }, 1)!.clips[0]).toBe(false);
   });
 
   it("편집점은 컷 경계와 컷 안에서 끝나는 클립의 끝이다", () => {

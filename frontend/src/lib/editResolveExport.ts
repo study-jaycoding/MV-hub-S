@@ -74,6 +74,7 @@ export interface TimelineExport {
   plan: TimelineExportPlan;
   gens: Generation[]; // 파일을 준비할 생성물(겹치지 않게, 타임라인 순서)
   unresolved: number; // 공유 목록에서 찾지 못한 클립 수 — 0 이 아니면 보내지 않는다
+  zeroCuts: number; // 한 프레임도 안 되는 컷 수 — 0 이 아니면 보내지 않는다(그 컷의 클립이 다음 컷과 겹친다)
   perTrack: number[]; // perTrack[n - 1] = Vn 의 클립 수
   disabled: number; // 꺼진 채 들어가는 클립 수
   markersDropped: number; // 같은 프레임에 겹쳐 뺀 북마크 수(Resolve 는 프레임마다 하나)
@@ -113,9 +114,14 @@ export function buildTimelineExport(args: {
   const perTrack = Array.from({ length: layout.tracks }, () => 0);
   let unresolved = 0;
   let disabled = 0;
+  let zeroCuts = 0;
 
   for (const slot of layout.cuts) {
     const start = frame(slot.start);
+    const stop = frame(slot.start + slot.len); // 컷의 끝(미포함) — 클립은 이 밖으로 나가지 않는다
+    // 한 프레임도 안 되는 컷(켜진 클립이 반 프레임 미만 — 깨진 영상의 실측 길이 등). 클립은 최소 한 프레임이라 다음 컷의 같은 트랙과
+    //  겹친다 → 보내지 않는다(zeroCuts. 컷 길이가 켜진 클립만 세게 되면서 생긴 길 — Codex 코드 리뷰 2026-10-13).
+    if (stop <= start) zeroCuts += 1;
     for (const clip of slot.clips) {
       const gen = links.get(clipKey(clip))?.gen ?? null;
       if (!gen) {
@@ -124,7 +130,7 @@ export function buildTimelineExport(args: {
       }
       // 꺼진 클립은 컷보다 길 수 있다(컷 길이는 켜진 클립만 센다 — buildLayout) → 컷의 끝에서 자른다. 안 자르면 다음 컷의 같은
       //  트랙 클립과 겹쳐 받는 쪽이 계획을 거부한다. 줄인 길이(trim)는 clip.len 에 이미 들어 있다.
-      const end = Math.max(start + 1, frame(slot.start + Math.min(clip.len, slot.len)));
+      const end = Math.max(start + 1, Math.min(stop, frame(slot.start + Math.min(clip.len, slot.len))));
       gens.set(gen.id, gen);
       clips.push({
         gen_id: gen.id,
@@ -184,6 +190,7 @@ export function buildTimelineExport(args: {
     },
     gens: [...gens.values()],
     unresolved,
+    zeroCuts,
     perTrack,
     disabled,
     markersDropped,

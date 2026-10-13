@@ -11,6 +11,17 @@ import type { EditShown } from "../../lib/useEditFollow";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 
+// 프레임마다 고치는 글자(타임코드) — **있는 글자 노드의 값만** 바꾼다. `textContent` 로 쓰면 글자 노드를 갈아 끼우는 일(자식 목록
+//  변경)이라 브라우저가 문서 전체의 스타일을 다시 계산한다: 재생 중 프레임마다 약 7ms 씩(클립 300·DOM 5,727, 2026-10-13 격리 실측 —
+//  같은 글자를 nodeValue 로 쓰면 0ms). 글자가 그대로면 쓰지 않는다(타임코드는 초당 24번만 바뀐다).
+export function writeText(el: Element | null, text: string): void {
+  if (!el) return;
+  const node = el.firstChild;
+  if (node && node.nodeType === Node.TEXT_NODE && !node.nextSibling) {
+    if (node.nodeValue !== text) node.nodeValue = text;
+  } else el.textContent = text;
+}
+
 export interface ViewOption {
   value: ViewMode;
   label: string;
@@ -96,7 +107,7 @@ export function EditViewer({
     return () => window.removeEventListener("resize", fit);
   }, [open]);
   useEffect(() => registerPaint((time) => {
-    if (timeRef.current) timeRef.current.textContent = timecode(time);
+    writeText(timeRef.current, timecode(time));
     const at = `${total > 0 ? Math.min(100, Math.max(0, (time / total) * 100)) : 0}%`;
     if (headRef.current) headRef.current.style.left = at;
     if (fillRef.current) fillRef.current.style.width = at;

@@ -1,12 +1,12 @@
 // 편집 탭 — 공유된 생성물을 컷(폴더) 순서대로 이어 보는 다빈치식 화면. 계약·한계는 docs/EDIT_TAB.md.
 //  왼쪽 = 시퀀스 폴더 고르기 · 그 옆 = 미디어 풀(재생헤드가 있는 컷의 생성물) · 오른쪽 = 뷰어 판(싱글/듀얼 — 판마다 타임라인·
-//  소스·한 트랙만 중에서 고른다) · 아래 = 트랙 타임라인(트랙 추가·삭제·옮기기, 마크 인/아웃, 북마크). 컷 자리는 폴더 순서로
-//  고정이고, 고른 생성물만 들어간다.
+//  소스·한 트랙만 중에서 고른다) · 아래 = 트랙 타임라인(트랙 추가·삭제·옮기기, 마크 인/아웃, 북마크). 컷 자리는 폴더 순서고
+//  (이름순 — 컷 머리를 끌어 내 순서로 바꿀 수 있다), 고른 생성물만 들어간다(휠 클릭 메뉴, 또는 풀의 카드를 끌어 놓기).
 //  편집은 이 브라우저(계정)에만 저장한다.
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
 import type { CardMark, Generation, PreviewTarget, WorkspaceContext } from "../../types";
-import { APP_EVENTS } from "../../lib/appEvents";
-import { backgroundKeysBlocked, focusCameByTab } from "../../lib/keyGate";
+import { APP_EVENTS, isLibraryPollTick } from "../../lib/appEvents";
+import { backgroundKeysBlocked, focusCameByTab, useDragKeyHold } from "../../lib/keyGate";
 import { isKeyHandled, markKeyHandled } from "../../lib/keyHandled";
 import { isFolderDisabled } from "../../lib/deactivated";
 import {
@@ -30,14 +30,17 @@ import {
   markerAt,
   marksOf,
   moveClipToTrack,
+  moveCut,
   moveTrack,
   nearestPoint,
   patchMarker,
   placeClip,
   placeState,
   posAt,
+  setClipTrim,
   removeClips,
   removeMarker,
+  resetCutOrder,
   setClipDurs,
   setMark,
   setTrackColor,
@@ -67,6 +70,7 @@ import { useCustomEvent } from "../../lib/useCustomEvent";
 import { useDisabledFolders } from "../../lib/useDisabledFolders";
 import { useEditDoc } from "../../lib/useEditDoc";
 import { useEditPlayback, type EditSource } from "../../lib/useEditPlayback";
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useVideoPair } from "../../lib/editVideoPair";
 import { workspaceViewKey } from "../../lib/libraryWorkspaceScope";
 import type { ResolveProjectTarget, ResolveTimelineResult } from "../../lib/resolveTransfer";
@@ -84,10 +88,11 @@ import { EditMarkerColorMenu, EditMarkerMenu } from "./EditMarkerMenu";
 import { arrangePool, EditPool, type PoolItem } from "./EditPool";
 import { EditSidebar } from "./EditSidebar";
 import { EditSoloViewer } from "./EditSoloViewer";
-import { EditTimeline, ZOOM_MAX, ZOOM_MIN, type ClipLink } from "./EditTimeline";
+import { dropLabel, EditTimeline, ZOOM_MAX, ZOOM_MIN, type ClipLink, type DropHint } from "./EditTimeline";
 import { EditClipMenu, EditListMenu, EditTrackHeadMenu, EditTrackMenu, type TrackAct, type TrackRow } from "./EditTrackMenu";
+import { EditTrimPop } from "./EditTrimPop";
 import { EditTrimView } from "./EditTrimView";
-import { EditViewer, type ViewerControls, type ViewerMarking, type ViewOption } from "./EditViewer";
+import { EditViewer, writeText, type ViewerControls, type ViewerMarking, type ViewOption } from "./EditViewer";
 import { ResizableSidebar } from "../common/ResizableSidebar";
 
 interface Props {
@@ -270,7 +275,7 @@ function EditTabInner({
     const x = time * zoomRef.current;
     if (headRef.current) headRef.current.style.transform = `translateX(${x}px)`;
     const code = timecode(time);
-    if (barTimeRef.current) barTimeRef.current.textContent = code;
+    writeText(barTimeRef.current, code);
     painters.current.forEach((draw) => draw(time));
     const scroll = scrollRef.current; // 재생 중에는 재생헤드가 화면 밖으로 나가면 따라간다
     if (scroll && playingRef.current && (x < scroll.scrollLeft || x > scroll.scrollLeft + scroll.clientWidth - 40)) {
@@ -368,7 +373,11 @@ function EditTabInner({
     });
   }, [shownKeys]);
 
+  const revNow = useRef(rev);
+  revNow.current = rev;
   const act = useCallback((change: (current: EditDoc) => EditDoc | null, options?: { rev?: number }) => {
+    // 끌기·메뉴를 시작한 뒤 문서가 갈렸다(rev 가 낡았다) — 그 조작은 말없이 버린다. '잠긴 트랙…' 안내는 틀린 말이다(Codex 3회째 P3).
+    if (options?.rev !== undefined && options.rev !== revNow.current) return;
     // 'stopped'(다른 창의 저장 때문에 버림)에는 그 알림이 이미 떴다 — 덮지 않는다
     if (applyEdit(change, options) === "none") flash(t("바꾸지 못했습니다 — 잠긴 트랙이 있거나 옮길 자리가 없습니다."));
   }, [applyEdit, flash, t]);
@@ -404,9 +413,11 @@ function EditTabInner({
   const srcShown = srcOrder >= 0;
   const tapeOn = slots[srcOrder] === "tape";
   const srcVideo = useVideoPair(); // 소스 테이프도 클립에서 클립으로 넘어간다
+  // 소스 판이 안 보이면 소스는 비워 둔다 — 싱글 뷰어(기본)에서 풀의 영상 카드를 누를 때마다 안 보이는 판이 그 영상을 끝까지
+  //  받았다(2026-10-13 격리 실측). 판을 올리면 그때 고른 것을 올린다. 보던 자리는 판을 내릴 때 엔진이 기억해 둔다(아래 scope).
   const srcGens = useMemo<Generation[]>(
-    () => (tapeOn ? arrangePool(cutItems, "", ui.sort).map((item) => item.gen) : pickedGen ? [pickedGen] : NO_GENS),
-    [tapeOn, cutItems, ui.sort, pickedGen],
+    () => (!srcShown ? NO_GENS : tapeOn ? arrangePool(cutItems, "", ui.sort).map((item) => item.gen) : pickedGen ? [pickedGen] : NO_GENS),
+    [srcShown, tapeOn, cutItems, ui.sort, pickedGen],
   );
   // 길이 — 실측값이 오면 고친다(타임라인에 안 넣은 영상은 적어 둔 길이가 없다 — 안 고치면 기본 5초에서 끝난다).
   //  하나씩 차례로 잰다: 길이 재기의 큐는 앱 전체가 같이 쓰고 동시에 4개라, 테이프의 영상을 한꺼번에 줄 세우면 타임라인
@@ -451,7 +462,8 @@ function EditTabInner({
   }, [src]);
   const paintSrc = useCallback((time: number) => srcPainters.current.forEach((draw) => draw(time)), []);
   const srcPlay = useEditPlayback({
-    scope: tapeOn ? `tape\n${target?.projectId ?? ""}\n${cut ?? ""}` : pickedGen ? `src\n${pickedGen.id}` : "src",
+    // 판이 안 보이는 동안은 다른 범위다 — 범위가 바뀔 때 엔진이 보던 자리를 적어 두고, 판을 다시 올리면 그 자리로 돌아온다
+    scope: !srcShown ? "src-off" : tapeOn ? `tape\n${target?.projectId ?? ""}\n${cut ?? ""}` : pickedGen ? `src\n${pickedGen.id}` : "src",
     layout: src.layout, doc: src.doc, sourceOf: srcSourceOf, videoRef: srcVideo.pair, paint: paintSrc, loop: ui.loopSrc,
     speed: ui.speed,
   });
@@ -588,6 +600,26 @@ function EditTabInner({
     menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setClipMenu({ keys: selected.has(key) ? [...selected] : [key], x, y });
   }, [selected]);
+  // 클립 길이 조절 창(Jay 2026-10-13) — 타임라인의 클립을 휠 클릭. 영상만이고 잠긴 트랙은 안 된다(setClipTrim 의 거부와 같다 — 창을
+  //  띄우기 전에 까닭을 알린다). group = 이 창을 한 번 연 동안의 걸음들을 되돌리기 한 단계로 묶는 이름(useEditDoc).
+  //  문서가 갈리면(rev) 닫는다 — 아래 효과. **저장 충돌을 알게 됐을 때도 닫는다**(edit.conflict): 슬라이더를 끄는 도중이면 같은 끌기의
+  //  다음 걸음이 '알고 이어 가는 편집'으로 저장돼, 알림을 읽기도 전에 다른 창의 저장을 덮는다(Codex 코드 리뷰 2회째 P1).
+  const [trimPop, setTrimPop] = useState<{ key: string; x: number; y: number; group: string; rev: number } | null>(null);
+  const trimSerial = useRef(0);
+  const openTrim = useCallback((key: string, x: number, y: number) => {
+    const clip = doc.clips.find((item) => clipKey(item) === key);
+    if (!clip) return;
+    if (doc.tracksLocked.includes(clip.track)) return flash(t("잠긴 트랙의 클립은 길이를 바꿀 수 없습니다."));
+    // 그림인지는 이어진 생성물로 먼저 본다 — kind 가 안 적힌 옛 클립은 문서만으로는 영상으로 보인다
+    if ((links.get(key)?.gen?.assets[0]?.type ?? clip.kind) === "image") return flash(t("그림은 길이를 줄일 수 없습니다 — 영상 클립만 됩니다."));
+    stopBoth(); // 창이 떠 있는 동안 편집 키는 막혀 있다 — 뒤에서 도는 재생을 멈출 길이 없다
+    menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setTrimPop({ key, x, y, group: `trim:${key}:${++trimSerial.current}`, rev });
+  }, [doc, links, flash, t, stopBoth, rev]);
+  const editConflict = edit.conflict;
+  useEffect(() => {
+    if (editConflict) setTrimPop(null);
+  }, [editConflict]);
   const openTrackMenu = useCallback((track: number, x: number, y: number) => {
     menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setTrackMenu({ track, x, y, rev });
@@ -602,6 +634,7 @@ function EditTabInner({
     setColorMenu(null);
     setListMenu(null);
     setClipMenu(null);
+    setTrimPop(null);
   }, [rev]);
   const closeMenu = useCallback(() => {
     setMenu(null);
@@ -610,6 +643,7 @@ function EditTabInner({
     setColorMenu(null);
     setListMenu(null);
     setClipMenu(null);
+    setTrimPop(null);
     const back = menuBackRef.current;
     menuBackRef.current = null;
     if (back?.isConnected) back.focus({ preventScroll: true });
@@ -636,27 +670,102 @@ function EditTabInner({
     return [...found.values()];
   }, [clipMenu, links]);
   const clipMenuOne = clipMenu?.keys.length === 1 ? doc.clips.find((clip) => clipKey(clip) === clipMenu.keys[0]) : undefined;
+  // 길이 조절 창이 보는 클립 — 지금 배치의 것(쓰는 길이·원본 길이가 걸음마다 새로 온다). 작은 화면은 틀 수 있는 영상일 때만.
+  const trimClip = trimPop ? layout.cuts.flatMap((slot) => slot.clips).find((clip) => clipKey(clip) === trimPop.key) : undefined;
+  const trimSource = trimClip ? sourceOf(trimClip) : null;
+  const trimSrc = trimSource?.state === "ok" && trimSource.type === "video" ? trimSource.url : null;
   const menuOwn = menu && doc.clips.find((clip) => clip.cut === menu.cut && links.get(clipKey(clip))?.gen?.id === menu.gen.id);
   const menuRows: TrackRow[] = !menu ? [] : Array.from({ length: layout.tracks }, (_, i) => layout.tracks - i).map((track) => ({
     track,
     state: placeState(doc, menu.cut, menuOwn, track),
   }));
-  const placeTo = (track: number) => {
-    if (!menu) return;
-    const menuCut = menu.cut;
-    // 카드는 **지금의 공유 목록**에서 다시 찾는다 — 메뉴가 떠 있는 사이 그 카드가 목록에서 빠졌으면(다른 창의 공유 해제 → 다시 받기)
-    //  연 순간의 사본으로 넣지 않는다: 잘 있던 클립이 '미디어 없음' 클립으로 갈린다.
-    const gen = byCut.get(menuCut)?.find((item) => item.id === menu.gen.id);
-    closeMenu();
+  // 카드를 그 컷의 그 트랙에 넣는다 — 휠 클릭 메뉴와 끌어 놓기가 같이 쓰는 한 길이다(같은 문지기).
+  //  카드는 **지금의 공유 목록**에서 다시 찾는다 — 메뉴가 떠 있거나 끄는 사이 그 카드가 목록에서 빠졌으면(다른 창의 공유 해제 →
+  //  다시 받기) 연 순간의 사본으로 넣지 않는다: 잘 있던 클립이 '미디어 없음' 클립으로 갈린다.
+  const ownClip = (cutPath: string, genId: string) =>
+    doc.clips.find((clip) => clip.cut === cutPath && links.get(clipKey(clip))?.gen?.id === genId);
+  const placeCard = (genId: string, cutPath: string, track: number, options?: { rev?: number }) => {
+    const gen = byCut.get(cutPath)?.find((item) => item.id === genId);
     if (!gen) return flash(t("이 카드는 넣을 수 없습니다 — 편집 탭의 이 컷 공유 목록에 없습니다."));
     const asset = gen.assets[0];
-    if (maybePlaced(menuCut, gen)) return flash(t("이 카드는 이미 넣은 클립일 수 있습니다 — 공유 목록을 다 받은 뒤에 다시 해 주세요.")); // 메뉴가 떠 있는 사이 다시 받기가 시작됐다
+    if (maybePlaced(cutPath, gen)) return flash(t("이 카드는 이미 넣은 클립일 수 있습니다 — 공유 목록을 다 받은 뒤에 다시 해 주세요.")); // 그사이 다시 받기가 시작됐다
+    const own = ownClip(cutPath, genId);
     act((current) => placeClip(current, {
       // job 으로 다시 이은 클립이면 그 클립을 옮긴다(문서에 적힌 옛 id 로 찾는다)
-      cut: menuCut, gen: menuOwn?.gen ?? gen.id, job: gen.job_id, kind: asset.type,
+      cut: cutPath, gen: own?.gen ?? gen.id, job: gen.job_id, kind: asset.type,
       dur: genSeconds(gen, knownVideoSeconds(asset.file_path)),
-    }, track));
+    }, track), options);
   };
+  const placeTo = (track: number) => {
+    if (!menu) return;
+    closeMenu();
+    placeCard(menu.gen.id, menu.cut, track);
+  };
+
+  // 풀의 카드를 끌어 타임라인에 넣기(Jay 2026-10-13) — 몸짓은 풀(EditPool)이 알리고, 여기서 무엇이 어디에 놓이는지를 정한다.
+  //  · 끌기가 시작되는 순간 {컷, 카드 id, 문서의 rev}를 잡아 두고 재생을 멈춘다. 끄는 동안 재생·편집 키는 쉰다(Esc 겹) — Esc = 버림.
+  //  · 넣을 컷은 **그때의 컷**이다(풀은 재생헤드가 있는 컷을 보여 주므로, 놓는 순간의 컷으로 보면 다른 컷일 수 있다).
+  //  · 그사이 문서가 갈리거나(rev) 풀의 컷이 바뀌거나 그 카드가 목록에서 사라지면 끌기를 버린다.
+  //  · 놓을 곳 = 포인터 바로 밑에 실제로 보이는 영상 줄(data-track)뿐 — 소리 줄·눈금자·컷 머리·창에 덮인 곳·화면 밖은 아니다.
+  //    가로 위치는 보지 않는다(그 카드의 컷 칸에 들어간다). 이미 그 트랙에 있거나 잠겼으면 아무 일도 없다(메뉴의 흐린 줄과 같다).
+  type CardDrag = { id: string; cut: string; rev: number; hint: Omit<DropHint, "cut"> | null };
+  const [cardDrag, setCardDragState] = useState<CardDrag | null>(null);
+  const cardDragLive = useRef(cardDrag);
+  cardDragLive.current = cardDrag;
+  // 풀은 start 에 이어 같은 이벤트 안에서 move 를 부른다 — 다음 렌더를 기다리지 않게 ref 를 같이 고친다
+  const setCardDrag = (next: CardDrag | null) => {
+    cardDragLive.current = next;
+    setCardDragState(next);
+  };
+  const ghostRef = useRef<HTMLDivElement | null>(null);
+  const ghostAt = useRef<[number, number]>([0, 0]);
+  const moveGhost = () => {
+    const [x, y] = ghostAt.current;
+    if (ghostRef.current) ghostRef.current.style.transform = `translate(${x + 14}px, ${y + 14}px)`;
+  };
+  const hintAt = (drag: { id: string; cut: string }, x: number, y: number): Omit<DropHint, "cut"> | null => {
+    const lane = document.elementFromPoint(x, y)?.closest<HTMLElement>(".ed-lanes [data-track]");
+    const track = Number(lane?.dataset.track);
+    return track > 0 ? { track, state: placeState(doc, drag.cut, ownClip(drag.cut, drag.id), track) } : null;
+  };
+  const onCardDrag = (phase: "start" | "move" | "drop" | "cancel", id: string, x: number, y: number) => {
+    ghostAt.current = [x, y];
+    if (phase === "start") {
+      if (!cut || !byCut.get(cut)?.some((item) => item.id === id)) return;
+      stopBoth();
+      setCardDrag({ id, cut, rev, hint: null });
+      return;
+    }
+    const drag = cardDragLive.current;
+    if (!drag || drag.id !== id) return; // 버린 끌기에 딸려 온 것(Esc 로 버린 뒤의 움직임·놓기)
+    if (phase === "cancel") return setCardDrag(null);
+    const hint = hintAt(drag, x, y);
+    if (phase === "move") {
+      moveGhost();
+      if (hint?.track !== drag.hint?.track || hint?.state !== drag.hint?.state) setCardDrag({ ...drag, hint });
+      return;
+    }
+    setCardDrag(null);
+    if (hint && hint.state !== "here" && hint.state !== "locked") placeCard(drag.id, drag.cut, hint.track, { rev: drag.rev });
+  };
+  const cardDragging = !!cardDrag;
+  useEscapeClose(() => setCardDrag(null), cardDragging, true, true);
+  useDragKeyHold(cardDragging); // 초점이 남은 뒤의 단추(재생·트랙 눈)를 Space·Enter 가 누르지 않게
+  const cardDragGone = !!cardDrag && (cardDrag.rev !== rev || cardDrag.cut !== cut || !byCut.get(cardDrag.cut)?.some((item) => item.id === cardDrag.id));
+  useEffect(() => {
+    if (cardDragGone) setCardDrag(null);
+  }, [cardDragGone]);
+  const cardDragGen = cardDrag ? byCut.get(cardDrag.cut)?.find((item) => item.id === cardDrag.id) ?? null : null;
+  const dropHint = useMemo<DropHint | null>(
+    () => (cardDrag?.hint ? { cut: cardDrag.cut, track: cardDrag.hint.track, state: cardDrag.hint.state } : null),
+    [cardDrag],
+  );
+
+  // 컷(폴더) 순서(Jay 2026-10-13) — 타임라인의 컷 머리 칸을 끌어 바꾼다(EditTimeline). before = 놓은 자리의 바로 뒤에 **보이는** 컷
+  //  (없으면 맨 뒤). 전체 순서(cuts — 숨긴 컷 포함)에서 그 컷 앞에 끼우므로 숨긴 컷은 제자리에 남는다. 되돌리기 한 단계.
+  const moveCutTo = useCallback((path: string, before: string | null, startedRev: number) => {
+    act((current) => moveCut(current, cuts, path, before), { rev: startedRev });
+  }, [act, cuts]);
 
   const lockedTrack = (track: number) => doc.tracksLocked.includes(track);
   const trackAct = (action: TrackAct) => {
@@ -722,7 +831,10 @@ function EditTabInner({
   useEffect(() => () => {
     if (reloadTimer.current !== null) window.clearTimeout(reloadTimer.current);
   }, []);
-  useCustomEvent(APP_EVENTS.libraryChanged, () => {
+  useCustomEvent(APP_EVENTS.libraryChanged, (event) => {
+    // 밑의 탭이 공유 & 리뷰면 그 목록의 15초 폴링이 끝날 때마다 이 알림이 온다(실제 변경이 아니다 — 사이드바 숫자를 깨우는 틱).
+    //  왼쪽의 숫자만 다시 받는다. 공유 목록은 다시 받지 않는다(§3 '폴링 없음' — 그 틱마다 목록 전체를 다시 받고 화면을 다시 그렸다).
+    if (isLibraryPollTick(event)) return reloadCounts();
     if (reloadTimer.current !== null) window.clearTimeout(reloadTimer.current);
     reloadTimer.current = window.setTimeout(() => {
       reloadTimer.current = null;
@@ -1059,6 +1171,7 @@ function EditTabInner({
               sideOpen={sideOpen}
               onToggleSide={() => patchUi({ sideHidden: sideOpen })}
               onFolder={(gen) => cut && openCut(cut, gen.id)}
+              onCardDrag={onCardDrag}
             />
           </ResizableSidebar>
           {/* 타임라인 판 — 안 보일 때도 붙어 있다(엔진의 영상 요소를 떼면 안 된다). 안 보이면 소리를 끈다. */}
@@ -1138,6 +1251,13 @@ function EditTabInner({
             </span>
           )}
           {edit.dirty && <span className="ed-warn" role="status">{t("저장 안 됨")}</span>}
+          {/* 컷 머리를 끌어 폴더 순서를 바꿔 둔 상태 — 누르면 이름순으로 되돌린다(되돌리기 한 단계) */}
+          {!!doc.cutOrder?.length && (
+            <button type="button" className="ed-mine ed-orderchip" title={t("이름순으로 되돌립니다")}
+              onClick={() => act((current) => resetCutOrder(current))}>
+              {t("폴더 순서: 내 순서")} ↺
+            </button>
+          )}
           {/* 공유 목록의 상태 — 받지 못하면 넣은 카드가 '확인 못 함'·'미디어 없음'으로 보이고, 폴더 창에서 넣을 수도 없다 */}
           {needWorkspace && (
             <span className="ed-warn" role="status">
@@ -1255,10 +1375,42 @@ function EditTabInner({
           onTrackMenu={openTrackMenu}
           onMarkerMenu={openMarkerMenu}
           onClipMenu={openClipMenu}
+          onClipTrim={openTrim}
+          dropHint={dropHint}
+          onMoveCut={moveCutTo}
         />
       </main>
+      {/* 풀에서 끄는 카드 — 포인터를 따라간다(자리는 ref 로 직접 옮긴다 — 움직일 때마다 다시 그리지 않는다). 무엇이 될지를 적는다 */}
+      {cardDrag && (
+        <div className={"ed-ghost" + (cardDrag.hint ? ` ed-ghost-${cardDrag.hint.state}` : "")} aria-hidden="true"
+          ref={(el) => {
+            ghostRef.current = el;
+            moveGhost();
+          }}>
+          {cardDragGen && thumbOf(cardDragGen, 256) && <img src={thumbOf(cardDragGen, 256)!} alt="" draggable={false} />}
+          <span>{cardDrag.hint ? dropLabel(cardDrag.hint, t) : t("트랙 줄 위에 놓으세요")}</span>
+        </div>
+      )}
       {exported && target && <EditExportConfirm exported={exported} onSend={sendTimeline} onClose={() => setExportOpen(false)} />}
       {menu && <EditTrackMenu x={menu.x} y={menu.y} rows={menuRows} onPick={placeTo} onClose={closeMenu} />}
+      {trimPop && trimClip && (
+        <EditTrimPop
+          x={trimPop.x}
+          y={trimPop.y}
+          title={`${trimClip.cut.slice(trimClip.cut.lastIndexOf("/") + 1)} · V${trimClip.track}`}
+          full={trimClip.full}
+          value={trimClip.len}
+          trimmed={trimClip.trim !== undefined}
+          src={trimSrc}
+          // 바꿀 것이 없었던 걸음(none)은 조용히 넘긴다. 버린 걸음(stopped — 다른 창의 저장·떠나는 중)에는 창을 닫는다: 그 알림이 이미
+          //  떴고, 이 조절은 여기서 끝이다(다시 열어 조절하면 그때는 알고 하는 편집이다).
+          onChange={(seconds) => {
+            const done = applyEdit((current) => setClipTrim(current, trimPop.key, seconds), { group: trimPop.group, rev: trimPop.rev });
+            if (done === "stopped") closeMenu();
+          }}
+          onClose={closeMenu}
+        />
+      )}
       {clipMenu && (
         <EditClipMenu
           x={clipMenu.x}
@@ -1272,6 +1424,12 @@ function EditTabInner({
             closeMenu();
             resolve.send(clipMenuGens);
           }}
+          // 길이 조절 — 휠 클릭과 같은 창을 메뉴에서도 연다(휠 단추가 없는 마우스·트랙패드). 클립 하나를 눌렀을 때만.
+          onTrim={clipMenuOne ? () => {
+            const { x, y } = clipMenu;
+            closeMenu();
+            openTrim(clipKey(clipMenuOne), x, y);
+          } : undefined}
           onClose={closeMenu}
         />
       )}

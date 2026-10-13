@@ -121,22 +121,17 @@ export function cutPaths(seq: string, folderPaths: Iterable<string>, doc: EditDo
   return orderCuts([...found].sort(byName), doc.cutOrder);
 }
 
-// 순서를 바꾼 뒤 마크 인이 아웃보다 뒤의 컷에 놓이면 둘을 맞바꾼다 — 그대로 두면 구간(띠·구간 반복)이 말없이 사라진다.
-//  order = 숨긴 컷까지 든 전체 순서. 같은 컷 안의 앞뒤는 순서와 무관하니 건드리지 않는다.
-function marksInOrder(doc: EditDoc, order: readonly string[]): EditDoc {
-  const { markIn, markOut } = doc;
-  if (!markIn || !markOut || markIn.cut === markOut.cut) return doc;
-  const from = order.indexOf(markIn.cut);
-  const to = order.indexOf(markOut.cut);
-  return from >= 0 && to >= 0 && from > to ? { ...doc, markIn: markOut, markOut: markIn } : doc;
-}
-
 // 컷(폴더) 하나를 before 앞으로 옮긴다(before = null 이면 맨 뒤). all = 지금의 전체 순서(cutPaths — 숨긴 컷 포함).
 //  적는 것은 옮긴 결과 **전체**다. 저장돼 있던 순서의 '지금 없는 컷'은 제자리에 남긴다(그 폴더가 돌아오면 그 자리) — 지금 컷만
 //  적으면 그 자리가 지워진다(Codex 설계 검토). 결과가 이름순과 같으면 칸을 지운다. 바뀐 것이 없으면 null.
-//  마크 인/아웃이 뒤집히면 같이 맞바꾼다(같은 되돌리기 한 단계).
+//  순서가 바뀌어 마크 인이 아웃보다 뒤에 놓여도 여기서는 건드리지 않는다 — 그릴 때·찍을 때 바로잡는다(straightMarks).
 export function moveCut(doc: EditDoc, all: readonly string[], path: string, before: string | null): EditDoc | null {
   if (!all.includes(path) || before === path || (before !== null && !all.includes(before))) return null;
+  // 지금 순서에서 제자리면 바뀐 것이 없다 — 아래의 전체 목록으로만 견주면, 바로 뒤 컷 앞에 놓은 것(제자리)이 그 사이의 '지금 없는 컷'을
+  //  넘어간 것으로 적혀 그 폴더의 돌아올 자리가 바뀐다(Codex 코드 리뷰 2026-10-13).
+  const after = all.filter((cut) => cut !== path);
+  after.splice(before === null ? after.length : after.indexOf(before), 0, path);
+  if (after.every((cut, index) => cut === all[index])) return null;
   // 저장된 순서(없는 컷 포함)에 아직 안 적힌 지금 컷을, 화면의 바로 앞 컷 뒤에 끼워 넣어 전체 목록을 만든다.
   const full = [...(doc.cutOrder ?? [])];
   all.forEach((cut, index) => {
@@ -149,15 +144,15 @@ export function moveCut(doc: EditDoc, all: readonly string[], path: string, befo
   const next: EditDoc = { ...doc };
   delete next.cutOrder;
   if (moved.some((cut, index) => index > 0 && byName(moved[index - 1], cut) > 0)) next.cutOrder = moved;
-  return marksInOrder(next, moved);
+  return next;
 }
 
-// 이름순으로 되돌린다. natural = 이름순의 전체 컷(마크의 앞뒤를 다시 보는 데 쓴다). 정한 순서가 없으면 null.
-export function resetCutOrder(doc: EditDoc, natural: readonly string[]): EditDoc | null {
+// 이름순으로 되돌린다. 정한 순서가 없으면 null.
+export function resetCutOrder(doc: EditDoc): EditDoc | null {
   if (!doc.cutOrder?.length) return null;
   const next: EditDoc = { ...doc };
   delete next.cutOrder;
-  return marksInOrder(next, [...natural].sort(byName));
+  return next;
 }
 
 const positiveInt = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
@@ -573,7 +568,7 @@ export function setClipTrim(doc: EditDoc, key: string, seconds: number | null): 
 //  한 프레임도 안 되는 영상이면 null(줄일 수 없다).
 export function snapTrim(seconds: number, max: number): number | null {
   const top = Math.floor(max * EDIT_FPS + 1e-6);
-  if (top < 1 || !Number.isFinite(seconds)) return null;
+  if (!(top >= 1) || !Number.isFinite(seconds)) return null; // 상한이 숫자가 아니어도(NaN) null
   return Math.min(Math.max(Math.round(seconds * EDIT_FPS), 1), top) / EDIT_FPS;
 }
 
@@ -715,9 +710,22 @@ export function markTime(layout: EditLayout, pos: EditPos | null | undefined): n
   return slot && pos!.local <= slot.len ? slot.start + pos!.local : null;
 }
 
+// 두 표시가 **다 보이는데** 인이 아웃보다 뒤면 맞바꾼 문서를 돌려준다(아니면 그대로). 컷 순서를 바꾸거나, 숨겼던 컷·사라졌던 폴더가
+//  돌아오면 문서의 인/아웃이 뒤집혀 있을 수 있다. 순서를 바꾸는 순간에 미리 맞바꾸는 것으로는 다 막지 못한다 — 없는 폴더 가운데 일부만
+//  돌아오면 그때 예측한 자리와 달라진다(Codex 코드 리뷰 2회째 2026-10-13). 그래서 **그리는 쪽(marksOf·markRange)과 찍는 쪽(setMark)이 같은
+//  눈으로 본다**: 화면의 '인'이 문서의 markOut 인 채로 인 지우기(Alt+I)를 누르면 엉뚱한 쪽이 지워진다. 문서는 다음에 표시를 찍거나
+//  지울 때 바로잡힌 모양으로 저장된다. 전에는 뒤집힌 구간이 말없이 사라졌다(길이가 음수라 구간이 아니었다).
+function straightMarks(layout: EditLayout, doc: EditDoc): EditDoc {
+  const from = markTime(layout, doc.markIn);
+  const to = markTime(layout, doc.markOut);
+  return from !== null && to !== null && from > to ? { ...doc, markIn: doc.markOut, markOut: doc.markIn } : doc;
+}
+
 // 인(또는 아웃)을 그 자리에 찍는다(pos = null 이면 지운다). 인을 '보이는' 아웃과 같거나 뒤에 찍으면 아웃을 지우고, 아웃을
 // 인과 같거나 앞에 찍으면 인을 지운다(다빈치). 안 보이는 쪽은 건드리지 않는다. 바뀐 것이 없으면 null.
-export function setMark(doc: EditDoc, layout: EditLayout, which: "markIn" | "markOut", pos: EditPos | null): EditDoc | null {
+// '인'·'아웃'은 화면에 보이는 것 기준이다(straightMarks).
+export function setMark(given: EditDoc, layout: EditLayout, which: "markIn" | "markOut", pos: EditPos | null): EditDoc | null {
+  const doc = straightMarks(layout, given);
   const old = doc[which];
   if (pos ? old?.cut === pos.cut && old.local === pos.local : !old) return null;
   const next: EditDoc = { ...doc };
@@ -736,7 +744,8 @@ export function setMark(doc: EditDoc, layout: EditLayout, which: "markIn" | "mar
 // 전체의 처음/끝으로 치면 구간이 말없이 넓어진다(아웃이 가려지는 순간 구간 반복이 전체 끝까지 돈다 — Codex 설계 검토 2026-10-13).
 // 표시는 문서에 남아 있어 다시 보이면 구간도 돌아온다.
 // 두 프레임보다 짧으면 구간으로 치지 않는다: 재생 엔진은 0.04초 안의 차이는 영상을 다시 보내지 않아, 되돌아가도 영상은 그대로 간다.
-export function markRange(layout: EditLayout, doc: EditDoc): { from: number; to: number } | null {
+export function markRange(layout: EditLayout, given: EditDoc): { from: number; to: number } | null {
+  const doc = straightMarks(layout, given);
   const from = markTime(layout, doc.markIn);
   const to = markTime(layout, doc.markOut);
   if ((doc.markIn && from === null) || (doc.markOut && to === null)) return null;
@@ -752,7 +761,8 @@ export interface EditMarks {
   band: { from: number; to: number } | null;
 }
 
-export function marksOf(layout: EditLayout, doc: EditDoc): EditMarks {
+export function marksOf(layout: EditLayout, given: EditDoc): EditMarks {
+  const doc = straightMarks(layout, given);
   return { in: markTime(layout, doc.markIn), out: markTime(layout, doc.markOut), band: markRange(layout, doc) };
 }
 

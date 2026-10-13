@@ -51,6 +51,9 @@ function open(key: string | null): Held {
 export interface EditOptions {
   undo?: boolean; // false = 사용자의 편집이 아니다(확정 길이 기록 등) — Undo 단계가 아니고, 충돌 중에는 저장하지 않는다
   rev?: number; // 지연 콜백이 시작할 때 본 rev — 그 사이 문서가 갈렸으면 버린다
+  // 같은 이름으로 **잇달아** 한 편집은 되돌리기 한 단계다(길이 조절 창을 한 번 연 동안의 여러 걸음). 그사이 다른 편집·되돌리기·다른 창의
+  //  문서가 끼어들면 새 단계가 된다. undo:false 로 묶지 않는다 — 그것은 '사용자의 편집이 아니다'라는 뜻이라 충돌 중에 저장되지 않는다.
+  group?: string;
 }
 
 /** 바꾸기의 결과. `none` 과 `stopped` 를 가른다 — 부르는 쪽이 `none` 에 띄우는 안내("바꾸지 못했습니다 — 잠긴 트랙…")가 `stopped` 의 알림
@@ -67,6 +70,7 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
   const [, bump] = useReducer((n: number) => n + 1, 0);
   const flashRef = useRef(flash);
   flashRef.current = flash;
+  const group = useRef<{ id: string; doc: EditDoc } | null>(null); // 되돌리기 한 단계로 묶는 중인 편집(EditOptions.group)
 
   // user = 사용자의 편집(되돌리기 포함). 충돌 중에는 이것만 저장한다.
   const commit = useCallback((next: EditDoc, user: boolean) => {
@@ -123,6 +127,7 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
       const known = cur.conflict;
       cur.conflict = true;
       if (announced || !known) flashRef.current(t(CHANGED_ELSEWHERE));
+      if (!known) bump(); // 화면이 충돌을 알게 한다(conflict) — 이어지던 조작(길이 조절 창의 끌기)을 거기서 끝내게
       return !known;
     }
     clearUndo(cur.key);
@@ -140,10 +145,20 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
     (change: (doc: EditDoc) => EditDoc | null, options: EditOptions = {}): EditOutcome => {
       const cur = held.current!;
       if (!cur.key || (options.rev !== undefined && options.rev !== cur.rev)) return "none";
-      if (isLeaving() || pull(false)) return "stopped"; // 떠나는 중(로그아웃 응답 대기) — 곧 새로고침이라 받지 않는다(lib/unloadGuard)
+      if (isLeaving()) {
+        // 떠나는 중(로그아웃 응답 대기) — 곧 새로고침이라 받지 않는다(lib/unloadGuard). 사용자의 조작이면 까닭을 알린다(자동 기록은 조용히).
+        if (options.undo !== false) flashRef.current(t("로그아웃하는 중입니다 — 지금 한 조작은 적용하지 않았습니다."));
+        return "stopped";
+      }
+      if (pull(false)) return "stopped";
       const next = change(cur.doc);
       if (!next || next === cur.doc) return "none";
-      if (options.undo !== false) pushUndo(cur.key, cur.doc);
+      const run = group.current; // 이어지는 묶음 — 이름이 같고, 그 묶음의 마지막 문서가 지금 문서 그대로일 때만 잇는다
+      const joined = options.group !== undefined && run?.id === options.group && run.doc === cur.doc;
+      if (options.undo !== false && !joined) pushUndo(cur.key, cur.doc);
+      // 자동 기록(확정 길이)은 묶음을 끊지 않는다 — 창을 연 사이 실측이 와도 되돌리기는 한 단계다
+      group.current = options.group !== undefined ? { id: options.group, doc: next }
+        : options.undo === false && run?.doc === cur.doc ? { id: run.id, doc: next } : null;
       commit(next, options.undo !== false);
       return "done";
     },
@@ -159,6 +174,7 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
       const next = stack[from].pop();
       if (!next) return;
       stack[from === "past" ? "future" : "past"].push(cur.doc);
+      group.current = null; // 되돌리기·다시 하기는 묶음을 끊는다
       commit(keepClipDurs(next, cur.doc), true); // 확정된 길이는 되돌리기 대상이 아니다
     },
     [commit, pull],
@@ -180,6 +196,9 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
     rev: cur.rev,
     bad: cur.bad,
     dirty: cur.dirty,
+    // 저장 못 한 편집이 있는데 다른 창이 저장했다(풀릴 때까지). 여러 걸음에 걸친 한 조작(길이 조절 창의 슬라이더 끌기)은 이것이 켜지면
+    //  끝낸다 — 같은 끌기의 다음 걸음을 '알고 이어 가는 편집'으로 받으면 알림을 읽기도 전에 다른 창의 저장을 덮는다(Codex 코드 리뷰 P1).
+    conflict: cur.conflict,
     canUndo: !!stack?.past.length,
     canRedo: !!stack?.future.length,
     applyEdit,
