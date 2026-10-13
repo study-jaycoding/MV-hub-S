@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // 나갈 때 묻기(lib/unloadGuard) — 쥔 쪽이 있는 동안만 묻고, 반드시 새로고침해야 하는 길(계정 전환·로그아웃)은 풀고 새로고침한다.
 import { afterEach, expect, it, vi } from "vitest";
-import { holdUnload, reloadNow, unloadHeld } from "../src/lib/unloadGuard";
+import { holdUnload, reloadIfFree, reloadNow, unloadHeld, unsavedNote } from "../src/lib/unloadGuard";
 
 const leaving = () => {
   const event = new Event("beforeunload", { cancelable: true });
@@ -25,6 +25,16 @@ it("쥔 쪽이 하나라도 있으면 묻고, 다 놓으면 묻지 않는다", (
   expect(leaving()).toBe(true);
   holdUnload("b", false);
   expect([leaving(), unloadHeld()]).toEqual([false, false]);
+});
+
+it("reloadIfFree 는 쥔 쪽이 있으면 새로고침하지 않고 거짓을 준다 — 확인 창에 붙일 한 줄도 그때만 있다", () => {
+  const reload = vi.fn();
+  vi.stubGlobal("location", { href: "http://localhost:3000/", reload });
+  holdUnload("a", true);
+  expect([reloadIfFree(), reload.mock.calls.length, unsavedNote().includes("저장하지 못한 변경")]).toEqual([false, 0, true]);
+  expect(leaving()).toBe(true); // 문지기는 그대로다
+  holdUnload("a", false);
+  expect([unsavedNote(), reloadIfFree(), reload.mock.calls.length]).toEqual(["", true, 1]);
 });
 
 it("reloadNow 는 문지기를 풀고 새로고침한다 — 머무르기를 고를 틈을 주지 않는다", () => {

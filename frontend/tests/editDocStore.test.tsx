@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { clipKey, insertClip, removeClips, setClipDurs } from "../src/lib/editTimeline";
 import { clearUndo, editDocKey, keepUnsavedEditDoc, readEditDoc } from "../src/lib/editTimelineStore";
 import { useEditDoc } from "../src/lib/useEditDoc";
+import { setLeaving } from "../src/lib/unloadGuard";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -384,6 +385,24 @@ it("저장하지 못한 편집이 있는 동안에는 창을 닫거나 새로고
   setItem.mockRestore();
   render(KEY_A); // 돌아와 저장에 성공하면 풀린다
   expect([edit.dirty, leaving()]).toEqual([false, false]);
+});
+
+// Codex 재검토 3회째: 로그아웃의 확인은 요청 전에 한 번뿐이다. 응답을 기다리는 동안 한 편집이 저장에 실패하면 묻지 못한 채 새로고침에
+//  사라진다 — 그사이에는 편집·되돌리기·자동 길이 기록을 받지 않는다(lib/unloadGuard 의 setLeaving).
+it("떠나는 중(로그아웃 응답 대기)에는 편집·되돌리기를 받지 않는다 — 풀리면 다시 받는다", () => {
+  render(KEY_A);
+  add("a1");
+  setLeaving(true);
+  try {
+    let outcome = "";
+    act(() => { outcome = edit.applyEdit((doc) => insertClip(doc, clip("late"))); });
+    act(() => edit.undo());
+    expect([outcome, gens(), stored(), flash.mock.calls.length]).toEqual(["stopped", ["a1"], ["a1"], 0]);
+  } finally {
+    setLeaving(false);
+  }
+  add("a2");
+  expect([gens(), stored()]).toEqual([["a1", "a2"], ["a1", "a2"]]);
 });
 
 it("StrictMode — 저장 못 한 편집을 들고 돌아와 저장에 성공해도 되돌리기는 남는다", () => {

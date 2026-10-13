@@ -15,6 +15,7 @@ import {
   writeEditDoc,
 } from "./editTimelineStore";
 import { t } from "./i18n";
+import { isLeaving } from "./unloadGuard";
 
 interface Held {
   key: string | null;
@@ -139,7 +140,7 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
     (change: (doc: EditDoc) => EditDoc | null, options: EditOptions = {}): EditOutcome => {
       const cur = held.current!;
       if (!cur.key || (options.rev !== undefined && options.rev !== cur.rev)) return "none";
-      if (pull(false)) return "stopped";
+      if (isLeaving() || pull(false)) return "stopped"; // 떠나는 중(로그아웃 응답 대기) — 곧 새로고침이라 받지 않는다(lib/unloadGuard)
       const next = change(cur.doc);
       if (!next || next === cur.doc) return "none";
       if (options.undo !== false) pushUndo(cur.key, cur.doc);
@@ -151,7 +152,7 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
 
   const step = useCallback(
     (from: "past" | "future") => {
-      if (pull(false)) return; // 되돌리기도 다른 창의 저장을 덮지 않는다
+      if (isLeaving() || pull(false)) return; // 되돌리기도 다른 창의 저장을 덮지 않는다 · 떠나는 중에는 받지 않는다
       const cur = held.current!;
       if (!cur.key) return;
       const stack = undoStack(cur.key);

@@ -6,7 +6,7 @@
 // 평소에는 아무 요청도 하지 않는다.
 import { useKeyOwner } from "../lib/keyGate";
 import { useEscapeClose } from "../lib/useEscapeClose";
-import { reloadNow, unloadHeld } from "../lib/unloadGuard";
+import { reloadIfFree, reloadNow, unloadHeld } from "../lib/unloadGuard";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -133,12 +133,17 @@ export function UpdateProgressOverlay() {
           && next.current_version === target
         ) {
           clearWait();
-          if (unloadHeld()) {
+          // 폴링을 멈추고 알린다 — 단추는 아래 finished 가 따로 그린다
+          const ask = () => {
             setFinished(true);
-            setDone(true); // 폴링을 멈춘다 — 단추는 아래 finished 가 따로 그린다
-            return;
-          }
-          window.setTimeout(() => window.location.reload(), 600);
+            setDone(true);
+          };
+          if (unloadHeld()) return ask();
+          // 새로고침하는 그 순간에 한 번 더 본다 — 이 0.6초 사이에 '저장 안 됨'이 생기면(영상 길이 기록 같은 늦은 쓰기), 브라우저가
+          //  묻고 '머무르기'를 고른 뒤 이 덮개가 5분 제한까지 남았다(Codex 재검토 3회째).
+          window.setTimeout(() => {
+            if (!reloadIfFree() && !cancelled) ask();
+          }, 600);
           return;
         }
         // 업데이트가 아니면 덮개를 걷는다. 앱이 강제 종료되면 대기 표시가 남고, 그대로 두면

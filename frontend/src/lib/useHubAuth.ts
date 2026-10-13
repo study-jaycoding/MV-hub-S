@@ -9,7 +9,7 @@ import { setAccountScope } from "./accountScope";
 import { useCustomEvent } from "./useCustomEvent";
 // 계정이 바뀌는 길의 새로고침은 반드시 일어나야 한다 — 저장 못 한 편집이 있어도 그 자리에서는 묻지 않는다(머무르면 계정 범위만 바뀐
 //  화면이 남는다). 묻는 것은 그 전, 로그아웃을 누른 순간이다(아래 logout).
-import { reloadNow, unloadHeld } from "./unloadGuard";
+import { reloadNow, setLeaving, unloadHeld } from "./unloadGuard";
 import type { Account, AuthConfig } from "../types";
 import { HttpError } from "./http";
 
@@ -245,11 +245,14 @@ export function useHubAuth() {
     //  계정·서버의 상태를 바꾸기 **전에** 묻는다: 바꾼 뒤에 새로고침만 막으면 화면이 옛 계정의 것으로 남는다(Codex 배포 전 재검토).
     if (unloadHeld() && !window.confirm("편집 탭에 저장하지 못한 변경이 있습니다. 로그아웃하면 그 변경은 사라집니다. 계속할까요?")) return false;
     if (!authConfig?.auth_enabled) {
+      // 응답을 기다리는 동안의 편집은 받지 않는다 — 위의 확인 뒤에 '저장 안 됨'이 새로 생기면 묻지 못한 채 아래 새로고침에 사라진다.
+      setLeaving(true);
       try {
         await api.sharedServerLogout();
       } catch {
         // 실패했으면 새로 고치지 않고 알린다(조작 규칙 41) — 전엔 실패를 삼키고 새로 고쳐, 허브에 세션이 남아 있어 로그인 화면 없이
         //  같은 계정으로 말없이 돌아왔다(로그아웃된 줄 안다).
+        setLeaving(false);
         flashMsg("로그아웃하지 못했습니다 — 잠시 뒤 다시 시도하세요.");
         return false;
       }
