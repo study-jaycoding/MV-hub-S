@@ -128,7 +128,8 @@ interface Props {
   onFolderAction: (kind: FolderMenuKind, projectId: string, path: string, name: string) => void | Promise<void>;
   // 최종 확정(Jay 2026-10-13 — 클립 메뉴의 '최종 선택' · 목록 단추의 '모두 최종으로 확정') — 앱의 것 그대로(공유 & 리뷰의 여러 장
   //  등급 처리와 같은 길: 바꿀 수 있는 것만 거르고, 요청하고, 결과를 알리고, 목록을 다시 받는다. 서버가 권한을 다시 확인한다).
-  //  canFinalize = 그 생성물에 내가 최종을 줄 수 있나(그 프로젝트의 supervisor·PM). 안 주면 두 줄 모두 없다.
+  //  canFinalize = 그 생성물에 내가 최종을 줄 수 있나(**그 프로젝트의 supervisor 와 전역 관리자** — PM 은 아니다: 서버의
+  //  /api/projects/my-finalize-roles 와 finalize 의 require_project_role(SUPERVISOR). 2026-10-13 격리 실측으로 확인). 안 주면 두 줄 모두 없다.
   review?: {
     canFinalize: (gen: Generation) => boolean;
     apply: (gens: Generation[], action: ReviewAction) => void | Promise<void>;
