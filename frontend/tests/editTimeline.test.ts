@@ -423,13 +423,15 @@ describe("트랙 더하기·빼기·옮기기", () => {
     expect(parseEditDoc(JSON.parse(JSON.stringify(next)))).toEqual(next); // 저장했다 읽어도 같다
   });
 
-  it("빈 트랙 모두 삭제 — 클립이 있는 트랙만 남기고 번호를 당긴다", () => {
-    const sparse = doc([clip("c1", "a", 2), clip("c1", "b", 5)], { tracksOff: [5], tracksLocked: [1], trackColors: { 5: "#46a758" } });
+  it("빈 트랙 모두 삭제 — 클립이 있는 트랙만 남기고 번호를 당긴다. 잠긴 트랙은 비어 있어도 남긴다", () => {
+    const sparse = doc([clip("c1", "a", 2), clip("c1", "b", 5)], { tracksOff: [5], tracksLocked: [3], trackColors: { 5: "#46a758" } });
     const next = deleteEmptyTracks(sparse)!;
-    expect(tracksOf(next)).toEqual({ a: 1, b: 2 });
-    expect(next).toMatchObject({ tracks: 2, tracksOff: [2], tracksLocked: [], trackColors: { 2: "#46a758" } });
-    expect(deleteEmptyTracks(next)).toBeNull(); // 더 지울 것이 없다
+    expect(tracksOf(next)).toEqual({ a: 1, b: 3 }); // 빈 V1·V4 가 빠진다 — 잠긴 빈 V3 은 V2 로 남는다(트랙 삭제가 잠긴 트랙을 거부하는 것과 같다)
+    expect(next).toMatchObject({ tracks: 3, tracksOff: [3], tracksLocked: [2], trackColors: { 3: "#46a758" } });
+    expect(deleteEmptyTracks(next)).toBeNull(); // 더 지울 것이 없다(남은 빈 줄은 잠긴 것뿐)
     expect(deleteEmptyTracks(emptyEditDoc())).toMatchObject({ tracks: 1 }); // 클립이 없어도 한 줄은 남는다
+    expect(deleteEmptyTracks(doc([], { tracksLocked: [2] }))).toMatchObject({ tracks: 1, tracksLocked: [1] }); // 잠긴 빈 줄이 그 한 줄이다
+    expect(deleteEmptyTracks(doc([clip("c1", "a", 1)], { tracks: 2, tracksLocked: [2, 9] }))).toBeNull(); // 없는 번호(9)의 잠금은 세지 않는다
   });
 
   it("트랙 색을 정하고 없앤다 — 저장된 값은 #rrggbb 만 받는다", () => {
