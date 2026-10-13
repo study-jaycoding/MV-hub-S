@@ -522,20 +522,27 @@ def _place_copy(
     gen_key: str,
     ext: str,
     books: export_names.Books,
+    ident: export_names.Ident,
 ) -> tuple[Path, bool]:
-    """원본을 이 생성물의 다빈치 이름(``<폴더 경로>_davinci_<번호 3자리>``)으로 놓는다 — (경로, 새로 썼나).
+    """원본을 이 생성물의 다빈치 이름(``<프로젝트>_<폴더 경로>_davinci_<작업자>_<번호 3자리>``)으로 놓는다 — (경로, 새로 썼나).
 
-    이름은 렌더 폴더의 장부가 정한다(``services/export_names.py``): 생성물마다 번호 하나이고 한 번 쓴
-    번호는 다시 쓰지 않는다. 같은 생성물을 또 보내면 **있는 파일을 그대로 쓴다**(사본을 만들지 않는다 —
-    Jay 2026-10-08, 09-02 의 "매번 다음 번호" 를 바꿈). 파일이 지워졌으면 같은 이름으로 다시 놓는다.
-    저장본(``…_share_…`` · ``…_fin_…``)과는 토큰이 달라 이름이 겹치지 않는다 — 서로의 파일을 쓰지도
-    건드리지도 않는다. 기존 파일은 어떤 경우에도 덮지 않는다.
+    이름은 렌더 폴더의 장부 v2 가 정한다(``services/export_names.py`` · docs/EXPORT_SYNC_DESIGN.md §7): 생성물마다
+    번호 하나이고(저장본·작업물과 **같은 번호**, 종류 글자만 다르다) 한 번 쓴 번호는 다시 쓰지 않는다. 같은 생성물을
+    또 보내면 **있는 파일을 그대로 쓴다**(사본을 만들지 않는다 — Jay 2026-10-08, 09-02 의 "매번 다음 번호" 를 바꿈).
+    파일이 지워졌으면 같은 이름으로 다시 놓는다. 저장본(``…_share_…`` · ``…_fin_…``)과는 종류 글자가 달라 이름이
+    겹치지 않는다 — 서로의 파일을 쓰지도 건드리지도 않는다. 기존 파일은 어떤 경우에도 덮지 않는다.
     """
     folder = _folder_dir(source_root, folder_path)
     if folder is None:
         raise ResolveTransferError("경로 안전성 위반")
-    book = books.get(folder_path, export_names.DAVINCI)
-    name = book.allocate(gen_key, ext, folder)
+    book = books.v2(folder_path)
+    kind = export_names.DAVINCI
+    # 번호는 종류와 무관한 한 줄이다 — 이 컷의 파일이 놓이는 두 폴더(컷 폴더·shared/)에 이미 있는 번호를 모두 건너뛴다.
+    name = book.allocate(ident, kind, ext, [folder, folder / project_folders.SHARED_SUBFOLDER])
+    # 번호를 받으며 장부를 다시 읽었을 수 있다 — 그사이 다른 PC 가 보낸 파일(이어지기 전 번호의 이름 포함)이 있으면 그것을 쓴다.
+    sent = _sent_copy(source_root, folder_path, gen_key, books, ident)
+    if sent is not None:
+        return sent, False
     # 다운로드 사이에 정션/경로가 바뀌지 않았는지 복사 직전 재검증한다.
     dest = project_folders.safe_dest(source_root, folder_path, name)
     if dest is None:
@@ -544,17 +551,20 @@ def _place_copy(
         for _attempt in range(_DONE_WAIT_TRIES):
             if not dest.exists():
                 if _copy_new(source, dest):
-                    book.mark_done(gen_key)
+                    book.mark_done(ident, kind)
                     return dest, True
                 continue  # 그 사이 다른 PC 가 같은 이름을 확정했다 — 아래에서 그 파일을 본다
-            # 이름이 같다는 것만으로 우리 파일로 보지 않는다 — 장부의 확정 표식이 있어야 한다.
+            # 이름이 같다는 것만으로 우리 파일로 보지 않는다 — 장부의 확정 표식이 있어야 한다. 다시 읽은 장부로 '전에 보낸 파일'을
+            # 다시 찾는다: 이 이름의 확정 파일이거나, 기다리는 사이 번호가 이어져 이 이름이 옛 번호의 확정 파일이 된 경우다.
             book.reload()
-            if dest.is_file() and dest.stat().st_size > 0 and book.is_done(gen_key):
-                return dest, False
+            sent = _sent_copy(source_root, folder_path, gen_key, books, ident)
+            if sent is not None:
+                return sent, False
             time.sleep(0.5)  # 방금 확정한 다른 PC 의 표식은 곧 따라온다
         # 표식이 끝내 없다(확정 직후 끊긴 전송 등) — 원본과 바이트가 같을 때만 우리 파일로 인정하고 표식을 채운다.
-        if dest.is_file() and _same_bytes(source, dest):
-            book.mark_done(gen_key)
+        # (다시 읽는 사이 이 생성물의 번호가 다른 번호로 이어졌으면 이 이름은 더는 내 이름이 아니다 — 표식을 적지 않는다.)
+        if dest.is_file() and book.name_of(ident, kind) == dest.name and _same_bytes(source, dest):
+            book.mark_done(ident, kind)
             return dest, False
     raise ResolveTransferError(f"같은 이름의 확인할 수 없는 파일이 있습니다: {name}")
 
@@ -572,20 +582,36 @@ def _same_bytes(first: Path, second: Path) -> bool:
                 return True
 
 
-def _sent_copy(source_root: Path, folder_path: str, gen_key: str, books: export_names.Books) -> Path | None:
+def _sent_copy(
+    source_root: Path, folder_path: str, gen_key: str, books: export_names.Books, ident: export_names.Ident
+) -> Path | None:
     """이 생성물을 전에 보낸 파일이 그대로 있으면 그 경로, 아니면 None — 읽기만 한다(번호를 만들지 않는다).
 
     장부가 이 생성물의 이름이라 하고 확정 표식도 있으며 파일이 실제로 있을 때만이다. 이때는 원본이 필요 없다 —
     로컬 원본이 정리됐거나 원본 주소가 만료돼도 이미 보낸 파일은 다시 보낼 수 있어야 한다(코덱스 리뷰 P1).
+    찾는 순서: 옛 규칙(§6 ``<폴더>_davinci_<번호>``)으로 보낸 파일 → §7 이름의 파일 → 같은 생성물이 예전 번호로 보낸 §7 파일.
     """
-    book = books.get(folder_path, export_names.DAVINCI)
-    name = book.name_of(gen_key)
-    if not name or not book.is_done(gen_key):
-        return None
-    dest = project_folders.safe_dest(source_root, folder_path, name)
-    if dest is None or not dest.is_file() or dest.stat().st_size == 0:
-        return None
-    return dest
+    old = books.get(folder_path, export_names.DAVINCI)
+    name = old.name_of(gen_key)
+    names = [name] if name and old.is_done(gen_key) else []
+    book = books.v2(folder_path)
+    if book.is_done(ident, export_names.DAVINCI):
+        names.append(book.name_of(ident, export_names.DAVINCI))
+    for name in (*names, *book.older_names(ident, export_names.DAVINCI)):
+        dest = project_folders.safe_dest(source_root, folder_path, name)
+        if dest is not None and dest.is_file() and dest.stat().st_size > 0:
+            return dest
+    return None
+
+
+def _link_keys(books: export_names.Books, folder_path: str, ident: export_names.Ident) -> None:
+    """전에 보낸 파일을 그대로 쓸 때 — 이 PC 가 새로 알게 된 열쇠(나중에 채워진 ``job_id``)도 같은 번호를 가리키게 적는다
+    (저장의 '건너뜀'과 같다). 안 적으면 그 열쇠만 아는 PC 가 같은 영상을 새 번호로 한 번 더 놓는다(Codex 코드 리뷰).
+    다 적혀 있으면 NAS 에 가지 않고, 적지 못해도 전송은 그대로다. §6 이름의 파일을 쓰는 경우에는 할 일이 없다."""
+    try:
+        books.v2(folder_path).link(ident)
+    except export_names.RegistryError:
+        pass
 
 
 def _prepare_destination(source: Path, dest: Path) -> int:
@@ -672,7 +698,7 @@ async def transfer_generations(
         "items": [],
     }
 
-    work: list[tuple[dict[str, Any], dict[str, Any], str, str]] = []
+    work: list[tuple[dict[str, Any], dict[str, Any], str, str, export_names.Ident]] = []
     for gen in generations:
         gen_id = str(gen.get("id") or "")
         folder_path = str(gen.get("folder_path") or "")
@@ -709,7 +735,9 @@ async def transfer_generations(
                 reason = "경로 안전성 위반"
             else:
                 # 장부의 열쇠 = job_id 우선(공유할 때 쓰는 앵커와 같은 규칙 — 만든 PC 와 받은 PC 가 같은 영상을 같은 번호로 본다).
-                work.append((item, asset, str(gen.get("job_id") or gen_id), ext))
+                # 이름의 재료(프로젝트·작업자 이름)는 카드에 실려 온 것 — 카드에 보이는 그 이름이다(§7).
+                ident = export_names.Ident(project_id, gen.get("project_name"), gen.get("job_id"), gen_id, gen.get("creator_name"))
+                work.append((item, asset, str(gen.get("job_id") or gen_id), ext, ident))
         if reason:
             item["status"] = "error"
             item["error"] = reason
@@ -718,12 +746,14 @@ async def transfer_generations(
     await asyncio.to_thread(_write_manifest, manifest_path, manifest)
 
     books = export_names.Books(source_root)  # 이름 장부 — 전송 한 건 동안 폴더별로 한 번만 읽는다
-    for index, (item, asset, gen_key, ext) in enumerate(work, 1):
+    for index, (item, asset, gen_key, ext, ident) in enumerate(work, 1):
         try:
             # 전에 보낸 파일이 그대로 있으면 원본을 찾지 않고 그 파일을 쓴다.
-            dest = await asyncio.to_thread(_sent_copy, source_root, item["folder_path"], gen_key, books)
+            dest = await asyncio.to_thread(_sent_copy, source_root, item["folder_path"], gen_key, books, ident)
             written = False
-            if dest is None:
+            if dest is not None:
+                await asyncio.to_thread(_link_keys, books, item["folder_path"], ident)
+            else:
                 source = await _cached_source(asset)
                 dest, written = await asyncio.to_thread(
                     _place_copy,
@@ -733,6 +763,7 @@ async def transfer_generations(
                     gen_key,
                     ext,
                     books,
+                    ident,
                 )
             item["filename"] = dest.name
             item["local_path"] = str(dest)

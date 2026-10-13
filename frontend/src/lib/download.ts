@@ -1,8 +1,10 @@
 // 결과물 다운로드 공용 헬퍼 — 카드 그리드·히스토리 보드·에셋 셀이 똑같이 복붙하던 것.
 import type { Generation } from "../types";
 import { postAssetsUpdated } from "./assetBroadcast";
+import { chunked } from "./batching";
 import { saveToDownloadDir } from "./downloadDir";
 import { flashMsg } from "./flash";
+import { jsonBody, jsonFetch } from "./http";
 import { withQuery } from "./url";
 
 // 다운로드 — bytes 를 받아 blob 으로 저장한다(파일명 보장 + 크롬 다운로드 목록 표시). 원격 URL
@@ -124,12 +126,96 @@ export async function download(url: string, name: string, genId?: string): Promi
 // bulk 는 downloadMany 가 시작/결과 토스트를 따로 내므로 이 래퍼를 쓰지 않는다(토스트 중복 방지).
 // genId 를 주면 허브가 파일에 각인해서 내려준다(나중에 캔버스에 끌어다 놓으면 복원). 폴더에서
 // 고른 외부 파일처럼 생성물이 아닌 것은 genId 없이 부르면 된다.
-export async function downloadOne(url: string, name: string, genId?: string): Promise<boolean> {
+// announced = 시작 토스트를 부르는 쪽이 이미 띄웠다(downloadGeneration — 이름을 받기 전에 먼저 알린다).
+export async function downloadOne(url: string, name: string, genId?: string, announced = false): Promise<boolean> {
   const joined = inFlight.has(fileKey(url, name)); // 받는 중에 다시 누른 것 — 새로 받지 않는다
-  flashMsg(joined ? "이미 받는 중입니다…" : "1개 다운로드 시작…");
+  if (joined || !announced) flashMsg(joined ? "이미 받는 중입니다…" : "1개 다운로드 시작…");
   const { ok, savedToDir } = await _download(url, name, genId);
   if (savedToDir && !joined) notifyAssetsMaybeChanged();
   return ok;
+}
+
+// ── 생성물의 다운로드 이름 = 우리 파일 이름 규칙(docs/EXPORT_SYNC_DESIGN.md §7) ──────────────────────
+// `<프로젝트>_<폴더>_<work|share|fin>_<작업자>_<번호>` — 공유·최종 저장, Resolve 보내기와 같은 번호다. 이름은 허브가 정한다
+// (번호의 장부가 렌더 폴더에 있다). **실제로 받을 때만** 부른다 — 부르는 것만으로 번호가 생긴다(미리보기·목록에서 부르지 않는다).
+// numbered=false = 번호를 받지 못해(렌더 폴더 미연결 등) 같은 꼴의 임시 이름을 받았다.
+export type DownloadNameInfo = { name: string; numbered: boolean };
+const DOWNLOAD_NAMES_LIMIT = 200; // 백엔드 /api/download/names 계약 상한
+const noNumberNotice = (count: number, total: number) =>
+  `${total > 1 ? `${count}개는 ` : ""}번호를 받지 못해 임시 이름으로 받았습니다 — 계속되면 프로젝트의 렌더 폴더 연결을 확인하세요`;
+
+// 이름을 묻는 중인 생성물 → 그 답. 단건과 일괄이 같은 생성물을 동시에 물으면 한 답을 같이 쓴다 — 따로 물어 한쪽만 번호를 못
+// 받으면 같은 파일을 두 이름으로 받는다(주소·이름으로 거르는 중복 방지를 빠져나간다, Codex 코드 리뷰).
+const nameRequests = new Map<string, Promise<DownloadNameInfo | undefined>>();
+// 허브(NAS)가 멎어도 다운로드는 시작한다 — 이만큼 기다려도 답이 없으면 옛 이름으로 받는다(처음 받는 이름은 건마다 NAS 에 적는다).
+const namesTimeoutMs = (count: number) => Math.min(60_000, 10_000 + count * 300);
+
+function requestDownloadNames(ids: string[]): Promise<Record<string, DownloadNameInfo>> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), namesTimeoutMs(ids.length));
+  return jsonFetch<{ names: Record<string, DownloadNameInfo> }>("/api/download/names", {
+    method: "POST",
+    body: jsonBody({ gen_ids: ids }),
+    signal: controller.signal,
+  })
+    .then((answer) => answer.names, () => ({})) // 이름을 못 받아도 다운로드는 막지 않는다 — 부르는 쪽이 옛 이름으로 받고 알린다
+    .finally(() => clearTimeout(timer));
+}
+
+export async function generationDownloadNames(genIds: string[]): Promise<Record<string, DownloadNameInfo>> {
+  const ids = [...new Set(genIds)];
+  let previous: Promise<unknown> | null = null;
+  for (const page of chunked(ids.filter((id) => !nameRequests.has(id)), DOWNLOAD_NAMES_LIMIT)) {
+    // 첫 묶음은 바로 묻고, 다음 묶음은 앞의 것이 끝난 뒤에 — 허브가 번호를 한 요청씩 준다(동시에 물으면 뒤의 것은 임시 이름을 받는다)
+    const request: Promise<Record<string, DownloadNameInfo>> = previous ? previous.then(() => requestDownloadNames(page)) : requestDownloadNames(page);
+    previous = request;
+    for (const id of page) {
+      const mine: Promise<DownloadNameInfo | undefined> = request
+        .then((names) => names[id])
+        .finally(() => { if (nameRequests.get(id) === mine) nameRequests.delete(id); });
+      nameRequests.set(id, mine);
+    }
+  }
+  const waiting = ids.map((id) => [id, nameRequests.get(id)] as const); // 기다리기 전에 모아 둔다(끝난 것은 지도에서 빠진다)
+  const names: Record<string, DownloadNameInfo> = {};
+  for (const [id, answer] of waiting) {
+    const info = await answer;
+    if (info) names[id] = info;
+  }
+  return names;
+}
+
+// 생성물 하나 받기(카드·보드·크게 보기 공용) — 허브가 정한 이름으로 받는다. fallbackName = 허브가 이름을 주지 못했을 때의 옛 이름.
+// 이름을 받는 동안 다시 누르면 받던 것을 같이 기다린다(조작 규칙 39 — 이름 요청도, 번호도 하나만).
+const naming = new Map<string, Promise<boolean>>();
+export function downloadGeneration(url: string, genId: string, fallbackName: string): Promise<boolean> {
+  const running = naming.get(genId);
+  if (running) {
+    flashMsg("이미 받는 중입니다…");
+    return running;
+  }
+  flashMsg("1개 다운로드 시작…");
+  const task = (async () => {
+    const named = (await generationDownloadNames([genId]))[genId];
+    const ok = await downloadOne(url, named?.name ?? fallbackName, genId, true);
+    if (ok && !named?.numbered) flashMsg(noNumberNotice(1, 1));
+    return ok;
+  })().finally(() => naming.delete(genId));
+  naming.set(genId, task);
+  return task;
+}
+
+// 일괄 받기의 이름을 허브가 정한 것으로 바꾼다 — 이름을 못 받은 건은 옛 이름 그대로 둔다.
+// notice = 번호를 받지 못한 건이 있을 때 다 받은 뒤에 띄울 안내(없으면 null).
+export async function nameGenerationItems<T extends { name: string; genId: string }>(
+  items: T[],
+): Promise<{ items: T[]; notice: string | null }> {
+  const names = await generationDownloadNames(items.map((item) => item.genId));
+  const unnumbered = items.filter((item) => !names[item.genId]?.numbered).length;
+  return {
+    items: items.map((item) => ({ ...item, name: names[item.genId]?.name ?? item.name })),
+    notice: unnumbered ? noNumberNotice(unnumbered, items.length) : null,
+  };
 }
 
 // 메모리에서 만든 텍스트(예: .md 지시문)를 파일로 저장 — Blob+object URL(_anchor 재사용).
@@ -139,8 +225,9 @@ export function downloadText(filename: string, text: string, mime = "text/plain"
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-// 다운로드 파일명 = 레퍼런스로 추가할 때 쓰는 이름(addRefFromGen 과 동일 규칙):
-// 소스명(@이름) 우선, 없으면 'img-/vid-{id 앞 8자}'. 경로 금지문자는 _ 로. 타입별 확장자.
+// 옛 다운로드 파일명 — 지금은 허브가 이름을 주지 못했을 때(downloadGeneration·nameGenerationItems 의 대체값)만 쓴다.
+// 레퍼런스로 추가할 때 쓰는 이름(addRefFromGen 과 동일 규칙): 소스명(@이름) 우선, 없으면 'img-/vid-{id 앞 8자}'.
+// 경로 금지문자는 _ 로. 타입별 확장자.
 export function downloadName(gen: Generation, type: string): string {
   const isVid = type === "video";
   const base = (gen.source_name || `${isVid ? "vid" : "img"}-${gen.id.slice(0, 8)}`)

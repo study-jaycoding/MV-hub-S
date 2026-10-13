@@ -15,6 +15,7 @@ def _notifies_library(method: str, path: str, status: int) -> bool:
 def test_polling_and_estimate_posts_do_not_broadcast_synced():
     paths = (
         "/api/cost",
+        "/api/download/names",
         "/api/generations/batch",
         "/api/generations/comment-counts",
         "/api/ingest/known-jobs",

@@ -23,7 +23,12 @@ from fastapi import HTTPException
 from app import db, repo
 from app.repo import manage as repo_manage
 from app.routers import manage as manage_router
-from app.services import file_stamp, final_export, project_folders
+from app.services import export_names, file_stamp, final_export, project_folders
+
+
+def v2(kind: str, seq: int) -> str:
+    """§7 이름 — 픽스처의 프로젝트 `P1` · 컷 `ep/c1` · 작업자 이름 없음(`noname`). 번호는 종류와 무관한 한 줄이다."""
+    return f"P1_ep_c1_{kind}_noname_{seq:03d}.png"
 
 
 class SaveFinalsKindTests(unittest.TestCase):
@@ -132,7 +137,7 @@ class SaveFinalsKindTests(unittest.TestCase):
         self.assertEqual((status["shared_supported"], status["shared_error"]), (False, "공유 서버 응답 없음"))
         self.assertEqual([t["gen_id"] for t in status["targets"]], ["final0000001"])  # 최종 목록은 그대로 뜬다
 
-        async def locked(project_id, request, render, folder_path=None, kind="final", run=None):
+        async def locked(project_id, request, render, folder_path=None, kind="final", run=None, books=None):
             if kind == "shared":
                 raise HTTPException(status_code=400, detail="공유 서버 업데이트가 필요합니다")
             return {"saved": 1, "skipped": 0, "errors": []}
@@ -229,7 +234,7 @@ class SaveFinalsKindTests(unittest.TestCase):
                 mock.patch.object(file_stamp, "stamp_file", return_value=True):
             out = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="shared"))
         self.assertEqual((out["saved"], [e["gen_id"] for e in out["errors"]]), (1, ["held00000001"]))
-        self.assertEqual((render / "ep" / "c1" / "shared" / "ep_c1_share_001.png").read_bytes(), b"from-cdn")
+        self.assertEqual((render / "ep" / "c1" / "shared" / v2("share", 1)).read_bytes(), b"from-cdn")  # 저장 못 한 것은 번호를 차지하지 않는다
 
     def _mirror_fixture(self):
         render = Path(self.tmp.name) / "Render"
@@ -275,7 +280,7 @@ class SaveFinalsKindTests(unittest.TestCase):
         self.assertTrue(out["quarantine"].startswith("_mvhub_removed/"))
         self.assertEqual((bucket / "ep" / "c1" / "c1_oldfinal0000.png").read_bytes(), b"ours-c1_oldfinal0000.png")  # 지우지 않고 옮긴다
         self.assertTrue((bucket / "ep" / "c1" / "shared" / "c1_gone00000000.png").is_file())
-        for kept in ("c1_unconfirmed0.png", "c1_justsaved000.png", "사람이넣은파일.png", "ep_c1_fin_001.png"):
+        for kept in ("c1_unconfirmed0.png", "c1_justsaved000.png", "사람이넣은파일.png", v2("fin", 1)):
             self.assertTrue((cut / kept).is_file(), kept)  # 확인 안 받은 것·방금 쓰인 것·사람 파일·대상 파일은 그대로
         self.assertFalse(list((render / "_mvhub_sync").glob("*.lock")))  # 잠금은 풀렸다
 
@@ -294,7 +299,7 @@ class SaveFinalsKindTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 409)
         self.assertIn("지우세요", str(ctx.exception.detail))  # 죽은 잠금은 사람이 지운다 — 어디를 지울지 알려 준다
         self.assertEqual(lock.read_text(encoding="ascii"), "someone-else")
-        self.assertFalse((cut / "ep_c1_fin_001.png").exists())  # 잠금을 못 잡으면 저장도 하지 않는다
+        self.assertFalse(list(cut.glob("*_fin_*")))  # 잠금을 못 잡으면 저장도 하지 않는다
         # 내 잠금이 중간에 남의 것으로 바뀌었으면(누가 손으로 지우고 다른 PC 가 잡음) 풀 때 건드리지 않는다
         lock.unlink()
         mine, token = manage_router._nas_lock_acquire(render.resolve(), "p1")
@@ -444,10 +449,11 @@ class SaveFinalsKindTests(unittest.TestCase):
         self.assertEqual((first["saved"], first["skipped"], first["errors"]), (3, 0, []))
         self.assertEqual((again["saved"], again["skipped"]), (0, 3))
         cut = render / "ep" / "c1"
-        # 이름 = <폴더 마디 전부>_<fin|share>_<번호 3자리>. 번호는 폴더·종류마다 따로 센다. 공유본은 shared/ 안.
-        self.assertEqual(sorted(f.name for f in cut.iterdir() if f.is_file()), ["ep_c1_fin_001.png"])
-        self.assertEqual(sorted(f.name for f in (cut / "shared").iterdir()), ["ep_c1_share_001.png", "ep_c1_share_002.png"])
-        self.assertEqual(sorted(t["filename"] for t in status["targets"]), ["ep_c1_fin_001.png", "ep_c1_share_001.png", "ep_c1_share_002.png"])
+        # 이름 = <프로젝트>_<폴더 마디 전부>_<fin|share>_<작업자>_<번호 3자리>(§7). 번호는 컷·작업자마다 한 줄 — 종류가 달라도
+        # 같은 줄에서 이름을 처음 받은 순서다(최종 001 → 공유 002·003). 공유본은 shared/ 안.
+        self.assertEqual(sorted(f.name for f in cut.iterdir() if f.is_file()), [v2("fin", 1)])
+        self.assertEqual(sorted(f.name for f in (cut / "shared").iterdir()), [v2("share", 2), v2("share", 3)])
+        self.assertEqual(sorted(t["filename"] for t in status["targets"]), [v2("fin", 1), v2("share", 2), v2("share", 3)])
         self.assertTrue(status["shared_supported"])
         self.assertEqual({(t["kind"], t["saved"]) for t in status["targets"]}, {("final", True), ("shared", True)})
         # 표의 '저장한 때' — 대상마다 대장의 저장 시각을 함께 준다(저장 이력은 최근 20건뿐이라 표를 못 채운다)
@@ -646,7 +652,7 @@ class SaveFinalsKindTests(unittest.TestCase):
         self.assertEqual(sorted(f.name for f in cut.iterdir() if f.is_file()), ["c1_final0000001.png"])  # 이름도 바꾸지 않는다
         self.assertEqual(old.read_bytes(), b"saved-before-the-rename-rule")
         self.assertEqual(status["final0000001"], (True, "c1_final0000001.png"))  # 표에는 실제 이름
-        self.assertEqual({name for saved, name in status.values() if saved}, {"c1_final0000001.png", "ep_c1_share_001.png", "ep_c1_share_002.png"})
+        self.assertEqual({name for saved, name in status.values() if saved}, {"c1_final0000001.png", v2("share", 1), v2("share", 2)})  # 옛 파일은 번호를 받지 않는다
 
     def test_another_pc_knows_a_numbered_file_by_the_registry_not_by_its_name(self):
         render, cut, patches = self._numbered_fixture()
@@ -662,7 +668,9 @@ class SaveFinalsKindTests(unittest.TestCase):
             self.assertEqual(sorted(f.name for f in (cut / "shared").iterdir()), names)
             # 확정 표식이 없으면(장부만 있고 파일은 남이 갖다 놓은 것일 수 있다) 이름이 같다는 것만으로는 인정하지 않는다
             self._forget_this_pc()
-            for mark in (render / "_mvhub_sync" / "names").rglob("d.share.*"):
+            marks = list((render / "_mvhub_sync" / "names2").rglob("d.share.*"))
+            self.assertEqual(len(marks), 2)
+            for mark in marks:
                 mark.unlink()
             blocked = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="shared"))
         self.assertEqual((blocked["saved"], blocked["skipped"], {e["reason"] for e in blocked["errors"]}), (0, 0, {manage_router._DEST_CONFLICT}))
@@ -670,15 +678,17 @@ class SaveFinalsKindTests(unittest.TestCase):
 
     def test_a_number_already_on_disk_is_skipped_and_never_overwritten(self):
         render, cut, patches = self._numbered_fixture()
-        foreign = cut / "shared" / "ep_c1_share_001.png"
+        foreign = cut / "shared" / v2("share", 1)
         foreign.write_bytes(b"someone-put-this-here")  # 장부에 없는 파일이 번호 이름을 차지하고 있다
+        other_kind = cut / v2("fin", 2)
+        other_kind.write_bytes(b"a-final-with-number-2")  # 번호는 종류와 무관한 한 줄 — 컷 폴더의 최종본 번호도 건너뛴다
         with ExitStack() as stack:
             for item in patches:
                 stack.enter_context(item)
             out = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="shared"))
         self.assertEqual((out["saved"], out["errors"]), (2, []))
-        self.assertEqual(foreign.read_bytes(), b"someone-put-this-here")
-        self.assertEqual(sorted(f.name for f in (cut / "shared").iterdir()), ["ep_c1_share_001.png", "ep_c1_share_002.png", "ep_c1_share_003.png"])
+        self.assertEqual((foreign.read_bytes(), other_kind.read_bytes()), (b"someone-put-this-here", b"a-final-with-number-2"))
+        self.assertEqual(sorted(f.name for f in (cut / "shared").iterdir()), [v2("share", 1), v2("share", 3), v2("share", 4)])
 
     def test_a_file_that_appears_at_the_reserved_name_is_not_overwritten(self):
         render, cut, patches = self._numbered_fixture()
@@ -697,15 +707,242 @@ class SaveFinalsKindTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(manage_router.time, "sleep"))
             out = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="final"))
         self.assertEqual((out["saved"], [e["reason"] for e in out["errors"]]), (0, [manage_router._DEST_CONFLICT]))
-        self.assertEqual((cut / "ep_c1_fin_001.png").read_bytes(), b"appeared-in-between")
-        self.assertEqual([f.name for f in cut.iterdir() if f.is_file()], ["ep_c1_fin_001.png"])  # 임시 파일도 남기지 않는다
+        self.assertEqual((cut / v2("fin", 1)).read_bytes(), b"appeared-in-between")
+        self.assertEqual([f.name for f in cut.iterdir() if f.is_file()], [v2("fin", 1)])  # 임시 파일도 남기지 않는다
+
+    # ── 이름 v2(2026-10-13, §7) ───────────────────────────────────────────────
+    def test_an_old_server_without_name_facts_keeps_the_previous_names(self):
+        """위임 모드에서 서버가 §7 재료(job_id·creator_name·project_name)를 주지 않으면(옛 서버) 추측으로 채우지 않고 §6 이름 그대로 저장한다."""
+        render, cut, patches = self._numbered_fixture()
+        old_server = {"kind": "final", "targets": [
+            {"gen_id": "final0000001", "folder_path": "ep/c1", "filename": "c1_final0000001.png", "media_type": "image", "reason": None}]}
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            stack.enter_context(mock.patch.object(manage_router._proxy, "proxying", return_value=True))
+            stack.enter_context(mock.patch.object(manage_router._proxy, "proxy_json", return_value=old_server))
+            stack.enter_context(mock.patch.object(manage_router._proxy, "stream_download", side_effect=lambda path, tmp: tmp.write_bytes(b"from-server")))
+            out = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="final"))
+        self.assertEqual((out["saved"], out["errors"]), (1, []))
+        self.assertEqual([f.name for f in cut.iterdir() if f.is_file()], ["ep_c1_fin_001.png"])
+        self.assertFalse((render / "_mvhub_sync" / "names2").exists())  # v2 장부는 건드리지도 않는다
+
+    def test_files_saved_under_the_previous_numbered_names_are_not_saved_again(self):
+        """§6 이름(`<폴더>_<share|fin>_<번호>`)으로 이미 저장된 파일은 그대로 '저장됨'이다 — §7 이름으로 한 번 더 저장하지 않는다."""
+        render, cut, patches = self._numbered_fixture()
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            with mock.patch.object(manage_router, "_ident_of", return_value=None):  # 규칙이 바뀌기 전의 저장
+                asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="all"))
+            before = sorted(f.name for f in render.rglob("*.png"))
+            again = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="all"))
+            self._forget_this_pc()  # 다른 PC — 옛 장부(names/)와 그 확정 표식으로 알아본다
+            other = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="all"))
+            compare = manage_router.save_finals_compare("p1", mock.Mock())
+        self.assertEqual(before, ["ep_c1_fin_001.png", "ep_c1_share_001.png", "ep_c1_share_002.png"])
+        self.assertEqual([(o["saved"], o["skipped"], o["errors"]) for o in (again, other)], [(0, 3, [])] * 2)
+        self.assertEqual(sorted(f.name for f in render.rglob("*.png")), before)
+        self.assertEqual((compare["same"], compare["to_add"], compare["extra"], compare["blocked"]), (3, [], [], []))
+
+    def test_each_worker_has_its_own_number_line_and_a_changed_kind_keeps_the_number(self):
+        """번호는 '컷 폴더 × 작업자' 한 줄 — 작업자가 다르면 각자 001 부터다. 공유본이 최종이 되면 종류 글자만 바뀌고 번호는 그대로다."""
+        render, cut, patches = self._numbered_fixture()
+        with db.get_connection() as conn:
+            conn.executemany("INSERT INTO creator(uid, name) VALUES(?,?)", [("u_me", "Jay Lee"), ("u_kim", "김 작가")])
+            conn.execute("UPDATE generation SET creator_uid='u_kim' WHERE id='held00000001'")
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="all"))
+            first = {t["gen_id"]: t["filename"] for t in manage_router.save_finals_status("p1", mock.Mock())["targets"]}
+            with db.get_connection() as conn:
+                conn.execute("UPDATE generation SET is_final=1 WHERE id='shared000001'")  # 공유본이 최종으로 올라갔다
+            out = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="all"))
+            after = {t["gen_id"]: (t["kind"], t["filename"]) for t in manage_router.save_finals_status("p1", mock.Mock())["targets"]}
+        self.assertEqual(first, {"final0000001": "P1_ep_c1_fin_Jay_Lee_001.png", "shared000001": "P1_ep_c1_share_Jay_Lee_002.png",
+                                 "held00000001": "P1_ep_c1_share_김_작가_001.png"})
+        self.assertEqual((out["saved"], out["skipped"], out["errors"]), (1, 2, []))
+        self.assertEqual(after["shared000001"], ("final", "P1_ep_c1_fin_Jay_Lee_002.png"))  # 종류만 fin 으로 — 번호 002 그대로
+        self.assertTrue((cut / "shared" / "P1_ep_c1_share_Jay_Lee_002.png").is_file())  # 앞서 저장한 공유본은 지우지 않는다(정리는 미러의 일)
+
+    def test_a_server_that_stops_sending_name_facts_does_not_make_the_hub_forget_v2_files(self):
+        """§7 이름으로 저장한 뒤 서버가 옛 판으로 돌아가(이름 재료 없음) 다른 PC 가 저장해도 — 장부 v2 로 알아보고 §6 이름으로 또 저장하지 않는다."""
+        render, cut, patches = self._numbered_fixture()
+        fetched = []
+
+        def old_server(method, path, params=None, **_kwargs):
+            facts = [{k: t[k] for k in ("gen_id", "folder_path", "filename", "media_type", "reason")}
+                     for t in manage_router._save_finals_targets_facts("p1", params["kind"])]
+            return {"kind": params["kind"], "targets": facts}
+
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="all"))
+            before = sorted(f.name for f in render.rglob("*.png"))
+            self._forget_this_pc()  # 다른 PC — 이 PC 의 대장으로는 알 수 없다
+            stack.enter_context(mock.patch.object(manage_router._proxy, "proxying", return_value=True))
+            stack.enter_context(mock.patch.object(manage_router._proxy, "proxy_json", side_effect=old_server))
+            stack.enter_context(mock.patch.object(manage_router._proxy, "stream_download", side_effect=lambda path, tmp: fetched.append(path)))
+            out = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="all"))
+            compare = manage_router.save_finals_compare("p1", mock.Mock())
+        self.assertEqual(before, [v2("fin", 1), v2("share", 2), v2("share", 3)])
+        self.assertEqual((out["saved"], out["skipped"], out["errors"], fetched), (0, 3, [], []))
+        self.assertEqual(sorted(f.name for f in render.rglob("*.png")), before)
+        self.assertEqual((compare["same"], compare["to_add"], compare["extra"]), (3, [], []))
+
+    def test_a_file_this_pc_recorded_for_a_target_is_its_file_whatever_the_name(self):
+        """이 PC 의 대장이 지금 대상을 그 목적지 폴더의 어떤 파일에 저장했다고 기억하면 — 이름이 어느 규칙으로도 읽히지 않아도 — 그 파일은
+        '새로 저장할 것'도 '폴더에만 남은 것'도 아니다(둘 다가 되면 미러가 멀쩡한 파일을 치운다, Codex 코드 리뷰 P1)."""
+        render, cut, patches = self._numbered_fixture()
+        odd = cut / "P1_ep_c1_fin_ep_c1_share_kim_001.png"  # 종류를 가릴 수 없는 이름(작업자 이름에 폴더·종류 글자가 다 들어 있다)
+        odd.write_bytes(b"saved-under-a-name-nobody-can-parse")
+        repo_manage.record_export("final0000001", str(odd.resolve()), "p1")
+        ours = {file_stamp.KEY_GEN: "final0000001", file_stamp.KEY_HUB: file_stamp.HUB_TAG}
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            stack.enter_context(mock.patch.object(file_stamp, "read_stamp", side_effect=lambda path: ours if path == odd else {}))
+            compare = manage_router.save_finals_compare("p1", mock.Mock())
+            out = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="final"))
+        self.assertEqual(({t["gen_id"] for t in compare["to_add"]}, compare["extra"], compare["same"]), ({"shared000001", "held00000001"}, [], 1))
+        self.assertEqual((out["saved"], out["skipped"], out["errors"]), (0, 1, []))
+        self.assertEqual([f.name for f in cut.iterdir() if f.is_file()], [odd.name])
+
+    def test_meeting_a_saved_file_again_links_a_job_id_that_was_filled_in_later(self):
+        """job_id 가 없을 때 저장한 파일 — 나중에 job_id 가 채워진 뒤 다시 저장(건너뜀)하면 그 job_id 로도 같은 번호를 찾게 적는다.
+        안 적으면 job_id 만 같은 다른 PC(받은 쪽 — id 가 다르다)가 같은 생성물에 새 번호를 준다(Codex 코드 리뷰 P1)."""
+        render, cut, patches = self._numbered_fixture()
+        received = export_names.Ident("p1", "P1", "job-final0000001", "id-on-another-pc", None)
+        with db.get_connection() as conn:
+            conn.execute("UPDATE generation SET job_id=NULL WHERE id='final0000001'")
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="final"))
+            self.assertIsNone(export_names.NameBook2(render, "ep/c1").name_of(received, "fin"))
+            with db.get_connection() as conn:
+                conn.execute("UPDATE generation SET job_id='job-final0000001' WHERE id='final0000001'")
+            again = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="final"))
+        self.assertEqual((again["saved"], again["skipped"], again["errors"]), (0, 1, []))
+        self.assertEqual(export_names.NameBook2(render, "ep/c1").name_of(received, "fin"), v2("fin", 1))
+
+    def test_a_shared_file_saved_under_an_earlier_number_is_not_saved_again_after_the_numbers_are_joined(self):
+        """id 로만 알던 때 공유본을 001 로 저장했다 → 그사이 job_id 만 아는 다른 PC 가 같은 생성물에 002 를 줬다 → job_id 가 채워져 001 이
+        002 로 이어졌다. 그 뒤에 온 PC(대장 없음)는 지금 이름 `…_share_…_002` 만 보면 이미 있는 `…_001` 공유본을 놓친다(Codex 코드 리뷰 P1)."""
+        render, cut, patches = self._numbered_fixture()
+        elsewhere = export_names.Ident("p1", "P1", "job-x", "id-on-another-pc", None)
+        with db.get_connection() as conn:
+            conn.execute("UPDATE generation SET job_id=NULL WHERE id='shared000001'")
+            conn.execute("DELETE FROM share WHERE generation_id='held00000001'")  # 공유본 하나만 두고 본다
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            stack.enter_context(mock.patch.object(file_stamp, "read_stamp", return_value={}))  # 각인 없음 — 장부만이 증거다
+            asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="shared"))
+            other_pc = export_names.NameBook2(render, "ep/c1")
+            other_pc.allocate(elsewhere, "fin", ".png", [cut, cut / "shared"])  # job_id 만 같은 PC 가 그사이 002 를 줬다
+            with db.get_connection() as conn:
+                conn.execute("UPDATE generation SET job_id='job-x' WHERE id='shared000001'")
+            asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="shared"))  # 건너뜀 — 이때 001 이 002 로 이어진다
+            self.assertEqual(export_names.NameBook2(render, "ep/c1").name_of(elsewhere, "share"), v2("share", 2))
+            self._forget_this_pc()  # 뒤에 온 PC
+            compare = manage_router.save_finals_compare("p1", mock.Mock())
+            out = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="shared"))
+        # 공유본은 '같음'(옛 번호 이름의 파일을 알아봤다) — 새로 저장할 것은 아직 저장한 적 없는 최종본뿐이다
+        self.assertEqual((compare["same"], [t["gen_id"] for t in compare["to_add"]], compare["extra"], compare["blocked"]), (1, ["final0000001"], [], []))
+        self.assertEqual((out["saved"], out["skipped"], out["errors"]), (0, 1, []))
+        self.assertEqual([f.name for f in (cut / "shared").iterdir()], [v2("share", 1)])  # 002 이름으로 또 저장하지 않았다
+
+    def test_a_ledger_read_earlier_is_refreshed_before_falling_back_to_the_previous_names(self):
+        """이름 재료가 없는 사실(옛 서버)로 저장할 때 — 읽어 둔 장부에 v2 배정이 없다고 §6 이름으로 가기 전에 장부를 다시 본다.
+        그사이 다른 PC 가 v2 로 배정했으면 그 이름이다(Codex 코드 리뷰 P1)."""
+        render, cut, patches = self._numbered_fixture()
+        books = export_names.Books(render)
+        self.assertIsNone(books.v2("ep/c1").name_of(export_names.Ident("p1", None, None, "final0000001", None, named=False), "fin"))
+        named = export_names.Ident("p1", "P1", "job-final0000001", "final0000001", None)
+        export_names.NameBook2(render, "ep/c1").allocate(named, "fin", ".png", [cut, cut / "shared"])  # 다른 PC 가 그사이 v2 로 배정했다
+        bare = export_names.Ident("p1", None, None, "final0000001", None, named=False)
+        dest, _book = manage_router._claim_export_name(render, "final", "ep/c1", "c1_final0000001.png", "final0000001", books, bare)
+        self.assertEqual(dest.name, v2("fin", 1))
+        self.assertFalse((render / "_mvhub_sync" / "names").exists())  # §6 장부에 번호를 만들지 않았다
+
+    def test_a_number_joined_to_another_while_the_file_was_being_copied_is_not_written_under_the_old_name(self):
+        """원본을 받는 동안(길면 몇 분) 다른 PC 가 이 생성물의 번호를 다른 번호로 잇고 그 이름으로 저장했다 — 받은 파일을 옛 번호
+        이름으로 확정하면 같은 생성물의 최종본이 둘이 된다. 확정 직전에 이름을 다시 받는다(Codex 코드 리뷰 P1)."""
+        render, cut, patches = self._numbered_fixture()
+        both = export_names.Ident("p1", "P1", "job-x", "final0000001", None)
+        elsewhere = export_names.Ident("p1", "P1", "job-x", "id-on-another-pc", None)
+        with db.get_connection() as conn:
+            conn.execute("UPDATE generation SET job_id=NULL WHERE id='final0000001'")  # 이 PC 는 아직 id 로만 안다
+        export_names.NameBook2(render, "ep/c1").allocate(elsewhere, "fin", ".png", [cut, cut / "shared"])  # job_id 만 같은 PC 의 001
+        real = manage_router.shutil.copy2
+        joined = []
+
+        def slow_copy(src, tmp):
+            if not joined:  # 받는 동안: 두 열쇠를 다 아는 PC 가 번호를 잇고(002 → 001) 그 이름으로 저장을 끝냈다
+                other_pc = export_names.NameBook2(render, "ep/c1")
+                other_pc.link(both)
+                joined.append(other_pc.name_of(both, "fin"))
+                (cut / joined[0]).write_bytes(b"saved-by-the-other-pc")
+                other_pc.mark_done(both, "fin")
+            return real(src, tmp)
+
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            stack.enter_context(mock.patch.object(file_stamp, "read_stamp", return_value={}))
+            stack.enter_context(mock.patch.object(manage_router.shutil, "copy2", side_effect=slow_copy))
+            stack.enter_context(mock.patch.object(manage_router.time, "sleep"))
+            out = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="final"))
+        self.assertEqual(joined, [v2("fin", 1)])
+        self.assertEqual((out["saved"], out["skipped"], out["errors"]), (0, 1, []))
+        self.assertEqual([(f.name, f.read_bytes()) for f in cut.iterdir() if f.is_file()], [(v2("fin", 1), b"saved-by-the-other-pc")])
+
+    def test_a_file_another_pc_confirmed_under_the_old_number_during_the_copy_is_found_before_committing(self):
+        """받는 동안 다른 PC 가 **같은 옛 번호 이름**으로 저장을 끝냈고, 그 뒤 번호가 이어졌다. 다시 받은 이름(새 번호)의 파일은 없지만
+        옛 번호 이름의 확정 파일이 있다 — 그것을 못 보면 새 번호 이름으로 한 번 더 저장한다(Codex 코드 리뷰 P1)."""
+        render, cut, patches = self._numbered_fixture()
+        alone = export_names.Ident("p1", "P1", None, "shared000001", None)
+        both = export_names.Ident("p1", "P1", "job-x", "shared000001", None)
+        elsewhere = export_names.Ident("p1", "P1", "job-x", "id-on-another-pc", None)
+        with db.get_connection() as conn:
+            conn.execute("UPDATE generation SET job_id=NULL WHERE id='shared000001'")
+            conn.execute("DELETE FROM share WHERE generation_id='held00000001'")
+        export_names.NameBook2(render, "ep/c1").allocate(elsewhere, "fin", ".png", [cut, cut / "shared"])  # job_id 만 같은 PC 의 001
+        real = manage_router.shutil.copy2
+        done = []
+
+        def slow_copy(src, tmp):
+            if not done:  # 받는 동안: id 만 아는 다른 PC 가 같은 이름(002)으로 저장을 끝냈고, 그 뒤 번호가 이어졌다(002 → 001)
+                other_pc = export_names.NameBook2(render, "ep/c1")
+                done.append(other_pc.name_of(alone, "share"))
+                (cut / "shared" / done[0]).write_bytes(b"saved-by-the-other-pc")
+                other_pc.mark_done(alone, "share")
+                other_pc.link(both)
+            return real(src, tmp)
+
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            stack.enter_context(mock.patch.object(file_stamp, "read_stamp", return_value={}))
+            stack.enter_context(mock.patch.object(manage_router.shutil, "copy2", side_effect=slow_copy))
+            out = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="shared"))
+        self.assertEqual(done, [v2("share", 2)])
+        self.assertEqual((out["saved"], out["skipped"], out["errors"]), (0, 1, []))
+        self.assertEqual([(f.name, f.read_bytes()) for f in (cut / "shared").iterdir()], [(v2("share", 2), b"saved-by-the-other-pc")])
 
     def test_compare_finds_numbered_leftovers_but_never_a_davinci_file(self):
         render, cut, patches = self._numbered_fixture()
         davinci = cut / "ep_c1_davinci_001.png"
-        davinci.write_bytes(b"sent-to-resolve")  # 다빈치 내보내기 파일 — 저장본이 아니다
-        # 각인도 우리 것이고 이 PC 의 대장이 그 자리까지 기억해도(있을 수 없는 최악) 이름의 종류가 davinci 면 '남은 저장본'이 아니다
-        repo_manage.record_export("davinci-gen", str(davinci.resolve()), "p1")
+        # §7 이름의 다빈치 파일·작업물도 마찬가지다 — 작업자 이름이 `fin` 이라 §6 꼴(`…_fin_001`)로도 읽히는 것까지
+        not_saves = {davinci.name: "davinci-gen", v2("davinci", 9): "davinci-v2", v2("work", 8): "work-v2",
+                     "P1_ep_c1_davinci_fin_001.png": "davinci-of-fin", "P1_ep_c1_work_fin_002.png": "work-of-fin"}
+        for name, gen in not_saves.items():
+            (cut / name).write_bytes(b"sent-to-resolve")  # 다빈치 내보내기 파일·작업물 — 저장본이 아니다
+            # 각인도 우리 것이고 이 PC 의 대장이 그 자리까지 기억해도(있을 수 없는 최악) 이름의 종류가 davinci·work 면 '남은 저장본'이 아니다
+            repo_manage.record_export(gen, str((cut / name).resolve()), "p1")
         with ExitStack() as stack:
             for item in patches:
                 stack.enter_context(item)
@@ -715,14 +952,14 @@ class SaveFinalsKindTests(unittest.TestCase):
                 conn.execute("DELETE FROM share WHERE generation_id='held00000001'")  # 공유가 풀렸다 — 그 파일은 폴더에만 남는다
 
             def read(path):
-                if path.name == davinci.name:
-                    return {file_stamp.KEY_GEN: "davinci-gen", file_stamp.KEY_HUB: file_stamp.HUB_TAG}
+                if path.name in not_saves:
+                    return {file_stamp.KEY_GEN: not_saves[path.name], file_stamp.KEY_HUB: file_stamp.HUB_TAG}
                 return {file_stamp.KEY_GEN: "held00000001", file_stamp.KEY_HUB: file_stamp.HUB_TAG} if path.name == left else {}
 
             with mock.patch.object(file_stamp, "read_stamp", side_effect=read):
                 out = manage_router.save_finals_compare("p1", mock.Mock())
         self.assertEqual([(e["gen_id"], e["folder_path"], e["filename"]) for e in out["extra"]], [("held00000001", "ep/c1/shared", left)])
-        self.assertEqual((out["same"], out["to_add"], out["blocked"], out["unknown"]), (2, [], [], 1))  # 다빈치 파일은 '모르는 파일'로만 센다
+        self.assertEqual((out["same"], out["to_add"], out["blocked"], out["unknown"]), (2, [], [], 5))  # 다빈치 파일·작업물은 '모르는 파일'로만 센다
 
     def test_losing_the_registry_never_turns_a_current_file_into_a_leftover(self):
         """장부(_mvhub_sync/names)를 통째로 잃어도, 이 PC 의 대장이 기억하는 지금 대상의 파일은 '새로 저장'도 '폴더에만 남은 것'도 아니다."""

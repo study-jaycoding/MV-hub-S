@@ -1570,9 +1570,43 @@ def _save_finals_targets_facts(project_id: str, kind: str = "final") -> list[dic
                 "media_type": f.get("media_type"),
                 "filename": filename,
                 "reason": reason,  # None=저장 가능(사실 측면), 값 있으면 불가 사유
+                # 파일 이름 v2(§7)의 재료 — 이 세 키가 응답에 **있어야** 허브가 v2 이름으로 저장한다(없는 옛 서버면 §6 이름 그대로).
+                "job_id": f.get("job_id"),
+                "creator_name": f.get("creator_name"),
+                "project_name": f.get("project_name"),
             }
         )
     return out
+
+
+def _ident_of(project_id: str, t: dict) -> export_names.Ident:
+    """v2 이름(§7)에 쓸 신원. 이름 재료(세 키)는 사실에 **있을 때만** 쓴다 — 옛 서버의 응답에는 없다 → named=False:
+    이미 있는 v2 배정·파일은 알아보되(안 그러면 서버를 되돌린 날 v2 저장본을 잊고 §6 이름으로 또 저장한다, Codex 코드 리뷰)
+    새 번호는 §6 규칙으로 받는다(추측으로 이름을 채우지 않는다)."""
+    named = all(key in t for key in ("job_id", "creator_name", "project_name"))
+    return export_names.Ident(project_id, t.get("project_name"), t.get("job_id"), t["gen_id"], t.get("creator_name"), named=named)
+
+
+class _BoundBook2:
+    """v2 장부를 한 생성물·한 종류에 묶어 §6 장부(NameBook)와 같은 모양으로 쓴다 — _numbered_state·_commit_export 가 그대로 쓴다."""
+
+    def __init__(self, book: export_names.NameBook2, ident: export_names.Ident, token: str) -> None:
+        self.book, self.ident, self.token = book, ident, token
+
+    def name_of(self, _gen_id: str) -> Optional[str]:
+        return self.book.name_of(self.ident, self.token)
+
+    def is_done(self, _gen_id: str) -> bool:
+        return self.book.is_done(self.ident, self.token)
+
+    def mark_done(self, _gen_id: str) -> None:
+        self.book.mark_done(self.ident, self.token)
+
+    def reload(self) -> None:
+        self.book.reload()
+
+    def older_names(self) -> list[str]:
+        return self.book.older_names(self.ident, self.token)
 
 
 @router.get("/save-finals/targets")
@@ -1701,8 +1735,8 @@ def _save_finals_scan(project_id: str, render: Path) -> dict:
     for t in facts:
         kind = t.get("kind") or "final"
         try:
-            dest_state, dest, legacy, numbered = _locate_export(
-                render, kind, t.get("folder_path") or "", t.get("filename") or "", t["gen_id"], ledger, books
+            dest_state, dest, legacy, numbered, others = _locate_export(
+                render, kind, t.get("folder_path") or "", t.get("filename") or "", t["gen_id"], ledger, books, _ident_of(project_id, t)
             )
         except export_names.RegistryError as exc:
             # 장부를 못 읽은 채로는 어느 파일이 대상의 것인지 모른다 — '남은 파일'을 잘못 가리느니 비교 전체를 멈춘다(미러도 여기서 멈춘다).
@@ -1711,7 +1745,7 @@ def _save_finals_scan(project_id: str, render: Path) -> dict:
         shown = dest or numbered
         item = {"gen_id": t["gen_id"], "kind": kind, "folder_path": project_folders.export_folder(t.get("folder_path") or "", kind),
                 "media_type": t.get("media_type"), "filename": shown.name if shown is not None else ""}
-        protected.update(place for place in (legacy, numbered) if place is not None)  # 옛 이름 자리와 번호 이름 자리 둘 다
+        protected.update(place for place in (legacy, numbered, *others) if place is not None)  # 옛 이름 · §6 번호 이름 · v2 이름 자리 모두
         if dest_state == "unsafe" or t.get("reason"):
             blocked_ids.add(t["gen_id"])
             blocked.append({**item, "reason": t.get("reason") or "경로 안전성 위반"})
@@ -1759,10 +1793,12 @@ def _save_finals_scan(project_id: str, render: Path) -> dict:
             names.add(child.name.casefold())
             if not child.is_file() or child in protected or child.name.endswith(".part"):
                 continue
-            # 저장본의 이름은 두 꼴이다: 번호 이름 `<컷 경로>_<share|fin>_<번호>`(이름에 gen 이 없다) · 옛 이름 `<컷>_<gen 12자>`.
-            # 다빈치 내보내기 파일(`…_davinci_<번호>`)은 저장본이 아니다 — 여기서 '우리 파일'이 될 수 없다(대장에도 없다).
+            # 저장본의 이름은 세 꼴이다: v2 `…<컷 경로>_<share|fin>_<작업자>_<번호>` · §6 번호 이름 `<컷 경로>_<share|fin>_<번호>`(둘 다 이름에
+            # gen 이 없다) · 옛 이름 `<컷>_<gen 12자>`. 다빈치 파일(`…_davinci_…`)·작업물(`…_work_…`)은 저장본이 아니다 — 여기서
+            # '우리 파일'이 될 수 없다(대장에도 없다). 꼴 판정은 export_names.saved_shape 한 곳(v2 로 읽히면 그 종류가 정한다).
             parsed = export_names.parse_numbered(child.name)
-            numbered = parsed is not None and parsed[1] in export_names.TOKENS.values()
+            cut_rel = (folder.parent if folder.name == project_folders.SHARED_SUBFOLDER else folder).relative_to(root).as_posix()
+            numbered = export_names.saved_shape(child.name, cut_rel)
             prefix = child.stem.rsplit("_", 1)[-1] if parsed is None and "_" in child.stem else ""
             # 각인은 이 PC 의 대장이 그 자리를 기억하는 파일만 읽는다 — 대장에 없는 파일은 어차피 '우리 파일'이 될 수 없다.
             stamp = file_stamp.read_stamp(child) if (numbered or len(prefix) == 12) and child in ours else {}
@@ -1920,10 +1956,11 @@ async def save_finals_mirror(project_id: str, body: MirrorIn, request: Request):
             saved = {"saved": 0, "skipped": 0, "errors": []}
             run = _progress_start(project_id, "mirror")
             try:
+                books = export_names.Books(render)
                 for kind in final_export.KINDS:
                     if _cancelled(run):
                         break
-                    part = await _save_finals_locked(project_id, request, render, None, kind, run)
+                    part = await _save_finals_locked(project_id, request, render, None, kind, run, books)
                     saved["saved"] += part["saved"]
                     saved["skipped"] += part["skipped"]
                     saved["errors"] += part["errors"]
@@ -2021,10 +2058,12 @@ def save_finals_status(project_id: str, request: Request):
                     recorded, recorded_at = ledger.get(t["gen_id"], ("", None))
                     kept = Path(recorded) if recorded else None
                     numbered = export_names.parse_numbered(kept.name) if kept is not None and kept.parent == dest.parent else None
+                    token = export_names.TOKENS.get(t.get("kind") or "final")
+                    newer = export_names.parse_v2_saved(kept.name, t.get("folder_path") or "") if kept is not None and kept.parent == dest.parent else None
                     saved = kept is not None and (kept == dest or (
-                        numbered is not None and numbered[1] == export_names.TOKENS.get(t.get("kind") or "final")
+                        numbered is not None and numbered[1] == token
                         and numbered[0].casefold() == export_names.name_base(t.get("folder_path") or "").casefold()
-                    ))
+                    ) or (newer is not None and newer[0] == token))  # v2 이름(§7)도 이 컷·종류의 것이면 저장된 것
                     saved_at = recorded_at if saved else None
                     shown = kept.name if saved and kept is not None else ""
         targets.append(
@@ -2099,48 +2138,84 @@ def _numbered_state(dest: Path, gen_id: str, ledger: dict[str, str], book: expor
     return "conflict"
 
 
+def _has_bytes(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
 def _locate_export(
     render: Path, kind: str, folder_path: str, legacy_name: str, gen_id: str, ledger: dict[str, str], books: export_names.Books,
-) -> tuple[str, Optional[Path], Optional[Path], Optional[Path]]:
-    """대상 1건이 이미 저장돼 있나 — (missing|saved|conflict|unsafe, 그 파일, 옛 이름 자리, 번호 이름 자리). 저장과 비교가 같이 쓴다.
+    ident: Optional[export_names.Ident] = None,
+) -> tuple[str, Optional[Path], Optional[Path], Optional[Path], tuple[Path, ...]]:
+    """대상 1건이 이미 저장돼 있나 — (missing|saved|conflict|unsafe, 그 파일, 옛 이름 자리, 새로 저장할 번호 이름 자리, 지킬 자리들).
+    저장과 비교가 같이 쓴다. 어느 장부든 조회만 하고 번호를 만들지 않는다.
 
-    자리는 둘이다: 번호 이름(장부에 이 생성물의 이름이 있을 때만 — 조회만 하고 번호를 만들지 않는다)과 옛 이름
-    `<컷>_<gen 12자>`. 번호 이름이 저장돼 있으면 그것, 아니면 옛 이름 — 옛 이름으로 저장된 파일은 그대로 두고 저장된 것으로
-    본다(Jay 2026-10-08). 둘 다 아닌데 번호 자리에 다른 파일이 있으면 conflict. 옛 이름 자리의 남의 파일은 막지 않는다
-    (새 저장은 번호 이름으로 간다)."""
+    이미 저장된 파일이 있을 수 있는 자리 — **모두의 '저장됨'을 먼저 본다**(하나라도 저장돼 있으면 그것이고 새로 배정하지
+    않는다. 옛 이름으로 저장된 파일은 그대로 둔다, Jay 2026-10-08·10-13):
+      ① v2 이름(§7 — 장부 v2 에 이 생성물의 배정이 있을 때)  ② §6 번호 이름(옛 장부에 이 생성물의 이름이 있을 때)
+      ③ **이 PC 의 대장이 이 생성물을 이 종류의 목적지 폴더에 저장했다고 기억하는 자리** — 이름 꼴을 따지지 않는다. 장부를 잃었거나
+         서버가 옛 판이라 v2 재료를 못 받았어도 지금 대상의 파일이다. 이 자리를 놓치면 그 파일이 '새로 저장할 것'이자 '폴더에만
+         남은 것'으로 넘어가 미러가 치운다(Codex 코드 리뷰 P1 — 10-08·10-13)
+      ④ 같은 생성물이 **예전 번호**로 확정해 둔 v2 파일(장부 v2 의 `r` 로 지금 번호에 이어진 번호 — 그 번호의 확정 표식이 증거)
+      ⑤ 옛 이름 `<컷>_<gen 12자>`
+    어느 것도 아닌데 새로 저장할 자리(이름 재료가 있거나 v2 배정이 이미 있으면 v2, 아니면 §6)에 다른 파일이 있으면 conflict.
+    옛 자리의 남의 파일은 막지 않는다(새 저장은 번호 이름으로 간다)."""
     folder = project_folders.export_folder(folder_path, kind)
     legacy = project_folders.safe_dest(render, folder, legacy_name)
     if legacy is None:
-        return "unsafe", None, None, None
-    book = books.get(folder_path, export_names.TOKENS.get(kind, "fin"))
+        return "unsafe", None, None, None, ()
+    token = export_names.TOKENS.get(kind, "fin")
+    bound = _BoundBook2(books.v2(folder_path), ident, token) if ident is not None else None
+    name = bound.name_of(gen_id) if bound is not None else None
+    newer = project_folders.safe_dest(render, folder, name) if name else None
+    book = books.get(folder_path, token)
     name = book.name_of(gen_id)
     numbered = project_folders.safe_dest(render, folder, name) if name else None
-    if numbered is None and ledger.get(gen_id):
-        # 장부가 이 생성물을 모른다(장부를 잃었다) — 이 PC 의 대장이 이 컷·종류의 번호 이름으로 저장했다고 기억하면 그 자리를 후보로 본다.
-        # 그러지 않으면 지금 대상인 파일이 '새로 저장할 것'이자 '폴더에만 남은 것'으로 넘어가 미러가 치운다(코덱스 코드 리뷰 P1).
-        kept = Path(ledger[gen_id])
-        parsed = export_names.parse_numbered(kept.name) if kept.parent == legacy.parent else None
-        if parsed is not None and parsed[1] == book.token and parsed[0].casefold() == book.base.casefold():
-            numbered = kept
-    numbered_state = _numbered_state(numbered, gen_id, ledger, book) if numbered is not None else "missing"
-    if numbered_state == "saved":
-        return "saved", numbered, legacy, numbered
+    kept = Path(ledger[gen_id]) if ledger.get(gen_id) else None
+    held = kept if kept is not None and kept.parent == legacy.parent else None
+    target = newer if ident is not None and (ident.named or newer is not None) else numbered
+    older = [project_folders.safe_dest(render, folder, old) for old in (bound.older_names() if bound is not None else ())]
+    places = tuple(place for place in (newer, numbered, held, *older) if place is not None)
+    states: dict[Path, str] = {}
+    for place, registry in ((newer, bound), (numbered, book), (held, book)):
+        if place is not None and place not in states:
+            states[place] = _numbered_state(place, gen_id, ledger, registry)
+            if states[place] == "saved":
+                return "saved", place, legacy, target, places
+    for place in older:
+        if place is not None and _has_bytes(place):
+            return "saved", place, legacy, target, places
     if _dest_state(legacy, gen_id, ledger) == "saved":
-        return "saved", legacy, legacy, numbered
-    return ("conflict" if numbered_state == "conflict" else "missing"), None, legacy, numbered
+        return "saved", legacy, legacy, target, places
+    return ("conflict" if target is not None and states[target] == "conflict" else "missing"), None, legacy, target, places
 
 
 def _claim_export_name(
     render: Path, kind: str, folder_path: str, legacy_name: str, gen_id: str, books: export_names.Books,
-) -> tuple[Optional[Path], export_names.NameBook]:
-    """이 생성물의 번호 이름을 장부에서 확보하고 그 목적지를 돌려준다 — **저장 직전에만** 부른다(번호가 여기서 생긴다)."""
+    ident: Optional[export_names.Ident] = None,
+) -> tuple[Optional[Path], "export_names.NameBook | _BoundBook2"]:
+    """이 생성물의 번호 이름을 장부에서 확보하고 그 목적지를 돌려준다 — **저장 직전에만** 부른다(번호가 여기서 생긴다).
+    이름 재료가 있거나 v2 배정이 이미 있으면 v2 이름(§7 — 작업자 줄의 번호), 아니면(옛 서버·첫 배정) §6 이름."""
     folder = project_folders.export_folder(folder_path, kind)
-    book = books.get(folder_path, export_names.TOKENS.get(kind, "fin"))
+    token = export_names.TOKENS.get(kind, "fin")
     probe = project_folders.safe_dest(render, folder, legacy_name)
+    if ident is not None and not ident.named:
+        books.v2(folder_path).refresh()  # §6 으로 갈지 정하기 전에 — 읽어 둔 뒤 다른 PC 가 v2 로 배정했을 수 있다(Codex 코드 리뷰)
+    if ident is None or not (ident.named or books.v2(folder_path).stem_of(ident)):
+        book = books.get(folder_path, token)
+        if probe is None:
+            return None, book
+        name = book.allocate(gen_id, Path(legacy_name).suffix, probe.parent)
+        return project_folders.safe_dest(render, folder, name), book
+    bound = _BoundBook2(books.v2(folder_path), ident, token)
     if probe is None:
-        return None, book
-    name = book.allocate(gen_id, Path(legacy_name).suffix, probe.parent)
-    return project_folders.safe_dest(render, folder, name), book
+        return None, bound
+    # 번호는 종류와 무관한 한 줄이다 — 이 컷의 파일이 놓이는 두 폴더(컷 폴더·shared/)에 이미 있는 번호를 모두 건너뛴다.
+    cut = probe.parent.parent if kind == "shared" else probe.parent  # shared/ 는 컷 폴더 바로 아래다(export_folder)
+    name = bound.book.allocate(ident, token, Path(legacy_name).suffix, [cut, cut / project_folders.SHARED_SUBFOLDER])
+    return project_folders.safe_dest(render, folder, name), bound
 
 
 def _commit_export(tmp: Path, dest: Path, gen_id: str, ledger: dict[str, str], book: export_names.NameBook) -> str:
@@ -2163,6 +2238,16 @@ def _commit_export(tmp: Path, dest: Path, gen_id: str, ledger: dict[str, str], b
     return "written"
 
 
+def _link_export_keys(books: export_names.Books, folder_path: str, ident: export_names.Ident) -> None:
+    """이미 저장된 파일을 다시 만났을 때 — 이 PC 가 새로 알게 된 열쇠(나중에 채워진 `job_id` 등)도 같은 v2 배정을 가리키게 적는다.
+    안 적으면 그 열쇠만 아는 다른 PC 가 같은 생성물에 새 번호를 준다(Codex 코드 리뷰). 이미 다 적혀 있으면 NAS 에 가지 않고,
+    적지 못해도 저장 결과는 그대로다."""
+    try:
+        books.v2(folder_path).link(ident)
+    except export_names.RegistryError as exc:
+        _manage_log.warning("이름 장부에 열쇠를 잇지 못했습니다: %s", exc)
+
+
 def _unlink_quiet(path: Path) -> None:
     try:
         path.unlink(missing_ok=True)
@@ -2173,12 +2258,13 @@ def _unlink_quiet(path: Path) -> None:
 async def _place_export(
     render: Path, project_id: str, kind: str, folder_path: str, legacy_name: str, gen_id: str,
     ledger: dict[str, str], books: export_names.Books, run: Optional[dict], fill, precheck=None,
+    ident: Optional[export_names.Ident] = None,
 ) -> tuple[str, Optional[str]]:
     """대상 1건을 렌더 폴더에 둔다 — ("saved"|"skipped", None) 또는 ("error", 사유). 위임·단독 저장이 같이 쓴다.
     fill(tmp) = 임시 파일을 원본으로 채운다(위임=서버에서 받기, 단독=이 PC 의 원본 복사). precheck() 가 사유를 돌려주면
-    번호를 잡기 전에 그만둔다(저장할 수 없는 것이 번호를 차지하지 않게)."""
-    state, path, _legacy, _numbered = await to_thread_non_abandon(  # NAS stat·장부·각인 읽기는 스레드로
-        _locate_export, render, kind, folder_path, legacy_name, gen_id, ledger, books
+    번호를 잡기 전에 그만둔다(저장할 수 없는 것이 번호를 차지하지 않게). ident 가 있으면 v2 이름(§7)으로 저장한다."""
+    state, path, _legacy, _numbered, _others = await to_thread_non_abandon(  # NAS stat·장부·각인 읽기는 스레드로
+        _locate_export, render, kind, folder_path, legacy_name, gen_id, ledger, books, ident
     )
     if state == "unsafe":
         return "error", "경로 안전성 위반(트래버설)"
@@ -2186,18 +2272,25 @@ async def _place_export(
         return "error", _DEST_CONFLICT
     if state == "saved":  # 멱등 — 이미 저장됨(사용자가 지웠으면 다시 저장한다 — 자기치유)
         await to_thread_non_abandon(repo_manage.record_export, gen_id, str(path), project_id)
+        if ident is not None:
+            await to_thread_non_abandon(_link_export_keys, books, folder_path, ident)
         return "skipped", None
     if precheck is not None:
         reason = await precheck()
         if reason:
             return "error", reason
-    dest, book = await to_thread_non_abandon(_claim_export_name, render, kind, folder_path, legacy_name, gen_id, books)
+    dest, book = await to_thread_non_abandon(_claim_export_name, render, kind, folder_path, legacy_name, gen_id, books, ident)
     if dest is None:
         return "error", "경로 안전성 위반(트래버설)"
-    # 번호를 잡는 사이 다른 PC 가 같은 생성물을 저장했을 수 있다 — 쓰기 전에 한 번 더 본다.
-    again = await to_thread_non_abandon(_numbered_state, dest, gen_id, ledger, book)
+    # 번호를 잡는 사이 다른 PC 가 같은 생성물을 저장했을 수 있다 — 쓰기 전에 한 번 더 본다. 번호를 잡으며 장부를 다시 읽었을 수도
+    # 있으므로(다른 PC 가 번호를 이었다) 방금 잡은 자리만이 아니라 모든 자리를 다시 본다(Codex 코드 리뷰).
+    again, path, _legacy, _numbered, _others = await to_thread_non_abandon(
+        _locate_export, render, kind, folder_path, legacy_name, gen_id, ledger, books, ident
+    )
     if again == "conflict":
         return "error", _DEST_CONFLICT
+    if again == "saved":
+        dest = path
     if again == "missing":
         await to_thread_non_abandon(dest.parent.mkdir, parents=True, exist_ok=True)
         # NAS '같은 폴더'에 .part 로 만들고 이름 바꾸기로 확정 — 중간에 끊겨도 반쪽 파일이 목적지 이름으로 남지 않는다.
@@ -2208,7 +2301,18 @@ async def _place_export(
                 file_stamp.stamp_file, tmp, file_stamp.tags_for_generation(gen_id), dest.suffix,
                 lambda: _cancelled(run),  # [취소]가 영상 각인(ffmpeg) 도중에도 먹게 — 각인만 빠지고 저장은 끝난다
             )
-            again = await to_thread_non_abandon(_commit_export, tmp, dest, gen_id, ledger, book)
+            # 받는 동안(길면 몇 분) 다른 PC 가 이 번호를 다른 번호로 이었거나 같은 생성물을 저장했을 수 있다 — 확정 직전에 이름을
+            # 한 번 더 받고 모든 자리를 다시 본다(Codex 코드 리뷰). 이름이 달라졌으면 그 이름으로 확정하고(같은 폴더다), 어느
+            # 자리에든 이미 저장돼 있으면(옛 번호 이름의 파일 포함) 받은 것은 버린다.
+            latest, book = await to_thread_non_abandon(_claim_export_name, render, kind, folder_path, legacy_name, gen_id, books, ident)
+            dest = latest or dest
+            again, path, _legacy, _numbered, _others = await to_thread_non_abandon(
+                _locate_export, render, kind, folder_path, legacy_name, gen_id, ledger, books, ident
+            )
+            if again == "saved":
+                dest = path
+            elif again == "missing":
+                again = await to_thread_non_abandon(_commit_export, tmp, dest, gen_id, ledger, book)
         finally:
             await to_thread_non_abandon(_unlink_quiet, tmp)
         if again == "conflict":
@@ -2353,11 +2457,12 @@ async def save_finals(
         try:
             kinds = final_export.KINDS if kind == "all" else (kind,)
             total: dict = {"saved": 0, "skipped": 0, "errors": []}
+            books = export_names.Books(render)
             for one in kinds:  # 최종 먼저 — 공유→최종이 된 컷의 최종본이 먼저 자리 잡는다
                 if _cancelled(run):
                     break
                 try:
-                    part = await _save_finals_locked(project_id, request, render, folder_path, one, run)
+                    part = await _save_finals_locked(project_id, request, render, folder_path, one, run, books)
                 except HTTPException as e:
                     # all 에서 한 종류가 통째로 막혀도(예: 구서버라 공유 불가) 이미 저장한 쪽의 결과를 잃지 않는다(코덱스 P1).
                     if kind != "all":
@@ -2374,8 +2479,10 @@ async def save_finals(
 
 async def _save_finals_locked(
     project_id: str, request: Request, render: Path, folder_path: Optional[str] = None, kind: str = "final",
-    run: Optional[dict] = None,
+    run: Optional[dict] = None, books: Optional[export_names.Books] = None,
 ):
+    # 번호 이름 장부 — 저장 한 번(종류 둘) 동안 폴더별로 한 번만 읽는다. v2 장부는 종류와 무관한 한 벌이라 부르는 쪽이 넘겨 같이 쓴다.
+    books = books or export_names.Books(render)
     if _proxy.proxying():
         facts, server_outdated = await to_thread_non_abandon(_save_finals_facts, project_id, kind)
         facts = _only_in_folder(facts, folder_path)
@@ -2387,7 +2494,6 @@ async def _save_finals_locked(
         saved, skipped = 0, 0
         errors: list[dict[str, str]] = []
         ledger = await to_thread_non_abandon(repo_manage.export_dest_paths, [t["gen_id"] for t in facts])
-        books = export_names.Books(render)  # 번호 이름 장부 — 저장 한 번 동안 폴더별로 한 번만 읽는다
         _progress_add_total(run, len(facts))
         # 순차 처리 — NAS 대역폭·서버 부하를 한 줄로(동시 다운로드 폭주 방지).
         for t in facts:
@@ -2405,6 +2511,7 @@ async def _save_finals_locked(
 
                 outcome, why = await _place_export(
                     render, project_id, kind, t.get("folder_path") or "", t.get("filename") or "", gen_id, ledger, books, run, fill,
+                    ident=_ident_of(project_id, t),
                 )
                 if outcome == "error":
                     errors.append({"gen_id": gen_id, "reason": why or ""})
@@ -2423,7 +2530,6 @@ async def _save_finals_locked(
     saved, skipped = 0, 0
     errors: list[dict[str, str]] = []
     ledger = await to_thread_non_abandon(repo_manage.export_dest_paths, [f["gen_id"] for f in finals])
-    books = export_names.Books(render)  # 번호 이름 장부 — 저장 한 번 동안 폴더별로 한 번만 읽는다
     _progress_add_total(run, len(finals))
     for f in finals:
         if _cancelled(run):  # 취소 — 받던 파일 하나는 끝내고 그다음을 시작하지 않는다
@@ -2465,6 +2571,7 @@ async def _save_finals_locked(
 
             outcome, why = await _place_export(
                 render, project_id, kind, folder_path, filename, gen_id, ledger, books, run, fill, precheck,
+                ident=_ident_of(project_id, f),
             )
             if outcome == "error":
                 errors.append({"gen_id": gen_id, "reason": why or ""})
