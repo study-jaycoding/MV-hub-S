@@ -146,6 +146,7 @@ let allWorkspacesIn = "";
 const NO_CUTS: ReadonlySet<string> = new Set();
 const NO_MARKS: readonly number[] = [];
 const AROUND_SEC = 2; // 다이나믹 트림 모드 — 재생이 편집점의 앞뒤로 트는 길이(초)
+export const MEASURE_SAVE_MS = 500; // 잰 영상 길이를 모아 한 번에 적는 간격 — 첫 값이 온 뒤 이만큼
 // 소스 뷰어 — 생성물마다 컷 하나·클립 하나짜리 가상 시퀀스(소스 클립 = 고른 것 하나, 소스 테이프 = 이 컷의 풀 목록).
 //  컷 경로는 `@src/<생성물 id>`. 편집 문서와 무관하다.
 const SRC_CUT = "@src";
@@ -341,19 +342,40 @@ function EditTabInner({
     }
     if (durs.size) applyEdit((current) => setClipDurs(current, durs), { undo: false, rev });
   }, [list.complete, doc, links, applyEdit, rev]);
+  //  · 이미 잰 클립은 다시 재지 않는다 — 적힌 길이가 '안 잰 값'(요청 길이 params.duration · 기본 5초)과 한 프레임 넘게 다르면 잰 값이다.
+  //    전에는 페이지를 열 때마다 영상 클립 전부를 다시 쟀다(클립마다 메타데이터 요청). 안 잰 값과 같으면 전처럼 잰다 — 실측이 우연히
+  //    그 값인 영상은 매번 재지만 틀린 길이로 굳지는 않는다. 기본 5초도 안 잰 값인 까닭: 목록에 없어 5초로 적힌 클립(위)이 나중에
+  //    돌아오면 요청 길이와 달라도 잰 적이 없다.
+  //  · 잰 값은 첫 값이 온 뒤 MEASURE_SAVE_MS 동안 모아 한 번에 적는다 — 클립마다 적으면 영상 N개에 저장·다시 그리기가 N번이다.
+  //    모으는 중에 문서가 바뀌거나 탭을 떠나면 그 자리에서 적는다. 시퀀스를 바꾸면 버려진다(rev 가 다르다) — 적힌 길이가 그대로라
+  //    다음에 열 때 다시 잰다.
   useEffect(() => {
     let alive = true;
+    let timer = 0;
+    const frame = 1 / EDIT_FPS;
+    const measured = new Map<string, number>();
+    const save = () => {
+      window.clearTimeout(timer);
+      timer = 0;
+      if (measured.size) applyEdit((current) => setClipDurs(current, measured), { undo: false, rev });
+      measured.clear();
+    };
     for (const clip of doc.clips) {
-      const asset = links.get(clipKey(clip))?.gen?.assets[0];
-      if (asset?.type !== "video" || !asset.file_path) continue;
+      const gen = links.get(clipKey(clip))?.gen;
+      const asset = gen?.assets[0];
+      if (!gen || asset?.type !== "video" || !asset.file_path) continue;
+      const dur = clip.dur;
+      if (dur !== undefined && [DEFAULT_SEC, genSeconds(gen)].every((guess) => Math.abs(dur - guess) >= frame)) continue;
       const key = clipKey(clip);
       void measureVideoSeconds(asset.file_path).then((seconds) => {
-        if (!alive || !seconds || Math.abs(seconds - (clip.dur ?? 0)) < 1 / EDIT_FPS) return;
-        applyEdit((current) => setClipDurs(current, new Map([[key, seconds]])), { undo: false, rev });
+        if (!alive || !seconds || Math.abs(seconds - (dur ?? 0)) < frame) return;
+        measured.set(key, seconds);
+        timer ||= window.setTimeout(save, MEASURE_SAVE_MS);
       });
     }
     return () => {
       alive = false;
+      save();
     };
   }, [doc, links, applyEdit, rev]);
 
