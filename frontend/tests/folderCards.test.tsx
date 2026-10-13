@@ -155,6 +155,44 @@ it("옛 공유 서버(경로 없음)는 그 계정·서버에서만 '지원 안 
   expect(folderCardsApi).toHaveBeenCalledTimes(calls + 1);
 });
 
+// 2026-10-13 ③(Jay): 폴더를 옮기면 묶음 응답 전에 낱장이 한 번 보였다 — App 이 loading 동안 낱장 격자를 그리지 않는다.
+it("loading — 새 문맥의 첫 응답 전엔 true, 받아 둔 카드가 있는 문맥은 false, 실패하면 false(실패 표식은 문맥을 떠나면 버린다), 옛 서버는 false", async () => {
+  show({ scope: null });
+  expect(seen.loading).toBe(false); // 받을 것이 없다
+  const first = hold();
+  show({ scope: e035 });
+  expect(seen.loading).toBe(true); // 첫 렌더부터 — 효과가 돌기 전에도
+  await first.release(cards(card("C0010", 8)));
+  expect(seen.loading).toBe(false);
+  const again = hold();
+  show({ scope: e035, reloadKey: 1 }); // 같은 문맥의 다시 받기(주기 조회) — 올리지 않는다
+  expect([seen.loading, seen.cards?.folders.length]).toEqual([false, 1]);
+  await again.release(cards(card("C0010", 8)));
+
+  const other = hold();
+  show({ scope: { projectId: "p1", parent: "e036" }, reloadKey: 1 });
+  expect([seen.loading, seen.cards]).toEqual([true, null]);
+  await other.fail(new HttpError(502, "502: 공유 서버 연결 실패", "공유 서버 연결 실패"));
+  expect([seen.loading, seen.cards, seen.unsupported]).toEqual([false, null, false]); // 실패 — 낱장으로(영영 빈 화면이 아니다)
+  // 받아 둔 카드가 있는 문맥으로 돌아오면 바로 그 카드(다시 받기는 뒤에서)
+  const back = hold();
+  show({ scope: e035, reloadKey: 1 });
+  expect([seen.loading, seen.cards?.parent]).toEqual([false, "e035"]);
+  await back.release(cards(card("C0010", 8)));
+  // 실패했던 문맥으로 되돌아오면 다시 기다린다 — 실패 표식을 남기면 첫 렌더부터 낱장이 선다(Codex 설계 검토)
+  const retry = hold();
+  show({ scope: { projectId: "p1", parent: "e036" }, reloadKey: 1 });
+  expect(seen.loading).toBe(true);
+  await retry.release({ parent: "e036", own_count: 0, folders: [] });
+  expect([seen.loading, seen.cards?.folders]).toEqual([false, []]);
+  // 옛 서버(경로 없음) — 기다리지 않는다
+  folderCardsApi.mockRejectedValueOnce(new HttpError(404, "404: Not Found", "Not Found"));
+  show({ scope: { projectId: "p1", parent: "e037" }, reloadKey: 1 });
+  expect(seen.loading).toBe(true);
+  await settle();
+  expect([seen.loading, seen.unsupported]).toEqual([false, true]);
+});
+
 it("reload 는 서버 값을 다시 읽고 끝난 뒤에 풀린다 — 그 앞에 출발한 조회는 버리고 그 뒤 한 번만 더 보낸다(같은 문맥은 합친다)", async () => {
   const early = hold();
   show({ scope: e035 }); // 저장 전에 출발한 조회(받는 중)
@@ -265,15 +303,15 @@ it("옛 문맥의 조회가 끝나며 새 문맥에 얹힌 요구를 가져가�
 });
 
 // ── 컷 카드 격자 ──
-const gridProps = { scale: 1, fill: true, selected: new Set<string>(), onSelect: () => {}, onInfo: () => {}, onReel: () => {}, onShowAll: () => {}, onEnter: () => {}, top: false };
+const gridProps = { scale: 1, fill: true, selected: new Set<string>(), onSelect: () => {}, onInfo: () => {}, onReel: () => {}, onShowAll: () => {}, onEnter: () => {}, onOpen: () => {}, top: false };
 const dbl = (el: Element) => act(() => { el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); });
 
-it("폴더마다 카드 한 장 — 이름·건수, 대표가 없으면 '대표 미정', 영상이면 재생 표시. 두 번 누르면 그 폴더로 들어간다", () => {
+it("폴더마다 카드 한 장 — 이름·건수, 대표가 없으면 '대표 미정', 영상이면 재생 표시. 컷을 두 번 누르면 모아보기", () => {
   const opened: string[] = [];
   const folders = [card("C0010", 8, true), card("C0040", 14, false, "video")];
   const showAll = vi.fn();
   const draw = (outside: number, shown: FolderCard[] = folders) => act(() => root.render(
-    <FolderCardGrid {...gridProps} folders={shown} onEnter={(folder) => opened.push(folder.path)} outside={outside} onShowAll={showAll} />,
+    <FolderCardGrid {...gridProps} folders={shown} onReel={(paths) => opened.push(...paths)} outside={outside} onShowAll={showAll} />,
   ));
   draw(0);
 
@@ -316,13 +354,15 @@ it("폴더마다 카드 한 장 — 이름·건수, 대표가 없으면 '대표 
   expect(opened).toEqual(["e035/C0040"]);
 });
 
-it("두 번 클릭은 하위 폴더가 있든(에피소드) 없든(컷·옛 서버) 그 폴더로 들어간다 — 전엔 컷이 창을 열었다(Jay 2026-10-13 ②). 맨 위에서는 '에피소드 밖'", () => {
+// 2026-10-13 낮(Jay): 컷 두 번 클릭 = 모아보기(아침엔 '들어가기', 그 전엔 창). 들어가기는 하위 폴더가 있는 카드(에피소드)만.
+it("두 번 클릭은 하위 폴더가 있으면(에피소드) 그 폴더로 들어가고, 없으면(컷·옛 서버) 모아보기. 맨 위에서는 '에피소드 밖'", () => {
   const entered: string[] = [];
+  const reels: string[][] = [];
   const episode: FolderCard = { ...card("e035", 14), path: "e035", subfolders: 5 };
   const leaf: FolderCard = { ...card("e036", 2), path: "e036", subfolders: 0 };
   const old: FolderCard = { ...card("e037", 1), path: "e037" }; // 옛 서버 — subfolders 없음 = 잎
   act(() => root.render(
-    <FolderCardGrid {...gridProps} folders={[episode, leaf, old]} top onEnter={(f) => entered.push(f.path)} outside={2} />,
+    <FolderCardGrid {...gridProps} folders={[episode, leaf, old]} top onEnter={(f) => entered.push(f.path)} onReel={(paths) => reels.push(paths)} outside={2} />,
   ));
   const tile = (path: string) => host.querySelector<HTMLElement>(`.cut-card[data-path="${path}"]`)!;
   expect(tile("e035").querySelector(".cut-tab")!.textContent).toBe("e035컷 5 ·14");
@@ -331,7 +371,7 @@ it("두 번 클릭은 하위 폴더가 있든(에피소드) 없든(컷·옛 서�
   dbl(tile("e035"));
   dbl(tile("e036"));
   dbl(tile("e037"));
-  expect(entered).toEqual(["e035", "e036", "e037"]);
+  expect([entered, reels]).toEqual([["e035"], [["e036"], ["e037"]]]);
   expect(host.querySelector(".cut-out-count")!.textContent).toBe("에피소드 밖 2건");
 });
 
@@ -534,20 +574,28 @@ it("빈 곳에서 끌면 걸친 카드를 모두 고른다 — 창을 떠나면(
   expect(info).toHaveLength(2);
 });
 
-// 29회차(Jay 2026-10-13 "우클릭이 모아보기가 나오게"): 컷 카드 우클릭 = 모아보기. 고른 카드 위면 고른 컷 전부(격자 순서), 아니면 그 컷만 골라서.
-//  위에 뜬 메뉴를 닫는 우클릭(누름 시작에 가려져 있었다)은 열지 않는다 — contextmenu 는 단추를 뗀 뒤 오므로 가림을 누름 시작에 적어 둔다.
-it("우클릭 = 모아보기 — 고른 카드 위면 고른 컷 전부(격자 순서), 아니면 그 컷만 골라서. 메뉴를 닫는 우클릭은 열지 않고, 메뉴 키는 그 순간의 가림을 본다", async () => {
+// 2026-10-13 낮(Jay): 컷 카드 두 번 클릭 = 모아보기(고른 카드 위면 고른 컷 전부(격자 순서), 아니면 그 컷만 골라서 — 29회차엔 우클릭이 이것이었다),
+//  우클릭 = 그 폴더의 창(고르지 않은 카드면 그것만 골라서). 위에 뜬 메뉴를 닫는 우클릭(누름 시작에 가려져 있었다)은 열지 않는다 — contextmenu 는
+//  단추를 뗀 뒤 오므로 가림을 누름 시작에 적어 둔다.
+it("두 번 클릭 = 모아보기(고른 컷 전부·격자 순서) · 우클릭 = 그 폴더의 창. 메뉴를 닫는 우클릭은 열지 않고, 메뉴 키는 그 순간의 가림을 본다", async () => {
   const folders = [card("C0010", 1), card("C0020", 1), card("C0030", 1)];
   let selected = new Set<string>(["e035/C0030", "e035/C0010"]);
   const reels: string[][] = [];
+  const opened: string[] = [];
   const draw = () => act(() => root.render(
     <FolderCardGrid
       {...gridProps} folders={folders} selected={selected} onSelect={(next) => { selected = next; draw(); }}
-      onReel={(paths) => reels.push(paths)} outside={0}
+      onReel={(paths) => reels.push(paths)} onOpen={(folder) => opened.push(folder.path)} outside={0}
     />,
   ));
   draw();
   const tile = (name: string) => host.querySelector<HTMLElement>(`.cut-card[data-path="e035/${name}"]`)!;
+  // 두 번 클릭 — 고른 카드 위면 고른 컷 전부(격자 순서, 고르기는 그대로), 고르지 않은 카드면 그것만 골라서. 창은 열지 않는다
+  dbl(tile("C0010"));
+  expect([reels, [...selected].sort()]).toEqual([[["e035/C0010", "e035/C0030"]], ["e035/C0010", "e035/C0030"]]);
+  dbl(tile("C0020"));
+  expect([reels[1], [...selected], opened]).toEqual([["e035/C0020"], ["e035/C0020"], []]);
+  selected = new Set(["e035/C0030", "e035/C0010"]); draw();
   // jsdom 에는 PointerEvent 가 없다 — lib/keyGate 가 보는 것은 이벤트 이름뿐이라 Event 로 보낸다(round7Grid 의 press 와 같다)
   const rightClick = (el: HTMLElement) => {
     act(() => { el.dispatchEvent(new Event("pointerdown", { bubbles: true })); });
@@ -558,13 +606,13 @@ it("우클릭 = 모아보기 — 고른 카드 위면 고른 컷 전부(격자 �
     act(() => { el.dispatchEvent(menu); });
     return menu.defaultPrevented;
   };
-  // 고른 카드 위 — 고른 컷 전부, 격자 순서(고른 순서가 아니다). 고르기는 그대로
+  // 고른 카드 위 — 그 폴더의 창. 고르기는 그대로, 모아보기는 열지 않는다
   expect(rightClick(tile("C0010"))).toBe(true); // 브라우저 메뉴는 막는다
-  expect(reels).toEqual([["e035/C0010", "e035/C0030"]]);
+  expect([opened, reels.length]).toEqual([["e035/C0010"], 2]);
   expect([...selected].sort()).toEqual(["e035/C0010", "e035/C0030"]);
   // 고르지 않은 카드 — 그것만 골라서 연다
   rightClick(tile("C0020"));
-  expect(reels).toEqual([["e035/C0010", "e035/C0030"], ["e035/C0020"]]);
+  expect(opened).toEqual(["e035/C0010", "e035/C0020"]);
   expect([...selected]).toEqual(["e035/C0020"]);
   // 위에 메뉴가 떠 있는 채 시작한 우클릭(메뉴를 닫는 누름) — 메뉴는 누름의 앞쪽(pointerdown)에 닫혀 contextmenu 때는 이미 없다. 열지 않는다
   const { useKeyOwner } = await import("../src/lib/keyGate");
@@ -576,16 +624,16 @@ it("우클릭 = 모아보기 — 고른 카드 위면 고른 컷 전부(격자 �
   mouse("mousedown", tile("C0030"), { button: 2, buttons: 2 });
   act(() => { tile("C0030").dispatchEvent(new Event("pointerup", { bubbles: true })); });
   act(() => { tile("C0030").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 })); });
-  expect(reels).toHaveLength(2);
+  expect(opened).toHaveLength(2);
   expect([...selected]).toEqual(["e035/C0020"]);
   // 키보드의 메뉴 키(누름 없이 contextmenu 만) — 위에 창이 떠 있으면 쉬고, 없으면 연다
   act(() => owner.render(<Owner on />));
   act(() => { tile("C0020").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); });
-  expect(reels).toHaveLength(2);
+  expect(opened).toHaveLength(2);
   act(() => owner.render(<Owner on={false} />));
   act(() => { tile("C0020").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); });
-  expect(reels).toHaveLength(3);
-  expect(reels[2]).toEqual(["e035/C0020"]);
+  expect(opened).toHaveLength(3);
+  expect(opened[2]).toBe("e035/C0020");
   // 격자의 빈 곳에서 메뉴를 닫는 우클릭(가려진 채 시작) → 그 기록이 남아 다음 메뉴 키를 삼키면 안 된다(Codex 코드 리뷰)
   const grid = host.querySelector<HTMLElement>(".cut-grid")!;
   act(() => owner.render(<Owner on />));
@@ -594,9 +642,9 @@ it("우클릭 = 모아보기 — 고른 카드 위면 고른 컷 전부(격자 �
   mouse("mousedown", grid, { button: 2, buttons: 2 });
   act(() => { grid.dispatchEvent(new Event("pointerup", { bubbles: true })); });
   act(() => { grid.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 })); });
-  expect(reels).toHaveLength(3); // 빈 곳 — 아무것도 안 연다
+  expect(opened).toHaveLength(3); // 빈 곳 — 아무것도 안 연다
   act(() => { tile("C0020").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); }); // 메뉴 키 — 가림 없음
-  expect(reels).toHaveLength(4);
+  expect(opened).toHaveLength(4);
   // 카드 위에서 우클릭을 시작해 카드 밖(격자 빈 곳)에서 떼어도 기록은 지워진다 — 다음 메뉴 키가 삼켜지지 않는다
   act(() => owner.render(<Owner on />));
   act(() => { tile("C0020").dispatchEvent(new Event("pointerdown", { bubbles: true })); });
@@ -604,9 +652,9 @@ it("우클릭 = 모아보기 — 고른 카드 위면 고른 컷 전부(격자 �
   mouse("mousedown", tile("C0020"), { button: 2, buttons: 2 });
   act(() => { grid.dispatchEvent(new Event("pointerup", { bubbles: true })); });
   act(() => { grid.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 })); });
-  expect(reels).toHaveLength(4);
+  expect(opened).toHaveLength(4);
   act(() => { tile("C0020").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); });
-  expect(reels).toHaveLength(5);
+  expect([opened.length, reels.length]).toEqual([5, 2]); // 우클릭은 끝까지 모아보기를 열지 않았다
   act(() => owner.unmount());
 });
 
@@ -617,10 +665,11 @@ it("키보드 — Ctrl+A 모두 · 방향키 옮기기(Shift = 누른 카드부�
   let selected = new Set<string>();
   let overlay = false;
   const entered: string[] = [];
+  const reels: string[][] = [];
   const draw = () => act(() => root.render(<>
     {overlay ? <Overlay /> : null}
     <FolderCardGrid {...gridProps} folders={folders} selected={selected} onSelect={(next) => { selected = next; draw(); }}
-      onEnter={(folder) => entered.push(folder.name)} outside={1} />
+      onEnter={(folder) => entered.push(folder.name)} onReel={(paths) => reels.push(paths)} outside={1} />
   </>));
   draw();
   const grid = host.querySelector<HTMLElement>(".cut-grid")!;
@@ -642,14 +691,14 @@ it("키보드 — Ctrl+A 모두 · 방향키 옮기기(Shift = 누른 카드부�
   expect([...selected]).toEqual(["e035/E01", "e035/C0030"]);
   key("ArrowRight");
   expect([...selected]).toEqual(["e035/C0040"]);
-  key("Enter"); // 하위 폴더가 없어도(컷) 들어간다 — 전엔 그 폴더의 창(Jay 2026-10-13 ②)
-  expect(entered).toEqual(["E01", "C0040"]);
+  key("Enter"); // 하위 폴더가 없으면(컷) 모아보기 — 아침엔 들어가기, 그 전엔 창(Jay 2026-10-13)
+  expect([entered, reels]).toEqual([["E01"], [["e035/C0040"]]]);
   key(" ");
   expect(selected.size).toBe(0);
   // 길게 눌린 Space(반복 keydown)는 막기만 한다 — 고르기가 반복마다 뒤집히지 않는다(조작 규칙 38)
   expect([key(" ", { repeat: true }).defaultPrevented, selected.size]).toEqual([true, 0]);
-  key("Enter"); // Space 로 뺀 자리는 화면에 표시가 없다 — Enter 가 그 폴더에 들어가지 않는다
-  expect(entered).toEqual(["E01", "C0040"]);
+  key("Enter"); // Space 로 뺀 자리는 화면에 표시가 없다 — Enter 가 아무것도 열지 않는다
+  expect([entered, reels.length]).toEqual([["E01"], 1]);
   key("ArrowRight"); // 끝에서는 멈춘다
   expect([...selected]).toEqual(["e035/C0040"]);
 
@@ -659,7 +708,7 @@ it("키보드 — Ctrl+A 모두 · 방향키 옮기기(Shift = 누른 카드부�
   expect(document.activeElement).toBe(grid);
 
   key("Enter", {}, host.querySelector(".cut-out")!); // '컷 밖' 칸의 Enter 는 그 단추를 누르는 키
-  expect(entered).toEqual(["E01", "C0040"]);
+  expect([entered, reels.length]).toEqual([["E01"], 1]);
 
   overlay = true; draw(); // 위에 창이 떠 있으면 키는 그 창의 것 — 그것을 닫는 누름도 고른 것을 바꾸지 않는다
   key("ArrowLeft");

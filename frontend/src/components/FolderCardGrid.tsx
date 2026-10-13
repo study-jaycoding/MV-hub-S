@@ -1,10 +1,11 @@
 // 공유 & 리뷰 탭의 폴더 묶음 보기 — 고른 폴더 바로 아래 폴더마다 카드 한 장(표지·이름·건수).
 //  표지는 팀이 정한 대표, 없으면 가장 최근 것(그때는 카드 위에 '대표 미정'). 한 장짜리 카드와 구분되게 종이를 겹친 모양이다.
-//  한 번 클릭 = 고르기(Ctrl·⌘ 토글, Shift 범위, 빈 곳에서 끌면 걸친 카드 모두), 휠 클릭 = 컷 정보(Jay 2026-10-08), **우클릭 = 모아보기**(Jay 2026-10-13 —
-//  고른 카드 위면 고른 컷 전부, 아니면 그 컷만 골라서. 메뉴 없이 바로 연다). 우클릭 누름이 위에 뜬 메뉴를 닫는 누름이었으면 열지 않는다 — 가림은
-//  누름의 시작(mousedown)에 적어 두고 contextmenu(윈도는 단추를 뗀 뒤 온다)에서 본다. 키보드의 메뉴 키는 그 순간의 가림을 본다.
-//  두 번 클릭 = 그 폴더에 하위 폴더가 있으면(에피소드) 그 폴더로 **들어가고**(사이드바에서 그 폴더를 누른 것과 같다), 없으면(컷)
-//  그 폴더의 창(Jay 2026-10-09 '가. 들어가기'). 끌기·클릭 판정은 ThumbnailGrid 와 같은 식(5px 안 움직이면 클릭, 마퀴는 lib/marquee).
+//  한 번 클릭 = 고르기(Ctrl·⌘ 토글, Shift 범위, 빈 곳에서 끌면 걸친 카드 모두), 휠 클릭 = 컷 정보(Jay 2026-10-08).
+//  두 번 클릭 = 컷(하위 폴더 없음)이면 **모아보기**(고른 카드 위면 고른 컷 전부, 아니면 그 컷만 골라서 — Jay 2026-10-13 낮. 아침엔 '그 폴더로
+//  들어가기'였고 그 전엔 폴더 창), 에피소드(하위 폴더 있음)면 그 폴더로 **들어가기**(사이드바에서 그 폴더를 누른 것과 같다).
+//  **우클릭 = 그 폴더의 창**(두 번 클릭이 모아보기로 바뀌며 창이 여기로 — Jay 2026-10-13 낮. 메뉴 없이 바로 연다). 우클릭 누름이 위에 뜬 메뉴를
+//  닫는 누름이었으면 열지 않는다 — 가림은 누름의 시작(mousedown)에 적어 두고 contextmenu(윈도는 단추를 뗀 뒤 온다)에서 본다. 키보드의
+//  메뉴 키는 그 순간의 가림을 본다. 끌기·클릭 판정은 ThumbnailGrid 와 같은 식(5px 안 움직이면 클릭, 마퀴는 lib/marquee).
 //  S 단추·작성자 표시는 넣지 않는다 — 이 카드는 생성물 한 장이 아니라 묶음이다.
 //  키보드: Ctrl+A 모두 · 방향키 옮기기(Shift = 마지막으로 누른 카드부터 범위) · Enter = 두 번 클릭 · Space = 고르기 토글(2026-10-10 —
 //  전엔 키가 하나도 없어 Ctrl+A 가 화면 글자를 긁었다). 색·비활성 같은 생성물 단축키는 없다(묶음이라 대상이 없다).
@@ -24,11 +25,11 @@ interface Props {
   fill: boolean; // 썸네일 꽉 채움 ↔ 비율 유지
   selected: ReadonlySet<string>; // 고른 카드(폴더 경로)
   onSelect: (next: Set<string>) => void;
-  // 두 번 클릭·Enter — 그 폴더로 들어가기(에피소드·컷 모두. 컷은 낱장 목록이 되고 그 카드 위에 [대표]가 뜬다 — Jay 2026-10-13 ②,
-  //  전엔 컷이 폴더 창을 열었다). 크롬 뒤로 가기가 이 묶음으로 돌아온다(App 의 enterFolderCard 가 기록을 한 칸 쌓는다).
+  // 두 번 클릭·Enter(하위 폴더 있음 = 에피소드) — 그 폴더로 들어가기. 크롬 뒤로 가기가 이 묶음으로 돌아온다(App 의 enterFolderCard 가 기록을 한 칸 쌓는다).
   onEnter: (folder: FolderCard) => void;
+  onOpen: (folder: FolderCard) => void; // 우클릭·메뉴 키 — 그 폴더의 창(에피소드·컷 모두. Jay 2026-10-13 낮)
   onInfo: (folder: FolderCard, x: number, y: number) => void; // 휠 클릭 — 컷 정보
-  onReel: (paths: string[]) => void; // 우클릭 — 모아보기(고른 카드 위면 고른 컷 전부(격자 순서), 아니면 그 컷만)
+  onReel: (paths: string[]) => void; // 두 번 클릭·Enter(하위 폴더 없음 = 컷) — 모아보기(고른 카드 위면 고른 컷 전부(격자 순서), 아니면 그 컷만)
   top: boolean; // 프로젝트 맨 위(에피소드 단계)인가 — '컷 밖' 대신 '에피소드 밖'
   outside: number; // 고른 폴더에 직접 든 수 — 어느 카드에도 들지 않아 맨 끝 칸으로 알린다
   onShowAll: () => void; // 그 칸을 누르면 한 장씩 보기로
@@ -55,8 +56,20 @@ interface Drag {
   moved: boolean;
 }
 
-export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onEnter, onInfo, onReel, top, outside, onShowAll }: Props) {
+export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onEnter, onOpen, onInfo, onReel, top, outside, onShowAll }: Props) {
   const t = useT();
+  // 두 번 클릭·Enter — 컷이면 모아보기(고른 카드 위면 고른 컷 전부(격자 순서), 아니면 그 컷만 골라서), 에피소드면 들어가기.
+  //  열 경로를 먼저 정한다 — 고르기를 바꾼 뒤의 낡은 선택을 읽지 않게. 최신 props 는 ref 로(두 번 클릭의 첫 클릭이 고르기를 바꾼 직후다).
+  const activate = (folder: FolderCard) => {
+    if (folder.subfolders) {
+      onEnter(folder);
+      return;
+    }
+    const { folders: list, selected: chosen, onSelect: select } = opsRef.current;
+    const paths = chosen.has(folder.path) ? list.filter((item) => chosen.has(item.path)).map((item) => item.path) : [folder.path];
+    if (!chosen.has(folder.path)) select(new Set([folder.path]));
+    onReel(paths);
+  };
   const width = Math.round(180 * scale); // ThumbnailGrid 의 카드 최소 폭과 같은 식
   const thumbSize = width * (window.devicePixelRatio || 1) <= 256 ? 256 : 512;
   const gridRef = useRef<HTMLDivElement>(null);
@@ -208,7 +221,7 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onEnt
       // 여는 것은 **보이는** 카드만 — 골라져 있거나 초점이 놓인 카드. Space 로 뺀 자리(다시 고르기·방향키용으로만 남긴 것)는 화면에
       //  아무 표시가 없다: 그 자리에 Enter 가 폴더 창을 열었다(2026-10-10 최종 재실측 — Space 로 빼고 Esc 뒤 Enter).
       if (focused == null && !chosen.has(list[at].path)) return;
-      onEnter(list[at]);
+      activate(list[at]);
     } else if (e.key === " ") {
       e.preventDefault();
       if (e.repeat) return; // 길게 눌린 Space — 고르기는 토글이라 반복마다 뒤집힌다(조작 규칙 38)
@@ -284,7 +297,7 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onEnt
               className={"cut-card" + (isSelected ? " sel" : "")}
               aria-pressed={isSelected}
               title={`${folder.path} · ${subfolders ? `${t("컷")} ${subfolders} · ` : ""}${folder.count}${t("건")}`}
-              onDoubleClick={() => onEnter(folder)}
+              onDoubleClick={() => activate(folder)}
               onAuxClick={(e) => {
                 if (e.button !== 1) return;
                 e.preventDefault();
@@ -297,11 +310,10 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onEnt
                 const covered = e.button === 2 ? (rightPressCoveredRef.current ?? backgroundKeysBlocked()) : backgroundKeysBlocked();
                 rightPressCoveredRef.current = null;
                 if (covered) return; // 위에 뜬 메뉴를 닫는 우클릭 — 뒤의 조작을 실행하지 않는다
-                const { folders: list, selected: chosen, onSelect: select } = opsRef.current;
-                // 열 경로를 먼저 정한다 — 고르기를 바꾼 뒤의 낡은 선택을 읽지 않게
-                const paths = chosen.has(folder.path) ? list.filter((item) => chosen.has(item.path)).map((item) => item.path) : [folder.path];
+                // 그 폴더의 창 — 고르지 않은 카드면 그것만 골라서(어느 폴더를 열었는지 보이게. 창을 닫으면 초점은 격자로 돌아온다)
+                const { selected: chosen, onSelect: select } = opsRef.current;
                 if (!chosen.has(folder.path)) select(new Set([folder.path]));
-                onReel(paths);
+                onOpen(folder);
               }}
             >
               <span className={"cut-face" + (fill ? "" : " contain")}>
