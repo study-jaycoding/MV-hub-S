@@ -48,8 +48,9 @@ export function useAppNavigation({
   previewScopeKey?: string;
   /** 지금 보는 자리 — 모든 기록이 완전한 자리 스냅샷을 갖는다(없으면 자리를 싣지 않는 옛 호출자). */
   currentLocation?: NavLocation;
-  /** 기록의 자리를 되살리는 표시 전용 setter(lib/useLibraryFilters restoreLocation) — 같은 문맥의 자리만 받는다. */
-  restoreLocation?: (location: NavLocation) => void;
+  /** 기록의 자리를 되살리는 setter(lib/useLibraryFilters restoreLocation) — 같은 문맥의 자리만 받는다. adopt = 브라우저 뒤로·앞으로 가기로 온 것
+   *  (자리가 바뀌면 다음 생성 위치·무장 폴더도 그 자리로 — 사이드바의 표시가 화면과 어긋나지 않게, Jay 2026-10-13 오후). */
+  restoreLocation?: (location: NavLocation, adopt?: boolean) => void;
   /** 어느 탭의 자리가 **지금** 갖게 될 문맥 — 기록의 자리는 지금 탭이 아니라 **그 기록의 탭**의 문맥과 견준다(공유 탭의 폴더 → 작업 공간 탭 → 뒤로:
    *  지금 탭의 문맥("")과 견주면 공유 폴더가 안 되살아나고 effect 가 그 기록을 빈 자리로 덮었다 — Codex 코드 리뷰). 없으면 지금 자리의 문맥. */
   locationCtxFor?: (tab: Filters["tab"]) => string;
@@ -76,7 +77,7 @@ export function useAppNavigation({
   }, [currentTab]);
 
   const applyView = useCallback(
-    (v: NavView) => {
+    (v: NavView, fromHistory = false) => {
       viewRef.current = v;
       const payload = v.key && v.sid === NAV_SESSION ? navPayloadsRef.current.get(v.key) : undefined;
       setPreview(v.ov === "preview" ? ((payload as PreviewTarget) ?? null) : null);
@@ -92,7 +93,8 @@ export function useAppNavigation({
       // 기록의 자리 — 같은 문맥(계정·서버·공간 범위 — **그 기록의 탭**이 지금 갖게 될 문맥)일 때만 되살린다. 자리가 없는 옛 기록·다른 문맥의
       //  기록은 지금 자리를 둔다. 탭보다 먼저 넣는다(아래 setFilters 의 갱신 함수가 최신 상태 위에서 탭만 바꾼다).
       const ctxNow = locationCtxForRef.current ? locationCtxForRef.current(v.tab) : currentLocationRef.current?.ctx;
-      if (v.loc && ctxNow !== undefined && v.loc.ctx === ctxNow) restoreLocationRef.current?.(v.loc);
+      //  fromHistory 가 아닌 것(탭·겹을 여는 navigate)은 지금 자리의 사본을 실어 오므로 자리가 바뀌지 않는다.
+      if (v.loc && ctxNow !== undefined && v.loc.ctx === ctxNow) restoreLocationRef.current?.(v.loc, fromHistory);
       setFilters((f) => (f.tab === v.tab ? f : { ...f, tab: v.tab }));
     },
     [
@@ -181,7 +183,7 @@ export function useAppNavigation({
     window.history.replaceState({ chv: viewRef.current }, "");
     const onPop = (e: PopStateEvent) => {
       const st = e.state as { chv?: NavView } | null;
-      applyView(st?.chv ?? { tab: "my", focusId: null, ov: null, key: 0 });
+      applyView(st?.chv ?? { tab: "my", focusId: null, ov: null, key: 0 }, true);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);

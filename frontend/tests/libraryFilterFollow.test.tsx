@@ -226,8 +226,8 @@ describe("Resolve 라이브러리 따라가기", () => {
     }
   });
 
-  // 2026-10-13 ①②: 뒤로 가기·공유 탭의 마지막 자리 기억은 보는 자리만 되살린다 — 생성 위치·무장 폴더는 그대로, 선택은 비우고 수동 횟수는 올린다
-  it("restoreLocation 은 보는 자리만 되살린다 — 생성 위치·무장 폴더 보존, 선택 비움·수동 횟수 +1, 같은 자리면 아무 일도 없다", () => {
+  // 2026-10-13 ①②: 공유 탭의 마지막 자리 기억(adopt 없음)은 보는 자리만 되살린다 — 생성 위치·무장 폴더는 그대로, 선택은 비우고 수동 횟수는 올린다
+  it("restoreLocation(기억 되살림) 은 보는 자리만 되살린다 — 생성 위치·무장 폴더 보존, 선택 비움·수동 횟수 +1, 같은 자리면 아무 일도 없다", () => {
     mount(fakeStore({
       [FILTERS_KEY]: JSON.stringify({ tab: "team", project_id: "p1", folder_path: "e001", [FILTERS_FORMAT_KEY]: "2" }),
       [GENERATION_SCOPE_KEY]: JSON.stringify({ project_id: "create", folder_path: "dest" }),
@@ -257,6 +257,41 @@ describe("Resolve 라이브러리 따라가기", () => {
     expect(latest.restoredLocationRef.current).toBe(true);
     act(() => latest.patch({ project_id: "p1" }));
     expect(latest.restoredLocationRef.current).toBe(false);
+  });
+
+  // 2026-10-13 오후(Jay "화면은 e035 인데 표시는 C0110"): 브라우저 뒤로·앞으로 가기(adopt)는 그 자리를 눌러 들어간 것과 같다 — 생성 위치·무장 폴더도
+  //  그 자리로. 자리가 실제로 바뀔 때만이고, 휴지통 기록은 건드리지 않는다.
+  it("restoreLocation(뒤로·앞으로 가기) 은 자리가 바뀌면 생성 위치·무장 폴더도 그 자리로 — 같은 자리·휴지통은 그대로, 표식은 켠 채", () => {
+    const store = fakeStore({
+      [FILTERS_KEY]: JSON.stringify({ tab: "team", project_id: "p1", folder_path: "e035/C0110", [FILTERS_FORMAT_KEY]: "2" }),
+      [GENERATION_SCOPE_KEY]: JSON.stringify({ project_id: "p1", folder_path: "e035/C0110" }),
+      armedFolder: JSON.stringify({ projectId: "p1", path: "e035/C0110" }),
+    });
+    mount(store);
+    const revision = latest.manualRevision;
+    // 뒤로 — e035 로: 보는 자리·생성 위치·무장이 함께
+    act(() => latest.restoreLocation({ project_id: "p1", folder_path: "e035" }, true));
+    expect([latest.filters.folder_path, latest.generationScope, latest.armedFolder])
+      .toEqual(["e035", { project_id: "p1", folder_path: "e035" }, { projectId: "p1", path: "e035" }]);
+    expect([latest.manualRevision, latest.restoredLocationRef.current]).toEqual([revision + 1, true]); // 표식은 켠 채('낡은 프로젝트' 효과가 건너뛴다)
+    // 프로젝트만 고른 자리 — 무장 없음(눌러 고를 때와 같다)
+    act(() => latest.restoreLocation({ project_id: "p1" }, true));
+    expect([latest.generationScope, latest.armedFolder]).toEqual([{ project_id: "p1" }, null]);
+    // 같은 자리의 기록(겹·탭의 사본) — 생성 위치가 달라도 맞추지 않는다: 기억으로 되살린 자리에서 미리보기를 닫는 것만으로 바뀌면 안 된다
+    act(() => latest.restoreLocation({ project_id: "p1", folder_path: "e001" })); // 기억 되살림(보기만)
+    expect([latest.filters.folder_path, latest.generationScope]).toEqual(["e001", { project_id: "p1" }]);
+    const armedBefore = latest.armedFolder;
+    act(() => latest.restoreLocation({ project_id: "p1", folder_path: "e001" }, true));
+    expect([latest.generationScope, latest.armedFolder === armedBefore]).toEqual([{ project_id: "p1" }, true]);
+    // 휴지통 기록 — 보는 자리만(생성 목적지가 아니다. 폴더 값이 남아 있어도 무장하지 않는다)
+    act(() => latest.restoreLocation({ project_id: "p1", folder_path: "e035", deleted_only: true }, true));
+    expect([latest.filters.deleted_only, latest.generationScope, latest.armedFolder]).toEqual([true, { project_id: "p1" }, null]);
+    // 다시 일반 목록의 폴더로 — 같은 무장 값이면 객체를 갈지 않는다(저장을 다시 하지 않는다)
+    act(() => latest.restoreLocation({ project_id: "p1", folder_path: "e035" }, true));
+    const armed = latest.armedFolder;
+    act(() => latest.restoreLocation({ project_id: "p1" }));          // 보기만 맨 위로
+    act(() => latest.restoreLocation({ project_id: "p1", folder_path: "e035" }, true)); // 다시 그 폴더로(생성 위치는 계속 e035 였다)
+    expect([latest.armedFolder === armed, latest.armedFolder]).toEqual([true, { projectId: "p1", path: "e035" }]);
   });
 
   it("teamScopeKey·teamAutoReady — 지금 탭과 무관하게 공유 탭에 들어가면 갖게 될 공간 범위와 '확정된 자동 공간인가'를 센다", () => {
