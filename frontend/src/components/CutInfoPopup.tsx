@@ -4,7 +4,7 @@
 //  목록은 폴더 창과 같은 조회(folderPeekQuery)를 끝까지 넘겨 받는다 — 첫 쪽만 세면 카드의 건수와 어긋난다(Codex 설계 검토).
 //  ponytail: 크레딧은 건마다 metrics 요청 — 컷이 수백 건이면 묶음 조회 API 로.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { askMetrics } from "../lib/coverCredits";
 import { inFolder, summarizeCut, type CutMetrics } from "../lib/cutSummary";
 import { FETCH_ALL_MAX, fetchAllGenerations } from "../lib/fetchAllGenerations";
 import { formatCredits } from "../lib/formatCredits";
@@ -111,6 +111,7 @@ export function CutInfoPopup({ folder, x, y, query, savingRep, previewOpen, onCl
   useEffect(() => {
     const my = ++seqRef.current;
     const alive = () => my === seqRef.current;
+    const stop = new AbortController(); // 닫거나 다른 폴더로 — 받는 중인 크레딧 요청도 끊는다(멎은 요청을 남긴 채 새 요청이 쌓이지 않게)
     setGens(null);
     setMetrics(null);
     setTruncated(false);
@@ -126,12 +127,13 @@ export function CutInfoPopup({ folder, x, y, query, savingRep, previewOpen, onCl
           return;
         }
         // 넷씩 보낸다 — 한꺼번에 보내면 다른 조회(목록·폴더 카드)가 그 뒤에 선다. 닫으면 아직 안 보낸 것은 보내지 않는다(Codex 코드 리뷰).
+        //  멎은 요청은 시간이 지나면 끊고 미상으로 둔 채 다음으로 간다(lib/coverCredits 의 askMetrics — 카드의 크레딧 줄과 같은 규칙).
         const results: (CutMetrics | null)[] = got.gens.map(() => null);
         let at = 0;
         await Promise.all(Array.from({ length: METRICS_AT_ONCE }, async () => {
           while (alive() && at < got.gens.length) {
             const i = at++;
-            results[i] = await Promise.resolve().then(() => api.generationMetrics(got.gens[i].id)).catch(() => null);
+            results[i] = await askMetrics(got.gens[i].id, stop.signal);
           }
         }));
         if (!alive()) return;
@@ -140,7 +142,10 @@ export function CutInfoPopup({ folder, x, y, query, savingRep, previewOpen, onCl
         if (alive()) setError(e instanceof Error ? e.message : String(e));
       }
     })();
-    return () => { seqRef.current += 1; };
+    return () => {
+      seqRef.current += 1;
+      stop.abort();
+    };
   }, [folder.path, query]);
 
   const cover = folder.cover;

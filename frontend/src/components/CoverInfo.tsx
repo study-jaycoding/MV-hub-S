@@ -8,7 +8,7 @@ import { useCoverCredits } from "../lib/coverCredits";
 import { workerLabel } from "../lib/cutSummary";
 import { reviewCounts } from "../lib/episodeBoard";
 import { formatCredits } from "../lib/formatCredits";
-import { formatGenerationDateTime, generationListMeta } from "../lib/generationDisplay";
+import { formatGenerationDateAndTime, formatGenerationDateTime, generationListMeta } from "../lib/generationDisplay";
 import { useT } from "../lib/i18n";
 import { useModelDisplayName } from "../lib/modelCatalog";
 import type { FolderCard } from "../types";
@@ -33,21 +33,33 @@ export function CoverInfo({ folder, className, ...rest }: Props) {
   const credits = useCoverCredits(g.id, onScreen);
   const duration = generationListMeta((g.params || {}) as Record<string, unknown>).duration;
   const review = reviewCounts(folder);
+  const model = modelName(g.model);
+  // 날짜와 시각을 조각으로 나눈다 — 컷 카드(그리드)의 정보판은 늘 두 줄(날짜 / 시각)로 그려 줄 높이가 카드마다 같다(CSS .cut-meta .when).
+  //  한 줄에 두면 월·일·시의 자릿수에 따라 어떤 카드는 줄이 바뀌고 어떤 카드는 안 바뀌어 아래 줄이 어긋났다(Jay 2026-10-13 밤).
+  const [day, clock] = formatGenerationDateAndTime(g.created_at);
   return (
     <div ref={ref} className={"reel-info" + (className ? " " + className : "")} {...rest}>
-      <span className="k">{t("모델")}</span><span className="v">{modelName(g.model)}{duration ? <> · <i>{duration}</i></> : null}</span>
+      {/* 좁은 카드에서는 값이 한 줄로 잘린다(말줄임) — 잘린 값은 title 로 다 보인다 */}
+      <span className="k">{t("모델")}</span>
+      {/* 좁으면 모델 이름이 줄고(말줄임) 길이는 남는다 — CSS .model */}
+      <span className="v model" title={duration ? `${model} · ${duration}` : model}><span>{model}</span>{duration ? <> · <i>{duration}</i></> : null}</span>
       <span className="k">{t("작업자")}</span><span className="v">{workerLabel(g)}</span>
       <span className="k">{t("크레딧")}</span>
       <span className="v">{credits === undefined ? "…" : credits != null ? `${formatCredits(credits)} credits` : t("미상")}</span>
-      <span className="k">{t("생성일")}</span><span className="v">{formatGenerationDateTime(g.created_at)}</span>
+      <span className="k">{t("생성일")}</span>
+      <span className="v when" title={formatGenerationDateTime(g.created_at)}><span>{day}</span>{clock ? <> <span>{clock}</span></> : null}</span>
       <span className="k">{t("검토")}</span>
       {review === null ? (
         <span className="v">{g.is_final ? t("최종") : g.is_held ? t("보류") : t("공유")}</span>
       ) : (
         // 0 인 것은 감춘다(사이드바와 같다). 조각 사이의 '·' 은 CSS 가 그린다
-        <span className="v reel-rv">
+        <span
+          className="v reel-rv"
+          title={`${t("공유")} ${review.shared} · ${t("최종")} ${review.final} · ${t("보류")} ${review.held} · ${t("전체")} ${folder.count}`}
+        >
           {review.shared > 0 && <span>{t("공유")} <b>{review.shared}</b></span>}
-          {review.final > 0 && <span className="fin">★ {t("최종")} {review.final}</span>}
+          {/* '최종' 글자는 좁은 카드에서 CSS 가 뺀다(★ 숫자만 — 색이 같다) */}
+          {review.final > 0 && <span className="fin">★ <em>{t("최종")}</em> {review.final}</span>}
           {review.held > 0 && <span className="held" title={t("보류")}>R {review.held}</span>}
           <span className="all">{t("전체")} {folder.count}</span>
         </span>
