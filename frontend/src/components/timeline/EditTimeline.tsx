@@ -192,13 +192,14 @@ export const EditTimeline = memo(function EditTimeline({
   const tracks = Array.from({ length: layout.tracks }, (_, i) => layout.tracks - i); // 위에서부터
   const keepFocus = (event: ReactMouseEvent) => event.preventDefault();
 
-  const renderClip = (clip: SlotClip, start: number) => {
+  // span = 그 컷의 길이. 꺼진 클립은 컷보다 길 수 있어(컷 길이는 켜진 클립만 센다) 컷의 끝에서 잘라 그린다 — 다음 컷을 덮지 않게.
+  const renderClip = (clip: SlotClip, start: number, span: number) => {
     const key = clipKey(clip);
     const link = links.get(key);
     const state = link?.state ?? "unknown";
     const locked = doc.tracksLocked.includes(clip.track);
     const off = !!clip.off || doc.tracksOff.includes(clip.track) || offCuts.has(clip.cut);
-    const clipWidth = Math.max(6, clip.len * zoom - 2);
+    const clipWidth = Math.max(6, Math.min(clip.len, span) * zoom - 2);
     const thumb = link?.gen ? thumbOf(link.gen, 256) : null;
     const frames = Math.min(16, Math.max(1, Math.round(clipWidth / ((LANE_H - 6) * (16 / 9)))));
     return (
@@ -223,7 +224,8 @@ export const EditTimeline = memo(function EditTimeline({
         {state === "ok" && thumb
           ? Array.from({ length: frames }, (_, i) => <i key={i} style={{ backgroundImage: `url("${thumb}")` }} />)
           : <span className="ed-clip-msg">{state === "missing" ? t("미디어 없음") : state === "unknown" ? t("확인 못 함") : ""}</span>}
-        <b>{clip.len.toFixed(1)}s</b>
+        {/* 길이를 줄였으면(휠 클릭) 쓰는 길이 / 원본 길이 */}
+        <b>{clip.len.toFixed(1)}s{clip.len < clip.full ? ` / ${clip.full.toFixed(1)}s` : ""}</b>
       </div>
     );
   };
@@ -316,7 +318,7 @@ export const EditTimeline = memo(function EditTimeline({
               style={trackTint(doc.trackColors?.[track])}>
               {layout.cuts.map((slot) => {
                 const clip = slot.clips.find((item) => item.track === track);
-                if (clip) return renderClip(clip, slot.start);
+                if (clip) return renderClip(clip, slot.start, slot.len);
                 // 고르지 않은 컷은 V1 에 빈 자리로만 보인다.
                 return track === 1 && !slot.clips.length ? (
                   <div className={"ed-slot" + (offCuts.has(slot.path) ? " ed-slot-off" : "")} key={slot.path}

@@ -29,12 +29,14 @@ class FakeVideo implements EditVideo {
   count() { return [...this.listeners.values()].reduce((sum, set) => sum + set.size, 0); }
 }
 
-// c1 0~8(V1 low 8초 · V2 top 3초 — 타임라인에서는 처음 3초 동안 top 이 low 를 가린다) · c2(빈 컷) 8~13 · c3 13~18(V1 그림)
+// c1 0~8(V1 low 8초 — 꺼 둠 · V2 top 3초 · V3 hold 8초 — 타임라인에서는 위 트랙이 low 를 가린다) · c2(빈 컷) 8~13 · c3 13~18(V1 그림)
+//  컷 길이는 켜진 클립만 센다(2026-10-13) — 꺼 둔 low 만으로는 c1 이 8초가 되지 않아, 켜진 hold 가 그 길이를 잡는다.
 const DOC: EditDoc = {
   ...emptyEditDoc(),
   clips: [
     { cut: "e070/c1", gen: "low", track: 1, dur: 8, kind: "video", off: true },
     { cut: "e070/c1", gen: "top", track: 2, dur: 3, kind: "video" },
+    { cut: "e070/c1", gen: "hold", track: 3, dur: 8, kind: "video" },
     { cut: "e070/c3", gen: "pic", track: 1, dur: 5, kind: "image" },
   ],
   tracksOff: [1],
@@ -86,7 +88,7 @@ it("그 트랙의 클립만 보인다 — 위 트랙에 가려져 있어도, 꺼
   time = 1;
   render({ track: 1 });
   frame();
-  expect(shown.clip?.gen).toBe("low"); // 타임라인에서는 top 이 보이는 자리
+  expect(shown.clip?.gen).toBe("low"); // 타임라인에서는 위 트랙이 보이는 자리
   expect(video.src).toBe("/v/low");
   time = 5; // V2 의 top 은 3초에서 끝났다
   render({ track: 2 });

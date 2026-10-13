@@ -34,6 +34,7 @@ import {
   nearestPoint,
   patchMarker,
   placeClip,
+  placeState,
   posAt,
   removeClips,
   removeMarker,
@@ -280,6 +281,7 @@ function EditTabInner({
     scope: target ? `${target.projectId}\n${target.seq}` : "", layout, doc, sourceOf, videoRef: tlVideo.pair, paint, loop: ui.loop,
     range: rangeLoop ? marks.band : null, // 구간 반복 재생 — 반복(전체)과 따로 켠다
     speed: ui.speed,
+    order: cuts, // 보던 컷이 빠졌을 때 '그다음 컷'을 내가 정한 순서에서 찾는다(숨긴 컷 포함)
   });
   const { view, now, seek, seekPos, stop, toggle, shuttle, playRange, playAround } = playback;
   playingRef.current = view.playing;
@@ -637,9 +639,7 @@ function EditTabInner({
   const menuOwn = menu && doc.clips.find((clip) => clip.cut === menu.cut && links.get(clipKey(clip))?.gen?.id === menu.gen.id);
   const menuRows: TrackRow[] = !menu ? [] : Array.from({ length: layout.tracks }, (_, i) => layout.tracks - i).map((track) => ({
     track,
-    state: menuOwn?.track === track ? "here"
-      : doc.tracksLocked.includes(track) || (!!menuOwn && doc.tracksLocked.includes(menuOwn.track)) ? "locked"
-        : doc.clips.some((clip) => clip.cut === menu.cut && clip.track === track) ? "taken" : "empty",
+    state: placeState(doc, menu.cut, menuOwn, track),
   }));
   const placeTo = (track: number) => {
     if (!menu) return;

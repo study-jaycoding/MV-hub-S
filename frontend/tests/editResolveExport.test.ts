@@ -69,6 +69,34 @@ describe("buildTimelineExport", () => {
     expect([out.perTrack, out.disabled]).toEqual([[2, 1, 1], 1]);
   });
 
+  // Jay 2026-10-13 — 컷 길이는 켜진 클립만 센다 · 클립 길이를 줄일 수 있다(뒤를 자른다).
+  it("꺼진 긴 클립은 컷의 끝에서 자르고, 줄인 클립은 줄인 길이로 싣는다 — 다음 컷과 겹치지 않는다", () => {
+    const doc: EditDoc = {
+      ...emptyEditDoc(),
+      clips: [
+        clip("C0010", "long-off", 1, 8, { off: true }), clip("C0010", "top", 2, 3), // 컷 = 3초(꺼진 8초는 세지 않는다)
+        // 위(V2)를 2초로, 아래(V1)를 4초로 줄였다 — 2초 뒤 아래가 드러나 4초에 컷이 끝난다
+        clip("C0020", "under", 1, 5, { trim: 4 }), clip("C0020", "cut", 2, 5, { kind: "video", trim: 2 }),
+        clip("C0030", "next", 1, 5),
+      ],
+    };
+    const out = build(doc, ["C0010", "C0020", "C0030"]);
+    expect(out.plan.clips.map((item) => [item.gen_id, item.track, item.start, item.end, item.enabled])).toEqual([
+      ["long-off", 1, 0, 72, false], ["top", 2, 0, 72, true],
+      ["under", 1, 72, 168, true], ["cut", 2, 72, 120, true],
+      ["next", 1, 168, 288, true],
+    ]);
+    // 같은 트랙에서 겹치는 것이 없다(받는 쪽은 겹친 계획을 거부한다)
+    for (const a of out.plan.clips) for (const b of out.plan.clips) {
+      if (a !== b && a.track === b.track) expect(a.end <= b.start || b.end <= a.start).toBe(true);
+    }
+    // 소리 = 보이는 것: 줄인 위 클립의 2초, 이어서 아래 클립의 2초부터(소스의 그 시각)
+    expect(out.plan.audio.map((item) => [item.gen_id, item.start, item.end, item.offset])).toEqual([
+      ["top", 0, 72, 0], ["cut", 72, 120, 0], ["under", 120, 168, 2], ["next", 168, 288, 0],
+    ]);
+    expect(out.plan.total).toBe(288);
+  });
+
   it("소리는 그 순간 보이는 영상 하나의 것 — 위 클립이 끝나면 아래 클립의 소리가 그 자리(소스의 그 시각)부터", () => {
     const doc: EditDoc = {
       ...emptyEditDoc(),

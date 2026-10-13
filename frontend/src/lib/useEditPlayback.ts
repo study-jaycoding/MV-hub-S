@@ -102,7 +102,11 @@ export function useEditPlayback({
   loop = false,
   range = null,
   speed = 1,
+  order,
 }: {
+  // 타임라인의 전체 컷 순서(숨긴 컷 포함 — cutPaths). 보던 컷이 배치에서 빠졌을 때 '그다음 컷'을 여기서 찾는다(settlePos).
+  //  안 주면 배치의 순서다(소스 판). 배치·문서가 바뀔 때만 읽는다 — 이것만 바뀌는 일은 없다(순서는 문서에서 나온다).
+  order?: readonly string[];
   scope: string; // 시퀀스(문서) — 바뀌면 위치를 처음으로 돌린다(옛 시퀀스의 컷 이름으로 새 자리를 짐작하지 않는다)
   layout: EditLayout;
   doc: EditDoc;
@@ -563,7 +567,7 @@ export function useEditPlayback({
       pos.current = back;
       wanted.current = null;
     }
-    const settled = settlePos(layout, pos.current);
+    const settled = settlePos(layout, pos.current, order, doc.cutOrder);
     pos.current = settled.pos;
     if ((settled.moved || fresh) && run.current.playing) stop(false);
     else sync(settled.moved || fresh);
