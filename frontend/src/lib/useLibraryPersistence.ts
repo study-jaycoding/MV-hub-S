@@ -50,8 +50,6 @@ interface UseLibraryPersistenceArgs {
   finalOnly: boolean;
   generationScope?: GenerationScope;
   grayOn: boolean;
-  groupByDate: boolean;
-  layout: "grid" | "list";
   sharedOnly: boolean;
   reviewFilter?: GenQuery["review_filter"];
   showFilters: boolean;
@@ -74,8 +72,6 @@ export function useLibraryPersistence({
   finalOnly,
   generationScope = {},
   grayOn,
-  groupByDate,
-  layout,
   scale,
   sharedOnly,
   reviewFilter = "shared",
@@ -94,9 +90,8 @@ export function useLibraryPersistence({
   useEffect(() => store.set("typeFilter", typeFilter), [store, typeFilter]);
   useEffect(() => store.set("scale", String(scale)), [scale, store]);
   useEffect(() => store.set("fill", fill ? "1" : "0"), [fill, store]);
-  useEffect(() => store.set("layout", layout), [layout, store]);
+  // 모양(`layout`·`groupByDate`)은 자리마다 기억하는 lib/usePlaceView 가 저장한다(같은 키)
   useEffect(() => store.set("showFilters", showFilters ? "1" : "0"), [showFilters, store]);
-  useEffect(() => store.set("groupByDate", groupByDate ? "1" : "0"), [groupByDate, store]);
   useEffect(() => store.setSet("colorFilter", colorFilter), [colorFilter, store]);
   useEffect(() => store.set("sharedOnly", sharedOnly ? "1" : "0"), [sharedOnly, store]);
   useEffect(() => store.set("reviewFilter", reviewFilter), [reviewFilter, store]);

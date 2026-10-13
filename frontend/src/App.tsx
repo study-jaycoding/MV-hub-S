@@ -149,6 +149,8 @@ import { folderCardsPlace, folderUnder, hasFindFilters, parentFolder, singleTeam
 import { fillFolderCards, groupGenerations, lacksCounts } from "./lib/folderCardsLocal";
 import { FETCH_ALL_MAX } from "./lib/fetchAllGenerations";
 import { useLocalFolderCards } from "./lib/useLocalFolderCards";
+import { placeViewKey } from "./lib/placeViews";
+import { usePlaceView } from "./lib/usePlaceView";
 import { useFolderCards } from "./lib/useFolderCards";
 import { CutInfoPopup } from "./components/CutInfoPopup";
 import { CutReel, type ReelMode } from "./components/CutReel";
@@ -199,8 +201,8 @@ export default function App() {
   // 라이브러리 필터/뷰 상태 + genQuery/selectionResetKey 파생 + LS 저장(useLibraryPersistence)은 useLibraryFilters 훅으로 추출.
   const {
     filters, storedTab, setFilters, patch, restoreLocation, restoredLocationRef, teamScopeKey, teamAutoReady,
-    typeFilter, setTypeFilter, scale, setScale, fill, setFill, layout, setLayout,
-    showFilters, setShowFilters, groupByDate, setGroupByDate, colorFilter, setColorFilter,
+    typeFilter, setTypeFilter, scale, setScale, fill, setFill,
+    showFilters, setShowFilters, colorFilter, setColorFilter,
     sharedOnly, setSharedOnly, reviewFilter, setReviewFilter, tagFilter, setTagFilter, tagPanelOpen, setTagPanelOpen,
     commentOnly, setCommentOnly, finalOnly, setFinalOnly, grayOn, setGrayOn,
     armedAutoTags, setArmedAutoTags, armedFolder, setArmedFolder,
@@ -498,6 +500,11 @@ export default function App() {
   // 라이브러리 단축키(r/g/b/d·격자 키)는 편집 탭에서 쉰다 — 편집 탭이 연 폴더 창이 떠 있을 때만 듣는다(그때 편집 키는 쉰다).
   const libraryKeysOffRef = useRef(false);
   libraryKeysOffRef.current = editOpen && !listPeek;
+  // 모양(리스트/그리드 · 리스트 한 번 더)은 **보는 폴더**마다 기억한다(Jay 2026-10-13 저녁 — lib/usePlaceView). 폴더 창이 떠 있으면 그 창의 폴더가
+  //  보는 폴더다: 창 안에서 바꾼 모양은 그 폴더 것으로 적히고, 닫으면 뒤 화면은 제 모양 그대로다(뒤 폴더에 적히지 않는다 — Codex 코드 리뷰).
+  const { layout, setLayout, groupByDate, setGroupByDate } = usePlaceView(LS, placeViewKey(
+    listPeek ? { tab: filters.tab, project_id: listPeek.projectId ?? undefined, folder_path: listPeek.path } : filters,
+  ));
   const listGenQuery = useMemo(() => (listPeek ? folderPeekQuery(genQuery, listPeek) : genQuery), [genQuery, listPeek]);
   // 창의 격자는 열 때마다 새로 마운트되므로 nonce 는 고정값이면 된다(한 번 열 때 한 번만 이동).
   const listPeekScroll = useMemo(() => (listPeek?.genId ? { generationId: listPeek.genId, nonce: 0 } : null), [listPeek]);
@@ -578,9 +585,12 @@ export default function App() {
     && (cutFiltered || fillable);
   //  신호 = 첫 쪽의 내용 서명(객체가 아니라 내용 — 폴더 창을 닫으며 목록 훅이 만드는 사본 배열에 다시 받지 않게) + 서버 카드 객체.
   const listSig = useMemo(() => gens.map((g) => `${g.id}${g.is_final ? "f" : ""}${g.is_held ? "h" : ""}`).join(","), [gens]);
+  const listOurs = !listPeek && !staleList && !listBehind && !isLocatedView; // 본 목록이 지금 조회의 것인가
   const local = useLocalFolderCards({
     place: localWanted ? cutScope : null, query: genQuery, authKey: libraryAuthKey,
-    listSig: !listPeek && !staleList && !listBehind && !isLocatedView ? listSig : null, base: baseHere,
+    listSig: listOurs ? listSig : null, base: baseHere,
+    // 옛 서버 채우기는 본 목록의 첫 쪽이 온 뒤에 출발한다 — 자리를 옮긴 직후 화면을 세우는 응답과 큰 요청이 겹치지 않게(걸러 보기는 바로)
+    ready: cutFiltered || listOurs,
   });
   // 회색 숨김·비활성은 받은 것 위에서 다시 거른다(다시 받지 않는다 — 낱장 격자의 gridGens 와 같은 식).
   const localVisible = useMemo(

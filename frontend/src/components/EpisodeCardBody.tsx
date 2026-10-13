@@ -11,6 +11,7 @@ import {
 } from "../lib/episodeBoard";
 import { mediaThumbUrl, thumbOf } from "../lib/media";
 import type { FolderCard, FolderCardChild, FolderCardTake } from "../types";
+import { CoverInfo } from "./CoverInfo";
 import { MediaThumbnail } from "./MediaThumbnail";
 
 interface Props {
@@ -174,16 +175,7 @@ export function EpisodeCardBody({ folder, layout, thumbSize, fill, now, cutsColu
           <span className="ep-name">{folder.name}</span>
           {shared && <span className="ep-sub">{t("마지막 공유")} {shared}</span>}
           <span className="ep-line">{line}</span>
-          {leaf ? (
-            // 컷 — 그 폴더 안의 검토 개수(0 인 것은 감춘다 — 사이드바·모아보기 카드와 같다)
-            review && (
-              <span className="ep-rv">
-                {review.shared > 0 && <span>{t("공유")} <b>{review.shared}</b></span>}
-                {review.final > 0 && <span className="fin">★ {t("최종")} {review.final}</span>}
-                {review.held > 0 && <span className="held" title={t("보류")}>R {review.held}</span>}
-              </span>
-            )
-          ) : (
+          {!leaf && (
             <>
               {bar}
               {progress && <span className="ep-rep">{t("대표 정한 컷")} {progress.done} / {progress.total}</span>}
@@ -191,6 +183,8 @@ export function EpisodeCardBody({ folder, layout, thumbSize, fill, now, cutsColu
           )}
           {enter}
         </span>
+        {/* 컷 줄 — 가운데에 그 그림의 정보와 폴더 안의 검토 개수(모아보기 카드와 같은 줄, Jay 2026-10-13) */}
+        {leaf && <CoverInfo folder={folder} className="ep-meta" />}
         {leaf ? takeTiles : tiles}
       </>
     );

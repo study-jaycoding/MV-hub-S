@@ -1047,6 +1047,17 @@
   font-size: 11.5px; font-weight: 800; line-height: 1.6;
 }
 /* 고른 폴더에 직접 든 것('컷 밖') — 어느 카드에도 들지 않아 맨 끝 칸으로 알린다. 종이 겹침 없이 점선 칸. 누르면 한 장씩 보기 */
+/* 컷 카드 + 아래 정보판 한 칸(Jay 2026-10-13 — 모아보기 카드와 같은 정보 줄 .reel-info) */
+.cut-slot { min-width: 0; }
+.cut-meta {
+  margin-top: 8px; padding: 8px 10px 9px; border-radius: 10px; background: #1b1d22; border: 1px solid #2a2d33;
+  grid-template-columns: 38px minmax(0, 1fr); row-gap: 3px; font-size: 11.5px; text-align: left; cursor: default;
+}
+.cut-meta.sel { border-color: var(--accent); }
+/* 카드가 좁다(최소 180px) — 값을 잘라 내지 않고 줄을 바꾼다. 건수는 카드의 이름표에 이미 있어 '전체 N' 은 뺀다 */
+.cut-meta .v { overflow-wrap: anywhere; }
+.cut-meta .reel-rv { row-gap: 0; }
+.cut-meta .reel-rv .all { display: none; }
 .cut-card.cut-out {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
   border: 1px dashed rgba(255, 255, 255, 0.2); color: var(--muted);

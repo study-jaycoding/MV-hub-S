@@ -5,14 +5,12 @@
 // 공개 setter 모양은 보존하되 수동 변경만 revision에 기록해 자동 따라가기 응답과 구분한다.
 import {
   useCallback,
-  useEffect,
   useMemo,
   useRef,
   useState,
   type Dispatch,
   type SetStateAction,
 } from "react";
-import { PLACE_VIEWS_KEY, parsePlaceViews, placeViewKey, withPlaceView, type PlaceView, type PlaceViews } from "./placeViews";
 import type { Store } from "./storage";
 import { useT } from "./i18n";
 import type { Filters, GenQuery, WorkspaceContext } from "../types";
@@ -256,48 +254,9 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext, teamP
     return Number.isFinite(saved) && saved > 0 ? Math.min(1.7, Math.max(0.7, saved)) : 1;
   });
   const [fill, setFill] = useState(() => LS.get("fill", "1") !== "0"); // cover ↔ contain
-  // ── 모양(리스트/그리드 · '리스트 한 번 더')은 자리마다 기억한다(Jay 2026-10-13 저녁, lib/placeViews) ──
-  //  lastLayout·lastGroup = **방금 보던 모양**(전의 layout·groupByDate 상태 그대로 — 저장 키도 같다). 처음 들어가는 자리가 이것을 물려받는다.
-  //  화면의 값(layout·groupByDate)은 **렌더에서** 정한다: 그 자리에 적힌 것이 있으면 그것, 없으면 방금 보던 것. effect 로 맞추면 자리를 옮긴 첫
-  //  렌더가 옛 자리의 모양으로 한 번 그려진다(줄 ↔ 카드가 번쩍인다).
-  const [lastLayout, rawSetLayout] = useState<"grid" | "list">(() =>
-    LS.get("layout", "grid") === "list" ? "list" : "grid",
-  );
+  // 모양(리스트/그리드 · '리스트 한 번 더')은 여기 없다 — 자리(보는 폴더)마다 기억하고, 보는 폴더는 폴더 창까지 알아야 정해져 App 이
+  //  lib/usePlaceView 로 따로 쥔다(Jay 2026-10-13 저녁).
   const [showFilters, setShowFilters] = useState(() => LS.get("showFilters", "1") !== "0");
-  const [lastGroup, rawSetGroupByDate] = useState(() => LS.get("groupByDate", "0") === "1");
-  const [placeViews, setPlaceViews] = useState<PlaceViews>(() => parsePlaceViews(LS.loadJSON<unknown>(PLACE_VIEWS_KEY)));
-  const placeViewsRef = useRef(placeViews);
-  const viewPlace = placeViewKey(filters); // 화면이 보는 자리 — 공간이 바뀌어 지워진 폴더(위)는 지워진 대로
-  const layout = placeViews[viewPlace]?.layout ?? lastLayout;
-  const groupByDate = placeViews[viewPlace]?.group ?? lastGroup;
-  const viewRef = useRef({ place: viewPlace, layout, groupByDate });
-  viewRef.current = { place: viewPlace, layout, groupByDate };
-  const pinPlaceView = useCallback((place: string, view: PlaceView) => {
-    const next = withPlaceView(placeViewsRef.current, place, view);
-    if (next === placeViewsRef.current) return;
-    placeViewsRef.current = next;
-    setPlaceViews(next);
-    LS.setJSON(PLACE_VIEWS_KEY, next);
-  }, [LS]);
-  // 모양을 바꾸면 지금 자리 것만 바뀐다(그리고 '방금 보던 모양'이 된다).
-  const setLayout = useCallback((next: "grid" | "list") => {
-    rawSetLayout(next);
-    pinPlaceView(viewRef.current.place, { layout: next, group: viewRef.current.groupByDate });
-  }, [pinPlaceView]);
-  const setGroupByDate = useCallback<Dispatch<SetStateAction<boolean>>>((action) => {
-    const next = typeof action === "function" ? action(viewRef.current.groupByDate) : action;
-    rawSetGroupByDate(next);
-    pinPlaceView(viewRef.current.place, { layout: viewRef.current.layout, group: next });
-  }, [pinPlaceView]);
-  // 자리를 옮긴 뒤: 적혀 있던 자리면 그 모양이 '방금 보던 모양'이 되고(다음에 처음 들어가는 폴더가 물려받는다), 처음 본 자리면 지금 보이는
-  //  모양(= 방금 보던 것)을 그 자리 것으로 적는다 — 나중에 다른 폴더에서 모양을 바꿔도 이 자리는 본 그대로다.
-  useEffect(() => {
-    const seen = placeViewsRef.current[viewPlace];
-    if (seen) {
-      rawSetLayout(seen.layout);
-      rawSetGroupByDate(seen.group);
-    } else pinPlaceView(viewPlace, { layout: viewRef.current.layout, group: viewRef.current.groupByDate });
-  }, [viewPlace, pinPlaceView]);
   const [colorFilter, setColorFilter, setColorFilterAutomatic] = useManualState<Set<string>>(
     () => LS.loadSet("colorFilter"), bumpViewFilter,
   );
@@ -504,8 +463,6 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext, teamP
     finalOnly,
     generationScope,
     grayOn,
-    groupByDate,
-    layout,
     scale,
     sharedOnly,
     reviewFilter,
@@ -523,9 +480,7 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext, teamP
     typeFilter, setTypeFilter,
     scale, setScale,
     fill, setFill,
-    layout, setLayout,
     showFilters, setShowFilters,
-    groupByDate, setGroupByDate,
     colorFilter, setColorFilter,
     sharedOnly, setSharedOnly,
     reviewFilter, setReviewFilter,
