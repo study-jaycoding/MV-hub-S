@@ -17,6 +17,16 @@ export function usePlaceView(store: Store, place: string) {
   const [lastLayout, rawSetLayout] = useState<"grid" | "list">(() => (store.get("layout", "grid") === "list" ? "list" : "grid"));
   const [lastGroup, rawSetGroupByDate] = useState(() => store.get("groupByDate", "0") === "1");
   const [views, setViews] = useState<PlaceViews>(() => parsePlaceViews(store.loadJSON<unknown>(PLACE_VIEWS_KEY)));
+  // 자리를 옮긴 렌더에서 저장된 것을 다시 읽는다 — 다른 창이 그사이 그 자리에 적어 둔 모양이 있으면 첫 렌더부터 그 모양이고, 아래의 '처음 본
+  //  자리 적기'가 그것을 덮지 않는다(낡은 사본으로 '처음 본 자리'라 여겨 다른 창의 리스트를 그리드로 덮었다 — Codex 코드 리뷰). 렌더 중의
+  //  setState 는 앞 렌더의 값에 맞춰 상태를 고치는 React 의 그 방식이다(이 렌더는 버리고 곧바로 다시 그린다). 저장에 실패한(용량) 이 창만의
+  //  기억은 남긴다.
+  const [placeRead, setPlaceRead] = useState(place);
+  if (placeRead !== place) {
+    setPlaceRead(place);
+    const stored = { ...views, ...parsePlaceViews(store.loadJSON<unknown>(PLACE_VIEWS_KEY)) };
+    if (!sameViews(views, stored)) setViews(stored);
+  }
   const viewsRef = useRef(views);
   viewsRef.current = views;
   const layout = views[place]?.layout ?? lastLayout;

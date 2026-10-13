@@ -156,4 +156,17 @@ describe("자리마다 본 모양(usePlaceView)", () => {
     go(b, "e035"); // B 도 그 폴더에 가면 A 가 적은 모양을 본다(적을 때 최신 저장을 읽어 왔다)
     expect(view(b)).toBe("list");
   });
+
+  // Codex 코드 리뷰: B 가 아무것도 바꾸지 않은 채 처음 가면 낡은 사본에 그 자리가 없어 '처음 본 자리'로 여기고 A 의 모양을 덮었다.
+  it("다른 창이 먼저 적어 둔 폴더를 아무것도 바꾸지 않고 처음 가도 그 모양이다 — 처음 본 자리인지는 저장된 것으로 본다(덮지 않는다)", () => {
+    const a = open("e035");
+    const b = open("e040"); // 둘 다 켜진 뒤 — B 의 사본에는 e050 이 없다
+    go(a, "e050");
+    act(() => a.latest.setLayout("list")); // 창 A: e050 = 리스트
+    go(b, "e050");
+    expect(view(b)).toBe("list");
+    expect(parsePlaceViews(JSON.parse(data[PLACE_VIEWS_KEY])).e050).toEqual({ layout: "list", group: false });
+    go(b, "e070"); // 그다음 처음 가는 폴더는 방금 본 것(리스트)을 물려받는다
+    expect(view(b)).toBe("list");
+  });
 });
