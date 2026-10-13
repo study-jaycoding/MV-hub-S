@@ -234,6 +234,7 @@ export function EditListMenu({
   hideOff,
   offCount,
   fillCount,
+  finalAll,
   trigger,
   onHide,
   onFill,
@@ -245,13 +246,16 @@ export function EditListMenu({
   hideOff: boolean;
   offCount: number;
   fillCount: number;
+  // 모두 최종으로 확정(Jay 2026-10-13) — 타임라인의 생성물에 최종을 줄 수 있는 사람에게만 준다(안 주면 줄이 없다).
+  //  count = 지금 최종으로 올라갈 생성물 수(이미 최종인 것은 뺀 수 — 0 이면 흐리다) · busy = 앞서 누른 것이 아직 도는 중
+  finalAll?: { count: number; busy: boolean; onRun: () => void };
   trigger: RefObject<HTMLElement>; // 목록 단추 — 다시 누르면 그 단추가 닫는다(EditMenu)
   onHide: () => void;
   onFill: () => void;
   onClose: () => void;
 }) {
   const t = useT();
-  const height = HEAD_H - 22 + 2 * ROW_H; // 제목 줄이 없다
+  const height = HEAD_H - 22 + (finalAll ? 3 : 2) * ROW_H; // 제목 줄이 없다
   const y = bottom + 4 + height > window.innerHeight ? top - 4 - height : bottom + 4;
   return (
     <EditMenu x={x} y={y} width={190} height={height} label={t("타임라인 정리")} trigger={trigger} onClose={onClose}>
@@ -265,6 +269,14 @@ export function EditListMenu({
         {t("빈 곳 채우기")}
         <i>{fillCount || ""}</i>
       </button>
+      {finalAll && (
+        <button type="button" role="menuitem" className="ed-tmenu-item" disabled={!finalAll.count || finalAll.busy} aria-busy={finalAll.busy}
+          title={t("타임라인에 있는 생성물을 모두 최종으로 확정합니다 — 보이는 컷의 켜진 클립만(숨긴 컷·꺼진 클립·꺼진 트랙은 뺍니다). 누르면 무엇이 바뀌는지 먼저 묻습니다.")}
+          onClick={finalAll.onRun}>
+          {t("모두 최종으로 확정")}
+          <i>{finalAll.count || ""}</i>
+        </button>
+      )}
     </EditMenu>
   );
 }
@@ -280,6 +292,7 @@ export function EditClipMenu({
   pendingCount,
   onSend,
   onTrim,
+  final,
   onClose,
 }: {
   x: number;
@@ -291,11 +304,14 @@ export function EditClipMenu({
   onSend: () => void;
   // 길이 조절 창을 연다(클립 하나를 눌렀을 때만 준다) — 휠 클릭과 같은 창. 휠 단추가 없는 마우스·트랙패드의 길이다.
   onTrim?: () => void;
+  // 최종 선택(Jay 2026-10-13) — 이 클립들의 생성물에 최종을 줄 수 있을 때만 준다(안 주면 줄이 없다). checked = 줄 수 있는 것이
+  //  전부 최종이다(누르면 해제) · count = 누르면 바뀌는 생성물 수(여러 개일 때만 적는다)
+  final?: { checked: boolean; count: number; onToggle: () => void };
   onClose: () => void;
 }) {
   const t = useT();
   return (
-    <EditMenu x={x} y={y} width={190} height={HEAD_H + ROW_H * (onTrim ? 2 : 1)} label={t("클립 메뉴")} onClose={onClose}>
+    <EditMenu x={x} y={y} width={190} height={HEAD_H + ROW_H * (1 + (onTrim ? 1 : 0) + (final ? 1 : 0))} label={t("클립 메뉴")} onClose={onClose}>
       <div className="ed-tmenu-head">{title}</div>
       <button type="button" role="menuitem" autoFocus className="ed-tmenu-item" disabled={!count} aria-busy={busy} onClick={onSend}
         title={busy
@@ -308,6 +324,16 @@ export function EditClipMenu({
         <button type="button" role="menuitem" className="ed-tmenu-item" onClick={onTrim}>
           {t("길이 조절")}
           <i>{t("휠 클릭")}</i>
+        </button>
+      )}
+      {final && (
+        <button type="button" role="menuitemcheckbox" aria-checked={final.checked} className={"ed-tmenu-item" + (final.checked ? " ed-here" : "")}
+          title={final.checked
+            ? t("최종 확정을 해제합니다(공유 상태로 돌아갑니다).")
+            : t("이 생성물을 최종으로 확정합니다 — 공유 & 리뷰의 최종(★)과 같은 것입니다.")}
+          onClick={final.onToggle}>
+          {t("최종 선택")}
+          <i>{final.checked ? "✓ " : ""}{final.count > 1 ? final.count : ""}</i>
         </button>
       )}
     </EditMenu>
