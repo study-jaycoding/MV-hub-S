@@ -955,6 +955,7 @@ updated: 2026-10-13
 | `useDragEndReset.ts` | 훅 | 놓기 대상의 강조를 끌기가 어디서 끝나든 끈다 — 강조가 켜진 동안만 window 의 `dragend` 를 듣는다(대상 위에서 취소하면 dragleave 가 오지 않는다). `useHandleRelease` = 순서 손잡이(⠿)의 '누르고 있다' 표식을 손잡이 밖에서 떼거나 창을 떠나도 내린다(조작 규칙 39) |
 | `saveQueue.ts` | 줄 | 한 줄로 서는 저장 — 목록 전체를 덮어쓰는 저장(역할 PATCH)을 앞의 것이 끝난 뒤에 보낸다(줄은 모듈 값). `rebaseRoles` = 화면에서 바꾼 것만 서버의 지금 값에 얹는다 · `accountAtRequest` = 쓰기 직전에 계정이 그대로인지(조작 규칙 39) |
 | `useOverlayDismiss.ts` | 훅 | 오버레이 바깥 클릭/Esc 통합 해제 |
+| `useStaleMultiClick.ts` | 훅 | 두 번 누름의 둘째가 '첫 누름으로 바뀐 화면'에 닿는 것을 버린다(조작 규칙 61) — 브라우저는 연속 누름 수를 시간·거리로만 세어, 첫 누름이 자리를 옮겨도 둘째 누름을 새 요소에 click·dblclick 으로 보낸다. 격자 뿌리에 handlers 를 펴 넣고 누름 처리 첫머리에서 `isStale()` 을 본다. 자리의 열쇠(`placeKey`)가 같으면 건드리지 않는다. 쓰는 곳: `FolderCardGrid`·`ThumbnailGrid` |
 | `useOutsideMouseDown.ts` | 훅 | 바깥 누름 감지(mousedown + pointerdown — 누름을 pointerdown 에서 막는 곳을 눌러도 닫힌다. pointerdown 은 **잡는 단계**로 듣는다 — 사이드바 폭 손잡이는 전파까지 멈춘다) |
 | `useOutsideDragSelect.ts` | 훅 | 빈 곳 드래그 선택 시작 위임 |
 | `useClickSeparation.ts` | 훅 | 단일/더블 클릭 분리 |

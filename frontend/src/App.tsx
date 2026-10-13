@@ -2349,6 +2349,8 @@ export default function App() {
           //  카드의 클릭·키는 <main inert> 가, 바깥에서 시작하는 끌기 선택과 그 결과는 여기서 막는다. 선택은 닫을 때 비웠고
           //  새로 생길 길이 이 둘뿐이라, 선택 막대·전역 단축키(선택이 있어야 움직인다)는 따로 막지 않아도 된다.
           selectLocked={listLocked}
+          // 두 번 누름의 둘째가 '첫 누름으로 바뀐 화면'의 카드에 닿는 것을 버린다(조작 규칙 61) — 자리, 또는 그 위에 뜬 폴더 창이 화면이다
+          placeKey={listPeek ? `peek:${listPeek.projectId ?? ""}:${listPeek.path}` : hereKey}
           loading={loading}
           onSelectedChange={(next) => {
             if (listLocked) return;
@@ -2813,6 +2815,7 @@ export default function App() {
                 <FolderCardGrid
                   folders={cutCards.folders} scale={scale} fill={fill} layout={layout} onEnter={enterFolderCard} onOpen={openFolderCard}
                   table={groupByDate} onPreview={openPreview} // 리스트 단추 한 번 더(낱장 목록의 '날짜별 구분' 자리) = 표 · 컷 줄의 생성물 띠 = 크게 보기
+                  placeKey={hereKey} // 두 번 누름의 둘째가 들어간 화면에 닿는 것을 버린다(조작 규칙 61)
                   top={!cutScope?.parent} selected={cutSel} onSelect={setCutSel}
                   onInfo={(folder, x, y) => {
                     if (cutScope) setCutInfo({ projectId: cutScope.projectId, path: folder.path, x, y, ctx: listPeekCtx });
