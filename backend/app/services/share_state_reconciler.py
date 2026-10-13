@@ -46,6 +46,13 @@ _BATCH_LIMIT = 10
 _LEASE_SECONDS = 120
 _MAX_BACKOFF_SECONDS = 600
 _LOCAL_TARGET_LOST_RETRY_LIMIT = 5
+# 결과를 모르는 요청(시간 초과·응답 유실·호출 전후를 모르는 크래시)을 서버의 '바라던 상태'가 보일 때까지 지켜보는 기한.
+# 서버가 요청을 받고 아직 처리하지 않았을 수 있다 — 허브의 60초 제한은 서버 일의 취소 기한이 아니다. 그동안은 읽기 관측만
+# 되풀이한다(명령을 다시 보내지 않는다. 간격은 backoff 로 최대 _MAX_BACKOFF_SECONDS). 기한이 지나면 서버의 지금 상태로
+# 닫는다. 서버가 요청별 완료 여부를 알려 주지 않으므로 '절대 늦게 적용되지 않는다'는 증명은 아니다 — 하루는 실제로 있을 법한
+# 지연을 덮는 완화책이다. 횟수(fail_streak)로 세지 않는다: 그 숫자는 관측 실패·로컬 대상 유실도 같이 쓴다.
+_RESULT_UNKNOWN_WATCH_SECONDS = 24 * 60 * 60
+_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 class _RemoteObservationError(RuntimeError):
@@ -218,6 +225,76 @@ def _unpublish_remote(
     raise _RemoteObservationError(f"remote_cleanup_{status}", status_code=status)
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _result_unknown(intent: Mapping[str, Any]) -> bool:
+    """이 의도의 서버 결과를 아직 모르는가.
+
+    ``prepared`` 는 선기록 뒤 성공 응답을 받지 못했다는 뜻이다. 그 상태에서 인증 대기(``auth_required``)를 거치면 상태
+    이름이 바뀌므로 관측 기록에 표식(``result_unknown``)을 남겨 이어 간다."""
+    return (
+        intent.get("status") == "prepared"
+        or _observed_payload(intent).get("result_unknown") is True
+    )
+
+
+def _unknown_state(
+    intent: Mapping[str, Any], observed: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """결과 불명 표식을 실은 관측 기록. 처음 표시한 시각과 합성 발행 확정 표식은 이어 간다."""
+    prior = _observed_payload(intent)
+    state = dict(observed) if observed is not None else dict(prior)
+    if prior.get("publish_confirmed") is True:
+        state["publish_confirmed"] = True
+    state["result_unknown"] = True
+    state["unknown_since"] = str(
+        prior.get("unknown_since") or _utc_now().strftime(_TIME_FORMAT)
+    )
+    return state
+
+
+def _unknown_watch_expired(intent: Mapping[str, Any]) -> bool:
+    since = _observed_payload(intent).get("unknown_since")
+    if not since:
+        return False
+    try:
+        started = datetime.strptime(str(since), _TIME_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    return (_utc_now() - started).total_seconds() >= _RESULT_UNKNOWN_WATCH_SECONDS
+
+
+def _keep_watching(
+    intent: Mapping[str, Any], claim_token: str, observed: Mapping[str, Any]
+) -> bool:
+    """결과 불명인 채로 둔다 — 관측만 적고 다음에 다시 본다. 로컬은 건드리지 않는다."""
+    transitioned = repo.transition_share_state_intent(
+        intent["intent_id"],
+        intent["intent_seq"],
+        claim_token,
+        "prepared",
+        observed_state=_unknown_state(intent, observed),
+        next_retry_at=_next_retry_at(int(intent.get("fail_streak") or 0)),
+        last_error_code="remote_result_unknown",
+        increment_fail_streak=True,
+    )
+    if transitioned:
+        repo.release_share_state_intent_claim(
+            intent["intent_id"], intent["intent_seq"], claim_token
+        )
+    return transitioned
+
+
+def _auth_required_fields(intent: Mapping[str, Any]) -> dict[str, Any]:
+    """인증 대기로 보낼 때 같이 적을 것 — 결과 불명이었다면 그 표식을 관측 기록에 남긴다."""
+    fields: dict[str, Any] = {"last_error_code": "remote_auth_required"}
+    if _result_unknown(intent):
+        fields["observed_state"] = _unknown_state(intent)
+    return fields
+
+
 def _next_retry_at(fail_streak: int) -> str:
     exponent = min(max(int(fail_streak), 0), 10)
     delay = min(2 ** exponent, _MAX_BACKOFF_SECONDS)
@@ -379,6 +456,16 @@ async def _apply_or_retry(
     if result == repo.SHARE_STATE_APPLY_CAS_LOST:
         # 새 의도나 다른 claim이 이긴 정상 경합이다. 낡은 워커가 실패 횟수를 올리지 않는다.
         return repo.SHARE_STATE_APPLY_CAS_LOST
+    if result == repo.SHARE_STATE_APPLY_BUSY:
+        # 같은 로컬 행을 다른 미종결 원장이 물고 있다 — 닫지 않고 그쪽이 끝난 뒤에 다시 본다.
+        await asyncio.to_thread(
+            _mark_retry,
+            intent,
+            claim_token,
+            error_code="local_target_busy",
+            waiting_local=False,
+        )
+        return "retry"
     if result == repo.SHARE_STATE_APPLY_NO_TARGET:
         return await asyncio.to_thread(
             _settle_missing_local_target,
@@ -453,22 +540,54 @@ async def _process_claimed_intent(
                 return await _process_composite_partial(
                     intent, claim_token, server_origin, token, observed
                 )
+            status = _terminal_status(intent, observed)
+            if _result_unknown(intent):
+                if status != "converged":
+                    if not _unknown_watch_expired(intent):
+                        # '아직 바라던 상태가 아니다'는 '요청이 거절됐다'도 '다른 조작이 덮었다'도 아니다. 전에는 첫 관측에
+                        # rejected(이전 상태)·superseded(그 밖)로 닫아, 서버가 그 뒤에 적용한 최종·보류를 영영 놓쳤다
+                        # (실패로 안내 → 서버에는 적용 → 로컬 행은 그대로. 2026-10-14 격리 실측). 결과 불명으로 두고 다시 본다.
+                        kept = await asyncio.to_thread(
+                            _keep_watching, intent, claim_token, observed
+                        )
+                        return "retry" if kept else repo.SHARE_STATE_APPLY_CAS_LOST
+                    # 지켜볼 만큼 지켜봤다 — 서버의 지금 상태를 로컬에 맞추고 닫는다(명령은 다시 보내지 않는다).
+                    status = "rejected"
+                else:
+                    # 서버가 (늦게라도) 받아들였다. 여기서부터는 성공 응답을 받은 요청과 같은 길이다 — pending 으로 올리고
+                    # 다시 보던 횟수를 비운다(로컬 대상 유실의 재시도 예산이 그 횟수에 깎이지 않게).
+                    moved = await asyncio.to_thread(
+                        functools.partial(
+                            repo.transition_share_state_intent,
+                            intent["intent_id"],
+                            intent["intent_seq"],
+                            claim_token,
+                            "pending",
+                            observed_state=dict(observed),
+                            reset_fail_streak=True,
+                        )
+                    )
+                    if not moved:
+                        return repo.SHARE_STATE_APPLY_CAS_LOST
+                    intent = {**intent, "status": "pending", "fail_streak": 0}
             return await _apply_or_retry(
                 intent,
                 claim_token,
                 observed,
-                status=_terminal_status(intent, observed),
+                status=status,
             )
         except asyncio.CancelledError:
             raise
         except _RemoteAuthRequired:
             await asyncio.to_thread(
-                repo.transition_share_state_intent,
-                intent["intent_id"],
-                intent["intent_seq"],
-                claim_token,
-                "auth_required",
-                last_error_code="remote_auth_required",
+                functools.partial(
+                    repo.transition_share_state_intent,
+                    intent["intent_id"],
+                    intent["intent_seq"],
+                    claim_token,
+                    "auth_required",
+                    **_auth_required_fields(intent),
+                )
             )
             return "auth_required"
         except _RemoteObservationError as exc:
@@ -566,12 +685,14 @@ async def run_share_state_reconciliation_cycle(
             except _RemoteAuthRequired:
                 for intent in processable:
                     await asyncio.to_thread(
-                        repo.transition_share_state_intent,
-                        intent["intent_id"],
-                        intent["intent_seq"],
-                        worker_token,
-                        "auth_required",
-                        last_error_code="remote_auth_required",
+                        functools.partial(
+                            repo.transition_share_state_intent,
+                            intent["intent_id"],
+                            intent["intent_seq"],
+                            worker_token,
+                            "auth_required",
+                            **_auth_required_fields(intent),
+                        )
                     )
                 counts["auth_required"] = len(processable)
                 observed_by_intent = {}
