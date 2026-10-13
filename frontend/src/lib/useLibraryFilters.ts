@@ -189,6 +189,10 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
     ? JSON.stringify([workspaceKey, sharedMode]) : "";
   const workspaceQueryReady = !workspace || filters.tab !== "team" || sharedMode === "all" ||
     workspace.scope === "personal" || (workspace.scope === "team" && !!workspace.id);
+  // 공유 탭에 **들어가면** 갖게 될 공간 범위 키와 '확정된 자동 공간인가' — 지금 탭과 무관하게 센다(공유 탭의 마지막 자리 기억의 문맥 — App).
+  const teamScopeKey = JSON.stringify([workspaceKey, sharedMode]);
+  const teamAutoReady = !!workspace && sharedMode === "auto" &&
+    (workspace.scope === "personal" || (workspace.scope === "team" && !!workspace.id));
   const filtersRef = useRef(filters);
   filtersRef.current = filters;
   const [generationScope, rawSetGenerationScope] = useState<GenerationScope>(
@@ -196,8 +200,12 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
   );
   const generationScopeRef = useRef(generationScope);
   generationScopeRef.current = generationScope;
+  // 되살린 자리 표식(2026-10-13 ① Codex 3차 P2): 뒤로 가기·공유 탭 기억으로 **보기만** 옮긴 자리는 생성 위치와 우연히 같아도 App 의 '낡은 프로젝트'
+  //  효과가 지우지 않는다(사이드바 목록에 없다고 지워진 것이 아니다). 눌러서 자리를 고르면(commitGenerationScope) 표식이 내린다.
+  const restoredLocationRef = useRef(false);
 
   const commitGenerationScope = useCallback((next: GenerationScope) => {
+    restoredLocationRef.current = false;
     if (sameGenerationScope(generationScopeRef.current, next)) return false;
     generationScopeRef.current = next;
     rawSetGenerationScope(next);
@@ -291,6 +299,26 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
     // 자리를 바꾸는 변경만 선택을 비운다(위 selectionRevision 주석) — 검색어·W 침 같은 보기 필터는 보이는 카드를 고른 채로 둔다.
     bumpManualRevision(isLocationPatch(p));
   }, [bumpManualRevision, commitGenerationScope]);
+
+  // 보는 자리만 되살린다(브라우저 뒤로·앞으로 가기, 공유 탭의 마지막 자리 기억 — 2026-10-13 ①②): 다음 생성 위치(generationScope)·무장 폴더는 건드리지
+  //  않는다(그것은 사이드바·컷 카드를 **눌러** 들어갈 때만 바뀐다). 자리가 바뀌니 선택은 비우고 수동 횟수도 올린다 — 늦게 온 Resolve 따라가기 응답이
+  //  되살린 자리를 덮지 않게(Codex 설계 검토). 같은 자리면 아무 일도 없다.
+  const restoreLocation = useCallback((location: GenerationScope & { deleted_only?: boolean; include_deleted?: boolean }) => {
+    const previous = filtersRef.current;
+    const deletedOnly = location.deleted_only || undefined; // 휴지통 보기도 자리다(없으면 지운다 — 기록에서 돌아온 일반 목록)
+    const includeDeleted = location.include_deleted || undefined;
+    if (
+      previous.project_id === location.project_id && previous.folder_path === location.folder_path &&
+      previous.deleted_only === deletedOnly && previous.include_deleted === includeDeleted
+    ) return;
+    const next = {
+      ...previous, project_id: location.project_id, folder_path: location.folder_path, deleted_only: deletedOnly, include_deleted: includeDeleted,
+    };
+    filtersRef.current = next;
+    restoredLocationRef.current = true;
+    rawSetFilters(next);
+    bumpManualRevision();
+  }, [bumpManualRevision]);
 
   const setSharedWorkspaceMode = useCallback((mode: SharedWorkspaceMode) => {
     setSharedView({ key: workspaceKey, mode });
@@ -422,8 +450,9 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext) {
   });
 
   return {
-    filters, setFilters, patch,
+    filters, setFilters, patch, restoreLocation, restoredLocationRef,
     generationScope, followLocation, manualRevision, followRevision,
+    teamScopeKey, teamAutoReady,
     typeFilter, setTypeFilter,
     scale, setScale,
     fill, setFill,

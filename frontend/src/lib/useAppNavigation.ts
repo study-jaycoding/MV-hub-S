@@ -3,7 +3,20 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { Filters, InfoTarget, PreviewTarget } from "../types";
 
 type NavOverlay = "preview" | "comment" | "admin";
-type NavView = { tab: Filters["tab"]; focusId: string | null; ov: NavOverlay | null; key: number; sid?: string };
+/** 기록에 싣는 **보는 자리**(2026-10-13 ② — 뒤로·앞으로 가기가 폴더 위치를 되살린다). `ctx` = 계정·서버·공간 범위(App 이 만든다) — 다른 문맥에서
+ *  남긴 자리는 되살리지 않는다(공간을 바꾼 뒤의 뒤로 가기가 옛 공간의 폴더를 넣지 않게). 프로젝트 맨 위는 둘 다 undefined 인 **명시적** 자리다 —
+ *  옛 판의 기록(`loc` 자체가 없음)과 구분된다(Codex 설계 검토). */
+export type NavLocation = {
+  project_id?: string;
+  folder_path?: string;
+  deleted_only?: boolean; // 휴지통 보기도 자리다 — 사이드바의 휴지통 줄로 들어가고 뒤로 가면 일반 목록(Codex 코드 리뷰)
+  include_deleted?: boolean;
+  ctx: string;
+};
+type NavView = { tab: Filters["tab"]; focusId: string | null; ov: NavOverlay | null; key: number; sid?: string; loc?: NavLocation };
+const sameLocation = (a: NavLocation | undefined, b: NavLocation) =>
+  !!a && a.project_id === b.project_id && a.folder_path === b.folder_path &&
+  !!a.deleted_only === !!b.deleted_only && !!a.include_deleted === !!b.include_deleted && a.ctx === b.ctx;
 // 이 페이지를 연 때의 표식 — payload 번호(key)는 페이지를 열 때마다 1 부터 다시 세므로, 새로 고침 전의 기록(브라우저가 state 를
 //  보존한다)과 번호가 겹친다. 표식이 다른 기록은 payload 가 없는 것으로 본다(미리보기는 닫힌 채로 — 다른 것이 뜨는 것보다 낫다).
 const NAV_SESSION = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -19,6 +32,9 @@ export function useAppNavigation({
   setBoardArrange,
   setFilters,
   previewScopeKey,
+  currentLocation,
+  restoreLocation,
+  locationCtxFor,
 }: {
   currentTab: Filters["tab"];
   lastBoardFocusRef: MutableRefObject<string | null>;
@@ -30,9 +46,22 @@ export function useAppNavigation({
   setBoardArrange: Dispatch<SetStateAction<number>>;
   setFilters: Dispatch<SetStateAction<Filters>>;
   previewScopeKey?: string;
+  /** 지금 보는 자리 — 모든 기록이 완전한 자리 스냅샷을 갖는다(없으면 자리를 싣지 않는 옛 호출자). */
+  currentLocation?: NavLocation;
+  /** 기록의 자리를 되살리는 표시 전용 setter(lib/useLibraryFilters restoreLocation) — 같은 문맥의 자리만 받는다. */
+  restoreLocation?: (location: NavLocation) => void;
+  /** 어느 탭의 자리가 **지금** 갖게 될 문맥 — 기록의 자리는 지금 탭이 아니라 **그 기록의 탭**의 문맥과 견준다(공유 탭의 폴더 → 작업 공간 탭 → 뒤로:
+   *  지금 탭의 문맥("")과 견주면 공유 폴더가 안 되살아나고 effect 가 그 기록을 빈 자리로 덮었다 — Codex 코드 리뷰). 없으면 지금 자리의 문맥. */
+  locationCtxFor?: (tab: Filters["tab"]) => string;
 }) {
   const navPayloadsRef = useRef(new Map<number, unknown>());
   const previewScopeRef = useRef(previewScopeKey);
+  const currentLocationRef = useRef(currentLocation);
+  currentLocationRef.current = currentLocation;
+  const restoreLocationRef = useRef(restoreLocation);
+  restoreLocationRef.current = restoreLocation;
+  const locationCtxForRef = useRef(locationCtxFor);
+  locationCtxForRef.current = locationCtxFor;
   // 표시 공간/계정이 바뀌면 닫힌 미리보기도 뒤로가기로 복원하지 않는다.
   // 히스토리 엔트리는 그대로 두고 payload만 비워, 새 공간의 이후 기록은 정상 사용한다.
   if (previewScopeRef.current !== previewScopeKey) {
@@ -40,7 +69,7 @@ export function useAppNavigation({
     navPayloadsRef.current.clear();
   }
   const navSeqRef = useRef(0);
-  const viewRef = useRef<NavView>({ tab: currentTab, focusId: null, ov: null, key: 0 });
+  const viewRef = useRef<NavView>({ tab: currentTab, focusId: null, ov: null, key: 0, ...(currentLocation ? { loc: currentLocation } : {}) });
 
   useEffect(() => {
     viewRef.current = { ...viewRef.current, tab: currentTab };
@@ -60,6 +89,10 @@ export function useAppNavigation({
       } else {
         setBoardFocusId(null);
       }
+      // 기록의 자리 — 같은 문맥(계정·서버·공간 범위 — **그 기록의 탭**이 지금 갖게 될 문맥)일 때만 되살린다. 자리가 없는 옛 기록·다른 문맥의
+      //  기록은 지금 자리를 둔다. 탭보다 먼저 넣는다(아래 setFilters 의 갱신 함수가 최신 상태 위에서 탭만 바꾼다).
+      const ctxNow = locationCtxForRef.current ? locationCtxForRef.current(v.tab) : currentLocationRef.current?.ctx;
+      if (v.loc && ctxNow !== undefined && v.loc.ctx === ctxNow) restoreLocationRef.current?.(v.loc);
       setFilters((f) => (f.tab === v.tab ? f : { ...f, tab: v.tab }));
     },
     [
@@ -101,7 +134,7 @@ export function useAppNavigation({
         }
       }
       const cur = viewRef.current;
-      navigate({ tab: cur.tab, focusId: cur.focusId, ov, key, sid: NAV_SESSION });
+      navigate({ tab: cur.tab, focusId: cur.focusId, ov, key, sid: NAV_SESSION, loc: cur.loc }); // 겹을 열 때도 지금 자리를 싣는다
     },
     [navigate],
   );
@@ -117,14 +150,27 @@ export function useAppNavigation({
         focusId: tab === "compose" ? viewRef.current.focusId || lastBoardFocusRef.current : null,
         ov: null,
         key: 0,
+        loc: viewRef.current.loc, // 탭을 누른 뒤 App 이 자리를 지우거나 되살리면 아래 syncLocation 이 이 기록의 자리를 고쳐 적는다
       }),
     [lastBoardFocusRef, navigate],
   );
 
   const enterBoard = useCallback(
-    (genId: string) => navigate({ tab: "compose", focusId: genId, ov: null, key: 0 }),
+    (genId: string) => navigate({ tab: "compose", focusId: genId, ov: null, key: 0, loc: viewRef.current.loc }),
     [navigate],
   );
+
+  // 보는 자리가 바뀌었다(App 의 effect — 렌더마다) — 명시적 이동(컷 카드·사이드바 폴더를 눌러 들어감)이면 기록을 한 칸 **쌓고**, 그 밖(따라가기·
+  //  탭을 누른 뒤의 지움·되살림·지워진 프로젝트 정리·공간 전환)은 지금 기록의 자리를 **고쳐 적는다** — 모든 기록이 완전한 자리를 갖는다. 같은
+  //  자리면 아무 일도 없다(되살린 뒤의 렌더, 겹을 여닫은 뒤). 겹·초점은 그대로 둔다.
+  const syncLocation = useCallback((location: NavLocation, push: boolean) => {
+    const cur = viewRef.current;
+    if (sameLocation(cur.loc, location)) return;
+    const next = { ...cur, loc: location };
+    if (push) window.history.pushState({ chv: next }, "");
+    else window.history.replaceState({ chv: next }, "");
+    viewRef.current = next;
+  }, []);
 
   const openPreview = useCallback((target: PreviewTarget) => openOverlay("preview", target), [openOverlay]);
   // 코멘트는 nav 오버레이가 아니라 독립 상태 — 열면 그대로 두고(탭 전환에도 유지) X 로만 닫는다.
@@ -149,5 +195,6 @@ export function useAppNavigation({
     openPreview,
     openComment,
     openAdmin,
+    syncLocation,
   };
 }

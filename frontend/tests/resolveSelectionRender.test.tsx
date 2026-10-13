@@ -34,6 +34,7 @@ let gridSnapshot: ComponentProps<typeof import("../src/components/ThumbnailGrid"
 let promptSnapshot: PromptProps | null;
 let librarySnapshot: { filters: Filters; genQuery: GenQuery; projectWorkspaceId?: string } | null;
 let sidebarSnapshot: ComponentProps<typeof import("../src/components/FilterSidebar").FilterSidebar> | null;
+let topBarOnTab: ((tab: Filters["tab"]) => void) | null; // 상단바 모의가 잡아 둔 탭 누름(2026-10-13 ① 공유 탭의 마지막 자리)
 let canvasSidebarSnapshot: ComponentProps<typeof import("../src/components/sidebar/CanvasFolderSidebar").CanvasFolderSidebar> | null;
 let refreshProjects: () => void;
 const relinkOnWorkspaceChange = vi.fn();
@@ -101,7 +102,7 @@ beforeEach(() => {
   localStorage.clear();
   localStorage.setItem("ch.workspaceContext", JSON.stringify({ scope: "team", id: "view-workspace", name: "View workspace" }));
   boundary = installPromptBoundaryMocks();
-  gridSnapshot = null; promptSnapshot = null; librarySnapshot = null; sidebarSnapshot = null; canvasSidebarSnapshot = null;
+  gridSnapshot = null; promptSnapshot = null; librarySnapshot = null; sidebarSnapshot = null; canvasSidebarSnapshot = null; topBarOnTab = null;
   startAuthPending = false;
   refreshProjects = () => {};
   locateGenerations = vi.fn().mockImplementation(async ({ gen_ids, workspace_ids, workspace_scope }: GenerationLocationRequest) => {
@@ -426,7 +427,10 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
     }) };
   });
   vi.doMock("../src/components/TopBar", () => ({
-    TopBar: ({ filters, inert }: { filters: { tab: string }; inert?: boolean }) => <output data-testid="tab" data-inert={inert || undefined}>{filters.tab}</output>,
+    TopBar: ({ filters, inert, onTab }: { filters: { tab: string }; inert?: boolean; onTab: (tab: Filters["tab"]) => void }) => {
+      topBarOnTab = onTab;
+      return <output data-testid="tab" data-inert={inert || undefined}>{filters.tab}</output>;
+    },
   }));
   vi.doMock("../src/lib/useHubAuth", () => ({
     useHubAuth: () => {
@@ -488,6 +492,85 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
   }));
   vi.spyOn(document, "hasFocus").mockReturnValue(true);
 }
+
+// 2026-10-13 Jay ①②(공유 탭 컷 카드 요청): 공유 탭을 떠났다 **직접 눌러** 돌아오면 같은 문맥(계정·서버·확정된 자동 공간)의 마지막 자리로. 사이드바·컷 카드로
+//  들어간 자리는 브라우저 기록 한 칸 — 뒤로 가기가 들어가기 전 목록으로 돌아온다. 보는 자리만 되살린다(다음 생성 위치는 그대로).
+it("공유 탭을 떠났다 직접 눌러 돌아오면 마지막 자리로, 사이드바로 들어간 폴더는 뒤로 가기로 돌아온다 — 첫 기록부터 자리를 싣고 생성 위치는 그대로", async () => {
+  // 틀의 프로젝트 목록에는 사이드바로 들어갈 프로젝트만 둔다 — 목록에 없는 "archived-project" 는 기억에서 그대로 되살아나야 한다(아래)
+  installAppBoundaries([fixture], fixture.id, [{ id: "resolve-project", name: "Resolve" } as unknown as Project]);
+  localStorage.setItem("ch.workspaceContext", JSON.stringify({ scope: "team", id: "view-workspace", name: "View workspace" }));
+  localStorage.setItem("ch.lib.filtersV2", JSON.stringify({ tab: "team", project_id: "resolve-project", __v: "2", __view: JSON.stringify(["team", "view-workspace"]) }));
+  localStorage.setItem("ch.lib.generationScopeV1", JSON.stringify({ project_id: "create", folder_path: "dest" }));
+  const { default: App } = await import("../src/App");
+  act(() => view.root.render(<StrictMode><App /></StrictMode>));
+  await settle();
+  const loc = () => (window.history.state as { chv: { loc?: { project_id?: string; folder_path?: string; ctx: string } } }).chv.loc;
+  expect(librarySnapshot!.filters).toMatchObject({ tab: "team", project_id: "resolve-project" });
+  expect(loc()?.project_id).toBe("resolve-project"); // 첫 기록부터 자리를 싣는다(프로젝트 맨 위 = 폴더 없음)
+  const top = window.history.state;
+  const before = window.history.length;
+  act(() => sidebarSnapshot!.onChange({ project_id: "resolve-project", folder_path: "episode" })); // 사이드바 폴더 — 명시적 이동
+  await settle();
+  expect([librarySnapshot!.filters.folder_path, window.history.length - before, loc()?.folder_path]).toEqual(["episode", 1, "episode"]);
+  const enteredEntry = window.history.state; // 폴더에 들어간 기록
+  expect(JSON.parse(localStorage.getItem("ch.lib.teamLocationV1")!)).toMatchObject({ project_id: "resolve-project", folder_path: "episode" });
+  expect(JSON.parse(localStorage.getItem("ch.lib.generationScopeV1")!)).toEqual({ project_id: "resolve-project", folder_path: "episode" }); // 눌러 들어가면 생성 위치도(전과 같다)
+  act(() => topBarOnTab!("my")); // 다른 탭 — 자리가 지워진다(전처럼 — 생성 위치도 비워진다)
+  await settle();
+  expect([librarySnapshot!.filters.tab, librarySnapshot!.filters.project_id, loc()?.project_id]).toEqual(["my", undefined, undefined]);
+  expect(JSON.parse(localStorage.getItem("ch.lib.generationScopeV1")!)).toEqual({});
+  act(() => topBarOnTab!("team")); // 공유 탭을 직접 누름 — 마지막 자리
+  await settle();
+  expect(librarySnapshot!.filters).toMatchObject({ tab: "team", project_id: "resolve-project", folder_path: "episode" });
+  expect(loc()).toMatchObject({ project_id: "resolve-project", folder_path: "episode" }); // 탭 기록의 자리도 되살린 자리로 고쳐 적혔다
+  expect(JSON.parse(localStorage.getItem("ch.lib.generationScopeV1")!)).toEqual({}); // 되살리기는 보는 자리만 — 생성 위치는 건드리지 않는다(눌러 들어간 것이 아니다)
+  act(() => window.dispatchEvent(new PopStateEvent("popstate", { state: top }))); // 뒤로 — 폴더에 들어가기 전의 기록
+  await settle();
+  expect([librarySnapshot!.filters.tab, librarySnapshot!.filters.project_id, librarySnapshot!.filters.folder_path]).toEqual(["team", "resolve-project", undefined]);
+  // 다른 문맥(공간)의 기록은 자리를 되살리지 않는다
+  act(() => window.dispatchEvent(new PopStateEvent("popstate", { state: { chv: { tab: "team", focusId: null, ov: null, key: 0, loc: { project_id: "other", folder_path: "x", ctx: "다른 문맥" } } } })));
+  await settle();
+  expect(librarySnapshot!.filters.project_id).toBe("resolve-project");
+  // 휴지통 보기 — 자리에 실리고(기록 한 칸), 기억은 덮이지 않으며, 뒤로 가면 일반 목록
+  const beforeTrash = window.history.length;
+  act(() => sidebarSnapshot!.onChange({ deleted_only: true, project_id: undefined, include_deleted: undefined }));
+  await settle();
+  expect([librarySnapshot!.filters.deleted_only, window.history.length - beforeTrash, loc()?.deleted_only]).toEqual([true, 1, true]);
+  // 기억은 휴지통 직전의 일반 자리(위에서 뒤로 가 프로젝트 맨 위) 그대로 — 휴지통의 '프로젝트 없음'으로 덮이지 않는다
+  const memoryInTrash = JSON.parse(localStorage.getItem("ch.lib.teamLocationV1")!) as { project_id?: string; folder_path?: string };
+  expect([memoryInTrash.project_id, memoryInTrash.folder_path]).toEqual(["resolve-project", undefined]);
+  act(() => window.dispatchEvent(new PopStateEvent("popstate", { state: top })));
+  await settle();
+  expect([librarySnapshot!.filters.deleted_only, librarySnapshot!.filters.project_id]).toEqual([undefined, "resolve-project"]);
+  // 공유 탭 밖(작업 공간 탭)에서 뒤로 가도 공유 탭의 기록이면 그 폴더로 — 문맥은 지금 탭이 아니라 기록의 탭 기준(Codex 코드 리뷰)
+  act(() => topBarOnTab!("my")); await settle();
+  act(() => window.dispatchEvent(new PopStateEvent("popstate", { state: enteredEntry }))); await settle();
+  expect(librarySnapshot!.filters).toMatchObject({ tab: "team", project_id: "resolve-project", folder_path: "episode" });
+  act(() => topBarOnTab!("my")); await settle();
+  expect([librarySnapshot!.filters.tab, librarySnapshot!.filters.project_id]).toEqual(["my", undefined]);
+  // 기억의 프로젝트가 사이드바 목록에 없어도 그대로 되살린다 — 목록은 보관·공간 제한이라 삭제의 증거가 아니다(Codex 코드 리뷰). 정말 사라졌으면 빈 목록.
+  //  생성 위치가 우연히 같은 프로젝트여도(작업 공간 탭에서 눌러 골랐다가 뒤로 가 맨 위) '낡은 프로젝트' 효과가 되살린 자리를 지우지 않는다(Codex 3차 P2)
+  const myTop = window.history.state;
+  act(() => sidebarSnapshot!.onChange({ project_id: "archived-project", folder_path: "ep" })); await settle(); // 눌러 고름 — 생성 위치도
+  expect(JSON.parse(localStorage.getItem("ch.lib.generationScopeV1")!)).toEqual({ project_id: "archived-project", folder_path: "ep" });
+  act(() => window.dispatchEvent(new PopStateEvent("popstate", { state: myTop }))); await settle(); // 뒤로 — 맨 위(생성 위치는 그대로)
+  expect(librarySnapshot!.filters.project_id).toBeUndefined();
+  const saved = JSON.parse(localStorage.getItem("ch.lib.teamLocationV1")!) as { ctx: string };
+  localStorage.setItem("ch.lib.teamLocationV1", JSON.stringify({ ...saved, project_id: "archived-project", folder_path: "ep" }));
+  act(() => topBarOnTab!("team")); await settle();
+  expect([librarySnapshot!.filters.tab, librarySnapshot!.filters.project_id, librarySnapshot!.filters.folder_path]).toEqual(["team", "archived-project", "ep"]);
+  act(() => refreshProjects()); await settle(); // 프로젝트 목록 갱신 — 목록에 없지만 되살린 자리는 둔다
+  expect([librarySnapshot!.filters.project_id, librarySnapshot!.filters.folder_path]).toEqual(["archived-project", "ep"]);
+  expect(JSON.parse(localStorage.getItem("ch.lib.generationScopeV1")!)).toEqual({ project_id: "archived-project", folder_path: "ep" }); // 생성 위치는 여전히 그대로
+  act(() => sidebarSnapshot!.onChange({ project_id: "archived-project", folder_path: "ep" })); await settle(); // 눌러서 고른 자리는 전처럼 — 목록에 없으면 지운다
+  act(() => refreshProjects()); await settle();
+  expect(librarySnapshot!.filters.project_id).toBeUndefined();
+  // 다른 문맥(다른 공간)의 기억은 되살리지 않는다 — 맨 위
+  act(() => topBarOnTab!("my")); await settle();
+  localStorage.setItem("ch.lib.teamLocationV1", JSON.stringify({ ctx: "다른 공간", project_id: "resolve-project", folder_path: "episode" }));
+  act(() => topBarOnTab!("team")); await settle();
+  expect([librarySnapshot!.filters.tab, librarySnapshot!.filters.project_id]).toEqual(["team", undefined]);
+});
 
 it.each(["my", "team"])("%s 탭: 체크 시 캔버스 대신 현재 탭의 대상 폴더와 카드를 표시한다", async (tab) => {
   installAppBoundaries();

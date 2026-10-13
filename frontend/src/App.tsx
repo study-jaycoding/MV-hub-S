@@ -128,6 +128,7 @@ import { reviewTargets } from "./lib/generationReview";
 import { GradeStepModal } from "./components/GradeStepModal";
 import { useAskPrompt } from "./lib/prompt";
 import { makeStore } from "./lib/storage";
+import { TEAM_LOCATION_KEY, type TeamLocationMemory } from "./lib/useLibraryPersistence";
 import type {
   FolderCard,
   Generation,
@@ -177,7 +178,7 @@ export default function App() {
   );
   // 라이브러리 필터/뷰 상태 + genQuery/selectionResetKey 파생 + LS 저장(useLibraryPersistence)은 useLibraryFilters 훅으로 추출.
   const {
-    filters, setFilters, patch,
+    filters, setFilters, patch, restoreLocation, restoredLocationRef, teamScopeKey, teamAutoReady,
     typeFilter, setTypeFilter, scale, setScale, fill, setFill, layout, setLayout,
     showFilters, setShowFilters, groupByDate, setGroupByDate, colorFilter, setColorFilter,
     sharedOnly, setSharedOnly, reviewFilter, setReviewFilter, tagFilter, setTagFilter, tagPanelOpen, setTagPanelOpen,
@@ -418,6 +419,23 @@ export default function App() {
     resetKey: selectionResetKey,
   });
   const libraryAuthKey = JSON.stringify([hubAccount?.email, account?.email, account?.creator_uid, sharedSrv?.url]);
+  // 보는 자리의 문맥(계정·서버·공간 범위) — 브라우저 기록(lib/useAppNavigation)과 공유 탭의 마지막 자리 기억이 같은 문맥의 자리만 되살린다.
+  //  탭마다 센다 — 기록의 자리는 **그 기록의 탭**이 지금 갖게 될 문맥과 견준다(공유 탭의 폴더 → 작업 공간 탭 → 뒤로 가기).
+  const locationCtxFor = useCallback(
+    (tab: "my" | "team" | "compose") => JSON.stringify([libraryAuthKey, tab === "team" ? teamScopeKey : ""]),
+    [libraryAuthKey, teamScopeKey],
+  );
+  const locationCtx = locationCtxFor(filters.tab);
+  const currentLocation = useMemo(
+    () => ({
+      project_id: filters.project_id, folder_path: filters.folder_path,
+      deleted_only: filters.deleted_only || undefined, include_deleted: filters.include_deleted || undefined, ctx: locationCtx,
+    }),
+    [filters.project_id, filters.folder_path, filters.deleted_only, filters.include_deleted, locationCtx],
+  );
+  // 공유 탭의 마지막 자리를 기억하는 문맥 — 확정된 자동 공간일 때만(전체 보기·공간 미확정은 저장도 복원도 안 한다, Codex 설계 검토)
+  const teamMemoryCtx = teamAutoReady ? JSON.stringify([libraryAuthKey, teamScopeKey]) : "";
+  const pushLocationRef = useRef(false); // 다음 자리 변경이 명시적 이동(컷 카드·사이드바를 눌러 들어감)인가 — 기록을 한 칸 쌓는다
   const previousWorkspaceView = useRef(workspaceScopeKey);
   useLayoutEffect(() => {
     if (previousWorkspaceView.current === workspaceScopeKey) return;
@@ -942,6 +960,7 @@ export default function App() {
   const enterFolderCard = useCallback((folder: FolderCard) => {
     const projectId = folder.cover.project_id;
     if (!projectId) return;
+    pushLocationRef.current = true; // 명시적 이동 — 브라우저 기록을 한 칸 쌓는다(뒤로 가기가 이 목록으로 돌아온다, 2026-10-13 ②)
     setArmedFolder({ projectId, path: folder.path });
     patch({ project_id: projectId, folder_path: folder.path });
   }, [setArmedFolder, patch]);
@@ -1009,7 +1028,9 @@ export default function App() {
   useEffect(() => {
     if (!projectsLoadedRef.current) return; // 첫 로드 전엔 판단 보류
     // 자동 조회 위치는 재시작 후에도 생성 목적지와 다를 수 있다. 공간 제한 목록만으로 지우지 않는다.
-    if (isLocatedView || filters.project_id !== generationScope.project_id) return;
+    //  뒤로 가기·공유 탭 기억으로 **되살린** 자리(restoredLocationRef)도 지우지 않는다 — 보관·공간 제한 목록은 삭제의 증거가 아니고, 생성 목적지와
+    //  우연히 같을 수 있다(작업 공간 탭에서 골랐다가 뒤로 가 맨 위 → 공유 탭. 2026-10-13 ① Codex 3차 P2).
+    if (isLocatedView || restoredLocationRef.current || filters.project_id !== generationScope.project_id) return;
     const pid = filters.project_id;
     if (pid && pid !== "none" && !projects.some((p) => p.id === pid)) {
       patch({ project_id: undefined });
@@ -1223,6 +1244,7 @@ export default function App() {
     openPreview,
     openComment,
     openAdmin,
+    syncLocation,
   } = useAppNavigation({
     currentTab: filters.tab,
     previewScopeKey: JSON.stringify([workspaceContext.scope, workspaceContext.id, workspaceFollow?.mode ?? "auto", libraryAuthKey]),
@@ -1234,7 +1256,23 @@ export default function App() {
     setBoardFocusId,
     setBoardArrange,
     setFilters,
+    currentLocation,
+    restoreLocation,
+    locationCtxFor,
   });
+  // 보는 자리를 브라우저 기록에 맞춘다(렌더마다 — 같은 자리면 아무 일도 없다): 명시적 이동이면 한 칸 쌓고, 그 밖은 지금 기록을 고쳐 적는다.
+  //  표식은 렌더마다 내린다 — 같은 폴더를 다시 눌러 자리가 안 바뀌어도 다음 자동 변경(따라가기)이 '명시적'으로 쌓이지 않게.
+  useEffect(() => {
+    const push = pushLocationRef.current;
+    pushLocationRef.current = false;
+    syncLocation(currentLocation, push);
+  });
+  // 공유 탭의 마지막 자리 기억(2026-10-13 ①) — 확정된 자동 공간에서 **일반 목록**을 보는 동안 자리마다 적는다(휴지통 보기는 자리가 아니다 — 휴지통에
+  //  들어가면 프로젝트가 지워져 마지막 일반 자리를 '맨 위'로 덮었다, Codex 코드 리뷰). 되살리는 곳은 상단바의 탭 누름(onTab).
+  useEffect(() => {
+    if (filters.tab !== "team" || !teamMemoryCtx || filters.deleted_only) return;
+    LS.setJSON(TEAM_LOCATION_KEY, { ctx: teamMemoryCtx, project_id: filters.project_id, folder_path: filters.folder_path } satisfies TeamLocationMemory);
+  }, [filters.tab, filters.project_id, filters.folder_path, filters.deleted_only, teamMemoryCtx]);
   const canFollowResolve = useCallback(() => {
     if (document.visibilityState !== "visible") return false;
     try {
@@ -2338,6 +2376,16 @@ export default function App() {
           navTab(tab); // 브라우저 히스토리 엔트리 추가(뒤로/앞으로 연동)
           // 직접 탭 클릭은 다른 필터를 초기화하되 무장된 워크스페이스 침 필터는 유지
           setFilters((previous) => ({ tab, workspace_ids: previous.workspace_ids }));
+          // 공유 탭을 **직접 눌러** 들어오면 같은 문맥의 마지막 자리로(2026-10-13 ① — 처음이거나 다른 문맥이면 프로젝트 맨 위). 보는 자리만 되살린다 —
+          //  다음 생성 위치·무장 폴더는 그대로. 뒤로·앞으로 가기는 여기를 거치지 않고 기록의 자리를 쓴다(lib/useAppNavigation).
+          if (tab === "team" && teamMemoryCtx) {
+            const remembered = LS.loadJSON<TeamLocationMemory>(TEAM_LOCATION_KEY);
+            if (remembered && remembered.ctx === teamMemoryCtx && (remembered.project_id || remembered.folder_path)) {
+              // 그사이 지워졌는지는 판정하지 않는다 — 사이드바의 프로젝트 목록은 보관·공간 제한이라 없다고 지워진 것이 아니고, 폴더는 알 길이 없다
+              //  (컷 카드 0장은 공유 해제·필터로도 난다). 정말 사라졌으면 빈 목록이 보이고, 사이드바에서 다시 고르면 기억이 덮인다(Codex 코드 리뷰 2회).
+              restoreLocation({ project_id: remembered.project_id, folder_path: remembered.folder_path });
+            }
+          }
           clearSelect();
         }}
         onSearch={(q) => patch({ search: q || undefined })}
@@ -2609,7 +2657,10 @@ export default function App() {
               <FilterSidebar
                 facets={facets}
                 filters={filters}
-                onChange={patch}
+                onChange={(p) => {
+                  pushLocationRef.current = true; // 사이드바를 눌러 자리를 바꾸는 것은 명시적 이동 — 기록 한 칸(폴더 줄의 onFilter→onArmFolder 둘이 와도 한 칸)
+                  patch(p);
+                }}
                 creatorWorkspaceFilter={genQuery}
                 creatorQueryReady={authReady && workspaceQueryReady}
                 creatorContextKey={libraryAuthKey}
@@ -2630,7 +2681,8 @@ export default function App() {
                 onRemoveWorkspaceChip={removeWorkspaceChip}
                 armedFolder={armedFolder}
                 onArmFolder={(projectId, path) => {
-                  // 폴더 선택 = ① 생성 라벨 무장 ② 그 폴더(하위 포함)로 라이브러리 필터
+                  // 폴더 선택 = ① 생성 라벨 무장 ② 그 폴더(하위 포함)로 라이브러리 필터 — 명시적 이동(기록 한 칸)
+                  pushLocationRef.current = true;
                   setArmedFolder(path ? { projectId, path } : null);
                   patch({ project_id: projectId, folder_path: path || undefined });
                 }}
