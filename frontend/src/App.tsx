@@ -1192,6 +1192,11 @@ export default function App() {
           e.preventDefault();
           if (e.button === 0) pick(g);
         }}
+        // Tab 으로 와서 Enter·Space 로 누른 것(키보드가 만든 click 은 detail 0) — mousedown 에만 걸면 키보드로는 못 정한다(조작 규칙 51).
+        //  마우스의 click(detail 1 이상)은 위에서 이미 했다.
+        onClick={(e) => {
+          if (e.detail === 0) pick(g);
+        }}
       >
         {t("대표")}
       </button>
