@@ -184,14 +184,17 @@ export const EditTimeline = memo(function EditTimeline({
   };
 
   // 클립 끌기 — 6px 넘게 움직이면 끌기로 보고, 놓은 자리의 트랙으로 옮긴다(찬 자리면 맞바꿈).
-  const drag = useRef<{ key: string; track: number; y: number; rev: number; moved: boolean } | null>(null);
+  //  끄는 중(6px 를 넘긴 뒤)이라는 것은 상태로도 든다(clipDragging) — Esc 겹과 키 막기를 켜는 데 쓴다. 전에는 ref 뿐이라 Esc 가 고른 것만
+  //  풀고 놓으면 그대로 옮겨졌고, 끄는 동안 Space·Delete 가 뒤에서 먹었다(Codex 코드 리뷰 3회째 — 카드·컷 끌기와 같은 규칙으로 맞춘다).
+  const drag = useRef<{ key: string; track: number; y: number; rev: number; moved: boolean; el: HTMLElement; id: number } | null>(null);
+  const [clipDragging, setClipDragging] = useState(false);
   const clipDown = (event: ReactPointerEvent<HTMLElement>, key: string, from: number, locked: boolean, cut: string) => {
     event.stopPropagation(); // 오른쪽 단추도 — 우클릭(메뉴)이 고른 것을 풀지 않게(빈 자리를 누른 것이 아니다)
     if (event.button !== 0) return;
     onPickCut(cut); // 그림을 누르면 그 컷으로 간다(보는 것은 편집이 아니라 잠긴 트랙도 된다)
     if (locked) return; // 잠긴 트랙의 클립은 고르지도 못한다
     onSelect(key, event.ctrlKey || event.metaKey || event.shiftKey);
-    drag.current = { key, track: from, y: event.clientY, rev, moved: false };
+    drag.current = { key, track: from, y: event.clientY, rev, moved: false, el: event.currentTarget, id: event.pointerId };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
   const clipMove = (event: ReactPointerEvent<HTMLElement>) => {
@@ -202,6 +205,7 @@ export const EditTimeline = memo(function EditTimeline({
     if (!(event.buttons & 1)) return clipUp(event, true);
     const dy = event.clientY - current.y;
     if (!current.moved && Math.abs(dy) < DRAG_START) return;
+    if (!current.moved) setClipDragging(true);
     current.moved = true;
     event.currentTarget.style.transform = `translateY(${dy}px)`;
     event.currentTarget.style.zIndex = "4";
@@ -211,6 +215,7 @@ export const EditTimeline = memo(function EditTimeline({
     drag.current = null;
     event.currentTarget.style.transform = "";
     event.currentTarget.style.zIndex = "";
+    if (current?.moved) setClipDragging(false);
     if (!current?.moved || cancel) return;
     const lane = document.elementsFromPoint(event.clientX, event.clientY)
       .find((element) => element instanceof HTMLElement && element.dataset.track);
@@ -296,6 +301,17 @@ export const EditTimeline = memo(function EditTimeline({
     }
     placeCutDrag(event.clientX);
   };
+  // 클립 끌기 — Esc 는 끌기를 버린다(제자리로). 그 뒤의 놓기는 아무것도 옮기지 않는다(drag 가 비어 있다).
+  useEscapeClose(() => {
+    const current = drag.current;
+    drag.current = null;
+    if (current) {
+      current.el.style.transform = "";
+      current.el.style.zIndex = "";
+    }
+    setClipDragging(false);
+  }, clipDragging, true, true);
+  useDragKeyHold(clipDragging);
   const cutDragging = !!cutDrag;
   useEscapeClose(() => endCutDrag(false), cutDragging, true, true);
   useDragKeyHold(cutDragging); // 초점이 남은 뒤의 단추(누른 컷 칸 포함)를 Space·Enter 가 누르지 않게

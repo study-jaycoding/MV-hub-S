@@ -29,12 +29,17 @@ interface Held {
   // 저장 못 한 편집이 있는데 그 사이 다른 창이 저장했다. 풀릴 때까지 **자동 저장은 하지 않는다** — 사용자가 편집을
   // 이어 갈 때만 저장한다(그것이 다른 창의 저장을 덮는다는 것을 알린 뒤다).
   conflict: boolean;
+  // 충돌로 **알고 있는** 다른 창의 원문과 그 번호. '안다'는 것은 그때 본 원문에 대해서다 — 알고 이어 가는 동안 다른 창이 또 저장하면
+  //  (새 원문) 그것은 새로 안 충돌이다: 번호가 바뀌고, 이어지던 조작은 다시 한 번 멈춘다(Codex 코드 리뷰 3회째 P1).
+  seenRaw: string | null;
+  conflictId: number; // 0 = 충돌을 안 적 없음
   warned: boolean;
   checked: boolean; // 연 직후의 확인을 마쳤다(effect 가 두 번 돌아도 한 번만 한다)
 }
 
 // rev 는 열 때마다 새 번호 — 다른 문서에서 시작한 지연 콜백이 번호가 우연히 같아 끼어들지 못하게 한다.
 let lastRev = 0;
+let lastConflict = 0; // 충돌 번호 — 새 외부 저장을 알 때마다 새 번호
 
 // 읽기만 한다(렌더 중에 불리고 StrictMode 에서는 두 번 불린다) — 모듈 상태는 아래 effect 가 고친다.
 function open(key: string | null): Held {
@@ -45,6 +50,7 @@ function open(key: string | null): Held {
     key, rev: ++lastRev, doc: kept?.doc ?? stored?.doc ?? emptyEditDoc(),
     bad: !!stored?.bad, badRaw: stored?.bad ? raw : null, dirty: !!kept,
     savedRaw: kept ? kept.base : raw, openRaw: raw, conflict: !!kept && kept.base !== raw, warned: false, checked: false,
+    seenRaw: kept && kept.base !== raw ? raw : null, conflictId: kept && kept.base !== raw ? ++lastConflict : 0,
   };
 }
 
@@ -79,7 +85,7 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
     cur.doc = next;
     const raw = cur.conflict && !user ? null : writeEditDoc(cur.key, next, cur.bad ? cur.badRaw : null);
     if (raw !== null) {
-      Object.assign(cur, { savedRaw: raw, dirty: false, bad: false, badRaw: null, conflict: false });
+      Object.assign(cur, { savedRaw: raw, dirty: false, bad: false, badRaw: null, conflict: false, seenRaw: null });
       noteEditRaw(cur.key, raw);
       keepUnsavedEditDoc(cur.key, null);
     } else {
@@ -121,13 +127,18 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
   //     편집은 전처럼 저장한다(사용자가 알고 이어 가는 것이다).
   const pull = useCallback((announced: boolean): boolean => {
     const cur = held.current!;
-    if (!cur.key || readEditRaw(cur.key) === cur.savedRaw) return false; // 이 창의 마지막 저장과 같다 = 바뀐 것 없음(낡은 알림 포함)
+    const raw = cur.key ? readEditRaw(cur.key) : null;
+    if (!cur.key || raw === cur.savedRaw) return false; // 이 창의 마지막 저장과 같다 = 바뀐 것 없음(낡은 알림 포함)
     if (cur.dirty) {
-      // 저장 못 한 편집이 있다 — 받아들이지 않고, 자동 저장으로 덮지도 않는다. 알림이 올 때마다, 편집 직전에는 처음 알았을 때만 알린다.
-      const known = cur.conflict;
+      // 저장 못 한 편집이 있다 — 받아들이지 않고, 자동 저장으로 덮지도 않는다. 알림이 올 때마다, 편집 직전에는 **그 원문을 처음 봤을 때만** 알린다.
+      const known = cur.conflict && cur.seenRaw === raw;
       cur.conflict = true;
+      cur.seenRaw = raw;
       if (announced || !known) flashRef.current(t(CHANGED_ELSEWHERE));
-      if (!known) bump(); // 화면이 충돌을 알게 한다(conflict) — 이어지던 조작(길이 조절 창의 끌기)을 거기서 끝내게
+      if (!known) {
+        cur.conflictId = ++lastConflict;
+        bump(); // 화면이 충돌을 알게 한다(conflict) — 이어지던 조작(길이 조절 창의 끌기)을 거기서 끝내게
+      }
       return !known;
     }
     clearUndo(cur.key);
@@ -198,7 +209,8 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
     dirty: cur.dirty,
     // 저장 못 한 편집이 있는데 다른 창이 저장했다(풀릴 때까지). 여러 걸음에 걸친 한 조작(길이 조절 창의 슬라이더 끌기)은 이것이 켜지면
     //  끝낸다 — 같은 끌기의 다음 걸음을 '알고 이어 가는 편집'으로 받으면 알림을 읽기도 전에 다른 창의 저장을 덮는다(Codex 코드 리뷰 P1).
-    conflict: cur.conflict,
+    //  값 = 충돌 번호(0 = 없음). **새 외부 저장을 알 때마다 번호가 바뀐다** — 알고 다시 연 조작 도중 다른 창이 또 저장하면 그 조작도 끝낸다.
+    conflict: cur.conflict ? cur.conflictId : 0,
     canUndo: !!stack?.past.length,
     canRedo: !!stack?.future.length,
     applyEdit,

@@ -403,3 +403,53 @@ it("끄는 사이 다른 창이 이 편집을 바꾸면 카드·컷·클립 끌�
   expect(storedTracks()).toEqual([["a", 2], ["x", 3]]); // 다른 창의 것 그대로 — 그 위에 옛 끌기를 얹지 않는다
   expect(flashed.filter((message) => message.includes("바꾸지 못했습니다"))).toEqual([]);
 });
+
+// Codex 코드 리뷰 3회째: 끄는 중의 다른 단추는 **어느 요소 위에서든** 메뉴·창을 열지 않는다 — 풀의 카드를 끄는 채 타임라인의 클립 위에서
+//  휠 클릭하면 그 클립의 길이 조절 창이 떴다(풀 쪽 가드는 풀의 카드만 봤다). 끄는 동안 auxclick·contextmenu 를 통째로 삼킨다(useDragKeyHold).
+it("카드를 끄는 채 타임라인의 클립 위에서 휠 클릭·우클릭해도 길이 조절 창·클립 메뉴가 뜨지 않는다 — 끌기가 끝나면 풀린다", () => {
+  // 길이 조절은 영상만이다 — V2 의 b 를 영상으로 둔다(이 파일의 기본 생성물은 그림)
+  world.gens = [gen("a", "c1"), gen("b", "c1", { assets: [{ id: "a-b", generation_id: "b", type: "video", file_path: "/media/b.mp4",
+    thumbnail_path: null, source_url: null, cached: true }] } as unknown as Partial<Generation>), gen("x", "c2")];
+  seed([{ cut: "c1", gen: "b", track: 2 }]);
+  mountOn("c1");
+  const clip = () => lane(2).querySelector<HTMLElement>(".ed-clip")!;
+  dragCard(poolCards()[0], lane(1));
+  expect(drops()).toEqual([["1", "V1 에 넣기"]]);
+  const aux = fire(clip(), "auxclick", { button: 1, buttons: 5 });
+  const menu = fire(clip(), "contextmenu", { button: 2, buttons: 3 });
+  expect([document.querySelector(".ed-trim"), document.querySelector(".ed-tmenu"), aux.defaultPrevented, menu.defaultPrevented])
+    .toEqual([null, null, true, true]);
+  expect(drops()).toEqual([["1", "V1 에 넣기"]]); // 끌기는 이어진다
+  dropCard();
+  expect(storedTracks()).toEqual([["b", 2], ["a", 1]]);
+  fire(clip(), "auxclick", { button: 1, buttons: 0 }); // 끌기가 끝난 뒤의 휠 클릭은 창을 연다
+  expect(document.querySelector(".ed-trim")).not.toBeNull();
+});
+
+// 클립 끌기(트랙 옮기기)는 끄는 중이라는 것이 ref 뿐이라 Esc 가 고른 것만 풀고 놓으면 그대로 옮겨졌고, 끄는 동안 뒤의 키가 먹었다.
+it("클립 끌기: Esc 는 끌기를 버린다(놓아도 옮기지 않는다) — 끄는 동안 Delete·Space 는 뒤에서 먹지 않는다", () => {
+  seed([{ cut: "c1", gen: "a", track: 1 }]);
+  mountOn("c1");
+  const clip = document.querySelector<HTMLElement>(".ed-clip")!;
+  const pointDoc = document as unknown as { elementsFromPoint?: unknown };
+  const savedPoint = pointDoc.elementsFromPoint;
+  pointDoc.elementsFromPoint = () => [lane(2)]; // 마우스 밑은 V2 — 놓기로 치면 클립이 그리로 간다
+  try {
+    fire(clip, "pointerdown", { clientX: 10, clientY: 100 });
+    fire(clip, "pointermove", { clientX: 10, clientY: 40 });
+    expect(clip.style.transform).toBe("translateY(-60px)");
+    const space = press({ key: " ", code: "Space" });
+    press({ key: "Delete", code: "Delete" }); // 누를 때 그 클립이 골라졌다 — 키가 먹으면 지워진다
+    expect([space.defaultPrevented, playing(), storedTracks()]).toEqual([true, false, [["a", 1]]]);
+    press({ key: "Escape", code: "Escape" });
+    expect(clip.style.transform).toBe("");
+    fire(clip, "pointerup", { clientX: 10, clientY: 40, buttons: 0 }); // 버린 뒤의 놓기
+    expect(storedTracks()).toEqual([["a", 1]]);
+    fire(clip, "pointerdown", { clientX: 10, clientY: 100 }); // 보통의 끌기는 그대로 옮긴다
+    fire(clip, "pointermove", { clientX: 10, clientY: 40 });
+    fire(clip, "pointerup", { clientX: 10, clientY: 40, buttons: 0 });
+    expect(storedTracks()).toEqual([["a", 2]]);
+  } finally {
+    pointDoc.elementsFromPoint = savedPoint;
+  }
+});

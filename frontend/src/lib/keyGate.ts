@@ -56,11 +56,21 @@ export function useDragKeyHold(active: boolean): void {
     const hold = (e: KeyboardEvent) => {
       if (e.key === "Enter" || e.key === " ") e.preventDefault();
     };
+    // 끄는 중에 다른 단추(휠·오른쪽)를 눌렀다 뗀 것은 메뉴·창을 여는 누름이 아니다 — 끌기가 어느 요소 위에 있든(풀의 카드를 끄는 채
+    //  타임라인의 클립 위에서 휠 클릭 → 그 클립의 길이 조절 창이 떴다. Codex 코드 리뷰 3회째) 여기서 한 번에 삼킨다. 브라우저 메뉴도 안 뜬다.
+    const swallow = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
     window.addEventListener("keydown", hold, true);
     window.addEventListener("keyup", hold, true);
+    window.addEventListener("auxclick", swallow, true);
+    window.addEventListener("contextmenu", swallow, true);
     return () => {
       window.removeEventListener("keydown", hold, true);
       window.removeEventListener("keyup", hold, true);
+      window.removeEventListener("auxclick", swallow, true);
+      window.removeEventListener("contextmenu", swallow, true);
     };
   }, [active]);
 }

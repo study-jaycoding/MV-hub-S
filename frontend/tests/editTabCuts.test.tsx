@@ -413,3 +413,50 @@ it("클립 끌기는 왼쪽 단추의 놓기만 확정이다 — 휠을 같이 �
     pointDoc.elementsFromPoint = savedPoint;
   }
 });
+
+// 되돌려 확인(2026-10-13)에서 홀로 살아남은 줄 — 버린 걸음(stopped)에 창을 닫는 것. 충돌은 conflict 효과가, 다른 창의 문서를 받아들인
+//  것은 rev 효과가 먼저 닫아 준다. 이 줄만 일하는 것은 '떠나는 중'(로그아웃 응답 대기 — lib/unloadGuard)이다.
+it("길이 조절 중에 로그아웃 응답을 기다리게 되면(떠나는 중) 다음 걸음은 버리고 창을 닫는다", async () => {
+  const { setLeaving } = await import("../src/lib/unloadGuard");
+  const docKey = "mvhub.editDoc:local:p1:e070";
+  const press1f = openTrimOn(docKey);
+  const before = localStorage.getItem(docKey);
+  setLeaving(true);
+  try {
+    press1f("−1f");
+    expect([document.querySelector(".ed-trim"), localStorage.getItem(docKey)]).toEqual([null, before]);
+  } finally {
+    setLeaving(false);
+  }
+});
+
+// Codex 코드 리뷰 3회째 P1: 충돌(T1)을 알고 길이 조절을 다시 연 것은 '알고 하는 편집'이다. 그런데 그 조절 도중 다른 창이 **또** 저장하면(T2)
+//  그것까지 안 것은 아니다 — 전에는 충돌이 이미 켜져 있다는 이유로 T2 를 새 충돌로 보지 않아, 다음 걸음이 T2 를 덮었다.
+it("충돌을 알고 길이 조절을 다시 연 뒤에도, 그 조절 도중 다른 창이 또 저장하면 다시 창을 닫는다 — 새 저장을 덮지 않는다", () => {
+  const docKey = "mvhub.editDoc:local:p1:e070";
+  const T2 = JSON.stringify({ ...TRIM_DOC, clips: [{ cut: "e070/c1", gen: "theirs2", track: 1, kind: "video", dur: 5 }] });
+  const fail = () => vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
+  const wheel = () => act(() => {
+    document.querySelector<HTMLElement>(".ed-clip")!
+      .dispatchEvent(new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1, clientX: 50, clientY: 50 }));
+  });
+  const step = () => act(() => {
+    [...document.querySelector<HTMLElement>(".ed-trim")!.querySelectorAll("button")].find((item) => item.textContent === "−1f")!.click();
+  });
+  openTrimOn(docKey);
+  let setItem = fail();
+  step(); // 저장 실패 — 저장 안 됨
+  setItem.mockRestore();
+  localStorage.setItem(docKey, THEIRS); // T1
+  setItem = fail(); // 이 창의 저장은 계속 실패한다
+  step(); // T1 을 처음 안다 — 버리고 닫는다
+  expect(document.querySelector(".ed-trim")).toBeNull();
+  wheel(); // 알고 다시 연다
+  step(); // 알고 하는 편집 — 받는다(저장은 또 실패해 충돌은 그대로다)
+  expect(document.querySelector(".ed-trim")).not.toBeNull();
+  setItem.mockRestore();
+  localStorage.setItem(docKey, T2); // 그 조절 도중 다른 창이 또 저장했다
+  step(); // T2 는 처음 안 것 — 버리고 닫는다
+  expect(document.querySelector(".ed-trim")).toBeNull();
+  expect(localStorage.getItem(docKey)).toBe(T2);
+});
