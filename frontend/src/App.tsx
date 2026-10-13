@@ -537,9 +537,20 @@ export default function App() {
   //     격자를 잠근다(staleList 와 같은 잠금 — listLocked)·더 받기도 쉰다. 고를 것이 없으면 자리를 비운다(cutPending).
   //  조회가 실패하면 꺼져 낱장으로(옛 서버는 unsupported). 창이 떠 있으면 격자는 창의 것이라 무관. 위치 주입(다빈치 따라가기)·사본·실패 화면은
   //  목록 훅이 캐시를 지운 구간이라 listBehind 가 참이어도 건드리지 않는다.
+  //  이 둘은 **자리를 옮긴 뒤 그 자리의 화면이 다 설 때까지만** 한다(moved). 자리는 그대로 두고 보기 필터만 바꾼 때는 전처럼 옛 목록을 새 목록이
+  //  올 때까지 보인다 — 필터 변경은 선택을 남기므로(규칙 55), 화면을 비우거나 바꿔 그리면 보이지 않는 선택에 선택 막대·전역 단축키가 걸린다
+  //  (Codex 코드 리뷰). 자리를 옮기면 선택은 이미 비어 있고 잠긴 격자에서는 새로 생기지 않는다. '다 섰다' = 목록이 지금 조회의 것이고 묶음 답도
+  //  안다 — 둘 중 하나만 온 때에 풀면 그 자리의 낱장이 잠깐 섰다가 컷 카드로 바뀐다(③).
   const cutWaiting = cutView && !listPeek && cardsScope !== null && !folderCardsUnsupported;
-  const cutLoading = cutWaiting && folderCardsLoading;
-  const narrowing = cutWaiting && !!listBehind && !staleList && !isLocatedView && !loadError;
+  const hereKey = JSON.stringify([filters.tab, filters.project_id ?? null, filters.folder_path ?? null, !!filters.deleted_only]);
+  const settledHereRef = useRef<string | null>(null);
+  useEffect(() => {
+    // 창이 떠 있으면 목록은 창의 것이다 — 적지 않는다(창은 자리를 바꾸지 않는다)
+    if (!listBehind && !listPeek && !(cutWaiting && folderCardsLoading)) settledHereRef.current = hereKey;
+  });
+  const moved = settledHereRef.current !== hereKey;
+  const cutLoading = cutWaiting && folderCardsLoading && moved;
+  const narrowing = cutWaiting && !!listBehind && moved && !staleList && !isLocatedView && !loadError;
   const listLocked = staleList || (narrowing && !cutMode); // 낱장 격자를 보이는 중일 때만 — 컷 카드는 목록과 무관하게 눌린다
   // 창이 보여 주는 폴더의 지금 대표 — 표지가 '가장 최근 것' 일 뿐이면 대표가 아니다(null).
   const peekFolderCard = listPeek ? folderCards?.folders.find((folder) => folder.path === listPeek.path) : undefined;

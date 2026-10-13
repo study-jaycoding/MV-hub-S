@@ -1483,6 +1483,15 @@ it("App 공유·리뷰: 에피소드에서 컷으로 들어가면 받아 둔 목
   act(() => { setLibraryGens([at("far", "elsewhere")]); setListBehind(false); });
   await settle();
   expect([busy(), shown(), main().hasAttribute("inert")]).toEqual([null, ["far"], false]);
+  // 자리는 그대로 두고 보기 필터만 바꾼 때는 전처럼 — 옛 목록을 새 목록이 올 때까지 그대로 보이고 잠그지도 않는다. 필터 변경은 선택을 남기므로
+  //  화면을 비우거나 바꿔 그리면 보이지 않는 선택에 선택 막대·전역 단축키가 걸린다(Codex 코드 리뷰)
+  act(() => { sidebarSnapshot!.onChange({ search: "cat" }); }); // 찾는 중 — 묶어 보이지 않는다
+  await settle();
+  act(() => gridSnapshot!.onSelectedChange(new Set(["far"])));
+  act(() => { sidebarSnapshot!.onChange({ search: undefined }); setListBehind(true); }); // 필터를 풀었다 — 새 목록 전
+  await settle();
+  expect([busy(), shown(), main().hasAttribute("inert"), [...gridSnapshot!.selectedIds]]).toEqual([null, ["far"], false, ["far"]]);
+  act(() => setListBehind(false));
   // 에피소드로 돌아오면 받아 둔 컷 카드가 바로 — 목록이 아직 옛것이어도 컷 카드는 눌린다(잠그지 않는다)
   act(() => { sidebarSnapshot!.onChange({ folder_path: "episode" }); setListBehind(true); });
   expect([cutGrid() !== null, main().hasAttribute("inert")]).toEqual([true, false]); // settle 전 — 응답을 기다리지 않았다
