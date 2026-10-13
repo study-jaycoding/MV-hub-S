@@ -67,7 +67,9 @@ export interface EditOptions {
  *  done = 바꿨다 · none = 바꿀 것이 없었다(변경 함수가 거부했거나, 옛 rev 의 지연 콜백) · stopped = 다른 창의 저장 때문에 이번 조작을 버렸다. */
 export type EditOutcome = "done" | "none" | "stopped";
 
-const CHANGED_ELSEWHERE = "다른 창에서 이 편집이 바뀌었습니다. 이 창의 변경은 아직 저장되지 않았습니다.";
+// 끝 문장(Jay 2026-10-14): 이 알림 뒤에 편집을 이어 가면 이 창의 문서가 통째로 저장돼 다른 창의 변경이 사라진다(알고 이어 가는 편집 —
+//  아래 pull 의 주석). 그 일을 알림이 미리 말한다. 동작은 그대로다.
+const CHANGED_ELSEWHERE = "다른 창에서 이 편집이 바뀌었습니다. 이 창의 변경은 아직 저장되지 않았습니다. 계속 편집하면 이 창의 내용으로 저장되고 다른 창의 변경은 사라집니다.";
 
 export function useEditDoc(key: string | null, flash: (message: string) => void) {
   const held = useRef<Held | null>(null);

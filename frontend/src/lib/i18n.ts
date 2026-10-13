@@ -226,7 +226,8 @@ const EN: Record<string, string> = {
   "축소 (Ctrl+-)": "Zoom out (Ctrl+-)",
   "확대 (Ctrl+=)": "Zoom in (Ctrl+=)",
   "편집을 저장하지 못했습니다. 다음 변경 때 다시 시도합니다.": "Could not save the edit. It will retry on the next change.",
-  "다른 창에서 이 편집이 바뀌었습니다. 이 창의 변경은 아직 저장되지 않았습니다.": "This edit changed in another window. Changes in this window are not saved yet.",
+  "다른 창에서 이 편집이 바뀌었습니다. 이 창의 변경은 아직 저장되지 않았습니다. 계속 편집하면 이 창의 내용으로 저장되고 다른 창의 변경은 사라집니다.":
+    "This edit changed in another window. Changes in this window are not saved yet. If you keep editing, this window's version is saved and the other window's changes are lost.",
   "다른 창에서 바꾼 편집을 불러왔습니다.": "Loaded the edit changed in another window.",
   "다른 창에서 바꾼 편집을 불러왔습니다. 방금 한 조작은 적용하지 않았습니다 — 다시 해 주세요.":
     "Loaded the edit changed in another window. Your last action was not applied — please do it again.",
