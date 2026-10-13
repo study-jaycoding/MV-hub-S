@@ -9,7 +9,11 @@
 //  S 단추·작성자 표시는 넣지 않는다 — 이 카드는 생성물 한 장이 아니라 묶음이다.
 //  키보드: Ctrl+A 모두 · 방향키 옮기기(Shift = 마지막으로 누른 카드부터 범위) · Enter = 두 번 클릭 · Space = 고르기 토글(2026-10-10 —
 //  전엔 키가 하나도 없어 Ctrl+A 가 화면 글자를 긁었다). 색·비활성 같은 생성물 단축키는 없다(묶음이라 대상이 없다).
+//  **에피소드 화면**(하위 폴더를 가진 카드가 놓인 단계 — lib/episodeBoard)은 모양만 다르다: 도구 줄의 리스트 보기 = 에피소드마다 가로 한 줄,
+//  그리드 보기 = 컷 띠가 붙은 큰 카드(Jay 2026-10-13). 카드는 같은 `.cut-card[data-path]` 라 위의 고르기·마퀴·키가 그대로 듣는다. 카드 안의
+//  단추(컷 띠의 컷 · '+N' · [열기], `data-ep-action`)의 누름은 카드 고르기·두 번 클릭으로 읽지 않는다 — 그 단추가 제 일을 한다.
 import { useCallback, useEffect, useRef, useState } from "react";
+import { isEpisodeLevel } from "../lib/episodeBoard";
 import { useT } from "../lib/i18n";
 import { backgroundKeysBlocked, isTypingTarget, pressStartedCovered, useLooseKeys } from "../lib/keyGate";
 import { computeMarquee, marqueeHits, type MarqueeRect } from "../lib/marquee";
@@ -17,12 +21,14 @@ import { thumbOf } from "../lib/media";
 import { matchShortcut } from "../lib/shortcuts";
 import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { FolderCard } from "../types";
+import { EpisodeCardBody } from "./EpisodeCardBody";
 import { MediaThumbnail } from "./MediaThumbnail";
 
 interface Props {
   folders: FolderCard[];
   scale: number; // 라이브러리 격자와 같은 카드 크기 배율
   fill: boolean; // 썸네일 꽉 채움 ↔ 비율 유지
+  layout: "grid" | "list"; // 도구 줄의 보기 방식 — 에피소드 화면에서만 쓴다(리스트 = 가로 한 줄, 그리드 = 컷 띠가 붙은 카드)
   selected: ReadonlySet<string>; // 고른 카드(폴더 경로)
   onSelect: (next: Set<string>) => void;
   // 두 번 클릭·Enter(하위 폴더 있음 = 에피소드) — 그 폴더로 들어가기. 크롬 뒤로 가기가 이 묶음으로 돌아온다(App 의 enterFolderCard 가 기록을 한 칸 쌓는다).
@@ -56,8 +62,14 @@ interface Drag {
   moved: boolean;
 }
 
-export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onEnter, onOpen, onInfo, onReel, top, outside, onShowAll }: Props) {
+// 카드 안의 단추(에피소드 카드의 컷 띠·[열기])에서 난 누름인가 — 그 누름은 카드의 것이 아니다.
+function inCardAction(target: EventTarget | null): boolean {
+  return !!(target as HTMLElement | null)?.closest?.("[data-ep-action]");
+}
+
+export function FolderCardGrid({ folders, scale, fill, layout, selected, onSelect, onEnter, onOpen, onInfo, onReel, top, outside, onShowAll }: Props) {
   const t = useT();
+  const board = isEpisodeLevel(folders); // 에피소드 화면 — 모양만 다르다(머리말)
   // 두 번 클릭·Enter — 컷이면 모아보기(고른 카드 위면 고른 컷 전부(격자 순서), 아니면 그 컷만 골라서), 에피소드면 들어가기.
   //  열 경로를 먼저 정한다 — 고르기를 바꾼 뒤의 낡은 선택을 읽지 않게. 최신 props 는 ref 로(두 번 클릭의 첫 클릭이 고르기를 바꾼 직후다).
   //  일반 두 번 클릭은 첫 클릭이 고르기를 그 카드 하나로 줄이므로 결국 그 컷만 연다(탐색기와 같다) — 여러 컷은 Ctrl 로 고른 뒤 두 번 클릭하거나
@@ -72,8 +84,9 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onEnt
     if (!chosen.has(folder.path)) select(new Set([folder.path]));
     onReel(paths);
   };
-  const width = Math.round(180 * scale); // ThumbnailGrid 의 카드 최소 폭과 같은 식
-  const thumbSize = width * (window.devicePixelRatio || 1) <= 256 ? 256 : 512;
+  const width = Math.round((board ? 340 : 180) * scale); // 컷 카드는 ThumbnailGrid 의 카드 최소 폭과 같은 식, 에피소드 카드는 그 두 배쯤
+  const thumbSize = !board && width * (window.devicePixelRatio || 1) <= 256 ? 256 : 512;
+  const now = Date.now(); // 에피소드 카드의 '2시간 전' — 한 번 재어 모든 카드에 같은 값을(다시 그릴 때마다 새로)
   const gridRef = useRef<HTMLDivElement>(null);
   const [marquee, setMarquee] = useState<MarqueeRect | null>(null);
   const dragRef = useRef<Drag | null>(null);
@@ -170,6 +183,7 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onEnt
   const onGridKey = (e: KeyboardEvent) => {
     if (backgroundKeysBlocked() || isTypingTarget(e.target)) return; // 위에 뜬 창·메뉴의 키, 글자 입력
     if ((e.target as HTMLElement | null)?.closest?.(".cut-out")) return; // '컷 밖' 칸의 Enter·Space 는 그 단추를 누르는 키
+    if (inCardAction(e.target)) return; // 카드 안 단추(컷 띠·[열기])에 초점이 있으면 그 단추의 키
     const { folders: list, selected: chosen, onSelect: select } = opsRef.current;
     if (!list.length) return;
     if (matchShortcut(e, "selectAll")) {
@@ -264,6 +278,7 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onEnt
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
     if (target.closest(".cut-out")) return; // '컷 밖' 칸은 고르는 대상이 아니다(누르면 한 장씩 보기)
+    if (inCardAction(target)) return; // 카드 안 단추(컷 띠·[열기]) — 고르기를 바꾸지 않고 그 단추가 제 일을 한다
     const card = target.closest(".cut-card[data-path]") as HTMLElement | null;
     e.preventDefault(); // 끌 때 글자·그림이 긁히지 않게(카드 위에서 시작해도 마퀴)
     if (pressStartedCovered()) return; // 위에 뜬 메뉴를 닫는 누름 — 고른 것을 바꾸지 않는다
@@ -279,10 +294,14 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onEnt
     <div className="grid-wrap">
       {/* tabIndex — 폴더 창을 닫은 뒤 초점을 돌려받는 자리(App 의 초점 복원) */}
       <div
-        className="cut-grid"
+        className={"cut-grid" + (board ? ` ep-board ep-${layout}` : "")}
         ref={gridRef}
         tabIndex={-1}
-        style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${width}px, 1fr))` }}
+        style={{
+          // 에피소드 화면의 리스트는 한 줄에 하나, 그 밖에는 폭에 맞춰 채운다. --ep-scale = 크기 슬라이더(episode-board.css 가 쓴다)
+          gridTemplateColumns: board && layout === "list" ? "minmax(0, 1fr)" : `repeat(auto-fill, minmax(${width}px, 1fr))`,
+          ...(board ? ({ "--ep-scale": String(scale) } as React.CSSProperties) : {}),
+        }}
         onMouseDown={onGridMouseDown}
         onKeyDown={(e) => onGridKey(e.nativeEvent)}
       >
@@ -291,33 +310,45 @@ export function FolderCardGrid({ folders, scale, fill, selected, onSelect, onEnt
           const isVideo = asset?.type === "video";
           const isSelected = selected.has(folder.path);
           const subfolders = folder.subfolders ?? 0;
+          // 카드의 누름·키는 두 모양이 같이 쓴다(에피소드 화면의 카드는 안에 단추가 들어 있어 div — 단추 안에 단추를 둘 수 없다).
+          const card = {
+            "data-path": folder.path,
+            "aria-pressed": isSelected,
+            title: `${folder.path} · ${subfolders ? `${t("컷")} ${subfolders} · ` : ""}${folder.count}${t("건")}`,
+            onDoubleClick: (e: React.MouseEvent) => {
+              if (!inCardAction(e.target)) activate(folder); // 카드 안 단추를 빠르게 두 번 누른 것은 카드의 두 번 클릭이 아니다
+            },
+            onAuxClick: (e: React.MouseEvent) => {
+              if (e.button !== 1) return;
+              e.preventDefault();
+              if (!isSelected) onSelect(new Set([folder.path]));
+              onInfo(folder, e.clientX, e.clientY);
+            },
+            onContextMenu: (e: React.MouseEvent) => {
+              e.preventDefault(); // 컷 카드 위에서만 브라우저 메뉴를 막는다
+              // 마우스(button 2)는 누름 시작의 가림, 키보드의 메뉴 키(button 0)는 지금의 가림
+              const covered = e.button === 2 ? (rightPressCoveredRef.current ?? backgroundKeysBlocked()) : backgroundKeysBlocked();
+              rightPressCoveredRef.current = null;
+              if (covered) return; // 위에 뜬 메뉴를 닫는 우클릭 — 뒤의 조작을 실행하지 않는다
+              // 그 폴더의 창 — 고르지 않은 카드면 그것만 골라서(어느 폴더를 열었는지 보이게. 창을 닫으면 초점은 격자로 돌아온다)
+              const { selected: chosen, onSelect: select } = opsRef.current;
+              if (!chosen.has(folder.path)) select(new Set([folder.path]));
+              onOpen(folder);
+            },
+          };
+          if (board)
+            return (
+              <div key={folder.path} role="button" tabIndex={0} className={`cut-card ep-card ep-${layout}` + (isSelected ? " sel" : "")} {...card}>
+                <EpisodeCardBody
+                  folder={folder} layout={layout} thumbSize={thumbSize} fill={fill} now={now}
+                  onEnter={() => onEnter(folder)}
+                  // 컷 띠의 컷 = 그 컷으로 바로(사이드바에서 그 컷을 누른 것과 같다 — 에피소드로 들어가는 것과 같은 길)
+                  onEnterCut={(cut) => onEnter({ ...folder, path: cut.path, name: cut.name, subfolders: 0 })}
+                />
+              </div>
+            );
           return (
-            <button
-              key={folder.path}
-              type="button"
-              data-path={folder.path}
-              className={"cut-card" + (isSelected ? " sel" : "")}
-              aria-pressed={isSelected}
-              title={`${folder.path} · ${subfolders ? `${t("컷")} ${subfolders} · ` : ""}${folder.count}${t("건")}`}
-              onDoubleClick={() => activate(folder)}
-              onAuxClick={(e) => {
-                if (e.button !== 1) return;
-                e.preventDefault();
-                if (!isSelected) onSelect(new Set([folder.path]));
-                onInfo(folder, e.clientX, e.clientY);
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault(); // 컷 카드 위에서만 브라우저 메뉴를 막는다
-                // 마우스(button 2)는 누름 시작의 가림, 키보드의 메뉴 키(button 0)는 지금의 가림
-                const covered = e.button === 2 ? (rightPressCoveredRef.current ?? backgroundKeysBlocked()) : backgroundKeysBlocked();
-                rightPressCoveredRef.current = null;
-                if (covered) return; // 위에 뜬 메뉴를 닫는 우클릭 — 뒤의 조작을 실행하지 않는다
-                // 그 폴더의 창 — 고르지 않은 카드면 그것만 골라서(어느 폴더를 열었는지 보이게. 창을 닫으면 초점은 격자로 돌아온다)
-                const { selected: chosen, onSelect: select } = opsRef.current;
-                if (!chosen.has(folder.path)) select(new Set([folder.path]));
-                onOpen(folder);
-              }}
-            >
+            <button key={folder.path} type="button" className={"cut-card" + (isSelected ? " sel" : "")} {...card}>
               <span className={"cut-face" + (fill ? "" : " contain")}>
                 {/* 생성물 카드와 같은 그림 분기(깨진 뒤 새 대표로 바뀌면 다시 보이고, 포스터 없는 영상은 첫 프레임) */}
                 <MediaThumbnail

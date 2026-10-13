@@ -11,6 +11,8 @@
 .cut-card.ep-card:hover, .cut-card.ep-card:focus-visible { border-color: var(--accent); outline: none; }
 .cut-card.ep-card.sel { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 0 14px 2px rgba(var(--accent-rgb), 0.35); }
 .ep-card .play-badge { z-index: 1; }
+/* '에피소드 밖 N건' 칸 — 정사각 대신 줄/카드 높이에 맞춘다 */
+.ep-board .cut-card.cut-out { aspect-ratio: auto; margin-top: 0; min-height: 64px; }
 
 /* 표지(리스트의 포스터 · 그리드의 큰 표지) */
 .ep-poster, .ep-cover { position: relative; display: block; overflow: hidden; background: #000; }
