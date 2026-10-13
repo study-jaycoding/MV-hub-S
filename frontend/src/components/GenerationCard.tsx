@@ -363,7 +363,9 @@ function GenerationCardImpl({
       className="card-thumb"
       // 리스트: 미디어 종횡비와 무관하게 행 높이를 꽉 채우는 정사각(에셋 리스트와 동일 — 이미지·영상 동일 크기)
       style={isList ? { aspectRatio: "1 / 1" } : undefined}
-      title={isList ? "클릭 = 미리보기 · 휠클릭 = 정보" : "클릭 = 선택 · 더블클릭 = 미리보기 · 휠클릭 = 정보"}
+      title={(isList ? "클릭 = 미리보기 · 휠클릭 = 정보" : "클릭 = 선택 · 더블클릭 = 미리보기 · 휠클릭 = 정보")
+        // 우클릭 = 그 카드가 속한 폴더의 창(격자가 듣는다 — ThumbnailGrid.onGridContextMenu). 폴더에 속하고 창을 열 수 있을 때만 알린다
+        + (onOpenFolder && gen.folder_path ? " · 우클릭 = 폴더" : "")}
       onMouseEnter={onEnter}
       onMouseLeave={onLeave}
       onClick={isList ? openPreview : undefined}
