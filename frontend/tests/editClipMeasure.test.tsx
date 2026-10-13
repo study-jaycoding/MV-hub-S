@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // 편집 탭 — 영상 클립의 길이 재기(2026-10-13 격리 실측 ⑤):
-//  · 이미 잰 클립(적힌 길이가 '안 잰 값'과 한 프레임 넘게 다르다)은 다시 재지 않는다. 안 잰 값(요청 길이·기본 5초)과 같으면 전처럼 잰다.
+//  · 영상 클립은 페이지를 열 때마다 다시 잰다 — 적힌 길이만 보고 '이미 쟀다'고 건너뛰지 않는다.
 //  · 잰 값은 모아서 한 번에 적는다. 모으는 중에 문서가 바뀌거나 탭을 떠나면 그 자리에서 적고, 시퀀스를 바꾸면 버려지지만 돌아오면
 //    다시 재어 적는다.
 import { act } from "react";
@@ -127,33 +127,35 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("이미 잰 영상 클립은 다시 재지 않는다 — 적힌 길이가 안 잰 값(요청 길이·기본 5초)과 한 프레임 안이면 전처럼 잰다", async () => {
-  world.gens = [video("m", "c1", 5), video("n", "c1", 5), gen("p", "c1", "image"), video("d", "c2", 8), video("e", "c2", 8), video("f", "c2")];
+// 적힌 길이만 보고 '이미 쟀다'고 건너뛰지 않는다(그렇게 넣었다가 뺐다 — Codex 코드 리뷰 4회째): dur 에는 요청 길이와 실측값이 구분 없이
+//  적히고, 요청 길이는 동기화로 바뀔 수 있다. d 가 그 경우다 — 요청 8초로 넣어 8 이 적혔고 재지 못했는데(실패·그 전에 떠남), 그 뒤
+//  요청 길이가 10초로 바뀌었다. '지금의 요청 길이(10)·기본 5초와 다르니 잰 값'으로 보면 실제 10초짜리 영상이 8초로 굳는다.
+it("영상 클립은 페이지를 열 때마다 다시 잰다 — 적힌 길이가 지금의 요청 길이와 달라도 '이미 잰 값'으로 보지 않는다", async () => {
+  world.gens = [video("m", "c1", 5), video("n", "c1", 5), gen("p", "c1", "image"), video("d", "c2", 10), video("f", "c2")];
   seed([
-    { cut: "c1", gen: "m", track: 1, dur: 5.5 }, // 잰 값이다 — 요청 길이(5초)와 한 프레임 넘게 다르다
-    { cut: "c1", gen: "n", track: 2, dur: 5.02 }, // 요청 길이와 한 프레임 안 — 쟀는지 알 수 없다
+    { cut: "c1", gen: "m", track: 1, dur: 5.5 }, // 전에 잰 값
+    { cut: "c1", gen: "n", track: 2, dur: 5.02 },
     { cut: "c1", gen: "p", track: 3, dur: 5, kind: "image" }, // 그림은 재지 않는다
-    { cut: "c2", gen: "d", track: 1, dur: 5 }, // 기본 5초 — 목록에 없을 때 적힌 값일 수 있다(요청 길이는 8초)
-    { cut: "c2", gen: "e", track: 2, dur: 8 }, // 요청 길이 그대로
-    { cut: "c2", gen: "f", track: 3 }, // 길이가 안 적혔다
+    { cut: "c2", gen: "d", track: 1, dur: 8 }, // 옛 요청 길이 — 잰 적이 없다
+    { cut: "c2", gen: "f", track: 2 }, // 길이가 안 적혔다
   ]);
   await mount();
-  expect(asked()).toEqual(["d", "e", "f", "n"]);
+  expect(asked()).toEqual(["d", "f", "m", "n"]);
 
+  await arrive("m", 5.5);
   await arrive("n", 5.03); // 적힌 것과 한 프레임 안 — 고쳐 적지 않는다
-  await arrive("d", 8.2);
-  await arrive("e", 8.3);
+  await arrive("d", 10.04);
   await arrive("f", 5.6);
   act(() => { vi.advanceTimersByTime(MEASURE_SAVE_MS); });
-  expect(durs()).toEqual({ m: 5.5, n: 5.02, p: 5, d: 8.2, e: 8.3, f: 5.6 });
+  expect(durs()).toEqual({ m: 5.5, n: 5.02, p: 5, d: 10.04, f: 5.6 });
 
-  // 페이지를 새로 열었다(기억해 둔 값이 없다) — 잰 값이 적힌 클립은 묻지 않는다. 안 잰 값과 같은 n 만 전처럼 잰다
+  // 페이지를 새로 열었다(기억해 둔 값이 없다) — 잰 값이 적혀 있어도 다시 전부 묻는다
   act(() => root.unmount());
   root = createRoot(host);
   probes.asked.length = 0;
   for (const map of [probes.known, probes.inflight, probes.finish]) map.clear();
   await mount();
-  expect(asked()).toEqual(["n"]);
+  expect(asked()).toEqual(["d", "f", "m", "n"]);
   expect(flashed).toEqual([]);
 });
 
