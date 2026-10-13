@@ -651,15 +651,19 @@ class ResolveBridgeTests(unittest.TestCase):
     # ── 가져오는 도중 Resolve 에서 다른 프로젝트를 열었다 ─────────────────────────────────────────────
     # SaveProject 는 '지금 열린' 프로젝트를 저장한다 — 시작한 프로젝트가 아니면 멈추고 저장하지 않는다.
     # 대역(가짜 Resolve)으로만 본다: 바뀐 뒤 옛 Media Pool 객체가 실제로 어떻게 구는지는 재지 않았다.
-    def _switch_after(self, owner, method):
-        """owner.method 가 한 번 돈 직후 다른 프로젝트가 열린 것으로 만든다 — 그 다른 프로젝트를 돌려준다."""
+    def _switch_after(self, owner, method, nth=1):
+        """owner.method 가 nth 번째로 돈 직후 다른 프로젝트가 열린 것으로 만든다 — 그 다른 프로젝트를 돌려준다.
+        self.calls 에 그 method 가 불린 횟수가 쌓인다(바뀐 뒤에 더 불렸는지 본다)."""
         other = FakeProject(FakeMediaPool())
         other.unique_id = "resolve-project-2"
         real = getattr(owner, method)
+        self.calls = []
 
         def then_switch(*args, **kwargs):
             done = real(*args, **kwargs)
-            self.manager.project = other
+            self.calls.append(method)
+            if len(self.calls) >= nth:
+                self.manager.project = other
             return done
 
         setattr(owner, method, then_switch)
@@ -727,7 +731,111 @@ class ResolveBridgeTests(unittest.TestCase):
         # 옮기다 만 상태(임시 Bin)는 시작한 프로젝트에 저장되지 않은 채 남고, 백업(.drp)이 있다.
         self._assert_stopped_without_touching(result, other, saved=2)
         self.assertEqual(len(self.pool.import_calls), 1)
-        self.assertTrue(any(folder.name.startswith("__MVHUB_REBUILD_") for folder in self.pool.root.children))
+        staging = next(folder.name for folder in self.pool.root.children if folder.name.startswith("__MVHUB_REBUILD_"))
+        # 남은 임시 Bin 과 백업 자리를 결과가 알려 준다 — '다시 가져오기'만 안내하면 임시 Bin 의 클립을 못 되살린다(Codex 재검토 P1).
+        self.assertEqual(result["rebuild_staging_bin"], staging)
+        self.assertTrue(Path(result["folder_order_backup"]).is_file())
+        for needed in (staging, result["folder_order_backup"], "다시 가져오기 **전에**"):
+            self.assertIn(needed, result["error"])
+
+    def _assert_plain_stop(self, result):
+        """남긴 것이 없는 멈춤 — 복구 안내가 아니라 보통의 '다시 가져오기' 안내다."""
+        self.assertNotIn("rebuild_staging_bin", result)
+        self.assertIn("준비된 원본 다시 가져오기를 실행하세요", result["error"])
+
+    def test_switching_projects_while_reading_the_bins_creates_no_new_bin(self):
+        manifest = self._manifest()
+        import_manifest_to_current_project(manifest, resolve=self.resolve)
+        extra = self.root / "source-3.mp4"
+        extra.write_bytes(b"video-3")
+        third = {"generation_id": "g3", "folder_path": "ep001/c0030", "local_path": str(extra), "status": "downloaded"}
+        with mock.patch.object(resolve_bridge, "_scan_actual_tree", wraps=resolve_bridge._scan_actual_tree):
+            other = self._switch_after(resolve_bridge, "_scan_actual_tree")  # 순서는 안 깨진다(다시 짓지 않는다) — 구조를 읽는 사이에 바꿨다
+            result = import_manifest_to_current_project(
+                {**manifest, "folder_paths": ["ep001/c0030"], "items": [third]}, resolve=self.resolve
+            )
+
+        self._assert_stopped_without_touching(result, other, saved=1)
+        self._assert_plain_stop(result)
+        episode = self._child(self._child(self._child(self.pool.root, "MV Hub"), "프로젝트_테스트"), "ep001")
+        self.assertEqual([folder.name for folder in episode.children], ["c0010", "c0020"])  # 긴 조회 뒤의 첫 쓰기 앞에서 멈췄다
+
+    def test_switching_projects_between_bins_stops_creating(self):
+        other = self._switch_after(self.pool, "AddSubFolder", nth=3)  # MV Hub · 프로젝트 · ep001 까지 만든 뒤에 바꿨다
+        result = import_manifest_to_current_project(self._manifest(), resolve=self.resolve)
+
+        self._assert_stopped_without_touching(result, other, saved=0)
+        self._assert_plain_stop(result)
+        episode = self._child(self._child(self._child(self.pool.root, "MV Hub"), "프로젝트_테스트"), "ep001")
+        self.assertEqual((episode.children, len(self.calls)), ([], 3))  # 그 아래 컷 Bin 은 만들지 않았다
+
+    def test_switching_projects_between_bin_preparations_stops(self):
+        with mock.patch.object(resolve_bridge, "_destination_folder", wraps=resolve_bridge._destination_folder):
+            other = self._switch_after(resolve_bridge, "_destination_folder", nth=2)  # 첫 컷의 Bin 을 준비한 뒤에 바꿨다
+            result = import_manifest_to_current_project(self._manifest(), resolve=self.resolve)
+
+        self._assert_stopped_without_touching(result, other, saved=0)
+        self.assertEqual(len(self.calls), 2)  # 둘째 컷의 Bin 은 준비하지 않았다(= 관리 뿌리 1 + 첫 컷 1)
+
+    def _two_bin_reorder(self):
+        """클립이 든 Bin 둘(c0015·c0020)을 먼저 가져오고, 순서를 깨는 셋째(c0010)의 manifest 를 돌려준다 —
+        다시 지을 때 클립 옮기기가 Bin 마다 한 번씩(임시 Bin 으로 2번, 되돌아오며 2번) 돈다."""
+        manifest = self._manifest()
+        first_item, second_item = manifest["items"]
+        first_item["folder_path"], second_item["folder_path"] = "ep001/c0015", "ep001/c0020"
+        import_manifest_to_current_project({**manifest, "folder_paths": ["ep001/c0015", "ep001/c0020"]}, resolve=self.resolve)
+        extra = self.root / "source-3.mp4"
+        extra.write_bytes(b"video-3")
+        third = {"generation_id": "g3", "folder_path": "ep001/c0010", "local_path": str(extra), "status": "downloaded"}
+        return {**manifest, "folder_paths": ["ep001/c0010"], "items": [third]}
+
+    def _switch_between_clip_moves(self, moves_before_the_switch):
+        second = self._two_bin_reorder()
+        other = self._switch_after(self.pool, "MoveClips", nth=moves_before_the_switch)
+        result = import_manifest_to_current_project(second, resolve=self.resolve)
+
+        self._assert_stopped_without_touching(result, other, saved=2)
+        self.assertEqual(len(self.calls), moves_before_the_switch)  # 그다음 Bin 의 클립은 옮기지 않았다
+        self.assertIn(result["rebuild_staging_bin"], result["error"])
+
+    def test_switching_projects_between_moves_to_staging_stops_moving(self):
+        self._switch_between_clip_moves(1)  # 첫 Bin 의 클립을 임시 Bin 으로 옮긴 뒤
+
+    def test_switching_projects_between_moves_back_stops_moving(self):
+        self._switch_between_clip_moves(3)  # 다시 지은 첫 Bin 으로 되돌린 뒤(임시 Bin 으로 2번 + 되돌리기 1번)
+
+    def test_switching_projects_during_the_recovery_stops_moving_clips_back(self):
+        second = self._two_bin_reorder()
+        self.pool.DeleteFolders = lambda folders: False  # 옛 Bin 을 못 지워 다시 짓기가 실패한다 — 임시 Bin 의 클립 둘을 되돌려야 한다
+        other = self._switch_after(self.pool, "MoveClips", nth=3)  # 첫 Bin 의 클립을 되돌린 뒤에 바꿨다
+        result = import_manifest_to_current_project(second, resolve=self.resolve)
+
+        self._assert_stopped_without_touching(result, other, saved=2)
+        self.assertEqual(len(self.calls), 3)  # 둘째 Bin 의 클립은 되돌리지 않았다(임시 Bin 에 남아 있다 — 결과가 알린다)
+        self.assertIn(result["rebuild_staging_bin"], result["error"])
+
+    def test_switching_projects_between_deletes_stops_deleting(self):
+        first, second = self._reorder_manifests()
+        import_manifest_to_current_project(first, resolve=self.resolve)
+        other = self._switch_after(self.pool, "DeleteFolders")  # 옛 Bin 하나를 지운 뒤에 바꿨다
+        result = import_manifest_to_current_project(second, resolve=self.resolve)
+
+        self._assert_stopped_without_touching(result, other, saved=2)
+        self.assertEqual(len(self.calls), 1)  # 그 위의 Bin 들은 지우지 않았다
+        project = self._child(self._child(self.pool.root, "MV Hub"), "프로젝트_테스트")
+        self.assertEqual([folder.name for folder in project.children], ["ep001"])
+        self.assertIn(result["rebuild_staging_bin"], result["error"])
+
+    def test_switching_projects_before_the_staging_bin_is_deleted_keeps_it(self):
+        # 다시 짓기가 끝나 임시 Bin 을 치우는 중 — 지우기 4번(옛 Bin 2 + 임시 Bin 아래 2) 뒤에 바꿨다. 임시 Bin 자체(5번째)는 안 지운다.
+        first, second = self._reorder_manifests()
+        import_manifest_to_current_project(first, resolve=self.resolve)
+        other = self._switch_after(self.pool, "DeleteFolders", nth=4)
+        result = import_manifest_to_current_project(second, resolve=self.resolve)
+
+        self._assert_stopped_without_touching(result, other, saved=2)
+        self.assertEqual(len(self.calls), 4)
+        self.assertTrue(any(folder.name == result["rebuild_staging_bin"] for folder in self.pool.root.children))
 
     def test_switching_projects_before_the_reorder_backup_skips_its_save(self):
         first, second = self._reorder_manifests()
@@ -738,14 +846,24 @@ class ResolveBridgeTests(unittest.TestCase):
 
         self._assert_stopped_without_touching(result, other, saved=1)  # 백업 직전의 저장도 하지 않는다
 
-    def test_switching_projects_during_the_recovery_skips_its_save(self):
+    def _switch_during_the_recovery(self, deletes_before_the_switch):
+        """다시 짓기가 프로젝트와 무관한 까닭으로 실패해 되돌리기가 돈다. 되돌리기의 지우기는 세 번이다
+        (임시 Bin 아래의 컷·에피소드 Bin, 그리고 임시 Bin 자체) — 그 가운데 몇 번째 뒤에 프로젝트를 바꿀지."""
         first, second = self._reorder_manifests()
         import_manifest_to_current_project(first, resolve=self.resolve)
-        self.pool.MoveClips = lambda clips, target: False  # 다시 짓기가 프로젝트와 무관한 까닭으로 실패해 되돌리기가 돈다
-        other = self._switch_after(self.pool, "DeleteFolders")  # 되돌리는 사이에 바꿨다
+        self.pool.MoveClips = lambda clips, target: False
+        other = self._switch_after(self.pool, "DeleteFolders", nth=deletes_before_the_switch)
         result = import_manifest_to_current_project(second, resolve=self.resolve)
 
-        self._assert_stopped_without_touching(result, other, saved=2)  # 되돌린 뒤의 저장을 하지 않는다
+        self._assert_stopped_without_touching(result, other, saved=2)  # 되돌린 뒤의 저장은 어느 쪽이든 하지 않는다
+        self.assertEqual(len(self.calls), deletes_before_the_switch)
+        self.assertIn("처음 실패: 클립을 정렬용 공간으로 옮기지 못했습니다", result["error"])  # 왜 되돌리게 됐는지도 남긴다
+
+    def test_switching_projects_during_the_recovery_skips_its_save(self):
+        self._switch_during_the_recovery(3)  # 다 지운 뒤에 바꿨다 — 남은 것은 저장뿐이다
+
+    def test_switching_projects_during_the_recovery_keeps_the_staging_bin(self):
+        self._switch_during_the_recovery(2)  # 임시 Bin 자체를 지우기 전에 바꿨다 — 그것은 지우지 않는다
 
     def test_still_current_compares_names_when_ids_are_unreadable(self):
         self.manager.project.unique_id = ""
