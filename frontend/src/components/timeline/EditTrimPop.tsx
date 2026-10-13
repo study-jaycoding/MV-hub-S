@@ -58,7 +58,7 @@ export function EditTrimPop({
     <button type="button" disabled={delta < 0 ? frames <= 1 : frames >= top} onClick={() => set(frames + delta)}>{label}</button>
   );
   return (
-    <EditMenu x={x} y={y} width={WIDTH} height={src ? 300 : 152} label={t("길이 조절")} className="ed-trim" onClose={onClose}>
+    <EditMenu x={x} y={y} width={WIDTH} height={src ? 300 : 152} label={t("길이 조절")} className="ed-trim" role="dialog" onClose={onClose}>
       <div
         className="ed-trim-body"
         onKeyDown={(event) => {

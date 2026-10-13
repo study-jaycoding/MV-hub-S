@@ -127,6 +127,7 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
       const known = cur.conflict;
       cur.conflict = true;
       if (announced || !known) flashRef.current(t(CHANGED_ELSEWHERE));
+      if (!known) bump(); // 화면이 충돌을 알게 한다(conflict) — 이어지던 조작(길이 조절 창의 끌기)을 거기서 끝내게
       return !known;
     }
     clearUndo(cur.key);
@@ -195,6 +196,9 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
     rev: cur.rev,
     bad: cur.bad,
     dirty: cur.dirty,
+    // 저장 못 한 편집이 있는데 다른 창이 저장했다(풀릴 때까지). 여러 걸음에 걸친 한 조작(길이 조절 창의 슬라이더 끌기)은 이것이 켜지면
+    //  끝낸다 — 같은 끌기의 다음 걸음을 '알고 이어 가는 편집'으로 받으면 알림을 읽기도 전에 다른 창의 저장을 덮는다(Codex 코드 리뷰 P1).
+    conflict: cur.conflict,
     canUndo: !!stack?.past.length,
     canRedo: !!stack?.future.length,
     applyEdit,

@@ -216,6 +216,59 @@ it("보던 컷이 짧아지면 재생을 멈추고, 시퀀스가 바뀌면 처�
   expect(playback.now()).toBeCloseTo(14);
 });
 
+// Jay 2026-10-13: "v1 이 5초 v2 가 3초면 3초 보여주다가 남은 v1 이 더 보인다. 하지만 v1 트랙이 꺼져 있다면 그 해당 폴더는 3초만 재생된다."
+it("컷 길이는 켜진 클립만 센다 — 아래 트랙을 끄면 그 컷은 위 클립의 길이에서 다음 컷으로 넘어가고, 재생 중에 끄면 줄어든 끝에서 멈춘다", () => {
+  const cuts = ["e070/c1", "e070/c2", "e070/c3"];
+  const off: EditDoc = { ...DOC, tracksOff: [1] }; // V1(low 8초)을 껐다 → c1 은 top 의 3초
+  const short = buildLayout(cuts, off);
+  expect(short.cuts.map((cut) => [cut.start, cut.len])).toEqual([[0, 3], [3, 5], [8, 5]]);
+  // 꺼 둔 채 재생: 3초에서 꺼진 low 가 드러나지 않고 다음 컷(빈 컷)으로 넘어간다
+  render({ doc: off, layout: short });
+  act(() => playback.seek(0)); // 재생헤드의 마지막 자리는 시험 사이에 남는다 — 처음에서 시작한다
+  video.emit("loadedmetadata");
+  video.emit("seeked");
+  act(() => playback.toggle());
+  video.currentTime = 2.9;
+  frame(16);
+  expect([playback.view.cut, playback.view.clip?.gen]).toEqual(["e070/c1", "top"]);
+  video.currentTime = 3.05;
+  frame(16);
+  expect([playback.view.cut, playback.view.clip]).toEqual(["e070/c2", null]);
+  expect(video.src).toBe(""); // low 를 올리지 않았다
+  act(() => playback.toggle());
+  // 켜 둔 채 6.5초(아래 클립)를 보다가 재생 중에 V1 을 끈다 → 줄어든 끝 직전에서 멈춘다(영상의 옛 시각으로 되덮지 않는다)
+  render();
+  act(() => playback.seek(6));
+  video.emit("loadedmetadata");
+  video.emit("seeked");
+  act(() => playback.toggle());
+  video.currentTime = 6.5;
+  frame(16);
+  expect(playback.view.clip?.gen).toBe("low");
+  render({ doc: off, layout: short });
+  expect(playback.view.playing).toBe(false);
+  expect(playback.now()).toBeLessThan(3);
+  expect(playback.now()).toBeGreaterThan(2.9);
+  expect([playback.view.cut, playback.view.clip?.gen]).toEqual(["e070/c1", "top"]);
+});
+
+// 길이 조절(Jay 2026-10-13 — 뒤를 자른다): 줄인 위 클립은 줄인 길이에서 끝나고 아래 클립이 그 시각부터 이어진다.
+it("줄인 클립은 줄인 길이에서 끝난다 — 영상의 실제 끝까지 틀지 않고 아래 클립으로 넘어간다", () => {
+  const cut: EditDoc = { ...DOC, clips: DOC.clips.map((clip) => (clip.gen === "top" ? { ...clip, trim: 1.5 } : clip)) };
+  render({ doc: cut, layout: buildLayout(["e070/c1", "e070/c2", "e070/c3"], cut) });
+  act(() => playback.seek(0)); // 재생헤드의 마지막 자리는 시험 사이에 남는다 — 처음에서 시작한다
+  video.emit("loadedmetadata");
+  video.emit("seeked");
+  act(() => playback.toggle());
+  video.currentTime = 1.4;
+  frame(16);
+  expect(playback.view.clip?.gen).toBe("top");
+  video.currentTime = 1.55; // top 의 영상은 3초까지 있지만 줄인 길이(1.5초)를 넘었다
+  frame(16);
+  expect([playback.view.cut, playback.view.clip?.gen]).toEqual(["e070/c1", "low"]);
+  expect(video.src).toBe("/v/low");
+});
+
 it("훑는 도중에 재생을 눌러도 옛 탐색 자리가 아니라 마지막에 놓은 자리에서 시작한다", () => {
   render();
   video.emit("loadedmetadata");

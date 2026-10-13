@@ -602,8 +602,9 @@ function EditTabInner({
   }, [selected]);
   // 클립 길이 조절 창(Jay 2026-10-13) — 타임라인의 클립을 휠 클릭. 영상만이고 잠긴 트랙은 안 된다(setClipTrim 의 거부와 같다 — 창을
   //  띄우기 전에 까닭을 알린다). group = 이 창을 한 번 연 동안의 걸음들을 되돌리기 한 단계로 묶는 이름(useEditDoc).
-  //  문서가 갈리면(rev) 닫는다 — 아래 효과.
-  const [trimPop, setTrimPop] = useState<{ key: string; x: number; y: number; group: string } | null>(null);
+  //  문서가 갈리면(rev) 닫는다 — 아래 효과. **저장 충돌을 알게 됐을 때도 닫는다**(edit.conflict): 슬라이더를 끄는 도중이면 같은 끌기의
+  //  다음 걸음이 '알고 이어 가는 편집'으로 저장돼, 알림을 읽기도 전에 다른 창의 저장을 덮는다(Codex 코드 리뷰 2회째 P1).
+  const [trimPop, setTrimPop] = useState<{ key: string; x: number; y: number; group: string; rev: number } | null>(null);
   const trimSerial = useRef(0);
   const openTrim = useCallback((key: string, x: number, y: number) => {
     const clip = doc.clips.find((item) => clipKey(item) === key);
@@ -613,8 +614,12 @@ function EditTabInner({
     if ((links.get(key)?.gen?.assets[0]?.type ?? clip.kind) === "image") return flash(t("그림은 길이를 줄일 수 없습니다 — 영상 클립만 됩니다."));
     stopBoth(); // 창이 떠 있는 동안 편집 키는 막혀 있다 — 뒤에서 도는 재생을 멈출 길이 없다
     menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setTrimPop({ key, x, y, group: `trim:${key}:${++trimSerial.current}` });
-  }, [doc, links, flash, t, stopBoth]);
+    setTrimPop({ key, x, y, group: `trim:${key}:${++trimSerial.current}`, rev });
+  }, [doc, links, flash, t, stopBoth, rev]);
+  const editConflict = edit.conflict;
+  useEffect(() => {
+    if (editConflict) setTrimPop(null);
+  }, [editConflict]);
   const openTrackMenu = useCallback((track: number, x: number, y: number) => {
     menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setTrackMenu({ track, x, y, rev });
@@ -1249,7 +1254,7 @@ function EditTabInner({
           {/* 컷 머리를 끌어 폴더 순서를 바꿔 둔 상태 — 누르면 이름순으로 되돌린다(되돌리기 한 단계) */}
           {!!doc.cutOrder?.length && (
             <button type="button" className="ed-mine ed-orderchip" title={t("이름순으로 되돌립니다")}
-              onClick={() => act((current) => resetCutOrder(current, cuts))}>
+              onClick={() => act((current) => resetCutOrder(current))}>
               {t("폴더 순서: 내 순서")} ↺
             </button>
           )}
@@ -1397,9 +1402,11 @@ function EditTabInner({
           value={trimClip.len}
           trimmed={trimClip.trim !== undefined}
           src={trimSrc}
-          // 바꿀 것이 없었던 걸음(none)은 조용히 넘긴다. 다른 창의 저장 때문에 버린 것(stopped)은 그 알림이 뜨고 rev 가 갈려 창이 닫힌다.
+          // 바꿀 것이 없었던 걸음(none)은 조용히 넘긴다. 버린 걸음(stopped — 다른 창의 저장·떠나는 중)에는 창을 닫는다: 그 알림이 이미
+          //  떴고, 이 조절은 여기서 끝이다(다시 열어 조절하면 그때는 알고 하는 편집이다).
           onChange={(seconds) => {
-            applyEdit((current) => setClipTrim(current, trimPop.key, seconds), { group: trimPop.group });
+            const done = applyEdit((current) => setClipTrim(current, trimPop.key, seconds), { group: trimPop.group, rev: trimPop.rev });
+            if (done === "stopped") closeMenu();
           }}
           onClose={closeMenu}
         />
@@ -1417,6 +1424,12 @@ function EditTabInner({
             closeMenu();
             resolve.send(clipMenuGens);
           }}
+          // 길이 조절 — 휠 클릭과 같은 창을 메뉴에서도 연다(휠 단추가 없는 마우스·트랙패드). 클립 하나를 눌렀을 때만.
+          onTrim={clipMenuOne ? () => {
+            const { x, y } = clipMenu;
+            closeMenu();
+            openTrim(clipKey(clipMenuOne), x, y);
+          } : undefined}
           onClose={closeMenu}
         />
       )}

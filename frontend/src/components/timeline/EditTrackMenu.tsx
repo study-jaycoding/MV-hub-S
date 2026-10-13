@@ -34,6 +34,7 @@ export function EditMenu({
   height,
   label,
   className = "",
+  role = "menu",
   trigger,
   onClose,
   children,
@@ -44,6 +45,8 @@ export function EditMenu({
   height: number; // 화면 밖으로 안 나가게 자리를 잡는 데만 쓴다
   label: string;
   className?: string;
+  role?: "menu" | "dialog"; // 고르는 줄이 아니라 조절하는 칸이 든 창(길이 조절)은 dialog
+
   // 이 메뉴를 여닫는 단추(막대의 목록·북마크 색 단추) — 그 단추의 누름은 바깥 누름으로 치지 않는다. 치면 누르는 순간
   //  (pointerdown) 메뉴가 먼저 닫히고 뒤따르는 click 이 다시 열어, 다시 눌러도 안 닫힌다. 닫는 것은 그 단추의 click 이 한다.
   //  우클릭으로 뜨는 메뉴에는 그런 단추가 없다(안 준다).
@@ -93,7 +96,7 @@ export function EditMenu({
     <div
       ref={ref}
       className={"folder-ctx-menu ed-tmenu" + (className ? ` ${className}` : "")}
-      role="menu"
+      role={role}
       aria-label={label}
       tabIndex={-1}
       style={{ ...clampMenuPosition(at.x, at.y, window.innerWidth, window.innerHeight, width, height), width }}
@@ -276,6 +279,7 @@ export function EditClipMenu({
   busy,
   pendingCount,
   onSend,
+  onTrim,
   onClose,
 }: {
   x: number;
@@ -285,11 +289,13 @@ export function EditClipMenu({
   busy: boolean; // 앱이 Resolve 작업을 처리하는 중 — 누르면 대기열에 더한다
   pendingCount: number;
   onSend: () => void;
+  // 길이 조절 창을 연다(클립 하나를 눌렀을 때만 준다) — 휠 클릭과 같은 창. 휠 단추가 없는 마우스·트랙패드의 길이다.
+  onTrim?: () => void;
   onClose: () => void;
 }) {
   const t = useT();
   return (
-    <EditMenu x={x} y={y} width={190} height={HEAD_H + ROW_H} label={t("클립 메뉴")} onClose={onClose}>
+    <EditMenu x={x} y={y} width={190} height={HEAD_H + ROW_H * (onTrim ? 2 : 1)} label={t("클립 메뉴")} onClose={onClose}>
       <div className="ed-tmenu-head">{title}</div>
       <button type="button" role="menuitem" autoFocus className="ed-tmenu-item" disabled={!count} aria-busy={busy} onClick={onSend}
         title={busy
@@ -298,6 +304,12 @@ export function EditClipMenu({
         {busy ? `${t("◆ Resolve에 추가")} (${pendingCount})` : t("◆ Resolve 보내기")}
         <i>{count > 1 ? count : ""}</i>
       </button>
+      {onTrim && (
+        <button type="button" role="menuitem" className="ed-tmenu-item" onClick={onTrim}>
+          {t("길이 조절")}
+          <i>{t("휠 클릭")}</i>
+        </button>
+      )}
     </EditMenu>
   );
 }

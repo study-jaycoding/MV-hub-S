@@ -145,6 +145,7 @@ const EN: Record<string, string> = {
   "초": "s",
   "원본 {full}초 · 지금 {frames}프레임": "Source {full}s · now {frames} frames",
   "원본 길이로": "Full length",
+  "휠 클릭": "middle-click",
   "잠긴 트랙의 클립은 길이를 바꿀 수 없습니다.": "Clips on a locked track can't be shortened.",
   "그림은 길이를 줄일 수 없습니다 — 영상 클립만 됩니다.": "Stills can't be shortened — video clips only.",
   "한 프레임보다 짧은 컷이 {count}개 있어 보낼 수 없습니다 — 그 컷에 켜 둔 영상의 길이를 확인해 주세요.":
