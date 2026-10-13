@@ -43,6 +43,8 @@ SHARE_STATE_APPLY_NO_TARGET = "no_target"
 # 관측한 job_id 로 찾은 로컬 행을 같은 서버의 **다른 미종결 원장**도 가리키고 있다 — 지금 적용하면 그쪽의 더 새로운
 # 사용자 의도를 낡은 관측으로 덮을 수 있다(원장마다 seq·claim 을 따로 본다). 적용하지 않고 다음에 다시 본다.
 SHARE_STATE_APPLY_BUSY = "busy"
+# 관측한 job_id 에 같은 급의 로컬 완료본이 둘 이상이다 — 어느 쪽인지 추측하지 않고, 로컬은 건드리지 않는다.
+SHARE_STATE_APPLY_AMBIGUOUS = "ambiguous"
 _CLAIMABLE_STATUSES = ("prepared", "pending", "waiting_local", "auth_required")
 _UNSET = object()
 
@@ -576,12 +578,16 @@ def apply_share_state_intent_local(
     preservation_reason: Optional[str] = None,
     status: str = "converged",
     observed_state: Optional[Mapping[str, Any]] = None,
+    link_job_id: Optional[str] = None,
 ) -> str:
     """로컬 ``{shared, final, held}`` 적용과 원장 상태 전이를 한 트랜잭션 CAS로 수행한다.
 
     CAS가 먼저 확인된 뒤 BEGIN IMMEDIATE가 끝날 때까지 새 seq UPSERT가 들어올 수 없다. 따라서
     옛 워커는 로컬을 한 줄도 바꾸지 못하고, 적용 중 예외가 나면 원장 전이까지 함께 롤백된다.
     반환값으로 정상 적용, CAS 경합 패배, 로컬 대상 부재를 구분한다.
+
+    ``link_job_id`` 는 원장에 저장된 앵커로 로컬 행을 못 찾을 때 대신 쓸 job_id 다. 이 길은 다른 키(job 키)로 잠그는
+    조작과 같은 로컬 행을 만지므로, 호출자가 **그 job 키의 잠금까지 쥐고 그 아래에서 다시 관측한 값**일 때만 넘긴다.
     """
     if is_final and not shared:
         raise ValueError("최종 상태는 공유 상태여야 합니다")
@@ -624,45 +630,46 @@ def apply_share_state_intent_local(
                     ).fetchone()
                     if target is not None:
                         break
-            if target is None and observed_state is not None:
+            observed_job_id = _clean_optional(link_job_id)
+            if target is None and observed_job_id:
                 # 응답을 받지 못한 요청은 원장에 서버 id 만 남는다(로컬 행은 job_id 로만 이어진다 — 정상 응답 길은
                 # 응답의 job_id 로 로컬 행을 다시 찾는다). 서버 관측이 알려 준 job_id 로 한 번 더 찾는다
                 # (2026-10-14 격리 실측 — 늦은 서버). 이름·폴더로 추측하지 않고, 없으면 행을 만들지 않는다.
-                observed_job_id = _clean_optional(observed_state.get("job_id"))
-                if observed_job_id:
-                    # 완료본만 본다 — 같은 job_id 에 '실패로 보존한 요청 행(origin local)'과 실제 결과(synced)가 같이
-                    # 있을 수 있고(generation_sync 의 NO_REVIVE 보존), 최종·공유의 대상은 실제 결과다.
-                    candidates = conn.execute(
-                        "SELECT id, worker_id, job_id, (id=?) AS by_id, (origin='local') AS is_local "
-                        "FROM generation WHERE (id=? OR job_id=?) AND status='done' "
-                        "ORDER BY by_id DESC, is_local DESC LIMIT 2",
-                        (observed_job_id, observed_job_id, observed_job_id),
-                    ).fetchall()
-                    # 맨 앞 후보가 둘째보다 분명히 앞설 때만 고른다(id 일치 > 로컬본 > 그 외). 같은 급이 둘이면 고르지 않는다.
-                    if len(candidates) == 1 or (
-                        len(candidates) == 2
-                        and (candidates[0]["by_id"], candidates[0]["is_local"])
-                        != (candidates[1]["by_id"], candidates[1]["is_local"])
-                    ):
-                        found = candidates[0]
-                        busy = conn.execute(
-                            "SELECT 1 FROM share_state_intent "
-                            "WHERE server_origin=? AND intent_id<>? AND status IN (?,?,?,?) "
-                            "AND (local_id=? OR job_anchor IN (?,?,?)) LIMIT 1",
-                            (
-                                intent["server_origin"],
-                                intent_id,
-                                *_CLAIMABLE_STATUSES,
-                                found["id"],
-                                observed_job_id,
-                                found["job_id"] or observed_job_id,
-                                found["id"],
-                            ),
-                        ).fetchone()
-                        if busy is not None:
-                            conn.execute("ROLLBACK")
-                            return SHARE_STATE_APPLY_BUSY
-                        target = found
+                # 완료본만 본다 — 같은 job_id 에 '실패로 보존한 요청 행(origin local)'과 실제 결과(synced)가 같이
+                # 있을 수 있고(generation_sync 의 NO_REVIVE 보존), 최종·공유의 대상은 실제 결과다.
+                candidates = conn.execute(
+                    "SELECT id, worker_id, job_id, (id=?) AS by_id, (origin='local') AS is_local "
+                    "FROM generation WHERE (id=? OR job_id=?) AND status='done' "
+                    "ORDER BY by_id DESC, is_local DESC LIMIT 2",
+                    (observed_job_id, observed_job_id, observed_job_id),
+                ).fetchall()
+                # 맨 앞 후보가 둘째보다 분명히 앞설 때만 고른다(id 일치 > 로컬본 > 그 외). 같은 급이 둘이면 고르지 않는다.
+                if len(candidates) == 2 and (
+                    candidates[0]["by_id"],
+                    candidates[0]["is_local"],
+                ) == (candidates[1]["by_id"], candidates[1]["is_local"]):
+                    conn.execute("ROLLBACK")
+                    return SHARE_STATE_APPLY_AMBIGUOUS
+                if candidates:
+                    found = candidates[0]
+                    busy = conn.execute(
+                        "SELECT 1 FROM share_state_intent "
+                        "WHERE server_origin=? AND intent_id<>? AND status IN (?,?,?,?) "
+                        "AND (local_id=? OR job_anchor IN (?,?,?)) LIMIT 1",
+                        (
+                            intent["server_origin"],
+                            intent_id,
+                            *_CLAIMABLE_STATUSES,
+                            found["id"],
+                            observed_job_id,
+                            found["job_id"] or observed_job_id,
+                            found["id"],
+                        ),
+                    ).fetchone()
+                    if busy is not None:
+                        conn.execute("ROLLBACK")
+                        return SHARE_STATE_APPLY_BUSY
+                    target = found
             if target is None:
                 conn.execute("ROLLBACK")
                 return SHARE_STATE_APPLY_NO_TARGET

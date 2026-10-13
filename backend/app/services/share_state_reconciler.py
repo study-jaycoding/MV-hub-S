@@ -335,12 +335,21 @@ def _mark_retry(
     return transitioned
 
 
+def _link_job_id(intent: Mapping[str, Any], observed: Mapping[str, Any]) -> str | None:
+    """서버 id 만 아는 원장(팀 카드에서 낸 요청)이 로컬 행을 찾을 때 쓸 관측의 job_id. 그 밖의 원장은 저장된 앵커로 찾는다."""
+    if intent.get("local_id") or intent.get("job_anchor"):
+        return None
+    job_id = str(observed.get("job_id") or "").strip()
+    return job_id if job_id and job_id != _remote_id(intent) else None
+
+
 def _apply_observed_local(
     intent: Mapping[str, Any],
     claim_token: str,
     observed: Mapping[str, Any],
     *,
     status: str,
+    link_job_id: str | None = None,
 ) -> str:
     result = repo.apply_share_state_intent_local(
         intent["intent_id"],
@@ -359,6 +368,7 @@ def _apply_observed_local(
         ),
         status=status,
         observed_state=observed,
+        link_job_id=link_job_id,
     )
     if result == repo.SHARE_STATE_APPLY_APPLIED:
         saved = repo.get_share_state_intent(str(intent["intent_id"])) or {}
@@ -391,8 +401,13 @@ def _settle_missing_local_target(
     intent: Mapping[str, Any],
     claim_token: str,
     observed: Mapping[str, Any],
+    *,
+    status: str,
+    ambiguous: bool = False,
 ) -> str:
-    """대상 부재를 경합과 분리해 재시도하거나 관측값만 기록하고 종결한다."""
+    """대상 부재를 경합과 분리해 재시도하거나 관측값만 기록하고 종결한다.
+
+    ``status`` 는 호출자가 이 관측으로 정한 종결 상태다(적용이 됐다면 썼을 그 값 — 두 길이 같은 이름으로 닫히게)."""
     if intent.get("local_id"):
         # 기존 로컬 행은 계정 DB 전환·일시 유실일 수 있어 정해진 횟수만 복구를 기다린다.
         if int(intent.get("fail_streak") or 0) < _LOCAL_TARGET_LOST_RETRY_LIMIT:
@@ -414,12 +429,15 @@ def _settle_missing_local_target(
         terminal_status = "rejected"
         error_code = "local_target_lost"
     else:
-        terminal_status = _terminal_status(intent, observed)
-        error_code = (
-            "local_mirror_skipped_no_target"
-            if terminal_status == "converged"
-            else "local_target_missing"
-        )
+        terminal_status = status
+        if ambiguous:
+            error_code = "local_target_ambiguous"
+        elif terminal_status == "converged":
+            error_code = "local_mirror_skipped_no_target"
+        elif observed.get("unknown_watch_expired") is True:
+            error_code = "remote_result_unknown_expired"
+        else:
+            error_code = "local_target_missing"
 
     transitioned = repo.transition_share_state_intent(
         intent["intent_id"],
@@ -438,6 +456,7 @@ async def _apply_or_retry(
     observed: Mapping[str, Any],
     *,
     status: str,
+    link_job_id: str | None = None,
 ) -> str:
     try:
         result = await asyncio.to_thread(
@@ -446,6 +465,7 @@ async def _apply_or_retry(
             claim_token,
             observed,
             status=status,
+            link_job_id=link_job_id,
         )
     except asyncio.CancelledError:
         raise
@@ -466,12 +486,16 @@ async def _apply_or_retry(
             waiting_local=False,
         )
         return "retry"
-    if result == repo.SHARE_STATE_APPLY_NO_TARGET:
+    if result in (repo.SHARE_STATE_APPLY_NO_TARGET, repo.SHARE_STATE_APPLY_AMBIGUOUS):
         return await asyncio.to_thread(
-            _settle_missing_local_target,
-            intent,
-            claim_token,
-            observed,
+            functools.partial(
+                _settle_missing_local_target,
+                intent,
+                claim_token,
+                observed,
+                status=status,
+                ambiguous=result == repo.SHARE_STATE_APPLY_AMBIGUOUS,
+            )
         )
     await asyncio.to_thread(
         _mark_retry,
@@ -528,8 +552,23 @@ async def _process_claimed_intent(
         server_generation_id=intent.get("server_generation_id"),
         job_anchor=intent.get("job_anchor"),
     )
-    async with repo.async_share_state_action_locks([identity_key]):
+    lock_keys = [identity_key]
+    link_job_id = _link_job_id(intent, observed)
+    if link_job_id:
+        # 관측의 job_id 로 로컬 행을 이으면 '내 작업' 쪽 조작(job 키로 잠근다)과 같은 로컬 행을 만진다 — 그 키도 같이 쥔다.
+        lock_keys.append(
+            repo.share_state_identity_key(server_origin, job_anchor=link_job_id)
+        )
+    async with repo.async_share_state_action_locks(lock_keys):
         try:
+            if link_job_id:
+                # 묶음 관측은 job 키를 쥐기 전의 것이다. 그사이 내 작업 쪽에서 끝난 조작(예: 공유 해제가 늦게 먹은 뒤의
+                # 다시 공유)을 낡은 관측으로 덮지 않도록, 두 키를 쥔 채 다시 본 값만 쓴다(Codex 2차 검토 P2).
+                observed = await asyncio.to_thread(
+                    _observe_remote_state, server_origin, token, intent
+                )
+                if _link_job_id(intent, observed) != link_job_id:
+                    link_job_id = None
             prior_observed = _observed_payload(intent)
             composite_partial = bool(
                 intent.get("operation_kind") == "composite_finalize"
@@ -540,8 +579,9 @@ async def _process_claimed_intent(
                 return await _process_composite_partial(
                     intent, claim_token, server_origin, token, observed
                 )
-            status = _terminal_status(intent, observed)
             if _result_unknown(intent):
+                # 인증 대기를 거쳐 상태 이름이 바뀌었어도 판정은 결과 불명(prepared)의 규칙으로 한다.
+                status = _terminal_status({**intent, "status": "prepared"}, observed)
                 if status != "converged":
                     if not _unknown_watch_expired(intent):
                         # '아직 바라던 상태가 아니다'는 '요청이 거절됐다'도 '다른 조작이 덮었다'도 아니다. 전에는 첫 관측에
@@ -551,30 +591,33 @@ async def _process_claimed_intent(
                             _keep_watching, intent, claim_token, observed
                         )
                         return "retry" if kept else repo.SHARE_STATE_APPLY_CAS_LOST
-                    # 지켜볼 만큼 지켜봤다 — 서버의 지금 상태를 로컬에 맞추고 닫는다(명령은 다시 보내지 않는다).
-                    status = "rejected"
-                else:
-                    # 서버가 (늦게라도) 받아들였다. 여기서부터는 성공 응답을 받은 요청과 같은 길이다 — pending 으로 올리고
-                    # 다시 보던 횟수를 비운다(로컬 대상 유실의 재시도 예산이 그 횟수에 깎이지 않게).
-                    moved = await asyncio.to_thread(
-                        functools.partial(
-                            repo.transition_share_state_intent,
-                            intent["intent_id"],
-                            intent["intent_seq"],
-                            claim_token,
-                            "pending",
-                            observed_state=dict(observed),
-                            reset_fail_streak=True,
-                        )
+                    # 지켜볼 만큼 지켜봤다 — 서버의 지금 상태를 로컬에 맞추고 전과 같은 이름으로 닫는다(이전 상태면
+                    # rejected, 그 밖이면 superseded. 명령은 다시 보내지 않는다). 기한으로 닫았다는 표식을 남긴다.
+                    observed = {**observed, "unknown_watch_expired": True}
+                # 서버가 (늦게라도) 받아들였거나 기한이 찼다. 여기서부터는 로컬에 맞추는 길이다 — pending 으로 올리고
+                # 다시 보던 횟수를 비운다(로컬 대상 유실의 재시도 예산이 그 횟수에 깎이지 않게).
+                moved = await asyncio.to_thread(
+                    functools.partial(
+                        repo.transition_share_state_intent,
+                        intent["intent_id"],
+                        intent["intent_seq"],
+                        claim_token,
+                        "pending",
+                        observed_state=dict(observed),
+                        reset_fail_streak=True,
                     )
-                    if not moved:
-                        return repo.SHARE_STATE_APPLY_CAS_LOST
-                    intent = {**intent, "status": "pending", "fail_streak": 0}
+                )
+                if not moved:
+                    return repo.SHARE_STATE_APPLY_CAS_LOST
+                intent = {**intent, "status": "pending", "fail_streak": 0}
+            else:
+                status = _terminal_status(intent, observed)
             return await _apply_or_retry(
                 intent,
                 claim_token,
                 observed,
                 status=status,
+                link_job_id=link_job_id,
             )
         except asyncio.CancelledError:
             raise
