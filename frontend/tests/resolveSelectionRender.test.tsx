@@ -1497,6 +1497,46 @@ it("App 공유·리뷰: 에피소드에서 컷으로 들어가면 받아 둔 목
   expect([cutGrid() !== null, main().hasAttribute("inert")]).toEqual([true, false]); // settle 전 — 응답을 기다리지 않았다
 });
 
+// 31회차(Codex 빈틈 점검 — 둘 다 '옛 자리의 카드가 잠금 없이 선다'):
+//  ① 빠른 A→B→A — B 는 목록만 오고 묶음 답은 아직인 채 A 로 되돌아오면, A 가 '이미 선 자리'로 남아 B 의 목록이 A 에 그대로 섰다 → 자리를 떠나면 그 표식을 지운다.
+//  ② 자리를 옮기고 기다리는 사이 검색어를 치면 묶음 조건이 풀리며 잠금까지 풀렸다 → 잠금은 묶어 보일 수 있는지와 무관하게 건다.
+it("App 공유·리뷰: 자리를 옮긴 뒤 새 목록 전에는 옛 자리의 카드가 눌리지 않는다 — 빠르게 되돌아와도, 기다리는 사이 검색어를 쳐도", { timeout: 20_000 }, async () => {
+  const leafCards = { parent: "episode", own_count: 0, folders: cutCards(false).folders.map((folder) => ({ ...folder, subfolders: 0 })) };
+  const folderCards = vi.fn((_pid: string, parent: string) => (parent === "slow"
+    ? new Promise<never>(() => {}) // 묶음 답이 끝내 안 오는 폴더
+    : Promise.resolve(parent === "episode" ? leafCards : parent === "" ? topCards : { parent, own_count: 0, folders: [] })));
+  localStorage.setItem("ch.lib.cutView", "1");
+  await mountTeamFolder({ folderCards, setFolderCover: vi.fn() });
+  const at = (id: string, folder: string): Generation => ({ ...libraryGeneration(id), folder_path: folder });
+  const main = () => document.querySelector<HTMLElement>("main.main")!;
+  const shown = () => gridSnapshot!.generations.map((item) => item.id);
+  const busy = () => document.querySelector("main.main .grid-wrap[aria-busy='true']:empty");
+  // A(episode/shot)에 선다 — 목록이 지금 조회의 것이고 묶음 답도 안다
+  act(() => { sidebarSnapshot!.onChange({ folder_path: "episode/shot" }); setLibraryGens([at("a", "episode/shot")]); });
+  await settle();
+  expect([shown(), main().hasAttribute("inert")]).toEqual([["a"], false]);
+  // B(slow, 처음 가는 폴더) — 목록은 왔는데 묶음 답은 아직: 자리를 비운 채다
+  act(() => { sidebarSnapshot!.onChange({ folder_path: "slow" }); setLibraryGens([at("b1", "slow")]); });
+  await settle();
+  expect([busy() !== null, gridOutputs().length]).toEqual([true, 0]);
+  // ① A 로 되돌아왔다 — 화면의 목록은 아직 B 의 것. A 에 그리지도, 누르게 두지도 않는다(받아 둔 것에서 고를 것도 없으니 자리를 비운다)
+  act(() => { sidebarSnapshot!.onChange({ folder_path: "episode/shot" }); setListBehind(true); });
+  await settle();
+  expect([busy() !== null, gridOutputs().length, main().hasAttribute("inert")]).toEqual([true, 0, true]);
+  act(() => { setLibraryGens([at("a", "episode/shot")]); setListBehind(false); }); // A 의 목록이 왔다
+  await settle();
+  expect([busy(), shown(), main().hasAttribute("inert")]).toEqual([null, ["a"], false]);
+  // ② 다른 폴더로 옮기고 기다리는 사이 검색어를 쳤다 — 묶어 보이지 않게 돼 옛 목록이 그려지지만, 새 목록이 올 때까지 잠겨 있다
+  act(() => { sidebarSnapshot!.onChange({ folder_path: "episode/other" }); setListBehind(true); });
+  await settle();
+  act(() => { sidebarSnapshot!.onChange({ search: "cat" }); });
+  await settle();
+  expect([shown(), main().hasAttribute("inert"), gridSnapshot!.selectLocked, gridSnapshot!.hasMore]).toEqual([["a"], true, true, false]);
+  act(() => { setLibraryGens([at("found", "episode/other")]); setListBehind(false); });
+  await settle();
+  expect([shown(), main().hasAttribute("inert"), gridSnapshot!.selectLocked]).toEqual([["found"], false, false]);
+});
+
 it("App 공유·리뷰: 묶어 보이지 않는 경우 — 하위 폴더가 없는 폴더, 무엇을 찾는 중", { timeout: 20_000 }, async () => {
   // 하위 폴더가 없다 — 한 장씩 그대로이고, 바꿀 것이 없으니 전환 단추도 없다
   const leaf = vi.fn().mockResolvedValue({ parent: "episode", own_count: 5, folders: [] });
