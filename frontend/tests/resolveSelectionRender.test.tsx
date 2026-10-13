@@ -1312,7 +1312,7 @@ it.each(["my", "compose"])("App 편집 탭(밑의 탭 %s): 컷을 더블클릭�
   expect(localStorage.getItem("ch.lib.generationScopeV1")).toBe(scopeBefore);
   expect(promptSnapshot?.activeProjectId).toBe("generation-project");
 
-  // 창의 카드를 우클릭하면 편집 탭의 트랙 메뉴로 간다(편집 탭이 ref 에 걸어 둔다). 편집 탭이 표를 다시 알리면 창의 카드 표만
+  // 창의 카드를 휠 클릭하면 편집 탭의 트랙 메뉴로 간다(편집 탭이 ref 에 걸어 둔다). 편집 탭이 표를 다시 알리면 창의 카드 표만
   //  바뀐다 — 창은 그대로다(열릴 때의 '그 카드로 내려가기'를 다시 하지 않는다).
   expect(editProps!.peekPath).toBe("e035/C0050");
   const cardMenu = vi.fn();

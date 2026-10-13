@@ -233,7 +233,7 @@ describe("문서 편집", () => {
     expect(trackClip(slot, 3, 0)).toBeNull();
   });
 
-  // 카드 우클릭 메뉴(Jay 2026-10-08) — 찬 트랙을 고르면 교체, 빈 트랙이면 그 자리에 들어간다.
+  // 카드의 트랙 메뉴(Jay 2026-10-08) — 찬 트랙을 고르면 교체, 빈 트랙이면 그 자리에 들어간다.
   it("트랙을 골라 넣기 — 찬 트랙은 교체, 빈 트랙은 그 자리에, 이미 넣은 것은 옮긴다", () => {
     const d = doc([clip("c1", "a", 1, { off: true, dur: 3 }), clip("c1", "b", 2), clip("c2", "y", 1)]);
     const fresh = { cut: "e070/c1", gen: "new", job: "j", kind: "video" as const, dur: 8 };

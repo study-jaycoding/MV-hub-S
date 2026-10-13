@@ -415,7 +415,7 @@ export default function App() {
   } | null>(null);
   const [editReloadSignal, setEditReloadSignal] = useState(0); // 편집 탭이 연 창이 닫혔다 — 편집 탭이 공유 목록을 다시 받는다
   // 그 창의 카드에 붙는 표("V1 - 선택 카드") — 창이 떠 있는 동안 편집 탭이 넣고 바꾸는 대로 다시 알린다(창을 조회·스크롤과
-  //  묶인 folderWindow 에 두지 않는다 — 표가 바뀔 때마다 창의 조회 조건이 새 객체가 된다). 창의 카드를 우클릭하면 편집 탭의
+  //  묶인 folderWindow 에 두지 않는다 — 표가 바뀔 때마다 창의 조회 조건이 새 객체가 된다). 창의 카드를 휠 클릭하면 편집 탭의
   //  트랙 메뉴를 연다(편집 탭이 ref 에 걸어 둔다).
   const [editMarks, setEditMarks] = useState<Record<string, CardMark>>({});
   const editCardMenuRef = useRef<EditCardMenu | null>(null);

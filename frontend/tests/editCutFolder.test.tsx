@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-// 편집 탭(Jay 2026-10-08) — 미디어 풀(폴더 목록 옆: 보기 방식·크기·검색·정렬, 고르기·넣기/빼기·우클릭 트랙 메뉴) ·
+// 편집 탭(Jay 2026-10-08) — 미디어 풀(폴더 목록 옆: 보기 방식·크기·검색·정렬, 고르기·넣기/빼기·휠 클릭 트랙 메뉴·우클릭 폴더 창) ·
 // 뷰어 판(싱글/듀얼·무엇을 볼지·타임바·반복·키 대상) · 풀의 Resolve 보내기 · 그림을 누르면 그 컷으로 · 컷 더블클릭 = 공유 & 리뷰의 폴더 창 열기(무엇을 열지만 App 에 알린다) ·
-// 그 창의 카드 우클릭 = 넣을 트랙 고르기(찬 트랙은 교체) · 빈 폴더 기본 비활성과 숨기기 · D 로 폴더 켜고 끄기 ·
+// 그 창의 카드 휠 클릭 = 넣을 트랙 고르기(찬 트랙은 교체 — 2026-10-13 부터. 그 전에는 우클릭) · 빈 폴더 기본 비활성과 숨기기 · D 로 폴더 켜고 끄기 ·
 // 왼쪽 폴더 옆의 새 항목·최종·보류 표시 · 공유 목록과 폴더 옆 숫자 다시 받기 ·
 // 트랙 머리 우클릭(트랙 추가·옮기기·삭제·색) · 마크 인/아웃 · 북마크(색 메뉴·모두 지우기) · 구간 반복 재생 · 소스 테이프 ·
 // 다이나믹 트림 모드(나뉜 뷰어가 한 창 — 편집점의 앞 | 뒤) · 막대의 목록 단추(비활성 숨기기 · 빈 곳 채우기).
@@ -92,7 +92,7 @@ const mount = (reloadSignal = 0, peekPath: string | null = null, ws: typeof work
   ));
 const DOC_KEY = "ch.editTimeline:local:p1:e070";
 type Seed = { cut: string; gen: string; track: number; job?: string; off?: boolean; kind?: "image" | "video" };
-// 타임라인에 미리 넣어 둔 상태로 시작한다(넣기는 폴더 창의 우클릭 메뉴로만 한다 — 아래 시험이 그 길을 본다).
+// 타임라인에 미리 넣어 둔 상태로 시작한다(넣기는 풀·폴더 창의 트랙 메뉴로만 한다 — 아래 시험이 그 길을 본다).
 const seed = (clips: Seed[], extra: Record<string, unknown> = {}) => localStorage.setItem(DOC_KEY, JSON.stringify({
   v: 1, tracksOff: [], tracksLocked: [], ...extra,
   clips: clips.map((clip) => ({ kind: "image", dur: 5, ...clip, cut: `e070/${clip.cut}` })),
@@ -113,8 +113,16 @@ const typeIn = (input: HTMLInputElement, value: string) => act(() => {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
   input.dispatchEvent(new Event("input", { bubbles: true }));
 });
-const rightClick = (target: Element) => {
-  const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 30, clientY: 40 });
+// 마우스 우클릭의 contextmenu 는 button 2, 키보드 메뉴 키의 것은 누름 없이 button −1 로 온다(2026-10-13 크롬 실측)
+const rightClick = (target: Element, button = 2) => {
+  const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button, clientX: 30, clientY: 40 });
+  act(() => { target.dispatchEvent(event); });
+  return event;
+};
+const menuKey = (target: Element) => rightClick(target, -1);
+// 휠 클릭(가운데 단추) — 풀의 카드에서는 넣을 트랙 메뉴(Jay 2026-10-13). button 을 바꾸면 다른 단추의 auxclick(우클릭에도 따라온다)
+const wheelClick = (target: Element, button = 1) => {
+  const event = new MouseEvent("auxclick", { bubbles: true, cancelable: true, button, clientX: 30, clientY: 40 });
   act(() => { target.dispatchEvent(event); });
   return event;
 };
@@ -142,7 +150,7 @@ const listItem = (label: string) => {
 };
 const toggleHide = () => { const item = listItem("비활성 숨기기"); act(() => item.click()); };
 const menuText = () => menuItems().map((item) => `${item.textContent}${item.disabled ? " ×" : ""}`);
-const cardMenu = (id: string) => act(() => cardMenuRef.current!({ id }, 30, 40)); // 창의 카드를 우클릭
+const cardMenu = (id: string) => act(() => cardMenuRef.current!({ id }, 30, 40)); // 창의 카드를 휠 클릭(격자가 알려 온 것)
 const mouse = (target: Element, type: string, init: MouseEventInit = {}) =>
   act(() => { target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...init })); });
 const press = (init: KeyboardEventInit, target: EventTarget = document.body) => {
@@ -189,7 +197,7 @@ afterEach(() => {
 });
 
 // 미디어 풀(Jay 2026-10-08) — 다빈치의 Bins | 클립처럼 왼쪽 폴더 목록 바로 옆에 둔다(뷰어의 왼쪽). 폭은 끌어서 바꾼다.
-it("미디어 풀은 뷰어 왼쪽에 있다 — 누르면 고르고, 더블클릭하면 크게 보고, 우클릭하면 넣을 트랙을 고른다", () => {
+it("미디어 풀은 뷰어 왼쪽에 있다 — 누르면 고르고, 더블클릭하면 크게 보고, 휠 클릭하면 넣을 트랙을 고르고, 우클릭하면 폴더 창이 열린다", () => {
   mount();
   act(() => cutCell("c1").click());
   expect([...document.querySelector(".ed-top")!.children].slice(0, 2).map((item) => item.classList[0]))
@@ -209,7 +217,8 @@ it("미디어 풀은 뷰어 왼쪽에 있다 — 누르면 고르고, 더블클�
 
   act(() => a.click()); // 누르기 = 고르기만 — 타임라인은 그대로다
   expect(poolCards()[0].classList.contains("ed-picked")).toBe(true);
-  expect(document.querySelector<HTMLElement>(".ed-slot")!.title).toContain("우클릭"); // 빈 자리는 넣는 방법을 알려 준다
+  expect(document.querySelector<HTMLElement>(".ed-slot")!.title).toContain("휠 클릭"); // 빈 자리는 넣는 방법을 알려 준다
+  expect(poolCards()[0].title).toContain("우클릭 = 폴더 창 · 휠 클릭 = 넣을 트랙");
 
   mouse(poolCards()[1], "dblclick"); // 더블클릭 = 크게 보기(앱의 크게 보기 창) — 앞뒤 넘기기는 풀에 보이는 순서
   expect(previews).toHaveLength(1);
@@ -217,19 +226,35 @@ it("미디어 풀은 뷰어 왼쪽에 있다 — 누르면 고르고, 더블클�
   expect(previews[0].items!.map((item) => item.genId)).toEqual(["a", "b"]);
   expect(localStorage.getItem(DOC_KEY)).toBeNull(); // 고르기·크게 보기는 타임라인을 바꾸지 않는다
 
-  expect(rightClick(poolCards()[0]).defaultPrevented).toBe(true); // 우클릭 = 넣을 트랙(브라우저 메뉴 대신)
+  wheelClick(poolCards()[0], 2); // 오른쪽 단추의 auxclick — 휠 클릭이 아니다(우클릭에도 따라온다)
+  expect(trackMenu()).toBeNull();
+  expect(wheelClick(poolCards()[0]).defaultPrevented).toBe(true); // 휠 클릭 = 넣을 트랙(Jay 2026-10-13 — 그 전에는 우클릭)
   expect(menuText()).toEqual(["V3비어 있음", "V2비어 있음", "V1비어 있음"]);
   act(() => menuItems()[2].click());
   const mark = poolCards()[0].querySelector(".card.selected .card-bottom > .card-here > span")!;
   expect(mark.textContent).toBe("V1 - 선택 카드");
   expect(mark.getAttribute("data-short")).toBe("V1"); // 카드가 작으면 이것만 보인다(CSS)
-  rightClick(poolCards()[1]);
+  wheelClick(poolCards()[1]);
   expect(menuText()).toEqual(["V3비어 있음", "V2비어 있음", "V1교체"]);
   act(() => menuItems()[1].click()); // V2 에 쌓는다 — 위 트랙이 보인다
   expect(storedTracks()).toEqual([["a", 1], ["b", 2]]);
   expect(poolCards()[1].querySelector(".card-here")?.textContent).toBe("V2 - 선택 카드");
   expect(poolCards()[0].querySelector(".card-bottom > .card-folder.static")?.textContent).toBe("V1 - 선택 카드"); // 깔린 것은 옅게
   expect(document.querySelector(".ed-pool-sub")!.textContent).toBe("공유된 것 2개 · 넣은 것 2개");
+
+  // 우클릭 = 이 컷의 폴더 창(공유 & 리뷰의 '폴더 보기' — 컷 더블클릭과 같은 창). 누른 카드가 보이게 열고, 트랙 메뉴는 뜨지 않는다.
+  expect(rightClick(poolCards()[0]).defaultPrevented).toBe(true); // 브라우저 메뉴 대신
+  expect(trackMenu()).toBeNull();
+  expect(opened).toEqual([{
+    projectId: "p1", projectName: "P1", path: "e070/c1", focusId: "a", // 뷰어에 보이는 것(b)이 아니라 누른 카드
+    marks: { a: { label: "V1 - 선택 카드", lead: false }, b: { label: "V2 - 선택 카드", lead: true } },
+  }]);
+  expect(storedTracks()).toEqual([["a", 1], ["b", 2]]); // 창을 여는 것은 타임라인을 바꾸지 않는다
+
+  // 키보드의 메뉴 키(누름 없이 오는 contextmenu) = 전처럼 트랙 메뉴 — 휠 클릭은 키보드로 할 수 없다(Codex 코드 리뷰)
+  expect(menuKey(poolCards()[0]).defaultPrevented).toBe(true);
+  expect(menuText()).toEqual(["V3비어 있음", "V2교체", "V1지금 여기 ×"]);
+  expect(opened).toHaveLength(1); // 폴더 창은 열지 않는다
 });
 
 it("미디어 풀: Ctrl·Shift 로 여러 장을 고르면 비교할 수 있다 — 앱의 비교 창에 그 생성물들을 넘긴다", () => {
@@ -636,8 +661,8 @@ it("트랙 메뉴가 떠 있는 사이 그 카드가 공유 목록에서 사라�
   expect(storedTracks()).toEqual([["a", 1]]); // 전엔 a 를 빼고 b 가 들어갔다(b 는 '미디어 없음')
   expect(flashed[flashed.length - 1]).toContain("넣을 수 없습니다");
 });
-// 카드 우클릭(Jay 2026-10-08) — 지금 있는 트랙이 뜨고, 고르면 그 트랙에 들어간다. 찬 트랙은 교체, 빈 트랙은 그 자리에 쌓인다.
-it("폴더 창의 카드를 우클릭하면 트랙 메뉴가 뜬다 — 찬 트랙을 고르면 교체, 빈 트랙이면 그 자리에 들어간다", () => {
+// 카드 휠 클릭(Jay 2026-10-08 · 누르는 단추는 10-13 에 우클릭에서 바뀜) — 지금 있는 트랙이 뜨고, 고르면 그 트랙에 들어간다. 찬 트랙은 교체, 빈 트랙은 그 자리에 쌓인다.
+it("폴더 창의 카드를 휠 클릭하면 트랙 메뉴가 뜬다 — 찬 트랙을 고르면 교체, 빈 트랙이면 그 자리에 들어간다", () => {
   seed([{ cut: "c1", gen: "a", track: 1 }]);
   mount();
   act(() => cutCell("c1").click());
