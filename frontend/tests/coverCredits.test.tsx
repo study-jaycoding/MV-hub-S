@@ -89,6 +89,30 @@ it("화면에 들어오지 않은 카드는 묻지 않는다 — 들어오면 �
   expect(shown()).toEqual(["1", "…", "…", "…", "…", "…"]);
 });
 
+// Codex 코드 리뷰(배포 전 점검): 받는 중인 요청에 시간 제한이 없어, 넷이 멎으면 뒤의 카드가 다 기다렸다.
+it("멎은 요청은 시간이 지나면 끊고 '모름'으로 둔다 — 넷이 멎어도 뒤의 카드가 기다리지 않는다", async () => {
+  vi.useFakeTimers();
+  try {
+    const aborted: string[] = [];
+    generationMetrics.mockImplementation((id: string, signal?: AbortSignal) => {
+      if (id === "e") return Promise.resolve({ real_credits: 5 });
+      signal?.addEventListener("abort", () => aborted.push(id));
+      return new Promise(() => {}); // 멎었다
+    });
+    act(() => root.render(<>{["a", "b", "c", "d", "e"].map((id) => <Cell key={id} id={id} />)}</>));
+    await settle();
+    expect(generationMetrics.mock.calls.map((call) => call[0])).toEqual(["a", "b", "c", "d"]);
+    await act(async () => { vi.advanceTimersByTime(19_000); });
+    await settle();
+    expect(shown()).toEqual(["…", "…", "…", "…", "…"]);
+    await act(async () => { vi.advanceTimersByTime(1_000); });
+    await settle();
+    expect([shown(), aborted]).toEqual([["미상", "미상", "미상", "미상", "5"], ["a", "b", "c", "d"]]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 // Codex 코드 리뷰: 실제 크레딧은 생성 뒤 나중에 확정된다 — '모름'을 영영 기억하면 '미상'이 굳는다. 잠깐(1분)만 기억하고 그 뒤엔 다시 묻는다.
 it("'모름'(값 없음·실패)은 잠깐만 기억한다 — 1분 안에는 다시 묻지 않고, 지나서 다시 그리면 다시 물어 확정된 값으로 바뀐다", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });

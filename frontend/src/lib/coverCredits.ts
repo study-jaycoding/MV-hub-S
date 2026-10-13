@@ -12,6 +12,7 @@ import { api } from "../api";
 const AT_ONCE = 4;
 const KEEP_MAX = 4000;
 const UNKNOWN_KEEP_MS = 60_000;
+const ASK_TIMEOUT_MS = 20_000; // 멎은 요청은 끊고 '모름'으로 둔다 — 안 끊으면 넷이 멎었을 때 뒤의 카드가 다 기다린다(Codex 코드 리뷰)
 const known = new Map<string, number>(); // 확정된 값
 const unknownAt = new Map<string, number>(); // '모름'으로 받은 시각
 const asking = new Map<string, Promise<number | null>>();
@@ -52,16 +53,29 @@ function ask(id: string): Promise<number | null> {
   const promise = new Promise<number | null>((resolve) => {
     queue.set(id, () => {
       running += 1;
+      const stop = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const tooLate = new Promise<null>((late) => {
+        timer = setTimeout(() => {
+          stop.abort();
+          late(null);
+        }, ASK_TIMEOUT_MS);
+      });
       // 호출 자체가 던져도(약속이 아니라 바로 던지는 경우) 줄이 멎지 않게 약속 안에서 부른다 — 못 받은 것은 '모름'
-      Promise.resolve().then(() => api.generationMetrics(id))
+      const answer = Promise.resolve().then(() => api.generationMetrics(id, stop.signal))
         .then((metrics) => metrics.real_credits ?? null)
-        .catch(() => null)
+        .catch(() => null);
+      void Promise.race([answer, tooLate])
         .then((credits) => {
+          clearTimeout(timer);
           if (born === epoch) {
             running -= 1;
             asking.delete(id);
-            if (credits === null) unknownAt.set(id, Date.now());
-            else {
+            if (credits === null) {
+              unknownAt.delete(id); // 다시 넣어 맨 뒤로 — 넘치면 가장 오래된 것부터 버린다
+              unknownAt.set(id, Date.now());
+              if (unknownAt.size > KEEP_MAX) unknownAt.delete(unknownAt.keys().next().value as string);
+            } else {
               unknownAt.delete(id);
               known.set(id, credits);
               if (known.size > KEEP_MAX) known.delete(known.keys().next().value as string);
