@@ -25,6 +25,7 @@ import {
 
 const POLL_MS = 1500;
 const DEADLINE_MS = 5 * 60 * 1000;
+const RELOAD_GRACE_MS = 3000; // 새로고침을 건 뒤 이만큼 지나도 이 화면이 살아 있으면 새로고침이 일어나지 않은 것이다
 
 function waitVersion(): string {
   try {
@@ -129,6 +130,11 @@ export function UpdateProgressOverlay() {
         ) {
           clearWait();
           window.setTimeout(() => window.location.reload(), 600);
+          // 새로고침이 일어나지 않았으면 덮개를 걷는다 — 저장하지 못한 편집이 있으면 브라우저가 묻고(lib/unloadGuard), 사용자가 머무르기를
+          //  고르면 이 화면이 그대로 남는다. 안 걷으면 제한 시간(5분)까지 화면과 키보드를 막는다(Codex 배포 전 재검토 2026-10-13).
+          timer = window.setTimeout(() => {
+            if (!cancelled) setOpen(false);
+          }, RELOAD_GRACE_MS);
           return;
         }
         // 업데이트가 아니면 덮개를 걷는다. 앱이 강제 종료되면 대기 표시가 남고, 그대로 두면

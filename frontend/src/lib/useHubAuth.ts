@@ -7,6 +7,8 @@ import { loadString, saveString } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 import { setAccountScope } from "./accountScope";
 import { useCustomEvent } from "./useCustomEvent";
+// 계정이 바뀌는 길의 새로고침은 반드시 일어나야 한다 — 저장 못 한 편집이 있어도 묻지 않는다(머무르면 계정 범위만 바뀐 화면이 남는다)
+import { reloadNow } from "./unloadGuard";
 import type { Account, AuthConfig } from "../types";
 import { HttpError } from "./http";
 
@@ -109,7 +111,7 @@ export function useHubAuth() {
       setAccountScope(newEmail);
       saveString(STORAGE_KEYS.activeAccount, newEmail);
     }
-    window.location.reload();
+    reloadNow();
   }, []);
 
   useEffect(() => {
@@ -197,13 +199,13 @@ export function useHubAuth() {
     if (prev && prev !== account.email && authConfig?.auth_enabled) {
       clearPersonalSettings();
       saveString(STORAGE_KEYS.activeAccount, account.email);
-      window.location.reload();
+      reloadNow();
       return;
     }
     saveString(STORAGE_KEYS.activeAccount, account.email);
     // 첫 로그인처럼 이전 activeAccount 가 없던 경우에도 App 의 씬 상태는 이미 local 범위로
     // 초기화됐을 수 있다. 인증 범위가 달라졌다면 한 번만 다시 열어 정확한 계정 버킷을 읽는다.
-    if (accountScopeChanged) window.location.reload();
+    if (accountScopeChanged) reloadNow();
   }, [account?.email, authConfig?.auth_enabled]);
 
   useEffect(() => {
@@ -247,7 +249,7 @@ export function useHubAuth() {
         flashMsg("로그아웃하지 못했습니다 — 잠시 뒤 다시 시도하세요.");
         return false;
       }
-      window.location.reload();
+      reloadNow();
       return true;
     }
     api.logout().catch(() => {});

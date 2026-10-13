@@ -121,6 +121,30 @@ describe("덮개", () => {
     expect(window.sessionStorage.getItem(UPDATE_WAIT_VERSION_KEY)).toBeNull();
   });
 
+  // 배포 전 재검토(2026-10-13, Codex): 저장하지 못한 편집이 있으면 브라우저가 새로고침 전에 묻는다(lib/unloadGuard). 사용자가 머무르면
+  //  이 덮개가 남아, 제한 시간(5분)까지 화면과 키보드를 막았다.
+  it("새 버전이 됐는데 새로고침이 일어나지 않으면 덮개를 걷는다 — 머무르기를 골라도 화면을 막지 않는다", async () => {
+    vi.useFakeTimers();
+    const reload = vi.fn(); // 브라우저가 묻고 사용자가 머물렀다 = 새로고침이 일어나지 않았다
+    vi.stubGlobal("location", { href: "http://localhost:3000/", origin: "http://localhost:3000", protocol: "http:", host: "localhost:3000",
+      hostname: "localhost", port: "3000", pathname: "/", search: "", hash: "", reload });
+    window.sessionStorage.setItem(UPDATE_WAIT_VERSION_KEY, "2026.09.28-1438");
+    mocks.jsonFetch.mockResolvedValue(status({ state: "complete", current_version: "2026.09.28-1438", percent: 100 }));
+    mount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(veil()).not.toBeNull(); // 새로고침을 기다리는 잠깐은 그대로다
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(veil()).toBeNull();
+    expect(vi.getTimerCount()).toBe(0); // 5분 제한 타이머도 같이 걷힌다
+    vi.unstubAllGlobals();
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  });
+
   it("실패하면 경고 문구 대신 실패를 알리고 닫기를 내준다", async () => {
     mount();
     mocks.jsonFetch

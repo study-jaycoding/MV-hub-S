@@ -184,6 +184,8 @@ const EN: Record<string, string> = {
   "편집을 저장하지 못했습니다. 다음 변경 때 다시 시도합니다.": "Could not save the edit. It will retry on the next change.",
   "다른 창에서 이 편집이 바뀌었습니다. 이 창의 변경은 아직 저장되지 않았습니다.": "This edit changed in another window. Changes in this window are not saved yet.",
   "다른 창에서 바꾼 편집을 불러왔습니다.": "Loaded the edit changed in another window.",
+  "다른 창에서 바꾼 편집을 불러왔습니다. 방금 한 조작은 적용하지 않았습니다 — 다시 해 주세요.":
+    "Loaded the edit changed in another window. Your last action was not applied — please do it again.",
   "설정의 Comfy 미회수 실행에서 확인하세요. 다시 생성하지 마세요.": "Check Comfy unresolved runs in Settings. Do not generate again.",
   "Comfy 미회수 실행": "Comfy unresolved runs",
   "카드가 없어도 실행 기록은 여기에 남습니다. 목록 확인은 원격 서비스를 호출하지 않습니다.": "Run records remain here even without a card. Refreshing this list does not contact the remote service.",
