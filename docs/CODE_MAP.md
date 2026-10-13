@@ -865,10 +865,13 @@ updated: 2026-10-13
 | `assetVirtualRows.ts` | 순수 | 에셋 그리드 행 모델(인덱스판) |
 | `folderTreeModel.ts` | 순수 | 폴더 경로 정규화 + 개수 트리 구성 |
 | `folderLabel.ts` | 순수 | 카드 폴더 이름표 글자(끝 두 칸)·전체 경로 표기 |
-| `folderCards.ts` | 순수 | 공유 & 리뷰 탭의 폴더 묶음 보기 규칙 — `folderCardsScope`(묶어 보일 수 있는 조회면 그 범위, 아니면 null)·`parentFolder`·`singleTeamWorkspace` |
+| `folderCards.ts` | 순수 | 공유 & 리뷰 탭의 폴더 묶음 보기 규칙 — `folderCardsPlace`(묶어 보일 **자리**: 공유 탭 + 프로젝트 + 휴지통 아님 + 서버가 거를 수 있는 공간 조건)·`hasFindFilters`(찾는 조건이 켜져 있나 — 켜져 있어도 자리는 자리다, 10-13 저녁)·`folderCardsScope`(자리 && 찾는 조건 없음 — 서버 카드만으로 묶을 수 있는 조회)·`parentFolder`·`singleTeamWorkspace` |
+| `folderCardsLocal.ts` | 순수 | 폴더 카드를 **목록에서 직접** 묶기 — `groupGenerations`(최신 순 목록을 부모 바로 아래 폴더마다 한 장: 건수·표지·검토 개수·영상 수·마지막 공유·작업자·컷 띠·생성물 띠 — 서버 `folder_cards` 와 같은 규칙, 팀 대표는 서버 카드에서 읽는다)·`fillFolderCards`(옛 서버의 카드에 없는 칸만 채운다)·`lacksCounts` |
+| `fetchAllGenerations.ts` | 순수(비동기) | 한 조회의 목록을 커서로 끝까지(쪽 500 · 상한 2000 — `truncated`) — 컷 정보 창과 `useLocalFolderCards` 가 같이 쓴다 |
 | `episodeBoard.ts` | 순수 | 에피소드 화면의 규칙 — `isEpisodeLevel`(하위 폴더를 가진 카드가 하나라도 있는 단계) · `boardView`(리스트 = 줄, 한 번 더 = 표, 그리드 = 에피소드 화면만 카드) · `episodeNumber`(이름의 마지막 숫자 덩어리를 쓴 그대로 — 003·0010) · `numberColumn`(번호 칸의 폭·글자 크기) · `takesOf`(컷의 생성물 띠 10칸 + '+N') · `reviewCounts`(공유·최종·보류) · `stripOf`(컷 띠: 리스트 7칸·그리드 5칸 + '+N') · `repProgress`(대표 정한 컷 a/n) · `sharedAgo`(서버 UTC → '얼마 전') |
 | `cutSummary.ts` | 순수 | 컷 정보의 집계 — `summarizeCut`(건수·작업자별 수·실제 크레딧 합+미상 건수·생성일 범위·영상 길이 합·모델·검토)·`inFolder`(경로로 다시 거르기 — 대소문자)·`workerLabel`·`durationSec` |
 | `cutReel.ts` | 순수 | 모아보기 재생기 계산 — `reelClips`(컷 카드 → 클립)·`reelStarts`·`reelLocate`(가상 시각 → 클립·오프셋)·`fmtReelTime`(`m:ss.s`)·`REEL_IMAGE_SEC`(3) |
+| `useLocalFolderCards.ts` | 훅 | 목록에서 직접 묶을 때의 자료 — 지금 조회(자리 + 찾는 조건)의 목록을 본 목록 훅과 **따로** 끝까지 받는다. 끝까지 받은 결과만 내놓는다 · 같은 자리에서 조회만 바뀌면 앞 결과를 쥔다(`fresh` 거짓) · 자리가 바뀌면 버린다 · 다시 받는 때 = 조회가 바뀜 / 같은 조회에서 본 목록의 첫 쪽 내용이 바뀜(주기 조회마다 받지 않는다) · 공간 필터는 받은 뒤 한 번 더 |
 | `useFolderCards.ts` | 훅 | 폴더 카드 받기 — 문맥(계정·서버·프로젝트·폴더·공간)이 바뀌면 받던 응답·받아 둔 카드를 버린다 · `reloadKey`(목록의 `listRevision`)마다 다시 받는다 · 옛 서버는 그 계정·서버에서만 '지원 안 함' · `reload()` 는 끝난 뒤 풀리고 던지지 않는다. **같은 문맥의 조회가 받는 중이면 새로 보내지 않고 그 조회에 얹는다**(`Run.pending` — 끝난 뒤 한 번 더; 주기 조회는 받는 중인 응답을 버리지 않고, 대표 저장 뒤의 `reload()` 만 버린다 — 느린 서버에서 조회가 꼬리를 물어 잠금이 안 풀리거나 어느 응답도 적용되지 못하던 것, 10-09) · 버려진 조회의 약속은 그 자리를 대신한 조회가 끝날 때 풀린다 · 내용이 같은 응답은 같은 객체(15초마다 카드·창이 다시 그리지 않게) · `loading` = 지금 문맥의 카드가 없고 실패하지도 않은 동안(App 의 `cutPending` — 그동안 낱장 격자를 안 그린다, 10-13 ③. 실패 표식은 문맥을 떠나면 버린다) · **받아 둔 카드는 문맥마다 기억**(모듈 Map `remembered`, 상한 400 — 다시 온 폴더는 응답 전에 그 카드, `subfolders` 0 인 컷은 빈 묶음을 미리 적는다. 조회는 늘 다시 보낸다, 10-13 "아직 딜레이") |
 | `projectFolderTree.ts` | 저장 | 프로젝트 폴더 캐시·펼침 상태 |
 | `folderContextMenu.ts` | 순수 | 폴더 우클릭 메뉴 규칙·위치 클램프 |

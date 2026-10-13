@@ -9,7 +9,7 @@ const folderCardsApi = vi.hoisted(() => vi.fn());
 vi.mock("../src/api", () => ({ api: { folderCards: folderCardsApi, thumbOrRaw: (path: string) => path } }));
 
 import { FolderCardGrid } from "../src/components/FolderCardGrid";
-import { folderCardsScope, parentFolder, singleTeamWorkspace, type FolderCardsScope } from "../src/lib/folderCards";
+import { folderCardsPlace, folderCardsScope, hasFindFilters, parentFolder, singleTeamWorkspace, type FolderCardsScope } from "../src/lib/folderCards";
 import { HttpError } from "../src/lib/http";
 import { forgetFolderCards, useFolderCards } from "../src/lib/useFolderCards";
 
@@ -40,6 +40,27 @@ it("묶어 보일 수 있는 조회 — 공유 탭에서 프로젝트(또는 그
   ];
   for (const change of flat) expect([change, folderCardsScope({ ...base, ...change }, false)]).toEqual([change, null]);
   expect(folderCardsScope(base, true)).toBeNull(); // 회색 숨김은 이 PC 에만 있는 조건이라 서버가 못 센다
+});
+
+// 2026-10-13 저녁(Jay): 묶인 상태에서 태그·작성자·종류를 눌러도 묶음이 풀리지 않게 — '자리'와 '찾는 조건'을 가른다.
+//  찾는 조건이 켜져 있어도 자리는 자리다(그때는 걸러진 목록을 화면이 직접 묶는다). 공간 조건·휴지통만 자리를 없앤다.
+it("묶어 보일 자리 — 찾는 조건이 켜져 있어도 자리는 그대로, 자리가 아닌 것은 공유 탭 밖·프로젝트 없음·휴지통·서버가 못 거르는 공간 조건", () => {
+  const finds: Partial<GenQuery>[] = [
+    { search: "cat" }, { creator_uid: "u" }, { worker_id: "w" }, { share_dir: "mine" }, { local_only: true }, { color: "r" }, { tag: "x" },
+    { media_type: "video" }, { review_filter: "held" }, { shared_only: true }, { comment_only: true }, { final_only: true },
+    { colors: ["r"] }, { tags: ["x"] }, { auto_tags: ["y"] },
+  ];
+  for (const change of finds) {
+    const query = { ...base, ...change };
+    expect([change, folderCardsPlace(query), hasFindFilters(query, false)]).toEqual([change, { projectId: "p1", parent: "e035" }, true]);
+  }
+  expect([hasFindFilters(base, false), hasFindFilters(base, true)]).toEqual([false, true]); // 회색 숨김도 찾는 조건
+  expect(hasFindFilters({ ...base, workspace_ids: ["ws-1"] }, false)).toBe(false); // 팀 공간 하나는 자리의 일부(서버가 같은 식으로 거른다)
+  const noPlace: Partial<GenQuery>[] = [
+    { tab: "my" }, { project_id: undefined }, { project_id: "none" }, { include_deleted: true }, { deleted_only: true },
+    { workspace_ids: ["ws-1", "ws-2"] }, { workspace_scope: "personal" },
+  ];
+  for (const change of noPlace) expect([change, folderCardsPlace({ ...base, ...change })]).toEqual([change, null]);
 });
 
 it("부모 폴더와 팀 공간 하나", () => {
