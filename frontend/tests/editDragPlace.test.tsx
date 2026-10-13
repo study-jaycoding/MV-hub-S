@@ -115,6 +115,8 @@ beforeEach(() => {
     hasPointerCapture(this: Element) { return held.has(this); },
     releasePointerCapture(this: Element) { held.delete(this); },
   });
+  // jsdom 에는 ResizeObserver 가 없다 — 길이 조절 창(떠 있는 창, lib/useFloatingPanel)이 쓴다
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
   under = null;
   document.elementFromPoint = () => under;
   world.gens = [gen("a", "c1"), gen("b", "c1"), gen("x", "c2")];
@@ -514,7 +516,7 @@ it("클립을 누르기만 한 채(6px 전) 휠 클릭·우클릭으로 창을 �
     expect(clip().style.transform).toBe("");
     fire(clip(), "pointerup", { clientX: 10, clientY: 40, buttons: 0 });
     expect(storedTracks()).toEqual([["b", 2]]);
-    press({ key: "Escape", code: "Escape" });
+    act(() => document.querySelector<HTMLElement>('.ed-trim [aria-label="닫기"]')!.click());
     expect(document.querySelector(".ed-trim")).toBeNull();
     // 우클릭 메뉴도 같다
     fire(clip(), "pointerdown", { clientX: 10, clientY: 100 });
@@ -543,4 +545,42 @@ it("클립 끌기: 문서가 그대로여도 끌던 클립의 컷이 화면에�
   expect([lane(1).querySelectorAll(".ed-clip").length, mine.isConnected, localStorage.getItem(DOC_KEY)]).toEqual([1, false, before]);
   fire(lane(1).querySelector<HTMLElement>(".ed-clip")!, "contextmenu", { button: 2, buttons: 0 }); // 끄는 중이 풀렸다 — 메뉴가 뜬다
   expect(document.querySelector(".ed-tmenu")).not.toBeNull();
+});
+
+// 길이 조절 창은 떠 있는 창이라 떠 있는 동안 타임라인을 쓴다(Jay 2026-10-13 밤) — 그 클립이 타임라인에서 빠지면(지움) 조절할 것이 없으니 닫는다.
+it("길이 조절 창이 떠 있는 동안 그 클립을 지우면 창이 닫힌다 — 되돌려도 다시 뜨지 않는다", () => {
+  world.gens = [gen("a", "c1"), gen("b", "c1", { assets: [{ id: "a-b", generation_id: "b", type: "video", file_path: "/media/b.mp4",
+    thumbnail_path: null, source_url: null, cached: true }] } as unknown as Partial<Generation>), gen("x", "c2")];
+  seed([{ cut: "c1", gen: "b", track: 2 }]);
+  mountOn("c1");
+  const clip = lane(2).querySelector<HTMLElement>(".ed-clip")!;
+  fire(clip, "pointerdown", { clientX: 10, clientY: 100 }); // 누르면 그 클립이 골라진다
+  fire(clip, "pointerup", { clientX: 10, clientY: 100, buttons: 0 });
+  fire(clip, "auxclick", { button: 1, buttons: 0 });
+  expect(document.querySelector(".ed-trim")).not.toBeNull();
+  press({ key: "Delete", code: "Delete" }); // 초점이 타임라인(body)이면 키는 타임라인의 것 — 고른 클립을 지운다
+  expect([storedTracks(), document.querySelector(".ed-trim")]).toEqual([[], null]);
+  press({ key: "z", code: "KeyZ", ctrlKey: true });
+  expect([storedTracks(), document.querySelector(".ed-trim")]).toEqual([[["b", 2]], null]);
+});
+
+// Codex 코드 리뷰 6회째: 영상 정보(loadedmetadata)가 오기 전에 ▶ 를 누르면, 창을 열 때 걸어 둔 '마지막 프레임으로'가 뒤늦게 돌아 재생
+//  자리를 끝으로 옮겼다(처음부터 트는 대신 끝에서 바로 멈춤).
+it("길이 조절 창: 영상 정보가 오기 전에 재생을 눌러도 처음부터 튼다 — 뒤늦은 '마지막 프레임으로'가 끼어들지 않는다", () => {
+  world.gens = [gen("a", "c1"), gen("b", "c1", { assets: [{ id: "a-b", generation_id: "b", type: "video", file_path: "/media/b.mp4",
+    thumbnail_path: null, source_url: null, cached: true }] } as unknown as Partial<Generation>), gen("x", "c2")];
+  seed([{ cut: "c1", gen: "b", track: 2 }]);
+  mountOn("c1");
+  fire(lane(2).querySelector<HTMLElement>(".ed-clip")!, "auxclick", { button: 1, buttons: 0 });
+  const video = document.querySelector<HTMLVideoElement>(".ed-trim video")!;
+  const go = () => act(() => document.querySelector<HTMLElement>(".ed-trim .ed-trim-go")!.click());
+  // jsdom 의 video 는 정보를 받지 않는다(readyState 0 — 열 때의 '마지막 프레임으로'는 loadedmetadata 를 기다린다). 적는 값을 기록한다
+  const sets: number[] = [];
+  Object.defineProperty(video, "currentTime", { configurable: true, get: () => sets[sets.length - 1] ?? 0, set: (value: number) => { sets.push(value); } });
+  go();
+  expect(sets).toEqual([0]); // 처음부터
+  act(() => { video.dispatchEvent(new Event("loadedmetadata")); });
+  expect(sets).toEqual([0]); // 뒤늦게 온 정보가 재생 자리를 끝으로 옮기지 않는다
+  go(); // 멈추면 그 길이의 마지막 프레임(120프레임 = 119/24초)으로 돌아간다
+  expect(sets[sets.length - 1]).toBeCloseTo(119 / 24);
 });

@@ -629,6 +629,8 @@ function EditTabInner({
   }, [selected]);
   // 클립 길이 조절 창(Jay 2026-10-13) — 타임라인의 클립을 휠 클릭. 영상만이고 잠긴 트랙은 안 된다(setClipTrim 의 거부와 같다 — 창을
   //  띄우기 전에 까닭을 알린다). group = 이 창을 한 번 연 동안의 걸음들을 되돌리기 한 단계로 묶는 이름(useEditDoc).
+  //  **떠 있는 창이다**(같은 날 밤 Jay: "플로팅창으로") — 메뉴가 아니라서 다른 메뉴를 여닫아도(closeMenu) 떠 있고, 떠 있는 동안 타임라인을
+  //  그대로 쓴다. 떠 있는 채 다른 클립을 휠 클릭하면 창이 그 클립으로 바뀐다(새 group). 닫는 것: ✕ · 창 안의 Esc · 아래의 셋.
   //  문서가 갈리면(rev) 닫는다 — 아래 효과. **저장 충돌을 알게 됐을 때도 닫는다**(edit.conflict): 슬라이더를 끄는 도중이면 같은 끌기의
   //  다음 걸음이 '알고 이어 가는 편집'으로 저장돼, 알림을 읽기도 전에 다른 창의 저장을 덮는다(Codex 코드 리뷰 2회째 P1).
   const [trimPop, setTrimPop] = useState<{ key: string; x: number; y: number; group: string; rev: number } | null>(null);
@@ -639,8 +641,7 @@ function EditTabInner({
     if (doc.tracksLocked.includes(clip.track)) return flash(t("잠긴 트랙의 클립은 길이를 바꿀 수 없습니다."));
     // 그림인지는 이어진 생성물로 먼저 본다 — kind 가 안 적힌 옛 클립은 문서만으로는 영상으로 보인다
     if ((links.get(key)?.gen?.assets[0]?.type ?? clip.kind) === "image") return flash(t("그림은 길이를 줄일 수 없습니다 — 영상 클립만 됩니다."));
-    stopBoth(); // 창이 떠 있는 동안 편집 키는 막혀 있다 — 뒤에서 도는 재생을 멈출 길이 없다
-    menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    stopBoth(); // 창을 열면 초점(키)이 창으로 간다 — Space 는 창 안의 재생이 되므로 뒤에서 도는 재생은 멈춰 둔다
     setTrimPop({ key, x, y, group: `trim:${key}:${++trimSerial.current}`, rev });
   }, [doc, links, flash, t, stopBoth, rev]);
   const editConflict = edit.conflict;
@@ -670,10 +671,15 @@ function EditTabInner({
     setColorMenu(null);
     setListMenu(null);
     setClipMenu(null);
-    setTrimPop(null);
     const back = menuBackRef.current;
     menuBackRef.current = null;
     if (back?.isConnected) back.focus({ preventScroll: true });
+  }, []);
+  // 길이 조절 창을 닫는다 — 초점을 편집 화면으로 돌려 키가 바로 타임라인의 것이 되게 한다(창은 body 에 그려져 있어, 그대로 두면
+  //  초점이 body 로 떨어진다).
+  const closeTrim = useCallback(() => {
+    setTrimPop(null);
+    rootRef.current?.focus({ preventScroll: true });
   }, []);
   // 그 두 단추를 왼쪽이 아닌 단추(오른쪽·가운데)로 누른 것은 여닫기가 아니다(click 이 오지 않는다). 메뉴가 그 단추의 누름을
   //  바깥 누름에서 뺐으므로 여기서 닫는다 — 안 닫으면 그 누름에만 메뉴가 남는다(전에는 어느 단추로 눌러도 닫혔다).
@@ -701,6 +707,11 @@ function EditTabInner({
   const trimClip = trimPop ? layout.cuts.flatMap((slot) => slot.clips).find((clip) => clipKey(clip) === trimPop.key) : undefined;
   const trimSource = trimClip ? sourceOf(trimClip) : null;
   const trimSrc = trimSource?.state === "ok" && trimSource.type === "video" ? trimSource.url : null;
+  // 떠 있는 동안 그 클립이 타임라인에서 빠졌거나(지움·숨긴 컷) 그 트랙이 잠기면 창을 닫는다 — 조절할 것이 없다
+  const trimGone = !!trimPop && (!trimClip || doc.tracksLocked.includes(trimClip.track));
+  useEffect(() => {
+    if (trimGone) setTrimPop(null);
+  }, [trimGone]);
   const menuOwn = menu && doc.clips.find((clip) => clip.cut === menu.cut && links.get(clipKey(clip))?.gen?.id === menu.gen.id);
   const menuRows: TrackRow[] = !menu ? [] : Array.from({ length: layout.tracks }, (_, i) => layout.tracks - i).map((track) => ({
     track,
@@ -1496,6 +1507,7 @@ function EditTabInner({
         <EditTrimPop
           x={trimPop.x}
           y={trimPop.y}
+          openId={trimPop.group}
           title={`${trimClip.cut.slice(trimClip.cut.lastIndexOf("/") + 1)} · V${trimClip.track}`}
           full={trimClip.full}
           value={trimClip.len}
@@ -1505,9 +1517,11 @@ function EditTabInner({
           //  떴고, 이 조절은 여기서 끝이다(다시 열어 조절하면 그때는 알고 하는 편집이다).
           onChange={(seconds) => {
             const done = applyEdit((current) => setClipTrim(current, trimPop.key, seconds), { group: trimPop.group, rev: trimPop.rev });
-            if (done === "stopped") closeMenu();
+            if (done === "stopped") closeTrim();
           }}
-          onClose={closeMenu}
+          onUndo={edit.undo}
+          onRedo={edit.redo}
+          onClose={closeTrim}
         />
       )}
       {clipMenu && (
