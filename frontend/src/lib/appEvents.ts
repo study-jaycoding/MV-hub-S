@@ -32,6 +32,13 @@ export const ASSET_CHANNEL_MESSAGES = {
 
 export type AppEventName = (typeof APP_EVENTS)[keyof typeof APP_EVENTS];
 
+// libraryChanged 의 detail — 실제 변경이 아니라 팀 탭의 유휴 폴링(15초)이 '사이드바 숫자를 깨우려고' 쏜 것(useGenerationAutoRefresh).
+// 숫자만 다시 받으면 되는 구독자는 이것을 보고 무거운 조회를 건너뛴다 — 편집 탭이 이 틱마다 시퀀스의 공유 목록 전체를 다시 받았다
+// (2026-10-13 격리 실측: 60초에 8.7MB, 밑의 탭이 작업 공간이면 0.5MB). detail 을 보지 않는 구독자에게는 전과 같은 알림이다.
+export const LIBRARY_POLL_TICK = { poll: true } as const;
+export const isLibraryPollTick = (event: Event): boolean =>
+  (event as CustomEvent<{ poll?: boolean } | null | undefined>).detail?.poll === true;
+
 export function dispatchAppEvent<T>(name: AppEventName, detail?: T): void {
   window.dispatchEvent(new CustomEvent(name, detail === undefined ? undefined : { detail }));
 }

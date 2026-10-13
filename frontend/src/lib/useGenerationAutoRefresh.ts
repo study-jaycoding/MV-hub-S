@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
+import { APP_EVENTS, dispatchAppEvent, LIBRARY_POLL_TICK } from "./appEvents";
 import { hasActiveGenerationJob } from "./generationDisplay";
 import type { Filters, Generation } from "../types";
 
@@ -52,7 +52,8 @@ export function useGenerationAutoRefresh({
         inflight = false;
         // 팀 탭 유휴 폴링: light 리로드는 projects 를 안 갱신해 사이드바 폴더 카운트(+N 신규 배지)가
         // 낡는다 — 사이드바 카운트 갱신 채널을 깨운다(활성 잡 3초 폴링에선 스팸 방지 위해 제외).
-        if (tab === "team" && !hasActiveJob) dispatchAppEvent(APP_EVENTS.libraryChanged);
+        // 실제 변경이 아니라는 표식을 단다(LIBRARY_POLL_TICK) — 편집 탭은 이것에 공유 목록을 다시 받지 않는다.
+        if (tab === "team" && !hasActiveJob) dispatchAppEvent(APP_EVENTS.libraryChanged, LIBRARY_POLL_TICK);
       });
     }, ms);
     return () => clearInterval(id);

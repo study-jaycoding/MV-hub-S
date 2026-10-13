@@ -5,7 +5,7 @@
 //  편집은 이 브라우저(계정)에만 저장한다.
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
 import type { CardMark, Generation, PreviewTarget, WorkspaceContext } from "../../types";
-import { APP_EVENTS } from "../../lib/appEvents";
+import { APP_EVENTS, isLibraryPollTick } from "../../lib/appEvents";
 import { backgroundKeysBlocked, focusCameByTab } from "../../lib/keyGate";
 import { isKeyHandled, markKeyHandled } from "../../lib/keyHandled";
 import { isFolderDisabled } from "../../lib/deactivated";
@@ -92,7 +92,7 @@ import { dropLabel, EditTimeline, ZOOM_MAX, ZOOM_MIN, type ClipLink, type DropHi
 import { EditClipMenu, EditListMenu, EditTrackHeadMenu, EditTrackMenu, type TrackAct, type TrackRow } from "./EditTrackMenu";
 import { EditTrimPop } from "./EditTrimPop";
 import { EditTrimView } from "./EditTrimView";
-import { EditViewer, type ViewerControls, type ViewerMarking, type ViewOption } from "./EditViewer";
+import { EditViewer, writeText, type ViewerControls, type ViewerMarking, type ViewOption } from "./EditViewer";
 import { ResizableSidebar } from "../common/ResizableSidebar";
 
 interface Props {
@@ -275,7 +275,7 @@ function EditTabInner({
     const x = time * zoomRef.current;
     if (headRef.current) headRef.current.style.transform = `translateX(${x}px)`;
     const code = timecode(time);
-    if (barTimeRef.current) barTimeRef.current.textContent = code;
+    writeText(barTimeRef.current, code);
     painters.current.forEach((draw) => draw(time));
     const scroll = scrollRef.current; // 재생 중에는 재생헤드가 화면 밖으로 나가면 따라간다
     if (scroll && playingRef.current && (x < scroll.scrollLeft || x > scroll.scrollLeft + scroll.clientWidth - 40)) {
@@ -413,9 +413,11 @@ function EditTabInner({
   const srcShown = srcOrder >= 0;
   const tapeOn = slots[srcOrder] === "tape";
   const srcVideo = useVideoPair(); // 소스 테이프도 클립에서 클립으로 넘어간다
+  // 소스 판이 안 보이면 소스는 비워 둔다 — 싱글 뷰어(기본)에서 풀의 영상 카드를 누를 때마다 안 보이는 판이 그 영상을 끝까지
+  //  받았다(2026-10-13 격리 실측). 판을 올리면 그때 고른 것을 올린다. 보던 자리는 판을 내릴 때 엔진이 기억해 둔다(아래 scope).
   const srcGens = useMemo<Generation[]>(
-    () => (tapeOn ? arrangePool(cutItems, "", ui.sort).map((item) => item.gen) : pickedGen ? [pickedGen] : NO_GENS),
-    [tapeOn, cutItems, ui.sort, pickedGen],
+    () => (!srcShown ? NO_GENS : tapeOn ? arrangePool(cutItems, "", ui.sort).map((item) => item.gen) : pickedGen ? [pickedGen] : NO_GENS),
+    [srcShown, tapeOn, cutItems, ui.sort, pickedGen],
   );
   // 길이 — 실측값이 오면 고친다(타임라인에 안 넣은 영상은 적어 둔 길이가 없다 — 안 고치면 기본 5초에서 끝난다).
   //  하나씩 차례로 잰다: 길이 재기의 큐는 앱 전체가 같이 쓰고 동시에 4개라, 테이프의 영상을 한꺼번에 줄 세우면 타임라인
@@ -460,7 +462,8 @@ function EditTabInner({
   }, [src]);
   const paintSrc = useCallback((time: number) => srcPainters.current.forEach((draw) => draw(time)), []);
   const srcPlay = useEditPlayback({
-    scope: tapeOn ? `tape\n${target?.projectId ?? ""}\n${cut ?? ""}` : pickedGen ? `src\n${pickedGen.id}` : "src",
+    // 판이 안 보이는 동안은 다른 범위다 — 범위가 바뀔 때 엔진이 보던 자리를 적어 두고, 판을 다시 올리면 그 자리로 돌아온다
+    scope: !srcShown ? "src-off" : tapeOn ? `tape\n${target?.projectId ?? ""}\n${cut ?? ""}` : pickedGen ? `src\n${pickedGen.id}` : "src",
     layout: src.layout, doc: src.doc, sourceOf: srcSourceOf, videoRef: srcVideo.pair, paint: paintSrc, loop: ui.loopSrc,
     speed: ui.speed,
   });
@@ -822,7 +825,10 @@ function EditTabInner({
   useEffect(() => () => {
     if (reloadTimer.current !== null) window.clearTimeout(reloadTimer.current);
   }, []);
-  useCustomEvent(APP_EVENTS.libraryChanged, () => {
+  useCustomEvent(APP_EVENTS.libraryChanged, (event) => {
+    // 밑의 탭이 공유 & 리뷰면 그 목록의 15초 폴링이 끝날 때마다 이 알림이 온다(실제 변경이 아니다 — 사이드바 숫자를 깨우는 틱).
+    //  왼쪽의 숫자만 다시 받는다. 공유 목록은 다시 받지 않는다(§3 '폴링 없음' — 그 틱마다 목록 전체를 다시 받고 화면을 다시 그렸다).
+    if (isLibraryPollTick(event)) return reloadCounts();
     if (reloadTimer.current !== null) window.clearTimeout(reloadTimer.current);
     reloadTimer.current = window.setTimeout(() => {
       reloadTimer.current = null;
