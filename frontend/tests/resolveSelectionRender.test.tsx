@@ -1631,15 +1631,23 @@ it("App 공유·리뷰: 폴더를 옮기면 묶음 조회는 한 번 — 옮긴 
 it("App 공유·리뷰: 모아보기 카드의 [폴더로] = 창을 닫고 그 컷 폴더로 이동(기록 한 칸)", { timeout: 20_000 }, async () => {
   const generationMetrics = vi.fn().mockResolvedValue({ real_credits: 1, est_credits: null, credit_source: null, elapsed_seconds: null });
   localStorage.setItem("ch.lib.cutView", "1");
-  await mountTeamFolder({ folderCards: byParent(() => false), setFolderCover: vi.fn(), generationMetrics });
+  const folderCards = byParent(() => false);
+  await mountTeamFolder({ folderCards, setFolderCover: vi.fn(), generationMetrics });
   const reel = () => document.querySelector<HTMLElement>(".reel");
   act(() => { cutTile("shot").dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); });
   await settle();
   expect([reel() !== null, librarySnapshot!.filters.folder_path]).toEqual([true, "episode"]);
   const before = window.history.length;
   const episodeEntry = window.history.state; // 들어가기 전(episode 의 컷 카드)의 기록
+  act(() => bumpListRevision()); // episode 화면의 첫 쪽
+  await settle();
+  const cardsBefore = folderCards.mock.calls.length;
   act(() => { reel()!.querySelector<HTMLButtonElement>(".reel-go")!.click(); });
   await settle();
+  act(() => bumpListRevision()); // 들어간 컷의 첫 쪽
+  await settle();
+  // 묶음 조회는 자리마다 한 번 — 들어간 컷(빈 묶음)과 그 부모(그 컷의 대표를 알려고). 옮긴 뒤 온 목록의 첫 쪽은 다시 받게 하지 않는다
+  expect(folderCards.mock.calls.slice(cardsBefore).map((call) => call[1])).toEqual(["episode/shot", "episode"]);
   expect([reel(), librarySnapshot!.filters.folder_path, window.history.length - before, cutGrid()]).toEqual([null, "episode/shot", 1, null]);
   expect(sidebarSnapshot!.armedFolder).toEqual({ projectId: "resolve-project", path: "episode/shot" });
   // 뒤로 가기 — 화면은 컷 카드(episode)로, 사이드바의 분홍 표시(무장 폴더 = 다음 생성 위치)도 같이 돌아온다(Jay 2026-10-13 오후: 표시만 shot 에 남았다)
