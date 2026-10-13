@@ -342,13 +342,12 @@ function EditTabInner({
     }
     if (durs.size) applyEdit((current) => setClipDurs(current, durs), { undo: false, rev });
   }, [list.complete, doc, links, applyEdit, rev]);
-  //  · 이미 잰 클립은 다시 재지 않는다 — 적힌 길이가 '안 잰 값'(요청 길이 params.duration · 기본 5초)과 한 프레임 넘게 다르면 잰 값이다.
-  //    전에는 페이지를 열 때마다 영상 클립 전부를 다시 쟀다(클립마다 메타데이터 요청). 안 잰 값과 같으면 전처럼 잰다 — 실측이 우연히
-  //    그 값인 영상은 매번 재지만 틀린 길이로 굳지는 않는다. 기본 5초도 안 잰 값인 까닭: 목록에 없어 5초로 적힌 클립(위)이 나중에
-  //    돌아오면 요청 길이와 달라도 잰 적이 없다.
+  //  · 영상 클립은 페이지를 열 때마다 다시 잰다(같은 페이지에서는 lib/videoDuration 이 기억한 값이 바로 온다). 적힌 길이만 보고
+  //    '이미 쟀다'고 건너뛰지 않는다 — dur 에는 요청 길이와 실측값이 구분 없이 적히고, 요청 길이(params.duration)는 동기화로 바뀔 수
+  //    있어 '지금의 요청 길이와 다르다'가 쟀다는 증거가 아니다. 건너뛰면 옛 요청 길이가 실측값인 양 굳는다(Codex 코드 리뷰 4회째 —
+  //    10-13 에 그렇게 넣었다가 뺐다). 건너뛰려면 문서에 '쟀다'는 표시가 있어야 한다.
   //  · 잰 값은 첫 값이 온 뒤 MEASURE_SAVE_MS 동안 모아 한 번에 적는다 — 클립마다 적으면 영상 N개에 저장·다시 그리기가 N번이다.
-  //    모으는 중에 문서가 바뀌거나 탭을 떠나면 그 자리에서 적는다. 시퀀스를 바꾸면 버려진다(rev 가 다르다) — 적힌 길이가 그대로라
-  //    다음에 열 때 다시 잰다.
+  //    모으는 중에 문서가 바뀌거나 탭을 떠나면 그 자리에서 적는다. 시퀀스를 바꾸면 버려진다(rev 가 다르다) — 돌아오면 다시 잰다.
   useEffect(() => {
     let alive = true;
     let timer = 0;
@@ -361,14 +360,11 @@ function EditTabInner({
       measured.clear();
     };
     for (const clip of doc.clips) {
-      const gen = links.get(clipKey(clip))?.gen;
-      const asset = gen?.assets[0];
-      if (!gen || asset?.type !== "video" || !asset.file_path) continue;
-      const dur = clip.dur;
-      if (dur !== undefined && [DEFAULT_SEC, genSeconds(gen)].every((guess) => Math.abs(dur - guess) >= frame)) continue;
+      const asset = links.get(clipKey(clip))?.gen?.assets[0];
+      if (asset?.type !== "video" || !asset.file_path) continue;
       const key = clipKey(clip);
       void measureVideoSeconds(asset.file_path).then((seconds) => {
-        if (!alive || !seconds || Math.abs(seconds - (dur ?? 0)) < frame) return;
+        if (!alive || !seconds || Math.abs(seconds - (clip.dur ?? 0)) < frame) return;
         measured.set(key, seconds);
         timer ||= window.setTimeout(save, MEASURE_SAVE_MS);
       });
