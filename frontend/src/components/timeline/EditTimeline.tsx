@@ -2,6 +2,7 @@
 // 재생헤드는 부모가 ref 로 직접 옮긴다(프레임마다 React 렌더 없음). 컷 자리는 폴더 순서로 고정이라
 // 클립은 좌우로 못 옮기고, 위아래로 끌어 트랙만 바꾼다.
 import {
+  Fragment,
   memo,
   useEffect,
   useLayoutEffect,
@@ -65,6 +66,7 @@ export const EditTimeline = memo(function EditTimeline({
   onTrackMenu,
   onMarkerMenu,
   onClipMenu,
+  onClipTrim,
 }: {
   layout: EditLayout;
   doc: EditDoc;
@@ -91,6 +93,7 @@ export const EditTimeline = memo(function EditTimeline({
   onTrackMenu: (track: number, x: number, y: number) => void; // 트랙 머리를 우클릭 — 트랙 추가·삭제·옮기기·색
   onMarkerMenu: (key: string, x: number, y: number) => void; // 북마크를 더블클릭·우클릭 — 이름·색·지우기
   onClipMenu: (key: string, x: number, y: number) => void; // 클립을 우클릭 — Resolve 보내기
+  onClipTrim: (key: string, x: number, y: number) => void; // 클립을 휠 클릭 — 길이 조절 창
 }) {
   const t = useT();
   const lanesRef = useRef<HTMLDivElement>(null);
@@ -199,16 +202,29 @@ export const EditTimeline = memo(function EditTimeline({
     const state = link?.state ?? "unknown";
     const locked = doc.tracksLocked.includes(clip.track);
     const off = !!clip.off || doc.tracksOff.includes(clip.track) || offCuts.has(clip.cut);
-    const clipWidth = Math.max(6, Math.min(clip.len, span) * zoom - 2);
+    // 잡기 쉬운 최소 폭(6px)보다 컷의 경계가 먼저다 — 한 프레임짜리 컷에서 6px 로 늘리면 다음 컷 자리를 덮고 거기서 눌린다
+    //  (Codex 코드 리뷰 2026-10-13). 아주 좁은 컷에서는 옆 여백(1px)도 없앤다.
+    const room = span * zoom;
+    const pad = room > 4 ? 1 : 0;
+    const clipWidth = Math.max(1, Math.min(Math.max(6, clip.len * zoom - 2), room - pad * 2));
     const thumb = link?.gen ? thumbOf(link.gen, 256) : null;
     const frames = Math.min(16, Math.max(1, Math.round(clipWidth / ((LANE_H - 6) * (16 / 9)))));
+    // 줄인 클립의 '원본의 나머지' — 그 컷 안에 남는 만큼만 빗금으로 보인다(아래 트랙이 드러나는 구간이다). 누를 수 없다.
+    const rest = (Math.min(clip.full, span) - clip.len) * zoom;
     return (
+      <Fragment key={key}>
+      {rest > 4 && <div className="ed-clip-rest" style={{ left: (start + clip.len) * zoom, width: rest - 1 }} />}
       <div
-        key={key}
         className={"ed-clip" + (selected.has(key) ? " ed-sel" : "") + (off ? " ed-off" : "") +
           (state !== "ok" ? ` ed-${state}` : "") + (locked ? " ed-locked" : "")}
-        style={{ left: start * zoom + 1, width: clipWidth }}
+        style={{ left: start * zoom + pad, width: clipWidth }}
         title={link?.gen?.prompt?.slice(0, 80) || undefined}
+        // 휠 클릭(가운데 단추) = 길이 조절 창(Jay 2026-10-13). 누름의 자동 스크롤은 줄 뿌리의 keepFocus 가 이미 막는다.
+        onAuxClick={(event) => {
+          if (event.button !== 1) return;
+          event.preventDefault();
+          onClipTrim(key, event.clientX, event.clientY);
+        }}
         onPointerDown={(event) => clipDown(event, key, clip.track, locked, clip.cut)}
         onPointerMove={clipMove}
         onPointerUp={(event) => clipUp(event)}
@@ -227,6 +243,7 @@ export const EditTimeline = memo(function EditTimeline({
         {/* 길이를 줄였으면(휠 클릭) 쓰는 길이 / 원본 길이 */}
         <b>{clip.len.toFixed(1)}s{clip.len < clip.full ? ` / ${clip.full.toFixed(1)}s` : ""}</b>
       </div>
+      </Fragment>
     );
   };
 

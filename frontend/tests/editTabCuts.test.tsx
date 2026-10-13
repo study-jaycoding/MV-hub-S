@@ -264,3 +264,45 @@ it("클립을 끌다 놓는 이벤트를 놓치면(포인터 쥐기를 잃음) �
     pointDoc.elementsFromPoint = savedPoint;
   }
 });
+
+// Jay 2026-10-13 — 타임라인의 클립을 휠 클릭 = 길이 조절 창(뒤를 자른다). 영상만이다.
+it("클립을 휠 클릭하면 길이 조절 창이 뜬다 — 걸음마다 저장하고, 닫은 뒤 Ctrl+Z 한 번에 줄이기 전으로 돌아간다", () => {
+  const docKey = "mvhub.editDoc:local:p1:e070";
+  localStorage.setItem(docKey, JSON.stringify({ v: 1, tracksOff: [], tracksLocked: [], clips: [
+    { cut: "e070/c1", gen: "g1", track: 1, kind: "video", dur: 5 }, { cut: "e070/c1", gen: "g2", track: 2, kind: "image", dur: 5 },
+  ] }));
+  mount();
+  const trimOf = () => (JSON.parse(localStorage.getItem(docKey)!) as { clips: { gen: string; trim?: number }[] })
+    .clips.find((clip) => clip.gen === "g1")!.trim;
+  const clipOn = (track: string) => [...document.querySelectorAll<HTMLElement>(".ed-clip")]
+    .find((clip) => clip.closest<HTMLElement>("[data-track]")!.dataset.track === track)!;
+  const wheelClick = (clip: HTMLElement) => act(() => {
+    clip.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1, clientX: 50, clientY: 50 }));
+  });
+  wheelClick(clipOn("2")); // 그림 — 창이 뜨지 않는다
+  expect(document.querySelector(".ed-trim")).toBeNull();
+  wheelClick(clipOn("1"));
+  const pop = document.querySelector<HTMLElement>(".ed-trim")!;
+  expect(pop.textContent).toContain("c1 · V1");
+  const button = (label: string) => [...pop.querySelectorAll("button")].find((item) => item.textContent === label)!;
+  expect(button("원본 길이로").disabled).toBe(true); // 아직 줄이지 않았다
+  act(() => button("−10f").click());
+  act(() => button("−1f").click());
+  expect(trimOf()).toBeCloseTo(109 / 24);
+  press({ key: "ArrowLeft", shiftKey: true }, pop.querySelector("input")!); // Shift+← = 10프레임
+  expect(trimOf()).toBeCloseTo(99 / 24);
+  expect(clipOn("1").textContent).toContain("4.1s / 5.0s"); // 타임라인의 클립에 쓰는 길이 / 원본 길이
+  press({ key: "Delete" }); // 창이 떠 있는 동안 뒤의 편집 키는 쉰다
+  expect(document.querySelectorAll(".ed-clip")).toHaveLength(2);
+  act(() => button("닫기").click());
+  expect(document.querySelector(".ed-trim")).toBeNull();
+  press({ key: "z", code: "KeyZ", ctrlKey: true }); // 창을 한 번 연 동안의 걸음 셋이 되돌리기 한 단계다
+  expect(trimOf()).toBeUndefined();
+  press({ key: "z", code: "KeyZ", ctrlKey: true, shiftKey: true });
+  expect(trimOf()).toBeCloseTo(99 / 24);
+  // 끝까지 늘리면 '원본 길이로'와 같다 — 줄임을 지운다
+  wheelClick(clipOn("1"));
+  const again = document.querySelector<HTMLElement>(".ed-trim")!;
+  act(() => [...again.querySelectorAll("button")].find((item) => item.textContent === "원본 길이로")!.click());
+  expect(trimOf()).toBeUndefined();
+});

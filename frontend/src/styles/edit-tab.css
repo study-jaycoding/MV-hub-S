@@ -329,6 +329,21 @@
   background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border2); color: var(--text);
 }
 .ed-mmenu-name:focus { border-color: rgba(var(--accent-rgb), 0.6); }
+/* 클립 길이 조절 창(타임라인의 클립 휠 클릭) — 작은 화면 · 슬라이더 · 프레임 단추 */
+.folder-ctx-menu.ed-tmenu.ed-trim { width: 268px; }
+.ed-trim-body { display: flex; flex-direction: column; gap: 4px; }
+.ed-trim-view { width: 100%; aspect-ratio: 16 / 9; border-radius: 6px; background: #000; object-fit: contain; }
+.ed-trim-range { width: 100%; margin: 4px 0 0; accent-color: var(--accent); }
+.ed-trim-row { display: flex; align-items: center; gap: 4px; }
+.ed-trim-row button, .ed-trim-foot button {
+  flex: none; height: 24px; padding: 0 7px; border: 1px solid var(--border2); border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05); color: var(--text); font-size: 11px; cursor: pointer;
+}
+.ed-trim-row button:hover:not(:disabled), .ed-trim-foot button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }
+.ed-trim-row button:disabled, .ed-trim-foot button:disabled { opacity: 0.4; cursor: default; }
+.ed-trim-row b { flex: 1; text-align: center; font-size: 13px; font-variant-numeric: tabular-nums; }
+.ed-trim-note { font-size: 11px; color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
+.ed-trim-foot { display: flex; justify-content: space-between; margin-top: 2px; }
 
 /* 타임라인 — 왼쪽 트랙 머리 + 오른쪽 가로 스크롤. 줄 높이는 머리와 줄이 같아야 한다. */
 .ed-tl { flex: none; max-height: 52%; display: flex; overflow-y: auto; background: #0b0c0e; user-select: none; }
@@ -407,6 +422,12 @@
 .ed-clip.ed-missing { background: repeating-linear-gradient(135deg, #3a1218 0 8px, #2a0d12 8px 16px); border-color: rgba(255, 90, 100, 0.6); }
 .ed-clip.ed-unknown { background: repeating-linear-gradient(135deg, #24262b 0 8px, #1b1d21 8px 16px); }
 .ed-clip-msg { flex: 1; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #d7dae0; pointer-events: none; }
+/* 줄인 클립의 '원본의 나머지'(그 컷 안에 남는 만큼) — 빗금만, 누를 수 없다 */
+.ed-clip-rest {
+  position: absolute; top: 3px; height: 52px; box-sizing: border-box; border-radius: 0 5px 5px 0; pointer-events: none;
+  border: 1px dashed rgba(255, 255, 255, 0.16); border-left: 0;
+  background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.07) 0 6px, transparent 6px 12px);
+}
 .ed-slot {
   border: 1px dashed rgba(255, 255, 255, 0.22); align-items: center; justify-content: center; pointer-events: none;
   font-size: 11px; color: var(--muted2);
