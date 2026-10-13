@@ -543,7 +543,16 @@ it("길이 조절 창이 떠 있는 채 다른 클립을 휠 클릭하면 창이
   const trims = () => (JSON.parse(localStorage.getItem(docKey)!) as { clips: { trim?: number }[] }).clips.map((clip) => clip.trim);
   wheel(0);
   step();
+  // 초 칸에 치다 만 값이 있는 채 다른 클립으로 바꾼다 — 그 값은 앞 클립의 것이라 버린다(초점이 창으로 옮겨지며 칸이 blur 되는데,
+  //  그때 적용하면 새 클립에 들어간다)
+  const seconds = document.querySelector<HTMLInputElement>(".ed-trim .ed-trim-num")!;
+  act(() => {
+    seconds.focus();
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(seconds, "2");
+    seconds.dispatchEvent(new Event("input", { bubbles: true }));
+  });
   wheel(1);
+  expect(trims()).toEqual([119 / 24, undefined]);
   expect(document.querySelectorAll(".ed-trim")).toHaveLength(1);
   expect(document.querySelector(".ed-trim")!.textContent).toContain("c2 · V1");
   step();

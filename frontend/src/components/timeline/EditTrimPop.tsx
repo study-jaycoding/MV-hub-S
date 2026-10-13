@@ -128,17 +128,19 @@ export function EditTrimPop({
     return () => cancelAnimationFrame(frame);
   }, [playing, frames, last]);
 
+  // 숫자 칸 — 치는 동안은 칸의 글자, Enter·칸을 떠날 때 적용한다. 못 읽는 값은 버리고 지금 값으로 돌아간다.
+  //  치던 글자는 그 클립의 것이다(of) — 창이 다른 클립으로 바뀌면 버린다: 초점을 창으로 옮기는 순간 칸이 blur 되며 적용이 불리는데,
+  //  그때의 onChange 는 이미 새 클립의 것이다.
+  const [draftOf, setDraft] = useState<{ field: "sec" | "frame"; text: string; of: string } | null>(null);
+  const draft = draftOf?.of === openId ? draftOf : null;
   // 열 때(다른 클립으로 바뀔 때도) 초점을 창으로 — 그래야 키가 바로 창의 것이다
   useEffect(() => {
     panel.current?.focus({ preventScroll: true });
   }, [openId]);
-
-  // 숫자 칸 — 치는 동안은 칸의 글자, Enter·칸을 떠날 때 적용한다. 못 읽는 값은 버리고 지금 값으로 돌아간다.
-  const [draft, setDraft] = useState<{ field: "sec" | "frame"; text: string } | null>(null);
   const commit = () => {
+    setDraft(null);
     if (!draft) return;
     const number = Number(draft.text.trim().replace(",", "."));
-    setDraft(null);
     if (!draft.text.trim() || !Number.isFinite(number) || number <= 0) return;
     set(draft.field === "sec" ? number * EDIT_FPS : number);
   };
@@ -147,7 +149,7 @@ export function EditTrimPop({
     <input type="text" className="ed-trim-num" inputMode={name === "sec" ? "decimal" : "numeric"} aria-label={label}
       value={draft?.field === name ? draft.text : shown}
       onFocus={(event) => event.target.select()}
-      onChange={(event) => setDraft({ field: name, text: event.target.value })}
+      onChange={(event) => setDraft({ field: name, text: event.target.value, of: openId })}
       onBlur={commit}
       onKeyDown={(event) => {
         if (event.key === "Enter") commit();
