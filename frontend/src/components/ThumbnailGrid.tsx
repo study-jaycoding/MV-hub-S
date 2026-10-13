@@ -668,9 +668,30 @@ export function ThumbnailGrid(props: Props) {
   //  '생성 결과' 창)는 '이 격자가 첫 누름을 보지 못했다'만 본다. 뿌리의 잡는 단계에서 누름부터 삼킨다 — 카드의 '새 항목 확인'(누름의 잡는
   //  단계에서 저장한다)과 카드 끌기(프롬프트 재사용)가 그 누름으로 일어나지 않게.
   const multiClick = useStaleMultiClick(props.placeKey ?? "");
+  // 우클릭 = 그 카드가 속한 폴더의 창 — 카드의 폴더 이름표를 누른 것과 같다(Jay 2026-10-13: 작업 공간에서도. 공유 탭의 컷 카드 우클릭과 같은
+  //  뜻이다). 폴더가 없는 카드·폴더 창을 열 수 없는 격자(onOpenFolder 없음 — 폴더 창 안·휴지통·캔버스)에서는 아무 일도 없다(브라우저 메뉴 그대로).
+  //  위에 뜬 메뉴를 닫는 우클릭은 열지 않는다 — contextmenu 는 단추를 뗀 뒤 오므로(윈도) 가림은 누름의 시작에 적어 둔다(FolderCardGrid 와 같은
+  //  이유). 키보드의 메뉴 키(button 0)는 기록을 보지 않고 그 순간의 가림을 본다.
+  const rightPressCoveredRef = useRef<boolean | null>(null);
+  const onGridContextMenu = (e: React.MouseEvent) => {
+    const open = props.onOpenFolder;
+    if (!open || props.selectLocked) return;
+    if ((e.target as HTMLElement).closest("input, textarea, a, [contenteditable]")) return; // 글 칸·링크 위는 브라우저 메뉴
+    const cellEl = (e.target as HTMLElement).closest(".gen-cell") as HTMLElement | null;
+    const g = cellEl && opsRef.current.generations.find((x) => x.id === cellEl.dataset.id);
+    if (!g?.folder_path) return;
+    e.preventDefault(); // 폴더에 속한 카드 위에서만 브라우저 메뉴를 막는다
+    const covered = e.button === 2 ? (rightPressCoveredRef.current ?? backgroundKeysBlocked()) : backgroundKeysBlocked();
+    rightPressCoveredRef.current = null;
+    if (!covered) open(g);
+  };
   const onGridMouseDown = (e: React.MouseEvent) => {
     if (e.button === 1) {
       e.preventDefault(); // 미들클릭 자동스크롤 방지(정보는 카드 auxclick 에서)
+      return;
+    }
+    if (e.button === 2) {
+      rightPressCoveredRef.current = pressStartedCovered(); // 고르기는 바꾸지 않는다
       return;
     }
     if (e.button !== 0) return;
@@ -801,6 +822,7 @@ export function ThumbnailGrid(props: Props) {
         {...multiClick}
         onMouseDown={onGridMouseDown}
         onDoubleClick={onGridDblClick}
+        onContextMenu={onGridContextMenu}
         onDragStart={onGridDragStart}
         onKeyDown={(e) => onGridKey(e.nativeEvent)}
         onScroll={onGridScroll}
