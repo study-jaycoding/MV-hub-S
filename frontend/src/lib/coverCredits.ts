@@ -46,6 +46,32 @@ function remembered(id: string): number | null | undefined {
   return at !== undefined && Date.now() - at < UNKNOWN_KEEP_MS ? null : undefined;
 }
 
+type Metrics = Awaited<ReturnType<typeof api.generationMetrics>>;
+
+/** 크레딧 한 건을 묻는다 — 멎으면 ASK_TIMEOUT_MS 뒤 끊고 null(모름). 실패·호출이 바로 던지는 것도 null(약속 안에서 부른다).
+ *  outer 가 끊기면(창을 닫았다·다른 폴더로) 받는 중인 요청도 같이 끊고 바로 null. 컷 정보 창(CutInfoPopup)도 이것으로 묻는다. */
+export function askMetrics(id: string, outer?: AbortSignal): Promise<Metrics | null> {
+  return new Promise((resolve) => {
+    const stop = new AbortController();
+    const give = (metrics: Metrics | null) => {
+      clearTimeout(timer);
+      outer?.removeEventListener("abort", cut);
+      resolve(metrics);
+    };
+    const cut = () => {
+      stop.abort();
+      give(null);
+    };
+    const timer = setTimeout(cut, ASK_TIMEOUT_MS);
+    if (outer?.aborted) {
+      cut();
+      return;
+    }
+    outer?.addEventListener("abort", cut);
+    void Promise.resolve().then(() => api.generationMetrics(id, stop.signal)).catch(() => null).then(give);
+  });
+}
+
 function ask(id: string): Promise<number | null> {
   const going = asking.get(id);
   if (going) return going;
@@ -53,21 +79,9 @@ function ask(id: string): Promise<number | null> {
   const promise = new Promise<number | null>((resolve) => {
     queue.set(id, () => {
       running += 1;
-      const stop = new AbortController();
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const tooLate = new Promise<null>((late) => {
-        timer = setTimeout(() => {
-          stop.abort();
-          late(null);
-        }, ASK_TIMEOUT_MS);
-      });
-      // 호출 자체가 던져도(약속이 아니라 바로 던지는 경우) 줄이 멎지 않게 약속 안에서 부른다 — 못 받은 것은 '모름'
-      const answer = Promise.resolve().then(() => api.generationMetrics(id, stop.signal))
-        .then((metrics) => metrics.real_credits ?? null)
-        .catch(() => null);
-      void Promise.race([answer, tooLate])
-        .then((credits) => {
-          clearTimeout(timer);
+      void askMetrics(id)
+        .then((metrics) => {
+          const credits = metrics?.real_credits ?? null;
           if (born === epoch) {
             running -= 1;
             asking.delete(id);

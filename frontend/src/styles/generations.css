@@ -1049,15 +1049,35 @@
 /* 고른 폴더에 직접 든 것('컷 밖') — 어느 카드에도 들지 않아 맨 끝 칸으로 알린다. 종이 겹침 없이 점선 칸. 누르면 한 장씩 보기 */
 /* 컷 카드 + 아래 정보판 한 칸(Jay 2026-10-13 — 모아보기 카드와 같은 정보 줄 .reel-info) */
 .cut-slot { min-width: 0; }
-.cut-meta {
+/* .reel-info 와 같이 붙는 클래스다 — 그 규칙(아래쪽, 같은 세기)이 칸 폭·안쪽 여백을 덮지 않게 둘을 붙여 쓴다. 전엔 .cut-meta 만 써서 여기 적은
+   칸 폭·여백이 듣지 않았다(이름 칸 54px · 위 여백 0 · 값 칸이 내용보다 줄지 못함). 글자 크기는 보이던 그대로(.reel-info 의 12.5px) */
+.reel-info.cut-meta {
   margin-top: 8px; padding: 8px 10px 9px; border-radius: 10px; background: #1b1d22; border: 1px solid #2a2d33;
-  grid-template-columns: 38px minmax(0, 1fr); row-gap: 3px; font-size: 11.5px; text-align: left; cursor: default;
+  grid-template-columns: 42px minmax(0, 1fr); row-gap: 3px; line-height: 1.4; text-align: left; cursor: default;
+  container-type: inline-size; /* 아래의 좁은 카드 규칙(@container)이 이 상자의 폭을 본다 */
 }
 .cut-meta.sel { border-color: var(--accent); }
-/* 카드가 좁다(최소 180px) — 값을 잘라 내지 않고 줄을 바꾼다. 건수는 카드의 이름표에 이미 있어 '전체 N' 은 뺀다 */
-.cut-meta .v { overflow-wrap: anywhere; }
-.cut-meta .reel-rv { row-gap: 0; }
+/* **줄 높이가 카드마다 같다**(Jay 2026-10-13 밤 — 전엔 값이 길면 줄을 바꿔, 날짜의 자릿수·검토 조각 수에 따라 카드마다 줄 수가 달라 아래 줄이
+   어긋났다). 값은 늘 한 줄(넘치면 말줄임 — 다 보려면 title), 생성일만 늘 두 줄(날짜 / 시각). 건수는 카드의 이름표에 이미 있어 '전체 N' 은 뺀다 */
+.cut-meta .v { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 모델 줄 — 좁으면 모델 이름이 줄고 길이(5.0s)는 남는다 */
+.cut-meta .model { display: flex; column-gap: 0.3em; }
+.cut-meta .model > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cut-meta .model > i { flex: none; }
+.cut-meta .when { min-height: 2.8em; } /* 두 줄(1.4 × 2) — 날짜를 못 읽은 카드도 높이는 같다 */
+.cut-meta .when > span { display: block; overflow: hidden; text-overflow: ellipsis; }
+.cut-meta .reel-rv { flex-wrap: nowrap; }
 .cut-meta .reel-rv .all { display: none; }
+/* 좁은 카드(크기 슬라이더를 줄였을 때) — 검토 줄이 한 줄에 들게 '최종' 글자를 빼고(★ 숫자만), 더 좁으면 이름 칸(모델·작업자 …)을 빼 값에 자리를 준다 */
+@container (max-width: 200px) {
+  .cut-meta .reel-rv .fin em { display: none; }
+  .cut-meta .reel-rv { column-gap: 4px; }
+  .cut-meta .reel-rv > span + span:not(.all)::before { margin-right: 4px; }
+}
+@container (max-width: 135px) {
+  .cut-meta .k { display: none; }
+  .cut-meta .v { grid-column: 1 / -1; }
+}
 .cut-card.cut-out {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
   border: 1px dashed rgba(255, 255, 255, 0.2); color: var(--muted);
@@ -1159,6 +1179,7 @@
 .reel-rv > span + span:not(.all)::before { content: "·"; margin-right: 6px; color: var(--muted); font-weight: 400; }
 .reel-rv b { color: #fff; font-weight: 800; }
 .reel-rv .fin { color: #e8b62c; font-weight: 700; }
+.reel-rv .fin em { font-style: normal; }
 .reel-rv .held { color: #ef7d8c; font-weight: 700; }
 .reel-rv .all { margin-left: auto; color: var(--muted); }
 /* 연결 — 편집 탭 뷰어의 아래 판과 같은 값(가는 타임바·빨간 자리·44px 조작 줄) */

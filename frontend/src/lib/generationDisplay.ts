@@ -222,6 +222,12 @@ export function formatGenerationDateTime(value: string): string {
   return isNaN(d.getTime()) ? value : d.toLocaleString();
 }
 
+// 생성일과 시각을 따로 — 좁은 카드(컷 카드의 정보판)가 날짜 / 시각 두 줄로 고정해 그릴 때. 둘을 이으면 위와 같은 정보다.
+export function formatGenerationDateAndTime(value: string): [string, string] {
+  const d = value ? parseCreatedAt(value) : new Date(NaN);
+  return isNaN(d.getTime()) ? [value || "", ""] : [d.toLocaleDateString(), d.toLocaleTimeString()];
+}
+
 // 영상 길이 표기 — 숫자든 숫자문자열("4")이든 "4.0s" 로 통일(힉스필드 기본 duration 은 문자열이라 통일 필요).
 // 숫자로 못 읽는 문자열은 그대로, 값이 없으면 undefined(Row·배지 자동 생략).
 function formatDurationSec(d: unknown): string | undefined {

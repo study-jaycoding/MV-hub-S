@@ -767,6 +767,12 @@ it("컷 카드(그리드) 아래 정보판 — 모델·작업자·크레딧·생
   expect(lines.map(([k]) => k)).toEqual(["모델", "작업자", "크레딧", "생성일", "검토"]);
   expect([lines[0][1], lines[1][1], lines[2][1], lines[4][1]]).toEqual(["seedance-2.0 · 6.0s", "리버", "54 credits", "공유 9★ 최종 2R 1전체 12"]);
   expect(meta(slots[1])[4][1]).toBe("공유");
+  // 생성일은 날짜 / 시각 두 조각이다 — 컷 카드에서는 늘 두 줄로 그려 카드마다 줄 높이가 같다(Jay 2026-10-13 밤). 잘린 값은 title 로 다 보인다
+  const when = slots[0].querySelector<HTMLElement>(".cut-meta .when")!;
+  expect([...when.children].map((part) => [part.tagName, (part.textContent ?? "").length > 0])).toEqual([["SPAN", true], ["SPAN", true]]);
+  expect(when.title).toBe(new Date("2026-08-31T02:22:08Z").toLocaleString());
+  expect([slots[0].querySelector<HTMLElement>(".cut-meta .model")!.title, slots[0].querySelector<HTMLElement>(".cut-meta .reel-rv")!.title])
+    .toEqual(["seedance-2.0 · 6.0s", "공유 9 · 최종 2 · 보류 1 · 전체 12"]);
   expect(generationMetrics.mock.calls.map((call) => call[0])).toEqual(["cover-C0010", "cover-C0020"]); // 카드마다 한 번
   // 정보판을 누르면 그 카드를 고른다(빈 곳을 누른 것이 아니다) — 두 번 클릭은 카드와 같이 모아보기
   const panel = slots[0].querySelector<HTMLElement>(".cut-meta")!;
