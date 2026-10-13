@@ -1,5 +1,6 @@
 // 모아보기 — 고른 컷의 대표(없으면 가장 최근 것)를 격자 순서대로(Jay 2026-10-08).
-//  [개별] = 큰 카드 + 정보(작업자·크레딧·생성일·검토). [연결] = 하나의 영상처럼 이어서 재생 — 편집 탭 뷰어의 재생 줄 모양
+//  [개별] = 큰 카드 + 정보(모델·작업자·크레딧·생성일·검토) + [폴더로](그 컷 폴더로 이동 — Jay 2026-10-13). 검토 줄은 그 폴더 안의
+//  개수(공유·★ 최종·R 보류 — 사이드바 폴더 숫자와 같은 규칙·같은 색)다. [연결] = 하나의 영상처럼 이어서 재생 — 편집 탭 뷰어의 재생 줄 모양
 //  (가는 타임바·빨간 자리·처음/이전 컷/재생/다음 컷/끝/반복). 대표가 이미지인 컷(과 재생 못 하는 영상)은 3초 멈춘 화면(Jay '가').
 //  재생 논리는 캔버스 View 노드의 ViewTimeline 과 같은 원리(가상 시간 = 앞 클립 길이 합 + 지금 위치)지만 그 창과는 요구가 달라
 //  (반복 끔·컷 이동·길이를 다 알기 전 이동 잠금·깨진 영상) 따로 둔다 — 잘 도는 창을 고치지 않는다.
@@ -38,6 +39,7 @@ interface Props {
   previewOpen: boolean; // 크게 보기가 위에 떠 있으면 Esc·Space 는 그쪽 몫
   onClose: () => void;
   onPreview: (target: PreviewTarget) => void;
+  onEnter: (folder: FolderCard) => void; // [폴더로] — 그 컷 폴더로 이동(창을 닫는 것은 호출하는 쪽)
 }
 
 function isEditable(target: EventTarget | null): boolean {
@@ -54,7 +56,7 @@ function startPlay(v: HTMLVideoElement, current: () => HTMLVideoElement | null, 
   });
 }
 
-export function CutReel({ folders, mode, onModeChange, previewOpen, onClose, onPreview }: Props) {
+export function CutReel({ folders, mode, onModeChange, previewOpen, onClose, onPreview, onEnter }: Props) {
   const t = useT();
   useEscapeClose(onClose, !previewOpen);
   const reelRef = useRef<HTMLDivElement>(null);
@@ -84,7 +86,7 @@ export function CutReel({ folders, mode, onModeChange, previewOpen, onClose, onP
         {mode === "grid" ? (
           <div className="reel-grid">
             {folders.map((folder, i) => (
-              <ReelCard key={folder.path} folder={folder} order={i + 1} onPreview={() => {
+              <ReelCard key={folder.path} folder={folder} order={i + 1} onEnter={() => onEnter(folder)} onPreview={() => {
                 const index = clips.findIndex((clip) => clip.path === folder.path);
                 if (index >= 0) previewAt(index);
               }} />
@@ -100,7 +102,7 @@ export function CutReel({ folders, mode, onModeChange, previewOpen, onClose, onP
 }
 
 // ── 개별 — 큰 카드 + 정보 ──
-function ReelCard({ folder, order, onPreview }: { folder: FolderCard; order: number; onPreview: () => void }) {
+function ReelCard({ folder, order, onPreview, onEnter }: { folder: FolderCard; order: number; onPreview: () => void; onEnter: () => void }) {
   const t = useT();
   const modelName = useModelDisplayName();
   const g = folder.cover;
@@ -117,6 +119,9 @@ function ReelCard({ folder, order, onPreview }: { folder: FolderCard; order: num
     return () => { cancelled = true; };
   }, [g.id]);
   const duration = generationListMeta((g.params || {}) as Record<string, unknown>).duration;
+  // 검토 = 그 폴더 안의 개수. 서버가 안 주면(옛 공유 서버) 전처럼 표지 한 장의 상태만 보인다.
+  const { final_count: finals, held_count: held } = folder;
+  const shared = finals != null && held != null ? Math.max(0, folder.count - finals - held) : null;
   return (
     <div className="reel-card">
       <button type="button" className="reel-face" title={t("크게 보기")} onClick={onPreview}>
@@ -125,13 +130,28 @@ function ReelCard({ folder, order, onPreview }: { folder: FolderCard; order: num
         <span className="reel-order">{order}</span>
         <span className={"reel-rep" + (folder.rep ? " rep" : "")}>{folder.rep ? `★ ${t("대표")}` : t("최신 것")}</span>
       </button>
-      <div className="reel-ttl"><b>{folder.name}</b><span>{modelName(g.model)}{duration ? <> · <i>{duration}</i></> : null}</span></div>
+      <div className="reel-ttl">
+        <b>{folder.name}</b>
+        <button type="button" className="reel-go" title={`${folder.path} — ${t("이 폴더로 이동합니다")}`} onClick={onEnter}>{t("폴더로")} ▸</button>
+      </div>
       <div className="reel-info">
+        <span className="k">{t("모델")}</span><span className="v">{modelName(g.model)}{duration ? <> · <i>{duration}</i></> : null}</span>
         <span className="k">{t("작업자")}</span><span className="v">{workerLabel(g)}</span>
         <span className="k">{t("크레딧")}</span>
         <span className="v">{credits === undefined ? "…" : credits != null ? `${formatCredits(credits)} credits` : t("미상")}</span>
         <span className="k">{t("생성일")}</span><span className="v">{formatGenerationDateTime(g.created_at)}</span>
-        <span className="k">{t("검토")}</span><span className="v">{g.is_final ? t("최종") : g.is_held ? t("보류") : t("공유")}</span>
+        <span className="k">{t("검토")}</span>
+        {shared === null ? (
+          <span className="v">{g.is_final ? t("최종") : g.is_held ? t("보류") : t("공유")}</span>
+        ) : (
+          // 0 인 것은 감춘다(사이드바와 같다). 조각 사이의 '·' 은 CSS 가 그린다
+          <span className="v reel-rv">
+            {shared > 0 && <span>{t("공유")} <b>{shared}</b></span>}
+            {finals! > 0 && <span className="fin">★ {t("최종")} {finals}</span>}
+            {held! > 0 && <span className="held" title={t("보류")}>R {held}</span>}
+            <span className="all">{t("전체")} {folder.count}</span>
+          </span>
+        )}
       </div>
     </div>
   );

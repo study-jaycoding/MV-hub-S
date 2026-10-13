@@ -450,6 +450,8 @@ const EN: Record<string, string> = {
   "대표 정한 컷": "Cuts with a cover",
   "대표 미정": "No cover yet",
   "이 에피소드의 컷을 모두 봅니다": "See all cuts of this episode",
+  "폴더로": "Go to folder",
+  "이 폴더로 이동합니다": "Go to this folder",
   "방금": "just now",
   "어제": "yesterday",
   "분 전": "m ago",

@@ -160,6 +160,9 @@ export interface FolderCard {
   last_shared_at?: string | null; // 그 폴더에서 가장 늦게 공유된 것의 시각(UTC) — 표지의 것이 아니다
   last_shared_by?: string | null; // 그것을 만든 사람의 표시 이름(모르면 null)
   children?: FolderCardChild[]; // 바로 아래 폴더 미리보기 — 이름순 앞 몇 개(나머지 수 = subfolders − 길이)
+  // 그 폴더(하위 포함)의 최종·보류 수 — 사이드바 폴더 숫자와 같은 규칙. 일반 공유 수 = count - final_count - held_count.
+  final_count?: number;
+  held_count?: number;
 }
 
 // 에피소드 카드의 컷 띠 한 칸. 표지는 그림에 필요한 것만 온다.
