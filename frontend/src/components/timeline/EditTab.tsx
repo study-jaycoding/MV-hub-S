@@ -98,7 +98,7 @@ interface Props {
   // 컷을 더블클릭 — 공유 & 리뷰의 '폴더 보기' 창을 그 컷 폴더로 연다(창은 App 의 것, 여기는 무엇을 열지만 알린다).
   onOpenCutFolder: (target: EditCutFolder) => void;
   reloadSignal: number; // 그 창이 닫혔다 — 창에서 공유를 풀거나 지웠을 수 있으니 공유 목록을 다시 받는다
-  // 그 창이 떠 있는 동안(peekPath = 그 컷 폴더): 창의 카드를 우클릭하면 App 이 cardMenuRef 로 넘겨주고(넣을 트랙 메뉴),
+  // 그 창이 떠 있는 동안(peekPath = 그 컷 폴더): 창의 카드를 휠 클릭하면 App 이 cardMenuRef 로 넘겨주고(넣을 트랙 메뉴),
   //  표는 창에서 넣고 바꾸는 대로 다시 알린다(onPeekMarks).
   peekPath: string | null;
   onPeekMarks: (marks: Record<string, CardMark>) => void;
@@ -538,8 +538,8 @@ function EditTabInner({
     const target = previewTargetFromGenerations(shown, gen, 512);
     if (target) onPreview({ ...target, sceneId: TEAM_SCOPE });
   }, [onPreview]);
-  // 카드 우클릭 메뉴(Jay 2026-10-08) — 미디어 풀의 카드, 폴더 창의 카드를 우클릭하면 지금 있는 트랙을 보여 주고, 고르면 그
-  //  트랙에 넣는다(찬 트랙은 교체). 넣을 컷은 여는 순간에 정한다(풀 = 재생헤드가 있는 컷, 창 = 그 창의 컷). 편집 탭의 그 컷
+  // 카드의 트랙 메뉴(Jay 2026-10-08 — 10-13 부터 우클릭이 아니라 **휠 클릭**: 풀 카드의 우클릭은 폴더 창을 연다) — 미디어 풀의
+  //  카드, 폴더 창의 카드를 휠 클릭하면 지금 있는 트랙을 보여 주고, 고르면 그 트랙에 넣는다(찬 트랙은 교체). 넣을 컷은 여는 순간에 정한다(풀 = 재생헤드가 있는 컷, 창 = 그 창의 컷). 편집 탭의 그 컷
   //  공유 목록에 있는 카드만 받는다 — 창에서 W 를 '전체'로 바꿔 보이는 다른 공간의 카드 등은 넣어도 '미디어 없음'으로 본다.
   //  그 카드가 그 컷의 '확인 못 한' 클립과 같은 것일 수 있으면 넣지 않는다: job 으로 이은 클립은 공유 목록을 끝까지 받기
   //  전에는 어느 카드인지 모른다 — 그때 넣으면 같은 생성물이 두 트랙에 들어가거나, 교체하면서 그 클립의 꺼짐이 사라진다.
@@ -685,16 +685,17 @@ function EditTabInner({
   }, [layout, view.cut, view.clip, doc, links, t]);
   // 컷을 더블클릭 — 그 컷으로 재생헤드를 옮기고(이미 그 컷이면 그대로) 재생을 멈춘 뒤, 공유 & 리뷰의 '폴더 보기' 창을 그 컷
   //  폴더로 연다. 창은 App 의 것이라 여기서는 무엇을 열지와, 타임라인에 넣은 카드에 붙일 표만 넘긴다.
-  const openCut = useCallback((path: string) => {
+  //  미디어 풀의 카드를 우클릭해도 같은 창이다(Jay 2026-10-13) — 그때는 누른 카드가 보이게 연다(focusId).
+  const openCut = useCallback((path: string, focusId?: string) => {
     if (!target || !layout.cuts.some((item) => item.path === path)) return;
     stop();
     if (view.cut !== path) seekPos({ cut: path, local: 0 });
     onOpenCutFolder({
       projectId: target.projectId, projectName: projects.find((item) => item.id === target.projectId)?.name ?? "",
-      path, ...cutMarks(path),
+      path, ...cutMarks(path), ...(focusId ? { focusId } : null),
     });
   }, [layout, target, stop, view.cut, seekPos, cutMarks, onOpenCutFolder, projects]);
-  // 창이 떠 있는 동안 표를 살려 둔다 — 창에서 우클릭으로 넣고 바꾸면 그 자리에서 표가 바뀐다. 글로 비교해, 내용이 바뀔
+  // 창이 떠 있는 동안 표를 살려 둔다 — 창에서 트랙 메뉴(휠 클릭)로 넣고 바꾸면 그 자리에서 표가 바뀐다. 글로 비교해, 내용이 바뀔
   //  때만 알린다(알릴 때마다 App 이 다시 그려지므로 객체로 비교하면 끝없이 돈다).
   const peekMarks = peekPath ? JSON.stringify(cutMarks(peekPath).marks) : null;
   useEffect(() => {
@@ -1034,6 +1035,7 @@ function EditTabInner({
               resolve={resolve}
               onClearPicked={clearPicked}
               onMenu={(gen, x, y) => openMenu(gen, cut, x, y)}
+              onFolder={(gen) => cut && openCut(cut, gen.id)}
             />
           </ResizableSidebar>
           {/* 타임라인 판 — 안 보일 때도 붙어 있다(엔진의 영상 요소를 떼면 안 된다). 안 보이면 소리를 끈다. */}

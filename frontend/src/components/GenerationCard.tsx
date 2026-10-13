@@ -90,6 +90,8 @@ interface Props {
   onOpenFolder?: (g: Generation) => void;
   openedHere?: boolean; // 이 카드의 폴더 이름표로 폴더 창을 열었다 — 창 안에서 '방금 누른 카드' 표시
   mark?: CardMark; // 편집 탭이 연 폴더 창 — 타임라인에 넣은 카드의 표(같은 자리)
+  // 편집 탭이 연 폴더 창 — 휠 클릭이 정보가 아니라 '넣을 트랙' 메뉴다. 여기서는 설명 글만 바꾼다(누름은 격자가 잡는 단계에서 받는다).
+  wheelMenu?: boolean;
   showFolder?: boolean; // onOpenFolder 가 없어도 폴더 표를 '표시만' 한다(캔버스 '생성 결과' 창 — 누르기 없음)
   dimmed?: boolean; // 흐리게(캔버스에서 고른 폴더 밖). 호버하면 다시 선명
 }
@@ -105,6 +107,7 @@ function GenerationCardImpl({
   onOpenFolder,
   openedHere = false,
   mark,
+  wheelMenu = false,
   showFolder = false,
   dimmed = false,
   fill = true,
@@ -369,7 +372,7 @@ function GenerationCardImpl({
       className="card-thumb"
       // 리스트: 미디어 종횡비와 무관하게 행 높이를 꽉 채우는 정사각(에셋 리스트와 동일 — 이미지·영상 동일 크기)
       style={isList ? { aspectRatio: "1 / 1" } : undefined}
-      title={isList ? "클릭 = 미리보기 · 휠클릭 = 정보" : "클릭 = 선택 · 더블클릭 = 미리보기 · 휠클릭 = 정보"}
+      title={`${isList ? "클릭 = 미리보기" : "클릭 = 선택 · 더블클릭 = 미리보기"} · 휠클릭 = ${wheelMenu ? "넣을 트랙" : "정보"}`}
       onMouseEnter={onEnter}
       onMouseLeave={onLeave}
       onClick={isList ? openPreview : undefined}

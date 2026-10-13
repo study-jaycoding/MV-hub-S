@@ -285,7 +285,7 @@
 .ed-listbtn svg { stroke-linecap: round; }
 .ed-listbtn.ed-on { color: var(--accent); }
 
-/* 카드 우클릭 메뉴 — 넣을 트랙 고르기. 틀(자리·배경·그림자)은 폴더 우클릭 메뉴(.folder-ctx-menu)의 것. */
+/* 카드 휠 클릭 메뉴 — 넣을 트랙 고르기. 틀(자리·배경·그림자)은 폴더 우클릭 메뉴(.folder-ctx-menu)의 것. */
 /* 줄이 많으면(트랙 20개 남짓 + 낮은 창) 화면보다 길어진다 — 메뉴 안에서 스크롤한다(전엔 아래 줄에 마우스로 닿을 수 없었다). 줄은 줄어들지 않는다. */
 .folder-ctx-menu.ed-tmenu { min-width: 0; width: 190px; gap: 2px; max-height: calc(100vh - 8px); overflow-y: auto; }
 .ed-tmenu > * { flex: none; }

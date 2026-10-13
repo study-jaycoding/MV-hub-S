@@ -30,7 +30,8 @@ const EN: Record<string, string> = {
   "반복 재생": "Loop",
   "싱글 뷰어로 — 뷰어 하나만 봅니다": "Single viewer",
   "듀얼 뷰어로 — 뷰어 두 개를 나란히 봅니다": "Dual viewer — two viewers side by side",
-  "더블클릭 = 크게 보기 · 우클릭 = 넣을 트랙 고르기 · Ctrl+클릭 = 여러 장 고르기": "Double-click = open large · right-click = pick a track · Ctrl+click = select several",
+  "더블클릭 = 크게 보기 · 우클릭 = 폴더 창 · 휠 클릭 = 넣을 트랙 고르기 · Ctrl+클릭 = 여러 장 고르기":
+    "Double-click = open large · right-click = folder window · middle-click = pick a track · Ctrl+click = select several",
   "{count}개 선택": "{count} selected",
   "선택 해제": "Clear",
   "고른 생성물을 나란히 비교합니다": "Compare the selected results side by side",
@@ -69,8 +70,8 @@ const EN: Record<string, string> = {
   "소스 테이프": "Source tape",
   "이 컷의 생성물을 이어서": "this cut's results in a row",
   "미디어 풀에서 생성물을 고르면 여기에서 봅니다.": "Pick a result in the media pool to view it here.",
-  "더블클릭하면 이 컷의 생성물 창이 열립니다 — 카드를 우클릭해 넣을 트랙을 고릅니다.":
-    "Double-click to open this cut's folder window — right-click a card to pick a track.",
+  "더블클릭하면 이 컷의 생성물 창이 열립니다 — 카드를 휠 클릭해 넣을 트랙을 고릅니다.":
+    "Double-click to open this cut's folder window — middle-click a card to pick a track.",
   "이 카드는 이미 넣은 클립일 수 있습니다 — 공유 목록을 다 받은 뒤에 다시 해 주세요.":
     "This card may already be placed — try again once the shared list has loaded.",
   "모든 워크스페이스 보기": "Show all workspaces",

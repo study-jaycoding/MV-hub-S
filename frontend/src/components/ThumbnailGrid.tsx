@@ -83,7 +83,7 @@ interface Props {
   onOpenFolder?: (g: Generation) => void; // 카드의 폴더 이름표 → 그 폴더의 생성물 창(안 주면 이름표 없음)
   openedFromId?: string | null; // 폴더 창을 연 카드 — 그 카드에 '방금 누른 카드' 표시
   cardMarks?: Readonly<Record<string, CardMark>>; // 편집 탭이 연 폴더 창 — 타임라인에 넣은 카드의 표(같은 자리)
-  onCardMenu?: (g: Generation, x: number, y: number) => void; // 그 창 — 카드 우클릭(넣을 트랙 메뉴). 안 주면 브라우저 메뉴 그대로
+  onCardMenu?: (g: Generation, x: number, y: number) => void; // 그 창 — 카드 휠 클릭(넣을 트랙 메뉴). 안 주면 휠 클릭 = 정보 그대로
   // ── 캔버스 '생성 결과' 창이 쓰는 선택 기능(안 주면 종전 그대로) ──
   cellHeader?: (g: Generation) => React.ReactNode; // 카드 위(셀 안)에 그리는 칸 — '대표' 단추
   lastViewedId?: string | null; // 주면(null 포함) '마지막으로 본' 표시를 이 값으로 — 라이브러리 칸 대신 호출자의 칸
@@ -382,6 +382,7 @@ export function ThumbnailGrid(props: Props) {
       onOpenFolder={props.onOpenFolder ? cb.onOpenFolder : undefined}
       openedHere={generation.id === props.openedFromId}
       mark={props.cardMarks?.[generation.id]}
+      wheelMenu={!!props.onCardMenu}
       showFolder={props.showFolder}
       dimmed={props.dimIds?.has(generation.id)}
     />
@@ -697,13 +698,19 @@ export function ThumbnailGrid(props: Props) {
     if (g) onPreviewCell(g);
   };
 
-  // 카드 우클릭(onCardMenu 를 준 화면만) — 입력칸 위는 브라우저 메뉴(붙여넣기)를 그대로 둔다.
-  const onGridContextMenu = (e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest("input, textarea, [contenteditable]")) return;
+  // 카드 휠 클릭(onCardMenu 를 준 화면만 — 편집 탭이 연 폴더 창의 '넣을 트랙' 메뉴, Jay 2026-10-13: 그 전에는 우클릭이었다).
+  //  잡는 단계에서 받아 전파를 막는다 — 안 막으면 카드의 휠 클릭(정보 창)이 같이 뜬다. 그 창에서 정보는 카드의 ⓘ 단추로 본다.
+  //  글자를 넣는 칸 위는 건드리지 않는다(체크박스는 카드의 일부다 — 목록 보기의 선택 칸 위에서도 같은 메뉴, Codex 코드 리뷰).
+  //  키보드의 메뉴 키(누름 없이 오는 contextmenu — button 이 2 가 아니다)는 전처럼 그 카드의 메뉴를 연다: 휠 클릭은 키보드로 할 수
+  //  없다. 마우스 우클릭(button 2)은 건드리지 않는다 — 브라우저 메뉴 그대로.
+  const onGridCardMenu = (e: React.MouseEvent) => {
+    if (e.type === "auxclick" ? e.button !== 1 : e.button === 2) return;
+    if ((e.target as HTMLElement).closest("textarea, [contenteditable], input:not([type=checkbox])")) return;
     const cellEl = (e.target as HTMLElement).closest(".gen-cell") as HTMLElement | null;
     const g = cellEl && opsRef.current.generations.find((x) => x.id === cellEl.dataset.id);
     if (!g) return;
     e.preventDefault();
+    e.stopPropagation();
     props.onCardMenu?.(g, e.clientX, e.clientY);
   };
 
@@ -814,7 +821,8 @@ export function ThumbnailGrid(props: Props) {
         {...multiClick}
         onMouseDown={onGridMouseDown}
         onDoubleClick={onGridDblClick}
-        onContextMenu={props.onCardMenu ? onGridContextMenu : undefined}
+        onAuxClickCapture={props.onCardMenu ? onGridCardMenu : undefined}
+        onContextMenu={props.onCardMenu ? onGridCardMenu : undefined}
         onDragStart={onGridDragStart}
         onKeyDown={(e) => onGridKey(e.nativeEvent)}
         onScroll={onGridScroll}

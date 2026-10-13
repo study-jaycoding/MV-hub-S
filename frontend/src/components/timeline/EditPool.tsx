@@ -2,7 +2,8 @@
 //  Jay 2026-10-08). 머리줄에서 보기 방식(썸네일·메타데이터·목록)과 썸네일 크기·검색·정렬을 바꾼다.
 //  누르면 고른다(Ctrl·Shift 로, 또는 끌어서 상자로 여러 장 — 마지막 것이 듀얼 뷰어의 소스, 2장 이상이면 비교) ·
 //  더블클릭 = 크게 보기(재생) ·
-//  우클릭 = 넣을 트랙 고르기(EditTrackMenu).
+//  우클릭 = 이 컷의 폴더 창(공유 & 리뷰의 '폴더 보기' — 그 카드가 보이게) ·
+//  휠 클릭 = 넣을 트랙 고르기(EditTrackMenu). (Jay 2026-10-13 — 그 전에는 우클릭이 트랙 메뉴였다)
 import { useEffect, useMemo, useRef, useState, type HTMLAttributes, type MouseEvent as ReactMouseEvent } from "react";
 import type { Generation } from "../../types";
 import { POOL_SIZE, type EditUi, type PoolSort, type PoolView } from "../../lib/editTimelineStore";
@@ -58,6 +59,7 @@ export function EditPool({
   resolve,
   onClearPicked,
   onMenu,
+  onFolder,
 }: {
   title: string; // 'e070 / c0050'
   items: PoolItem[]; // 받은 순서(최신 먼저)
@@ -73,7 +75,8 @@ export function EditPool({
   // Resolve 보내기(Jay 2026-10-08) — 앱의 보내기 줄 그대로(고른 생성물을 넘기면 된다. 탭·선택 상태에 묶여 있지 않다)
   resolve: { send: (gens: Generation[]) => void; busy: boolean; pendingCount: number };
   onClearPicked: () => void;
-  onMenu: (gen: Generation, x: number, y: number) => void; // 우클릭 — 넣을 트랙 고르기
+  onMenu: (gen: Generation, x: number, y: number) => void; // 휠 클릭 — 넣을 트랙 고르기
+  onFolder: (gen: Generation) => void; // 우클릭 — 이 컷의 폴더 창을 그 카드가 보이게 연다
 }) {
   const t = useT();
   const [open, setOpen] = useState<"view" | "sort" | null>(null);
@@ -153,7 +156,7 @@ export function EditPool({
   };
   const handlersOf = (item: PoolItem): HTMLAttributes<HTMLButtonElement> & { "data-id": string } => ({
     "data-id": item.gen.id, // 끌어서 고르기가 이 값으로 카드를 찾는다
-    title: t("더블클릭 = 크게 보기 · 우클릭 = 넣을 트랙 고르기 · Ctrl+클릭 = 여러 장 고르기"),
+    title: t("더블클릭 = 크게 보기 · 우클릭 = 폴더 창 · 휠 클릭 = 넣을 트랙 고르기 · Ctrl+클릭 = 여러 장 고르기"),
     onClick: (event) => {
       if (draggedRef.current) {
         draggedRef.current = false; // 건너뛰는 것은 그 끌기에 딸린 한 번뿐이다
@@ -162,7 +165,16 @@ export function EditPool({
       onPick(item.gen, event.ctrlKey || event.metaKey || event.shiftKey);
     },
     onDoubleClick: () => onOpen(item.gen, shown.map((entry) => entry.gen)),
+    // 마우스 우클릭(contextmenu 의 button = 2) = 폴더 창. 키보드의 메뉴 키는 누름 없이 contextmenu 만 온다(button 이 2 가 아니다 —
+    //  2026-10-13 크롬 실측 −1) — 그때는 전처럼 트랙 메뉴다: 휠 클릭은 키보드로 할 수 없어, 이 길이 없으면 키보드로는 넣지 못한다.
     onContextMenu: (event) => {
+      event.preventDefault();
+      if (event.button === 2) onFolder(item.gen);
+      else onMenu(item.gen, event.clientX, event.clientY);
+    },
+    // 휠 클릭(가운데 단추) — 누름의 자동 스크롤은 풀 뿌리의 keepFocus 가 이미 막는다(어느 단추든 preventDefault)
+    onAuxClick: (event) => {
+      if (event.button !== 1) return;
       event.preventDefault();
       onMenu(item.gen, event.clientX, event.clientY);
     },

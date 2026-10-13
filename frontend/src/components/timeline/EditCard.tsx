@@ -24,7 +24,7 @@ export function EditCard({
 }: {
   item: PoolItem;
   picked: boolean; // 풀에서 고른 카드(듀얼 뷰어의 소스)
-  handlers: HTMLAttributes<HTMLButtonElement>; // 누르기·더블클릭·우클릭·설명 — 세 보기가 같은 것을 쓴다
+  handlers: HTMLAttributes<HTMLButtonElement>; // 누르기·더블클릭·우클릭·휠 클릭·설명 — 세 보기가 같은 것을 쓴다
 }) {
   const t = useT();
   const { gen, track, showing } = item;
