@@ -445,8 +445,13 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   // undefined = 아직 한 번도 안 돎. 처음 실행은 '라이브러리 → 씬 전환'이 아니다 — 캔버스 탭으로 켜졌을 때 빈 편집기를 라이브러리 초안으로
   //  적지 않고, 라이브러리로 켜졌을 때는 담아 둔 초안을 되살린다(Jay 결정 5B, Codex C17).
   const prevBindingKeyRef = useRef<string | null | undefined>(undefined);
-  const [storedLibraryDraft] = useState(readLibraryDraft); // 같은 브라우저에 담아 둔 라이브러리 초안(켤 때 한 번)
+  // 초안 키는 켤 때의 계정으로 고정한다 — 읽은 계정과 쓰는 계정이 갈리면 A 의 글을 B 키로 적을 수 있다(로그인 직후 다시 읽기 전, Codex 5B 리뷰).
+  const [libraryDraftStoreKey] = useState(libraryDraftKey);
+  const [storedLibraryDraft] = useState(() => readLibraryDraft(libraryDraftStoreKey)); // 같은 브라우저에 담아 둔 라이브러리 초안(켤 때 한 번)
   const libraryDraftRef = useRef<string>(storedLibraryDraft ? JSON.stringify(storedLibraryDraft.parts) : ""); // 비-씬(라이브러리) 프롬프트 보관
+  // 되살린 직후의 내용 지문 — 되살리기만 하고 고치지 않았으면 담지 않는다(오래된 탭이 손대지 않고 다른 탭의 새 초안을 덮지 않게, Codex 5B 리뷰).
+  const restoredDraftFpRef = useRef<string | null>(null);
+  const draftFingerprint = (draft: LibraryPromptDraft) => JSON.stringify([draft.parts, draft.trayRefs]);
   const draftParse = (s: string): PromptPart[] => {
     if (!s) return [];
     let p: unknown;
@@ -480,6 +485,11 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       // 씬 → 라이브러리 이탈: 보관해둔 라이브러리 프롬프트 복원(직전이 씬이었을 때만). 처음 실행이면 담아 둔 초안이 있을 때만.
       if (prev !== null && (prev !== undefined || libraryDraftRef.current)) {
         restoreParts(ed, draftParse(libraryDraftRef.current));
+        restoredDraftFpRef.current = draftFingerprint({
+          parts: serializeParts(ed),
+          // 처음 실행이면 트레이는 아직 상태에 안 들어왔다(아래 effect 가 놓는다) — 담아 둔 값으로 견준다
+          trayRefs: prev === undefined ? storedLibraryDraft?.trayRefs ?? [] : localTrayRefs.map(({ uid: _uid, ...ref }) => ref),
+        });
         scheduleLiveWrap();
         updatePlaceholder();
         bumpPromptTick();
@@ -605,9 +615,13 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     if (!ed) return;
     const parts = serializeParts(ed);
     const draft: LibraryPromptDraft = { parts, trayRefs: localTrayRefs.map(({ uid: _uid, ...ref }) => ref) };
-    const key = libraryDraftKey();
+    const key = libraryDraftStoreKey;
     if (pendingDraftRef.current) clearTimeout(pendingDraftRef.current.timer);
     pendingDraftRef.current = null;
+    if (restoredDraftFpRef.current !== null) {
+      if (draftFingerprint(draft) === restoredDraftFpRef.current) return; // 되살리기만 했다 — 고친 게 없다
+      restoredDraftFpRef.current = null; // 한 번이라도 고쳤으면 그 뒤로는 늘 담는다(되돌려 같아져도)
+    }
     if (parts.every((part) => part.t === "text" && !part.v.trim())) {
       writeLibraryDraft(key, draft);
       return;
@@ -1234,6 +1248,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
         if (ed) {
           stripQuery(ed, mention.kind);
           updatePlaceholder();
+          bumpPromptTick(); // 글이 바뀌었다 — 라이브러리 초안도 따라가게(안 그러면 지운 검색어가 다음에 되살아났다, Codex 5B 리뷰)
         }
         setMention(null);
       } else if (tagFilter) {

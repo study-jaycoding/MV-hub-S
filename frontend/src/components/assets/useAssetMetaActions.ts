@@ -100,15 +100,23 @@ export function useAssetMetaActions({
     void queue.enqueue(operation);
   };
 
-  // 태그 더하기·빼기 저장 — 서버는 다른 창이 그사이 더한 태그까지 합쳐 돌려준다. 이 저장 뒤에 들어온 편집이 없을 때만 그 값으로 화면과 열린 편집기를
-  //  맞춘다(뒤 편집의 낙관 화면을 덮지 않게). 안 맞추면 서버는 [old, B] 인데 화면·편집기는 [old] 로 남았다(Codex 9A 리뷰, 서버셋 설계 ③).
+  // 태그 더하기·빼기 저장 — 서버는 다른 창이 그사이 더한 태그까지 합쳐 돌려준다. 그 파일에 이 저장 뒤의 태그 편집이 없을 때만 그 값으로 화면과
+  //  열린 편집기를 맞춘다(뒤 편집의 낙관 화면을 덮지 않게). 안 맞추면 서버는 [old, B] 인데 화면·편집기는 [old] 로 남았다(Codex 9A 리뷰, 서버셋 설계 ③).
+  //  '뒤 편집'은 **파일마다** 본다 — 프로젝트 전체로 보면 a 를 고친 뒤 응답 전에 b 를 고쳤을 때 a 의 병합 결과까지 버렸다(Codex 9A 재리뷰).
+  const tagOpSeqRef = useRef(new Map<string, number>()); // `${project}\n${path}` → 그 파일의 마지막 태그 저장 순번
   const saveTagOps = (items: { path: string; add?: string[]; remove?: string[] }[]) => {
     const targetProject = project;
-    const revision = mutationRevisionRef.current.get(targetProject) || 0;
+    const seqOf = (path: string) => tagOpSeqRef.current.get(`${targetProject}\n${path}`) || 0;
+    const sent = new Map(items.map(({ path }) => {
+      const seq = seqOf(path) + 1;
+      tagOpSeqRef.current.set(`${targetProject}\n${path}`, seq);
+      return [path, seq] as const;
+    }));
     enqueueSave(async () => {
       const saved = await api.applyAssetTagOps(targetProject, items);
-      if (currentProjectRef.current !== targetProject || (mutationRevisionRef.current.get(targetProject) || 0) !== revision) return;
-      const changed = saved.items.filter(({ path, tags }) => (metaRef.current[path]?.tags ?? []).join("\n") !== tags.join("\n"));
+      if (currentProjectRef.current !== targetProject) return;
+      const changed = saved.items.filter(({ path, tags }) =>
+        seqOf(path) === sent.get(path) && (metaRef.current[path]?.tags ?? []).join("\n") !== tags.join("\n"));
       if (!changed.length) return;
       const next = { ...metaRef.current };
       for (const { path, tags } of changed) next[path] = { ...(next[path] || EMPTY_ASSET_META), tags };

@@ -353,6 +353,29 @@ it("에셋 태그 — 저장이 성공하면 서버가 합친 태그(다른 창�
   expect(chips()).toEqual(["old", "B"]); // 전엔 ["old"] — 서버와 달랐다(Codex 9A 리뷰가 재현)
 });
 
+it("에셋 태그 — a 의 응답 전에 다른 파일 b 를 고쳐도 a 의 합친 태그는 맞춘다(뒤 편집은 파일마다 본다)", async () => {
+  fixture.meta = { "a.png": metaOf(["old", "A"]), "b.png": metaOf([]) };
+  let answerA!: (value: { ok: boolean; count: number; items: { path: string; tags: string[] }[] }) => void;
+  fixture.setTags.mockImplementationOnce(() => new Promise((done) => { answerA = done; }));
+  fixture.setMeta = (next) => { fixture.meta = next as Record<string, unknown>; };
+  await mount();
+  await click("a.png");
+  await key({ key: "#" });
+  const chipA = [...host.querySelectorAll(".te-chip")].find((chip) => chip.firstChild!.textContent === "A")!;
+  await act(async () => { chipA.querySelector<HTMLButtonElement>(".te-x")!.click(); }); // a 저장 — 응답 대기
+  await act(async () => { tagInput()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+  await click("b.png");
+  await key({ key: "#" });
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(tagInput()!, "X");
+    tagInput()!.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => { tagInput()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); }); // b 저장 — a 뒤에 줄 선다
+  await act(async () => { answerA({ ok: true, count: 1, items: [{ path: "a.png", tags: ["old", "B"] }] }); }); // 서버엔 다른 창의 B
+  await act(async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); });
+  expect((fixture.meta["a.png"] as { tags: string[] }).tags).toEqual(["old", "B"]); // 전엔 b 편집 때문에 버려져 ["old"] 로 남았다
+});
+
 it("폴더를 바꾸면 열려 있던 태그 입력이 닫힌다 — 새 폴더에 같은 경로의 파일이 있어도 그 파일에 저절로 열리지 않는다", async () => {
   fixture.meta = { "b.png": metaOf(["p-tag"]) };
   await mount();

@@ -73,6 +73,30 @@ it("캔버스 탭(씬 카드)으로 켜면 담아 둔 글을 빈 글로 덮지 �
   expect(editor().textContent).toBe("라이브러리 글");
 });
 
+// Codex 5B 리뷰(10-15): 읽은 계정과 쓰는 계정이 갈리면 안 된다 · 되살리기만 한 오래된 탭이 다른 탭의 새 초안을 덮으면 안 된다 · Esc 로 지운 검색어가 되살아나면 안 된다.
+it("켤 때의 계정 키에만 쓴다 — 그 뒤 이 탭의 계정 범위가 바뀌어도 앞 계정의 글을 새 계정 키에 적지 않는다", async () => {
+  view = await mountPrompt();
+  sessionStorage.setItem("ch.accountScope", "b@example.test"); // 로그인으로 범위가 바뀌었다(새로 고치기 전)
+  typeText("A 계정에서 쓰던 글");
+  await wait(600);
+  expect(JSON.parse(stored()!).parts).toEqual([{ t: "text", v: "A 계정에서 쓰던 글" }]);
+  expect(localStorage.getItem("mvhub.libraryPromptDraft:acct:b@example.test")).toBeNull();
+  sessionStorage.removeItem("ch.accountScope");
+});
+
+it("되살리기만 하고 고치지 않은 탭은 담지 않는다 — 다른 탭이 그사이 담은 새 초안을 덮지 않는다", async () => {
+  localStorage.setItem(key, draft("옛 글"));
+  view = await mountPrompt();
+  expect(editor().textContent).toBe("옛 글");
+  localStorage.setItem(key, draft("다른 탭의 새 글")); // 다른 탭이 담았다
+  await act(async () => { await view!.render({ armedAutoTags: [] }); }); // 다시 그려져도
+  await wait(600);
+  expect(JSON.parse(stored()!).parts).toEqual([{ t: "text", v: "다른 탭의 새 글" }]);
+  typeText("옛 글 고침"); // 이 탭에서 실제로 고치면 그때는 담는다
+  await wait(600);
+  expect(JSON.parse(stored()!).parts).toEqual([{ t: "text", v: "옛 글 고침" }]);
+});
+
 it("다른 계정의 초안·손상된 초안은 읽지 않는다", async () => {
   localStorage.setItem("mvhub.libraryPromptDraft:acct:other@example.test", draft("남의 글"));
   view = await mountPrompt();
