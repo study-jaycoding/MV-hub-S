@@ -117,7 +117,7 @@ it("설명을 고치는 사이 남이 먼저 저장했으면(409) 내 글은 '�
   expect(manageApi.updateTask).toHaveBeenLastCalledWith("task-a", { description: "내 초안", expected_description: "남이 쓴 글" });
 });
 
-it("앞 저장이 가는 중에 이어 쳐서 다시 저장하면 기준을 보내지 않는다 — 그 저장이 서버 글을 바꾸는 중이라 엉뚱한 충돌이 나지 않게(50회차)", async () => {
+it("앞 저장이 가는 중에 이어 쳐서 다시 저장하면, 앞 저장이 성공했을 때 그 글을 기준으로 보낸다 — 엉뚱한 충돌이 나지 않게(50회차)", async () => {
   render(); await settle();
   let release!: () => void;
   vi.mocked(manageApi.updateTask).mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve({} as never); }));
@@ -128,7 +128,24 @@ it("앞 저장이 가는 중에 이어 쳐서 다시 저장하면 기준을 보�
   release();
   await settle(); await settle();
   const calls = vi.mocked(manageApi.updateTask).mock.calls.map((call) => call[1]);
-  expect(calls).toEqual([{ description: "첫 글", expected_description: "원래 설명" }, { description: "첫 글 더" }]);
+  expect(calls).toEqual([{ description: "첫 글", expected_description: "원래 설명" }, { description: "첫 글 더", expected_description: "첫 글" }]);
+});
+
+// Codex 검토(P1): 앞 저장이 남의 변경과 충돌했는데 뒤 저장이 기준 없이 나가 안내 전에 남의 글을 덮었다.
+it("앞 저장이 충돌(409)로 막히면 그 뒤에 줄 선 저장도 원래 기준으로 나가 막힌다 — 안내 전에 남의 글을 덮지 않는다(50회차)", async () => {
+  render(); await settle();
+  let reject!: (error: unknown) => void;
+  vi.mocked(manageApi.updateTask).mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+  act(() => input().focus()); type("첫 글"); act(() => input().blur());
+  await settle();
+  act(() => input().focus()); type("첫 글 더"); act(() => input().blur()); // 앞 저장이 아직 가는 중
+  await settle();
+  const conflict = new HttpError(409, "conflict", JSON.stringify({ kind: "task_edit_conflict", field: "description", latest: "남이 쓴 글" }));
+  vi.mocked(manageApi.updateTask).mockRejectedValueOnce(conflict); // 서버는 뒤 저장도 거절한다(기준이 맞지 않으니)
+  reject(conflict);
+  await settle(); await settle(); await settle();
+  const calls = vi.mocked(manageApi.updateTask).mock.calls.map((call) => call[1]);
+  expect(calls[1]).toEqual({ description: "첫 글 더", expected_description: "원래 설명" }); // 앞 저장이 실패했다 — 기준을 그 글로 잇지 않는다
 });
 
 it("받은 적 없는 범위의 조회 실패는 전처럼 오류 화면이다 — 첫 조회 실패, 그리고 다른 범위에 다녀온 뒤의 실패(빈 표를 받은 내용이라 하지 않는다)", async () => {
@@ -200,7 +217,7 @@ it("'저장 안 됨'은 복구 조회가 끝나기를 기다리지 않고 붙는
   await act(async () => { release(); });
   await settle();
   expect(manageApi.updateTask).toHaveBeenCalledTimes(2);
-  expect(manageApi.updateTask).toHaveBeenLastCalledWith("task-a", { description: "못 간 글" });
+  expect(manageApi.updateTask).toHaveBeenLastCalledWith("task-a", { description: "못 간 글", expected_description: "원래 설명" }); // 앞 저장은 실패했다 — 원래 기준 그대로
   expect(host.querySelector(".work-desc-chip")).toBeNull();
   expect(input().value).toBe("못 간 글");
 });

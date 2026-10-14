@@ -415,8 +415,8 @@ function DescCell({ task, disabled, onCommit, drafts }: {
     const mineRev = rev.current;
     const sentText = draft;
     // 기준(편집을 시작할 때의 서버 글)을 같이 보낸다 — 그사이 남이 바꿨으면 서버가 거절한다(50회차). 같은 작업의 앞 저장이 아직 가는
-    //  중이면 보내지 않는다(그 저장이 서버 글을 바꾸는 중이라 엉뚱한 충돌이 난다 — 그때는 전처럼 덮는다).
-    const base = store.flying.get(taskId) ? undefined : store.drafts.get(taskId)?.base;
+    //  중이면 그 결과로 기준을 잇는 것은 줄(WorkBoard 의 onPatch)이 한다 — 앞 저장이 성공하면 그 글, 실패하면 이 기준 그대로(Codex 검토).
+    const base = store.drafts.get(taskId)?.base;
     sent.current = mine;
     if (!skip) {
       store.stale.add(taskId);

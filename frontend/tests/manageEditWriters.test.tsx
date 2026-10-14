@@ -138,7 +138,22 @@ it("ProjectManagerPanel sends the name and workspace only when they were edited"
   await click('[title="프로젝트 설정"]');
   await type(host.querySelector<HTMLInputElement>('[placeholder="프로젝트 이름"]')!, "Renamed");
   await click('.project-dialog-actions .admin-confirm-yes');
-  expect(mocks.updateProject).toHaveBeenCalledExactlyOnceWith("p", expect.objectContaining({ name: "Renamed" }));
+  expect(mocks.updateProject).toHaveBeenCalledExactlyOnceWith("p", { name: "Renamed" }); // 워크스페이스는 손대지 않았다 — 보내지 않는다(Codex 검토)
+});
+
+// Codex 검토: 새 프로젝트를 만든 뒤 뒤 저장이 실패하면, 그사이 남이 연결한 폴더를 다시 저장이 '빈칸으로 바꾼 것'으로 보고 지웠다.
+it("new project partial failure — a retry does not clear a render folder someone linked meanwhile", async () => {
+  mocks.createProject.mockResolvedValue({ id: "new", name: "New", workspace_id: "ws" });
+  mocks.setPlanning.mockRejectedValueOnce(new Error("offline")).mockResolvedValue({ project_id: "new", revision: 1, status: "active" });
+  await act(async () => { root.render(<ProjectManagerPanel />); }); await settle();
+  const create = [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("새 프로젝트"))!;
+  await act(async () => { create.click(); }); await settle();
+  await type(host.querySelector<HTMLInputElement>('[placeholder="프로젝트 이름"]')!, "New");
+  mocks.projectFolderLinks.mockResolvedValue({ links: { new: { root_path: "\\\\nas\\render\\other", selected_path: "" } } }); // 그사이 남이 연결했다
+  await click('.project-dialog-actions .admin-confirm-yes'); // 생성은 됐고 일정 저장이 실패 → 목록을 다시 받는다
+  expect(host.textContent).toContain("일부 저장됨: 프로젝트 생성");
+  await click('.project-dialog-actions .admin-confirm-yes'); // 다시 저장 — 렌더 폴더 칸은 손대지 않았다
+  expect(mocks.setProjectFolder).not.toHaveBeenCalled();
 });
 
 it("ProjectManagerPanel does not re-save the render folder it only read when the dialog opened", async () => {

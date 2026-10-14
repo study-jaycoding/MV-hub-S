@@ -615,9 +615,25 @@ export function WorkBoard({
     });
   }
 
+  // 설명 저장의 기준 잇기(50회차 — Codex 검토): 같은 작업의 설명 저장이 가는 중에 들어온 저장은, 그 앞 저장이 **성공했으면** 그 글을
+  //  기준으로 보낸다(서버 글이 그것이 됐다). 실패했으면 칸이 준 기준 그대로 — 앞 저장이 충돌로 막혔으면 이것도 막혀, 안내 전에 남의
+  //  글을 덮지 않는다. descWrites = 이 화면이 서버에 쓴 마지막 설명(순번과 글), descInFlight = 가는 중인 설명 저장 수.
+  const descWritesRef = useRef(new Map<string, { seq: number; text: string }>());
+  const descWriteSeqRef = useRef(0);
+  const descInFlightRef = useRef(new Map<string, number>());
   const onPatch = (tid: string, patch: Partial<Task>, expectedDescription?: string): Promise<boolean> => {
     if (writeBlocked(tid)) return Promise.resolve(false);
     const requestScope = scopeKey;
+    const isDesc = patch.description !== undefined;
+    // 줄에 설 때 앞 설명 저장이 가는 중이면, 그때까지의 마지막 쓰기 순번을 적어 둔다 — 나갈 때 그 뒤의 쓰기가 있으면 그 글이 기준이다
+    const chainedAfter = isDesc && (descInFlightRef.current.get(tid) ?? 0) > 0 ? (descWritesRef.current.get(tid)?.seq ?? 0) : null;
+    if (isDesc) descInFlightRef.current.set(tid, (descInFlightRef.current.get(tid) ?? 0) + 1);
+    const doneInFlight = () => {
+      if (!isDesc) return;
+      const left = (descInFlightRef.current.get(tid) ?? 1) - 1;
+      if (left > 0) descInFlightRef.current.set(tid, left);
+      else descInFlightRef.current.delete(tid);
+    };
     let saved = false; // 서버가 받았나 — 줄(queue)은 실패를 삼키고 복구하므로 여기서 따로 적는다
     // 결과는 줄의 끝과 따로 알린다. 줄의 끝(enqueue 가 돌려주는 것)은 실패 뒤의 복구 조회까지 기다린다 — 그것으로 알리면 설명 칸의
     //  '저장 안 됨'이 조회가 끝나야 붙었다(서버가 응답 없이 매달리면 그만큼 늦는다). 실패는 그 자리에서 알리고, 성공은 전처럼 줄의
@@ -634,8 +650,16 @@ export function WorkBoard({
     const drafts = descDraftsRef.current; // 범위가 바뀌면 보관함이 새것이 된다 — 센 곳에서 뺀다
     let held = false;
     void taskPatchQueueRef.current!.enqueue(tid, async () => {
+      let expected = expectedDescription;
+      const last = descWritesRef.current.get(tid);
+      if (expected !== undefined && chainedAfter !== null && last && last.seq > chainedAfter) expected = last.text;
       try {
-        await manageApi.updateTask(tid, expectedDescription === undefined ? patch : { ...patch, expected_description: expectedDescription });
+        try {
+          await manageApi.updateTask(tid, expected === undefined ? patch : { ...patch, expected_description: expected });
+        } finally {
+          doneInFlight();
+        }
+        if (isDesc) descWritesRef.current.set(tid, { seq: ++descWriteSeqRef.current, text: patch.description ?? "" });
         saved = true;
         taskDataRevisionRef.current += 1;
       } catch (error) {

@@ -401,13 +401,20 @@ export function ProjectManagerPanel({
         if (projects.some(sameName)) throw new Error(taken);
         const created = await api.createProject(name, "team", workspaceContext);
         if (projects.some((item) => item.id === created.id)) throw new Error(taken);
-        pending = { ...projectDialog, mode: "rename", project: created };
+        // 새 프로젝트의 렌더 폴더 기준은 빈칸으로 못 박는다 — 뒤 저장이 실패해 다시 저장할 때, 그사이 남이 연결한 폴더를 '내가 지운 것'으로 보지 않게(Codex 검토)
+        pending = { ...projectDialog, mode: "rename", project: created, rootPathBaseline: "" };
         savedParts.push("프로젝트 생성");
-      } else if (name !== projectDialog.project.name || workspace.id !== projectDialog.project.workspace_id) {
-        // 손댄 것만 보낸다 — 예산만 고쳐도 창을 열 때의 이름·워크스페이스를 다시 보내, 그사이 남이 바꾼 이름을 되돌렸다(50회차)
-        await api.updateProject(projectDialog.project.id, { name, workspace: workspaceContext });
-        savedParts.push("프로젝트 이름·워크스페이스");
-        if (pending.mode === "rename") pending = { ...pending, project: { ...pending.project, name, workspace_id: workspace.id } }; // 다시 저장할 때의 기준
+      } else {
+        // 손댄 칸만 보낸다 — 예산만(또는 이름만·워크스페이스만) 고쳐도 창을 열 때의 나머지 값을 다시 보내, 그사이 남이 바꾼 것을 되돌렸다(50회차)
+        const renamed = name !== projectDialog.project.name;
+        const moved = workspace.id !== projectDialog.project.workspace_id;
+        if (renamed || moved) {
+          await api.updateProject(projectDialog.project.id, { ...(renamed ? { name } : {}), ...(moved ? { workspace: workspaceContext } : {}) });
+          savedParts.push(renamed && moved ? "프로젝트 이름·워크스페이스" : renamed ? "프로젝트 이름" : "워크스페이스");
+          if (pending.mode === "rename") { // 다시 저장할 때의 기준
+            pending = { ...pending, project: { ...pending.project, ...(renamed ? { name } : {}), ...(moved ? { workspace_id: workspace.id } : {}) } };
+          }
+        }
       }
       if (pending.mode !== "rename") return;
       const planning = await conflict.savePlanning(pending.project.id, pending.planningBaseline, planningResult.planning);
@@ -416,7 +423,7 @@ export function ProjectManagerPanel({
       setProjectDialog({ ...pending, busy: true });
       const prev = projFolders[pending.project.id];
       // 렌더 폴더도 손댔을 때만 — 창을 열 때 읽은 값을 다시 저장하면 그사이 남이 바꾼 폴더 연결을 되돌린다(50회차). 새 프로젝트는 기준이 빈칸.
-      const rootBaseline = projectDialog.mode === "rename" ? projectDialog.rootPathBaseline ?? prev?.root_path ?? "" : "";
+      const rootBaseline = pending.rootPathBaseline ?? "";
       if (rootPath !== rootBaseline) {
         folderSaveFailed = !(await saveProjectFolderLink(pending.project.id, rootPath, rootPath ? prev?.selected_path || "" : ""));
         if (!folderSaveFailed) {

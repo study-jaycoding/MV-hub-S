@@ -125,7 +125,7 @@ it("설명 칸 — 치는 중에 목록이 새로 와도 친 글자를 지우지
   act(() => input().focus());
   type("새 설명");
   await act(async () => { input().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); }); // 저장 결과까지 기다린다
-  expect(onPatch).toHaveBeenCalledExactlyOnceWith("task", { description: "새 설명" });
+  expect(onPatch).toHaveBeenCalledExactlyOnceWith("task", { description: "새 설명" }, "서버 값"); // 기준 = 처음 칠 때의 목록 글(50회차)
   // 초점만 두고 고치지 않은 칸은 남의 변경을 따라가고, 벗어날 때 옛 글을 저장하지 않는다(옛 초안이 남의 변경을 되돌렸다)
   onPatch.mockClear();
   draw("새 설명");
@@ -150,7 +150,7 @@ it("설명 저장이 실패하면 친 글을 남기고 '저장 안 됨'을 표�
   act(() => input().focus());
   type("색 보정 다시");
   act(() => input().blur());
-  expect(onPatch).toHaveBeenCalledExactlyOnceWith("task", { description: "색 보정 다시" });
+  expect(onPatch).toHaveBeenCalledExactlyOnceWith("task", { description: "색 보정 다시" }, "원래 값");
   expect(host.querySelector(".work-desc-chip")).toBeNull(); // 아직 답이 안 왔다
   await settle(false); // 저장 실패
   expect(host.querySelector(".work-desc-chip")!.textContent).toBe("저장 안 됨");
@@ -160,7 +160,7 @@ it("설명 저장이 실패하면 친 글을 남기고 '저장 안 됨'을 표�
   // [다시 저장] — 같은 글로 한 번 더, 성공하면 표시가 사라진다
   act(() => host.querySelector<HTMLButtonElement>(".work-desc-retry")!.click());
   expect(onPatch).toHaveBeenCalledTimes(2);
-  expect(onPatch).toHaveBeenLastCalledWith("task", { description: "색 보정 다시" });
+  expect(onPatch).toHaveBeenLastCalledWith("task", { description: "색 보정 다시" }, "원래 값");
   await settle(true);
   expect(host.querySelector(".work-desc-chip")).toBeNull();
   // 다시 실패한 뒤 Esc = 그 글을 버리고 서버 값으로, 표시도 사라진다
@@ -209,7 +209,7 @@ it("설명 저장의 응답을 기다리는 동안 새 목록이 와도 친 글�
   expect(chip()).not.toBeNull();
   act(() => input().blur()); // 저장 3 출발('셋째 글' 은 아직 서버에 없다)
   expect(onPatch).toHaveBeenCalledTimes(3);
-  expect(onPatch).toHaveBeenLastCalledWith("task", { description: "셋째 글" });
+  expect(onPatch).toHaveBeenLastCalledWith("task", { description: "셋째 글" }, "둘째 글"); // 저장 2 가 성공했다 — 기준은 서버에 쓴 그 글
   await settle(2, true);
   expect(chip()).toBeNull();
   // ③ Esc 로 버린 뒤에 온 늦은 실패가 표시를 다시 켜지 않는다
@@ -243,7 +243,7 @@ it("설명 저장이 가는 중에 원래 글로 되돌려 벗어나면 그 글�
   type("원래 값"); // 마음을 바꿔 원래 글로
   act(() => input().blur());
   expect(onPatch).toHaveBeenCalledTimes(2); // 목록의 값과 같아도 보낸다 — 안 보내면 저장 1 이 끝난 뒤 서버·화면이 "새 글"이 된다
-  expect(onPatch).toHaveBeenLastCalledWith("task", { description: "원래 값" });
+  expect(onPatch).toHaveBeenLastCalledWith("task", { description: "원래 값" }, "원래 값"); // 저장 1 이 가는 중 — 잇기는 줄(WorkBoard)의 몫
   await settle(0, true);
   await settle(1, true);
   expect(host.querySelector(".work-desc-chip")).toBeNull();
@@ -276,7 +276,7 @@ it("설명 저장이 성공한 직후, 목록이 따라오기 전에 원래 글�
   await settle(0, true); // 저장 1 성공: 서버는 "새 글". 이 시험의 목록은 따라오지 않는다(성공 직후의 틈)
   act(() => input().blur());
   expect(onPatch).toHaveBeenCalledTimes(2); // 목록의 옛 값과 같다고 생략하면 서버·화면이 "새 글"로 남는다
-  expect(onPatch).toHaveBeenLastCalledWith("task", { description: "원래 값" });
+  expect(onPatch).toHaveBeenLastCalledWith("task", { description: "원래 값" }, "새 글"); // 저장 1 이 성공했다 — 서버 글은 "새 글"
   await settle(1, true);
   expect(chip()).toBeNull();
   // 저장이 실패한 뒤에도 목록이 새로 오기 전에는 목록 값을 믿지 않는다 — 원래 글로 되돌리면 보내고, 성공하면 표시를 걷는다
@@ -317,7 +317,7 @@ it("설명 저장의 성공 응답이 더 새 목록보다 늦게 와도, 그 �
   type("내 글"); // 다시 내 글로
   act(() => input().blur());
   expect(onPatch).toHaveBeenCalledTimes(2); // 서버는 "남이 바꾼 값"이다 — 보내야 한다
-  expect(onPatch).toHaveBeenLastCalledWith("task", { description: "내 글" });
+  expect(onPatch).toHaveBeenLastCalledWith("task", { description: "내 글" }, "남이 바꾼 값");
 });
 
 it("저장에 실패한 설명 글은 표 밖에 적어 둔다 — 그 줄이 화면에서 빠졌다 돌아와도 글과 '저장 안 됨'이 남고, 저장되거나 Esc 로 버리면 지운다", async () => {
@@ -345,7 +345,7 @@ it("저장에 실패한 설명 글은 표 밖에 적어 둔다 — 그 줄이 �
   // 다시 저장 → 성공하면 표시도, 적어 둔 것도 지운다
   fail = false;
   await act(async () => { host.querySelector<HTMLButtonElement>(".work-desc-retry")!.click(); await Promise.resolve(); await Promise.resolve(); });
-  expect(onPatch).toHaveBeenLastCalledWith("task", { description: "못 간 글" });
+  expect(onPatch).toHaveBeenLastCalledWith("task", { description: "못 간 글" }, "원래 값");
   expect(host.querySelector(".work-desc-chip")).toBeNull();
   expect(drafts.drafts.size).toBe(0);
   // 실패한 글을 Esc 로 버려도 지운다
