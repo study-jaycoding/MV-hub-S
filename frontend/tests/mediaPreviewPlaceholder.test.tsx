@@ -37,6 +37,25 @@ afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(
 const show = (target: PreviewTarget) => act(() => root.render(<MediaPreview target={target} onClose={() => {}} />));
 const thumbLoaded = () => act(() => images.filter((im) => im.src === "/t.jpg").forEach((im) => im.onload?.()));
 
+// 51회차(Codex 검토): 끌어 옮긴 뒤 브라우저를 확대하거나 창을 줄이면 머리(제목·닫기·받기)가 화면 밖에 남아 다시 잡을 수 없었다.
+it("크게 보기 창은 끌어도, 창이 줄어도 머리가 화면 안에 남는다", () => {
+  const size = (name: "offsetWidth" | "offsetHeight", value: number) =>
+    vi.spyOn(HTMLElement.prototype, name, "get").mockImplementation(function (this: HTMLElement) { return this.classList.contains("media-preview") ? value : 0; });
+  size("offsetWidth", 600); size("offsetHeight", 400);
+  try {
+    show({ url: "/o.png", type: "image", name: "n" });
+    const box = () => host.querySelector<HTMLElement>(".media-preview")!;
+    act(() => { host.querySelector(".info-head")!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 500, clientY: 10 })); });
+    act(() => { window.dispatchEvent(new MouseEvent("pointermove", { clientX: 5000, clientY: 10, buttons: 1 })); }); // 오른쪽 끝 너머로(누른 채)
+    act(() => { window.dispatchEvent(new MouseEvent("pointerup", { clientX: 5000, clientY: 10 })); });
+    expect(box().style.transform).toContain("calc(-50% + 720px)"); // 왼쪽 = 200 + x ≤ 1000 − 80
+    act(() => { Object.assign(window, { innerWidth: 500 }); window.dispatchEvent(new Event("resize")); }); // 확대·창 줄임
+    expect(box().style.transform).toContain("calc(-50% + 470px)"); // 왼쪽 = −50 + x ≤ 500 − 80 — 전엔 720 그대로라 머리가 밖에 있었다
+  } finally {
+    vi.restoreAllMocks();
+  }
+});
+
 it("자리 표시 크기는 원본이 놓일 상자(78vw × 74vh)에 썸네일 비율로 맞춘다", () => {
   expect(fitPreviewBox(512, 288, 1000, 1000)).toEqual({ w: 780, h: 439 }); // 가로가 먼저 닿는다
   expect(fitPreviewBox(288, 512, 1000, 1000)).toEqual({ w: 416, h: 740 }); // 세로가 먼저 닿는다

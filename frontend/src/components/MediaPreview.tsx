@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { recordGenerationView } from "../lib/generationViews";
 import { APP_EVENTS } from "../lib/appEvents";
 import { downloadGeneration, downloadOne } from "../lib/download";
-import { addWindowPointerDrag, removeWindowPointerDrag } from "../lib/windowDrag";
+import { addWindowPointerDrag, keepHeadReachable, removeWindowPointerDrag } from "../lib/windowDrag";
 import type { PreviewTarget } from "../types";
 import { CloseIcon } from "./common/ViewIcons";
 
@@ -161,6 +161,25 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [items]);
 
+  // 머리(제목·닫기·받기)가 화면 안에 남게 — 끌어 옮긴 뒤 브라우저를 확대하거나 창을 줄이면 머리가 화면 밖에 남아 다시 잡을 수 없었다(51회차).
+  //  이 창은 가운데 기준 오프셋이라, 왼쪽 위 자리로 바꿔 keepHeadReachable(다른 떠 있는 창과 같은 규칙)에 맞춘 뒤 되돌린다.
+  const reachable = (x: number, y: number) => {
+    const box = boxRef.current;
+    if (!box) return { x, y };
+    const left = window.innerWidth / 2 - box.offsetWidth / 2 + x;
+    const top = window.innerHeight / 2 - box.offsetHeight / 2 + y;
+    const kept = keepHeadReachable(left, top, box.offsetWidth);
+    return { x: x + kept.x - left, y: y + kept.y - top };
+  };
+  useEffect(() => {
+    const fit = () => setPos((p) => {
+      const next = reachable(p.x, p.y);
+      return next.x === p.x && next.y === p.y ? p : next;
+    });
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const onDragStart = (e: React.PointerEvent) => {
     drag.current = { ox: pos.x, oy: pos.y, sx: e.clientX, sy: e.clientY };
     addWindowPointerDrag(onDragMove, onDragEnd);
@@ -168,7 +187,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
   const onDragMove = (e: PointerEvent) => {
     const d = drag.current;
     if (!d) return;
-    setPos({ x: d.ox + (e.clientX - d.sx), y: d.oy + (e.clientY - d.sy) });
+    setPos(reachable(d.ox + (e.clientX - d.sx), d.oy + (e.clientY - d.sy)));
   };
   const onDragEnd = () => {
     drag.current = null;
