@@ -81,7 +81,7 @@ import {
   useEditProjects,
 } from "../../lib/useEditSequence";
 import { dropQueuedVideoMeasures, knownVideoSeconds, measureVideoSeconds, measuredExactly } from "../../lib/videoDuration";
-import { editMarkLabel } from "./EditCard";
+import { editMarkLabel, sourceMarkLabel } from "./EditCard";
 import { EditExportConfirm } from "./EditExportConfirm";
 import { EditMarkerColorMenu, EditMarkerMenu } from "./EditMarkerMenu";
 import { arrangePool, EditPool, type PoolItem } from "./EditPool";
@@ -471,14 +471,18 @@ function EditTabInner({
   const showingTrack = view.clip?.track ?? null;
   const srcIn0 = srcModeOf(0) === "source" ? gen0?.id : undefined;
   const srcIn1 = srcModeOf(1) === "source" ? gen1?.id : undefined;
+  // 그 카드가 떠 있는 소스 클립 판 — 풀의 표와 폴더 창의 표가 같이 쓴다
+  const sourceOfGen = useCallback((id: string): PoolItem["source"] => {
+    const left = id === srcIn0;
+    const right = id === srcIn1;
+    return !left && !right ? undefined : !ui.dual ? "S" : left && right ? "LR" : left ? "L" : "R";
+  }, [srcIn0, srcIn1, ui.dual]);
   const poolItems = useMemo<PoolItem[]>(() => cutItems.map((item) => {
-    const left = item.gen.id === srcIn0;
-    const right = item.gen.id === srcIn1;
-    const source = !left && !right ? undefined : !ui.dual ? "S" : left && right ? "LR" : left ? "L" : "R";
+    const source = sourceOfGen(item.gen.id);
     const showing = item.track !== null && item.track === showingTrack;
     const resolved = resolvePicked.has(item.gen.id); // 다빈치에서 고른 것(빨간 표)
     return showing || source || resolved ? { ...item, showing, ...(source && { source }), ...(resolved && { resolve: true }) } : item;
-  }), [cutItems, showingTrack, srcIn0, srcIn1, ui.dual, resolvePicked]);
+  }), [cutItems, showingTrack, sourceOfGen, resolvePicked]);
   const tlOrder = slots.indexOf("timeline");
   const tlShown = tlOrder >= 0;
   // 재생 키(Space·J·K·L·←→·↑↓·Home·End)는 마지막에 누른 판의 시계로 간다(다빈치). 편집 키는 언제나 타임라인 것이다. 싱글이면 보이는 판.
@@ -877,20 +881,32 @@ function EditTabInner({
   const pickCut = useCallback((path: string) => {
     if (view.cut !== path) seekPos({ cut: path, local: 0 });
   }, [view.cut, seekPos]);
-  // 그 컷에 넣은 카드의 표("V1 - 선택 카드") — 지금 뷰어에 보이는 것(lead)만 라임이고, 창이 열릴 때 그 카드로 내려간다.
-  const cutMarks = useCallback((path: string) => {
+  // 그 컷의 폴더 창에 붙일 표 — 넣은 트랙("V1 - 선택 카드") · 소스 클립 판("소스 L") · 우클릭해서 창을 연 카드("방금 누른 카드"),
+  //  한 카드에 여럿이면 이어서 적는다(Jay 2026-10-14). 지금 뷰어에 보이는 것(타임라인의 그 클립·소스 판)과 누른 카드만 라임이고,
+  //  창이 열릴 때 타임라인의 그 카드로 내려간다.
+  const cutMarks = useCallback((path: string, clicked: string | null) => {
     const slot = layout.cuts.find((item) => item.path === path);
     const lead = !slot ? null : view.cut === path ? view.clip : visibleClip(doc, slot, 0);
-    const marks: Record<string, CardMark> = {};
+    const parts = new Map<string, { labels: string[]; lead: boolean }>();
+    const add = (id: string, label: string, isLead: boolean) => {
+      const part = parts.get(id) ?? { labels: [], lead: false };
+      parts.set(id, { labels: [...part.labels, label], lead: part.lead || isLead });
+    };
     let focusId: string | null = null;
     for (const clip of slot?.clips ?? []) {
       const id = links.get(clipKey(clip))?.gen?.id ?? clip.gen; // job 으로 다시 이은 클립은 지금의 카드 id
       const isLead = !!lead && lead.gen === clip.gen;
-      marks[id] = { label: editMarkLabel(clip.track, t), lead: isLead };
+      add(id, editMarkLabel(clip.track, t), isLead);
       if (isLead) focusId = id;
     }
+    for (const id of new Set([srcIn0, srcIn1])) if (id) add(id, sourceMarkLabel(sourceOfGen(id), t), true);
+    if (clicked) add(clicked, t("방금 누른 카드"), true);
+    const marks: Record<string, CardMark> = {};
+    for (const [id, part] of parts) marks[id] = { label: part.labels.join(" · "), lead: part.lead };
     return { marks, focusId };
-  }, [layout, view.cut, view.clip, doc, links, t]);
+  }, [layout, view.cut, view.clip, doc, links, t, srcIn0, srcIn1, sourceOfGen]);
+  const [peekClicked, setPeekClicked] = useState<string | null>(null); // 풀의 카드를 우클릭해 연 창 — 그 카드(창이 닫히면 잊는다)
+  useEffect(() => { if (!peekPath) setPeekClicked(null); }, [peekPath]);
   // 컷을 더블클릭 — 그 컷으로 재생헤드를 옮기고(이미 그 컷이면 그대로) 재생을 멈춘 뒤, 공유 & 리뷰의 '폴더 보기' 창을 그 컷
   //  폴더로 연다. 창은 App 의 것이라 여기서는 무엇을 열지와, 타임라인에 넣은 카드에 붙일 표만 넘긴다.
   //  미디어 풀의 카드를 우클릭해도 같은 창이다(Jay 2026-10-13) — 그때는 누른 카드가 보이게 연다(focusId).
@@ -898,14 +914,15 @@ function EditTabInner({
     if (!target || !layout.cuts.some((item) => item.path === path)) return;
     stopBoth();
     if (view.cut !== path) seekPos({ cut: path, local: 0 });
+    setPeekClicked(focusId ?? null);
     onOpenCutFolder({
       projectId: target.projectId, projectName: projects.find((item) => item.id === target.projectId)?.name ?? "",
-      path, ...cutMarks(path), ...(focusId ? { focusId } : null),
+      path, ...cutMarks(path, focusId ?? null), ...(focusId ? { focusId } : null),
     });
   }, [layout, target, stopBoth, view.cut, seekPos, cutMarks, onOpenCutFolder, projects]);
   // 창이 떠 있는 동안 표를 살려 둔다 — 창에서 트랙 메뉴(휠 클릭)로 넣고 바꾸면 그 자리에서 표가 바뀐다. 글로 비교해, 내용이 바뀔
   //  때만 알린다(알릴 때마다 App 이 다시 그려지므로 객체로 비교하면 끝없이 돈다).
-  const peekMarks = peekPath ? JSON.stringify(cutMarks(peekPath).marks) : null;
+  const peekMarks = peekPath ? JSON.stringify(cutMarks(peekPath, peekClicked).marks) : null;
   useEffect(() => {
     if (peekMarks !== null) onPeekMarks(JSON.parse(peekMarks) as Record<string, CardMark>);
   }, [peekMarks, onPeekMarks]);

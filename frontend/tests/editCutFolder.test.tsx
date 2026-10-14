@@ -253,7 +253,8 @@ it("미디어 풀은 뷰어 왼쪽에 있다 — 누르면 고르고, 더블클�
   expect(trackMenu()).toBeNull();
   expect(opened).toEqual([{
     projectId: "p1", projectName: "P1", path: "e070/c1", focusId: "a", // 뷰어에 보이는 것(b)이 아니라 누른 카드
-    marks: { a: { label: "V1 - 선택 카드", lead: false }, b: { label: "V2 - 선택 카드", lead: true } },
+    // 누른 카드에는 '방금 누른 카드'를 이어 적고 라임(Jay 2026-10-14 모의 화면 — 라이브러리 폴더 창과 같은 표)
+    marks: { a: { label: "V1 - 선택 카드 · 방금 누른 카드", lead: true }, b: { label: "V2 - 선택 카드", lead: true } },
   }]);
   expect(storedTracks()).toEqual([["a", 1], ["b", 2]]); // 창을 여는 것은 타임라인을 바꾸지 않는다
 
@@ -1523,6 +1524,16 @@ it("두 판이 다 소스 클립이어도 따로 논다 — 풀에서 고르면 
   expect(marks()).toEqual(["", "소스 R", ""]);
   pickMode("tape", "소스 클립"); // 메뉴로 올린 소스 클립 판 = 마지막으로 고른 것(b) — 두 판이 같은 카드
   expect(marks()).toEqual(["", "소스 L·R", ""]);
+
+  // 우클릭으로 연 폴더 창의 표에도 소스 판과 누른 카드가 보인다(Jay 2026-10-14 — "어느 걸 누르고 열었는지·어느 게 소스 L R 인지")
+  rightClick(poolCards()[0]); // a 를 우클릭
+  expect(opened.at(-1)!.marks).toEqual({ b: { label: "소스 L·R", lead: true }, a: { label: "방금 누른 카드", lead: true } });
+  // 목록 보기의 마지막 칸 = 트랙 · 소스(Jay — "여기도 소스 L R 등이 보여야 한다")
+  act(() => poolButton("보기 방식").click());
+  act(() => popItem("목록 보기").click());
+  expect(document.querySelector(".ed-prow-head")!.lastElementChild!.textContent).toBe("트랙 · 소스");
+  expect(poolRows("list").map((row) => row.lastElementChild!.textContent)).toEqual(["", "소스 L·R", ""]);
+  expect(poolRows("list")[1].querySelector(".ed-ptrack > .cd-mark.lead")).not.toBeNull();
 });
 
 // Codex 코드 리뷰(2026-10-14 오후) — 풀의 상자 고르기·선택 해제가 판에 안 따라왔고(누름만 따라왔다), 테이프 판에서 고르면 옆 소스 클립 판도 바뀌었다.
