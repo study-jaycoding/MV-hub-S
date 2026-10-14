@@ -696,5 +696,10 @@ def activate_backup_set(backup_set_id: str, request: Request):
     d = _dir(acc["email"])
     with _dir_lock(d):
         folder, _manifest, count = _select_valid_set(d, backup_set_id)
+        # 마무리가 끊긴 세트(server.json 없음)를 먼저 '끝난 세트'로 적는다 — 안 그러면 그 세트의 재전송이 _finish_marks 로
+        # 사용자가 고른 머리를 다시 뒤집는다(Codex 47회차 검토). 고른 세트가 아니면 갈래다.
+        for other in _valid_set_dirs(folder.parent):
+            if not _server_meta(other):
+                _write_server_meta(other, conflict=other.name != folder.name)
         _write_head(folder.parent, folder.name)
     return {"ok": True, "backup_set_id": backup_set_id, "count": count}

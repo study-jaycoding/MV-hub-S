@@ -956,6 +956,34 @@ def test_resend_finishes_marks_after_publish_failure(tmp_path: Path, monkeypatch
     assert json.loads((final / "server.json").read_text("utf-8"))["conflict"] is False
 
 
+def test_resend_of_an_unfinished_set_does_not_undo_an_activation(tmp_path: Path, monkeypatch):
+    """Codex 47회차 검토 — 머리는 자식으로 옮겼는데 server.json 만 못 적은 세트도, 사용자가 부모를 고른(activate) 뒤 다시 오면
+    머리를 다시 가져가지 않는다. activate 가 마무리 안 된 세트를 '끝난 세트(갈래)'로 적어 둔다."""
+    first, second, first_data, second_data = _parent_and_child(tmp_path)
+    root = tmp_path / "account"
+    _store(root, first, first_data)
+    real_write = db_backup.atomic_write_text
+
+    def fail_meta_once(path, *args, **kwargs):
+        if Path(path).name == "server.json" and Path(path).parent.name == second["backup_set_id"]:
+            monkeypatch.setattr(db_backup, "atomic_write_text", real_write)
+            raise OSError("disk full")
+        return real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(db_backup, "atomic_write_text", fail_meta_once)
+    with pytest.raises(OSError):
+        _store(root, second, second_data)
+    assert db_backup._read_head(root / "sets") == second["backup_set_id"]  # 머리는 옮겼고 server.json 만 없다
+    monkeypatch.setattr(db_backup, "_acct", lambda _request: {"email": "artist@example.com"})
+    monkeypatch.setattr(db_backup, "_dir", lambda _email: root)
+    db_backup.activate_backup_set(first["backup_set_id"], object())  # 사용자가 부모로 되돌렸다
+
+    ack = _store(root, second, second_data)  # 응답을 못 받았던 작업자가 자식을 다시 보낸다
+
+    assert (ack["duplicate"], ack["is_current"], ack["conflict"]) == (True, False, True)
+    assert db_backup._read_head(root / "sets") == first["backup_set_id"]
+
+
 def test_resend_of_a_finished_set_does_not_undo_a_chosen_head(tmp_path: Path):
     """마무리가 끝난 세트(server.json 있음)의 재전송은 머리를 건드리지 않는다 — 사용자가 옛 세트로 되돌린 것을 다시 뒤집지 않는다."""
     first, second, first_data, second_data = _parent_and_child(tmp_path)

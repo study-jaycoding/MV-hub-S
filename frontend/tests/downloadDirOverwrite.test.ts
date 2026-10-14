@@ -104,3 +104,18 @@ it("쓰다 실패하면(디스크 꽉 참·잠김) 방금 만든 빈 파일을 �
   expect(aborted).toEqual(["shot (1).png"]);
   expect(await read()).toEqual({ "shot.png": "먼저 받은 그림" }); // 전엔 빈 'shot (1).png' 가 남았다
 });
+
+it("'없음'을 본 뒤 다른 창이 같은 이름으로 저장을 끝냈으면, 이쪽 쓰기가 실패해도 그 파일은 지우지 않는다(Codex 47회차 검토)", async () => {
+  const { dir: real, files, read } = fakeDir();
+  const raced = {
+    getFileHandle: async (name: string, options?: { create?: boolean }) => {
+      if (!options?.create) throw Object.assign(new Error("없음"), { name: "NotFoundError" }); // 이 창이 볼 때는 없었다
+      files.set(name, blob("다른 창이 받은 그림")); // 그 사이 다른 창이 같은 이름으로 저장을 끝냈다 — create 는 그 파일을 준다
+      const handle = await real.getFileHandle(name, options);
+      return { ...handle, createWritable: async () => ({ write: async () => { throw new Error("디스크 꽉 참"); }, close: async () => {}, abort: async () => {} }) };
+    },
+    removeEntry: async (name: string) => { files.delete(name); },
+  };
+  await expect(writeIntoDir(raced, "shot.png", blob("이 창의 그림"))).rejects.toThrow("디스크 꽉 참");
+  expect(await read()).toEqual({ "shot.png": "다른 창이 받은 그림" });
+});
