@@ -1365,6 +1365,27 @@ it("다이나믹 트림 모드: 앞을 자른 클립은 시작점을 더한 프�
   press({ key: "w", code: "KeyW" });
 });
 
+// 길이 조절 창의 크기(Jay 2026-10-14 — 모서리를 끌어 키운다 · 가장 작은 크기 = 처음 크기). 끌기 자체는 브라우저(CSS resize)가 하고,
+//  잰 크기는 떠 있는 창 공용 훅이 남긴다 — 여기서는 '남긴 크기로 연다'와 '남긴 것이 없으면 처음 크기(CSS)'를 본다.
+it("길이 조절 창: 남겨 둔 크기로 열린다 · 없으면 처음 크기 그대로(인라인 크기 없음)", () => {
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
+  world.gens = [...world.gens, videoGen()];
+  seed([{ cut: "c1", gen: "v", track: 1, kind: "video" }]);
+  const open = () => {
+    mount();
+    const clip = document.querySelector<HTMLElement>(".ed-lanes .ed-clip")!;
+    act(() => { clip.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1, clientX: 50, clientY: 50 })); });
+    return document.querySelector<HTMLElement>(".ed-trim")!;
+  };
+  let pop = open();
+  expect([pop.style.width, pop.style.height]).toEqual(["", ""]);
+  act(() => root.unmount());
+  localStorage.setItem("ch.editTrim.size", JSON.stringify({ w: 820, h: 700 })); // 지난번에 키워 둔 크기
+  root = createRoot(host);
+  pop = open();
+  expect([pop.style.width, pop.style.height]).toEqual(["820px", "700px"]);
+});
+
 // 길이 조절 창의 큰 화면(Jay 2026-10-14 앞 자르기) — 영상 요소가 **실제로 가는 시각**을 본다(tests/editTabCuts 의 창 시험에는 영상 요소가
 //  없다 — Codex 코드 리뷰): 잡은 쪽의 프레임 · ▶ 는 원본의 0초가 아니라 시작점부터 · 끝점에서 멈춰 잡은 쪽의 프레임으로.
 it("길이 조절 창의 큰 화면: 잡은 쪽의 프레임에 서고, ▶ 는 시작점부터 틀어 끝점에서 멈춘다(앞을 자른 클립)", () => {

@@ -115,10 +115,13 @@ export function EditTrimPop({
   // 자리 — 끌어 옮긴 적이 있으면 그 자리(저장), 없으면 **열 때마다** 누른 클립의 바로 위(trimPopPlace). 화면 밖으로 나가지 않게 잡는
   //  것은 훅이 한다. 훅은 열기만 해도 자리를 적어 둔다(화면 밖 보정용) — 그래서 '끌어 옮겼다'는 표(moved)를 따로 둔다: 표가 없으면
   //  적힌 자리를 쓰지 않는다(전날 판이 적어 둔 오른쪽 위 자리도 그렇게 지나간다).
-  const { pos, setPos, panelRef, onHeadMouseDown } = useFloatingPanel(LS, "pos", "size", true);
+  // size = 오른쪽 아래 모서리로 바꾼 크기(훅이 재서 남긴다) — 다음에 열 때 그 크기로 연다(Jay 2026-10-14)
+  const { pos, setPos, size, panelRef, onHeadMouseDown } = useFloatingPanel(LS, "pos", "size", true);
+  const opened0 = useRef(size).current; // 연 순간의 크기 — 떠 있는 동안 끌어 바꾸는 크기는 브라우저가 쥔다(인라인으로 다시 덮지 않는다)
   const [moved, setMoved] = useState(() => LS.get("moved", "") === "1");
   const opened = useRef({ anchor, moved }).current; // 창이 뜬 순간의 것
-  const first = useRef(trimPopPlace(anchor, { width: WIDTH, height: HEIGHT }, { width: window.innerWidth, height: window.innerHeight })).current;
+  const first = useRef(trimPopPlace(anchor, opened0 ? { width: opened0.w, height: opened0.h } : { width: WIDTH, height: HEIGHT },
+    { width: window.innerWidth, height: window.innerHeight })).current;
   const [placed, setPlaced] = useState(false); // 이 열림의 자리를 훅에 알렸다 — 그 뒤로는 훅의 자리(pos)가 화면의 자리다
   const at = (moved || placed) && pos ? pos : first;
   const panel = useRef<HTMLDivElement | null>(null);
@@ -325,7 +328,7 @@ export function EditTrimPop({
   ].filter(Boolean);
   return createPortal(
     <div ref={setPanel} className="ed-trim" role="dialog" aria-label={t("길이 조절")} tabIndex={-1}
-      style={{ left: at.x, top: at.y }} onKeyDown={onKeyDown}>
+      style={{ left: at.x, top: at.y, ...(opened0 && { width: opened0.w, height: opened0.h }) }} onKeyDown={onKeyDown}>
       <div className="ed-trim-head" onMouseDown={onHead}>
         <b>{t("길이 조절")}</b>
         <span>{title}</span>
