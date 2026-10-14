@@ -301,10 +301,12 @@ class RemoteRealtimeBridge:
             self._connected = True
             self._state = "connected"
             self._last_error = None
-            if self._had_connection:
+            if self._had_connection or self._reconnect_attempts:
                 # 끊긴 동안 놓친 신호는 복구할 수 없다(서버에 cursor/재전송 없음) — 세 도메인에
                 # 출처 없는 reload 를 한 번씩 흘려 로컬 브라우저가 전체 재조회로 따라잡게 한다.
-                # 최초 연결은 App 초기 로드와 겹치므로 생략(브라우저 progressSocket 과 같은 계약).
+                # 바로 붙은 최초 연결은 App 초기 로드와 겹치므로 생략한다. 최초 연결이 실패했다가
+                # 나중에 붙은 것은 따라잡는다 — 그 사이 다른 PC 의 변경을 놓친다(53회차, 브라우저
+                # progressSocket 과 같은 계약).
                 for event_type in _EVENT_TO_CHANNEL:
                     self._event_handler(
                         RemoteRealtimeEvent(event_type=event_type, origins=None)

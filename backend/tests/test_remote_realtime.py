@@ -153,9 +153,13 @@ def test_bridge_reconnects_after_failure_and_stop_cleans_task():
                 return FakeConnection(error=OSError("offline"))
             return FakeConnection(FakeSocket([json.dumps({"type": "synced"})]))
 
+        seen = []
+
         def handle(event):
-            current[0] = None
-            delivered.set()
+            seen.append(event)
+            if len(seen) >= 4:  # 따라잡기 3건(첫 시도가 실패했다 — 53회차) + 실제 synced 1건
+                current[0] = None
+                delivered.set()
 
         bridge = RemoteRealtimeBridge(
             lambda: current[0],
@@ -176,8 +180,9 @@ def test_bridge_reconnects_after_failure_and_stop_cleans_task():
     assert calls == 2
     assert stats["reconnect_attempts"] == 1
     assert stats["relayed_events"] == 1
-    # 첫 시도는 연결 자체가 실패(established 아님) — 재연결이어도 catch-up reload 는 없다.
-    assert stats["catchup_reloads"] == 0
+    # 첫 시도가 실패했다가 나중에 붙었다 — 그 사이 다른 PC 의 변경을 놓쳤으므로 따라잡는다(53회차: 전엔 0 이라
+    #  완료 카드만 있는 캔버스처럼 주기 조회가 없는 화면은 다음 신호까지 옛 상태였다. 브라우저 progressSocket 과 같은 계약).
+    assert stats["catchup_reloads"] == 1
     assert stats["state"] == "stopped"
     assert stats["connected"] is False
 
