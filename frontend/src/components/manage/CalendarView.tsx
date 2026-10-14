@@ -3,6 +3,7 @@
 //    "누가 언제 무엇을 만들었나" 뷰(작업 타임라인 아님).
 //  · 월간: 일반 달력(주=행)에 작업 기간(시작~마감)을 막대로. "시퀀스가 언제 시작해 끝났나" 뷰.
 import { useMemo, useState } from "react";
+import { kstDay } from "../../lib/dateGroups";
 import { useT } from "../../lib/i18n";
 import { MediaThumbnail } from "../MediaThumbnail";
 import { MonthlyTaskCalendar } from "./MonthlyTaskCalendar";
@@ -87,7 +88,7 @@ export function creatorCalendarRows(
   return [...map.entries()].map(([key, e]) => {
     const byDay: Record<number, Cut[]> = {};
     for (const c of e.cuts) {
-      const d = parseYMD(c.created_at);
+      const d = parseYMD(kstDay(c.created_at)); // 한국 날짜 칸(서버셋 설계 ②)
       if (!d || d.y !== year || d.m !== month) continue;
       (byDay[d.d] ||= []).push(c);
     }

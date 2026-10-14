@@ -658,7 +658,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   const cellOnT = startTagEdit; // 카드 T 클릭 = 인라인 태그 편집(키보드 #와 동일)
   const cellOnC = useCallback((p: string) => cellOpsRef.current.openComments(p), []);
   const cellOnTagsReplace = useCallback(
-    (p: string, tags: string[]) => cellOpsRef.current.setAssetTagsReplace(p, tags),
+    (p: string, tags: string[], previous: string[]) => cellOpsRef.current.setAssetTagsReplace(p, tags, previous),
     [],
   );
   const cellOnBulkTagAdd = useCallback(

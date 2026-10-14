@@ -53,7 +53,7 @@ export const AssetCell = memo(function AssetCell({
   onS: (path: string) => void;
   onT: (path: string) => void; // 태그 인라인 편집 시작(생성카드 T 버튼과 동일 · 키보드 #와 같은 경로)
   onC: (path: string) => void;
-  onTagsReplace: (path: string, tags: string[]) => void; // 이 카드의 태그를 정확히 이 집합으로 교체
+  onTagsReplace: (path: string, tags: string[], previous: string[]) => void; // 이 카드의 태그를 이 집합으로(previous = 조작 직전 칩)
   onBulkTagAdd: (path: string, names: string[]) => void; // 다중선택 시 추가를 선택 전체에 적용
   onBulkTagRemove: (path: string, names: string[]) => void; // 다중선택 시 ×해제를 선택 전체에(공통 삭제)
   onTagCancel: () => void;
@@ -333,7 +333,7 @@ export const AssetCell = memo(function AssetCell({
     >
       <TagEditor
         tags={meta.tags}
-        onChange={(next) => onTagsReplace(node.path, next)}
+        onChange={(next, previous) => onTagsReplace(node.path, next, previous)}
         onBulkAdd={(names) => onBulkTagAdd(node.path, names)}
         onBulkRemove={(names) => onBulkTagRemove(node.path, names)}
         selectedCount={selectedCount}
@@ -349,7 +349,7 @@ export const AssetCell = memo(function AssetCell({
     >
       <TagEditor
         tags={meta.tags}
-        onChange={(next) => onTagsReplace(node.path, next)}
+        onChange={(next, previous) => onTagsReplace(node.path, next, previous)}
         selectedCount={selectedCount}
         showInput={false}
       />

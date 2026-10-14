@@ -36,7 +36,7 @@ it("다중 선택: 새 태그와 가진 태그를 섞어 입력하면 이 카드
   const onChange = vi.fn(), onBulkAdd = vi.fn();
   act(() => root.render(<TagEditor tags={["hero"]} onChange={onChange} onBulkAdd={onBulkAdd} selectedCount={3} />));
   typeTag("hero, night");
-  expect(onChange).toHaveBeenCalledExactlyOnceWith(["hero", "night"]);
+  expect(onChange).toHaveBeenCalledExactlyOnceWith(["hero", "night"], ["hero"]); // 둘째 = 조작 직전 칩(서버셋 설계 ③)
   expect(onBulkAdd).toHaveBeenCalledExactlyOnceWith(["hero", "night"]);
 });
 

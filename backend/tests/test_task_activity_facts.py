@@ -101,6 +101,18 @@ class TaskActivityFactsTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM generation").fetchone()[0], 0)
         self.assertNotIn("account_email", json.dumps(task))
 
+    def test_derived_days_are_korean_dates(self):
+        """새벽(KST 00~09시)에 만든 컷은 그날 칸 — UTC 앞 10자를 쓰면 전날이 됐다(서버셋 설계 ②, Jay 결정 9A)."""
+        self.content(shared=True)
+        self.content("server-2", job="job-2", shared=True)
+        with db.get_connection() as conn:
+            conn.execute("UPDATE generation SET created_at='2026-09-22 15:30:00' WHERE id='server-1'")
+            conn.execute("UPDATE generation SET created_at='2026-09-24T14:59:59Z' WHERE id='server-2'")
+        task = self.read("u2")[0]
+        self.assertEqual((task["derived_start"], task["derived_due"]), ("2026-09-23", "2026-09-24"))
+        self.assertEqual(manage_tasks._kst_day("2026-09-24T15:00:00Z"), "2026-09-25")
+        self.assertEqual(manage_tasks._kst_day("not a date"), "not a date")
+
     def test_viewer_pair_is_required_even_with_read_all(self):
         self.fact()
         self.assertEqual(self.read(viewer=False, read_all=True), [])

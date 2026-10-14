@@ -14,19 +14,19 @@ afterEach(() => {
 });
 
 describe("Assets batch metadata API", () => {
-  it("여러 태그 변경을 한 요청 본문으로 보낸다", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(okResponse({ ok: true, count: 2 }));
+  it("여러 태그 변경을 더하기·빼기 한 요청으로 보낸다(목록 통째가 아니다 — 서버셋 설계 ③)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse({ ok: true, items: [] }));
     vi.stubGlobal("fetch", fetchMock);
     const items = [
-      { path: "a.png", tags: ["hero"] },
-      { path: "b.png", tags: ["bg"] },
+      { path: "a.png", add: ["hero"] },
+      { path: "b.png", remove: ["bg"] },
     ];
 
-    await expect(assetsApi.setAssetTagsBatch("demo", items)).resolves.toEqual({ ok: true, count: 2 });
+    await expect(assetsApi.applyAssetTagOps("demo", items)).resolves.toEqual({ ok: true, count: 2 });
 
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/assets/tags/batch",
+      "/api/assets/tags/ops",
       expect.objectContaining({ method: "PUT", body: JSON.stringify({ project: "demo", items }) }),
     );
   });

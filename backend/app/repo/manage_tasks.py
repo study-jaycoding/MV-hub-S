@@ -10,6 +10,7 @@ import os
 import threading
 import time
 import weakref
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from ..db import get_connection, pool_epoch
@@ -26,6 +27,21 @@ from .manage_task_activity import (
     task_activity_cache_key,
     visible_activity_projects,
 )
+
+
+_KST = timezone(timedelta(hours=9))
+
+
+def _kst_day(created_at: str) -> str:
+    """UTC 시각('YYYY-MM-DD HH:MM:SS' 또는 '…T…Z')을 한국 날짜로. 앞 10자를 그대로 쓰면 새벽(KST 00~09시)에 만든 컷이
+    전날로 갔다(서버셋 설계 ②). 서버의 TZ 설정(CONTENT_HUB_TZ)이 아니라 UTC+9 고정 — 화면의 Asia/Seoul 과 같다."""
+    try:
+        moment = datetime.fromisoformat(created_at.strip().replace(" ", "T").replace("Z", "+00:00"))
+    except ValueError:
+        return created_at[:10]
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(_KST).strftime("%Y-%m-%d")
 
 
 # ── 작업(Task) ────────────────────────────────────────────────────────────────
@@ -876,8 +892,8 @@ def _list_tasks_batch_uncached(
             d["comment_count"] = cc
             # 기간 파생 — 자동 작업의 시작~마감을 연결 컷의 생성일 범위로 표시(DB 미기록, 반환값만).
             # start_date/due_date 는 PM 입력값 그대로 두고, 별도 derived_* 로 내려 프론트가
-            # 'PM값 ?? 파생값'으로 표시(코덱스). created_at 은 시각 포함이라 앞 10자리(날짜)만 쓴다.
-            days = sorted(g["created_at"][:10] for g in gens if g.get("created_at"))
+            # 'PM값 ?? 파생값'으로 표시(코덱스). created_at 은 UTC 시각이라 한국 날짜로 바꿔 쓴다.
+            days = sorted(_kst_day(g["created_at"]) for g in gens if g.get("created_at"))
             d["derived_start"] = days[0] if days else None
             d["derived_due"] = days[-1] if days else None
             d["derived_date"] = days[0] if days else None  # 기존 캘린더 폴백 호환

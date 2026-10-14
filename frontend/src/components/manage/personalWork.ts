@@ -1,6 +1,22 @@
 // 팀 작업(Task) 한 행을 현재 생성자 기준 개인 작업으로 좁힌다.
 // 실제로 만든 컷의 creator_uid 기준 자동 파생만 사용한다(수동 담당 배정 개념은 2026-08-21 폐기).
+import { kstDay } from "../../lib/dateGroups";
 import type { Cut, Task } from "./types";
+
+// 연결 컷의 생성일 범위(한국 날짜). 서버도 같은 컷 집합에서 같은 값을 내지만, 옛 서버는 UTC 날짜를 준다 —
+//  화면이 컷에서 다시 계산하면 서버 판과 상관없이 달력·칸반·표가 하루 어긋나지 않는다(서버셋 설계 ②).
+function derivedDays(cuts: Cut[]): Pick<Task, "derived_start" | "derived_due" | "derived_date"> {
+  const dates = cuts
+    .map((cut) => kstDay(cut.created_at))
+    .filter((date): date is string => !!date)
+    .sort();
+  return { derived_start: dates[0] || null, derived_due: dates[dates.length - 1] || null, derived_date: dates[0] || null };
+}
+
+/** 서버가 준 작업의 파생 기간을 컷에서 한국 날짜로 다시 계산한다(컷이 없는 옛 응답은 그대로). */
+export function withKstDerived(task: Task): Task {
+  return Array.isArray(task.cuts) ? { ...task, ...derivedDays(task.cuts) } : task;
+}
 
 export interface TaskModelUsage {
   model: string;
@@ -26,10 +42,6 @@ export function scopeTaskToCreator(task: Task, creatorUid: string): Task | null 
   const cuts = allCuts.filter((cut) => cut.creator_uid === creatorUid);
   if (!cuts.length) return null;
 
-  const dates = cuts
-    .map((cut) => cut.created_at?.slice(0, 10))
-    .filter((date): date is string => !!date)
-    .sort();
   const creators = [...new Set(
     cuts.map((cut) => cut.creator_name).filter((name): name is string => !!name),
   )];
@@ -50,9 +62,7 @@ export function scopeTaskToCreator(task: Task, creatorUid: string): Task | null 
     comment_count: hasPerCutComments
       ? sum(cuts, (cut) => cut.comment_count)
       : (ownsEveryCut ? task.comment_count || 0 : 0),
-    derived_start: dates[0] || null,
-    derived_due: dates[dates.length - 1] || null,
-    derived_date: dates[0] || null,
+    ...derivedDays(cuts),
   };
 }
 

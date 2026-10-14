@@ -1,6 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { scopeTaskToCreator, taskModelUsage } from "../src/components/manage/personalWork";
+import { creatorCalendarRows } from "../src/components/manage/CalendarView";
+import { scopeTaskToCreator, taskModelUsage, withKstDerived } from "../src/components/manage/personalWork";
 import type { Task } from "../src/components/manage/types";
+import { kstDay } from "../src/lib/dateGroups";
+
+// 서버셋 설계 ②(Jay 결정 9A, 10-15): 컷의 생성 시각은 UTC 다 — 새벽(KST 00~09시, UTC 15:00 이후)에 만든 컷이 앞 10글자로는
+//  전날 칸에 놓였다. 기존 시험은 T10:00Z(KST 19시)라 이 경계를 못 봤다.
+describe("한국 날짜 — 작업 달력·파생 기간", () => {
+  it("UTC 15:00 이후는 한국 다음 날이다(두 시각 형식 모두, 시간대 표기가 있으면 그대로)", () => {
+    expect(kstDay("2026-08-02T15:30:00Z")).toBe("2026-08-03");
+    expect(kstDay("2026-08-02 15:30:00")).toBe("2026-08-03");
+    expect(kstDay("2026-08-02T14:59:59Z")).toBe("2026-08-02");
+    expect(kstDay("2026-08-03T00:30:00+09:00")).toBe("2026-08-03");
+    expect(kstDay(null)).toBeNull();
+  });
+
+  it("파생 기간·개인 범위·생성자별 달력이 한국 날짜를 쓴다(옛 서버의 UTC 파생값은 덮는다)", () => {
+    const source = task();
+    source.cuts![0].created_at = "2026-08-02T16:00:00Z"; // 한국 08-03 01:00
+    source.derived_start = "2026-08-02"; // 옛 서버 값
+    expect(withKstDerived(source)).toMatchObject({ derived_start: "2026-08-03", derived_due: "2026-08-04" });
+    expect(scopeTaskToCreator(source, "user-jay")).toMatchObject({ derived_start: "2026-08-03" });
+    const rows = creatorCalendarRows([source], 2026, 7);
+    expect(Object.keys(rows.find((row) => row.key === "user-jay")!.byDay).sort()).toEqual(["3", "4"]);
+  });
+});
 
 function task(): Task {
   return {

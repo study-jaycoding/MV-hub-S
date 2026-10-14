@@ -724,6 +724,36 @@ def set_asset_tags_batch(
     return len(items)
 
 
+def apply_asset_tag_ops(
+    items: list[tuple[str, str, list[str], list[str]]], owner_uid: str = ""
+) -> list[list[str]]:
+    """``(project, path, add, remove)`` 마다 지금 태그를 읽어 remove 를 빼고 add 를 끝에(없는 것만) 더한다.
+
+    목록 통째 저장은 같은 계정의 두 창이 같은 파일을 고치면 나중 창이 앞 창의 태그를 지웠다(서버셋 설계 ③).
+    읽기~쓰기를 한 트랜잭션에 두어 그사이 다른 요청이 끼지 않는다. 반환 = 항목 순서대로 저장된 태그.
+    """
+    out: list[list[str]] = []
+    if not items:
+        return out
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for project, path, add, remove in items:
+            _ensure_asset_meta(conn, project, path, owner_uid)
+            row = conn.execute(
+                "SELECT tags FROM asset_meta WHERE project=? AND path=? AND owner_uid=?",
+                (project, path, owner_uid),
+            ).fetchone()
+            drop = set(remove)
+            tags = [t for t in (json.loads(row["tags"]) if row["tags"] else []) if t not in drop]
+            tags += [t for t in dict.fromkeys(add) if t and t not in tags]
+            conn.execute(
+                "UPDATE asset_meta SET tags=? WHERE project=? AND path=? AND owner_uid=?",
+                (json.dumps(tags, ensure_ascii=False) if tags else None, project, path, owner_uid),
+            )
+            out.append(tags)
+    return out
+
+
 def set_asset_comment(
     project: str, path: str, comment: Optional[str], owner_uid: str = ""
 ) -> None:

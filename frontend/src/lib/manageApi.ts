@@ -9,6 +9,7 @@ import type {
   TaskPreviewCandidate,
   TaskPreviewResponse,
 } from "../components/manage/types";
+import { withKstDerived } from "../components/manage/personalWork";
 import type { WorkspaceOption } from "../types";
 import type { CreditPlanSaveBody, CreditPlanSettings, CreditPlanView, MyModelPolicy } from "./creditPlan";
 import type { MemberTableData } from "./memberTable";
@@ -100,12 +101,13 @@ export const manageApi = {
     jsonFetch<MemberTableData>(withQuery("/api/manage/member-table", { workspace_id: workspaceId })),
   creditPlanMyModels: (workspaceId: string) =>
     jsonFetch<MyModelPolicy>(withQuery("/api/manage/credit-plan/my-models", { workspace_id: workspaceId })),
+  // 작업의 파생 기간은 컷에서 한국 날짜로 다시 센다(withKstDerived — 옛 서버의 UTC 날짜를 쓰지 않는다).
   listTasks: (projectId: string, workspaceId?: string, includeArchived = false) =>
     jsonFetch<Task[]>(withQuery("/api/manage/tasks", {
       project_id: projectId,
       workspace_id: workspaceId,
       include_archived: includeArchived || undefined,
-    })),
+    })).then((tasks) => tasks.map(withKstDerived)),
   // 여러 프로젝트 작업을 배치 조회한다. 500개를 넘으면 서버 상한에 맞춰 순차 분할하며,
   // 한 조각이라도 실패하면 불완전한 목록을 정상 결과로 돌려주지 않는다.
   listTasksBatch: async (projectIds: string[], workspaceId?: string, includeArchived = false) => {
@@ -122,6 +124,7 @@ export const manageApi = {
         ),
       );
     }
+    for (const pid of Object.keys(result)) result[pid] = result[pid].map(withKstDerived);
     return result;
   },
   // expected_description = 설명 편집을 시작할 때의 글(서버가 지금 글과 다르면 409 task_edit_conflict — 50회차). 옛 서버는 무시한다.
@@ -129,7 +132,7 @@ export const manageApi = {
     jsonFetch<Task>(`/api/manage/tasks/${pathPart(tid)}`, {
       method: "PATCH",
       body: jsonBody(body),
-    }),
+    }).then(withKstDerived),
   deleteTask: (tid: string) =>
     jsonFetch<{ ok: boolean }>(`/api/manage/tasks/${pathPart(tid)}`, {
       method: "DELETE",

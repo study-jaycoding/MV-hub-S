@@ -49,7 +49,8 @@ export function TagEditor({
   //  칩은 편집기의 사본이라(아래 chips) 부모 값이 되돌아가도 모른다: 실패한 태그의 칩이 남고, 다음 Enter 가 그것까지 다시 저장했다.
   resetSignal?: number;
   tags: string[];
-  onChange: (next: string[]) => void; // 이 카드의 일반 태그 교체
+  // 이 카드의 일반 태그 교체. previous = 그 조작 직전의 칩 목록 — 받는 쪽이 더하기·빼기로 저장할 때 쓴다(Assets).
+  onChange: (next: string[], previous: string[]) => void;
   onBulkAdd?: (names: string[]) => void; // 다중선택 시 추가를 다른 선택 카드에도(이 카드 제외)
   onBulkRemove?: (names: string[]) => void; // 다중선택 시 ×해제를 다른 선택 카드에도(공통 태그 일괄 삭제)
   selectedCount?: number; // 다중선택에 포함될 때 N. >1 이면 '선택된 카드 …' 배지.
@@ -144,7 +145,7 @@ export function TagEditor({
 
   const applyTags = (next: string[]) => {
     if (showInput) setChips(next);
-    onChange(next);
+    onChange(next, baseTags);
   };
   const applyWorkspaceCommand = async (
     operation: WorkspaceCommandOperation,

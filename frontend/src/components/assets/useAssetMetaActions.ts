@@ -128,28 +128,32 @@ export function useAssetMetaActions({
   };
 
   const removeAssetTag = (path: string, tag: string) => {
-    const next = commitMeta((current) => {
+    commitMeta((current) => {
       const next = { ...current };
       const cur = next[path] || EMPTY_ASSET_META;
       next[path] = { ...cur, tags: cur.tags.filter((item) => item !== tag) };
       return next;
     });
-    enqueueSave(() => api.setAssetTags(project, path, next[path].tags));
+    enqueueSave(() => api.applyAssetTagOps(project, [{ path, remove: [tag] }]));
   };
 
-  const setAssetTagsReplace = (path: string, nextTags: string[]) => {
+  // previous = 그 조작 **직전** 편집기의 칩 목록. 열 때의 목록이나 최신 부모 메타와 견주면 안 된다 — 연 뒤 넣었다 뺀 태그가
+  //  연산에서 빠지거나, 다른 창이 넣어 아직 편집기에 안 보이는 태그까지 빼게 된다(서버셋 설계 ③, Codex).
+  const setAssetTagsReplace = (path: string, nextTags: string[], previous: string[] = metaRef.current[path]?.tags ?? []) => {
     const tags = [...nextTags];
+    const add = tags.filter((tag) => !previous.includes(tag));
+    const remove = previous.filter((tag) => !tags.includes(tag));
     commitMeta((current) => ({
       ...current,
       [path]: { ...(current[path] || EMPTY_ASSET_META), tags },
     }));
-    enqueueSave(() => api.setAssetTags(project, path, tags));
+    if (add.length || remove.length) enqueueSave(() => api.applyAssetTagOps(project, [{ path, add, remove }]));
   };
 
   const bulkTagAdd = (path: string, names: string[]) => {
     const targets = Array.from(new Set([...selPaths(), path]));
     if (!targets.length) return;
-    const next = commitMeta((current) => {
+    commitMeta((current) => {
       const out = { ...current };
       for (const target of targets) {
         const cur = out[target] || EMPTY_ASSET_META;
@@ -157,19 +161,14 @@ export function useAssetMetaActions({
       }
       return out;
     });
-    enqueueSave(() =>
-      api.setAssetTagsBatch(
-        project,
-        targets.map((target) => ({ path: target, tags: next[target].tags })),
-      ),
-    );
+    enqueueSave(() => api.applyAssetTagOps(project, targets.map((target) => ({ path: target, add: names }))));
   };
 
   const bulkTagRemove = (path: string, names: string[]) => {
     const targets = Array.from(new Set([...selPaths(), path]));
     if (!targets.length) return;
     const drop = new Set(names);
-    const next = commitMeta((current) => {
+    commitMeta((current) => {
       const out = { ...current };
       for (const target of targets) {
         const cur = out[target] || EMPTY_ASSET_META;
@@ -177,12 +176,7 @@ export function useAssetMetaActions({
       }
       return out;
     });
-    enqueueSave(() =>
-      api.setAssetTagsBatch(
-        project,
-        targets.map((target) => ({ path: target, tags: next[target].tags })),
-      ),
-    );
+    enqueueSave(() => api.applyAssetTagOps(project, targets.map((target) => ({ path: target, remove: names }))));
   };
 
   const deleteTag = (tag: string) => {
@@ -190,18 +184,13 @@ export function useAssetMetaActions({
       .filter(([, meta]) => meta.tags.includes(tag))
       .map(([path]) => path);
     if (!affected.length) return;
-    const next = commitMeta((current) => {
+    commitMeta((current) => {
       const out = { ...current };
       for (const path of affected)
         out[path] = { ...out[path], tags: out[path].tags.filter((item) => item !== tag) };
       return out;
     });
-    enqueueSave(() =>
-      api.setAssetTagsBatch(
-        project,
-        affected.map((path) => ({ path, tags: next[path].tags })),
-      ),
-    );
+    enqueueSave(() => api.applyAssetTagOps(project, affected.map((path) => ({ path, remove: [tag] }))));
     if (activeTags.has(tag))
       setActiveTags((prev) => {
         const out = new Set(prev);
@@ -210,8 +199,9 @@ export function useAssetMetaActions({
       });
   };
 
-  // 이 폴더의 메타를 받기 전에는 고치지 않는다(조작 규칙 45). 아래 조작은 모두 **지금 화면의 메타**에서 다음 값을 만든다 — 태그는 목록을
-  //  통째로 저장하므로, 메타가 아직 비어 있을 때(폴더를 처음 열어 파일 목록만 먼저 온 사이) 태그를 더하면 기존 태그가 지워진 목록이 나간다.
+  // 이 폴더의 메타를 받기 전에는 고치지 않는다(조작 규칙 45). 아래 조작은 모두 **지금 화면의 메타**에서 다음 값을 만든다 — 메타가 아직
+  //  비어 있을 때(폴더를 처음 열어 파일 목록만 먼저 온 사이) 고치면 화면이 기존 태그·색이 없는 값으로 바뀐다. 태그 저장은 더하기·빼기라
+  //  서버의 기존 태그는 지우지 않지만(서버셋 설계 ③), 색 토글·편집기 기준은 여전히 화면 값을 본다.
   const whenReady = <Args extends unknown[]>(run: (...args: Args) => void) => (...args: Args) => {
     if (ready) run(...args);
     else flashMsg(ASSET_META_NOT_READY);

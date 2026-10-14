@@ -30,6 +30,7 @@ class AssetMetadataTests(unittest.TestCase):
             ("/api/assets/comments/read", "POST"),
             ("/api/assets/tags", "PUT"),
             ("/api/assets/tags/batch", "PUT"),
+            ("/api/assets/tags/ops", "PUT"),
             ("/api/assets/comment", "PUT"),
             ("/api/assets/color", "PUT"),
             ("/api/assets/colors/batch", "PUT"),
@@ -164,6 +165,29 @@ class AssetMetadataTests(unittest.TestCase):
         setter.assert_called_once_with(
             [("captures", "a.png", ["A"]), ("imports", "b.png", ["B"])],
             "me",
+        )
+
+    def test_tag_ops_map_combined_paths_and_answer_with_request_paths(self) -> None:
+        body = assets_metadata.AssetTagOpsIn(
+            project=asset_paths.COMBINED_INTERNAL_PROJECT,
+            items=[
+                assets_metadata.AssetTagOpsItem(path="captures/a.png", add=["A"]),
+                assets_metadata.AssetTagOpsItem(path="imports/b.png", remove=["B"]),
+            ],
+        )
+        with (
+            patch.object(assets_metadata, "actor_id", return_value="me"),
+            patch.object(assets_metadata.repo, "apply_asset_tag_ops", return_value=[["A"], []]) as apply,
+        ):
+            result = assets_metadata.asset_apply_tag_ops(body, self.request)
+
+        apply.assert_called_once_with(
+            [("captures", "a.png", ["A"], []), ("imports", "b.png", [], ["B"])],
+            "me",
+        )
+        self.assertEqual(
+            result,
+            {"ok": True, "items": [{"path": "captures/a.png", "tags": ["A"]}, {"path": "imports/b.png", "tags": []}]},
         )
 
     def test_batch_colors_map_combined_paths_before_one_repo_call(self) -> None:

@@ -99,7 +99,7 @@ it("태그 편집기 — 부모가 서버 값으로 되돌렸다고 알리면 �
   show(["a"], 0);
   type(tagInput(), "hero");
   key(tagInput(), "Enter");
-  expect(onChange).toHaveBeenLastCalledWith(["a", "hero"]);
+  expect(onChange).toHaveBeenLastCalledWith(["a", "hero"], ["a"]); // 둘째 = 조작 직전 칩(서버셋 설계 ③)
   expect(chipTexts()).toEqual(["a", "hero"]);
   // 부모 값만 달라지고 알림이 없으면 사본을 둔다 — 늦게 오는 부모 값(캔버스)이 방금 넣은 칩을 걷지 않게
   show(["a"], 0);
@@ -111,7 +111,7 @@ it("태그 편집기 — 부모가 서버 값으로 되돌렸다고 알리면 �
   expect(tagInput().value).toBe("wor");
   type(tagInput(), "world");
   key(tagInput(), "Enter");
-  expect(onChange).toHaveBeenLastCalledWith(["a", "world"]); // 전엔 실패한 hero 까지 다시 저장했다
+  expect(onChange).toHaveBeenLastCalledWith(["a", "world"], ["a"]); // 전엔 실패한 hero 까지 다시 저장했다
 });
 
 it("Assets 타일 — 메타를 되돌렸다는 알림을 열려 있는 태그 편집기까지 넘긴다", () => {

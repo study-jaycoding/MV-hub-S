@@ -17,7 +17,7 @@ vi.mock("../src/api", () => {
   const pending = () => new Promise(() => {});
   const urls: Record<string, unknown> = {
     assetFileUrl: (_project: string, path: string) => `/files/${path}`, assetThumbUrl: (_project: string, path: string) => `/thumbs/${path}`,
-    setAssetTags: fixture.setTags, setAssetColorsBatch: fixture.setColors,
+    applyAssetTagOps: fixture.setTags, setAssetColorsBatch: fixture.setColors,
   };
   return { api: new Proxy(urls, { get: (target, name: string) => target[name] ?? pending }) };
 });
@@ -298,10 +298,44 @@ it("메타를 받기 전에는 태그 입력이 열리지 않고 색도 바뀌�
       tagInput()!.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await act(async () => { tagInput()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
-    expect(fixture.setTags).toHaveBeenLastCalledWith("P", "b.png", ["old", "new"]); // 전엔 ["new"] — old 가 지워졌다
+    expect(chips()).toEqual(["old", "new"]); // 전엔 ["new"] — old 가 지워졌다
+    // 저장은 더하기만 — 다른 창이 그사이 더한 태그를 지우지 않는다(서버셋 설계 ③)
+    expect(fixture.setTags).toHaveBeenLastCalledWith("P", [{ path: "b.png", add: ["new"], remove: [] }]);
   } finally {
     flash.stop();
   }
+});
+
+// 서버셋 설계 ③(Jay 결정 9A, 10-15): 태그 편집기는 조작마다 '그 조작 직전 칩 → 결과'를 더하기·빼기로 보낸다. 연 시점 목록과 견주면
+//  닫지 않고 넣었다 뺀 태그가 연산에서 빠져 서버에 남았다(Codex 설계 검토). 부모 메타와 견주면 다른 창이 넣은 태그까지 뺀다.
+it("에셋 태그 편집기 — 넣고 닫지 않은 채 × 하면 더하기 뒤 빼기로 저장한다(다른 태그는 연산에 없다)", async () => {
+  fixture.meta = { "b.png": metaOf(["old"]) };
+  await mount();
+  await click("b.png");
+  await key({ key: "#" });
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(tagInput()!, "A");
+    tagInput()!.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => { tagInput()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+  const chipA = [...host.querySelectorAll(".te-chip")].find((chip) => chip.firstChild!.textContent === "A")!;
+  await act(async () => { chipA.querySelector<HTMLButtonElement>(".te-x")!.click(); });
+  expect(chips()).toEqual(["old"]);
+  expect(fixture.setTags.mock.calls).toEqual([
+    ["P", [{ path: "b.png", add: ["A"], remove: [] }]],
+    ["P", [{ path: "b.png", add: [], remove: ["A"] }]],
+  ]);
+});
+
+it("에셋 태그 편집기 — 열어 둔 사이 다른 창이 더한 태그는 × 저장에서 빼지 않는다", async () => {
+  fixture.meta = { "b.png": metaOf(["old", "A"]) };
+  await mount();
+  await click("b.png");
+  await key({ key: "#" });
+  await act(async () => { fixture.meta = { "b.png": metaOf(["old", "A", "B"]) }; rerender(); }); // 다른 창이 B 를 더했다
+  const chipA = [...host.querySelectorAll(".te-chip")].find((chip) => chip.firstChild!.textContent === "A")!;
+  await act(async () => { chipA.querySelector<HTMLButtonElement>(".te-x")!.click(); });
+  expect(fixture.setTags).toHaveBeenLastCalledWith("P", [{ path: "b.png", add: [], remove: ["A"] }]);
 });
 
 it("폴더를 바꾸면 열려 있던 태그 입력이 닫힌다 — 새 폴더에 같은 경로의 파일이 있어도 그 파일에 저절로 열리지 않는다", async () => {

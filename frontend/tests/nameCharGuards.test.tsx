@@ -43,7 +43,7 @@ it("태그 편집기: / 가 든 태그는 만들지 않고 이유를 보인다 �
   expect(host.querySelector('[role="alert"]')!.textContent).toContain(". 이나 .. 일 수 없습니다");
   type(input, "hero");
   enter(input);
-  expect(onChange).toHaveBeenCalledWith(["hero"]);
+  expect(onChange).toHaveBeenCalledWith(["hero"], []);
 });
 
 it("Assets 등록: 표시 이름에 / \\ | 가 들면 등록하지 않고 이유를 보인다", async () => {

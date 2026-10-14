@@ -40,6 +40,17 @@ class AssetTagsBatchIn(BaseModel):
     items: list[AssetTagsBatchItem] = Field(default_factory=list)
 
 
+class AssetTagOpsItem(BaseModel):
+    path: str
+    add: list[str] = Field(default_factory=list)
+    remove: list[str] = Field(default_factory=list)
+
+
+class AssetTagOpsIn(BaseModel):
+    project: str
+    items: list[AssetTagOpsItem] = Field(default_factory=list)
+
+
 class AssetCommentIn(BaseModel):
     project: str
     path: str
@@ -279,6 +290,20 @@ def asset_set_tags_batch(body: AssetTagsBatchIn, request: Request):
         items.append((project, path, item.tags))
     count = repo.set_asset_tags_batch(items, actor_id(request))
     return {"ok": True, "count": count}
+
+
+@router.put(
+    "/tags/ops",
+    dependencies=[Depends(_assets_access.require_local_assets)],
+)
+def asset_apply_tag_ops(body: AssetTagOpsIn, request: Request):
+    """태그 더하기·빼기 — 목록 통째(/tags·/tags/batch)와 달리 다른 창이 그사이 더한 태그를 지우지 않는다(서버셋 설계 ③).
+    옛 라우트는 옛 창을 위해 그대로 둔다."""
+    if len(body.items) > 500:
+        raise HTTPException(status_code=400, detail="한 번에 최대 500개 파일까지 변경할 수 있습니다")
+    ops = [(*real_meta_key(body.project, item.path), item.add, item.remove) for item in body.items]
+    saved = repo.apply_asset_tag_ops(ops, actor_id(request))
+    return {"ok": True, "items": [{"path": item.path, "tags": tags} for item, tags in zip(body.items, saved)]}
 
 
 @router.put(
