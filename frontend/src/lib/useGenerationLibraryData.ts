@@ -7,6 +7,7 @@ import { beginLibraryReload, finishLibraryReload } from "./librarySync";
 import { isStructurallyEqual, reconcileArrayState, reconcileValueState } from "./stateReconciliation";
 import { hasWorkspaceFilter, matchesWorkspaceFilter, workspaceFilterOf } from "./libraryWorkspaceScope";
 import { t } from "./i18n";
+import { timedLibraryRequest } from "./libraryRequestTimeout";
 import type { Facets, Filters, GenQuery, GenStats, Generation, Project } from "../types";
 
 interface UseGenerationLibraryDataArgs {
@@ -434,17 +435,18 @@ export function useGenerationLibraryData({
       //    그리드 표시는 목록만 기다린다. 메타는 메타 줄이 받아 적용한다 — 줄이 비어 있으면 지금 이 자리에서 출발하고,
       //    앞 묶음이 떠 있으면 그 뒤에 선다(이 실행의 목록은 그것을 기다리지 않는다).
       const keepPainted = colorLedger.stamp(); // 출발 시점을 찍는다 — 이 뒤에 칠한 색은 아래 응답이 덮지 못한다
-      const list = trashMode ? api.listTrash(query.search, 0) : api.listGenerations(query, null);
+      const list = timedLibraryRequest((signal) =>
+        trashMode ? api.listTrash(query.search, 0, GEN_PAGE, signal) : api.listGenerations(query, null, GEN_PAGE, { signal }));
       const metaDone = requestMeta(light);
       const located = locatedRef.current;
       // 共有解除・削除・移動は毎回の通常更新と一緒に再確認。古い注入カードを復活させない。
       const locationCheck = located && isLocatedQuery(query, located.tab, located.location)
-        ? api.locateGenerations({
+        ? timedLibraryRequest((signal) => api.locateGenerations({
             tab: located.tab, gen_ids: located.location.focus_ids,
             ...workspaceFilterOf(query),
             project_id: located.location.project_id || "none",
             folder_path: located.location.folder_path,
-          }).catch(() => null)
+          }, signal)).catch(() => null)
         : Promise.resolve(null);
       try {
         const [page, checked] = await Promise.all([list, locationCheck]);
@@ -668,9 +670,11 @@ export function useGenerationLibraryData({
       // 가드 없이는 '내 작업' 추가 페이지가 팀 탭 목록에 합쳐지고 탭 캐시까지 오염된다(코덱스 P1).
       let batch: Generation[];
       if (trashMode) {
-        batch = await api.listTrash(query.search, trashOffsetRef.current);
+        const offset = trashOffsetRef.current;
+        batch = await timedLibraryRequest((signal) => api.listTrash(query.search, offset, GEN_PAGE, signal));
       } else {
-        batch = await api.listGenerations(query, pageCursorRef.current);
+        const cursor = pageCursorRef.current;
+        batch = await timedLibraryRequest((signal) => api.listGenerations(query, cursor, GEN_PAGE, { signal }));
       }
       if (seq !== reloadSeqRef.current) return; // 다른 탭/쿼리로 바뀐 뒤 도착한 이전 컨텍스트 페이지
       if (trashMode) trashOffsetRef.current += batch.length;

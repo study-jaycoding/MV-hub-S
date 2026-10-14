@@ -4,6 +4,7 @@ import type { Filters, Generation } from "../types";
 import type { ColorEditLedger } from "./generationColorState";
 import { locatedItems, locationFilters, type GenerationLocation } from "./resolveLibraryLocation";
 import { hasWorkspaceFilter, workspaceFilterOf, type LibraryWorkspaceFilter } from "./libraryWorkspaceScope";
+import { timedLibraryRequest } from "./libraryRequestTimeout";
 
 interface Args {
   filters: Filters;
@@ -68,12 +69,12 @@ export function useResolveLibraryFollow(args: Args) {
         try {
           // 출발 시점을 찍는다 — 응답의 카드는 '출발할 때의 서버 값'이라, 이 뒤에 칠한 색을 덮으면 다음 색 키가 낡은 값으로 토글한다.
           const keepPainted = before.colorLedger?.stamp();
-          const response = await api.locateGenerations({
+          const response = await timedLibraryRequest((signal) => api.locateGenerations({
             tab, gen_ids: request.ids,
             ...workspaceFilterOf(before.workspaceFilter ?? {}),
             project_id: before.filters.project_id,
             folder_path: before.filters.folder_path,
-          });
+          }, signal));
           if (!mounted.current || request.seq !== sequence.current ||
               request.context !== contextRef.current || !latest.current.canFollow()) continue;
           if (hasWorkspaceFilter(before.workspaceFilter ?? {}) && response.workspace_filter_applied !== true) {

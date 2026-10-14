@@ -614,7 +614,7 @@ it.each(["my", "team"])("%s 탭: 체크 시 캔버스 대신 현재 탭의 대�
   expect(librarySnapshot?.filters).toEqual({ tab, project_id: "resolve-project", folder_path: "episode/shot" });
   expect(gridSnapshot?.resolveScrollRequest?.generationId).toBe("target");
   expect(gridSnapshot?.selectedIds.size).toBe(0);
-  expect(locateGenerations).toHaveBeenLastCalledWith(expect.objectContaining({ tab, gen_ids: ["target"] }));
+  expect(locateGenerations).toHaveBeenLastCalledWith(expect.objectContaining({ tab, gen_ids: ["target"] }), expect.any(AbortSignal)); // 둘째 = 30초 제한의 취소 신호(15A)
 });
 
 it("App: 자동 조회는 모든 보기 필터만 해제하며 없는 프로젝트의 위치와 기존 생성 설정을 유지한다", async () => {

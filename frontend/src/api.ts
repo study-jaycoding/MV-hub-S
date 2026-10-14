@@ -348,9 +348,10 @@ function putGenComments(genId: string, comments: import("./types").GenComment[])
 }
 
 export const api = {
-  locateGenerations: (request: GenerationLocationRequest) =>
+  // signal — 제한 시간이 지나면 실제로 요청을 끊는다(목록 줄이 끝없이 막히지 않게 — Jay 결정 15A).
+  locateGenerations: (request: GenerationLocationRequest, signal?: AbortSignal) =>
     jsonFetch<GenerationLocation>("/api/generations/locate", {
-      method: "POST", body: jsonBody(request),
+      method: "POST", body: jsonBody(request), signal,
     }).then((location) => ({ ...location, items: normalizeGenerations(location.items) })),
   // 공유 & 리뷰 탭의 폴더 카드 — parent 바로 아래 폴더마다 건수·표지(팀이 정한 대표, 없으면 가장 최근 것).
   //  옛 공유 서버에는 이 경로가 없다(404 "Not Found" — isRouteMissing 으로 가려 묶음 보기를 끈다).
@@ -373,10 +374,10 @@ export const api = {
   //  ★옛 프론트는 이 인자를 안 보내므로 서버가 축약하지 않는다 — 공존 기간에 레시피가 상하지 않는다.
   //  leanPrompt = `lean_prompt=1` — prompt·display_prompt 를 빈 글로 받는다. 프롬프트를 읽지 않는 곳(걸러 보는 컷 카드의 끝까지 받기)만 쓴다
   //  (2026-10-15 42회차 — 500건 한 쪽 12.3MB 의 86% 가 이 두 칸). 옛 서버는 인자를 무시해 원문을 준다.
-  listGenerations: (query: GenQuery, cursor: GenCursor | null = null, limit = GEN_PAGE, opts: { leanPrompt?: boolean } = {}) =>
+  listGenerations: (query: GenQuery, cursor: GenCursor | null = null, limit = GEN_PAGE, opts: { leanPrompt?: boolean; signal?: AbortSignal } = {}) =>
     jsonFetch<Generation[]>(
       `/api/generations?${buildQuery(query, cursor, limit)}&lean_params=1${opts.leanPrompt ? "&lean_prompt=1" : ""}`,
-      undefined,
+      opts.signal ? { signal: opts.signal } : undefined,
       query.review_filter ? (response) => {
         if (response.headers.get("X-MVHub-Review-Filter") !== query.review_filter) {
           throw reviewCompatibilityError();
@@ -404,12 +405,12 @@ export const api = {
 
   // ── 휴지통(별도 DB) — 지운 것 검색·복원·영구삭제 ────────────────────────
   // 지운 항목 목록(최근 삭제순, prompt·source_name 부분일치). 그리드가 그대로 그림(deleted=true).
-  listTrash: (search?: string, offset = 0, limit = GEN_PAGE) => {
+  listTrash: (search?: string, offset = 0, limit = GEN_PAGE, signal?: AbortSignal) => {
     const p = new URLSearchParams();
     if (search) p.set("search", search);
     p.set("limit", String(limit));
     p.set("offset", String(offset));
-    return jsonFetch<Generation[]>(`/api/trash?${p.toString()}`).then(normalizeGenerations);
+    return jsonFetch<Generation[]>(`/api/trash?${p.toString()}`, signal ? { signal } : undefined).then(normalizeGenerations);
   },
   // 휴지통에서 영구 삭제(복원 불가)
   purgeTrashed: (id: string) =>

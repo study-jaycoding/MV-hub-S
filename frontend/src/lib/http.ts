@@ -114,6 +114,23 @@ export async function throwHttpError(res: Response, url: string, fallback?: stri
   throw new HttpError(res.status, `${res.status}: ${detail}`, detail);
 }
 
+/**
+ * 읽기 요청에 제한 시간 — 넘으면 실제로 요청을 끊고(본문 읽기까지 포함) message 로 실패한다. 허브가 멎으면 목록 줄이 끝없이
+ * '불러오는 중'에 막혔다(Jay 결정 15A). 다른 이유의 실패는 그대로 던진다.
+ */
+export async function withRequestTimeout<T>(run: (signal: AbortSignal) => Promise<T>, ms: number, message: string): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await run(controller.signal);
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(message);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function jsonFetch<T>(
   url: string,
   init?: RequestInit,

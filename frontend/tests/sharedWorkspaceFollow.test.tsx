@@ -231,7 +231,7 @@ it("공간 전환은 표시 폴더만 해제하고 선택·옛 카드 즉시 제
 it("다빈치 복수 선택 조회에 공간조건 전달, 같은공간만 표시·강조하고 필터 유지", async () => {
   await mount();
   act(() => state.follow.receive(["a1", "b1"], false)); await settle();
-  expect(api.locateGenerations).toHaveBeenCalledWith(expect.objectContaining({ workspace_ids: ["a"] }));
+  expect(api.locateGenerations).toHaveBeenCalledWith(expect.objectContaining({ workspace_ids: ["a"] }), expect.any(AbortSignal)); // 둘째 = 30초 제한의 취소 신호(15A)
   expect([...state.follow.highlightedIds]).toEqual(["a1"]);
   expect(state.filters.genQuery.workspace_ids).toEqual(["a"]);
   expect(state.filters.filters.project_id).toBe("project-a");
