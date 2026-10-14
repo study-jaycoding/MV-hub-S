@@ -181,13 +181,13 @@ export const EditTimeline = memo(function EditTimeline({
   //  트랙 때문에 이미 보이는 클립을 두고 넘겼다 — Codex 리뷰). 신호(resolveScroll)는 표시(resolvePicked)와 따로다 — 표시는 모든 브라우저
   //  탭이 받지만 넘기기는 앱이 '따라가는 탭'에서만 올린다(다른 탭의 타임라인까지 움직였다 — Codex 리뷰). 클립·컷·상자를 누르거나 끄는
   //  중에도 넘기지 않는다(버린다) — 컷 끌기는 놓는 순간의 스크롤로 끼울 자리를 다시 재서, 끄는 사이 온 신호가 넘기면 겨냥한 자리가 아닌
-  //  넘어간 화면의 컷 앞에 놓였다(Codex 39회차).
+  //  넘어간 화면의 컷 앞에 놓였다(Codex 39회차). 눈금자를 누른 채 훑는 중도 같다 — 다음 움직임의 시각이 넘어간 자리로 뛰었다(Codex 39회차 리뷰).
   const seenScroll = useRef(resolveScroll);
   useEffect(() => {
     if (seenScroll.current === resolveScroll) return;
     seenScroll.current = resolveScroll;
     const scroll = scrollRef.current;
-    if (!scroll || !resolvePicked.size || isPlaying() || drag.current || cutPress.current || boxPress.current) return;
+    if (!scroll || !resolvePicked.size || isPlaying() || drag.current || cutPress.current || boxPress.current || scrubbing.current) return;
     for (const slot of layout.cuts) {
       const clip = slot.clips.find((item) => resolvePicked.has(links.get(clipKey(item))?.gen?.id ?? ""));
       if (!clip) continue;
@@ -214,10 +214,15 @@ export const EditTimeline = memo(function EditTimeline({
     const slot = layout.cuts.find((item) => time >= item.start && time < item.start + item.len);
     if (slot) onOpenCut(slot.path);
   };
+  const scrubbing = useRef(false); // 눈금자를 누른 채 훑는 중 — 다빈치 넘김을 쉰다(위)
+  const endScrub = () => {
+    scrubbing.current = false;
+  };
   const scrub = (event: ReactPointerEvent<HTMLElement>) => {
     if (event.type === "pointerdown") {
       if (event.button !== 0) return;
       event.stopPropagation(); // 눈금자를 눌러도 고른 클립은 그대로다
+      scrubbing.current = true;
       event.currentTarget.setPointerCapture(event.pointerId);
     } else if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
     onSeek(timeAt(event.clientX));
@@ -596,7 +601,8 @@ export const EditTimeline = memo(function EditTimeline({
           onPointerUp={lanesUp} onPointerCancel={endMarquee} onLostPointerCapture={() => boxPress.current?.moved && endMarquee()}
           onMouseDown={keepFocus} onDoubleClick={openCutAt}>
           {marquee && <div className="assets-marquee" style={{ left: marquee.l, top: marquee.t, width: marquee.w, height: marquee.h }} />}
-          <div className="ed-ruler" onPointerDown={scrub} onPointerMove={scrub}>
+          <div className="ed-ruler" onPointerDown={scrub} onPointerMove={scrub}
+            onPointerUp={endScrub} onPointerCancel={endScrub} onLostPointerCapture={endScrub}>
             {ticks.map((time) => (
               <div className="ed-tick" key={time} style={{ left: time * zoom }}><span>{timecode(time)}</span></div>
             ))}

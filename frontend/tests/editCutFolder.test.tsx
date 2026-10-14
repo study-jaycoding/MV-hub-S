@@ -448,8 +448,8 @@ it("다빈치에서 고른 것 — 풀의 세 보기와 타임라인 클립에 �
   expect(scroll.scrollLeft).toBe(0);
   press({ key: "k", code: "KeyK" });
   // 컷 머리·클립을 누르고 있는(끄는) 중에도 넘기지 않는다 — 컷 끌기는 놓는 순간의 스크롤로 끼울 자리를 다시 재서, 끄는 사이 넘어가면
-  //  겨냥한 자리가 아닌 곳에 놓였다(Codex 39회차). 놓은 뒤의 새 신호는 넘긴다.
-  for (const held of [cutCell("c1"), clips()[0]]) {
+  //  겨냥한 자리가 아닌 곳에 놓였다(Codex 39회차). 눈금자를 누른 채 훑는 중도(다음 움직임의 시각이 뛰었다 — 39회차 리뷰). 놓은 뒤의 새 신호는 넘긴다.
+  for (const held of [cutCell("c1"), clips()[0], document.querySelector(".ed-ruler")!]) {
     mouse(held, "pointerdown");
     resolveScroll += 1;
     mount();
