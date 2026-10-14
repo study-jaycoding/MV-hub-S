@@ -19,10 +19,14 @@ export interface PoolItem {
 export const editMarkLabel = (track: number, t: (key: string) => string) =>
   t("V{track} - 선택 카드").replace("{track}", String(track));
 
+// 소스 클립 판의 표 글 — "소스 L"·"소스 R"·"소스 L·R"(싱글 뷰어면 "소스"). 풀의 세 보기와 폴더 창이 같은 글을 쓴다.
+export const sourceMarkLabel = (source: PoolItem["source"], t: (key: string) => string) =>
+  !source ? "" : `${t("소스")}${source === "S" ? "" : ` ${source === "LR" ? "L·R" : source}`}`;
+
 // 풀 카드의 표 — 넣은 트랙과 소스 클립 판(둘 다면 이어서). 없으면 null. short = 작은 카드에 보이는 짧은 글
 export function poolMark(item: PoolItem, t: (key: string) => string): { label: string; short: string; lead: boolean } | null {
   const side = item.source === "LR" ? "L·R" : item.source === "S" ? "" : item.source ?? "";
-  const source = item.source ? `${t("소스")}${side && ` ${side}`}` : "";
+  const source = sourceMarkLabel(item.source, t);
   const label = [item.track !== null ? editMarkLabel(item.track, t) : "", source].filter(Boolean).join(" · ");
   if (!label) return null;
   const short = [item.track !== null ? `V${item.track}` : "", item.source ? side || t("소스") : ""].filter(Boolean).join("·");
