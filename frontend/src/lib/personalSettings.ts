@@ -17,7 +17,9 @@ export function clearPersonalSettings() {
   //  애초에 이 정리의 대상이 아니다 — 아직 못 옮긴 것이 옛 자리에 남을 수 있어 예외를 둔다)와 '마지막으로 연 시퀀스'(`.last:<계정>`)도 계정별
   //  네임스페이스다. 지우면 그 계정의 편집본이 통째로 사라진다 — 브라우저에만 있고 백업이 없다(lib/editTimelineStore). 다른 계정으로
   //  잠깐 로그인했다 돌아오기만 해도 지워졌다(2026-10-10 점검). 화면 설정(`.ui`)은 개인 설정이라 다른 것들처럼 지운다.
-  const keepPrefixes = [`${STORAGE_KEYS.editTimeline}:`, `${STORAGE_KEYS.editTimeline}.last:`];
+  //  캔버스 카드 소속의 '아직 못 보낸 빼기·되살리기' 대기열(lib/sceneCardLinks `ch.sceneCardRemovals.v1.<계정>`·`ch.sceneCardRevives.v1.<계정>`)도
+  //  계정별이다 — 지우면 되살리기(Undo)를 보내지 못한 채 계정을 오간 뒤 DB 의 빼기 기록이 되살린 결과를 카드에서 다시 뺐다(Codex 43회차).
+  const keepPrefixes = [`${STORAGE_KEYS.editTimeline}:`, `${STORAGE_KEYS.editTimeline}.last:`, "ch.sceneCardRemovals.v1.", "ch.sceneCardRevives.v1."];
   const remove: string[] = [];
   for (let i = 0; i < localStorage.length; i++) {
     const k = localStorage.key(i);

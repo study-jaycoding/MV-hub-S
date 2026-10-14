@@ -26,3 +26,19 @@ it("편집 문서·못 읽은 원문의 보관본·마지막으로 연 시퀀스
   for (const [key, value] of Object.entries({ ...keep, ...untouched })) expect(localStorage.getItem(key), key).toBe(value);
   for (const key of Object.keys(drop)) expect(localStorage.getItem(key), key).toBeNull();
 });
+
+// Codex 43회차 — 캔버스 카드 소속의 '아직 못 보낸 빼기·되살리기' 대기열도 계정별(lib/sceneCardLinks)이다. 지우면 되살리기(Undo)를 보내지 못한 채
+//  계정을 오간 뒤 DB 의 빼기 기록이 되살린 결과를 카드에서 다시 뺐다.
+it("캔버스 카드 소속의 못 보낸 빼기·되살리기 대기열은 계정을 바꿔도 남는다", () => {
+  const link = JSON.stringify([{ scene_id: "s1", card_id: "c1", generation_id: "g1" }]);
+  const keep = {
+    "ch.sceneCardRevives.v1.me%40x": link,
+    "ch.sceneCardRemovals.v1.me%40x": link,
+    "ch.sceneCardRevives.v1.other%40x": link,
+  };
+  for (const [key, value] of Object.entries(keep)) localStorage.setItem(key, value);
+  localStorage.setItem("ch.sceneCardSomethingElse", "1");
+  clearPersonalSettings();
+  for (const [key, value] of Object.entries(keep)) expect(localStorage.getItem(key), key).toBe(value);
+  expect(localStorage.getItem("ch.sceneCardSomethingElse")).toBeNull();
+});
