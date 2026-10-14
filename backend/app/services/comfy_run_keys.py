@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from typing import Any
@@ -24,6 +25,15 @@ class RunKeyError(RuntimeError):
     pass
 
 
+def _finite_time(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
 def _load_locked() -> list[dict[str, Any]]:
     try:
         raw = repo.get_setting(KEY)
@@ -35,11 +45,11 @@ def _load_locked() -> list[dict[str, Any]]:
         rows = json.loads(raw)
     except (TypeError, ValueError) as error:
         raise RunKeyError("Comfy 실행 접수 장부를 읽을 수 없습니다") from error
-    # 접수 시각도 본다 — 빠지거나 숫자가 아니면 '만료'로 지워 같은 키를 새로 실행하게 된다(Codex 2A 리뷰)
+    # 접수 시각도 본다 — 빠지거나 유한한 수가 아니면(NaN·무한·넘치는 정수 포함) '만료'로 지워 같은 키를 새로 실행하게 된다(Codex 2A 리뷰)
     if not isinstance(rows, list) or any(
         not isinstance(row, dict)
         or not all(isinstance(row.get(k), str) for k in ("owner", "key", "fp", "job_id"))
-        or isinstance(row.get("at"), bool) or not isinstance(row.get("at"), (int, float))
+        or not _finite_time(row.get("at"))
         for row in rows
     ):
         raise RunKeyError("Comfy 실행 접수 장부 형식을 확인할 수 없습니다")

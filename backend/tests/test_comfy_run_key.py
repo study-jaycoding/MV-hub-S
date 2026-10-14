@@ -115,13 +115,16 @@ def test_invalid_key_and_account_change_and_broken_ledger_are_refused_before_run
     assert len(comfy._RUN_JOBS) == 1  # 거절한 접수의 잡은 남지 않는다
 
 
-@pytest.mark.parametrize("bad_at", [None, "어제", True, "missing"])
+@pytest.mark.parametrize("bad_at", [None, "어제", True, "missing", "NaN", "-Infinity", "huge"])
 def test_entry_with_broken_time_is_refused_not_expired(admission, bad_at):
-    """접수 시각이 망가진 행을 '만료'로 지우면 같은 키가 새로 실행된다 — 장부 손상으로 거절(Codex 2A 리뷰)."""
+    """접수 시각이 망가진 행을 '만료'로 지우면 같은 키가 새로 실행된다 — 장부 손상으로 거절(Codex 2A 리뷰 둘)."""
     row = {"owner": "a@example.test", "key": KEY, "fp": "x", "job_id": "j"}
-    if bad_at != "missing":
+    raw = None
+    if bad_at in ("NaN", "-Infinity", "huge"):
+        raw = '[{"owner":"a@example.test","key":"%s","fp":"x","job_id":"j","at":%s}]' % (KEY, "1" + "0" * 400 if bad_at == "huge" else bad_at)
+    elif bad_at != "missing":
         row["at"] = bad_at
-    admission.settings[comfy_run_keys.KEY] = comfy_run_keys.json.dumps([row])
+    admission.settings[comfy_run_keys.KEY] = raw or comfy_run_keys.json.dumps([row])
     with pytest.raises(HTTPException) as error:
         run()
     assert error.value.status_code == 409 and not admission.starts and not comfy._RUN_JOBS
