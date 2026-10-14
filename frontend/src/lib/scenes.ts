@@ -16,6 +16,7 @@ import {
   readConfirmedTexts,
   readWorkingBucket,
   sceneStoreConflicts,
+  sceneStoreHasPending,
   setSceneFlushListener,
   settleConflictsAsCopies,
   workingBucketLength,
@@ -331,7 +332,9 @@ const RENOTIFY_MS = 30_000;
 function reportSaveState(failed: boolean): void {
   const changed = failed !== saveFailing;
   saveFailing = failed;
-  holdUnload("scene-save", failed); // 확정 못 한 편집은 메모리에만 있다 — 그동안 창을 닫거나 새로고침하면 묻는다(56회차)
+  // 확정 못 한 편집은 메모리에만 있다 — 그동안 창을 닫거나 새로고침하면 묻는다(56회차). 밀린 편집이 없는 작업(가져오기)의 실패는
+  //  잃을 것이 없고, 쓸 것 없는 성공은 풀어 주는 신호가 없어 남는다(Codex 검토) — 밀린 편집이 있을 때만 쥔다.
+  holdUnload("scene-save", failed && sceneStoreHasPending());
   if (!changed && !(failed && Date.now() - lastNotifiedAt >= RENOTIFY_MS)) return;
   lastNotifiedAt = Date.now();
   saveStateSubs.forEach((fn) => fn(failed));

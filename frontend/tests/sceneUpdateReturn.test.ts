@@ -22,7 +22,9 @@ import {
 } from "../src/lib/scenes";
 import {
   failSceneStoreWritesForTest,
+  mergeSceneStoreDump,
   readScenesCache,
+  type SceneStoreDump,
   settleSceneStoreForTest,
   writeScenesStore,
 } from "../src/lib/sceneStore";
@@ -183,6 +185,20 @@ describe("씬 쓰기 계약", () => {
     expect(unsavedPlaces()).toBe("캔버스");
     updateScene(null, "s1", { name: "성공" });
     await settleSceneStoreForTest();
+    expect(unloadHeld()).toBe(false);
+  });
+
+  // Codex 56회차 검토: 밀린 편집이 없는 저장소 작업(가져오기)의 실패도 같은 실패 신호를 낸다. 쓸 것이 없는 성공은 풀어 주는 신호가 없어,
+  //  잃을 편집이 없는데도 나갈 때 묻고 자동 업데이트 새로고침이 멈춘 채 남았다.
+  it("밀린 편집 없이 실패한 가져오기는 나갈 때 묻지 않는다 — 잃을 편집이 없다", async () => {
+    saveScenes(null, [mkScene("s1")]);
+    await settleSceneStoreForTest();
+    failSceneStoreWritesForTest(true);
+    try {
+      expect(await mergeSceneStoreDump({ buckets: {}, conflicts: [] } as unknown as SceneStoreDump, (local) => ({ next: local, added: 0, recovered: 0 }))).toBeNull();
+    } finally {
+      failSceneStoreWritesForTest(false);
+    }
     expect(unloadHeld()).toBe(false);
   });
 
