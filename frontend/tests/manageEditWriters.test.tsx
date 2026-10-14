@@ -29,6 +29,9 @@ const conflict = (latest: object, revision: number) => new HttpError(409, "confl
 let host: HTMLDivElement, root: Root;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  // 날짜만 고정한다(타이머는 그대로) — 시험이 '매월 충전일 15'를 고르는데, 오늘이 15일이면 그 칸이 '오늘'로 보여 매달 15일에만 실패했다(2026-10-15)
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(2026, 9, 14, 12, 0, 0));
   Object.values(mocks).forEach((mock) => mock.mockReset());
   mocks.models.mockResolvedValue([]); mocks.members.mockResolvedValue([]); mocks.allProjectMembers.mockResolvedValue({});
   mocks.workspaceOptions.mockResolvedValue({ workspaces: [{ id: "ws", name: "Workspace", member_count: 0 }] });
@@ -39,7 +42,7 @@ beforeEach(() => {
   mocks.updateProject.mockResolvedValue({}); mocks.creditPlanSettings.mockResolvedValue(settings());
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
-afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
+afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 const settle = async () => { for (let i = 0; i < 5; i++) await act(async () => { await Promise.resolve(); }); };
 const click = async (selector: string) => { await act(async () => { host.querySelector<HTMLButtonElement>(selector)!.click(); }); await settle(); };
 const type = async (input: HTMLInputElement, value: string) => {
