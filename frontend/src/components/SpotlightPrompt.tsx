@@ -451,6 +451,8 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   const libraryDraftRef = useRef<string>(storedLibraryDraft ? JSON.stringify(storedLibraryDraft.parts) : ""); // 비-씬(라이브러리) 프롬프트 보관
   // 되살린 직후의 내용 지문 — 되살리기만 하고 고치지 않았으면 담지 않는다(오래된 탭이 손대지 않고 다른 탭의 새 초안을 덮지 않게, Codex 5B 리뷰).
   const restoredDraftFpRef = useRef<string | null>(null);
+  // 담아 둔 트레이는 다음 그리기부터 상태에 들어온다 — 그 전의 판정은 빈 트레이로 견줘 되살리기를 고친 것으로 오인했다(Codex 5B 재리뷰).
+  const trayRestorePendingRef = useRef(!!storedLibraryDraft?.trayRefs.length);
   const draftFingerprint = (draft: LibraryPromptDraft) => JSON.stringify([draft.parts, draft.trayRefs]);
   const draftParse = (s: string): PromptPart[] => {
     if (!s) return [];
@@ -618,6 +620,10 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     const key = libraryDraftStoreKey;
     if (pendingDraftRef.current) clearTimeout(pendingDraftRef.current.timer);
     pendingDraftRef.current = null;
+    if (trayRestorePendingRef.current) {
+      if (!localTrayRefs.length) return; // 트레이 되살림이 아직 상태에 안 들어왔다 — 판정을 미룬다
+      trayRestorePendingRef.current = false;
+    }
     if (restoredDraftFpRef.current !== null) {
       if (draftFingerprint(draft) === restoredDraftFpRef.current) return; // 되살리기만 했다 — 고친 게 없다
       restoredDraftFpRef.current = null; // 한 번이라도 고쳤으면 그 뒤로는 늘 담는다(되돌려 같아져도)

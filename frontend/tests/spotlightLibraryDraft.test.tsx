@@ -97,6 +97,16 @@ it("되살리기만 하고 고치지 않은 탭은 담지 않는다 — 다른 �
   expect(JSON.parse(stored()!).parts).toEqual([{ t: "text", v: "옛 글 고침" }]);
 });
 
+it("트레이가 있는 초안도 되살리기만 하면 담지 않는다(트레이가 상태에 들어오기 전 판정을 고친 것으로 오인하지 않는다)", async () => {
+  localStorage.setItem(key, draft("옛 글", [{ file_path: "https://fixture.invalid/a.png", type: "image", name: "a" }]));
+  view = await mountPrompt();
+  await settle();
+  expect(view.container.querySelectorAll(".sl-reftray-item").length).toBe(1);
+  localStorage.setItem(key, draft("다른 탭의 새 글")); // 다른 탭이 담았다
+  await wait(600);
+  expect(JSON.parse(stored()!).parts).toEqual([{ t: "text", v: "다른 탭의 새 글" }]);
+});
+
 it("다른 계정의 초안·손상된 초안은 읽지 않는다", async () => {
   localStorage.setItem("mvhub.libraryPromptDraft:acct:other@example.test", draft("남의 글"));
   view = await mountPrompt();
