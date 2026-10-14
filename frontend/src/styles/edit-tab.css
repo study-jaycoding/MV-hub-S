@@ -233,12 +233,13 @@
 .ed-pstate-held { color: #ef7d8c; }
 .ed-pstate-final { color: #e8b62c; }
 .ed-prow-list {
-  display: grid; grid-template-columns: 14px minmax(0, 3fr) minmax(0, 1.2fr) minmax(0, 1.5fr) 44px 56px;
+  display: grid; grid-template-columns: 14px minmax(0, 3fr) minmax(0, 1.2fr) minmax(0, 1.5fr) 44px 64px;
   align-items: center; gap: 8px; height: 28px; padding: 0 6px; border-radius: 6px;
 }
 .ed-prow-list > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ed-prow-list.ed-placed > span:last-child { color: var(--accent); font-weight: 700; }
-/* 마지막 칸 '트랙·소스' — 작은 카드와 같은 짧은 글(V10·L·R 이 56px 에 든다). 소스 판에 떠 있으면 안 넣었어도 라임 */
+/* 마지막 칸 '트랙·소스' — 작은 카드와 같은 짧은 글. 64px: 가장 긴 영어 싱글 'V10·Source'(63px)까지 든다 — 56px 에선 말줄임이 됐다
+   (38회차 격리 실측: 듀얼 'V10·L·R' 56/56 · 싱글 en 63/56). 전체 글은 title. 소스 판에 떠 있으면 안 넣었어도 라임 */
 .ed-prow-list > span.ed-psrc { color: var(--accent); font-weight: 700; }
 .ed-prow-head { position: sticky; top: 0; z-index: 1; height: 26px; font-size: 11px; color: var(--muted2); background: var(--panel); border-bottom: 1px solid var(--border); border-radius: 0; }
 .ed-prow-head:hover { background: var(--panel); }

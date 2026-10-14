@@ -381,7 +381,7 @@ export function EditPool({
                 {/* 마지막 칸 = 넣은 트랙 + 소스 클립 판에 떠 있는 판 — 작은 카드와 같은 짧은 글(V1 · L · V10·L·R, Jay 2026-10-14).
                     칩에 '소스 L·R' 을 다 적으면 좁은 풀에서 잘리고 다른 칸이 사라졌다(격리 실측 — 영어·두 자리 트랙 91/84px) */}
                 <span>{info.duration}</span>
-                <span className={item.source ? "ed-psrc" : undefined}>{poolMark(item, t)?.short ?? ""}</span>
+                <span className={item.source ? "ed-psrc" : undefined} title={poolMark(item, t)?.label}>{poolMark(item, t)?.short ?? ""}</span>
               </button>
             );
           })}
