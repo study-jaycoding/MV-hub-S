@@ -5,6 +5,7 @@
 // 선택 상태는 App 이 Set<string>(id) 로 보유 — 일괄 작업/select-bar 가 의존.
 import { activationKeyOwned, backgroundKeysBlocked, isTypingTarget, pressStartedCovered, useLooseKeys } from "../lib/keyGate";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { getDevicePixelRatio, subscribeDevicePixelRatio } from "../lib/devicePixelRatio";
 import { Virtualizer, type VirtualizerHandle } from "virtua";
 import {
   previewTargetFromGenerations,
@@ -101,11 +102,6 @@ interface Props {
   onRetryLoad?: () => void; // 로드 실패 시 "다시 시도"
 }
 
-const subscribeResize = (onChange: () => void) => {
-  window.addEventListener("resize", onChange);
-  return () => window.removeEventListener("resize", onChange);
-};
-
 export function ThumbnailGrid(props: Props) {
   const { generations, scale, layout, groupByDate, selectedIds } = props;
   const resolveScrollGuardRef = useRef(false);
@@ -191,9 +187,9 @@ export function ThumbnailGrid(props: Props) {
 
   // 썸네일 요청 폭 버킷 — 카드 표시폭(≈180*scale)×DPR 이 256 이하면 256, 아니면 512. 1x 디스플레이·
   // 작은 줌에선 512 가 과해 256 으로 디코딩 메모리 1/4. 레티나·큰 줌에선 512 유지(화질 무손실).
-  //  배율(DPR)은 모니터를 옮기거나 브라우저를 확대하면 바뀐다 — 창 크기 바뀜에 다시 읽는다(숫자라 바뀔 때만 다시 그린다. 51회차:
-  //  옛 배율에 머물러 큰 배율 화면에서 256 을 계속 받았다).
-  const dpr = useSyncExternalStore(subscribeResize, () => window.devicePixelRatio || 1, () => 1);
+  //  배율(DPR)은 모니터를 옮기거나 브라우저를 확대하면 바뀐다 — 배율 질의로 듣는다(창 크기는 그대로일 수 있어 resize 로는 못 듣는다.
+  //  숫자라 바뀔 때만 다시 그린다. 51회차: 옛 배율에 머물러 큰 배율 화면에서 256 을 계속 받았다).
+  const dpr = useSyncExternalStore(subscribeDevicePixelRatio, () => getDevicePixelRatio() || 1, () => 1);
   const thumbSize = useMemo(() => {
     if (isList) return 512; // 리스트는 행이 커질 수 있어 안전하게 원해상도
     return Math.round(180 * scale) * dpr <= 256 ? 256 : 512;

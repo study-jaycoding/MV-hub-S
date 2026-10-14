@@ -6,6 +6,7 @@
 import { floatHost, pressStartedCovered, useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { ownEntry } from "../../lib/ownEntry";
+import { getDevicePixelRatio, subscribeDevicePixelRatio } from "../../lib/devicePixelRatio";
 import {
   useCallback,
   useEffect,
@@ -295,23 +296,6 @@ function moveLayerScreenOk(zoomPct: number, dpr: number): boolean {
 function shownZoomPct(canvas: HTMLElement | null): number | null {
   const scale = canvas && /^matrix(?:3d)?\(\s*(-?[\d.]+(?:e-?\d+)?)/.exec(getComputedStyle(canvas).transform)?.[1];
   return scale ? Math.round(Number(scale) * 100) : null;
-}
-const getDevicePixelRatio = () => window.devicePixelRatio;
-// 모니터 배율이 바뀐 것을 듣는다(창을 배율이 다른 모니터로 옮김·OS 의 배율 변경) — `(resolution: <지금 배율>dppx)` 질의가 어긋나는 순간이
-//  곧 바뀐 순간이다. 질의는 값 하나에 묶여 있어, 알림이 올 때마다 지금 배율로 다시 건다(허용하는 배율이 늘어도 이어서 듣는다).
-function subscribeDevicePixelRatio(listener: () => void): () => void {
-  let query: MediaQueryList | undefined;
-  function onChange() {
-    watch();
-    listener();
-  }
-  function watch() {
-    query?.removeEventListener("change", onChange);
-    query = window.matchMedia?.(`(resolution: ${window.devicePixelRatio}dppx)`);
-    query?.addEventListener("change", onChange);
-  }
-  watch();
-  return () => query?.removeEventListener("change", onChange);
 }
 /** 지금 살아 있는 끄는 카드의 수 — 그중 하나라도 선택 밖이면 -1(고르지 않은 채 끌리는 카드는 쌓임 맥락이 새로 생겨 배지·포트가
  *  이웃 카드 아래로 내려간다. 고른 카드는 원래 z-index 5 라 달라지는 것이 없다). 켤 때와 끄는 동안 같은 함수로 본다.
