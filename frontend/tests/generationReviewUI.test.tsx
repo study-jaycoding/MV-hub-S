@@ -218,6 +218,19 @@ it("English review labels use the i18n dictionary", () => {
   expect(host.querySelector(".cs-final-no")?.textContent).toBe("No");
 });
 
+// 50회차(Codex 검토): 팀 탭에 새 카드가 들어와 행이 바뀌면 격자가 카드를 다시 만들어 열어 둔 등급 메뉴가 사라졌다.
+it("an open review menu survives the card being rebuilt in another row, but not the card going away", async () => {
+  const p = props();
+  await act(async () => root.render(<div key="row0"><GenerationCard {...p} /></div>));
+  click(".card-sf");
+  expect(host.querySelectorAll(".review-option")).toHaveLength(3);
+  await act(async () => root.render(<div key="row1"><GenerationCard {...p} /></div>)); // 다른 행 — 카드가 새로 만들어진다
+  expect(host.querySelectorAll(".review-option")).toHaveLength(3);
+  await act(async () => root.render(<div />)); // 스크롤로 사라졌다
+  await act(async () => root.render(<div key="row1"><GenerationCard {...p} /></div>)); // 돌아왔다 — 저절로 열려 있지 않다
+  expect(host.querySelector(".review-option")).toBeNull();
+});
+
 it("outside click and Escape close both selection and confirmation without changing data", () => {
   const p = props(); act(() => root.render(<GenerationCard {...p} />));
   click(".card-sf"); act(() => document.body.dispatchEvent(new Event("pointerdown", { bubbles: true })));

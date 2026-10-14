@@ -3,7 +3,7 @@
 //  · 미디어 위 호버 오버레이 액션(정보·다운로드·미리보기·재생성·공유/가져오기)
 //  · 좌상단 선택 체크박스(다중 선택 → 상단 일괄 작업 바)
 // 그리드 모드 = 세로 카드, 리스트 모드 = 좌측 큰 썸네일 + 우측 상세 패널.
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "../api";
 import type { CardMark, Generation, InfoTarget, PreviewTarget } from "../types";
 import { DRAG_TYPES } from "../lib/dragTypes";
@@ -96,6 +96,24 @@ interface Props {
   dimmed?: boolean; // 흐리게(캔버스에서 고른 폴더 밖). 호버하면 다시 선명
 }
 
+// 열린 등급 메뉴(팀 탭 S) — 카드 밖에 하나만 둔다(50회차). 팀 탭에 새 카드가 들어와 행이 바뀌면 격자가 그 카드를 다시 만들어
+//  카드 안의 '열림'이 처음으로 돌아가, 고르던 메뉴가 사라졌다. 열 때의 상태(공유·보류·최종·선택 수·탭)를 같이 적어 두고, 상태가
+//  바뀌면 열린 것으로 보지 않는다(전의 '바뀌면 닫는다'와 같다). 다른 카드의 메뉴를 열면 이것은 닫힌다.
+let openReviewMenu: { id: string; sig: string } | null = null;
+const reviewMenuListeners = new Set<() => void>();
+function setOpenReviewMenu(next: { id: string; sig: string } | null) {
+  if (openReviewMenu === next) return;
+  openReviewMenu = next;
+  reviewMenuListeners.forEach((listener) => listener());
+}
+const subscribeReviewMenu = (listener: () => void) => {
+  reviewMenuListeners.add(listener);
+  return () => { reviewMenuListeners.delete(listener); };
+};
+// 붙어 있는 카드 수(생성물별) — 행이 바뀌어 다시 만들어지는 카드는 같은 커밋 안에서 곧 다시 붙는다. 한 박자 뒤에도 없으면(스크롤로
+//  사라짐·목록에서 빠짐) 그 메뉴는 닫는다 — 돌아왔을 때 저절로 열려 있지 않게.
+const mountedCards = new Map<string, number>();
+
 function GenerationCardImpl({
   gen,
   tab,
@@ -167,9 +185,31 @@ function GenerationCardImpl({
   // v02 CMS — S 더블클릭 → 최종(골드) 확인 플로팅. 단일클릭(공유 토글)과 충돌 방지용 타이머.
   const [confirmFinal, setConfirmFinal] = useState(false);
   const [confirmShare, setConfirmShare] = useState(false); // S 단일클릭 → 공유/해제 확인(최종과 동일 UX)
-  const [confirmReview, setConfirmReview] = useState(false);
+  const reviewSig = `${gen.shared}|${gen.is_held}|${gen.is_final}|${selectedCount}|${tab}`;
+  // 이 카드의 것이 열렸을 때만 값이 생긴다 — 다른 카드의 메뉴가 열리고 닫혀도 이 카드는 다시 그리지 않는다
+  const openSig = useSyncExternalStore(subscribeReviewMenu, () => (openReviewMenu?.id === gen.id ? openReviewMenu.sig : null));
+  const confirmReview = openSig === reviewSig;
+  const setConfirmReview = (open: boolean) => {
+    if (open) setOpenReviewMenu({ id: gen.id, sig: reviewSig });
+    else if (openReviewMenu?.id === gen.id) setOpenReviewMenu(null);
+  };
+  // 열린 뒤 상태가 바뀌었으면 닫는다 — 되돌아와도 다시 열리지 않게(전의 효과와 같다)
+  useEffect(() => {
+    if (openSig !== null && openSig !== reviewSig) setOpenReviewMenu(null);
+  }, [openSig, reviewSig]);
+  useEffect(() => {
+    const id = gen.id;
+    mountedCards.set(id, (mountedCards.get(id) ?? 0) + 1);
+    return () => {
+      const left = (mountedCards.get(id) ?? 1) - 1;
+      if (left > 0) mountedCards.set(id, left);
+      else mountedCards.delete(id);
+      queueMicrotask(() => {
+        if (!mountedCards.has(id) && openReviewMenu?.id === id) setOpenReviewMenu(null);
+      });
+    };
+  }, [gen.id]);
   const reviewOpenedAt = useRef(0);
-  useEffect(() => setConfirmReview(false), [gen.id, gen.shared, gen.is_held, gen.is_final, selectedCount, tab]);
   // 미디어 로드 실패(원본 URL 죽음 = 힉스필드에서 삭제 등) → '원본 없음' 흐림 표시(즉시 감지 신호).
   // 소스가 바뀌면(리로드로 캐시 URL 전환 등) 초기화해 다시 시도.
   const [broken, setBroken] = useState(false);
