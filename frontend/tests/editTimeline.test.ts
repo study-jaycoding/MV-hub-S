@@ -42,6 +42,7 @@ import {
   removeMarker,
   resetCutOrder,
   setClipDurs,
+  keepClipDurs,
   setClipRange,
   clipHead,
   clipFrames,
@@ -538,6 +539,19 @@ describe("문서 편집", () => {
     expect(setClipDurs(d, new Map([[key("c1", "a"), 8]]))).toBeNull();
     expect(setClipDurs(d, new Map([[key("c1", "a"), NaN]]))).toBeNull();
     expect(setClipDurs(d, new Map([[key("c1", "a"), 8.04]]))!.clips[0].dur).toBe(8.04);
+  });
+
+  // 2026-10-14 — 그림 트랙으로 잰 길이의 표(durExact). 길이가 같아도 표가 달라지면 바뀐 것이다. 저장했다 읽어도·되돌리기에도 남는다.
+  it("그림 트랙으로 잰 표(durExact) — 달고 떼기 · 저장·읽기 · 되돌리기는 지금 것을 따른다", () => {
+    const k = key("c1", "a");
+    const d = doc([clip("c1", "a", 1, { dur: 97 / 24 })]);
+    const sure = setClipDurs(d, new Map([[k, 97 / 24]]), new Set([k]))!; // 같은 길이 — 표만 단다
+    expect(sure.clips[0]).toMatchObject({ dur: 97 / 24, durExact: true });
+    expect(setClipDurs(sure, new Map([[k, 97 / 24]]), new Set([k]))).toBeNull();
+    expect("durExact" in setClipDurs(sure, new Map([[k, 98 / 24]]))!.clips[0]).toBe(false); // 표 없이 고치면 뗀다
+    expect(parseEditDoc(JSON.parse(JSON.stringify(sure)))).toEqual(sure);
+    expect(parseEditDoc({ ...sure, clips: [{ ...sure.clips[0], durExact: "yes" }] })).toBeNull();
+    expect(keepClipDurs(d, sure)).toEqual(sure); // 옛 문서를 되살려도 길이·표는 지금 것
   });
 });
 

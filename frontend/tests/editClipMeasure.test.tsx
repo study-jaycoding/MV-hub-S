@@ -87,12 +87,15 @@ const mount = () => act(async () => root.render(
 ));
 const docKey = (seq: string) => `mvhub.editDoc:local:p1:${seq}`;
 const DOC_KEY = docKey("e070");
-const seed = (clips: { cut: string; gen: string; track: number; dur?: number; kind?: string }[]) =>
+const seed = (clips: { cut: string; gen: string; track: number; dur?: number; durExact?: boolean; kind?: string }[]) =>
   localStorage.setItem(DOC_KEY, JSON.stringify({
     v: 1, tracksOff: [], tracksLocked: [], clips: clips.map((clip) => ({ kind: "video", ...clip, cut: `e070/${clip.cut}` })),
   }));
 const durs = (): Record<string, number | undefined> => Object.fromEntries(
   (JSON.parse(localStorage.getItem(DOC_KEY) ?? "null")?.clips ?? []).map((clip: { gen: string; dur?: number }) => [clip.gen, clip.dur]));
+// 그림 트랙으로 잰 표(durExact)가 달린 클립
+const exacts = () => (JSON.parse(localStorage.getItem(DOC_KEY) ?? "null")?.clips ?? [])
+  .filter((clip: { durExact?: boolean }) => clip.durExact).map((clip: { gen: string }) => clip.gen).sort();
 // 재어 달라고 한 영상들(한 번이라도) — 효과가 다시 돌 때마다 또 묻는 것은 세지 않는다
 const asked = () => [...new Set(probes.asked.map((url) => url.replace(/^\/media\/|\.mp4$/g, "")))].sort();
 const arrive = (id: string, seconds: number | null) => act(async () => { probes.finish.get(`/media/${id}.mp4`)!(seconds); });
@@ -130,24 +133,31 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// Codex 코드 리뷰 P1(2026-10-14) — 한 창은 서버에서 그림 길이(97프레임)를, 다른 창은 서버가 잠깐 실패해 video.duration(소리까지 —
-//  98프레임)을 쟀다. 그 값으로 덮으면 두 창이 저장을 받을 때마다 서로 되돌렸다(저장 반복·되돌리기 기록 초기화).
-it("video.duration 으로 잰 값은 1프레임 안쪽이면 적힌 값을 덮지 않는다 — 다른 창의 저장을 받아도 되돌리지 않는다", async () => {
-  world.gens = [video("m", "c1", 4), video("d", "c2", 8)];
-  seed([{ cut: "c1", gen: "m", track: 1, dur: 97 / 24 }, { cut: "c2", gen: "d", track: 1, dur: 8 }]);
+// Codex 코드 리뷰(2026-10-14) — 한 창은 서버에서 그림 길이(97프레임)를, 다른 창은 서버가 잠깐 실패해 video.duration(소리까지 —
+//  98·99프레임)을 쟀다. 그 값으로 덮으면 두 창이 저장을 받을 때마다 서로 되돌렸다(저장 반복·되돌리기 기록 초기화). '1프레임
+//  안쪽만 막기'로는 소리가 2프레임 넘게 긴 파일(99 ↔ 97)에서 남았다 — 문서의 표(durExact)로 막는다.
+it("그림 트랙으로 잰 길이는 표를 달고, video.duration 으로 잰 값은 그 표가 있는 클립을 차이와 상관없이 덮지 않는다", async () => {
+  world.gens = [video("m", "c1", 4), video("d", "c2", 8), video("e", "c2", 4)];
+  seed([
+    { cut: "c1", gen: "m", track: 1, dur: 97 / 24, durExact: true }, // 다른 창이 그림 길이로 적었다
+    { cut: "c2", gen: "d", track: 1, dur: 8 }, // 요청 길이
+    { cut: "c2", gen: "e", track: 2, dur: 4.087 }, // 옛 '소리까지 친 길이'
+  ]);
   probes.inexact.add("/media/m.mp4");
-  probes.inexact.add("/media/d.mp4");
+  probes.inexact.add("/media/d.mp4"); // e 는 이 창도 그림 길이로 잰다
   await mount();
-  await arrive("m", 98 / 24); // 그림 길이로 적힌 것보다 1프레임 길다 — 덮지 않는다
-  await arrive("d", 10); // 요청 길이(8)와 크게 다르다 — 고친다
+  await arrive("m", 99 / 24); // 2프레임 길다 — 표가 있으니 덮지 않는다
+  await arrive("d", 10); // 표가 없다 — 고친다(표는 안 단다)
+  await arrive("e", 97 / 24); // 그림 길이 — 고치고 표를 단다
   act(() => { vi.advanceTimersByTime(MEASURE_SAVE_MS); });
-  expect(durs()).toEqual({ m: 97 / 24, d: 10 });
+  expect(durs()).toEqual({ m: 97 / 24, d: 10, e: 97 / 24 });
+  expect(exacts()).toEqual(["e", "m"]);
 
   const writes = countWrites();
   act(() => { window.dispatchEvent(new StorageEvent("storage", { key: DOC_KEY })); }); // 다른 창이 저장했다
   await settle();
   act(() => { vi.advanceTimersByTime(MEASURE_SAVE_MS); });
-  expect([writes(), durs()]).toEqual([0, { m: 97 / 24, d: 10 }]);
+  expect([writes(), durs(), exacts()]).toEqual([0, { m: 97 / 24, d: 10, e: 97 / 24 }, ["e", "m"]]);
   expect(flashed).toEqual([]);
 });
 

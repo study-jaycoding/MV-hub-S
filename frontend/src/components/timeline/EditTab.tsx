@@ -360,29 +360,38 @@ function EditTabInner({
   //    10-13 에 그렇게 넣었다가 뺐다). 건너뛰려면 문서에 '쟀다'는 표시가 있어야 한다.
   //  · 잰 값은 첫 값이 온 뒤 MEASURE_SAVE_MS 동안 모아 한 번에 적는다 — 클립마다 적으면 영상 N개에 저장·다시 그리기가 N번이다.
   //    모으는 중에 문서가 바뀌거나 탭을 떠나면 그 자리에서 적는다. 시퀀스를 바꾸면 버려진다(rev 가 다르다) — 돌아오면 다시 잰다.
-  //  · 잰 값과 조금이라도 다르면 고쳐 적는다 — 잰 값은 프레임에 맞춘 그림 길이다(lib/videoDuration). 예전엔 '1프레임 넘게 다를 때만'
+  //  · 잰 값과 조금이라도 다르면 고쳐 적는다 — 잰 값은 프레임에 맞춘 길이다(lib/videoDuration). 예전엔 '1프레임 넘게 다를 때만'
   //    적어, 소리까지 친 옛 길이(4.087초 = 98.1프레임)가 그림 길이(97프레임)로 안 바뀐 채 남았다(2026-10-14).
+  //  · 그림 트랙으로 잰 값은 표(`durExact`)를 달아 적고, video.duration 으로 잰 값(서버가 그림 길이를 못 준 창)은 그 표가 있는
+  //    클립을 **차이와 상관없이** 덮지 않는다 — 소리까지 친 길이라 그림보다 길게 나와, 두 창이 저장을 받을 때마다 서로 되돌렸다
+  //    (Codex 코드 리뷰 — 처음엔 '1프레임 안쪽만' 막았는데 소리가 2프레임 이상 긴 파일에서 남았다).
   useEffect(() => {
     let alive = true;
     let timer = 0;
     const measured = new Map<string, number>();
+    const exact = new Set<string>();
     const save = () => {
       window.clearTimeout(timer);
       timer = 0;
-      if (measured.size) applyEdit((current) => setClipDurs(current, measured), { undo: false, rev });
+      if (measured.size) {
+        const durs = new Map(measured);
+        const sure = new Set(exact);
+        applyEdit((current) => setClipDurs(current, durs, sure), { undo: false, rev });
+      }
       measured.clear();
+      exact.clear();
     };
     for (const clip of doc.clips) {
       const asset = links.get(clipKey(clip))?.gen?.assets[0];
       if (asset?.type !== "video" || !asset.file_path) continue;
       const key = clipKey(clip);
       void measureVideoSeconds(asset.file_path).then((seconds) => {
-        if (!alive || !seconds || seconds === clip.dur) return;
-        // video.duration 으로 잰 값(서버가 그림 길이를 못 줬다)은 1프레임 안쪽이면 덮지 않는다 — 소리까지 친 길이라 그림 길이보다
-        //  1프레임 길게 나와, 다른 창이 그림 길이로 적은 값을 되돌리며 두 창이 서로 고쳐 쓴다(Codex 코드 리뷰 P1). 요청 길이처럼
-        //  크게 다른 값은 그대로 고친다.
-        if (!measuredExactly(asset.file_path) && Math.abs(seconds - (clip.dur ?? 0)) <= 1 / EDIT_FPS + 1e-9) return;
+        if (!alive || !seconds) return;
+        const sure = measuredExactly(asset.file_path);
+        if (seconds === clip.dur && sure === !!clip.durExact) return;
+        if (!sure && clip.durExact) return;
         measured.set(key, seconds);
+        if (sure) exact.add(key);
         timer ||= window.setTimeout(save, MEASURE_SAVE_MS);
       });
     }
