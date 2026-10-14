@@ -14,6 +14,7 @@ vi.mock("../src/lib/download", () => ({ fetchBlob: vi.fn(async () => new Blob(["
 
 import { PartialEditModal } from "../src/components/edit/PartialEditModal";
 import type { Generation } from "../src/types";
+import { unloadHeld, unsavedPlaces } from "../src/lib/unloadGuard";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -46,6 +47,20 @@ const key = (init: KeyboardEventInit) => {
   return event;
 };
 const clearButton = () => [...document.querySelectorAll<HTMLButtonElement>(".partial-edit-tools button")].find((button) => button.textContent === "전체 지우기")!;
+
+// 56회차 — 그린 획·친 프롬프트는 이 창의 상태에만 있다. 그동안 창을 닫거나 새로고침하면 브라우저가 묻는다(전엔 편집 탭만 물었다).
+it("그린 것이 있는 동안만 나갈 때 묻는다 — 다 지우거나 창을 닫으면 묻지 않는다", async () => {
+  act(() => root.render(<PartialEditModal gen={gen} workspace={{ scope: "personal", id: null, name: null } as never} onQueued={() => {}} onClose={() => {}} />));
+  await settle();
+  expect(unloadHeld()).toBe(false);
+  stroke(10);
+  expect(unsavedPlaces()).toBe("부분 수정 창");
+  act(() => clearButton().click());
+  expect(unloadHeld()).toBe(false);
+  stroke(10);
+  act(() => root.render(<></>)); // 창을 닫는다
+  expect(unloadHeld()).toBe(false);
+});
 
 it("그리기 — Ctrl+Z 는 한 획을 지운다. 다시 하기(Ctrl+Shift+Z)는 획을 지우지 않고, 뒤 화면으로도 흘리지 않는다", async () => {
   act(() => root.render(<PartialEditModal gen={gen} workspace={{ scope: "personal", id: null, name: null } as never} onQueued={() => {}} onClose={() => {}} />));

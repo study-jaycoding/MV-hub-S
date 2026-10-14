@@ -61,7 +61,7 @@ import {
   type ReleaseUpdateStatus,
 } from "../lib/releaseUpdate";
 import { CloseIcon } from "./common/ViewIcons";
-import { reloadIfFree, reloadNow, unsavedNote } from "../lib/unloadGuard"; // 앱이 스스로 하는 새로고침 — 서버 상태를 바꾼 뒤라 묻지 않고 진행한다
+import { reloadIfFree, reloadNow, unsavedNote, unsavedPlaces } from "../lib/unloadGuard"; // 앱이 스스로 하는 새로고침 — 서버 상태를 바꾼 뒤라 묻지 않고 진행한다
 
 export function SettingsPanel({
   onClose,
@@ -244,7 +244,7 @@ export function SettingsPanel({
           //  lib/unloadGuard). 여기서 묻지 않고 새로고침하면 덮개가 묻기도 전에 그 편집이 사라졌다(Codex 재검토 3회째).
           window.setTimeout(() => {
             if (reloadIfFree() || cancelled) return;
-            setReleaseUpdateMsg("업데이트가 끝났습니다 — 편집 탭에 저장하지 못한 변경이 있어 자동으로 새로고침하지 않았습니다.");
+            setReleaseUpdateMsg(`업데이트가 끝났습니다 — ${unsavedPlaces()}에 저장하지 못한 변경이 있어 자동으로 새로고침하지 않았습니다.`);
             setReleaseUpdateBusy(false);
             setReleaseUpdatePolling(false);
           }, 500);

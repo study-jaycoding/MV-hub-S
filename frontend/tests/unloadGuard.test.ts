@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // 나갈 때 묻기(lib/unloadGuard) — 쥔 쪽이 있는 동안만 묻고, 반드시 새로고침해야 하는 길(계정 전환·로그아웃)은 풀고 새로고침한다.
 import { afterEach, expect, it, vi } from "vitest";
-import { holdUnload, reloadIfFree, reloadNow, unloadHeld, unsavedNote } from "../src/lib/unloadGuard";
+import { holdUnload, reloadIfFree, reloadNow, unloadHeld, unsavedNote, unsavedPlaces } from "../src/lib/unloadGuard";
 
 const leaving = () => {
   const event = new Event("beforeunload", { cancelable: true });
@@ -35,6 +35,18 @@ it("reloadIfFree 는 쥔 쪽이 있으면 새로고침하지 않고 거짓을 �
   expect(leaving()).toBe(true); // 문지기는 그대로다
   holdUnload("a", false);
   expect([unsavedNote(), reloadIfFree(), reload.mock.calls.length]).toEqual(["", true, 1]);
+});
+
+// 56회차 — 편집 탭만 쥐던 문지기를 캔버스·작업표 설명·부분 수정 창도 쥔다. 안내 글은 실제로 쥔 곳을 말한다.
+it("안내 글은 저장하지 못한 것을 쥔 곳의 이름을 말한다", () => {
+  holdUnload("edit-docs", true);
+  expect(unsavedPlaces()).toBe("편집 탭");
+  holdUnload("scene-save", true);
+  expect(unsavedPlaces()).toBe("편집 탭·캔버스");
+  expect(unsavedNote()).toContain("편집 탭·캔버스에 저장하지 못한 변경이 있습니다");
+  holdUnload("edit-docs", false);
+  holdUnload("scene-save", false);
+  expect(unsavedPlaces()).toBe("");
 });
 
 it("reloadNow 는 문지기를 풀고 새로고침한다 — 머무르기를 고를 틈을 주지 않는다", () => {

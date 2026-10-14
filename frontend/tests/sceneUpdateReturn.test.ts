@@ -27,6 +27,7 @@ import {
   writeScenesStore,
 } from "../src/lib/sceneStore";
 import { saveString } from "../src/lib/storage";
+import { unloadHeld, unsavedPlaces } from "../src/lib/unloadGuard";
 import { STORAGE_KEYS } from "../src/lib/storageKeys";
 import { setAccountScope } from "../src/lib/accountScope";
 
@@ -171,6 +172,18 @@ describe("씬 쓰기 계약", () => {
     } finally {
       unsubscribe();
     }
+  });
+
+  // 56회차 — 확정되지 못한 편집은 메모리에만 있다. 그동안 창을 닫거나 새로고침하면 브라우저가 묻는다(전엔 편집 탭만 물었다).
+  it("저장이 실패하는 동안만 나갈 때 묻는다", async () => {
+    saveScenes(null, [mkScene("s1")]);
+    await settleSceneStoreForTest();
+    expect(unloadHeld()).toBe(false);
+    await whileStoreFails(() => updateScene(null, "s1", { name: "실패" }));
+    expect(unsavedPlaces()).toBe("캔버스");
+    updateScene(null, "s1", { name: "성공" });
+    await settleSceneStoreForTest();
+    expect(unloadHeld()).toBe(false);
   });
 
   // 부팅 첫 저장(옛 버킷 이관)이 실패하면 화면이 구독하기 전이다. 그때 '상태가 안 바뀌었다'는 이유로

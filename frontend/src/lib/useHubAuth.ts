@@ -9,7 +9,7 @@ import { setAccountScope } from "./accountScope";
 import { useCustomEvent } from "./useCustomEvent";
 // 계정이 바뀌는 길의 새로고침은 반드시 일어나야 한다 — 저장 못 한 편집이 있어도 그 자리에서는 묻지 않는다(머무르면 계정 범위만 바뀐
 //  화면이 남는다). 묻는 것은 그 전, 로그아웃을 누른 순간이다(아래 logout).
-import { reloadNow, setLeaving, unloadHeld } from "./unloadGuard";
+import { reloadNow, setLeaving, unloadHeld, unsavedPlaces } from "./unloadGuard";
 import type { Account, AuthConfig } from "../types";
 import { HttpError } from "./http";
 
@@ -292,7 +292,7 @@ export function useHubAuth() {
     if (loggingOut.current) return loggingOut.current;
     // 저장하지 못한 편집이 있으면 먼저 묻는다 — 로그아웃(그리고 이어지는 계정 전환)은 새로고침으로 끝나 메모리에만 남은 그 편집이 사라진다.
     //  계정·서버의 상태를 바꾸기 **전에** 묻는다: 바꾼 뒤에 새로고침만 막으면 화면이 옛 계정의 것으로 남는다(Codex 배포 전 재검토).
-    if (unloadHeld() && !window.confirm("편집 탭에 저장하지 못한 변경이 있습니다. 로그아웃하면 그 변경은 사라집니다. 계속할까요?")) return false;
+    if (unloadHeld() && !window.confirm(`${unsavedPlaces()}에 저장하지 못한 변경이 있습니다. 로그아웃하면 그 변경은 사라집니다. 계속할까요?`)) return false;
     if (!authConfig?.auth_enabled) {
       // 응답을 기다리는 동안의 편집은 받지 않는다 — 위의 확인 뒤에 '저장 안 됨'이 새로 생기면 묻지 못한 채 아래 새로고침에 사라진다.
       setLeaving(true);

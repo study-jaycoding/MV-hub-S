@@ -6,7 +6,7 @@
 // 평소에는 아무 요청도 하지 않는다.
 import { useKeyOwner } from "../lib/keyGate";
 import { useEscapeClose } from "../lib/useEscapeClose";
-import { reloadIfFree, reloadNow, unloadHeld } from "../lib/unloadGuard";
+import { reloadIfFree, reloadNow, unloadHeld, unsavedPlaces } from "../lib/unloadGuard";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -209,7 +209,7 @@ export function UpdateProgressOverlay() {
         <div className="upd-box" ref={boxRef} tabIndex={-1}>
           <h3 className="upd-title">업데이트가 끝났습니다</h3>
           <p className="upd-step">
-            편집 탭에 저장하지 못한 변경이 있어 자동으로 새로고침하지 않았습니다. 새로고침하면 그 변경은 사라집니다.
+            {unsavedPlaces() || "화면"}에 저장하지 못한 변경이 있어 자동으로 새로고침하지 않았습니다. 새로고침하면 그 변경은 사라집니다.
           </p>
           {status?.current_version && <p className="upd-ver">v<b>{status.current_version}</b></p>}
           <div className="upd-actions">

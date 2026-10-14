@@ -7,6 +7,7 @@ import { WorkBoard } from "../src/components/manage/WorkBoard";
 import { api } from "../src/api";
 import { manageApi } from "../src/lib/manageApi";
 import { HttpError } from "../src/lib/http";
+import { unloadHeld, unsavedPlaces } from "../src/lib/unloadGuard";
 import type { Task } from "../src/components/manage/types";
 
 vi.mock("../src/api", () => ({ api: { facets: vi.fn(), projects: vi.fn() } }));
@@ -96,6 +97,29 @@ it("설명 저장이 실패하고 복구 조회까지 실패해도 친 글과 '�
   // 저장이 통했으면 서버는 돌아온 것 — 목록을 다시 받아(띠만 지운 것이 아니다) "목록을 새로 받지 못했습니다" 띠를 걷는다(28회차).
   expect(manageApi.taskProjects).toHaveBeenCalledTimes(loads + 1);
   expect(banner()).toBeNull();
+});
+
+// 56회차 — 서버에 아직 없는 설명 글은 이 창의 메모리에만 있다. 그동안 창을 닫거나 새로고침하면 브라우저가 묻는다(전엔 편집 탭만 물었다).
+it("서버에 없는 설명 글을 쥔 동안만 나갈 때 묻는다 — 치는 중·저장 실패 뒤에는 묻고, 저장되거나 버리면 묻지 않는다", async () => {
+  render(); await settle();
+  expect(unloadHeld()).toBe(false);
+  vi.mocked(manageApi.updateTask).mockRejectedValueOnce(new Error("500: boom"));
+  act(() => input().focus());
+  type("저장할 글");
+  expect(unsavedPlaces()).toBe("작업표 설명");
+  act(() => input().blur());
+  await settle();
+  expect(unloadHeld()).toBe(true); // '저장 안 됨'
+  vi.mocked(manageApi.updateTask).mockResolvedValueOnce({} as never);
+  vi.mocked(manageApi.listTasksBatch).mockImplementation(async (_ids, workspace) => ({ project: [{ ...task(workspace), description: "저장할 글" }] }));
+  await act(async () => { host.querySelector<HTMLButtonElement>(".work-desc .work-desc-retry")!.click(); });
+  await settle();
+  expect(unloadHeld()).toBe(false);
+  act(() => input().focus());
+  type("버릴 글");
+  expect(unloadHeld()).toBe(true);
+  act(() => { input().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+  expect(unloadHeld()).toBe(false);
 });
 
 // 50회차(Codex 검토): 두 사람이 같은 설명을 고치면 나중에 확정한 옛 초안이 먼저 저장된 글을 덮었다.

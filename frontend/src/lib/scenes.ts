@@ -6,6 +6,7 @@ import { loadJSON, saveJSON } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 import { getAccountNamespace } from "./accountScope";
 import { sceneBodySum } from "./sceneAbsorb";
+import { holdUnload } from "./unloadGuard";
 import {
   applySceneOp,
   captureSceneOps,
@@ -330,6 +331,7 @@ const RENOTIFY_MS = 30_000;
 function reportSaveState(failed: boolean): void {
   const changed = failed !== saveFailing;
   saveFailing = failed;
+  holdUnload("scene-save", failed); // 확정 못 한 편집은 메모리에만 있다 — 그동안 창을 닫거나 새로고침하면 묻는다(56회차)
   if (!changed && !(failed && Date.now() - lastNotifiedAt >= RENOTIFY_MS)) return;
   lastNotifiedAt = Date.now();
   saveStateSubs.forEach((fn) => fn(failed));

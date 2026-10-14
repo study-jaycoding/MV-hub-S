@@ -22,6 +22,7 @@ import { flashMsg } from "../../lib/flash";
 import { HttpError } from "../../lib/http";
 import { generationIssueFor } from "../../lib/generationDisplay";
 import { isGenerationWorkspaceReady } from "../../lib/workspaceContext";
+import { holdUnload } from "../../lib/unloadGuard";
 import { useModels } from "../../lib/useModels";
 import type { Generation, WorkspaceContext } from "../../types";
 import { CloseIcon } from "../common/ViewIcons";
@@ -409,6 +410,13 @@ export function PartialEditModal({
       if (current) URL.revokeObjectURL(current);
     };
   }, [resultUrl]);
+
+  // 그린 획·친 프롬프트는 이 창의 상태에만 있다 — 그동안 창을 닫거나 새로고침하면 브라우저가 묻는다(56회차). 보낸 뒤는 서버에 있다.
+  const drafting = stage === "draw" && (items.length > 0 || !!prompt.trim());
+  useEffect(() => {
+    holdUnload("partial-edit", drafting);
+    return () => holdUnload("partial-edit", false);
+  }, [drafting]);
 
   const workspaceReady = isGenerationWorkspaceReady(workspace);
   // aspect 필수 — 파라미터 로드 실패로 빈 스키마가 되면 기본 1:1 로 심하게 크롭된

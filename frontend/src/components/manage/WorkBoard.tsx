@@ -13,6 +13,7 @@ import {
 import { manageApi } from "../../lib/manageApi";
 import { HttpError, isHttpStatus, isRouteMissing } from "../../lib/http";
 import { mediaThumbUrl } from "../../lib/media";
+import { holdUnload } from "../../lib/unloadGuard";
 import { loadJSON, loadString, saveJSON, saveString } from "../../lib/storage";
 import { STORAGE_KEYS } from "../../lib/storageKeys";
 import {
@@ -264,6 +265,18 @@ export function WorkBoard({
   //  (2026-10-10 격리 실측 3/3). 표 밖에 두고, 칸이 다시 만들어질 때 여기서 되살린다. 범위가 바뀌면 **새것으로 바꾼다** —
   //  비우기만 하면 앞 범위의 칸이 늦게 받은 실패 응답으로 다시 채울 수 있다(Codex 코드 리뷰).
   const descDraftsRef = useRef(newDescDraftStore());
+  // 서버에 아직 없는 설명 글이 있는 동안 창을 닫거나 새로고침하면 브라우저가 묻는다(56회차). 그릴 때마다 지금 보관함에 다시 건다 —
+  //  보관함은 범위가 바뀌면 새것이 되고, 칸들은 글이 바뀔 때 listeners 로 알린다. 삭제가 지운 글은 뒤따르는 다시 그리기가 맞춘다.
+  useEffect(() => {
+    const store = descDraftsRef.current;
+    const sync = () => holdUnload("task-desc", store.drafts.size > 0);
+    sync();
+    store.listeners.add(sync);
+    return () => {
+      store.listeners.delete(sync);
+      holdUnload("task-desc", false);
+    };
+  });
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
