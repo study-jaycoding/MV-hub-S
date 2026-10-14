@@ -2641,14 +2641,17 @@ export default function App() {
           navTab(tab); // 브라우저 히스토리 엔트리 추가(뒤로/앞으로 연동)
           // 직접 탭 클릭은 다른 필터를 초기화하되 무장된 워크스페이스 침 필터는 유지
           setFilters((previous) => ({ tab, workspace_ids: previous.workspace_ids }));
-          // 공유 탭을 **직접 눌러** 들어오면 같은 문맥의 마지막 자리로(2026-10-13 ① — 처음이거나 다른 문맥이면 프로젝트 맨 위). 보는 자리만 되살린다 —
-          //  다음 생성 위치·무장 폴더는 그대로. 뒤로·앞으로 가기는 여기를 거치지 않고 기록의 자리를 쓴다(lib/useAppNavigation).
+          // 공유 탭을 **직접 눌러** 들어오면 같은 문맥의 마지막 자리로(2026-10-13 ①). **사이드바의 표시(= 다음 생성 위치·무장 폴더)도 그 자리로
+          //  옮긴다**(2026-10-14 Jay: "이미지1처럼 선택되어있으면 이미지2처럼 나와야하고 만약 전에 눌러서 저 화면이 나왔다면 이미지3번처럼" —
+          //  전에는 보는 자리만 되살려 사이드바는 프로젝트, 카드는 e035 였다. 뒤로·앞으로 가기와 같게(adopt)). 기억이 없거나 다른 문맥이면 프로젝트
+          //  맨 위 — 위의 setFilters 가 생성 위치도 같이 비우므로 사이드바와 맞는다. 뒤로·앞으로 가기는 여기를 거치지 않고 기록의 자리를 쓴다
+          //  (lib/useAppNavigation).
           if (tab === "team" && teamMemoryCtx) {
             const remembered = LS.loadJSON<TeamLocationMemory>(TEAM_LOCATION_KEY);
             if (remembered && remembered.ctx === teamMemoryCtx && (remembered.project_id || remembered.folder_path)) {
               // 그사이 지워졌는지는 판정하지 않는다 — 사이드바의 프로젝트 목록은 보관·공간 제한이라 없다고 지워진 것이 아니고, 폴더는 알 길이 없다
               //  (컷 카드 0장은 공유 해제·필터로도 난다). 정말 사라졌으면 빈 목록이 보이고, 사이드바에서 다시 고르면 기억이 덮인다(Codex 코드 리뷰 2회).
-              restoreLocation({ project_id: remembered.project_id, folder_path: remembered.folder_path });
+              restoreLocation({ project_id: remembered.project_id, folder_path: remembered.folder_path }, true);
             }
           }
           clearSelect();
