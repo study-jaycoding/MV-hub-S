@@ -451,6 +451,20 @@ it("연결 재생기 — 타임바로 컷을 넘긴 뒤 늦게 도는 옛 컷의
   }
 });
 
+// 55회차(Codex): 숨긴 탭에서는 rAF 가 멈춘다 — 돌아온 첫 틱이 숨어 있던 시간을 한 번에 더해, 지금 컷을 멈추려고 Space 를 누르기도 전에 다음 컷으로 넘어갔다.
+it("연결 재생기 — 탭을 숨겼다 돌아온 첫 틱은 숨어 있던 시간을 더하지 않는다(이미지 컷이 넘어가지 않는다)", () => {
+  const ticks: FrameRequestCallback[] = [];
+  const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => ticks.push(callback));
+  const still = (name: string): ReelClip => ({ path: `e035/${name}`, name, url: `/m/${name}.png`, type: "image", thumb: null, worker: "리버", rep: false });
+  try {
+    act(() => root.render(<ReelPlayer clips={[still("C0010"), still("C0020")]} />)); // 3초 × 2, 재생 중
+    act(() => { ticks[ticks.length - 1](performance.now() + 10 * 60_000); }); // 10분 숨겼다 돌아온 첫 틱
+    expect(host.querySelector(".reel-chip.l")!.textContent).toBe("1 / 2 · C0010 · 리버");
+  } finally {
+    raf.mockRestore();
+  }
+});
+
 it("연결 재생기 — Tab 으로 찾아간 단추의 Space 는 그 단추를 누르는 키다. 마우스로 눌러 초점이 남은 단추에서는 여전히 재생/정지", () => {
   // 2026-10-11 격리 실측(dist_b46): Tab 으로 간 [반복]·[다음 컷]·[닫기]에서 Space 18/18 이 재생/정지로 갔고 단추는 0/18 눌렸다.
   const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 1);

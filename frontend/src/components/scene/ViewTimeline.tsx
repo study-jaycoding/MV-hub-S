@@ -209,7 +209,8 @@ export function ViewTimeline({
     let raf = 0;
     let last = performance.now();
     const tick = (now: number) => {
-      const nt = clipTimeRef.current + (now - last) / 1000;
+      // 한 틱에 0.25초까지만 — 숨긴 탭에서는 rAF 가 멈춰, 돌아온 첫 틱이 숨어 있던 시간을 통째로 더했다(55회차)
+      const nt = clipTimeRef.current + Math.min(now - last, 250) / 1000;
       last = now;
       if (nt >= dur) {
         setClipTime(dur); // 끝으로 고정(오버슈트 방지)

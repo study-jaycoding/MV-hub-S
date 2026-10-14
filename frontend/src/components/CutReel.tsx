@@ -452,7 +452,8 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
     const jump = jumpRef.current;
     const tick = (now: number) => {
       if (jumpRef.current !== jump) return; // 자리를 옮겼다 — 새 컷의 틱이 이어받는다
-      const nt = st.current.clipTime + (now - last) / 1000;
+      // 한 틱에 0.25초까지만 — 숨긴 탭에서는 rAF 가 멈춰, 돌아온 첫 틱이 숨어 있던 시간을 통째로 더했다(55회차)
+      const nt = st.current.clipTime + Math.min(now - last, 250) / 1000;
       last = now;
       if (nt >= dur) {
         setClipTime(dur);

@@ -73,6 +73,17 @@ it("Tab 으로 찾아간 단추의 Space 는 그 단추의 키다 — 마우스�
   raf.mockRestore();
 });
 
+// 55회차(Codex): 숨긴 탭에서는 rAF 가 멈춘다 — 돌아온 첫 틱이 숨어 있던 시간을 한 번에 더해 이미지 클립이 곧바로 넘어갔다.
+it("탭을 숨겼다 돌아온 첫 틱은 숨어 있던 시간을 더하지 않는다(이미지 클립이 넘어가지 않는다)", () => {
+  const ticks: FrameRequestCallback[] = [];
+  const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => ticks.push(callback));
+  const clips = [{ url: "/media/1.png", type: "image" as const }, { url: "/media/2.png", type: "image" as const }];
+  act(() => root.render(<ViewTimeline clips={clips} onClose={() => {}} />));
+  act(() => { ticks[ticks.length - 1](performance.now() + 10 * 60_000); }); // 10분 숨겼다 돌아온 첫 틱
+  expect(parseFloat(host.querySelector<HTMLElement>(".vtl-playhead")!.style.left)).toBeLessThan(10); // 둘째 클립(50%)으로 넘어가지 않았다
+  raf.mockRestore();
+});
+
 it("mouseup 을 놓친 타임라인 끌기는 단추를 뗀 마우스를 따라오지 않는다", () => {
   const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 1);
   const clips = [{ url: "/media/1.png", type: "image" as const }, { url: "/media/2.png", type: "image" as const }];
