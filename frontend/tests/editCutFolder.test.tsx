@@ -1374,6 +1374,27 @@ it("다이나믹 재생 모드: W 로 켜면 두 판의 재생 조작이 같이 
   expect(playing(right)).toBe(false); // right = 이제 가려진 타임라인 판(그 시계의 단추)
   press({ key: "k", code: "KeyK" });
   expect(panes().map(playing)).toEqual([false, false]);
+
+  // 싱글로 가면 모드도 꺼진다 — 남겨 두면 단추는 켜짐인데 키는 한 판만 받고, 다음 W 는 끄기만 했다(Codex 37회차)
+  act(() => panes()[1].querySelector<HTMLButtonElement>(".ed-dual")!.click());
+  expect([paneModes().length, btn.getAttribute("aria-pressed")]).toEqual([1, "false"]);
+  press({ key: "w", code: "KeyW" }); // W 한 번으로 다시 듀얼 · 켜짐
+  expect([paneModes().length, btn.getAttribute("aria-pressed")]).toEqual([2, "true"]);
+});
+
+// Codex 37회차 — 멈춤은 미리 받아 둔 다음 영상을 남겨 둔다(다시 틀 때 바로 넘어가게). 판을 내려도 그대로라 안 보이는 판이 끝까지 받았다.
+it("소스 테이프를 틀다 싱글로 바꾸면 내려간 판은 미리 받아 둔 다음 영상도 놓는다", () => {
+  world.gens = [...world.gens, videoGen()]; // c1 = 그림 a · 그림 b · 영상 v
+  localStorage.setItem(UI_KEY, JSON.stringify({ dual: true, views: ["tape", "timeline"] }));
+  mount();
+  act(() => cutCell("c1").click());
+  const tape = pane("tape");
+  act(() => poolCards()[1].click()); // 테이프가 그림 b 의 처음으로 — 다음이 영상 v
+  act(() => tape.querySelector<HTMLButtonElement>(".ed-play")!.click());
+  expect(tape.querySelector("video[data-spare]")!.getAttribute("src")).toBe("/media/v.mp4");
+  act(() => pane("timeline").querySelector<HTMLButtonElement>(".ed-dual")!.click());
+  expect(paneModes()).toEqual(["timeline"]);
+  expect(tape.querySelectorAll("video[src]")).toHaveLength(0);
 });
 
 // Jay 2026-10-14 오후 — "두개 화면 모두 소스클립이나 내가 정한 화면이 자유롭게". 소스 엔진이 판마다라 두 판이 서로 다른 소스 클립을 띄운다.

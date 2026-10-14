@@ -1244,7 +1244,11 @@ function EditTabInner({
     return {
       order, mode, options: viewOptions, ...(place !== null && { place }),
       onMode: (next: ViewMode) => place !== null && setModeAt(place, next),
-      dualButton: order >= 0 && order === slots.length - 1 ? { dual: ui.dual, onToggle: () => patchUi({ dual: !ui.dual }) } : null,
+      // 싱글로 가면 다이나믹 재생 모드도 끈다 — 남겨 두면 단추는 켜짐인데 키는 한 판만 받고, 다음 W 는 그것을 끄기만 했다(Codex 37회차)
+      dualButton: order >= 0 && order === slots.length - 1 ? { dual: ui.dual, onToggle: () => {
+        if (ui.dual) setLinked(false);
+        patchUi({ dual: !ui.dual });
+      } } : null,
       active: place !== null && multi && (linkedOn || keyPlace === place),
       onActivate: () => place !== null && setActivePlace(place),
     };
