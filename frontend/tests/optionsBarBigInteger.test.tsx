@@ -37,6 +37,8 @@ it("고급 옵션의 정수 칸 — 2^53 을 넘는 정수는 들어가지 않�
   expect([values.seed, input().value]).toEqual([7, "7"]); // 전엔 9007199254740992 가 들어갔다
   type("9007199254740991"); // 정확히 담기는 가장 큰 정수
   expect(values.seed).toBe(9007199254740991);
+  type("12.5"); // 소수도 받지 않는다 — 전엔 시드 12.5 가 그대로 CLI 로 갔다(Codex P2, 2026-10-14)
+  expect(values.seed).toBe(9007199254740991);
   type(""); // 비우는 것은 종전대로
   expect(values.seed).toBe("");
 });

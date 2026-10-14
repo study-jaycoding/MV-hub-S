@@ -204,7 +204,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   // 그룹 사용 모델 정책(앱 수준 모듈 저장소) — 못 쓰는 모델은 목록에서 빼고, 이미 고른 것이면 제출만 막는다.
   const modelPolicy = useModelPolicy();
   const { type, setType, model, setModel, markModelSelection, modelPickedByUser, firstAllowed,
-          currentModel: readSelectedModel, tunable, constraints, typeModels, modelName,
+          currentModel: readSelectedModel, loadedParams, tunable, constraints, typeModels, modelName,
           optionValues, setOptionValues, setOpt, cost, costLoading, paramsModel, paramsLoading,
           pendingOptsRef, setOpenRef, params: schemaParams, selectedBlocked, typeFullyBlocked } =
     useModels((msg) => setError(msg), { allowed: modelPolicy.allowed, ready: modelPolicy.status !== "loading" });
@@ -860,7 +860,12 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
         // 모델 동일 → [model] effect 안 돎. 옵션을 직접 병합. 출처는 항상 다시 기록한다 — 폴백이 마침 지금 모델과
         // 같을 때 이전의 '명시 선택'이 남아 자동 대체가 막히지 않게(코덱스 P2).
         markModelSelection(keepsOriginal);
-        setOptionValues((prev) => ({ ...prev, ...opts }));
+        // 지금 값 위가 아니라 **실효 기본값 위에** 얹는다 — 원본에서 비워 둔 옵션(Nano Banana 2.1 의 시드·웹 검색 등)에
+        // 앞서 넣은 값이 남아 다음 요청에 실리지 않게(Codex P2, 2026-10-14). 다른 모델로 옮길 때·씬 카드 적용과 같은 규칙.
+        // 스키마를 아직 받는 중이면 받은 뒤 기본값 위에 덮이도록 예약한다.
+        const loaded = loadedParams(useModel);
+        if (loaded) setOptionValues(withEffectiveDefaults(loaded, useModel, opts));
+        else pendingOptsRef.current = { model: useModel, opts };
       } else {
         pendingOptsRef.current = { model: useModel, opts }; // 그 모델 로드 때 기본값 위에 덮음(model 스탬프)
         setModel(useModel, keepsOriginal);

@@ -395,6 +395,13 @@ export function useModels(
   );
   /** 지금 고른 모델 — 비동기 작업이 끝난 뒤 '현재' 모델과 비교할 때 쓴다(시작 시점 값이 아니라). */
   const currentModel = useCallback(() => modelRef.current, []);
+  // 받아 둔 스키마가 어느 모델 것인지 — 비동기(재사용 응답) 뒤에는 렌더 클로저 대신 이것을 읽는다(그사이 바뀐 모델의 스키마를 쓰지 않게).
+  const loadedParamsRef = useRef<{ model: string; params: ModelParam[] }>({ model: "", params: [] });
+  /** 이 모델의 스키마를 받아 두었으면 그 파라미터, 아니면 null(받는 중·실패). */
+  const loadedParams = useCallback(
+    (m: string) => (loadedParamsRef.current.model === m ? loadedParamsRef.current.params : null),
+    [],
+  );
   const [params, setParams] = useState<ModelParam[]>([]);
   const [optionValues, setOptionValues] = useState<Record<string, string | number | boolean>>({});
   const [cost, setCost] = useState<number | null>(null);
@@ -472,6 +479,7 @@ export function useModels(
   // 모델 바뀌면 CLI 파라미터 로드 + 기본값으로 옵션 초기화.
   useEffect(() => {
     if (!model) {
+      loadedParamsRef.current = { model: "", params: [] };
       setParams([]);
       setOptionValues({});
       setParamsModel("");
@@ -481,6 +489,7 @@ export function useModels(
     }
     // 파라미터 → params + 기본값 옵션 적용. 드롭 복원이 대기 중이면 기본값 위에 덮음.
     const apply = (r: ModelParamsOut) => {
+      loadedParamsRef.current = { model, params: r.params };
       setParams(r.params);
       const init = defaultOptions(r.params, model); // 실효 기본값(오버라이드·게이트 반영)
       // 이 모델용 예약 옵션일 때만 덮는다(다른 모델용이면 그 모델 로드 때 적용되도록 보존).
@@ -512,6 +521,7 @@ export function useModels(
       })
       .catch(() => {
         if (alive) {
+          loadedParamsRef.current = { model: "", params: [] };
           setParams([]);
           setOptionValues({});
           // ★정합을 **깬다**(2026-09-13). 종전엔 `model` 을 넣어 성공과 구별되지 않았고,
@@ -630,7 +640,7 @@ export function useModels(
     setOpenRef.current?.(null);
   };
 
-  return { models, type, setType, model, setModel, markModelSelection, modelPickedByUser, firstAllowed, currentModel,
+  return { models, type, setType, model, setModel, markModelSelection, modelPickedByUser, firstAllowed, currentModel, loadedParams,
            params, tunable, constraints,
            typeModels, modelName, optionValues, setOptionValues, setOpt, cost, costLoading, paramsModel, paramsLoading, paramsError,
            pendingOptsRef, setOpenRef, selectedBlocked, typeFullyBlocked };
