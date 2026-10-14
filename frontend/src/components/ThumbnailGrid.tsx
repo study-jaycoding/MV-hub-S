@@ -101,6 +101,11 @@ interface Props {
   onRetryLoad?: () => void; // 로드 실패 시 "다시 시도"
 }
 
+const subscribeResize = (onChange: () => void) => {
+  window.addEventListener("resize", onChange);
+  return () => window.removeEventListener("resize", onChange);
+};
+
 export function ThumbnailGrid(props: Props) {
   const { generations, scale, layout, groupByDate, selectedIds } = props;
   const resolveScrollGuardRef = useRef(false);
@@ -186,11 +191,13 @@ export function ThumbnailGrid(props: Props) {
 
   // 썸네일 요청 폭 버킷 — 카드 표시폭(≈180*scale)×DPR 이 256 이하면 256, 아니면 512. 1x 디스플레이·
   // 작은 줌에선 512 가 과해 256 으로 디코딩 메모리 1/4. 레티나·큰 줌에선 512 유지(화질 무손실).
+  //  배율(DPR)은 모니터를 옮기거나 브라우저를 확대하면 바뀐다 — 창 크기 바뀜에 다시 읽는다(숫자라 바뀔 때만 다시 그린다. 51회차:
+  //  옛 배율에 머물러 큰 배율 화면에서 256 을 계속 받았다).
+  const dpr = useSyncExternalStore(subscribeResize, () => window.devicePixelRatio || 1, () => 1);
   const thumbSize = useMemo(() => {
     if (isList) return 512; // 리스트는 행이 커질 수 있어 안전하게 원해상도
-    const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
     return Math.round(180 * scale) * dpr <= 256 ? 256 : 512;
-  }, [isList, scale]);
+  }, [isList, scale, dpr]);
 
   // underfill 보정 — 첫 화면이 뷰포트를 못 채우면 스크롤바가 없어 onScroll 이 안 오고 다음 페이지를
   // 못 당긴다. 렌더 후 높이를 재보고 안 채워졌으면 서버 다음 페이지 요청.
