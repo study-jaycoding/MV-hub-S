@@ -638,6 +638,38 @@ it("조용한 다시 받기의 같은 실패는 한 번만 알린다 — 직접 
   expect(flash).toHaveBeenCalledTimes(3);
 });
 
+// Codex 검토: 실패 표시(loadError)는 다시 그린 뒤에야 ref 에 들어가, 그리기 전에 연달아 끝난 조용한 실패가 또 알렸다.
+it("조용한 다시 받기 — 다시 그리기 전에 연달아 실패해도 한 번만 알린다", async () => {
+  await mount();
+  flash.mockClear();
+  vi.mocked(api.listGenerations).mockRejectedValue(new Error("offline"));
+  await act(async () => {
+    await data.reload(true, true);
+    await data.reload(true, true);
+  });
+  expect(flash).toHaveBeenCalledTimes(1);
+  await act(async () => { // 같은 박자에 성공 → 실패 — 되살아난 뒤의 실패는 새 실패다
+    vi.mocked(api.listGenerations).mockResolvedValueOnce(mainRows);
+    await data.reload(true, true);
+    await data.reload(true, true);
+  });
+  expect(flash).toHaveBeenCalledTimes(2);
+});
+
+// Codex 검토: 다른 탭의 실패 표시가 남은 채 신선한 캐시로 돌아오면, 이 탭의 첫 조용한 실패를 알리지 않았다 — 탭을 바꾸면 실패 표시도 그 탭의 것이 아니다.
+it("탭을 오가면 앞 탭의 실패 표시가 이 탭의 첫 실패를 묻지 않는다", async () => {
+  await mount();
+  flash.mockClear();
+  vi.mocked(api.listGenerations).mockRejectedValueOnce(new Error("offline"));
+  await mount({ query: { tab: "team" } }); // 팀 탭 첫 조회 실패 — 알림 1
+  expect(flash).toHaveBeenCalledTimes(1);
+  await mount({ query: MAIN }); // 15초 안 — 신선한 캐시로 돌아온다(다시 받지 않는다)
+  expect(data.loadError).toBeNull();
+  vi.mocked(api.listGenerations).mockRejectedValueOnce(new Error("offline"));
+  await act(async () => { await data.reload(true, true); }); // 이 탭의 첫 조용한 실패
+  expect(flash).toHaveBeenCalledTimes(2); // 전엔 앞 탭의 실패 표시 때문에 묻혔다
+});
+
 // 52회차 격리 실측 — 공유 & 리뷰 → 워크스페이스 → 15초 안에 공유 & 리뷰: 목록은 캐시로 돌아왔는데 왼쪽 폴더·태그 숫자는 워크스페이스
 //  것(830·21)으로 남았다. 팀 탭의 15초 폴링은 가벼워서 폴더·태그를 다시 받지 않으므로 새로고침 전까지 그대로였다.
 it("15초 안에 돌아온 탭: 목록은 캐시로 두되, 다른 범위의 폴더·태그가 남아 있으면 그것만 다시 받는다", async () => {

@@ -276,6 +276,9 @@ export function useGenerationLibraryData({
     if (lastLoadedTabRef.current === null || lastLoadedTabRef.current === tab) return;
     lastLoadedTabRef.current = tab;
     setStaleList(false); // 아래에서 목록을 이 탭의 것으로 갈아 끼운다 — 사본 구간 끝
+    // 실패 표시도 앞 탭의 것이다 — 남기면 신선한 캐시로 돌아온 이 탭의 첫 조용한 실패를 알리지 않았다(60회차 Codex 검토)
+    loadErrorRef.current = null;
+    setLoadError(null);
     const sig = JSON.stringify([!!filtersRef.current.deleted_only, genQueryRef.current]);
     const cached = tabCacheRef.current[tab];
     if (cached && cached.sig === sig) {
@@ -467,6 +470,7 @@ export function useGenerationLibraryData({
         g = keepPainted(g); // 화면·탭 캐시 둘 다 같은 값을 쓴다
         setGens((prev) => reconcileArrayState(prev, g));
         setHasMore(page.length >= GEN_PAGE);
+        loadErrorRef.current = null; // 다시 그리기 전에 끝나는 다음 실패도 '새 실패'로 알린다(Codex 검토)
         setLoadError(null);
         setStaleList(false); // 새 첫 쪽이 들어왔다 — 사본 구간 끝(내용이 사본과 같아도 푼다)
         setListRevision((revision) => revision + 1);
@@ -486,8 +490,10 @@ export function useGenerationLibraryData({
           // 조용한 다시 받기(자동 조회 — 3초·15초마다)는 이미 실패 표시가 떠 있으면 다시 알리지 않는다: 매번 알리면 다른 조작의 안내를
           //  덮었다(60회차). 사람이 직접 한 다시 받기는 전처럼 알린다. 성공하면 표시가 걷혀 다음 실패는 또 알린다.
           if (!silent || !loadErrorRef.current) flash("로드 실패: " + String(e));
-          // 화면에 남는 실패 상태 — 빈 그리드가 "항목 없음"으로 오인되지 않게(재시도 UI 근거).
-          setLoadError(String(e).replace(/^Error:\s*/, ""));
+          // 화면에 남는 실패 상태 — 빈 그리드가 "항목 없음"으로 오인되지 않게(재시도 UI 근거). ref 도 바로 — 다시 그리기 전에 끝나는
+          //  다음 조용한 실패가 이것을 보게(Codex 검토).
+          loadErrorRef.current = String(e).replace(/^Error:\s*/, "");
+          setLoadError(loadErrorRef.current);
           // 사본을 보이던 중이면 치운다 — 낡은 사본을 최신 목록처럼 남기지 않고 실패·재시도를 보인다
           if (staleListRef.current) {
             setGens([]);

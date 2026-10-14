@@ -173,4 +173,7 @@ it("Comfy 결과 저장 안내는 한 문구로 — 일부 실패와 이전 결�
   expect(comfySaveNotice(true, false)).toBe("일부 Comfy 결과를 내 작업에 저장하지 못했습니다");
   expect(comfySaveNotice(false, true)).toBe("입력이 바뀌어 이전 실행 결과는 내 작업에 저장했습니다");
   expect(comfySaveNotice(true, true)).toBe("입력이 바뀌어 이전 실행 결과는 내 작업에 저장했습니다 — 일부는 저장하지 못했습니다");
+  // Codex 검토: 다른 실행이 '결과 회수 못 함'으로 끝나면 그 안내가 저장 안내를 또 덮었다 — 앞에 붙여 한 문구로
+  expect(comfySaveNotice(true, false, "결과를 확인하지 못한 실행이 있습니다")).toBe("결과를 확인하지 못한 실행이 있습니다 · 일부 Comfy 결과를 내 작업에 저장하지 못했습니다");
+  expect(comfySaveNotice(false, false, "결과를 확인하지 못한 실행이 있습니다")).toBe("결과를 확인하지 못한 실행이 있습니다");
 });

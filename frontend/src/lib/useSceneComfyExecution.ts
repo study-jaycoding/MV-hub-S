@@ -85,13 +85,14 @@ export async function saveCompletedComfyResults(
 
 // 결과 저장의 안내 — **한 번에** 낸다. 토스트는 마지막 문구만 남아, 둘로 내면 앞의 '일부 저장 못 함'이 바로 뒤의
 //  '이전 결과는 저장함'에 덮였다(60회차). supersededSaved = 입력이 바뀌어 이전 실행 결과를 내 작업에 저장했다.
-export function comfySaveNotice(failed: boolean, supersededSaved: boolean): string | null {
-  if (failed) {
-    return supersededSaved
+//  lead = 같은 실행에서 함께 알릴 실행 오류(결과 회수 못 함) — 따로 내면 그것이 저장 안내를 덮었다(Codex 검토).
+export function comfySaveNotice(failed: boolean, supersededSaved: boolean, lead?: string | null): string | null {
+  const save = failed
+    ? supersededSaved
       ? "입력이 바뀌어 이전 실행 결과는 내 작업에 저장했습니다 — 일부는 저장하지 못했습니다"
-      : "일부 Comfy 결과를 내 작업에 저장하지 못했습니다";
-  }
-  return supersededSaved ? "입력이 바뀌어 이전 실행 결과는 내 작업에 저장했습니다" : null;
+      : "일부 Comfy 결과를 내 작업에 저장하지 못했습니다"
+    : supersededSaved ? "입력이 바뀌어 이전 실행 결과는 내 작업에 저장했습니다" : null;
+  return [lead, save].filter(Boolean).join(" · ") || null;
 }
 
 // 완료 정산의 done 패치 조각 — 저장 attach(saveComfyToLibrary)가 카드 outputs 를 이미
@@ -380,11 +381,11 @@ export function useSceneComfyExecution({
             isInputCurrent(cardId, configSnapshot, result.inputSnapshot),
         );
       const superseded = !inputsStillCurrent || sets.some((result) => result.superseded);
-      const saveNotice = comfySaveNotice(!!saveResult.failed, superseded && !!saveResult.saved);
+      const unresolved = rejected?.reason instanceof ComfyUnresolvedRunError ? rejected.reason.message : null;
+      const saveNotice = comfySaveNotice(!!saveResult.failed, superseded && !!saveResult.saved, unresolved);
       if (saveNotice) flashMsg(saveNotice);
       if (rejected) {
         if (rejected.reason instanceof ComfyUnresolvedRunError) {
-          flashMsg(rejected.reason.message);
           patchComfyRunIfOwner(sceneId, cardId, runId, { status: "failed", error: rejected.reason.message });
         } else if (rejected.reason instanceof SceneComfyRunSupersededError || superseded) {
           patchComfyRunIfOwner(sceneId, cardId, runId, { status: "idle", error: null });
