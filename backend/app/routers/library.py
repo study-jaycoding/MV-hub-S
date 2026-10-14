@@ -697,11 +697,14 @@ async def media_picture(src: str = Query(..., max_length=4096)):
         if src.startswith(("http://", "https://")):
             if _proxy.is_shared_team_server():  # 공유 서버는 원격 원본을 받지 않는다(media-thumb 와 같다)
                 raise HTTPException(status_code=404, detail="공유 서버는 원격 영상을 읽지 않습니다")
-            async with _PICTURE_SLOTS:
-                try:
-                    picture = await asyncio.wait_for(asyncio.to_thread(mp4_picture.remote_picture_cached, src), PICTURE_WAIT)
-                except asyncio.TimeoutError as exc:  # 스레드는 소켓 시한에 끝난다(mp4_picture 의 ponytail 주석)
-                    raise HTTPException(status_code=504, detail="원격 영상의 머리를 제때 받지 못했습니다") from exc
+            async def read_remote():
+                async with _PICTURE_SLOTS:
+                    return await asyncio.to_thread(mp4_picture.remote_picture_cached, src)
+
+            try:  # 자리를 기다리는 시간까지 한 시한 안이다 — 겹친 요청이 '앞 요청 대기 + 제 처리'로 화면의 20초를 넘지 않게(Codex 코드 리뷰)
+                picture = await asyncio.wait_for(read_remote(), PICTURE_WAIT)
+            except asyncio.TimeoutError as exc:  # 스레드는 소켓 시한에 끝난다(mp4_picture 의 ponytail 주석)
+                raise HTTPException(status_code=504, detail="원격 영상의 머리를 제때 받지 못했습니다") from exc
         else:
             target = thumbs._media_target(src)
             if not target:

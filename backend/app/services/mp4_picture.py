@@ -124,14 +124,37 @@ def picture_from_moov(moov: bytes) -> Picture:
 
     edts = [(b, s) for name, b, s in _children(moov, start, stop) if name == "edts"]
     if edts:
-        _check_edit_list(moov, _one(moov, *edts[0], "elst"), frames, delta, timescale)
+        ctts = [(b, s) for name, b, s in _children(moov, *stbl) if name == "ctts"]
+        first_shown = _first_composition(moov, ctts[0], delta, frames) if ctts else 0
+        _check_edit_list(moov, _one(moov, *edts[0], "elst"), frames, delta, timescale, first_shown)
     return Picture(frames=frames, fps=timescale / delta)
 
 
-def _check_edit_list(moov: bytes, elst: tuple[int, int], frames: int, delta: int, timescale: int) -> None:
+def _first_composition(moov: bytes, ctts: tuple[int, int], delta: int, frames: int) -> int:
+    """가장 먼저 보이는 프레임의 표시 시각 = min(디코딩 시각 + ctts 보정). B 프레임이 있으면 ffmpeg 가 편집 목록의 시작점
+    (media_time)을 이 값으로 적는다(Seedance 원본: 첫 프레임 0 + 1024 = 1024 — 보정값의 최솟값(0)이 아니다, 실측 32개).
+    한 줄(n 개 표본)의 가장 이른 시각은 그 줄의 첫 표본이다(디코딩 시각이 고르게 는다 — 위에서 stts 가 한 간격인 것만 받았다)."""
+    version = _full(moov, *ctts, 8)
+    count = struct.unpack_from(">I", moov, ctts[0] + 4)[0]
+    _full(moov, *ctts, 8 + 8 * count)
+    fmt = ">Ii" if version == 1 else ">II"
+    index, first = 0, None
+    for i in range(count):
+        n, offset = struct.unpack_from(fmt, moov, ctts[0] + 8 + 8 * i)
+        if n:
+            shown = index * delta + offset
+            first = shown if first is None else min(first, shown)
+            index += n
+    if first is None or index != frames:
+        raise PictureError("ctts 의 표본 수가 프레임 수와 다르다")
+    return first
+
+
+def _check_edit_list(moov: bytes, elst: tuple[int, int], frames: int, delta: int, timescale: int, first_shown: int) -> None:
     """편집 목록이 그림 전체를 1배속으로 트는 한 줄(ffmpeg 의 시작 보정)인지 본다 — 아니면 PictureError(Codex 코드 리뷰).
     줄 수만 보면 '240프레임 중 2초만 튼다'는 파일도 10초로 읽는다. 재생 구간 길이(segment_duration — moov 의 mvhd 단위)가 그림
-    길이와 반 프레임 안으로 같아야 하고, 시작점(media_time)은 0 이상, 배속은 1 이어야 한다. 구간 길이 0 은 '끝까지'로 본다."""
+    길이와 반 프레임 안으로 같아야 하고, 배속은 1, 시작점(media_time)은 **가장 먼저 보이는 프레임의 표시 시각**(ctts 가 없으면 0)
+    이어야 한다 — 그보다 크면 앞 프레임을 잘라 낸다. 구간 길이 0 은 '끝까지'로 본다."""
     version = _full(moov, *elst, 8)
     count = struct.unpack_from(">I", moov, elst[0] + 4)[0]
     if count == 0:
@@ -146,8 +169,10 @@ def _check_edit_list(moov: bytes, elst: tuple[int, int], frames: int, delta: int
         _full(moov, *elst, 8 + 12)
         segment, media_time = struct.unpack_from(">Ii", moov, elst[0] + 8)
         rate = struct.unpack_from(">hh", moov, elst[0] + 16)
-    if media_time < 0 or rate != (1, 0):
-        raise PictureError("편집 목록이 빈 구간이거나 배속이 다르다")
+    if rate != (1, 0):
+        raise PictureError("편집 목록의 배속이 1 이 아니다")
+    if media_time != first_shown:  # -1 = 빈 구간 · 그보다 크면 앞 프레임을 자른다 · 작으면 앞에 빈 화면
+        raise PictureError("편집 목록의 시작점이 첫 프레임이 아니다")
     if segment:
         mvhd = _one(moov, 0, len(moov), "mvhd")
         if _full(moov, *mvhd, 4) == 1:

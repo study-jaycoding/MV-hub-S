@@ -37,22 +37,26 @@ def edit(segment: int, media_time: int = 1024, rate: tuple[int, int] = (1, 0)) -
     return struct.pack(">Iihh", segment, media_time, *rate)
 
 
-def trak(handler: bytes, frames: int, timescale: int, deltas, elst: list[bytes] | None = None) -> bytes:
+def trak(handler: bytes, frames: int, timescale: int, deltas, elst: list[bytes] | None = None, ctts=None) -> bytes:
     stts = struct.pack(">I", len(deltas)) + b"".join(struct.pack(">II", count, delta) for count, delta in deltas)
     parts = []
     if elst is not None:
         parts.append(box("edts", full("elst", struct.pack(">I", len(elst)) + b"".join(elst))))
+    tables = [full("stsz", struct.pack(">II", 0, frames)), full("stts", stts)]
+    if ctts is not None:
+        tables.append(full("ctts", struct.pack(">I", len(ctts)) + b"".join(struct.pack(">II", n, o) for n, o in ctts)))
     parts.append(box("mdia",
         full("mdhd", struct.pack(">IIII", 0, 0, timescale, 0) + b"\0" * 4),
         full("hdlr", b"\0" * 4 + handler + b"\0" * 12),
-        box("minf", box("stbl", full("stsz", struct.pack(">II", 0, frames)), full("stts", stts))),
+        box("minf", box("stbl", *tables)),
     ))
     return box("trak", *parts)
 
 
-# Seedance 원본과 같은 모양 — 그림 97프레임(12288 / 512 = 24fps) · 소리 트랙 · moov 가 파일 끝 · 편집 목록 한 줄(시작 보정 1024,
-#  구간 4042/1000초 = 그림 전체)
-SEEDANCE_VIDEO = trak(b"vide", 97, 12288, [(97, 512)], elst=[edit(4042)])
+# Seedance 원본과 같은 모양(실측 32개) — 그림 97프레임(12288 / 512 = 24fps) · 소리 트랙 · moov 가 파일 끝 · B 프레임(ctts — 첫
+#  프레임의 표시 시각 0 + 1024) · 편집 목록 한 줄(시작점 1024 = 첫 프레임, 구간 4042/1000초 = 그림 전체)
+SEEDANCE_CTTS = [(1, 1024), (1, 2560), (1, 1024), (1, 0), (93, 1024)]
+SEEDANCE_VIDEO = trak(b"vide", 97, 12288, [(97, 512)], elst=[edit(4042)], ctts=SEEDANCE_CTTS)
 SOUND = trak(b"soun", 190, 44100, [(190, 1024)])
 
 
@@ -88,12 +92,16 @@ def test_seedance_shape_reads_picture_frames_not_sound(tmp_path):
     (moov(trak(b"vide", 97, 12288, [(90, 512)])), "stts 합이 프레임 수와 다르다"),
     (moov(SEEDANCE_VIDEO, SEEDANCE_VIDEO), "그림 트랙이 둘"),
     (moov(SOUND), "그림 트랙이 없다"),
-    (moov(trak(b"vide", 97, 12288, [(97, 512)], elst=[edit(2000), edit(2042)])), "편집 목록이 여러 줄"),
+    (moov(trak(b"vide", 97, 12288, [(97, 512)], elst=[edit(2000), edit(2042)], ctts=SEEDANCE_CTTS)), "편집 목록이 여러 줄"),
     # Codex 코드 리뷰 — 줄 수만 보면 아래를 그림 전체로 읽었다
-    (moov(trak(b"vide", 240, 12288, [(240, 512)], elst=[edit(2000)])), "10초 중 2초만 튼다"),
-    (moov(trak(b"vide", 97, 12288, [(97, 512)], elst=[edit(4042, rate=(2, 0))])), "2배속"),
-    (moov(trak(b"vide", 97, 12288, [(97, 512)], elst=[edit(4042, media_time=-1)])), "빈 구간"),
-    (moov(trak(b"vide", 97, 12288, [(97, 512)], elst=[b""])), "한 줄이라면서 본문이 없다"),
+    (moov(trak(b"vide", 240, 12288, [(240, 512)], elst=[edit(2000)], ctts=[(240, 1024)])), "10초 중 2초만 튼다"),
+    (moov(trak(b"vide", 97, 12288, [(97, 512)], elst=[edit(4042, rate=(2, 0))], ctts=SEEDANCE_CTTS)), "2배속"),
+    (moov(trak(b"vide", 97, 12288, [(97, 512)], elst=[edit(4042, media_time=-1)], ctts=SEEDANCE_CTTS)), "빈 구간"),
+    (moov(trak(b"vide", 97, 12288, [(97, 512)], elst=[b""], ctts=SEEDANCE_CTTS)), "한 줄이라면서 본문이 없다"),
+    # Codex 재검토 — B 프레임 없이 시작점 5초 · 구간 0(끝까지)은 남은 5초만 튼다
+    (moov(trak(b"vide", 240, 12288, [(240, 512)], elst=[edit(0, media_time=5 * 24 * 512)])), "앞 5초를 자른다"),
+    (moov(trak(b"vide", 97, 12288, [(97, 512)], elst=[edit(0, media_time=1536)], ctts=SEEDANCE_CTTS)), "첫 프레임보다 늦게 시작"),
+    (moov(trak(b"vide", 97, 12288, [(97, 512)], elst=[edit(4042)], ctts=[(50, 1024)])), "ctts 표본 수가 다르다"),
     (moov(SEEDANCE_VIDEO, extra=box("mvex")), "분할 MP4"),
     (moov(trak(b"vide", 97, 0, [(97, 512)])), "timescale 0"),
 ])
@@ -103,8 +111,12 @@ def test_unusual_files_are_refused(moov_box, reason):
 
 
 def test_edit_list_that_plays_everything_is_accepted():
-    for elst in ([edit(0)], [edit(4042, media_time=0)], []):  # 구간 0 = 끝까지 · 시작 보정 없음 · 빈 목록
-        assert picture_from_moov(body_of(moov(trak(b"vide", 97, 12288, [(97, 512)], elst=elst)))).frames == 97
+    for elst, ctts in (
+        ([edit(0)], SEEDANCE_CTTS),  # 구간 0 = 끝까지
+        ([edit(4042, media_time=0)], None),  # B 프레임 없음 — 시작점 0
+        ([], None),  # 빈 목록
+    ):
+        assert picture_from_moov(body_of(moov(trak(b"vide", 97, 12288, [(97, 512)], elst=elst, ctts=ctts)))).frames == 97
 
 
 def test_truncated_or_lying_boxes_are_refused(tmp_path):
@@ -246,6 +258,42 @@ def test_endpoint_gives_up_waiting_and_frees_the_slot():
         assert asyncio.run(run()) == (504, 4)  # 답했고, 자리는 비었다
     finally:
         release.set()
+
+
+def test_endpoint_deadline_includes_waiting_for_a_slot():
+    # Codex 재검토 — 시한이 자리를 얻은 뒤에야 시작해, 겹친 다섯째는 '앞 넷의 시한 + 제 시한'을 기다렸다
+    import threading
+    import time
+
+    release = threading.Event()
+
+    def stuck(_url):
+        release.wait(5)
+        return mp4_picture.Picture(frames=97, fps=24.0)
+
+    async def one():
+        started = time.monotonic()
+        with pytest.raises(HTTPException) as late:
+            await library.media_picture("https://cdn.example/slow.mp4")
+        return late.value.status_code, time.monotonic() - started
+
+    async def run():
+        with (
+            mock.patch.object(library._proxy, "is_shared_team_server", return_value=False),
+            mock.patch.object(library.mp4_picture, "remote_picture_cached", side_effect=stuck),
+            mock.patch.object(library, "PICTURE_WAIT", 0.2),
+            mock.patch.object(library, "_PICTURE_SLOTS", asyncio.Semaphore(4)),
+        ):
+            results = await asyncio.gather(*(one() for _ in range(5)))
+        release.set()
+        return results
+
+    try:
+        results = asyncio.run(run())
+    finally:
+        release.set()
+    assert [status for status, _t in results] == [504] * 5
+    assert max(took for _s, took in results) < 0.35  # 다섯째도 시한 한 번(0.2초) 안쪽 — 고치기 전엔 0.4초
 
 
 def test_remote_refuses_private_addresses():
