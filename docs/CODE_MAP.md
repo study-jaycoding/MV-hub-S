@@ -538,6 +538,7 @@ updated: 2026-10-13
 | `TopBar.tsx`(150줄) | 상단바(로고·탭·동기화·검색·Assets·계정) | `TopBar` |
 | `app/SelectionActionBar.tsx`(216줄) | 선택바 2종(`BoardSelectionActionBar`·`LibrarySelectionActionBar`) | 위 2개 |
 | `app/AppOverlays.tsx`(172줄) | App 이 띄우는 오버레이 모음(미리보기·정보·비교…) 배선. 코드를 늦게 받는 창의 **틀** `LazyModalShell`(막·겹 번호·Esc 를 여는 순간 쥐고 본문만 늦게 온다) | `AppOverlays`, `VideoCompareOverlay` |
+| `app/ResolveNotices.tsx` | Resolve 보내기 결과 가운데 확인이 필요한 것(부분 성공·실패·결과 불명) — 알림 바로 아래에 ✕ 로 닫을 때까지 남는 줄(세 줄까지). 겹이 아니다(Esc·뒤 화면의 키를 건드리지 않는다). 무엇을 남길지는 `lib/useResolveTransferActions` 가 정한다 | `ResolveNotices` |
 | `generation/GenerationCardStatusBar.tsx`(154줄) | 카드 하단 S/T/C 상태줄 + 태그 에디터 호스팅 | 〃 |
 | `generation/GenerationCardIcons.tsx`(57줄) | 카드용 SVG 4종 | `ModelIcon` 외 |
 | `generation/GenerationThumbOverlay.tsx`(122줄) | 썸네일 호버 오버레이(정보·미리보기·다운로드) | 〃 |
@@ -950,7 +951,7 @@ updated: 2026-10-13
 |---|---|---|
 | `resolveSelection.ts` | 순수 | Resolve 선택 → 씬·카드 역추적 |
 | `resolveSelectionSettings.ts` | 저장+훅 | '선택 따라가기' 설정 구독 |
-| `useResolveTransferActions.ts` | 훅 | 전송 실행·재시도 액션(직렬 큐) · 편집 탭의 타임라인 보내기도 같은 줄에 선다(`sendTimelineToResolve` — 끝나면 결과로 풀리는 약속, `timelineBusy`) |
+| `useResolveTransferActions.ts` | 훅 | 전송 실행·재시도 액션(직렬 큐) · 편집 탭의 타임라인 보내기도 같은 줄에 선다(`sendTimelineToResolve` — 끝나면 결과로 풀리는 약속, `timelineBusy`) · 확인이 필요한 결과는 알림에 더해 `notices` 로 남긴다(세 줄까지 · `dismissNotice`) |
 | `useResolveLibraryFollow.ts` | 훅 | Resolve 선택에 라이브러리 페이지 따라가기 |
 | `sourceLocationFeedback.ts` | api | 원본 위치 열기 실패 보고 |
 
