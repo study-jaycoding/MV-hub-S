@@ -84,6 +84,11 @@ class ThumbLruTests(unittest.TestCase):
         thumb = thumbs.ensure_thumb(src, 64)
         with Image.open(thumb) as im:
             self.assertEqual(im.size, (32, 64))  # 전엔 (64, 32) — 누운 채로
+        # EXIF 를 못 읽는 그림도 썸네일은 전처럼 만든다(방향만 못 바로잡는다)
+        plain = self.dir / "src" / "plain.jpg"
+        Image.new("RGB", (80, 40)).save(plain, "JPEG")
+        with mock.patch("PIL.ImageOps.exif_transpose", side_effect=SyntaxError("broken EXIF")):
+            self.assertIsNotNone(thumbs.ensure_thumb(plain, 64))
 
     def test_evict_scan_guard_skips_repeat_but_force_rechecks(self):
         _make_jpg(self.dir, "a.jpg", 1024, 3 * 86400)

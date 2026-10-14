@@ -114,7 +114,11 @@ def ensure_thumb(target: Path, w: int) -> Optional[Path]:
                 with Image.open(target) as im:
                     # EXIF 방향(세로로 찍은 사진)을 먼저 적용한다 — 브라우저는 원본을 돌려 보여 주는데 썸네일만 누워 있었다(48회차).
                     # shortcut: 이미 구운 썸네일은 원본이 바뀌기 전까지 그대로다(캐시 열쇠에 판이 없다) — 문제가 되면 썸네일 캐시를 비운다.
-                    im = ImageOps.exif_transpose(im).convert("RGB")  # JPEG: 알파 제거(어두운 카드 배경이라 무방)
+                    try:
+                        im = ImageOps.exif_transpose(im)
+                    except Exception:  # noqa: BLE001 — EXIF 가 깨진 그림도 전처럼 썸네일은 만든다(방향만 못 바로잡는다)
+                        pass
+                    im = im.convert("RGB")  # JPEG: 알파 제거(어두운 카드 배경이라 무방)
                     im.thumbnail((w, w), Image.LANCZOS)
                     im.save(tmp, "JPEG", quality=82)
                 tmp.replace(cache)
