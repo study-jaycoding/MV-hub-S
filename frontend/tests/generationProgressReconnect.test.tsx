@@ -6,10 +6,13 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Generation } from "../src/types";
 
-const mocks = vi.hoisted(() => ({ onReconnect: null as null | (() => void), dispatch: vi.fn(), reload: vi.fn(), bumpBoard: vi.fn(), tick: vi.fn() }));
+const mocks = vi.hoisted(() => ({ onReconnect: null as null | (() => void), listener: null as null | ((m: unknown) => void),
+  decision: "reload" as "reload" | "wait" | "skip", dispatch: vi.fn(), reload: vi.fn(), bumpBoard: vi.fn(), tick: vi.fn() }));
 vi.mock("../src/api", () => ({ api: { getGeneration: vi.fn() },
-  connectProgress: (_listener: unknown, onReconnect?: () => void) => { mocks.onReconnect = onReconnect ?? null; return () => {}; },
+  connectProgress: (listener: (m: unknown) => void, onReconnect?: () => void) => { mocks.listener = listener; mocks.onReconnect = onReconnect ?? null; return () => {}; },
 }));
+// 메아리 억제(방금 끝난 조회의 보호 구간)를 시험이 정한다 — 'skip' 이면 일반 synced 는 건너뛴다
+vi.mock("../src/lib/librarySync", () => ({ decideLibrarySync: () => mocks.decision, trackBareSyncedForReload: vi.fn(), trackOwnSyncedForReload: vi.fn() }));
 vi.mock("../src/lib/sceneRecentDoneStore", () => ({ isKnownGen: () => true, observeStatus: vi.fn() }));
 vi.mock("../src/lib/assetBroadcast", () => ({ postAssetsUpdated: vi.fn() }));
 vi.mock("../src/lib/appEvents", () => ({ APP_EVENTS: { libraryChanged: "ch:library-changed" }, dispatchAppEvent: mocks.dispatch }));
@@ -21,6 +24,7 @@ let root: Root;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.useFakeTimers();
+  mocks.decision = "reload";
   for (const fn of [mocks.dispatch, mocks.reload, mocks.bumpBoard, mocks.tick]) fn.mockReset();
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
@@ -41,4 +45,18 @@ it("다시 붙으면 목록·캔버스(libraryChanged)·열린 히스토리·코
   expect(mocks.dispatch).toHaveBeenCalledWith("ch:library-changed"); // 전엔 없었다 — 캔버스의 완료 카드가 깨지 않았다
   expect(mocks.bumpBoard).toHaveBeenCalled(); // 열린 히스토리
   expect(mocks.tick).toHaveBeenCalled(); // 열린 코멘트
+});
+
+// Codex 검토: 재연결 보정이 일반 synced 판정을 그대로 타면, 방금 끝난 조회의 보호 구간('skip')에 걸려 reload·libraryChanged 가 빠졌다.
+it("메아리 보호 구간에서도 재연결 보정은 건너뛰지 않는다 — 일반 synced 는 전처럼 건너뛴다", async () => {
+  mocks.decision = "skip";
+  act(() => root.render(<Probe />));
+  act(() => mocks.listener!({ type: "synced" })); // 일반 synced — 보호 구간이라 건너뛴다
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(mocks.reload).not.toHaveBeenCalled();
+  expect(mocks.dispatch).not.toHaveBeenCalled();
+  act(() => { mocks.onReconnect!(); mocks.listener!({ type: "synced" }); }); // 재연결 직후 첫 synced 와 같은 묶음
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(mocks.reload).toHaveBeenCalledTimes(1); // 묶음 하나에 한 번
+  expect(mocks.dispatch).toHaveBeenCalledWith("ch:library-changed");
 });

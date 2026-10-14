@@ -131,12 +131,15 @@ export function useGenerationProgress({
     let pendingSyncOrigins: LibraryMutationOrigin[] | undefined;
     let forceFullSync = false;
     let pendingSyncSince = 0;
+    // 이 묶음에 재연결 보정이 들었다 — 메아리 억제(방금 끝난 조회의 보호 구간)로 건너뛰지 않는다. 끊긴 동안의 변경은 그 조회 뒤에
+    //  일어났을 수 있다(53회차 — Codex 검토). 일반 synced 의 억제는 그대로다.
+    let reconnectCatchUp = false;
 
     const flushSynced = () => {
       syncedTimer = null;
       if (pendingSyncOrigins === undefined) return;
       const wasBareSync = forceFullSync;
-      const decision = decideLibrarySync(wasBareSync ? undefined : pendingSyncOrigins);
+      const decision = reconnectCatchUp ? "reload" : decideLibrarySync(wasBareSync ? undefined : pendingSyncOrigins);
       // 내 변경을 포함한 목록 요청이 아직 진행 중이면 끝날 때까지 짧게 기다린다. 실패하면 inflight
       // 표식이 사라져 reload로 전환한다. 비정상적으로 오래 걸리면 5초 뒤 안전하게 한 번 더 읽는다.
       if (decision === "wait" && Date.now() - pendingSyncSince < SYNC_WAIT_MAX_MS) {
@@ -146,6 +149,7 @@ export function useGenerationProgress({
       const flushedOrigins = pendingSyncOrigins;
       pendingSyncOrigins = undefined;
       forceFullSync = false;
+      reconnectCatchUp = false;
       pendingSyncSince = 0;
       if (decision !== "skip") {
         if (wasBareSync) trackBareSyncedForReload();
@@ -252,7 +256,10 @@ export function useGenerationProgress({
       },
       // 다시 붙었다 — 출처 없는 synced 와 같은 전체 보정으로 보낸다: 목록 reload 만으로는 캔버스의 완료 카드·사이드바(libraryChanged)와
       //  열린 히스토리·코멘트(refreshVisibleSyncConsumers)가 끊긴 동안의 변경을 못 따라잡았다(53회차). 첫 연결에는 불리지 않는다.
-      () => queueSynced(undefined),
+      () => {
+        reconnectCatchUp = true;
+        queueSynced(undefined);
+      },
     );
     return () => {
       alive = false;
