@@ -984,6 +984,34 @@ def test_resend_of_an_unfinished_set_does_not_undo_an_activation(tmp_path: Path,
     assert db_backup._read_head(root / "sets") == first["backup_set_id"]
 
 
+def test_activating_an_unfinished_set_whose_head_write_fails_still_lets_its_resend_finish(tmp_path: Path, monkeypatch):
+    """Codex 47회차 재검토 — 마무리 안 된 B 를 고르고(activate) 머리 쓰기가 또 실패해도, B 의 재전송이 마저 마무리한다.
+    activate 가 고른 세트를 머리보다 먼저 '끝난 세트'로 적으면 재전송이 건너뛰어 머리가 A 에 남는다."""
+    first, second, first_data, second_data = _parent_and_child(tmp_path)
+    root = tmp_path / "account"
+    _store(root, first, first_data)
+    real_write = db_backup.atomic_write_text
+
+    def fail_head(path, *args, **kwargs):
+        if Path(path).name == db_backup._HEAD_NAME:
+            raise OSError("disk full")
+        return real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(db_backup, "atomic_write_text", fail_head)
+    with pytest.raises(OSError):
+        _store(root, second, second_data)  # 폴더는 공개, 머리 쓰기 실패
+    monkeypatch.setattr(db_backup, "_acct", lambda _request: {"email": "artist@example.com"})
+    monkeypatch.setattr(db_backup, "_dir", lambda _email: root)
+    with pytest.raises(OSError):
+        db_backup.activate_backup_set(second["backup_set_id"], object())  # 사용자가 B 를 골랐지만 머리 쓰기가 또 실패
+    monkeypatch.setattr(db_backup, "atomic_write_text", real_write)
+
+    ack = _store(root, second, second_data)
+
+    assert (ack["duplicate"], ack["is_current"], ack["conflict"]) == (True, True, False)
+    assert db_backup._read_head(root / "sets") == second["backup_set_id"]
+
+
 def test_resend_of_a_finished_set_does_not_undo_a_chosen_head(tmp_path: Path):
     """마무리가 끝난 세트(server.json 있음)의 재전송은 머리를 건드리지 않는다 — 사용자가 옛 세트로 되돌린 것을 다시 뒤집지 않는다."""
     first, second, first_data, second_data = _parent_and_child(tmp_path)

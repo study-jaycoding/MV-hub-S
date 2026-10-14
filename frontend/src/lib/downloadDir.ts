@@ -131,13 +131,11 @@ export async function writeIntoDir(dir: any, name: string, blob: Blob): Promise<
         await writable.write(blob);
         await writable.close();
       } catch (error) {
-        // 쓰다 실패하면(디스크 꽉 참·잠김·권한) 방금 만든 빈 파일을 치운다 — 남기면 그 폴더에 빈 그림이 보이고
-        //  다음 저장은 그 이름을 피해 번호를 붙인다(47회차). **비어 있을 때만** 지운다: '없음'을 본 뒤 다른 창이 같은 이름으로
-        //  저장을 끝냈으면 create 는 그 파일을 돌려준다 — 그것을 지우면 안 된다(Codex 47회차 검토). 치우기가 실패해도 원래 오류를 올린다.
+        // 쓰다 실패하면(디스크 꽉 참·잠김·권한) 쓰기만 거두고 오류를 올린다 — 부르는 쪽이 알리고 일반 다운로드로 받는다.
+        //  방금 생긴 빈 파일은 **지우지 않는다**: '없음'을 본 뒤 다른 창이 같은 이름으로 저장을 끝냈을 수 있고(create 는 그 파일을
+        //  돌려준다), 크기를 보고 지워도 보는 순간과 지우는 순간 사이에 그 창이 끝낼 수 있다 — 남의 완성 파일을 지우느니 빈 파일이
+        //  남는 편이 낫다(Codex 47회차 재검토).
         await quietly(() => writable?.abort?.());
-        await quietly(async () => {
-          if ((await handle.getFile()).size === 0) await dir.removeEntry?.(candidate);
-        });
         throw error;
       }
       return true;

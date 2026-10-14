@@ -81,7 +81,7 @@ it("읽을 수 없는 폴더(권한이 풀림 등)의 오류는 삼키지 않고
   expect(await read()).toEqual({ "shot.png": "먼저 받은 그림" });
 });
 
-it("쓰다 실패하면(디스크 꽉 참·잠김) 방금 만든 빈 파일을 치우고 오류를 올린다 — 있던 파일은 그대로(47회차)", async () => {
+it("쓰다 실패하면(디스크 꽉 참·잠김) 쓰기를 거두고 오류를 올린다 — 있던 파일은 그대로, 지우는 정리는 하지 않는다(47회차)", async () => {
   const { dir: real, files, read } = fakeDir();
   await writeIntoDir(real, "shot.png", blob("먼저 받은 그림"));
   const aborted: string[] = [];
@@ -102,7 +102,8 @@ it("쓰다 실패하면(디스크 꽉 참·잠김) 방금 만든 빈 파일을 �
   };
   await expect(writeIntoDir(full, "shot.png", blob("나중 그림"))).rejects.toThrow("디스크 꽉 참");
   expect(aborted).toEqual(["shot (1).png"]);
-  expect(await read()).toEqual({ "shot.png": "먼저 받은 그림" }); // 전엔 빈 'shot (1).png' 가 남았다
+  // 빈 'shot (1).png' 는 남는다 — 그 이름의 파일이 다른 창의 완성 파일일 수 있어 지우지 않는다(Codex 47회차 재검토)
+  expect(await read()).toEqual({ "shot.png": "먼저 받은 그림", "shot (1).png": "" });
 });
 
 it("'없음'을 본 뒤 다른 창이 같은 이름으로 저장을 끝냈으면, 이쪽 쓰기가 실패해도 그 파일은 지우지 않는다(Codex 47회차 검토)", async () => {
