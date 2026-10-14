@@ -68,11 +68,13 @@ export async function fetchBlob(
 
 // 받는 중인 파일(주소·이름) — 받는 동안 같은 파일을 다시 청하면(단추 연타, 일괄이 도는 중의 단건) 받던 것을 같이 기다린다.
 // 따로 받으면 브라우저가 같은 파일의 사본('이름 (1)')을 하나씩 더 만든다(조작 규칙 39). 다 받은 뒤의 다시 누름은 전처럼 새로 받는다.
+// 생성물은 이름 대신 생성물로 가린다 — 이름 요청이 시간을 넘겨 옛 이름으로 받는 중에 다시 누르면 그사이 번호 이름이 와서
+// 이름만 다른 같은 파일을 또 받는다(Codex 통합 검토 P2, 2026-10-13).
 type DownloadResult = { ok: boolean; savedToDir: boolean };
 const inFlight = new Map<string, Promise<DownloadResult>>();
-const fileKey = (url: string, name: string) => JSON.stringify([url, name]);
+const fileKey = (url: string, name: string, genId?: string) => JSON.stringify(genId ? [url, "gen", genId] : [url, name]);
 function _download(url: string, name: string, genId?: string): Promise<DownloadResult> {
-  const key = fileKey(url, name);
+  const key = fileKey(url, name, genId);
   const running = inFlight.get(key);
   if (running) return running;
   const task = _downloadNow(url, name, genId).finally(() => inFlight.delete(key));
@@ -128,7 +130,7 @@ export async function download(url: string, name: string, genId?: string): Promi
 // 고른 외부 파일처럼 생성물이 아닌 것은 genId 없이 부르면 된다.
 // announced = 시작 토스트를 부르는 쪽이 이미 띄웠다(downloadGeneration — 이름을 받기 전에 먼저 알린다).
 export async function downloadOne(url: string, name: string, genId?: string, announced = false): Promise<boolean> {
-  const joined = inFlight.has(fileKey(url, name)); // 받는 중에 다시 누른 것 — 새로 받지 않는다
+  const joined = inFlight.has(fileKey(url, name, genId)); // 받는 중에 다시 누른 것 — 새로 받지 않는다
   if (joined || !announced) flashMsg(joined ? "이미 받는 중입니다…" : "1개 다운로드 시작…");
   const { ok, savedToDir } = await _download(url, name, genId);
   if (savedToDir && !joined) notifyAssetsMaybeChanged();

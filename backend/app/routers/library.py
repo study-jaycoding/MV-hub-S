@@ -533,7 +533,13 @@ def _download_name(card: dict, books: Optional[dict[str, Optional[export_names.B
                 books[pid] = export_names.Books(Path(state["render_path"])) if usable else None
             render = books[pid]
             probe = project_folders.safe_dest(render.root, folder, "_probe") if render is not None else None
-            if render is not None and probe is not None:
+            if render is not None and probe is not None and os.environ.get("MVHUB_NAMES_READONLY") == "1":
+                # 격리 개발 화면(test_dev)은 시험 DB 사본의 렌더 경로 = 운영 NAS 를 본다 — 다운로드로 번호를 영구히 쥐지 않고
+                # 이미 받은 이름만 읽는다(Codex 통합 검토 P1, 2026-10-13). 저장·다빈치 보내기는 운영 NAS 에 파일까지 쓰는 명시적 동작이라 그대로다.
+                found = render.v2(folder).name_of(ident, kind)
+                if found:
+                    return {"name": found, "numbered": True}
+            elif render is not None and probe is not None:
                 # 번호는 종류와 무관한 한 줄 — 이 컷의 파일이 놓이는 두 폴더(컷 폴더·shared/)에 이미 있는 번호를 건너뛴다.
                 dirs = [probe.parent, probe.parent / project_folders.SHARED_SUBFOLDER]
                 return {"name": render.v2(folder).allocate(ident, kind, ext, dirs), "numbered": True}

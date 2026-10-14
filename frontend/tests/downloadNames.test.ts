@@ -10,7 +10,7 @@ vi.mock("../src/lib/assetBroadcast", () => ({ postAssetsUpdated: vi.fn() }));
 vi.mock("../src/lib/downloadDir", () => ({ saveToDownloadDir: mocks.saveToDownloadDir }));
 vi.mock("../src/lib/flash", () => ({ flashMsg: mocks.flashMsg }));
 
-import { downloadGeneration, generationDownloadNames, nameGenerationItems } from "../src/lib/download";
+import { downloadGeneration, downloadMany, generationDownloadNames, nameGenerationItems } from "../src/lib/download";
 
 const NAME = "뻘뻘뻘_e035_C0050_share_리버_001.mp4";
 const flashes = () => mocks.flashMsg.mock.calls.map((call) => String(call[0]));
@@ -81,6 +81,20 @@ it("허브가 답하지 않으면 기다리다 옛 이름으로 받는다 — �
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("옛 이름으로 받는 중에 같은 생성물을 다시 누르면 — 그사이 번호 이름이 와도 같은 파일을 또 받지 않는다", async () => {
+  let finish!: () => void;
+  const fetchMock = vi.fn(() => new Promise((resolve) => { finish = () => resolve({ ok: true, blob: async () => new Blob(["x"]) }); }));
+  vi.stubGlobal("fetch", fetchMock);
+  const bulk = downloadMany([{ url: "/media/a.mp4", name: "vid-g1.mp4", genId: "g1" }]); // 이름 요청이 시간을 넘겨 옛 이름으로 받는 중
+  mocks.jsonFetch.mockResolvedValue({ names: { g1: { name: NAME, numbered: true } } }); // 그사이 허브는 번호를 줬다
+  const single = downloadGeneration("/media/a.mp4", "g1", "vid-g1.mp4");
+  await vi.waitFor(() => expect(flashes()).toContain("이미 받는 중입니다…")); // 번호 이름을 받고도 받던 것에 붙었다
+  finish();
+  expect([await single, (await bulk).ok]).toEqual([true, 1]);
+  expect(saved()).toEqual(["vid-g1.mp4"]); // 받던 것을 같이 기다렸다
+  expect(fetchMock).toHaveBeenCalledTimes(1);
 });
 
 it("일괄 다운로드의 이름 — 200개씩 묻고, 번호를 못 받은 것만 옛 이름으로 두고 몇 개인지 알린다", async () => {

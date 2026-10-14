@@ -46,6 +46,32 @@ def test_name_shape_and_cleaning():
     assert Ident("p", "프로 젝트", None, "g", "리버").project == "프로_젝트"
 
 
+def test_names_old_versions_or_windows_would_misread_are_avoided(tmp_path):
+    """Codex 통합 검토(2026-10-13) — 이름이 옛 판·Windows 에서 다른 뜻으로 읽히지 않게.
+    P1: 작업자 이름이 종류 글자(`fin`)면 10-08 판(§6)이 `…_share_fin_001` 을 자기 저장본 `…_fin_001` 로 읽어 미러가 치울 수 있다.
+    P2: 프로젝트 이름의 점 앞이 장치 이름(`CON.x`)이면 파일 이름 전체가 장치를 가리킨다."""
+    names = book(tmp_path)
+    for gen, worker in (("gen-a", "fin"), ("gen-b", "share"), ("gen-c", "davinci"), ("gen-d", "work")):
+        name = names.allocate(ident(gen, worker), "share", ".mp4", dirs(tmp_path))
+        assert name.split("_")[-2] == worker.capitalize()
+        assert export_names.parse_numbered(name) is None  # §6 의 읽기로는 번호 이름이 아니다
+        assert export_names.parse_v2(name, FOLDER) == ("share", 1)
+    assert names.allocate(ident("gen-e", "Fin"), "share", ".mp4", dirs(tmp_path)).endswith("_share_Fin_002.mp4")  # 같은 줄(대소문자 무시)
+    assert export_names.clean_part("CON.final", 24) == "CON_.final"
+    assert export_names.clean_part("lpt1.x", 24) == "lpt1_.x"
+    assert export_names.clean_part("CONTEST.x", 24) == "CONTEST.x"  # 장치 이름 그 자체일 때만
+    assert export_names.clean_part("lee.jaelyun", 16) == "lee.jaelyun"  # 이메일 앞부분의 점은 그대로
+
+
+def test_a_path_too_long_for_windows_takes_no_number(tmp_path):
+    """Codex 통합 검토 P2(2026-10-13) — 전체 경로가 260자를 넘으면 LongPathsEnabled 가 꺼진 PC·다빈치가 못 연다. 번호를 쥐기 전에 멈춘다."""
+    deep = tmp_path / ("d" * 120) / ("e" * 60)
+    with pytest.raises(RegistryError, match="저장 경로가 너무 깁니다"):
+        book(tmp_path).allocate(ident("gen-a"), "share", ".mp4", [deep, deep / "shared"])
+    assert not any((tmp_path / export_names.SYNC_DIR).rglob("n.*"))  # 번호를 쥐지 않았다
+    assert book(tmp_path).allocate(ident("gen-a"), "share", ".mp4", dirs(tmp_path)).endswith("_001.mp4")  # 짧은 곳은 그대로
+
+
 def test_number_follows_the_worker_line_and_stays_across_kinds(tmp_path):
     names = book(tmp_path)
     a, b, other = ident("gen-a"), ident("gen-b"), ident("gen-c", "제이")

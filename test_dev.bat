@@ -40,6 +40,9 @@ set "CONTENT_HUB_DB=%ROOT%backend\data_test\db\content_hub.db"
 set "CONTENT_HUB_AUTH=1"
 set "CONTENT_HUB_NO_PROXY=1"
 set "CONTENT_HUB_SERVER_SYNC=0"
+REM File names (docs\EXPORT_SYNC_DESIGN.md section 7): the copied test DB still points at the real
+REM NAS render folder. Downloads here only read names already given and never take a new number.
+set "MVHUB_NAMES_READONLY=1"
 REM Asset registry (docs\ASSET_REGISTRY.md): this backend is its own server, so it keeps the
 REM registry that gives NAS pictures their numbers. Scans run only from the admin window
 REM (asset registry tab) and only read the NAS.

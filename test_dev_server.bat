@@ -29,6 +29,9 @@ set "CONTENT_HUB_NO_PROXY=1"
 set "CONTENT_HUB_SERVER_SYNC=0"
 set "CONTENT_HUB_DATA=%TEST_DATA%"
 set "CONTENT_HUB_DB=%TEST_DB%"
+REM File names (docs\EXPORT_SYNC_DESIGN.md section 7): the copied test DB still points at the real
+REM NAS render folder. Downloads here only read names already given and never take a new number.
+set "MVHUB_NAMES_READONLY=1"
 
 echo.
 echo ============================================================

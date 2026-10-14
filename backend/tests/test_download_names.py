@@ -106,6 +106,21 @@ class DownloadNameTests(unittest.TestCase):
         self.assertEqual(self.names("nofolder", "norender"), got)  # 임시 이름도 같은 생성물이면 같다
         self.assertFalse((self.render / "_mvhub_sync").exists())  # 장부에 아무것도 적지 않았다
 
+    def test_the_isolated_dev_screen_reads_names_but_never_takes_a_number(self):
+        """test_dev·test_dev_server 는 시험 DB 사본의 렌더 경로 = 운영 NAS 를 본다 — 다운로드로 번호를 영구히 쥐지 않는다
+        (Codex 통합 검토 P1, 2026-10-13). 이미 받은 이름은 읽어서 준다."""
+        self.assertTrue(self.names("work1")["work1"]["numbered"])  # 실제 앱이 먼저 받아 둔 번호
+        before = sorted(p.name for p in (self.render / "_mvhub_sync").rglob("*"))
+        with mock.patch.dict(os.environ, {"MVHUB_NAMES_READONLY": "1"}):
+            got = self.names("work1", "share1")
+        self.assertEqual(got["work1"], {"name": "뻘뻘뻘_e035_C0050_work_리버_001.mp4", "numbered": True})
+        self.assertFalse(got["share1"]["numbered"])
+        self.assertRegex(got["share1"]["name"], r"^뻘뻘뻘_e035_C0050_share_리버_x[0-9a-f]{8}\.mp4$")
+        self.assertEqual(sorted(p.name for p in (self.render / "_mvhub_sync").rglob("*")), before)  # 장부에 아무것도 더하지 않았다
+        launchers = {name: (Path(__file__).resolve().parents[2] / name).read_text(encoding="utf-8") for name in ("test_dev.bat", "test_dev_server.bat")}
+        for name, text in launchers.items():
+            self.assertIn('set "MVHUB_NAMES_READONLY=1"', text, name)
+
     def test_an_unreadable_ledger_never_blocks_the_download(self):
         with mock.patch.object(export_names.NameBook2, "reload", side_effect=export_names.RegistryError("NAS")):
             got = self.names("work1")["work1"]
