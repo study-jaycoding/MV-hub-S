@@ -1414,6 +1414,23 @@ it("타임라인 빈 곳에서 끌어 고른다 — 걸친 클립 · 잠긴 트�
   mouse(v2, "pointermove", { clientX: 60, clientY: 300, buttons: 1 });
   mouse(v2, "pointermove", { clientX: 70, clientY: 300, buttons: 0 }); // 놓기를 놓쳤다 — 상자만 걷고 고른 것은 남긴다
   expect([document.querySelector(".ed-lanes .assets-marquee"), picked()]).toEqual([null, ["a"]]);
+
+  // Codex 코드 리뷰 ③ — 문턱 전에 창이 초점을 잃으면 그 누름은 끝났다(돌아와 움직여도 상자가 생기지 않는다)
+  mouse(v1, "pointerdown", { clientX: 250, clientY: 150, ctrlKey: true });
+  act(() => { window.dispatchEvent(new Event("blur")); });
+  mouse(v1, "pointermove", { clientX: 290, clientY: 260, buttons: 1, ctrlKey: true });
+  expect([document.querySelector(".ed-lanes .assets-marquee"), picked()]).toEqual([null, ["a"]]);
+  mouse(v1, "pointerup", { clientX: 290, clientY: 260 });
+
+  // Codex 코드 리뷰 ① — 더하며 끄는 사이 다른 창이 고른 클립(a)을 지우면 상자를 걷는다. 지워진 a 가 바탕(base)에서 되살아나지 않는다
+  mouse(v1, "pointerdown", { clientX: 250, clientY: 150, ctrlKey: true });
+  mouse(v1, "pointermove", { clientX: 290, clientY: 260, buttons: 1, ctrlKey: true });
+  expect(picked()).toEqual(["a", "c"]);
+  localStorage.setItem(DOC_KEY, JSON.stringify({ ...stored(), clips: stored().clips.filter((clip: { gen: string }) => clip.gen !== "a") }));
+  act(() => { window.dispatchEvent(new StorageEvent("storage", { key: DOC_KEY })); });
+  mouse(v1, "pointermove", { clientX: 295, clientY: 262, buttons: 1, ctrlKey: true });
+  mouse(v1, "pointerup", { clientX: 295, clientY: 262 });
+  expect([document.querySelector(".ed-lanes .assets-marquee"), picked().includes("a")]).toEqual([null, false]);
   box.mockRestore();
 });
 

@@ -195,22 +195,31 @@ export const EditTimeline = memo(function EditTimeline({
   //  재생헤드는 움직이지 않는다. 시작점은 줄 기준으로 적는다(줄은 스크롤과 함께 움직인다) — 끄는 사이 휠로 넘기거나 배율·배치가
   //  바뀌어도 그 자리로 다시 재고, 놓는 순간에도 한 번 더 잰다(Codex 설계 검토).
   const [marquee, setMarquee] = useState<MarqueeRect | null>(null);
-  const boxPress = useRef<{ x: number; y: number; at: [number, number]; base: string[]; id: number; moved: boolean } | null>(null);
+  const boxPress = useRef<{
+    x: number; y: number; at: [number, number]; base: string[]; id: number; moved: boolean; rev: number; off: () => void;
+  } | null>(null);
   const marqueeEnded = useRef(-Infinity);
   const measureMarquee = () => {
     const state = boxPress.current;
     const lanes = lanesRef.current;
     if (!state?.moved || !lanes) return;
+    // 끄는 사이 문서가 갈렸다(다른 창의 변경·되돌리기) — 다른 끌기처럼 상자를 걷는다. 안 걷으면 더하기의 바탕(base)에 남은, 이제는 없는
+    //  클립이 다시 고른 것에 들어간다(Codex 코드 리뷰). 고른 것은 그대로 둔다(부모가 없는 것을 이미 뺐다).
+    if (state.rev !== rev) return endMarquee();
     const box = lanes.getBoundingClientRect();
     const { rect, b } = computeMarquee(lanes, { x: box.left + state.x, y: box.top + state.y }, { clientX: state.at[0], clientY: state.at[1] });
     setMarquee(rect);
-    onPickMany([...marqueeHits<string>(lanes, ".ed-clip[data-clip]:not(.ed-locked)", b, state.base, (el) => el.dataset.clip)]);
+    // 바탕도 지금 줄에 있는 클립만 — 배치만 바뀌어(숨김 컷 등) 사라진 클립이 되살아나지 않게
+    const shown = new Set([...lanes.querySelectorAll<HTMLElement>(".ed-clip[data-clip]")].map((el) => el.dataset.clip));
+    onPickMany([...marqueeHits<string>(lanes, ".ed-clip[data-clip]:not(.ed-locked)", b, state.base.filter((key) => shown.has(key)),
+      (el) => el.dataset.clip)]);
   };
   const endMarquee = () => {
     const state = boxPress.current;
     boxPress.current = null;
     setMarquee(null);
     if (!state) return;
+    state.off();
     const lanes = lanesRef.current;
     if (lanes?.hasPointerCapture(state.id)) lanes.releasePointerCapture(state.id);
     if (state.moved) marqueeEnded.current = performance.now();
@@ -224,9 +233,12 @@ export const EditTimeline = memo(function EditTimeline({
     if (event.button !== 0 || !(event.target as HTMLElement).closest(".ed-l-v, .ed-l-a")) return;
     endMarquee();
     const box = event.currentTarget.getBoundingClientRect();
+    // 창이 초점을 잃으면 걷는다 — **누르는 순간부터**(6px 문턱 전에 잃고 돌아와 움직이면 상자가 시작됐다 — Codex 코드 리뷰)
+    const blur = () => marqueeLive.current.end();
+    window.addEventListener("blur", blur);
     boxPress.current = {
       x: event.clientX - box.left, y: event.clientY - box.top, at: [event.clientX, event.clientY],
-      base: adding ? [...selected] : [], id: event.pointerId, moved: false,
+      base: adding ? [...selected] : [], id: event.pointerId, moved: false, rev, off: () => window.removeEventListener("blur", blur),
     };
   };
   const lanesMove = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -256,17 +268,12 @@ export const EditTimeline = memo(function EditTimeline({
   useDragKeyHold(marqueeOn);
   useEffect(() => {
     if (!marqueeOn) return;
-    const end = () => marqueeLive.current.end();
     const scroll = scrollRef.current;
     const remeasure = () => marqueeLive.current.measure(); // 끄는 사이 휠로 넘김 — 상자와 고른 것을 그 자리로
-    window.addEventListener("blur", end);
     scroll?.addEventListener("scroll", remeasure);
-    return () => {
-      window.removeEventListener("blur", end);
-      scroll?.removeEventListener("scroll", remeasure);
-    };
+    return () => scroll?.removeEventListener("scroll", remeasure);
   }, [marqueeOn, scrollRef]);
-  useEffect(() => marqueeLive.current.measure(), [layout, zoom]); // 끄는 사이 배율·배치(실측 길이)가 바뀜
+  useEffect(() => marqueeLive.current.measure(), [layout, zoom, rev]); // 끄는 사이 배율·배치(실측 길이)가 바뀜 · 문서가 갈리면 걷는다
   useEffect(() => () => marqueeLive.current.end(), []);
 
   // 클립 끌기 — 6px 넘게 움직이면 끌기로 보고, 놓은 자리의 트랙으로 옮긴다(찬 자리면 맞바꿈).

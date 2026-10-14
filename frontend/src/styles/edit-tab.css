@@ -353,6 +353,9 @@
   background: #14151a; border: 1px solid var(--border2); border-radius: 12px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
   color: var(--text); outline: none;
 }
+/* 아주 낮은 화면 — 큰 화면이 가장 작게(90px) 줄어도 내용이 화면보다 높다. 그때는 가장 작은 크기를 풀어 창이 화면 안에 머물고 안에서
+   스크롤한다(min-height 가 max-height 를 이겨 창 아래가 화면 밖으로 나갔다 — Codex 코드 리뷰). */
+@media (max-height: 360px) { .ed-trim { min-height: 0; } }
 /* 키가 창의 것일 때(초점이 창 안) 테두리가 라임이다 — 초점이 타임라인이면 키는 타임라인의 것인데, 전에는 두 상태의 모양이 같았다 */
 .ed-trim:focus-within { border-color: rgba(var(--accent-rgb), 0.55); }
 .ed-trim-head {
