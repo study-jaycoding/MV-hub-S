@@ -181,8 +181,9 @@ it("풀의 카드를 끌어 트랙 줄에 놓으면 그 컷의 그 트랙에 들
   expect(storedTracks()).toEqual([["a", 2]]);
 });
 
-// Jay 2026-10-14 — 뷰어에 끌어 놓으면 '트랙 줄 위에 놓으세요'만 뜨고 아무 일이 없었다.
-it("풀의 카드를 뷰어에 놓으면 그 카드를 소스 클립으로 본다 — 소스 판이 없으면 놓은 판을 바꾸고(다이나믹 트림은 끈다), 편집 문서는 그대로", () => {
+// Jay 2026-10-14 — 뷰어에 끌어 놓으면 '트랙 줄 위에 놓으세요'만 뜨고 아무 일이 없었다. 오후: 두 판이면 놓은 판이 바뀌어야 한다
+//  ("우측은 타임라인이 고정되어서 드래그해서 넣어도 바뀌지가 않는다").
+it("풀의 카드를 뷰어에 놓으면 놓은 판이 그 카드를 소스 클립으로 본다 — 편집 문서는 그대로 · 뷰어 밖은 아무 일도 없다", () => {
   mountOn("c1");
   const viewer = (mode: string) => document.querySelector<HTMLElement>(`.ed-top > .ed-view[data-view="${mode}"]:not([hidden])`);
   const picked = () => poolCards().map((card) => card.classList.contains("ed-picked"));
@@ -196,17 +197,6 @@ it("풀의 카드를 뷰어에 놓으면 그 카드를 소스 클립으로 본�
   expect([viewer("timeline"), viewer("source")].map(Boolean)).toEqual([false, true]); // 놓은 판이 소스 클립이 됐다
   expect(picked()).toEqual([false, true]);
 
-  dragCard(poolCards()[0], viewer("source")); // 소스 판이 이미 있으면 그 판으로 본다
-  dropCard();
-  expect(picked()).toEqual([true, false]);
-
-  press({ key: "w", code: "KeyW" }); // 다이나믹 트림 모드 — 뷰어 자리는 타임라인 판 하나다
-  expect([viewer("timeline"), viewer("source")].map(Boolean)).toEqual([true, false]);
-  dragCard(poolCards()[1], viewer("timeline"));
-  dropCard();
-  expect([viewer("timeline"), viewer("source")].map(Boolean)).toEqual([false, true]); // 트림 모드를 끄고 소스 클립으로
-  expect(picked()).toEqual([false, true]);
-
   dragCard(poolCards()[0], viewer("source")); // 뷰어 밖(줄도 아님)으로 옮겨 놓으면 아무 일도 없다
   under = null;
   fire(window, "mousemove", { clientX: 61, clientY: 80 });
@@ -216,29 +206,34 @@ it("풀의 카드를 뷰어에 놓으면 그 카드를 소스 클립으로 본�
   expect([stored(), flashed]).toEqual([null, []]);
 });
 
-it("뷰어에 놓기: 소스 테이프 판은 소스 클립으로 바뀐다 — 두 판이면 어느 판에 놓아도 소스 쪽 판만 바뀌고 타임라인 판은 그대로", () => {
-  localStorage.setItem("ch.editTimeline.ui", JSON.stringify({ dual: true, views: ["timeline", "tape"] }));
+it("뷰어에 놓기: 두 판이면 놓은 판만 바뀐다 — 타임라인 판·소스 테이프 판·소스 클립 판 모두, 다른 판은 그대로", () => {
+  localStorage.setItem("ch.editTimeline.ui", JSON.stringify({ dual: true, views: ["source", "timeline"] }));
   mountOn("c1");
   const shown = () => [...document.querySelectorAll<HTMLElement>(".ed-top > .ed-view:not([hidden])")]
-    .sort((a, b) => Number(a.style.order) - Number(b.style.order)).map((item) => item.dataset.view);
-  const pane = (mode: string) => document.querySelector<HTMLElement>(`.ed-top > .ed-view[data-view="${mode}"]:not([hidden])`)!;
-  const picked = () => poolCards().map((card) => card.classList.contains("ed-picked"));
-  expect(shown()).toEqual(["timeline", "tape"]);
+    .sort((a, b) => Number(a.style.order) - Number(b.style.order));
+  const modes = () => shown().map((item) => item.dataset.view);
+  const media = () => shown().map((item) => item.querySelector(".ed-stage > .ed-media:not([hidden])")?.getAttribute("src") ?? null);
+  expect(modes()).toEqual(["source", "timeline"]);
 
-  dragCard(poolCards()[1], pane("timeline")); // 타임라인 판에 놓았다 — 테이프 판이 소스 클립이 된다
+  dragCard(poolCards()[0], shown()[0]); // 왼쪽(소스 클립)에 a
   dropCard();
-  expect(shown()).toEqual(["timeline", "source"]);
-  expect(picked()).toEqual([false, true]);
+  dragCard(poolCards()[1], shown()[1]); // 오른쪽(타임라인)에 b — 오른쪽이 소스 클립이 되고 왼쪽은 a 그대로(Jay 의 경우)
+  dropCard();
+  expect([modes(), media()]).toEqual([["source", "source"], ["/media/a.png", "/media/b.png"]]);
+  expect(shown().map((item) => item.classList.contains("ed-view-on"))).toEqual([false, true]); // 놓은 판이 재생 키를 받는다
+
+  dragCard(poolCards()[0], shown()[1]); // 소스 클립 판에 다시 놓으면 그 판만
+  dropCard();
+  expect(media()).toEqual(["/media/a.png", "/media/a.png"]);
 
   act(() => { localStorage.setItem("ch.editTimeline.ui", JSON.stringify({ dual: true, views: ["tape", "timeline"] })); });
   act(() => root.unmount());
   root = createRoot(host);
   mountOn("c1");
-  expect(shown()).toEqual(["tape", "timeline"]);
-  dragCard(poolCards()[0], pane("tape")); // 테이프 판에 놓았다 — 그 판이 소스 클립이 된다
+  expect(modes()).toEqual(["tape", "timeline"]);
+  dragCard(poolCards()[1], shown()[0]); // 소스 테이프 판에 놓으면 그 판이 소스 클립으로(테이프는 이어서 틀고 컷을 옮기면 사라진다)
   dropCard();
-  expect(shown()).toEqual(["source", "timeline"]);
-  expect(picked()).toEqual([true, false]);
+  expect([modes(), media()[0]]).toEqual([["source", "timeline"], "/media/b.png"]);
   expect([stored(), flashed]).toEqual([null, []]);
 });
 

@@ -154,7 +154,8 @@ export function saveEditTarget(target: EditTarget | null): void {
 export type PoolView = "thumb" | "meta" | "list";
 export type PoolSort = "new" | "old" | "placed";
 // 뷰어 한 판이 보는 것 — 타임라인(위 트랙 우선) · 소스 클립(풀에서 고른 것) · 소스 테이프(이 컷의 풀 목록을 이어서) ·
-//  한 트랙만(트랙 번호). 소스 클립과 소스 테이프는 같은 판(소스 엔진 하나)의 두 방식이라 두 판에 같이 뜰 수 없다.
+//  한 트랙만(트랙 번호). 소스 엔진은 판마다 하나라(2026-10-14 Jay — "두개 화면 모두 소스클립이나 내가 정한 화면이 자유롭게")
+//  두 판이 같이 소스여도 된다. 타임라인·같은 트랙은 시계가 하나라 두 판에 같이 뜨지 않는다.
 export type ViewMode = "timeline" | "source" | "tape" | number;
 export const isSourceView = (mode: ViewMode | undefined): boolean => mode === "source" || mode === "tape";
 export interface EditUi {
@@ -162,20 +163,24 @@ export interface EditUi {
   size: number; // 썸네일 폭(px)
   sort: PoolSort;
   dual: boolean; // 듀얼 뷰어(판 두 개)
-  views: [ViewMode, ViewMode]; // [왼쪽 판, 오른쪽 판] — 서로 다르다. 싱글이면 오른쪽 것만 보인다
+  views: [ViewMode, ViewMode]; // [왼쪽 판, 오른쪽 판] — 소스가 아니면 서로 다르다. 싱글이면 오른쪽 것만 보인다
   loop: boolean; // 타임라인 반복 재생
   loopSrc: boolean; // 소스 반복 재생
   speed: number; // 재생 배속(EDIT_SPEEDS 중 하나) — 두 뷰어가 같이 쓴다
   markerColor: string; // 새 북마크의 색(#rrggbb)
   sideHidden: boolean; // 왼쪽 폴더 목록을 닫아 두었다(풀 머리줄의 단추 — 공유 탭의 닫힘과는 따로 기억한다, Jay 2026-10-13)
-  volume: number; // 뷰어의 소리 크기 0~1(Jay 2026-10-14 — 뷰어 아래 오른쪽) — 모든 판이 같이 쓴다. A1 의 M(문서의 소리 끄기)과는 따로다
+  // 판 자리(왼쪽·오른쪽)마다의 소리 크기 0~1(Jay 2026-10-14 — 뷰어 아래 오른쪽 · 오후: "따로따로 조절이 되어야한다"). 싱글이면 오른쪽 것.
+  //  A1 의 M(문서의 소리 끄기)과는 따로다. 옛 칸 volume(하나)은 두 자리에 같이 읽는다.
+  volumes: [number, number];
 }
 export const POOL_SIZE = { min: 56, max: 240 }; // 최소 = 다빈치 미디어 풀의 작은 썸네일쯤
 export const EDIT_SPEEDS = [1, 1.5, 2, 4]; // 배속 단추가 도는 순서
 const DEFAULT_UI: EditUi = {
   view: "thumb", size: 160, sort: "new", dual: false, views: ["source", "timeline"], loop: false, loopSrc: false, speed: 1,
-  markerColor: MARKER_COLORS[0].color, sideHidden: false, volume: 1,
+  markerColor: MARKER_COLORS[0].color, sideHidden: false, volumes: [1, 1],
 };
+const unitOr = (value: unknown, fallback: number) =>
+  (typeof value === "number" && Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : fallback);
 const viewMode = (value: unknown): ViewMode | null =>
   value === "timeline" || value === "source" || value === "tape" ? value
     : Number.isSafeInteger(value) && (value as number) > 0 ? (value as number) : null;
@@ -183,11 +188,13 @@ const uiKey = `${STORAGE_KEYS.editTimeline}.ui`;
 
 export function loadEditUi(): EditUi {
   try {
-    const raw = JSON.parse(localStorage.getItem(uiKey) || "null") as Partial<EditUi> | null;
+    const raw = JSON.parse(localStorage.getItem(uiKey) || "null") as (Partial<EditUi> & { volume?: unknown }) | null;
     if (!raw || typeof raw !== "object") return DEFAULT_UI;
     const pair = Array.isArray(raw.views) && raw.views.length === 2 ? [viewMode(raw.views[0]), viewMode(raw.views[1])] : [];
-    const views = pair[0] != null && pair[1] != null && pair[0] !== pair[1] && !(isSourceView(pair[0]) && isSourceView(pair[1]))
+    const views = pair[0] != null && pair[1] != null && (pair[0] !== pair[1] || isSourceView(pair[0]))
       ? ([pair[0], pair[1]] as [ViewMode, ViewMode]) : null;
+    const one = unitOr(raw.volume, 1); // 옛 칸
+    const both = Array.isArray(raw.volumes) && raw.volumes.length === 2 ? raw.volumes : [one, one];
     return {
       view: raw.view === "meta" || raw.view === "list" ? raw.view : "thumb",
       size: typeof raw.size === "number" && Number.isFinite(raw.size)
@@ -200,7 +207,7 @@ export function loadEditUi(): EditUi {
       speed: EDIT_SPEEDS.includes(raw.speed as number) ? (raw.speed as number) : 1,
       markerColor: isHexColor(raw.markerColor) ? raw.markerColor : DEFAULT_UI.markerColor,
       sideHidden: raw.sideHidden === true,
-      volume: typeof raw.volume === "number" && Number.isFinite(raw.volume) ? Math.min(1, Math.max(0, raw.volume)) : 1,
+      volumes: [unitOr(both[0], one), unitOr(both[1], one)],
     };
   } catch {
     return DEFAULT_UI;

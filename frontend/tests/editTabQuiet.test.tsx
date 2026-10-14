@@ -58,7 +58,9 @@ const mount = () => {
   // 재생헤드의 마지막 자리는 시험 사이에도 남는다 — c1 에서 시작한다(풀은 재생헤드가 있는 컷을 보여 준다)
   act(() => [...document.querySelectorAll<HTMLButtonElement>(".ed-cutcell")].find((cell) => cell.textContent === "c1")!.click());
 };
-const pane = (mode: string) => document.querySelector<HTMLElement>(`.ed-top > .ed-view[data-view="${mode}"]`)!;
+// 그 보기의 판 — 보이는 것 먼저(소스 판은 자리마다 하나라 안 보이는 소스 판도 붙어 있다)
+const pane = (mode: string) => document.querySelector<HTMLElement>(`.ed-top > .ed-view[data-view="${mode}"]:not([hidden])`)
+  ?? document.querySelector<HTMLElement>(`.ed-top > .ed-view[data-view="${mode}"]`)!;
 const pickMode = (from: string, label: string) => {
   act(() => pane(from).querySelector<HTMLButtonElement>(".ed-vpick-btn")!.click());
   act(() => [...pane(from).querySelectorAll<HTMLButtonElement>(".ed-pop-item")].find((item) => item.textContent!.includes(label))!.click());
