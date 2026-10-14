@@ -16,7 +16,17 @@ export interface EditClip {
   track: number; // 1 부터. 위 트랙이 우선 보인다
   off?: boolean;
   dur?: number;
+  // dur 이 그림 트랙의 프레임 수로 잰 값이다(2026-10-14 — lib/videoDuration 의 measuredExactly). 이 표가 있으면 video.duration 으로 잰
+  //  값(소리까지 친 길이 — 서버가 그림 길이를 못 준 창)이 덮지 않는다. 안 그러면 두 창이 서로 고쳐 쓴다(Codex 코드 리뷰).
+  durExact?: boolean;
   kind?: "video" | "image";
+  // 사용자가 줄인 길이(초) — 뒤를 자른다(Jay 2026-10-13: 타임라인 클립 휠 클릭 = 길이 조절). 영상만이고 원본(dur)보다 길게는 못 한다.
+  //  dur 과 따로 둔다: dur 은 실측이 오면 고쳐 적히고 되돌리기 대상이 아니다. 이것은 사용자의 편집이라 되돌리기 대상이다.
+  trim?: number;
+  // 앞에서 잘라 낸 길이(초, Jay 2026-10-14: 길이 조절에서 앞도 자른다) — 그 클립은 원본의 이 시각에서 시작한다. 영상만. 없으면 0.
+  //  trim 은 그대로 '쓰는 길이'다(시작점부터 센다). 실제로 쓰는 값(유효 시작)은 clipHead 가 프레임에 맞춰 원본 안으로 자른다 —
+  //  적힌 값은 남긴다(trim 과 같은 까닭: 실측 전의 dur 은 추정값이다).
+  head?: number;
 }
 
 // 북마크(다빈치의 마커) — 자리는 (컷, 컷 안 시각). (컷, 프레임)에 하나뿐이다(markerKey).
@@ -45,6 +55,9 @@ export interface EditDoc {
   markIn?: EditPos;
   markOut?: EditPos;
   markers?: EditMarker[];
+  // 사용자가 정한 컷(폴더) 순서(Jay 2026-10-13: 타임라인의 폴더 순서를 내가 바꾼다) — 컷 경로. 없으면 이름순(cutPaths).
+  //  이름순과 같아지면 지운다. 목록에 없는 컷(나중에 생긴 폴더)이 설 자리는 cutPaths 가 정한다.
+  cutOrder?: string[];
 }
 
 export function emptyEditDoc(): EditDoc {
@@ -74,7 +87,37 @@ export function cutOf(seq: string, folderPath: string | null | undefined): strin
   return head ? `${seq}/${head}` : null;
 }
 
+const byName = (a: string, b: string) => naturalCompare(leaf(a), leaf(b));
+
+// 사용자가 정한 순서(saved — 지금 없는 컷이 섞여 있을 수 있다)로 이름순의 지금 컷들(natural)을 다시 세운다.
+//  · 목록에 있고 지금 있는 컷 = 목록 순서.
+//  · 목록에 없는 컷(순서를 정한 뒤에 생긴 폴더) = **이름순에서 자기 바로 앞인 컷의 뒤**(앞선 컷이 하나도 없으면 맨 앞). 이름순으로
+//    하나씩 끼우므로 같은 자리에 여럿이 끼어도 그들끼리는 이름순이다 — 같은 입력이면 언제나 같은 순서다.
+//  · 목록에만 있고 지금 없는 컷 = 건너뛴다(목록에는 남는다 — moveCut. 그 폴더가 다시 나타나면 제자리).
+//  경로는 글자 그대로 본다(대소문자만 다른 폴더는 다른 컷이다 — naturalCompare 의 동률 가르기까지 쓴다).
+export function orderCuts(natural: readonly string[], saved?: readonly string[]): string[] {
+  if (!saved?.length) return [...natural];
+  const present = new Set(natural);
+  const out = saved.filter((path) => present.has(path));
+  const placed = new Set(out);
+  natural.forEach((path, index) => {
+    if (placed.has(path)) return;
+    let at = 0;
+    for (let before = index - 1; before >= 0; before--) {
+      const found = out.indexOf(natural[before]);
+      if (found >= 0) {
+        at = found + 1;
+        break;
+      }
+    }
+    out.splice(at, 0, path);
+    placed.add(path);
+  });
+  return out;
+}
+
 // 컷 목록 = 디스크·팀 개수에서 온 폴더 ∪ 문서에 남은 클립의 컷. 마지막 공유물이 사라져도 자리가 남는다.
+//  순서 = 이름 자연 정렬, 사용자가 순서를 정했으면(doc.cutOrder) 그 순서(orderCuts).
 export function cutPaths(seq: string, folderPaths: Iterable<string>, doc: EditDoc): string[] {
   const found = new Set<string>();
   for (const path of folderPaths) {
@@ -82,7 +125,41 @@ export function cutPaths(seq: string, folderPaths: Iterable<string>, doc: EditDo
     if (cut) found.add(cut);
   }
   for (const clip of doc.clips) if (cutOf(seq, clip.cut) === clip.cut) found.add(clip.cut);
-  return [...found].sort((a, b) => naturalCompare(leaf(a), leaf(b)));
+  return orderCuts([...found].sort(byName), doc.cutOrder);
+}
+
+// 컷(폴더) 하나를 before 앞으로 옮긴다(before = null 이면 맨 뒤). all = 지금의 전체 순서(cutPaths — 숨긴 컷 포함).
+//  적는 것은 옮긴 결과 **전체**다. 저장돼 있던 순서의 '지금 없는 컷'은 제자리에 남긴다(그 폴더가 돌아오면 그 자리) — 지금 컷만
+//  적으면 그 자리가 지워진다(Codex 설계 검토). 결과가 이름순과 같으면 칸을 지운다. 바뀐 것이 없으면 null.
+//  순서가 바뀌어 마크 인이 아웃보다 뒤에 놓여도 여기서는 건드리지 않는다 — 그릴 때·찍을 때 바로잡는다(straightMarks).
+export function moveCut(doc: EditDoc, all: readonly string[], path: string, before: string | null): EditDoc | null {
+  if (!all.includes(path) || before === path || (before !== null && !all.includes(before))) return null;
+  // 지금 순서에서 제자리면 바뀐 것이 없다 — 아래의 전체 목록으로만 견주면, 바로 뒤 컷 앞에 놓은 것(제자리)이 그 사이의 '지금 없는 컷'을
+  //  넘어간 것으로 적혀 그 폴더의 돌아올 자리가 바뀐다(Codex 코드 리뷰 2026-10-13).
+  const after = all.filter((cut) => cut !== path);
+  after.splice(before === null ? after.length : after.indexOf(before), 0, path);
+  if (after.every((cut, index) => cut === all[index])) return null;
+  // 저장된 순서(없는 컷 포함)에 아직 안 적힌 지금 컷을, 화면의 바로 앞 컷 뒤에 끼워 넣어 전체 목록을 만든다.
+  const full = [...(doc.cutOrder ?? [])];
+  all.forEach((cut, index) => {
+    if (full.includes(cut)) return;
+    full.splice(index ? full.indexOf(all[index - 1]) + 1 : 0, 0, cut);
+  });
+  const moved = full.filter((cut) => cut !== path);
+  moved.splice(before === null ? moved.length : moved.indexOf(before), 0, path);
+  if (moved.every((cut, index) => cut === full[index])) return null;
+  const next: EditDoc = { ...doc };
+  delete next.cutOrder;
+  if (moved.some((cut, index) => index > 0 && byName(moved[index - 1], cut) > 0)) next.cutOrder = moved;
+  return next;
+}
+
+// 이름순으로 되돌린다. 정한 순서가 없으면 null.
+export function resetCutOrder(doc: EditDoc): EditDoc | null {
+  if (!doc.cutOrder?.length) return null;
+  const next: EditDoc = { ...doc };
+  delete next.cutOrder;
+  return next;
 }
 
 const positiveInt = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
@@ -112,6 +189,8 @@ export function parseEditDoc(value: unknown): EditDoc | null {
   const cutsOn = paths(raw.cutsOn);
   const cutsOff = paths(raw.cutsOff);
   if (!cutsOn || !cutsOff || cutsOn.some((cut) => cutsOff.includes(cut))) return null; // 켬·끔에 같이 있을 수 없다
+  const cutOrder = paths(raw.cutOrder);
+  if (!cutOrder) return null;
   if (raw.tracks !== undefined && !positiveInt(raw.tracks)) return null;
   const trackColors: Record<number, string> = {};
   if (raw.trackColors !== undefined) {
@@ -148,7 +227,10 @@ export function parseEditDoc(value: unknown): EditDoc | null {
     if (c.job != null && typeof c.job !== "string") return null;
     if (c.off !== undefined && typeof c.off !== "boolean") return null;
     if (c.dur !== undefined && (typeof c.dur !== "number" || validSeconds(c.dur) === null)) return null;
+    if (c.durExact !== undefined && typeof c.durExact !== "boolean") return null;
     if (c.kind !== undefined && c.kind !== "video" && c.kind !== "image") return null;
+    if (c.trim !== undefined && (typeof c.trim !== "number" || validSeconds(c.trim) === null)) return null;
+    if (c.head !== undefined && (typeof c.head !== "number" || validSeconds(c.head) === null)) return null;
     const slotKey = `${c.cut}\t${c.track}`;
     const genKey = clipKey({ cut: c.cut, gen: c.gen });
     if (seen.has(slotKey) || seen.has(genKey)) return null; // (컷, 트랙)·(컷, 생성물)은 하나뿐
@@ -158,7 +240,10 @@ export function parseEditDoc(value: unknown): EditDoc | null {
       ...(c.job ? { job: c.job as string } : {}),
       ...(c.off ? { off: true } : {}),
       ...(c.dur !== undefined ? { dur: c.dur as number } : {}),
+      ...(c.dur !== undefined && c.durExact ? { durExact: true } : {}),
       ...(c.kind ? { kind: c.kind as "video" | "image" } : {}),
+      ...(c.trim !== undefined ? { trim: c.trim as number } : {}),
+      ...(c.head !== undefined ? { head: c.head as number } : {}),
     });
   }
   return {
@@ -168,6 +253,7 @@ export function parseEditDoc(value: unknown): EditDoc | null {
     ...(Object.keys(trackColors).length ? { trackColors } : {}),
     ...(raw.markIn ? { markIn: mark(raw.markIn) } : {}), ...(raw.markOut ? { markOut: mark(raw.markOut) } : {}),
     ...(markers.length ? { markers } : {}),
+    ...(cutOrder.length ? { cutOrder } : {}),
   };
 }
 
@@ -197,7 +283,11 @@ export function toggleCutOff(doc: EditDoc, cut: string, autoOff: boolean): EditD
 // ── 배치 ────────────────────────────────────────────────────────────────────────────────────────
 
 export interface SlotClip extends EditClip {
-  len: number;
+  len: number; // 쓰는 길이 — 사용자가 줄였으면(trim·head) 그 길이
+  full: number; // 줄이기 전의 길이(원본) — 화면이 '3.0s / 5.0s' 처럼 둘 다 보여 준다
+  // 유효 시작(초) — 그 클립이 원본의 어디에서 시작하는가(clipHead). 문서에 적힌 값(EditClip.head)이 아니라 프레임에 맞추고 원본
+  //  안으로 자른 값이다. **영상 시각 = 컷 안 시각 + 이 값**(재생·다이나믹 트림 모드·길이 조절 창·Resolve 계획이 같이 쓴다).
+  head: number;
 }
 export interface CutSlot {
   path: string;
@@ -212,8 +302,43 @@ export interface EditLayout {
   tracks: number; // 그릴 영상 트랙 줄 수
 }
 
-export function clipLen(clip: EditClip, fallback?: unknown): number {
+// 줄이기 전의 길이 — 문서에 적힌 길이(dur), 없으면 호출부가 아는 값, 그것도 없으면 기본 길이.
+export function clipFull(clip: EditClip, fallback?: unknown): number {
   return validSeconds(clip.dur) ?? validSeconds(fallback) ?? DEFAULT_SEC;
+}
+
+// 원본을 넘지 않는 가장 긴 프레임 수 — 길이 조절의 눈금 끝. **내림**한다: 올리면 3.02초 영상이 73프레임(3.0417초)으로 잡혀 원본을 넘는다.
+export function clipFrames(full: number): number {
+  return Math.floor(full * EDIT_FPS + 1e-6);
+}
+
+// 유효 시작(초) — 앞에서 잘라 낸 길이(head)를 프레임에 맞추고, 원본에 한 프레임은 남게 자른 값. 그림은 0 이다.
+//  한 프레임도 안 되는 영상은 자를 수 없다(0). 창·재생·그리기·Resolve 계획이 전부 이 값을 쓴다 — 초로만 자르면(full − 1/24)
+//  프레임 사이의 시각이 나와, 브라우저는 그 시각을 틀고 창과 Resolve 의 정수 프레임은 그것을 적지 못한다(Codex 설계 검토).
+export function clipHead(clip: EditClip, fallback?: unknown): number {
+  const head = clip.kind === "image" ? null : validSeconds(clip.head);
+  if (head === null) return 0;
+  const top = clipFrames(clipFull(clip, fallback));
+  return top < 1 ? 0 : Math.min(Math.round(head * EDIT_FPS), top - 1) / EDIT_FPS;
+}
+
+// 쓰는 길이 — 사용자가 줄였으면(trim) 그 길이, 앞을 잘랐으면(head) 시작점부터 남은 만큼까지. 영상만이고 원본 밖으로는 안 된다
+//  (재생 엔진이 영상의 실제 끝에서 건너뛴다). trim 이 없으면 원본 끝까지다.
+//  영상은 **프레임 수로 내린다**(2026-10-14) — 프레임에 못 미치는 나머지가 있으면 컷 경계가 프레임 사이에 서고, Resolve 계획이 시작과
+//  끝을 따로 반올림하며 같은 클립이 98·99프레임으로 갈렸다(99 = 원본보다 길어 막힘, 98 = 1프레임 빈칸). 한 프레임도 안 되면 그대로.
+//  그림은 줄이지 않는다: Resolve 가 스틸을 준 길이와 무관하게 5초로 놓아, 줄이면 다음 컷과 겹친다. kind 가 없는 옛 클립은 영상으로 본다.
+export function clipLen(clip: EditClip, fallback?: unknown): number {
+  const full = clipFull(clip, fallback);
+  if (clip.kind === "image") return full;
+  const rest = full - clipHead(clip, fallback);
+  const trim = validSeconds(clip.trim);
+  const len = trim === null ? rest : Math.min(trim, rest);
+  return clipFrames(len) / EDIT_FPS || len;
+}
+
+// 켜져 있는 클립인가 — 클립을 껐거나 그 트랙을 껐으면 아니다. 보이는 것(visibleClip)과 컷 길이(buildLayout)가 같은 기준을 쓴다.
+export function clipIsOn(doc: EditDoc, clip: Pick<EditClip, "off" | "track">): boolean {
+  return !clip.off && !doc.tracksOff.includes(clip.track);
 }
 
 // 그릴 영상 트랙 줄 수 = 적어 둔 줄 수(없으면 기본 3)와 클립이 있는 가장 높은 트랙 중 큰 쪽.
@@ -221,7 +346,10 @@ export function trackCount(doc: EditDoc): number {
   return Math.max(doc.tracks ?? MIN_TRACKS, ...doc.clips.map((clip) => clip.track));
 }
 
-// 컷 길이 = 그 컷 클립들의 최대 길이(꺼진 것 포함 — 끌 때 길이가 출렁이지 않게). 빈 컷은 기본 길이.
+// 컷 길이 = 그 컷의 **켜진** 클립 중 가장 긴 것(Jay 2026-10-13: "v1 트랙이 꺼져 있다면 그 폴더는 3초만 재생된다"). 켜진 클립이
+//  없으면(빈 컷, 또는 넣은 것을 전부 껐다) 기본 길이다 — 꺼진 것은 없는 것으로 친다. 처음엔 꺼진 것까지 넣었다("끌 때 길이가
+//  출렁이지 않게") — 그러면 위 트랙이 끝난 뒤 꺼진 아래 트랙의 길이만큼 빈 화면이 나왔다.
+//  그래서 **꺼진 클립은 컷보다 길 수 있다**(clip.len > slot.len): 그리기·Resolve 계획은 컷의 끝에서 자른다.
 export function buildLayout(
   cuts: string[],
   doc: EditDoc,
@@ -232,8 +360,12 @@ export function buildLayout(
     const clips = doc.clips
       .filter((clip) => clip.cut === path)
       .sort((a, b) => a.track - b.track)
-      .map((clip) => ({ ...clip, len: clipLen(clip, fallbackOf?.(clip)) }));
-    const len = clips.length ? Math.max(...clips.map((clip) => clip.len)) : DEFAULT_SEC;
+      .map((clip) => {
+        const fallback = fallbackOf?.(clip);
+        return { ...clip, len: clipLen(clip, fallback), full: clipFull(clip, fallback), head: clipHead(clip, fallback) };
+      });
+    const on = clips.filter((clip) => clipIsOn(doc, clip));
+    const len = on.length ? Math.max(...on.map((clip) => clip.len)) : DEFAULT_SEC;
     const slot: CutSlot = { path, name: leaf(path), start, len, clips };
     start += len;
     return slot;
@@ -246,7 +378,7 @@ export function buildLayout(
 export function visibleClip(doc: EditDoc, slot: CutSlot, local: number): SlotClip | null {
   for (let i = slot.clips.length - 1; i >= 0; i--) {
     const clip = slot.clips[i];
-    if (clip.off || doc.tracksOff.includes(clip.track)) continue;
+    if (!clipIsOn(doc, clip)) continue;
     if (local < clip.len) return clip;
   }
   return null;
@@ -298,16 +430,28 @@ export function posAt(layout: EditLayout, time: number): EditPos | null {
 }
 
 // 배치가 바뀐 뒤 위치를 유효한 자리로 맞춘다. moved=true 면 호출부가 재생을 멈춘다.
-//  · 보던 컷이 사라짐 → 이름 순서로 그다음 컷의 처음(없으면 전체 끝)
+//  · 보던 컷이 배치에서 빠짐(숨김·폴더가 사라짐) → **컷 순서에서** 그다음 컷의 처음(없으면 전체 끝)
 //  · 보던 컷이 local 보다 짧아짐 → 컷 끝 직전
-export function settlePos(layout: EditLayout, pos: EditPos | null): { pos: EditPos | null; moved: boolean } {
+//  order = 타임라인의 전체 컷 순서(숨긴 컷 포함 — cutPaths) · saved = 사용자가 정한 순서(doc.cutOrder — 사라진 폴더의 자리가 남아 있다).
+//  안 주면 배치의 순서로 본다(소스 판처럼 순서를 따로 정하지 않는 문서 — 타임라인의 순서를 넘기지 않는다).
+//  폴더가 사라져 order 에도 없는 컷은 서 있던 자리를 다시 찾는다: 정한 순서에 적혀 있으면 그 자리, 아니면 새 컷이 서는 규칙
+//  (이름순으로 바로 앞인 컷의 뒤 — orderCuts). 순서를 정하지 않았으면 전과 같이 '이름순으로 그다음 컷'이다.
+export function settlePos(
+  layout: EditLayout,
+  pos: EditPos | null,
+  order?: readonly string[],
+  saved?: readonly string[],
+): { pos: EditPos | null; moved: boolean } {
   const last = layout.cuts[layout.cuts.length - 1];
   if (!last) return { pos: null, moved: pos !== null };
   if (!pos) return { pos: { cut: layout.cuts[0].path, local: 0 }, moved: false };
   const index = layout.cuts.findIndex((cut) => cut.path === pos.cut);
   if (index < 0) {
-    const next = layout.cuts.find((cut) => naturalCompare(cut.name, leaf(pos.cut)) > 0);
-    return { pos: next ? { cut: next.path, local: 0 } : { cut: last.path, local: last.len }, moved: true };
+    let all = order ?? layout.cuts.map((cut) => cut.path);
+    if (!all.includes(pos.cut)) all = orderCuts([...all, pos.cut].sort(byName), saved?.includes(pos.cut) ? saved : all);
+    const shown = new Set(layout.cuts.map((cut) => cut.path));
+    const next = all.slice(all.indexOf(pos.cut) + 1).find((path) => shown.has(path));
+    return { pos: next ? { cut: next, local: 0 } : { cut: last.path, local: last.len }, moved: true };
   }
   const slot = layout.cuts[index];
   if (pos.local < 0) return { pos: { cut: slot.path, local: 0 }, moved: true };
@@ -340,7 +484,7 @@ export function nearestPoint(points: readonly number[], time: number): number {
 
 export interface EditShot {
   slot: CutSlot;
-  local: number; // 컷 안 시각(클립은 컷의 처음에서 시작하므로 그 영상의 시각이기도 하다)
+  local: number; // 컷 안 시각. 클립은 컷의 처음에서 시작한다 — 그 영상의 시각은 여기에 clip.head(앞을 자른 만큼)를 더한 값이다
   clip: SlotClip | null; // 그 순간 보이는 클립(위 트랙 우선·끔 반영 — 타임라인 뷰어와 같다). 없으면 빈 화면
 }
 
@@ -423,6 +567,52 @@ export function placeClip(
     ...doc,
     clips: [...doc.clips.filter((item) => item !== own && !(item.cut === clip.cut && item.track === track)), next],
   };
+}
+
+// 그 컷의 그 트랙에 이 카드를 놓으면 무슨 일이 일어나는가 — 휠 클릭 메뉴의 줄과 끌어 넣기의 강조가 같이 쓴다(둘이 어긋나지 않게).
+//  own = 그 카드가 이 컷에 이미 넣어져 있으면 그 클립(job 으로 이은 것 포함 — 호출부가 찾는다).
+//  here = 이미 거기 있다(아무 일도 없다) · locked = 잠겨서 못 놓는다(도착 트랙, 또는 지금 있는 트랙) · taken = 다른 클립이 있다(놓으면
+//  교체) · empty = 빈 자리. placeClip 의 거부 조건과 같은 판정이다.
+export type PlaceState = "empty" | "taken" | "here" | "locked";
+export function placeState(doc: EditDoc, cut: string, own: Pick<EditClip, "track"> | null | undefined, track: number): PlaceState {
+  if (own?.track === track) return "here";
+  if (isLocked(doc, track) || (!!own && isLocked(doc, own.track))) return "locked";
+  return doc.clips.some((clip) => clip.cut === cut && clip.track === track) ? "taken" : "empty";
+}
+
+// 클립이 쓰는 구간을 정한다(Jay 2026-10-13 뒤를 자른다 · 10-14 앞도 자른다). head = 앞에서 잘라 내는 길이(초, 0 = 원본의 처음부터),
+//  trim = 쓰는 길이(초, null = 원본 끝까지). 영상만이다 — 그림과 잠긴 트랙의 클립은 거부한다. 바뀐 것이 없으면 null.
+//  값은 호출부(길이 조절 창)가 프레임에 맞춰 준다.
+//  원본보다 긴 값도 그대로 적는다 — 쓰는 값은 clipHead·clipLen 이 원본에서 자른다. 원본 길이를 아직 모를 때(실측 전의 dur 은 추정값이다)
+//  정한 값을 '원본 이상'이라고 지우면, 실측이 온 뒤 사용자가 정한 길이가 원본 길이로 늘어난다(Codex 설계 검토).
+export function setClipRange(doc: EditDoc, key: string, range: { head: number; trim: number | null }): EditDoc | null {
+  const clip = doc.clips.find((item) => clipKey(item) === key);
+  if (!clip || clip.kind === "image" || isLocked(doc, clip.track)) return null;
+  if (!Number.isFinite(range.head) || range.head < 0) return null;
+  const head = range.head > 0 ? range.head : undefined;
+  const trim = range.trim === null ? undefined : validSeconds(range.trim) ?? undefined;
+  if ((range.trim !== null && trim === undefined) || (trim === clip.trim && head === clip.head)) return null;
+  return {
+    ...doc,
+    clips: doc.clips.map((item) => {
+      if (item !== clip) return item;
+      const next = { ...item };
+      delete next.trim;
+      delete next.head;
+      if (trim !== undefined) next.trim = trim;
+      if (head !== undefined) next.head = head;
+      return next;
+    }),
+  };
+}
+
+// 초 → 프레임에 맞춘 초(길이 조절 창의 값). 최소 1프레임, 상한(max — 원본 길이)을 넘지 않는 가장 긴 프레임 수까지.
+//  상한은 **내림**한다: 가장 가까운 프레임으로 올리면 3.02초짜리 영상이 3.0417초로 잡혀 원본을 넘는다.
+//  한 프레임도 안 되는 영상이면 null(줄일 수 없다).
+export function snapTrim(seconds: number, max: number): number | null {
+  const top = Math.floor(max * EDIT_FPS + 1e-6);
+  if (!(top >= 1) || !Number.isFinite(seconds)) return null; // 상한이 숫자가 아니어도(NaN) null
+  return Math.min(Math.max(Math.round(seconds * EDIT_FPS), 1), top) / EDIT_FPS;
 }
 
 function pick(doc: EditDoc, keys: Iterable<string>): EditClip[] | null {
@@ -532,11 +722,14 @@ export function deleteTrack(doc: EditDoc, track: number): EditDoc | null {
   return { ...renumberTracks(doc, (item) => (item === track ? null : item > track ? item - 1 : item)), tracks: count - 1 };
 }
 
-// 클립이 하나도 없는 트랙을 모두 지운다(숨긴 컷의 클립도 있는 것으로 센다). 한 줄은 남긴다. 지울 것이 없으면 null.
+// 클립이 하나도 없는 트랙을 모두 지운다(숨긴 컷의 클립도 있는 것으로 센다). 잠긴 트랙은 비어 있어도 남긴다 — 트랙 삭제(deleteTrack)와
+// 같은 규칙이다(Codex 배포 전 검토 2026-10-13: 하나씩은 못 지우는데 한꺼번에는 지워졌다). 한 줄은 남긴다. 지울 것이 없으면 null.
 export function deleteEmptyTracks(doc: EditDoc): EditDoc | null {
-  const used = [...new Set(doc.clips.map((clip) => clip.track))].sort((a, b) => a - b);
+  const count = trackCount(doc);
+  const locked = doc.tracksLocked.filter((track) => track <= count); // 없는 번호의 잠금은 줄을 만들지 않는다
+  const used = [...new Set([...doc.clips.map((clip) => clip.track), ...locked])].sort((a, b) => a - b);
   const keep = used.length ? used : [1];
-  if (keep.length === trackCount(doc)) return null;
+  if (keep.length === count) return null;
   return { ...renumberTracks(doc, (track) => (keep.includes(track) ? keep.indexOf(track) + 1 : null)), tracks: keep.length };
 }
 
@@ -560,9 +753,22 @@ export function markTime(layout: EditLayout, pos: EditPos | null | undefined): n
   return slot && pos!.local <= slot.len ? slot.start + pos!.local : null;
 }
 
+// 두 표시가 **다 보이는데** 인이 아웃보다 뒤면 맞바꾼 문서를 돌려준다(아니면 그대로). 컷 순서를 바꾸거나, 숨겼던 컷·사라졌던 폴더가
+//  돌아오면 문서의 인/아웃이 뒤집혀 있을 수 있다. 순서를 바꾸는 순간에 미리 맞바꾸는 것으로는 다 막지 못한다 — 없는 폴더 가운데 일부만
+//  돌아오면 그때 예측한 자리와 달라진다(Codex 코드 리뷰 2회째 2026-10-13). 그래서 **그리는 쪽(marksOf·markRange)과 찍는 쪽(setMark)이 같은
+//  눈으로 본다**: 화면의 '인'이 문서의 markOut 인 채로 인 지우기(Alt+I)를 누르면 엉뚱한 쪽이 지워진다. 문서는 다음에 표시를 찍거나
+//  지울 때 바로잡힌 모양으로 저장된다. 전에는 뒤집힌 구간이 말없이 사라졌다(길이가 음수라 구간이 아니었다).
+function straightMarks(layout: EditLayout, doc: EditDoc): EditDoc {
+  const from = markTime(layout, doc.markIn);
+  const to = markTime(layout, doc.markOut);
+  return from !== null && to !== null && from > to ? { ...doc, markIn: doc.markOut, markOut: doc.markIn } : doc;
+}
+
 // 인(또는 아웃)을 그 자리에 찍는다(pos = null 이면 지운다). 인을 '보이는' 아웃과 같거나 뒤에 찍으면 아웃을 지우고, 아웃을
 // 인과 같거나 앞에 찍으면 인을 지운다(다빈치). 안 보이는 쪽은 건드리지 않는다. 바뀐 것이 없으면 null.
-export function setMark(doc: EditDoc, layout: EditLayout, which: "markIn" | "markOut", pos: EditPos | null): EditDoc | null {
+// '인'·'아웃'은 화면에 보이는 것 기준이다(straightMarks).
+export function setMark(given: EditDoc, layout: EditLayout, which: "markIn" | "markOut", pos: EditPos | null): EditDoc | null {
+  const doc = straightMarks(layout, given);
   const old = doc[which];
   if (pos ? old?.cut === pos.cut && old.local === pos.local : !old) return null;
   const next: EditDoc = { ...doc };
@@ -576,11 +782,16 @@ export function setMark(doc: EditDoc, layout: EditLayout, which: "markIn" | "mar
   return next;
 }
 
-// 인/아웃 구간(표시의 띠·반복 재생) — 하나라도 보이고 두 프레임 이상일 때만. 한쪽만 있으면 전체의 처음/끝까지다.
-// 그보다 짧으면 구간으로 치지 않는다: 재생 엔진은 0.04초 안의 차이는 영상을 다시 보내지 않아, 되돌아가도 영상은 그대로 간다.
-export function markRange(layout: EditLayout, doc: EditDoc): { from: number; to: number } | null {
+// 인/아웃 구간(표시의 띠·반복 재생) — 찍어 둔 표시가 다 보이고 두 프레임 이상일 때만. **한쪽만 찍었으면** 전체의 처음/끝까지다.
+// 찍어 둔 표시가 지금 안 보이면(그 컷을 숨겼다 · 컷이 그 자리보다 짧아졌다 — 트랙을 꺼서·길이를 줄여서) 구간이 아니다: 안 보이는 쪽을
+// 전체의 처음/끝으로 치면 구간이 말없이 넓어진다(아웃이 가려지는 순간 구간 반복이 전체 끝까지 돈다 — Codex 설계 검토 2026-10-13).
+// 표시는 문서에 남아 있어 다시 보이면 구간도 돌아온다.
+// 두 프레임보다 짧으면 구간으로 치지 않는다: 재생 엔진은 0.04초 안의 차이는 영상을 다시 보내지 않아, 되돌아가도 영상은 그대로 간다.
+export function markRange(layout: EditLayout, given: EditDoc): { from: number; to: number } | null {
+  const doc = straightMarks(layout, given);
   const from = markTime(layout, doc.markIn);
   const to = markTime(layout, doc.markOut);
+  if ((doc.markIn && from === null) || (doc.markOut && to === null)) return null;
   if (from === null && to === null) return null;
   const range = { from: from ?? 0, to: to ?? layout.total };
   return range.to - range.from > 1.5 / EDIT_FPS ? range : null;
@@ -593,7 +804,8 @@ export interface EditMarks {
   band: { from: number; to: number } | null;
 }
 
-export function marksOf(layout: EditLayout, doc: EditDoc): EditMarks {
+export function marksOf(layout: EditLayout, given: EditDoc): EditMarks {
+  const doc = straightMarks(layout, given);
   return { in: markTime(layout, doc.markIn), out: markTime(layout, doc.markOut), band: markRange(layout, doc) };
 }
 
@@ -673,22 +885,27 @@ export function markerAt(layout: EditLayout, shown: readonly ShownMarker[], time
   return shown.find((item) => item.key === key) ?? shown.find((item) => Math.abs(item.time - time) <= 0.5 / EDIT_FPS) ?? null;
 }
 
-// 확정된 길이를 문서에 적는다(Undo 단계 아님). 바뀐 것이 없으면 null.
-export function setClipDurs(doc: EditDoc, durs: ReadonlyMap<string, number>): EditDoc | null {
+// 확정된 길이를 문서에 적는다(Undo 단계 아님). exact = 그 가운데 그림 트랙으로 잰 것(durExact 를 단다 — 없는 것은 뗀다).
+//  바뀐 것이 없으면 null.
+export function setClipDurs(doc: EditDoc, durs: ReadonlyMap<string, number>, exact?: ReadonlySet<string>): EditDoc | null {
   let changed = false;
   const clips = doc.clips.map((clip) => {
-    const dur = validSeconds(durs.get(clipKey(clip)));
-    if (dur === null || dur === clip.dur) return clip;
+    const key = clipKey(clip);
+    const dur = validSeconds(durs.get(key));
+    const sure = !!exact?.has(key);
+    if (dur === null || (dur === clip.dur && sure === !!clip.durExact)) return clip;
     changed = true;
-    return { ...clip, dur };
+    const { durExact: _was, ...rest } = clip;
+    return sure ? { ...rest, dur, durExact: true } : { ...rest, dur };
   });
   return changed ? { ...doc, clips } : null;
 }
 
-// 되돌리기·다시 하기로 옛 문서를 되살릴 때, 그 사이 확정된 길이는 지금 것을 따른다(길이는 되돌리기 대상이 아니다).
+// 되돌리기·다시 하기로 옛 문서를 되살릴 때, 그 사이 확정된 길이는 지금 것을 따른다(길이는 되돌리기 대상이 아니다 — 표 durExact 도).
 export function keepClipDurs(doc: EditDoc, from: EditDoc): EditDoc {
   const durs = new Map(from.clips.filter((clip) => clip.dur !== undefined).map((clip) => [clipKey(clip), clip.dur!]));
-  return setClipDurs(doc, durs) ?? doc;
+  const exact = new Set(from.clips.filter((clip) => clip.durExact).map(clipKey));
+  return setClipDurs(doc, durs, exact) ?? doc;
 }
 
 // ── 공유 목록과 잇기 ────────────────────────────────────────────────────────────────────────────

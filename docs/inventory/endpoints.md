@@ -10,7 +10,7 @@
 - `로컬 예외 · 핸들러가 _proxy 호출` 은 핸들러 **본문이 `_proxy` 를 직접 참조**할 때만 붙는다(팀 탭 등에서 핸들러가 골라서 위임). 헬퍼·usecase 를 거쳐 위임하면 안 보이므로, 이 표시가 없다고 위임이 없다는 뜻은 아니다.
 - `Depends` 칸은 라우터·데코레이터·핸들러 인자에 직접 적힌 것만이다. 인증 미들웨어와 핸들러 본문의 권한 검사는 안 나온다.
 
-전체 341개.
+전체 342개.
 
 ## `backend/app/main.py` — 10개
 
@@ -279,7 +279,7 @@
 | `POST` | `/api/ingest/mcp` | `ingest_mcp` | 로컬 예외 | — |
 | `POST` | `/api/ingest` | `ingest` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 
-## `backend/app/routers/library.py` — 16개
+## `backend/app/routers/library.py` — 17개
 
 | 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
 | --- | --- | --- | --- | --- |
@@ -294,6 +294,7 @@
 | `POST` | `/api/generations/locate` | `locate_generation_targets` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `GET` | `/api/generations/{gen_id}` | `get_generation` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `GET` | `/api/generations` | `list_generations` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
+| `GET` | `/api/media-picture` | `media_picture` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `GET` | `/api/media-thumb` | `media_thumb` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `POST` | `/api/merge` | `merge_videos` | 로컬 예외 | — |
 | `POST` | `/api/stamp/read` | `read_file_stamp` | 로컬 예외 | — |

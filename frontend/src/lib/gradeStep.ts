@@ -118,7 +118,7 @@ export function describeGradeStep(
   if (r.mode === "down") {
     return {
       title: translate("단계 내리기"),
-      body: body("선택한 {count}개를 한 단계 내릴까요? (최종→공유, 공유·보류→일반)"),
+      body: body("선택한 {count}개를 한 단계 내릴까요? (최종→공유, 공유·보류→일반) 최종 전에 보류였던 것은 보류로 돌아갑니다."),
     };
   }
   if (r.mode === "single") {
@@ -131,5 +131,5 @@ export function describeGradeStep(
         title: translate("단계 올리기"),
         body: body("선택한 {count}개를 한 단계 올릴까요? (일반→공유, 공유→최종) — 일반은 공유까지만 올라갑니다."),
       }
-    : { title: translate("최종 해제"), body: body("선택한 {count}개의 최종을 해제할까요? (→공유)") };
+    : { title: translate("최종 해제"), body: body("선택한 {count}개의 최종을 해제할까요? (→공유 · 최종 전에 보류였던 것은 보류로)") };
 }

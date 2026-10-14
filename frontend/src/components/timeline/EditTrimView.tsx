@@ -45,7 +45,8 @@ function Half({ shot, before, sourceOf, failedKey }: {
           : failed ? t("이 영상을 재생하지 못했습니다.") : null;
   return (
     <div className="ed-half">
-      {video && shot && <Frame key={video} url={video} time={shot.local} />}
+      {/* 영상 시각 = 컷 안 시각 + 그 클립의 시작점(앞 자르기) */}
+      {video && shot && <Frame key={video} url={video} time={shot.local + (clip?.head ?? 0)} />}
       {still && <img className="ed-media" src={still} alt="" draggable={false} />}
       {notice && <div className="ed-notice">{notice}</div>}
       {shot && <span className="ed-chip ed-chip-r">{clip ? `${shot.slot.name} · V${clip.track}` : shot.slot.name}</span>}

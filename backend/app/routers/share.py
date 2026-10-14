@@ -128,10 +128,15 @@ def _prepare_proxy_intent(
     expected_final_by: str | None = None,
     desired_held: bool | None = None,
     base_held: bool | None = None,
+    held_open: bool = False,
 ) -> dict[str, Any]:
-    """프록시 mutation의 서버 호출 전 prepared 기록. 실패하면 503으로 서버 호출을 막는다."""
+    """프록시 mutation의 서버 호출 전 prepared 기록. 실패하면 503으로 서버 호출을 막는다.
+
+    ``held_open``: 보류 축을 주장하지 않는다(원장의 desired_held = NULL) — 결과를 서버만 아는 조작(되살리는 최종 해제)이다.
+    없으면 최종 지정 · 해제 · 공유 해제는 '보류 아님'을 주장한다(전과 같다).
+    """
     try:
-        if desired_held is None and operation_kind in {"finalize", "unfinalize", "unpublish"}:
+        if desired_held is None and not held_open and operation_kind in {"finalize", "unfinalize", "unpublish"}:
             desired_held = False
         return repo.prepare_share_state_intent(
             _proxy.base_url(),
@@ -637,8 +642,11 @@ def finalize(gen_id: str, request: Request, background: BackgroundTasks):
 
 @router.post("/generations/{gen_id}/unfinalize", response_model=GenerationOut)
 @_account_scoped_route
-def unfinalize(gen_id: str, request: Request):
+def unfinalize(gen_id: str, request: Request, restore_held: bool = False):
     """최종(골드) 해제 → 일반 공유 상태로 복귀(공유는 유지). Supervisor 만.
+    ``?restore_held=1``(새 앱이 붙인다 — Jay 2026-10-14): 최종이 되던 순간에 보류였던 것은 **보류로** 돌아온다. 표식이 없으면
+    전과 같다(공유로) — 옛 앱의 원장은 해제 뒤의 보류를 False 로 기대해서, 서버가 알아서 되살리면 맞게 바뀌고도 409 가 된다.
+    옛 서버는 모르는 쿼리를 무시한다(전처럼 공유로).
     ★unpublish 와 같은 구조(원장 prepare → 서버 왕복 → 로컬 미러)라 같은 계정 고정을 쓴다."""
     requested_id = gen_id
     gen_id = repo.resolve_local_id(gen_id)  # 서버 핸들러가 job_id 로 와도 자기 행을 찾게(내작업탭→서버 방향)
@@ -654,10 +662,13 @@ def unfinalize(gen_id: str, request: Request):
                 desired_final=False,
                 base_shared=bool(current.get("shared")) if current else True,
                 base_final=bool(current.get("is_final")) if current else True,
+                # 되살리는 해제의 결과(보류 | 공유)는 서버만 안다 — 보류 축을 주장하지 않고, 응답의 값을 그대로 미러한다
+                held_open=restore_held,
             )
             try:
                 out = _proxy.proxy_json(
-                    "POST", f"/api/generations/{server_id}/unfinalize"
+                    "POST", f"/api/generations/{server_id}/unfinalize",
+                    **({"params": {"restore_held": 1}} if restore_held else {}),
                 )
             except HTTPException as exc:
                 _record_proxy_failure(ref, exc)
@@ -688,17 +699,24 @@ def unfinalize(gen_id: str, request: Request):
             require_project_role(request, gen["project_id"], rbac.SUPERVISOR)
     else:
         require_edit_generation(request, gen)  # 미배정 → 본인/admin 만
-    repo.set_final(gen_id, False)
+    restored = repo.release_final(gen_id, restore_held=restore_held)
     _touch_telemetry(gen_id)
-    journal_audit_event(
-        "generation.unfinalized",
-        actor_uid=actor_id(request),
-        target_type="generation",
-        target_id=gen_id,
-        project_id=gen.get("project_id"),
-        fields=["is_final", "final_by", "final_at"],
-        details={"is_final": False},
-    )
+    # 기록은 잠금 안에서 실제로 바뀐 것만 — 되살리는 길에서 이미 최종이 아니었으면(None) 바꾼 것이 없다
+    if restored is not None:
+        journal_audit_event(
+            "generation.unfinalized",
+            actor_uid=actor_id(request),
+            target_type="generation",
+            target_id=gen_id,
+            project_id=gen.get("project_id"),
+            fields=["is_final", "final_by", "final_at"],
+            details={"is_final": False},
+        )
+    if restored:
+        journal_audit_event(
+            "generation.held", actor_uid=actor_id(request), target_type="generation", target_id=gen_id,
+            project_id=gen.get("project_id"), fields=["is_held"], details={"is_held": True, "restored": True},
+        )
     return repo.get_generation(gen_id)
 
 

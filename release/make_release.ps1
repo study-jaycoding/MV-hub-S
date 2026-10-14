@@ -241,6 +241,17 @@ function Assert-ReleaseArchive {
             throw "Release archive contains forbidden local/test data: $Preview"
         }
 
+        $FrontendCode = @($Names | Where-Object { $_ -match "^frontend/dist/assets/.*\.(js|css)$" })
+        if ($FrontendCode.Count -eq 0) {
+            throw "Release archive contains no frontend JS/CSS assets."
+        }
+        foreach ($Compressed in @($Names | Where-Object { $_ -match "^frontend/dist/assets/.*\.gz$" })) {
+            $Original = $Compressed.Substring(0, $Compressed.Length - 3)
+            if ($FrontendCode -cnotcontains $Original) {
+                throw "Precompressed frontend asset has no JS/CSS original: $Compressed"
+            }
+        }
+
         $ArchiveVersion = (Read-ArchiveText -Archive $Archive -EntryName "VERSION.txt").Trim()
         if ($ArchiveVersion -ne $ExpectedVersion) {
             throw "Release version mismatch: expected $ExpectedVersion, got $ArchiveVersion"
@@ -434,12 +445,13 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 Write-Host "[2/8] Building frontend dist..."
 Push-Location (Join-Path $ProjectRoot "frontend")
 try {
-    $TscCmd = Join-Path $PWD "node_modules\.bin\tsc.cmd"
-    $ViteCmd = Join-Path $PWD "node_modules\.bin\vite.cmd"
-    if ((-not (Test-Path -LiteralPath $TscCmd)) -or (-not (Test-Path -LiteralPath $ViteCmd))) {
-        Write-Host "      frontend build tools missing - running npm ci"
-        & npm.cmd ci --include=dev --no-audit --no-fund
-        if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
+    if (-not (Test-Path -LiteralPath "package-lock.json" -PathType Leaf)) {
+        throw "Frontend package-lock.json is required for a reproducible release build."
+    }
+    Write-Host "      installing frontend dependencies from package-lock.json"
+    & npm.cmd ci --include=dev --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) {
+        throw "npm ci failed; build stopped. If files are locked, close frontend dev/build processes and retry."
     }
     & npm.cmd run build
     if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
@@ -669,8 +681,8 @@ $Latest = [ordered]@{
     size = $Zip.Length
     created_at = (Get-Date).ToString("s")
 }
-# B안: 이 스크립트는 '후보'만 만든다. 팀원이 보는 표지(latest.json)는 관리자 창 [공지]만 바꾼다
-# (docs/UPDATE_ANNOUNCEMENTS.md). 후보와 공개 표지는 같은 원문(UTF-8 BOM)을 쓴다 — [공지]가 그대로 옮긴다.
+# B안: 이 스크립트는 '후보'만 만든다. 팀원이 보는 표지(latest.json)는 관리자 창 [배포]로 바꾼다
+# (docs/UPDATE_ANNOUNCEMENTS.md). 후보와 공개 표지는 같은 원문(UTF-8 BOM)을 쓴다 — 후보 줄의 [배포]가 그대로 옮긴다.
 $ManifestBytes = (New-Object System.Text.UTF8Encoding($true)).GetPreamble() +
     (New-Object System.Text.UTF8Encoding($false)).GetBytes(($Latest | ConvertTo-Json) + "`r`n")
 $CandidatePath = Join-Path $OutputDir "candidate.json"
@@ -689,13 +701,13 @@ Write-Host ""
 # Destination comes from -PublishDir, else from publish_target.txt (machine-local,
 # git-ignored), resolved before the build. The zip goes first (to a .part name, then
 # a no-overwrite rename), candidate.json last under release.lock. latest.json and the
-# shared installer are never touched here: an admin's [공지] publishes the candidate.
+# shared installer are never touched here: an admin's [배포] publishes the candidate.
 if ($SkipPublish) {
     Write-Host "[publish] skipped by -SkipPublish. Package remains local for validation."
 }
 elseif (-not $PublishTarget) {
     Write-Host "Upload the zip first, then candidate.json, to your company server packages folder."
-    Write-Host "Never upload latest.json by hand - [공지] in the admin window (업데이트 tab) publishes it."
+    Write-Host "Never upload latest.json by hand - [배포] in the admin window (업데이트 tab) publishes it."
     Write-Host "(To automate: put the server packages path in release\publish_target.txt)"
 }
 elseif ($PublishTarget -match "^https?://") {
@@ -741,6 +753,6 @@ else {
         Write-Host "[publish] NOTE: MVHub_Install.bat differs from the published one. Replace it after the announcement"
         Write-Host "          (docs/UPDATE_ANNOUNCEMENTS.md - 'Installer'). It was NOT copied."
     }
-    Write-Host "[publish] done - candidate uploaded. Teammates see nothing until an admin presses [공지]"
+    Write-Host "[publish] done - candidate uploaded. Teammates see nothing until an admin presses [배포]"
     Write-Host "          in the admin window (업데이트 tab)."
 }

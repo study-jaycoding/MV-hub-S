@@ -34,6 +34,7 @@ export function EditMenu({
   height,
   label,
   className = "",
+  role = "menu",
   trigger,
   onClose,
   children,
@@ -44,6 +45,8 @@ export function EditMenu({
   height: number; // 화면 밖으로 안 나가게 자리를 잡는 데만 쓴다
   label: string;
   className?: string;
+  role?: "menu" | "dialog"; // 고르는 줄이 아니라 조절하는 칸이 든 창(길이 조절)은 dialog
+
   // 이 메뉴를 여닫는 단추(막대의 목록·북마크 색 단추) — 그 단추의 누름은 바깥 누름으로 치지 않는다. 치면 누르는 순간
   //  (pointerdown) 메뉴가 먼저 닫히고 뒤따르는 click 이 다시 열어, 다시 눌러도 안 닫힌다. 닫는 것은 그 단추의 click 이 한다.
   //  우클릭으로 뜨는 메뉴에는 그런 단추가 없다(안 준다).
@@ -93,7 +96,7 @@ export function EditMenu({
     <div
       ref={ref}
       className={"folder-ctx-menu ed-tmenu" + (className ? ` ${className}` : "")}
-      role="menu"
+      role={role}
       aria-label={label}
       tabIndex={-1}
       style={{ ...clampMenuPosition(at.x, at.y, window.innerWidth, window.innerHeight, width, height), width }}
@@ -231,6 +234,7 @@ export function EditListMenu({
   hideOff,
   offCount,
   fillCount,
+  finalAll,
   trigger,
   onHide,
   onFill,
@@ -242,13 +246,16 @@ export function EditListMenu({
   hideOff: boolean;
   offCount: number;
   fillCount: number;
+  // 타임라인 최종 확정(Jay 2026-10-13 · 10-14 이름 '모두 최종으로 확정'에서 바꿈) — 타임라인의 생성물에 최종을 줄 수 있는 사람에게만 준다(안 주면 줄이 없다).
+  //  count = 지금 최종으로 올라갈 생성물 수(이미 최종인 것은 뺀 수 — 0 이면 흐리다) · busy = 앞서 누른 것이 아직 도는 중
+  finalAll?: { count: number; busy: boolean; onRun: () => void };
   trigger: RefObject<HTMLElement>; // 목록 단추 — 다시 누르면 그 단추가 닫는다(EditMenu)
   onHide: () => void;
   onFill: () => void;
   onClose: () => void;
 }) {
   const t = useT();
-  const height = HEAD_H - 22 + 2 * ROW_H; // 제목 줄이 없다
+  const height = HEAD_H - 22 + (finalAll ? 3 : 2) * ROW_H; // 제목 줄이 없다
   const y = bottom + 4 + height > window.innerHeight ? top - 4 - height : bottom + 4;
   return (
     <EditMenu x={x} y={y} width={190} height={height} label={t("타임라인 정리")} trigger={trigger} onClose={onClose}>
@@ -262,6 +269,14 @@ export function EditListMenu({
         {t("빈 곳 채우기")}
         <i>{fillCount || ""}</i>
       </button>
+      {finalAll && (
+        <button type="button" role="menuitem" className="ed-tmenu-item" disabled={!finalAll.count || finalAll.busy} aria-busy={finalAll.busy}
+          title={t("타임라인에 있는 생성물을 모두 최종으로 확정합니다 — 켜진 컷의 켜진 클립만(숨긴 컷·꺼 둔 컷·꺼진 클립·꺼진 트랙은 뺍니다). 누르면 무엇이 바뀌는지 먼저 묻습니다.")}
+          onClick={finalAll.onRun}>
+          {t("타임라인 최종 확정")}
+          <i>{finalAll.count || ""}</i>
+        </button>
+      )}
     </EditMenu>
   );
 }
@@ -276,6 +291,8 @@ export function EditClipMenu({
   busy,
   pendingCount,
   onSend,
+  onTrim,
+  final,
   onClose,
 }: {
   x: number;
@@ -285,11 +302,17 @@ export function EditClipMenu({
   busy: boolean; // 앱이 Resolve 작업을 처리하는 중 — 누르면 대기열에 더한다
   pendingCount: number;
   onSend: () => void;
+  // 길이 조절 창을 연다(클립 하나를 눌렀을 때만 준다) — 휠 클릭과 같은 창. 휠 단추가 없는 마우스·트랙패드의 길이다.
+  onTrim?: () => void;
+  // 최종 선택(Jay 2026-10-13) — 이 클립들의 생성물에 최종을 줄 수 있을 때만 준다(안 주면 줄이 없다). checked = 줄 수 있는 것이
+  //  전부 최종이다(누르면 해제) · count = 누르면 바뀌는 생성물 수(여러 개일 때만 적는다) · stale = 공유 목록을 다시 받는 중이거나
+  //  받지 못했다(든 목록이 옛 것이라 흐리다 — 그 상태로 올리면 그사이 공유가 풀린 생성물을 다시 공유하게 된다)
+  final?: { checked: boolean; count: number; stale: boolean; onToggle: () => void };
   onClose: () => void;
 }) {
   const t = useT();
   return (
-    <EditMenu x={x} y={y} width={190} height={HEAD_H + ROW_H} label={t("클립 메뉴")} onClose={onClose}>
+    <EditMenu x={x} y={y} width={190} height={HEAD_H + ROW_H * (1 + (onTrim ? 1 : 0) + (final ? 1 : 0))} label={t("클립 메뉴")} onClose={onClose}>
       <div className="ed-tmenu-head">{title}</div>
       <button type="button" role="menuitem" autoFocus className="ed-tmenu-item" disabled={!count} aria-busy={busy} onClick={onSend}
         title={busy
@@ -298,6 +321,23 @@ export function EditClipMenu({
         {busy ? `${t("◆ Resolve에 추가")} (${pendingCount})` : t("◆ Resolve 보내기")}
         <i>{count > 1 ? count : ""}</i>
       </button>
+      {onTrim && (
+        <button type="button" role="menuitem" className="ed-tmenu-item" onClick={onTrim}>
+          {"↔ " + t("길이 조절") /* 줄 앞 표시(Jay 2026-10-14) — 위의 ◆ 처럼 */}
+          <i>{t("휠 클릭")}</i>
+        </button>
+      )}
+      {final && (
+        <button type="button" role="menuitemcheckbox" aria-checked={final.checked} className={"ed-tmenu-item" + (final.checked ? " ed-here" : "")}
+          disabled={final.stale}
+          title={final.stale ? t("공유 목록을 다시 받는 중이거나 받지 못했습니다 — 받은 뒤에 다시 눌러 주세요.")
+            : final.checked ? t("최종 확정을 해제합니다(최종 전에 보류였던 것은 보류로, 나머지는 공유로 돌아갑니다).")
+              : t("이 생성물을 최종으로 확정합니다 — 공유 & 리뷰의 최종(★)과 같은 것입니다.")}
+          onClick={final.onToggle}>
+          {"★ " + t("최종 선택")}
+          <i>{final.checked ? "✓ " : ""}{final.count > 1 ? final.count : ""}</i>
+        </button>
+      )}
     </EditMenu>
   );
 }

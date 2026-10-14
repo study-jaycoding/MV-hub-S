@@ -216,6 +216,59 @@ it("보던 컷이 짧아지면 재생을 멈추고, 시퀀스가 바뀌면 처�
   expect(playback.now()).toBeCloseTo(14);
 });
 
+// Jay 2026-10-13: "v1 이 5초 v2 가 3초면 3초 보여주다가 남은 v1 이 더 보인다. 하지만 v1 트랙이 꺼져 있다면 그 해당 폴더는 3초만 재생된다."
+it("컷 길이는 켜진 클립만 센다 — 아래 트랙을 끄면 그 컷은 위 클립의 길이에서 다음 컷으로 넘어가고, 재생 중에 끄면 줄어든 끝에서 멈춘다", () => {
+  const cuts = ["e070/c1", "e070/c2", "e070/c3"];
+  const off: EditDoc = { ...DOC, tracksOff: [1] }; // V1(low 8초)을 껐다 → c1 은 top 의 3초
+  const short = buildLayout(cuts, off);
+  expect(short.cuts.map((cut) => [cut.start, cut.len])).toEqual([[0, 3], [3, 5], [8, 5]]);
+  // 꺼 둔 채 재생: 3초에서 꺼진 low 가 드러나지 않고 다음 컷(빈 컷)으로 넘어간다
+  render({ doc: off, layout: short });
+  act(() => playback.seek(0)); // 재생헤드의 마지막 자리는 시험 사이에 남는다 — 처음에서 시작한다
+  video.emit("loadedmetadata");
+  video.emit("seeked");
+  act(() => playback.toggle());
+  video.currentTime = 2.9;
+  frame(16);
+  expect([playback.view.cut, playback.view.clip?.gen]).toEqual(["e070/c1", "top"]);
+  video.currentTime = 3.05;
+  frame(16);
+  expect([playback.view.cut, playback.view.clip]).toEqual(["e070/c2", null]);
+  expect(video.src).toBe(""); // low 를 올리지 않았다
+  act(() => playback.toggle());
+  // 켜 둔 채 6.5초(아래 클립)를 보다가 재생 중에 V1 을 끈다 → 줄어든 끝 직전에서 멈춘다(영상의 옛 시각으로 되덮지 않는다)
+  render();
+  act(() => playback.seek(6));
+  video.emit("loadedmetadata");
+  video.emit("seeked");
+  act(() => playback.toggle());
+  video.currentTime = 6.5;
+  frame(16);
+  expect(playback.view.clip?.gen).toBe("low");
+  render({ doc: off, layout: short });
+  expect(playback.view.playing).toBe(false);
+  expect(playback.now()).toBeLessThan(3);
+  expect(playback.now()).toBeGreaterThan(2.9);
+  expect([playback.view.cut, playback.view.clip?.gen]).toEqual(["e070/c1", "top"]);
+});
+
+// 길이 조절(Jay 2026-10-13 — 뒤를 자른다): 줄인 위 클립은 줄인 길이에서 끝나고 아래 클립이 그 시각부터 이어진다.
+it("줄인 클립은 줄인 길이에서 끝난다 — 영상의 실제 끝까지 틀지 않고 아래 클립으로 넘어간다", () => {
+  const cut: EditDoc = { ...DOC, clips: DOC.clips.map((clip) => (clip.gen === "top" ? { ...clip, trim: 1.5 } : clip)) };
+  render({ doc: cut, layout: buildLayout(["e070/c1", "e070/c2", "e070/c3"], cut) });
+  act(() => playback.seek(0)); // 재생헤드의 마지막 자리는 시험 사이에 남는다 — 처음에서 시작한다
+  video.emit("loadedmetadata");
+  video.emit("seeked");
+  act(() => playback.toggle());
+  video.currentTime = 1.4;
+  frame(16);
+  expect(playback.view.clip?.gen).toBe("top");
+  video.currentTime = 1.55; // top 의 영상은 3초까지 있지만 줄인 길이(1.5초)를 넘었다
+  frame(16);
+  expect([playback.view.cut, playback.view.clip?.gen]).toEqual(["e070/c1", "low"]);
+  expect(video.src).toBe("/v/low");
+});
+
 it("훑는 도중에 재생을 눌러도 옛 탐색 자리가 아니라 마지막에 놓은 자리에서 시작한다", () => {
   render();
   video.emit("loadedmetadata");
@@ -638,4 +691,93 @@ it("미리 굴리는 중에 멈추면, 멈춘 자리가 경계를 넘었어도 �
   expect(video.src).toBe("/v/low");
   expect(video.paused).toBe(true);
   expect(video.currentTime).toBeCloseTo(3.01); // 굴러간 자리(3.1초)가 아니라 멈춘 자리로
+});
+
+// ── 앞 자르기(Jay 2026-10-14) — 클립은 원본의 head 초에서 시작한다: 영상 시각 = 컷 안 시각 + head ──
+const CUTS3 = ["e070/c1", "e070/c2", "e070/c3"];
+const headDoc = (gen: string, head: number): { doc: EditDoc; layout: typeof LAYOUT } => {
+  const doc: EditDoc = { ...DOC, clips: DOC.clips.map((clip) => (clip.gen === gen ? { ...clip, head } : clip)) };
+  return { doc, layout: buildLayout(CUTS3, doc) };
+};
+
+it("앞을 자른 클립은 원본의 그 시각에서 시작한다 — 재생헤드는 컷 안 시각, 영상은 거기에 시작점을 더한 시각", () => {
+  render({ scope: "head-play", ...headDoc("top", 1) }); // top: 원본 3초의 앞 1초를 잘랐다 → 컷 안 0~2초 = 영상 1~3초
+  expect(playback.view.clip?.gen).toBe("top");
+  video.emit("loadedmetadata");
+  expect(video.currentTime).toBe(1); // 컷 안 0초 = 영상 1초
+  video.emit("seeked");
+  act(() => playback.seek(0.5)); // 멈춘 채 훑는다
+  expect(video.currentTime).toBe(1.5);
+  video.emit("seeked");
+  act(() => playback.toggle());
+  video.currentTime = 2.2;
+  frame(16);
+  expect(playback.now()).toBeCloseTo(1.2); // 영상이 시계 — 영상 2.2초는 컷 안 1.2초다
+  video.currentTime = 2.6;
+  act(() => playback.toggle()); // 멈추면 영상의 그 프레임이 위치다(시작점을 뺀다)
+  expect(playback.now()).toBeCloseTo(1.6);
+  expect(paint.mock.lastCall![0]).toBeCloseTo(1.6);
+  act(() => playback.toggle());
+  video.currentTime = 3.05; // 컷 안 2.05초 — 쓰는 길이(2초)가 끝났다
+  frame(16);
+  expect([playback.view.clip?.gen, video.src]).toEqual(["low", "/v/low"]);
+  video.emit("loadedmetadata");
+  expect(video.currentTime).toBeCloseTo(2.05); // 아래 클립은 앞을 자르지 않았다 — 제 시각(컷 안 시각)이고, 위 클립의 시작점을 물려받지 않는다
+});
+
+it("같은 영상의 시작점만 바뀌면(길이 조절 창) 영상을 새 자리로 보내고, 닿기 전에는 시계를 넘기지 않는다 — 재생헤드가 튀지 않는다", () => {
+  render({ scope: "head-change", ...headDoc("top", 1) });
+  video.emit("loadedmetadata");
+  video.emit("seeked");
+  act(() => playback.seek(0.5));
+  video.emit("seeked");
+  expect(video.currentTime).toBe(1.5);
+  render({ scope: "head-change", ...headDoc("top", 1.5) }); // 멈춘 채 시작점을 0.5초 뒤로
+  expect(playback.now()).toBeCloseTo(0.5); // 재생헤드는 그대로
+  expect(video.currentTime).toBe(2); // 영상만 새 자리로
+  expect(video.loads).toBe(1); // 같은 영상이다 — 다시 받지 않는다
+  video.emit("seeked");
+  act(() => playback.toggle());
+  video.currentTime = 2.3;
+  frame(16);
+  expect(playback.now()).toBeCloseTo(0.8);
+  const plays = video.plays;
+  render({ scope: "head-change", ...headDoc("top", 1) }); // 재생 중에 시작점을 앞으로
+  frame(16);
+  expect(playback.now()).toBeCloseTo(0.8); // 도는 영상의 시각(2.3초)을 새 시작점으로 읽지 않는다 — 읽으면 1.3초로 튄다
+  expect(video.currentTime).toBeCloseTo(1.8); // 컷 안 0.8초 + 새 시작점 1초
+  expect(video.plays).toBe(plays); // 아직 닿지 않았다
+  video.emit("seeked"); // 닿았다 — 그때부터 영상이 시계다
+  expect(video.plays).toBe(plays + 1);
+  video.currentTime = 1.9;
+  frame(16);
+  expect(playback.now()).toBeCloseTo(0.9);
+});
+
+it("앞을 자른 영상의 실제 끝은 컷 안 시각으로 '길이 − 시작점'이다 — 그 뒤로는 보내지 않고 넘긴다", () => {
+  render({ scope: "head-end", ...headDoc("top", 1) }); // top: 적힌 길이 3초 · 앞 1초 자름 → 컷 안 0~2초
+  Object.assign(video, { duration: 2.5 }); // 실제 영상은 2.5초뿐이다 — 컷 안 1.5초가 실제 끝
+  video.emit("loadedmetadata");
+  video.emit("seeked");
+  act(() => playback.seek(1.8)); // 실제 끝 뒤
+  expect(video.currentTime).toBe(2.5); // 끝으로만 보낸다(그 뒤로 보내면 브라우저가 자르고, 같은 자리로 거듭 보내게 된다)
+  video.emit("seeked");
+  act(() => playback.toggle()); // 틀 것이 없다 — 그 클립을 넘겨 아래 클립으로
+  frame(16);
+  expect(playback.view.clip?.gen).toBe("low");
+});
+
+it("미리 받아 세워 두는 자리도 영상 시각이다 — 다음 클립이 앞을 잘랐으면 그 시작점을 더한 자리", () => {
+  const pair = usePair();
+  render({ scope: "pair-head", ...headDoc("low", 2) }); // low: 원본 8초의 앞 2초를 잘랐다
+  video.emit("loadedmetadata");
+  act(() => playback.toggle());
+  expect(pair.prepared).toEqual([["/v/low", 5]]); // 위 클립이 끝나는 컷 안 3초 = low 의 영상 5초
+  video.currentTime = 3.02;
+  frame(16);
+  expect([playback.view.clip?.gen, video.src]).toEqual(["low", "/v/low"]);
+  expect(playback.now()).toBeCloseTo(3.02); // 바꾼 직후에도 재생헤드는 컷 안 시각이다(받아 둔 영상의 5초가 아니다)
+  video.currentTime = 5.3; // low 의 영상 5.3초 = 컷 안 3.3초
+  frame(16);
+  expect(playback.now()).toBeCloseTo(3.3);
 });

@@ -120,6 +120,13 @@ it("'대표' 단추를 누르면 그 결과가 카드 대표가 되고, 카드 �
   });
   expect(setCardVariant).toHaveBeenCalledExactlyOnceWith("card", "b");
   expect(setSelected).not.toHaveBeenCalled();
+  // 키보드로도 정한다(Tab 으로 와서 Enter·Space — 키보드가 만든 click 은 detail 0). 마우스가 만든 click(detail 1)은 mousedown 에서 이미 했다
+  //  (조작 규칙 51 — mousedown 에만 건 실행은 키보드에 없다)
+  setCardVariant.mockClear();
+  act(() => { button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
+  expect(setCardVariant).not.toHaveBeenCalled();
+  act(() => { button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 })); });
+  expect(setCardVariant).toHaveBeenCalledExactlyOnceWith("card", "b");
 });
 
 it("끄는 중에 창이 닫히면 기다리던 한 박자를 버린다 — 닫힌 뒤에 막의 클릭통과를 걸지 않는다", () => {

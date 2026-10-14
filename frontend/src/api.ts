@@ -357,11 +357,8 @@ export const api = {
   folderCards: (projectId: string, parent: string, workspaceId?: string) => {
     const params = new URLSearchParams({ parent });
     if (workspaceId) params.set("workspace_id", workspaceId);
-    return jsonFetch<FolderCards>(`/api/projects/${pathPart(projectId)}/folder-cards?${params.toString()}`)
-      .then((cards) => ({
-        ...cards,
-        folders: cards.folders.map((folder) => ({ ...folder, cover: normalizeGenerations([folder.cover])[0] })),
-      }));
+    // 표지는 화면이 쓰는 칸만 온다(types.FolderCover) — 프롬프트가 없으니 목록 행의 프롬프트 호환 처리도 하지 않는다
+    return jsonFetch<FolderCards>(`/api/projects/${pathPart(projectId)}/folder-cards?${params.toString()}`);
   },
   // 그 폴더의 대표를 정한다(팀이 같이 본다). 서버가 '그 폴더 아래에서 내가 볼 수 있는 공유물' 인지 확인한다.
   setFolderCover: (projectId: string, folderPath: string, generationId: string) =>
@@ -451,13 +448,13 @@ export const api = {
     ),
 
   // 생성물의 실제 크레딧·소요시간(정보 팝업) — generation_metrics(매칭 실제값·허브 소요시간)
-  generationMetrics: (id: string) =>
+  generationMetrics: (id: string, signal?: AbortSignal) =>
     jsonFetch<{
       est_credits: number | null;
       real_credits: number | null;
       credit_source: string | null;
       elapsed_seconds: number | null;
-    }>(`/api/generations/${pathPart(id)}/metrics`),
+    }>(`/api/generations/${pathPart(id)}/metrics`, signal ? { signal } : undefined),
 
   // Comfy 실행 대상의 구독 정보(크레딧 표시용) — Cloud 는 건별 크레딧 API 미노출(정액 구독제)이라 등급만.
   comfySubscription: () =>
@@ -476,10 +473,15 @@ export const api = {
   models: () => jsonFetch<ModelInfo[]>("/api/models"),
 
   // 모델별 CLI 조절 가능 파라미터(동적 옵션)
+  // CLI 는 비워 둘 수 있는 옵션의 타입을 "boolean|null"·"integer|null" 로 준다(Nano Banana 2.1 이 처음).
+  // 화면은 타입을 그대로 비교해 그리므로 뒤의 "|null" 을 떼어 ON/OFF·숫자 칸으로 그려지게 한다.
   modelParams: (jobSetType: string) =>
     jsonFetch<import("./types").ModelParamsOut>(
       `/api/models/${pathPart(jobSetType)}/params`,
-    ),
+    ).then((r) => ({
+      ...r,
+      params: (r.params ?? []).map((p) => ({ ...p, type: String(p.type ?? "").replace(/\|null$/, "") })),
+    })),
 
   // 예상 크레딧 추정(잡 생성 안 함) — Generate 버튼 표시용
   estimateCost: (model: string, params: Record<string, unknown>, prompt = "") =>
@@ -881,8 +883,10 @@ export const api = {
   // v02 CMS — Supervisor 최종(골드) 지정/해제. 공유 없으면 finalize 가 함께 발행.
   finalize: (id: string) =>
     generationFetch(`/api/generations/${pathPart(id)}/finalize`, { method: "POST" }),
+  // 해제는 '최종 전의 보류'로 되돌린다(restore_held — Jay 2026-10-14): 최종이 되던 순간에 보류였던 것은 보류로, 나머지는 공유로.
+  //  옛 서버는 모르는 쿼리를 무시한다(전처럼 공유로). 목표를 고르는 전환(setReviewState 의 final-review)은 고른 대로다.
   unfinalize: (id: string) =>
-    generationFetch(`/api/generations/${pathPart(id)}/unfinalize`, { method: "POST" }),
+    generationFetch(`/api/generations/${pathPart(id)}/unfinalize?restore_held=1`, { method: "POST" }),
   hold: (id: string) => reviewFetch(id, "hold"),
   unhold: (id: string) => reviewFetch(id, "unhold"),
   setReviewState: (generation: Generation, state: ReviewAction): Promise<Generation> => {

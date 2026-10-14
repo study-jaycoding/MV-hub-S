@@ -29,12 +29,14 @@ class FakeVideo implements EditVideo {
   count() { return [...this.listeners.values()].reduce((sum, set) => sum + set.size, 0); }
 }
 
-// c1 0~8(V1 low 8초 · V2 top 3초 — 타임라인에서는 처음 3초 동안 top 이 low 를 가린다) · c2(빈 컷) 8~13 · c3 13~18(V1 그림)
+// c1 0~8(V1 low 8초 — 꺼 둠 · V2 top 3초 · V3 hold 8초 — 타임라인에서는 위 트랙이 low 를 가린다) · c2(빈 컷) 8~13 · c3 13~18(V1 그림)
+//  컷 길이는 켜진 클립만 센다(2026-10-13) — 꺼 둔 low 만으로는 c1 이 8초가 되지 않아, 켜진 hold 가 그 길이를 잡는다.
 const DOC: EditDoc = {
   ...emptyEditDoc(),
   clips: [
     { cut: "e070/c1", gen: "low", track: 1, dur: 8, kind: "video", off: true },
     { cut: "e070/c1", gen: "top", track: 2, dur: 3, kind: "video" },
+    { cut: "e070/c1", gen: "hold", track: 3, dur: 8, kind: "video" },
     { cut: "e070/c3", gen: "pic", track: 1, dur: 5, kind: "image" },
   ],
   tracksOff: [1],
@@ -51,8 +53,10 @@ let time = 0; // 타임라인의 지금 시각
 let clock = 0;
 let frames: ((stamp: number) => void)[] = [];
 
-function Harness({ track = 1, playing = false, rate = 1 }: { track?: number; playing?: boolean; rate?: number }) {
-  shown = useEditFollow({ videoRef, layout: LAYOUT, track, sourceOf, now: () => time, playing, rate });
+function Harness({ track = 1, playing = false, rate = 1, layout = LAYOUT }: {
+  track?: number; playing?: boolean; rate?: number; layout?: typeof LAYOUT;
+}) {
+  shown = useEditFollow({ videoRef, layout, track, sourceOf, now: () => time, playing, rate });
   return null;
 }
 const render = (props: Parameters<typeof Harness>[0] = {}) => act(() => root.render(<Harness {...props} />));
@@ -86,7 +90,7 @@ it("그 트랙의 클립만 보인다 — 위 트랙에 가려져 있어도, 꺼
   time = 1;
   render({ track: 1 });
   frame();
-  expect(shown.clip?.gen).toBe("low"); // 타임라인에서는 top 이 보이는 자리
+  expect(shown.clip?.gen).toBe("low"); // 타임라인에서는 위 트랙이 보이는 자리
   expect(video.src).toBe("/v/low");
   time = 5; // V2 의 top 은 3초에서 끝났다
   render({ track: 2 });
@@ -99,6 +103,29 @@ it("그 트랙의 클립만 보인다 — 위 트랙에 가려져 있어도, 꺼
   expect(shown.clip?.gen).toBe("pic");
   expect(shown.source?.type).toBe("image");
   expect(video.src).toBe("");
+});
+
+// 컷 길이는 켜진 클립만 센다(2026-10-13) — 꺼 둔 클립은 컷보다 길 수 있다. 그 트랙을 보고 있어도 컷이 끝나면 다음 컷으로 넘어간다
+//  (꺼 둔 8초 클립이 3초짜리 컷의 뒤 5초 동안 다음 컷 위에 남지 않는다).
+it("꺼 둔 클립이 컷보다 길어도, 그 트랙의 보기는 컷의 끝에서 다음 컷의 것으로 넘어간다", () => {
+  const doc: EditDoc = {
+    ...emptyEditDoc(),
+    clips: [
+      { cut: "e070/c1", gen: "long", track: 1, dur: 8, kind: "video", off: true },
+      { cut: "e070/c1", gen: "top", track: 2, dur: 3, kind: "video" },
+      { cut: "e070/c2", gen: "after", track: 1, dur: 5, kind: "video" },
+    ],
+  };
+  const layout = buildLayout(["e070/c1", "e070/c2"], doc); // c1 0~3(켜진 top 의 길이) · c2 3~8
+  expect(layout.cuts.map((cut) => cut.len)).toEqual([3, 5]);
+  time = 2;
+  render({ track: 1, layout });
+  frame();
+  expect(shown.clip?.gen).toBe("long");
+  time = 4; // c1 의 꺼 둔 클립은 8초까지지만, 여기는 이미 c2 다
+  render({ track: 1, layout });
+  frame();
+  expect(shown.clip?.gen).toBe("after");
 });
 
 it("멈춰 있으면 그 자리에 정확히 맞춘다 — 한 프레임 이동도 보이고, 탐색 중에는 새 탐색을 걸지 않는다", () => {
@@ -241,4 +268,44 @@ it("탭이 가려지면 따라가던 영상을 바로 세운다 — 프레임을
   expect(pause).not.toHaveBeenCalled();
   visibility.mockRestore();
   root = createRoot(host);
+});
+
+// 앞 자르기(Jay 2026-10-14) — 영상 시각 = 컷 안 시각 + 그 클립의 시작점
+it("앞을 자른 클립은 시작점을 더한 자리로 보낸다 — 같은 영상의 시작점이 조금만 바뀌어도(재생 중) 한 번 정확히 맞춘다", () => {
+  const withHead = (head: number) => buildLayout(["e070/c1", "e070/c2", "e070/c3"],
+    { ...DOC, clips: DOC.clips.map((clip) => (clip.gen === "low" ? { ...clip, head } : clip)) });
+  time = 1;
+  render({ track: 1, layout: withHead(2) }); // low: 원본 8초의 앞 2초를 잘랐다
+  frame();
+  video.emit("loadedmetadata");
+  frame();
+  expect(video.currentTime).toBe(3); // 컷 안 1초 = 영상 3초
+  render({ track: 1, playing: true, layout: withHead(2) });
+  time = 1.016;
+  frame();
+  expect(video.paused).toBe(false);
+  video.currentTime = 3.05;
+  time = 1.05;
+  frame();
+  expect(video.currentTime).toBe(3.05); // 맞는 자리다
+  render({ track: 1, playing: true, layout: withHead(2 + 2 / 24) }); // 시작점을 2프레임(0.083초) 뒤로 — 재생 중의 허용 오차(0.2초) 안이다
+  time = 1.1;
+  frame();
+  expect(video.currentTime).toBeCloseTo(1.1 + 2 + 2 / 24); // 그래도 새 시작점으로 맞춘다(그냥 두면 이 판만 옛 구간을 튼다)
+  video.currentTime = 3.25;
+  time = 1.13;
+  frame();
+  expect(video.currentTime).toBe(3.25); // 그 뒤의 작은 어긋남은 전처럼 그냥 둔다
+});
+
+it("앞을 자른 클립으로 바뀌면 새로 받은 영상을 시작점으로 한 번 정확히 보낸다 — 시작점이 0.2초 안이어도", () => {
+  const layout = buildLayout(["e070/c1", "e070/c2", "e070/c3"],
+    { ...DOC, clips: DOC.clips.map((clip) => (clip.gen === "low" ? { ...clip, head: 3 / 24 } : clip)) });
+  time = 0.01;
+  render({ track: 1, playing: true, layout });
+  frame();
+  video.emit("loadedmetadata"); // 새로 받은 영상은 0초에 서 있다 — 컷 안 0.01초와 0.2초 안으로 가깝다
+  time = 0.02;
+  frame();
+  expect(video.currentTime).toBeCloseTo(0.02 + 3 / 24); // 시작점(3프레임)을 건너뛴 자리
 });

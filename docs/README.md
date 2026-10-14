@@ -6,7 +6,7 @@ tags:
   - mvhub
   - mvhub/문서
 status: active
-updated: 2026-10-10
+updated: 2026-10-14
 ---
 
 # MV Hub 개발 문서 안내
@@ -36,8 +36,9 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 목적 | 기준 문서 |
 |---|---|
 | 지금 완료된 것과 다음 작업 | [CURRENT_STATUS.md](CURRENT_STATUS.md) |
-| 현재 종합 점검·중복 구현 조사·Claude 설계 합의·실측 진척 | [PROGRAM_AUDIT_2026-09-17.md](PROGRAM_AUDIT_2026-09-17.md) |
-| 날짜별 상세 기록(회귀·실측·구현 근거) | [status/](status/) 노트 — 진입점은 [status/최근작업_2026-08-24.md](status/최근작업_2026-08-24.md) |
+| 2026-09-17 종합 점검·중복 구현 조사·당시 설계 합의와 실측 기록 | [PROGRAM_AUDIT_2026-09-17.md](PROGRAM_AUDIT_2026-09-17.md) |
+| 날짜별 상세 기록(회귀·실측·구현 근거) | [CURRENT_STATUS](CURRENT_STATUS.md)가 연결하는 해당 [status/](status/) 노트 |
+| Claude·Codex 역할 호출·설계 합의·독립 리뷰·검증 완료 기준 | [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md) |
 | 프로그램 사용 | [사용설명서.md](사용설명서.md), [기능설명서.md](기능설명서.md) |
 | 현재 구조와 데이터 흐름 | [ARCHITECTURE.md](ARCHITECTURE.md), [AI_CONTEXT.md](AI_CONTEXT.md) |
 | 무엇을 고치려면 어느 파일을 여나(파일 단위 색인·함정 지도) | [CODE_MAP.md](CODE_MAP.md) — 계층 원칙·흐름 설명과 충돌하면 위 두 문서가 이긴다 |
@@ -98,8 +99,12 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 
 ### 문서 프로퍼티 규칙
 
-`AGENTS.md`·`CLAUDE.md`(매 세션 자동으로 읽히는 제어 문서) 두 개를 뺀 **모든 Markdown**은 맨 위에
-`updated`·`status` 두 프로퍼티를 둔다(`superseded` 는 `superseded_by` 도 함께). 프로퍼티가 없으면 누락으로 본다.
+**사람이 관리하는 문서**는 맨 위에 `updated`·`status` 두 프로퍼티를 둔다
+(`superseded` 는 `superseded_by` 도 함께). 다음은 도구의 형식을 따르므로 예외다.
+
+- `AGENTS.md`·`CLAUDE.md`와 에이전트·스킬 정의: 제어 파일의 고유 스키마를 유지한다.
+- `inventory/*.md`: `tools/gen_inventory.py`의 생성물이다. 손으로 속성이나 설명을 추가하지 않는다.
+- Git에서 제외한 검증 원문·감시 인계 기록: 관측 시점과 원래 형식을 보존한다. 현재 사실로 덮어쓰지 않는다.
 
 **정본이 서로 다르다.** 같은 정보를 두 곳에서 관리하지 않는다.
 
@@ -125,6 +130,10 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 
 문서 상태와 구현 완료 상태를 섞지 않는다. 외부 실측이 남아 있어도 그 문서가 현행 계약이면
 `active` 다. 구현·검증 잔여는 본문이나 `RISK_REDUCTION_PLAN_2026-08-15` 에서 관리한다.
+
+YAML의 `status`는 위 표의 **문서 위상**이다. 본문 인계 블록의 `owner`·`reviewer`·`status`는
+**협업 작업 단계**이며 `설계 중`·`검토 요청`·`승인`·`구현 중`·`검증 중`·`완료`·`보류`를 쓴다.
+문서 위상을 고칠 때 기존 작업 담당자·작업 단계·미확인 결과를 함께 바꾸지 않는다.
 
 #### `updated` 규칙
 
@@ -156,14 +165,17 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 
 ### 전체 문서 분류
 
-아래 표는 현재 `docs` 아래 Markdown **84개**(`docs/*.md` 64 + `docs/status/*.md` 20)를 한 번씩
-분류한다. PDF는 특정 시점에 만든 외부 배포용 결과물이므로 현재 기술 판단의 기준으로 사용하지 않는다.
+아래 표는 `docs`의 문서를 역할별로 한 번씩 분류한다. 변동하는 총개수는 수동으로 중복 관리하지 않는다.
+자동 생성 목록도 별도 행으로 포함한다. PDF는 특정 시점의 외부 배포용 결과물이므로 현재 기술 판단의 기준이 아니다.
 
 | 상태 | 문서 |
 |---|---|
 | **문서 색인·갱신 규칙** | [README](README.md)(이 문서) |
+| **에이전트 운영 기준** | [AGENT_WORKFLOW](AGENT_WORKFLOW.md) |
+| **코드 탐색 지도** | [CODE_MAP](CODE_MAP.md) |
+| **자동 생성 목록** | [엔드포인트](inventory/endpoints.md), [환경변수](inventory/env_vars.md), [DB 표](inventory/db_tables.md), [백그라운드 작업](inventory/background_jobs.md) |
 | **현황·작업 기준** | [CURRENT_STATUS](CURRENT_STATUS.md), [RISK_REDUCTION_PLAN_2026-08-15](RISK_REDUCTION_PLAN_2026-08-15.md) |
-| **날짜별 기록(`status/`)** | [최근작업](status/최근작업_2026-08-24.md), [RL 완료목록](status/RL_완료목록.md), [검증기록](status/검증기록.md), [구현완료](status/구현완료_RL-02_RL-23.md), [사전배포검증](status/사전배포검증_2026-08-19.md), [안정화](status/안정화_2026-08-18.md), [코드대조](status/코드대조_2026-08-26.md), [영상 포스터 오염](status/영상_포스터_오염_2026-08-27.md), [최근작업 09-03](status/최근작업_2026-09-03.md), [최근작업 09-09](status/최근작업_2026-09-09.md), [성능·CLI정확도 점검 09-12](status/성능_CLI정확도_점검_2026-09-12.md), [최근작업 09-18](status/최근작업_2026-09-18.md), [dev 실측 09-21](status/dev_실측_2026-09-21.md), [전체점검 09-18](status/전체점검_2026-09-18.md), [브라우저실측 09-19](status/브라우저실측_2026-09-19.md), [dev 검토 09-22](status/dev_검토_2026-09-22.md), [캔버스 버벅임 09-29](status/캔버스_버벅임_2026-09-29.md), [최적화 점검 10-03](status/최적화점검_2026-10-03.md), [조작점검 10-10](status/조작점검_2026-10-10.md), [조작점검 고정 흐름 2026-10-12](status/조작점검_고정흐름_2026-10-12.md), [서버셋 설계 10-13](status/서버셋_설계_2026-10-13.md), [컷카드 요청 10-13](status/컷카드_요청_2026-10-13.md) |
+| **날짜별 기록(`status/`)** | [최근작업](status/최근작업_2026-08-24.md), [RL 완료목록](status/RL_완료목록.md), [검증기록](status/검증기록.md), [구현완료](status/구현완료_RL-02_RL-23.md), [사전배포검증](status/사전배포검증_2026-08-19.md), [안정화](status/안정화_2026-08-18.md), [코드대조](status/코드대조_2026-08-26.md), [영상 포스터 오염](status/영상_포스터_오염_2026-08-27.md), [최근작업 09-03](status/최근작업_2026-09-03.md), [최근작업 09-09](status/최근작업_2026-09-09.md), [성능·CLI정확도 점검 09-12](status/성능_CLI정확도_점검_2026-09-12.md), [최근작업 09-18](status/최근작업_2026-09-18.md), [dev 실측 09-21](status/dev_실측_2026-09-21.md), [전체점검 09-18](status/전체점검_2026-09-18.md), [브라우저실측 09-19](status/브라우저실측_2026-09-19.md), [dev 검토 09-22](status/dev_검토_2026-09-22.md), [캔버스 버벅임 09-29](status/캔버스_버벅임_2026-09-29.md), [최적화 점검 10-03](status/최적화점검_2026-10-03.md), [조작점검 10-10](status/조작점검_2026-10-10.md), [조작점검 고정 흐름 2026-10-12](status/조작점검_고정흐름_2026-10-12.md), [서버셋 설계 10-13](status/서버셋_설계_2026-10-13.md), [컷카드 요청 10-13](status/컷카드_요청_2026-10-13.md), [dev 검토 10-13](status/dev_검토_2026-10-13.md), [문서 정리·운영안 10-14](status/문서정리_운영안_2026-10-14.md) |
 | **현행 구조·계약 — 공통** | [ARCHITECTURE](ARCHITECTURE.md), [AI_CONTEXT](AI_CONTEXT.md), [DATA_OWNERSHIP](DATA_OWNERSHIP.md), [WORKSPACE_DATA_CONTRACT](WORKSPACE_DATA_CONTRACT.md), [신원과 모드 가이드](신원과_모드_가이드.md) |
 | **현행 구조·계약 — 기능별** | [AUTH_FAILURE_SEMANTICS](AUTH_FAILURE_SEMANTICS.md), [ASSET_REGISTRY](ASSET_REGISTRY.md), [CANVAS_GENERATION_IDEMPOTENCY](CANVAS_GENERATION_IDEMPOTENCY.md), [CANVAS_SCENE_STORAGE](CANVAS_SCENE_STORAGE.md), [CLI_ESTIMATE_LIFECYCLE](CLI_ESTIMATE_LIFECYCLE.md), [GENERATION_SUBMISSION_RECOVERY](GENERATION_SUBMISSION_RECOVERY.md), [TELEMETRY_DRAIN_LIFECYCLE](TELEMETRY_DRAIN_LIFECYCLE.md), [RESULT_FINGERPRINT](RESULT_FINGERPRINT.md), [NAS_RESULTS](NAS_RESULTS.md), [EDIT_TAB](EDIT_TAB.md), [SHARE_STATE_RECONCILIATION_DESIGN](SHARE_STATE_RECONCILIATION_DESIGN.md), [WORKER_OFFDISK_BACKUP_CONTRACT](WORKER_OFFDISK_BACKUP_CONTRACT.md), [UPDATE_ANNOUNCEMENTS](UPDATE_ANNOUNCEMENTS.md), [TASK_ACTIVITY_FACTS](TASK_ACTIVITY_FACTS.md), [MEMBER_TABLE_DESIGN](MEMBER_TABLE_DESIGN.md), [EXPORT_SYNC_DESIGN](EXPORT_SYNC_DESIGN.md), [CREDIT_QUOTA_DESIGN](CREDIT_QUOTA_DESIGN.md), [WORKSPACE_CONSOLE_DESIGN](WORKSPACE_CONSOLE_DESIGN.md)(서브스페이스 — 대시보드 '워크스페이스' 단추) |
 | **운영·검증 절차** | [SERVER](SERVER.md), [SERVER_RECOVERY](SERVER_RECOVERY.md), [SERVER_RELOCATION](SERVER_RELOCATION.md), [TESTING](TESTING.md), [HF_CLI_UPGRADE](HF_CLI_UPGRADE.md), [SERVER_MIGRATION](SERVER_MIGRATION.md) |
@@ -269,7 +281,11 @@ Markdown 을 추가·이름 변경·삭제하거나 위상이 바뀌면 **같은
 
 ## 실행
 
-### 1) 백엔드 (FastAPI, 기본 8000)
+일반 개발·실측은 [TESTING.md](TESTING.md)의 격리 설정과 `test_dev.bat`을 따른다.
+아래는 수동 구성 참고이며, 실행 전에 임시 `CONTENT_HUB_DATA`·`CONTENT_HUB_DB`를 지정한다.
+설치본·운영 서버 실행은 [사용설명서](사용설명서.md)·[SERVER](SERVER.md)를 따른다.
+
+### 1) 백엔드 (수동 구성, 기본 8000)
 ```powershell
 cd backend
 pip install -r requirements.txt
@@ -309,6 +325,7 @@ npm run dev                    # http://localhost:5173
 ## 아키텍처 (요약 — 상세 지도는 [ARCHITECTURE.md](ARCHITECTURE.md))
 
 계층: `routers → usecases → repo/services` (경계는 pytest `test_architecture_boundaries.py` 가 강제).
+아래는 구성 예시다. 파일의 전체 목록은 [CODE_MAP](CODE_MAP.md), 코드에서 뽑은 계약 목록은 `inventory/`를 본다.
 
 ```
 backend/
@@ -317,21 +334,21 @@ backend/
     db.py / db_migrations.py  # 커넥션 풀(스레드별)·유지보수 게이트 / 멱등 마이그레이션
     config.py / models.py     # 환경변수 설정 / Pydantic 요청·응답
     main.py                   # 앱 팩토리·미들웨어·lifespan·/ws
-    routers/   (24개)         # library·generation·gen_requests·ingest·share·publish·sync·
+    routers/         # library·generation·gen_requests·ingest·share·publish·sync·
                               # projects·members·manage·assets(+metadata)·comfy·
                               # resolve_integration·release_update·scenes·auth·db_backup·
                               # db_transfer·notifications·update_notices
                               # + 내부(_proxy·_telemetry·_assets_access)
-    usecases/  (4개)          # gen_requests·generation_media_cache·generation_personal_meta·hf_missing
-    repo/      (39개 모듈)     # 데이터 접근 — generations·share·projects·identity·manage·trash 등
-    services/  (61개)          # cli_bridge·media_cache·syncer·thumbs·backup·comfy_*·resolve_*·
+    usecases/          # gen_requests·generation_media_cache·generation_personal_meta·hf_missing
+    repo/     # 데이터 접근 — generations·share·projects·identity·manage·trash 등
+    services/          # cli_bridge·media_cache·syncer·thumbs·backup·comfy_*·resolve_*·
                               # telemetry_drain·operational_*·release_update·asset_* 등
 frontend/
   src/
     api.ts, types.ts      # 타입 안전 클라이언트 + WS
     App.tsx               # 상태·WS·액션 오케스트레이션
-    components/           # 12개 서브폴더(scene·assets·manage·spotlight·settings·…)
-    lib/                  # 160+ 훅·유틸
+    components/           # 서브폴더(scene·assets·manage·spotlight·settings·…)
+    lib/                  # 훅·유틸
 ```
 
 ## 기술 노트 (검증됨)

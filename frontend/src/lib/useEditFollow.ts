@@ -47,6 +47,7 @@ export function useEditFollow({
       shown: "", // React 에 알린 것의 열쇠
       video: "", // 올려 둔 영상의 열쇠(클립 열쇠 + 주소). 빈 문자열 = 영상 없음
       clip: "",
+      head: 0, // 올려 둔 클립의 유효 시작(초) — 영상 시각 = 컷 안 시각 + head(앞 자르기)
       loaded: false,
       failed: new Set<string>(),
       lastTime: Number.NaN,
@@ -89,6 +90,9 @@ export function useEditFollow({
       if (video && videoKey !== state.video) {
         state.video = videoKey;
         state.clip = key;
+        state.head = playable ? clip!.head : 0;
+        // 앞을 자른 클립은 새로 받은 영상(0초에 서 있다)을 한 번 정확히 보낸다 — 시작점이 0.2초 안이면 '작은 어긋남'으로 넘어간다
+        state.rewound = state.head > 0;
         state.loaded = false;
         video.pause();
         if (playable) video.src = media!.url!;
@@ -103,20 +107,27 @@ export function useEditFollow({
         const going = on && speed > 0 && stamp - state.movedAt < STALL_MS && document.visibilityState === "visible";
         // 영상을 보낼 자리 — 실제 끝 뒤로는 보낼 수 없다(적어 둔 길이보다 짧은 영상: 브라우저가 끝으로 자른다). 자르지 않은
         //  시각과 견주면 프레임마다 같은 자리로 다시 보낸다 — 그 뒤에서는 끝 프레임에 세워 둔다(2026-10-11 R21).
-        const end = videoEnd(video);
+        // 같은 영상의 시작점이 바뀌었다(길이 조절 창에서 앞 손잡이를 옮김) — 자리 옮김이다. 재생 중의 작은 어긋남(DRIFT)으로 넘기지
+        //  않고 한 번 정확히 맞춘다(탐색 중이면 끝난 뒤에 — rewound 가 남는다. Codex 설계 검토).
+        const head = clip!.head;
+        if (head !== state.head) {
+          state.head = head;
+          state.rewound = true;
+        }
+        const end = videoEnd(video) - head; // 컷 안 시각으로 본 실제 끝
         const target = Math.min(pos!.local, end);
-        const off = Math.abs(video.currentTime - target);
+        const off = Math.abs(video.currentTime - head - target);
         if (going) {
           video.playbackRate = Math.max(1, speed);
           if (!video.seeking) {
-            if (off > (state.rewound ? EXACT : DRIFT)) video.currentTime = target;
+            if (off > (state.rewound ? EXACT : DRIFT)) video.currentTime = target + head;
             state.rewound = false;
           }
           // 소스가 갈리며 끊긴 재생 요청은 실패가 아니다. 실제 끝에 선 영상은 틀지 않는다 — 브라우저가 처음부터 다시 튼다.
-          if (video.paused && video.currentTime < end) void video.play().catch(() => {});
+          if (video.paused && video.currentTime - head < end) void video.play().catch(() => {}); // 방금 보낸 자리로 본다
         } else {
           if (!video.paused) video.pause();
-          if (off > EXACT && !video.seeking) video.currentTime = target;
+          if (off > EXACT && !video.seeking) video.currentTime = target + head;
           state.rewound = false; // 서 있으면 어차피 정확히 맞춘다
         }
       }

@@ -279,7 +279,7 @@ export const projectApi = {
     );
     if (tab === "my") {
       if (!result || Array.isArray(result) || result.creator_scope_applied !== true || !Array.isArray(result.items)) {
-        throw new HttpError(409, "작업 공간 생성자 표시에는 로컬 앱 업데이트가 필요합니다.");
+        throw new HttpError(409, "워크스페이스 탭의 생성자 표시에는 로컬 앱 업데이트가 필요합니다.");
       }
       return result.items;
     }

@@ -4,7 +4,9 @@ import {
   addTrack,
   buildLayout,
   clearMarkers,
+  clipFull,
   clipKey,
+  clipLen,
   cutIsOff,
   cutOf,
   cutPaths,
@@ -27,21 +29,30 @@ import {
   marksOf,
   markTime,
   moveClipToTrack,
+  moveCut,
   moveTrack,
   nearestPoint,
+  orderCuts,
   parseEditDoc,
   patchMarker,
   placeClip,
+  placeState,
   posAt,
   removeClips,
   removeMarker,
+  resetCutOrder,
   setClipDurs,
+  keepClipDurs,
+  setClipRange,
+  clipHead,
+  clipFrames,
   setMark,
   settlePos,
   setTrackColor,
   shiftClips,
   shotsAt,
   shownMarkers,
+  snapTrim,
   stepPoint,
   timecode,
   timeOf,
@@ -98,6 +109,108 @@ describe("길이·컷 순서", () => {
   });
 });
 
+// Jay 2026-10-13 — 타임라인의 폴더 순서를 내가 바꾼다.
+describe("내가 정한 컷 순서", () => {
+  const p = (...names: string[]) => names.map((name) => `${SEQ}/${name}`);
+  const natural = p("c1", "c2", "c3", "c4");
+
+  it("정한 순서대로 서고, 나중에 생긴 폴더는 이름순으로 바로 앞인 컷의 뒤에 선다", () => {
+    expect(orderCuts(natural)).toEqual(natural);
+    expect(orderCuts(natural, [])).toEqual(natural);
+    const saved = p("c3", "c1", "c4");
+    expect(orderCuts(natural, saved)).toEqual(p("c3", "c1", "c2", "c4")); // c2 는 c1 의 뒤
+    expect(orderCuts(p("c0", "c1", "c3", "c4"), saved)).toEqual(p("c0", "c3", "c1", "c4")); // 앞선 컷이 없으면 맨 앞
+    // 같은 자리에 여럿이 끼어도 그들끼리는 이름순 — 같은 입력이면 언제나 같은 순서
+    expect(orderCuts(p("c1", "c1a", "c1b", "c3", "c4"), saved)).toEqual(p("c3", "c1", "c1a", "c1b", "c4"));
+    // 목록에만 있고 지금 없는 컷은 건너뛴다
+    expect(orderCuts(p("c1", "c4"), saved)).toEqual(p("c1", "c4"));
+    expect(cutPaths(SEQ, natural, doc([], { cutOrder: saved }))).toEqual(p("c3", "c1", "c2", "c4"));
+  });
+
+  it("컷 하나를 다른 컷 앞(또는 맨 뒤)으로 옮긴다 — 이름순과 같아지면 적어 둔 순서를 지운다", () => {
+    const moved = moveCut(emptyEditDoc(), natural, natural[2], natural[0])!;
+    expect(moved.cutOrder).toEqual(p("c3", "c1", "c2", "c4"));
+    expect(moveCut(moved, moved.cutOrder!, natural[0], null)!.cutOrder).toEqual(p("c3", "c2", "c4", "c1"));
+    const back = moveCut(moved, moved.cutOrder!, natural[2], null)!; // c3 을 맨 뒤로 — c1 c2 c4 c3
+    expect(back.cutOrder).toEqual(p("c1", "c2", "c4", "c3"));
+    expect("cutOrder" in moveCut(back, back.cutOrder!, natural[2], natural[3])!).toBe(false); // 이름순으로 돌아왔다
+    // 바뀐 것이 없으면 null: 제자리(바로 뒤 컷의 앞·자기 앞) · 맨 뒤 컷을 맨 뒤로 · 없는 컷
+    expect(moveCut(emptyEditDoc(), natural, natural[1], natural[2])).toBeNull();
+    expect(moveCut(emptyEditDoc(), natural, natural[1], natural[1])).toBeNull();
+    expect(moveCut(emptyEditDoc(), natural, natural[3], null)).toBeNull();
+    expect(moveCut(emptyEditDoc(), natural, `${SEQ}/c9`, null)).toBeNull();
+    expect(moveCut(emptyEditDoc(), natural, natural[0], `${SEQ}/c9`)).toBeNull();
+    expect(parseEditDoc(JSON.parse(JSON.stringify(moved)))).toEqual(moved);
+    expect(parseEditDoc({ ...emptyEditDoc(), cutOrder: ["e070\\c1"] })).toBeNull();
+    expect(parseEditDoc({ ...emptyEditDoc(), cutOrder: "e070/c1" })).toBeNull();
+  });
+
+  it("지금 없는 폴더의 자리는 순서를 바꿔도 남는다 — 그 폴더가 돌아오면 제자리에 선다", () => {
+    const d = doc([], { cutOrder: p("c3", "c9", "c1", "c2") }); // c9 는 지금 없다
+    const now = cutPaths(SEQ, p("c1", "c2", "c3"), d);
+    expect(now).toEqual(p("c3", "c1", "c2"));
+    const moved = moveCut(d, now, `${SEQ}/c2`, `${SEQ}/c1`)!;
+    expect(moved.cutOrder).toEqual(p("c3", "c9", "c2", "c1"));
+    expect(cutPaths(SEQ, p("c1", "c2", "c3", "c9"), moved)).toEqual(p("c3", "c9", "c2", "c1"));
+    // 순서를 정한 뒤 생긴 폴더(c2b — 목록에 없다)도 옮기는 순간 화면에서 서 있던 자리로 적힌다
+    const withNew = cutPaths(SEQ, p("c1", "c2", "c2b", "c3"), moved); // c3 c2 c2b c1
+    expect(withNew).toEqual(p("c3", "c2", "c2b", "c1"));
+    expect(moveCut(moved, withNew, `${SEQ}/c1`, `${SEQ}/c3`)!.cutOrder).toEqual(p("c1", "c3", "c9", "c2", "c2b"));
+  });
+
+  // Codex 코드 리뷰 2026-10-13: 지금 순서에서 제자리인 놓기가, 그 사이의 '지금 없는 폴더'를 넘어간 것으로 적혀 그 폴더의 돌아올
+  //  자리를 바꿨다.
+  it("지금 순서에서 제자리면 바뀐 것이 없다 — 그 사이에 지금 없는 폴더의 자리가 있어도", () => {
+    const d = doc([], { cutOrder: p("c3", "c9", "c1") }); // c9 는 지금 없다 — 화면은 c3 c1
+    const now = cutPaths(SEQ, p("c1", "c3"), d);
+    expect(now).toEqual(p("c3", "c1"));
+    expect(moveCut(d, now, `${SEQ}/c3`, `${SEQ}/c1`)).toBeNull(); // c3 을 바로 뒤 컷 앞에 = 제자리
+    expect(moveCut(doc([], { cutOrder: p("c3", "c1", "c9") }), now, `${SEQ}/c1`, null)).toBeNull(); // 맨 뒤 컷을 맨 뒤로(뒤에 없는 폴더의 자리)
+    // 진짜 옮기기는 된다 — c1 을 앞으로: c1 c3 (c9). 이름순이 되어 적어 둔 순서가 지워진다
+    expect("cutOrder" in moveCut(d, now, `${SEQ}/c1`, `${SEQ}/c3`)!).toBe(false);
+    const more = doc([], { cutOrder: p("c3", "c9", "c1", "c2") }); // 화면은 c3 c1 c2
+    expect(moveCut(more, p("c3", "c1", "c2"), `${SEQ}/c2`, `${SEQ}/c3`)!.cutOrder).toEqual(p("c2", "c3", "c9", "c1"));
+  });
+
+  // 컷 순서가 바뀌거나 사라졌던 폴더가 돌아오면 문서의 인/아웃이 뒤집혀 있을 수 있다. 순서를 바꾸는 순간에 미리 맞바꾸지 않는다
+  //  (없는 폴더 가운데 일부만 돌아오면 그때의 예측과 달라진다 — Codex 코드 리뷰 2회째). 그릴 때·찍을 때 같은 눈으로 바로잡는다.
+  it("순서를 바꿔 인이 아웃보다 뒤의 컷에 놓이면 — 문서는 그대로 두고, 그리는 구간과 찍기·지우기가 보이는 앞뒤를 따른다", () => {
+    const marked = doc([], { markIn: { cut: natural[0], local: 1 }, markOut: { cut: natural[2], local: 2 } });
+    const moved = moveCut(marked, natural, natural[2], natural[0])!; // c3 c1 c2 c4 — 인(c1)이 아웃(c3)의 뒤
+    expect(moved).toMatchObject({ markIn: marked.markIn, markOut: marked.markOut }); // 문서의 표시는 건드리지 않는다
+    const layout = buildLayout(cutPaths(SEQ, natural, moved), moved); // c3 0~5 · c1 5~10 · c2 · c4
+    expect(marksOf(layout, moved)).toEqual({ in: 2, out: 6, band: { from: 2, to: 6 } }); // 앞의 것이 인, 뒤의 것이 아웃
+    // 인 지우기(Alt+I)는 화면의 인(문서의 markOut — c3 의 2초)을 지운다. 문서는 그때 바로잡힌 모양으로 남는다.
+    const cleared = setMark(moved, layout, "markIn", null)!;
+    expect([cleared.markIn, cleared.markOut]).toEqual([undefined, { cut: natural[0], local: 1 }]);
+    expect(marksOf(layout, cleared)).toEqual({ in: null, out: 6, band: { from: 0, to: 6 } });
+    // 아웃을 인 앞에 찍으면 화면의 인이 지워진다(다빈치) — 뒤집힌 문서에서도
+    const outFirst = setMark(moved, layout, "markOut", { cut: natural[2], local: 1 })!;
+    expect([outFirst.markIn, outFirst.markOut]).toEqual([undefined, { cut: natural[2], local: 1 }]);
+    // 이름순으로 되돌리면 원래 앞뒤다
+    const reset = resetCutOrder(moved)!;
+    expect("cutOrder" in reset).toBe(false);
+    expect(marksOf(buildLayout(natural, reset), reset)).toMatchObject({ in: 1, out: 12 });
+    expect(resetCutOrder(reset)).toBeNull(); // 정한 순서가 없다
+    // 같은 컷 안의 인·아웃은 순서와 무관하다
+    const same = doc([], { markIn: { cut: natural[2], local: 1 }, markOut: { cut: natural[2], local: 2 } });
+    const sameMoved = moveCut(same, natural, natural[2], natural[0])!;
+    expect(marksOf(buildLayout(cutPaths(SEQ, natural, sameMoved), sameMoved), sameMoved)).toMatchObject({ in: 1, out: 2 });
+  });
+
+  // Codex 코드 리뷰 2회째의 입력: 정한 순서 c4 (c2) c1 c5, 인 = 없는 c3, 아웃 = c1. c5 를 맨 앞으로 옮긴 뒤 c3 만 돌아온다(c2 는 그대로 없다).
+  //  c3 는 '이름순으로 바로 앞인 컷의 뒤'에 서는데, 그 앞 컷(c2)이 없어 c1 의 뒤다 → 인(c3)이 아웃(c1)의 뒤. 그래도 구간은 살아 있다.
+  it("없는 폴더 가운데 일부만 돌아와 인/아웃이 뒤집혀도 구간이 사라지지 않는다", () => {
+    const d = doc([], { cutOrder: p("c4", "c2", "c1", "c5"), markIn: { cut: `${SEQ}/c3`, local: 0 }, markOut: { cut: `${SEQ}/c1`, local: 1 } });
+    const moved = moveCut(d, cutPaths(SEQ, p("c1", "c4", "c5"), d), `${SEQ}/c5`, `${SEQ}/c4`)!;
+    const back = cutPaths(SEQ, p("c1", "c3", "c4", "c5"), moved);
+    expect(back).toEqual(p("c5", "c4", "c1", "c3"));
+    const layout = buildLayout(back, moved); // c5 0~5 · c4 5~10 · c1 10~15 · c3 15~20
+    expect(marksOf(layout, moved)).toEqual({ in: 11, out: 15, band: { from: 11, to: 15 } });
+    // 한쪽이 아직 안 보이는 동안(c3 가 돌아오기 전)은 구간이 아니다 — 넓히지 않는다
+    expect(marksOf(buildLayout(p("c5", "c4", "c1"), moved), moved)).toEqual({ in: null, out: 11, band: null });
+  });
+});
 describe("배치와 보이는 클립", () => {
   const d = doc([clip("c1", "low", 1, { dur: 8 }), clip("c1", "top", 2, { dur: 3 }), clip("c3", "solo", 1)]);
   const layout = buildLayout(["e070/c1", "e070/c2", "e070/c3"], d, (c) => (c.gen === "solo" ? "6" : undefined));
@@ -118,15 +231,138 @@ describe("배치와 보이는 클립", () => {
     expect(visibleClip(d, layout.cuts[1], 1)).toBeNull(); // 고르지 않은 컷은 비어 있다
   });
 
-  it("끈 클립·끈 트랙은 안 보이지만 컷 길이는 그대로다. 잠금은 보이기와 무관하다", () => {
+  // Jay 2026-10-13 — "v1 이 5초 v2 가 3초면 3초 보여주다가 남은 v1 이 더 보인다. v1 트랙이 꺼져 있다면 그 폴더는 3초만 재생된다."
+  it("컷 길이는 켜진 클립만 센다 — 끈 클립·끈 트랙은 안 보이고 길이에도 안 든다. 잠금은 보이기와 무관하다", () => {
     const off = toggleClipsOff(d, [key("c1", "top")])!;
     const slot = buildLayout(["e070/c1"], off).cuts[0];
     expect(visibleClip(off, slot, 0)?.gen).toBe("low");
-    const trackOff = toggleTrack(d, "tracksOff", 1);
-    expect(visibleClip(trackOff, buildLayout(["e070/c1"], trackOff).cuts[0], 5)).toBeNull();
-    expect(buildLayout(["e070/c1"], toggleClipsOff(d, [key("c1", "low")])!).cuts[0].len).toBe(8);
+    expect(slot.len).toBe(8);
+    const trackOff = toggleTrack(d, "tracksOff", 1); // 긴 아래 트랙을 껐다 — 위 클립의 3초만 남는다
+    const short = buildLayout(["e070/c1"], trackOff).cuts[0];
+    expect(short.len).toBe(3);
+    expect(visibleSegments(trackOff, short).map((s) => [s.from, s.to, s.clip?.gen])).toEqual([[0, 3, "top"]]);
+    expect(short.clips.map((c) => [c.gen, c.len])).toEqual([["low", 8], ["top", 3]]); // 꺼진 클립은 컷보다 길 수 있다
+    expect(buildLayout(["e070/c1"], toggleClipsOff(d, [key("c1", "low")])!).cuts[0].len).toBe(3);
+    // 넣은 것을 전부 껐으면 빈 컷과 같다(기본 길이)
+    const allOff = toggleClipsOff(d, [key("c1", "low"), key("c1", "top")])!;
+    expect(buildLayout(["e070/c1"], allOff).cuts[0].len).toBe(DEFAULT_SEC);
     const locked = toggleTrack(d, "tracksLocked", 2);
     expect(visibleClip(locked, layout.cuts[0], 0)?.gen).toBe("top");
+  });
+
+  // 뒤만 자르는 걸음(시작점은 그대로 둔다) — 10-13 의 시험들이 쓰던 모양
+  const setClipTrim = (d: EditDoc, k: string, seconds: number | null) =>
+    setClipRange(d, k, { head: d.clips.find((item) => clipKey(item) === k)?.head ?? 0, trim: seconds });
+
+  // Jay 2026-10-13 — 타임라인 클립 휠 클릭 = 길이 조절(뒤를 자른다). 영상만이고 원본보다 길게는 안 된다.
+  it("줄인 길이(trim) — 쓰는 길이는 줄인 값, 원본은 full 에 남는다. 그림은 줄이지 않는다", () => {
+    const v = clip("c1", "v", 1, { dur: 5, kind: "video", trim: 3 });
+    expect([clipLen(v), clipFull(v)]).toEqual([3, 5]);
+    expect(clipLen({ ...v, trim: 9 })).toBe(5); // 원본보다 길게는 안 된다 — 값은 문서에 남고 쓰는 길이만 자른다
+    expect(clipLen(clip("c1", "old", 1, { dur: 5, trim: 2 }))).toBe(2); // kind 가 없는 옛 클립은 영상이다
+    expect(clipLen(clip("c1", "i", 1, { dur: 5, kind: "image", trim: 2 }))).toBe(5);
+    expect(clipLen(clip("c1", "n", 1, { trim: 2 }), "8")).toBe(2); // 길이를 모르면 호출부가 아는 값이 원본
+    expect(clipFull(clip("c1", "n", 1), "8")).toBe(8);
+    // 위를 3초로 줄이면 3초 뒤에 아래가 드러나고, 아래까지 줄이면 컷이 짧아진다
+    const two = doc([clip("c1", "low", 1, { dur: 5, trim: 4 }), clip("c1", "top", 2, { dur: 5, trim: 3 })]);
+    const slot = buildLayout(["e070/c1"], two).cuts[0];
+    expect(slot.len).toBe(4);
+    expect(slot.clips.map((c) => [c.gen, c.len, c.full])).toEqual([["low", 4, 5], ["top", 3, 5]]);
+    expect(visibleSegments(two, slot).map((s) => [s.from, s.to, s.clip?.gen])).toEqual([[0, 3, "top"], [3, 4, "low"]]);
+  });
+
+  it("길이 줄이기 — 잠긴 트랙·그림·없는 클립은 거부, 같은 값이면 null, null 을 주면 원본 길이로", () => {
+    const d2 = doc([clip("c1", "v", 1, { dur: 5, kind: "video" }), clip("c1", "i", 2, { kind: "image" }),
+      clip("c2", "k", 3, { dur: 5 })], { tracksLocked: [3] });
+    const cut = setClipTrim(d2, key("c1", "v"), 3)!;
+    expect(cut.clips[0]).toEqual(clip("c1", "v", 1, { dur: 5, kind: "video", trim: 3 }));
+    expect(cut.clips[1]).toBe(d2.clips[1]); // 다른 클립은 그대로
+    expect(setClipTrim(cut, key("c1", "v"), 3)).toBeNull();
+    expect("trim" in setClipTrim(cut, key("c1", "v"), null)!.clips[0]).toBe(false);
+    expect(setClipTrim(d2, key("c1", "v"), null)).toBeNull(); // 줄인 적이 없다
+    expect(setClipTrim(d2, key("c1", "v"), 9)!.clips[0].trim).toBe(9); // 원본보다 긴 값도 적는다(쓰는 길이는 clipLen 이 자른다)
+    for (const bad of [0, -1, NaN, Infinity]) expect(setClipTrim(d2, key("c1", "v"), bad)).toBeNull();
+    expect(setClipTrim(d2, key("c1", "i"), 2)).toBeNull();
+    expect(setClipTrim(d2, key("c2", "k"), 2)).toBeNull();
+    expect(setClipTrim(d2, "없는 키", 2)).toBeNull();
+    expect(parseEditDoc(JSON.parse(JSON.stringify(cut)))).toEqual(cut);
+  });
+
+  it("길이 값은 프레임에 맞춘다 — 최소 1프레임, 원본을 넘지 않는 가장 긴 프레임까지", () => {
+    expect(snapTrim(3.01, 5)).toBe(72 / 24);
+    expect(snapTrim(0, 5)).toBe(1 / 24);
+    expect(snapTrim(99, 5)).toBe(5);
+    expect(snapTrim(99, 3.02)).toBe(72 / 24); // 원본 3.02초 — 73프레임(3.0417초)으로 올리지 않는다
+    expect(snapTrim(1, 0.03)).toBeNull(); // 한 프레임도 안 되는 영상
+    expect(snapTrim(NaN, 5)).toBeNull();
+    expect(snapTrim(2, NaN)).toBeNull(); // 길이를 아직 모르는 영상(상한이 숫자가 아니다)
+  });
+
+  // 실측이 오면 dur 은 고쳐 적히고(되돌리기 대상 아님) trim 은 그대로다 — 쓰는 길이만 그때의 원본에서 다시 잘린다.
+  it("줄인 길이는 원본 길이가 바뀌어도 적어 둔 값이 남는다 — 5초 → 3초 → 6초면 쓰는 길이는 4 → 3 → 4", () => {
+    const k = key("c1", "v");
+    let d2 = setClipTrim(doc([clip("c1", "v", 1, { dur: 5, kind: "video" })]), k, 4)!;
+    const len = () => buildLayout(["e070/c1"], d2).cuts[0].clips[0].len;
+    expect(len()).toBe(4);
+    d2 = setClipDurs(d2, new Map([[k, 3]]))!;
+    expect([len(), d2.clips[0].trim]).toEqual([3, 4]);
+    d2 = setClipDurs(d2, new Map([[k, 6]]))!;
+    expect([len(), d2.clips[0].trim]).toEqual([4, 4]);
+    // 옮겨도(트랙) 줄인 길이는 따라간다. 다른 카드로 교체하면 새 클립이라 없다.
+    expect(moveClipToTrack(d2, k, 2)!.clips[0]).toMatchObject({ track: 2, trim: 4 });
+    expect("trim" in placeClip(d2, { cut: "e070/c1", gen: "new", kind: "video", dur: 5 }, 1)!.clips[0]).toBe(false);
+  });
+
+  // Jay 2026-10-14 — 길이 조절에서 앞도 자른다(head). trim 은 그대로 '쓰는 길이'(시작점부터)다.
+  it("앞 자르기(head) — 쓰는 길이는 시작점부터 남은 만큼, 유효 시작은 프레임에 맞춰 원본 안으로 자른다", () => {
+    const v = clip("c1", "v", 1, { dur: 5, kind: "video", head: 1 });
+    expect([clipHead(v), clipLen(v), clipFull(v)]).toEqual([1, 4, 5]);
+    expect(clipLen({ ...v, trim: 2 })).toBe(2); // 1초부터 2초
+    expect(clipLen({ ...v, trim: 9 })).toBe(4); // 남은 만큼까지만
+    const still = clip("c1", "i", 1, { dur: 5, kind: "image", head: 2 });
+    expect([clipHead(still), clipLen(still)]).toEqual([0, 5]); // 그림은 자르지 않는다
+    // 원본보다 긴 값(실측이 짧아졌다) — 적힌 값은 남고, 쓰는 값은 마지막 프레임의 시작이다(프레임 경계 — 71.48프레임 같은 값이 아니다)
+    const long = clip("c1", "v", 1, { dur: 3.02, kind: "video", head: 4 });
+    expect(clipFrames(3.02)).toBe(72);
+    expect(clipHead(long)).toBe(71 / 24);
+    expect(clipLen(long)).toBe(1 / 24); // 남은 1.48프레임 → 1프레임(영상의 쓰는 길이는 프레임으로 내린다, 2026-10-14)
+    expect(clipHead(clip("c1", "v", 1, { dur: 5, kind: "video", head: 1.01 }))).toBe(1); // 프레임에 맞춘다
+    // 한 프레임도 안 되는 영상은 자를 수 없다
+    const tiny = clip("c1", "v", 1, { dur: 0.02, kind: "video", head: 1 });
+    expect([clipHead(tiny), clipLen(tiny)]).toEqual([0, 0.02]);
+    // 배치에 유효 시작이 실린다(없으면 0). 컷 길이는 켜진 클립의 쓰는 길이 중 가장 긴 것 그대로다
+    const slot = buildLayout(["e070/c1"], doc([clip("c1", "low", 1, { dur: 5 }), clip("c1", "top", 2, { dur: 5, head: 2, trim: 1 })])).cuts[0];
+    expect(slot.clips.map((c) => [c.gen, c.head, c.len, c.full])).toEqual([["low", 0, 5, 5], ["top", 2, 1, 5]]);
+    expect(slot.len).toBe(5);
+    // 원본 길이가 바뀌면(실측) 쓰는 값만 다시 잘린다 — 5초 → 1.5초 → 5초면 시작은 2 → 35프레임 → 2
+    const k = key("c1", "v");
+    let d2 = doc([clip("c1", "v", 1, { dur: 5, kind: "video", head: 2 })]);
+    const head = () => buildLayout(["e070/c1"], d2).cuts[0].clips[0].head;
+    d2 = setClipDurs(d2, new Map([[k, 1.5]]))!;
+    expect([head(), d2.clips[0].head]).toEqual([35 / 24, 2]);
+    d2 = setClipDurs(d2, new Map([[k, 5]]))!;
+    expect(head()).toBe(2);
+  });
+
+  it("구간 정하기(setClipRange) — 앞·뒤를 한 번에 적고, 0·null 은 그 칸을 지운다. 거부는 길이 줄이기와 같다", () => {
+    const k = key("c1", "v");
+    const d2 = doc([clip("c1", "v", 1, { dur: 5, kind: "video" }), clip("c1", "i", 2, { kind: "image" }),
+      clip("c2", "k", 3, { dur: 5 })], { tracksLocked: [3] });
+    const both = setClipRange(d2, k, { head: 1, trim: 2 })!;
+    expect(both.clips[0]).toEqual(clip("c1", "v", 1, { dur: 5, kind: "video", trim: 2, head: 1 }));
+    expect(both.clips[1]).toBe(d2.clips[1]); // 다른 클립은 그대로
+    expect(setClipRange(both, k, { head: 1, trim: 2 })).toBeNull(); // 바뀐 것이 없다
+    expect(setClipRange(both, k, { head: 0, trim: 2 })!.clips[0]).toEqual(clip("c1", "v", 1, { dur: 5, kind: "video", trim: 2 })); // 앞만 되돌린다
+    expect(setClipRange(both, k, { head: 1, trim: null })!.clips[0]).toEqual(clip("c1", "v", 1, { dur: 5, kind: "video", head: 1 })); // 끝은 원본 끝까지
+    expect(setClipRange(both, k, { head: 0, trim: null })!.clips[0]).toEqual(clip("c1", "v", 1, { dur: 5, kind: "video" })); // 원본 길이로
+    for (const bad of [-1, NaN, Infinity]) expect(setClipRange(d2, k, { head: bad, trim: null })).toBeNull();
+    expect(setClipRange(d2, key("c1", "i"), { head: 1, trim: null })).toBeNull(); // 그림
+    expect(setClipRange(d2, key("c2", "k"), { head: 1, trim: null })).toBeNull(); // 잠긴 트랙
+    expect(parseEditDoc(JSON.parse(JSON.stringify(both)))).toEqual(both);
+    // 옮겨도(트랙) 따라가고, 다른 카드로 교체하면 새 클립이라 없다
+    const solo = setClipRange(doc([clip("c1", "v", 1, { dur: 5, kind: "video" })]), k, { head: 1, trim: 2 })!;
+    expect(moveClipToTrack(solo, k, 2)!.clips[0]).toMatchObject({ track: 2, trim: 2, head: 1 });
+    expect("head" in placeClip(solo, { cut: "e070/c1", gen: "new", kind: "video", dur: 5 }, 1)!.clips[0]).toBe(false);
   });
 
   it("편집점은 컷 경계와 컷 안에서 끝나는 클립의 끝이다", () => {
@@ -169,6 +405,22 @@ describe("위치는 컷 경로로 든다", () => {
   it("보던 컷이 사라지면 이름 순서로 그다음 컷 처음(없으면 끝)으로 옮기고 멈춘다", () => {
     expect(settlePos(before, { cut: "e070/c2", local: 1 })).toEqual({ pos: { cut: "e070/c3", local: 0 }, moved: true });
     expect(settlePos(before, { cut: "e070/c9", local: 1 })).toEqual({ pos: { cut: "e070/c3", local: 6 }, moved: true });
+  });
+
+  it("보던 컷이 빠지면 '내가 정한 순서'에서 그다음 컷으로 간다 — 숨긴 컷도, 사라진 폴더도", () => {
+    const shown = buildLayout(["e070/c3", "e070/c1"], d); // 정한 순서 c3 · (c2 숨김) · c1
+    const order = ["e070/c3", "e070/c2", "e070/c1"];
+    expect(settlePos(shown, { cut: "e070/c2", local: 1 }, order, order)).toEqual({ pos: { cut: "e070/c1", local: 0 }, moved: true });
+    // 폴더가 사라져 순서에도 없는 컷 — 정한 순서에 적혀 있으면 그 자리에서 본다
+    const saved = ["e070/c3", "e070/c9", "e070/c1"];
+    expect(settlePos(shown, { cut: "e070/c9", local: 1 }, ["e070/c3", "e070/c1"], saved))
+      .toEqual({ pos: { cut: "e070/c1", local: 0 }, moved: true });
+    // 적혀 있지 않으면 새 컷이 서는 규칙(이름순으로 바로 앞인 컷의 뒤 — c0 은 맨 앞이라 그다음은 c3)
+    expect(settlePos(shown, { cut: "e070/c0", local: 1 }, ["e070/c3", "e070/c1"], saved))
+      .toEqual({ pos: { cut: "e070/c3", local: 0 }, moved: true });
+    // 순서의 맨 뒤였으면 전체 끝
+    expect(settlePos(shown, { cut: "e070/c2", local: 1 }, ["e070/c3", "e070/c1", "e070/c2"]))
+      .toEqual({ pos: { cut: "e070/c1", local: 4 }, moved: true });
   });
 
   it("보던 컷이 짧아지면 컷 끝 직전으로 제한하고 멈춘다", () => {
@@ -260,6 +512,21 @@ describe("문서 편집", () => {
     expect(tracksOf(placeClip(d, fresh, 1))).toEqual({ b: 2, new: 1 });
   });
 
+  it("놓을 자리의 판정 — 휠 클릭 메뉴의 줄과 끌어 넣기가 같이 쓴다(placeClip 의 거부와 어긋나지 않는다)", () => {
+    const d = doc([clip("c1", "a", 1), clip("c1", "b", 2)], { tracksLocked: [2] });
+    const [a, b] = d.clips;
+    expect([1, 2, 3].map((track) => placeState(d, "e070/c1", null, track))).toEqual(["taken", "locked", "empty"]);
+    expect([1, 2, 3].map((track) => placeState(d, "e070/c1", a, track))).toEqual(["here", "locked", "empty"]);
+    expect([1, 2, 3].map((track) => placeState(d, "e070/c1", b, track))).toEqual(["locked", "here", "locked"]); // 잠긴 트랙에서 못 떠난다
+    expect(placeState(d, "e070/c2", null, 1)).toBe("empty"); // 다른 컷의 같은 트랙
+    for (const [own, id] of [[null, "new"], [a, "a"], [b, "b"]] as const) {
+      for (const track of [1, 2, 3]) {
+        const placed = placeClip(d, { cut: "e070/c1", gen: id, kind: "video", dur: 5 }, track);
+        expect([id, track, placed === null]).toEqual([id, track, ["here", "locked"].includes(placeState(d, "e070/c1", own, track))]);
+      }
+    }
+  });
+
   it("끄기는 하나라도 켜져 있으면 모두 끄고, 모두 꺼져 있으면 모두 켠다", () => {
     const d = doc([clip("c1", "a", 1, { off: true }), clip("c1", "b", 2)]);
     const allOff = toggleClipsOff(d, [key("c1", "a"), key("c1", "b")])!;
@@ -272,6 +539,19 @@ describe("문서 편집", () => {
     expect(setClipDurs(d, new Map([[key("c1", "a"), 8]]))).toBeNull();
     expect(setClipDurs(d, new Map([[key("c1", "a"), NaN]]))).toBeNull();
     expect(setClipDurs(d, new Map([[key("c1", "a"), 8.04]]))!.clips[0].dur).toBe(8.04);
+  });
+
+  // 2026-10-14 — 그림 트랙으로 잰 길이의 표(durExact). 길이가 같아도 표가 달라지면 바뀐 것이다. 저장했다 읽어도·되돌리기에도 남는다.
+  it("그림 트랙으로 잰 표(durExact) — 달고 떼기 · 저장·읽기 · 되돌리기는 지금 것을 따른다", () => {
+    const k = key("c1", "a");
+    const d = doc([clip("c1", "a", 1, { dur: 97 / 24 })]);
+    const sure = setClipDurs(d, new Map([[k, 97 / 24]]), new Set([k]))!; // 같은 길이 — 표만 단다
+    expect(sure.clips[0]).toMatchObject({ dur: 97 / 24, durExact: true });
+    expect(setClipDurs(sure, new Map([[k, 97 / 24]]), new Set([k]))).toBeNull();
+    expect("durExact" in setClipDurs(sure, new Map([[k, 98 / 24]]))!.clips[0]).toBe(false); // 표 없이 고치면 뗀다
+    expect(parseEditDoc(JSON.parse(JSON.stringify(sure)))).toEqual(sure);
+    expect(parseEditDoc({ ...sure, clips: [{ ...sure.clips[0], durExact: "yes" }] })).toBeNull();
+    expect(keepClipDurs(d, sure)).toEqual(sure); // 옛 문서를 되살려도 길이·표는 지금 것
   });
 });
 
@@ -295,6 +575,7 @@ describe("저장된 문서 읽기", () => {
       { v: 1, clips: [{ ...c, cut: "" }] }, { v: 1, clips: [{ ...c, cut: "e070\\c1" }] },
       { v: 1, clips: [{ ...c, dur: 0 }] }, { v: 1, clips: [{ ...c, dur: "8" }] },
       { v: 1, clips: [{ ...c, kind: "audio" }] }, { v: 1, clips: [], tracksOff: [0] },
+      { v: 1, clips: [{ ...c, head: 0 }] }, { v: 1, clips: [{ ...c, head: -1 }] }, { v: 1, clips: [{ ...c, head: "1" }] },
       { v: 1, clips: [c, { ...c, gen: "other" }] }, // 같은 (컷, 트랙)
       { v: 1, clips: [c, { ...c, track: 3 }] }, // 같은 (컷, 생성물)
       { v: 1, clips: [], muted: "yes" },
@@ -423,13 +704,15 @@ describe("트랙 더하기·빼기·옮기기", () => {
     expect(parseEditDoc(JSON.parse(JSON.stringify(next)))).toEqual(next); // 저장했다 읽어도 같다
   });
 
-  it("빈 트랙 모두 삭제 — 클립이 있는 트랙만 남기고 번호를 당긴다", () => {
-    const sparse = doc([clip("c1", "a", 2), clip("c1", "b", 5)], { tracksOff: [5], tracksLocked: [1], trackColors: { 5: "#46a758" } });
+  it("빈 트랙 모두 삭제 — 클립이 있는 트랙만 남기고 번호를 당긴다. 잠긴 트랙은 비어 있어도 남긴다", () => {
+    const sparse = doc([clip("c1", "a", 2), clip("c1", "b", 5)], { tracksOff: [5], tracksLocked: [3], trackColors: { 5: "#46a758" } });
     const next = deleteEmptyTracks(sparse)!;
-    expect(tracksOf(next)).toEqual({ a: 1, b: 2 });
-    expect(next).toMatchObject({ tracks: 2, tracksOff: [2], tracksLocked: [], trackColors: { 2: "#46a758" } });
-    expect(deleteEmptyTracks(next)).toBeNull(); // 더 지울 것이 없다
+    expect(tracksOf(next)).toEqual({ a: 1, b: 3 }); // 빈 V1·V4 가 빠진다 — 잠긴 빈 V3 은 V2 로 남는다(트랙 삭제가 잠긴 트랙을 거부하는 것과 같다)
+    expect(next).toMatchObject({ tracks: 3, tracksOff: [3], tracksLocked: [2], trackColors: { 3: "#46a758" } });
+    expect(deleteEmptyTracks(next)).toBeNull(); // 더 지울 것이 없다(남은 빈 줄은 잠긴 것뿐)
     expect(deleteEmptyTracks(emptyEditDoc())).toMatchObject({ tracks: 1 }); // 클립이 없어도 한 줄은 남는다
+    expect(deleteEmptyTracks(doc([], { tracksLocked: [2] }))).toMatchObject({ tracks: 1, tracksLocked: [1] }); // 잠긴 빈 줄이 그 한 줄이다
+    expect(deleteEmptyTracks(doc([clip("c1", "a", 1)], { tracks: 2, tracksLocked: [2, 9] }))).toBeNull(); // 없는 번호(9)의 잠금은 세지 않는다
   });
 
   it("트랙 색을 정하고 없앤다 — 저장된 값은 #rrggbb 만 받는다", () => {
@@ -476,7 +759,9 @@ describe("마크 인/아웃·북마크", () => {
     const marked: EditDoc = { ...d, markIn: at(2), markOut: at(10) };
     const hidden = buildLayout([cuts3[0], cuts3[2]], marked); // c2 를 숨겼다 — c1 0~8 · c3 8~12
     expect(markTime(hidden, marked.markOut)).toBeNull();
-    expect(markRange(hidden, marked)).toEqual({ from: 2, to: 12 });
+    // 찍어 둔 표시가 안 보이면 구간이 아니다 — 안 보이는 쪽을 전체 끝으로 치면 구간 반복이 말없이 끝까지 넓어진다
+    expect(marksOf(hidden, marked)).toEqual({ in: 2, out: null, band: null });
+    expect(markRange(layout, marked)).toEqual({ from: 2, to: 10 }); // 다시 보이면 구간도 돌아온다
     const short = buildLayout(cuts3, doc([clip("c1", "a", 1, { dur: 1 }), clip("c3", "p", 1, { dur: 4 })]));
     expect(markTime(short, marked.markIn)).toBeNull(); // 끝으로 자르지 않는다
     expect(markTime(short, marked.markOut)).toBe(3); // 앞 컷이 짧아진 만큼 당겨진다 — 그 컷 안의 자리는 그대로
@@ -555,7 +840,8 @@ describe("다이나믹 트림 모드 — 편집점의 앞 | 뒤", () => {
   });
 
   it("아주 짧게 비치는 클립을 건너뛰지 않는다 — 표본 시각은 이웃 편집점과의 한가운데를 넘지 않는다", () => {
-    const thin = doc([clip("c1", "v1", 1, { dur: 8 }), clip("c1", "v2", 2, { dur: 5.005 }), clip("c1", "v3", 3, { dur: 5 })]);
+    // 0.005초 조각은 그림 클립으로 만든다 — 영상의 쓰는 길이는 프레임으로 내려 이런 조각이 생기지 않는다(2026-10-14)
+    const thin = doc([clip("c1", "v1", 1, { dur: 8 }), clip("c1", "v2", 2, { dur: 5.005, kind: "image" }), clip("c1", "v3", 3, { dur: 5 })]);
     const thinLayout = buildLayout(["e070/c1"], thin);
     const thinPoints = editPoints(thinLayout); // 0 · 5 · 5.005 · 8
     const gens = (point: number) => shotsAt(thinLayout, thin, thinPoints, point).map((shot) => shot!.clip!.gen);

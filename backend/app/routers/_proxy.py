@@ -567,6 +567,7 @@ _LOCAL_EXACT = frozenset(
         "/api/sync",          # CLI 수동 동기화
         "/api/sync-status",   # 로컬 텔레메트리 outbox 상태(이 허브 자기 상태 — 서버 위임 금지)
         "/api/media-thumb",   # 로컬 보관 미디어 썸네일
+        "/api/media-picture",  # 영상의 그림 트랙 길이(편집 탭) — 썸네일과 같은 원천을 읽는다
         "/api/download",      # 원격 미디어 → attachment 스트리밍(이 PC 가 직접 받아 브라우저로)
         "/api/download/names",  # 다운로드 파일 이름 — 번호의 장부가 이 PC 가 보는 렌더 폴더에 있다(서버엔 디스크 없음)
         "/api/merge",         # View 타임라인 영상 병합(로컬 ffmpeg·디스크 작업 — 서버 위임 금지)
@@ -697,7 +698,7 @@ def _needs_shared_media_fallback(request: Request) -> bool:
     media_path: Optional[str] = None
     if path.startswith(_MEDIA_PREFIX):
         media_path = path
-    elif path == "/api/media-thumb":
+    elif path in ("/api/media-thumb", "/api/media-picture"):
         src = request.query_params.get("src")
         if isinstance(src, str) and src.startswith(_MEDIA_PREFIX):
             media_path = src

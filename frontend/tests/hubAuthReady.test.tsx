@@ -148,6 +148,144 @@ it("AUTH-off 로그아웃 — 허브가 실패를 답하면 새로 고치지 않
   }
 });
 
+// 배포 전 재검토(2026-10-13, Codex): 저장하지 못한 편집(편집 탭 — lib/unloadGuard 가 쥔다)이 있는데 로그아웃하면 새로고침으로 그 편집이
+//  사라진다. 계정·서버의 상태를 바꾸기 전에 묻는다 — 바꾼 뒤에 새로고침만 막으면 화면이 옛 계정의 것으로 남는다.
+it("저장하지 못한 편집이 있으면 로그아웃 전에 묻는다 — 취소하면 아무것도 하지 않고, 계속하면 묻지 않고 새로 고친다", async () => {
+  const reloadPage = vi.fn();
+  vi.stubGlobal("location", { href: "http://localhost:3000/", origin: "http://localhost:3000", protocol: "http:", host: "localhost:3000",
+    hostname: "localhost", port: "3000", pathname: "/", search: "", hash: "", reload: reloadPage });
+  const asked: string[] = [];
+  let answer = false;
+  vi.stubGlobal("confirm", (message: string) => { asked.push(message); return answer; });
+  const requests: string[] = [];
+  vi.stubGlobal("fetch", vi.fn((url: string) => {
+    requests.push(url);
+    if (url === "/api/auth/config") return Promise.resolve(response({ auth_enabled: false, has_accounts: false }));
+    if (url === "/api/shared-server/status") return Promise.resolve(response({ configured: true, has_token: false, url: "http://127.0.0.1:9" }));
+    if (url === "/api/projects/my-finalize-roles") return Promise.resolve(response({ project_ids: [] }));
+    if (url === "/api/shared-server/logout") return Promise.resolve(response({ ok: true, has_token: false }));
+    throw new Error(`Unexpected request: ${url}`);
+  }));
+  const { useHubAuth } = await import("../src/lib/useHubAuth");
+  const { holdUnload } = await import("../src/lib/unloadGuard");
+  let logout!: () => Promise<boolean>;
+  function Host() {
+    logout = useHubAuth().logout;
+    return null;
+  }
+  await act(async () => root!.render(<Host />));
+  await act(async () => {});
+  holdUnload("edit-docs", true);
+  try {
+    let loggedOut: boolean | undefined;
+    await act(async () => { loggedOut = await logout(); });
+    expect([loggedOut, asked.length, requests.includes("/api/shared-server/logout"), reloadPage.mock.calls.length]).toEqual([false, 1, false, 0]);
+    answer = true;
+    await act(async () => { loggedOut = await logout(); });
+    expect([loggedOut, asked.length, reloadPage.mock.calls.length]).toEqual([true, 2, 1]);
+    const leaving = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(leaving);
+    expect(leaving.defaultPrevented).toBe(false); // 새로고침은 문지기를 풀고 한다 — 브라우저가 한 번 더 묻지 않는다
+  } finally {
+    holdUnload("edit-docs", false);
+  }
+});
+
+// Codex 재검토 3회째: 위의 확인은 요청 전에 한 번뿐이다. 응답을 기다리는 동안 한 편집이 저장에 실패하면 묻지 못한 채 새로고침에 사라진다 —
+//  그사이는 '떠나는 중'이라 편집 문서가 조작을 받지 않는다(useEditDoc 이 isLeaving 을 본다 — editDocStore 시험). 실패하면 풀린다.
+it("AUTH-off 로그아웃 — 응답을 기다리는 동안은 '떠나는 중'이고, 실패하면 풀린다", async () => {
+  const reloadPage = vi.fn();
+  vi.stubGlobal("location", { href: "http://localhost:3000/", origin: "http://localhost:3000", protocol: "http:", host: "localhost:3000",
+    hostname: "localhost", port: "3000", pathname: "/", search: "", hash: "", reload: reloadPage });
+  const answer = deferred<Response>();
+  vi.stubGlobal("fetch", vi.fn((url: string) => {
+    if (url === "/api/auth/config") return Promise.resolve(response({ auth_enabled: false, has_accounts: false }));
+    if (url === "/api/shared-server/status") return Promise.resolve(response({ configured: true, has_token: false, url: "http://127.0.0.1:9" }));
+    if (url === "/api/projects/my-finalize-roles") return Promise.resolve(response({ project_ids: [] }));
+    if (url === "/api/shared-server/logout") return answer.promise;
+    throw new Error(`Unexpected request: ${url}`);
+  }));
+  const { useHubAuth } = await import("../src/lib/useHubAuth");
+  const { isLeaving } = await import("../src/lib/unloadGuard");
+  let logout!: () => Promise<boolean>;
+  function Host() {
+    logout = useHubAuth().logout;
+    return null;
+  }
+  await act(async () => root!.render(<Host />));
+  await act(async () => {});
+  expect(isLeaving()).toBe(false);
+  let pending!: Promise<boolean>;
+  await act(async () => { pending = logout(); });
+  expect(isLeaving()).toBe(true);
+  let loggedOut: boolean | undefined;
+  await act(async () => {
+    answer.resolve(new Response(JSON.stringify({ detail: "boom" }), { status: 500 }));
+    loggedOut = await pending;
+  });
+  expect([loggedOut, isLeaving(), reloadPage.mock.calls.length]).toEqual([false, false, 0]);
+});
+
+// Codex 재검토 4회째: (1) 로그아웃을 두 번 누르면 요청이 둘 — 하나의 실패가 편집 잠금을 풀고, 아직 기다리던 다른 하나의 성공이 그사이의
+//  편집을 새로고침으로 지웠다. 요청은 하나뿐이고 두 번째 누름은 그 결과를 같이 기다린다. (2) 응답이 끝나지 않으면 잠금이 영영 남았다 —
+//  제한 시간 뒤에 끊고, 로그아웃이 됐는지를 허브에 물어 정한다.
+it("AUTH-off 로그아웃 — 진행 중에 다시 눌러도 요청은 하나다. 응답이 안 끝나면 허브에 물어, 됐으면 새로 고치고 아니면 풀고 알린다", async () => {
+  vi.useFakeTimers();
+  const reloadPage = vi.fn();
+  vi.stubGlobal("location", { href: "http://localhost:3000/", origin: "http://localhost:3000", protocol: "http:", host: "localhost:3000",
+    hostname: "localhost", port: "3000", pathname: "/", search: "", hash: "", reload: reloadPage });
+  let stillLoggedIn = true;
+  let ready = false; // 화면이 뜬 뒤의 상태 조회만 센다
+  const asked: string[] = [];
+  vi.stubGlobal("fetch", vi.fn((url: string) => {
+    if (ready) asked.push(url);
+    if (url === "/api/auth/config") return Promise.resolve(response({ auth_enabled: false, has_accounts: false }));
+    if (url === "/api/shared-server/status") return Promise.resolve(response({ configured: true, has_token: stillLoggedIn, url: "http://127.0.0.1:9" }));
+    if (url === "/api/projects/my-finalize-roles") return Promise.resolve(response({ project_ids: [] }));
+    if (url === "/api/auth/me") return Promise.resolve(response({ email: "a@test", name: "a", roles: [] }));
+    if (url === "/api/shared-server/logout") return new Promise<Response>(() => {}); // 끝나지 않는 응답
+    throw new Error(`Unexpected request: ${url}`);
+  }));
+  const flashes: string[] = [];
+  const onFlash = (event: Event) => { flashes.push((event as CustomEvent<string>).detail); };
+  window.addEventListener("ch:flash", onFlash);
+  try {
+    const { useHubAuth } = await import("../src/lib/useHubAuth");
+    const { isLeaving } = await import("../src/lib/unloadGuard");
+    let logout!: () => Promise<boolean>;
+    function Host() {
+      logout = useHubAuth().logout;
+      return null;
+    }
+    await act(async () => root!.render(<Host />));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    ready = true;
+    reloadPage.mockClear(); // 처음 로그인한 계정의 범위를 맞추는 새로고침(이 시험의 일이 아니다)
+    const results: boolean[] = [];
+    await act(async () => {
+      void logout().then((done) => results.push(done));
+      void logout().then((done) => results.push(done)); // 다시 누름
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect([asked.filter((url) => url.endsWith("/logout")).length, isLeaving(), results]).toEqual([1, true, []]);
+    // 제한 시간이 지났다 — 허브에 묻는다. 세션이 그대로면 로그아웃은 안 된 것: 풀고 알린다(새로 고치지 않는다)
+    await act(async () => { await vi.advanceTimersByTimeAsync(6_000); });
+    expect([results, isLeaving(), reloadPage.mock.calls.length, flashes]).toEqual(
+      [[false, false], false, 0, ["로그아웃하지 못했습니다 — 잠시 뒤 다시 시도하세요."]]);
+    expect(asked.filter((url) => url.endsWith("/status"))).toHaveLength(1);
+    // 다시 누른다 — 이번에는 응답은 안 끝났지만 허브의 세션이 없어졌다(로그아웃은 됐다): 새로 고친다
+    stillLoggedIn = false;
+    await act(async () => {
+      void logout().then((done) => results.push(done));
+      await vi.advanceTimersByTimeAsync(11_000);
+    });
+    expect([results, reloadPage.mock.calls.length, flashes.length]).toEqual([[false, false, true], 1, 1]);
+  } finally {
+    window.removeEventListener("ch:flash", onFlash);
+    vi.useRealTimers();
+  }
+});
+
 it("AUTH-on: 설정이 오기 전 참이었다가 거짓으로 출렁이지 않는다(로그인 전에는 거짓)", async () => {
   const config = deferred<Response>();
   const { ready } = await mount({ "/api/auth/config": () => config.promise });

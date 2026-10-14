@@ -320,6 +320,59 @@ it("컷 정보 — 조회 조건이 같으면 카드 객체가 바뀌어도 다�
   expect(generationMetrics).not.toHaveBeenCalled();
 });
 
+// 2026-10-13 밤(배포 전 점검, Codex): 생성물이 200건 이하면 크레딧 요청을 한꺼번에 보냈다 — 넷씩 보내고, 닫으면 남은 것은 보내지 않는다.
+it("컷 정보 — 크레딧 요청은 한꺼번에 넷만, 끝나는 대로 다음. 닫으면 아직 안 보낸 것은 보내지 않는다", async () => {
+  const gens = ["g0", "g1", "g2", "g3", "g4", "g5", "g6"].map((id) => gen(id));
+  listGenerations.mockResolvedValue(gens);
+  const waiting = new Map<string, (value: { real_credits: number }) => void>();
+  generationMetrics.mockImplementation((id: string) => new Promise((resolve) => { waiting.set(id, resolve); }));
+  const asked = () => generationMetrics.mock.calls.map((call) => call[0]);
+  act(() => root.render(
+    <CutInfoPopup folder={card("C0290")} x={0} y={0} query={query} savingRep={false} previewOpen={false} onClose={() => {}} onOpen={() => {}} onPreview={() => {}} onPickCover={() => {}} />,
+  ));
+  await settle();
+  await settle();
+  expect(asked()).toEqual(["g0", "g1", "g2", "g3"]);
+  await act(async () => { waiting.get("g1")!({ real_credits: 1 }); });
+  await settle();
+  expect(asked()).toEqual(["g0", "g1", "g2", "g3", "g4"]);
+  act(() => root.render(null)); // 닫았다
+  await act(async () => { for (const id of ["g0", "g2", "g3", "g4"]) waiting.get(id)!({ real_credits: 1 }); });
+  await settle();
+  expect(asked()).toEqual(["g0", "g1", "g2", "g3", "g4"]); // g5·g6 은 나가지 않았다
+});
+
+// Codex 재검토(10-13 밤): 정보 창의 크레딧 요청에 시간 제한·취소가 없었다 — 앞의 넷이 멎으면 나머지가 출발하지 못해 '집계 중…'에 머물고,
+//  그 상태에서 다른 컷의 정보 창을 열면 멎은 넷을 남긴 채 새 요청이 더 나갔다.
+it("컷 정보 — 멎은 크레딧 요청은 20초 뒤 끊고 미상으로 둔 채 다음으로 간다. 닫으면 받는 중인 요청도 끊는다", async () => {
+  vi.useFakeTimers();
+  try {
+    const gens = ["g0", "g1", "g2", "g3", "g4", "g5"].map((id) => gen(id));
+    listGenerations.mockResolvedValue(gens);
+    const aborted: string[] = [];
+    generationMetrics.mockImplementation((id: string, signal?: AbortSignal) => {
+      signal?.addEventListener("abort", () => aborted.push(id));
+      return id === "g4" ? Promise.resolve({ real_credits: 2, est_credits: null, credit_source: null, elapsed_seconds: null }) : new Promise(() => {});
+    });
+    const asked = () => generationMetrics.mock.calls.map((call) => call[0]);
+    act(() => root.render(
+      <CutInfoPopup folder={card("C0290")} x={0} y={0} query={query} savingRep={false} previewOpen={false} onClose={() => {}} onOpen={() => {}} onPreview={() => {}} onPickCover={() => {}} />,
+    ));
+    await settle();
+    await settle();
+    expect([asked(), rows()["크레딧(실제)"]]).toEqual([["g0", "g1", "g2", "g3"], "집계 중…"]);
+    await act(async () => { vi.advanceTimersByTime(20_000); });
+    await settle();
+    await settle();
+    expect([asked(), aborted]).toEqual([["g0", "g1", "g2", "g3", "g4", "g5"], ["g0", "g1", "g2", "g3"]]); // 멎은 넷을 끊고 다음 둘이 나갔다
+    act(() => root.render(null)); // 닫았다 — 받는 중이던 g5 도 끊는다
+    await settle();
+    expect(aborted).toEqual(["g0", "g1", "g2", "g3", "g5"]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("모아보기 연결 — 같은 주소의 영상은 길이를 한 번만 읽고, 내용이 같은 카드 배열이 다시 와도 다시 읽지 않으며, 닫으면 주소를 뗀다", () => {
   const created: HTMLVideoElement[] = [];
   const realCreate = document.createElement.bind(document);

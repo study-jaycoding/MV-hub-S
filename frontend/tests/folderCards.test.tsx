@@ -17,7 +17,7 @@ vi.mock("../src/lib/modelCatalog", () => ({
 import { FolderCardGrid } from "../src/components/FolderCardGrid";
 import { folderCardsPlace, folderCardsScope, hasFindFilters, parentFolder, singleTeamWorkspace, type FolderCardsScope } from "../src/lib/folderCards";
 import { HttpError } from "../src/lib/http";
-import { forgetFolderCards, useFolderCards } from "../src/lib/useFolderCards";
+import { forgetFolderCards, useFolderCards, useSameQueryRevision } from "../src/lib/useFolderCards";
 import { forgetCoverCredits } from "../src/lib/coverCredits";
 
 const base: GenQuery = { tab: "team", project_id: "p1", folder_path: "e035", colors: [], tags: [], auto_tags: [] };
@@ -182,6 +182,63 @@ it("옛 공유 서버(경로 없음)는 그 계정·서버에서만 '지원 안 
   await settle();
   expect(seen.unsupported).toBe(false);
   expect(folderCardsApi).toHaveBeenCalledTimes(calls + 1);
+});
+
+// 2026-10-13 밤(배포 전 점검, Codex): 앱을 먼저 올리고 공유 서버를 나중에 갱신하면 열린 화면의 묶음 보기가 돌아오지 않았다 — 옛 서버의
+//  404 를 그 계정·서버 문맥으로 기억하고 그 뒤로는 묻지 않았기 때문. 가끔(5분) 다시 물어본다.
+it("옛 서버로 기억한 뒤에도 5분에 한 번은 다시 물어본다 — 서버가 갱신되면 묶음 보기가 돌아오고, 아직 옛 서버면 다시 5분", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    const at = (seconds: number) => vi.setSystemTime(new Date(Date.UTC(2026, 9, 13) + seconds * 1000));
+    const missing = () => new HttpError(404, "404: Not Found", "Not Found");
+    at(0);
+    folderCardsApi.mockRejectedValue(missing());
+    show({ scope: e035 });
+    await settle();
+    expect([seen.unsupported, folderCardsApi.mock.calls.length]).toEqual([true, 1]);
+    at(299);
+    show({ scope: e035, reloadKey: 1 });
+    await settle();
+    expect(folderCardsApi).toHaveBeenCalledTimes(1); // 5분 안 — 묻지 않는다
+    at(301);
+    show({ scope: e035, reloadKey: 2 });
+    await settle();
+    expect([seen.unsupported, folderCardsApi.mock.calls.length]).toEqual([true, 2]); // 물어봤지만 아직 옛 서버
+    at(400);
+    show({ scope: e035, reloadKey: 3 });
+    await settle();
+    expect(folderCardsApi).toHaveBeenCalledTimes(2); // 그 물음에서 다시 5분
+    folderCardsApi.mockResolvedValue(cards(card("C0010", 8)));
+    at(602);
+    show({ scope: e035, reloadKey: 4 });
+    await settle();
+    expect([seen.unsupported, seen.cards?.folders.map((folder) => folder.name)]).toEqual([false, ["C0010"]]); // 서버가 갱신됐다
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// 2026-10-13 밤(배포 전 점검, Codex): 폴더를 옮길 때마다 같은 묶음 조회가 두 번 나갔다 — 자리 변경으로 한 번, 옮긴 뒤 목록의 첫 쪽이 와서
+//  (listRevision) 또 한 번. 조회가 바뀐 뒤의 첫 revision 은 그 조회의 첫 답이지 변경 통보가 아니다.
+it("다시 받는 신호 — 목록이 같은 조회를 다시 받았을 때만 오른다. 조회가 바뀐 뒤의 첫 revision 은 세지 않는다", () => {
+  let count = -1;
+  function Probe({ query, revision }: { query: string; revision: number }) {
+    count = useSameQueryRevision(query, revision);
+    return null;
+  }
+  const at = (query: string, revision: number) => { act(() => root.render(<Probe query={query} revision={revision} />)); return count; };
+  expect(at("a", 0)).toBe(0);
+  expect(at("a", 1)).toBe(0); // 처음 연 화면의 첫 쪽
+  expect(at("a", 2)).toBe(1); // 주기 조회·통보·내 조작 뒤의 다시 받기
+  expect(at("b", 2)).toBe(1); // 폴더를 옮겼다
+  expect(at("b", 3)).toBe(1); // 그 조회의 첫 쪽 — 변경 통보가 아니다
+  expect(at("b", 4)).toBe(2);
+  expect(at("c", 5)).toBe(2); // 조회와 revision 이 같이 바뀌어도 그 조회의 첫 답으로 본다
+  expect(at("c", 6)).toBe(3);
+  at("d", 6);
+  at("e", 6); // 빠르게 두 번 옮겼다 — 목록 훅은 마지막 조회의 첫 쪽만 적용한다
+  expect(at("e", 7)).toBe(3);
+  expect(at("e", 8)).toBe(4);
 });
 
 // 2026-10-13 ③(Jay): 폴더를 옮기면 묶음 응답 전에 낱장이 한 번 보였다 — App 이 loading 동안 낱장 격자를 그리지 않는다.
@@ -710,6 +767,12 @@ it("컷 카드(그리드) 아래 정보판 — 모델·작업자·크레딧·생
   expect(lines.map(([k]) => k)).toEqual(["모델", "작업자", "크레딧", "생성일", "검토"]);
   expect([lines[0][1], lines[1][1], lines[2][1], lines[4][1]]).toEqual(["seedance-2.0 · 6.0s", "리버", "54 credits", "공유 9★ 최종 2R 1전체 12"]);
   expect(meta(slots[1])[4][1]).toBe("공유");
+  // 생성일은 날짜 / 시각 두 조각이다 — 컷 카드에서는 늘 두 줄로 그려 카드마다 줄 높이가 같다(Jay 2026-10-13 밤). 잘린 값은 title 로 다 보인다
+  const when = slots[0].querySelector<HTMLElement>(".cut-meta .when")!;
+  expect([...when.children].map((part) => [part.tagName, (part.textContent ?? "").length > 0])).toEqual([["SPAN", true], ["SPAN", true]]);
+  expect(when.title).toBe(new Date("2026-08-31T02:22:08Z").toLocaleString());
+  expect([slots[0].querySelector<HTMLElement>(".cut-meta .model")!.title, slots[0].querySelector<HTMLElement>(".cut-meta .reel-rv")!.title])
+    .toEqual(["seedance-2.0 · 6.0s", "공유 9 · 최종 2 · 보류 1 · 전체 12"]);
   expect(generationMetrics.mock.calls.map((call) => call[0])).toEqual(["cover-C0010", "cover-C0020"]); // 카드마다 한 번
   // 정보판을 누르면 그 카드를 고른다(빈 곳을 누른 것이 아니다) — 두 번 클릭은 카드와 같이 모아보기
   const panel = slots[0].querySelector<HTMLElement>(".cut-meta")!;
@@ -721,6 +784,36 @@ it("컷 카드(그리드) 아래 정보판 — 모델·작업자·크레딧·생
   // 다시 그려도 크레딧은 다시 묻지 않는다(한 번 받은 것은 기억한다)
   draw();
   expect(generationMetrics).toHaveBeenCalledTimes(2);
+});
+
+// 2026-10-13 밤(배포 전 점검): 컷 화면은 카드를 다 그린다(가상화 없음) — 크레딧은 카드마다 요청 한 건이라, 화면에 들어온 카드만 묻는다.
+it("정보판의 크레딧은 화면에 들어온 카드만 묻는다 — 안 보이는 카드는 들어올 때 묻는다", async () => {
+  const fire = new Map<Element, (on: boolean) => void>();
+  const g = globalThis as { IntersectionObserver?: unknown };
+  const before = g.IntersectionObserver;
+  g.IntersectionObserver = class {
+    constructor(private readonly report: (entries: { isIntersecting: boolean }[]) => void) {}
+    observe(el: Element) { fire.set(el, (on) => this.report([{ isIntersecting: on }])); }
+    disconnect() {}
+    unobserve() {}
+  };
+  try {
+    forgetCoverCredits();
+    generationMetrics.mockClear();
+    act(() => root.render(<FolderCardGrid {...gridProps} folders={[card("C0010", 3), card("C0020", 2)]} outside={0} />));
+    const flush = () => act(async () => { for (let i = 0; i < 4; i++) await Promise.resolve(); });
+    await flush();
+    const panels = [...host.querySelectorAll<HTMLElement>(".cut-meta")];
+    const credit = (panel: Element) => panel.querySelectorAll(".v")[2].textContent;
+    expect([generationMetrics.mock.calls.length, panels.map(credit)]).toEqual([0, ["…", "…"]]);
+    act(() => fire.get(panels[1])!(true));
+    await flush();
+    expect([generationMetrics.mock.calls.map((call) => call[0]), panels.map(credit)]).toEqual([["cover-C0020"], ["…", "54 credits"]]);
+    act(() => fire.get(panels[1])!(false)); // 다시 화면을 벗어나도 받은 값은 그대로 보인다
+    expect(credit(panels[1])).toBe("54 credits");
+  } finally {
+    g.IntersectionObserver = before;
+  }
 });
 
 it("에피소드 화면의 표 — '컷' 열이 생기고 대표는 정한 컷 수, 단추는 [열기]", () => {

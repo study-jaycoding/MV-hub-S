@@ -4,7 +4,7 @@
 //  목록은 폴더 창과 같은 조회(folderPeekQuery)를 끝까지 넘겨 받는다 — 첫 쪽만 세면 카드의 건수와 어긋난다(Codex 설계 검토).
 //  ponytail: 크레딧은 건마다 metrics 요청 — 컷이 수백 건이면 묶음 조회 API 로.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { askMetrics } from "../lib/coverCredits";
 import { inFolder, summarizeCut, type CutMetrics } from "../lib/cutSummary";
 import { FETCH_ALL_MAX, fetchAllGenerations } from "../lib/fetchAllGenerations";
 import { formatCredits } from "../lib/formatCredits";
@@ -35,6 +35,7 @@ interface Props {
 const POP_W = 420;
 const MAX = FETCH_ALL_MAX; // 목록은 이만큼까지(4쪽) — 넘으면 '최근 N건 기준'. 프로젝트만 골랐을 때의 카드는 에피소드라 수천 건일 수 있다
 const METRICS_MAX = 200; // 크레딧은 건마다 요청이라 이보다 많으면 집계하지 않는다
+const METRICS_AT_ONCE = 4; // 그 요청을 한꺼번에 보내는 수
 const STRIP_MAX = 200; // 아래 생성물 줄도 이만큼만(그 뒤는 '외 N건') — 수천 장의 썸네일을 한 창에 그리지 않는다
 
 function clampStart(x: number, y: number) {
@@ -110,6 +111,7 @@ export function CutInfoPopup({ folder, x, y, query, savingRep, previewOpen, onCl
   useEffect(() => {
     const my = ++seqRef.current;
     const alive = () => my === seqRef.current;
+    const stop = new AbortController(); // 닫거나 다른 폴더로 — 받는 중인 크레딧 요청도 끊는다(멎은 요청을 남긴 채 새 요청이 쌓이지 않게)
     setGens(null);
     setMetrics(null);
     setTruncated(false);
@@ -124,17 +126,26 @@ export function CutInfoPopup({ folder, x, y, query, savingRep, previewOpen, onCl
           setMetrics(new Map());
           return;
         }
-        const results = await Promise.allSettled(got.gens.map((g) => api.generationMetrics(g.id)));
+        // 넷씩 보낸다 — 한꺼번에 보내면 다른 조회(목록·폴더 카드)가 그 뒤에 선다. 닫으면 아직 안 보낸 것은 보내지 않는다(Codex 코드 리뷰).
+        //  멎은 요청은 시간이 지나면 끊고 미상으로 둔 채 다음으로 간다(lib/coverCredits 의 askMetrics — 카드의 크레딧 줄과 같은 규칙).
+        const results: (CutMetrics | null)[] = got.gens.map(() => null);
+        let at = 0;
+        await Promise.all(Array.from({ length: METRICS_AT_ONCE }, async () => {
+          while (alive() && at < got.gens.length) {
+            const i = at++;
+            results[i] = await askMetrics(got.gens[i].id, stop.signal);
+          }
+        }));
         if (!alive()) return;
-        setMetrics(new Map(got.gens.map((g, i) => {
-          const result = results[i];
-          return [g.id, result.status === "fulfilled" ? result.value : null];
-        })));
+        setMetrics(new Map(got.gens.map((g, i) => [g.id, results[i]])));
       } catch (e) {
         if (alive()) setError(e instanceof Error ? e.message : String(e));
       }
     })();
-    return () => { seqRef.current += 1; };
+    return () => {
+      seqRef.current += 1;
+      stop.abort();
+    };
   }, [folder.path, query]);
 
   const cover = folder.cover;

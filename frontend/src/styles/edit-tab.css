@@ -93,8 +93,6 @@
 .ed-tbtn:hover svg.ed-line { fill: none; stroke: #fff; }
 .ed-tbtn.ed-on { background: rgba(var(--accent-rgb), 0.14); } /* 반복이 켜져 있다 */
 .ed-tbtn.ed-on svg.ed-line, .ed-tbtn.ed-on:hover svg.ed-line { stroke: var(--accent); }
-.ed-tbtn:disabled { opacity: 0.35; } /* 구간 반복 — 인/아웃이 없다 */
-.ed-tbtn.ed-t-range { width: 32px; border-radius: 7px; }
 /* 배속 — 글자 단추. 1x 가 아니면 라임(.ed-on) */
 .ed-tbtn.ed-t-speed {
   width: 40px; border-radius: 7px; font: 600 11.5px ui-monospace, Consolas, monospace; color: #c9ccd3;
@@ -103,18 +101,25 @@
 .ed-tbtn.ed-t-speed.ed-on, .ed-tbtn.ed-t-speed.ed-on:hover { color: var(--accent); }
 .ed-tbtn.ed-play { width: 30px; height: 30px; background: var(--accent); }
 .ed-tbtn.ed-play svg, .ed-tbtn.ed-play:hover svg { fill: var(--accent-ink); }
-.ed-tside { position: absolute; right: 12px; display: flex; align-items: center; gap: 2px; } /* 구간 반복 · 마크 인 · 마크 아웃 */
+.ed-tside { position: absolute; right: 12px; display: flex; align-items: center; gap: 2px; } /* 소리 크기(Jay 2026-10-14) */
 .ed-tside svg { fill: #9aa0ae; }
 .ed-tside svg.ed-line { fill: none; stroke: #9aa0ae; }
+.ed-vol-bar { width: 72px; height: 22px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
+.ed-vol-track { position: relative; flex: 1; height: 4px; border-radius: 2px; background: #2c303b; }
+.ed-vol-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: #9aa0ae; pointer-events: none; }
+.ed-vol-knob { position: absolute; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: #c9ccd3; pointer-events: none; }
+.ed-vol-bar:hover .ed-vol-knob { background: #fff; }
 .ed-tbtn.ed-dual { margin-left: 2px; border-radius: 6px; width: 30px; height: 24px; }
 .ed-tbtn.ed-dual svg { fill: none; stroke: #c9ccd3; stroke-width: 1.3; }
 .ed-tbtn.ed-dual:hover svg, .ed-tbtn.ed-dual.ed-on svg { stroke: var(--accent); fill: none; }
 .ed-tbtn.ed-dual.ed-on { background: rgba(var(--accent-rgb), 0.1); }
-/* 좁은 판(듀얼) — 폭 기준은 판 자신이다. 오른쪽 단추들이 가운데 단추와 겹치기 전에 숨긴다: 먼저 마크 인/아웃(I·O 키가
-   있다), 더 좁아지면 구간 반복까지(Alt+/ 가 있다 — 켜 둔 것을 끌 길은 남는다). */
+/* 좁은 판(듀얼) — 폭 기준은 판 자신이다. 오른쪽의 소리 크기가 가운데 단추와 겹치기 전에 줄이고 숨긴다: 먼저 막대를 줄이고(44px),
+   더 좁으면 막대를, 더 좁으면 스피커까지. 가운데 단추 묶음은 약 282px 이라 막대 44px 의 소리 칸(74px)은 판 폭 약 470px 까지 안 겹친다
+   (2026-10-14 격리 실측 — 1584 창의 듀얼 판 495px 에서 막대가 숨어 '판마다 소리'가 끄고 켜기뿐이었다). */
 .ed-vbot { container-type: inline-size; }
-@container (max-width: 520px) { .ed-tside .ed-t-in, .ed-tside .ed-t-out { display: none; } }
-@container (max-width: 400px) { .ed-tside { display: none; } }
+@container (max-width: 560px) { .ed-tside .ed-vol-bar { width: 44px; } }
+@container (max-width: 470px) { .ed-tside .ed-vol-bar { display: none; } }
+@container (max-width: 440px) { .ed-tside { display: none; } }
 
 /* 미디어 풀 — 왼쪽 폴더 목록 바로 옆(다빈치의 Bins | 클립). 머리줄 = 컷 이름 + 보기 방식·검색·정렬. */
 /* 폭은 끌어서 바꾼다(ResizableSidebar — 프로젝트 칸과 같은 손잡이). */
@@ -237,6 +242,13 @@
 .ed-seq i { font-style: normal; color: var(--muted2); margin: 0 7px; }
 .ed-mine, .ed-warn { flex: none; padding: 3px 9px; border-radius: 999px; font-size: 11.5px; border: 1px solid var(--border2); color: var(--muted); }
 .ed-warn { color: #ffb37a; border-color: rgba(255, 150, 80, 0.45); }
+/* 폴더 순서를 바꿔 둔 상태의 알약 — 누르면 이름순으로 되돌린다(단추라 전역 button 의 안쪽 여백·배경을 여기서 다시 정한다) */
+.ed-orderchip {
+  height: auto; padding: 3px 9px; background: transparent; font: inherit; font-size: 11.5px; line-height: inherit; cursor: pointer;
+  color: var(--accent); border-color: rgba(var(--accent-rgb), 0.45);
+}
+.ed-orderchip:hover { background: rgba(var(--accent-rgb), 0.1); }
+.ed-orderchip:active { transform: none; }
 /* 마크 인/아웃·북마크 — 재생헤드 자리에 찍는 단추. 찍혀 있으면 라임. 옆 글자는 구간 길이(누르면 지운다). */
 .ed-marks { margin-left: auto; flex: none; display: flex; align-items: center; gap: 4px; }
 .ed-marks + .ed-zoom { margin-left: 0; }
@@ -249,6 +261,11 @@
 .ed-mbtn.ed-on { background: rgba(var(--accent-rgb), 0.14); }
 .ed-mbtn.ed-on svg { stroke: var(--accent); }
 .ed-mbtn-mk { margin-left: 6px; }
+.ed-mbtn:disabled { opacity: 0.35; } /* 구간 반복 — 인/아웃이 없다 */
+.ed-mbtn-range { min-width: 32px; } /* 구간 반복 · 마크 인 · 마크 아웃(Jay 2026-10-14 — 뷰어 오른쪽 아래에서 옮겼다) */
+.ed-mbtn-range svg { stroke-width: 1.5; stroke-linecap: round; }
+.ed-mbtn-io svg { fill: #c9ccd3; stroke: none; }
+.ed-mbtn-io:hover svg { fill: #fff; stroke: none; }
 .ed-mbtn-trim { min-width: 36px; } /* 다이나믹 트림 모드 */
 .ed-mbtn-trim svg { stroke-width: 1.5; stroke-linecap: round; }
 .ed-mbtn-trim circle { fill: currentColor; stroke: none; color: #c9ccd3; }
@@ -329,6 +346,92 @@
   background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border2); color: var(--text);
 }
 .ed-mmenu-name:focus { border-color: rgba(var(--accent-rgb), 0.6); }
+/* 클립 길이 조절 창 — 떠 있는 창(머리를 끌어 옮긴다 · body 에 그린다). 큰 화면 · 재생 · 띠(슬라이더) · 프레임 단추 · 숫자 칸.
+   쌓임은 떠 있는 창의 띠(lib/useFloatingPanel 이 152~159 를 인라인으로 준다) — 우클릭 메뉴(1000)·끌기 유령(900)보다 아래다. */
+/* 오른쪽 아래 모서리를 끌어 크기를 바꾼다(Jay 2026-10-14) — 가장 작은 크기 = 처음 크기(폭 560 · 높이는 내용이 다 보이는 만큼).
+   키운 만큼 큰 화면이 커진다(아래 .ed-trim-view 의 flex-grow). 바꾼 크기는 이 브라우저에 남는다(lib/useFloatingPanel 의 size). */
+.ed-trim {
+  position: fixed; z-index: 153; width: 560px; min-width: min(560px, calc(100vw - 16px)); min-height: max-content;
+  max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); display: flex; flex-direction: column; resize: both; overflow: hidden;
+  background: #14151a; border: 1px solid var(--border2); border-radius: 12px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
+  color: var(--text); outline: none;
+}
+/* 아주 낮은 화면 — 큰 화면이 가장 작게(90px) 줄어도 내용이 화면보다 높다. 그때는 가장 작은 크기를 풀어 창이 화면 안에 머물고 안에서
+   스크롤한다(min-height 가 max-height 를 이겨 창 아래가 화면 밖으로 나갔다 — Codex 코드 리뷰). */
+@media (max-height: 360px) { .ed-trim { min-height: 0; } }
+/* 키가 창의 것일 때(초점이 창 안) 테두리가 라임이다 — 초점이 타임라인이면 키는 타임라인의 것인데, 전에는 두 상태의 모양이 같았다 */
+.ed-trim:focus-within { border-color: rgba(var(--accent-rgb), 0.55); }
+.ed-trim-head {
+  display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 6px 0 12px; border-bottom: 1px solid var(--border);
+  font-size: 12.5px; cursor: move; user-select: none;
+}
+.ed-trim-head b { flex: none; font-weight: 800; }
+.ed-trim-head span { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-trim-head button {
+  flex: none; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 6px; background: none; color: var(--muted);
+  font-size: 13px; line-height: 1; cursor: pointer;
+}
+.ed-trim-head button:hover, .ed-trim-head button:focus-visible { background: rgba(255, 255, 255, 0.08); color: var(--text); outline: none; }
+/* 낮은 창에서는 큰 화면이 줄어든다(나머지 줄 약 230px 을 남기고) — 아래 단추 줄이 화면 밖으로 잘리지 않게. 그래도 모자라면 창 안에서 스크롤 */
+.ed-trim-body { flex: 1 1 auto; display: flex; flex-direction: column; gap: 8px; padding: 12px; min-height: 0; overflow-y: auto; }
+.ed-trim-body > * { flex: none; }
+.ed-trim-body > .ed-trim-view { flex: 1 0 auto; } /* 창을 위아래로 키운 만큼 큰 화면이 받는다(영상은 contain 으로 가운데) */
+.ed-trim-view { width: 100%; aspect-ratio: 16 / 9; max-height: max(90px, calc(100vh - 246px)); border-radius: 8px; background: #000; object-fit: contain; }
+.ed-trim-play { display: flex; align-items: center; gap: 8px; min-height: 26px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ed-trim-play span { flex: 1; text-align: right; }
+.ed-trim-play em { font-style: normal; color: #ff9aa1; }
+/* 띠 — 쓰는 구간은 라임, 잘라 낸 구간(앞·뒤)은 옅은 회색(--from = 쓰는 구간의 처음, --fill = 끝 — EditTrimPop 이 준다). 브라우저
+   기본 띠는 잘라 낸 구간이 거의 안 보였다(대비 1.6:1 — 이 창에서 가장 중요한 정보다). 앱은 크롬 계열에서만 돈다.
+   손잡이 둘(시작 · 끝)은 같은 자리에 겹친 range 둘이다: 입력 자체는 누름을 받지 않고 손잡이만 받는다 — 위에 놓인 입력이 띠
+   전체의 누름을 가져가지 않게. 띠의 색은 끝(.ed-trim-out)의 트랙이 그리고, 잡은 쪽(.ed-on)이 위에 온다. */
+.ed-trim-bar { position: relative; height: 26px; cursor: pointer; }
+.ed-trim-range {
+  position: absolute; left: 0; top: 0; width: 100%; height: 26px; margin: 0; background: none; pointer-events: none;
+  -webkit-appearance: none; appearance: none;
+}
+.ed-trim-range.ed-on { z-index: 1; }
+.ed-trim-range::-webkit-slider-runnable-track {
+  height: 8px; border-radius: 4px;
+  background: linear-gradient(to right, rgba(255, 255, 255, 0.28) 0 var(--from, 0%), var(--accent) var(--from, 0%) var(--fill, 100%),
+    rgba(255, 255, 255, 0.28) var(--fill, 100%) 100%);
+}
+.ed-trim-in::-webkit-slider-runnable-track { background: none; }
+.ed-trim-range::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; width: 18px; height: 18px; margin-top: -5px; border-radius: 50%;
+  background: var(--accent); border: 2px solid #14151a; box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.6);
+  pointer-events: auto; cursor: ew-resize;
+}
+.ed-trim-range:focus-visible { outline: none; }
+/* 잡은 쪽(←/→ 와 ±단추가 움직이는 손잡이)과 초점이 있는 손잡이 — 테가 굵다 */
+.ed-trim-range.ed-on::-webkit-slider-thumb, .ed-trim-range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.45); }
+/* 잡은 쪽 고르기(시작 · 끝) — 붙은 단추 둘 */
+.ed-trim-edge { flex: none; display: flex; }
+.ed-trim-edge button { border-radius: 0; }
+.ed-trim-edge button:first-child { border-radius: 6px 0 0 6px; }
+.ed-trim-edge button:last-child { border-radius: 0 6px 6px 0; margin-left: -1px; }
+.ed-trim-body .ed-trim-edge button[aria-pressed="true"] { position: relative; border-color: rgba(var(--accent-rgb), 0.7); background: rgba(var(--accent-rgb), 0.16); color: var(--accent); }
+/* 눈금 — 가운데 글이 띠의 가운데에 오게 세 칸(양 끝 글의 폭이 달라 space-between 이면 가운데가 밀린다) */
+.ed-trim-scale { display: grid; grid-template-columns: 1fr auto 1fr; margin-top: -6px; font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ed-trim-scale span:last-child { text-align: right; }
+.ed-trim-row, .ed-trim-foot { display: flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.ed-trim-row i { flex: 1; }
+.ed-trim-eq { color: var(--muted); }
+.ed-trim-body button {
+  flex: none; height: 26px; padding: 0 9px; border: 1px solid var(--border2); border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05); color: var(--text); font-size: 12px; line-height: 1; cursor: pointer;
+}
+.ed-trim-body button:active { transform: none; }
+.ed-trim-body button:hover:not([aria-disabled="true"]) { background: rgba(255, 255, 255, 0.1); }
+.ed-trim-body button[aria-disabled="true"] { opacity: 0.4; cursor: default; }
+.ed-trim-body button.ed-trim-go { border-color: var(--accent); background: var(--accent); color: #111; font-weight: 800; }
+.ed-trim-body button.ed-trim-go:hover { background: var(--accent); filter: brightness(1.1); }
+.ed-trim-num {
+  width: 62px; height: 26px; padding: 0 4px; border: 1px solid var(--border2); border-radius: 6px; background: rgba(0, 0, 0, 0.35);
+  color: var(--text); font-size: 13px; font-weight: 800; text-align: center; font-variant-numeric: tabular-nums;
+}
+.ed-trim-num:focus { border-color: rgba(var(--accent-rgb), 0.6); outline: none; }
+.ed-trim-foot { justify-content: space-between; margin-top: 2px; }
+.ed-trim-foot small { font-size: 11px; color: var(--muted); }
 
 /* 타임라인 — 왼쪽 트랙 머리 + 오른쪽 가로 스크롤. 줄 높이는 머리와 줄이 같아야 한다. */
 .ed-tl { flex: none; max-height: 52%; display: flex; overflow-y: auto; background: #0b0c0e; user-select: none; }
@@ -400,6 +503,17 @@
   position: absolute; left: 4px; bottom: 3px; padding: 1px 5px; border-radius: 4px; pointer-events: none;
   font-size: 10px; font-weight: 600; background: rgba(8, 9, 12, 0.66); color: #e6e8ec;
 }
+/* 최종(★) — 풀의 카드에 붙는 금색 표(generations.css 의 .card-sf.final)를 0.72배로 줄인 모양. 표시만 한다 */
+.ed-clip-final {
+  position: absolute; top: 5px; right: 4px; width: 19px; height: 19px; border-radius: 6px; pointer-events: none;
+  display: flex; align-items: center; justify-content: center; font-size: 12px; color: #2a1d00;
+  background: linear-gradient(135deg, #f5c542, #e0a316); box-shadow: 0 0 0 1px #ffd966, 0 0 7px rgba(245, 197, 66, 0.5);
+}
+/* 앞을 자른 클립의 왼쪽 가장자리 — 빗금 4px(원본의 처음에서 시작하지 않는다). 좁은 클립(.ed-thin)에서는 다른 자식처럼 감춘다 */
+.ed-clip-head {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 4px; pointer-events: none;
+  background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.7) 0 2px, rgba(0, 0, 0, 0.35) 2px 4px);
+}
 .ed-clip::after { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px; background: var(--trk, transparent); pointer-events: none; }
 .ed-clip.ed-sel { border: 2px solid var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.18); }
 .ed-clip.ed-off { opacity: 0.4; filter: grayscale(1); } /* 끈 클립·끈 트랙만 흐리다 — 쌓인 클립은 흐리게 하지 않는다 */
@@ -407,12 +521,47 @@
 .ed-clip.ed-missing { background: repeating-linear-gradient(135deg, #3a1218 0 8px, #2a0d12 8px 16px); border-color: rgba(255, 90, 100, 0.6); }
 .ed-clip.ed-unknown { background: repeating-linear-gradient(135deg, #24262b 0 8px, #1b1d21 8px 16px); }
 .ed-clip-msg { flex: 1; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #d7dae0; pointer-events: none; }
+/* 컷이 몇 픽셀뿐일 때의 클립(한 프레임짜리 컷 등) — 테두리가 폭보다 넓어 다음 컷 자리를 덮지 않게 테두리·그림자·글자 없이 그 폭만. 고른 것은 색으로 */
+.ed-clip.ed-thin, .ed-clip.ed-thin.ed-sel { border: 0; box-shadow: none; border-radius: 0; }
+.ed-clip.ed-thin.ed-sel { background: var(--accent); }
+.ed-clip.ed-thin > * { display: none; }
+/* 줄인 클립의 '원본의 나머지'(그 컷 안에 남는 만큼) — 빗금만, 누를 수 없다 */
+.ed-clip-rest {
+  position: absolute; top: 3px; height: 52px; box-sizing: border-box; border-radius: 0 5px 5px 0; pointer-events: none;
+  border: 1px dashed rgba(255, 255, 255, 0.16); border-left: 0;
+  background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.07) 0 6px, transparent 6px 12px);
+}
 .ed-slot {
   border: 1px dashed rgba(255, 255, 255, 0.22); align-items: center; justify-content: center; pointer-events: none;
   font-size: 11px; color: var(--muted2);
   background: repeating-linear-gradient(135deg, transparent 0 7px, rgba(255, 255, 255, 0.025) 7px 14px);
 }
 .ed-slot.ed-slot-off { border-style: dotted; opacity: 0.5; }
+/* 풀의 카드를 끌어 트랙 줄 위에 올렸다 — 들어갈 칸(그 카드의 컷). 클립 위에 겹쳐 그린다. 넣기·교체 = 라임, 지금 여기·잠김 = 흐리게 */
+.ed-drop {
+  position: absolute; top: 3px; height: 52px; box-sizing: border-box; border-radius: 5px; z-index: 5; pointer-events: none;
+  display: flex; align-items: center; justify-content: center; overflow: hidden; white-space: nowrap;
+  font-size: 11px; font-weight: 700; color: var(--accent-ink);
+  border: 2px solid var(--accent); background: rgba(var(--accent-rgb), 0.82);
+}
+.ed-drop-here, .ed-drop-locked { color: #d7dae0; border: 2px dashed rgba(255, 255, 255, 0.45); background: rgba(8, 9, 12, 0.72); }
+/* 끄는 카드(유령) — 포인터를 따라간다. 자리는 transform 으로 옮긴다(EditTab) */
+.ed-ghost {
+  position: fixed; left: 0; top: 0; z-index: 900; pointer-events: none; display: flex; align-items: center; gap: 8px;
+  padding: 5px 10px 5px 5px; border-radius: 9px; font-size: 12px; font-weight: 600; white-space: nowrap; color: var(--text);
+  background: var(--glass); backdrop-filter: blur(14px); border: 1px solid var(--border2); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+}
+.ed-ghost img { width: 56px; height: 32px; border-radius: 5px; object-fit: cover; }
+.ed-ghost > span:first-child { padding-left: 5px; }
+.ed-ghost-empty, .ed-ghost-taken, .ed-ghost-view { border-color: rgba(var(--accent-rgb), 0.7); }
+.ed-ghost-empty > span, .ed-ghost-taken > span, .ed-ghost-view > span { color: var(--accent); }
+/* 컷(폴더) 순서 끌기 — 끄는 칸은 흐리게, 끼워질 자리에는 세로 줄 */
+.ed-cutcell { touch-action: none; }
+.ed-cutcell.ed-cutdrag { opacity: 0.45; cursor: grabbing; }
+.ed-cutdrop {
+  position: absolute; top: 28px; bottom: 0; width: 2px; margin-left: -1px; z-index: 6; pointer-events: none;
+  background: var(--accent); box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.35), 0 0 10px rgba(var(--accent-rgb), 0.6);
+}
 .ed-aud { position: absolute; top: 5px; height: 36px; box-sizing: border-box; border-radius: 5px; background: #1f5a3a; border: 1px solid #2f7d53; pointer-events: none; }
 .ed-phead { position: absolute; left: -1px; top: 0; bottom: 0; width: 2px; background: #ff4d4f; z-index: 5; pointer-events: none; will-change: transform; }
 .ed-phead::before { content: ""; position: absolute; left: -6px; top: 0; border: 7px solid transparent; border-top: 10px solid #ff4d4f; }

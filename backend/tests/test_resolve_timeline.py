@@ -272,13 +272,22 @@ class FakeResolve:
         return self.manager
 
 
-def clip(gen_id, track, start, end, *, enabled=True, kind="video"):
-    return {"gen_id": gen_id, "track": track, "start": start, "end": end, "enabled": enabled, "kind": kind}
+def clip(gen_id, track, start, end, *, enabled=True, kind="video", head=None):
+    """head 를 주면 2 판의 클립이다(소스의 시작, 24fps 프레임) — 안 주면 그 칸이 없다(1 판)."""
+    row = {"gen_id": gen_id, "track": track, "start": start, "end": end, "enabled": enabled, "kind": kind}
+    if head is not None:
+        row["head"] = head
+    return row
 
 
-def plan(clips, *, audio=(), markers=(), mark=None, tracks=3, off=(), locked=(), muted=False, name="뻘뻘뻘_e035"):
+def sound(gen_id, start, end, track, offset=0):
+    """2 판의 소리 — 그 소리를 내는 영상 클립의 트랙을 가리킨다."""
+    return {"gen_id": gen_id, "start": start, "end": end, "offset": offset, "track": track}
+
+
+def plan(clips, *, audio=(), markers=(), mark=None, tracks=3, off=(), locked=(), muted=False, name="뻘뻘뻘_e035", version=1):
     return {
-        "format": "mvhub.edit-timeline", "version": 1, "name": name, "fps": 24, "video_tracks": tracks,
+        "format": "mvhub.edit-timeline", "version": version, "name": name, "fps": 24, "video_tracks": tracks,
         "tracks_off": list(off), "tracks_locked": list(locked), "muted": muted,
         "clips": list(clips), "audio": list(audio), "markers": list(markers), "mark": mark,
         "total": max((item["end"] for item in clips), default=0),
@@ -309,9 +318,36 @@ class ValidatePlanTests(unittest.TestCase):
         self.assertEqual(out["mark"], {"in": 0, "out": 48})
         self.assertEqual(resolve_timeline.plan_generation_ids(out), ["a", "b"])
 
+    def test_version_two_carries_the_source_start_and_the_audio_carrier(self):
+        # 앞 자르기(2026-10-14) — 2 판은 클립마다 head(소스의 시작, 24fps 프레임), 소리마다 track(제 영상 클립의 트랙)이 있어야 한다
+        v2 = {"version": 2, "clips": [clip("a", 1, 0, 120, head=0), clip("b", 2, 0, 96, head=24)], "audio": [sound("b", 0, 96, 2, 1)]}
+        out = self.ok(**v2)
+        self.assertEqual(out["version"], 2)  # 받은 버전을 그대로 돌려준다
+        self.assertEqual([(row["gen_id"], row["head"]) for row in out["clips"]], [("a", 0), ("b", 24)])
+        self.assertEqual(out["audio"][0]["track"], 2)
+        one = self.ok()
+        self.assertEqual((one["version"], [row["head"] for row in one["clips"]], one["audio"][0]["track"]), (1, [0, 0], None))
+        self.bad(version=3)
+        self.bad(version=True)
+        self.bad(**{**v2, "clips": [clip("a", 1, 0, 120), clip("b", 2, 0, 96, head=24)]})  # 2 판인데 head 가 빠진 클립
+        self.bad(**{**v2, "clips": [clip("a", 1, 0, 120, head=0), clip("b", 2, 0, 96, head=-1)]})
+        self.bad(**{**v2, "clips": [clip("a", 1, 0, 120, head=0), clip("b", 2, 0, 96, head=1.5)]})
+        self.bad(**{**v2, "clips": [clip("a", 1, 0, 120, head=0), clip("b", 2, 0, 96, head=True)]})
+        self.bad(**{**v2, "clips": [clip("a", 1, 0, 120, head=5, kind="image"), clip("b", 2, 0, 96, head=24)]})  # 그림에는 시작점이 없다
+        self.bad(**{**v2, "audio": [{"gen_id": "b", "start": 0, "end": 96, "offset": 1}]})  # 소리에 track 이 없다
+        self.bad(**{**v2, "audio": [sound("b", 0, 96, 1, 1)]})  # V1 의 그 자리에는 b 가 없다 — 다른 클립으로 대신하지 않는다
+        self.bad(**{**v2, "audio": [sound("b", 96, 110, 2, 1)]})  # b 가 놓인 구간 밖
+        self.bad(**{**v2, "audio": [sound("b", 0, 96, 9, 1)]})  # 없는 트랙
+        # 1 판에 2 판의 칸이 오면 조용히 버리지 않는다(버리면 0초부터 놓고 완료라고 답한다)
+        self.bad(clips=[clip("a", 1, 0, 120, head=24), clip("b", 2, 0, 96)])
+        self.bad(clips=[clip("a", 1, 0, 120, head=0), clip("b", 2, 0, 96)])
+        self.bad(audio=[sound("b", 0, 96, 2)])
+
     def test_rejects_wrong_shape_before_anything_is_prepared(self):
         self.bad(format="mvhub.resolve-transfer")
-        self.bad(version=2)
+        self.bad(version=2)  # 2 판인데 클립에 head 가 없다
+        self.bad(version=0)
+        self.bad(version="1")
         self.bad(fps=25)
         self.bad(fps=True)
         self.bad(name="  ")
@@ -526,6 +562,82 @@ class BuildTimelineTests(unittest.TestCase):
         self.add("a", frames=600)
         self.build(plan([clip("a", 1, 300, 540)], audio=[{"gen_id": "a", "start": 122, "end": 239, "offset": 5.0625}], tracks=1))
         self.assertEqual(self.lane(self.project.timelines[0], "audio", 1), [("a.mp4", 122, 117, 122)])
+
+    # ── 앞 자르기(2026-10-14) — 클립이 소스의 중간에서 시작한다 ────────────────────────────────────────
+    def test_a_clip_can_start_inside_its_source(self):
+        # top 은 원본 1~3초, ntsc(30fps)는 원본 2~4초. 영상과 소리가 같은 소스 프레임에서 시작하고 같이 끝난다
+        self.add("low", frames=192)
+        self.add("top", frames=120)
+        self.add("ntsc", "e035/C0020", fps=30.0, frames=300)
+        result = self.build(plan(
+            [clip("low", 1, 0, 192, head=0), clip("top", 2, 0, 48, head=24), clip("ntsc", 1, 192, 240, head=48)],
+            audio=[sound("top", 0, 48, 2, 1), sound("low", 48, 192, 1, 2), sound("ntsc", 192, 240, 1, 2)], version=2,
+        ))
+        self.assertEqual((result["status"], result["mismatches"], result["warnings"]), ("complete", [], []))
+        timeline = self.project.timelines[0]
+        self.assertEqual(self.lane(timeline, "video", 1), [("low.mp4", 0, 192, 0), ("ntsc.mp4", 192, 48, 60)])  # 30fps 의 2초 = 소스 60프레임
+        self.assertEqual(self.lane(timeline, "video", 2), [("top.mp4", 0, 48, 24)])
+        self.assertEqual(self.lane(timeline, "audio", 1), [("top.mp4", 0, 48, 24), ("low.mp4", 48, 144, 48), ("ntsc.mp4", 192, 48, 60)])
+        ranges = {(info["mediaPoolItem"].path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1], info["mediaType"]): (info["startFrame"], info["endFrame"])
+                  for call in self.pool.append_calls for info in call}
+        self.assertEqual((ranges[("top.mp4", 1)], ranges[("top.mp4", 2)]), ((24, 72), (24, 72)))
+        self.assertEqual((ranges[("ntsc.mp4", 1)], ranges[("ntsc.mp4", 2)]), ((60, 120), (60, 120)))
+
+    def test_picture_and_sound_use_one_source_frame_rule(self):
+        # Codex 설계 검토: 시작과 끝을 따로 반올림하면 30fps 원본의 [1프레임에서 시작 · 1프레임 길이]가 영상 [1, 2) · 소리 [1, 3) 이 된다
+        self.add("ntsc", fps=30.0, frames=300)
+        self.add("next", "e035/C0020", frames=240)
+        self.build(plan([clip("ntsc", 1, 0, 1, head=1), clip("next", 1, 1, 241, head=0)], audio=[sound("ntsc", 0, 1, 1, 1 / 24)], version=2, tracks=1))
+        calls = [info for call in self.pool.append_calls for info in call if info["mediaPoolItem"].path.endswith("ntsc.mp4")]
+        self.assertEqual([(info["mediaType"], info["startFrame"], info["endFrame"]) for info in calls], [(1, 1, 2), (2, 1, 2)])
+
+    def test_refuses_when_the_start_point_leaves_too_little_source(self):
+        self.add("a", frames=120)  # 5초
+        result = self.build(plan([clip("a", 1, 0, 96, head=48)], version=2, tracks=1))  # 2초부터 4초를 쓰겠다 — 남은 것은 3초다
+        self.assertEqual((result["status"], result["error_code"], result["step"]), ("failed", "source_shorter", "measure"))
+        self.assertEqual(result["short_sources"], [{"gen_id": "a", "track": 1, "start": 0, "planned": 96, "actual": 72}])
+        self.setUp()
+        self.add("a", frames=120)
+        # 시작점이 원본의 끝이다 — 넣을 것이 한 프레임도 없다('한 프레임 모자람'으로 넘기지 않는다)
+        result = self.build(plan([clip("a", 1, 0, 1, head=120)], version=2, tracks=1))
+        self.assertEqual((result["error_code"], result["short_sources"][0]["actual"]), ("source_shorter", 0))
+        self.assertEqual(self.project.timelines, [])
+
+    def test_the_reread_checks_where_a_trimmed_clip_starts(self):
+        self.add("a", frames=240)
+        original = FakeMediaPool.AppendToTimeline
+
+        def from_zero(pool, infos):  # Resolve 가 시작점을 무시하고 0초부터 놓았다(길이는 같다)
+            return original(pool, [{**info, "startFrame": 0, "endFrame": info["endFrame"] - info.get("startFrame", 0)} for info in infos])
+
+        FakeMediaPool.AppendToTimeline = from_zero
+        try:
+            result = self.build(plan([clip("a", 1, 0, 96, head=48)], version=2, tracks=1))
+        finally:
+            FakeMediaPool.AppendToTimeline = original
+        self.assertEqual(result["status"], "partial")  # 자리와 길이가 맞아도 다른 구간이다
+        self.assertEqual([(row["track"], row["gen_id"], row["expected"], row["actual"], row["short"]) for row in result["mismatches"]],
+                         [("V1", "a", 96, 96, False)])
+        # 시작점을 되읽지 못하면(API 가 없다) 완료라고 하지 않는다 — 경고를 남긴다
+        self.setUp()
+        self.add("a", frames=240)
+        with mock.patch.object(FakeItem, "GetLeftOffset", None):
+            result = self.build(plan([clip("a", 1, 0, 96, head=48)], version=2, tracks=1))
+        self.assertEqual((result["status"], result["mismatches"]), ("partial", []))
+        self.assertEqual(result["warnings"], ["앞을 자른 클립 1개의 시작점을 Resolve 에서 확인하지 못했습니다(타임라인에서 직접 확인하세요)"])
+        # 앞을 자르지 않은 영상은 되읽지 못해도 전과 같다(완료)
+        self.setUp()
+        self.add("a", frames=240)
+        with mock.patch.object(FakeItem, "GetLeftOffset", None):
+            self.assertEqual(self.build(plan([clip("a", 1, 0, 96)], tracks=1))["status"], "complete")
+
+    def test_sound_follows_its_own_picture_when_one_source_is_on_two_tracks(self):
+        # Codex 설계 검토: 같은 생성물이 두 트랙에 있으면(옛 id 와 새 id 가 같은 것으로 이어진 문서) 먼저 찾은 클립의 시작점을 쓰면 안 된다
+        self.add("a", frames=240)
+        result = self.build(plan([clip("a", 1, 0, 96, head=0), clip("a", 2, 0, 48, head=48)],
+                                 audio=[sound("a", 0, 48, 2, 2), sound("a", 48, 96, 1, 2)], version=2))
+        self.assertEqual(self.lane(self.project.timelines[0], "audio", 1), [("a.mp4", 0, 48, 48), ("a.mp4", 48, 48, 48)])
+        self.assertEqual(result["status"], "complete")
 
     def test_a_marker_resolve_refuses_is_not_called_complete(self):
         self.add("a", frames=120)

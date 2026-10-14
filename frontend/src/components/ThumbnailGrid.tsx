@@ -73,7 +73,7 @@ interface Props {
   onReview?: (g: Generation, action: ReviewAction) => void;
   onBulkReview?: (action: ReviewAction) => void;
   bulkReviewAllowed?: Record<ReviewAction, boolean>;
-  canFinalize?: (g: Generation) => boolean; // 그 프로젝트 supervisor/PM 일 때만 최종 지정 가능(없으면 허용)
+  canFinalize?: (g: Generation) => boolean; // 그 프로젝트의 supervisor 나 전역 관리자일 때만 최종 지정 가능 — PM 은 아니다(없으면 허용)
   onImport: (g: Generation) => void;
   onRestore: (g: Generation) => void; // 휴지통 복구
   dimDeleted: boolean; // 지운 카드 흐림 적용('함께 보기'만 true, '지운 것만'은 false)

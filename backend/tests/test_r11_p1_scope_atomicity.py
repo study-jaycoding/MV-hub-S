@@ -331,10 +331,12 @@ def test_p1_1_decorated_routes_keep_their_fastapi_signature() -> None:
         "request",
         "background",
     ]
-    for route_name in ("unpublish", "unfinalize"):
+    # unfinalize 의 restore_held 는 쿼리(?restore_held=1 — 최종 전의 보류로 되돌린다, 2026-10-14)다
+    for route_name, extra in (("unpublish", []), ("unfinalize", ["restore_held"])):
         assert list(inspect.signature(getattr(share, route_name)).parameters) == [
             "gen_id",
             "request",
+            *extra,
         ]
     # 동기 라우트로 남아야 threadpool 에서 돈다(전환 락을 직접 기다려도 루프가 안 멈춘다).
     assert not inspect.iscoroutinefunction(share.finalize)

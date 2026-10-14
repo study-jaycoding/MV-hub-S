@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-10-13
+updated: 2026-10-14
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -16,7 +16,8 @@ updated: 2026-10-13
 계층 원칙(무엇을 어디에 두는가)의 정본은 루트 [ARCHITECTURE.md](../ARCHITECTURE.md), 실행 흐름·데이터
 모델의 정본은 [docs/ARCHITECTURE.md](ARCHITECTURE.md)다 — 이 문서는 그 둘과 충돌하면 항상 진다.
 2026-09-18 전체 점검에서 8개 구역(백엔드 3·프런트 3·스타일·스크립트)을 읽기 전용으로 답사해 만들었다
-(조사 기준 `f2d57867`, 줄 수는 그 시점 값이라 어림으로만 본다). 파일을 추가·삭제·이동하면 §6 대로 갱신한다.
+(조사 기준 `f2d57867`, 줄 수와 구역별 파일 수는 그 시점 값이라 어림으로만 본다). 파일을 추가·삭제·이동하면 §6 대로 갱신한다.
+현재 정확한 파일 목록은 해당 소스 디렉터리를 확인한다. 아래 과거 개수·시험 비율은 현재 코드의 검증 범위를 보장하지 않는다.
 
 > [!NOTE]
 > 이 문서는 "구역 지도"·"구조 관찰"만 옮긴 것이다. 수정 후보(발견) 목록은 담지 않는다 — 후보는
@@ -43,7 +44,7 @@ updated: 2026-10-13
 | ComfyUI 실행(로컬/Cloud) | `lib/useSceneComfyExecution.ts`, `components/scene/cards/ComfyCard.tsx` | `routers/comfy.py`, `services/comfy_client.py` | |
 | DaVinci Resolve 전송 | `lib/useResolveTransferActions.ts` | `routers/resolve_integration.py`, `services/resolve_transfer.py` | 편집 탭의 타임라인 보내기도 같은 줄·같은 관문을 지난다(위 '편집 탭' 줄) |
 | Assets의 DaVinci 프로젝트 목록·열기 | `components/assets/ResolveProjectBrowser.tsx` | `routers/assets.py`, `services/resolve_project_library.py`, `services/resolve_project_open_worker.py` | `@davinci` 내부 DB 폴더는 일반 Assets 트리에 펼치지 않는다 |
-| 앱 자동 업데이트·릴리스 절차 | `lib/releaseUpdate.ts`, `components/UpdateProgressOverlay.tsx`(진행 덮개), `components/admin/UpdateNoticesSection.tsx`(관리자 창 업데이트 탭 — 후보·[공지]=배포) | `routers/release_update.py`, `services/release_update.py`, `update_release_worker.bat` | **B안(2026-10-02)**: 릴리스는 후보(`candidate.json`)만, 첫 [공지]가 표지(`latest.json`)를 바꾼다 — [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md). 배포 스크립트는 §4. 강제 업데이트는 **워커까지** 닿아야 재설치가 된다(`MVHUB_UPDATE_FORCE` → `-ForceReinstall`) |
+| 앱 자동 업데이트·릴리스 절차 | `lib/releaseUpdate.ts`, `components/UpdateProgressOverlay.tsx`(진행 덮개), `components/admin/UpdateNoticesSection.tsx`(관리자 창 업데이트 탭 — NAS 모든 판·`배포`) | `routers/release_update.py`, `services/release_update.py`, `update_release_worker.bat` | 릴리스는 후보(`candidate.json`)만, `배포`가 알림과 팀 표지(`latest.json`) 교체를 수행한다. `공지`/`재공지`는 알림만 — [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md). 배포 스크립트는 §4. 강제 업데이트는 **워커까지** 닿아야 재설치가 된다(`MVHUB_UPDATE_FORCE` → `-ForceReinstall`) |
 | DB 백업·복원 | — | `routers/db_backup.py`, `routers/db_transfer.py`, `services/backup.py` | |
 | 계정 전환·워크스페이스 전환 | `components/AccountMenu.tsx`, `lib/useHubAuth.ts` | `active_account.py`, `routers/auth.py` | |
 | 실시간 갱신(WebSocket) | `lib/progressSocket.ts` | `ws.py`, `mutation_notify.py` | |
@@ -106,7 +107,7 @@ updated: 2026-10-13
 | `models.py` | Pydantic 요청/응답 스키마 48종 | 약 512줄 |
 | `mutation_notify.py` | 변경 알림 HTTP 계약(도메인 판정·출처 파싱) | |
 | `rbac.py` | 전역 4역할 + 프로젝트 3역할 매트릭스(순수 상수·매핑) | |
-| `static_files.py` | 해시 자산 immutable 캐시 헤더 | |
+| `static_files.py` | 해시 자산 immutable 캐시·JS/CSS 사전 gzip 협상(원본·Range 폴백, 표현별 ETag·Vary) | 빌드 생성은 `frontend/vite.config.ts`의 `precompressedAssets` |
 | `task_activity.py` | 작업 보관 배치 시각 규칙(순수) | |
 | `workspace_context.py` | 워크스페이스 컨텍스트 저장·전송 규격(순수) | |
 | `ws.py` | WebSocket 연결 관리·브로드캐스트·디바운스 | 약 473줄 |
@@ -156,7 +157,7 @@ updated: 2026-10-13
 | `manage.py`(2508줄) | `POST /telemetry/push`·`GET /team-overview`·`GET /tasks[-batch]`·`POST /save-finals`·`GET /save-finals/progress`·`POST /save-finals/cancel` (47) | PM 대시보드: 텔레메트리 수신·팀 집계·크레딧 플랜·작업 CRUD·골드 저장 | 11곳. 서로 무관한 5개 도메인이 한 파일(§5) |
 | `workspace_console.py`(102줄) | `GET /console/overview`·`POST /console/workspaces`·`PATCH /console/workspaces/{id}`·`PUT /console/allocation-base`·`PUT /console/main` (5) | 워크스페이스 콘솔(서브스페이스) — `manage.py` 가 include(접두 `/api/manage`) | 없음(서버 권위, 미들웨어가 위임) |
 | `manage_quota.py`(33줄) | `GET /api/manage/credit-plan/my-quota` (1) | 내 크레딧 몫·이번 기간 사용·남은 몫 조회 — 공유 서버 위임·본인 워크스페이스 멤버만. **표시 전용**(생성은 이 값을 확인하지 않는다, 2026-09-30) | 0곳 |
-| `update_notices.py`(약 205줄) | `GET /api/update-notices`·`POST /admin/register`·`GET /admin/item`·`DELETE /admin/{id}` (9) | 릴리스 공지 등록·고정·공표·읽음·후보 단건 조회(promote 확인용)·[해제](멱등) | 0곳(쓰기는 서버 Admin 역할 게이트로 제한 — 프록시 위임과는 다른 종류의 서버 제약) |
+| `update_notices.py`(약 205줄) | `GET /api/update-notices`·`POST /admin/register`·`GET /admin/item`·`DELETE /admin/{id}` (9) | 릴리스 공지 등록·고정·공표·읽음·후보 단건 조회(promote 확인용)·`해제`(멱등) | 0곳(쓰기는 서버 Admin 역할 게이트로 제한 — 프록시 위임과는 다른 종류의 서버 제약) |
 
 **로컬 PC 기능(이 PC 에서만)**
 
@@ -169,9 +170,9 @@ updated: 2026-10-13
 | `comfy.py`(1654줄) | `POST /api/comfy/{run\|parse\|save-to-library}`·`GET /run_status\|/unresolved-runs` (11) | ComfyUI(로컬·Cloud) 연결·그래프 파싱·비동기 실행·미회수 결과 수거 | 0곳 |
 | `resolve_integration.py`(364줄) | `POST /api/resolve/transfers`·`GET /api/resolve/{status\|script\|locks}` (10) | DaVinci Resolve 스크립트 설치·연결 진단·전송 접수/재시도 | 1곳 |
 | `registry_helper.py`(약 100줄) | `POST /api/registry-helper/scan`·`GET /status` (2) + `schedule_loop`(main 이 워커 허브에서 띄움) | 에셋 대장 도우미 훑기 — **이 PC 전용**(`_LOCAL_PREFIXES`). 서버가 NAS 를 못 읽을 때 관리자 PC 가 대신 훑는다(ASSET_REGISTRY §10). 정한 시간이면 60초 틱으로 서버에 claim → 맡으면 자동 속도로 시작(§11) | 0곳 |
-| `release_update.py`(약 190줄) | `GET /api/release-update/status`·`/latest-metadata`·`POST /start`·`/promote` (4) | 작업자 PC 앱 업데이트 상태·시작(로컬 요청만). 관리자: 후보·공개 상태(`release_overview`), [공지]한 후보를 표지로(promote — 공유 서버 단건 확인 뒤, 동기 def) | 0곳 |
+| `release_update.py`(약 190줄) | `GET /api/release-update/status`·`/latest-metadata`·`POST /start`·`/promote` (4) | 작업자 PC 앱 업데이트 상태·시작(로컬 요청만). 관리자: 후보·공개 상태(`release_overview`), 알림 확인을 마친 후보를 표지로(promote — 후보의 `배포` 또는 `배포 반영` 경로, 공유 서버 단건 확인 뒤, 동기 def) | 0곳 |
 | `console.py`(142줄) | `GET /api/console/summary`·`POST /close-app` (2) | cmd 창 정보(버전·CLI·로그 tail)·앱 종료 | 0곳 |
-| `scenes.py`(86줄) | `GET·PUT /api/scenes/{backup\|cards}` (4) | 브라우저 localStorage 씬·카드링크의 DB 미러 동기화 | 0곳 |
+| `scenes.py`(86줄) | `GET·PUT /api/scenes/{backup\|cards}` (4) | 브라우저 씬(원본 IndexedDB)과 카드링크의 DB 미러 동기화([씬 저장 계약](CANVAS_SCENE_STORAGE.md)) | 0곳 |
 
 **DB 이전·백업**
 
@@ -252,7 +253,7 @@ updated: 2026-10-13
 | `personal_meta_transactions.py` | 53 | 개인 메타 로컬행 + 팀 shadow 를 한 트랜잭션으로 쓰는 경계 | `apply_generation_personal_meta_writes` |
 | `tags.py` | 287 | 태그/자동태그(별도 네임스페이스) 생성·설정·배치·전역삭제 | `repo.set_tags`·`create_auto_tag` |
 | `generation_views.py` | 121 | "마지막으로 크게 본" 개인 표시 | `repo.record_generation_view` |
-| `folder_cover.py` | 150 | 폴더 카드 집계(한 번 훑어 하위 폴더별 건수·최신·대표 유효성)와 대표 저장(`folder_cover`). 범위는 `projects._folder_counts_where`(사이드바 숫자와 같은 조건) + 폴더 접두(목록과 같은 LIKE 이스케이프) + 팀 공간 하나 | `repo.folder_cards`·`set_folder_cover` |
+| `folder_cover.py` | 150 | 폴더 카드 집계(한 번 훑어 하위 폴더별 건수·최신·대표 유효성)와 대표 저장(`folder_cover`). 범위는 `projects._folder_counts_where`(사이드바 숫자와 같은 조건) + 폴더 접두(목록과 같은 LIKE 이스케이프) + 팀 공간 하나. 카드의 표지는 목록 행에서 화면이 쓰는 칸만(`_COVER_FIELDS` — 프런트 `types.FolderCover` 와 같은 목록), 미리보기(컷 띠·생성물 띠)는 목록 행을 읽지 않고 첫 에셋만(`_first_assets`) | `repo.folder_cards`·`set_folder_cover` |
 | `scene_cards.py` | 140 | 캔버스 카드 ↔ 생성물 소속 사실 | `repo.list_scene_card_links` |
 | `scenes_backup.py` | 130 | 캔버스 씬(브라우저 IndexedDB)의 DB 미러 | `repo.list_scene_backups` |
 
@@ -365,7 +366,7 @@ updated: 2026-10-13
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
 | `resolve_transfer.py`(759줄) | 생성물 원본을 `Render/<folder>` 로 모으고 manifest 기록 — 파일 이름 `<프로젝트>_<폴더 경로>_davinci_<작업자>_<번호>`(이름 장부 `export_names` v2 — 저장본·다운로드와 같은 번호), 같은 생성물은 있는 파일을 그대로 쓴다(옛 이름 `<폴더 경로>_davinci_<번호>` 로 보낸 것 포함) | `resolve_integration`·`release_update`·`selection_monitor` |
-| `resolve_bridge.py`(1334줄) | Media Pool 조작 계층 — 상대 import 0(자식 프로세스 겸용, §5-a) | `probe`·`import_worker`·`status_runner`·`selection_worker`·`diagnostics` |
+| `resolve_bridge.py`(1418줄) | Media Pool 조작 계층 — 상대 import 0(자식 프로세스 겸용, §5-a) | `probe`·`import_worker`·`status_runner`·`selection_worker`·`diagnostics` |
 | `resolve_status_runner.py` | fusionscript 상태·가져오기·프로젝트 열기를 자식 프로세스로 격리·인터프리터 폴백. **켜기 창**: 앱이 Resolve 를 켜는 동안(최대 90초) 모든 Resolve API 호출을 `_select_interpreter` 한 곳에서 막고, 켤 때 받은 `launch_id` 를 가진 열기만 통과시킨다 — 새 Resolve 호출 경로도 반드시 여기를 지나야 관문이 적용된다 | `resolve_integration`·`diagnostics`·`selection_monitor`·`project_library`·`routers/assets` |
 | `resolve_probe.py` | 연결 상태 검사 자식 프로세스 진입점(`-m`, §2.6) | `resolve_status_runner` |
 | `resolve_import_worker.py` | 가져오기 자식 프로세스 진입점(§2.6) + `AttemptJournal` | `resolve_status_runner` |
@@ -467,11 +468,12 @@ updated: 2026-10-13
 
 ### 3.2 components (`frontend/src/components/`, 152파일)
 
-#### 씬 캔버스 보드 셸(`scene/` 최상위, 5파일)
+#### 씬 캔버스 보드 셸(`scene/` 최상위)
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
 | `scene/SceneBoard.tsx` | 캔버스 전체 소유 — 카드·엣지·그룹 state, 드래그/마퀴/가위/줌, undo, comfy 실행, 렌더링 | 약 4,452줄. `SceneBoard({...55 props})`·`actionRef` |
+| `scene/SceneBoardBoundary.tsx` | 지연 로딩·렌더 실패를 캔버스 영역 안에 가두고 수동 새로고침 안내 표시 | `App.tsx`가 `lazy`·`Suspense`와 함께 조립. 바깥 탭·도구 막대 유지 |
 | `scene/SceneBar.tsx`(286줄) | 씬 탭 바 — 전환·추가·이름변경·삭제·드래그 순서변경·우클릭 메뉴 | `SceneBar` |
 | `scene/SceneMinimap.tsx`(184줄) | 우상단 네비게이터 — 카드 축소도·뷰포트 박스, 클릭/드래그 이동 | `SceneMinimap` |
 | `scene/sceneColors.ts`(10줄) | `CARD_W/CARD_H`·`GROUP_COLORS` 상수(순환 import 회피용 분리) | 상수 3개 |
@@ -529,7 +531,7 @@ updated: 2026-10-13
 | `MediaThumbnail.tsx`(157줄) | 영상 포스터/이미지/포스터 없는 영상 3분기 통합 표현 | `MediaThumbnail`(10곳 재사용) |
 | `LibraryToolbar.tsx`(약 335줄) | 타입 필터·검토 필터·크기 슬라이더·리스트/그리드 토글·태그 패널 · 폴더 묶음 보기 전환(`folderCards` — [컷별 \| 전체]·'컷 N · M건', 받았을 때만) | `LibraryToolbar` |
 | `FolderCardGrid.tsx`(약 195줄) | 공유 & 리뷰 탭의 폴더 묶음 보기 — 폴더마다 카드 한 장(표지·이름·건수·'대표 미정', 종이를 겹친 모양) + 맨 끝 '컷 밖(맨 위에선 에피소드 밖) N건' 칸. 한 번 클릭 = 고르기(Ctrl·Shift·끌기 = 마퀴 — **카드 위에서 시작해도**(꽉 찬 격자엔 빈 곳이 없다, 10-09 실측 100장에서 0장), `ThumbnailGrid` 와 같은 5px 판정·rAF 코얼레스·blur 면 버림), 두 번 클릭·Enter = 컷(하위 폴더 없음)이면 `onReel`(모아보기 — 고른 카드 위면 고른 컷 전부), 에피소드면 `onEnter`(그 폴더로 들어가기) — 10-13 낮(아침엔 컷도 들어가기, 그 전엔 폴더 창), 휠 클릭 = 컷 정보, 우클릭·메뉴 키 = `onOpen`(그 폴더의 창). 카드 크기는 `ThumbnailGrid` 와 같은 식(180×배율). `.cut-grid` 는 폴더 창을 닫은 뒤 초점을 돌려받는 자리 | `FolderCardGrid` |
-| `CoverInfo.tsx` | 폴더 카드의 정보 줄(모델 · 작업자 · 크레딧 · 생성일 · 검토) — 모아보기 [개별] 카드(`CutReel`)·컷 카드(그리드, `FolderCardGrid` 의 `.cut-meta`)·컷 줄(리스트, `EpisodeCardBody` 의 `.ep-meta`)이 같이 쓴다. 앞의 넷은 그 카드에 보이는 그림 한 장(대표, 없으면 가장 최근 것)의 것, 검토는 그 폴더 안의 개수(모르면 그 그림의 상태). 크레딧은 `lib/coverCredits` |
+| `CoverInfo.tsx` | 폴더 카드의 정보 줄(모델 · 작업자 · 크레딧 · 생성일 · 검토) — 모아보기 [개별] 카드(`CutReel`)·컷 카드(그리드, `FolderCardGrid` 의 `.cut-meta`)·컷 줄(리스트, `EpisodeCardBody` 의 `.ep-meta`)이 같이 쓴다. 앞의 넷은 그 카드에 보이는 그림 한 장(대표, 없으면 가장 최근 것)의 것, 검토는 그 폴더 안의 개수(모르면 그 그림의 상태). 크레딧은 `lib/coverCredits` — 화면에 들어온 카드만 묻는다(`IntersectionObserver`). 컷 카드(그리드)에서는 줄 높이가 고정이다 — 값은 한 줄(말줄임), 생성일만 늘 두 줄(날짜 / 시각). 규칙은 `styles/generations.css` 의 `.reel-info.cut-meta` |
 | `EpisodeCardBody.tsx` | 에피소드 화면 카드의 안쪽 그림 — `FolderCardGrid` 가 하위 폴더를 가진 카드가 놓인 단계(`isEpisodeLevel`)에서 카드(`.cut-card.ep-card`, 안에 단추가 있어 div) 안에 그린다. 리스트 보기 = 가로 한 줄(번호 · 표지 · 이름과 숫자 · 컷 띠 4×2 · [열기]), 그리드 보기 = 큰 표지 + 컷 띠 한 줄 + 대표 진행 막대(Jay 2026-10-13). 카드 안 단추(`data-ep-action` — 컷 띠의 컷 = 그 컷으로, '+N'·[열기] = 그 에피소드로)의 누름은 격자가 카드 고르기·두 번 클릭으로 읽지 않는다. 서버가 새 집계를 안 주면(옛 공유 서버) 그 표시만 빠진다. **컷 화면의 리스트**(2026-10-13 오후)도 여기서 그린다: 줄 = 같은 모양에 띠만 그 컷의 생성물(`takes` — 그림 = 크게 보기, [폴더로] = 그 컷 폴더로)·검토 개수·표지 위 대표 표시 / 표(`layout="table"`, 리스트 단추 한 번 더) = 번호·작은 그림·숫자 열 |
 | `CutInfoPopup.tsx`(약 235줄) | 컷 정보(휠 클릭) — 정보 창과 같은 틀(`.info-popup`, 머리 끌기, Esc·바깥 클릭). 표지(대표/최신 것) + 그 폴더의 목록을 커서로 끝까지 받아 센 집계(`lib/cutSummary`) + '이 컷의 생성물' 줄(크게 보기·★ 대표). 폴더가 바뀌면 순번으로 늦은 응답을 버리고, **닫으면(정리) 남은 쪽·건별 metrics 요청을 보내지 않는다**(`alive()`). 조회 조건(`query`)은 App 이 폴더 경로·조회로만 메모해 카드가 다시 와도 다시 받지 않는다(10-09 실측: 열어 둔 채 32초에 metrics +300 → 0). 크게 보기가 위에 있으면 Esc 를 넘긴다 | `CutInfoPopup` |
 | `CutReel.tsx`(약 370줄) | 모아보기 — [개별] 큰 카드(표지·순번·★ 대표/최신 것·작업자·크레딧·생성일·검토) / [연결] `ReelPlayer`: 대표를 이어서 재생(가상 시간, 이미지·깨진 영상 3초, 길이를 다 알기 전 타임바 잠금, 반복 끄면 끝에서 멈춤, ↑↓·Space·Home/End). 클립은 보이는 값 전부의 JSON 으로 메모(카드가 다시 와도 그대로), 바뀌면 key 로 다시 올린다. 영상 길이는 **주소마다 한 번**(`DURATION_CACHE`, 모듈 수준)·**한 번에 둘씩** 읽고 끝나거나 닫히면 요소의 주소를 뗀다(10-09 실측: 28개 동시 읽기 → 첫 재생 6.2초 → 0.6초, 열고 닫기 5번 영상 요청 +334 → +7). 화면 영상의 loadedmetadata 로도 길이를 채운다. **영상 요소 둘(앞·뒤, 떼지 않음)**: 뒤의 것에 다음 영상(이미지 컷은 건너뛴 그 뒤 영상)을 미리 올려 두고 넘어갈 때 자리만 바꾼다, 끝 0.3초 전부터 뒤의 것을 소리 없이 굴린다(`ROLL_AHEAD`·`ROLL_MAX`, 편집 탭 `editVideoPair` 와 같은 원리) — 전환 간격 130~200ms → **0**(10-09 실측, Jay "끊김 없이"). 이벤트는 앞의 것·지금 컷이 영상일 때만 엔진에 간다, 세우면 굴리던 뒤의 것도 세운다, 정리 때 두 요소의 주소·기록을 비운다(StrictMode). `ViewTimeline` 과 원리는 같지만 요구가 달라 따로 둔다 | `CutReel`, `ReelPlayer` |
@@ -538,6 +540,7 @@ updated: 2026-10-13
 | `TopBar.tsx`(150줄) | 상단바(로고·탭·동기화·검색·Assets·계정) | `TopBar` |
 | `app/SelectionActionBar.tsx`(216줄) | 선택바 2종(`BoardSelectionActionBar`·`LibrarySelectionActionBar`) | 위 2개 |
 | `app/AppOverlays.tsx`(172줄) | App 이 띄우는 오버레이 모음(미리보기·정보·비교…) 배선. 코드를 늦게 받는 창의 **틀** `LazyModalShell`(막·겹 번호·Esc 를 여는 순간 쥐고 본문만 늦게 온다) | `AppOverlays`, `VideoCompareOverlay` |
+| `app/ResolveNotices.tsx` | Resolve 보내기 결과 가운데 확인이 필요한 것(부분 성공·실패·결과 불명) — 알림 바로 아래에 ✕ 로 닫을 때까지 남는 줄(세 줄까지). 겹이 아니다(Esc·뒤 화면의 키를 건드리지 않는다). 무엇을 남길지는 `lib/useResolveTransferActions` 가 정한다 | `ResolveNotices` |
 | `generation/GenerationCardStatusBar.tsx`(154줄) | 카드 하단 S/T/C 상태줄 + 태그 에디터 호스팅 | 〃 |
 | `generation/GenerationCardIcons.tsx`(57줄) | 카드용 SVG 4종 | `ModelIcon` 외 |
 | `generation/GenerationThumbOverlay.tsx`(122줄) | 썸네일 호버 오버레이(정보·미리보기·다운로드) | 〃 |
@@ -568,7 +571,7 @@ updated: 2026-10-13
 | `admin/ApprovalTab.tsx`(143줄) | 계정 승인·숨김·비번 초기화 표 | 〃 |
 | `admin/MemberRolesTab.tsx`(82줄) | 전역 역할 표 | 〃 |
 | `admin/AssetRegistryTab.tsx`(약 330줄) | 에셋 리스트(옛 '에셋 대장') — 훑는 곳·자동 훑기 시간(끔·매월·매주·매일)·프로젝트별 마지막 훑기 상태 표 + [지금 훑기](한 번 더 확인). 영구 관리자(system)만 |
-| `admin/UpdateNoticesSection.tsx`(약 230줄) | 관리자 창 업데이트 탭 — 새 후보 등록·[공지](처음이면 promote 까지)·[재공지](알림만)·[배포 반영]·[해제]·확인 불가 표시 | 〃 | 〃 |
+| `admin/UpdateNoticesSection.tsx` | 관리자 창 업데이트 탭 — NAS 모든 판·`배포`(알림 + 팀 표지 교체)·`이 PC에 먼저 설치`·`공지`/`재공지`(알림만)·`배포 반영`(후보 줄)·`해제`·확인 불가 표시 | 〃 | 〃 |
 | `admin/BackupReplicaSection.tsx`(약 280줄) | 서버 백업 복사 위치 — 공유 서버 탭의 결과 상자·NAS 주소·[저장](비밀번호 확인 창)·[지금 복사](끝날 때까지 5초마다 다시 읽음) | 〃 |
 | `admin/RolePickers.tsx`(70줄) | 전역/프로젝트 역할 선택기 + 정렬 랭크 | 〃 |
 | `admin/ProjectRenderTree.tsx`(29줄) | 프로젝트 렌더 폴더 트리 표시 | 〃 |
@@ -608,9 +611,10 @@ updated: 2026-10-13
 | `timeline/EditTrimView.tsx`(약 90줄) | 다이나믹 트림 모드(다빈치의 Dynamic Trim Mode, 보기만) — 켜면 나뉜 뷰어가 타임라인 판 하나가 되고(`EditTab` 의 `trim`), 그 무대를 덮는 두 칸에 재생헤드에서 가장 가까운 편집점의 바로 앞 \| 바로 뒤가 뜬다. 재생헤드 쪽 칸에는 엔진의 화면이 올라와(CSS `data-side`) 한 번의 재생이 앞 칸에서 뒤 칸으로 이어지고, 반대쪽은 그 편집점의 프레임으로 서 있다 | `EditTrimView` |
 | `timeline/EditPool.tsx`(약 310줄) | 미디어 풀 — 재생헤드가 있는 컷의 공유 생성물을 폴더 목록 옆에 보인다. 보기 방식(썸네일·메타데이터·목록)·크기·검색·정렬. 누르기·Ctrl/Shift·끌어서 상자 = 고르기(마지막 것이 듀얼 뷰어의 소스, 2장 이상이면 비교) · 더블클릭 = 크게 보기 · 휠 클릭 = 넣을 트랙 고르기 · 우클릭 = 이 컷의 폴더 창. 폭은 `ResizableSidebar` 로 끌어서 바꾼다 | `EditPool`, `arrangePool` |
 | `timeline/EditSoloViewer.tsx`(약 25줄) | 한 트랙만 보는 판 — `useEditFollow` 로 타임라인의 시계를 따라간다 | `EditSoloViewer` |
-| `timeline/EditTrackMenu.tsx`(약 320줄) | 편집 탭의 메뉴들 — 껍데기 `EditMenu`(body 포털·자리·바깥 누르기·Esc/Tab·↑↓·뒤 화면 키 차단) 위에 카드 휠 클릭 메뉴(지금 있는 트랙을 보여 주고 고르면 그 트랙에 넣는다 — 미디어 풀과 편집 탭이 연 폴더 창 공용)와 트랙 머리 메뉴(트랙 추가·위/아래로·삭제·빈 트랙 삭제·색), 막대의 목록 메뉴(비활성 숨기기·빈 곳 채우기), 클립 우클릭 메뉴(Resolve 보내기), 왼쪽 폴더 트리의 폴더 메뉴(공유 저장·최종 저장·원본 위치 열기 — 공유 & 리뷰 탭의 폴더 메뉴와 같은 규칙·모양) | `EditMenu`, `EditTrackMenu`, `EditTrackHeadMenu`, `EditListMenu`, `EditClipMenu`, `EditFolderMenu`, `EditSwatches`, `TrackRow`, `TrackAct` |
+| `timeline/EditTrackMenu.tsx`(약 320줄) | 편집 탭의 메뉴들 — 껍데기 `EditMenu`(body 포털·자리·바깥 누르기·Esc/Tab·↑↓·뒤 화면 키 차단) 위에 카드 휠 클릭 메뉴(지금 있는 트랙을 보여 주고 고르면 그 트랙에 넣는다 — 미디어 풀과 편집 탭이 연 폴더 창 공용)와 트랙 머리 메뉴(트랙 추가·위/아래로·삭제·빈 트랙 삭제·색), 막대의 목록 메뉴(비활성 숨기기·빈 곳 채우기·모두 최종으로 확정), 클립 우클릭 메뉴(Resolve 보내기·길이 조절·최종 선택), 왼쪽 폴더 트리의 폴더 메뉴(공유 저장·최종 저장·원본 위치 열기 — 공유 & 리뷰 탭의 폴더 메뉴와 같은 규칙·모양) | `EditMenu`, `EditTrackMenu`, `EditTrackHeadMenu`, `EditListMenu`, `EditClipMenu`, `EditFolderMenu`, `EditSwatches`, `TrackRow`, `TrackAct` |
 | `timeline/EditExportConfirm.tsx`(약 105줄) | 편집 탭 막대의 [타임라인 Resolve 보내기] 확인 창 — 이름·트랙별 클립 수·길이·받는 곳을 보여 주고, Resolve 연결을 열릴 때 묻는다([다시 확인]). 못 이은 클립·빈 타임라인·원본 전송 조건에 걸리면 [보내기]가 안 눌린다. 틀은 `GradeStepModal` 의 것(`gradestep-*`) | `EditExportConfirm` |
 | `timeline/EditMarkerMenu.tsx`(약 100줄) | 북마크의 메뉴 둘 — 편집 창(이름: Enter·바깥 = 저장, Esc = 버림 · 색 16개 · 지우기)과 막대의 색 메뉴(새 북마크의 색·모두 지우기 — 다빈치의 마커 색 메뉴). 껍데기는 `EditMenu` | `EditMarkerMenu`, `EditMarkerColorMenu` |
+| `timeline/EditTrimPop.tsx`(약 250줄) | 클립 길이 조절 창 — 타임라인의 클립을 휠 클릭하면 뜬다. **떠 있는 창**(`lib/useFloatingPanel` — 머리 끌기·자리 기억, body 포털. 밖을 눌러도 안 닫히고 떠 있는 동안 타임라인을 쓴다 · 키는 초점을 따른다). 큰 화면(그 길이의 마지막 프레임 — 타임라인 재생헤드와 무관)·창 안 재생·띠·`±1f`/`±10f`·숫자 칸(초·프레임)·원본 길이로. 값은 24fps 프레임, 걸음마다 부르는 쪽(`EditTab`)이 `setClipTrim` 으로 적고 이어진 걸음이 되돌리기 한 단계 | `EditTrimPop` |
 | `timeline/EditCard.tsx`(약 65줄) | 편집 탭 미디어 풀(썸네일 보기)의 생성물 카드 — 라이브러리 카드의 CSS 클래스를 그대로 써서 같은 모양으로 '보이기만' 한다. 아래 변의 표 = "V1 - 선택 카드"(폴더 창의 표와 같은 글) | `EditCard`, `PoolItem`, `editMarkLabel` |
 | `timeline/EditSidebar.tsx`(약 150줄) | 프로젝트·폴더에서 시퀀스 고르기(`FolderTreeView` 만 쓴다 — `ProjectSection` 아님). 폴더 우클릭 = 폴더 메뉴(`EditFolderMenu` — 실행은 App 의 `onFolderAction`) | `EditSidebar` |
 | `FloatingPrompt.tsx`(104줄) | `window.prompt` 대체 플로팅 입력 | `FloatingPrompt` |
@@ -717,11 +721,12 @@ updated: 2026-10-13
 | `shortcuts.ts` | 저장 | 사용자 지정 단축키 레지스트리 — 충돌은 같이 켜지는 화면끼리만(`scope`), 고정 키는 지정 불가(`isReservedBinding`), Shift 는 Ctrl·Alt 와 함께일 때만 센다, 저장 직전 다시 읽기 + storage 이벤트(다른 탭) |
 | `downloadDir.ts` | 저장 | File System Access 다운로드 폴더 핸들 |
 
-**4. 계정·인증·워크스페이스(13)**
+**4. 계정·인증·워크스페이스(14)**
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `useHubAuth.ts` | 훅 | 로컬 허브·공유 서버 로그인 상태 통합 |
+| `unloadGuard.ts` | 유틸 | 저장 못 한 것이 있는 동안 사용자가 창을 닫거나 새로고침하면 브라우저가 묻게(`holdUnload` — 지금은 편집 탭의 '저장 안 됨' 문서) · 앱이 스스로 하는 새로고침은 풀고 진행(`reloadNow`) · 그 전에 물을 자리(로그아웃·업데이트 완료)는 `unloadHeld` · 끝났으니 새 화면을 여는 새로고침은 그 순간에 보고(`reloadIfFree`) · 확인 창에 붙이는 한 줄(`unsavedNote`) · 로그아웃 응답을 기다리는 동안 편집을 받지 않게(`setLeaving`/`isLeaving`) |
 | `accountIdentity.ts` | 순수 | 계정 표시명·역할·시스템 계정 판정 |
 | `useAccountStatus.ts` | 훅 | 하단 상태줄용 계정·CLI 연결·크레딧 |
 | `workspaceContext.ts` | 저장 | 현재 워크스페이스 컨텍스트 보관·조정 |
@@ -763,7 +768,7 @@ updated: 2026-10-13
 | `mediaTypes.ts` | 순수 | 미디어 필터 옵션 상수 |
 | `boardFilters.ts` | 순수 | 캔버스 툴바 필터·폴더 선택 판정(`matchesBoardFilters`·`inBoardFolder`) — 캔버스 노드(안 맞으면 흐리게)와 '생성 결과' 창(안 맞으면 걸러 냄)이 같이 쓴다 |
 | `keyHandled.ts` | 순수 | 한 키 입력을 '이미 쓴 것'으로 표시·확인(`markKeyHandled`·`isKeyHandled`) — 안쪽 처리 뒤 window 전역 단축키가 같은 키를 또 처리하지 않게(전파를 막지 않아 다른 리스너는 그대로 받는다) |
-| `keyGate.ts` | 훅·순수 | 떠 있는 것이 키의 주인 — Esc 겹 등록부(`openLayer`·`isTopLayer`)·`useKeyOwner`(Esc 없는 덮개)·`backgroundKeysBlocked`, 글자 입력 대상 판정 `isTypingTarget`, 초점 잃은 키를 보이는 격자로 `useLooseKeys`, 누르는 순간 위에 뭔가 떠 있었나 `pressStartedCovered`(pointerdown 캡처), 앱이 한 번 거는 `usePageSelectAllGuard`(입력칸 밖 Ctrl+A·조합 중 Enter), 지금 초점이 Tab 으로 왔나 `focusCameByTab`(마우스로 눌러 남은 단추 초점과 구분 — `:focus-visible` 은 아무 키에나 켜져 못 쓴다), 마우스로 만진 슬라이더의 초점 내려놓기 `dropFocusAfterPress`(격자를 품은 창 안이면 그 창으로), 한글 입력 상태의 글자 키를 물리 키로 읽기 `letterFromPhysicalKey`(key 가 Process·자모일 때만, 입력칸 밖에서만), **모달의 초점** `useModalFocus`(막이 있는 창 — 열릴 때 뿌리로·Tab 은 안에서 돈다·닫히면 연 자리로. 새 모달은 이 훅을 건다), body 로 띄운 패널의 주인 찾기 `floatHost` |
+| `keyGate.ts` | 훅·순수 | 떠 있는 것이 키의 주인 — Esc 겹 등록부(`openLayer`·`isTopLayer`)·`useKeyOwner`(Esc 없는 덮개)·`backgroundKeysBlocked`, 글자 입력 대상 판정 `isTypingTarget`, 초점 잃은 키를 보이는 격자로 `useLooseKeys`, 누르는 순간 위에 뭔가 떠 있었나 `pressStartedCovered`(pointerdown 캡처), 앱이 한 번 거는 `usePageSelectAllGuard`(입력칸 밖 Ctrl+A·조합 중 Enter), 지금 초점이 Tab 으로 왔나 `focusCameByTab`(마우스로 눌러 남은 단추 초점과 구분 — `:focus-visible` 은 아무 키에나 켜져 못 쓴다), 마우스로 만진 슬라이더의 초점 내려놓기 `dropFocusAfterPress`(격자를 품은 창 안이면 그 창으로), 한글 입력 상태의 글자 키를 물리 키로 읽기 `letterFromPhysicalKey`(key 가 Process·자모일 때만, 입력칸 밖에서만), **모달의 초점** `useModalFocus`(막이 있는 창 — 열릴 때 뿌리로·Tab 은 안에서 돈다·닫히면 연 자리로. 새 모달은 이 훅을 건다), body 로 띄운 패널의 주인 찾기 `floatHost`, 마우스로 끄는 동안 Space·Enter 가 초점이 남은 뒤의 단추를 누르지 않게 `useDragKeyHold`(편집 탭의 카드·컷 끌기) |
 | `appConstants.ts` | 순수 | 빈 facets·단축키 색 매핑 상수 |
 
 **7. 생성 라이브러리 — 표시·판정(순수)(11)**
@@ -892,7 +897,7 @@ updated: 2026-10-13
 | `useEditFollow.ts` | 훅 | 편집 탭 '한 트랙만 보기' — 타임라인의 시각을 프레임마다 읽어 그 트랙의 클립을 맞춰 보인다(시계에 영향 없음) |
 | `videoDuration.ts` | 브라우저 | 영상 길이 재기(메타데이터만·주소별 한 번·동시에 4개) |
 | `folderLabel.ts` | 순수 | 카드 폴더 이름표 글자(끝 두 칸)·전체 경로 표기 |
-| `coverCredits.ts` | 훅 | 폴더 카드의 크레딧(그 그림 한 장의 실제 크레딧 — `api.generationMetrics`) — 한 번 받은 것은 모듈에 기억하고(다시 묻지 않는다) 한꺼번에 넷만 묻는다(`useCoverCredits` · 시험용 `forgetCoverCredits`) |
+| `coverCredits.ts` | 훅 | 폴더 카드의 크레딧(그 그림 한 장의 실제 크레딧 — `api.generationMetrics`) — 한 번 받은 것은 모듈에 기억하고(다시 묻지 않는다) 한꺼번에 넷만 묻는다. 기다리는 화면이 있는 것만 — `wanted` 가 거짓이면 안 묻고, 기다리는 화면이 없어진 요청은 출발 전이면 줄에서 뺀다. 멎은 요청은 20초 뒤 끊고 '모름'(`useCoverCredits` · 시험용 `forgetCoverCredits`). 한 건을 묻는 `askMetrics`(시간 제한 + 밖에서 끊기)는 컷 정보 창(`CutInfoPopup`)도 쓴다 |
 | `folderCards.ts` | 순수 | 공유 & 리뷰 탭의 폴더 묶음 보기 규칙 — `folderCardsPlace`(묶어 보일 **자리**: 공유 탭 + 프로젝트 + 휴지통 아님 + 서버가 거를 수 있는 공간 조건)·`hasFindFilters`(찾는 조건이 켜져 있나 — 켜져 있어도 자리는 자리다, 10-13 저녁)·`folderCardsScope`(자리 && 찾는 조건 없음 — 서버 카드만으로 묶을 수 있는 조회)·`parentFolder`·`singleTeamWorkspace` |
 | `folderCardsLocal.ts` | 순수 | 폴더 카드를 **목록에서 직접** 묶기 — `groupGenerations`(최신 순 목록을 부모 바로 아래 폴더마다 한 장: 건수·표지·검토 개수·영상 수·마지막 공유·작업자·컷 띠·생성물 띠 — 서버 `folder_cards` 와 같은 규칙, 팀 대표는 서버 카드에서 읽는다)·`fillFolderCards`(옛 서버의 카드에 없는 칸만 채운다)·`lacksCounts` |
 | `fetchAllGenerations.ts` | 순수(비동기) | 한 조회의 목록을 커서로 끝까지(쪽 500 · 상한 2000 — `truncated`) — 컷 정보 창과 `useLocalFolderCards` 가 같이 쓴다 |
@@ -900,7 +905,7 @@ updated: 2026-10-13
 | `cutSummary.ts` | 순수 | 컷 정보의 집계 — `summarizeCut`(건수·작업자별 수·실제 크레딧 합+미상 건수·생성일 범위·영상 길이 합·모델·검토)·`inFolder`(경로로 다시 거르기 — 대소문자)·`workerLabel`·`durationSec` |
 | `cutReel.ts` | 순수 | 모아보기 재생기 계산 — `reelClips`(컷 카드 → 클립)·`reelStarts`·`reelLocate`(가상 시각 → 클립·오프셋)·`fmtReelTime`(`m:ss.s`)·`REEL_IMAGE_SEC`(3) |
 | `useLocalFolderCards.ts` | 훅 | 목록에서 직접 묶을 때의 자료 — 지금 조회(자리 + 찾는 조건)의 목록을 본 목록 훅과 **따로** 끝까지 받는다. 끝까지 받은 결과만 내놓는다 · 같은 자리에서 조회만 바뀌면 앞 결과를 쥔다(`fresh` 거짓) · 자리가 바뀌면 버린다 · 다시 받는 때 = 조회가 바뀜 / 같은 조회에서 본 목록의 첫 쪽 내용이 바뀜(주기 조회마다 받지 않는다) · 공간 필터는 받은 뒤 한 번 더 |
-| `useFolderCards.ts` | 훅 | 폴더 카드 받기 — 문맥(계정·서버·프로젝트·폴더·공간)이 바뀌면 받던 응답·받아 둔 카드를 버린다 · `reloadKey`(목록의 `listRevision`)마다 다시 받는다 · 옛 서버는 그 계정·서버에서만 '지원 안 함' · `reload()` 는 끝난 뒤 풀리고 던지지 않는다. **같은 문맥의 조회가 받는 중이면 새로 보내지 않고 그 조회에 얹는다**(`Run.pending` — 끝난 뒤 한 번 더; 주기 조회는 받는 중인 응답을 버리지 않고, 대표 저장 뒤의 `reload()` 만 버린다 — 느린 서버에서 조회가 꼬리를 물어 잠금이 안 풀리거나 어느 응답도 적용되지 못하던 것, 10-09) · 버려진 조회의 약속은 그 자리를 대신한 조회가 끝날 때 풀린다 · 내용이 같은 응답은 같은 객체(15초마다 카드·창이 다시 그리지 않게) · `loading` = 지금 문맥의 카드가 없고 실패하지도 않은 동안(App 의 `cutPending` — 그동안 낱장 격자를 안 그린다, 10-13 ③. 실패 표식은 문맥을 떠나면 버린다) · **받아 둔 카드는 문맥마다 기억**(모듈 Map `remembered`, 상한 400 — 다시 온 폴더는 응답 전에 그 카드, `subfolders` 0 인 컷은 빈 묶음을 미리 적는다. 조회는 늘 다시 보낸다, 10-13 "아직 딜레이") |
+| `useFolderCards.ts` | 훅 | 폴더 카드 받기 — 문맥(계정·서버·프로젝트·폴더·공간)이 바뀌면 받던 응답·받아 둔 카드를 버린다 · `reloadKey`(목록의 `listRevision`)마다 다시 받는다 · 옛 서버는 그 계정·서버에서만 '지원 안 함' · `reload()` 는 끝난 뒤 풀리고 던지지 않는다. **같은 문맥의 조회가 받는 중이면 새로 보내지 않고 그 조회에 얹는다**(`Run.pending` — 끝난 뒤 한 번 더; 주기 조회는 받는 중인 응답을 버리지 않고, 대표 저장 뒤의 `reload()` 만 버린다 — 느린 서버에서 조회가 꼬리를 물어 잠금이 안 풀리거나 어느 응답도 적용되지 못하던 것, 10-09) · 버려진 조회의 약속은 그 자리를 대신한 조회가 끝날 때 풀린다 · 내용이 같은 응답은 같은 객체(15초마다 카드·창이 다시 그리지 않게) · `loading` = 지금 문맥의 카드가 없고 실패하지도 않은 동안(App 의 `cutPending` — 그동안 낱장 격자를 안 그린다, 10-13 ③. 실패 표식은 문맥을 떠나면 버린다) · **받아 둔 카드는 문맥마다 기억**(모듈 Map `remembered`, 상한 400 — 다시 온 폴더는 응답 전에 그 카드, `subfolders` 0 인 컷은 빈 묶음을 미리 적는다. 조회는 늘 다시 보낸다, 10-13 "아직 딜레이") 다시 받는 신호(`reloadKey`)는 `useSameQueryRevision` — 목록이 **같은 조회를 다시 받았을 때만** 오른다(조회가 바뀌어 받은 첫 쪽은 세지 않는다 — 폴더 이동 때 두 번 받지 않게). 옛 서버라는 기억은 5분에 한 번 다시 물어본다 |
 | `projectFolderTree.ts` | 저장 | 프로젝트 폴더 캐시·펼침 상태 |
 | `folderContextMenu.ts` | 순수 | 폴더 우클릭 메뉴 규칙·위치 클램프 |
 | `teamSeen.ts` | store+저장 | 공유&리뷰 '새로 들어옴' 항목별 확인(ack) 모델 |
@@ -948,7 +953,7 @@ updated: 2026-10-13
 |---|---|---|
 | `resolveSelection.ts` | 순수 | Resolve 선택 → 씬·카드 역추적 |
 | `resolveSelectionSettings.ts` | 저장+훅 | '선택 따라가기' 설정 구독 |
-| `useResolveTransferActions.ts` | 훅 | 전송 실행·재시도 액션(직렬 큐) · 편집 탭의 타임라인 보내기도 같은 줄에 선다(`sendTimelineToResolve` — 끝나면 결과로 풀리는 약속, `timelineBusy`) |
+| `useResolveTransferActions.ts` | 훅 | 전송 실행·재시도 액션(직렬 큐) · 편집 탭의 타임라인 보내기도 같은 줄에 선다(`sendTimelineToResolve` — 끝나면 결과로 풀리는 약속, `timelineBusy`) · 확인이 필요한 결과는 알림에 더해 `notices` 로 남긴다(세 줄까지 · `dismissNotice`) |
 | `useResolveLibraryFollow.ts` | 훅 | Resolve 선택에 라이브러리 페이지 따라가기 |
 | `sourceLocationFeedback.ts` | api | 원본 위치 열기 실패 보고 |
 
@@ -1005,9 +1010,12 @@ updated: 2026-10-13
 | `format.ts` | 순수 | SQLite UTC 문자열 → ms·로컬 표시 |
 | `setUtils.ts` | 순수 | Set 토글·제거·단일화 |
 
-**21. 테스트(14)**
+**21. 테스트(이전 조사 목록)**
 
-순수 모듈 198개 중 테스트가 닿은 파일은 13개(6.6%)뿐이다: `assetUrls.test.ts` ·
+이전 조사에는 순수 모듈 198개 중 13개(6.6%)라는 측정과 아래 14개 시험 파일 목록이 함께 기록돼 있다.
+대상 모듈 수와 시험 파일 수를 같은 개수로 해석하지 않으며, 현재 커버리지는 이 기록으로 판단하지 않는다.
+현행 시험 파일은 `frontend/tests/`와 소스 옆 시험을, 실행 절차는 [TESTING.md](TESTING.md)를 확인한다.
+당시 목록: `assetUrls.test.ts` ·
 `canvasDetached.test.ts` · `generationDisplay.test.ts` · `generationViews.test.ts` ·
 `manageWorkspaceScope.test.ts` · `progressSocket.test.ts` · `releaseUpdate.test.ts` ·
 `sceneDerive.test.ts` · `sceneMedia.test.ts` · `sceneNodeCatalog.test.ts` ·

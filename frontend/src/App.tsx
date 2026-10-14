@@ -20,8 +20,12 @@ import { ThumbnailGrid } from "./components/ThumbnailGrid";
 import { ensureTeamBase } from "./lib/teamSeen";
 import { TopBar } from "./components/TopBar";
 import { SceneBar } from "./components/scene/SceneBar";
-import { SceneBoard } from "./components/scene/SceneBoard";
+import { SceneBoardBoundary } from "./components/scene/SceneBoardBoundary";
+const SceneBoard = lazy(() =>
+  import("./components/scene/SceneBoard").then((m) => ({ default: m.SceneBoard })),
+);
 import { AppOverlays, VideoCompareOverlay } from "./components/app/AppOverlays";
+import { ResolveNotices } from "./components/app/ResolveNotices";
 const EditTab = lazy(() =>
   import("./components/timeline/EditTab").then((m) => ({ default: m.EditTab })),
 );
@@ -33,7 +37,7 @@ import { KEY_COLORS } from "./lib/appConstants";
 import { folderPeekQuery, generationQueryKey } from "./lib/appGenerationQuery";
 import { useResolveLibraryFollow } from "./lib/useResolveLibraryFollow";
 import { generationsByIds, uniqueTagNames } from "./lib/generationTags";
-import { useAppNavigation } from "./lib/useAppNavigation";
+import { reloadedIntoEdit, useAppNavigation } from "./lib/useAppNavigation";
 import {
   confirmSceneWrite,
   subscribeSceneSaveState,
@@ -151,7 +155,7 @@ import { FETCH_ALL_MAX } from "./lib/fetchAllGenerations";
 import { useLocalFolderCards } from "./lib/useLocalFolderCards";
 import { placeViewKey } from "./lib/placeViews";
 import { usePlaceView } from "./lib/usePlaceView";
-import { useFolderCards } from "./lib/useFolderCards";
+import { useFolderCards, useSameQueryRevision } from "./lib/useFolderCards";
 import { CutInfoPopup } from "./components/CutInfoPopup";
 import { CutReel, type ReelMode } from "./components/CutReel";
 import { buildSpotlightCreateBody } from "./lib/spotlightSubmit";
@@ -191,7 +195,7 @@ export default function App() {
   // 편집 탭(docs/EDIT_TAB.md) — filters.tab 의 값이 아니라 본문만 바꾸는 별도 '보기'다. 밑의 탭 상태·목록 훅은 그대로 돈다.
   //  떠 있는 동안: 캔버스 폴더 창 닫힘(folderPeek) · 프롬프트 단축키 쉼 · 다빈치 따라가기 쉼. 라이브러리 단축키는 편집 탭이 연
   //  폴더 창이 떠 있을 때만 듣는다(아래 teamPeek).
-  const [editOpen, setEditOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(reloadedIntoEdit); // 새로 고침해도 편집 탭에 남는다(Jay 2026-10-14)
   const editOpenRef = useRef(editOpen);
   editOpenRef.current = editOpen;
   // 편집 탭이 연 '폴더 보기' 창(컷 더블클릭, Jay 2026-10-08) — 공유 & 리뷰의 폴더 창을 그대로 쓴다. 그 창은 하나뿐인 목록
@@ -200,7 +204,7 @@ export default function App() {
   const [teamPeek, setTeamPeek] = useState(false);
   // 라이브러리 필터/뷰 상태 + genQuery/selectionResetKey 파생 + LS 저장(useLibraryPersistence)은 useLibraryFilters 훅으로 추출.
   const {
-    filters, storedTab, setFilters, patch, restoreLocation, restoredLocationRef, teamScopeKey, teamAutoReady,
+    filters, storedTab, setFilters, patch, restoreLocation, adoptShownLocation, restoredLocationRef, teamScopeKey, teamAutoReady,
     typeFilter, setTypeFilter, scale, setScale, fill, setFill,
     showFilters, setShowFilters, colorFilter, setColorFilter,
     sharedOnly, setSharedOnly, reviewFilter, setReviewFilter, tagFilter, setTagFilter, tagPanelOpen, setTagPanelOpen,
@@ -502,8 +506,10 @@ export default function App() {
   libraryKeysOffRef.current = editOpen && !listPeek;
   // 모양(리스트/그리드 · 리스트 한 번 더)은 **보는 폴더**마다 기억한다(Jay 2026-10-13 저녁 — lib/usePlaceView). 폴더 창이 떠 있으면 그 창의 폴더가
   //  보는 폴더다: 창 안에서 바꾼 모양은 그 폴더 것으로 적히고, 닫으면 뒤 화면은 제 모양 그대로다(뒤 폴더에 적히지 않는다 — Codex 코드 리뷰).
+  //  창이 없을 때의 자리는 **저장된 탭**의 것이다 — 편집 탭이 연 창이 무효가 된 렌더(창은 닫혔는데 teamPeek 는 아직 참)에서는 filters.tab 이
+  //  공유 & 리뷰라, 보지도 않은 공유 탭 자리에 모양이 적혔다(Codex 코드 리뷰).
   const { layout, setLayout, groupByDate, setGroupByDate } = usePlaceView(LS, placeViewKey(
-    listPeek ? { tab: filters.tab, project_id: listPeek.projectId ?? undefined, folder_path: listPeek.path } : filters,
+    listPeek ? { tab: filters.tab, project_id: listPeek.projectId ?? undefined, folder_path: listPeek.path } : { ...filters, tab: storedTab },
   ));
   const listGenQuery = useMemo(() => (listPeek ? folderPeekQuery(genQuery, listPeek) : genQuery), [genQuery, listPeek]);
   // 창의 격자는 열 때마다 새로 마운트되므로 nonce 는 고정값이면 된다(한 번 열 때 한 번만 이동).
@@ -565,8 +571,15 @@ export default function App() {
     const workspaceId = singleTeamWorkspace(genQuery);
     return { projectId: listPeek.projectId, parent: parentFolder(listPeek.path), ...(workspaceId ? { workspaceId } : {}) };
   }, [filters.tab, authReady, workspaceQueryReady, listPeek, cutView, cutScope, genQuery]);
+  // 폴더 카드를 다시 받는 신호 = 목록이 **같은 조회를 다시 받았을 때**(주기 조회·통보·내 조작 뒤의 다시 받기). 조회가 바뀌어(폴더 이동·찾는 조건·
+  //  폴더 창) 받은 첫 쪽은 변경 통보가 아니다 — 자리가 바뀐 것은 훅이 스스로 받는다. 둘 다 따라가면 폴더를 옮길 때마다 같은 묶음 조회가 두 번
+  //  나간다(아래 두 훅이면 네 번 — Codex 코드 리뷰 10-13).
+  const listQueryKey = useMemo(
+    () => JSON.stringify([libraryAuthKey, workspaceScopeKey, listGenQuery]), [libraryAuthKey, workspaceScopeKey, listGenQuery],
+  );
+  const cardsReloadKey = useSameQueryRevision(listQueryKey, listRevision);
   const { cards: folderCards, unsupported: folderCardsUnsupported, loading: folderCardsLoading, reload: reloadFolderCards } = useFolderCards({
-    scope: cardsScope, authKey: libraryAuthKey, reloadKey: listRevision,
+    scope: cardsScope, authKey: libraryAuthKey, reloadKey: cardsReloadKey,
   });
   // 지금 고른 자리의 서버 카드(안 거른 것) — 어느 폴더가 묶음인지·팀이 정한 대표가 무엇인지의 근거다.
   const baseHere =
@@ -684,7 +697,7 @@ export default function App() {
     const workspaceId = singleTeamWorkspace(genQuery);
     return { projectId: filters.project_id, parent: parentFolder(filters.folder_path), ...(workspaceId ? { workspaceId } : {}) };
   }, [filters.tab, filters.project_id, filters.folder_path, filters.deleted_only, authReady, workspaceQueryReady, listPeek, genQuery]);
-  const { cards: ownCards, reload: reloadOwnCards } = useFolderCards({ scope: ownScope, authKey: libraryAuthKey, reloadKey: listRevision });
+  const { cards: ownCards, reload: reloadOwnCards } = useFolderCards({ scope: ownScope, authKey: libraryAuthKey, reloadKey: cardsReloadKey });
   const ownFolderCard = ownScope ? ownCards?.folders.find((folder) => folder.path === filters.folder_path) : undefined;
   const ownCoverId = ownFolderCard?.rep ? ownFolderCard.cover.id : null;
   // 한 장씩 → 묶음으로 바뀌는 순간 고른 것을 비운다 — 남기면 보이지 않는 카드에 삭제·공유가 걸린다.
@@ -1189,6 +1202,11 @@ export default function App() {
         onMouseDown={(e) => {
           e.preventDefault();
           if (e.button === 0) pick(g);
+        }}
+        // Tab 으로 와서 Enter·Space 로 누른 것(키보드가 만든 click 은 detail 0) — mousedown 에만 걸면 키보드로는 못 정한다(조작 규칙 51).
+        //  마우스의 click(detail 1 이상)은 위에서 이미 했다.
+        onClick={(e) => {
+          if (e.detail === 0) pick(g);
         }}
       >
         {t("대표")}
@@ -2623,15 +2641,19 @@ export default function App() {
           navTab(tab); // 브라우저 히스토리 엔트리 추가(뒤로/앞으로 연동)
           // 직접 탭 클릭은 다른 필터를 초기화하되 무장된 워크스페이스 침 필터는 유지
           setFilters((previous) => ({ tab, workspace_ids: previous.workspace_ids }));
-          // 공유 탭을 **직접 눌러** 들어오면 같은 문맥의 마지막 자리로(2026-10-13 ① — 처음이거나 다른 문맥이면 프로젝트 맨 위). 보는 자리만 되살린다 —
-          //  다음 생성 위치·무장 폴더는 그대로. 뒤로·앞으로 가기는 여기를 거치지 않고 기록의 자리를 쓴다(lib/useAppNavigation).
-          if (tab === "team" && teamMemoryCtx) {
-            const remembered = LS.loadJSON<TeamLocationMemory>(TEAM_LOCATION_KEY);
+          // 공유 탭을 **직접 눌러** 들어오면 같은 문맥의 마지막 자리로(2026-10-13 ①). **사이드바의 표시(= 다음 생성 위치·무장 폴더)도 그 자리로
+          //  옮긴다**(2026-10-14 Jay: "이미지1처럼 선택되어있으면 이미지2처럼 나와야하고 만약 전에 눌러서 저 화면이 나왔다면 이미지3번처럼" —
+          //  전에는 보는 자리만 되살려 사이드바는 프로젝트, 카드는 e035 였다. 뒤로·앞으로 가기와 같게(adopt)). 기억이 없거나 다른 문맥이면 프로젝트
+          //  맨 위 — 사이드바의 표시도 맨 위로 맞춘다(Codex 코드 리뷰: 공간을 바꿔 공유 탭의 자리만 표시 전용으로 비운 뒤면 위의 setFilters 는 자리가
+          //  그대로라 생성 위치를 안 건드려, 사이드바에 옛 폴더가 남았다). 뒤로·앞으로 가기는 여기를 거치지 않고 기록의 자리를 쓴다(lib/useAppNavigation).
+          //  기억을 되살리는 것만 문맥이 있어야 한다 — 전체 보기(문맥 없음)에서도 사이드바의 표시는 맞춘다(Codex 36회차).
+          if (tab === "team") {
+            const remembered = teamMemoryCtx ? LS.loadJSON<TeamLocationMemory>(TEAM_LOCATION_KEY) : null;
             if (remembered && remembered.ctx === teamMemoryCtx && (remembered.project_id || remembered.folder_path)) {
               // 그사이 지워졌는지는 판정하지 않는다 — 사이드바의 프로젝트 목록은 보관·공간 제한이라 없다고 지워진 것이 아니고, 폴더는 알 길이 없다
               //  (컷 카드 0장은 공유 해제·필터로도 난다). 정말 사라졌으면 빈 목록이 보이고, 사이드바에서 다시 고르면 기억이 덮인다(Codex 코드 리뷰 2회).
-              restoreLocation({ project_id: remembered.project_id, folder_path: remembered.folder_path });
-            }
+              restoreLocation({ project_id: remembered.project_id, folder_path: remembered.folder_path }, true);
+            } else adoptShownLocation();
           }
           clearSelect();
         }}
@@ -2683,6 +2705,11 @@ export default function App() {
                 sendTimeline: resolveTransfer.sendTimelineToResolve, timelineBusy: resolveTransfer.timelineBusy,
               }}
               onFolderAction={onFolderAction}
+              // 최종 확정(클립 메뉴·목록 단추) — 공유 & 리뷰의 여러 장 등급 처리와 같은 길
+              review={{
+                canFinalize, apply: (gens, action) => onReviewSelection(gens, action, canFinalize),
+                release: (gens) => onReviewSelection(gens, "shared", canFinalize, true),
+              }}
             />
           </Suspense>
         ) : filters.tab === "compose" ? (
@@ -2785,6 +2812,17 @@ export default function App() {
               onExportAll={exportAllScenes}
             />
             {activeScene ? (
+              <SceneBoardBoundary fallback={
+                <div role="status" style={{ flex: 1, display: "grid", placeContent: "center", gap: 12 }}>
+                  <span>{t("캔버스를 불러오지 못했습니다.")}</span>
+                  <button type="button" onClick={() => window.location.reload()}>{t("새로고침")}</button>
+                </div>
+              }>
+              <Suspense fallback={
+                <div role="status" style={{ flex: 1, display: "grid", placeContent: "center" }}>
+                  {t("캔버스를 불러오는 중…")}
+                </div>
+              }>
               <SceneBoard
                 authKey={libraryAuthKey}
                 authReady={authReady}
@@ -2892,6 +2930,8 @@ export default function App() {
                 onVariantGradeStep={(gens, mode) => grade.requestGradeStep(gens, mode)}
                 escBlocked={info !== null}
               />
+              </Suspense>
+              </SceneBoardBoundary>
             ) : (
             <Suspense fallback={null}>
             <HistoryBoard
@@ -3129,6 +3169,8 @@ export default function App() {
         onOpenInBoardFromPreview={onOpenInBoardFromPreview}
         onPreview={openPreview}
       />
+      {/* Resolve 보내기 결과 가운데 확인이 필요한 것 — 알림 바로 아래에 닫을 때까지 남는다(겹이 아니다 — 뒤 화면을 그대로 쓴다) */}
+      <ResolveNotices items={resolveTransfer.notices} onDismiss={resolveTransfer.dismissNotice} />
       {/* 컷 정보(휠 클릭)·모아보기 — 크게 보기(AppOverlays)보다 아래 층. 크게 보기가 떠 있는 동안은 Esc 를 그쪽에 넘긴다. */}
       {cutInfo && cutInfoFolder && cutInfoQuery && (
         <CutInfoPopup

@@ -46,7 +46,7 @@ export function CreatorSection({
       {loading && !creators.length && <div className="creator-status" role="status">{tr("불러오는 중…")}</div>}
       {error && <div role="status">
         {error === "update" && <p className="creator-status">{tr(tab === "my"
-          ? "작업 공간 생성자 표시에는 로컬 앱 업데이트가 필요합니다."
+          ? "워크스페이스 탭의 생성자 표시에는 로컬 앱 업데이트가 필요합니다."
           : "워크스페이스별 생성자 표시에는 공유 서버 업데이트가 필요합니다.")}</p>}
         <button className="creator-pick" onClick={() => void reload()}>{tr("목록을 못 받았습니다 — 다시 시도")}</button>
       </div>}

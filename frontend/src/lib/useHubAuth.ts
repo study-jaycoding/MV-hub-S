@@ -7,10 +7,47 @@ import { loadString, saveString } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 import { setAccountScope } from "./accountScope";
 import { useCustomEvent } from "./useCustomEvent";
+// 계정이 바뀌는 길의 새로고침은 반드시 일어나야 한다 — 저장 못 한 편집이 있어도 그 자리에서는 묻지 않는다(머무르면 계정 범위만 바뀐
+//  화면이 남는다). 묻는 것은 그 전, 로그아웃을 누른 순간이다(아래 logout).
+import { reloadNow, setLeaving, unloadHeld } from "./unloadGuard";
 import type { Account, AuthConfig } from "../types";
 import { HttpError } from "./http";
 
 const FINALIZE_ROLES_RETRY_MS = 30_000;
+const LOGOUT_WAIT_MS = 10_000;
+const TIMED_OUT = Symbol("timed out");
+
+// 요청 하나를 제한 시간까지만 기다린다 — 넘으면 끊고 TIMED_OUT.
+function within<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T | typeof TIMED_OUT> {
+  const control = new AbortController();
+  let timer = 0;
+  const late = new Promise<typeof TIMED_OUT>((yes) => {
+    timer = window.setTimeout(() => {
+      control.abort();
+      yes(TIMED_OUT);
+    }, LOGOUT_WAIT_MS);
+  });
+  const run = work(control.signal);
+  run.catch(() => {}); // 끊긴 뒤에 오는 거부를 떠돌게 두지 않는다
+  return Promise.race([run, late]).finally(() => window.clearTimeout(timer));
+}
+
+/** 허브(AUTH-off)의 로그아웃. 돌려주는 값 = 로그아웃됐는가. 응답이 끝나지 않으면 끊고, **됐는지를 허브에 물어** 정한다 —
+ *  기다리는 동안 편집이 잠겨 있어(setLeaving) 끝나지 않는 요청이 화면을 영영 묶지 않게(Codex 재검토 4회째). 묻지도 못하면 안 된 것으로
+ *  본다: 그 뒤에 허브가 실제로는 로그아웃돼 있었다면 다음 요청의 401 이 로그인 화면으로 보낸다(전부터 있는 길). */
+async function hubLogout(): Promise<boolean> {
+  try {
+    if ((await within((signal) => api.sharedServerLogout(signal))) !== TIMED_OUT) return true;
+  } catch {
+    return false; // 허브가 실패를 답했다
+  }
+  try {
+    const status = await within((signal) => api.sharedServerStatus(signal));
+    return status !== TIMED_OUT && !status.has_token;
+  } catch {
+    return false;
+  }
+}
 
 export interface SharedServerState {
   configured: boolean;
@@ -109,7 +146,7 @@ export function useHubAuth() {
       setAccountScope(newEmail);
       saveString(STORAGE_KEYS.activeAccount, newEmail);
     }
-    window.location.reload();
+    reloadNow();
   }, []);
 
   useEffect(() => {
@@ -197,13 +234,13 @@ export function useHubAuth() {
     if (prev && prev !== account.email && authConfig?.auth_enabled) {
       clearPersonalSettings();
       saveString(STORAGE_KEYS.activeAccount, account.email);
-      window.location.reload();
+      reloadNow();
       return;
     }
     saveString(STORAGE_KEYS.activeAccount, account.email);
     // 첫 로그인처럼 이전 activeAccount 가 없던 경우에도 App 의 씬 상태는 이미 local 범위로
     // 초기화됐을 수 있다. 인증 범위가 달라졌다면 한 번만 다시 열어 정확한 계정 버킷을 읽는다.
-    if (accountScopeChanged) window.location.reload();
+    if (accountScopeChanged) reloadNow();
   }, [account?.email, authConfig?.auth_enabled]);
 
   useEffect(() => {
@@ -236,18 +273,28 @@ export function useHubAuth() {
     };
   }, [account, authConfig?.auth_enabled]);
 
+  const loggingOut = useRef<Promise<boolean> | null>(null); // 진행 중인 허브 로그아웃(하나뿐)
   /** 로그아웃한다. 돌려주는 값 = 로그아웃됐는가(부르는 쪽이 먼저 비운 화면을 실패 때 되살린다). */
   const logout = useCallback(async (): Promise<boolean> => {
+    // 이미 로그아웃하는 중이면 그 요청의 결과를 같이 기다린다 — 요청은 하나뿐이다. 둘이 따로 돌면 하나의 실패가 편집 잠금을 풀고,
+    //  아직 기다리던 다른 하나의 성공이 그사이의 편집을 새로고침으로 지운다(Codex 재검토 4회째).
+    if (loggingOut.current) return loggingOut.current;
+    // 저장하지 못한 편집이 있으면 먼저 묻는다 — 로그아웃(그리고 이어지는 계정 전환)은 새로고침으로 끝나 메모리에만 남은 그 편집이 사라진다.
+    //  계정·서버의 상태를 바꾸기 **전에** 묻는다: 바꾼 뒤에 새로고침만 막으면 화면이 옛 계정의 것으로 남는다(Codex 배포 전 재검토).
+    if (unloadHeld() && !window.confirm("편집 탭에 저장하지 못한 변경이 있습니다. 로그아웃하면 그 변경은 사라집니다. 계속할까요?")) return false;
     if (!authConfig?.auth_enabled) {
-      try {
-        await api.sharedServerLogout();
-      } catch {
+      // 응답을 기다리는 동안의 편집은 받지 않는다 — 위의 확인 뒤에 '저장 안 됨'이 새로 생기면 묻지 못한 채 아래 새로고침에 사라진다.
+      setLeaving(true);
+      const done = await (loggingOut.current = hubLogout());
+      loggingOut.current = null;
+      if (!done) {
         // 실패했으면 새로 고치지 않고 알린다(조작 규칙 41) — 전엔 실패를 삼키고 새로 고쳐, 허브에 세션이 남아 있어 로그인 화면 없이
         //  같은 계정으로 말없이 돌아왔다(로그아웃된 줄 안다).
+        setLeaving(false);
         flashMsg("로그아웃하지 못했습니다 — 잠시 뒤 다시 시도하세요.");
         return false;
       }
-      window.location.reload();
+      reloadNow();
       return true;
     }
     api.logout().catch(() => {});

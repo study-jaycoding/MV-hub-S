@@ -90,7 +90,7 @@ export function TopBar({
           className={!editOpen && filters.tab === "my" ? "on" : ""}
           onClick={() => pickTab("my")}
         >
-          {t("작업 공간")}
+          {t("워크스페이스")}
         </button>
         <button
           className={!editOpen && filters.tab === "team" ? "on" : ""}

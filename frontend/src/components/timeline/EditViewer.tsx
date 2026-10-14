@@ -1,5 +1,6 @@
 // 편집 탭의 뷰어 한 판(Jay 2026-10-08, 다빈치의 뷰어) — 위 줄(지금 시각 · 무엇을 볼지 · 전체 길이 · 싱글/듀얼), 무대,
-//  아래 줄(타임바 · 처음·역재생·정지·재생·끝·반복 · 구간 반복·마크 인·마크 아웃). 타임라인·소스·한 트랙만 보기가 같은 판을 쓴다.
+//  아래 줄(타임바 · 처음·역재생·정지·재생·끝·반복 · 오른쪽에 소리 크기). 타임라인·소스·한 트랙만 보기가 같은 판을 쓴다.
+//  구간 반복·마크 인·마크 아웃은 위 막대의 다이나믹 트림 단추 왼쪽으로 옮겼다(Jay 2026-10-14).
 //  판은 '무엇을 그릴지'(shown)와 조작 함수만 받는다 — 시계는 편집 탭이 가진 엔진(타임라인·소스)의 것이다.
 //  `<video>` 는 판마다 하나고 떼지 않는다(떼면 재생 훅이 걸어 둔 이벤트와 주소가 사라진다) — 안 보이는 판은 hidden 으로 둔다.
 //  지금 시각과 타임바 머리는 React 를 거치지 않고, 등록해 둔 그리기 함수가 프레임마다 고친다.
@@ -11,6 +12,17 @@ import type { EditShown } from "../../lib/useEditFollow";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 
+// 프레임마다 고치는 글자(타임코드) — **있는 글자 노드의 값만** 바꾼다. `textContent` 로 쓰면 글자 노드를 갈아 끼우는 일(자식 목록
+//  변경)이라 브라우저가 문서 전체의 스타일을 다시 계산한다: 재생 중 프레임마다 약 7ms 씩(클립 300·DOM 5,727, 2026-10-13 격리 실측 —
+//  같은 글자를 nodeValue 로 쓰면 0ms). 글자가 그대로면 쓰지 않는다(타임코드는 초당 24번만 바뀐다).
+export function writeText(el: Element | null, text: string): void {
+  if (!el) return;
+  const node = el.firstChild;
+  if (node && node.nodeType === Node.TEXT_NODE && !node.nextSibling) {
+    if (node.nodeValue !== text) node.nodeValue = text;
+  } else el.textContent = text;
+}
+
 export interface ViewOption {
   value: ViewMode;
   label: string;
@@ -20,18 +32,12 @@ export interface ViewerControls {
   toggle: () => void;
   stop: () => void;
   shuttle: (dir: 1 | -1) => void;
-  seek: (time: number) => void;
-}
-// 오른쪽 아래의 단추 셋(다빈치 뷰어) — 구간 반복 재생 · 마크 인 · 마크 아웃. 타임라인의 시계를 쓰는 판만 받는다.
-export interface ViewerMarking {
-  markIn: () => void;
-  markOut: () => void;
-  rangeLoop: boolean; // 구간 반복 재생이 켜져 있다
-  canRangeLoop: boolean; // 되풀이할 구간(인/아웃)이 있다
-  onRangeLoop: () => void;
+  seek: (time: number) => void; // 재생바 누르기·끌기 — 이 판만(다이나믹 재생 모드에서도)
+  edge: (end: boolean) => void; // 처음으로·끝으로 단추 — 다이나믹 재생 모드면 두 판 같이(2026-10-14)
 }
 export interface ViewerProps {
   order: number; // 보이는 자리(0 = 왼쪽). -1 = 안 보인다(요소는 남는다)
+  place?: 0 | 1; // 판 자리(왼쪽 0 · 오른쪽 1 — 싱글이면 1). 카드를 놓은 판을 찾는다(data-place)
   mode: ViewMode;
   options: ViewOption[];
   onMode: (next: ViewMode) => void;
@@ -45,14 +51,15 @@ export interface ViewerProps {
   marks: readonly number[]; // 타임바의 얇은 줄(소스 테이프의 클립 경계, 초)
   io?: EditMarks | null; // 마크 인/아웃 — 타임바 위의 구간 선과 아래의 회색 꼬리표
   flags?: readonly { time: number; color?: string }[]; // 북마크 — 타임바 위의 색 꼬리표
-  marking?: ViewerMarking | null;
-  over?: ReactNode; // 무대를 덮는 것(다이나믹 트림 모드의 두 칸) — 밑의 영상 요소는 그대로 둔다
+  over?: ReactNode; // 무대를 덮는 것 — 밑의 영상 요소는 그대로 둔다
   registerPaint: (paint: (time: number) => void) => () => void; // 이 판의 시각·타임바를 그릴 함수를 시계에 건다
   controls: ViewerControls;
   loop: boolean;
   onLoop: () => void;
   speed: number; // 재생 배속 — 누르면 다음 값으로(onSpeed)
   onSpeed: () => void;
+  volume: number; // 소리 크기 0~1 — 판의 영상 요소에 그대로 건다(끄고 켜기는 muted 가 따로 한다)
+  onVolume: (volume: number) => void;
   label: string; // 'e070 / c0050 · V3'
   detail: string; // '만든 사람 · 모델 · 5.0s'
   empty: string | null; // 그릴 것이 없을 때의 안내(있으면 화면 가운데에 그것만)
@@ -64,9 +71,9 @@ export interface ViewerProps {
 const NO_FLAGS: readonly { time: number; color?: string }[] = [];
 
 export function EditViewer({
-  order, mode, options, onMode, shown, videoRef, spareRef, muted, playing, rate, total, marks, io = null, flags = NO_FLAGS, marking = null,
+  order, place, mode, options, onMode, shown, videoRef, spareRef, muted, playing, rate, total, marks, io = null, flags = NO_FLAGS,
   over = null, registerPaint, controls,
-  loop, onLoop, speed, onSpeed, label, detail, empty, active, onActivate, dualButton,
+  loop, onLoop, speed, onSpeed, volume, onVolume, label, detail, empty, active, onActivate, dualButton,
 }: ViewerProps) {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -76,7 +83,8 @@ export function EditViewer({
   const trackRef = useRef<HTMLDivElement>(null);
   const headRef = useRef<HTMLDivElement>(null);
   const fillRef = useRef<HTMLDivElement>(null);
-  useOutsideMouseDown(pickRef, () => setOpen(false), open);
+  // 초점이 밖에 생겨도 닫는다 — 마우스로 열면 단추가 초점을 받지 않아(keepFocus) 아래 onBlur 만으로는 Tab 에 안 닫혔다(풀의 메뉴와 같다)
+  useOutsideMouseDown(pickRef, () => setOpen(false), open, undefined, true);
   // 판이 숨겨지면(order < 0) 메뉴도 닫는다 — 판은 숨겨도 마운트돼 있어, 열림이 남으면 보이지 않는 겹이 뒤 화면의 키를 전부 막는다
   //  (lib/keyGate: 켜진 Esc 겹 = 키의 주인).
   useEffect(() => {
@@ -96,7 +104,7 @@ export function EditViewer({
     return () => window.removeEventListener("resize", fit);
   }, [open]);
   useEffect(() => registerPaint((time) => {
-    if (timeRef.current) timeRef.current.textContent = timecode(time);
+    writeText(timeRef.current, timecode(time));
     const at = `${total > 0 ? Math.min(100, Math.max(0, (time / total) * 100)) : 0}%`;
     if (headRef.current) headRef.current.style.left = at;
     if (fillRef.current) fillRef.current.style.width = at;
@@ -120,6 +128,24 @@ export function EditViewer({
     const box = trackRef.current?.getBoundingClientRect();
     if (box) controls.seek(total * Math.min(1, Math.max(0, (event.clientX - box.left) / Math.max(1, box.width))));
   };
+  // 소리 크기 — 영상 요소 둘(앞·뒤로 바꿔 트는 짝) 모두에 건다. 짝이 바뀌어도 요소는 그대로라 값이 남는다.
+  //  다만 미리 굴리는 뒤의 것(가려진 채 도는 것)은 0 그대로 둔다 — 굴리기를 멈추거나 앞으로 나올 때 짝이 앞의 값으로
+  //  돌려놓는다(editVideoPair). 여기서 덮으면 가려진 다음 영상의 소리가 났다(Codex 36회차).
+  useEffect(() => {
+    for (const el of [videoRef.current, spareRef?.current]) {
+      if (el && !(el.dataset.spare !== undefined && !el.paused)) el.volume = volume;
+    }
+  }, [volume, videoRef, spareRef]);
+  // 끈 막대 — 타임바처럼 누르거나 끌어서 정한다(입력칸이 아니고, 마우스로는 초점을 가져가지 않는다 — 재생 키가 막대로 가지 않게).
+  //  스피커를 누르면 0 ↔ 끄기 전의 크기(없으면 1).
+  const volRef = useRef<HTMLDivElement>(null);
+  const volBack = useRef(volume > 0 ? volume : 1);
+  if (volume > 0) volBack.current = volume;
+  const setVolumeAt = (event: ReactPointerEvent) => {
+    const box = volRef.current?.getBoundingClientRect();
+    if (box) onVolume(Math.round(Math.min(1, Math.max(0, (event.clientX - box.left) / Math.max(1, box.width))) * 100) / 100);
+  };
+  const volTitle = `${t("소리 크기")} ${Math.round(volume * 100)}%`;
   const button = (name: string, title: string, run: () => void, icon: JSX.Element, on = false) => (
     <button type="button" className={`ed-tbtn ed-t-${name}` + (on ? " ed-on" : "")} title={title} aria-label={title}
       aria-pressed={name === "loop" ? on : undefined} onClick={run}>{icon}</button>
@@ -127,7 +153,7 @@ export function EditViewer({
 
   return (
     <section className={"ed-view" + (isSourceView(mode) ? " ed-src" : "") + (active ? " ed-view-on" : "")}
-      hidden={order < 0} style={{ order: order + 1 }} data-view={String(mode)}
+      hidden={order < 0} style={{ order: order + 1 }} data-view={String(mode)} data-place={place}
       // 누르면(마우스), 또는 이 판의 단추를 키보드로 실행하면(click) 이 판이 재생 키를 받는다. 초점이 들어온 것만으로는
       //  바꾸지 않는다 — 우클릭 메뉴가 닫히며 초점을 돌려줄 때 재생 대상이 엉뚱하게 바뀐다(Codex 코드 리뷰).
       onMouseDownCapture={onActivate} onClickCapture={onActivate}>
@@ -217,7 +243,7 @@ export function EditViewer({
           </div>
         </div>
         <div className="ed-trans">
-          {button("first", t("처음으로 (Home)"), () => controls.seek(0),
+          {button("first", t("처음으로 (Home)"), () => controls.edge(false),
             <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><rect x="1" y="1" width="2" height="12" /><path d="M15 1v12L5 7z" /></svg>)}
           {button("rev", t("역재생 (J)"), () => controls.shuttle(-1),
             <svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"><path d="M11 1v12L1 7z" /></svg>)}
@@ -230,28 +256,47 @@ export function EditViewer({
               <svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"><path d="M2 1v12l9-6z" /></svg>
             )}
           </button>
-          {button("last", t("끝으로 (End)"), () => controls.seek(total),
+          {button("last", t("끝으로 (End)"), () => controls.edge(true),
             <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><rect x="13" y="1" width="2" height="12" /><path d="M1 1v12l10-6z" /></svg>)}
           {button("loop", t("반복 재생"), onLoop,
             <svg className="ed-line" width="18" height="14" viewBox="0 0 18 14" aria-hidden="true"><path d="M5 3h8a4 4 0 0 1 0 8H5a4 4 0 0 1 0-8" /><path d="M8 .6 5 3l3 2.4" /></svg>, loop)}
           <button type="button" className={"ed-tbtn ed-t-speed" + (speed !== 1 ? " ed-on" : "")} title={speedTitle} aria-label={speedTitle}
             onClick={onSpeed}>{speed}x</button>
-          {marking && (
-            <span className="ed-tside">
-              <button type="button" className={"ed-tbtn ed-t-range" + (marking.rangeLoop ? " ed-on" : "")} aria-pressed={marking.rangeLoop}
-                disabled={!marking.canRangeLoop} onClick={marking.onRangeLoop}
-                title={t("구간 반복 재생 (Alt+/) — 마크 인/아웃 사이를 되풀이합니다")}
-                aria-label={t("구간 반복 재생 (Alt+/) — 마크 인/아웃 사이를 되풀이합니다")}>
-                <svg className="ed-line" width="20" height="14" viewBox="0 0 20 14" aria-hidden="true">
-                  <rect x="1" y="1" width="18" height="12" rx="2.5" /><path d="M10 4v6M7.5 4.8 5 7l2.5 2.2M12.5 4.8 15 7l-2.5 2.2" />
-                </svg>
-              </button>
-              {button("in", t("마크 인 (I)"), marking.markIn,
-                <svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><path d="M1 1v10l8-5z" /><rect x="11" y="1" width="2" height="10" /></svg>)}
-              {button("out", t("마크 아웃 (O)"), marking.markOut,
-                <svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><rect x="1" y="1" width="2" height="10" /><path d="M13 1v10L5 6z" /></svg>)}
-            </span>
-          )}
+          <span className="ed-tside ed-vol">
+            <button type="button" className={"ed-tbtn ed-t-vol" + (volume === 0 ? " ed-on" : "")} aria-pressed={volume === 0}
+              title={volume === 0 ? t("소리 켜기") : t("소리 끄기")} aria-label={volume === 0 ? t("소리 켜기") : t("소리 끄기")}
+              onClick={() => onVolume(volume > 0 ? 0 : volBack.current)}>
+              <svg className="ed-line" width="18" height="14" viewBox="0 0 18 14" aria-hidden="true">
+                <path d="M1.5 5h2.8L8 2v10L4.3 9H1.5z" />
+                {volume === 0 ? <path d="M11.5 4.5l5 5M16.5 4.5l-5 5" />
+                  : <><path d="M11 4.6a3.4 3.4 0 0 1 0 4.8" />{volume > 0.5 && <path d="M13.3 2.6a6.2 6.2 0 0 1 0 8.8" />}</>}
+              </svg>
+            </button>
+            <div className="ed-vol-bar" role="slider" aria-label={t("소리 크기")} title={volTitle} tabIndex={0}
+              aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(volume * 100)}
+              // 키보드(Tab 으로 온 초점)로도 — ←↓ / →↑ 5%, Home·End 끝. 쓴 키는 막아 프레임 이동으로 새지 않는다(편집 키는
+              //  막힌 키를 건너뛴다). 마우스로 누를 때는 초점을 안 가져간다 — 누른 뒤의 ←→ 는 그대로 프레임 이동이다(Codex 36회차).
+              onMouseDown={(event) => event.preventDefault()}
+              onKeyDown={(event) => {
+                const step = ({ ArrowLeft: -0.05, ArrowDown: -0.05, ArrowRight: 0.05, ArrowUp: 0.05, Home: -1, End: 1 } as Record<string, number>)[event.key];
+                if (step === undefined || event.ctrlKey || event.metaKey || event.altKey) return;
+                event.preventDefault();
+                onVolume(Math.round(Math.min(1, Math.max(0, volume + step)) * 100) / 100);
+              }}
+              onPointerDown={(event) => {
+                if (event.button !== 0) return;
+                event.currentTarget.setPointerCapture(event.pointerId);
+                setVolumeAt(event);
+              }}
+              onPointerMove={(event) => {
+                if (event.currentTarget.hasPointerCapture(event.pointerId)) setVolumeAt(event);
+              }}>
+              <div className="ed-vol-track" ref={volRef}>
+                <div className="ed-vol-fill" style={{ width: `${volume * 100}%` }} />
+                <div className="ed-vol-knob" style={{ left: `${volume * 100}%` }} />
+              </div>
+            </div>
+          </span>
         </div>
       </div>
     </section>

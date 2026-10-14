@@ -5,7 +5,9 @@
 import { act, StrictMode, useRef, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { focusCameByTab, useModalFocus } from "../src/lib/keyGate";
+import { readFileSync } from "node:fs";
+import { URL as NodeURL } from "node:url";
+import { closeModal, focusCameByTab, nextLayerSeq, openModal, useModalFocus } from "../src/lib/keyGate";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -597,4 +599,27 @@ it("닫았다가 다시 연 창은 지난번 자리가 아니라 뿌리에서 �
   expect(activeId()).toBe("top"); // 닫히며 연 자리로 돌아갔다
   act(() => root.render(page(<Kept open />)));
   expect(activeId()).toBe("win");
+});
+
+// Codex 조작 점검(2026-10-14) — 모달이 떠 있는 동안 body 에 표(data-modal-open)를 둔다. CSS 가 그 표로 Resolve 결과의 남는 안내를 모달 뒤로
+//  내린다: 모달의 Tab 순환은 그 창 안만 돌아, 안내가 위에 보여도 키보드로는 ✕ 에 닿지 못했다.
+it("모달이 하나라도 떠 있으면 body 에 data-modal-open 이 붙고 다 닫히면 떼어진다 — 남는 안내의 CSS 가 그 표를 쓴다", () => {
+  const first = document.createElement("div"), second = document.createElement("div");
+  for (const el of [first, second]) { el.tabIndex = -1; document.body.append(el); }
+  const a = {}, b = {};
+  expect(document.body.hasAttribute("data-modal-open")).toBe(false);
+  openModal(a, nextLayerSeq(), () => [first]);
+  openModal(b, nextLayerSeq(), () => [second]);
+  expect(document.body.hasAttribute("data-modal-open")).toBe(true);
+  closeModal(b, null);
+  expect(document.body.hasAttribute("data-modal-open")).toBe(true); // 아래에 하나 남았다
+  closeModal(a, null);
+  expect(document.body.hasAttribute("data-modal-open")).toBe(false);
+  closeModal(a, null); // 이미 닫은 것을 또 닫아도 그대로다
+  expect(document.body.hasAttribute("data-modal-open")).toBe(false);
+  first.remove();
+  second.remove();
+  const css = readFileSync(new NodeURL("../src/styles/assets.css", import.meta.url), "utf8");
+  expect(css).toMatch(/body\[data-modal-open\] \.resolve-notices\s*\{[^}]*z-index:\s*140/);
+  expect(Number(/\n\.resolve-notices\s*\{[^}]*z-index:\s*(\d+)/.exec(css)![1])).toBe(400); // 모달이 없을 때는 알림과 같은 층
 });

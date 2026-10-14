@@ -42,6 +42,7 @@ const beginList = vi.fn(); // 목록 훅의 beginComposeList — 폴더 창을 �
 let setStaleList: (on: boolean) => void; // 목록 훅의 staleList(닫은 직후 옛 첫 쪽을 보이는 중)를 시험이 켜고 끈다
 let setLoadingList: (on: boolean) => void; // 목록 훅의 loading(받는 중)
 let setListBehind: (on: boolean) => void; // 목록 훅의 listBehind(화면의 목록이 아직 옛 조회의 것)
+let bumpListRevision: () => void; // 목록 훅의 listRevision — 새 첫 쪽을 적용했다(조회가 바뀌어 받았든 같은 조회를 다시 받았든)
 let setLibraryGens: (next: Generation[]) => void; // 목록 훅의 gens — 다시 받아 목록이 바뀐 것을 시험이 만든다
 let startAuthPending = false; // 인증 훅을 '확인 중'으로 시작한다(새로 고친 직후) — 기본은 처음부터 끝난 상태
 let setAuthPending: (on: boolean) => void; // 인증 확인이 끝났다고 알린다
@@ -476,6 +477,8 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
       setLoadingList = setLoad;
       const [listBehind, setBehind] = useState(false);
       setListBehind = setBehind;
+      const [listRevision, setRevision] = useState(0);
+      bumpListRevision = () => setRevision((revision) => revision + 1);
       refreshProjects = () => setProjects((previous) => [...previous]);
       const revealLocated = useCallback((tab: "my" | "team", value: GenerationLocation) => {
         setLocation({ tab, value }); setGens(value.items);
@@ -489,7 +492,7 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
       isLocatedView: !!location && isLocatedQuery(args.genQuery, location.tab, location.value),
       stats: { has_unread: false, failed_count: 0, unread_count: 0 }, loading, loadingMore: false,
       hasMore: false, loadError: null, archivedCount: 0, unassignedCount: 0, loadMore: noop, beginComposeList: beginList,
-      reload: noop, reloadIfStale: noop, staleList, listBehind,
+      reload: noop, reloadIfStale: noop, staleList, listBehind, listRevision,
     };
     },
   }));
@@ -497,8 +500,9 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
 }
 
 // 2026-10-13 Jay ①②(공유 탭 컷 카드 요청): 공유 탭을 떠났다 **직접 눌러** 돌아오면 같은 문맥(계정·서버·확정된 자동 공간)의 마지막 자리로. 사이드바·컷 카드로
-//  들어간 자리는 브라우저 기록 한 칸 — 뒤로 가기가 들어가기 전 목록으로 돌아온다. 보는 자리만 되살린다(다음 생성 위치는 그대로).
-it("공유 탭을 떠났다 직접 눌러 돌아오면 마지막 자리로, 사이드바로 들어간 폴더는 뒤로 가기로 돌아온다 — 첫 기록부터 자리를 싣고, 뒤로 가면 생성 위치도 그 자리로", async () => {
+//  들어간 자리는 브라우저 기록 한 칸 — 뒤로 가기가 들어가기 전 목록으로 돌아온다. 되살리면 다음 생성 위치(= 사이드바의 표시)도 그 자리로
+//  (2026-10-14 Jay — 전에는 보는 자리만 되살려 사이드바는 프로젝트, 카드는 e035 였다).
+it("공유 탭을 떠났다 직접 눌러 돌아오면 마지막 자리로(사이드바의 표시도), 사이드바로 들어간 폴더는 뒤로 가기로 돌아온다 — 첫 기록부터 자리를 싣고, 뒤로 가면 생성 위치도 그 자리로", async () => {
   // 틀의 프로젝트 목록에는 사이드바로 들어갈 프로젝트만 둔다 — 목록에 없는 "archived-project" 는 기억에서 그대로 되살아나야 한다(아래)
   installAppBoundaries([fixture], fixture.id, [{ id: "resolve-project", name: "Resolve" } as unknown as Project]);
   localStorage.setItem("ch.workspaceContext", JSON.stringify({ scope: "team", id: "view-workspace", name: "View workspace" }));
@@ -526,7 +530,9 @@ it("공유 탭을 떠났다 직접 눌러 돌아오면 마지막 자리로, 사�
   await settle();
   expect(librarySnapshot!.filters).toMatchObject({ tab: "team", project_id: "resolve-project", folder_path: "episode" });
   expect(loc()).toMatchObject({ project_id: "resolve-project", folder_path: "episode" }); // 탭 기록의 자리도 되살린 자리로 고쳐 적혔다
-  expect(JSON.parse(localStorage.getItem("ch.lib.generationScopeV1")!)).toEqual({}); // 되살리기는 보는 자리만 — 생성 위치는 건드리지 않는다(눌러 들어간 것이 아니다)
+  // 되살리면 생성 위치(사이드바의 표시)도 그 자리로 — 화면과 사이드바가 갈리지 않게(2026-10-14 Jay)
+  expect(JSON.parse(localStorage.getItem("ch.lib.generationScopeV1")!)).toEqual({ project_id: "resolve-project", folder_path: "episode" });
+  expect(sidebarSnapshot!.armedFolder).toEqual({ projectId: "resolve-project", path: "episode" }); // 사이드바의 빨간 표시
   act(() => window.dispatchEvent(new PopStateEvent("popstate", { state: top }))); // 뒤로 — 폴더에 들어가기 전의 기록
   await settle();
   expect([librarySnapshot!.filters.tab, librarySnapshot!.filters.project_id, librarySnapshot!.filters.folder_path]).toEqual(["team", "resolve-project", undefined]);
@@ -567,7 +573,7 @@ it("공유 탭을 떠났다 직접 눌러 돌아오면 마지막 자리로, 사�
   expect([librarySnapshot!.filters.tab, librarySnapshot!.filters.project_id, librarySnapshot!.filters.folder_path]).toEqual(["team", "archived-project", "ep"]);
   act(() => refreshProjects()); await settle(); // 프로젝트 목록 갱신 — 목록에 없지만 되살린 자리는 둔다
   expect([librarySnapshot!.filters.project_id, librarySnapshot!.filters.folder_path]).toEqual(["archived-project", "ep"]);
-  expect(JSON.parse(localStorage.getItem("ch.lib.generationScopeV1")!)).toEqual({}); // 기억 되살림은 보는 자리만 — 생성 위치는 건드리지 않는다
+  expect(JSON.parse(localStorage.getItem("ch.lib.generationScopeV1")!)).toEqual({ project_id: "archived-project", folder_path: "ep" }); // 기억 되살림도 생성 위치를
   // 기록으로 돌아온 자리도 지우지 않는다 — 이때는 생성 위치가 같은 프로젝트가 되지만(뒤로·앞으로 가기는 생성 위치도 옮긴다) '낡은 프로젝트' 효과가
   //  되살린 자리를 지우지 않는다(되살린 자리 표식을 생성 위치를 옮긴 **뒤에** 켠다 — Codex 3차 P2 의 경우가 이제 이 길로 난다)
   act(() => topBarOnTab!("my")); await settle(); // 다른 자리(맨 위)로 — 같은 자리의 기록이면 생성 위치를 옮기지 않는다(자리가 바뀔 때만)
@@ -666,6 +672,7 @@ async function mountApp(tab = "compose") {
   const { default: App } = await import("../src/App");
   act(() => view.root.render(<StrictMode><App /></StrictMode>));
   await settle();
+  if (tab === "compose" && !startAuthPending) await waitForBoard();
   let sequence = 0;
   return (generationIds: string[], extra: Record<string, unknown> = {}) => window.dispatchEvent(
     new CustomEvent("ch:resolve-selection", { detail: {
@@ -674,6 +681,43 @@ async function mountApp(tab = "compose") {
     } }),
   );
 }
+
+async function waitForBoard() {
+  // 열린 창을 전제로 한 다음 신호는 청크 로드가 아니라 실제 캔버스 마운트 뒤에 보낸다.
+  await act(async () => { await import("../src/components/scene/SceneBoard"); });
+  await vi.waitFor(async () => {
+    await settle();
+    expect(view.container.querySelector(".scene-board")).not.toBeNull();
+  });
+}
+
+it("App: 캔버스 청크를 받는 중 들어온 최초 Resolve 선택도 마운트 뒤 결과 창에 반영한다", async () => {
+  installAppBoundaries([fixture, otherScene]);
+  localStorage.setItem("ch.lib.filtersV2", JSON.stringify({ tab: "compose", __v: "2" }));
+  let release!: () => void;
+  const loaded = new Promise<void>((done) => { release = done; });
+  vi.doMock("../src/components/scene/SceneBoard", async () => {
+    await loaded;
+    return vi.importActual("../src/components/scene/SceneBoard");
+  });
+  try {
+    const { default: App } = await import("../src/App");
+    act(() => view.root.render(<StrictMode><App /></StrictMode>));
+    await settle();
+    expect(view.container.querySelector(".scene-board")).toBeNull();
+    expect(view.container.querySelector('[role="status"]')?.textContent).toBe("캔버스를 불러오는 중…");
+    act(() => window.dispatchEvent(new CustomEvent("ch:resolve-selection", { detail: {
+      generationId: "target", generationIds: ["target"], selectedCount: 1, selectionId: "during-chunk-load",
+    } })));
+    await act(async () => { release(); await loaded; });
+    await waitForBoard();
+    expect(tile("target")).toBeTruthy();
+    expect(resolveHighlightedIds()).toEqual(["target"]);
+  } finally {
+    release();
+    vi.doUnmock("../src/components/scene/SceneBoard");
+  }
+});
 
 it("App: 다른 씬에만 복수 선택이 있어도 열린 창·씬을 유지하고 단일 선택 이동은 보존한다", async () => {
   const send = await mountApp();
@@ -1407,7 +1451,10 @@ const cutGrid = () => document.querySelector<HTMLElement>("main.main .cut-grid")
 // 컷 카드는 이름표(.cut-tab), 에피소드 화면의 카드는 표지 위 이름(.ep-cap > b · 리스트는 .ep-name) — 2026-10-13
 const cutTile = (name: string) => [...document.querySelectorAll<HTMLElement>("main.main .cut-card:not(.cut-out)")]
   .find((tile) => tile.querySelector(".cut-tab > span, .ep-cap > b, .ep-name")!.textContent === name)!;
-type Pill = { type: string; props: { className: string; disabled?: boolean; onMouseDown?: (event: { preventDefault: () => void; button: number }) => void } };
+type Pill = { type: string; props: {
+  className: string; disabled?: boolean; onMouseDown?: (event: { preventDefault: () => void; button: number }) => void;
+  onClick?: (event: { detail: number }) => void;
+} };
 const pill = (id: string) => gridSnapshot!.cellHeader!(withAsset(id)) as unknown as Pill | null;
 
 async function mountTeamFolder(api: Record<string, unknown>, more: Partial<Filters> = {}) {
@@ -1500,6 +1547,14 @@ it("App 공유·리뷰: 폴더를 고르면 바로 아래 폴더마다 카드 �
   expect(folderCards.mock.calls.length).toBeGreaterThan(requests);
   expect(pill("target")).toMatchObject({ type: "span", props: { className: "scene-varpop-cur" } });
   expect(pill("sibling")).toMatchObject({ type: "button", props: { disabled: false } });
+  // 키보드로도 정한다(Tab 으로 와서 Enter·Space — 키보드가 만든 click 은 detail 0). 마우스가 만든 click(detail 1)은 mousedown 에서 이미
+  //  했으니 다시 하지 않는다(조작 규칙 51 — mousedown 에만 건 실행은 키보드에 없다. Codex 배포 전 검토)
+  act(() => pill("sibling")!.props.onClick!({ detail: 1 }));
+  expect(setFolderCover).toHaveBeenCalledTimes(1);
+  act(() => pill("sibling")!.props.onClick!({ detail: 0 }));
+  expect(setFolderCover).toHaveBeenLastCalledWith("resolve-project", "episode/shot", "sibling");
+  await act(async () => { saved(); });
+  await settle();
 
   // 닫으면 뒤 목록이 조작 가능해질 때까지 잠근다(목록 훅처럼: 닫을 때(restore) 옛 첫 쪽을 먼저 보인다). 다시 [컷별]로 보면 새 대표를 안다
   beginList.mockImplementationOnce((back?: { restore?: string }) => { if (back?.restore !== undefined) setStaleList(true); });
@@ -1594,19 +1649,46 @@ it("App 공유·리뷰: 컷 두 번 클릭 = 모아보기 · 우클릭 = 폴더 
   expect(pill("neighbour")).toMatchObject({ type: "button", props: { disabled: false } });
 });
 
+// 2026-10-13 밤(배포 전 점검, Codex): 폴더를 옮길 때마다 같은 묶음 조회가 두 번 나갔다(자리 변경으로 한 번, 옮긴 뒤 목록의 첫 쪽이 와서 또 한 번).
+it("App 공유·리뷰: 폴더를 옮기면 묶음 조회는 한 번 — 옮긴 뒤 온 목록의 첫 쪽은 변경 통보가 아니다. 같은 조회를 다시 받으면 그때 다시 받는다", { timeout: 20_000 }, async () => {
+  const folderCards = byParent(() => false);
+  await mountTeamFolder({ folderCards, setFolderCover: vi.fn() });
+  act(() => bumpListRevision()); // 처음 연 화면(episode)의 첫 쪽
+  await settle();
+  const before = folderCards.mock.calls.length;
+  const since = () => folderCards.mock.calls.slice(before).map((call) => call[1]);
+  act(() => sidebarSnapshot!.onChange({ folder_path: undefined })); // 프로젝트 맨 위로
+  await settle();
+  expect(since()).toEqual([""]);
+  act(() => bumpListRevision()); // 옮긴 조회의 첫 쪽이 왔다
+  await settle();
+  expect(since()).toEqual([""]);
+  act(() => bumpListRevision()); // 같은 조회를 다시 받았다(주기 조회·통보)
+  await settle();
+  expect(since()).toEqual(["", ""]);
+});
+
 // 2026-10-13 오후(Jay): 모아보기 [개별] 카드의 [폴더로] = 그 컷 폴더로 이동 — 창이 닫히고, 사이드바에서 그 폴더를 누른 것처럼 기록 한 칸이 쌓인다.
 it("App 공유·리뷰: 모아보기 카드의 [폴더로] = 창을 닫고 그 컷 폴더로 이동(기록 한 칸)", { timeout: 20_000 }, async () => {
   const generationMetrics = vi.fn().mockResolvedValue({ real_credits: 1, est_credits: null, credit_source: null, elapsed_seconds: null });
   localStorage.setItem("ch.lib.cutView", "1");
-  await mountTeamFolder({ folderCards: byParent(() => false), setFolderCover: vi.fn(), generationMetrics });
+  const folderCards = byParent(() => false);
+  await mountTeamFolder({ folderCards, setFolderCover: vi.fn(), generationMetrics });
   const reel = () => document.querySelector<HTMLElement>(".reel");
   act(() => { cutTile("shot").dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); });
   await settle();
   expect([reel() !== null, librarySnapshot!.filters.folder_path]).toEqual([true, "episode"]);
   const before = window.history.length;
   const episodeEntry = window.history.state; // 들어가기 전(episode 의 컷 카드)의 기록
+  act(() => bumpListRevision()); // episode 화면의 첫 쪽
+  await settle();
+  const cardsBefore = folderCards.mock.calls.length;
   act(() => { reel()!.querySelector<HTMLButtonElement>(".reel-go")!.click(); });
   await settle();
+  act(() => bumpListRevision()); // 들어간 컷의 첫 쪽
+  await settle();
+  // 묶음 조회는 자리마다 한 번 — 들어간 컷(빈 묶음)과 그 부모(그 컷의 대표를 알려고). 옮긴 뒤 온 목록의 첫 쪽은 다시 받게 하지 않는다
+  expect(folderCards.mock.calls.slice(cardsBefore).map((call) => call[1])).toEqual(["episode/shot", "episode"]);
   expect([reel(), librarySnapshot!.filters.folder_path, window.history.length - before, cutGrid()]).toEqual([null, "episode/shot", 1, null]);
   expect(sidebarSnapshot!.armedFolder).toEqual({ projectId: "resolve-project", path: "episode/shot" });
   // 뒤로 가기 — 화면은 컷 카드(episode)로, 사이드바의 분홍 표시(무장 폴더 = 다음 생성 위치)도 같이 돌아온다(Jay 2026-10-13 오후: 표시만 shot 에 남았다)

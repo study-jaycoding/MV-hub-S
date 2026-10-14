@@ -1,6 +1,7 @@
 // 편집 탭의 미디어 풀 — 재생헤드가 있는 컷 폴더에 공유된 생성물. 왼쪽 폴더 목록 바로 옆에 둔다(다빈치의 Bins | 클립,
 //  Jay 2026-10-08). 머리줄에서 보기 방식(썸네일·메타데이터·목록)과 썸네일 크기·검색·정렬을 바꾼다.
 //  누르면 고른다(Ctrl·Shift 로, 또는 끌어서 상자로 여러 장 — 마지막 것이 듀얼 뷰어의 소스, 2장 이상이면 비교) ·
+//  카드를 끌면 타임라인에 넣는다(놓은 트랙 줄의 그 컷 칸 — Jay 2026-10-13. 상자는 빈 곳에서, 또는 Ctrl·Shift 를 누른 채) ·
 //  더블클릭 = 크게 보기(재생) ·
 //  우클릭 = 이 컷의 폴더 창(공유 & 리뷰의 '폴더 보기' — 그 카드가 보이게) ·
 //  휠 클릭 = 넣을 트랙 고르기(EditTrackMenu). (Jay 2026-10-13 — 그 전에는 우클릭이 트랙 메뉴였다)
@@ -17,7 +18,7 @@ import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../../lib/windowDrag";
 import { FilterPanelIcon } from "../common/ViewIcons";
-import { EditCard, editMarkLabel, type PoolItem } from "./EditCard";
+import { EditCard, poolMark, type PoolItem } from "./EditCard";
 
 export type { PoolItem };
 
@@ -63,6 +64,7 @@ export function EditPool({
   sideOpen,
   onToggleSide,
   onFolder,
+  onCardDrag,
 }: {
   // 왼쪽 폴더 목록 여닫기(Jay 2026-10-13 — 공유 탭 도구 줄의 '필터 사이드바 닫기'와 같은 단추·같은 자리 관계: 사이드바 바로 옆 줄의 첫 단추).
   //  닫아도 단추는 여기 남아 다시 연다. 닫힘은 편집 탭의 화면 설정(EditUi.sideHidden)에만 적는다 — 공유 탭의 것과 따로다.
@@ -84,6 +86,9 @@ export function EditPool({
   onClearPicked: () => void;
   onMenu: (gen: Generation, x: number, y: number) => void; // 휠 클릭 — 넣을 트랙 고르기
   onFolder: (gen: Generation) => void; // 우클릭 — 이 컷의 폴더 창을 그 카드가 보이게 연다
+  // 카드를 끌어 타임라인에 넣기(Jay 2026-10-13) — 여기서는 몸짓만 알린다(무엇이 어디에 놓이는지는 EditTab 이 정한다).
+  //  start = 5px 을 넘겨 끌기가 됐다 · move = 따라가는 자리 · drop = 놓았다 · cancel = 놓는 이벤트 없이 끝났다(창 밖에서 뗌·초점 잃음).
+  onCardDrag: (phase: "start" | "move" | "drop" | "cancel", id: string, x: number, y: number) => void;
 }) {
   const t = useT();
   const [open, setOpen] = useState<"view" | "sort" | null>(null);
@@ -96,21 +101,27 @@ export function EditPool({
   useEffect(() => {
     if (searching) searchRef.current?.focus();
   }, [searching]);
-  useOutsideMouseDown(toolsRef, () => setOpen(null), open !== null);
+  // 초점이 도구 줄 밖에 생겨도 닫는다(Jay 2026-10-14) — 마우스로 연 메뉴는 단추가 초점을 받지 않아(keepFocus) 아래 onBlur 가 볼 것이
+  //  없었다: Tab 한 번에 초점만 옆 단추로 가고 메뉴는 열린 채 남아 편집 키를 막았다(2026-10-14 격리 실측).
+  useOutsideMouseDown(toolsRef, () => setOpen(null), open !== null, undefined, true);
   useEscapeClose(() => setOpen(null), open !== null, true, true);
   const shown = useMemo(() => arrangePool(items, searching ? query : "", ui.sort), [items, searching, query, ui.sort]);
   const placed = items.filter((item) => item.track !== null).length;
 
   // 여기를 눌러도 편집 화면이 키를 받게 초점을 옮기지 않는다. 입력칸(검색·크기)만 초점을 받고, 그 밖을 누르면 입력칸에서
   //  초점을 뗀다 — 안 떼면 Space·J·K·L 이 계속 입력칸으로 간다.
-  // 끌어서 고르기(Jay 2026-10-08) — 라이브러리 격자처럼 상자에 걸친 카드를 고른다. 풀의 카드는 끌어 옮기는 것이 없어 카드
-  //  위에서 시작해도 상자다. Ctrl·Shift 를 누른 채 끌면 고른 것에 더한다. 5px 넘게 움직여야 끌기다 — 그 밑은 누르기.
+  // 끌기 둘(5px 넘게 움직여야 끌기다 — 그 밑은 누르기):
+  //  · 카드 위에서 그냥 끌면 **그 카드를 타임라인으로 끌어 넣는다**(Jay 2026-10-13 — 그 전에는 카드 위에서 시작해도 상자였다).
+  //  · 빈 곳에서 끌거나, **Ctrl·Shift 를 누른 채** 끌면(카드 위에서도) 끌어서 고르기(Jay 2026-10-08) — 라이브러리 격자처럼
+  //    상자에 걸친 카드를 고른다. 격자는 카드로 꽉 차 빈 곳이 거의 없어, 누른 채 끄는 길을 남긴다(누르면 고른 것에 더한다).
   const bodyRef = useRef<HTMLDivElement>(null);
   const [marquee, setMarquee] = useState<MarqueeRect | null>(null);
-  const dragRef = useRef<{ x: number; y: number; base: readonly string[]; moved: boolean } | null>(null);
+  const dragRef = useRef<{
+    x: number; y: number; base: readonly string[]; moved: boolean; card: string | null; at: [number, number];
+  } | null>(null);
   const draggedRef = useRef(false); // 끌기가 끝난 직후의 click 은 누르기가 아니다(같은 카드 위에서 놓으면 click 이 따라온다)
-  const live = useRef({ onPickMany });
-  live.current = { onPickMany };
+  const live = useRef({ onPickMany, onCardDrag });
+  live.current = { onPickMany, onCardDrag };
   const drag = useRef({
     move: (event: MouseEvent) => {
       const state = dragRef.current;
@@ -119,12 +130,23 @@ export function EditPool({
       // 버튼을 창 밖(다른 앱)에서 놓으면 mouseup 이 오지 않는다 — 버튼이 안 눌린 이동이면 거기서 끝낸다(Codex 코드 리뷰).
       if (!(event.buttons & 1)) return drag.up();
       if (!state.moved && Math.hypot(event.clientX - state.x, event.clientY - state.y) < 5) return;
+      state.at = [event.clientX, event.clientY];
+      if (state.card) {
+        if (!state.moved) live.current.onCardDrag("start", state.card, ...state.at);
+        state.moved = true;
+        live.current.onCardDrag("move", state.card, ...state.at);
+        return;
+      }
       state.moved = true;
       const { rect, b } = computeMarquee(body, state, event);
       setMarquee(rect);
       live.current.onPickMany([...marqueeHits<string>(body, "[data-id]", b, state.base, (el) => el.dataset.id)]);
     },
-    up: () => {
+    // event 가 없거나 mouseup 이 아니면(단추가 떼어진 채 온 움직임·창이 초점을 잃음) 놓친 끝이다 — 카드는 넣지 않는다
+    up: (event?: Event) => {
+      // 끌기를 시작한 왼쪽 단추의 놓기만 끝이다 — 끄는 중에 다른 단추(휠)를 눌렀다 떼면 그 mouseup 도 여기로 온다. 그것으로 카드가
+      //  놓이지 않게, 끌기 상태·리스너를 걷기 전에 거른다(끌기는 이어진다. Codex 코드 리뷰 2회째)
+      if (event instanceof MouseEvent && event.type === "mouseup" && event.button !== 0) return;
       const state = dragRef.current;
       dragRef.current = null;
       removeWindowMouseDrag(drag.move, drag.up);
@@ -132,13 +154,17 @@ export function EditPool({
       if (!state?.moved) return;
       draggedRef.current = true;
       window.setTimeout(() => { draggedRef.current = false; }, 0);
+      if (!state.card) return;
+      const released = event instanceof MouseEvent && event.type === "mouseup";
+      const [x, y] = released ? [event.clientX, event.clientY] : state.at;
+      live.current.onCardDrag(released ? "drop" : "cancel", state.card, x, y);
     },
   }).current;
   useEffect(() => {
     window.addEventListener("blur", drag.up); // 끄는 중에 창이 초점을 잃으면 끝낸다
     return () => {
+      drag.up(); // 끄는 중에 풀이 사라졌다 — 끌던 카드를 내려놓는다(cancel)
       window.removeEventListener("blur", drag.up);
-      removeWindowMouseDrag(drag.move, drag.up);
     };
   }, [drag]);
   const startDrag = (event: ReactMouseEvent) => {
@@ -146,9 +172,11 @@ export function EditPool({
     // 새 누름이다 — 앞 끌기에 딸린 click 은 이미 지나갔다. 안 풀면 끌어서 고른 바로 뒤(타이머가 돌기 전)에 누른 카드가 전부 안 골라진다
     //  (입력은 타이머보다 먼저 처리된다 — 캔버스의 swallowDropClick 과 같은 약속. Codex 코드 리뷰)
     draggedRef.current = false;
+    const adding = event.ctrlKey || event.metaKey || event.shiftKey;
     dragRef.current = {
-      x: event.clientX, y: event.clientY, moved: false,
-      base: event.ctrlKey || event.metaKey || event.shiftKey ? picked : [],
+      x: event.clientX, y: event.clientY, moved: false, at: [event.clientX, event.clientY],
+      base: adding ? picked : [],
+      card: adding ? null : (event.target as HTMLElement).closest<HTMLElement>("[data-id]")?.dataset.id ?? null,
     };
     addWindowMouseDrag(drag.move, drag.up);
   };
@@ -163,7 +191,7 @@ export function EditPool({
   };
   const handlersOf = (item: PoolItem): HTMLAttributes<HTMLButtonElement> & { "data-id": string } => ({
     "data-id": item.gen.id, // 끌어서 고르기가 이 값으로 카드를 찾는다
-    title: t("더블클릭 = 크게 보기 · 우클릭 = 폴더 창 · 휠 클릭 = 넣을 트랙 고르기 · Ctrl+클릭 = 여러 장 고르기"),
+    title: t("끌기 = 타임라인에 넣기 · 더블클릭 = 크게 보기 · 우클릭 = 폴더 창 · 휠 클릭 = 넣을 트랙 고르기 · Ctrl+클릭 = 여러 장 고르기"),
     onClick: (event) => {
       if (draggedRef.current) {
         draggedRef.current = false; // 건너뛰는 것은 그 끌기에 딸린 한 번뿐이다
@@ -183,6 +211,7 @@ export function EditPool({
     onAuxClick: (event) => {
       if (event.button !== 1) return;
       event.preventDefault();
+      if (dragRef.current?.moved) return; // 끄는 중의 휠 클릭은 메뉴가 아니다(끌기는 이어진다)
       onMenu(item.gen, event.clientX, event.clientY);
     },
   });
@@ -195,9 +224,10 @@ export function EditPool({
   const stateMark = (state: string) => (
     <span className={`ed-pstate ed-pstate-${state}`}>{state === "final" ? "★" : state === "held" ? "R" : "S"}</span>
   );
-  const trackMark = (item: PoolItem) => item.track !== null && (
-    <span className={"cd-mark" + (item.showing ? " lead" : "")}>{editMarkLabel(item.track, t)}</span>
-  );
+  const trackMark = (item: PoolItem) => {
+    const mark = poolMark(item, t); // 넣은 트랙·소스 클립 판 — 썸네일 카드의 아래 표와 같은 글
+    return mark && <span className={"cd-mark" + (mark.lead ? " lead" : "")}>{mark.label}</span>;
+  };
   const rowClass = (item: PoolItem, kind: string) =>
     `ed-prow ed-prow-${kind}` + (picked.includes(item.gen.id) ? " ed-picked" : "") + (item.track !== null ? " ed-placed" : "");
   // 막대의 대상은 **지금 보이는 것** 가운데 고른 것이다(조작 규칙 42). 전엔 검색 전의 목록(items)에서 구해, 검색으로 가려진 카드가

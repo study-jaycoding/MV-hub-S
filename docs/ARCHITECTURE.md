@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-08
+updated: 2026-10-14
 status: active
 ---
 
@@ -85,8 +85,9 @@ HTTP 요청
    │                         본다 — 다른 사이트 페이지의 단순 POST(CSRF)는 403, Origin 없는 비브라우저는 통과(2026-10-02)
    ├─ list_gzip            : 생성물 목록 응답만 gzip(전역 압축 아님 — `list_gzip.py` 머리말의 실측 근거)
    ├─ upload_body_limit    : 선별된 업로드의 원시 본문을 multipart 파싱 전에 제한
+   ├─ read_only_guard      : 읽기 전용 복원·이사 검증에서 허용 목록 외 쓰기 요청 차단
    ├─ auth_off_remote_guard: AUTH off 서버에 원격 주소가 접근하면 차단(보안 경계)
-   └─ runtime_observation  : 요청 지표·운영 관측   (8개 — 등록 순서의 정본은 `main.py`)
+   └─ runtime_observation  : 요청 지표·운영 관측   (등록 순서의 정본은 `main.py`)
    │
    ▼  routers/*.py   — HTTP 경계. 입력 검증(Pydantic) + deps(인증/RBAC) + actor_id 주입
    │
@@ -214,7 +215,7 @@ HTTP 요청
 | `syncer.py` | 주기 동기화(과도기: 서버 PC 로컬 결과 흡수) |
 | `media_cache.py` | 원격 URL → 로컬 샤딩 캐시 |
 | `thumbs.py` | 썸네일 사전생성·리사이즈 |
-| `backup.py` | 콘텐츠·휴지통·관리 DB의 동일 읽기 시점 SQLite 온라인 백업 세트 |
+| `backup.py` | 콘텐츠·휴지통·관리 DB를 같은 stamp로 묶는 SQLite 온라인 백업 세트. WAL의 여러 DB가 완전히 같은 읽기 시점임을 보장하지 않음([SERVER.md](SERVER.md)) |
 | `worker_backup.py` | 작업자 개인 `content + trash` 세트 staging·비밀정보 제거·영속 outbox·백오프·명시적 서버 ACK·재시작 복구. 상태 DB와 staging은 업데이트가 보존하는 `backend/data`에 위치 |
 | `auth.py` | pbkdf2 비번 해시 + 무상태 HMAC 세션 토큰 |
 | `agent_signals.py`·`mcp_ingest.py` | 에이전트·MCP 적재 보조 |
@@ -307,7 +308,7 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 - **생성**: `SpotlightPrompt`(@/# 피커)·`FloatingPrompt`.
 - **캔버스 탭**(씬 캔버스 · 히스토리 보기): `SceneBoard`는 카드 상태·선택·노드별 포인터 판정·렌더 조립을 소유한다. 저장/undo, Comfy 실행, 단축키, 드래그 세션, 팬·줌은 전용 훅에 위임한다. 계보 뷰는 `HistoryBoard`·`CompareModal`이 담당한다.
 - **코멘트**: `GenCommentPanel`(생성본 스레드·NEW 알림).
-- **계정/관리**: `LoginScreen`·`AccountMenu`(워크스페이스 전환·크레딧 게이지 — 분모는 프로젝트 예산 합)·`ManageAccount`·`AdminWindow`(승인·전역 역할·공유 서버 — 프로젝트 CRUD 는 `manage/ProjectManagerPanel`)·`SettingsPanel`(강조색·언어·모션·다운로드 위치·과거 가져오기·내 메타데이터·동기화 점검·DaVinci Resolve·프로그램 업데이트·생성물 재점검·단축키·ComfyUI 연결 — `settings/SettingsSections.tsx`).
+- **계정/관리**: `LoginScreen`·`AccountMenu`(워크스페이스 전환·크레딧 게이지 — 분모는 프로젝트 예산 합)·`ManageAccount`·`AdminWindow`(승인·전역 역할·프로젝트·공유 서버·업데이트 — 프로젝트 탭에 `manage/ProjectManagerPanel`)·`SettingsPanel`(강조색·언어·모션·다운로드 위치·과거 가져오기·내 메타데이터·동기화 점검·DaVinci Resolve·프로그램 업데이트·생성물 재점검·단축키·ComfyUI 연결 — `settings/SettingsSections.tsx`).
 - **Assets 분리창**: `AssetsWindow`·`AssetsView` + `assets/`(`AssetCell`·`FolderTree`·`MountManager`·`treeUtils`·`exportDrag`·`useAssetBroadcastSync`). 메인 창 없이도 WS를 직접 구독한다.
 - **PM 분리창**: `ManageWindow` + `manage/`(`DashboardView`·`WorkBoard`·`ExportView`). 전용 실시간 신호를 활성 탭의 한 번짜리 재조회로 합친다.
 - **보조**: `InfoPopup`·`MediaPreview`·`ProjectAssignMenu`·`ShortcutsWindow`.
@@ -439,10 +440,12 @@ ACK를 반환한 뒤 현재 `dirty_rev`와 일치할 때만 완료한다. 실패
 
 ### 7.5 업데이트 공지
 
-- 릴리스 스크립트는 NAS 에 **후보**(`candidate.json`)만 올리고, 팀원 PC 가 보는 표지(`latest.json`)는 관리자 창
-  업데이트 탭의 첫 [공지]가 공유 서버 확인 뒤 로컬 promote 로 바꾼다(B안, 2026-10-02). 등록에는 검증된 메타데이터만
-  공유 서버로 보내며 실제 배포 경로는 전달하지 않는다.
-- 공유 서버가 최근 5개 목록과 고정(최대 4개), 공지 회차, 계정별 읽음 상태의 권위 원장이다.
+- 릴리스 스크립트는 NAS 에 **후보**(`candidate.json`)만 올린다. 관리자 창 업데이트 탭은 NAS 의 모든 판을
+  표시하며, 해당 줄의 **[배포]**가 공지 확인 뒤 팀원 PC 가 보는 표지(`latest.json`)를 바꾼다(2026-10-05 개편).
+  후보 줄은 promote, 다른 줄은 판 선택 배포를 사용한다. 등록에는 검증된 메타데이터만 공유 서버로 보내며
+  실제 배포 경로는 전달하지 않는다.
+- 공유 서버는 공지 회차·고정·계정별 읽음 상태의 권위 원장이다. 화면의 판 목록은 NAS 에서 읽고,
+  공지 상태는 최근 5개와 공개본·후보의 sha 단건 조회를 합친다.
 - 재공지는 회차를 증가시켜 다시 미확인으로 만들 뿐 표지는 바꾸지 않는다. [해제]는 목록·알림에서만 지운다. 세부 계약은 [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md)를 따른다.
 
 ### 7.6 Resolve 전송 (현행)
@@ -483,7 +486,7 @@ ACK를 반환한 뒤 현재 `dirty_rev`와 일치할 때만 완료한다. 실패
   1MiB를 허용한다. 개수·길이 상한에 걸리면 원본 선택 수를 유지하며 `truncated`로 표시한다.
   이때 자동 창 열기·탭/씬 이동 없이 현재 창과의 교집합만 표시한다. 매핑은 한 계정 스냅샷으로
   순차 실행하며 중간에 계정이 바뀌면 묶음 전체를 버린다. 경로는 로컬 자식→부모 검증에만 쓴다.
-- 작업 공간·공유 & 리뷰에서는 읽기 전용 `POST /api/generations/locate`로 실제 프로젝트/폴더와 대상
+- 워크스페이스(옛 이름 '작업 공간')·공유 & 리뷰에서는 읽기 전용 `POST /api/generations/locate`로 실제 프로젝트/폴더와 대상
   메타(최대 200개)를 찾는다. 공유 탭은 서버의 현재 공유·접근권한·휴지통 조건을 따르며 비공유·삭제·
   접근 불가·구서버/네트워크 오류는 이동·필터 해제·알림 없이 이전 Resolve 강조만 지운다. 로컬 정보로
   대신 열지 않는다. 복수 선택은 현재 프로젝트/폴더(하위 포함)를 우선하고, 없으면 가장 많은 대상의
@@ -537,17 +540,33 @@ ACK를 반환한 뒤 현재 `dirty_rev`와 일치할 때만 완료한다. 실패
   우리 파일로 보지 않는다 — 원본과 바이트가 같을 때만 쓰고(표식을 채운다), 다르면 "같은 이름의 확인할 수 없는 파일" 오류.
   대상 폴더나 장부를 **읽지 못하면** 빈 것으로 보고 001 부터 세지 않고 실패로 남긴다(`export_names.RegistryError`).
   다빈치 내보내기는 각인하지 않는다(종전대로 `shutil.copy2`).
+- **가져오는 도중 Resolve 에서 다른 프로젝트를 열면 멈추고 저장하지 않는다**(`resolve_bridge._assert_still_current`, 2026-10-13).
+  `SaveProject` 는 '지금 열린' 프로젝트를 저장하므로, 시작할 때 한 번만 확인하면 그사이 연 **다른 프로젝트가 저장**된다.
+  그래서 **Resolve 에 쓰는 호출 바로 앞마다** — Bin 만들기·클립 옮기기·Bin 지우기 하나하나, 가져오기 묶음, 저장(정렬 백업·정렬
+  실패 복구의 저장 포함) — ProjectManager 에 현재 프로젝트를 다시 물어, 시작한 프로젝트(ID, 못 읽으면 이름)가 아니면
+  `project_changed` 로 끝낸다(결과는 `unavailable` — 다시 가져오면 이미 들어간 클립은 건너뛴다). 카드의 'Resolve 보내기'와
+  타임라인 보내기가 같은 길이다.
+  **Bin 순서를 다시 짓는 도중에 바뀌면 복구가 먼저다**: 되돌리지도 저장하지도 않고(지금 열린 것은 다른 프로젝트다), 결과에 남은
+  임시 Bin 이름(`rebuild_staging_bin`)과 백업 자리(`folder_order_backup`)를 싣고 글도 "다시 가져오기 **전에** 그 클립을 원래
+  Bin 으로 옮기거나 백업을 불러오세요"로 바꾼다 — 다시 가져오기는 MV Hub Bin 만 보므로 임시 Bin 의 클립을 되살리지 못한다
+  (처음 고칠 때는 이 정보가 정렬 실패로 삼켜져 보통의 '다시 가져오기' 안내만 나갔다 — Codex 재검토).
+  **한계**: 호출 하나(가져오기 묶음이면 그 묶음)가 도는 도중에 바꾸면 그 호출은 끝난다 · 클립의 MV Hub 표식 쓰기와 묶음 안의
+  한 번 더 시도, 끝의 '보던 Bin 으로 돌아가기'는 따로 확인하지 않는다 · 그 안내 글은 화면에서 잠깐 뜨는 알림으로만 보인다 ·
+  바뀐 뒤 옛 Media Pool 객체가 Resolve 에서 실제로 어떻게 구는지는 재지 않았다(대역 시험만) · Resolve 메뉴 스크립트
+  (`MVHub_Importer.py`)는 같은 모양인데 아직 한 번만 확인한다.
 - **스틸 이미지는 한 호출에 하나씩 반입한다**(`resolve_bridge._import_media_items`, Resolve 메뉴 스크립트도 동일).
   `ImportMedia` 에 번호만 다른 이미지를 한꺼번에 넘기면 Resolve 의 이미지 시퀀스 자동 인식이 클립 하나(`[00-01]`)로
   묶는다 — 번호 규칙이 시퀀스 패턴과 똑같이 생겼기 때문이다. 판정은 manifest 필드가 아니라 **확장자**로 한다
   (`_STILL_IMAGE_SUFFIXES`) — 반입 계층까지 내려오는 항목에는 `media_type` 이 없다. 영상·오디오는 시퀀스로 합쳐질 일이
   없어 종전대로 묶어 넣는다(대량 전송 성능). ★`ImportMedia([{"FilePath": …}])`(clipInfo) 는 README 상 항목당 클립
   하나지만 실기에서 **아무것도 가져오지 못했다**(2026-09-02 실측, `media_import_failed`) — 쓰지 말 것.
-- 복사는 기존 파일을 **어떤 경우에도 덮지 않는다**. 순번 이름은 종전 `<컷>_<gen 해시12자>` 와 달리 다른 PC 가 같은
+- **이전 구현 기록(2026-09-02, 현재 적용하지 않음)**: 당시 복사는 기존 파일을 덮지 않도록 다음 이름 선점을 사용했다.
+  현재는 위 전송 파일명 절의 registry와 `export_names.commit_new`로 확정하며 [EXPORT_SYNC_DESIGN.md](EXPORT_SYNC_DESIGN.md) §6을 따른다.
+  당시 순번 이름은 종전 `<컷>_<gen 해시12자>` 와 달리 다른 PC 가 같은
   이름을 고를 수 있어서, 복사 전에 `O_CREAT|O_EXCL` 로 이름을 원자적으로 선점하고 실패하면 다음 꼬리로 넘어간다
   (선점만 하고 복사에 실패하면 빈 파일을 지워 이름을 되돌린다). 같은 번호를 다른 전송이 먼저 가져갔으면 다음 번호로
   넘어간다. 2026-09-02 이전에 전송한 파일은 옛 해시 이름 그대로 남는다 — 새 규칙은 새로 쓰는 파일에만 적용된다.
-  > **알려진 한계(2026-09-02 — 현행 유지).** 이름 선점 직후(0바이트 상태) 프로세스가 죽으면 빈 파일이 남고 그 번호가
+  > **당시 알려진 한계(2026-09-02, 이전 구현).** 이름 선점 직후(0바이트 상태) 프로세스가 죽으면 빈 파일이 남고 그 번호가
   > 쓰인 것으로 계산된다. 동시 전송에서만 생기고 결과는 번호 하나를 건너뛰는 정도다.
 - Windows 경로 안전 비교와 대상 파일 잠금 키는 `path_safety.path_comparison_key`를 함께 쓴다.
   양쪽 경로의 `resolve()`는 유지하고, 알려진 `\\?\C:\...`·`\\?\UNC\서버\공유\...` 표기만 비교용으로

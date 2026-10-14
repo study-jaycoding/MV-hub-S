@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-27
+updated: 2026-10-14
 status: active
 ---
 
@@ -15,7 +15,9 @@ status: active
 > 로컬 실행 큐(gen-request)·크레딧 집계 반영. 이전 "서버가 직접 생성" 모델에서 전환됨.
 > ★Higgsfield CLI 는 `hf_cli_version.txt` 로 **버전 pin**(0.2.x→1.x 파괴적 변경 대응). CLI 출력
 > 필드를 읽는 코드는 `x.get(new) or x.get(old)` 폴백을 쓴다 — 절차·계약은 `docs/HF_CLI_UPGRADE.md`.
-> UI 상단 탭은 **작업 공간 / 공유 & 리뷰 / 캔버스**(`frontend/src/components/TopBar.tsx`).
+> UI 상단 탭은 **워크스페이스 / 공유 & 리뷰 / 캔버스**(`frontend/src/components/TopBar.tsx`). 첫 탭의 글자는 2026-10-14 에 '작업 공간'에서
+> 바뀌었다(Jay) — 코드의 탭 값은 그대로 `my` 이고, 다른 문서·주석의 '작업 공간(탭)'은 같은 탭이다. 화면의 다른 '워크스페이스'(계정 메뉴 ·
+> 걸러 보기 — 힉스필드 공간)와는 다른 것이다.
 > **현재 완료·잔여·검증 상태는 [CURRENT_STATUS.md](CURRENT_STATUS.md)를 먼저 확인한다.** 이 본문은
 > 구조를 설명하며 최신 작업 상태의 단일 출처가 아니다.
 
@@ -62,7 +64,8 @@ CLI**로 생성한다. 생성 결과는 **내 로컬 DB 가 정답**이고(`rout
 - 과도기 편의: 서버측 주기 동기화는 `MV_server.bat` 에서 **기본 꺼짐**(`CONTENT_HUB_SERVER_SYNC=0`)이라
   명시적으로 켜야만 동작한다. 본질은 전원이 로컬→push 다. "하우스 계정/서버 생성" 개념은 폐기됨.
 
-이 모델의 근거·검증은 메모리 `project_content_hub_push_model` 에 상세 기록.
+이 모델의 현행 근거는 [ARCHITECTURE.md](ARCHITECTURE.md)의 실행 흐름과
+[DATA_OWNERSHIP.md](DATA_OWNERSHIP.md)의 데이터 소유권 계약을 따른다.
 
 ---
 
@@ -101,8 +104,8 @@ CLI**로 생성한다. 생성 결과는 **내 로컬 DB 가 정답**이고(`rout
   - 시작·가입 시 `repo.link_accounts_to_creators()`: 소유자(provider_email)=힉스필드 `my_creator_uid`, 그 외=합성 `acct:<email>`.
   - push 첫 적재 때 `set_account_hf_creator` 가 합성 uid 를 **실제 힉스필드 uid**로 교체(그 계정의 자기 작업이 "내 작업"에 잡히게).
 - **가입 흐름**: 자동 등록(pending) → 관리자 승인(approved). **첫 계정 = 부트스트랩 관리자**(admin+product_manager, 즉시 approved).
-- **본인 작업 분리**(UI 탭 이름은 **작업 공간**): `GET /api/generations?tab=my` 는 라우터가 `request.state.account.creator_uid` 를 주입 → 그 계정 생성물만. 비로그인(토큰 없음)이면 전체(단독/개발). `tab=team` 은 공유된 것.
-- **멤버 목록**: `list_members()` 는 **계정 우선**(생성물 0이어도 멤버·프로젝트 후보로 노출) + 계정 없는 외부 creator(가져온 작업 작성자)도 포함. → 관리자 창의 승인·전역 역할 화면과 관리창 대시보드의 프로젝트 배정이 신규 계정을 바로 본다.
+- **본인 작업 분리**(UI 탭 이름은 **워크스페이스** — 2026-10-14 전에는 '작업 공간'): `GET /api/generations?tab=my` 는 라우터가 `request.state.account.creator_uid` 를 주입 → 그 계정 생성물만. 비로그인(토큰 없음)이면 전체(단독/개발). `tab=team` 은 공유된 것.
+- **멤버 목록**: `list_members()` 는 **계정 우선**(생성물 0이어도 멤버·프로젝트 후보로 노출) + 계정 없는 외부 creator(가져온 작업 작성자)도 포함. → 관리자 창의 승인·전역 역할 화면과 프로젝트 탭의 배정이 신규 계정을 바로 본다.
 - **RBAC**(`rbac.py`, `deps.py`): 전역 역할(admin/product_manager/production_director/member, CSV 복수) + 프로젝트 역할(project_manager/supervisor/creator). 게이트는 `CONTENT_HUB_AUTH=1` 일 때만 강제. `require_global_cap`/`require_project_role` 등.
 - 표시이름: 로그인 시 `account.name` 우선(전역 provider.name 아님) — [AccountMenu].
 
@@ -229,11 +232,11 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). 주요 엔�
   불변식과 혼합 버전 `404` 판정은
   [SHARE_STATE_RECONCILIATION_DESIGN.md](SHARE_STATE_RECONCILIATION_DESIGN.md)를 따른다.
 - ✅ **프로젝트**: 작업 묶음 + 보관(archived 콜드분리).
-- ✅ **계보(리니지)**: 재생성·@소스 참조 시 타입드 엣지 기록 + 가시화. **캔버스 탭 · 히스토리 보기** = 원본→파생 가로 트리(`HistoryBoard`): 마퀴 선택·비교·정보·다운로드·재생성·드래그 이동·무한 캔버스(휠 줌·미들클릭 팬)·`d` 비활성화·`a` 자동정렬·골드(최종) 강조. 같은 탭의 **씬 캔버스**(`SceneBoard`)는 자유 배치·연결·태그(localStorage).
+- ✅ **계보(리니지)**: 재생성·@소스 참조 시 타입드 엣지 기록 + 가시화. **캔버스 탭 · 히스토리 보기** = 원본→파생 가로 트리(`HistoryBoard`): 마퀴 선택·비교·정보·다운로드·재생성·드래그 이동·무한 캔버스(휠 줌·미들클릭 팬)·`d` 비활성화·`a` 자동정렬·골드(최종) 강조. 같은 탭의 **씬 캔버스**(`SceneBoard`)는 자유 배치·연결·태그(원본은 IndexedDB).
 - ✅ **소스 라이브러리**: is_source/source_name + @·# 프롬프트 피커로 재사용.
 - ✅ **Assets 분리창**: 임의 폴더 마운트·파일 브라우저·파일별 메타/코멘트(`/?embed=assets`). 원본 HTTP 응답은 지원 이미지·영상·오디오만 허용하며 고정 MIME·inline·nosniff·CSP sandbox·동일 출처 정책을 사용한다. HTML/SVG/스크립트와 이중 확장자는 415로 차단한다.
-- ✅ **크레딧 집계**(§7), **다국어**(ko/en, i18n 반응형), **테마**(강조색·모션 끄기), **관리자 창**(승인·전역 역할·공유 서버) · **관리창 대시보드**(프로젝트 관리).
-- ✅ **씬 서버 백업**: 씬 원본은 localStorage, 계정별 로컬 SQLite 로 자동 미러(`/api/scenes/backup`).
+- ✅ **크레딧 집계**(§7), **다국어**(ko/en, i18n 반응형), **테마**(강조색·모션 끄기), **관리자 창**(승인·전역 역할·프로젝트·공유 서버·업데이트) · **관리창 대시보드**(팀 집계).
+- ✅ **씬 서버 백업**: 씬 원본은 IndexedDB, 계정별 로컬 SQLite 로 자동 미러(`/api/scenes/backup`). 저장 계약은 [CANVAS_SCENE_STORAGE.md](CANVAS_SCENE_STORAGE.md).
 - ✅ **ComfyUI 연동**: 캔버스 comfy 카드 — 워크플로 파싱·파라미터 노출·미디어 자동주입·비동기 실행(`routers/comfy.py`).
 - ✅ **DaVinci Resolve 연동**: 렌더폴더 전송 + Media Pool 가져오기 + 수동 Importer(`routers/resolve_integration.py`).
 - ✅ **PM 관리 대시보드**(분리창): 작업 칸반·일정·완료본 저장·팀 텔레메트리(`routers/manage.py`, manage_hub.db). 로컬 계정 메뉴는 생성 텔레메트리와 계정 보고 큐의 대기·실패를 구분해 표시하고 두 채널 중 가장 최근 실제 반영 성공 시각을 표시한다.
@@ -245,8 +248,8 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). 주요 엔�
 
 ## 10. 백엔드 모듈 지도 (`backend/app/`)
 
-> ⚠️ 아래는 핵심 요약이다. `__init__.py` 를 뺀 실측 개수는
-> **라우터 24개·usecases 4개·repo 39모듈·services 61개**다.
+> ⚠️ 아래는 핵심 요약이다. 이전 브리프의 `__init__.py` 제외 측정값(라우터 24개·usecases 4개·repo 39모듈·services 61개)은
+> 당시 기록이며 현재 파일 수가 아니다. 현재 목록은 `backend/app/`의 해당 디렉터리와 [CODE_MAP.md](CODE_MAP.md)를 확인한다.
 > 더 자세한 역할 지도는 [ARCHITECTURE.md](ARCHITECTURE.md) §4 를 본다 — 다만 §4 도 모든 파일을
 > 한 줄씩 나열하는 목록이 아니라 **주요 책임 경계를 설명하는 지도**이므로, 정확한 파일 목록이
 > 필요하면 저장소를 직접 본다.
@@ -263,7 +266,7 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). 주요 엔�
 
 - `App.tsx` — 최상위 상태·reload/loadMore(무한 스크롤)·벌크·필터 합성(genQuery)·인증 부트스트랩·WS 진행률·캔버스 탭 보드 신호·onCreated 리니지 연결.
 - `api.ts`(타입세이프 클라이언트: `create`/`regenerate` 는 이제 **`/api/gen-requests`** 호출, `credits`, 인증 Bearer), `types.ts`(응답 타입), `lib/`(`http.ts`(401 세션 만료 의미 판정)·`librarySync.ts`(자기 변경 요청↔library/assets/manage 갱신 상관관계)·`useManageRealtime.ts`(독립 PM 창 직접 WS)·`assetBroadcast.ts`(Assets 창 전달)·`i18n.ts`·`theme.ts`(강조색·모션·언어)·`prompt.tsx`·`promptEditor.ts`·`useModels.ts`).
-- **components/**: `ThumbnailGrid`·`GenerationCard`(카드·오버레이·대기/생성 중 로고·상태 툴팁·썸네일·드래그 재사용), `FilterSidebar`·`LibraryToolbar`·`SearchBox`, `SpotlightPrompt`(생성 입력·@/# 피커), **`HistoryBoard`(캔버스 탭 계보 트리)**, **`SceneBoard`/`SceneBar`(씬 캔버스)**·`FloatingPrompt`, `AssetsView/AssetsWindow`(분리창), `GenCommentPanel`, `AdminWindow`(승인·전역 역할·공유 서버 — 프로젝트 CRUD 는 `manage/ProjectManagerPanel`), `AccountMenu`(아바타·워크스페이스 전환·크레딧 게이지)·`ManageAccount`·**`SettingsPanel`(`settings/SettingsSections.tsx` + 자체 섹션 — 강조색·언어·모션·다운로드 위치·단축키·내 메타데이터(동기화 점검 포함)·ComfyUI·Resolve·생성물 재점검(과거 전체 가져오기 포함)·프로그램 업데이트)**, `LoginScreen`, `TopBar`(Assets·PM 보드 버튼 포함), `ManageWindow`+`manage/`(PM 분리창), `InfoPopup`·`MediaPreview`·`CompareModal`·`ShortcutsWindow`·`ProjectAssignMenu`.
+- **components/**: `ThumbnailGrid`·`GenerationCard`(카드·오버레이·대기/생성 중 로고·상태 툴팁·썸네일·드래그 재사용), `FilterSidebar`·`LibraryToolbar`·`SearchBox`, `SpotlightPrompt`(생성 입력·@/# 피커), **`HistoryBoard`(캔버스 탭 계보 트리)**, **`SceneBoard`/`SceneBar`(씬 캔버스)**·`FloatingPrompt`, `AssetsView/AssetsWindow`(분리창), `GenCommentPanel`, `AdminWindow`(승인·전역 역할·프로젝트·공유 서버·업데이트 — 프로젝트 탭에 `manage/ProjectManagerPanel`), `AccountMenu`(아바타·워크스페이스 전환·크레딧 게이지)·`ManageAccount`·**`SettingsPanel`(`settings/SettingsSections.tsx` + 자체 섹션 — 강조색·언어·모션·다운로드 위치·단축키·내 메타데이터(동기화 점검 포함)·ComfyUI·Resolve·생성물 재점검(과거 전체 가져오기 포함)·프로그램 업데이트)**, `LoginScreen`, `TopBar`(Assets·PM 보드 버튼 포함), `ManageWindow`+`manage/`(PM 분리창), `InfoPopup`·`MediaPreview`·`CompareModal`·`ShortcutsWindow`·`ProjectAssignMenu`.
 
 ---
 
@@ -441,4 +444,8 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). 주요 엔�
 - `MV_server.bat` 기본 = 포트 **8010** + 로그인 **ON**(`CONTENT_HUB_AUTH=1`). 끄려면 bat 에서 0.
 - 첫 가입자 = 관리자. 이후 가입자는 pending → 관리자 승인 필요.
 - 같은 PC 는 `http://127.0.0.1:8010`, LAN 팀원은 `http://<서버IP>:8010`.
-- 메모리 참조: `project_content_hub_push_model`(이번 모델 근거·구현), `project_content_hub_lineage`(계보), `project_content_hub_server`(서버화), `project_content_hub_provenance`(출처 보존).
+- 저장소 참조: [ARCHITECTURE.md](ARCHITECTURE.md)(실행 모델·계보), [SERVER.md](SERVER.md)(서버 운영),
+  [DATA_OWNERSHIP.md](DATA_OWNERSHIP.md)(데이터·출처 소유권).
+- 이전 브리프의 기억 참조 기록: `project_content_hub_push_model`(push 모델), `project_content_hub_lineage`(계보),
+  `project_content_hub_server`(서버화), `project_content_hub_provenance`(출처 보존). 저장소 밖 기록이므로,
+  이 문서를 받는 외부 AI가 읽을 수 있는 현행 근거로 요구하지 않는다.

@@ -20,7 +20,7 @@ export interface CutSummary {
 }
 
 // 작업자 표시 이름 — 정보 창과 같은 규칙(이름 미정이면 나/팀원). uid·이메일은 보이지 않는다.
-export function workerLabel(g: Generation): string {
+export function workerLabel(g: Pick<Generation, "creator_name" | "is_mine">): string {
   return g.creator_name || (g.is_mine ? "나" : "팀원");
 }
 

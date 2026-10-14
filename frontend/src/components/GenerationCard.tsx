@@ -59,7 +59,7 @@ interface Props {
   onReview?: (g: Generation, action: ReviewAction) => void;
   onBulkReview?: (action: ReviewAction) => void;
   bulkReviewAllowed?: Record<ReviewAction, boolean>;
-  canFinalize?: (g: Generation) => boolean; // 그 프로젝트 supervisor/PM 일 때만 최종 가능(없으면 허용)
+  canFinalize?: (g: Generation) => boolean; // 그 프로젝트의 supervisor 나 전역 관리자일 때만 최종 가능 — PM 은 아니다(없으면 허용)
   onImport: (g: Generation) => void;
   onRestore: (g: Generation) => void; // 휴지통 복구
   dimDeleted?: boolean; // 지운 카드 흐림('함께 보기'만 true)
@@ -208,7 +208,7 @@ function GenerationCardImpl({
     }
     sClick.onDouble(() => {
       setConfirmShare(false); // 더블클릭(최종)이면 공유 확인은 닫는다
-      // 최종(골드) 지정/해제는 그 프로젝트 supervisor/PM 만 — 권한 없으면 확인창을 띄우지 않는다.
+      // 최종(골드) 지정/해제는 그 프로젝트의 supervisor 와 전역 관리자만(PM 은 아니다) — 권한 없으면 확인창을 띄우지 않는다.
       const mayFinalize = canFinalize ? canFinalize(gen) : true;
       if (!mayFinalize) {
         // 권한 없음: 본인 미공유면 더블클릭으로 공유만 켜고, 그 외엔 무반응.

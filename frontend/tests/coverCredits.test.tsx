@@ -10,8 +10,8 @@ const { forgetCoverCredits, useCoverCredits } = await import("../src/lib/coverCr
 
 let root: Root;
 let host: HTMLDivElement;
-function Cell({ id }: { id: string }) {
-  const credits = useCoverCredits(id);
+function Cell({ id, wanted }: { id: string; wanted?: boolean }) {
+  const credits = useCoverCredits(id, wanted);
   return <span data-id={id}>{credits === undefined ? "…" : credits === null ? "미상" : String(credits)}</span>;
 }
 const shown = () => [...host.querySelectorAll("span")].map((cell) => cell.textContent);
@@ -45,6 +45,72 @@ it("한꺼번에 넷만 묻고, 끝나는 대로 다음을 묻는다 — 같은 
   await act(async () => { waiting.get("f")!({ real_credits: 2 }); });
   await settle();
   expect(shown()).toEqual(["54", "1.5", "미상", "1.5", "1.5", "2", "54"]);
+});
+
+// 2026-10-13 밤(배포 전 점검 — 컷 카드 세션): 폴더를 떠나도 줄에 선 요청이 끝까지 나가, 새로 들어간 화면의 카드가 그 뒤에 섰다
+//  (에피소드를 빠르게 오가면 지금 보는 카드의 크레딧이 가장 늦게 왔다). 기다리는 화면이 없어진 요청은 출발 전이면 줄에서 뺀다.
+it("기다리는 화면이 없어진 요청은 출발 전이면 줄에서 뺀다 — 이미 출발한 것은 받아 기억하고, 빠진 것은 다시 그리면 다시 묻는다", async () => {
+  const waiting = new Map<string, (value: { real_credits: number | null }) => void>();
+  generationMetrics.mockImplementation((id: string) => new Promise((resolve) => { waiting.set(id, resolve); }));
+  const asked = () => generationMetrics.mock.calls.map((call) => call[0]);
+  const draw = (keys: string[]) => act(() => root.render(<>{keys.map((key) => <Cell key={key} id={key.split("#")[0]} />)}</>));
+  draw(["a", "b", "c", "d", "e", "f#1", "f#2"]);
+  await settle();
+  expect(asked()).toEqual(["a", "b", "c", "d"]); // e·f 는 줄에 서 있다
+  draw(["a", "f#2"]); // b·c·d(출발했다)·e(줄)·f 하나가 내려갔다 — f 는 아직 기다리는 화면이 있다
+  await act(async () => { waiting.get("b")!({ real_credits: 3 }); });
+  await settle();
+  expect(asked()).toEqual(["a", "b", "c", "d", "f"]); // e 는 나가지 않았다
+  await act(async () => { waiting.get("c")!({ real_credits: 4 }); });
+  await settle();
+  draw(["b", "c", "e"]);
+  expect(shown()).toEqual(["3", "4", "…"]); // 떠난 뒤에 끝난 것도 기억한다(묻지 않고 바로 보인다)
+  await settle();
+  expect(asked()).toEqual(["a", "b", "c", "d", "f", "e"]); // 줄에서 빠졌던 e 는 다시 묻는다
+});
+
+it("화면에 들어오지 않은 카드는 묻지 않는다 — 들어오면 묻고, 줄에 선 채 화면을 벗어나면 줄에서 빠진다. 받아 둔 값은 화면 밖이어도 보인다", async () => {
+  const waiting = new Map<string, (value: { real_credits: number | null }) => void>();
+  generationMetrics.mockImplementation((id: string) => new Promise((resolve) => { waiting.set(id, resolve); }));
+  const asked = () => generationMetrics.mock.calls.map((call) => call[0]);
+  const ids = ["a", "b", "c", "d", "e", "f"];
+  const draw = (on: string[]) => act(() => root.render(<>{ids.map((id) => <Cell key={id} id={id} wanted={on.includes(id)} />)}</>));
+  draw(["a"]);
+  await settle();
+  expect(asked()).toEqual(["a"]);
+  draw(ids);
+  await settle();
+  expect(asked()).toEqual(["a", "b", "c", "d"]);
+  draw(["a", "b", "c", "d", "f"]); // 줄에 서 있던 e 가 화면을 벗어났다
+  await act(async () => { waiting.get("a")!({ real_credits: 1 }); });
+  await settle();
+  expect(asked()).toEqual(["a", "b", "c", "d", "f"]);
+  draw([]);
+  expect(shown()).toEqual(["1", "…", "…", "…", "…", "…"]);
+});
+
+// Codex 코드 리뷰(배포 전 점검): 받는 중인 요청에 시간 제한이 없어, 넷이 멎으면 뒤의 카드가 다 기다렸다.
+it("멎은 요청은 시간이 지나면 끊고 '모름'으로 둔다 — 넷이 멎어도 뒤의 카드가 기다리지 않는다", async () => {
+  vi.useFakeTimers();
+  try {
+    const aborted: string[] = [];
+    generationMetrics.mockImplementation((id: string, signal?: AbortSignal) => {
+      if (id === "e") return Promise.resolve({ real_credits: 5 });
+      signal?.addEventListener("abort", () => aborted.push(id));
+      return new Promise(() => {}); // 멎었다
+    });
+    act(() => root.render(<>{["a", "b", "c", "d", "e"].map((id) => <Cell key={id} id={id} />)}</>));
+    await settle();
+    expect(generationMetrics.mock.calls.map((call) => call[0])).toEqual(["a", "b", "c", "d"]);
+    await act(async () => { vi.advanceTimersByTime(19_000); });
+    await settle();
+    expect(shown()).toEqual(["…", "…", "…", "…", "…"]);
+    await act(async () => { vi.advanceTimersByTime(1_000); });
+    await settle();
+    expect([shown(), aborted]).toEqual([["미상", "미상", "미상", "미상", "5"], ["a", "b", "c", "d"]]);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 // Codex 코드 리뷰: 실제 크레딧은 생성 뒤 나중에 확정된다 — '모름'을 영영 기억하면 '미상'이 굳는다. 잠깐(1분)만 기억하고 그 뒤엔 다시 묻는다.

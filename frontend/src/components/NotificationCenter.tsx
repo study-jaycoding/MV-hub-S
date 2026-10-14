@@ -34,6 +34,7 @@ import { sharedApi } from "../lib/sharedApi";
 import { updateNoticeApi } from "../lib/updateNotices";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../lib/useOutsideMouseDown";
+import { reloadNow } from "../lib/unloadGuard"; // 앱이 스스로 하는 새로고침 — 서버 주소를 바꾼 뒤라 묻지 않고 진행한다
 import type { NotificationComment } from "../types";
 
 type CenterItem =
@@ -361,7 +362,7 @@ export function NotificationCenter({
       });
       return;
     }
-    window.location.reload();
+    reloadNow();
   };
 
   const runUpdate = async (item: ReleaseNotification) => {

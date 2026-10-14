@@ -219,6 +219,14 @@ export function resolveTransferSummary(result: ResolveTransferResult): string {
   return `Resolve ${imported.imported}개 가져오기 완료${existing} · ${imported.target_root}`;
 }
 
+/** 닫을 때까지 남길 결과인가(Jay 2026-10-14 — 부분 성공·실패·결과 불명) — 위 요약의 마지막 가지("가져오기 완료")가 아닌 것 전부다:
+ *  Resolve 에 못 붙었거나(unavailable) · 준비나 가져오기에서 하나라도 떨어졌거나 · 가져오기가 실패로 끝났다. */
+export function resolveTransferNeedsCheck(result: ResolveTransferResult): boolean {
+  const imported = result.resolve_import;
+  return imported.status === "unavailable" || result.error_count + imported.error_count > 0
+    || imported.status === "failed" || !!imported.error;
+}
+
 export function createResolveTransfer(
   genIds: string[],
   target?: ResolveProjectTarget,
@@ -309,6 +317,12 @@ export function resolveTimelineSummary(result: ResolveTimelineResult): string {
     ? ` · 원본 준비 실패 ${result.transfer.error_count}개`
     : "";
   return `타임라인을 만들지 못했습니다 · ${built.error || "Resolve 연결 실패"}${prepareFailed}`;
+}
+
+/** 닫을 때까지 남길 결과인가 — 계획대로 지은 것(complete)만 아니다: 계획과 다르게 지었다 · 못 지었다 · 지었는지 모른다.
+ *  계획대로 지었어도 경고가 붙었으면(지금은 '전송 기록을 저장하지 못했습니다' 하나) 남긴다 — 알림이 지나가면 다시 볼 길이 없다. */
+export function resolveTimelineNeedsCheck(result: ResolveTimelineResult): boolean {
+  return result.timeline.status !== "complete" || (result.timeline.warnings ?? []).length > 0;
 }
 
 export function getResolveConnectionStatus(): Promise<ResolveConnectionStatus> {

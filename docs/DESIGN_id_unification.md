@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-27
+updated: 2026-10-14
 status: draft
 ---
 
@@ -93,12 +93,14 @@ status: draft
 
 ## 7. 권장
 
+> **Phase 0 착수 전의 제안 기록**이다. Phase 0a·0b는 완료됐고 당시 "저위험" 평가는 §5에서 정정했다. 현재 착수 여부는 [규모 확장 로드맵](ROADMAP_SCALE.md) B항목을 따른다.
+
 **Phase 0 먼저** — 새 데이터의 이중성 발생을 멈추는 저위험 변경이라 독립 배포·측정 후, Phase 1~3(실제 정리)은 마이그레이션·테스트를 충분히 준비해 착수. Phase 0 의 핵심 변경점은 `upsert_synced_generation` / `set_job_id` 가 동기화 행을 `id==job_id` 대신 `새 uuid + job_id 속성`으로 만들도록 하는 것.
 
 ## 8. Phase 0 영향 파일(착수 시)
 
 - `backend/app/repo/generation_sync.py`: `upsert_synced_generation`(동기화 행 id 생성 — Phase 0b 로 UUID 발급 완료).
-  `backend/app/repo/generations.py`: `set_job_id`(이미 BEGIN IMMEDIATE 적용됨).
+  `backend/app/repo/generations.py`: 당시 대상은 `set_job_id`였으며 2026-08-27 삭제됐다. 현재 경계는 §5의 `apply_local_fulfillment` 등으로 확인한다.
 - `job_id` 인덱스는 `db_migrations.py` 에만 있고(비고유 `idx_generation_job`) `backend/schema.sql` 에는 없다 — 새 설치도
   부팅 시 `_migrate` 에 의존한다. **UNIQUE 는 보류.**
 - 검증: 같은 job_id 두 번 동기화 → 한 행(uuid)으로 수렴, 로컬 생성+동기화 충돌 → 중복 없음.
