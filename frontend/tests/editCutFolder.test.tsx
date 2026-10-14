@@ -1303,6 +1303,8 @@ it("다이나믹 재생 모드: W 로 켜면 두 판의 재생 조작이 같이 
   expect([btn.getAttribute("aria-pressed"), btn.title]).toEqual(["true",
     "다이나믹 재생 모드 (W) — 두 화면의 재생을 한 번에: 재생·멈춤·J/K/L·프레임·처음/끝 · 재생바는 화면마다 따로"]);
   act(() => poolCards()[2].click()); // 왼쪽 소스 판에 영상 v
+  // 풀의 표 — v 는 V1 에 넣었고(타임라인 뷰어에 보인다) 왼쪽 소스 판에도 떴다
+  expect(poolCards()[2].querySelector(".card-bottom > .card-here")!.textContent).toBe("V1 - 선택 카드 · 소스 L");
   const [left, right] = panes();
   expect([left, right].map((item) => item.classList.contains("ed-view-on"))).toEqual([true, true]); // 두 판이 다 키를 받는다
   const tcOf = (view: HTMLElement) => view.querySelector(".ed-vtop > .ed-vtc")!.textContent;
@@ -1361,6 +1363,14 @@ it("두 판이 다 소스 클립이어도 따로 논다 — 풀에서 고르면 
   expect([shownIn(left), shownIn(right)]).toEqual(["/media/v.mp4", "/media/b.png"]);
   press({ key: "ArrowRight", code: "ArrowRight" }); // 재생 키는 누른 판(오른쪽)만
   expect([left, right].map((view) => view.querySelector(".ed-vtop > .ed-vtc")!.textContent)).toEqual(["00:00:00:00", "00:00:00:01"]);
+
+  // 풀에도 어느 카드가 어느 소스 판에 떴는지(Jay 2026-10-14 — "소스클립에 들어가면 어떤게 들어갔는지 풀에도 표시") — 지금 보이는 것이라 라임
+  const marks = () => poolCards().map((card) => card.querySelector(".card-bottom > .card-here")?.textContent ?? "");
+  expect(marks()).toEqual(["", "소스 R", "소스 L"]); // a · b · v
+  pickMode("source", "소스 테이프"); // 왼쪽을 테이프로 — 테이프는 표를 달지 않는다(재생하며 바뀐다)
+  expect(marks()).toEqual(["", "소스 R", ""]);
+  pickMode("tape", "소스 클립"); // 메뉴로 올린 소스 클립 판 = 마지막으로 고른 것(b) — 두 판이 같은 카드
+  expect(marks()).toEqual(["", "소스 L·R", ""]);
 });
 
 // Codex 코드 리뷰(2026-10-14 오후) — 풀의 상자 고르기·선택 해제가 판에 안 따라왔고(누름만 따라왔다), 테이프 판에서 고르면 옆 소스 클립 판도 바뀌었다.
