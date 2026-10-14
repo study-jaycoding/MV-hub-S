@@ -24,6 +24,7 @@ from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
 from ..deps import (
     account_actor_uid,
     actor_id,
+    expected_account_differs,
     realtime_scope,
     require_admin,
     require_agent_account,
@@ -244,6 +245,9 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             detail="업데이트 중이거나 상태를 확인할 수 없어 새 생성을 시작할 수 없습니다. 프로그램을 다시 실행한 뒤에도 계속되면 관리자에게 문의하세요",
         )
     acc = _require_account(request)
+    # 답을 잃고 다시 보내는 사이 다른 탭이 다른 계정으로 로그인했으면 그 계정 DB 엔 이 요청표가 없어 새로 만든다 — 보내지 않는다(Jay 결정 2A)
+    if expected_account_differs(request, acc["email"]):
+        raise HTTPException(status_code=409, detail="그사이 이 PC 의 계정이 바뀌어 보내지 않았습니다 — 화면을 새로 고친 뒤 다시 눌러 주세요")
     await _require_generation_deployment_open()
     workspace = await asyncio.to_thread(
         _validated_generation_workspace, body.workspace, acc["email"]

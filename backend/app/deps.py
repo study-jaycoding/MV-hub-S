@@ -70,6 +70,22 @@ def resolve_agent_account(session_account: Optional[dict]) -> dict:
     raise HTTPException(status_code=401, detail="로그인이 필요합니다")
 
 
+EXPECT_ACCOUNT_HEADER = "X-MVHub-Expect-Account"
+
+
+def expected_account_differs(request: Request, owner: str) -> bool:
+    """화면이 '이 계정으로 보낸다'고 실은 값(`acct:<email>` | `local`)이 이 요청에 고정한 계정과 다른가.
+
+    응답을 잃고 다시 보내는 사이 다른 탭이 다른 계정으로 로그인하면, 두 번째 요청이 그 계정의 DB 로 가 새 실행·새 생성이
+    된다(같은 요청표가 그 장부엔 없다). 그때는 실행 전에 거절한다(Jay 결정 2A, Codex). 헤더가 없으면(옛 화면) 보지 않는다."""
+    headers = getattr(request, "headers", None)  # 시험의 가짜 요청 등 머리글이 없는 호출자 — 옛 화면과 같게 본다
+    expected = ((headers.get(EXPECT_ACCOUNT_HEADER) if headers is not None else None) or "").strip()
+    if not expected:
+        return False
+    email = expected[5:] if expected.startswith("acct:") else ("" if expected == "local" else expected)
+    return (norm_email(email) or "local") != (norm_email(owner) or "local")
+
+
 def actor_id(request: Request) -> str:
     """현재 요청 행위자의 안정 신원.
 

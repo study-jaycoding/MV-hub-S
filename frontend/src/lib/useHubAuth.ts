@@ -12,6 +12,7 @@ import { useCustomEvent } from "./useCustomEvent";
 import { reloadNow, setLeaving, unloadHeld, unsavedPlaces } from "./unloadGuard";
 import type { Account, AuthConfig } from "../types";
 import { HttpError } from "./http";
+import { setHubFeatures } from "./hubFeatures";
 
 const FINALIZE_ROLES_RETRY_MS = 30_000;
 const LOGOUT_WAIT_MS = 10_000;
@@ -154,6 +155,7 @@ export function useHubAuth() {
       .authConfig()
       .then((cfg) => {
         setAuthConfig(cfg);
+        setHubFeatures(cfg.features); // 허브 기능 표식 — 생성·Comfy 재전송 여부(Jay 결정 2A)
         if (cfg.auth_enabled && getAuthToken()) {
           // ★늦은 응답 무효화: 이 검증이 오래 걸려 부팅 워치독이 화면을 풀면 사용자가
           //  그 사이 다른 계정으로 로그인할 수 있다. 그때 뒤늦게 도착한 이 응답이

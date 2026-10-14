@@ -1,5 +1,7 @@
-import { authFormHeaders, HttpError, jsonBody, jsonFetch, throwHttpError } from "./http";
+import { authFormHeaders, HttpError, jsonBody, jsonFetch, NO_RESPONSE_MESSAGE, throwHttpError } from "./http";
 import { t } from "./i18n";
+import { getAccountNamespace } from "./accountScope";
+import { EXPECT_ACCOUNT_HEADER, hubHasFeature, REQUEST_RETRY_FEATURE } from "./hubFeatures";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const RUN_POLL_MS = 1500; // /run_status 폴링 간격
@@ -175,9 +177,29 @@ export const comfyApi = {
     fd.append("param_values", JSON.stringify(paramValues ?? {}));
     fd.append("media_meta", JSON.stringify((media ?? []).map((m) => ({ type: m.type }))));
     for (const m of media ?? []) fd.append("media", m.blob, m.name);
-    const res = await fetch("/api/comfy/run", { method: "POST", body: fd, headers: authFormHeaders() });
-    if (!res.ok) await throwHttpError(res, "/api/comfy/run");
-    const first = (await res.json()) as ComfyRunResult & { job_id?: string };
+    // 요청표(run_key) — 허브가 재전송 계약을 알릴 때만. 답을 받지 못하면(전송 TypeError·본문 끊김) 1초 뒤 **같은 키·같은 FormData** 로
+    //  한 번 더 보낸다 — 허브가 같은 요청이면 처음 잡을 돌려준다(Comfy Cloud 두 번 과금 방지, Jay 결정 2A). 옛 허브엔 지금처럼 한 번만.
+    const retry = hubHasFeature(REQUEST_RETRY_FEATURE) && typeof crypto?.randomUUID === "function";
+    if (retry) fd.append("run_key", crypto.randomUUID());
+    const headers = { ...authFormHeaders(), ...(retry ? { [EXPECT_ACCOUNT_HEADER]: getAccountNamespace() } : {}) };
+    const send = async () => {
+      const res = await fetch("/api/comfy/run", { method: "POST", body: fd, headers });
+      if (!res.ok) await throwHttpError(res, "/api/comfy/run");
+      return (await res.json()) as ComfyRunResult & { job_id?: string };
+    };
+    let first: ComfyRunResult & { job_id?: string };
+    try {
+      first = await send();
+    } catch (error) {
+      if (!retry || error instanceof HttpError || (error instanceof DOMException && error.name === "AbortError")) throw error;
+      await new Promise((done) => setTimeout(done, 1000));
+      try {
+        first = await send();
+      } catch (again) {
+        if (again instanceof HttpError) throw again;
+        throw new Error(NO_RESPONSE_MESSAGE);
+      }
+    }
     // 구버전 백엔드(동기)는 {outputs} 를 바로 준다 → 재시작 전 새로고침해도 깨지지 않게 그대로 반환.
     if (Array.isArray(first.outputs)) return first;
     const job_id = first.job_id;

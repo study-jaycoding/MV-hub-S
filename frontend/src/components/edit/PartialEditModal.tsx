@@ -591,28 +591,23 @@ export function PartialEditModal({
         },
       ],
     };
-    // prepareCreate 클로저 = 제출 1회의 idempotency key. 네트워크 오류 재시도에도 같은
-    // 클로저를 다시 불러 유료 요청이 중복 생성되지 않는다.
+    // prepareCreate 클로저 = 제출 1회의 idempotency key. 답이 없을 때의 재전송은 전송 층(jsonFetch)이 같은 key·같은 헤더로
+    // 한 번 한다 — 여기서 또 부르면 최대 네 번 보냈고, 새 변경 id·토큰으로 나갔다(Jay 결정 2A, Codex D5).
     const run = api.prepareCreate(body, workspace);
     let created: Generation | null = null;
     try {
       created = await run();
-    } catch {
-      try {
-        created = await run(); // 1회 재시도(같은 key)
-      } catch (e) {
-        // 확정 거절(400/422)만 방금 올린 신규 캡처를 정리한다 — 같은 idempotency key 의
-        // 재시도가 4xx 로 끝났다는 것은 서버에 커밋된 적이 없다는 뜻(커밋됐으면 dedup 성공).
-        // 네트워크 오류·5xx·타임아웃·408/409/429 는 커밋됐을 수 있어 절대 지우지 않는다(코덱스).
-        if (refBits.discardToken && e instanceof HttpError && (e.status === 400 || e.status === 422)) {
-          api.discardCapture(refBits.discardToken).catch(() => {});
-        }
-        if (mountedRef.current) {
-          setSubmitting(false);
-          setError(`생성 요청 실패: ${String(e)}`);
-        }
-        return;
+    } catch (e) {
+      // 확정 거절(400/422)만 방금 올린 신규 캡처를 정리한다 — 4xx 는 서버에 커밋된 적이 없다는 뜻.
+      // 네트워크 오류·5xx·타임아웃·408/409/429 는 커밋됐을 수 있어 절대 지우지 않는다(코덱스).
+      if (refBits.discardToken && e instanceof HttpError && (e.status === 400 || e.status === 422)) {
+        api.discardCapture(refBits.discardToken).catch(() => {});
       }
+      if (mountedRef.current) {
+        setSubmitting(false);
+        setError(`생성 요청 실패: ${String(e)}`);
+      }
+      return;
     }
     // 계보는 references 의 source_gen_id 가 이미 만든다(서버가 reference 엣지 기록). 별도 호출 없음.
     onQueued(created); // 카드가 생겼으면 unmount 여부와 무관하게 목록에 알린다

@@ -256,6 +256,7 @@ export interface AuthConfig {
   auth_enabled: boolean;
   has_accounts: boolean;
   manage_enabled?: boolean; // PM 대시보드(분리형) 활성 여부 — 버튼 노출 게이트
+  features?: string[]; // 허브 기능 표식(lib/hubFeatures) — 옛 허브는 없다
 }
 
 // 팀 크레딧 집계 — 각 계정 에이전트가 보고한 마지막 잔액(실시간 아님).

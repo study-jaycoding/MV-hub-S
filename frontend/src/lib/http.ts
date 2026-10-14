@@ -131,10 +131,20 @@ export async function withRequestTimeout<T>(run: (signal: AbortSignal) => Promis
   }
 }
 
+// 답을 받지 못한 요청을 한 번 더 보내고도 못 받았을 때 — 서버에는 들어갔을 수 있다(Jay 결정 2A).
+export const NO_RESPONSE_MESSAGE = "답을 받지 못했습니다 — 들어갔을 수 있으니 목록을 확인한 뒤 다시 누르세요";
+const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+
+/**
+ * opts.retryNoResponse — 요청표가 있는 쓰기(생성·재생성)에만 켠다. **전송(fetch)과 본문 읽기만** 최대 두 번 — fetch 가
+ * TypeError(답 없음)로 실패했거나 본문을 다 못 읽었을 때 1초 뒤 같은 헤더(요청표·변경 id·토큰)·같은 본문으로 다시 보낸다.
+ * HTTP 오류·그 뒤의 데이터 보정은 다시 보내지 않는다(보정 중 TypeError 를 '답 없음'으로 오인하지 않게 — Codex C6).
+ */
 export async function jsonFetch<T>(
   url: string,
   init?: RequestInit,
   validateResponse?: (response: Response) => void,
+  opts: { retryNoResponse?: boolean } = {},
 ): Promise<T> {
   const mutationOrigin = createLibraryMutationOrigin(init?.method);
   const headers: Record<string, string> = {
@@ -146,28 +156,45 @@ export async function jsonFetch<T>(
     headers[LIBRARY_CLIENT_ID_HEADER] = mutationOrigin.client_id;
     headers[LIBRARY_MUTATION_ID_HEADER] = mutationOrigin.mutation_id;
   }
-  const res = await fetch(url, { ...init, headers });
-  if (!res.ok) await throwHttpError(res, url);
-  validateResponse?.(res);
-  if (mutationOrigin) {
-    const domainHeader = res.headers?.get(MUTATION_DOMAINS_HEADER) ?? null;
-    // P36 서버는 변경 id만 되돌려주므로 도메인 헤더가 없으면 library로 간주해 롤링 업데이트를
-    // 유지한다. 새 서버의 명시적 빈/알 수 없는 값은 임의로 성공 처리하지 않는다.
-    const domains: MutationDomain[] = domainHeader === null
-      ? ["library"]
-      : domainHeader
-          .split(",")
-          .map((part) => part.trim())
-          .filter((part): part is MutationDomain =>
-            part === "library" || part === "assets" || part === "manage",
-          );
-    markMutationDomainsSucceeded(
-      mutationOrigin,
-      res.headers?.get(LIBRARY_MUTATION_ID_HEADER) ?? null,
-      domains,
-    );
+  for (let attempt = 1; ; attempt += 1) {
+    const last = !opts.retryNoResponse || attempt >= 2;
+    let res: Response;
+    try {
+      res = await fetch(url, { ...init, headers });
+    } catch (error) {
+      const noResponse = error instanceof TypeError; // AbortError(DOMException)·그 밖의 예외는 그대로
+      if (!noResponse || !opts.retryNoResponse) throw error;
+      if (last) throw new Error(NO_RESPONSE_MESSAGE);
+      await sleep(1000);
+      continue;
+    }
+    if (!res.ok) await throwHttpError(res, url);
+    validateResponse?.(res);
+    if (mutationOrigin) {
+      const domainHeader = res.headers?.get(MUTATION_DOMAINS_HEADER) ?? null;
+      // P36 서버는 변경 id만 되돌려주므로 도메인 헤더가 없으면 library로 간주해 롤링 업데이트를
+      // 유지한다. 새 서버의 명시적 빈/알 수 없는 값은 임의로 성공 처리하지 않는다.
+      const domains: MutationDomain[] = domainHeader === null
+        ? ["library"]
+        : domainHeader
+            .split(",")
+            .map((part) => part.trim())
+            .filter((part): part is MutationDomain =>
+              part === "library" || part === "assets" || part === "manage",
+            );
+      markMutationDomainsSucceeded(
+        mutationOrigin,
+        res.headers?.get(LIBRARY_MUTATION_ID_HEADER) ?? null,
+        domains,
+      );
+    }
+    try {
+      return (await res.json()) as T;
+    } catch (error) {
+      if (last) throw error; // 본문을 다 못 읽었다 — 서버는 이미 처리했으니 같은 요청표로 다시 받는다
+      await sleep(1000);
+    }
   }
-  return res.json() as Promise<T>;
 }
 
 export function jsonBody(value: unknown): string {

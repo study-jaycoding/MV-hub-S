@@ -32,6 +32,7 @@ import { isGenerationWorkspaceReady } from "./lib/workspaceContext";
 import type { CanvasGenerationLink } from "./lib/canvasGenerationRecovery";
 import type { CardHistoryCursor, CardHistoryLink } from "./lib/canvasDetached";
 import { getAccountNamespace } from "./lib/accountScope";
+import { EXPECT_ACCOUNT_HEADER, hubHasFeature, REQUEST_RETRY_FEATURE } from "./lib/hubFeatures";
 import type { GenerationLocation, GenerationLocationRequest } from "./lib/resolveLibraryLocation";
 
 export { getAuthToken, jsonFetch, setAuthToken };
@@ -123,8 +124,19 @@ function normalizeHistoryGraph(graph: HistoryGraph): HistoryGraph {
   return { ...graph, nodes: normalizeGenerations(graph.nodes) };
 }
 
-function generationFetch(path: string, init?: RequestInit): Promise<Generation> {
-  return jsonFetch<Generation>(path, init).then(normalizeGenerationPromptCompatibility);
+function generationFetch(path: string, init?: RequestInit, retryNoResponse = false): Promise<Generation> {
+  return jsonFetch<Generation>(path, init, undefined, { retryNoResponse }).then(normalizeGenerationPromptCompatibility);
+}
+
+// 요청표가 있는 생성 POST — 허브가 재전송 계약(계정 확인 헤더)을 알릴 때만 답이 없으면 한 번 더 보낸다(Jay 결정 2A).
+//  같은 키·같은 내용이면 허브가 처음 카드를 돌려준다. 계정 헤더는 그사이 다른 계정으로 바뀐 허브가 새로 만들지 않게.
+function genRequestFetch(body: string): Promise<Generation> {
+  const retry = hubHasFeature(REQUEST_RETRY_FEATURE);
+  return generationFetch("/api/gen-requests", {
+    method: "POST",
+    body,
+    ...(retry ? { headers: { [EXPECT_ACCOUNT_HEADER]: getAccountNamespace() } } : {}),
+  }, retry);
 }
 
 function reviewCompatibilityError(): Error {
@@ -205,16 +217,13 @@ function createGeneration(
     return Promise.reject(new Error("워크스페이스 id와 이름이 모두 확인된 뒤 생성할 수 있습니다"));
   }
   const requestKey = canvasLink ? undefined : idempotencyKey || newGenerationRequestKey();
-  return generationFetch("/api/gen-requests", {
-    method: "POST",
-    body: jsonBody({
-      kind: "create",
-      workspace,
-      create: body,
-      canvas_link: canvasLink,
-      ...(requestKey ? { idempotency_key: requestKey } : {}),
-    }),
-  });
+  return genRequestFetch(jsonBody({
+    kind: "create",
+    workspace,
+    create: body,
+    canvas_link: canvasLink,
+    ...(requestKey ? { idempotency_key: requestKey } : {}),
+  }));
 }
 
 function regenerateGeneration(
@@ -228,17 +237,14 @@ function regenerateGeneration(
     return Promise.reject(new Error("워크스페이스 id와 이름이 모두 확인된 뒤 재생성할 수 있습니다"));
   }
   const requestKey = canvasLink ? undefined : idempotencyKey || newGenerationRequestKey();
-  return generationFetch("/api/gen-requests", {
-    method: "POST",
-    body: jsonBody({
-      kind: "regenerate",
-      workspace,
-      source_gen_id: id,
-      regenerate: body,
-      canvas_link: canvasLink,
-      ...(requestKey ? { idempotency_key: requestKey } : {}),
-    }),
-  });
+  return genRequestFetch(jsonBody({
+    kind: "regenerate",
+    workspace,
+    source_gen_id: id,
+    regenerate: body,
+    canvas_link: canvasLink,
+    ...(requestKey ? { idempotency_key: requestKey } : {}),
+  }));
 }
 
 interface GenerationBatchResponse {

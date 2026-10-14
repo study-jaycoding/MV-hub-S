@@ -23,7 +23,7 @@ import uuid
 from dataclasses import dataclass, replace
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -42,10 +42,11 @@ from ..deps import (
     account_actor_uid,
     batch_view_member_projects,
     can_view_generation_with_member_projects,
+    expected_account_differs,
     require_agent_account,
     require_project_role,
 )
-from ..services import comfy_client, comfy_run_journal as run_journal, comfy_workflow, upload_limits, video_convert, worker_backup
+from ..services import comfy_client, comfy_run_journal as run_journal, comfy_run_keys, comfy_workflow, upload_limits, video_convert, worker_backup
 from ..services.release_update import update_in_progress
 from ..services.request_guards import require_loopback_request
 
@@ -1244,18 +1245,41 @@ def run(
     param_values: str = Form("{}"),
     media_meta: str = Form("[]"),
     media: list[UploadFile] = File(default=[]),
+    run_key: Annotated[str, Form()] = "",  # 함수를 직접 부르는 호출(시험)에서도 기본값이 빈 글이 되게 Annotated 로
 ):
     """Comfy 노드 실행 '시작' — 실제 제출/폴링/다운로드는 백그라운드 스레드에서 처리하고 즉시 job_id 반환.
     (긴 HTTP 연결을 붙잡지 않아 배치 병렬 시 연결 끊김='Failed to fetch' 오판을 없앤다.)
     프론트는 /run_status?job_id= 를 폴링해 완료 시 기존과 동일한 {outputs, prompt_id} 를 받는다.
-    멀티파트: content(워크플로우), param_values(JSON 플랫), media_meta(JSON [{type}]), media(파일들))."""
+    멀티파트: content(워크플로우), param_values(JSON 플랫), media_meta(JSON [{type}]), media(파일들)),
+    run_key(요청표 UUID — 응답을 잃고 다시 보내도 한 번만 실행, Jay 결정 2A. 없으면 옛 동작)."""
+    if run_key:
+        try:
+            uuid.UUID(run_key)
+        except ValueError:
+            raise HTTPException(422, "run_key 형식이 아닙니다") from None
     if update_in_progress():
         raise HTTPException(409, "업데이트 중이거나 상태를 확인할 수 없어 새 Comfy 작업을 시작할 수 없습니다. 프로그램을 다시 실행한 뒤에도 계속되면 관리자에게 문의하세요")
     with _comfy_request_scope(request) as identity:
-        return _start_run(content, param_values, media_meta, media, identity)
+        if expected_account_differs(request, identity.owner):
+            raise HTTPException(409, "그사이 이 PC 의 계정이 바뀌어 실행하지 않았습니다 — 화면을 새로 고친 뒤 다시 눌러 주세요")
+        return _start_run(content, param_values, media_meta, media, identity, run_key)
 
 
-def _start_run(content: str, param_values: str, media_meta: str, media: list[UploadFile], identity: _ComfyIdentity):
+def _run_fingerprint(content: str, param_values: str, media_meta: str, uploads: list[_MediaUpload]) -> str:
+    """같은 요청인가 — 워크플로·값·미디어 순서·이름·실제 바이트(크기만으로는 다른 그림을 같은 실행으로 본다, Codex C8)."""
+    digest = hashlib.sha256()
+    for part in (content, param_values, media_meta):
+        digest.update(part.encode("utf-8") + b"\0")
+    for upload in uploads:
+        digest.update(upload.filename.encode("utf-8") + b"\0")
+        with upload.path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _start_run(content: str, param_values: str, media_meta: str, media: list[UploadFile], identity: _ComfyIdentity, run_key: str = ""):
     try:
         wf = json.loads(content)
         pvals = json.loads(param_values or "{}")
@@ -1284,6 +1308,23 @@ def _start_run(content: str, param_values: str, media_meta: str, media: list[Upl
         uploads = _stage_media_uploads(media_files)
         if update_in_progress():
             raise HTTPException(409, "업데이트 중이거나 상태를 확인할 수 없어 새 Comfy 작업을 시작할 수 없습니다. 프로그램을 다시 실행한 뒤에도 계속되면 관리자에게 문의하세요")
+        if run_key:
+            # 준비 중 잡을 먼저 등록한 뒤(업데이트가 유휴로 오판하지 않게) 접수 장부에 적는다 — 장부를 못 적으면 실행하지 않는다(Codex D7).
+            try:
+                verdict, known = comfy_run_keys.claim(identity.owner, run_key, _run_fingerprint(content, param_values, media_meta, uploads), job_id)
+            except comfy_run_keys.RunKeyError as error:
+                raise HTTPException(409, f"{error} — 실행하지 않았습니다") from error
+            if verdict == "conflict":
+                raise HTTPException(409, "같은 요청표에 다른 내용이 왔습니다 — 다시 눌러 새로 실행하세요")
+            if verdict == "same":
+                _cleanup_media_uploads(uploads)
+                _discard_run_job(job_id)
+                with _RUN_JOBS_LOCK:
+                    alive = known in _RUN_JOBS
+                if alive:
+                    return {"job_id": known}  # 응답을 잃고 다시 보낸 같은 요청 — 처음 잡을 그대로
+                # 허브가 그사이 다시 켜져 잡이 메모리에 없다 — 끝났을 수도 있으니 '미해결 실행'이라고 하지 않는다(Codex C7)
+                raise HTTPException(409, "같은 실행이 이미 접수돼 다시 실행하지 않았습니다")
     except Exception:
         _cleanup_media_uploads(uploads)
         _discard_run_job(job_id)

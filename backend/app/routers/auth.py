@@ -202,6 +202,9 @@ def auth_config():
         "auth_enabled": AUTH_ENABLED,
         "has_accounts": repo.count_accounts() > 0,
         "manage_enabled": MANAGE_ENABLED,  # PM 대시보드 버튼 노출 여부(분리형)
+        # 화면이 켤 때 읽는 기능 표식. request_retry_v1 = 생성·Comfy 요청을 답이 없을 때 같은 요청표로 한 번 더 보내도 되는 허브
+        #  (계정 확인 헤더 X-MVHub-Expect-Account + Comfy run_key 장부). 없으면 화면은 다시 보내지 않는다(Jay 결정 2A).
+        "features": ["request_retry_v1"],
     }
 
 
