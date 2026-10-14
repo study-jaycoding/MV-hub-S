@@ -171,7 +171,8 @@ def _check_edit_list(moov: bytes, elst: tuple[int, int], frames: int, delta: int
         rate = struct.unpack_from(">hh", moov, elst[0] + 16)
     if rate != (1, 0):
         raise PictureError("편집 목록의 배속이 1 이 아니다")
-    if media_time != first_shown:  # -1 = 빈 구간 · 그보다 크면 앞 프레임을 자른다 · 작으면 앞에 빈 화면
+    # -1 = 빈 구간(ctts v1 의 음수 보정으로 첫 표시 시각이 -1 이어도 — Codex 재검토) · 그보다 크면 앞 프레임을 자른다 · 작으면 앞에 빈 화면
+    if media_time < 0 or media_time != first_shown:
         raise PictureError("편집 목록의 시작점이 첫 프레임이 아니다")
     if segment:
         mvhd = _one(moov, 0, len(moov), "mvhd")

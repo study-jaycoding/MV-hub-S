@@ -43,8 +43,10 @@ def trak(handler: bytes, frames: int, timescale: int, deltas, elst: list[bytes] 
     if elst is not None:
         parts.append(box("edts", full("elst", struct.pack(">I", len(elst)) + b"".join(elst))))
     tables = [full("stsz", struct.pack(">II", 0, frames)), full("stts", stts)]
-    if ctts is not None:
-        tables.append(full("ctts", struct.pack(">I", len(ctts)) + b"".join(struct.pack(">II", n, o) for n, o in ctts)))
+    if ctts is not None:  # 음수 보정이 있으면 버전 1(부호 있음)
+        signed = any(o < 0 for _n, o in ctts)
+        rows = b"".join(struct.pack(">Ii" if signed else ">II", n, o) for n, o in ctts)
+        tables.append(full("ctts", struct.pack(">I", len(ctts)) + rows, version=1 if signed else 0))
     parts.append(box("mdia",
         full("mdhd", struct.pack(">IIII", 0, 0, timescale, 0) + b"\0" * 4),
         full("hdlr", b"\0" * 4 + handler + b"\0" * 12),
@@ -102,9 +104,11 @@ def test_seedance_shape_reads_picture_frames_not_sound(tmp_path):
     (moov(trak(b"vide", 240, 12288, [(240, 512)], elst=[edit(0, media_time=5 * 24 * 512)])), "앞 5초를 자른다"),
     (moov(trak(b"vide", 97, 12288, [(97, 512)], elst=[edit(0, media_time=1536)], ctts=SEEDANCE_CTTS)), "첫 프레임보다 늦게 시작"),
     (moov(trak(b"vide", 97, 12288, [(97, 512)], elst=[edit(4042)], ctts=[(50, 1024)])), "ctts 표본 수가 다르다"),
+    # Codex 세 번째 확인 — ctts v1 의 음수 보정으로 첫 표시 시각이 -1 이면 빈 구간(-1)이 '같다'로 통과했다
+    (moov(trak(b"vide", 97, 12288, [(97, 512)], elst=[edit(4042, media_time=-1)], ctts=[(97, -1)])), "음수 보정 + 빈 구간"),
     (moov(SEEDANCE_VIDEO, extra=box("mvex")), "분할 MP4"),
     (moov(trak(b"vide", 97, 0, [(97, 512)])), "timescale 0"),
-])
+], ids=lambda value: value if isinstance(value, str) else "moov")  # 시험 이름 = 사유
 def test_unusual_files_are_refused(moov_box, reason):
     with pytest.raises(PictureError):
         picture_from_moov(body_of(moov_box))
