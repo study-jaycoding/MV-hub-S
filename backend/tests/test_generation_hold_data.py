@@ -60,7 +60,7 @@ def test_legacy_schema_adds_columns_without_rewriting_existing_state(tmp_path):
     schema = (Path(__file__).parents[1] / "schema.sql").read_text(encoding="utf-8")
     old_schema = "\n".join(
         line for line in schema.splitlines()
-        if not any(name in line for name in ("is_held", "desired_held", "base_held"))
+        if not any(name in line for name in ("is_held", "desired_held", "base_held", "held_before_final"))
     )
     conn = sqlite3.connect(tmp_path / "legacy.db")
     conn.row_factory = sqlite3.Row
@@ -69,6 +69,7 @@ def test_legacy_schema_adds_columns_without_rewriting_existing_state(tmp_path):
         # 이전 릴리스의 기존 마이그레이션까지 완료된 DB를 재현한다.
         db_migrations._migrate(conn)
         conn.execute("ALTER TABLE generation DROP COLUMN is_held")
+        conn.execute("ALTER TABLE generation DROP COLUMN held_before_final")  # 2026-10-14 에 생긴 칸(최종 전의 보류)
         conn.execute("ALTER TABLE share_state_intent DROP COLUMN desired_held")
         conn.execute("ALTER TABLE share_state_intent DROP COLUMN base_held")
         conn.execute("INSERT INTO worker(id,name) VALUES('me','Me')")
@@ -86,6 +87,7 @@ def test_legacy_schema_adds_columns_without_rewriting_existing_state(tmp_path):
         db_migrations._migrate(conn)
         after = dict(conn.execute("SELECT * FROM generation").fetchone())
         assert after.pop("is_held") == 0
+        assert after.pop("held_before_final") == 0
         assert after == before
         intent = dict(conn.execute("SELECT * FROM share_state_intent").fetchone())
         assert intent["desired_held"] is None and intent["base_held"] is None

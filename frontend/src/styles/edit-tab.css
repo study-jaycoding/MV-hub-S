@@ -363,19 +363,36 @@
 .ed-trim-play { display: flex; align-items: center; gap: 8px; min-height: 26px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .ed-trim-play span { flex: 1; text-align: right; }
 .ed-trim-play em { font-style: normal; color: #ff9aa1; }
-/* 띠 — 쓰는 구간은 라임, 잘라 낸 구간은 옅은 회색(--fill = 쓰는 구간의 끝, EditTrimPop 이 준다). 브라우저 기본 띠는 잘라 낸 구간이
-   거의 안 보였다(대비 1.6:1 — 이 창에서 가장 중요한 정보다). 앱은 크롬 계열에서만 돈다 */
-.ed-trim-range { width: 100%; height: 26px; margin: 0; background: none; cursor: ew-resize; -webkit-appearance: none; appearance: none; }
+/* 띠 — 쓰는 구간은 라임, 잘라 낸 구간(앞·뒤)은 옅은 회색(--from = 쓰는 구간의 처음, --fill = 끝 — EditTrimPop 이 준다). 브라우저
+   기본 띠는 잘라 낸 구간이 거의 안 보였다(대비 1.6:1 — 이 창에서 가장 중요한 정보다). 앱은 크롬 계열에서만 돈다.
+   손잡이 둘(시작 · 끝)은 같은 자리에 겹친 range 둘이다: 입력 자체는 누름을 받지 않고 손잡이만 받는다 — 위에 놓인 입력이 띠
+   전체의 누름을 가져가지 않게. 띠의 색은 끝(.ed-trim-out)의 트랙이 그리고, 잡은 쪽(.ed-on)이 위에 온다. */
+.ed-trim-bar { position: relative; height: 26px; cursor: pointer; }
+.ed-trim-range {
+  position: absolute; left: 0; top: 0; width: 100%; height: 26px; margin: 0; background: none; pointer-events: none;
+  -webkit-appearance: none; appearance: none;
+}
+.ed-trim-range.ed-on { z-index: 1; }
 .ed-trim-range::-webkit-slider-runnable-track {
   height: 8px; border-radius: 4px;
-  background: linear-gradient(to right, var(--accent) 0 var(--fill, 100%), rgba(255, 255, 255, 0.28) var(--fill, 100%) 100%);
+  background: linear-gradient(to right, rgba(255, 255, 255, 0.28) 0 var(--from, 0%), var(--accent) var(--from, 0%) var(--fill, 100%),
+    rgba(255, 255, 255, 0.28) var(--fill, 100%) 100%);
 }
+.ed-trim-in::-webkit-slider-runnable-track { background: none; }
 .ed-trim-range::-webkit-slider-thumb {
   -webkit-appearance: none; appearance: none; width: 18px; height: 18px; margin-top: -5px; border-radius: 50%;
   background: var(--accent); border: 2px solid #14151a; box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.6);
+  pointer-events: auto; cursor: ew-resize;
 }
 .ed-trim-range:focus-visible { outline: none; }
-.ed-trim-range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.45); }
+/* 잡은 쪽(←/→ 와 ±단추가 움직이는 손잡이)과 초점이 있는 손잡이 — 테가 굵다 */
+.ed-trim-range.ed-on::-webkit-slider-thumb, .ed-trim-range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.45); }
+/* 잡은 쪽 고르기(시작 · 끝) — 붙은 단추 둘 */
+.ed-trim-edge { flex: none; display: flex; }
+.ed-trim-edge button { border-radius: 0; }
+.ed-trim-edge button:first-child { border-radius: 6px 0 0 6px; }
+.ed-trim-edge button:last-child { border-radius: 0 6px 6px 0; margin-left: -1px; }
+.ed-trim-body .ed-trim-edge button[aria-pressed="true"] { position: relative; border-color: rgba(var(--accent-rgb), 0.7); background: rgba(var(--accent-rgb), 0.16); color: var(--accent); }
 /* 눈금 — 가운데 글이 띠의 가운데에 오게 세 칸(양 끝 글의 폭이 달라 space-between 이면 가운데가 밀린다) */
 .ed-trim-scale { display: grid; grid-template-columns: 1fr auto 1fr; margin-top: -6px; font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .ed-trim-scale span:last-child { text-align: right; }
@@ -468,6 +485,17 @@
 .ed-clip b {
   position: absolute; left: 4px; bottom: 3px; padding: 1px 5px; border-radius: 4px; pointer-events: none;
   font-size: 10px; font-weight: 600; background: rgba(8, 9, 12, 0.66); color: #e6e8ec;
+}
+/* 최종(★) — 풀의 카드에 붙는 금색 표(generations.css 의 .card-sf.final)를 0.72배로 줄인 모양. 표시만 한다 */
+.ed-clip-final {
+  position: absolute; top: 5px; right: 4px; width: 19px; height: 19px; border-radius: 6px; pointer-events: none;
+  display: flex; align-items: center; justify-content: center; font-size: 12px; color: #2a1d00;
+  background: linear-gradient(135deg, #f5c542, #e0a316); box-shadow: 0 0 0 1px #ffd966, 0 0 7px rgba(245, 197, 66, 0.5);
+}
+/* 앞을 자른 클립의 왼쪽 가장자리 — 빗금 4px(원본의 처음에서 시작하지 않는다). 좁은 클립(.ed-thin)에서는 다른 자식처럼 감춘다 */
+.ed-clip-head {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 4px; pointer-events: none;
+  background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.7) 0 2px, rgba(0, 0, 0, 0.35) 2px 4px);
 }
 .ed-clip::after { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px; background: var(--trk, transparent); pointer-events: none; }
 .ed-clip.ed-sel { border: 2px solid var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.18); }

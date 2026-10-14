@@ -3,7 +3,7 @@
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { clipKey, insertClip, removeClips, setClipDurs, setClipTrim } from "../src/lib/editTimeline";
+import { clipKey, insertClip, removeClips, setClipDurs, setClipRange } from "../src/lib/editTimeline";
 import { clearUndo, editDocKey, keepUnsavedEditDoc, readEditDoc } from "../src/lib/editTimelineStore";
 import { useEditDoc } from "../src/lib/useEditDoc";
 import { setLeaving } from "../src/lib/unloadGuard";
@@ -284,6 +284,8 @@ it("충돌 — StrictMode 의 두 번 렌더·두 번 effect 에서도 덮지 �
   expect(gens()).toEqual(["unsaved"]);
   expect(stored()).toEqual(["theirs"]);
   expect(flash).toHaveBeenCalledTimes(1);
+  // 이어 가면 무엇이 사라지는지 알림이 미리 말한다(Jay 2026-10-14 — 전엔 "아직 저장되지 않았습니다"에서 끝났다)
+  expect(flash.mock.calls[0][0]).toContain("계속 편집하면 이 창의 내용으로 저장되고 다른 창의 변경은 사라집니다");
 });
 
 it("충돌 — 자동 길이 기록은 저장하지 않고, 사용자가 편집을 이어 가면 그때 저장한다", () => {
@@ -414,7 +416,7 @@ it("같은 이름으로 잇달아 한 편집은 되돌리기 한 단계다 — �
   render(KEY_A);
   add("a1");
   const k = clipKey({ cut: "e070/c1", gen: "a1" });
-  const trim = (seconds: number, group: string) => act(() => { edit.applyEdit((doc) => setClipTrim(doc, k, seconds), { group }); });
+  const trim = (seconds: number, group: string) => act(() => { edit.applyEdit((doc) => setClipRange(doc, k, { head: 0, trim: seconds }), { group }); });
   trim(4, "g1");
   trim(3, "g1");
   act(() => { edit.applyEdit((doc) => setClipDurs(doc, new Map([[k, 6]])), { undo: false }); }); // 창을 연 사이 실측이 왔다

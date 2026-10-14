@@ -38,7 +38,7 @@ import {
   placeClip,
   placeState,
   posAt,
-  setClipTrim,
+  setClipRange,
   removeClips,
   removeMarker,
   resetCutOrder,
@@ -92,7 +92,7 @@ import { EditSidebar } from "./EditSidebar";
 import { EditSoloViewer } from "./EditSoloViewer";
 import { dropLabel, EditTimeline, ZOOM_MAX, ZOOM_MIN, type ClipLink, type DropHint } from "./EditTimeline";
 import { EditClipMenu, EditListMenu, EditTrackHeadMenu, EditTrackMenu, type TrackAct, type TrackRow } from "./EditTrackMenu";
-import { EditTrimPop } from "./EditTrimPop";
+import { EditTrimPop, type TrimAnchor } from "./EditTrimPop";
 import { EditTrimView } from "./EditTrimView";
 import { EditViewer, writeText, type ViewerControls, type ViewerMarking, type ViewOption } from "./EditViewer";
 import { ResizableSidebar } from "../common/ResizableSidebar";
@@ -133,6 +133,8 @@ interface Props {
   review?: {
     canFinalize: (gen: Generation) => boolean;
     apply: (gens: Generation[], action: ReviewAction) => void | Promise<void>;
+    // 최종 해제(Jay 2026-10-14) — '공유로'(고른 전환)와 다르다: 최종 전에 보류였던 것은 보류로 돌아온다. 최종인 것만 넘긴다
+    release: (gens: Generation[]) => void | Promise<void>;
   };
 }
 
@@ -628,13 +630,14 @@ function EditTabInner({
     menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setClipMenu({ keys: selected.has(key) ? [...selected] : [key], x, y });
   }, [selected]);
-  // 클립 길이 조절 창(Jay 2026-10-13) — 타임라인의 클립을 휠 클릭. 영상만이고 잠긴 트랙은 안 된다(setClipTrim 의 거부와 같다 — 창을
+  // 클립 길이 조절 창(Jay 2026-10-13) — 타임라인의 클립을 휠 클릭. 영상만이고 잠긴 트랙은 안 된다(setClipRange 의 거부와 같다 — 창을
   //  띄우기 전에 까닭을 알린다). group = 이 창을 한 번 연 동안의 걸음들을 되돌리기 한 단계로 묶는 이름(useEditDoc).
   //  **떠 있는 창이다**(같은 날 밤 Jay: "플로팅창으로") — 메뉴가 아니라서 다른 메뉴를 여닫아도(closeMenu) 떠 있고, 떠 있는 동안 타임라인을
   //  그대로 쓴다. 떠 있는 채 다른 클립을 휠 클릭하면 창이 그 클립으로 바뀐다(새 group). 닫는 것: ✕ · 창 안의 Esc · 아래의 셋.
   //  문서가 갈리면(rev) 닫는다 — 아래 효과. **저장 충돌을 알게 됐을 때도 닫는다**(edit.conflict): 슬라이더를 끄는 도중이면 같은 끌기의
   //  다음 걸음이 '알고 이어 가는 편집'으로 저장돼, 알림을 읽기도 전에 다른 창의 저장을 덮는다(Codex 코드 리뷰 2회째 P1).
-  const [trimPop, setTrimPop] = useState<{ key: string; group: string; rev: number } | null>(null);
+  //  anchor = 연 순간의 그 클립의 화면 자리(보이는 부분) — 창이 그 근처에 뜬다(Jay 2026-10-14). 창이 새로 뜰 때만 쓰인다.
+  const [trimPop, setTrimPop] = useState<{ key: string; group: string; rev: number; anchor: TrimAnchor | null } | null>(null);
   const trimSerial = useRef(0);
   const openTrim = useCallback((key: string) => {
     const clip = doc.clips.find((item) => clipKey(item) === key);
@@ -643,7 +646,14 @@ function EditTabInner({
     // 그림인지는 이어진 생성물로 먼저 본다 — kind 가 안 적힌 옛 클립은 문서만으로는 영상으로 보인다
     if ((links.get(key)?.gen?.assets[0]?.type ?? clip.kind) === "image") return flash(t("그림은 길이를 줄일 수 없습니다 — 영상 클립만 됩니다."));
     stopBoth(); // 창을 열면 초점(키)이 창으로 간다 — Space 는 창 안의 재생이 되므로 뒤에서 도는 재생은 멈춰 둔다
-    setTrimPop({ key, group: `trim:${key}:${++trimSerial.current}`, rev });
+    // 휠 클릭도 메뉴의 '길이 조절'도 그 클립 요소에서 잰다. 타임라인의 보이는 칸 밖(트랙 머리 밑·옆으로 넘긴 부분)은 뺀다
+    const view = scrollRef.current?.getBoundingClientRect();
+    const box = [...(scrollRef.current?.querySelectorAll<HTMLElement>(".ed-clip") ?? [])]
+      .find((item) => item.dataset.clip === key)?.getBoundingClientRect();
+    const left = box && view ? Math.max(box.left, view.left) : 0;
+    const right = box && view ? Math.min(box.right, view.right) : 0;
+    const anchor = box && right > left ? { x: left, y: box.top, width: right - left, height: box.height } : null;
+    setTrimPop({ key, group: `trim:${key}:${++trimSerial.current}`, rev, anchor });
   }, [doc, links, flash, t, stopBoth, rev]);
   const editConflict = edit.conflict;
   useEffect(() => {
@@ -947,7 +957,8 @@ function EditTabInner({
   //  아니다): 생성물의 검수 상태를 바꾸는 것이고, 길은 앱의 것이다(review.apply). 무엇이 바뀔 수 있는지는 앱과 같은 판정으로 미리
   //  본다(reviewTargets — 공유된 완료본이고 내가 그 프로젝트에서 최종을 줄 수 있는 것). 그런 것이 하나도 없으면 줄을 보이지 않는다.
   //  메뉴가 떠 있을 때만 센다(떠 있지 않은 동안의 렌더에 얹지 않는다).
-  // · 클립 메뉴: 줄 수 있는 것이 전부 최종이면 ✓ — 누르면 해제(공유로). 아니면 누르면 전부 최종으로.
+  // · 클립 메뉴: 줄 수 있는 것이 전부 최종이면 ✓ — 누르면 해제(최종 전에 보류였던 것은 보류로, 나머지는 공유로 — review.release.
+  //   2026-10-14 전에는 전부 공유가 됐다). 아니면 누르면 전부 최종으로.
   const clipFinal = (() => {
     if (!clipMenu || !review) return undefined;
     const raise = reviewTargets(clipMenuGens, "final", review.canFinalize);
@@ -964,19 +975,21 @@ function EditTabInner({
       onToggle: () => {
         closeMenu();
         if (!listFresh) return;
-        // 해제는 최종인 것만 넘긴다 — 고른 것 전부를 '공유로' 넘기면 보류(R)해 둔 것까지 풀린다
-        void review.apply(checked ? lower : clipMenuGens, checked ? "shared" : "final");
+        // 해제는 최종인 것만 넘긴다 — 고른 것 전부를 넘기면 보류(R)해 둔 것까지 풀린다
+        void (checked ? review.release(lower) : review.apply(clipMenuGens, "final"));
       },
     };
   })();
-  // · 목록 단추: '타임라인에 있는 것' = 보이는 컷(layout)의 켜진 클립이 가리키는 생성물. 숨긴 컷·꺼진 클립·꺼진 트랙은 뺀다 —
-  //   최종은 집계·'최종 저장'에 쓰이고 잘못 올리면 하나씩 풀어야 해서 좁게 잡았다(숨기지 않은 비활성 컷은 재생되므로 든다 —
-  //   Resolve 보내기와 같은 기준). 공유 목록을 다시 받는 중에는 누르지 못한다(빈 곳 채우기와 같다 — 그동안 든 목록은 옛 것이다).
+  // · 목록 단추: '타임라인에 있는 것' = **켜진 컷**의 켜진 클립이 가리키는 생성물. 숨긴 컷·꺼 둔 컷·꺼진 클립·꺼진 트랙은 뺀다 —
+  //   최종은 집계·'최종 저장'에 쓰이고 잘못 올리면 하나씩 풀어야 해서 좁게 잡았다. 꺼 두기만 한(숨기지 않은) 컷은 2026-10-13 에는
+  //   들었다(재생되고 Resolve 로도 나가서). Jay 2026-10-14: 뺀다 — 그 클립은 타임라인에서 회색인데 최종이 되면 놀란다(회색으로
+  //   보이는 것은 전부 빠진다 = EditTimeline 의 off 와 같은 셋). 공유 목록을 다시 받는 중에는 누르지 못한다(빈 곳 채우기와 같다).
   const [finalBusy, setFinalBusy] = useState(false);
   const finalAll = (() => {
     if (!listMenu || !review) return null;
     const shown = layout.cuts.flatMap((slot) => slot.clips);
-    const on = shown.filter((clip) => clipIsOn(doc, clip));
+    const live = shown.filter((clip) => !offCuts.has(clip.cut)); // 꺼 둔 컷의 클립은 뺀다
+    const on = live.filter((clip) => clipIsOn(doc, clip));
     const found = new Map<string, Generation>();
     for (const clip of on) {
       const gen = links.get(clipKey(clip))?.gen;
@@ -988,7 +1001,7 @@ function EditTabInner({
     if (!targets.length && !reviewTargets(finals, "shared", review.canFinalize).length) return null; // 내가 최종을 줄 수 있는 것이 없다
     return {
       gens, targets, clips: on.length, finals: finals.length, denied: gens.length - targets.length - finals.length,
-      off: shown.length - on.length, hidden: doc.clips.length - shown.length,
+      off: live.length - on.length, cutOff: shown.length - live.length, hidden: doc.clips.length - shown.length,
       unlinked: on.filter((clip) => !links.get(clipKey(clip))?.gen).length,
     };
   })();
@@ -999,13 +1012,13 @@ function EditTabInner({
     if (!plan.targets.length) return flash(t("최종으로 확정할 것이 없습니다."));
     stopBoth(); // 확인 창이 떠 있는 동안 뒤에서 도는 재생을 멈출 길이 없다
     const skipped = ([
-      [plan.off, t("꺼진 클립·트랙 {count}개")], [plan.hidden, t("숨긴 컷의 클립 {count}개")],
+      [plan.off, t("꺼진 클립·트랙 {count}개")], [plan.cutOff, t("꺼 둔 컷의 클립 {count}개")], [plan.hidden, t("숨긴 컷의 클립 {count}개")],
       [plan.denied, t("권한이 없거나 공유가 풀린 것 {count}개")], [plan.unlinked, t("공유 목록에서 못 찾은 클립 {count}개")],
     ] as const).filter(([value]) => value > 0).map(([value, text]) => text.replace("{count}", String(value)));
     const asked = [
       t("타임라인의 생성물 {count}개를 최종으로 확정할까요?").replace("{count}", String(plan.targets.length)),
       "",
-      t("· 보이는 컷의 켜진 클립 {clips}개 기준 — 이미 최종인 {finals}개는 그대로 둡니다")
+      t("· 켜진 컷의 켜진 클립 {clips}개 기준 — 이미 최종인 {finals}개는 그대로 둡니다")
         .replace("{clips}", String(plan.clips)).replace("{finals}", String(plan.finals)),
       ...(skipped.length ? [`${t("· 빼는 것:")} ${skipped.join(" · ")}`] : []),
       t("· 되돌리기(Ctrl+Z)로는 돌아가지 않습니다 — 풀려면 클립 우클릭의 '최종 선택'으로 하나씩 해제합니다"),
@@ -1516,15 +1529,17 @@ function EditTabInner({
       {trimPop && trimClip && (
         <EditTrimPop
           openId={trimPop.group}
+          anchor={trimPop.anchor}
           title={`${trimClip.cut.slice(trimClip.cut.lastIndexOf("/") + 1)} · V${trimClip.track}`}
           full={trimClip.full}
+          head={trimClip.head}
           value={trimClip.len}
-          trimmed={trimClip.trim !== undefined}
+          cutEnd={trimClip.trim !== undefined}
           src={trimSrc}
           // 바꿀 것이 없었던 걸음(none)은 조용히 넘긴다. 버린 걸음(stopped — 다른 창의 저장·떠나는 중)에는 창을 닫는다: 그 알림이 이미
           //  떴고, 이 조절은 여기서 끝이다(다시 열어 조절하면 그때는 알고 하는 편집이다).
-          onChange={(seconds) => {
-            const done = applyEdit((current) => setClipTrim(current, trimPop.key, seconds), { group: trimPop.group, rev: trimPop.rev });
+          onChange={(range) => {
+            const done = applyEdit((current) => setClipRange(current, trimPop.key, range), { group: trimPop.group, rev: trimPop.rev });
             if (done === "stopped") closeTrim();
           }}
           onUndo={edit.undo}

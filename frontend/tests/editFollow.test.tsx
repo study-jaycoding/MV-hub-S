@@ -269,3 +269,43 @@ it("탭이 가려지면 따라가던 영상을 바로 세운다 — 프레임을
   visibility.mockRestore();
   root = createRoot(host);
 });
+
+// 앞 자르기(Jay 2026-10-14) — 영상 시각 = 컷 안 시각 + 그 클립의 시작점
+it("앞을 자른 클립은 시작점을 더한 자리로 보낸다 — 같은 영상의 시작점이 조금만 바뀌어도(재생 중) 한 번 정확히 맞춘다", () => {
+  const withHead = (head: number) => buildLayout(["e070/c1", "e070/c2", "e070/c3"],
+    { ...DOC, clips: DOC.clips.map((clip) => (clip.gen === "low" ? { ...clip, head } : clip)) });
+  time = 1;
+  render({ track: 1, layout: withHead(2) }); // low: 원본 8초의 앞 2초를 잘랐다
+  frame();
+  video.emit("loadedmetadata");
+  frame();
+  expect(video.currentTime).toBe(3); // 컷 안 1초 = 영상 3초
+  render({ track: 1, playing: true, layout: withHead(2) });
+  time = 1.016;
+  frame();
+  expect(video.paused).toBe(false);
+  video.currentTime = 3.05;
+  time = 1.05;
+  frame();
+  expect(video.currentTime).toBe(3.05); // 맞는 자리다
+  render({ track: 1, playing: true, layout: withHead(2 + 2 / 24) }); // 시작점을 2프레임(0.083초) 뒤로 — 재생 중의 허용 오차(0.2초) 안이다
+  time = 1.1;
+  frame();
+  expect(video.currentTime).toBeCloseTo(1.1 + 2 + 2 / 24); // 그래도 새 시작점으로 맞춘다(그냥 두면 이 판만 옛 구간을 튼다)
+  video.currentTime = 3.25;
+  time = 1.13;
+  frame();
+  expect(video.currentTime).toBe(3.25); // 그 뒤의 작은 어긋남은 전처럼 그냥 둔다
+});
+
+it("앞을 자른 클립으로 바뀌면 새로 받은 영상을 시작점으로 한 번 정확히 보낸다 — 시작점이 0.2초 안이어도", () => {
+  const layout = buildLayout(["e070/c1", "e070/c2", "e070/c3"],
+    { ...DOC, clips: DOC.clips.map((clip) => (clip.gen === "low" ? { ...clip, head: 3 / 24 } : clip)) });
+  time = 0.01;
+  render({ track: 1, playing: true, layout });
+  frame();
+  video.emit("loadedmetadata"); // 새로 받은 영상은 0초에 서 있다 — 컷 안 0.01초와 0.2초 안으로 가깝다
+  time = 0.02;
+  frame();
+  expect(video.currentTime).toBeCloseTo(0.02 + 3 / 24); // 시작점(3프레임)을 건너뛴 자리
+});

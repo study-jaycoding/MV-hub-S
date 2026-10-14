@@ -4,6 +4,8 @@
 //  · 시계 주인은 항상 하나: 보이는 클립이 영상이고 정방향 재생이면 영상(받는 중·버퍼링이면 시간도 선다), 그 밖에는 rAF.
 //  · '보이는 소스가 바뀜'은 컷이 바뀌는 것과 별개 사건 — 같은 컷에서 위 클립이 끝나 아래가 드러날 때도 일어난다.
 //  · 다음에 보일 영상은 미리 받아 둔다(정방향 재생 중) — 영상 요소가 둘이면(editVideoPair) 넘어갈 때 받지 않고 자리만 바꾼다.
+//  · 클립은 원본의 중간에서 시작할 수 있다(앞 자르기 — SlotClip.head): **영상 시각 = 컷 안 시각 + 올려 둔 클립의 head**.
+//    엔진은 컷 안 시각만 안다 — 영상의 시각을 읽고 쓰는 것은 build() 안의 clipTime·send·endOf 셋으로만 한다.
 // ponytail: 미리 받는 것은 '바로 다음 하나'뿐이다 — 역방향·훑기와, 다 받기 전에 경계에 닿은 때는 받는 시간만큼 선다.
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import {
@@ -129,6 +131,7 @@ export function useEditPlayback({
     arrived: -1, // 영상이 목표 위치까지 온 token. token 과 같아야 영상이 시계를 맡는다
     loaded: false, // 지금 소스의 메타데이터를 받았다(그 전에는 탐색하지 않는다 — loadedmetadata 가 최신 목표로 보낸다)
     shown: "", // 지금 올려 둔 소스의 열쇠(클립 열쇠 + 주소). 빈 문자열 = 영상 없음
+    head: 0, // 지금 올려 둔 클립의 유효 시작(초) — 그 영상의 시각은 컷 안 시각보다 이만큼 앞서 있다(sync 가 맞춘다)
     failed: new Set<string>(), // 재생하지 못한 클립 열쇠
     armed: false, // 구간 반복 — 마지막으로 위치를 옮긴 뒤 구간 끝(아웃) 앞에 있었다. 아웃 뒤에서 시작했으면 꺼진 채다
     // 편집점 앞뒤 재생 — 재생 중에만 있다: 멈추거나 다른 재생 명령(재생·J/L·구간 반복 재생)이 오면 풀린다.
@@ -179,6 +182,15 @@ export function useEditPlayback({
       return sum;
     };
 
+    // 영상 시각 ↔ 컷 안 시각(앞 자르기, Jay 2026-10-14) — 올려 둔 클립은 원본의 head 초에서 시작한다. 영상의 시각을 읽고 쓰는 것과
+    //  '실제 끝'은 이 셋으로만 한다. head 는 **지금 영상 요소에 올려 둔 클립**의 것이다(state.head): 위치가 방금 다른 클립으로
+    //  넘어갔어도, sync 가 소스를 갈기 전까지 영상 요소에는 앞 클립이 올라가 있다(tick·stop 이 그 값으로 읽는다).
+    const clipTime = (video: EditVideo) => video.currentTime - state.head;
+    const send = (video: EditVideo, local: number) => {
+      video.currentTime = local + state.head;
+    };
+    const endOf = (video: EditVideo | null | undefined) => videoEnd(video) - state.head;
+
     const publish = () => {
       const { slot, clip, source } = visible();
       const next: EditView = {
@@ -195,14 +207,14 @@ export function useEditPlayback({
 
     // 영상을 보낼 자리 — 컷 안 시각 그대로, 다만 실제 끝 뒤로는 보낼 수 없다(브라우저가 끝으로 자른다). 자르지 않은 시각과
     //  견주면 영영 '어긋남'이라 seeked 마다 같은 자리로 다시 보내고, 도착하지 못해 재생이 그 자리에 선다(2026-10-11 R21).
-    const aim = () => Math.min(pos.current!.local, videoEnd(videoRef.current));
+    const aim = () => Math.min(pos.current!.local, endOf(videoRef.current));
 
     // 영상이 보낼 자리에 와 있지 않다 — 허용 오차 밖이거나, 영상은 실제 끝에 서 있는데 자리는 그 앞이다. 뒤의 것은 허용 오차
     //  안이어도 '도착'이 아니다: 끝에 선 영상은 그대로 틀 수 없어 넘기게 되고(over), 그러면 틀 수 있는 마지막 조각을 건너뛴다 —
     //  그 조각뿐인 구간 반복은 '빈 바퀴'로 멈췄다(Codex 재검토). 그 자리로 되감으면 틀 수 있다.
     const astray = (video: EditVideo, target: number) => {
-      const end = videoEnd(video);
-      return Math.abs(video.currentTime - target) > SEEK_SLOP || (target < end && video.currentTime >= end);
+      const end = endOf(video);
+      return Math.abs(clipTime(video) - target) > SEEK_SLOP || (target < end && clipTime(video) >= end);
     };
 
     // 이 클립은 여기까지다 — 그 클립의 끝으로 보내 다음(아래 클립·다음 컷)으로 넘어가게 한다. 남은 길은 rAF 시계가 잇는다.
@@ -219,7 +231,7 @@ export function useEditPlayback({
     //    되돌아간다(Codex 코드 리뷰).
     //  · 영상 쪽: 끝에 선 영상에 play() 를 걸면 브라우저가 처음부터 다시 튼다. 자리가 끝 앞이면 먼저 되감으므로(astray), 끝에 선
     //    채 여기까지 오는 것은 탐색이 끝난 뒤에도 끝인 때뿐이다(탐색 중에 목표가 끝 바로 앞으로 바뀜 · 되감아도 못 벗어남).
-    const over = (video: EditVideo) => Math.max(pos.current!.local, video.currentTime) >= videoEnd(video);
+    const over = (video: EditVideo) => Math.max(pos.current!.local, clipTime(video)) >= endOf(video);
 
     const startVideo = () => {
       const video = videoRef.current;
@@ -242,11 +254,17 @@ export function useEditPlayback({
 
     // 보이는 소스를 지금 위치에 맞춘다 — 바뀌었으면 갈아 끼우고, 같으면 필요할 때만 탐색한다.
     // jump = 사용자가 위치를 옮겼다(영상이 시계여도 그 위치로 보낸다).
-    const sync = (jump: boolean) => {
+    const sync = (moved: boolean) => {
       const video = videoRef.current;
       const { clip, source } = visible();
       const shown = shownOf(clip, source);
       const playable = !!shown;
+      // 올려 둘 클립의 시작점 — 소스를 갈거나(바로 아래의 swap 은 onMeta 를 그 자리에서 부른다) 탐색하기 **전에** 맞춘다.
+      //  같은 소스인데 시작점만 바뀌었으면(길이 조절 창에서 앞 손잡이를 옮김) 위치를 옮긴 것과 같게 다룬다: 영상이 새 자리에
+      //  닿기 전에는 시계를 넘기지 않는다 — 그냥 두면 도는 영상의 시각이 그대로 컷 안 시각으로 읽혀 재생헤드가 그 차이만큼 튄다.
+      const head = playable ? clip!.head : 0;
+      const jump = moved || (shown === state.shown && head !== state.head);
+      state.head = head;
       const owner = playable && state.playing && state.rate > 0 ? "video" : "raf";
       if (owner !== state.owner) {
         state.owner = owner;
@@ -276,11 +294,11 @@ export function useEditPlayback({
           // 그것이 끝나면 seeked 처리부가 최신 목표로 다시 보낸 뒤에 도착을 선언한다.
           state.token++;
           if (state.loaded && !video.seeking) {
-            if (off) video.currentTime = local;
+            if (off) send(video, local);
             else state.arrived = state.token;
           }
         } else if (owner === "raf" && state.arrived === state.token && !video.seeking && off) {
-          video.currentTime = local; // 정지·역방향 — 영상을 위치에 맞춘다
+          send(video, local); // 정지·역방향 — 영상을 위치에 맞춘다
         }
         // 돌고 있는 영상이어도, 재생헤드가 그 실제 끝 뒤로 갔으면 시계를 맡기지 않는다(startVideo 가 넘긴다).
         if (owner === "video" && state.arrived === state.token && (video.paused || over(video))) startVideo();
@@ -322,7 +340,7 @@ export function useEditPlayback({
       const source = clip ? live.current.sourceOf(clip) : null;
       const shown = shownOf(clip, source);
       const url = shown && shown !== state.shown ? source!.url : null;
-      video.prepare(url, next?.at.local ?? 0);
+      video.prepare(url, (next?.at.local ?? 0) + (url ? clip!.head : 0)); // 세워 둘 자리도 영상 시각이다(그 클립의 시작점을 더한다)
       video.roll?.(!!url && next!.left / state.rate <= ROLL_LEAD);
     };
 
@@ -336,7 +354,7 @@ export function useEditPlayback({
       const video = videoRef.current;
       if (adopt && video && pos.current && state.owner === "video" && state.arrived === state.token) {
         const slot = slotOf(pos.current.cut);
-        if (slot) pos.current = { cut: slot.path, local: Math.min(video.currentTime, slot.len) };
+        if (slot) pos.current = { cut: slot.path, local: Math.min(Math.max(0, clipTime(video)), slot.len) };
       }
       sync(!adopt);
       // 멈춘 자리를 그린다 — 영상의 시각을 위치로 받으면 마지막 tick 이 그린 자리와 다르다(그 사이 편집점을 넘었으면 보이는
@@ -416,7 +434,7 @@ export function useEditPlayback({
       if (state.owner === "video") {
         // 영상이 시계 — 아직 목표 위치에 못 왔거나 버퍼링 중이면 시간도 선다.
         const video = videoRef.current;
-        if (video && state.arrived === state.token) local = video.currentTime;
+        if (video && state.arrived === state.token) local = Math.max(0, clipTime(video));
       } else {
         local += (Math.max(0, stamp - state.last) / 1000) * state.rate;
       }
@@ -508,9 +526,9 @@ export function useEditPlayback({
       // 새로 받은 요소는 0 에 서 있다. 미리 그 자리에 세워 둔 요소는 다시 보내지 않는다 — 아직 가는 중이면(seeking) 시각은 이미
       //  목표를 가리키므로 도착은 seeked 가 알린다(Codex 설계 검토). 미리 굴려 둔 요소는 이미 돌고 있다 — 목표를 조금 지나
       //  있어도 되감지 않고 그대로 시계를 맡긴다(되감으면 그만큼 선다).
-      const ahead = video.currentTime - target;
+      const ahead = clipTime(video) - target;
       if (!video.paused && ahead >= 0 && ahead <= ROLL_SLOP * Math.abs(state.rate)) arrive();
-      else if (astray(video, target)) video.currentTime = target;
+      else if (astray(video, target)) send(video, target);
       else if (!video.seeking) arrive();
     };
     const onSeeked = () => {
@@ -521,7 +539,7 @@ export function useEditPlayback({
       //  같을 수 있고, seeked 마다 다시 보내면 끝이 없다. 그때는 도착으로 치고 over 가 넘긴다.
       const clock = state.owner === "video" && state.arrived === state.token;
       const target = aim();
-      if (!clock && Math.abs(video.currentTime - target) > SEEK_SLOP) video.currentTime = target;
+      if (!clock && Math.abs(clipTime(video) - target) > SEEK_SLOP) send(video, target);
       else arrive();
     };
     const onEnded = () => {
@@ -531,7 +549,7 @@ export function useEditPlayback({
       //  바퀴의 끝(아웃) 뒤에서 돌다 끝난 것은 더하지 않는다 — tick 의 셈과 같은 자름이다(이 바퀴의 시간이 아니다).
       const video = videoRef.current;
       if (state.owner !== "video" || state.arrived !== state.token || !video || !pos.current) return;
-      if (now() < span().to) state.flowed += Math.max(Number.EPSILON, video.currentTime - pos.current.local);
+      if (now() < span().to) state.flowed += Math.max(Number.EPSILON, clipTime(video) - pos.current.local);
       passClip();
     };
     const events: [string, () => void][] = [

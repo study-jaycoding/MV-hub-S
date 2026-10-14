@@ -46,13 +46,18 @@ let root: Root;
 const flashed: string[] = [];
 const cardMenuRef: { current: EditCardMenu | null } = { current: null };
 // 앱의 등급 처리 대역 — 넘겨받은 것을 적고, 시험이 끝내 줄 때까지 도는 중이다
-const applied: { ids: string[]; action: ReviewAction }[] = [];
+const applied: { ids: string[]; action: ReviewAction | "release" }[] = [];
 let finishApply: () => void = () => {};
 let denied: ReadonlySet<string> = new Set(); // 내가 최종을 줄 수 없는 생성물
 const review = {
   canFinalize: (item: Generation) => !denied.has(item.id),
   apply: (gens: Generation[], action: ReviewAction) => {
     applied.push({ ids: gens.map((item) => item.id).sort(), action });
+    return new Promise<void>((resolve) => { finishApply = resolve; });
+  },
+  // 최종 해제(Jay 2026-10-14) — '공유로'와 다른 길이다: 최종 전에 보류였던 것은 보류로 돌아온다
+  release: (gens: Generation[]) => {
+    applied.push({ ids: gens.map((item) => item.id).sort(), action: "release" });
     return new Promise<void>((resolve) => { finishApply = resolve; });
   },
 };
@@ -64,7 +69,7 @@ const mount = (withReview: typeof review | undefined = review) => act(() => root
     onFolderAction={() => {}} review={withReview} />,
 ));
 const DOC_KEY = "mvhub.editDoc:local:p1:e070";
-const seed = (clips: { cut: string; gen: string; track: number; off?: boolean }[], extra: Record<string, unknown> = {}) =>
+const seed = (clips: { cut: string; gen: string; track: number; off?: boolean; dur?: number }[], extra: Record<string, unknown> = {}) =>
   localStorage.setItem(DOC_KEY, JSON.stringify({
     v: 1, tracksOff: [], tracksLocked: [], ...extra,
     clips: clips.map((clip) => ({ kind: "image", dur: 5, ...clip, cut: `e070/${clip.cut}` })),
@@ -131,6 +136,17 @@ it("최종을 줄 권한이 없으면 두 줄 모두 없다 — 다른 줄은 �
   expect(applied).toEqual([]);
 });
 
+// Jay 2026-10-14: 타임라인의 클립에도 최종 ★ — 그 전에는 풀의 카드와 왼쪽 폴더 목록에만 보여, '모두 확정'을 눌러도 타임라인은 그대로였다.
+it("최종인 생성물의 클립에는 ★ 표가 붙는다 — 최종이 아닌 클립·표보다 좁은 클립에는 없다", () => {
+  world.gens = [gen("a", "c1"), gen("f", "c2", { is_final: true }), gen("n", "c3", { is_final: true })];
+  seed([{ cut: "c1", gen: "a", track: 1 }, { cut: "c2", gen: "f", track: 1 }, { cut: "c3", gen: "n", track: 1, dur: 1 }]); // 20px/초 — 1초 클립은 18px
+  mount();
+  const star = (id: string) => clipOf(id).querySelector(".ed-clip-final");
+  expect([!!star("a"), !!star("f"), !!star("n")]).toEqual([false, true, false]);
+  expect(star("f")!.getAttribute("aria-label")).toBe("최종");
+  expect(star("f")!.querySelector("svg.card-final-star")).not.toBeNull(); // 풀의 카드와 같은 별
+});
+
 it("클립 메뉴의 '최종 선택' — 누르면 그 생성물이 최종으로, 이미 최종이면 ✓ 이고 누르면 해제(공유로)", () => {
   seed([{ cut: "c1", gen: "a", track: 1 }, { cut: "c2", gen: "f", track: 1 }]);
   mount();
@@ -145,7 +161,7 @@ it("클립 메뉴의 '최종 선택' — 누르면 그 생성물이 최종으로
   expect(row("최종 선택")!.getAttribute("aria-checked")).toBe("true");
   expect(row("최종 선택")!.textContent).toBe("최종 선택✓ ");
   act(() => row("최종 선택")!.click());
-  expect(applied[1]).toEqual({ ids: ["f"], action: "shared" });
+  expect(applied[1]).toEqual({ ids: ["f"], action: "release" }); // '공유로'(고른 전환)가 아니다 — 해제다
   expect(localStorage.getItem(DOC_KEY)).toContain('"gen":"a"'); // 편집 문서는 그대로다(되돌리기 단계가 아니다)
   expect(JSON.parse(localStorage.getItem(DOC_KEY)!).clips).toHaveLength(2);
 });
@@ -168,7 +184,7 @@ it("여러 클립을 고른 채면 고른 것 전부에 — 해제는 최종인 
   openClipMenu("f");
   expect(row("최종 선택")!.getAttribute("aria-checked")).toBe("true");
   act(() => row("최종 선택")!.click());
-  expect(applied[1]).toEqual({ ids: ["f"], action: "shared" }); // a·r 을 '공유로' 넘기면 r 의 보류가 풀린다
+  expect(applied[1]).toEqual({ ids: ["f"], action: "release" }); // 최종인 f 만 — a·r 까지 넘기면 r 의 보류가 풀릴 수 있다
 });
 
 // 최종은 공유를 동반한다(서버가 공유가 없으면 같이 발행한다). 그사이 다른 창에서 공유를 푼 생성물이 옛 목록에 남아 있으면, 그것을
@@ -198,7 +214,7 @@ it("공유 목록을 다시 받는 중·받지 못한 뒤에는 '최종 선택'�
   expect(applied).toEqual([{ ids: ["a"], action: "final" }]);
 });
 
-it("'모두 최종으로 확정' — 보이는 컷의 켜진 클립만 센다. 확인 창에 숫자를 보이고, 아니오면 아무것도 넘기지 않는다", async () => {
+it("'모두 최종으로 확정' — 켜진 컷의 켜진 클립만 센다. 확인 창에 숫자를 보이고, 아니오면 아무것도 넘기지 않는다", async () => {
   world.gens = [gen("a", "c1"), gen("b", "c1"), gen("n", "c1"), gen("t", "c1"), gen("f", "c2", { is_final: true }), gen("x", "c2"), gen("h", "c3")];
   denied = new Set(["n"]);
   seed([
@@ -238,6 +254,22 @@ it("'모두 최종으로 확정' — 보이는 컷의 켜진 클립만 센다. �
   expect(row("모두 최종으로 확정")!.disabled).toBe(false);
   expect(confirm).toHaveBeenCalledTimes(2);
   expect(flashed).toEqual([]);
+});
+
+// Jay 2026-10-14: 꺼 두기만 한(숨기지 않은) 컷의 클립은 타임라인에서 회색이다 — 그것이 최종이 되면 놀란다. 전날에는 들었다(재생되므로).
+it("'모두 최종으로 확정' — 꺼 두기만 한 컷(숨기지 않음)의 클립도 뺀다. 확인 창이 그 수를 따로 적는다", () => {
+  world.gens = [gen("a", "c1"), gen("k", "c2"), gen("m", "c3")];
+  seed([{ cut: "c1", gen: "a", track: 1 }, { cut: "c2", gen: "k", track: 1 }, { cut: "c3", gen: "m", track: 1 }], { cutsOff: ["e070/c2"] });
+  mount();
+  expect(clipOf("k").className).toContain("ed-off"); // 화면에서 회색인 바로 그 클립이다
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  openListMenu();
+  expect(row("모두 최종으로 확정")!.textContent).toBe("모두 최종으로 확정2"); // a · m — 꺼 둔 컷의 k 는 세지 않는다
+  act(() => row("모두 최종으로 확정")!.click());
+  const asked = String(confirm.mock.calls[0][0]);
+  for (const part of ["생성물 2개를 최종으로 확정할까요?", "켜진 컷의 켜진 클립 2개", "꺼 둔 컷의 클립 1개"]) expect(asked).toContain(part);
+  expect(asked).not.toContain("숨긴 컷"); // 숨긴 것은 없다 — 꺼 둔 것과 따로 센다
+  expect(applied).toEqual([{ ids: ["a", "m"], action: "final" }]);
 });
 
 it("'모두 최종으로 확정' — 올릴 것이 없거나(전부 최종) 공유 목록을 다시 받는 중이면 흐리다", () => {

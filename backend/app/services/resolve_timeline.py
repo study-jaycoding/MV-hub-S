@@ -1,6 +1,7 @@
 """편집 탭의 타임라인을 현재 Resolve 프로젝트에 **새 타임라인**으로 짓는다(타임라인 Resolve 보내기).
 
-들어오는 계획(plan)은 프런트의 ``lib/editResolveExport.ts`` 가 만든 프레임 단위 배치다(format ``mvhub.edit-timeline`` v1).
+들어오는 계획(plan)은 프런트의 ``lib/editResolveExport.ts`` 가 만든 프레임 단위 배치다(format ``mvhub.edit-timeline`` v1 · v2).
+v2(2026-10-14 앞 자르기)는 클립에 ``head``(소스의 시작, 24fps 프레임), 소리에 ``track``(그 소리를 내는 영상 클립의 트랙)이 더 있다.
 전송 manifest(``mvhub.resolve-transfer`` v2 — 원본 파일 준비·Media Pool 가져오기)와는 **다른 문서**이고 manifest 에 넣지
 않는다: 메뉴 스크립트 Importer·pending 목록은 이 전송을 보통의 원본 전송으로만 본다(Codex 설계 검토 10-09).
 
@@ -46,7 +47,7 @@ from .resolve_bridge import (
 )
 
 PLAN_FORMAT = "mvhub.edit-timeline"
-PLAN_VERSION = 1
+PLAN_VERSIONS = (1, 2)  # 2 = 앞을 자른 클립이 있는 계획(클립의 head · 소리의 track). 그런 클립이 없으면 프런트는 1 을 보낸다
 TIMELINE_FPS = 24
 MAX_VIDEO_TRACKS = 32
 MAX_CLIPS = 2000
@@ -104,8 +105,11 @@ def _no_overlap(rows: list[dict[str, Any]], label: str) -> None:
 
 def validate_plan(plan: Any, generation_ids: set[str]) -> dict[str, Any]:
     """계획을 검사해 정리한 사본을 돌려준다. generation_ids = 이 요청이 보내는 생성물(계획의 클립은 이 안의 것만)."""
-    if not isinstance(plan, dict) or plan.get("format") != PLAN_FORMAT or plan.get("version") != PLAN_VERSION:
-        raise TimelinePlanError("타임라인 계획의 형식을 알 수 없습니다(앱을 새로 고친 뒤 다시 보내세요)")
+    unknown = TimelinePlanError("타임라인 계획의 형식을 알 수 없습니다(앱을 새로 고친 뒤 다시 보내세요)")
+    version = plan.get("version") if isinstance(plan, dict) else None
+    if not isinstance(plan, dict) or plan.get("format") != PLAN_FORMAT or isinstance(version, bool) or version not in PLAN_VERSIONS:
+        raise unknown
+    headed = version == 2
     if plan.get("fps") != TIMELINE_FPS or isinstance(plan.get("fps"), bool):
         raise TimelinePlanError(f"타임라인 계획의 fps 는 {TIMELINE_FPS} 이어야 합니다")
     name = _text(plan.get("name"), "이름", MAX_NAME)
@@ -134,12 +138,22 @@ def validate_plan(plan: Any, generation_ids: set[str]) -> dict[str, Any]:
         start, end = span(row, "클립")
         if row.get("kind") not in ("video", "image"):
             raise TimelinePlanError("타임라인 계획의 클립 종류가 올바르지 않습니다")
+        # 소스의 시작(24fps 프레임). 1 판에 이 칸이 오면 조용히 버리지 않는다 — 버리면 0초부터 놓고도 '계획대로'라고 답한다.
+        if headed:
+            head = _int(row.get("head"), "클립 시작점", low=0, high=MAX_FRAMES)
+            if head and row["kind"] == "image":
+                raise TimelinePlanError("타임라인 계획의 그림 클립에 시작점이 있습니다")
+        elif "head" in row:
+            raise unknown
+        else:
+            head = 0
         clips.append({
             "gen_id": gen_id(row, "클립"),
             "track": _int(row.get("track"), "클립 트랙", low=1, high=tracks),
             "start": start, "end": end,
             "enabled": _bool(row.get("enabled"), "클립 켬"),
             "kind": row["kind"],
+            "head": head,
         })
     if not clips:
         raise TimelinePlanError("타임라인에 올린 클립이 없습니다")
@@ -152,7 +166,19 @@ def validate_plan(plan: Any, generation_ids: set[str]) -> dict[str, Any]:
         offset = row.get("offset")
         if isinstance(offset, bool) or not isinstance(offset, (int, float)) or not math.isfinite(offset) or not 0 <= offset <= MAX_FRAMES:
             raise TimelinePlanError("타임라인 계획의 소리 시작 값이 올바르지 않습니다")
-        audio.append({"gen_id": gen_id(row, "소리"), "start": start, "end": end, "offset": float(offset)})
+        sound_id = gen_id(row, "소리")
+        # 2 판: 그 소리를 내는 영상 클립을 트랙으로 가리킨다 — 같은 생성물이 두 트랙에 있어도 제 클립의 시작점을 쓰게.
+        #  그 트랙의 그 자리에 그 영상 클립이 없으면 다른 클립으로 대신하지 않는다(계획이 틀린 것이다 — Codex 설계 검토).
+        if headed:
+            carrier_track = _int(row.get("track"), "소리의 영상 트랙", low=1, high=tracks)
+            if not any(item["gen_id"] == sound_id and item["track"] == carrier_track and item["kind"] == "video"
+                       and item["start"] <= start < item["end"] for item in clips):
+                raise TimelinePlanError("타임라인 계획의 소리가 가리키는 영상 클립이 없습니다")
+        elif "track" in row:
+            raise unknown
+        else:
+            carrier_track = None
+        audio.append({"gen_id": sound_id, "start": start, "end": end, "offset": float(offset), "track": carrier_track})
     _no_overlap(audio, "소리")
 
     markers: list[dict[str, Any]] = []
@@ -174,7 +200,7 @@ def validate_plan(plan: Any, generation_ids: set[str]) -> dict[str, Any]:
         mark = {"in": mark_in, "out": _int(mark.get("out"), "아웃", low=mark_in + 1, high=MAX_FRAMES)}
 
     return {
-        "format": PLAN_FORMAT, "version": PLAN_VERSION, "name": name, "fps": TIMELINE_FPS,
+        "format": PLAN_FORMAT, "version": version, "name": name, "fps": TIMELINE_FPS,
         "video_tracks": tracks, "tracks_off": track_list("tracks_off"), "tracks_locked": track_list("tracks_locked"),
         "muted": _bool(plan.get("muted"), "소리 끔"),
         "clips": clips, "audio": audio, "markers": markers, "mark": mark,
@@ -365,20 +391,24 @@ def _build_locked(manifest: dict[str, Any], plan: dict[str, Any], resolve: Any, 
         if not fact["still"]:
             if fact["fps"] <= 0 or fact["frames"] <= 0:
                 raise ResolveBridgeError("Resolve 가 영상의 길이를 알려 주지 않았습니다", code="clip_unreadable")
-            wanted = _frame(length / TIMELINE_FPS * fact["fps"])
+            # 소스의 구간 [first, wanted) — 시작점(head)을 소스 프레임으로 한 번 바꾸고, 끝은 **거기서부터** 센다. 소리도 같은 식을
+            #  쓴다(아래) — 시작과 끝을 따로 반올림하면 fps 가 다른 원본에서 영상과 소리의 끝이 한 프레임 갈린다(Codex 설계 검토).
+            first = _frame(clip_plan["head"] / TIMELINE_FPS * fact["fps"])
+            wanted = first + _frame(length / TIMELINE_FPS * fact["fps"])
             if wanted > fact["frames"]:
                 missing = (wanted - fact["frames"]) / fact["fps"] * TIMELINE_FPS
-                if missing > 1.0:
+                # 시작점이 원본의 끝이거나 그 뒤면 넣을 것이 한 프레임도 없다 — '한 프레임 모자람'으로 넘기지 않는다
+                if missing > 1.0 or first >= fact["frames"]:
                     result["short_sources"].append({
                         "gen_id": clip_plan["gen_id"], "track": clip_plan["track"], "start": clip_plan["start"],
-                        "planned": length, "actual": int(fact["frames"] / fact["fps"] * TIMELINE_FPS),
+                        "planned": length, "actual": max(0, int((fact["frames"] - first) / fact["fps"] * TIMELINE_FPS)),
                     })
                 # 한 프레임 이내로 모자란 것은 있는 만큼 넣는다 — 막으면 보낼 길이 없다(브라우저가 잰 길이는 소리 트랙까지 친 것이라
                 #  영상 프레임 수보다 조금 길 수 있다). 다만 끝이 비면 계획과 다른 것이라 되읽을 때 그대로 알린다(short).
                 wanted = fact["frames"]
                 short = True
-            info["startFrame"] = 0
-            info["endFrame"] = max(1, wanted)
+            info["startFrame"] = first
+            info["endFrame"] = max(first + 1, wanted)
         video_infos.setdefault(clip_plan["track"], []).append((info, {**clip_plan, "short": short}))
     if result["short_sources"]:
         raise ResolveBridgeError(
@@ -394,13 +424,18 @@ def _build_locked(manifest: dict[str, Any], plan: dict[str, Any], resolve: Any, 
         # 소스 안의 시작 = **그 영상 클립이 놓인 자리에서 센 것**이다. 화면은 클립의 처음(소스 0)부터 타임라인 프레임대로 흐르므로,
         #  소리도 같은 프레임 차이만큼 들어가야 그림과 맞는다(초로 적힌 offset 을 따로 반올림하면 한 프레임 어긋날 수 있다).
         #  그 클립을 계획에서 못 찾으면(없어야 한다) 적힌 offset 을 쓴다.
+        #  2 판은 그 클립을 트랙으로 가리킨다(validate_plan 이 있는 것을 확인했다) — 같은 생성물이 두 트랙에 있을 때 먼저 찾은 것의
+        #  시작점을 쓰지 않게.
         carrier = next((row for row in plan["clips"] if row["gen_id"] == audio_plan["gen_id"]
+                        and (audio_plan["track"] is None or row["track"] == audio_plan["track"])
                         and row["start"] <= audio_plan["start"] < row["end"]), None)
         lead = (audio_plan["start"] - carrier["start"]) / TIMELINE_FPS if carrier else audio_plan["offset"]
-        first = _frame(lead * fact["fps"])
+        # 그 영상 클립이 소스의 중간에서 시작하면(head) 소리도 같은 소스 프레임에서 센다 — 영상과 같은 식(위)
+        origin = _frame(carrier["head"] / TIMELINE_FPS * fact["fps"]) if carrier else 0
+        first = origin + _frame(lead * fact["fps"])
         # 끝도 소스 좌표다(30fps 영상의 5~10초 = [150, 300)). **끝 시각을 한 번** 반올림한다 — 시작 + 반올림한 길이는 한 프레임
         #  어긋날 수 있다(계획을 짓는 쪽과 같은 규칙). 원본이 모자라 줄인 것은 영상과 같이 되읽을 때 알린다(short).
-        wanted = _frame((lead + (audio_plan["end"] - audio_plan["start"]) / TIMELINE_FPS) * fact["fps"])
+        wanted = origin + _frame((lead + (audio_plan["end"] - audio_plan["start"]) / TIMELINE_FPS) * fact["fps"])
         last = min(wanted, fact["frames"])
         if last <= first:  # 넣을 소리가 한 프레임도 없다 — 조용히 빼지 않는다
             result["mismatches"].append({
@@ -451,6 +486,8 @@ def _build_locked(manifest: dict[str, Any], plan: dict[str, Any], resolve: Any, 
             media_pool.AppendToTimeline([{**info, "recordFrame": base + info["recordFrame"]} for info, _plan in entries])
             return _rows(timeline, kind, index, base)
 
+        unread: list[str] = []  # 앞을 자른 영상인데 소스의 시작을 되읽지 못한 것 — 완료라고 하지 않는다
+
         def check(kind: str, index: int, rows: list[dict[str, Any]], entries: list[tuple[dict[str, Any], dict[str, Any]]]) -> None:
             actual = {row["start"]: row for row in rows}
             for info, row_plan in entries:
@@ -465,7 +502,12 @@ def _build_locked(manifest: dict[str, Any], plan: dict[str, Any], resolve: Any, 
                     # 그 자리에 놓인 클립이다 — 길이가 달라도(short) 끄기는 해야 한다. 길이가 맞을 때만 쥐면 짧게 들어간 꺼 둔
                     #  클립이 켜진 채 남는다(Codex 코드 리뷰).
                     row_plan["item"] = found["item"]
-                wrong_source = kind == "audio" and found is not None and found["left"] is not None and found["left"] != info["startFrame"]
+                # 소스의 시작 — 소리는 늘, 영상은 앞을 자른 것만 본다(자르지 않은 영상은 전과 같이 자리·길이만: 그 길은 2026-10-09 실측
+                #  그대로 둔다). 시작점이 있는 영상을 되읽지 못하면(API 가 없다) 맞는지 모르는 것이다 — 경고로 남긴다.
+                trimmed = kind == "video" and info.get("startFrame", 0) > 0
+                wrong_source = (kind == "audio" or trimmed) and found is not None and found["left"] is not None and found["left"] != info["startFrame"]
+                if trimmed and found is not None and found["left"] is None:
+                    unread.append(row_plan["gen_id"])
                 if found is None or abs(found["dur"] - expected) > slack or wrong_source:
                     result["mismatches"].append({
                         "track": f"{'V' if kind == 'video' else 'A'}{index}", "gen_id": row_plan["gen_id"],
@@ -523,6 +565,8 @@ def _build_locked(manifest: dict[str, Any], plan: dict[str, Any], resolve: Any, 
             result["warnings"].append("Resolve 에 적용하지 못한 것: " + ", ".join(dict.fromkeys(failed)))
         if result["markers_skipped"]:
             result["warnings"].append(f"북마크 {result['markers_skipped']}개는 Resolve 가 받지 않았습니다")
+        if unread:
+            result["warnings"].append(f"앞을 자른 클립 {len(unread)}개의 시작점을 Resolve 에서 확인하지 못했습니다(타임라인에서 직접 확인하세요)")
 
         result["step"] = "save"
         guard()
@@ -531,7 +575,7 @@ def _build_locked(manifest: dict[str, Any], plan: dict[str, Any], resolve: Any, 
             result["warnings"].append("Resolve 프로젝트 저장을 확인하지 못했습니다(Resolve 에서 직접 저장하세요)")
         result["step"] = "done"
         # complete = 계획대로. 빠진 북마크도 '다르다'에 든다 — 경고만 남기면 화면은 완료라고 말한다(Codex 코드 리뷰).
-        different = result["mismatches"] or failed or result["markers_skipped"] or not result["saved"]
+        different = result["mismatches"] or failed or result["markers_skipped"] or not result["saved"] or unread
         result["status"] = "partial" if different else "complete"
     finally:
         if previous_folder:

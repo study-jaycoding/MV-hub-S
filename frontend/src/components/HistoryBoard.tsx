@@ -81,7 +81,7 @@ export function HistoryBoard({
   onUnpublish: (g: Generation) => void;
   onFinalize: (g: Generation) => void; // v02 CMS: 최종(골드) 지정 — S 더블클릭
   onUnfinalize: (g: Generation) => void; // 최종 해제
-  canFinalize?: (g: Generation) => boolean; // 최종 가능 판정(supervisor/PM 또는 미배정 본인)
+  canFinalize?: (g: Generation) => boolean; // 최종 가능 판정(그 프로젝트의 supervisor · 전역 관리자, 프로젝트 미배정이면 본인 — PM 은 아니다)
   // 선택 노드(Generation[])를 App에 통지 — 생성 시 부모(파생) + 프롬프트 위 선택바 렌더용.
   onSelectionChange?: (gens: Generation[]) => void;
   // 노드 수(현재 타입필터 기준)·화면 줌%·이동여부를 App→LibraryToolbar 로 올려보낸다(값 변할 때만).

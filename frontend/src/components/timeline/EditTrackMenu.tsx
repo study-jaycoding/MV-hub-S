@@ -271,7 +271,7 @@ export function EditListMenu({
       </button>
       {finalAll && (
         <button type="button" role="menuitem" className="ed-tmenu-item" disabled={!finalAll.count || finalAll.busy} aria-busy={finalAll.busy}
-          title={t("타임라인에 있는 생성물을 모두 최종으로 확정합니다 — 보이는 컷의 켜진 클립만(숨긴 컷·꺼진 클립·꺼진 트랙은 뺍니다). 누르면 무엇이 바뀌는지 먼저 묻습니다.")}
+          title={t("타임라인에 있는 생성물을 모두 최종으로 확정합니다 — 켜진 컷의 켜진 클립만(숨긴 컷·꺼 둔 컷·꺼진 클립·꺼진 트랙은 뺍니다). 누르면 무엇이 바뀌는지 먼저 묻습니다.")}
           onClick={finalAll.onRun}>
           {t("모두 최종으로 확정")}
           <i>{finalAll.count || ""}</i>
@@ -331,7 +331,7 @@ export function EditClipMenu({
         <button type="button" role="menuitemcheckbox" aria-checked={final.checked} className={"ed-tmenu-item" + (final.checked ? " ed-here" : "")}
           disabled={final.stale}
           title={final.stale ? t("공유 목록을 다시 받는 중이거나 받지 못했습니다 — 받은 뒤에 다시 눌러 주세요.")
-            : final.checked ? t("최종 확정을 해제합니다(공유 상태로 돌아갑니다).")
+            : final.checked ? t("최종 확정을 해제합니다(최종 전에 보류였던 것은 보류로, 나머지는 공유로 돌아갑니다).")
               : t("이 생성물을 최종으로 확정합니다 — 공유 & 리뷰의 최종(★)과 같은 것입니다.")}
           onClick={final.onToggle}>
           {t("최종 선택")}

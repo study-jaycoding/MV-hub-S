@@ -91,7 +91,7 @@ const mount = (reloadSignal = 0, peekPath: string | null = null, ws: typeof work
       resolve={{ send: sendToResolve, sendTimeline, ...resolveState }} onFolderAction={onFolderAction} />,
   ));
 const DOC_KEY = "mvhub.editDoc:local:p1:e070";
-type Seed = { cut: string; gen: string; track: number; job?: string; off?: boolean; kind?: "image" | "video" };
+type Seed = { cut: string; gen: string; track: number; job?: string; off?: boolean; kind?: "image" | "video"; head?: number; trim?: number };
 // 타임라인에 미리 넣어 둔 상태로 시작한다(넣기는 풀·폴더 창의 트랙 메뉴로만 한다 — 아래 시험이 그 길을 본다).
 const seed = (clips: Seed[], extra: Record<string, unknown> = {}) => localStorage.setItem(DOC_KEY, JSON.stringify({
   v: 1, tracksOff: [], tracksLocked: [], ...extra,
@@ -1317,6 +1317,62 @@ it("다이나믹 트림 모드: W 로 켜면 나뉜 뷰어가 한 창이 되고 
   expect(localStorage.getItem(DOC_KEY)).toBe(docBefore); // 보기일 뿐이다 — 편집 문서는 그대로다
 });
 
+// 앞 자르기(Jay 2026-10-14) — 두 칸에 서 있는 프레임도 영상 시각이다(컷 안 시각 + 그 클립의 시작점)
+it("다이나믹 트림 모드: 앞을 자른 클립은 시작점을 더한 프레임으로 선다", () => {
+  world.gens = [...world.gens, videoGen()];
+  seed([{ cut: "c1", gen: "v", track: 1, kind: "video", head: 1 }, { cut: "c2", gen: "x", track: 1 }]); // c1: 원본 5초의 앞 1초를 잘랐다 → 0~4초
+  mount();
+  act(() => cutCell("c1").click());
+  press({ key: "w", code: "KeyW" });
+  press({ key: "ArrowDown", code: "ArrowDown" }); // 다음 편집점(4초 — c1 | c2)
+  expect(timecode()).toBe("00:00:04:00");
+  const before = document.querySelectorAll<HTMLElement>(".ed-split .ed-half")[0].querySelector("video")!;
+  const sent = vi.spyOn(before, "currentTime", "set");
+  act(() => { before.dispatchEvent(new Event("loadedmetadata")); });
+  expect(sent.mock.calls[0][0]).toBeCloseTo(4 - 0.25 / 24 + 1); // 컷 안의 마지막 프레임(4초 직전) + 시작점 1초 = 영상의 끝 직전
+  press({ key: "w", code: "KeyW" });
+});
+
+// 길이 조절 창의 큰 화면(Jay 2026-10-14 앞 자르기) — 영상 요소가 **실제로 가는 시각**을 본다(tests/editTabCuts 의 창 시험에는 영상 요소가
+//  없다 — Codex 코드 리뷰): 잡은 쪽의 프레임 · ▶ 는 원본의 0초가 아니라 시작점부터 · 끝점에서 멈춰 잡은 쪽의 프레임으로.
+it("길이 조절 창의 큰 화면: 잡은 쪽의 프레임에 서고, ▶ 는 시작점부터 틀어 끝점에서 멈춘다(앞을 자른 클립)", () => {
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
+  world.gens = [...world.gens, videoGen()];
+  seed([{ cut: "c1", gen: "v", track: 1, kind: "video", head: 1, trim: 2 }]); // 원본 5초의 1~3초를 쓴다(24 … 72프레임)
+  mount();
+  const clip = document.querySelector<HTMLElement>(".ed-lanes .ed-clip")!;
+  act(() => { clip.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1, clientX: 50, clientY: 50 })); });
+  const pop = document.querySelector<HTMLElement>(".ed-trim")!;
+  const video = pop.querySelector<HTMLVideoElement>("video.ed-trim-view")!;
+  expect(video.getAttribute("src")).toBe("/media/v.mp4");
+  let now = 0;
+  const seeks: number[] = [];
+  vi.spyOn(video, "currentTime", "get").mockImplementation(() => now);
+  vi.spyOn(video, "currentTime", "set").mockImplementation((value: number) => { now = value; seeks.push(value); });
+  act(() => { video.dispatchEvent(new Event("loadedmetadata")); });
+  expect(seeks).toEqual([71 / 24]); // 끝을 잡고 있다 — 마지막으로 보이는 프레임(끝점 72 의 한 프레임 앞)
+
+  const play = vi.mocked(HTMLMediaElement.prototype.play);
+  const pause = vi.mocked(HTMLMediaElement.prototype.pause);
+  play.mockClear();
+  act(() => pop.querySelector<HTMLButtonElement>(".ed-trim-play button")!.click());
+  expect([seeks.at(-1), play.mock.calls.length]).toEqual([1, 1]); // 원본의 0초가 아니라 시작점(1초)에서 튼다
+  const steps = seeks.length;
+  pause.mockClear();
+  now = 2.5; // 구간 안 — 계속 튼다
+  act(() => { vi.advanceTimersByTime(20); });
+  expect([seeks.length, pause.mock.calls.length]).toEqual([steps, 0]);
+  now = 3; // 끝점(72프레임 = 3초)에 닿았다
+  act(() => { vi.advanceTimersByTime(20); });
+  expect(pause).toHaveBeenCalled();
+  expect(seeks.slice(steps)).toEqual([71 / 24]); // 멈추고 잡은 쪽(끝)의 프레임으로 돌아온다
+
+  vi.spyOn(video, "readyState", "get").mockReturnValue(4);
+  act(() => [...pop.querySelectorAll<HTMLButtonElement>(".ed-trim-edge button")].find((item) => item.textContent === "시작")!.click());
+  expect(seeks.at(-1)).toBe(1); // 시작을 잡으면 처음 보이는 프레임 = 시작점
+  act(() => pop.querySelector<HTMLButtonElement>(".ed-trim-head button")!.click());
+});
+
 it("다이나믹 트림 모드: 타임라인 판이 안 보이던 화면에서도 한 창으로 뜨고, 끄면 그 화면으로 돌아온다", () => {
   localStorage.setItem(UI_KEY, JSON.stringify({ dual: true, views: ["source", 1] }));
   mount();
@@ -1800,6 +1856,21 @@ it("뷰어의 '무엇을 볼지' 메뉴·풀의 보기 메뉴: Tab 으로 메뉴
   expect(tools.querySelector(".ed-pop")).not.toBeNull();
   leave(poolButton("검색"), cutCell("c1"));
   expect(tools.querySelector(".ed-pop")).toBeNull();
+
+  // 마우스로 열면 단추가 초점을 받지 않는다(누름의 기본 동작을 막는다) — 초점은 메뉴 밖에 그대로 있고, Tab 한 번에 밖의 다른 단추로
+  //  간다. 떠나는 쪽(focusout)은 도구 줄이 볼 수 없으니 **들어가는 쪽**(focusin)으로 닫는다(Jay 2026-10-14 — 전엔 열린 채 남았다).
+  const land = (on: Element) => act(() => { on.dispatchEvent(new FocusEvent("focusin", { bubbles: true })); });
+  act(() => poolButton("정렬").click());
+  expect(tools.querySelector(".ed-pop")).not.toBeNull();
+  land(popItem("오래된순")); // 메뉴 안으로 들어간 초점은 닫지 않는다
+  expect(tools.querySelector(".ed-pop")).not.toBeNull();
+  land(document.querySelector(".ed-side-toggle")!); // Tab — 옆의 [필터 사이드바 닫기]
+  expect(tools.querySelector(".ed-pop")).toBeNull();
+  expect(backgroundKeysBlocked()).toBe(false);
+  act(() => pick.querySelector<HTMLButtonElement>(".ed-vpick-btn")!.click()); // 뷰어의 메뉴도 같다
+  expect(pick.querySelector(".ed-vpop")).not.toBeNull();
+  land(pane("timeline").querySelector(".ed-play")!);
+  expect(pick.querySelector(".ed-vpop")).toBeNull();
 });
 
 // 24회차 격리 실측(900×600 · 트랙 20개 = 23항목): 메뉴 아래 7항목이 화면 밖이었고 안쪽 스크롤이 없었다. 페이지가 늘어나 스크롤되면 상태 알약이 마지막 항목을 덮는다.

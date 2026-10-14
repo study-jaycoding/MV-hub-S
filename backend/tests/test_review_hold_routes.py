@@ -1,4 +1,5 @@
 """공유 검토 보류의 권한·원장·세 축 수렴 계약. 임시 DB만 사용한다."""
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -348,3 +349,155 @@ def test_different_review_response_mirrors_truth_but_does_not_claim_success(item
     with db.get_connection() as conn:
         saved = dict(conn.execute("SELECT * FROM share_state_intent").fetchone())
     assert saved["status"] == "superseded"
+
+
+# ── 최종을 해제하면 원래의 보류로(Jay 2026-10-14) — 표식(restore_held)이 있을 때만 ─────────────────────────────
+def _make_final(gid):
+    repo.finalize_generation_with_share(gid, "me", "reviewer")
+
+
+def _events():
+    return [(call.args[0], call.kwargs.get("details")) for call in share.journal_audit_event.call_args_list]
+
+
+@pytest.mark.parametrize("held,restore,expected", [(True, True, True), (True, False, False), (False, True, False)])
+def test_unfinalize_restores_the_hold_it_had_only_when_asked(item, held, restore, expected):
+    if held:
+        share.hold_generation(item, req())
+    _make_final(item)
+    state = repo.get_generation(item)
+    assert state["is_final"] and not state["is_held"]  # 최종이면 보류가 아니다(불변식) — 기억은 다른 칸에 있다
+    share.journal_audit_event.reset_mock()
+    out = share.unfinalize(item, req(), restore_held=restore)
+    assert out["shared"] and not out["is_final"] and out["is_held"] is expected and out["final_by"] is None
+    assert _events() == [("generation.unfinalized", {"is_final": False})] + (
+        [("generation.held", {"is_held": True, "restored": True})] if expected else [])
+    with db.get_connection() as conn:  # 해제하면 기억은 지워진다
+        assert conn.execute("SELECT held_before_final FROM generation WHERE id=?", (item,)).fetchone()[0] == 0
+
+
+def test_unfinalize_restore_changes_nothing_on_a_row_that_is_not_final(item):
+    """같은 해제가 다시 와도(재시도 · 두 번 누름) 그사이에 정해진 보류 상태를 건드리지 않는다 — 기록도 남기지 않는다."""
+    share.hold_generation(item, req())
+    _make_final(item)
+    assert share.unfinalize(item, req(), restore_held=True)["is_held"] is True
+    share.unhold_generation(item, req())  # 그사이 누가 보류를 풀었다
+    share.journal_audit_event.reset_mock()
+    again = share.unfinalize(item, req(), restore_held=True)
+    assert again["shared"] and not again["is_final"] and again["is_held"] is False  # 되살아나지 않는다(기억은 이미 썼다)
+    share.hold_generation(item, req())  # 그사이 누가 다시 보류했다
+    share.journal_audit_event.reset_mock()
+    assert share.unfinalize(item, req(), restore_held=True)["is_held"] is True  # 풀리지 않는다
+    assert share.journal_audit_event.call_count == 0
+    # 표식이 없으면 전과 같다 — 최종이 아닌 행의 보류도 지운다(옛 앱의 원장이 해제 뒤의 보류를 False 로 기대한다)
+    assert share.unfinalize(item, req())["is_held"] is False
+    assert _events() == [("generation.unfinalized", {"is_final": False})]
+
+
+def test_refinalize_keeps_the_memory_and_a_chosen_transition_clears_it(item):
+    share.hold_generation(item, req())
+    _make_final(item)
+    _make_final(item)  # 이미 최종인 행에 또 온 최종 지정 — 그때의 is_held 는 0 이지만 기억을 덮지 않는다
+    assert share.unfinalize(item, req(), restore_held=True)["is_held"] is True
+    _make_final(item)  # 보류 → 최종
+    assert share.final_review(item, FinalReviewIn(state="shared"), req())["is_held"] is False  # 고른 전환은 고른 대로다
+    # 고른 전환이 기억도 지운다 — 다음의 최종 지정(새 코드)이 어차피 새로 적지만, 이 칸을 모르는 옛 서버 코드가 그 사이에 최종을 주면
+    #  낡은 기억이 그대로 되살아난다(되돌려 확인: 이 단언이 없으면 지우는 줄을 빼도 통과했다).
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT held_before_final FROM generation WHERE id=?", (item,)).fetchone()[0] == 0
+    _make_final(item)  # 공유 → 최종: 옛 기억(보류)이 남아 되살아나면 안 된다
+    assert share.unfinalize(item, req(), restore_held=True)["is_held"] is False
+
+
+def test_unfinalize_restore_never_holds_what_is_not_shared(item):
+    share.hold_generation(item, req())
+    _make_final(item)
+    repo.unpublish(item)  # 레거시 드리프트: 최종인데 공유가 없다
+    with db.get_connection() as conn:
+        conn.execute("UPDATE generation SET is_final=1, held_before_final=1 WHERE id=?", (item,))
+    out = share.unfinalize(item, req(), restore_held=True)
+    assert not out["shared"] and not out["is_final"] and out["is_held"] is False
+
+
+def test_concurrent_restore_unfinalize_applies_once(item):
+    share.hold_generation(item, req())
+    _make_final(item)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = [future.result(timeout=10) for future in [
+            pool.submit(repo.release_final, item, restore_held=True) for _ in range(4)]]
+    assert sorted(results, key=str) == [None, None, None, True]  # 한 번만 바꾼다 — 나머지는 바꾼 것이 없다
+    state = repo.get_generation(item)
+    assert state["is_held"] and state["shared"] and not state["is_final"]
+
+
+def test_unfinalize_http_query_contract(item):
+    app = FastAPI()
+    app.include_router(share.router)
+    share.hold_generation(item, req())
+    _make_final(item)
+    with TestClient(app) as client:
+        response = client.post(f"/api/generations/{item}/unfinalize?restore_held=1")
+        assert response.status_code == 200, response.text
+        assert response.json()["is_held"] is True and response.json()["is_final"] is False
+        assert "held_before_final" not in response.json()  # 기억은 밖으로 내보내지 않는다(화면이 쓰지 않는다)
+        _make_final(item)  # 보류 → 최종
+        response = client.post(f"/api/generations/{item}/unfinalize")  # 옛 앱 — 표식이 없다
+        assert response.status_code == 200 and response.json()["is_held"] is False
+
+
+def _remote_after_unfinalize(item, *, held):
+    return {**repo.get_generation(item), "id": "remote-review", "is_final": False, "is_held": held,
+            "final_by": None, "final_at": None}
+
+
+def test_proxy_unfinalize_restore_forwards_the_flag_and_does_not_claim_the_held_axis(item, monkeypatch):
+    """허브: 표식을 서버로 넘기고, 원장은 보류 축을 주장하지 않는다(NULL) — 서버가 보류로 되살린 답이 409 가 되지 않는다."""
+    repo.set_final(item, True)
+    monkeypatch.setattr(share._proxy, "proxying", lambda: True)
+    remote = _remote_after_unfinalize(item, held=True)
+    call = Mock(return_value=remote)
+    monkeypatch.setattr(share._proxy, "proxy_json", call)
+    out = share.unfinalize(item, req(), restore_held=True)
+    assert out == remote
+    call.assert_called_once_with("POST", "/api/generations/remote-review/unfinalize", params={"restore_held": 1})
+    local = repo.get_generation(item)
+    assert local["is_held"] and local["shared"] and not local["is_final"]  # 응답의 보류가 이 PC 에 미러된다
+    with db.get_connection() as conn:
+        saved = dict(conn.execute("SELECT * FROM share_state_intent").fetchone())
+    assert saved["desired_held"] is None and saved["operation_kind"] == "unfinalize" and saved["status"] == "converged"
+
+
+@pytest.mark.parametrize("held,status", [(False, "converged"), (True, "superseded")])
+def test_proxy_unfinalize_without_the_flag_still_claims_not_held(item, monkeypatch, held, status):
+    """표식이 없으면 전과 같다 — 쿼리를 붙이지 않고, 원장이 '보류 아님'을 주장한다(보류로 온 답은 다른 작업의 결과다)."""
+    repo.set_final(item, True)
+    monkeypatch.setattr(share._proxy, "proxying", lambda: True)
+    call = Mock(return_value=_remote_after_unfinalize(item, held=held))
+    monkeypatch.setattr(share._proxy, "proxy_json", call)
+    if held:
+        with pytest.raises(HTTPException) as error:
+            share.unfinalize(item, req())
+        assert error.value.status_code == 409
+    else:
+        share.unfinalize(item, req())
+    call.assert_called_once_with("POST", "/api/generations/remote-review/unfinalize")
+    with db.get_connection() as conn:
+        saved = dict(conn.execute("SELECT * FROM share_state_intent").fetchone())
+    assert saved["desired_held"] == 0 and saved["status"] == status
+
+
+def test_late_restore_observation_converges_and_mirrors_the_restored_hold(item):
+    """응답을 잃은 되살리는 해제 — 조정기가 서버를 다시 보면 보류로 되살아난 것이 '맞게 끝난 것'이고, 그 보류가 미러된다."""
+    repo.set_final(item, True)
+    ref = repo.prepare_share_state_intent(
+        "http://review.example.test/", job_anchor="remote-review", local_id=item, operation_kind="unfinalize",
+        desired_shared=True, desired_final=False, base_shared=True, base_final=True,
+    )
+    saved = repo.get_share_state_intent(ref["intent_id"])
+    assert saved["desired_held"] is None
+    for held in (True, False):
+        assert reconciler._terminal_status(saved, {"shared": True, "is_final": False, "is_held": held}) == "converged"
+    assert reconciler._terminal_status(saved, {"shared": True, "is_final": True, "is_held": False}) == "rejected"  # 서버에 닿지 않았다
+    assert apply(ref, item, held=True) == repo.SHARE_STATE_APPLY_APPLIED
+    local = repo.get_generation(item)
+    assert local["is_held"] and local["shared"] and not local["is_final"]

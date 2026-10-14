@@ -19,7 +19,7 @@ import type { Generation } from "../src/types";
 vi.mock("../src/lib/modelCatalog", () => ({ useModelDisplayName: () => () => "Test model" }));
 vi.mock("../src/lib/modelPolicy", () => ({ modelBlockMessage: () => null }));
 vi.mock("../src/lib/libraryBroadcast", () => ({ postLibraryChanged: vi.fn() }));
-vi.mock("../src/api", () => ({ api: { setReviewState: vi.fn() } }));
+vi.mock("../src/api", () => ({ api: { setReviewState: vi.fn(), unfinalize: vi.fn() } }));
 const noop = () => {};
 
 it("open review menu never lets a double event run a bulk grade action behind it", () => {
@@ -306,6 +306,23 @@ it("bulk review rechecks eligible targets and reports partial failure without to
   expect(bulk).toContain("\ndenied");
   expect(bulk).not.toContain("Error:");
   expect(reload).toHaveBeenCalledTimes(1); expect(bumpBoard).toHaveBeenCalledTimes(1);
+});
+
+// Jay 2026-10-14 — 편집 탭의 '최종 선택' 해제: 최종인 것은 '공유로'(고른 전환)가 아니라 **해제**로 간다 — 최종 전에 보류였던 것은
+//  보류로 돌아온다(서버가 정한다). 몇 개가 보류로 돌아갔는지 알린다.
+it("release sends finals through unfinalize and says how many went back on hold", async () => {
+  let actions!: ReturnType<typeof useGenerationCardActions>;
+  const flash = vi.fn(), reload = vi.fn().mockResolvedValue(undefined);
+  function Harness() { actions = useGenerationCardActions({ armedAutoTags: new Set(),
+    bumpBoard: noop, canFinalize: () => true, flash, navTab: noop, reload, workspace: { scope: "personal", id: null, name: null } }); return null; }
+  act(() => root.render(<Harness />));
+  vi.mocked(api.unfinalize).mockResolvedValueOnce(gen({ id: "was-held", is_held: true })).mockResolvedValueOnce(gen({ id: "was-shared" }));
+  await act(async () => actions.onReviewSelection(
+    [gen({ id: "was-held", is_final: true }), gen({ id: "was-shared", is_final: true }), gen({ id: "plain" })], "shared", () => true, true));
+  expect(vi.mocked(api.unfinalize).mock.calls.map(([id]) => id)).toEqual(["was-held", "was-shared"]);
+  expect(api.setReviewState).not.toHaveBeenCalled(); // 이미 공유인 것(plain)은 대상이 아니다 — 고른 전환의 길로 새지 않는다
+  expect(flash).toHaveBeenCalledWith(expect.stringContaining("2개 적용 · 0개 실패 · 1개 유지 · 원래의 보류로 1개"));
+  expect(reload).toHaveBeenCalledTimes(1);
 });
 
 it("reopening a pending result cannot submit it twice", async () => {

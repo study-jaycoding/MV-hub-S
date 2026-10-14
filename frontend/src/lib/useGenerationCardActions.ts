@@ -147,6 +147,9 @@ export function useGenerationCardActions({
     generations: Generation[],
     action: ReviewAction,
     canFinalize: (generation: Generation) => boolean,
+    // release(편집 탭의 '최종 선택' 해제 — Jay 2026-10-14): 최종인 것을 '공유로'(고른 전환) 대신 **해제**로 보낸다 — 최종 전에
+    //  보류였던 것은 보류로 돌아온다(api.unfinalize). 부르는 쪽은 action 을 "shared" 로 준다(대상 거르기가 같다).
+    release = false,
   ) => {
     const targets = reviewTargets(generations, action, canFinalize)
       .filter((generation) => !reviewInFlightRef.current.has(generation.id));
@@ -155,14 +158,18 @@ export function useGenerationCardActions({
     armStateGlow(targets.map((generation) => generation.id)); // 뒤이은 재조회에서 이 중 상태가 달라진 카드만 빛난다
     try {
       // 기존 다중 등급 처리와 같은 부분 성공 방식. 요청 헤더는 이 호출 문맥에서 함께 고정한다.
-      const results = await Promise.allSettled(targets.map((generation) => api.setReviewState(generation, action)));
+      const results = await Promise.allSettled(targets.map((generation) =>
+        release && generation.is_final ? api.unfinalize(generation.id) : api.setReviewState(generation, action)));
+      // 해제로 보류가 되살아난 것은 따로 알린다 — '최종 선택'을 풀었는데 카드가 보류(빨강)로 보이는 까닭이다
+      const reheld = release ? results.filter((result) => result.status === "fulfilled" && result.value.is_held).length : 0;
       const succeeded = results.filter((result) => result.status === "fulfilled").length;
       const mirrorPending = results.some((result) => result.status === "fulfilled" && result.value.mirror_pending);
       const firstError = results.find((result) => result.status === "rejected")?.reason;
       const failed = targets.length - succeeded;
       const kept = generations.length - targets.length;
       const summary = t("{success}개 적용 · {failed}개 실패 · {kept}개 유지")
-        .replace("{success}", String(succeeded)).replace("{failed}", String(failed)).replace("{kept}", String(kept));
+        .replace("{success}", String(succeeded)).replace("{failed}", String(failed)).replace("{kept}", String(kept)) +
+        (reheld ? " · " + t("원래의 보류로 {count}개").replace("{count}", String(reheld)) : "");
       flash(withMirrorPendingNotice(summary, { mirror_pending: mirrorPending }, t) +
         (firstError ? `\n${errorDetail(firstError)}` : "")); // 까닭만 — "TypeError: Failed to fetch"·"Error: 500: …" 앞머리는 뗀다(16회차의 통일에서 빠진 자리)
       if (succeeded) {
@@ -193,7 +200,9 @@ export function useGenerationCardActions({
     armStateGlow([g.id]);
     try {
       const result = await api.unfinalize(g.id);
-      flash(withMirrorPendingNotice(t("최종 지정을 해제했습니다."), result, t));
+      // 최종 전에 보류였던 것은 보류로 돌아온다(서버가 정한다 — api.unfinalize) — 그랬으면 그렇게 알린다
+      flash(withMirrorPendingNotice(
+        result.is_held ? t("최종 지정을 해제했습니다 — 원래의 보류로 돌아갔습니다.") : t("최종 지정을 해제했습니다."), result, t));
       await reload();
       postLibraryChanged();
     } catch (e) {

@@ -92,20 +92,22 @@ const EN: Record<string, string> = {
   "비활성 숨기기": "Hide off folders",
   "빈 곳 채우기": "Fill empty cuts",
   "모두 최종으로 확정": "Mark all as final",
-  "타임라인에 있는 생성물을 모두 최종으로 확정합니다 — 보이는 컷의 켜진 클립만(숨긴 컷·꺼진 클립·꺼진 트랙은 뺍니다). 누르면 무엇이 바뀌는지 먼저 묻습니다.":
-    "Marks everything on the timeline as final — only enabled clips in the cuts you can see (hidden cuts, disabled clips and disabled tracks are left out). It asks before changing anything.",
+  "타임라인에 있는 생성물을 모두 최종으로 확정합니다 — 켜진 컷의 켜진 클립만(숨긴 컷·꺼 둔 컷·꺼진 클립·꺼진 트랙은 뺍니다). 누르면 무엇이 바뀌는지 먼저 묻습니다.":
+    "Marks everything on the timeline as final — only enabled clips in enabled cuts (hidden cuts, disabled cuts, disabled clips and disabled tracks are left out). It asks before changing anything.",
   "최종 선택": "Final",
-  "최종 확정을 해제합니다(공유 상태로 돌아갑니다).": "Removes the final mark (back to shared).",
+  "최종 확정을 해제합니다(최종 전에 보류였던 것은 보류로, 나머지는 공유로 돌아갑니다).":
+    "Removes the final mark (items that were on hold before go back on hold, the rest back to shared).",
   "이 생성물을 최종으로 확정합니다 — 공유 & 리뷰의 최종(★)과 같은 것입니다.": "Marks this as final — the same final (★) as in Share & Review.",
   "공유 목록을 다시 받는 중이거나 받지 못했습니다 — 받은 뒤에 다시 눌러 주세요.":
     "The shared list is reloading or failed to load — try again once it has loaded.",
   "최종으로 확정할 것이 없습니다.": "Nothing to mark as final.",
   "타임라인의 생성물 {count}개를 최종으로 확정할까요?": "Mark {count} item(s) on the timeline as final?",
-  "· 보이는 컷의 켜진 클립 {clips}개 기준 — 이미 최종인 {finals}개는 그대로 둡니다":
-    "· From {clips} enabled clip(s) in the visible cuts — {finals} already final stay as they are",
+  "· 켜진 컷의 켜진 클립 {clips}개 기준 — 이미 최종인 {finals}개는 그대로 둡니다":
+    "· From {clips} enabled clip(s) in the enabled cuts — {finals} already final stay as they are",
   "· 빼는 것:": "· Left out:",
   "꺼진 클립·트랙 {count}개": "{count} disabled clip(s)/track(s)",
   "숨긴 컷의 클립 {count}개": "{count} clip(s) in hidden cuts",
+  "꺼 둔 컷의 클립 {count}개": "{count} clip(s) in disabled cuts",
   "권한이 없거나 공유가 풀린 것 {count}개": "{count} you can't finalize or no longer shared",
   "공유 목록에서 못 찾은 클립 {count}개": "{count} clip(s) not found in the shared list",
   "· 되돌리기(Ctrl+Z)로는 돌아가지 않습니다 — 풀려면 클립 우클릭의 '최종 선택'으로 하나씩 해제합니다":
@@ -165,9 +167,16 @@ const EN: Record<string, string> = {
   "원본 {full}초 · 지금 {frames}프레임": "Source {full}s · now {frames} frames",
   "원본 길이로": "Full length",
   "멈춤": "Stop",
+  "시작": "Start",
+  "끝": "End",
   "프레임": "frames",
   "길이(초)": "Length (seconds)",
-  "잘라낸 뒤 {cut}초 · 원본 {full}초": "Cut off {cut}s · source {full}s",
+  "{cuts} 잘라냄 · 원본 {full}초": "{cuts} cut · source {full}s",
+  "앞 {sec}초": "{sec}s off the start",
+  "뒤 {sec}초": "{sec}s off the end",
+  "움직일 손잡이": "Handle to move",
+  "시작점(프레임)": "Start point (frame)",
+  "끝점(프레임)": "End point (frame)",
   "원본 {full}초 그대로": "Full source, {full}s",
   "영상을 불러오지 못했습니다 — 길이는 조절할 수 있습니다": "Couldn't load the video — you can still set the length",
   "←/→ 1프레임 · Shift 10프레임 · Space 재생 · Esc 닫기": "←/→ 1 frame · Shift 10 frames · Space play · Esc close",
@@ -226,7 +235,8 @@ const EN: Record<string, string> = {
   "축소 (Ctrl+-)": "Zoom out (Ctrl+-)",
   "확대 (Ctrl+=)": "Zoom in (Ctrl+=)",
   "편집을 저장하지 못했습니다. 다음 변경 때 다시 시도합니다.": "Could not save the edit. It will retry on the next change.",
-  "다른 창에서 이 편집이 바뀌었습니다. 이 창의 변경은 아직 저장되지 않았습니다.": "This edit changed in another window. Changes in this window are not saved yet.",
+  "다른 창에서 이 편집이 바뀌었습니다. 이 창의 변경은 아직 저장되지 않았습니다. 계속 편집하면 이 창의 내용으로 저장되고 다른 창의 변경은 사라집니다.":
+    "This edit changed in another window. Changes in this window are not saved yet. If you keep editing, this window's version is saved and the other window's changes are lost.",
   "다른 창에서 바꾼 편집을 불러왔습니다.": "Loaded the edit changed in another window.",
   "다른 창에서 바꾼 편집을 불러왔습니다. 방금 한 조작은 적용하지 않았습니다 — 다시 해 주세요.":
     "Loaded the edit changed in another window. Your last action was not applied — please do it again.",
@@ -324,6 +334,8 @@ const EN: Record<string, string> = {
   "최종(골드)으로 지정했습니다.": "Marked as final (gold).",
   "최종 지정 실패:": "Could not mark as final:",
   "최종 지정을 해제했습니다.": "Removed final status.",
+  "최종 지정을 해제했습니다 — 원래의 보류로 돌아갔습니다.": "Removed final status — it is back on hold, as it was before.",
+  "원래의 보류로 {count}개": "{count} back on hold",
   "최종 해제 실패:": "Could not remove final status:",
   "{count}개 팀 공유.": "{count} shared with the team.",
   "공유 실패:": "Could not share:",
@@ -576,6 +588,8 @@ const EN: Record<string, string> = {
   "재생 배속 — 누를 때마다 1x · 1.5x · 2x · 4x": "Playback speed — each click: 1x · 1.5x · 2x · 4x",
   "클립 메뉴": "Clip menu",
   "폴더 메뉴": "Folder menu",
+  "Resolve 보내기 결과": "Resolve send results",
+  "안내 닫기": "Dismiss",
   "◆ Resolve에 추가": "◆ Add to Resolve",
   "Resolve 전송 중…": "Sending to Resolve…",
   "항목이 없습니다.": "Nothing here yet.",

@@ -29,6 +29,7 @@ vi.mock("../src/lib/useEditSequence", async () => {
 });
 
 import { EditTab } from "../src/components/timeline/EditTab";
+import { trimPopPlace } from "../src/components/timeline/EditTrimPop";
 import { clearUndo, keepUnsavedEditDoc } from "../src/lib/editTimelineStore";
 
 let host: HTMLDivElement;
@@ -302,7 +303,8 @@ it("클립을 휠 클릭하면 길이 조절 창이 뜬다 — 걸음마다 저�
   expect(trimOf()).toBeCloseTo(109 / 24);
   // 띠의 채움(쓰는 구간의 끝) — 값이 비면 띠가 통째로 안 그려진다(2026-10-14 격리 실측: 식이 빠져 "%" 만 들어가 있었다)
   const fill = pop.querySelector<HTMLInputElement>(".ed-trim-range")!.style.getPropertyValue("--fill");
-  expect([fill.endsWith("%"), Math.round(parseFloat(fill) * 100)]).toEqual([true, Math.round((108 / 119) * 10000)]);
+  //  눈금은 0 … 원본의 프레임 수(120)다 — 두 손잡이(시작 · 끝)가 같은 눈금을 쓴다(2026-10-14. 그 전에는 1 … 120 이었다)
+  expect([fill.endsWith("%"), Math.round(parseFloat(fill) * 100)]).toEqual([true, Math.round((109 / 120) * 10000)]);
   press({ key: "ArrowLeft", shiftKey: true }, pop.querySelector("input")!); // Shift+← = 10프레임
   expect(trimOf()).toBeCloseTo(99 / 24);
   expect(clipOn("1").textContent).toContain("4.1s / 5.0s"); // 타임라인의 클립에 쓰는 길이 / 원본 길이
@@ -360,6 +362,148 @@ it("길이 조절 창이 떠 있는 동안 다른 창의 저장 알림이 먼저
   act(() => { window.dispatchEvent(new StorageEvent("storage", { key: docKey })); });
   expect(document.querySelector(".ed-trim")).toBeNull();
   expect(localStorage.getItem(docKey)).toBe(THEIRS);
+});
+
+// Jay 2026-10-14 — 길이 조절에서 앞도 자른다: 띠 하나에 손잡이 둘(시작 · 끝). 잡은 쪽이 ←/→ 와 ±단추가 움직이는 손잡이다(처음에는 끝).
+it("길이 조절 창의 두 손잡이 — '시작'을 잡고 앞을 자른다. 서로를 밀지 않고, 숫자 칸은 쓰는 길이(끝이 움직인다), '원본 길이로'는 앞뒤를 지운다", () => {
+  const docKey = "mvhub.editDoc:local:p1:e070";
+  const click = openTrimOn(docKey); // 영상 5초 = 120프레임
+  const pop = document.querySelector<HTMLElement>(".ed-trim")!;
+  const stored = () => (JSON.parse(localStorage.getItem(docKey)!) as { clips: { head?: number; trim?: number }[] }).clips[0];
+  const ranges = () => [...pop.querySelectorAll<HTMLInputElement>(".ed-trim-range")]
+    .map((item) => [item.classList.contains("ed-trim-out") ? "끝" : "시작", Number(item.value), item.max, item.classList.contains("ed-on")]);
+  const note = () => pop.querySelector(".ed-trim-play span")!.textContent;
+  const edge = (label: string) => [...pop.querySelectorAll<HTMLButtonElement>(".ed-trim-edge button")].find((item) => item.textContent === label)!;
+  const nums = () => [...pop.querySelectorAll<HTMLInputElement>(".ed-trim-num")].map((item) => item.value);
+  const type = (field: HTMLInputElement, text: string) => {
+    act(() => {
+      field.focus();
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, text);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    press({ key: "Enter", code: "Enter" }, field);
+  };
+  expect(ranges()).toEqual([["끝", 120, "120", true], ["시작", 0, "120", false]]); // 같은 눈금 · 처음에는 끝을 잡고 있다
+  expect([note(), nums()]).toEqual(["원본 5.00초 그대로", ["5.00", "120"]]);
+
+  act(() => edge("시작").click());
+  expect([edge("시작").getAttribute("aria-pressed"), edge("끝").getAttribute("aria-pressed")]).toEqual(["true", "false"]);
+  click("+10f");
+  click("+1f"); // ±단추가 시작을 움직인다
+  expect(stored()).toMatchObject({ head: 11 / 24 });
+  expect("trim" in stored()).toBe(false); // 끝은 원본 끝까지 그대로다
+  expect(ranges()).toEqual([["끝", 120, "120", false], ["시작", 11, "120", true]]);
+  expect([note(), nums()]).toEqual(["앞 0.46초 잘라냄 · 원본 5.00초", ["4.54", "109"]]);
+  const out = pop.querySelector<HTMLInputElement>(".ed-trim-out")!;
+  expect([parseFloat(out.style.getPropertyValue("--from")), parseFloat(out.style.getPropertyValue("--fill"))]).toEqual([(11 / 120) * 100, 100]);
+  press({ key: "ArrowRight", shiftKey: true }, pop); // 창 안의 ←/→ 도 잡은 쪽을 움직인다
+  expect(stored().head).toBe(21 / 24);
+
+  type(pop.querySelectorAll<HTMLInputElement>(".ed-trim-num")[1], "24"); // 프레임 칸 = 쓰는 길이 — 끝이 움직이고 시작은 그대로다
+  expect([stored().head, stored().trim]).toEqual([21 / 24, 1]);
+  expect(ranges().map((row) => row[1])).toEqual([45, 21]);
+  expect(note()).toBe("앞 0.88초 · 뒤 3.13초 잘라냄 · 원본 5.00초");
+
+  // 서로를 밀지 않는다 — 시작은 끝의 한 프레임 앞에서 멈춘다(끝은 그대로)
+  press({ key: "ArrowRight", shiftKey: true }, pop);
+  press({ key: "ArrowRight", shiftKey: true }, pop);
+  press({ key: "ArrowRight", shiftKey: true }, pop); // 21 → 31 → 41 → 44(끝 45 의 한 프레임 앞)
+  expect([stored().head, stored().trim]).toEqual([44 / 24, 1 / 24]);
+  const more = [...pop.querySelectorAll("button")].find((item) => item.textContent === "+1f")!;
+  expect(more.getAttribute("aria-disabled")).toBe("true"); // 더 못 간다 — 꺼진 단추도 초점은 받는다(disabled 가 아니다)
+  // 끝 손잡이로 초점이 가면 그쪽이 잡은 쪽이 된다 — 끝도 시작의 한 프레임 뒤에서 멈춘다
+  act(() => out.focus());
+  expect(edge("끝").getAttribute("aria-pressed")).toBe("true");
+  press({ key: "ArrowLeft", shiftKey: true }, out);
+  expect([stored().head, stored().trim]).toEqual([44 / 24, 1 / 24]);
+  press({ key: "ArrowRight", shiftKey: true }, out); // 45 → 55
+  expect(stored().trim).toBe(11 / 24);
+
+  click("원본 길이로"); // 앞뒤를 모두 지운다
+  expect(["head" in stored(), "trim" in stored()]).toEqual([false, false]);
+  expect(note()).toBe("원본 5.00초 그대로");
+  // 처음과 다른 값으로 끝낸다 — 아래의 되돌리기 · 다시가 빈 걸음이 아니게(처음 = 자르지 않음. Codex 코드 리뷰: 같은 값이면 아무 일을 안 해도 통과한다)
+  //  마지막 걸음의 앞도 처음과 다르게 둔다 — 걸음들이 한 단계로 묶이지 않으면 되돌리기 한 번이 처음까지 가지 못한다.
+  act(() => edge("시작").click());
+  click("+10f");
+  act(() => edge("끝").click());
+  click("−10f");
+  expect([stored().head, stored().trim]).toEqual([10 / 24, 100 / 24]);
+  act(() => pop.querySelector<HTMLButtonElement>(".ed-trim-head button")!.click());
+  press({ key: "z", code: "KeyZ", ctrlKey: true }); // 창을 한 번 연 동안의 걸음 전부가 되돌리기 한 단계다 — 자르기 전으로
+  expect(["head" in stored(), "trim" in stored()]).toEqual([false, false]);
+  press({ key: "z", code: "KeyZ", ctrlKey: true, shiftKey: true }); // 다시 — 마지막 값으로
+  expect([stored().head, stored().trim]).toEqual([10 / 24, 100 / 24]);
+});
+
+// 큰 화면은 잡은 쪽의 프레임이다 — 끝을 잡으면 마지막으로 보이는 프레임, 시작을 잡으면 처음 보이는 프레임. 재생은 시작부터.
+it("길이 조절 창의 큰 화면 — 잡은 쪽의 프레임에 서고, 재생은 쓰는 구간의 처음에서 시작한다", () => {
+  const docKey = "mvhub.editDoc:local:p1:e070";
+  localStorage.setItem(docKey, JSON.stringify({ ...TRIM_DOC, clips: [{ ...TRIM_DOC.clips[0], head: 1, trim: 2 }] })); // 원본 1~3초를 쓴다
+  const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(() => Promise.resolve());
+  mount();
+  const clip = document.querySelector<HTMLElement>(".ed-clip")!;
+  expect(clip.textContent).toContain("2.0s / 5.0s");
+  expect(clip.querySelector(".ed-clip-head")).not.toBeNull(); // 앞을 자른 클립의 표
+  act(() => { clip.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1, clientX: 50, clientY: 50 })); });
+  const pop = document.querySelector<HTMLElement>(".ed-trim")!;
+  const edge = (label: string) => [...pop.querySelectorAll<HTMLButtonElement>(".ed-trim-edge button")].find((item) => item.textContent === label)!;
+  expect([...pop.querySelectorAll<HTMLInputElement>(".ed-trim-range")].map((item) => Number(item.value))).toEqual([72, 24]);
+  expect(pop.querySelector(".ed-trim-play span")!.textContent).toBe("앞 1.00초 · 뒤 2.00초 잘라냄 · 원본 5.00초");
+  // 영상 요소가 없다(이 파일의 공유 목록은 비어 주소가 없다) — 여기서는 손잡이와 글만 본다. 영상 요소가 실제로 가는 시각(잡은 쪽의
+  //  프레임 · 시작점에서 재생 · 끝점에서 멈춤)은 tests/editCutFolder 의 '길이 조절 창의 큰 화면'이 본다.
+  expect(pop.querySelector("video")).toBeNull();
+  act(() => edge("시작").click());
+  expect([...pop.querySelectorAll<HTMLInputElement>(".ed-trim-range")].map((item) => item.classList.contains("ed-on"))).toEqual([false, true]);
+  expect(play).not.toHaveBeenCalled();
+});
+
+// Jay 2026-10-14 — 창은 누른 클립의 바로 위에 뜬다(그 전날은 화면 오른쪽 위). 클립 자체는 덮지 않는다.
+it("길이 조절 창의 자리 — 누른 클립의 바로 위, 위에 자리가 없으면 옆, 그것도 안 되면 화면 오른쪽 위", () => {
+  const panel = { width: 560, height: 516 };
+  const view = { width: 1584, height: 905 };
+  expect(trimPopPlace({ x: 936, y: 794, width: 200, height: 52 }, panel, view)).toEqual({ x: 756, y: 268 }); // 가로는 클립의 가운데, 창 아래 끝이 클립 위 10px
+  expect(trimPopPlace({ x: 20, y: 794, width: 80, height: 52 }, panel, view)).toEqual({ x: 8, y: 268 }); // 화면 왼쪽 끝의 클립 — 창은 화면 안으로
+  const low = { width: 1280, height: 600 }; // 낮은 창 — 클립 위에 창이 들어갈 자리가 없다
+  expect(trimPopPlace({ x: 300, y: 500, width: 100, height: 52 }, panel, low)).toEqual({ x: 410, y: 36 }); // 오른쪽 옆, 아래 끝을 클립의 아래 끝에
+  expect(trimPopPlace({ x: 900, y: 500, width: 300, height: 52 }, panel, low)).toEqual({ x: 330, y: 36 }); // 오른쪽에 자리가 없으면 왼쪽 옆
+  expect(trimPopPlace({ x: 100, y: 500, width: 1100, height: 52 }, panel, low)).toEqual({ x: 704, y: 64 }); // 양옆에도 없으면 화면 오른쪽 위
+  expect(trimPopPlace(null, panel, view)).toEqual({ x: 1008, y: 64 }); // 그 클립의 자리를 못 쟀다
+});
+
+it("길이 조절 창은 누른 클립 위에 뜨고, 머리를 끌어 옮긴 뒤로는 그 자리에 뜬다 — 열기만 해서 적힌 자리는 기억으로 치지 않는다", () => {
+  localStorage.setItem("mvhub.editDoc:local:p1:e070", JSON.stringify(TRIM_DOC));
+  localStorage.setItem("ch.editTrim.pos", JSON.stringify({ x: 400, y: 64 })); // 전날 판은 열기만 해도 자리를 적었다 — 끌어 옮긴 것이 아니다
+  mount();
+  const rect = (x: number, y: number, width: number, height: number) =>
+    ({ x, y, left: x, top: y, width, height, right: x + width, bottom: y + height, toJSON: () => ({}) }) as DOMRect;
+  const clip = document.querySelector<HTMLElement>(".ed-clip")!;
+  let clipAt = rect(300, 700, 100, 52);
+  clip.getBoundingClientRect = () => clipAt;
+  document.querySelector<HTMLElement>(".ed-scroll")!.getBoundingClientRect = () => rect(200, 600, 824, 168);
+  const open = () => act(() => { clip.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1, clientX: 350, clientY: 720 })); });
+  const pop = () => document.querySelector<HTMLElement>(".ed-trim")!;
+  const at = () => [pop().style.left, pop().style.top];
+  const close = () => act(() => pop().querySelector<HTMLButtonElement>(".ed-trim-head button")!.click());
+  open();
+  expect(at()).toEqual(["70px", "170px"]); // 클립(300~400, 위 700)의 가운데 위 — 적혀 있던 (400, 64) 가 아니다
+  expect(localStorage.getItem("ch.editTrim.moved")).toBeNull();
+  close();
+  clipAt = rect(500, 700, 100, 52); // 다른 자리의 클립을 누르면 그 위에
+  open();
+  expect(at()).toEqual(["270px", "170px"]);
+
+  // 머리를 끌어 옮긴다 — 그 자리가 기억이다
+  const head = pop().querySelector<HTMLElement>(".ed-trim-head")!;
+  act(() => { head.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: 500, clientY: 180 })); });
+  act(() => { window.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, buttons: 1, clientX: 600, clientY: 300 })); });
+  act(() => { window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: 600, clientY: 300 })); });
+  expect(at()).toEqual(["370px", "290px"]); // 잡은 자리에서 (+100, +120)
+  expect(localStorage.getItem("ch.editTrim.moved")).toBe("1");
+  close();
+  clipAt = rect(300, 700, 100, 52);
+  open();
+  expect(at()).toEqual(["370px", "290px"]); // 누른 클립이 어디든 끌어 둔 자리
 });
 
 // 휠 단추가 없는 마우스·트랙패드의 길 — 클립 우클릭 메뉴에서도 같은 창을 연다.
