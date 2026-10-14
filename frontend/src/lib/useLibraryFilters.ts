@@ -292,6 +292,13 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext, teamP
   const [armedFolder, setArmedFolder] = useState<{ projectId: string; path: string } | null>(
     () => LS.loadJSON<{ projectId: string; path: string }>("armedFolder") ?? null,
   );
+  // 자리를 다음 생성 위치·무장 폴더로 삼는다 — 눌러 들어간 것과 같다. 무장 값은 App 의 onArmFolder 와 같다(폴더까지 고른 자리만, 프로젝트만
+  //  고른 자리는 없음). 같은 값이면 무장 객체를 갈지 않는다(저장을 다시 하지 않는다).
+  const adoptScope = useCallback((scope: GenerationScope) => {
+    commitGenerationScope(scope);
+    const armed = scope.project_id && scope.folder_path ? { projectId: scope.project_id, path: scope.folder_path } : null;
+    setArmedFolder((current) => (current?.projectId === armed?.projectId && current?.path === armed?.path ? current : armed));
+  }, [commitGenerationScope]);
 
   const patch = useCallback((p: Partial<Filters>) => {
     const next = { ...filtersRef.current, ...p };
@@ -310,7 +317,8 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext, teamP
 
   // 자리를 되살린다(2026-10-13 ①②). 자리가 바뀌니 선택은 비우고 수동 횟수도 올린다 — 늦게 온 Resolve 따라가기 응답이 되살린 자리를 덮지 않게
   //  (Codex 설계 검토). 같은 자리면 아무 일도 없다.
-  //  · 공유 탭의 마지막 자리 기억(adopt 없음) = **보는 자리만**: 다음 생성 위치(generationScope)·무장 폴더는 건드리지 않는다 — Jay 가 고른 자리가 아니다.
+  //  · adopt 없음 = **보는 자리만**: 다음 생성 위치(generationScope)·무장 폴더는 건드리지 않는다(시험·옛 호출용). 공유 탭의 마지막 자리 기억도
+  //    처음엔 이것이었다가 2026-10-14 에 adopt 로 바뀌었다(Jay: 사이드바는 프로젝트, 카드는 e035 — App 의 탭 누름).
   //  · 브라우저 뒤로·앞으로 가기(adopt) = 그 자리를 **눌러 들어간 것과 같다**: 생성 위치·무장 폴더도 그 자리로 옮긴다. 앞으로 가는 조작(사이드바·
   //    에피소드 카드·[폴더로])이 모두 무장까지 옮기니, 뒤로 가기만 안 옮기면 화면은 e035 인데 사이드바의 분홍 표시(= 실제 생성 목적지)는 C0110 에
   //    남는다(Jay 2026-10-13 오후). **자리가 실제로 바뀔 때만**이다 — 겹(미리보기)·탭의 기록도 그때 자리의 사본을 실어, 같은 자리에서 맞추면
@@ -329,17 +337,16 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext, teamP
       ...previous, project_id: location.project_id, folder_path: location.folder_path, deleted_only: deletedOnly, include_deleted: includeDeleted,
     };
     filtersRef.current = next;
-    if (adopt && !deletedOnly) {
-      const scope = generationScopeOf(next);
-      commitGenerationScope(scope);
-      // 무장 값은 눌러 고를 때와 같다(App 의 onArmFolder) — 폴더까지 고른 자리만, 프로젝트만 고른 자리는 없음. 같은 값이면 그대로(저장을 다시 하지 않는다)
-      const armed = scope.project_id && scope.folder_path ? { projectId: scope.project_id, path: scope.folder_path } : null;
-      setArmedFolder((current) => (current?.projectId === armed?.projectId && current?.path === armed?.path ? current : armed));
-    }
+    if (adopt && !deletedOnly) adoptScope(generationScopeOf(next));
     restoredLocationRef.current = true; // 생성 위치를 옮긴 뒤에 켠다(commitGenerationScope 가 내린다) — '낡은 프로젝트' 효과가 되살린 자리를 지우지 않게
     rawSetFilters(next);
     bumpManualRevision();
-  }, [bumpManualRevision, commitGenerationScope]);
+  }, [adoptScope, bumpManualRevision]);
+  // 지금 보는 자리를 다음 생성 위치·무장 폴더로(2026-10-14 Jay — 사이드바의 표시 = 화면). 자리를 바꾸지 않고 표시만 화면에 맞춘다: 공간을 바꿔
+  //  공유 탭의 자리만 비운 뒤(표시 전용) 탭을 누를 때 · 앱을 켤 때 저장된 두 값이 갈려 있을 때(App). 휴지통 보기는 생성 목적지가 아니다.
+  const adoptShownLocation = useCallback(() => {
+    if (!filtersRef.current.deleted_only) adoptScope(generationScopeOf(filtersRef.current));
+  }, [adoptScope]);
 
   const setSharedWorkspaceMode = useCallback((mode: SharedWorkspaceMode) => {
     setSharedView({ key: workspaceKey, mode });
@@ -474,7 +481,7 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext, teamP
   });
 
   return {
-    filters: shown, storedTab: filters.tab, setFilters, patch, restoreLocation, restoredLocationRef, // storedTab = 저장된 탭 — 뒤로가기 기록(useAppNavigation)이 쓴다
+    filters: shown, storedTab: filters.tab, setFilters, patch, restoreLocation, adoptShownLocation, restoredLocationRef, // storedTab = 저장된 탭 — 뒤로가기 기록(useAppNavigation)이 쓴다
     generationScope, followLocation, manualRevision, followRevision,
     teamScopeKey, teamAutoReady,
     typeFilter, setTypeFilter,

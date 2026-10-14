@@ -9,8 +9,10 @@ import {
   FILTER_AUTO_TAGS_KEY,
   FILTERS_FORMAT_KEY,
   FILTERS_KEY,
+  FILTERS_VIEW_KEY,
   GENERATION_SCOPE_KEY,
 } from "../src/lib/useLibraryPersistence";
+import { workspaceViewKey } from "../src/lib/libraryWorkspaceScope";
 
 function fakeStore(data: Record<string, string>): Store {
   return {
@@ -226,8 +228,9 @@ describe("Resolve 라이브러리 따라가기", () => {
     }
   });
 
-  // 2026-10-13 ①②: 공유 탭의 마지막 자리 기억(adopt 없음)은 보는 자리만 되살린다 — 생성 위치·무장 폴더는 그대로, 선택은 비우고 수동 횟수는 올린다
-  it("restoreLocation(기억 되살림) 은 보는 자리만 되살린다 — 생성 위치·무장 폴더 보존, 선택 비움·수동 횟수 +1, 같은 자리면 아무 일도 없다", () => {
+  // 2026-10-13 ①②: adopt 없는 되살림은 보는 자리만 — 생성 위치·무장 폴더는 그대로, 선택은 비우고 수동 횟수는 올린다(공유 탭의 마지막 자리 기억은
+  //  2026-10-14 부터 App 이 adopt 로 부른다 — 사이드바의 표시 = 화면)
+  it("restoreLocation(adopt 없음) 은 보는 자리만 되살린다 — 생성 위치·무장 폴더 보존, 선택 비움·수동 횟수 +1, 같은 자리면 아무 일도 없다", () => {
     mount(fakeStore({
       [FILTERS_KEY]: JSON.stringify({ tab: "team", project_id: "p1", folder_path: "e001", [FILTERS_FORMAT_KEY]: "2" }),
       [GENERATION_SCOPE_KEY]: JSON.stringify({ project_id: "create", folder_path: "dest" }),
@@ -292,6 +295,35 @@ describe("Resolve 라이브러리 따라가기", () => {
     act(() => latest.restoreLocation({ project_id: "p1" }));          // 보기만 맨 위로
     act(() => latest.restoreLocation({ project_id: "p1", folder_path: "e035" }, true)); // 다시 그 폴더로(생성 위치는 계속 e035 였다)
     expect([latest.armedFolder === armed, latest.armedFolder]).toEqual([true, { projectId: "p1", path: "e035" }]);
+  });
+
+  // 2026-10-14(Jay — 사이드바의 표시 = 화면, Codex 코드 리뷰): 공간을 바꾸면 공유 탭의 자리를 표시 전용으로 비운다(생성 위치는 그대로). 그 뒤 탭을
+  //  누르면 setFilters 는 자리가 같아(맨 위 → 맨 위) 생성 위치를 안 건드려 사이드바에 옛 폴더가 남았다 — App 이 adoptShownLocation 으로 맞춘다.
+  it("adoptShownLocation — 지금 보는 자리를 생성 위치·무장 폴더로(공간 전환 뒤 탭 누름의 경우) · 휴지통 보기는 그대로", () => {
+    const w1 = { scope: "team", id: "ws-1", name: "팀1" } as never;
+    const w2 = { scope: "team", id: "ws-2", name: "팀2" } as never;
+    const store = fakeStore({
+      [FILTERS_KEY]: JSON.stringify({ tab: "team", project_id: "p1", folder_path: "e035", [FILTERS_FORMAT_KEY]: "2", [FILTERS_VIEW_KEY]: workspaceViewKey(w1) }),
+      [GENERATION_SCOPE_KEY]: JSON.stringify({ project_id: "p1", folder_path: "e035" }),
+      armedFolder: JSON.stringify({ projectId: "p1", path: "e035" }),
+    });
+    function Probe({ workspace }: { workspace: Parameters<typeof useLibraryFilters>[1] }) {
+      latest = useLibraryFilters(store, workspace);
+      return null;
+    }
+    act(() => root.render(<Probe workspace={w1} />));
+    expect(latest.filters).toMatchObject({ tab: "team", project_id: "p1", folder_path: "e035" });
+    act(() => root.render(<Probe workspace={w2} />)); // 공간 전환 — 공유 탭의 자리만 비운다(표시 전용)
+    expect([latest.filters.project_id, latest.generationScope, latest.armedFolder])
+      .toEqual([undefined, { project_id: "p1", folder_path: "e035" }, { projectId: "p1", path: "e035" }]);
+    act(() => latest.setFilters((current) => ({ tab: "team", workspace_ids: current.workspace_ids }))); // 탭 누름 — 자리가 같아 그대로다
+    expect(latest.generationScope).toEqual({ project_id: "p1", folder_path: "e035" });
+    act(() => latest.adoptShownLocation());
+    expect([latest.generationScope, latest.armedFolder]).toEqual([{}, null]); // 화면(맨 위)과 같게
+    act(() => latest.restoreLocation({ project_id: "p1", folder_path: "e001" }, true)); // 다른 자리로(함께)
+    act(() => latest.restoreLocation({ project_id: "p1", deleted_only: true })); // 휴지통 보기에서는
+    act(() => latest.adoptShownLocation()); // 아무 일도 없다 — 휴지통은 생성 목적지가 아니다
+    expect([latest.generationScope, latest.armedFolder]).toEqual([{ project_id: "p1", folder_path: "e001" }, { projectId: "p1", path: "e001" }]);
   });
 
   it("teamScopeKey·teamAutoReady — 지금 탭과 무관하게 공유 탭에 들어가면 갖게 될 공간 범위와 '확정된 자동 공간인가'를 센다", () => {
