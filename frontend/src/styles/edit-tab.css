@@ -233,14 +233,13 @@
 .ed-pstate-held { color: #ef7d8c; }
 .ed-pstate-final { color: #e8b62c; }
 .ed-prow-list {
-  display: grid; grid-template-columns: 14px minmax(0, 3fr) minmax(0, 1.2fr) minmax(0, 1.5fr) 44px 84px;
+  display: grid; grid-template-columns: 14px minmax(0, 3fr) minmax(0, 1.2fr) minmax(0, 1.5fr) 44px 56px;
   align-items: center; gap: 8px; height: 28px; padding: 0 6px; border-radius: 6px;
 }
 .ed-prow-list > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ed-prow-list.ed-placed > span:last-child { color: var(--accent); font-weight: 700; }
-/* 마지막 칸 '트랙 · 소스' — V1 + 소스 판의 표(84px 에 "V2 소스 L·R" 이 들어간다) */
-.ed-ptrack { display: flex; align-items: center; gap: 4px; }
-.ed-ptrack > .cd-mark { margin-left: 0; padding: 0 6px; }
+/* 마지막 칸 '트랙·소스' — 작은 카드와 같은 짧은 글(V10·L·R 이 56px 에 든다). 소스 판에 떠 있으면 안 넣었어도 라임 */
+.ed-prow-list > span.ed-psrc { color: var(--accent); font-weight: 700; }
 .ed-prow-head { position: sticky; top: 0; z-index: 1; height: 26px; font-size: 11px; color: var(--muted2); background: var(--panel); border-bottom: 1px solid var(--border); border-radius: 0; }
 .ed-prow-head:hover { background: var(--panel); }
 /* 다빈치(미디어 풀)에서 고른 것(Jay 2026-10-14) — 공유 탭의 다빈치 확인 표시(resolve-library.css)와 같은 빨강·빛.
