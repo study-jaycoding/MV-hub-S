@@ -216,6 +216,32 @@ it("풀의 카드를 뷰어에 놓으면 그 카드를 소스 클립으로 본�
   expect([stored(), flashed]).toEqual([null, []]);
 });
 
+it("뷰어에 놓기: 소스 테이프 판은 소스 클립으로 바뀐다 — 두 판이면 어느 판에 놓아도 소스 쪽 판만 바뀌고 타임라인 판은 그대로", () => {
+  localStorage.setItem("ch.editTimeline.ui", JSON.stringify({ dual: true, views: ["timeline", "tape"] }));
+  mountOn("c1");
+  const shown = () => [...document.querySelectorAll<HTMLElement>(".ed-top > .ed-view:not([hidden])")]
+    .sort((a, b) => Number(a.style.order) - Number(b.style.order)).map((item) => item.dataset.view);
+  const pane = (mode: string) => document.querySelector<HTMLElement>(`.ed-top > .ed-view[data-view="${mode}"]:not([hidden])`)!;
+  const picked = () => poolCards().map((card) => card.classList.contains("ed-picked"));
+  expect(shown()).toEqual(["timeline", "tape"]);
+
+  dragCard(poolCards()[1], pane("timeline")); // 타임라인 판에 놓았다 — 테이프 판이 소스 클립이 된다
+  dropCard();
+  expect(shown()).toEqual(["timeline", "source"]);
+  expect(picked()).toEqual([false, true]);
+
+  act(() => { localStorage.setItem("ch.editTimeline.ui", JSON.stringify({ dual: true, views: ["tape", "timeline"] })); });
+  act(() => root.unmount());
+  root = createRoot(host);
+  mountOn("c1");
+  expect(shown()).toEqual(["tape", "timeline"]);
+  dragCard(poolCards()[0], pane("tape")); // 테이프 판에 놓았다 — 그 판이 소스 클립이 된다
+  dropCard();
+  expect(shown()).toEqual(["source", "timeline"]);
+  expect(picked()).toEqual([true, false]);
+  expect([stored(), flashed]).toEqual([null, []]);
+});
+
 it("카드 끌기: 시작하면 재생이 멈추고 끄는 동안 키는 쉰다 — Esc·창이 초점을 잃음·카드가 목록에서 사라짐은 버린다", () => {
   mountOn("c1");
   act(() => document.querySelector<HTMLButtonElement>('.ed-top > .ed-view[data-view="timeline"] .ed-play')!.click());

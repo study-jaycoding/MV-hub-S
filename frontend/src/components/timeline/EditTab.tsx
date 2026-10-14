@@ -766,8 +766,8 @@ function EditTabInner({
   //  · 그사이 문서가 갈리거나(rev) 풀의 컷이 바뀌거나 그 카드가 목록에서 사라지면 끌기를 버린다.
   //  · 놓을 곳 = 포인터 바로 밑에 실제로 보이는 영상 줄(data-track)뿐 — 소리 줄·눈금자·컷 머리·창에 덮인 곳·화면 밖은 아니다.
   //    가로 위치는 보지 않는다(그 카드의 컷 칸에 들어간다). 이미 그 트랙에 있거나 잠겼으면 아무 일도 없다(메뉴의 흐린 줄과 같다).
-  //  · 뷰어에 놓으면(Jay 2026-10-14) 그 카드를 소스 클립으로 본다 — 소스 판이 없으면 놓은 판을 소스 클립으로 바꾼다(다이나믹 트림
-  //    모드는 끈다). 편집 문서는 바꾸지 않는다(풀에서 카드를 누른 것과 같다). view = 지금 뷰어 위다(안내 글).
+  //  · 뷰어에 놓으면(Jay 2026-10-14) 그 카드를 소스 클립으로 본다 — 소스 판이 없으면 놓은 판을, 소스 테이프 판이면 그 판을 소스
+  //    클립으로 바꾼다(다이나믹 트림 모드는 끈다). 편집 문서는 바꾸지 않는다(풀에서 카드를 누른 것과 같다). view = 지금 뷰어 위다(안내 글).
   type CardDrag = { id: string; cut: string; rev: number; hint: Omit<DropHint, "cut"> | null; view?: boolean };
   const [cardDrag, setCardDragState] = useState<CardDrag | null>(null);
   const cardDragLive = useRef(cardDrag);
@@ -810,12 +810,13 @@ function EditTabInner({
     if (hint && hint.state !== "here" && hint.state !== "locked") placeCard(drag.id, drag.cut, hint.track, { rev: drag.rev });
     const gen = pane && byCut.get(drag.cut)?.find((item) => item.id === drag.id);
     if (!pane || !gen) return;
-    if (srcShown) setKeyTarget("source"); // 소스 판이 이미 있으면 그 판으로 본다
+    if (srcShown && !tapeOn) setKeyTarget("source"); // 소스 클립 판이 이미 있으면 그 판으로 본다
+    else if (srcShown) setMode(srcOrder, "source"); // 소스 테이프 판은 소스 클립으로 바꾼다 — 테이프면 이어서 틀고 컷을 옮기면 사라진다(Codex 코드 리뷰)
     else {
       setTrim(false);
       setMode(Math.max(0, Number(pane.style.order) - 1), "source"); // 놓은 판(EditViewer 의 style.order = 자리 + 1)을 소스 클립으로
     }
-    pickInPool(gen, false);
+    pickGen(gen, false);
   };
   const viewerAt = (x: number, y: number) => document.elementFromPoint(x, y)?.closest<HTMLElement>(".ed-view:not([hidden])") ?? null;
   const cardDragging = !!cardDrag;
