@@ -32,10 +32,12 @@ export interface ViewerControls {
   toggle: () => void;
   stop: () => void;
   shuttle: (dir: 1 | -1) => void;
-  seek: (time: number) => void;
+  seek: (time: number) => void; // 재생바 누르기·끌기 — 이 판만(다이나믹 재생 모드에서도)
+  edge: (end: boolean) => void; // 처음으로·끝으로 단추 — 다이나믹 재생 모드면 두 판 같이(2026-10-14)
 }
 export interface ViewerProps {
   order: number; // 보이는 자리(0 = 왼쪽). -1 = 안 보인다(요소는 남는다)
+  place?: 0 | 1; // 판 자리(왼쪽 0 · 오른쪽 1 — 싱글이면 1). 카드를 놓은 판을 찾는다(data-place)
   mode: ViewMode;
   options: ViewOption[];
   onMode: (next: ViewMode) => void;
@@ -49,7 +51,7 @@ export interface ViewerProps {
   marks: readonly number[]; // 타임바의 얇은 줄(소스 테이프의 클립 경계, 초)
   io?: EditMarks | null; // 마크 인/아웃 — 타임바 위의 구간 선과 아래의 회색 꼬리표
   flags?: readonly { time: number; color?: string }[]; // 북마크 — 타임바 위의 색 꼬리표
-  over?: ReactNode; // 무대를 덮는 것(다이나믹 트림 모드의 두 칸) — 밑의 영상 요소는 그대로 둔다
+  over?: ReactNode; // 무대를 덮는 것 — 밑의 영상 요소는 그대로 둔다
   registerPaint: (paint: (time: number) => void) => () => void; // 이 판의 시각·타임바를 그릴 함수를 시계에 건다
   controls: ViewerControls;
   loop: boolean;
@@ -69,7 +71,7 @@ export interface ViewerProps {
 const NO_FLAGS: readonly { time: number; color?: string }[] = [];
 
 export function EditViewer({
-  order, mode, options, onMode, shown, videoRef, spareRef, muted, playing, rate, total, marks, io = null, flags = NO_FLAGS,
+  order, place, mode, options, onMode, shown, videoRef, spareRef, muted, playing, rate, total, marks, io = null, flags = NO_FLAGS,
   over = null, registerPaint, controls,
   loop, onLoop, speed, onSpeed, volume, onVolume, label, detail, empty, active, onActivate, dualButton,
 }: ViewerProps) {
@@ -147,7 +149,7 @@ export function EditViewer({
 
   return (
     <section className={"ed-view" + (isSourceView(mode) ? " ed-src" : "") + (active ? " ed-view-on" : "")}
-      hidden={order < 0} style={{ order: order + 1 }} data-view={String(mode)}
+      hidden={order < 0} style={{ order: order + 1 }} data-view={String(mode)} data-place={place}
       // 누르면(마우스), 또는 이 판의 단추를 키보드로 실행하면(click) 이 판이 재생 키를 받는다. 초점이 들어온 것만으로는
       //  바꾸지 않는다 — 우클릭 메뉴가 닫히며 초점을 돌려줄 때 재생 대상이 엉뚱하게 바뀐다(Codex 코드 리뷰).
       onMouseDownCapture={onActivate} onClickCapture={onActivate}>
@@ -237,7 +239,7 @@ export function EditViewer({
           </div>
         </div>
         <div className="ed-trans">
-          {button("first", t("처음으로 (Home)"), () => controls.seek(0),
+          {button("first", t("처음으로 (Home)"), () => controls.edge(false),
             <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><rect x="1" y="1" width="2" height="12" /><path d="M15 1v12L5 7z" /></svg>)}
           {button("rev", t("역재생 (J)"), () => controls.shuttle(-1),
             <svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"><path d="M11 1v12L1 7z" /></svg>)}
@@ -250,7 +252,7 @@ export function EditViewer({
               <svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"><path d="M2 1v12l9-6z" /></svg>
             )}
           </button>
-          {button("last", t("끝으로 (End)"), () => controls.seek(total),
+          {button("last", t("끝으로 (End)"), () => controls.edge(true),
             <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><rect x="13" y="1" width="2" height="12" /><path d="M1 1v12l10-6z" /></svg>)}
           {button("loop", t("반복 재생"), onLoop,
             <svg className="ed-line" width="18" height="14" viewBox="0 0 18 14" aria-hidden="true"><path d="M5 3h8a4 4 0 0 1 0 8H5a4 4 0 0 1 0-8" /><path d="M8 .6 5 3l3 2.4" /></svg>, loop)}

@@ -68,9 +68,8 @@ const EN: Record<string, string> = {
   "모델": "Model",
   "길이": "Length",
   "트랙": "Track",
-  "다이나믹 트림 모드": "Dynamic Trim Mode",
-  "다이나믹 트림 모드 (W) — 나뉜 뷰어를 한 창으로 합쳐 편집점의 앞 컷 | 뒤 컷을 이어 봅니다 · ↑↓ 편집점 · Space 앞뒤 2초 재생":
-    "Dynamic Trim Mode (W) — merges the viewers into one window showing outgoing | incoming at the edit · ↑↓ edit points · Space plays 2s around",
+  "다이나믹 재생 모드 (W) — 두 화면의 재생을 한 번에: 재생·멈춤·J/K/L·프레임·처음/끝 · 재생바는 화면마다 따로":
+    "Dynamic Playback Mode (W) — drive both viewers at once: play·stop·J/K/L·frames·start/end · each viewer's timebar stays its own",
   "다이나믹 트림 모드 끄기 (W)": "Exit Dynamic Trim Mode (W)",
   "타임라인의 처음입니다.": "Start of the timeline.",
   "타임라인의 끝입니다.": "End of the timeline.",
