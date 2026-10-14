@@ -83,7 +83,7 @@ import {
   useEditGenerations,
   useEditProjects,
 } from "../../lib/useEditSequence";
-import { dropQueuedVideoMeasures, knownVideoSeconds, measureVideoSeconds } from "../../lib/videoDuration";
+import { dropQueuedVideoMeasures, knownVideoSeconds, measureVideoSeconds, measuredExactly } from "../../lib/videoDuration";
 import { editMarkLabel } from "./EditCard";
 import { EditExportConfirm } from "./EditExportConfirm";
 import { EditMarkerColorMenu, EditMarkerMenu } from "./EditMarkerMenu";
@@ -378,6 +378,10 @@ function EditTabInner({
       const key = clipKey(clip);
       void measureVideoSeconds(asset.file_path).then((seconds) => {
         if (!alive || !seconds || seconds === clip.dur) return;
+        // video.duration 으로 잰 값(서버가 그림 길이를 못 줬다)은 1프레임 안쪽이면 덮지 않는다 — 소리까지 친 길이라 그림 길이보다
+        //  1프레임 길게 나와, 다른 창이 그림 길이로 적은 값을 되돌리며 두 창이 서로 고쳐 쓴다(Codex 코드 리뷰 P1). 요청 길이처럼
+        //  크게 다른 값은 그대로 고친다.
+        if (!measuredExactly(asset.file_path) && Math.abs(seconds - (clip.dur ?? 0)) <= 1 / EDIT_FPS + 1e-9) return;
         measured.set(key, seconds);
         timer ||= window.setTimeout(save, MEASURE_SAVE_MS);
       });

@@ -30,11 +30,18 @@ def full(kind: str, body: bytes, version: int = 0) -> bytes:
     return box(kind, bytes([version, 0, 0, 0]) + body)
 
 
-def trak(handler: bytes, frames: int, timescale: int, deltas, elst: int | None = None) -> bytes:
+MOVIE_SCALE = 1000  # mvhd 의 timescale — 편집 목록의 구간 길이 단위
+
+
+def edit(segment: int, media_time: int = 1024, rate: tuple[int, int] = (1, 0)) -> bytes:
+    return struct.pack(">Iihh", segment, media_time, *rate)
+
+
+def trak(handler: bytes, frames: int, timescale: int, deltas, elst: list[bytes] | None = None) -> bytes:
     stts = struct.pack(">I", len(deltas)) + b"".join(struct.pack(">II", count, delta) for count, delta in deltas)
     parts = []
     if elst is not None:
-        parts.append(box("edts", full("elst", struct.pack(">I", elst) + b"\0" * 12 * elst)))
+        parts.append(box("edts", full("elst", struct.pack(">I", len(elst)) + b"".join(elst))))
     parts.append(box("mdia",
         full("mdhd", struct.pack(">IIII", 0, 0, timescale, 0) + b"\0" * 4),
         full("hdlr", b"\0" * 4 + handler + b"\0" * 12),
@@ -43,13 +50,14 @@ def trak(handler: bytes, frames: int, timescale: int, deltas, elst: int | None =
     return box("trak", *parts)
 
 
-# Seedance 원본과 같은 모양 — 그림 97프레임(12288 / 512 = 24fps) · 소리 트랙 · moov 가 파일 끝
-SEEDANCE_VIDEO = trak(b"vide", 97, 12288, [(97, 512)], elst=1)
+# Seedance 원본과 같은 모양 — 그림 97프레임(12288 / 512 = 24fps) · 소리 트랙 · moov 가 파일 끝 · 편집 목록 한 줄(시작 보정 1024,
+#  구간 4042/1000초 = 그림 전체)
+SEEDANCE_VIDEO = trak(b"vide", 97, 12288, [(97, 512)], elst=[edit(4042)])
 SOUND = trak(b"soun", 190, 44100, [(190, 1024)])
 
 
 def moov(*traks: bytes, extra: bytes = b"") -> bytes:
-    return box("moov", full("mvhd", b"\0" * 96), *traks, extra)
+    return box("moov", full("mvhd", struct.pack(">IIII", 0, 0, MOVIE_SCALE, 0) + b"\0" * 80), *traks, extra)
 
 
 def mp4(moov_box: bytes, mdat_size: int = 4096, faststart: bool = False) -> bytes:
@@ -80,13 +88,23 @@ def test_seedance_shape_reads_picture_frames_not_sound(tmp_path):
     (moov(trak(b"vide", 97, 12288, [(90, 512)])), "stts 합이 프레임 수와 다르다"),
     (moov(SEEDANCE_VIDEO, SEEDANCE_VIDEO), "그림 트랙이 둘"),
     (moov(SOUND), "그림 트랙이 없다"),
-    (moov(trak(b"vide", 97, 12288, [(97, 512)], elst=2)), "편집 목록이 여러 줄"),
+    (moov(trak(b"vide", 97, 12288, [(97, 512)], elst=[edit(2000), edit(2042)])), "편집 목록이 여러 줄"),
+    # Codex 코드 리뷰 — 줄 수만 보면 아래를 그림 전체로 읽었다
+    (moov(trak(b"vide", 240, 12288, [(240, 512)], elst=[edit(2000)])), "10초 중 2초만 튼다"),
+    (moov(trak(b"vide", 97, 12288, [(97, 512)], elst=[edit(4042, rate=(2, 0))])), "2배속"),
+    (moov(trak(b"vide", 97, 12288, [(97, 512)], elst=[edit(4042, media_time=-1)])), "빈 구간"),
+    (moov(trak(b"vide", 97, 12288, [(97, 512)], elst=[b""])), "한 줄이라면서 본문이 없다"),
     (moov(SEEDANCE_VIDEO, extra=box("mvex")), "분할 MP4"),
     (moov(trak(b"vide", 97, 0, [(97, 512)])), "timescale 0"),
 ])
 def test_unusual_files_are_refused(moov_box, reason):
     with pytest.raises(PictureError):
         picture_from_moov(body_of(moov_box))
+
+
+def test_edit_list_that_plays_everything_is_accepted():
+    for elst in ([edit(0)], [edit(4042, media_time=0)], []):  # 구간 0 = 끝까지 · 시작 보정 없음 · 빈 목록
+        assert picture_from_moov(body_of(moov(trak(b"vide", 97, 12288, [(97, 512)], elst=elst)))).frames == 97
 
 
 def test_truncated_or_lying_boxes_are_refused(tmp_path):
@@ -176,6 +194,58 @@ def test_remote_gives_up_after_too_many_requests(public_url):
     with pytest.raises(PictureError):
         remote_picture(public_url, opener=cdn)
     assert len(cdn.ranges) == mp4_picture.MAX_REQUESTS
+
+
+def test_remote_deadline_counts_from_the_address_check_and_caps_each_request(public_url):
+    # Codex 코드 리뷰 — 시한이 주소 확인(DNS) 뒤에야 시작했고, 요청마다 15초를 통째로 줬다
+    now = [0.0]
+    cdn = FakeCDN(mp4(moov(SEEDANCE_VIDEO)))
+    timeouts = []
+    real_open = cdn.open
+
+    def slow_open(request, timeout):
+        timeouts.append(timeout)
+        now[0] += 6.0  # 요청마다 6초 걸린다
+        return real_open(request, timeout)
+
+    cdn.open = slow_open
+
+    def slow_check(_url):
+        now[0] += 5.0  # 주소 확인에 5초
+
+    with mock.patch("app.services.net_guard.assert_public_http_url", side_effect=slow_check):
+        with pytest.raises(PictureError):
+            remote_picture(public_url, opener=cdn, clock=lambda: now[0])
+    assert timeouts[0] == pytest.approx(10.0)  # 첫 요청: 남은 10초(15 − 5) — 한 번의 시한(10초)과 같다
+    assert timeouts[1] == pytest.approx(4.0)  # 둘째: 15 − 5 − 6
+    assert len(timeouts) == 2  # 셋째 전에 시간이 다 됐다
+
+
+def test_endpoint_gives_up_waiting_and_frees_the_slot():
+    import threading
+
+    release = threading.Event()
+
+    def stuck(_url):
+        release.wait(5)
+        return mp4_picture.Picture(frames=97, fps=24.0)
+
+    async def run():
+        with (
+            mock.patch.object(library._proxy, "is_shared_team_server", return_value=False),
+            mock.patch.object(library.mp4_picture, "remote_picture_cached", side_effect=stuck),
+            mock.patch.object(library, "PICTURE_WAIT", 0.05),
+        ):
+            with pytest.raises(HTTPException) as late:
+                await library.media_picture("https://cdn.example/slow.mp4")
+            free = library._PICTURE_SLOTS._value
+            release.set()  # 남은 스레드를 풀어 준다(asyncio.run 이 끝나며 기다린다)
+            return late.value.status_code, free
+
+    try:
+        assert asyncio.run(run()) == (504, 4)  # 답했고, 자리는 비었다
+    finally:
+        release.set()
 
 
 def test_remote_refuses_private_addresses():

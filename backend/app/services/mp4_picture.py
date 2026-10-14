@@ -124,12 +124,43 @@ def picture_from_moov(moov: bytes) -> Picture:
 
     edts = [(b, s) for name, b, s in _children(moov, start, stop) if name == "edts"]
     if edts:
-        elst = _one(moov, *edts[0], "elst")
-        _full(moov, *elst, 8)
-        count = struct.unpack_from(">I", moov, elst[0] + 4)[0]
-        if count > 1:  # 한 줄(ffmpeg 가 넣는 시작 보정)만 받는다 — 여러 줄은 재생 구간이 따로 놀 수 있다
-            raise PictureError("편집 목록이 여러 줄이다")
+        _check_edit_list(moov, _one(moov, *edts[0], "elst"), frames, delta, timescale)
     return Picture(frames=frames, fps=timescale / delta)
+
+
+def _check_edit_list(moov: bytes, elst: tuple[int, int], frames: int, delta: int, timescale: int) -> None:
+    """편집 목록이 그림 전체를 1배속으로 트는 한 줄(ffmpeg 의 시작 보정)인지 본다 — 아니면 PictureError(Codex 코드 리뷰).
+    줄 수만 보면 '240프레임 중 2초만 튼다'는 파일도 10초로 읽는다. 재생 구간 길이(segment_duration — moov 의 mvhd 단위)가 그림
+    길이와 반 프레임 안으로 같아야 하고, 시작점(media_time)은 0 이상, 배속은 1 이어야 한다. 구간 길이 0 은 '끝까지'로 본다."""
+    version = _full(moov, *elst, 8)
+    count = struct.unpack_from(">I", moov, elst[0] + 4)[0]
+    if count == 0:
+        return
+    if count > 1:  # 여러 줄은 재생 구간이 따로 놀 수 있다
+        raise PictureError("편집 목록이 여러 줄이다")
+    if version == 1:
+        _full(moov, *elst, 8 + 20)
+        segment, media_time = struct.unpack_from(">Qq", moov, elst[0] + 8)
+        rate = struct.unpack_from(">hh", moov, elst[0] + 24)
+    else:
+        _full(moov, *elst, 8 + 12)
+        segment, media_time = struct.unpack_from(">Ii", moov, elst[0] + 8)
+        rate = struct.unpack_from(">hh", moov, elst[0] + 16)
+    if media_time < 0 or rate != (1, 0):
+        raise PictureError("편집 목록이 빈 구간이거나 배속이 다르다")
+    if segment:
+        mvhd = _one(moov, 0, len(moov), "mvhd")
+        if _full(moov, *mvhd, 4) == 1:
+            _full(moov, *mvhd, 24)
+            movie_scale = struct.unpack_from(">I", moov, mvhd[0] + 20)[0]
+        else:
+            _full(moov, *mvhd, 16)
+            movie_scale = struct.unpack_from(">I", moov, mvhd[0] + 12)[0]
+        if movie_scale <= 0:
+            raise PictureError("mvhd 의 timescale 이 0 이다")
+        shown = segment * timescale / movie_scale  # 그림 트랙 단위
+        if abs(shown - frames * delta) * 2 > delta:
+            raise PictureError("편집 목록이 그림 일부만 튼다")
 
 
 def read_picture(read_at: Callable[[int, int], bytes], size: int) -> Picture:
@@ -193,8 +224,8 @@ def file_picture(path) -> Picture:
 # 원격(공유받은 생성물의 CDN 주소) — 머리 상자와 moov 만 Range 요청으로 읽는다(mdat 는 받지 않는다).
 #  요청은 206 + 그 범위의 Content-Range 만 받는다: 범위를 무시하는 서버(200)는 파일 전체를 보내므로 그만둔다.
 #  지문 수집기(result_probe)와 같은 방어 — 공용 주소만·리다이렉트 재검사(guarded_opener)·압축 본문 거절·전체 시한.
-_IO_TIMEOUT = 15  # 연결·읽기 한 번
-_TOTAL_TIMEOUT = 30.0  # 한 파일 전체
+_IO_TIMEOUT = 10  # 연결·읽기 한 번
+_TOTAL_TIMEOUT = 15.0  # 한 파일 전체 — 라우터(PICTURE_WAIT 18초)·화면(lib/videoDuration 20초)보다 짧다
 MAX_REQUESTS = 12  # 머리 상자마다 한 번 + moov 한 번 — 일반 MP4 는 2~6번이다
 _CONTENT_RANGE_RE = re.compile(r"^bytes (\d+)-(\d+)/(\d+)$")
 
@@ -203,11 +234,11 @@ def remote_picture(url: str, *, opener=None, clock: Callable[[], float] = time.m
     from .net_guard import BlockedURLError, assert_public_http_url, guarded_opener
     from .result_probe import ProbeError, _read_exact
 
+    deadline = clock() + _TOTAL_TIMEOUT  # 주소 확인(DNS)부터 센다(Codex 코드 리뷰)
     try:
         assert_public_http_url(url)
     except BlockedURLError as exc:
         raise PictureError("허용되지 않는 주소다") from exc
-    deadline = clock() + _TOTAL_TIMEOUT
     use = opener or guarded_opener()
     seen = {"requests": 0, "total": None}
 
@@ -215,13 +246,19 @@ def remote_picture(url: str, *, opener=None, clock: Callable[[], float] = time.m
         seen["requests"] += 1
         if seen["requests"] > MAX_REQUESTS:
             raise PictureError("요청이 너무 많다")
+        left = deadline - clock()
+        if left <= 0:
+            raise PictureError("시간이 다 됐다")
+        # 요청마다 남은 시간만 준다. ponytail: 소켓 시한은 recv 한 번마다라, 머리글을 한 바이트씩 흘리는 서버는 이 스레드를 그보다
+        #  오래 붙잡을 수 있다 — 화면 쪽은 라우터의 시한(PICTURE_WAIT)에서 끊고 물러난다. 끝까지 막으려면 소켓을 닫는 감시가 필요하다.
+        timeout = min(_IO_TIMEOUT, left)
         request = urllib.request.Request(url, headers={
             "Range": f"bytes={offset}-{offset + length - 1}",
             "Accept-Encoding": "identity",
             "User-Agent": "content-hub/0.1",
         })
         try:
-            with use.open(request, timeout=_IO_TIMEOUT) as resp:
+            with use.open(request, timeout=timeout) as resp:
                 if (resp.headers.get("Content-Encoding") or "").strip().lower() not in ("", "identity"):
                     raise PictureError("압축된 본문이다")
                 if resp.getcode() != 206:

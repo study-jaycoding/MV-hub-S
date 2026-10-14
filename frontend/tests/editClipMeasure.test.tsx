@@ -21,6 +21,7 @@ const video = (id: string, cut: string, duration?: number) => gen(id, cut, "vide
 // 길이 재기(lib/videoDuration)의 대역 — 받는 중인 주소는 한 약속에 합류하고, 잰 값은 이 페이지에서 기억한다(known). 결과는 시험이 준다.
 const probes = vi.hoisted(() => ({
   asked: [] as string[],
+  inexact: new Set<string>(), // 서버가 그림 길이를 못 줘 video.duration 으로 잰 주소(기본은 그림 길이로 쟀다)
   known: new Map<string, number>(),
   inflight: new Map<string, Promise<number | null>>(),
   finish: new Map<string, (seconds: number | null) => void>(),
@@ -45,6 +46,7 @@ vi.mock("../src/lib/videoDuration", () => ({
     return pending;
   },
   dropQueuedVideoMeasures: () => {},
+  measuredExactly: (url: string) => !probes.inexact.has(url),
 }));
 const world = vi.hoisted(() => ({ gens: [] as unknown[] }));
 vi.mock("../src/lib/resolveTransfer", async () => ({
@@ -114,6 +116,7 @@ beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(() => Promise.resolve());
   Object.assign(Element.prototype, { setPointerCapture() {}, hasPointerCapture: () => false, releasePointerCapture() {} });
   probes.asked.length = 0;
+  probes.inexact.clear();
   for (const map of [probes.known, probes.inflight, probes.finish]) map.clear();
   flashed.length = 0;
   host = document.createElement("div");
@@ -125,6 +128,27 @@ afterEach(() => {
   host.remove();
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+// Codex 코드 리뷰 P1(2026-10-14) — 한 창은 서버에서 그림 길이(97프레임)를, 다른 창은 서버가 잠깐 실패해 video.duration(소리까지 —
+//  98프레임)을 쟀다. 그 값으로 덮으면 두 창이 저장을 받을 때마다 서로 되돌렸다(저장 반복·되돌리기 기록 초기화).
+it("video.duration 으로 잰 값은 1프레임 안쪽이면 적힌 값을 덮지 않는다 — 다른 창의 저장을 받아도 되돌리지 않는다", async () => {
+  world.gens = [video("m", "c1", 4), video("d", "c2", 8)];
+  seed([{ cut: "c1", gen: "m", track: 1, dur: 97 / 24 }, { cut: "c2", gen: "d", track: 1, dur: 8 }]);
+  probes.inexact.add("/media/m.mp4");
+  probes.inexact.add("/media/d.mp4");
+  await mount();
+  await arrive("m", 98 / 24); // 그림 길이로 적힌 것보다 1프레임 길다 — 덮지 않는다
+  await arrive("d", 10); // 요청 길이(8)와 크게 다르다 — 고친다
+  act(() => { vi.advanceTimersByTime(MEASURE_SAVE_MS); });
+  expect(durs()).toEqual({ m: 97 / 24, d: 10 });
+
+  const writes = countWrites();
+  act(() => { window.dispatchEvent(new StorageEvent("storage", { key: DOC_KEY })); }); // 다른 창이 저장했다
+  await settle();
+  act(() => { vi.advanceTimersByTime(MEASURE_SAVE_MS); });
+  expect([writes(), durs()]).toEqual([0, { m: 97 / 24, d: 10 }]);
+  expect(flashed).toEqual([]);
 });
 
 // 적힌 길이만 보고 '이미 쟀다'고 건너뛰지 않는다(그렇게 넣었다가 뺐다 — Codex 코드 리뷰 4회째): dur 에는 요청 길이와 실측값이 구분 없이
