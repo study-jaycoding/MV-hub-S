@@ -471,6 +471,24 @@ it("다빈치에서 고른 것 — 풀의 세 보기와 타임라인 클립에 �
   expect(scroll.scrollLeft).toBeGreaterThan(0);
 });
 
+// 40회차(격리 실측 — 카드 300장, 프롬프트 평균 1만 1천 자·최대 3만): 줄에 원문을 다 넣으면 보기 전환에 배치만 0.2~0.46초가 들어 화면이
+//  멈췄다. 줄에는 400자만 넣고, 검색은 원문 전체로 한다.
+it("미디어 풀: 긴 프롬프트는 줄에 400자만 넣는다 — 검색은 원문 끝의 글도 찾는다", () => {
+  world.gens = [gen("a", "c1", { prompt: "가".repeat(600) + " 끝말" }), gen("b", "c1")];
+  seed([{ cut: "c1", gen: "b", track: 1 }]);
+  mount();
+  act(() => cutCell("c1").click());
+  const lengths = (kind: string) => poolRows(kind).map((row) => row.querySelector(".ed-pprompt")!.textContent!.length);
+  for (const [view, kind] of [["메타데이터 보기", "meta"], ["목록 보기", "list"]]) {
+    act(() => poolButton("보기 방식").click());
+    act(() => popItem(view).click());
+    expect(lengths(kind)).toEqual([400, "prompt b".length]);
+  }
+  act(() => poolButton("검색").click());
+  typeIn(document.querySelector<HTMLInputElement>(".ed-pool-search")!, "끝말");
+  expect(lengths("list")).toEqual([400]);
+});
+
 it("미디어 풀: 보기 방식(썸네일·메타데이터·목록)과 크기·정렬·검색을 바꾼다 — 보기 설정은 이 브라우저에 남는다", () => {
   seed([{ cut: "c1", gen: "b", track: 1 }]);
   mount();

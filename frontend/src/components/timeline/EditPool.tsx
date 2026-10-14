@@ -35,6 +35,7 @@ const VIEWS: { id: PoolView; label: string }[] = [
 const SORTS: { id: PoolSort; label: string }[] = [
   { id: "new", label: "최신순" }, { id: "old", label: "오래된순" }, { id: "placed", label: "넣은 것 먼저" },
 ];
+const PROMPT_SHOWN = 400; // 줄에 넣는 프롬프트 글자 수(아래 promptShown) — 넓은 풀의 두 줄보다 넉넉히
 
 // 검색 = 프롬프트·모델·만든 사람에 그 글이 들어 있는 것. 정렬 = 받은 순서(최신 먼저)를 바탕으로.
 export function arrangePool(items: PoolItem[], query: string, sort: PoolSort): PoolItem[] {
@@ -221,6 +222,9 @@ export function EditPool({
     duration: gen.assets[0].type === "video" ? generationListMeta(gen.params ?? {}).duration ?? "" : "",
     state: reviewState(gen),
   });
+  // 줄에 보이는 프롬프트는 한두 줄(목록 한 줄 · 메타데이터 두 줄)인데 원문은 평균 1만 자를 넘는다(최대 3만) — 다 넣으면 카드 300장에서
+  //  보기를 바꿀 때 배치에만 0.2~0.46초가 들어 화면이 멈췄다(40회차 격리 실측). 보이는 만큼만 넣는다 — 검색은 원문 전체로 한다(arrangePool).
+  const promptShown = (prompt: string) => (prompt.length > PROMPT_SHOWN ? prompt.slice(0, PROMPT_SHOWN) : prompt);
   const stateMark = (state: string) => (
     <span className={`ed-pstate ed-pstate-${state}`}>{state === "final" ? "★" : state === "held" ? "R" : "S"}</span>
   );
@@ -357,7 +361,7 @@ export function EditPool({
                 <span className="ed-pinfo">
                   <b>{stateMark(info.state)}{[info.who, info.model].filter(Boolean).join(" · ")}{trackMark(item)}{dvMark(item)}</b>
                   <span>{[formatGenerationDateTime(item.gen.created_at), info.duration].filter(Boolean).join(" · ")}</span>
-                  <span className="ed-pprompt">{item.gen.prompt}</span>
+                  <span className="ed-pprompt">{promptShown(item.gen.prompt)}</span>
                 </span>
               </button>
             );
@@ -377,7 +381,7 @@ export function EditPool({
               <button key={item.gen.id} type="button" className={rowClass(item, "list")} {...handlersOf(item)}>
                 {stateMark(info.state)}
                 {/* 다빈치 표는 프롬프트 칸 앞에 — 마지막 칸(트랙·소스, 56px)은 그 둘의 짧은 글로 이미 찬다 */}
-                <span className="ed-pprompt">{dvMark(item)}{item.gen.prompt}</span><span>{info.who}</span><span>{info.model}</span>
+                <span className="ed-pprompt">{dvMark(item)}{promptShown(item.gen.prompt)}</span><span>{info.who}</span><span>{info.model}</span>
                 {/* 마지막 칸 = 넣은 트랙 + 소스 클립 판에 떠 있는 판 — 작은 카드와 같은 짧은 글(V1 · L · V10·L·R, Jay 2026-10-14).
                     칩에 '소스 L·R' 을 다 적으면 좁은 풀에서 잘리고 다른 칸이 사라졌다(격리 실측 — 영어·두 자리 트랙 91/84px) */}
                 <span>{info.duration}</span>
