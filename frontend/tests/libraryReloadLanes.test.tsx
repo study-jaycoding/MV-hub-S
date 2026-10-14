@@ -618,3 +618,21 @@ it("앞지르기는 낡은 요청 하나까지 — 그것이 떠 있는 동안 �
   show({ query: at("e035/C0030") });
   expect(calls().list).toBe(mark.list + 1);
 });
+
+// 52회차 격리 실측 — 공유 & 리뷰 → 워크스페이스 → 15초 안에 공유 & 리뷰: 목록은 캐시로 돌아왔는데 왼쪽 폴더·태그 숫자는 워크스페이스
+//  것(830·21)으로 남았다. 팀 탭의 15초 폴링은 가벼워서 폴더·태그를 다시 받지 않으므로 새로고침 전까지 그대로였다.
+it("15초 안에 돌아온 탭: 목록은 캐시로 두되, 다른 범위의 폴더·태그가 남아 있으면 그것만 다시 받는다", async () => {
+  vi.mocked(api.projects).mockImplementation(async (scope) => folders(scope === "team" ? 2 : 830) as never);
+  await mount({ query: { tab: "team" } });
+  expect(data.unassignedCount).toBe(2);
+  await mount({ query: MAIN });
+  expect(data.unassignedCount).toBe(830);
+  const before = calls();
+  await mount({ query: { tab: "team" } });
+  expect(calls().list).toBe(before.list); // 목록은 신선한 캐시 그대로
+  expect(vi.mocked(api.facets).mock.calls.at(-1)).toEqual(["team"]);
+  expect(data.unassignedCount).toBe(2);
+  const again = calls();
+  await act(async () => { await data.reloadIfStale(); }); // 이미 이 범위의 것 — 더 받지 않는다
+  expect(calls()).toEqual(again);
+});

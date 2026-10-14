@@ -188,6 +188,10 @@ export function useGenerationLibraryData({
   // 전체 메타(태그·폴더 포함) 요구가 아직 지금 문맥에서 처리되지 않았다 — 못 보냈든, 보낸 뒤 seq 로 버려졌든 다음 묶음이
   //  전체로 나간다(가벼운 요청이 뒤따라와도 요구를 잃지 않는다). 빚만으로 스스로 다시 보내지는 않는다 — 다음 요청이 올 때 갚는다.
   const metaOwedRef = useRef(false);
+  // 지금 화면의 태그·폴더가 어느 범위(내 작업|팀 · 공간)의 것인가 — 둘 다 받았을 때만 적는다(null = 모름). 탭 캐시는 목록만 담으므로
+  //  15초 안에 돌아온 탭(reloadIfStale)은 이것으로 '다른 범위의 숫자가 남았는가' 를 본다(52회차: 워크스페이스 숫자가 공유 탭에 남았다).
+  const metaScopeRef = useRef<string | null>(null);
+  const metaScopeKey = () => JSON.stringify([filtersRef.current.tab === "team" ? "team" : "my", projectWorkspaceIdRef.current]);
 
   // 같은 공유 탭 안의 공간 전환도 비동기 응답의 문맥 경계다. 효과가 돌기 전부터 차단한다.
   const workspaceScopeRef = useRef(workspaceScopeKey);
@@ -344,7 +348,8 @@ export function useGenerationLibraryData({
     // 캔버스(목록 없음)는 좌측 폴더(projects)와 등록 태그 패널(facets)을 직접 쓴다 — 폴더는 light 여도 받고 통계는 받지 않는다.
     const bare = tab === "compose" && !composeListEnabledRef.current;
     const workspaceId = projectWorkspaceIdRef.current;
-    const ask = <T,>(wanted: boolean, fetch: () => Promise<T>): Promise<T | null> =>
+    const scopeKey = metaScopeKey();
+    const ask =<T,>(wanted: boolean, fetch: () => Promise<T>): Promise<T | null> =>
       wanted && authReadyRef.current ? fetch().catch(() => null) : Promise.resolve(null);
     const [st, f, pr] = await Promise.all([
       ask(!bare && (full || now - lastStatsAtRef.current > 10000), () => api.generationStats()), // stats는 비싸 10초 스로틀
@@ -353,7 +358,10 @@ export function useGenerationLibraryData({
     ]);
     const current = seq === reloadSeqRef.current;
     if (current) {
-      if (full) metaOwedRef.current = false;
+      if (full) {
+        metaOwedRef.current = false;
+        metaScopeRef.current = f && pr ? scopeKey : null;
+      }
       if (st) {
         setStats((prev) => reconcileValueState(prev, st));
         lastStatsAtRef.current = now;
@@ -586,11 +594,13 @@ export function useGenerationLibraryData({
         // 응답이 seq 가드를 통과해 현재 탭 목록·추가 페이지·탭 캐시를 덮는다(Workspace 로
         // 돌아왔는데 Share & Review 카드가 섞여 나타남 — 코덱스 레인B P1).
         reloadSeqRef.current++;
+        // 목록은 캐시로 충분해도 태그·폴더는 탭마다 담아 두지 않는다 — 다른 범위의 것이 남아 있으면 그것만 다시 받는다.
+        if (metaScopeRef.current !== metaScopeKey()) return requestMeta(false).then(() => undefined);
         return Promise.resolve();
       }
       return reload();
     },
-    [reload],
+    [reload, requestMeta],
   );
 
   useEffect(() => {
