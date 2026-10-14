@@ -18,7 +18,7 @@ import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../../lib/windowDrag";
 import { FilterPanelIcon } from "../common/ViewIcons";
-import { EditCard, poolMark, sourceMarkLabel, type PoolItem } from "./EditCard";
+import { EditCard, poolMark, type PoolItem } from "./EditCard";
 
 export type { PoolItem };
 
@@ -369,21 +369,19 @@ export function EditPool({
           {marqueeBox}
           <div className="ed-prow ed-prow-list ed-prow-head">
             <span />
-            <span>{t("프롬프트")}</span><span>{t("만든 사람")}</span><span>{t("모델")}</span><span>{t("길이")}</span><span>{t("트랙 · 소스")}</span>
+            <span>{t("프롬프트")}</span><span>{t("만든 사람")}</span><span>{t("모델")}</span><span>{t("길이")}</span><span>{t("트랙·소스")}</span>
           </div>
           {shown.map((item) => {
             const info = infoOf(item);
             return (
               <button key={item.gen.id} type="button" className={rowClass(item, "list")} {...handlersOf(item)}>
                 {stateMark(info.state)}
-                {/* 다빈치 표는 프롬프트 칸 앞에 — 마지막 칸(트랙 · 소스)은 그 둘로 이미 찬다 */}
+                {/* 다빈치 표는 프롬프트 칸 앞에 — 마지막 칸(트랙·소스, 56px)은 그 둘의 짧은 글로 이미 찬다 */}
                 <span className="ed-pprompt">{dvMark(item)}{item.gen.prompt}</span><span>{info.who}</span><span>{info.model}</span>
-                {/* 마지막 칸 = 넣은 트랙 + 소스 클립 판에 떠 있는 판(Jay 2026-10-14 — 썸네일·목록 보기의 표와 같은 글) */}
+                {/* 마지막 칸 = 넣은 트랙 + 소스 클립 판에 떠 있는 판 — 작은 카드와 같은 짧은 글(V1 · L · V10·L·R, Jay 2026-10-14).
+                    칩에 '소스 L·R' 을 다 적으면 좁은 풀에서 잘리고 다른 칸이 사라졌다(격리 실측 — 영어·두 자리 트랙 91/84px) */}
                 <span>{info.duration}</span>
-                <span className="ed-ptrack">
-                  {item.track !== null && <b>V{item.track}</b>}
-                  {item.source && <span className="cd-mark lead">{sourceMarkLabel(item.source, t)}</span>}
-                </span>
+                <span className={item.source ? "ed-psrc" : undefined}>{poolMark(item, t)?.short ?? ""}</span>
               </button>
             );
           })}
