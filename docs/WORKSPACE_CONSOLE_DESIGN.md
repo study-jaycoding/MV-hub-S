@@ -1,9 +1,12 @@
 ---
-updated: 2026-10-01
+updated: 2026-10-14
 status: active
 ---
 
 # 워크스페이스 콘솔(서브스페이스) 설계 — 메인·서브 워크스페이스
+
+> **읽는 순서**: 현재 화면·권한·메인 고정은 §16 말미의 2026-09-30 후속 결정을 먼저 본다. 초기안의 별도 탭·메인 교체는 그 결정으로 대체됐다.
+> 아래 협업 상태·브랜치·예정 경로는 09-29 당시 기록이며, 현재 적용 상태는 [CURRENT_STATUS](CURRENT_STATUS.md)를 따른다. 앞선 제안과 검토 기록은 결정 근거로 보존한다.
 
 > 이름: 2026-09-30 Jay 결정으로 '가제' → **서브스페이스** (이 문서의 옛 기록도 새 이름으로 바꿨다. 코드 이름표 `WorkspaceConsole`·`workspace_console` 은 그대로).
 
@@ -616,6 +619,6 @@ Codex 치명 2건(트랜잭션 중첩·`set_planning` 이 안 보낸 칸을 NULL
   메인이 등록부에서 사라지면 개요 `main_orphan: {id}` → 화면은 지정 선택기를 숨기고 복구 안내(조용히 다른 메인으로 바꾸지 않는다). 옛 메인이 서브로 내려가며 정기 크레딧을 잃는 구멍(Codex 병합 검토 ②)은 이로써 생기지 않는다.
   **import 순환 제거** — 보호 판정(`managed_sub`·`guard_project_change`·`ConsoleManaged`·전환 표식·상태 짝)을 잎 모듈 `repo/console_guard.py` 로 옮겼다(다른 repo 를 import 하지 않음, `workspace_console` 이 재노출). 크레딧 계획·프로젝트·신원·manage 는 잎 모듈만 부른다.
   관리 창 위쪽의 **'서브스페이스' 탭은 뺐다**(Jay 2026-09-30) — 대시보드의 워크스페이스 단추가 같은 화면(서브스페이스)을 연다. 서브스페이스 탭을 기억한 창은 대시보드로 열린다.
-  워크스페이스 단추는 **관리자·매니저만** — `system || createProject || grantRole`(read_all 인 디렉터는 뺀다). 관리 창의 서브스페이스 탭은 아직 read_all 기준.
+  워크스페이스 단추는 **관리자·매니저만** — `system || createProject || grantRole`(read_all 인 디렉터는 뺀다). 삭제한 관리 창 서브스페이스 탭의 `read_all` 조건은 과거 기록이다.
   머리 글자 단추 셋(`+ 프로젝트`·워크스페이스·상세)은 같은 모양(`usage-ws-button`) — 평소 어두운 판, 열려 있으면 라임(`+ 프로젝트` 는 관리 창이 열린 동안). 옛 `usage-project-button` 은 지웠다.
   `+ 프로젝트`(프로젝트 관리 창)는 **관리자만** — `caps.system && (createProject || grantRole)`(관리자는 슈퍼유저가 아니라 생성 권한도 있어야 서버가 받는다).

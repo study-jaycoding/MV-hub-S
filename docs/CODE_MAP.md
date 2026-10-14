@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-10-13
+updated: 2026-10-14
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -16,7 +16,8 @@ updated: 2026-10-13
 계층 원칙(무엇을 어디에 두는가)의 정본은 루트 [ARCHITECTURE.md](../ARCHITECTURE.md), 실행 흐름·데이터
 모델의 정본은 [docs/ARCHITECTURE.md](ARCHITECTURE.md)다 — 이 문서는 그 둘과 충돌하면 항상 진다.
 2026-09-18 전체 점검에서 8개 구역(백엔드 3·프런트 3·스타일·스크립트)을 읽기 전용으로 답사해 만들었다
-(조사 기준 `f2d57867`, 줄 수는 그 시점 값이라 어림으로만 본다). 파일을 추가·삭제·이동하면 §6 대로 갱신한다.
+(조사 기준 `f2d57867`, 줄 수와 구역별 파일 수는 그 시점 값이라 어림으로만 본다). 파일을 추가·삭제·이동하면 §6 대로 갱신한다.
+현재 정확한 파일 목록은 해당 소스 디렉터리를 확인한다. 아래 과거 개수·시험 비율은 현재 코드의 검증 범위를 보장하지 않는다.
 
 > [!NOTE]
 > 이 문서는 "구역 지도"·"구조 관찰"만 옮긴 것이다. 수정 후보(발견) 목록은 담지 않는다 — 후보는
@@ -43,7 +44,7 @@ updated: 2026-10-13
 | ComfyUI 실행(로컬/Cloud) | `lib/useSceneComfyExecution.ts`, `components/scene/cards/ComfyCard.tsx` | `routers/comfy.py`, `services/comfy_client.py` | |
 | DaVinci Resolve 전송 | `lib/useResolveTransferActions.ts` | `routers/resolve_integration.py`, `services/resolve_transfer.py` | 편집 탭의 타임라인 보내기도 같은 줄·같은 관문을 지난다(위 '편집 탭' 줄) |
 | Assets의 DaVinci 프로젝트 목록·열기 | `components/assets/ResolveProjectBrowser.tsx` | `routers/assets.py`, `services/resolve_project_library.py`, `services/resolve_project_open_worker.py` | `@davinci` 내부 DB 폴더는 일반 Assets 트리에 펼치지 않는다 |
-| 앱 자동 업데이트·릴리스 절차 | `lib/releaseUpdate.ts`, `components/UpdateProgressOverlay.tsx`(진행 덮개), `components/admin/UpdateNoticesSection.tsx`(관리자 창 업데이트 탭 — 후보·[공지]=배포) | `routers/release_update.py`, `services/release_update.py`, `update_release_worker.bat` | **B안(2026-10-02)**: 릴리스는 후보(`candidate.json`)만, 첫 [공지]가 표지(`latest.json`)를 바꾼다 — [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md). 배포 스크립트는 §4. 강제 업데이트는 **워커까지** 닿아야 재설치가 된다(`MVHUB_UPDATE_FORCE` → `-ForceReinstall`) |
+| 앱 자동 업데이트·릴리스 절차 | `lib/releaseUpdate.ts`, `components/UpdateProgressOverlay.tsx`(진행 덮개), `components/admin/UpdateNoticesSection.tsx`(관리자 창 업데이트 탭 — NAS 모든 판·`배포`) | `routers/release_update.py`, `services/release_update.py`, `update_release_worker.bat` | 릴리스는 후보(`candidate.json`)만, `배포`가 알림과 팀 표지(`latest.json`) 교체를 수행한다. `공지`/`재공지`는 알림만 — [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md). 배포 스크립트는 §4. 강제 업데이트는 **워커까지** 닿아야 재설치가 된다(`MVHUB_UPDATE_FORCE` → `-ForceReinstall`) |
 | DB 백업·복원 | — | `routers/db_backup.py`, `routers/db_transfer.py`, `services/backup.py` | |
 | 계정 전환·워크스페이스 전환 | `components/AccountMenu.tsx`, `lib/useHubAuth.ts` | `active_account.py`, `routers/auth.py` | |
 | 실시간 갱신(WebSocket) | `lib/progressSocket.ts` | `ws.py`, `mutation_notify.py` | |
@@ -156,7 +157,7 @@ updated: 2026-10-13
 | `manage.py`(2508줄) | `POST /telemetry/push`·`GET /team-overview`·`GET /tasks[-batch]`·`POST /save-finals`·`GET /save-finals/progress`·`POST /save-finals/cancel` (47) | PM 대시보드: 텔레메트리 수신·팀 집계·크레딧 플랜·작업 CRUD·골드 저장 | 11곳. 서로 무관한 5개 도메인이 한 파일(§5) |
 | `workspace_console.py`(102줄) | `GET /console/overview`·`POST /console/workspaces`·`PATCH /console/workspaces/{id}`·`PUT /console/allocation-base`·`PUT /console/main` (5) | 워크스페이스 콘솔(서브스페이스) — `manage.py` 가 include(접두 `/api/manage`) | 없음(서버 권위, 미들웨어가 위임) |
 | `manage_quota.py`(33줄) | `GET /api/manage/credit-plan/my-quota` (1) | 내 크레딧 몫·이번 기간 사용·남은 몫 조회 — 공유 서버 위임·본인 워크스페이스 멤버만. **표시 전용**(생성은 이 값을 확인하지 않는다, 2026-09-30) | 0곳 |
-| `update_notices.py`(약 205줄) | `GET /api/update-notices`·`POST /admin/register`·`GET /admin/item`·`DELETE /admin/{id}` (9) | 릴리스 공지 등록·고정·공표·읽음·후보 단건 조회(promote 확인용)·[해제](멱등) | 0곳(쓰기는 서버 Admin 역할 게이트로 제한 — 프록시 위임과는 다른 종류의 서버 제약) |
+| `update_notices.py`(약 205줄) | `GET /api/update-notices`·`POST /admin/register`·`GET /admin/item`·`DELETE /admin/{id}` (9) | 릴리스 공지 등록·고정·공표·읽음·후보 단건 조회(promote 확인용)·`해제`(멱등) | 0곳(쓰기는 서버 Admin 역할 게이트로 제한 — 프록시 위임과는 다른 종류의 서버 제약) |
 
 **로컬 PC 기능(이 PC 에서만)**
 
@@ -169,9 +170,9 @@ updated: 2026-10-13
 | `comfy.py`(1654줄) | `POST /api/comfy/{run\|parse\|save-to-library}`·`GET /run_status\|/unresolved-runs` (11) | ComfyUI(로컬·Cloud) 연결·그래프 파싱·비동기 실행·미회수 결과 수거 | 0곳 |
 | `resolve_integration.py`(364줄) | `POST /api/resolve/transfers`·`GET /api/resolve/{status\|script\|locks}` (10) | DaVinci Resolve 스크립트 설치·연결 진단·전송 접수/재시도 | 1곳 |
 | `registry_helper.py`(약 100줄) | `POST /api/registry-helper/scan`·`GET /status` (2) + `schedule_loop`(main 이 워커 허브에서 띄움) | 에셋 대장 도우미 훑기 — **이 PC 전용**(`_LOCAL_PREFIXES`). 서버가 NAS 를 못 읽을 때 관리자 PC 가 대신 훑는다(ASSET_REGISTRY §10). 정한 시간이면 60초 틱으로 서버에 claim → 맡으면 자동 속도로 시작(§11) | 0곳 |
-| `release_update.py`(약 190줄) | `GET /api/release-update/status`·`/latest-metadata`·`POST /start`·`/promote` (4) | 작업자 PC 앱 업데이트 상태·시작(로컬 요청만). 관리자: 후보·공개 상태(`release_overview`), [공지]한 후보를 표지로(promote — 공유 서버 단건 확인 뒤, 동기 def) | 0곳 |
+| `release_update.py`(약 190줄) | `GET /api/release-update/status`·`/latest-metadata`·`POST /start`·`/promote` (4) | 작업자 PC 앱 업데이트 상태·시작(로컬 요청만). 관리자: 후보·공개 상태(`release_overview`), 알림 확인을 마친 후보를 표지로(promote — 후보의 `배포` 또는 `배포 반영` 경로, 공유 서버 단건 확인 뒤, 동기 def) | 0곳 |
 | `console.py`(142줄) | `GET /api/console/summary`·`POST /close-app` (2) | cmd 창 정보(버전·CLI·로그 tail)·앱 종료 | 0곳 |
-| `scenes.py`(86줄) | `GET·PUT /api/scenes/{backup\|cards}` (4) | 브라우저 localStorage 씬·카드링크의 DB 미러 동기화 | 0곳 |
+| `scenes.py`(86줄) | `GET·PUT /api/scenes/{backup\|cards}` (4) | 브라우저 씬(원본 IndexedDB)과 카드링크의 DB 미러 동기화([씬 저장 계약](CANVAS_SCENE_STORAGE.md)) | 0곳 |
 
 **DB 이전·백업**
 
@@ -569,7 +570,7 @@ updated: 2026-10-13
 | `admin/ApprovalTab.tsx`(143줄) | 계정 승인·숨김·비번 초기화 표 | 〃 |
 | `admin/MemberRolesTab.tsx`(82줄) | 전역 역할 표 | 〃 |
 | `admin/AssetRegistryTab.tsx`(약 330줄) | 에셋 리스트(옛 '에셋 대장') — 훑는 곳·자동 훑기 시간(끔·매월·매주·매일)·프로젝트별 마지막 훑기 상태 표 + [지금 훑기](한 번 더 확인). 영구 관리자(system)만 |
-| `admin/UpdateNoticesSection.tsx`(약 230줄) | 관리자 창 업데이트 탭 — 새 후보 등록·[공지](처음이면 promote 까지)·[재공지](알림만)·[배포 반영]·[해제]·확인 불가 표시 | 〃 | 〃 |
+| `admin/UpdateNoticesSection.tsx` | 관리자 창 업데이트 탭 — NAS 모든 판·`배포`(알림 + 팀 표지 교체)·`이 PC에 먼저 설치`·`공지`/`재공지`(알림만)·`배포 반영`(후보 줄)·`해제`·확인 불가 표시 | 〃 | 〃 |
 | `admin/BackupReplicaSection.tsx`(약 280줄) | 서버 백업 복사 위치 — 공유 서버 탭의 결과 상자·NAS 주소·[저장](비밀번호 확인 창)·[지금 복사](끝날 때까지 5초마다 다시 읽음) | 〃 |
 | `admin/RolePickers.tsx`(70줄) | 전역/프로젝트 역할 선택기 + 정렬 랭크 | 〃 |
 | `admin/ProjectRenderTree.tsx`(29줄) | 프로젝트 렌더 폴더 트리 표시 | 〃 |
@@ -1008,9 +1009,12 @@ updated: 2026-10-13
 | `format.ts` | 순수 | SQLite UTC 문자열 → ms·로컬 표시 |
 | `setUtils.ts` | 순수 | Set 토글·제거·단일화 |
 
-**21. 테스트(14)**
+**21. 테스트(이전 조사 목록)**
 
-순수 모듈 198개 중 테스트가 닿은 파일은 13개(6.6%)뿐이다: `assetUrls.test.ts` ·
+이전 조사에는 순수 모듈 198개 중 13개(6.6%)라는 측정과 아래 14개 시험 파일 목록이 함께 기록돼 있다.
+대상 모듈 수와 시험 파일 수를 같은 개수로 해석하지 않으며, 현재 커버리지는 이 기록으로 판단하지 않는다.
+현행 시험 파일은 `frontend/tests/`와 소스 옆 시험을, 실행 절차는 [TESTING.md](TESTING.md)를 확인한다.
+당시 목록: `assetUrls.test.ts` ·
 `canvasDetached.test.ts` · `generationDisplay.test.ts` · `generationViews.test.ts` ·
 `manageWorkspaceScope.test.ts` · `progressSocket.test.ts` · `releaseUpdate.test.ts` ·
 `sceneDerive.test.ts` · `sceneMedia.test.ts` · `sceneNodeCatalog.test.ts` ·

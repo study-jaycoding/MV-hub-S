@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-02
+updated: 2026-10-14
 status: snapshot
 ---
 
@@ -8,8 +8,11 @@ status: snapshot
 > **시점 고정 검증 기록**: 이 문서는 2026-07-31 당시 코드와 격리 환경의 결과를 보존한다.
 > 현재 배포 가능 여부와 최신 테스트 숫자는 [CURRENT_STATUS.md](CURRENT_STATUS.md)를 따른다.
 > 코드·CLI·운영 환경이 바뀐 뒤 이 결과를 새 배포의 자동 보증으로 사용하지 않는다.
+> 아래 게이트·배포 절차는 후속 운영 참고다. 현행 승인 조건은 [TESTING.md](TESTING.md)와
+> [위험 감소 계획](RISK_REDUCTION_PLAN_2026-08-15.md)의 Gate 6-A, 공개 계약은
+> [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md)가 우선한다.
 
-## 현재 결론
+## 당시 결론(2026-07-31)
 
 2026-07-31 기준, 격리된 Windows 로컬 환경에서 100개 계정·100개 WebSocket·100개 에이전트
 롱폴을 동시에 연결하고 API 읽기·쓰기·미디어 요청을 섞은 30초 부하를 같은 서버에 2회 연속
@@ -54,11 +57,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\predeploy_gate.ps1 -Sk
 
 ## 단계적 배포 순서
 
-1. 배포 직전 운영 DB 백업을 만들고 `verify_backup_restore.py --backup <백업경로>`로 복원 검증한다.
+1. 승인된 배포 작업에서 운영 DB 백업 세트를 만들고 `verify_backup_restore.py --backup-set <세트의_content_DB_경로>`로 복원 검증한다([SERVER.md](SERVER.md)의 백업 세트 절차).
 2. `make_release.ps1 -SkipPublish`로 로컬 패키지를 만든다. ZIP의 SHA256과 실행 여부를 확인한 뒤에만
    공유 `packages` 폴더로 ZIP을 먼저 복사하고 `candidate.json`을 마지막에 복사한다(B안 — `latest.json`은
-   손으로 올리지 않는다. 관리자 창 업데이트 탭의 [공지]가 바꾼다, `docs/UPDATE_ANNOUNCEMENTS.md`).
-3. 서버를 먼저 업데이트하고 `/api/ready`가 `ready=true`인지 확인한다.
+   손으로 올리지 않는다. 관리자 창 업데이트 탭의 해당 판 [배포]가 바꾼다, [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md)).
+3. 서버를 먼저 업데이트하고 `/api/ready`의 응답이 HTTP 200·`status="ready"`인지 확인한다.
 4. 내부 관리자 5명에게 배포하고 30분 관찰한다.
 5. 이상이 없으면 20명, 50명, 100명 순서로 확대하며 각 단계마다 최소 30분 관찰한다.
 6. 각 단계에서 로그인, 생성물 목록·상세, 태그/색상 쓰기, 공유, SceneBoard 저장·undo, 에이전트

@@ -1,14 +1,16 @@
 ---
-updated: 2026-10-08
+updated: 2026-10-14
 status: active
 ---
 
 # 캔버스 씬 저장 계약 (IndexedDB)
 
-기준일: 2026-10-07 · 구현 기준: `feature/scene-save-contract`
+기준일: 2026-10-07 · 최초 구현 브랜치: `feature/scene-save-contract`
+
+공개 상태: `2026.10.08-0836`에 포함됐다([공개 기록](CURRENT_STATUS.md)). 개별 PC의 설치 완료를 뜻하지 않는다.
 
 작업 기록 — owner: Claude(설계·구현·실측) · reviewer: Codex(설계 검토 2회·적대 코드 리뷰 6회, 마지막 판정 `승인`) ·
-status: `검증 중`(코드·시험·실측 완료, 배포 전) · touched_paths: `frontend/src/lib/scene*.ts`,
+status: `완료`(코드·시험·실측 및 공개판 반영) · touched_paths: `frontend/src/lib/scene*.ts`,
 `frontend/src/lib/ownEntry.ts`, `frontend/src/lib/useSceneCoordination.ts`, `frontend/src/lib/useSceneGenData.ts`,
 `frontend/src/main.tsx`, `frontend/src/App.tsx`, `frontend/src/components/scene/`,
 `frontend/src/components/settings/CanvasArchiveSection.tsx`

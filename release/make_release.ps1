@@ -669,8 +669,8 @@ $Latest = [ordered]@{
     size = $Zip.Length
     created_at = (Get-Date).ToString("s")
 }
-# B안: 이 스크립트는 '후보'만 만든다. 팀원이 보는 표지(latest.json)는 관리자 창 [공지]만 바꾼다
-# (docs/UPDATE_ANNOUNCEMENTS.md). 후보와 공개 표지는 같은 원문(UTF-8 BOM)을 쓴다 — [공지]가 그대로 옮긴다.
+# B안: 이 스크립트는 '후보'만 만든다. 팀원이 보는 표지(latest.json)는 관리자 창 [배포]로 바꾼다
+# (docs/UPDATE_ANNOUNCEMENTS.md). 후보와 공개 표지는 같은 원문(UTF-8 BOM)을 쓴다 — 후보 줄의 [배포]가 그대로 옮긴다.
 $ManifestBytes = (New-Object System.Text.UTF8Encoding($true)).GetPreamble() +
     (New-Object System.Text.UTF8Encoding($false)).GetBytes(($Latest | ConvertTo-Json) + "`r`n")
 $CandidatePath = Join-Path $OutputDir "candidate.json"
@@ -689,13 +689,13 @@ Write-Host ""
 # Destination comes from -PublishDir, else from publish_target.txt (machine-local,
 # git-ignored), resolved before the build. The zip goes first (to a .part name, then
 # a no-overwrite rename), candidate.json last under release.lock. latest.json and the
-# shared installer are never touched here: an admin's [공지] publishes the candidate.
+# shared installer are never touched here: an admin's [배포] publishes the candidate.
 if ($SkipPublish) {
     Write-Host "[publish] skipped by -SkipPublish. Package remains local for validation."
 }
 elseif (-not $PublishTarget) {
     Write-Host "Upload the zip first, then candidate.json, to your company server packages folder."
-    Write-Host "Never upload latest.json by hand - [공지] in the admin window (업데이트 tab) publishes it."
+    Write-Host "Never upload latest.json by hand - [배포] in the admin window (업데이트 tab) publishes it."
     Write-Host "(To automate: put the server packages path in release\publish_target.txt)"
 }
 elseif ($PublishTarget -match "^https?://") {
@@ -741,6 +741,6 @@ else {
         Write-Host "[publish] NOTE: MVHub_Install.bat differs from the published one. Replace it after the announcement"
         Write-Host "          (docs/UPDATE_ANNOUNCEMENTS.md - 'Installer'). It was NOT copied."
     }
-    Write-Host "[publish] done - candidate uploaded. Teammates see nothing until an admin presses [공지]"
+    Write-Host "[publish] done - candidate uploaded. Teammates see nothing until an admin presses [배포]"
     Write-Host "          in the admin window (업데이트 tab)."
 }

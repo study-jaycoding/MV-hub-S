@@ -16,9 +16,19 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 동시성·상태 계약(새 코드 규칙) | 루트 `ARCHITECTURE.md` §6 |
 | 실행 구조·데이터 흐름 | `docs/ARCHITECTURE.md`, `docs/AI_CONTEXT.md` |
 | 주요 문서 색인·문서 위상 | `docs/README.md` |
+| 에이전트 역할 호출·설계 합의·독립 리뷰·완료 기준 | `docs/AGENT_WORKFLOW.md` |
 | 위험 항목 상태의 단일 출처 | `docs/RISK_REDUCTION_PLAN_2026-08-15.md` `Gate 0` 표 |
 
 현행 프로젝트 규칙은 **이 파일**이다. 옛 헌장은 `docs/PROJECT_CHARTER_LEGACY.md` 에 과거 기록으로 보존돼 있다(현행 아님 — 그 안의 `lineage` 테이블·"자동 동기화 금지"·"모든 ID UUID" 는 지금과 다르다).
+
+## 에이전트 운영
+
+- 작업 시작 때 `docs/AGENT_WORKFLOW.md`로 규모와 필요한 역할을 정한다. 역할은 필요할 때 호출하며 상주시킬 필요가 없다.
+- 모델·추론 수준·상향 조건은 운영안의 모델 배치를 따른다. 요청한 모델과 실제 실행 모델을 대조하며, 사용할 수 없으면 임의로 낮추지 않고 보고한다.
+- 중요한 작업은 Claude 설계 → Codex 사전 검토·합의 → Codex 구현 → 별도 Claude 독립 리뷰·필요한 실측 → 두 모델의 근거 대조로 마감한다. 실제 상대 응답 없이 합의로 기록하지 않는다.
+- 작은 문구·서식 수정은 한 담당자가 끝낼 수 있다. 독립적인 작업을 나눌 때는 담당 경로를 분리하고 통합 담당을 한 명 정한다.
+- 리뷰어는 제품 파일을 쓰지 않는다. 역할 프롬프트와 실제 도구 권한은 다르며, 설정 파일을 만들었다는 이유만으로 격리·자동 호출이 검증됐다고 하지 않는다.
+- 역할 정의·호출 경로·검증 상태는 운영 문서에서 확인한다. 필수 검증이 미확인·보류이면 전체 완료로 선언하지 않는다.
 
 ## 실행
 
@@ -50,7 +60,7 @@ venv 위치는 클론마다 다르다(이 클론은 저장소 루트 `.venv`). �
 - **실행 앱은 릴리스 설치본(이 PC: `C:\Users\FX-PC06\Desktop\MV-hub-S`)이다. 건드리지 않는다.** `D:\ClaudeCode\MV-hub-S` 는 2026-08-24 에 멈춘 옛 소스 트리라 근거로 쓰지 않고 건드리지도 않는다. 작업은 `MV-hub-S-dev`에서.
 - **`backend/data` 는 사용자 데이터다**(Git 제외). 직접 초기화·마이그레이션 금지. 수동 검증은 임시 `CONTENT_HUB_DATA`/`CONTENT_HUB_DB` 를 지정해서 한다.
 - **`register_autostart.bat` · `restart_server_task.bat` 는 검증용으로 실행 금지.** 시스템 자동시작 작업(MVHub Server/Watchdog/BackupCopy)을 교체하고 서버를 즉시 시작한다.
-- **`release/make_release*.ps1` · `update_release*.bat` 는 테스트 명령이 아니다.** `_staging` 재귀 삭제·프런트 재빌드·ZIP/`latest.json` 덮어쓰기, `release/publish_target.txt` 가 있으면 배포 폴더(NAS)에도 강제 복사한다. 명시적 배포 지시가 있을 때만.
+- **`release/make_release*.ps1` · `update_release*.bat` 는 테스트 명령이 아니다.** `_staging` 재귀 삭제·프런트 재빌드·패키지 제작/설치를 수행하며, `release/publish_target.txt`가 있으면 NAS에 ZIP·`candidate.json`을 게시한다. 팀 공개(`latest.json`)는 별도 관리자 배포 단계다. 명시적 배포 지시가 있을 때만.
 - **배포판은 반드시 고정 폴더 `D:\ClaudeCode\MV-hub-S-release`에서 만든다.** 배포 전에 원격을 갱신하고 이 폴더의 `HEAD`를 `origin/main`과 정확히 일치시킨 뒤, 작업 트리가 깨끗한지 확인하고 이 폴더 안의 릴리스 스크립트만 실행한다. `MV-hub-S-dev`나 임시 worktree에서 배포판을 만들지 않는다. 고정 폴더에 미커밋 변경이 있거나 안전하게 `origin/main`으로 맞출 수 없으면 배포를 중단하고 보고한다.
 - **DaVinci Resolve 를 임의로 끄지 않는다.** 열려 있는 사용자 프로젝트를 바꾸지 않는다.
 

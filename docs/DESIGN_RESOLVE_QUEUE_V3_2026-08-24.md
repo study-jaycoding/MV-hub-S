@@ -1,19 +1,21 @@
 ---
 status: superseded
 superseded_by: ARCHITECTURE.md
-updated: 2026-08-26
+updated: 2026-10-14
 ---
 
 # Resolve 가져오기 큐 — manifest v3 설계 명세 (코덱스 확정, 2026-08-24)
 
 > **상태: 이력(superseded) — 현행 아님.** 2026-08-25 `aa0985b9` 로 영구 큐를 걷어내고 직접 전송으로
 > 되돌렸다(릴리스 `2026.08.25-0847` 부터). 현행 흐름은 [ARCHITECTURE.md](ARCHITECTURE.md) §7.6.
-> 큐 모듈·라우트는 비현행 코드로 남아 있고(워커 비활성) `host_id_at_accept` 보강(`fe1efacf`)도 그 위에
-> 있다. 아래는 큐 v3 의 설계 기록이다.
+> 2026-08-26 기록 당시에는 큐 모듈·라우트가 비현행 코드로 남아 있었고(워커 비활성), `host_id_at_accept`
+> 보강(`fe1efacf`)도 그 위에 있었다. **8-27 후속 정리에서 큐 전용 라우트·워커를 제거하고 `resolve_queue.py`는
+> 현행 경로가 쓰는 `run_non_abandon`만 남겼다.** 근거는 [코드 대조 기록의 3차 정리](status/코드대조_2026-08-26.md).
+> 아래는 그 이전 큐 v3의 설계 기록이며, 모듈·라우트의 현재 존재를 보증하지 않는다.
 >
 > 기록: 2026-08-24 1·2단계 구현, 적대 리뷰 P1 6건 수정,
 > 라이브 테스트에서 릴리스 차단 2건(동일 초 FIFO·사망 프로세스 오판) 수정, 실기기 실반입 검증 통과.
-> 구현 위치는 `backend/app/services/resolve_queue*.py`·`resolve_lock.py`.
+> 당시 구현 위치는 `backend/app/services/resolve_queue*.py`·`resolve_lock.py`.
 > 아래 본문 끝의 "다음 권장 작업"은 명세 작성 시점의 계획이며 이미 수행됐다.
 
 아래 명세로 확정합니다. 파일 수정은 하지 않았습니다.

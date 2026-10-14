@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-02
+updated: 2026-10-14
 status: archived
 ---
 
@@ -7,8 +7,8 @@ status: archived
 
 > ⚠️ **초기 설계 문서(보존 이력)** — 2026-08-26 코드 대조 결과 §6 진행 순서는 **전부 구현됐고**, 방식이 달라진 곳
 > (create-first·claim→완료 elapsed·전량 매칭·`link_generations` id 전용·manage 로컬 예외·텔레메트리 채널)은 본문 NOTE 로
-> 표시했다. 현행 구조는 [관리대시보드_통합계획.md](관리대시보드_통합계획.md) §1 과 코드
-> (backend/app/repo/manage.py, frontend/src/components/manage/)를 기준으로 판단한다. §3 매칭 규칙·§6-1 위험·§6-3 포트 함정은
+> 표시했다. 현행 데이터 의미는 [작업 표시 계약](TASK_ACTIVITY_FACTS.md), 화면·관리 표의 후속 결정은
+> [워크스페이스 콘솔 설계](WORKSPACE_CONSOLE_DESIGN.md)와 코드(`backend/app/repo/manage.py`, `frontend/src/components/manage/`)를 기준으로 판단한다. §3 매칭 규칙·§6-1 위험·§6-3 포트 함정은
 > 유효한 운영 지식이다.
 
 > 작업자별·프로젝트별 **크레딧 사용량 / 제작시간 / 일정**을 한눈에 보는 관리 뷰.
