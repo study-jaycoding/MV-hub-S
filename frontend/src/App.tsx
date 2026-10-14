@@ -20,7 +20,10 @@ import { ThumbnailGrid } from "./components/ThumbnailGrid";
 import { ensureTeamBase } from "./lib/teamSeen";
 import { TopBar } from "./components/TopBar";
 import { SceneBar } from "./components/scene/SceneBar";
-import { SceneBoard } from "./components/scene/SceneBoard";
+import { SceneBoardBoundary } from "./components/scene/SceneBoardBoundary";
+const SceneBoard = lazy(() =>
+  import("./components/scene/SceneBoard").then((m) => ({ default: m.SceneBoard })),
+);
 import { AppOverlays, VideoCompareOverlay } from "./components/app/AppOverlays";
 import { ResolveNotices } from "./components/app/ResolveNotices";
 const EditTab = lazy(() =>
@@ -2805,6 +2808,17 @@ export default function App() {
               onExportAll={exportAllScenes}
             />
             {activeScene ? (
+              <SceneBoardBoundary fallback={
+                <div role="status" style={{ flex: 1, display: "grid", placeContent: "center", gap: 12 }}>
+                  <span>{t("캔버스를 불러오지 못했습니다.")}</span>
+                  <button type="button" onClick={() => window.location.reload()}>{t("새로고침")}</button>
+                </div>
+              }>
+              <Suspense fallback={
+                <div role="status" style={{ flex: 1, display: "grid", placeContent: "center" }}>
+                  {t("캔버스를 불러오는 중…")}
+                </div>
+              }>
               <SceneBoard
                 authKey={libraryAuthKey}
                 authReady={authReady}
@@ -2912,6 +2926,8 @@ export default function App() {
                 onVariantGradeStep={(gens, mode) => grade.requestGradeStep(gens, mode)}
                 escBlocked={info !== null}
               />
+              </Suspense>
+              </SceneBoardBoundary>
             ) : (
             <Suspense fallback={null}>
             <HistoryBoard

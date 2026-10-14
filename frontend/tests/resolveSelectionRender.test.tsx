@@ -669,6 +669,7 @@ async function mountApp(tab = "compose") {
   const { default: App } = await import("../src/App");
   act(() => view.root.render(<StrictMode><App /></StrictMode>));
   await settle();
+  if (tab === "compose" && !startAuthPending) await waitForBoard();
   let sequence = 0;
   return (generationIds: string[], extra: Record<string, unknown> = {}) => window.dispatchEvent(
     new CustomEvent("ch:resolve-selection", { detail: {
@@ -677,6 +678,43 @@ async function mountApp(tab = "compose") {
     } }),
   );
 }
+
+async function waitForBoard() {
+  // 열린 창을 전제로 한 다음 신호는 청크 로드가 아니라 실제 캔버스 마운트 뒤에 보낸다.
+  await act(async () => { await import("../src/components/scene/SceneBoard"); });
+  await vi.waitFor(async () => {
+    await settle();
+    expect(view.container.querySelector(".scene-board")).not.toBeNull();
+  });
+}
+
+it("App: 캔버스 청크를 받는 중 들어온 최초 Resolve 선택도 마운트 뒤 결과 창에 반영한다", async () => {
+  installAppBoundaries([fixture, otherScene]);
+  localStorage.setItem("ch.lib.filtersV2", JSON.stringify({ tab: "compose", __v: "2" }));
+  let release!: () => void;
+  const loaded = new Promise<void>((done) => { release = done; });
+  vi.doMock("../src/components/scene/SceneBoard", async () => {
+    await loaded;
+    return vi.importActual("../src/components/scene/SceneBoard");
+  });
+  try {
+    const { default: App } = await import("../src/App");
+    act(() => view.root.render(<StrictMode><App /></StrictMode>));
+    await settle();
+    expect(view.container.querySelector(".scene-board")).toBeNull();
+    expect(view.container.querySelector('[role="status"]')?.textContent).toBe("캔버스를 불러오는 중…");
+    act(() => window.dispatchEvent(new CustomEvent("ch:resolve-selection", { detail: {
+      generationId: "target", generationIds: ["target"], selectedCount: 1, selectionId: "during-chunk-load",
+    } })));
+    await act(async () => { release(); await loaded; });
+    await waitForBoard();
+    expect(tile("target")).toBeTruthy();
+    expect(resolveHighlightedIds()).toEqual(["target"]);
+  } finally {
+    release();
+    vi.doUnmock("../src/components/scene/SceneBoard");
+  }
+});
 
 it("App: 다른 씬에만 복수 선택이 있어도 열린 창·씬을 유지하고 단일 선택 이동은 보존한다", async () => {
   const send = await mountApp();

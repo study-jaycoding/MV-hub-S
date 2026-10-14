@@ -107,7 +107,7 @@ updated: 2026-10-14
 | `models.py` | Pydantic 요청/응답 스키마 48종 | 약 512줄 |
 | `mutation_notify.py` | 변경 알림 HTTP 계약(도메인 판정·출처 파싱) | |
 | `rbac.py` | 전역 4역할 + 프로젝트 3역할 매트릭스(순수 상수·매핑) | |
-| `static_files.py` | 해시 자산 immutable 캐시 헤더 | |
+| `static_files.py` | 해시 자산 immutable 캐시·JS/CSS 사전 gzip 협상(원본·Range 폴백, 표현별 ETag·Vary) | 빌드 생성은 `frontend/vite.config.ts`의 `precompressedAssets` |
 | `task_activity.py` | 작업 보관 배치 시각 규칙(순수) | |
 | `workspace_context.py` | 워크스페이스 컨텍스트 저장·전송 규격(순수) | |
 | `ws.py` | WebSocket 연결 관리·브로드캐스트·디바운스 | 약 473줄 |
@@ -468,11 +468,12 @@ updated: 2026-10-14
 
 ### 3.2 components (`frontend/src/components/`, 152파일)
 
-#### 씬 캔버스 보드 셸(`scene/` 최상위, 5파일)
+#### 씬 캔버스 보드 셸(`scene/` 최상위)
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
 | `scene/SceneBoard.tsx` | 캔버스 전체 소유 — 카드·엣지·그룹 state, 드래그/마퀴/가위/줌, undo, comfy 실행, 렌더링 | 약 4,452줄. `SceneBoard({...55 props})`·`actionRef` |
+| `scene/SceneBoardBoundary.tsx` | 지연 로딩·렌더 실패를 캔버스 영역 안에 가두고 수동 새로고침 안내 표시 | `App.tsx`가 `lazy`·`Suspense`와 함께 조립. 바깥 탭·도구 막대 유지 |
 | `scene/SceneBar.tsx`(286줄) | 씬 탭 바 — 전환·추가·이름변경·삭제·드래그 순서변경·우클릭 메뉴 | `SceneBar` |
 | `scene/SceneMinimap.tsx`(184줄) | 우상단 네비게이터 — 카드 축소도·뷰포트 박스, 클릭/드래그 이동 | `SceneMinimap` |
 | `scene/sceneColors.ts`(10줄) | `CARD_W/CARD_H`·`GROUP_COLORS` 상수(순환 import 회피용 분리) | 상수 3개 |

@@ -4,6 +4,7 @@
 //  (이름순 — 컷 머리를 끌어 내 순서로 바꿀 수 있다), 고른 생성물만 들어간다(휠 클릭 메뉴, 또는 풀의 카드를 끌어 놓기).
 //  편집은 이 브라우저(계정)에만 저장한다.
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
+import "../../styles/edit-tab.css";
 import type { CardMark, Generation, PreviewTarget, WorkspaceContext } from "../../types";
 import { APP_EVENTS, isLibraryPollTick } from "../../lib/appEvents";
 import { backgroundKeysBlocked, focusCameByTab, useDragKeyHold } from "../../lib/keyGate";

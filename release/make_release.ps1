@@ -241,6 +241,17 @@ function Assert-ReleaseArchive {
             throw "Release archive contains forbidden local/test data: $Preview"
         }
 
+        $FrontendCode = @($Names | Where-Object { $_ -match "^frontend/dist/assets/.*\.(js|css)$" })
+        if ($FrontendCode.Count -eq 0) {
+            throw "Release archive contains no frontend JS/CSS assets."
+        }
+        foreach ($Compressed in @($Names | Where-Object { $_ -match "^frontend/dist/assets/.*\.gz$" })) {
+            $Original = $Compressed.Substring(0, $Compressed.Length - 3)
+            if ($FrontendCode -cnotcontains $Original) {
+                throw "Precompressed frontend asset has no JS/CSS original: $Compressed"
+            }
+        }
+
         $ArchiveVersion = (Read-ArchiveText -Archive $Archive -EntryName "VERSION.txt").Trim()
         if ($ArchiveVersion -ne $ExpectedVersion) {
             throw "Release version mismatch: expected $ExpectedVersion, got $ArchiveVersion"
@@ -434,12 +445,13 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 Write-Host "[2/8] Building frontend dist..."
 Push-Location (Join-Path $ProjectRoot "frontend")
 try {
-    $TscCmd = Join-Path $PWD "node_modules\.bin\tsc.cmd"
-    $ViteCmd = Join-Path $PWD "node_modules\.bin\vite.cmd"
-    if ((-not (Test-Path -LiteralPath $TscCmd)) -or (-not (Test-Path -LiteralPath $ViteCmd))) {
-        Write-Host "      frontend build tools missing - running npm ci"
-        & npm.cmd ci --include=dev --no-audit --no-fund
-        if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
+    if (-not (Test-Path -LiteralPath "package-lock.json" -PathType Leaf)) {
+        throw "Frontend package-lock.json is required for a reproducible release build."
+    }
+    Write-Host "      installing frontend dependencies from package-lock.json"
+    & npm.cmd ci --include=dev --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) {
+        throw "npm ci failed; build stopped. If files are locked, close frontend dev/build processes and retry."
     }
     & npm.cmd run build
     if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
