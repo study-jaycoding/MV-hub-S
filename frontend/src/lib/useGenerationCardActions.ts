@@ -1,7 +1,8 @@
 import { useRef } from "react";
 import { t } from "./i18n";
 import { api } from "../api";
-import { errorDetail } from "./http";
+import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
+import { errorDetail, HttpError } from "./http";
 import { postLibraryChanged } from "./libraryBroadcast";
 import { modelBlockMessage } from "./modelPolicy";
 import { isGenerationWorkspaceReady } from "./workspaceContext";
@@ -11,6 +12,12 @@ import { withMirrorPendingNotice } from "./shareMirrorPending";
 import { generationIssueFor } from "./generationDisplay";
 import { reviewTargets, type ReviewAction } from "./generationReview";
 import { armStateGlow } from "./stateGlow";
+
+// 최종 지정·해제·등급 전환이 권한 없음(403)으로 거절되면 최종 권한 목록을 다시 읽게 한다 — 그사이 검수 역할이 회수됐으면
+//  단추가 사라진다(49회차 — 전엔 새로 고침 전까지 같은 단추가 남아 같은 실패를 되풀이했다).
+const rereadRolesOnForbidden = (error: unknown) => {
+  if (error instanceof HttpError && error.status === 403) dispatchAppEvent(APP_EVENTS.finalizeRolesStale);
+};
 
 interface UseGenerationCardActionsArgs {
   armedAutoTags: Set<string>;
@@ -165,6 +172,9 @@ export function useGenerationCardActions({
       const succeeded = results.filter((result) => result.status === "fulfilled").length;
       const mirrorPending = results.some((result) => result.status === "fulfilled" && result.value.mirror_pending);
       const firstError = results.find((result) => result.status === "rejected")?.reason;
+      const forbidden = results.find((result): result is PromiseRejectedResult =>
+        result.status === "rejected" && result.reason instanceof HttpError && result.reason.status === 403);
+      if (forbidden) rereadRolesOnForbidden(forbidden.reason);
       const failed = targets.length - succeeded;
       const kept = generations.length - targets.length;
       const summary = t("{success}개 적용 · {failed}개 실패 · {kept}개 유지")
@@ -192,6 +202,7 @@ export function useGenerationCardActions({
       await reload();
       postLibraryChanged();
     } catch (e) {
+      rereadRolesOnForbidden(e);
       flash(t("최종 지정 실패:") + " " + String(e));
     }
   };
@@ -206,6 +217,7 @@ export function useGenerationCardActions({
       await reload();
       postLibraryChanged();
     } catch (e) {
+      rereadRolesOnForbidden(e);
       flash(t("최종 해제 실패:") + " " + String(e));
     }
   };

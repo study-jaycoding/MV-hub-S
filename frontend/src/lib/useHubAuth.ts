@@ -267,9 +267,18 @@ export function useHubAuth() {
         });
     };
     load();
+    // 최종 조작이 403 으로 거절되면 다시 읽는다 — 역할이 회수된 뒤에도 단추가 남아 같은 실패를 되풀이하지 않게(49회차).
+    //  걸려 있던 재시도는 지우고 묻는다(두 줄로 돌지 않게).
+    const reread = () => {
+      if (retry !== undefined) window.clearTimeout(retry);
+      retry = undefined;
+      load();
+    };
+    window.addEventListener(APP_EVENTS.finalizeRolesStale, reread);
     return () => {
       ignore = true;
       if (retry !== undefined) window.clearTimeout(retry);
+      window.removeEventListener(APP_EVENTS.finalizeRolesStale, reread);
     };
   }, [account, authConfig?.auth_enabled]);
 

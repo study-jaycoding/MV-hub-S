@@ -7,8 +7,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ prepareRegenerate: vi.fn() }));
-vi.mock("../src/api", () => ({ api: { prepareRegenerate: mocks.prepareRegenerate } }));
+const mocks = vi.hoisted(() => ({ prepareRegenerate: vi.fn(), finalize: vi.fn(), unfinalize: vi.fn() }));
+vi.mock("../src/api", () => ({ api: { prepareRegenerate: mocks.prepareRegenerate, finalize: mocks.finalize, unfinalize: mocks.unfinalize } }));
 vi.mock("../src/lib/modelPolicy", () => ({ modelBlockMessage: () => null }));
 vi.mock("../src/lib/workspaceContext", async (orig) => ({ ...(await orig<Record<string, unknown>>()), isGenerationWorkspaceReady: () => true }));
 vi.mock("../src/lib/libraryBroadcast", () => ({ postLibraryChanged: vi.fn() }));
@@ -60,4 +60,29 @@ it("재생성 — 응답 전의 다시 누름은 요청을 더 만들지 않는�
   await settle();
   void actions.onRegenerate(g);
   expect(mocks.prepareRegenerate).toHaveBeenCalledTimes(4);
+});
+
+it("최종 지정·해제가 권한 없음(403)으로 거절되면 최종 권한을 다시 읽으라고 알린다 — 다른 실패는 알리지 않는다(49회차)", async () => {
+  const { HttpError } = await import("../src/lib/http");
+  const stale = vi.fn();
+  window.addEventListener("ch:finalize-roles-stale", stale);
+  try {
+    let actions!: ReturnType<typeof useGenerationCardActions>;
+    function Host() {
+      actions = useGenerationCardActions({ armedAutoTags: new Set(), bumpBoard: () => {}, canFinalize: () => true, flash: () => {}, navTab: () => {},
+        reload: async () => {}, workspace: { scope: "personal", id: null, name: null } });
+      return null;
+    }
+    act(() => root.render(<Host />));
+    mocks.finalize.mockRejectedValueOnce(new HttpError(500, "서버 오류"));
+    await actions.onFinalize(generation("g1"));
+    expect(stale).not.toHaveBeenCalled();
+    mocks.finalize.mockRejectedValueOnce(new HttpError(403, "검수 권한이 없습니다"));
+    await actions.onFinalize(generation("g1"));
+    mocks.unfinalize.mockRejectedValueOnce(new HttpError(403, "검수 권한이 없습니다"));
+    await actions.onUnfinalize(generation("g1"));
+    expect(stale).toHaveBeenCalledTimes(2);
+  } finally {
+    window.removeEventListener("ch:finalize-roles-stale", stale);
+  }
 });

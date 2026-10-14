@@ -105,6 +105,27 @@ it.each([
   }
 });
 
+it("최종 조작이 403 으로 거절됐다는 알림이 오면 최종 권한을 다시 읽는다 — 회수된 검수 역할의 단추가 남지 않게(49회차)", async () => {
+  let roles = ["p1"];
+  const { seen } = await mount({
+    "/api/auth/config": () => Promise.resolve(response({ auth_enabled: false, has_accounts: false })),
+    "/api/shared-server/status": () => Promise.resolve(response({ configured: true, has_token: false, url: "http://127.0.0.1:9" })),
+    "/api/projects/my-finalize-roles": () => Promise.resolve(response({ project_ids: roles })),
+  });
+  const { useHubAuth } = await import("../src/lib/useHubAuth");
+  const { APP_EVENTS, dispatchAppEvent } = await import("../src/lib/appEvents");
+  let finalize = new Set<string>();
+  function Probe() { finalize = useHubAuth().finalizeProjects; return null; }
+  await act(async () => root!.render(<Probe />));
+  await act(async () => { await Promise.resolve(); });
+  expect([...finalize]).toEqual(["p1"]);
+  roles = []; // 다른 관리자가 검수 역할을 회수했다
+  await act(async () => { dispatchAppEvent(APP_EVENTS.finalizeRolesStale); });
+  await act(async () => { await Promise.resolve(); });
+  expect([...finalize]).toEqual([]);
+  expect(seen.filter((url) => url === "/api/projects/my-finalize-roles").length).toBeGreaterThanOrEqual(2);
+});
+
 // 14회차(조작 규칙 41): AUTH-off 의 로그아웃은 허브에 세션 정리를 시키고 새로 고친다. 전엔 그 요청의 실패를 삼키고 새로 고쳐,
 //  허브에 세션이 남은 채 로그인 화면 없이 같은 계정으로 말없이 돌아왔다(로그아웃된 줄 안다).
 it("AUTH-off 로그아웃 — 허브가 실패를 답하면 새로 고치지 않고 알리며 '로그아웃 안 됨'을 돌려준다", async () => {

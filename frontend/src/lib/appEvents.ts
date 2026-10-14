@@ -3,6 +3,8 @@ export const APP_EVENTS = {
   addReference: "ch:add-reference",
   authRequired: "ch:auth-required",
   disabledChanged: "ch:disabled-changed",
+  // 최종 지정·해제가 권한 없음(403)으로 거절됐다 — 그사이 검수 역할이 회수됐을 수 있다. 인증 훅이 최종 권한 목록을 다시 읽는다(49회차).
+  finalizeRolesStale: "ch:finalize-roles-stale",
   flash: "ch:flash",
   focusPrompt: "ch:focus-prompt",
   // 태그 저장 묶음이 끝났다(성공·실패 모두, 마지막 저장 뒤 한 번) — 생성물 사본을 따로 든 화면(캔버스)이 서버 값으로 다시 읽는다.
