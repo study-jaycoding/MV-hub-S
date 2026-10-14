@@ -126,7 +126,7 @@ import {
   subscribeRefServerStatus,
   type RelinkTarget,
 } from "../../lib/sceneAssetRelink";
-import { flashMsg } from "../../lib/flash";
+import { copyText, flashMsg } from "../../lib/flash";
 import { useSceneHistory } from "../../lib/useSceneHistory";
 import { useSceneKeyboardShortcuts } from "../../lib/useSceneKeyboardShortcuts";
 import { isSceneTextEntryTarget, sceneEscapeTarget } from "../../lib/sceneKeyboard";
@@ -5063,7 +5063,7 @@ export function SceneBoard({
             </div>
             <div className="scene-modelmodal-ft">
               <button
-                onClick={() => void navigator.clipboard?.writeText(viewTextModal.join("\n\n"))}
+                onClick={() => void copyText(viewTextModal.join("\n\n"))}
               >
                 전체 복사
               </button>

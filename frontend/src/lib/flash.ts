@@ -10,3 +10,15 @@ export function flashMsg(msg: string): void {
     /* SSR/비브라우저 환경 무시 */
   }
 }
+
+/** 글자를 클립보드에 담는다 — 못 담았으면(클립보드 없음·쓰기 막힘) 알리고 거짓. 담았는가를 돌려준다(59회차: 실패가 조용해 예전 클립보드가 붙었다). */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    if (typeof navigator.clipboard?.writeText !== "function") throw new Error("clipboard write unsupported");
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    flashMsg("클립보드에 복사하지 못했습니다 — 브라우저가 막았습니다.");
+    return false;
+  }
+}

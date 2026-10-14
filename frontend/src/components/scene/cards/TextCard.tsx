@@ -10,6 +10,7 @@ import type { Generation } from "../../../types";
 import { collectListInputs, effectiveTextOf } from "../../../lib/sceneEdges";
 import { refThumbSrc } from "../../../lib/sceneMedia";
 import { hideBrokenImg, showLoadedImg, thumbOf } from "../../../lib/media";
+import { copyText } from "../../../lib/flash";
 
 export function TextCard({
   card,
@@ -167,7 +168,7 @@ export function TextCard({
         onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation();
-          void navigator.clipboard?.writeText(
+          void copyText(
             effectiveTextOf(card.id, cardsById, resolvedEdges),
           );
         }}

@@ -247,8 +247,9 @@ export const AssetCell = memo(function AssetCell({
     // (2) 붙여넣기용: 클립보드에 담는다. 제스처 유지 위해 write 는 동기 호출하고 blob 은 Promise 로 넘긴다.
     //  클립보드 이미지 쓰기는 image/png 만 안전 → png 아니면 canvas 로 변환.
     if (!navigator.clipboard || typeof ClipboardItem === "undefined") {
-      // 클립보드 미지원 브라우저 — 드래그 준비만 하고 종료(드래그로는 첨부 가능)
-      setCopyState("ok");
+      // 클립보드 미지원 브라우저 — 드래그 준비만 하고 종료(드래그로는 첨부 가능). 클립보드에는 안 들어갔다 — ✓(Ctrl+V 안내)가 아니라
+      //  실패로 알린다: 전엔 ✓ 를 보고 붙이면 예전 클립보드가 붙었다(59회차).
+      setCopyState("err");
       resetCopySoon();
       return;
     }

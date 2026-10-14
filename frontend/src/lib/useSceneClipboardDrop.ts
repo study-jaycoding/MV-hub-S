@@ -404,6 +404,13 @@ export function useSceneClipboardDrop(
       }
 
       const image = clipboardImage(event);
+      // 밖에서 복사한 그림 아닌 파일(영상·PDF …) — 글자가 비어 아래 노드 표식 검사를 통과해, 예전에 복사해 둔 카드가 대신 붙었다(59회차).
+      //  붙여 넣기로는 그림만 받는다. 파일은 끌어 놓기가 받는다.
+      if (!image && event.clipboardData?.files?.length) {
+        event.preventDefault();
+        flashMsg("붙여 넣기는 그림만 됩니다 — 이 파일은 캔버스에 끌어 놓아 주세요.");
+        return;
+      }
       const imageKey = image ? `${image.size}:${image.type}` : null;
       const clipboard = clipboardRef.current;
       // 표식을 클립보드에 써 넣은 뒤라면, 지금 클립보드의 그림은 **그 뒤에 밖에서 새로 복사한 것**이다 — 방금 붙인 그림과 같아도 그림이다.

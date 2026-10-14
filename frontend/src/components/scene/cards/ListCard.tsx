@@ -10,6 +10,7 @@ import { collectListInputs, collectRenderGenCardIds, effectiveTextOf } from "../
 import { refThumbSrc } from "../../../lib/sceneMedia";
 import { refServerStatus } from "../../../lib/sceneAssetRelink";
 import { hideBrokenImg, showLoadedImg, thumbOf } from "../../../lib/media";
+import { copyText } from "../../../lib/flash";
 import { CloudOffIcon, LinkOffIcon } from "../../common/ViewIcons";
 import { CARD_W } from "../sceneColors";
 
@@ -274,7 +275,7 @@ export function ListCard({
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
-            void navigator.clipboard?.writeText(li.text);
+            void copyText(li.text);
           }}
         >
           ⧉

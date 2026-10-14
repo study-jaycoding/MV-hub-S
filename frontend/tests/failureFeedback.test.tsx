@@ -684,6 +684,35 @@ it("캔버스의 노드 붙여넣기 폴백 — 클립보드를 읽는 사이 �
   await settle();
   expect(persist).toHaveBeenCalledTimes(1);
 });
+// 59회차(Codex): 탐색기에서 영상·PDF 같은 파일을 복사해 붙이면 글자가 비어 '밖에서 다른 것을 복사했다'는 표식 검사를 통과해, 예전에 복사해 둔
+//  카드가 대신 붙고 저장됐다.
+it("캔버스 붙여넣기 — 클립보드에 그림이 아닌 파일만 있으면 예전에 복사한 카드를 붙이지 않고 알린다", async () => {
+  const persist = vi.fn();
+  let handlers!: ReturnType<typeof useSceneClipboardDrop>;
+  function Host() {
+    handlers = useSceneClipboardDrop({
+      frozenRef: useRef(false), sceneIdRef: useRef("s"), edgesRef: useRef<SceneEdge[]>([]),
+      cardsRef: useRef<SceneCard[]>([{ id: "c1", kind: "reference", x: 0, y: 0 } as SceneCard]),
+      selectedRef: useRef(new Set<string>(["c1"])), lastMouseRef: useRef({ x: 10, y: 10, over: false }), scrollRef: useRef<HTMLDivElement | null>(null),
+      setCards: () => {}, setEdges: () => {}, setSelected: () => {}, toCanvas: (x, y) => ({ x, y }), reconcileGenerationRefs: (cards) => cards,
+      persist, cardWidth: 100, cardHeight: 100,
+    });
+    return null;
+  }
+  vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText: async () => {}, readText: async () => "" } });
+  act(() => root.render(<Host />));
+  act(() => handlers.copySelectedNodes());
+  await settle();
+  const video = new File(["x"], "clip.mp4", { type: "video/mp4" });
+  const paste = Object.assign(new Event("paste", { bubbles: true, cancelable: true }), {
+    clipboardData: { items: [{ kind: "file", type: "video/mp4", getAsFile: () => video }], files: [video], getData: () => "" },
+  });
+  act(() => { document.body.dispatchEvent(paste); });
+  await settle();
+  expect(persist).not.toHaveBeenCalled(); // 전엔 예전에 복사한 c1 이 붙어 저장됐다
+  expect(flashes).toEqual(["붙여 넣기는 그림만 됩니다 — 이 파일은 캔버스에 끌어 놓아 주세요."]);
+});
+
 it("캔버스에 붙여 넣은 그림 — 올리는 사이 캔버스를 떠났으면 늦게 끝난 올리기가 카드를 넣지 않는다", async () => {
   const board = mountBoardDrop();
   const upload = held<{ project: string; path: string; name: string; type: string }>();

@@ -19,7 +19,7 @@ import {
 } from "../../../lib/sceneEdges";
 import { gatherComfyMedia, hasTextConnection } from "../../../lib/sceneComfyInputs";
 import { isComfyRunning } from "../../../lib/sceneComfyRunningStore";
-import { flashMsg } from "../../../lib/flash";
+import { copyText, flashMsg } from "../../../lib/flash";
 import { displayThumb, hideBrokenImg, showLoadedImg } from "../../../lib/media";
 import { HistoryBoardNode } from "../../history/HistoryBoardNode";
 import { StepIcon } from "../../common/ViewIcons";
@@ -309,7 +309,7 @@ export function ComfyCard({
                         onMouseDown={stop}
                         onClick={(e) => {
                           e.stopPropagation();
-                          void navigator.clipboard?.writeText(o.text || "");
+                          void copyText(o.text || "");
                         }}
                       >
                         ⧉
@@ -490,7 +490,7 @@ export function ComfyCard({
                   onMouseDown={stop}
                   onClick={(e) => {
                     e.stopPropagation();
-                    void navigator.clipboard?.writeText(cfg.error || "");
+                    void copyText(cfg.error || "");
                   }}
                 >
                   ⧉

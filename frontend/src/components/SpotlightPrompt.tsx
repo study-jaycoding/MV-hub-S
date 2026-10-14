@@ -51,7 +51,7 @@ import {
   wrapRefTokens,
 } from "../lib/promptEditor";
 import type { ChipRef, HistEntry, PromptPart } from "../lib/promptEditor";
-import { flashMsg } from "../lib/flash";
+import { copyText, flashMsg } from "../lib/flash";
 import { dataTransferHasFiles, displayRefThumb, filesFromDataTransfer } from "../lib/media";
 import {
   emptySeedanceTokenRoles,
@@ -643,6 +643,23 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       .filter((it) => !q || it.token.slice(1).toLowerCase().includes(q));
   }, [mention, model, trayRefs, assetVersionTick]);
 
+  // 그림 붙여넣기를 맡은 Ctrl+V 를 길게 누르면 반복 keydown 마다 paste 가 또 와, 같은 그림이 그만큼 올라가고 레퍼런스로 붙었다(59회차,
+  //  조작 규칙 38). 그 키를 뗄 때까지 반복의 기본 동작(paste)만 막는다 — 글자 붙여넣기의 반복은 그대로다.
+  const imagePasteHeldRef = useRef(false);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (imagePasteHeldRef.current && event.repeat && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") event.preventDefault();
+    };
+    const release = () => { imagePasteHeldRef.current = false; };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("keyup", release, true);
+    window.addEventListener("blur", release);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("keyup", release, true);
+      window.removeEventListener("blur", release);
+    };
+  }, []);
   // 화면 캡쳐 붙여넣기(Ctrl+V) — 클립보드의 이미지를 내장 'captures' 폴더에 올리고 곧바로
   // 레퍼런스로 추가(확장=트레이, 접힘=인라인 칩). 이미지가 아니면 기본 텍스트 붙여넣기 유지. 처리했으면 true.
   const pasteCaptureAsRef = (e: { clipboardData: DataTransfer | null; preventDefault: () => void }): boolean => {
@@ -657,6 +674,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     }
     if (!blob) return false; // 이미지 없음 → 기본 동작(텍스트 붙여넣기)
     e.preventDefault();
+    imagePasteHeldRef.current = true; // 아래 — 이 Ctrl+V 를 뗄 때까지 반복은 막는다
     // 붙여넣은 그림은 이 PC 설치 폴더(captures)에 저장한다(Jay 2026-09-29 옛 방식).
     const startedFor = bindingKeyRef.current;
     setImportingRefs((n) => n + 1);
@@ -717,10 +735,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       flashMsg("복사할 프롬프트가 없습니다");
       return;
     }
-    navigator.clipboard?.writeText(txt).then(
-      () => flashMsg("프롬프트를 복사했습니다"),
-      () => flashMsg("복사 실패"),
-    );
+    void copyText(txt).then((ok) => ok && flashMsg("프롬프트를 복사했습니다")); // 실패는 copyText 가 알린다(클립보드가 없을 때도 — 59회차)
   };
   // 캐럿 이동(keyup/click) — 멘션만 재감지(기록 탐색·placeholder 는 건드리지 않음).
   const onCaretMove = (e?: React.SyntheticEvent) => {

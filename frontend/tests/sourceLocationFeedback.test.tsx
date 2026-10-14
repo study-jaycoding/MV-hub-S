@@ -178,10 +178,23 @@ it("Assets 한 장 복사 뒤 선택이 늘어도 끝난 표시는 복사한 수
   const cell = (selectedCount?: number) => <AssetCell project="fixture" node={node} idx={0} layout="grid" scale={1} fit="contain" selected focused={false} meta={meta} editingTag={false}
     selectedCount={selectedCount}
     onS={noop} onT={noop} onC={noop} onTagsReplace={noop} onBulkTagAdd={noop} onBulkTagRemove={noop} onTagCancel={noop} onInfo={noop} onExportDrag={noop} />;
+  // 클립보드 쓰기가 되는 곳 — jsdom 에는 클립보드가 없어 흉내 낸다(없는 곳은 아래 시험)
+  vi.stubGlobal("ClipboardItem", class { constructor(readonly items: unknown) {} });
+  vi.stubGlobal("navigator", { ...navigator, clipboard: { write: vi.fn().mockResolvedValue(undefined) } });
   act(() => root.render(cell()));
   const button = () => [...host.querySelectorAll<HTMLButtonElement>("button.ov-icon")].find((item) => ["📋", "…", "✓", "⚠"].includes(item.textContent?.trim() || ""))!;
-  await act(async () => { button().click(); }); // jsdom 에는 클립보드가 없다 — 드래그 준비만 하고 '끝남'이 된다
+  await act(async () => { button().click(); });
   expect(button().textContent?.trim()).toBe("✓");
   act(() => root.render(cell(2))); // 끝난 표시가 남은 채 다른 파일을 Ctrl+클릭
   expect(button().title).toBe("1개 복사됨! 대화창에서 Ctrl+V");
+});
+
+// 59회차(Codex): 클립보드를 쓸 수 없는 곳(없음·ClipboardItem 없음)에서도 ✓ 와 'Ctrl+V' 안내를 띄워, 붙이면 예전 클립보드가 붙었다.
+it("Assets 한 장 복사 — 클립보드를 쓸 수 없는 곳이면 ✓ 가 아니라 실패로 알린다(끌어 놓기 준비는 그대로)", async () => {
+  vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+  act(() => root.render(<AssetCell project="fixture" node={node} idx={0} layout="grid" scale={1} fit="contain" selected focused={false} meta={meta} editingTag={false}
+    onS={noop} onT={noop} onC={noop} onTagsReplace={noop} onBulkTagAdd={noop} onBulkTagRemove={noop} onTagCancel={noop} onInfo={noop} onExportDrag={noop} />));
+  const button = () => [...host.querySelectorAll<HTMLButtonElement>("button.ov-icon")].find((item) => ["📋", "…", "✓", "⚠"].includes(item.textContent?.trim() || ""))!;
+  await act(async () => { button().click(); }); // jsdom 에는 클립보드가 없다
+  expect(button().textContent?.trim()).toBe("⚠");
 });

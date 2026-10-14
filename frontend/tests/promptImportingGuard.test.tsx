@@ -94,6 +94,21 @@ it("'레퍼런스로 사용(@)'을 받아 오는 동안도 막는다 — 끝나�
   expect(boundary.api.prepareCreate.mock.calls[0][0].references).toHaveLength(2);
 });
 
+// 59회차(Codex): 그림 붙여넣기를 맡은 Ctrl+V 를 길게 누르면 반복 keydown 마다 paste 가 또 와, 같은 그림이 그만큼 올라가고 레퍼런스로 붙었다(조작 규칙 38).
+it("그림을 붙인 Ctrl+V 를 길게 누르면 반복은 막는다 — 키를 떼면 다시 붙일 수 있다", async () => {
+  Object.assign(boundary.api, { uploadCapture: vi.fn(() => deferred<Capture>().promise) });
+  view = await mountPrompt({ trayBinding: binding() });
+  paste();
+  const repeat = () => {
+    const event = new KeyboardEvent("keydown", { key: "v", ctrlKey: true, repeat: true, bubbles: true, cancelable: true });
+    act(() => { editor().dispatchEvent(event); });
+    return event.defaultPrevented;
+  };
+  expect(repeat()).toBe(true); // 전엔 막지 않아 반복마다 paste 가 왔다
+  act(() => { editor().dispatchEvent(new KeyboardEvent("keyup", { key: "v", ctrlKey: true, bubbles: true })); });
+  expect(repeat()).toBe(false); // 키를 뗐다 — 글자 붙여넣기의 반복은 전처럼 둔다
+});
+
 it("붙여 넣은 그림도 같다 — 올리기가 실패해도 막힘은 풀린다", async () => {
   const upload = deferred<Capture>();
   Object.assign(boundary.api, { uploadCapture: vi.fn(() => upload.promise) });

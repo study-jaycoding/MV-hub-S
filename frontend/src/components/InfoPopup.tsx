@@ -25,6 +25,7 @@ import { MediaThumbnail } from "./MediaThumbnail";
 
 import { fmtElapsed } from "../lib/format";
 import { formatCredits } from "../lib/formatCredits";
+import { copyText } from "../lib/flash";
 import { CloseIcon } from "./common/ViewIcons";
 interface Props {
   target: InfoTarget;
@@ -80,13 +81,9 @@ export function InfoPopup({
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const copyPrompt = async (text: string) => {
     if (!text) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedPrompt(true);
-      setTimeout(() => setCopiedPrompt(false), 1500);
-    } catch {
-      /* 클립보드 접근 차단 환경 — 조용히 무시 */
-    }
+    if (!(await copyText(text))) return; // 못 담았으면 copyText 가 알린다(59회차 — 전엔 조용해 예전 클립보드가 붙었다)
+    setCopiedPrompt(true);
+    setTimeout(() => setCopiedPrompt(false), 1500);
   };
   const [dim, setDim] = useState<string>("");
   const [credits, setCredits] = useState<number | null>(null); // 견적(폴백)
