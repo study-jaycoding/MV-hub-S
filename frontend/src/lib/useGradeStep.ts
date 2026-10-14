@@ -16,7 +16,7 @@ interface Args {
 interface GradeState { shared: boolean; is_final: boolean; is_held: boolean }
 const gradeOf = (g: Pick<Generation, "shared" | "is_final" | "is_held">): GradeState =>
   ({ shared: !!g.shared, is_final: !!g.is_final, is_held: !!g.is_held });
-// 방금 한 조작의 답을 기억하는 시간 — 목록이 다시 오는 데 걸리는 시간(보통 1초 안)을 넉넉히 덮는다
+// 방금 한 조작의 답을 기억하는 시간 — 이어서 누르는 조작을 덮을 만큼(잰 값이 아니라 정한 값이다. 목록이 다시 오는 시간은 재지 않았다)
 const REMEMBER_MS = 10_000;
 
 // 등급 S 다중선택 — 계산→인앱 확인 모달→실행. 실행은 부분 실패 허용(allSettled), 끝에 reload 1회.
