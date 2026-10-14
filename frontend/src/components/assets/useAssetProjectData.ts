@@ -45,6 +45,8 @@ export function useAssetProjectData({
   //  받아 둔 폴더로 돌아갈 때 setTree 는 같은 내용이면 건너뛰므로(bail-out) ref 만 바뀌면 가린 빈 화면이 그대로 남을 수 있다 — state 는 바뀌면 반드시 다시 그린다.
   const [treeFor, setTreeFor] = useState("");
   const [loading, setLoading] = useState(false);
+  // 폴더 목록과 파일 트리의 오류는 따로 — 한 칸을 같이 쓰면 트리가 성공할 때 풀리지 않은 목록 오류까지 지웠다(60회차). 화면에는 남은 것을 보인다.
+  const [projectsError, setProjectsError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // 프로젝트별 트리·메타 캐시 — 한 번 본 폴더는 다시 열 때 즉시 보여주고(로딩 플래시 제거), 뒤에서 조용히 최신화.
@@ -117,6 +119,7 @@ export function useAssetProjectData({
       .assetProjects(workspaceId)
       .then((info) => {
         if (seq !== projectsSeqRef.current) return;
+        setProjectsError(null);
         setProjects((prev) => reconcileArrayState(prev, info.projects));
         setLinkedProjects(new Set(info.linked || []));
         setProject((current) => {
@@ -128,7 +131,7 @@ export function useAssetProjectData({
         });
       })
       .catch((err) => {
-        if (seq === projectsSeqRef.current) setError(String(err));
+        if (seq === projectsSeqRef.current) setProjectsError(String(err));
       });
   }, [workspaceId]);
 
@@ -262,7 +265,7 @@ export function useAssetProjectData({
   }, [project, refreshProjectData]);
 
   return {
-    error,
+    error: projectsError ?? error,
     loading,
     // 화면에 내보내는 tree/meta 는 **지금 폴더의 것일 때만**(규칙 45 의 남은 한 박자 — 27회차 실측): 폴더를 바꾼 첫 렌더는 '새 폴더 이름 + 앞 폴더 목록'
     //  이라 셀이 앞 폴더의 파일 이름으로 새 폴더에 썸네일을 물었다(레이아웃 효과가 캐시를 넣는 것은 그 뒤). 열쇠는 state(treeFor·metaFor) — 받은 뒤 바뀌므로

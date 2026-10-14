@@ -130,6 +130,27 @@ it("Assets 폴더 목록 — 팀을 잇달아 바꾸면 가장 나중에 물은 
   expect(view.data().error).toBeNull();
 });
 
+// 60회차(Codex): 폴더 목록 조회와 파일 트리 조회가 오류 칸 하나를 같이 써, 트리가 성공하면 풀리지 않은 목록 오류까지 지웠다(목록이 다시 성공해도
+//  자기 오류는 지우지 않았다).
+it("Assets — 폴더 목록 오류는 파일 트리가 성공해도 남고, 목록이 다시 성공해야 걷힌다", async () => {
+  mocks.assetProjects.mockResolvedValueOnce(projectList(["a-folder"]));
+  mocks.assetTree.mockImplementation(async (project: string) => treeOf(`${project}.png`));
+  const view = mountProjectData();
+  view.show("team-a");
+  await settle();
+  expect(view.data().error).toBeNull();
+  mocks.assetProjects.mockRejectedValueOnce(new Error("offline"));
+  act(() => view.data().reloadProjects(true));
+  await settle();
+  expect(view.data().error).toContain("offline");
+  await act(async () => { await view.data().reloadTree("a-folder", true); });
+  expect(view.data().error).toContain("offline"); // 전엔 트리 성공이 지웠다
+  mocks.assetProjects.mockResolvedValueOnce(projectList(["a-folder"]));
+  act(() => view.data().reloadProjects(true));
+  await settle();
+  expect(view.data().error).toBeNull();
+});
+
 it("Assets — 폴더가 하나도 없는 팀으로 옮기면 앞 팀의 화면을 비우고 '로딩…'이 남지 않는다", async () => {
   const trees = held<ReturnType<typeof treeOf>>();
   mocks.assetProjects.mockImplementation(async (workspaceId: string) => projectList(workspaceId === "team-a" ? ["a-folder"] : []));

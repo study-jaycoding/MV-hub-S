@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  comfySaveNotice,
   doneOutputsPatch,
   saveCompletedComfyResults,
   type SaveComfyOptions,
@@ -164,4 +165,12 @@ describe("doneOutputsPatch — 저장 실패 시에도 결과가 카드에서 �
     const textOnly = [{ kind: "text" as const, text: "hello" }];
     expect(doneOutputsPatch([], textOnly)).toEqual({ outputs: textOnly, output: null });
   });
+});
+
+// 60회차(Codex): 저장 결과 안내를 둘로 내면 토스트에는 뒤의 것만 남아, 일부 결과를 저장하지 못한 것을 놓쳤다 — 한 문구로 함께 말한다.
+it("Comfy 결과 저장 안내는 한 문구로 — 일부 실패와 이전 결과 저장이 겹치면 둘 다 말한다", () => {
+  expect(comfySaveNotice(false, false)).toBeNull();
+  expect(comfySaveNotice(true, false)).toBe("일부 Comfy 결과를 내 작업에 저장하지 못했습니다");
+  expect(comfySaveNotice(false, true)).toBe("입력이 바뀌어 이전 실행 결과는 내 작업에 저장했습니다");
+  expect(comfySaveNotice(true, true)).toBe("입력이 바뀌어 이전 실행 결과는 내 작업에 저장했습니다 — 일부는 저장하지 못했습니다");
 });

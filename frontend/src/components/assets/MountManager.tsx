@@ -122,6 +122,7 @@ export function MountManager({
 
   const remove = async (mn: string) => {
     if (!window.confirm(`"${mn}" 등록을 해제할까요? (원본 폴더는 그대로입니다)`)) return;
+    setErr(""); // 다시 해서 되면 앞서 실패한 글이 남지 않게(60회차 — 정리·다시 잇기와 같게)
     try {
       await api.delAssetMount(mn);
       afterChange();

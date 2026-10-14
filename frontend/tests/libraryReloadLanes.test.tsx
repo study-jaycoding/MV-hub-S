@@ -619,6 +619,25 @@ it("앞지르기는 낡은 요청 하나까지 — 그것이 떠 있는 동안 �
   expect(calls().list).toBe(mark.list + 1);
 });
 
+// 60회차(Codex): 자동 조회(조용한 다시 받기)는 3초마다 돈다 — 실패할 때마다 알림을 띄워 다른 조작의 안내를 덮었다. 실패 표시는 화면에 남으니
+//  조용한 조회는 처음 한 번만 알리고, 사람이 직접 한 조회는 전처럼 알린다. 다시 성공하면 다음 실패는 또 알린다.
+it("조용한 다시 받기의 같은 실패는 한 번만 알린다 — 직접 한 다시 받기·성공 뒤의 실패는 알린다", async () => {
+  await mount();
+  flash.mockClear();
+  vi.mocked(api.listGenerations).mockRejectedValue(new Error("offline"));
+  await act(async () => { await data.reload(true, true); });
+  await act(async () => { await data.reload(true, true); });
+  await act(async () => { await data.reload(true, true); });
+  expect(flash).toHaveBeenCalledTimes(1); // 전엔 세 번
+  await act(async () => { await data.reload(); }); // 사람이 누른 다시 받기
+  expect(flash).toHaveBeenCalledTimes(2);
+  vi.mocked(api.listGenerations).mockResolvedValue(mainRows);
+  await act(async () => { await data.reload(true, true); }); // 되살아났다
+  vi.mocked(api.listGenerations).mockRejectedValue(new Error("offline"));
+  await act(async () => { await data.reload(true, true); });
+  expect(flash).toHaveBeenCalledTimes(3);
+});
+
 // 52회차 격리 실측 — 공유 & 리뷰 → 워크스페이스 → 15초 안에 공유 & 리뷰: 목록은 캐시로 돌아왔는데 왼쪽 폴더·태그 숫자는 워크스페이스
 //  것(830·21)으로 남았다. 팀 탭의 15초 폴링은 가벼워서 폴더·태그를 다시 받지 않으므로 새로고침 전까지 그대로였다.
 it("15초 안에 돌아온 탭: 목록은 캐시로 두되, 다른 범위의 폴더·태그가 남아 있으면 그것만 다시 받는다", async () => {

@@ -83,6 +83,17 @@ export async function saveCompletedComfyResults(
   return { saved, failed };
 }
 
+// 결과 저장의 안내 — **한 번에** 낸다. 토스트는 마지막 문구만 남아, 둘로 내면 앞의 '일부 저장 못 함'이 바로 뒤의
+//  '이전 결과는 저장함'에 덮였다(60회차). supersededSaved = 입력이 바뀌어 이전 실행 결과를 내 작업에 저장했다.
+export function comfySaveNotice(failed: boolean, supersededSaved: boolean): string | null {
+  if (failed) {
+    return supersededSaved
+      ? "입력이 바뀌어 이전 실행 결과는 내 작업에 저장했습니다 — 일부는 저장하지 못했습니다"
+      : "일부 Comfy 결과를 내 작업에 저장하지 못했습니다";
+  }
+  return supersededSaved ? "입력이 바뀌어 이전 실행 결과는 내 작업에 저장했습니다" : null;
+}
+
 // 완료 정산의 done 패치 조각 — 저장 attach(saveComfyToLibrary)가 카드 outputs 를 이미
 // 갱신했으면(saved_generation_id 마킹 포함) 그대로 두고, attach 가 안 됐으면(저장 API 실패·
 // 텍스트 전용 출력) 실행 결과를 여기서 붙인다. 저장이 실패해도 결과가 카드에서 사라지면
@@ -369,10 +380,8 @@ export function useSceneComfyExecution({
             isInputCurrent(cardId, configSnapshot, result.inputSnapshot),
         );
       const superseded = !inputsStillCurrent || sets.some((result) => result.superseded);
-      if (saveResult.failed) flashMsg("일부 Comfy 결과를 내 작업에 저장하지 못했습니다");
-      if (superseded && saveResult.saved) {
-        flashMsg("입력이 바뀌어 이전 실행 결과는 내 작업에 저장했습니다");
-      }
+      const saveNotice = comfySaveNotice(!!saveResult.failed, superseded && !!saveResult.saved);
+      if (saveNotice) flashMsg(saveNotice);
       if (rejected) {
         if (rejected.reason instanceof ComfyUnresolvedRunError) {
           flashMsg(rejected.reason.message);
@@ -697,10 +706,8 @@ export function useSceneComfyExecution({
     const wasSuperseded =
       aborted ||
       copies.some((copy) => Object.values(copy.superseded).some(Boolean));
-    if (saveResult.failed) flashMsg("일부 Comfy 결과를 내 작업에 저장하지 못했습니다");
-    if (wasSuperseded && saveResult.saved) {
-      flashMsg("입력이 바뀌어 이전 실행 결과는 내 작업에 저장했습니다");
-    }
+    const saveNotice = comfySaveNotice(!!saveResult.failed, wasSuperseded && !!saveResult.saved);
+    if (saveNotice) flashMsg(saveNotice);
     for (const id of plan.comfyIds) releaseRunning(id);
     // 실행 소유자만 최종 상태를 정산한다. 중간에 새 실행이 시작되면 runId가 달라져 이 블록은 아무것도 못 바꾼다.
     for (const id of plan.comfyIds) {

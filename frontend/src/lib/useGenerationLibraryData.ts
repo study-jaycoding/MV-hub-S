@@ -483,7 +483,9 @@ export function useGenerationLibraryData({
         finishSync(true);
       } catch (e) {
         if (seq === reloadSeqRef.current) {
-          flash("로드 실패: " + String(e));
+          // 조용한 다시 받기(자동 조회 — 3초·15초마다)는 이미 실패 표시가 떠 있으면 다시 알리지 않는다: 매번 알리면 다른 조작의 안내를
+          //  덮었다(60회차). 사람이 직접 한 다시 받기는 전처럼 알린다. 성공하면 표시가 걷혀 다음 실패는 또 알린다.
+          if (!silent || !loadErrorRef.current) flash("로드 실패: " + String(e));
           // 화면에 남는 실패 상태 — 빈 그리드가 "항목 없음"으로 오인되지 않게(재시도 UI 근거).
           setLoadError(String(e).replace(/^Error:\s*/, ""));
           // 사본을 보이던 중이면 치운다 — 낡은 사본을 최신 목록처럼 남기지 않고 실패·재시도를 보인다
