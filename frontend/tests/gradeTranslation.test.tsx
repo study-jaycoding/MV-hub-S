@@ -114,6 +114,52 @@ it("bulk results translate counts, partial failures and mirror pending at comple
   expect(flash).toHaveBeenLastCalledWith("No eligible items to change.");
 });
 
+// Codex 조작 점검(2026-10-14) — 처리 뒤 목록을 다시 받는 동안에는 다음 등급 조작을 받지 않는다: 그동안 든 선택은 옛 상태라(방금 최종을
+//  풀었는데 아직 최종으로 보인다) 방향이 틀리게 잡힌다. 받은 뒤에는 다시 받는다.
+it("grade steps wait for the reload after a run — the selection is stale until the list is back", async () => {
+  let actions!: ReturnType<typeof useGradeStep>;
+  let finishReload: () => void = () => {};
+  const flash = vi.fn(), reload = vi.fn(() => new Promise<void>((resolve) => { finishReload = resolve; }));
+  function Harness() { actions = useGradeStep({ canFinalize: () => true, flash, reload }); return null; }
+  act(() => root.render(<Harness />));
+  vi.mocked(api.unfinalize).mockResolvedValue(gen({ is_held: true }));
+  const stale = [gen({ is_final: true })]; // 화면이 아직 들고 있는 옛 선택
+  act(() => actions.requestGradeStep(stale, "down"));
+  let run: Promise<void> = Promise.resolve();
+  await act(async () => { run = actions.confirm(); for (let turn = 0; turn < 8; turn++) await Promise.resolve(); });
+  expect([actions.pending, reload.mock.calls.length, flash.mock.calls.length]).toEqual([null, 1, 1]); // 확인 창은 닫혔고 결과를 알렸고, 목록을 다시 받는 중이다
+  act(() => actions.requestGradeStep(stale, "down"));
+  act(() => actions.requestGradeStep(stale, "up"));
+  expect([actions.pending, flash.mock.calls.length, vi.mocked(api.unfinalize).mock.calls.length]).toEqual([null, 1, 1]); // 창도 안 뜨고 '바꿀 것이 없다'도 안 뜬다
+  await act(async () => { finishReload(); await run; });
+  act(() => actions.requestGradeStep(stale, "down"));
+  expect(actions.pending).not.toBeNull(); // 받은 뒤에는 다시 받는다
+});
+
+// Jay 2026-10-14 — 최종을 해제하면 원래의 보류로: 여러 장을 한 번에 풀 때도(S 더블클릭 · ↓) 보류로 돌아간 수를 알린다. 올리는 쪽(최종 지정 ·
+//  보류 해제)의 응답은 세지 않는다.
+it("bulk un-final says how many went back on hold", async () => {
+  let actions!: ReturnType<typeof useGradeStep>;
+  const flash = vi.fn(), reload = vi.fn().mockResolvedValue(undefined);
+  function Harness() { actions = useGradeStep({ canFinalize: () => true, flash, reload }); return null; }
+  act(() => root.render(<Harness />));
+  vi.mocked(api.unfinalize).mockResolvedValueOnce(gen({ id: "was-held", is_held: true })).mockResolvedValueOnce(gen({ id: "was-shared" }));
+  act(() => actions.requestGradeStep([gen({ id: "was-held", is_final: true }), gen({ id: "was-shared", is_final: true })], "double"));
+  await act(async () => actions.confirm());
+  expect(vi.mocked(api.unfinalize).mock.calls.map(([id]) => id)).toEqual(["was-held", "was-shared"]);
+  expect(flash).toHaveBeenLastCalledWith("2 applied · 1 back on hold");
+  setLang("ko");
+  vi.mocked(api.unfinalize).mockResolvedValueOnce(gen({ id: "was-held", is_held: true }));
+  act(() => actions.requestGradeStep([gen({ id: "was-held", is_final: true })], "down"));
+  await act(async () => actions.confirm());
+  expect(flash).toHaveBeenLastCalledWith("1개 적용 · 원래의 보류로 1개");
+  // 올리는 쪽: 보류 해제(↑)의 응답이 보류로 와도(그럴 일은 없지만) 세지 않는다 — 해제의 것만 센다
+  vi.mocked(api.unhold).mockResolvedValueOnce(gen({ id: "h", is_held: true }));
+  act(() => actions.requestGradeStep([gen({ id: "h", is_held: true })], "up"));
+  await act(async () => actions.confirm());
+  expect(flash).toHaveBeenLastCalledWith("1개 적용");
+});
+
 it.each([
   ["onUnpublish", "unpublish", "Removed team sharing.", "Could not remove sharing:"],
   ["onFinalize", "finalize", "Marked as final (gold).", "Could not mark as final:"],

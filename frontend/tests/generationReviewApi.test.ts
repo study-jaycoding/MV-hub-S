@@ -109,6 +109,8 @@ describe("review targets", () => {
     const result = computeGradeStep([held], mode, allowed);
     const description = describeGradeStep(result);
     expect(description.title).toBe(title);
-    expect(description.body).toBe(`선택한 1개를 한 단계 ${mode === "up" ? "올릴까요" : "내릴까요"}? (${transitions})`);
+    // 내림에는 한 문장이 더 붙는다(Jay 2026-10-14 — 최종을 해제하면 원래의 보류로. Codex 조작 점검: 확인 글이 '공유'만 말했다)
+    expect(description.body).toBe(`선택한 1개를 한 단계 ${mode === "up" ? "올릴까요" : "내릴까요"}? (${transitions})`
+      + (mode === "down" ? " 최종 전에 보류였던 것은 보류로 돌아갑니다." : ""));
   });
 });

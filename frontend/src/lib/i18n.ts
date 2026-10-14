@@ -317,13 +317,14 @@ const EN: Record<string, string> = {
   " ({kept}개는 유지·권한없음)": " ({kept} unchanged or not permitted)",
   "선택한 {count}개를 한 단계 올릴까요? (일반·보류→공유, 공유→최종)":
     "Raise {count} selected items by one grade? (Unshared/On hold→Shared, Shared→Final)",
-  "선택한 {count}개를 한 단계 내릴까요? (최종→공유, 공유·보류→일반)":
-    "Lower {count} selected items by one grade? (Final→Shared, Shared/On hold→Unshared)",
+  "선택한 {count}개를 한 단계 내릴까요? (최종→공유, 공유·보류→일반) 최종 전에 보류였던 것은 보류로 돌아갑니다.":
+    "Lower {count} selected items by one grade? (Final→Shared, Shared/On hold→Unshared) Items that were on hold before final go back on hold.",
   "선택한 {count}개를 팀 공유할까요?": "Share {count} selected items with the team?",
   "선택한 {count}개의 공유를 해제할까요? (→일반)": "Remove sharing from {count} selected items? (→Unshared)",
   "선택한 {count}개를 한 단계 올릴까요? (일반→공유, 공유→최종) — 일반은 공유까지만 올라갑니다.":
     "Raise {count} selected items by one grade? (Unshared→Shared, Shared→Final) — Unshared items only become shared.",
-  "선택한 {count}개의 최종을 해제할까요? (→공유)": "Remove final status from {count} selected items? (→Shared)",
+  "선택한 {count}개의 최종을 해제할까요? (→공유 · 최종 전에 보류였던 것은 보류로)":
+    "Remove final status from {count} selected items? (→Shared · back on hold if it was on hold before final)",
   "확인": "Confirm",
   "적용 중…": "Applying…",
   "{count}개 적용": "{count} applied",

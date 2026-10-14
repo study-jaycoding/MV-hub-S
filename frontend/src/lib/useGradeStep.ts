@@ -20,7 +20,9 @@ export function useGradeStep({ canFinalize, reload, flash }: Args) {
 
   // 카드 S(단일/더블) 다중선택 트리거 → 계산 후 확인 모달 오픈. 바꿀 게 없으면 알림만.
   const requestGradeStep = (selected: Generation[], mode: GradeMode) => {
-    if (!selected.length) return;
+    // busy: 앞의 처리가 목록을 다시 받는 중이다 — 그동안 든 선택은 옛 상태라(방금 최종을 풀었는데 아직 최종으로 보인다) 방향이 틀리게
+    //  잡힌다: ↑ 는 "바꿀 수 있는 항목이 없습니다", S 더블클릭은 또 '최종 해제'가 된다(Codex 조작 점검 2026-10-14). 받은 뒤에 받는다.
+    if (!selected.length || busy) return;
     const r = computeGradeStep(selected, mode, canFinalize);
     if (r.applied === 0) {
       flash(t("바꿀 수 있는 항목이 없습니다."));
@@ -72,18 +74,26 @@ export function useGradeStep({ canFinalize, reload, flash }: Args) {
     mirrorPending ||= results.some(
       (result) => result.status === "fulfilled" && !!result.value.mirror_pending,
     );
-    setPending(null);
-    setBusy(false);
+    // 최종 해제로 보류가 되살아난 것(최종 전에 보류였던 것 — api.unfinalize, Jay 2026-10-14)은 따로 알린다: 해제했는데 카드가
+    //  보류(빨강)로 보이는 까닭이다. 한 장 해제(onUnfinalize) · 편집 탭의 해제(onReviewSelection 의 release)와 같은 글.
+    const reheld = results.filter((result, index) =>
+      rest[index].action === "unfinalize" && result.status === "fulfilled" && !!(result.value as { is_held?: boolean }).is_held).length;
+    setPending(null); // 확인 창은 닫는다 — 잠금(busy)은 목록을 다시 받은 뒤에 푼다(아래)
     flash(
       withMirrorPendingNotice(
         (fail ? t("{count}개 적용 · {failed}개 실패/생략") : t("{count}개 적용"))
-          .replace("{count}", String(ok)).replace("{failed}", String(fail)),
+          .replace("{count}", String(ok)).replace("{failed}", String(fail))
+          + (reheld ? " · " + t("원래의 보류로 {count}개").replace("{count}", String(reheld)) : ""),
         { mirror_pending: mirrorPending },
         t,
       ),
     );
     postLibraryChanged(); // 관리탭 상태(게시/완료) 즉시 재조회
-    await reload();
+    try {
+      await reload();
+    } finally {
+      setBusy(false);
+    }
     // 선택은 자동 해제하지 않는다 — 더블을 한 번 더 눌러 최종까지 이어갈 수 있게.
   };
 
