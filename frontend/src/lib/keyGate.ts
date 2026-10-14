@@ -406,10 +406,17 @@ export function focusModal(token: object): void {
   if (roots.length && !roots.some((root) => root.contains(document.activeElement))) focusRoot(roots[0]);
 }
 
+// 모달이 떠 있는 동안의 표(body[data-modal-open]) — 화면 맨 위에 떠 있지만 모달의 초점 가두기 밖에 있는 것(Resolve 결과의 남는 안내 —
+//  styles/assets.css)을 CSS 가 모달 뒤로 내린다: 위에 보이는데 Tab 이 그 창 안만 돌면 키보드로는 닫을 수 없다(Codex 조작 점검 2026-10-14).
+function markModalOpen(): void {
+  if (typeof document !== "undefined") document.body.toggleAttribute("data-modal-open", modals.size > 0);
+}
+
 /** keep = 같은 창의 effect 가 다시 돌기 직전에 영역 안에서 초점이 있던 자리(useModalFocus) — 붙어 있으면 뿌리 대신 그 자리로 돌려준다. */
 export function openModal(token: object, seq: number, roots: ModalRoots, keep: Element | null = null): void {
   const modal = { seq, roots };
   modals.set(token, modal);
+  markModalOpen();
   if (keep instanceof HTMLElement && topModal() === modal) keep.focus({ preventScroll: true }); // 그사이 사라진 자리면 아무 일도 없다 — 아래에서 뿌리로
   focusModal(token);
 }
@@ -418,6 +425,7 @@ export function openModal(token: object, seq: number, roots: ModalRoots, keep: E
 export function closeModal(token: object, from: Element | null): void {
   const closing = modals.get(token);
   modals.delete(token);
+  markModalOpen();
   if (!closing) return;
   // 초점이 이 창 안에 있었을 때만 돌려준다(창과 함께 사라진 초점은 BODY 에 있다) — 닫히는 사이 다른 데로 간 초점은 뺏지 않는다.
   const active = document.activeElement;

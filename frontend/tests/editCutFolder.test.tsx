@@ -1355,6 +1355,9 @@ it("길이 조절 창의 큰 화면: 잡은 쪽의 프레임에 서고, ▶ 는 
   const play = vi.mocked(HTMLMediaElement.prototype.play);
   const pause = vi.mocked(HTMLMediaElement.prototype.pause);
   play.mockClear();
+  // 길게 눌러 반복된 Space 는 막기만 한다 — 재생을 뒤집지 않는다(조작 규칙 38). 처음 누름만 재생·멈춤이다
+  const held = press({ key: " ", code: "Space", repeat: true }, pop);
+  expect([held.defaultPrevented, play.mock.calls.length]).toEqual([true, 0]);
   act(() => pop.querySelector<HTMLButtonElement>(".ed-trim-play button")!.click());
   expect([seeks.at(-1), play.mock.calls.length]).toEqual([1, 1]); // 원본의 0초가 아니라 시작점(1초)에서 튼다
   const steps = seeks.length;

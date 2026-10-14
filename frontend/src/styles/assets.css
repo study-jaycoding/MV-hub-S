@@ -1004,6 +1004,10 @@
   position: fixed; top: 96px; left: 50%; transform: translateX(-50%); z-index: 400;
   width: min(430px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 8px; pointer-events: none;
 }
+/* 모달(초점을 가두는 창 — 크게 보기 · 등급 확인 · 단축키 창 …)이 떠 있는 동안은 그 뒤로 내린다: 모달의 Tab 은 그 창 안만 돌아, 위에
+   떠 있어도 ✕ 에 닿지 못했다(Codex 조작 점검 2026-10-14). 표는 lib/keyGate 의 openModal · closeModal 이 body 에 단다. 떠 있는 채 뒤를
+   쓰는 창(폴더 창 · 길이 조절 창 · 코멘트 — 150~165)은 모달이 아니라 그대로 그 위다. 닫히면 다시 맨 위로 온다. */
+body[data-modal-open] .resolve-notices { z-index: 140; }
 .resolve-notice {
   pointer-events: auto; display: flex; align-items: flex-start; gap: 12px;
   background: var(--glass); backdrop-filter: blur(18px); border: 1px solid rgba(255, 150, 80, 0.45);

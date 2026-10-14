@@ -278,7 +278,8 @@ export function EditTrimPop({
       move(edge, held + (event.key === "ArrowLeft" ? -1 : 1) * (event.shiftKey ? 10 : 1));
     } else if (event.code === "Space") {
       event.preventDefault(); // 초점이 남은 단추를 누르는 키가 아니다 — 창에서는 재생·멈춤
-      togglePlay();
+      // 길게 눌러 반복된 keydown 은 막기만 한다 — 반복마다 뒤집히면 키를 놓는 순간에 따라 재생·멈춤이 갈린다(조작 규칙 38. Codex 조작 점검)
+      if (!event.repeat) togglePlay();
     }
   };
 
