@@ -113,9 +113,12 @@
 .ed-tbtn.ed-dual svg { fill: none; stroke: #c9ccd3; stroke-width: 1.3; }
 .ed-tbtn.ed-dual:hover svg, .ed-tbtn.ed-dual.ed-on svg { stroke: var(--accent); fill: none; }
 .ed-tbtn.ed-dual.ed-on { background: rgba(var(--accent-rgb), 0.1); }
-/* 좁은 판(듀얼) — 폭 기준은 판 자신이다. 오른쪽의 소리 크기가 가운데 단추와 겹치기 전에 숨긴다: 먼저 막대, 더 좁아지면 스피커까지. */
+/* 좁은 판(듀얼) — 폭 기준은 판 자신이다. 오른쪽의 소리 크기가 가운데 단추와 겹치기 전에 줄이고 숨긴다: 먼저 막대를 줄이고(44px),
+   더 좁으면 막대를, 더 좁으면 스피커까지. 가운데 단추 묶음은 약 282px 이라 막대 44px 의 소리 칸(74px)은 판 폭 약 470px 까지 안 겹친다
+   (2026-10-14 격리 실측 — 1584 창의 듀얼 판 495px 에서 막대가 숨어 '판마다 소리'가 끄고 켜기뿐이었다). */
 .ed-vbot { container-type: inline-size; }
-@container (max-width: 560px) { .ed-tside .ed-vol-bar { display: none; } }
+@container (max-width: 560px) { .ed-tside .ed-vol-bar { width: 44px; } }
+@container (max-width: 470px) { .ed-tside .ed-vol-bar { display: none; } }
 @container (max-width: 440px) { .ed-tside { display: none; } }
 
 /* 미디어 풀 — 왼쪽 폴더 목록 바로 옆(다빈치의 Bins | 클립). 머리줄 = 컷 이름 + 보기 방식·검색·정렬. */
