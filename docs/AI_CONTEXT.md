@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-27
+updated: 2026-10-14
 status: active
 ---
 
@@ -15,7 +15,9 @@ status: active
 > 로컬 실행 큐(gen-request)·크레딧 집계 반영. 이전 "서버가 직접 생성" 모델에서 전환됨.
 > ★Higgsfield CLI 는 `hf_cli_version.txt` 로 **버전 pin**(0.2.x→1.x 파괴적 변경 대응). CLI 출력
 > 필드를 읽는 코드는 `x.get(new) or x.get(old)` 폴백을 쓴다 — 절차·계약은 `docs/HF_CLI_UPGRADE.md`.
-> UI 상단 탭은 **작업 공간 / 공유 & 리뷰 / 캔버스**(`frontend/src/components/TopBar.tsx`).
+> UI 상단 탭은 **워크스페이스 / 공유 & 리뷰 / 캔버스**(`frontend/src/components/TopBar.tsx`). 첫 탭의 글자는 2026-10-14 에 '작업 공간'에서
+> 바뀌었다(Jay) — 코드의 탭 값은 그대로 `my` 이고, 다른 문서·주석의 '작업 공간(탭)'은 같은 탭이다. 화면의 다른 '워크스페이스'(계정 메뉴 ·
+> 걸러 보기 — 힉스필드 공간)와는 다른 것이다.
 > **현재 완료·잔여·검증 상태는 [CURRENT_STATUS.md](CURRENT_STATUS.md)를 먼저 확인한다.** 이 본문은
 > 구조를 설명하며 최신 작업 상태의 단일 출처가 아니다.
 
@@ -101,7 +103,7 @@ CLI**로 생성한다. 생성 결과는 **내 로컬 DB 가 정답**이고(`rout
   - 시작·가입 시 `repo.link_accounts_to_creators()`: 소유자(provider_email)=힉스필드 `my_creator_uid`, 그 외=합성 `acct:<email>`.
   - push 첫 적재 때 `set_account_hf_creator` 가 합성 uid 를 **실제 힉스필드 uid**로 교체(그 계정의 자기 작업이 "내 작업"에 잡히게).
 - **가입 흐름**: 자동 등록(pending) → 관리자 승인(approved). **첫 계정 = 부트스트랩 관리자**(admin+product_manager, 즉시 approved).
-- **본인 작업 분리**(UI 탭 이름은 **작업 공간**): `GET /api/generations?tab=my` 는 라우터가 `request.state.account.creator_uid` 를 주입 → 그 계정 생성물만. 비로그인(토큰 없음)이면 전체(단독/개발). `tab=team` 은 공유된 것.
+- **본인 작업 분리**(UI 탭 이름은 **워크스페이스** — 2026-10-14 전에는 '작업 공간'): `GET /api/generations?tab=my` 는 라우터가 `request.state.account.creator_uid` 를 주입 → 그 계정 생성물만. 비로그인(토큰 없음)이면 전체(단독/개발). `tab=team` 은 공유된 것.
 - **멤버 목록**: `list_members()` 는 **계정 우선**(생성물 0이어도 멤버·프로젝트 후보로 노출) + 계정 없는 외부 creator(가져온 작업 작성자)도 포함. → 관리자 창의 승인·전역 역할 화면과 관리창 대시보드의 프로젝트 배정이 신규 계정을 바로 본다.
 - **RBAC**(`rbac.py`, `deps.py`): 전역 역할(admin/product_manager/production_director/member, CSV 복수) + 프로젝트 역할(project_manager/supervisor/creator). 게이트는 `CONTENT_HUB_AUTH=1` 일 때만 강제. `require_global_cap`/`require_project_role` 등.
 - 표시이름: 로그인 시 `account.name` 우선(전역 provider.name 아님) — [AccountMenu].

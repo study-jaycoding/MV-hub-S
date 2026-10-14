@@ -98,7 +98,7 @@ async def run(base: str, work: Path, debug_port: int, shots: bool, verbose: bool
         # 탭
         await w.step("탭", "공유 & 리뷰", w.click(by_text("공유 & 리뷰")), settle=4)
         await w.step("탭", "캔버스", w.click(by_text("캔버스")), settle=5)
-        await w.step("탭", "작업 공간", w.click(by_text("작업 공간")), settle=3, expect=has_cards)
+        await w.step("탭", "워크스페이스", w.click(by_text("워크스페이스")), settle=3, expect=has_cards)  # 2026-10-14 까지의 이름은 '작업 공간'
 
         # 프롬프트 도크 — 제출하지 않는다
         dock = "!!document.querySelector('.sl-gen') && document.querySelector('.sl-gen').getBoundingClientRect().width > 0"
