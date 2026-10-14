@@ -57,8 +57,15 @@ def test_names_old_versions_or_windows_would_misread_are_avoided(tmp_path):
         assert export_names.parse_numbered(name) is None  # §6 의 읽기로는 번호 이름이 아니다
         assert export_names.parse_v2(name, FOLDER) == ("share", 1)
     assert names.allocate(ident("gen-e", "Fin"), "share", ".mp4", dirs(tmp_path)).endswith("_share_Fin_002.mp4")  # 같은 줄(대소문자 무시)
+    # 마지막 마디만 종류 글자여도 같다 — `kim_fin` 은 §6 이 `…_share_kim` + `fin` 으로 읽는다(Codex 통합 재검토 P1)
+    for gen, worker, shown in (("gen-f", "kim_fin", "kim_Fin"), ("gen-g", "kim fin", "kim_Fin"), ("gen-h", "a_share", "a_Share"), ("gen-i", "fin_kim", "fin_kim")):
+        name = names.allocate(ident(gen, worker), "fin", ".mp4", dirs(tmp_path))
+        assert name.endswith(f"_fin_{shown}_001.mp4") or name.endswith(f"_fin_{shown}_002.mp4"), name
+        assert export_names.parse_numbered(name) is None
     assert export_names.clean_part("CON.final", 24) == "CON_.final"
     assert export_names.clean_part("lpt1.x", 24) == "lpt1_.x"
+    assert export_names.clean_part("COM¹.x", 24) == "COM¹_.x"  # 위첨자 숫자도 장치다(Codex 통합 재검토 P2)
+    assert export_names.clean_part("lpt³.x", 24) == "lpt³_.x"
     assert export_names.clean_part("CONTEST.x", 24) == "CONTEST.x"  # 장치 이름 그 자체일 때만
     assert export_names.clean_part("lee.jaelyun", 16) == "lee.jaelyun"  # 이메일 앞부분의 점은 그대로
 
@@ -70,6 +77,15 @@ def test_a_path_too_long_for_windows_takes_no_number(tmp_path):
         book(tmp_path).allocate(ident("gen-a"), "share", ".mp4", [deep, deep / "shared"])
     assert not any((tmp_path / export_names.SYNC_DIR).rglob("n.*"))  # 번호를 쥐지 않았다
     assert book(tmp_path).allocate(ident("gen-a"), "share", ".mp4", dirs(tmp_path)).endswith("_001.mp4")  # 짧은 곳은 그대로
+    # 저장 중의 임시 파일(.part·각인)까지, Windows 처럼 UTF-16 으로 센다(Codex 통합 재검토 P2) — 파이썬 글자 수로는 들어가는 깊이
+    emoji = ident("gen-b", project="😀" * 24)
+    name = export_names.v2_name("😀" * 24, "e035_C0050", "davinci", "리버", "000000", ".00000")
+    budget = export_names._PATH_MAX - export_names._TEMP_EXTRA - 1
+    deep = Path("C:/" + "d" * (budget - len(name) - len("C:/") - len("/shared") - 8))  # 없는 폴더라도 된다 — 길이만 잰다
+    assert len(str(deep / "shared")) + 1 + len(name) + export_names._TEMP_EXTRA <= export_names._PATH_MAX  # 파이썬 글자 수로는 통과
+    with pytest.raises(RegistryError, match="저장 경로가 너무 깁니다"):
+        book(tmp_path).allocate(emoji, "share", ".mp4", [deep, deep / "shared"])
+    assert export_names._TEMP_EXTRA == 60 and export_names._wlen("😀") == 2
 
 
 def test_number_follows_the_worker_line_and_stays_across_kinds(tmp_path):

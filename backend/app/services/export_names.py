@@ -290,8 +290,17 @@ _PART_BAD = re.compile(r'[\x00-\x1f\\/:*?"<>|\s]+|\.{2,}')  # `..` 도 — 목�
 _KIND_MARK = re.compile(r"(?=_(" + "|".join(KINDS2) + r")_)")  # 겹쳐서도 센다(`_fin_fin_`)
 _TAIL_SEQ = re.compile(r"_(\d{3,})$")
 _LONGEST_EXT = ".00000"  # _EXT 가 받는 가장 긴 확장자 — 이름 길이는 확장자와 무관하게 맞춘다
-_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"{dev}{n}" for dev in ("COM", "LPT") for n in range(1, 10))}  # Windows 장치 이름
-_PATH_MAX = 259  # LongPathsEnabled 가 꺼진 Windows(기본)가 열 수 있는 전체 경로 길이(MAX_PATH 260 - 끝 NUL)
+# Windows 장치 이름 — COM·LPT 는 위첨자 숫자(¹²³)도 장치다(Codex 통합 재검토 P2)
+_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"{dev}{n}" for dev in ("COM", "LPT") for n in (*"123456789", "¹", "²", "³"))}
+_PATH_MAX = 259  # LongPathsEnabled 가 꺼진 Windows(기본)가 열 수 있는 전체 경로 길이(MAX_PATH 260 - 끝 NUL), UTF-16 단위
+# 저장·다빈치는 같은 폴더에 `<이름>.<uuid 32자>.part` 를 먼저 쓰고(routers/manage.py · services/resolve_transfer.py), 각인은 그 곁에
+# `.<그 이름>.<8자>.stamp<확장자>` 를 만든다(file_stamp._new_stamp_tmp) — 최종 이름보다 38 + 22 자 길다(Codex 통합 재검토 P2)
+_TEMP_EXTRA = len(f".{'0' * 32}.part") + len(f"..{'0' * 8}.stamp{_LONGEST_EXT}")
+
+
+def _wlen(text: str) -> int:
+    """Windows 가 경로 길이를 세는 단위(UTF-16) — 이모지 같은 글자는 둘로 센다."""
+    return len(text.encode("utf-16-le")) // 2
 
 
 def clean_part(text: object, limit: int) -> str:
@@ -330,9 +339,10 @@ def _fit(project: str, base: str, worker: str) -> tuple[str, str]:
     if over > 0:
         raise RegistryError("파일 이름이 너무 깁니다(폴더 경로가 너무 깁니다)")
     worker = worker or NO_WORKER
-    # 작업자 이름이 종류 글자 그대로면(`fin`) 10-08 판(§6)이 `…_share_fin_001` 을 자기 저장본 `…_fin_001` 로 읽어, 그 판으로
-    # 되돌린 PC 의 미러가 치울 수 있다 — 첫 글자만 키운다(§6 의 읽기는 대소문자를 가린다, Codex 통합 검토 P1, 2026-10-13).
-    return project, worker.capitalize() if worker in KINDS2 else worker
+    # 작업자 이름의 마지막 마디가 종류 글자면(`fin`·`kim_fin`) 10-08 판(§6)이 `…_share_kim_fin_001` 을 자기 저장본 `…_fin_001` 로
+    # 읽어, 그 판으로 되돌린 PC 의 미러가 치울 수 있다 — 그 마디의 첫 글자만 키운다(§6 의 읽기는 대소문자를 가린다, Codex 통합 검토 P1).
+    head, sep, last = worker.rpartition("_")
+    return project, f"{head}{sep}{last.capitalize()}" if last in KINDS2 else worker
 
 
 class Ident:
@@ -705,11 +715,13 @@ class NameBook2:
         if ext and not _EXT.fullmatch(ext):  # 읽을 때 거부할 확장자를 적으면 그 컷의 장부 전체가 '읽지 못함'이 된다
             raise RegistryError(f"파일 확장자를 쓸 수 없습니다: {ext}")
         # 전체 경로가 260자를 넘으면 LongPathsEnabled 가 꺼진 PC(Windows 기본)와 다빈치가 그 파일을 못 연다 — 번호를 쥐기 전에
-        # 그만둔다(쥐고 나면 그 이름으로 영영 실패한다, Codex 통합 검토 P2, 2026-10-13).
+        # 그만둔다(쥐고 나면 그 이름으로 영영 실패한다, Codex 통합 검토 P2, 2026-10-13). 저장 중의 임시 파일까지 들어가야 하고(_TEMP_EXTRA),
+        # 길이는 Windows 처럼 UTF-16 으로 센다.
         # shortcut: 가장 긴 폴더 + 가장 긴 이름(davinci·번호 6자리·확장자 6자)으로 재 몇 글자 일찍 거절한다 — 거절이 잦으면 종류별로 잰다.
-        longest = max((len(str(folder)) for folder in dest_dirs), default=0) + 1 + len(v2_name(project, self.base, DAVINCI, worker, "000000", _LONGEST_EXT))
+        longest = (max((_wlen(str(folder)) for folder in dest_dirs), default=0) + 1
+                   + _wlen(v2_name(project, self.base, DAVINCI, worker, "000000", _LONGEST_EXT)) + _TEMP_EXTRA)
         if longest > _PATH_MAX:
-            raise RegistryError(f"저장 경로가 너무 깁니다({longest}자 — Windows 기본 한도 {_PATH_MAX}자). 렌더 폴더나 컷 폴더 이름을 줄이세요")
+            raise RegistryError(f"저장 경로가 너무 깁니다(저장 중의 임시 파일까지 {longest}자 — Windows 기본 한도 {_PATH_MAX}자). 렌더 폴더나 컷 폴더 이름을 줄이세요")
         line = _line(worker)
         try:
             self.dir.mkdir(parents=True, exist_ok=True)
