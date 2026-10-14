@@ -5,13 +5,13 @@
 //  둘 다 생성물마다 컷 하나·클립 하나짜리 가상 시퀀스(`@src/<id>`)를 타임라인과 같은 엔진으로 튼다 — 조작·훑기·반복이 같다.
 //  편집 문서에는 아무것도 쓰지 않는다. 판이 소스가 아니거나 안 보이면(mode null) 비우고 멈춘다 — 안 보이는 판이 풀의 영상 카드를
 //  누를 때마다 그 영상을 끝까지 받았다(2026-10-13 격리 실측). 보던 자리는 범위(scope)가 바뀔 때 엔진이 기억해 둔다.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { Generation } from "../../types";
 import { buildLayout, emptyEditDoc, genSeconds, type EditDoc, type SlotClip } from "../../lib/editTimeline";
 import { useVideoPair } from "../../lib/editVideoPair";
 import { thumbOf } from "../../lib/media";
 import { useEditPlayback, type EditSource } from "../../lib/useEditPlayback";
-import { knownVideoSeconds, measuredExactly, measureVideoSeconds } from "../../lib/videoDuration";
+import { knownVideoSeconds, measuredExactly, measureVideoSeconds, subscribeVideoSeconds, videoSecondsVersion } from "../../lib/videoDuration";
 
 export const SRC_CUT = "@src";
 const NO_GENS: Generation[] = [];
@@ -34,7 +34,6 @@ export function useSourcePane({ place, mode, gen, tape, tapeScope, loop, speed }
   //  하나씩 차례로 잰다: 길이 재기의 큐는 앱 전체가 같이 쓰고 동시에 4개라, 테이프의 영상을 한꺼번에 줄 세우면 타임라인
   //  클립이나 방금 고른 소스의 길이 재기가 그 뒤로 밀린다. 목록·방식이 바뀌거나 떠나면 더 신청하지 않는다(Codex 설계 검토).
   // ponytail: 영상이 아주 많은 컷은 끝까지 재는 데 오래 걸린다 — 안 잰 것은 그동안 적힌 길이·기본 5초로 지나간다.
-  const [seconds, setSeconds] = useState<ReadonlyMap<string, number>>(new Map());
   useEffect(() => {
     let alive = true;
     void (async () => {
@@ -42,29 +41,30 @@ export function useSourcePane({ place, mode, gen, tape, tapeScope, loop, speed }
         const asset = item.assets[0];
         // 그림 길이로 잰 것만 건너뛴다 — video.duration 으로 잰 것은 다시 물어야 서버가 나은 뒤 그림 길이로 바뀐다(Codex 37회차)
         if (asset?.type !== "video" || !asset.file_path || measuredExactly(asset.file_path)) continue;
-        const url = asset.file_path;
-        const measured = await measureVideoSeconds(url, true); // 줄의 맨 앞 — 타임라인 클립들의 재기 뒤로 밀리지 않게
+        await measureVideoSeconds(asset.file_path, true); // 줄의 맨 앞 — 타임라인 클립들의 재기 뒤로 밀리지 않게
         if (!alive) return;
-        if (measured) setSeconds((prev) => (prev.get(url) === measured ? prev : new Map(prev).set(url, measured)));
       }
     })();
     return () => {
       alive = false;
     };
   }, [gens]);
+  // 잰 길이는 공용 기억에서 읽고, 바뀌면 다시 그린다 — 어느 판이 다시 재든 같은 영상을 띄운 판은 모두 그 길이다(전엔 다시 잰 판만
+  //  깨워 두 판의 길이가 갈렸다 — Codex 39회차). 배치는 이 판의 영상 길이가 실제로 바뀔 때만 다시 짓는다(lengths 가 그 열쇠).
+  useSyncExternalStore(subscribeVideoSeconds, videoSecondsVersion);
+  const lengths = gens.map((item) => knownVideoSeconds(item.assets[0]?.file_path) ?? 0).join(",");
   const src = useMemo(() => {
     if (!gens.length) return NO_SOURCE;
+    const measured = lengths.split(",").map(Number);
     const made: EditDoc = {
       ...emptyEditDoc(),
-      clips: gens.map((item) => {
+      clips: gens.map((item, at) => {
         const asset = item.assets[0];
-        // 공용 기억이 먼저다 — 다른 판이 그림 길이로 다시 잰 값이 이 판이 전에 받은 옛 값에 가리지 않게(Codex 37회차). seconds 는 다시 그리라는 신호다.
-        const known = knownVideoSeconds(asset.file_path) ?? seconds.get(asset.file_path);
-        return { cut: `${SRC_CUT}/${item.id}`, gen: item.id, track: 1, kind: asset.type, dur: genSeconds(item, known) };
+        return { cut: `${SRC_CUT}/${item.id}`, gen: item.id, track: 1, kind: asset.type, dur: genSeconds(item, measured[at] || null) };
       }),
     };
     return { doc: made, layout: buildLayout(made.clips.map((clip) => clip.cut), made), byId: new Map(gens.map((item) => [item.id, item])) };
-  }, [gens, seconds]);
+  }, [gens, lengths]);
   const sourceOf = useCallback((clip: SlotClip): EditSource => {
     const item = src.byId.get(clip.gen);
     const asset = item?.assets[0];

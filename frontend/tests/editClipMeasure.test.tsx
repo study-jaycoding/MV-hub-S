@@ -25,9 +25,23 @@ const probes = vi.hoisted(() => ({
   known: new Map<string, number>(),
   inflight: new Map<string, Promise<number | null>>(),
   finish: new Map<string, (seconds: number | null) => void>(),
+  listeners: new Set<() => void>(),
+  version: 0,
+  // 공용 기억이 바뀌었다고 알린다 — 진짜 모듈은 잰 값이 바뀔 때 그렇게 한다
+  remember: (url: string, seconds: number) => {
+    if (probes.known.get(url) === seconds) return;
+    probes.known.set(url, seconds);
+    probes.version++;
+    probes.listeners.forEach((listener) => listener());
+  },
 }));
 vi.mock("../src/lib/videoDuration", () => ({
   knownVideoSeconds: (url: string | null | undefined) => (url && probes.known.get(url)) || null,
+  subscribeVideoSeconds: (listener: () => void) => {
+    probes.listeners.add(listener);
+    return () => { probes.listeners.delete(listener); };
+  },
+  videoSecondsVersion: () => probes.version,
   measureVideoSeconds: (url: string) => {
     probes.asked.push(url);
     const cached = probes.known.get(url);
@@ -37,7 +51,7 @@ vi.mock("../src/lib/videoDuration", () => ({
       pending = new Promise<number | null>((resolve) => {
         probes.finish.set(url, (seconds) => {
           probes.inflight.delete(url);
-          if (seconds) probes.known.set(url, seconds);
+          if (seconds) probes.remember(url, seconds);
           resolve(seconds);
         });
       });
@@ -194,6 +208,36 @@ it("소스 판: video.duration 으로 잰 영상은 다시 띄울 때 다시 묻
   await act(async () => [...document.querySelectorAll<HTMLButtonElement>(".ed-pool .ed-card")].at(-1)!.click()); // 다른 것을 띄웠다가
   await showS(); // 다시
   expect(pane().querySelector(".ed-vtotal")!.textContent).toBe("00:00:04:01"); // 97프레임(그림)
+});
+
+// Codex 39회차 — 두 소스 판이 같은 영상을 띄웠는데 한 판만 다시 재어(그 판이 테이프로 갔다 돌아옴 등) 공용 기억이 그림 길이로
+//  바뀌면, 다른 판은 옛 길이(소리까지 친 길이)로 남아 두 판의 전체 길이가 갈렸다 — 다시 잰 판만 다시 그렸다.
+it("소스 판 둘이 같은 영상을 띄웠을 때 공용 기억의 길이가 바뀌면 두 판 다 그 길이로 다시 배치한다", async () => {
+  localStorage.setItem("ch.editTimeline.ui", JSON.stringify({ dual: true, views: ["source", "source"] }));
+  world.gens = [video("m", "c1", 4), video("s", "c1", 4)];
+  seed([{ cut: "c1", gen: "m", track: 1, dur: 4 }]);
+  probes.known.set("/media/s.mp4", 98 / 24);
+  probes.inexact.add("/media/s.mp4");
+  await mount();
+  const panes = () => [...document.querySelectorAll<HTMLElement>(".ed-top > .ed-view:not([hidden])")]
+    .sort((a, b) => Number(a.style.order) - Number(b.style.order));
+  const srcOf = (view: HTMLElement) => view.querySelector(".ed-stage > video.ed-media")?.getAttribute("src");
+  // 오른쪽 판(처음 재생 키를 받는 판)에 띄우고, 왼쪽 판을 눌러 같은 것을 띄운다
+  for (const card of document.querySelectorAll<HTMLButtonElement>(".ed-pool .ed-card")) {
+    await act(async () => card.click());
+    await settle();
+    if (srcOf(panes()[1]) === "/media/s.mp4") break;
+  }
+  act(() => { panes()[0].querySelector(".ed-stage")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 })); });
+  for (const card of document.querySelectorAll<HTMLButtonElement>(".ed-pool .ed-card")) {
+    await act(async () => card.click());
+    await settle();
+    if (srcOf(panes()[0]) === "/media/s.mp4") break;
+  }
+  const totals = () => panes().map((view) => [srcOf(view), view.querySelector(".ed-vtotal")!.textContent]);
+  expect(totals()).toEqual([["/media/s.mp4", "00:00:04:02"], ["/media/s.mp4", "00:00:04:02"]]); // 98프레임(소리까지)
+  await act(async () => probes.remember("/media/s.mp4", 97 / 24)); // 한 판이 다시 재어 그림 길이를 받았다
+  expect(totals()).toEqual([["/media/s.mp4", "00:00:04:01"], ["/media/s.mp4", "00:00:04:01"]]); // 두 판 다 97프레임(전엔 한 판만)
 });
 
 // 적힌 길이만 보고 '이미 쟀다'고 건너뛰지 않는다(그렇게 넣었다가 뺐다 — Codex 코드 리뷰 4회째): dur 에는 요청 길이와 실측값이 구분 없이

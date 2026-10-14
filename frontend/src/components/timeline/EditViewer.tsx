@@ -8,6 +8,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactM
 import { timecode, type EditMarks } from "../../lib/editTimeline";
 import { isSourceView, type ViewMode } from "../../lib/editTimelineStore";
 import { useT } from "../../lib/i18n";
+import { focusCameByTab } from "../../lib/keyGate";
 import type { EditShown } from "../../lib/useEditFollow";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
@@ -313,10 +314,11 @@ export function VolumeControl({ volume, onVolume, label = "", memory }: {
         aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(volume * 100)}
         // 키보드(Tab 으로 온 초점)로도 — ←↓ / →↑ 5%, Home·End 끝. 쓴 키는 막아 프레임 이동으로 새지 않는다(편집 키는
         //  막힌 키를 건너뛴다). 마우스로 누를 때는 초점을 안 가져간다 — 누른 뒤의 ←→ 는 그대로 프레임 이동이다(Codex 36회차).
+        //  Tab 으로 온 초점을 두고 마우스로 딴 것을 누른 뒤에도 프레임 이동이다 — 남은 초점이 ←→ 를 가져가 소리가 바뀌었다(Codex 39회차, 규칙 8).
         onMouseDown={(event) => event.preventDefault()}
         onKeyDown={(event) => {
           const step = ({ ArrowLeft: -0.05, ArrowDown: -0.05, ArrowRight: 0.05, ArrowUp: 0.05, Home: -1, End: 1 } as Record<string, number>)[event.key];
-          if (step === undefined || event.ctrlKey || event.metaKey || event.altKey) return;
+          if (step === undefined || event.ctrlKey || event.metaKey || event.altKey || !focusCameByTab()) return;
           event.preventDefault();
           onVolume(Math.round(Math.min(1, Math.max(0, volume + step)) * 100) / 100);
         }}

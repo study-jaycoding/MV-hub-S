@@ -179,13 +179,15 @@ export const EditTimeline = memo(function EditTimeline({
   //  처음 그릴 때(편집 탭을 열 때)와 배치·확대가 바뀔 때는 넘기지 않는다(보던 자리를 끌어가지 않게). 재생 중에도 넘기지 않는다 —
   //  재생헤드 따라가기(EditTab.paint)가 다음 프레임에 되돌린다(Codex 리뷰). 보이는지는 컷이 아니라 그 클립으로 잰다(같은 컷의 긴 다른
   //  트랙 때문에 이미 보이는 클립을 두고 넘겼다 — Codex 리뷰). 신호(resolveScroll)는 표시(resolvePicked)와 따로다 — 표시는 모든 브라우저
-  //  탭이 받지만 넘기기는 앱이 '따라가는 탭'에서만 올린다(다른 탭의 타임라인까지 움직였다 — Codex 리뷰).
+  //  탭이 받지만 넘기기는 앱이 '따라가는 탭'에서만 올린다(다른 탭의 타임라인까지 움직였다 — Codex 리뷰). 클립·컷·상자를 누르거나 끄는
+  //  중에도 넘기지 않는다(버린다) — 컷 끌기는 놓는 순간의 스크롤로 끼울 자리를 다시 재서, 끄는 사이 온 신호가 넘기면 겨냥한 자리가 아닌
+  //  넘어간 화면의 컷 앞에 놓였다(Codex 39회차).
   const seenScroll = useRef(resolveScroll);
   useEffect(() => {
     if (seenScroll.current === resolveScroll) return;
     seenScroll.current = resolveScroll;
     const scroll = scrollRef.current;
-    if (!scroll || !resolvePicked.size || isPlaying()) return;
+    if (!scroll || !resolvePicked.size || isPlaying() || drag.current || cutPress.current || boxPress.current) return;
     for (const slot of layout.cuts) {
       const clip = slot.clips.find((item) => resolvePicked.has(links.get(clipKey(item))?.gen?.id ?? ""));
       if (!clip) continue;

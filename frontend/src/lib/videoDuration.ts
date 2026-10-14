@@ -20,6 +20,18 @@ export function knownVideoSeconds(url: string | null | undefined): number | null
   return (url && known.get(url)) || null;
 }
 
+// 기억한 길이가 바뀌면 알린다 — 같은 영상을 띄운 소스 판이 모두 다시 배치한다(한 판의 다시 재기가 그 판만 깨워 두 판의 길이가
+//  갈렸다 — Codex 39회차). useSyncExternalStore 로 쓴다.
+const listeners = new Set<() => void>();
+let version = 0;
+export function subscribeVideoSeconds(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+export const videoSecondsVersion = (): number => version;
+
 // 잰 길이가 그림 길이인가(서버가 읽었다). 아니면 소리까지 친 길이일 수 있어 그림 길이보다 1프레임쯤 길다 — 그 값으로 다른 창이
 //  그림 길이로 적은 것을 덮으면 두 창이 서로 고쳐 쓴다(Codex 코드 리뷰 P1). 편집 탭이 덮을지 정할 때 본다.
 export function measuredExactly(url: string): boolean {
@@ -96,7 +108,11 @@ export function measureVideoSeconds(url: string, first = false): Promise<number 
         if (next) next.run();
         else active--;
         inflight.delete(url);
-        if (seconds) known.set(url, seconds);
+        if (seconds && known.get(url) !== seconds) {
+          known.set(url, seconds);
+          version++;
+          listeners.forEach((listener) => listener());
+        }
         resolve(seconds);
       });
     };

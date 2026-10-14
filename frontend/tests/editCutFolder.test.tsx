@@ -447,6 +447,18 @@ it("다빈치에서 고른 것 — 풀의 세 보기와 타임라인 클립에 �
   expect(clips().map((clip) => clip.classList.contains("ed-dv"))).toEqual([false, true]); // 표는 붙는다
   expect(scroll.scrollLeft).toBe(0);
   press({ key: "k", code: "KeyK" });
+  // 컷 머리·클립을 누르고 있는(끄는) 중에도 넘기지 않는다 — 컷 끌기는 놓는 순간의 스크롤로 끼울 자리를 다시 재서, 끄는 사이 넘어가면
+  //  겨냥한 자리가 아닌 곳에 놓였다(Codex 39회차). 놓은 뒤의 새 신호는 넘긴다.
+  for (const held of [cutCell("c1"), clips()[0]]) {
+    mouse(held, "pointerdown");
+    resolveScroll += 1;
+    mount();
+    expect(scroll.scrollLeft).toBe(0);
+    mouse(held, "pointerup");
+  }
+  resolveScroll += 1;
+  mount();
+  expect(scroll.scrollLeft).toBeGreaterThan(0);
 });
 
 it("미디어 풀: 보기 방식(썸네일·메타데이터·목록)과 크기·정렬·검색을 바꾼다 — 보기 설정은 이 브라우저에 남는다", () => {
@@ -1302,12 +1314,20 @@ it("뷰어 아래 오른쪽의 소리 크기 — 판마다 따로 · 막대를 �
   act(() => { bar.dispatchEvent(down); });
   expect(down.defaultPrevented).toBe(true);
   const tc = timecode();
+  press({ key: "Tab", code: "Tab" }, bar); // Tab 으로 막대에 왔다
   press({ key: "ArrowRight", code: "ArrowRight" }, bar);
   expect([valueOf(left), valueOf(right), timecode()]).toEqual(["45", "80", tc]);
   press({ key: "End", code: "End" }, bar);
   expect(valueOf(left)).toBe("100");
   press({ key: "Home", code: "Home" }, bar);
   expect([valueOf(left), timecode()]).toEqual(["0", tc]);
+  // Tab 으로 온 초점을 두고 마우스로 딴 것을 누른 뒤의 ←→ 는 프레임 이동이다 — 남은 초점이 가져가 소리가 바뀌었다(Codex 39회차, 규칙 8)
+  mouse(right.querySelector(".ed-stage")!, "pointerdown"); // 마우스로 오른쪽(타임라인) 판을 눌렀다 — 초점은 막대에 남는다
+  mouse(right.querySelector(".ed-stage")!, "mousedown");
+  press({ key: "ArrowRight", code: "ArrowRight" }, bar);
+  expect([valueOf(left), timecode() === tc]).toEqual(["0", false]);
+  press({ key: "ArrowLeft", code: "ArrowLeft" }, bar);
+  press({ key: "Tab", code: "Tab" }, bar); // 다시 Tab 으로
 
   // 미리 굴리는 뒤의 영상(가려진 채 도는 것)에는 소리 크기를 걸지 않는다 — 가려진 다음 영상의 소리가 났다(Codex 36회차)
   const spare = right.querySelector<HTMLVideoElement>("video[data-spare]")!;
@@ -1429,11 +1449,22 @@ it("다이나믹 재생 모드: W 로 켜면 두 판의 재생 조작이 같이 
   expect([playing(left), playing(right)]).toEqual([false, false]);
   // 소리는 판마다 — 왼쪽 끝은 왼쪽 판, 오른쪽 끝은 오른쪽 판
   const [volL, volR] = [...bar()!.querySelectorAll<HTMLElement>(".ed-vol-bar")];
+  press({ key: "Tab", code: "Tab" }, volL); // 키보드로는 Tab 으로 온 초점일 때만
   press({ key: "ArrowLeft", code: "ArrowLeft" }, volL);
   press({ key: "ArrowLeft", code: "ArrowLeft" }, volR);
   press({ key: "ArrowLeft", code: "ArrowLeft" }, volR);
   expect(JSON.parse(localStorage.getItem(UI_KEY)!).volumes).toEqual([0.95, 0.9]);
   expect([volL.getAttribute("aria-label"), volR.getAttribute("aria-label")]).toEqual(["소리 크기 (L)", "소리 크기 (R)"]);
+  // Tab 으로 공용 줄의 단추에 간 초점은 Space 를 그 단추에 준다 — 그러나 그 뒤 마우스로 딴 것을 누르면(편집 탭의 누름은 초점을 옮기지
+  //  않는다) Space 는 다시 재생·멈춤이다. 전엔 마우스로 ▶ 를 누른 뒤의 Space 가 남은 초점의 단추(처음으로)를 눌렀다(Codex 39회차, 규칙 8).
+  const first = bar()!.querySelector<HTMLButtonElement>(".ed-t-first")!;
+  press({ key: "Tab", code: "Tab" }, first);
+  expect(press({ key: " ", code: "Space" }, first).defaultPrevented).toBe(false); // 그 단추의 것
+  mouse(bar()!.querySelector(".ed-play")!, "pointerdown");
+  act(() => bar()!.querySelector<HTMLButtonElement>(".ed-play")!.click());
+  expect([playing(left), playing(right)]).toEqual([true, true]);
+  expect(press({ key: " ", code: "Space" }, first).defaultPrevented).toBe(true);
+  expect([playing(left), playing(right)]).toEqual([false, false]); // 멈춤
   // 반복(⟲)은 보이는 시계들(타임라인 · 소스)의 반복을 같이 켜고 끈다
   act(() => bar()!.querySelector<HTMLButtonElement>(".ed-t-loop")!.click());
   expect([bar()!.querySelector(".ed-t-loop")!.getAttribute("aria-pressed"), JSON.parse(localStorage.getItem(UI_KEY)!).loop,

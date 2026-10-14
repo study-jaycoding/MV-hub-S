@@ -1164,9 +1164,10 @@ function EditTabInner({
     else if (event.shiftKey && key === "ArrowUp") stepMarker(-1);
     else if (event.shiftKey && key === "ArrowDown") stepMarker(1);
     else if (code === "Space") {
-      // 초점이 있는 단추의 Space 는 그 단추 것. 마우스로 눌러 초점만 남은 상단바 단추는 예외 — 그 Space 가 방금 Esc 로 닫은 창을
-      //  다시 열었다. Tab 으로 옮겨 간 단추는 그대로 그 단추의 것(lib/keyGate.focusCameByTab).
-      if (from?.closest("button, a, [role=button]") && !(onTopbar && !focusCameByTab())) used = false;
+      // 초점이 있는 단추의 Space 는 그 단추 것 — Tab 으로 옮겨 간 초점일 때만(조작 규칙 8, lib/keyGate.focusCameByTab). 마우스로 누른
+      //  뒤에 남은 초점은 화면 것이다: 상단바 단추에 남은 초점의 Space 가 방금 Esc 로 닫은 창을 다시 열었고, Tab 으로 간 공용 줄의 단추를
+      //  두고 마우스로 ▶ 를 누른 뒤의 Space 가 멈춤 대신 그 단추(처음으로)를 눌렀다(Codex 39회차 — 편집 탭의 누름은 초점을 옮기지 않는다).
+      if (from?.closest("button, a, [role=button]") && focusCameByTab()) used = false;
       else if (once) keys.toggle();
     } else if (code === "KeyL") { if (once) keys.shuttle(1); }
     else if (code === "KeyJ") { if (once) keys.shuttle(-1); }

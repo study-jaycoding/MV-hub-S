@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // 영상 길이 재기 — 동시에 4개까지만 받고, 화면을 떠나면 줄 서 있던 것은 버린다.
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { dropQueuedVideoMeasures, measureVideoSeconds } from "../src/lib/videoDuration";
+import { dropQueuedVideoMeasures, measureVideoSeconds, subscribeVideoSeconds, videoSecondsVersion } from "../src/lib/videoDuration";
 
 let videos: HTMLVideoElement[] = [];
 const settle = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
@@ -79,6 +79,34 @@ it("video.duration 으로 잰 것은 1분 뒤 다시 물으면 그림 길이만 
   now += 600_000;
   expect(await measureVideoSeconds("/media/retry.mp4")).toBe(97 / 24); // 그림 길이는 다시 묻지 않는다
   expect([asked.length, videos.length]).toEqual([3, 1]);
+});
+
+// Codex 39회차 — 같은 영상을 띄운 소스 판이 모두 다시 배치하도록 기억한 길이가 바뀌면 알린다. 같은 값을 다시 받으면 알리지 않는다
+//  (타임라인 클립을 잴 때마다 판을 다시 짓지 않게).
+it("기억한 길이가 바뀔 때만 알린다 — 같은 값을 다시 받으면 알리지 않는다", async () => {
+  let now = 5_000_000;
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  const heard = vi.fn();
+  const off = subscribeVideoSeconds(heard);
+  const before = videoSecondsVersion();
+  const first = measureVideoSeconds("/media/notify.mp4");
+  await settle();
+  Object.defineProperty(videos[0], "duration", { value: 4.087 });
+  finish(videos[0]);
+  expect(await first).toBe(98 / 24);
+  expect(heard).toHaveBeenCalledTimes(1);
+  now += 61_000;
+  expect(await measureVideoSeconds("/media/notify.mp4")).toBe(98 / 24); // 다시 물었지만 같은 값
+  expect(heard).toHaveBeenCalledTimes(1);
+  now += 61_000;
+  picture = () => new Response(JSON.stringify({ frames: 97, fps: 24 })); // 서버가 나았다 — 그림 길이
+  expect(await measureVideoSeconds("/media/notify.mp4")).toBe(97 / 24);
+  expect([heard.mock.calls.length, videoSecondsVersion() - before]).toEqual([2, 2]);
+  off();
+  now += 61_000;
+  picture = () => new Response(JSON.stringify({ frames: 96, fps: 24 }));
+  await measureVideoSeconds("/media/notify2.mp4");
+  expect(heard).toHaveBeenCalledTimes(2); // 끊은 뒤에는 듣지 않는다
 });
 
 it("한꺼번에 스무 개를 물어도 동시에 받는 것은 4개 — 하나가 끝나야 다음이 시작한다", async () => {
