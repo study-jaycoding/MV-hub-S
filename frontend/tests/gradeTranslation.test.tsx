@@ -115,9 +115,9 @@ it("bulk results translate counts, partial failures and mirror pending at comple
 });
 
 // Codex 조작 점검(2026-10-14) — 처리 뒤 같은 선택으로 또 누르면, 화면이 아직 든 옛 상태가 아니라 **서버의 답**으로 방향을 잡는다(목록을
-//  다시 받는 중이거나 받지 못했을 때 — 그 생성물의 객체가 그대로다). 목록이 새로 오면(객체가 바뀐다) 목록을 믿는다. 잠그고 기다리지
-//  않는다: 다시 받기는 실패해도 조용히 끝나고, 뒤따르는 조회가 늦으면 끝나지 않는다.
-it("the next grade step after a run uses the server's answer until the list brings a new object", async () => {
+//  다시 받는 중이거나 받지 못했을 때). 목록이 따라왔는지는 **등급 값**으로 본다 — 객체가 같은지가 아니다(색만 바꿔도 새 객체다).
+//  잠그고 기다리지 않는다: 다시 받기는 실패해도 조용히 끝나고, 뒤따르는 조회가 늦으면 끝나지 않는다.
+it("the next grade step after a run uses the server's answer until the list's grade changes", async () => {
   let actions!: ReturnType<typeof useGradeStep>;
   const flash = vi.fn(), reload = vi.fn(() => new Promise<void>(() => {})); // 다시 받기가 끝나지 않는다
   function Harness() { actions = useGradeStep({ canFinalize: () => true, flash, reload }); return null; }
@@ -133,11 +133,54 @@ it("the next grade step after a run uses the server's answer until the list brin
   act(() => actions.requestGradeStep([stale], "double")); // 옛 상태면 또 '최종 해제'
   expect(actions.pending?.ops.map((op) => op.action)).toEqual(["finalize"]);
   act(() => actions.cancel());
-  act(() => actions.requestGradeStep([{ ...stale }], "down")); // 목록이 새로 왔다(객체가 다르다) — 목록을 믿는다
-  expect(actions.pending?.ops.map((op) => op.action)).toEqual(["unfinalize"]);
+  // 색만 바뀐 새 객체(등급은 옛 값 그대로) — 목록이 따라온 것이 아니다: 여전히 서버의 답을 쓴다
+  act(() => actions.requestGradeStep([{ ...stale, color: "red" } as Generation], "up"));
+  expect(actions.pending?.ops.map((op) => op.action)).toEqual(["unhold"]);
   act(() => actions.cancel());
-  act(() => actions.requestGradeStep([stale], "up")); // 서버의 답은 그때 버렸다 — 옛 객체가 다시 와도 쓰지 않는다
+  // 목록의 등급이 달라졌다(그사이 누가 보류를 풀어 그냥 공유다) — 목록을 믿는다: ↑ 는 최종 지정(서버의 답 '보류'면 보류 해제였다)
+  act(() => actions.requestGradeStep([{ ...stale, is_final: false, is_held: false }], "up"));
+  expect(actions.pending?.ops.map((op) => op.action)).toEqual(["finalize"]);
+  act(() => actions.cancel());
+  act(() => actions.requestGradeStep([stale], "up")); // 기록은 그때 버렸다 — 옛 값이 다시 와도 쓰지 않는다
   expect(flash).toHaveBeenLastCalledWith("No eligible items to change.");
+});
+
+// 이어서 누르는 조작(Codex 3차) — 공유 해제 → 발행 → 다시 ↑: 발행의 결과도 적어야 마지막이 '최종 지정'이 된다(안 적으면 '공유 아님'
+//  기록이 남아 또 발행한다). 묶음 발행이 일부만 됐으면 어느 것인지 모른다 — 그 기록을 지우고 목록을 본다.
+it("consecutive runs keep the record current — unpublish, publish, then the next step is finalize", async () => {
+  let actions!: ReturnType<typeof useGradeStep>;
+  const flash = vi.fn(), reload = vi.fn(() => new Promise<void>(() => {})); // 목록은 끝내 안 온다
+  function Harness() { actions = useGradeStep({ canFinalize: () => true, flash, reload }); return null; }
+  act(() => root.render(<Harness />));
+  const run = async () => { await act(async () => { void actions.confirm(); for (let turn = 0; turn < 8; turn++) await Promise.resolve(); }); };
+  const a = gen({ id: "a" }), b = gen({ id: "b" }); // 화면이 든 것: 둘 다 내 것 · 공유(끝까지 이 값 그대로다)
+  vi.mocked(api.unpublish).mockImplementation(async (id: string) => gen({ id, shared: false }));
+  act(() => actions.requestGradeStep([a, b], "down"));
+  await run();
+  act(() => actions.requestGradeStep([a, b], "up")); // 서버의 답(공유 아님)으로 — 다시 발행이다
+  expect(actions.pending?.ops.map((op) => op.action)).toEqual(["publish", "publish"]);
+  vi.mocked(api.publishToShared).mockResolvedValueOnce({ ok: true, published: 2, blocked: 0, mirror_pending: false, message: "" });
+  await run();
+  act(() => actions.requestGradeStep([a, b], "up")); // 발행도 적었다 — 이제 최종 지정이다(안 적으면 또 발행)
+  expect(actions.pending?.ops.map((op) => op.action)).toEqual(["finalize", "finalize"]);
+  act(() => actions.cancel());
+
+  act(() => actions.requestGradeStep([a, b], "down")); // 다시 공유 해제
+  await run();
+  act(() => actions.requestGradeStep([a, b], "up"));
+  vi.mocked(api.publishToShared).mockResolvedValueOnce({ ok: true, published: 1, blocked: 1, mirror_pending: false, message: "" }); // 하나만 됐다
+  await run();
+  act(() => actions.requestGradeStep([a, b], "single")); // 어느 것이 됐는지 모른다 — 기록을 지우고 목록(둘 다 공유)을 본다: 공유 해제
+  expect(actions.pending?.ops.map((op) => op.action)).toEqual(["unpublish", "unpublish"]);
+  act(() => actions.cancel());
+
+  // 일부만 된 발행을 '전부 공유됨'으로 적지도 않는다 — 화면이 '공유 아님'인 둘: 하나만 됐으면 다음 ↑ 도 둘 다 발행 대상이다
+  const c = gen({ id: "c", shared: false }), d = gen({ id: "d", shared: false });
+  act(() => actions.requestGradeStep([c, d], "up"));
+  vi.mocked(api.publishToShared).mockResolvedValueOnce({ ok: true, published: 1, blocked: 1, mirror_pending: false, message: "" });
+  await run();
+  act(() => actions.requestGradeStep([c, d], "up"));
+  expect(actions.pending?.ops.map((op) => op.action)).toEqual(["publish", "publish"]);
 });
 
 // Jay 2026-10-14 — 최종을 해제하면 원래의 보류로: 여러 장을 한 번에 풀 때도(S 더블클릭 · ↓) 보류로 돌아간 수를 알린다. 올리는 쪽(최종 지정 ·
@@ -153,8 +196,9 @@ it("bulk un-final says how many went back on hold", async () => {
   expect(vi.mocked(api.unfinalize).mock.calls.map(([id]) => id)).toEqual(["was-held", "was-shared"]);
   expect(flash).toHaveBeenLastCalledWith("2 applied · 1 back on hold");
   setLang("ko");
-  vi.mocked(api.unfinalize).mockResolvedValueOnce(gen({ id: "was-held", is_held: true }));
-  act(() => actions.requestGradeStep([gen({ id: "was-held", is_final: true })], "down"));
+  // 다른 생성물로 본다 — 방금 푼 것과 같은 id 를 '아직 최종'으로 다시 넘기면 옛 목록으로 보고 서버의 답(보류)을 쓴다(아래 시험)
+  vi.mocked(api.unfinalize).mockResolvedValueOnce(gen({ id: "another", is_held: true }));
+  act(() => actions.requestGradeStep([gen({ id: "another", is_final: true })], "down"));
   await act(async () => actions.confirm());
   expect(flash).toHaveBeenLastCalledWith("1개 적용 · 원래의 보류로 1개");
   // 올리는 쪽: 보류 해제(↑)의 응답이 보류로 와도(그럴 일은 없지만) 세지 않는다 — 해제의 것만 센다
