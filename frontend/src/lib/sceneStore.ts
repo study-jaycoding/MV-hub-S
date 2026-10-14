@@ -1040,12 +1040,12 @@ export interface SceneBucketMerge {
  * 전체 내보내기 파일을 저장소에 **합친다**(덮지 않는다). 버킷 키는 그대로 두고(빈 버킷도 만든다),
  * 버킷마다 무엇을 더할지는 mergeBucket 이 정한다(sceneArchive — 없는 씬은 더하고, 같은 id 인데 내용이
  * 다르면 사본으로 따로 둔다).
- * @param mergeBucket (지금 목록, 파일의 목록) → 합친 목록. 트랜잭션 안에서 버킷마다 한 번만 불린다.
+ * @param mergeBucket (지금 목록, 파일의 목록, 버킷 키) → 합친 목록. 트랜잭션 안에서 버킷마다 한 번만 불린다.
  * @returns 더한 씬 수 / 복구 사본 수. 실패면 null.
  */
 export async function mergeSceneStoreDump(
   dump: SceneStoreDump,
-  mergeBucket: (local: Scene[], incoming: Scene[]) => SceneBucketMerge,
+  mergeBucket: (local: Scene[], incoming: Scene[], bucket: string) => SceneBucketMerge,
 ): Promise<{ added: number; recovered: number } | null> {
   let added = 0;
   let recovered = 0;
@@ -1056,7 +1056,7 @@ export async function mergeSceneStoreDump(
       let changed = false;
       for (const [bucket, scenes] of Object.entries(dump.buckets)) {
         const local = live[bucket] || [];
-        const out = mergeBucket(local, scenes || []);
+        const out = mergeBucket(local, scenes || [], bucket);
         added += out.added;
         recovered += out.recovered;
         if (out.next !== local || !(bucket in live)) {

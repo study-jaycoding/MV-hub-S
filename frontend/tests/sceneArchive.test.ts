@@ -2,8 +2,12 @@
 //
 // 둘 다 "잃지 않는다"가 계약이다: 가져오기는 지금 것을 덮지 않고, 엇갈린 씬은 양쪽을 다 남긴다.
 // 그리고 둘 다 되풀이해도 탭이 끝없이 늘지 않아야 한다(같은 파일을 두 번·옛 창이 계속 고침).
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setAccountScope } from "../src/lib/accountScope";
+
+// 카드 소속의 명시적 되살리기(네트워크로 나간다) — 가져오기가 무엇을 되살리라고 하는지만 본다
+const revive = vi.hoisted(() => vi.fn());
+vi.mock("../src/lib/sceneCardLinks", async (orig) => ({ ...(await orig<typeof import("../src/lib/sceneCardLinks")>()), reviveCardGenerations: revive }));
 import {
   SCENE_ARCHIVE_FORMAT,
   exportSceneArchiveText,
@@ -131,6 +135,30 @@ describe("캔버스 전체 내보내기·가져오기", () => {
     const all = readScenesCache();
     expect(all[bucketOf("b@x.com")].map((s) => s.id)).toEqual(["theirs"]);
     expect(all[bucketOf("c@x.com")]).toEqual([]); // 빈 버킷도 그대로(= '다 지웠다'는 뜻이 보존된다)
+  });
+
+  // Codex 43회차 — 워크플로 교체로 결과를 뺀(DB 에 빼기 기록) 뒤 씬을 지우고 파일에서 되살리면, 같은 씬·카드 id 의 빼기 기록이 그 결과를
+  //  카드에서 다시 뺐다. 파일로 되살린 결과 카드는 Undo 처럼 명시적으로 되살린다 — 지금 계정에 id 그대로 돌아온 씬만(사본·다른 계정은 아니다).
+  it("id 그대로 되살린 지금 계정의 씬은 결과 카드의 소속을 명시적으로 되살린다 — 사본·다른 계정·결과 없는 카드는 아니다", async () => {
+    revive.mockClear();
+    await initSceneStore(() => null, null, () => true);
+    saveScenes(null, [mk("diff", "지금 이름")]);
+    await settleSceneStoreForTest();
+    const card = (id: string, kind: string, ids: string[]) => ({ id, kind, x: 0, y: 0, genIds: ids, genId: ids.at(-1) ?? null });
+    const scene = (id: string, cards: unknown[]) => ({ ...mk(id), cards });
+    const text = JSON.stringify({
+      format: SCENE_ARCHIVE_FORMAT,
+      schemaVersion: 1,
+      buckets: {
+        [BUCKET]: [
+          scene("back", [card("c1", "comfy", ["g1", "g2"]), card("c2", "generation", ["g3"]), { id: "t1", kind: "text", x: 0, y: 0 }]),
+          scene("diff", [card("c3", "comfy", ["g9"])]), // 지금 것과 내용이 달라 사본(새 씬 id)으로 — 빼기 기록이 걸리지 않는다
+        ],
+        [bucketOf("b@x.com")]: [scene("theirs", [card("c4", "comfy", ["g8"])])], // 다른 계정 — 이 계정의 일이 아니다
+      },
+    });
+    expect(await importSceneArchiveText(text)).toEqual({ added: 2, recovered: 1 });
+    expect(revive.mock.calls).toEqual([["back", "c1", ["g1", "g2"]], ["back", "c2", ["g3"]]]);
   });
 
   it("이상한 파일은 통째로 거절한다 — 반쯤 들어가는 일이 없다", async () => {

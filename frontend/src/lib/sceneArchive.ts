@@ -3,8 +3,10 @@
 // 씬 하나를 파일로 주고받는 것(scenes.exportSceneText)과 다르다: 그쪽은 '새 탭으로 연다'는 공유용이고,
 // 이쪽은 **백업·복원**이다 — 버킷(계정)·씬 id 를 그대로 싣고, 가져올 때 지금 것을 덮지 않고 합친다.
 // 저장소가 막혔을 때 사용자가 작업을 건질 유일한 길이므로, 내보내기는 아직 확정 안 된 편집까지 싣는다.
+import { getAccountNamespace } from "./accountScope";
 import { downloadText } from "./download";
 import { sameSceneContent, sceneBodySum, type SceneAbsorbConflict } from "./sceneAbsorb";
+import { reviveCardGenerations } from "./sceneCardLinks";
 import {
   dumpSceneStore,
   mergeSceneStoreDump,
@@ -14,7 +16,7 @@ import {
   type SceneMigrationInfo,
   type SceneStoreDump,
 } from "./sceneStore";
-import { readStoredScene, uid, type Scene, type ScenesByProject } from "./scenes";
+import { readStoredScene, uid, variantIds, type Scene, type ScenesByProject } from "./scenes";
 
 export const SCENE_ARCHIVE_FORMAT = "mvhub-scenes-full";
 export const SCENE_ARCHIVE_VERSION = 1;
@@ -163,7 +165,25 @@ export function mergeArchiveBucket(local: Scene[], incoming: Scene[]): SceneBuck
 export async function importSceneArchiveText(text: string): Promise<{ added: number; recovered: number }> {
   if (!sceneStoreReady()) throw new Error("캔버스 저장소가 아직 열리지 않았습니다.");
   const dump = parseSceneArchive(text);
-  const out = await mergeSceneStoreDump(dump, mergeArchiveBucket);
+  // 지금 계정의 버킷에 id 그대로 되돌아온 씬(사본 아님) — 아래에서 그 결과 카드의 소속을 되살린다
+  const mine = `${getAccountNamespace()}::`;
+  const restored: Scene[] = [];
+  const out = await mergeSceneStoreDump(dump, (local, incoming, bucket) => {
+    const merged = mergeArchiveBucket(local, incoming);
+    if (bucket.startsWith(mine)) {
+      const had = new Set(local.map((scene) => scene.id));
+      restored.push(...merged.next.filter((scene) => !had.has(scene.id) && !scene.recoveredFrom));
+    }
+    return merged;
+  });
   if (!out) throw new Error("가져온 캔버스를 저장하지 못했습니다 — 잠시 뒤 다시 시도하세요.");
+  // 파일로 되살린 씬의 결과 카드는 사용자가 되살린 것이다 — DB 에 남은 빼기 기록(같은 씬·카드 id)이 다시 빼지 않게 Undo 와 같은 명시적
+  //  되살리기로 보낸다(Codex 43회차: 워크플로 교체로 뺀 뒤 씬을 지우고 파일에서 되살리면 그 결과가 카드에서 다시 빠졌다). 사본([사본] — 새 씬 id)과
+  //  다른 계정의 버킷은 해당 없다(빼기 기록이 걸리지 않거나, 이 계정의 일이 아니다).
+  for (const scene of restored) {
+    for (const card of scene.cards) {
+      if (card.kind === "generation" || card.kind === "comfy") reviveCardGenerations(scene.id, card.id, variantIds(card));
+    }
+  }
   return out;
 }
