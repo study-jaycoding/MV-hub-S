@@ -72,6 +72,19 @@ class ThumbLruTests(unittest.TestCase):
 
         self.assertIsNone(thumbs.ensure_thumb(VanishingImage(), 256))
 
+    def test_thumb_follows_exif_orientation(self):
+        """48회차 — 세로로 찍은 사진(픽셀은 가로, EXIF 방향 6)의 썸네일은 브라우저처럼 세워서 굽는다."""
+        from PIL import Image
+
+        src = self.dir / "src" / "phone.jpg"
+        src.parent.mkdir()
+        exif = Image.Exif()
+        exif[0x0112] = 6  # Orientation: 시계 방향 90도 돌려 보여라
+        Image.new("RGB", (80, 40), (200, 30, 90)).save(src, "JPEG", exif=exif)
+        thumb = thumbs.ensure_thumb(src, 64)
+        with Image.open(thumb) as im:
+            self.assertEqual(im.size, (32, 64))  # 전엔 (64, 32) — 누운 채로
+
     def test_evict_scan_guard_skips_repeat_but_force_rechecks(self):
         _make_jpg(self.dir, "a.jpg", 1024, 3 * 86400)
         _make_jpg(self.dir, "b.jpg", 1024, 2 * 86400)

@@ -149,6 +149,10 @@ def _read_jpeg(data: bytes) -> dict[str, str]:
                 key, _, value = line.partition("=")
                 if key.startswith("mvhub."):
                     out[key] = value
+            if out:
+                # 새 각인은 SOI 바로 뒤(맨 앞)에 들어간다 — 맨 앞의 우리 각인 하나만 읽는다. 뒤의 옛 각인을 더 읽으면 옛 번호가
+                # 이기거나 두 생성물의 값이 섞인다(48회차).
+                return out
         pos += 2 + size
     return out
 

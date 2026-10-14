@@ -85,6 +85,26 @@ it("외부 파일을 올리는 사이 고른 카드가 바뀌면 지금 카드�
   expect(onChange).toHaveBeenCalledTimes(1);
 });
 
+it("섞어 놓은 파일 중 일부만 들어가도 빠진 것을 알린다(48회차 — 전엔 하나라도 들어가면 빠진 파일은 말없이 사라졌다)", async () => {
+  Object.assign(boundary.api, { uploadReferenceFiles: vi.fn(() => Promise.resolve(saved())) });
+  view = await mountPrompt({ trayBinding: binding("a", 0), onTrayBindingRefsChange: ((refs: unknown[]) => refs) as never });
+  const flashes: string[] = [];
+  const listen = (event: Event) => flashes.push(String((event as CustomEvent).detail));
+  window.addEventListener("ch:flash", listen);
+  try {
+    const files = [new File(["x"], "outside.png", { type: "image/png" }), new File(["memo"], "notes.txt", { type: "text/plain" })];
+    const event = Object.assign(new Event("drop", { bubbles: true, cancelable: true }), {
+      dataTransfer: { types: ["Files"], files, items: [], getData: () => "" },
+    });
+    act(() => { required(view!.container, ".sl-panel").dispatchEvent(event); });
+    await settle();
+  } finally {
+    window.removeEventListener("ch:flash", listen);
+  }
+  expect(trayCount()).toBe(1);
+  expect(flashes).toEqual([expect.stringContaining("1개는 넣지 못했습니다")]);
+});
+
 // 21회차(조작 규칙 48, Codex 전수 검토): 놓은 파일은 10회차에 막았는데, **붙여 넣은 그림**(Ctrl+V 캡처)의 완료부에는 그 검사가 없었다.
 it("붙여 넣은 그림도 같다 — 올리는 사이 고른 카드가 바뀌면 지금 카드의 레퍼런스에 넣지 않는다", async () => {
   type Capture = { project: string; path: string; name: string; type: string };

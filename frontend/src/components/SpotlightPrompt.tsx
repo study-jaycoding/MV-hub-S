@@ -1003,6 +1003,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
         setError(`${items.length}개 파일을 가져왔지만, 그사이 고른 카드가 바뀌어 레퍼런스에는 넣지 않았습니다 — Assets 에서 끌어 넣으세요.`);
         return;
       }
+      const skippedCount = ignored + skipped.length;
       if (items.length) {
         addAssetRefs(JSON.stringify(items));
         const reused = (res.saved || []).filter((item) => item.reused).length;
@@ -1012,10 +1013,10 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
           : reused
             ? `${reused}개 기존 파일을 재사용했습니다`
             : `${items.length}개 외부 파일을 레퍼런스로 추가했습니다`;
-        flashMsg(label);
+        // 섞어 놓은 것 중 빠진 것도 알린다 — 전엔 하나라도 들어가면 빠진 파일은 말없이 사라졌다(48회차).
+        flashMsg(skippedCount ? `${label} · ${skippedCount}개는 넣지 못했습니다(이미지·영상·오디오가 아니거나 빈 파일)` : label);
         notifySpotlightAssetsChanged(items);
       }
-      const skippedCount = ignored + skipped.length;
       if (!items.length && skippedCount > 0) {
         setError("이미지/영상/오디오 파일만 레퍼런스로 추가할 수 있습니다.");
       }

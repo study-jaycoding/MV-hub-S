@@ -76,6 +76,20 @@ class StampImageTests(unittest.TestCase):
                 "cd9f84ab-d0ba-4571-8c97-eb3b7e646586",
             )
 
+    def test_restamped_images_read_only_the_newest_stamp(self):
+        """48회차 — 각인된 그림에 다시 각인하면 새 것을 읽는다. JPEG 는 새 각인을 맨 앞에 넣는데 읽기는 뒤의 옛 값으로 덮었다.
+        새 각인에 없는 열쇠(job_id)를 옛 각인에서 섞어 오지도 않는다."""
+        newer = file_stamp.build_tags("gen-new")  # job_id 없음
+        for name, src in (("a.jpg", _jpeg_bytes()), ("a.png", _png_bytes())):
+            twice = file_stamp.stamp_bytes(file_stamp.stamp_bytes(src, TAGS), newer)
+            with TemporaryDirectory() as tmp:
+                path = Path(tmp) / name
+                path.write_bytes(twice)
+                stamp = file_stamp.read_stamp(path)
+            self.assertEqual(file_stamp.gen_id_of(stamp), "gen-new", name)
+            if name.endswith(".jpg"):
+                self.assertNotIn(file_stamp.KEY_JOB, stamp)  # 옛 각인의 job_id 를 섞지 않는다
+
     def test_unstamped_file_reads_empty(self):
         """각인이 없으면 빈 dict — '우리가 만든 파일이 아니다'."""
         with TemporaryDirectory() as tmp:

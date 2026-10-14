@@ -105,14 +105,16 @@ def ensure_thumb(target: Path, w: int) -> Optional[Path]:
         with lock:
             if _is_complete_file(cache):
                 return cache
-            from PIL import Image  # 지연 import
+            from PIL import Image, ImageOps  # 지연 import
 
             # 임시파일 → 원자적 교체: 같은 캐시 미스가 동시에 들어와도(요청 스레드 + prewarm)
             # 반쯤 쓰인 .jpg 를 다른 쪽이 읽는 일이 없다. 파일명에 고유 접미사.
             tmp = cache.with_suffix(f".{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
             try:
                 with Image.open(target) as im:
-                    im = im.convert("RGB")  # JPEG: 알파 제거(어두운 카드 배경이라 무방)
+                    # EXIF 방향(세로로 찍은 사진)을 먼저 적용한다 — 브라우저는 원본을 돌려 보여 주는데 썸네일만 누워 있었다(48회차).
+                    # shortcut: 이미 구운 썸네일은 원본이 바뀌기 전까지 그대로다(캐시 열쇠에 판이 없다) — 문제가 되면 썸네일 캐시를 비운다.
+                    im = ImageOps.exif_transpose(im).convert("RGB")  # JPEG: 알파 제거(어두운 카드 배경이라 무방)
                     im.thumbnail((w, w), Image.LANCZOS)
                     im.save(tmp, "JPEG", quality=82)
                 tmp.replace(cache)
