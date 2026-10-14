@@ -536,6 +536,12 @@ function EditTabInner({
     if (started < 0) return;
     [stop, stopSrc0, stopSrc1].forEach((halt, i) => i !== started && halt());
   }, [view.playing, src0.play.view.playing, src1.play.view.playing, linked, stop, stopSrc0, stopSrc1]);
+  // 타임라인의 시계를 쓰는 판이 모두 사라지는 순간 그 시계도 멈춘다 — 가려진 채 돌면 K(같이 멈춤 포함)가 닿지 않았다(Codex 36회차).
+  //  소스 판을 내리면 그 소스가 멈추는 것(useSourcePane)과 같은 규칙이다. 사라진 동안 Alt+/ 로 튼 것은 건드리지 않는다(바뀔 때만 돈다).
+  const tlClockShown = places.some((place) => !isSourceView(ui.views[place]));
+  useEffect(() => {
+    if (!tlClockShown) stop();
+  }, [tlClockShown, stop]);
   // 판의 단추 — 다이나믹 재생 모드면 재생·멈춤·셔틀·처음/끝은 같이, 재생바(훑기)는 그 판만
   const controlsOf = (engine: Engine, total: number): ViewerControls => (linkedOn
     ? { toggle: together.toggle, stop: together.stop, shuttle: together.shuttle, seek: engine.seek, edge: together.edge }

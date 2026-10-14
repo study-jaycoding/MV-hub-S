@@ -1238,6 +1238,28 @@ it("뷰어 아래 오른쪽의 소리 크기 — 판마다 따로 · 막대를 �
   act(() => speaker.click()); // 끄기 전 크기로
   expect(valueOf(left)).toBe("40");
   expect(JSON.parse(localStorage.getItem(UI_KEY)!).volumes).toEqual([0.4, 0.8]);
+
+  // 키보드로도(Codex 36회차) — 초점은 Tab 으로만 온다(마우스로 누를 때는 안 가져간다). 쓴 키는 프레임 이동으로 새지 않는다.
+  expect(bar.tabIndex).toBe(0);
+  const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 });
+  act(() => { bar.dispatchEvent(down); });
+  expect(down.defaultPrevented).toBe(true);
+  const tc = timecode();
+  press({ key: "ArrowRight", code: "ArrowRight" }, bar);
+  expect([valueOf(left), valueOf(right), timecode()]).toEqual(["45", "80", tc]);
+  press({ key: "End", code: "End" }, bar);
+  expect(valueOf(left)).toBe("100");
+  press({ key: "Home", code: "Home" }, bar);
+  expect([valueOf(left), timecode()]).toEqual(["0", tc]);
+
+  // 미리 굴리는 뒤의 영상(가려진 채 도는 것)에는 소리 크기를 걸지 않는다 — 가려진 다음 영상의 소리가 났다(Codex 36회차)
+  const spare = right.querySelector<HTMLVideoElement>("video[data-spare]")!;
+  spare.volume = 0;
+  Object.defineProperty(spare, "paused", { value: false, configurable: true }); // 굴리는 중
+  press({ key: "ArrowLeft", code: "ArrowLeft" }, right.querySelector(".ed-vol-bar")!);
+  expect(valueOf(right)).toBe("75");
+  expect([...right.querySelectorAll<HTMLVideoElement>("video")].map((video) => video === spare ? video.volume : video.volume === 0.75))
+    .toEqual([...right.querySelectorAll("video")].map((video) => (video === spare ? 0 : true)));
 });
 
 it("소스 테이프: 이 컷의 풀 목록을 이어서 본다 — 풀에서 고르면 그 카드로 가고, 소스 클립과는 같은 판의 두 방식이다", () => {
@@ -1342,6 +1364,16 @@ it("다이나믹 재생 모드: W 로 켜면 두 판의 재생 조작이 같이 
   act(() => right.querySelector<HTMLButtonElement>(".ed-play")!.click()); // 오른쪽을 틀면 왼쪽은 멈춘다
   expect([playing(left), playing(right)]).toEqual([false, true]);
   act(() => right.querySelector<HTMLButtonElement>(".ed-t-stop")!.click());
+
+  // 같이 도는 채 오른쪽(타임라인)을 소스 클립으로 바꾸면 가려지는 타임라인의 시계도 멈춘다 — 가려진 채 돌아 K 가 닿지 않았다(Codex 36회차)
+  press({ key: "w", code: "KeyW" });
+  press({ key: " ", code: "Space" });
+  expect([playing(left), playing(right)]).toEqual([true, true]);
+  pickMode("timeline", "소스 클립");
+  expect(paneModes()).toEqual(["source", "source"]);
+  expect(playing(right)).toBe(false); // right = 이제 가려진 타임라인 판(그 시계의 단추)
+  press({ key: "k", code: "KeyK" });
+  expect(panes().map(playing)).toEqual([false, false]);
 });
 
 // Jay 2026-10-14 오후 — "두개 화면 모두 소스클립이나 내가 정한 화면이 자유롭게". 소스 엔진이 판마다라 두 판이 서로 다른 소스 클립을 띄운다.
