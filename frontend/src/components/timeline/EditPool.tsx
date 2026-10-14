@@ -376,7 +376,7 @@ export function EditPool({
             return (
               <button key={item.gen.id} type="button" className={rowClass(item, "list")} {...handlersOf(item)}>
                 {stateMark(info.state)}
-                {/* 다빈치 표는 프롬프트 칸 앞에 — 트랙 칸(28px)에는 안 들어간다 */}
+                {/* 다빈치 표는 프롬프트 칸 앞에 — 마지막 칸(트랙 · 소스)은 그 둘로 이미 찬다 */}
                 <span className="ed-pprompt">{dvMark(item)}{item.gen.prompt}</span><span>{info.who}</span><span>{info.model}</span>
                 {/* 마지막 칸 = 넣은 트랙 + 소스 클립 판에 떠 있는 판(Jay 2026-10-14 — 썸네일·목록 보기의 표와 같은 글) */}
                 <span>{info.duration}</span>
