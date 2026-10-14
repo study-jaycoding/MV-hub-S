@@ -540,6 +540,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       if (e.key === " ") e.preventDefault();
       return;
     }
+    if (e.altKey && e.key.startsWith("Arrow")) return; // Alt+←/→ 는 브라우저의 뒤로/앞으로(생성물·컷 격자와 같다 — 56회차)
     if (e.key.startsWith("Arrow")) {
       e.preventDefault();
       const cur = focusIdx < 0 ? 0 : focusIdx;

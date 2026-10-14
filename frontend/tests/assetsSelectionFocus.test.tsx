@@ -106,6 +106,15 @@ it("목록이 바뀌면 초점도 그 파일을 따라간다 — 앞의 파일�
   expect(picked()).toEqual(["c.png"]); // 전엔 c 에서 출발해 d.png
 });
 
+// 56회차(Codex): 생성물·컷 격자처럼 Alt+←/→ 는 브라우저의 뒤로/앞으로다 — Assets 격자만 선택 이동으로 가로챘다.
+it("Alt+방향키는 선택을 옮기지 않고 브라우저에 맡긴다", async () => {
+  await mount();
+  await click("b.png");
+  const event = new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true, cancelable: true });
+  await act(async () => { grid().dispatchEvent(event); });
+  expect([event.defaultPrevented, picked()]).toEqual([false, ["b.png"]]);
+});
+
 // 20회차(Codex 전수 검토): 보던 자리(스크롤)는 스크롤이 멈추고 150ms 뒤에 저장된다. 파일 수가 바뀔 때마다 **저장된 자리로 되돌려서**,
 //  방금 스크롤한 직후에 목록이 바뀌면(비활성 숨기기·자동 새로 고침) 화면이 옛 자리로 튀었다.
 it("같은 화면에서 파일 수만 바뀌면 보던 스크롤 자리를 둔다 — 저장해 둔 옛 자리로 되돌리지 않는다. 화면을 다시 열면 저장된 자리로 간다", async () => {

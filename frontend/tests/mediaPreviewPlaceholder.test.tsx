@@ -112,6 +112,19 @@ it("←/→ 로 넘기면 앞 장의 자리 표시가 남지 않는다", () => {
   expect(host.querySelector('img[alt="b"]')!.getAttribute("src")).toBe("/b.png");
 });
 
+// 56회차(Codex): 격자처럼 Alt+←/→ 는 브라우저의 뒤로/앞으로(앱의 화면 기록)다 — 크게 보기만 장 넘기기로 가로챘다.
+it("Alt+←/→ 는 장을 넘기지 않고 브라우저에 맡긴다", () => {
+  const items = [
+    { url: "/a.png", type: "image" as const, name: "a" },
+    { url: "/b.png", type: "image" as const, name: "b" },
+  ];
+  show({ ...items[0], items, index: 0 });
+  const event = new KeyboardEvent("keydown", { key: "ArrowRight", altKey: true, cancelable: true });
+  act(() => { window.dispatchEvent(event); });
+  expect(event.defaultPrevented).toBe(false);
+  expect(host.querySelector('img[alt="a"]')).not.toBeNull();
+});
+
 it("A→B→A 로 돌아오면 A 의 원본이 다시 뜰 때까지 자리 표시가 다시 깔린다", () => {
   const items = [
     { url: "/a.png", type: "image" as const, name: "a", thumb: "/t.jpg" },

@@ -134,6 +134,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
     // 크게 보기는 정보팝업/그리드 위에 떠 있으므로 키를 캡처 단계에서 먼저 가로챈다.
     // ←/→ → 목록 내 이동(뒤 그리드 포커스 이동과 충돌 방지).
     const onKey = (e: KeyboardEvent) => {
+      if (e.altKey && e.key.startsWith("Arrow")) return; // Alt+←/→ 는 브라우저의 뒤로/앞으로(격자와 같다 — 56회차)
       if (items && items.length > 1 && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
         e.preventDefault();
         e.stopPropagation();
