@@ -1177,16 +1177,19 @@ export default function App() {
   const reloadFolderCardsRef = useRef(async () => {});
   reloadFolderCardsRef.current = async () => { await Promise.all([reloadFolderCards(), reloadOwnCards()]); };
   //  컷 정보 창의 ★ 도 같은 저장 — 그쪽은 어느 폴더인지(where)를 같이 준다(폴더 창이 떠 있지 않다).
-  const pickFolderCover = useCallback(async (g: Generation, where?: { projectId: string | null; path: string }) => {
+  //  돌려주는 값 = 저장했나(거른 누름은 undefined) — 컷 정보 창은 실패하면 자기 목록을 다시 받는다(50회차: 남이 옮긴 것이 남아 같은 404 를 되풀이했다).
+  const pickFolderCover = useCallback(async (g: Generation, where?: { projectId: string | null; path: string }): Promise<boolean | undefined> => {
     const peek = listPeekRef.current;
     const target = where ?? (peek ? { projectId: peek.projectId, path: peek.path } : null);
-    if (!target?.projectId || savingRepRef.current) return;
+    if (!target?.projectId || savingRepRef.current) return undefined;
     savingRepRef.current = true;
     setSavingRep(true);
     try {
       await api.setFolderCover(target.projectId, target.path, g.id);
+      return true;
     } catch (error) {
       flash(`${t("대표를 정하지 못했습니다")} — ${error instanceof Error ? error.message : String(error)}`);
+      return false;
     } finally {
       await reloadFolderCardsRef.current();
       savingRepRef.current = false;
@@ -3195,7 +3198,7 @@ export default function App() {
           onClose={() => setCutInfo(null)}
           onOpen={(folder) => { setCutInfo(null); openFolderCard(folder); }} // [폴더 열기] = 그 폴더의 창(컷 카드 우클릭과 같다, 2026-10-13 낮)
           onPreview={openPreview}
-          onPickCover={(folder, g) => void pickFolderCover(g, { projectId: cutInfo.projectId, path: folder.path })}
+          onPickCover={(folder, g) => pickFolderCover(g, { projectId: cutInfo.projectId, path: folder.path })}
         />
       )}
       {cutReelOpen && (

@@ -29,7 +29,8 @@ interface Props {
   onClose: () => void;
   onOpen: (folder: FolderCard) => void; // [폴더 열기]
   onPreview: (target: PreviewTarget) => void;
-  onPickCover: (folder: FolderCard, g: Generation) => void;
+  // 돌려주는 값이 false(저장 실패)면 이 창의 목록을 다시 받는다 — 그사이 남이 옮기거나 지운 생성물이 남아 같은 실패를 되풀이하지 않게(50회차)
+  onPickCover: (folder: FolderCard, g: Generation) => void | Promise<boolean | undefined>;
 }
 
 const POP_W = 420;
@@ -67,6 +68,7 @@ export function CutInfoPopup({ folder, x, y, query, savingRep, previewOpen, onCl
   const [gens, setGens] = useState<Generation[] | null>(null);
   const [truncated, setTruncated] = useState(false);
   const [metrics, setMetrics] = useState<Map<string, CutMetrics | null> | null>(null); // null = 아직 받는 중
+  const [refetch, setRefetch] = useState(0); // 대표 지정이 실패하면 올린다 — 목록을 다시 받는다
   const [error, setError] = useState<string | null>(null);
 
   // 머리 끌기 — 리스너는 창 전역, 언마운트 때 반드시 뗀다.
@@ -146,7 +148,7 @@ export function CutInfoPopup({ folder, x, y, query, savingRep, previewOpen, onCl
       seqRef.current += 1;
       stop.abort();
     };
-  }, [folder.path, query]);
+  }, [folder.path, query, refetch]);
 
   const cover = folder.cover;
   const coverAsset = cover.assets?.[0];
@@ -254,7 +256,7 @@ export function CutInfoPopup({ folder, x, y, query, savingRep, previewOpen, onCl
                         className={"cutinfo-rep" + (isCover && folder.rep ? " on" : "")}
                         title={isCover && folder.rep ? t("지금 대표") : t("대표로")}
                         disabled={savingRep || (isCover && folder.rep) || g.deleted}
-                        onClick={() => onPickCover(folder, g)}
+                        onClick={() => void Promise.resolve(onPickCover(folder, g)).then((saved) => { if (saved === false) setRefetch((n) => n + 1); })}
                       >
                         ★
                       </button>

@@ -115,6 +115,27 @@ it("컷 정보 — 작은 컷은 크레딧(실제) 합계 + 미상 건수. ★ �
   expect(host.querySelector<HTMLButtonElement>(".cutinfo-item.cur .cutinfo-rep")!.disabled).toBe(true);
 });
 
+it("컷 정보 — ★ 대표 지정이 실패하면(그사이 남이 옮김·지움 → 404) 목록을 다시 받아 빠진 것을 걷는다. 성공이면 다시 받지 않는다(50회차)", async () => {
+  listGenerations.mockResolvedValueOnce([gen("g0"), gen("moved")]).mockResolvedValue([gen("g0")]);
+  let saved: boolean | undefined = false;
+  const onPickCover = vi.fn(async () => saved);
+  act(() => root.render(
+    <CutInfoPopup folder={card("C0290")} x={10} y={10} query={query} savingRep={false} previewOpen={false} onClose={() => {}} onOpen={() => {}} onPreview={() => {}} onPickCover={onPickCover} />,
+  ));
+  await settle();
+  await settle();
+  expect(host.querySelectorAll(".cutinfo-item")).toHaveLength(2);
+  await act(async () => { host.querySelectorAll<HTMLButtonElement>(".cutinfo-item .cutinfo-rep")[1].click(); }); // 남이 옮긴 'moved' 의 ★
+  await settle();
+  await settle();
+  expect(listGenerations).toHaveBeenCalledTimes(2); // 실패 → 다시 받았다
+  expect(host.querySelectorAll(".cutinfo-item")).toHaveLength(1); // 옮겨 간 것은 빠졌다 — 같은 404 를 또 누를 수 없다
+  saved = true;
+  await act(async () => { host.querySelector<HTMLButtonElement>(".cutinfo-item .cutinfo-rep")!.click(); });
+  await settle();
+  expect(listGenerations).toHaveBeenCalledTimes(2); // 성공은 다시 받지 않는다
+});
+
 it("컷 정보 — 2000건을 넘으면 '최근 2000건 기준'. 목록을 못 받으면 그 까닭", async () => {
   listGenerations.mockImplementation(async () => Array.from({ length: 500 }, (_, i) => gen(`g${i}`)));
   act(() => root.render(
