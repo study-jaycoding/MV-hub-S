@@ -13,7 +13,7 @@ import os
 import subprocess
 import sys
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import test_task_activity_facts as facts  # 클래스째 가져오면 그 시험들이 여기서 한 번 더 돈다
@@ -31,10 +31,24 @@ class DueDateLocalChild(unittest.TestCase):
     fact = facts.TaskActivityFactsTests.fact
     read = facts.TaskActivityFactsTests.read
 
+    @staticmethod
+    def _dates():
+        # 제품 SQL 이 쓰는 그 시계로 본다(지역 오늘, UTC 오늘).
+        with db.get_connection() as conn:
+            return tuple(conn.execute("SELECT date('now','localtime'), date('now')").fetchone())
+
     def test_due_dates_use_local_today(self):
-        today = datetime.now().date()
-        if today == datetime.now(timezone.utc).date():
+        local, utc = self._dates()
+        if local == utc:
             self.skipTest("방금 날짜 경계를 넘었다 — 부모가 다시 고른다")
+        try:
+            self._check(date.fromisoformat(local))
+        except AssertionError:
+            if self._dates()[0] != local:
+                self.skipTest("시험 도중 날짜가 넘어갔다 — 부모가 다시 고른다")
+            raise
+
+    def _check(self, today):
         yesterday = (today - timedelta(days=1)).isoformat()
         self.fact(created_at="2025-01-01T00:00:00Z", sort_ts=1735689600)
         tid = self.read(archived=True)[0]["id"]
@@ -42,6 +56,9 @@ class DueDateLocalChild(unittest.TestCase):
         self.assertEqual(self.read()[0]["archived"], 0, "오늘 마감은 아직 안 지났다")
         manage.update_task(tid, {"due_date": yesterday})
         self.assertEqual(self.read(archived=True)[0]["archived"], 1, "어제 마감은 지났다")
+        # 시각이 붙어 와도 적힌 날짜로 본다 — date() 는 +09:00 을 UTC 로 바꿔 전날로 읽는다.
+        manage.update_task(tid, {"due_date": today.isoformat() + "T00:00:00+09:00"})
+        self.assertEqual(self.read()[0]["archived"], 0, "시각이 붙은 오늘 마감도 아직 안 지났다")
         manage.update_task(tid, {"due_date": None})
         with db.get_connection() as conn:
             conn.execute("INSERT INTO project_planning(project_id,due_date) VALUES('p1',?)", (today.isoformat(),))
@@ -49,6 +66,10 @@ class DueDateLocalChild(unittest.TestCase):
         with db.get_connection() as conn:
             conn.execute("UPDATE project_planning SET due_date=? WHERE project_id='p1'", (yesterday,))
         self.assertEqual(self.read(archived=True)[0]["archived"], 1, "프로젝트 마감이 어제면 보관")
+        with db.get_connection() as conn:
+            conn.execute("UPDATE project_planning SET due_date=? WHERE project_id='p1'",
+                         (today.isoformat() + "T00:00:00+09:00",))
+        self.assertEqual(self.read()[0]["archived"], 0, "시각이 붙은 프로젝트 마감 오늘도 진행 중")
 
 
 class DueDateLocalTodayTests(unittest.TestCase):
