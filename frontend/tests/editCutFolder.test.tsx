@@ -83,10 +83,12 @@ const sendTimeline = (plan: unknown, gens: Generation[], target: unknown) => {
 const folderActs: string[][] = []; // 폴더 메뉴가 앱에 청한 것 — [무엇, 프로젝트, 폴더 경로, 폴더 이름]
 const onFolderAction = (...args: string[]) => { folderActs.push(args); };
 // peekPath = 폴더 창이 떠 있는 컷(없으면 null). 창은 App 의 것이라 여기서는 떠 있다는 사실만 넘긴다.
+let resolvePicked: ReadonlySet<string> | undefined; // 다빈치(미디어 풀)에서 고른 것 — 앱이 넘긴다
+let resolveScroll = 0; // 그 클립까지 넘기라는 신호 — 앱이 '따라가는 탭'에서만 올린다
 const mount = (reloadSignal = 0, peekPath: string | null = null, ws: typeof workspace | { scope: "unknown"; id: null; name: null } = workspace) =>
   act(() => root.render(
     <EditTab authKey="auth" authReady workspace={ws} keysActive flash={flash}
-      onOpenCutFolder={onOpenCutFolder} reloadSignal={reloadSignal}
+      onOpenCutFolder={onOpenCutFolder} reloadSignal={reloadSignal} resolvePicked={resolvePicked} resolveScroll={resolveScroll}
       peekPath={peekPath} onPeekMarks={onPeekMarks} cardMenuRef={cardMenuRef} onPreview={onPreview} onCompare={onCompare}
       resolve={{ send: sendToResolve, sendTimeline, ...resolveState }} onFolderAction={onFolderAction} />,
   ));
@@ -171,6 +173,8 @@ beforeEach(() => {
   // jsdom 에는 포인터 잡기가 없다 — 클립은 누를 때 포인터를 잡는다.
   Object.assign(Element.prototype, { setPointerCapture() {}, hasPointerCapture: () => false, releasePointerCapture() {} });
   world.gens = [gen("a", "c1"), gen("b", "c1", { is_final: true, is_mine: true }), gen("x", "c2"), gen("y", "c2", { is_held: true })];
+  resolvePicked = undefined;
+  resolveScroll = 0;
   world.known = true;
   world.state = "ok";
   world.error = null;
@@ -390,6 +394,58 @@ it("미디어 풀: 끌어서 고른 바로 뒤(타이머가 돌기 전)에 누�
   move("mouseup", 1, 1);
   act(() => poolCards()[0].click());
   expect(pickedCount()).toBe(1);
+});
+
+// Jay 2026-10-14 — "풀에서도 내가 다빈치에 클릭하면 어떤거 클릭했는지 표시가 되게 한다. 카드일때도 리스트일때도 … 타임라인에서도".
+//  모의 그림의 기본값(ⓐ): 표시만 한다 — 재생헤드·풀은 그대로, 다른 컷의 클립이면 타임라인이 그 컷까지 넘어간다(화면 밖일 때).
+it("다빈치에서 고른 것 — 풀의 세 보기와 타임라인 클립에 빨간 '다빈치' 표 · 표시만 · 새로 고르면 그 컷까지 넘긴다 · 풀면 사라진다", () => {
+  seed([{ cut: "c1", gen: "b", track: 1 }, { cut: "c2", gen: "x", track: 1 }]);
+  mount();
+  act(() => cutCell("c1").click());
+  const tc = timecode();
+  const scroll = document.querySelector<HTMLElement>(".ed-scroll")!;
+  resolvePicked = new Set(["a", "b"]); // a = 안 넣은 카드 · b = c1 의 V1 에 넣은 카드
+  mount();
+  expect(poolCards().map((card) => [card.classList.contains("ed-dv"), card.querySelector(".card-bottom")?.textContent ?? null]))
+    .toEqual([[true, "다빈치"], [true, "V1 - 선택 카드 · 다빈치"]]);
+  expect(clips().map((clip) => [clip.classList.contains("ed-dv"), clip.querySelector(".ed-clip-dv")?.textContent ?? null]))
+    .toEqual([[true, "다빈치"], [false, null]]); // b 의 클립(c1)만
+  expect(timecode()).toBe(tc); // 재생헤드는 그대로
+
+  act(() => poolButton("보기 방식").click());
+  act(() => popItem("메타데이터 보기").click());
+  expect(poolRows("meta").map((row) => [row.classList.contains("ed-dv"), row.querySelector(".ed-dv-chip")?.textContent ?? null]))
+    .toEqual([[true, "다빈치"], [true, "다빈치"]]);
+  act(() => poolButton("보기 방식").click());
+  act(() => popItem("목록 보기").click());
+  expect(poolRows("list").map((row) => [row.classList.contains("ed-dv"), row.querySelector(".ed-dv-chip")?.textContent ?? null]))
+    .toEqual([[true, "다빈치"], [true, "다빈치"]]);
+
+  // 다른 컷(c2)의 것을 고르면 — 그 클립만 빨갛고 풀(c1)에는 없다. 넘기라는 신호가 오면 타임라인이 그 컷까지 넘어간다(jsdom 의 폭은 0 — 늘 '화면 밖')
+  resolvePicked = new Set(["x"]); // 신호 없이(다른 브라우저 탭이 따라가는 탭) — 표만 붙고 넘기지 않는다(Codex 리뷰)
+  mount();
+  expect(poolRows("list").some((row) => row.classList.contains("ed-dv"))).toBe(false);
+  expect(clips().map((clip) => clip.classList.contains("ed-dv"))).toEqual([false, true]);
+  expect(scroll.scrollLeft).toBe(0);
+  resolveScroll += 1; // 이 탭이 따라가는 탭
+  mount();
+  expect(scroll.scrollLeft).toBeGreaterThan(0);
+  expect(timecode()).toBe(tc);
+  // 신호 없이 다시 그려도(다른 이유의 렌더) 넘기지 않는다 · 다빈치에서 선택을 풀면 사라진다
+  scroll.scrollLeft = 0;
+  mount();
+  expect(scroll.scrollLeft).toBe(0);
+  resolvePicked = new Set();
+  mount();
+  expect(document.querySelectorAll(".ed-dv")).toHaveLength(0);
+  // 재생 중에는 넘기지 않는다 — 재생헤드 따라가기가 다음 프레임에 되돌린다(Codex 리뷰)
+  press({ key: " ", code: "Space" });
+  resolvePicked = new Set(["x"]);
+  resolveScroll += 1;
+  mount();
+  expect(clips().map((clip) => clip.classList.contains("ed-dv"))).toEqual([false, true]); // 표는 붙는다
+  expect(scroll.scrollLeft).toBe(0);
+  press({ key: "k", code: "KeyK" });
 });
 
 it("미디어 풀: 보기 방식(썸네일·메타데이터·목록)과 크기·정렬·검색을 바꾼다 — 보기 설정은 이 브라우저에 남는다", () => {

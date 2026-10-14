@@ -41,6 +41,9 @@ const EDGE_PX = 48; // 컷을 끄는 중 — 타임라인의 이만큼 안쪽 �
 const EDGE_STEP = 14; // 한 프레임에 넘기는 px
 const DBLCLICK_MS = 500; // 끈 직후의 더블클릭으로 치는 간격(운영체제 기본 더블클릭 시간쯤)
 const FINAL_MARK_MIN = 28; // 최종 ★ 표(19px + 양옆 여백)가 들어가는 클립의 최소 폭(px)
+const DV_MARK_MIN = 52; // '다빈치' 표가 들어가는 클립의 최소 폭(px) — 더 좁으면 빨간 테두리만
+const NO_PICKS: ReadonlySet<string> = new Set();
+const notPlaying = () => false;
 
 export interface ClipLink {
   state: MediaState;
@@ -92,6 +95,9 @@ export const EditTimeline = memo(function EditTimeline({
   onClipTrim,
   dropHint,
   onMoveCut,
+  resolvePicked = NO_PICKS,
+  resolveScroll = 0,
+  isPlaying = notPlaying,
 }: {
   layout: EditLayout;
   doc: EditDoc;
@@ -123,6 +129,10 @@ export const EditTimeline = memo(function EditTimeline({
   dropHint: DropHint | null; // 풀의 카드를 끌어 이 줄 위에 올렸다 — 그 카드의 컷 칸을 강조한다(끌기는 EditTab 이 쥔다)
   // 컷 머리 칸을 끌어 놓았다 — path 를 before 앞으로(before = 놓은 자리의 바로 뒤에 보이는 컷, null = 맨 뒤). rev = 끌기 시작 때의 것
   onMoveCut: (path: string, before: string | null, rev: number) => void;
+  // 다빈치(미디어 풀)에서 고른 생성물(Jay 2026-10-14) — 그 클립에 빨간 테두리와 '다빈치' 표. 새로 고르면 화면 밖일 때만 거기까지 넘긴다
+  resolvePicked?: ReadonlySet<string>;
+  resolveScroll?: number; // 올라가면 그 클립까지 넘긴다(앱이 '따라가는 탭'에서만 올린다)
+  isPlaying?: () => boolean; // 타임라인이 도는 중인가 — 그동안은 다빈치 선택으로 넘기지 않는다(재생헤드 따라가기가 앞선다)
 }) {
   const t = useT();
   const lanesRef = useRef<HTMLDivElement>(null);
@@ -164,6 +174,28 @@ export const EditTimeline = memo(function EditTimeline({
     scroll.addEventListener("wheel", onWheel, { passive: false });
     return () => scroll.removeEventListener("wheel", onWheel);
   }, [scrollRef]);
+
+  // 다빈치에서 새로 고른 것이 화면 밖이면 그 클립까지 가로로 넘긴다(Jay 2026-10-14 ⓐ — 재생헤드·풀은 그대로). 고른 것이 바뀔 때만 —
+  //  처음 그릴 때(편집 탭을 열 때)와 배치·확대가 바뀔 때는 넘기지 않는다(보던 자리를 끌어가지 않게). 재생 중에도 넘기지 않는다 —
+  //  재생헤드 따라가기(EditTab.paint)가 다음 프레임에 되돌린다(Codex 리뷰). 보이는지는 컷이 아니라 그 클립으로 잰다(같은 컷의 긴 다른
+  //  트랙 때문에 이미 보이는 클립을 두고 넘겼다 — Codex 리뷰). 신호(resolveScroll)는 표시(resolvePicked)와 따로다 — 표시는 모든 브라우저
+  //  탭이 받지만 넘기기는 앱이 '따라가는 탭'에서만 올린다(다른 탭의 타임라인까지 움직였다 — Codex 리뷰).
+  const seenScroll = useRef(resolveScroll);
+  useEffect(() => {
+    if (seenScroll.current === resolveScroll) return;
+    seenScroll.current = resolveScroll;
+    const scroll = scrollRef.current;
+    if (!scroll || !resolvePicked.size || isPlaying()) return;
+    for (const slot of layout.cuts) {
+      const clip = slot.clips.find((item) => resolvePicked.has(links.get(clipKey(item))?.gen?.id ?? ""));
+      if (!clip) continue;
+      const left = slot.start * zoom;
+      if (left < scroll.scrollLeft || (slot.start + Math.min(clip.len, slot.len)) * zoom > scroll.scrollLeft + scroll.clientWidth) {
+        scroll.scrollLeft = Math.max(0, left - scroll.clientWidth / 3);
+      }
+      return;
+    }
+  }, [resolveScroll, resolvePicked, layout, links, zoom, scrollRef, isPlaying]);
 
   const timeAt = (clientX: number) => {
     const rect = lanesRef.current?.getBoundingClientRect();
@@ -462,12 +494,13 @@ export const EditTimeline = memo(function EditTimeline({
     // 줄인 클립의 '원본의 나머지'(뒤) — 그 컷 안에 남는 만큼만 빗금으로 보인다(아래 트랙이 드러나는 구간이다). 누를 수 없다.
     //  앞을 자른 만큼(clip.head)은 나머지가 아니다 — 원본에서 시작점 뒤로 남은 길이(full − head)로 센다.
     const rest = (Math.min(clip.full - clip.head, span) - clip.len) * zoom;
+    const resolved = !!link?.gen && resolvePicked.has(link.gen.id); // 다빈치에서 고른 것
     return (
       <Fragment key={key}>
       {rest > 4 && <div className="ed-clip-rest" style={{ left: (start + clip.len) * zoom, width: rest - 1 }} />}
       <div
         className={"ed-clip" + (selected.has(key) ? " ed-sel" : "") + (off ? " ed-off" : "") +
-          (state !== "ok" ? ` ed-${state}` : "") + (locked ? " ed-locked" : "") + (thin ? " ed-thin" : "")}
+          (state !== "ok" ? ` ed-${state}` : "") + (locked ? " ed-locked" : "") + (thin ? " ed-thin" : "") + (resolved ? " ed-dv" : "")}
         style={{ left: start * zoom + pad, width: clipWidth }}
         data-clip={key} // 길이 조절 창이 이 클립의 화면 자리를 잰다(EditTab.openTrim)
         title={link?.gen?.prompt?.slice(0, 80) || undefined}
@@ -496,6 +529,8 @@ export const EditTimeline = memo(function EditTimeline({
         {state === "ok" && thumb
           ? Array.from({ length: frames }, (_, i) => <i key={i} style={{ backgroundImage: `url("${thumb}")` }} />)
           : <span className="ed-clip-msg">{state === "missing" ? t("미디어 없음") : state === "unknown" ? t("확인 못 함") : ""}</span>}
+        {/* 최종 ★ 표(오른쪽 위)와 겹치지 않을 폭이어야 한다(Codex 리뷰) — 모자라면 빨간 테두리만 */}
+        {resolved && clipWidth >= DV_MARK_MIN + (link?.gen?.is_final ? FINAL_MARK_MIN : 0) && <span className="ed-clip-dv">{t("다빈치")}</span>}
         {/* 앞을 자른 클립(Jay 2026-10-14) — 왼쪽 가장자리의 빗금: 원본의 처음에서 시작하지 않는다. 표시만 한다 */}
         {clip.head > 0 && <span className="ed-clip-head" aria-hidden="true" />}
         {/* 길이를 줄였으면(휠 클릭) 쓰는 길이 / 원본 길이 */}
