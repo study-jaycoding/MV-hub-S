@@ -250,7 +250,9 @@ export function useGenerationProgress({
           bumpBoard();
         }
       },
-      () => void reload(true),
+      // 다시 붙었다 — 출처 없는 synced 와 같은 전체 보정으로 보낸다: 목록 reload 만으로는 캔버스의 완료 카드·사이드바(libraryChanged)와
+      //  열린 히스토리·코멘트(refreshVisibleSyncConsumers)가 끊긴 동안의 변경을 못 따라잡았다(53회차). 첫 연결에는 불리지 않는다.
+      () => queueSynced(undefined),
     );
     return () => {
       alive = false;
