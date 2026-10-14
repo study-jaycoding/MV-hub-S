@@ -216,6 +216,9 @@ export interface DescDraft {
   text: string;
   failed: boolean;
   rev: number; // 이 글을 친 편집의 번호 — 저장 응답은 자기 번호의 항목만 고친다(글자가 같아도 옛 응답이 새 편집을 건드리지 않게)
+  // 편집을 시작할 때의 서버 글 — 저장에 같이 보내 그사이 다른 사람이 바꿨으면 서버가 409 로 거절한다(50회차). 충돌하면 최신 글로
+  //  바뀐다 — 안내를 본 뒤의 [다시 저장]은 일부러 덮는 것이다.
+  base?: string;
 }
 
 // 설명 칸들이 같이 보는 보관함(작업 id 별) — TableView 의 DescCell 주석 ④⑤.
@@ -247,7 +250,7 @@ export interface WorkViewProps {
   myUid?: string | null; // 현재 로그인 uid — '내 작업' 필터·표시용
   readOnly?: boolean; // 과거 워크스페이스 기록 화면 — 모든 변경 동작 차단
   // 저장이 끝나면 성공 여부를 알려 준다(알릴 수 없는 곳은 아무것도 돌려주지 않는다) — 설명 칸이 '저장 안 됨'을 표시하는 데 쓴다.
-  onPatch: (tid: string, patch: Partial<Task>) => Promise<boolean> | void;
+  onPatch: (tid: string, patch: Partial<Task>, expectedDescription?: string) => Promise<boolean> | void;
   // 아직 서버에 없는 설명 글(작업 id → 가장 최근에 친 글, failed = 저장을 시도했다 실패함). 표 밖(WorkBoard)에 둔다 —
   //  보기 전환·검색으로 그 줄이 화면에서 빠졌다 돌아와도 남게.
   descDrafts?: DescDraftStore;

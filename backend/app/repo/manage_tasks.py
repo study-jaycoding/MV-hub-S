@@ -200,6 +200,14 @@ class TaskMissingError(ValueError):
     """권한 검사 뒤 실제 쓰기 전에 작업이 사라졌을 때의 안전 중단."""
 
 
+class TaskEditConflictError(ValueError):
+    """편집을 시작할 때의 값과 지금 값이 달라(그사이 다른 사람이 바꿨다) 쓰지 않았다 — field·latest 를 함께 준다(50회차)."""
+
+    def __init__(self, field: str, latest: str):
+        super().__init__(f"{field} changed since editing started")
+        self.field, self.latest = field, latest
+
+
 def _assert_tasks_current_for_write(conn, task_ids: list[str]) -> set[str]:
     """쓰기 트랜잭션 안에서 과거·미귀속 작업 변경을 다시 차단한다.
 
@@ -1137,7 +1145,11 @@ def create_task(project_id: str, name: str, **kw: Any) -> dict[str, Any]:
         return dict(conn.execute("SELECT * FROM project_task WHERE id=?", (tid,)).fetchone())
 
 
-def update_task(tid: str, fields: dict[str, Any]) -> Optional[dict[str, Any]]:
+def update_task(
+    tid: str, fields: dict[str, Any], expected: Optional[dict[str, str]] = None
+) -> Optional[dict[str, Any]]:
+    """expected = {칸: 편집을 시작할 때의 값} — 주면 지금 값과 같을 때만 쓴다(같은 쓰기락 안에서 비교). 다르면
+    TaskEditConflictError: 그사이 다른 사람이 저장한 글을 옛 화면의 초안이 덮지 않게(50회차). 옛 앱은 보내지 않는다(전처럼)."""
     sets = {k: v for k, v in fields.items() if k in _TASK_FIELDS}
     if not sets:
         return None
@@ -1146,6 +1158,13 @@ def update_task(tid: str, fields: dict[str, Any]) -> Optional[dict[str, Any]]:
         conn.execute("BEGIN IMMEDIATE")
         if tid not in _assert_tasks_current_for_write(conn, [tid]):
             return None
+        for field, base in (expected or {}).items():
+            if field not in _TASK_FIELDS:
+                continue
+            row = conn.execute(f"SELECT {field} FROM project_task WHERE id=?", (tid,)).fetchone()
+            latest = "" if row is None or row[0] is None else str(row[0])
+            if latest != (base or ""):
+                raise TaskEditConflictError(field, latest)
         cols = ", ".join(f"{k}=?" for k in sets)
         conn.execute(
             f"UPDATE project_task SET {cols} WHERE id=?", (*sets.values(), tid)

@@ -11,7 +11,7 @@ import {
   removeDisabledGen,
 } from "../../lib/deactivated";
 import { manageApi } from "../../lib/manageApi";
-import { isHttpStatus, isRouteMissing } from "../../lib/http";
+import { HttpError, isHttpStatus, isRouteMissing } from "../../lib/http";
 import { mediaThumbUrl } from "../../lib/media";
 import { loadJSON, loadString, saveJSON, saveString } from "../../lib/storage";
 import { STORAGE_KEYS } from "../../lib/storageKeys";
@@ -40,7 +40,23 @@ import {
   type WorkViewProps,
 } from "./types";
 
+// 설명을 고치는 사이 다른 사람이 먼저 저장했다는 서버의 거절(409 task_edit_conflict)이면 그 최신 글, 아니면 null(50회차)
+export function taskEditConflictLatest(error: unknown): string | null {
+  if (!(error instanceof HttpError) || error.status !== 409) return null;
+  try {
+    const detail = JSON.parse(error.detail) as { kind?: string; latest?: unknown };
+    return detail?.kind === "task_edit_conflict" ? String(detail.latest ?? "") : null;
+  } catch {
+    return null;
+  }
+}
+
 export function taskWriteErrorMessage(action: string, error: unknown): string {
+  const latest = taskEditConflictLatest(error);
+  if (latest !== null) {
+    const shown = latest.length > 80 ? `${latest.slice(0, 80)}…` : latest;
+    return `${action} 실패: 그사이 다른 사람이 설명을 바꿨습니다(지금: "${shown}"). 내 글은 '저장 안 됨'으로 남겨 두었습니다 — [다시 저장]을 누르면 내 글로 바꿉니다.`;
+  }
   if (isHttpStatus(error, 404)) {
     return `${action} 실패: 작업 목록이 다른 사용자에 의해 변경되었습니다. 최신 목록을 다시 불러옵니다.`;
   }
@@ -599,7 +615,7 @@ export function WorkBoard({
     });
   }
 
-  const onPatch = (tid: string, patch: Partial<Task>): Promise<boolean> => {
+  const onPatch = (tid: string, patch: Partial<Task>, expectedDescription?: string): Promise<boolean> => {
     if (writeBlocked(tid)) return Promise.resolve(false);
     const requestScope = scopeKey;
     let saved = false; // 서버가 받았나 — 줄(queue)은 실패를 삼키고 복구하므로 여기서 따로 적는다
@@ -619,13 +635,17 @@ export function WorkBoard({
     let held = false;
     void taskPatchQueueRef.current!.enqueue(tid, async () => {
       try {
-        await manageApi.updateTask(tid, patch);
+        await manageApi.updateTask(tid, expectedDescription === undefined ? patch : { ...patch, expected_description: expectedDescription });
         saved = true;
         taskDataRevisionRef.current += 1;
       } catch (error) {
         if (patch.description !== undefined) {
           drafts.flying.set(tid, (drafts.flying.get(tid) ?? 0) + 1);
           held = true;
+          // 그사이 남이 설명을 바꿨다 — 쥔 글은 그대로 두고 기준만 최신 글로 옮긴다: 안내를 본 뒤의 [다시 저장]은 일부러 덮는 것이다(50회차)
+          const latest = taskEditConflictLatest(error);
+          const entry = drafts.drafts.get(tid);
+          if (latest !== null && entry) drafts.drafts.set(tid, { ...entry, base: latest });
         }
         settle(false);
         throw scopedMutationError(requestScope, error);

@@ -405,3 +405,30 @@ def test_additive_legacy_schema_migration_is_idempotent(monkeypatch, tmp_path):
     assert saved["revision"] == 1
     assert saved["updated_by"] == "u_a"
     db.flush_pool()
+
+
+def test_task_description_save_from_a_stale_base_is_refused(client):
+    """50회차 — 두 사람이 같은 설명을 고치면, 편집을 시작할 때의 값이 지금과 다른 저장은 409(먼저 저장된 글을 덮지 않는다)."""
+    tid = manage.create_task("p1", "cut 1")["id"]
+    url = f"/api/manage/tasks/{tid}"
+    first = client.patch(url, json={"description": "B wrote", "expected_description": ""})
+    assert (first.status_code, first.json()["description"]) == (200, "B wrote")
+    stale = client.patch(url, json={"description": "A draft", "expected_description": ""})  # A 는 빈 설명에서 시작했다
+    assert stale.status_code == 409
+    assert stale.json()["detail"] == {"kind": "task_edit_conflict", "field": "description", "latest": "B wrote"}
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT description FROM project_task WHERE id=?", (tid,)).fetchone()[0] == "B wrote"
+    # 최신을 보고(기준을 최신으로) 다시 보내면 덮는다 · 옛 앱(기준 없음)은 전처럼 덮는다
+    assert client.patch(url, json={"description": "A draft", "expected_description": "B wrote"}).status_code == 200
+    assert client.patch(url, json={"description": "legacy"}).json()["description"] == "legacy"
+
+
+def test_task_assignee_can_still_save_a_description_with_its_base(client):
+    """기준값은 바꿀 칸이 아니다 — 배정된 작업자의 '설명만' 권한 판정에 섞이지 않는다."""
+    tid = manage.create_task("p2", "cut 2")["id"]  # member 는 p2 의 PM 이 아니다 — 일반 작업자(creator)로 배정만 됐다
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO project_member(project_id, creator_uid, project_role) VALUES('p2','u_m',?)", (rbac.CREATOR,))
+    manage.add_assignment(tid, "u_m", "u_a")
+    saved = client.patch(f"/api/manage/tasks/{tid}", json={"description": "mine", "expected_description": ""}, headers={"x-actor": "member"})
+    assert saved.status_code == 200, saved.json()
+    assert saved.json()["description"] == "mine"

@@ -124,7 +124,8 @@ export const manageApi = {
     }
     return result;
   },
-  updateTask: (tid: string, body: Partial<Task>) =>
+  // expected_description = 설명 편집을 시작할 때의 글(서버가 지금 글과 다르면 409 task_edit_conflict — 50회차). 옛 서버는 무시한다.
+  updateTask: (tid: string, body: Partial<Task> & { expected_description?: string }) =>
     jsonFetch<Task>(`/api/manage/tasks/${pathPart(tid)}`, {
       method: "PATCH",
       body: jsonBody(body),

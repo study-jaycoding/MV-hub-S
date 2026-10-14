@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { WorkBoard } from "../src/components/manage/WorkBoard";
 import { api } from "../src/api";
 import { manageApi } from "../src/lib/manageApi";
+import { HttpError } from "../src/lib/http";
 import type { Task } from "../src/components/manage/types";
 
 vi.mock("../src/api", () => ({ api: { facets: vi.fn(), projects: vi.fn() } }));
@@ -88,12 +89,46 @@ it("설명 저장이 실패하고 복구 조회까지 실패해도 친 글과 '�
   await act(async () => { host.querySelector<HTMLButtonElement>(".work-desc .work-desc-retry")!.click(); });
   await settle();
   expect(manageApi.updateTask).toHaveBeenCalledTimes(2);
-  expect(manageApi.updateTask).toHaveBeenLastCalledWith("task-a", { description: "저장할 글" });
+  // 편집을 시작할 때의 설명(기준)을 같이 보낸다 — 그사이 남이 바꿨으면 서버가 거절한다(50회차)
+  expect(manageApi.updateTask).toHaveBeenLastCalledWith("task-a", { description: "저장할 글", expected_description: "원래 설명" });
   expect(host.querySelector(".work-desc .work-desc-chip")).toBeNull();
   expect(input().value).toBe("저장할 글");
   // 저장이 통했으면 서버는 돌아온 것 — 목록을 다시 받아(띠만 지운 것이 아니다) "목록을 새로 받지 못했습니다" 띠를 걷는다(28회차).
   expect(manageApi.taskProjects).toHaveBeenCalledTimes(loads + 1);
   expect(banner()).toBeNull();
+});
+
+// 50회차(Codex 검토): 두 사람이 같은 설명을 고치면 나중에 확정한 옛 초안이 먼저 저장된 글을 덮었다.
+it("설명을 고치는 사이 남이 먼저 저장했으면(409) 내 글은 '저장 안 됨'으로 남고 안내한다 — [다시 저장]은 최신 글을 기준으로 보낸다(일부러 덮기)", async () => {
+  render(); await settle();
+  const conflict = new HttpError(409, "conflict", JSON.stringify({ kind: "task_edit_conflict", field: "description", latest: "남이 쓴 글" }));
+  vi.mocked(manageApi.updateTask).mockRejectedValueOnce(conflict);
+  act(() => input().focus());
+  type("내 초안");
+  act(() => input().blur());
+  await settle();
+  expect(manageApi.updateTask).toHaveBeenLastCalledWith("task-a", { description: "내 초안", expected_description: "원래 설명" });
+  expect(window.alert).toHaveBeenLastCalledWith(expect.stringContaining("그사이 다른 사람이 설명을 바꿨습니다"));
+  expect(input().value).toBe("내 초안");
+  expect(host.querySelector(".work-desc-chip")).not.toBeNull();
+  vi.mocked(manageApi.updateTask).mockResolvedValueOnce({} as never);
+  await act(async () => { host.querySelector<HTMLButtonElement>(".work-desc .work-desc-retry")!.click(); });
+  await settle();
+  expect(manageApi.updateTask).toHaveBeenLastCalledWith("task-a", { description: "내 초안", expected_description: "남이 쓴 글" });
+});
+
+it("앞 저장이 가는 중에 이어 쳐서 다시 저장하면 기준을 보내지 않는다 — 그 저장이 서버 글을 바꾸는 중이라 엉뚱한 충돌이 나지 않게(50회차)", async () => {
+  render(); await settle();
+  let release!: () => void;
+  vi.mocked(manageApi.updateTask).mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve({} as never); }));
+  act(() => input().focus()); type("첫 글"); act(() => input().blur());
+  await settle();
+  act(() => input().focus()); type("첫 글 더"); act(() => input().blur()); // 앞 저장이 아직 가는 중
+  await settle();
+  release();
+  await settle(); await settle();
+  const calls = vi.mocked(manageApi.updateTask).mock.calls.map((call) => call[1]);
+  expect(calls).toEqual([{ description: "첫 글", expected_description: "원래 설명" }, { description: "첫 글 더" }]);
 });
 
 it("받은 적 없는 범위의 조회 실패는 전처럼 오류 화면이다 — 첫 조회 실패, 그리고 다른 범위에 다녀온 뒤의 실패(빈 표를 받은 내용이라 하지 않는다)", async () => {

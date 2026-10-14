@@ -18,6 +18,7 @@ from .event_journal import _edit_conflict_detail, _record_audit_event, safe_iden
 from .identity import resolve_display_names
 from .manage_schema import _SCHEMA_ENSURED, _ensure_schema, unresolved_workspace_sql
 from .manage_tasks import (
+    TaskEditConflictError,
     TaskMissingError,
     TaskProjectMissingError,
     TaskWorkspaceConflictError,

@@ -1096,6 +1096,9 @@ class TaskPatch(BaseModel):
     note: Optional[str] = None
     sequence: Optional[str] = None
     description: Optional[str] = None
+    # 설명 편집을 시작할 때의 값 — 주면 지금 값과 같을 때만 바꾼다(다르면 409 task_edit_conflict + 최신 값). 50회차:
+    #  두 사람이 같은 설명을 고치면 나중에 확정한 옛 초안이 먼저 저장된 글을 덮었다. 옛 앱은 보내지 않는다(전처럼 덮는다).
+    expected_description: Optional[str] = None
 
 
 class TaskLinkIn(BaseModel):
@@ -1347,6 +1350,8 @@ def create_task(body: TaskIn, request: Request):
 def patch_task(tid: str, body: TaskPatch, request: Request):
     pid = _task_project_or_404(tid)
     fields = body.model_dump(exclude_unset=True)
+    # 비교 기준은 바꿀 칸이 아니다 — 권한 판정(아래 칸 목록)에 섞이지 않게 먼저 뺀다
+    expected = {"description": fields.pop("expected_description") or ""} if "expected_description" in fields else None
     # 배정된 작업자는 자기 배분 작업을 '진행'(상태·설명·메모)할 수 있다. 그 외 관리 필드는 PM 권한.
     actor = account_actor_uid(request) or actor_id(request)
     if fields and set(fields) <= {"status", "note", "description"} and repo_manage.is_assignee(tid, actor):
@@ -1355,11 +1360,15 @@ def patch_task(tid: str, body: TaskPatch, request: Request):
         _require_project_manage(request, pid)
     _require_task_current(tid)
     try:
-        r = repo_manage.update_task(tid, fields)
+        r = repo_manage.update_task(tid, fields, expected)
     except repo_manage.TaskMissingError as exc:
         _task_write_missing(exc)
     except repo_manage.TaskWorkspaceConflictError as exc:
         _task_write_conflict(exc)
+    except repo_manage.TaskEditConflictError as exc:
+        raise HTTPException(
+            status_code=409, detail={"kind": "task_edit_conflict", "field": exc.field, "latest": exc.latest}
+        ) from exc
     if not r:
         raise HTTPException(status_code=404, detail="없는 작업(또는 변경 필드 없음)")
     return r

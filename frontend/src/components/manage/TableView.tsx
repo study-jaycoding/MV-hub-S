@@ -49,7 +49,7 @@ export function TableView(props: WorkViewProps) {
   useT(); // 언어 토글 시 상태 라벨 리렌더
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
-  const commitText = (t: Task, value: string) => onPatch(t.id, { description: value }); // 보낼지 말지는 칸(DescCell)이 정한다
+  const commitText = (t: Task, value: string, base?: string) => onPatch(t.id, { description: value }, base); // 보낼지 말지는 칸(DescCell)이 정한다
 
   const allIds = tasks.filter((task) => !taskIsReadOnly(task, readOnly)).map((t) => t.id);
   const allSelected = allIds.length > 0 && allIds.every((id) => selected?.has(id));
@@ -343,7 +343,7 @@ let descDraftRev = 0; // 보관함 항목의 편집 번호 — 칸을 가리지 
 function DescCell({ task, disabled, onCommit, drafts }: {
   task: Task;
   disabled: boolean;
-  onCommit: (task: Task, value: string) => Promise<boolean> | boolean | void;
+  onCommit: (task: Task, value: string, base?: string) => Promise<boolean> | boolean | void;
   drafts?: DescDraftStore;
 }) {
   const own = useRef<DescDraftStore | null>(null);
@@ -413,6 +413,10 @@ function DescCell({ task, disabled, onCommit, drafts }: {
     const skip = !store.stale.has(taskId) && draft === (task.description || ""); // ④
     const mine = edit.current;
     const mineRev = rev.current;
+    const sentText = draft;
+    // 기준(편집을 시작할 때의 서버 글)을 같이 보낸다 — 그사이 남이 바꿨으면 서버가 거절한다(50회차). 같은 작업의 앞 저장이 아직 가는
+    //  중이면 보내지 않는다(그 저장이 서버 글을 바꾸는 중이라 엉뚱한 충돌이 난다 — 그때는 전처럼 덮는다).
+    const base = store.flying.get(taskId) ? undefined : store.drafts.get(taskId)?.base;
     sent.current = mine;
     if (!skip) {
       store.stale.add(taskId);
@@ -420,7 +424,7 @@ function DescCell({ task, disabled, onCommit, drafts }: {
       store.sending.set(taskId, mineRev);
     }
     // 같은 작업의 저장은 줄을 서서 보낸 순서대로 간다(WorkBoard 의 taskPatchQueue)
-    void Promise.resolve(skip ? true : onCommit(task, draft)).then((ok) => {
+    void Promise.resolve(skip ? true : onCommit(task, draft, base)).then((ok) => {
       if (!skip) {
         const left = (store.flying.get(taskId) ?? 1) - 1;
         if (left > 0) store.flying.set(taskId, left);
@@ -434,6 +438,8 @@ function DescCell({ task, disabled, onCommit, drafts }: {
       if (owned) {
         if (ok === false) store.drafts.set(taskId, { ...entry, failed: true });
         else store.drafts.delete(taskId);
+      } else if (entry && !skip && ok !== false) {
+        store.drafts.set(taskId, { ...entry, base: sentText }); // 더 새 편집이 있다 — 그 기준은 방금 서버에 쓴 글이다(50회차)
       }
       if (mine === edit.current) {
         // 이 칸이 그사이 다시 고치지도 Esc 로 버리지도 않았다 — 이 결과가 지금 글의 것이다
@@ -464,7 +470,9 @@ function DescCell({ task, disabled, onCommit, drafts }: {
           rev.current = ++descDraftRev;
           hold(true);
           setDraft(e.target.value);
-          store.drafts.set(taskId, { text: e.target.value, failed: failed.current, rev: rev.current });
+          // 기준(편집을 시작할 때의 서버 글)은 처음 칠 때만 잡고 이어 치는 동안은 그대로 둔다(50회차)
+          const base = store.drafts.get(taskId)?.base ?? (task.description || "");
+          store.drafts.set(taskId, { text: e.target.value, failed: failed.current, rev: rev.current, base });
           tell();
         }}
         onBlur={save}
