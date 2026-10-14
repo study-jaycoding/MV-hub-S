@@ -19,10 +19,11 @@ type OptionValue = string | number | boolean;
 type OptionValues = Record<string, OptionValue>;
 type ConstraintMap = Record<string, { allow: Set<string>; note: string }>;
 
-// 정확히 담을 수 없는 큰 정수(2^53 이상)인가 — `Number()` 가 다른 수로 바꾼다(9007199254740993 → …992). 받지 않는다: 받으면 친 것과
-//  다른 값(seed)이 제출된다(조작 규칙 49). 칸은 그대로 남는다(그 글자가 들어가지 않는다 — 규칙 43 의 '받을 수 없으면 받지 않는다').
+// 정수 칸이 받을 수 없는 수인가 — 정확히 담을 수 없는 큰 정수(2^53 이상: `Number()` 가 9007199254740993 → …992 로 바꾼다)와
+//  소수(시드 1.5 — CLI 의 정수 옵션에 그대로 실린다, Codex P2 2026-10-14). 받지 않는다: 받으면 친 것과 다른 값이 제출된다(조작 규칙 49).
+//  칸은 그대로 남는다(그 글자가 들어가지 않는다 — 규칙 43 의 '받을 수 없으면 받지 않는다').
 const inexactInteger = (value: OptionValue): boolean =>
-  typeof value === "number" && Number.isInteger(value) && !Number.isSafeInteger(value);
+  typeof value === "number" && !Number.isSafeInteger(value);
 
 interface Props {
   type: MediaType;
@@ -366,9 +367,9 @@ export function SpotlightOptionsBar({
                               }
                               disabled={blocked}
                               onClick={() => !blocked && setOpt(p.name, v)}
-                              title={blocked ? con!.note : spotlightValueLabel(v)}
+                              title={blocked ? con!.note : spotlightValueLabel(v, p.name)}
                             >
-                              {spotlightValueLabel(v)}
+                              {spotlightValueLabel(v, p.name)}
                             </button>
                           );
                         })}

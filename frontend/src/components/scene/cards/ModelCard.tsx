@@ -49,7 +49,7 @@ export const ModelCard = memo(function ModelCard({
                 {Object.entries(card.modelCfg.params).map(([k, v]) => (
                   <div key={k} className="scene-modelnode-param">
                     <span className="k">{spotlightParamLabel(k)}</span>
-                    <span className="v">{spotlightValueLabel(String(v))}</span>
+                    <span className="v">{spotlightValueLabel(String(v), k)}</span>
                   </div>
                 ))}
               </div>
