@@ -11,7 +11,7 @@ import { buildLayout, emptyEditDoc, genSeconds, type EditDoc, type SlotClip } fr
 import { useVideoPair } from "../../lib/editVideoPair";
 import { thumbOf } from "../../lib/media";
 import { useEditPlayback, type EditSource } from "../../lib/useEditPlayback";
-import { knownVideoSeconds, measureVideoSeconds } from "../../lib/videoDuration";
+import { knownVideoSeconds, measuredExactly, measureVideoSeconds } from "../../lib/videoDuration";
 
 export const SRC_CUT = "@src";
 const NO_GENS: Generation[] = [];
@@ -40,11 +40,12 @@ export function useSourcePane({ place, mode, gen, tape, tapeScope, loop, speed }
     void (async () => {
       for (const item of gens) {
         const asset = item.assets[0];
-        if (asset?.type !== "video" || !asset.file_path || knownVideoSeconds(asset.file_path)) continue;
+        // 그림 길이로 잰 것만 건너뛴다 — video.duration 으로 잰 것은 다시 물어야 서버가 나은 뒤 그림 길이로 바뀐다(Codex 37회차)
+        if (asset?.type !== "video" || !asset.file_path || measuredExactly(asset.file_path)) continue;
         const url = asset.file_path;
-        const measured = await measureVideoSeconds(url);
+        const measured = await measureVideoSeconds(url, true); // 줄의 맨 앞 — 타임라인 클립들의 재기 뒤로 밀리지 않게
         if (!alive) return;
-        if (measured) setSeconds((prev) => new Map(prev).set(url, measured));
+        if (measured) setSeconds((prev) => (prev.get(url) === measured ? prev : new Map(prev).set(url, measured)));
       }
     })();
     return () => {
@@ -57,7 +58,8 @@ export function useSourcePane({ place, mode, gen, tape, tapeScope, loop, speed }
       ...emptyEditDoc(),
       clips: gens.map((item) => {
         const asset = item.assets[0];
-        const known = seconds.get(asset.file_path) ?? knownVideoSeconds(asset.file_path);
+        // 공용 기억이 먼저다 — 다른 판이 그림 길이로 다시 잰 값이 이 판이 전에 받은 옛 값에 가리지 않게(Codex 37회차). seconds 는 다시 그리라는 신호다.
+        const known = knownVideoSeconds(asset.file_path) ?? seconds.get(asset.file_path);
         return { cut: `${SRC_CUT}/${item.id}`, gen: item.id, track: 1, kind: asset.type, dur: genSeconds(item, known) };
       }),
     };
@@ -82,9 +84,14 @@ export function useSourcePane({ place, mode, gen, tape, tapeScope, loop, speed }
       painters.current.delete(draw);
     };
   }, [now]);
+  // 판을 내리면 그 소스도 멈추고, 미리 받아 둔 다음 영상도 놓는다 — 멈춤은 그것을 남겨 두어(다시 틀 때 바로 넘어가게) 안 보이는
+  //  판이 끝까지 받았다(Codex 37회차 — 소스 테이프를 틀다 싱글로).
+  const pair = video.pair;
   useEffect(() => {
-    if (!mode) stop(); // 판을 내리면 그 소스도 멈춘다
-  }, [mode, stop]);
+    if (mode) return;
+    stop();
+    pair.current?.prepare?.(null, 0);
+  }, [mode, stop, pair]);
   // 소스 테이프의 클립 경계(재생바의 얇은 줄)와, 지금 이 판에 보이는 생성물
   const starts = useMemo(() => (mode === "tape" ? src.layout.cuts.slice(1).map((item) => item.start) : NO_MARKS), [mode, src]);
   const shown = src.byId.get(play.view.clip?.gen ?? "") ?? (mode === "tape" ? null : gen);

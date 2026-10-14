@@ -58,6 +58,29 @@ it("서버가 못 읽으면(옛 서버·분할 MP4·이상한 답) 예전처럼 
   expect(videos).toHaveLength(2);
 });
 
+// Codex 37회차 — 서버가 잠깐 못 읽었거나 옛 서버를 새로 켠 뒤에도 새로 고칠 때까지 소리까지 친 길이로 굳어 있었다.
+it("video.duration 으로 잰 것은 1분 뒤 다시 물으면 그림 길이만 다시 묻는다 — 영상은 다시 받지 않는다", async () => {
+  let now = 1_000_000;
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  const first = measureVideoSeconds("/media/retry.mp4");
+  await settle();
+  Object.defineProperty(videos[0], "duration", { value: 4.087 });
+  finish(videos[0]);
+  expect(await first).toBe(98 / 24);
+  now += 30_000;
+  expect(await measureVideoSeconds("/media/retry.mp4")).toBe(98 / 24); // 1분 안 — 묻지 않는다
+  expect(asked).toHaveLength(1);
+  now += 31_000;
+  expect(await measureVideoSeconds("/media/retry.mp4")).toBe(98 / 24); // 서버가 아직 못 읽으면 전에 잰 값 그대로
+  expect([asked.length, videos.length]).toEqual([2, 1]);
+  now += 61_000;
+  picture = () => new Response(JSON.stringify({ frames: 97, fps: 24 })); // 새 서버
+  expect(await measureVideoSeconds("/media/retry.mp4")).toBe(97 / 24);
+  now += 600_000;
+  expect(await measureVideoSeconds("/media/retry.mp4")).toBe(97 / 24); // 그림 길이는 다시 묻지 않는다
+  expect([asked.length, videos.length]).toEqual([3, 1]);
+});
+
 it("한꺼번에 스무 개를 물어도 동시에 받는 것은 4개 — 하나가 끝나야 다음이 시작한다", async () => {
   const results = Array.from({ length: 20 }, (_, i) => measureVideoSeconds(`/v/a${i}.mp4`));
   await settle();
@@ -67,6 +90,23 @@ it("한꺼번에 스무 개를 물어도 동시에 받는 것은 4개 — 하나
   expect(videos).toHaveLength(5);
   expect(await results[0]).toBeNull();
   expect(measureVideoSeconds("/v/a5.mp4")).toBe(results[5]); // 같은 주소는 받는 중인 것에 합류한다
+});
+
+// Codex 37회차 — 소스 판이 방금 띄운 영상이 타임라인이 한꺼번에 줄 세운 클립들 뒤로 밀렸다.
+it("first = 줄의 맨 앞에 선다 — 이미 줄 서 있던 주소면 그 자리를 앞으로 옮긴다", async () => {
+  const backlog = Array.from({ length: 8 }, (_, i) => measureVideoSeconds(`/v/q${i}.mp4`));
+  await settle();
+  expect(videos).toHaveLength(4); // q0~q3 받는 중 · q4~q7 줄
+  const src = measureVideoSeconds("/v/src.mp4", true);
+  expect(measureVideoSeconds("/v/q6.mp4", true)).toBe(backlog[6]); // 줄 서 있던 q6 도 앞으로
+  finish(videos[0]);
+  await settle();
+  finish(videos[1]);
+  await settle();
+  expect(videos.slice(4).map((video) => video.getAttribute("src"))).toEqual(["/v/q6.mp4", "/v/src.mp4"]);
+  videos.slice(2).forEach(finish);
+  await settle();
+  expect(await src).toBeNull();
 });
 
 it("화면을 떠나면 줄 서 있던 것은 버리고, 받던 것만 끝까지 간다", async () => {

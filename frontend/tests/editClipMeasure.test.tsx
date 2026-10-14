@@ -161,6 +161,41 @@ it("그림 트랙으로 잰 길이는 표를 달고, video.duration 으로 잰 �
   expect(flashed).toEqual([]);
 });
 
+// Codex 37회차 — 소스 판에서만 보는 영상(타임라인에 없다)을 video.duration 으로 쟀으면, 이미 잰 값이 있다고 건너뛰어 서버가 나은 뒤에도
+//  그림 길이를 다시 묻지 않았다. 다시 띄우면 묻는다(1분 안이면 lib/videoDuration 이 기억한 값을 바로 준다). 그림 길이로 잰 것은 묻지 않는다.
+it("소스 판: video.duration 으로 잰 영상은 다시 띄울 때 다시 묻는다 — 그림 길이로 잰 것은 묻지 않는다", async () => {
+  localStorage.setItem("ch.editTimeline.ui", JSON.stringify({ dual: true, views: ["source", "timeline"] }));
+  world.gens = [video("m", "c1", 4), video("s", "c1", 4), video("x", "c1", 4)];
+  seed([{ cut: "c1", gen: "m", track: 1, dur: 4 }]);
+  probes.known.set("/media/s.mp4", 98 / 24);
+  probes.inexact.add("/media/s.mp4");
+  probes.known.set("/media/x.mp4", 97 / 24); // 그림 길이로 쟀다
+  await mount();
+  probes.asked.length = 0;
+  for (const card of document.querySelectorAll<HTMLButtonElement>(".ed-pool .ed-card")) {
+    await act(async () => card.click());
+    await settle();
+  }
+  expect(asked().filter((id) => id !== "m")).toEqual(["s"]);
+
+  // 다른 판(또는 1분 뒤 다시 물음)이 그림 길이를 받아 공용 기억이 바뀌었으면, 이 판이 전에 받은 옛 값보다 그것이 먼저다(Codex 37회차)
+  const pane = () => document.querySelector<HTMLElement>(".ed-top > .ed-view[data-view='source']")!;
+  const showS = async () => {
+    for (const card of document.querySelectorAll<HTMLButtonElement>(".ed-pool .ed-card")) {
+      await act(async () => card.click());
+      await settle();
+      if (pane().querySelector(".ed-stage > video.ed-media")?.getAttribute("src") === "/media/s.mp4") return;
+    }
+  };
+  await showS();
+  expect(pane().querySelector(".ed-vtotal")!.textContent).toBe("00:00:04:02"); // 98프레임(소리까지)
+  probes.known.set("/media/s.mp4", 97 / 24);
+  probes.inexact.delete("/media/s.mp4");
+  await act(async () => [...document.querySelectorAll<HTMLButtonElement>(".ed-pool .ed-card")].at(-1)!.click()); // 다른 것을 띄웠다가
+  await showS(); // 다시
+  expect(pane().querySelector(".ed-vtotal")!.textContent).toBe("00:00:04:01"); // 97프레임(그림)
+});
+
 // 적힌 길이만 보고 '이미 쟀다'고 건너뛰지 않는다(그렇게 넣었다가 뺐다 — Codex 코드 리뷰 4회째): dur 에는 요청 길이와 실측값이 구분 없이
 //  적히고, 요청 길이는 동기화로 바뀔 수 있다. d 가 그 경우다 — 요청 8초로 넣어 8 이 적혔고 재지 못했는데(실패·그 전에 떠남), 그 뒤
 //  요청 길이가 10초로 바뀌었다. '지금의 요청 길이(10)·기본 5초와 다르니 잰 값'으로 보면 실제 10초짜리 영상이 8초로 굳는다.
