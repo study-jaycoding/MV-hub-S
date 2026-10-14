@@ -148,6 +148,28 @@ it("앞 저장이 충돌(409)로 막히면 그 뒤에 줄 선 저장도 원래 �
   expect(calls[1]).toEqual({ description: "첫 글 더", expected_description: "원래 설명" }); // 앞 저장이 실패했다 — 기준을 그 글로 잇지 않는다
 });
 
+// Codex 재검토(P1): 첫 409 를 받자마자 기준을 최신 글로 옮기면, 안내(줄이 끝난 뒤) 전에 친 세 번째 저장이 그 기준으로 나가 통과했다.
+it("첫 409 뒤 안내 전에 친 세 번째 저장도 원래 기준으로 나간다 — 기준은 안내를 띄울 때 옮긴다(50회차)", async () => {
+  render(); await settle();
+  const conflict = new HttpError(409, "conflict", JSON.stringify({ kind: "task_edit_conflict", field: "description", latest: "남이 쓴 글" }));
+  const pending: ((error: unknown) => void)[] = [];
+  vi.mocked(manageApi.updateTask).mockImplementation(() => new Promise((_resolve, fail) => { pending.push(fail); }));
+  act(() => input().focus()); type("A"); act(() => input().blur()); await settle();
+  act(() => input().focus()); type("AB"); act(() => input().blur()); await settle(); // A 가 가는 중에 줄 선 B
+  pending[0](conflict); await settle(); await settle(); // A 409 → B 출발
+  act(() => input().focus()); type("ABC"); act(() => input().blur()); await settle(); // B 가 가는 중에 친 C — 아직 안내 전
+  pending[1](conflict); await settle(); await settle(); // B 409 → C 출발
+  const calls = vi.mocked(manageApi.updateTask).mock.calls.map((call) => call[1]);
+  expect(calls[2]).toEqual({ description: "ABC", expected_description: "원래 설명" }); // 전엔 "남이 쓴 글"로 나가 통과했다
+  expect(window.alert).not.toHaveBeenCalled(); // 안내는 줄이 끝난 뒤
+  pending[2](conflict); await settle(); await settle(); await settle();
+  expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("그사이 다른 사람이 설명을 바꿨습니다"));
+  vi.mocked(manageApi.updateTask).mockResolvedValue({} as never);
+  await act(async () => { host.querySelector<HTMLButtonElement>(".work-desc .work-desc-retry")!.click(); });
+  await settle();
+  expect(vi.mocked(manageApi.updateTask).mock.calls.at(-1)![1]).toEqual({ description: "ABC", expected_description: "남이 쓴 글" }); // 안내 뒤 = 일부러 덮기
+});
+
 it("받은 적 없는 범위의 조회 실패는 전처럼 오류 화면이다 — 첫 조회 실패, 그리고 다른 범위에 다녀온 뒤의 실패(빈 표를 받은 내용이라 하지 않는다)", async () => {
   vi.mocked(manageApi.listTasksBatch).mockRejectedValueOnce(new Error("Failed to fetch"));
   render(); await settle();

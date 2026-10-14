@@ -607,10 +607,17 @@ export function WorkBoard({
       const requestScope = scopeKeyRef.current;
       const activeErrors = mutationErrorsForScope(errors, requestScope);
       if (!activeErrors.length) return;
-      const error =
+      let error =
         activeErrors.find((item) => isHttpStatus(item, 409)) ??
         activeErrors.find((item) => isHttpStatus(item, 404)) ??
         activeErrors[activeErrors.length - 1];
+      // 설명 충돌이면 가장 나중의 것(최신 글)으로 알리고, 안내를 띄우는 바로 그때 쥔 글의 기준을 그 글로 옮긴다 — 안내를 본 뒤의
+      //  [다시 저장]은 일부러 덮는 것이다. 옮김과 안내 사이에 기다림이 없어, 안내 전에 새 기준으로 나가는 저장이 없다(50회차 — Codex 재검토).
+      const lastConflict = [...activeErrors].reverse().find((item) => taskEditConflictLatest(item) !== null);
+      if (lastConflict && taskEditConflictLatest(error) !== null) error = lastConflict;
+      const latest = taskEditConflictLatest(error);
+      const entry = latest !== null && scopeIsActive(requestScope) ? descDraftsRef.current.drafts.get(_tid) : undefined;
+      if (entry && latest !== null) descDraftsRef.current.drafts.set(_tid, { ...entry, base: latest });
       await recoverWriteFailure("작업 수정", error, requestScope);
     });
   }
@@ -666,10 +673,8 @@ export function WorkBoard({
         if (patch.description !== undefined) {
           drafts.flying.set(tid, (drafts.flying.get(tid) ?? 0) + 1);
           held = true;
-          // 그사이 남이 설명을 바꿨다 — 쥔 글은 그대로 두고 기준만 최신 글로 옮긴다: 안내를 본 뒤의 [다시 저장]은 일부러 덮는 것이다(50회차)
-          const latest = taskEditConflictLatest(error);
-          const entry = drafts.drafts.get(tid);
-          if (latest !== null && entry) drafts.drafts.set(tid, { ...entry, base: latest });
+          // 충돌(409)이어도 여기서 기준을 옮기지 않는다 — 안내는 줄이 끝난 뒤라, 그 사이 친 저장이 새 기준으로 나가 남의 글을 덮는다
+          //  (Codex 재검토). 기준은 안내를 띄우는 자리(아래 줄의 오류 처리)에서 옮긴다.
         }
         settle(false);
         throw scopedMutationError(requestScope, error);
