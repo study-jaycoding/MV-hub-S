@@ -1431,6 +1431,16 @@ it("타임라인 빈 곳에서 끌어 고른다 — 걸친 클립 · 잠긴 트�
   mouse(v1, "pointermove", { clientX: 295, clientY: 262, buttons: 1, ctrlKey: true });
   mouse(v1, "pointerup", { clientX: 295, clientY: 262 });
   expect([document.querySelector(".ed-lanes .assets-marquee"), picked().includes("a")]).toEqual([null, false]);
+
+  // 지워지는 클립이 없어도 문서가 갈리면 상자는 걷힌다(다른 끌기와 같다) — 다른 창이 소리만 껐다
+  mouse(v1, "pointerdown", { clientX: 250, clientY: 150 });
+  mouse(v1, "pointermove", { clientX: 290, clientY: 260, buttons: 1 });
+  expect(document.querySelector(".ed-lanes .assets-marquee")).not.toBeNull();
+  localStorage.setItem(DOC_KEY, JSON.stringify({ ...stored(), muted: true }));
+  act(() => { window.dispatchEvent(new StorageEvent("storage", { key: DOC_KEY })); });
+  mouse(v1, "pointermove", { clientX: 295, clientY: 262, buttons: 1 });
+  expect(document.querySelector(".ed-lanes .assets-marquee")).toBeNull();
+  mouse(v1, "pointerup", { clientX: 295, clientY: 262 });
   box.mockRestore();
 });
 
