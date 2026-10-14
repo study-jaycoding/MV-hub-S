@@ -5,7 +5,8 @@
 //    서버·계정의 상태를 이미 바꾼 뒤라 '머무르기'를 고르면 화면만 옛 상태로 남는다(계정 전환·로그아웃·DB 가져오기·서버 주소 전환.
 //    Codex 배포 전 재검토 2026-10-13). 그런 길 가운데 사용자가 미리 고를 수 있는 것(로그아웃·업데이트 완료)은 unloadHeld() 로 먼저 묻는다.
 const holders = new Set<string>();
-const PLACES: Record<string, string> = { "edit-docs": "편집 탭", "scene-save": "캔버스", "task-desc": "작업표 설명", "partial-edit": "부분 수정 창" };
+const PLACES: Record<string, string> = { "edit-docs": "편집 탭", "scene-save": "캔버스", "task-desc": "작업표 설명", "partial-edit": "부분 수정 창",
+  "member-planning": "PM 관리 표" };
 
 /** 저장하지 못한 것을 쥔 쪽이 있는가 — 앱이 스스로 새로고침하기 전에 묻는 데 쓴다. */
 export const unloadHeld = (): boolean => holders.size > 0;

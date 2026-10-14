@@ -33,6 +33,7 @@ import {
 import { isSystemAccountEmail } from "../../lib/accountIdentity";
 import { formatCredits as credits } from "../../lib/formatCredits";
 import { errorDetail, isHttpStatus, isRouteMissing } from "../../lib/http";
+import { holdUnload } from "../../lib/unloadGuard";
 import { manageApi } from "../../lib/manageApi";
 import {
   applyProjectRoles,
@@ -345,6 +346,12 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
   // 초안의 최신 값 — 칸마다 바로 저장하는 큐가 **실행되는 순간** 읽는다(렌더 전 연달아 고친 칸도 놓치지 않게)
   const planningEditsRef = useRef(planningEdits);
   planningEditsRef.current = planningEdits;
+  // 저장하지 못한 프로젝트 설정 칸(치는 중 · 틀린 조합으로 보류 · 저장 실패)은 이 표의 메모리에만 있다 — 그동안 창을 닫거나 새로고침하면
+  //  브라우저가 묻는다(57회차, 작업표 설명 칸과 같게).
+  useEffect(() => {
+    holdUnload("member-planning", Object.keys(planningEdits).length > 0);
+  }, [planningEdits]);
+  useEffect(() => () => holdUnload("member-planning", false), []);
   const [groupEditor, setGroupEditor] = useState<{
     source: CreditPlanSettings;
     draft: CreditPlanDraft;

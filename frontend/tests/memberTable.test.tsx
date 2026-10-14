@@ -8,6 +8,7 @@ import { draftFromSettings, GROUP_COLOR_PALETTE, newDraftGroup, todayLocal, type
 import { HttpError } from "../src/lib/http";
 import { fillReorder, groupAssignBody, groupColorBody, groupEditBody, groupTermsBody, mainPeople, memberQuotaBody, type MemberTableData, type MemberTableRow } from "../src/lib/memberTable";
 import { recurringEditBody } from "../src/lib/workspaceConsole";
+import { unloadHeld, unsavedPlaces } from "../src/lib/unloadGuard";
 
 const mocks = vi.hoisted(() => ({ memberTable: vi.fn(), saveCreditPlan: vi.fn(), setPlanning: vi.fn(), members: vi.fn(), setProjectRoles: vi.fn(), removeProjectMember: vi.fn(), models: vi.fn(),
   consoleSetStatus: vi.fn(), getPlanning: vi.fn(), updateProject: vi.fn(), projects: vi.fn(), reorderProjects: vi.fn(), projectFolder: vi.fn(), setProjectFolder: vi.fn() }));
@@ -664,6 +665,33 @@ it("프로젝트 설정은 적용 단추 없이 칸마다 저장한다 — 날�
   expect(mocks.setPlanning).toHaveBeenLastCalledWith("p1", expect.objectContaining({
     status: "hold", start_date: "2026-09-10", due_date: "2026-11-20", budget_credits: 25000, budget_period: "month", archive_after_days: 45, note: "후반 작업",
   }));
+});
+
+// 57회차(Codex) — 아직 저장하지 못한 프로젝트 설정 칸(치는 중 · 틀린 조합으로 보류 · 저장 실패)은 이 표의 메모리에만 있다.
+//  그동안 창을 닫거나 새로고침하면 브라우저가 묻는다(작업표 설명 칸과 같게 — 56회차).
+it("저장하지 못한 프로젝트 설정 칸이 있는 동안만 나갈 때 묻는다", async () => {
+  let saved = table(1, [row("a@x")]).projects[0].planning;
+  mocks.memberTable.mockImplementation(async () => { const t = table(1, [row("a@x")]); t.projects[0].planning = saved; return t; });
+  mocks.setPlanning.mockImplementation(async (_pid: string, body: { revision?: number }) => {
+    saved = { ...body, revision: (body.revision ?? 0) + 1 } as typeof saved;
+    return saved;
+  });
+  await mount();
+  await openSheet("프로젝트");
+  const q = (label: string) => host.querySelector<HTMLInputElement>(`[aria-label="본편 ${label}"]`)!;
+  expect(unloadHeld()).toBe(false);
+  await typeInput(q("메모"), "후반 작업"); // 치는 중 — 칸을 나가야 저장된다
+  expect(unsavedPlaces()).toBe("PM 관리 표");
+  await blurInput(q("메모"));
+  await settle();
+  expect(unloadHeld()).toBe(false);
+  await typeInput(q("시작일"), "2026-09-10");
+  await typeInput(q("종료일"), "2026-09-01"); // 틀린 조합 — 저장하지 않고 보류
+  await settle();
+  expect(unloadHeld()).toBe(true);
+  await typeInput(q("종료일"), "2026-11-20");
+  await settle();
+  expect(unloadHeld()).toBe(false);
 });
 
 it("프로젝트 편집 중 재조회는 기준을 바꾸지 않고 409 선택 후 손대지 않은 서버 값을 보존한다", async () => {
