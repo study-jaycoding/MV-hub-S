@@ -631,31 +631,6 @@ it("구간 반복을 켠 뒤따르는 렌더로 같은 구간이 와도 판정�
   expect(playback.now()).toBe(3);
 });
 
-// Codex 재검토(2026-10-11) 두 건 — 판정을 '일어난 일마다 깃발을 켜고 끄기'로 하면 빠지는 길이 생긴다.
-//  ① 바퀴의 범위가 달라지는 길은 여럿이다(여기서는 편집점 앞뒤 반복의 그 컷이 배치에서 빠짐) — 바퀴를 시작할 때의 범위와
-//    끝에서의 범위를 견주면 그 길들을 일일이 듣지 않아도 된다.
-it("편집점 앞뒤 반복 중에 그 컷이 배치에서 빠지면(비활성 숨기기) 그 바퀴는 판정하지 않는다 — 전체 반복으로 처음부터 튼다", () => {
-  const both = world([WRITTEN], ["e070/c1", "e070/c2"]); // c1 적힌 5초·실제 2초 · c2 는 빈 컷
-  const { front: video, spare, rerender } = mountEngine(both, 2, 2, null, true);
-  const plays = () => video.state.plays + spare.state.plays;
-  video.state.seeking = true; // 탐색이 끝나기 전에 아래 일들이 일어난다
-  act(() => playback.playAround({ cut: "e070/c2", local: 0 }, 2, false)); // c2 의 처음(5초) 앞뒤 2초 — 3초(c1)로 간다
-  expect(playback.now()).toBe(3);
-  rerender({ at: ONE }); // 비활성 숨기기 — c2 가 배치에서 빠진다(편집점이 사라져 되풀이할 것은 전체가 된다)
-  video.state.seeking = false;
-  video.emit("seeked"); // 끝난 탐색 — 실제 끝(2초)으로 다시 보낸다
-  video.emit("seeked"); // 도착 — 실제 끝 뒤라 넘긴다
-  const before = plays();
-  frame(16); // 전체 끝 → 처음으로
-  expect(playback.view.playing).toBe(true);
-  expect(playback.now()).toBe(0);
-  video.emit("seeked");
-  spare.emit("seeked");
-  frame(16);
-  expect(playback.view.playing).toBe(true);
-  expect(plays()).toBeGreaterThan(before); // 0~2초를 튼다
-});
-
 // 바퀴의 범위는 처음과 끝을 다 견준다 — 아래 둘은 한쪽만 달라지는 경우다. 틀 것 없는 두 컷을 돌다가(둘째 컷의 영상이 아직
 //  도착하지 않아 서 있는 사이) 범위가 달라진다.
 it("재생 중에 지나온 쪽에 틀 수 있는 컷이 생기면(전체 길이가 달라진다) 그 바퀴는 판정하지 않는다 — 다음 바퀴에 그 컷을 튼다", () => {

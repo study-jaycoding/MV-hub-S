@@ -476,34 +476,6 @@ export function stepPoint(points: number[], time: number, dir: 1 | -1): number {
   return 0;
 }
 
-// ── 다이나믹 트림 모드(다빈치의 Dynamic Trim Mode, 보기만) — 편집점의 앞 | 뒤 ──
-// 보는 편집점 = 재생헤드에서 가장 가까운 것(↑·↓ 가 쓰는 목록 그대로 — 처음·끝 포함).
-export function nearestPoint(points: readonly number[], time: number): number {
-  return points.reduce((best, point) => (Math.abs(point - time) < Math.abs(best - time) ? point : best), points[0] ?? 0);
-}
-
-export interface EditShot {
-  slot: CutSlot;
-  local: number; // 컷 안 시각. 클립은 컷의 처음에서 시작한다 — 그 영상의 시각은 여기에 clip.head(앞을 자른 만큼)를 더한 값이다
-  clip: SlotClip | null; // 그 순간 보이는 클립(위 트랙 우선·끔 반영 — 타임라인 뷰어와 같다). 없으면 빈 화면
-}
-
-// 편집점의 [바로 앞, 바로 뒤]에 보이는 것. 표본 시각은 편집점에서 1/4 프레임 떨어진 곳이되 이웃 편집점과의 한가운데를 넘지
-//  않는다 — 부동소수 오차로 방금 끝난 클립이 다시 잡히지 않고, 아주 짧게 비치는 클립을 건너뛰지도 않는다(Codex 설계 검토).
-//  타임라인의 처음에는 앞이, 끝에는 뒤가 없다(null).
-export function shotsAt(
-  layout: EditLayout, doc: EditDoc, points: readonly number[], point: number,
-): [EditShot | null, EditShot | null] {
-  const index = points.indexOf(point);
-  const shot = (dir: 1 | -1): EditShot | null => {
-    const near = index < 0 ? undefined : points[index + dir];
-    const pos = near === undefined ? null : posAt(layout, point + dir * Math.min(0.25 / EDIT_FPS, Math.abs(near - point) / 2));
-    const slot = pos && layout.cuts.find((cut) => cut.path === pos.cut);
-    return slot ? { slot, local: pos!.local, clip: visibleClip(doc, slot, pos!.local) } : null;
-  };
-  return [shot(-1), shot(1)];
-}
-
 export function timecode(time: number): string {
   const frames = Math.max(0, Math.round((Number.isFinite(time) ? time : 0) * EDIT_FPS));
   const p2 = (n: number) => String(n).padStart(2, "0");

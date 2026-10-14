@@ -74,13 +74,6 @@ export interface EditView {
 // 시퀀스별 마지막 재생헤드 자리 — 다른 탭에 다녀와도 보던 자리로 돌아온다(새로고침하면 사라진다).
 const lastPos = new Map<string, EditPos>();
 
-// 편집점 앞뒤 재생(다이나믹 트림 모드의 Space) — 그 편집점(컷 좌표라 배치가 바뀌어도 따라간다)·앞뒤 길이(초)·한 번만 틀지.
-interface Around {
-  at: EditPos;
-  span: number;
-  once: boolean;
-}
-
 const STOPPED: EditView = { cut: null, clip: null, source: null, playing: false, rate: 1, failed: false };
 const SEEK_SLOP = 0.04;
 // 다 받아 둔 영상도 play() 뒤 화면이 움직이기까지 시간이 든다(격리 실측 약 0.05초 — 그동안 첫 프레임에 서 있다). 그래서
@@ -117,7 +110,7 @@ export function useEditPlayback({
   paint: (time: number) => void;
   loop?: boolean; // 반복 — 정방향으로 끝에 닿으면 처음부터 이어 튼다(역방향은 처음에서 멈춘다)
   range?: { from: number; to: number } | null; // 되풀이할 구간(전체 시각) — 있으면 loop 와 무관하게 이 구간을 돈다(구간 반복 재생)
-  speed?: number; // 재생 배속(1 이상) — 정방향 재생(재생 단추·Space·L·구간 반복·편집점 앞뒤)이 이 배속으로 시작한다
+  speed?: number; // 재생 배속(1 이상) — 정방향 재생(재생 단추·Space·L·구간 반복)이 이 배속으로 시작한다
 }) {
   const [view, setView] = useState<EditView>(STOPPED);
   const live = useRef({ layout, doc, sourceOf, paint, loop, range, speed });
@@ -134,8 +127,6 @@ export function useEditPlayback({
     head: 0, // 지금 올려 둔 클립의 유효 시작(초) — 그 영상의 시각은 컷 안 시각보다 이만큼 앞서 있다(sync 가 맞춘다)
     failed: new Set<string>(), // 재생하지 못한 클립 열쇠
     armed: false, // 구간 반복 — 마지막으로 위치를 옮긴 뒤 구간 끝(아웃) 앞에 있었다. 아웃 뒤에서 시작했으면 꺼진 채다
-    // 편집점 앞뒤 재생 — 재생 중에만 있다: 멈추거나 다른 재생 명령(재생·J/L·구간 반복 재생)이 오면 풀린다.
-    around: null as Around | null,
     // 반복의 '빈 바퀴' 판정(되돌아갈 때 — loopBack) — 이 둘뿐이다. 일어난 일마다 깃발을 켜고 끄지 않는다: 바퀴의 범위를
     //  바꾸는 길과 시간을 흘리는 길을 전부 열거해야 해서 빠진 길이 거듭 나왔다(Codex 재검토).
     //  · lap — 지금 도는 바퀴를 열 때의 범위(from~to)와, 온전한 바퀴인지(whole: 범위의 처음에서 시작했고 도중에 자리를 옮기지
@@ -310,8 +301,7 @@ export function useEditPlayback({
     };
 
     // 지금 보이는 것이 끝난 뒤 보일 자리(at)와 거기까지 남은 길이(left, 타임라인 초) — tick 이 넘기는 순서 그대로다: 구간의
-    //  끝(경계와 같은 자리 포함)·반복하는 전체 끝이면 구간 처음으로 되돌아가고(한 번만 트는 편집점 앞뒤 재생은 거기서 멈추므로
-    //  없다), 아니면 같은 컷의 아래 클립이나 다음 컷.
+    //  끝(경계와 같은 자리 포함)·반복하는 전체 끝이면 구간 처음으로 되돌아가고, 아니면 같은 컷의 아래 클립이나 다음 컷.
     const upcoming = (): { at: EditPos; left: number } | null => {
       const at = pos.current;
       const slot = slotOf(at?.cut);
@@ -323,7 +313,7 @@ export function useEditPlayback({
       const here = slot.start + at.local;
       const edge = slot.start + end;
       const turn = range && state.armed && range.to <= edge ? range.to : end >= slot.len && !next && (loop || range) ? edge : null;
-      const to = turn !== null ? (state.around?.once ? null : posAt(layout, range?.from ?? 0))
+      const to = turn !== null ? posAt(layout, range?.from ?? 0)
         : end < slot.len ? { cut: slot.path, local: end } : next ? { cut: next.path, local: 0 } : null;
       return to && { at: to, left: (turn ?? edge) - here };
     };
@@ -348,7 +338,6 @@ export function useEditPlayback({
     const stop = (adopt = true) => {
       if (!state.playing) return;
       state.playing = false;
-      state.around = null;
       cancelAnimationFrame(state.frame);
       // 영상이 시계였으면 멈춘 그 프레임을 위치로 삼는다(마지막 tick 과 한 프레임 어긋나 다시 탐색하지 않게).
       const video = videoRef.current;
@@ -358,18 +347,12 @@ export function useEditPlayback({
       }
       sync(!adopt);
       // 멈춘 자리를 그린다 — 영상의 시각을 위치로 받으면 마지막 tick 이 그린 자리와 다르다(그 사이 편집점을 넘었으면 보이는
-      //  클립도 바뀐다). 안 그리면 재생헤드·시각과 다이나믹 트림 모드의 두 칸이 한 박자 낡은 채 선다(Codex 코드 리뷰).
+      //  클립도 바뀐다). 안 그리면 재생헤드·시각이 한 박자 낡은 채 선다(Codex 코드 리뷰).
       live.current.paint(now());
     };
 
-    // 지금 지킬 구간 — 편집점 앞뒤 재생이 걸려 있으면 그 편집점의 앞뒤, 아니면 구간 반복(range).
-    const rangeNow = () => {
-      if (state.around && !slotOf(state.around.at.cut)) state.around = null; // 그 컷이 배치에서 사라졌다 — 보통 재생으로
-      const { around } = state;
-      if (!around) return live.current.range;
-      const point = timeOf(live.current.layout, around.at);
-      return { from: Math.max(0, point - around.span), to: Math.min(live.current.layout.total, point + around.span) };
-    };
+    // 지금 지킬 구간 — 구간 반복(range).
+    const rangeNow = () => live.current.range;
     // 구간 반복(마크 인/아웃) — 구간(range)이 있으면 아웃을 넘는 순간 인으로 돌아간다. '넘는 순간'을 tick 앞뒤 시각의
     //  비교로만 보면 영상의 ended 가 위치를 먼저 아웃으로 옮긴 때를 놓친다 → 아웃 앞에 있었는지를 적어 둔다(armed).
     //  아웃 뒤에서 시작했거나 아웃 뒤로 훑었으면 꺼진 채라 끝까지 간 뒤(전체 끝) 구간 처음으로 들어온다(Codex 설계 검토).
@@ -377,7 +360,7 @@ export function useEditPlayback({
       const range = rangeNow();
       state.armed = !!range && now() < range.to;
     };
-    // 지금 되풀이하는 범위 — 편집점 앞뒤 재생·구간 반복이면 그 구간, 아니면 전체.
+    // 지금 되풀이하는 범위 — 구간 반복이면 그 구간, 아니면 전체.
     const span = () => rangeNow() ?? { from: 0, to: live.current.layout.total };
     // 바퀴를 연다(재생을 누름 · 되돌아감) — 그때의 범위와, 그 처음(또는 그 앞)에서 시작하는지를 적는다. 중간에서 시작한 바퀴는
     //  온전한 바퀴가 아니다: 지나가지 않은 앞부분에 틀 것이 있는지 모른다.
@@ -392,7 +375,7 @@ export function useEditPlayback({
     //  흐른 시간이 없으면, 틀 것이 하나도 없는 바퀴다(적어 둔 길이보다 짧은 영상을 넘기기만 했다 — 컷이 몇이든): 멈춘다.
     //  그냥 두면 프레임마다 넘기고 돌아오기만 되풀이해 '재생 중'인 채 화면의 시간이 선다. 온전하지 않은 바퀴는 판정하지 않고
     //  한 바퀴 더 돈다. 멈추는 자리는 돌아간 자리(바퀴의 처음 — 구간 반복이면 인)다: 넘긴 클립의 끝에 서면 재생헤드가 구간 밖에
-    //  남는다(한 번만 트는 편집점 앞뒤 재생이 그 편집점으로 돌아가 멈추는 것과 같게).
+    //  남는다.
     const loopBack = () => {
       const { from, to } = span();
       const { lap } = state;
@@ -410,15 +393,6 @@ export function useEditPlayback({
       }
       live.current.paint(now());
       state.frame = requestAnimationFrame(tick);
-    };
-
-    // 구간의 끝 — 되풀이면 구간 처음으로, 한 번만(편집점 앞뒤 재생)이면 그 편집점에 가서 멈춘다.
-    const wrap = () => {
-      const { around } = state;
-      if (!around?.once) return loopBack();
-      pos.current = posAt(live.current.layout, timeOf(live.current.layout, around.at));
-      stop(false);
-      live.current.paint(now());
     };
 
     // passes = 이 프레임에 이미 클립을 넘긴 횟수(아래의 '한 번 더 본다'로 다시 불릴 때마다 하나씩 는다).
@@ -454,7 +428,7 @@ export function useEditPlayback({
       state.last = stamp;
       if (state.rate > 0 && local >= slot.len) {
         const next = cuts[cuts.indexOf(slot) + 1];
-        if (!next && (live.current.loop || range)) return wrap();
+        if (!next && (live.current.loop || range)) return loopBack();
         if (!next) {
           pos.current = { cut: slot.path, local: slot.len }; // 전체 끝 = 정지점
           live.current.paint(now());
@@ -472,7 +446,7 @@ export function useEditPlayback({
         slot = prev;
         local = Math.max(0, prev.len - 1 / EDIT_FPS);
       }
-      if (range && state.armed && slot.start + local >= range.to) return wrap();
+      if (range && state.armed && slot.start + local >= range.to) return loopBack();
       const at = (pos.current = { cut: slot.path, local });
       sync(false);
       // 이 프레임의 sync 가 그 클립을 넘겼다(passClip — 영상이 실제 끝에 닿은 것을 ended 보다 이 프레임이 먼저 봤다 · 드러난 영상이
@@ -485,7 +459,7 @@ export function useEditPlayback({
       state.frame = requestAnimationFrame(tick);
     };
 
-    const play = (rate: number, around: Around | null = null) => {
+    const play = (rate: number) => {
       if (!pos.current || !live.current.layout.cuts.length) return;
       wanted.current = null;
       // 끝에서 정방향으로 누르면 처음부터.
@@ -493,7 +467,6 @@ export function useEditPlayback({
       cancelAnimationFrame(state.frame);
       state.playing = true;
       state.rate = rate;
-      state.around = around;
       openLap();
       state.last = performance.now();
       arm();
@@ -618,7 +591,7 @@ export function useEditPlayback({
     };
   }, [stop, videoRef]);
 
-  // 재생 중(정방향)에 배속을 바꾸면 바로 따른다 — 걸려 있던 구간·편집점 앞뒤 재생은 그대로 이어진다. 배속이 바뀔 때만 돈다
+  // 재생 중(정방향)에 배속을 바꾸면 바로 따른다 — 걸려 있던 구간 반복은 그대로 이어진다. 배속이 바뀔 때만 돈다
   //  (L 로 올려 둔 속도를 다른 렌더가 되돌리지 않는다).
   useEffect(() => {
     const state = run.current;
@@ -652,13 +625,6 @@ export function useEditPlayback({
       live.current = { ...live.current, range: next };
       seek(next.from);
       play(live.current.speed);
-    }, [play, seek]),
-    // 편집점 앞뒤 재생(다이나믹 트림 모드) — 그 편집점의 span 초 앞으로 가서 정방향(고른 배속)으로 span 초 뒤까지 튼다. once 면 끝에서 그
-    //  편집점으로 돌아가 멈추고, 아니면 그 구간을 되풀이한다. 구간은 엔진이 쥔다 — 화면 상태로 두면 그 사이에 켠 구간 반복
-    //  재생을 옛 구간이 덮고, 길이 보정으로 배치가 바뀌면 낡는다(Codex 설계 검토).
-    playAround: useCallback((at: EditPos, span: number, once: boolean) => {
-      seek(timeOf(live.current.layout, at) - span);
-      play(live.current.speed, { at, span, once });
     }, [play, seek]),
   };
 }

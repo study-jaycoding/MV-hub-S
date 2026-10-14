@@ -53,22 +53,6 @@
 }
 .ed-chip-l { left: 12px; }
 .ed-chip-r { right: 12px; font-weight: 500; color: #d7dae0; }
-/* 다이나믹 트림 모드 — 무대를 덮는 두 칸(편집점의 앞 | 뒤). 재생헤드가 있는 쪽 칸에는 엔진의 화면(무대의 .ed-media)이
-   올라온다(data-side — 시계가 프레임마다 적는다): 앞 컷이 왼쪽에서 가다가 편집점을 넘으면 뒤 컷이 오른쪽에서 이어진다.
-   반대쪽 칸은 그 편집점의 프레임으로 서 있다. 무대의 꼬리표·안내는 칸의 것으로 갈음한다. */
-.ed-split { position: absolute; inset: 0; display: flex; gap: 2px; background: #2c303b; }
-.ed-half { position: relative; flex: 1; min-width: 0; overflow: hidden; background: #000; }
-.ed-half .ed-chip { z-index: 2; max-width: calc(100% - 24px); font-weight: 700; color: var(--text); }
-.ed-half .ed-notice { z-index: 2; } /* 엔진의 화면(썸네일) 위에 — 재생하지 못한 영상의 안내 */
-.ed-stage:has(> .ed-split) > .ed-media { z-index: 1; width: calc(50% - 1px); background: #000; }
-.ed-stage:has(> .ed-split[data-side="r"]) > .ed-media { left: auto; right: 0; }
-.ed-stage:has(> .ed-split) > .ed-notice, .ed-stage:has(> .ed-split) > .ed-chip { display: none; }
-.ed-split-close {
-  position: absolute; left: 10px; top: 10px; z-index: 3; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%;
-  background: rgba(8, 9, 12, 0.5); display: flex; align-items: center; justify-content: center;
-}
-.ed-split-close svg { display: block; fill: none; stroke: #d7dae0; stroke-width: 1.4; stroke-linecap: round; }
-.ed-split-close:hover svg { stroke: #fff; }
 .ed-vbot { flex: none; background: var(--panel); border-top: 1px solid var(--border); user-select: none; }
 /* 타임바(다빈치의 재생바) — 누르는 자리는 넉넉하게(높이 28px), 보이는 줄은 4px. 빨강 = 지금 자리, 위의 색 꼬리표 = 북마크,
    밝은 선과 아래의 회색 꼬리표 = 마크 인/아웃, 얇은 줄 = 소스 테이프의 클립 경계. */
