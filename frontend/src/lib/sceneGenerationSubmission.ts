@@ -2,6 +2,8 @@
 // 각 작업을 준비→제출까지 독립 실행해, 한 모델의 느린 파라미터 조회가 다른 모델의 제출을 막지 않게 한다.
 // 성공 콜백도 작업별 완료 즉시 호출하므로 전체 배치가 끝나기 전에 화면에 placeholder를 반영할 수 있다.
 
+import { NO_RESPONSE_MESSAGE } from "./http";
+
 // 같은 씬의 중복 렌더만 막는 작은 실행권. 다른 sceneId는 동시에 획득할 수 있다.
 export function acquireSceneGeneration(
   activeSceneIds: Set<string>,
@@ -32,6 +34,8 @@ export interface SceneGenerationSubmissionSummary<TResult> {
   successes: SceneGenerationSubmissionSuccess<TResult>[];
   buildFail: number;
   submitFail: number;
+  // 다시 보내도 답을 못 받았다 — 서버엔 들어갔을 수 있다. '제출 실패'로 세면 다시 눌러 두 번 만든다(Jay 결정 2A, Codex 리뷰).
+  submitUnknown: number;
   applyFail: number;
 }
 
@@ -54,8 +58,8 @@ export async function executeSceneGenerationBatch<TInput, TBody, TResult>(
       let result: TResult;
       try {
         result = await submit(body);
-      } catch {
-        return { kind: "submit-fail" as const };
+      } catch (error) {
+        return { kind: error instanceof Error && error.message === NO_RESPONSE_MESSAGE ? "submit-unknown" as const : "submit-fail" as const };
       }
       // 제출 성공 뒤의 로컬 반영 오류를 "서버 제출 실패"로 오분류하지 않는다. 콜백 오류는 호출부로
       // 별도 집계해 사용자가 같은 요청을 제출 실패로 오해해 중복 제출하지 않게 한다.
@@ -73,6 +77,7 @@ export async function executeSceneGenerationBatch<TInput, TBody, TResult>(
   const successes: SceneGenerationSubmissionSuccess<TResult>[] = [];
   let buildFail = 0;
   let submitFail = 0;
+  let submitUnknown = 0;
   let applyFail = 0;
   for (const outcome of outcomes) {
     if (outcome.kind === "success") {
@@ -80,7 +85,8 @@ export async function executeSceneGenerationBatch<TInput, TBody, TResult>(
       if (outcome.applyFailed) applyFail++;
     }
     else if (outcome.kind === "build-fail") buildFail++;
+    else if (outcome.kind === "submit-unknown") submitUnknown++;
     else submitFail++;
   }
-  return { successes, buildFail, submitFail, applyFail };
+  return { successes, buildFail, submitFail, submitUnknown, applyFail };
 }

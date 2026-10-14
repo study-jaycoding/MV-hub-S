@@ -191,7 +191,8 @@ export async function jsonFetch<T>(
     try {
       return (await res.json()) as T;
     } catch (error) {
-      if (last) throw error; // 본문을 다 못 읽었다 — 서버는 이미 처리했으니 같은 요청표로 다시 받는다
+      // 본문을 다 못 읽었다 — 서버는 이미 처리했으니 같은 요청표로 다시 받는다. 마지막도 못 읽으면 '들어갔을 수 있다'로(Codex 2A 리뷰)
+      if (last) throw opts.retryNoResponse ? new Error(NO_RESPONSE_MESSAGE) : error;
       await sleep(1000);
     }
   }

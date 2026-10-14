@@ -2035,7 +2035,7 @@ export default function App() {
       },
       ({ cardId, result }) => applySuccess(cardId, result),
     );
-    const { successes, buildFail, submitFail: createFail, applyFail } = summary;
+    const { successes, buildFail, submitFail: createFail, submitUnknown, applyFail } = summary;
     if (!successes.length && buildFail === jobs.length) {
       flash(`생성 요청을 만들 수 없습니다(요청 ${buildFail}건 실패, 모델 미확정 카드 ${skipped}개).`);
       return;
@@ -2061,6 +2061,7 @@ export default function App() {
     if (blockedCards.size) notes.push(`쓸 수 없는 모델 제외 ${blockedCards.size}개`);
     if (buildFail) notes.push(`요청 실패 ${buildFail}개`);
     if (createFail) notes.push(`제출 실패 ${createFail}장`);
+    if (submitUnknown) notes.push(`접수 여부 모름 ${submitUnknown}장 — 다시 누르기 전에 목록 확인`); // 들어갔을 수 있다(Jay 결정 2A)
     if (applyFail) notes.push("화면 반영 실패 — 재시작 시 자동 복구");
     flash(
       `${byCard.size}개 카드에서 생성 시작(${freshGens.length}장)` +

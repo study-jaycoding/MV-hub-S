@@ -113,3 +113,45 @@ def test_invalid_key_and_account_change_and_broken_ledger_are_refused_before_run
     assert broken.value.status_code == 409 and "실행하지 않았습니다" in broken.value.detail
     assert len(admission.starts) == 1
     assert len(comfy._RUN_JOBS) == 1  # 거절한 접수의 잡은 남지 않는다
+
+
+@pytest.mark.parametrize("bad_at", [None, "어제", True, "missing"])
+def test_entry_with_broken_time_is_refused_not_expired(admission, bad_at):
+    """접수 시각이 망가진 행을 '만료'로 지우면 같은 키가 새로 실행된다 — 장부 손상으로 거절(Codex 2A 리뷰)."""
+    row = {"owner": "a@example.test", "key": KEY, "fp": "x", "job_id": "j"}
+    if bad_at != "missing":
+        row["at"] = bad_at
+    admission.settings[comfy_run_keys.KEY] = comfy_run_keys.json.dumps([row])
+    with pytest.raises(HTTPException) as error:
+        run()
+    assert error.value.status_code == 409 and not admission.starts and not comfy._RUN_JOBS
+
+
+def test_ledger_write_failure_does_not_start(admission, monkeypatch):
+    def boom(*_):
+        raise OSError("disk")
+
+    monkeypatch.setattr(comfy_run_keys.repo, "set_setting", boom)
+    with pytest.raises(HTTPException) as error:
+        run()
+    assert error.value.status_code == 409 and not admission.starts and not comfy._RUN_JOBS
+
+
+def test_two_concurrent_requests_with_same_key_start_once(admission):
+    """동시에 온 같은 요청표 둘 — 장부 잠금 안에서 하나만 새로, 다른 하나는 그 잡을 받는다."""
+    results, errors = [], []
+
+    def worker():
+        try:
+            results.append(run(media=[("a.png", b"AAAA")]))
+        except Exception as error:  # noqa: BLE001
+            errors.append(error)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+    assert not errors
+    assert len(admission.starts) == 1
+    assert results[0] == results[1]

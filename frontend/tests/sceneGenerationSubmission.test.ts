@@ -22,6 +22,21 @@ const card = (id: string, over: Partial<SceneCard> = {}): SceneCard => ({
 });
 
 describe("sceneGenerationSubmission", () => {
+  // Jay 결정 2A(Codex 리뷰): 다시 보내도 답을 못 받은 제출은 '제출 실패'가 아니라 '접수 여부 모름' — 서버엔 들어갔을 수 있다.
+  it("확정 실패와 접수 여부 모름을 따로 센다", async () => {
+    const { NO_RESPONSE_MESSAGE, HttpError } = await import("../src/lib/http");
+    const summary = await executeSceneGenerationBatch(
+      [{ cardId: "a", input: "fail" }, { cardId: "b", input: "unknown" }, { cardId: "c", input: "ok" }],
+      async (input: string) => input,
+      async (body: string) => {
+        if (body === "fail") throw new HttpError(500, "500: boom", "boom");
+        if (body === "unknown") throw new Error(NO_RESPONSE_MESSAGE);
+        return body;
+      },
+    );
+    expect([summary.submitFail, summary.submitUnknown, summary.successes.length]).toEqual([1, 1, 1]);
+  });
+
   it("같은 씬 재진입만 막고 다른 씬은 동시에 실행한다", () => {
     const active = new Set<string>();
     const releaseA = acquireSceneGeneration(active, "A");
@@ -90,6 +105,7 @@ describe("sceneGenerationSubmission", () => {
       successes: [{ cardId: "ok", result: "ok" }],
       buildFail: 2,
       submitFail: 1,
+      submitUnknown: 0,
       applyFail: 0,
     });
   });

@@ -45,6 +45,14 @@ describe("전송 층 재전송(jsonFetch retryNoResponse)", () => {
     expect(await settle(jsonFetch("/x", { method: "POST" }, undefined, { retryNoResponse: true }))).toEqual({ value: { id: "g1" } });
   });
 
+  it("두 번 다 본문이 끊겨도 '들어갔을 수 있다'로 실패한다(SyntaxError 그대로가 아니다)", async () => {
+    const broken = () => ({ ...ok(null), json: () => Promise.reject(new SyntaxError("Unexpected end")) }) as unknown as Response;
+    fetchMock.mockImplementation(() => Promise.resolve(broken()));
+    const out = await settle(jsonFetch("/x", { method: "POST" }, undefined, { retryNoResponse: true }));
+    expect((out as { error: Error }).error.message).toBe(NO_RESPONSE_MESSAGE);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("HTTP 오류는 다시 보내지 않는다 · 두 번 다 답이 없으면 '들어갔을 수 있다'로 실패 · 켜지 않으면 지금처럼", async () => {
     fetchMock.mockResolvedValueOnce(httpFail(500));
     const failed = await settle(jsonFetch("/x", { method: "POST" }, undefined, { retryNoResponse: true }));
