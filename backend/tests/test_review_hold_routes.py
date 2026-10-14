@@ -401,6 +401,10 @@ def test_refinalize_keeps_the_memory_and_a_chosen_transition_clears_it(item):
     assert share.unfinalize(item, req(), restore_held=True)["is_held"] is True
     _make_final(item)  # 보류 → 최종
     assert share.final_review(item, FinalReviewIn(state="shared"), req())["is_held"] is False  # 고른 전환은 고른 대로다
+    # 고른 전환이 기억도 지운다 — 다음의 최종 지정(새 코드)이 어차피 새로 적지만, 이 칸을 모르는 옛 서버 코드가 그 사이에 최종을 주면
+    #  낡은 기억이 그대로 되살아난다(되돌려 확인: 이 단언이 없으면 지우는 줄을 빼도 통과했다).
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT held_before_final FROM generation WHERE id=?", (item,)).fetchone()[0] == 0
     _make_final(item)  # 공유 → 최종: 옛 기억(보류)이 남아 되살아나면 안 된다
     assert share.unfinalize(item, req(), restore_held=True)["is_held"] is False
 
