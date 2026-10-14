@@ -196,6 +196,7 @@ it("풀의 카드를 뷰어에 놓으면 놓은 판이 그 카드를 소스 클�
   dropCard();
   expect([viewer("timeline"), viewer("source")].map(Boolean)).toEqual([false, true]); // 놓은 판이 소스 클립이 됐다
   expect(picked()).toEqual([false, true]);
+  expect(poolCards().map((card) => card.querySelector(".card-bottom")?.textContent ?? "")).toEqual(["", "소스"]); // 싱글 = '소스'(판 이름 없이)
 
   dragCard(poolCards()[0], viewer("source")); // 뷰어 밖(줄도 아님)으로 옮겨 놓으면 아무 일도 없다
   under = null;

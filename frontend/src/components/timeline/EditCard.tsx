@@ -11,11 +11,22 @@ export interface PoolItem {
   gen: Generation;
   track: number | null; // 타임라인에 넣은 트랙(안 넣었으면 null)
   showing: boolean; // 지금 타임라인 뷰어에 보이는 것
+  source?: "S" | "L" | "R" | "LR"; // 소스 클립 판에 떠 있다(Jay 2026-10-14) — S = 싱글 뷰어, 듀얼이면 왼쪽·오른쪽·둘 다
 }
 
 // 타임라인에 넣은 카드의 표 글 — 미디어 풀과 폴더 창이 같은 글을 쓴다.
 export const editMarkLabel = (track: number, t: (key: string) => string) =>
   t("V{track} - 선택 카드").replace("{track}", String(track));
+
+// 풀 카드의 표 — 넣은 트랙과 소스 클립 판(둘 다면 이어서). 없으면 null. short = 작은 카드에 보이는 짧은 글
+export function poolMark(item: PoolItem, t: (key: string) => string): { label: string; short: string; lead: boolean } | null {
+  const side = item.source === "LR" ? "L·R" : item.source === "S" ? "" : item.source ?? "";
+  const source = item.source ? `${t("소스")}${side && ` ${side}`}` : "";
+  const label = [item.track !== null ? editMarkLabel(item.track, t) : "", source].filter(Boolean).join(" · ");
+  if (!label) return null;
+  const short = [item.track !== null ? `V${item.track}` : "", item.source ? side || t("소스") : ""].filter(Boolean).join("·");
+  return { label, short, lead: item.showing || !!item.source }; // 지금 뷰어에 보이는 것만 라임
+}
 
 export function EditCard({
   item,
@@ -27,7 +38,8 @@ export function EditCard({
   handlers: HTMLAttributes<HTMLButtonElement>; // 누르기·더블클릭·우클릭·휠 클릭·설명 — 세 보기가 같은 것을 쓴다
 }) {
   const t = useT();
-  const { gen, track, showing } = item;
+  const { gen, track } = item;
+  const mark = poolMark(item, t);
   const thumb = thumbOf(gen, 512);
   const state = reviewState(gen); // 공유 목록이라 shared·held·final 중 하나다
   return (
@@ -49,12 +61,13 @@ export function EditCard({
             </span>
             {gen.assets[0].type === "video" && <span className="play-badge">▶</span>}
             {/* 아래 변 가운데의 표 — 라이브러리 폴더 창의 '방금 누른 카드'와 같은 자리·같은 모양. 타임라인에 넣은 카드에
-                트랙과 함께 붙는다(Jay: "V1 - 선택 카드"). 지금 뷰어에 보이는 것만 라임, 아래에 깔린 것은 옅게. */}
-            {track !== null && (
+                트랙과 함께 붙는다(Jay: "V1 - 선택 카드"), 소스 클립 판에 떠 있으면 '소스 L' 처럼(2026-10-14). 지금 뷰어에
+                보이는 것만 라임, 아래에 깔린 것은 옅게. */}
+            {mark && (
               <span className="card-bottom">
-                <span className={showing ? "card-here" : "card-folder static"}>
-                  {/* 카드가 작으면 CSS 가 data-short("V1")만 보인다 */}
-                  <span data-short={`V${track}`}>{editMarkLabel(track, t)}</span>
+                <span className={mark.lead ? "card-here" : "card-folder static"}>
+                  {/* 카드가 작으면 CSS 가 data-short("V1"·"V1·L")만 보인다 */}
+                  <span data-short={mark.short}>{mark.label}</span>
                 </span>
               </span>
             )}

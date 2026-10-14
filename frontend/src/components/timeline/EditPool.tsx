@@ -18,7 +18,7 @@ import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../../lib/windowDrag";
 import { FilterPanelIcon } from "../common/ViewIcons";
-import { EditCard, editMarkLabel, type PoolItem } from "./EditCard";
+import { EditCard, poolMark, type PoolItem } from "./EditCard";
 
 export type { PoolItem };
 
@@ -224,9 +224,10 @@ export function EditPool({
   const stateMark = (state: string) => (
     <span className={`ed-pstate ed-pstate-${state}`}>{state === "final" ? "★" : state === "held" ? "R" : "S"}</span>
   );
-  const trackMark = (item: PoolItem) => item.track !== null && (
-    <span className={"cd-mark" + (item.showing ? " lead" : "")}>{editMarkLabel(item.track, t)}</span>
-  );
+  const trackMark = (item: PoolItem) => {
+    const mark = poolMark(item, t); // 넣은 트랙·소스 클립 판 — 썸네일 카드의 아래 표와 같은 글
+    return mark && <span className={"cd-mark" + (mark.lead ? " lead" : "")}>{mark.label}</span>;
+  };
   const rowClass = (item: PoolItem, kind: string) =>
     `ed-prow ed-prow-${kind}` + (picked.includes(item.gen.id) ? " ed-picked" : "") + (item.track !== null ? " ed-placed" : "");
   // 막대의 대상은 **지금 보이는 것** 가운데 고른 것이다(조작 규칙 42). 전엔 검색 전의 목록(items)에서 구해, 검색으로 가려진 카드가

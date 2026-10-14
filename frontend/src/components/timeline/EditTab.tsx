@@ -426,11 +426,6 @@ function EditTabInner({
       gen, track: placed.find((item) => links.get(clipKey(item))?.gen?.id === gen.id)?.track ?? null, showing: false,
     }));
   }, [cut, byCut, doc, links]);
-  const showingTrack = view.clip?.track ?? null; // (컷, 트랙)에 클립은 하나뿐이다
-  const poolItems = useMemo<PoolItem[]>(
-    () => cutItems.map((item) => (item.track !== null && item.track === showingTrack ? { ...item, showing: true } : item)),
-    [cutItems, showingTrack],
-  );
   // 고른 생성물은 컷을 옮겨도 소스 뷰어에 남는다(이 시퀀스의 공유 목록에 있는 동안).
   const pickedId = pickedIds[pickedIds.length - 1] ?? null;
   const genById = useCallback((id: string | null) => (id ? list.gens.find((gen) => gen.id === id) ?? null : null), [list.gens]);
@@ -466,6 +461,18 @@ function EditTabInner({
   const src0 = useSourcePane({ place: 0, mode: srcModeOf(0), gen: gen0, tape: tapeGens, tapeScope, loop: ui.loopSrc, speed: ui.speed });
   const src1 = useSourcePane({ place: 1, mode: srcModeOf(1), gen: gen1, tape: tapeGens, tapeScope, loop: ui.loopSrc, speed: ui.speed });
   const srcPanes = [src0, src1] as const;
+  // 풀의 '지금 보이는 것' 표 — 타임라인 뷰어에 보이는 클립((컷, 트랙)에 클립은 하나뿐이다)과 소스 클립 판에 떠 있는 카드(Jay 2026-10-14 —
+  //  "소스클립에 들어가면 어떤게 들어갔는지 풀에도 표시". 싱글이면 S, 듀얼이면 어느 판인지 L·R·LR — 테이프는 재생하며 바뀌어 빼 둔다)
+  const showingTrack = view.clip?.track ?? null;
+  const srcIn0 = srcModeOf(0) === "source" ? gen0?.id : undefined;
+  const srcIn1 = srcModeOf(1) === "source" ? gen1?.id : undefined;
+  const poolItems = useMemo<PoolItem[]>(() => cutItems.map((item) => {
+    const left = item.gen.id === srcIn0;
+    const right = item.gen.id === srcIn1;
+    const source = !left && !right ? undefined : !ui.dual ? "S" : left && right ? "LR" : left ? "L" : "R";
+    const showing = item.track !== null && item.track === showingTrack;
+    return showing || source ? { ...item, showing, ...(source && { source }) } : item;
+  }), [cutItems, showingTrack, srcIn0, srcIn1, ui.dual]);
   const tlOrder = slots.indexOf("timeline");
   const tlShown = tlOrder >= 0;
   // 재생 키(Space·J·K·L·←→·↑↓·Home·End)는 마지막에 누른 판의 시계로 간다(다빈치). 편집 키는 언제나 타임라인 것이다. 싱글이면 보이는 판.
