@@ -983,3 +983,23 @@ def test_corrupt_journal_blocks_route_family_without_overwrite_or_side_effects(h
     with db.get_connection() as conn:
         assert conn.execute("SELECT count(*) FROM generation").fetchone()[0] == 0
     assert not any(mock.call_count for mock in h.mocks.values())
+
+
+def test_live_worker_is_not_swept_when_status_arrives_before_its_heartbeat(h):
+    """55회차 — PC 가 정리 기준(1시간)보다 오래 잠들었다 깨면, 화면의 상태 조회가 작업 스레드의 하트비트보다 먼저 올 수 있다.
+    전엔 하트비트 시각만 보고 살아 있는 작업을 지워 404(화면은 실패) · 그 뒤 완료 기록도 갈 곳이 없었다."""
+    entry = h.successful()
+    seen = []
+
+    def status_after_wake(_target, _prompt_id):
+        with comfy._RUN_JOBS_LOCK:
+            comfy._RUN_JOBS[job_id]["updated_at"] -= comfy._RUN_ACTIVE_JOB_TTL_SEC + 60  # 잠든 동안 하트비트가 없었다
+        seen.append(comfy.run_status(job_id, h.request())["state"])  # 깬 직후 화면의 조회가 먼저
+        return "completed"
+
+    h.mocks["cloud_job_status"].side_effect = status_after_wake
+    job_id = h.start()
+    h.drain()
+    assert seen == [comfy._RUN_RUNNING]
+    assert comfy.run_status(job_id, h.request())["outputs"]
+    assert entry["outputs"]

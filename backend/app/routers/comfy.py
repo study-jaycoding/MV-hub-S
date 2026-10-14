@@ -269,6 +269,7 @@ def active_run_job_count() -> int:
 # (배치 병렬 시 클라우드 동시성 한도(5) 초과로 429 나는 것 방지. capacity 는 실행 시점 설정값.)
 _RUN_GATE = threading.Condition()
 _RUN_SLOTS_ACTIVE = 0
+_RUN_WORKERS_LIVE: set[str] = set()  # 실행 스레드가 아직 도는 잡 — 시간 기준 정리에서 뺀다(_sweep_run_jobs_locked)
 
 
 def _acquire_run_slot(capacity: int, job_id: Optional[str] = None) -> None:
@@ -307,6 +308,10 @@ def _sweep_run_jobs_locked(now: Optional[float] = None) -> None:
             # 큐 대기시간 때문에 실행 도중 스윕돼 결과가 증발했다(크레딧은 소모된 채 404).
             # 워커가 대기/폴링 중 주기적으로 updated_at 을 갱신하므로, 살아 있는 잡은 절대
             # 안 걸리고 죽은 스레드의 잔재만 TTL 뒤 정리된다.
+            # 스레드가 도는 잡은 시각으로 판정하지 않는다 — PC 가 TTL 보다 오래 잠들었다 깨면 화면의 조회가
+            # 워커의 하트비트보다 먼저 와서 살아 있는 잡을 지웠다(55회차).
+            if job_id in _RUN_WORKERS_LIVE:
+                continue
             base = job.get("updated_at") or job.get("created_at") or now
             ttl = _RUN_ACTIVE_JOB_TTL_SEC
         if now - float(base) > ttl:
@@ -1205,6 +1210,7 @@ def _mark_run_failure(job_id: str, code: int, detail: Any) -> None:
 def _execute_run_worker(job_id: str, settings: dict, action, uploads: list[_MediaUpload], *, cancel_on_failure: bool = True) -> None:
     """스레드 진입점 — 실행 결과/에러를 잡 레코드에 기록. HTTPException.status_code 로 402/502 보존.
     설정한 동시 실행 수만큼만 실제 제출하도록 슬롯을 획득한 뒤 실행한다(초과분은 슬롯 날 때까지 PENDING 대기)."""
+    _RUN_WORKERS_LIVE.add(job_id)
     _acquire_run_slot(_to_int(settings.get("comfy_concurrency"), 3), job_id)
     try:
         _update_run_job(job_id, state=_RUN_RUNNING)
@@ -1228,6 +1234,7 @@ def _execute_run_worker(job_id: str, settings: dict, action, uploads: list[_Medi
     finally:
         _cleanup_media_uploads(uploads)
         _release_run_slot()
+        _RUN_WORKERS_LIVE.discard(job_id)
 
 
 @router.post("/run")
