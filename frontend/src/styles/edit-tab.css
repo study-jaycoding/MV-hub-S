@@ -117,6 +117,27 @@
    더 좁으면 막대를, 더 좁으면 스피커까지. 가운데 단추 묶음은 약 282px 이라 막대 44px 의 소리 칸(74px)은 판 폭 약 470px 까지 안 겹친다
    (2026-10-14 격리 실측 — 1584 창의 듀얼 판 495px 에서 막대가 숨어 '판마다 소리'가 끄고 켜기뿐이었다). */
 .ed-vbot { container-type: inline-size; }
+/* 다이나믹 재생 모드(W) — 아래 단추 줄은 두 판 아래에 하나(Jay 2026-10-14 모의 그림 승인). 판은 재생바까지만(bare) 그리고, .ed-top 을
+   격자로 바꿔 풀·폭 손잡이는 두 줄을 차지하고 판 둘은 위 줄, 공용 줄(.ed-linkbar)은 아래 줄에 두 판 폭만큼 걸친다(판의 요소는 그대로
+   .ed-top 바로 아래다). 가운데 = 재생 단추, 양 끝 = 왼쪽 판(L)·오른쪽 판(R)의 소리. */
+.ed-top.ed-top-linked { display: grid; grid-template-columns: auto auto minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+.ed-top-linked > .ed-pool-side { grid-column: 1; grid-row: 1 / -1; }
+.ed-top-linked > .sidebar-resize-handle { grid-column: 2; grid-row: 1 / -1; }
+.ed-top-linked > .ed-view { grid-row: 1; min-height: 0; }
+.ed-linkbar {
+  grid-column: 3 / -1; grid-row: 2; position: relative; display: flex; justify-content: center; container-type: inline-size;
+  background: var(--panel); border-top: 1px solid var(--border); border-left: 1px solid var(--border); user-select: none;
+}
+.ed-linkvol { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; gap: 2px; }
+.ed-linkvol-l { left: 12px; }
+.ed-linkvol-r { right: 12px; }
+.ed-linkvol svg { fill: #9aa0ae; }
+.ed-linkvol svg.ed-line { fill: none; stroke: #9aa0ae; }
+.ed-vol-side { margin: 0 4px; font: 700 11px ui-monospace, Consolas, monospace; color: var(--accent); }
+.ed-linkvol-l .ed-vol-side { order: -1; } /* 'L 🔈 ━' · '🔈 ━ R' — 글자가 바깥 끝에 */
+/* 좁으면(두 판 폭이 가운데 단추 약 282px + 양 끝 소리 칸과 겹칠 때) 막대를 줄이고, 더 좁으면 막대를 숨긴다(스피커·글자는 남긴다) */
+@container (max-width: 640px) { .ed-linkvol .ed-vol-bar { width: 44px; } }
+@container (max-width: 520px) { .ed-linkvol .ed-vol-bar { display: none; } }
 @container (max-width: 560px) { .ed-tside .ed-vol-bar { width: 44px; } }
 @container (max-width: 470px) { .ed-tside .ed-vol-bar { display: none; } }
 @container (max-width: 440px) { .ed-tside { display: none; } }
@@ -212,13 +233,24 @@
 .ed-pstate-held { color: #ef7d8c; }
 .ed-pstate-final { color: #e8b62c; }
 .ed-prow-list {
-  display: grid; grid-template-columns: 14px minmax(0, 3fr) minmax(0, 1.2fr) minmax(0, 1.5fr) 44px 28px;
+  display: grid; grid-template-columns: 14px minmax(0, 3fr) minmax(0, 1.2fr) minmax(0, 1.5fr) 44px 84px;
   align-items: center; gap: 8px; height: 28px; padding: 0 6px; border-radius: 6px;
 }
 .ed-prow-list > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ed-prow-list.ed-placed > span:last-child { color: var(--accent); font-weight: 700; }
+/* 마지막 칸 '트랙 · 소스' — V1 + 소스 판의 표(84px 에 "V2 소스 L·R" 이 들어간다) */
+.ed-ptrack { display: flex; align-items: center; gap: 4px; }
+.ed-ptrack > .cd-mark { margin-left: 0; padding: 0 6px; }
 .ed-prow-head { position: sticky; top: 0; z-index: 1; height: 26px; font-size: 11px; color: var(--muted2); background: var(--panel); border-bottom: 1px solid var(--border); border-radius: 0; }
 .ed-prow-head:hover { background: var(--panel); }
+/* 다빈치(미디어 풀)에서 고른 것(Jay 2026-10-14) — 공유 탭의 다빈치 확인 표시(resolve-library.css)와 같은 빨강·빛.
+   썸네일 = 카드 둘레 + 아래 표 · 메타데이터 = 그림 둘레 + 이름 줄의 표 · 목록 = 줄 바탕 + 왼쪽 막대 + 표 · 타임라인은 아래 .ed-clip.ed-dv */
+.ed-card.ed-dv { box-shadow: 0 0 0 2px #ff304f, 0 0 16px 4px rgba(255, 48, 79, 0.6); }
+.ed-card .card-bottom > .ed-dv-mark { color: #fff; background: #ff304f; border-color: #ff304f; text-shadow: none; }
+.cd-mark.ed-dv-chip { color: #fff; background: #ff304f; border-color: #ff304f; }
+.ed-prow.ed-dv .ed-pthumb { box-shadow: 0 0 0 2px #ff304f, 0 0 10px 2px rgba(255, 48, 79, 0.55); }
+.ed-prow-list.ed-dv { background: rgba(255, 48, 79, 0.14); box-shadow: inset 3px 0 0 #ff304f; }
+.ed-prow-list .ed-dv-chip { margin: 0 6px 0 0; }
 
 /* 여러 장을 골랐을 때 — 풀 아래의 막대(비교) */
 .ed-pool-sel {
@@ -516,6 +548,16 @@
 }
 .ed-clip::after { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px; background: var(--trk, transparent); pointer-events: none; }
 .ed-clip.ed-sel { border: 2px solid var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.18); }
+/* 다빈치에서 고른 클립 — 빨간 테두리·빛(고른 클립이어도 빨강이 앞선다) + 왼쪽 위의 '다빈치' 표(좁으면 테두리만) */
+.ed-clip.ed-dv { border: 2px solid #ff304f; box-shadow: 0 0 0 1px #ff304f, 0 0 12px 3px rgba(255, 48, 79, 0.6); z-index: 1; }
+/* 고른 클립이기도 하면 바깥에 라임 고리를 둔다 — 빨강만 보이면 Delete·D 가 걸릴 실제 선택을 가릴 수 없었다(Codex 리뷰) */
+.ed-clip.ed-dv.ed-sel { box-shadow: 0 0 0 2px var(--accent), 0 0 12px 4px rgba(255, 48, 79, 0.6); }
+/* 꺼진 클립이어도 빨강은 남긴다 — 회색 거름이 테두리·표까지 회색으로 바꿨다(Codex 리뷰). 흐림(opacity)은 그대로 */
+.ed-clip.ed-off.ed-dv { filter: none; }
+.ed-clip-dv {
+  position: absolute; top: 5px; left: 4px; padding: 0 5px; border-radius: 4px; pointer-events: none;
+  font-size: 10px; font-weight: 800; line-height: 15px; color: #fff; background: #ff304f;
+}
 .ed-clip.ed-off { opacity: 0.4; filter: grayscale(1); } /* 끈 클립·끈 트랙만 흐리다 — 쌓인 클립은 흐리게 하지 않는다 */
 .ed-clip.ed-locked { cursor: default; }
 .ed-clip.ed-missing { background: repeating-linear-gradient(135deg, #3a1218 0 8px, #2a0d12 8px 16px); border-color: rgba(255, 90, 100, 0.6); }
@@ -524,6 +566,9 @@
 /* 컷이 몇 픽셀뿐일 때의 클립(한 프레임짜리 컷 등) — 테두리가 폭보다 넓어 다음 컷 자리를 덮지 않게 테두리·그림자·글자 없이 그 폭만. 고른 것은 색으로 */
 .ed-clip.ed-thin, .ed-clip.ed-thin.ed-sel { border: 0; box-shadow: none; border-radius: 0; }
 .ed-clip.ed-thin.ed-sel { background: var(--accent); }
+.ed-clip.ed-thin.ed-dv { background: #ff304f; box-shadow: none; }
+/* 좁은 클립이 둘 다면 반씩 — 빨강만이면 Delete·D 가 걸릴 선택을 가릴 수 없었다(Codex 리뷰) */
+.ed-clip.ed-thin.ed-dv.ed-sel { background: linear-gradient(90deg, #ff304f 50%, var(--accent) 50%); }
 .ed-clip.ed-thin > * { display: none; }
 /* 줄인 클립의 '원본의 나머지'(그 컷 안에 남는 만큼) — 빗금만, 누를 수 없다 */
 .ed-clip-rest {

@@ -18,7 +18,7 @@ import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../../lib/windowDrag";
 import { FilterPanelIcon } from "../common/ViewIcons";
-import { EditCard, poolMark, type PoolItem } from "./EditCard";
+import { EditCard, poolMark, sourceMarkLabel, type PoolItem } from "./EditCard";
 
 export type { PoolItem };
 
@@ -228,8 +228,11 @@ export function EditPool({
     const mark = poolMark(item, t); // 넣은 트랙·소스 클립 판 — 썸네일 카드의 아래 표와 같은 글
     return mark && <span className={"cd-mark" + (mark.lead ? " lead" : "")}>{mark.label}</span>;
   };
+  // 다빈치(미디어 풀)에서 고른 것 — 빨간 표(Jay 2026-10-14). 썸네일 카드는 아래 표 글에 잇는다(EditCard)
+  const dvMark = (item: PoolItem) => item.resolve && <span className="cd-mark ed-dv-chip">{t("다빈치")}</span>;
   const rowClass = (item: PoolItem, kind: string) =>
-    `ed-prow ed-prow-${kind}` + (picked.includes(item.gen.id) ? " ed-picked" : "") + (item.track !== null ? " ed-placed" : "");
+    `ed-prow ed-prow-${kind}` + (picked.includes(item.gen.id) ? " ed-picked" : "") + (item.track !== null ? " ed-placed" : "") +
+    (item.resolve ? " ed-dv" : "");
   // 막대의 대상은 **지금 보이는 것** 가운데 고른 것이다(조작 규칙 42). 전엔 검색 전의 목록(items)에서 구해, 검색으로 가려진 카드가
   //  '2개 선택'에 남아 Resolve 로 같이 나갔다. 고른 것 자체(picked — 마지막 것이 뷰어의 소스)는 건드리지 않는다: 검색을 지우면 다시 보인다.
   const pickedGens = picked.map((id) => shown.find((item) => item.gen.id === id)?.gen).filter((gen): gen is Generation => !!gen);
@@ -352,7 +355,7 @@ export function EditPool({
                   {item.gen.assets[0].type === "video" && <i>▶</i>}
                 </span>
                 <span className="ed-pinfo">
-                  <b>{stateMark(info.state)}{[info.who, info.model].filter(Boolean).join(" · ")}{trackMark(item)}</b>
+                  <b>{stateMark(info.state)}{[info.who, info.model].filter(Boolean).join(" · ")}{trackMark(item)}{dvMark(item)}</b>
                   <span>{[formatGenerationDateTime(item.gen.created_at), info.duration].filter(Boolean).join(" · ")}</span>
                   <span className="ed-pprompt">{item.gen.prompt}</span>
                 </span>
@@ -366,15 +369,21 @@ export function EditPool({
           {marqueeBox}
           <div className="ed-prow ed-prow-list ed-prow-head">
             <span />
-            <span>{t("프롬프트")}</span><span>{t("만든 사람")}</span><span>{t("모델")}</span><span>{t("길이")}</span><span>{t("트랙")}</span>
+            <span>{t("프롬프트")}</span><span>{t("만든 사람")}</span><span>{t("모델")}</span><span>{t("길이")}</span><span>{t("트랙 · 소스")}</span>
           </div>
           {shown.map((item) => {
             const info = infoOf(item);
             return (
               <button key={item.gen.id} type="button" className={rowClass(item, "list")} {...handlersOf(item)}>
                 {stateMark(info.state)}
-                <span className="ed-pprompt">{item.gen.prompt}</span><span>{info.who}</span><span>{info.model}</span>
-                <span>{info.duration}</span><span>{item.track !== null ? `V${item.track}` : ""}</span>
+                {/* 다빈치 표는 프롬프트 칸 앞에 — 마지막 칸(트랙 · 소스)은 그 둘로 이미 찬다 */}
+                <span className="ed-pprompt">{dvMark(item)}{item.gen.prompt}</span><span>{info.who}</span><span>{info.model}</span>
+                {/* 마지막 칸 = 넣은 트랙 + 소스 클립 판에 떠 있는 판(Jay 2026-10-14 — 썸네일·목록 보기의 표와 같은 글) */}
+                <span>{info.duration}</span>
+                <span className="ed-ptrack">
+                  {item.track !== null && <b>V{item.track}</b>}
+                  {item.source && <span className="cd-mark lead">{sourceMarkLabel(item.source, t)}</span>}
+                </span>
               </button>
             );
           })}

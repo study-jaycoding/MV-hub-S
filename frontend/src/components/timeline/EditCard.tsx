@@ -12,16 +12,21 @@ export interface PoolItem {
   track: number | null; // 타임라인에 넣은 트랙(안 넣었으면 null)
   showing: boolean; // 지금 타임라인 뷰어에 보이는 것
   source?: "S" | "L" | "R" | "LR"; // 소스 클립 판에 떠 있다(Jay 2026-10-14) — S = 싱글 뷰어, 듀얼이면 왼쪽·오른쪽·둘 다
+  resolve?: boolean; // 다빈치(미디어 풀)에서 고른 것(Jay 2026-10-14) — 빨간 테두리와 '다빈치' 표
 }
 
 // 타임라인에 넣은 카드의 표 글 — 미디어 풀과 폴더 창이 같은 글을 쓴다.
 export const editMarkLabel = (track: number, t: (key: string) => string) =>
   t("V{track} - 선택 카드").replace("{track}", String(track));
 
+// 소스 클립 판의 표 글 — "소스 L"·"소스 R"·"소스 L·R"(싱글 뷰어면 "소스"). 풀의 세 보기와 폴더 창이 같은 글을 쓴다.
+export const sourceMarkLabel = (source: PoolItem["source"], t: (key: string) => string) =>
+  !source ? "" : `${t("소스")}${source === "S" ? "" : ` ${source === "LR" ? "L·R" : source}`}`;
+
 // 풀 카드의 표 — 넣은 트랙과 소스 클립 판(둘 다면 이어서). 없으면 null. short = 작은 카드에 보이는 짧은 글
 export function poolMark(item: PoolItem, t: (key: string) => string): { label: string; short: string; lead: boolean } | null {
   const side = item.source === "LR" ? "L·R" : item.source === "S" ? "" : item.source ?? "";
-  const source = item.source ? `${t("소스")}${side && ` ${side}`}` : "";
+  const source = sourceMarkLabel(item.source, t);
   const label = [item.track !== null ? editMarkLabel(item.track, t) : "", source].filter(Boolean).join(" · ");
   if (!label) return null;
   const short = [item.track !== null ? `V${item.track}` : "", item.source ? side || t("소스") : ""].filter(Boolean).join("·");
@@ -39,11 +44,15 @@ export function EditCard({
 }) {
   const t = useT();
   const { gen, track } = item;
-  const mark = poolMark(item, t);
+  const base = poolMark(item, t);
+  // 다빈치에서 고른 것 — 표 글 끝에 '다빈치'를 잇고 빨갛게(표가 없던 카드면 '다빈치'만)
+  const dv = t("다빈치");
+  const mark = !item.resolve ? base
+    : { label: base ? `${base.label} · ${dv}` : dv, short: base ? `${base.short}·${dv}` : dv, lead: true };
   const thumb = thumbOf(gen, 512);
   const state = reviewState(gen); // 공유 목록이라 shared·held·final 중 하나다
   return (
-    <button type="button" className={"ed-card" + (picked ? " ed-picked" : "")} {...handlers}>
+    <button type="button" className={"ed-card" + (picked ? " ed-picked" : "") + (item.resolve ? " ed-dv" : "")} {...handlers}>
       {/* 넣은 카드 = 라이브러리의 '선택'과 같은 굵은 상태색 테두리 */}
       <span className={"card card-grid" + (state === "unshared" ? "" : ` st-${state}`) + (track !== null ? " selected" : "")}>
         <span className="card-clip">
@@ -65,7 +74,7 @@ export function EditCard({
                 보이는 것만 라임, 아래에 깔린 것은 옅게. */}
             {mark && (
               <span className="card-bottom">
-                <span className={mark.lead ? "card-here" : "card-folder static"}>
+                <span className={(mark.lead ? "card-here" : "card-folder static") + (item.resolve ? " ed-dv-mark" : "")}>
                   {/* 카드가 작으면 CSS 가 data-short("V1"·"V1·L")만 보인다 */}
                   <span data-short={mark.short}>{mark.label}</span>
                 </span>

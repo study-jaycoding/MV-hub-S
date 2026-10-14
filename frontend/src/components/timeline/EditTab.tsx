@@ -81,7 +81,7 @@ import {
   useEditProjects,
 } from "../../lib/useEditSequence";
 import { dropQueuedVideoMeasures, knownVideoSeconds, measureVideoSeconds, measuredExactly } from "../../lib/videoDuration";
-import { editMarkLabel } from "./EditCard";
+import { editMarkLabel, sourceMarkLabel } from "./EditCard";
 import { EditExportConfirm } from "./EditExportConfirm";
 import { EditMarkerColorMenu, EditMarkerMenu } from "./EditMarkerMenu";
 import { arrangePool, EditPool, type PoolItem } from "./EditPool";
@@ -90,7 +90,7 @@ import { EditSoloViewer } from "./EditSoloViewer";
 import { dropLabel, EditTimeline, ZOOM_MAX, ZOOM_MIN, type ClipLink, type DropHint } from "./EditTimeline";
 import { EditClipMenu, EditListMenu, EditTrackHeadMenu, EditTrackMenu, type TrackAct, type TrackRow } from "./EditTrackMenu";
 import { EditTrimPop, type TrimAnchor } from "./EditTrimPop";
-import { EditViewer, writeText, type ViewerControls, type ViewOption } from "./EditViewer";
+import { EditViewer, TransportButtons, VolumeControl, writeText, type ViewerControls, type ViewOption } from "./EditViewer";
 import { SRC_CUT, useSourcePane } from "./useSourcePane";
 import { ResizableSidebar } from "../common/ResizableSidebar";
 
@@ -108,6 +108,10 @@ interface Props {
   peekPath: string | null;
   onPeekMarks: (marks: Record<string, CardMark>) => void;
   cardMenuRef: MutableRefObject<EditCardMenu | null>;
+  // 다빈치(미디어 풀)에서 고른 생성물(Jay 2026-10-14) — 풀의 카드·타임라인의 클립에 빨간 '다빈치' 표. 표시만 한다(재생헤드·풀은 그대로).
+  //  새로 고르면 타임라인이 그 클립까지 가로로 넘어간다(화면 밖일 때만). 안 주면 없다.
+  resolvePicked?: ReadonlySet<string>;
+  resolveScroll?: number; // 올라가면 타임라인을 다빈치에서 고른 클립까지 넘긴다 — 화면을 옮기는 일이라 앱이 '따라가는 탭'에서만 올린다
   // 미디어 풀의 더블클릭·비교 — 앱의 크게 보기 창·비교 창을 그대로 쓴다(둘 다 보기 전용).
   onPreview: (target: PreviewTarget) => void;
   onCompare: (gens: Generation[]) => void;
@@ -164,7 +168,7 @@ const isTyping = (target: EventTarget | null) => {
 
 function EditTabInner({
   authKey, workspace, keysActive, flash, onOpenCutFolder, reloadSignal, peekPath, onPeekMarks, cardMenuRef, onPreview, onCompare,
-  resolve, onFolderAction, review,
+  resolve, onFolderAction, review, resolvePicked = NO_CUTS, resolveScroll = 0,
 }: Props) {
   const t = useT();
   const [target, setTarget] = useState<EditTarget | null>(loadEditTarget);
@@ -274,6 +278,7 @@ function EditTabInner({
   const zoomRef = useRef(zoom);
   zoomRef.current = zoom;
   const playingRef = useRef(false);
+  const isPlaying = useCallback(() => playingRef.current, []);
   const paint = useCallback((time: number) => {
     const x = time * zoomRef.current;
     if (headRef.current) headRef.current.style.transform = `translateX(${x}px)`;
@@ -466,13 +471,18 @@ function EditTabInner({
   const showingTrack = view.clip?.track ?? null;
   const srcIn0 = srcModeOf(0) === "source" ? gen0?.id : undefined;
   const srcIn1 = srcModeOf(1) === "source" ? gen1?.id : undefined;
+  // 그 카드가 떠 있는 소스 클립 판 — 풀의 표와 폴더 창의 표가 같이 쓴다
+  const sourceOfGen = useCallback((id: string): PoolItem["source"] => {
+    const left = id === srcIn0;
+    const right = id === srcIn1;
+    return !left && !right ? undefined : !ui.dual ? "S" : left && right ? "LR" : left ? "L" : "R";
+  }, [srcIn0, srcIn1, ui.dual]);
   const poolItems = useMemo<PoolItem[]>(() => cutItems.map((item) => {
-    const left = item.gen.id === srcIn0;
-    const right = item.gen.id === srcIn1;
-    const source = !left && !right ? undefined : !ui.dual ? "S" : left && right ? "LR" : left ? "L" : "R";
+    const source = sourceOfGen(item.gen.id);
     const showing = item.track !== null && item.track === showingTrack;
-    return showing || source ? { ...item, showing, ...(source && { source }) } : item;
-  }), [cutItems, showingTrack, srcIn0, srcIn1, ui.dual]);
+    const resolved = resolvePicked.has(item.gen.id); // 다빈치에서 고른 것(빨간 표)
+    return showing || source || resolved ? { ...item, showing, ...(source && { source }), ...(resolved && { resolve: true }) } : item;
+  }), [cutItems, showingTrack, sourceOfGen, resolvePicked]);
   const tlOrder = slots.indexOf("timeline");
   const tlShown = tlOrder >= 0;
   // 재생 키(Space·J·K·L·←→·↑↓·Home·End)는 마지막에 누른 판의 시계로 간다(다빈치). 편집 키는 언제나 타임라인 것이다. 싱글이면 보이는 판.
@@ -499,6 +509,10 @@ function EditTabInner({
   //  듀얼로 바꾼다. 저장하지 않는다. 켜져 있는 동안은 '한쪽을 틀면 다른 쪽을 멈춘다'(아래)를 쉰다 — 소리는 판마다 따로 줄인다.
   const [linked, setLinked] = useState(false);
   const linkedOn = linked && multi;
+  // 공용 줄(아래)은 모드가 켜져 있고 판이 둘이면 늘 — 같은 시계의 두 판(타임라인 + 한 트랙만)이어도 한 줄이다(그 둘뿐이면 같이 갈 시계는
+  //  하나지만, 켜짐 표시인데 판마다 한 줄씩 남았다 — Codex 리뷰)
+  const oneBar = linked && ui.dual;
+  const volumeMemory = [useRef(1), useRef(1)] as const; // 판 자리마다 '끄기 전 소리 크기'(VolumeControl)
   const toggleLinked = () => {
     if (!linked && !ui.dual) patchUi({ dual: true });
     // 끄면 키를 받는 판의 시계만 남긴다 — 같이 돌던 다른 판이 그대로 돌면 연동 표시는 꺼졌는데 소리가 남고 K 가 한쪽만 멈췄다(Codex 코드 리뷰)
@@ -867,20 +881,32 @@ function EditTabInner({
   const pickCut = useCallback((path: string) => {
     if (view.cut !== path) seekPos({ cut: path, local: 0 });
   }, [view.cut, seekPos]);
-  // 그 컷에 넣은 카드의 표("V1 - 선택 카드") — 지금 뷰어에 보이는 것(lead)만 라임이고, 창이 열릴 때 그 카드로 내려간다.
-  const cutMarks = useCallback((path: string) => {
+  // 그 컷의 폴더 창에 붙일 표 — 넣은 트랙("V1 - 선택 카드") · 소스 클립 판("소스 L") · 우클릭해서 창을 연 카드("방금 누른 카드"),
+  //  한 카드에 여럿이면 이어서 적는다(Jay 2026-10-14). 지금 뷰어에 보이는 것(타임라인의 그 클립·소스 판)과 누른 카드만 라임이고,
+  //  창이 열릴 때 타임라인의 그 카드로 내려간다.
+  const cutMarks = useCallback((path: string, clicked: string | null) => {
     const slot = layout.cuts.find((item) => item.path === path);
     const lead = !slot ? null : view.cut === path ? view.clip : visibleClip(doc, slot, 0);
-    const marks: Record<string, CardMark> = {};
+    const parts = new Map<string, { labels: string[]; lead: boolean }>();
+    const add = (id: string, label: string, isLead: boolean) => {
+      const part = parts.get(id) ?? { labels: [], lead: false };
+      parts.set(id, { labels: [...part.labels, label], lead: part.lead || isLead });
+    };
     let focusId: string | null = null;
     for (const clip of slot?.clips ?? []) {
       const id = links.get(clipKey(clip))?.gen?.id ?? clip.gen; // job 으로 다시 이은 클립은 지금의 카드 id
       const isLead = !!lead && lead.gen === clip.gen;
-      marks[id] = { label: editMarkLabel(clip.track, t), lead: isLead };
+      add(id, editMarkLabel(clip.track, t), isLead);
       if (isLead) focusId = id;
     }
+    for (const id of new Set([srcIn0, srcIn1])) if (id) add(id, sourceMarkLabel(sourceOfGen(id), t), true);
+    if (clicked) add(clicked, t("방금 누른 카드"), true);
+    const marks: Record<string, CardMark> = {};
+    for (const [id, part] of parts) marks[id] = { label: part.labels.join(" · "), lead: part.lead };
     return { marks, focusId };
-  }, [layout, view.cut, view.clip, doc, links, t]);
+  }, [layout, view.cut, view.clip, doc, links, t, srcIn0, srcIn1, sourceOfGen]);
+  const [peekClicked, setPeekClicked] = useState<string | null>(null); // 풀의 카드를 우클릭해 연 창 — 그 카드(창이 닫히면 잊는다)
+  useEffect(() => { if (!peekPath) setPeekClicked(null); }, [peekPath]);
   // 컷을 더블클릭 — 그 컷으로 재생헤드를 옮기고(이미 그 컷이면 그대로) 재생을 멈춘 뒤, 공유 & 리뷰의 '폴더 보기' 창을 그 컷
   //  폴더로 연다. 창은 App 의 것이라 여기서는 무엇을 열지와, 타임라인에 넣은 카드에 붙일 표만 넘긴다.
   //  미디어 풀의 카드를 우클릭해도 같은 창이다(Jay 2026-10-13) — 그때는 누른 카드가 보이게 연다(focusId).
@@ -888,14 +914,15 @@ function EditTabInner({
     if (!target || !layout.cuts.some((item) => item.path === path)) return;
     stopBoth();
     if (view.cut !== path) seekPos({ cut: path, local: 0 });
+    setPeekClicked(focusId ?? null);
     onOpenCutFolder({
       projectId: target.projectId, projectName: projects.find((item) => item.id === target.projectId)?.name ?? "",
-      path, ...cutMarks(path), ...(focusId ? { focusId } : null),
+      path, ...cutMarks(path, focusId ?? null), ...(focusId ? { focusId } : null),
     });
   }, [layout, target, stopBoth, view.cut, seekPos, cutMarks, onOpenCutFolder, projects]);
   // 창이 떠 있는 동안 표를 살려 둔다 — 창에서 트랙 메뉴(휠 클릭)로 넣고 바꾸면 그 자리에서 표가 바뀐다. 글로 비교해, 내용이 바뀔
   //  때만 알린다(알릴 때마다 App 이 다시 그려지므로 객체로 비교하면 끝없이 돈다).
-  const peekMarks = peekPath ? JSON.stringify(cutMarks(peekPath).marks) : null;
+  const peekMarks = peekPath ? JSON.stringify(cutMarks(peekPath, peekClicked).marks) : null;
   useEffect(() => {
     if (peekMarks !== null) onPeekMarks(JSON.parse(peekMarks) as Record<string, CardMark>);
   }, [peekMarks, onPeekMarks]);
@@ -1244,11 +1271,23 @@ function EditTabInner({
     return {
       order, mode, options: viewOptions, ...(place !== null && { place }),
       onMode: (next: ViewMode) => place !== null && setModeAt(place, next),
-      dualButton: order >= 0 && order === slots.length - 1 ? { dual: ui.dual, onToggle: () => patchUi({ dual: !ui.dual }) } : null,
+      // 싱글로 가면 다이나믹 재생 모드도 끈다 — 남겨 두면 단추는 켜짐인데 키는 한 판만 받고, 다음 W 는 그것을 끄기만 했다(Codex 37회차)
+      dualButton: order >= 0 && order === slots.length - 1 ? { dual: ui.dual, onToggle: () => {
+        if (ui.dual) setLinked(false);
+        patchUi({ dual: !ui.dual });
+      } } : null,
       active: place !== null && multi && (linkedOn || keyPlace === place),
       onActivate: () => place !== null && setActivePlace(place),
+      bare: oneBar, // 다이나믹 재생 모드 — 단추 줄은 두 판 아래의 공용 줄(.ed-linkbar)로
     };
   };
+  // 다이나믹 재생 모드의 공용 줄(Jay 2026-10-14 — "플레이 되는게 예전 트림처럼 하나로 나온다 … 소리는 2개 조절할수 있게", 모의 그림
+  //  mock_linked_bar 승인): 판마다의 단추 줄 대신 두 판 아래에 하나 — 가운데 = 재생 단추(보이는 시계 모두 — together), 양 끝 = 왼쪽 판(L)·
+  //  오른쪽 판(R)의 소리. 재생바는 판마다 남는다(시작점을 따로 맞추는 길). 반복(⟲)은 보이는 시계들의 반복을 같이 켜고 끈다(타임라인 =
+  //  loop · 소스 = loopSrc — 다 켜져 있어야 켜짐). 재생 단추 그림은 하나라도 돌면 '멈춤'(together.toggle 이 그때 모두 멈춘다).
+  const loopKeys = [...new Set(places.map((place) => (isSourceView(ui.views[place]) ? "loopSrc" : "loop")))];
+  const linkLoop = loopKeys.every((key) => ui[key]);
+  const linkPlaying = shownEngines.some(({ engine }) => engine.view.playing);
   // 배속 단추(Jay 2026-10-08) — 누를 때마다 다음 값(모든 판이 같이 쓴다). 소리 크기(Jay 2026-10-14)는 판 자리마다 따로다(오후 — "따로따로
   //  조절이 되어야한다"). 둘 다 이 브라우저에 남는다.
   const speedPane = (place: 0 | 1) => ({
@@ -1256,6 +1295,7 @@ function EditTabInner({
     onSpeed: () => patchUi({ speed: EDIT_SPEEDS[(EDIT_SPEEDS.indexOf(ui.speed) + 1) % EDIT_SPEEDS.length] }),
     volume: ui.volumes[place],
     onVolume: (volume: number) => patchUi({ volumes: place === 0 ? [volume, ui.volumes[1]] : [ui.volumes[0], volume] }),
+    volumeMemory: volumeMemory[place], // '끄기 전 크기' — 판의 줄과 공용 줄이 같이 쓴다(모드를 오가도 남게)
   });
   const clockPane = (place: 0 | 1) => ({ // 타임라인의 시계를 쓰는 판(타임라인·한 트랙만)이 같이 받는 것
     ...speedPane(place),
@@ -1311,7 +1351,7 @@ function EditTabInner({
       }}>
         {/* 풀의 폭 손잡이는 끌 때 초점을 받는다(방향키로도 폭을 바꾸게) — 놓으면 편집 화면으로 돌려준다. 안 돌려주면
             ←·→ 가 프레임 이동이 아니라 풀 폭을 바꾼다(2026-10-08 격리 실측). Tab 으로 손잡이에 간 키보드 조절은 그대로다. */}
-        <div className="ed-top" onPointerUp={(event) => {
+        <div className={"ed-top" + (oneBar ? " ed-top-linked" : "")} onPointerUp={(event) => {
           if ((event.target as HTMLElement).classList.contains("sidebar-resize-handle")) rootRef.current?.focus({ preventScroll: true });
         }}>
           {/* 폭은 프로젝트 칸처럼 끌어서 바꾼다(같은 손잡이 — 저장 키와 범위만 다르다) */}
@@ -1391,6 +1431,21 @@ function EditTabInner({
               detailOf={detailOf}
             />
           ))}
+          {oneBar && (
+            <div className="ed-linkbar" onMouseDown={(event) => event.preventDefault()}>
+              <span className="ed-linkvol ed-linkvol-l">
+                <VolumeControl label="L" volume={speedPane(0).volume} onVolume={speedPane(0).onVolume} memory={volumeMemory[0]} />
+              </span>
+              <div className="ed-trans">
+                <TransportButtons controls={together} playing={linkPlaying} loop={linkLoop}
+                  onLoop={() => patchUi({ ...(loopKeys.includes("loop") && { loop: !linkLoop }), ...(loopKeys.includes("loopSrc") && { loopSrc: !linkLoop }) })}
+                  speed={ui.speed} onSpeed={speedPane(0).onSpeed} />
+              </div>
+              <span className="ed-linkvol ed-linkvol-r">
+                <VolumeControl label="R" volume={speedPane(1).volume} onVolume={speedPane(1).onVolume} memory={volumeMemory[1]} />
+              </span>
+            </div>
+          )}
         </div>
         <div className="ed-bar" onMouseDown={(event) => event.preventDefault()}>
           <span className="ed-tc" ref={barTimeRef}>00:00:00:00</span>
@@ -1556,6 +1611,9 @@ function EditTabInner({
           onClipMenu={openClipMenu}
           onClipTrim={openTrim}
           dropHint={dropHint}
+          resolvePicked={resolvePicked}
+          resolveScroll={resolveScroll}
+          isPlaying={isPlaying}
           onMoveCut={moveCutTo}
         />
       </main>

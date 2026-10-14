@@ -266,6 +266,12 @@ export default function App() {
   const resolveSelectionFollow = useResolveSelectionFollow();
   useEffect(() => setResolveSceneSelection(null), [resolveSelectionFollow]);
   const resolveSelectionEventRef = useRef("");
+  // 다빈치(미디어 풀)에서 마지막으로 고른 생성물 — 편집 탭의 풀·타임라인이 빨간 '다빈치' 표로 보인다(Jay 2026-10-14). 탭과 상관없이 둔다
+  //  (편집 탭을 열기 전에 고른 것도 열면 보인다). 다빈치에서 선택을 풀면 빈다.
+  const [resolvePicked, setResolvePicked] = useState<ReadonlySet<string>>(() => new Set());
+  const resolvePickedRef = useRef(resolvePicked);
+  // 편집 탭 타임라인을 그 클립까지 넘기라는 신호 — 표시와 달리 화면을 옮기는 일이라 '따라가는 탭'만 올린다(Codex 리뷰)
+  const [resolveScroll, setResolveScroll] = useState(0);
   const resolveOpenPopupRef = useRef<ResolveOpenPopup | null>(null);
   // 캔버스 '생성 결과' 창이 떠 있나 — 창이 라이브러리 툴바·격자를 쓰므로 '폴더 보기' 창과 겹쳐 두지 않고(격자 둘이 같은
   //  바깥 끌기·키를 받는다), 보드 툴바의 태그 패널도 창 쪽 하나만 띄운다.
@@ -1560,15 +1566,6 @@ export default function App() {
     manualRevision, gens: gridGens, locatedVisibleIds, followLocation, revealLocated, colorLedger, canFollow: canFollowResolve,
   });
   useCustomEvent(APP_EVENTS.resolveSelection, (event) => {
-    if (editOpenRef.current) return; // 편집 탭 — 숨은 목록의 위치·활성 씬을 다빈치 선택이 바꾸지 않게
-    // 같은 계정의 여러 탭이 /ws를 받아도 마지막으로 사용한 MV Hub 탭 하나만 화면을 움직인다.
-    if (document.visibilityState !== "visible") return;
-    try {
-      if (localStorage.getItem("ch.resolve-follower-tab") !== resolveFollowerTabIdRef.current)
-        return;
-    } catch {
-      // 저장소를 막은 브라우저에서는 visibility만으로 최선의 탭을 고른다.
-    }
     const detail = (
       event as CustomEvent<{
         generationId?: string; generationIds?: string[]; selectedCount?: number;
@@ -1577,6 +1574,24 @@ export default function App() {
     ).detail;
     const generationIds = resolveSelectionGenerationIds(detail?.generationIds, detail?.generationId);
     if (!generationIds.length && !Array.isArray(detail?.generationIds)) return;
+    // 편집 탭의 '다빈치' 표는 화면을 옮기지 않는 표시라 **모든 탭**이 받는다 — 따라가는 탭만 받으면, 다른 탭에 있는 동안 다빈치에서
+    //  선택을 풀어도 돌아온 탭에 옛 빨간 표가 남았다(서버는 바뀔 때만 보낸다 — Codex 리뷰). 같은 선택이 다시 오면(중복 신호) 그대로 둔다.
+    const prevPicked = resolvePickedRef.current;
+    const pickChanged = prevPicked.size !== generationIds.length || generationIds.some((id) => !prevPicked.has(id));
+    if (pickChanged) {
+      resolvePickedRef.current = new Set(generationIds);
+      setResolvePicked(resolvePickedRef.current);
+    }
+    // 같은 계정의 여러 탭이 /ws를 받아도 마지막으로 사용한 MV Hub 탭 하나만 화면을 움직인다.
+    if (document.visibilityState !== "visible") return;
+    try {
+      if (localStorage.getItem("ch.resolve-follower-tab") !== resolveFollowerTabIdRef.current)
+        return;
+    } catch {
+      // 저장소를 막은 브라우저에서는 visibility만으로 최선의 탭을 고른다.
+    }
+    if (pickChanged && generationIds.length) setResolveScroll((count) => count + 1); // 편집 탭 타임라인을 그 클립까지(따라가는 탭만)
+    if (editOpenRef.current) return; // 편집 탭 — 숨은 목록의 위치·활성 씬을 다빈치 선택이 바꾸지 않는다(표시만 — 위)
     const selectedCount = Math.max(generationIds.length,
       Number.isInteger(detail?.selectedCount) ? detail!.selectedCount! : 0);
     const truncated = detail?.truncated === true;
@@ -2698,6 +2713,8 @@ export default function App() {
               peekPath={listPeek?.edit ? listPeek.path : null}
               onPeekMarks={setEditMarks}
               cardMenuRef={editCardMenuRef}
+              resolvePicked={resolvePicked}
+              resolveScroll={resolveScroll}
               onPreview={openPreview}
               onCompare={setCompareGens}
               resolve={{

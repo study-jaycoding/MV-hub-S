@@ -1275,7 +1275,15 @@ it("App 작업 공간: 바깥 막·✕ 로 닫히고, 보던 위치가 바뀌거
 });
 
 it("App 편집 탭: 들어가면 폴더 창이 닫히고 다빈치 선택이 숨은 목록을 옮기지 않는다 — 나와도 창은 되살아나지 않는다", async () => {
-  vi.doMock("../src/components/timeline/EditTab", () => ({ EditTab: () => <div data-testid="edit-tab" /> }));
+  let picked: ReadonlySet<string> | undefined; // 편집 탭이 받은 다빈치 선택(빨간 '다빈치' 표 — Jay 2026-10-14)
+  let scrolls = 0; // 타임라인을 그 클립까지 넘기라는 신호
+  vi.doMock("../src/components/timeline/EditTab", () => ({
+    EditTab: (props: { resolvePicked?: ReadonlySet<string>; resolveScroll?: number }) => {
+      picked = props.resolvePicked;
+      scrolls = props.resolveScroll ?? 0;
+      return <div data-testid="edit-tab" />;
+    },
+  }));
   const send = await mountApp("my");
   const body = () => document.querySelector<HTMLElement>(".body")!;
   // 편집은 filters.tab 의 값이 아니라 내비 기록의 '보기'다 — 뒤로/앞으로 가기로도 들어오고 나간다.
@@ -1299,6 +1307,19 @@ it("App 편집 탭: 들어가면 폴더 창이 닫히고 다빈치 선택이 숨
   act(() => send(["other", "other-target"])); // 편집 중의 다빈치 선택은 숨은 목록의 위치를 옮기지 않는다
   await settle();
   expect(librarySnapshot!.filters).toBe(filtersInEdit);
+  expect([...picked!].sort()).toEqual(["other", "other-target"]); // 편집 탭에는 표시로 넘긴다
+  expect(scrolls).toBe(1); // 이 탭이 따라가는 탭 — 그 클립까지 넘긴다
+  // 다른 탭이 '따라가는 탭'이어도 표시는 받는다 — 안 받으면 돌아왔을 때 옛 표가 남는다(Codex 리뷰). 넘기기는 안 한다. 선택을 풀면 빈다
+  const follower = localStorage.getItem("ch.resolve-follower-tab");
+  localStorage.setItem("ch.resolve-follower-tab", "another-tab");
+  act(() => send(["target"]));
+  await settle();
+  expect([[...picked!], scrolls]).toEqual([["target"], 1]);
+  act(() => send([]));
+  await settle();
+  expect(picked!.size).toBe(0);
+  if (follower) localStorage.setItem("ch.resolve-follower-tab", follower);
+  else localStorage.removeItem("ch.resolve-follower-tab");
 
   editView(false);
   await settle();

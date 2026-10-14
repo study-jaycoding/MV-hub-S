@@ -68,6 +68,8 @@ const EN: Record<string, string> = {
   "모델": "Model",
   "길이": "Length",
   "트랙": "Track",
+  "트랙 · 소스": "Track · Source",
+  "방금 누른 카드": "Just clicked",
   "다이나믹 재생 모드 (W) — 두 화면의 재생을 한 번에: 재생·멈춤·J/K/L·프레임·처음/끝 · 재생바는 화면마다 따로":
     "Dynamic Playback Mode (W) — drive both viewers at once: play·stop·J/K/L·frames·start/end · each viewer's timebar stays its own",
   "다이나믹 트림 모드 끄기 (W)": "Exit Dynamic Trim Mode (W)",
@@ -75,6 +77,7 @@ const EN: Record<string, string> = {
   "타임라인의 끝입니다.": "End of the timeline.",
   "소스 클립": "Source clip",
   "소스": "Source",
+  "다빈치": "Resolve",
   "소스 테이프": "Source tape",
   "이 컷의 생성물을 이어서": "this cut's results in a row",
   "미디어 풀에서 생성물을 고르면 여기에서 봅니다.": "Pick a result in the media pool to view it here.",
