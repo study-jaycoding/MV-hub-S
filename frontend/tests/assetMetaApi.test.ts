@@ -22,7 +22,7 @@ describe("Assets batch metadata API", () => {
       { path: "b.png", remove: ["bg"] },
     ];
 
-    await expect(assetsApi.applyAssetTagOps("demo", items)).resolves.toEqual({ ok: true, count: 2 });
+    await expect(assetsApi.applyAssetTagOps("demo", items)).resolves.toEqual({ ok: true, count: 2, items: [] });
 
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchMock).toHaveBeenCalledWith(

@@ -11,7 +11,8 @@ import type { AssetNode, PreviewTarget } from "../src/types";
 
 const fixture = vi.hoisted(() => ({
   tree: [] as unknown[], meta: {} as Record<string, unknown>, project: "P", metaReady: true, loading: false, noop: () => {},
-  setTags: vi.fn(async () => {}), setColors: vi.fn(async () => ({ updated: 0, failed: [] })),
+  setTags: vi.fn(async (..._args: unknown[]) => ({ ok: true, count: 0, items: [] as { path: string; tags: string[] }[] })),
+  setColors: vi.fn(async () => ({ updated: 0, failed: [] })),
 }));
 vi.mock("../src/api", () => {
   const pending = () => new Promise(() => {});
@@ -24,7 +25,7 @@ vi.mock("../src/api", () => {
 vi.mock("../src/components/assets/useAssetProjectData", () => ({
   useAssetProjectData: () => ({
     error: "", loading: fixture.loading, meta: fixture.meta, metaReady: fixture.metaReady, project: fixture.project, projects: ["P", "Q"], linkedProjects: new Set<string>(), tree: fixture.tree,
-    refreshProjectData: fixture.noop, reloadMeta: async () => true, reloadProjects: fixture.noop, reloadTree: fixture.noop, setMeta: fixture.noop, setProject: fixture.noop,
+    refreshProjectData: fixture.noop, reloadMeta: async () => true, reloadProjects: fixture.noop, reloadTree: fixture.noop, setMeta: (next: unknown) => fixture.setMeta(next), setProject: fixture.noop,
   }),
 }));
 vi.mock("virtua", async () => {
@@ -59,7 +60,7 @@ beforeEach(() => {
   });
   fixture.tree = ["a.png", "b.png", "c.png", "d.png"].map(file);
   fixture.meta = {}; fixture.project = "P"; fixture.metaReady = true; fixture.loading = false;
-  fixture.setTags.mockClear(); fixture.setColors.mockClear();
+  fixture.setTags.mockClear(); fixture.setColors.mockClear(); fixture.setMeta = () => {};
   previews = [];
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
@@ -336,6 +337,20 @@ it("에셋 태그 편집기 — 열어 둔 사이 다른 창이 더한 태그는
   const chipA = [...host.querySelectorAll(".te-chip")].find((chip) => chip.firstChild!.textContent === "A")!;
   await act(async () => { chipA.querySelector<HTMLButtonElement>(".te-x")!.click(); });
   expect(fixture.setTags).toHaveBeenLastCalledWith("P", [{ path: "b.png", add: [], remove: ["A"] }]);
+});
+
+it("에셋 태그 — 저장이 성공하면 서버가 합친 태그(다른 창이 더한 것)로 화면과 열린 편집기를 맞춘다", async () => {
+  fixture.meta = { "b.png": metaOf(["old", "A"]) };
+  fixture.setTags.mockResolvedValueOnce({ ok: true, count: 1, items: [{ path: "b.png", tags: ["old", "B"] }] }); // 서버엔 다른 창의 B 가 있다
+  fixture.setMeta = (next) => { fixture.meta = next as Record<string, unknown>; }; // 이 시험은 화면 값이 실제로 바뀌어야 한다
+  await mount();
+  await click("b.png");
+  await key({ key: "#" });
+  const chipA = [...host.querySelectorAll(".te-chip")].find((chip) => chip.firstChild!.textContent === "A")!;
+  await act(async () => { chipA.querySelector<HTMLButtonElement>(".te-x")!.click(); });
+  await act(async () => { await Promise.resolve(); });
+  await act(async () => { rerender(); });
+  expect(chips()).toEqual(["old", "B"]); // 전엔 ["old"] — 서버와 달랐다(Codex 9A 리뷰가 재현)
 });
 
 it("폴더를 바꾸면 열려 있던 태그 입력이 닫힌다 — 새 폴더에 같은 경로의 파일이 있어도 그 파일에 저절로 열리지 않는다", async () => {

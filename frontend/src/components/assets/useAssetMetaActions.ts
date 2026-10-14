@@ -100,6 +100,25 @@ export function useAssetMetaActions({
     void queue.enqueue(operation);
   };
 
+  // 태그 더하기·빼기 저장 — 서버는 다른 창이 그사이 더한 태그까지 합쳐 돌려준다. 이 저장 뒤에 들어온 편집이 없을 때만 그 값으로 화면과 열린 편집기를
+  //  맞춘다(뒤 편집의 낙관 화면을 덮지 않게). 안 맞추면 서버는 [old, B] 인데 화면·편집기는 [old] 로 남았다(Codex 9A 리뷰, 서버셋 설계 ③).
+  const saveTagOps = (items: { path: string; add?: string[]; remove?: string[] }[]) => {
+    const targetProject = project;
+    const revision = mutationRevisionRef.current.get(targetProject) || 0;
+    enqueueSave(async () => {
+      const saved = await api.applyAssetTagOps(targetProject, items);
+      if (currentProjectRef.current !== targetProject || (mutationRevisionRef.current.get(targetProject) || 0) !== revision) return;
+      const changed = saved.items.filter(({ path, tags }) => (metaRef.current[path]?.tags ?? []).join("\n") !== tags.join("\n"));
+      if (!changed.length) return;
+      const next = { ...metaRef.current };
+      for (const { path, tags } of changed) next[path] = { ...(next[path] || EMPTY_ASSET_META), tags };
+      metaRef.current = next;
+      optimisticMetaRef.current.set(targetProject, next);
+      setMeta(next);
+      setRestoreEpoch((epoch) => epoch + 1); // 열린 편집기의 칩도 맞춘다(치던 글은 둔다)
+    });
+  };
+
   const colorAssets = (paths: string[], color: string) => {
     const allSame = paths.every((path) => metaRef.current[path]?.color === color);
     const next = allSame ? null : color;
@@ -134,7 +153,7 @@ export function useAssetMetaActions({
       next[path] = { ...cur, tags: cur.tags.filter((item) => item !== tag) };
       return next;
     });
-    enqueueSave(() => api.applyAssetTagOps(project, [{ path, remove: [tag] }]));
+    saveTagOps([{ path, remove: [tag] }]);
   };
 
   // previous = 그 조작 **직전** 편집기의 칩 목록. 열 때의 목록이나 최신 부모 메타와 견주면 안 된다 — 연 뒤 넣었다 뺀 태그가
@@ -147,7 +166,7 @@ export function useAssetMetaActions({
       ...current,
       [path]: { ...(current[path] || EMPTY_ASSET_META), tags },
     }));
-    if (add.length || remove.length) enqueueSave(() => api.applyAssetTagOps(project, [{ path, add, remove }]));
+    if (add.length || remove.length) saveTagOps([{ path, add, remove }]);
   };
 
   const bulkTagAdd = (path: string, names: string[]) => {
@@ -161,7 +180,7 @@ export function useAssetMetaActions({
       }
       return out;
     });
-    enqueueSave(() => api.applyAssetTagOps(project, targets.map((target) => ({ path: target, add: names }))));
+    saveTagOps(targets.map((target) => ({ path: target, add: names })));
   };
 
   const bulkTagRemove = (path: string, names: string[]) => {
@@ -176,7 +195,7 @@ export function useAssetMetaActions({
       }
       return out;
     });
-    enqueueSave(() => api.applyAssetTagOps(project, targets.map((target) => ({ path: target, remove: names }))));
+    saveTagOps(targets.map((target) => ({ path: target, remove: names })));
   };
 
   const deleteTag = (tag: string) => {
@@ -190,7 +209,7 @@ export function useAssetMetaActions({
         out[path] = { ...out[path], tags: out[path].tags.filter((item) => item !== tag) };
       return out;
     });
-    enqueueSave(() => api.applyAssetTagOps(project, affected.map((path) => ({ path, remove: [tag] }))));
+    saveTagOps(affected.map((path) => ({ path, remove: [tag] })));
     if (activeTags.has(tag))
       setActiveTags((prev) => {
         const out = new Set(prev);

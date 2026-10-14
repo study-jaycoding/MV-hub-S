@@ -429,16 +429,17 @@ export const assetsApi = {
   },
   // 태그는 더하기·빼기로 보낸다 — 목록 통째로 보내면 같은 계정의 다른 창이 그사이 더한 태그를 지웠다(서버셋 설계 ③).
   //  옛 통째 저장 라우트(/tags·/tags/batch)는 업데이트 전에 열어 둔 창을 위해 허브에 남아 있다.
+  //  돌려주는 items = 서버가 합쳐 저장한 태그(다른 창이 더한 것 포함).
   applyAssetTagOps: async (project: string, items: { path: string; add?: string[]; remove?: string[] }[]) => {
-    let count = 0;
+    const saved: { path: string; tags: string[] }[] = [];
     for (const chunk of chunked(items)) {
-      await jsonFetch<{ ok: boolean; items: { path: string; tags: string[] }[] }>(`/api/assets/tags/ops`, {
+      const res = await jsonFetch<{ ok: boolean; items?: { path: string; tags: string[] }[] }>(`/api/assets/tags/ops`, {
         method: "PUT",
         body: jsonBody({ project, items: chunk }),
       });
-      count += chunk.length;
+      saved.push(...(res.items ?? []));
     }
-    return { ok: true, count };
+    return { ok: true, count: items.length, items: saved };
   },
   setAssetColorsBatch: async (project: string, paths: string[], color: string | null) => {
     let count = 0;
