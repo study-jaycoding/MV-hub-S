@@ -8,6 +8,8 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { flashMsg } from "./flash";
+
 const DB_NAME = "ch-fsa";
 const STORE = "handles";
 const KEY = "downloadDir";
@@ -92,6 +94,14 @@ async function sameBytes(a: Blob, b: Blob): Promise<boolean> {
 
 const claimed = new Set<string>(); // 지금 쓰는 중인 이름 — 잇달아 시작한 저장 둘이 같은 빈 이름을 같이 잡지 않게
 
+async function quietly(step: () => unknown): Promise<void> {
+  try {
+    await step();
+  } catch {
+    /* 정리 실패는 원래 오류를 가리지 않는다 */
+  }
+}
+
 /** 그 폴더(dir = 폴더 핸들)에 name 으로 저장한다. **같은 이름의 파일이 이미 있으면 덮지 않는다**(조작 규칙 49): 내용이 같으면(같은 것을 다시
  *  받았다) 그대로 두고, 다르면 번호를 붙인 이름("shot (1).png" — 브라우저의 기본 다운로드와 같다)으로 쓴다. 전엔 말없이 덮어, 소스 이름이
  *  같은 다른 그림을 받으면 먼저 받은 파일이 사라졌다(서로 다른 이름 `a:b`·`a?b` 도 금지 문자를 바꾸면 같은 `a_b` 다). */
@@ -114,9 +124,19 @@ export async function writeIntoDir(dir: any, name: string, blob: Blob): Promise<
         if (await sameBytes(await existing.getFile(), blob)) return true; // 같은 파일이 이미 있다 — 다시 쓰지 않는다
         continue; // 다른 파일이다 — 다음 번호로
       }
-      const writable = await (await dir.getFileHandle(candidate, { create: true })).createWritable();
-      await writable.write(blob);
-      await writable.close();
+      const handle = await dir.getFileHandle(candidate, { create: true }); // 여기서 빈 파일이 생긴다
+      let writable: any = null;
+      try {
+        writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+      } catch (error) {
+        // 쓰다 실패하면(디스크 꽉 참·잠김·권한) 방금 만든 빈 파일을 치운다 — 남기면 그 폴더에 빈 그림이 보이고
+        //  다음 저장은 그 이름을 피해 번호를 붙인다(47회차). 치우기가 실패해도 원래 오류를 올린다.
+        await quietly(() => writable?.abort?.());
+        await quietly(() => dir.removeEntry?.(candidate));
+        throw error;
+      }
       return true;
     } finally {
       claimed.delete(claim);
@@ -128,14 +148,18 @@ export async function writeIntoDir(dir: any, name: string, blob: Blob): Promise<
 // 지정 폴더에 직접 저장(프롬프트 없음). 성공 true. 핸들/권한 없거나 실패하면 false(호출측이 일반
 // 다운로드로 폴백). 권한이 풀렸으면 requestPermission 으로 1회 재허용 시도(다운로드 클릭=제스처).
 export async function saveToDownloadDir(name: string, blob: Blob): Promise<boolean> {
+  let h: any = null;
   try {
-    const h = await _idbGet(KEY);
+    h = await _idbGet(KEY);
     if (!h) return false;
     let perm = await h.queryPermission({ mode: "readwrite" });
     if (perm !== "granted") perm = await h.requestPermission({ mode: "readwrite" });
     if (perm !== "granted") return false;
     return await writeIntoDir(h, name, blob);
   } catch {
-    return false; // 권한 거부·핸들 무효 등 → 일반 다운로드 폴백
+    // 핸들 무효·쓰기 실패 등 → 일반 다운로드 폴백. 폴더를 정해 둔 사람에게는 거기에 안 들어간 것을 알린다
+    //  (47회차 — 전엔 말없이 다른 곳에 받았다). 폴더를 읽지도 못했으면(정한 적 없을 수 있다) 조용히 넘어간다.
+    if (h) flashMsg(`다운로드 폴더에 저장하지 못해 브라우저 다운로드로 받습니다: ${name}`);
+    return false;
   }
 }

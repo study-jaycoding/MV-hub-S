@@ -19,6 +19,26 @@ beforeEach(async () => {
 });
 afterEach(() => localStorage.clear());
 
+it("저장 공간이 꽉 차 저장하지 못하면 알린다 — 말없이 두면 새로 고침 뒤 옛 키로 돌아간다(47회차)", () => {
+  const seen: string[] = [];
+  const listener = (event: Event) => seen.push(String((event as CustomEvent).detail));
+  window.addEventListener("ch:flash", listener);
+  const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw new DOMException("full", "QuotaExceededError");
+  });
+  try {
+    shortcuts.setBinding("tag", "mod+alt+t");
+    setItem.mockRestore();
+    expect(seen).toEqual([expect.stringContaining("단축키를 저장하지 못했습니다")]);
+    shortcuts.setBinding("tag", "mod+alt+t"); // 저장되면 알리지 않는다
+    expect(seen).toHaveLength(1);
+    expect(stored()).toEqual({ tag: "mod+alt+t" });
+  } finally {
+    setItem.mockRestore();
+    window.removeEventListener("ch:flash", listener);
+  }
+});
+
 it("Shift 는 Ctrl·Alt 와 함께일 때만 바인딩에 든다 — 글자만 바꾸는 Shift(#, R)는 그대로", () => {
   const { eventToBinding, matchShortcut, prettyBinding } = shortcuts;
   expect(eventToBinding(key("x", { ctrlKey: true }))).toBe("mod+x");

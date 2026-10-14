@@ -80,3 +80,27 @@ it("읽을 수 없는 폴더(권한이 풀림 등)의 오류는 삼키지 않고
   await expect(writeIntoDir(flaky, "shot.png", blob("나중 그림"))).rejects.toThrow("잠깐 못 읽음");
   expect(await read()).toEqual({ "shot.png": "먼저 받은 그림" });
 });
+
+it("쓰다 실패하면(디스크 꽉 참·잠김) 방금 만든 빈 파일을 치우고 오류를 올린다 — 있던 파일은 그대로(47회차)", async () => {
+  const { dir: real, files, read } = fakeDir();
+  await writeIntoDir(real, "shot.png", blob("먼저 받은 그림"));
+  const aborted: string[] = [];
+  const full = {
+    getFileHandle: async (name: string, options?: { create?: boolean }) => {
+      const handle = await real.getFileHandle(name, options);
+      if (options?.create) files.set(name, blob("")); // 진짜처럼 만들면 빈 파일이 생긴다
+      return {
+        ...handle,
+        createWritable: async () => ({
+          write: async () => { throw Object.assign(new Error("디스크 꽉 참"), { name: "QuotaExceededError" }); },
+          close: async () => {},
+          abort: async () => { aborted.push(name); },
+        }),
+      };
+    },
+    removeEntry: async (name: string) => { files.delete(name); },
+  };
+  await expect(writeIntoDir(full, "shot.png", blob("나중 그림"))).rejects.toThrow("디스크 꽉 참");
+  expect(aborted).toEqual(["shot (1).png"]);
+  expect(await read()).toEqual({ "shot.png": "먼저 받은 그림" }); // 전엔 빈 'shot (1).png' 가 남았다
+});

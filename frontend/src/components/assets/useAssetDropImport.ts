@@ -56,7 +56,9 @@ export function useAssetDropImport({
         );
       }
     } catch (error) {
-      alert(`가져오기 실패: ${error}`);
+      // 여러 개 중 뒤의 것이 실패해도 앞의 것은 이미 폴더에 있다 — 목록은 새로 본다(47회차).
+      await Promise.resolve(onImported(project)).catch(() => undefined);
+      alert(`가져오기 실패: ${error}\n앞의 파일은 저장됐을 수 있습니다 — 목록을 새로 고쳤습니다.`);
     } finally {
       for (const key of keys) uploading.current.delete(key);
       setImporting((count) => count - 1);

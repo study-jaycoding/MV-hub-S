@@ -147,3 +147,21 @@ it("Assets 반입 — 올리는 중인 같은 파일을 다시 놓으면 올리�
   drop([file("big.mp4")]); // 다 올라간 뒤에 다시 놓는 것은 전처럼 받는다
   expect(mocks.uploadAssets).toHaveBeenCalledTimes(3);
 });
+
+it("Assets 반입 — 실패해도 목록을 새로 본다(여러 개 중 뒤의 것이 실패하면 앞의 것은 이미 폴더에 있다 — 47회차)", async () => {
+  mocks.uploadAssets.mockRejectedValue(new Error("저장 실패(b.png): 디스크 꽉 참"));
+  const alert = vi.fn();
+  vi.stubGlobal("alert", alert);
+  const onImported = vi.fn();
+  let zone!: ReturnType<typeof useAssetDropImport>;
+  function Host() { zone = useAssetDropImport({ dir: "refs", project: "p1", onImported }); return null; }
+  act(() => root.render(<Host />));
+  const files = [new File(["a"], "a.png"), new File(["b"], "b.png")];
+  await act(async () => {
+    zone.onZoneDrop({ preventDefault: () => {}, dataTransfer: { types: ["Files"], files, items: [] } } as never);
+    await settle();
+  });
+  expect(onImported).toHaveBeenCalledWith("p1");
+  expect(alert).toHaveBeenCalledWith(expect.stringContaining("가져오기 실패"));
+  expect(zone.importing).toBe(false);
+});

@@ -4,7 +4,8 @@
 // '변경'(다음 키 캡처)으로 재지정한다. 방향키·Enter·Space·Esc 같은 네비/편집 기본키는 비대상(고정).
 
 import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
-import { loadJSON, saveJSON } from "./storage";
+import { flashMsg } from "./flash";
+import { loadJSON, trySaveJSON } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 
 export type ShortcutId =
@@ -139,7 +140,8 @@ function load(): Overrides {
 let overrides = load();
 
 function persist() {
-  saveJSON(LS_KEY, overrides);
+  // 저장 공간이 꽉 찼거나 막혔으면 알린다 — 말없이 두면 새로 고침 뒤(또는 다음 변경 때) 옛 키로 돌아간다(47회차).
+  if (!trySaveJSON(LS_KEY, overrides)) flashMsg("단축키를 저장하지 못했습니다(브라우저 저장 공간) — 이 창에서만 바뀌고 새로 고침하면 돌아갑니다");
   dropped = []; // 정리된 것이 저장소에 쓰였다 — 더 알릴 것이 없다
   // 다른 컴포넌트(설정창 등)가 즉시 갱신되도록 알림(핸들러는 조회식이라 별도 갱신 불필요).
   dispatchAppEvent(APP_EVENTS.shortcutsChanged);
