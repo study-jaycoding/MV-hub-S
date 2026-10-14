@@ -90,7 +90,7 @@ import { EditSoloViewer } from "./EditSoloViewer";
 import { dropLabel, EditTimeline, ZOOM_MAX, ZOOM_MIN, type ClipLink, type DropHint } from "./EditTimeline";
 import { EditClipMenu, EditListMenu, EditTrackHeadMenu, EditTrackMenu, type TrackAct, type TrackRow } from "./EditTrackMenu";
 import { EditTrimPop, type TrimAnchor } from "./EditTrimPop";
-import { EditViewer, writeText, type ViewerControls, type ViewOption } from "./EditViewer";
+import { EditViewer, TransportButtons, VolumeControl, writeText, type ViewerControls, type ViewOption } from "./EditViewer";
 import { SRC_CUT, useSourcePane } from "./useSourcePane";
 import { ResizableSidebar } from "../common/ResizableSidebar";
 
@@ -505,6 +505,10 @@ function EditTabInner({
   //  듀얼로 바꾼다. 저장하지 않는다. 켜져 있는 동안은 '한쪽을 틀면 다른 쪽을 멈춘다'(아래)를 쉰다 — 소리는 판마다 따로 줄인다.
   const [linked, setLinked] = useState(false);
   const linkedOn = linked && multi;
+  // 공용 줄(아래)은 모드가 켜져 있고 판이 둘이면 늘 — 같은 시계의 두 판(타임라인 + 한 트랙만)이어도 한 줄이다(그 둘뿐이면 같이 갈 시계는
+  //  하나지만, 켜짐 표시인데 판마다 한 줄씩 남았다 — Codex 리뷰)
+  const oneBar = linked && ui.dual;
+  const volumeMemory = [useRef(1), useRef(1)] as const; // 판 자리마다 '끄기 전 소리 크기'(VolumeControl)
   const toggleLinked = () => {
     if (!linked && !ui.dual) patchUi({ dual: true });
     // 끄면 키를 받는 판의 시계만 남긴다 — 같이 돌던 다른 판이 그대로 돌면 연동 표시는 꺼졌는데 소리가 남고 K 가 한쪽만 멈췄다(Codex 코드 리뷰)
@@ -1257,8 +1261,16 @@ function EditTabInner({
       } } : null,
       active: place !== null && multi && (linkedOn || keyPlace === place),
       onActivate: () => place !== null && setActivePlace(place),
+      bare: oneBar, // 다이나믹 재생 모드 — 단추 줄은 두 판 아래의 공용 줄(.ed-linkbar)로
     };
   };
+  // 다이나믹 재생 모드의 공용 줄(Jay 2026-10-14 — "플레이 되는게 예전 트림처럼 하나로 나온다 … 소리는 2개 조절할수 있게", 모의 그림
+  //  mock_linked_bar 승인): 판마다의 단추 줄 대신 두 판 아래에 하나 — 가운데 = 재생 단추(보이는 시계 모두 — together), 양 끝 = 왼쪽 판(L)·
+  //  오른쪽 판(R)의 소리. 재생바는 판마다 남는다(시작점을 따로 맞추는 길). 반복(⟲)은 보이는 시계들의 반복을 같이 켜고 끈다(타임라인 =
+  //  loop · 소스 = loopSrc — 다 켜져 있어야 켜짐). 재생 단추 그림은 하나라도 돌면 '멈춤'(together.toggle 이 그때 모두 멈춘다).
+  const loopKeys = [...new Set(places.map((place) => (isSourceView(ui.views[place]) ? "loopSrc" : "loop")))];
+  const linkLoop = loopKeys.every((key) => ui[key]);
+  const linkPlaying = shownEngines.some(({ engine }) => engine.view.playing);
   // 배속 단추(Jay 2026-10-08) — 누를 때마다 다음 값(모든 판이 같이 쓴다). 소리 크기(Jay 2026-10-14)는 판 자리마다 따로다(오후 — "따로따로
   //  조절이 되어야한다"). 둘 다 이 브라우저에 남는다.
   const speedPane = (place: 0 | 1) => ({
@@ -1266,6 +1278,7 @@ function EditTabInner({
     onSpeed: () => patchUi({ speed: EDIT_SPEEDS[(EDIT_SPEEDS.indexOf(ui.speed) + 1) % EDIT_SPEEDS.length] }),
     volume: ui.volumes[place],
     onVolume: (volume: number) => patchUi({ volumes: place === 0 ? [volume, ui.volumes[1]] : [ui.volumes[0], volume] }),
+    volumeMemory: volumeMemory[place], // '끄기 전 크기' — 판의 줄과 공용 줄이 같이 쓴다(모드를 오가도 남게)
   });
   const clockPane = (place: 0 | 1) => ({ // 타임라인의 시계를 쓰는 판(타임라인·한 트랙만)이 같이 받는 것
     ...speedPane(place),
@@ -1321,7 +1334,7 @@ function EditTabInner({
       }}>
         {/* 풀의 폭 손잡이는 끌 때 초점을 받는다(방향키로도 폭을 바꾸게) — 놓으면 편집 화면으로 돌려준다. 안 돌려주면
             ←·→ 가 프레임 이동이 아니라 풀 폭을 바꾼다(2026-10-08 격리 실측). Tab 으로 손잡이에 간 키보드 조절은 그대로다. */}
-        <div className="ed-top" onPointerUp={(event) => {
+        <div className={"ed-top" + (oneBar ? " ed-top-linked" : "")} onPointerUp={(event) => {
           if ((event.target as HTMLElement).classList.contains("sidebar-resize-handle")) rootRef.current?.focus({ preventScroll: true });
         }}>
           {/* 폭은 프로젝트 칸처럼 끌어서 바꾼다(같은 손잡이 — 저장 키와 범위만 다르다) */}
@@ -1401,6 +1414,21 @@ function EditTabInner({
               detailOf={detailOf}
             />
           ))}
+          {oneBar && (
+            <div className="ed-linkbar" onMouseDown={(event) => event.preventDefault()}>
+              <span className="ed-linkvol ed-linkvol-l">
+                <VolumeControl label="L" volume={speedPane(0).volume} onVolume={speedPane(0).onVolume} memory={volumeMemory[0]} />
+              </span>
+              <div className="ed-trans">
+                <TransportButtons controls={together} playing={linkPlaying} loop={linkLoop}
+                  onLoop={() => patchUi({ ...(loopKeys.includes("loop") && { loop: !linkLoop }), ...(loopKeys.includes("loopSrc") && { loopSrc: !linkLoop }) })}
+                  speed={ui.speed} onSpeed={speedPane(0).onSpeed} />
+              </div>
+              <span className="ed-linkvol ed-linkvol-r">
+                <VolumeControl label="R" volume={speedPane(1).volume} onVolume={speedPane(1).onVolume} memory={volumeMemory[1]} />
+              </span>
+            </div>
+          )}
         </div>
         <div className="ed-bar" onMouseDown={(event) => event.preventDefault()}>
           <span className="ed-tc" ref={barTimeRef}>00:00:00:00</span>

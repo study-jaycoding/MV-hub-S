@@ -1316,6 +1316,30 @@ it("뷰어 아래 오른쪽의 소리 크기 — 판마다 따로 · 막대를 �
   expect(valueOf(right)).toBe("75");
   expect([...right.querySelectorAll<HTMLVideoElement>("video")].map((video) => video === spare ? video.volume : video.volume === 0.75))
     .toEqual([...right.querySelectorAll("video")].map((video) => (video === spare ? 0 : true)));
+
+  // '끄기 전 크기'는 다이나믹 재생 모드를 오가도 남는다 — 판의 줄과 공용 줄의 소리 조절이 서로 다른 부품이라 새로 생기며 100% 로
+  //  돌아갔다(Codex 리뷰)
+  press({ key: "ArrowRight", code: "ArrowRight" }, left.querySelector(".ed-vol-bar")!); // 0 → 0.05
+  press({ key: "End", code: "End" }, left.querySelector(".ed-vol-bar")!);
+  press({ key: "ArrowLeft", code: "ArrowLeft" }, left.querySelector(".ed-vol-bar")!); // 0.95
+  act(() => left.querySelector<HTMLButtonElement>(".ed-t-vol")!.click()); // 끈다
+  press({ key: "w", code: "KeyW" }); // 공용 줄로
+  const barSpeakerL = document.querySelector<HTMLButtonElement>(".ed-linkvol-l .ed-t-vol")!;
+  act(() => barSpeakerL.click()); // 켠다 — 끄기 전 크기로
+  expect(JSON.parse(localStorage.getItem(UI_KEY)!).volumes[0]).toBe(0.95);
+});
+
+// Codex 리뷰 — 같은 시계를 쓰는 두 판(타임라인 + 한 트랙만)에서 W 를 켜면 켜짐 표시인데 판마다 한 줄씩 남았다
+it("다이나믹 재생 모드: 같은 시계의 두 판(타임라인 + V1 만 보기)이어도 아래 단추 줄은 하나다", () => {
+  seed([{ cut: "c1", gen: "a", track: 1 }]);
+  localStorage.setItem(UI_KEY, JSON.stringify({ dual: true, views: ["timeline", 1] }));
+  mount();
+  act(() => cutCell("c1").click());
+  expect(paneModes()).toEqual(["timeline", "1"]);
+  press({ key: "w", code: "KeyW" });
+  expect([!!document.querySelector(".ed-linkbar"), panes().map((view) => !!view.querySelector(".ed-trans"))]).toEqual([true, [false, false]]);
+  press({ key: "w", code: "KeyW" });
+  expect([!!document.querySelector(".ed-linkbar"), panes().map((view) => !!view.querySelector(".ed-trans"))]).toEqual([false, [true, true]]);
 });
 
 it("소스 테이프: 이 컷의 풀 목록을 이어서 본다 — 풀에서 고르면 그 카드로 가고, 소스 클립과는 같은 판의 두 방식이다", () => {
@@ -1386,18 +1410,36 @@ it("다이나믹 재생 모드: W 로 켜면 두 판의 재생 조작이 같이 
   const [left, right] = panes();
   expect([left, right].map((item) => item.classList.contains("ed-view-on"))).toEqual([true, true]); // 두 판이 다 키를 받는다
   const tcOf = (view: HTMLElement) => view.querySelector(".ed-vtop > .ed-vtc")!.textContent;
-  const playing = (view: HTMLElement) => !!view.querySelector(".ed-play rect");
+  const playing = (view: HTMLElement) => view.hasAttribute("data-playing");
+  // 아래 단추 줄은 두 판 아래에 하나(Jay 2026-10-14 모의 그림) — 판에는 재생바까지만, 공용 줄의 양 끝은 왼쪽(L)·오른쪽(R) 판의 소리
+  const bar = () => document.querySelector<HTMLElement>(".ed-linkbar");
+  expect([left, right].map((view) => [!!view.querySelector(".ed-trans"), !!view.querySelector(".ed-scrub")])).toEqual([[false, true], [false, true]]);
+  expect([...bar()!.querySelectorAll(".ed-vol-side")].map((item) => item.textContent)).toEqual(["L", "R"]);
+  expect(bar()!.querySelectorAll(".ed-play")).toHaveLength(1);
 
   press({ key: " ", code: "Space" });
   expect([playing(left), playing(right)]).toEqual([true, true]); // 같이 튼다(한쪽을 틀면 다른 쪽을 멈추는 규칙을 쉰다)
+  expect(!!bar()!.querySelector(".ed-play rect")).toBe(true); // 공용 줄의 단추는 '멈춤' 그림
   press({ key: "k", code: "KeyK" });
   expect([playing(left), playing(right)]).toEqual([false, false]);
-  act(() => left.querySelector<HTMLButtonElement>(".ed-play")!.click()); // 판의 단추도 두 판에
+  act(() => bar()!.querySelector<HTMLButtonElement>(".ed-play")!.click()); // 공용 줄의 단추도 두 판에
   expect([playing(left), playing(right)]).toEqual([true, true]);
-  act(() => right.querySelector<HTMLButtonElement>(".ed-t-stop")!.click());
+  act(() => bar()!.querySelector<HTMLButtonElement>(".ed-t-stop")!.click());
   expect([playing(left), playing(right)]).toEqual([false, false]);
+  // 소리는 판마다 — 왼쪽 끝은 왼쪽 판, 오른쪽 끝은 오른쪽 판
+  const [volL, volR] = [...bar()!.querySelectorAll<HTMLElement>(".ed-vol-bar")];
+  press({ key: "ArrowLeft", code: "ArrowLeft" }, volL);
+  press({ key: "ArrowLeft", code: "ArrowLeft" }, volR);
+  press({ key: "ArrowLeft", code: "ArrowLeft" }, volR);
+  expect(JSON.parse(localStorage.getItem(UI_KEY)!).volumes).toEqual([0.95, 0.9]);
+  expect([volL.getAttribute("aria-label"), volR.getAttribute("aria-label")]).toEqual(["소리 크기 (L)", "소리 크기 (R)"]);
+  // 반복(⟲)은 보이는 시계들(타임라인 · 소스)의 반복을 같이 켜고 끈다
+  act(() => bar()!.querySelector<HTMLButtonElement>(".ed-t-loop")!.click());
+  expect([bar()!.querySelector(".ed-t-loop")!.getAttribute("aria-pressed"), JSON.parse(localStorage.getItem(UI_KEY)!).loop,
+    JSON.parse(localStorage.getItem(UI_KEY)!).loopSrc]).toEqual(["true", true, true]);
+  act(() => bar()!.querySelector<HTMLButtonElement>(".ed-t-loop")!.click());
 
-  act(() => right.querySelector<HTMLButtonElement>(".ed-t-last")!.click()); // 끝으로 — 두 판이 저마다의 끝으로
+  act(() => bar()!.querySelector<HTMLButtonElement>(".ed-t-last")!.click()); // 끝으로 — 두 판이 저마다의 끝으로
   expect([tcOf(left), tcOf(right)]).toEqual(["00:00:05:00", "00:00:15:00"]);
   mouse(left.querySelector(".ed-scrub")!, "pointerdown"); // 재생바는 그 판만(jsdom 의 줄 폭은 0 이라 맨 앞)
   expect([tcOf(left), tcOf(right)]).toEqual(["00:00:00:00", "00:00:15:00"]);
@@ -1411,6 +1453,7 @@ it("다이나믹 재생 모드: W 로 켜면 두 판의 재생 조작이 같이 
   expect([playing(left), playing(right)]).toEqual([true, true]);
   press({ key: "w", code: "KeyW" }); // 키를 받는 판(오른쪽)만 남는다 · 듀얼은 그대로 · 재생 키는 누른 판의 시계
   expect([btn.getAttribute("aria-pressed"), paneModes()]).toEqual(["false", ["source", "timeline"]]);
+  expect([bar(), [left, right].map((view) => !!view.querySelector(".ed-trans"))]).toEqual([null, [true, true]]); // 판마다 한 줄씩으로 돌아간다
   expect([left, right].map((item) => item.classList.contains("ed-view-on"))).toEqual([false, true]);
   expect([playing(left), playing(right)]).toEqual([false, true]);
   press({ key: "k", code: "KeyK" });
