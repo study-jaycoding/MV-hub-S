@@ -27,6 +27,9 @@ updated: 2026-10-14
 
 ## 1. 빠른 찾기
 
+편집 탭의 소스 클립·테이프 재생은 [useSourcePane.ts](../frontend/src/components/timeline/useSourcePane.ts),
+MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_picture.py)다.
+
 | 하고 싶은 일 | 프런트 진입 파일 | 백엔드 진입 파일 | 비고 |
 |---|---|---|---|
 | 라이브러리 카드 표시 문구·상태 라벨 바꾸기 | `components/GenerationCard.tsx`, `lib/generationDisplay.ts` | — | 상태 라벨은 순수 프런트 판정 |

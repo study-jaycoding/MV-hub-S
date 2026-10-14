@@ -11,6 +11,8 @@ updated: 2026-10-14
 
 # MV Hub 개발 문서 안내
 
+MCP 연동은 `codex/mvhub-mcp` 브랜치의 별도 worktree에서 관리한다. 설계·사용 안내는 그 브랜치의 `docs/MCP_INTEGRATION.md`를 참조한다. dev에는 로컬 AI 연결(MCP 브리지) 구현을 포함하지 않는다. 기존 Higgsfield 수집 기능은 유지한다.
+
 Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·공유 툴.
 현재 작업 상태는 [CURRENT_STATUS.md](CURRENT_STATUS.md)에서 먼저 확인한다.
 현행 설계는 [ARCHITECTURE.md](ARCHITECTURE.md)와 [AI_CONTEXT.md](AI_CONTEXT.md)를 참조한다.

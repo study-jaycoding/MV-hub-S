@@ -7,6 +7,7 @@ model: claude-opus-5-5
 effort: high
 skills:
   - ponytail:ponytail
+  - ponytail:ponytail-review
 ---
 
 한국어로 답한다. 저장소 루트 CLAUDE.md와 docs/AGENT_WORKFLOW.md를 먼저 읽는다.
