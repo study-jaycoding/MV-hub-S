@@ -2167,6 +2167,37 @@ it("풀 머리줄의 첫 단추로 왼쪽 폴더 목록을 여닫는다 — 닫�
   expect(look()).toEqual([true, 2, "필터 사이드바 닫기", "true", "▢"]);
 });
 
+// 58회차(Codex 검토): 메뉴가 떠 있는 채 다른 폴더·풀 카드를 누르면 메뉴만 닫혀야 한다(조작 규칙 4) — 전엔 닫히면서 그 폴더로 옮겨 가고 그 카드를 골랐다.
+it("메뉴를 닫는 누름은 왼쪽 폴더·풀 카드를 고르지 않는다 — 메뉴가 없을 때는 전처럼 고른다", () => {
+  mount();
+  const row = (name: string) =>
+    [...document.querySelectorAll<HTMLButtonElement>(".ed-side .folder-tree-row")].find((item) => item.textContent!.includes(name))!;
+  const pressOn = (target: Element) => act(() => {
+    target.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
+    target.dispatchEvent(new Event("pointerup", { bubbles: true }));
+    target.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, button: 0 }));
+    target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, detail: 1 }));
+  });
+  const poolHead = () => document.querySelector(".ed-pool-side > .ed-pool h3")!.textContent;
+  act(() => cutCell("c1").click());
+  expect(poolHead()).toBe("e070 / c1");
+  rightClick(row("c2")); // 폴더 메뉴
+  expect(document.querySelector(".ed-fmenu")).not.toBeNull();
+  pressOn(row("c2"));
+  expect(document.querySelector(".ed-fmenu")).toBeNull();
+  expect(poolHead()).toBe("e070 / c1"); // 전엔 c2 로 옮겨 갔다
+  wheelClick(poolCards()[0]); // 넣을 트랙 메뉴
+  expect(trackMenu()).not.toBeNull();
+  pressOn(poolCards()[1]);
+  expect(trackMenu()).toBeNull();
+  expect(poolCards()[1].classList.contains("ed-picked")).toBe(false); // 전엔 골랐다
+  pressOn(poolCards()[1]); // 메뉴가 없으면 전처럼 고른다
+  expect(poolCards()[1].classList.contains("ed-picked")).toBe(true);
+  pressOn(row("c2"));
+  expect(poolHead()).toBe("e070 / c2");
+});
+
 it("왼쪽 폴더를 우클릭하면 폴더 메뉴가 뜬다 — 공유 저장 · 최종 저장은 묻고 하고, 원본 위치 열기는 바로 한다", () => {
   mount();
   const row = (name: string) =>

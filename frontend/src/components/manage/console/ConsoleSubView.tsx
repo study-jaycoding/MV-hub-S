@@ -525,7 +525,8 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
                       return (
                         <td>
                           {locked ? <span title={why}><RolePills roles={roles} /></span> : (
-                            <PillMenu disabled={busy || rolesStale} trigger={<RolePills roles={roles} />}>
+                            // 프로젝트마다 새 메뉴 — 연 채 프로젝트를 바꾸면 앞 프로젝트에서 띄운 '빼기' 확인이 다음 프로젝트에 남았다(58회차 Codex 검토)
+                            <PillMenu key={projectId} disabled={busy || rolesStale} trigger={<RolePills roles={roles} />}>
                               {(close) => <RoleMenuBody roles={roles} close={close} onSave={(next) => void saveRoles(m.name, row!.uid as string, next)} />}
                             </PillMenu>
                           )}

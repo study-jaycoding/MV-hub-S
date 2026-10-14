@@ -11,6 +11,7 @@ import { POOL_SIZE, type EditUi, type PoolSort, type PoolView } from "../../lib/
 import { formatGenerationDateTime, generationListMeta } from "../../lib/generationDisplay";
 import { reviewState } from "../../lib/generationReview";
 import { useT } from "../../lib/i18n";
+import { pressStartedCovered } from "../../lib/keyGate";
 import { computeMarquee, marqueeHits, type MarqueeRect } from "../../lib/marquee";
 import { thumbOf } from "../../lib/media";
 import type { EditListState } from "../../lib/useEditSequence";
@@ -123,6 +124,7 @@ export function EditPool({
     x: number; y: number; base: readonly string[]; moved: boolean; card: string | null; at: [number, number];
   } | null>(null);
   const draggedRef = useRef(false); // 끌기가 끝난 직후의 click 은 누르기가 아니다(같은 카드 위에서 놓으면 click 이 따라온다)
+  const coveredPressRef = useRef(false); // 이 누름은 위에 뜬 메뉴를 닫는 누름이었다(아래 startDrag)
   const live = useRef({ onPickMany, onCardDrag });
   live.current = { onPickMany, onCardDrag };
   const drag = useRef({
@@ -175,6 +177,9 @@ export function EditPool({
     // 새 누름이다 — 앞 끌기에 딸린 click 은 이미 지나갔다. 안 풀면 끌어서 고른 바로 뒤(타이머가 돌기 전)에 누른 카드가 전부 안 골라진다
     //  (입력은 타이머보다 먼저 처리된다 — 캔버스의 swallowDropClick 과 같은 약속. Codex 코드 리뷰)
     draggedRef.current = false;
+    // 위에 뜬 메뉴를 닫는 누름이다 — 끌기도, 뒤따르는 click 의 고르기도 하지 않는다(조작 규칙 4, 58회차). click 때는 이미 메뉴가 닫혀 있어 그때 볼 수 없다.
+    coveredPressRef.current = pressStartedCovered();
+    if (coveredPressRef.current) return;
     const adding = event.ctrlKey || event.metaKey || event.shiftKey;
     dragRef.current = {
       x: event.clientX, y: event.clientY, moved: false, at: [event.clientX, event.clientY],
@@ -198,6 +203,10 @@ export function EditPool({
     onClick: (event) => {
       if (draggedRef.current) {
         draggedRef.current = false; // 건너뛰는 것은 그 끌기에 딸린 한 번뿐이다
+        return;
+      }
+      if (coveredPressRef.current && event.detail > 0) { // 키보드의 click(detail 0)은 누름이 아니다
+        coveredPressRef.current = false;
         return;
       }
       onPick(item.gen, event.ctrlKey || event.metaKey || event.shiftKey);

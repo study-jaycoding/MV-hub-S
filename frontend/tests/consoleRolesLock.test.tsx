@@ -112,6 +112,24 @@ it("역할 메뉴가 열린 채 다시 읽기가 시작되면 메뉴가 닫힌�
   expect(mocks.setProjectRoles).not.toHaveBeenCalled();
 });
 
+// 58회차(Codex 검토): 메뉴를 연 채 프로젝트 칸을 직접 바꾸면(잠금 없이) A 에서 띄운 '프로젝트에서 빼기'가 남아 B 의 사람을 뺐다.
+it("역할 메뉴가 열린 채 프로젝트를 바꾸면 메뉴가 닫힌다 — 앞 프로젝트에서 띄운 '빼기'가 다음 프로젝트에 가지 않는다", async () => {
+  const two = () => { const t = table(["creator"]); t.projects.push({ ...t.projects[0], id: "p2", name: "외전" }); t.rows[0].projects = { p1: ["creator"], p2: ["creator"] }; return t; };
+  mocks.memberTable.mockResolvedValue(two());
+  await act(async () => root.render(<ConsoleSubView workspaceId="ws" name="서브" tier="sub" today="2026-10-12" canEdit onChanged={() => {}}
+    conflict={{ saveCredit: vi.fn(), savePlanning: vi.fn(), dialog: null, active: false } as never} />));
+  await settle();
+  await act(async () => { pill().click(); });
+  await act(async () => { roleItem("creator").click(); }); // 마지막 역할 — '빼기' 확인이 뜬다
+  expect(host.querySelector("button.danger")?.textContent).toBe("프로젝트에서 빼기");
+  const select = [...host.querySelectorAll<HTMLSelectElement>("select")].find((item) => [...item.options].some((option) => option.value === "p2"))!;
+  await act(async () => { select.value = "p2"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  await settle();
+  expect(host.querySelector("button.danger")).toBeNull();
+  expect(host.querySelector('[role="menuitemcheckbox"]')).toBeNull();
+  expect(mocks.removeProjectMember).not.toHaveBeenCalled();
+});
+
 // Codex 코드 리뷰(2차): 저장 뒤의 조회 R1 이 뒤에 떠난 자동 조회 R2 에 밀려 버려지면, R1 을 기다리던 저장이 잠금을 풀어 화면은 아직 옛 역할인데 다음 저장을 받았다.
 it("저장 뒤의 조회가 뒤에 떠난 자동 조회에 밀려 버려져도, 그 자동 조회가 올 때까지 역할 알약은 잠겨 있다", async () => {
   let finishR1!: (value: ReturnType<typeof table>) => void;

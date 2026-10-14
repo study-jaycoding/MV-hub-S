@@ -1,6 +1,7 @@
 // 편집 탭 왼쪽 — 프로젝트와 폴더 트리에서 시퀀스(컷 폴더들을 담은 폴더)를 고른다.
 // 라이브러리 사이드바(ProjectSection)를 쓰지 않는다: 그쪽은 폴더 클릭이 '생성 목적지'를 서버에 저장한다.
-import { useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { pressStartedCovered } from "../../lib/keyGate";
 import type { Project } from "../../types";
 import { folderConfirmText, type FolderMenuKind } from "../../lib/folderContextMenu";
 import { useT } from "../../lib/i18n";
@@ -68,10 +69,24 @@ export function EditSidebar({
   };
   // 단추가 초점을 가져가지 않게 한다 — 누른 뒤에도 Space·J·K·L 이 재생으로 간다.
   const keepFocus = (event: ReactMouseEvent) => event.preventDefault();
+  // 위에 뜬 메뉴(폴더 우클릭 메뉴 등)를 닫는 누름은 고르기가 아니다(조작 규칙 4, 58회차) — 누름의 시작에 적어 두고 뒤따르는 click 을
+  //  여기서 거둔다(click 때는 이미 메뉴가 닫혀 있다). 메뉴는 body 에 그려져 이 칸의 DOM 밖이라, 그 안의 누름·click 은 세지 않는다
+  //  (React 이벤트는 포털에서도 이 뿌리를 지나온다). 키보드의 click(detail 0)도 거두지 않는다.
+  const coveredPressRef = useRef(false);
+  const inside = (event: ReactMouseEvent<HTMLDivElement>) => event.currentTarget.contains(event.target as Node);
+  const notePress = (event: ReactMouseEvent<HTMLDivElement>) => {
+    coveredPressRef.current = event.button === 0 && inside(event) && pressStartedCovered();
+    onGrabFocus();
+  };
+  const swallowCoveredClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!coveredPressRef.current || event.detail === 0 || !inside(event)) return;
+    coveredPressRef.current = false;
+    event.stopPropagation();
+  };
 
   return (
     <ResizableSidebar>
-      <div className="sidebar-main ed-side" onMouseDownCapture={onGrabFocus} onMouseDown={keepFocus}>
+      <div className="sidebar-main ed-side" onMouseDownCapture={notePress} onClickCapture={swallowCoveredClick} onMouseDown={keepFocus}>
         <section className="project-section">
           <div className="project-tree-section">
             <h4>{t("프로젝트")}</h4>
