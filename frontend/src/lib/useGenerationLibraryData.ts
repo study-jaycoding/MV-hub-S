@@ -692,6 +692,9 @@ export function useGenerationLibraryData({
       if (seq === reloadSeqRef.current && trashMode && hasWorkspaceFilter(query)) {
         setHasMore(false);
         setLoadError(t("휴지통 추가 조회에 실패했습니다. 새로고침 후 다시 시도하세요."));
+        // 이 탭의 캐시(빈 목록 · '더 없음')는 믿을 수 없다 — 남기면 15초 안에 돌아올 때 다시 받지 않고, 탭 전환이 걷은 실패 표시 없이
+        //  '항목 없음'으로 보였다(60회차 Codex 검토). 돌아오면 첫 쪽부터 다시 받는다.
+        delete tabCacheRef.current[filtersRef.current.tab];
       }
       // 일반 목록은 기존대로 다음 스크롤에 재시도한다.
     } finally {

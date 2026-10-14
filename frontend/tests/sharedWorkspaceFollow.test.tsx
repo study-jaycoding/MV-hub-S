@@ -45,10 +45,12 @@ function deferred<T>() {
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
 }
+// App 처럼 고정된 알림 함수 — 그릴 때마다 새 함수를 주면 조회 함수가 매번 바뀌어 아래 신선도 확인이 그릴 때마다 돈다(실제 앱에는 없는 일)
+const noFlash = () => {};
 function Harness() {
   const filters = useLibraryFilters(store, workspace);
   const data = useGenerationLibraryData({ authReady: filters.workspaceQueryReady,
-    filters: filters.filters, genQuery: filters.genQuery, flash: () => {},
+    filters: filters.filters, genQuery: filters.genQuery, flash: noFlash,
     workspaceScopeKey: filters.workspaceScopeKey });
   const select = useGenerationSelection({ resetKey: filters.selectionResetKey });
   const follow = useResolveLibraryFollow({ filters: filters.filters, enabled: true,
@@ -133,6 +135,21 @@ it("공간 필터로 빈 휴지통의 추가 조회 실패는 자동 재시도�
   await act(async () => { await state.data.reload(); });
   expect(state.data.loadError).toBeNull();
   expect(state.data.gens.map((g) => g.id)).toEqual(["restored"]);
+});
+
+// 60회차 Codex 검토: 위 실패 뒤 15초 안에 탭을 오가면, 빈 목록·'더 없음'을 든 캐시가 신선해 다시 받지 않고 실패 표시만 걷혀 '항목 없음'으로 보였다.
+it("휴지통 추가 조회가 실패한 탭에 바로 돌아와도 '항목 없음'으로 남지 않는다 — 다시 받는다", async () => {
+  vi.mocked(api.listTrash).mockImplementation(async (_search, offset = 0) => {
+    if (offset) throw new Error("fixture network failure");
+    return Array.from({ length: 200 }, (_, i) => ({ ...gen(`other-${i}`, B), deleted: true }));
+  });
+  await mount();
+  act(() => state.filters.patch({ deleted_only: true })); await settle();
+  await act(async () => { await state.data.loadMore(); });
+  expect([state.data.hasMore, !!state.data.loadError]).toEqual([false, true]);
+  act(() => state.filters.patch({ tab: "my" })); await settle();
+  act(() => state.filters.patch({ tab: "team" })); await settle();
+  expect(state.data.hasMore).toBe(true); // 다시 받은 첫 쪽 — 전엔 캐시의 '더 없음'·빈 목록에 실패 표시만 걷혀 '항목 없음'
 });
 
 it("공유만 현재 공간을 따르고 저장 수동 필터·다음 생성 목적지·태그는 보존", async () => {
