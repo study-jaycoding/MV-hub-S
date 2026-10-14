@@ -35,7 +35,9 @@ const VIEWS: { id: PoolView; label: string }[] = [
 const SORTS: { id: PoolSort; label: string }[] = [
   { id: "new", label: "최신순" }, { id: "old", label: "오래된순" }, { id: "placed", label: "넣은 것 먼저" },
 ];
-const PROMPT_SHOWN = 400; // 줄에 넣는 프롬프트 글자 수(아래 promptShown) — 넓은 풀의 두 줄보다 넉넉히
+// 줄에 넣는 프롬프트 글자 수(아래 promptShown). 가장 넓은 풀(720px)·가장 작은 썸네일(56px)의 메타 두 줄은 약 1,230px 라, 'i·l' 같은 좁은
+//  글자(12px 에 약 3px)면 400자 넘게 든다 — 그때 잘린 끝이 말줄임 없이 보였다(Codex 40회차 리뷰). 1,000자면 글자 폭 1.3px 까지 넘친다.
+const PROMPT_SHOWN = 1000;
 
 // 검색 = 프롬프트·모델·만든 사람에 그 글이 들어 있는 것. 정렬 = 받은 순서(최신 먼저)를 바탕으로.
 export function arrangePool(items: PoolItem[], query: string, sort: PoolSort): PoolItem[] {
@@ -223,7 +225,7 @@ export function EditPool({
     state: reviewState(gen),
   });
   // 줄에 보이는 프롬프트는 한두 줄(목록 한 줄 · 메타데이터 두 줄)인데 원문은 평균 1만 자를 넘는다(최대 3만) — 다 넣으면 카드 300장에서
-  //  보기를 바꿀 때 배치에만 0.2~0.46초가 들어 화면이 멈췄다(40회차 격리 실측). 보이는 만큼만 넣는다 — 검색은 원문 전체로 한다(arrangePool).
+  //  보기를 바꿀 때 배치에만 0.2~0.46초가 들어 화면이 멈췄다(40회차 격리 실측). 보이는 것보다 넉넉히만 넣는다 — 검색은 원문 전체로 한다(arrangePool).
   const promptShown = (prompt: string) => (prompt.length > PROMPT_SHOWN ? prompt.slice(0, PROMPT_SHOWN) : prompt);
   const stateMark = (state: string) => (
     <span className={`ed-pstate ed-pstate-${state}`}>{state === "final" ? "★" : state === "held" ? "R" : "S"}</span>
