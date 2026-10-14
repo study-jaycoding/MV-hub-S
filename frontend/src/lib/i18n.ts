@@ -68,13 +68,10 @@ const EN: Record<string, string> = {
   "모델": "Model",
   "길이": "Length",
   "트랙": "Track",
-  "트랙 · 소스": "Track · Source",
+  "트랙·소스": "Track·Src", // 목록 보기 마지막 칸(56px) 머리글 — 칸에 들도록 짧게
   "방금 누른 카드": "Just clicked",
   "다이나믹 재생 모드 (W) — 두 화면의 재생을 한 번에: 재생·멈춤·J/K/L·프레임·처음/끝 · 재생바는 화면마다 따로":
     "Dynamic Playback Mode (W) — drive both viewers at once: play·stop·J/K/L·frames·start/end · each viewer's timebar stays its own",
-  "다이나믹 트림 모드 끄기 (W)": "Exit Dynamic Trim Mode (W)",
-  "타임라인의 처음입니다.": "Start of the timeline.",
-  "타임라인의 끝입니다.": "End of the timeline.",
   "소스 클립": "Source clip",
   "소스": "Source",
   "다빈치": "Resolve",

@@ -53,22 +53,6 @@
 }
 .ed-chip-l { left: 12px; }
 .ed-chip-r { right: 12px; font-weight: 500; color: #d7dae0; }
-/* 다이나믹 트림 모드 — 무대를 덮는 두 칸(편집점의 앞 | 뒤). 재생헤드가 있는 쪽 칸에는 엔진의 화면(무대의 .ed-media)이
-   올라온다(data-side — 시계가 프레임마다 적는다): 앞 컷이 왼쪽에서 가다가 편집점을 넘으면 뒤 컷이 오른쪽에서 이어진다.
-   반대쪽 칸은 그 편집점의 프레임으로 서 있다. 무대의 꼬리표·안내는 칸의 것으로 갈음한다. */
-.ed-split { position: absolute; inset: 0; display: flex; gap: 2px; background: #2c303b; }
-.ed-half { position: relative; flex: 1; min-width: 0; overflow: hidden; background: #000; }
-.ed-half .ed-chip { z-index: 2; max-width: calc(100% - 24px); font-weight: 700; color: var(--text); }
-.ed-half .ed-notice { z-index: 2; } /* 엔진의 화면(썸네일) 위에 — 재생하지 못한 영상의 안내 */
-.ed-stage:has(> .ed-split) > .ed-media { z-index: 1; width: calc(50% - 1px); background: #000; }
-.ed-stage:has(> .ed-split[data-side="r"]) > .ed-media { left: auto; right: 0; }
-.ed-stage:has(> .ed-split) > .ed-notice, .ed-stage:has(> .ed-split) > .ed-chip { display: none; }
-.ed-split-close {
-  position: absolute; left: 10px; top: 10px; z-index: 3; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%;
-  background: rgba(8, 9, 12, 0.5); display: flex; align-items: center; justify-content: center;
-}
-.ed-split-close svg { display: block; fill: none; stroke: #d7dae0; stroke-width: 1.4; stroke-linecap: round; }
-.ed-split-close:hover svg { stroke: #fff; }
 .ed-vbot { flex: none; background: var(--panel); border-top: 1px solid var(--border); user-select: none; }
 /* 타임바(다빈치의 재생바) — 누르는 자리는 넉넉하게(높이 28px), 보이는 줄은 4px. 빨강 = 지금 자리, 위의 색 꼬리표 = 북마크,
    밝은 선과 아래의 회색 꼬리표 = 마크 인/아웃, 얇은 줄 = 소스 테이프의 클립 경계. */
@@ -233,14 +217,14 @@
 .ed-pstate-held { color: #ef7d8c; }
 .ed-pstate-final { color: #e8b62c; }
 .ed-prow-list {
-  display: grid; grid-template-columns: 14px minmax(0, 3fr) minmax(0, 1.2fr) minmax(0, 1.5fr) 44px 84px;
+  display: grid; grid-template-columns: 14px minmax(0, 3fr) minmax(0, 1.2fr) minmax(0, 1.5fr) 44px 64px;
   align-items: center; gap: 8px; height: 28px; padding: 0 6px; border-radius: 6px;
 }
 .ed-prow-list > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ed-prow-list.ed-placed > span:last-child { color: var(--accent); font-weight: 700; }
-/* 마지막 칸 '트랙 · 소스' — V1 + 소스 판의 표(84px 에 "V2 소스 L·R" 이 들어간다) */
-.ed-ptrack { display: flex; align-items: center; gap: 4px; }
-.ed-ptrack > .cd-mark { margin-left: 0; padding: 0 6px; }
+/* 마지막 칸 '트랙·소스' — 작은 카드와 같은 짧은 글. 64px: 가장 긴 영어 싱글 'V10·Source'(63px)까지 든다 — 56px 에선 말줄임이 됐다
+   (38회차 격리 실측: 듀얼 'V10·L·R' 56/56 · 싱글 en 63/56). 전체 글은 title. 소스 판에 떠 있으면 안 넣었어도 라임 */
+.ed-prow-list > span.ed-psrc { color: var(--accent); font-weight: 700; }
 .ed-prow-head { position: sticky; top: 0; z-index: 1; height: 26px; font-size: 11px; color: var(--muted2); background: var(--panel); border-bottom: 1px solid var(--border); border-radius: 0; }
 .ed-prow-head:hover { background: var(--panel); }
 /* 다빈치(미디어 풀)에서 고른 것(Jay 2026-10-14) — 공유 탭의 다빈치 확인 표시(resolve-library.css)와 같은 빨강·빛.

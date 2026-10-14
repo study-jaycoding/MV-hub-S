@@ -432,72 +432,7 @@ it("구간 반복 재생을 켜는 순간: 구간 처음으로 가서 정방향 
   expect(playback.view.playing).toBe(true);
 });
 
-// 편집점 앞뒤 재생(Jay 2026-10-08 — 다이나믹 트림 모드의 Space) — 편집점의 앞 2초에서 뒤 2초까지. 구간은 엔진이 쥔다.
-it("편집점 앞뒤 재생: 앞 2초로 가서 뒤 2초까지 틀고 그 편집점으로 돌아와 멈춘다 — 되풀이면 그 구간을 돌고, 다른 재생 명령이 오면 풀린다", () => {
-  const point = { cut: "e070/c3", local: 0 }; // 13초 — 앞은 빈 컷, 뒤는 그림(둘 다 rAF 시계)
-  render({ scope: "around" });
-  act(() => playback.playAround(point, 2, true));
-  expect(playback.now()).toBe(11);
-  expect(playback.view.playing).toBe(true);
-  expect(playback.view.rate).toBe(1);
-  frame(1000);
-  frame(1500); // 컷을 넘는다(13초)
-  frame(1900);
-  expect(playback.now()).toBeCloseTo(14.9);
-  frame(200); // 뒤 2초(15초)를 넘었다 → 편집점으로 돌아와 멈춘다
-  expect(playback.now()).toBe(13);
-  expect(playback.view.playing).toBe(false);
-  expect(playback.view.cut).toBe("e070/c3");
-  expect(frames).toHaveLength(0);
-
-  act(() => playback.playAround(point, 2, false)); // 되풀이(반복이 켜져 있을 때)
-  frame(1000);
-  frame(1500);
-  frame(2100); // 15초를 넘었다 → 앞 2초(11초)로
-  expect(playback.now()).toBe(11);
-  expect(playback.view.playing).toBe(true);
-  act(() => playback.shuttle(1)); // L — 다른 재생 명령이다(같은 방향이라 2배). 구간이 풀려 보통 재생이 된다
-  frame(1300); // 컷을 넘는다(13초)
-  frame(1500); // 16초 — 15초를 지나 그대로 간다
-  expect(playback.now()).toBeCloseTo(16);
-  expect(playback.view.playing).toBe(true);
-
-  act(() => playback.playAround(point, 2, true));
-  frame(500);
-  act(() => playback.toggle()); // 중간에 멈추면 멈춘 자리에 남고, 구간도 풀린다
-  expect(playback.now()).toBeCloseTo(11.5);
-  act(() => playback.toggle());
-  frame(1600); // 컷을 넘는다
-  frame(2500); // 15.5초 — 멈추지 않는다
-  expect(playback.view.playing).toBe(true);
-
-  const range = { from: 9, to: 10 };
-  act(() => playback.playAround(point, 2, true));
-  act(() => playback.playRange(range)); // 그 사이에 구간 반복 재생을 켰다 — 옛 편집점 구간이 새 구간을 덮지 않는다
-  render({ scope: "around", range });
-  frame(1100); // 10초를 넘었다 → 9초로(13초로 가서 멈추지 않는다)
-  expect(playback.now()).toBe(9);
-  expect(playback.view.playing).toBe(true);
-});
-
-it("편집점 앞뒤 재생: 편집점은 컷 좌표로 쥔다 — 트는 동안 앞 컷의 길이가 바뀌어도 그 편집점의 앞뒤를 지킨다", () => {
-  const point = { cut: "e070/c3", local: 0 };
-  render({ scope: "around2" });
-  act(() => playback.playAround(point, 2, true)); // 11초(c2 의 3초)에서
-  frame(1000); // c2 의 4초
-  const longer: EditDoc = { ...DOC, clips: DOC.clips.map((clip) => (clip.gen === "low" ? { ...clip, dur: 9 } : clip)) };
-  render({ scope: "around2", doc: longer, layout: buildLayout(["e070/c1", "e070/c2", "e070/c3"], longer) }); // c3 가 14초에서 시작한다
-  expect(playback.now()).toBe(13); // 보던 자리(c2 의 4초)는 그대로다
-  expect(playback.view.playing).toBe(true);
-  frame(1500); // c3 로 넘어간다(14초)
-  frame(1900); // 15.9초 — 옛 구간의 끝(15초)을 지났지만 멈추지 않는다
-  expect(playback.view.playing).toBe(true);
-  frame(200); // 새 구간의 끝(16초) → 그 편집점(14초)으로 돌아와 멈춘다
-  expect(playback.now()).toBe(14);
-  expect(playback.view.playing).toBe(false);
-});
-
-// 다이나믹 트림 모드의 두 칸은 시계가 그릴 때만 맞춰진다 — 멈춘 자리도 그려야 한다(Codex 코드 리뷰).
+// 재생헤드·시각은 시계가 그릴 때만 맞춰진다 — 멈춘 자리도 그려야 한다(Codex 코드 리뷰).
 it("멈추면 멈춘 자리를 그린다 — 마지막 프레임 뒤에 영상이 편집점을 넘었어도", () => {
   render({ scope: "stop-paint" });
   video.emit("loadedmetadata");
@@ -613,12 +548,6 @@ it("미리 받기: 구간의 끝이 클립 경계와 같으면 다음 클립이 
   expect(video.src).toBe("/v/top");
   expect(video.loads).toBe(loads);
   expect(video.paused).toBe(false);
-
-  act(() => playback.stop());
-  render({ scope: "pair-once" });
-  act(() => playback.playAround({ cut: "e070/c2", local: 0 }, 2, true)); // 한 번만 트는 편집점 앞뒤 재생은 끝에서 멈춘다
-  frame(2100); // 편집점(8초)을 넘어 빈 컷으로 — 구간의 끝(10초)이 다음 경계(13초)보다 먼저다
-  expect(pair.prepared[pair.prepared.length - 1][0]).toBeNull(); // 되돌아가지 않으므로 받지 않는다
 });
 
 it("배속: 재생·L 은 고른 배속으로 시작하고, 재생 중에 바꾸면 바로 따른다 — L 로 올린 속도는 다른 렌더가 되돌리지 않는다", () => {
@@ -646,9 +575,7 @@ it("배속: 재생·L 은 고른 배속으로 시작하고, 재생 중에 바꾸
   act(() => playback.toggle());
   frame(1000);
   expect(playback.now()).toBeCloseTo(10);
-  act(() => playback.playRange({ from: 9, to: 12 })); // 구간 반복 재생·편집점 앞뒤 재생도 고른 배속으로
-  expect(playback.view.rate).toBe(1.5);
-  act(() => playback.playAround({ cut: "e070/c3", local: 0 }, 2, true));
+  act(() => playback.playRange({ from: 9, to: 12 })); // 구간 반복 재생도 고른 배속으로
   expect(playback.view.rate).toBe(1.5);
 });
 
