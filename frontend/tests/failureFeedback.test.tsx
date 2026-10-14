@@ -124,6 +124,8 @@ it("코멘트 — 보내지 못한 글이 있는 동안만 나갈 때 묻는다(
   expect(unloadHeld()).toBe(false); // 열기만 했다 — 원문 그대로
   type(field("e")!, "고친 글");
   expect(unloadHeld()).toBe(true);
+  type(field("e")!, " ");
+  expect(unloadHeld()).toBe(true); // 다 지운 것도 고친 것이다
   act(() => { field("e")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); }); // 고치기 그만
   expect(unloadHeld()).toBe(false);
   act(() => rowButton("c2", "답글").click());

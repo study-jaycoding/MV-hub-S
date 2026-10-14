@@ -125,7 +125,8 @@ export function CommentPanel<T extends CommentPanelItem>({
   const syncUnsent = () => {
     const panel = document.querySelector(`[data-cmt-hold="${holdName}"]`);
     const inputs = panel ? [...panel.querySelectorAll<HTMLInputElement>('input[name="c"], input[name="r"], input[name="e"]')] : [];
-    holdUnload(holdName, inputs.some((input) => input.value.trim() !== "" && input.value !== (input.dataset.original ?? "")));
+    // 고치는 칸(data-original 있음)은 다 지운 것도 고친 것이다
+    holdUnload(holdName, inputs.some((input) => input.dataset.original !== undefined ? input.value !== input.dataset.original : input.value.trim() !== ""));
   };
   useEffect(syncUnsent); // 답글·수정 칸이 열리고 닫힐 때(그린 뒤)
   useEffect(() => () => holdUnload(holdName, false), [holdName]);
