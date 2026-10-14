@@ -422,11 +422,18 @@ it("길이 조절 창의 두 손잡이 — '시작'을 잡고 앞을 자른다. 
   click("원본 길이로"); // 앞뒤를 모두 지운다
   expect(["head" in stored(), "trim" in stored()]).toEqual([false, false]);
   expect(note()).toBe("원본 5.00초 그대로");
+  // 처음과 다른 값으로 끝낸다 — 아래의 되돌리기 · 다시가 빈 걸음이 아니게(처음 = 자르지 않음. Codex 코드 리뷰: 같은 값이면 아무 일을 안 해도 통과한다)
+  //  마지막 걸음의 앞도 처음과 다르게 둔다 — 걸음들이 한 단계로 묶이지 않으면 되돌리기 한 번이 처음까지 가지 못한다.
+  act(() => edge("시작").click());
+  click("+10f");
+  act(() => edge("끝").click());
+  click("−10f");
+  expect([stored().head, stored().trim]).toEqual([10 / 24, 100 / 24]);
   act(() => pop.querySelector<HTMLButtonElement>(".ed-trim-head button")!.click());
-  press({ key: "z", code: "KeyZ", ctrlKey: true }); // 창을 한 번 연 동안의 걸음 전부가 되돌리기 한 단계다
+  press({ key: "z", code: "KeyZ", ctrlKey: true }); // 창을 한 번 연 동안의 걸음 전부가 되돌리기 한 단계다 — 자르기 전으로
   expect(["head" in stored(), "trim" in stored()]).toEqual([false, false]);
-  press({ key: "z", code: "KeyZ", ctrlKey: true, shiftKey: true });
-  expect(["head" in stored(), "trim" in stored()]).toEqual([false, false]);
+  press({ key: "z", code: "KeyZ", ctrlKey: true, shiftKey: true }); // 다시 — 마지막 값으로
+  expect([stored().head, stored().trim]).toEqual([10 / 24, 100 / 24]);
 });
 
 // 큰 화면은 잡은 쪽의 프레임이다 — 끝을 잡으면 마지막으로 보이는 프레임, 시작을 잡으면 처음 보이는 프레임. 재생은 시작부터.
@@ -443,7 +450,8 @@ it("길이 조절 창의 큰 화면 — 잡은 쪽의 프레임에 서고, 재�
   const edge = (label: string) => [...pop.querySelectorAll<HTMLButtonElement>(".ed-trim-edge button")].find((item) => item.textContent === label)!;
   expect([...pop.querySelectorAll<HTMLInputElement>(".ed-trim-range")].map((item) => Number(item.value))).toEqual([72, 24]);
   expect(pop.querySelector(".ed-trim-play span")!.textContent).toBe("앞 1.00초 · 뒤 2.00초 잘라냄 · 원본 5.00초");
-  // 영상 요소가 없다(시험의 공유 목록이 비어 주소가 없다) — 자리 계산은 문서 값으로만 본다: 끝 = 71프레임째, 시작 = 24프레임째
+  // 영상 요소가 없다(이 파일의 공유 목록은 비어 주소가 없다) — 여기서는 손잡이와 글만 본다. 영상 요소가 실제로 가는 시각(잡은 쪽의
+  //  프레임 · 시작점에서 재생 · 끝점에서 멈춤)은 tests/editCutFolder 의 '길이 조절 창의 큰 화면'이 본다.
   expect(pop.querySelector("video")).toBeNull();
   act(() => edge("시작").click());
   expect([...pop.querySelectorAll<HTMLInputElement>(".ed-trim-range")].map((item) => item.classList.contains("ed-on"))).toEqual([false, true]);
