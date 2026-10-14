@@ -1,7 +1,7 @@
 import { memo } from "react";
 import { APP_EVENTS, dispatchAppEvent } from "../../lib/appEvents";
 import { DRAG_TYPES } from "../../lib/dragTypes";
-import { downloadName, downloadOne } from "../../lib/download";
+import { downloadGeneration, downloadName } from "../../lib/download";
 import { thumbOf } from "../../lib/media";
 import { generationStatusLabelFor, generationStatusTitle } from "../../lib/generationDisplay";
 import { useT } from "../../lib/i18n";
@@ -266,7 +266,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
               className="linb-ov-btn"
               title="다운로드"
               onClick={() =>
-                downloadOne(asset.file_path, downloadName(generation, asset.type), generation.id)
+                downloadGeneration(asset.file_path, generation.id, downloadName(generation, asset.type))
               }
             >
               ⤓

@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import { api } from "../api";
 import type { Generation, History } from "../types";
-import { downloadItemsForGenerations, downloadMany } from "./download";
+import { downloadItemsForGenerations, downloadMany, nameGenerationItems } from "./download";
 import { EMBED_MODES, openEmbedWindow } from "./popupWindows";
 
 interface UseGenerationUtilityActionsArgs {
@@ -31,8 +31,11 @@ export function useGenerationUtilityActions({
     bulkBusyRef.current = true;
     try {
       flash(`${items.length}개 다운로드 시작…`);
-      const { ok, failed } = await downloadMany(items);
+      // 파일 이름은 허브가 정한다(프로젝트_폴더_종류_작업자_번호) — 받기 직전에 한 번에 받는다.
+      const named = await nameGenerationItems(items);
+      const { ok, failed } = await downloadMany(named.items);
       if (failed) flash(`다운로드 완료 ${ok}개 · 직접 저장 실패 ${failed}개(새 탭)`);
+      else if (named.notice) flash(named.notice);
     } finally {
       bulkBusyRef.current = false;
     }

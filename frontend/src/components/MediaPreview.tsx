@@ -6,7 +6,7 @@ import { useEscapeClose } from "../lib/useEscapeClose";
 import { useEffect, useRef, useState } from "react";
 import { recordGenerationView } from "../lib/generationViews";
 import { APP_EVENTS } from "../lib/appEvents";
-import { downloadOne } from "../lib/download";
+import { downloadGeneration, downloadOne } from "../lib/download";
 import { addWindowPointerDrag, removeWindowPointerDrag } from "../lib/windowDrag";
 import type { PreviewTarget } from "../types";
 import { CloseIcon } from "./common/ViewIcons";
@@ -223,13 +223,11 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
             <button
               className="lin-board-btn preview-dl-btn"
               title="원본 다운로드"
-              onClick={() =>
-                downloadOne(
-                  cur.url,
-                  previewDownloadName(cur.url, cur.name, cur.type, cur.genId),
-                  cur.genId,
-                )
-              }
+              onClick={() => {
+                // 생성물은 허브가 정한 이름(프로젝트_폴더_종류_작업자_번호)으로 받는다 — 아래 이름은 그것을 못 받았을 때와 에셋의 것
+                const name = previewDownloadName(cur.url, cur.name, cur.type, cur.genId);
+                return cur.genId ? downloadGeneration(cur.url, cur.genId, name) : downloadOne(cur.url, name);
+              }}
             >
               ⤓ 다운로드
             </button>

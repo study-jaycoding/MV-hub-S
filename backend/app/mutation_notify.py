@@ -38,6 +38,7 @@ _NOTIFY_NO_LIBRARY_CHANGE_PATHS = frozenset(
         "/api/agent/sync",
         "/api/cost",
         "/api/comfy/settings",
+        "/api/download/names",  # 다운로드 파일 이름 — 번호는 렌더 폴더의 장부에 생긴다(라이브러리는 그대로다)
         "/api/generations/batch",
         "/api/generations/locate",
         "/api/generations/comment-counts",

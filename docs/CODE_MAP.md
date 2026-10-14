@@ -134,7 +134,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 
 | 파일 | URL·라우트 수 | 한 줄 책임 | 프록시 위임 |
 |---|---|---|---|
-| `library.py`(1178줄) | `GET /api/generations`·`/api/trash`·`/api/download`·`/api/media-thumb`·`POST /api/generations/batch`·`/locate` (15) | 목록·단건·배치·휴지통·다운로드·썸네일·머지, 팀 응답에 로컬 개인메타 오버레이 | 10곳 |
+| `library.py`(1178줄) | `GET /api/generations`·`/api/trash`·`/api/download`·`/api/media-thumb`·`POST /api/generations/batch`·`/locate`·`/api/download/names` (16) | 목록·단건·배치·휴지통·다운로드·썸네일·머지, 팀 응답에 로컬 개인메타 오버레이. `POST /api/download/names` = 카드 다운로드의 파일 이름(§7 — 생성물 id 만 받고, 권한을 확인해 다시 읽은 카드로 이름을 만든다. 번호는 렌더 폴더의 장부. 로컬 전용) | 10곳 |
 | `generation.py`(1314줄) | `PUT /generations/{id}/tags·color·source·comment`·`PUT /generations/workspace/batch` 등 (40) | 태그·색·소스·코멘트·히스토리·워크스페이스 배치·캐시 | 25곳 |
 | `generation_views.py`(57줄) | `GET·PUT /api/generation-views` (2) | "마지막으로 크게 본" 배지 읽기/쓰기 | 0곳 |
 | `folder_cards.py`(약 75줄) | `GET /api/projects/{pid}/folder-cards`·`PUT /api/projects/{pid}/folder-cover` (2) | 공유 & 리뷰 탭의 폴더 카드(하위 폴더별 건수·표지)와 팀 공용 대표 지정. 가시성은 팀 목록과 같다 — 전체를 보는 계정도 '보는 계정 uid' 는 따로 넘긴다(개인 메타 가림). 표지 행은 목록과 같은 주소 규칙(`library._prefer_remote_source_urls`) | 2곳(둘 다) |
@@ -368,7 +368,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
-| `resolve_transfer.py`(759줄) | 생성물 원본을 `Render/<folder>` 로 모으고 manifest 기록 — 파일 이름 `<폴더 경로>_davinci_<번호>`(이름 장부 `export_names`), 같은 생성물은 있는 파일을 그대로 쓴다 | `resolve_integration`·`release_update`·`selection_monitor` |
+| `resolve_transfer.py`(759줄) | 생성물 원본을 `Render/<folder>` 로 모으고 manifest 기록 — 파일 이름 `<프로젝트>_<폴더 경로>_davinci_<작업자>_<번호>`(이름 장부 `export_names` v2 — 저장본·다운로드와 같은 번호), 같은 생성물은 있는 파일을 그대로 쓴다(옛 이름 `<폴더 경로>_davinci_<번호>` 로 보낸 것 포함) | `resolve_integration`·`release_update`·`selection_monitor` |
 | `resolve_bridge.py`(1418줄) | Media Pool 조작 계층 — 상대 import 0(자식 프로세스 겸용, §5-a) | `probe`·`import_worker`·`status_runner`·`selection_worker`·`diagnostics` |
 | `resolve_status_runner.py` | fusionscript 상태·가져오기·프로젝트 열기를 자식 프로세스로 격리·인터프리터 폴백. **켜기 창**: 앱이 Resolve 를 켜는 동안(최대 90초) 모든 Resolve API 호출을 `_select_interpreter` 한 곳에서 막고, 켤 때 받은 `launch_id` 를 가진 열기만 통과시킨다 — 새 Resolve 호출 경로도 반드시 여기를 지나야 관문이 적용된다 | `resolve_integration`·`diagnostics`·`selection_monitor`·`project_library`·`routers/assets` |
 | `resolve_probe.py` | 연결 상태 검사 자식 프로세스 진입점(`-m`, §2.6) | `resolve_status_runner` |
@@ -427,7 +427,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
 | `final_export.py` | 완료 탭 저장 '대상 판정' 순수 정책 단일 출처 — 종류 `final`(최종) · `shared`(공유 중·최종 아님, 보류 포함). 두 집합은 겹치지 않는다 | `manage` |
-| `export_names.py` | 저장 파일의 번호 이름(`<폴더 마디>_<share\|fin\|davinci>_<번호>`)과 렌더 폴더의 이름 장부(`_mvhub_sync/names` — n·g·d 항목, 덮어쓰지 않는 확정). 번호의 권위는 서버가 아니라 이 장부다(`docs/EXPORT_SYNC_DESIGN.md` §6). `NameBook.allocate`·`mark_done` 은 이긴 공개를 메모리 장부(`_owners`·`_mine`·`_done`)에 반영하고 **g 공개에 졌을 때만** `reload()` — 저장마다 장부 전체를 다시 읽으면 한 컷 N 건에 3N²+2N 번 읽는다(Codex 검토 10-09) | `manage`(저장·비교)·`resolve_transfer` |
+| `export_names.py` | 파일 이름 규칙과 렌더 폴더의 이름 장부. **v2(2026-10-13, `docs/EXPORT_SYNC_DESIGN.md` §7)** = `<프로젝트>_<폴더 마디>_<work\|share\|fin\|davinci>_<작업자>_<번호>` · 장부 `_mvhub_sync/names2`(`NameBook2` — n·g·d·r 항목): 번호는 '컷 폴더 × 작업자' 한 줄에서 이름을 처음 받은 순서, 종류와 무관하게 생성물마다 하나. 열쇠는 `job_id`·`id` 둘(`Ident` — 적을 때 `id` 먼저, 찾을 때 `job_id` 먼저), 같은 생성물이 두 번호를 받으면 `r` 로 잇는다. `allocate` 는 쓰기 직전에 장부가 바뀌었는지 보고(`refresh`) 다시 읽는다. 이름 읽기는 `parse_v2`·`saved_shape`(비교·미러의 '저장본 꼴'). **v1(§6)** = `<폴더 마디>_<share\|fin\|davinci>_<번호>` · 장부 `names`(`NameBook`) — 이미 있는 옛 파일을 알아보는 데 계속 쓴다. 번호의 권위는 서버가 아니라 이 장부다. 확정은 덮어쓰지 않는 이름 바꾸기(`commit_new`) | `manage`(저장·비교)·`resolve_transfer`·`library`(다운로드 이름) |
 
 ### 2.6 숨은 진입점
 
@@ -965,7 +965,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `media.ts` | 순수+브라우저(+훅 1) | 썸네일 URL·미디어 종류·DataTransfer 파일 판정 |
-| `download.ts` | api | 다운로드 공용(허브 각인 → 직접 → 프록시 → 새 탭 폴백) |
+| `download.ts` | api | 다운로드 공용(허브 각인 → 직접 → 프록시 → 새 탭 폴백). 생성물의 파일 이름은 허브가 정한다(`POST /api/download/names` — `downloadGeneration`·`nameGenerationItems`, 받을 때만 묻는다. 규칙은 `docs/EXPORT_SYNC_DESIGN.md` §7) |
 | `compareDiff.ts` | 순수 | 비교 모달의 프롬프트·파라미터 차이 계산 |
 | `compareWindow.ts` | 순수 | 비교 창 이동·크기·뷰포트 맞춤 |
 | `synchronizedVideos.ts` | 브라우저 | 비교 영상 재생·탐색 동기화 바인더 |

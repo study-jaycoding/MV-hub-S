@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -34,7 +35,7 @@ from ..deps import (
 )
 from ..models import FacetsOut, GenerationOut
 from ..usecases.generation_locate import locate_generations
-from ..services import file_stamp, media_cache, mp4_picture, thumbs
+from ..services import export_names, file_stamp, media_cache, mp4_picture, project_folders, thumbs
 from ..services.path_safety import safe_join
 from ..services.async_tools import to_thread_non_abandon
 from ..services.media_types import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
@@ -299,6 +300,13 @@ def _team_local_filtered_for_account(
 STAMP_MAX_BYTES = 512 * 1024 * 1024  # 이보다 크면 각인 없이 그냥 흘려보낸다(디스크·시간 보호).
 
 
+def _attachment(name: str) -> str:
+    """Content-Disposition 값. 한글처럼 latin-1 밖의 글자는 머리글에 그대로 실을 수 없다(응답이 500 으로 깨져 화면이
+    '각인 없이 직접 받기'로 빠진다) — RFC 5987 의 `filename*` 로 싣는다(FileResponse 가 쓰는 꼴과 같다)."""
+    quoted = urllib.parse.quote(name)
+    return f'attachment; filename="{name}"' if quoted == name else f"attachment; filename*=utf-8''{quoted}"
+
+
 def _new_temp_file(suffix: str) -> Path:
     """빈 임시 파일 경로. mkstemp 가 연 fd 를 반드시 닫는다 — Windows 는 열린 파일을 교체하지
     못해, fd 를 쥔 채로 두면 각인이 '액세스 거부'로 조용히 실패한다."""
@@ -352,7 +360,7 @@ def _stamped_download(
             return StreamingResponse(
                 _stream_unstamped(),
                 media_type=ctype,
-                headers={"Content-Disposition": f'attachment; filename="{safe}"'},
+                headers={"Content-Disposition": _attachment(safe)},
             )
         file_stamp.stamp_file(tmp, tags, suffix)
         upstream.close()
@@ -363,7 +371,7 @@ def _stamped_download(
     background.add_task(lambda: tmp.unlink(missing_ok=True))
     return FileResponse(
         tmp, media_type=ctype, filename=safe,
-        headers={"Content-Disposition": f'attachment; filename="{safe}"'},
+        headers={"Content-Disposition": _attachment(safe)},
     )
 
 
@@ -417,7 +425,8 @@ def download_media(
     프록시(이 엔드포인트)로 받으면 Content-Disposition: attachment 로 '진짜 다운로드'(크롬 다운로드
     목록)가 된다. http(s) 만 허용 + 내부 호스트 차단(기본 SSRF 방어). 로컬 보관본(/media·/api)은
     로컬 보관본(/media/...)도 gen_id 가 오면 여기서 각인해 내려준다(각인 경로 일원화)."""
-    safe = (name or "download").replace('"', "").replace("\n", "").replace("\r", "")[:120] or "download"
+    # 200자 — 우리 이름 규칙(§7)의 이름은 150자까지다. 그보다 짧게 자르면 확장자가 잘린다.
+    safe = (name or "download").replace('"', "").replace("\n", "").replace("\r", "")[:200] or "download"
 
     # 로컬 보관본(byte-cache) — 원격이 아니라 우리 디스크에 있는 파일. 각인해서 사본으로 내려준다.
     if url.startswith("/media/"):
@@ -478,8 +487,87 @@ def download_media(
     return StreamingResponse(
         _stream(),
         media_type=ctype,
-        headers={"Content-Disposition": f'attachment; filename="{safe}"'},
+        headers={"Content-Disposition": _attachment(safe)},
     )
+
+
+# ── 카드 다운로드의 파일 이름(docs/EXPORT_SYNC_DESIGN.md §7) ─────────────────────────────────
+# `<프로젝트>_<폴더>_<work|share|fin>_<작업자>_<번호>` — 공유·최종 저장, 다빈치 보내기와 같은 장부·같은 번호다.
+MAX_DOWNLOAD_NAMES = 200
+# 번호 받기는 이 허브에서 한 번에 한 요청만 — 동시 다운로드가 장부에서 서로 번호를 태우지 않게. 기다림에는 상한을 둔다:
+# NAS 가 멎은 요청 뒤에 줄을 세우면 워커 스레드가 차서 허브의 다른 요청까지 선다(Codex 코드 리뷰). 못 잡으면 임시 이름.
+_DOWNLOAD_NAMES_LOCK = threading.Lock()
+_DOWNLOAD_NAMES_WAIT = 3.0  # 초
+
+
+class DownloadNamesIn(BaseModel):
+    gen_ids: list[str] = Field(default_factory=list, max_length=MAX_DOWNLOAD_NAMES)
+
+
+def _first_asset(card: dict) -> dict:
+    assets = card.get("assets") or []
+    return assets[0] if assets and isinstance(assets[0], dict) else {}
+
+
+def _downloadable(card: dict) -> bool:
+    """받을 결과물이 있는 카드인가 — 완료됐고 첫 에셋에 원본 자리가 있다. 생성 중인 카드에 이름을 주면 확장자(`.bin`)가
+    그 생성물의 번호와 함께 굳는다(나중에 mp4 가 와도 저장·다빈치까지 그 확장자를 쓴다, Codex 코드 리뷰)."""
+    asset = _first_asset(card)
+    return card.get("status") == "done" and bool(asset.get("file_path") or asset.get("source_url"))
+
+
+def _download_name(card: dict, books: Optional[dict[str, Optional[export_names.Books]]]) -> dict:
+    """생성물 카드 하나의 다운로드 이름 — {"name", "numbered"}. 번호를 받을 수 없으면(렌더 폴더 미연결·NAS 불통·프로젝트나 폴더가
+    없음 · books=None: 다른 요청이 번호를 받는 중) 같은 꼴의 임시 이름(`…_x<해시>`)을 주고 numbered=False — 다운로드는 막지
+    않는다. 임시 이름은 장부에 적지 않는다."""
+    asset = _first_asset(card)
+    kind = "fin" if card.get("is_final") else "share" if card.get("shared") else export_names.WORK
+    ext = project_folders.export_ext(str(asset.get("file_path") or asset.get("source_url") or ""), asset.get("type"))
+    pid, folder = str(card.get("project_id") or ""), str(card.get("folder_path") or "")
+    ident = export_names.Ident(pid, card.get("project_name"), card.get("job_id"), card.get("id"), card.get("creator_name"))
+    try:
+        if books is not None and pid and folder:
+            if pid not in books:
+                state = project_folders.render_root_state(pid)
+                usable = state.get("render_path") and not state.get("error")
+                books[pid] = export_names.Books(Path(state["render_path"])) if usable else None
+            render = books[pid]
+            probe = project_folders.safe_dest(render.root, folder, "_probe") if render is not None else None
+            if render is not None and probe is not None and os.environ.get("MVHUB_NAMES_READONLY") == "1":
+                # 격리 개발 화면(test_dev)은 시험 DB 사본의 렌더 경로 = 운영 NAS 를 본다 — 다운로드로 번호를 영구히 쥐지 않고
+                # 이미 받은 이름만 읽는다(Codex 통합 검토 P1, 2026-10-13). 저장·다빈치 보내기는 운영 NAS 에 파일까지 쓰는 명시적 동작이라 그대로다.
+                found = render.v2(folder).name_of(ident, kind)
+                if found:
+                    return {"name": found, "numbered": True}
+            elif render is not None and probe is not None:
+                # 번호는 종류와 무관한 한 줄 — 이 컷의 파일이 놓이는 두 폴더(컷 폴더·shared/)에 이미 있는 번호를 건너뛴다.
+                dirs = [probe.parent, probe.parent / project_folders.SHARED_SUBFOLDER]
+                return {"name": render.v2(folder).allocate(ident, kind, ext, dirs), "numbered": True}
+    except (export_names.RegistryError, OSError) as exc:
+        log.warning("다운로드 이름의 번호를 받지 못했습니다(%s): %s", card.get("id"), exc)
+    return {"name": export_names.temp_name(ident, folder, kind, ext), "numbered": False}
+
+
+@router.post("/download/names")
+def download_names(body: DownloadNamesIn, request: Request):
+    """카드 다운로드에 쓸 파일 이름 — **실제로 받을 때만** 부른다(부르는 것만으로 번호가 생긴다).
+
+    생성물 id 만 받는다. 이름·종류·확장자는 이 허브가 **권한을 확인해 다시 읽은 카드**에서 만든다 — 화면이 보낸 값은
+    장부에 들어가지 않는다. 볼 수 없거나 없는 생성물, 아직 받을 결과물이 없는 생성물(생성 중·실패)은 응답에서 빠진다
+    (화면은 옛 이름으로 받는다). 로컬 전용(_proxy._LOCAL_EXACT) — 번호의 장부가 이 PC 가 보는 렌더 폴더에 있다."""
+    ids = list(dict.fromkeys(str(gen_id).strip() for gen_id in body.gen_ids if str(gen_id).strip()))
+    if not ids:
+        return {"names": {}}
+    # 조회·권한은 캔버스 일괄 조회와 한 곳(존재 은닉·공유 서버 위임 포함)
+    found = get_generations_batch(GenerationBatchIn(gen_ids=ids), request)["items"]
+    cards = {gen_id: found[gen_id] for gen_id in ids if isinstance(found.get(gen_id), dict) and _downloadable(found[gen_id])}
+    held = _DOWNLOAD_NAMES_LOCK.acquire(timeout=_DOWNLOAD_NAMES_WAIT)
+    try:
+        books: Optional[dict[str, Optional[export_names.Books]]] = {} if held else None
+        return {"names": {gen_id: _download_name(card, books) for gen_id, card in cards.items()}}
+    finally:
+        if held:
+            _DOWNLOAD_NAMES_LOCK.release()
 
 
 # ── View 타임라인 '합쳐진 영상' 병합 다운로드 ──────────────────────────────────

@@ -8,8 +8,10 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ history: vi.fn(), uploadAssets: vi.fn(), saveToDownloadDir: vi.fn(), flashMsg: vi.fn() }));
+const mocks = vi.hoisted(() => ({ history: vi.fn(), uploadAssets: vi.fn(), saveToDownloadDir: vi.fn(), flashMsg: vi.fn(), jsonFetch: vi.fn() }));
 vi.mock("../src/api", () => ({ api: { history: mocks.history, uploadAssets: mocks.uploadAssets } }));
+// 생성물의 다운로드 이름은 허브가 정한다(tests/downloadNames) — 여기서는 이름을 못 받은 것으로 두고 옛 이름으로 받는다
+vi.mock("../src/lib/http", async (original) => ({ ...(await original<typeof import("../src/lib/http")>()), jsonFetch: mocks.jsonFetch }));
 vi.mock("../src/lib/assetBroadcast", () => ({ postAssetsUpdated: vi.fn() }));
 vi.mock("../src/lib/downloadDir", () => ({ saveToDownloadDir: mocks.saveToDownloadDir }));
 vi.mock("../src/lib/flash", () => ({ flashMsg: mocks.flashMsg }));
@@ -25,6 +27,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   for (const mock of Object.values(mocks)) mock.mockReset();
   mocks.saveToDownloadDir.mockResolvedValue(true); // 지정 폴더에 저장된 것으로 — 브라우저 다운로드(a[download])를 타지 않는다
+  mocks.jsonFetch.mockResolvedValue({ names: {} });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });

@@ -92,7 +92,9 @@ class SaveProgressTests(unittest.TestCase):
 
         out = self._run(peek)
         self.assertEqual((out["saved"], out["cancelled"]), (6, False))
-        self.assertEqual([d for d, _, _ in seen], [1, 2, 3, 4, 5, 6])  # 건마다 오른다
+        # 건마다 오른다. 한 건을 여러 번 들여다봐도(저장 전·번호를 잡은 뒤·확정 직전 — 2026-10-13) 그 건의 값은 같고 뒤로 가지 않는다.
+        self.assertEqual(sorted({d for d, _, _ in seen}), [1, 2, 3, 4, 5, 6])
+        self.assertEqual([d for d, _, _ in seen], sorted(d for d, _, _ in seen))
         self.assertTrue(all(total == 6 and running for _, total, running in seen))
         done = manage_router._progress_view("p1")
         self.assertEqual((done["done"], done["total"], done["running"], done["saved"]), (6, 6, False, 6))

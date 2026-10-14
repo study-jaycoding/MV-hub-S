@@ -817,7 +817,9 @@ def final_export_sources(
     project_id: str, gen_ids: "list[str] | set[str]"
 ) -> list[dict[str, Any]]:
     """판정 통과한 gen_id 들의 저장 원자료(폴더·첫 asset). 종전 finals_to_export 후반부와
-    동일 SQL — ★project_id 재제한·deleted 제외로 타 프로젝트 수동 링크 유출을 막는다."""
+    동일 SQL — ★project_id 재제한·deleted 제외로 타 프로젝트 수동 링크 유출을 막는다.
+    파일 이름 v2(docs/EXPORT_SYNC_DESIGN.md §7)에 쓰는 `job_id`·`creator_name`·`project_name` 도 같이 준다 — 이름은 이
+    프로젝트의 유일한 해석기(resolve_display_names)의 것이다(카드에 보이는 그 이름)."""
     ids = list(dict.fromkeys(g for g in (gen_ids or []) if g))
     if not ids:
         return []
@@ -827,7 +829,7 @@ def final_export_sources(
         for id_batch in _batched(ids):
             ph = ",".join("?" * len(id_batch))
             rows = conn.execute(
-                f"SELECT g.id AS gen_id, g.folder_path AS folder_path, "
+                f"SELECT g.id AS gen_id, g.folder_path AS folder_path, g.job_id AS job_id, g.creator_uid AS creator_uid, "
                 f"  (SELECT a.file_path FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS file_path, "
                 f"  (SELECT a.type FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS media_type, "
                 f"  (SELECT a.source_url FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS source_url "
@@ -835,6 +837,11 @@ def final_export_sources(
                 [*id_batch, project_id],
             ).fetchall()
             result.extend(dict(r) for r in rows)
+        names = resolve_display_names(conn, {row["creator_uid"] for row in result if row["creator_uid"]})
+        project = conn.execute("SELECT name FROM project WHERE id=?", (project_id,)).fetchone()
+        for row in result:
+            row["creator_name"] = names.get(row.pop("creator_uid") or "")
+            row["project_name"] = project["name"] if project else None
         return result
 
 

@@ -1,4 +1,4 @@
-import { downloadName, downloadOne } from "../../lib/download";
+import { downloadGeneration, downloadName } from "../../lib/download";
 import { APP_EVENTS, dispatchAppEvent } from "../../lib/appEvents";
 import type { Asset, Generation, InfoTarget } from "../../types";
 import { BranchIcon } from "./GenerationCardIcons";
@@ -68,7 +68,7 @@ export function GenerationThumbOverlay({
           <button
             className="ov-icon"
             title="다운로드"
-            onClick={() => downloadOne(asset.file_path, downloadName(gen, asset.type), gen.id)}
+            onClick={() => downloadGeneration(asset.file_path, gen.id, downloadName(gen, asset.type))}
           >
             ⤓
           </button>
