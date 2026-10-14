@@ -94,7 +94,7 @@ import { dropLabel, EditTimeline, ZOOM_MAX, ZOOM_MIN, type ClipLink, type DropHi
 import { EditClipMenu, EditListMenu, EditTrackHeadMenu, EditTrackMenu, type TrackAct, type TrackRow } from "./EditTrackMenu";
 import { EditTrimPop, type TrimAnchor } from "./EditTrimPop";
 import { EditTrimView } from "./EditTrimView";
-import { EditViewer, writeText, type ViewerControls, type ViewerMarking, type ViewOption } from "./EditViewer";
+import { EditViewer, writeText, type ViewerControls, type ViewOption } from "./EditViewer";
 import { ResizableSidebar } from "../common/ResizableSidebar";
 
 interface Props {
@@ -1222,19 +1222,16 @@ function EditTabInner({
     order, mode, options: viewOptions, onMode: (next: ViewMode) => setMode(order, next),
     dualButton: order === slots.length - 1 ? { dual: ui.dual, onToggle: () => patchUi({ dual: !ui.dual }) } : null,
   });
-  // 뷰어 오른쪽 아래의 단추 셋(타임라인의 시계를 쓰는 판)
-  const marking: ViewerMarking = {
-    markIn: () => markHere("markIn"), markOut: () => markHere("markOut"),
-    rangeLoop: rangeOn, canRangeLoop: hasBand, onRangeLoop: toggleRangeLoop,
-  };
-  // 배속 단추(Jay 2026-10-08) — 누를 때마다 다음 값. 두 뷰어가 같이 쓰고, 이 브라우저에 남는다.
+  // 배속 단추(Jay 2026-10-08) — 누를 때마다 다음 값. 소리 크기(Jay 2026-10-14 — 뷰어 아래 오른쪽)도 같이 — 모든 판이 같이 쓰고, 이 브라우저에 남는다.
   const speedPane = {
     speed: ui.speed,
     onSpeed: () => patchUi({ speed: EDIT_SPEEDS[(EDIT_SPEEDS.indexOf(ui.speed) + 1) % EDIT_SPEEDS.length] }),
+    volume: ui.volume,
+    onVolume: (volume: number) => patchUi({ volume }),
   };
   const clockPane = { // 타임라인의 시계를 쓰는 판(타임라인·한 트랙만)이 같이 받는 것
     ...speedPane,
-    playing: view.playing, rate: view.rate, total: layout.total, marks: NO_MARKS, io: marks, flags, marking, registerPaint,
+    playing: view.playing, rate: view.rate, total: layout.total, marks: NO_MARKS, io: marks, flags, registerPaint,
     controls: tlControls,
     loop: ui.loop, onLoop: () => patchUi({ loop: !ui.loop }), empty,
     active: mixed && !onSource, onActivate: () => setKeyTarget("timeline"),
@@ -1409,7 +1406,7 @@ function EditTabInner({
           {!needWorkspace && list.state === "capped" && (
             <span className="ed-warn" role="status">{t("최대 2,000건까지만 표시합니다.")}</span>
           )}
-          {/* 인/아웃 구간의 길이(누르면 지운다)와 북마크 — 마크 인/아웃 단추는 뷰어 오른쪽 아래에 있다(다빈치) */}
+          {/* 인/아웃 구간의 길이(누르면 지운다)와 북마크 — 구간 반복·마크 인·마크 아웃은 다이나믹 트림 단추의 왼쪽(Jay 2026-10-14 — 전엔 뷰어 오른쪽 아래) */}
           {target && (
             <span className="ed-marks">
               {/* 타임라인 Resolve 보내기 — 오른쪽 도구들의 맨 앞(다빈치의 Quick Export 자리). 누르면 확인 창이 뜬다 */}
@@ -1426,6 +1423,22 @@ function EditTabInner({
                 {resolve.timelineBusy ? t("보내는 중…") : exportDone ? t("✓ Resolve 에 보냄") : t("타임라인 Resolve 보내기")}
               </button>
               <i className="ed-msep" aria-hidden="true" />
+              <button type="button" className={"ed-mbtn ed-mbtn-range" + (rangeOn ? " ed-on" : "")} aria-pressed={rangeOn}
+                disabled={!hasBand} onClick={toggleRangeLoop}
+                title={t("구간 반복 재생 (Alt+/) — 마크 인/아웃 사이를 되풀이합니다")}
+                aria-label={t("구간 반복 재생 (Alt+/) — 마크 인/아웃 사이를 되풀이합니다")}>
+                <svg width="20" height="14" viewBox="0 0 20 14" aria-hidden="true">
+                  <rect x="1" y="1" width="18" height="12" rx="2.5" /><path d="M10 4v6M7.5 4.8 5 7l2.5 2.2M12.5 4.8 15 7l-2.5 2.2" />
+                </svg>
+              </button>
+              <button type="button" className="ed-mbtn ed-mbtn-io ed-mbtn-in" onClick={() => markHere("markIn")}
+                title={t("마크 인 (I)")} aria-label={t("마크 인 (I)")}>
+                <svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><path d="M1 1v10l8-5z" /><rect x="11" y="1" width="2" height="10" /></svg>
+              </button>
+              <button type="button" className="ed-mbtn ed-mbtn-io ed-mbtn-out" onClick={() => markHere("markOut")}
+                title={t("마크 아웃 (O)")} aria-label={t("마크 아웃 (O)")}>
+                <svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><rect x="1" y="1" width="2" height="10" /><path d="M13 1v10L5 6z" /></svg>
+              </button>
               {/* 다빈치의 Dynamic Trim Mode 단추 — [ ‹ | › ] */}
               <button type="button" className={"ed-mbtn ed-mbtn-trim" + (trim ? " ed-on" : "")} aria-pressed={trim} onClick={toggleTrim}
                 title={t("다이나믹 트림 모드 (W) — 나뉜 뷰어를 한 창으로 합쳐 편집점의 앞 컷 | 뒤 컷을 이어 봅니다 · ↑↓ 편집점 · Space 앞뒤 2초 재생")}

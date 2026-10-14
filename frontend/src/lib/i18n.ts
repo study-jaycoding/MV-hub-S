@@ -139,6 +139,8 @@ const EN: Record<string, string> = {
   "트랙 켜기": "Enable track",
   "트랙 끄기": "Disable track",
   "소리 끄기": "Mute",
+  "소리 켜기": "Unmute",
+  "소리 크기": "Volume",
   "우클릭 — 트랙 추가·삭제·옮기기·색": "Right-click — add, delete, move, color the track",
   "트랙 메뉴": "Track menu",
   "이 위에 트랙 추가": "Add track above",

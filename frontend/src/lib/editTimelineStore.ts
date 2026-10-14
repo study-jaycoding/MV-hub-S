@@ -168,12 +168,13 @@ export interface EditUi {
   speed: number; // 재생 배속(EDIT_SPEEDS 중 하나) — 두 뷰어가 같이 쓴다
   markerColor: string; // 새 북마크의 색(#rrggbb)
   sideHidden: boolean; // 왼쪽 폴더 목록을 닫아 두었다(풀 머리줄의 단추 — 공유 탭의 닫힘과는 따로 기억한다, Jay 2026-10-13)
+  volume: number; // 뷰어의 소리 크기 0~1(Jay 2026-10-14 — 뷰어 아래 오른쪽) — 모든 판이 같이 쓴다. A1 의 M(문서의 소리 끄기)과는 따로다
 }
 export const POOL_SIZE = { min: 56, max: 240 }; // 최소 = 다빈치 미디어 풀의 작은 썸네일쯤
 export const EDIT_SPEEDS = [1, 1.5, 2, 4]; // 배속 단추가 도는 순서
 const DEFAULT_UI: EditUi = {
   view: "thumb", size: 160, sort: "new", dual: false, views: ["source", "timeline"], loop: false, loopSrc: false, speed: 1,
-  markerColor: MARKER_COLORS[0].color, sideHidden: false,
+  markerColor: MARKER_COLORS[0].color, sideHidden: false, volume: 1,
 };
 const viewMode = (value: unknown): ViewMode | null =>
   value === "timeline" || value === "source" || value === "tape" ? value
@@ -199,6 +200,7 @@ export function loadEditUi(): EditUi {
       speed: EDIT_SPEEDS.includes(raw.speed as number) ? (raw.speed as number) : 1,
       markerColor: isHexColor(raw.markerColor) ? raw.markerColor : DEFAULT_UI.markerColor,
       sideHidden: raw.sideHidden === true,
+      volume: typeof raw.volume === "number" && Number.isFinite(raw.volume) ? Math.min(1, Math.max(0, raw.volume)) : 1,
     };
   } catch {
     return DEFAULT_UI;
