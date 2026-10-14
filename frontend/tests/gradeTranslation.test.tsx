@@ -114,26 +114,30 @@ it("bulk results translate counts, partial failures and mirror pending at comple
   expect(flash).toHaveBeenLastCalledWith("No eligible items to change.");
 });
 
-// Codex 조작 점검(2026-10-14) — 처리 뒤 목록을 다시 받는 동안에는 다음 등급 조작을 받지 않는다: 그동안 든 선택은 옛 상태라(방금 최종을
-//  풀었는데 아직 최종으로 보인다) 방향이 틀리게 잡힌다. 받은 뒤에는 다시 받는다.
-it("grade steps wait for the reload after a run — the selection is stale until the list is back", async () => {
+// Codex 조작 점검(2026-10-14) — 처리 뒤 같은 선택으로 또 누르면, 화면이 아직 든 옛 상태가 아니라 **서버의 답**으로 방향을 잡는다(목록을
+//  다시 받는 중이거나 받지 못했을 때 — 그 생성물의 객체가 그대로다). 목록이 새로 오면(객체가 바뀐다) 목록을 믿는다. 잠그고 기다리지
+//  않는다: 다시 받기는 실패해도 조용히 끝나고, 뒤따르는 조회가 늦으면 끝나지 않는다.
+it("the next grade step after a run uses the server's answer until the list brings a new object", async () => {
   let actions!: ReturnType<typeof useGradeStep>;
-  let finishReload: () => void = () => {};
-  const flash = vi.fn(), reload = vi.fn(() => new Promise<void>((resolve) => { finishReload = resolve; }));
+  const flash = vi.fn(), reload = vi.fn(() => new Promise<void>(() => {})); // 다시 받기가 끝나지 않는다
   function Harness() { actions = useGradeStep({ canFinalize: () => true, flash, reload }); return null; }
   act(() => root.render(<Harness />));
-  vi.mocked(api.unfinalize).mockResolvedValue(gen({ is_held: true }));
-  const stale = [gen({ is_final: true })]; // 화면이 아직 들고 있는 옛 선택
-  act(() => actions.requestGradeStep(stale, "down"));
-  let run: Promise<void> = Promise.resolve();
-  await act(async () => { run = actions.confirm(); for (let turn = 0; turn < 8; turn++) await Promise.resolve(); });
-  expect([actions.pending, reload.mock.calls.length, flash.mock.calls.length]).toEqual([null, 1, 1]); // 확인 창은 닫혔고 결과를 알렸고, 목록을 다시 받는 중이다
-  act(() => actions.requestGradeStep(stale, "down"));
-  act(() => actions.requestGradeStep(stale, "up"));
-  expect([actions.pending, flash.mock.calls.length, vi.mocked(api.unfinalize).mock.calls.length]).toEqual([null, 1, 1]); // 창도 안 뜨고 '바꿀 것이 없다'도 안 뜬다
-  await act(async () => { finishReload(); await run; });
-  act(() => actions.requestGradeStep(stale, "down"));
-  expect(actions.pending).not.toBeNull(); // 받은 뒤에는 다시 받는다
+  const stale = gen({ id: "a", is_final: true }); // 화면이 든 것 — 처리 뒤에도 같은 객체다(목록이 아직 안 왔다)
+  vi.mocked(api.unfinalize).mockResolvedValueOnce(gen({ id: "a", is_final: false, is_held: true })); // 최종 전에 보류였다 → 보류로
+  act(() => actions.requestGradeStep([stale], "down"));
+  await act(async () => { void actions.confirm(); for (let turn = 0; turn < 8; turn++) await Promise.resolve(); });
+  expect([actions.pending, actions.busy, reload.mock.calls.length]).toEqual([null, false, 1]); // 확인 창은 닫혔고, 잠그지 않는다
+  act(() => actions.requestGradeStep([stale], "up")); // 옛 상태(최종)로 보면 올릴 것이 없다 — 서버의 답(보류)으로 보면 보류 해제다
+  expect(actions.pending?.ops.map((op) => op.action)).toEqual(["unhold"]);
+  act(() => actions.cancel());
+  act(() => actions.requestGradeStep([stale], "double")); // 옛 상태면 또 '최종 해제'
+  expect(actions.pending?.ops.map((op) => op.action)).toEqual(["finalize"]);
+  act(() => actions.cancel());
+  act(() => actions.requestGradeStep([{ ...stale }], "down")); // 목록이 새로 왔다(객체가 다르다) — 목록을 믿는다
+  expect(actions.pending?.ops.map((op) => op.action)).toEqual(["unfinalize"]);
+  act(() => actions.cancel());
+  act(() => actions.requestGradeStep([stale], "up")); // 서버의 답은 그때 버렸다 — 옛 객체가 다시 와도 쓰지 않는다
+  expect(flash).toHaveBeenLastCalledWith("No eligible items to change.");
 });
 
 // Jay 2026-10-14 — 최종을 해제하면 원래의 보류로: 여러 장을 한 번에 풀 때도(S 더블클릭 · ↓) 보류로 돌아간 수를 알린다. 올리는 쪽(최종 지정 ·
