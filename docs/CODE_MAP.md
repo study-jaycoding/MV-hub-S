@@ -1001,6 +1001,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `useFloatingPanel.ts` | 훅 | 떠 있는 패널 위치·드래그·클램프 |
 | `useMenuPlacement.ts` | 훅 | 메뉴 배치 계산을 DOM 에 부착·재측정 |
 | `menuPlacement.ts` | 순수 | 잘리는 조상 안에서 메뉴 방향·높이 계산 |
+| `devicePixelRatio.ts` | 브라우저 | 화면 배율(DPR) 읽기·바뀜 구독 — `(resolution: Ndppx)` 질의로 듣는다(모니터를 옮기면 창 크기는 그대로라 resize 가 안 온다). 캔버스 끌기 층·격자의 썸네일 요청 폭이 같이 쓴다 |
 | `windowDrag.ts` | 브라우저 | window mouse/pointer 드래그 리스너 add/remove 4벌 — 캔버스 밖 끌기의 공용부. 단추 없는 움직임·blur·pointercancel 에 `onUp` 을 그 이벤트로 부른다(놓친 mouseup). 받는 쪽은 `dragLost(e)` 로 가른다 |
 | `useDisabledGenerations.ts` / `useDisabledFolders.ts` | 훅(2파일) | 비활성 집합 구독 |
 
