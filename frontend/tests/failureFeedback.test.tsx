@@ -34,6 +34,7 @@ import { EMPTY_ASSET_META } from "../src/components/assets/assetsViewModel";
 import { useAssetMetaActions } from "../src/components/assets/useAssetMetaActions";
 import { useAssetProjectData } from "../src/components/assets/useAssetProjectData";
 import { useSceneClipboardDrop } from "../src/lib/useSceneClipboardDrop";
+import { unloadHeld, unsavedPlaces } from "../src/lib/unloadGuard";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -104,6 +105,32 @@ it("코멘트 — 전송에 실패하면 쓴 글이 남고, 저장된 뒤에야 
   submit(input, "둘째 글");
   await settle();
   expect([input.value, input.readOnly]).toEqual(["둘째 글", false]);
+});
+
+// Jay 결정 6A(10-15): 보내지 못한 코멘트 글이 있는 동안 창을 닫거나 새로고침하면 묻는다 — 고치던 글은 원문과 달라졌을 때만.
+it("코멘트 — 보내지 못한 글이 있는 동안만 나갈 때 묻는다(새 글·답글·원문과 달라진 수정)", async () => {
+  const type = (input: HTMLInputElement, text: string) => act(() => {
+    input.value = text;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  showPanel(async () => true, async () => true);
+  expect(unloadHeld()).toBe(false);
+  type(field("c")!, "쓰다 만 글");
+  expect(unsavedPlaces()).toBe("코멘트");
+  submit(field("c")!);
+  await settle();
+  expect(unloadHeld()).toBe(false); // 보냈다
+  act(() => rowButton("c1", "수정").click());
+  expect(unloadHeld()).toBe(false); // 열기만 했다 — 원문 그대로
+  type(field("e")!, "고친 글");
+  expect(unloadHeld()).toBe(true);
+  act(() => { field("e")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); }); // 고치기 그만
+  expect(unloadHeld()).toBe(false);
+  act(() => rowButton("c2", "답글").click());
+  type(field("r")!, "답글 쓰는 중");
+  expect(unloadHeld()).toBe(true);
+  act(() => root.render(<></>)); // 패널을 닫았다
+  expect(unloadHeld()).toBe(false);
 });
 
 it("답글 — 실패하면 답글 칸과 글이 남고 성공하면 닫힌다. 기다리는 사이 연 다른 글의 답글 칸은 닫지 않는다", async () => {

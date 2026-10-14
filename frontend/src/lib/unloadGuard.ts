@@ -6,12 +6,13 @@
 //    Codex 배포 전 재검토 2026-10-13). 그런 길 가운데 사용자가 미리 고를 수 있는 것(로그아웃·업데이트 완료)은 unloadHeld() 로 먼저 묻는다.
 const holders = new Set<string>();
 const PLACES: Record<string, string> = { "edit-docs": "편집 탭", "scene-save": "캔버스", "task-desc": "작업표 설명", "partial-edit": "부분 수정 창",
-  "member-planning": "PM 관리 표" };
+  "member-planning": "PM 관리 표", comment: "코멘트" };
 
 /** 저장하지 못한 것을 쥔 쪽이 있는가 — 앱이 스스로 새로고침하기 전에 묻는 데 쓴다. */
 export const unloadHeld = (): boolean => holders.size > 0;
 /** 저장하지 못한 것을 쥔 곳("편집 탭" · "편집 탭·캔버스", 없으면 "") — 안내 글에 쓴다. */
-export const unsavedPlaces = (): string => [...holders].map((name) => PLACES[name] ?? name).join("·");
+//  이름의 ':' 앞이 곳이다 — 같은 곳이 여럿 떠 있어도(코멘트 창 둘) 한 번만 말한다.
+export const unsavedPlaces = (): string => [...new Set([...holders].map((name) => PLACES[name.split(":")[0]] ?? name))].join("·");
 
 const warn = (event: BeforeUnloadEvent) => {
   event.preventDefault();

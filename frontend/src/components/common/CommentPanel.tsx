@@ -1,6 +1,7 @@
 import { backgroundKeysBlocked } from "../../lib/keyGate";
 import { markKeyHandled } from "../../lib/keyHandled";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { holdUnload } from "../../lib/unloadGuard";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, Ref } from "react";
 import { buildCommentTree } from "../../lib/commentTree";
 import { fmtWhen } from "../../lib/format";
@@ -118,6 +119,16 @@ export function CommentPanel<T extends CommentPanelItem>({
   const sendingRef = useRef(new WeakSet<HTMLInputElement>());
   const targetRef = useRef(targetKey);
   targetRef.current = targetKey;
+  // 보내지 못한 글이 있는 동안 창을 닫거나 새로고침하면 브라우저가 묻는다(Jay 결정 6A, 10-15) — 새 글·답글은 비어 있지 않으면, 고치는 글은
+  //  원문(data-original)과 달라졌으면. 입력칸이 글을 쥐고 있어(state 가 아니다) 칠 때·그린 뒤·보낸 뒤에 이 패널의 칸들을 다시 센다.
+  const holdName = `comment:${useId()}`;
+  const syncUnsent = () => {
+    const panel = document.querySelector(`[data-cmt-hold="${holdName}"]`);
+    const inputs = panel ? [...panel.querySelectorAll<HTMLInputElement>('input[name="c"], input[name="r"], input[name="e"]')] : [];
+    holdUnload(holdName, inputs.some((input) => input.value.trim() !== "" && input.value !== (input.dataset.original ?? "")));
+  };
+  useEffect(syncUnsent); // 답글·수정 칸이 열리고 닫힐 때(그린 뒤)
+  useEffect(() => () => holdUnload(holdName, false), [holdName]);
   const submitFrom = async (input: HTMLInputElement, send: (text: string) => Promise<boolean>, done?: () => void) => {
     const text = input.value;
     if (!text.trim() || sendingRef.current.has(input)) return;
@@ -130,6 +141,7 @@ export function CommentPanel<T extends CommentPanelItem>({
     // 실패한 글과 칸은 남긴다. 다만 기다리는 사이 패널이 다른 대상으로 넘어갔으면 치운다 — 남겨 두면 다시 보낼 때 새 대상에 달린다.
     if (!saved && targetRef.current === sentFor) return;
     input.value = "";
+    syncUnsent(); // 값을 바꿔도 input 이벤트는 오지 않는다
     // 칸을 닫는 것은 보낸 그 칸이 아직 떠 있을 때만 — 기다리는 사이 닫았다 다시 열었거나 다른 글의 칸을 열었으면 지금 칸은 새 칸이다.
     if (input.isConnected) done?.();
   };
@@ -216,6 +228,7 @@ export function CommentPanel<T extends CommentPanelItem>({
             <input
               name="e"
               defaultValue={c.text}
+              data-original={c.text}
               autoFocus
               onKeyDown={(e) => { if (e.key === "Escape") setEditingId(null); }}
             />
@@ -262,6 +275,8 @@ export function CommentPanel<T extends CommentPanelItem>({
     <div
       className="cmt-panel"
       ref={panelRef}
+      data-cmt-hold={holdName}
+      onInput={syncUnsent}
       // 패널 안에서 난 Esc 는 패널이 쓴다(고치던 것·답글 접기는 그 입력칸이 한다) — '쓴 것'으로 표시해 뒤 화면으로 새지 않게 한다.
       //  2026-10-10 실측: 코멘트 입력칸의 Esc 에 뒤의 폴더 창만 닫히고 패널이 남았다. 맨 아래 입력칸은 초점을 내려놓는다 —
       //  다음 Esc 부터는 뒤 화면(선택 해제·폴더 창)의 몫이다.
