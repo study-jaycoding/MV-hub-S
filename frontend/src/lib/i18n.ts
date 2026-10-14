@@ -387,7 +387,6 @@ const EN: Record<string, string> = {
   "워크스페이스별 다빈치 확인에는 공유 서버 업데이트가 필요합니다. 임시로 전체 보기를 사용할 수 있습니다.": "Update the shared server for workspace-scoped Resolve selection. You can use All temporarily.",
   "소속 미확인 생성물은 전체 보기에서 확인할 수 있습니다.": "Items with an unknown workspace are available in All.",
   // 상단바·탭
-  "작업 공간": "Workspace",
   "공유 & 리뷰": "Share & Review",
   "히스토리": "History",
   "캔버스": "Canvas",
@@ -472,7 +471,7 @@ const EN: Record<string, string> = {
   "생성자": "Creator",
   "생성자 필터 해제": "Clear creator filter",
   "워크스페이스별 생성자 표시에는 공유 서버 업데이트가 필요합니다.": "Update the shared server to show creators for this workspace.",
-  "작업 공간 생성자 표시에는 로컬 앱 업데이트가 필요합니다.": "Update the local app for workspace creator counts.",
+  "워크스페이스 탭의 생성자 표시에는 로컬 앱 업데이트가 필요합니다.": "Update the local app for workspace creator counts.",
   "컬러": "Color",
   "프로젝트": "Projects",
   "공유": "Shared",
