@@ -20,7 +20,7 @@ const API = "/api/scenes/cards";
 const DEBOUNCE_MS = 2000;
 const RETRY_MS = 30_000;
 const REFRESH_MS = 30_000; // 다른 브라우저 변경을 새로고침 없이 가져오는 상한
-const MAX_PER_REQUEST = 1000; // 서버 상한(2000)의 절반 — 추가+제거가 한 요청에 섞여도 안전
+const MAX_PER_REQUEST = 2000; // 서버 상한(repo/scene_cards MAX_SCENE_CARD_LINKS — added·backfill·explicit·removed 합산). send 가 합계로 나눈다
 
 export interface CardLink {
   scene_id: string;
@@ -335,22 +335,38 @@ async function send(
     card_id: l.card_id,
     generation_id: l.generation_id,
   });
-  const longest = Math.max(backfill.length, explicit.length, removed.length);
-  for (let i = 0; i < longest; i += MAX_PER_REQUEST) {
-    const explicitChunk = explicit.slice(i, i + MAX_PER_REQUEST).map(strip);
-    await jsonFetch(API, {
-      method: "PUT",
-      body: JSON.stringify({
-        backfill: backfill.slice(i, i + MAX_PER_REQUEST).map(strip),
-        explicit: explicitChunk,
-        // 구서버 호환(검증 P2): 새 필드를 모르는 구서버는 added 만 반영한다. explicit 의
-        // 의미(=tombstone 해제 upsert)는 구서버의 added 처리와 동일하므로 중복 전송이 안전하다.
-        // backfill 은 구서버 added 로 보내면 안 된다(그쪽 upsert 가 남의 제거를 되살리는 원래 버그).
-        added: explicitChunk,
-        removed: removed.slice(i, i + MAX_PER_REQUEST).map(strip),
-      }),
-    });
+  // 한 요청의 합계로 나눈다 — 서버는 added(+backfill)·explicit·removed 를 **합쳐** 상한을 보고, explicit 은 구서버 호환으로 added 에 한 번
+  //  더 싣는다(아래). 목록마다 1000씩 따로 자르면 되살리기 1000 + 그 사본 1000 + 빼기 1 = 2001 로 거절되고, 실패는 대기열을 그대로 두어
+  //  같은 요청을 끝없이 다시 보냈다(Codex 43회차 리뷰 — 파일로 되살린 씬은 한꺼번에 많이 되살린다). 빼기·되살리기(사용자 의도)가 먼저다.
+  let chunk = { backfill: [] as CardLink[], explicit: [] as CardLink[], removed: [] as CardLink[] };
+  let used = 0;
+  const flush = async () => {
+    if (!used) return;
+    const explicitChunk = chunk.explicit.map(strip);
+    const body = {
+      backfill: chunk.backfill.map(strip),
+      explicit: explicitChunk,
+      // 구서버 호환(검증 P2): 새 필드를 모르는 구서버는 added 만 반영한다. explicit 의
+      // 의미(=tombstone 해제 upsert)는 구서버의 added 처리와 동일하므로 중복 전송이 안전하다.
+      // backfill 은 구서버 added 로 보내면 안 된다(그쪽 upsert 가 남의 제거를 되살리는 원래 버그).
+      added: explicitChunk,
+      removed: chunk.removed.map(strip),
+    };
+    chunk = { backfill: [], explicit: [], removed: [] };
+    used = 0;
+    await jsonFetch(API, { method: "PUT", body: JSON.stringify(body) });
+  };
+  const items: [keyof typeof chunk, CardLink, number][] = [
+    ...removed.map((l): [keyof typeof chunk, CardLink, number] => ["removed", l, 1]),
+    ...explicit.map((l): [keyof typeof chunk, CardLink, number] => ["explicit", l, 2]),
+    ...backfill.map((l): [keyof typeof chunk, CardLink, number] => ["backfill", l, 1]),
+  ];
+  for (const [kind, link, cost] of items) {
+    if (used + cost > MAX_PER_REQUEST) await flush();
+    chunk[kind].push(link);
+    used += cost;
   }
+  await flush();
 }
 
 /** 로컬에만 있는 소속을 서버로 올린다(=백필이자 평상시 기록). 추가만 보낸다. */

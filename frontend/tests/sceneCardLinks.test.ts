@@ -29,7 +29,12 @@ vi.mock("../src/lib/http", () => ({
   jsonFetch: (url: string, init?: RequestInit) => {
     calls.push({ url, init });
     if (init?.method === "PUT") {
-      return putFails ? Promise.reject(new Error("offline")) : Promise.resolve({ ok: true });
+      if (putFails) return Promise.reject(new Error("offline"));
+      // 서버(repo/scene_cards)처럼 한 요청의 added(+backfill)·explicit·removed 합계 2000 을 넘으면 거절한다
+      const body = JSON.parse(String(init.body));
+      const total = new Set([...(body.added || []), ...(body.backfill || [])].map((l: object) => JSON.stringify(l))).size
+        + (body.explicit || []).length + (body.removed || []).length;
+      return total > 2000 ? Promise.reject(new Error("422 한 요청 상한 초과")) : Promise.resolve({ ok: true });
     }
     return getLinks();
   },
@@ -198,6 +203,31 @@ describe("sceneCardLinks (카드 소속 기록)", () => {
       );
       expect(backfillIds).not.toContain("g1");
     }
+  });
+
+  // Codex 43회차 리뷰 — 서버는 한 요청의 added(+backfill)·explicit·removed 를 합쳐 2000 까지만 받는다. explicit 은 구서버 호환으로 added 에
+  //  한 번 더 실리므로, 되살리기 1000 + 못 보낸 빼기 1 을 목록마다 1000씩 자르면 2001 로 거절되고 같은 요청을 끝없이 다시 보냈다
+  //  (파일로 되살린 씬은 한꺼번에 많이 되살린다).
+  it("되살리기와 빼기가 섞여도 한 요청의 합계가 서버 상한(2000)을 넘지 않게 나눠 보내고, 끝나면 다시 보내지 않는다", async () => {
+    const { links } = await boot();
+    links.initSceneCardLinks();
+    await vi.advanceTimersByTimeAsync(2500);
+    putFails = true; // 빼기 하나가 못 나간 채 대기열에 남는다
+    await links.markCardGenerationsRemoved("s1", "c9", ["gone"]);
+    const ids = Array.from({ length: 1000 }, (_, i) => `g${i}`);
+    links.reviveCardGenerations("s1", "c1", ids);
+    await vi.advanceTimersByTimeAsync(100);
+    putFails = false;
+    calls = [];
+    await vi.advanceTimersByTimeAsync(31_000); // 재시도
+    const sent = puts().map(putBody);
+    expect(sent.length).toBeGreaterThan(1);
+    for (const body of sent) expect(body.explicit.length * 2 + body.backfill.length + body.removed.length).toBeLessThanOrEqual(2000);
+    expect(sent.flatMap((b) => b.explicit.map((l: { generation_id: string }) => l.generation_id)).sort()).toEqual([...ids].sort());
+    expect(sent.flatMap((b) => b.removed.map((l: { generation_id: string }) => l.generation_id))).toEqual(["gone"]);
+    calls = [];
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(puts().filter((c) => putBody(c).explicit.length || putBody(c).removed.length)).toEqual([]); // 다 보냈으면 대기열이 비어 다시 보내지 않는다
   });
 
   it("서버 읽기 실패 시 아무것도 올리지 않는다(무엇이 새 것인지 모르므로)", async () => {
