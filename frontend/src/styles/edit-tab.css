@@ -550,8 +550,8 @@
 }
 .ed-ghost img { width: 56px; height: 32px; border-radius: 5px; object-fit: cover; }
 .ed-ghost > span:first-child { padding-left: 5px; }
-.ed-ghost-empty, .ed-ghost-taken { border-color: rgba(var(--accent-rgb), 0.7); }
-.ed-ghost-empty > span, .ed-ghost-taken > span { color: var(--accent); }
+.ed-ghost-empty, .ed-ghost-taken, .ed-ghost-view { border-color: rgba(var(--accent-rgb), 0.7); }
+.ed-ghost-empty > span, .ed-ghost-taken > span, .ed-ghost-view > span { color: var(--accent); }
 /* 컷(폴더) 순서 끌기 — 끄는 칸은 흐리게, 끼워질 자리에는 세로 줄 */
 .ed-cutcell { touch-action: none; }
 .ed-cutcell.ed-cutdrag { opacity: 0.45; cursor: grabbing; }

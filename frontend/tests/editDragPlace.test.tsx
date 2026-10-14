@@ -181,6 +181,41 @@ it("풀의 카드를 끌어 트랙 줄에 놓으면 그 컷의 그 트랙에 들
   expect(storedTracks()).toEqual([["a", 2]]);
 });
 
+// Jay 2026-10-14 — 뷰어에 끌어 놓으면 '트랙 줄 위에 놓으세요'만 뜨고 아무 일이 없었다.
+it("풀의 카드를 뷰어에 놓으면 그 카드를 소스 클립으로 본다 — 소스 판이 없으면 놓은 판을 바꾸고(다이나믹 트림은 끈다), 편집 문서는 그대로", () => {
+  mountOn("c1");
+  const viewer = (mode: string) => document.querySelector<HTMLElement>(`.ed-top > .ed-view[data-view="${mode}"]:not([hidden])`);
+  const picked = () => poolCards().map((card) => card.classList.contains("ed-picked"));
+  expect([viewer("timeline"), viewer("source")].map(Boolean)).toEqual([true, false]); // 싱글 뷰어 = 타임라인
+
+  dragCard(poolCards()[1], viewer("timeline")!.firstElementChild);
+  expect(ghost()!.textContent).toBe("놓으면 소스 클립으로 봅니다");
+  expect(ghost()!.classList.contains("ed-ghost-view")).toBe(true);
+  expect(drops()).toEqual([]);
+  dropCard();
+  expect([viewer("timeline"), viewer("source")].map(Boolean)).toEqual([false, true]); // 놓은 판이 소스 클립이 됐다
+  expect(picked()).toEqual([false, true]);
+
+  dragCard(poolCards()[0], viewer("source")); // 소스 판이 이미 있으면 그 판으로 본다
+  dropCard();
+  expect(picked()).toEqual([true, false]);
+
+  press({ key: "w", code: "KeyW" }); // 다이나믹 트림 모드 — 뷰어 자리는 타임라인 판 하나다
+  expect([viewer("timeline"), viewer("source")].map(Boolean)).toEqual([true, false]);
+  dragCard(poolCards()[1], viewer("timeline"));
+  dropCard();
+  expect([viewer("timeline"), viewer("source")].map(Boolean)).toEqual([false, true]); // 트림 모드를 끄고 소스 클립으로
+  expect(picked()).toEqual([false, true]);
+
+  dragCard(poolCards()[0], viewer("source")); // 뷰어 밖(줄도 아님)으로 옮겨 놓으면 아무 일도 없다
+  under = null;
+  fire(window, "mousemove", { clientX: 61, clientY: 80 });
+  expect(ghost()!.textContent).toBe("트랙 줄 위에 놓으세요");
+  dropCard();
+  expect(picked()).toEqual([false, true]);
+  expect([stored(), flashed]).toEqual([null, []]);
+});
+
 it("카드 끌기: 시작하면 재생이 멈추고 끄는 동안 키는 쉰다 — Esc·창이 초점을 잃음·카드가 목록에서 사라짐은 버린다", () => {
   mountOn("c1");
   act(() => document.querySelector<HTMLButtonElement>('.ed-top > .ed-view[data-view="timeline"] .ed-play')!.click());

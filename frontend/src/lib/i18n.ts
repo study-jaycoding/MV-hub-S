@@ -36,6 +36,7 @@ const EN: Record<string, string> = {
   "V{track} 교체": "Replace V{track}",
   "잠김 — 놓을 수 없음": "Locked — can't drop here",
   "트랙 줄 위에 놓으세요": "Drop on a track row",
+  "놓으면 소스 클립으로 봅니다": "Drop to view it as the source clip",
   "끌어서 순서 바꾸기": "drag to reorder",
   "폴더 순서: 내 순서": "Folder order: mine",
   "이름순으로 되돌립니다": "Back to name order",
@@ -91,7 +92,7 @@ const EN: Record<string, string> = {
   "비활성 폴더": "folder is off",
   "비활성 숨기기": "Hide off folders",
   "빈 곳 채우기": "Fill empty cuts",
-  "모두 최종으로 확정": "Mark all as final",
+  "타임라인 최종 확정": "Mark timeline as final",
   "타임라인에 있는 생성물을 모두 최종으로 확정합니다 — 켜진 컷의 켜진 클립만(숨긴 컷·꺼 둔 컷·꺼진 클립·꺼진 트랙은 뺍니다). 누르면 무엇이 바뀌는지 먼저 묻습니다.":
     "Marks everything on the timeline as final — only enabled clips in enabled cuts (hidden cuts, disabled cuts, disabled clips and disabled tracks are left out). It asks before changing anything.",
   "최종 선택": "Final",

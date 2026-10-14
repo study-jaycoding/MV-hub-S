@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// 편집 탭의 최종 확정(Jay 2026-10-13) — 클립 우클릭 메뉴의 '최종 선택' · 목록 단추(☰)의 '모두 최종으로 확정'.
+// 편집 탭의 최종 확정(Jay 2026-10-13) — 클립 우클릭 메뉴의 '최종 선택' · 목록 단추(☰)의 '타임라인 최종 확정'.
 //  길은 앱의 것이다(review.apply = 공유 & 리뷰의 여러 장 등급 처리 — 요청·부분 실패 안내·다시 받기는 tests/generationReviewUI 가 본다).
 //  여기서는 편집 탭이 **무엇을 언제 넘기는지**만 본다: 권한이 없으면 줄이 없다 · 무엇이 대상인가 · 확인 창의 숫자 · 아니오 = 넘기지 않음.
 import { act } from "react";
@@ -80,7 +80,7 @@ const fire = (target: EventTarget, type: string, init: MouseEventInit = {}) => {
 };
 const clipOf = (id: string) => document.querySelector<HTMLElement>(`.ed-clip[title="prompt ${id}"]`)!;
 const menuRows = () => [...document.querySelectorAll<HTMLButtonElement>(".ed-tmenu .ed-tmenu-item")];
-const row = (label: string) => menuRows().find((item) => item.textContent!.startsWith(label));
+const row = (label: string) => menuRows().find((item) => item.textContent!.replace(/^[★↔] /, "").startsWith(label)); // 줄 앞 표시는 빼고 본다
 const openClipMenu = (id: string) => fire(clipOf(id), "contextmenu", { button: 2, buttons: 2, clientX: 40, clientY: 40 });
 const pickClip = (id: string, additive = false) => {
   fire(clipOf(id), "pointerdown", { ctrlKey: additive });
@@ -118,7 +118,7 @@ it("최종을 줄 권한이 없으면 두 줄 모두 없다 — 다른 줄은 �
   denied = new Set(["a", "f"]);
   mount();
   openClipMenu("a");
-  expect(menuRows().map((item) => item.textContent)).toEqual(["◆ Resolve 보내기", "길이 조절휠 클릭"]);
+  expect(menuRows().map((item) => item.textContent)).toEqual(["◆ Resolve 보내기", "↔ 길이 조절휠 클릭"]);
   closeMenus();
   openClipMenu("f"); // 이미 최종인 것도 내가 풀 수 없으면 줄이 없다
   expect(row("최종 선택")).toBeUndefined();
@@ -132,7 +132,7 @@ it("최종을 줄 권한이 없으면 두 줄 모두 없다 — 다른 줄은 �
   expect(row("최종 선택")).toBeUndefined();
   closeMenus();
   openListMenu();
-  expect(row("모두 최종으로 확정")).toBeUndefined();
+  expect(row("타임라인 최종 확정")).toBeUndefined();
   expect(applied).toEqual([]);
 });
 
@@ -151,7 +151,7 @@ it("클립 메뉴의 '최종 선택' — 누르면 그 생성물이 최종으로
   seed([{ cut: "c1", gen: "a", track: 1 }, { cut: "c2", gen: "f", track: 1 }]);
   mount();
   openClipMenu("a");
-  expect(menuRows().map((item) => item.textContent)).toEqual(["◆ Resolve 보내기", "길이 조절휠 클릭", "최종 선택"]);
+  expect(menuRows().map((item) => item.textContent)).toEqual(["◆ Resolve 보내기", "↔ 길이 조절휠 클릭", "★ 최종 선택"]); // 줄 앞 표시(Jay 2026-10-14)
   expect(row("최종 선택")!.getAttribute("aria-checked")).toBe("false");
   act(() => row("최종 선택")!.click());
   expect(applied).toEqual([{ ids: ["a"], action: "final" }]);
@@ -159,7 +159,7 @@ it("클립 메뉴의 '최종 선택' — 누르면 그 생성물이 최종으로
 
   openClipMenu("f");
   expect(row("최종 선택")!.getAttribute("aria-checked")).toBe("true");
-  expect(row("최종 선택")!.textContent).toBe("최종 선택✓ ");
+  expect(row("최종 선택")!.textContent).toBe("★ 최종 선택✓ ");
   act(() => row("최종 선택")!.click());
   expect(applied[1]).toEqual({ ids: ["f"], action: "release" }); // '공유로'(고른 전환)가 아니다 — 해제다
   expect(localStorage.getItem(DOC_KEY)).toContain('"gen":"a"'); // 편집 문서는 그대로다(되돌리기 단계가 아니다)
@@ -174,7 +174,7 @@ it("여러 클립을 고른 채면 고른 것 전부에 — 해제는 최종인 
   pickClip("f", true);
   pickClip("r", true);
   openClipMenu("f"); // 고른 것 위에서 — 셋 모두가 대상
-  expect(row("최종 선택")!.textContent).toBe("최종 선택2"); // 최종으로 올라갈 것 = a 와 보류해 둔 r
+  expect(row("최종 선택")!.textContent).toBe("★ 최종 선택2"); // 최종으로 올라갈 것 = a 와 보류해 둔 r
   expect(row("최종 선택")!.getAttribute("aria-checked")).toBe("false");
   act(() => row("최종 선택")!.click());
   expect(applied).toEqual([{ ids: ["a", "f", "r"], action: "final" }]); // 고른 것 전부를 넘긴다 — 무엇이 바뀌는지는 앱이 거른다
@@ -214,7 +214,7 @@ it("공유 목록을 다시 받는 중·받지 못한 뒤에는 '최종 선택'�
   expect(applied).toEqual([{ ids: ["a"], action: "final" }]);
 });
 
-it("'모두 최종으로 확정' — 켜진 컷의 켜진 클립만 센다. 확인 창에 숫자를 보이고, 아니오면 아무것도 넘기지 않는다", async () => {
+it("'타임라인 최종 확정' — 켜진 컷의 켜진 클립만 센다. 확인 창에 숫자를 보이고, 아니오면 아무것도 넘기지 않는다", async () => {
   world.gens = [gen("a", "c1"), gen("b", "c1"), gen("n", "c1"), gen("t", "c1"), gen("f", "c2", { is_final: true }), gen("x", "c2"), gen("h", "c3")];
   denied = new Set(["n"]);
   seed([
@@ -230,8 +230,8 @@ it("'모두 최종으로 확정' — 켜진 컷의 켜진 클립만 센다. 확�
   mount();
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
   openListMenu();
-  expect(row("모두 최종으로 확정")!.textContent).toBe("모두 최종으로 확정2"); // a · x
-  act(() => row("모두 최종으로 확정")!.click());
+  expect(row("타임라인 최종 확정")!.textContent).toBe("타임라인 최종 확정2"); // a · x
+  act(() => row("타임라인 최종 확정")!.click());
   expect(document.querySelector(".ed-tmenu")).toBeNull();
   const asked = String(confirm.mock.calls[0][0]);
   for (const part of [
@@ -242,57 +242,57 @@ it("'모두 최종으로 확정' — 켜진 컷의 켜진 클립만 센다. 확�
 
   confirm.mockReturnValue(true);
   openListMenu();
-  act(() => row("모두 최종으로 확정")!.click());
+  act(() => row("타임라인 최종 확정")!.click());
   expect(applied).toEqual([{ ids: ["a", "f", "n", "x"], action: "final" }]); // 켜진 클립의 생성물 — 꺼진 b·t, 숨긴 h, 못 찾은 것은 없다
 
   openListMenu(); // 도는 동안은 다시 누르지 못한다
-  expect(row("모두 최종으로 확정")!.disabled).toBe(true);
-  expect(row("모두 최종으로 확정")!.getAttribute("aria-busy")).toBe("true");
+  expect(row("타임라인 최종 확정")!.disabled).toBe(true);
+  expect(row("타임라인 최종 확정")!.getAttribute("aria-busy")).toBe("true");
   closeMenus();
   await act(async () => { finishApply(); });
   openListMenu();
-  expect(row("모두 최종으로 확정")!.disabled).toBe(false);
+  expect(row("타임라인 최종 확정")!.disabled).toBe(false);
   expect(confirm).toHaveBeenCalledTimes(2);
   expect(flashed).toEqual([]);
 });
 
 // Jay 2026-10-14: 꺼 두기만 한(숨기지 않은) 컷의 클립은 타임라인에서 회색이다 — 그것이 최종이 되면 놀란다. 전날에는 들었다(재생되므로).
-it("'모두 최종으로 확정' — 꺼 두기만 한 컷(숨기지 않음)의 클립도 뺀다. 확인 창이 그 수를 따로 적는다", () => {
+it("'타임라인 최종 확정' — 꺼 두기만 한 컷(숨기지 않음)의 클립도 뺀다. 확인 창이 그 수를 따로 적는다", () => {
   world.gens = [gen("a", "c1"), gen("k", "c2"), gen("m", "c3")];
   seed([{ cut: "c1", gen: "a", track: 1 }, { cut: "c2", gen: "k", track: 1 }, { cut: "c3", gen: "m", track: 1 }], { cutsOff: ["e070/c2"] });
   mount();
   expect(clipOf("k").className).toContain("ed-off"); // 화면에서 회색인 바로 그 클립이다
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
   openListMenu();
-  expect(row("모두 최종으로 확정")!.textContent).toBe("모두 최종으로 확정2"); // a · m — 꺼 둔 컷의 k 는 세지 않는다
-  act(() => row("모두 최종으로 확정")!.click());
+  expect(row("타임라인 최종 확정")!.textContent).toBe("타임라인 최종 확정2"); // a · m — 꺼 둔 컷의 k 는 세지 않는다
+  act(() => row("타임라인 최종 확정")!.click());
   const asked = String(confirm.mock.calls[0][0]);
   for (const part of ["생성물 2개를 최종으로 확정할까요?", "켜진 컷의 켜진 클립 2개", "꺼 둔 컷의 클립 1개"]) expect(asked).toContain(part);
   expect(asked).not.toContain("숨긴 컷"); // 숨긴 것은 없다 — 꺼 둔 것과 따로 센다
   expect(applied).toEqual([{ ids: ["a", "m"], action: "final" }]);
 });
 
-it("'모두 최종으로 확정' — 올릴 것이 없거나(전부 최종) 공유 목록을 다시 받는 중이면 흐리다", () => {
+it("'타임라인 최종 확정' — 올릴 것이 없거나(전부 최종) 공유 목록을 다시 받는 중이면 흐리다", () => {
   seed([{ cut: "c1", gen: "a", track: 1 }, { cut: "c2", gen: "f", track: 1 }]);
   world.gens = [gen("a", "c1", { is_final: true }), gen("f", "c2", { is_final: true })];
   mount();
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
   openListMenu();
-  expect(row("모두 최종으로 확정")!.textContent).toBe("모두 최종으로 확정"); // 숫자 없음
-  expect(row("모두 최종으로 확정")!.disabled).toBe(true);
+  expect(row("타임라인 최종 확정")!.textContent).toBe("타임라인 최종 확정"); // 숫자 없음
+  expect(row("타임라인 최종 확정")!.disabled).toBe(true);
   closeMenus();
 
   world.gens = [gen("a", "c1"), gen("f", "c2", { is_final: true })];
   world.state = "loading"; // 그동안 든 목록은 옛 것이다 — 빈 곳 채우기와 같이 기다린다
   mount();
   openListMenu();
-  expect(row("모두 최종으로 확정")!.disabled).toBe(true);
+  expect(row("타임라인 최종 확정")!.disabled).toBe(true);
   closeMenus();
 
   world.state = "ok";
   mount();
   openListMenu();
-  expect(row("모두 최종으로 확정")!.textContent).toBe("모두 최종으로 확정1");
-  expect(row("모두 최종으로 확정")!.disabled).toBe(false);
+  expect(row("타임라인 최종 확정")!.textContent).toBe("타임라인 최종 확정1");
+  expect(row("타임라인 최종 확정")!.disabled).toBe(false);
   expect([confirm.mock.calls.length, applied]).toEqual([0, []]);
 });

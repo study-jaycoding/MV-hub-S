@@ -766,7 +766,9 @@ function EditTabInner({
   //  · 그사이 문서가 갈리거나(rev) 풀의 컷이 바뀌거나 그 카드가 목록에서 사라지면 끌기를 버린다.
   //  · 놓을 곳 = 포인터 바로 밑에 실제로 보이는 영상 줄(data-track)뿐 — 소리 줄·눈금자·컷 머리·창에 덮인 곳·화면 밖은 아니다.
   //    가로 위치는 보지 않는다(그 카드의 컷 칸에 들어간다). 이미 그 트랙에 있거나 잠겼으면 아무 일도 없다(메뉴의 흐린 줄과 같다).
-  type CardDrag = { id: string; cut: string; rev: number; hint: Omit<DropHint, "cut"> | null };
+  //  · 뷰어에 놓으면(Jay 2026-10-14) 그 카드를 소스 클립으로 본다 — 소스 판이 없으면 놓은 판을 소스 클립으로 바꾼다(다이나믹 트림
+  //    모드는 끈다). 편집 문서는 바꾸지 않는다(풀에서 카드를 누른 것과 같다). view = 지금 뷰어 위다(안내 글).
+  type CardDrag = { id: string; cut: string; rev: number; hint: Omit<DropHint, "cut"> | null; view?: boolean };
   const [cardDrag, setCardDragState] = useState<CardDrag | null>(null);
   const cardDragLive = useRef(cardDrag);
   cardDragLive.current = cardDrag;
@@ -798,14 +800,24 @@ function EditTabInner({
     if (!drag || drag.id !== id) return; // 버린 끌기에 딸려 온 것(Esc 로 버린 뒤의 움직임·놓기)
     if (phase === "cancel") return setCardDrag(null);
     const hint = hintAt(drag, x, y);
+    const pane = hint ? null : viewerAt(x, y);
     if (phase === "move") {
       moveGhost();
-      if (hint?.track !== drag.hint?.track || hint?.state !== drag.hint?.state) setCardDrag({ ...drag, hint });
+      if (hint?.track !== drag.hint?.track || hint?.state !== drag.hint?.state || !!pane !== !!drag.view) setCardDrag({ ...drag, hint, view: !!pane });
       return;
     }
     setCardDrag(null);
     if (hint && hint.state !== "here" && hint.state !== "locked") placeCard(drag.id, drag.cut, hint.track, { rev: drag.rev });
+    const gen = pane && byCut.get(drag.cut)?.find((item) => item.id === drag.id);
+    if (!pane || !gen) return;
+    if (srcShown) setKeyTarget("source"); // 소스 판이 이미 있으면 그 판으로 본다
+    else {
+      setTrim(false);
+      setMode(Math.max(0, Number(pane.style.order) - 1), "source"); // 놓은 판(EditViewer 의 style.order = 자리 + 1)을 소스 클립으로
+    }
+    pickInPool(gen, false);
   };
+  const viewerAt = (x: number, y: number) => document.elementFromPoint(x, y)?.closest<HTMLElement>(".ed-view:not([hidden])") ?? null;
   const cardDragging = !!cardDrag;
   useEscapeClose(() => setCardDrag(null), cardDragging, true, true);
   useDragKeyHold(cardDragging); // 초점이 남은 뒤의 단추(재생·트랙 눈)를 Space·Enter 가 누르지 않게
@@ -1532,13 +1544,13 @@ function EditTabInner({
       </main>
       {/* 풀에서 끄는 카드 — 포인터를 따라간다(자리는 ref 로 직접 옮긴다 — 움직일 때마다 다시 그리지 않는다). 무엇이 될지를 적는다 */}
       {cardDrag && (
-        <div className={"ed-ghost" + (cardDrag.hint ? ` ed-ghost-${cardDrag.hint.state}` : "")} aria-hidden="true"
+        <div className={"ed-ghost" + (cardDrag.hint ? ` ed-ghost-${cardDrag.hint.state}` : cardDrag.view ? " ed-ghost-view" : "")} aria-hidden="true"
           ref={(el) => {
             ghostRef.current = el;
             moveGhost();
           }}>
           {cardDragGen && thumbOf(cardDragGen, 256) && <img src={thumbOf(cardDragGen, 256)!} alt="" draggable={false} />}
-          <span>{cardDrag.hint ? dropLabel(cardDrag.hint, t) : t("트랙 줄 위에 놓으세요")}</span>
+          <span>{cardDrag.hint ? dropLabel(cardDrag.hint, t) : cardDrag.view ? t("놓으면 소스 클립으로 봅니다") : t("트랙 줄 위에 놓으세요")}</span>
         </div>
       )}
       {exported && target && <EditExportConfirm exported={exported} onSend={sendTimeline} onClose={() => setExportOpen(false)} />}
