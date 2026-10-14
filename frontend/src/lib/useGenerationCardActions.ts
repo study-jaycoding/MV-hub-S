@@ -15,7 +15,7 @@ import { armStateGlow } from "./stateGlow";
 
 // 최종 지정·해제·등급 전환이 권한 없음(403)으로 거절되면 최종 권한 목록을 다시 읽게 한다 — 그사이 검수 역할이 회수됐으면
 //  단추가 사라진다(49회차 — 전엔 새로 고침 전까지 같은 단추가 남아 같은 실패를 되풀이했다).
-const rereadRolesOnForbidden = (error: unknown) => {
+export const rereadRolesOnForbidden = (error: unknown) => {
   if (error instanceof HttpError && error.status === 403) dispatchAppEvent(APP_EVENTS.finalizeRolesStale);
 };
 

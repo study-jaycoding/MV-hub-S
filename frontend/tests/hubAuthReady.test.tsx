@@ -126,6 +126,29 @@ it("최종 조작이 403 으로 거절됐다는 알림이 오면 최종 권한�
   expect(seen.filter((url) => url === "/api/projects/my-finalize-roles").length).toBeGreaterThanOrEqual(2);
 });
 
+it("다시 읽기 전에 낸 조회가 늦게 와도 나중 조회의 결과(권한 회수)를 덮지 않는다(49회차 — Codex 검토)", async () => {
+  const first = deferred<Response>();
+  let calls = 0;
+  vi.stubGlobal("fetch", vi.fn((url: string) => {
+    if (url === "/api/auth/config") return Promise.resolve(response({ auth_enabled: false, has_accounts: false }));
+    if (url === "/api/shared-server/status") return Promise.resolve(response({ configured: true, has_token: false, url: "http://127.0.0.1:9" }));
+    if (url === "/api/projects/my-finalize-roles") return ++calls === 1 ? first.promise : Promise.resolve(response({ project_ids: [] }));
+    throw new Error(`Unexpected request: ${url}`);
+  }));
+  const { useHubAuth } = await import("../src/lib/useHubAuth");
+  const { APP_EVENTS, dispatchAppEvent } = await import("../src/lib/appEvents");
+  let finalize = new Set<string>(["x"]);
+  function Probe() { finalize = useHubAuth().finalizeProjects; return null; }
+  await act(async () => root!.render(<Probe />)); // 한 화면 — 첫 조회와 다시 읽기가 같은 effect 안에서 겹친다
+  expect(calls).toBe(1);
+  await act(async () => { dispatchAppEvent(APP_EVENTS.finalizeRolesStale); }); // 첫 조회가 아직 안 왔는데 다시 읽는다
+  expect(calls).toBe(2);
+  await act(async () => { await Promise.resolve(); });
+  await act(async () => { first.resolve(response({ project_ids: ["p1"] })); }); // 회수 전 권한을 든 첫 응답이 늦게 온다
+  await act(async () => { await Promise.resolve(); });
+  expect([...finalize]).toEqual([]);
+});
+
 // 14회차(조작 규칙 41): AUTH-off 의 로그아웃은 허브에 세션 정리를 시키고 새로 고친다. 전엔 그 요청의 실패를 삼키고 새로 고쳐,
 //  허브에 세션이 남은 채 로그인 화면 없이 같은 계정으로 말없이 돌아왔다(로그아웃된 줄 안다).
 it("AUTH-off 로그아웃 — 허브가 실패를 답하면 새로 고치지 않고 알리며 '로그아웃 안 됨'을 돌려준다", async () => {

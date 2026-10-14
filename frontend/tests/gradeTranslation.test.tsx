@@ -114,6 +114,24 @@ it("bulk results translate counts, partial failures and mirror pending at comple
   expect(flash).toHaveBeenLastCalledWith("No eligible items to change.");
 });
 
+it("a grade step whose finalize is refused with 403 asks to re-read the finalize roles (round 49 — Codex review)", async () => {
+  const { HttpError } = await import("../src/lib/http");
+  const stale = vi.fn();
+  window.addEventListener("ch:finalize-roles-stale", stale);
+  try {
+    let actions!: ReturnType<typeof useGradeStep>;
+    function Harness() { actions = useGradeStep({ canFinalize: () => true, flash: vi.fn(), reload: vi.fn().mockResolvedValue(undefined) }); return null; }
+    act(() => root.render(<Harness />));
+    vi.mocked(api.finalize).mockRejectedValueOnce(new HttpError(403, "no supervisor role"));
+    act(() => actions.requestGradeStep([gen({ id: "g1" })], "up")); // 공유 → 최종
+    expect(actions.pending?.ops.map((op) => op.action)).toEqual(["finalize"]);
+    await act(async () => actions.confirm());
+    expect(stale).toHaveBeenCalledTimes(1);
+  } finally {
+    window.removeEventListener("ch:finalize-roles-stale", stale);
+  }
+});
+
 // Codex 조작 점검(2026-10-14) — 처리 뒤 같은 선택으로 또 누르면, 화면이 아직 든 옛 상태가 아니라 **서버의 답**으로 방향을 잡는다. 그
 //  기억은 시간으로만 끝난다(10초) — 목록과 견줘 '따라왔나'를 판단하지 않는다(객체가 같은지 · 그때의 등급과 같은지 — 둘 다 구멍이 났다).
 //  잠그고 기다리지도 않는다: 다시 받기는 실패해도 조용히 끝나고, 뒤따르는 조회가 늦으면 끝나지 않는다.

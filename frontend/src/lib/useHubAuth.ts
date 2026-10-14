@@ -251,14 +251,16 @@ export function useHubAuth() {
     }
     let ignore = false;
     let retry: number | undefined;
+    let latest = 0; // 가장 나중에 낸 조회만 반영한다 — 다시 읽기 전에 낸 조회가 늦게 와 '회수 전 권한'으로 덮지 않게(49회차 — Codex 검토)
     const load = () => {
+      const asked = ++latest;
       api
         .myFinalizeRoles()
         .then((r) => {
-          if (!ignore) setFinalizeProjects(new Set(r.project_ids));
+          if (!ignore && asked === latest) setFinalizeProjects(new Set(r.project_ids));
         })
         .catch((error) => {
-          if (ignore) return;
+          if (ignore || asked !== latest) return;
           setFinalizeProjects(new Set());
           // 서버가 잠깐 안 될 때의 실패가 새로고침 전까지 '권한 없음'으로 굳지 않게 30초 뒤 다시 묻는다
           // (2026-10-03). 확정 거부(401·403)는 다시 묻지 않는다.

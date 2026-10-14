@@ -6,6 +6,8 @@ import type { Generation } from "../types";
 import { withMirrorPendingNotice } from "./shareMirrorPending";
 import { t } from "./i18n";
 import { armStateGlow } from "./stateGlow";
+import { HttpError } from "./http";
+import { rereadRolesOnForbidden } from "./useGenerationCardActions";
 
 interface Args {
   canFinalize: (g: Generation) => boolean;
@@ -108,6 +110,11 @@ export function useGradeStep({ canFinalize, reload, flash }: Args) {
     );
     ok += results.filter((x) => x.status === "fulfilled").length;
     fail += results.filter((x) => x.status === "rejected").length;
+    // 최종·최종 해제가 권한 없음(403)으로 거절됐으면 최종 권한을 다시 읽게 한다 — 카드의 한 장 조작과 같다(49회차 — Codex 검토)
+    const forbidden = results.find((result, index): result is PromiseRejectedResult =>
+      result.status === "rejected" && (rest[index].action === "finalize" || rest[index].action === "unfinalize") &&
+      result.reason instanceof HttpError && result.reason.status === 403);
+    if (forbidden) rereadRolesOnForbidden(forbidden.reason);
     mirrorPending ||= results.some(
       (result) => result.status === "fulfilled" && !!result.value.mirror_pending,
     );
