@@ -18,9 +18,11 @@ const warn = (event: BeforeUnloadEvent) => {
 };
 
 export function holdUnload(name: string, on: boolean): void {
+  const before = holders.size;
   if (on) holders.add(name);
   else holders.delete(name);
-  if (typeof window === "undefined") return; // 창 없는 곳(node 시험)에서 부르는 모듈(lib/scenes)도 있다
+  // 바뀐 것이 없으면 리스너도 그대로 — 캔버스는 저장이 성공할 때마다 '놓는다'고 부른다(56회차). 창 없는 곳(node 시험)에서 부르는 모듈도 있다.
+  if (holders.size === before || typeof window === "undefined") return;
   if (holders.size) window.addEventListener("beforeunload", warn); // 같은 함수라 여러 번 걸어도 하나다
   else window.removeEventListener("beforeunload", warn);
 }
