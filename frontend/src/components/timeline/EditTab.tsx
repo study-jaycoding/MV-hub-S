@@ -1164,6 +1164,9 @@ function EditTabInner({
     });
   }, []);
   const clearSelection = useCallback(() => setSelected((prev) => (prev.size ? new Set() : prev)), []);
+  // 끌어서 고르기(EditTimeline) — 상자에 걸친 클립으로 바꾼다. 같은 것이면 그대로(끄는 동안 움직일 때마다 다시 그리지 않게)
+  const pickMany = useCallback((keys: string[]) => setSelected((prev) =>
+    keys.length === prev.size && keys.every((key) => prev.has(key)) ? prev : new Set(keys)), []);
   const moveClip = useCallback((key: string, track: number, startedRev: number) => {
     act((current) => moveClipToTrack(current, key, track), { rev: startedRev });
   }, [act]);
@@ -1513,6 +1516,7 @@ function EditTabInner({
           onZoom={setZoom}
           onSelect={select}
           onClearSelection={clearSelection}
+          onPickMany={pickMany}
           onMoveClip={moveClip}
           onPickCut={pickCut}
           onOpenCut={openCut}

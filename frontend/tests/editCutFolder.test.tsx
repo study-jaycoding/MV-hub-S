@@ -1365,6 +1365,58 @@ it("다이나믹 트림 모드: 앞을 자른 클립은 시작점을 더한 프�
   press({ key: "w", code: "KeyW" });
 });
 
+// 타임라인에서도 끌어서 여러 개 고르기(Jay 2026-10-14) — 풀의 끌어서 고르기와 같은 약속(조작 규칙 21)에 Codex 설계 검토를 더했다:
+//  잠긴 트랙은 빼고 · Ctrl 은 더하고 · Esc·놓친 끝은 상자만 걷고 선택은 남기고 · 놓는 순간 다시 재고 · 끈 직후의 더블클릭은 컷 창을 열지 않는다.
+it("타임라인 빈 곳에서 끌어 고른다 — 걸친 클립 · 잠긴 트랙 빼고 · Ctrl 은 더한다 · Esc 는 상자만 걷는다 · 재생헤드와 컷 창은 그대로", () => {
+  seed([{ cut: "c1", gen: "a", track: 1 }, { cut: "c2", gen: "b", track: 1 }, { cut: "c3", gen: "c", track: 1 }, { cut: "c2", gen: "d", track: 2 }],
+    { tracksLocked: [2] });
+  mount();
+  const at = (left: number, top: number, width: number, height: number) =>
+    ({ left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON() {} } as DOMRect);
+  // 줄 = 화면의 (0,0) 부터 · 클립 = 인라인 left/width 그대로(배율 20px/초 — 컷 하나 5초 = 100px) · V2 는 위, V1 은 아래
+  const box = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    const el = this as HTMLElement;
+    if (el.classList.contains("ed-lanes")) return at(0, 0, 2000, 400);
+    if (el.classList.contains("ed-clip")) {
+      const track = Number(el.closest<HTMLElement>("[data-track]")!.dataset.track);
+      return at(parseFloat(el.style.left), track === 1 ? 200 : 140, parseFloat(el.style.width), 50);
+    }
+    return at(0, 0, 0, 0);
+  });
+  const picked = () => [...document.querySelectorAll<HTMLElement>(".ed-clip.ed-sel")].map((el) => el.dataset.clip!.split("\n")[1]).sort();
+  const v1 = document.querySelector<HTMLElement>('.ed-lanes [data-track="1"]')!;
+  const v2 = document.querySelector<HTMLElement>('.ed-lanes [data-track="2"]')!;
+  const before = timecode();
+  mouse(v1, "pointerdown", { clientX: 50, clientY: 150 });
+  mouse(v1, "pointermove", { clientX: 53, clientY: 152, buttons: 1 }); // 6px 안 — 아직 상자가 아니다
+  expect(document.querySelector(".ed-lanes .assets-marquee")).toBeNull();
+  mouse(v1, "pointermove", { clientX: 150, clientY: 260, buttons: 1 }); // a·b 와 잠긴 V2 의 d 에 걸친다
+  expect(document.querySelector(".ed-lanes .assets-marquee")).not.toBeNull();
+  expect(picked()).toEqual(["a", "b"]); // 잠긴 트랙의 d 는 빠진다
+  mouse(v1, "pointerup", { clientX: 150, clientY: 260 });
+  expect([document.querySelector(".ed-lanes .assets-marquee"), picked(), timecode()]).toEqual([null, ["a", "b"], before]); // 재생헤드 그대로
+  mouse(document.querySelector(".ed-lanes")!, "dblclick", { clientX: 150, clientY: 230 }); // 끈 직후의 더블클릭 — 컷 창을 열지 않는다
+  expect(opened).toHaveLength(0);
+
+  mouse(v1, "pointerdown", { clientX: 250, clientY: 150, ctrlKey: true }); // Ctrl 은 더한다(누를 때 풀지 않는다)
+  mouse(v1, "pointermove", { clientX: 290, clientY: 260, buttons: 1, ctrlKey: true });
+  expect(picked()).toEqual(["a", "b", "c"]);
+  press({ key: "Escape", code: "Escape" }); // Esc 는 상자만 걷는다 — 그때까지 고른 것은 남는다(규칙 21)
+  expect([document.querySelector(".ed-lanes .assets-marquee"), picked()]).toEqual([null, ["a", "b", "c"]]);
+  mouse(v1, "pointermove", { clientX: 10, clientY: 260, buttons: 1 }); // 걷힌 뒤의 움직임은 아무것도 안 한다
+  expect(picked()).toEqual(["a", "b", "c"]);
+  mouse(v1, "pointerup", { clientX: 10, clientY: 260 });
+
+  mouse(v1, "pointerdown", { clientX: 250, clientY: 150 }); // 그냥 누르면 지금처럼 푼다
+  mouse(v1, "pointerup", { clientX: 250, clientY: 150 });
+  expect(picked()).toEqual([]);
+  mouse(v2, "pointerdown", { clientX: 20, clientY: 150 }); // 잠긴 줄의 빈 곳에서 시작해도 상자다(고르는 것은 잠기지 않은 클립)
+  mouse(v2, "pointermove", { clientX: 60, clientY: 300, buttons: 1 });
+  mouse(v2, "pointermove", { clientX: 70, clientY: 300, buttons: 0 }); // 놓기를 놓쳤다 — 상자만 걷고 고른 것은 남긴다
+  expect([document.querySelector(".ed-lanes .assets-marquee"), picked()]).toEqual([null, ["a"]]);
+  box.mockRestore();
+});
+
 // 길이 조절 창의 크기(Jay 2026-10-14 — 모서리를 끌어 키운다 · 가장 작은 크기 = 처음 크기). 끌기 자체는 브라우저(CSS resize)가 하고,
 //  잰 크기는 떠 있는 창 공용 훅이 남긴다 — 여기서는 '남긴 크기로 연다'와 '남긴 것이 없으면 처음 크기(CSS)'를 본다.
 it("길이 조절 창: 남겨 둔 크기로 열린다 · 없으면 처음 크기 그대로(인라인 크기 없음)", () => {
