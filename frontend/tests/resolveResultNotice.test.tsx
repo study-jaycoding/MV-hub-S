@@ -202,13 +202,72 @@ it("안내 줄 — 첫 마디가 굵고, ✕ 로만 닫힌다. 겹이 아니라 
   expect(press.defaultPrevented).toBe(true);
   act(() => closers()[1].click());
   expect(dismissed).toEqual([2]);
+});
 
-  // 키보드: Tab 으로 ✕ 에 와서 닫으면 남은 줄의 ✕ 로 초점이 간다
-  show([items[0], items[2]]);
-  closers()[1].focus();
-  act(() => closers()[1].click()); // 마지막 줄을 닫았다 — 앞 줄로
-  expect(dismissed).toEqual([2, 3]);
+// ── 훅과 그리는 쪽을 같이 둔다(Codex 코드 리뷰 — 줄이 실제로 사라질 때의 초점 · 안내 안에서 난 키) ──
+function Live() {
+  hook = useResolveTransferActions({ flash: (message: string) => { flashed.push(message); } });
+  return <ResolveNotices items={hook.notices} onDismiss={hook.dismissNotice} />;
+}
+const closers = () => [...host.querySelectorAll<HTMLButtonElement>(".resolve-notice-x")];
+const shown = () => [...host.querySelectorAll(".resolve-notice b")].map((item) => item.textContent!.replace("Resolve 전송 실패: ", ""));
+const fail = (reason: string) => sendClips(new HttpError(500, `500: ${reason}`, reason), true);
+
+it("초점이 있던 줄이 사라지면 남은 줄의 ✕ 로 옮긴다 — 네 번째 결과가 와서 맨 위 줄이 빠질 때도, 키보드로 닫을 때도. 안내 밖의 초점은 건드리지 않는다", async () => {
+  act(() => root.render(<Live />));
+  for (const reason of ["하나", "둘", "셋"]) await fail(reason);
+  expect(shown()).toEqual(["하나", "둘", "셋"]);
+
+  // 첫 줄의 ✕ 에 초점을 둔 채(Tab 으로 왔다) 줄 서 있던 네 번째 결과가 온다 — 맨 위 줄이 빠진다. 사용자가 닫은 것이 아니다
+  closers()[0].focus();
+  await fail("넷");
+  expect(shown()).toEqual(["둘", "셋", "넷"]);
+  expect(document.activeElement).toBe(closers()[0]); // BODY 가 아니다 — 그 자리에 올라온 줄의 ✕. 떨어지면 다음 Delete 가 뒤의 고른 클립을 지운다
+
+  // 초점이 있던 줄이 남아 있으면 그 줄을 따라간다(자리 번호를 따라가지 않는다)
+  closers()[1].focus(); // '셋'
+  await fail("다섯"); // '둘'이 빠진다 — '셋'은 첫 줄이 됐다
+  expect(shown()).toEqual(["셋", "넷", "다섯"]);
   expect(document.activeElement).toBe(closers()[0]);
-  act(() => closers()[0].click()); // 다음 줄로
-  expect(document.activeElement).toBe(closers()[1]);
+
+  // 키보드로 닫기 — 같은 자리에 올라온 줄로, 마지막 줄이었으면 앞 줄로
+  closers()[1].focus();
+  act(() => closers()[1].click()); // 가운데('넷')
+  expect(shown()).toEqual(["셋", "다섯"]);
+  expect(document.activeElement).toBe(closers()[1]); // '다섯'
+  act(() => closers()[1].click()); // 마지막 줄
+  expect(shown()).toEqual(["셋"]);
+  expect(document.activeElement).toBe(closers()[0]);
+
+  // 초점이 안내 밖에 있으면 줄이 빠져도 건드리지 않는다
+  const outside = document.createElement("button");
+  document.body.appendChild(outside);
+  outside.focus();
+  for (const reason of ["여섯", "일곱", "여덟"]) await fail(reason);
+  expect(shown()).toEqual(["여섯", "일곱", "여덟"]);
+  expect(document.activeElement).toBe(outside);
+  outside.remove();
+});
+
+it("안내 안에서 난 키는 뒤 화면의 키 처리(window)에 닿지 않는다 — 전파만 막아 Tab·Enter·Space 는 그대로고, 안내 밖에서 난 키는 그대로 간다", async () => {
+  act(() => root.render(<Live />));
+  await fail("하나");
+  const heard: string[] = [];
+  const listen = (event: KeyboardEvent) => { heard.push(event.key); };
+  window.addEventListener("keydown", listen); // 라이브러리·편집 탭의 단축키가 듣는 자리 — 버블 단계이고, 키가 어디서 났는지 보지 않는다
+  const press = (target: Element, key: string) => {
+    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    act(() => { target.dispatchEvent(event); });
+    return event.defaultPrevented;
+  };
+  closers()[0].focus();
+  // R·D(뒤의 고른 카드에 색·비활성) · Delete·화살표(편집 탭의 클립·재생헤드) · Esc(뒤의 선택 해제)
+  const stopped = ["r", "d", "Delete", "ArrowLeft", "Escape", "Tab", "Enter", " "].map((key) => press(closers()[0], key));
+  expect(heard).toEqual([]);
+  expect(stopped).toEqual(Array(8).fill(false)); // 기본 동작은 하나도 막지 않는다(Tab 이동·단추 누르기)
+  expect(shown()).toEqual(["하나"]); // Esc 로 닫히지도 않는다(겹이 아니다)
+
+  press(document.body, "r"); // 뒤 화면에 초점이 있을 때의 키는 그대로다
+  expect(heard).toEqual(["r"]);
+  window.removeEventListener("keydown", listen);
 });
