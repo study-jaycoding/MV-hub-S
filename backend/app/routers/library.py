@@ -829,6 +829,26 @@ def _strip_list_prompt(rows):
     return rows
 
 
+def _blank_list_prompt_text(rows):
+    """목록 응답에서 `prompt`·`display_prompt` 를 빈 글로 — **새 행**으로 돌려준다(2026-10-15, 42회차).
+
+    ★왜: 공유 탭에서 찾는 조건을 켠 채 컷 카드로 묶으면 화면이 그 조회를 500건씩 끝까지 받는다(프런트 lib/useLocalFolderCards).
+     격리 실측 500건 한 쪽이 12.3MB 였고 그중 86% 가 이 두 칸이었다 — 묶기는 프롬프트를 읽지 않는다.
+    ★클라이언트가 `lean_prompt=1` 로 명시할 때만 — 본 목록·컷 정보 창·옛 프런트는 원문을 받는다. 상세·히스토리는 그대로.
+    ★원본 행 dict 를 고치지 않는다(`_strip_list_prompt` 는 행을 그 자리에서 고친다 — 이것은 얕은 복사본을 돌려준다).
+    """
+    return [
+        {**row, "prompt": "", **({"display_prompt": ""} if "display_prompt" in row else {})} if isinstance(row, dict) else row
+        for row in rows
+    ]
+
+
+def _lean_list(rows, lean_params, lean_prompt):
+    # `== 1` 로 견준다 — 함수를 직접 부르면 기본값이 숫자 0 이 아니라 Query(0) 객체라 그냥 참으로 읽힌다(Codex 42회차 설계 검토)
+    rows = _strip_list_prompt(rows) if lean_params else rows
+    return _blank_list_prompt_text(rows) if lean_prompt == 1 else rows
+
+
 @router.get("/generations", response_model=list[GenerationOut])
 def list_generations(
     request: Request,
@@ -838,6 +858,8 @@ def list_generations(
     #  옛 프론트는 이 인자를 안 보내고, 그 프론트는 아직 **목록 행**으로 레시피를 만든다 —
     #  기본값으로 빼면 공존 기간에 옛 화면의 레시피가 프롬프트를 잃는다(코덱스 조건).
     lean_params: int = Query(0, ge=0, le=1),
+    # ★클라이언트가 **명시적으로 요청할 때만** `prompt`·`display_prompt` 를 비운다 — 걸러 보는 컷 카드의 끝까지 받기(42회차, 위 _blank_list_prompt_text)
+    lean_prompt: int = Query(0, ge=0, le=1),
     worker_id: Optional[str] = None,
     color: Optional[str] = None,
     tag: Optional[str] = None,
@@ -920,7 +942,7 @@ def list_generations(
         _schedule_remote_thumb_prewarm(background, data)
         if review_filter and response is not None:
             response.headers[_proxy.REVIEW_FILTER_HEADER] = review_filter
-        return _strip_list_prompt(data) if lean_params else data
+        return _lean_list(data, lean_params, lean_prompt)
     # 로그인 계정이면 그 계정의 생성자 uid 로 '내 작업'을 한정(계정별 분리). 비로그인은 전체.
     account_uid = _account_uid(request)
     # Team 탭: 내가 멤버인 프로젝트의 공유물만(read_all=admin/PM/PD 와 단독 모드는 전체).
@@ -1017,7 +1039,7 @@ def list_generations(
     _schedule_remote_thumb_prewarm(background, result)
     if review_filter and response is not None:
         response.headers[_proxy.REVIEW_FILTER_HEADER] = review_filter
-    return _strip_list_prompt(result) if lean_params else result
+    return _lean_list(result, lean_params, lean_prompt)
 
 
 @router.get("/generations-stats")

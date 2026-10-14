@@ -76,7 +76,8 @@ export function useLocalFolderCards({ place, query, authKey, listSig, base, read
     const run = laneRef.current.then(() => {
       if (!alive) return null; // 기다리는 사이 조회가 또 바뀌었다 — 보내지 않는다
       const asked = queryRef.current;
-      return fetchAllGenerations(asked, () => alive).then((got) => got && { asked, got });
+      // 묶기는 프롬프트를 읽지 않는다 — 빈 글로 받는다(42회차: 500건 한 쪽 12.3MB 의 86% 가 프롬프트 두 칸 · lib/folderCardsLocal)
+      return fetchAllGenerations(asked, () => alive, { leanPrompt: true }).then((got) => got && { asked, got });
     });
     laneRef.current = run.catch(() => null);
     run.then((done) => {

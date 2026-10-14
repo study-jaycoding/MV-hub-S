@@ -60,6 +60,8 @@ it("끝까지 받은 결과만 내놓는다 — 쪽을 넘겨 받고, 공간 필
   await act(async () => { release([gen("tail"), gen("elsewhere", { workspace_id: "w2" })]); });
   await settle();
   expect([latest.gens!.length, ids()!.slice(-1), latest.fresh, latest.truncated, latest.loading]).toEqual([501, ["tail"], true, false, false]);
+  // 묶기는 프롬프트를 읽지 않는다 — 쪽마다 빈 글로 받는다(42회차)
+  expect(listGenerations.mock.calls.map((call) => call[3])).toEqual([{ leanPrompt: true }, { leanPrompt: true }]);
 });
 
 it("같은 자리에서 조회만 바뀌면 앞 결과를 쥔 채 새로 받고, 자리가 바뀌면 버린다", async () => {

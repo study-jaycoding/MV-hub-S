@@ -33,6 +33,22 @@ describe("generation prompt API compatibility boundary", () => {
     expect(batch.items.batch.prompt).toBe("legacy batch");
   });
 
+  // 42회차 — leanPrompt 는 lean_prompt=1 을 붙이고(요청할 때만), 빈 글로 온 프롬프트를 다른 데서 채우지 않는다
+  it("adds lean_prompt=1 only when asked and keeps a blanked prompt blank", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(okResponse([{ id: "a", prompt: "", display_prompt: "" } as Generation]))
+      .mockResolvedValueOnce(okResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const lean = await api.listGenerations({ tab: "team" }, null, 500, { leanPrompt: true });
+    await api.listGenerations({ tab: "team" });
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain("&lean_prompt=1");
+    expect(String(fetchMock.mock.calls[1][0])).not.toContain("lean_prompt");
+    expect([lean[0].prompt, lean[0].display_prompt]).toEqual(["", ""]);
+  });
+
   it("normalizes every generation nested in a history response", async () => {
     const target = legacyGeneration("target");
     const history = {

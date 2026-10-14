@@ -66,6 +66,8 @@ it("컷 정보 — 폴더 창과 같은 조회를 끝까지 받아(쪽 넘김) �
   await settle();
   expect(listGenerations).toHaveBeenCalledTimes(2);
   expect(listGenerations.mock.calls[1][1]).toEqual({ ts: 1, id: "g499" }); // 커서 = 첫 쪽 마지막
+  // 컷 정보 창은 프롬프트 원문을 받는다(미리보기 이름에 쓴다) — 빈 글로 받는 것은 걸러 보는 컷 카드만(42회차)
+  expect(listGenerations.mock.calls.some((call) => call[3]?.leanPrompt)).toBe(false);
   expect(rows()["건수"]).toBe("501영상 501 · 이미지 0");
   expect(rows()["작업자"]).toBe("리버 251 · 오지짱 250");
   expect(rows()["크레딧(실제)"]).toBe("건수가 많아 집계하지 않음");

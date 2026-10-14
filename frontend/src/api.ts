@@ -371,9 +371,11 @@ export const api = {
   // `lean_params=1` — 목록 응답에서 `params.prompt` 를 빼 달라는 **명시적 요청**(C-1).
   //  같은 값이 `prompt` 필드로 이미 오고, 목록의 26.3%(실측 896KB)가 그 중복이었다.
   //  ★옛 프론트는 이 인자를 안 보내므로 서버가 축약하지 않는다 — 공존 기간에 레시피가 상하지 않는다.
-  listGenerations: (query: GenQuery, cursor: GenCursor | null = null, limit = GEN_PAGE) =>
+  //  leanPrompt = `lean_prompt=1` — prompt·display_prompt 를 빈 글로 받는다. 프롬프트를 읽지 않는 곳(걸러 보는 컷 카드의 끝까지 받기)만 쓴다
+  //  (2026-10-15 42회차 — 500건 한 쪽 12.3MB 의 86% 가 이 두 칸). 옛 서버는 인자를 무시해 원문을 준다.
+  listGenerations: (query: GenQuery, cursor: GenCursor | null = null, limit = GEN_PAGE, opts: { leanPrompt?: boolean } = {}) =>
     jsonFetch<Generation[]>(
-      `/api/generations?${buildQuery(query, cursor, limit)}&lean_params=1`,
+      `/api/generations?${buildQuery(query, cursor, limit)}&lean_params=1${opts.leanPrompt ? "&lean_prompt=1" : ""}`,
       undefined,
       query.review_filter ? (response) => {
         if (response.headers.get("X-MVHub-Review-Filter") !== query.review_filter) {

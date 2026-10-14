@@ -6,14 +6,14 @@ import type { GenQuery, Generation } from "../types";
 export const FETCH_ALL_PAGE = 500;
 export const FETCH_ALL_MAX = 2000; // 이만큼까지(4쪽)
 
-/** alive() 가 거짓이면(창을 닫았거나 다른 조회로) 다음 쪽을 받지 않고 null. */
+/** alive() 가 거짓이면(창을 닫았거나 다른 조회로) 다음 쪽을 받지 않고 null. leanPrompt = 프롬프트를 빈 글로 받는다(읽지 않는 곳만 — api.listGenerations). */
 export async function fetchAllGenerations(
-  query: GenQuery, alive: () => boolean,
+  query: GenQuery, alive: () => boolean, opts: { leanPrompt?: boolean } = {},
 ): Promise<{ gens: Generation[]; truncated: boolean } | null> {
   const all: Generation[] = [];
   let cursor: GenCursor | null = null;
   for (;;) {
-    const page: Generation[] = await api.listGenerations(query, cursor, FETCH_ALL_PAGE);
+    const page: Generation[] = await api.listGenerations(query, cursor, FETCH_ALL_PAGE, opts);
     if (!alive()) return null;
     all.push(...page);
     if (page.length < FETCH_ALL_PAGE) return { gens: all, truncated: false };
