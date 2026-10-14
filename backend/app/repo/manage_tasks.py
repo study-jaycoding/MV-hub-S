@@ -596,6 +596,8 @@ def sync_folder_tasks_batch(
         existing[(r["project_id"], r["folder_path"], scope, workspace_id)] = r
     # 보관/재활성의 조건을 하나만 사용한다. source가 같아도 PM 마감·보관 기간 변경으로
     # 활성화될 수 있으므로 시각 동일 여부만 보고 archived 행을 건너뛰면 안 된다.
+    # 마감일은 PM 이 고른 달력 날짜라 팀 표준시(KST — config 의 TZ 고정)의 오늘과 비교한다.
+    # UTC 의 오늘과 비교하면 KST 00~09시에 어제 마감이 아직 안 지난 것으로 보였다(46회차).
     archive_where = (
         "project_id IN (" + placeholders + ") "
         "AND source_kind='generation' "
@@ -604,11 +606,11 @@ def sync_folder_tasks_batch(
         "  MAX(1, MIN(COALESCE((SELECT pp.archive_after_days FROM project_planning pp "
         "                           WHERE pp.project_id=project_task.project_id), 30), 3650))"
         ")) < datetime('now') "
-        "AND (due_date IS NULL OR TRIM(due_date)='' OR date(due_date)<date('now')) "
+        "AND (due_date IS NULL OR TRIM(due_date)='' OR date(due_date)<date('now','localtime')) "
         "AND NOT EXISTS (SELECT 1 FROM project_planning pp "
         "                WHERE pp.project_id=project_task.project_id "
         "                  AND pp.due_date IS NOT NULL AND TRIM(pp.due_date)<>'' "
-        "                  AND date(pp.due_date)>=date('now'))"
+        "                  AND date(pp.due_date)>=date('now','localtime'))"
     )
     still_archived: set[str] = set()
     if folder_paths is None:
