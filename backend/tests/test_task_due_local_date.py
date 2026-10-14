@@ -53,23 +53,23 @@ class DueDateLocalChild(unittest.TestCase):
         self.fact(created_at="2025-01-01T00:00:00Z", sort_ts=1735689600)
         tid = self.read(archived=True)[0]["id"]
         manage.update_task(tid, {"due_date": today.isoformat()})
-        self.assertEqual(self.read()[0]["archived"], 0, "오늘 마감은 아직 안 지났다")
+        self.assertEqual(self.read(archived=True)[0]["archived"], 0, "오늘 마감은 아직 안 지났다")
         manage.update_task(tid, {"due_date": yesterday})
         self.assertEqual(self.read(archived=True)[0]["archived"], 1, "어제 마감은 지났다")
         # 시각이 붙어 와도 적힌 날짜로 본다 — date() 는 +09:00 을 UTC 로 바꿔 전날로 읽는다.
         manage.update_task(tid, {"due_date": today.isoformat() + "T00:00:00+09:00"})
-        self.assertEqual(self.read()[0]["archived"], 0, "시각이 붙은 오늘 마감도 아직 안 지났다")
+        self.assertEqual(self.read(archived=True)[0]["archived"], 0, "시각이 붙은 오늘 마감도 아직 안 지났다")
         manage.update_task(tid, {"due_date": None})
         with db.get_connection() as conn:
             conn.execute("INSERT INTO project_planning(project_id,due_date) VALUES('p1',?)", (today.isoformat(),))
-        self.assertEqual(self.read()[0]["archived"], 0, "프로젝트 마감이 오늘이면 아직 진행 중")
+        self.assertEqual(self.read(archived=True)[0]["archived"], 0, "프로젝트 마감이 오늘이면 아직 진행 중")
         with db.get_connection() as conn:
             conn.execute("UPDATE project_planning SET due_date=? WHERE project_id='p1'", (yesterday,))
         self.assertEqual(self.read(archived=True)[0]["archived"], 1, "프로젝트 마감이 어제면 보관")
         with db.get_connection() as conn:
             conn.execute("UPDATE project_planning SET due_date=? WHERE project_id='p1'",
                          (today.isoformat() + "T00:00:00+09:00",))
-        self.assertEqual(self.read()[0]["archived"], 0, "시각이 붙은 프로젝트 마감 오늘도 진행 중")
+        self.assertEqual(self.read(archived=True)[0]["archived"], 0, "시각이 붙은 프로젝트 마감 오늘도 진행 중")
 
 
 class DueDateLocalTodayTests(unittest.TestCase):
