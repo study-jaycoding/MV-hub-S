@@ -14,6 +14,7 @@ import {
   clampMenuPosition, FOLDER_MENU_W, folderMenuHeight, folderMenuKinds, folderMenuLabel, folderTone, type FolderMenuKind,
 } from "../../lib/folderContextMenu";
 import { useT } from "../../lib/i18n";
+import { useKeyOwner } from "../../lib/keyGate";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { GROUP_COLORS } from "../scene/sceneColors";
 
@@ -59,6 +60,9 @@ export function EditMenu({
   onCloseRef.current = onClose;
   const closeOutside = useRef(() => onCloseRef.current(false)).current;
   useOutsideMouseDown(ref, closeOutside, true, trigger);
+  // 떠 있는 동안은 뒤 화면을 덮은 것이다 — 메뉴를 닫는 누름이 뒤 격자·타임라인의 고르기까지 바꾸지 않게(조작 규칙 4: pressStartedCovered 가
+  //  이 표식을 본다). 키는 아래가 따로 막는다(58회차).
+  useKeyOwner();
   // 단추로 여는 메뉴(trigger)는 부르는 쪽이 단추에 맞춰 준 자리 그대로다. 우클릭으로 뜨는 메뉴는 누른 자리를 덮지 않게 놓는다 —
   //  화면 아래쪽의 트랙 머리에서는 메뉴가 화면 안으로 밀려 올라가 누른 자리를 덮었고, 그래서 그 머리를 다시 눌러도 '메뉴 안'의
   //  누름이라 닫히지 않았다(2026-10-11 격리 실측). 위아래 어느 쪽에도 안 들어가는 큰 메뉴만 마지막에 화면 안으로 밀린다.

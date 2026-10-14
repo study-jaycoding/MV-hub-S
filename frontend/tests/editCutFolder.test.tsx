@@ -202,6 +202,22 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+// 58회차(Codex): 카드의 '넣을 트랙' 메뉴만 문서가 갈려도(다른 창의 저장) 남아, 옛 화면을 보고 고른 줄이 그 창이 넣은 클립을 교체했다
+//  (트랙 머리·북마크 메뉴는 닫힌다 — 조작 규칙 63). 그리고 메뉴가 떠 있는 동안은 뒤 화면을 덮은 것이다 — 닫는 누름이 뒤 카드를 고르지 않는다(규칙 4).
+it("넣을 트랙 메뉴는 떠 있는 동안 뒤를 덮고, 그사이 다른 창이 이 편집을 바꾸면 닫힌다 — 그 창이 넣은 클립을 교체하지 않는다", () => {
+  mount();
+  act(() => cutCell("c1").click());
+  expect(backgroundKeysBlocked()).toBe(false);
+  wheelClick(poolCards()[0]);
+  expect(menuText()).toEqual(["V3비어 있음", "V2비어 있음", "V1비어 있음"]);
+  expect(backgroundKeysBlocked()).toBe(true); // 전엔 거짓 — 메뉴를 닫는 누름이 뒤 격자의 고르기까지 바꿨다
+  seed([{ cut: "c1", gen: "b", track: 1 }]); // 다른 창이 V1 에 b 를 넣었다
+  act(() => { window.dispatchEvent(new StorageEvent("storage", { key: DOC_KEY })); });
+  expect(trackMenu()).toBeNull();
+  expect(backgroundKeysBlocked()).toBe(false);
+  expect(storedTracks()).toEqual([["b", 1]]);
+});
+
 // 미디어 풀(Jay 2026-10-08) — 다빈치의 Bins | 클립처럼 왼쪽 폴더 목록 바로 옆에 둔다(뷰어의 왼쪽). 폭은 끌어서 바꾼다.
 it("미디어 풀은 뷰어 왼쪽에 있다 — 누르면 고르고, 더블클릭하면 크게 보고, 휠 클릭하면 넣을 트랙을 고르고, 우클릭하면 폴더 창이 열린다", () => {
   mount();

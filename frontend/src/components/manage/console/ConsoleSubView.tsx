@@ -78,13 +78,17 @@ function RoleMenuBody({ roles, onSave, close }: { roles: string[]; onSave: (next
 /** 알약을 누르면 뜨는 작은 메뉴(바깥을 누르면 닫힘). */
 function PillMenu({ trigger, disabled, children }: { trigger: React.ReactNode; disabled?: boolean; children: (close: () => void) => React.ReactNode }) {
   const [open, setOpen] = useState(false);
-  useEscapeClose(() => setOpen(false), open, true, true); // 펼침만 닫는다
+  // 잠기면(저장 중 · 역할 다시 읽는 중) 열린 메뉴도 닫는다 — 여는 단추만 잠그면 이미 열린 메뉴의 항목이 옛 역할 배열로 저장을 보냈고,
+  //  다시 읽기가 다른 프로젝트로 넘어가면 남은 '프로젝트에서 빼기'가 그 프로젝트의 사람을 뺐다(58회차). 풀려도 저절로 다시 열지 않는다.
+  const shown = open && !disabled;
+  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+  useEscapeClose(() => setOpen(false), shown, true, true); // 펼침만 닫는다
   return (
     <span className="wc-status-wrap" onClick={(e) => e.stopPropagation()}>
-      <button type="button" className="wc-pill-btn" disabled={disabled} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>
+      <button type="button" className="wc-pill-btn" disabled={disabled} aria-haspopup="menu" aria-expanded={shown} onClick={() => setOpen(!open)}>
         {trigger}
       </button>
-      {open ? (
+      {shown ? (
         <>
           <div className="wc-menu-backdrop" onMouseDown={() => setOpen(false)} />
           <div className="wc-menu wc-status-menu" role="menu">{children(() => setOpen(false))}</div>

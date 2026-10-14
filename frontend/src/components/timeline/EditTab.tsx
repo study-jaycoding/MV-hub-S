@@ -623,15 +623,16 @@ function EditTabInner({
   const maybePlaced = useCallback((path: string, gen: Generation) =>
     doc.clips.some((clip) => clip.cut === path && !!clip.job && clip.job === gen.job_id &&
       links.get(clipKey(clip))?.state === "unknown"), [doc, links]);
-  const [menu, setMenu] = useState<{ gen: Generation; cut: string; x: number; y: number } | null>(null);
+  // rev = 연 순간의 문서 판 — 아래 트랙 머리 메뉴와 같게, 떠 있는 사이 다른 창이 이 편집을 바꾸면 닫고 고른 것도 그 판에서만 넣는다(58회차).
+  const [menu, setMenu] = useState<{ gen: Generation; cut: string; x: number; y: number; rev: number } | null>(null);
   const menuBackRef = useRef<HTMLElement | null>(null); // 메뉴가 닫히면 초점을 돌려줄 곳(메뉴가 초점을 가져간다)
   const openMenu = useCallback((card: Pick<Generation, "id">, menuCut: string | null, x: number, y: number) => {
     const gen = menuCut ? byCut.get(menuCut)?.find((item) => item.id === card.id) : undefined;
     if (!gen || !menuCut) return flash(t("이 카드는 넣을 수 없습니다 — 편집 탭의 이 컷 공유 목록에 없습니다."));
     if (maybePlaced(menuCut, gen)) return flash(t("이 카드는 이미 넣은 클립일 수 있습니다 — 공유 목록을 다 받은 뒤에 다시 해 주세요."));
     menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setMenu({ gen, cut: menuCut, x, y });
-  }, [byCut, maybePlaced, flash, t]);
+    setMenu({ gen, cut: menuCut, x, y, rev });
+  }, [byCut, maybePlaced, flash, t, rev]);
   // 트랙 머리 우클릭 메뉴·북마크 편집 창 — 여는 순간의 rev 를 잡아 둔다. 떠 있는 사이 다른 창이 이 편집을 바꾸면(rev 가
   //  갈린다) 닫고, 그 뒤에 고른 것은 저장하지 않는다(옛 화면을 보고 고른 것이 새 문서를 덮지 않게 — Codex 설계 검토).
   const [trackMenu, setTrackMenu] = useState<{ track: number; x: number; y: number; rev: number } | null>(null);
@@ -687,6 +688,7 @@ function EditTabInner({
     setMarkerMenu({ key, x, y, rev });
   }, [rev]);
   useEffect(() => {
+    setMenu(null);
     setTrackMenu(null);
     setMarkerMenu(null);
     setColorMenu(null);
@@ -776,7 +778,7 @@ function EditTabInner({
   const placeTo = (track: number) => {
     if (!menu) return;
     closeMenu();
-    placeCard(menu.gen.id, menu.cut, track);
+    placeCard(menu.gen.id, menu.cut, track, { rev: menu.rev });
   };
 
   // 풀의 카드를 끌어 타임라인에 넣기(Jay 2026-10-13) — 몸짓은 풀(EditPool)이 알리고, 여기서 무엇이 어디에 놓이는지를 정한다.

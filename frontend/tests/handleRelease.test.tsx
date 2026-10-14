@@ -9,6 +9,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SubTable } from "../src/components/manage/console/ConsoleMainParts";
 import { useHandleRelease } from "../src/lib/useDragEndReset";
+import { backgroundKeysBlocked } from "../src/lib/keyGate";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -58,4 +59,20 @@ it("서브스페이스 표의 순서 손잡이도 같은 훅을 쓴다 — 손�
   expect(row.draggable).toBe(true);
   act(() => { document.body.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); });
   expect(row.draggable).toBe(false);
+});
+
+// 58회차(Codex): ⋯ 메뉴가 열린 채 그 줄이 목록에서 빠지면(다른 창이 콘솔에서 내림·검색) 메뉴는 안 보이는데 Esc 겹이 남아 뒤 화면 키를 막고
+//  Esc 한 번을 먹었다. 다시 보일 때 저절로 열리지도 않아야 한다.
+it("서브스페이스 표의 ⋯ 메뉴 — 그 줄이 목록에서 빠지면 닫힌다", () => {
+  const noop = () => {};
+  const sub = (id: string) => ({ id, name: id, balance: 0, first_seen_at: null, monthly_topup: null, recurring_auto: false, next_topup_day: null, status: "active", projects: [] });
+  const view = (subs: ReturnType<typeof sub>[]) => <SubTable data={{ subs } as never} canEdit busy={false} onSelect={noop} onMove={noop} onCredit={noop} onFolder={noop}
+    onPeriod={noop} onStatus={noop} onArchive={noop} onAdd={noop} />;
+  act(() => root.render(view([sub("s1"), sub("s2")])));
+  act(() => host.querySelector<HTMLButtonElement>('[aria-label="s1 메뉴"]')!.click());
+  expect([!!host.querySelector(".wc-menu"), backgroundKeysBlocked()]).toEqual([true, true]);
+  act(() => root.render(view([sub("s2")])));
+  expect(backgroundKeysBlocked()).toBe(false); // 전엔 보이지 않는 메뉴가 계속 막았다
+  act(() => root.render(view([sub("s1"), sub("s2")])));
+  expect(host.querySelector(".wc-menu")).toBeNull();
 });

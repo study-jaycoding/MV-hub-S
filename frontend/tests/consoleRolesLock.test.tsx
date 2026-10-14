@@ -90,6 +90,28 @@ it("먼저 떠난 자동 재조회가 뒤에 떠난 조회보다 늦게 와도 �
   expect(pill().disabled).toBe(false);
 });
 
+// 58회차(Codex): 잠금은 여는 단추만 막아, 이미 열린 메뉴는 다시 읽는 동안에도 옛 역할 배열로 저장을 보냈다(서버는 배열 전체를 교체) —
+//  다시 읽기가 다른 프로젝트로 넘어가면 남아 있던 '프로젝트에서 빼기'가 그 프로젝트의 사람을 뺐다. 잠기면 열린 메뉴도 닫는다.
+it("역할 메뉴가 열린 채 다시 읽기가 시작되면 메뉴가 닫힌다 — 옛 역할로 저장하지 않는다", async () => {
+  let finishReload!: (value: ReturnType<typeof table>) => void;
+  mocks.memberTable.mockResolvedValueOnce(table(["creator"])).mockReturnValueOnce(new Promise((resolve) => { finishReload = resolve; }));
+  const view = (reloadSignal: number) => (
+    <ConsoleSubView workspaceId="ws" name="서브" tier="sub" today="2026-10-12" canEdit onChanged={() => {}} reloadSignal={reloadSignal}
+      conflict={{ saveCredit: vi.fn(), savePlanning: vi.fn(), dialog: null, active: false } as never} />
+  );
+  await act(async () => root.render(view(0)));
+  await settle();
+  await act(async () => { pill().click(); });
+  expect(roleItem("supervisor")).toBeTruthy();
+  await act(async () => root.render(view(1))); // 다른 관리자의 변경 알림 — 다시 읽는 중
+  await settle();
+  expect(host.querySelector('[role="menuitemcheckbox"]')).toBeNull(); // 전엔 열린 채 남아 눌렸다
+  await act(async () => { finishReload(table(["creator", "supervisor"])); });
+  await settle();
+  expect(host.querySelector('[role="menuitemcheckbox"]')).toBeNull(); // 풀려도 저절로 다시 열리지 않는다
+  expect(mocks.setProjectRoles).not.toHaveBeenCalled();
+});
+
 // Codex 코드 리뷰(2차): 저장 뒤의 조회 R1 이 뒤에 떠난 자동 조회 R2 에 밀려 버려지면, R1 을 기다리던 저장이 잠금을 풀어 화면은 아직 옛 역할인데 다음 저장을 받았다.
 it("저장 뒤의 조회가 뒤에 떠난 자동 조회에 밀려 버려져도, 그 자동 조회가 올 때까지 역할 알약은 잠겨 있다", async () => {
   let finishR1!: (value: ReturnType<typeof table>) => void;

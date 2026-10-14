@@ -3,7 +3,7 @@
 import { useModalFocus } from "../../../lib/keyGate";
 import { useEscapeClose } from "../../../lib/useEscapeClose";
 import { useHandleRelease } from "../../../lib/useDragEndReset";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { acceptDecimal, formatDecimal } from "../../../lib/creditPlan";
 import { formatCredits } from "../../../lib/formatCredits";
 import { manageApi } from "../../../lib/manageApi";
@@ -133,7 +133,6 @@ export function SubTable({ data, canEdit, busy, onSelect, onMove, onCredit, onFo
 }) {
   const [query, setQuery] = useState("");
   const [menu, setMenu] = useState<string | null>(null);
-  useEscapeClose(() => setMenu(null), menu !== null, true, true); // ⋯ 메뉴만 닫는다
   // 프로젝트 관리 창과 같은 끌기 — ⠿ 를 누른 동안만 줄이 끌린다(이름·단추 클릭을 막지 않게)
   const [dragArmed, setDragArmed] = useState(false);
   useHandleRelease(dragArmed, () => setDragArmed(false)); // 손잡이 밖에서 떼거나 누른 채 창을 떠나도 내린다
@@ -145,6 +144,11 @@ export function SubTable({ data, canEdit, busy, onSelect, onMove, onCredit, onFo
   const matched = data.subs.filter((s) => !q || s.name.toLowerCase().includes(q));
   const view = paginateUsageItems(matched, paging.page, paging.pageSize);
   const rows = view.items;
+  // ⋯ 메뉴는 그 줄이 지금 보일 때만 열린 것이다 — 줄이 목록에서 빠지면(다른 창이 콘솔에서 내림·검색·쪽 넘김) 메뉴는 안 보이는데 Esc 겹이
+  //  남아 뒤 화면의 키를 막고 Esc 한 번을 먹었다(58회차). 그때 닫아 두어, 줄이 다시 보여도 저절로 열리지 않게 한다.
+  const menuShown = menu !== null && rows.some((s) => s.id === menu);
+  useEffect(() => { if (menu !== null && !menuShown) setMenu(null); }, [menu, menuShown]);
+  useEscapeClose(() => setMenu(null), menuShown, true, true); // ⋯ 메뉴만 닫는다
   return (
     <div className="usage-card">
       <div className="usage-card-head">

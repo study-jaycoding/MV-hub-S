@@ -94,18 +94,25 @@ export function SceneWorkspaceMenu({
 
   // 화면 밖으로 나가지 않게 위치 보정 — 가로는 바로, 세로는 **실제 높이를 잰 뒤** 넘치면 위로 연다
   // (여러 줄 탭·작은 창에서 아래쪽을 우클릭하면 목록과 이동 단추에 손이 닿지 않는다 — 코덱스 P2).
-  const left = Math.max(8, Math.min(target.x, window.innerWidth - MENU_MAX_W - 8));
+  //  연 채 창 크기가 바뀌어도 다시 잰다 — 열 때만 재면 창을 줄인 뒤 아래 항목이 화면 밖에 남았다(58회차).
+  const [viewport, setViewport] = useState(() => ({ w: window.innerWidth, h: window.innerHeight }));
+  useEffect(() => {
+    const onResize = () => setViewport({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  const left = Math.max(8, Math.min(target.x, viewport.w - MENU_MAX_W - 8));
   const [top, setTop] = useState(() => Math.max(8, target.y));
   useLayoutEffect(() => {
     const height = ref.current?.offsetHeight ?? 0;
-    const room = window.innerHeight - 8;
+    const room = viewport.h - 8;
     if (target.y + height <= room) {
       setTop(Math.max(8, target.y));
       return;
     }
     // 위로 열되(우클릭 지점 위), 그래도 안 들어가면 화면 안에 맞춘다.
     setTop(Math.max(8, Math.min(target.y - height, room - height)));
-  }, [target.x, target.y, options.length, loading]);
+  }, [target.x, target.y, options.length, loading, viewport]);
 
   // 머리줄에 보여줄 '지금 지정' — 목록에 같은 id 가 있으면 현재 이름을 쓴다(이름이 바뀌어도 맞게).
   const currentLabel = target.current
