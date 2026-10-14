@@ -2646,8 +2646,9 @@ export default function App() {
           //  전에는 보는 자리만 되살려 사이드바는 프로젝트, 카드는 e035 였다. 뒤로·앞으로 가기와 같게(adopt)). 기억이 없거나 다른 문맥이면 프로젝트
           //  맨 위 — 사이드바의 표시도 맨 위로 맞춘다(Codex 코드 리뷰: 공간을 바꿔 공유 탭의 자리만 표시 전용으로 비운 뒤면 위의 setFilters 는 자리가
           //  그대로라 생성 위치를 안 건드려, 사이드바에 옛 폴더가 남았다). 뒤로·앞으로 가기는 여기를 거치지 않고 기록의 자리를 쓴다(lib/useAppNavigation).
-          if (tab === "team" && teamMemoryCtx) {
-            const remembered = LS.loadJSON<TeamLocationMemory>(TEAM_LOCATION_KEY);
+          //  기억을 되살리는 것만 문맥이 있어야 한다 — 전체 보기(문맥 없음)에서도 사이드바의 표시는 맞춘다(Codex 36회차).
+          if (tab === "team") {
+            const remembered = teamMemoryCtx ? LS.loadJSON<TeamLocationMemory>(TEAM_LOCATION_KEY) : null;
             if (remembered && remembered.ctx === teamMemoryCtx && (remembered.project_id || remembered.folder_path)) {
               // 그사이 지워졌는지는 판정하지 않는다 — 사이드바의 프로젝트 목록은 보관·공간 제한이라 없다고 지워진 것이 아니고, 폴더는 알 길이 없다
               //  (컷 카드 0장은 공유 해제·필터로도 난다). 정말 사라졌으면 빈 목록이 보이고, 사이드바에서 다시 고르면 기억이 덮인다(Codex 코드 리뷰 2회).

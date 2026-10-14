@@ -129,10 +129,14 @@ export function EditViewer({
     if (box) controls.seek(total * Math.min(1, Math.max(0, (event.clientX - box.left) / Math.max(1, box.width))));
   };
   // 소리 크기 — 영상 요소 둘(앞·뒤로 바꿔 트는 짝) 모두에 건다. 짝이 바뀌어도 요소는 그대로라 값이 남는다.
+  //  다만 미리 굴리는 뒤의 것(가려진 채 도는 것)은 0 그대로 둔다 — 굴리기를 멈추거나 앞으로 나올 때 짝이 앞의 값으로
+  //  돌려놓는다(editVideoPair). 여기서 덮으면 가려진 다음 영상의 소리가 났다(Codex 36회차).
   useEffect(() => {
-    for (const el of [videoRef.current, spareRef?.current]) if (el) el.volume = volume;
+    for (const el of [videoRef.current, spareRef?.current]) {
+      if (el && !(el.dataset.spare !== undefined && !el.paused)) el.volume = volume;
+    }
   }, [volume, videoRef, spareRef]);
-  // 끈 막대 — 타임바처럼 누르거나 끌어서 정한다(입력칸이 아니라 초점을 가져가지 않는다 — 재생 키가 막대로 가지 않게).
+  // 끈 막대 — 타임바처럼 누르거나 끌어서 정한다(입력칸이 아니고, 마우스로는 초점을 가져가지 않는다 — 재생 키가 막대로 가지 않게).
   //  스피커를 누르면 0 ↔ 끄기 전의 크기(없으면 1).
   const volRef = useRef<HTMLDivElement>(null);
   const volBack = useRef(volume > 0 ? volume : 1);
@@ -268,8 +272,17 @@ export function EditViewer({
                   : <><path d="M11 4.6a3.4 3.4 0 0 1 0 4.8" />{volume > 0.5 && <path d="M13.3 2.6a6.2 6.2 0 0 1 0 8.8" />}</>}
               </svg>
             </button>
-            <div className="ed-vol-bar" role="slider" aria-label={t("소리 크기")} title={volTitle}
+            <div className="ed-vol-bar" role="slider" aria-label={t("소리 크기")} title={volTitle} tabIndex={0}
               aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(volume * 100)}
+              // 키보드(Tab 으로 온 초점)로도 — ←↓ / →↑ 5%, Home·End 끝. 쓴 키는 막아 프레임 이동으로 새지 않는다(편집 키는
+              //  막힌 키를 건너뛴다). 마우스로 누를 때는 초점을 안 가져간다 — 누른 뒤의 ←→ 는 그대로 프레임 이동이다(Codex 36회차).
+              onMouseDown={(event) => event.preventDefault()}
+              onKeyDown={(event) => {
+                const step = ({ ArrowLeft: -0.05, ArrowDown: -0.05, ArrowRight: 0.05, ArrowUp: 0.05, Home: -1, End: 1 } as Record<string, number>)[event.key];
+                if (step === undefined || event.ctrlKey || event.metaKey || event.altKey) return;
+                event.preventDefault();
+                onVolume(Math.round(Math.min(1, Math.max(0, volume + step)) * 100) / 100);
+              }}
               onPointerDown={(event) => {
                 if (event.button !== 0) return;
                 event.currentTarget.setPointerCapture(event.pointerId);
