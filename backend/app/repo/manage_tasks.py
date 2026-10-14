@@ -1163,7 +1163,9 @@ def update_task(
                 continue
             row = conn.execute(f"SELECT {field} FROM project_task WHERE id=?", (tid,)).fetchone()
             latest = "" if row is None or row[0] is None else str(row[0])
-            if latest != (base or ""):
+            # 지금 값이 이미 쓰려는 글이면 덮을 남의 글이 없다 — 응답만 잃은 저장을 다시 보낸 경우(52회차)
+            already = field in sets and latest == ("" if sets[field] is None else str(sets[field]))
+            if latest != (base or "") and not already:
                 raise TaskEditConflictError(field, latest)
         cols = ", ".join(f"{k}=?" for k in sets)
         conn.execute(

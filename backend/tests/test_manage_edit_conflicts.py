@@ -423,6 +423,17 @@ def test_task_description_save_from_a_stale_base_is_refused(client):
     assert client.patch(url, json={"description": "legacy"}).json()["description"] == "legacy"
 
 
+def test_task_description_retry_after_a_lost_response_is_not_a_conflict(client):
+    """52회차 — 저장은 됐는데 응답만 잃고 같은 글을 같은 기준으로 다시 보내면, 지금 값이 이미 그 글이라 덮을 남의 글이 없다.
+    전엔 409 로 내 글을 '다른 사람이 바꾼 글' 이라고 안내했다. 다른 글을 옛 기준으로 보내는 것은 여전히 409."""
+    tid = manage.create_task("p1", "cut 1")["id"]
+    url = f"/api/manage/tasks/{tid}"
+    assert client.patch(url, json={"description": "mine", "expected_description": ""}).status_code == 200
+    retry = client.patch(url, json={"description": "mine", "expected_description": ""})
+    assert (retry.status_code, retry.json()["description"]) == (200, "mine")
+    assert client.patch(url, json={"description": "other", "expected_description": ""}).status_code == 409
+
+
 def test_task_assignee_can_still_save_a_description_with_its_base(client):
     """기준값은 바꿀 칸이 아니다 — 배정된 작업자의 '설명만' 권한 판정에 섞이지 않는다."""
     tid = manage.create_task("p2", "cut 2")["id"]  # member 는 p2 의 PM 이 아니다 — 일반 작업자(creator)로 배정만 됐다
