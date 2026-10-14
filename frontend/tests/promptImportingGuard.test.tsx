@@ -105,6 +105,8 @@ it("그림을 붙인 Ctrl+V 를 길게 누르면 반복은 막는다 — 키를 
     return event.defaultPrevented;
   };
   expect(repeat()).toBe(true); // 전엔 막지 않아 반복마다 paste 가 왔다
+  act(() => { editor().dispatchEvent(new KeyboardEvent("keyup", { key: "Shift", ctrlKey: true, bubbles: true })); }); // 누른 채 다른 키만 뗐다(Codex 검토)
+  expect(repeat()).toBe(true);
   act(() => { editor().dispatchEvent(new KeyboardEvent("keyup", { key: "v", ctrlKey: true, bubbles: true })); });
   expect(repeat()).toBe(false); // 키를 뗐다 — 글자 붙여넣기의 반복은 전처럼 둔다
 });

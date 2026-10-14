@@ -651,12 +651,16 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       if (imagePasteHeldRef.current && event.repeat && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") event.preventDefault();
     };
     const release = () => { imagePasteHeldRef.current = false; };
+    // V 나 Ctrl(⌘)을 뗄 때만 — 누른 채 다른 키(Shift 등)만 떼어도 풀리면 다음 반복이 또 붙였다(Codex 검토)
+    const onUp = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() === "v" || event.key === "Control" || event.key === "Meta") release();
+    };
     window.addEventListener("keydown", onKey, true);
-    window.addEventListener("keyup", release, true);
+    window.addEventListener("keyup", onUp, true);
     window.addEventListener("blur", release);
     return () => {
       window.removeEventListener("keydown", onKey, true);
-      window.removeEventListener("keyup", release, true);
+      window.removeEventListener("keyup", onUp, true);
       window.removeEventListener("blur", release);
     };
   }, []);
