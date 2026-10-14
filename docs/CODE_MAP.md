@@ -611,7 +611,6 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `timeline/EditTab.tsx`(약 1,100줄) | 편집 탭 조립 — 시퀀스 고르기·문서·재생·편집 키·컷(폴더) 비활성/숨기기·빈 곳 채우기(최종 확인된 것 먼저, 없으면 최신)·컷 더블클릭(공유 & 리뷰의 폴더 창을 App 에 열어 달라고 알린다)([EDIT_TAB.md](EDIT_TAB.md)). `edit/`(부분 수정)와 다른 기능이다 | `EditTab`(App 이 지연 로드) |
 | `timeline/EditTimeline.tsx`(약 345줄) | 눈금자(마크 인/아웃의 띠·북마크 꼬리표)·컷 줄·영상 트랙(트랙 색)·소리 줄·재생헤드. 클립은 위아래로만 끈다(컷 자리는 폴더 순서로 고정). 트랙 머리 우클릭·북마크 더블클릭은 무엇을 열지만 알린다 | `EditTimeline`, `EditMarks` |
 | `timeline/EditViewer.tsx`(약 230줄) | 뷰어 한 판 — 위 줄(지금 시각·무엇을 볼지·전체 길이·싱글/듀얼)·무대(`<video>` — 자기 시계로 이어 트는 판은 둘: 앞 · 다음 것을 미리 받는 뒤 `spareRef`)·아래 줄(타임바: 북마크·마크 인/아웃 · 버튼·반복·배속 · 오른쪽의 구간 반복·마크 인·마크 아웃). 타임라인·소스(클립·테이프)·한 트랙만이 같은 판을 쓰고, 시계는 편집 탭이 가진 엔진의 것이다. 무대는 덮을 수 있다(`over` — 다이나믹 트림 모드) | `EditViewer`, `ViewerProps`, `ViewerMarking` |
-| `timeline/EditTrimView.tsx`(약 90줄) | 다이나믹 트림 모드(다빈치의 Dynamic Trim Mode, 보기만) — 켜면 나뉜 뷰어가 타임라인 판 하나가 되고(`EditTab` 의 `trim`), 그 무대를 덮는 두 칸에 재생헤드에서 가장 가까운 편집점의 바로 앞 \| 바로 뒤가 뜬다. 재생헤드 쪽 칸에는 엔진의 화면이 올라와(CSS `data-side`) 한 번의 재생이 앞 칸에서 뒤 칸으로 이어지고, 반대쪽은 그 편집점의 프레임으로 서 있다 | `EditTrimView` |
 | `timeline/EditPool.tsx`(약 310줄) | 미디어 풀 — 재생헤드가 있는 컷의 공유 생성물을 폴더 목록 옆에 보인다. 보기 방식(썸네일·메타데이터·목록)·크기·검색·정렬. 누르기·Ctrl/Shift·끌어서 상자 = 고르기(마지막 것이 듀얼 뷰어의 소스, 2장 이상이면 비교) · 더블클릭 = 크게 보기 · 휠 클릭 = 넣을 트랙 고르기 · 우클릭 = 이 컷의 폴더 창. 폭은 `ResizableSidebar` 로 끌어서 바꾼다 | `EditPool`, `arrangePool` |
 | `timeline/EditSoloViewer.tsx`(약 25줄) | 한 트랙만 보는 판 — `useEditFollow` 로 타임라인의 시계를 따라간다 | `EditSoloViewer` |
 | `timeline/EditTrackMenu.tsx`(약 320줄) | 편집 탭의 메뉴들 — 껍데기 `EditMenu`(body 포털·자리·바깥 누르기·Esc/Tab·↑↓·뒤 화면 키 차단) 위에 카드 휠 클릭 메뉴(지금 있는 트랙을 보여 주고 고르면 그 트랙에 넣는다 — 미디어 풀과 편집 탭이 연 폴더 창 공용)와 트랙 머리 메뉴(트랙 추가·위/아래로·삭제·빈 트랙 삭제·색), 막대의 목록 메뉴(비활성 숨기기·빈 곳 채우기·모두 최종으로 확정), 클립 우클릭 메뉴(Resolve 보내기·길이 조절·최종 선택), 왼쪽 폴더 트리의 폴더 메뉴(공유 저장·최종 저장·원본 위치 열기 — 공유 & 리뷰 탭의 폴더 메뉴와 같은 규칙·모양) | `EditMenu`, `EditTrackMenu`, `EditTrackHeadMenu`, `EditListMenu`, `EditClipMenu`, `EditFolderMenu`, `EditSwatches`, `TrackRow`, `TrackAct` |
@@ -890,12 +889,12 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `assetVersionRefresh.ts` | 브라우저+api | 프로젝트별 1-in-flight 버전 갱신 실행기(API 조회) + 포커스·가시성 복귀 리스너 |
 | `assetVirtualRows.ts` | 순수 | 에셋 그리드 행 모델(인덱스판) |
 | `folderTreeModel.ts` | 순수 | 폴더 경로 정규화 + 개수 트리 구성 |
-| `editTimeline.ts` | 순수 | 편집 탭 계산 — 컷 순서(이름 자연 정렬)·배치·보이는 클립(위 트랙 우선)·위치((컷, 컷 안 시각))·문서 편집(클립·트랙 더하기/빼기/옮기기/색·마크 인/아웃·북마크·빈 컷 채우기 `fillEmptyCuts`)·다이나믹 트림 모드의 계산(`nearestPoint`·`shotsAt`)·공유 목록과 잇기([EDIT_TAB.md](EDIT_TAB.md)) |
+| `editTimeline.ts` | 순수 | 편집 탭 계산 — 컷 순서(이름 자연 정렬)·배치·보이는 클립(위 트랙 우선)·위치((컷, 컷 안 시각))·문서 편집(클립·트랙 더하기/빼기/옮기기/색·마크 인/아웃·북마크·빈 컷 채우기 `fillEmptyCuts`)·공유 목록과 잇기([EDIT_TAB.md](EDIT_TAB.md)) |
 | `editResolveExport.ts` | 순수 | 편집 탭의 타임라인 Resolve 보내기 — 지금 배치를 프레임 단위 계획(`mvhub.edit-timeline` v1: 클립·소리·북마크·인/아웃, 절대 시각을 한 번씩 반올림)으로 옮긴다 · 타임라인 이름. 받는 쪽은 `services/resolve_timeline.py` 의 `validate_plan` — 계획의 칸을 바꾸면 두 곳을 같이 |
 | `editTimelineStore.ts` | 저장 | 편집 문서 localStorage 읽기/쓰기(읽지 못한 문서는 `.bad` 로 보존)·되돌리기 스택·마지막 시퀀스·화면 설정(`EditUi` — 판이 보는 것 `ViewMode`(타임라인·소스 클립·소스 테이프·한 트랙)·새 북마크의 색) |
 | `useEditDoc.ts` | 훅 | 편집 문서 상태 — 바꾸기·저장·되돌리기·다른 창의 변경 받아들이기((키, 문서) 한 쌍·`rev`) |
 | `useEditSequence.ts` | 훅+api | 편집 탭 조회 — 프로젝트·폴더 트리(온전성 표시)와 시퀀스의 공유 생성물 전부(쪽 넘김·문맥 가드·상한 2,000) |
-| `useEditPlayback.ts` | 훅 | 편집 탭 재생 — 시계 주인(영상/rAF)·보이는 소스 전환·훑기·배속·반복·구간 반복(`range` — 전체 반복과 따로, 켜는 순간은 `playRange`)·편집점 앞뒤 재생(`playAround` — 구간은 엔진이 쥔다)·다음 영상 미리 받기와 미리 굴리기(`upcoming`·`prepare` — 영상 요소가 둘일 때)·고른 배속(`speed`). 멈추면 멈춘 자리를 그린다. 프레임마다 React 를 건드리지 않는다. 타임라인용·소스용(클립·테이프) 두 인스턴스 |
+| `useEditPlayback.ts` | 훅 | 편집 탭 재생 — 시계 주인(영상/rAF)·보이는 소스 전환·훑기·배속·반복·구간 반복(`range` — 전체 반복과 따로, 켜는 순간은 `playRange`)·다음 영상 미리 받기와 미리 굴리기(`upcoming`·`prepare` — 영상 요소가 둘일 때)·고른 배속(`speed`). 멈추면 멈춘 자리를 그린다. 프레임마다 React 를 건드리지 않는다. 타임라인용·소스용(클립·테이프) 두 인스턴스 |
 | `editVideoPair.ts` | 순수 + 훅 | 편집 탭의 영상 요소 둘을 하나처럼(`pairVideo`) — 앞의 것이 보이고 뒤의 것은 다음 영상을 미리 받아 세워 둔다. 넘어갈 때 받지 않고 앞뒤만 바꾸고(`swap`), 직전에는 소리 없이 미리 굴린다(`roll`). `useVideoPair` = 판 하나의 요소 둘과 묶음 |
 | `useEditFollow.ts` | 훅 | 편집 탭 '한 트랙만 보기' — 타임라인의 시각을 프레임마다 읽어 그 트랙의 클립을 맞춰 보인다(시계에 영향 없음) |
 | `videoDuration.ts` | 브라우저 | 영상 길이 재기(메타데이터만·주소별 한 번·동시에 4개) |
