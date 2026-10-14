@@ -459,6 +459,16 @@ it("다빈치에서 고른 것 — 풀의 세 보기와 타임라인 클립에 �
   resolveScroll += 1;
   mount();
   expect(scroll.scrollLeft).toBeGreaterThan(0);
+  // 휠 단추를 같이 누른 채 왼쪽만 떼면 pointerup 이 안 온다 — 왼쪽이 떼어진 채 온 움직임에서 훑기(넘김 쉬기)를 끝낸다(조작 규칙 21, 39회차 재검토)
+  scroll.scrollLeft = 0;
+  const ruler = document.querySelector(".ed-ruler")!;
+  mouse(ruler, "pointerdown");
+  const captured = vi.spyOn(Element.prototype, "hasPointerCapture").mockReturnValue(true);
+  mouse(ruler, "pointermove", { buttons: 4 });
+  captured.mockRestore();
+  resolveScroll += 1;
+  mount();
+  expect(scroll.scrollLeft).toBeGreaterThan(0);
 });
 
 it("미디어 풀: 보기 방식(썸네일·메타데이터·목록)과 크기·정렬·검색을 바꾼다 — 보기 설정은 이 브라우저에 남는다", () => {

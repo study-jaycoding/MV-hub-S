@@ -225,6 +225,13 @@ export const EditTimeline = memo(function EditTimeline({
       scrubbing.current = true;
       event.currentTarget.setPointerCapture(event.pointerId);
     } else if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    else if (!(event.buttons & 1)) {
+      // 왼쪽 단추가 떼어진 채 온 움직임 — 놓기를 놓쳤다(조작 규칙 21: 휠 단추를 같이 누른 채 왼쪽만 떼면 pointerup 이 안 와서 훑기와
+      //  넘김 쉬기가 남았다 — Codex 39회차 재검토). 클립·컷 끌기와 같이 거기서 끝낸다.
+      endScrub();
+      event.currentTarget.releasePointerCapture(event.pointerId);
+      return;
+    }
     onSeek(timeAt(event.clientX));
   };
 
