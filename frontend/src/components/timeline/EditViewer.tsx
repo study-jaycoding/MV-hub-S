@@ -4,7 +4,7 @@
 //  판은 '무엇을 그릴지'(shown)와 조작 함수만 받는다 — 시계는 편집 탭이 가진 엔진(타임라인·소스)의 것이다.
 //  `<video>` 는 판마다 하나고 떼지 않는다(떼면 재생 훅이 걸어 둔 이벤트와 주소가 사라진다) — 안 보이는 판은 hidden 으로 둔다.
 //  지금 시각과 타임바 머리는 React 를 거치지 않고, 등록해 둔 그리기 함수가 프레임마다 고친다.
-import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type MutableRefObject, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type MutableRefObject, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
 import { timecode, type EditMarks } from "../../lib/editTimeline";
 import { isSourceView, type ViewMode } from "../../lib/editTimelineStore";
 import { useT } from "../../lib/i18n";
@@ -51,7 +51,6 @@ export interface ViewerProps {
   marks: readonly number[]; // 타임바의 얇은 줄(소스 테이프의 클립 경계, 초)
   io?: EditMarks | null; // 마크 인/아웃 — 타임바 위의 구간 선과 아래의 회색 꼬리표
   flags?: readonly { time: number; color?: string }[]; // 북마크 — 타임바 위의 색 꼬리표
-  over?: ReactNode; // 무대를 덮는 것 — 밑의 영상 요소는 그대로 둔다
   registerPaint: (paint: (time: number) => void) => () => void; // 이 판의 시각·타임바를 그릴 함수를 시계에 건다
   controls: ViewerControls;
   loop: boolean;
@@ -74,7 +73,7 @@ const NO_FLAGS: readonly { time: number; color?: string }[] = [];
 
 export function EditViewer({
   order, place, mode, options, onMode, shown, videoRef, spareRef, muted, playing, rate, total, marks, io = null, flags = NO_FLAGS,
-  over = null, registerPaint, controls,
+  registerPaint, controls,
   loop, onLoop, speed, onSpeed, volume, onVolume, volumeMemory, label, detail, empty, active, onActivate, dualButton, bare = false,
 }: ViewerProps) {
   const t = useT();
@@ -199,7 +198,6 @@ export function EditViewer({
         {notice && <div className="ed-notice" role="status">{notice}</div>}
         {!empty && label && <span className="ed-chip ed-chip-l">{label}</span>}
         {!empty && detail && <span className="ed-chip ed-chip-r">{detail}</span>}
-        {!empty && over}
       </div>
       <div className="ed-vbot" onMouseDown={keepFocus}>
         {/* 타임바 — 누르거나 끌어서 훑는다(다빈치의 재생바). 빨강 = 지금 자리, 위의 색 꼬리표 = 북마크, 밝은 선과 아래의 회색
