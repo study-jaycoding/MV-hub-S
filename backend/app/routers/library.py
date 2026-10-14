@@ -1362,6 +1362,6 @@ def create_auto_tag(body: AutoTagIn, request: Request):
     return {"ok": True, "name": name}
 
 
-@router.delete("/auto-tags/{name}")
+@router.delete("/auto-tags/{name:path}")  # 이름의 '/' 도 받는다(서버셋 설계 ①)
 def delete_auto_tag(name: str, request: Request):
     return {"removed": repo.delete_auto_tag(name, _tag_owner(request))}

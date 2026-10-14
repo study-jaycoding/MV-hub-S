@@ -54,7 +54,7 @@
 | `POST` | `/api/assets/clipboard-copy` | `clipboard_copy_files` | 로컬 예외 | `_require_local_assets` |
 | `GET` | `/api/assets/file` | `get_file` | 로컬 예외 | `_require_local_assets` |
 | `POST` | `/api/assets/locate` | `locate_legacy_assets` | 로컬 예외 | `_require_local_assets` |
-| `DELETE` | `/api/assets/mounts/{name}` | `del_mount` | 로컬 예외 | `_require_mount_manager` |
+| `DELETE` | `/api/assets/mounts/{name:path}` | `del_mount` | 로컬 예외 | `_require_mount_manager` |
 | `GET` | `/api/assets/mounts` | `list_mounts` | 로컬 예외 | `_require_local_assets` |
 | `POST` | `/api/assets/mounts` | `add_mount` | 로컬 예외 | `_require_mount_manager` |
 | `GET` | `/api/assets/projects` | `list_projects` | 로컬 예외 | `_require_local_assets` |
@@ -244,7 +244,7 @@
 | `GET` | `/api/models/{job_set_type}/params` | `model_params` | 로컬 예외 | — |
 | `GET` | `/api/models` | `list_models` | 로컬 예외 | — |
 | `GET` | `/api/sources` | `list_sources` | 로컬 예외 | — |
-| `DELETE` | `/api/tags/{tag}` | `delete_tag` | 로컬 예외 | — |
+| `DELETE` | `/api/tags/{tag:path}` | `delete_tag` | 로컬 예외 | — |
 | `GET` | `/api/workspaces/available` | `available_workspaces` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `GET` | `/api/workspaces/resolve` | `resolve_workspace_by_name` | 로컬 예외 | — |
 | `POST` | `/api/workspaces/select` | `select_workspace` | 로컬 예외 | — |
@@ -283,7 +283,7 @@
 
 | 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
 | --- | --- | --- | --- | --- |
-| `DELETE` | `/api/auto-tags/{name}` | `delete_auto_tag` | 로컬 예외 | — |
+| `DELETE` | `/api/auto-tags/{name:path}` | `delete_auto_tag` | 로컬 예외 | — |
 | `GET` | `/api/auto-tags` | `list_auto_tags` | 로컬 예외 | — |
 | `POST` | `/api/auto-tags` | `create_auto_tag` | 로컬 예외 | — |
 | `POST` | `/api/download/names` | `download_names` | 로컬 예외 | — |

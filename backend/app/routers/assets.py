@@ -766,7 +766,7 @@ def add_mount(body: MountIn, request: Request):
     return _mounts_payload(request)
 
 
-@router.delete("/mounts/{name}", dependencies=[Depends(_require_mount_manager)])
+@router.delete("/mounts/{name:path}", dependencies=[Depends(_require_mount_manager)])  # 이름의 '/' 도 받는다(서버셋 설계 ①)
 def del_mount(name: str, request: Request):
     """등록된 외부 폴더 해제 — **내 것만** 지운다(남의 등록엔 영향 없음). 원본 폴더는 안 건드림."""
     owner = actor_id(request)

@@ -814,7 +814,8 @@ def set_tags_batch(body: GenerationTagsBatchIn, request: Request):
     return {"succeeded": result.succeeded, "failed": result.failed}
 
 
-@router.delete("/tags/{tag}")
+# {tag:path} — 이름에 '/' 가 들면 주소가 %2F 를 풀어 한 칸 라우트와 안 맞아 지울 수 없었다(서버셋 설계 ①).
+@router.delete("/tags/{tag:path}")
 def delete_tag(tag: str, request: Request):
     """태그를 generation 에서 삭제(에셋 T 패널 ✕ 와 동일). AUTH on 이면 내 생성물에서만(남의 태그 보존)."""
     return {"removed": repo.delete_tag_everywhere(tag, account_uid=account_scope_uid(request))}
