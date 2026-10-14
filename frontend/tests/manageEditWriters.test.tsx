@@ -12,6 +12,7 @@ import { parseManageConflict } from "../src/components/manage/useManageEditConfl
 const mocks = vi.hoisted(() => ({
   creditPlanSettings: vi.fn(), saveCreditPlan: vi.fn(), getPlanning: vi.fn(), setPlanning: vi.fn(),
   members: vi.fn(), projects: vi.fn(), workspaceOptions: vi.fn(), allProjectMembers: vi.fn(), projectFolderLinks: vi.fn(), projectFolder: vi.fn(), workspaceMembers: vi.fn(), updateProject: vi.fn(), createProject: vi.fn(), models: vi.fn(),
+  setProjectFolder: vi.fn(),
 }));
 vi.mock("../src/lib/manageApi", () => ({ manageApi: mocks }));
 vi.mock("../src/api", () => ({ api: mocks }));
@@ -104,7 +105,8 @@ it("ProjectManagerPanel planning sends revision and keeps its original baseline 
   await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); }); await settle();
   expect(host.querySelector('.admin-project-dialog')).not.toBeNull();
   expect(note.value).toBe("my planning");
-  expect(host.textContent).toContain("일부 저장됨: 프로젝트 이름·워크스페이스");
+  expect(mocks.updateProject).not.toHaveBeenCalled(); // 이름·워크스페이스는 손대지 않았다 — 보내지 않는다(50회차)
+  expect(host.textContent).not.toContain("일부 저장됨");
   expect(mocks.setPlanning).toHaveBeenCalledTimes(1);
   await click('.project-dialog-actions .admin-confirm-yes');
   expect(mocks.setPlanning.mock.calls[1][1].revision).toBe(3);
@@ -120,11 +122,31 @@ it("ProjectManagerPanel keeps credit drafts on 409 while reporting earlier plann
   expect(mocks.saveCreditPlan.mock.calls[0][1]).toMatchObject({ revision: 1, topup_day: 15 });
   await click('.manage-conflict .credit-modal-delete');
   expect(host.querySelector<HTMLSelectElement>('[aria-label="매월 충전일"]')!.value).toBe("15");
-  expect(host.textContent).toContain("일부 저장됨: 프로젝트 이름·워크스페이스, 일정·예산");
+  expect(host.textContent).toContain("일부 저장됨: 일정·예산");
   expect(host.textContent).toContain("미저장 입력은 유지");
   await click('.project-dialog-actions .admin-confirm-yes');
   expect(mocks.setPlanning.mock.calls[1][1].revision).toBe(4);
   expect(mocks.saveCreditPlan.mock.calls[1][1].revision).toBe(1);
+});
+
+// 50회차(Codex 검토): 예산만 고쳐 저장해도 창을 열 때의 이름·워크스페이스를 다시 보내, 그사이 다른 사람이 바꾼 이름을 되돌렸다.
+it("ProjectManagerPanel sends the name and workspace only when they were edited", async () => {
+  mocks.setPlanning.mockResolvedValue({ project_id: "p", revision: 4, note: "old planning", status: "active" });
+  await openPanel();
+  await click('.project-dialog-actions .admin-confirm-yes'); // 아무것도 안 고치고 저장
+  expect(mocks.updateProject).not.toHaveBeenCalled();
+  await click('[title="프로젝트 설정"]');
+  await type(host.querySelector<HTMLInputElement>('[placeholder="프로젝트 이름"]')!, "Renamed");
+  await click('.project-dialog-actions .admin-confirm-yes');
+  expect(mocks.updateProject).toHaveBeenCalledExactlyOnceWith("p", expect.objectContaining({ name: "Renamed" }));
+});
+
+it("ProjectManagerPanel does not re-save the render folder it only read when the dialog opened", async () => {
+  mocks.projectFolder.mockResolvedValue({ root_path: "\\\\nas\\render\\old", selected_path: "" });
+  mocks.setPlanning.mockResolvedValue({ project_id: "p", revision: 4, note: "old planning", status: "active" });
+  await openPanel();
+  await click('.project-dialog-actions .admin-confirm-yes'); // 폴더는 손대지 않았다 — 그사이 남이 바꿨어도 되돌리지 않는다
+  expect(mocks.setProjectFolder).not.toHaveBeenCalled();
 });
 
 it("new project partial failure stays editable and retry does not create the project twice", async () => {

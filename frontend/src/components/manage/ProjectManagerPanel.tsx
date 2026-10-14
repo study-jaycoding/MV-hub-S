@@ -62,6 +62,7 @@ type ProjectDialogState =
       project: Project;
       name: string;
       rootPath: string;
+      rootPathBaseline?: string; // 창을 열 때의 렌더 폴더 — 손대지 않았으면 다시 저장하지 않는다(50회차)
       workspaceId: string;
       planning: Planning;
       planningBaseline: Planning;
@@ -308,6 +309,7 @@ export function ProjectManagerPanel({
         project: p,
         name: p.name,
         rootPath: folder?.root_path || "",
+        rootPathBaseline: folder?.root_path || "",
         workspaceId,
         planning: { status: "active", ...planning },
         planningBaseline: planning,
@@ -401,9 +403,11 @@ export function ProjectManagerPanel({
         if (projects.some((item) => item.id === created.id)) throw new Error(taken);
         pending = { ...projectDialog, mode: "rename", project: created };
         savedParts.push("프로젝트 생성");
-      } else {
+      } else if (name !== projectDialog.project.name || workspace.id !== projectDialog.project.workspace_id) {
+        // 손댄 것만 보낸다 — 예산만 고쳐도 창을 열 때의 이름·워크스페이스를 다시 보내, 그사이 남이 바꾼 이름을 되돌렸다(50회차)
         await api.updateProject(projectDialog.project.id, { name, workspace: workspaceContext });
         savedParts.push("프로젝트 이름·워크스페이스");
+        if (pending.mode === "rename") pending = { ...pending, project: { ...pending.project, name, workspace_id: workspace.id } }; // 다시 저장할 때의 기준
       }
       if (pending.mode !== "rename") return;
       const planning = await conflict.savePlanning(pending.project.id, pending.planningBaseline, planningResult.planning);
@@ -411,9 +415,14 @@ export function ProjectManagerPanel({
       savedParts.push("일정·예산");
       setProjectDialog({ ...pending, busy: true });
       const prev = projFolders[pending.project.id];
-      if (rootPath || prev?.root_path) {
+      // 렌더 폴더도 손댔을 때만 — 창을 열 때 읽은 값을 다시 저장하면 그사이 남이 바꾼 폴더 연결을 되돌린다(50회차). 새 프로젝트는 기준이 빈칸.
+      const rootBaseline = projectDialog.mode === "rename" ? projectDialog.rootPathBaseline ?? prev?.root_path ?? "" : "";
+      if (rootPath !== rootBaseline) {
         folderSaveFailed = !(await saveProjectFolderLink(pending.project.id, rootPath, rootPath ? prev?.selected_path || "" : ""));
-        if (!folderSaveFailed) savedParts.push("렌더 폴더");
+        if (!folderSaveFailed) {
+          savedParts.push("렌더 폴더");
+          pending = { ...pending, rootPathBaseline: rootPath }; // 다시 저장할 때의 기준
+        }
       }
       if (creditDraft?.dirty && creditDraft.loadedFor === workspace.id) {
         if (!creditDraft.baseline) throw new Error("크레딧 편집 시작값이 없습니다. 입력은 유지됩니다.");
