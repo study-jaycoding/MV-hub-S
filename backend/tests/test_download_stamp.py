@@ -9,6 +9,7 @@ import asyncio
 import io
 import tempfile
 import unittest
+from email.message import Message
 from pathlib import Path
 from unittest.mock import patch
 
@@ -116,6 +117,82 @@ class DownloadStampTests(unittest.TestCase):
                 self.assertEqual(asyncio.run(_body()), payload)
                 self.assertFalse(temp_path.exists())
                 self.assertTrue(upstream.closed_by_route)
+
+
+class _Remote(io.BytesIO):
+    """원격 응답 흉내 — 머리글에 밝힌 길이(declared)보다 본문이 짧으면 중간에 끊긴 것이다.
+    http.client 의 길이 지정 read() 도 끊기면 예외 없이 짧게 끝난다(그래서 길이를 대조해야 한다)."""
+
+    def __init__(self, payload: bytes, declared: int):
+        super().__init__(payload)
+        self.headers = Message()
+        self.headers["Content-Type"] = "video/mp4"
+        self.headers["Content-Length"] = str(declared)
+        self.closed_by_route = False
+
+    def close(self):
+        self.closed_by_route = True
+        super().close()
+
+
+def _drain(response) -> bytes:
+    async def _body() -> bytes:
+        return b"".join([chunk async for chunk in response.body_iterator])
+
+    return asyncio.run(_body())
+
+
+class TruncatedRemoteTests(unittest.TestCase):
+    """47회차 — 원격이 중간에 끊긴 반쪽 파일을 정상 다운로드로 내보내지 않는다."""
+
+    def _remote_download(self, upstream, gen_id=None):
+        opener = type("_Opener", (), {"open": lambda self, req, timeout=None: upstream})()
+        with (
+            patch.object(library, "assert_public_http_url", lambda url: None),
+            patch.object(library, "guarded_opener", lambda: opener),
+            patch.object(library.file_stamp, "tags_for_generation", lambda gen_id: {"mvhub.gen_id": gen_id}),
+            patch.object(library.file_stamp, "stamp_file", lambda *args, **kwargs: None),
+        ):
+            return library.download_media(BackgroundTasks(), url="https://cdn.example/clip.mp4", name="clip.mp4", gen_id=gen_id)
+
+    def test_stamped_path_rejects_short_body_and_cleans_temp(self):
+        upstream = _Remote(b"x" * 70, declared=100)
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+            temp_path = Path(tmpdir) / "part.mp4"
+            with patch.object(library, "_new_temp_file", return_value=temp_path):
+                with self.assertRaises(HTTPException) as caught:
+                    self._remote_download(upstream, gen_id="gen-1")
+            self.assertEqual(caught.exception.status_code, 502)
+            self.assertIn("70/100", caught.exception.detail)
+            self.assertFalse(temp_path.exists())
+        self.assertTrue(upstream.closed_by_route)
+
+    def test_streamed_path_fails_at_the_end_of_a_short_body(self):
+        upstream = _Remote(b"x" * 70, declared=100)
+        response = self._remote_download(upstream)  # gen_id 없음 = 각인 없이 흘려보낸다
+        self.assertIsInstance(response, StreamingResponse)
+        with self.assertRaises(HTTPException):
+            _drain(response)  # 끝맺지 않고 끊는다 — 브라우저는 실패로 보고 CDN 직접 받기로 넘어간다
+        self.assertTrue(upstream.closed_by_route)
+
+    def test_complete_bodies_pass_on_both_paths(self):
+        streamed = self._remote_download(_Remote(b"y" * 100, declared=100))
+        self.assertEqual(_drain(streamed), b"y" * 100)
+        stamped = self._remote_download(_Remote(b"z" * 100, declared=100), gen_id="gen-1")
+        try:
+            self.assertEqual(Path(stamped.path).read_bytes(), b"z" * 100)
+        finally:
+            Path(stamped.path).unlink(missing_ok=True)
+
+    def test_over_cap_stream_also_checks_the_declared_length(self):
+        upstream = _Remote(b"w" * 70, declared=100)
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+            temp_path = Path(tmpdir) / "big.bin"
+            with patch.object(library, "STAMP_MAX_BYTES", 32), patch.object(library, "_new_temp_file", return_value=temp_path):
+                response = library._stamped_download(upstream, "video/mp4", "big.mp4", {"mvhub.gen_id": "g1"}, BackgroundTasks())
+                with self.assertRaises(HTTPException):
+                    _drain(response)
+                self.assertFalse(temp_path.exists())
 
 
 class ReadStampRouteTests(unittest.IsolatedAsyncioTestCase):

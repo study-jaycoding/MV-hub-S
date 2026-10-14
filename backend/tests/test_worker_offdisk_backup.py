@@ -907,6 +907,69 @@ def test_server_publish_failure_restores_previous_set(tmp_path: Path, monkeypatc
     assert not list(final.parent.glob(".replace-*"))
 
 
+def _parent_and_child(tmp_path: Path) -> tuple[dict, dict, dict[str, bytes], dict[str, bytes]]:
+    trash = _trash_db(tmp_path / "trash.db")
+    first = _content_db(tmp_path / "first.db", secret=False)
+    first_manifest = _server_manifest_with_parent(first, trash, parent=None, device_id="1" * 32)
+    second_path = tmp_path / "second.db"
+    _content_db(second_path, secret=False)
+    with sqlite3.connect(second_path) as conn:
+        conn.execute("INSERT INTO generation(id) VALUES('generation-2')")
+    second = second_path.read_bytes()
+    second_manifest = _server_manifest_with_parent(
+        second, trash, parent=first_manifest["backup_set_id"], device_id="1" * 32
+    )
+    return first_manifest, second_manifest, {"content": first, "trash": trash}, {"content": second, "trash": trash}
+
+
+def _store(root: Path, manifest: dict, data: dict[str, bytes]) -> dict:
+    return db_backup._store_backup_set(root, manifest, {role: io.BytesIO(raw) for role, raw in data.items()})
+
+
+@pytest.mark.parametrize("failing", ["head", "server_meta"])
+def test_resend_finishes_marks_after_publish_failure(tmp_path: Path, monkeypatch, failing: str):
+    """47회차 — 폴더를 공개한 뒤 머리·server.json 쓰기가 실패하면, 같은 세트 재전송이 마저 마무리한다.
+    전엔 '이미 있음'으로 성공을 돌려줘 머리가 부모에 남았다(기본 복원이 최신 작업을 빼먹는다)."""
+    first, second, first_data, second_data = _parent_and_child(tmp_path)
+    root = tmp_path / "account"
+    _store(root, first, first_data)
+    real_write = db_backup.atomic_write_text
+    failed = []
+
+    def fail_once(path, *args, **kwargs):
+        name = {"head": db_backup._HEAD_NAME, "server_meta": "server.json"}[failing]
+        if Path(path).name == name and not failed:
+            failed.append(name)
+            raise OSError("disk full")
+        return real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(db_backup, "atomic_write_text", fail_once)
+    with pytest.raises(OSError):
+        _store(root, second, second_data)
+    final = root / "sets" / second["backup_set_id"]
+    assert final.is_dir() and failed  # 폴더는 공개됐고, 마무리 쓰기 하나가 실패했다
+
+    ack = _store(root, second, second_data)
+
+    assert (ack["duplicate"], ack["is_current"], ack["conflict"]) == (True, True, False)
+    assert db_backup._read_head(root / "sets") == second["backup_set_id"]
+    assert json.loads((final / "server.json").read_text("utf-8"))["conflict"] is False
+
+
+def test_resend_of_a_finished_set_does_not_undo_a_chosen_head(tmp_path: Path):
+    """마무리가 끝난 세트(server.json 있음)의 재전송은 머리를 건드리지 않는다 — 사용자가 옛 세트로 되돌린 것을 다시 뒤집지 않는다."""
+    first, second, first_data, second_data = _parent_and_child(tmp_path)
+    root = tmp_path / "account"
+    _store(root, first, first_data)
+    assert _store(root, second, second_data)["is_current"] is True
+    db_backup._write_head(root / "sets", first["backup_set_id"])  # 사용자가 첫 세트로 되돌렸다(activate)
+
+    ack = _store(root, second, second_data)  # 응답을 못 받았던 작업자가 같은 세트를 다시 보낸다
+
+    assert (ack["duplicate"], ack["is_current"]) == (True, False)
+    assert db_backup._read_head(root / "sets") == first["backup_set_id"]
+
+
 def test_worker_upload_streams_a_complete_multipart_set(tmp_path: Path):
     content_path = tmp_path / "content.db"
     trash_path = tmp_path / "trash.db"

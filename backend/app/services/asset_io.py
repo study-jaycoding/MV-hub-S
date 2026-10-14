@@ -180,7 +180,16 @@ def commit_unique_tmp(tmp: Path, dest_dir: Path, raw_name: str) -> Path:
                 index += 1
                 continue
             except OSError:
-                # 하드링크를 지원하지 않는 파일시스템에서도 O_EXCL로 이름을 먼저 선점한다.
+                if os.name == "nt":
+                    # Windows 의 rename 은 대상이 있으면 실패한다(NTFS·SMB — export_names.commit_new 와 같은 방법). 최종 이름의
+                    # 빈 파일을 먼저 만들지 않으므로, 중간에 끊기거나 교체가 실패해도 빈 파일이 남지 않는다(47회차).
+                    try:
+                        os.rename(tmp, target)
+                    except FileExistsError:
+                        index += 1
+                        continue
+                    return target
+                # POSIX 의 rename 은 덮어쓴다 — 하드링크를 지원하지 않는 파일시스템에서는 O_EXCL로 이름을 먼저 선점한다.
                 try:
                     fd = os.open(
                         str(target),

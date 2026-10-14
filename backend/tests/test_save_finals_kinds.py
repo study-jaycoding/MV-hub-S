@@ -676,6 +676,25 @@ class SaveFinalsKindTests(unittest.TestCase):
         self.assertEqual((blocked["saved"], blocked["skipped"], {e["reason"] for e in blocked["errors"]}), (0, 0, {manage_router._DEST_CONFLICT}))
         self.assertEqual(sorted(f.name for f in (cut / "shared").iterdir()), names)  # 덮어쓰지도, 다른 번호로 또 저장하지도 않는다
 
+    def test_a_lost_done_mark_is_written_again_when_this_pc_saves_again(self):
+        """47회차 — 파일은 확정됐는데 장부의 확정 표식 쓰기가 실패하면(NAS 순간 끊김), 같은 PC 의 다시 저장이 표식을 채운다.
+        전엔 이 PC 는 대장으로 '이미 저장됨'만 보고 넘어가, 각인을 못 읽는 다른 PC 에서는 '같은 이름의 다른 파일'로 막혔다."""
+        render, cut, patches = self._numbered_fixture()
+        marks = lambda: list((render / "_mvhub_sync" / "names2").rglob("d.share.*"))  # noqa: E731
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            stack.enter_context(mock.patch.object(file_stamp, "read_stamp", return_value={}))  # 각인 없음(WebP·오디오·ffmpeg 없는 PC)
+            lost = manage_router.export_names.RegistryError("NAS 끊김")
+            with mock.patch.object(manage_router.export_names.NameBook2, "mark_done", side_effect=lost):
+                first = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="shared"))
+            self.assertEqual((first["saved"], first["errors"], marks()), (2, [], []))  # 저장은 됐고 표식만 없다
+            again = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="shared"))  # 이 PC 가 다시 저장 — 대장으로 알아본다
+            self.assertEqual((again["saved"], again["skipped"], again["errors"], len(marks())), (0, 2, [], 2))  # 표식을 채웠다
+            self._forget_this_pc()
+            other = asyncio.run(manage_router.save_finals("p1", mock.Mock(), kind="shared"))  # 다른 PC
+        self.assertEqual((other["saved"], other["skipped"], other["errors"]), (0, 2, []))  # 전엔 '같은 이름의 다른 파일'
+
     def test_a_number_already_on_disk_is_skipped_and_never_overwritten(self):
         render, cut, patches = self._numbered_fixture()
         foreign = cut / "shared" / v2("share", 1)

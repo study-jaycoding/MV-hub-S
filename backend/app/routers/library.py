@@ -307,6 +307,24 @@ def _attachment(name: str) -> str:
     return f'attachment; filename="{name}"' if quoted == name else f"attachment; filename*=utf-8''{quoted}"
 
 
+def _declared_length(upstream) -> Optional[int]:
+    """원격이 밝힌 본문 길이(없거나 깨졌거나 chunked 면 None) — 중간에 끊긴 본문을 알아보는 데 쓴다."""
+    if getattr(upstream, "chunked", False):
+        return None  # chunked 는 끊기면 http.client 가 IncompleteRead 를 낸다
+    try:
+        raw = upstream.headers.get("Content-Length")
+        return int(raw) if raw is not None else None
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _check_complete(received: int, declared: Optional[int]) -> None:
+    """길이 지정 read() 는 연결이 중간에 끊겨도 예외 없이 짧게 끝난다(http.client — comfy_client.download_view 와 같은 함정).
+    반쪽 파일을 정상 다운로드로 내보내지 않는다(47회차) — 화면은 실패를 받고 CDN 직접 받기로 넘어간다."""
+    if declared is not None and received != declared:
+        raise HTTPException(status_code=502, detail=f"원격 미디어가 중간에 끊겼습니다(수신 {received}/{declared} bytes)")
+
+
 def _new_temp_file(suffix: str) -> Path:
     """빈 임시 파일 경로. mkstemp 가 연 fd 를 반드시 닫는다 — Windows 는 열린 파일을 교체하지
     못해, fd 를 쥔 채로 두면 각인이 '액세스 거부'로 조용히 실패한다."""
@@ -325,6 +343,7 @@ def _stamped_download(
     막지 않으면서도 알 수 없는 크기의 파일이 디스크를 무제한 점유하지 않게 한다.
     """
     suffix = Path(safe).suffix or ""
+    declared = _declared_length(upstream)
     tmp = _new_temp_file(suffix)
     overflow = False
     try:
@@ -341,18 +360,22 @@ def _stamped_download(
                     break
         if overflow:
             def _stream_unstamped():
+                total = 0
                 try:
                     with tmp.open("rb") as prefix:
                         while True:
                             chunk = prefix.read(65536)
                             if not chunk:
                                 break
+                            total += len(chunk)
                             yield chunk
                     while True:
                         chunk = upstream.read(65536)
                         if not chunk:
                             break
+                        total += len(chunk)
                         yield chunk
+                    _check_complete(total, declared)  # 머리글을 보낸 뒤라 연결을 끊는 것으로 실패를 알린다
                 finally:
                     upstream.close()
                     tmp.unlink(missing_ok=True)
@@ -362,6 +385,7 @@ def _stamped_download(
                 media_type=ctype,
                 headers={"Content-Disposition": _attachment(safe)},
             )
+        _check_complete(size, declared)
         file_stamp.stamp_file(tmp, tags, suffix)
         upstream.close()
     except Exception:
@@ -474,13 +498,18 @@ def download_media(
             if tags:
                 return _stamped_download(upstream, ctype, safe, tags, background)
 
+    declared = _declared_length(upstream)
+
     def _stream():
+        got = 0
         try:
             while True:
                 chunk = upstream.read(65536)
                 if not chunk:
                     break
+                got += len(chunk)
                 yield chunk
+            _check_complete(got, declared)  # 머리글을 보낸 뒤라 연결을 끊는 것으로 실패를 알린다
         finally:
             upstream.close()
 

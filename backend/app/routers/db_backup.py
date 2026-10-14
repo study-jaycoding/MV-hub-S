@@ -323,6 +323,28 @@ def _ack_for_stored_set(folder: Path, manifest: dict, *, duplicate: bool, count:
     }
 
 
+def _write_server_meta(final: Path, conflict: bool) -> None:
+    atomic_write_text(
+        final / _SERVER_META_NAME,
+        json.dumps({"received_at": time.time(), "conflict": conflict}, sort_keys=True, separators=(",", ":")),
+    )
+
+
+def _finish_marks(root: Path, final: Path, manifest: dict, head: str | None) -> bool:
+    """폴더를 공개한 뒤의 마무리(머리 → server.json)가 끊긴 세트를 같은 세트 재전송이 마저 한다(47회차 — 전엔 '이미 있음'으로
+    성공을 돌려줘 머리가 옛 세트에 남았고, 기본 복원이 최신 작업을 빼먹을 수 있었다). server.json 이 마무리의 마지막이라
+    그것이 있으면 끝난 세트다 — 그 뒤 머리가 옮겨졌어도(사용자가 고른 복원 등) 건드리지 않는다.
+    판정은 처음 저장 때와 같다 — 머리가 없거나, 이 세트이거나, 이 세트의 부모일 때만 이 세트가 머리다. 마무리했으면 True."""
+    if _server_meta(final):
+        return False
+    backup_set_id = manifest["backup_set_id"]
+    on_top = head in (None, backup_set_id) or manifest.get("parent_backup_set_id") == head
+    if on_top and head != backup_set_id:
+        _write_head(root, backup_set_id)
+    _write_server_meta(final, conflict=not on_top)
+    return True
+
+
 def _valid_set_dirs(root: Path) -> list[Path]:
     if not root.is_dir():
         return []
@@ -369,6 +391,8 @@ def _store_backup_set(
         if final.is_dir():
             ack = _ack_for_stored_set(final, manifest, duplicate=True, count=existing_count)
             if ack is not None:
+                if _finish_marks(root, final, manifest, head_before):
+                    ack = _ack_for_stored_set(final, manifest, duplicate=True, count=existing_count) or ack
                 return ack
             # backup_set_id는 manifest 전체 계보를 포함한 불변 객체의 식별자다. 같은 ID로
             # 다른 manifest가 오면 기존 정상 버전을 교체하지 않는다. 저장 파일만 손상되고
@@ -415,19 +439,10 @@ def _store_backup_set(
             parent = manifest.get("parent_backup_set_id")
             conflict = bool(head_before and parent != head_before)
             is_current = head_before is None or not conflict
-            atomic_write_text(
-                final / _SERVER_META_NAME,
-                json.dumps(
-                    {
-                        "received_at": time.time(),
-                        "conflict": conflict,
-                    },
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ),
-            )
             if is_current:
                 _write_head(root, manifest["backup_set_id"])
+            # server.json 은 마무리의 마지막이다 — 없으면 같은 세트 재전송이 마무리를 다시 한다(_finish_marks, 47회차).
+            _write_server_meta(final, conflict)
             count = _rotate_sets(root)
             ack = _ack_for_stored_set(final, manifest, duplicate=False, count=count)
             if ack is None:

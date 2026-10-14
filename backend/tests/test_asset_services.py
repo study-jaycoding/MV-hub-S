@@ -179,11 +179,46 @@ class AssetIoTests(unittest.TestCase):
             with (
                 patch.object(asset_io.os, "link", side_effect=OSError("no links")),
                 patch.object(asset_io.os, "open", side_effect=PermissionError("denied")),
+                patch.object(asset_io.os, "rename", side_effect=PermissionError("denied")),
                 self.assertRaises(PermissionError),
             ):
                 asset_io.commit_unique_tmp(pending, root, "image.png")
 
             self.assertFalse(pending.exists())
+            self.assertEqual(list(root.iterdir()), [])  # 최종 이름의 빈 파일도 남지 않는다(47회차)
+
+    @unittest.skipUnless(os.name == "nt", "Windows 의 rename 은 대상이 있으면 실패한다 — 그 성질에 기댄다")
+    def test_commit_without_hardlinks_leaves_no_empty_final_file(self) -> None:
+        """47회차 — 하드링크가 안 되는 곳(NAS 등)에서 최종 이름의 빈 파일을 먼저 만들지 않는다.
+        전엔 O_EXCL 로 빈 'image.png' 를 만든 뒤 교체했다 — 그 사이에 끊기면 빈 그림이 Assets 에 남았다."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "image.png").write_bytes(b"old")
+            pending = root / ".pending.part"
+            pending.write_bytes(b"new")
+            with patch.object(asset_io.os, "link", side_effect=OSError("no links")):
+                target = asset_io.commit_unique_tmp(pending, root, "image.png")
+            self.assertEqual((target.name, target.read_bytes()), ("image_2.png", b"new"))
+            self.assertEqual((root / "image.png").read_bytes(), b"old")
+
+            # 확정이 실패하고 정리도 막힌 경우(잠김·NAS 끊김) — 최종 이름에는 아무것도 남지 않아야 한다.
+            pending.write_bytes(b"newer")
+            real_rename = os.rename
+
+            def rename(src, dst):
+                if Path(dst).name == "image_3.png":
+                    raise OSError("NAS 끊김")
+                return real_rename(src, dst)
+
+            with (
+                patch.object(asset_io.os, "link", side_effect=OSError("no links")),
+                patch.object(asset_io.os, "replace", side_effect=OSError("잠김")),
+                patch.object(asset_io.os, "unlink", side_effect=PermissionError("잠김")),
+                patch.object(asset_io.os, "rename", side_effect=rename),
+                self.assertRaises(OSError),
+            ):
+                asset_io.commit_unique_tmp(pending, root, "image.png")
+            self.assertNotIn("image_3.png", [p.name for p in root.iterdir()])  # 전엔 빈 image_3.png 가 남았다
 
     def test_find_same_media_hashes_only_same_size_candidates(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:

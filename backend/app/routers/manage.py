@@ -2248,6 +2248,23 @@ def _link_export_keys(books: export_names.Books, folder_path: str, ident: export
         _manage_log.warning("이름 장부에 열쇠를 잇지 못했습니다: %s", exc)
 
 
+def _heal_done_mark(
+    books: export_names.Books, kind: str, folder_path: str, gen_id: str, ident: Optional[export_names.Ident], path: Path,
+) -> None:
+    """'이미 저장됨'으로 다시 만난 번호 이름 파일의 확정 표식이 빠졌으면 채운다(47회차) — 처음 저장 때 표식 쓰기가 실패했을 수
+    있다(_commit_export 는 경고만 남긴다). 표식이 없으면 각인을 못 읽는 다른 PC 에서 '같은 이름의 다른 파일'로 막힌다.
+    여기 오는 파일은 이미 증거(이 PC 의 대장·각인)로 이 생성물의 것이 확인됐다. 장부가 이 생성물에 준 지금 이름일 때만 적는다."""
+    token = export_names.TOKENS.get(kind, "fin")
+    registries: list = [_BoundBook2(books.v2(folder_path), ident, token)] if ident is not None else []
+    registries.append(books.get(folder_path, token))
+    try:
+        for registry in registries:
+            if registry.name_of(gen_id) == path.name and not registry.is_done(gen_id):
+                registry.mark_done(gen_id)
+    except export_names.RegistryError as exc:
+        _manage_log.warning("번호 이름 확정 표식을 다시 적지 못했습니다: %s (%s)", path.name, exc)
+
+
 def _unlink_quiet(path: Path) -> None:
     try:
         path.unlink(missing_ok=True)
@@ -2274,6 +2291,7 @@ async def _place_export(
         await to_thread_non_abandon(repo_manage.record_export, gen_id, str(path), project_id)
         if ident is not None:
             await to_thread_non_abandon(_link_export_keys, books, folder_path, ident)
+        await to_thread_non_abandon(_heal_done_mark, books, kind, folder_path, gen_id, ident, path)
         return "skipped", None
     if precheck is not None:
         reason = await precheck()
