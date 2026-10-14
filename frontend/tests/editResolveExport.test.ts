@@ -32,17 +32,25 @@ const build = (doc: EditDoc, cuts: string[], links = linksOf(doc)) =>
   buildTimelineExport({ layout: buildLayout(cuts.map(cut), doc), doc, links, name: "뻘뻘뻘_e035" });
 
 describe("buildTimelineExport", () => {
-  it("컷 순서대로 프레임 자리를 잡는다 — 절대 시각을 한 번씩 반올림하고, 빈 컷은 5초 자리로 남는다", () => {
-    // 길이 4.1초 셋: 컷마다 반올림해 더하면 98+98+98 = 294, 절대 시각으로는 round(12.3*24) = 295
+  it("컷 순서대로 프레임 자리를 잡는다 — 영상 길이는 프레임으로 내려 같은 클립이 98·99프레임으로 갈리지 않고, 빈 컷은 5초 자리로 남는다", () => {
+    // 길이 4.1초(98.4프레임) 셋 — 예전엔 컷 경계가 프레임 사이에 서서 98·99·98 로 갈렸다(99 = 원본보다 길어 막힘, 2026-10-14).
+    //  이제 쓰는 길이(clipLen)가 98프레임(4.0833초)이라 경계가 프레임에 선다.
     const doc: EditDoc = { ...emptyEditDoc(), clips: [clip("C0010", "a", 1, 4.1), clip("C0020", "b", 1, 4.1), clip("C0040", "c", 1, 4.1)] };
     const out = build(doc, ["C0010", "C0020", "C0030", "C0040"]); // C0030 은 빈 컷
     expect(out.plan.clips.map((item) => [item.gen_id, item.track, item.start, item.end])).toEqual([
-      ["a", 1, 0, 98], ["b", 1, 98, 197], ["c", 1, 317, 415], // 빈 컷 5초 = 197 → 317
+      ["a", 1, 0, 98], ["b", 1, 98, 196], ["c", 1, 316, 414], // 빈 컷 5초 = 196 → 316
     ]);
-    expect(out.plan).toMatchObject({ format: "mvhub.edit-timeline", version: 1, name: "뻘뻘뻘_e035", fps: 24, video_tracks: 3, total: 415 });
+    expect(out.plan).toMatchObject({ format: "mvhub.edit-timeline", version: 1, name: "뻘뻘뻘_e035", fps: 24, video_tracks: 3, total: 414 });
     expect(out.gens.map((item) => item.id)).toEqual(["a", "b", "c"]);
     expect([out.unresolved, out.perTrack, out.disabled]).toEqual([0, [3, 0, 0], 0]);
-    expect([out.end, out.tailEmpty]).toEqual([415, 0]); // 마지막 컷에 클립이 있다 — 끝이 전체 길이와 같다
+    expect([out.end, out.tailEmpty]).toEqual([414, 0]); // 마지막 컷에 클립이 있다 — 끝이 전체 길이와 같다
+  });
+
+  it("그림은 프레임으로 내리지 않는 대신, 프레임 사이의 길이(5.01초)도 절대 시각을 한 번씩 반올림한다", () => {
+    const image = { kind: "image" } as const;
+    const doc: EditDoc = { ...emptyEditDoc(), clips: [clip("C0010", "a", 1, 5.01, image), clip("C0020", "b", 1, 5.01, image)] };
+    const out = build(doc, ["C0010", "C0020"], linksOf(doc, { a: "image", b: "image" }));
+    expect(out.plan.clips.map((item) => [item.start, item.end])).toEqual([[0, 120], [120, 240]]); // round(120.24) · round(240.48)
   });
 
   // Resolve 의 타임라인은 마지막 클립에서 끝난다(실측) — 끝의 빈 컷은 남지 않는다. 확인 창이 그 길이를 약속하지 않게 따로 센다.

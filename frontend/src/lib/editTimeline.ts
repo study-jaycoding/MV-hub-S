@@ -318,14 +318,17 @@ export function clipHead(clip: EditClip, fallback?: unknown): number {
 }
 
 // 쓰는 길이 — 사용자가 줄였으면(trim) 그 길이, 앞을 잘랐으면(head) 시작점부터 남은 만큼까지. 영상만이고 원본 밖으로는 안 된다
-//  (재생 엔진이 영상의 실제 끝에서 건너뛴다). trim 이 없으면 원본 끝까지다(프레임에 못 미치는 나머지도 쓴다 — 전과 같다).
+//  (재생 엔진이 영상의 실제 끝에서 건너뛴다). trim 이 없으면 원본 끝까지다.
+//  영상은 **프레임 수로 내린다**(2026-10-14) — 프레임에 못 미치는 나머지가 있으면 컷 경계가 프레임 사이에 서고, Resolve 계획이 시작과
+//  끝을 따로 반올림하며 같은 클립이 98·99프레임으로 갈렸다(99 = 원본보다 길어 막힘, 98 = 1프레임 빈칸). 한 프레임도 안 되면 그대로.
 //  그림은 줄이지 않는다: Resolve 가 스틸을 준 길이와 무관하게 5초로 놓아, 줄이면 다음 컷과 겹친다. kind 가 없는 옛 클립은 영상으로 본다.
 export function clipLen(clip: EditClip, fallback?: unknown): number {
   const full = clipFull(clip, fallback);
   if (clip.kind === "image") return full;
   const rest = full - clipHead(clip, fallback);
   const trim = validSeconds(clip.trim);
-  return trim === null ? rest : Math.min(trim, rest);
+  const len = trim === null ? rest : Math.min(trim, rest);
+  return clipFrames(len) / EDIT_FPS || len;
 }
 
 // 켜져 있는 클립인가 — 클립을 껐거나 그 트랙을 껐으면 아니다. 보이는 것(visibleClip)과 컷 길이(buildLayout)가 같은 기준을 쓴다.

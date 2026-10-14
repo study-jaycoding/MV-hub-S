@@ -324,7 +324,7 @@ describe("배치와 보이는 클립", () => {
     const long = clip("c1", "v", 1, { dur: 3.02, kind: "video", head: 4 });
     expect(clipFrames(3.02)).toBe(72);
     expect(clipHead(long)).toBe(71 / 24);
-    expect(clipLen(long)).toBeCloseTo(3.02 - 71 / 24);
+    expect(clipLen(long)).toBe(1 / 24); // 남은 1.48프레임 → 1프레임(영상의 쓰는 길이는 프레임으로 내린다, 2026-10-14)
     expect(clipHead(clip("c1", "v", 1, { dur: 5, kind: "video", head: 1.01 }))).toBe(1); // 프레임에 맞춘다
     // 한 프레임도 안 되는 영상은 자를 수 없다
     const tiny = clip("c1", "v", 1, { dur: 0.02, kind: "video", head: 1 });
@@ -826,7 +826,8 @@ describe("다이나믹 트림 모드 — 편집점의 앞 | 뒤", () => {
   });
 
   it("아주 짧게 비치는 클립을 건너뛰지 않는다 — 표본 시각은 이웃 편집점과의 한가운데를 넘지 않는다", () => {
-    const thin = doc([clip("c1", "v1", 1, { dur: 8 }), clip("c1", "v2", 2, { dur: 5.005 }), clip("c1", "v3", 3, { dur: 5 })]);
+    // 0.005초 조각은 그림 클립으로 만든다 — 영상의 쓰는 길이는 프레임으로 내려 이런 조각이 생기지 않는다(2026-10-14)
+    const thin = doc([clip("c1", "v1", 1, { dur: 8 }), clip("c1", "v2", 2, { dur: 5.005, kind: "image" }), clip("c1", "v3", 3, { dur: 5 })]);
     const thinLayout = buildLayout(["e070/c1"], thin);
     const thinPoints = editPoints(thinLayout); // 0 · 5 · 5.005 · 8
     const gens = (point: number) => shotsAt(thinLayout, thin, thinPoints, point).map((shot) => shot!.clip!.gen);

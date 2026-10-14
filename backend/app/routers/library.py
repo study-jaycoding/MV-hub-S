@@ -34,7 +34,7 @@ from ..deps import (
 )
 from ..models import FacetsOut, GenerationOut
 from ..usecases.generation_locate import locate_generations
-from ..services import file_stamp, media_cache, thumbs
+from ..services import file_stamp, media_cache, mp4_picture, thumbs
 from ..services.path_safety import safe_join
 from ..services.async_tools import to_thread_non_abandon
 from ..services.media_types import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
@@ -682,6 +682,33 @@ async def media_thumb(src: str = Query(...), w: int = Query(512, ge=64, le=1024)
     return FileResponse(
         cache, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=2592000"}
     )
+
+
+_PICTURE_SLOTS = asyncio.Semaphore(4)  # 원격 머리 읽기가 한꺼번에 몰리지 않게(편집 탭이 시퀀스를 열면 영상 수만큼 온다)
+
+
+@router.get("/media-picture")
+async def media_picture(src: str = Query(..., max_length=4096)):
+    """영상의 그림 트랙 길이(프레임 수·fps) — 편집 탭의 클립 길이(docs/EDIT_TAB.md). 브라우저의 video.duration 은 소리까지 친
+    파일 길이라 Seedance 원본에서 그림보다 약 1프레임 길었다(2026-10-14 — 타임라인 만들기가 '영상 길이 모자람'으로 막힘).
+    src 는 media-thumb 와 같다(/media/… 또는 http(s)). 못 읽으면 404·422 — 화면은 예전 방식(video.duration)으로 물러난다."""
+    try:
+        if src.startswith(("http://", "https://")):
+            if _proxy.is_shared_team_server():  # 공유 서버는 원격 원본을 받지 않는다(media-thumb 와 같다)
+                raise HTTPException(status_code=404, detail="공유 서버는 원격 영상을 읽지 않습니다")
+            async with _PICTURE_SLOTS:
+                picture = await asyncio.to_thread(mp4_picture.remote_picture_cached, src)
+        else:
+            target = thumbs._media_target(src)
+            if not target:
+                raise HTTPException(status_code=400, detail="로컬 /media 경로 또는 http(s) URL만 지원")
+            if not target.is_file():
+                raise HTTPException(status_code=404, detail="파일 없음")
+            stat = target.stat()
+            picture = await asyncio.to_thread(mp4_picture.local_picture, str(target), stat.st_size, stat.st_mtime_ns)
+    except mp4_picture.PictureError as exc:
+        raise HTTPException(status_code=422, detail=f"그림 길이를 읽지 못했습니다: {exc}") from exc
+    return {"frames": picture.frames, "fps": picture.fps}
 
 
 def _strip_list_prompt(rows):

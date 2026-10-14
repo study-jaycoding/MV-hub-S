@@ -143,11 +143,11 @@ it("영상 클립은 페이지를 열 때마다 다시 잰다 — 적힌 길이�
   expect(asked()).toEqual(["d", "f", "m", "n"]);
 
   await arrive("m", 5.5);
-  await arrive("n", 5.03); // 적힌 것과 한 프레임 안 — 고쳐 적지 않는다
+  await arrive("n", 5.03); // 적힌 것과 한 프레임 안이어도 다르면 고쳐 적는다(2026-10-14 — 옛 '소리까지 친 길이'가 남지 않게)
   await arrive("d", 10.04);
   await arrive("f", 5.6);
   act(() => { vi.advanceTimersByTime(MEASURE_SAVE_MS); });
-  expect(durs()).toEqual({ m: 5.5, n: 5.02, p: 5, d: 10.04, f: 5.6 });
+  expect(durs()).toEqual({ m: 5.5, n: 5.03, p: 5, d: 10.04, f: 5.6 });
 
   // 페이지를 새로 열었다(기억해 둔 값이 없다) — 잰 값이 적혀 있어도 다시 전부 묻는다
   act(() => root.unmount());

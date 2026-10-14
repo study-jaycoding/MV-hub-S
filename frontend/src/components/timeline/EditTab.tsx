@@ -360,10 +360,11 @@ function EditTabInner({
   //    10-13 에 그렇게 넣었다가 뺐다). 건너뛰려면 문서에 '쟀다'는 표시가 있어야 한다.
   //  · 잰 값은 첫 값이 온 뒤 MEASURE_SAVE_MS 동안 모아 한 번에 적는다 — 클립마다 적으면 영상 N개에 저장·다시 그리기가 N번이다.
   //    모으는 중에 문서가 바뀌거나 탭을 떠나면 그 자리에서 적는다. 시퀀스를 바꾸면 버려진다(rev 가 다르다) — 돌아오면 다시 잰다.
+  //  · 잰 값과 조금이라도 다르면 고쳐 적는다 — 잰 값은 프레임에 맞춘 그림 길이다(lib/videoDuration). 예전엔 '1프레임 넘게 다를 때만'
+  //    적어, 소리까지 친 옛 길이(4.087초 = 98.1프레임)가 그림 길이(97프레임)로 안 바뀐 채 남았다(2026-10-14).
   useEffect(() => {
     let alive = true;
     let timer = 0;
-    const frame = 1 / EDIT_FPS;
     const measured = new Map<string, number>();
     const save = () => {
       window.clearTimeout(timer);
@@ -376,7 +377,7 @@ function EditTabInner({
       if (asset?.type !== "video" || !asset.file_path) continue;
       const key = clipKey(clip);
       void measureVideoSeconds(asset.file_path).then((seconds) => {
-        if (!alive || !seconds || Math.abs(seconds - (clip.dur ?? 0)) < frame) return;
+        if (!alive || !seconds || seconds === clip.dur) return;
         measured.set(key, seconds);
         timer ||= window.setTimeout(save, MEASURE_SAVE_MS);
       });
