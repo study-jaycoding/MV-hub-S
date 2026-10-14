@@ -443,16 +443,22 @@ function EditTabInner({
   const slots: ViewMode[] = places.map((place) => ui.views[place]); // 보이는 판들(왼쪽부터)
   const orderOf = (place: 0 | 1) => places.indexOf(place); // 보이는 자리(-1 = 안 보인다)
   const srcModeOf = (place: 0 | 1) => (orderOf(place) >= 0 && isSourceView(ui.views[place]) ? (ui.views[place] as "source" | "tape") : null);
-  // 판마다 고른 소스 클립 — 아직 안 골랐으면 풀에서 마지막으로 고른 것(판을 소스로 올리면 그것이 뜬다 — 전과 같다). 저장하지 않는다.
+  // 판마다 고른 소스 클립 — null = 풀의 선택(마지막으로 고른 것)을 따라간다 · "" = 아무것도 안 띄운 채 굳었다 · id = 그 카드로 굳었다.
+  //  저장하지 않는다. 풀의 선택을 따라가는 판은 한 번에 하나다(followPool) — 풀에서 고르기(누름·상자·해제)는 그 판에만 뜨고, 다른 소스
+  //  클립 판은 지금 보이는 것으로 굳는다(Codex 코드 리뷰 — 안 그러면 같이 바뀌고, 상자 고르기·해제가 판에 안 따라왔다).
   const [paneGen, setPaneGen] = useState<[string | null, string | null]>([null, null]);
-  //  한 판에 고르는 순간, 아직 안 고른 채 '마지막으로 고른 것'을 띄우던 다른 소스 판은 지금 보이는 것으로 굳힌다 — 안 그러면 같이 바뀐다.
-  const setPaneGenAt = (place: 0 | 1, id: string | null) => setPaneGen((prev) => {
-    const next: [string | null, string | null] = [prev[0], prev[1]];
-    const other = place === 0 ? 1 : 0;
-    if (next[other] === null && srcModeOf(other) === "source") next[other] = pickedId;
-    next[place] = id;
+  const freezeOthers = (next: [string | null, string | null], keep: 0 | 1 | undefined) => {
+    for (const place of [0, 1] as const) {
+      if (place !== keep && next[place] === null && srcModeOf(place) === "source") next[place] = pickedId ?? "";
+    }
     return next;
-  });
+  };
+  const setPaneGenAt = (place: 0 | 1, id: string | null) =>
+    setPaneGen((prev) => {
+      const next = freezeOthers([prev[0], prev[1]], place);
+      next[place] = id;
+      return next;
+    });
   const tapeGens = useMemo(() => arrangePool(cutItems, "", ui.sort).map((item) => item.gen), [cutItems, ui.sort]);
   const tapeScope = `${target?.projectId ?? ""}\n${cut ?? ""}`;
   const gen0 = useMemo(() => genById(paneGen[0] ?? pickedId), [genById, paneGen, pickedId]);
@@ -488,6 +494,8 @@ function EditTabInner({
   const linkedOn = linked && multi;
   const toggleLinked = () => {
     if (!linked && !ui.dual) patchUi({ dual: true });
+    // 끄면 키를 받는 판의 시계만 남긴다 — 같이 돌던 다른 판이 그대로 돌면 연동 표시는 꺼졌는데 소리가 남고 K 가 한쪽만 멈췄다(Codex 코드 리뷰)
+    if (linked) shownEngines.forEach(({ engine }) => engine !== engineOf(keyPlace) && engine.stop());
     setLinked(!linked);
   };
   const together = {
@@ -532,18 +540,33 @@ function EditTabInner({
     ...Array.from({ length: layout.tracks }, (_, i) => layout.tracks - i)
       .map((track) => ({ value: track, label: t("V{track} 만 보기").replace("{track}", String(track)) })),
   ], [layout.tracks, t]);
-  // 풀의 카드를 고른다 — 소스를 보여 줄 판: 재생 키를 받는 판이 소스면 그 판, 아니면 보이는 소스 판(왼쪽부터). 소스 테이프 판이면
-  //  테이프가 그 카드의 처음으로 간다(다빈치). 소스 판이 없으면 고르기만 한다(판을 소스로 올리면 그때 뜬다).
+  // 풀에서 고르기(누름·상자·해제) — 풀의 선택을 따라갈 판: 재생 키를 받는 판이 소스면 그 판, 아니면 보이는 소스 판(왼쪽부터). 그 판이
+  //  소스 클립이면 선택을 따라가고(마지막으로 고른 것 — 해제하면 빈다, 전과 같다), 소스 테이프면 테이프가 그 카드의 처음으로 간다(다빈치).
+  //  다른 소스 클립 판은 지금 보이는 것으로 굳는다. 소스 판이 없으면 고르기만 한다(판을 소스로 올리면 그때 뜬다).
+  const poolTarget = () => (srcModeOf(keyPlace) ? keyPlace : places.find((item) => srcModeOf(item)));
+  const followPool = () => {
+    const place = poolTarget();
+    setPaneGen((prev) => {
+      const next = freezeOthers([prev[0], prev[1]], place);
+      if (place !== undefined && srcModeOf(place) === "source") next[place] = null;
+      return next;
+    });
+    return place;
+  };
   const pickInPool = (gen: Generation, additive: boolean) => {
     const adding = !additive || !pickedIds.includes(gen.id);
+    const place = followPool();
     pickGen(gen, additive);
-    if (!adding) return;
-    const place = srcModeOf(keyPlace) ? keyPlace : places.find((item) => srcModeOf(item));
-    if (place === undefined) return;
-    const pane = srcPanes[place];
-    if (srcModeOf(place) === "tape") {
-      if (pane.src.byId.has(gen.id)) pane.play.seekPos({ cut: `${SRC_CUT}/${gen.id}`, local: 0 });
-    } else setPaneGenAt(place, gen.id);
+    const pane = place === undefined ? null : srcPanes[place];
+    if (adding && pane && srcModeOf(place!) === "tape" && pane.src.byId.has(gen.id)) pane.play.seekPos({ cut: `${SRC_CUT}/${gen.id}`, local: 0 });
+  };
+  const pickManyInPool = (ids: string[]) => {
+    followPool();
+    setPickedIds(ids);
+  };
+  const clearPool = () => {
+    followPool();
+    clearPicked();
   };
 
   // 크게 보기·비교·폴더 창으로 넘길 때는 시계를 다 멈춘다 — 그 창이 떠 있는 동안 편집 키는 막혀 있어(backgroundKeysBlocked)
@@ -1289,11 +1312,11 @@ function EditTabInner({
               listState={list.state}
               notice={poolNotice}
               onPick={pickInPool}
-              onPickMany={setPickedIds}
+              onPickMany={pickManyInPool}
               onOpen={openGen}
               onCompare={openCompare}
               resolve={resolve}
-              onClearPicked={clearPicked}
+              onClearPicked={clearPool}
               onMenu={(gen, x, y) => openMenu(gen, cut, x, y)}
               sideOpen={sideOpen}
               onToggleSide={() => patchUi({ sideHidden: sideOpen })}

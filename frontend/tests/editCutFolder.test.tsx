@@ -1327,14 +1327,19 @@ it("다이나믹 재생 모드: W 로 켜면 두 판의 재생 조작이 같이 
   expect([tcOf(left), tcOf(right)]).toEqual(["00:00:00:00", "00:00:00:00"]);
   expect(localStorage.getItem(DOC_KEY)).toContain('"gen":"v"'); // 편집 문서는 그대로
 
-  press({ key: "w", code: "KeyW" }); // 끄면 — 듀얼은 그대로, 재생 키는 누른 판의 시계
+  press({ key: " ", code: "Space" }); // 둘 다 튼 채로 끄면(Codex 코드 리뷰 — 둘 다 계속 돌고 K 가 한쪽만 멈췄다)
+  expect([playing(left), playing(right)]).toEqual([true, true]);
+  press({ key: "w", code: "KeyW" }); // 키를 받는 판(오른쪽)만 남는다 · 듀얼은 그대로 · 재생 키는 누른 판의 시계
   expect([btn.getAttribute("aria-pressed"), paneModes()]).toEqual(["false", ["source", "timeline"]]);
   expect([left, right].map((item) => item.classList.contains("ed-view-on"))).toEqual([false, true]);
-  press({ key: " ", code: "Space" });
   expect([playing(left), playing(right)]).toEqual([false, true]);
-  act(() => left.querySelector<HTMLButtonElement>(".ed-play")!.click()); // 왼쪽을 틀면 오른쪽은 멈춘다
+  press({ key: "k", code: "KeyK" });
+  expect([playing(left), playing(right)]).toEqual([false, false]);
+  act(() => left.querySelector<HTMLButtonElement>(".ed-play")!.click()); // 왼쪽을 틀면 왼쪽만
   expect([playing(left), playing(right)]).toEqual([true, false]);
-  act(() => left.querySelector<HTMLButtonElement>(".ed-t-stop")!.click());
+  act(() => right.querySelector<HTMLButtonElement>(".ed-play")!.click()); // 오른쪽을 틀면 왼쪽은 멈춘다
+  expect([playing(left), playing(right)]).toEqual([false, true]);
+  act(() => right.querySelector<HTMLButtonElement>(".ed-t-stop")!.click());
 });
 
 // Jay 2026-10-14 오후 — "두개 화면 모두 소스클립이나 내가 정한 화면이 자유롭게". 소스 엔진이 판마다라 두 판이 서로 다른 소스 클립을 띄운다.
@@ -1346,8 +1351,8 @@ it("두 판이 다 소스 클립이어도 따로 논다 — 풀에서 고르면 
   expect(paneModes()).toEqual(["source", "source"]);
   const [left, right] = panes();
   const shownIn = (view: HTMLElement) => view.querySelector(".ed-stage > .ed-media:not([hidden])")?.getAttribute("src") ?? null;
-  act(() => poolCards()[0].click()); // 처음엔 오른쪽 판이 키를 받는다 — 두 판 다 아직 안 골라 '마지막으로 고른 것'(a)
-  expect([shownIn(left), shownIn(right)]).toEqual(["/media/a.png", "/media/a.png"]);
+  act(() => poolCards()[0].click()); // 처음엔 오른쪽 판이 키를 받는다 — 왼쪽은 아무것도 안 띄운 채 그대로
+  expect([shownIn(left), shownIn(right)]).toEqual([null, "/media/a.png"]);
   mouse(left.querySelector(".ed-stage")!, "mousedown"); // 왼쪽 판을 누르고 고른다 — 왼쪽만 바뀐다
   act(() => poolCards()[2].click());
   expect([shownIn(left), shownIn(right)]).toEqual(["/media/v.mp4", "/media/a.png"]);
@@ -1356,6 +1361,42 @@ it("두 판이 다 소스 클립이어도 따로 논다 — 풀에서 고르면 
   expect([shownIn(left), shownIn(right)]).toEqual(["/media/v.mp4", "/media/b.png"]);
   press({ key: "ArrowRight", code: "ArrowRight" }); // 재생 키는 누른 판(오른쪽)만
   expect([left, right].map((view) => view.querySelector(".ed-vtop > .ed-vtc")!.textContent)).toEqual(["00:00:00:00", "00:00:00:01"]);
+});
+
+// Codex 코드 리뷰(2026-10-14 오후) — 풀의 상자 고르기·선택 해제가 판에 안 따라왔고(누름만 따라왔다), 테이프 판에서 고르면 옆 소스 클립 판도 바뀌었다.
+it("두 판: 풀의 상자 고르기·선택 해제도 선택을 따라가는 판에만 뜬다 · 테이프 판에서 골라도 옆 소스 클립 판은 그대로", () => {
+  world.gens = [...world.gens, videoGen()]; // c1 = 그림 a · 그림 b · 영상 v
+  localStorage.setItem(UI_KEY, JSON.stringify({ dual: true, views: ["source", "source"] }));
+  mount();
+  act(() => cutCell("c1").click());
+  const [left, right] = panes();
+  const shownIn = (view: HTMLElement) => view.querySelector(".ed-stage > .ed-media:not([hidden])")?.getAttribute("src") ?? null;
+  mouse(left.querySelector(".ed-stage")!, "mousedown");
+  act(() => poolCards()[0].click());
+  mouse(right.querySelector(".ed-stage")!, "mousedown");
+  act(() => poolCards()[1].click());
+  expect([shownIn(left), shownIn(right)]).toEqual(["/media/a.png", "/media/b.png"]);
+
+  act(() => { vi.advanceTimersByTime(1); });
+  const body = document.querySelector<HTMLElement>(".ed-pbody")!;
+  const move = (type: string, at: number) =>
+    act(() => { window.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: at, clientY: at, buttons: type === "mousemove" ? 1 : 0 })); });
+  mouse(body, "mousedown", { clientX: 0, clientY: 0 }); // 오른쪽이 키를 받는 채 상자로 셋 — 오른쪽만 마지막 것(v)으로
+  move("mousemove", 30);
+  move("mouseup", 30);
+  expect(document.querySelectorAll(".ed-pool .ed-picked")).toHaveLength(3);
+  expect([shownIn(left), shownIn(right)]).toEqual(["/media/a.png", "/media/v.mp4"]);
+
+  act(() => panes()[0].querySelector<HTMLButtonElement>(".ed-vpick-btn")!.click()); // 왼쪽을 소스 테이프로
+  act(() => [...panes()[0].querySelectorAll<HTMLButtonElement>(".ed-pop-item")].find((item) => item.textContent!.includes("소스 테이프"))!.click());
+  act(() => { vi.advanceTimersByTime(1); });
+  act(() => poolCards()[1].click()); // 테이프 판(방금 고른 판)에서 b — 테이프가 b 로 가고 오른쪽은 v 그대로
+  const [tape, clip] = panes();
+  expect([tape.dataset.view, shownIn(tape), clip.dataset.view, shownIn(clip)]).toEqual(["tape", "/media/b.png", "source", "/media/v.mp4"]);
+
+  mouse(clip.querySelector(".ed-stage")!, "mousedown");
+  act(() => [...document.querySelector(".ed-pool-sel")!.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent === "선택 해제")!.click());
+  expect([shownIn(tape), shownIn(clip)]).toEqual(["/media/b.png", null]); // 해제하면 따라가던 판이 빈다(전과 같다) — 테이프는 그대로
 });
 
 // 타임라인에서도 끌어서 여러 개 고르기(Jay 2026-10-14) — 풀의 끌어서 고르기와 같은 약속(조작 규칙 21)에 Codex 설계 검토를 더했다:
