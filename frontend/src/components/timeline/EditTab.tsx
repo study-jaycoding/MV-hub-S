@@ -108,6 +108,10 @@ interface Props {
   peekPath: string | null;
   onPeekMarks: (marks: Record<string, CardMark>) => void;
   cardMenuRef: MutableRefObject<EditCardMenu | null>;
+  // 다빈치(미디어 풀)에서 고른 생성물(Jay 2026-10-14) — 풀의 카드·타임라인의 클립에 빨간 '다빈치' 표. 표시만 한다(재생헤드·풀은 그대로).
+  //  새로 고르면 타임라인이 그 클립까지 가로로 넘어간다(화면 밖일 때만). 안 주면 없다.
+  resolvePicked?: ReadonlySet<string>;
+  resolveScroll?: number; // 올라가면 타임라인을 다빈치에서 고른 클립까지 넘긴다 — 화면을 옮기는 일이라 앱이 '따라가는 탭'에서만 올린다
   // 미디어 풀의 더블클릭·비교 — 앱의 크게 보기 창·비교 창을 그대로 쓴다(둘 다 보기 전용).
   onPreview: (target: PreviewTarget) => void;
   onCompare: (gens: Generation[]) => void;
@@ -164,7 +168,7 @@ const isTyping = (target: EventTarget | null) => {
 
 function EditTabInner({
   authKey, workspace, keysActive, flash, onOpenCutFolder, reloadSignal, peekPath, onPeekMarks, cardMenuRef, onPreview, onCompare,
-  resolve, onFolderAction, review,
+  resolve, onFolderAction, review, resolvePicked = NO_CUTS, resolveScroll = 0,
 }: Props) {
   const t = useT();
   const [target, setTarget] = useState<EditTarget | null>(loadEditTarget);
@@ -274,6 +278,7 @@ function EditTabInner({
   const zoomRef = useRef(zoom);
   zoomRef.current = zoom;
   const playingRef = useRef(false);
+  const isPlaying = useCallback(() => playingRef.current, []);
   const paint = useCallback((time: number) => {
     const x = time * zoomRef.current;
     if (headRef.current) headRef.current.style.transform = `translateX(${x}px)`;
@@ -471,8 +476,9 @@ function EditTabInner({
     const right = item.gen.id === srcIn1;
     const source = !left && !right ? undefined : !ui.dual ? "S" : left && right ? "LR" : left ? "L" : "R";
     const showing = item.track !== null && item.track === showingTrack;
-    return showing || source ? { ...item, showing, ...(source && { source }) } : item;
-  }), [cutItems, showingTrack, srcIn0, srcIn1, ui.dual]);
+    const resolved = resolvePicked.has(item.gen.id); // 다빈치에서 고른 것(빨간 표)
+    return showing || source || resolved ? { ...item, showing, ...(source && { source }), ...(resolved && { resolve: true }) } : item;
+  }), [cutItems, showingTrack, srcIn0, srcIn1, ui.dual, resolvePicked]);
   const tlOrder = slots.indexOf("timeline");
   const tlShown = tlOrder >= 0;
   // 재생 키(Space·J·K·L·←→·↑↓·Home·End)는 마지막에 누른 판의 시계로 간다(다빈치). 편집 키는 언제나 타임라인 것이다. 싱글이면 보이는 판.
@@ -1560,6 +1566,9 @@ function EditTabInner({
           onClipMenu={openClipMenu}
           onClipTrim={openTrim}
           dropHint={dropHint}
+          resolvePicked={resolvePicked}
+          resolveScroll={resolveScroll}
+          isPlaying={isPlaying}
           onMoveCut={moveCutTo}
         />
       </main>
