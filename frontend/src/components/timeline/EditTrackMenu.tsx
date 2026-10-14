@@ -331,7 +331,7 @@ export function EditClipMenu({
         <button type="button" role="menuitemcheckbox" aria-checked={final.checked} className={"ed-tmenu-item" + (final.checked ? " ed-here" : "")}
           disabled={final.stale}
           title={final.stale ? t("공유 목록을 다시 받는 중이거나 받지 못했습니다 — 받은 뒤에 다시 눌러 주세요.")
-            : final.checked ? t("최종 확정을 해제합니다(공유 상태로 돌아갑니다).")
+            : final.checked ? t("최종 확정을 해제합니다(최종 전에 보류였던 것은 보류로, 나머지는 공유로 돌아갑니다).")
               : t("이 생성물을 최종으로 확정합니다 — 공유 & 리뷰의 최종(★)과 같은 것입니다.")}
           onClick={final.onToggle}>
           {t("최종 선택")}

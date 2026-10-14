@@ -95,7 +95,8 @@ const EN: Record<string, string> = {
   "타임라인에 있는 생성물을 모두 최종으로 확정합니다 — 켜진 컷의 켜진 클립만(숨긴 컷·꺼 둔 컷·꺼진 클립·꺼진 트랙은 뺍니다). 누르면 무엇이 바뀌는지 먼저 묻습니다.":
     "Marks everything on the timeline as final — only enabled clips in enabled cuts (hidden cuts, disabled cuts, disabled clips and disabled tracks are left out). It asks before changing anything.",
   "최종 선택": "Final",
-  "최종 확정을 해제합니다(공유 상태로 돌아갑니다).": "Removes the final mark (back to shared).",
+  "최종 확정을 해제합니다(최종 전에 보류였던 것은 보류로, 나머지는 공유로 돌아갑니다).":
+    "Removes the final mark (items that were on hold before go back on hold, the rest back to shared).",
   "이 생성물을 최종으로 확정합니다 — 공유 & 리뷰의 최종(★)과 같은 것입니다.": "Marks this as final — the same final (★) as in Share & Review.",
   "공유 목록을 다시 받는 중이거나 받지 못했습니다 — 받은 뒤에 다시 눌러 주세요.":
     "The shared list is reloading or failed to load — try again once it has loaded.",
@@ -333,6 +334,8 @@ const EN: Record<string, string> = {
   "최종(골드)으로 지정했습니다.": "Marked as final (gold).",
   "최종 지정 실패:": "Could not mark as final:",
   "최종 지정을 해제했습니다.": "Removed final status.",
+  "최종 지정을 해제했습니다 — 원래의 보류로 돌아갔습니다.": "Removed final status — it is back on hold, as it was before.",
+  "원래의 보류로 {count}개": "{count} back on hold",
   "최종 해제 실패:": "Could not remove final status:",
   "{count}개 팀 공유.": "{count} shared with the team.",
   "공유 실패:": "Could not share:",

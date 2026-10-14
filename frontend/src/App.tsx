@@ -2698,7 +2698,10 @@ export default function App() {
               }}
               onFolderAction={onFolderAction}
               // 최종 확정(클립 메뉴·목록 단추) — 공유 & 리뷰의 여러 장 등급 처리와 같은 길
-              review={{ canFinalize, apply: (gens, action) => onReviewSelection(gens, action, canFinalize) }}
+              review={{
+                canFinalize, apply: (gens, action) => onReviewSelection(gens, action, canFinalize),
+                release: (gens) => onReviewSelection(gens, "shared", canFinalize, true),
+              }}
             />
           </Suspense>
         ) : filters.tab === "compose" ? (

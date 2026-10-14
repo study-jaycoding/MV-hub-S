@@ -159,9 +159,12 @@ def finalize_generation_with_share(
                     "VALUES(?,?,?,?) ON CONFLICT(generation_id) DO NOTHING",
                     (sid, gen_id, shared_by, visibility),
                 )
+            # held_before_final — 최종이 되는 순간의 보류를 적어 둔다(해제가 그리로 돌아간다 — release_final). 이미 최종인 행에
+            #  또 온 최종 지정은 덮지 않는다: 그때의 is_held 는 0 이라 기억이 지워진다. (SET 의 식은 바꾸기 전의 값을 본다.)
             conn.execute(
                 "UPDATE generation "
-                "SET is_final=1, is_held=0, final_by=?, final_at=datetime('now') WHERE id=?",
+                "SET is_final=1, is_held=0, final_by=?, final_at=datetime('now'), "
+                "held_before_final=CASE WHEN is_final=1 THEN held_before_final ELSE is_held END WHERE id=?",
                 (final_by, gen_id),
             )
             conn.execute("COMMIT")
@@ -211,11 +214,47 @@ def transition_final_review(gen_id: str, target: str, shared_by: str) -> dict[st
                     (new_id(), gen_id, shared_by),
                 )
             conn.execute(
-                "UPDATE generation SET is_final=0, final_by=NULL, final_at=NULL, is_held=? "
+                "UPDATE generation SET is_final=0, final_by=NULL, final_at=NULL, held_before_final=0, is_held=? "
                 "WHERE id=?", (int(target == "held"), gen_id),
             )
             conn.execute("COMMIT")
             return previous
+        except BaseException:
+            try:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+
+
+def release_final(gen_id: str, *, restore_held: bool = False) -> Optional[bool]:
+    """최종을 해제한다(공유는 그대로). 반환: None = 바꾼 것이 없다 · True = 보류가 되살아났다 · False = 공유로 갔다.
+
+    ``restore_held``(Jay 2026-10-14): 최종이 되던 순간에 보류였던 것(``held_before_final``)은 보류로 돌아온다. 이 길은
+    **최종인 행만** 바꾼다 — 같은 요청이 다시 와도(재시도 · 두 번 누름) 그사이에 정해진 보류 상태를 건드리지 않는다.
+    표식이 없으면 전과 같다: 최종이 아닌 행의 보류도 지운다(옛 앱의 원장이 해제 뒤의 보류를 False 로 기대한다).
+    transaction-root 전용 — 읽고 쓰는 사이에 다른 전이(보류 · 최종 지정)가 끼지 못한다.
+    """
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            state = conn.execute(
+                "SELECT g.is_final, g.held_before_final, "
+                "EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared "
+                "FROM generation g WHERE g.id=?", (gen_id,),
+            ).fetchone()
+            if restore_held and not (state and state["is_final"]):
+                conn.execute("COMMIT")
+                return None
+            # 공유가 없는 최종(레거시 드리프트)은 보류가 될 수 없다 — 보류는 공유된 것의 상태다
+            restored = bool(restore_held and state["held_before_final"] and state["shared"])
+            conn.execute(
+                "UPDATE generation SET is_final=0, final_by=NULL, final_at=NULL, held_before_final=0, is_held=? "
+                "WHERE id=?", (int(restored), gen_id),
+            )
+            conn.execute("COMMIT")
+            return restored
         except BaseException:
             try:
                 if conn.in_transaction:

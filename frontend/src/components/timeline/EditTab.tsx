@@ -133,6 +133,8 @@ interface Props {
   review?: {
     canFinalize: (gen: Generation) => boolean;
     apply: (gens: Generation[], action: ReviewAction) => void | Promise<void>;
+    // 최종 해제(Jay 2026-10-14) — '공유로'(고른 전환)와 다르다: 최종 전에 보류였던 것은 보류로 돌아온다. 최종인 것만 넘긴다
+    release: (gens: Generation[]) => void | Promise<void>;
   };
 }
 
@@ -955,7 +957,8 @@ function EditTabInner({
   //  아니다): 생성물의 검수 상태를 바꾸는 것이고, 길은 앱의 것이다(review.apply). 무엇이 바뀔 수 있는지는 앱과 같은 판정으로 미리
   //  본다(reviewTargets — 공유된 완료본이고 내가 그 프로젝트에서 최종을 줄 수 있는 것). 그런 것이 하나도 없으면 줄을 보이지 않는다.
   //  메뉴가 떠 있을 때만 센다(떠 있지 않은 동안의 렌더에 얹지 않는다).
-  // · 클립 메뉴: 줄 수 있는 것이 전부 최종이면 ✓ — 누르면 해제(공유로). 아니면 누르면 전부 최종으로.
+  // · 클립 메뉴: 줄 수 있는 것이 전부 최종이면 ✓ — 누르면 해제(최종 전에 보류였던 것은 보류로, 나머지는 공유로 — review.release.
+  //   2026-10-14 전에는 전부 공유가 됐다). 아니면 누르면 전부 최종으로.
   const clipFinal = (() => {
     if (!clipMenu || !review) return undefined;
     const raise = reviewTargets(clipMenuGens, "final", review.canFinalize);
@@ -972,8 +975,8 @@ function EditTabInner({
       onToggle: () => {
         closeMenu();
         if (!listFresh) return;
-        // 해제는 최종인 것만 넘긴다 — 고른 것 전부를 '공유로' 넘기면 보류(R)해 둔 것까지 풀린다
-        void review.apply(checked ? lower : clipMenuGens, checked ? "shared" : "final");
+        // 해제는 최종인 것만 넘긴다 — 고른 것 전부를 넘기면 보류(R)해 둔 것까지 풀린다
+        void (checked ? review.release(lower) : review.apply(clipMenuGens, "final"));
       },
     };
   })();

@@ -347,6 +347,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE generation ADD COLUMN is_final INTEGER NOT NULL DEFAULT 0")
     if "is_held" not in gen_cols:
         conn.execute("ALTER TABLE generation ADD COLUMN is_held INTEGER NOT NULL DEFAULT 0")
+    # 최종이 되던 순간에 보류였나 — 최종 해제(restore_held)가 그 보류로 돌려놓는다(2026-10-14). 옛 행은 0 = 전처럼 공유로.
+    if "held_before_final" not in gen_cols:
+        conn.execute("ALTER TABLE generation ADD COLUMN held_before_final INTEGER NOT NULL DEFAULT 0")
     if "final_by" not in gen_cols:
         conn.execute("ALTER TABLE generation ADD COLUMN final_by TEXT")
     if "final_at" not in gen_cols:

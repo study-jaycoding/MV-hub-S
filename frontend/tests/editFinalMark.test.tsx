@@ -46,13 +46,18 @@ let root: Root;
 const flashed: string[] = [];
 const cardMenuRef: { current: EditCardMenu | null } = { current: null };
 // 앱의 등급 처리 대역 — 넘겨받은 것을 적고, 시험이 끝내 줄 때까지 도는 중이다
-const applied: { ids: string[]; action: ReviewAction }[] = [];
+const applied: { ids: string[]; action: ReviewAction | "release" }[] = [];
 let finishApply: () => void = () => {};
 let denied: ReadonlySet<string> = new Set(); // 내가 최종을 줄 수 없는 생성물
 const review = {
   canFinalize: (item: Generation) => !denied.has(item.id),
   apply: (gens: Generation[], action: ReviewAction) => {
     applied.push({ ids: gens.map((item) => item.id).sort(), action });
+    return new Promise<void>((resolve) => { finishApply = resolve; });
+  },
+  // 최종 해제(Jay 2026-10-14) — '공유로'와 다른 길이다: 최종 전에 보류였던 것은 보류로 돌아온다
+  release: (gens: Generation[]) => {
+    applied.push({ ids: gens.map((item) => item.id).sort(), action: "release" });
     return new Promise<void>((resolve) => { finishApply = resolve; });
   },
 };
@@ -156,7 +161,7 @@ it("클립 메뉴의 '최종 선택' — 누르면 그 생성물이 최종으로
   expect(row("최종 선택")!.getAttribute("aria-checked")).toBe("true");
   expect(row("최종 선택")!.textContent).toBe("최종 선택✓ ");
   act(() => row("최종 선택")!.click());
-  expect(applied[1]).toEqual({ ids: ["f"], action: "shared" });
+  expect(applied[1]).toEqual({ ids: ["f"], action: "release" }); // '공유로'(고른 전환)가 아니다 — 해제다
   expect(localStorage.getItem(DOC_KEY)).toContain('"gen":"a"'); // 편집 문서는 그대로다(되돌리기 단계가 아니다)
   expect(JSON.parse(localStorage.getItem(DOC_KEY)!).clips).toHaveLength(2);
 });
@@ -179,7 +184,7 @@ it("여러 클립을 고른 채면 고른 것 전부에 — 해제는 최종인 
   openClipMenu("f");
   expect(row("최종 선택")!.getAttribute("aria-checked")).toBe("true");
   act(() => row("최종 선택")!.click());
-  expect(applied[1]).toEqual({ ids: ["f"], action: "shared" }); // a·r 을 '공유로' 넘기면 r 의 보류가 풀린다
+  expect(applied[1]).toEqual({ ids: ["f"], action: "release" }); // 최종인 f 만 — a·r 까지 넘기면 r 의 보류가 풀릴 수 있다
 });
 
 // 최종은 공유를 동반한다(서버가 공유가 없으면 같이 발행한다). 그사이 다른 창에서 공유를 푼 생성물이 옛 목록에 남아 있으면, 그것을

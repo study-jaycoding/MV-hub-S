@@ -701,16 +701,18 @@ def set_comment(gen_id: str, comment: Optional[str]) -> None:
 def set_final(gen_id: str, is_final: bool, by_uid: Optional[str] = None) -> None:
     """Supervisor 가 생성본을 최종(골드)으로 지정/해제. 지정 시 누가/언제 기록.
     저수준 단건 함수이며 공유 불변식은 보장하지 않는다. 서버 본체의 최종 지정은
-    ``finalize_generation_with_share`` transaction-root를 사용해야 한다."""
+    ``finalize_generation_with_share``, 해제는 ``release_final`` transaction-root를 사용해야 한다
+    (2026-10-14 부터 앱 코드는 이 함수를 부르지 않는다 — 시험의 준비 단계만 쓴다)."""
     with get_connection() as conn:
         if is_final:
             conn.execute(
-                "UPDATE generation SET is_final=1, is_held=0, final_by=?, final_at=datetime('now') WHERE id=?",
+                "UPDATE generation SET is_final=1, is_held=0, final_by=?, final_at=datetime('now'), "
+                "held_before_final=CASE WHEN is_final=1 THEN held_before_final ELSE is_held END WHERE id=?",
                 (by_uid, gen_id),
             )
         else:
             conn.execute(
-                "UPDATE generation SET is_final=0, is_held=0, final_by=NULL, final_at=NULL WHERE id=?",
+                "UPDATE generation SET is_final=0, is_held=0, held_before_final=0, final_by=NULL, final_at=NULL WHERE id=?",
                 (gen_id,),
             )
 

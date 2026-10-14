@@ -62,6 +62,14 @@ describe("review API compatibility", () => {
     await api.setReviewState(generation(), state);
     expect(fetch.mock.calls[0][0]).toBe(`/api/generations/shared/${route}`);
   });
+  // Jay 2026-10-14 — 해제는 '최종 전의 보류'로 되돌려 달라고 서버에 말한다(옛 서버는 쿼리를 무시한다 — 전처럼 공유로)
+  it("unfinalize asks the server to restore the hold the item had before it became final", async () => {
+    const fetch = vi.fn().mockResolvedValue(response(generation({ is_held: true }))); vi.stubGlobal("fetch", fetch);
+    expect((await api.unfinalize("shared")).is_held).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[0][0]).toBe("/api/generations/shared/unfinalize?restore_held=1");
+    expect(fetch.mock.calls[0][1].method).toBe("POST");
+  });
   it("final-review never falls back to sequential mutations on old servers", async () => {
     const fetch = vi.fn().mockResolvedValue(response({ detail: "Not Found" }, undefined, 404)); vi.stubGlobal("fetch", fetch);
     await expect(api.setReviewState(generation({ is_final: true }), "held")).rejects.toThrow("업데이트");

@@ -878,8 +878,10 @@ export const api = {
   // v02 CMS — Supervisor 최종(골드) 지정/해제. 공유 없으면 finalize 가 함께 발행.
   finalize: (id: string) =>
     generationFetch(`/api/generations/${pathPart(id)}/finalize`, { method: "POST" }),
+  // 해제는 '최종 전의 보류'로 되돌린다(restore_held — Jay 2026-10-14): 최종이 되던 순간에 보류였던 것은 보류로, 나머지는 공유로.
+  //  옛 서버는 모르는 쿼리를 무시한다(전처럼 공유로). 목표를 고르는 전환(setReviewState 의 final-review)은 고른 대로다.
   unfinalize: (id: string) =>
-    generationFetch(`/api/generations/${pathPart(id)}/unfinalize`, { method: "POST" }),
+    generationFetch(`/api/generations/${pathPart(id)}/unfinalize?restore_held=1`, { method: "POST" }),
   hold: (id: string) => reviewFetch(id, "hold"),
   unhold: (id: string) => reviewFetch(id, "unhold"),
   setReviewState: (generation: Generation, state: ReviewAction): Promise<Generation> => {
