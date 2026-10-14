@@ -84,7 +84,7 @@ import {
   useEditGenerations,
   useEditProjects,
 } from "../../lib/useEditSequence";
-import { dropQueuedVideoMeasures, knownVideoSeconds, measureVideoSeconds } from "../../lib/videoDuration";
+import { dropQueuedVideoMeasures, knownVideoSeconds, measureVideoSeconds, measuredExactly } from "../../lib/videoDuration";
 import { editMarkLabel } from "./EditCard";
 import { EditExportConfirm } from "./EditExportConfirm";
 import { EditMarkerColorMenu, EditMarkerMenu } from "./EditMarkerMenu";
@@ -361,24 +361,38 @@ function EditTabInner({
   //    10-13 에 그렇게 넣었다가 뺐다). 건너뛰려면 문서에 '쟀다'는 표시가 있어야 한다.
   //  · 잰 값은 첫 값이 온 뒤 MEASURE_SAVE_MS 동안 모아 한 번에 적는다 — 클립마다 적으면 영상 N개에 저장·다시 그리기가 N번이다.
   //    모으는 중에 문서가 바뀌거나 탭을 떠나면 그 자리에서 적는다. 시퀀스를 바꾸면 버려진다(rev 가 다르다) — 돌아오면 다시 잰다.
+  //  · 잰 값과 조금이라도 다르면 고쳐 적는다 — 잰 값은 프레임에 맞춘 길이다(lib/videoDuration). 예전엔 '1프레임 넘게 다를 때만'
+  //    적어, 소리까지 친 옛 길이(4.087초 = 98.1프레임)가 그림 길이(97프레임)로 안 바뀐 채 남았다(2026-10-14).
+  //  · 그림 트랙으로 잰 값은 표(`durExact`)를 달아 적고, video.duration 으로 잰 값(서버가 그림 길이를 못 준 창)은 그 표가 있는
+  //    클립을 **차이와 상관없이** 덮지 않는다 — 소리까지 친 길이라 그림보다 길게 나와, 두 창이 저장을 받을 때마다 서로 되돌렸다
+  //    (Codex 코드 리뷰 — 처음엔 '1프레임 안쪽만' 막았는데 소리가 2프레임 이상 긴 파일에서 남았다).
   useEffect(() => {
     let alive = true;
     let timer = 0;
-    const frame = 1 / EDIT_FPS;
     const measured = new Map<string, number>();
+    const exact = new Set<string>();
     const save = () => {
       window.clearTimeout(timer);
       timer = 0;
-      if (measured.size) applyEdit((current) => setClipDurs(current, measured), { undo: false, rev });
+      if (measured.size) {
+        const durs = new Map(measured);
+        const sure = new Set(exact);
+        applyEdit((current) => setClipDurs(current, durs, sure), { undo: false, rev });
+      }
       measured.clear();
+      exact.clear();
     };
     for (const clip of doc.clips) {
       const asset = links.get(clipKey(clip))?.gen?.assets[0];
       if (asset?.type !== "video" || !asset.file_path) continue;
       const key = clipKey(clip);
       void measureVideoSeconds(asset.file_path).then((seconds) => {
-        if (!alive || !seconds || Math.abs(seconds - (clip.dur ?? 0)) < frame) return;
+        if (!alive || !seconds) return;
+        const sure = measuredExactly(asset.file_path);
+        if (seconds === clip.dur && sure === !!clip.durExact) return;
+        if (!sure && clip.durExact) return;
         measured.set(key, seconds);
+        if (sure) exact.add(key);
         timer ||= window.setTimeout(save, MEASURE_SAVE_MS);
       });
     }
@@ -767,7 +781,9 @@ function EditTabInner({
   //  · 그사이 문서가 갈리거나(rev) 풀의 컷이 바뀌거나 그 카드가 목록에서 사라지면 끌기를 버린다.
   //  · 놓을 곳 = 포인터 바로 밑에 실제로 보이는 영상 줄(data-track)뿐 — 소리 줄·눈금자·컷 머리·창에 덮인 곳·화면 밖은 아니다.
   //    가로 위치는 보지 않는다(그 카드의 컷 칸에 들어간다). 이미 그 트랙에 있거나 잠겼으면 아무 일도 없다(메뉴의 흐린 줄과 같다).
-  type CardDrag = { id: string; cut: string; rev: number; hint: Omit<DropHint, "cut"> | null };
+  //  · 뷰어에 놓으면(Jay 2026-10-14) 그 카드를 소스 클립으로 본다 — 소스 판이 없으면 놓은 판을, 소스 테이프 판이면 그 판을 소스
+  //    클립으로 바꾼다(다이나믹 트림 모드는 끈다). 편집 문서는 바꾸지 않는다(풀에서 카드를 누른 것과 같다). view = 지금 뷰어 위다(안내 글).
+  type CardDrag = { id: string; cut: string; rev: number; hint: Omit<DropHint, "cut"> | null; view?: boolean };
   const [cardDrag, setCardDragState] = useState<CardDrag | null>(null);
   const cardDragLive = useRef(cardDrag);
   cardDragLive.current = cardDrag;
@@ -799,14 +815,25 @@ function EditTabInner({
     if (!drag || drag.id !== id) return; // 버린 끌기에 딸려 온 것(Esc 로 버린 뒤의 움직임·놓기)
     if (phase === "cancel") return setCardDrag(null);
     const hint = hintAt(drag, x, y);
+    const pane = hint ? null : viewerAt(x, y);
     if (phase === "move") {
       moveGhost();
-      if (hint?.track !== drag.hint?.track || hint?.state !== drag.hint?.state) setCardDrag({ ...drag, hint });
+      if (hint?.track !== drag.hint?.track || hint?.state !== drag.hint?.state || !!pane !== !!drag.view) setCardDrag({ ...drag, hint, view: !!pane });
       return;
     }
     setCardDrag(null);
     if (hint && hint.state !== "here" && hint.state !== "locked") placeCard(drag.id, drag.cut, hint.track, { rev: drag.rev });
+    const gen = pane && byCut.get(drag.cut)?.find((item) => item.id === drag.id);
+    if (!pane || !gen) return;
+    if (srcShown && !tapeOn) setKeyTarget("source"); // 소스 클립 판이 이미 있으면 그 판으로 본다
+    else if (srcShown) setMode(srcOrder, "source"); // 소스 테이프 판은 소스 클립으로 바꾼다 — 테이프면 이어서 틀고 컷을 옮기면 사라진다(Codex 코드 리뷰)
+    else {
+      setTrim(false);
+      setMode(Math.max(0, Number(pane.style.order) - 1), "source"); // 놓은 판(EditViewer 의 style.order = 자리 + 1)을 소스 클립으로
+    }
+    pickGen(gen, false);
   };
+  const viewerAt = (x: number, y: number) => document.elementFromPoint(x, y)?.closest<HTMLElement>(".ed-view:not([hidden])") ?? null;
   const cardDragging = !!cardDrag;
   useEscapeClose(() => setCardDrag(null), cardDragging, true, true);
   useDragKeyHold(cardDragging); // 초점이 남은 뒤의 단추(재생·트랙 눈)를 Space·Enter 가 누르지 않게
@@ -1165,6 +1192,9 @@ function EditTabInner({
     });
   }, []);
   const clearSelection = useCallback(() => setSelected((prev) => (prev.size ? new Set() : prev)), []);
+  // 끌어서 고르기(EditTimeline) — 상자에 걸친 클립으로 바꾼다. 같은 것이면 그대로(끄는 동안 움직일 때마다 다시 그리지 않게)
+  const pickMany = useCallback((keys: string[]) => setSelected((prev) =>
+    keys.length === prev.size && keys.every((key) => prev.has(key)) ? prev : new Set(keys)), []);
   const moveClip = useCallback((key: string, track: number, startedRev: number) => {
     act((current) => moveClipToTrack(current, key, track), { rev: startedRev });
   }, [act]);
@@ -1514,6 +1544,7 @@ function EditTabInner({
           onZoom={setZoom}
           onSelect={select}
           onClearSelection={clearSelection}
+          onPickMany={pickMany}
           onMoveClip={moveClip}
           onPickCut={pickCut}
           onOpenCut={openCut}
@@ -1529,13 +1560,13 @@ function EditTabInner({
       </main>
       {/* 풀에서 끄는 카드 — 포인터를 따라간다(자리는 ref 로 직접 옮긴다 — 움직일 때마다 다시 그리지 않는다). 무엇이 될지를 적는다 */}
       {cardDrag && (
-        <div className={"ed-ghost" + (cardDrag.hint ? ` ed-ghost-${cardDrag.hint.state}` : "")} aria-hidden="true"
+        <div className={"ed-ghost" + (cardDrag.hint ? ` ed-ghost-${cardDrag.hint.state}` : cardDrag.view ? " ed-ghost-view" : "")} aria-hidden="true"
           ref={(el) => {
             ghostRef.current = el;
             moveGhost();
           }}>
           {cardDragGen && thumbOf(cardDragGen, 256) && <img src={thumbOf(cardDragGen, 256)!} alt="" draggable={false} />}
-          <span>{cardDrag.hint ? dropLabel(cardDrag.hint, t) : t("트랙 줄 위에 놓으세요")}</span>
+          <span>{cardDrag.hint ? dropLabel(cardDrag.hint, t) : cardDrag.view ? t("놓으면 소스 클립으로 봅니다") : t("트랙 줄 위에 놓으세요")}</span>
         </div>
       )}
       {exported && target && <EditExportConfirm exported={exported} onSend={sendTimeline} onClose={() => setExportOpen(false)} />}

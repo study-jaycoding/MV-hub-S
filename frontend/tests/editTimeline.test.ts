@@ -42,6 +42,7 @@ import {
   removeMarker,
   resetCutOrder,
   setClipDurs,
+  keepClipDurs,
   setClipRange,
   clipHead,
   clipFrames,
@@ -324,7 +325,7 @@ describe("배치와 보이는 클립", () => {
     const long = clip("c1", "v", 1, { dur: 3.02, kind: "video", head: 4 });
     expect(clipFrames(3.02)).toBe(72);
     expect(clipHead(long)).toBe(71 / 24);
-    expect(clipLen(long)).toBeCloseTo(3.02 - 71 / 24);
+    expect(clipLen(long)).toBe(1 / 24); // 남은 1.48프레임 → 1프레임(영상의 쓰는 길이는 프레임으로 내린다, 2026-10-14)
     expect(clipHead(clip("c1", "v", 1, { dur: 5, kind: "video", head: 1.01 }))).toBe(1); // 프레임에 맞춘다
     // 한 프레임도 안 되는 영상은 자를 수 없다
     const tiny = clip("c1", "v", 1, { dur: 0.02, kind: "video", head: 1 });
@@ -538,6 +539,19 @@ describe("문서 편집", () => {
     expect(setClipDurs(d, new Map([[key("c1", "a"), 8]]))).toBeNull();
     expect(setClipDurs(d, new Map([[key("c1", "a"), NaN]]))).toBeNull();
     expect(setClipDurs(d, new Map([[key("c1", "a"), 8.04]]))!.clips[0].dur).toBe(8.04);
+  });
+
+  // 2026-10-14 — 그림 트랙으로 잰 길이의 표(durExact). 길이가 같아도 표가 달라지면 바뀐 것이다. 저장했다 읽어도·되돌리기에도 남는다.
+  it("그림 트랙으로 잰 표(durExact) — 달고 떼기 · 저장·읽기 · 되돌리기는 지금 것을 따른다", () => {
+    const k = key("c1", "a");
+    const d = doc([clip("c1", "a", 1, { dur: 97 / 24 })]);
+    const sure = setClipDurs(d, new Map([[k, 97 / 24]]), new Set([k]))!; // 같은 길이 — 표만 단다
+    expect(sure.clips[0]).toMatchObject({ dur: 97 / 24, durExact: true });
+    expect(setClipDurs(sure, new Map([[k, 97 / 24]]), new Set([k]))).toBeNull();
+    expect("durExact" in setClipDurs(sure, new Map([[k, 98 / 24]]))!.clips[0]).toBe(false); // 표 없이 고치면 뗀다
+    expect(parseEditDoc(JSON.parse(JSON.stringify(sure)))).toEqual(sure);
+    expect(parseEditDoc({ ...sure, clips: [{ ...sure.clips[0], durExact: "yes" }] })).toBeNull();
+    expect(keepClipDurs(d, sure)).toEqual(sure); // 옛 문서를 되살려도 길이·표는 지금 것
   });
 });
 
@@ -826,7 +840,8 @@ describe("다이나믹 트림 모드 — 편집점의 앞 | 뒤", () => {
   });
 
   it("아주 짧게 비치는 클립을 건너뛰지 않는다 — 표본 시각은 이웃 편집점과의 한가운데를 넘지 않는다", () => {
-    const thin = doc([clip("c1", "v1", 1, { dur: 8 }), clip("c1", "v2", 2, { dur: 5.005 }), clip("c1", "v3", 3, { dur: 5 })]);
+    // 0.005초 조각은 그림 클립으로 만든다 — 영상의 쓰는 길이는 프레임으로 내려 이런 조각이 생기지 않는다(2026-10-14)
+    const thin = doc([clip("c1", "v1", 1, { dur: 8 }), clip("c1", "v2", 2, { dur: 5.005, kind: "image" }), clip("c1", "v3", 3, { dur: 5 })]);
     const thinLayout = buildLayout(["e070/c1"], thin);
     const thinPoints = editPoints(thinLayout); // 0 · 5 · 5.005 · 8
     const gens = (point: number) => shotsAt(thinLayout, thin, thinPoints, point).map((shot) => shot!.clip!.gen);

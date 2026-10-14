@@ -16,6 +16,9 @@ export interface EditClip {
   track: number; // 1 부터. 위 트랙이 우선 보인다
   off?: boolean;
   dur?: number;
+  // dur 이 그림 트랙의 프레임 수로 잰 값이다(2026-10-14 — lib/videoDuration 의 measuredExactly). 이 표가 있으면 video.duration 으로 잰
+  //  값(소리까지 친 길이 — 서버가 그림 길이를 못 준 창)이 덮지 않는다. 안 그러면 두 창이 서로 고쳐 쓴다(Codex 코드 리뷰).
+  durExact?: boolean;
   kind?: "video" | "image";
   // 사용자가 줄인 길이(초) — 뒤를 자른다(Jay 2026-10-13: 타임라인 클립 휠 클릭 = 길이 조절). 영상만이고 원본(dur)보다 길게는 못 한다.
   //  dur 과 따로 둔다: dur 은 실측이 오면 고쳐 적히고 되돌리기 대상이 아니다. 이것은 사용자의 편집이라 되돌리기 대상이다.
@@ -224,6 +227,7 @@ export function parseEditDoc(value: unknown): EditDoc | null {
     if (c.job != null && typeof c.job !== "string") return null;
     if (c.off !== undefined && typeof c.off !== "boolean") return null;
     if (c.dur !== undefined && (typeof c.dur !== "number" || validSeconds(c.dur) === null)) return null;
+    if (c.durExact !== undefined && typeof c.durExact !== "boolean") return null;
     if (c.kind !== undefined && c.kind !== "video" && c.kind !== "image") return null;
     if (c.trim !== undefined && (typeof c.trim !== "number" || validSeconds(c.trim) === null)) return null;
     if (c.head !== undefined && (typeof c.head !== "number" || validSeconds(c.head) === null)) return null;
@@ -236,6 +240,7 @@ export function parseEditDoc(value: unknown): EditDoc | null {
       ...(c.job ? { job: c.job as string } : {}),
       ...(c.off ? { off: true } : {}),
       ...(c.dur !== undefined ? { dur: c.dur as number } : {}),
+      ...(c.dur !== undefined && c.durExact ? { durExact: true } : {}),
       ...(c.kind ? { kind: c.kind as "video" | "image" } : {}),
       ...(c.trim !== undefined ? { trim: c.trim as number } : {}),
       ...(c.head !== undefined ? { head: c.head as number } : {}),
@@ -318,14 +323,17 @@ export function clipHead(clip: EditClip, fallback?: unknown): number {
 }
 
 // 쓰는 길이 — 사용자가 줄였으면(trim) 그 길이, 앞을 잘랐으면(head) 시작점부터 남은 만큼까지. 영상만이고 원본 밖으로는 안 된다
-//  (재생 엔진이 영상의 실제 끝에서 건너뛴다). trim 이 없으면 원본 끝까지다(프레임에 못 미치는 나머지도 쓴다 — 전과 같다).
+//  (재생 엔진이 영상의 실제 끝에서 건너뛴다). trim 이 없으면 원본 끝까지다.
+//  영상은 **프레임 수로 내린다**(2026-10-14) — 프레임에 못 미치는 나머지가 있으면 컷 경계가 프레임 사이에 서고, Resolve 계획이 시작과
+//  끝을 따로 반올림하며 같은 클립이 98·99프레임으로 갈렸다(99 = 원본보다 길어 막힘, 98 = 1프레임 빈칸). 한 프레임도 안 되면 그대로.
 //  그림은 줄이지 않는다: Resolve 가 스틸을 준 길이와 무관하게 5초로 놓아, 줄이면 다음 컷과 겹친다. kind 가 없는 옛 클립은 영상으로 본다.
 export function clipLen(clip: EditClip, fallback?: unknown): number {
   const full = clipFull(clip, fallback);
   if (clip.kind === "image") return full;
   const rest = full - clipHead(clip, fallback);
   const trim = validSeconds(clip.trim);
-  return trim === null ? rest : Math.min(trim, rest);
+  const len = trim === null ? rest : Math.min(trim, rest);
+  return clipFrames(len) / EDIT_FPS || len;
 }
 
 // 켜져 있는 클립인가 — 클립을 껐거나 그 트랙을 껐으면 아니다. 보이는 것(visibleClip)과 컷 길이(buildLayout)가 같은 기준을 쓴다.
@@ -877,22 +885,27 @@ export function markerAt(layout: EditLayout, shown: readonly ShownMarker[], time
   return shown.find((item) => item.key === key) ?? shown.find((item) => Math.abs(item.time - time) <= 0.5 / EDIT_FPS) ?? null;
 }
 
-// 확정된 길이를 문서에 적는다(Undo 단계 아님). 바뀐 것이 없으면 null.
-export function setClipDurs(doc: EditDoc, durs: ReadonlyMap<string, number>): EditDoc | null {
+// 확정된 길이를 문서에 적는다(Undo 단계 아님). exact = 그 가운데 그림 트랙으로 잰 것(durExact 를 단다 — 없는 것은 뗀다).
+//  바뀐 것이 없으면 null.
+export function setClipDurs(doc: EditDoc, durs: ReadonlyMap<string, number>, exact?: ReadonlySet<string>): EditDoc | null {
   let changed = false;
   const clips = doc.clips.map((clip) => {
-    const dur = validSeconds(durs.get(clipKey(clip)));
-    if (dur === null || dur === clip.dur) return clip;
+    const key = clipKey(clip);
+    const dur = validSeconds(durs.get(key));
+    const sure = !!exact?.has(key);
+    if (dur === null || (dur === clip.dur && sure === !!clip.durExact)) return clip;
     changed = true;
-    return { ...clip, dur };
+    const { durExact: _was, ...rest } = clip;
+    return sure ? { ...rest, dur, durExact: true } : { ...rest, dur };
   });
   return changed ? { ...doc, clips } : null;
 }
 
-// 되돌리기·다시 하기로 옛 문서를 되살릴 때, 그 사이 확정된 길이는 지금 것을 따른다(길이는 되돌리기 대상이 아니다).
+// 되돌리기·다시 하기로 옛 문서를 되살릴 때, 그 사이 확정된 길이는 지금 것을 따른다(길이는 되돌리기 대상이 아니다 — 표 durExact 도).
 export function keepClipDurs(doc: EditDoc, from: EditDoc): EditDoc {
   const durs = new Map(from.clips.filter((clip) => clip.dur !== undefined).map((clip) => [clipKey(clip), clip.dur!]));
-  return setClipDurs(doc, durs) ?? doc;
+  const exact = new Set(from.clips.filter((clip) => clip.durExact).map(clipKey));
+  return setClipDurs(doc, durs, exact) ?? doc;
 }
 
 // ── 공유 목록과 잇기 ────────────────────────────────────────────────────────────────────────────

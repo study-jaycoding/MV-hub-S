@@ -3,7 +3,7 @@
 import { act, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { useAppNavigation } from "../src/lib/useAppNavigation";
+import { reloadedIntoEdit, useAppNavigation } from "../src/lib/useAppNavigation";
 import type { Filters, InfoTarget, PreviewTarget } from "../src/types";
 
 let host: HTMLDivElement;
@@ -13,7 +13,7 @@ let seen: { tab: Filters["tab"]; edit: boolean; admin: boolean };
 
 function Harness() {
   const [filters, setFilters] = useState<Filters>({ tab: "team" });
-  const [editOpen, setEditOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(reloadedIntoEdit); // App 과 같이
   const [adminOpen, setAdminOpen] = useState(false);
   const [, setPreview] = useState<PreviewTarget | null>(null);
   const [, setCommentGenId] = useState<string | null>(null);
@@ -74,6 +74,26 @@ it("편집 칸이 없는 옛 기록과 빈 기록은 편집이 아니다", () =>
   act(() => nav.openEdit());
   pop(null);
   expect(seen).toEqual({ tab: "my", edit: false, admin: false });
+});
+
+it("새로 고침해도 편집 탭에 남는다 — 브라우저가 보존한 지금 기록의 편집 칸을 읽고, 마운트의 기록 고침이 그 칸을 지우지 않는다", () => {
+  act(() => nav.openEdit());
+  const reload = () => {
+    act(() => root.unmount());
+    root = createRoot(host);
+    act(() => root.render(<Harness />));
+  };
+  reload(); // 새로 고침 = 같은 기록(state 보존)으로 다시 마운트
+  expect(seen).toEqual({ tab: "team", edit: true, admin: false });
+  expect(window.history.state.chv.edit).toBe(true);
+  reload(); // 한 번 더 새로 고쳐도
+  expect(seen.edit).toBe(true);
+  act(() => nav.navTab("my"));
+  reload(); // 편집에서 나온 뒤의 새로 고침은 편집이 아니다
+  expect(seen.edit).toBe(false);
+  window.history.replaceState(null, ""); // 앱을 새로 열면(기록 없음) 평소처럼
+  reload();
+  expect(seen.edit).toBe(false);
 });
 
 it("구성 보기로 들어가면(구성에서 보기) 편집에서 나온다", () => {

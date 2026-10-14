@@ -21,6 +21,7 @@ const video = (id: string, cut: string, duration?: number) => gen(id, cut, "vide
 // 길이 재기(lib/videoDuration)의 대역 — 받는 중인 주소는 한 약속에 합류하고, 잰 값은 이 페이지에서 기억한다(known). 결과는 시험이 준다.
 const probes = vi.hoisted(() => ({
   asked: [] as string[],
+  inexact: new Set<string>(), // 서버가 그림 길이를 못 줘 video.duration 으로 잰 주소(기본은 그림 길이로 쟀다)
   known: new Map<string, number>(),
   inflight: new Map<string, Promise<number | null>>(),
   finish: new Map<string, (seconds: number | null) => void>(),
@@ -45,6 +46,7 @@ vi.mock("../src/lib/videoDuration", () => ({
     return pending;
   },
   dropQueuedVideoMeasures: () => {},
+  measuredExactly: (url: string) => !probes.inexact.has(url),
 }));
 const world = vi.hoisted(() => ({ gens: [] as unknown[] }));
 vi.mock("../src/lib/resolveTransfer", async () => ({
@@ -85,12 +87,15 @@ const mount = () => act(async () => root.render(
 ));
 const docKey = (seq: string) => `mvhub.editDoc:local:p1:${seq}`;
 const DOC_KEY = docKey("e070");
-const seed = (clips: { cut: string; gen: string; track: number; dur?: number; kind?: string }[]) =>
+const seed = (clips: { cut: string; gen: string; track: number; dur?: number; durExact?: boolean; kind?: string }[]) =>
   localStorage.setItem(DOC_KEY, JSON.stringify({
     v: 1, tracksOff: [], tracksLocked: [], clips: clips.map((clip) => ({ kind: "video", ...clip, cut: `e070/${clip.cut}` })),
   }));
 const durs = (): Record<string, number | undefined> => Object.fromEntries(
   (JSON.parse(localStorage.getItem(DOC_KEY) ?? "null")?.clips ?? []).map((clip: { gen: string; dur?: number }) => [clip.gen, clip.dur]));
+// 그림 트랙으로 잰 표(durExact)가 달린 클립
+const exacts = () => (JSON.parse(localStorage.getItem(DOC_KEY) ?? "null")?.clips ?? [])
+  .filter((clip: { durExact?: boolean }) => clip.durExact).map((clip: { gen: string }) => clip.gen).sort();
 // 재어 달라고 한 영상들(한 번이라도) — 효과가 다시 돌 때마다 또 묻는 것은 세지 않는다
 const asked = () => [...new Set(probes.asked.map((url) => url.replace(/^\/media\/|\.mp4$/g, "")))].sort();
 const arrive = (id: string, seconds: number | null) => act(async () => { probes.finish.get(`/media/${id}.mp4`)!(seconds); });
@@ -114,6 +119,7 @@ beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(() => Promise.resolve());
   Object.assign(Element.prototype, { setPointerCapture() {}, hasPointerCapture: () => false, releasePointerCapture() {} });
   probes.asked.length = 0;
+  probes.inexact.clear();
   for (const map of [probes.known, probes.inflight, probes.finish]) map.clear();
   flashed.length = 0;
   host = document.createElement("div");
@@ -125,6 +131,34 @@ afterEach(() => {
   host.remove();
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+// Codex 코드 리뷰(2026-10-14) — 한 창은 서버에서 그림 길이(97프레임)를, 다른 창은 서버가 잠깐 실패해 video.duration(소리까지 —
+//  98·99프레임)을 쟀다. 그 값으로 덮으면 두 창이 저장을 받을 때마다 서로 되돌렸다(저장 반복·되돌리기 기록 초기화). '1프레임
+//  안쪽만 막기'로는 소리가 2프레임 넘게 긴 파일(99 ↔ 97)에서 남았다 — 문서의 표(durExact)로 막는다.
+it("그림 트랙으로 잰 길이는 표를 달고, video.duration 으로 잰 값은 그 표가 있는 클립을 차이와 상관없이 덮지 않는다", async () => {
+  world.gens = [video("m", "c1", 4), video("d", "c2", 8), video("e", "c2", 4)];
+  seed([
+    { cut: "c1", gen: "m", track: 1, dur: 97 / 24, durExact: true }, // 다른 창이 그림 길이로 적었다
+    { cut: "c2", gen: "d", track: 1, dur: 8 }, // 요청 길이
+    { cut: "c2", gen: "e", track: 2, dur: 4.087 }, // 옛 '소리까지 친 길이'
+  ]);
+  probes.inexact.add("/media/m.mp4");
+  probes.inexact.add("/media/d.mp4"); // e 는 이 창도 그림 길이로 잰다
+  await mount();
+  await arrive("m", 99 / 24); // 2프레임 길다 — 표가 있으니 덮지 않는다
+  await arrive("d", 10); // 표가 없다 — 고친다(표는 안 단다)
+  await arrive("e", 97 / 24); // 그림 길이 — 고치고 표를 단다
+  act(() => { vi.advanceTimersByTime(MEASURE_SAVE_MS); });
+  expect(durs()).toEqual({ m: 97 / 24, d: 10, e: 97 / 24 });
+  expect(exacts()).toEqual(["e", "m"]);
+
+  const writes = countWrites();
+  act(() => { window.dispatchEvent(new StorageEvent("storage", { key: DOC_KEY })); }); // 다른 창이 저장했다
+  await settle();
+  act(() => { vi.advanceTimersByTime(MEASURE_SAVE_MS); });
+  expect([writes(), durs(), exacts()]).toEqual([0, { m: 97 / 24, d: 10, e: 97 / 24 }, ["e", "m"]]);
+  expect(flashed).toEqual([]);
 });
 
 // 적힌 길이만 보고 '이미 쟀다'고 건너뛰지 않는다(그렇게 넣었다가 뺐다 — Codex 코드 리뷰 4회째): dur 에는 요청 길이와 실측값이 구분 없이
@@ -143,11 +177,11 @@ it("영상 클립은 페이지를 열 때마다 다시 잰다 — 적힌 길이�
   expect(asked()).toEqual(["d", "f", "m", "n"]);
 
   await arrive("m", 5.5);
-  await arrive("n", 5.03); // 적힌 것과 한 프레임 안 — 고쳐 적지 않는다
+  await arrive("n", 5.03); // 적힌 것과 한 프레임 안이어도 다르면 고쳐 적는다(2026-10-14 — 옛 '소리까지 친 길이'가 남지 않게)
   await arrive("d", 10.04);
   await arrive("f", 5.6);
   act(() => { vi.advanceTimersByTime(MEASURE_SAVE_MS); });
-  expect(durs()).toEqual({ m: 5.5, n: 5.02, p: 5, d: 10.04, f: 5.6 });
+  expect(durs()).toEqual({ m: 5.5, n: 5.03, p: 5, d: 10.04, f: 5.6 });
 
   // 페이지를 새로 열었다(기억해 둔 값이 없다) — 잰 값이 적혀 있어도 다시 전부 묻는다
   act(() => root.unmount());

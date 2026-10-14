@@ -21,6 +21,9 @@ const sameLocation = (a: NavLocation | undefined, b: NavLocation) =>
 // 이 페이지를 연 때의 표식 — payload 번호(key)는 페이지를 열 때마다 1 부터 다시 세므로, 새로 고침 전의 기록(브라우저가 state 를
 //  보존한다)과 번호가 겹친다. 표식이 다른 기록은 payload 가 없는 것으로 본다(미리보기는 닫힌 채로 — 다른 것이 뜨는 것보다 낫다).
 const NAV_SESSION = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+/** 새로 고침 전에 편집 탭이었나(Jay 2026-10-14 — 새로 고침해도 편집 탭에 남는다). 브라우저가 새로 고침에도 지금 기록의 state 를
+ *  보존하므로 그것을 읽는다 — 앱을 새로 열면(기록 없음) 평소처럼 시작한다. App 의 처음 값과 아래 viewRef 가 같이 쓴다. */
+export const reloadedIntoEdit = () => !!(window.history.state as { chv?: NavView } | null)?.chv?.edit;
 
 export function useAppNavigation({
   currentTab,
@@ -73,7 +76,10 @@ export function useAppNavigation({
     navPayloadsRef.current.clear();
   }
   const navSeqRef = useRef(0);
-  const viewRef = useRef<NavView>({ tab: currentTab, focusId: null, ov: null, key: 0, ...(currentLocation ? { loc: currentLocation } : {}) });
+  // 편집 칸도 싣는다 — 아래 마운트의 replaceState 가 새로 고침 전의 편집 표시를 지우지 않게
+  const viewRef = useRef<NavView>({
+    tab: currentTab, focusId: null, ov: null, key: 0, ...(reloadedIntoEdit() ? { edit: true } : {}), ...(currentLocation ? { loc: currentLocation } : {}),
+  });
 
   useEffect(() => {
     viewRef.current = { ...viewRef.current, tab: currentTab };

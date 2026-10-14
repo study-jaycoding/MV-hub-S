@@ -246,7 +246,7 @@ export function EditListMenu({
   hideOff: boolean;
   offCount: number;
   fillCount: number;
-  // 모두 최종으로 확정(Jay 2026-10-13) — 타임라인의 생성물에 최종을 줄 수 있는 사람에게만 준다(안 주면 줄이 없다).
+  // 타임라인 최종 확정(Jay 2026-10-13 · 10-14 이름 '모두 최종으로 확정'에서 바꿈) — 타임라인의 생성물에 최종을 줄 수 있는 사람에게만 준다(안 주면 줄이 없다).
   //  count = 지금 최종으로 올라갈 생성물 수(이미 최종인 것은 뺀 수 — 0 이면 흐리다) · busy = 앞서 누른 것이 아직 도는 중
   finalAll?: { count: number; busy: boolean; onRun: () => void };
   trigger: RefObject<HTMLElement>; // 목록 단추 — 다시 누르면 그 단추가 닫는다(EditMenu)
@@ -273,7 +273,7 @@ export function EditListMenu({
         <button type="button" role="menuitem" className="ed-tmenu-item" disabled={!finalAll.count || finalAll.busy} aria-busy={finalAll.busy}
           title={t("타임라인에 있는 생성물을 모두 최종으로 확정합니다 — 켜진 컷의 켜진 클립만(숨긴 컷·꺼 둔 컷·꺼진 클립·꺼진 트랙은 뺍니다). 누르면 무엇이 바뀌는지 먼저 묻습니다.")}
           onClick={finalAll.onRun}>
-          {t("모두 최종으로 확정")}
+          {t("타임라인 최종 확정")}
           <i>{finalAll.count || ""}</i>
         </button>
       )}
@@ -323,7 +323,7 @@ export function EditClipMenu({
       </button>
       {onTrim && (
         <button type="button" role="menuitem" className="ed-tmenu-item" onClick={onTrim}>
-          {t("길이 조절")}
+          {"↔ " + t("길이 조절") /* 줄 앞 표시(Jay 2026-10-14) — 위의 ◆ 처럼 */}
           <i>{t("휠 클릭")}</i>
         </button>
       )}
@@ -334,7 +334,7 @@ export function EditClipMenu({
             : final.checked ? t("최종 확정을 해제합니다(최종 전에 보류였던 것은 보류로, 나머지는 공유로 돌아갑니다).")
               : t("이 생성물을 최종으로 확정합니다 — 공유 & 리뷰의 최종(★)과 같은 것입니다.")}
           onClick={final.onToggle}>
-          {t("최종 선택")}
+          {"★ " + t("최종 선택")}
           <i>{final.checked ? "✓ " : ""}{final.count > 1 ? final.count : ""}</i>
         </button>
       )}

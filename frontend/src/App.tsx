@@ -37,7 +37,7 @@ import { KEY_COLORS } from "./lib/appConstants";
 import { folderPeekQuery, generationQueryKey } from "./lib/appGenerationQuery";
 import { useResolveLibraryFollow } from "./lib/useResolveLibraryFollow";
 import { generationsByIds, uniqueTagNames } from "./lib/generationTags";
-import { useAppNavigation } from "./lib/useAppNavigation";
+import { reloadedIntoEdit, useAppNavigation } from "./lib/useAppNavigation";
 import {
   confirmSceneWrite,
   subscribeSceneSaveState,
@@ -195,7 +195,7 @@ export default function App() {
   // 편집 탭(docs/EDIT_TAB.md) — filters.tab 의 값이 아니라 본문만 바꾸는 별도 '보기'다. 밑의 탭 상태·목록 훅은 그대로 돈다.
   //  떠 있는 동안: 캔버스 폴더 창 닫힘(folderPeek) · 프롬프트 단축키 쉼 · 다빈치 따라가기 쉼. 라이브러리 단축키는 편집 탭이 연
   //  폴더 창이 떠 있을 때만 듣는다(아래 teamPeek).
-  const [editOpen, setEditOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(reloadedIntoEdit); // 새로 고침해도 편집 탭에 남는다(Jay 2026-10-14)
   const editOpenRef = useRef(editOpen);
   editOpenRef.current = editOpen;
   // 편집 탭이 연 '폴더 보기' 창(컷 더블클릭, Jay 2026-10-08) — 공유 & 리뷰의 폴더 창을 그대로 쓴다. 그 창은 하나뿐인 목록
