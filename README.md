@@ -5,7 +5,7 @@ aliases:
 tags:
   - mvhub
   - mvhub/진입점
-updated: 2026-08-27
+updated: 2026-10-14
 status: active
 ---
 
@@ -18,17 +18,28 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 > → [docs/README.md](docs/README.md)(전체 문서 색인).
 > 코드를 **어디에 둘지** 정할 때는 [ARCHITECTURE.md](ARCHITECTURE.md)가 기준이다.
 >
-> 기준선(2026-08-27, `dev` `5f7a1853`): 자동 테스트 백엔드 1,854건(+29 subtests) · 프런트 98파일 679건 통과.
-> 팀 릴리스 `2026.08.25-0847`·`origin/main` 은 `aa0985b9` 이며 `dev` 는 코드 커밋 2개 앞서 있다(push 전). 새 릴리스 제작과 운영 배포 검증이 남아 있다.
-> 이후 문서 전용 정리는 실행 코드를 바꾸지 않는다. 잔여 항목의 단일 출처는
-> `docs/CURRENT_STATUS.md`다.
+> 현재 코드·배포·잔여 항목의 단일 출처는 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md)다.
 
-## 처음 받기 (작업자용 — 문서 제외하고 코드만)
+<details>
+<summary>2026-08-27 당시 기준선 기록(현재 상태 아님)</summary>
+
+`dev` `5f7a1853`: 자동 테스트 백엔드 1,854건(+29 subtests) · 프런트 98파일 679건 통과.
+당시 팀 릴리스 `2026.08.25-0847`·`origin/main` 은 `aa0985b9`이며 `dev`는 코드 커밋 2개 앞서 있었다(push 전).
+새 릴리스 제작과 운영 배포 검증이 남아 있었고, 이후 문서 전용 정리는 실행 코드를 바꾸지 않았다.
+
+</details>
+
+## 처음 받기
+
+**작업자 PC**는 공유 배포 폴더의 `MVHub_Install.bat`로 설치한다. Git/Python/Node 설치가 필요 없으며,
+설치·업데이트 방법은 [release/README.md](release/README.md)를 따른다.
+
+### 서버·개발용 소스 받기 (선택: 문서 제외)
 
 상세 설계·개발 문서는 [`docs/`](docs/) 에 있습니다(개발자용). 아래 sparse-checkout 으로
 받으면 `docs/` 는 다운로드되지 않습니다 — 실행에 필요한 코드만 받습니다.
 
-```sh
+```powershell
 # docs/ 를 받지 않는 부분 체크아웃(blob 다운로드도 생략)
 git clone --filter=blob:none --sparse https://github.com/study-jaycoding/MV-hub-S.git
 cd MV-hub-S
@@ -89,7 +100,7 @@ git sparse-checkout set backend frontend tools
 | [ARCHITECTURE.md](ARCHITECTURE.md) | **구조 원칙** — 어디에 무슨 코드를 두는가(이 저장소의 규칙) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/AI_CONTEXT.md](docs/AI_CONTEXT.md) | 현행 구조 지도 · AI 에게 통째로 붙여넣는 자기완결 브리프 |
 | [docs/RISK_REDUCTION_PLAN_2026-08-15.md](docs/RISK_REDUCTION_PLAN_2026-08-15.md) | 위험 항목 상태를 바꾸는 단일 출처(Gate 0 표) |
-| [docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) | Resolve 전송 큐 v3 **설계 이력(superseded)** — 현행은 직접 전송([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §7.6). 큐 모듈은 휴면 워커 모듈은 2026-08-27 삭제하며 현재 확인된 재도입 계획은 없다 |
+| [docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md](docs/DESIGN_RESOLVE_QUEUE_V3_2026-08-24.md) | Resolve 전송 큐 v3 **설계 이력(superseded)** — 현행은 직접 전송([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §7.6). 휴면 워커 모듈은 2026-08-27 삭제했으며 현재 확인된 재도입 계획은 없다 |
 | [docs/SERVER_RELOCATION.md](docs/SERVER_RELOCATION.md) | 공유 서버 주소 이사 — 공지 발행·원클릭 전환·수동 대안 |
 | [docs/TELEMETRY_DRAIN_LIFECYCLE.md](docs/TELEMETRY_DRAIN_LIFECYCLE.md) | 로컬 응답·관리 텔레메트리 전송·마지막 성공 관측 계약 |
 | [docs/SHARE_STATE_RECONCILIATION_DESIGN.md](docs/SHARE_STATE_RECONCILIATION_DESIGN.md) | 공유·최종 상태의 현행 계약 — 서버 권위 원장·converge-forward 수렴 (옛 즉시 보상 계약 `SHARE_STATE_COMPENSATION` 은 대체됨) |

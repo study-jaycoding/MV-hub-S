@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-03
+updated: 2026-10-14
 status: review-required
 ---
 
@@ -9,7 +9,7 @@ status: review-required
 
 > [!IMPORTANT]
 > 이 문서의 절차를 실행하기 전에 **저장소 루트 `AGENTS.md` 의 안전 규칙**을 먼저 읽는다.
-> 릴리스 스크립트는 `_staging` 재귀 삭제·프런트 재빌드·ZIP/`latest.json` 덮어쓰기를 하고,
+> 릴리스 제작 스크립트는 `_staging` 재귀 삭제·프런트 재빌드·ZIP 생성·`candidate.json` 갱신을 하고,
 > `release/publish_target.txt` 가 있으면 배포 폴더(NAS)에도 강제 복사한다. 검증 목적으로
 > 실행하지 않는다.
 >
@@ -39,7 +39,7 @@ cd D:\ClaudeCode\MV-hub-S-release\release
 
 ```text
 release\packages\
-  latest.json
+  candidate.json
   MVHub-<버전>.zip
   MVHub_Install.bat
 ```
@@ -47,8 +47,10 @@ release\packages\
 ### 서버로 자동 복사
 
 `release\publish_target.txt`에 서버 `packages` 폴더 경로가 있으면, `make_release.bat`이 빌드 후
-**zip, 설치기, latest.json을 그 폴더로 자동 복사**합니다(수동 복사 불필요). latest.json을 맨 나중에 복사해
-작업자가 배포 중간본을 받는 일이 없습니다. 경로 파일이 없으면 기존처럼 수동 안내만 뜹니다.
+**ZIP을 먼저 올리고 잠금 안에서 candidate.json을 마지막에 갱신**합니다. 공유 폴더의 설치기와
+`latest.json`은 바꾸지 않습니다. 경로 파일이 없으면 ZIP과 후보 파일을 올리라는 수동 안내가 뜹니다.
+팀 공개는 관리자 창 **업데이트 탭 → 해당 판 [배포]**로 합니다. 후보 생성만으로 작업자 공개본은
+바뀌지 않습니다. 세부 계약은 [업데이트 공지 관리](../docs/UPDATE_ANNOUNCEMENTS.md)를 따릅니다.
 
 ```text
 release\publish_target.txt   ← 예: Z:\mvutil\MV_hub_S\packages  (머신별 로컬, git 제외)
@@ -71,7 +73,7 @@ backend               # 백엔드 코드
 ```
 
 `hf_cli_version.txt`의 고정 버전과 실제 번들 npm 패키지 버전이 다르면 릴리즈 생성이 중단됩니다.
-완성된 ZIP 내부에서도 같은 검사를 한 번 더 수행하고, `latest.json`에
+완성된 ZIP 내부에서도 같은 검사를 한 번 더 수행하고, `candidate.json`에
 `higgsfield_cli_version`을 기록합니다. 따라서 작업자는 `update_release.bat`만 실행하면 앱 코드와
 Higgsfield CLI가 함께 갱신되며, 릴리즈 설치본에서는 `update_git.bat`을 사용할 필요가 없습니다.
 
@@ -83,9 +85,10 @@ Higgsfield CLI가 함께 갱신되며, 릴리즈 설치본에서는 `update_git.
 Z:\mvutil\MV_hub_S\packages
     MVHub_Install.bat
     latest.json
+    candidate.json
     MVHub-<버전>.zip
     latest-backups\
-        latest.previous-<날짜-시각>.json
+        latest.previous-<날짜-시각>-<고유접미사>.json
 ```
 
 설치기는 자신과 같은 폴더의 `latest.json`을 자동으로 사용하므로 서버 경로를 직접 편집하지 않습니다.
@@ -124,11 +127,12 @@ MV Hub를 종료하고 파일을 교체한 뒤 새 버전의 준비 완료까지
 
 ## 업데이트 흐름
 
-1. 관리자가 `make_release.bat`로 새 zip 생성 (→ `publish_target.txt` 설정 시 서버 `packages`로 자동 복사)
-2. (자동 복사 안 쓰면) 서버 `packages`에 새 `latest.json`과 `MVHub-<버전>.zip` 수동 복사
-3. 작업자는 MV Hub 설정에서 `프로그램 업데이트` 클릭
-4. 버전 차이 또는 설치 손상을 발견하면 자동 다운로드/검증/복구 설치
-5. MV Hub가 자동 재시작되고 새 버전의 준비 완료를 확인
+1. 관리자가 고정 릴리스 폴더에서 `make_release.bat`로 새 ZIP과 후보 생성 (→ `publish_target.txt` 설정 시 자동 복사)
+2. 자동 복사를 안 쓰면 공유 `packages`에 ZIP을 먼저, `candidate.json`을 마지막에 복사 (`latest.json` 수동 복사 금지)
+3. 관리자 창 **업데이트 탭**에서 새 후보를 확인하고 필요하면 **[이 PC에 먼저 설치]**로 검증한 뒤 **[배포]**
+4. 작업자는 MV Hub 설정에서 `프로그램 업데이트` 클릭
+5. 버전 차이 또는 설치 손상을 발견하면 자동 다운로드/검증/복구 설치
+6. MV Hub가 자동 재시작되고 새 버전의 준비 완료를 확인
 
 공유 서버 코드는 기존처럼 서버 PC에서 `update_git.bat`으로 갱신합니다. 작업자 릴리스 버튼과 서버 Git
 업데이트는 서로 다른 경로이며, 한쪽이 다른 쪽을 대신 실행하지 않습니다. 서버 업데이트의 실제 작업
@@ -145,11 +149,12 @@ MV Hub를 종료하고 파일을 교체한 뒤 새 버전의 준비 완료까지
 
 기존 `latest.json`은 같은 폴더 아래 `latest-backups\latest.previous-*.json`으로 보관됩니다.
 `-LatestPath`를 별도로 지정하면 그 파일이 있는 폴더 아래에 백업 폴더를 만듭니다.
-동일한 초에 만든 동명 백업은 덮어쓰지 않고 중단하므로 1초 뒤 다시 실행합니다.
+백업 이름에는 날짜·시각과 고유 접미사를 붙이며 기존 백업을 덮어쓰지 않습니다.
 백업 생성·해시 확인에 실패하면 현재 `latest.json`을 바꾸지 않습니다. 기존 백업의 자동 이동·삭제는 하지 않습니다.
 검증에 실패해 남은 백업은 오류 메시지에 표시된 경로에서 수동 확인해야 하며, 정상 백업으로 간주하지 않습니다.
-백업은 이 선택 도구가 만들며, `make_release.ps1`의 자동 게시 경로는 백업을 만들지 않습니다.
-선택한 ZIP의 `VERSION.txt`와 SHA256으로 새 `latest.json`을 만든 뒤 작업자가 `update_release.bat`를 실행하면
+표지를 바꾸는 관리자 배포와 이 선택 도구가 백업을 만듭니다. `make_release.ps1`은 후보만 만들고 표지를 바꾸지 않습니다.
+선택한 ZIP의 `VERSION.txt`와 SHA256으로 잠금 안에서 `candidate.json`을 먼저, `latest.json`을 마지막에 갱신합니다.
+공지 전 후보가 있었다면 이 선택으로 취소됩니다. 작업자가 `update_release.bat`를 실행하면
 이전 버전으로 전환됩니다.
 
 설치/업데이트는 DB·미디어를 보존하고, 프로그램 영역은 폴더 단위로 깨끗하게 교체합니다. 릴리즈는 `backend\app`과 필요한 실행 파일만 허용 목록으로
