@@ -52,6 +52,7 @@ import {
 } from "../lib/promptEditor";
 import type { ChipRef, HistEntry, PromptPart } from "../lib/promptEditor";
 import { copyText, flashMsg } from "../lib/flash";
+import { libraryDraftKey, readLibraryDraft, writeLibraryDraft, type LibraryPromptDraft } from "../lib/libraryPromptDraft";
 import { dataTransferHasFiles, displayRefThumb, filesFromDataTransfer } from "../lib/media";
 import {
   emptySeedanceTokenRoles,
@@ -262,7 +263,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   //  외부 파일 임포트(importExternalFilesAsRefs)는 카드/에셋 도메인이라 컴포넌트에 남기고 콜백으로 주입.
   //  화살표로 감싸는 이유: importExternalFilesAsRefs 는 아래(선언 순서상 뒤)에 있어 호출 시점(드롭=마운트 후)에만 참조 → TDZ 회피.
   const {
-    trayRefs, setTrayRefs, trayReady, sceneMode, withFreshTrayUids,
+    trayRefs, setTrayRefs, localTrayRefs, setLocalTrayRefs, trayReady, sceneMode, withFreshTrayUids,
     addAssetToTray, removeTrayRef, onTrayKeyDown, onTrayDragOver, onTrayDrop,
     reorderTray,
   } = useSpotlightTray({
@@ -441,8 +442,11 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     },
   });
   const lastPromptFpRef = useRef<string>("");
-  const prevBindingKeyRef = useRef<string | null>(null);
-  const libraryDraftRef = useRef<string>(""); // 비-씬(라이브러리) 프롬프트 임시 보관
+  // undefined = 아직 한 번도 안 돎. 처음 실행은 '라이브러리 → 씬 전환'이 아니다 — 캔버스 탭으로 켜졌을 때 빈 편집기를 라이브러리 초안으로
+  //  적지 않고, 라이브러리로 켜졌을 때는 담아 둔 초안을 되살린다(Jay 결정 5B, Codex C17).
+  const prevBindingKeyRef = useRef<string | null | undefined>(undefined);
+  const [storedLibraryDraft] = useState(readLibraryDraft); // 같은 브라우저에 담아 둔 라이브러리 초안(켤 때 한 번)
+  const libraryDraftRef = useRef<string>(storedLibraryDraft ? JSON.stringify(storedLibraryDraft.parts) : ""); // 비-씬(라이브러리) 프롬프트 보관
   const draftParse = (s: string): PromptPart[] => {
     if (!s) return [];
     let p: unknown;
@@ -473,8 +477,8 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     const ed = editorRef.current;
     if (!ed) return;
     if (bindingKey === null) {
-      // 씬 → 라이브러리 이탈: 보관해둔 라이브러리 프롬프트 복원(직전이 씬이었을 때만).
-      if (prev !== null) {
+      // 씬 → 라이브러리 이탈: 보관해둔 라이브러리 프롬프트 복원(직전이 씬이었을 때만). 처음 실행이면 담아 둔 초안이 있을 때만.
+      if (prev !== null && (prev !== undefined || libraryDraftRef.current)) {
         restoreParts(ed, draftParse(libraryDraftRef.current));
         scheduleLiveWrap();
         updatePlaceholder();
@@ -570,6 +574,54 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     onTrayBindingPromptChange?.(json);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [promptTick]);
+
+  // ── 라이브러리 초안 담기·되살리기(Jay 결정 5B, 10-15) — 글은 위 바인딩 effect 가 처음 실행 때 되살린다. 트레이는 여기서 라이브러리 쪽에
+  //    직접 놓는다(씬 모드의 setTrayRefs 는 씬 카드 트레이를 가리킨다 — Codex C17). 새 uid 는 이때 한 번만 붙인다.
+  useEffect(() => {
+    if (!storedLibraryDraft) return;
+    if (storedLibraryDraft.trayRefs.length) setLocalTrayRefs(withFreshTrayUids(storedLibraryDraft.trayRefs));
+    if (bindingKey === null) {
+      if (storedLibraryDraft.trayRefs.length && !expanded) onToggleExpand();
+      flashMsg("지난번 쓰던 프롬프트를 되살렸습니다");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // 담기 — 그 순간의 계정 키·내용을 고정해 0.5초 뒤 쓴다(그때의 DOM 을 다시 읽지 않는다 — 씬 글이 섞이지 않게). 글이 비면(보내기 성공·지우기)
+  //  기다리던 쓰기를 버리고 바로 쓴다 — 안 그러면 0.5초 뒤 보낸 글이 다시 적힌다. 씬에 들어가거나 창을 닫으면 기다리던 것을 바로 쓴다(Codex C18).
+  const pendingDraftRef = useRef<{ timer: ReturnType<typeof setTimeout>; key: string; draft: LibraryPromptDraft } | null>(null);
+  const flushLibraryDraft = useCallback(() => {
+    const pending = pendingDraftRef.current;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingDraftRef.current = null;
+    writeLibraryDraft(pending.key, pending.draft);
+  }, []);
+  useEffect(() => {
+    if (bindingKey !== null) {
+      flushLibraryDraft();
+      return;
+    }
+    const ed = editorRef.current;
+    if (!ed) return;
+    const parts = serializeParts(ed);
+    const draft: LibraryPromptDraft = { parts, trayRefs: localTrayRefs.map(({ uid: _uid, ...ref }) => ref) };
+    const key = libraryDraftKey();
+    if (pendingDraftRef.current) clearTimeout(pendingDraftRef.current.timer);
+    pendingDraftRef.current = null;
+    if (parts.every((part) => part.t === "text" && !part.v.trim())) {
+      writeLibraryDraft(key, draft);
+      return;
+    }
+    pendingDraftRef.current = { key, draft, timer: setTimeout(flushLibraryDraft, 500) };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [promptTick, localTrayRefs, bindingKey]);
+  useEffect(() => {
+    window.addEventListener("pagehide", flushLibraryDraft);
+    return () => {
+      window.removeEventListener("pagehide", flushLibraryDraft);
+      flushLibraryDraft();
+    };
+  }, [flushLibraryDraft]);
 
   // 카드의 '레퍼런스로 사용'(@) 버튼 → 그 생성물을 레퍼런스로 추가(확장이면 트레이, 아니면 인라인 칩).
   // useCustomEvent 가 항상 최신 addRefFromGen(최신 expanded)을 호출 → stale 분기 버그 없음.

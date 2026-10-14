@@ -29,6 +29,9 @@ interface Params {
 export interface SpotlightTrayApi {
   trayRefs: SpotlightTrayRef[];
   setTrayRefs: React.Dispatch<React.SetStateAction<SpotlightTrayRef[]>>;
+  /** 라이브러리(씬 밖) 트레이 — 씬 안에서도 이것을 읽고 놓는다(라이브러리 초안 담기·되살리기, Jay 결정 5B). */
+  localTrayRefs: SpotlightTrayRef[];
+  setLocalTrayRefs: React.Dispatch<React.SetStateAction<SpotlightTrayRef[]>>;
   /** 트레이가 지금의 묶임에 맞춰졌는가 — 아니면 trayRefs 는 앞 카드의 것이다(제출하지 않는다). */
   trayReady: boolean;
   sceneMode: boolean;
@@ -201,6 +204,8 @@ export function useSpotlightTray({
   return {
     trayRefs,
     setTrayRefs,
+    localTrayRefs,
+    setLocalTrayRefs,
     trayReady: syncedKey === bindingKey,
     sceneMode,
     withFreshTrayUids,
