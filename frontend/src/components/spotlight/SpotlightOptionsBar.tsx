@@ -366,9 +366,9 @@ export function SpotlightOptionsBar({
                               }
                               disabled={blocked}
                               onClick={() => !blocked && setOpt(p.name, v)}
-                              title={blocked ? con!.note : spotlightValueLabel(v)}
+                              title={blocked ? con!.note : spotlightValueLabel(v, p.name)}
                             >
-                              {spotlightValueLabel(v)}
+                              {spotlightValueLabel(v, p.name)}
                             </button>
                           );
                         })}

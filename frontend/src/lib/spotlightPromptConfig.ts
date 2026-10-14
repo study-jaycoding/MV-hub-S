@@ -114,7 +114,7 @@ export function modelVariantSuffix(
   return v.entries.find((e) => e.value === cur)?.suffix ?? "";
 }
 
-const ADVANCED_PARAM_ORDER = ["mode", "genre", "bitrate_mode"];
+const ADVANCED_PARAM_ORDER = ["mode", "genre", "bitrate_mode", "thinking_level", "enable_web_search", "enable_image_search", "seed"];
 
 export function spotlightAdvancedParamRank(name: string): number {
   const index = ADVANCED_PARAM_ORDER.indexOf(name);
@@ -129,6 +129,10 @@ const PARAM_LABEL: Record<string, string> = {
   genre: "장르",
   mode: "모드",
   quality: "품질",
+  thinking_level: "생각 수준",
+  enable_web_search: "웹 검색",
+  enable_image_search: "이미지 검색",
+  seed: "시드",
 };
 
 export function spotlightParamLabel(name: string): string {
@@ -143,6 +147,11 @@ const VALUE_LABEL: Record<string, string> = {
   auto: "자동(auto)",
 };
 
-export function spotlightValueLabel(value: string): string {
-  return VALUE_LABEL[value] || value;
+// 같은 값이 옵션마다 뜻이 다르다 — thinking_level 의 high 는 '고화질'이 아니다.
+const PARAM_VALUE_LABEL: Record<string, Record<string, string>> = {
+  thinking_level: { minimal: "최소(minimal)", medium: "보통(medium)", high: "깊게(high)" },
+};
+
+export function spotlightValueLabel(value: string, param = ""): string {
+  return PARAM_VALUE_LABEL[param]?.[value] || VALUE_LABEL[value] || value;
 }

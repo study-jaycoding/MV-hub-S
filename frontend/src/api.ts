@@ -473,10 +473,15 @@ export const api = {
   models: () => jsonFetch<ModelInfo[]>("/api/models"),
 
   // 모델별 CLI 조절 가능 파라미터(동적 옵션)
+  // CLI 는 비워 둘 수 있는 옵션의 타입을 "boolean|null"·"integer|null" 로 준다(Nano Banana 2.1 이 처음).
+  // 화면은 타입을 그대로 비교해 그리므로 뒤의 "|null" 을 떼어 ON/OFF·숫자 칸으로 그려지게 한다.
   modelParams: (jobSetType: string) =>
     jsonFetch<import("./types").ModelParamsOut>(
       `/api/models/${pathPart(jobSetType)}/params`,
-    ),
+    ).then((r) => ({
+      ...r,
+      params: (r.params ?? []).map((p) => ({ ...p, type: String(p.type ?? "").replace(/\|null$/, "") })),
+    })),
 
   // 예상 크레딧 추정(잡 생성 안 함) — Generate 버튼 표시용
   estimateCost: (model: string, params: Record<string, unknown>, prompt = "") =>

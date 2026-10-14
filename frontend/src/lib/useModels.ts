@@ -9,7 +9,7 @@ import type { ModelInfo, ModelParam, ModelParamsOut } from "../types";
 import { fetchModelCatalog } from "./modelCatalogCache";
 
 // 노출 모델 화이트리스트(타입별, 표시 순서대로).
-//  이미지: Nano Banana 2(nano_banana_flash) · Nano Banana 2 Lite(nano_banana_2_lite) · Nano Banana Pro(nano_banana_pro) · GPT Image 2.5(gpt_image_2_5) · GPT Image 2(gpt_image_2)
+//  이미지: Nano Banana 2(nano_banana_flash) · Nano Banana 2.1(nano_banana_2_1, 2026-10-14 추가 — 첫 자리는 그대로 두어 기본 모델이 안 바뀐다) · Nano Banana 2 Lite(nano_banana_2_lite) · Nano Banana Pro(nano_banana_pro) · GPT Image 2.5(gpt_image_2_5) · GPT Image 2(gpt_image_2)
 //  비디오: Seedance 2.5(seedance_2_5, duration 4~30s·오디오 생성 지원·480p/720p/1080p) · Seedance 2.0(seedance_2_0) · Seedance 2.0 Mini(seedance_2_0_mini, 저가·빠름·최대 720p)
 //   ※ Gemini Omni Flash(gemini_omni)는 2026-09-15 노출 제외(Jay 요청). CLI 카탈로그엔 남아 있고 이 목록에서만 뺐다 —
 //     이 모델로 만든 생성물은 0건이라 기존 카드 표시엔 영향 없다(DB 대조 확인).
@@ -17,7 +17,7 @@ import { fetchModelCatalog } from "./modelCatalogCache";
 // ※ CLI 업데이트로 Nano Banana Pro 코드가 nano_banana_2 → nano_banana_pro 로 개명됨(옛 코드는 CLI 목록에서 사라져 매칭 실패→드롭다운 누락이었음).
 //   ai_stylist/skin_enhancer/shots 변형도 표시명은 "Nano Banana Pro"지만 프리셋 전용(프롬프트 없음)이라 일반 드롭다운엔 제외.
 export const ALLOWED: Record<"image" | "video", string[]> = {
-  image: ["nano_banana_flash", "nano_banana_2_lite", "nano_banana_pro", "gpt_image_2_5", "gpt_image_2"],
+  image: ["nano_banana_flash", "nano_banana_2_1", "nano_banana_2_lite", "nano_banana_pro", "gpt_image_2_5", "gpt_image_2"],
   video: ["seedance_2_5", "seedance_2_0", "seedance_2_0_mini"],
 };
 
@@ -45,6 +45,7 @@ export function inferModelType(model: string | null | undefined): "image" | "vid
 // (우선순위: CLI 카탈로그 display_name > 이 교정맵 > 휴머나이즈). 모든 화면이 modelCatalog 로 일원화.
 export const MODEL_DISPLAY_NAMES: Record<string, string> = {
   nano_banana_flash: "Nano Banana 2",
+  nano_banana_2_1: "Nano Banana 2.1",
   nano_banana_2_lite: "Nano Banana 2 Lite",
   nano_banana_pro: "Nano Banana Pro",
   nano_banana_2: "Nano Banana Pro", // 레거시(개명 전 코드)로 만든 과거 카드 표시용 — CLI 목록엔 더 없음
