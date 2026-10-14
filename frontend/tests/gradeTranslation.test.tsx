@@ -114,6 +114,30 @@ it("bulk results translate counts, partial failures and mirror pending at comple
   expect(flash).toHaveBeenLastCalledWith("No eligible items to change.");
 });
 
+// Jay 2026-10-14 — 최종을 해제하면 원래의 보류로: 여러 장을 한 번에 풀 때도(S 더블클릭 · ↓) 보류로 돌아간 수를 알린다. 올리는 쪽(최종 지정 ·
+//  보류 해제)의 응답은 세지 않는다.
+it("bulk un-final says how many went back on hold", async () => {
+  let actions!: ReturnType<typeof useGradeStep>;
+  const flash = vi.fn(), reload = vi.fn().mockResolvedValue(undefined);
+  function Harness() { actions = useGradeStep({ canFinalize: () => true, flash, reload }); return null; }
+  act(() => root.render(<Harness />));
+  vi.mocked(api.unfinalize).mockResolvedValueOnce(gen({ id: "was-held", is_held: true })).mockResolvedValueOnce(gen({ id: "was-shared" }));
+  act(() => actions.requestGradeStep([gen({ id: "was-held", is_final: true }), gen({ id: "was-shared", is_final: true })], "double"));
+  await act(async () => actions.confirm());
+  expect(vi.mocked(api.unfinalize).mock.calls.map(([id]) => id)).toEqual(["was-held", "was-shared"]);
+  expect(flash).toHaveBeenLastCalledWith("2 applied · 1 back on hold");
+  setLang("ko");
+  vi.mocked(api.unfinalize).mockResolvedValueOnce(gen({ id: "was-held", is_held: true }));
+  act(() => actions.requestGradeStep([gen({ id: "was-held", is_final: true })], "down"));
+  await act(async () => actions.confirm());
+  expect(flash).toHaveBeenLastCalledWith("1개 적용 · 원래의 보류로 1개");
+  // 올리는 쪽: 보류 해제(↑)의 응답이 보류로 와도(그럴 일은 없지만) 세지 않는다 — 해제의 것만 센다
+  vi.mocked(api.unhold).mockResolvedValueOnce(gen({ id: "h", is_held: true }));
+  act(() => actions.requestGradeStep([gen({ id: "h", is_held: true })], "up"));
+  await act(async () => actions.confirm());
+  expect(flash).toHaveBeenLastCalledWith("1개 적용");
+});
+
 it.each([
   ["onUnpublish", "unpublish", "Removed team sharing.", "Could not remove sharing:"],
   ["onFinalize", "finalize", "Marked as final (gold).", "Could not mark as final:"],

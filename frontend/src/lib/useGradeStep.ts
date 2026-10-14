@@ -72,12 +72,17 @@ export function useGradeStep({ canFinalize, reload, flash }: Args) {
     mirrorPending ||= results.some(
       (result) => result.status === "fulfilled" && !!result.value.mirror_pending,
     );
+    // 최종 해제로 보류가 되살아난 것(최종 전에 보류였던 것 — api.unfinalize, Jay 2026-10-14)은 따로 알린다: 해제했는데 카드가
+    //  보류(빨강)로 보이는 까닭이다. 한 장 해제(onUnfinalize) · 편집 탭의 해제(onReviewSelection 의 release)와 같은 글.
+    const reheld = results.filter((result, index) =>
+      rest[index].action === "unfinalize" && result.status === "fulfilled" && !!(result.value as { is_held?: boolean }).is_held).length;
     setPending(null);
     setBusy(false);
     flash(
       withMirrorPendingNotice(
         (fail ? t("{count}개 적용 · {failed}개 실패/생략") : t("{count}개 적용"))
-          .replace("{count}", String(ok)).replace("{failed}", String(fail)),
+          .replace("{count}", String(ok)).replace("{failed}", String(fail))
+          + (reheld ? " · " + t("원래의 보류로 {count}개").replace("{count}", String(reheld)) : ""),
         { mirror_pending: mirrorPending },
         t,
       ),
