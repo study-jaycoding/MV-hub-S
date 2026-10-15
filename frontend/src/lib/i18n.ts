@@ -707,6 +707,14 @@ const EN: Record<string, string> = {
     "You do not have permission to move these items. Check your sign-in and permissions.",
   "최종본은 두 프로젝트의 검수자(또는 관리자)만 옮길 수 있습니다.":
     "Only reviewers of both projects (or an admin) can move a final item.",
+  "서버가 늦습니다 — 들어갔는지 확인하는 중입니다":
+    "The server is slow — checking whether the request went through",
+  "늦었던 요청 확인: 반영 {confirmed} · 실패 {failed} · 확인 불가 {unknown}":
+    "Slow requests checked: applied {confirmed} · failed {failed} · unconfirmed {unknown}",
+  "확인하지 못한 것은 카드 상태를 보세요.": "For unconfirmed items, check the card state.",
+  "최종 지정이 들어가지 않아 공유도 되돌렸습니다": "Final selection did not go through, so sharing was undone too",
+  "최종 지정이 들어가지 않았습니다(공유는 그대로)": "Final selection did not go through (still shared)",
+  " · {count}개 확인 중": " · {count} being confirmed",
   "팀 서버에는 옮겼지만 이 PC 에는 반영하지 못했습니다. 목록을 새로고침한 뒤 다시 옮겨 주세요.":
     "Moved on the team server, but not on this PC. Refresh the list and move the items again.",
   "대상을 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도해 주세요.":

@@ -20,6 +20,11 @@ vi.mock("../src/lib/modelCatalog", () => ({ useModelDisplayName: () => () => "Te
 vi.mock("../src/lib/modelPolicy", () => ({ modelBlockMessage: () => null }));
 vi.mock("../src/lib/libraryBroadcast", () => ({ postLibraryChanged: vi.fn() }));
 vi.mock("../src/api", () => ({ api: { setReviewState: vi.fn(), unfinalize: vi.fn() } }));
+// 늦은 요청의 원장 확인은 뒤에서 10분까지 돈다 — 시험에서는 부른 것만 본다(Jay 결정 10A)
+vi.mock("../src/lib/shareConfirm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/shareConfirm")>()),
+  watchSlowRequests: vi.fn(),
+}));
 const noop = () => {};
 
 it("open review menu never lets a double event run a bulk grade action behind it", () => {
@@ -319,6 +324,24 @@ it("bulk review rechecks eligible targets and reports partial failure without to
   expect(bulk).toContain("\ndenied");
   expect(bulk).not.toContain("Error:");
   expect(reload).toHaveBeenCalledTimes(1); expect(bumpBoard).toHaveBeenCalledTimes(1);
+});
+
+it("bulk review counts a slow-server answer as 'being confirmed', not failed, and checks it in the background (Jay 10A)", async () => {
+  const { HttpError } = await import("../src/lib/http");
+  const { watchSlowRequests } = await import("../src/lib/shareConfirm");
+  let actions!: ReturnType<typeof useGenerationCardActions>;
+  const flash = vi.fn(), reload = vi.fn().mockResolvedValue(undefined);
+  function Harness() { actions = useGenerationCardActions({ armedAutoTags: new Set(),
+    bumpBoard: noop, canFinalize: () => true, flash, navTab: noop, reload, workspace: { scope: "personal", id: null, name: null } }); return null; }
+  act(() => root.render(<Harness />));
+  const refs = [{ gen_id: "slow", intent_id: "i1", seq: 2 }];
+  vi.mocked(api.setReviewState).mockResolvedValueOnce(gen({ is_held: true }))
+    .mockRejectedValueOnce(new HttpError(502, "502: 서버가 늦습니다", "서버가 늦습니다", { code: "upstream_timeout", refs }));
+  await act(async () => actions.onReviewSelection([gen({ id: "ok" }), gen({ id: "slow" })], "held", () => true));
+  const bulk = vi.mocked(flash).mock.calls.map(([message]) => String(message)).find((message) => message.includes("개 적용"))!;
+  expect(bulk).toContain("1개 적용 · 0개 실패 · 0개 유지 · 1개 확인 중");
+  expect(bulk).not.toContain("\n"); // 늦은 것은 실패의 까닭으로 붙이지 않는다
+  expect(vi.mocked(watchSlowRequests).mock.calls[0][0]).toEqual(refs);
 });
 
 // Jay 2026-10-14 — 편집 탭의 '최종 선택' 해제: 최종인 것은 '공유로'(고른 전환)가 아니라 **해제**로 간다 — 최종 전에 보류였던 것은

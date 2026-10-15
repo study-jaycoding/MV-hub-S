@@ -6,6 +6,7 @@ import { shareableGenerations } from "./generationDisplay";
 import { withMirrorPendingNotice } from "./shareMirrorPending";
 import { t } from "./i18n";
 import { armStateGlow } from "./stateGlow";
+import { SLOW_NOTICE, slowRefs, watchSlowRequests } from "./shareConfirm";
 
 interface UseGenerationShareActionsArgs {
   bumpBoard: () => void;
@@ -36,9 +37,21 @@ export function useGenerationShareActions({
       if (succeeded) postLibraryChanged(); // 관리탭 즉시 재조회(공유→게시 상태 반영)
       return succeeded;
     } catch (e) {
+      const refs = slowRefs(e);
+      if (refs) {
+        // 서버가 늦어 결과 불명 — 실패가 아니라 '확인 중'. 끝은 원장으로 확인하고 알린다(Jay 결정 10A)
+        flash(t(SLOW_NOTICE) + t(" · {count}개 확인 중").replace("{count}", String(refs.length)));
+        watchSlowRequests(refs, flash, afterSettled);
+        return 0;
+      }
       flash(t("공유 실패:") + " " + errorDetail(e)); // "TypeError: Failed to fetch" 같은 앞머리도 뗀다(lib/http 한 곳)
       return 0;
     }
+  };
+  const afterSettled = async () => {
+    postLibraryChanged();
+    await reload();
+    bumpBoard();
   };
 
   const onPublish = async (g: Generation) => {
@@ -77,10 +90,13 @@ export function useGenerationShareActions({
           ? t("'{name}' 폴더에 공유할 항목이 없습니다(내 완료·미공유만).").replace("{name}", () => name)
           : t("'{name}' 폴더 {count}개 팀 공유.").replace("{count}", String(succeeded)).replace("{name}", () => name);
       if (r.message) message += ` ${r.message}`;
+      const confirming = r.confirming ?? [];
+      if (confirming.length) message += t(" · {count}개 확인 중").replace("{count}", String(confirming.length)); // 늦은 서버(Jay 결정 10A)
       if (r.error)
         message += " " + t("중단: {error} (미처리 {count}개 — 다시 실행하면 이어서 공유)")
-          .replace("{count}", String(r.unprocessed)).replace("{error}", () => r.error!);
+          .replace("{count}", String(r.unprocessed)).replace("{error}", () => t(r.error!));
       flash(withMirrorPendingNotice(message, r, t));
+      watchSlowRequests(confirming, flash, afterSettled);
       if (succeeded) postLibraryChanged();
       await reload();
       bumpBoard();

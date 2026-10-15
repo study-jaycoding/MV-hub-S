@@ -213,6 +213,16 @@ def _record_proxy_failure(
         pass
     if should_kick:
         kick_share_state_reconciler()
+    # 공유 서버가 늦어 답을 못 받았다 — 실패가 아니라 결과 불명이다. 화면이 이 원장으로 끝을 확인하게 참조를 실어 올린다(Jay 결정 10A)
+    if _proxy.upstream_timed_out(exc):
+        raise _proxy.slow_with_refs(exc, [repo.intent_ref_entry(ref)]) from exc
+
+
+@router.get("/share/intents/{intent_id}")
+def share_intent_state(intent_id: str, seq: int):
+    """늦은 공유·최종 요청의 끝 — pending | confirmed | failed | unknown(+reason). 이 허브의 원장(지금 계정 DB)만 본다(Jay 결정 10A)."""
+    with _pinned_account_scope():
+        return repo.share_intent_outcome(intent_id, seq)
 
 
 def _mirror_proxy_success(

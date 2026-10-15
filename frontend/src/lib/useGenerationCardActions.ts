@@ -12,6 +12,7 @@ import { withMirrorPendingNotice } from "./shareMirrorPending";
 import { generationIssueFor } from "./generationDisplay";
 import { reviewTargets, type ReviewAction } from "./generationReview";
 import { armStateGlow } from "./stateGlow";
+import { SLOW_NOTICE, slowRefs, watchSlowRequests } from "./shareConfirm";
 
 // 최종 지정·해제·등급 전환이 권한 없음(403)으로 거절되면 최종 권한 목록을 다시 읽게 한다 — 그사이 검수 역할이 회수됐으면
 //  단추가 사라진다(49회차 — 전엔 새로 고침 전까지 같은 단추가 남아 같은 실패를 되풀이했다).
@@ -146,8 +147,23 @@ export function useGenerationCardActions({
       bumpBoard();
       postLibraryChanged();
     } catch (e) {
+      if (slowNotice(e)) return;
       flash(t("공유 해제 실패:") + " " + String(e));
     }
+  };
+
+  // 서버가 늦어 결과 불명이면(Jay 결정 10A) '실패' 대신 '확인 중'으로 알리고 원장으로 끝을 확인한 뒤 다시 읽는다. 그런 오류였으면 true.
+  const afterSettled = async () => {
+    await reload();
+    bumpBoard();
+    postLibraryChanged();
+  };
+  const slowNotice = (error: unknown): boolean => {
+    const refs = slowRefs(error);
+    if (!refs) return false;
+    flash(t(SLOW_NOTICE));
+    watchSlowRequests(refs, flash, afterSettled);
+    return true;
   };
 
   const onReviewSelection = async (
@@ -171,15 +187,20 @@ export function useGenerationCardActions({
       const reheld = release ? results.filter((result) => result.status === "fulfilled" && result.value.is_held).length : 0;
       const succeeded = results.filter((result) => result.status === "fulfilled").length;
       const mirrorPending = results.some((result) => result.status === "fulfilled" && result.value.mirror_pending);
-      const firstError = results.find((result) => result.status === "rejected")?.reason;
+      // 서버가 늦어 결과 불명인 것은 실패로 세지 않고 '확인 중'으로 — 끝은 원장으로 확인한다(Jay 결정 10A)
+      const slow = results.flatMap((result) => (result.status === "rejected" ? [slowRefs(result.reason)] : [])).filter((refs) => refs !== null);
+      const firstError = results.find((result): result is PromiseRejectedResult =>
+        result.status === "rejected" && !slowRefs(result.reason))?.reason;
       const forbidden = results.find((result): result is PromiseRejectedResult =>
         result.status === "rejected" && result.reason instanceof HttpError && result.reason.status === 403);
       if (forbidden) rereadRolesOnForbidden(forbidden.reason);
-      const failed = targets.length - succeeded;
+      const failed = targets.length - succeeded - slow.length;
       const kept = generations.length - targets.length;
       const summary = t("{success}개 적용 · {failed}개 실패 · {kept}개 유지")
         .replace("{success}", String(succeeded)).replace("{failed}", String(failed)).replace("{kept}", String(kept)) +
+        (slow.length ? t(" · {count}개 확인 중").replace("{count}", String(slow.length)) : "") +
         (reheld ? " · " + t("원래의 보류로 {count}개").replace("{count}", String(reheld)) : "");
+      watchSlowRequests(slow.flat(), flash, afterSettled);
       flash(withMirrorPendingNotice(summary, { mirror_pending: mirrorPending }, t) +
         (firstError ? `\n${errorDetail(firstError)}` : "")); // 까닭만 — "TypeError: Failed to fetch"·"Error: 500: …" 앞머리는 뗀다(16회차의 통일에서 빠진 자리)
       if (succeeded) {
@@ -202,6 +223,7 @@ export function useGenerationCardActions({
       await reload();
       postLibraryChanged();
     } catch (e) {
+      if (slowNotice(e)) return;
       rereadRolesOnForbidden(e);
       flash(t("최종 지정 실패:") + " " + String(e));
     }
@@ -217,6 +239,7 @@ export function useGenerationCardActions({
       await reload();
       postLibraryChanged();
     } catch (e) {
+      if (slowNotice(e)) return;
       rereadRolesOnForbidden(e);
       flash(t("최종 해제 실패:") + " " + String(e));
     }

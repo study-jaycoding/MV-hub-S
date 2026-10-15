@@ -389,6 +389,49 @@ def get_share_state_intent(intent_id: str) -> Optional[dict[str, Any]]:
     return dict(row) if row else None
 
 
+def intent_ref_entry(ref: Mapping[str, Any]) -> dict[str, Any]:
+    """화면에 주는 원장 참조 — 어느 카드의 몇 번째 요청인가(GET /api/share/intents/{intent_id}?seq= 로 끝을 묻는다, Jay 결정 10A)."""
+    return {
+        "gen_id": ref.get("local_id") or ref.get("job_anchor") or ref.get("server_generation_id"),
+        "intent_id": ref["intent_id"],
+        "seq": int(ref["intent_seq"]),
+    }
+
+
+def share_intent_outcome(intent_id: str, seq: int) -> dict[str, str]:
+    """늦은 공유·최종 요청의 끝(Jay 결정 10A) — 상태 이름을 옮기지 않고 원인·관측 근거로 가른다(Codex E12~14·4차).
+
+    confirmed = 그 순번의 목표 상태를 서버에서 **관측**했다(로컬 적용·종결 이름과 무관 — 로컬 대상을 잃어 rejected 로 닫혔어도).
+    failed = 서버의 확정 거절(4xx·작성자 불일치) 또는 합성 최종 지정이 들어가지 않았다(공유를 되돌렸으면 reason).
+    pending = 아직 보는 중. unknown = 원장이 없거나 다른 순번(그 뒤 다른 요청), 24시간 지켜봐도 모름, 그 밖의 종결."""
+    row = get_share_state_intent(intent_id)
+    if not row or int(row["intent_seq"]) != int(seq):
+        return {"state": "unknown"}
+    try:
+        observed = json.loads(row.get("observed_state_json") or "null")
+    except (TypeError, ValueError):
+        observed = None
+    if isinstance(observed, dict) and _observed_target(row, observed):
+        return {"state": "confirmed"}
+    if row["status"] not in SHARE_STATE_TERMINAL_STATUSES:
+        return {"state": "pending"}
+    code = str(row.get("last_error_code") or "")
+    if row["status"] == "rejected" and code.startswith("finalize_remote_"):
+        return {"state": "failed", "reason": "composite_final_refused" if row.get("base_shared") else "composite_reverted"}
+    if row["status"] == "rejected" and (code == "remote_blocked" or (code.startswith("remote_4") and code[7:].isdigit())):
+        return {"state": "failed"}
+    return {"state": "unknown"}
+
+
+def _observed_target(row: Mapping[str, Any], observed: Mapping[str, Any]) -> bool:
+    if not isinstance(observed.get("shared"), bool) or not isinstance(observed.get("is_final"), bool):
+        return False
+    if observed["shared"] != bool(row.get("desired_shared")) or observed["is_final"] != bool(row.get("desired_final")):
+        return False
+    desired_held = row.get("desired_held")
+    return desired_held is None or observed.get("is_held") == bool(desired_held)
+
+
 def transition_share_state_intent(
     intent_id: str,
     intent_seq: int,

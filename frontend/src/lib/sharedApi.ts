@@ -1,4 +1,5 @@
 import { jsonBody, jsonFetch } from "./http";
+import type { IntentRef } from "./shareConfirm";
 
 // 공유 서버 이사 공지(C안) — 관리자가 서버를 새 주소로 옮기면 릴리스 폴더의
 // server-location.json 공지를 백엔드가 읽어 이 형태로 알려준다.
@@ -130,6 +131,7 @@ export const sharedApi = {
       published: number;
       blocked: number;
       unprocessed: number;
+      confirming?: IntentRef[]; // 서버가 늦어 결과 불명인 묶음 — 원장으로 끝을 확인한다(Jay 결정 10A, 옛 허브는 없음)
       mirror_pending: boolean;
       message: string | null;
       error: string | null;

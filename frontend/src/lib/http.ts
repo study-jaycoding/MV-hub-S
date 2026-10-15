@@ -94,17 +94,19 @@ export function installApiGate(target: { fetch: typeof fetch } = globalThis): vo
   };
 }
 
-async function responseErrorDetail(res: Response, fallback?: string): Promise<string> {
+// 오류 본문의 글 — 서버가 구조로 준 오류({code, message, …} — 늦은 서버의 원장 참조 등, Jay 결정 10A)는 글은 message 로, 나머지는 info 로 남긴다.
+async function responseErrorDetail(res: Response, fallback?: string): Promise<{ detail: string; info?: Record<string, unknown> }> {
   let detail = fallback || res.statusText;
   try {
     const j = await res.json();
     let d = j?.detail ?? j?.message ?? j;
+    if (d && typeof d === "object" && typeof d.message === "string") return { detail: d.message, info: d };
     if (typeof d !== "string") d = JSON.stringify(d);
     detail = d || detail;
   } catch {
     /* ignore */
   }
-  return detail;
+  return { detail };
 }
 
 // 상태코드를 구조로 보존한 HTTP 오류 — 구서버 폴백(404/405 판별)이 message 문자열
@@ -112,12 +114,14 @@ async function responseErrorDetail(res: Response, fallback?: string): Promise<st
 export class HttpError extends Error {
   status: number;
   detail: string;
+  info?: Record<string, unknown>; // 서버가 구조로 준 오류의 나머지(code·refs …)
 
-  constructor(status: number, message: string, detail = message) {
+  constructor(status: number, message: string, detail = message, info?: Record<string, unknown>) {
     super(message);
     this.name = "HttpError";
     this.status = status;
     this.detail = detail;
+    this.info = info;
   }
 
   // 글로 바꾸면 여느 Error 와 같은 모양이다("Error: 500: …"). 안내를 만드는 곳들이 `String(e)` 의 "Error: " 앞머리만 떼는데, 이름이
@@ -177,8 +181,8 @@ export async function throwHttpError(res: Response, url: string, fallback?: stri
   if (shouldInvalidateAuth(res, url) && dropAuthIfCurrent(sentTokens.has(res) ? sentTokens.get(res)! : authToken)) {
     dispatchAppEvent(APP_EVENTS.authRequired);
   }
-  const detail = await responseErrorDetail(res, fallback);
-  throw new HttpError(res.status, `${res.status}: ${detail}`, detail);
+  const { detail, info } = await responseErrorDetail(res, fallback);
+  throw new HttpError(res.status, `${res.status}: ${detail}`, detail, info);
 }
 
 /**

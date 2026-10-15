@@ -1095,7 +1095,7 @@ def publish_bundle_to_server(
                 token=token,
                 body={"bundle": bundle},
             )
-        except Exception:
+        except Exception as exc:
             # 응답을 못 받은 prepared는 명령을 재생하지 않고 워커가 서버를 관측해야 한다.
             for ref in refs:
                 try:
@@ -1105,6 +1105,9 @@ def publish_bundle_to_server(
                 except Exception:  # noqa: BLE001 — 원래 서버 오류를 가리지 않는다.
                     pass
             kick_share_state_reconciler()
+            if _proxy.upstream_timed_out(exc):
+                # 늦은 서버 — 항목마다 원장 참조를 실어 화면이 '확인 중'으로 세고 끝을 묻게 한다(Jay 결정 10A)
+                raise _proxy.slow_with_refs(exc, [repo.intent_ref_entry(ref) for ref in refs]) from exc
             raise
         if status == 401:
             for ref in refs:
@@ -1333,6 +1336,7 @@ def _publish_folder_pinned(project_id: str, folder_path: str, request: Request) 
         "published": 0,
         "blocked": 0,
         "unprocessed": 0,
+        "confirming": [],
         "mirror_pending": False,
         "message": None,
         "error": None,
@@ -1348,8 +1352,15 @@ def _publish_folder_pinned(project_id: str, folder_path: str, request: Request) 
                 r = publish_to_shared(PublishToSharedIn(gen_ids=chunk), request)
                 accepted = int(r.get("published") or 0)
         except HTTPException as e:
-            out["error"] = str(e.detail)
-            out["unprocessed"] = len(ids) - offset
+            slow = e.detail if isinstance(e.detail, dict) and e.detail.get("code") == "upstream_timeout" else None
+            if slow:
+                # 이 묶음은 서버가 늦어 결과 불명 — '확인 중'(원장 참조)으로 따로 돌려주고, 보내지 않은 뒤 묶음만 미처리로 센다(Jay 결정 10A)
+                out["confirming"] = slow.get("refs") or []
+                out["error"] = slow.get("message")
+                out["unprocessed"] = len(ids) - offset - len(chunk)
+            else:
+                out["error"] = str(e.detail)
+                out["unprocessed"] = len(ids) - offset
             break
         except Exception as e:  # noqa: BLE001 — 배치 1개 실패를 격리해 앞선 성공을 보존
             out["error"] = str(e)

@@ -8,6 +8,7 @@ import { t } from "./i18n";
 import { armStateGlow } from "./stateGlow";
 import { HttpError } from "./http";
 import { rereadRolesOnForbidden } from "./useGenerationCardActions";
+import { slowRefs, watchSlowRequests, type IntentRef } from "./shareConfirm";
 
 interface Args {
   canFinalize: (g: Generation) => boolean;
@@ -75,6 +76,7 @@ export function useGradeStep({ canFinalize, reload, flash }: Args) {
     let ok = 0;
     let fail = 0;
     let mirrorPending = false;
+    const slow: IntentRef[] = []; // 서버가 늦어 확인 중인 요청(Jay 결정 10A)
     // 공유(publish)는 벌크 1회 — 서버가 실제 발행한 개수(published)로 성공/생략 집계.
     const pubIds = ops.filter((o) => o.action === "publish").map((o) => o.gen.id);
     if (pubIds.length) {
@@ -90,8 +92,11 @@ export function useGradeStep({ canFinalize, reload, flash }: Args) {
         //  안 적으면 방금 '공유 해제'로 적어 둔 기록이 남아, 발행한 뒤의 ↑ 가 또 발행이 된다(Codex 3차)
         const all = succeeded === pubIds.length;
         for (const id of pubIds) note(id, all ? { shared: true, is_final: false, is_held: false } : null);
-      } catch {
-        fail += pubIds.length;
+      } catch (error) {
+        // 서버가 늦어 결과 불명이면 실패가 아니라 '확인 중' — 끝은 원장으로 확인한다(Jay 결정 10A)
+        const refs = slowRefs(error);
+        if (refs) slow.push(...refs);
+        else fail += pubIds.length;
         for (const id of pubIds) note(id, null); // 됐는지 모른다
       }
     }
@@ -109,7 +114,12 @@ export function useGradeStep({ canFinalize, reload, flash }: Args) {
       ),
     );
     ok += results.filter((x) => x.status === "fulfilled").length;
-    fail += results.filter((x) => x.status === "rejected").length;
+    for (const result of results) {
+      if (result.status !== "rejected") continue;
+      const refs = slowRefs(result.reason);
+      if (refs) slow.push(...refs);
+      else fail += 1;
+    }
     // 최종·최종 해제가 권한 없음(403)으로 거절됐으면 최종 권한을 다시 읽게 한다 — 카드의 한 장 조작과 같다(49회차 — Codex 검토)
     const forbidden = results.find((result, index): result is PromiseRejectedResult =>
       result.status === "rejected" && (rest[index].action === "finalize" || rest[index].action === "unfinalize") &&
@@ -140,12 +150,17 @@ export function useGradeStep({ canFinalize, reload, flash }: Args) {
       withMirrorPendingNotice(
         (fail ? t("{count}개 적용 · {failed}개 실패/생략") : t("{count}개 적용"))
           .replace("{count}", String(ok)).replace("{failed}", String(fail))
+          + (slow.length ? t(" · {count}개 확인 중").replace("{count}", String(slow.length)) : "")
           + (reheld ? " · " + t("원래의 보류로 {count}개").replace("{count}", String(reheld)) : ""),
         { mirror_pending: mirrorPending },
         t,
       ),
     );
     postLibraryChanged(); // 관리탭 상태(게시/완료) 즉시 재조회
+    watchSlowRequests(slow, flash, async () => {
+      postLibraryChanged();
+      await reload();
+    });
     await reload();
     // 선택은 자동 해제하지 않는다 — 더블을 한 번 더 눌러 최종까지 이어갈 수 있게.
   };

@@ -109,6 +109,30 @@ AUTH_STATE_HEADER = "X-MVHub-Auth-State"
 AUTH_STATE_INVALID = "invalid"
 AUTH_STATE_PRESERVED = "preserved"
 REVIEW_FILTER_HEADER = "X-MVHub-Review-Filter"
+# 공유 서버가 정해진 시간 안에 답하지 않았다(Jay 결정 10A) — 연결 실패와 달리 서버에는 들어갔을 수 있다. 허브 안의 표식(응답 헤더에도 실림).
+UPSTREAM_STATE_HEADER = "X-MVHub-Upstream"
+UPSTREAM_SLOW_MESSAGE = "서버가 늦습니다 — 들어갔는지 확인하는 중입니다"
+
+
+def _timed_out(error: BaseException) -> bool:
+    return isinstance(error, TimeoutError) or isinstance(getattr(error, "reason", None), TimeoutError)
+
+
+def upstream_timed_out(error: BaseException) -> bool:
+    """공유 서버가 시간 안에 답하지 않아 생긴 502 인가(연결 실패·서버 오류와 구분)."""
+    return isinstance(error, HTTPException) and (error.headers or {}).get(UPSTREAM_STATE_HEADER) == "timeout"
+
+
+def slow_with_refs(error: HTTPException, refs: list[dict[str, Any]]) -> HTTPException:
+    """결과 불명(늦은 서버) — 화면이 원장으로 끝을 확인하게 요청별 원장 참조를 싣는다(Jay 결정 10A, Codex E12~14).
+    refs = [{gen_id, intent_id, seq}] · 원장이 없으면 그대로(일반 502)."""
+    if not refs:
+        return error
+    return HTTPException(
+        status_code=502,
+        detail={"code": "upstream_timeout", "message": UPSTREAM_SLOW_MESSAGE, "refs": refs},
+        headers=error.headers,
+    )
 
 # 같은 화면의 여러 요청이 한꺼번에 401을 받아도 /api/auth/me 확인을 한 번만 수행한다.
 # 네트워크 왕복은 짧은 TTL 동안만 공유하고, 판정 불가도 잠깐 캐시해 장애 중 확인 폭주를 막는다.
@@ -275,6 +299,12 @@ def raw_request(
             pass
         return e.code, detail
     except (urllib.error.URLError, TimeoutError, OSError) as e:
+        if _timed_out(e):
+            raise HTTPException(
+                status_code=502,
+                detail=f"공유 서버가 {timeout}초 안에 답하지 않았습니다",
+                headers={UPSTREAM_STATE_HEADER: "timeout"},
+            )
         raise HTTPException(status_code=502, detail=f"공유 서버 연결 실패: {e}")
 
 
@@ -536,6 +566,7 @@ _LOCAL_PREFIXES = (
     "/api/workspaces",     # CLI 워크스페이스
     "/api/stamp/",         # 끌어다 놓은 로컬 파일의 각인 읽기 — 파일이 이 PC 에 있으므로 로컬 처리
     "/api/shared-server/", # 공유 서버 로그인/토큰/주소(이 허브의 로컬 설정)
+    "/api/share/intents/",  # 늦은 공유·최종 요청의 원장 상태(이 허브의 원장 — 서버에는 없다, Jay 결정 10A)
     "/api/registry-helper/",  # 에셋 대장 도우미 훑기 — 이 PC 가 NAS 를 읽어 서버에 올린다(서버 위임 금지)
     # 서버 백업 복사 위치 — 로컬 허브에서 직접 경로를 자동 중계하면 저장된 관리자 토큰이 붙어 출처 검사를 건너뛴다(Codex P1).
     # 로컬은 이 경로를 자기가 받아 '해당 없음/404' 로 끝내고, 중계는 출처·계정 고정을 거치는 /api/shared-server/backup-replica 로만.
