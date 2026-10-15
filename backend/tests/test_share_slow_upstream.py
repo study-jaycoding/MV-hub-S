@@ -15,6 +15,7 @@ import pytest
 from fastapi import BackgroundTasks, HTTPException
 
 from app import db, repo
+from app.models import IntentOutcomesIn
 from app.routers import _proxy, publish, share
 
 
@@ -84,6 +85,17 @@ def test_slow_finalize_answers_with_intent_ref_instead_of_plain_failure(isolated
     assert share.share_intent_state(ref["intent_id"], ref["seq"], ref["scope"]) == {"state": "pending"}  # 원장은 결과 불명으로 남아 있다
     # 그사이 허브 계정이 바뀌었으면 남의 원장을 묻지 않는다(Codex 10A 리뷰)
     assert share.share_intent_state(ref["intent_id"], ref["seq"], "other@example.test") == {"state": "unknown", "reason": "account_changed"}
+    # 여러 참조를 한 번에 — 참조 순서대로, 판정은 한 건짜리와 같다(Codex 63회차: 하나씩이면 묶음 2,000장이 한 바퀴 2,000 요청)
+    body = IntentOutcomesIn(refs=[
+        {"intent_id": ref["intent_id"], "seq": ref["seq"], "scope": ref["scope"]},
+        {"intent_id": ref["intent_id"], "seq": ref["seq"], "scope": "other@example.test"},
+        {"intent_id": "missing", "seq": 1},
+    ])
+    assert share.share_intent_outcomes(body) == [
+        {"intent_id": ref["intent_id"], "seq": ref["seq"], "state": "pending"},
+        {"intent_id": ref["intent_id"], "seq": ref["seq"], "state": "unknown", "reason": "account_changed"},
+        {"intent_id": "missing", "seq": 1, "state": "unknown"},
+    ]
 
 
 def test_plain_502_stays_a_plain_failure(isolated_content_db):

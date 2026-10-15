@@ -163,6 +163,26 @@ class SceneBackupTests(unittest.TestCase):
             self.assertNotIn(res["target_id"], avoid)
             avoid.append(res["target_id"])
 
+    def test_avoided_copy_rows_are_not_serialized(self):
+        # 피할 자리는 사본 글자(씬 전체 JSON)를 만들지 않고 건너뛴다 — 5MB 씬에 피할 자리 100개면 쓰기 잠금 중 직렬화 101번이었다(Codex 63회차).
+        from unittest import mock
+
+        from app.repo import scenes_backup
+
+        repo.sync_scene_backups("u1", "", [{"id": "s1", "data": _scene("s1", "A")}], [])
+        avoid: list[str] = []
+        for _ in range(10):
+            avoid.append(repo.sync_scene_backups(
+                "u1", "", [{"id": "s1", "data": _scene("s1", "옛"), "base_hash": "x"}], [], None, avoid
+            )["results"][0]["target_id"])
+        with mock.patch.object(scenes_backup, "_fork_copy", wraps=scenes_backup._fork_copy) as copies:
+            res = repo.sync_scene_backups(
+                "u1", "", [{"id": "s1", "data": _scene("s1", "옛"), "base_hash": "x"}], [], None, avoid
+            )["results"][0]
+        self.assertEqual(res["status"], "copied")
+        self.assertNotIn(res["target_id"], avoid)
+        self.assertEqual(copies.call_count, 1)
+
     def test_delete_bases_keep_newer_row(self):
         repo.sync_scene_backups("u1", "", [{"id": "s1", "data": _scene("s1", "A")}], [])
         old = self._hash_of()

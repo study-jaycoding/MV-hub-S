@@ -60,11 +60,15 @@ def list_scene_backups(
     return out
 
 
+def _fork_target(sid: str, incoming_hash: str, salt: str = "") -> str:
+    return "bk_" + hashlib.sha256(f"{sid}|{incoming_hash}|{salt}".encode("utf-8")).hexdigest()[:24]
+
+
 def _fork_copy(sid: str, parsed: dict[str, Any], incoming_hash: str, salt: str = "") -> tuple[str, str]:
     """옛 창의 내용을 덮지 않고 남길 사본 — (target_id, data). id 는 원본 id·들어온 지문(·고쳐진 기존 사본 지문)에서 고정 길이로
     정한다(같은 입력을 다시 보내도 같은 사본으로 모이고, 갈래의 갈래도 길이가 늘지 않는다). 카드의 진행 중 생성 표식은 뺀다 —
     새 id 에서는 생성 복구가 씬 id 불일치로 결과를 카드에서 지운다(canvasGenerationRecovery). 결과 id(genIds)는 남긴다."""
-    target = "bk_" + hashlib.sha256(f"{sid}|{incoming_hash}|{salt}".encode("utf-8")).hexdigest()[:24]
+    target = _fork_target(sid, incoming_hash, salt)
     copy = dict(parsed)
     copy["id"] = target
     copy["name"] = f"{parsed.get('name') or '씬'} (옛 창 사본)"
@@ -159,10 +163,13 @@ def sync_scene_backups(
                 # 그사이 다른 창이 올렸다 — 덮지 않고 사본으로. 같은 입력의 사본이 이미 있고 그대로면 그것, 그 뒤 고쳐졌으면 새 사본(Codex E3).
                 salt = ""
                 for _ in range(8 + len(avoid)):  # 피할 자리를 건너뛰는 횟수는 고쳐진 사본 한도(8)를 쓰지 않는다(Codex 1A 6차)
-                    target, copy_data = _fork_copy(sid, parsed, incoming, salt)
+                    target = _fork_target(sid, incoming, salt)
                     existing = _row_hash(conn, owner_uid, project_id, target)
-                    if target not in avoid and (existing is None or existing == _hash(copy_data)):
-                        break
+                    # 피할 자리는 사본 글자를 만들지 않고 건너뛴다 — 5MB 씬이면 자리마다 전체 직렬화였다(쓰기 잠금 중, Codex 63회차)
+                    if target not in avoid:
+                        target, copy_data = _fork_copy(sid, parsed, incoming, salt)
+                        if existing is None or existing == _hash(copy_data):
+                            break
                     salt = existing or target  # 고쳐진 사본·피할 자리 — 그 값을 섞어 다음 자리로(같은 입력이면 같은 자리)
                 else:
                     raise ValueError(f"사본 자리를 정하지 못함: {sid}")

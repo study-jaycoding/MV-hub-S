@@ -181,6 +181,7 @@ class ProxyOwnershipTests(unittest.TestCase):
             "/api/registry-helper/scan",  # 에셋 대장 도우미 — 이 PC 가 NAS 를 읽는다(서버로 보내면 서버가 훑으려 든다)
             "/api/registry-helper/status",
             "/api/share/intents/i1",  # 늦은 공유·최종 요청의 원장 — 이 허브에만 있다(Jay 결정 10A)
+            "/api/share/intents/outcomes",  # 같은 원장을 한 번에(Codex 63회차)
         ):
             self.assertTrue(is_local_path(p), f"{p} 는 로컬로 들어와 핸들러가 재분기해야 한다(서버 오프록시 금지)")
 

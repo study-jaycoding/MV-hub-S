@@ -98,8 +98,9 @@ let holdNoticeShown = false; // 지문을 못 구해 보류한 안내는 범위�
 //  처음 알림에 모든 씬을 받은 것으로 세면 보내던 정상 응답까지 버린다(Codex 1A 3차 P2).
 let knownText = new Map<string, string>();
 let externalSeq = new Map<string, number>(); // 씬마다 다른 탭에서 받은 횟수 — 보내는 사이 받았는지 응답 때 본다
+// 확정본에 없는 씬(지운 것)은 뺀다 — 남기면 지운 큰 씬의 글자를 범위가 바뀔 때까지 쥐고 있다(Codex 63회차)
 const noteSeenTexts = (): void => {
-  for (const s of listPersistedSceneTexts(null)) knownText.set(s.id, s.text);
+  knownText = new Map(listPersistedSceneTexts(null).map((s) => [s.id, s.text]));
 };
 
 function readLedgerEntry(scope: string, id: string): LedgerEntry | null {
@@ -172,7 +173,10 @@ async function onExternalScenes(): Promise<void> {
   const scope = ns();
   if (scope !== curScope) return;
   const changed: { id: string; text: string }[] = [];
-  for (const s of listPersistedSceneTexts(null)) {
+  const persisted = listPersistedSceneTexts(null);
+  const present = new Set(persisted.map((s) => s.id));
+  for (const id of knownText.keys()) if (!present.has(id)) knownText.delete(id); // 다른 탭이 지운 씬(noteSeenTexts 와 같은 까닭)
+  for (const s of persisted) {
     // 이 탭이 본 마지막 글자(자기 확정 포함 — noteSeenTexts)와 같으면 다른 탭이 바꾼 씬이 아니다
     if (knownText.get(s.id) === s.text) continue;
     knownText.set(s.id, s.text);

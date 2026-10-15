@@ -27,7 +27,7 @@ from ..deps import (
     require_project_role,
     require_view_generation,
 )
-from ..models import FinalReviewIn, GenerationOut, ImportIn, PublishIn
+from ..models import FinalReviewIn, GenerationOut, ImportIn, IntentOutcomesIn, PublishIn
 from ..services.async_tools import to_thread_non_abandon
 from ..services.event_journal import journal_audit_event
 from ..services.media_preservation import preserve_generation_now
@@ -226,6 +226,19 @@ def share_intent_state(intent_id: str, seq: int, scope: str | None = None):
         if scope is not None and scope != (active_account.account_key() or ""):
             return {"state": "unknown", "reason": "account_changed"}
         return repo.share_intent_outcome(intent_id, seq)
+
+
+@router.post("/share/intents/outcomes")
+def share_intent_outcomes(body: IntentOutcomesIn):
+    """여러 늦은 요청의 끝을 한 번에 — 참조 순서대로 {intent_id, seq, state, reason?}. 판정은 위 한 건짜리와 같다(Codex 63회차)."""
+    with _pinned_account_scope():
+        account = active_account.account_key() or ""
+        return [
+            {"intent_id": ref.intent_id, "seq": ref.seq,
+             **({"state": "unknown", "reason": "account_changed"} if ref.scope is not None and ref.scope != account
+                else repo.share_intent_outcome(ref.intent_id, ref.seq))}
+            for ref in body.refs
+        ]
 
 
 def _mirror_proxy_success(

@@ -358,6 +358,18 @@ class PublishIn(BaseModel):
     shared_by: Optional[str] = None  # 없으면 기본 작업자
 
 
+class IntentRefIn(BaseModel):
+    intent_id: str
+    seq: int
+    scope: Optional[str] = None
+
+
+class IntentOutcomesIn(BaseModel):
+    """늦은 요청의 끝을 한 번에 묻는다(Jay 결정 10A — 묶음 발행 2,000장이면 하나씩 묻기는 한 바퀴 2,000 요청, Codex 63회차)."""
+
+    refs: list[IntentRefIn] = Field(default_factory=list, max_length=500)
+
+
 class FinalReviewIn(BaseModel):
     """최종 카드 검토 메뉴의 명시적인 목적 상태."""
 

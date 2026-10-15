@@ -18,14 +18,21 @@ export function slowRefs(error: unknown): IntentRef[] | null {
 
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 
-// 한 번 묻기 — 응답·본문이 멈춰도 기한(ms)에 끊고 null(다음 차례에 다시). 허브가 멎으면 기다림이 기한을 넘지 않게(Codex 10A 리뷰).
-async function ask(ref: IntentRef, ms: number): Promise<Outcome | null> {
+const ASK_BATCH = 500; // 허브 상한(models.IntentOutcomesIn)과 같다
+type Answer = Outcome & { intent_id: string; seq: number };
+
+// 한 번 묻기(참조 여러 개를 한 요청으로 — 2,000장이면 하나씩은 한 바퀴 2,000 요청이었다, Codex 63회차) — 응답·본문이 멈춰도 기한(ms)에
+//  끊고 null(다음 차례에 다시). 허브가 멎으면 기다림이 기한을 넘지 않게(Codex 10A 리뷰).
+async function ask(refs: IntentRef[], ms: number): Promise<Answer[] | null> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const scope = ref.scope === undefined ? "" : `&scope=${encodeURIComponent(ref.scope)}`;
   try {
-    return await Promise.race([
-      jsonFetch<Outcome>(`/api/share/intents/${encodeURIComponent(ref.intent_id)}?seq=${ref.seq}${scope}`, { signal: controller.signal }),
+    const answers = await Promise.race([
+      jsonFetch<Answer[]>("/api/share/intents/outcomes", {
+        method: "POST",
+        body: JSON.stringify({ refs: refs.map(({ intent_id, seq, scope }) => ({ intent_id, seq, scope })) }),
+        signal: controller.signal,
+      }),
       new Promise<null>((done) => {
         timer = setTimeout(() => {
           controller.abort();
@@ -33,6 +40,7 @@ async function ask(ref: IntentRef, ms: number): Promise<Outcome | null> {
         }, ms);
       }),
     ]);
+    return Array.isArray(answers) ? answers : null;
   } catch {
     return null;
   } finally {
@@ -46,14 +54,17 @@ export async function settleIntents(refs: IntentRef[], pollMs = 5000, limitMs = 
   const counts: SettledCounts = { confirmed: 0, failed: 0, unknown: 0, reasons: [] };
   const until = Date.now() + limitMs;
   for (;;) {
-    for (const [key, ref] of [...left]) {
+    const waiting = [...left.values()];
+    for (let i = 0; i < waiting.length; i += ASK_BATCH) {
       const remaining = until - Date.now();
       if (remaining <= 0) break;
-      const outcome = await ask(ref, Math.min(15_000, remaining));
-      if (!outcome || outcome.state === "pending") continue;
-      left.delete(key);
-      counts[outcome.state] += 1;
-      if (outcome.reason) counts.reasons.push(outcome.reason);
+      for (const outcome of (await ask(waiting.slice(i, i + ASK_BATCH), Math.min(15_000, remaining))) ?? []) {
+        const key = `${outcome.intent_id}:${outcome.seq}`;
+        if (outcome.state === "pending" || !left.has(key)) continue;
+        left.delete(key);
+        counts[outcome.state] += 1;
+        if (outcome.reason) counts.reasons.push(outcome.reason);
+      }
     }
     if (!left.size || Date.now() >= until) break;
     await sleep(Math.min(pollMs, until - Date.now())); // 기다림도 기한을 넘지 않게(Codex 10A 재검토)
