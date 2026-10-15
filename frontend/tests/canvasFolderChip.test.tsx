@@ -252,14 +252,6 @@ it("the chip's rules add no compositing layers — no backdrop-filter, mask, wil
   }
 });
 
-// 72회차 실측 — 캔버스 위 폴더 창의 막이 뒤 캔버스를 흐리게 다시 그리느라 창이 늦게 떴다(처음 열 때 195→69ms). 캔버스 위에서만 흐림을 뺀다(Jay 10-16 1A).
-it("the folder window's backdrop over the canvas dims without blurring", () => {
-  const css = readFileSync(new NodeURL("../src/styles/app-shell.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  const rule = (selector: string) => [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(([, s]) => s.trim() === selector)?.[2] ?? "";
-  expect(rule(".folder-peek-catcher")).toMatch(/backdrop-filter:\s*blur/); // 목록 탭 위는 그대로(10-13)
-  expect(rule(".folder-peek-catcher.over-canvas")).toMatch(/backdrop-filter:\s*none/);
-});
-
 // 65회차 실측 — 안 보이는(opacity 0) 호버 단추에 흐림이 늘 걸려 카드마다 레이어 ~8개, 그 위의 이름표까지 레이어가 됐다(88% 끌기 Layerize 약 2.8배).
 //  흐림은 보일 때(호버·초점)만 건다.
 it("hover buttons blur only while shown — the always-on rule has no backdrop-filter", () => {

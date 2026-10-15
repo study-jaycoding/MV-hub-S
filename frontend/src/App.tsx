@@ -2627,8 +2627,7 @@ export default function App() {
   //  격자·툴바·선택 막대라, 창에서도 워크스페이스처럼 조작한다. 창 안 키 입력은 캔버스 전역 단축키(c·Delete·y…)로 새지 않는다.
   const renderFolderPeek = (title: string, tip: string, close: () => void) => (
     <>
-      {/* 캔버스 위에서는 흐림 없이 어둡게만(Jay 10-16 1A — app-shell.css .over-canvas) */}
-      <div className={!editOpen && filters.tab === "compose" ? "folder-peek-catcher over-canvas" : "folder-peek-catcher"} onMouseDown={close} />
+      <div className="folder-peek-catcher" onMouseDown={close} />
       <section
         ref={folderPeekRef}
         className="folder-peek"

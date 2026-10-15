@@ -2134,8 +2134,6 @@ it.each(["my", "compose"])("App %s: 폴더 창이 뜬 동안 상단바와 뒤 �
   expect(body().hasAttribute("inert")).toBe(true); // 사이드바·툴바·보드(본문) 전부 — Tab 으로 닿지 않는다
   expect(peekWindow()!.closest("[inert]")).toBeNull(); // 창은 잠긴 곳 밖에 그린다(캔버스의 창은 전에 main 안이었다)
   expect(document.querySelector(".folder-peek-catcher")!.closest("[inert]")).toBeNull(); // 막도 — 눌러 닫을 수 있어야 한다
-  // 캔버스 위의 막만 흐림을 뺀다(Jay 10-16 1A) — 목록 탭 위는 10-13 결정대로 흐림
-  expect(document.querySelector(".folder-peek-catcher")!.classList.contains("over-canvas")).toBe(tab === "compose");
   expect(document.activeElement).toBe(peekWindow()); // 잠긴 자리에 있던 초점은 창이 가져간다
   expect(document.querySelector('.sl-dockbar [contenteditable="true"]')!.closest("[inert]")).toBeNull();
   act(() => { document.querySelector(".folder-peek-catcher")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });

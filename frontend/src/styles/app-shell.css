@@ -781,9 +781,6 @@
 /* 바깥 막 — 모아보기(.reel-backdrop)와 같은 어둡기·흐림(Jay 2026-10-13: 뒤가 그대로 흐려 보이게). 막은 창의 **형제**라 창 안에
    position:fixed 로 띄운 것의 기준이 되지 않는다(창을 감싼 요소에 backdrop-filter 를 걸면 그 안의 fixed 가 어긋난다 — scene.css 의 .scene-varpop-backdrop 주석). */
 .folder-peek-catcher { position: fixed; inset: 0; z-index: 150; background: rgba(4, 5, 8, 0.6); backdrop-filter: blur(4px); }
-/* 캔버스 위에서는 흐림을 빼고 어둡게만(Jay 2026-10-16 1A) — 뒤 캔버스(카드 레이어 수백)를 흐리게 다시 그리느라 창이 늦게 떴다
-   (72회차 격리 실측: 창이 보이기까지 중앙 69→58ms · 처음 열 때 195→69ms · 새 래스터 144→21). 목록 탭 위는 10-13 결정대로 흐림. */
-.folder-peek-catcher.over-canvas { backdrop-filter: none; }
 /* 창 뒤에 남기는 도구 줄 사본(App) — 자리만 차지하는 그림이다. 감싼 칸이 줄 배치를 바꾸지 않게 한다. */
 .lib-toolbar-behind { display: contents; }
 .folder-peek {
