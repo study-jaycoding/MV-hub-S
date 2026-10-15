@@ -621,12 +621,20 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     tagPanelOpen,
   });
 
+  // 코멘트 창에 보내지 않은 글이 있으면 다른 파일·프로젝트로 가기 전에 묻는다(Jay 결정 5A) — 창은 파일마다 다시 그려져, 묻지 않고
+  //  옮기면 쓰던 글이 사라졌다(65회차 실측). 창 닫기·새로 고침은 6A(holdUnload)가 묻는다.
+  const commentUnsentRef = useRef(false);
+  const onCommentUnsent = useCallback((unsent: boolean) => { commentUnsentRef.current = unsent; }, []);
+  const canLeaveComment = () => !commentUnsentRef.current || window.confirm(
+    t("보내지 않은 코멘트가 있습니다 — '{name}' 에 쓰던 글이 사라집니다. 버리고 옮길까요?").replace("{name}", commentPath?.split("/").pop() || ""),
+  );
   const { openComments, refreshComments, sendComment, editComment, delComment } = useAssetCommentActions({
     project,
     commentPath,
     setCommentPath,
     setComments,
     reconcile,
+    canLeaveComment,
   });
   useAssetBroadcastSync({
     project,
@@ -792,6 +800,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             }
             value={project}
             onChange={(e) => {
+              if (!canLeaveComment()) return; // 머무르면 선택 상자는 지금 프로젝트로 돌아간다(제어되는 값)
               setProject(e.target.value);
               setDir(""); // 사용자가 프로젝트를 바꾸면 루트로
             }}
@@ -952,6 +961,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
               size={cmtSize}
               onHeadMouseDown={onCmtHeadDown}
               onClose={() => setCommentPath(null)}
+              onUnsentChange={onCommentUnsent}
               onSend={sendComment}
               onEdit={editComment}
               onDelete={delComment}

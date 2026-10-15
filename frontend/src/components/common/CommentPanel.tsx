@@ -64,6 +64,7 @@ export function CommentPanel<T extends CommentPanelItem>({
   onDelete,
   onSeen,
   targetKey,
+  onUnsentChange,
 }: {
   comments: T[];
   label: string;
@@ -81,6 +82,8 @@ export function CommentPanel<T extends CommentPanelItem>({
   onSeen?: (comment: T) => void;
   // 패널이 보고 있는 대상 — 패널을 다시 만들지 않고 대상만 바꾸는 쪽(생성물 패널은 고른 카드를 따라간다)이 준다
   targetKey?: string;
+  // 보내지 않은 글이 생기거나 없어질 때 — 패널을 대상마다 다시 만드는 쪽(Assets)이 대상을 바꾸기 전에 묻는다(Jay 결정 5A)
+  onUnsentChange?: (unsent: boolean) => void;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [replyingId, setReplyingId] = useState<string | null>(null);
@@ -126,10 +129,15 @@ export function CommentPanel<T extends CommentPanelItem>({
     const panel = document.querySelector(`[data-cmt-hold="${holdName}"]`);
     const inputs = panel ? [...panel.querySelectorAll<HTMLInputElement>('input[name="c"], input[name="r"], input[name="e"]')] : [];
     // 고치는 칸(data-original 있음)은 다 지운 것도 고친 것이다
-    holdUnload(holdName, inputs.some((input) => input.dataset.original !== undefined ? input.value !== input.dataset.original : input.value.trim() !== ""));
+    const unsent = inputs.some((input) => input.dataset.original !== undefined ? input.value !== input.dataset.original : input.value.trim() !== "");
+    holdUnload(holdName, unsent);
+    onUnsentChange?.(unsent);
   };
   useEffect(syncUnsent); // 답글·수정 칸이 열리고 닫힐 때(그린 뒤)
-  useEffect(() => () => holdUnload(holdName, false), [holdName]);
+  useEffect(() => () => {
+    holdUnload(holdName, false);
+    onUnsentChange?.(false);
+  }, [holdName, onUnsentChange]);
   const submitFrom = async (input: HTMLInputElement, send: (text: string) => Promise<boolean>, done?: () => void) => {
     const text = input.value;
     if (!text.trim() || sendingRef.current.has(input)) return;

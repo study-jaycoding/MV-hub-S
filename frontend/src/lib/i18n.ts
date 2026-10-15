@@ -403,6 +403,8 @@ const EN: Record<string, string> = {
   "알림 센터": "Notifications",
   "전체 알림": "All notifications",
   "코멘트": "Comments",
+  "보내지 않은 코멘트가 있습니다 — '{name}' 에 쓰던 글이 사라집니다. 버리고 옮길까요?":
+    "You have an unsent comment — what you wrote on '{name}' will be lost. Discard it and move on?",
   "시스템": "System",
   "안읽음": "Unread",
   "읽음": "Read",
