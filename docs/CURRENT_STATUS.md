@@ -41,7 +41,7 @@ owner: Claude(통합) · 'MV hub'·'MV hub 편집' 세션(구현) · reviewer: C
 owner: Claude · reviewer: Codex · status: 검증 중(main 미병합) · updated: 2026-10-15 18시 · 기준: dev `65d23e9c`(통합 `018dd3e4` 에 포함) ·
 확인 주소: 통합 실사용 `test_integration.bat` → 127.0.0.1:5173(dev 와 한 번에 하나) · 격리 5175 ·
 touched_paths: `frontend/src/lib/keyGate.ts` · `frontend/src/components/timeline/`(EditTab·EditPool·EditCard) · ThumbnailGrid·FolderCardGrid·SceneBoard ·
-`test_dev.bat` · [status/조작점검_2026-10-10.md](status/조작점검_2026-10-10.md)(68회차까지 — 정본) · [status/공유서버_배포준비_2026-10-15.md](status/공유서버_배포준비_2026-10-15.md)
+`test_dev.bat` · [status/조작점검_2026-10-10.md](status/조작점검_2026-10-10.md)(72회차까지 — 정본) · [status/공유서버_배포준비_2026-10-15.md](status/공유서버_배포준비_2026-10-15.md)
 
 - **10-15 에 든 것**: Jay 결정 8A·7A·11A·14A·5A · 캔버스 카드 우클릭 = 폴더 보기 · 편집 풀 카드 = 라이브러리 카드 · 덮개 창·메뉴를 닫는
   우클릭·휠 클릭(67·68회차, 68회차는 새 규칙의 첫 묶음 검토 — Codex 승인) · 통합 실사용 모드(`8d3f6d4c` + 통합 폴더의 Git 제외
@@ -53,7 +53,10 @@ touched_paths: `frontend/src/lib/keyGate.ts` · `frontend/src/components/timelin
   ③ 공유 서버 배포 준비 — Jay 답 1B 2A 3A 4B 5A 6A 7A 8B, **서버 백업 사본(Jay 복사) 대기** → 실제 데이터 연습·게이트·섞인 판 측정 → 저녁 날짜 재확인
   ④ **배포 준비(Jay 20시)**: 지연 둘·풀 빨간 표시는 고침(69회차) · 사전 배포 검사 통과(`25700780`) · Codex 묶음 리뷰 승인(P2 둘 `f194b70b` 고침) ·
   Jay 21시 "'낮음'도 배포 전에 고친다" → 70회차에서 '낮음' 넷 + 새 지적 고침(dev `daca7310`, Codex 승인 — [조작점검 '70회차'](status/조작점검_2026-10-10.md)) ·
-  71회차 실측 중(씬 전환 썸네일 한 프레임 검정·편집 탭 재생·Resolve 요청 출처) — 그 뒤 최종 후보 SHA 로 검사 1회 → Jay 확인 → main
+  71회차 다시 연 씬 썸네일 쥐기(`b32d7898`·`ae985b78`) · 72회차 넓은 재실측 배포 막는 것 0 · MCP .4 배포 전 P1·P2 전부 고침(dev `81dd6d5f`..`b80133ad`,
+  Codex 재리뷰 승인 — [조작점검 '71·72회차'·'MCP .4'](status/조작점검_2026-10-10.md)) · 남은 것: 73회차(큰 씬을 떠날 때 lazy 그림 40장 — 변형 실측) ·
+  Jay 답 둘(폴더 창 덮개 흐림·에피소드 빈 격자) — 그 뒤 최종 후보 SHA 로 전체 시험·사전 배포 검사 1회 → Jay 확인 → main.
+  리졸브 보내기 속도는 별도 작업실 `MV-hub-S-wt-rsv`(다음 배포): 1부 `d8ac6694` Codex 승인·통합실만 · 2부(MoveFolders 로 깨진 층만) 설계 v2 Codex 검토 중
   ⑤ 1시간마다 경과 보고는 Claude 세션의 반복 — 이어받으면 따로 정한다.
 - [문서·운영](status/문서정리_운영안_2026-10-14.md)·[번들](status/번들최적화_2026-10-14.md).
 
