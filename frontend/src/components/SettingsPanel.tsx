@@ -630,9 +630,13 @@ export function SettingsPanel({
           </SettingsGroup>
 
           {onOpenMcp && <section className="settings-section">
-            <h4>{t("AI·MCP 연결")}</h4>
-            <button className="settings-action" onClick={() => { onClose(); onOpenMcp(); }}>{t("AI·MCP 연결 열기")}</button>
-            <p className="settings-desc">{t("이 PC의 로컬 앱에서 Codex·Claude 등록 안내, 연결 확인과 생성 실행 허용을 관리합니다.")}</p>
+            <h4>{t("MV·MCP 연결")}</h4>
+            <button className="settings-action" onClick={() => { onClose(); onOpenMcp(); }}>{t("MV·MCP 연결 열기")}</button>
+            {/* 다른 항목과 같은 설명 모양(한 줄 요약 + 더보기) — 전에는 스타일 없는 <p> 라 글자가 크고 밝았다(Jay 2026-10-16) */}
+            <SettingsDescription summary={t("Codex·Claude Code 등록과 생성 실행 허용을 관리합니다.")}>
+              <p>{t("이 PC의 로컬 앱에서 Codex·Claude Code 등록 안내, 연결 확인과 생성 실행 허용을 관리합니다.")}</p>
+              <p>{t("한 번 연결하면 LLM이 MV Hub의 자료를 조회하고, 요청한 워크스페이스·폴더에 생성합니다.")}</p>
+            </SettingsDescription>
           </section>}
 
           <section className="settings-section">
