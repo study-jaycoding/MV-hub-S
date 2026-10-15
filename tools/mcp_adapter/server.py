@@ -48,7 +48,7 @@ MAX_PREVIEW = 512 * 1024
 REQUEST_TIMEOUT = 30
 RESULT_TIMEOUT = 90
 RESULT_UI_URI = "ui://mvhub/result.html"
-ADAPTER_VERSION = "2026.10.15.2"
+ADAPTER_VERSION = "2026.10.15.3"
 HUB_FEATURES = {"generation_result", "batch_results", "history_cursor", "plan_estimate"}
 ERRORS = {
     "invalid_input": ("입력 형식을 확인하세요.", False, "check_arguments"),
@@ -321,8 +321,8 @@ def render_result(result: dict, directory: Path | None = None) -> CallToolResult
                 result["display"] = write_result_display(data, directory, result.get("card_text", ""))
             except (OSError, ToolError):
                 result["display"] = {"status": "error", "reason": "표시 파일을 저장하지 못했습니다. 생성 결과는 유지됩니다. 재생성하지 마세요."}
-    # Host-only compatibility export; local paths must not become model-facing image links.
-    meta = {"display": result.pop("display")} if "display" in result else None
+    # Explicit Codex export needs a model-visible reference; retain metadata compatibility.
+    meta = {"display": result["display"]} if "display" in result else None
     blocks.insert(0, TextContent(type="text", text=json.dumps(result, ensure_ascii=False)))
     if result.get("card_text"):
         blocks.append(TextContent(type="text", text=result["card_text"]))
@@ -499,8 +499,10 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             "read_context(kind='generations')의 next_cursor를 다음 조회에 사용하며 null이 아니면 더 조회할 수 있습니다. "
             "pagination_unavailable이면 전체 목록을 확인했다고 말하지 말고 정렬 정보 누락으로 다음 페이지를 확인하지 못했다고 알리세요. "
             "비용이 필요하면 estimate_plan을 선택적으로 호출하세요. null을 0으로 취급하지 마세요. "
-            "네이티브 이미지 또는 MCP Apps 결과 화면을 사용하세요. 이미지를 받으려고 로컬 표시 폴더를 만들 필요가 없습니다. "
-            "도구 결과에 나온 이미지를 최종 답변에 다시 삽입하지 말고 완료 내용을 짧게 안내하세요. "
+            "Codex에서는 show_results·get_result·get_generation에 display_directory로 이미 존재하는 이 작업 소유 로컬 폴더의 절대경로를 지정하세요. "
+            "설치본·backend/data·NAS 폴더를 쓰지 마세요. 반환된 display.status가 ready인 각 display.reference를 최종 답변에 한 번씩 그대로 포함하세요. "
+            "묶음 결과는 items의 display를 확인하세요. 이는 PC·모바일 대화 표시용이며 ImageContent도 유지됩니다. "
+            "그 밖의 클라이언트는 display_directory를 생략하고 네이티브 이미지 또는 MCP Apps 결과 화면을 사용하며 답변에 이미지를 중복 삽입하지 마세요. "
             "사용자가 파일·다운로드를 요청하지 않으면 URL·PC 경로·HTML 링크를 나열하지 마세요. 로컬 HTML을 Markdown 이미지로 삽입하지 마세요. "
             "네이티브 표시를 지원하지 않으면 앱의 지원되는 이미지 표시 도구를 사용하고, 그것도 불가하면 표시 제한을 알리세요. "
             "이미지 수신은 실제 화면 표시 확인이 아닙니다. 확인하지 않은 표시 성공을 주장하지 마세요. "
@@ -594,7 +596,7 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
 
     @tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=True))
     def execute_generation_plan(plan_id: Annotated[str, Field(min_length=1, max_length=200)]) -> dict[str, Any]:
-        """명확한 사용자 생성 요청에 따라 계획을 실행합니다. 크레딧이 소모될 수 있습니다. 실행 전 조건·위치를, 응답 뒤 presentation.message를 안내하세요. 영속 연결은 wait_results로 기다린 뒤 show_results로 결과를 한 번 표시합니다. 이미지는 도구의 네이티브 표시를 사용하며 답변에 중복 삽입하지 마세요. 불명확한 응답을 자동 재시도하지 마세요."""
+        """명확한 사용자 생성 요청에 따라 계획을 실행합니다. 크레딧이 소모될 수 있습니다. 실행 전 조건·위치를, 응답 뒤 presentation.message를 안내하세요. wait_results로 기다린 뒤 show_results로 결과를 표시합니다. Codex는 display_directory를 지정해 받은 display.reference를 최종 답변에 포함하고, 다른 앱은 네이티브 표시를 사용합니다. 불명확한 응답을 자동 재시도하지 마세요."""
         return present_result(broker.action("execute_generation_plan", {"plan_id": plan_id}))
 
     if profile:
@@ -609,9 +611,9 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             item_index: Annotated[int, Field(ge=0, lt=20)] = 0,
             asset_index: Annotated[int, Field(ge=0, lt=100)] = 0,
             wait_seconds: Annotated[int, Field(ge=0, le=25, strict=True)] = 0,
-            display_directory: Annotated[str | None, Field(min_length=1, max_length=1024, description="구형 파일 내보내기 호환용. 일반 이미지 조회에서는 생략하세요.")] = None,
+            display_directory: Annotated[str | None, Field(min_length=1, max_length=1024, description="Codex PC·모바일 대화 표시용. 이미 존재하는 이 작업 소유 로컬 폴더 절대경로. 다른 앱은 생략.")] = None,
         ) -> CallToolResult:
-            """생성·과금 없이 선택 항목의 상태 카드와 네이티브 이미지를 반환합니다. MCP Apps 지원 앱은 결과 화면을 엽니다. 도구 이미지를 최종 답변에 중복 삽입하거나 URL·PC 경로·HTML 링크를 나열하지 마세요. 표시 불가 시 지원되는 이미지 표시 도구를 사용하세요. scope=item은 전체 계획 완료가 아닙니다. wait_seconds=25로 최대 25초 완료 대기합니다. 재생성하지 마세요. 이미지 수신과 화면 표시 확인은 별개입니다. 영상은 기존 포스터만 반환합니다."""
+            """생성·과금 없이 선택 항목의 상태 카드와 네이티브 이미지를 반환합니다. Codex는 display_directory를 지정하고 display.status=ready인 display.reference를 최종 답변에 그대로 한 번 포함하세요. 일반 URL·PC 경로·HTML Markdown 링크로 바꾸지 마세요. 다른 앱은 폴더 없이 네이티브 이미지 또는 MCP Apps를 사용합니다. scope=item은 전체 계획 완료가 아닙니다. wait_seconds=25로 최대 25초 기다립니다. 재생성하지 마세요. 파일 준비와 화면 표시 확인은 별개입니다. 영상은 기존 포스터만 반환합니다."""
             directory = validate_display_directory(display_directory) if display_directory is not None else None
             args = {"plan_id": plan_id, "item_index": item_index, "asset_index": asset_index}
             if wait_seconds:
@@ -619,17 +621,20 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             result = present_result(broker.action("get_result", args))
             return render_result(result, directory)
 
-        @tool(meta={"ui": {"resourceUri": RESULT_UI_URI}}, annotations=read_only)
+        @tool(meta={"ui": {"resourceUri": RESULT_UI_URI}},
+              annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
         def get_generation(
             generation_id: UUID,
             workspace_scope: Literal["personal", "team"],
             workspace_id: Annotated[str | None, Field(min_length=1, max_length=200)] = None,
             asset_index: Annotated[int, Field(ge=0, lt=100)] = 0,
+            display_directory: Annotated[str | None, Field(min_length=1, max_length=1024, description="Codex PC·모바일 대화 표시용. 이미 존재하는 이 작업 소유 로컬 폴더 절대경로. 다른 앱은 생략.")] = None,
         ) -> CallToolResult:
-            """다른 LLM에서 만든 본인 생성물도 ID로 다시 표시합니다. read_context의 실제 ID와 공간을 사용하세요. 생성·과금 없이 기존 이미지 또는 영상 포스터를 반환하며 URL·PC 경로·중복 이미지를 답변에 넣지 마세요."""
+            """다른 LLM에서 만든 본인 생성물도 ID로 다시 표시합니다. read_context의 실제 ID와 공간을 사용하세요. 생성·과금 없이 기존 이미지 또는 영상 포스터를 반환합니다. Codex는 display_directory를 지정하고 ready인 display.reference를 최종 답변에 한 번 그대로 포함하세요. 다른 앱은 폴더를 생략하고 네이티브 표시를 사용합니다. 파일 준비는 화면 표시 확인이 아닙니다."""
+            directory = validate_display_directory(display_directory) if display_directory is not None else None
             return render_result(present_result(broker.action("get_generation", {
                 "generation_id": str(generation_id), "workspace_scope": workspace_scope,
-                "workspace_id": workspace_id, "asset_index": asset_index})))
+                "workspace_id": workspace_id, "asset_index": asset_index})), directory)
 
         @tool(annotations=read_only)
         def wait_results(
@@ -640,13 +645,16 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             """한 계획의 1~8개 항목을 한 대기 예산으로 확인합니다. 이미지·화면을 만들지 않습니다. all_terminal이면 대기를 멈추고 show_results로 표시하세요. all_done과 구분하며 실패를 재생성하지 마세요. 단계가 바뀔 때만 진행을 안내하세요."""
             return broker.action("wait_results", {"plan_id": str(plan_id), "item_indexes": item_indexes, "wait_seconds": wait_seconds})
 
-        @tool(meta={"ui": {"resourceUri": RESULT_UI_URI}}, annotations=read_only)
+        @tool(meta={"ui": {"resourceUri": RESULT_UI_URI}},
+              annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
         def show_results(
             plan_id: UUID,
             item_indexes: Annotated[list[Annotated[int, Field(ge=0, lt=20, strict=True)]], Field(min_length=1, max_length=8)],
             asset_index: Annotated[int, Field(ge=0, lt=100)] = 0,
+            display_directory: Annotated[str | None, Field(min_length=1, max_length=1024, description="Codex PC·모바일 대화 표시용. 이미 존재하는 이 작업 소유 로컬 폴더 절대경로. 다른 앱은 생략.")] = None,
         ) -> CallToolResult:
-            """대기가 끝난 항목 1~8개를 하나의 갤러리로 표시합니다. 새 생성이나 완료 대기를 하지 않습니다. 실패·포스터 없는 항목도 상태 카드에 남깁니다. 답변에는 결과 요약만 쓰고 이미지·URL·PC 경로를 중복 출력하지 마세요."""
+            """대기가 끝난 항목 1~8개의 결과를 표시합니다. 새 생성이나 완료 대기를 하지 않습니다. Codex는 display_directory를 지정하고 items에서 display.status=ready인 각 display.reference를 최종 답변에 한 번씩 그대로 포함하세요. 다른 앱은 폴더 없이 네이티브 갤러리를 사용합니다. 실패·포스터 없는 항목도 카드에 남습니다. 표시 실패로 재생성하지 마세요. 파일 준비는 화면 표시 확인이 아닙니다."""
+            directory = validate_display_directory(display_directory) if display_directory is not None else None
             result = broker.action("show_results", {"plan_id": str(plan_id), "item_indexes": item_indexes, "asset_index": asset_index})
             images, cards = [], []
             items = result.get("items")
@@ -654,13 +662,13 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
                 raise ToolError("결과 목록 형식이 올바르지 않습니다.")
             for item in items:
                 try:
-                    rendered = render_result(present_result(item))
+                    rendered = render_result(present_result(item), directory)
                 except ToolError:
                     # A broken preview must not hide the other completed results.
                     item.pop("media", None)
                     item["note"] = "미리보기를 읽지 못했습니다. 생성 결과는 MV Hub에서 확인하세요."
                     item["card_text"] = (item.get("card_text", "") + "\n" + item["note"]).strip()
-                    rendered = render_result(item)
+                    rendered = render_result(item, directory)
                 blocks = [block for block in rendered.content if block.type == "image"]
                 item["image_index"] = len(images) if blocks else None
                 images.extend(blocks)

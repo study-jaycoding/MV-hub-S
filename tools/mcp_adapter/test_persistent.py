@@ -235,10 +235,8 @@ class PersistentTests(unittest.TestCase):
                         self.assertNotIn("<script", html)
                         self.assertNotIn("http", html)
                         self.assertLess(len(html.encode()), 1_000_000)
-                        self.assertNotIn("display", json.loads(result.content[0].text))
-                        self.assertNotIn("display", result.structured_content)
-                        self.assertNotIn(str(output), result.content[0].text)
-                        self.assertNotIn(path.as_posix(), result.content[0].text)
+                        self.assertEqual(json.loads(result.content[0].text)["display"], display)
+                        self.assertEqual(result.structured_content["display"], display)
                         self.assertEqual(json.loads(display["reference"].removeprefix("visualize").removesuffix("")), {"path": path.as_posix()})
                         self.assertEqual(set(self.http.calls[-1][1]["args"]), {"plan_id", "item_index", "asset_index", "wait_seconds"})
                     self.assertNotEqual(*files)
@@ -261,9 +259,12 @@ class PersistentTests(unittest.TestCase):
         async def exercise():
             with anyio.fail_after(30):
                 async with Client(StdioServerParameters(**config)) as client:
-                    for directory in ("relative", "C:relative", "\\rooted", "\\\\server\\share", "//server/share", "\\\\?\\C:\\", str(regular), str(self.root / "missing"), str(self.root) + "\x00", "x" * 1025):
-                        result = await client.call_tool("get_result", {"plan_id": "p", "display_directory": directory})
-                        self.assertTrue(result.is_error, repr(directory))
+                    for name, args in (("get_result", {"plan_id": "p"}),
+                                       ("show_results", {"plan_id": str(uuid4()), "item_indexes": [0]}),
+                                       ("get_generation", {"generation_id": str(uuid4()), "workspace_scope": "personal"})):
+                        for directory in ("relative", "C:relative", "\\rooted", "\\\\server\\share", "//server/share", "\\\\?\\C:\\", str(regular), str(self.root / "missing"), str(self.root) + "\x00", "x" * 1025):
+                            result = await client.call_tool(name, {**args, "display_directory": directory})
+                            self.assertTrue(result.is_error, (name, repr(directory)))
         anyio.run(exercise)
         self.assertEqual(self.http.calls, [])
         self.assertEqual(regular.read_text(), "keep")
@@ -437,6 +438,64 @@ class PersistentTests(unittest.TestCase):
                 self.assertFalse(page.is_error)
                 self.assertEqual(page.structured_content["args"]["cursor_ts"], 100.5)
         anyio.run(exercise)
+
+    def test_sdk_codex_gallery_and_generation_export_keep_native_images(self):
+        config, _ = self.profile()
+        output = self.root / "display"
+        output.mkdir()
+        plan = str(uuid4())
+        encoded = [base64.b64encode(b"\xff\xd8\xff" + bytes([i]) + b"\xff\xd9").decode() for i in range(2)]
+        async def exercise():
+            async with Client(StdioServerParameters(**config)) as client:
+                tools = {t.name: t for t in (await client.list_tools()).tools}
+                for name in ("get_result", "show_results", "get_generation"):
+                    self.assertFalse(tools[name].annotations.read_only_hint)
+                    self.assertFalse(tools[name].annotations.idempotent_hint)
+                    self.assertIn("display_directory", tools[name].input_schema["properties"])
+                self.http.result_value = {"items": [
+                    {"item_index": 0, "generation_status": "failed", "media": None},
+                    *[{"item_index": i + 1, "generation_status": "done", "media": {
+                        "mime": "image/jpeg", "data_base64": data}} for i, data in enumerate(encoded)]]}
+                args = {"plan_id": plan, "item_indexes": [0, 1, 2]}
+                native = await client.call_tool("show_results", args)
+                self.assertFalse(native.is_error)
+                self.assertEqual(list(output.iterdir()), [])
+                self.assertTrue(all("display" not in item for item in native.structured_content["items"]))
+                gallery = await client.call_tool("show_results", {**args, "display_directory": str(output)})
+                self.assertFalse(gallery.is_error)
+                items = gallery.structured_content["items"]
+                self.assertEqual(items[0]["display"]["status"], "unavailable")
+                images = [b.data for b in gallery.content if b.type == "image"]
+                self.assertEqual(images, encoded)
+                self.assertEqual(len(list(output.iterdir())), 2)
+                for item in items[1:]:
+                    display = item["display"]
+                    self.assertEqual(display["rendered"], "unverified")
+                    path = Path(display["path"])
+                    self.assertEqual(path.parent, output.resolve())
+                    self.assertEqual(json.loads(display["reference"].removeprefix("visualize").removesuffix("")), {"path": path.as_posix()})
+                    html = path.read_text(encoding="utf-8")
+                    self.assertEqual(re.search(r"base64,([A-Za-z0-9+/=]+)", html).group(1), images[item["image_index"]])
+                    self.assertLess(path.stat().st_size, 1_000_000)
+                self.assertEqual(json.loads(gallery.content[0].text)["items"], items)
+                self.assertNotIn("display_directory", self.http.calls[-1][1]["args"])
+                self.http.result_value["items"][0]["media"] = {"mime": "image/jpeg", "data_base64": "bad!"}
+                failing = self.root / "vanishing"
+                failing.mkdir()
+                self.http.before_result = failing.rmdir
+                failed = await client.call_tool("show_results", {**args, "display_directory": str(failing)})
+                self.assertFalse(failed.is_error)
+                self.assertEqual([b.data for b in failed.content if b.type == "image"], images)
+                self.assertEqual([i["display"]["status"] for i in failed.structured_content["items"]], ["unavailable", "error", "error"])
+                self.http.result_value = {"generation_id": plan, "media": {"mime": "image/jpeg", "data_base64": encoded[0]}}
+                one = await client.call_tool("get_generation", {"generation_id": plan, "workspace_scope": "personal", "display_directory": str(output)})
+                self.assertFalse(one.is_error)
+                self.assertEqual(one.structured_content["display"], one.meta["display"])
+                self.assertEqual(one.structured_content["display"]["status"], "ready")
+                self.assertEqual([b.data for b in one.content if b.type == "image"], [encoded[0]])
+                self.assertNotIn("display_directory", self.http.calls[-1][1]["args"])
+        anyio.run(exercise)
+        self.assertEqual([body["method"] for _, body in self.http.calls], ["show_results"] * 3 + ["get_generation"])
 
     def test_sdk_safe_errors_are_structured_and_do_not_replay(self):
         config, _ = self.profile()
