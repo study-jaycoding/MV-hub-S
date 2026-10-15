@@ -967,11 +967,12 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `useResolveLibraryFollow.ts` | 훅 | Resolve 선택에 라이브러리 페이지 따라가기 |
 | `sourceLocationFeedback.ts` | api | 원본 위치 열기 실패 보고 |
 
-**17. 미디어·다운로드·비교·히스토리(9)**
+**17. 미디어·다운로드·비교·히스토리(10)**
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `media.ts` | 순수+브라우저(+훅 1) | 썸네일 URL·미디어 종류·DataTransfer 파일 판정 |
+| `keptThumbs.ts` | 브라우저 | 그려진 캔버스 카드 썸네일을 씬을 떠난 뒤에도 최근 300장 쥐기(`keepThumb` — `MediaThumbnail` 의 `keep`, 긴 변 640px 넘는 것·원본 재시도분은 안 쥔다). 다시 연 씬의 빈 썸네일 95→0ms(71회차). 시험 `tests/keptThumbs.test.tsx` |
 | `download.ts` | api | 다운로드 공용(허브 각인 → 직접 → 프록시 → 새 탭 폴백). 생성물의 파일 이름은 허브가 정한다(`POST /api/download/names` — `downloadGeneration`·`nameGenerationItems`, 받을 때만 묻는다. 규칙은 `docs/EXPORT_SYNC_DESIGN.md` §7) |
 | `compareDiff.ts` | 순수 | 비교 모달의 프롬프트·파라미터 차이 계산 |
 | `compareWindow.ts` | 순수 | 비교 창 이동·크기·뷰포트 맞춤 |
@@ -981,11 +982,12 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `useHistoryBoardState.ts` | 훅 | 계보 보드 상태(App.tsx 추출) |
 | `appWindow.ts` | 브라우저+저장 | 앱 전용 창(`?appwin=1`) 감지 |
 
-**18. 코멘트·알림·토스트(7)**
+**18. 코멘트·알림·토스트(8)**
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `commentTree.ts` | 순수 | 코멘트 부모→답글 트리 |
+| `statsFreshness.ts` | 순수 | 라이브러리가 `/api/generations-stats` 를 반영한 시각 — 벨 60초 폴링은 10초 안이고 벨 수가 그것과 같으면 건너뛴다(`NotificationCenter`). 시험 `tests/notificationDetailPoll.test.tsx` |
 | `commentBadgeTargets.ts` | 순수 | 배지 폴링 대상·변화 판정 |
 | `useCommentBadgePoll.ts` | 훅 | 코멘트 배지 주기 폴링(+stale 방어) |
 | `notificationCenter.ts` | 순수+저장 | 알림 탭·릴리스 공지 병합·읽음·배지 수 |

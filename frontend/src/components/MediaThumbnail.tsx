@@ -104,7 +104,7 @@ export function MediaThumbnail({
           alt=""
           aria-hidden="true"
           style={{ display: "none" }}
-          onLoad={keep ? () => keepThumb(thumb) : undefined}
+          onLoad={keep ? (event) => keepThumb(thumb, event.currentTarget) : undefined}
           onError={() => setLoadState(nextVideoPosterErrorState(loadState))}
         />
         <video
@@ -134,7 +134,7 @@ export function MediaThumbnail({
         decoding="async"
         alt={alt}
         draggable={false}
-        onLoad={keep ? () => keepThumb(imgSrc) : undefined}
+        onLoad={keep && imgSrc === thumb ? (event) => keepThumb(imgSrc, event.currentTarget) : undefined} // 원본으로 다시 받은 것은 쥐지 않는다
         onError={() => {
           const next = nextMediaThumbnailErrorState(loadState, !!canRetry);
           if (next.mediaBroken && !loadState.mediaBroken) onError?.();
