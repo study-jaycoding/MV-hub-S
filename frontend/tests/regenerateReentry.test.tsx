@@ -62,6 +62,29 @@ it("재생성 — 응답 전의 다시 누름은 요청을 더 만들지 않는�
   expect(mocks.prepareRegenerate).toHaveBeenCalledTimes(4);
 });
 
+// Codex 62회차(4B × ↻) — 다른 탭 로그아웃으로 멈춰 보내지 못한 재생성은 '나갔을 수 있는' 것이 아니다. 캔버스의 대기 표식을 남기면
+//  보내지 않은 생성이 대기로 남는다. 답을 못 받은 것(TypeError)은 들어갔을 수 있으니 남긴다.
+it("재생성 — 멈춤으로 못 보냈거나 서버가 거절(4xx)했으면 캔버스 대기 표식을 버리고, 답을 못 받았으면 남긴다", async () => {
+  const { ApiPausedError, HttpError } = await import("../src/lib/http");
+  let actions!: ReturnType<typeof useGenerationCardActions>;
+  function Host() {
+    actions = useGenerationCardActions({ armedAutoTags: new Set(), bumpBoard: () => {}, canFinalize: () => true, flash: () => {}, navTab: () => {},
+      reload: async () => {}, workspace: { scope: "personal", id: null, name: null } });
+    return null;
+  }
+  act(() => root.render(<Host />));
+  const outcome = async (error: unknown) => {
+    mocks.prepareRegenerate.mockImplementationOnce(() => () => Promise.reject(error));
+    const dropLink = vi.fn();
+    await actions.onRegenerate(generation("g1"), undefined, dropLink);
+    return dropLink.mock.calls.length;
+  };
+  expect(await outcome(new ApiPausedError("paused"))).toBe(1);
+  expect(await outcome(new HttpError(409, "충돌"))).toBe(1);
+  expect(await outcome(new TypeError("Failed to fetch"))).toBe(0);
+  expect(await outcome(new HttpError(429, "많음"))).toBe(0);
+});
+
 it("최종 지정·해제가 권한 없음(403)으로 거절되면 최종 권한을 다시 읽으라고 알린다 — 다른 실패는 알리지 않는다(49회차)", async () => {
   const { HttpError } = await import("../src/lib/http");
   const stale = vi.fn();

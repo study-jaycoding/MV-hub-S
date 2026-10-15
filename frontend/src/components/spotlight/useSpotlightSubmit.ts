@@ -3,6 +3,7 @@ import type { RefObject, MutableRefObject } from "react";
 import { api } from "../../api";
 import { resolveAutoAspectRatio } from "../../lib/aspectAuto";
 import { isGenerationWorkspaceReady } from "../../lib/workspaceContext";
+import { surelyNotRun } from "../../lib/http";
 import {
   appendHistory,
   partsDisplay,
@@ -217,12 +218,9 @@ export function useSpotlightSubmit({
             if (link) settleCanvasGeneration?.(link, generation);
             return { generation };
           } catch (error) {
-            const status = Number((error as { status?: number })?.status);
-            // 서버가 요청을 확실히 거절한 4xx는 유령 표식을 즉시 치운다. 타임아웃·과부하·네트워크
+            // 서버가 요청을 확실히 거절한 4xx·멈춤으로 못 보낸 것은 유령 표식을 즉시 치운다. 타임아웃·과부하·네트워크
             // 단절은 서버 커밋 여부가 모호하므로 재시작 복구가 확인할 수 있게 남긴다.
-            if (link && status >= 400 && status < 500 && status !== 408 && status !== 429) {
-              discardCanvasGeneration?.(link);
-            }
+            if (link && surelyNotRun(error)) discardCanvasGeneration?.(link);
             return { error };
           }
         }),

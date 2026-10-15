@@ -2,7 +2,7 @@ import { useRef } from "react";
 import { t } from "./i18n";
 import { api } from "../api";
 import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
-import { errorDetail, HttpError } from "./http";
+import { errorDetail, HttpError, surelyNotRun } from "./http";
 import { postLibraryChanged } from "./libraryBroadcast";
 import { modelBlockMessage } from "./modelPolicy";
 import { isGenerationWorkspaceReady } from "./workspaceContext";
@@ -95,10 +95,7 @@ export function useGenerationCardActions({
       postLibraryChanged();
       return ng;
     } catch (e) {
-      const status = Number((e as { status?: number })?.status);
-      if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
-        onDefinitiveReject?.();
-      }
+      if (surelyNotRun(e)) onDefinitiveReject?.(); // 멈춤(다른 탭 로그아웃)으로 못 보낸 것도 — 대기 표식이 남지 않게(Codex 62회차)
       flash("재생성 실패: " + String(e));
       return null;
     }

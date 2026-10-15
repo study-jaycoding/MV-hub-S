@@ -40,6 +40,12 @@ export const API_PAUSED_MESSAGE = "다른 탭에서 로그아웃해 이 탭의 �
 export class ApiPausedError extends Error {
   name = "ApiPausedError";
 }
+/** 요청이 실행되지 않은 것이 확실한가 — 멈춤으로 보내지 않았거나 서버가 거절했다(4xx, 408·429 제외). 답을 못 받은 것은 모른다. */
+export function surelyNotRun(error: unknown): boolean {
+  if (error instanceof ApiPausedError) return true;
+  const status = Number((error as { status?: number })?.status);
+  return status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
 let apiPause: ApiPause = null;
 const pauseSubs = new Set<() => void>();
 export const getApiPause = (): ApiPause => apiPause;

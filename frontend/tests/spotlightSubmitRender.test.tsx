@@ -260,6 +260,19 @@ describe("실제 프롬프트 제출: 캔버스 연속 생성과 응답 후 편�
     expect(onCanvasBatchCreated).not.toHaveBeenCalled();
   });
 
+  // Codex 62회차(4B) — 다른 탭 로그아웃으로 멈춰 보내지 못한 요청은 '나갔을 수 있는' 것이 아니다. 표식을 남기면 대기 카드가 남는다.
+  it("멈춤으로 보내지 못한 요청은 캔버스 대기 표식을 치우고, 답을 못 받은 요청은 남긴다", async () => {
+    const { ApiPausedError } = await import("../src/lib/http");
+    prepareCreate.mockImplementation(() => async () => { throw new ApiPausedError("paused"); });
+    await mount();
+    await run();
+    expect(discardCanvasGeneration).toHaveBeenCalledTimes(1);
+    discardCanvasGeneration.mockClear();
+    prepareCreate.mockImplementation(() => async () => { throw new TypeError("Failed to fetch"); });
+    await run();
+    expect(discardCanvasGeneration).not.toHaveBeenCalled();
+  });
+
   it("배치 일부만 성공해도 같은 캔버스 프롬프트로 다시 제출할 수 있다", async () => {
     prepareCreate
       .mockImplementationOnce(() => async () => generation("successful-part"))

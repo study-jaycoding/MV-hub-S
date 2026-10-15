@@ -5,6 +5,7 @@ import { KEY_COLORS } from "./appConstants";
 import { toggleDisabledGen } from "./deactivated";
 import { applyGenerationColor, ColorSaveError, nextGenerationSelectionColor, type ColorEditLedger } from "./generationColorState";
 import { createMutationQueue } from "./mutationQueue";
+import { API_PAUSED_MESSAGE, getApiPause } from "./http";
 import { backgroundKeysBlocked, floatHost, isTypingTarget } from "./keyGate";
 import { markKeyHandled } from "./keyHandled";
 import { matchShortcut } from "./shortcuts";
@@ -59,6 +60,11 @@ export function useGenerationKeyboardActions({
 
   const colorSelected = useCallback(
     async (ids: string[], color: string) => {
+      // 멈춘 동안(다른 탭 로그아웃 — 4B)은 칠하지 않는다 — 화면만 바뀌고 저장도 되돌리기 조회도 막힌다(Codex 62회차)
+      if (getApiPause()) {
+        latestCallbacksRef.current.flash(API_PAUSED_MESSAGE);
+        return;
+      }
       const next = nextGenerationSelectionColor(gensRef.current, ids, color);
       colorLedger?.begin(ids, next);
       gensRef.current = applyGenerationColor(gensRef.current, ids, next);
