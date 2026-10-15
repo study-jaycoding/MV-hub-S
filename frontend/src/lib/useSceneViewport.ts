@@ -15,6 +15,7 @@ import {
   type SceneWorldRect,
 } from "./sceneViewport";
 import { setSceneZoomPct } from "./sceneZoomStore";
+import { swallowPanAuxClick } from "./useSceneCardMove";
 
 const CAMERA_SAVE_DELAY_MS = 400;
 const FRAME_TRANSITION_MS = 250;
@@ -240,7 +241,9 @@ export function useSceneViewport({
       const start = getCamera();
       const startX = event.clientX;
       const startY = event.clientY;
+      let moved = false; // 정지 휠 클릭은 카드 정보(auxclick)다 — 실제로 끌었을 때만 놓는 순간의 auxclick 을 삼킨다
       const move = (moveEvent: MouseEvent) => {
+        if (Math.abs(moveEvent.clientX - startX) + Math.abs(moveEvent.clientY - startY) > 3) moved = true;
         const next = panSceneCamera(
           start,
           moveEvent.clientX - startX,
@@ -252,6 +255,7 @@ export function useSceneViewport({
       const finish = () => {
         scrollRef.current?.classList.remove("panning");
         persistCamera();
+        if (moved) swallowPanAuxClick();
       };
       scrollRef.current?.classList.add("panning");
       beginDrag(move, finish, finish);
