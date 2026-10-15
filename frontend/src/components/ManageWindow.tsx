@@ -12,6 +12,7 @@ import { DashboardView } from "./manage/DashboardView";
 import { ExportView } from "./manage/ExportView";
 import { WorkBoard } from "./manage/WorkBoard";
 import { PopupAuthPauseBanner } from "./app/AuthPauseBanner";
+import { getApiPause } from "../lib/http";
 
 type Tab = "dashboard" | "tasks" | "export";
 
@@ -55,6 +56,8 @@ export function ManageWindow() {
     const onStorage = (event: StorageEvent) => {
       if (event.key !== STORAGE_KEYS.workspaceContext && event.key !== null) return;
       if (workspacePinnedRef.current) return;
+      // 다른 탭 로그아웃 뒤 멈춘 중 — 다른 계정의 로그인이 범위를 지워도 따라가지 않는다(작업표 초안 보존, Codex 4B 3차)
+      if (getApiPause()) return;
       setWorkspaceId(loadManageWorkspaceScope().workspaceId);
     };
     window.addEventListener("storage", onStorage);

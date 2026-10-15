@@ -27,6 +27,7 @@ const SceneBoard = lazy(() =>
 import { AppOverlays, VideoCompareOverlay } from "./components/app/AppOverlays";
 import { ResolveNotices } from "./components/app/ResolveNotices";
 import { AuthPauseBanner } from "./components/app/AuthPauseBanner";
+import { getApiPause } from "./lib/http";
 const EditTab = lazy(() =>
   import("./components/timeline/EditTab").then((m) => ({ default: m.EditTab })),
 );
@@ -231,6 +232,7 @@ export default function App() {
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
       if (event.key !== STORAGE_KEYS.workspaceContext) return;
+      if (getApiPause()) return; // 다른 탭 로그아웃 뒤 멈춘 중 — 다른 계정의 범위를 따라가지 않는다(Jay 결정 4B)
       const stored = loadStoredWorkspaceContext();
       if (stored) changeWorkspaceContext(stored);
     };
