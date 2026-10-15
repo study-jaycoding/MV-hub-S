@@ -723,7 +723,7 @@ def test_result_returns_bounded_jpeg_without_source_and_does_not_mutate_plan(loc
     root = tmp_path / ".thumbs"
     root.mkdir()
     path = root / "thumb.jpg"
-    Image.new("RGB", (32, 32), "red").save(path)
+    Image.new("RGB", (1024, 576), "red").save(path)
     monkeypatch.setattr(api.thumbs, "THUMB_DIR", root)
     calls = []
     async def thumbnail(src, w):
@@ -742,11 +742,31 @@ def test_result_returns_bounded_jpeg_without_source_and_does_not_mutate_plan(loc
     assert result["workspace"] == plan["workspace"]
     assert "prompt" not in result and "seed" not in result["params"]
     assert base64.b64decode(result["media"]["data_base64"]) == path.read_bytes()
-    assert calls == [("/media/poster.jpg", 512)]
+    assert calls == [("/media/original.png", 1024)]
     assert "file_path" not in response.text and "original.png" not in response.text and str(root) not in response.text
     assert action(local, "get_plan", {"plan_id": plan["id"]}).json() == before
     assert action(local, "get_result", {"plan_id": plan["id"]}, "claude").status_code == 404
     assert action(local, "get_result", {"plan_id": plan["id"], "src": "http://unsafe"}).status_code == 422
+
+
+def test_result_preview_falls_back_when_original_is_unavailable(local, result_plan, tmp_path, monkeypatch):
+    from PIL import Image
+    plan, _ = result_plan
+    root = tmp_path / ".thumbs"
+    root.mkdir()
+    path = root / "poster.jpg"
+    Image.new("RGB", (512, 286), "red").save(path)
+    monkeypatch.setattr(api.thumbs, "THUMB_DIR", root)
+    calls = []
+    async def thumbnail(src, w):
+        calls.append((src, w))
+        if src == "/media/original.png":
+            raise HTTPException(404, "original expired")
+        return api.FileResponse(path, media_type="image/jpeg")
+    monkeypatch.setattr(api.library, "media_thumb", thumbnail)
+    result = action(local, "get_result", {"plan_id": plan["id"]}).json()
+    assert result["media"] is not None
+    assert calls == [("/media/original.png", 1024), ("/media/poster.jpg", 1024)]
 
 
 def test_result_wait_observes_completion_and_previews_only_once(local, result_plan, tmp_path, monkeypatch):
@@ -780,7 +800,7 @@ def test_result_wait_observes_completion_and_previews_only_once(local, result_pl
     print(f"MCP wait measurement: {elapsed:.3f}s total, {elapsed - 0.1:.3f}s after ready; one HTTP call; one preview; another item pending")
     assert response.status_code == 200, response.text
     assert response.json()["generation_status"] == "done" and response.json()["media"]
-    assert len(reads) == 3 and previews == [512]
+    assert len(reads) == 3 and previews == [1024]
     assert 1.9 <= elapsed < 5
     assert action(local, "get_plan", {"plan_id": plan["id"]}).json() == before
 
@@ -915,6 +935,7 @@ def test_result_video_never_downloads_original(local, result_plan, monkeypatch, 
 @pytest.mark.parametrize("failure", ["outside", "invalid", "large", "ssrf"])
 def test_result_preview_failures_return_metadata_only(local, result_plan, tmp_path, monkeypatch, failure):
     plan, row = result_plan
+    row["assets"][0].pop("thumbnail_path")
     root = tmp_path / ".thumbs"
     root.mkdir()
     monkeypatch.setattr(api.thumbs, "THUMB_DIR", root)
@@ -929,11 +950,11 @@ def test_result_preview_failures_return_metadata_only(local, result_plan, tmp_pa
     monkeypatch.setattr(api.library, "media_thumb", thumbnail)
     response = action(local, "get_result", {"plan_id": plan["id"]})
     assert response.status_code == 200 and response.json()["media"] is None
-    assert widths == ([512, 256] if failure == "large" else [512])
+    assert widths == ([1024, 512, 256] if failure == "large" else [1024])
     assert "sensitive" not in response.text
 
 
-@pytest.mark.parametrize("small_height", [455, 600])
+@pytest.mark.parametrize("small_height", [910, 1200])
 def test_result_portrait_jpeg_retries_smaller_thumbnail(local, result_plan, tmp_path, monkeypatch, small_height):
     from PIL import Image
     import base64
@@ -942,7 +963,7 @@ def test_result_portrait_jpeg_retries_smaller_thumbnail(local, result_plan, tmp_
     root = tmp_path / ".thumbs"
     root.mkdir()
     monkeypatch.setattr(api.thumbs, "THUMB_DIR", root)
-    for width, height in ((512, 910), (256, small_height)):
+    for width, height in ((1024, 1820), (512, 1820), (256, small_height)):
         Image.new("RGB", (width, height), "red").save(root / f"poster-{width}.jpg")
     widths = []
     async def thumbnail(src, w):
@@ -951,9 +972,9 @@ def test_result_portrait_jpeg_retries_smaller_thumbnail(local, result_plan, tmp_
     monkeypatch.setattr(api.library, "media_thumb", thumbnail)
     response = action(local, "get_result", {"plan_id": plan["id"]})
     assert response.status_code == 200, response.text
-    assert widths == [512, 256]
+    assert widths == [1024, 512, 256]
     media = response.json()["media"]
-    if small_height <= 512:
+    if small_height <= 1024:
         assert base64.b64decode(media["data_base64"]) == (root / "poster-256.jpg").read_bytes()
     else:
         assert media is None

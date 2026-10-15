@@ -721,7 +721,7 @@ def _read_preview(response):
     with Image.open(io.BytesIO(data)) as image:
         if image.format != "JPEG":
             raise ValueError("Invalid thumbnail")
-        if max(image.size) > 512:
+        if max(image.size) > 1024:
             return None
         image.verify()
     return data
@@ -791,10 +791,11 @@ async def _result_once(ctx, args, *, preview=True):
                   Path(urlsplit(source).path).suffix.lower() in library.VIDEO_EXTENSIONS):
                 source = None
             result["note"] = "미리보기를 사용할 수 없습니다. 앱에서 결과를 확인하세요."
-            if source:
+            sources = ([asset.get("file_path"), source] if asset.get("type") == "image" else [source])
+            for source in dict.fromkeys(value for value in sources if value):
                 try:
                     # Only server-selected assets reach the existing SSRF-safe thumbnail route.
-                    for width in (512, 256):
+                    for width in (1024, 512, 256):
                         response = await library.media_thumb(src=source, w=width)
                         data = await asyncio.to_thread(_read_preview, response)
                         if data is not None:
@@ -803,6 +804,8 @@ async def _result_once(ctx, args, *, preview=True):
                             break
                 except (HTTPException, OSError, ValueError):
                     pass
+                if result["media"] is not None:
+                    break
     if _result_pending(result):
         result["note"] = ("생성 진행 중입니다. 같은 generation_id로 다시 조회하세요. 재생성하지 마세요." if direct else
                           "생성 진행 중입니다. 같은 항목의 get_result(wait_seconds=25)로 계속 확인하세요. 재생성하지 마세요.")

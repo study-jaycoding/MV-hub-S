@@ -54,6 +54,10 @@ class Handler(BaseHTTPRequestHandler):
             failure = getattr(self.server, "failure", None)
             if failure:
                 return self.reply(failure[0], {"detail": "private upstream error"}, failure[1])
+            if body["method"] == "read_context" and body["args"].get("kind") == "models":
+                return self.reply(200, {"models": [{"job_set_type": "nano_banana_flash", "display_name": "Nano Banana 2"}]})
+            if body["method"] in {"execute_generation_plan", "get_plan"} and hasattr(self.server, "plan_value"):
+                return self.reply(200, self.server.plan_value)
             if body["method"] in {"get_result", "get_generation", "show_results", "wait_results"}:
                 callback = getattr(self.server, "before_result", None)
                 if callback:
@@ -305,7 +309,9 @@ class PersistentTests(unittest.TestCase):
         self.assertIn("전체 계획", plan["card_text"])
         self.assertIn("선택 항목 1", selected["card_text"])
         self.assertEqual(plan["card_text"].splitlines()[1:], selected["card_text"].splitlines()[1:])
-        self.assertEqual([line.split(":")[0] for line in selected["card_text"].splitlines()], ["상태", "조건", "위치"])
+        self.assertNotIn("프로젝트 ID", selected["card_text"])
+        self.assertNotIn("test-model", selected["card_text"])
+        self.assertIn("저장 위치:", selected["card_text"])
         self.assertNotIn("DO NOT DISPLAY", selected["card_text"])
         saved = write_result_display("safe-base64", self.root, selected["card_text"])
         html = Path(saved["path"]).read_text(encoding="utf-8")
@@ -313,6 +319,50 @@ class PersistentTests(unittest.TestCase):
         self.assertIn("&lt;script&gt;", html)
         self.assertIn("&lt;team&gt;", html)
         self.assertEqual(saved["rendered"], "unverified")
+
+    def test_friendly_card_preserves_partial_failures_and_ids_only_in_data(self):
+        result = {"title": "바나나", "workspace": {"scope": "team", "id": "secret-id", "name": "작업실"},
+                  "items": [{"model": "nano_banana_flash", "project_id": "internal-project-id", "folder_path": "e001/c0010",
+                             "params": {"aspect_ratio": "16:9"}}],
+                  "presentation": {"version": 1, "stage": "running", "scope": "plan",
+                                   "details": {"total": 3, "completed": 1, "by_stage": {"failed": 1, "running": 1, "completed": 1}}}}
+        card = present_result(result, {"nano_banana_flash": "Nano Banana 2"})["card_text"]
+        for value in ("바나나 생성 중입니다.", "완료 1/3", "실패 1", "Nano Banana 2 · 16:9", "작업실 / e001/c0010"):
+            self.assertIn(value, card)
+        for value in ("nano_banana_flash", "internal-project-id", "secret-id"):
+            self.assertNotIn(value, card)
+        self.assertEqual(result["items"][0]["project_id"], "internal-project-id")
+
+    def test_sdk_live_card_uses_read_only_results_and_catalog_on_new_session(self):
+        config, _ = self.profile()
+        plan = str(uuid4())
+        item = {"label": "바나나", "model": "nano_banana_flash", "workspace": {"scope": "personal"},
+                "params": {"aspect_ratio": "16:9"},
+                "presentation": {"version": 1, "scope": "item", "stage": "completed", "item_index": 0},
+                "media": {"mime": "image/jpeg", "data_base64": "/9j/eP/Z"}}
+        self.http.result_value = {"items": [item], "all_terminal": True, "all_done": True}
+        self.http.plan_value = {"plan_id": plan, "items": [{}]}
+        async def exercise():
+            async with Client(StdioServerParameters(**config)) as client:
+                listing = {t.name: t for t in (await client.list_tools()).tools}
+                self.assertEqual(listing["execute_generation_plan"].meta["ui"]["resourceUri"], RESULT_UI_URI)
+                reader = listing["read_display_results"]
+                self.assertTrue(reader.annotations.read_only_hint)
+                self.assertEqual(reader.meta["ui"]["visibility"], ["app"])
+                self.assertNotIn("display_directory", reader.input_schema["properties"])
+                before = set(self.root.rglob("*"))
+                result = await client.call_tool("read_display_results", {"plan_id": plan, "item_indexes": [0]})
+                self.assertFalse(result.is_error)
+                self.assertIn("Nano Banana 2", result.structured_content["card_text"])
+                self.assertEqual(set(self.root.rglob("*")), before)
+                self.assertEqual(len([b for b in result.content if b.type == "image"]), 1)
+                forbidden = await client.call_tool("read_display_results", {"plan_id": plan, "item_indexes": [0], "display_directory": str(self.root)})
+                self.assertNotIn("display", forbidden.structured_content["items"][0])
+                self.assertEqual(set(self.root.rglob("*")), before)
+                executed = await client.call_tool("execute_generation_plan", {"plan_id": plan})
+                self.assertEqual(executed.structured_content["live_plan_id"], plan)
+        anyio.run(exercise)
+        self.assertEqual([b["method"] for _, b in self.http.calls], ["show_results", "read_context", "show_results", "execute_generation_plan"])
 
     def test_two_clients_get_identical_card_and_native_image(self):
         configs = [self.profile()[0], self.profile()[0]]
@@ -372,7 +422,7 @@ class PersistentTests(unittest.TestCase):
                     self.assertFalse(response.is_error)
                     info = response.structured_content
                     self.assertEqual(info["apps_negotiated"], supported)
-                    self.assertEqual(info["adapter"], {"version": ADAPTER_VERSION, "tools": 13})
+                    self.assertEqual(info["adapter"], {"version": ADAPTER_VERSION, "tools": 14})
                     self.assertIsNone(info["reload_required"])
             self.http.features = []
             async with Client(StdioServerParameters(**config)) as client:
@@ -395,7 +445,7 @@ class PersistentTests(unittest.TestCase):
         async def exercise():
             async with Client(StdioServerParameters(**config)) as client:
                 tools = await client.list_tools()
-                self.assertEqual(len(tools.tools), 13)
+                self.assertEqual(len(tools.tools), 14)
                 image = await client.call_tool("get_result", {"plan_id": "p"})
                 self.assertFalse(image.is_error)
                 self.assertTrue(any(b.type == "image" for b in image.content))
@@ -497,6 +547,18 @@ class PersistentTests(unittest.TestCase):
         anyio.run(exercise)
         self.assertEqual([body["method"] for _, body in self.http.calls], ["show_results"] * 3 + ["get_generation"])
 
+    def test_sdk_gallery_handles_eight_maximum_bounded_previews(self):
+        config, _ = self.profile()
+        data = base64.b64encode(b"\xff\xd8\xff" + b"x" * (512 * 1024 - 5) + b"\xff\xd9").decode()
+        self.http.result_value = {"items": [{"media": {"mime": "image/jpeg", "data_base64": data}} for _ in range(8)]}
+        self.assertLess(len(json.dumps(self.http.result_value).encode()), MAX_GALLERY_RESPONSE)
+        async def exercise():
+            async with Client(StdioServerParameters(**config)) as client:
+                result = await client.call_tool("read_display_results", {"plan_id": str(uuid4()), "item_indexes": list(range(8))})
+                self.assertFalse(result.is_error)
+                self.assertEqual([b.data for b in result.content if b.type == "image"], [data] * 8)
+        anyio.run(exercise)
+
     def test_sdk_safe_errors_are_structured_and_do_not_replay(self):
         config, _ = self.profile()
         async def exercise():
@@ -521,25 +583,32 @@ class PersistentTests(unittest.TestCase):
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const html = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+(async () => {
 const sent = [], handlers = {};
+const timers = new Map(); let timerId = 0;
+let now = 0;
+const setTimeout = (fn, ms) => { timers.set(++timerId, {fn, ms}); return timerId; };
+const clearTimeout = id => timers.delete(id);
 let observer, disconnected = false;
 const node = tag => ({tag, children: [], events: {}, textContent: '',
+  setAttribute(name, value) {this[name] = value;},
+  classList: {toggle() {this.expanded = !this.expanded; return this.expanded;}},
   append(child) {this.children.push(child); child.parent = this;},
   replaceChildren() {this.children = [];},
   addEventListener(name, fn) {this.events[name] = fn;},
   remove() {this.parent.children = this.parent.children.filter(c => c !== this);}});
-const gallery = node('div'), status = node('p');
+const gallery = node('div'), status = node('p'), refresh = node('button');
 const images = () => gallery.children.flatMap(f => f.children).filter(c => c.tag === 'img');
 const parent = {postMessage: value => sent.push(value)};
 const window = {parent, addEventListener: (name, fn) => handlers[name] = fn};
 const document = {body: {getBoundingClientRect: () => ({height: 220})}, createElement: node,
-  getElementById: name => name === 'gallery' ? gallery : status};
+  getElementById: name => ({gallery, status, refresh})[name]};
 const ResizeObserver = class {
   constructor(fn) { observer = fn; }
   observe() { observer(); }
   disconnect() { disconnected = true; }
 };
-vm.runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)[1], {window, document, ResizeObserver});
+vm.runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)[1], {window, document, ResizeObserver, setTimeout, clearTimeout, Date: {now: () => now}});
 const emit = (value, source = parent) => handlers.message({source, data: {jsonrpc: '2.0', ...value}});
 assert.equal(sent[0].method, 'ui/initialize');
 emit({id: 'mvhub-init', result: {protocolVersion: '2026-01-26'}}, {});
@@ -572,9 +641,67 @@ assert.equal(images().length, 0);
 emit({method: 'ui/notifications/tool-result', params: result});
 emit({method: 'ui/notifications/tool-cancelled'});
 assert.equal(images().length, 0);
+// A second host handshake enables the live card without granting generation access.
+emit({method: 'ui/notifications/tool-result', params: {structuredContent: {
+  live_plan_id: '11111111-1111-4111-8111-111111111111', items: [{}], card_text: '생성 대기 중'}}});
+assert.ok(status.textContent.includes('자동 갱신을 지원하지 않습니다'));
+assert.equal(sent.filter(m => m.method === 'tools/call').length, 0);
+emit({method: 'ui/resource-teardown', id: 8});
+emit({id: 'mvhub-init', result: {protocolVersion: '2026-01-26', hostCapabilities: {serverTools: {}}}});
+const planId = '11111111-1111-4111-8111-111111111111';
+const plan = {live_plan_id: planId, card_text: '생성 대기 중', items: Array(9).fill({}),
+  presentation: {details: {by_stage: {queued: 9}}}};
+const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
+const runTimer = () => {
+  const entry = [...timers].find(([, t]) => t.ms === 2500);
+  assert.ok(entry); timers.delete(entry[0]); entry[1].fn();
+};
+const respond = async result => { emit({id: sent.at(-1).id, result}); await flush(); };
+emit({method: 'ui/notifications/tool-result', params: {structuredContent: plan}});
+assert.equal(status.textContent, '생성 대기 중');
+runTimer();
+assert.equal(sent.at(-1).params.name, 'get_plan');
+assert.equal([...timers.values()].filter(t => t.ms === 2500).length, 0); // no overlapping reads
+await respond({structuredContent: {...plan, card_text: '생성 중', presentation: {details: {by_stage: {running: 9}}}}});
+assert.equal(status.textContent, '생성 중');
+runTimer();
+await respond({structuredContent: {...plan, card_text: '완료 8/9 · 실패 1', presentation: {details: {by_stage: {completed: 8, failed: 1}}}}});
+assert.equal(sent.at(-1).params.name, 'read_display_results');
+assert.deepEqual(Array.from(sent.at(-1).params.arguments.item_indexes), [0,1,2,3,4,5,6,7]);
+const batch = {structuredContent: {items: Array.from({length: 8}, (_, i) => ({image_index: i ? 0 : null, card_text: i ? '완료' : '실패'}))}, content: result.content};
+await respond(batch);
+assert.deepEqual(Array.from(sent.at(-1).params.arguments.item_indexes), [8]);
+await respond({structuredContent: {items: [{image_index: 0, card_text: '완료'}]}, content: result.content});
+assert.equal(gallery.children.length, 9); assert.equal(images().length, 8);
+assert.equal(status.textContent, '완료 8/9 · 실패 1');
+assert.equal(timers.size, 0);
+assert.equal(refresh.hidden, false);
+// Refresh only reads; a host denial stops polling and offers a safe retry.
+refresh.events.click();
+assert.equal(sent.at(-1).params.name, 'get_plan');
+emit({id: sent.at(-1).id, error: {code: -1}}); await flush();
+assert.equal(refresh.hidden, false); assert.equal(timers.size, 0);
+assert.ok(status.textContent.includes('다시 생성하지 말고'));
+refresh.events.click();
+await respond({structuredContent: plan});
+now = 601000;
+runTimer(); await respond({structuredContent: plan});
+assert.ok(status.textContent.includes('자동 확인을 잠시 멈췄습니다'));
+assert.equal(timers.size, 0);
+document.hidden = true;
+const countBeforeHide = sent.length;
+refresh.events.click(); await flush();
+assert.equal(sent.length, countBeforeHide); assert.equal(timers.size, 0);
+document.hidden = false;
+refresh.events.click();
+const lateId = sent.at(-1).id;
 emit({method: 'ui/resource-teardown', id: 9});
+emit({id: lateId, result: batch}); await flush();
+assert.equal(images().length, 0); assert.equal(timers.size, 0);
 assert.equal(disconnected, true); assert.equal(sent.at(-1).id, 9);
+assert.ok(sent.filter(m => m.method === 'tools/call').every(m => ['get_plan', 'read_display_results'].includes(m.params.name)));
 assert.ok(!html.includes('innerHTML') && !html.includes('fetch('));
+})().catch(e => { console.error(e); process.exitCode = 1; });
 '''
         checked = subprocess.run([node, "-e", script], input=json.dumps(result_ui()), text=True,
                                  capture_output=True, timeout=20)
