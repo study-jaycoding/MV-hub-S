@@ -31,6 +31,7 @@ import {
   startReleaseUpdate,
 } from "../lib/releaseUpdate";
 import { sharedApi } from "../lib/sharedApi";
+import { libraryStatsFresh } from "../lib/statsFreshness";
 import { updateNoticeApi } from "../lib/updateNotices";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../lib/useOutsideMouseDown";
@@ -176,6 +177,9 @@ export function NotificationCenter({
   useEffect(() => {
     const refreshBadge = () => {
       loadReleaseItems();
+      // 라이브러리가 10초 안에 받아 반영했으면 벨 숫자는 그 props 로 이미 새것이다 — 같은 것을 다시 묻지 않는다(70회차).
+      //  받은 값을 따로 쓰지 않으므로(건너뛰기만) 읽음 처리 직후의 숫자를 옛 값으로 되돌릴 일이 없다.
+      if (libraryStatsFresh(10_000)) return;
       api
         .generationStats()
         .then((stats) => {

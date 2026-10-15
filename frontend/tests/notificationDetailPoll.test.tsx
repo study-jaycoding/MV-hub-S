@@ -14,13 +14,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 //  React 18.3 의 `act` 와 이미 있던 `react-dom/client` 로 충분해 다른 도구는 안 넣었다.
 
 const notificationComments = vi.fn();
+const generationStats = vi.fn();
 
 vi.mock("../src/api", () => ({
   api: {
     notificationComments: (...args: unknown[]) => notificationComments(...args),
     markGenCommentSeen: vi.fn().mockResolvedValue(undefined),
     markAllNotificationCommentsSeen: vi.fn().mockResolvedValue(undefined),
-    generationStats: vi.fn().mockResolvedValue({ comment_unread: 0, failed: 0 }),
+    generationStats: (...args: unknown[]) => generationStats(...args),
   },
 }));
 vi.mock("../src/lib/releaseUpdate", () => ({ getReleaseUpdateStatus: vi.fn(() => Promise.reject(new Error("없음"))) }));
@@ -28,6 +29,7 @@ vi.mock("../src/lib/sharedApi", () => ({ sharedApi: { sharedServerRelocation: vi
 vi.mock("../src/lib/updateNoticeApi", () => ({ updateNoticeApi: { list: vi.fn(() => Promise.reject(new Error("없음"))) } }));
 
 const { NotificationCenter } = await import("../src/components/NotificationCenter");
+const { markLibraryStatsApplied } = await import("../src/lib/statsFreshness");
 
 let container: HTMLDivElement;
 let root: Root;
@@ -48,6 +50,8 @@ function render(props: { commentUnreadCount?: number }) {
 beforeEach(() => {
   notificationComments.mockReset();
   notificationComments.mockResolvedValue([]);
+  generationStats.mockReset();
+  generationStats.mockResolvedValue({ comment_unread: 0, failed: 0 });
   vi.useFakeTimers();
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -106,6 +110,18 @@ describe("열린 알림 패널의 상세 폴", () => {
     Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
     act(() => vi.advanceTimersByTime(180_000));
     expect(notificationComments).not.toHaveBeenCalled();
+  });
+
+  // 70회차 격리 실측 — 닫힌 벨의 60초 배지 폴링이 라이브러리가 방금(0.4~1.5초 전) 받은 통계를 또 물었다. 벨 숫자는 그것을 props 로 받는다.
+  it("badge poll skips the stats request when the library applied stats within 10 seconds — asks again once they are older", () => {
+    render({ commentUnreadCount: 0 });
+    expect(generationStats).toHaveBeenCalledTimes(1); // 처음 열 때는 묻는다(라이브러리가 아직 안 받았다)
+    act(() => vi.advanceTimersByTime(55_000));
+    markLibraryStatsApplied(); // 라이브러리가 5초 전에 받았다
+    act(() => vi.advanceTimersByTime(5_000)); // 60초 폴링
+    expect(generationStats).toHaveBeenCalledTimes(1);
+    act(() => vi.advanceTimersByTime(60_000)); // 라이브러리 것이 65초 묵었다
+    expect(generationStats).toHaveBeenCalledTimes(2);
   });
 
   it("패널을 닫으면 폴이 멈춘다", () => {

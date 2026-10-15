@@ -8,6 +8,7 @@ import { isStructurallyEqual, reconcileArrayState, reconcileValueState } from ".
 import { hasWorkspaceFilter, matchesWorkspaceFilter, workspaceFilterOf } from "./libraryWorkspaceScope";
 import { t } from "./i18n";
 import { timedLibraryRequest } from "./libraryRequestTimeout";
+import { markLibraryStatsApplied } from "./statsFreshness";
 import { API_PAUSED_MESSAGE, ApiPausedError } from "./http";
 import type { Facets, Filters, GenQuery, GenStats, Generation, Project } from "../types";
 
@@ -391,6 +392,7 @@ export function useGenerationLibraryData({
       if (st) {
         setStats((prev) => reconcileValueState(prev, st));
         lastStatsAtRef.current = now;
+        markLibraryStatsApplied();
       }
       if (f) setFacets((prev) => reconcileValueState(prev, f));
       if (pr) {
