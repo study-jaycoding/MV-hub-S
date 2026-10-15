@@ -158,7 +158,7 @@ def sync_scene_backups(
                     continue
                 # 그사이 다른 창이 올렸다 — 덮지 않고 사본으로. 같은 입력의 사본이 이미 있고 그대로면 그것, 그 뒤 고쳐졌으면 새 사본(Codex E3).
                 salt = ""
-                for _ in range(8):
+                for _ in range(8 + len(avoid)):  # 피할 자리를 건너뛰는 횟수는 고쳐진 사본 한도(8)를 쓰지 않는다(Codex 1A 6차)
                     target, copy_data = _fork_copy(sid, parsed, incoming, salt)
                     existing = _row_hash(conn, owner_uid, project_id, target)
                     if target not in avoid and (existing is None or existing == _hash(copy_data)):

@@ -151,6 +151,18 @@ class SceneBackupTests(unittest.TestCase):
         self.assertEqual(resend["target_id"], again["target_id"])  # 같은 입력·같은 피할 자리면 같은 새 자리(재전송이 사본을 늘리지 않음)
         self.assertEqual(len(repo.list_scene_backups("u1")), 3)
 
+    def test_many_fork_avoid_entries_do_not_exhaust_copy_search(self):
+        # 갈래를 모르는 탭이 사본을 거듭 가져와 피할 자리가 8개를 넘어도 사본 찾기가 실패해 요청 전체가 막히지 않는다(Codex 1A 6차).
+        repo.sync_scene_backups("u1", "", [{"id": "s1", "data": _scene("s1", "A")}], [])
+        avoid: list[str] = []
+        for _ in range(10):
+            res = repo.sync_scene_backups(
+                "u1", "", [{"id": "s1", "data": _scene("s1", "옛"), "base_hash": "x"}], [], None, avoid
+            )["results"][0]
+            self.assertEqual(res["status"], "copied")
+            self.assertNotIn(res["target_id"], avoid)
+            avoid.append(res["target_id"])
+
     def test_delete_bases_keep_newer_row(self):
         repo.sync_scene_backups("u1", "", [{"id": "s1", "data": _scene("s1", "A")}], [])
         old = self._hash_of()
