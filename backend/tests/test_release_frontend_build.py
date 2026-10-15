@@ -118,6 +118,32 @@ def test_release_mcp_install_requires_hashes_and_wheels(tmp_path: Path, pip_exit
     assert "AFTER C:\\custom\\pip.ini" in result.stdout  # 성공·실패 모두 원래 설정으로 되돌린다
 
 
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell release build")
+def test_release_locked_install_refuses_a_target_with_leftover_packages(tmp_path: Path) -> None:
+    # Codex 3A 리뷰 P2 — 남은 패키지 위에 설치하면 pip 가 이미 있는 폴더를 바꾸지 않아 지문 확인을 지나 옛 코드가 포장될 수 있다
+    source = (Path(__file__).resolve().parents[2] / "release/make_release.ps1").read_text(encoding="utf-8-sig")
+    function = "function Install-HashLockedPackages {" + source.split("function Install-HashLockedPackages {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+    log = tmp_path / "pip.txt"
+    fake = tmp_path / "python.cmd"
+    fake.write_text(f"@echo off\r\necho CALLED> \"{log}\"\r\nexit /b 0\r\n", encoding="ascii")
+    target = tmp_path / "site-packages"
+    (target / "fastapi").mkdir(parents=True)  # 앞 빌드가 남긴 것
+    harness = tmp_path / "leftover-probe.ps1"
+    harness.write_text(
+        "param([string]$Py,[string]$Lock,[string]$Target)\n$ErrorActionPreference = 'Stop'\n"
+        + function
+        + "try { Install-HashLockedPackages -PythonExe $Py -LockPath $Lock -Target $Target -Label 'backend'; Write-Output 'INSTALLED' } catch { Write-Output ('THREW ' + $_) }\n",
+        encoding="utf-8-sig",
+    )
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(harness),
+         "-Py", str(fake), "-Lock", str(_BACKEND / "requirements.lock.txt"), "-Target", str(target)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert "THREW" in result.stdout and "not empty" in result.stdout
+    assert not log.exists()  # pip 를 부르지 않았다
+
+
 def _archive_probe(
     tmp_path: Path, assets: list[str], *, extra: tuple[str, ...] = (),
     missing: str = "", python: bool = False,

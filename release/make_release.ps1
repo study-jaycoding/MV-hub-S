@@ -163,6 +163,11 @@ function Install-HashLockedPackages {
     # 잠금 파일의 판·지문(SHA256)이 다르거나 휠이 없으면 멈춘다 — 받은 파일이 바뀌었거나 소스 빌드·이 PC 의 pip 설정
     # (pip.ini·환경변수)으로 다른 것이 들어가지 않게(배포 전 P1, 2026-10-16 — MCP, 같은 날 Jay 3A 로 백엔드도). --no-deps 를 쓰지 않아
     # 잠금에서 빠진 하위 의존성도 실패로 잡힌다. 대상은 빈 폴더라, 빌드 PC 에 깔린 무관한 패키지와의 거짓 충돌 경고만 숨긴다.
+    # 대상이 비어 있지 않으면 멈춘다 — 남은 패키지 위에 설치하면 pip 는 이미 있는 폴더를 바꾸지 않아, 지문을 확인하고도 옛 코드를
+    # 포장할 수 있다(스테이징 지우기는 실패를 무시한다 — [1/8]. Codex 3A 리뷰 P2).
+    if ((Test-Path -LiteralPath $Target) -and @(Get-ChildItem -LiteralPath $Target -Force).Count -gt 0) {
+        throw "bundled $Label packages target is not empty: $Target"
+    }
     $PreviousPipConfig = $env:PIP_CONFIG_FILE
     $env:PIP_CONFIG_FILE = "nul"
     try {
