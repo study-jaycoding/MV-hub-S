@@ -831,6 +831,26 @@ it("풀 카드의 호버 단추 — S·T·C·ⓘ 는 앱의 동작을 부르고,
   act(() => part(".card-tl .card-cm").click());
   typeTag("컷2");
   expect(cardActions.onSetTags.mock.calls.map(([g, tags]) => [g.id, tags])).toEqual([["a", ["컷1"]], ["a", ["컷1", "컷2"]]]);
+  // 앞 태그(컷1)만 담긴 목록이 뒤 태그(컷2)의 저장보다 먼저 와도 덧입힌 컷2 는 남는다 — 목록이 따라잡을 때까지(Codex 리뷰: 다시 받은
+  //  목록이면 걷던 때는 여기서 컷2 가 사라져 다음 저장이 [컷1, 컷3] 이었다). 따라잡은 뒤에는 걷어서 그 뒤의 목록 값을 따른다.
+  const escape = () => act(() => {
+    part(".cs-tag-input").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  });
+  const listed = (tags: string[]) => {
+    world.gens = [gen("a", "c1", { tags }), gen("b", "c1"), gen("x", "c2")];
+    mount();
+  };
+  escape();
+  listed(["컷1"]);
+  act(() => part(".card-tl .card-cm").click());
+  typeTag("컷3");
+  escape();
+  listed(["컷1", "컷2", "컷3"]);
+  listed(["다른"]);
+  act(() => part(".card-tl .card-cm").click());
+  typeTag("컷4");
+  escape();
+  expect(cardActions.onSetTags.mock.calls.slice(2).map(([, tags]) => tags)).toEqual([["컷1", "컷2", "컷3"], ["다른", "컷4"]]);
 
   // 몸통: 휠 클릭 = 넣을 트랙 메뉴(라이브러리 카드의 휠 클릭 = 정보 창은 뜨지 않는다) · 누르기 = 고르기 · 더블클릭 = 크게 보기
   fire(part(".card-thumb"), "auxclick", { button: 1, buttons: 0 });
@@ -867,6 +887,11 @@ it("풀 카드는 키보드로 누를 수 있다 — Tab 으로 간 초점의 En
   act(() => a.focus());
   const space = key(a, " ");
   expect([picked(), space.defaultPrevented]).toEqual([[false, true], true]); // 편집 탭이 썼다(재생) — 카드는 고르지 않는다
+  // 다른 카드를 끄는 중의 Enter 는 초점이 남은 카드를 누르지 않는다 — 끌기가 키를 먼저 막는다(useDragKeyHold · Codex 리뷰)
+  dragCard(b, null);
+  key(a, "Enter");
+  expect(picked()).toEqual([false, true]);
+  dropCard();
 });
 
 // Jay 2026-10-15 — 풀 맨 윗줄 카드가 위에서 잘렸다: 스크롤 칸은 제 안쪽 끝에서 자르는데 위 여백이 0 이라, 고른 카드의 바깥 흰 테두리
@@ -890,4 +915,11 @@ it("풀 격자의 위 여백은 고른 카드의 바깥 테두리·호버로 들
   expect([".card-drag-grip", ".ov-ref", ".ov-import", ".ov-icon"].map((selector) => style(selector).display === "none"))
     .toEqual([true, true, true, false]); // ⠿·@·⬇ 는 뺐다 · ⤓ 는 있다
   expect(style(".thumb-overlay").opacity).toBe("0"); // 라이브러리의 '선택'은 늘 보이지만 여기의 굵은 테두리는 넣은 것이다
+  // Tab 으로 간 단추는 넣은 카드에서도 보인다 — 보이는 규칙이 숨김 규칙보다 세야 한다(약해서 투명한 채 눌렸다 — Codex 리뷰).
+  //  jsdom 은 :focus-within 상태를 계산된 값에 넣지 않아(선택자는 맞는다) 규칙의 세기(클래스·가상 클래스 수)를 직접 센다
+  const weight = (selector: string) => (selector.match(/[.:][\w-]+/g) ?? []).length;
+  const rules = css("edit-tab");
+  const hide = /([^{}\n]*\.card\.selected \.thumb-overlay)\s*\{\s*opacity:\s*0/.exec(rules)![1];
+  const show = /([^{},\n]*\.thumb-overlay:focus-within)/.exec(rules)![1];
+  expect(weight(show)).toBeGreaterThan(weight(hide));
 });

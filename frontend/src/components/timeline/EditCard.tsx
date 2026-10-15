@@ -66,8 +66,10 @@ export function EditCard({
   const mark = !item.resolve ? base
     : { label: base ? `${base.label} · ${dv}` : dv, short: base ? `${base.short}·${dv}` : dv, lead: true };
   // Enter·Space = 누르기(단추와 같다). 마우스로 남은 초점의 Space 는 편집 키(재생)다 — 편집 탭의 규칙(조작 규칙 8)과 같다.
+  //  이미 막힌 키(끄는 중 — useDragKeyHold 가 잡는 단계에서 막는다)는 누르지 않는다: 단추라면 브라우저가 누르지 않았다(Codex 리뷰)
   const press = (event: KeyboardEvent<HTMLElement>) => {
-    if (event.target !== event.currentTarget || (event.key !== "Enter" && !(event.key === " " && focusCameByTab()))) return;
+    if (event.defaultPrevented || event.target !== event.currentTarget) return;
+    if (event.key !== "Enter" && !(event.key === " " && focusCameByTab())) return;
     event.preventDefault();
     event.currentTarget.click();
   };

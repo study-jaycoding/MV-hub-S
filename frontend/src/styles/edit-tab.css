@@ -200,7 +200,8 @@
 .ed-card .card-drag-grip, .ed-card .ov-bottom .ov-icon.ov-ref, .ed-card .ov-bottom .ov-icon.ov-import { display: none; }
 /* 넣은 카드도 단추는 호버·초점 때만 — 라이브러리의 '선택'은 늘 보이지만, 여기의 굵은 테두리는 고른 것이 아니라 넣은 것이다 */
 .ed-card .card.selected .thumb-overlay { opacity: 0; }
-.ed-card .card-thumb:hover .thumb-overlay, .ed-card .thumb-overlay:focus-within { opacity: 1; }
+/*  (보이는 규칙은 위 숨김 규칙보다 세게 — 약하면 넣은 카드에서 Tab 으로 간 ⓘ·⤓ 가 투명한 채 눌렸다. Codex 리뷰) */
+.ed-card .card .card-thumb:hover .thumb-overlay, .ed-card .card .card-thumb .thumb-overlay:focus-within { opacity: 1; }
 /* 단추의 흐림은 보일 때만 — 안 보일 때(opacity 0)도 걸려 있으면 단추마다 합성 레이어가 된다(65회차 캔버스 실측과 같은 까닭) */
 .ed-card .card-sf, .ed-card .card-cm, .ed-card .ov-icon { backdrop-filter: none; }
 .ed-card .card:hover .card-sf, .ed-card .card:hover .card-cm, .ed-card .card:hover .ov-icon,

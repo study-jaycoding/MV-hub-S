@@ -115,18 +115,32 @@ export function EditPool({
   useEscapeClose(() => setOpen(null), open !== null, true, true);
   const shown = useMemo(() => arrangePool(items, searching ? query : "", ui.sort), [items, searching, query, ui.sort]);
   const placed = items.filter((item) => item.track !== null).length;
-  // 썸네일 카드의 T(태그 고치기) — 한 번에 한 장. 고친 태그는 공유 목록을 다시 받을 때까지(받은 생성물이 바뀔 때까지) 여기서 덧입힌다:
+  // 썸네일 카드의 T(태그 고치기) — 한 번에 한 장. 고친 태그는 받은 목록이 그 값을 따라잡을 때까지 여기서 덧입힌다:
   //  앱의 낙관적 갱신은 라이브러리 목록에만 닿아, 안 그러면 잇달아 넣는 태그가 옛 태그에서 계산돼 앞에 넣은 것을 지운다.
+  //  '목록을 다시 받았다'만으로 걷지 않는다 — 태그 저장 알림은 저장 묶음마다 와서, 뒤 편집의 저장보다 먼저 온 목록이 그 편집을 지웠다(Codex 리뷰).
+  //  shortcut: 저장이 실패하면 목록이 끝내 따라잡지 않아 저장 안 된 태그가 풀에 남는다(앱이 실패를 알린다) — 거슬리면 실패 알림 때 걷는다.
   const [tagging, setTagging] = useState<string | null>(null);
-  const [retag, setRetag] = useState<Record<string, { base: Generation; tags?: string[]; auto_tags?: string[] }>>({});
+  const [retag, setRetag] = useState<Record<string, { tags?: string[]; auto_tags?: string[] }>>({});
   const withTags = (gen: Generation) => {
     const kept = retag[gen.id];
-    return kept?.base === gen ? { ...gen, ...(kept.tags && { tags: kept.tags }), ...(kept.auto_tags && { auto_tags: kept.auto_tags }) } : gen;
+    return kept ? { ...gen, ...(kept.tags && { tags: kept.tags }), ...(kept.auto_tags && { auto_tags: kept.auto_tags }) } : gen;
   };
-  const keepTags = (gen: Generation, patch: { tags?: string[]; auto_tags?: string[] }) => {
-    const base = items.find((item) => item.gen.id === gen.id)?.gen;
-    if (base) setRetag((prev) => ({ ...prev, [gen.id]: { ...(prev[gen.id]?.base === base ? prev[gen.id] : {}), ...patch, base } }));
-  };
+  const keepTags = (gen: Generation, patch: { tags?: string[]; auto_tags?: string[] }) =>
+    setRetag((prev) => ({ ...prev, [gen.id]: { ...prev[gen.id], ...patch } }));
+  useEffect(() => {
+    const same = (have: string[] | undefined, want: string[] | undefined) =>
+      !want || [...(have ?? [])].sort().join("\n") === [...want].sort().join("\n");
+    setRetag((prev) => {
+      const caught = Object.keys(prev).filter((id) => {
+        const gen = items.find((item) => item.gen.id === id)?.gen;
+        return gen && same(gen.tags, prev[id].tags) && same(gen.auto_tags, prev[id].auto_tags);
+      });
+      if (caught.length === 0) return prev;
+      const next = { ...prev };
+      for (const id of caught) delete next[id];
+      return next;
+    });
+  }, [items]);
   const actions: PoolCardActions = {
     ...cardActions,
     onSetTags: (gen, tags) => {
