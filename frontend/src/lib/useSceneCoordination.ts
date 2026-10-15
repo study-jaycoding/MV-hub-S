@@ -33,6 +33,7 @@ import {
   countBackupOnlyScenes,
   importFromBackup,
   initSceneBackup,
+  subscribeSceneBackupForked,
   subscribeSceneBackupSkipped,
   subscribeSceneRestore,
 } from "./sceneBackup";
@@ -182,10 +183,20 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
           "작업은 이 브라우저에 그대로 저장돼 있습니다. 설정의 [전체 내보내기]로 따로 받아 두세요.",
       );
     });
+    // 다른 창이 더 새로 올린 백업을 덮지 않았다(Jay 결정 1A) — 이 창의 내용은 DB 백업에 사본으로 따로 남는다. 빈 목록 = 판을 몰라 미룸.
+    const unsubscribeForked = subscribeSceneBackupForked((names) => {
+      flashRef.current?.(
+        names.length
+          ? `캔버스 ${names.map((name) => `'${name}'`).join(", ")}: 다른 창에서 더 새로 백업한 내용이 있어 덮지 않았습니다 — ` +
+              "이 창의 내용은 DB 백업에 '(옛 창 사본)'으로 따로 올립니다. 작업은 이 화면에 그대로 있습니다."
+          : "일부 캔버스는 DB 백업의 판을 확인하지 못해 올리기를 미뤘습니다 — 다른 창의 새 백업을 덮지 않기 위해서입니다. 작업은 이 화면에 그대로 있습니다.",
+      );
+    });
     return () => {
       unsubscribe();
       unsubscribeLinks();
       unsubscribeSkipped();
+      unsubscribeForked();
     };
   }, []);
   const lastNotifyRef = useRef(0);

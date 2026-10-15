@@ -21,6 +21,7 @@ vi.mock("../src/lib/sceneBackup", () => ({
   importFromBackup: async () => 0,
   subscribeSceneRestore: () => () => {},
   subscribeSceneBackupSkipped: () => () => {},
+  subscribeSceneBackupForked: () => () => {},
 }));
 vi.mock("../src/lib/sceneCardLinks", () => ({
   initSceneCardLinks: () => {},

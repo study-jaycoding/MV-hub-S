@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import repo
 from ..deps import actor_id
@@ -18,15 +18,19 @@ router = APIRouter(prefix="/api/scenes", tags=["scenes"])
 
 
 class SceneUpsertIn(BaseModel):
-    id: str
+    id: str = Field(max_length=200)
     name: Optional[str] = None
     data: str  # 씬 JSON 원문(프론트 직렬화 그대로 보관)
+    # 이 창이 마지막으로 서버와 맞춘 지문(""=모름). 없으면(옛 앱) 지금처럼 덮는다 — 판이 다르면 사본으로(Jay 결정 1A).
+    base_hash: Optional[str] = None
 
 
 class SceneSyncIn(BaseModel):
     project_id: str = ""  # 현재 씬은 전역('') — 미래 프로젝트별 분리용 자리
     upserts: list[SceneUpsertIn] = []
     deleted_ids: list[str] = []
+    # 지울 씬의 판 — 행 지문이 다르면 남긴다(옛 창이 새 내용을 지우지 않게). 칸을 보냈는데 빠진 id 는 '모름'이라 남긴다. 없음(옛 앱) = 지금처럼 지운다.
+    delete_bases: Optional[dict[str, str]] = None
 
 
 class CardLinkIn(BaseModel):
@@ -57,8 +61,9 @@ def sync_scene_backups(body: SceneSyncIn, request: Request):
         res = repo.sync_scene_backups(
             actor_id(request),
             body.project_id,
-            [u.model_dump() for u in body.upserts],
+            [u.model_dump(exclude_unset=True) for u in body.upserts],  # base_hash 를 안 보낸 옛 앱은 칸 자체가 없다
             body.deleted_ids,
+            body.delete_bases,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

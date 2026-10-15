@@ -1218,6 +1218,11 @@ export function writeSceneStoreAsOtherWindowForTest(mutate: (all: ScenesByProjec
   memory.set(K_VERSION, ((memory.get(K_VERSION) as number | undefined) ?? 0) + 1);
 }
 
+/** 시험 전용 — 다른 창이 썼다는 알림(BroadcastChannel)을 받은 것처럼 저장소를 다시 읽는다(위의 쓰기와 짝). */
+export function refreshSceneStoreForTest(): Promise<boolean> {
+  return refreshFromStore();
+}
+
 /** 시험·실측용 — 저장소 전체를 갈아 끼우고 **확정을 기다린다**. */
 export async function writeScenesStore(next: ScenesByProject): Promise<boolean> {
   const snapshot = structuredClone(next);

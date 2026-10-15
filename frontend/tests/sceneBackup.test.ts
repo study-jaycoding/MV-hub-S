@@ -24,19 +24,21 @@ type Call = { url: string; init?: RequestInit };
 let calls: Call[] = [];
 let getMeta: () => Promise<{ items: unknown[] }>; // GET ?project_id=
 let getFull: () => Promise<{ items: unknown[] }>; // GET ?project_id=&include_data=1
+let putReply: (body: { upserts: { id: string; data: string; base_hash?: string }[] }) => unknown = () => ({ ok: true }); // 옛 허브 꼴(결과 칸 없음)
 vi.mock("../src/lib/http", () => ({
   jsonFetch: (url: string, init?: RequestInit) => {
     calls.push({ url, init });
     if (init?.method === "PUT") {
       // 실제 서버(repo/scenes_backup.py)와 같게: 씬 하나라도 상한을 넘으면 그 요청 전체를 거절한다.
-      const body = JSON.parse(String(init.body)) as { upserts: { data: string }[] };
+      const body = JSON.parse(String(init.body)) as { upserts: { id: string; data: string }[] };
       const tooBig = body.upserts.some((u) => new TextEncoder().encode(u.data).byteLength > SERVER_MAX_SCENE_BYTES);
-      return tooBig ? Promise.reject(new Error("400 씬이 너무 큼")) : Promise.resolve({ ok: true });
+      return tooBig ? Promise.reject(new Error("400 씬이 너무 큼")) : Promise.resolve(putReply(body));
     }
     if (url.includes("include_data")) return getFull();
     return getMeta();
   },
 }));
+
 
 const SERVER_MAX_SCENE_BYTES = 5 * 1024 * 1024;
 const puts = () => calls.filter((c) => c.init?.method === "PUT");
@@ -66,6 +68,7 @@ describe("sceneBackup (DB 미러·복구)", () => {
     localStorage.setItem("ch.activeAccount", `user${acctSeq}@test`);
     getMeta = () => Promise.resolve({ items: [] });
     getFull = () => Promise.resolve({ items: [] });
+    putReply = () => ({ ok: true });
   });
 
   afterEach(() => {
@@ -300,8 +303,9 @@ describe("sceneBackup (DB 미러·복구)", () => {
     // 해시 대조(crypto.subtle)는 진짜 비동기라 가짜 타이머로 넘길 수 없다 — http LAN 처럼 해시가 없는 환경으로
     // 돌린다(그때는 바뀐 씬을 그대로 올린다). 이 시험이 보는 것은 '무엇을 보내는가'다.
     vi.stubGlobal("crypto", {});
-    // 서버에는 그 씬의 예전(작던 때) 사본이 있다 — 지우면 안 된다.
+    // 서버에는 그 씬의 예전(작던 때) 사본이 있다 — 지우면 안 된다. 이 프로필이 그때 서버와 맞췄다(판 = "old", 1A 장부).
     getMeta = () => Promise.resolve({ items: [{ id: "big", data_hash: "old" }] });
+    localStorage.setItem(`mvhub.sceneBackupBase:acct:user${acctSeq}@test:big`, JSON.stringify({ b: "old" }));
     const { scenes, backup, settle } = await boot();
     const skipped: string[][] = [];
     backup.subscribeSceneBackupSkipped((names) => skipped.push(names));
@@ -351,5 +355,297 @@ describe("sceneBackup (DB 미러·복구)", () => {
     await vi.advanceTimersByTimeAsync(2500);
     expect(puts().length).toBe(1);
     expect(putBody(puts()[0]).upserts.map((u: { id: string }) => u.id)).toEqual(["edge"]);
+  });
+});
+
+// ── Jay 결정 1A(10-15): 오래 안 쓴 창이 씬 백업을 옛 내용으로 덮지 않게 — 판 장부·옛 창 건너뛰기·사본(갈래) ──
+// 진짜 crypto.subtle 은 가짜 타이머 밖에서 끝난다 — 마이크로태스크로 끝나는 결정적 지문으로 바꿔 둔다(판 비교만 본다).
+function fakeHex(text: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619) >>> 0;
+  return h.toString(16).padStart(8, "0").repeat(8);
+}
+let holdDigest: { match: string; until: Promise<void> } | null = null; // 이 글자를 담은 씬의 지문은 until 까지 끝나지 않는다
+function stubDigest() {
+  vi.stubGlobal("crypto", {
+    subtle: {
+      digest: async (_algo: string, data: Uint8Array) => {
+        const text = new TextDecoder().decode(data);
+        if (holdDigest && text.includes(holdDigest.match)) await holdDigest.until;
+        return Uint8Array.from(fakeHex(text).match(/../g)!.map((b) => parseInt(b, 16))).buffer;
+      },
+    },
+  });
+}
+const ledgerKey = (id: string) => `mvhub.sceneBackupBase:acct:user${acctSeq}@test:${id}`;
+
+describe("sceneBackup — 판(1A)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    calls = [];
+    mem.clear();
+    acctSeq += 1;
+    localStorage.setItem("ch.activeAccount", `user${acctSeq}@test`);
+    getFull = () => Promise.resolve({ items: [] });
+    putReply = () => ({ ok: true });
+    holdDigest = null;
+    stubDigest();
+  });
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("바뀐 것 없는 옛 창(지문 == 판)은 서버가 더 새것이면 올리지 않는다", async () => {
+    const { scenes, backup, settle } = await boot();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "옛 7장"))]);
+    await settle();
+    const text = scenes.listPersistedSceneTexts(null)[0].text;
+    localStorage.setItem(ledgerKey("s1"), JSON.stringify({ b: fakeHex(text) })); // 이 프로필이 10-11 에 맞춘 판
+    getMeta = () => Promise.resolve({ items: [{ id: "s1", data_hash: "새-창-12장" }] }); // 그사이 다른 프로필이 올렸다
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().length).toBe(0); // 전엔 옛 7장으로 덮었다
+  });
+
+  it("둘 다 바뀌었으면 판을 실어 보내고, 허브가 사본으로 받으면 그 뒤 편집은 사본 행으로 간다 · 지우면 사본 행을 판과 함께 지운다", async () => {
+    const { scenes, backup, settle } = await boot();
+    const forked: string[][] = [];
+    backup.subscribeSceneBackupForked((names) => forked.push(names));
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "고친 옛 창"))]);
+    await settle();
+    localStorage.setItem(ledgerKey("s1"), JSON.stringify({ b: "옛-판" }));
+    getMeta = () => Promise.resolve({ items: [{ id: "s1", data_hash: "새-창" }] });
+    putReply = (body) => ({ ok: true, results: body.upserts.map((u) => (u.id === "s1"
+      ? { id: "s1", status: "copied", target_id: "bk_copy", hash: "사본-판" }
+      : { id: u.id, status: "saved", target_id: u.id, hash: "사본-판2" })) });
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(putBody(puts()[0]).upserts[0]).toMatchObject({ id: "s1", base_hash: "옛-판" });
+    expect(forked).toEqual([["고친 옛 창"]]);
+    expect(JSON.parse(localStorage.getItem(ledgerKey("s1"))!).fork).toEqual({ id: "bk_copy", b: "사본-판" });
+
+    scenes.updateScene(null, "s1", { name: "더 고침" });
+    await settle();
+    await vi.advanceTimersByTimeAsync(2500);
+    const next = putBody(puts()[1]).upserts[0];
+    expect(next).toMatchObject({ id: "bk_copy", base_hash: "사본-판" });
+    expect(JSON.parse(next.data)).toMatchObject({ id: "bk_copy", name: "더 고침 (옛 창 사본)", backupForkOf: { id: "s1" } });
+
+    scenes.saveScenes(null, []);
+    await settle();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(putBody(puts()[2])).toMatchObject({ deleted_ids: ["bk_copy"], delete_bases: { bk_copy: "사본-판2" } });
+    expect(localStorage.getItem(ledgerKey("s1"))).toBeNull();
+  });
+
+  it("판은 범위에 들어갈 때 한 번만 읽는다 — 그 뒤 다른 탭이 장부를 바꿔도 이 탭은 처음 판으로 보낸다", async () => {
+    const { scenes, backup, settle } = await boot();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "이 탭의 옛 글"))]);
+    await settle();
+    getMeta = () => Promise.resolve({ items: [{ id: "s1", data_hash: "다른-탭-판" }] });
+    await backup.initSceneBackup(); // 장부 없음 = '모름'
+    localStorage.setItem(ledgerKey("s1"), JSON.stringify({ b: "다른-탭-판" })); // 다른 탭이 그 뒤 맞췄다 — 이 탭이 받은 내용은 아니다
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(putBody(puts()[0]).upserts[0]).toMatchObject({ id: "s1", base_hash: "" }); // 남의 새 판으로 덮어쓰기 허가를 받지 않는다(Codex C1)
+  });
+
+  it("가져오기·개수는 이 탭의 갈래 사본 행을 빼고, 서버에 행이 사라진 씬은 다시 넣는다", async () => {
+    const { scenes, backup, settle } = await boot();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1"))]);
+    await settle();
+    localStorage.setItem(ledgerKey("s1"), JSON.stringify({ b: "x", fork: { id: "bk_mine", b: "y" } }));
+    getMeta = () => Promise.resolve({ items: [{ id: "bk_mine", data_hash: "y" }, { id: "other", data_hash: "z" }] });
+    getFull = () => Promise.resolve({ items: [{ id: "bk_mine", data: sceneJson("bk_mine") }, { id: "other", data: sceneJson("other") }] });
+    await backup.initSceneBackup();
+    expect(await backup.countBackupOnlyScenes()).toBe(1);
+    expect(await backup.importFromBackup()).toBe(1);
+    expect(scenes.listScenes(null).map((s) => s.id).sort()).toEqual(["other", "s1"]);
+  });
+
+  // ── Codex 1A 코드 리뷰(08:40) 넷 — 새 백업을 덮거나 지우던 순서들 ──
+  it("#1 앞 씬의 지문을 기다리는 사이 바뀐 씬은 옛 글자로 보내지 않고, 끝나고 새 글자로 보낸다", async () => {
+    const { scenes, backup, settle } = await boot();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "하나")), JSON.parse(sceneJson("s2", "둘"))]);
+    await settle();
+    localStorage.setItem(ledgerKey("s1"), JSON.stringify({ b: "서버1" }));
+    localStorage.setItem(ledgerKey("s2"), JSON.stringify({ b: "서버2" }));
+    getMeta = () => Promise.resolve({ items: [{ id: "s1", data_hash: "서버1" }, { id: "s2", data_hash: "서버2" }] });
+    let release!: () => void;
+    holdDigest = { match: '"하나"', until: new Promise<void>((done) => (release = done)) };
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500); // s1 의 지문에서 멈춰 있다
+    scenes.updateScene(null, "s2", { name: "둘 고침" }); // 그사이 s2 가 바뀐다
+    await settle();
+    release();
+    await vi.advanceTimersByTimeAsync(2500);
+    const sent = puts().map((c) => putBody(c).upserts.map((u: { id: string; data: string }) => [u.id, JSON.parse(u.data).name]));
+    expect(sent).toEqual([[["s1", "하나"]], [["s2", "둘 고침"]]]);
+  });
+
+  it("#2 지문 계산이 없는 창 — 복구한 씬의 판은 서버가 준 지문이고, 지울 때 그 판을 싣는다", async () => {
+    vi.stubGlobal("crypto", {});
+    const { scenes, backup, settle } = await boot();
+    getFull = () => Promise.resolve({ items: [{ id: "s1", data: sceneJson("s1"), data_hash: "h1" }] });
+    getMeta = () => Promise.resolve({ items: [{ id: "s1", data_hash: "h1" }] });
+    expect(await backup.initSceneBackup()).toBe(true);
+    expect(JSON.parse(localStorage.getItem(ledgerKey("s1"))!)).toEqual({ b: "h1" });
+    scenes.saveScenes(null, []);
+    await settle();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(putBody(puts()[0])).toMatchObject({ deleted_ids: ["s1"], delete_bases: { s1: "h1" } }); // 전엔 판 없이 보내 허브가 무조건 지웠다
+  });
+
+  it("#3 저장소를 잃고 복구했는데 옛 장부에 갈래가 남았으면 끊는다 — 복구한 원본을 지워도 사본 씬의 백업은 남는다", async () => {
+    const { scenes, backup, settle } = await boot();
+    localStorage.setItem(ledgerKey("x"), JSON.stringify({ b: "x0", fork: { id: "bk_f", b: "f0" } }));
+    const rows = [{ id: "x", data: sceneJson("x", "원본"), data_hash: "hx" }, { id: "bk_f", data: sceneJson("bk_f", "사본"), data_hash: "hf" }];
+    getFull = () => Promise.resolve({ items: rows });
+    getMeta = () => Promise.resolve({ items: rows.map(({ id, data_hash }) => ({ id, data_hash })) });
+    expect(await backup.initSceneBackup()).toBe(true);
+    expect(JSON.parse(localStorage.getItem(ledgerKey("x"))!)).toEqual({ b: "hx" });
+    scenes.saveScenes(null, scenes.listScenes(null).filter((s) => s.id !== "x"));
+    await settle();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(putBody(puts()[0])).toMatchObject({ deleted_ids: ["x"], delete_bases: { x: "hx" } }); // 전엔 bk_f(화면에 남은 사본 씬)를 지웠다
+  });
+
+  it("#4 다른 탭에서 받은 씬을 옛 글자로 되돌리면 다시 올린다 — '올린 그대로'로 보고 건너뛰지 않게", async () => {
+    const { scenes, backup, settle } = await boot();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "A"))]);
+    await settle();
+    const textA = scenes.listPersistedSceneTexts(null)[0].text;
+    putReply = (body) => ({ ok: true, results: body.upserts.map((u) => ({ id: u.id, status: "saved", target_id: u.id, hash: fakeHex(u.data) })) });
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().length).toBe(1); // A 를 올렸다
+    const [{ text: textB }] = await receiveFromOtherTab(scenes, settle, [["s1", "B"]]);
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "A"))]); // 사용자가 옛 이름으로 되돌린다
+    await settle();
+    expect(scenes.listPersistedSceneTexts(null)[0].text).toBe(textA);
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().length).toBe(2);
+    expect(putBody(puts()[1]).upserts[0]).toMatchObject({ id: "s1", base_hash: fakeHex(textB) });
+  });
+
+  // ── Codex 1A 재검토(08:56) 셋 — #4 의 다른 순서 ──
+  const hashReply = (body: { upserts: { id: string; data: string }[] }) =>
+    ({ ok: true, results: body.upserts.map((u) => ({ id: u.id, status: "saved", target_id: u.id, hash: fakeHex(u.data) })) });
+  // 같은 브라우저의 다른 탭이 이 씬들을 고쳐 저장하고 서버에 올려 장부를 맞췄다 → 이 탭이 그 알림을 받아 저장소를 다시 읽는다(진짜 길)
+  async function receiveFromOtherTab(scenes: typeof import("../src/lib/scenes"), settle: () => Promise<boolean>, list: [string, string][]) {
+    const store = await import("../src/lib/sceneStore");
+    const texts = list.map(([id, name]) => ({ id, text: sceneJson(id, name) }));
+    for (const s of texts) localStorage.setItem(ledgerKey(s.id), JSON.stringify({ b: fakeHex(s.text) }));
+    getMeta = () => Promise.resolve({ items: texts.map((s) => ({ id: s.id, data_hash: fakeHex(s.text) })) });
+    store.writeSceneStoreAsOtherWindowForTest((all) => {
+      all[`acct:user${acctSeq}@test::_none`] = list.map(([id, name]) => JSON.parse(sceneJson(id, name)));
+    });
+    await store.refreshSceneStoreForTest();
+    await settle();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(scenes.listPersistedSceneTexts(null).map((s) => s.text)).toEqual(texts.map((s) => s.text)); // 받은 글자 = 다른 탭이 올린 글자
+    return texts;
+  }
+
+  it("재검토 1 — 받음 → 되돌려 올림 → 같은 글자를 또 받음 → 또 되돌림: 마지막 되돌림도 올린다", async () => {
+    const { scenes, backup, settle } = await boot();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "A"))]);
+    await settle();
+    putReply = hashReply;
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500);
+    const [b1] = await receiveFromOtherTab(scenes, settle, [["s1", "B"]]);
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "A"))]);
+    await settle();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().length).toBe(2);
+    await receiveFromOtherTab(scenes, settle, [["s1", "B"]]);
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "A"))]);
+    await settle();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().length).toBe(3);
+    expect(putBody(puts()[2]).upserts[0]).toMatchObject({ id: "s1", base_hash: fakeHex(b1.text) });
+  });
+
+  it("재검토 2 — 보내는 사이 다른 탭에서 받은 뒤 늦게 온 응답이 '올린 그대로' 기억을 되살리지 않는다", async () => {
+    const { scenes, backup, settle } = await boot();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "A"))]);
+    await settle();
+    let answer!: () => void;
+    putReply = (body) => new Promise((done) => (answer = () => done(hashReply(body))));
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500); // A 를 보내는 중 — 응답이 늦다
+    const [b] = await receiveFromOtherTab(scenes, settle, [["s1", "B"]]);
+    answer();
+    await vi.advanceTimersByTimeAsync(0);
+    putReply = hashReply;
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "A"))]); // 사용자가 A 로 되돌린다
+    await settle();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().length).toBe(2);
+    expect(putBody(puts()[1]).upserts[0]).toMatchObject({ id: "s1", base_hash: fakeHex(b.text) });
+  });
+
+  it("재검토 3 — 지문 계산이 없는 창에서 두 씬을 받으면 둘 다 기억을 무효로 한다(첫 씬에서 멈추지 않는다)", async () => {
+    vi.stubGlobal("crypto", {});
+    const { scenes, backup, settle } = await boot();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "A1")), JSON.parse(sceneJson("s2", "A2"))]);
+    await settle();
+    putReply = (body) => ({ ok: true, results: body.upserts.map((u) => ({ id: u.id, status: "saved", target_id: u.id, hash: `h:${JSON.parse(u.data).name}` })) });
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().length).toBe(1);
+    await receiveFromOtherTab(scenes, settle, [["s1", "B1"], ["s2", "B2"]]);
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "B1")), JSON.parse(sceneJson("s2", "A2"))]); // s2 만 되돌린다
+    await settle();
+    await vi.advanceTimersByTimeAsync(2500);
+    const sent = puts().slice(1).flatMap((c) => putBody(c).upserts.map((u: { id: string; data: string }) => [u.id, JSON.parse(u.data).name]));
+    expect(sent).toContainEqual(["s2", "A2"]);
+  });
+
+  // ── Codex 1A 3차(09:05) — '다른 탭에서 받았나'를 글자 기억으로 가리는 자리 ──
+  it("3차 P1 — 되돌려 보내는 중에 같은 글자를 또 받으면 늦은 응답이 '올린 그대로' 기억을 되살리지 않는다", async () => {
+    const { scenes, backup, settle } = await boot();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "A"))]);
+    await settle();
+    putReply = hashReply;
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500); // A 를 올렸다
+    await receiveFromOtherTab(scenes, settle, [["s1", "B"]]);
+    let answer!: () => void;
+    putReply = (body) => new Promise((done) => (answer = () => done(hashReply(body))));
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "A"))]);
+    await settle();
+    await vi.advanceTimersByTimeAsync(2500); // A 를 다시 보내는 중 — 응답이 늦다
+    const [b] = await receiveFromOtherTab(scenes, settle, [["s1", "B"]]);
+    answer();
+    await vi.advanceTimersByTimeAsync(0);
+    putReply = hashReply;
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "A"))]);
+    await settle();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().length).toBe(3);
+    expect(putBody(puts()[2]).upserts[0]).toMatchObject({ id: "s1", base_hash: fakeHex(b.text) });
+  });
+
+  it("3차 P2 — 다른 탭이 다른 씬만 바꿨으면 보내던 씬의 정상 응답(판)은 그대로 쓴다", async () => {
+    const { scenes, backup, settle } = await boot();
+    const store = await import("../src/lib/sceneStore");
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "A")), JSON.parse(sceneJson("s2", "X"))]);
+    await settle();
+    getMeta = () => Promise.resolve({ items: [{ id: "s2", data_hash: fakeHex(sceneJson("s2", "X")) }] });
+    let answer!: () => void;
+    putReply = (body) => new Promise((done) => (answer = () => done(hashReply(body))));
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500); // s1 을 보내는 중
+    store.writeSceneStoreAsOtherWindowForTest((all) => {
+      all[`acct:user${acctSeq}@test::_none`] = [JSON.parse(sceneJson("s1", "A")), JSON.parse(sceneJson("s2", "Y"))];
+    });
+    await store.refreshSceneStoreForTest();
+    await vi.advanceTimersByTimeAsync(0);
+    answer();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(JSON.parse(localStorage.getItem(ledgerKey("s1"))!)).toEqual({ b: fakeHex(sceneJson("s1", "A")) }); // 전엔 첫 알림이 모든 씬을 '받음'으로 세어 버렸다
   });
 });

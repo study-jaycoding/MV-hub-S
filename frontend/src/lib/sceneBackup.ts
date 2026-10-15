@@ -20,6 +20,10 @@
 //  · 변경 대조: 서버 data_hash(sha256) vs 로컬 sha256(crypto.subtle). http LAN 등 insecure
 //    context 로 subtle 이 없으면 첫 동기화 때 전 씬을 한 번 올린다(누락보다 중복이 안전) —
 //    이후는 세션 내 lastPushed 문자열 비교로 변경분만.
+//  · ★판(Jay 결정 1A, 10-15): 씬마다 '이 프로필이 서버와 맞춘 마지막 지문'(b)을 씬별 localStorage 키에 둔다. 탭은 범위에 들어갈 때 한 번
+//    읽고 그 뒤로는 자기가 본 것(같음 확인·올리기·복구·가져오기)과, 다른 탭이 맞춘 값이 **이 탭이 받은 내용과 같을 때만** 승계한다.
+//    바뀐 것 없는 옛 창(지문 == b, 서버 ≠ b)은 올리지 않는다. 그 밖엔 base_hash 를 실어 올리고, 서버가 그사이 바뀌었으면 허브가 덮지 않고
+//    사본 행으로 받는다(갈래 — 그 뒤 이 씬의 편집은 그 사본 행으로 미러). 설계: docs/status/결정일곱_설계_2026-10-15.md 1A.
 import { jsonFetch } from "./http";
 import { getAccountNamespace } from "./accountScope";
 import {
@@ -31,6 +35,7 @@ import {
   subscribeScenesPersisted,
   type Scene,
 } from "./scenes";
+import { subscribeSceneStoreExternal } from "./sceneStore";
 
 const API = "/api/scenes/backup";
 const DEBOUNCE_MS = 2000;
@@ -81,6 +86,128 @@ let syncSettled: (() => void) | null = null;
 // 가져오기가 도는 동안엔 sync 를 아예 들이지 않는다. 겹치면 sync 가 '가져오기 전' 로컬 목록을 들고
 // 삭제를 계산해, 방금 가져온 씬을 서버에서 지운다(코덱스 P1). 가져오기가 끝나며 schedule() 로 이어준다.
 let importing = false;
+
+// ── 판 장부(1A) — 씬마다 키 하나: 전체를 읽고 다시 쓰지 않으니 다른 탭이 쓴 다른 씬 항목을 지우지 않는다(Codex D2) ──
+type LedgerEntry = { b?: string; fork?: { id: string; b?: string } };
+const LEDGER_PREFIX = "mvhub.sceneBackupBase:";
+const ledgerKey = (scope: string, id: string) => `${LEDGER_PREFIX}${scope}:${id}`;
+let ledger = new Map<string, LedgerEntry>(); // 이 탭이 믿는 판 — 범위에 들어갈 때 한 번 읽는다
+let received = new Map<string, string>(); // 다른 탭에서 받은 확정본의 지문(씬마다 마지막 것) — 승계 조건
+let holdNoticeShown = false; // 지문을 못 구해 보류한 안내는 범위마다 한 번
+// 이 탭이 본 마지막 글자(범위에 들어갈 때·이 탭의 확정·다른 탭에서 받음) — 다른 탭 알림 때 '그 탭이 바꾼 씬'만 가려낸다.
+//  처음 알림에 모든 씬을 받은 것으로 세면 보내던 정상 응답까지 버린다(Codex 1A 3차 P2).
+let knownText = new Map<string, string>();
+let externalSeq = new Map<string, number>(); // 씬마다 다른 탭에서 받은 횟수 — 보내는 사이 받았는지 응답 때 본다
+const noteSeenTexts = (): void => {
+  for (const s of listPersistedSceneTexts(null)) knownText.set(s.id, s.text);
+};
+
+function readLedgerEntry(scope: string, id: string): LedgerEntry | null {
+  try {
+    const raw = localStorage.getItem(ledgerKey(scope, id));
+    const value = raw ? (JSON.parse(raw) as LedgerEntry) : null;
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function loadLedger(scope: string): Map<string, LedgerEntry> {
+  const out = new Map<string, LedgerEntry>();
+  try {
+    const prefix = `${LEDGER_PREFIX}${scope}:`;
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key?.startsWith(prefix)) continue;
+      const entry = readLedgerEntry(scope, key.slice(prefix.length));
+      if (entry) out.set(key.slice(prefix.length), entry);
+    }
+  } catch {
+    /* 못 읽으면 빈 장부 — '모름'(사본 쪽)으로 가지 덮어쓰기 쪽으로 새지 않는다 */
+  }
+  return out;
+}
+
+// 이 탭의 판을 바꾸고 그 씬 항목만 저장한다. 쓰기 실패(용량)는 삼킨다. 범위가 바뀌었으면 아무것도 안 한다.
+function setLedger(scope: string, id: string, entry: LedgerEntry | null): void {
+  if (ns() !== scope) return;
+  if (entry && (entry.b || entry.fork)) ledger.set(id, entry);
+  else ledger.delete(id);
+  try {
+    if (entry && (entry.b || entry.fork)) localStorage.setItem(ledgerKey(scope, id), JSON.stringify(entry));
+    else localStorage.removeItem(ledgerKey(scope, id));
+  } catch {
+    /* 용량 — 다음 탭은 '모름'으로 시작한다 */
+  }
+}
+
+// 갈래 업로드용 글자 — 허브의 사본 변환과 같다(id·이름·표식, 진행 중 생성 표식 빼기 — Codex D4). 지문도 이 글자로 잰다.
+function forkText(text: string, forkId: string, originalId: string, sum: string): string | null {
+  try {
+    const scene = JSON.parse(text) as Scene & { backupForkOf?: unknown };
+    return JSON.stringify({
+      ...scene,
+      id: forkId,
+      name: `${scene.name || "씬"} (옛 창 사본)`,
+      backupForkOf: { id: originalId, sum },
+      cards: (scene.cards || []).map((card) => {
+        const { pendingGenerationAttempts: _pending, ...rest } = card as typeof card & { pendingGenerationAttempts?: unknown };
+        return rest;
+      }),
+    });
+  } catch {
+    return null;
+  }
+}
+
+// 다른 창에 더 새로 저장된 백업이 있어 덮지 않고 사본으로 남긴 씬(이름) — 화면이 한 번 알린다.
+const forkSubs = new Set<(names: string[]) => void>();
+export function subscribeSceneBackupForked(fn: (names: string[]) => void): () => void {
+  forkSubs.add(fn);
+  return () => forkSubs.delete(fn);
+}
+
+// 다른 탭이 저장한 확정본을 받았다 — 받은 글자의 지문을 기억하고, 그 씬의 장부를 **새로 읽어** 같은 지문이면 승계한다(Codex D1).
+async function onExternalScenes(): Promise<void> {
+  const scope = ns();
+  if (scope !== curScope) return;
+  const changed: { id: string; text: string }[] = [];
+  for (const s of listPersistedSceneTexts(null)) {
+    // 이 탭이 본 마지막 글자(자기 확정 포함 — noteSeenTexts)와 같으면 다른 탭이 바꾼 씬이 아니다
+    if (knownText.get(s.id) === s.text) continue;
+    knownText.set(s.id, s.text);
+    externalSeq.set(s.id, (externalSeq.get(s.id) ?? 0) + 1);
+    // 다른 탭에서 바뀐 씬 — 서버도 그사이 바뀌었을 수 있다. 올린 기억을 무효로 하고(지움 표식으로는 남긴다) 메타를 새로 받는다 —
+    //  안 그러면 사용자가 옛 글자로 되돌렸을 때 '올린 그대로'로 보고 건너뛰어 서버만 남의 글자로 남는다(Codex 1A 리뷰 #4·재검토).
+    if (lastPushed.get(s.id)) {
+      lastPushed.set(s.id, "");
+      serverHash = null;
+    }
+    changed.push(s);
+  }
+  for (const s of changed) {
+    const h = await sha256hex(s.text);
+    if (ns() !== scope) return;
+    if (!h) continue; // 지문을 못 구하면 이 씬의 판 승계만 건너뛴다 — 나머지 씬·예약은 그대로(재검토)
+    received.set(s.id, h);
+    const fresh = readLedgerEntry(scope, s.id);
+    if (fresh?.b === h) ledger.set(s.id, { ...ledger.get(s.id), b: h });
+  }
+  schedule();
+}
+
+// 다른 탭이 장부를 고쳤다(뒤늦게 온 백업 확인) — 그 값이 이 탭이 받은 내용의 지문과 같을 때만 승계한다(Codex E1).
+function onLedgerStorage(event: StorageEvent): void {
+  const scope = curScope;
+  if (!scope || !event.key?.startsWith(`${LEDGER_PREFIX}${scope}:`) || !event.newValue) return;
+  const id = event.key.slice(`${LEDGER_PREFIX}${scope}:`.length);
+  try {
+    const value = JSON.parse(event.newValue) as LedgerEntry;
+    if (value?.b && received.get(id) === value.b) ledger.set(id, { ...ledger.get(id), b: value.b });
+  } catch {
+    /* 손상 — 승계하지 않는다 */
+  }
+}
 
 // 너무 커서 DB 백업에 올리지 못한 씬(id). 새로 생길 때만 알린다 — 작아져 다시 올라가면 빠진다.
 let oversized = new Set<string>();
@@ -133,6 +260,12 @@ function enterScope(): string {
     serverHash = null;
     lastPushed = new Map();
     oversized = new Set();
+    ledger = loadLedger(s); // 이 범위의 판 — 여기서 한 번만 읽는다(Codex C1)
+    received = new Map();
+    knownText = new Map();
+    noteSeenTexts();
+    externalSeq = new Map();
+    holdNoticeShown = false;
     rerun = false;
     if (timer) clearTimeout(timer);
     timer = null;
@@ -150,9 +283,9 @@ function ensureInit(scope: string): Promise<InitResult> {
     // ★확정본으로 판정한다 — 화면 값의 아직 확정 안 된 버킷 때문에 복구를 건너뛰면, 그 뒤 빈 확정본을
     //  기준으로 서버 백업을 지우는 길이 열린다(Codex).
     if (hasPersistedSceneBucket(null)) return "clean";
-    let items: { id: string; data: string }[];
+    let items: BackupRow[];
     try {
-      const r = await jsonFetch<{ items: { id: string; data: string }[] }>(
+      const r = await jsonFetch<{ items: BackupRow[] }>(
         `${API}?project_id=&include_data=1`,
       );
       items = r.items || [];
@@ -187,6 +320,7 @@ function ensureInit(scope: string): Promise<InitResult> {
     //  확정본을 기준으로 서버 백업을 지운다(코덱스 P0).
     if (!merged.ok || !(await confirmed)) return "retry";
     for (const s of added) lastPushed.set(s.id, JSON.stringify(s)); // 복구 에코 방지(서버가 이미 아는 것만)
+    adoptReceivedRows(scope, items, new Set(added.map((s) => s.id)));
     return "restored";
   })();
   initPromise = p;
@@ -195,6 +329,18 @@ function ensureInit(scope: string): Promise<InitResult> {
   });
   return p;
 }
+
+type BackupRow = { id: string; data: string; data_hash?: string };
+
+// 복구·가져오기로 받은 씬 — 판은 서버가 준 지문이다(지문 계산을 못 하는 창도 판을 안다 — Codex 1A 리뷰 #2). 받은 씬은 그 서버 행
+//  그대로라 옛 장부의 갈래를 통째로 버린다 — 저장소를 잃고 복구했는데 갈래가 남으면 원본을 지울 때 함께 복구된 사본 씬의 백업이
+//  지워진다(#3). 가져오기는 갈래 사본 행을 받지 않는다(forkIds).
+function adoptReceivedRows(scope: string, items: BackupRow[], added: Set<string>): void {
+  for (const it of items) if (added.has(it.id)) setLedger(scope, it.id, it.data_hash ? { b: it.data_hash } : null);
+}
+
+/** 이 탭 장부의 갈래 사본 id — 가져오기·개수에서 뺀다(두 로컬 씬이 같은 행을 미러하지 않게, Codex C3). */
+const forkIds = (): Set<string> => new Set([...ledger.values()].flatMap((entry) => (entry.fork ? [entry.fork.id] : [])));
 
 async function ensureServerMeta(scope: string): Promise<Map<string, string> | null> {
   if (serverHash) return serverHash;
@@ -239,12 +385,22 @@ async function syncNow(): Promise<void> {
     //  저장되지도 않은 삭제가 서버 백업에 반영된다(Codex).
     //  씬은 저장소가 기억해 둔 글자를 그대로 받는다 — 확정 때마다 전부를 다시 글자로 바꾸지 않는다.
     const local = listPersistedSceneTexts(null);
-    const upserts: { id: string; name: string; data: string }[] = [];
+    // ★모든 씬의 글자와 판을 첫 await 전에 한 쌍으로 고정한다 — 앞 씬의 지문을 기다리는 사이 다른 탭에서 받은 뒤 씬의 새 판을
+    //  옛 글자에 붙이면 서버의 새 내용을 덮는다(Codex E1 · 1A 리뷰 #1). 아래 지움 계산도 이 판을 쓴다.
+    const frozen = new Map(ledger);
+    // 올릴 것: id = 서버 행(갈래면 사본 id), localId = 이 브라우저의 씬, text = 로컬 글자(lastPushed 비교용).
+    //  판(base_hash)은 늘 싣는다(""=모름) — 칸을 빼는 것은 옛 앱의 '그냥 덮기'라 새 앱은 쓰지 않는다(Codex 1A 리뷰 #2).
+    type Up = { id: string; name: string; data: string; base_hash: string; localId: string; text: string };
+    const upserts: Up[] = [];
     const tooBig = new Set<string>();
     const newlyTooBig: string[] = [];
+    let heldNoHash = 0;
     for (const s of local) {
       const data = s.text;
-      if (lastPushed.get(s.id) === data) continue; // 이 세션에서 이미 올린(또는 복구한) 그대로
+      const entry = frozen.get(s.id);
+      const target = entry?.fork?.id ?? s.id;
+      // 이 세션에서 이미 올린(또는 복구한) 그대로 — 다만 서버 행이 사라졌으면 다시 넣는다(Codex C2)
+      if (lastPushed.get(s.id) === data && meta.has(target)) continue;
       if (exceedsSceneLimit(data)) {
         // 전송에서 뺀다. ★올린 것으로 적지 않는다(lastPushed) — 작아지면 다시 대상이 된다. 서버에 남은 옛 사본도
         //  지우지 않는다(아래 삭제 계산은 '로컬에서 사라진 것'만 본다 — 이 씬은 로컬에 있다).
@@ -252,28 +408,76 @@ async function syncNow(): Promise<void> {
         if (!oversized.has(s.id)) newlyTooBig.push(s.name);
         continue;
       }
-      if (meta.has(s.id)) {
-        const h = await sha256hex(data);
+      // 지문은 서버에 그 씬이 있을 때만 필요하다(같음·옛 창 판정) — 없으면 넣기만 한다
+      const h = meta.has(s.id) ? await sha256hex(data) : null;
+      if (entry?.fork) {
+        // 갈래 — 이 씬의 편집은 사본 행으로 간다. 로컬이 원본 서버 행과 같아졌으면 갈래를 끝낸다.
         if (h && h === meta.get(s.id)) {
-          lastPushed.set(s.id, data); // 서버와 동일 — 올릴 필요 없음
+          setLedger(scope, s.id, { b: h });
+          lastPushed.set(s.id, data);
           continue;
         }
-        // 해시 불가(insecure context)면 보수적으로 업로드 — 누락보다 중복이 안전
+        const fork = forkText(data, entry.fork.id, s.id, h ?? "");
+        if (!fork || exceedsSceneLimit(fork)) {
+          tooBig.add(s.id);
+          continue;
+        }
+        upserts.push({ id: entry.fork.id, name: s.name, data: fork, base_hash: entry.fork.b ?? "", localId: s.id, text: data });
+        continue;
       }
-      upserts.push({ id: s.id, name: s.name, data });
+      if (!meta.has(s.id)) {
+        upserts.push({ id: s.id, name: s.name, data, base_hash: entry?.b ?? "", localId: s.id, text: data });
+        continue;
+      }
+      if (h === null) {
+        // 지문을 못 구한다(insecure context·예외). 판을 알거나 이 세션이 올린 씬이면 판(모르면 "")을 실어 허브가 판정하게 한다(다르면 사본 —
+        //  옛 허브는 판을 모르고 지금처럼 덮는다). 둘 다 아니면 서버에 이미 있는 씬은 덮지 않고 보류한다(Codex C5).
+        if (entry?.b || lastPushed.has(s.id)) upserts.push({ id: s.id, name: s.name, data, base_hash: entry?.b ?? "", localId: s.id, text: data });
+        else heldNoHash++;
+        continue;
+      }
+      if (h === meta.get(s.id)) {
+        setLedger(scope, s.id, { ...entry, b: h });
+        lastPushed.set(s.id, data); // 서버와 동일 — 올릴 필요 없음
+        continue;
+      }
+      // 바뀐 것 없는 옛 창 — 서버가 더 새것이다(다른 창이 올렸다). 올리지 않고 lastPushed 에도 적지 않는다(지워도 남의 새것을 안 지움).
+      if (entry?.b === h) continue;
+      upserts.push({ id: s.id, name: s.name, data, base_hash: entry?.b ?? "", localId: s.id, text: data });
     }
     oversized = tooBig;
     if (newlyTooBig.length) oversizeSubs.forEach((fn) => fn(newlyTooBig));
+    if (heldNoHash && !holdNoticeShown) {
+      holdNoticeShown = true;
+      forkSubs.forEach((fn) => fn([])); // 빈 목록 = '지문을 못 구해 보류' 안내(화면이 글을 고른다)
+    }
     const localIds = new Set(local.map((s) => s.id));
     // ★삭제 미러는 '이 세션에서 로컬에 있던 씬이 사라진 것'만 지운다(코덱스 P0).
     //  종전엔 '서버에만 있는 id' 를 전부 지웠다. 앱 전용 브라우저 프로필 도입(2026-09-01) 뒤로
     //  한 PC 에 프로필이 여럿 생기면서, 프로필을 번갈아 열 때마다 서로의 백업을 지웠다.
     //  · lastPushed = 이 세션에서 올렸거나 복구한 씬. 그게 지금 로컬에 없으면 사용자가 지운 것이다.
     //  · 버킷 키 자체가 없으면(읽기 실패·캐시 소실) 로컬을 '정답'으로 믿을 수 없으므로 삭제하지 않는다.
+    //  · 갈래가 있으면 사본 행을 지우고, 지울 때의 판을 실어 그사이 다른 창이 올린 새 내용은 남긴다(1A).
     const localTrusted = hasPersistedSceneBucket(null);
-    const allDeleted = localTrusted
-      ? [...meta.keys()].filter((id) => !localIds.has(id) && lastPushed.has(id))
-      : [];
+    const deleteOf = new Map<string, string>(); // 서버 행 id → 로컬 씬 id
+    const deleteBases: Record<string, string> = {}; // 지울 행마다 판("" = 모름 → 허브가 남긴다, Codex 1A 리뷰 #2)
+    if (localTrusted) {
+      for (const id of lastPushed.keys()) {
+        if (localIds.has(id)) continue;
+        const entry = frozen.get(id);
+        const target = entry?.fork?.id ?? id;
+        if (!meta.has(target)) continue;
+        deleteOf.set(target, id);
+        deleteBases[target] = (entry?.fork ? entry.fork.b : entry?.b) ?? "";
+      }
+    }
+    // ★지문을 기다리는 사이 확정본이 바뀐 씬(다른 탭에서 받음·이 탭의 새 편집)은 이번에 보내지 않는다 — 옛 글자를 보내지 않게.
+    //  끝나고 한 번 더 돌아 새 글자와 그때의 판으로 보낸다(Codex 1A 리뷰 #1).
+    const nowText = new Map(listPersistedSceneTexts(null).map((s) => [s.id, s.text]));
+    const fresh = upserts.filter((u) => nowText.get(u.localId) === u.text);
+    if (fresh.length < upserts.length) rerun = true;
+    upserts.splice(0, upserts.length, ...fresh);
+    const allDeleted = [...deleteOf.keys()].filter((id) => !nowText.has(deleteOf.get(id)!)); // 그사이 되살아난 씬은 지우지 않는다
     if (!upserts.length && !allDeleted.length) return;
     if (ns() !== scope) return; // 변경 적용(PUT) 직전 최종 확인
     // 청크 전송 — upsert 는 개수+UTF-8 바이트, delete 는 개수 기준(서버 상한과 동일).
@@ -283,28 +487,63 @@ async function syncNow(): Promise<void> {
       delChunks.push(allDeleted.slice(i, i + MAX_DELETES));
     }
     const rounds = Math.max(upChunks.length, delChunks.length);
+    const forked: string[] = [];
     for (let i = 0; i < rounds; i++) {
       if (ns() !== scope) return; // 각 청크 직전 재확인
       const chunk = upChunks[i] || [];
       const dels = delChunks[i] || [];
-      await jsonFetch(`${API}`, {
+      const seqAtSend = new Map(chunk.map((u) => [u.localId, externalSeq.get(u.localId) ?? 0]));
+      const res = await jsonFetch<{ results?: { id: string; status: string; target_id: string; hash: string | null }[]; kept?: string[] }>(`${API}`, {
         method: "PUT",
-        body: JSON.stringify({ project_id: "", upserts: chunk, deleted_ids: dels }),
+        body: JSON.stringify({
+          project_id: "",
+          upserts: chunk.map(({ id, name, data, base_hash }) => ({ id, name, data, base_hash })),
+          deleted_ids: dels,
+          delete_bases: Object.fromEntries(dels.map((id) => [id, deleteBases[id] ?? ""])),
+        }),
       });
       if (ns() !== scope) return; // 응답 후 상태 반영도 같은 scope 일 때만
+      const results = new Map((res?.results ?? []).map((r) => [r.id, r]));
       for (const u of chunk) {
-        lastPushed.set(u.id, u.data);
-        // 서버가 재계산한 정확한 해시는 모르지만, 이 ID가 서버에 '존재한다'는 사실은 유지해야 한다.
-        // 여기서 지우면 같은 세션에서 로컬 씬을 삭제했을 때 allDeleted가 그 ID를 못 찾아 서버 백업이
-        // 남고, 캐시 소실 후 삭제한 씬이 되살아난다. 빈 문자열은 존재 멤버십용 sentinel이며 변경
-        // 대조는 lastPushed가 담당한다(내용이 바뀌면 sentinel과 해시가 달라 재업로드됨).
-        serverHash?.set(u.id, "");
+        const r = results.get(u.id);
+        if (r?.status === "too_big") {
+          tooBig.add(u.localId); // 사본이 상한을 넘었다 — 올라가지 않았다(lastPushed 에 적지 않는다)
+          continue;
+        }
+        if ((externalSeq.get(u.localId) ?? 0) !== seqAtSend.get(u.localId)) {
+          // 보내는 사이 다른 탭에서 이 씬을 받았다 — 늦은 응답으로 올린 기억·판·갈래를 되살리지 않는다(지금 글자는 받은 것이다).
+          //  다음 동기화가 메타를 새로 받아 맞춘다. 사본으로 갔으면 그 행은 옛 내용의 사본으로 남는다(Codex 1A 재검토).
+          lastPushed.set(u.localId, "");
+          serverHash = null;
+          continue;
+        }
+        lastPushed.set(u.localId, u.text);
+        if (!r) {
+          // 옛 허브(결과 칸 없음) — 지금처럼. 빈 글자는 존재 멤버십 sentinel 이며 변경 대조는 lastPushed 가 한다.
+          serverHash?.set(u.id, "");
+          continue;
+        }
+        serverHash?.set(r.target_id, r.hash ?? "");
+        const entry = ledger.get(u.localId);
+        if (r.status === "copied") {
+          setLedger(scope, u.localId, { ...entry, fork: { id: r.target_id, b: r.hash ?? undefined } });
+          forked.push(u.name);
+        } else if (u.id !== u.localId) {
+          setLedger(scope, u.localId, { ...entry, fork: { id: u.id, b: r.hash ?? undefined } });
+        } else if (r.hash) {
+          setLedger(scope, u.localId, { ...entry, b: r.hash });
+        }
       }
+      const kept = new Set(res?.kept ?? []);
       for (const id of dels) {
-        serverHash?.delete(id);
-        lastPushed.delete(id);
+        const localId = deleteOf.get(id) ?? id;
+        if (!kept.has(id)) serverHash?.delete(id);
+        lastPushed.delete(localId);
+        setLedger(scope, localId, null);
       }
     }
+    oversized = tooBig;
+    if (forked.length) forkSubs.forEach((fn) => fn(forked));
   } catch {
     failed = true;
   } finally {
@@ -347,7 +586,8 @@ export async function countBackupOnlyScenes(): Promise<number> {
     const r = await jsonFetch<{ items: { id: string }[] }>(`${API}?project_id=`);
     if (ns() !== scope) return 0;
     const localIds = new Set(listScenes(null).map((s) => s.id));
-    return (r.items || []).filter((it) => !localIds.has(it.id)).length;
+    const mine = forkIds(); // 이 탭 씬의 갈래 사본은 자기 것 — 다시 가져오라고 하지 않는다
+    return (r.items || []).filter((it) => !localIds.has(it.id) && !mine.has(it.id)).length;
   } catch {
     return 0; // 오프라인·구백엔드 — 조용히 숨긴다(없는 기능처럼 보이는 게 낫다)
   }
@@ -370,13 +610,15 @@ async function runImport(): Promise<number> {
   // (syncIdle 은 sync 마다 새로 만들어진다). importing=true 라 새 sync 는 더 들어오지 않는다.
   while (syncing) await syncIdle;
   const scope = enterScope();
-  const r = await jsonFetch<{ items: { id: string; data: string }[] }>(
+  const r = await jsonFetch<{ items: BackupRow[] }>(
     `${API}?project_id=&include_data=1`,
   );
   if (ns() !== scope) return 0;
   // 자동 복구와 같은 전 행 검증 — 하나라도 손상이면 부분 적용 없이 전체 포기.
+  //  이 탭 씬의 갈래 사본 행은 가져오지 않는다 — 두 로컬 씬이 같은 행을 미러하게 된다(Codex C3).
+  const mine = forkIds();
   const scenes: Scene[] = [];
-  for (const it of r.items || []) {
+  for (const it of (r.items || []).filter((item) => !mine.has(item.id))) {
     let s: Scene;
     try {
       s = JSON.parse(it.data) as Scene;
@@ -402,6 +644,7 @@ async function runImport(): Promise<number> {
     throw new Error("가져온 씬을 저장소에 확정하지 못했습니다 — 잠시 뒤 자동으로 다시 시도합니다");
   }
   for (const s of added) lastPushed.set(s.id, JSON.stringify(s)); // 방금 가져온 것 = 서버에 이미 있음
+  adoptReceivedRows(scope, r.items || [], new Set(added.map((s) => s.id)));
   serverHash = null; // 그사이 다른 프로필이 바꿨을 수 있다 — 메타를 새로 받아 대조
   restoreSubs.forEach((f) => f());
   return added.length;
@@ -413,7 +656,13 @@ let installed = false;
 export async function initSceneBackup(): Promise<boolean> {
   if (!installed) {
     installed = true;
-    subscribeScenesPersisted(schedule);
+    // 이 탭의 확정 — 본 글자로 적는다(같은 확정에 다른 탭 변경이 섞였으면 그 알림이 먼저 온다 — sceneStore runStoreTx)
+    subscribeScenesPersisted(() => {
+      if (ns() === curScope) noteSeenTexts();
+      schedule();
+    });
+    subscribeSceneStoreExternal(() => void onExternalScenes()); // 다른 탭의 확정본 — 판 승계·미러 예약(1A)
+    window.addEventListener("storage", onLedgerStorage); // 다른 탭이 장부를 고쳤다 — 받은 내용과 같으면 승계(1A)
     window.addEventListener("online", () => void syncNow());
   }
   const scope = enterScope();
