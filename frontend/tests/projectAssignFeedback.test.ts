@@ -89,6 +89,16 @@ it("final-item move refused by the server (Jay 3A) says reviewers of both projec
   expect(h.flash).toHaveBeenCalledExactlyOnceWith("Only reviewers of both projects (or an admin) can move a final item.");
 });
 
+it("moved only on the team server (Jay 3A, rare) says so and re-reads the list instead of a generic conflict", async () => {
+  const detail = "팀 서버에는 옮겼지만 이 PC 에는 반영하지 못했습니다 — 목록을 새로고침한 뒤 다시 옮겨 주세요";
+  assignProject.mockRejectedValue(new HttpError(409, `409: ${detail}`, detail));
+  const h = setup();
+  await h.actions.boardAssign([{ id: "g1" }] as Generation[], "p");
+  expect(h.flash).toHaveBeenCalledExactlyOnceWith("Moved on the team server, but not on this PC. Refresh the list and move the items again.");
+  expect(h.reload).toHaveBeenCalledOnce();
+  expect(broadcast).toHaveBeenCalledOnce();
+});
+
 it("non-HTTP failure uses a safe connection message", async () => {
   assignProject.mockRejectedValue(new TypeError("SYNTHETIC_INTERNAL_DETAIL"));
   const h = setup();

@@ -707,6 +707,8 @@ const EN: Record<string, string> = {
     "You do not have permission to move these items. Check your sign-in and permissions.",
   "최종본은 두 프로젝트의 검수자(또는 관리자)만 옮길 수 있습니다.":
     "Only reviewers of both projects (or an admin) can move a final item.",
+  "팀 서버에는 옮겼지만 이 PC 에는 반영하지 못했습니다. 목록을 새로고침한 뒤 다시 옮겨 주세요.":
+    "Moved on the team server, but not on this PC. Refresh the list and move the items again.",
   "대상을 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도해 주세요.":
     "The destination or items could not be found. Refresh the list and try again.",
   "다른 곳에서 먼저 바뀌었습니다. 새로고침한 뒤 다시 시도해 주세요.":

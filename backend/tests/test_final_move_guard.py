@@ -228,3 +228,31 @@ def test_bundle_receive_judges_with_identity_linked_in_the_same_request(env, mon
     out = publish.receive_published_bundle(PublishBundleIn(bundle=bundle), request)
     assert out["blocked"] == 0
     assert project_of("g1") is None
+
+def test_local_db_failure_after_server_move_reports_server_only_move(env, monkeypatch):
+    # 서버가 옮긴 뒤 로컬 DB 가 실패해도(잠금 등) 500 이 아니라 '서버만 옮겨짐' 409(Codex 3A 재검토 P2)
+    import sqlite3
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from app.models import AssignProjectIn
+    from app.routers import projects
+
+    main, _side, gen = env
+    gen("g1", None, final=False)
+    real = repo.assign_to_project
+
+    def flaky(*args, **kwargs):
+        if kwargs.get("check_only"):
+            return real(*args, **kwargs)
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(projects, "MANAGE_ENABLED", False)
+    monkeypatch.setattr(projects._proxy, "proxying", lambda: True)
+    monkeypatch.setattr(projects._proxy, "proxy_json", lambda method, endpoint, **kw: {"projects": []} if method == "GET" else {"updated": 1})
+    monkeypatch.setattr(projects.repo, "shared_generation_anchors", lambda ids: ["g1"])
+    monkeypatch.setattr(projects.repo, "assign_to_project", flaky)
+    with pytest.raises(HTTPException) as moved:
+        projects.assign_project(AssignProjectIn(generation_ids=["g1"], project_id=main), SimpleNamespace(state=SimpleNamespace(account=None)))
+    assert (moved.value.status_code, moved.value.detail) == (409, projects.SERVER_ONLY_MOVED)

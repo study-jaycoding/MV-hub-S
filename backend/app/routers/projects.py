@@ -38,6 +38,9 @@ from ..services.telemetry_drain import drain_isolated_telemetry
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
+# 로컬 허브의 '내 작업' 이동에서 공유 서버는 옮겼는데 이 PC 반영이 실패한 드문 경우(Jay 결정 3A) — 화면이 이 글로 가려 다시 읽는다.
+SERVER_ONLY_MOVED = "팀 서버에는 옮겼지만 이 PC 에는 반영하지 못했습니다 — 목록을 새로고침한 뒤 다시 옮겨 주세요"
+
 
 _PROJECT_READ_ROLES = (rbac.PROJECT_MANAGER, rbac.SUPERVISOR, rbac.CREATOR)
 
@@ -527,14 +530,13 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
                 )
         except repo.FinalMoveDenied as e:
             raise HTTPException(status_code=403, detail=str(e))
-        except ValueError as e:
+        except Exception as e:  # noqa: BLE001 — 서버가 이미 옮겼으면 어떤 로컬 실패든 '서버만 옮겨짐'으로 알린다(Codex 3A 재검토 P2 — DB 잠금 등)
             if server_moved:
-                # 위의 검증 뒤 그사이 바뀌었다(드묾) — 서버만 옮겨졌다는 것을 숨기지 않는다
-                raise HTTPException(
-                    status_code=409,
-                    detail="팀 서버에는 옮겼지만 이 PC 에는 반영하지 못했습니다 — 목록을 새로고침한 뒤 다시 옮겨 주세요",
-                )
-            raise HTTPException(status_code=400, detail=str(e))
+                # 위의 검증 뒤 그사이 바뀌었거나 로컬 DB 가 실패했다(드묾) — 서버만 옮겨졌다는 것을 숨기지 않는다
+                raise HTTPException(status_code=409, detail=SERVER_ONLY_MOVED) from e
+            if isinstance(e, ValueError):
+                raise HTTPException(status_code=400, detail=str(e)) from e
+            raise
         # 팀 매니징: 귀속(프로젝트·폴더)이 바뀐 내 생성물을 텔레메트리 dirty 표시 → 다음 drain 에 반영.
         if MANAGE_ENABLED and tab != "team":
             try:

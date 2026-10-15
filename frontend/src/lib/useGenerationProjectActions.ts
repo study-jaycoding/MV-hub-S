@@ -60,6 +60,13 @@ export function useGenerationProjectActions({
         !!projectId && !!folderPath?.trim(),
       );
     } catch (error) {
+      // 공유 서버는 옮겼는데 이 PC 반영만 실패했다(Jay 결정 3A, 드묾) — 일반 충돌 글이 아니라 그대로 알리고 목록을 다시 읽는다
+      if (error instanceof HttpError && error.status === 409 && error.detail.startsWith("팀 서버에는 옮겼지만")) {
+        flash(t("팀 서버에는 옮겼지만 이 PC 에는 반영하지 못했습니다. 목록을 새로고침한 뒤 다시 옮겨 주세요."));
+        await reload().catch(() => {});
+        postLibraryChanged();
+        return;
+      }
       flash(assignFailureMessage(error));
       return;
     }
