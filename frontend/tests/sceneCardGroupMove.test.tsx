@@ -777,15 +777,19 @@ it("범위 선택·화면 이동도 같은 끝맺음을 쓴다 — 단추를 뗀
   // 가운데 단추로 화면을 미는 동안의 움직임은 buttons 가 4 다 — 왼쪽 단추(1)만 보고 '뗐다'고 하면 화면 이동이 첫 걸음에 끊긴다
   await act(async () => { board().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 1, clientX: 100, clientY: 100 })); });
   // 끄는 표시(보드 위 덮개)는 움직였을 때만 — 누르기만 한 휠은 카드 정보(auxclick)다(66회차 ③)
-  expect(board().classList.contains("scene-panning")).toBe(false);
+  expect(board().hasAttribute("data-panning")).toBe(false);
   await act(async () => {
     window.dispatchEvent(new MouseEvent("mousemove", { clientX: 150, clientY: 130, buttons: 4 }));
     frames.splice(0).forEach((cb) => cb(0));
   });
-  expect(board().classList.contains("scene-panning")).toBe(true);
+  expect(board().hasAttribute("data-panning")).toBe(true);
+  // 끄는 도중 가위(Y)로 보드의 className 이 다시 그려져도 표시는 남는다 — 클래스였을 때는 지워져 덮개가 풀렸다(Codex 리뷰 P2)
+  await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "y", code: "KeyY", bubbles: true })); });
+  expect([board().classList.contains("cutting"), board().hasAttribute("data-panning")]).toEqual([true, true]);
+  await act(async () => { window.dispatchEvent(new KeyboardEvent("keyup", { key: "y", code: "KeyY", bubbles: true })); });
   expect(canvas().style.transform).toContain("translate(50px, 30px)");
   await hoverTo(400, 400); // 가운데 단추를 뗀 것을 놓쳤다
-  expect(board().classList.contains("scene-panning")).toBe(false);
+  expect(board().hasAttribute("data-panning")).toBe(false);
   expect(canvas().style.transform).toContain("translate(50px, 30px)");
 });
 

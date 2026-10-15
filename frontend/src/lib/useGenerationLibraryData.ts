@@ -263,7 +263,9 @@ export function useGenerationLibraryData({
 
   // 목록이 바뀌면(삭제·태그·컬러·추가 로드 등) 현재 탭 캐시도 동기화 —
   // 탭을 오갔다 돌아와도 방금 편집한 결과가 캐시 화면에 그대로 보이게.
-  useEffect(() => {
+  //  layout 이고 아래 탭 교체보다 먼저 선언한다 — 편집과 탭 이동이 한 갱신에 묶이면 교체가 소유 탭을 먼저 바꿔, 편집한 목록이
+  //  새 탭 캐시에 적히고 편집한 탭 캐시에는 빠졌다(15초 안에 돌아오면 편집 전 색. 배포 준비 Codex 리뷰 P2).
+  useLayoutEffect(() => {
     const cachedTab = lastLoadedTabRef.current;
     if (!cachedTab) return;
     const c = tabCacheRef.current[cachedTab];

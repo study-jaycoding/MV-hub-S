@@ -345,3 +345,24 @@ it("switching tabs swaps the list before paint — the committed render never sh
   expect(renders.flat()).toEqual([]);
   await settle();
 });
+
+// 배포 준비 Codex 리뷰 P2 — 편집과 탭 이동이 한 갱신에 묶여도 편집은 편집한 탭의 캐시에 남는다. 탭 교체(layout)가 캐시 동기화(그때 passive)보다
+//  먼저 소유 탭을 바꿔, 편집한 목록이 새 탭 캐시에 적히고 15초 안에 돌아오면 편집 전 값이 보였다.
+it("an edit made in the same update as a tab switch stays in the cache of the tab it was made on", async () => {
+  const TEAM: GenQuery = { tab: "team" };
+  act(() => render(MAIN));
+  await settle();
+  act(() => render(TEAM, { tab: "team" }));
+  await settle();
+  act(() => render(MAIN));
+  await settle();
+  expect(ids()).toEqual(["m1", "m2"]);
+  act(() => {
+    data.setGens((prev) => prev.map((g) => (g.id === "m1" ? { ...g, tags: ["편집"] } : g)));
+    render(TEAM, { tab: "team" });
+  });
+  await settle();
+  act(() => render(MAIN)); // 15초 안 — 캐시로 돌아온다
+  await settle();
+  expect(data.gens.find((g) => g.id === "m1")?.tags).toEqual(["편집"]);
+});

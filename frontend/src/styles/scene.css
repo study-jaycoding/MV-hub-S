@@ -68,12 +68,13 @@
   position: absolute; inset: -64px; pointer-events: none; will-change: transform;
   background: radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.11) 1px, transparent 0) 64px 64px / 22px 22px;
 }
-.scene-board.scene-panning { cursor: grabbing; }
+.scene-board[data-panning] { cursor: grabbing; }
 /* 화면을 끄는 동안(useSceneViewport — 실제로 움직였을 때만) 보드 위 덮개 하나가 커서를 잡은 손으로 두고 카드의 hover 를 막는다(Jay 66회차 ③).
    전엔 `.scene-board.panning *` 로 자손 전부의 커서를 바꿔 끌기의 시작·끝마다 보드 아래 전부를 다시 계산했다(66회차 격리 실측 40~48ms) —
-   크롬은 무효화를 클래스 이름 단위로 해 계보 보드의 `.linb-scroll.panning *` 에도 걸리므로 이름도 캔버스 전용이다. 덮개는 카드(캔버스 층) 위,
+   크롬은 무효화를 클래스 이름 단위로 해 계보 보드의 `.linb-scroll.panning *` 에도 걸려 캔버스 전용 표시를 쓴다 — 클래스가 아니라 속성
+   (data-panning): 보드의 className 은 React 가 그려 끄는 도중 바뀌면(가위 Y) 손으로 붙인 클래스가 지워졌다. 덮개는 카드(캔버스 층) 위,
    보드 안의 안내·사각형(z 10~) 아래. 자손을 고르는 규칙을 다시 달지 않는다(tests/sceneRound7Perf). */
-.scene-board.scene-panning::after { content: ""; position: absolute; inset: 0; z-index: 9; cursor: grabbing; }
+.scene-board[data-panning]::after { content: ""; position: absolute; inset: 0; z-index: 9; cursor: grabbing; }
 /* 카드를 끄는 동안 다른 카드가 마우스 영향을 받지 않게 하는 일(겹친 뒤 카드의 hover·포트가 끄는 카드 위로 튀어나오던 문제,
    2026-07-24)은 여기 규칙이 아니라 포인터 캡처가 한다(lib/useSceneCardMove.holdSceneDragPointer). 전엔
    `.scene-board.dragging .scene-card { pointer-events: none }` 이었는데, pointer-events 는 자식으로 내려가는 속성이라 dragging 이

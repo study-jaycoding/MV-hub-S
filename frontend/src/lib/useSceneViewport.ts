@@ -245,8 +245,9 @@ export function useSceneViewport({
       const move = (moveEvent: MouseEvent) => {
         if (!moved && Math.abs(moveEvent.clientX - startX) + Math.abs(moveEvent.clientY - startY) > 3) {
           moved = true;
-          // 끄는 표시(보드 위 덮개 — scene.css)는 실제로 움직였을 때만 — 누를 때 붙이면 덮개가 정지 휠 클릭(카드 정보)을 가로챈다(계보 보드와 같다)
-          scrollRef.current?.classList.add("scene-panning");
+          // 끄는 표시(보드 위 덮개 — scene.css)는 실제로 움직였을 때만 — 누를 때 붙이면 덮개가 정지 휠 클릭(카드 정보)을 가로챈다(계보 보드와 같다).
+          //  클래스가 아니라 속성이다 — 보드의 className 은 React 가 그려서(가위 Y·연결선) 끄는 도중 바뀌면 손으로 붙인 클래스가 지워졌다(Codex 리뷰 P2)
+          scrollRef.current?.setAttribute("data-panning", "");
         }
         const next = panSceneCamera(
           start,
@@ -257,7 +258,7 @@ export function useSceneViewport({
         applyTransform();
       };
       const finish = () => {
-        scrollRef.current?.classList.remove("scene-panning");
+        scrollRef.current?.removeAttribute("data-panning");
         persistCamera();
       };
       // 놓는 순간(up)에만 삼킨다 — 놓친 끌기를 다음 누름이 정리할 때(onCancel)는 그 놓기의 auxclick 이 이미 지나갔다(Codex 66회차 리뷰)
