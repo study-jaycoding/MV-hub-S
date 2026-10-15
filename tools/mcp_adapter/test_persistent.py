@@ -3,6 +3,8 @@ import json
 import base64
 import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -17,7 +19,7 @@ from mcp import Client, StdioServerParameters
 from mcp.server.mcpserver.exceptions import ToolError
 
 from local_setup import configure_client
-from server import Broker, MAX_RESPONSE, MAX_RESULT_RESPONSE, write_result_display, validate_display_directory, present_result
+from server import Broker, MAX_RESPONSE, MAX_RESULT_RESPONSE, RESULT_UI_URI, result_ui, write_result_display, validate_display_directory, present_result
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -152,7 +154,8 @@ class PersistentTests(unittest.TestCase):
                     self.assertEqual(result.content[1].mime_type, "image/jpeg")
                     self.assertNotIn("data_base64", result.content[0].text)
                     self.assertNotIn("media", result.structured_content)
-                    self.assertEqual(result.structured_content["hub_url"], self.url)
+                    self.assertNotIn("hub_url", result.structured_content)
+                    self.assertNotIn(self.url, result.content[0].text)
                     for media in ({"mime": "image/svg+xml", "data_base64": encoded}, {"mime": "image/jpeg", "data_base64": "bad!"}):
                         self.http.result_value["media"] = media
                         rejected = await client.call_tool("get_result", {"plan_id": "p"})
@@ -197,7 +200,7 @@ class PersistentTests(unittest.TestCase):
                     self.assertFalse(tool.annotations.idempotent_hint)
                     args = {"plan_id": "p", "wait_seconds": 25, "display_directory": str(output)}
                     pending = await client.call_tool("get_result", args)
-                    self.assertEqual(pending.structured_content["display"]["status"], "unavailable")
+                    self.assertEqual(pending.meta["display"]["status"], "unavailable")
                     self.assertEqual(list(output.iterdir()), [])
                     self.http.result_value = {"generation_status": "done", "media": {"mime": "image/jpeg", "data_base64": "bad!"}}
                     bad = await client.call_tool("get_result", args)
@@ -208,7 +211,7 @@ class PersistentTests(unittest.TestCase):
                     for _ in range(2):
                         result = await client.call_tool("get_result", args)
                         self.assertFalse(result.is_error)
-                        display = result.structured_content["display"]
+                        display = result.meta["display"]
                         self.assertEqual(display["status"], "ready")
                         path = Path(display["path"])
                         files.append(path)
@@ -220,7 +223,10 @@ class PersistentTests(unittest.TestCase):
                         self.assertNotIn("<script", html)
                         self.assertNotIn("http", html)
                         self.assertLess(len(html.encode()), 1_000_000)
-                        self.assertEqual(json.loads(result.content[0].text)["display"], display)
+                        self.assertNotIn("display", json.loads(result.content[0].text))
+                        self.assertNotIn("display", result.structured_content)
+                        self.assertNotIn(str(output), result.content[0].text)
+                        self.assertNotIn(path.as_posix(), result.content[0].text)
                         self.assertEqual(json.loads(display["reference"].removeprefix("visualize").removesuffix("")), {"path": path.as_posix()})
                         self.assertEqual(set(self.http.calls[-1][1]["args"]), {"plan_id", "item_index", "asset_index", "wait_seconds"})
                     self.assertNotEqual(*files)
@@ -231,7 +237,7 @@ class PersistentTests(unittest.TestCase):
                     failed = await client.call_tool("get_result", {**args, "display_directory": str(failing)})
                     self.assertFalse(failed.is_error)
                     self.assertEqual(failed.structured_content["generation_status"], "done")
-                    self.assertEqual(failed.structured_content["display"]["status"], "error")
+                    self.assertEqual(failed.meta["display"]["status"], "error")
                     self.assertEqual(failed.content[1].data, encoded)
         anyio.run(exercise)
         self.assertTrue(all(body["method"] == "get_result" for _, body in self.http.calls))
@@ -312,9 +318,94 @@ class PersistentTests(unittest.TestCase):
                         cards.append(result.structured_content["card_text"])
                         self.assertTrue(any(c.type == "image" for c in result.content))
                         self.assertEqual(result.content[-1].text, cards[-1])
-                        self.assertIn(cards[-1], Path(result.structured_content["display"]["path"]).read_text(encoding="utf-8"))
+                        self.assertIn(cards[-1], Path(result.meta["display"]["path"]).read_text(encoding="utf-8"))
                 self.assertEqual(*cards)
         anyio.run(exercise)
+
+    def test_real_sdk_result_app_resource_and_path_free_default(self):
+        config, _ = self.profile()
+        self.http.result_value = {"generation_status": "done", "media": {
+            "mime": "image/jpeg", "data_base64": base64.b64encode(b"\xff\xd8\xfftest\xff\xd9").decode()}}
+        async def exercise():
+            async with Client(StdioServerParameters(**config)) as client:
+                tools = await client.list_tools()
+                tool = next(t for t in tools.tools if t.name == "get_result")
+                self.assertEqual(tool.meta["ui"]["resourceUri"], RESULT_UI_URI)
+                resource = await client.read_resource(RESULT_UI_URI)
+                self.assertEqual(resource.contents[0].mime_type, "text/html;profile=mcp-app")
+                self.assertEqual(resource.contents[0].text, result_ui())
+                self.assertFalse(resource.contents[0].meta["ui"]["prefersBorder"])
+                before = set(self.root.rglob("*"))
+                result = await client.call_tool("get_result", {"plan_id": "p"})
+                self.assertFalse(result.is_error)
+                self.assertNotIn("display", result.meta or {})
+                self.assertEqual(set(self.root.rglob("*")), before)
+                self.assertEqual(sum(b.type == "image" for b in result.content), 1)
+                self.assertNotIn("hub_url", result.structured_content)
+                self.assertNotIn("display", result.structured_content)
+        anyio.run(exercise)
+
+    def test_result_app_handshake_and_untrusted_messages(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node is required for the MCP Apps JavaScript check")
+        script = r'''
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const html = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const sent = [], handlers = {}, imageHandlers = {};
+let observer, disconnected = false;
+const preview = {hidden: true, addEventListener: (name, fn) => imageHandlers[name] = fn,
+  removeAttribute: name => delete preview[name]};
+const status = {textContent: ''};
+const parent = {postMessage: value => sent.push(value)};
+const window = {parent, addEventListener: (name, fn) => handlers[name] = fn};
+const document = {body: {getBoundingClientRect: () => ({height: 220})},
+  getElementById: name => name === 'preview' ? preview : status};
+const ResizeObserver = class {
+  constructor(fn) { observer = fn; }
+  observe() { observer(); }
+  disconnect() { disconnected = true; }
+};
+vm.runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)[1], {window, document, ResizeObserver});
+const emit = (value, source = parent) => handlers.message({source, data: {jsonrpc: '2.0', ...value}});
+assert.equal(sent[0].method, 'ui/initialize');
+emit({id: 'mvhub-init', result: {protocolVersion: '2026-01-26'}}, {});
+assert.equal(sent.length, 1);
+emit({id: 'mvhub-init', result: {protocolVersion: '2026-01-26'}});
+assert.equal(sent[1].method, 'ui/notifications/initialized');
+assert.equal(sent[2].method, 'ui/notifications/size-changed');
+observer(); assert.equal(sent.length, 3);
+const data = '/9j/eP/Z';
+const result = {structuredContent: {card_text: '<script>untrusted</script>'}, content: [{type: 'image', mimeType: 'image/jpeg', data}]};
+emit({method: 'ui/notifications/tool-result', params: result}, {});
+assert.equal(preview.hidden, true);
+emit({method: 'ui/notifications/tool-result', params: result});
+assert.equal(status.textContent, '<script>untrusted</script>');
+assert.equal(preview.src, 'data:image/jpeg;base64,' + data);
+assert.equal(preview.hidden, false);
+assert.equal(html.match(/<img /g).length, 1);
+for (const image of [null, {type: 'image', mimeType: 'image/svg+xml', data},
+  {type: 'image', mimeType: 'image/jpeg', data: 'https://unsafe'},
+  {type: 'image', mimeType: 'image/jpeg', data: '/9j/' + 'A'.repeat(699052)}]) {
+  emit({method: 'ui/notifications/tool-result', params: {content: [image]}});
+  assert.equal(preview.hidden, true);
+  assert.equal(preview.src, undefined);
+}
+emit({method: 'ui/notifications/tool-result', params: result});
+imageHandlers.error(); assert.equal(preview.hidden, true);
+emit({method: 'ui/notifications/tool-result', params: {...result, isError: true}});
+assert.equal(preview.hidden, true);
+emit({method: 'ui/notifications/tool-result', params: result});
+emit({method: 'ui/notifications/tool-cancelled'});
+assert.equal(preview.hidden, true);
+emit({method: 'ui/resource-teardown', id: 9});
+assert.equal(disconnected, true); assert.equal(sent.at(-1).id, 9);
+assert.ok(!html.includes('innerHTML') && !html.includes('fetch('));
+'''
+        checked = subprocess.run([node, "-e", script], input=json.dumps(result_ui()), text=True,
+                                 capture_output=True, timeout=20)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
 
 
 if __name__ == "__main__":

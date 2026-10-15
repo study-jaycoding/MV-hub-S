@@ -37,6 +37,79 @@ MAX_RESULT_RESPONSE = 1024 * 1024
 MAX_PREVIEW = 512 * 1024
 REQUEST_TIMEOUT = 30
 RESULT_TIMEOUT = 90
+RESULT_UI_URI = "ui://mvhub/result.html"
+
+
+def result_ui() -> str:
+    """MCP Apps view. All image bytes arrive through the authorized tool result."""
+    return r'''<!doctype html>
+<html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MV Hub 생성 결과</title>
+<style>
+:root { color-scheme: light dark; font: 14px/1.5 system-ui, sans-serif; }
+body { margin: 0; padding: 12px; }
+figure { margin: 0; }
+img { display: block; max-width: 100%; max-height: 600px; height: auto; border-radius: 12px; }
+[hidden] { display: none; }
+figcaption { margin-top: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+</style>
+<figure><img id="preview" alt="MV Hub 생성 결과" hidden>
+<figcaption id="status" role="status">결과를 기다리고 있습니다.</figcaption></figure>
+<script>
+const preview = document.getElementById('preview');
+const status = document.getElementById('status');
+const send = value => window.parent.postMessage({jsonrpc: '2.0', ...value}, '*');
+let ready = false;
+let lastHeight = 0;
+const resize = new ResizeObserver(() => {
+  const height = Math.ceil(document.body.getBoundingClientRect().height);
+  if (ready && height !== lastHeight) {
+    lastHeight = height;
+    send({method: 'ui/notifications/size-changed', params: {height}});
+  }
+});
+const clearImage = () => { preview.hidden = true; preview.removeAttribute('src'); };
+preview.addEventListener('error', () => {
+  clearImage();
+  status.textContent += '\n미리보기를 표시하지 못했습니다. MV Hub에서 결과를 확인하세요.';
+});
+window.addEventListener('message', event => {
+  if (event.source !== window.parent || event.data?.jsonrpc !== '2.0') return;
+  const message = event.data;
+  if (message.id === 'mvhub-init' && !ready) {
+    if (!message.result || message.result.protocolVersion !== '2026-01-26') {
+      status.textContent = '이 앱에서 결과 화면을 열지 못했습니다. MV Hub에서 확인하세요.';
+      return;
+    }
+    ready = true;
+    send({method: 'ui/notifications/initialized', params: {}});
+    resize.observe(document.body);
+  } else if (ready && message.method === 'ui/notifications/tool-result') {
+    clearImage();
+    const result = message.params || {};
+    const card = result.structuredContent?.card_text;
+    status.textContent = typeof card === 'string' ? card.slice(0, 20000) : 'MV Hub 결과를 확인하세요.';
+    if (result.isError) { status.textContent = '결과를 조회하지 못했습니다. MV Hub에서 상태를 확인하세요.'; return; }
+    const image = Array.isArray(result.content) && result.content.find(block => block?.type === 'image');
+    if (image?.mimeType === 'image/jpeg' && typeof image.data === 'string' &&
+        image.data.length <= 699052 && /^\/9j\/[A-Za-z0-9+/]*={0,2}$/.test(image.data)) {
+      preview.src = 'data:image/jpeg;base64,' + image.data;
+      preview.hidden = false;
+    }
+  } else if (ready && message.method === 'ui/notifications/tool-cancelled') {
+    clearImage();
+    status.textContent = '결과 조회가 취소됐습니다. 생성 취소 여부는 MV Hub에서 확인하세요.';
+  } else if (message.method === 'ui/resource-teardown' && message.id != null) {
+    resize.disconnect(); clearImage(); ready = false;
+    send({id: message.id, result: {}});
+  } else if (message.method === 'ping' && message.id != null) {
+    send({id: message.id, result: {}});
+  }
+});
+send({id: 'mvhub-init', method: 'ui/initialize', params: {
+  protocolVersion: '2026-01-26', appInfo: {name: 'MV Hub 결과', version: '1.0.0'}, appCapabilities: {}
+}});
+</script></html>'''
 
 
 class PlanItem(BaseModel):
@@ -312,18 +385,16 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             "card_text를 사용자에게 별도 텍스트 메시지로 안내한 뒤 실행하세요. 도구 결과에 있는 텍스트만으로 안내를 대신하지 마세요. "
             "실행 응답과 결과 조회의 presentation.stage가 바뀔 때마다 presentation.message를 짧게 안내하세요. "
             "진행 중 단계가 같으면 중복 설명하지 말고, 임의 진행률이나 예상 시간을 만들지 마세요. "
-            "종료 응답은 card_text(상태→조건→위치) 다음에 결과 이미지를 반드시 표시하세요. "
+            "종료 시 card_text(상태→조건→위치)를 안내하고 이미지는 도구의 네이티브 표시를 사용하세요. "
             "presentation.scope=item은 선택 항목만의 상태이며 계획 전체 완료가 아닙니다. 여러 항목은 모두 확인하세요. "
             "실행 뒤 get_result(wait_seconds=25)로 완료를 기다리고 미리보기를 함께 받으세요. 별도 sleep과 get_plan 반복은 불필요합니다. "
             "계획 status=submitted는 완료 여부가 아닙니다. 항목의 generation_status=done이 완료입니다. "
             "아직 진행 중이면 같은 항목의 get_result(wait_seconds=25)만 다시 조회하고 실패·취소·불명확한 접수는 안내하세요. "
-            "이미지 수신과 사용자 화면 표시는 별개이며 대화창 표시는 필수입니다. "
-            "Codex처럼 PC·휴대폰에서 ImageContent가 보이지 않을 수 있는 클라이언트는 get_result에 display_directory로 "
-            "이미 존재하는 작업 소유 로컬 절대경로를 지정하세요. 반환된 display.reference를 최종 답변에 그대로 넣으세요. "
-            "표시 파일은 도구가 준비하므로 직접 HTML을 다시 만들거나 이미지를 다시 조회할 필요가 없습니다. "
-            "ImageContent를 직접 표시하는 클라이언트는 표시 폴더를 생략할 수 있습니다. Claude도 이미지 표시가 불가능하면 "
-            "display_directory를 지정해 같은 결과 카드를 준비하고 display.path를 지원되는 파일 미리보기 또는 클릭 가능한 링크로 제공하세요. "
-            "Codex 전용 참조를 Claude에 복사하지 마세요. 텍스트만 내고 결과를 누락하지 마세요. 파일 준비는 실제 화면 표시 확인이 아닙니다. "
+            "get_result의 네이티브 이미지 또는 MCP Apps 결과 화면을 사용하세요. 이미지를 받으려고 로컬 표시 폴더를 만들 필요가 없습니다. "
+            "도구 결과에 나온 이미지를 최종 답변에 다시 삽입하지 말고 완료 내용을 짧게 안내하세요. "
+            "사용자가 파일·다운로드를 요청하지 않으면 URL·PC 경로·HTML 링크를 나열하지 마세요. 로컬 HTML을 Markdown 이미지로 삽입하지 마세요. "
+            "네이티브 표시를 지원하지 않으면 앱의 지원되는 이미지 표시 도구를 사용하고, 그것도 불가하면 표시 제한을 알리세요. "
+            "이미지 수신은 실제 화면 표시 확인이 아닙니다. 확인하지 않은 표시 성공을 주장하지 마세요. "
             "미리보기 실패는 생성 실패가 아닙니다. 불명확한 실패는 자동 재제출하지 마세요. "
             "캔버스 노드를 명시적으로 요청했을 때만 read_context(kind='scenes')로 대상 ID를 확인해 add_to_canvas를 호출하세요. "
             "캔버스 반영은 해당 계정·공간의 앱 화면을 열 때 처리되며 생성 자체와 독립입니다."
@@ -392,26 +463,30 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=True))
     def execute_generation_plan(plan_id: Annotated[str, Field(min_length=1, max_length=200)]) -> dict[str, Any]:
-        """명확한 사용자 생성 요청에 따라 계획을 실행합니다. 크레딧이 소모될 수 있습니다. 실행 전 조건·위치를, 응답 뒤 presentation.message를 안내하세요. 영속 연결은 get_result(wait_seconds=25)로 결과를 받고 card_text 다음에 이미지를 표시합니다. 불명확한 응답을 자동 재시도하지 마세요."""
+        """명확한 사용자 생성 요청에 따라 계획을 실행합니다. 크레딧이 소모될 수 있습니다. 실행 전 조건·위치를, 응답 뒤 presentation.message를 안내하세요. 영속 연결은 get_result(wait_seconds=25)로 결과를 받습니다. 이미지는 도구의 네이티브 표시를 사용하며 답변에 중복 삽입하지 마세요. 불명확한 응답을 자동 재시도하지 마세요."""
         return present_result(broker.action("execute_generation_plan", {"plan_id": plan_id}))
 
     if profile:
-        @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
+        server.resource(RESULT_UI_URI, name="mvhub_result", title="MV Hub 생성 결과",
+                        mime_type="text/html;profile=mcp-app", meta={"ui": {"prefersBorder": False}})(result_ui)
+
+        @server.tool(meta={"ui": {"resourceUri": RESULT_UI_URI}},
+                     annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
         def get_result(
             plan_id: Annotated[str, Field(min_length=1, max_length=200)],
             item_index: Annotated[int, Field(ge=0, lt=20)] = 0,
             asset_index: Annotated[int, Field(ge=0, lt=100)] = 0,
             wait_seconds: Annotated[int, Field(ge=0, le=25, strict=True)] = 0,
-            display_directory: Annotated[str | None, Field(min_length=1, max_length=1024)] = None,
+            display_directory: Annotated[str | None, Field(min_length=1, max_length=1024, description="구형 파일 내보내기 호환용. 일반 이미지 조회에서는 생략하세요.")] = None,
         ) -> CallToolResult:
-            """생성·과금 없이 선택 항목을 조회합니다. presentation.stage 변경 시 message를 안내하고, 종료 시 card_text(상태→조건→위치) 다음에 이미지를 반드시 제공합니다. scope=item은 전체 계획 완료가 아닙니다. wait_seconds=25는 최대 25초 완료 대기입니다. Codex는 display_directory에 기존 작업 소유 로컬 절대경로를 지정하고 display.reference를 최종 답변에 넣습니다. Claude는 ImageContent 또는 같은 display.path의 파일 미리보기·링크를 제공합니다. JPEG가 있을 때만 새 파일을 쓰고 기존 파일은 덮지 않습니다. 재생성하지 마세요. 표시 준비와 사용자 화면 확인은 별개입니다. 영상은 기존 포스터만 반환합니다."""
+            """생성·과금 없이 선택 항목의 상태 카드와 네이티브 이미지를 반환합니다. MCP Apps 지원 앱은 결과 화면을 엽니다. 도구 이미지를 최종 답변에 중복 삽입하거나 URL·PC 경로·HTML 링크를 나열하지 마세요. 표시 불가 시 지원되는 이미지 표시 도구를 사용하세요. scope=item은 전체 계획 완료가 아닙니다. wait_seconds=25로 최대 25초 완료 대기합니다. 재생성하지 마세요. 이미지 수신과 화면 표시 확인은 별개입니다. 영상은 기존 포스터만 반환합니다."""
             directory = validate_display_directory(display_directory) if display_directory is not None else None
             args = {"plan_id": plan_id, "item_index": item_index, "asset_index": asset_index}
             if wait_seconds:
                 args["wait_seconds"] = wait_seconds
             result = present_result(broker.action("get_result", args))
             media = result.pop("media", None)
-            result.update(hub_url=broker.url, preview_available=media is not None)
+            result.update(preview_available=media is not None)
             blocks: list[Any] = []
             if directory is not None:
                 result["display"] = {"status": "unavailable", "reason": "표시할 미리보기가 없습니다. 생성 진행 중일 때만 다시 조회하고 완료·실패·취소이면 상태를 안내하세요. 재생성하지 마세요."}
@@ -433,10 +508,12 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
                         result["display"] = write_result_display(data, directory, result.get("card_text", ""))
                     except (OSError, ToolError):
                         result["display"] = {"status": "error", "reason": "표시 파일을 저장하지 못했습니다. 생성 결과는 유지됩니다. 재생성하지 마세요."}
+            # Host-only compatibility export; local paths must not become model-facing image links.
+            meta = {"display": result.pop("display")} if "display" in result else None
             blocks.insert(0, TextContent(type="text", text=json.dumps(result, ensure_ascii=False)))
             if result.get("card_text"):
                 blocks.append(TextContent(type="text", text=result["card_text"]))
-            return CallToolResult(content=blocks, structured_content=result)
+            return CallToolResult(content=blocks, structured_content=result, meta=meta)
 
         @server.tool(annotations=write)
         def add_to_canvas(
