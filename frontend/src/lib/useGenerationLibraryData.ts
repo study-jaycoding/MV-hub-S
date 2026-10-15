@@ -272,7 +272,9 @@ export function useGenerationLibraryData({
   // ★탭이 바뀌면 '그 자리에서' 화면 컨텍스트를 전환 — 진행 중 reload(코얼레싱 큐)가 끝나길 기다리면
   //  이전 탭 카드가 새 탭에 남는다(코덱스 P1). 캐시(sig 일치)가 있으면 즉시 그 탭 목록, 없으면 비움.
   //  이후 fetch(seq 가드)가 최신본으로 갱신한다. 첫 마운트(null)는 초기 로드에 맡긴다.
-  useEffect(() => {
+  //  그리기 전에(layout) 갈아 끼운다 — 그린 뒤에 하면 새 탭 아래 이전 탭 목록이 한 번 칠해졌다(69회차 격리 실측: 공유 탭 컷 카드 화면 →
+  //  워크스페이스에서 153ms 에 공유 목록, 206ms 에 내 목록). 읽는 ref 들은 렌더 중에 갱신돼 여기서 이미 최신이다.
+  useLayoutEffect(() => {
     const tab = filters.tab;
     if (tab === "compose") return; // 캔버스는 그리드를 안 그림 — 표시 컨텍스트 유지
     if (lastLoadedTabRef.current === null || lastLoadedTabRef.current === tab) return;

@@ -2,6 +2,7 @@
 // 목록 탭의 '폴더 보기' 창(카드의 폴더 이름표, 2026-10-07) — 조회 조건과, 열고 닫을 때 목록을 비우고 다시 받는 약속.
 // 창 자체(App 배선)는 resolveSelectionRender.test.tsx 의 "App … 폴더 이름표" 시험이 본다.
 import { act, StrictMode, useEffect } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { api } from "../src/api";
@@ -326,4 +327,16 @@ it("on the my tab a workspace change keeps the kept page locked until the fresh 
   await settle();
   expect(data.staleList).toBe(false);
   expect(ids()).toEqual(["n1"]);
+});
+
+// 69회차 격리 실측 — 탭을 바꾸면 그 커밋 안에서(그리기 전) 목록을 이 탭의 것(캐시 또는 빈 목록)으로 갈아 끼운다. 그린 뒤에 갈아 끼우면
+//  새 탭 아래 이전 탭 목록이 한 번 칠해졌다(공유 & 리뷰 → 워크스페이스에서 화면이 두 번 바뀌었다 — 153ms 공유 목록 → 206ms 내 목록).
+it("switching tabs swaps the list before paint — the committed render never shows the previous tab's cards", async () => {
+  act(() => render(MAIN));
+  await settle();
+  expect(ids()).toEqual(["m1", "m2"]);
+  // 클릭처럼 동기 우선순위로 그린다 — 그 커밋이 끝난 바로 그 자리(화면에 칠해질 상태)를 본다
+  flushSync(() => render({ tab: "team" }, { tab: "team" }));
+  expect(ids()).toEqual([]);
+  await settle();
 });

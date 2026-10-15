@@ -2236,10 +2236,20 @@ export default function App() {
   // 열리거나(폴더 바뀜 포함) 열린 채 필터가 바뀌면 그 폴더 목록을 새로 받는다 — compose 는 평소 목록을 안 받아
   //  이전 탭(팀·휴지통) 카드가 남아 있을 수 있으니 먼저 비운다(코덱스 P1). 열릴 때 창으로 초점 이동 — 안 하면
   //  폴더 클릭 직후 Delete 가 뒤 캔버스 선택 노드를 지운다(코덱스 P2).
+  //  비우기는 그리기 전에(layout) — 그린 뒤에 비우면 첫 화면에 직전 폴더(처음이면 워크스페이스 전체) 카드가 한 번 비쳤다. 그리고 아래 목록
+  //  조회 effect(serverFilterKey)보다 먼저 — 뒤에 비우면 그 effect 가 방금 띄운 조회를 버리고 같은 조회를 줄 세워 요청이 두 번, 시간도
+  //  두 배였다(69회차 격리 실측: 캔버스 우클릭 폴더 창 3단계·요청 2번 직렬 · 라이브러리 경로는 2단계·1번).
+  useLayoutEffect(() => {
+    if (folderPeek) beginComposeList(); // 소유 탭 전환 + 비우기(이전 탭 캐시 보존)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folderPeek, serverFilterKey]);
+  // 조회는 조건이 그대로일 때만(같은 폴더를 다시 열기 등) 여기서 — 조건이 바뀐 커밋은 목록 조회 effect 가 이미 띄웠다(compose 는 늘 다시 받는다)
+  const peekQueryKeyRef = useRef(serverFilterKey);
   useEffect(() => {
+    const queryChanged = peekQueryKeyRef.current !== serverFilterKey;
+    peekQueryKeyRef.current = serverFilterKey;
     if (!folderPeek) return;
-    beginComposeList(); // 소유 탭 전환 + 비우기(이전 탭 캐시 보존)
-    void reload();
+    if (!queryChanged) void reload();
     folderPeekRef.current?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [folderPeek, serverFilterKey]);
