@@ -193,6 +193,7 @@ async function onExternalScenes(): Promise<void> {
   const persisted = listPersistedSceneTexts(null);
   const present = new Set(persisted.map((s) => s.id));
   for (const id of knownText.keys()) if (!present.has(id)) knownText.delete(id); // 다른 탭이 지운 씬(noteSeenTexts 와 같은 까닭)
+  recountOverLimit(); // 다른 탭이 저장한 확정본도 크기를 다시 센다(7A·D11)
   for (const s of persisted) {
     // 이 탭이 본 마지막 글자(자기 확정 포함 — noteSeenTexts)와 같으면 다른 탭이 바꾼 씬이 아니다
     if (knownText.get(s.id) === s.text) continue;
@@ -239,6 +240,42 @@ export function subscribeSceneBackupSkipped(fn: (names: string[]) => void): () =
   return () => oversizeSubs.delete(fn);
 }
 
+// 씬 탭에 계속 보이는 '백업 안 됨'(Jay 결정 7A) — 까닭 둘을 따로 기억한다(설계 D11·E11):
+//  overLimit  = 확정본 글자가 상한을 넘음 — 저장·다른 탭에서 받음·범위 전환 때마다 다시 센다(네트워크·동기화 성패와 무관).
+//  copyTooBig = 사본(갈래)으로 바꾼 글자가 상한을 넘음 — 동기화가 안다. 그 씬이 다음에 올라가면·갈래가 끝나면·씬이 사라지면 지운다.
+//  표시가 사라지는 것은 '크기 제한이 풀림'이지 '백업됨'이 아니다(C19).
+let overLimit = new Set<string>();
+let copyTooBig = new Set<string>();
+let skippedIds: ReadonlySet<string> = new Set();
+const overLimitCache = new Map<string, { text: string; over: boolean }>(); // 글자가 그대로면 큰 씬의 바이트를 다시 세지 않는다
+const skippedIdSubs = new Set<() => void>();
+/** 지금 DB 백업에서 빠진 씬 id — 바뀔 때만 새 집합이다(useSyncExternalStore 용). */
+export const getSceneBackupSkippedIds = (): ReadonlySet<string> => skippedIds;
+export function subscribeSceneBackupSkippedIds(fn: () => void): () => void {
+  skippedIdSubs.add(fn);
+  return () => skippedIdSubs.delete(fn);
+}
+function publishSkippedIds(): void {
+  const next = new Set([...overLimit, ...copyTooBig]);
+  if (next.size === skippedIds.size && [...next].every((id) => skippedIds.has(id))) return;
+  skippedIds = next;
+  skippedIdSubs.forEach((fn) => fn());
+}
+function recountOverLimit(): void {
+  const persisted = listPersistedSceneTexts(null);
+  const present = new Set(persisted.map((s) => s.id));
+  overLimit = new Set();
+  for (const s of persisted) {
+    const hit = overLimitCache.get(s.id);
+    const over = hit?.text === s.text ? hit.over : exceedsSceneLimit(s.text);
+    overLimitCache.set(s.id, { text: s.text, over });
+    if (over) overLimit.add(s.id);
+  }
+  for (const id of overLimitCache.keys()) if (!present.has(id)) overLimitCache.delete(id);
+  for (const id of copyTooBig) if (!present.has(id)) copyTooBig.delete(id);
+  publishSkippedIds();
+}
+
 // 복구 알림 — 백그라운드(백오프 재시도) 복구도 현재 탭 UI(씬 목록)에 반영되게 구독을 받는다.
 //  같은 탭엔 storage 이벤트가 안 오므로 이 콜백이 유일한 통지 경로다(코덱스 P1).
 const restoreSubs = new Set<() => void>();
@@ -281,10 +318,13 @@ function enterScope(): string {
     serverHash = null;
     lastPushed = new Map();
     oversized = new Set();
+    copyTooBig = new Set();
+    overLimitCache.clear();
     ledger = loadLedger(s); // 이 범위의 판 — 여기서 한 번만 읽는다(Codex C1)
     received = new Map();
     knownText = new Map();
     noteSeenTexts();
+    recountOverLimit();
     externalSeq = new Map();
     holdNoticeShown = false;
     rerun = false;
@@ -425,6 +465,7 @@ async function syncNow(): Promise<void> {
         //  이 씬은 제 행으로 돌아가 판으로 판정받는다(그사이 바뀌었으면 새 사본) — Codex 1A 4차 P1.
         entry = { b: entry.b };
         setLedger(scope, s.id, entry);
+        copyTooBig.delete(s.id); // 갈래가 끝났다 — 사본 초과도 풀린다(E11)
         // 이 씬의 내용은 지금껏 그 사본 행에만 있었다 — 올린 기억을 무효로 해 제 판정(새 사본 행)을 다시 받게 한다.
         //  안 그러면 사본 씬만 지울 때 이 씬 내용의 유일한 백업이 지워진다(Codex 1A 5차). 새 사본 자리는 fork_avoid 로 그 행을 피한다.
         if (lastPushed.has(s.id)) lastPushed.set(s.id, "");
@@ -446,13 +487,16 @@ async function syncNow(): Promise<void> {
         if (h && h === meta.get(s.id)) {
           setLedger(scope, s.id, { b: h });
           lastPushed.set(s.id, data);
+          copyTooBig.delete(s.id);
           continue;
         }
         const fork = forkText(data, entry.fork.id, s.id, h ?? "");
         if (!fork || exceedsSceneLimit(fork)) {
           tooBig.add(s.id);
+          copyTooBig.add(s.id);
           continue;
         }
+        copyTooBig.delete(s.id); // 지금 내용의 사본은 상한 안이다(E11 — 허브가 다시 넘는다고 하면 아래 응답이 다시 넣는다)
         upserts.push({ id: entry.fork.id, name: s.name, data: fork, base_hash: entry.fork.b ?? "", localId: s.id, text: data });
         continue;
       }
@@ -477,6 +521,7 @@ async function syncNow(): Promise<void> {
       upserts.push({ id: s.id, name: s.name, data, base_hash: entry?.b ?? "", localId: s.id, text: data });
     }
     oversized = tooBig;
+    publishSkippedIds();
     if (newlyTooBig.length) oversizeSubs.forEach((fn) => fn(newlyTooBig));
     if (heldNoHash && !holdNoticeShown) {
       holdNoticeShown = true;
@@ -576,8 +621,10 @@ async function syncNow(): Promise<void> {
         const r = results.get(u.id);
         if (r?.status === "too_big") {
           tooBig.add(u.localId); // 사본이 상한을 넘었다 — 올라가지 않았다(lastPushed 에 적지 않는다)
+          copyTooBig.add(u.localId);
           continue;
         }
+        copyTooBig.delete(u.localId); // 이번엔 올라갔다
         if ((externalSeq.get(u.localId) ?? 0) !== seqAtSend.get(u.localId)) {
           // 보내는 사이 다른 탭에서 이 씬을 받았다 — 늦은 응답으로 올린 기억·판·갈래를 되살리지 않는다(지금 글자는 받은 것이다).
           //  다음 동기화가 메타를 새로 받아 맞춘다. 사본으로 갔으면 그 행은 옛 내용의 사본으로 남는다(Codex 1A 재검토).
@@ -611,6 +658,7 @@ async function syncNow(): Promise<void> {
       }
     }
     oversized = tooBig;
+    publishSkippedIds();
     if (forked.length) forkSubs.forEach((fn) => fn(forked));
   } catch {
     failed = true;
@@ -726,7 +774,10 @@ export async function initSceneBackup(): Promise<boolean> {
     installed = true;
     // 이 탭의 확정 — 본 글자로 적는다(같은 확정에 다른 탭 변경이 섞였으면 그 알림이 먼저 온다 — sceneStore runStoreTx)
     subscribeScenesPersisted(() => {
-      if (ns() === curScope) noteSeenTexts();
+      if (ns() === curScope) {
+        noteSeenTexts();
+        recountOverLimit();
+      }
       schedule();
     });
     subscribeSceneStoreExternal(() => void onExternalScenes()); // 다른 탭의 확정본 — 판 승계·미러 예약(1A)

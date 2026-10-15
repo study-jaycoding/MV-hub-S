@@ -6,7 +6,7 @@
 // ★드래그는 포인터 이벤트로 한다(HTML5 DnD 는 자식 요소가 부모 드래그를 막고 투명 고스트가 생긴다).
 //  5px 임계 전에는 클릭이고, 드래그가 끝나면 그 뒤에 합성되는 click/dblclick 을 한 번 삼킨다 —
 //  안 그러면 순서만 바꾸려다 씬이 열리고 워크스페이스까지 바뀐다(코덱스 P1).
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Scene } from "../../lib/scenes";
 import {
   dropIndexAt,
@@ -41,6 +41,27 @@ interface Props {
   onImportBackup?: () => void;
   saveFailing?: boolean; // 캔버스가 저장소에 확정되지 못하고 있다 — 그동안 '저장 안 됨'을 계속 띄운다
   onExportAll?: () => void; // 지금 상태 전체를 파일로 내려받는다
+  backupSkippedIds?: ReadonlySet<string>; // DB 백업에서 빠진 씬(5MB 초과 — Jay 결정 7A)
+}
+
+const BACKUP_SKIPPED_TITLE = "5MB 를 넘어 이 PC 의 DB 백업에서 빠졌습니다 — 카드를 줄이면 다시 백업됩니다. 설정의 [전체 내보내기]로 따로 받아 두세요.";
+
+// 이름 뒤 호박색 '백업 안 됨' — 누르는 동작은 없다(탭 누름 그대로). 이 표시 때문에 이름이 잘리면 '⚠' 하나만 둔다. 한 번 줄이면 그 이름 동안
+//  그대로 — 줄이면 이름이 다시 들어가 늘였다 줄였다 깜빡이지 않게.
+function BackupSkippedBadge({ name }: { name: string }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [narrowFor, setNarrowFor] = useState<string | null>(null);
+  const narrow = narrowFor === name;
+  useLayoutEffect(() => {
+    if (narrow) return;
+    const label = ref.current?.previousElementSibling;
+    if (label && label.scrollWidth > label.clientWidth) setNarrowFor(name);
+  });
+  return (
+    <span ref={ref} className="scene-tab-backup" title={BACKUP_SKIPPED_TITLE} aria-label="백업 안 됨">
+      {narrow ? "⚠" : "백업 안 됨"}
+    </span>
+  );
 }
 
 interface DragState {
@@ -69,6 +90,7 @@ export function SceneBar({
   onImportBackup,
   saveFailing = false,
   onExportAll,
+  backupSkippedIds,
 }: Props) {
   const [drag, setDrag] = useState<DragState | null>(null);
   const [menu, setMenu] = useState<SceneMenuTarget | null>(null);
@@ -265,6 +287,7 @@ ${sceneTabTitle(scene, workspaceContext, label, missing)}`}
                 />
               ) : null}
               <span className="scene-tab-name">{shortSceneName(scene.name)}</span>
+              {backupSkippedIds?.has(scene.id) ? <BackupSkippedBadge name={scene.name} /> : null}
             </button>
             <button
               className="scene-del"

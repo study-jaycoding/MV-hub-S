@@ -356,6 +356,31 @@ describe("sceneBackup (DB 미러·복구)", () => {
     expect(puts().length).toBe(1);
     expect(putBody(puts()[0]).upserts.map((u: { id: string }) => u.id)).toEqual(["edge"]);
   });
+
+  // Jay 결정 7A — 빠진 씬은 탭에 계속 보인다. 표시는 확정본 크기로 정한다: 백업 서버가 안 닿아도(동기화가 일찍 끝나도) 맞아야 한다(C19).
+  it("7A — 상한을 넘은 씬은 확정되자마자 '빠짐', 줄이거나 지우면 풀린다(서버가 안 닿아도) · 범위가 바뀌면 비운다", async () => {
+    getMeta = () => Promise.reject(new Error("offline"));
+    getFull = () => Promise.reject(new Error("offline"));
+    const { scenes, backup, settle } = await boot();
+    await backup.initSceneBackup().catch(() => false);
+    const seen: string[][] = [];
+    backup.subscribeSceneBackupSkippedIds(() => seen.push([...backup.getSceneBackupSkippedIds()]));
+    const big = { ...JSON.parse(sceneJson("big", "큰 씬")), cards: [{ id: "t", kind: "text", x: 0, y: 0, text: "가".repeat(1_800_000) }] };
+    scenes.saveScenes(null, [JSON.parse(sceneJson("a")), big]);
+    await settle();
+    expect([...backup.getSceneBackupSkippedIds()]).toEqual(["big"]);
+    scenes.updateScene(null, "big", { cards: [] });
+    await settle();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("a")), big]);
+    await settle();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("a"))]); // 지웠다
+    await settle();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("a")), big]);
+    await settle();
+    localStorage.setItem("ch.activeAccount", `other${acctSeq}@test`); // 다른 계정 — 그 범위엔 큰 씬이 없다
+    await backup.initSceneBackup().catch(() => false);
+    expect(seen).toEqual([["big"], [], ["big"], [], ["big"], []]);
+  });
 });
 
 // ── Jay 결정 1A(10-15): 오래 안 쓴 창이 씬 백업을 옛 내용으로 덮지 않게 — 판 장부·옛 창 건너뛰기·사본(갈래) ──
@@ -734,6 +759,27 @@ describe("sceneBackup — 판(1A)", () => {
     const [first] = puts();
     expect(putBody(first).upserts.map((u: { id: string }) => u.id)).toEqual(["x", "bk_x", "bk_y", "bk_unknown"]);
     expect([...putBody(first).fork_avoid].sort()).toEqual(["bk_unknown", "bk_x"]); // y 는 이번에 올리지 않는다 — bk_y 는 피할 까닭이 없다
+  });
+
+  it("7A — 허브가 사본이 상한을 넘는다고(too_big) 하면 그 씬도 '빠짐'이고, 원본 크기를 다시 세도 그대로 · 다음에 올라가면 풀린다", async () => {
+    const { scenes, backup, settle } = await boot();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("x", "원본"))]);
+    await settle();
+    let refuse = true;
+    putReply = (body) => (refuse
+      ? { ok: true, results: body.upserts.map((u) => ({ id: u.id, status: "too_big", target_id: "bk_t", hash: null })) }
+      : hashReply(body));
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect([...backup.getSceneBackupSkippedIds()]).toEqual(["x"]);
+    scenes.saveScenes(null, [JSON.parse(sceneJson("x", "원본")), JSON.parse(sceneJson("y"))]); // 다른 씬 확정 — 원본 크기를 다시 센다
+    await settle();
+    expect([...backup.getSceneBackupSkippedIds()]).toEqual(["x"]);
+    refuse = false;
+    scenes.updateScene(null, "x", { name: "원본 고침" });
+    await settle();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect([...backup.getSceneBackupSkippedIds()]).toEqual([]);
   });
 
   it("63회차 재검토 — 원본 여럿의 사본 합계가 상한을 넘으면 요청을 나눈다(목록은 자르지 않는다)", async () => {

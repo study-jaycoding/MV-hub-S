@@ -19,12 +19,15 @@ import { useSceneCoordination } from "../src/lib/useSceneCoordination";
 vi.mock("../src/api", () => ({
   api: { locateAssets: async (tokens: string[]) => ({ fixed: [], unresolved: [], missing: [], local: [], open: tokens }) },
 }));
+const EMPTY_SKIPPED = vi.hoisted(() => new Set<string>()); // 같은 값을 돌려줘야 useSyncExternalStore 가 다시 그리기를 되풀이하지 않는다
 vi.mock("../src/lib/sceneBackup", () => ({
   initSceneBackup: async () => false,
   countBackupOnlyScenes: async () => 0,
   importFromBackup: async () => 0,
   subscribeSceneRestore: () => () => {},
   subscribeSceneBackupSkipped: () => () => {},
+  subscribeSceneBackupSkippedIds: () => () => {},
+  getSceneBackupSkippedIds: () => EMPTY_SKIPPED,
   subscribeSceneBackupForked: () => () => {},
 }));
 vi.mock("../src/lib/sceneCardLinks", () => ({

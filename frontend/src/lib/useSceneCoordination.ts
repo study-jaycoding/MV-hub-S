@@ -2,7 +2,7 @@
 //  · 씬 목록/활성/바인딩/선택 상태 + 씬 CRUD(선택·추가·이름변경·삭제)를 한곳에.
 //  · patchSceneById/patchActiveScene: 대상 씬을 갱신하고 목록을 다시 읽는 반복 패턴을 DRY.
 // 씬은 프로젝트 무관 전역(S1) — 모든 scenes 호출에 projectId=null. localStorage 데이터계층(scenes.ts).
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Scene, SceneRef, SceneSnapshot } from "./scenes";
 import {
   createScene,
@@ -35,6 +35,8 @@ import {
   initSceneBackup,
   subscribeSceneBackupForked,
   subscribeSceneBackupSkipped,
+  subscribeSceneBackupSkippedIds,
+  getSceneBackupSkippedIds,
   subscribeSceneRestore,
 } from "./sceneBackup";
 import {
@@ -112,6 +114,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   //  이제는 화면을 되돌리지 않는다 — 편집은 화면에 남고 저장소가 계속 다시 시도한다. 그래서 알림 한 줄로
   //  끝내지 않고, 실패하는 동안 탭 줄에 '저장 안 됨'을 **계속** 띄운다(알림은 다른 알림에 덮인다).
   const [sceneSaveFailing, setSceneSaveFailing] = useState(isSceneSaveFailing);
+  const sceneBackupSkippedIds = useSyncExternalStore(subscribeSceneBackupSkippedIds, getSceneBackupSkippedIds); // 씬 탭의 '백업 안 됨'(Jay 결정 7A)
   useEffect(
     () =>
       subscribeSceneSaveState((failed) => {
@@ -492,5 +495,6 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     backupOnly,
     importBackupScenes,
     sceneSaveFailing,
+    sceneBackupSkippedIds,
   };
 }
