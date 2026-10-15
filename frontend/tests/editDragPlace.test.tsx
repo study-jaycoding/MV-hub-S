@@ -42,6 +42,7 @@ vi.mock("../src/lib/useDisabledFolders", () => ({ useDisabledFolders: () => worl
 
 import { EditTab } from "../src/components/timeline/EditTab";
 import { editTick } from "../src/lib/useEditSequence";
+import { clearPoolTagOverlays } from "../src/components/timeline/EditPool";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -142,6 +143,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   act(() => root.unmount());
+  clearPoolTagOverlays(); // 풀의 태그 덧입힘은 모듈에 산다(탭을 오가도 남게) — 시험 사이에 넘기지 않는다
   host.remove();
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -854,7 +856,10 @@ it("풀 카드의 호버 단추 — S·T·C·ⓘ 는 앱의 동작을 부르고,
   const finishSaves = () => act(async () => { saves.splice(0).forEach((resolve) => resolve()); });
   escape();
   await act(async () => { saves.shift()!(); }); // 컷1 저장 끝 — 컷2 는 아직
-  listed(["컷1"]);
+  act(() => root.unmount()); // 다른 탭에 갔다 — 편집 탭이 사라진다(저장 대기열은 앱에 남는다 · Codex 리뷰 4차)
+  root = createRoot(host);
+  mountOn("c1"); // 돌아왔다
+  listed(["컷1"]); // 돌아와 받은 목록 — 컷2 는 아직 저장 중
   tagAgain("컷3");
   const early = editTick(); // 저장이 끝나기 전에 출발한 조회
   await finishSaves();

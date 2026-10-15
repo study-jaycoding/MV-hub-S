@@ -5,7 +5,7 @@
 //  더블클릭 = 크게 보기(재생) ·
 //  우클릭 = 이 컷의 폴더 창(공유 & 리뷰의 '폴더 보기' — 그 카드가 보이게) ·
 //  휠 클릭 = 넣을 트랙 고르기(EditTrackMenu). (Jay 2026-10-13 — 그 전에는 우클릭이 트랙 메뉴였다)
-import { useEffect, useMemo, useRef, useState, type HTMLAttributes, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState, type HTMLAttributes, type MouseEvent as ReactMouseEvent } from "react";
 import type { Generation } from "../../types";
 import { POOL_SIZE, type EditUi, type PoolSort, type PoolView } from "../../lib/editTimelineStore";
 import { formatGenerationDateTime, generationListMeta } from "../../lib/generationDisplay";
@@ -24,6 +24,15 @@ import { EditCard, NO_CARD_ACTIONS, poolMark, type PoolCardActions, type PoolIte
 export type { PoolItem };
 // 썸네일 카드 안의 단추(라이브러리 카드의 호버 단추) — 그 누름은 카드의 누르기·끌기·더블클릭이 아니다(라이브러리 격자와 같은 약속)
 const CARD_BUTTON = ".ed-card button";
+
+// 풀 카드 T 로 고친 태그의 덧입힘(아래 EditPool 의 설명) — 탭보다 오래 산다: 저장 중에 다른 탭에 갔다 오면 풀은 새로 그려지지만
+//  저장 대기열은 앱에 남는다(풀 안에 두었을 때는 돌아와 옛 목록에서 더 넣은 태그가 앞의 것을 지웠다 — Codex 리뷰 4차).
+//  키 = 계정·서버(authKey) + 생성물. saving = 끝나지 않은 저장 수, savedAt = 다 끝난 순번(editTick).
+type TagOverlay = { tags?: string[]; auto_tags?: string[]; saving: number; savedAt?: number };
+const tagOverlays = new Map<string, TagOverlay>();
+const overlayWatchers = new Set<() => void>();
+const overlaysChanged = () => overlayWatchers.forEach((watch) => watch());
+export const clearPoolTagOverlays = () => tagOverlays.clear(); // 시험 사이 정리용
 
 const ICONS: Record<PoolView | "search" | "sort", JSX.Element> = {
   thumb: <svg viewBox="0 0 16 16" aria-hidden="true">{[1, 6.5, 12].flatMap((y) => [1, 6.5, 12].map((x) => <rect key={`${x}-${y}`} x={x} y={y} width="3.5" height="3.5" />))}</svg>,
@@ -58,6 +67,7 @@ export function EditPool({
   picked,
   ui,
   onUi,
+  authKey,
   listState,
   listStartedAt,
   notice,
@@ -83,6 +93,7 @@ export function EditPool({
   picked: readonly string[]; // 고른 카드들(고른 순서 — 마지막 것이 듀얼 뷰어의 소스)
   ui: EditUi;
   onUi: (patch: Partial<EditUi>) => void;
+  authKey: string; // 계정·서버 — 태그 덧입힘을 계정마다 나눈다
   listState: EditListState;
   listStartedAt: number; // 지금 목록을 낸 조회가 출발한 순번(editTick) — 태그 덧입힘을 걷는 기준
   notice: string | null; // 목록 대신 보여 줄 안내(폴더를 안 골랐다·워크스페이스 미확인 등)
@@ -122,38 +133,41 @@ export function EditPool({
   //  '목록이 바뀌었다'로 걷으면 뒤 편집의 저장보다 먼저 온 목록·저장 전에 출발한 늦은 응답·그냥 다시 만들어진 배열이 편집을 지웠고,
   //  '목록이 같아질 때'까지 들면 저장 뒤 다른 창이 바꾼 태그를 가려 다음 저장이 덮었다(Codex 리뷰 10-15 세 번).
   //  그래서 카드마다 끝나지 않은 저장을 세고, 다 끝난 순번(savedAt)과 목록을 낸 조회의 출발 순번(listStartedAt)을 견준다.
+  //  덧입힘은 모듈(tagOverlays)에 둔다 — 탭을 오가도 남는다.
   const [tagging, setTagging] = useState<string | null>(null);
-  const [retag, setRetag] = useState<Record<string, { tags?: string[]; auto_tags?: string[]; savedAt?: number }>>({});
-  const saving = useRef<Record<string, number>>({}); // 카드마다 끝나지 않은 저장 수
+  const [, redraw] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    overlayWatchers.add(redraw);
+    return () => { overlayWatchers.delete(redraw); };
+  }, []);
+  const overlayKey = (id: string) => `${authKey}\n${id}`;
   const withTags = (gen: Generation) => {
-    const kept = retag[gen.id];
+    const kept = tagOverlays.get(overlayKey(gen.id));
     return kept ? { ...gen, ...(kept.tags && { tags: kept.tags }), ...(kept.auto_tags && { auto_tags: kept.auto_tags }) } : gen;
   };
   const keepTags = (gen: Generation, patch: { tags?: string[]; auto_tags?: string[] }, save: void | Promise<void>) => {
-    const id = gen.id;
-    setRetag((prev) => ({ ...prev, [id]: { tags: prev[id]?.tags, auto_tags: prev[id]?.auto_tags, ...patch } }));
-    saving.current[id] = (saving.current[id] ?? 0) + 1;
+    const key = overlayKey(gen.id);
+    const had = tagOverlays.get(key);
+    tagOverlays.set(key, { tags: had?.tags, auto_tags: had?.auto_tags, ...patch, saving: (had?.saving ?? 0) + 1 });
+    overlaysChanged();
     void Promise.resolve(save).finally(() => {
-      const left = (saving.current[id] ?? 1) - 1;
-      if (left > 0) {
-        saving.current[id] = left;
-        return;
-      }
-      delete saving.current[id];
-      const savedAt = editTick();
-      setRetag((prev) => (prev[id] ? { ...prev, [id]: { ...prev[id], savedAt } } : prev));
+      const now = tagOverlays.get(key);
+      if (!now) return;
+      tagOverlays.set(key, now.saving > 1 ? { ...now, saving: now.saving - 1 } : { ...now, saving: 0, savedAt: editTick() });
+      overlaysChanged();
     });
   };
   // 저장이 다 끝난 뒤 출발한 조회의 목록이 들어왔다 — 그 카드는 목록을 믿는다(덧입힘을 걷는다)
   useEffect(() => {
-    setRetag((prev) => {
-      const done = Object.keys(prev).filter((id) => (prev[id].savedAt ?? Infinity) < listStartedAt);
-      if (done.length === 0) return prev;
-      const next = { ...prev };
-      for (const id of done) delete next[id];
-      return next;
-    });
-  }, [listStartedAt]);
+    let changed = false;
+    for (const [key, kept] of tagOverlays) {
+      if (key.startsWith(`${authKey}\n`) && kept.saving === 0 && (kept.savedAt ?? Infinity) < listStartedAt) {
+        tagOverlays.delete(key);
+        changed = true;
+      }
+    }
+    if (changed) overlaysChanged();
+  }, [authKey, listStartedAt]);
   const actions: PoolCardActions = {
     ...cardActions,
     onSetTags: (gen, tags) => keepTags(gen, { tags }, cardActions.onSetTags(gen, tags)),

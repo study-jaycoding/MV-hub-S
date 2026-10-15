@@ -1372,6 +1372,7 @@ function EditTabInner({
               picked={pickedIds}
               ui={ui}
               onUi={patchUi}
+              authKey={authKey}
               listState={list.state}
               listStartedAt={list.startedAt}
               notice={poolNotice}
