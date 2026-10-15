@@ -209,7 +209,7 @@
   position: absolute; top: 5px; left: 5px; z-index: 4; pointer-events: none;
   width: 26px; height: 26px; border-radius: 8px; line-height: 1;
   display: flex; align-items: center; justify-content: center;
-  font-weight: 900; transition: opacity 0.12s; backdrop-filter: blur(6px);
+  font-weight: 900; transition: opacity 0.12s; /* 흐림 없음 — 배경이 늘 불투명(shared·held·final)이라 보이지 않고, 노드마다 합성 레이어만 만든다(65회차) */
 }
 /* 그리드 카드 .card-sf.on / .card-sf.final 과 동일한 룩 — 공유=라임 S, 최종=골드 그라데이션 ★ */
 .linb-sf.shared { background: var(--accent); color: var(--accent-ink); border: 1px solid var(--accent); font-size: 13px; }

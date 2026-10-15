@@ -139,4 +139,6 @@ it("hover buttons blur only while shown — the always-on rule has no backdrop-f
   expect(base?.[1]).toBeDefined();
   expect(base![1]).not.toMatch(/backdrop-filter/);
   expect(rules.some(([selector, body]) => selector.includes(".linb-node:hover .linb-ov-btn") && /backdrop-filter/.test(body))).toBe(true);
+  // 공유·최종 배지는 배경이 늘 불투명 — 흐림은 보이지 않고 노드마다 레이어만 만든다(Codex 65회차 리뷰)
+  expect(rules.filter(([selector]) => selector.startsWith(".linb-sf")).map(([, body]) => body).join("")).not.toMatch(/backdrop-filter/);
 });
