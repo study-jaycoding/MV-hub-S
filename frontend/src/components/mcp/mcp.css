@@ -1,57 +1,88 @@
-.mcp-backdrop { position: fixed; inset: 0; z-index: 1600; background: #0009; display: flex; align-items: center; justify-content: center; padding: 24px; }
-.mcp-dialog { width: min(820px, 95vw); max-height: 90vh; overflow: auto; box-sizing: border-box; background: var(--panel2, #181a1e); color: var(--text, #f3f4f6); border: 1px solid #2f333a; border-radius: 12px; padding: 24px; box-shadow: 0 12px 60px #0008; }
-.mcp-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
-.mcp-dialog h2 { margin: 0; font-size: 18px; }
-.mcp-dialog button { padding: 8px 14px; border-radius: 6px; border: 1px solid #4a4f58; background: #23262c; color: var(--text, #f3f4f6); cursor: pointer; }
-.mcp-dialog button:hover:not(:disabled) { border-color: #6b717c; background: #2b2f36; }
-.mcp-dialog button:focus-visible, .mcp-dialog summary:focus-visible, .mcp-dialog input:focus-visible, .mcp-dialog select:focus-visible { outline: 2px solid var(--accent, #c4e84a); outline-offset: 2px; }
-.mcp-dialog button:disabled { opacity: .5; cursor: default; }
-.mcp-pair { display: flex; flex-wrap: wrap; align-items: end; gap: 16px; margin-top: 16px; }
-.mcp-pair input { display: block; margin-top: 8px; width: 160px; font-size: 22px; padding: 8px; letter-spacing: 4px; }
-.mcp-error { color: #ffb3b3; white-space: pre-wrap; }
-.mcp-items { padding-left: 24px; }
-.mcp-items li { margin: 16px 0; border-bottom: 1px solid #555; padding-bottom: 12px; }
-.mcp-items pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #1116; padding: 10px; max-height: 180px; overflow: auto; }
-.mcp-dialog .mcp-approve { background: #315cd4; color: white; }
-.mcp-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.mcp-setup { margin: 16px 0; padding: 16px; border: 1px solid #555; border-radius: 8px; }
-.mcp-setup pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #1116; padding: 10px; max-height: 240px; overflow: auto; user-select: text; }
-.mcp-setup select { max-width: 100%; padding: 6px; margin: 6px 0; }
+/* MV·MCP 연결 창 — 앱의 가운데 창(.gradestep-modal)·설정 패널과 같은 틀·글꼴·단추(Jay 2026-10-16 모의 그림 승인).
+   값은 base.css 의 토큰(--panel·--border2·--accent·--grad·--accent-ink)을 쓴다 — 베껴 두면 테마 색을 바꿀 때 어긋난다. */
+.mcp-backdrop { position: fixed; inset: 0; z-index: 1600; background: rgba(0, 0, 0, 0.45); display: flex; align-items: center; justify-content: center; padding: 24px; }
+.mcp-dialog {
+  width: min(560px, 95vw); max-height: 90vh; overflow: auto; box-sizing: border-box;
+  background: var(--panel, #121316); color: var(--text, #f3f4f6); border: 1px solid var(--border2);
+  border-radius: 14px; padding: 16px 18px 14px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+  font-size: 13px; line-height: 1.45;
+}
+.mcp-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+.mcp-dialog h2 { margin: 0; font-size: 15px; font-weight: 800; }
+.mcp-dialog h3 { margin: 0 0 6px; font-size: 12.5px; font-weight: 700; }
 .mcp-dialog p { overflow-wrap: anywhere; }
+/* 단추 기본 = 설정의 보조(ghost) 단추. 주 단추(.mcp-primary·.mcp-approve)만 라임 */
+.mcp-dialog button {
+  padding: 8px 12px; border-radius: 9px; border: 1px solid var(--border2); background: transparent; color: var(--muted);
+  font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer;
+}
+.mcp-dialog button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.05); color: var(--text); border-color: var(--border2); }
+.mcp-dialog button:focus-visible, .mcp-dialog summary:focus-visible, .mcp-dialog input:focus-visible, .mcp-dialog select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mcp-dialog button:disabled { opacity: .5; cursor: default; }
+.mcp-dialog .mcp-close { width: 26px; height: 26px; padding: 0; border-radius: 8px; background: rgba(255, 255, 255, 0.04); font-size: 13px; line-height: 1; }
+.mcp-error { color: #ffb3b3; white-space: pre-wrap; }
 
 /* 계속 사용하는 연결(v2) */
-.mcp-reg { margin-top: 18px; min-width: 0; }
-.mcp-reg-title { margin: 14px 0 4px; font-size: 16px; }
-.mcp-reg-lead { margin: 0; color: #b4b9c3; }
-.mcp-reg-consent { margin: 16px 0 12px; padding: 14px 16px; border: 1px solid #c4e84a66; border-radius: 10px; background: #c4e84a0f; }
-.mcp-reg-consent p { margin: 0 0 12px; line-height: 1.5; }
-.mcp-dialog .mcp-primary { width: 100%; padding: 11px 16px; border-color: var(--accent, #c4e84a); background: var(--accent, #c4e84a); color: var(--accent-ink, #131806); font-weight: 700; font-size: 15px; }
-.mcp-dialog .mcp-primary:hover:not(:disabled) { border-color: #d6f27a; background: #d6f27a; }
-.mcp-reg-notes { margin: 14px 0 0; padding-left: 18px; color: #a9aeb8; font-size: 13px; line-height: 1.55; }
-.mcp-reg-notes li { overflow-wrap: anywhere; }
-.mcp-reg-status { margin: 12px 0 0; padding: 8px 12px; border-radius: 6px; background: #ffffff0d; }
-.mcp-result { margin-top: 12px; padding: 12px 14px; border: 1px solid #343840; border-left: 3px solid #8b909c; border-radius: 8px; background: #0003; min-width: 0; }
-.mcp-result[data-status="configured"] { border-left-color: var(--accent, #c4e84a); }
+.mcp-reg { min-width: 0; }
+.mcp-reg-title { margin: 0 0 6px; }
+.mcp-reg-lead { margin: 0 0 10px; font-size: 12px; color: var(--muted); }
+.mcp-reg-consent { margin: 10px 0; padding: 12px 14px; border: 1px solid rgba(var(--accent-rgb), 0.35); border-radius: 10px; background: rgba(var(--accent-rgb), 0.07); }
+.mcp-reg-consent p { margin: 0 0 10px; font-size: 12.5px; line-height: 1.55; }
+/* 연결 허용 = 앱의 주 단추(button.primary 와 같은 라임 위 검은 글자) */
+.mcp-dialog .mcp-primary, .mcp-dialog .mcp-approve {
+  border: none; background: var(--grad); color: var(--accent-ink); font-weight: 800; letter-spacing: 0.2px;
+  box-shadow: 0 6px 22px rgba(var(--accent-rgb), 0.28);
+}
+.mcp-dialog .mcp-primary { display: block; width: 100%; padding: 9px 12px; font-size: 13px; }
+.mcp-dialog .mcp-primary:hover:not(:disabled), .mcp-dialog .mcp-approve:hover:not(:disabled) { background: var(--grad); color: var(--accent-ink); box-shadow: 0 8px 28px rgba(var(--accent-rgb), 0.42); }
+.mcp-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.mcp-reg-secondary > button { flex: 1 1 0; }
+.mcp-reg > .settings-description { margin-top: 9px; }
+.mcp-reg-status { margin: 10px 0 0; padding: 7px 10px; border-radius: 8px; background: rgba(255, 255, 255, 0.04); border-left: 3px solid var(--accent); font-size: 11.5px; color: var(--muted); }
+.mcp-result { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--border); border-left: 3px solid var(--muted); border-radius: 8px; background: rgba(255, 255, 255, 0.03); min-width: 0; }
+.mcp-result[data-status="configured"] { border-left-color: var(--accent); }
 .mcp-result[data-status="manual"] { border-left-color: #f2c14e; }
 .mcp-result[data-status="error"] { border-left-color: #ff7b72; }
 .mcp-result strong { overflow-wrap: anywhere; }
-.mcp-result p { margin: 6px 0 10px; color: #c3c7cf; }
-.mcp-result pre { box-sizing: border-box; max-width: 100%; margin: 8px 0 0; padding: 10px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; background: #0007; border-radius: 6px; user-select: text; font-size: 12px; }
-.mcp-clients { list-style: none; margin: 12px 0 0; padding: 0; }
+.mcp-result p { margin: 6px 0 8px; font-size: 12px; color: var(--muted); }
+.mcp-clients { list-style: none; margin: 10px 0 0; padding: 0; }
 .mcp-clients:empty { display: none; }
-.mcp-clients li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid #2f333a; }
-.mcp-client-info { display: flex; flex-wrap: wrap; gap: 4px 10px; min-width: 0; color: #b4b9c3; font-size: 13px; }
-.mcp-client-info strong { color: var(--text, #f3f4f6); font-size: 14px; }
+.mcp-clients li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 0; border-top: 1px solid var(--border); }
+.mcp-client-info { display: flex; flex-wrap: wrap; gap: 3px 10px; min-width: 0; color: var(--muted); font-size: 11.5px; }
+.mcp-client-info strong { color: var(--text); font-size: 12.5px; }
 .mcp-client-info > * { min-width: 0; overflow-wrap: anywhere; }
-.mcp-dialog .mcp-revoke { flex: none; padding: 5px 10px; font-size: 12px; border-color: #7a3b38; color: #ffb3ad; }
-.mcp-dialog .mcp-revoke:hover:not(:disabled) { border-color: #ff7b72; background: #ff7b7214; }
-.mcp-legacy { margin-top: 22px; padding-top: 14px; border-top: 1px solid #2f333a; }
-.mcp-legacy > summary { cursor: pointer; color: #a9aeb8; font-size: 13px; }
+.mcp-dialog .mcp-revoke { flex: none; padding: 4px 10px; font-size: 11.5px; border-color: rgba(255, 123, 114, 0.45); color: #ffb3ad; }
+.mcp-dialog .mcp-revoke:hover:not(:disabled) { border-color: #ff7b72; background: rgba(255, 123, 114, 0.08); color: #ffb3ad; }
+
+/* 접이(캔버스 대기 작업 · 이전 방식 연결) — 설정 접이와 같은 줄: ▸ 회색 굵은 글자, 안은 11px */
+.mcp-legacy { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.mcp-legacy > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--muted); }
+.mcp-legacy > summary::-webkit-details-marker { display: none; }
+.mcp-legacy > summary::before { content: "▸"; color: var(--muted2); font-size: 11px; }
+.mcp-legacy[open] > summary::before { content: "▾"; }
+.mcp-legacy > summary:hover { color: var(--text); }
+.mcp-legacy p { margin: 6px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+.mcp-legacy > button, .mcp-legacy .mcp-actions { margin-top: 8px; }
+
+/* 이전 방식(6자리 코드) 안의 것들 */
+.mcp-pair { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-top: 12px; }
+.mcp-pair input {
+  display: block; margin-top: 6px; width: 150px; padding: 6px 8px; letter-spacing: 4px; font: inherit; font-size: 20px;
+  background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+}
+.mcp-items { padding-left: 18px; }
+.mcp-items li { margin: 12px 0; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+.mcp-items pre, .mcp-setup pre, .mcp-result pre {
+  box-sizing: border-box; max-width: 100%; margin: 8px 0 0; padding: 8px 10px; white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 200px; overflow: auto; background: rgba(0, 0, 0, 0.35); border-radius: 6px; font-size: 11.5px; user-select: text;
+}
+.mcp-setup { margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
+.mcp-setup select { max-width: 100%; padding: 6px; margin: 6px 0; font: inherit; background: var(--panel2); color: var(--text); border: 1px solid var(--border2); border-radius: 8px; }
 
 @media (max-width: 480px) {
   .mcp-backdrop { padding: 10px; }
-  .mcp-dialog { padding: 16px; width: 100%; box-sizing: border-box; }
+  .mcp-dialog { padding: 14px; width: 100%; box-sizing: border-box; }
   .mcp-setup { padding: 10px; }
-  .mcp-reg-consent { padding: 12px; }
+  .mcp-reg-consent { padding: 10px 12px; }
   .mcp-clients li { flex-wrap: wrap; }
 }

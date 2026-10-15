@@ -391,8 +391,9 @@ export function McpConnection(props: McpConnectionProps) {
 
   if (!visible) return null;
   return <div className="mcp-backdrop">
-    <div className="mcp-dialog" ref={modal} role="dialog" aria-modal="true" aria-label="AI 연결 및 생성 상태">
-      <div className="mcp-heading"><h2>AI·MCP 연결</h2><button onClick={closePanel} disabled={busy} aria-label="닫기">닫기</button></div>
+    <div className="mcp-dialog" ref={modal} role="dialog" aria-modal="true" aria-label="MV·MCP 연결">
+      {/* 제목·✕ 는 설정 창과 같은 머리(Jay 2026-10-16 모의 그림) — 닫기 단추의 aria-label 은 시험·초점 복귀가 붙잡는다 */}
+      <div className="mcp-heading"><h2>MV·MCP 연결</h2><button className="mcp-close" onClick={closePanel} disabled={busy} aria-label="닫기">✕</button></div>
       <McpRegistration authReady={props.authReady} authKey={props.authKey} workspace={props.workspace} />
       <details className="mcp-legacy"><summary>이전 방식 연결 · 고급 호환 설정</summary>
       <p>아래 6자리 코드 방식은 이전 클라이언트용입니다. 이 방식은 연결한 브라우저 창을 열어 두어야 합니다.</p>
