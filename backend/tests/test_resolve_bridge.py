@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -1150,6 +1151,72 @@ class FastBinSortTests(unittest.TestCase):
         result = self._send()
         self.assertEqual(result["error_code"], "rebuild_recovery_needed")
         self.assertEqual((self.pool.move_calls, self.pool.import_calls, len(self._staging())), ([], [], 1))
+
+    def test_name_read_error_after_making_the_staging_bin_stops(self):
+        # Codex 재확인 P1 — 이름 읽기의 일반 예외가 정렬 오류로 삼켜져 가져오기·저장이 이어졌다
+        real = self.pool.AddSubFolder
+
+        def add(parent, name):
+            folder = real(parent, name)
+            if name.startswith("__MVHUB_SORT_"):
+                folder.GetName = mock.Mock(side_effect=RuntimeError("API 끊김"))
+            return folder
+
+        self.pool.AddSubFolder = add
+        result = self._send()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        self.assertEqual((self.pool.import_calls, self.manager.saved), ([], self.saved_before + 1))
+
+    def test_stop_at_the_first_check_leaves_a_record_the_next_send_settles(self):
+        other = FakeProject(FakeMediaPool())
+        other.unique_id = "resolve-project-2"
+        started = self.manager.project
+        real = resolve_bridge._write_recovery_record
+
+        def write_then_switch(path, record):
+            real(path, record)
+            if record["stage"] == "planned":
+                self.manager.project = other  # 첫 쓰기 직전 확인에서 멈춘다
+
+        with mock.patch.object(resolve_bridge, "_write_recovery_record", side_effect=write_then_switch):
+            result = self._send()
+        self.assertEqual(result["error_code"], "project_changed")
+        self.assertEqual((len(self._records()), self._staging(), self.pool.move_calls), (1, [], []))
+        self.manager.project = started
+        self._assert_sorted_and_clean(self._send())  # (가) 처음 상태 — 풀고 이어 간다
+
+    def test_new_bin_whose_id_cannot_be_read_is_kept_and_stops(self):
+        real = self.pool.AddSubFolder
+
+        def add(parent, name):
+            folder = real(parent, name)
+            if name == "c0010":
+                folder.GetUniqueId = mock.Mock(side_effect=RuntimeError("API 끊김"))  # 만들었지만 기록할 고유 ID 가 없다
+            return folder
+
+        self.pool.AddSubFolder = add
+        result = self._send()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        self.assertIn("c0010", [folder.name for folder in self._staging()[0].children])  # 모르는 Bin 은 지우지 않았다
+        self.assertEqual(self.pool.import_calls, [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction")
+    def test_record_behind_a_junction_still_blocks(self):
+        import _winapi
+
+        outside = self.root / "elsewhere"
+        outside.mkdir()
+        key = resolve_bridge._recovery_record_path(
+            outside, "resolve-project-1", resolve_bridge._path_identity(("MV Hub", "프로젝트_테스트"))
+        )
+        key.write_text("{not json", encoding="utf-8")
+        mvhub = self.root / "@davinci" / ".mvhub"
+        mvhub.mkdir(parents=True)
+        link = mvhub / "resolve-recovery"
+        _winapi.CreateJunction(str(outside), str(link))
+        self.addCleanup(os.rmdir, link)  # junction 은 지우기 전에 뗀다(안의 것을 따라 지우지 않게)
+        self.assertEqual(self._send()["error_code"], "rebuild_recovery_pending")
+        self.assertEqual(self.pool.import_calls, [])
 
     def test_record_update_failure_mid_way_stops_and_keeps_the_last_record(self):
         real, calls = resolve_bridge._write_recovery_record, []

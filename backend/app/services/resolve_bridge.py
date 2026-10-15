@@ -998,10 +998,18 @@ def _strict_list(read: Any) -> list[Any]:
     return list(value)
 
 
+def _name(item: Any) -> str:
+    # 이름 읽기의 예외도 '모름'이다 — 일반 예외로 빠져나가면 부르는 쪽이 정렬 오류로 삼키고 가져오기를 이어 간다(Codex 재확인 P1)
+    try:
+        return str(item.GetName() or "")
+    except Exception as exc:  # noqa: BLE001
+        raise _Unknown("Resolve Bin 이름을 읽지 못했습니다") from exc
+
+
 def _children_of(folder: Any) -> list[tuple[str, str, Any]]:
     """자식 Bin (고유 ID, 이름 identity, 객체) — 늘 새로 조회한다."""
     return [
-        (_uid(child), _folder_identity(str(child.GetName() or "")), child)
+        (_uid(child), _folder_identity(_name(child)), child)
         for child in _strict_list(folder.GetSubFolderList)
     ]
 
@@ -1020,7 +1028,7 @@ def _subtree(folder: Any) -> dict[str, Any]:
         uid = _uid(node)
         if uid in folders:
             raise _Unknown(f"같은 고유 ID 가 두 번 나왔습니다: {uid}")
-        folders[uid] = [parent_uid, str(node.GetName() or "")]
+        folders[uid] = [parent_uid, _name(node)]
         clips[uid] = _clip_counter(node)
         for child in _strict_list(node.GetSubFolderList):
             visit(child, uid)
