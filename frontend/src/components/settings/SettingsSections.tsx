@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { ACCENT_PRESETS, type Lang } from "../../lib/theme";
 import { fsaSupported } from "../../lib/downloadDir";
 import { fmtBackupWhen } from "../../lib/format";
@@ -17,6 +17,8 @@ import {
   type ReleaseUpdateStatus,
 } from "../../lib/releaseUpdate";
 import { SettingsDescription } from "./SettingsDescription";
+import { API_PAUSED_MESSAGE, getApiPause, subscribeApiPause } from "../../lib/http";
+import { flashMsg } from "../../lib/flash";
 
 export function AppearanceSettingsSection({
   accent,
@@ -173,6 +175,7 @@ export function MetadataContinuitySection({
   onImportDb: (file: File | null | undefined) => void;
 }) {
   const t = useT();
+  const apiPaused = !!useSyncExternalStore(subscribeApiPause, getApiPause);
   const stateLabels: Record<string, string> = {
     waiting_for_backup: "첫 자동 백업 대기",
     waiting_for_data: "작업 데이터 대기",
@@ -278,7 +281,16 @@ export function MetadataContinuitySection({
         )}
         <details className="settings-details">
           <summary style={{ cursor: "pointer" }}>서버 없이 파일로 직접 주고받기 (고급)</summary>
-          <a className="settings-action" href="/api/db/export" download="MV-hub-mydb.db">
+          <a
+            className="settings-action"
+            // 링크는 fetch 관문을 지나지 않는다 — 다른 탭 로그아웃 뒤 멈춘 동안엔 주소를 떼어 우클릭 '새 탭에서 열기'로도 못 연다(Jay 결정 4B·E9)
+            href={apiPaused ? undefined : "/api/db/export"}
+            download="MV-hub-mydb.db"
+            aria-disabled={apiPaused || undefined}
+            onClick={() => {
+              if (apiPaused) flashMsg(API_PAUSED_MESSAGE);
+            }}
+          >
             ⬆ 내 DB 내보내기
           </a>
           <label className={"settings-action" + (dbBusy ? " is-busy" : "")}>

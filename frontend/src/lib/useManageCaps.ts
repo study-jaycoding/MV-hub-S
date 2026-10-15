@@ -8,7 +8,7 @@ import { sharedApi } from "./sharedApi";
 import { findCurrentMember, viewerGlobalRoles } from "./accountIdentity";
 import { hasGlobalCap } from "../types";
 import { APP_EVENTS } from "./appEvents";
-import { getAuthToken, setAuthToken } from "./http";
+import { getApiPause, getAuthToken, setAuthToken } from "./http";
 import { loadString } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 
@@ -46,6 +46,8 @@ export function useManageCaps(reloadSignal = 0): ManageCaps {
     const onStorage = (event: StorageEvent) => {
       if (event.key !== null && event.key !== STORAGE_KEYS.authToken &&
           event.key !== STORAGE_KEYS.activeAccount) return;
+      // 다른 탭 로그아웃 뒤 멈춘 중(저장 못 한 설명이 있다 — Jay 결정 4B)이면 화면을 내리지 않는다. 띠의 [새로 고침]이 정한다
+      if (getApiPause()) return;
       // 별도 관리 창에는 메인 App의 인증 훅이 없다. 저장된 새 자격으로 다시 확인한다.
       setAuthToken(loadString(STORAGE_KEYS.authToken) || null);
       invalidate();

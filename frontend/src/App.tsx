@@ -26,6 +26,7 @@ const SceneBoard = lazy(() =>
 );
 import { AppOverlays, VideoCompareOverlay } from "./components/app/AppOverlays";
 import { ResolveNotices } from "./components/app/ResolveNotices";
+import { AuthPauseBanner } from "./components/app/AuthPauseBanner";
 const EditTab = lazy(() =>
   import("./components/timeline/EditTab").then((m) => ({ default: m.EditTab })),
 );
@@ -437,11 +438,14 @@ export default function App() {
   const askPrompt = useAskPrompt(); // 플로팅 입력(네이티브 prompt 대체)
   const {
     account,
+    apiPause,
     authConfig,
     authPending,
     authReady,
     finalizeProjects,
     hubAccount,
+    leavePause,
+    loggedOutElsewhere,
     logout,
     onProxyConnected,
     setAccount,
@@ -2325,7 +2329,7 @@ export default function App() {
   }
   // 인증 게이트: 로그인 필요(서버 모드)한데 미로그인 → 앱 전체를 로그인 화면으로 가린다.
   if (authConfig?.auth_enabled && !account) {
-    return <LoginScreen config={authConfig} onAuthed={setAccount} />;
+    return <LoginScreen config={authConfig} onAuthed={setAccount} notice={loggedOutElsewhere ? "다른 탭에서 로그아웃했습니다." : undefined} />;
   }
   // 로컬 허브 게이트: 백엔드 AUTH off(로컬)에서는 '팀 서버 로그인'을 강제 — 로그인해야 사용
   // (신원=서버 계정). 서버 계정으로 작업·공유가 기록되고, 역할은 서버가 관리·강제.
@@ -3192,6 +3196,7 @@ export default function App() {
       />
       {/* Resolve 보내기 결과 가운데 확인이 필요한 것 — 알림 바로 아래에 닫을 때까지 남는다(겹이 아니다 — 뒤 화면을 그대로 쓴다) */}
       <ResolveNotices items={resolveTransfer.notices} onDismiss={resolveTransfer.dismissNotice} />
+      {apiPause && <AuthPauseBanner action={apiPause === "shared" ? "login" : "reload"} onLeave={leavePause} />}
       {/* 컷 정보(휠 클릭)·모아보기 — 크게 보기(AppOverlays)보다 아래 층. 크게 보기가 떠 있는 동안은 Esc 를 그쪽에 넘긴다. */}
       {cutInfo && cutInfoFolder && cutInfoQuery && (
         <CutInfoPopup

@@ -8,6 +8,7 @@ import { useAppToast } from "../lib/useAppToast";
 import { AssetsView } from "./AssetsView";
 import { InfoPopup } from "./InfoPopup";
 import { MediaPreview } from "./MediaPreview";
+import { PopupAuthPauseBanner } from "./app/AuthPauseBanner";
 
 export function AssetsWindow() {
   usePageSelectAllGuard(); // 분리 창은 App 밖에서 뜬다 — 조합 중 Enter·입력칸 밖 Ctrl+A 지킴이를 이 창에도 건다(lib/keyGate)
@@ -28,6 +29,7 @@ export function AssetsWindow() {
         <MediaPreview target={preview} onClose={() => setPreview(null)} />
       )}
       {toast && <div className="toast">{toast}</div>}
+      <PopupAuthPauseBanner />
     </div>
   );
 }

@@ -5,6 +5,8 @@ import { installFileDropGuard } from "./lib/media";
 import { EMBED_MODES } from "./lib/popupWindows";
 import { applyAccent, applyReduceMotion, loadAccent, loadLang, loadReduceMotion } from "./lib/theme";
 import { bootSceneStore, readLegacyScenesRaw } from "./lib/sceneBoot";
+import { installApiGate } from "./lib/http";
+import { installPopupLogoutWatch } from "./lib/otherTabLogout";
 import "./styles.css";
 
 // 코드 스플리팅 — 메인 앱과 Assets 팝업을 별도 청크로. 메인 창은 App 청크만, 팝업(?embed=assets)은
@@ -23,6 +25,7 @@ applyAccent(loadAccent());
 document.documentElement.setAttribute("lang", loadLang());
 applyReduceMotion(loadReduceMotion());
 installFileDropGuard(); // 받는 곳이 없는 자리에 놓인 파일을 브라우저가 새 탭으로 열지 않게(분리 창도 같다)
+installApiGate(); // 모든 fetch 앞 관문 — 다른 탭 로그아웃 뒤 멈춤·늦은 401 판정(Jay 결정 4B). 어떤 요청보다 먼저 건다
 
 // `/?embed=assets` 로 열면 Assets 만 독립 창으로 렌더(분리된 브라우저 창).
 const embed = new URLSearchParams(window.location.search).get("embed");
@@ -90,8 +93,10 @@ function renderStoreError(message: string) {
 // 분리 창(Assets·관리)은 씬을 쓰지 않는다 — 저장소 부팅을 기다리게 하면 씬 이관이 실패했을 때 이
 // 창들까지 막히고, 창을 열 때마다 쓸데없이 이관·흡수를 돌린다(Codex). 먼저 갈라 보낸다.
 if (embed === EMBED_MODES.assets) {
+  installPopupLogoutWatch(); // 분리 창에는 메인의 인증 훅이 없다 — 다른 탭 로그아웃을 여기서 본다(Jay 결정 4B). 창의 리스너보다 먼저
   render(<AssetsWindow />);
 } else if (embed === EMBED_MODES.manage) {
+  installPopupLogoutWatch();
   render(<ManageWindow />);
 } else {
   // ★순서를 강제한다: 저장소 열기·이관 완료 → App 마운트 → (App 안에서) 백업 미러.

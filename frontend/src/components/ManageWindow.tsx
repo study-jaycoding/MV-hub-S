@@ -11,6 +11,7 @@ import { useManageRealtime } from "../lib/useManageRealtime";
 import { DashboardView } from "./manage/DashboardView";
 import { ExportView } from "./manage/ExportView";
 import { WorkBoard } from "./manage/WorkBoard";
+import { PopupAuthPauseBanner } from "./app/AuthPauseBanner";
 
 type Tab = "dashboard" | "tasks" | "export";
 
@@ -106,6 +107,7 @@ export function ManageWindow() {
 
   return (
     <div className="manage-window">
+      <PopupAuthPauseBanner />
       <nav className="manage-tabs">
         {TABS.map((t) => (
           <button

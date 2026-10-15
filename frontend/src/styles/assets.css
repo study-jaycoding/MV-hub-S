@@ -1022,6 +1022,21 @@ body[data-modal-open] .resolve-notices { z-index: 140; }
 }
 .resolve-notice-x:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
 .resolve-notice-x:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* 다른 탭에서 로그아웃 — 화면은 남기고 서버 요청은 멈춘 동안의 띠(Jay 결정 4B). 옮겨 적는 동안 계속 보이게 모달보다 위. */
+.auth-pause-banner {
+  position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 1000;
+  width: min(600px, calc(100vw - 32px)); display: flex; align-items: center; gap: 12px;
+  background: var(--glass); backdrop-filter: blur(18px); border: 1px solid rgba(255, 110, 110, 0.55);
+  padding: 10px 12px 10px 16px; border-radius: 12px; font-size: 13.5px; line-height: 1.55;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55);
+}
+.auth-pause-banner > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.auth-pause-banner > button {
+  flex: none; padding: 6px 12px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08); color: #fff; font-weight: 600; cursor: pointer;
+}
+.auth-pause-banner > button:hover { background: rgba(255, 255, 255, 0.16); }
+.auth-pause-banner > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* 스크롤바 */
 *::-webkit-scrollbar { width: 10px; height: 10px; }

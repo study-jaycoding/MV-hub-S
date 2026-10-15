@@ -10,9 +10,11 @@ import type { Account, AuthConfig } from "../types";
 export function LoginScreen({
   config,
   onAuthed,
+  notice,
 }: {
   config: AuthConfig;
   onAuthed: (account: Account) => void;
+  notice?: string; // 왜 로그인 화면인가(다른 탭에서 로그아웃 — Jay 결정 4B)
 }) {
   useKeyOwner(); // 로그인 화면 뒤에서 앱의 단축키(프롬프트 표시/숨김 등)가 돌지 않게 한다
   const [email, setEmail] = useState("");
@@ -53,6 +55,7 @@ export function LoginScreen({
     <div className="login-screen">
       <form className="login-card" onSubmit={submit}>
         <div className="login-brand">⬡ Millionvolt Hub</div>
+        {notice && <div className="login-notice">{notice}</div>}
         <div className="login-sub">
           {first ? (
             "첫 계정을 만들면 관리자가 됩니다."

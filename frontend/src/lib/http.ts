@@ -27,6 +27,64 @@ export function getAuthToken(): string | null {
   return authToken;
 }
 
+/** 다른 탭이 로그아웃했다 — 이 탭의 메모리 토큰만 비운다. 공유 저장소는 그 탭이 이미 비웠고, 그 뒤에 다른 탭의 새 로그인이 있을 수 있다(4B). */
+export function forgetAuthToken(): void {
+  authToken = null;
+}
+
+// ── 멈춤(Jay 결정 4B) — 다른 탭에서 로그아웃했는데 이 탭에 저장하지 못한 것이 있으면 화면은 남기고, 앱이 시작하는 /api 요청은
+//  GET 까지 하나도 보내지 않는다(쓰는 GET 이 있다 — 프로젝트 목록 캐시·공유 서버 상태의 설정 정리·Comfy 상태의 장부 복원).
+//  img·video 가 직접 부르는 그림 주소는 브라우저가 부르므로 관문 밖이다. 설계 docs/status/결정일곱_설계_2026-10-15.md 4B·E9.
+export type ApiPause = "shared" | "hub" | null;
+export const API_PAUSED_MESSAGE = "다른 탭에서 로그아웃해 이 탭의 서버 요청을 멈췄습니다 — 위의 띠를 보세요";
+export class ApiPausedError extends Error {
+  name = "ApiPausedError";
+}
+let apiPause: ApiPause = null;
+const pauseSubs = new Set<() => void>();
+export const getApiPause = (): ApiPause => apiPause;
+export function setApiPause(next: ApiPause): void {
+  if (apiPause === next) return;
+  apiPause = next;
+  pauseSubs.forEach((fn) => fn());
+}
+export function subscribeApiPause(fn: () => void): () => void {
+  pauseSubs.add(fn);
+  return () => pauseSubs.delete(fn);
+}
+
+/** 이 앱의 /api 주소인가(같은 오리진의 /api/…). */
+export function isApiRequest(url: string): boolean {
+  try {
+    const here = new URL(globalThis.location?.href ?? "http://localhost/");
+    const target = new URL(url, here);
+    return target.origin === here.origin && target.pathname.startsWith("/api/");
+  } catch {
+    return false;
+  }
+}
+
+/** 링크로 여는 /api 주소(DB 내보내기·다운로드 폴백)도 같은 관문을 지난다 — 멈춤이면 ApiPausedError. */
+export function assertApiOpen(url: string): void {
+  if (apiPause && isApiRequest(url)) throw new ApiPausedError(API_PAUSED_MESSAGE);
+}
+
+// 응답마다 그 요청에 실어 보낸 토큰 — 늦게 온 401 이 그사이 새로 로그인한 토큰을 지우지 않게(4B·D10). 관문이 적는다.
+const sentTokens = new WeakMap<Response, string | null>();
+
+/** 앱의 모든 fetch 앞 관문(main.tsx 가 한 번 건다) — 직접 fetch 하는 업로드·Comfy·재시도까지 같은 자리를 지난다. */
+export function installApiGate(target: { fetch: typeof fetch } = globalThis): void {
+  const send = target.fetch.bind(target);
+  target.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = typeof Request !== "undefined" && input instanceof Request ? input : null;
+    assertApiOpen(request ? request.url : String(input));
+    const auth = new Headers(init?.headers ?? request?.headers).get("Authorization");
+    const res = await send(input, init);
+    sentTokens.set(res, auth?.startsWith("Bearer ") ? auth.slice(7) : null);
+    return res;
+  };
+}
+
 async function responseErrorDetail(res: Response, fallback?: string): Promise<string> {
   let detail = fallback || res.statusText;
   try {
@@ -107,8 +165,14 @@ export function shouldInvalidateAuth(res: Response, url: string): boolean {
 
 export async function throwHttpError(res: Response, url: string, fallback?: string): Promise<never> {
   if (shouldInvalidateAuth(res, url)) {
-    setAuthToken(null);
-    dispatchAppEvent(APP_EVENTS.authRequired);
+    // 그 요청에 실어 보낸 토큰이 지금 토큰일 때만 로그인을 지운다 — 공유 저장소도 그 값일 때만(다른 탭이 저장한 새 로그인을 옛 요청의
+    //  401 이 지우지 않게, 4B·D10). 관문 밖에서 받은 응답(시험)은 지금 토큰으로 보낸 것으로 본다.
+    const sent = sentTokens.has(res) ? sentTokens.get(res)! : authToken;
+    if (sent === authToken) {
+      authToken = null;
+      if ((loadString(TOKEN_KEY) || null) === sent) removeStorage(TOKEN_KEY);
+      dispatchAppEvent(APP_EVENTS.authRequired);
+    }
   }
   const detail = await responseErrorDetail(res, fallback);
   throw new HttpError(res.status, `${res.status}: ${detail}`, detail);

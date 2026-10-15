@@ -1,4 +1,4 @@
-import { authFormHeaders, HttpError, jsonBody, jsonFetch, NO_RESPONSE_MESSAGE, throwHttpError } from "./http";
+import { ApiPausedError, authFormHeaders, HttpError, jsonBody, jsonFetch, NO_RESPONSE_MESSAGE, throwHttpError } from "./http";
 import { t } from "./i18n";
 import { getAccountNamespace } from "./accountScope";
 import { EXPECT_ACCOUNT_HEADER, hubHasFeature, REQUEST_RETRY_FEATURE } from "./hubFeatures";
@@ -191,12 +191,13 @@ export const comfyApi = {
     try {
       first = await send();
     } catch (error) {
-      if (!retry || error instanceof HttpError || (error instanceof DOMException && error.name === "AbortError")) throw error;
+      // 멈춤(다른 탭 로그아웃 — 4B)은 보내지 않은 것이다 — 다시 보내거나 '들어갔을 수 있다'로 바꾸지 않는다(Codex E9)
+      if (!retry || error instanceof HttpError || error instanceof ApiPausedError || (error instanceof DOMException && error.name === "AbortError")) throw error;
       await new Promise((done) => setTimeout(done, 1000));
       try {
         first = await send();
       } catch (again) {
-        if (again instanceof HttpError) throw again;
+        if (again instanceof HttpError || again instanceof ApiPausedError) throw again;
         throw new Error(NO_RESPONSE_MESSAGE);
       }
     }

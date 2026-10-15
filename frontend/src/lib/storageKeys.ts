@@ -15,6 +15,8 @@ export const STORAGE_KEYS = {
   //  옛 판의 계정 전환 정리가 보존 목록 밖의 `ch.*` 를 전부 지워, 새 판을 쓰다 옛 판으로 되돌린 뒤 계정을 바꾸면 편집본이 사라졌다.
   editDocs: "mvhub.editDoc",
 
+  // 로컬 허브에서 로그아웃한 시각 — 같은 브라우저의 다른 탭이 storage 알림으로 듣는 신호(Jay 결정 4B). 값 자체는 쓰지 않는다.
+  hubLogoutAt: "mvhub.hubLogoutAt",
   historyPos: "ch.history.pos",
   historyPosLegacy: "ch.lineage.pos",
   historyView: "ch.history.view",

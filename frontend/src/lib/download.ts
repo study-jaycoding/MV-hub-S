@@ -4,7 +4,7 @@ import { postAssetsUpdated } from "./assetBroadcast";
 import { chunked } from "./batching";
 import { saveToDownloadDir } from "./downloadDir";
 import { flashMsg } from "./flash";
-import { jsonBody, jsonFetch } from "./http";
+import { API_PAUSED_MESSAGE, getApiPause, isApiRequest, jsonBody, jsonFetch } from "./http";
 import { withQuery } from "./url";
 
 // 다운로드 — bytes 를 받아 blob 으로 저장한다(파일명 보장 + 크롬 다운로드 목록 표시). 원격 URL
@@ -101,6 +101,11 @@ async function _downloadNow(
   // bytes 를 못 받음 — 로컬(/...)은 a[download] 가 동작하므로 저장 성공, 원격은 새 탭(저장 보장
   // 안 됨)이라 '실패'로 보고해 호출측·사용자가 알게 한다.
   if (url.startsWith("/")) {
+    // 멈춤(다른 탭 로그아웃 — 4B) 때문에 못 받은 /api 주소를 링크로 다시 부르지 않는다 — 링크는 관문을 지나지 않는다(Codex E9)
+    if (getApiPause() && isApiRequest(url)) {
+      flashMsg(API_PAUSED_MESSAGE);
+      return { ok: false, savedToDir: false };
+    }
     _anchor(url, name);
     return { ok: true, savedToDir: false };
   }

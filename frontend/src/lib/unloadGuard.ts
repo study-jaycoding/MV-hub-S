@@ -43,6 +43,10 @@ export function reloadIfFree(): boolean {
   return true;
 }
 
+/** 다른 탭 로그아웃 뒤 멈춘 화면을 떠나기 전(Jay 결정 4B) — 저장하지 못한 것이 아직 있으면 묻는다. 계속해도 되면 true. */
+export const confirmLeaveUnsaved = (): boolean =>
+  !unloadHeld() || window.confirm(`${unsavedPlaces()}에 저장하지 못한 변경이 있습니다. 옮겨 적으셨나요? 계속하면 그 변경은 사라집니다.`);
+
 /** 저장하지 못한 것이 있을 때 확인 창의 글 뒤에 붙이는 한 줄(없으면 빈 문자열) — 새로고침으로 끝나는 작업을 **시작하기 전에** 알린다. */
 export const unsavedNote = (): string =>
   unloadHeld() ? `\n\n${unsavedPlaces()}에 저장하지 못한 변경이 있습니다 — 이 작업이 끝나면 화면이 새로고침되어 그 변경은 사라집니다.` : "";

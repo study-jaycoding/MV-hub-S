@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { api, getAuthToken, setAuthToken } from "../api";
 import { APP_EVENTS } from "./appEvents";
 import { flashMsg } from "./flash";
@@ -9,9 +9,10 @@ import { setAccountScope } from "./accountScope";
 import { useCustomEvent } from "./useCustomEvent";
 // 계정이 바뀌는 길의 새로고침은 반드시 일어나야 한다 — 저장 못 한 편집이 있어도 그 자리에서는 묻지 않는다(머무르면 계정 범위만 바뀐
 //  화면이 남는다). 묻는 것은 그 전, 로그아웃을 누른 순간이다(아래 logout).
-import { reloadNow, setLeaving, unloadHeld, unsavedPlaces } from "./unloadGuard";
+import { confirmLeaveUnsaved, reloadNow, setLeaving, unloadHeld, unsavedPlaces } from "./unloadGuard";
+import { loggedOutKind } from "./otherTabLogout";
 import type { Account, AuthConfig } from "../types";
-import { HttpError } from "./http";
+import { forgetAuthToken, getApiPause, HttpError, setApiPause, subscribeApiPause } from "./http";
 import { setHubFeatures } from "./hubFeatures";
 
 const FINALIZE_ROLES_RETRY_MS = 30_000;
@@ -121,7 +122,8 @@ export function useHubAuth() {
     api
       .sharedServerStatus()
       .then((s) =>
-        setSharedSrv({
+        // 멈춤 동안의 인증 응답은 계정·화면을 바꾸지 못한다(4B·E8) — 아래 catch 의 '미연결'도 같다
+        getApiPause() ? undefined : setSharedSrv({
           configured: s.configured,
           has_token: s.has_token,
           url: s.url,
@@ -132,7 +134,9 @@ export function useHubAuth() {
           roles: s.roles || [],
         }),
       )
-      .catch(() => setSharedSrv(fallbackSharedServer()))
+      .catch(() => {
+        if (!getApiPause()) setSharedSrv(fallbackSharedServer());
+      })
       .finally(() => {
         sharedSrvLoadingRef.current = false;
       });
@@ -209,18 +213,68 @@ export function useHubAuth() {
   }, [authConfig?.auth_enabled, sharedSrv]);
 
   useCustomEvent(APP_EVENTS.authRequired, () => {
+    if (getApiPause()) return; // 멈춤 동안 뒤늦게 온 401 은 화면을 내리지 않는다 — 띠의 단추가 정한다(4B·E8)
     setAccount(null);
     if (shouldLoadSharedServer(authConfig?.auth_enabled)) loadSharedSrv();
   });
 
+  // ── 다른 탭의 로그아웃(Jay 결정 4B) ── 지킬 것(저장하지 못한 것)이 없으면 지금처럼 로그인 화면(공유 서버)·새로 고침(로컬 허브).
+  //  있으면 화면은 두고 이 탭의 토큰을 비운 채 /api 요청을 멈춘다(http 관문) — 띠의 단추(leavePause)를 누를 때까지.
+  const apiPause = useSyncExternalStore(subscribeApiPause, getApiPause);
+  const [loggedOutElsewhere, setLoggedOutElsewhere] = useState(false);
+  const hubSignedIn = !!sharedSrv?.has_token;
+  useEffect(() => {
+    if (!authConfig) return;
+    const shared = authConfig.auth_enabled;
+    const onStorage = (event: StorageEvent) => {
+      if (getApiPause()) return;
+      const kind = loggedOutKind(event);
+      if (!kind || (kind === "shared") !== shared || (kind === "hub" && !hubSignedIn)) return;
+      if (kind === "shared") forgetAuthToken(); // 이 탭만 — 다른 탭이 곧바로 저장한 새 로그인은 그대로 둔다
+      if (unloadHeld()) setApiPause(kind);
+      else if (kind === "hub") reloadNow();
+      else {
+        setLoggedOutElsewhere(true);
+        setAccount(null);
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [authConfig, hubSignedIn]);
+  useEffect(() => {
+    if (account) setLoggedOutElsewhere(false);
+  }, [account]);
+  // 멈춤을 끝낸다 — 공유 서버는 로그인 화면으로(토큰은 이미 비웠다 — 저장소의 새 로그인은 건드리지 않는다), 로컬 허브는 새로 고침.
+  const finishPause = useCallback((): boolean => {
+    if (getApiPause() === "hub") {
+      reloadNow();
+      return true;
+    }
+    setApiPause(null);
+    setLoggedOutElsewhere(true);
+    setAccount(null);
+    return true;
+  }, []);
+  /** 띠의 단추 — 저장하지 못한 것이 아직 있으면 묻고 멈춤을 끝낸다. */
+  const leavePause = useCallback(() => {
+    if (getApiPause() && confirmLeaveUnsaved()) finishPause();
+  }, [finishPause]);
+
   useCustomEvent(APP_EVENTS.accountUpdated, () => {
-    api.me().then(setAccount).catch(() => {});
+    // 요청 당시의 로그인이 그대로일 때만 반영한다 — 그사이 다른 탭 로그아웃으로 로그인 화면이 됐으면 옛 계정 화면을 되살리지 않는다(Codex 4B P2)
+    const token = getAuthToken();
+    api.me().then((acc) => {
+      if (!getApiPause() && isAuthResponseCurrent(token, getAuthToken())) setAccount(acc);
+    }).catch(() => {});
   });
 
   useEffect(() => {
     if (authConfig?.auth_enabled) return;
     if (sharedSrv?.has_token) {
-      api.me().then(setAccount).catch(() => {
+      api.me().then((acc) => {
+        if (!getApiPause()) setAccount(acc);
+      }).catch(() => {
+        if (getApiPause()) return; // 멈춤 동안의 실패(막힌 요청 포함)는 화면을 내리지 않는다(4B·E8)
         setAccount(null);
         loadSharedSrv();
       });
@@ -295,6 +349,8 @@ export function useHubAuth() {
     // 저장하지 못한 편집이 있으면 먼저 묻는다 — 로그아웃(그리고 이어지는 계정 전환)은 새로고침으로 끝나 메모리에만 남은 그 편집이 사라진다.
     //  계정·서버의 상태를 바꾸기 **전에** 묻는다: 바꾼 뒤에 새로고침만 막으면 화면이 옛 계정의 것으로 남는다(Codex 배포 전 재검토).
     if (unloadHeld() && !window.confirm(`${unsavedPlaces()}에 저장하지 못한 변경이 있습니다. 로그아웃하면 그 변경은 사라집니다. 계속할까요?`)) return false;
+    // 다른 탭 로그아웃으로 멈춘 중 — 이미 로그아웃됐다. 띠의 단추와 같은 길로 끝낸다(멈춤이 남아 로그인 요청까지 막히지 않게, Codex 4B P2)
+    if (getApiPause()) return finishPause();
     if (!authConfig?.auth_enabled) {
       // 응답을 기다리는 동안의 편집은 받지 않는다 — 위의 확인 뒤에 '저장 안 됨'이 새로 생기면 묻지 못한 채 아래 새로고침에 사라진다.
       setLeaving(true);
@@ -307,6 +363,7 @@ export function useHubAuth() {
         flashMsg("로그아웃하지 못했습니다 — 잠시 뒤 다시 시도하세요.");
         return false;
       }
+      saveString(STORAGE_KEYS.hubLogoutAt, String(Date.now())); // 같은 브라우저의 다른 탭이 듣는다(4B) — 허브의 활성 계정이 풀렸다
       reloadNow();
       return true;
     }
@@ -314,7 +371,7 @@ export function useHubAuth() {
     setAuthToken(null);
     setAccount(null);
     return true;
-  }, [authConfig?.auth_enabled]);
+  }, [authConfig?.auth_enabled, finishPause]);
 
   // 설정을 받기 전에는 준비 안 됨 — 전에는 그때도 참이라 목록(3.38MB 급)·통계·패싯·프로젝트를 한 번 먼저 받았다가 계정이 정해지면
   // 버리고 다시 받았다(2026-10-03 점검 S1, 새로고침마다). AUTH-off 는 화면 게이트와 같은 시점(공유 서버 상태를 받은 뒤 — 실패해도
@@ -328,12 +385,15 @@ export function useHubAuth() {
 
   return {
     account,
+    apiPause,
     authChecked,
     authConfig,
     authPending,
     authReady,
     finalizeProjects,
     hubAccount,
+    leavePause,
+    loggedOutElsewhere,
     logout,
     onProxyConnected,
     setAccount,
