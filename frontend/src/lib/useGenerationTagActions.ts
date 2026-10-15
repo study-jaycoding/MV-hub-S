@@ -87,8 +87,9 @@ export function useGenerationTagActions({
     return next;
   };
 
-  const enqueueSave = (operation: () => Promise<unknown>, total: number) => {
-    void tagQueueRef.current?.enqueue(async () => {
+  // 돌려주는 약속은 그 저장이 끝나면(실패도) 풀린다 — 사본을 든 화면(편집 탭 풀)이 '이 카드의 저장이 다 끝났나'를 본다
+  const enqueueSave = (operation: () => Promise<unknown>, total: number) =>
+    tagQueueRef.current?.enqueue(async () => {
       try {
         await operation();
       } catch (error) {
@@ -96,17 +97,16 @@ export function useGenerationTagActions({
         throw new TagSaveError(total);
       }
     });
-  };
 
   const onSetTags = (g: Generation, tags: string[]) => {
     applyGens((generations) => replaceGenerationTags(generations, g.id, "tags", tags));
     onTagNamesAdded(tags);
-    enqueueSave(() => api.setTags(g.id, tags), 1);
+    return enqueueSave(() => api.setTags(g.id, tags), 1);
   };
 
   const onSetAutoTags = (g: Generation, names: string[]) => {
     applyGens((generations) => replaceGenerationTags(generations, g.id, "auto_tags", names));
-    enqueueSave(() => api.setGenAutoTags(g.id, names), 1);
+    return enqueueSave(() => api.setGenAutoTags(g.id, names), 1);
   };
 
   const enqueueBulkTags = (

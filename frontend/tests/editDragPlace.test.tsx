@@ -786,7 +786,7 @@ it("컷을 끄는 중 끼울 자리가 화면 밖이면 그쪽 가장자리에 '
 
 // Jay 2026-10-15 — 풀 카드에도 라이브러리 카드의 호버 단추(S·T·C·ⓘ·⤓): 누르면 라이브러리와 같은 앱의 동작을 부르고, 그 누름은 카드의
 //  고르기·끌기·크게 보기·정보 창으로 번지지 않는다(라이브러리 격자와 같은 약속). 카드 몸통의 누르기·더블클릭·휠 클릭은 그대로다.
-it("풀 카드의 호버 단추 — S·T·C·ⓘ 는 앱의 동작을 부르고, 그 누름은 고르기·끌기·크게 보기가 아니다 · 몸통은 그대로", () => {
+it("풀 카드의 호버 단추 — S·T·C·ⓘ 는 앱의 동작을 부르고, 그 누름은 고르기·끌기·크게 보기가 아니다 · 몸통은 그대로", async () => {
   mountOn("c1");
   const card = () => poolCards()[0];
   const part = (selector: string) => card().querySelector<HTMLElement>(selector)!;
@@ -824,6 +824,8 @@ it("풀 카드의 호버 단추 — S·T·C·ⓘ 는 앱의 동작을 부르고,
     });
     act(() => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
   };
+  const saves: (() => void)[] = []; // 태그 저장은 시험이 끝낸다(앱의 저장 대기열처럼 끝나면 풀리는 약속)
+  cardActions.onSetTags.mockImplementation(() => new Promise<void>((resolve) => { saves.push(resolve); }));
   act(() => part(".card-tl .card-cm").click());
   typeTag("컷1");
   act(() => { part(".cs-tag-input").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
@@ -831,8 +833,9 @@ it("풀 카드의 호버 단추 — S·T·C·ⓘ 는 앱의 동작을 부르고,
   act(() => part(".card-tl .card-cm").click());
   typeTag("컷2");
   expect(cardActions.onSetTags.mock.calls.map(([g, tags]) => [g.id, tags])).toEqual([["a", ["컷1"]], ["a", ["컷1", "컷2"]]]);
-  // 앞 태그(컷1)만 담긴 목록이 뒤 태그(컷2)의 저장보다 먼저 와도 덧입힌 컷2 는 남는다 — 목록이 따라잡을 때까지(Codex 리뷰: 다시 받은
-  //  목록이면 걷던 때는 여기서 컷2 가 사라져 다음 저장이 [컷1, 컷3] 이었다). 따라잡은 뒤에는 걷어서 그 뒤의 목록 값을 따른다.
+  // 덧입힘은 그 카드의 저장이 다 끝난 뒤 온 목록이 걷는다(Codex 리뷰 10-15 두 번):
+  //  ① 컷1 만 저장되고 컷2 는 아직인데 [컷1] 목록이 오면 컷2 는 남는다 — 다시 받으면 걷던 때는 다음 저장이 [컷1, 컷3] 이었다
+  //  ② 저장이 다 끝난 뒤 다른 창이 [다른] 으로 바꾼 목록이 오면 그것을 믿는다 — 같아질 때까지 들던 때는 [컷1, 컷2, 컷3, 컷4] 로 덮었다
   const escape = () => act(() => {
     part(".cs-tag-input").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
   });
@@ -841,11 +844,12 @@ it("풀 카드의 호버 단추 — S·T·C·ⓘ 는 앱의 동작을 부르고,
     mount();
   };
   escape();
+  await act(async () => { saves.shift()!(); }); // 컷1 저장 끝 — 컷2 는 아직
   listed(["컷1"]);
   act(() => part(".card-tl .card-cm").click());
   typeTag("컷3");
   escape();
-  listed(["컷1", "컷2", "컷3"]);
+  await act(async () => { saves.splice(0).forEach((resolve) => resolve()); }); // 다 끝남
   listed(["다른"]);
   act(() => part(".card-tl .card-cm").click());
   typeTag("컷4");

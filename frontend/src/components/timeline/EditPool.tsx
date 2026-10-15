@@ -115,42 +115,50 @@ export function EditPool({
   useEscapeClose(() => setOpen(null), open !== null, true, true);
   const shown = useMemo(() => arrangePool(items, searching ? query : "", ui.sort), [items, searching, query, ui.sort]);
   const placed = items.filter((item) => item.track !== null).length;
-  // 썸네일 카드의 T(태그 고치기) — 한 번에 한 장. 고친 태그는 받은 목록이 그 값을 따라잡을 때까지 여기서 덧입힌다:
+  // 썸네일 카드의 T(태그 고치기) — 한 번에 한 장. 고친 태그는 그 카드의 저장이 다 끝난 뒤 새 목록이 올 때까지 여기서 덧입힌다:
   //  앱의 낙관적 갱신은 라이브러리 목록에만 닿아, 안 그러면 잇달아 넣는 태그가 옛 태그에서 계산돼 앞에 넣은 것을 지운다.
-  //  '목록을 다시 받았다'만으로 걷지 않는다 — 태그 저장 알림은 저장 묶음마다 와서, 뒤 편집의 저장보다 먼저 온 목록이 그 편집을 지웠다(Codex 리뷰).
-  //  shortcut: 저장이 실패하면 목록이 끝내 따라잡지 않아 저장 안 된 태그가 풀에 남는다(앱이 실패를 알린다) — 거슬리면 실패 알림 때 걷는다.
+  //  '목록을 다시 받았다'만으로 걷으면 뒤 편집의 저장보다 먼저 온 목록이 그 편집을 지웠고, '목록이 같아질 때'까지 들면 저장 뒤 다른 창이
+  //  바꾼 태그를 가려 다음 저장이 덮었다(둘 다 Codex 리뷰 10-15) — 그래서 카드마다 끝나지 않은 저장을 센다.
+  //  shortcut: 저장이 끝나기 전에 출발한 조회가 끝난 뒤에 오면 그 목록을 믿는다(태그가 잠깐 옛 값으로 보일 수 있다 — 저장 끝 알림의
+  //   다시 받기가 곧 맞춘다). 조회의 출발 시각을 풀까지 넘기면 막을 수 있다.
   const [tagging, setTagging] = useState<string | null>(null);
-  const [retag, setRetag] = useState<Record<string, { tags?: string[]; auto_tags?: string[] }>>({});
+  const [retag, setRetag] = useState<Record<string, { tags?: string[]; auto_tags?: string[]; saved?: true }>>({});
+  const saving = useRef<Record<string, number>>({}); // 카드마다 끝나지 않은 저장 수
   const withTags = (gen: Generation) => {
     const kept = retag[gen.id];
     return kept ? { ...gen, ...(kept.tags && { tags: kept.tags }), ...(kept.auto_tags && { auto_tags: kept.auto_tags }) } : gen;
   };
-  const keepTags = (gen: Generation, patch: { tags?: string[]; auto_tags?: string[] }) =>
-    setRetag((prev) => ({ ...prev, [gen.id]: { ...prev[gen.id], ...patch } }));
+  const keepTags = (gen: Generation, patch: { tags?: string[]; auto_tags?: string[] }, save: void | Promise<void>) => {
+    const id = gen.id;
+    setRetag((prev) => ({ ...prev, [id]: { tags: prev[id]?.tags, auto_tags: prev[id]?.auto_tags, ...patch } }));
+    saving.current[id] = (saving.current[id] ?? 0) + 1;
+    void Promise.resolve(save).finally(() => {
+      const left = (saving.current[id] ?? 1) - 1;
+      if (left > 0) {
+        saving.current[id] = left;
+        return;
+      }
+      delete saving.current[id];
+      setRetag((prev) => (prev[id] ? { ...prev, [id]: { ...prev[id], saved: true } } : prev));
+    });
+  };
+  // 저장이 다 끝난 카드는 그 뒤에 온 목록을 믿는다(덧입힘을 걷는다)
+  const seenItems = useRef(items);
   useEffect(() => {
-    const same = (have: string[] | undefined, want: string[] | undefined) =>
-      !want || [...(have ?? [])].sort().join("\n") === [...want].sort().join("\n");
+    if (seenItems.current === items) return;
+    seenItems.current = items;
     setRetag((prev) => {
-      const caught = Object.keys(prev).filter((id) => {
-        const gen = items.find((item) => item.gen.id === id)?.gen;
-        return gen && same(gen.tags, prev[id].tags) && same(gen.auto_tags, prev[id].auto_tags);
-      });
-      if (caught.length === 0) return prev;
+      const done = Object.keys(prev).filter((id) => prev[id].saved);
+      if (done.length === 0) return prev;
       const next = { ...prev };
-      for (const id of caught) delete next[id];
+      for (const id of done) delete next[id];
       return next;
     });
   }, [items]);
   const actions: PoolCardActions = {
     ...cardActions,
-    onSetTags: (gen, tags) => {
-      keepTags(gen, { tags });
-      cardActions.onSetTags(gen, tags);
-    },
-    onSetAutoTags: (gen, names) => {
-      keepTags(gen, { auto_tags: names });
-      cardActions.onSetAutoTags(gen, names);
-    },
+    onSetTags: (gen, tags) => keepTags(gen, { tags }, cardActions.onSetTags(gen, tags)),
+    onSetAutoTags: (gen, names) => keepTags(gen, { auto_tags: names }, cardActions.onSetAutoTags(gen, names)),
   };
 
   // 여기를 눌러도 편집 화면이 키를 받게 초점을 옮기지 않는다. 입력칸(검색·크기)만 초점을 받고, 그 밖을 누르면 입력칸에서

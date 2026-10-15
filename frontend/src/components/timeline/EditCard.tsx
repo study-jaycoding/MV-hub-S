@@ -18,8 +18,12 @@ export interface PoolItem {
 // 풀 카드의 호버 단추가 부르는 앱의 동작 — 라이브러리 격자에 주는 것과 같은 것(App). 편집 탭을 떠나게 하는 것(⬇ 가져오기·가계)과
 //  숨은 프롬프트를 고치는 것(⠿·@)은 넘기지 않는다(풀에서는 CSS 로 숨긴다 — docs/EDIT_TAB.md).
 export type PoolCardActions = Required<Pick<ComponentProps<typeof GenerationCard>,
-  "canFinalize" | "onReview" | "onPublish" | "onUnpublish" | "onFinalize" | "onUnfinalize" | "onSetTags" | "onSetAutoTags" |
-  "autoTagOptions" | "onOpenComments" | "onInfo">>;
+  "canFinalize" | "onReview" | "onPublish" | "onUnpublish" | "onFinalize" | "onUnfinalize" |
+  "autoTagOptions" | "onOpenComments" | "onInfo">> & {
+  // 태그 저장 — 돌려주는 약속이 풀리면 그 저장이 끝났다(풀이 덧입힌 태그를 언제 걷을지 본다)
+  onSetTags: (g: Generation, tags: string[]) => void | Promise<void>;
+  onSetAutoTags: (g: Generation, names: string[]) => void | Promise<void>;
+};
 const noop = () => {};
 export const NO_CARD_ACTIONS: PoolCardActions = {
   canFinalize: () => false, onReview: noop, onPublish: noop, onUnpublish: noop, onFinalize: noop, onUnfinalize: noop,
