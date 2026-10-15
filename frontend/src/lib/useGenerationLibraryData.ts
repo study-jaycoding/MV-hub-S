@@ -27,6 +27,7 @@ interface UseGenerationLibraryDataArgs {
 }
 
 export const GENERATION_TAB_CACHE_FRESH_MS = 15_000;
+const NO_GENS: Generation[] = []; // 탭 전환 렌더의 빈 목록 — 렌더마다 새 배열이면 쓰는 쪽의 effect 가 매번 다시 돈다
 
 type GenerationTabCacheEntry = {
   gens: Generation[];
@@ -296,9 +297,24 @@ export function useGenerationLibraryData({
       pageCursorRef.current = null;
       trashOffsetRef.current = 0;
       setHasMore(false);
+      // 비운 그 자리에서 '불러오는 중'으로 — 그리기 전에 비우니 뒤따르는 조회가 스피너를 올리기 전의 한 번에 "항목이 없습니다"가 비쳤다
+      //  (위 팀 탭 비우기·beginComposeList 와 같은 이유). 조회를 할 수 없는 상태(공간 미확인)면 올리지 않는다.
+      if (authReadyRef.current) setLoading(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters.tab]);
+
+  // 탭을 막 바꾼 렌더 — 위 layout effect 가 갈아 끼우기 전의 그 한 번에도 이전 탭 목록을 내주지 않고, 갈아 끼울 것(그 탭 캐시 또는 빈 목록)을
+  //  미리 내준다. 이전 탭 목록을 내주면 쓰는 쪽이 그 카드들을 새로 붙였다 곧바로 뗐다(69회차 재실측: 공유 컷 카드 화면 → 워크스페이스 클릭 직후
+  //  긴 작업 약 80ms). 조건은 위 effect 와 같다 — 탭 전환이 아닌 '소유 탭' 바뀜(폴더 창의 beginComposeList)은 직전에 그린 탭과 같아 걸리지 않는다.
+  const committedTabRef = useRef(filters.tab);
+  useLayoutEffect(() => { committedTabRef.current = filters.tab; }, [filters.tab]);
+  const swapping = filters.tab !== committedTabRef.current && filters.tab !== "compose" &&
+    lastLoadedTabRef.current !== null && lastLoadedTabRef.current !== filters.tab;
+  const swapCache = swapping ? tabCacheRef.current[filters.tab] : undefined;
+  const swapHit = !!swapCache && swapCache.sig === JSON.stringify([!!filters.deleted_only, genQuery]);
+  const shownGens = !swapping ? gens : swapHit ? swapCache!.gens : NO_GENS;
+  const shownLoading = !swapping ? loading : !swapHit && authReadyRef.current; // 위 effect 가 곧 둘 값과 같게
 
   const queryKey = JSON.stringify(genQuery);
   useEffect(() => {
@@ -717,14 +733,14 @@ export function useGenerationLibraryData({
     archivedCount,
     facets,
     filtersRef,
-    gens,
+    gens: shownGens,
     gensRef,
     colorLedger,
     hasMore,
     listRevision,
     loadError,
     loadMore,
-    loading,
+    loading: shownLoading,
     loadingMore,
     projects,
     projectsLoadedRef,

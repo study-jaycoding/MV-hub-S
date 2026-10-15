@@ -24,11 +24,13 @@ const folderRows = [gen("f1")];
 let root: Root;
 let host: HTMLDivElement;
 let data: ReturnType<typeof useGenerationLibraryData>;
+const renders: string[][] = []; // 렌더마다 쓰는 쪽에 내준 목록(id) — 탭 전환 시험이 본다
 const flash = () => {}; // App 처럼 고정된 함수 — 렌더마다 새 함수면 reload 계열이 매번 새로 만들어져 아래 effect 가 렌더마다 다시 돈다
 function Harness({ query, filters = FILTERS, authKey = "", workspaceScopeKey = "" }: {
   query: GenQuery; filters?: Filters; authKey?: string; workspaceScopeKey?: string;
 }) {
   data = useGenerationLibraryData({ authReady: true, authKey, filters, genQuery: query, flash, workspaceScopeKey });
+  renders.push(data.gens.map((g) => g.id));
   const key = JSON.stringify(query);
   // App 과 같은 배선 — 조회 조건(또는 보는 공간)이 바뀌면 신선도 확인을 거쳐 다시 받는다.
   useEffect(() => { void data.reloadIfStale(); }, [key, data.reloadIfStale, workspaceScopeKey]);
@@ -336,7 +338,10 @@ it("switching tabs swaps the list before paint — the committed render never sh
   await settle();
   expect(ids()).toEqual(["m1", "m2"]);
   // 클릭처럼 동기 우선순위로 그린다 — 그 커밋이 끝난 바로 그 자리(화면에 칠해질 상태)를 본다
+  renders.length = 0;
   flushSync(() => render({ tab: "team" }, { tab: "team" }));
   expect(ids()).toEqual([]);
+  // 갈아 끼우기 전의 첫 렌더에도 이전 탭 카드를 내주지 않는다 — 내주면 쓰는 쪽이 그 카드들을 붙였다 곧바로 뗐다(69회차 재실측 약 80ms)
+  expect(renders.flat()).toEqual([]);
   await settle();
 });
