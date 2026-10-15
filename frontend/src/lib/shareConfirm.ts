@@ -56,7 +56,7 @@ export async function settleIntents(refs: IntentRef[], pollMs = 5000, limitMs = 
       if (outcome.reason) counts.reasons.push(outcome.reason);
     }
     if (!left.size || Date.now() >= until) break;
-    await sleep(pollMs);
+    await sleep(Math.min(pollMs, until - Date.now())); // 기다림도 기한을 넘지 않게(Codex 10A 재검토)
   }
   counts.unknown += left.size;
   return counts;

@@ -18,6 +18,11 @@ vi.mock("../src/api", () => ({ api: {
   setReviewState: vi.fn(),
 } }));
 vi.mock("../src/lib/libraryBroadcast", () => ({ postLibraryChanged: vi.fn() }));
+// 늦은 요청의 원장 확인은 뒤에서 10분까지 돈다 — 시험에서는 부른 것만 본다(Jay 결정 10A)
+vi.mock("../src/lib/shareConfirm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/shareConfirm")>()),
+  watchSlowRequests: vi.fn(),
+}));
 
 const noop = () => {};
 const gen = (patch: Partial<Generation> = {}): Generation => ({
@@ -234,6 +239,22 @@ it("consecutive runs keep the record current — unpublish, publish, then the ne
   await run();
   act(() => actions.requestGradeStep([c, d], "up"));
   expect(actions.pending?.ops.map((op) => op.action)).toEqual(["publish", "publish"]);
+});
+
+// Jay 결정 10A(Codex 재검토) — 묶음 발행이 늦어 결과 불명이면 실패가 아니라 확인 중이다. 허브가 걸러 보내지 않은 것은 확인 중에 넣지 않는다.
+it("a slow bulk publish counts sent items as being confirmed and the ones the hub did not send as failed/skipped", async () => {
+  const { HttpError } = await import("../src/lib/http");
+  const { watchSlowRequests } = await import("../src/lib/shareConfirm");
+  let actions!: ReturnType<typeof useGradeStep>;
+  const flash = vi.fn(), reload = vi.fn().mockResolvedValue(undefined);
+  function Harness() { actions = useGradeStep({ canFinalize: () => true, flash, reload }); return null; }
+  act(() => root.render(<Harness />));
+  const refs = [{ gen_id: "a", intent_id: "i1", seq: 1 }]; // b 는 그사이 지워져 허브가 보내지 않았다
+  vi.mocked(api.publishToShared).mockRejectedValueOnce(new HttpError(502, "502: slow", "slow", { code: "upstream_timeout", refs }));
+  act(() => actions.requestGradeStep([gen({ id: "a", shared: false }), gen({ id: "b", shared: false })], "up"));
+  await act(async () => actions.confirm());
+  expect(flash).toHaveBeenLastCalledWith("0 applied · 1 failed/skipped · 1 being confirmed");
+  expect(vi.mocked(watchSlowRequests).mock.calls[0][0]).toEqual(refs);
 });
 
 // Jay 2026-10-14 — 최종을 해제하면 원래의 보류로: 여러 장을 한 번에 풀 때도(S 더블클릭 · ↓) 보류로 돌아간 수를 알린다. 올리는 쪽(최종 지정 ·

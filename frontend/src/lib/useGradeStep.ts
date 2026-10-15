@@ -95,8 +95,10 @@ export function useGradeStep({ canFinalize, reload, flash }: Args) {
       } catch (error) {
         // 서버가 늦어 결과 불명이면 실패가 아니라 '확인 중' — 끝은 원장으로 확인한다(Jay 결정 10A)
         const refs = slowRefs(error);
-        if (refs) slow.push(...refs);
-        else fail += pubIds.length;
+        if (refs) {
+          slow.push(...refs);
+          fail += Math.max(0, pubIds.length - refs.length); // 허브가 걸러 보내지 않은 것(지워진 카드 등)은 확인 중이 아니다(Codex 10A 재검토)
+        } else fail += pubIds.length;
         for (const id of pubIds) note(id, null); // 됐는지 모른다
       }
     }

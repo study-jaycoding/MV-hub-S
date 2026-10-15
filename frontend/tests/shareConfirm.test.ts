@@ -58,6 +58,14 @@ describe("원장으로 끝을 묻기", () => {
     expect(Date.now() - started).toBeLessThan(2000);
   });
 
+  it("다음 묻기까지의 기다림도 기한을 넘지 않는다(Codex 10A 재검토)", async () => {
+    answers.set(url("slowpoke", 1), [{ state: "pending" }]);
+    const started = Date.now();
+    const counts = await settleIntents([{ gen_id: "g1", intent_id: "slowpoke", seq: 1 }], 10_000, 40);
+    expect(counts.unknown).toBe(1);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
   it("묻기 자체가 실패하면(허브 불통) 끝난 것으로 세지 않고 다시 묻는다", async () => {
     const refs = [{ gen_id: "g1", intent_id: "x", seq: 1 }];
     const counts = await settleIntents(refs, 1, 15); // 답이 없다(목록에 없음 → 거절)
