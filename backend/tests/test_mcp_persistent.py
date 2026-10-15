@@ -1,5 +1,7 @@
 """Isolated v2 contracts; generation submission is mocked, never paid CLI calls."""
 import asyncio
+import hashlib
+import json
 from uuid import uuid4
 
 import pytest
@@ -272,10 +274,19 @@ def test_partial_failure_explains_unattempted_items_without_replaying(local, mon
     assert again["next_step"] == result["next_step"] and len(calls) == 2
 
 
+def _scene_row(client, scene_id):
+    """캔버스 작업은 씬이 있어야 만든다(add_canvas_task 가 같은 잠금 안에서 확인 — Codex 리뷰 ⑥) — 시험용 씬 백업 한 줄."""
+    data = json.dumps({"id": scene_id, "name": scene_id})
+    with db.get_connection() as conn:
+        conn.execute("INSERT OR REPLACE INTO scene_backup(owner_uid,project_id,scene_id,name,data,data_hash) VALUES(?,?,?,?,?,?)",
+                     (client["owner_uid"], "", scene_id, scene_id, data, hashlib.sha256(data.encode()).hexdigest()))
+
+
 def test_cancel_and_explicit_retry_use_new_task_id_without_stale_completion(local):
     configure(local)
     plan = prepare(local)
     client = store.client_for_secret(api.mcp.digest(local[1]["codex"]["secret"]))
+    _scene_row(client, "missing-scene")
     task = store.add_canvas_task(client, plan["id"], "missing-scene", ["existing-generation"])
     cancel_url = f"/api/mcp/v2/app/canvas-tasks/{task['id']}/cancel"
     complete_url = f"/api/mcp/v2/app/canvas-tasks/{task['id']}/complete"
@@ -297,10 +308,48 @@ def test_cancel_and_explicit_retry_use_new_task_id_without_stale_completion(loca
     assert store.add_canvas_task(client, plan["id"], "missing-scene", ["existing-generation"])["status"] == "done"
 
 
+def test_accepted_scene_delete_cancels_pending_attachment(local):
+    # Codex 리뷰 P2 ⑥ — 씬을 지우면(서버가 삭제를 받아들인 그 트랜잭션에서) 그 씬으로 가던 대기 작업도 거둔다. 남으면 앱이 2분마다 영원히 다시 물었다
+    configure(local)
+    plan = prepare(local)
+    client = store.client_for_secret(api.mcp.digest(local[1]["codex"]["secret"]))
+    workspace = {"scope": "personal"}
+    _scene_row(client, "gone")
+    _scene_row(client, "stays")
+    store.add_canvas_task(client, plan["id"], "gone", ["g1"])
+    store.add_canvas_task(client, plan["id"], "stays", ["g1"])
+    result = repo.sync_scene_backups(client["owner_uid"], "", [], ["gone"])
+    assert result["deleted"] == 1
+    assert [task["scene_id"] for task in store.canvas_tasks(client["owner_uid"], client["account_email"], workspace)] == ["stays"]
+
+
+def test_conflicting_scene_delete_preserves_attachment(local):
+    # 그사이 다른 창이 올려 지우지 않고 남긴 씬(kept)이면 작업도 그대로
+    configure(local)
+    plan = prepare(local)
+    client = store.client_for_secret(api.mcp.digest(local[1]["codex"]["secret"]))
+    _scene_row(client, "busy")
+    store.add_canvas_task(client, plan["id"], "busy", ["g1"])
+    result = repo.sync_scene_backups(client["owner_uid"], "", [], ["busy"], delete_bases={"busy": "stale-hash"})
+    assert result["kept"] == ["busy"]
+    assert len(store.canvas_tasks(client["owner_uid"], client["account_email"], {"scope": "personal"})) == 1
+
+
+def test_attachment_cannot_be_created_after_scene_delete(local):
+    # 라우터가 씬을 확인한 직후 지워져도 작업이 남지 않는다 — 같은 쓰기 잠금 안에서 다시 본다
+    configure(local)
+    plan = prepare(local)
+    client = store.client_for_secret(api.mcp.digest(local[1]["codex"]["secret"]))
+    with pytest.raises(LookupError):
+        store.add_canvas_task(client, plan["id"], "never-there", ["g1"])
+    assert store.canvas_tasks(client["owner_uid"], client["account_email"], {"scope": "personal"}) == []
+
+
 def test_cancel_checks_workspace_owner_and_membership(local, monkeypatch):
     configure(local)
     plan = prepare(local)
     client = store.client_for_secret(api.mcp.digest(local[1]["codex"]["secret"]))
+    _scene_row(client, "scene")
     task = store.add_canvas_task(client, plan["id"], "scene", ["generation"])
     workspace = {"scope": "personal"}
     assert not store.cancel_canvas_task(task["id"], "someone-else", client["account_email"], workspace)
@@ -577,6 +626,7 @@ def test_empty_canvas_poll_skips_upstream_auth_but_pending_poll_authenticates(lo
     assert probes == []
     client = store.client_for_secret(api.mcp.digest(local[1]["codex"]["secret"]))
     plan = store.create_plan(client, "queued", [{"label": "item"}])
+    _scene_row(client, "scene")
     store.add_canvas_task(client, plan["id"], "scene", ["generation"])
     response = local[0].get(url, headers=APP_HEADERS)
     assert response.status_code == 200 and len(response.json()["tasks"]) == 1, response.text

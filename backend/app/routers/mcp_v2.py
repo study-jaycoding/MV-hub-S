@@ -997,7 +997,10 @@ async def action(body: mcp.ActionIn, ctx=Depends(_client_context)):
             if len(ids) != len(plan["items"]):
                 raise HTTPException(409, "모든 항목의 접수가 확인된 뒤 캔버스에 추가하세요.")
             await asyncio.to_thread(_still_current, ctx)
-            return await asyncio.to_thread(store.add_canvas_task, ctx.client, plan["id"], data.scene_id, ids, plan["workspace"])
+            try:
+                return await asyncio.to_thread(store.add_canvas_task, ctx.client, plan["id"], data.scene_id, ids, plan["workspace"])
+            except LookupError as exc:  # 확인 뒤 그사이 씬이 지워졌다
+                raise HTTPException(404, "현재 워크스페이스의 캔버스를 찾을 수 없습니다.") from exc
         data = PlanId.model_validate(body.args)
         if body.method == "execute_generation_plan":
             return await _execute(ctx, str(data.plan_id))

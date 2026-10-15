@@ -185,10 +185,18 @@ def sync_scene_backups(
                 if delete_bases is not None and _row_hash(conn, owner_uid, project_id, sid) not in (None, delete_bases.get(sid, "")):
                     kept.append(sid)  # 그사이 다른 창이 올린 새 내용 — 지우지 않는다
                     continue
-                deleted += conn.execute(
+                gone = conn.execute(
                     "DELETE FROM scene_backup WHERE owner_uid=? AND project_id=? AND scene_id=?",
                     (owner_uid, project_id, sid),
                 ).rowcount
+                deleted += gone
+                if gone:
+                    # 지운 씬으로 가던 MCP '캔버스에 추가' 대기 작업도 같은 트랜잭션에서 거둔다 — 남으면 앱이 씬을 못 찾아 2분마다
+                    #  영원히 다시 물었다(Codex 리뷰 P2 ⑥). 지우지 않고 남긴 씬(kept)은 건드리지 않는다.
+                    conn.execute(
+                        "UPDATE mcp_canvas_task SET status='cancelled' WHERE owner_uid=? AND scene_id=? AND status='pending'",
+                        (owner_uid, sid),
+                    )
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")

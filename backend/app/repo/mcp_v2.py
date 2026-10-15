@@ -154,13 +154,23 @@ def add_canvas_task(client, plan_id, scene_id, generation_ids, workspace=None):
         raise ValueError("A canvas task requires the plan workspace")
     task_id = str(uuid4())
     with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO mcp_canvas_task(id,plan_id,owner_uid,account_email,workspace,scene_id,generation_ids) VALUES(?,?,?,?,?,?,?) "
-            "ON CONFLICT(plan_id,scene_id) DO UPDATE SET id=excluded.id,status='pending',generation_ids=excluded.generation_ids "
-            "WHERE mcp_canvas_task.status='cancelled'",
-            (task_id, plan_id, client["owner_uid"], client["account_email"], encode(workspace), scene_id, encode(generation_ids)),
-        )
-        row = conn.execute("SELECT * FROM mcp_canvas_task WHERE plan_id=? AND scene_id=?", (plan_id, scene_id)).fetchone()
+        # 씬이 아직 있는지를 같은 쓰기 잠금 안에서 다시 본다 — 라우터의 확인 직후 씬이 지워지면 거둘 수 없는 작업이 남았다(Codex 리뷰 P2 ⑥)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if conn.execute("SELECT 1 FROM scene_backup WHERE owner_uid=? AND project_id='' AND scene_id=?",
+                            (client["owner_uid"], scene_id)).fetchone() is None:
+                raise LookupError("scene is gone")
+            conn.execute(
+                "INSERT INTO mcp_canvas_task(id,plan_id,owner_uid,account_email,workspace,scene_id,generation_ids) VALUES(?,?,?,?,?,?,?) "
+                "ON CONFLICT(plan_id,scene_id) DO UPDATE SET id=excluded.id,status='pending',generation_ids=excluded.generation_ids "
+                "WHERE mcp_canvas_task.status='cancelled'",
+                (task_id, plan_id, client["owner_uid"], client["account_email"], encode(workspace), scene_id, encode(generation_ids)),
+            )
+            row = conn.execute("SELECT * FROM mcp_canvas_task WHERE plan_id=? AND scene_id=?", (plan_id, scene_id)).fetchone()
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     return _task(row)
 
 
