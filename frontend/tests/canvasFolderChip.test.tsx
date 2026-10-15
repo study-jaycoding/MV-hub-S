@@ -264,3 +264,15 @@ it("hover buttons blur only while shown — the always-on rule has no backdrop-f
   // 공유·최종 배지는 배경이 늘 불투명 — 흐림은 보이지 않고 노드마다 레이어만 만든다(Codex 65회차 리뷰)
   expect(rules.filter(([selector]) => selector.startsWith(".linb-sf")).map(([, body]) => body).join("")).not.toMatch(/backdrop-filter/);
 });
+
+// 70회차 격리 실측 — 라이브러리 격자 카드도 같았다: 안 보이는 S·C·⠿·오버레이 단추의 흐림 때문에 캔버스→워크스페이스 때 레이어 645개를
+//  새로 만들어 화면이 늦게 바뀌었다(128→72ms, 레이어 645→26). 이 단추들에 흐림을 거는 규칙은 가리킴·초점 상태뿐이어야 한다.
+it("library card hover buttons blur only while hovered or focused — never in an always-on or selected rule", () => {
+  const css = readFileSync(new NodeURL("../src/styles/generations.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter(([, selector, body]) => /card-sf|card-cm|card-drag-grip|ov-icon/.test(selector) && /backdrop-filter/.test(body));
+  expect(rules.length).toBeGreaterThan(0); // 보일 때의 흐림은 남아 있다
+  for (const [, selector] of rules) {
+    for (const part of selector.split(",")) expect(part.trim()).toMatch(/:hover|:focus/);
+  }
+});

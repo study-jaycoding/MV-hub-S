@@ -242,11 +242,13 @@
   color: var(--muted2); font-size: 12px; font-weight: 900; line-height: 1;
   cursor: pointer; opacity: 0; pointer-events: none;
   transition: opacity 0.12s, background 0.12s, transform 0.12s;
-  backdrop-filter: blur(6px);
 }
+/* 흐림(backdrop-filter)은 보일 때만 — 안 보일 때(opacity 0)도 걸려 있으면 단추마다 합성 레이어가 되어, 캔버스에서 워크스페이스로 올 때
+   격자 레이어 645개를 새로 만들고 GPU 가 그것을 그리느라 화면이 늦게 바뀌었다(70회차 격리 실측: 128→72ms, 레이어 645→26 —
+   캔버스 history.css·편집 탭 edit-tab.css 와 같은 까닭). 늘 보이는 .on·.final·.alert 는 바탕이 불투명해 흐림이 원래 안 보인다. */
 .card:hover .card-sf, .card:hover .card-cm,
 .asset-cell:hover .card-sf, .asset-cell:hover .card-cm,
-.card-sf:focus, .card-cm:focus { opacity: 1; pointer-events: auto; } /* Tab 으로 닿은 단추는 보여야 한다 — 안 보이는 채 Enter 가 먹었다(조작 규칙 51) */
+.card-sf:focus, .card-cm:focus { opacity: 1; pointer-events: auto; backdrop-filter: blur(6px); } /* Tab 으로 닿은 단추는 보여야 한다 — 안 보이는 채 Enter 가 먹었다(조작 규칙 51) */
 .card-sf:hover, .card-cm:hover { color: #fff; border-color: var(--border2); transform: scale(1.08); }
 /* S 공유(라임)/최종(골드) — 항상 표시 */
 .card-sf.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); opacity: 1; pointer-events: auto; font-size: 13px; }
@@ -274,9 +276,8 @@
   color: var(--muted2); font-size: 14px; line-height: 1;
   cursor: grab; opacity: 0; pointer-events: none;
   transition: opacity 0.12s, background 0.12s, transform 0.12s;
-  backdrop-filter: blur(6px);
 }
-.card:hover .card-drag-grip { opacity: 1; pointer-events: auto; }
+.card:hover .card-drag-grip { opacity: 1; pointer-events: auto; backdrop-filter: blur(6px); } /* 흐림은 보일 때만(위 .card-sf 와 같은 까닭) */
 .card-drag-grip:hover { color: #fff; border-color: var(--border2); transform: scale(1.08); }
 .card-drag-grip:active { cursor: grabbing; }
 
@@ -764,9 +765,13 @@
   width: 28px; height: 28px; border-radius: 8px; flex: none;
   padding: 0; /* base.css 전역 button padding이 폭 하한 26px를 만들어 @container 23px 축소를 막음 */
   display: inline-flex; align-items: center; justify-content: center;
-  background: rgba(12,13,16,0.6); backdrop-filter: blur(6px);
+  background: rgba(12,13,16,0.6);
   border: 1px solid rgba(255,255,255,0.16); color: #fff; font-size: 14px;
 }
+/* 흐림은 가리킬 때·초점일 때만(위 .card-sf 와 같은 까닭 — 이 단추가 레이어 243개였다). 고른 카드는 단추가 늘 보여도 흐림을 걸지 않는다 —
+   Ctrl+A 로 다 고르면 레이어가 다시 수백 개가 되고, 편집 탭의 '넣은 카드'(.selected)는 단추가 숨어 있다(edit-tab.css 와 같은 규칙) */
+.card-thumb:hover .ov-icon, .thumb-overlay:focus-within .ov-icon,
+.asset-media:hover .ov-icon { backdrop-filter: blur(6px); }
 /* 호버 = '이걸 누른다' 라임 강조(보드 .linb-ov-btn:hover 와 동일 — 전역 일관) */
 .ov-icon:hover { background: var(--grad); color: var(--accent-ink); border-color: var(--accent); }
 /* 글자 아이콘(S·T·C·⤓ ↺ ↻ @ ⬇ 📋 📂)을 대문자 높이로 다듬어 정중앙에 — 글꼴 기준선 탓에 0.8~1.6px 아래였다
