@@ -18,6 +18,7 @@ from ..workspace_context import workspace_columns
 from ._common import clean_folder_path as _clean_folder_path, new_id
 from ._visibility import team_generation_visibility_clause
 from .console_guard import guard_project_change
+from .final_moves import FinalMoveActor, check_final_moves
 
 _SELECT = (
     "SELECT p.id, p.name, p.kind, p.created_by, p.created_at, p.archived, p.render_root_path, "
@@ -519,8 +520,10 @@ def assign_to_project(
     shared_only: bool = False,
     folder_path: Optional[str] = None,
     resume_work: bool = False,
+    final_actor: Optional[FinalMoveActor] = None,
 ) -> int:
     """결과물들을 프로젝트에 귀속(또는 project_id=None 으로 미분류 해제). 변경 행수 반환.
+    final_actor(공유 서버의 요청자) — 최종본의 프로젝트가 바뀌면 양쪽 검수자만(하나라도 걸리면 아무것도 안 바꾸고 FinalMoveDenied, Jay 결정 3A).
     project_id 가 실재하는지 검증(없으면 ValueError).
     account_uid 지정(AUTH on)이면 내 생성물만 이동 — 공유 DB 에서 추측한 남의 id 로 남의 작업물을
     다른 프로젝트로 옮기거나 미분류화하는 사고를 막는다. None(단독)이면 제약 없음(기존 동작).
@@ -578,10 +581,11 @@ def assign_to_project(
             params.append(account_uid)
         rows = conn.execute(
             "SELECT id, project_id, folder_path, workspace_scope, workspace_id, workspace_name, "
-            "task_activity_at FROM generation "
+            "task_activity_at, is_final FROM generation "
             f"WHERE (id IN ({placeholders}) OR job_id IN ({placeholders})){scope}",
             params,
         ).fetchall()
+        check_final_moves(conn, final_actor, ((bool(r["is_final"]), r["project_id"], project_id) for r in rows))
         dirty_ids: list[str] = []
         stamp = task_activity_now()
         fields = ("project_id", "folder_path", "workspace_scope", "workspace_id", "workspace_name")

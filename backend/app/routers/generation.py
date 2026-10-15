@@ -31,6 +31,7 @@ from ..deps import (
     require_view_generation,
     account_actor_uid,
     can_view_generation_with_member_projects,
+    final_move_actor,
 )
 from ..models import (
     AutoTagsIn,
@@ -636,7 +637,10 @@ def set_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Re
                 body.operation,
                 workspace,
                 owner_uid=mutation_owner_uid,
+                final_actor=final_move_actor(request),  # 프로젝트가 바뀌는 최종본은 양쪽 검수자만(Jay 결정 3A)
             )
+        except repo.FinalMoveDenied as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
         except repo.WorkspaceAssignmentError as exc:
             logger.error(
                 "워크스페이스 원격 검증 뒤 로컬 재검증 실패: operation=%s workspace=%s error=%s",

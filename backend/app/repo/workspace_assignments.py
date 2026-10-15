@@ -12,6 +12,7 @@ from typing import Any, Optional
 from ..db import get_connection
 from ..emailnorm import norm_email
 from ..task_activity import task_activity_now, task_location_key
+from .final_moves import FinalMoveActor, check_final_moves
 
 
 class WorkspaceAssignmentError(ValueError):
@@ -140,7 +141,7 @@ def _build_plan(
     rows = conn.execute(
         f"WITH requested(requested_id) AS (VALUES {values}) "
         "SELECT requested.requested_id, g.id, g.job_id, g.creator_uid, g.deleted_at, "
-        "g.workspace_scope, g.workspace_id, g.workspace_name, g.project_id, g.folder_path, "
+        "g.workspace_scope, g.workspace_id, g.workspace_name, g.project_id, g.folder_path, g.is_final, "
         "p.workspace_scope AS project_workspace_scope, p.workspace_id AS project_workspace_id, "
         "p.workspace_name AS project_workspace_name, "
         "EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared "
@@ -252,8 +253,10 @@ def set_generation_workspace_batch(
     operation: str,
     workspace: dict[str, str],
     owner_uid: Optional[str] = None,
+    final_actor: Optional[FinalMoveActor] = None,
 ) -> dict[str, Any]:
-    """전체 검증과 귀속 변경을 한 쓰기 트랜잭션으로 수행한다."""
+    """전체 검증과 귀속 변경을 한 쓰기 트랜잭션으로 수행한다.
+    final_actor — 프로젝트가 바뀌는 최종본은 양쪽 검수자만(걸리면 아무것도 안 바꾸고 FinalMoveDenied, Jay 결정 3A)."""
     from .manage_schema import ensure_manage_schema
     from .manage_telemetry import mark_telemetry_dirty_in_connection
 
@@ -262,6 +265,11 @@ def set_generation_workspace_batch(
         conn.execute("BEGIN IMMEDIATE")
         plan = _build_plan(conn, generation_ids, operation, workspace, owner_uid)
         assigned_project = plan.get("assigned_project")
+        next_project = {"set": (assigned_project or {}).get("id"), "clear": None}
+        check_final_moves(conn, final_actor, (
+            (bool(row.get("is_final")), row.get("project_id"), next_project[row["project_action"]])
+            for row in plan["changed"] if row.get("project_action") in next_project
+        ))
         stamp = task_activity_now()
         for row in plan["changed"]:
             action = row.get("project_action", "keep")

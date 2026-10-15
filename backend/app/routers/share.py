@@ -474,6 +474,10 @@ def unpublish(gen_id: str, request: Request):
 
 
 # ── v02 CMS — Supervisor 최종(골드) 선별 (로드맵 PART 2) ────────────────────
+# 권한을 본 뒤 그사이 다른 사람이 프로젝트를 옮겼다(Jay 결정 3A) — 새 프로젝트 기준으로는 권한을 본 적이 없다.
+_FINAL_PROJECT_CHANGED = "그사이 이 생성물의 프로젝트가 바뀌었습니다 — 새로고침한 뒤 다시 시도해 주세요"
+
+
 def _finalizer_uid(request: Request) -> str | None:
     """최종 지정자 uid — 로그인 계정의 creator_uid, 없으면 제공자(나) uid."""
     acc = current_account(request)
@@ -621,9 +625,13 @@ def finalize(gen_id: str, request: Request, background: BackgroundTasks):
         require_edit_generation(request, gen)
     # 최종 = 후보 확정 → 공유 동반. 공유 확인부터 final 기록까지 한 쓰기락으로 묶어
     # 로컬 unpublish가 둘 사이에 끼어드는 모순(is_final=1, share 없음)을 차단한다.
-    repo.finalize_generation_with_share(
-        gen_id, actor_id(request), _finalizer_uid(request), "team"
-    )
+    # 권한은 위에서 지금 귀속(gen.project_id)으로 봤다 — 쓰기 트랜잭션 안에서 그 귀속 그대로인지 다시 본다(Jay 결정 3A·C10).
+    try:
+        repo.finalize_generation_with_share(
+            gen_id, actor_id(request), _finalizer_uid(request), "team", expect_project=gen.get("project_id"),
+        )
+    except repo.FinalProjectChanged:
+        raise HTTPException(status_code=409, detail=_FINAL_PROJECT_CHANGED) from None
     _touch_telemetry(gen_id)
     journal_audit_event(
         "generation.finalized",
@@ -699,7 +707,10 @@ def unfinalize(gen_id: str, request: Request, restore_held: bool = False):
             require_project_role(request, gen["project_id"], rbac.SUPERVISOR)
     else:
         require_edit_generation(request, gen)  # 미배정 → 본인/admin 만
-    restored = repo.release_final(gen_id, restore_held=restore_held)
+    try:
+        restored = repo.release_final(gen_id, restore_held=restore_held, expect_project=gen.get("project_id"))
+    except repo.FinalProjectChanged:
+        raise HTTPException(status_code=409, detail=_FINAL_PROJECT_CHANGED) from None
     _touch_telemetry(gen_id)
     # 기록은 잠금 안에서 실제로 바뀐 것만 — 되살리는 길에서 이미 최종이 아니었으면(None) 바꾼 것이 없다
     if restored is not None:
@@ -775,7 +786,11 @@ def final_review(gen_id: str, body: FinalReviewIn, request: Request):
     else:
         require_edit_generation(request, gen)
     try:
-        previous = repo.transition_final_review(gen_id, target, gen.get("worker_id") or DEFAULT_WORKER_ID)
+        previous = repo.transition_final_review(
+            gen_id, target, gen.get("worker_id") or DEFAULT_WORKER_ID, expect_project=gen.get("project_id"),
+        )
+    except repo.FinalProjectChanged:
+        raise HTTPException(409, _FINAL_PROJECT_CHANGED) from None
     except repo.GenerationHoldStateError as exc:
         messages = {
             "not_found": "generation 없음", "not_done": "완료된 생성물만 상태를 변경할 수 있습니다",

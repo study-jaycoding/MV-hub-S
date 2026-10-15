@@ -29,7 +29,7 @@ from . import _proxy
 from .. import active_account, db, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MEDIA_PRESERVATION_ENABLED
 from ._telemetry import touch_generation_telemetry
-from ..deps import actor_id, current_account, require_edit_generation
+from ..deps import actor_id, current_account, final_move_actor, require_edit_generation
 from ..repo import identity
 from ..services import agent_signals, net_guard, server_relocation
 from ..services.request_guards import require_loopback_browser_request
@@ -301,7 +301,8 @@ def receive_published_bundle(body: PublishBundleIn, request: Request):
                 "email": acc.get("email"),
             },
         }
-    counts = repo.import_bundle_payload(bundle, DEFAULT_WORKER_ID)
+    # 서버 수신 길 — 최종본의 프로젝트를 바꾸려는 항목은 발행자가 양쪽 검수자일 때만(아니면 그 항목 blocked, Jay 결정 3A)
+    counts = repo.import_bundle_payload(bundle, DEFAULT_WORKER_ID, final_move_actor(request))
     # 공유 서버의 정식 발행 입구는 개별 publish 라우트가 아니라 이 번들 수신이다.
     # 따라서 운영자가 나중에 "누가 어떤 생성물을 공유했나"를 복원할 수 있도록 여기서
     # 요청 단위 감사 이력을 남긴다. 500개 전체를 빠뜨리지 않되 DB 쓰기는 50개 묶음으로 제한한다.

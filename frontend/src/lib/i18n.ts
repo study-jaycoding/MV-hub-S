@@ -705,6 +705,8 @@ const EN: Record<string, string> = {
     "Cannot move to this destination. Check the project and workspace, then try again.",
   "이동할 권한이 없습니다. 로그인 상태와 권한을 확인해 주세요.":
     "You do not have permission to move these items. Check your sign-in and permissions.",
+  "최종본은 두 프로젝트의 검수자(또는 관리자)만 옮길 수 있습니다.":
+    "Only reviewers of both projects (or an admin) can move a final item.",
   "대상을 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도해 주세요.":
     "The destination or items could not be found. Refresh the list and try again.",
   "다른 곳에서 먼저 바뀌었습니다. 새로고침한 뒤 다시 시도해 주세요.":

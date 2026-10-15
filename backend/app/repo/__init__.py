@@ -37,6 +37,7 @@ from .super_admin_sessions import *  # noqa: F401,F403  (10분 workspace 전용 
 from .release_update_notices import *  # noqa: F401,F403  (관리자 릴리스 공지·읽음 — leaf)
 from .media_preservation import *  # noqa: F401,F403  (공유·최종 원본 보존 작업 상태 — leaf)
 from .share_state_intents import *  # noqa: F401,F403  (공유/골드 desired-state 원장 — leaf)
+from .final_moves import *  # noqa: F401,F403  (최종본 귀속 이동의 양쪽 검수자 판정 — leaf, Jay 결정 3A)
 from .trash import *  # noqa: F401,F403  (generations·tags 뒤 — trash 가 둘을 import)
 from .assets import *  # noqa: F401,F403
 from .share import *  # noqa: F401,F403

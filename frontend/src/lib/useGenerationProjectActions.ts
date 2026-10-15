@@ -18,6 +18,8 @@ function assignFailureMessage(error: unknown): string {
   let message = "옮기지 못했습니다. 연결 상태를 확인한 뒤 다시 시도해 주세요.";
   if (error instanceof HttpError) {
     if (error.status === 400) message = "담을 수 없는 대상입니다. 프로젝트와 워크스페이스를 확인한 뒤 다시 시도해 주세요.";
+    // 최종본 이동 거절(Jay 결정 3A, 서버 글 FINAL_MOVE_DENIED 로 가린다) — '권한 없음'보다 무엇이 필요한지 말한다(서버 날 글은 보이지 않는다)
+    else if (error.status === 403 && error.detail.startsWith("최종본은")) message = "최종본은 두 프로젝트의 검수자(또는 관리자)만 옮길 수 있습니다.";
     else if (error.status === 401 || error.status === 403) message = "이동할 권한이 없습니다. 로그인 상태와 권한을 확인해 주세요.";
     else if (error.status === 404) message = "대상을 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도해 주세요.";
     else if (error.status === 409) message = "다른 곳에서 먼저 바뀌었습니다. 새로고침한 뒤 다시 시도해 주세요.";

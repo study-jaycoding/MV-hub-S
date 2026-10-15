@@ -16,6 +16,7 @@ from ..deps import (
     account_global_roles,
     account_scope_uid,
     actor_id,
+    final_move_actor,
     project_roles_of,
     require_global_cap,
     require_project_role,
@@ -465,39 +466,9 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
             except Exception:  # noqa: BLE001
                 pass
         _require_assign_target(request, body.project_id)
-        try:
-            if tab == "team":
-                # 팀 공유 탭 귀속(서버 본체): 공유물을 프로젝트로 조직하는 팀 작업이다. read_all(admin·PM·PD)
-                # 은 생성자 무관하게 묶을 수 있게 스코프를 풀되, shared_only 로 '공유물'만 건드린다(남의
-                # 사적 작업물은 불가). 일반 멤버는 기존대로 본인 공유물만.
-                read_all = (not AUTH_ENABLED) or rbac.has_global_cap(
-                    account_global_roles(request), "read_all"
-                )
-                account_uid = None if read_all else account_scope_uid(request)
-                n = repo.assign_to_project(
-                    body.generation_ids, body.project_id,
-                    account_uid=account_uid, shared_only=True,
-                    folder_path=body.folder_path,
-                    resume_work=body.resume_work,
-                )
-            else:
-                # 내 작업: AUTH on 이면 내 생성물만 귀속(남의 작업물 이동 차단). 단독/AUTH off 는 None → 제약 없음.
-                n = repo.assign_to_project(
-                    body.generation_ids, body.project_id,
-                    account_uid=account_scope_uid(request), folder_path=body.folder_path,
-                    resume_work=body.resume_work,
-                )
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        # 팀 매니징: 귀속(프로젝트·폴더)이 바뀐 내 생성물을 텔레메트리 dirty 표시 → 다음 drain 에 반영.
-        if MANAGE_ENABLED and tab != "team":
-            try:
-                # 이동과 outbox 기록은 repo의 같은 트랜잭션에서 완료했다.
-                drain_isolated_telemetry()
-            except Exception:  # noqa: BLE001
-                pass
-        # 이동 양방향 동기(#2 Phase3): 내 작업에서 옮긴 게 이미 공유된 것이면 서버에도 같은 이동을
-        # 반영해 팀 공유 뷰가 안 어긋나게 한다. best-effort — 실패해도 로컬 이동은 유효(team_synced=False).
+        # 이동 양방향 동기(#2 Phase3): 내 작업에서 옮길 것 가운데 이미 공유된 것은 **서버 먼저** 옮긴다(Jay 결정 3A·C11) — 최종본 이동은
+        #  서버가 양쪽 검수자를 보고 403 으로 거절할 수 있고, 로컬의 최종 표식은 늦거나 틀릴 수 있다. 403 이면 로컬도 바꾸지 않는다.
+        #  서버 미연결·그 밖의 실패는 지금처럼 로컬만 반영한다(team_synced=False — 추후 재동기).
         team_synced: Optional[bool] = None
         if tab != "team" and _proxy.proxying():
             anchors = repo.shared_generation_anchors(body.generation_ids)
@@ -514,8 +485,47 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
                     )
                     # 서버가 실제로 매칭·반영했는지(updated>0)까지 확인해야 진짜 동기 성공.
                     team_synced = ((resp or {}).get("updated") or 0) > 0
+                except HTTPException as exc:
+                    if exc.status_code == 403:
+                        raise
+                    team_synced = False
                 except Exception:  # noqa: BLE001 — 서버 미연결·오프라인 시 로컬만 반영(추후 재동기 필요)
                     team_synced = False
+        try:
+            if tab == "team":
+                # 팀 공유 탭 귀속(서버 본체): 공유물을 프로젝트로 조직하는 팀 작업이다. read_all(admin·PM·PD)
+                # 은 생성자 무관하게 묶을 수 있게 스코프를 풀되, shared_only 로 '공유물'만 건드린다(남의
+                # 사적 작업물은 불가). 일반 멤버는 기존대로 본인 공유물만.
+                read_all = (not AUTH_ENABLED) or rbac.has_global_cap(
+                    account_global_roles(request), "read_all"
+                )
+                account_uid = None if read_all else account_scope_uid(request)
+                n = repo.assign_to_project(
+                    body.generation_ids, body.project_id,
+                    account_uid=account_uid, shared_only=True,
+                    folder_path=body.folder_path,
+                    resume_work=body.resume_work,
+                    final_actor=final_move_actor(request),
+                )
+            else:
+                # 내 작업: AUTH on 이면 내 생성물만 귀속(남의 작업물 이동 차단). 단독/AUTH off 는 None → 제약 없음.
+                n = repo.assign_to_project(
+                    body.generation_ids, body.project_id,
+                    account_uid=account_scope_uid(request), folder_path=body.folder_path,
+                    resume_work=body.resume_work,
+                    final_actor=final_move_actor(request),
+                )
+        except repo.FinalMoveDenied as e:
+            raise HTTPException(status_code=403, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        # 팀 매니징: 귀속(프로젝트·폴더)이 바뀐 내 생성물을 텔레메트리 dirty 표시 → 다음 drain 에 반영.
+        if MANAGE_ENABLED and tab != "team":
+            try:
+                # 이동과 outbox 기록은 repo의 같은 트랜잭션에서 완료했다.
+                drain_isolated_telemetry()
+            except Exception:  # noqa: BLE001
+                pass
         return {"ok": True, "updated": n, "team_synced": team_synced}
 
 

@@ -195,6 +195,18 @@ def require_project_role(
     raise HTTPException(status_code=403, detail="프로젝트 권한이 없습니다")
 
 
+def final_move_actor(request: Request):
+    """최종본 귀속 이동 판정의 요청자(Jay 결정 3A) — AUTH off(단독·로컬 허브)면 None(판정 안 함, 공유 서버가 한다)."""
+    if not AUTH_ENABLED:
+        return None
+    from .repo.final_moves import FinalMoveActor
+
+    return FinalMoveActor(
+        uid=account_actor_uid(request),
+        admin=rbac.has_any_global_role(account_global_roles(request), rbac.ADMIN),
+    )
+
+
 def require_admin(request: Request) -> None:
     """관리자만(전역 역할에 admin 보유). AUTH off 면 통과(차단 비활성)."""
     if not AUTH_ENABLED:

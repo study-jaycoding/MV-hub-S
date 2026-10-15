@@ -81,6 +81,14 @@ it.each(failureCases)("API %i gives a safe translated message and no success sid
   expect(consoleError).not.toHaveBeenCalled();
 });
 
+it("final-item move refused by the server (Jay 3A) says reviewers of both projects are needed, not a generic denial", async () => {
+  const detail = "최종본은 두 프로젝트의 검수자(또는 관리자)만 옮길 수 있습니다 — 본편";
+  assignProject.mockRejectedValue(new HttpError(403, `403: ${detail}`, detail));
+  const h = setup();
+  await h.actions.boardAssign([{ id: "g1" }] as Generation[], "p");
+  expect(h.flash).toHaveBeenCalledExactlyOnceWith("Only reviewers of both projects (or an admin) can move a final item.");
+});
+
 it("non-HTTP failure uses a safe connection message", async () => {
   assignProject.mockRejectedValue(new TypeError("SYNTHETIC_INTERNAL_DETAIL"));
   const h = setup();

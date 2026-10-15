@@ -10,6 +10,7 @@ from ..config import DEFAULT_WORKER_ID
 from ..db import get_connection
 from ..task_activity import merge_task_activity_location
 from . import generation_sync, identity, tags
+from .final_moves import FinalMoveActor, FinalMoveDenied, FinalProjectChanged, check_final_moves
 from ._common import (
     BUNDLE_FORMAT,
     BUNDLE_VERSION,
@@ -132,22 +133,37 @@ def set_generation_hold(gen_id: str, held: bool) -> None:
             raise
 
 
+_ANY_PROJECT = object()  # 귀속 프로젝트를 확인하지 않는다(옛 호출)
+
+
+def _assert_project_unchanged(conn, gen_id: str, expect_project: Any) -> None:
+    """권한은 라우터가 그때의 귀속 프로젝트로 봤다 — 쓰기 트랜잭션 안에서 그 프로젝트 그대로인지 다시 본다. 그사이 옮겨졌으면
+    새 프로젝트 기준의 권한을 본 적이 없으니 쓰지 않는다(Jay 결정 3A·C10: 확인 → 그사이 이동 → 새 프로젝트에서 최종 확정 방지)."""
+    if expect_project is _ANY_PROJECT:
+        return
+    row = conn.execute("SELECT project_id FROM generation WHERE id=?", (gen_id,)).fetchone()
+    if row is not None and (row["project_id"] or None) != (expect_project or None):
+        raise FinalProjectChanged()
+
+
 def finalize_generation_with_share(
     gen_id: str,
     shared_by: str,
     final_by: Optional[str] = None,
     visibility: str = "team",
+    expect_project: Any = _ANY_PROJECT,
 ) -> bool:
     """공유를 보장하고 최종 지정까지 한 트랜잭션으로 반영한다.
 
     반환값은 잠금 안에서 확인한 기존 공유 여부다. ★transaction-root 전용(바깥
     트랜잭션 안 호출 금지): 공유 SELECT 전에 ``BEGIN IMMEDIATE``를 열어
-    unpublish의 검사·삭제 루트와 직렬화한다.
+    unpublish의 검사·삭제 루트와 직렬화한다. expect_project = 권한을 본 귀속 프로젝트(다르면 FinalProjectChanged).
     """
     sid = new_id()
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            _assert_project_unchanged(conn, gen_id, expect_project)
             was_shared = bool(
                 conn.execute(
                     "SELECT 1 FROM share WHERE generation_id=?", (gen_id,)
@@ -179,17 +195,21 @@ def finalize_generation_with_share(
             raise
 
 
-def transition_final_review(gen_id: str, target: str, shared_by: str) -> dict[str, bool]:
+def transition_final_review(
+    gen_id: str, target: str, shared_by: str, expect_project: Any = _ANY_PROJECT,
+) -> dict[str, bool]:
     """최종을 공유 해제/일반 공유/보류로 전환하고 잠금 안의 이전 상태를 반환한다.
 
     transaction-root 전용. 기존 unpublish/hold의 최종 보호를 완화하지 않는다.
     이미 최종이 아니면 낡은 메뉴 또는 경합이므로 같은 목적 상태여도 거절한다.
+    expect_project = 권한을 본 귀속 프로젝트(다르면 FinalProjectChanged).
     """
     if target not in ("unshared", "shared", "held"):
         raise ValueError("target must be unshared, shared or held")
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            _assert_project_unchanged(conn, gen_id, expect_project)
             state = conn.execute(
                 "SELECT g.status, g.deleted_at, g.is_final, g.is_held, "
                 "EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared "
@@ -228,7 +248,7 @@ def transition_final_review(gen_id: str, target: str, shared_by: str) -> dict[st
             raise
 
 
-def release_final(gen_id: str, *, restore_held: bool = False) -> Optional[bool]:
+def release_final(gen_id: str, *, restore_held: bool = False, expect_project: Any = _ANY_PROJECT) -> Optional[bool]:
     """최종을 해제한다(공유는 그대로). 반환: None = 바꾼 것이 없다 · True = 보류가 되살아났다 · False = 공유로 갔다.
 
     ``restore_held``(Jay 2026-10-14): 최종이 되던 순간에 보류였던 것(``held_before_final``)은 보류로 돌아온다. 이 길은
@@ -239,6 +259,7 @@ def release_final(gen_id: str, *, restore_held: bool = False) -> Optional[bool]:
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            _assert_project_unchanged(conn, gen_id, expect_project)
             state = conn.execute(
                 "SELECT g.is_final, g.held_before_final, "
                 "EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared "
@@ -602,12 +623,15 @@ def _merge_comments(
 
 
 def import_bundle_item(
-    item: dict[str, Any], worker_id: str, shared_by: Optional[str] = None
+    item: dict[str, Any], worker_id: str, shared_by: Optional[str] = None,
+    final_actor: Optional[FinalMoveActor] = None,
 ) -> str:
     """번들 항목 1건을 병합. 사실은 upsert(uuid 멱등), 오버레이는 union/append.
     shared_by(제공자 worker id)가 오면 '받은 공유' 표식으로 share 행을 1개 기록한다 —
     received 필터(shared_by <> 'me')가 가져온 작업물을 사이드바에 띄울 수 있게.
-    반환: 'inserted'|'updated'|'unchanged'|'skipped'|'blocked'(작성자 불일치로 미반영)."""
+    final_actor(공유 서버 수신 길만 — 로컬 반영 길은 넘기지 않는다): 이 번들이 최종본의 프로젝트를 바꾸려는데 양쪽 검수자가 아니면
+    항목 전체를 되돌리고 'blocked'(Jay 결정 3A — URL 로 채택한 기존 행도 같다).
+    반환: 'inserted'|'updated'|'unchanged'|'skipped'|'blocked'(작성자 불일치·최종본 이동 권한 없음으로 미반영)."""
     g = item.get("generation") or {}
     job_id = g.get("id")
     if not job_id:
@@ -686,8 +710,9 @@ def import_bundle_item(
                 is_owner = (not creator) or (creator == shared_by)
                 current = dict(conn.execute(
                     "SELECT project_id, folder_path, workspace_scope, workspace_id, workspace_name, "
-                    "task_activity_at FROM generation WHERE id=?", (gid,),
+                    "task_activity_at, is_final FROM generation WHERE id=?", (gid,),
                 ).fetchone())
+                is_final = bool(current.pop("is_final"))
                 incoming = dict(current)
                 if is_owner:
                     incoming.update(project_id=g.get("project_id"), folder_path=folder_path,
@@ -700,6 +725,11 @@ def import_bundle_item(
                         task_activity_at=None,
                     )
                 merged = merge_task_activity_location(dict(existing) if existing else None, incoming)
+                try:
+                    check_final_moves(conn, final_actor, [(is_final, current["project_id"], merged.get("project_id"))])
+                except FinalMoveDenied:
+                    conn.execute("ROLLBACK")  # 사실·오버레이까지 이 항목 전체를 되돌린다(다른 항목은 계속 받는다)
+                    return "blocked"
                 fields = ("project_id", "folder_path", "workspace_scope", "workspace_id",
                           "workspace_name", "task_activity_at")
                 conn.execute(
@@ -726,10 +756,12 @@ def import_bundle_item(
 
 
 def import_bundle_payload(
-    bundle: dict[str, Any], worker_id: str = DEFAULT_WORKER_ID
+    bundle: dict[str, Any], worker_id: str = DEFAULT_WORKER_ID,
+    final_actor: Optional[FinalMoveActor] = None,
 ) -> dict[str, Any]:
     """번들 1개(provider + generations)를 통째로 병합. 항목별 결과를 카운트로 집계.
-    provider.name 이 있으면 그 uid 의 creator 이름을 보강해 받은 작업물의 작성자가 표시되게."""
+    provider.name 이 있으면 그 uid 의 creator 이름을 보강해 받은 작업물의 작성자가 표시되게.
+    final_actor = 공유 서버가 받은 발행의 요청자(최종본 이동 판정 — import_bundle_item)."""
     # 작성자 이름 맵 적용 — 각 작업의 creator_uid(user_<id>) 가 'user_xxx' 아닌 사람 이름으로 뜨게.
     # overwrite=False: 이미 이름이 있는 작성자(특히 내 신원·내가 라벨링한 팀원)는 보존 → 받은 이름이
     # 내 로컬 명명을 침범하지 않는다(get_my_uid 가 아직 None 이어도 안전. provider 블록은 이메일 키라
@@ -759,7 +791,7 @@ def import_bundle_payload(
         if not isinstance(it, dict):
             counts["skipped"] += 1
             continue
-        result = import_bundle_item(it, worker_id, shared_by)
+        result = import_bundle_item(it, worker_id, shared_by, final_actor)
         counts[result] += 1
         if result == "blocked":
             anchor = (it.get("generation") or {}).get("id")
