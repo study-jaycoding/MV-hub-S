@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 // 70회차 격리 실측 — 캔버스에서 다른 씬을 열면 완료된 카드가 생성물 정보를 받기 전(약 78ms) '생성 중' 로고로 비쳤다. 한 번 본 씬도 캐시 복원이
 //  그린 뒤라 같았다. → 캐시 복원은 그리기 전에, 아직 답을 못 받은 카드는 로고 대신 빈 바탕(실제 SceneBoard + 실제 useSceneGenData).
+import { readFileSync } from "node:fs";
+import { URL as NodeURL } from "node:url";
 import { act } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
@@ -97,4 +99,12 @@ it("switching to a scene seen before: the leaving scene is not painted in the ga
   await act(async () => {});
   watch.disconnect();
   expect([board_().hasAttribute("data-switching"), content() !== null, logoSeen]).toEqual([false, true, false]);
+});
+
+// 73회차 — 틈에 떠난 씬의 카드가 새 카메라로 놓여 화면 밖 lazy 그림을 깨웠다(큰 씬 12~40장). 틈에는 캔버스 아래를 건너뛴다(scene.css).
+it("the gap skips the canvas subtree so the leaving scene's lazy images are not woken", () => {
+  const css = readFileSync(new NodeURL("../src/styles/scene.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rule = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .find(([, selector]) => selector.trim() === ".scene-board[data-switching] .scene-canvas");
+  expect(rule?.[2]).toMatch(/content-visibility:\s*hidden/);
 });

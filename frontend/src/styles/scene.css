@@ -104,6 +104,11 @@
    아래 전부의 스타일을 다시 계산했다(70회차 재실측: 처음 여는 씬 긴 작업 108 → 145ms). */
 .scene-board[data-switching] .scene-canvas,
 .scene-board[data-switching] .scene-minimap { opacity: 0; }
+/* 틈 동안 캔버스 아래의 그리기·배치를 건너뛴다 — 새 씬 카메라는 이미 들어와 있어(useSceneViewport 의 sceneId effect) 떠난 씬의 카드가
+   다른 자리에 놓이고, 화면 밖 lazy 그림(큰 씬에서 12~40장)이 깨어나 받아졌다. 73회차 격리 실측(n=10): 떠날 때 그 요청 12→0 · 새 씬 카드
+   첫 프레임 219→193ms · 누름→그림 80→64ms · 카드 rect·미니맵·썸네일 쥐기는 그대로. 틈에 캔버스 아래 크기를 읽으면 강제 배치가 된다
+   (지금 높이 측정 SceneBoard 의 useLayoutEffect 는 틈이 끝난 커밋에서 돈다). */
+.scene-board[data-switching] .scene-canvas { content-visibility: hidden; }
 .scene-board[data-switching]::after { content: ""; position: absolute; inset: 0; z-index: 9; }
 /* 캔버스 맨 아래 거의 투명한 바닥 한 장(Jay 66회차 ①) — 그룹·카드가 한 레이어로 합쳐지지 못하고 흩어진 섬(12% 에서 레이어 72)이 되던 것을
    바닥 위로 모은다(격리 실측: 레이어 72→17 · Layerize 964→174ms · 33ms 넘는 프레임 8→6). 크롬의 레이어 합치기에 기대는 방법이다 — 안 통하게
