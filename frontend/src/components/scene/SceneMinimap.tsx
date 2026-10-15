@@ -85,7 +85,11 @@ export function SceneMinimap({
     ro.observe(sc);
     watchRef.current = { el: sc, ro };
   });
-  useEffect(() => () => watchRef.current?.ro.disconnect(), []);
+  // 끊을 때 기억도 지운다 — StrictMode 는 정리 뒤 effect 를 다시 돌리는데, 남아 있으면 '이미 감시 중'으로 보고 다시 안 건다(Codex 재리뷰 P2)
+  useEffect(() => () => {
+    watchRef.current?.ro.disconnect();
+    watchRef.current = null;
+  }, []);
 
   // 표시여부(화면 밖 카드 존재)와 뷰포트 박스를 DOM 에 직접 반영 — 리렌더 없이 팬/줌에 반응.
   //  팬은 매 프레임 불리므로 바뀐 값만 쓰고, 박스 이동은 transform 으로 한다(위치·크기를 매번 쓰면 보드를 다시 칠했다).
