@@ -194,7 +194,10 @@ if (typeof document !== "undefined") {
     focusByTab = false;
   }, true);
   // 다른 단추를 누른 채 오른쪽을 더 누르면 pointerdown 이 없고 pointermove(button 2)만 온다(Pointer Events 의 겹친 단추) — 그것도 적는다(Codex 리뷰)
-  document.addEventListener("pointermove", (e) => { if (e.button === 2) lastPressCovered = backgroundKeysBlocked(); }, true);
+  //  누를 때만(buttons 에 오른쪽이 켜짐) — 왼쪽을 쥔 채 오른쪽을 뗄 때도 button 2 가 와서 적은 것을 덮었다(Codex 리뷰)
+  document.addEventListener("pointermove", (e) => {
+    if (e.button === 2 && (e.buttons & 2) !== 0) lastPressCovered = backgroundKeysBlocked();
+  }, true);
   const release = () => { coveredAtPress = false; }; // 그 누름의 것만 — 다음 누름으로 넘기지 않는다
   document.addEventListener("pointerup", release, true);
   document.addEventListener("pointercancel", release, true);

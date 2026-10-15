@@ -232,9 +232,10 @@ it("a chorded right press (another button still held) records the cover too — 
   const menu = {};
   openLayer(menu, nextLayerSeq()); // 그 사이 키보드로 메뉴를 열었다
   await act(async () => { card.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, button: 2, buttons: 3 })); }); // 오른쪽을 더 누름
-  const opened = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 });
+  closeLayer(menu); // 그 누름이 메뉴를 닫았다
+  await act(async () => { card.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, button: 2, buttons: 1 })); }); // 왼쪽을 쥔 채 오른쪽을 뗌
+  const opened = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }); // 윈도는 뗀 뒤에 온다
   await act(async () => { card.dispatchEvent(opened); });
-  closeLayer(menu);
   await act(async () => { card.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, button: 0 })); });
   expect(onOpenFolder).not.toHaveBeenCalled();
   await rightClick(card); // 다음 우클릭은 연다
