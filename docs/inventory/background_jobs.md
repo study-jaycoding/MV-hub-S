@@ -55,6 +55,7 @@
 | `backend/app/routers/comfy.py` | `_start_run` | Thread | `_run_comfy_job_worker` |
 | `backend/app/routers/comfy.py` | `collect_unresolved_run` | Thread | `_collect_run_worker` |
 | `backend/app/routers/gen_requests.py` | `_release_claim_on_abort` | create_task | `release_claim(acc["email"], realtime_scope(acc), rid, agent_id)` |
+| `backend/app/routers/mcp_v2.py` | `_execute` | ensure_future | `asyncio.to_thread(store.claim_plan, ctx.client, plan_id, plan["workspa…` |
 | `backend/app/services/asset_registry.py` | `AssetRegistryController.request_scan` | create_task | `self._run(project_ids, mode)` |
 | `backend/app/services/asset_registry.py` | `AssetRegistryController.start` | create_task | `self._loop() (name=asset-registry-loop)` |
 | `backend/app/services/asset_registry_helper.py` | `HelperController._project_run` | create_task | `self._renew_loop(lease_id)` |

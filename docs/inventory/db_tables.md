@@ -53,7 +53,7 @@
 | `history` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/generation_delete.py` `repo/lineage.py` `repo/share.py` | `repo/gen_requests.py` `repo/generation_rows.py` `repo/generations_query.py` `repo/history.py` `repo/lineage.py` `repo/share.py` `repo/trash.py` |
 | `history_import_audit` | content DB | `backend/schema.sql` | `repo/history_import_audit.py` | `repo/history_import_audit.py` |
 | `manage_schema_state` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` `repo/workspace_console.py` | `repo/console_guard.py` `repo/manage_schema.py` `repo/workspace_console.py` |
-| `mcp_canvas_task` | content DB | `backend/schema.sql` | `repo/mcp_v2.py` | `repo/mcp_v2.py` |
+| `mcp_canvas_task` | content DB | `backend/schema.sql` | `repo/mcp_v2.py` `repo/scenes_backup.py` | `repo/mcp_v2.py` |
 | `mcp_client` | content DB | `backend/schema.sql` | `repo/mcp_v2.py` | `repo/mcp_v2.py` |
 | `mcp_generation_plan` | content DB | `backend/schema.sql` | `repo/mcp_v2.py` | `repo/mcp_v2.py` |
 | `mcp_reference` | content DB | `backend/schema.sql` | `repo/mcp_v2.py` | `repo/mcp_v2.py` |
@@ -70,7 +70,7 @@
 | `reference` | content DB | `backend/schema.sql` | `repo/asset_registry.py` `repo/gen_requests.py` `repo/generation_references.py` `repo/generation_sync.py` `repo/generations.py` | `repo/asset_registry.py` `repo/gen_requests.py` `repo/generation_rows.py` `repo/generations.py` `repo/history.py` `repo/share.py` `repo/trash.py` `routers/assets.py` |
 | `release_update_notice` | content DB | `backend/schema.sql` | `repo/release_update_notices.py` | `repo/release_update_notices.py` |
 | `release_update_notice_seen` | content DB | `backend/schema.sql` | `repo/release_update_notices.py` | `repo/release_update_notices.py` |
-| `scene_backup` | content DB | `backend/schema.sql` | `repo/scenes_backup.py` | `repo/scenes_backup.py` |
+| `scene_backup` | content DB | `backend/schema.sql` | `repo/scenes_backup.py` | `repo/mcp_v2.py` `repo/scenes_backup.py` |
 | `scene_card_generation` | content DB | `backend/schema.sql` | `repo/gen_requests.py` `repo/identity.py` `repo/scene_cards.py` | `repo/gen_requests.py` `repo/identity.py` `repo/scene_cards.py` |
 | `share` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `db_migrations.py` `repo/generation_delete.py` `repo/share.py` `repo/share_state_intents.py` | `backend/cleanup_orphan_creators.py` `db_migrations.py` `repo/_visibility.py` `repo/assets.py` `repo/facets.py` `repo/folder_cover.py` `repo/generation_rows.py` `repo/generations_query.py` `repo/identity.py` `repo/lineage.py` `repo/manage.py` `repo/manage_analytics.py` `repo/manage_task_activity.py` `repo/manage_tasks.py` `repo/manage_telemetry.py` `repo/media_preservation.py` `repo/projects.py` `repo/share.py` `repo/sources.py` `repo/trash.py` `repo/workspace_assignments.py` |
 | `share_state_intent` | content DB | `backend/schema.sql` `db_migrations.py` | `repo/share_state_intents.py` | `repo/share_state_intents.py` |
