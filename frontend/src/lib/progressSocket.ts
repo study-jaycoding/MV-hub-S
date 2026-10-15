@@ -1,5 +1,5 @@
 import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
-import { setAuthToken } from "./http";
+import { dropAuthIfCurrent, getApiPause, getAuthToken } from "./http";
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15000;
@@ -39,7 +39,9 @@ export function connectProgress(
   let needsCatchUp = false;
   let openedAt: number | null = null;
 
+  let connectedToken: string | null = null;
   const connect = () => {
+    connectedToken = getAuthToken();
     ws = new WebSocket(`${proto}://${location.host}/ws`);
     ws.onopen = () => {
       openedAt = performance.now(); // 단조 시계 — 시스템 시각 점프가 1013 수 ms 거부를 "안정 연결"로 오판하지 않게
@@ -89,15 +91,20 @@ export function connectProgress(
           );
           return;
         }
+        // 다른 탭 로그아웃으로 멈춘 탭 — 인증은 띠가 정한다(Jay 결정 4B). 다시 붙지도 않는다.
+        if (getApiPause()) return;
         // 세션 만료/무효는 재시도해도 거부된다. 조용히 멈추지 않고 기존 HTTP 401과 같은
-        // 인증 이벤트를 보내 로그인 화면과 사용자 안내가 즉시 나타나게 한다.
-        setAuthToken(null);
-        dispatchAppEvent(
-          APP_EVENTS.flash,
-          "로그인 인증이 만료되어 실시간 연결이 중지되었습니다. 다시 로그인해 주세요.",
-        );
-        dispatchAppEvent(APP_EVENTS.authRequired);
-        return;
+        // 인증 이벤트를 보내 로그인 화면과 사용자 안내가 즉시 나타나게 한다. 단 연결할 때의 토큰이 지금 토큰일 때만 —
+        // 그사이 다른 로그인으로 바뀌었으면 옛 자격의 거부다: 새 로그인을 지우지 않고 그 자격으로 다시 붙는다(Codex 4B 2차).
+        if (connectedToken === getAuthToken()) {
+          dropAuthIfCurrent(connectedToken);
+          dispatchAppEvent(
+            APP_EVENTS.flash,
+            "로그인 인증이 만료되어 실시간 연결이 중지되었습니다. 다시 로그인해 주세요.",
+          );
+          dispatchAppEvent(APP_EVENTS.authRequired);
+          return;
+        }
       }
       needsCatchUp = true;
       // 안정적으로 붙어 있다가 끊긴 연결만 백오프를 처음으로 되돌린다. accept 직후 닫히는

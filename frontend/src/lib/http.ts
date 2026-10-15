@@ -72,6 +72,15 @@ export function assertApiOpen(url: string): void {
 // 응답마다 그 요청에 실어 보낸 토큰 — 늦게 온 401 이 그사이 새로 로그인한 토큰을 지우지 않게(4B·D10). 관문이 적는다.
 const sentTokens = new WeakMap<Response, string | null>();
 
+/** 인증 거부를 받은 요청(연결)에 실어 보낸 토큰이 지금 토큰일 때만 로그인을 지운다 — 공유 저장소도 그 값일 때만(다른 탭이 저장한
+ *  새 로그인을 옛 요청의 거부가 지우지 않게, 4B·D10). 지웠으면 true(부르는 쪽이 로그인 요구를 알린다). */
+export function dropAuthIfCurrent(sent: string | null): boolean {
+  if (sent !== authToken) return false;
+  authToken = null;
+  if ((loadString(TOKEN_KEY) || null) === sent) removeStorage(TOKEN_KEY);
+  return true;
+}
+
 /** 앱의 모든 fetch 앞 관문(main.tsx 가 한 번 건다) — 직접 fetch 하는 업로드·Comfy·재시도까지 같은 자리를 지난다. */
 export function installApiGate(target: { fetch: typeof fetch } = globalThis): void {
   const send = target.fetch.bind(target);
@@ -164,15 +173,9 @@ export function shouldInvalidateAuth(res: Response, url: string): boolean {
 }
 
 export async function throwHttpError(res: Response, url: string, fallback?: string): Promise<never> {
-  if (shouldInvalidateAuth(res, url)) {
-    // 그 요청에 실어 보낸 토큰이 지금 토큰일 때만 로그인을 지운다 — 공유 저장소도 그 값일 때만(다른 탭이 저장한 새 로그인을 옛 요청의
-    //  401 이 지우지 않게, 4B·D10). 관문 밖에서 받은 응답(시험)은 지금 토큰으로 보낸 것으로 본다.
-    const sent = sentTokens.has(res) ? sentTokens.get(res)! : authToken;
-    if (sent === authToken) {
-      authToken = null;
-      if ((loadString(TOKEN_KEY) || null) === sent) removeStorage(TOKEN_KEY);
-      dispatchAppEvent(APP_EVENTS.authRequired);
-    }
+  // 관문 밖에서 받은 응답(시험)은 지금 토큰으로 보낸 것으로 본다.
+  if (shouldInvalidateAuth(res, url) && dropAuthIfCurrent(sentTokens.has(res) ? sentTokens.get(res)! : authToken)) {
+    dispatchAppEvent(APP_EVENTS.authRequired);
   }
   const detail = await responseErrorDetail(res, fallback);
   throw new HttpError(res.status, `${res.status}: ${detail}`, detail);

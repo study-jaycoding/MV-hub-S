@@ -281,4 +281,47 @@ describe("분리 창(installPopupLogoutWatch)", () => {
     otherTab("mvhub.hubLogoutAt", String(Date.now()));
     expect([reloadPage.mock.calls.length, http.getApiPause()]).toEqual([1, null]);
   });
+
+  // ── Codex 4B 2차(09:28) ──
+  it("관리 창 권한 — 멈춘 중의 30초 재조회·로그인 요구는 권한을 바꾸지 않는다(작업표가 다시 그려져 초안을 잃지 않게)", async () => {
+    localStorage.setItem("ch.auth.token", "A");
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (url === "/api/auth/config") return Promise.resolve(response({ auth_enabled: true, has_accounts: true }));
+      if (url === "/api/auth/me") return Promise.resolve(response({ ...ACCOUNT, creator_uid: "u1", global_roles: ["admin"] }));
+      return Promise.resolve(response([], 200));
+    }));
+    const http = await import("../src/lib/http");
+    http.installApiGate();
+    const { useManageCaps } = await import("../src/lib/useManageCaps");
+    const { APP_EVENTS, dispatchAppEvent } = await import("../src/lib/appEvents");
+    let caps: ReturnType<typeof useManageCaps> | null = null;
+    function Host({ signal }: { signal: number }) {
+      caps = useManageCaps(signal);
+      return null;
+    }
+    await act(async () => root!.render(<Host signal={0} />));
+    await act(async () => {});
+    const before = caps!;
+    expect(before.loaded).toBe(true);
+    http.setApiPause("shared");
+    await act(async () => root!.render(<Host signal={1} />)); // 30초 갱신 — 요청은 막혀 실패한다
+    await act(async () => {});
+    await act(async () => dispatchAppEvent(APP_EVENTS.authRequired));
+    await act(async () => otherTab("ch.auth.token", null));
+    expect(caps).toBe(before);
+  });
+
+  it("Assets 끌어 내보내기 — 멈춘 중엔 브라우저가 직접 받는 주소를 싣지 않는다", async () => {
+    const http = await import("../src/lib/http");
+    const { setSingleFileDrag, setZipDrag } = await import("../src/components/assets/exportDrag");
+    const data = new Map<string, string>();
+    const dt = { setData: (key: string, value: string) => data.set(key, value), effectAllowed: "" } as unknown as DataTransfer;
+    http.setApiPause("shared");
+    setZipDrag(dt, "p1", ["a.png", "b.png"]);
+    setSingleFileDrag(dt, "p1", "c.mp4", "c.mp4");
+    expect(data.size).toBe(0);
+    http.setApiPause(null);
+    setZipDrag(dt, "p1", ["a.png", "b.png"]);
+    expect(data.has("DownloadURL")).toBe(true);
+  });
 });

@@ -3,12 +3,22 @@
 // 단일 = 원본 파일 그대로, 다중 = 백엔드가 묶어주는 zip 한 건.
 import { assetFileUrl, assetZipUrl } from "../../lib/assetUrls";
 import { mimeOf } from "../../lib/media";
+import { API_PAUSED_MESSAGE, getApiPause } from "../../lib/http";
+import { flashMsg } from "../../lib/flash";
 
 // 단일 파일(영상·오디오) — OS/탐색기로 내보내기 + URL 을 받는 웹앱용.
 //  ※ 이미지 단건은 이 함수를 쓰지 않는다. 크롬 '네이티브 이미지 드래그'(img 가 소스일 때 크롬이
 //    로컬 이미지를 직접 실어줌)에 맡겨야 외부 웹앱(클로드 대화창)이 파일로 받는다. 우리가 여기서
 //    DownloadURL/html 로 dataTransfer 를 덮어쓰면 그 네이티브 이미지가 깨진다.
+// 다른 탭 로그아웃 뒤 멈춘 창 — 끌어 내보내기 주소는 브라우저가 직접 받아 fetch 관문을 지나지 않는다. 주소를 싣지 않는다(Jay 결정 4B, Codex 2차).
+function pausedExport(): boolean {
+  if (!getApiPause()) return false;
+  flashMsg(API_PAUSED_MESSAGE);
+  return true;
+}
+
 export function setSingleFileDrag(dt: DataTransfer, project: string, path: string, name: string) {
+  if (pausedExport()) return;
   const absUrl = location.origin + assetFileUrl(project, path);
   const mime = mimeOf(name);
   dt.effectAllowed = "copy";
@@ -21,6 +31,7 @@ export function setSingleFileDrag(dt: DataTransfer, project: string, path: strin
 
 // 여러 파일 — 백엔드 zip 스트리밍 URL. 드롭 시 assets-N.zip 으로 저장.
 export function setZipDrag(dt: DataTransfer, project: string, paths: string[]) {
+  if (pausedExport()) return;
   const url = location.origin + assetZipUrl(project, paths);
   dt.effectAllowed = "copy";
   dt.setData("DownloadURL", `application/zip:assets-${paths.length}.zip:${url}`);

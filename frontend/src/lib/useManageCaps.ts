@@ -39,6 +39,7 @@ export function useManageCaps(reloadSignal = 0): ManageCaps {
   const sequence = useRef(0);
   useEffect(() => {
     const invalidate = () => {
+      if (getApiPause()) return; // 멈춘 중(Jay 결정 4B) — 권한·화면을 그대로 둔다(작업표가 다시 그려져 초안을 잃지 않게, Codex 4B 2차)
       sequence.current += 1;
       setCaps(NONE);
       setAccountRevision((revision) => revision + 1);
@@ -53,6 +54,7 @@ export function useManageCaps(reloadSignal = 0): ManageCaps {
       invalidate();
     };
     const onAuthRequired = () => {
+      if (getApiPause()) return;
       sequence.current += 1;
       setCaps(NONE);
       // 실패한 권한 조회가 다시 401을 내면서 즉시 재시도 루프를 만들지 않는다.
@@ -75,7 +77,7 @@ export function useManageCaps(reloadSignal = 0): ManageCaps {
     const current = () => alive && request === sequence.current && token === getAuthToken() &&
       account === loadString(STORAGE_KEYS.activeAccount);
     const accept = (next: ManageCaps) => {
-      if (!current()) return;
+      if (!current() || getApiPause()) return; // 멈춘 중의 재조회(막힌 요청의 실패 포함)는 권한을 바꾸지 않는다
       const contextKey = JSON.stringify([accountRevision, next.viewerUid, next.authOff,
         next.system, next.readAll, next.createProject, next.grantRole]);
       setCaps((previous) => previous.contextKey === contextKey && previous.loaded

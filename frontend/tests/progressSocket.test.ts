@@ -1,10 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { APP_EVENTS } from "../src/lib/appEvents";
-import { setAuthToken } from "../src/lib/http";
+import { dropAuthIfCurrent } from "../src/lib/http";
 import { connectProgress, progressReconnectDelayMs } from "../src/lib/progressSocket";
 
-// 1008 분기에서 토큰을 지우는지/지키는지를 관찰하기 위해 http 모듈만 목으로 대체한다.
-vi.mock("../src/lib/http", () => ({ setAuthToken: vi.fn() }));
+// 1008 분기에서 토큰을 지우는지/지키는지를 관찰하기 위해 http 모듈만 목으로 대체한다. 토큰·멈춤은 시험이 바꾼다.
+const auth = vi.hoisted(() => ({ token: "t" as string | null, paused: null as string | null }));
+vi.mock("../src/lib/http", () => ({
+  dropAuthIfCurrent: vi.fn(() => true),
+  getAuthToken: () => auth.token,
+  getApiPause: () => auth.paused,
+}));
 
 class FakeWebSocket {
   static OPEN = 1;
@@ -23,6 +28,8 @@ class FakeWebSocket {
 }
 
 afterEach(() => {
+  auth.token = "t";
+  auth.paused = null;
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
@@ -92,7 +99,7 @@ describe("connectProgress", () => {
     expect(FakeWebSocket.instances).toHaveLength(1);
     expect(authRequired).toHaveBeenCalledTimes(1);
     expect(flash).toHaveBeenCalledTimes(1);
-    expect(setAuthToken).toHaveBeenCalledWith(null);
+    expect(dropAuthIfCurrent).toHaveBeenCalledWith("t");
 
     off();
     window.removeEventListener(APP_EVENTS.authRequired, authRequired);
@@ -121,7 +128,7 @@ describe("connectProgress", () => {
     vi.advanceTimersByTime(60_000);
     expect(FakeWebSocket.instances).toHaveLength(1);
     expect(authRequired).toHaveBeenCalledTimes(1);
-    expect(setAuthToken).toHaveBeenCalledWith(null);
+    expect(dropAuthIfCurrent).toHaveBeenCalledWith("t");
 
     off();
     window.removeEventListener(APP_EVENTS.authRequired, authRequired);
@@ -151,7 +158,7 @@ describe("connectProgress", () => {
     vi.advanceTimersByTime(60_000);
     expect(FakeWebSocket.instances).toHaveLength(1); // 재연결도 멈춘다(재시도해도 같은 거부)
     expect(authRequired).not.toHaveBeenCalled();
-    expect(setAuthToken).not.toHaveBeenCalled();
+    expect(dropAuthIfCurrent).not.toHaveBeenCalled();
     expect(flash).toHaveBeenCalledTimes(1);
     expect((flash.mock.calls[0][0] as CustomEvent<string>).detail).toContain("로컬에서만");
 
@@ -241,6 +248,34 @@ describe("connectProgress", () => {
       selectionId: "selection",
     });
     expect(onMessage).toHaveBeenCalledWith(message);
+    off();
+  });
+
+  // Jay 결정 4B(Codex 2차): 연결 뒤 다른 탭에서 새로 로그인했다면 옛 자격의 거부다 — 새 로그인을 지우지 않고 새 자격으로 다시 붙는다.
+  it("1008 — 연결할 때의 토큰이 지금 토큰이 아니면 로그인을 지우지 않고 다시 붙는다", () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    vi.stubGlobal("location", { protocol: "http:", host: "192.168.1.199:8010" });
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const off = connectProgress(() => {});
+    auth.token = "B"; // 그사이 다른 탭의 새 로그인
+    FakeWebSocket.instances[0].onclose?.({ code: 1008, reason: "authentication required" });
+    vi.advanceTimersByTime(2000);
+    expect(dropAuthIfCurrent).not.toHaveBeenCalled();
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    off();
+  });
+
+  it("1008 — 다른 탭 로그아웃으로 멈춘 탭은 로그인을 지우지도 다시 붙지도 않는다", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("location", { protocol: "http:", host: "192.168.1.199:8010" });
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const off = connectProgress(() => {});
+    auth.paused = "shared";
+    FakeWebSocket.instances[0].onclose?.({ code: 1008, reason: "authentication required" });
+    vi.advanceTimersByTime(60_000);
+    expect(dropAuthIfCurrent).not.toHaveBeenCalled();
+    expect(FakeWebSocket.instances).toHaveLength(1);
     off();
   });
 });
