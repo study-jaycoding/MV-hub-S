@@ -470,9 +470,18 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
         #  서버가 양쪽 검수자를 보고 403 으로 거절할 수 있고, 로컬의 최종 표식은 늦거나 틀릴 수 있다. 403 이면 로컬도 바꾸지 않는다.
         #  서버 미연결·그 밖의 실패는 지금처럼 로컬만 반영한다(team_synced=False — 추후 재동기).
         team_synced: Optional[bool] = None
+        server_moved = False
         if tab != "team" and _proxy.proxying():
             anchors = repo.shared_generation_anchors(body.generation_ids)
             if anchors:
+                # 로컬에서 막힐 선택(없는 프로젝트·다른 워크스페이스)이면 서버에 보내기 전에 거절한다 — 서버만 옮겨진 채 남지 않게(Codex 3A 리뷰 P1)
+                try:
+                    repo.assign_to_project(
+                        body.generation_ids, body.project_id,
+                        account_uid=account_scope_uid(request), folder_path=body.folder_path, check_only=True,
+                    )
+                except ValueError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
                 try:
                     resp = _proxy.proxy_json(
                         "POST", "/api/projects/assign", params={"tab": "team"},
@@ -485,6 +494,7 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
                     )
                     # 서버가 실제로 매칭·반영했는지(updated>0)까지 확인해야 진짜 동기 성공.
                     team_synced = ((resp or {}).get("updated") or 0) > 0
+                    server_moved = team_synced
                 except HTTPException as exc:
                     if exc.status_code == 403:
                         raise
@@ -518,6 +528,12 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
         except repo.FinalMoveDenied as e:
             raise HTTPException(status_code=403, detail=str(e))
         except ValueError as e:
+            if server_moved:
+                # 위의 검증 뒤 그사이 바뀌었다(드묾) — 서버만 옮겨졌다는 것을 숨기지 않는다
+                raise HTTPException(
+                    status_code=409,
+                    detail="팀 서버에는 옮겼지만 이 PC 에는 반영하지 못했습니다 — 목록을 새로고침한 뒤 다시 옮겨 주세요",
+                )
             raise HTTPException(status_code=400, detail=str(e))
         # 팀 매니징: 귀속(프로젝트·폴더)이 바뀐 내 생성물을 텔레메트리 dirty 표시 → 다음 drain 에 반영.
         if MANAGE_ENABLED and tab != "team":

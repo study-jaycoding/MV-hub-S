@@ -13,6 +13,7 @@ broadcast → 그 서버를 띄운 팀원에게 실시간 반영. 미디어는 �
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import logging
 import os
@@ -301,8 +302,12 @@ def receive_published_bundle(body: PublishBundleIn, request: Request):
                 "email": acc.get("email"),
             },
         }
-    # 서버 수신 길 — 최종본의 프로젝트를 바꾸려는 항목은 발행자가 양쪽 검수자일 때만(아니면 그 항목 blocked, Jay 결정 3A)
-    counts = repo.import_bundle_payload(bundle, DEFAULT_WORKER_ID, final_move_actor(request))
+    # 서버 수신 길 — 최종본의 프로젝트를 바꾸려는 항목은 발행자가 양쪽 검수자일 때만(아니면 그 항목 blocked, Jay 결정 3A).
+    #  판정 신원은 위에서 갱신한 계정의 것 — 이 요청에서 acct:→user_ 로 연결됐으면 프로젝트 역할도 새 신원으로 옮겨졌다(Codex 3A 리뷰 P2)
+    actor = final_move_actor(request)
+    if actor is not None and acc and acc.get("creator_uid"):
+        actor = dataclasses.replace(actor, uid=acc["creator_uid"])
+    counts = repo.import_bundle_payload(bundle, DEFAULT_WORKER_ID, actor)
     # 공유 서버의 정식 발행 입구는 개별 publish 라우트가 아니라 이 번들 수신이다.
     # 따라서 운영자가 나중에 "누가 어떤 생성물을 공유했나"를 복원할 수 있도록 여기서
     # 요청 단위 감사 이력을 남긴다. 500개 전체를 빠뜨리지 않되 DB 쓰기는 50개 묶음으로 제한한다.

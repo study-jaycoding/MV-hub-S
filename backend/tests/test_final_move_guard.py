@@ -175,3 +175,56 @@ def test_finalize_route_answers_409_when_project_moved_after_permission_check(en
         share.finalize("g1", SimpleNamespace(state=SimpleNamespace(account=None)), Mock())
     assert changed.value.status_code == 409
     assert not original("g1")["is_final"]
+
+def test_local_hub_rejects_mixed_selection_locally_before_moving_on_server(env, monkeypatch):
+    # 옮길 수 있는 공유 카드 + 이 프로젝트 공간에 담을 수 없는 카드를 함께 고르면 서버에 보내기 전에 400 — 서버만 옮겨진 채 남지 않게(Codex 3A 리뷰 P1)
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from app.models import AssignProjectIn
+    from app.routers import projects
+
+    _main, _side, gen = env
+    team = repo.create_project("팀 본편", workspace={"scope": "team", "id": "ws1", "name": "팀"})["id"]
+    gen("g1", None, final=False)
+    gen("g2", None, final=False)
+    with db.get_connection() as conn:
+        conn.execute("UPDATE generation SET workspace_scope='team', workspace_id='ws2', workspace_name='다른 팀' WHERE id='g2'")
+    calls = []
+
+    def proxy(method, endpoint, **kwargs):
+        calls.append((method, endpoint))
+        return {"projects": []} if method == "GET" else {"updated": 1}
+
+    monkeypatch.setattr(projects, "MANAGE_ENABLED", False)
+    monkeypatch.setattr(projects._proxy, "proxying", lambda: True)
+    monkeypatch.setattr(projects._proxy, "proxy_json", proxy)
+    monkeypatch.setattr(projects.repo, "shared_generation_anchors", lambda ids: ["g1"])
+    with pytest.raises(HTTPException) as refused:
+        projects.assign_project(AssignProjectIn(generation_ids=["g1", "g2"], project_id=team), SimpleNamespace(state=SimpleNamespace(account=None)))
+    assert refused.value.status_code == 400
+    assert ("POST", "/api/projects/assign") not in calls
+    assert (project_of("g1"), project_of("g2")) == (None, None)
+
+
+def test_bundle_receive_judges_with_identity_linked_in_the_same_request(env, monkeypatch):
+    # 이 요청에서 acct:→user_ 로 신원이 연결되면 프로젝트 역할도 새 신원으로 옮겨진다 — 판정도 새 신원으로(Codex 3A 리뷰 P2)
+    from types import SimpleNamespace
+
+    from app import deps
+    from app.routers import publish
+    from app.routers.publish import PublishBundleIn
+
+    main, _side, gen = env
+    gen("g1", main, creator="user_new")
+    repo.set_project_roles(main, "user_new", ["supervisor"])  # 연결 뒤의 역할(옛 acct: 신원에는 없다)
+    monkeypatch.setattr(deps, "AUTH_ENABLED", True)
+    monkeypatch.setattr(publish.repo, "uid_owner_email", lambda uid: None)
+    monkeypatch.setattr(publish.repo, "set_account_hf_creator", lambda email, uid: True)
+    monkeypatch.setattr(publish.repo, "get_account", lambda email: {"email": email, "creator_uid": "user_new", "name": "나", "global_role": ""})
+    request = SimpleNamespace(state=SimpleNamespace(account={"email": "a@test", "creator_uid": "acct:a@test", "name": "나", "global_role": ""}))
+    bundle = {"generations": [{"generation": {"id": "g1", "creator_uid": "user_new", "status": "done", "project_id": None}}]}
+    out = publish.receive_published_bundle(PublishBundleIn(bundle=bundle), request)
+    assert out["blocked"] == 0
+    assert project_of("g1") is None

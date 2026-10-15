@@ -521,9 +521,11 @@ def assign_to_project(
     folder_path: Optional[str] = None,
     resume_work: bool = False,
     final_actor: Optional[FinalMoveActor] = None,
+    check_only: bool = False,
 ) -> int:
     """결과물들을 프로젝트에 귀속(또는 project_id=None 으로 미분류 해제). 변경 행수 반환.
     final_actor(공유 서버의 요청자) — 최종본의 프로젝트가 바뀌면 양쪽 검수자만(하나라도 걸리면 아무것도 안 바꾸고 FinalMoveDenied, Jay 결정 3A).
+    check_only — 같은 검증만 하고 바꾸지 않는다(로컬 허브가 서버에 먼저 보내기 전에 '로컬에서는 막힐 선택'을 가려낸다, Codex 3A 리뷰).
     project_id 가 실재하는지 검증(없으면 ValueError).
     account_uid 지정(AUTH on)이면 내 생성물만 이동 — 공유 DB 에서 추측한 남의 id 로 남의 작업물을
     다른 프로젝트로 옮기거나 미분류화하는 사고를 막는다. None(단독)이면 제약 없음(기존 동작).
@@ -586,6 +588,9 @@ def assign_to_project(
             params,
         ).fetchall()
         check_final_moves(conn, final_actor, ((bool(r["is_final"]), r["project_id"], project_id) for r in rows))
+        if check_only:
+            conn.execute("ROLLBACK")  # 검증만 — 아무것도 쓰지 않았다
+            return 0
         dirty_ids: list[str] = []
         stamp = task_activity_now()
         fields = ("project_id", "folder_path", "workspace_scope", "workspace_id", "workspace_name")
