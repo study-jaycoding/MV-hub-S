@@ -47,6 +47,7 @@ interface Props {
   onRegenerate: (generation: Generation) => void;
   onTag?: (generation: Generation) => void; // T → 태그 편집(있을 때만 버튼 표시)
   onOpenComments?: (generation: Generation) => void; // C → 코멘트 스레드(있을 때만 버튼 표시)
+  folderChip?: string; // 아래 변 가운데의 폴더 이름표 글자 — 표시만(캔버스 생성 카드, Jay 14A). 비면 안 단다
 }
 
 export const HistoryBoardNode = memo(function HistoryBoardNode({
@@ -80,6 +81,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
   onRegenerate,
   onTag,
   onOpenComments,
+  folderChip,
 }: Props) {
   const t = useT();
   // 대체 S/★ 버튼이 없는 읽기 전용 배지는 호버 중에도 남기고, T/C 버튼 자리를 비킨다.
@@ -103,6 +105,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
         (generation.is_final ? " final" : "") +
         (sfReadonly ? " sf-readonly" : "") +
         (generation.color || generation.is_final ? " has-cbar" : "") +
+        (folderChip ? " has-folder" : "") +
         (disabled ? " disabled" : "") +
         (!generation.shared && !generation.is_mine ? " unshared" : "") +
         (offLine ? " offline" : "") +
@@ -171,6 +174,15 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
           className={"linb-colorbar" + (generation.is_final ? " final" : "")}
           style={generation.is_final ? undefined : { background: generation.color || undefined }}
         />
+      )}
+      {folderChip && (
+        // 라이브러리 카드 아래 변의 이름표와 같은 부품(generations.css .card-bottom·.card-folder.static) — 누를 수 없고
+        //  클릭·더블클릭·끌기는 노드(카드)로 통과한다. 놓는 자리·단추 비킴은 scene.css
+        <div className="card-bottom">
+          <span className="card-folder static">
+            <span>{folderChip}</span>
+          </span>
+        </div>
       )}
 
       <div className="linb-ov" onMouseDown={(e) => e.stopPropagation()}>

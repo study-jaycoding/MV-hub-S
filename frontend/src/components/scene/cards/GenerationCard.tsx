@@ -8,6 +8,7 @@ import { cardBatch, variantIds } from "../../../lib/scenes";
 import type { Generation, InfoTarget, PreviewTarget } from "../../../types";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../../lib/workspaceCommand";
 import { generationStatusLabelFor, generationStatusTitle } from "../../../lib/generationDisplay";
+import { folderChipLabel } from "../../../lib/folderLabel";
 import { useT } from "../../../lib/i18n";
 import { HistoryBoardNode } from "../../history/HistoryBoardNode";
 import { StepIcon } from "../../common/ViewIcons";
@@ -158,6 +159,8 @@ export const GenerationCard = memo(function GenerationCard({
           onRegenerate={hist.onRegenerate || NOOP}
           onTag={hist.onTag}
           onOpenComments={hist.onOpenComments}
+          // 폴더 이름표(Jay 14A, 2026-10-15) — 라이브러리 카드와 같은 글자. 지운 생성물에는 안 단다(휴지통에 안 다는 것과 같이)
+          folderChip={genMissing || g.deleted ? undefined : folderChipLabel(g.folder_path)}
         />
       ) : (
         <div className="scene-card-inner">
