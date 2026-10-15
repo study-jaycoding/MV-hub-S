@@ -782,6 +782,42 @@ describe("sceneBackup — 판(1A)", () => {
     expect([...backup.getSceneBackupSkippedIds()]).toEqual([]);
   });
 
+  it("7A 리뷰 P1 — 앞 묶음이 사본 초과(too_big)를 받고 뒤 묶음이 실패해도 탭에 보인다", async () => {
+    const { scenes, backup, settle } = await boot();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("x")), ...Array.from({ length: 200 }, (_, i) => JSON.parse(sceneJson(`s${i}`)))]);
+    await settle();
+    getMeta = () => Promise.resolve({ items: [] });
+    let sent = 0;
+    putReply = (body) => (++sent === 1
+      ? { ok: true, results: body.upserts.map((u) => (u.id === "x"
+        ? { id: u.id, status: "too_big", target_id: "bk_t", hash: null }
+        : { id: u.id, status: "saved", target_id: u.id, hash: fakeHex(u.data) })) }
+      : Promise.reject(new Error("offline")));
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(sent).toBe(2); // 200개씩 두 묶음 — 둘째가 실패했다
+    expect([...backup.getSceneBackupSkippedIds()]).toEqual(["x"]);
+  });
+
+  it("7A 리뷰 — 사본 초과였던 씬이 서버 내용과 같아지면 풀린다(같아서 올리지 않는 길)", async () => {
+    const { scenes, backup, settle } = await boot();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("x", "서버 판"))]);
+    await settle();
+    const serverText = scenes.listPersistedSceneTexts(null)[0].text;
+    scenes.saveScenes(null, [JSON.parse(sceneJson("x", "이 창 판"))]);
+    await settle();
+    localStorage.setItem(ledgerKey("x"), JSON.stringify({ b: "옛 판" }));
+    getMeta = () => Promise.resolve({ items: [{ id: "x", data_hash: fakeHex(serverText) }] });
+    putReply = (body) => ({ ok: true, results: body.upserts.map((u) => ({ id: u.id, status: "too_big", target_id: "bk_t", hash: null })) });
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect([...backup.getSceneBackupSkippedIds()]).toEqual(["x"]);
+    scenes.saveScenes(null, [JSON.parse(sceneJson("x", "서버 판"))]);
+    await settle();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect([...backup.getSceneBackupSkippedIds()]).toEqual([]);
+  });
+
   it("63회차 재검토 — 원본 여럿의 사본 합계가 상한을 넘으면 요청을 나눈다(목록은 자르지 않는다)", async () => {
     const { scenes, backup, settle } = await boot();
     const copies = (origin: string) => Array.from({ length: 700 }, (_, i) =>

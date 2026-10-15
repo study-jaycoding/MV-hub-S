@@ -482,6 +482,7 @@ async function syncNow(): Promise<void> {
       }
       // 지문은 서버에 그 씬이 있을 때만 필요하다(같음·옛 창 판정) — 없으면 넣기만 한다
       const h = meta.has(s.id) ? await sha256hex(data) : null;
+      if (ns() !== scope) return; // 지문을 기다리는 사이 범위가 바뀌었다 — 옛 범위의 씬을 새 범위의 표시·장부에 넣지 않는다(Codex 7A 리뷰)
       if (entry?.fork) {
         // 갈래 — 이 씬의 편집은 사본 행으로 간다. 로컬이 원본 서버 행과 같아졌으면 갈래를 끝낸다.
         if (h && h === meta.get(s.id)) {
@@ -514,6 +515,7 @@ async function syncNow(): Promise<void> {
       if (h === meta.get(s.id)) {
         setLedger(scope, s.id, { ...entry, b: h });
         lastPushed.set(s.id, data); // 서버와 동일 — 올릴 필요 없음
+        copyTooBig.delete(s.id); // 이 내용은 백업에 있다(Codex 7A 리뷰)
         continue;
       }
       // 바뀐 것 없는 옛 창 — 서버가 더 새것이다(다른 창이 올렸다). 올리지 않고 lastPushed 에도 적지 않는다(지워도 남의 새것을 안 지움).
@@ -649,6 +651,7 @@ async function syncNow(): Promise<void> {
           setLedger(scope, u.localId, { ...entry, b: r.hash });
         }
       }
+      publishSkippedIds(); // 묶음마다 — 뒤 묶음이 실패해도 앞 묶음이 받은 too_big 이 탭에 보이게(Codex 7A 리뷰 P1)
       const kept = new Set(res?.kept ?? []);
       for (const id of dels) {
         const localId = deleteOf.get(id) ?? id;
