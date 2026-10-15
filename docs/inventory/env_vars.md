@@ -11,11 +11,13 @@
 - **설정하는 곳** = 코드가 읽는 이름을 `.bat`/`.ps1` 이 `set X=`·`$env:X =` 로 주는 자리와 파이썬의 `os.environ["X"] = …`.
 - 스캔 범위는 `backend/app`·`backend/*.py`(서버 기동기 `serve.py` 등)·루트 `*.py`(`agent_push.py` 등)·`tools`·`release`·`deploy`·`frontend/src` 다. **시험 폴더(`backend/tests`·`frontend/tests`)는 보지 않는다** — 시험 전용 변수는 여기 없다.
 
-제품 환경변수 133개.
+제품 환경변수 135개.
 
 | 이름 | 기본값 | 직접 읽는 파일 | 설정하는 곳 |
 | --- | --- | --- | --- |
 | `BACKEND` | — | `frontend/vite.config.ts` | `test_dev.bat` |
+| `CLAUDE_CONFIG_DIR` | — | `tools/mcp_adapter/local_setup.py` | — |
+| `CODEX_HOME` | — | `tools/mcp_adapter/local_setup.py` | — |
 | `CONTENT_HUB_ACCESS_LOG` | `"0"` | `backend/serve.py` | — |
 | `CONTENT_HUB_ADMIN_EMAIL` | — | `backend/app/main.py` | — |
 | `CONTENT_HUB_ADMIN_PASSWORD` | — | `backend/app/main.py` | — |
@@ -83,7 +85,7 @@
 | `CONTENT_HUB_MEDIA_PRESERVATION_STARTUP_DELAY_SECONDS` | `"10"` | `backend/app/services/media_preservation.py` | — |
 | `CONTENT_HUB_METRICS_LOG_INTERVAL` | `"60"` | `backend/app/main.py` | — |
 | `CONTENT_HUB_METRICS_SAMPLE_MAX` | `"5000"` | `backend/app/services/runtime_metrics.py` | — |
-| `CONTENT_HUB_NO_PROXY` | `""` | `backend/app/routers/_proxy.py` `backend/app/routers/backup_replica.py` `backend/app/services/operational_health.py` `backend/app/services/telemetry_drain.py` `tools/endurance_probe.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |
+| `CONTENT_HUB_NO_PROXY` | `""` | `backend/app/routers/_proxy.py` `backend/app/routers/auth.py` `backend/app/routers/backup_replica.py` `backend/app/services/operational_health.py` `backend/app/services/telemetry_drain.py` `tools/endurance_probe.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |
 | `CONTENT_HUB_PORT` | `"0"` `"8000"` `"8010"` | `backend/app/config.py` `run_agent_session.py` `tools/endurance_probe.py` `tools/server_watchdog.py` | `MV_agent.bat` `MV_server.bat` |
 | `CONTENT_HUB_PRESERVED_MEDIA_MAX_BYTES` | `str(50 * 1024 * 1024 * 1024)` | `backend/app/services/media_cache.py` | — |
 | `CONTENT_HUB_READ_ONLY` | `"0"` | `backend/app/config.py` | — |
@@ -142,7 +144,7 @@
 | `MVHUB_CMDCMDLINE` | `""` | `run_agent_session.py` | `MV_agent.bat` |
 | `MVHUB_LOCAL_URLS` | `"http://127.0.0.1:8010,http://127.0.0.1:8012"` | `backend/app/resources/resolve/MVHub_Importer.py` | — |
 | `MVHUB_NAMES_READONLY` | — | `backend/app/routers/library.py` | `test_dev.bat` `test_dev_server.bat` |
-| `MVHUB_SESSION_GUARDED` | `None` | `run_agent_session.py` | `run_agent_session.py` |
+| `MVHUB_SESSION_GUARDED` | `None` | `run_agent_session.py` `tools/workroom.py` | `run_agent_session.py` |
 | `MVHUB_SESSION_TOKEN` | `(표시 안 함)` | `agent_push.py` | — |
 | `MVHUB_UPDATE_STATE_DIR` | `str(Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempd…` | `backend/app/services/release_update.py` | — |
 | `PM_TEST_SNAPSHOT_TOKEN` | — | `tools/refresh_pm_test_data.py` | — |
@@ -169,6 +171,6 @@
 | --- | --- |
 | `APPDATA` | `backend/app/services/resolve_library_dialog.py` `backend/app/services/resolve_script_installer.py` |
 | `COMPUTERNAME` | `backend/app/routers/registry_helper.py` `backend/app/services/worker_backup.py` |
-| `LOCALAPPDATA` | `agent_push.py` `backend/app/services/release_update.py` `run_agent_session.py` |
+| `LOCALAPPDATA` | `agent_push.py` `backend/app/routers/mcp.py` `backend/app/services/release_update.py` `run_agent_session.py` `tools/mcp_adapter/local_setup.py` |
 | `PROGRAMDATA` | `backend/app/services/resolve_bridge.py` `backend/app/services/resolve_script_installer.py` |
 | `PROGRAMFILES` | `backend/app/services/resolve_bridge.py` `backend/app/services/resolve_diagnostics.py` |

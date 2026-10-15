@@ -27,6 +27,14 @@ updated: 2026-10-15
 
 ## 1. 빠른 찾기
 
+통합 시험실의 MCP 계약은 [MCP_INTEGRATION](MCP_INTEGRATION.md)이다.
+프런트 연결은 `McpRegistration.tsx`, `McpConnection.tsx`, `mcp.css`, `mcpContext.ts`, `mcpPlans.ts`,
+캔버스 요청 처리는 `mcpCanvasTasks.ts`에서 맡는다.
+백엔드 진입은 `routers/mcp.py`, `routers/mcp_v2.py`, 저장은 `repo/mcp_plans.py`, `repo/mcp_v2.py`,
+검증 모델·브로커는 `mcp_models.py`, `mcp_broker.py`다.
+stdio 실행·설정 보존은 `tools/mcp_adapter/server.py`, `local_setup.py`,
+시험은 `test_server.py`, `test_local_setup.py`, `test_persistent.py`를 따른다.
+
 편집 탭의 소스 클립·테이프 재생은 [useSourcePane.ts](../frontend/src/components/timeline/useSourcePane.ts),
 MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_picture.py)다.
 
@@ -1126,6 +1134,9 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | 파일 | 한 줄 책임 | 호출 사슬 |
 |---|---|---|
 | `test_dev.bat`(117줄) | Vite+격리백엔드(8012) 원클릭 개발, 페어링 시크릿 발급 | → `MV_agent.bat`(후단), `tools/pick_dev_port.ps1`, `tools/replace_dev_session.ps1` |
+| `test_workroom.bat`, `tools/workroom.py` | 기능·통합 시험실 전용 실행, 포트 충돌 거부·브라우저/자식 프로세스 분리 | → `run_agent_session.py`, `tools/workroom_data.py`, `tools/workroom_backend.py`; [운영](WORKROOMS.md) |
+| `tools/workroom_data.py` | 최초 DB 사본·세션 비밀 제거·전용 환경·실제 LLM 설정 해시 | → `tools/browser_measure/servers.py`, `services/db_scrub.py` |
+| `tools/workroom_backend.py` | app import 전 개발 사고 방지: 외부 쓰기/연결/프로세스 차단·실제 생성 입구 제한 | → 기존 `serve.py`; OS 샌드박스 아님 |
 | `test_dev_server.bat`(65줄) | 격리DB(`data_test`) 로 빌드된 프론트+단일서버 최종시험(8011) | → `MV_server.bat` |
 | `test_pull-db.bat`(61줄) | 서버가 발행한 스냅샷을 1회용 코드로 내려받아 `data_test` 채움 | → `tools/refresh_pm_test_data.py` |
 | `test_push-db.bat`(112줄) | 라이브 DB 를 읽기전용 원본으로 스냅샷 발행 서버(8011) 기동 | → `tools/refresh_pm_test_data.py` |

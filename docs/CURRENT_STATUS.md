@@ -5,7 +5,7 @@ tags:
   - mvhub
   - mvhub/현황
 status: active
-updated: 2026-10-14
+updated: 2026-10-15
 ---
 
 # MV Hub 현재 작업 현황
@@ -15,6 +15,8 @@ updated: 2026-10-14
 > 무엇을 남기고 언제 내리는지, 항목 수·크기 예산은
 > [README.md `현황판에 무엇을 남기나`](README.md#현황판에-무엇을-남기나) 가 정본이다.
 > 작업이 끝나면 상세는 `status/` 새 노트에 넣고 여기서는 **내려놓는다**.
+
+[작업실](WORKROOMS.md) 완료.
 
 ## 10-13 dev 배포 전 검토 — dev(미푸시·미배포)
 
