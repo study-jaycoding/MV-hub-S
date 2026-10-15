@@ -446,9 +446,11 @@ const EN: Record<string, string> = {
   "목록 범위 밖 미확인 코멘트 {n}개 · 모두 읽음으로 정리할 수 있습니다.":
     "{n} unread comments outside this list · use Mark all as read.",
   // 설정
-  "AI·MCP 연결": "AI · MCP connection",
-  "AI·MCP 연결 열기": "Open AI · MCP connection",
-  "이 PC의 로컬 앱에서 Codex·Claude 등록 안내, 연결 확인과 생성 실행 허용을 관리합니다.": "Manage Codex/Claude setup, connection checks and generation access in this PC's local app.",
+  "MV·MCP 연결": "MV · MCP connection",
+  "MV·MCP 연결 열기": "Open MV · MCP connection",
+  "Codex·Claude Code 등록과 생성 실행 허용을 관리합니다.": "Manage Codex/Claude Code setup and generation access.",
+  "이 PC의 로컬 앱에서 Codex·Claude Code 등록 안내, 연결 확인과 생성 실행 허용을 관리합니다.": "Manage Codex/Claude Code setup, connection checks and generation access in this PC's local app.",
+  "한 번 연결하면 LLM이 MV Hub의 자료를 조회하고, 요청한 워크스페이스·폴더에 생성합니다.": "Once connected, the LLM can browse MV Hub and generate into the workspace and folder you ask for.",
   "설정": "Settings",
   "모션": "Motion",
   "모션 끄기 (골드 글로우 등 애니메이션 정지)": "Reduce motion (stop gold glow etc.)",

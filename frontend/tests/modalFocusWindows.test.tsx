@@ -173,11 +173,11 @@ describe("설정 창 + 옆 패널 + 단축키 창", () => {
   const flyout = () => document.querySelector<HTMLElement>(".settings-group-flyout");
   const shortcuts = () => document.querySelector<HTMLElement>(".sc-float");
 
-  it("AI·MCP 연결을 누르면 설정 닫기 콜백 뒤에 연결 열기를 호출한다", async () => {
+  it("MV·MCP 연결을 누르면 설정 닫기 콜백 뒤에 연결 열기를 호출한다", async () => {
     const order: string[] = [];
     act(() => root.render(<SettingsPanel onClose={() => order.push("close")} onOpenMcp={() => order.push("mcp")} />));
     await settle();
-    const button = [...document.querySelectorAll<HTMLButtonElement>(".settings-float button")].find((item) => item.textContent === "AI·MCP 연결 열기")!;
+    const button = [...document.querySelectorAll<HTMLButtonElement>(".settings-float button")].find((item) => item.textContent === "MV·MCP 연결 열기")!;
     expect(button).toBeDefined();
     press(button);
     expect(order).toEqual(["close", "mcp"]);
@@ -347,7 +347,7 @@ describe("상단바", () => {
     const settings = [...document.querySelectorAll<HTMLButtonElement>(".acct-pop button")].find((item) => item.textContent?.includes("Setting"))!;
     expect(settings).toBeDefined();
     press(settings); await settle();
-    const mcp = [...document.querySelectorAll<HTMLButtonElement>(".settings-float button")].find((item) => item.textContent === "AI·MCP 연결 열기")!;
+    const mcp = [...document.querySelectorAll<HTMLButtonElement>(".settings-float button")].find((item) => item.textContent === "MV·MCP 연결 열기")!;
     expect(mcp).toBeDefined();
     press(mcp); await settle();
     expect(onOpenMcp).toHaveBeenCalledTimes(1);
