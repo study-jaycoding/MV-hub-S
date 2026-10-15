@@ -157,22 +157,23 @@ print('MCP ' + version + ' isolated imports OK')
     Write-Host "      MCP runtime verified ($Label): $($Output -join ' ')"
 }
 
-function Install-McpAdapterPackages {
-    param([string]$PythonExe, [string]$LockPath, [string]$Target)
+function Install-HashLockedPackages {
+    param([string]$PythonExe, [string]$LockPath, [string]$Target, [string]$Label)
 
     # 잠금 파일의 판·지문(SHA256)이 다르거나 휠이 없으면 멈춘다 — 받은 파일이 바뀌었거나 소스 빌드·이 PC 의 pip 설정
-    # (pip.ini·환경변수)으로 다른 것이 들어가지 않게(배포 전 P1, 2026-10-16). --no-deps 를 쓰지 않아 잠금에서 빠진 하위 의존성도 실패로 잡힌다.
+    # (pip.ini·환경변수)으로 다른 것이 들어가지 않게(배포 전 P1, 2026-10-16 — MCP, 같은 날 Jay 3A 로 백엔드도). --no-deps 를 쓰지 않아
+    # 잠금에서 빠진 하위 의존성도 실패로 잡힌다. 대상은 빈 폴더라, 빌드 PC 에 깔린 무관한 패키지와의 거짓 충돌 경고만 숨긴다.
     $PreviousPipConfig = $env:PIP_CONFIG_FILE
     $env:PIP_CONFIG_FILE = "nul"
     try {
         & $PythonExe -m pip --isolated install --require-hashes --only-binary=:all: `
-            --index-url https://pypi.org/simple --no-compile --ignore-installed --target $Target -r $LockPath
+            --index-url https://pypi.org/simple --no-compile --ignore-installed --no-warn-conflicts --target $Target -r $LockPath
         $PipExit = $LASTEXITCODE
     } finally {
         $env:PIP_CONFIG_FILE = $PreviousPipConfig
     }
     if ($PipExit -ne 0) {
-        throw "pip install into bundled MCP packages failed"
+        throw "pip install into bundled $Label packages failed"
     }
 }
 
@@ -620,22 +621,18 @@ if (-not $SkipPythonRuntime) {
 
     New-Item -ItemType Directory -Force -Path $SitePackages | Out-Null
     Write-Host "      Installing backend packages into runtime..."
-    # 원본 Python의 site-packages는 복사하지 않으므로 pip도 명시적으로 넣는다. MV_agent.bat이
+    # 원본 Python의 site-packages는 복사하지 않으므로 pip도 명시적으로 넣는다(잠금의 pip==25.3). MV_agent.bat이
     # 누락된 앱 의존성을 자동 복구할 때 `python -m pip`가 실제로 동작해야 한다.
-    # 설치 대상은 원본 Python의 site-packages와 완전히 분리된 빈 폴더다. pip는 그래도 빌드 PC에
-    # 설치된 무관한 패키지 충돌을 경고하므로(예: scenedetect↔click), 운영자가 릴리즈 실패로
-    # 오해하지 않게 그 거짓 경고만 숨긴다. 완성 런타임은 아래 import/ZIP 검증으로 별도 확정한다.
-    & $Python.Exe -m pip install --upgrade --ignore-installed --no-warn-conflicts --target $SitePackages `
-        "pip==25.3" -r (Join-Path $ProjectRoot "backend\requirements.txt")
-    if ($LASTEXITCODE -ne 0) {
-        throw "pip install into bundled runtime failed"
-    }
+    # 판은 requirements.txt, 지문은 requirements.lock.txt(Python 3.14 x64 휠) — 둘이 어긋나면 시험이 잡는다.
+    # 완성 런타임은 아래 import/ZIP 검증으로 별도 확정한다.
+    Install-HashLockedPackages -PythonExe $Python.Exe -LockPath (Join-Path $ProjectRoot "backend\requirements.lock.txt") `
+        -Target $SitePackages -Label "backend"
 
     Assert-PythonRuntimeTree -RuntimeDir $RuntimeDir -Label "staging"
 
     # The SDK shares only Python's executable/stdlib, never the backend dependencies.
     $McpPackages = Join-Path $McpAdapterDir "site-packages"
-    Install-McpAdapterPackages -PythonExe $Python.Exe -LockPath (Join-Path $McpAdapterDir "requirements.lock.txt") -Target $McpPackages
+    Install-HashLockedPackages -PythonExe $Python.Exe -LockPath (Join-Path $McpAdapterDir "requirements.lock.txt") -Target $McpPackages -Label "MCP"
     Assert-McpAdapterTree -Root $Stage -Label "staging"
 
     $RequirementsHash = Get-FileDigestHex -Path (Join-Path $ProjectRoot "backend\requirements.txt") -Algorithm MD5

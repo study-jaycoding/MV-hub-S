@@ -22,7 +22,8 @@ status: 고침 dev 반영 · Codex 묶음 리뷰 승인(P2 셋 고침) · update
   ⑨ 일반 AUTH-off 로그아웃의 실제 경로는 `/shared-server/logout` — 토큰·활성 계정만 지운다), 구현·시험은 Claude, 매 고침은 '옛 코드로 되돌리면
   새 시험 실패'로 확인했다.
 - **P1** `81dd6d5f`·`812af892`: 번들 잠금 29개 전부 SHA256(Jay 승인으로 Python 3.14 x64 에서 PyPI 휠 14.8MB 를 임시로 받아 지문만 잼) ·
-  `Install-McpAdapterPackages`(`--isolated --require-hashes --only-binary=:all:` 공식 색인 · `PIP_CONFIG_FILE=nul` 뒤 복원 · `--no-deps` 없음).
+  `Install-McpAdapterPackages`(`--isolated --require-hashes --only-binary=:all:` 공식 색인 · `PIP_CONFIG_FILE=nul` 뒤 복원 · `--no-deps` 없음 —
+  같은 날 Jay 3A 로 백엔드 번들도 같은 함수로 설치하게 되어 `Install-HashLockedPackages` 로 이름을 바꿈, [릴리스 README](../release/README.md)).
   빈 대상 설치 성공 · 지문 한 글자 바꾸면 'DO NOT MATCH' 로 멈춤 확인. 갱신 순서는 [어댑터 README](../tools/mcp_adapter/README.md) '번들 의존성 갱신'.
   남은 것: 백엔드 번들(`backend/requirements.txt`)은 예전부터 판만 고정 — 같은 방식은 별도 결정.
 - **①②** `81dd6d5f`: health 는 sqlite 오류에도 200(hub_id 만 뺌)·MCP 업무 경로 503 · 어댑터는 hub_id 없는 허브를 `unavailable`(비밀 안 보냄) ·

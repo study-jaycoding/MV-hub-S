@@ -65,11 +65,33 @@ def test_release_mcp_lock_has_hash_for_every_pin() -> None:
     assert set(direct) <= set(pins)  # 직접 요구(mcp 판)가 잠금과 같다
 
 
+_BACKEND = Path(__file__).resolve().parents[1]
+
+
+def test_release_backend_lock_pins_every_requirement_with_a_hash() -> None:
+    # Jay 2026-10-16 3A — 백엔드 번들 의존성도 판만 고정해 받던 것을 지문까지(MCP 와 같은 방식)
+    lines = [line.strip() for line in (_BACKEND / "requirements.lock.txt").read_text(encoding="utf-8").splitlines()
+             if line.strip() and not line.startswith("#")]
+    pins = [line.split()[0] for line in lines if "==" in line]
+    hashes = [line for line in lines if line.startswith("--hash=sha256:")]
+    assert len(pins) == len(hashes) and all(len(h.split(":", 1)[1]) == 64 for h in hashes)
+    assert all(line.endswith("\\") for line in lines if "==" in line)
+    required = [line.split("#")[0].strip() for line in (_BACKEND / "requirements.txt").read_text(encoding="utf-8").splitlines()
+                if line.split("#")[0].strip()]
+    assert sorted(pins) == sorted(["pip==25.3", *required])  # 판이 requirements.txt 와 같고 빠진 것·더한 것이 없다
+
+
+def test_release_backend_install_uses_the_hash_lock() -> None:
+    source = (Path(__file__).resolve().parents[2] / "release/make_release.ps1").read_text(encoding="utf-8-sig")
+    assert 'Install-HashLockedPackages -PythonExe $Python.Exe -LockPath (Join-Path $ProjectRoot "backend\\requirements.lock.txt")' in source
+    assert '-r (Join-Path $ProjectRoot "backend\\requirements.txt")' not in source  # 지문 없는 설치가 남지 않았다
+
+
 @pytest.mark.skipif(os.name != "nt", reason="PowerShell release build")
 @pytest.mark.parametrize("pip_exit", [0, 3])
 def test_release_mcp_install_requires_hashes_and_wheels(tmp_path: Path, pip_exit: int) -> None:
     source = (Path(__file__).resolve().parents[2] / "release/make_release.ps1").read_text(encoding="utf-8-sig")
-    function = "function Install-McpAdapterPackages {" + source.split("function Install-McpAdapterPackages {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+    function = "function Install-HashLockedPackages {" + source.split("function Install-HashLockedPackages {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
     log = tmp_path / "pip.txt"
     fake = tmp_path / "python.cmd"
     fake.write_text(f"@echo off\r\necho ARGS %*> \"{log}\"\r\necho CFG %PIP_CONFIG_FILE%>> \"{log}\"\r\nexit /b {pip_exit}\r\n", encoding="ascii")
@@ -77,7 +99,7 @@ def test_release_mcp_install_requires_hashes_and_wheels(tmp_path: Path, pip_exit
     harness.write_text(
         "param([string]$Py,[string]$Lock,[string]$Target)\n$ErrorActionPreference = 'Stop'\n$env:PIP_CONFIG_FILE = 'C:\\custom\\pip.ini'\n"
         + function
-        + "try { Install-McpAdapterPackages -PythonExe $Py -LockPath $Lock -Target $Target; Write-Output 'INSTALLED' } catch { Write-Output ('THREW ' + $_) }\n"
+        + "try { Install-HashLockedPackages -PythonExe $Py -LockPath $Lock -Target $Target -Label 'MCP'; Write-Output 'INSTALLED' } catch { Write-Output ('THREW ' + $_) }\n"
         "Write-Output ('AFTER ' + $env:PIP_CONFIG_FILE)\n",
         encoding="utf-8-sig",
     )

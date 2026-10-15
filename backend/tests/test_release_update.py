@@ -468,7 +468,9 @@ def test_release_builder_ignores_unrelated_build_machine_package_conflicts():
     # Runtime site-packages is created empty and verified after install. Conflicts from unrelated
     # packages installed on the builder must not look like a failed release in the operator log.
     assert 'Join-Path $Python.Root "Lib\\site-packages"' in builder
-    assert "--ignore-installed --no-warn-conflicts --target $SitePackages" in builder
+    # 2026-10-16(Jay 3A): 백엔드도 지문 잠금 설치 함수(Install-HashLockedPackages)로 — 그 함수가 같은 옵션을 쓰고, 대상이 런타임 site-packages 다
+    assert "--ignore-installed --no-warn-conflicts --target $Target" in builder
+    assert '-Target $SitePackages -Label "backend"' in builder
 
 
 def test_release_tooling_hashes_without_powershell_module_autoloading():
