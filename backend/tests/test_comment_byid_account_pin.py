@@ -175,8 +175,11 @@ def hub(tmp_path, monkeypatch, request):
 
     try:
         assert db.get_db_path is db_paths.get_db_path
-        assert _proxy.token is shared_connection.token
-        assert _proxy.base_url is shared_connection.base_url
+        # MCP v2(2026-10-15)가 _proxy.token·base_url 을 '고정 연결' 래퍼로 감쌌다(요청 동안 잡아 둔 상류 연결을 쓰고, 고정이 없으면
+        # 공유 연결로 되돌아간다). 이 시험은 고정이 없는 상태에서 돌므로, 래퍼의 원천이 공유 연결 함수 그 자체인지를 본다.
+        assert _proxy._PINNED_CONNECTION.get() is None
+        assert _proxy._stored_token is shared_connection.token
+        assert _proxy._stored_base_url is shared_connection.base_url
         for email, path in paths.items():
             initialize(path, email)
         active_account.set_active(A, UIDS[A])
