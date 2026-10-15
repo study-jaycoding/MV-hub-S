@@ -14,7 +14,7 @@ import { useT } from "../../lib/i18n";
 import { pressStartedCovered } from "../../lib/keyGate";
 import { computeMarquee, marqueeHits, type MarqueeRect } from "../../lib/marquee";
 import { thumbOf } from "../../lib/media";
-import type { EditListState } from "../../lib/useEditSequence";
+import { editTick, type EditListState } from "../../lib/useEditSequence";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../../lib/windowDrag";
@@ -59,6 +59,7 @@ export function EditPool({
   ui,
   onUi,
   listState,
+  listStartedAt,
   notice,
   onPick,
   onPickMany,
@@ -83,6 +84,7 @@ export function EditPool({
   ui: EditUi;
   onUi: (patch: Partial<EditUi>) => void;
   listState: EditListState;
+  listStartedAt: number; // 지금 목록을 낸 조회가 출발한 순번(editTick) — 태그 덧입힘을 걷는 기준
   notice: string | null; // 목록 대신 보여 줄 안내(폴더를 안 골랐다·워크스페이스 미확인 등)
   onPick: (gen: Generation, additive: boolean) => void; // additive = Ctrl·Shift 를 누른 채(더하고 빼기)
   onPickMany: (ids: string[]) => void; // 끌어서 상자로 고른 것(전체 치환)
@@ -115,14 +117,13 @@ export function EditPool({
   useEscapeClose(() => setOpen(null), open !== null, true, true);
   const shown = useMemo(() => arrangePool(items, searching ? query : "", ui.sort), [items, searching, query, ui.sort]);
   const placed = items.filter((item) => item.track !== null).length;
-  // 썸네일 카드의 T(태그 고치기) — 한 번에 한 장. 고친 태그는 그 카드의 저장이 다 끝난 뒤 새 목록이 올 때까지 여기서 덧입힌다:
-  //  앱의 낙관적 갱신은 라이브러리 목록에만 닿아, 안 그러면 잇달아 넣는 태그가 옛 태그에서 계산돼 앞에 넣은 것을 지운다.
-  //  '목록을 다시 받았다'만으로 걷으면 뒤 편집의 저장보다 먼저 온 목록이 그 편집을 지웠고, '목록이 같아질 때'까지 들면 저장 뒤 다른 창이
-  //  바꾼 태그를 가려 다음 저장이 덮었다(둘 다 Codex 리뷰 10-15) — 그래서 카드마다 끝나지 않은 저장을 센다.
-  //  shortcut: 저장이 끝나기 전에 출발한 조회가 끝난 뒤에 오면 그 목록을 믿는다(태그가 잠깐 옛 값으로 보일 수 있다 — 저장 끝 알림의
-  //   다시 받기가 곧 맞춘다). 조회의 출발 시각을 풀까지 넘기면 막을 수 있다.
+  // 썸네일 카드의 T(태그 고치기) — 한 번에 한 장. 고친 태그는 그 카드의 저장이 다 끝난 **뒤에 출발한** 조회의 목록이 들어올 때까지
+  //  여기서 덧입힌다: 앱의 낙관적 갱신은 라이브러리 목록에만 닿아, 안 그러면 잇달아 넣는 태그가 옛 태그에서 계산돼 앞에 넣은 것을 지운다.
+  //  '목록이 바뀌었다'로 걷으면 뒤 편집의 저장보다 먼저 온 목록·저장 전에 출발한 늦은 응답·그냥 다시 만들어진 배열이 편집을 지웠고,
+  //  '목록이 같아질 때'까지 들면 저장 뒤 다른 창이 바꾼 태그를 가려 다음 저장이 덮었다(Codex 리뷰 10-15 세 번).
+  //  그래서 카드마다 끝나지 않은 저장을 세고, 다 끝난 순번(savedAt)과 목록을 낸 조회의 출발 순번(listStartedAt)을 견준다.
   const [tagging, setTagging] = useState<string | null>(null);
-  const [retag, setRetag] = useState<Record<string, { tags?: string[]; auto_tags?: string[]; saved?: true }>>({});
+  const [retag, setRetag] = useState<Record<string, { tags?: string[]; auto_tags?: string[]; savedAt?: number }>>({});
   const saving = useRef<Record<string, number>>({}); // 카드마다 끝나지 않은 저장 수
   const withTags = (gen: Generation) => {
     const kept = retag[gen.id];
@@ -139,22 +140,20 @@ export function EditPool({
         return;
       }
       delete saving.current[id];
-      setRetag((prev) => (prev[id] ? { ...prev, [id]: { ...prev[id], saved: true } } : prev));
+      const savedAt = editTick();
+      setRetag((prev) => (prev[id] ? { ...prev, [id]: { ...prev[id], savedAt } } : prev));
     });
   };
-  // 저장이 다 끝난 카드는 그 뒤에 온 목록을 믿는다(덧입힘을 걷는다)
-  const seenItems = useRef(items);
+  // 저장이 다 끝난 뒤 출발한 조회의 목록이 들어왔다 — 그 카드는 목록을 믿는다(덧입힘을 걷는다)
   useEffect(() => {
-    if (seenItems.current === items) return;
-    seenItems.current = items;
     setRetag((prev) => {
-      const done = Object.keys(prev).filter((id) => prev[id].saved);
+      const done = Object.keys(prev).filter((id) => (prev[id].savedAt ?? Infinity) < listStartedAt);
       if (done.length === 0) return prev;
       const next = { ...prev };
       for (const id of done) delete next[id];
       return next;
     });
-  }, [items]);
+  }, [listStartedAt]);
   const actions: PoolCardActions = {
     ...cardActions,
     onSetTags: (gen, tags) => keepTags(gen, { tags }, cardActions.onSetTags(gen, tags)),

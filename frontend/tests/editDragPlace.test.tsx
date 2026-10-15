@@ -19,7 +19,7 @@ const gen = (id: string, cut: string, extra: Partial<Generation> = {}) => ({
   ...extra,
 } as unknown as Generation);
 
-const world = vi.hoisted(() => ({ gens: [] as unknown[], disabled: {} as Record<string, string[]> }));
+const world = vi.hoisted(() => ({ gens: [] as unknown[], disabled: {} as Record<string, string[]>, startedAt: 0 }));
 vi.mock("../src/lib/resolveTransfer", async () => ({
   ...(await vi.importActual<typeof import("../src/lib/resolveTransfer")>("../src/lib/resolveTransfer")),
   getResolveConnectionStatus: () => Promise.reject(new Error("안 물었다")),
@@ -35,12 +35,13 @@ vi.mock("../src/lib/useEditSequence", async () => {
     useEditProjects: () => ({
       projects: [{ id: "p1", name: "P1" }], projectsState: "ok", tree, reload: () => {}, reloadCounts: () => {}, freshByProject: {},
     }),
-    useEditGenerations: () => ({ state: "ok", gens: world.gens, error: null, complete: true, known: true, reload: () => {} }),
+    useEditGenerations: () => ({ state: "ok", gens: world.gens, error: null, complete: true, known: true, startedAt: world.startedAt, reload: () => {} }),
   };
 });
 vi.mock("../src/lib/useDisabledFolders", () => ({ useDisabledFolders: () => world.disabled }));
 
 import { EditTab } from "../src/components/timeline/EditTab";
+import { editTick } from "../src/lib/useEditSequence";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -833,28 +834,38 @@ it("풀 카드의 호버 단추 — S·T·C·ⓘ 는 앱의 동작을 부르고,
   act(() => part(".card-tl .card-cm").click());
   typeTag("컷2");
   expect(cardActions.onSetTags.mock.calls.map(([g, tags]) => [g.id, tags])).toEqual([["a", ["컷1"]], ["a", ["컷1", "컷2"]]]);
-  // 덧입힘은 그 카드의 저장이 다 끝난 뒤 온 목록이 걷는다(Codex 리뷰 10-15 두 번):
+  // 덧입힘은 그 카드의 저장이 다 끝난 **뒤에 출발한** 조회의 목록이 걷는다(Codex 리뷰 10-15 세 번):
   //  ① 컷1 만 저장되고 컷2 는 아직인데 [컷1] 목록이 오면 컷2 는 남는다 — 다시 받으면 걷던 때는 다음 저장이 [컷1, 컷3] 이었다
-  //  ② 저장이 다 끝난 뒤 다른 창이 [다른] 으로 바꾼 목록이 오면 그것을 믿는다 — 같아질 때까지 들던 때는 [컷1, 컷2, 컷3, 컷4] 로 덮었다
+  //  ② 저장이 끝나기 전에 출발한 늦은 응답·같은 조회로 다시 만들어진 목록은 걷지 않는다 — 목록이 바뀌면 걷던 때는 [컷1, 컷4] 였다
+  //  ③ 저장이 끝난 뒤 출발한 조회가 다른 창의 [다른] 을 가져오면 믿는다 — 같아질 때까지 들던 때는 [컷1, 컷2, 컷3, 컷4, 컷5] 로 덮었다
   const escape = () => act(() => {
     part(".cs-tag-input").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
   });
-  const listed = (tags: string[]) => {
+  const listed = (tags: string[], startedAt = editTick()) => {
     world.gens = [gen("a", "c1", { tags }), gen("b", "c1"), gen("x", "c2")];
+    world.startedAt = startedAt;
     mount();
   };
+  const tagAgain = (tag: string) => {
+    act(() => part(".card-tl .card-cm").click());
+    typeTag(tag);
+    escape();
+  };
+  const finishSaves = () => act(async () => { saves.splice(0).forEach((resolve) => resolve()); });
   escape();
   await act(async () => { saves.shift()!(); }); // 컷1 저장 끝 — 컷2 는 아직
   listed(["컷1"]);
-  act(() => part(".card-tl .card-cm").click());
-  typeTag("컷3");
-  escape();
-  await act(async () => { saves.splice(0).forEach((resolve) => resolve()); }); // 다 끝남
+  tagAgain("컷3");
+  const early = editTick(); // 저장이 끝나기 전에 출발한 조회
+  await finishSaves();
+  listed(["컷1"], early); // 그 늦은 응답
+  listed(["컷1"], early); // 같은 조회로 목록만 다시 만들어짐
+  tagAgain("컷4");
+  await finishSaves();
   listed(["다른"]);
-  act(() => part(".card-tl .card-cm").click());
-  typeTag("컷4");
-  escape();
-  expect(cardActions.onSetTags.mock.calls.slice(2).map(([, tags]) => tags)).toEqual([["컷1", "컷2", "컷3"], ["다른", "컷4"]]);
+  tagAgain("컷5");
+  expect(cardActions.onSetTags.mock.calls.slice(2).map(([, tags]) => tags))
+    .toEqual([["컷1", "컷2", "컷3"], ["컷1", "컷2", "컷3", "컷4"], ["다른", "컷5"]]);
 
   // 몸통: 휠 클릭 = 넣을 트랙 메뉴(라이브러리 카드의 휠 클릭 = 정보 창은 뜨지 않는다) · 누르기 = 고르기 · 더블클릭 = 크게 보기
   fire(part(".card-thumb"), "auxclick", { button: 1, buttons: 0 });

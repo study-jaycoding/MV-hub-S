@@ -1373,6 +1373,7 @@ function EditTabInner({
               ui={ui}
               onUi={patchUi}
               listState={list.state}
+              listStartedAt={list.startedAt}
               notice={poolNotice}
               onPick={pickInPool}
               onPickMany={pickManyInPool}
