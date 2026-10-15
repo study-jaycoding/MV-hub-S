@@ -3295,6 +3295,8 @@ export function SceneBoard({
   // capture 단계라 카드의 stopPropagation 과 무관하게 항상 먼저 잡는다. 캔버스 내부 입력요소(태그 편집
   // 등)를 클릭한 경우는 제외(그건 그 입력창을 쓰려는 것).
   const onBoardMouseDownCapture = (e: React.MouseEvent) => {
+    // 우클릭 누름의 가림(위 onNodeFolder) — 캡처에서 적는다: 카드 위 단추(.linb-ov)는 mousedown 전파를 막지만 contextmenu 는 통과시킨다(Codex 리뷰)
+    if (e.button === 2) rightPressCoveredRef.current = pressStartedCovered();
     settleDrag(); // 남은 앞 끌기를 먼저 끝낸다 — 아래의 누름 처리들이 시작 좌표를 읽기 전에
     // 손을 뗀 것을 놓친 전체 끌기가 남아 있으면 그 이동량을 좌표에 먼저 넣는다 — 새로 누른 카드·그룹이 시작 좌표를 읽기 전에
     //  (안 넣으면 새 끌기가 옛 좌표에서 출발해 앞의 이동이 사라진다 — Codex 코드 리뷰).
@@ -3525,11 +3527,8 @@ export function SceneBoard({
     window.addEventListener("blur", release);
   };
   const onMouseDown = (e: React.MouseEvent) => {
-    // 우클릭 누름 — 가림만 적어 두고(위 onNodeFolder) 고르기·끌기·범위 선택은 시작하지 않는다(종전처럼)
-    if (e.button === 2) {
-      rightPressCoveredRef.current = pressStartedCovered();
-      return;
-    }
+    // 우클릭 누름 — 가림은 캡처(onBoardMouseDownCapture)가 적었다. 고르기·끌기·범위 선택은 시작하지 않는다(종전처럼)
+    if (e.button === 2) return;
     // 위에 뜬 창·메뉴의 클릭(바깥을 눌러 닫는 것 포함)은 그것의 몫 — 보드의 선택·범위 선택·화면 이동을 시작하지 않는다
     //  (2026-10-10 재실측: 재생 창·모델 설정 창의 바깥을 눌러 닫으면 뒤의 선택까지 풀렸다).
     if (pressStartedCovered()) return;

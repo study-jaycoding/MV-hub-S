@@ -185,6 +185,23 @@ it("a right-click that closes something above the board does not open the folder
   expect(onOpenFolder).toHaveBeenCalledTimes(1);
 });
 
+// 카드 위 단추(.linb-ov)는 mousedown 전파를 막지만 contextmenu 는 통과시킨다 — 가림 기록은 보드의 캡처에서 적어야 한다(Codex 리뷰)
+it("the cover record also works on a card's overlay button — a closing right-click there does not open, and a stale record does not block the next one", async () => {
+  const onOpenFolder = vi.fn();
+  await boardWith([gen()], onOpenFolder);
+  const button = () => cardEl("g1").querySelector<HTMLElement>(".linb-ov .ov-info")!;
+  const menu = {};
+  openLayer(menu, nextLayerSeq());
+  await rightClick(button(), () => closeLayer(menu)); // 단추 위의 우클릭이 위 메뉴를 닫는다
+  expect(onOpenFolder).not.toHaveBeenCalled();
+
+  const other = {};
+  openLayer(other, nextLayerSeq());
+  await rightClick(host.querySelector(".scene-board")!, () => closeLayer(other)); // 빈 곳 우클릭으로 닫음 — 기록이 소비되지 않고 남는다
+  await rightClick(button()); // 가림 없는 단추 위 우클릭은 연다
+  expect(onOpenFolder).toHaveBeenCalledTimes(1);
+});
+
 it("the chip's rules add no compositing layers — no backdrop-filter, mask, will-change, transform or animation", () => {
   const strip = (name: string) => readFileSync(new NodeURL(`../src/styles/${name}.css`, import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   const rules = ["generations", "scene"].flatMap((name) => [...strip(name).matchAll(/([^{}]+)\{([^{}]*)\}/g)])
