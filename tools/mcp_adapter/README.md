@@ -16,12 +16,15 @@ v2 등록 설정에는 `--url`과 `--profile`이 들어간다. 프로필은 Wind
 `read_context(kind="workspaces")`로 실제 접근 가능한 공간을 조회한 뒤, 다른 조회와 계획에
 `workspace_scope`와 팀 공간의 `workspace_id`를 명시한다. 기본 생성은 캔버스 없이 MV Hub 라이브러리에 기록된다.
 `read_context`로 실제 모델·프로젝트·컷·자료를 확인하고 `prepare_generation_plan` → `execute_generation_plan` → `get_result(wait_seconds=25)` 순서로 처리한다.
-Codex PC·휴대폰에는 `get_result`의 `display_directory`에 기존 작업 소유 로컬 절대경로를 지정하고,
-반환된 `display.reference`를 최종 답변에 그대로 넣는다. 어댑터가 이미지 내장 HTML을 준비하며 LLM의 별도 제작은 필요 없다.
-ImageContent 직접 표시 앱은 폴더를 생략할 수 있다. 파일 준비 성공은 실제 화면 표시 확인과 다르다.
+`get_result`는 표시 폴더 없이 네이티브 ImageContent를 반환한다. MCP Apps 지원 호스트에는
+`ui://mvhub/result.html` 결과 화면을 제공한다. 같은 이미지가 도구에 표시되면 최종 답변에 중복 삽입하지 않는다.
+URL·PC 경로·HTML 링크를 일반 답변에 나열하지 않으며 로컬 HTML을 Markdown 이미지로 넣지 않는다.
+구형 `display_directory` 내보내기는 유지하지만 경로는 호스트용 `_meta.display`에만 반환한다.
+이를 요청하지 않은 기본 조회는 파일을 쓰지 않는다. 이미지 수신·파일 준비는 실제 화면 표시 확인과 다르다.
 Codex·Claude 공통으로 실행 전 조건·위치를 알리고 `presentation.stage` 변경 시 `message`를 안내한다.
-최종 답변은 `card_text`(상태→조건→위치) 다음에 이미지를 표시한다. Claude는 네이티브 이미지 또는
-`display.path`의 같은 결과 카드를 사용하며 Codex 전용 참조를 출력하지 않는다. 선택 항목 완료는 전체 완료가 아니다.
+`card_text`(상태→조건→위치)와 네이티브 이미지를 공통으로 사용한다. 선택 항목 완료는 전체 완료가 아니다.
+이미지와 MCP Apps를 모두 지원하지 않는 호스트는 자체 이미지 표시 도구를 사용하거나 표시 제한을 알린다.
+Higgsfield의 전용 위젯 지원이 임의 로컬 MCP에도 적용된다고 가정하지 않는다. 앱별 실표시는 별도 확인한다.
 미리보기 조회는 생성·과금 없이 기존 결과만 읽는다. 영상은 기존 포스터만 표시하고, 원본은 MV Hub에서 확인한다.
 MCP 이미지 표시를 지원하지 않는 앱에서도 생성 ID와 상태는 텍스트로 확인할 수 있다. 도구 설명은 완료 뒤 결과 조회를 안내한다.
 프로젝트·컷을 생략할 수 있다. `add_to_canvas`는 사용자가 요청할 때만 `scene_id`를 명시하며 새 생성을 하지 않는다.

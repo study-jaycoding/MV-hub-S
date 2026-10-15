@@ -5,13 +5,52 @@ updated: 2026-10-15
 
 # MV Hub 로컬 MCP
 
-owner: Codex · reviewer: Claude · status: 완료 · updated: 2026-10-15
+owner: Codex · reviewer: Claude · status: 검증 중 · updated: 2026-10-15
 
 이번 변경의 범위는 **로컬 코드 구현·비유료 격리 검증**이다. 실제 사용자 클라이언트 등록·유료 생성·배포는 별도다.
 
 통합 시험실에서 실행하는 경우 [WORKROOMS](WORKROOMS.md)의 제한이 우선한다. 아래 완료 기록은
 원래 MCP 작업실의 검증 이력이며 최신 dev와 합친 대상의 검증 결과는 WORKROOMS에 따로 기록한다.
 시험실 실행기에서는 실제 생성·CLI 모델 조회·전역 LLM 등록을 검증하지 않는다.
+
+## 네이티브 결과 화면과 중복 링크 제거 (2026-10-15)
+
+owner: Codex · reviewer: Claude · status: 검증 중 · updated: 2026-10-15
+
+- 사용자 요청: Higgsfield처럼 결과 이미지를 표시하며 URL·PC 경로와 깨진 중복 이미지를 없앤다.
+  touched_paths: `tools/mcp_adapter/server.py`, `tools/mcp_adapter/test_persistent.py`,
+  어댑터 README, 이 문서. 생성·인증·DB·공유 서버·전역 설정은 변경하지 않는다.
+- 확인 근거: 사용자에 따르면 Higgsfield는 PC·휴대폰에서 정상 표시된다. Claude 모바일 첨부에서는
+  Get Result의 썸네일은 표시되지만 답변의 두 번째 이미지가 실패했다. 기존 서버 지시가
+  `display.path` 또는 `display.reference`의 추가 출력을 요구한 것을 소스로 확인했다.
+- 실제 Higgsfield `job_display`의 기존 결과 응답에는 TextContent·resource_link·구조화 결과가 있고,
+  도구 설명은 전용 위젯을 명시한다. JSON 모양이나 HTTPS만 복제하면 모든 앱에서 표시된다는 뜻은 아니다.
+- 일반 `get_result`는 파일 쓰기 없이 ImageContent 한 장과 공통 상태 카드를 반환한다.
+  결과의 `hub_url`을 제거하고 구형 파일 내보내기 경로는 호스트 전용 `_meta.display`로 옮겼다.
+  모델용 content/structuredContent에는 표시 경로가 없다. 기존 `_meta` 소비자가 아닌 클라이언트는
+  내보내기 경로를 읽는 위치를 바꿔야 한다. 명시적으로 내보낸 경로는 호스트 UI·로그에 남을 수 있다.
+- 최종 답변에 이미지를 중복 삽입하거나 URL·PC 경로·HTML 링크를 나열하지 않도록 지시를 통일했다.
+  로컬 HTML은 Markdown 이미지로 삽입하지 않는다. 파일·다운로드를 별도 요청한 경우는 구분한다.
+- MCP Apps 호스트에는 도구 `_meta.ui.resourceUri`와 `ui://mvhub/result.html` 자원을 제공한다.
+  MIME은 `text/html;profile=mcp-app`. 외부 요청 없이 기존 JPEG를 data URI로 표시하며 카드 문자열은
+  textContent로 처리한다. 부모 메시지 출처·초기화·입력 형식/크기·취소·조회 오류·높이 변경을 처리한다.
+  알 수 없는 프로토콜을 검증 없이 수락하지 않으며 미지원 호스트에서도 기존 ImageContent는 유지한다.
+  폐기 예정 평면 키 `_meta["ui/resourceUri"]`는 제공하지 않는다.
+- 설계와 별도 독립 리뷰의 실제 모델은 `claude-opus-5-5`, 요청 effort medium이다.
+  독립 리뷰는 차단 지적 없음으로 보고했고, 남아 있던 execute 도구의 중복 삽입 지시도 정리했다.
+  증거: `%TEMP%/mvhub-native-display-20261015/{design,review,client-results,runtime}.json`.
+- 검증: 어댑터 회귀 29개 통과. 실제 Codex(gpt-6.1-sol/medium 요청, 실행 모델 ID 미확인)와
+  Claude(실제 claude-opus-5-5)가 격리 서버에서 get_result만 각 1회 호출했고 새 생성·추가 이미지 링크가 없었다.
+  실허브의 기존 감자 조회 1회는 0.046초, ImageContent 1개와 UI 자원을 반환했다(생성/렌더링 시간 제외).
+  격리 MCP Apps 호스트의 브라우저에서 JPEG 512×286 실제 로드와 콘솔 오류 없음도 확인했다.
+  graft in sync·코드 지도 누락 0·문서 검사 통과(기존 CURRENT_STATUS 크기 경고 유지).
+  Claude 최종 대조(`closing.json`)는 코드 수정·격리 검증 완료 및 통합 시험실 병합에 동의했다.
+  실제 채팅 표시 검증 대기를 유지하며 전체 완료로 판정하지 않는다.
+- **아직 전체 완료가 아니다.** 로컬 MCP Apps 자동 표시 지원 여부는 Codex·Claude 실제 채팅 화면마다
+  확인해야 한다. 위 시험 화면은 실클라이언트 채팅의 성공 증거가 아니다. 호스트에 따라 네이티브 이미지와
+  위젯이 동시에 표시되거나 결과 조회마다 카드가 생길 수 있다. 둘 다 미지원이면 자체 이미지 표시 기능이
+  필요하다. 기존 대화의 MCP 프로세스/도구 설명은 재로딩 전까지 이전 버전일 수 있다.
+- 아래의 HTML 경로·참조를 최종 답변에 넣으라는 과거 안내는 이 절로 대체한다. 과거 측정은 당시 기록이다.
 
 ## Codex·Claude 공통 진행·결과 규격 (2026-10-15)
 
@@ -32,8 +71,8 @@ owner: Codex · reviewer: Claude · status: 코드·모의 연결·실행 서버
 - 공통 최종 답변의 순서는 **상태 → 조건(모델·비율·해상도·길이 중 확인된 값) → 위치 → 이미지**다.
   어댑터가 같은 `card_text`를 만들며 네이티브 이미지 응답과 표시 파일이 이 내용을 함께 사용한다.
   결과 조회에는 이미 권한 확인한 계획의 표시 메타만 추가하며 별도 조회·프롬프트 원문 추가 노출은 없다.
-- Codex는 `display.reference`, Claude는 네이티브 ImageContent 또는 같은 HTML의 `display.path`를
-  지원되는 파일 미리보기·링크로 제공한다. 이미지가 안 보이는 클라이언트에서 텍스트만 제공하고 끝내지 않는다.
+- 이미지 전달은 위 '네이티브 결과 화면과 중복 링크 제거' 절을 따른다. 과거의 Codex `display.reference`와
+  Claude HTML 경로 출력 지시는 폐기했다. 표시가 불가능하면 지원되는 표시 도구 또는 제한 안내를 사용한다.
   HTML의 메타 문자열은 escape하고, 이미지 데이터는 기존 JPEG 검증을 거친다.
 - 동일 규격은 같은 상태 판단·정보 순서·결과 카드 내용이다. 각 앱의 렌더러·터미널 능력까지 동일하게 만드는 것은
   이 MCP의 기능이 아니다. Claude에 Codex 전용 참조를 출력하거나 터미널에 이미지가 보였다고 주장하지 않는다.
