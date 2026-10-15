@@ -35,8 +35,11 @@ set "BACKEND=http://127.0.0.1:8012"
 REM Isolated backend settings. MV_agent.bat performs the Python/CLI checks, starts
 REM the backend first, waits for health, then starts the Vite frontend and opens it.
 set "PORT=%BACKEND_PORT%"
-set "CONTENT_HUB_DATA=%ROOT%backend\data_test"
-set "CONTENT_HUB_DB=%ROOT%backend\data_test\db\content_hub.db"
+REM MVHUB_DEV_DATA_DIR lets the integration room run on the SAME data as dev (docs\WORKROOMS.md,
+REM Jay 2026-10-15). Same ports too, so only one of them runs at a time: the port checks below stop the second.
+if not defined MVHUB_DEV_DATA_DIR set "MVHUB_DEV_DATA_DIR=%ROOT%backend\data_test"
+set "CONTENT_HUB_DATA=%MVHUB_DEV_DATA_DIR%"
+set "CONTENT_HUB_DB=%MVHUB_DEV_DATA_DIR%\db\content_hub.db"
 set "CONTENT_HUB_AUTH=1"
 set "CONTENT_HUB_NO_PROXY=1"
 set "CONTENT_HUB_SERVER_SYNC=0"
@@ -110,6 +113,7 @@ if defined PORT_PID (
 
 echo.
 echo [DEV ONE-CLICK] frontend = %FRONTEND_URL%    api/data = %BACKEND%
+echo   code = "%ROOT%"    data = "%MVHUB_DEV_DATA_DIR%"
 echo   Edit .tsx/.css and save -^> the page updates instantly.
 echo   Backend (.py) changes -^> restart this file.
 echo   Generation is isolated from the team DB but spends REAL Higgsfield credits.
