@@ -69,6 +69,21 @@ it("a card whose generation has not answered yet is a blank body, not the 'gener
   expect([logo(), content() !== null]).toEqual([null, true]);
 });
 
+// Codex 리뷰 P2 — 제출 성공으로 표식이 지워진 뒤 첫 조회 응답 전에도 '생성 중' 로고다(빈 바탕으로 바뀌지 않는다) · 첫 조회가 실패해 다시 묻는 동안도
+it("a card whose submission marker was just cleared keeps the 'generating' logo until the first answer, and so does a failed first poll", async () => {
+  const attempt = { attemptId: "t1", generationId: "c", createdAt: 0 };
+  const withAttempt: Scene = { ...sceneWith("scene-C", "c"), cards: [{ id: "card-c", kind: "generation", genId: "c", x: 0, y: 0, pendingGenerationAttempts: [attempt] }] };
+  await act(async () => root!.render(board(withAttempt)));
+  expect(logo()).not.toBeNull();
+  await act(async () => root!.render(board(sceneWith("scene-C", "c")))); // 제출 성공 — 표식이 지워졌다, 조회 응답은 아직
+  expect(logo()).not.toBeNull();
+  // 처음 보는 카드의 첫 조회가 실패하면(다시 묻는 동안) 전처럼 '생성 중'
+  await act(async () => root!.render(board(sceneWith("scene-D", "d"))));
+  expect(logo()).toBeNull();
+  await act(async () => polls[polls.length - 1].resolve(new Response("{}", { status: 500 })));
+  expect(logo()).not.toBeNull();
+});
+
 it("switching to a scene seen before: the leaving scene is not painted in the gap, then its finished cards appear without the logo", async () => {
   cache.putGen(generation("a")); // 앞서 본 씬의 카드
   await act(async () => root!.render(board(sceneWith("scene-B", "b"))));

@@ -133,6 +133,11 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
     ledgerRef.current = newColorGeneration(ledgerId, authRef.current.epoch);
   }, [ledgerId]);
   useLayoutEffect(() => { liveIdsRef.current = new Set(genIdSig.split(",").filter(Boolean)); }, [genIdSig]);
+  // 제출 표식이 붙었던 생성물은 '생성 중인 줄 아는' 것이다 — 표식이 지워진 뒤 첫 조회 응답 전에도 빈 바탕이 아니라 '생성 중' 로고(Codex 리뷰 P2)
+  useLayoutEffect(() => {
+    const ids = pendingAttemptSig.split(",").filter(Boolean);
+    if (ids.length) setAnsweredIds((prev) => addIds(prev, ids));
+  }, [pendingAttemptSig]);
 
   // 장부·ref·캐시의 단일 소유자. UI 명령은 현재 선택을 동기적으로 전달한다.
   // 티켓은 자신의 세대를 소유하므로 같은 씬/계정 문자열로 돌아와도 옛 end가 새 pending을 내리지 않는다.
@@ -270,6 +275,7 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
         batch = await api.getGenerationsBatch(pollIds, assertCurrent, { allowPartial: true });
       } catch (error) {
         if (error instanceof ColorScopeChangedError || !current()) return;
+        setAnsweredIds((prev) => (current() ? addIds(prev, pollIds) : prev)); // 물었는데 못 받았다 — 다시 묻는 동안은 전처럼 '생성 중'
         // 일시 오류는 기존 캐시를 유지하고 같은 묶음을 다시 시도한다. 캔버스가 열려 있는 동안은
         // 중복 방지를 위해 App 보조 watcher가 쉬므로 여기서 재시도 책임을 가진다.
         if (alive && seq === requestSeq) timer = window.setTimeout(() => tick(pollIds), 2500);
@@ -407,8 +413,10 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
     setMissingIds((prev) =>
       [...prev].every((id) => live.has(id)) ? prev : new Set([...prev].filter((id) => live.has(id))),
     );
+    // 제출 표식의 생성물은 아직 카드에 안 붙었어도 남긴다(위 '생성 중인 줄 아는' 표시)
+    const keep = new Set([...live, ...pendingAttemptSig.split(",").filter(Boolean)]);
     setAnsweredIds((prev) =>
-      [...prev].every((id) => live.has(id)) ? prev : new Set([...prev].filter((id) => live.has(id))),
+      [...prev].every((id) => keep.has(id)) ? prev : new Set([...prev].filter((id) => keep.has(id))),
     );
   }, [genIdSig]);
 
