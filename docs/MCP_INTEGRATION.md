@@ -13,6 +13,51 @@ owner: Codex · reviewer: Claude · status: 완료 · updated: 2026-10-15
 원래 MCP 작업실의 검증 이력이며 최신 dev와 합친 대상의 검증 결과는 WORKROOMS에 따로 기록한다.
 시험실 실행기에서는 실제 생성·CLI 모델 조회·전역 LLM 등록을 검증하지 않는다.
 
+## 공동 검토 후 운영 보완 (2026-10-15)
+
+owner: Codex · reviewer: Claude · status: 완료(보완 코드·연결 검증) · updated: 2026-10-15
+
+- 사용자 요청: “보완순서대로 보완”, 이어 통합 시험실의 Codex·Claude 연결 허용 승인.
+- 작업실: `codex/mvhub-mcp-fixes`, 기준은 통합 `15ab0bfd`. 기존 MCP 작업실의 전체 미커밋 구현을
+  건드리지 않고 검증한 MCP 코드가 들어 있는 통합 시점에서 분기했다. 이 분기는 다른 기능도 포함하므로 독립 배포 후보가 아니다.
+- touched_paths: `backend/app/{repo,routers}/mcp_v2.py`, `backend/tests/test_mcp_persistent.py`,
+  `frontend/src/lib/mcpCanvasTasks.ts`, `frontend/src/components/mcp/{McpConnection,McpRegistration}.tsx`,
+  `frontend/tests/{mcpCanvasTasks,mcpRegistration}.test.tsx`, 이 문서와 엔드포인트 색인.
+- 실제 사용자 설정: 구형 `8016`에서 통합 `8012`의 계정 범위 영속 연결로 Codex·Claude를 등록했다.
+  어댑터 경로가 달라 보수적인 자동 교체가 중단되어 승인 범위 안에서 `mvhub` 항목만 이관했다.
+  각 설정 옆 `*.mvhub-migration-backup-*`에 원본을 보관했고 다른 설정의 파싱 결과 불변을 확인했다.
+  두 설정에서 각각 새 SDK 프로세스를 띄워 9개 도구·계정 범위 연결·공간 목록 조회를 확인했다.
+  새 Codex CLI와 Claude Code에서도 `check_connection`→`connect`를 실제 호출해
+  `connected=true, scope=account, can_execute=true`를 확인했다(각 19.95초·8.81초, exit 0).
+  Claude 실제 모델은 `claude-opus-5-5`, Codex는 `gpt-6.1-sol`/medium 요청이며 출력에 실제 모델 ID는 미노출이다.
+  이미 실행 중인 LLM 채팅의 도구 목록 재로딩이나 실제 이미지 렌더링은 별도다.
+- 등록 오류는 고정 허용 목록의 설명만 공개한다. 파일 누락·Windows 암호화·저장 권한·설정 변경을
+  구분하며 알 수 없는 예외 원문·자격정보는 반환하지 않는다. 실패한 새 권한은 해제하고 이전 권한은 유지한다.
+- 일부 생성 접수 후 중단한 계획은 재개하지 않는다. 응답의 `next_step`은 `submitted` 재생성 금지,
+  `uncertain/submitting` 확인 전 재시도 금지, `attention`의 `pending/rejected`만 원인 해결 후 새 계획에 넣도록 안내한다.
+- 캔버스 추가 실패는 서버 조회 회차를 15→30→60→최대 120초로 늦춘다. 같은 회차의 다른 작업은 계속 처리하고
+  정상 회차에는 15초로 복귀한다. 장면 누락·404를 완료로 바꾸지 않는다. 새 작업도 최대 120초 기다릴 수 있다.
+- 설정 창의 접힌 **캔버스 대기 작업**에서 현재 공간을 수동 조회·취소한다. 앱 인증·공간 권한을 확인하며
+  `pending→cancelled`와 `pending→done`은 서로 뒤집지 않는다. 같은 종료 요청은 멱등 처리한다.
+  취소 후 명시적인 `add_to_canvas` 재요청은 새 작업 ID를 발급하여 옛 완료/취소 응답·영수증을 분리한다.
+  이미 진행 중인 로컬 카드 쓰기는 되돌리지 않는다. 재요청 전 캔버스를 확인해야 중복 카드를 피할 수 있다.
+- 설계 대조: 실제 Claude `claude-fable-5-1`, high 요청(실행 추론 메타데이터 미노출),
+  세션 `19ebe5d7-a892-4712-8f44-632e83b2c734`; 두 차례 좁은 확인으로 취소 재요청 ID와 조회 회차 백오프에 합의.
+- 관련 검증: 백엔드 122개, 프런트 77개, 어댑터 21개 통과(변경 없는 범위의 같은 환경 결과 재사용).
+  인벤토리 시험 2개·타입 포함 빌드·아키텍처 검사 통과. 코드 지도 누락 0, graft in sync.
+  기존 App 청크 500kB와 현황판 문서 예산 경고 유지. DB 스키마 변경·유료 생성·배포 없음.
+- 별도 Claude 독립 리뷰: 실제 `claude-fable-5-1`, 세션 `392baf1e-c4f1-436f-84a9-51ab9f7c18e7`.
+  읽기 도구만 제공하고 역할 본문을 명시 주입했다(네이티브 역할 자동 로드·OS 격리의 증거는 아님).
+  계정 전환 403 안내·파일 읽기 권한 문구·이미 완료된 작업 취소 404 뒤 목록 갱신을 수정했고,
+  실제 `add_to_canvas` 경로의 취소 후 재요청과 완료 후 멱등성 시험을 추가했다.
+  최종 대조에서 지적 해결·새 결함 없음으로 판정했다. 시험 실행은 Codex 측 증거이며 추론 메타데이터는 미확인.
+- 통합 재시작 준비: 실사용 모드의 진행 중 생성 요청 0건을 확인했고 DB 3개를 SQLite 백업·quick_check 했다.
+  복구용 사본은 `%TEMP%/mvhub-mcp-pre-restart-20261015/`이며 DB 이외 미디어·브라우저 상태를 복구하지 않는다.
+  통합 반영·화면 확인 결과는 아래 검토 근거 폴더의 `integration.json`에 따로 남긴다.
+- 근거: `%TEMP%/mvhub-mcp-review-20261015-op_jqn6a/{design-followup,retry-agreement}.json`,
+  `%TEMP%/mvhub-registered-verification.json`, `%TEMP%/mvhub-llm-smoke-20261015/`,
+  `%TEMP%/mvhub-mcp-fixes-review-20261015/`.
+
 ## 계정 기준 연결과 대화창 결과 표시 (2026-10-15)
 
 이 절이 아래 초기 v2의 공간 고정 계약을 대체한다. HTTP 프로토콜 번호는 2를 유지한다.
