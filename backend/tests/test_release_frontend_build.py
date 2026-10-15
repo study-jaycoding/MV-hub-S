@@ -50,24 +50,31 @@ def test_release_reinstalls_locked_dependencies_and_stops_on_failure(
     assert (calls.read_text().splitlines() if calls.exists() else []) == expected
 
 
-@pytest.mark.skipif(os.name != "nt", reason="PowerShell archive validator")
-@pytest.mark.parametrize("assets,valid", [
-    (["index-test.js", "index-test.js.gz"], True),
-    (["index-test.js", "missing.js.gz"], False),
-    ([], False),
-])
-def test_release_archive_checks_compressed_asset_pairs(tmp_path: Path, assets: list[str], valid: bool) -> None:
+def _archive_probe(
+    tmp_path: Path, assets: list[str], *, extra: tuple[str, ...] = (),
+    missing: str = "", python: bool = False,
+) -> subprocess.CompletedProcess[str]:
     archive = tmp_path / "fixture.zip"
     required = [
         "MV_agent.bat", "update_release.bat", "run_release_update.ps1", "update_release_worker.bat",
         "agent_push.py", "run_agent_session.py", "hf_cli_version.txt", "mvhub.ico",
         "backend/serve.py", "backend/app/main.py", "backend/app/routers/release_update.py",
         "backend/app/services/release_update.py", "backend/requirements.txt", "frontend/dist/index.html",
+        "tools/mcp_adapter/server.py", "tools/mcp_adapter/local_setup.py", "tools/mcp_adapter/requirements.txt",
+        "tools/mcp_adapter/requirements.lock.txt",
     ]
+    if python:
+        required += [
+            "runtime/python/python.exe", "runtime/python/python314.dll",
+            "runtime/python/Lib/site-packages/fastapi/__init__.py",
+            "runtime/python/Lib/site-packages/pip/__init__.py", "backend/.deps_installed",
+            "tools/mcp_adapter/site-packages/mcp/__init__.py",
+        ]
     with zipfile.ZipFile(archive, "w") as target:
         target.writestr("VERSION.txt", "test")
-        for name in required + ["frontend/dist/assets/" + name for name in assets]:
-            target.writestr(name, "fixture")
+        for name in required + list(extra) + ["frontend/dist/assets/" + name for name in assets]:
+            if name != missing:
+                target.writestr(name, "fixture")
     harness = tmp_path / "archive-probe.ps1"
     harness.write_text("""param([string]$Source,[string]$ArchivePath)
 $ErrorActionPreference = 'Stop'
@@ -80,15 +87,67 @@ foreach ($name in @('Read-ArchiveText', 'Assert-ReleaseArchive')) {
     if (-not $node) { throw "Missing function: $name" }
     . ([scriptblock]::Create($node.Extent.Text))
 }
-$SkipPythonRuntime = $true; $SkipNodeRuntime = $true; $SkipHiggsfieldCli = $true
+$SkipPythonRuntime = SKIP_PYTHON; $SkipNodeRuntime = $true; $SkipHiggsfieldCli = $true
 Assert-ReleaseArchive -ArchivePath $ArchivePath -ExpectedVersion 'test'
-""", encoding="utf-8-sig")
+""".replace("SKIP_PYTHON", "$false" if python else "$true"), encoding="utf-8-sig")
     source = Path(__file__).resolve().parents[2] / "release/make_release.ps1"
-    result = subprocess.run(
+    return subprocess.run(
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(harness),
          "-Source", str(source), "-ArchivePath", str(archive)],
         capture_output=True, text=True, timeout=20,
     )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell archive validator")
+@pytest.mark.parametrize("assets,valid", [
+    (["index-test.js", "index-test.js.gz"], True),
+    (["index-test.js", "missing.js.gz"], False),
+    ([], False),
+])
+def test_release_archive_checks_compressed_asset_pairs(tmp_path: Path, assets: list[str], valid: bool) -> None:
+    result = _archive_probe(tmp_path, assets)
     assert (result.returncode == 0) == valid, result.stderr
     if not valid:
         assert ("no JS/CSS original" if assets else "no frontend JS/CSS") in result.stderr
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell archive validator")
+@pytest.mark.parametrize("name,allowed", [
+    ("tools/stop_local_hub_on_port.ps1", True),
+    ("tools/mcp_adapter/site-packages/pywin32.pth", True),
+    ("tools/mcp_adapter/site-packages/win32/win32api.pyd", True),
+    ("tools/mcp_adapter/test_server.py", False),
+    ("tools/mcp_adapter/test_local_setup.py", False),
+    ("tools/mcp_adapter/README.md", False),
+    ("tools/mcp_adapter/server.py.bak", False),
+    ("tools/mcp_adapter/__pycache__/server.cpython-314.pyc", False),
+    ("tools/mcp_adapter/site-packages/mcp/__pycache__/__init__.cpython-314.pyc", False),
+    ("tools/mcp_adapter/site-packages-other/leak.py", False),
+    ("tools/unrelated.py", False),
+])
+def test_release_mcp_tools_allowlist(tmp_path: Path, name: str, allowed: bool) -> None:
+    result = _archive_probe(tmp_path, ["index-test.js"], extra=(name,))
+    assert (result.returncode == 0) == allowed, result.stderr
+    if not allowed:
+        assert "forbidden local/test data" in result.stderr
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell archive validator")
+@pytest.mark.parametrize("missing", [
+    "tools/mcp_adapter/server.py",
+    "tools/mcp_adapter/local_setup.py",
+    "tools/mcp_adapter/requirements.txt",
+    "tools/mcp_adapter/requirements.lock.txt",
+    "tools/mcp_adapter/site-packages/mcp/__init__.py",
+])
+def test_release_requires_mcp_adapter_and_bundled_sdk(tmp_path: Path, missing: str) -> None:
+    result = _archive_probe(tmp_path, ["index-test.js"], missing=missing, python=True)
+    assert result.returncode != 0
+    assert "missing required file" in result.stderr
+    assert missing in result.stderr
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell archive validator")
+def test_release_accepts_mcp_sdk_with_bundled_python(tmp_path: Path) -> None:
+    result = _archive_probe(tmp_path, ["index-test.js"], python=True)
+    assert result.returncode == 0, result.stderr

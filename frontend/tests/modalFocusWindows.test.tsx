@@ -46,6 +46,7 @@ import { GradeStepModal } from "../src/components/GradeStepModal";
 import { InfoPopup } from "../src/components/InfoPopup";
 import { ManageAccount } from "../src/components/ManageAccount";
 import { MediaPreview } from "../src/components/MediaPreview";
+import { McpConnection } from "../src/components/mcp/McpConnection";
 import { SettingsPanel } from "../src/components/SettingsPanel";
 import { ShortcutsWindow } from "../src/components/ShortcutsWindow";
 import { ThumbnailGrid } from "../src/components/ThumbnailGrid";
@@ -171,6 +172,16 @@ describe("설정 창 + 옆 패널 + 단축키 창", () => {
   const float = () => document.querySelector<HTMLElement>(".settings-float")!;
   const flyout = () => document.querySelector<HTMLElement>(".settings-group-flyout");
   const shortcuts = () => document.querySelector<HTMLElement>(".sc-float");
+
+  it("AI·MCP 연결을 누르면 설정 닫기 콜백 뒤에 연결 열기를 호출한다", async () => {
+    const order: string[] = [];
+    act(() => root.render(<SettingsPanel onClose={() => order.push("close")} onOpenMcp={() => order.push("mcp")} />));
+    await settle();
+    const button = [...document.querySelectorAll<HTMLButtonElement>(".settings-float button")].find((item) => item.textContent === "AI·MCP 연결 열기")!;
+    expect(button).toBeDefined();
+    press(button);
+    expect(order).toEqual(["close", "mcp"]);
+  });
 
   it("옆 패널은 설정 창과 한 영역이다 — Tab 이 둘 사이를 돌고 뒤 화면으로는 나가지 않는다", async () => {
     act(() => root.render(page(<SettingsPanel onClose={noop} onImported={noop} />)));
@@ -313,6 +324,44 @@ describe("매체에 초점이 있을 때의 Esc — 앱은 양보하지 않는�
 
 // 폴더 창이 뜬 동안 App 이 상단바에 inert 를 넘긴다(tests/resolveSelectionRender) — 여기서는 상단바가 그것을 머리 전체에 거는지만 본다.
 describe("상단바", () => {
+  it.each(["닫기", "Escape"])("설정에서 MCP를 연 뒤 %s로 닫으면 계정 아바타로 초점을 돌린다", async (close) => {
+    const onOpenMcp = vi.fn();
+    function Screen() {
+      const [open, setOpen] = useState(false);
+      const workspace = { scope: "personal" as const, id: null, name: null };
+      return <>
+        <TopBar filters={{ tab: "my" } as never} onTab={noop} onSearch={noop} onWorkspaceSwitched={noop}
+          workspaceContext={workspace} onWorkspaceContextChange={noop} onImported={noop}
+          onOpenAssets={noop} onOpenAdmin={noop} hasUnreadComments={false} onOpenNotificationComment={noop} onNotificationsChanged={noop}
+          onOpenMcp={() => { onOpenMcp(); setOpen(true); }} />
+        <McpConnection open={open} onClose={() => setOpen(false)} authReady authKey="account" workspace={workspace}
+          activeSceneId={null} flushScenePending={noop} patchSceneById={() => false}
+          prepareCanvasGenerationBatch={async () => []} settleCanvasGeneration={noop} discardCanvasGeneration={noop} />
+      </>;
+    }
+    act(() => root.render(<Screen />));
+    expect([...host.querySelectorAll("header button")].some((button) => button.textContent === "AI 연결")).toBe(false);
+    const avatar = host.querySelector<HTMLElement>(".acct-avatar-btn")!;
+    press(avatar);
+    await settle();
+    const settings = [...document.querySelectorAll<HTMLButtonElement>(".acct-pop button")].find((item) => item.textContent?.includes("Setting"))!;
+    expect(settings).toBeDefined();
+    press(settings); await settle();
+    const mcp = [...document.querySelectorAll<HTMLButtonElement>(".settings-float button")].find((item) => item.textContent === "AI·MCP 연결 열기")!;
+    expect(mcp).toBeDefined();
+    press(mcp); await settle();
+    expect(onOpenMcp).toHaveBeenCalledTimes(1);
+    expect(document.querySelector(".settings-float")).toBeNull();
+    expect(document.querySelector(".acct-pop")).toBeNull();
+    const dialog = document.querySelector<HTMLElement>(".mcp-dialog")!;
+    expect(dialog.contains(active())).toBe(true);
+    if (close === "Escape") key("Escape");
+    else press(dialog.querySelector<HTMLElement>('button[aria-label="닫기"]')!);
+    await settle();
+    expect(document.querySelector(".mcp-dialog")).toBeNull();
+    expect(active()).toBe(avatar);
+  });
+
   it("inert 를 받으면 머리 전체가 inert 다(로고·탭·검색·Assets — Tab 으로 닿지 않는다). 풀면 다시 닿는다", () => {
     const bar = (inert: boolean) => (
       <TopBar filters={{ tab: "my" } as never} onTab={noop} onSearch={noop} onWorkspaceSwitched={noop}

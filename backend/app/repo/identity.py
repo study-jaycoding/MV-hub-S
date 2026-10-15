@@ -525,6 +525,10 @@ _REMAP_PLAN: tuple[tuple[str, str, str], ...] = (
     ("task_assignment", "added_by", "plain"),  # 배정한 PM actor(routers add_assignment 가 actor_id 저장 → acct: 가능) — plain
     # 캔버스 씬 백업 owner(PK 선두) — 충돌(양 신원 행 공존) 시 user_ 행 유지·acct: 행 폐기(백업 미러라 손실 무해).
     ("scene_backup", "owner_uid", "ignore_del"),
+    ("ai_generation_batch", "owner_uid", "plain"),
+    ("mcp_client", "owner_uid", "plain"),
+    ("mcp_generation_plan", "owner_uid", "plain"),
+    ("mcp_canvas_task", "owner_uid", "plain"),
     # 마지막으로 본 생성물 표시(PK 에 owner_uid) — 캔버스 개인 상태라 scene_backup 과 같은 취급.
     ("generation_view", "owner_uid", "ignore_del"),
     # 캔버스 카드 소속 owner(PK 선두) — 충돌 시 '제거 표시(removed_at)' 를 보존하며 병합.

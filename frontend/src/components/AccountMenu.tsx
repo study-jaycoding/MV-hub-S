@@ -53,6 +53,7 @@ export function AccountMenu({
   onImported,
   localHub,
   manageEnabled,
+  onOpenMcp,
 }: {
   provider: ProviderIdentity | null;
   account?: Account | null;
@@ -64,6 +65,7 @@ export function AccountMenu({
   onImported?: (msg: string) => void; // 라이브러리 변경 후 리로드+안내(휴지통 이동 등)
   localHub?: boolean; // 로컬 허브(MV_agent, AUTH off) = 내 CLI 가 이 PC 에 있음 → 워크스페이스 전환 가능
   manageEnabled?: boolean; // PM 관리 기능 on — 꺼진 서버엔 예산(planning) 조회를 아예 안 보낸다
+  onOpenMcp?: () => void;
 }) {
   const [list, setList] = useState<Workspace[]>([]);
   const [reported, setReported] = useState<ReportedHfStatus | null>(null);
@@ -536,6 +538,7 @@ export function AccountMenu({
         <SettingsPanel
           onClose={() => setSettingsOpen(false)}
           onImported={onImported}
+          onOpenMcp={onOpenMcp ? () => { setOpen(false); avatarRef.current?.focus(); onOpenMcp(); } : undefined}
         />,
         document.body,
       )}

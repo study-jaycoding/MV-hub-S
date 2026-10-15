@@ -420,6 +420,9 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     if (!activeScene) return false;
     return patchSceneById(activeScene.id, patch);
   };
+  const refreshSceneById = useCallback((sceneId: string) => {
+    setScenes((previous) => mergePatchedSceneList(previous, listScenes(null), activeSceneIdRef.current, sceneId));
+  }, []);
 
   // 탭 순서 바꾸기 관문 — 드래그 결과를 **'이 씬을 저 씬 앞으로'라는 연산**으로 받는다.
   //  ★목록 스냅샷을 받으면 안 된다: 끌고 있는 동안 다른 창·DB 백업 복구가 추가한 씬이 그 스냅샷에는
@@ -489,6 +492,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     renameScene,
     removeSceneById,
     patchSceneById,
+    refreshSceneById,
     patchActiveScene,
     reorderScenes,
     setSceneWorkspace,

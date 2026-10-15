@@ -735,6 +735,21 @@ CREATE TABLE IF NOT EXISTS nas_result_scan (
     files        INTEGER NOT NULL DEFAULT 0,
     finished_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ai_generation_batch (
+    id TEXT PRIMARY KEY,
+    owner_uid TEXT NOT NULL,
+    status TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0,
+    source TEXT NOT NULL DEFAULT 'mcp',
+    client_name TEXT NOT NULL DEFAULT '',
+    plan TEXT NOT NULL,
+    items TEXT NOT NULL,
+    approved_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_generation_batch_owner ON ai_generation_batch(owner_uid, created_at);
+
 CREATE TABLE IF NOT EXISTS nas_result_file (
     project_id   TEXT NOT NULL,
     scan_id      TEXT NOT NULL,
@@ -748,4 +763,50 @@ CREATE TABLE IF NOT EXISTS nas_result_file (
     id_conflict  INTEGER NOT NULL DEFAULT 0,     -- 1 = PNG 에 같은 키로 다른 번호가 있었다(고르지 않음 → 판정 충돌)
     status       TEXT NOT NULL,                  -- ok | undetermined | pending
     PRIMARY KEY (project_id, path)
+);
+
+-- Local MCP v2: per-client revocation; no credential grants general API access.
+CREATE TABLE IF NOT EXISTS mcp_client (
+    id TEXT PRIMARY KEY,
+    secret_hash TEXT NOT NULL UNIQUE,
+    hub_id TEXT NOT NULL,
+    owner_uid TEXT NOT NULL,
+    account_email TEXT NOT NULL,
+    password_stamp TEXT,
+    workspace TEXT NOT NULL,
+    name TEXT NOT NULL,
+    can_execute INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen_at TEXT,
+    revoked_at TEXT
+);
+CREATE TABLE IF NOT EXISTS mcp_reference (
+    id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL REFERENCES mcp_client(id),
+    source TEXT NOT NULL,
+    version TEXT NOT NULL,
+    reference TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mcp_generation_plan (
+    id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL REFERENCES mcp_client(id),
+    owner_uid TEXT NOT NULL,
+    account_email TEXT NOT NULL,
+    workspace TEXT NOT NULL,
+    title TEXT NOT NULL,
+    items TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'planned',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS mcp_canvas_task (
+    id TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL REFERENCES mcp_generation_plan(id),
+    owner_uid TEXT NOT NULL,
+    account_email TEXT NOT NULL,
+    workspace TEXT NOT NULL,
+    scene_id TEXT NOT NULL,
+    generation_ids TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(plan_id,scene_id)
 );

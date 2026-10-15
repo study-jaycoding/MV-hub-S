@@ -120,6 +120,43 @@ function Assert-PythonRuntimeTree {
     Write-Host "      Python runtime verified ($Label): $($RuntimeIdentity[0]) 64-bit, $ExpectedDll"
 }
 
+function Assert-McpAdapterTree {
+    param([string]$Root, [string]$Label = "runtime")
+
+    $Exe = Join-Path $Root "runtime\python\python.exe"
+    $Adapter = Join-Path $Root "tools\mcp_adapter\server.py"
+    $Setup = Join-Path $Root "tools\mcp_adapter\local_setup.py"
+    $Packages = Join-Path $Root "tools\mcp_adapter\site-packages"
+    if (-not (Test-Path -LiteralPath $Exe -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $Adapter -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $Setup -PathType Leaf)) {
+        throw "Bundled MCP validation failed ($Label): Python or adapter is missing."
+    }
+    # -S excludes backend/user .pth files; only the isolated SDK's pywin32 .pth is loaded.
+    $Probe = @'
+import importlib.metadata, pathlib, site, sys
+root = pathlib.Path(sys.argv[1]).resolve()
+site.addsitedir(str(root))
+import mcp, mcp.client.stdio, pydantic, pywintypes, win32api
+for module in (mcp, mcp.client.stdio, pydantic, pywintypes, win32api):
+    if not pathlib.Path(module.__file__).resolve().is_relative_to(root):
+        raise RuntimeError('MCP import escaped bundled packages: ' + module.__name__)
+version = importlib.metadata.version('mcp')
+if version != '2.3.0':
+    raise RuntimeError('Unexpected MCP SDK version: ' + version)
+print('MCP ' + version + ' isolated imports OK')
+'@
+    $Output = @(& $Exe -I -S -B -c $Probe $Packages 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Bundled MCP validation failed ($Label): $($Output -join ' ')"
+    }
+    $Help = @(& $Exe -I -S -B -X utf8 $Adapter --help 2>&1)
+    if ($LASTEXITCODE -ne 0 -or ($Help -join ' ') -notmatch "usage:") {
+        throw "Bundled MCP adapter failed ($Label): $($Help -join ' ')"
+    }
+    Write-Host "      MCP runtime verified ($Label): $($Output -join ' ')"
+}
+
 function Assert-ReleaseArchive {
     param(
         [string]$ArchivePath,
@@ -147,6 +184,11 @@ function Assert-ReleaseArchive {
             "backend/app/services/release_update.py",
             "backend/requirements.txt",
             "frontend/dist/index.html",
+            "tools/mcp_adapter/server.py",
+            "tools/mcp_adapter/local_setup.py",
+            "tools/mcp_adapter/requirements.txt",
+            "tools/mcp_adapter/requirements.lock.txt",
+            "tools/mcp_adapter/site-packages/mcp/__init__.py",
             "runtime/python/python.exe",
             "runtime/python/Lib/site-packages/fastapi/__init__.py",
             "runtime/python/Lib/site-packages/pip/__init__.py",
@@ -158,7 +200,7 @@ function Assert-ReleaseArchive {
         )
         if ($SkipPythonRuntime) {
             $Required = @($Required | Where-Object {
-                $_ -notmatch "^(runtime/python/|backend/\.deps_installed$)"
+                $_ -notmatch "^(runtime/python/|backend/\.deps_installed$|tools/mcp_adapter/site-packages/)"
             })
         }
         if ($SkipNodeRuntime) {
@@ -231,7 +273,10 @@ function Assert-ReleaseArchive {
             $_ -match "^frontend/(src|tests|node_modules)(/|$)" -or
             $_ -match "^frontend/.*\.(map|tsbuildinfo)$" -or
             $_ -match "^(docs|deploy|release|predeploy-reports)(/|$)" -or
-            ($_ -match "^tools(/|$)" -and $_ -ne "tools/stop_local_hub_on_port.ps1") -or
+            ($_ -match "^tools(/|$)" -and
+                $_ -notmatch "^tools/(stop_local_hub_on_port\.ps1|mcp_adapter/(server\.py|local_setup\.py|requirements\.txt|requirements\.lock\.txt))$" -and
+                $_ -notmatch "^tools/mcp_adapter/site-packages/") -or
+            $_ -match "^tools/mcp_adapter/(.*/)?__pycache__(/|$)" -or
             $_ -match "^(test_.*\.bat|setup_clone_git\.bat|update_git\.bat)$" -or
             $_ -match "(^|/)\.env($|\.)" -or
             $_ -match "(^|/)(publish_target|INSTALL_SOURCE)\.txt$"
@@ -511,12 +556,18 @@ foreach ($Name in $RootFiles) {
 }
 
 # Port-cleanup helper - MV_agent.bat runs it before starting the hub. tools\ as a whole is
-# excluded from bundles, so ship just this file; without it worker PCs printed a red
+# excluded from bundles; without this file worker PCs printed a red
 # PowerShell "-File does not exist" error and skipped stale-hub cleanup entirely.
 $PortHelper = Join-Path $ProjectRoot "tools\stop_local_hub_on_port.ps1"
 if (Test-Path -LiteralPath $PortHelper) {
     New-Item -ItemType Directory -Force -Path (Join-Path $Stage "tools") | Out-Null
     Copy-Item -LiteralPath $PortHelper -Destination (Join-Path $Stage "tools\stop_local_hub_on_port.ps1") -Force
+}
+
+$McpAdapterDir = Join-Path $Stage "tools\mcp_adapter"
+New-Item -ItemType Directory -Force -Path $McpAdapterDir | Out-Null
+foreach ($Name in @("server.py", "local_setup.py", "requirements.txt", "requirements.lock.txt")) {
+    Copy-Item -LiteralPath (Join-Path $ProjectRoot "tools\mcp_adapter\$Name") -Destination (Join-Path $McpAdapterDir $Name)
 }
 
 Set-Content -LiteralPath (Join-Path $Stage "VERSION.txt") -Value $Version -Encoding ASCII
@@ -562,6 +613,15 @@ if (-not $SkipPythonRuntime) {
     }
 
     Assert-PythonRuntimeTree -RuntimeDir $RuntimeDir -Label "staging"
+
+    # The SDK shares only Python's executable/stdlib, never the backend dependencies.
+    $McpPackages = Join-Path $McpAdapterDir "site-packages"
+    & $Python.Exe -m pip install --no-deps --no-compile --ignore-installed --target $McpPackages `
+        -r (Join-Path $McpAdapterDir "requirements.lock.txt")
+    if ($LASTEXITCODE -ne 0) {
+        throw "pip install into bundled MCP packages failed"
+    }
+    Assert-McpAdapterTree -Root $Stage -Label "staging"
 
     $RequirementsHash = Get-FileDigestHex -Path (Join-Path $ProjectRoot "backend\requirements.txt") -Algorithm MD5
     Set-Content -LiteralPath (Join-Path $Stage "backend\.deps_installed") -Value $RequirementsHash -Encoding ASCII
@@ -658,6 +718,7 @@ try {
             Assert-PythonRuntimeTree `
                 -RuntimeDir (Join-Path $ArchiveVerifyRoot "runtime\python") `
                 -Label "finished archive"
+            Assert-McpAdapterTree -Root $ArchiveVerifyRoot -Label "finished archive"
         }
         finally {
             Remove-Item -LiteralPath $ArchiveVerifyRoot -Recurse -Force -ErrorAction SilentlyContinue

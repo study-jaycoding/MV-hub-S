@@ -49,6 +49,7 @@ release/publish_target.txt
 /logs/
 # 서버 자동시작 런타임 경로(Python·Node) — 로그 삭제와 분리한 머신 로컬 설정
 /.mvhub-runtime/
+/.mvhub-workroom.json
 # 백업 원격 복제 대상 경로(머신별 설정)
 tools/backup_replica_target.txt
 # 옵시디언 보관소 개인 설정(사람마다 다름 — 저장소에 올리지 않는다)
