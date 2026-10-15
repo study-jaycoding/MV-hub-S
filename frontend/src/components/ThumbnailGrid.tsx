@@ -849,10 +849,14 @@ export function ThumbnailGrid(props: Props) {
         onPointerDownCapture={releaseResolveScrollGuard}
       >
         <div className="gen-grid-head" />
+        {/* itemSize = 아직 재지 않은 줄의 높이 예상(카드 한 줄) — 없으면 virtua 가 작은 값으로 짐작해, 새로 붙을 때 화면에 들 줄보다 훨씬
+            많이(20줄 = 140장) 그렸다가 잰 뒤 7줄로 줄였다(69회차 격리 실측: 공유 컷 카드 화면 → 워크스페이스 클릭 직후 긴 작업 약 80ms —
+            virtua 크기 측정 약 28ms·Layout 약 24ms). 잰 줄은 잰 높이를 쓴다. */}
         <Virtualizer
           ref={vRef}
           scrollRef={gridRef}
           data={rowModel.rows}
+          itemSize={isList ? Math.round(300 * scale) : Math.round(180 * scale) + 12}
           bufferSize={400}
           startMargin={isList ? 10 : 14}
           keepMounted={keepMounted}
