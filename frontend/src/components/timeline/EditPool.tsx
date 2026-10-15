@@ -291,6 +291,9 @@ export function EditPool({
       event.preventDefault();
       event.stopPropagation();
       if (dragRef.current?.moved) return; // 끄는 중의 휠 클릭은 메뉴가 아니다(끌기는 이어진다)
+      // 카드 위 확인판(공유·보류 예/아니오 — Esc 겹이라 가림이다)·떠 있던 창·메뉴 위나 그것을 닫는 휠 누름도 메뉴가 아니다 — 열면 초점이
+      //  메뉴로 가 이어 누른 Enter 가 확인판 대신 트랙을 골랐다(68회차 Codex · 조작 규칙 4)
+      if (contextMenuCovered(event.button)) return;
       onMenu(item.gen, event.clientX, event.clientY);
     },
   });

@@ -882,6 +882,57 @@ it("풀 카드의 호버 단추 — S·T·C·ⓘ 는 앱의 동작을 부르고,
   expect(flashed).toEqual([]);
 });
 
+// 68회차(Codex 묶음 리뷰) — 태그 입력칸에 초점이 있을 때 편집기 안의 × 를 누르면 편집 화면이 초점을 되찾으며 편집기를 닫아 click 이 사라졌다 ·
+//  카드 위 확인판(예/아니오)이나 떠 있던 메뉴를 닫는 휠 클릭이 '넣을 트랙' 메뉴까지 열어, 이어 누른 Enter 가 확인판 대신 트랙을 골랐다
+it("풀 카드: 태그 입력 중 편집기 안의 × 는 그 태그를 뗀다 · 확인판 위·메뉴를 닫는 휠 클릭은 트랙 메뉴를 열지 않는다", async () => {
+  world.gens = [gen("a", "c1", { tags: ["컷1", "컷2"] }), gen("b", "c1"), gen("x", "c2")];
+  mountOn("c1");
+  const card = () => poolCards()[0];
+  const part = (selector: string) => card().querySelector<HTMLElement>(selector)!;
+  const menu = () => document.querySelector(".ed-tmenu");
+  // 실제 누름 순서 — 부모(편집 화면)의 잡는 단계 처리를 거친다
+  const leftClick = (target: HTMLElement) => {
+    fire(target, "pointerdown");
+    fire(target, "mousedown");
+    fire(target, "pointerup", { buttons: 0 });
+    fire(target, "mouseup", { buttons: 0 });
+    act(() => target.click());
+  };
+  const wheelClick = (target: HTMLElement) => {
+    fire(target, "pointerdown", { button: 1, buttons: 4 });
+    fire(target, "mousedown", { button: 1, buttons: 4 });
+    fire(target, "pointerup", { button: 1, buttons: 0 });
+    fire(target, "mouseup", { button: 1, buttons: 0 });
+    fire(target, "auxclick", { button: 1, buttons: 0 });
+  };
+
+  act(() => part(".card-tl .card-cm").click()); // T
+  expect(document.activeElement).toBe(part(".cs-tag-input"));
+  leftClick(card().querySelector<HTMLElement>(".te-x")!);
+  await act(async () => {}); // 태그 저장의 끝(덧입힘 기록)
+  expect([cardActions.onSetTags.mock.calls.map(([, tags]) => tags), document.activeElement === part(".cs-tag-input")])
+    .toEqual([[["컷2"]], true]);
+  act(() => { part(".cs-tag-input").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+
+  // S → 보류 → 확인판 위 휠 클릭: 메뉴 없음 · 확인판은 그대로
+  fire(part(".card-sf"), "mousedown");
+  act(() => part(".card-sf").click());
+  act(() => part(".review-held").click());
+  wheelClick(part(".cs-final-yes"));
+  expect(menu()).toBeNull();
+  act(() => part(".cs-final-yes").click());
+  expect(cardActions.onReview.mock.calls.map(([g, action]) => [g.id, action])).toEqual([["a", "held"]]);
+
+  // 떠 있는 메뉴를 닫는 휠 클릭은 다른 카드의 메뉴를 열지 않는다 — 다음 휠 클릭은 연다
+  const thumb = (index: number) => poolCards()[index].querySelector<HTMLElement>(".card-thumb")!;
+  wheelClick(thumb(1));
+  expect(menu()).not.toBeNull();
+  wheelClick(thumb(0));
+  expect(menu()).toBeNull();
+  wheelClick(thumb(0));
+  expect(menu()).not.toBeNull();
+});
+
 // 카드 껍데기는 이제 단추가 아니다(라이브러리 카드의 단추를 안에 두려면 — 단추 안에 단추를 둘 수 없다). Tab 으로 간 카드의 Enter·Space 는
 //  지금처럼 누르기(고르기)이고, 마우스로 누른 뒤 남은 초점의 Space 는 편집 키(재생)다(조작 규칙 8).
 it("풀 카드는 키보드로 누를 수 있다 — Tab 으로 간 초점의 Enter·Space = 고르기, 마우스로 남은 초점의 Space 는 카드가 쓰지 않는다", () => {

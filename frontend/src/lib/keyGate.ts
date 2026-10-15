@@ -238,10 +238,11 @@ export function pressStartedCovered(): boolean {
   return coveredAtPress || backgroundKeysBlocked();
 }
 
-/** 이 우클릭 메뉴(contextmenu)는 위에 뜬 창·메뉴를 닫는 누름에서 왔나 — 그렇다면 뒤 화면의 우클릭 조작(폴더 창 열기)을 하지 않는다.
- *  마우스(button 2)는 그 누름이 시작될 때의 가림, 키보드의 메뉴 키(누름 없이 온다 — button 0·-1)는 지금의 가림을 본다. */
+/** 이 우클릭 메뉴(contextmenu)·휠 클릭(auxclick)은 위에 뜬 창·메뉴를 닫는 누름에서 왔나 — 그렇다면 뒤 화면의 우클릭·휠 클릭 조작(폴더 창·
+ *  트랙 메뉴 열기)을 하지 않는다. 둘 다 손을 뗀 뒤에 와 누름 중의 기록(pressStartedCovered)은 이미 지워졌다.
+ *  마우스(button 2·1)는 그 누름이 시작될 때의 가림, 키보드의 메뉴 키(누름 없이 온다 — button 0·-1)는 지금의 가림을 본다. */
 export function contextMenuCovered(button: number): boolean {
-  return button === 2 && lastPressCovered !== null ? lastPressCovered : backgroundKeysBlocked();
+  return (button === 2 || button === 1) && lastPressCovered !== null ? lastPressCovered : backgroundKeysBlocked();
 }
 
 /** 지금의 초점이 Tab 으로 옮겨 온 것인가(마우스로 눌러 남은 초점이 아니라). `:focus-visible` 은 못 쓴다 — 마우스로 누른 단추도 그 뒤에

@@ -129,6 +129,12 @@ const rightClick = (target: Element, button = 2) => {
 const menuKey = (target: Element) => rightClick(target, -1);
 // 휠 클릭(가운데 단추) — 풀의 카드에서는 넣을 트랙 메뉴(Jay 2026-10-13). button 을 바꾸면 다른 단추의 auxclick(우클릭에도 따라온다)
 const wheelClick = (target: Element, button = 1) => {
+  // 실제 순서대로 누름이 먼저다 — 휠 클릭도 우클릭처럼 그 누름이 시작될 때의 가림을 본다(lib/keyGate contextMenuCovered).
+  //  누름 없이 보내면 앞 누름의 기록이 남아 판정이 틀린다
+  act(() => {
+    target.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button, buttons: 4 }));
+    target.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, button, buttons: 0 }));
+  });
   const event = new MouseEvent("auxclick", { bubbles: true, cancelable: true, button, clientX: 30, clientY: 40 });
   act(() => { target.dispatchEvent(event); });
   return event;
