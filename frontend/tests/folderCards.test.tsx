@@ -1235,10 +1235,11 @@ it("미리 받기: 다른 계정·오래된(3초 넘은) 미리 받기는 이어
   now.mockReturnValue(1_000_000);
   const e037: FolderCardsScope = { projectId: "p1", parent: "e037" };
   prefetchFolderCards("account-a", e037);
+  await settle(); // 응답이 왔다
   now.mockReturnValue(1_000_000 + 3_500);
   show({ scope: e037 });
   await settle();
-  expect(folderCardsApi).toHaveBeenCalledTimes(2); // 3초 넘게 들어가지 않았다 — 새로 묻는다
+  expect(folderCardsApi).toHaveBeenCalledTimes(2); // 받은 뒤 3초 넘게 들어가지 않았다 — 새로 묻는다
   now.mockRestore();
   // 대표 저장 뒤의 다시 받기 — 저장 전에 출발한 미리 받기를 쓰면 방금 고른 대표를 덮는다
   folderCardsApi.mockClear();
@@ -1266,6 +1267,31 @@ it("미리 받기: 다른 계정·오래된(3초 넘은) 미리 받기는 이어
   expect([folderCardsApi.mock.calls.length, done, seen.cards?.folders[0].count]).toEqual([3, true, 9]);
 });
 
+it("미리 받기: 받는 중인 것은 3초가 지나도 버리지 않는다(느린 서버에서 다시 눌러도 한 번만 묻는다) · 실패한 미리 받기는 이어받지 않는다", async () => {
+  const now = vi.spyOn(Date, "now");
+  now.mockReturnValue(1_000_000);
+  const slow = hold();
+  prefetchFolderCards("account-a", e035);
+  now.mockReturnValue(1_000_000 + 10_000);
+  prefetchFolderCards("account-a", e035); // [열기]를 놓았다가 10초 뒤 다시 누름 — 아직 받는 중
+  show({ scope: e035 });
+  expect(folderCardsApi).toHaveBeenCalledTimes(1);
+  await slow.release(cards(card("C0010", 3)));
+  await settle();
+  expect([folderCardsApi.mock.calls.length, seen.loading, seen.cards?.folders[0].name]).toEqual([1, false, "C0010"]);
+  now.mockRestore();
+  // 실패 — 들어간 훅이 새로 묻는다
+  forgetFolderCards();
+  folderCardsApi.mockReset();
+  folderCardsApi.mockRejectedValueOnce(new HttpError(500, "500: boom", "boom")).mockResolvedValueOnce(cards(card("C0020", 2)));
+  const e038: FolderCardsScope = { projectId: "p1", parent: "e038" };
+  prefetchFolderCards("account-a", e038);
+  await settle();
+  show({ scope: e038 });
+  await settle();
+  expect([folderCardsApi.mock.calls.length, seen.cards?.folders[0].name]).toEqual([2, "C0020"]);
+});
+
 it("미리 받기: 옛 서버(경로 없음)면 이어받은 실패가 그대로 '지원 안 함'이 된다", async () => {
   folderCardsApi.mockRejectedValueOnce(new HttpError(404, "404: Not Found", "Not Found"));
   prefetchFolderCards("account-a", e035);
@@ -1274,7 +1300,7 @@ it("미리 받기: 옛 서버(경로 없음)면 이어받은 실패가 그대로
   expect([folderCardsApi.mock.calls.length, seen.unsupported, seen.cards]).toEqual([1, true, null]);
 });
 
-it("미리 받기: 격자는 두 번 클릭의 둘째 누름과 [열기]·'+N' 누름에서만 묻는다 — 고르는 한 번 누름·컷 띠·하위 폴더 없는 카드는 묻지 않는다", () => {
+it("미리 받기: 격자는 두 번 클릭의 둘째 누름과 [열기]·'+N' 누름에서만 묻는다 — 고르는 한 번 누름·컷 띠·하위 폴더 없는 카드·메뉴를 닫는 누름은 묻지 않는다", async () => {
   const asked: string[] = [];
   const cuts = [{ path: "e035/C0010", name: "C0010", count: 3, rep: false, cover: { id: "c", assets: [] } }];
   const episode: FolderCard = { ...card("e035", 14), path: "e035", subfolders: 4, children: cuts };
@@ -1306,4 +1332,19 @@ it("미리 받기: 격자는 두 번 클릭의 둘째 누름과 [열기]·'+N' �
     mouse("mouseup", window);
     expect([layout, asked]).toEqual([layout, ["e035", "e035"]]);
   }
+  // 위에 뜬 메뉴를 닫는 누름은 들어가지 않으니 묻지도 않는다 — [열기]·두 번 클릭 모두
+  const { useKeyOwner } = await import("../src/lib/keyGate");
+  function Owner({ on }: { on: boolean }) { useKeyOwner(on); return null; }
+  const owner = createRoot(document.body.appendChild(document.createElement("div")));
+  asked.length = 0;
+  for (const press of [host.querySelector<HTMLElement>(".ep-enter, .ep-cut.more")!, host.querySelector<HTMLElement>('.cut-card[data-path="e035"]')!]) {
+    act(() => owner.render(<Owner on />));
+    act(() => { press.dispatchEvent(new Event("pointerdown", { bubbles: true })); });
+    act(() => owner.render(<Owner on={false} />));
+    mouse("mousedown", press, { detail: 2 });
+    act(() => { press.dispatchEvent(new Event("pointerup", { bubbles: true })); });
+    mouse("mouseup", window);
+  }
+  expect(asked).toEqual([]);
+  act(() => owner.unmount());
 });

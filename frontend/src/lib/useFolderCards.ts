@@ -45,23 +45,30 @@ const UNSUPPORTED_RETRY_MS = 5 * 60_000; // 옛 서버로 기억한 문맥을 �
 
 // 들어가기 직전의 미리 받기(Jay 10-16 2A — 에피소드로 들어갈 때 빈 칸). 두 번 클릭의 둘째 누름·[열기] 누름에서 그 폴더의 묶음을 미리 묻는다.
 //  들어간 훅의 **첫 조회가 그 요청을 이어받는다** — 같은 묶음을 두 번 묻지 않는다(Codex 검토 10-16). 대표 저장 뒤의 다시 받기(discard)는
-//  이어받지 않는다(저장 전에 출발한 미리 받기가 방금 고른 대표를 덮지 않게). 들어가지 않으면 WARM_MS 뒤 버린다.
+//  이어받지 않는다(저장 전에 출발한 미리 받기가 방금 고른 대표를 덮지 않게). 들어가지 않으면 응답이 온 뒤 WARM_MS 지나 버린다.
+//  받는 중인 요청은 버리지 않는다 — 느린 서버에서 다시 눌러도 같은 묶음을 두 번 묻지 않게(Codex 10-16 P2). 걸린 요청을 기다리는 것은
+//  훅이 스스로 물었을 때와 같다(요청에 시간 한도가 없다).
 const WARM_MS = 3000;
-const warming = new Map<string, { promise: Promise<FolderCards>; at: number }>();
+type Warm = { promise: Promise<FolderCards>; done?: number };
+const warming = new Map<string, Warm>();
+const stale = (warm: Warm, now: number) => warm.done !== undefined && now - warm.done > WARM_MS;
 export function prefetchFolderCards(authKey: string, scope: FolderCardsScope): void {
   const key = JSON.stringify([authKey, scope.projectId, scope.parent, scope.workspaceId ?? null]);
   const now = Date.now();
-  for (const [old, warm] of warming) if (now - warm.at > WARM_MS) warming.delete(old);
+  for (const [old, warm] of warming) if (stale(warm, now)) warming.delete(old);
   if (warming.has(key)) return; // 이미 묻는 중 — 빠른 두 번 클릭·[열기] 연타
-  const promise = api.folderCards(scope.projectId, scope.parent, scope.workspaceId);
-  promise.catch(() => {}); // 들어가지 않으면 아무도 기다리지 않는다 — 실패는 이어받은 조회가 처리한다
-  warming.set(key, { promise, at: now });
+  const warm: Warm = { promise: api.folderCards(scope.projectId, scope.parent, scope.workspaceId) };
+  warm.promise.then(
+    () => { warm.done = Date.now(); },
+    () => { if (warming.get(key) === warm) warming.delete(key); }, // 실패는 이어받지 않는다 — 들어간 훅이 새로 묻는다
+  );
+  warming.set(key, warm);
 }
 function takeWarm(key: string): Promise<FolderCards> | null {
   const warm = warming.get(key);
   if (!warm) return null;
   warming.delete(key); // 한 번만 이어받는다 — 그 뒤의 다시 받기는 새로 묻는다
-  return Date.now() - warm.at <= WARM_MS ? warm.promise : null;
+  return stale(warm, Date.now()) ? null : warm.promise;
 }
 
 /** 목록이 **같은 조회를 다시 받았을 때만** 오르는 값(주기 조회·통보·내 조작 뒤의 다시 받기) — 폴더 카드를 다시 받는 신호.
