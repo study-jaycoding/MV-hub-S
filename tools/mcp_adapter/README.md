@@ -15,8 +15,10 @@ v2 등록 설정에는 `--url`과 `--profile`이 들어간다. 프로필은 Wind
 새 등록은 계정 기준이며 현재 앱의 공간 선택에 묶이지 않는다. 기존 공간 고정 연결은 명시 재등록할 때만 바뀐다.
 `read_context(kind="workspaces")`로 실제 접근 가능한 공간을 조회한 뒤, 다른 조회와 계획에
 `workspace_scope`와 팀 공간의 `workspace_id`를 명시한다. 기본 생성은 캔버스 없이 MV Hub 라이브러리에 기록된다.
-`read_context`로 실제 모델·프로젝트·컷·자료를 확인하고 `prepare_generation_plan` → `execute_generation_plan` → `get_plan` 순서로 처리한다.
-완료된 항목은 `get_result(plan_id, item_index=0, asset_index=0)`로 조회하여 LLM에 이미지 미리보기와 상태를 반환한다.
+`read_context`로 실제 모델·프로젝트·컷·자료를 확인하고 `prepare_generation_plan` → `execute_generation_plan` → `get_result(wait_seconds=25)` 순서로 처리한다.
+Codex PC·휴대폰에는 `get_result`의 `display_directory`에 기존 작업 소유 로컬 절대경로를 지정하고,
+반환된 `display.reference`를 최종 답변에 그대로 넣는다. 어댑터가 이미지 내장 HTML을 준비하며 LLM의 별도 제작은 필요 없다.
+ImageContent 직접 표시 앱은 폴더를 생략할 수 있다. 파일 준비 성공은 실제 화면 표시 확인과 다르다.
 미리보기 조회는 생성·과금 없이 기존 결과만 읽는다. 영상은 기존 포스터만 표시하고, 원본은 MV Hub에서 확인한다.
 MCP 이미지 표시를 지원하지 않는 앱에서도 생성 ID와 상태는 텍스트로 확인할 수 있다. 도구 설명은 완료 뒤 결과 조회를 안내한다.
 프로젝트·컷을 생략할 수 있다. `add_to_canvas`는 사용자가 요청할 때만 `scene_id`를 명시하며 새 생성을 하지 않는다.
