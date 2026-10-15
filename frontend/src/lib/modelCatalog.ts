@@ -9,7 +9,9 @@ let nameMap: Record<string, string> = {};
 let loaded = false;
 let loading: Promise<void> | null = null;
 let lastAttemptAt: number | null = null;
+let failures = 0; // 잇단 실패 수
 const RETRY_INTERVAL_MS = 1000;
+const RETRY_MAX_MS = 60_000;
 const listeners = new Set<() => void>();
 
 export function ensureModelCatalog(): Promise<void> {
@@ -17,7 +19,10 @@ export function ensureModelCatalog(): Promise<void> {
   if (loading) return loading;
   const now = Date.now();
   // 실패/빈 맵은 다음 mount·호출에서 재시도한다. picker의 명시적 재시도는 제한하지 않는다.
-  if (lastAttemptAt !== null && now - lastAttemptAt < RETRY_INTERVAL_MS) return Promise.resolve();
+  //  잇달아 실패하면 기다림을 1초에서 두 배씩 늘린다(최대 1분) — 카드가 붙을 때마다 묻는데 서버는 실패를 캐시하지 않아
+  //  묻는 족족 CLI 를 다시 띄운다(70회차 격리 실측: 탭을 옮길 때마다 /api/models).
+  const wait = Math.min(RETRY_MAX_MS, RETRY_INTERVAL_MS * 2 ** Math.max(0, failures - 1));
+  if (lastAttemptAt !== null && now - lastAttemptAt < wait) return Promise.resolve();
   lastAttemptAt = now;
   loading = fetchModelCatalog()
     .then((ms) => {
@@ -30,10 +35,11 @@ export function ensureModelCatalog(): Promise<void> {
       }
       nameMap = m;
       loaded = Object.keys(m).length > 0;
+      failures = loaded ? 0 : failures + 1;
       if (loaded) listeners.forEach((l) => l());
     })
     .catch(() => {
-      /* 실패해도 폴백(교정맵·휴머나이즈)으로 동작 */
+      failures += 1; // 실패해도 폴백(교정맵·휴머나이즈)으로 동작
     })
     .finally(() => {
       loading = null;

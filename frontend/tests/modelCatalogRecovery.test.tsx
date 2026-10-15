@@ -90,26 +90,39 @@ describe("표시명 카탈로그 실패 복구", () => {
     expect(mocks.models).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["failure", "empty"])("%s 뒤 100연속 호출도 초당 한 시도, 다음 초에 복구한다", async (kind) => {
+  // 70회차: 잇단 실패는 기다림을 1·2·4초…(최대 1분)로 늘린다 — 카드가 붙을 때마다 묻는데 서버는 실패를 캐시하지 않아 묻는 족족 CLI 를 띄운다
+  it.each(["failure", "empty"])("%s 뒤 100연속 호출도 한 시도, 잇단 실패는 기다림을 두 배로 늘리고 그 뒤 복구한다", async (kind) => {
     mocks.models.mockImplementation(() => {
       if (mocks.models.mock.calls.length > 3) return Promise.resolve(MODELS);
       return kind === "failure" ? Promise.reject(new Error("synthetic unavailable")) : Promise.resolve([]);
     });
-    for (let interval = 0; interval < 3; interval += 1) {
-      vi.setSystemTime(interval * 1000);
+    const tries = [0, 1000, 3000]; // 실패 1번 뒤 1초, 2번 뒤 2초
+    for (const [index, at] of tries.entries()) {
+      vi.setSystemTime(at);
       for (let call = 0; call < 100; call += 1) await catalog.ensureModelCatalog();
-      expect(mocks.models).toHaveBeenCalledTimes(interval + 1);
-      vi.setSystemTime(interval * 1000 + 999);
+      expect(mocks.models).toHaveBeenCalledTimes(index + 1);
+      vi.setSystemTime((tries[index + 1] ?? 7000) - 1);
       await catalog.ensureModelCatalog();
-      expect(mocks.models).toHaveBeenCalledTimes(interval + 1);
+      expect(mocks.models).toHaveBeenCalledTimes(index + 1);
       expect(catalog.modelDisplayName("nano_banana_flash")).toBe("Nano Banana 2");
       expect(catalog.modelDisplayName("future_model_2_5")).toBe("Future Model 2.5");
       expect(catalog.modelDisplayName(null)).toBe("—");
     }
-    vi.setSystemTime(3000);
+    vi.setSystemTime(7000); // 실패 3번 뒤 4초
     await catalog.ensureModelCatalog();
     expect(mocks.models).toHaveBeenCalledTimes(4);
     expect(catalog.modelDisplayName(CODE)).toBe("Canonical Audit Model");
+  });
+
+  it("잇단 실패의 기다림은 1분을 넘지 않는다", async () => {
+    mocks.models.mockRejectedValue(new Error("synthetic unavailable"));
+    let at = 0;
+    for (let i = 0; i < 12; i += 1) { // 1·2·4…초 — 일곱 번째부터 1분에 막힌다
+      vi.setSystemTime(at);
+      await catalog.ensureModelCatalog();
+      at += Math.min(60_000, 1000 * 2 ** i);
+    }
+    expect(mocks.models).toHaveBeenCalledTimes(12);
   });
 
   it("유효 표시명이 없는 비어있지 않은 원시 배열은 공용 TTL 후 재시도한다", async () => {
