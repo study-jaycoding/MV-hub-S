@@ -5,23 +5,34 @@
 //  더블클릭 = 크게 보기(재생) ·
 //  우클릭 = 이 컷의 폴더 창(공유 & 리뷰의 '폴더 보기' — 그 카드가 보이게) ·
 //  휠 클릭 = 넣을 트랙 고르기(EditTrackMenu). (Jay 2026-10-13 — 그 전에는 우클릭이 트랙 메뉴였다)
-import { useEffect, useMemo, useRef, useState, type HTMLAttributes, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState, type HTMLAttributes, type MouseEvent as ReactMouseEvent } from "react";
 import type { Generation } from "../../types";
 import { POOL_SIZE, type EditUi, type PoolSort, type PoolView } from "../../lib/editTimelineStore";
 import { formatGenerationDateTime, generationListMeta } from "../../lib/generationDisplay";
 import { reviewState } from "../../lib/generationReview";
 import { useT } from "../../lib/i18n";
-import { pressStartedCovered } from "../../lib/keyGate";
+import { contextMenuCovered, pressStartedCovered } from "../../lib/keyGate";
 import { computeMarquee, marqueeHits, type MarqueeRect } from "../../lib/marquee";
 import { thumbOf } from "../../lib/media";
-import type { EditListState } from "../../lib/useEditSequence";
+import { editTick, type EditListState } from "../../lib/useEditSequence";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../../lib/windowDrag";
 import { FilterPanelIcon } from "../common/ViewIcons";
-import { EditCard, poolMark, type PoolItem } from "./EditCard";
+import { EditCard, NO_CARD_ACTIONS, poolMark, type PoolCardActions, type PoolItem } from "./EditCard";
 
 export type { PoolItem };
+// 썸네일 카드 안의 단추(라이브러리 카드의 호버 단추) — 그 누름은 카드의 누르기·끌기·더블클릭이 아니다(라이브러리 격자와 같은 약속)
+const CARD_BUTTON = ".ed-card button";
+
+// 풀 카드 T 로 고친 태그의 덧입힘(아래 EditPool 의 설명) — 탭보다 오래 산다: 저장 중에 다른 탭에 갔다 오면 풀은 새로 그려지지만
+//  저장 대기열은 앱에 남는다(풀 안에 두었을 때는 돌아와 옛 목록에서 더 넣은 태그가 앞의 것을 지웠다 — Codex 리뷰 4차).
+//  키 = 계정·서버(authKey) + 생성물. saving = 끝나지 않은 저장 수, savedAt = 다 끝난 순번(editTick).
+type TagOverlay = { tags?: string[]; auto_tags?: string[]; saving: number; savedAt?: number };
+const tagOverlays = new Map<string, TagOverlay>();
+const overlayWatchers = new Set<() => void>();
+const overlaysChanged = () => overlayWatchers.forEach((watch) => watch());
+export const clearPoolTagOverlays = () => tagOverlays.clear(); // 시험 사이 정리용
 
 const ICONS: Record<PoolView | "search" | "sort", JSX.Element> = {
   thumb: <svg viewBox="0 0 16 16" aria-hidden="true">{[1, 6.5, 12].flatMap((y) => [1, 6.5, 12].map((x) => <rect key={`${x}-${y}`} x={x} y={y} width="3.5" height="3.5" />))}</svg>,
@@ -56,7 +67,9 @@ export function EditPool({
   picked,
   ui,
   onUi,
+  authKey,
   listState,
+  listStartedAt,
   notice,
   onPick,
   onPickMany,
@@ -69,6 +82,7 @@ export function EditPool({
   onToggleSide,
   onFolder,
   onCardDrag,
+  cardActions = NO_CARD_ACTIONS,
 }: {
   // 왼쪽 폴더 목록 여닫기(Jay 2026-10-13 — 공유 탭 도구 줄의 '필터 사이드바 닫기'와 같은 단추·같은 자리 관계: 사이드바 바로 옆 줄의 첫 단추).
   //  닫아도 단추는 여기 남아 다시 연다. 닫힘은 편집 탭의 화면 설정(EditUi.sideHidden)에만 적는다 — 공유 탭의 것과 따로다.
@@ -79,7 +93,9 @@ export function EditPool({
   picked: readonly string[]; // 고른 카드들(고른 순서 — 마지막 것이 듀얼 뷰어의 소스)
   ui: EditUi;
   onUi: (patch: Partial<EditUi>) => void;
+  authKey: string; // 계정·서버 — 태그 덧입힘을 계정마다 나눈다
   listState: EditListState;
+  listStartedAt: number; // 지금 목록을 낸 조회가 출발한 순번(editTick) — 태그 덧입힘을 걷는 기준
   notice: string | null; // 목록 대신 보여 줄 안내(폴더를 안 골랐다·워크스페이스 미확인 등)
   onPick: (gen: Generation, additive: boolean) => void; // additive = Ctrl·Shift 를 누른 채(더하고 빼기)
   onPickMany: (ids: string[]) => void; // 끌어서 상자로 고른 것(전체 치환)
@@ -93,6 +109,7 @@ export function EditPool({
   // 카드를 끌어 타임라인에 넣기(Jay 2026-10-13) — 여기서는 몸짓만 알린다(무엇이 어디에 놓이는지는 EditTab 이 정한다).
   //  start = 5px 을 넘겨 끌기가 됐다 · move = 따라가는 자리 · drop = 놓았다 · cancel = 놓는 이벤트 없이 끝났다(창 밖에서 뗌·초점 잃음).
   onCardDrag: (phase: "start" | "move" | "drop" | "cancel", id: string, x: number, y: number) => void;
+  cardActions?: PoolCardActions; // 썸네일 카드의 호버 단추(S·T·C·ⓘ)가 부르는 앱의 동작(Jay 2026-10-15)
 }) {
   const t = useT();
   const [open, setOpen] = useState<"view" | "sort" | null>(null);
@@ -111,6 +128,51 @@ export function EditPool({
   useEscapeClose(() => setOpen(null), open !== null, true, true);
   const shown = useMemo(() => arrangePool(items, searching ? query : "", ui.sort), [items, searching, query, ui.sort]);
   const placed = items.filter((item) => item.track !== null).length;
+  // 썸네일 카드의 T(태그 고치기) — 한 번에 한 장. 고친 태그는 그 카드의 저장이 다 끝난 **뒤에 출발한** 조회의 목록이 들어올 때까지
+  //  여기서 덧입힌다: 앱의 낙관적 갱신은 라이브러리 목록에만 닿아, 안 그러면 잇달아 넣는 태그가 옛 태그에서 계산돼 앞에 넣은 것을 지운다.
+  //  '목록이 바뀌었다'로 걷으면 뒤 편집의 저장보다 먼저 온 목록·저장 전에 출발한 늦은 응답·그냥 다시 만들어진 배열이 편집을 지웠고,
+  //  '목록이 같아질 때'까지 들면 저장 뒤 다른 창이 바꾼 태그를 가려 다음 저장이 덮었다(Codex 리뷰 10-15 세 번).
+  //  그래서 카드마다 끝나지 않은 저장을 세고, 다 끝난 순번(savedAt)과 목록을 낸 조회의 출발 순번(listStartedAt)을 견준다.
+  //  덧입힘은 모듈(tagOverlays)에 둔다 — 탭을 오가도 남는다.
+  const [tagging, setTagging] = useState<string | null>(null);
+  const [, redraw] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    overlayWatchers.add(redraw);
+    return () => { overlayWatchers.delete(redraw); };
+  }, []);
+  const overlayKey = (id: string) => `${authKey}\n${id}`;
+  const withTags = (gen: Generation) => {
+    const kept = tagOverlays.get(overlayKey(gen.id));
+    return kept ? { ...gen, ...(kept.tags && { tags: kept.tags }), ...(kept.auto_tags && { auto_tags: kept.auto_tags }) } : gen;
+  };
+  const keepTags = (gen: Generation, patch: { tags?: string[]; auto_tags?: string[] }, save: void | Promise<void>) => {
+    const key = overlayKey(gen.id);
+    const had = tagOverlays.get(key);
+    tagOverlays.set(key, { tags: had?.tags, auto_tags: had?.auto_tags, ...patch, saving: (had?.saving ?? 0) + 1 });
+    overlaysChanged();
+    void Promise.resolve(save).finally(() => {
+      const now = tagOverlays.get(key);
+      if (!now) return;
+      tagOverlays.set(key, now.saving > 1 ? { ...now, saving: now.saving - 1 } : { ...now, saving: 0, savedAt: editTick() });
+      overlaysChanged();
+    });
+  };
+  // 저장이 다 끝난 뒤 출발한 조회의 목록이 들어왔다 — 그 카드는 목록을 믿는다(덧입힘을 걷는다)
+  useEffect(() => {
+    let changed = false;
+    for (const [key, kept] of tagOverlays) {
+      if (key.startsWith(`${authKey}\n`) && kept.saving === 0 && (kept.savedAt ?? Infinity) < listStartedAt) {
+        tagOverlays.delete(key);
+        changed = true;
+      }
+    }
+    if (changed) overlaysChanged();
+  }, [authKey, listStartedAt]);
+  const actions: PoolCardActions = {
+    ...cardActions,
+    onSetTags: (gen, tags) => keepTags(gen, { tags }, cardActions.onSetTags(gen, tags)),
+    onSetAutoTags: (gen, names) => keepTags(gen, { auto_tags: names }, cardActions.onSetAutoTags(gen, names)),
+  };
 
   // 여기를 눌러도 편집 화면이 키를 받게 초점을 옮기지 않는다. 입력칸(검색·크기)만 초점을 받고, 그 밖을 누르면 입력칸에서
   //  초점을 뗀다 — 안 떼면 Space·J·K·L 이 계속 입력칸으로 간다.
@@ -173,7 +235,7 @@ export function EditPool({
     };
   }, [drag]);
   const startDrag = (event: ReactMouseEvent) => {
-    if (event.button !== 0 || dragRef.current) return;
+    if (event.button !== 0 || dragRef.current || (event.target as HTMLElement).closest(CARD_BUTTON)) return;
     // 새 누름이다 — 앞 끌기에 딸린 click 은 이미 지나갔다. 안 풀면 끌어서 고른 바로 뒤(타이머가 돌기 전)에 누른 카드가 전부 안 골라진다
     //  (입력은 타이머보다 먼저 처리된다 — 캔버스의 swallowDropClick 과 같은 약속. Codex 코드 리뷰)
     draggedRef.current = false;
@@ -197,7 +259,7 @@ export function EditPool({
     const active = document.activeElement;
     if (active instanceof HTMLInputElement && event.currentTarget.contains(active)) active.blur();
   };
-  const handlersOf = (item: PoolItem): HTMLAttributes<HTMLButtonElement> & { "data-id": string } => ({
+  const handlersOf = (item: PoolItem): HTMLAttributes<HTMLElement> & { "data-id": string } => ({
     "data-id": item.gen.id, // 끌어서 고르기가 이 값으로 카드를 찾는다
     title: t("끌기 = 타임라인에 넣기 · 더블클릭 = 크게 보기 · 우클릭 = 폴더 창 · 휠 클릭 = 넣을 트랙 고르기 · Ctrl+클릭 = 여러 장 고르기"),
     onClick: (event) => {
@@ -211,18 +273,23 @@ export function EditPool({
       }
       onPick(item.gen, event.ctrlKey || event.metaKey || event.shiftKey);
     },
-    onDoubleClick: () => onOpen(item.gen, shown.map((entry) => entry.gen)),
+    onDoubleClick: (event) => {
+      if (!(event.target as HTMLElement).closest(CARD_BUTTON)) onOpen(item.gen, shown.map((entry) => entry.gen));
+    },
     // 마우스 우클릭(contextmenu 의 button = 2) = 폴더 창. 키보드의 메뉴 키는 누름 없이 contextmenu 만 온다(button 이 2 가 아니다 —
     //  2026-10-13 크롬 실측 −1) — 그때는 전처럼 트랙 메뉴다: 휠 클릭은 키보드로 할 수 없어, 이 길이 없으면 키보드로는 넣지 못한다.
     onContextMenu: (event) => {
       event.preventDefault();
+      if (contextMenuCovered(event.button)) return; // 위에 뜬 창·메뉴(정보 창·검토 메뉴…)를 닫는 우클릭 — 열지 않는다(67회차 실측)
       if (event.button === 2) onFolder(item.gen);
       else onMenu(item.gen, event.clientX, event.clientY);
     },
-    // 휠 클릭(가운데 단추) — 누름의 자동 스크롤은 풀 뿌리의 keepFocus 가 이미 막는다(어느 단추든 preventDefault)
-    onAuxClick: (event) => {
+    // 휠 클릭(가운데 단추) — 누름의 자동 스크롤은 풀 뿌리의 keepFocus 가 이미 막는다(어느 단추든 preventDefault).
+    //  잡는 단계에서 받아 전파를 막는다 — 썸네일 카드(라이브러리 카드)의 휠 클릭 = 정보 창이 같이 뜨지 않게(폴더 창의 격자와 같다)
+    onAuxClickCapture: (event) => {
       if (event.button !== 1) return;
       event.preventDefault();
+      event.stopPropagation();
       if (dragRef.current?.moved) return; // 끄는 중의 휠 클릭은 메뉴가 아니다(끌기는 이어진다)
       onMenu(item.gen, event.clientX, event.clientY);
     },
@@ -353,7 +420,9 @@ export function EditPool({
           style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${ui.size}px, 1fr))` }}>
           {marqueeBox}
           {shown.map((item) => (
-            <EditCard key={item.gen.id} item={item} picked={picked.includes(item.gen.id)} handlers={handlersOf(item)} />
+            <EditCard key={item.gen.id} item={{ ...item, gen: withTags(item.gen) }} picked={picked.includes(item.gen.id)}
+              handlers={handlersOf(item)} actions={actions} tagging={tagging === item.gen.id}
+              onTagging={(on) => setTagging((now) => (on ? item.gen.id : now === item.gen.id ? null : now))} />
           ))}
         </div>
       )}

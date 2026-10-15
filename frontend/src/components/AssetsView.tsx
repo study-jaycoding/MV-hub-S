@@ -94,6 +94,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     expandedSeeded.current = true;
     setExpanded(new Set(children.filter((node) => node.type === "dir").map((node) => node.path)));
   }, []);
+  const canLeaveCommentRef = useRef<() => boolean>(() => true); // 아래 canLeaveComment — 코멘트 창보다 먼저 만드는 훅이 쓴다(Jay 결정 5A)
   const {
     error,
     loading,
@@ -109,7 +110,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     setMeta,
     setProject,
     tree,
-  } = useAssetProjectData({ onTreeLoaded: seedInitialExpandedDirs, workspaceId });
+  } = useAssetProjectData({ onTreeLoaded: seedInitialExpandedDirs, workspaceId, canLeaveProject: () => canLeaveCommentRef.current() });
   const displayTree = useMemo(() => visibleAssetTree(project, tree), [project, tree]);
   useEffect(() => {
     if (isAssetFolderHidden(project, dir)) {
@@ -621,12 +622,21 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     tagPanelOpen,
   });
 
+  // 코멘트 창에 보내지 않은 글이 있으면 다른 파일·프로젝트로 가기 전에 묻는다(Jay 결정 5A) — 창은 파일마다 다시 그려져, 묻지 않고
+  //  옮기면 쓰던 글이 사라졌다(65회차 실측). 창 닫기·새로 고침은 6A(holdUnload)가 묻는다.
+  const commentUnsentRef = useRef(false);
+  const onCommentUnsent = useCallback((unsent: boolean) => { commentUnsentRef.current = unsent; }, []);
+  const canLeaveComment = () => !commentUnsentRef.current || window.confirm(
+    t("보내지 않은 코멘트가 있습니다 — '{name}' 에 쓰던 글이 사라집니다. 버리고 옮길까요?").replace("{name}", commentPath?.split("/").pop() || ""),
+  );
+  canLeaveCommentRef.current = canLeaveComment; // 프로젝트 목록 조회(위 useAssetProjectData)가 저절로 옮기기 전에도 같은 물음
   const { openComments, refreshComments, sendComment, editComment, delComment } = useAssetCommentActions({
     project,
     commentPath,
     setCommentPath,
     setComments,
     reconcile,
+    canLeaveComment,
   });
   useAssetBroadcastSync({
     project,
@@ -792,6 +802,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             }
             value={project}
             onChange={(e) => {
+              if (!canLeaveComment()) return; // 머무르면 선택 상자는 지금 프로젝트로 돌아간다(제어되는 값)
               setProject(e.target.value);
               setDir(""); // 사용자가 프로젝트를 바꾸면 루트로
             }}
@@ -811,6 +822,9 @@ export function AssetsView({ onInfo, onPreview }: Props) {
                 {p}
               </option>
             ))}
+            {/* 목록에 없는 지금 프로젝트(다른 팀 목록이 왔는데 쓰던 코멘트 때문에 머물렀다 — Jay 결정 5A) — 상자가 엉뚱한 이름을 보이지 않고,
+                새 목록의 프로젝트를 고르면 바뀌게 그대로 둔다(Codex 5A 재검토) */}
+            {project && !projects.includes(project) && <option value={project}>{project}</option>}
           </select>
           {searchActive ? (
             <span className="crumb-search">
@@ -952,6 +966,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
               size={cmtSize}
               onHeadMouseDown={onCmtHeadDown}
               onClose={() => setCommentPath(null)}
+              onUnsentChange={onCommentUnsent}
               onSend={sendComment}
               onEdit={editComment}
               onDelete={delComment}

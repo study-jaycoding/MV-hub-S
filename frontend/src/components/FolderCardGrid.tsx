@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { boardView, isEpisodeLevel, numberColumn, takesOf } from "../lib/episodeBoard";
 import { useT } from "../lib/i18n";
-import { backgroundKeysBlocked, isTypingTarget, pressStartedCovered, useLooseKeys } from "../lib/keyGate";
+import { backgroundKeysBlocked, contextMenuCovered, isTypingTarget, pressStartedCovered, useLooseKeys } from "../lib/keyGate";
 import { computeMarquee, marqueeHits, type MarqueeRect } from "../lib/marquee";
 import { mediaThumbUrl, thumbOf } from "../lib/media";
 import { matchShortcut } from "../lib/shortcuts";
@@ -293,11 +293,7 @@ export function FolderCardGrid({
     }
   }, [selected]);
 
-  // 우클릭 누름이 시작될 때 위에 메뉴가 떠 있었나 — contextmenu 는 단추를 뗀 뒤 오므로(윈도) 그때는 lib/keyGate 의 '누름 중 가림'이 이미 지워져 있다.
-  //  우클릭 누름마다 새로 적는다. 쓰는 곳은 **마우스의 contextmenu(button 2)뿐** — 키보드의 메뉴 키(button 0)는 기록을 보지 않고 그 순간의 가림을 본다.
-  //  그래서 소비되지 않은 기록(빈 곳의 우클릭·카드 밖에서 떼어 contextmenu 가 다른 곳에서 났거나 전파가 막힌 경우)이 남아도, 다음 마우스 우클릭은
-  //  누름에서 다시 적고 메뉴 키는 안 보니 낡은 기록이 쓰일 길이 없다(Codex 코드 리뷰 2회).
-  const rightPressCoveredRef = useRef<boolean | null>(null);
+  // 위에 메뉴가 떠 있을 때 그것을 닫는 우클릭은 카드의 우클릭 조작을 하지 않는다 — lib/keyGate 의 contextMenuCovered(누름의 시작에 문서가 적은 가림).
   // 카드 안 단추(에피소드 카드의 컷 띠·[열기])의 누름이 가려진 채 시작됐나. 마우스 클릭(detail > 0)은 늘 같은 단추의 누름이 앞서 새로 적으므로
   //  낡은 기록이 쓰일 길이 없고, 키보드로 누른 것(Enter·Space — detail 0)은 기록을 보지 않고 그 순간의 가림을 본다.
   // 줄·카드 안의 이동 단추([열기]·[폴더로]·컷 띠)를 두 번 누르면 둘째 누름이 들어간 화면의 같은 자리에 닿는다 — 그 누름은 버린다(조작 규칙 61).
@@ -315,10 +311,7 @@ export function FolderCardGrid({
       e.preventDefault(); // 휠 클릭의 자동 스크롤 막기(정보는 카드의 auxclick)
       return;
     }
-    if (e.button === 2) {
-      rightPressCoveredRef.current = pressStartedCovered();
-      return; // 고르기는 바꾸지 않는다 — 초점은 누른 카드로 간다(모아보기를 닫으면 거기로 돌아온다)
-    }
+    if (e.button === 2) return; // 고르기는 바꾸지 않는다 — 초점은 누른 카드로 간다(모아보기를 닫으면 거기로 돌아온다)
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
     if (target.closest(".cut-out")) return; // '컷 밖' 칸은 고르는 대상이 아니다(누르면 한 장씩 보기)
@@ -397,10 +390,7 @@ export function FolderCardGrid({
             },
             onContextMenu: (e: React.MouseEvent) => {
               e.preventDefault(); // 컷 카드 위에서만 브라우저 메뉴를 막는다
-              // 마우스(button 2)는 누름 시작의 가림, 키보드의 메뉴 키(button 0)는 지금의 가림
-              const covered = e.button === 2 ? (rightPressCoveredRef.current ?? backgroundKeysBlocked()) : backgroundKeysBlocked();
-              rightPressCoveredRef.current = null;
-              if (covered) return; // 위에 뜬 메뉴를 닫는 우클릭 — 뒤의 조작을 실행하지 않는다
+              if (contextMenuCovered(e.button)) return; // 위에 뜬 메뉴를 닫는 우클릭 — 뒤의 조작을 실행하지 않는다
               // 그 폴더의 창 — 고르지 않은 카드면 그것만 골라서(어느 폴더를 열었는지 보이게. 창을 닫으면 초점은 격자로 돌아온다)
               const { selected: chosen, onSelect: select } = opsRef.current;
               if (!chosen.has(folder.path)) select(new Set([folder.path]));

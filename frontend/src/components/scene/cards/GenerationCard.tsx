@@ -41,6 +41,7 @@ export type HistPass = {
   onRegenerate?: (gen: Generation) => void;
   onTag?: React.ComponentProps<typeof HistoryBoardNode>["onTag"];
   onOpenComments?: React.ComponentProps<typeof HistoryBoardNode>["onOpenComments"];
+  onOpenFolder?: React.ComponentProps<typeof HistoryBoardNode>["onOpenFolder"]; // 이름표가 붙은 카드의 우클릭 = 폴더 보기 창
 };
 
 // 받은 값이 같은가 — 묶음(hist·actions·tagEdit)은 보드가 그릴 때마다 새 객체로 만들어 넘기므로 정체성이 아니라 **안의 값**을 한 겹
@@ -161,6 +162,7 @@ export const GenerationCard = memo(function GenerationCard({
           onOpenComments={hist.onOpenComments}
           // 폴더 이름표(Jay 14A, 2026-10-15) — 라이브러리 카드와 같은 글자. 지운 생성물에는 안 단다(휴지통에 안 다는 것과 같이)
           folderChip={genMissing || g.deleted ? undefined : folderChipLabel(g.folder_path)}
+          onOpenFolder={hist.onOpenFolder}
         />
       ) : (
         <div className="scene-card-inner">

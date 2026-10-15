@@ -24,7 +24,7 @@ vi.mock("../src/lib/teamSeen", async () => ({
   getTeamBase: () => seenBase.value,
 }));
 
-import { useEditGenerations, useEditProjects } from "../src/lib/useEditSequence";
+import { editTick, useEditGenerations, useEditProjects } from "../src/lib/useEditSequence";
 
 const TEAM: WorkspaceContext = { scope: "team", id: "w1", name: "W" };
 const UNKNOWN: WorkspaceContext = { scope: "unknown", id: null, name: null };
@@ -116,6 +116,34 @@ it("실패하면 같은 문맥의 마지막 성공 결과를 남기되 '끝까�
   expect(list.complete).toBe(false); // 여기 없는 클립을 '미디어 없음'으로 판정하면 안 된다
   expect(list.known).toBe(true); // 한 번 끝까지 받은 문맥 — 남은 결과로 '빈 폴더'는 가려도 된다
   expect(list.gens.map((gen) => gen.id)).toEqual(["a1", "a2"]);
+});
+
+// 목록을 낸 조회의 출발 순번 — 편집 탭 풀의 태그 덧입힘이 '저장이 끝난 뒤 출발한 조회'를 가리는 기준이다(Codex 리뷰 10-15).
+//  다시 받는 동안·실패에는 그대로, 새 응답이 들어올 때만 그 조회의 순번으로 바뀐다. 다음 조회가 출발한 뒤에 온 옛 응답은 버린다.
+it("startedAt 은 지금 목록을 낸 조회의 출발 순번이다 — 다시 받는 동안·실패에는 그대로, 늦게 온 옛 응답은 바꾸지 못한다", async () => {
+  const [first, second, third] = [deferred<Generation[]>(), deferred<Generation[]>(), deferred<Generation[]>()];
+  mocks.list.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise).mockReturnValueOnce(third.promise);
+  render(<ListHarness seq="e070" />);
+  expect(list.startedAt).toBe(0);
+  first.resolve([row("a1")]);
+  await flush();
+  const one = list.startedAt;
+  expect(one).toBeGreaterThan(0);
+  act(() => list.reload()); // 둘째 조회 출발
+  expect([list.state, list.startedAt]).toEqual(["loading", one]); // 다시 받는 동안은 그대로(목록 배열이 다시 만들어져도)
+  const between = editTick();
+  act(() => list.reload()); // 셋째 조회 출발 — 둘째는 이제 옛 응답
+  second.resolve([row("old")]);
+  await flush();
+  expect([list.startedAt, list.gens.map((gen) => gen.id)]).toEqual([one, ["a1"]]);
+  third.reject(new Error("HTTP 502"));
+  await flush();
+  expect([list.state, list.startedAt]).toEqual(["error", one]); // 실패는 새 목록이 아니다
+  mocks.list.mockResolvedValueOnce([row("b1")]);
+  act(() => list.reload());
+  await flush();
+  expect(list.startedAt).toBeGreaterThan(between);
+  expect(list.gens.map((gen) => gen.id)).toEqual(["b1"]);
 });
 
 it("2,000행에서 멈추고 '일부만'으로 알린다", async () => {

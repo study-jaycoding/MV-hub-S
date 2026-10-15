@@ -72,9 +72,9 @@ export function releaseSceneDragPointer(): void {
  * 창을 떠나면(blur) 거둔다 — 밖에서 떼어 click 이 안 오면 억제가 남아 뒤의 클릭을 먹는다. 키보드로 누른 단추의 click(detail 0 — Enter·Space)은
  * 놓기의 것이 아니니 삼키지 않는다(Codex 코드 리뷰 P3).
  */
-function swallowDropClick(discarded = false): void {
+function swallowDropClick(discarded = false, type: "click" | "auxclick" = "click"): void {
   const stop = () => {
-    window.removeEventListener("click", swallow, true);
+    window.removeEventListener(type, swallow, true);
     window.removeEventListener("mousedown", stop, true);
     window.removeEventListener("mouseup", arm, true);
     window.removeEventListener("blur", stop);
@@ -86,7 +86,7 @@ function swallowDropClick(discarded = false): void {
     stop();
   };
   const arm = () => window.setTimeout(stop, 0);
-  window.addEventListener("click", swallow, true);
+  window.addEventListener(type, swallow, true);
   window.addEventListener("mousedown", stop, true);
   if (discarded) {
     window.addEventListener("mouseup", arm, true);
@@ -94,6 +94,11 @@ function swallowDropClick(discarded = false): void {
   } else {
     arm();
   }
+}
+
+/** 휠 버튼으로 판을 끌다 놓은 뒤의 auxclick 한 번을 삼킨다 — 출발한 카드 위에서 놓으면 그 카드의 정보 창이 떴다(66회차 실측). 끌기 끝(mouseup)에서 부른다. */
+export function swallowPanAuxClick(): void {
+  swallowDropClick(false, "auxclick");
 }
 
 /** 카드·그룹 끌기의 끝에서 부른다 — 쥔 포인터를 놓고, 실제로 끌다가 손을 떼어 끝난 것이면 뒤따르는 click 을 삼킨다(Esc 로 버린 끌기도). */

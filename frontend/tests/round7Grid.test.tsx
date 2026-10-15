@@ -386,12 +386,18 @@ it("낱장 카드 우클릭 = 그 카드가 속한 폴더의 창 — 폴더가 �
     act(() => { cell(id).dispatchEvent(event); });
     return event.defaultPrevented;
   };
+  // 마우스 우클릭의 누름 — 브라우저 순서대로 pointerdown(문서가 가림을 적는다, lib/keyGate) 다음 mousedown
+  const rightPress = (id: string) => {
+    act(() => { cell(id).dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 2 })); });
+    mouse("mousedown", cell(id), { button: 2 });
+    act(() => { cell(id).dispatchEvent(new MouseEvent("pointerup", { bubbles: true, button: 2 })); });
+  };
   mount({ list, openFolder });
   click("g2"); // 다른 카드를 골라 둔다
-  mouse("mousedown", cell("g1"), { button: 2 });
+  rightPress("g1");
   expect([context("g1"), opened, chosen()]).toEqual([true, ["g1"], ["g2"]]); // 브라우저 메뉴를 막고 창을 연다 — 고른 것은 그대로
   // 폴더가 없는 카드 — 아무 일도 없다(브라우저 메뉴 그대로)
-  mouse("mousedown", cell("g2"), { button: 2 });
+  rightPress("g2");
   expect([context("g2"), opened.length]).toEqual([false, 1]);
   // 위에 뜬 메뉴를 닫는 우클릭(누름의 시작에 가려져 있었다) — 열지 않는다. 그다음 우클릭은 연다(기록이 남지 않는다)
   mount({ list, openFolder, overlay: true });
@@ -404,6 +410,12 @@ it("낱장 카드 우클릭 = 그 카드가 속한 폴더의 창 — 폴더가 �
   mouse("mousedown", cell("g1"), { button: 2 });
   act(() => { cell("g1").dispatchEvent(new Event("pointerup", { bubbles: true })); });
   expect([context("g1"), opened.length]).toEqual([true, 2]);
+  // 덮개가 누름을 받아 닫히는 창(정보 창) — 격자에 mousedown 이 안 온다. 그래도 열지 않는다(67회차 실측: 정보 창이 닫히며 폴더 창까지 열렸다)
+  mount({ list, openFolder, overlay: true });
+  act(() => { cell("g1").dispatchEvent(new Event("pointerdown", { bubbles: true })); });
+  mount({ list, openFolder });
+  act(() => { cell("g1").dispatchEvent(new Event("pointerup", { bubbles: true })); });
+  expect([context("g1"), opened.length]).toEqual([true, 2]);
   // 키보드의 메뉴 키(button 0) — 그 순간의 가림을 본다
   mount({ list, openFolder, overlay: true });
   expect([context("g1", { button: 0 }), opened.length]).toEqual([true, 2]);
@@ -411,11 +423,11 @@ it("낱장 카드 우클릭 = 그 카드가 속한 폴더의 창 — 폴더가 �
   expect([context("g1", { button: 0 }), opened.length]).toEqual([true, 3]);
   // 리스트 보기의 줄도 같다
   mount({ list, openFolder, layout: "list" });
-  mouse("mousedown", cell("g1"), { button: 2 });
+  rightPress("g1");
   expect([context("g1"), opened.length]).toEqual([true, 4]);
   // 폴더 창을 열 수 없는 격자(폴더 창 안·휴지통·캔버스) — 우클릭은 아무 일도 없다
   mount({ list });
-  mouse("mousedown", cell("g1"), { button: 2 });
+  rightPress("g1");
   expect([context("g1"), opened.length]).toEqual([false, 4]);
 });
 

@@ -403,7 +403,7 @@ function GenerationCardImpl({
   //  편집 탭이 연 창에서는 같은 자리에 타임라인 표가 온다(mark) — 지금 뷰어에 보이는 것만 라임, 나머지는 이름표의 옅은 모양.
   const hereMark = isList ? null
     : openedHere ? <span className="card-here">방금 누른 카드</span>
-      : mark ? <span className={mark.lead ? "card-here" : "card-folder static"}><span>{mark.label}</span></span>
+      : mark ? <span className={mark.lead ? "card-here" : "card-folder static"}><span data-short={mark.short}>{mark.label}</span></span>
         : null;
   const bottomLead = folderChip ?? hereMark;
 

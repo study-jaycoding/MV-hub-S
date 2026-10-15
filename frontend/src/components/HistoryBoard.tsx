@@ -6,6 +6,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { loadJSON, saveJSON } from "../lib/storage";
 import { STORAGE_KEYS } from "../lib/storageKeys";
 import { useClickSeparation } from "../lib/useClickSeparation";
+import { swallowPanAuxClick } from "../lib/useSceneCardMove";
 import { useCustomEvent } from "../lib/useCustomEvent";
 import { useDebouncedCallback } from "../lib/useDebouncedCallback";
 import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../lib/windowDrag";
@@ -385,7 +386,7 @@ export function HistoryBoard({
   }, [onDragMove]);
 
   // 휠클릭(미들 버튼) 드래그 = 화면 이동(패닝, translate). 사방 무한 이동. 손모양 커서.
-  const panRef = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
+  const panRef = useRef<{ x: number; y: number; px: number; py: number; moved?: boolean } | null>(null);
   const onPanMove = useCallback((e: MouseEvent) => {
     const p = panRef.current;
     if (!p) return;
@@ -396,11 +397,14 @@ export function HistoryBoard({
     }
     // 실제 이동이 시작될 때만 패닝 모드(손모양·상호작용 잠금) — 클릭만이면 노드 정보(auxclick) 보존.
     scrollRef.current?.classList.add("panning");
+    if (Math.abs(e.clientX - p.x) + Math.abs(e.clientY - p.y) > 3) p.moved = true;
     panPosRef.current = { x: p.px + (e.clientX - p.x), y: p.py + (e.clientY - p.y) };
     applyTransform(); // 드래그 중 즉시 반영(재렌더 없음)
   }, [applyTransform]);
   const onPanUpRef = useRef<() => void>(() => {});
   const onPanUp = useCallback(() => {
+    // 끌었으면 놓는 순간의 auxclick 을 삼킨다 — 출발한 노드 위에서 놓으면 그 노드의 정보 창이 떴다(66회차 실측)
+    if (panRef.current?.moved) swallowPanAuxClick();
     panRef.current = null;
     scrollRef.current?.classList.remove("panning");
     removeWindowMouseDrag(onPanMove, onPanUp);

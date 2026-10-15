@@ -1163,6 +1163,14 @@ export default function App() {
     if (!g.folder_path) return;
     openFolderPath({ projectId: g.project_id, path: g.folder_path, projectName: g.project_name ?? "", genId: g.id });
   }, [openFolderPath]);
+  // 캔버스 카드 우클릭(폴더 이름표가 붙은 카드, Jay 2026-10-15) → 그 폴더의 캔버스 '폴더 보기' 창. 사이드바 폴더 누름(onArmFolder)의 ②③만 —
+  //  보는 자리만 옮기고(restoreLocation, adopt 없음) 다음 생성 위치·분홍 무장은 그대로다(라이브러리의 우클릭 폴더 창처럼). patch 는 생성 위치까지 옮긴다.
+  const openCanvasFolder = useCallback((g: Generation) => {
+    if (!g.project_id || !g.folder_path) return;
+    restoreLocation({ project_id: g.project_id, folder_path: g.folder_path });
+    setFolderPeek(true);
+    sceneActionRef.current?.closeVariants(); // 두 창을 겹쳐 두지 않는다(사이드바와 같이)
+  }, [restoreLocation, sceneActionRef]);
   // 컷 카드 우클릭·컷 정보 창의 [폴더 열기] → 그 폴더의 창. 누른 생성물 카드가 없으니 '방금 누른 카드'·이동 없이 맨 위부터 연다.
   //  (2026-10-13 낮 — 아침엔 두 번 클릭이 들어가기였고 창은 없었다. 그 전엔 컷 두 번 클릭이 이 창이었다.)
   const openFolderCard = useCallback((folder: FolderCard) => {
@@ -2758,6 +2766,11 @@ export default function App() {
                 canFinalize, apply: (gens, action) => onReviewSelection(gens, action, canFinalize),
                 release: (gens) => onReviewSelection(gens, "shared", canFinalize, true),
               }}
+              // 풀 카드의 호버 단추(Jay 2026-10-15) — 공유 & 리뷰 격자에 주는 것과 같은 동작. 정보는 라이브러리 선택(여러 장이면 비교)을 보지 않는다
+              cardActions={{
+                canFinalize, onReview, onPublish, onUnpublish, onFinalize, onUnfinalize, onSetTags, onSetAutoTags,
+                autoTagOptions: facets.auto_tags, onOpenComments: (g) => openComment(g.id), onInfo: setInfo,
+              }}
             />
           </Suspense>
         ) : filters.tab === "compose" ? (
@@ -2770,6 +2783,7 @@ export default function App() {
                 unassignedCount={unassignedCount}
                 archivedCount={archivedCount}
                 armedFolder={armedFolder}
+                generationScope={generationScope}
                 onArmFolder={(projectId, path) => {
                   // 폴더 선택 = ① 생성 라벨 무장 ② 그 폴더(하위 포함)로 계보 보드 필터 ③ 활성 씬이면 폴더 보기 창
                   setArmedFolder(path ? { projectId, path } : null);
@@ -2902,6 +2916,7 @@ export default function App() {
                 }
                 onPreview={openPreview}
                 onInfo={setInfo}
+                onOpenFolder={openCanvasFolder}
                 onRegenerate={onSceneRegenerate}
                 onPublish={onPublish}
                 onUnpublish={onUnpublish}
@@ -3041,6 +3056,7 @@ export default function App() {
                 onToggleWorkspaceChip={toggleWorkspaceChip}
                 onRemoveWorkspaceChip={removeWorkspaceChip}
                 armedFolder={armedFolder}
+                generationScope={generationScope}
                 onArmFolder={(projectId, path) => {
                   // 폴더 선택 = ① 생성 라벨 무장 ② 그 폴더(하위 포함)로 라이브러리 필터 — 명시적 이동(기록 한 칸)
                   pushLocationRef.current = true;

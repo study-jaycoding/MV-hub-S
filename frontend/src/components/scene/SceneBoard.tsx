@@ -3,7 +3,7 @@
 //   · 카드 좌드래그=이동(선택된 것 함께) · 클릭=단일선택 · Ctrl=토글(누적) · Shift=연결 체인선택 · 배경클릭=해제
 //   · Delete=선택 삭제(생성물 있으면 휴지통, 빈 카드면 그냥 제거)
 // 기능: 에셋 드롭 레퍼런스 카드(S2) · n키 빈 카드+연결선(S3) · 포트 수동 연결/해제(S4).
-import { floatHost, pressStartedCovered, useModalFocus } from "../../lib/keyGate";
+import { contextMenuCovered, floatHost, pressStartedCovered, useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { ownEntry } from "../../lib/ownEntry";
 import { getDevicePixelRatio, subscribeDevicePixelRatio } from "../../lib/devicePixelRatio";
@@ -455,6 +455,7 @@ interface Props {
     targets?: Generation[], // '생성 결과' 창에서 여러 장을 고른 채 내린 명령 — 고른 전체
   ) => Promise<boolean>;
   onOpenComments?: (g: Generation) => void; // C → 공유 코멘트 스레드 패널 열기(생성탭 카드와 동일)
+  onOpenFolder?: (g: Generation) => void; // 폴더 이름표가 붙은 생성 카드의 우클릭 → 그 폴더의 '폴더 보기' 창(App)
   // ── '생성 결과' 창(라이브러리와 같은 격자·툴바, Jay 2026-10-07) ──
   libraryView?: { scale: number; layout: "grid" | "list"; groupByDate: boolean }; // 카드 크기·레이아웃·날짜 구분(라이브러리와 공유하는 보기 설정)
   renderVariantToolbar?: (count: number) => ReactNode; // 창의 툴바 — 라이브러리 툴바를 이 창의 건수로
@@ -525,6 +526,7 @@ export function SceneBoard({
   autoTagOptions,
   onWorkspaceCommand,
   onOpenComments,
+  onOpenFolder,
   libraryView,
   renderVariantToolbar,
   onVariantGradeStep,
@@ -1786,6 +1788,13 @@ export function SceneBoard({
       setTagEditCardId(card.id);
       setTagEditNodeGenId(g.id);
     }
+  }, []);
+  // 폴더 이름표가 붙은 카드의 우클릭 = 그 폴더의 '폴더 보기' 창(Jay 2026-10-15 — 라이브러리 카드의 우클릭과 같은 뜻). 브라우저 메뉴는 노드가 막는다.
+  //  위에 뜬 메뉴·창을 닫는 우클릭은 열지 않는다(lib/keyGate 의 contextMenuCovered — 라이브러리 격자와 같은 규칙). 안정 참조라 노드의 memo 를 깨지 않는다.
+  const onOpenFolderRef = useRef(onOpenFolder);
+  onOpenFolderRef.current = onOpenFolder;
+  const onNodeFolder = useCallback((g: Generation, button: number) => {
+    if (!contextMenuCovered(button)) onOpenFolderRef.current?.(g);
   }, []);
   // 미리보기 핸들러 — 카드별로 '안정 참조'를 캐시한다(같은 card.id → 같은 함수). HistoryBoardNode memo 를
   //  안 깨서 드래그·선택 중 전 노드 재렌더를 막고, 동시에 '렌더된 그 카드'(card.id)로 정확히 조회한다
@@ -3512,6 +3521,8 @@ export function SceneBoard({
     window.addEventListener("blur", release);
   };
   const onMouseDown = (e: React.MouseEvent) => {
+    // 우클릭 누름 — 고르기·끌기·범위 선택은 시작하지 않는다(종전처럼). 가림은 문서가 적는다(lib/keyGate contextMenuCovered)
+    if (e.button === 2) return;
     // 위에 뜬 창·메뉴의 클릭(바깥을 눌러 닫는 것 포함)은 그것의 몫 — 보드의 선택·범위 선택·화면 이동을 시작하지 않는다
     //  (2026-10-10 재실측: 재생 창·모델 설정 창의 바깥을 눌러 닫으면 뒤의 선택까지 풀렸다).
     if (pressStartedCovered()) return;
@@ -4760,6 +4771,7 @@ export function SceneBoard({
                     onRegenerate,
                     onTag: onSetTags ? onNodeTag : undefined,
                     onOpenComments,
+                    onOpenFolder: onOpenFolder ? onNodeFolder : undefined,
                   }}
                   actions={{
                     setCardMenu,

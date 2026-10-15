@@ -26,6 +26,10 @@ const errorText = (error: unknown) => String(error instanceof Error ? error.mess
 // ── 공유 생성물 ─────────────────────────────────────────────────────────────────────────────────
 
 export type EditListState = "idle" | "loading" | "ok" | "error" | "capped";
+// 조회 출발과 태그 저장 끝의 앞뒤를 가리는 순번 — 풀의 태그 덧입힘은 '그 카드의 저장이 끝난 뒤 출발한 조회'의 결과가 들어와야 걷는다
+//  (목록 배열이 다시 만들어진 것·저장 전에 출발한 늦은 응답으로 걷으면 다음 저장이 태그를 잃었다 — Codex 리뷰 10-15). 시각이 아니라 순번이라 같은 값이 없다.
+let editTicks = 0;
+export const editTick = () => ++editTicks;
 export interface EditList {
   state: EditListState;
   gens: Generation[]; // 쓸 수 있는 것만(완료 + 영상/이미지)
@@ -35,9 +39,10 @@ export interface EditList {
   // (그동안 gens 는 마지막으로 끝까지 받은 것 그대로다. complete 와 달리 내려가지 않아, 빈 폴더 숨기기가 새로 고칠 때마다
   //  출렁이지 않는다). 잘린 결과(capped)로 바뀌면 거짓이다.
   known: boolean;
+  startedAt: number; // 지금 든 gens 를 낸 조회가 출발한 순번(editTick) — 0 = 아직 받은 것 없음
 }
 
-const EMPTY_LIST: EditList = { state: "idle", gens: [], error: null, complete: false, known: false };
+const EMPTY_LIST: EditList = { state: "idle", gens: [], error: null, complete: false, known: false, startedAt: 0 };
 
 export function useEditGenerations({
   authKey,
@@ -64,6 +69,7 @@ export function useEditGenerations({
     const run = ++runRef.current;
     if (!ready) return;
     const alive = () => run === runRef.current;
+    const startedAt = editTick();
     // 같은 문맥의 마지막 성공 결과는 다시 받는 동안에도, 실패해도 그대로 둔다.
     // 다만 다시 받는 동안은 '끝까지 받음'이 아니다 — 그 사이 여기 없는 클립을 '없음'으로 판정하지 않는다.
     setHeld((prev) => (prev.ctx === ctx ? { ...prev, state: "loading", complete: false } : { ctx, ...EMPTY_LIST, state: "loading" }));
@@ -92,12 +98,13 @@ export function useEditGenerations({
       }
       // known 은 **지금 든 gens** 가 온전한가다 — 잘린 결과로 바꿔 넣었으면 전에 끝까지 받았더라도 거짓이다
       //  (뒤로 밀려 빠진 카드만 있는 폴더를 '빈 폴더'로 숨기게 된다 — Codex 코드 리뷰).
-      setHeld({ ctx, state: capped ? "capped" : "ok", gens, error: null, complete: !capped, known: !capped });
+      setHeld({ ctx, state: capped ? "capped" : "ok", gens, error: null, complete: !capped, known: !capped, startedAt });
     })().catch((error) => {
       if (!alive()) return;
       setHeld((prev) => ({
         ctx, state: "error", error: errorText(error),
         gens: prev.ctx === ctx ? prev.gens : [], complete: false, known: prev.ctx === ctx && prev.known,
+        startedAt: prev.ctx === ctx ? prev.startedAt : 0, // 실패는 새 gens 가 아니다
       }));
     });
     return () => {
@@ -106,7 +113,9 @@ export function useEditGenerations({
   }, [ctx, ready, projectId, seq, allWorkspaces, nonce]);
 
   const list = !ready ? EMPTY_LIST : held.ctx === ctx ? held : { ...EMPTY_LIST, state: "loading" as const };
-  return { state: list.state, gens: list.gens, error: list.error, complete: list.complete, known: list.known, reload };
+  return {
+    state: list.state, gens: list.gens, error: list.error, complete: list.complete, known: list.known, startedAt: list.startedAt, reload,
+  };
 }
 
 // ── 프로젝트·폴더 트리 ──────────────────────────────────────────────────────────────────────────

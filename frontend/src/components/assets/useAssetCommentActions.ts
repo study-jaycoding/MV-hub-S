@@ -11,6 +11,8 @@ interface Params {
   setCommentPath: Dispatch<SetStateAction<string | null>>;
   setComments: Dispatch<SetStateAction<AssetComment[]>>;
   reconcile: () => Promise<void>;
+  // 다른 파일의 코멘트로 옮겨도 되나 — 창은 파일마다 다시 그려져 쓰던 글이 사라진다(Jay 결정 5A). 거짓이면 옮기지 않는다.
+  canLeaveComment?: () => boolean;
 }
 
 export function useAssetCommentActions({
@@ -19,6 +21,7 @@ export function useAssetCommentActions({
   setCommentPath,
   setComments,
   reconcile,
+  canLeaveComment,
 }: Params) {
   // 마지막으로 연 파일 — 파일을 연달아 열면 이전 파일 응답이 늦게 도착해 새 제목 아래
   // 남의 코멘트가 붙는다(연타 시 순서 역전). 목록을 비우고 최신 대상의 응답만 반영한다.
@@ -39,6 +42,7 @@ export function useAssetCommentActions({
     setComments([]);
   }, [project, setCommentPath, setComments]);
   const openComments = (path: string) => {
+    if (commentPath && path !== commentPath && canLeaveComment && !canLeaveComment()) return;
     const target = targetOf(path);
     setCommentPath(path);
     setComments([]);

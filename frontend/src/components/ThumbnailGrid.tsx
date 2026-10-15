@@ -3,7 +3,7 @@
 //  · 빈 공간 드래그 = 마퀴(러버밴드) 다중 선택
 //  · 더블클릭 = 미리보기. (카드 드래그는 프롬프트 재사용 — 마퀴 대신 네이티브 드래그)
 // 선택 상태는 App 이 Set<string>(id) 로 보유 — 일괄 작업/select-bar 가 의존.
-import { activationKeyOwned, backgroundKeysBlocked, isTypingTarget, pressStartedCovered, useLooseKeys } from "../lib/keyGate";
+import { activationKeyOwned, backgroundKeysBlocked, contextMenuCovered, isTypingTarget, pressStartedCovered, useLooseKeys } from "../lib/keyGate";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { getDevicePixelRatio, subscribeDevicePixelRatio } from "../lib/devicePixelRatio";
 import { Virtualizer, type VirtualizerHandle } from "virtua";
@@ -677,9 +677,7 @@ export function ThumbnailGrid(props: Props) {
   const multiClick = useStaleMultiClick(props.placeKey ?? "");
   // 우클릭 = 그 카드가 속한 폴더의 창 — 카드의 폴더 이름표를 누른 것과 같다(Jay 2026-10-13: 작업 공간에서도. 공유 탭의 컷 카드 우클릭과 같은
   //  뜻이다). 폴더가 없는 카드·폴더 창을 열 수 없는 격자(onOpenFolder 없음 — 폴더 창 안·휴지통·캔버스)에서는 아무 일도 없다(브라우저 메뉴 그대로).
-  //  위에 뜬 메뉴를 닫는 우클릭은 열지 않는다 — contextmenu 는 단추를 뗀 뒤 오므로(윈도) 가림은 누름의 시작에 적어 둔다(FolderCardGrid 와 같은
-  //  이유). 키보드의 메뉴 키(button 0)는 기록을 보지 않고 그 순간의 가림을 본다.
-  const rightPressCoveredRef = useRef<boolean | null>(null);
+  //  위에 뜬 메뉴를 닫는 우클릭은 열지 않는다(lib/keyGate 의 contextMenuCovered — 누름의 시작에 문서가 적어 둔 가림).
   const onGridContextMenu = (e: React.MouseEvent) => {
     const open = props.onOpenFolder;
     if (!open || props.selectLocked) return;
@@ -688,19 +686,14 @@ export function ThumbnailGrid(props: Props) {
     const g = cellEl && opsRef.current.generations.find((x) => x.id === cellEl.dataset.id);
     if (!g?.folder_path) return;
     e.preventDefault(); // 폴더에 속한 카드 위에서만 브라우저 메뉴를 막는다
-    const covered = e.button === 2 ? (rightPressCoveredRef.current ?? backgroundKeysBlocked()) : backgroundKeysBlocked();
-    rightPressCoveredRef.current = null;
-    if (!covered) open(g);
+    if (!contextMenuCovered(e.button)) open(g);
   };
   const onGridMouseDown = (e: React.MouseEvent) => {
     if (e.button === 1) {
       e.preventDefault(); // 미들클릭 자동스크롤 방지(정보는 카드 auxclick 에서)
       return;
     }
-    if (e.button === 2) {
-      rightPressCoveredRef.current = pressStartedCovered(); // 고르기는 바꾸지 않는다
-      return;
-    }
+    if (e.button === 2) return; // 고르기는 바꾸지 않는다
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest("button, input, label")) return; // 오버레이 컨트롤 제외
     // 위에 메뉴·확인 덮개가 떠 있을 때의 누름은 그것을 닫는 누름이다 — 격자 안을 눌러 닫아도 선택을 바꾸지 않는다(격자 밖과 같은 규칙).

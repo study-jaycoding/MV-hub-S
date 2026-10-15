@@ -2,6 +2,8 @@
 // 편집 탭(Jay 2026-10-13) — 풀의 카드를 끌어 타임라인에 넣기 · 컷(폴더) 머리 칸을 끌어 순서 바꾸기.
 //  jsdom 에는 배치가 없다: 포인터 밑의 요소(document.elementFromPoint)는 시험이 정하고, 컷 칸의 자리는 style 의 left·width 로 읽는다
 //  (타임라인의 가로 자리 = clientX / zoom — getBoundingClientRect 가 0 을 준다).
+import { readFileSync } from "node:fs";
+import { URL as NodeURL } from "node:url";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -11,13 +13,13 @@ import type { Generation } from "../src/types";
 
 const gen = (id: string, cut: string, extra: Partial<Generation> = {}) => ({
   id, job_id: `job-${id}`, status: "done", params: {}, prompt: `prompt ${id}`, folder_path: `e070/${cut}`,
-  shared: true, is_final: false, is_held: false, is_mine: false, creator_name: "리버",
+  shared: true, is_final: false, is_held: false, is_mine: false, tags: [], creator_name: "리버",
   assets: [{ id: `a-${id}`, generation_id: id, type: "image", file_path: `/media/${id}.png`,
     thumbnail_path: null, source_url: null, cached: true }],
   ...extra,
 } as unknown as Generation);
 
-const world = vi.hoisted(() => ({ gens: [] as unknown[], disabled: {} as Record<string, string[]> }));
+const world = vi.hoisted(() => ({ gens: [] as unknown[], disabled: {} as Record<string, string[]>, startedAt: 0 }));
 vi.mock("../src/lib/resolveTransfer", async () => ({
   ...(await vi.importActual<typeof import("../src/lib/resolveTransfer")>("../src/lib/resolveTransfer")),
   getResolveConnectionStatus: () => Promise.reject(new Error("안 물었다")),
@@ -33,24 +35,34 @@ vi.mock("../src/lib/useEditSequence", async () => {
     useEditProjects: () => ({
       projects: [{ id: "p1", name: "P1" }], projectsState: "ok", tree, reload: () => {}, reloadCounts: () => {}, freshByProject: {},
     }),
-    useEditGenerations: () => ({ state: "ok", gens: world.gens, error: null, complete: true, known: true, reload: () => {} }),
+    useEditGenerations: () => ({ state: "ok", gens: world.gens, error: null, complete: true, known: true, startedAt: world.startedAt, reload: () => {} }),
   };
 });
 vi.mock("../src/lib/useDisabledFolders", () => ({ useDisabledFolders: () => world.disabled }));
 
 import { EditTab } from "../src/components/timeline/EditTab";
+import { editTick } from "../src/lib/useEditSequence";
+import { clearPoolTagOverlays } from "../src/components/timeline/EditPool";
 
 let host: HTMLDivElement;
 let root: Root;
 const opened: EditCutFolder[] = [];
 const flashed: string[] = [];
 const cardMenuRef: { current: EditCardMenu | null } = { current: null };
+const previewed: string[] = [];
+// 풀 카드의 호버 단추가 부르는 앱의 동작(라이브러리 격자에 주는 것과 같은 것) — 부른 것만 적는다
+const newCardActions = () => ({
+  canFinalize: () => true, onReview: vi.fn(), onPublish: vi.fn(), onUnpublish: vi.fn(), onFinalize: vi.fn(), onUnfinalize: vi.fn(),
+  onSetTags: vi.fn(), onSetAutoTags: vi.fn(), autoTagOptions: [] as string[], onOpenComments: vi.fn(), onInfo: vi.fn(),
+});
+let cardActions = newCardActions();
 const mount = () => act(() => root.render(
   <EditTab authKey="auth" authReady workspace={{ scope: "team", id: "w1", name: "W" }} keysActive
     flash={(message: string) => { flashed.push(message); }} onOpenCutFolder={(target) => { opened.push(target); }} reloadSignal={0}
-    peekPath={null} onPeekMarks={() => {}} cardMenuRef={cardMenuRef} onPreview={() => {}} onCompare={() => {}}
+    peekPath={null} onPeekMarks={() => {}} cardMenuRef={cardMenuRef} onPreview={(target) => { previewed.push(target.genId ?? ""); }}
+    onCompare={() => {}}
     resolve={{ send: () => {}, sendTimeline: () => new Promise<never>(() => {}), busy: false, pendingCount: 0, timelineBusy: false }}
-    onFolderAction={() => {}} />,
+    onFolderAction={() => {}} cardActions={cardActions} />,
 ));
 // 그 컷에서 시작한다 — 재생헤드의 마지막 자리는 시험 사이에도 남는다(useEditPlayback 의 lastPos). 풀은 재생헤드가 있는 컷을 보여 준다
 const mountOn = (name: string) => {
@@ -123,12 +135,15 @@ beforeEach(() => {
   world.disabled = {};
   opened.length = 0;
   flashed.length = 0;
+  previewed.length = 0;
+  cardActions = newCardActions();
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
 });
 afterEach(() => {
   act(() => root.unmount());
+  clearPoolTagOverlays(); // 풀의 태그 덧입힘은 모듈에 산다(탭을 오가도 남게) — 시험 사이에 넘기지 않는다
   host.remove();
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -770,4 +785,161 @@ it("컷을 끄는 중 끼울 자리가 화면 밖이면 그쪽 가장자리에 '
   expect([document.querySelector(".ed-cutdrop"), mark()]).toEqual([null, null]);
   fire(cell, "pointerup", { buttons: 0 });
   expect(cuts()).toEqual(["c1", "c2", "c3"]);
+});
+
+// Jay 2026-10-15 — 풀 카드에도 라이브러리 카드의 호버 단추(S·T·C·ⓘ·⤓): 누르면 라이브러리와 같은 앱의 동작을 부르고, 그 누름은 카드의
+//  고르기·끌기·크게 보기·정보 창으로 번지지 않는다(라이브러리 격자와 같은 약속). 카드 몸통의 누르기·더블클릭·휠 클릭은 그대로다.
+it("풀 카드의 호버 단추 — S·T·C·ⓘ 는 앱의 동작을 부르고, 그 누름은 고르기·끌기·크게 보기가 아니다 · 몸통은 그대로", async () => {
+  mountOn("c1");
+  const card = () => poolCards()[0];
+  const part = (selector: string) => card().querySelector<HTMLElement>(selector)!;
+  const picked = () => poolCards().map((item) => item.classList.contains("ed-picked"));
+  expect([...card().querySelectorAll(".card-tl button")].map((item) => item.textContent)).toEqual(["S", "T", "C"]);
+  expect([part(".ov-info"), part('.ov-icon[title="다운로드"]')].every(Boolean)).toBe(true);
+
+  // S = 공유 & 리뷰의 검토 메뉴 → 보류 → 예
+  fire(part(".card-sf"), "mousedown");
+  act(() => part(".card-sf").click());
+  act(() => part(".review-held").click());
+  act(() => part(".cs-final-yes").click());
+  expect(cardActions.onReview.mock.calls.map(([g, action]) => [g.id, action])).toEqual([["a", "held"]]);
+  // C = 코멘트 창 · ⓘ = 정보 창
+  act(() => part(".card-tl .card-cm:last-child").click());
+  act(() => part(".ov-info").click());
+  expect([cardActions.onOpenComments.mock.calls.map(([g]) => g.id), cardActions.onInfo.mock.calls.map(([target]) => target.gen.id)])
+    .toEqual([["a"], ["a"]]);
+  // 단추를 누른 채 끌어도 카드 끌기가 아니고, 단추를 두 번 눌러도 크게 보기가 아니다
+  fire(part(".ov-info"), "mousedown", { clientX: 10, clientY: 10 });
+  under = lane(2);
+  fire(window, "mousemove", { clientX: 60, clientY: 80 });
+  expect(ghost()).toBeNull();
+  fire(window, "mouseup", { clientX: 60, clientY: 80, buttons: 0 });
+  fire(part(".ov-info"), "dblclick");
+  fire(part(".card-tl .card-cm"), "dblclick");
+  expect([picked(), previewed, opened, stored()]).toEqual([[false, false], [], [], null]);
+
+  // T = 태그 고치기(카드 아래 입력칸). 넣은 태그는 목록을 다시 받기 전에도 카드에 남는다 — 닫았다 다시 열어 더 넣으면 앞의 것과 같이 적힌다
+  const typeTag = (tag: string) => {
+    const input = card().querySelector<HTMLInputElement>(".cs-tag-input")!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, tag);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    act(() => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+  };
+  const saves: (() => void)[] = []; // 태그 저장은 시험이 끝낸다(앱의 저장 대기열처럼 끝나면 풀리는 약속)
+  cardActions.onSetTags.mockImplementation(() => new Promise<void>((resolve) => { saves.push(resolve); }));
+  act(() => part(".card-tl .card-cm").click());
+  typeTag("컷1");
+  act(() => { part(".cs-tag-input").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+  expect(card().querySelector(".cs-tag-input")).toBeNull();
+  act(() => part(".card-tl .card-cm").click());
+  typeTag("컷2");
+  expect(cardActions.onSetTags.mock.calls.map(([g, tags]) => [g.id, tags])).toEqual([["a", ["컷1"]], ["a", ["컷1", "컷2"]]]);
+  // 덧입힘은 그 카드의 저장이 다 끝난 **뒤에 출발한** 조회의 목록이 걷는다(Codex 리뷰 10-15 세 번):
+  //  ① 컷1 만 저장되고 컷2 는 아직인데 [컷1] 목록이 오면 컷2 는 남는다 — 다시 받으면 걷던 때는 다음 저장이 [컷1, 컷3] 이었다
+  //  ② 저장이 끝나기 전에 출발한 늦은 응답·같은 조회로 다시 만들어진 목록은 걷지 않는다 — 목록이 바뀌면 걷던 때는 [컷1, 컷4] 였다
+  //  ③ 저장이 끝난 뒤 출발한 조회가 다른 창의 [다른] 을 가져오면 믿는다 — 같아질 때까지 들던 때는 [컷1, 컷2, 컷3, 컷4, 컷5] 로 덮었다
+  const escape = () => act(() => {
+    part(".cs-tag-input").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  });
+  const listed = (tags: string[], startedAt = editTick()) => {
+    world.gens = [gen("a", "c1", { tags }), gen("b", "c1"), gen("x", "c2")];
+    world.startedAt = startedAt;
+    mount();
+  };
+  const tagAgain = (tag: string) => {
+    act(() => part(".card-tl .card-cm").click());
+    typeTag(tag);
+    escape();
+  };
+  const finishSaves = () => act(async () => { saves.splice(0).forEach((resolve) => resolve()); });
+  escape();
+  await act(async () => { saves.shift()!(); }); // 컷1 저장 끝 — 컷2 는 아직
+  act(() => root.unmount()); // 다른 탭에 갔다 — 편집 탭이 사라진다(저장 대기열은 앱에 남는다 · Codex 리뷰 4차)
+  root = createRoot(host);
+  mountOn("c1"); // 돌아왔다
+  listed(["컷1"]); // 돌아와 받은 목록 — 컷2 는 아직 저장 중
+  tagAgain("컷3");
+  const early = editTick(); // 저장이 끝나기 전에 출발한 조회
+  await finishSaves();
+  listed(["컷1"], early); // 그 늦은 응답
+  listed(["컷1"], early); // 같은 조회로 목록만 다시 만들어짐
+  tagAgain("컷4");
+  await finishSaves();
+  listed(["다른"]);
+  tagAgain("컷5");
+  expect(cardActions.onSetTags.mock.calls.slice(2).map(([, tags]) => tags))
+    .toEqual([["컷1", "컷2", "컷3"], ["컷1", "컷2", "컷3", "컷4"], ["다른", "컷5"]]);
+
+  // 몸통: 휠 클릭 = 넣을 트랙 메뉴(라이브러리 카드의 휠 클릭 = 정보 창은 뜨지 않는다) · 누르기 = 고르기 · 더블클릭 = 크게 보기
+  fire(part(".card-thumb"), "auxclick", { button: 1, buttons: 0 });
+  expect([document.querySelector(".ed-tmenu") !== null, cardActions.onInfo.mock.calls.length]).toEqual([true, 1]);
+  press({ key: "Escape", code: "Escape" });
+  act(() => part(".card-thumb").click());
+  fire(part(".card-thumb"), "dblclick");
+  expect([picked(), previewed]).toEqual([[true, false], ["a"]]);
+  expect(flashed).toEqual([]);
+});
+
+// 카드 껍데기는 이제 단추가 아니다(라이브러리 카드의 단추를 안에 두려면 — 단추 안에 단추를 둘 수 없다). Tab 으로 간 카드의 Enter·Space 는
+//  지금처럼 누르기(고르기)이고, 마우스로 누른 뒤 남은 초점의 Space 는 편집 키(재생)다(조작 규칙 8).
+it("풀 카드는 키보드로 누를 수 있다 — Tab 으로 간 초점의 Enter·Space = 고르기, 마우스로 남은 초점의 Space 는 카드가 쓰지 않는다", () => {
+  mountOn("c1");
+  const [a, b] = poolCards();
+  const picked = () => poolCards().map((item) => item.classList.contains("ed-picked"));
+  const key = (target: HTMLElement, name: string) => {
+    const event = new KeyboardEvent("keydown", { key: name, code: name === " " ? "Space" : "Enter", bubbles: true, cancelable: true });
+    act(() => { target.dispatchEvent(event); });
+    return event;
+  };
+  expect([a.tabIndex, a.getAttribute("role")]).toEqual([0, "button"]);
+  act(() => {
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    a.focus();
+  });
+  key(a, "Enter");
+  expect(picked()).toEqual([true, false]);
+  act(() => b.focus());
+  key(b, " ");
+  expect(picked()).toEqual([false, true]);
+  fire(a, "pointerdown"); // 마우스로 눌렀다 — 'Tab 으로 온 초점'이 꺼진다
+  act(() => a.focus());
+  const space = key(a, " ");
+  expect([picked(), space.defaultPrevented]).toEqual([[false, true], true]); // 편집 탭이 썼다(재생) — 카드는 고르지 않는다
+  // 다른 카드를 끄는 중의 Enter 는 초점이 남은 카드를 누르지 않는다 — 끌기가 키를 먼저 막는다(useDragKeyHold · Codex 리뷰)
+  dragCard(b, null);
+  key(a, "Enter");
+  expect(picked()).toEqual([false, true]);
+  dropCard();
+});
+
+// Jay 2026-10-15 — 풀 맨 윗줄 카드가 위에서 잘렸다: 스크롤 칸은 제 안쪽 끝에서 자르는데 위 여백이 0 이라, 고른 카드의 바깥 흰 테두리
+//  (outline 2px + 간격 2px)와 호버로 들리는 카드(.card:hover 의 translateY(-3px))가 잘렸다. 진짜 CSS 를 올려 계산된 값을 본다.
+it("풀 격자의 위 여백은 고른 카드의 바깥 테두리·호버로 들리는 높이를 담는다 · 뺀 단추는 숨고 넣은 카드의 단추는 호버 때만", () => {
+  const css = (name: string) => readFileSync(new NodeURL(`../src/styles/${name}.css`, import.meta.url), "utf8");
+  act(() => root.render(<><style>{css("generations") + css("edit-tab")}</style>
+    <div className="ed-pbody ed-pgrid">
+      <div className="ed-card ed-picked"><div className="card card-grid selected"><div className="card-clip"><div className="card-thumb">
+        <span className="card-drag-grip">⠿</span>
+        <div className="thumb-overlay"><div className="ov-bottom">
+          <button className="ov-icon">⤓</button><button className="ov-icon ov-ref">@</button><button className="ov-icon ov-import">⬇</button>
+        </div></div>
+      </div></div></div></div>
+    </div></>));
+  const style = (selector: string) => getComputedStyle(host.querySelector(selector)!);
+  const px = (value: string) => parseFloat(value) || 0;
+  const pad = px(style(".ed-pgrid").paddingTop);
+  expect(pad).toBeGreaterThanOrEqual(px(style(".ed-picked").outlineWidth) + px(style(".ed-picked").outlineOffset));
+  expect(pad).toBeGreaterThanOrEqual(3);
+  expect([".card-drag-grip", ".ov-ref", ".ov-import", ".ov-icon"].map((selector) => style(selector).display === "none"))
+    .toEqual([true, true, true, false]); // ⠿·@·⬇ 는 뺐다 · ⤓ 는 있다
+  expect(style(".thumb-overlay").opacity).toBe("0"); // 라이브러리의 '선택'은 늘 보이지만 여기의 굵은 테두리는 넣은 것이다
+  // Tab 으로 간 단추는 넣은 카드에서도 보인다 — 보이는 규칙이 숨김 규칙보다 세야 한다(약해서 투명한 채 눌렸다 — Codex 리뷰).
+  //  jsdom 은 :focus-within 상태를 계산된 값에 넣지 않아(선택자는 맞는다) 규칙의 세기(클래스·가상 클래스 수)를 직접 센다
+  const weight = (selector: string) => (selector.match(/[.:][\w-]+/g) ?? []).length;
+  const rules = css("edit-tab");
+  const hide = /([^{}\n]*\.card\.selected \.thumb-overlay)\s*\{\s*opacity:\s*0/.exec(rules)![1];
+  const show = /([^{},\n]*\.thumb-overlay:focus-within)/.exec(rules)![1];
+  expect(weight(show)).toBeGreaterThan(weight(hide));
 });

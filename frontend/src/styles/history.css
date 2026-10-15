@@ -173,13 +173,15 @@
 /* 그리드 카드 .ov-icon 과 동일한 룩(전역 일관) */
 .linb-ov-btn {
   width: 28px; height: 28px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.16);
-  background: rgba(12,13,16,0.6); backdrop-filter: blur(6px);
+  background: rgba(12,13,16,0.6);
   color: #fff; font-size: 14px; line-height: 1; cursor: pointer;
   padding: 0; /* base.css 전역 button padding이 폭 하한 26px를 만들어 씬카드 22px 축소를 막음 */
   display: flex; align-items: center; justify-content: center; pointer-events: none;
 }
-/* 호버 때만 버튼 클릭 가능 — 비호버 시 노드 선택/더블클릭을 가로채지 않게 */
-.linb-node:hover .linb-ov-btn, .linb-ov:focus-within .linb-ov-btn { pointer-events: auto; }
+/* 호버 때만 버튼 클릭 가능 — 비호버 시 노드 선택/더블클릭을 가로채지 않게.
+   흐림도 보일 때만 — 안 보일 때(opacity 0)도 걸려 있으면 단추마다 합성 레이어가 되어 카드당 8개쯤, 큰 씬 축소 끌기가 20fps 였고
+   그 위에 그리는 폴더 이름표까지 레이어가 됐다(65회차 실측 — 레이어 306→72). */
+.linb-node:hover .linb-ov-btn, .linb-ov:focus-within .linb-ov-btn { pointer-events: auto; backdrop-filter: blur(6px); }
 .linb-ov-btn:hover { background: var(--grad); color: var(--accent-ink); border-color: var(--accent); }
 .linb-ov-btn.on { background: var(--accent); color: var(--accent-ink); font-weight: 900; font-size: 17px; }
 /* C 미확인 코멘트(호박색) — 확인 전까지 강조(그리드 .card-cm.alert 톤). */
@@ -207,7 +209,7 @@
   position: absolute; top: 5px; left: 5px; z-index: 4; pointer-events: none;
   width: 26px; height: 26px; border-radius: 8px; line-height: 1;
   display: flex; align-items: center; justify-content: center;
-  font-weight: 900; transition: opacity 0.12s; backdrop-filter: blur(6px);
+  font-weight: 900; transition: opacity 0.12s; /* 흐림 없음 — 배경이 늘 불투명(shared·held·final)이라 보이지 않고, 노드마다 합성 레이어만 만든다(65회차) */
 }
 /* 그리드 카드 .card-sf.on / .card-sf.final 과 동일한 룩 — 공유=라임 S, 최종=골드 그라데이션 ★ */
 .linb-sf.shared { background: var(--accent); color: var(--accent-ink); border: 1px solid var(--accent); font-size: 13px; }

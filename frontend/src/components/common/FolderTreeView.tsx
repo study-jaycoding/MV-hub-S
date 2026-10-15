@@ -10,9 +10,14 @@ import { FolderReviewCount } from "./FolderReviewCount";
 const GENERATION_DRAG_TYPES: string[] = [DRAG_TYPES.generationList, DRAG_TYPES.generation];
 
 /** 사이드바 줄의 '보는 중'·'생성' 표 — 보는 자리와 생성 위치가 갈렸을 때만 붙는다(판정은 ProjectSection, Jay 2026-10-15 8A). */
+// '생성'은 새 생성의 기본 위치다 — 재생성은 원본 폴더로, 씬 Set 에 이어 만든 것은 그 Set 의 폴더로 간다(Codex 8A 리뷰)
+const SIDE_MARK_TITLE = {
+  see: "지금 목록이 보는 폴더",
+  gen: "새 생성이 들어갈 기본 위치 — 재생성은 원본 폴더로, 씬의 Set 에 이어 만든 것은 그 Set 의 폴더로 갑니다",
+} as const;
 export function SideMark({ kind }: { kind: "see" | "gen" }) {
   const t = useT();
-  return <span className={"side-mark " + kind}>{t(kind === "see" ? "보는 중" : "생성")}</span>;
+  return <span className={"side-mark " + kind} title={t(SIDE_MARK_TITLE[kind])}>{t(kind === "see" ? "보는 중" : "생성")}</span>;
 }
 
 export interface FolderTreeItem {
