@@ -139,8 +139,9 @@ class PersistentTests(unittest.TestCase):
                         self.assertEqual([block.type for block in result.content], ["text"])
                         self.assertEqual(result.structured_content["generation_status"], state)
                     self.http.result_value = {"generation_status": "done", "generation_id": "g", "media": {"mime": "image/jpeg", "data_base64": encoded}}
-                    result = await client.call_tool("get_result", {"plan_id": "p", "item_index": 1})
+                    result = await client.call_tool("get_result", {"plan_id": "p", "item_index": 1, "wait_seconds": 25})
                     self.assertFalse(result.is_error)
+                    self.assertEqual(self.http.calls[-1][1]["args"]["wait_seconds"], 25)
                     self.assertEqual([block.type for block in result.content], ["text", "image"])
                     self.assertEqual(base64.b64decode(result.content[1].data), jpeg)
                     self.assertEqual(result.content[1].mime_type, "image/jpeg")
@@ -154,6 +155,9 @@ class PersistentTests(unittest.TestCase):
                         self.assertFalse(any(block.type == "image" for block in rejected.content))
                     bad_index = await client.call_tool("get_result", {"plan_id": "p", "item_index": -1})
                     self.assertTrue(bad_index.is_error)
+                    for wait in (-1, 26, 1.5, True, "1"):
+                        invalid_wait = await client.call_tool("get_result", {"plan_id": "p", "wait_seconds": wait})
+                        self.assertTrue(invalid_wait.is_error)
         anyio.run(exercise)
         self.assertTrue(all(body["method"] == "get_result" for _, body in self.http.calls))
 
@@ -163,8 +167,12 @@ class PersistentTests(unittest.TestCase):
         with patch.object(broker, "require_hub"), patch.object(broker, "request", return_value={}) as request:
             broker.action("get_result", {})
             self.assertEqual(request.call_args.kwargs["maximum"], MAX_RESULT_RESPONSE)
+            self.assertEqual(request.call_args.kwargs["timeout"], 90)
+            broker.action("get_result", {"wait_seconds": 25})
+            self.assertEqual(request.call_args.kwargs["timeout"], 115)
             broker.action("get_plan", {})
             self.assertEqual(request.call_args.kwargs["maximum"], MAX_RESPONSE)
+            self.assertEqual(request.call_args.kwargs["timeout"], 90)
         self.http.result_value = {"data": "x" * (MAX_RESULT_RESPONSE + 1)}
         with self.assertRaises(ToolError):
             broker.action("get_result", {})

@@ -657,7 +657,8 @@ def result_plan(local, monkeypatch):
     return plan, row
 
 
-def test_result_returns_bounded_jpeg_without_source_and_does_not_mutate_plan(local, result_plan, tmp_path, monkeypatch):
+@pytest.mark.parametrize("wait_seconds", [0, 25])
+def test_result_returns_bounded_jpeg_without_source_and_does_not_mutate_plan(local, result_plan, tmp_path, monkeypatch, wait_seconds):
     from PIL import Image
     import base64
     root = tmp_path / ".thumbs"
@@ -672,7 +673,7 @@ def test_result_returns_bounded_jpeg_without_source_and_does_not_mutate_plan(loc
     monkeypatch.setattr(api.library, "media_thumb", thumbnail)
     plan, _ = result_plan
     before = action(local, "get_plan", {"plan_id": plan["id"]}).json()
-    response = action(local, "get_result", {"plan_id": plan["id"]})
+    response = action(local, "get_result", {"plan_id": plan["id"], "wait_seconds": wait_seconds})
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["generation_status"] == "done" and result["asset_type"] == "image"
@@ -682,6 +683,148 @@ def test_result_returns_bounded_jpeg_without_source_and_does_not_mutate_plan(loc
     assert action(local, "get_plan", {"plan_id": plan["id"]}).json() == before
     assert action(local, "get_result", {"plan_id": plan["id"]}, "claude").status_code == 404
     assert action(local, "get_result", {"plan_id": plan["id"], "src": "http://unsafe"}).status_code == 422
+
+
+def test_result_wait_observes_completion_and_previews_only_once(local, result_plan, tmp_path, monkeypatch):
+    from PIL import Image
+    import json
+    import time
+    plan, row = result_plan
+    root = tmp_path / ".thumbs"
+    root.mkdir()
+    path = root / "result.jpg"
+    Image.new("RGB", (32, 32), "blue").save(path)
+    monkeypatch.setattr(api.thumbs, "THUMB_DIR", root)
+    with db.get_connection() as conn:
+        items = json.loads(conn.execute("SELECT items FROM mcp_generation_plan WHERE id=?", (plan["id"],)).fetchone()[0])
+        items.append({**items[0], "idempotency_key": str(uuid4()), "generation_id": None, "state": "pending"})
+        conn.execute("UPDATE mcp_generation_plan SET items=? WHERE id=?", (json.dumps(items), plan["id"]))
+    reads, previews = [], []
+    def generation(*args):
+        reads.append(1)
+        return {**row, "status": "done" if time.monotonic() >= ready_at else "running"}
+    async def thumbnail(src, w):
+        previews.append(w)
+        return api.FileResponse(path, media_type="image/jpeg")
+    monkeypatch.setattr(api.library, "get_generation", generation)
+    monkeypatch.setattr(api.library, "media_thumb", thumbnail)
+    before = action(local, "get_plan", {"plan_id": plan["id"]}).json()
+    start = time.monotonic()
+    ready_at = start + 0.1
+    response = action(local, "get_result", {"plan_id": plan["id"], "wait_seconds": 5})
+    elapsed = time.monotonic() - start
+    print(f"MCP wait measurement: {elapsed:.3f}s total, {elapsed - 0.1:.3f}s after ready; one HTTP call; one preview; another item pending")
+    assert response.status_code == 200, response.text
+    assert response.json()["generation_status"] == "done" and response.json()["media"]
+    assert len(reads) == 3 and previews == [512]
+    assert 1.9 <= elapsed < 5
+    assert action(local, "get_plan", {"plan_id": plan["id"]}).json() == before
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled", "unknown"])
+def test_result_wait_stops_on_non_running_state(local, result_plan, monkeypatch, status):
+    plan, row = result_plan
+    row["status"] = status
+    async def forbidden(*args):
+        raise AssertionError("terminal or unknown state must not wait")
+    monkeypatch.setattr(api.asyncio, "sleep", forbidden)
+    result = action(local, "get_result", {"plan_id": plan["id"], "wait_seconds": 25})
+    assert result.status_code == 200 and result.json()["generation_status"] == status
+
+
+@pytest.mark.parametrize("state", ["pending", "uncertain", "rejected"])
+def test_result_wait_does_not_wait_for_unsubmitted_items(local, monkeypatch, state):
+    import json
+    configure(local)
+    plan = prepare(local)
+    with db.get_connection() as conn:
+        items = json.loads(conn.execute("SELECT items FROM mcp_generation_plan WHERE id=?", (plan["id"],)).fetchone()[0])
+        items[0]["state"] = state
+        conn.execute("UPDATE mcp_generation_plan SET items=? WHERE id=?", (json.dumps(items), plan["id"]))
+    async def forbidden(*args):
+        raise AssertionError("unsubmitted item must not wait or submit")
+    monkeypatch.setattr(api.asyncio, "sleep", forbidden)
+    monkeypatch.setattr(gen_requests, "create_gen_request", forbidden)
+    response = action(local, "get_result", {"plan_id": plan["id"], "wait_seconds": 25})
+    assert response.status_code == 200 and response.json()["item_state"] == state
+
+
+@pytest.mark.parametrize("wait_seconds", [-1, 26, 0.5, True, "1"])
+def test_result_wait_rejects_invalid_budget(local, result_plan, wait_seconds):
+    plan, _ = result_plan
+    assert action(local, "get_result", {"plan_id": plan["id"], "wait_seconds": wait_seconds}).status_code == 422
+
+
+def test_result_wait_expires_without_resubmission(local, result_plan, monkeypatch):
+    import time
+    plan, row = result_plan
+    row["status"] = "running"
+    start = time.monotonic()
+    response = action(local, "get_result", {"plan_id": plan["id"], "wait_seconds": 1})
+    assert 0.9 <= time.monotonic() - start < 3
+    assert response.status_code == 200 and response.json()["generation_status"] == "running"
+
+
+def test_result_wait_rechecks_revocation_and_releases_slot(local, result_plan, monkeypatch):
+    import threading
+    plan, row = result_plan
+    row["status"] = "running"
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(api, "_result_wait_slots", slots)
+    async def revoke(_):
+        with db.get_connection() as conn:
+            conn.execute("UPDATE mcp_client SET revoked_at=CURRENT_TIMESTAMP")
+    monkeypatch.setattr(api.asyncio, "sleep", revoke)
+    response = action(local, "get_result", {"plan_id": plan["id"], "wait_seconds": 1})
+    assert response.status_code == 403
+    assert slots.acquire(blocking=False)
+    slots.release()
+
+
+def test_result_wait_capacity_does_not_block_immediate_reads(local, result_plan, monkeypatch):
+    import threading
+    plan, row = result_plan
+    row["status"] = "running"
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(api, "_result_wait_slots", slots)
+    slots.acquire()
+    try:
+        assert action(local, "get_result", {"plan_id": plan["id"], "wait_seconds": 1}).status_code == 429
+        assert action(local, "get_result", {"plan_id": plan["id"]}).status_code == 200
+    finally:
+        slots.release()
+
+
+def test_result_wait_task_cancellation_releases_slot(monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(api, "_result_wait_slots", slots)
+    async def cancelled(*args, **kwargs):
+        raise asyncio.CancelledError()
+    monkeypatch.setattr(api, "_result_once", cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(api._result(None, SimpleNamespace(wait_seconds=25)))
+    assert slots.acquire(blocking=False)
+    slots.release()
+
+
+def test_result_wait_disconnect_releases_slot(monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(api, "_result_wait_slots", slots)
+    async def pending(*args, **kwargs):
+        return {"item_state": "submitted", "queue_status": "tracking", "generation_status": "running"}
+    async def disconnected():
+        return True
+    monkeypatch.setattr(api, "_result_once", pending)
+    ctx = SimpleNamespace(request=SimpleNamespace(is_disconnected=disconnected))
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(api._result(ctx, SimpleNamespace(wait_seconds=25)))
+    assert caught.value.status_code == 499
+    assert slots.acquire(blocking=False)
+    slots.release()
 
 
 @pytest.mark.parametrize("status", ["pending", "running", "failed"])

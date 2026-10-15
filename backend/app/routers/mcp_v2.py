@@ -35,6 +35,8 @@ from . import _proxy, assets, gen_requests, generation, library, manage, mcp, pr
 
 router = APIRouter(prefix="/api/mcp/v2", tags=["mcp"])
 _registration_lock = threading.Lock()
+_result_wait_slots = threading.BoundedSemaphore(8)
+_RESULT_POLL_SECONDS = 2.0
 
 
 def hub_id():
@@ -577,6 +579,7 @@ class CanvasIn(PlanId):
 class ResultIn(PlanId):
     item_index: int = Field(default=0, ge=0, le=19)
     asset_index: int = Field(default=0, ge=0, le=99)
+    wait_seconds: int = Field(default=0, ge=0, le=25, strict=True)
 
 
 async def _authorized_plan(ctx, plan_id):
@@ -612,14 +615,15 @@ def _read_preview(response):
     return data
 
 
-async def _result(ctx, args):
+async def _result_once(ctx, args, *, preview=True):
     plan = await _authorized_plan(ctx, str(args.plan_id))
     if args.item_index >= len(plan["items"]):
         raise HTTPException(404, "계획 항목을 찾을 수 없습니다.")
     item = plan["items"][args.item_index]
     result = {"plan_id": plan["id"], "item_index": args.item_index, "asset_index": args.asset_index,
               "generation_id": item.get("generation_id"), "generation_status": item.get("generation_status"),
-              "asset_type": None, "media": None, "note": "아직 완료된 미리보기가 없습니다. get_plan으로 상태를 확인하세요."}
+              "item_state": item.get("state"), "queue_status": item.get("queue_status"),
+              "asset_type": None, "media": None, "note": "아직 완료된 미리보기가 없습니다."}
     if result["generation_id"]:
         row = await asyncio.to_thread(library.get_generation, result["generation_id"],
                                       _internal(ctx, "/api/generations/" + result["generation_id"]))
@@ -631,7 +635,7 @@ async def _result(ctx, args):
         assets_list = row.get("assets", [])
         if row.get("status") == "done":
             result["note"] = "완료되었지만 선택한 미디어가 없습니다. 앱에서 결과를 확인하세요."
-        if row.get("status") == "done" and args.asset_index < len(assets_list):
+        if preview and row.get("status") == "done" and args.asset_index < len(assets_list):
             asset = assets_list[args.asset_index]
             result["asset_type"] = asset.get("type")
             source = asset.get("thumbnail_path")
@@ -655,9 +659,41 @@ async def _result(ctx, args):
                             break
                 except (HTTPException, OSError, ValueError):
                     pass
+    if _result_pending(result):
+        result["note"] = "생성 진행 중입니다. 같은 항목의 get_result(wait_seconds=25)로 계속 확인하세요. 재생성하지 마세요."
+    elif result["generation_status"] != "done":
+        result["note"] = "완료 대기를 중단했습니다. 항목·생성 상태를 확인하고 실패·취소·불명확한 접수를 자동 재제출하지 마세요."
     await asyncio.to_thread(_workspace, ctx, plan["workspace"])
     await asyncio.to_thread(_still_current, ctx)
     return result
+
+
+def _result_pending(result):
+    return (result["item_state"] == "submitted"
+            and result["queue_status"] not in {"failed", "cancelled", "canceled", "rejected"}
+            and result["generation_status"] in {None, "pending", "running"})
+
+
+async def _result(ctx, args):
+    if not args.wait_seconds:
+        return await _result_once(ctx, args)
+    # Bound sleepers without holding a DB transaction or a worker thread between polls.
+    if not _result_wait_slots.acquire(blocking=False):
+        raise HTTPException(429, "결과 대기 요청이 많습니다. 잠시 후 기존 계획을 조회하세요. 재생성하지 마세요.")
+    try:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + args.wait_seconds
+        result = await _result_once(ctx, args, preview=False)
+        while _result_pending(result) and loop.time() < deadline:
+            if await ctx.request.is_disconnected():
+                raise HTTPException(499, "결과 조회 연결이 종료되었습니다.")
+            await asyncio.sleep(min(_RESULT_POLL_SECONDS, deadline - loop.time()))
+            result = await _result_once(ctx, args, preview=False)
+        if result["generation_status"] == "done":
+            return await _result_once(ctx, args)
+        return result
+    finally:
+        _result_wait_slots.release()
 
 
 async def _execute(ctx, plan_id):
