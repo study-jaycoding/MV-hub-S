@@ -196,6 +196,18 @@ export function useGenerationLibraryData({
   const metaScopeRef = useRef<string | null>(null);
   const metaScopeKey = () => JSON.stringify([filtersRef.current.tab === "team" ? "team" : "my", projectWorkspaceIdRef.current]);
 
+  // 목록이 바뀌면(삭제·태그·컬러·추가 로드 등) 현재 탭 캐시도 동기화 —
+  // 탭을 오갔다 돌아와도 방금 편집한 결과가 캐시 화면에 그대로 보이게.
+  //  layout 이고 소유 탭을 바꾸는 아래 효과들(공간 전환·탭 교체)보다 **먼저** 선언한다 — 편집과 탭 이동이 한 갱신에 묶이면 그것들이
+  //  소유 탭을 먼저 바꿔, 편집한 목록이 새 탭 캐시에 적히고 편집한 탭 캐시에는 빠졌다(15초 안에 돌아오면 편집 전 색. 배포 준비 Codex
+  //  리뷰 P2 — 공유 탭으로 갈 때는 공간 범위 키도 같이 바뀌어 그 효과가 먼저 돌았다, 재검토).
+  useLayoutEffect(() => {
+    const cachedTab = lastLoadedTabRef.current;
+    if (!cachedTab) return;
+    const c = tabCacheRef.current[cachedTab];
+    if (c) tabCacheRef.current[cachedTab] = { ...c, gens, hasMore, cursor: pageCursorRef.current, trashOffset: trashOffsetRef.current };
+  }, [gens, hasMore]);
+
   // 같은 공유 탭 안의 공간 전환도 비동기 응답의 문맥 경계다. 효과가 돌기 전부터 차단한다.
   const workspaceScopeRef = useRef(workspaceScopeKey);
   const resetWorkspaceRef = useRef(false);
@@ -260,17 +272,6 @@ export function useGenerationLibraryData({
     setLocatedVisibleIds(null);
     setStaleList(false);
   }, [authScope]);
-
-  // 목록이 바뀌면(삭제·태그·컬러·추가 로드 등) 현재 탭 캐시도 동기화 —
-  // 탭을 오갔다 돌아와도 방금 편집한 결과가 캐시 화면에 그대로 보이게.
-  //  layout 이고 아래 탭 교체보다 먼저 선언한다 — 편집과 탭 이동이 한 갱신에 묶이면 교체가 소유 탭을 먼저 바꿔, 편집한 목록이
-  //  새 탭 캐시에 적히고 편집한 탭 캐시에는 빠졌다(15초 안에 돌아오면 편집 전 색. 배포 준비 Codex 리뷰 P2).
-  useLayoutEffect(() => {
-    const cachedTab = lastLoadedTabRef.current;
-    if (!cachedTab) return;
-    const c = tabCacheRef.current[cachedTab];
-    if (c) tabCacheRef.current[cachedTab] = { ...c, gens, hasMore, cursor: pageCursorRef.current, trashOffset: trashOffsetRef.current };
-  }, [gens, hasMore]);
 
   // ★탭이 바뀌면 '그 자리에서' 화면 컨텍스트를 전환 — 진행 중 reload(코얼레싱 큐)가 끝나길 기다리면
   //  이전 탭 카드가 새 탭에 남는다(코덱스 P1). 캐시(sig 일치)가 있으면 즉시 그 탭 목록, 없으면 비움.

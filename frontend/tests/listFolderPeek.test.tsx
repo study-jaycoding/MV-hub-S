@@ -350,18 +350,22 @@ it("switching tabs swaps the list before paint — the committed render never sh
 //  먼저 소유 탭을 바꿔, 편집한 목록이 새 탭 캐시에 적히고 15초 안에 돌아오면 편집 전 값이 보였다.
 it("an edit made in the same update as a tab switch stays in the cache of the tab it was made on", async () => {
   const TEAM: GenQuery = { tab: "team" };
+  vi.mocked(api.listGenerations).mockImplementation(async (query) => (query.tab === "team" ? [gen("t1")] : mainRows));
+  // 앱처럼 공유 탭에서는 보는 범위 키가 생긴다(작업 공간은 "") — 그 범위 전환의 layout 이 소유 탭을 먼저 바꿨다(Codex 재검토)
+  const toTeam = () => render(TEAM, { tab: "team" }, "", "team:a");
   act(() => render(MAIN));
   await settle();
-  act(() => render(TEAM, { tab: "team" }));
+  act(() => toTeam());
   await settle();
   act(() => render(MAIN));
   await settle();
   expect(ids()).toEqual(["m1", "m2"]);
   act(() => {
     data.setGens((prev) => prev.map((g) => (g.id === "m1" ? { ...g, tags: ["편집"] } : g)));
-    render(TEAM, { tab: "team" });
+    toTeam();
   });
   await settle();
+  expect(ids()).toEqual(["t1"]);
   act(() => render(MAIN)); // 15초 안 — 캐시로 돌아온다
   await settle();
   expect(data.gens.find((g) => g.id === "m1")?.tags).toEqual(["편집"]);
