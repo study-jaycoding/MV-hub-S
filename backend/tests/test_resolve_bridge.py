@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -989,6 +990,11 @@ class FastBinSortTests(unittest.TestCase):
         self.existing["c0020"].clips.append(self._clip("a"))
         self._add(self.existing["c0030"], "sub").clips.append(self._clip("b"))
         self.saved_before = self.manager.saved
+        self.clip_ids_before = self._clip_ids()
+
+    def _clip_ids(self):
+        return ([c.unique_id for c in self.existing["c0020"].clips], [c.unique_id for c in self.existing["c0030"].children[0].clips],
+                [c.unique_id for c in self.episode.clips])
 
     @staticmethod
     def _add(parent, name):
@@ -1033,9 +1039,7 @@ class FastBinSortTests(unittest.TestCase):
     def _assert_old_bins_kept(self):
         for name, folder in self.existing.items():
             self.assertIs(next(child for child in self.episode.children if child.name == name), folder)
-        self.assertEqual([clip.unique_id for clip in self.existing["c0020"].clips], [self.existing["c0020"].clips[0].unique_id])
-        self.assertEqual(len(self.existing["c0030"].children[0].clips), 1)
-        self.assertEqual(len(self.episode.clips), 1)
+        self.assertEqual(self._clip_ids(), self.clip_ids_before)  # 같은 클립(고유 ID)이 같은 Bin 에
 
     def _assert_sorted_and_clean(self, result):
         self.assertEqual(result["status"], "complete")
@@ -1120,7 +1124,20 @@ class FastBinSortTests(unittest.TestCase):
         self.pool.fail[2] = half
         self._assert_old_rebuild(self._send())
 
-    def test_staging_bin_made_but_the_call_failed_is_cleaned_then_falls_back(self):
+    def test_staging_call_failed_without_making_anything_falls_back(self):
+        real = self.pool.AddSubFolder
+
+        def add(parent, name):
+            if name.startswith("__MVHUB_SORT_"):
+                raise RuntimeError("API 끊김")  # 아무것도 만들지 않고 실패
+            return real(parent, name)
+
+        self.pool.AddSubFolder = add
+        self._assert_old_rebuild(self._send())
+        self.assertEqual(self.pool.move_calls, [])
+
+    def test_staging_bin_made_but_the_call_failed_stops_without_guessing(self):
+        # 설계 D — 부수효과가 남았으면 추측으로 지우지 않고 멈춘다(Codex 구현 리뷰 P1)
         real = self.pool.AddSubFolder
 
         def add(parent, name):
@@ -1130,10 +1147,11 @@ class FastBinSortTests(unittest.TestCase):
             return folder
 
         self.pool.AddSubFolder = add
-        self._assert_old_rebuild(self._send())
-        self.assertEqual(self.pool.move_calls, [])
+        result = self._send()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        self.assertEqual((self.pool.move_calls, self.pool.import_calls, len(self._staging())), ([], [], 1))
 
-    def test_record_update_failure_mid_way_is_undone_then_falls_back(self):
+    def test_record_update_failure_mid_way_stops_and_keeps_the_last_record(self):
         real, calls = resolve_bridge._write_recovery_record, []
 
         def flaky(path, record):
@@ -1143,8 +1161,63 @@ class FastBinSortTests(unittest.TestCase):
             return real(path, record)
 
         with mock.patch.object(resolve_bridge, "_write_recovery_record", side_effect=flaky):
-            self._assert_old_rebuild(self._send())
-        self.assertEqual(len(self.pool.move_calls), 2)  # 빼기 + 되돌리기
+            result = self._send()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        self.assertEqual((len(self.pool.move_calls), self.pool.import_calls), (1, []))  # 되돌리지 않았다
+        self.assertEqual(json.loads(self._records()[0].read_text(encoding="utf-8"))["stage"], "staging_created")
+        self.assertEqual(self._send()["error_code"], "rebuild_recovery_pending")
+
+    def test_restore_never_deletes_a_bin_it_did_not_make(self):
+        def half_then_user_bin(folders, target):
+            self.pool.do_move(folders[:2], target)
+            self._add(self.episode, "사람이 만든 Bin")  # 비어 있지만 이번에 만든 것이 아니다
+            return False
+
+        self.pool.fail[2] = half_then_user_bin
+        result = self._send()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        self.assertIn("사람이 만든 Bin", self._names())
+
+    def test_duplicate_clip_ids_are_not_trusted(self):
+        self.existing["c0030"].children[0].clips[0].unique_id = self.existing["c0020"].clips[0].unique_id
+        self._assert_old_rebuild(self._send())
+        self.assertEqual(self.pool.move_calls, [])
+
+    def test_second_parent_failure_keeps_the_first_parent_sorted(self):
+        other = self._add(self.pool._parent_of(self.episode), "ep002")
+        self._add(other, "c0020")
+        self.pool.fail[3] = lambda folders, target: (self.pool.do_move(folders, target), False)[1]  # ep002 빼기: 다 옮기고 거짓
+        self.pool.fail[4] = lambda folders, target: False  # 되돌리기 거절
+        result = self._send("ep001/c0010", "ep002/c0010")
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        self.assertEqual(self._names(), ["c0010", "c0020", "c0030", "c0040"])  # 앞 부모는 끝난 그대로
+        self._assert_old_bins_kept()
+
+    def test_unreadable_state_during_restore_stops(self):
+        def half_then_unreadable(folders, target):
+            self.pool.do_move(folders[:2], target)
+            self.existing["c0040"].GetClipList = lambda: None
+            return False
+
+        self.pool.fail[2] = half_then_unreadable
+        self.assertEqual(self._send()["error_code"], "rebuild_recovery_needed")
+
+    def test_record_that_cannot_be_removed_after_sorting_stops(self):
+        real_unlink = Path.unlink
+
+        def unlink(path, *args, **kwargs):
+            if path.parent.name == "resolve-recovery":
+                raise OSError("잠김")
+            return real_unlink(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "unlink", autospec=True, side_effect=unlink):
+            result = self._send()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        self.assertEqual(self.pool.import_calls, [])
+        self._assert_settles_now_that_the_record_can_be_removed()
+
+    def _assert_settles_now_that_the_record_can_be_removed(self):
+        self._assert_sorted_and_clean(self._send())  # (나) 끝난 상태 — 다음 보내기가 풀고 이어 간다
 
     # 확인이 안 되면 멈춘다 — 가져오기·추가 저장 없음, 기록은 남는다
     def _stop_with_tails_in_staging(self):
@@ -1209,6 +1282,24 @@ class FastBinSortTests(unittest.TestCase):
         self.pool.root.children.remove(self._staging()[0])
         self._assert_sorted_and_clean(self._send())  # (나) — 정렬은 이미 끝나 있다
         self.assertEqual(len(self.pool.move_calls), 2)
+
+    def test_crash_then_a_different_empty_bin_in_the_new_bins_place_does_not_settle(self):
+        self.pool.fail[2] = self._move_then_crash
+        with self.assertRaises(Crash):
+            self._send()
+        self.pool.fail.clear()
+        self.pool.root.children.remove(self._staging()[0])
+        index = self._names().index("c0010")
+        self.episode.children[index] = FakeFolder("c0010")  # 이름은 같지만 이번에 만든 Bin 이 아니다
+        self.assertEqual(self._send()["error_code"], "rebuild_recovery_pending")
+
+    def test_crash_then_an_unexpected_root_bin_does_not_settle(self):
+        self.pool.fail[2] = self._move_then_crash
+        with self.assertRaises(Crash):
+            self._send()
+        self.pool.fail.clear()
+        self._staging()[0].name = "이름이 바뀐 임시 Bin"  # 지운 줄 알았는데 남아 있다
+        self.assertEqual(self._send()["error_code"], "rebuild_recovery_pending")
 
     def test_crash_after_moving_back_with_something_put_in_the_new_bin_does_not_settle(self):
         self.pool.fail[2] = self._move_then_crash

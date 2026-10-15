@@ -1052,14 +1052,20 @@ def _finished(parent: Any, record: dict[str, Any]) -> bool:
     if [uid for uid, _identity, _folder in children[: len(prefix)]] != prefix:
         return False
     seen = set()
+    created = set(record.get("created") or [])
     for uid, _identity, folder in children[len(prefix):]:
         if uid in tails:
             if _subtree(folder) != tails[uid]:
                 return False
             seen.add(uid)
-        elif _strict_list(folder.GetSubFolderList) or _strict_list(folder.GetClipList):
-            return False
+        elif uid not in created or _strict_list(folder.GetSubFolderList) or _strict_list(folder.GetClipList):
+            return False  # 이번에 만든(기록한) 빈 Bin 만 허용한다 — 사람이 넣은 Bin 이면 끝난 상태가 아니다
     return seen == set(tails)
+
+
+def _root_as_before(root: Any, record: dict[str, Any]) -> bool:
+    """루트 직속이 시작 때와 같다 — 임시 Bin(이름이 바뀐 사본 포함)이 남지 않았다."""
+    return [uid for uid, _identity, _folder in _children_of(root)] == record["root_children"]
 
 
 def _recovery_folder(manifest: dict[str, Any]) -> Path | None:
@@ -1128,12 +1134,12 @@ def _settle_recovery_record(
 ) -> None:
     """앞서 빠른 Bin 정렬이 멈추며 남긴 기록 — **모든 보내기가 첫 Bin 을 만들기 전에** 본다. 지금 상태가 처음 상태(가) 또는
     끝난 상태(나)와 정확히 같으면 기록을 지우고 이어 간다. 그 밖에는(읽기·조회 실패, 주인 확인 불가 포함) 멈춘다."""
-    try:
-        folder = _recovery_folder(manifest)
-    except ResolveBridgeError:  # 프로젝트 밖을 가리키는 자리에는 기록을 쓰지 않는다(빠른 길이 같은 검사에서 멈춘다)
+    raw = str(manifest.get("manifest_root") or "").strip()
+    if not raw:
         return
-    if folder is None:
-        return
+    # 쓰는 쪽(_recovery_folder)과 같은 자리를 풀지 않은 경로로 본다 — 보통은 폴더가 없어 조회 한 번으로 끝난다. 그 자리가 프로젝트
+    #  밖을 가리켜도(junction 등) 거기에 기록이 있으면 확인한다(Codex 구현 리뷰 P2).
+    folder = Path(raw) / ".mvhub" / "resolve-recovery"
     try:
         names = {entry.name for entry in os.scandir(folder) if entry.name.endswith(".json")}
     except FileNotFoundError:
@@ -1160,7 +1166,6 @@ def _settle_recovery_record(
         )
         leftover.update(folder_order_backup=record["backup"], rebuild_staging_bin=record["staging"])
         settled = False
-        staging_identity = _folder_identity(record["staging"])
         managed_root = root
         for name in managed_identity:
             managed_root = next(
@@ -1168,9 +1173,7 @@ def _settle_recovery_record(
             )
             if managed_root is None:
                 break
-        if managed_root is not None and not any(
-            identity == staging_identity for _uid_, identity, _child in _children_of(root)
-        ):
+        if managed_root is not None and _root_as_before(root, record):  # 바로 되돌릴 때와 같은 해제 조건(Codex 구현 리뷰 P1)
             parent = _find_by_uid(managed_root, record["parent_uid"])
             settled = parent is not None and (_restored(parent, record) or _finished(parent, record))
     except (OSError, ValueError, KeyError, TypeError, _Unknown) as exc:
@@ -1196,17 +1199,12 @@ def _settle_recovery_record(
 def _restore_after_failed_move(
     media_pool: Any, root: Any, parent: Any, record: dict[str, Any], guard: Any
 ) -> None:
-    """임시 Bin 안의 꼬리를 부모로 되돌리고, 이번에 만든 빈 Bin 과 임시 Bin 을 지운 뒤 처음 상태인지 새로 조회해 확인한다.
-    확인되지 않으면 _MoveFailed. 프로젝트가 바뀌면 _ProjectChanged 를 그대로 올린다(되돌리기를 이어 가지 않는다)."""
+    """임시 Bin 안의 꼬리를 부모로 되돌리고, 이번에 만든(기록한) 빈 Bin 과 임시 Bin 을 지운 뒤 처음 상태인지 새로 조회해 확인한다.
+    확인되지 않으면 _MoveFailed. 프로젝트가 바뀌면 _ProjectChanged 를 그대로 올린다(되돌리기를 이어 가지 않는다).
+    지우는 것은 기록한 고유 ID 의 빈 Bin 뿐이다 — 사람이 넣은 Bin 은 비어 있어도 지우지 않고 멈춘다(Codex 구현 리뷰 P1)."""
     tails = record["tails"]
-    staging_uid = record.get("staging_uid") or ""
-    staging_identity = _folder_identity(record["staging"])
-    found = [
-        child for uid, identity, child in _children_of(root)
-        if (uid == staging_uid if staging_uid else identity == staging_identity)
-    ]
-    if len(found) > 1:
-        raise _MoveFailed("정렬용 임시 Bin 이 여럿입니다")
+    created = set(record.get("created") or [])
+    found = [child for uid, _identity, child in _children_of(root) if uid == record["staging_uid"]]
     if found:
         staging = found[0]
         back = [child for uid, _identity, child in _children_of(staging) if uid in tails]
@@ -1215,8 +1213,8 @@ def _restore_after_failed_move(
             if not media_pool.MoveFolders(back, parent):
                 raise _MoveFailed("Bin 을 원래 자리로 되돌리지 못했습니다")
         for uid, _identity, child in _children_of(staging):
-            if uid in tails or _strict_list(child.GetSubFolderList) or _strict_list(child.GetClipList):
-                raise _MoveFailed("정렬용 임시 Bin 에 비어 있지 않은 Bin 이 남았습니다")
+            if uid not in created or _strict_list(child.GetSubFolderList) or _strict_list(child.GetClipList):
+                raise _MoveFailed("정렬용 임시 Bin 에 이번에 만들지 않았거나 비어 있지 않은 Bin 이 남았습니다")
             guard()
             if not media_pool.DeleteFolders([child]):
                 raise _MoveFailed("새로 만든 빈 Bin 을 지우지 못했습니다")
@@ -1226,18 +1224,18 @@ def _restore_after_failed_move(
         if not media_pool.DeleteFolders([staging]):
             raise _MoveFailed("정렬용 임시 Bin 을 지우지 못했습니다")
         _refresh_folders(media_pool)
-    # 두 번째 이동이 일부만 됐으면 새 Bin 이 부모에 들어와 있다 — 비어 있을 때만 지운다.
+    # 두 번째 이동이 일부만 됐으면 이번에 만든 새 Bin 이 부모에 들어와 있다 — 그것만, 비어 있을 때만 지운다.
     keep = set(record["prefix"]) | set(tails)
     for uid, _identity, child in _children_of(parent):
         if uid in keep:
             continue
-        if _strict_list(child.GetSubFolderList) or _strict_list(child.GetClipList):
-            raise _MoveFailed("부모에 비어 있지 않은 낯선 Bin 이 있습니다")
+        if uid not in created or _strict_list(child.GetSubFolderList) or _strict_list(child.GetClipList):
+            raise _MoveFailed("부모에 이번에 만들지 않았거나 비어 있지 않은 Bin 이 있습니다")
         guard()
         if not media_pool.DeleteFolders([child]):
             raise _MoveFailed("새로 만든 빈 Bin 을 지우지 못했습니다")
     _refresh_folders(media_pool)
-    if [uid for uid, _identity, _child in _children_of(root)] != record["root_children"] or not _restored(parent, record):
+    if not _root_as_before(root, record) or not _restored(parent, record):
         raise _MoveFailed("되돌린 결과가 처음 상태와 같지 않습니다")
 
 
@@ -1266,7 +1264,14 @@ def _sort_by_moving_bins(
         tail = children[keep:]
         tails = {uid: _subtree(folder) for uid, _identity, folder in tail}
         every = [uid for tree in tails.values() for uid in tree["folders"]]
-        if not tail or len(set(every)) != len(every) or parent_uid in every:
+        clip_uses = Counter(_clip_counter(parent))
+        for tree in tails.values():
+            for counter in tree["clips"].values():
+                clip_uses.update(counter)
+        if (
+            not tail or len(set(every)) != len(every) or parent_uid in every
+            or any(count > 1 for count in clip_uses.values())  # 클립 고유 ID 가 겹치면 검증을 믿을 수 없다(Codex 구현 리뷰 P2)
+        ):
             return False
         record = {
             **record_base,
@@ -1278,6 +1283,8 @@ def _sort_by_moving_bins(
             "desired": desired_ids,
             "root_children": [uid for uid, _identity, _folder in _children_of(root)],
             "staging": f"__MVHUB_SORT_{uuid.uuid4().hex}__",
+            "staging_uid": "",
+            "created": [],
             "stage": "planned",
         }
     except _Unknown:
@@ -1291,26 +1298,48 @@ def _sort_by_moving_bins(
     }
 
     def stage(name: str) -> None:
+        # 필수 기록 — 갱신하지 못하면 되돌리지도, 기존 다시 짓기로 가지도 않고 멈춘다(설계 D)
         record["stage"] = name
-        _write_recovery_record(record_path, record)
+        try:
+            _write_recovery_record(record_path, record)
+        except OSError as exc:
+            raise _RebuildRecoveryNeeded(
+                f"Resolve Bin 정렬 복구 기록을 남기지 못해 멈췄습니다({name}): {exc}. 임시 Bin '{record['staging']}'"
+                f" · 백업: {record['backup']}",
+                code="rebuild_recovery_needed", leftover=leftover,
+            ) from exc
 
-    try:
-        stage("planned")  # 첫 쓰기(임시 Bin)보다 먼저
-    except OSError as exc:
-        raise _RebuildRecoveryNeeded(
-            f"Resolve Bin 정렬 복구 기록을 남기지 못해 정렬을 시작하지 않았습니다: {exc}. 백업: {record['backup']}",
+    def stop(message: str) -> _RebuildRecoveryNeeded:
+        return _RebuildRecoveryNeeded(
+            f"{message} — 가져오기를 멈췄습니다. 임시 Bin '{record['staging']}' · 백업: {record['backup']}",
             code="rebuild_recovery_needed", leftover=leftover,
-        ) from exc
-    try:
-        guard()
-        media_pool.AddSubFolder(root, record["staging"])
-        staging_identity = _folder_identity(record["staging"])
-        added = [(uid, folder) for uid, _identity, folder in _children_of(root) if uid not in record["root_children"]]
-        if len(added) != 1 or _folder_identity(str(added[0][1].GetName() or "")) != staging_identity:
-            raise _MoveFailed("Resolve 정렬용 임시 Bin 을 만들지 못했습니다")
-        record["staging_uid"], staging = added[0]
-        stage("staging_created")
+        )
 
+    stage("planned")  # 첫 쓰기(임시 Bin)보다 먼저
+    # 1) 임시 Bin — 호출이 실패·예외·다른 이름이면 새로 조회해 부수효과를 본다. 아무것도 안 생겼으면 기록을 지우고 기존 다시 짓기로,
+    #    무엇이든 생겼으면 멈춘다(설계 D — 생긴 것을 추측으로 지우지 않는다). 첫 guard 에서 멈추면 기록은 처음 상태라 다음 보내기가 푼다.
+    guard()
+    staging_identity = _folder_identity(record["staging"])
+    try:
+        made = media_pool.AddSubFolder(root, record["staging"])
+        call_ok = bool(made) and _folder_identity(str(made.GetName() or "")) == staging_identity
+    except Exception:  # noqa: BLE001 - 결과는 아래 새 조회로 판정한다.
+        call_ok = False
+    try:
+        added = [row for row in _children_of(root) if row[0] not in record["root_children"]]
+    except _Unknown as exc:
+        raise stop(f"정렬용 임시 Bin 을 만든 뒤 Resolve 를 다시 읽지 못했습니다({exc})") from exc
+    if not added and not call_ok:
+        try:
+            record_path.unlink()
+        except OSError as exc:
+            raise stop(f"복구 기록을 지우지 못했습니다({exc})") from exc
+        return False
+    if not call_ok or len(added) != 1 or added[0][1] != staging_identity:
+        raise stop("정렬용 임시 Bin 을 만든 결과가 맞지 않습니다(루트의 새 Bin 을 확인하세요)")
+    record["staging_uid"], _staging_identity, staging = added[0]
+    stage("staging_created")
+    try:
         guard()
         moved = media_pool.MoveFolders([folder for _uid_, _identity, folder in tail], staging)
         inside = [uid for uid, _identity, _folder in _children_of(staging)]
@@ -1322,8 +1351,12 @@ def _sort_by_moving_bins(
         for name in new_names:
             guard()
             created = media_pool.AddSubFolder(staging, name)
-            if not created or _folder_identity(str(created.GetName() or "")) != _folder_identity(name):
+            if not created:
                 raise _MoveFailed(f"새 Bin 을 만들지 못했습니다: {name}")
+            record["created"].append(_uid(created))
+            stage("moved_out")  # 만든 Bin 은 바로 적는다 — 되돌릴 때 이것만 지운다
+            if _folder_identity(str(created.GetName() or "")) != _folder_identity(name):
+                raise _MoveFailed(f"새 Bin 이 다른 이름으로 만들어졌습니다: {created.GetName()}")
         by_identity = {identity: folder for _uid_, identity, folder in _children_of(staging)}
         if set(by_identity) != set(desired_ids[keep:]):
             raise _MoveFailed("정렬용 공간의 Bin 이 바라는 목록과 다릅니다")
@@ -1338,8 +1371,10 @@ def _sort_by_moving_bins(
         if not media_pool.DeleteFolders([staging]):
             raise _MoveFailed("Resolve 정렬용 임시 Bin 을 정리하지 못했습니다")
         _refresh_folders(media_pool)
-        if [uid for uid, _identity, _folder in _children_of(root)] != record["root_children"]:
+        if not _root_as_before(root, record):
             raise _MoveFailed("Resolve 정렬용 임시 Bin 이 남았습니다")
+    except _RebuildRecoveryNeeded:
+        raise  # 기록 갱신 실패 — 되돌리지 않고 멈춘다
     except _ProjectChanged as changed:
         raise _ProjectChanged(
             changed.fact,
@@ -1456,7 +1491,8 @@ def _reconcile_folder_tree_visible(
                 if (actual_rows := actual_children.get(parent_id))
                 and [row[0] for row in actual_rows] != [row[0] for row in desired_rows][: len(actual_rows)]
             ),
-            key=len,  # 얕은 층부터 — 깊은 부모는 이름이 그대로라 다시 읽으면 찾는다
+            # 얕은 층부터(깊은 부모는 이름이 그대로라 다시 읽으면 찾는다), 같은 층은 이름순 — 실행마다 같은 순서(집합 순서는 해시 무작위)
+            key=lambda parent_id: (len(parent_id), _folder_path_sort_key(parent_id)),
         )
         if all(
             _sort_by_moving_bins(
