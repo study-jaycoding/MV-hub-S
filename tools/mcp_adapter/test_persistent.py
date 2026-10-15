@@ -2,6 +2,7 @@
 import json
 import base64
 import os
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -16,7 +17,7 @@ from mcp import Client, StdioServerParameters
 from mcp.server.mcpserver.exceptions import ToolError
 
 from local_setup import configure_client
-from server import Broker, MAX_RESPONSE, MAX_RESULT_RESPONSE
+from server import Broker, MAX_RESPONSE, MAX_RESULT_RESPONSE, write_result_display, validate_display_directory
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -45,6 +46,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, {"client_id": client, "can_execute": True, "workspace": {"scope": "personal"}})
         if self.path == "/api/mcp/v2/client/action":
             if body["method"] == "get_result":
+                callback = getattr(self.server, "before_result", None)
+                if callback:
+                    self.server.before_result = None
+                    callback()
                 return self.reply(200, self.server.result_value)
             return self.reply(200, {"method": body["method"], "args": body["args"]})
         self.reply(404, {})
@@ -176,6 +181,98 @@ class PersistentTests(unittest.TestCase):
         self.http.result_value = {"data": "x" * (MAX_RESULT_RESPONSE + 1)}
         with self.assertRaises(ToolError):
             broker.action("get_result", {})
+
+    def test_display_file_roundtrip_and_failures_keep_image(self):
+        config, _ = self.profile()
+        output = self.root / "display"
+        output.mkdir()
+        encoded = base64.b64encode(b"\xff\xd8\xfftransport-fixture\xff\xd9").decode("ascii")
+        async def exercise():
+            with anyio.fail_after(30):
+                async with Client(StdioServerParameters(**config)) as client:
+                    tools = await client.list_tools()
+                    tool = next(t for t in tools.tools if t.name == "get_result")
+                    self.assertFalse(tool.annotations.read_only_hint)
+                    self.assertFalse(tool.annotations.destructive_hint)
+                    self.assertFalse(tool.annotations.idempotent_hint)
+                    args = {"plan_id": "p", "wait_seconds": 25, "display_directory": str(output)}
+                    pending = await client.call_tool("get_result", args)
+                    self.assertEqual(pending.structured_content["display"]["status"], "unavailable")
+                    self.assertEqual(list(output.iterdir()), [])
+                    self.http.result_value = {"generation_status": "done", "media": {"mime": "image/jpeg", "data_base64": "bad!"}}
+                    bad = await client.call_tool("get_result", args)
+                    self.assertTrue(bad.is_error)
+                    self.assertEqual(list(output.iterdir()), [])
+                    self.http.result_value = {"generation_status": "done", "label": "<script>untrusted</script>", "media": {"mime": "image/jpeg", "data_base64": encoded}}
+                    files = []
+                    for _ in range(2):
+                        result = await client.call_tool("get_result", args)
+                        self.assertFalse(result.is_error)
+                        display = result.structured_content["display"]
+                        self.assertEqual(display["status"], "ready")
+                        path = Path(display["path"])
+                        files.append(path)
+                        self.assertEqual(path.parent, output.resolve())
+                        html = path.read_text(encoding="utf-8")
+                        self.assertEqual(re.search(r"base64,([A-Za-z0-9+/=]+)", html).group(1), encoded)
+                        self.assertEqual(result.content[1].data, encoded)
+                        self.assertEqual(html.count("<img "), 1)
+                        self.assertNotIn("<script", html)
+                        self.assertNotIn("http", html)
+                        self.assertLess(len(html.encode()), 1_000_000)
+                        self.assertEqual(json.loads(result.content[0].text)["display"], display)
+                        self.assertEqual(json.loads(display["reference"].removeprefix("visualize").removesuffix("")), {"path": path.as_posix()})
+                        self.assertEqual(set(self.http.calls[-1][1]["args"]), {"plan_id", "item_index", "asset_index", "wait_seconds"})
+                    self.assertNotEqual(*files)
+                    self.assertTrue(all(p.exists() for p in files))
+                    failing = self.root / "vanishing"
+                    failing.mkdir()
+                    self.http.before_result = failing.rmdir
+                    failed = await client.call_tool("get_result", {**args, "display_directory": str(failing)})
+                    self.assertFalse(failed.is_error)
+                    self.assertEqual(failed.structured_content["generation_status"], "done")
+                    self.assertEqual(failed.structured_content["display"]["status"], "error")
+                    self.assertEqual(failed.content[1].data, encoded)
+        anyio.run(exercise)
+        self.assertTrue(all(body["method"] == "get_result" for _, body in self.http.calls))
+
+    def test_invalid_display_path_rejected_before_hub_request(self):
+        config, _ = self.profile()
+        regular = self.root / "regular.txt"
+        regular.write_text("keep")
+        async def exercise():
+            with anyio.fail_after(30):
+                async with Client(StdioServerParameters(**config)) as client:
+                    for directory in ("relative", "C:relative", "\\rooted", "\\\\server\\share", "//server/share", "\\\\?\\C:\\", str(regular), str(self.root / "missing"), str(self.root) + "\x00", "x" * 1025):
+                        result = await client.call_tool("get_result", {"plan_id": "p", "display_directory": directory})
+                        self.assertTrue(result.is_error, repr(directory))
+        anyio.run(exercise)
+        self.assertEqual(self.http.calls, [])
+        self.assertEqual(regular.read_text(), "keep")
+
+    def test_display_does_not_overwrite_collision_or_leave_partial_file(self):
+        output = self.root / "display"
+        output.mkdir()
+        existing = output / "mvhub-preview-fixed.html"
+        existing.write_text("keep")
+        with patch("server.secrets.token_hex", return_value="fixed"):
+            with self.assertRaises(FileExistsError):
+                write_result_display("data", output)
+        self.assertEqual(existing.read_text(), "keep")
+        original = Path.open
+        def failing_open(path, *args, **kwargs):
+            stream = original(path, *args, **kwargs)
+            stream.write = lambda _: (_ for _ in ()).throw(OSError("private error"))
+            return stream
+        with patch.object(Path, "open", failing_open):
+            with self.assertRaises(OSError):
+                write_result_display("data", output)
+        self.assertEqual(list(output.iterdir()), [existing])
+
+    def test_mapped_network_display_drive_is_rejected(self):
+        with patch("ctypes.windll.kernel32.GetDriveTypeW", return_value=4):
+            with self.assertRaises(ToolError):
+                validate_display_directory(str(self.root))
 
 
 if __name__ == "__main__":

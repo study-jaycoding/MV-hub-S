@@ -6,6 +6,7 @@ import binascii
 import ipaddress
 import importlib.util
 import json
+import os
 import secrets
 import site
 import sys
@@ -84,6 +85,53 @@ def profile_settings(path: str) -> dict:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.read_profile(path)
+
+
+def validate_display_directory(value: str) -> Path:
+    """The caller chooses a task-owned directory; never create one or follow a remote drive."""
+    message = "표시 폴더는 이미 존재하는 로컬 작업 폴더의 절대경로여야 합니다."
+    try:
+        if any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ValueError
+        path = Path(value)
+        if not path.is_absolute() or value.startswith(("\\\\", "//")):
+            raise ValueError
+        if os.name == "nt":
+            import ctypes
+            if ctypes.windll.kernel32.GetDriveTypeW(ctypes.c_wchar_p(path.anchor)) == 4:
+                raise ValueError
+        path = path.resolve(strict=True)
+        if str(path).startswith(("\\\\", "//")):
+            raise ValueError
+        if os.name == "nt" and ctypes.windll.kernel32.GetDriveTypeW(ctypes.c_wchar_p(path.anchor)) == 4:
+            raise ValueError
+        if not path.is_dir():
+            raise ValueError
+        return path
+    except (OSError, ValueError, RuntimeError):
+        raise ToolError(message) from None
+
+
+def write_result_display(data: str, directory: Path) -> dict[str, str]:
+    """Only validated JPEG base64 enters markup; labels and prompts never do."""
+    path = validate_display_directory(str(directory)) / ("mvhub-preview-" + secrets.token_hex(16) + ".html")
+    created = False
+    try:
+        with path.open("x", encoding="utf-8") as stream:
+            created = True
+            stream.write(
+                '<div id="mvhub-result-image">\n'
+                f'  <img src="data:image/jpeg;base64,{data}" alt="MV Hub 생성 결과">\n'
+                '</div>\n<style>\n'
+                '  #mvhub-result-image img { display: block; max-width: 100%; height: auto; }\n'
+                '</style>\n'
+            )
+    except OSError:
+        if created:
+            path.unlink(missing_ok=True)
+        raise
+    reference = "visualize" + json.dumps({"path": path.as_posix()}, ensure_ascii=False) + ""
+    return {"status": "ready", "path": path.as_posix(), "format": "codex_visualize", "reference": reference}
 
 
 class Broker:
@@ -231,7 +279,11 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             "실행 뒤 get_result(wait_seconds=25)로 완료를 기다리고 미리보기를 함께 받으세요. 별도 sleep과 get_plan 반복은 불필요합니다. "
             "계획 status=submitted는 완료 여부가 아닙니다. 항목의 generation_status=done이 완료입니다. "
             "아직 진행 중이면 같은 항목의 get_result(wait_seconds=25)만 다시 조회하고 실패·취소·불명확한 접수는 안내하세요. "
-            "반환된 ImageContent를 지원하는 대화창에는 즉시 표시하세요. HTML 재가공·표시용 파일 생성·같은 이미지 재조회는 불필요합니다. "
+            "이미지 수신과 사용자 화면 표시는 별개이며 대화창 표시는 필수입니다. "
+            "Codex처럼 PC·휴대폰에서 ImageContent가 보이지 않을 수 있는 클라이언트는 get_result에 display_directory로 "
+            "이미 존재하는 작업 소유 로컬 절대경로를 지정하세요. 반환된 display.reference를 최종 답변에 그대로 넣으세요. "
+            "표시 파일은 도구가 준비하므로 직접 HTML을 다시 만들거나 이미지를 다시 조회할 필요가 없습니다. "
+            "ImageContent를 직접 표시하는 클라이언트는 표시 폴더를 생략할 수 있습니다. 파일 준비는 실제 화면 표시 확인이 아닙니다. "
             "미리보기 실패는 생성 실패가 아닙니다. 불명확한 실패는 자동 재제출하지 마세요. "
             "캔버스 노드를 명시적으로 요청했을 때만 read_context(kind='scenes')로 대상 ID를 확인해 add_to_canvas를 호출하세요. "
             "캔버스 반영은 해당 계정·공간의 앱 화면을 열 때 처리되며 생성 자체와 독립입니다."
@@ -304,21 +356,25 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
         return broker.action("execute_generation_plan", {"plan_id": plan_id})
 
     if profile:
-        @server.tool(annotations=read_only)
+        @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
         def get_result(
             plan_id: Annotated[str, Field(min_length=1, max_length=200)],
             item_index: Annotated[int, Field(ge=0, lt=20)] = 0,
             asset_index: Annotated[int, Field(ge=0, lt=100)] = 0,
             wait_seconds: Annotated[int, Field(ge=0, le=25, strict=True)] = 0,
+            display_directory: Annotated[str | None, Field(min_length=1, max_length=1024)] = None,
         ) -> CallToolResult:
-            """생성·과금 없이 선택 항목의 결과를 읽습니다. 실행 뒤 wait_seconds=25로 호출하면 최대 25초 완료를 기다려 이미지를 함께 반환합니다(기본 0=즉시 조회, 미리보기 준비 시간은 별도). 진행 중이면 같은 조회만 반복하고 실패·취소는 안내하세요. ImageContent는 바로 표시하며 HTML 재가공·중복 조회는 불필요합니다. 인덱스는 0부터, 영상은 기존 포스터만 반환합니다."""
+            """생성·과금 없이 선택 항목을 조회합니다. wait_seconds=25는 최대 25초 완료 대기(미리보기 준비 시간 별도)입니다. Codex PC·휴대폰 표시는 display_directory에 기존 작업 소유 로컬 절대경로를 지정하고 반환된 display.reference를 최종 답변에 그대로 넣으세요. JPEG가 있을 때만 새 표시 파일을 쓰며 기존 파일은 덮지 않습니다. ImageContent 직접 표시 클라이언트는 폴더를 생략할 수 있습니다. 진행 중이면 같은 조회만 반복하고 재생성하지 마세요. 표시 준비와 사용자 화면 확인은 별개입니다. 인덱스는 0부터, 영상은 기존 포스터만 반환합니다."""
+            directory = validate_display_directory(display_directory) if display_directory is not None else None
             args = {"plan_id": plan_id, "item_index": item_index, "asset_index": asset_index}
             if wait_seconds:
                 args["wait_seconds"] = wait_seconds
             result = broker.action("get_result", args)
             media = result.pop("media", None)
             result.update(hub_url=broker.url, preview_available=media is not None)
-            blocks: list[Any] = [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+            blocks: list[Any] = []
+            if directory is not None:
+                result["display"] = {"status": "unavailable", "reason": "표시할 미리보기가 없습니다. 생성 진행 중일 때만 다시 조회하고 완료·실패·취소이면 상태를 안내하세요. 재생성하지 마세요."}
             if media is not None:
                 try:
                     if not isinstance(media, dict) or media.get("mime") != "image/jpeg":
@@ -332,6 +388,12 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
                 except (KeyError, TypeError, ValueError, binascii.Error):
                     raise ToolError("미리보기 응답이 올바르지 않습니다. 생성은 다시 실행하지 말고 MV Hub에서 결과를 확인하세요.") from None
                 blocks.append(ImageContent(type="image", data=data, mime_type="image/jpeg"))
+                if directory is not None:
+                    try:
+                        result["display"] = write_result_display(data, directory)
+                    except (OSError, ToolError):
+                        result["display"] = {"status": "error", "reason": "표시 파일을 저장하지 못했습니다. 생성 결과는 유지됩니다. 재생성하지 마세요."}
+            blocks.insert(0, TextContent(type="text", text=json.dumps(result, ensure_ascii=False)))
             return CallToolResult(content=blocks, structured_content=result)
 
         @server.tool(annotations=write)
