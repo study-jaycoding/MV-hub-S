@@ -648,4 +648,53 @@ describe("sceneBackup — 판(1A)", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(JSON.parse(localStorage.getItem(ledgerKey("s1"))!)).toEqual({ b: fakeHex(sceneJson("s1", "A")) }); // 전엔 첫 알림이 모든 씬을 '받음'으로 세어 버렸다
   });
+
+  it("4차 P1 — 갈래 사본 행을 다른 탭이 별도 씬으로 가져왔으면, 원본을 지워도 그 씬의 백업은 지우지 않는다", async () => {
+    const { scenes, backup, settle } = await boot();
+    const store = await import("../src/lib/sceneStore");
+    scenes.saveScenes(null, [JSON.parse(sceneJson("x", "원본"))]);
+    await settle();
+    localStorage.setItem(ledgerKey("x"), JSON.stringify({ b: "x0", fork: { id: "bk_f", b: "f0" } }));
+    getMeta = () => Promise.resolve({ items: [{ id: "x", data_hash: "남의 새 판" }, { id: "bk_f", data_hash: "f0" }] });
+    putReply = hashReply;
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500);
+    const forkData = putBody(puts()[0]).upserts[0].data as string; // x 의 편집은 사본 행 bk_f 로 갔다
+    expect(putBody(puts()[0]).upserts[0].id).toBe("bk_f");
+    // 다른 탭(갈래를 모르던)이 bk_f 를 가져와 이 브라우저의 별도 씬이 됐다
+    store.writeSceneStoreAsOtherWindowForTest((all) => {
+      all[`acct:user${acctSeq}@test::_none`] = [JSON.parse(sceneJson("x", "원본")), JSON.parse(forkData)];
+    });
+    await store.refreshSceneStoreForTest();
+    await settle();
+    scenes.saveScenes(null, scenes.listScenes(null).filter((s) => s.id !== "x")); // 원본만 지운다
+    await settle();
+    await vi.advanceTimersByTimeAsync(2500);
+    const deleted = puts().slice(1).flatMap((c) => putBody(c).deleted_ids as string[]);
+    expect(deleted).not.toContain("bk_f"); // 전엔 화면에 남은 사본 씬의 백업을 지웠다
+  });
+
+  it("4차 P1 — 갈래 사본 행이 별도 씬이 됐으면 원본의 편집은 그 행이 아니라 제 행으로 간다(두 씬이 한 행을 덮어쓰지 않게)", async () => {
+    const { scenes, backup, settle } = await boot();
+    const store = await import("../src/lib/sceneStore");
+    scenes.saveScenes(null, [JSON.parse(sceneJson("x", "원본"))]);
+    await settle();
+    localStorage.setItem(ledgerKey("x"), JSON.stringify({ b: "x0", fork: { id: "bk_f", b: "f0" } }));
+    getMeta = () => Promise.resolve({ items: [{ id: "x", data_hash: "남의 새 판" }, { id: "bk_f", data_hash: "f0" }] });
+    putReply = hashReply;
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500);
+    const forkData = putBody(puts()[0]).upserts[0].data as string;
+    store.writeSceneStoreAsOtherWindowForTest((all) => {
+      all[`acct:user${acctSeq}@test::_none`] = [JSON.parse(sceneJson("x", "원본")), JSON.parse(forkData)];
+    });
+    await store.refreshSceneStoreForTest();
+    await settle();
+    scenes.updateScene(null, "x", { name: "원본 고침" });
+    await settle();
+    await vi.advanceTimersByTimeAsync(2500);
+    const sent = puts().slice(1).flatMap((c) => putBody(c).upserts.map((u: { id: string; data: string }) => [u.id, JSON.parse(u.data).name]));
+    expect(sent).toContainEqual(["x", "원본 고침"]);
+    expect(sent.filter(([id]: string[]) => id === "bk_f")).toEqual([]);
+  });
 });

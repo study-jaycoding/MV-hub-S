@@ -395,9 +395,16 @@ async function syncNow(): Promise<void> {
     const tooBig = new Set<string>();
     const newlyTooBig: string[] = [];
     let heldNoHash = 0;
+    const localIds = new Set(local.map((s) => s.id));
     for (const s of local) {
       const data = s.text;
-      const entry = frozen.get(s.id);
+      let entry = frozen.get(s.id);
+      if (entry?.fork && localIds.has(entry.fork.id)) {
+        // 갈래 사본 행이 이 브라우저의 씬으로 들어왔다(다른 탭이 가져옴) — 두 로컬 씬이 한 행을 미러하지 않게 갈래를 끊는다.
+        //  이 씬은 제 행으로 돌아가 판으로 판정받는다(그사이 바뀌었으면 새 사본) — Codex 1A 4차 P1.
+        entry = { b: entry.b };
+        setLedger(scope, s.id, entry);
+      }
       const target = entry?.fork?.id ?? s.id;
       // 이 세션에서 이미 올린(또는 복구한) 그대로 — 다만 서버 행이 사라졌으면 다시 넣는다(Codex C2)
       if (lastPushed.get(s.id) === data && meta.has(target)) continue;
@@ -451,7 +458,6 @@ async function syncNow(): Promise<void> {
       holdNoticeShown = true;
       forkSubs.forEach((fn) => fn([])); // 빈 목록 = '지문을 못 구해 보류' 안내(화면이 글을 고른다)
     }
-    const localIds = new Set(local.map((s) => s.id));
     // ★삭제 미러는 '이 세션에서 로컬에 있던 씬이 사라진 것'만 지운다(코덱스 P0).
     //  종전엔 '서버에만 있는 id' 를 전부 지웠다. 앱 전용 브라우저 프로필 도입(2026-09-01) 뒤로
     //  한 PC 에 프로필이 여럿 생기면서, 프로필을 번갈아 열 때마다 서로의 백업을 지웠다.
@@ -466,6 +472,12 @@ async function syncNow(): Promise<void> {
         if (localIds.has(id)) continue;
         const entry = frozen.get(id);
         const target = entry?.fork?.id ?? id;
+        if (localIds.has(target)) {
+          // 지운 씬의 갈래 사본 행이 살아 있는 다른 로컬 씬이다 — 그 백업은 지우지 않는다. 지운 씬의 제 행은 갈래였으니 남의 것이다(Codex 1A 4차 P1).
+          lastPushed.delete(id);
+          setLedger(scope, id, null);
+          continue;
+        }
         if (!meta.has(target)) continue;
         deleteOf.set(target, id);
         deleteBases[target] = (entry?.fork ? entry.fork.b : entry?.b) ?? "";
