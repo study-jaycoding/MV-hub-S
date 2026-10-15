@@ -15,7 +15,7 @@ owner: Codex · reviewer: Claude · status: 완료 · updated: 2026-10-15
 
 ## Codex·Claude 공통 진행·결과 규격 (2026-10-15)
 
-owner: Codex · reviewer: Claude · status: 코드·모의 연결 검증 완료 / 실행 서버 재시작·실화면 확인 대기 · updated: 2026-10-15
+owner: Codex · reviewer: Claude · status: 코드·모의 연결·실행 서버 적용 확인 / 실화면 확인 대기 · updated: 2026-10-15
 
 - 사용자 요청: 두 LLM 모두 생성 과정을 말하고 같은 규격으로 결과를 제공한다.
 - touched_paths: `backend/app/routers/mcp_v2.py`, `backend/tests/test_mcp_persistent.py`,
@@ -58,11 +58,13 @@ owner: Codex · reviewer: Claude · status: 코드·모의 연결 검증 완료 
   안내했다. Codex는 결과 참조, Claude는 같은 카드의 HTML 링크를 제공했다. 실제 화면 표시의 성공 증거는 아니다.
 - 최종 Claude 대조 `final-agreement.json`은 제한 명시 및 문서 상태 갱신 조건으로 통합 반영을 승인했고 Codex도
   동의했다. 제품 커밋 `fb56a9f3`를 통합 시험실에 병합했으며, 기존 다른 작업 파일 13개 해시를 보존했다.
-- 통합 시험실 자동 재시작 명령은 도구 정책의 `blocked by policy`로 실행 전 거부됐다(구체 사유 미제공).
-  실행 중인 백엔드 적용을 완료로 보고하지 않는다. 통합 시험실 `test_integration.bat` 재실행 및 두 LLM의 MCP
-  새로고침/재시작 뒤 실화면 확인이 남아 있다. 다른 세션을 임의로 끄거나 우회 재시도하지 않았다.
-  새 SDK 연결로 기존 감자 결과를 조회한 `runtime.json`은 이미지 수신 성공, `presentation` 부재를 확인했다.
-  새 어댑터는 적용됐지만 실행 중인 허브는 이전 코드이며 추가 생성은 0건이다.
+- 최초 자동 재시작은 도구 정책의 `blocked by policy`로 실행 전 거부됐다(구체 사유 미제공).
+  당시 새 SDK 조회는 이미지 수신 성공, `presentation` 부재를 확인했다. 다른 세션을 임의로 끄거나 우회하지 않았다.
+- 후속 사용자 요청 "재시작해라"에 따라 활성 생성·대기 작업 0건을 확인한 뒤, 소유 경로를 검사하는 기존
+  재시작 도구와 `test_integration.bat`로 통합 시험실만 재시작했다. 8012 health 및 5173 HTTP 200 확인.
+  새 SDK의 기존 감자 결과 조회는 `presentation.version=1`, 선택 항목 범위, 조건·위치 카드와 이미지·표시 파일을
+  모두 반환했다(0.418초, 추가 생성 0건). 최신 근거는 `runtime.json`이다. 기존 LLM 세션의 MCP 새로고침과
+  사용자 PC·휴대폰 실화면 확인은 별도이며 완료로 간주하지 않는다.
 - 정리 검사: graft build/check in sync, 코드 맵 누락 0, 생성 목록 최신, 문서 린트·공백 검사 통과.
   기존 CURRENT_STATUS 문서 크기 경고는 이 변경 범위 밖으로 유지했다. 배포·main 병합·유료 생성은 하지 않았다.
 - 보수적 상태 처리: `submitting`은 아직 접수가 확인되지 않아 `unknown`이다. 공간 이름을 새로 조회하지 않으며
