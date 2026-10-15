@@ -42,6 +42,7 @@ interface Props {
   onRemoveWorkspaceChip: (id: string) => void;
   onCreatorChanged: () => void; // 생성자 '나 지정'/이름변경 후 라이브러리 새로고침
   armedFolder?: { projectId: string; path: string } | null; // 무장 폴더 = 폴더 트리 빨간 하이라이트
+  generationScope?: { project_id?: string }; // 생성 요청이 쓰는 프로젝트 — '보는 중'·'생성' 표(ProjectSection)
   viewedFolder?: { projectId: string; projectName?: string; path: string; nonce: number } | null;
   onArmFolder?: (projectId: string, path: string) => void; // 폴더 선택 시 무장(생성 시 folder_path)
   onDropToFolder?: (projectId: string, path: string, genId: string) => void; // 카드 드래그 → 폴더 담기
@@ -73,6 +74,7 @@ export function FilterSidebar({
   onRemoveWorkspaceChip,
   onCreatorChanged,
   armedFolder,
+  generationScope,
   viewedFolder,
   onArmFolder,
   onDropToFolder,
@@ -108,6 +110,7 @@ export function FilterSidebar({
             creatorWorkspaceFilter?.workspace_scope])}
           deletedOnly={!!filters.deleted_only}
           viewPath={filters.folder_path}
+          generationScope={generationScope}
           armedFolder={armedFolder}
           viewedFolder={viewedFolder}
           // 프로젝트/라이브러리/미분류 선택 시 휴지통 보기는 해제(메인으로 복귀)

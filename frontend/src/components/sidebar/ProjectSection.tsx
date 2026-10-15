@@ -166,6 +166,7 @@ export function ProjectSection({
   countQueryReady = true,
   deletedOnly,
   viewPath,
+  generationScope,
   armedFolder,
   viewedFolder,
   onFilter,
@@ -187,6 +188,8 @@ export function ProjectSection({
   countQueryReady?: boolean;
   deletedOnly: boolean;
   viewPath?: string; // 목록이 보는 폴더(filters.folder_path) — activeId 와 합쳐 '보는 자리'
+  // 생성 요청이 쓰는 프로젝트(App 의 generationScope) — '보는 중'·'생성' 판정용. 없으면 두 표시를 그리지 않는다.
+  generationScope?: { project_id?: string };
   // 실제 생성 목적지(무장 폴더). 폴더 트리의 빨간 하이라이트를 이것에 연동 — 서버 selected_path 아님.
   armedFolder?: { projectId: string; path: string } | null;
   viewedFolder?: { projectId: string; projectName?: string; path: string; nonce: number } | null;
@@ -204,12 +207,15 @@ export function ProjectSection({
   onFolderAction?: (kind: FolderMenuKind, projectId: string, path: string, name: string) => void | Promise<void>;
 }) {
   const tr = useT();
-  // 보는 자리(목록 필터)와 생성 위치(분홍)가 갈렸나(Jay 2026-10-15 8A) — 앱을 새로 켜면 둘이 다를 수 있다. 갈렸을 때만 보는 줄에 라임 테두리+'보는 중',
-  //  분홍 줄에 '생성'. 같으면 지금처럼 아무 표시 없다. 생성 위치 = 무장 폴더, 없으면 분홍인 보는 프로젝트 줄(아래 sel-target 과 같은 규칙).
-  //  생성 위치는 고치지 않는다(켤 때 맞추기 = B안, 고르지 않음). 휴지통 보기는 생성 목적지가 아니다.
+  // 보는 자리(목록 필터)와 생성 위치가 갈렸나(Jay 2026-10-15 8A) — 앱을 새로 켜면 둘이 다를 수 있다. 갈렸을 때만 보는 줄에 라임 테두리+'보는 중',
+  //  실제 생성 목적지 줄에 '생성'. 같으면 지금처럼 아무 표시 없다. 생성 위치는 고치지 않는다(켤 때 맞추기 = B안, 고르지 않음).
+  //  목적지는 생성 요청과 같은 규칙으로 정한다(프로젝트 = generationScope, 폴더 = 그 프로젝트의 무장 폴더만 — App·useSpotlightSubmit).
+  //  분홍(sel-target)은 보는 프로젝트를 따르는 옛 규칙 그대로라, 다빈치 따라가기로 다른 프로젝트를 볼 때 분홍과 '생성'이 다른 줄일 수 있다(Codex 리뷰 P2).
+  //  휴지통 보기는 생성 목적지가 아니다.
   const seeFolder = activeId && activeId !== "none" ? viewPath || undefined : undefined;
-  const split = !deletedOnly &&
-    (armedFolder ? armedFolder.projectId !== activeId || armedFolder.path !== seeFolder : !!seeFolder);
+  const genProject = generationScope?.project_id;
+  const genFolder = armedFolder && armedFolder.projectId === genProject ? armedFolder.path : undefined;
+  const split = !!generationScope && !deletedOnly && (genProject !== activeId || genFolder !== seeFolder);
   const disabledFolders = useDisabledFolders(); // 폴더 단위 비활성(생략) — d 로 토글, 회색 표시
   // 폴더 우클릭 메뉴 — body 포털·고정 위치(사이드바 overflow 에 잘리지 않게). 행 밖에 그려 드래그·클릭과 분리.
   //  닫기: Esc(캡처·소비 — 폴더 행이 keydown 전파를 막아 기본 훅엔 안 닿는다), 바깥 mousedown, 드래그 시작, 탭 전환.
@@ -611,6 +617,7 @@ export function ProjectSection({
           >
             <span className="proj-name">{tr("라이브러리")}</span>
             {split && !activeId && <SideMark kind="see" />}
+            {split && !genProject && <SideMark kind="gen" />}
           </button>
           <button
             className={
@@ -648,6 +655,7 @@ export function ProjectSection({
           >
             <span className="proj-name">{tr("미분류")}</span>
             {split && activeId === "none" && <SideMark kind="see" />}
+            {split && genProject === "none" && <SideMark kind="gen" />}
             {(fresh?.unassigned || 0) > 0 && (
               <span className="proj-newcount" title="마지막 확인 이후 새로 공유됨">
                 +{fresh!.unassigned}
@@ -792,7 +800,7 @@ export function ProjectSection({
                   </span>
                   <span className="proj-name">{project.name}</span>
                   {split && projectActive && !seeFolder && <SideMark kind="see" />}
-                  {split && projectActive && !armedFolder && <SideMark kind="gen" />}
+                  {split && !genFolder && genProject === project.id && <SideMark kind="gen" />}
                   {(fresh?.byProject[project.id] || 0) > 0 && (
                     <span className="proj-newcount" title="마지막 확인 이후 새로 공유됨">
                       +{fresh!.byProject[project.id]}
@@ -813,7 +821,7 @@ export function ProjectSection({
                     }
                     viewedPath={viewedProjectId === project.id ? viewedPath : undefined}
                     seePath={split && projectActive ? seeFolder : undefined}
-                    markSelected={split && armedFolder?.projectId === project.id}
+                    markSelected={split && !!genFolder && genProject === project.id}
                     expanded={expandedFolders[project.id] || new Set()}
                     onToggle={(path) => toggleProjectFolderNode(project.id, path)}
                     onSelect={(path) => selectFolder(project.id, path)}
@@ -893,6 +901,7 @@ export function ProjectSection({
                   >
                     <span className="proj-name">{project.name}</span>
                     {split && activeId === project.id && <SideMark kind="see" />}
+                    {split && genProject === project.id && <SideMark kind="gen" />}
                     <span className="proj-count">{creatorUid ? currentCountSnapshot?.projectCounts?.[project.id] ?? "—" : project.count}</span>
                   </button>
                 ))}

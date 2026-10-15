@@ -14,6 +14,7 @@ export function CanvasFolderSidebar({
   unassignedCount,
   archivedCount,
   armedFolder,
+  generationScope,
   onArmFolder,
   onDropToFolder,
   onDropToUnassigned,
@@ -25,6 +26,7 @@ export function CanvasFolderSidebar({
   unassignedCount: number;
   archivedCount: number;
   armedFolder?: { projectId: string; path: string } | null;
+  generationScope?: { project_id?: string }; // 생성 요청이 쓰는 프로젝트 — '보는 중'·'생성' 표(ProjectSection)
   onArmFolder?: (projectId: string, path: string) => void;
   onDropToFolder?: (projectId: string, path: string, genId: string) => void;
   onDropToUnassigned?: (genId: string) => void;
@@ -43,6 +45,7 @@ export function CanvasFolderSidebar({
           tab={filters.tab === "team" ? "team" : "my"}
           deletedOnly={!!filters.deleted_only}
           viewPath={filters.folder_path}
+          generationScope={generationScope}
           armedFolder={armedFolder}
           onFilter={(pid) =>
             onChange({

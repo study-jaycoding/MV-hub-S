@@ -2749,6 +2749,7 @@ export default function App() {
                 unassignedCount={unassignedCount}
                 archivedCount={archivedCount}
                 armedFolder={armedFolder}
+                generationScope={generationScope}
                 onArmFolder={(projectId, path) => {
                   // 폴더 선택 = ① 생성 라벨 무장 ② 그 폴더(하위 포함)로 계보 보드 필터 ③ 활성 씬이면 폴더 보기 창
                   setArmedFolder(path ? { projectId, path } : null);
@@ -3020,6 +3021,7 @@ export default function App() {
                 onToggleWorkspaceChip={toggleWorkspaceChip}
                 onRemoveWorkspaceChip={removeWorkspaceChip}
                 armedFolder={armedFolder}
+                generationScope={generationScope}
                 onArmFolder={(projectId, path) => {
                   // 폴더 선택 = ① 생성 라벨 무장 ② 그 폴더(하위 포함)로 라이브러리 필터 — 명시적 이동(기록 한 칸)
                   pushLocationRef.current = true;
