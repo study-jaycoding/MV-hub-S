@@ -772,6 +772,16 @@ def test_agent_opens_browser_outside_the_cleanup_job():
     assert "url.dll,FileProtocolHandler" in guard
 
 
+def test_test_dev_data_folder_can_be_shared_with_the_integration_room():
+    # 통합 시험실 실사용 모드(Jay 2026-10-15) — dev 와 같은 데이터·같은 포트로 켠다. 한 번에 하나는 아래 포트 검사가 지킨다.
+    launcher = (ROOT_DIR / "test_dev.bat").read_text(encoding="utf-8")
+    assert 'if not defined MVHUB_DEV_DATA_DIR set "MVHUB_DEV_DATA_DIR=%ROOT%backend\\data_test"' in launcher
+    assert 'set "CONTENT_HUB_DATA=%MVHUB_DEV_DATA_DIR%"' in launcher
+    assert 'set "CONTENT_HUB_DB=%MVHUB_DEV_DATA_DIR%\\db\\content_hub.db"' in launcher
+    assert launcher.index("MVHUB_DEV_DATA_DIR=") < launcher.index('call "%ROOT%MV_agent.bat"')
+    assert "This prevents two generation agents from running at the same time." in launcher
+
+
 def test_test_dev_safely_replaces_only_its_own_previous_session():
     launcher = (ROOT_DIR / "test_dev.bat").read_text(encoding="utf-8")
     helper = (ROOT_DIR / "tools" / "replace_dev_session.ps1").read_text(
