@@ -20,11 +20,17 @@ v2 등록 설정에는 `--url`과 `--profile`이 들어간다. 프로필은 Wind
 한 번에 1~8개 항목을 선택하며 대기는 이미지 카드를 만들지 않는다. `all_terminal`이면 대기를 멈추고,
 `all_done`이 false이면 실패·취소·확인 필요 항목을 함께 안내한다. 25초는 대기 예산이며 조회·권한 확인 시간이 더해질 수 있다.
 `get_result`는 기존 단건 호출 호환용으로 유지한다.
-`get_result`는 표시 폴더 없이 네이티브 ImageContent를 반환한다. MCP Apps 지원 호스트에는
-`ui://mvhub/result.html` 결과 화면을 제공한다. 같은 이미지가 도구에 표시되면 최종 답변에 중복 삽입하지 않는다.
-URL·PC 경로·HTML 링크를 일반 답변에 나열하지 않으며 로컬 HTML을 Markdown 이미지로 넣지 않는다.
-구형 `display_directory` 내보내기는 유지하지만 경로는 호스트용 `_meta.display`에만 반환한다.
-이를 요청하지 않은 기본 조회는 파일을 쓰지 않는다. 이미지 수신·파일 준비는 실제 화면 표시 확인과 다르다.
+`get_result`·`get_generation`·`show_results`는 네이티브 ImageContent를 반환한다. MCP Apps 지원 호스트에는
+`ui://mvhub/result.html` 결과 화면도 제공한다.
+**Codex PC·모바일 대화에서는** 이미 존재하는 이 작업 소유 로컬 폴더를 `display_directory`로 지정한다.
+예: `show_results(plan_id, item_indexes=[0,1,2], display_directory=<작업 폴더 절대경로>)`.
+응답의 `display.status=ready`인 `display.reference`를 최종 답변에 그대로 한 번 포함한다.
+묶음 조회는 `items[i].display`를 사용한다. 일반 URL·PC 경로·HTML Markdown 링크로 바꾸지 않는다.
+표시 파일은 검증한 JPEG를 포함하며 외부 요청이 없다. 로컬 사본과 경로가 대화에 남고,
+설치본·`backend/data`·NAS를 표시 폴더로 쓰지 않는다. 폴더 자동 생성·기존 파일 덮어쓰기는 하지 않는다.
+다른 클라이언트는 폴더를 생략하고 네이티브 이미지 또는 MCP Apps로 표시하며 답변에 중복 삽입하지 않는다.
+명시한 경우만 표시 정보를 content/structuredContent와 기존 호환용 `_meta.display`에 함께 반환한다.
+폴더 없는 기본 조회는 파일을 쓰지 않는다. 이미지 수신·파일 준비는 실제 화면 표시 확인과 다르다.
 Codex·Claude 공통으로 실행 전 조건·위치를 알리고 `presentation.stage` 변경 시 `message`를 안내한다.
 `card_text`(상태→조건→위치)와 네이티브 이미지를 공통으로 사용한다. 선택 항목 완료는 전체 완료가 아니다.
 이미지와 MCP Apps를 모두 지원하지 않는 호스트는 자체 이미지 표시 도구를 사용하거나 표시 제한을 알린다.
