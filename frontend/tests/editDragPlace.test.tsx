@@ -922,6 +922,19 @@ it("풀 카드: 태그 입력 중 편집기 안의 × 는 그 태그를 뗀다 �
   expect(menu()).toBeNull();
   act(() => part(".cs-final-yes").click());
   expect(cardActions.onReview.mock.calls.map(([g, action]) => [g.id, action])).toEqual([["a", "held"]]);
+  // 겹친 누름(Codex 재검토): 가리지 않은 곳에서 왼쪽을 쥔 채 확인판을 열고 그 위에서 휠을 더 눌렀다 뗐다 — 새 pointerdown 없이
+  //  pointermove(button 1)만 온다. 그것도 그 누름의 가림으로 적는다(휠을 떼는 pointermove 는 덮지 않는다)
+  fire(document.body, "pointerdown", { button: 0, buttons: 1 });
+  fire(part(".card-sf"), "mousedown");
+  act(() => part(".card-sf").click());
+  act(() => part(".review-held").click());
+  fire(part(".cs-final-yes"), "pointermove", { button: 1, buttons: 5 });
+  fire(part(".cs-final-yes"), "pointermove", { button: 1, buttons: 1 });
+  fire(part(".cs-final-yes"), "auxclick", { button: 1, buttons: 1 });
+  expect(menu()).toBeNull();
+  fire(document.body, "pointerup", { button: 0, buttons: 0 });
+  act(() => part(".cs-final-yes").click());
+  expect(cardActions.onReview.mock.calls.length).toBe(2);
 
   // 떠 있는 메뉴를 닫는 휠 클릭은 다른 카드의 메뉴를 열지 않는다 — 다음 휠 클릭은 연다
   const thumb = (index: number) => poolCards()[index].querySelector<HTMLElement>(".card-thumb")!;
