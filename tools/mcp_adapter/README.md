@@ -15,7 +15,11 @@ v2 등록 설정에는 `--url`과 `--profile`이 들어간다. 프로필은 Wind
 새 등록은 계정 기준이며 현재 앱의 공간 선택에 묶이지 않는다. 기존 공간 고정 연결은 명시 재등록할 때만 바뀐다.
 `read_context(kind="workspaces")`로 실제 접근 가능한 공간을 조회한 뒤, 다른 조회와 계획에
 `workspace_scope`와 팀 공간의 `workspace_id`를 명시한다. 기본 생성은 캔버스 없이 MV Hub 라이브러리에 기록된다.
-`read_context`로 실제 모델·프로젝트·컷·자료를 확인하고 `prepare_generation_plan` → `execute_generation_plan` → `get_result(wait_seconds=25)` 순서로 처리한다.
+`read_context`로 실제 모델·프로젝트·컷·자료를 확인하고 `prepare_generation_plan` → `execute_generation_plan` →
+`wait_results(plan_id, item_indexes, wait_seconds=25)` → `show_results(plan_id, item_indexes)` 순서로 처리한다.
+한 번에 1~8개 항목을 선택하며 대기는 이미지 카드를 만들지 않는다. `all_terminal`이면 대기를 멈추고,
+`all_done`이 false이면 실패·취소·확인 필요 항목을 함께 안내한다. 25초는 대기 예산이며 조회·권한 확인 시간이 더해질 수 있다.
+`get_result`는 기존 단건 호출 호환용으로 유지한다.
 `get_result`는 표시 폴더 없이 네이티브 ImageContent를 반환한다. MCP Apps 지원 호스트에는
 `ui://mvhub/result.html` 결과 화면을 제공한다. 같은 이미지가 도구에 표시되면 최종 답변에 중복 삽입하지 않는다.
 URL·PC 경로·HTML 링크를 일반 답변에 나열하지 않으며 로컬 HTML을 Markdown 이미지로 넣지 않는다.
@@ -26,6 +30,18 @@ Codex·Claude 공통으로 실행 전 조건·위치를 알리고 `presentation.
 이미지와 MCP Apps를 모두 지원하지 않는 호스트는 자체 이미지 표시 도구를 사용하거나 표시 제한을 알린다.
 Higgsfield의 전용 위젯 지원이 임의 로컬 MCP에도 적용된다고 가정하지 않는다. 앱별 실표시는 별도 확인한다.
 미리보기 조회는 생성·과금 없이 기존 결과만 읽는다. 영상은 기존 포스터만 표시하고, 원본은 MV Hub에서 확인한다.
+다른 LLM에서 만든 본인 결과는 `read_context(kind="generations")`로 찾아
+`get_generation(generation_id, workspace_scope, workspace_id)`으로 다시 표시한다. 계획 조회·실행은 원래 클라이언트만 가능하다.
+목록의 `next_cursor`가 있으면 같은 필터와 `cursor_ts`, `cursor_id`를 다음 요청에 전달한다.
+`pagination_unavailable`이면 오래된 기록의 정렬 정보가 없어 후속 페이지를 확인하지 못한 상태다.
+`folder_path`, `media_type`으로 범위를 좁히고 `asset_count`로 여러 미디어를 확인한다.
+`estimate_plan(plan_id)`은 선택형 예상 비용 조회다. `credits:null`은 확인 불가이며 0이 아니다.
+실제 차감액을 보장하지 않으며 견적 조회가 생성 실행을 승인하지 않는다.
+`check_connection`의 `adapter.version`, `hub_features`, `reload_required`, `apps_negotiated`로 실제 실행 버전과
+화면 확장 협상 여부를 확인한다. `available`만으로 계정 연결·생성 준비·화면 표시가 검증되지는 않는다.
+실행 중인 구형 MCP는 새 파일을 자동으로 읽지 않으므로 LLM에서 MCP를 다시 불러와야 한다.
+오류는 `error={code,message,retryable,next_action}`으로 반환하며 비공개 서버 오류 원문을 전달하지 않는다.
+`retryable`은 지정한 조회를 다시 시도할 수 있다는 뜻이며 실패한 생성 요청을 재제출하라는 뜻이 아니다.
 MCP 이미지 표시를 지원하지 않는 앱에서도 생성 ID와 상태는 텍스트로 확인할 수 있다. 도구 설명은 완료 뒤 결과 조회를 안내한다.
 프로젝트·컷을 생략할 수 있다. `add_to_canvas`는 사용자가 요청할 때만 `scene_id`를 명시하며 새 생성을 하지 않는다.
 브라우저 탭을 닫아도 기본 생성은 가능하지만 허브 서버와 작업자는 실행 중이어야 한다.
