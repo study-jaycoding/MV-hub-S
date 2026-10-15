@@ -98,6 +98,9 @@
   background: rgba(var(--accent-rgb), 0.16); border: 1px solid var(--accent); border-radius: 2px;
 }
 .scene-canvas { position: absolute; top: 0; left: 0; will-change: transform; }
+/* 씬을 바꾸는 틈(SceneBoard data-switching — 새 씬은 왔는데 카드는 아직 떠난 씬의 것)에는 캔버스 층을 칠하지 않는다. 다음 렌더에 새 씬의
+   카드로 바뀐다. 층과 DOM 은 그대로 두어(display 가 아니다) 틈의 막기 장치·크기 측정에 손대지 않는다(70회차). */
+.scene-board[data-switching] .scene-canvas { visibility: hidden; }
 /* 캔버스 맨 아래 거의 투명한 바닥 한 장(Jay 66회차 ①) — 그룹·카드가 한 레이어로 합쳐지지 못하고 흩어진 섬(12% 에서 레이어 72)이 되던 것을
    바닥 위로 모은다(격리 실측: 레이어 72→17 · Layerize 964→174ms · 33ms 넘는 프레임 8→6). 크롬의 레이어 합치기에 기대는 방법이다 — 안 통하게
    되면 전과 같을 뿐이다. GPU 메모리는 재지 않았다. 누름은 받지 않는다. */

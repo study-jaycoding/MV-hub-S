@@ -615,7 +615,7 @@ export function SceneBoard({
   const [tempWire, setTempWire] = useState<{ fromId: string; x2: number; y2: number } | null>(null);
   // genId→실제 생성물 바인딩·폴링·계보(refParents)·비활성/삭제 상태는 useSceneGenData 훅으로 추출(동작 보존).
   //  각 생성물이 '레퍼런스로 쓴' 부모 gen id(refParents)는 수동 연결선 색(레퍼런스 점선 vs 계보 실선) 판정 근거.
-  const { genData, setGenData, genDataRef, missingIds, disabledIds, refParents, colors, refreshGenerationAfter } = useSceneGenData(cards,
+  const { genData, setGenData, genDataRef, missingIds, disabledIds, refParents, answeredIds, colors, refreshGenerationAfter } = useSceneGenData(cards,
     { sceneKey: cardsSceneId, authKey, authReady });
   const { applyColorToGids } = useSceneColorActions(colors, genDataRef);
   // 캔버스에 있는 동안 관찰한 생성 카드 상태를 store 에 반영(전환 규칙은 store 가 판정). 초기 done/새로고침은
@@ -4049,6 +4049,8 @@ export function SceneBoard({
   return (
     <div
       className={"scene-board" + (cutHeld ? " cutting" : "") + (tempWire ? " wiring" : "")}
+      // 씬을 바꾸는 틈 — 그려진 카드는 떠난 씬의 것이다. 칠하지 않는다(scene.css): 칠하면 새 탭 아래 이전 씬이 한 번 보였다(70회차 격리 실측 3/3)
+      data-switching={cardsSceneId !== scene.id ? "" : undefined}
       ref={scrollRef}
       tabIndex={-1}
       // 씬을 바꾸는 틈(switchingRef)에는 보드를 누를 수 없다 — 아직 보이는 것은 떠난 씬의 카드다. 틈에 시작한 끌기·크기 조절이 틈이 끝난
@@ -4745,6 +4747,7 @@ export function SceneBoard({
                   showNode={showNode}
                   waiting={comfyWaitingIds.has(card.id) || genWaitingFromComfy.has(card.id)}
                   genMissing={!!card.genId && missingIds.has(card.genId)}
+                  genKnown={!inner.genId || !answeredIds || answeredIds.has(inner.genId)}
                   width={widthOf(card)}
                   height={heightOf(card)}
                   fill={fill}

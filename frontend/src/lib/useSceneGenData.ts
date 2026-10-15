@@ -73,7 +73,15 @@ export interface SceneGenDataApi {
   missingIds: Set<string>; // 외부 삭제(404/410)로 사라진 id — '삭제됨' 표시
   disabledIds: Set<string>; // 비활성(회색) — deactivated 로컬 소스
   refParents: Record<string, string[]>; // genId → 레퍼런스 부모(materials) id들
+  // 이 씬에서 한 번이라도 답(캐시 복원·조회 응답)을 받은 id — 아직이면 카드는 '생성 중' 로고 대신 빈 바탕이다(씬을 바꾼 직후 완료 카드가
+  //  0.1초쯤 생성 중처럼 비쳤다 — 70회차 격리 실측)
+  answeredIds: Set<string>;
 }
+const addIds = (prev: Set<string>, ids: Iterable<string>) => {
+  let next: Set<string> | null = null;
+  for (const id of ids) if (!prev.has(id)) (next ??= new Set(prev)).add(id);
+  return next ?? prev;
+};
 
 export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE): SceneGenDataApi & {
   colors: SceneColorLedger;
@@ -90,6 +98,10 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
   // 외부(라이브러리)에서 삭제(휴지통 이동)돼 404 로 사라진 생성물 id — 카드가 무한 'Generating' 대신 '삭제됨' 표시.
   const [missingIds, setMissingIds] = useState<Set<string>>(() => hydrateMissing(initialGenIds()));
   const [refParents, setRefParents] = useState<Record<string, string[]>>(() => hydrateParents(initialGenIds()));
+  const [answeredIds, setAnsweredIds] = useState<Set<string>>(() => {
+    const ids = initialGenIds();
+    return new Set([...Object.keys(hydrateGen(ids)), ...hydrateMissing(ids)]);
+  });
   // 비활성(회색) 표시 — 라이브러리/계보와 같은 로컬 소스(deactivated). 어디서 토글해도 즉시 반영.
   const [disabledTick, setDisabledTick] = useState(0);
   useCustomEvent(DISABLED_EVENT, () => setDisabledTick((t) => t + 1));
@@ -271,6 +283,7 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
       }));
       // 새 변경 신호가 와서 전량 요청을 다시 시작했으면 그보다 먼저 출발한 응답은 폐기한다.
       if (!current()) return;
+      setAnsweredIds((prev) => (current() ? addIds(prev, pollIds) : prev)); // 찾음·삭제·못 물어봄 모두 '답을 받음'
       // 캐시에도 기록 — 탭 왕복·씬 전환 시 재조회 없이 즉시 복원되게(성공=저장/재등장, 삭제=missing 표시).
       for (const r of rs) {
         if (r.gen) {
@@ -349,12 +362,14 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
 
   // 씬 전환(genIdSig 변경) 시 새 씬 카드들의 생성물을 캐시에서 즉시 복원 — tick 서버조회를 기다리는 빈 화면 제거.
   //  (prev 우선 병합이라 이미 최신인 값은 덮지 않는다. 아래 prune 이 현재 카드 밖 id 를 곧 정리한다.)
-  useEffect(() => {
+  //  그리기 전에(layout) — 그린 뒤에 하면 한 번 본 씬도 첫 화면에 완료 카드가 '생성 중' 로고로 비쳤다(70회차 격리 실측).
+  useLayoutEffect(() => {
     const ids = genIdSig.split(",").filter(Boolean);
     if (!ids.length) return;
     const g = hydrateGen(ids);
     const p = hydrateParents(ids);
     const m = hydrateMissing(ids);
+    if (Object.keys(g).length || m.size) setAnsweredIds((prev) => addIds(prev, [...Object.keys(g), ...m]));
     if (Object.keys(g).length) {
       setGenData((prev) => reconcileRecordState(prev, { ...g, ...prev }));
     }
@@ -392,7 +407,10 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
     setMissingIds((prev) =>
       [...prev].every((id) => live.has(id)) ? prev : new Set([...prev].filter((id) => live.has(id))),
     );
+    setAnsweredIds((prev) =>
+      [...prev].every((id) => live.has(id)) ? prev : new Set([...prev].filter((id) => live.has(id))),
+    );
   }, [genIdSig]);
 
-  return { genData, setGenData, genDataRef, missingIds, disabledIds, refParents, colors, refreshGenerationAfter };
+  return { genData, setGenData, genDataRef, missingIds, disabledIds, refParents, answeredIds, colors, refreshGenerationAfter };
 }

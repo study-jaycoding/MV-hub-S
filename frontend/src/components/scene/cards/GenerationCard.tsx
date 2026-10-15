@@ -65,6 +65,7 @@ export const GenerationCard = memo(function GenerationCard({
   showNode,
   waiting,
   genMissing,
+  genKnown = true,
   width,
   height,
   fill,
@@ -82,6 +83,7 @@ export const GenerationCard = memo(function GenerationCard({
   showNode: boolean;
   waiting: boolean; // 상류 comfy 실행 중 — '생성중(회색)' 최우선 표시
   genMissing: boolean; // 바인딩된 생성물이 외부에서 삭제됨(missingIds)
+  genKnown?: boolean; // 그 생성물의 답(캐시·조회)을 한 번이라도 받았다 — 아직이면 '생성 중' 로고 대신 빈 바탕(씬을 바꾼 직후 — 70회차)
   width: number;
   height: number;
   fill: boolean;
@@ -195,6 +197,9 @@ export const GenerationCard = memo(function GenerationCard({
                   </div>
                 );
               })()
+            ) : !g && !genKnown && !card.pendingGenerationAttempts?.length ? (
+              // 아직 답을 못 받은 카드 — 완료된 것일 수 있다. '생성 중'이라고 말하지 않고 빈 바탕으로 둔다(제출 중인 카드는 아래 로고)
+              <div className="scene-card-genbody" />
             ) : (
               // 생성중 — 로고와 서버 상태 엔진의 현재 단계를 함께 표시한다.
               <div
