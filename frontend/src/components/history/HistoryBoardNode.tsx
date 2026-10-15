@@ -48,6 +48,7 @@ interface Props {
   onTag?: (generation: Generation) => void; // T → 태그 편집(있을 때만 버튼 표시)
   onOpenComments?: (generation: Generation) => void; // C → 코멘트 스레드(있을 때만 버튼 표시)
   folderChip?: string; // 아래 변 가운데의 폴더 이름표 글자 — 표시만(캔버스 생성 카드, Jay 14A). 비면 안 단다
+  onOpenFolder?: (generation: Generation, button: number) => void; // 이름표가 붙은 노드의 우클릭 — 그 폴더의 창(button = contextmenu 의 것)
 }
 
 export const HistoryBoardNode = memo(function HistoryBoardNode({
@@ -82,6 +83,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
   onTag,
   onOpenComments,
   folderChip,
+  onOpenFolder,
 }: Props) {
   const t = useT();
   // 대체 S/★ 버튼이 없는 읽기 전용 배지는 호버 중에도 남기고, T/C 버튼 자리를 비킨다.
@@ -145,6 +147,11 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
         }
       }}
       onMouseDown={(e) => e.button === 1 && e.preventDefault()}
+      // 폴더 이름표가 붙은 노드 위에서만 브라우저 메뉴를 막는다 — 이름표 없는 노드의 우클릭은 종전 그대로(브라우저 메뉴)
+      onContextMenu={folderChip && onOpenFolder ? (e) => {
+        e.preventDefault();
+        onOpenFolder(generation, e.button);
+      } : undefined}
     >
       <MediaThumbnail
         thumb={thumb}

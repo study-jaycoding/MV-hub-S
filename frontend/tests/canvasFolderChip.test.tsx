@@ -8,6 +8,7 @@ import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SceneBoard } from "../src/components/scene/SceneBoard";
+import { closeLayer, nextLayerSeq, openLayer } from "../src/lib/keyGate";
 import { GenerationCard as CanvasGenerationCard, type HistPass } from "../src/components/scene/cards/GenerationCard";
 import type { Scene } from "../src/lib/scenes";
 import type { SceneGenDataApi } from "../src/lib/useSceneGenData";
@@ -118,6 +119,70 @@ it("on the real board, pressing the chip selects the card and opens no window", 
   expect(card.classList.contains("sel")).toBe(true);
   fire(chip()!, "click");
   expect(document.querySelector(".scene-varpop-backdrop, .folder-peek, [role='dialog']")).toBeNull();
+});
+
+// 이름표가 붙은 카드의 우클릭 = 그 폴더의 '폴더 보기' 창(Jay 2026-10-15 — 라이브러리 카드 우클릭과 같은 뜻). 창을 여는 것은 App(onOpenFolder)이다.
+//  이름표 없는 카드(폴더 없음·생성 중·지운 것)의 우클릭은 종전 그대로 — 브라우저 메뉴. 우클릭은 카드 고르기를 바꾸지 않는다.
+const boardWith = async (gens: Generation[], onOpenFolder?: (g: Generation) => void) => {
+  const data = Object.fromEntries(gens.map((g) => [g.id, g]));
+  fixture.data = { genData: data, genDataRef: { current: data }, setGenData: noop, missingIds: new Set(), disabledIds: new Set(), refParents: {} } as unknown as SceneGenDataApi;
+  const scene = {
+    id: "S", name: "S", created_at: 0, edges: [], groups: [],
+    cards: gens.map((g, i) => ({ id: `c-${g.id}`, kind: "generation", genId: g.id, x: 110 + 330 * i, y: 110 })),
+  } as unknown as Scene;
+  await act(async () => { root.render(<SceneBoard scene={scene} onChange={noop} onOpenFolder={onOpenFolder} />); });
+};
+const cardEl = (id: string) => host.querySelector<HTMLElement>(`.scene-card[data-id="c-${id}"]`)!;
+const target = (id: string) => cardEl(id).querySelector<HTMLElement>(".card-folder") ?? cardEl(id).querySelector<HTMLElement>(".linb-node, .scene-card-genbody")!;
+// 실제 우클릭의 순서 — 누름(button 2) · 뗌 · contextmenu(윈도는 뗀 뒤에 온다)
+const rightClick = async (el: Element, between: () => void = noop) => {
+  await act(async () => { el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 2, buttons: 2, clientX: 180, clientY: 180 })); });
+  await act(async () => { window.dispatchEvent(new MouseEvent("mouseup", { button: 2, clientX: 180, clientY: 180 })); });
+  between();
+  const menu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: 180, clientY: 180 });
+  await act(async () => { el.dispatchEvent(menu); });
+  return menu;
+};
+const selectedCards = () => [...host.querySelectorAll<HTMLElement>(".scene-card.sel")].map((el) => el.dataset.id);
+
+it("right-clicking a card that carries the chip asks for that folder once and keeps the browser menu away; the selection does not move", async () => {
+  const onOpenFolder = vi.fn();
+  const inFolder = gen({ id: "in-folder" });
+  await boardWith([inFolder, gen({ id: "other" })], onOpenFolder);
+  expect((await rightClick(target("in-folder"))).defaultPrevented).toBe(true);
+  expect(onOpenFolder).toHaveBeenCalledTimes(1);
+  expect(onOpenFolder).toHaveBeenCalledWith(inFolder);
+  expect(selectedCards()).toEqual([]); // 우클릭은 고르지 않는다
+
+  await act(async () => { target("other").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: 500, clientY: 180 })); });
+  await act(async () => { window.dispatchEvent(new MouseEvent("mouseup", { button: 0, clientX: 500, clientY: 180 })); });
+  expect(selectedCards()).toEqual(["c-other"]);
+  await rightClick(target("in-folder"));
+  expect(onOpenFolder).toHaveBeenCalledTimes(2);
+  expect(selectedCards()).toEqual(["c-other"]); // 고른 것은 그대로
+});
+
+it("cards without the chip keep the browser menu — no folder, still generating, failed, deleted", async () => {
+  const onOpenFolder = vi.fn();
+  const cases = [gen({ id: "no-folder", folder_path: null }), gen({ id: "running", status: "running" }), gen({ id: "failed", status: "failed" }), gen({ id: "deleted", deleted: true })];
+  await boardWith(cases, onOpenFolder);
+  for (const g of cases) {
+    expect(cardEl(g.id).querySelector(".card-folder")).toBeNull();
+    expect((await rightClick(target(g.id))).defaultPrevented).toBe(false);
+  }
+  expect(onOpenFolder).not.toHaveBeenCalled();
+});
+
+it("a right-click that closes something above the board does not open the folder", async () => {
+  const onOpenFolder = vi.fn();
+  await boardWith([gen()], onOpenFolder);
+  const menu = {};
+  openLayer(menu, nextLayerSeq()); // 위에 메뉴가 떠 있다 — 우클릭 누름이 그것을 닫는다
+  const event = await rightClick(target("g1"), () => closeLayer(menu));
+  expect(event.defaultPrevented).toBe(true);
+  expect(onOpenFolder).not.toHaveBeenCalled();
+  await rightClick(target("g1")); // 다음 우클릭은 연다
+  expect(onOpenFolder).toHaveBeenCalledTimes(1);
 });
 
 it("the chip's rules add no compositing layers — no backdrop-filter, mask, will-change, transform or animation", () => {

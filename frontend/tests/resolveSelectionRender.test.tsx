@@ -961,6 +961,39 @@ it("App: 캔버스의 '생성 결과' 창과 '폴더 보기' 창은 겹쳐 두�
   expect(document.querySelector(".folder-peek")).toBeNull();
 });
 
+// 캔버스 카드 우클릭(폴더 이름표가 붙은 카드, Jay 2026-10-15) — 사이드바 폴더 누름의 ②③만: 그 폴더를 보고 '폴더 보기' 창을 연다.
+//  다음 생성 위치·분홍 무장은 그대로다(라이브러리의 우클릭 폴더 창처럼 — 사이드바 누름은 생성 위치까지 옮긴다).
+it("App: 캔버스에서 폴더 이름표가 붙은 카드를 우클릭하면 그 폴더의 '폴더 보기' 창 — 생성 위치·분홍 무장은 그대로, '생성 결과' 창은 닫는다", async () => {
+  const generationScope = { project_id: "generation-project", folder_path: "next/clip" };
+  const armedFolder = { projectId: "generation-project", path: "next/clip" };
+  localStorage.setItem("ch.lib.generationScopeV1", JSON.stringify(generationScope));
+  localStorage.setItem("ch.lib.armedFolder", JSON.stringify(armedFolder));
+  boundary.api.getGenerationsBatch.mockResolvedValue({ materials: {}, missing: [], items: Object.fromEntries(
+    ["representative", "target", "other", "other-target"].map((id) => [id, libraryGeneration(id)]),
+  ) } as never);
+  const send = await mountApp();
+  act(() => send(["target"])); // 결과 창이 떠 있다(실제 화면에서는 그 막이 카드를 가린다 — 두 창을 겹치지 않는다는 약속만 본다)
+  await settle();
+  expect(view.container.querySelector(".scene-varwin")).toBeTruthy();
+  expect(document.querySelector(".folder-peek")).toBeNull();
+  const node = view.container.querySelector<HTMLElement>('.scene-card[data-id="results"] .linb-node')!;
+  expect(node.querySelector(".card-folder")!.textContent).toBe("episode shot");
+  act(() => { node.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 2, buttons: 2 })); });
+  act(() => { window.dispatchEvent(new MouseEvent("mouseup", { button: 2 })); });
+  const menu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 });
+  act(() => { node.dispatchEvent(menu); });
+  await settle();
+  expect(menu.defaultPrevented).toBe(true);
+  expect(document.querySelector(".folder-peek")).toBeTruthy();
+  expect(view.container.querySelector(".scene-varwin")).toBeNull();
+  expect(librarySnapshot!.filters).toMatchObject({ tab: "compose", project_id: "resolve-project", folder_path: "episode/shot" });
+  expect(canvasSidebarSnapshot!.armedFolder).toEqual(armedFolder); // 분홍(생성 위치) 그대로
+  expect(canvasSidebarSnapshot!.generationScope).toEqual(generationScope);
+  expect(promptSnapshot?.armedFolder).toEqual(armedFolder);
+  expect(promptSnapshot?.activeProjectId).toBe("generation-project");
+  expect(JSON.parse(localStorage.getItem("ch.lib.generationScopeV1")!)).toEqual(generationScope);
+});
+
 // ── 목록 탭의 '폴더 보기' 창(카드의 폴더 이름표, 2026-10-07) — 캔버스 창과 같은 원리: 목록 조회가 그 폴더로 바뀌고 하나뿐인 격자를 창에 그린다 ──
 const peekWindow = () => document.querySelector<HTMLElement>(".folder-peek");
 const gridOutputs = () => [...document.querySelectorAll('[data-testid="library-highlight"]')];

@@ -1156,6 +1156,14 @@ export default function App() {
     if (!g.folder_path) return;
     openFolderPath({ projectId: g.project_id, path: g.folder_path, projectName: g.project_name ?? "", genId: g.id });
   }, [openFolderPath]);
+  // 캔버스 카드 우클릭(폴더 이름표가 붙은 카드, Jay 2026-10-15) → 그 폴더의 캔버스 '폴더 보기' 창. 사이드바 폴더 누름(onArmFolder)의 ②③만 —
+  //  보는 자리만 옮기고(restoreLocation, adopt 없음) 다음 생성 위치·분홍 무장은 그대로다(라이브러리의 우클릭 폴더 창처럼). patch 는 생성 위치까지 옮긴다.
+  const openCanvasFolder = useCallback((g: Generation) => {
+    if (!g.project_id || !g.folder_path) return;
+    restoreLocation({ project_id: g.project_id, folder_path: g.folder_path });
+    setFolderPeek(true);
+    sceneActionRef.current?.closeVariants(); // 두 창을 겹쳐 두지 않는다(사이드바와 같이)
+  }, [restoreLocation, sceneActionRef]);
   // 컷 카드 우클릭·컷 정보 창의 [폴더 열기] → 그 폴더의 창. 누른 생성물 카드가 없으니 '방금 누른 카드'·이동 없이 맨 위부터 연다.
   //  (2026-10-13 낮 — 아침엔 두 번 클릭이 들어가기였고 창은 없었다. 그 전엔 컷 두 번 클릭이 이 창이었다.)
   const openFolderCard = useCallback((folder: FolderCard) => {
@@ -2882,6 +2890,7 @@ export default function App() {
                 }
                 onPreview={openPreview}
                 onInfo={setInfo}
+                onOpenFolder={openCanvasFolder}
                 onRegenerate={onSceneRegenerate}
                 onPublish={onPublish}
                 onUnpublish={onUnpublish}
