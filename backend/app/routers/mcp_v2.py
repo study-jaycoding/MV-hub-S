@@ -14,7 +14,7 @@ import threading
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlencode, urlsplit
 from uuid import UUID
 
@@ -24,7 +24,7 @@ from starlette.responses import FileResponse
 
 from .. import active_account, config, repo
 from ..db_paths import get_db_path
-from ..deps import actor_id, current_account, resolve_agent_account
+from ..deps import account_actor_uid, actor_id, current_account, resolve_agent_account
 from ..emailnorm import norm_email
 from ..mcp_models import StrictModel
 from ..models import GenRequestIn, WorkspaceContext
@@ -37,6 +37,7 @@ router = APIRouter(prefix="/api/mcp/v2", tags=["mcp"])
 _registration_lock = threading.Lock()
 _result_wait_slots = threading.BoundedSemaphore(8)
 _RESULT_POLL_SECONDS = 2.0
+_ESTIMATE_BUDGET_SECONDS = 20.0
 
 
 def hub_id():
@@ -284,6 +285,16 @@ class ReadIn(StrictModel):
     limit: int = Field(default=30, ge=1, le=100)
     model: str | None = Field(default=None, max_length=200)
     asset_project: str | None = Field(default=None, max_length=200)
+    folder_path: str | None = Field(default=None, max_length=500)
+    media_type: Literal["image", "video", "audio"] | None = None
+    cursor_ts: float | None = Field(default=None, allow_inf_nan=False, strict=True)
+    cursor_id: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def check_cursor(self):
+        if (self.cursor_ts is None) != (self.cursor_id is None):
+            raise ValueError("다음 페이지의 시각과 ID를 함께 지정하세요")
+        return self
 
 
 def _matches(row, workspace):
@@ -378,11 +389,14 @@ def _generations(ctx, ws, args):
         params["project_id"] = args.project_id
     if args.search:
         params["search"] = args.search
+    params.update({key: value for key in ("folder_path", "media_type", "cursor_ts", "cursor_id")
+                   if (value := getattr(args, key)) is not None})
     return library.list_generations(_internal(ctx, "/api/generations", params), BackgroundTasks(),
         tab="my", limit=args.limit, lean_params=0, workspace_id=ws["id"], workspace_ids=[],
         workspace_scope="personal" if ws["scope"] == "personal" else None,
         project_id=args.project_id, search=args.search, colors=[], tags=[], auto_tags=[],
-        share_dir=None, media_type=None)
+        share_dir=None, media_type=args.media_type, folder_path=args.folder_path,
+        cursor_ts=args.cursor_ts, cursor_id=args.cursor_id)
 
 
 def _asset_tree(ctx, ws, project):
@@ -452,7 +466,7 @@ def _references(ctx, ws, ids):
                 raise HTTPException(404, "참고 자료의 워크스페이스가 다릅니다.")
             version = mcp.digest(store.encode(row.get("assets", [])))
         if not version or version != saved["version"]:
-            raise HTTPException(409, "참고 자료가 바뀌었습니다. 다시 조회해 계획을 만드세요.")
+            raise HTTPException(409, "참고 자료가 바뀌었습니다. 다시 조회해 계획을 만드세요.", headers={"X-MVHub-MCP-Error": "reference_changed"})
         reference = dict(saved["reference"])
         reference["role"] = "@" + reference["type"].capitalize() + str(sum(r["type"] == reference["type"] for r in result) + 1)
         result.append(reference)
@@ -496,7 +510,22 @@ async def _read(ctx, args):
     if args.kind == "references":
         return {"references": await asyncio.to_thread(_issue_references, ctx, ws, args)}
     rows = await asyncio.to_thread(_generations, ctx, ws, args)
-    return {"generations": [{key: row.get(key) for key in ("id", "prompt", "model", "status", "project_id", "folder_path", "workspace_scope", "workspace_id")} for row in rows]}
+    await asyncio.to_thread(_still_current, ctx)
+    last = rows[-1] if rows else None
+    result = {"generations": [{**{key: row.get(key) for key in ("id", "prompt", "model", "status", "project_id", "folder_path", "workspace_scope", "workspace_id")},
+                               "asset_count": len(row.get("assets") or [])} for row in rows], "next_cursor": None}
+    if last and len(rows) == args.limit:
+        timestamp = last.get("sort_ts")
+        try:
+            valid_timestamp = type(timestamp) in (int, float) and math.isfinite(timestamp)
+        except OverflowError:
+            valid_timestamp = False
+        if valid_timestamp:
+            result["next_cursor"] = {"cursor_ts": timestamp, "cursor_id": last["id"]}
+        else:
+            result.update(pagination_unavailable=True,
+                          note="마지막 항목의 정렬 시각이 없어 다음 페이지를 조회할 수 없습니다. 전체 검색이 끝난 것은 아닙니다. 앱에서 결과를 확인하세요.")
+    return result
 
 
 class PlanItem(StrictModel):
@@ -522,17 +551,17 @@ def _validate_params(params, schema):
     for name, value in params.items():
         field = fields.get(name)
         if not field or name.lower() in {"prompt", "references", "file_path", "url", "image_url", "video_url", "input_images"}:
-            raise HTTPException(422, "지원하지 않는 모델 옵션입니다.")
+            raise HTTPException(422, "지원하지 않는 모델 옵션입니다.", headers={"X-MVHub-MCP-Error": "invalid_option"})
         kind = str(field.get("type", "string")).split("|")[0]
         valid = ((kind == "integer" and type(value) is int) or (kind in ("number", "float") and type(value) in (int, float) and math.isfinite(value))
                  or (kind == "boolean" and type(value) is bool) or (kind == "string" and isinstance(value, str)))
         if not valid or (field.get("enum") and str(value) not in {str(v) for v in field["enum"]}):
-            raise HTTPException(422, "모델 옵션 형식이나 선택값이 잘못되었습니다.")
+            raise HTTPException(422, "모델 옵션 형식이나 선택값이 잘못되었습니다.", headers={"X-MVHub-MCP-Error": "invalid_option"})
         if isinstance(value, str) and (len(value) > 500 or "://" in value or "\\" in value or "/" in value):
-            raise HTTPException(422, "자료 경로는 모델 옵션으로 받지 않습니다. reference_ids를 사용하세요.")
+            raise HTTPException(422, "자료 경로는 모델 옵션으로 받지 않습니다. reference_ids를 사용하세요.", headers={"X-MVHub-MCP-Error": "invalid_option"})
         for bound, compare in (("minimum", lambda a, b: a < b), ("maximum", lambda a, b: a > b)):
             if bound in field and type(value) in (int, float) and compare(value, field[bound]):
-                raise HTTPException(422, "모델 옵션이 허용 범위를 벗어났습니다.")
+                raise HTTPException(422, "모델 옵션이 허용 범위를 벗어났습니다.", headers={"X-MVHub-MCP-Error": "invalid_option"})
 
 
 async def _validate_items(ctx, items, ws):
@@ -596,7 +625,7 @@ def _presentation(items, *, scope="plan", item_index=None):
         stage = "queued"
     else:
         stage = "attention"
-    target = f"선택 항목 {item_index + 1}" if scope == "item" else "전체 계획"
+    target = f"선택 항목 {item_index + 1}" if scope == "item" else "생성 결과" if scope == "generation" else "전체 계획"
     message = f"{target} · {labels[stage]} · 완료 {counts['completed']}/{len(items)}"
     for key, label in (("failed", "실패"), ("cancelled", "취소"), ("attention", "확인 필요"), ("unknown", "미확인")):
         if counts[key]:
@@ -640,6 +669,31 @@ class ResultIn(PlanId):
     wait_seconds: int = Field(default=0, ge=0, le=25, strict=True)
 
 
+class GenerationIn(StrictModel):
+    generation_id: UUID
+    workspace_scope: Literal["personal", "team"]
+    workspace_id: str | None = Field(default=None, max_length=200)
+    asset_index: int = Field(default=0, ge=0, le=99, strict=True)
+
+
+class SelectedResultsIn(PlanId):
+    item_indexes: list[Annotated[int, Field(ge=0, le=19, strict=True)]] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def unique_indexes(self):
+        if len(set(self.item_indexes)) != len(self.item_indexes):
+            raise ValueError("같은 항목을 두 번 선택할 수 없습니다")
+        return self
+
+
+class WaitResultsIn(SelectedResultsIn):
+    wait_seconds: int = Field(default=25, ge=0, le=25, strict=True)
+
+
+class ShowResultsIn(SelectedResultsIn):
+    asset_index: int = Field(default=0, ge=0, le=99, strict=True)
+
+
 async def _authorized_plan(ctx, plan_id):
     plan = await asyncio.to_thread(store.get_plan, ctx.client, plan_id)
     if plan is None:
@@ -673,34 +727,58 @@ def _read_preview(response):
     return data
 
 
+def _generation_row(ctx, generation_id):
+    row = library.get_generation(generation_id, _internal(ctx, "/api/generations/" + generation_id))
+    if not isinstance(row, dict):
+        raise HTTPException(502, "생성 결과 응답 형식을 확인할 수 없습니다.")
+    return row
+
+
 async def _result_once(ctx, args, *, preview=True):
-    plan = await _authorized_plan(ctx, str(args.plan_id))
-    if args.item_index >= len(plan["items"]):
-        raise HTTPException(404, "계획 항목을 찾을 수 없습니다.")
-    item = plan["items"][args.item_index]
-    result = {"plan_id": plan["id"], "item_index": args.item_index, "asset_index": args.asset_index,
+    row = None
+    direct = isinstance(args, GenerationIn)
+    if direct:
+        workspace = await asyncio.to_thread(_request_workspace, ctx, args.workspace_scope, args.workspace_id)
+        row = await asyncio.to_thread(_generation_row, ctx, str(args.generation_id))
+        creator = account_actor_uid(_internal(ctx, "/api/generations")) if config.AUTH_ENABLED else ctx.account.get("creator_uid")
+        if not _matches(row, workspace) or not creator or row.get("creator_uid") != creator:
+            raise HTTPException(404, "생성 결과를 찾을 수 없습니다.")
+        item = {**row, "state": "submitted", "generation_id": row["id"], "generation_status": row.get("status")}
+        plan = {"id": None, "title": "생성 결과", "workspace": workspace}
+        item_index = None
+    else:
+        plan = await _authorized_plan(ctx, str(args.plan_id))
+        if args.item_index >= len(plan["items"]):
+            raise HTTPException(404, "계획 항목을 찾을 수 없습니다.")
+        item = plan["items"][args.item_index]
+        item_index = args.item_index
+    result = {"plan_id": plan["id"], "item_index": item_index, "asset_index": args.asset_index,
               "generation_id": item.get("generation_id"), "generation_status": item.get("generation_status"),
               "item_state": item.get("state"), "queue_status": item.get("queue_status"),
-              "asset_type": None, "media": None, "note": "아직 완료된 미리보기가 없습니다."}
+              "asset_count": 0, "asset_type": None, "media": None, "note": "아직 완료된 미리보기가 없습니다."}
+    if direct:
+        result["source"] = "library"
     # These are already-authorized display fields, not another lookup or the raw prompt.
     result.update(title=plan["title"][:200], workspace=plan["workspace"],
                   **{key: item.get(key) for key in ("label", "model", "project_id", "folder_path")})
     result["params"] = {key: value[:100] if isinstance(value, str) else value
-                        for key, value in item.get("params", {}).items()
+                        for key, value in (item.get("params") or {}).items()
                         if key in {"aspect_ratio", "resolution", "duration"}
                         and isinstance(value, (str, int, float, bool))
                         and (not isinstance(value, float) or math.isfinite(value))}
     if result["generation_id"]:
-        row = await asyncio.to_thread(library.get_generation, result["generation_id"],
-                                      _internal(ctx, "/api/generations/" + result["generation_id"]))
+        if row is None:
+            row = await asyncio.to_thread(_generation_row, ctx, result["generation_id"])
         creator = ctx.owner if config.AUTH_ENABLED else ctx.account.get("creator_uid")
         if (not _matches(row, plan["workspace"]) or
                 (row.get("creator_uid") and row["creator_uid"] != creator)):
             raise HTTPException(404, "생성 결과를 찾을 수 없습니다.")
         result["generation_status"] = row.get("status")
         assets_list = row.get("assets", [])
+        result["asset_count"] = len(assets_list)
         if row.get("status") == "done":
-            result["note"] = "완료되었지만 선택한 미디어가 없습니다. 앱에서 결과를 확인하세요."
+            result["note"] = ("완료되었지만 선택한 미디어가 없습니다. 앱에서 결과를 확인하세요." if preview else
+                              "생성이 완료되었습니다. show_results로 결과를 확인하세요.")
         if preview and row.get("status") == "done" and args.asset_index < len(assets_list):
             asset = assets_list[args.asset_index]
             result["asset_type"] = asset.get("type")
@@ -726,11 +804,12 @@ async def _result_once(ctx, args, *, preview=True):
                 except (HTTPException, OSError, ValueError):
                     pass
     if _result_pending(result):
-        result["note"] = "생성 진행 중입니다. 같은 항목의 get_result(wait_seconds=25)로 계속 확인하세요. 재생성하지 마세요."
+        result["note"] = ("생성 진행 중입니다. 같은 generation_id로 다시 조회하세요. 재생성하지 마세요." if direct else
+                          "생성 진행 중입니다. 같은 항목의 get_result(wait_seconds=25)로 계속 확인하세요. 재생성하지 마세요.")
     elif result["generation_status"] != "done":
         result["note"] = "완료 대기를 중단했습니다. 항목·생성 상태를 확인하고 실패·취소·불명확한 접수를 자동 재제출하지 마세요."
     result["presentation"] = _presentation(
-        [{**item, "generation_status": result["generation_status"]}], scope="item", item_index=args.item_index)
+        [{**item, "generation_status": result["generation_status"]}], scope="generation" if direct else "item", item_index=item_index)
     await asyncio.to_thread(_workspace, ctx, plan["workspace"])
     await asyncio.to_thread(_still_current, ctx)
     return result
@@ -747,7 +826,8 @@ async def _result(ctx, args):
         return await _result_once(ctx, args)
     # Bound sleepers without holding a DB transaction or a worker thread between polls.
     if not _result_wait_slots.acquire(blocking=False):
-        raise HTTPException(429, "결과 대기 요청이 많습니다. 잠시 후 기존 계획을 조회하세요. 재생성하지 마세요.")
+        raise HTTPException(429, "결과 대기 요청이 많습니다. 잠시 후 기존 계획을 조회하세요. 재생성하지 마세요.",
+                            headers={"X-MVHub-MCP-Error": "wait_limit"})
     try:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + args.wait_seconds
@@ -764,9 +844,72 @@ async def _result(ctx, args):
         _result_wait_slots.release()
 
 
+async def _selected_results(ctx, args, *, preview=False):
+    plan = await _authorized_plan(ctx, str(args.plan_id))
+    if any(index >= len(plan["items"]) for index in args.item_indexes):
+        raise HTTPException(422, "계획 항목 범위를 확인하세요.")
+    wait = getattr(args, "wait_seconds", 0)
+    if wait and not _result_wait_slots.acquire(blocking=False):
+        raise HTTPException(429, "결과 대기 요청이 많습니다.", headers={"X-MVHub-MCP-Error": "wait_limit"})
+    try:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + wait
+        while True:
+            items = []
+            for index in args.item_indexes:
+                selected = ResultIn(plan_id=args.plan_id, item_index=index, asset_index=getattr(args, "asset_index", 0))
+                try:
+                    result = await _result_once(ctx, selected, preview=preview)
+                except HTTPException as exc:
+                    if exc.status_code not in (404, 502, 503, 504):
+                        raise
+                    result = {"plan_id": str(args.plan_id), "item_index": index, "media": None,
+                              "error": {"code": "not_found" if exc.status_code == 404 else "request_failed"}}
+                items.append(result)
+            # Never return partial data after the session or workspace permission changed.
+            await _authorized_plan(ctx, str(args.plan_id))
+            pending = any(_result_pending(item) for item in items if "error" not in item)
+            if not pending or loop.time() >= deadline:
+                return {"plan_id": str(args.plan_id), "items": items,
+                        "all_done": all(item.get("presentation", {}).get("stage") == "completed" for item in items),
+                        "all_terminal": not pending}
+            if await ctx.request.is_disconnected():
+                raise HTTPException(499, "결과 조회 연결이 종료되었습니다.")
+            await asyncio.sleep(max(0, min(_RESULT_POLL_SECONDS, deadline - loop.time())))
+    finally:
+        if wait:
+            _result_wait_slots.release()
+
+
+async def _estimate_plan(ctx, plan_id):
+    plan = await _authorized_plan(ctx, plan_id)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _ESTIMATE_BUDGET_SECONDS
+    items = []
+    for index, item in enumerate(plan["items"]):
+        credits = None
+        remaining = deadline - loop.time()
+        if remaining > 0:
+            await asyncio.to_thread(_still_current, ctx)
+            try:
+                estimate = await asyncio.wait_for(cli_bridge.estimate_cost(
+                    item["model"], item.get("params"), item.get("prompt", ""), timeout=min(5.0, remaining)), remaining)
+                value = estimate.get("credits") if isinstance(estimate, dict) else None
+                if type(value) in (int, float) and math.isfinite(value) and value >= 0:
+                    credits = value
+            except (RuntimeError, TimeoutError, ValueError, OverflowError):
+                pass
+        items.append({"item_index": index, "credits": credits, "status": "estimated" if credits is not None else "unavailable"})
+    await _authorized_plan(ctx, plan_id)
+    total = sum((item["credits"] for item in items), 0.0) if all(item["credits"] is not None for item in items) else None
+    return {"plan_id": plan_id, "is_estimate": True, "items": items,
+            "total_credits": total if total is not None and math.isfinite(total) else None,
+            "note": "예상 크레딧이며 실제 청구액과 다를 수 있습니다. 견적 조회는 생성하거나 실행을 승인하지 않습니다."}
+
+
 async def _execute(ctx, plan_id):
     if not ctx.client["can_execute"]:
-        raise HTTPException(403, "앱에서 이 클라이언트의 실행을 허용하세요.")
+        raise HTTPException(403, "앱에서 이 클라이언트의 실행을 허용하세요.", headers={"X-MVHub-MCP-Error": "execution_not_allowed"})
     plan = await _authorized_plan(ctx, plan_id)
     if plan["status"] != "planned":
         return _public_plan(plan)
@@ -806,6 +949,14 @@ async def action(body: mcp.ActionIn, ctx=Depends(_client_context)):
             return _public_plan(await asyncio.to_thread(store.create_plan, ctx.client, data.title, items, ws))
         if body.method == "get_result":
             return await _result(ctx, ResultIn.model_validate(body.args))
+        if body.method == "get_generation":
+            return await _result_once(ctx, GenerationIn.model_validate(body.args))
+        if body.method == "wait_results":
+            return await _selected_results(ctx, WaitResultsIn.model_validate(body.args))
+        if body.method == "show_results":
+            return await _selected_results(ctx, ShowResultsIn.model_validate(body.args), preview=True)
+        if body.method == "estimate_plan":
+            return await _estimate_plan(ctx, str(PlanId.model_validate(body.args).plan_id))
         if body.method == "add_to_canvas":
             data = CanvasIn.model_validate(body.args)
             plan = await _authorized_plan(ctx, str(data.plan_id))
@@ -824,7 +975,12 @@ async def action(body: mcp.ActionIn, ctx=Depends(_client_context)):
             return _public_plan(await _authorized_plan(ctx, str(data.plan_id)))
         raise HTTPException(422, "지원하지 않는 MCP 도구입니다.")
     except ValidationError as exc:
-        raise HTTPException(422, "MCP 입력 형식이 올바르지 않습니다.") from exc
+        raise HTTPException(422, "MCP 입력 형식이 올바르지 않습니다.", headers={"X-MVHub-MCP-Error": "invalid_input"}) from exc
+    except HTTPException as exc:
+        code = {401: "permission_denied", 403: "permission_denied", 404: "not_found", 409: "state_conflict",
+                422: "invalid_input", 429: "busy"}.get(exc.status_code, "request_failed")
+        exc.headers = {"X-MVHub-MCP-Error": code, **(exc.headers or {})}
+        raise
 
 
 @router.get("/app/canvas-tasks")

@@ -12,6 +12,7 @@ import secrets
 import site
 import sys
 import time
+from functools import wraps
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.error import HTTPError, URLError
@@ -27,6 +28,14 @@ if _sdk.is_dir():
     site.addsitedir(str(_sdk))
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver.context import Context
+try:
+    from mcp.server.apps import Apps, client_supports_apps
+except ImportError:
+    Apps = None
+
+    def client_supports_apps(ctx):
+        return False
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field
@@ -34,10 +43,39 @@ from pydantic import BaseModel, ConfigDict, Field
 MAX_REQUEST = 64 * 1024
 MAX_RESPONSE = 256 * 1024
 MAX_RESULT_RESPONSE = 1024 * 1024
+MAX_GALLERY_RESPONSE = 6 * 1024 * 1024
 MAX_PREVIEW = 512 * 1024
 REQUEST_TIMEOUT = 30
 RESULT_TIMEOUT = 90
 RESULT_UI_URI = "ui://mvhub/result.html"
+ADAPTER_VERSION = "2026.10.15.2"
+HUB_FEATURES = {"generation_result", "batch_results", "history_cursor", "plan_estimate"}
+ERRORS = {
+    "invalid_input": ("입력 형식을 확인하세요.", False, "check_arguments"),
+    "invalid_option": ("현재 모델의 지원 옵션을 다시 조회하세요.", False, "read_context"),
+    "reference_changed": ("참고 자료가 변경됐습니다. 자료를 다시 조회하고 계획을 준비하세요.", False, "read_context"),
+    "permission_denied": ("이 연결에 요청 권한이 없습니다. 앱에서 연결 상태를 확인하세요.", False, "check_connection"),
+    "execution_not_allowed": ("앱에서 이 연결의 생성 실행을 허용하세요.", False, "check_connection"),
+    "not_found": ("접근 가능한 요청 또는 결과를 찾지 못했습니다.", False, "read_context"),
+    "busy": ("대기 요청이 많습니다. 잠시 뒤 기존 결과만 조회하세요. 재생성하지 마세요.", True, "wait_results"),
+    "hub_outdated": ("새 기능을 지원하는 MV Hub로 업데이트·재시작한 뒤 MCP를 다시 불러오세요.", False, "reload_hub"),
+    "wait_limit": ("대기가 종료됐습니다. 기존 결과를 조회하세요. 재생성하지 마세요.", True, "wait_results"),
+    "state_conflict": ("연결 또는 작업 상태를 확인하세요. 기존 계획을 확인하고 자동 재실행하지 마세요.", False, "get_plan"),
+    "transport_unknown": ("허브 응답을 확인하지 못했습니다. 접수됐을 수 있으므로 자동 재실행하지 마세요.", False, "get_plan"),
+    "request_failed": ("허브가 요청을 처리하지 못했습니다. 앱에서 상태를 확인하세요.", False, "check_connection"),
+}
+
+
+def safe_error(code: str) -> dict:
+    code = code if code in ERRORS else "request_failed"
+    message, retryable, next_action = ERRORS[code]
+    return {"code": code, "message": message, "retryable": retryable, "next_action": next_action}
+
+
+class BrokerError(ToolError):
+    def __init__(self, code):
+        self.error = safe_error(code)
+        super().__init__(json.dumps({"error": self.error}, ensure_ascii=False))
 
 
 def result_ui() -> str:
@@ -48,15 +86,16 @@ def result_ui() -> str:
 <style>
 :root { color-scheme: light dark; font: 14px/1.5 system-ui, sans-serif; }
 body { margin: 0; padding: 12px; }
+#gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 16px; }
 figure { margin: 0; }
 img { display: block; max-width: 100%; max-height: 600px; height: auto; border-radius: 12px; }
 [hidden] { display: none; }
 figcaption { margin-top: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>
-<figure><img id="preview" alt="MV Hub 생성 결과" hidden>
-<figcaption id="status" role="status">결과를 기다리고 있습니다.</figcaption></figure>
+<div id="gallery"></div>
+<p id="status" role="status">결과를 기다리고 있습니다.</p>
 <script>
-const preview = document.getElementById('preview');
+const gallery = document.getElementById('gallery');
 const status = document.getElementById('status');
 const send = value => window.parent.postMessage({jsonrpc: '2.0', ...value}, '*');
 let ready = false;
@@ -68,11 +107,25 @@ const resize = new ResizeObserver(() => {
     send({method: 'ui/notifications/size-changed', params: {height}});
   }
 });
-const clearImage = () => { preview.hidden = true; preview.removeAttribute('src'); };
-preview.addEventListener('error', () => {
-  clearImage();
-  status.textContent += '\n미리보기를 표시하지 못했습니다. MV Hub에서 결과를 확인하세요.';
-});
+const clearImage = () => gallery.replaceChildren();
+const addImage = (image, card) => {
+  const figure = document.createElement('figure');
+  const caption = document.createElement('figcaption');
+  caption.textContent = typeof card === 'string' ? card.slice(0, 20000) : '';
+  if (image?.mimeType === 'image/jpeg' && typeof image.data === 'string' &&
+      image.data.length <= 699052 && /^\/9j\/[A-Za-z0-9+/]*={0,2}$/.test(image.data)) {
+    const preview = document.createElement('img');
+    preview.alt = 'MV Hub 생성 결과';
+    preview.addEventListener('error', () => {
+      preview.remove();
+      caption.textContent += '\n미리보기를 표시하지 못했습니다. MV Hub에서 결과를 확인하세요.';
+    });
+    preview.src = 'data:image/jpeg;base64,' + image.data;
+    figure.append(preview);
+  }
+  figure.append(caption);
+  gallery.append(figure);
+};
 window.addEventListener('message', event => {
   if (event.source !== window.parent || event.data?.jsonrpc !== '2.0') return;
   const message = event.data;
@@ -90,11 +143,16 @@ window.addEventListener('message', event => {
     const card = result.structuredContent?.card_text;
     status.textContent = typeof card === 'string' ? card.slice(0, 20000) : 'MV Hub 결과를 확인하세요.';
     if (result.isError) { status.textContent = '결과를 조회하지 못했습니다. MV Hub에서 상태를 확인하세요.'; return; }
-    const image = Array.isArray(result.content) && result.content.find(block => block?.type === 'image');
-    if (image?.mimeType === 'image/jpeg' && typeof image.data === 'string' &&
-        image.data.length <= 699052 && /^\/9j\/[A-Za-z0-9+/]*={0,2}$/.test(image.data)) {
-      preview.src = 'data:image/jpeg;base64,' + image.data;
-      preview.hidden = false;
+    const images = Array.isArray(result.content) ? result.content.filter(block => block?.type === 'image').slice(0, 8) : [];
+    const items = result.structuredContent?.items;
+    if (Array.isArray(items)) {
+      status.textContent = '선택한 결과 ' + Math.min(items.length, 8) + '개';
+      for (const item of items.slice(0, 8)) {
+        addImage(Number.isInteger(item?.image_index) && item.image_index >= 0 ? images[item.image_index] : null,
+                 item?.card_text || item?.note);
+      }
+    } else {
+      addImage(images[0], '');
     }
   } else if (ready && message.method === 'ui/notifications/tool-cancelled') {
     clearImage();
@@ -107,7 +165,7 @@ window.addEventListener('message', event => {
   }
 });
 send({id: 'mvhub-init', method: 'ui/initialize', params: {
-  protocolVersion: '2026-01-26', appInfo: {name: 'MV Hub 결과', version: '1.0.0'}, appCapabilities: {}
+  protocolVersion: '2026-01-26', appInfo: {name: 'MV Hub 결과', version: '1.1.0'}, appCapabilities: {}
 }});
 </script></html>'''
 
@@ -239,6 +297,38 @@ def write_result_display(data: str, directory: Path, card_text: str = "") -> dic
     return {"status": "ready", "rendered": "unverified", "path": path.as_posix(), "format": "codex_visualize", "reference": reference}
 
 
+def render_result(result: dict, directory: Path | None = None) -> CallToolResult:
+    media = result.pop("media", None)
+    result.update(preview_available=media is not None)
+    blocks: list[Any] = []
+    if directory is not None:
+        result["display"] = {"status": "unavailable", "reason": "표시할 미리보기가 없습니다. 생성 진행 중일 때만 다시 조회하고 완료·실패·취소이면 상태를 안내하세요. 재생성하지 마세요."}
+    if media is not None:
+        try:
+            if not isinstance(media, dict) or media.get("mime") != "image/jpeg":
+                raise ValueError("unsupported preview")
+            data = media["data_base64"]
+            if not isinstance(data, str) or len(data) > 4 * ((MAX_PREVIEW + 2) // 3):
+                raise ValueError("invalid preview size")
+            raw = base64.b64decode(data, validate=True)
+            if len(raw) > MAX_PREVIEW or not raw.startswith(b"\xff\xd8\xff") or not raw.endswith(b"\xff\xd9"):
+                raise ValueError("invalid JPEG")
+        except (KeyError, TypeError, ValueError, binascii.Error):
+            raise ToolError("미리보기 응답이 올바르지 않습니다. 생성은 다시 실행하지 말고 MV Hub에서 결과를 확인하세요.") from None
+        blocks.append(ImageContent(type="image", data=data, mime_type="image/jpeg"))
+        if directory is not None:
+            try:
+                result["display"] = write_result_display(data, directory, result.get("card_text", ""))
+            except (OSError, ToolError):
+                result["display"] = {"status": "error", "reason": "표시 파일을 저장하지 못했습니다. 생성 결과는 유지됩니다. 재생성하지 마세요."}
+    # Host-only compatibility export; local paths must not become model-facing image links.
+    meta = {"display": result.pop("display")} if "display" in result else None
+    blocks.insert(0, TextContent(type="text", text=json.dumps(result, ensure_ascii=False)))
+    if result.get("card_text"):
+        blocks.append(TextContent(type="text", text=result["card_text"]))
+    return CallToolResult(content=blocks, structured_content=result, meta=meta)
+
+
 class Broker:
     def __init__(self, url: str, profile: str | None = None):
         self.url = local_url(url)
@@ -264,18 +354,17 @@ class Broker:
             with self.opener.open(req, timeout=timeout) as response:
                 raw = response.read(maximum + 1)
         except HTTPError as exc:
-            messages = {
-                401: "MV Hub 앱에서 먼저 MCP 연결을 승인하세요.",
-                403: "이 연결에는 요청 권한이 없습니다. 앱에서 연결 상태를 확인하세요.",
-                404: "요청 또는 연결이 만료됐습니다. 앱에서 현재 상태를 확인하세요.",
-                409: "연결 권한 또는 작업 상태를 확인하세요. 실행을 허용하지 않은 연결은 앱에서 해제하고 실행 허용으로 다시 연결하세요. 요청을 자동 반복하지 마세요.",
-                429: "결과 대기 요청이 많습니다. 잠시 후 같은 계획의 결과만 조회하세요. 재생성하지 마세요.",
-            }
+            fallback = {401: "permission_denied", 403: "permission_denied", 404: "not_found",
+                        409: "state_conflict", 422: "invalid_input", 429: "busy"}
+            # Accept only fixed codes; never expose a server detail, path, or credential.
+            code = exc.headers.get("X-MVHub-MCP-Error")
+            if code not in ERRORS:
+                code = fallback.get(exc.code, "request_failed")
             exc.close()
-            raise ToolError(messages.get(exc.code, "MV Hub가 요청을 거절했습니다. 앱에서 상태를 확인하세요.")) from None
+            raise BrokerError(code) from None
         except (URLError, TimeoutError, OSError):
             # A timed-out POST may already have succeeded. Never replay it automatically.
-            raise ToolError("MV Hub 응답을 확인하지 못했습니다. 요청을 자동 반복하지 말고 앱에서 처리 상태를 확인하세요.") from None
+            raise BrokerError("transport_unknown") from None
         if len(raw) > maximum:
             raise ToolError(f"응답이 {maximum // 1024} KiB를 초과합니다. 조회 범위를 줄이세요.")
         try:
@@ -305,13 +394,17 @@ class Broker:
                              or capability.get("hub_id") != self.profile["hub_id"]):
             return {"status": "wrong_app", "hub_url": self.url,
                     "message": "등록한 허브·계정과 현재 앱이 다르거나 권한 확인이 불가능합니다. MV Hub의 연결 상태를 확인하세요."}
-        return {"status": "available", "hub_url": self.url,
+        features = capability.get("features")
+        features = sorted(HUB_FEATURES.intersection(features)) if isinstance(features, list) and all(isinstance(v, str) for v in features) else []
+        return {"status": "available", "hub_url": self.url, "hub_features": features,
+                "reload_required": "hub" if self.profile and HUB_FEATURES.difference(features) else None,
                 "message": "MCP 기능 응답 확인. 페어링·실제 계정·생성 준비는 별도 확인이 필요합니다."}
 
-    def require_hub(self) -> None:
+    def require_hub(self) -> dict:
         status = self.check_connection()
         if status["status"] != "available":
             raise ToolError(status["message"])
+        return status
 
     def connect(self) -> dict[str, Any]:
         self.require_hub()
@@ -337,11 +430,18 @@ class Broker:
                 "hub_url": self.url}
 
     def action(self, method: str, args: dict[str, Any]) -> dict[str, Any]:
-        self.require_hub()
+        status = self.require_hub()
         if self.profile:
-            timeout = RESULT_TIMEOUT + (args.get("wait_seconds", 0) if method == "get_result" else 0)
+            feature = {"get_generation": "generation_result", "wait_results": "batch_results",
+                       "show_results": "batch_results", "estimate_plan": "plan_estimate"}.get(method)
+            if method == "read_context" and any(args.get(key) is not None for key in ("cursor_ts", "cursor_id", "folder_path", "media_type")):
+                feature = "history_cursor"
+            if feature and feature not in status["hub_features"]:
+                raise BrokerError("hub_outdated")
+            timeout = RESULT_TIMEOUT + (args.get("wait_seconds", 0) if method in {"get_result", "wait_results"} else 0)
             return self.request("/api/mcp/v2/client/action", {"method": method, "args": args}, timeout=timeout,
-                                maximum=MAX_RESULT_RESPONSE if method == "get_result" else MAX_RESPONSE)
+                                maximum=MAX_GALLERY_RESPONSE if method == "show_results" else
+                                MAX_RESULT_RESPONSE if method in {"get_result", "get_generation"} else MAX_RESPONSE)
         created = self.request("/api/mcp/client/action", {"method": method, "args": args})
         try:
             request_id = str(UUID(created["id"]))
@@ -369,8 +469,13 @@ class Broker:
 
 def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None) -> MCPServer:
     broker = Broker(url, profile)
+    apps = Apps() if Apps is not None else None
+    if profile and apps is not None:
+        apps.add_html_resource(RESULT_UI_URI, result_ui(), name="mvhub_result", title="MV Hub 생성 결과", prefers_border=False)
     server = MCPServer(
         "MV Hub",
+        version=ADAPTER_VERSION,
+        extensions=[apps] if profile and apps is not None else [],
         instructions=(
             "MV Hub 앱에서 등록한 이 PC의 영속 연결입니다. check_connection과 connect로 연결 범위·권한을 확인하세요. "
             "연결 코드를 요구하지 않으며 브라우저 탭을 닫아도 허브와 작업자가 실행 중이면 처리됩니다. "
@@ -387,10 +492,14 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             "진행 중 단계가 같으면 중복 설명하지 말고, 임의 진행률이나 예상 시간을 만들지 마세요. "
             "종료 시 card_text(상태→조건→위치)를 안내하고 이미지는 도구의 네이티브 표시를 사용하세요. "
             "presentation.scope=item은 선택 항목만의 상태이며 계획 전체 완료가 아닙니다. 여러 항목은 모두 확인하세요. "
-            "실행 뒤 get_result(wait_seconds=25)로 완료를 기다리고 미리보기를 함께 받으세요. 별도 sleep과 get_plan 반복은 불필요합니다. "
+            "실행 뒤 wait_results(plan_id,item_indexes,wait_seconds=25)로 최대 8개씩 기다리세요. 별도 sleep과 get_plan 반복은 불필요합니다. "
             "계획 status=submitted는 완료 여부가 아닙니다. 항목의 generation_status=done이 완료입니다. "
-            "아직 진행 중이면 같은 항목의 get_result(wait_seconds=25)만 다시 조회하고 실패·취소·불명확한 접수는 안내하세요. "
-            "get_result의 네이티브 이미지 또는 MCP Apps 결과 화면을 사용하세요. 이미지를 받으려고 로컬 표시 폴더를 만들 필요가 없습니다. "
+            "all_terminal이면 대기를 멈추고 show_results로 결과를 한 번 표시하세요. all_done=false이면 실패·취소·불명확한 접수를 안내하세요. "
+            "구형 허브는 get_result(wait_seconds=25)를 사용합니다. 다른 LLM의 생성물은 read_context로 찾고 get_generation으로 표시하세요. "
+            "read_context(kind='generations')의 next_cursor를 다음 조회에 사용하며 null이 아니면 더 조회할 수 있습니다. "
+            "pagination_unavailable이면 전체 목록을 확인했다고 말하지 말고 정렬 정보 누락으로 다음 페이지를 확인하지 못했다고 알리세요. "
+            "비용이 필요하면 estimate_plan을 선택적으로 호출하세요. null을 0으로 취급하지 마세요. "
+            "네이티브 이미지 또는 MCP Apps 결과 화면을 사용하세요. 이미지를 받으려고 로컬 표시 폴더를 만들 필요가 없습니다. "
             "도구 결과에 나온 이미지를 최종 답변에 다시 삽입하지 말고 완료 내용을 짧게 안내하세요. "
             "사용자가 파일·다운로드를 요청하지 않으면 URL·PC 경로·HTML 링크를 나열하지 마세요. 로컬 HTML을 Markdown 이미지로 삽입하지 마세요. "
             "네이티브 표시를 지원하지 않으면 앱의 지원되는 이미지 표시 도구를 사용하고, 그것도 불가하면 표시 제한을 알리세요. "
@@ -404,17 +513,31 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
     read_only = ToolAnnotations(read_only_hint=True, open_world_hint=False)
     write = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
 
-    @server.tool(annotations=read_only)
-    def check_connection() -> dict[str, Any]:
-        """MCP 지원 허브의 응답만 확인합니다. available은 페어링·실제 계정·생성 준비를 보장하지 않습니다."""
-        return broker.check_connection()
+    def tool(**options):
+        def register(fn):
+            @wraps(fn)
+            def checked(*args, **kwargs):
+                try:
+                    return fn(*args, **kwargs)
+                except BrokerError as exc:
+                    body = {"error": exc.error}
+                    return CallToolResult(is_error=True, structured_content=body,
+                                          content=[TextContent(type="text", text=json.dumps(body, ensure_ascii=False))])
+            return server.tool(**options)(checked)
+        return register
 
-    @server.tool(annotations=write)
+    @tool(annotations=read_only)
+    def check_connection(ctx: Context) -> dict[str, Any]:
+        """MCP 지원 허브의 응답만 확인합니다. available은 페어링·실제 계정·생성 준비를 보장하지 않습니다."""
+        return {**broker.check_connection(), "adapter": {"version": ADAPTER_VERSION, "tools": 13 if profile else 7},
+                "apps_available": apps is not None, "apps_negotiated": client_supports_apps(ctx)}
+
+    @tool(annotations=write)
     def connect() -> dict[str, Any]:
         """등록된 연결의 계정 범위·실행 권한을 확인합니다. 구형 설정만 최초 페어링 코드가 필요합니다."""
-        return broker.connect()
+        return {**broker.connect(), "adapter": {"version": ADAPTER_VERSION, "tools": 13 if profile else 7}}
 
-    @server.tool(annotations=read_only)
+    @tool(annotations=read_only)
     def read_context(
         kind: Literal["workspaces", "workspace", "scene", "scenes", "projects", "generations", "models", "references"] | None = None,
         project_id: str | None = None,
@@ -424,16 +547,24 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
         asset_project: Annotated[str | None, Field(max_length=200)] = None,
         workspace_scope: Literal["personal", "team"] | None = None,
         workspace_id: Annotated[str | None, Field(min_length=1, max_length=200)] = None,
+        cursor_ts: Annotated[float | None, Field(allow_inf_nan=False)] = None,
+        cursor_id: Annotated[str | None, Field(max_length=200)] = None,
+        folder_path: Annotated[str | None, Field(max_length=500)] = None,
+        media_type: Literal["image", "video", "audio"] | None = None,
     ) -> dict[str, Any]:
         """workspaces로 사용 가능한 공간을 조회한 뒤, 선택한 공간의 프로젝트·컷·모델·자료를 읽습니다. 계정 연결은 조회마다 workspace_scope/team의 workspace_id가 필요합니다."""
         args = {"kind": kind or ("workspaces" if profile else "scene"), "project_id": project_id, "search": search, "limit": limit}
         if profile:
             args.update(model=model, asset_project=asset_project, workspace_scope=workspace_scope, workspace_id=workspace_id)
+            args.update({key: value for key, value in dict(cursor_ts=cursor_ts, cursor_id=cursor_id,
+                        folder_path=folder_path, media_type=media_type).items() if value is not None})
+        elif any(value is not None for value in (cursor_ts, cursor_id, folder_path, media_type)):
+            raise BrokerError("hub_outdated")
         elif workspace_scope is not None or workspace_id is not None or kind == "workspaces":
             raise ToolError("구형 연결은 앱에서 선택한 공간을 사용합니다. 계정 연결을 등록하세요.")
         return broker.action("read_context", args)
 
-    @server.tool(annotations=write)
+    @tool(annotations=write)
     def prepare_generation_plan(
         title: Annotated[str, Field(min_length=1, max_length=200)],
         items: Annotated[list[PlanItem], Field(min_length=1, max_length=20)],
@@ -451,26 +582,27 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             raise ToolError("구형 연결은 앱에서 선택한 공간을 사용합니다. 계정 연결을 등록하세요.")
         return present_result(broker.action("prepare_generation_plan", args))
 
-    @server.tool(annotations=read_only)
+    @tool(annotations=read_only)
     def get_plan(plan_id: Annotated[str, Field(min_length=1, max_length=200)]) -> dict[str, Any]:
-        """계획·항목 상태를 조회합니다. presentation.stage 변경 시 message를 안내하고 추측한 진행률을 말하지 마세요. 계획 status=submitted는 완료 후에도 유지됩니다. 영속 연결은 get_result(wait_seconds=25)로 대기와 미리보기를 함께 받으세요."""
+        """계획·항목 상태를 조회합니다. presentation.stage 변경 시 message를 안내하고 추측한 진행률을 말하지 마세요. 계획 status=submitted는 완료 후에도 유지됩니다. 영속 연결은 wait_results로 기다리고 종료 뒤 show_results로 표시하세요."""
         return present_result(broker.action("get_plan", {"plan_id": plan_id}))
 
-    @server.tool(annotations=write)
+    @tool(annotations=write)
     def request_execution(plan_id: Annotated[str, Field(min_length=1, max_length=200)]) -> dict[str, Any]:
         """구형 호환용 승인 화면 요청. 영속 연결에서는 execute_generation_plan으로 직접 실행하세요."""
         return broker.action("request_execution", {"plan_id": plan_id})
 
-    @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=True))
+    @tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=True))
     def execute_generation_plan(plan_id: Annotated[str, Field(min_length=1, max_length=200)]) -> dict[str, Any]:
-        """명확한 사용자 생성 요청에 따라 계획을 실행합니다. 크레딧이 소모될 수 있습니다. 실행 전 조건·위치를, 응답 뒤 presentation.message를 안내하세요. 영속 연결은 get_result(wait_seconds=25)로 결과를 받습니다. 이미지는 도구의 네이티브 표시를 사용하며 답변에 중복 삽입하지 마세요. 불명확한 응답을 자동 재시도하지 마세요."""
+        """명확한 사용자 생성 요청에 따라 계획을 실행합니다. 크레딧이 소모될 수 있습니다. 실행 전 조건·위치를, 응답 뒤 presentation.message를 안내하세요. 영속 연결은 wait_results로 기다린 뒤 show_results로 결과를 한 번 표시합니다. 이미지는 도구의 네이티브 표시를 사용하며 답변에 중복 삽입하지 마세요. 불명확한 응답을 자동 재시도하지 마세요."""
         return present_result(broker.action("execute_generation_plan", {"plan_id": plan_id}))
 
     if profile:
-        server.resource(RESULT_UI_URI, name="mvhub_result", title="MV Hub 생성 결과",
-                        mime_type="text/html;profile=mcp-app", meta={"ui": {"prefersBorder": False}})(result_ui)
+        if apps is None:
+            server.resource(RESULT_UI_URI, name="mvhub_result", title="MV Hub 생성 결과",
+                            mime_type="text/html;profile=mcp-app", meta={"ui": {"prefersBorder": False}})(result_ui)
 
-        @server.tool(meta={"ui": {"resourceUri": RESULT_UI_URI}},
+        @tool(meta={"ui": {"resourceUri": RESULT_UI_URI}},
                      annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
         def get_result(
             plan_id: Annotated[str, Field(min_length=1, max_length=200)],
@@ -485,37 +617,64 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             if wait_seconds:
                 args["wait_seconds"] = wait_seconds
             result = present_result(broker.action("get_result", args))
-            media = result.pop("media", None)
-            result.update(preview_available=media is not None)
-            blocks: list[Any] = []
-            if directory is not None:
-                result["display"] = {"status": "unavailable", "reason": "표시할 미리보기가 없습니다. 생성 진행 중일 때만 다시 조회하고 완료·실패·취소이면 상태를 안내하세요. 재생성하지 마세요."}
-            if media is not None:
-                try:
-                    if not isinstance(media, dict) or media.get("mime") != "image/jpeg":
-                        raise ValueError("unsupported preview")
-                    data = media["data_base64"]
-                    if not isinstance(data, str) or len(data) > 4 * ((MAX_PREVIEW + 2) // 3):
-                        raise ValueError("invalid preview size")
-                    raw = base64.b64decode(data, validate=True)
-                    if len(raw) > MAX_PREVIEW or not raw.startswith(b"\xff\xd8\xff") or not raw.endswith(b"\xff\xd9"):
-                        raise ValueError("invalid JPEG")
-                except (KeyError, TypeError, ValueError, binascii.Error):
-                    raise ToolError("미리보기 응답이 올바르지 않습니다. 생성은 다시 실행하지 말고 MV Hub에서 결과를 확인하세요.") from None
-                blocks.append(ImageContent(type="image", data=data, mime_type="image/jpeg"))
-                if directory is not None:
-                    try:
-                        result["display"] = write_result_display(data, directory, result.get("card_text", ""))
-                    except (OSError, ToolError):
-                        result["display"] = {"status": "error", "reason": "표시 파일을 저장하지 못했습니다. 생성 결과는 유지됩니다. 재생성하지 마세요."}
-            # Host-only compatibility export; local paths must not become model-facing image links.
-            meta = {"display": result.pop("display")} if "display" in result else None
-            blocks.insert(0, TextContent(type="text", text=json.dumps(result, ensure_ascii=False)))
-            if result.get("card_text"):
-                blocks.append(TextContent(type="text", text=result["card_text"]))
-            return CallToolResult(content=blocks, structured_content=result, meta=meta)
+            return render_result(result, directory)
 
-        @server.tool(annotations=write)
+        @tool(meta={"ui": {"resourceUri": RESULT_UI_URI}}, annotations=read_only)
+        def get_generation(
+            generation_id: UUID,
+            workspace_scope: Literal["personal", "team"],
+            workspace_id: Annotated[str | None, Field(min_length=1, max_length=200)] = None,
+            asset_index: Annotated[int, Field(ge=0, lt=100)] = 0,
+        ) -> CallToolResult:
+            """다른 LLM에서 만든 본인 생성물도 ID로 다시 표시합니다. read_context의 실제 ID와 공간을 사용하세요. 생성·과금 없이 기존 이미지 또는 영상 포스터를 반환하며 URL·PC 경로·중복 이미지를 답변에 넣지 마세요."""
+            return render_result(present_result(broker.action("get_generation", {
+                "generation_id": str(generation_id), "workspace_scope": workspace_scope,
+                "workspace_id": workspace_id, "asset_index": asset_index})))
+
+        @tool(annotations=read_only)
+        def wait_results(
+            plan_id: UUID,
+            item_indexes: Annotated[list[Annotated[int, Field(ge=0, lt=20, strict=True)]], Field(min_length=1, max_length=8)],
+            wait_seconds: Annotated[int, Field(ge=0, le=25, strict=True)] = 25,
+        ) -> dict[str, Any]:
+            """한 계획의 1~8개 항목을 한 대기 예산으로 확인합니다. 이미지·화면을 만들지 않습니다. all_terminal이면 대기를 멈추고 show_results로 표시하세요. all_done과 구분하며 실패를 재생성하지 마세요. 단계가 바뀔 때만 진행을 안내하세요."""
+            return broker.action("wait_results", {"plan_id": str(plan_id), "item_indexes": item_indexes, "wait_seconds": wait_seconds})
+
+        @tool(meta={"ui": {"resourceUri": RESULT_UI_URI}}, annotations=read_only)
+        def show_results(
+            plan_id: UUID,
+            item_indexes: Annotated[list[Annotated[int, Field(ge=0, lt=20, strict=True)]], Field(min_length=1, max_length=8)],
+            asset_index: Annotated[int, Field(ge=0, lt=100)] = 0,
+        ) -> CallToolResult:
+            """대기가 끝난 항목 1~8개를 하나의 갤러리로 표시합니다. 새 생성이나 완료 대기를 하지 않습니다. 실패·포스터 없는 항목도 상태 카드에 남깁니다. 답변에는 결과 요약만 쓰고 이미지·URL·PC 경로를 중복 출력하지 마세요."""
+            result = broker.action("show_results", {"plan_id": str(plan_id), "item_indexes": item_indexes, "asset_index": asset_index})
+            images, cards = [], []
+            items = result.get("items")
+            if not isinstance(items, list) or len(items) > 8:
+                raise ToolError("결과 목록 형식이 올바르지 않습니다.")
+            for item in items:
+                try:
+                    rendered = render_result(present_result(item))
+                except ToolError:
+                    # A broken preview must not hide the other completed results.
+                    item.pop("media", None)
+                    item["note"] = "미리보기를 읽지 못했습니다. 생성 결과는 MV Hub에서 확인하세요."
+                    item["card_text"] = (item.get("card_text", "") + "\n" + item["note"]).strip()
+                    rendered = render_result(item)
+                blocks = [block for block in rendered.content if block.type == "image"]
+                item["image_index"] = len(images) if blocks else None
+                images.extend(blocks)
+                cards.append(item.get("card_text", item.get("note", "결과 상태를 확인하세요.")))
+            result["card_text"] = "\n\n".join(cards)
+            return CallToolResult(content=[TextContent(type="text", text=json.dumps(result, ensure_ascii=False)), *images],
+                                  structured_content=result)
+
+        @tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True))
+        def estimate_plan(plan_id: UUID) -> dict[str, Any]:
+            """기존 계획의 예상 크레딧을 조회합니다. 선택 기능이며 생성·결제·실행 승인이 아닙니다. null은 0이 아닌 확인 불가입니다. 실제 차감과 다를 수 있고 견적 뒤에도 사용자의 요청 범위만 실행하세요."""
+            return broker.action("estimate_plan", {"plan_id": str(plan_id)})
+
+        @tool(annotations=write)
         def add_to_canvas(
             plan_id: Annotated[str, Field(min_length=1, max_length=200)],
             scene_id: Annotated[str, Field(min_length=1, max_length=200)],

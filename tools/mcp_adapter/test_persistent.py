@@ -16,27 +16,31 @@ from uuid import uuid4
 
 import anyio
 from mcp import Client, StdioServerParameters
+from mcp.client import advertise
 from mcp.server.mcpserver.exceptions import ToolError
 
 from local_setup import configure_client
-from server import Broker, MAX_RESPONSE, MAX_RESULT_RESPONSE, RESULT_UI_URI, result_ui, write_result_display, validate_display_directory, present_result
+from server import Broker, HUB_FEATURES, ADAPTER_VERSION, MAX_RESPONSE, MAX_RESULT_RESPONSE, MAX_GALLERY_RESPONSE, RESULT_UI_URI, result_ui, write_result_display, validate_display_directory, present_result
 
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def reply(self, code, body):
+    def reply(self, code, body, error_code=None):
         raw = json.dumps(body).encode()
         self.send_response(code)
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Content-Type", "application/json")
+        if error_code is not None:
+            self.send_header("X-MVHub-MCP-Error", error_code)
         self.end_headers()
         self.wfile.write(raw)
 
     def do_GET(self):
         self.server.probes.append(self.headers.get("X-MVHub-MCP-Secret"))
-        self.reply(200, {"mcp_bridge": {"protocol": 1, "transport": "stdio-local", "persistent_protocol": 2, "hub_id": self.server.hub_id}})
+        self.reply(200, {"mcp_bridge": {"protocol": 1, "transport": "stdio-local", "persistent_protocol": 2, "hub_id": self.server.hub_id,
+                    "features": getattr(self.server, "features", sorted(HUB_FEATURES))}})
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -47,7 +51,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/mcp/v2/client/connect":
             return self.reply(200, {"client_id": client, "can_execute": True, "workspace": {"scope": "personal"}})
         if self.path == "/api/mcp/v2/client/action":
-            if body["method"] == "get_result":
+            failure = getattr(self.server, "failure", None)
+            if failure:
+                return self.reply(failure[0], {"detail": "private upstream error"}, failure[1])
+            if body["method"] in {"get_result", "get_generation", "show_results", "wait_results"}:
                 callback = getattr(self.server, "before_result", None)
                 if callback:
                     self.server.before_result = None
@@ -172,10 +179,15 @@ class PersistentTests(unittest.TestCase):
     def test_preview_response_limit_does_not_widen_other_actions(self):
         config, _ = self.profile()
         broker = Broker(self.url, config["args"][-1])
-        with patch.object(broker, "require_hub"), patch.object(broker, "request", return_value={}) as request:
+        with patch.object(broker, "check_connection", return_value={"status": "available", "hub_features": sorted(HUB_FEATURES)}), patch.object(broker, "request", return_value={}) as request:
             broker.action("get_result", {})
             self.assertEqual(request.call_args.kwargs["maximum"], MAX_RESULT_RESPONSE)
             self.assertEqual(request.call_args.kwargs["timeout"], 90)
+            broker.action("show_results", {})
+            self.assertEqual(request.call_args.kwargs["maximum"], MAX_GALLERY_RESPONSE)
+            broker.action("wait_results", {"wait_seconds": 25})
+            self.assertEqual(request.call_args.kwargs["maximum"], MAX_RESPONSE)
+            self.assertEqual(request.call_args.kwargs["timeout"], 115)
             broker.action("get_result", {"wait_seconds": 25})
             self.assertEqual(request.call_args.kwargs["timeout"], 115)
             broker.action("get_plan", {})
@@ -345,6 +357,103 @@ class PersistentTests(unittest.TestCase):
                 self.assertNotIn("display", result.structured_content)
         anyio.run(exercise)
 
+    def test_sdk_capability_negotiation_and_old_hub_diagnosis(self):
+        config, _ = self.profile()
+        async def exercise():
+            for supported in (False, True):
+                extensions = [advertise("io.modelcontextprotocol/ui", {"mimeTypes": ["text/html;profile=mcp-app"]})] if supported else []
+                async with Client(StdioServerParameters(**config), extensions=extensions) as client:
+                    self.assertIn("io.modelcontextprotocol/ui", client.server_capabilities.extensions)
+                    self.assertEqual(client.server_info.version, ADAPTER_VERSION)
+                    resource = await client.read_resource(RESULT_UI_URI)
+                    self.assertEqual(resource.contents[0].text, result_ui())
+                    response = await client.call_tool("check_connection", {})
+                    self.assertFalse(response.is_error)
+                    info = response.structured_content
+                    self.assertEqual(info["apps_negotiated"], supported)
+                    self.assertEqual(info["adapter"], {"version": ADAPTER_VERSION, "tools": 13})
+                    self.assertIsNone(info["reload_required"])
+            self.http.features = []
+            async with Client(StdioServerParameters(**config)) as client:
+                response = await client.call_tool("check_connection", {})
+                self.assertEqual(response.structured_content["status"], "available")
+                self.assertEqual(response.structured_content["reload_required"], "hub")
+                before = len(self.http.calls)
+                refused = await client.call_tool("estimate_plan", {"plan_id": str(uuid4())})
+                self.assertTrue(refused.is_error)
+                self.assertEqual(refused.structured_content["error"]["code"], "hub_outdated")
+                self.assertEqual(len(self.http.calls), before)
+        anyio.run(exercise)
+
+    def test_sdk_apps_import_fallback_keeps_native_images(self):
+        config, _ = self.profile()
+        self.http.result_value = {"media": {"mime": "image/jpeg", "data_base64": "/9j/eP/Z"}}
+        original = config["args"]
+        script = "import sys,runpy; sys.modules['mcp.server.apps']=None; sys.path.insert(0," + repr(str(Path(__file__).parent)) + "); sys.argv=" + repr(original) + "; runpy.run_path(sys.argv[0],run_name='__main__')"
+        config["args"] = ["-c", script]
+        async def exercise():
+            async with Client(StdioServerParameters(**config)) as client:
+                tools = await client.list_tools()
+                self.assertEqual(len(tools.tools), 13)
+                image = await client.call_tool("get_result", {"plan_id": "p"})
+                self.assertFalse(image.is_error)
+                self.assertTrue(any(b.type == "image" for b in image.content))
+        anyio.run(exercise)
+
+    def test_sdk_batch_wait_gallery_and_generation_selector(self):
+        config, _ = self.profile()
+        plan = str(uuid4())
+        async def exercise():
+            async with Client(StdioServerParameters(**config)) as client:
+                tools = {t.name: t for t in (await client.list_tools()).tools}
+                self.assertFalse((tools["wait_results"].meta or {}).get("ui"))
+                self.assertEqual(tools["show_results"].meta["ui"]["resourceUri"], RESULT_UI_URI)
+                self.http.result_value = {"items": [{"item_index": 0, "generation_status": "running"}], "all_terminal": False}
+                waiting = await client.call_tool("wait_results", {"plan_id": plan, "item_indexes": [0]})
+                self.assertFalse(waiting.is_error)
+                self.assertFalse(any(b.type == "image" for b in waiting.content))
+                self.http.result_value = {"items": [{"item_index": 0, "note": "failed", "media": None},
+                    {"item_index": 1, "note": "done", "media": {"mime": "image/jpeg", "data_base64": "/9j/eP/Z"}}]}
+                gallery = await client.call_tool("show_results", {"plan_id": plan, "item_indexes": [0, 1]})
+                self.assertFalse(gallery.is_error)
+                self.assertEqual(sum(b.type == "image" for b in gallery.content), 1)
+                self.assertIsNone(gallery.structured_content["items"][0]["image_index"])
+                self.assertEqual(gallery.structured_content["items"][1]["image_index"], 0)
+                self.assertNotIn("media", gallery.structured_content["items"][1])
+                self.http.result_value["items"][0]["media"] = {"mime": "image/jpeg", "data_base64": "bad!"}
+                broken = await client.call_tool("show_results", {"plan_id": plan, "item_indexes": [0, 1]})
+                self.assertFalse(broken.is_error)
+                self.assertEqual(sum(b.type == "image" for b in broken.content), 1)
+                self.assertIn("미리보기를 읽지 못했습니다", broken.structured_content["items"][0]["card_text"])
+                for indexes in ([], list(range(9)), [-1], [True]):
+                    bad = await client.call_tool("wait_results", {"plan_id": plan, "item_indexes": indexes})
+                    self.assertTrue(bad.is_error)
+                self.http.result_value = {"generation_id": plan, "media": {"mime": "image/jpeg", "data_base64": "/9j/eP/Z"}}
+                one = await client.call_tool("get_generation", {"generation_id": plan, "workspace_scope": "personal"})
+                self.assertFalse(one.is_error)
+                self.assertEqual(self.http.calls[-1][1]["args"]["generation_id"], plan)
+                page = await client.call_tool("read_context", {"kind": "generations", "workspace_scope": "personal",
+                    "cursor_ts": 100.5, "cursor_id": "g", "folder_path": "e001/c0010", "media_type": "image"})
+                self.assertFalse(page.is_error)
+                self.assertEqual(page.structured_content["args"]["cursor_ts"], 100.5)
+        anyio.run(exercise)
+
+    def test_sdk_safe_errors_are_structured_and_do_not_replay(self):
+        config, _ = self.profile()
+        async def exercise():
+            async with Client(StdioServerParameters(**config)) as client:
+                for status, header, expected in ((409, "reference_changed", "reference_changed"),
+                    (403, "execution_not_allowed", "execution_not_allowed"), (500, "private-header", "request_failed")):
+                    self.http.failure = (status, header)
+                    before = len(self.http.calls)
+                    failed = await client.call_tool("execute_generation_plan", {"plan_id": "p"})
+                    self.assertTrue(failed.is_error)
+                    self.assertEqual(failed.structured_content["error"]["code"], expected)
+                    self.assertFalse(failed.structured_content["error"]["retryable"])
+                    self.assertNotIn("private", failed.content[0].text)
+                    self.assertEqual(len(self.http.calls), before + 1)
+        anyio.run(exercise)
+
     def test_result_app_handshake_and_untrusted_messages(self):
         node = shutil.which("node")
         if node is None:
@@ -353,15 +462,19 @@ class PersistentTests(unittest.TestCase):
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const html = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
-const sent = [], handlers = {}, imageHandlers = {};
+const sent = [], handlers = {};
 let observer, disconnected = false;
-const preview = {hidden: true, addEventListener: (name, fn) => imageHandlers[name] = fn,
-  removeAttribute: name => delete preview[name]};
-const status = {textContent: ''};
+const node = tag => ({tag, children: [], events: {}, textContent: '',
+  append(child) {this.children.push(child); child.parent = this;},
+  replaceChildren() {this.children = [];},
+  addEventListener(name, fn) {this.events[name] = fn;},
+  remove() {this.parent.children = this.parent.children.filter(c => c !== this);}});
+const gallery = node('div'), status = node('p');
+const images = () => gallery.children.flatMap(f => f.children).filter(c => c.tag === 'img');
 const parent = {postMessage: value => sent.push(value)};
 const window = {parent, addEventListener: (name, fn) => handlers[name] = fn};
-const document = {body: {getBoundingClientRect: () => ({height: 220})},
-  getElementById: name => name === 'preview' ? preview : status};
+const document = {body: {getBoundingClientRect: () => ({height: 220})}, createElement: node,
+  getElementById: name => name === 'gallery' ? gallery : status};
 const ResizeObserver = class {
   constructor(fn) { observer = fn; }
   observe() { observer(); }
@@ -379,26 +492,27 @@ observer(); assert.equal(sent.length, 3);
 const data = '/9j/eP/Z';
 const result = {structuredContent: {card_text: '<script>untrusted</script>'}, content: [{type: 'image', mimeType: 'image/jpeg', data}]};
 emit({method: 'ui/notifications/tool-result', params: result}, {});
-assert.equal(preview.hidden, true);
+assert.equal(images().length, 0);
 emit({method: 'ui/notifications/tool-result', params: result});
 assert.equal(status.textContent, '<script>untrusted</script>');
-assert.equal(preview.src, 'data:image/jpeg;base64,' + data);
-assert.equal(preview.hidden, false);
-assert.equal(html.match(/<img /g).length, 1);
+assert.equal(images()[0].src, 'data:image/jpeg;base64,' + data);
 for (const image of [null, {type: 'image', mimeType: 'image/svg+xml', data},
   {type: 'image', mimeType: 'image/jpeg', data: 'https://unsafe'},
   {type: 'image', mimeType: 'image/jpeg', data: '/9j/' + 'A'.repeat(699052)}]) {
   emit({method: 'ui/notifications/tool-result', params: {content: [image]}});
-  assert.equal(preview.hidden, true);
-  assert.equal(preview.src, undefined);
+  assert.equal(images().length, 0);
 }
-emit({method: 'ui/notifications/tool-result', params: result});
-imageHandlers.error(); assert.equal(preview.hidden, true);
+emit({method: 'ui/notifications/tool-result', params: {...result, structuredContent: {items: [
+  {card_text: 'failed', image_index: null}, {card_text: '<b>one</b>', image_index: 0}, {card_text: 'two', image_index: 0}]}}});
+assert.equal(gallery.children.length, 3);
+assert.equal(images().length, 2);
+assert.equal(gallery.children[1].children[1].textContent, '<b>one</b>');
+images()[0].events.error(); assert.equal(images().length, 1);
 emit({method: 'ui/notifications/tool-result', params: {...result, isError: true}});
-assert.equal(preview.hidden, true);
+assert.equal(images().length, 0);
 emit({method: 'ui/notifications/tool-result', params: result});
 emit({method: 'ui/notifications/tool-cancelled'});
-assert.equal(preview.hidden, true);
+assert.equal(images().length, 0);
 emit({method: 'ui/resource-teardown', id: 9});
 assert.equal(disconnected, true); assert.equal(sent.at(-1).id, 9);
 assert.ok(!html.includes('innerHTML') && !html.includes('fetch('));

@@ -1015,3 +1015,277 @@ def test_result_real_thumbnail_route_blocks_private_remote_source(local, result_
     response = action(local, "get_result", {"plan_id": plan["id"]})
     assert response.status_code == 200 and response.json()["media"] is None, response.text
     assert "127.0.0.1" not in response.text
+
+
+def test_generation_can_be_read_by_other_client_without_plan_access(local, result_plan):
+    plan, row = result_plan
+    row.update(id=str(uuid4()), creator_uid="acct:" + local[2]["email"], assets=[])
+    response = action(local, "get_generation", {"generation_id": row["id"], "workspace_scope": "personal"}, "claude")
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["source"] == "library" and result["plan_id"] is None
+    assert result["presentation"]["scope"] == "generation"
+    assert result["presentation"]["stage"] == "completed"
+    assert action(local, "get_plan", {"plan_id": plan["id"]}, "claude").status_code == 404
+    assert action(local, "execute_generation_plan", {"plan_id": plan["id"]}, "claude").status_code == 404
+
+
+@pytest.mark.parametrize("owner", [None, "", "other"])
+def test_generation_requires_explicit_matching_owner(local, result_plan, owner):
+    _, row = result_plan
+    row.update(id=str(uuid4()), creator_uid=owner)
+    response = action(local, "get_generation", {"generation_id": row["id"], "workspace_scope": "personal"})
+    assert response.status_code == 404
+    assert response.headers["X-MVHub-MCP-Error"] == "not_found"
+
+
+def test_generation_requires_workspace_and_rechecks_after_preview(local, result_plan, monkeypatch):
+    _, row = result_plan
+    row.update(id=str(uuid4()), creator_uid="acct:" + local[2]["email"])
+    assert action(local, "get_generation", {"generation_id": row["id"]}).status_code == 422
+    row.update(workspace_scope="team", workspace_id="another-team")
+    args = {"generation_id": row["id"], "workspace_scope": "personal"}
+    assert action(local, "get_generation", args).status_code == 404
+    row.update(workspace_scope="personal", workspace_id=None)
+    async def revoke(*args, **kwargs):
+        credential = store.client_for_secret(api.mcp.digest(local[1]["codex"]["secret"]))
+        store.revoke(credential["id"], credential["owner_uid"], credential["account_email"])
+        raise HTTPException(404, "not available")
+    monkeypatch.setattr(api.library, "media_thumb", revoke)
+    assert action(local, "get_generation", args).status_code == 403
+
+
+def test_generation_never_treats_missing_identity_as_ownership(local, result_plan, monkeypatch):
+    _, row = result_plan
+    row.update(id=str(uuid4()), creator_uid=None)
+    monkeypatch.setattr(api, "account_actor_uid", lambda *_: None)
+    response = action(local, "get_generation", {"generation_id": row["id"], "workspace_scope": "personal"})
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize("indexes", [[], [0, 0], [True], [0.5], list(range(9)), [1]])
+def test_batch_rejects_all_bad_indexes_before_reading_results(local, result_plan, monkeypatch, indexes):
+    plan, _ = result_plan
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("invalid selection must not read a result")
+    monkeypatch.setattr(api, "_result_once", forbidden)
+    for method in ("wait_results", "show_results"):
+        response = action(local, method, {"plan_id": plan["id"], "item_indexes": indexes})
+        assert response.status_code == 422
+
+
+def test_batch_wait_has_one_budget_and_no_preview(local, result_plan, monkeypatch):
+    import json
+    import threading
+    import time
+    plan, row = result_plan
+    row["status"] = "running"
+    with db.get_connection() as conn:
+        items = json.loads(conn.execute("SELECT items FROM mcp_generation_plan WHERE id=?", (plan["id"],)).fetchone()[0])
+        items.append({**items[0], "label": "two", "generation_id": "another-generation", "idempotency_key": str(uuid4())})
+        conn.execute("UPDATE mcp_generation_plan SET items=? WHERE id=?", (json.dumps(items), plan["id"]))
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(api, "_result_wait_slots", slots)
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("wait must not render media")
+    monkeypatch.setattr(api.library, "media_thumb", forbidden)
+    start = time.monotonic()
+    response = action(local, "wait_results", {"plan_id": plan["id"], "item_indexes": [0, 1], "wait_seconds": 1})
+    elapsed = time.monotonic() - start
+    assert response.status_code == 200, response.text
+    assert 0.9 <= elapsed < 1.8
+    result = response.json()
+    assert not result["all_done"] and not result["all_terminal"] and len(result["items"]) == 2
+    assert all(item["media"] is None for item in result["items"])
+    assert slots.acquire(blocking=False)
+    slots.release()
+
+
+def test_batch_show_preserves_good_preview_next_to_failed_result(local, result_plan, monkeypatch):
+    import json
+    plan, _ = result_plan
+    with db.get_connection() as conn:
+        items = json.loads(conn.execute("SELECT items FROM mcp_generation_plan WHERE id=?", (plan["id"],)).fetchone()[0])
+        items.append({**items[0], "label": "two", "idempotency_key": str(uuid4())})
+        conn.execute("UPDATE mcp_generation_plan SET items=? WHERE id=?", (json.dumps(items), plan["id"]))
+    async def result(ctx, args, preview):
+        assert preview
+        done = args.item_index == 0
+        return {"item_index": args.item_index, "item_state": "submitted", "queue_status": None,
+                "generation_status": "done" if done else "failed", "media": {"data_base64": "jpeg"} if done else None,
+                "presentation": {"stage": "completed" if done else "failed"}}
+    monkeypatch.setattr(api, "_result_once", result)
+    response = action(local, "show_results", {"plan_id": plan["id"], "item_indexes": [0, 1]})
+    assert response.status_code == 200
+    result = response.json()
+    assert result["all_terminal"] and not result["all_done"]
+    assert result["items"][0]["media"] and result["items"][1]["media"] is None
+
+
+def test_batch_wait_rechecks_revoke_and_releases_slot(local, result_plan, monkeypatch):
+    import threading
+    plan, row = result_plan
+    row["status"] = "running"
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(api, "_result_wait_slots", slots)
+    async def revoke(_):
+        credential = store.client_for_secret(api.mcp.digest(local[1]["codex"]["secret"]))
+        store.revoke(credential["id"], credential["owner_uid"], credential["account_email"])
+    monkeypatch.setattr(api.asyncio, "sleep", revoke)
+    response = action(local, "wait_results", {"plan_id": plan["id"], "item_indexes": [0], "wait_seconds": 1})
+    assert response.status_code == 403
+    assert slots.acquire(blocking=False)
+    slots.release()
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_batch_disconnect_or_cancellation_releases_slot(monkeypatch, cancelled):
+    import threading
+    from types import SimpleNamespace
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(api, "_result_wait_slots", slots)
+    async def authorized(*args):
+        return {"items": [{}]}
+    async def selected(*args, **kwargs):
+        if cancelled:
+            raise asyncio.CancelledError()
+        return {"item_state": "submitted", "queue_status": None, "generation_status": "running"}
+    async def disconnected():
+        return True
+    monkeypatch.setattr(api, "_authorized_plan", authorized)
+    monkeypatch.setattr(api, "_result_once", selected)
+    ctx = SimpleNamespace(request=SimpleNamespace(is_disconnected=disconnected))
+    with pytest.raises(asyncio.CancelledError if cancelled else HTTPException) as error:
+        asyncio.run(api._selected_results(ctx, api.WaitResultsIn(plan_id=uuid4(), item_indexes=[0])))
+    if not cancelled:
+        assert error.value.status_code == 499
+    assert slots.acquire(blocking=False)
+    slots.release()
+
+
+@pytest.mark.parametrize("state", ["pending", "uncertain", "rejected"])
+def test_batch_wait_stops_without_sleep_for_unsubmitted(local, monkeypatch, state):
+    import json
+    configure(local)
+    plan = prepare(local)
+    with db.get_connection() as conn:
+        items = json.loads(conn.execute("SELECT items FROM mcp_generation_plan WHERE id=?", (plan["id"],)).fetchone()[0])
+        items[0]["state"] = state
+        conn.execute("UPDATE mcp_generation_plan SET items=? WHERE id=?", (json.dumps(items), plan["id"]))
+    async def forbidden(*args):
+        raise AssertionError("unsubmitted results must not sleep")
+    monkeypatch.setattr(api.asyncio, "sleep", forbidden)
+    response = action(local, "wait_results", {"plan_id": plan["id"], "item_indexes": [0]})
+    assert response.status_code == 200
+    assert response.json()["all_terminal"] and not response.json()["all_done"]
+
+
+def test_generation_search_forwards_keyset_and_filters(local, monkeypatch):
+    configure(local)
+    calls = []
+    def listing(request, background, **kwargs):
+        calls.append(kwargs)
+        return [{"id": "first", "sort_ts": 8.5, "assets": [{}, {}]}]
+    monkeypatch.setattr(api.library, "list_generations", listing)
+    args = {"kind": "generations", "limit": 1, "cursor_ts": 9.5, "cursor_id": "previous",
+            "folder_path": "shot", "media_type": "video"}
+    response = action(local, "read_context", args)
+    assert response.status_code == 200
+    assert response.json()["next_cursor"] == {"cursor_ts": 8.5, "cursor_id": "first"}
+    assert response.json()["generations"][0]["asset_count"] == 2
+    assert calls[0]["cursor_ts"] == 9.5 and calls[0]["cursor_id"] == "previous"
+    assert calls[0]["folder_path"] == "shot" and calls[0]["media_type"] == "video"
+    del args["cursor_id"]
+    assert action(local, "read_context", args).status_code == 422
+
+
+@pytest.mark.parametrize("timestamp", [None, "8.5", True, float("nan"), float("inf"), 10**400])
+def test_generation_search_reports_unavailable_cursor(local, monkeypatch, timestamp):
+    configure(local)
+    monkeypatch.setattr(api, "_generations", lambda *args: [{"id": "last", "sort_ts": timestamp, "assets": []}])
+    response = action(local, "read_context", {"kind": "generations", "limit": 1})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["next_cursor"] is None and result["pagination_unavailable"]
+    assert "전체 검색이 끝난 것은 아닙니다" in result["note"]
+
+
+@pytest.mark.parametrize("payload", [None, [], "private upstream body"])
+def test_generation_results_reject_non_object_response(local, result_plan, monkeypatch, payload):
+    plan, _ = result_plan
+    monkeypatch.setattr(api.library, "get_generation", lambda *args: payload)
+    for method, args in (("get_result", {"plan_id": plan["id"]}),
+                         ("get_generation", {"generation_id": str(uuid4()), "workspace_scope": "personal"})):
+        response = action(local, method, args)
+        assert response.status_code == 502, response.text
+        assert response.headers["X-MVHub-MCP-Error"] == "request_failed"
+        assert "private upstream" not in response.text
+
+
+@pytest.mark.parametrize("value", [0, 1.5, -1, True, "2", float("inf"), float("nan"), 10**400])
+def test_estimate_plan_validates_money_and_does_not_execute(local, monkeypatch, value):
+    configure(local, ["codex", "claude"])
+    plan = prepare(local)
+    async def estimate(model, params, prompt, timeout):
+        assert model == "test_model" and params == {"seed": 3} and prompt == "hello"
+        assert 0 < timeout <= 5
+        return {"credits": value}
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("estimate must not submit")
+    monkeypatch.setattr(api.cli_bridge, "estimate_cost", estimate)
+    monkeypatch.setattr(gen_requests, "create_gen_request", forbidden)
+    response = action(local, "estimate_plan", {"plan_id": plan["id"]})
+    assert response.status_code == 200, response.text
+    expected = value if type(value) in (int, float) and value in (0, 1.5) else None
+    assert response.json()["total_credits"] == expected and response.json()["is_estimate"]
+    assert action(local, "get_plan", {"plan_id": plan["id"]}).json()["status"] == "planned"
+    assert action(local, "estimate_plan", {"plan_id": plan["id"]}, "claude").status_code == 404
+
+
+def test_estimate_timeout_does_not_cancel_shared_cost_follower(local, monkeypatch):
+    from types import SimpleNamespace
+    events = []
+    async def authorized(*args):
+        return {"items": [{"model": "test", "params": {}, "prompt": "hi"}]}
+    monkeypatch.setattr(api, "_authorized_plan", authorized)
+    monkeypatch.setattr(api, "_still_current", lambda *_: None)
+    monkeypatch.setattr(api, "_ESTIMATE_BUDGET_SECONDS", 0.02)
+    async def leader():
+        await asyncio.sleep(0.06)
+        events.append("completed")
+        return {"credits": 3}
+    async def estimate(*args, **kwargs):
+        return await api.cli_bridge._single_flight("mcp-timeout-test", leader)
+    monkeypatch.setattr(api.cli_bridge, "estimate_cost", estimate)
+    async def run():
+        follower = asyncio.create_task(estimate())
+        result = await api._estimate_plan(SimpleNamespace(), str(uuid4()))
+        assert result["total_credits"] is None
+        assert await follower == {"credits": 3}
+    asyncio.run(run())
+    assert events == ["completed"]
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("catalog refresh is still running"), ValueError("private catalog content")])
+def test_estimate_catalog_failures_are_unavailable(local, monkeypatch, failure):
+    configure(local)
+    plan = prepare(local)
+    async def estimate(*args, **kwargs):
+        raise failure
+    monkeypatch.setattr(api.cli_bridge, "estimate_cost", estimate)
+    response = action(local, "estimate_plan", {"plan_id": plan["id"]})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["total_credits"] is None
+    assert result["items"] == [{"item_index": 0, "credits": None, "status": "unavailable"}]
+    assert str(failure) not in response.text
+
+
+def test_error_codes_preserve_existing_headers(local, monkeypatch):
+    configure(local)
+    async def unavailable(*args):
+        raise HTTPException(503, "private upstream error", headers={"Retry-After": "5"})
+    monkeypatch.setattr(api, "_read", unavailable)
+    response = action(local, "read_context")
+    assert response.headers["Retry-After"] == "5"
+    assert response.headers["X-MVHub-MCP-Error"] == "request_failed"
