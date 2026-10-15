@@ -1168,8 +1168,8 @@ def test_batch_show_preserves_good_preview_next_to_failed_result(local, result_p
         items = json.loads(conn.execute("SELECT items FROM mcp_generation_plan WHERE id=?", (plan["id"],)).fetchone()[0])
         items.append({**items[0], "label": "two", "idempotency_key": str(uuid4())})
         conn.execute("UPDATE mcp_generation_plan SET items=? WHERE id=?", (json.dumps(items), plan["id"]))
-    async def result(ctx, args, preview):
-        assert preview
+    async def result(ctx, args, preview, plan=None):
+        assert preview and plan is not None  # 묶음은 회마다 한 번 읽은 계획을 항목에 넘긴다
         done = args.item_index == 0
         return {"item_index": args.item_index, "item_state": "submitted", "queue_status": None,
                 "generation_status": "done" if done else "failed", "media": {"data_base64": "jpeg"} if done else None,
@@ -1196,6 +1196,51 @@ def test_batch_wait_rechecks_revoke_and_releases_slot(local, result_plan, monkey
     assert response.status_code == 403
     assert slots.acquire(blocking=False)
     slots.release()
+
+
+def _pending_batch(monkeypatch, count, checks):
+    import threading
+    from types import SimpleNamespace
+    monkeypatch.setattr(api, "_result_wait_slots", threading.BoundedSemaphore(1))
+    item = {"state": "submitted", "generation_id": None, "queue_status": None, "generation_status": "pending", "label": "x"}
+    plan = {"id": "p", "title": "t", "workspace": {"scope": "personal"}, "items": [dict(item) for _ in range(count)]}
+    monkeypatch.setattr(api.store, "get_plan", lambda client, plan_id: plan)
+    monkeypatch.setattr(api, "_workspace", checks)
+    monkeypatch.setattr(api, "_still_current", lambda ctx: None)
+    async def connected():
+        return False
+    return SimpleNamespace(client={}, request=SimpleNamespace(is_disconnected=connected))
+
+
+@pytest.mark.parametrize("count", [1, 8])
+def test_batch_workspace_checks_are_constant_per_poll(monkeypatch, count):
+    # Codex 리뷰 P2 ③ — 항목마다·2초마다 공간 확인(팀이면 공유 서버)을 다시 물었다(8개면 회당 17번). 회당 앞·뒤 두 번이면 된다
+    seen = []
+    ctx = _pending_batch(monkeypatch, count, lambda ctx, ws: seen.append(ws))
+    polls = []
+    class Stop(Exception):
+        pass
+    async def sleep(_):
+        polls.append(len(seen))
+        if len(polls) == 3:
+            raise Stop()
+    monkeypatch.setattr(api.asyncio, "sleep", sleep)
+    with pytest.raises(Stop):
+        asyncio.run(api._selected_results(ctx, api.WaitResultsIn(plan_id=uuid4(), item_indexes=list(range(count)), wait_seconds=25)))
+    assert polls == [2, 4, 6]
+
+
+def test_batch_permission_loss_discards_partial_results(monkeypatch):
+    # 회의 끝 재확인에서 공간 권한이 사라졌으면 그 회에 모은 항목을 내보내지 않는다
+    seen = []
+    def checks(ctx, ws):
+        seen.append(ws)
+        if len(seen) == 2:
+            raise HTTPException(403, "워크스페이스 권한을 확인할 수 없습니다.")
+    ctx = _pending_batch(monkeypatch, 2, checks)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(api._selected_results(ctx, api.WaitResultsIn(plan_id=uuid4(), item_indexes=[0, 1], wait_seconds=25)))
+    assert caught.value.status_code == 403
 
 
 @pytest.mark.parametrize("cancelled", [False, True])

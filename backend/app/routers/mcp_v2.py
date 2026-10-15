@@ -752,7 +752,11 @@ def _generation_row(ctx, generation_id):
     return row
 
 
-async def _result_once(ctx, args, *, preview=True):
+async def _result_once(ctx, args, *, preview=True, plan=None):
+    """plan 을 받으면(묶음 대기 — _selected_results 가 한 회에 한 번 읽고 앞뒤로 권한을 검사한 계획) 그 계획을 쓰고 항목마다의
+    공간·세션 재확인을 건너뛴다 — 항목·2초마다 공간 확인(팀이면 공유 서버)을 다시 물어 8개면 초당 ~8회였다(Codex 리뷰 P2 ③).
+    생성물의 공간·만든 이 검사(_matches)는 항목마다 그대로다."""
+    batch_plan = plan
     row = None
     direct = isinstance(args, GenerationIn)
     if direct:
@@ -765,7 +769,7 @@ async def _result_once(ctx, args, *, preview=True):
         plan = {"id": None, "title": "생성 결과", "workspace": workspace}
         item_index = None
     else:
-        plan = await _authorized_plan(ctx, str(args.plan_id))
+        plan = batch_plan if batch_plan is not None else await _authorized_plan(ctx, str(args.plan_id))
         if args.item_index >= len(plan["items"]):
             raise HTTPException(404, "계획 항목을 찾을 수 없습니다.")
         item = plan["items"][args.item_index]
@@ -831,8 +835,9 @@ async def _result_once(ctx, args, *, preview=True):
         result["note"] = "완료 대기를 중단했습니다. 항목·생성 상태를 확인하고 실패·취소·불명확한 접수를 자동 재제출하지 마세요."
     result["presentation"] = _presentation(
         [{**item, "generation_status": result["generation_status"]}], scope="generation" if direct else "item", item_index=item_index)
-    await asyncio.to_thread(_workspace, ctx, plan["workspace"])
-    await asyncio.to_thread(_still_current, ctx)
+    if batch_plan is None:  # 묶음은 회마다 끝에서 한 번 재확인한다(_selected_results)
+        await asyncio.to_thread(_workspace, ctx, plan["workspace"])
+        await asyncio.to_thread(_still_current, ctx)
     return result
 
 
@@ -875,12 +880,16 @@ async def _selected_results(ctx, args, *, preview=False):
     try:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + wait
+        first = True
         while True:
+            if not first:  # 회마다 계획을 한 번 새로 읽고 권한을 본다(앞) — 항목들은 이 계획을 같이 쓴다
+                plan = await _authorized_plan(ctx, str(args.plan_id))
+            first = False
             items = []
             for index in args.item_indexes:
                 selected = ResultIn(plan_id=args.plan_id, item_index=index, asset_index=getattr(args, "asset_index", 0))
                 try:
-                    result = await _result_once(ctx, selected, preview=preview)
+                    result = await _result_once(ctx, selected, preview=preview, plan=plan)
                 except HTTPException as exc:
                     if exc.status_code not in (404, 502, 503, 504):
                         raise
