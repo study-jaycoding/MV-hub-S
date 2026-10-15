@@ -5,7 +5,7 @@ tags:
   - mvhub
   - mvhub/현황
 status: active
-updated: 2026-10-14
+updated: 2026-10-15
 ---
 
 # MV Hub 현재 작업 현황
@@ -36,10 +36,22 @@ owner: Claude(통합) · 'MV hub'·'MV hub 편집' 세션(구현) · reviewer: C
 - **Jay 답 대기**: 브랜치 정리 · 푸시·main 병합·배포(10-14 에 고르지 않음) · 10-14 에 내가 정한 기본값(검토 노트 §12).
 - AI 분석(`feature/ai-analysis`)은 이 줄에 없다(Jay — 따로 관리).
 
-## 10-10 조작·단축키 전반 점검 — dev(미배포)
+## 10-10 조작·단축키 전반 점검 — dev(미배포) · 10-15 인계
 
-owner: Claude · reviewer: Codex · status: 검증 중(main 미병합). 규칙 63·**씬 섞임 수정 `075edeee`**·**Jay 확인: 지어 둔 셋·7~29회차 변화** → [status/조작점검_2026-10-10.md](status/조작점검_2026-10-10.md). 29회차(10-13): 규칙 55·56 · 서버 셋 설계안 [status/서버셋_설계_2026-10-13.md](status/서버셋_설계_2026-10-13.md)(Jay 답 대기). 34회차(10-13 저녁): 규칙 62·63.
-[문서·운영](status/문서정리_운영안_2026-10-14.md)·[번들](status/번들최적화_2026-10-14.md).
+owner: Claude · reviewer: Codex · status: 검증 중(main 미병합) · updated: 2026-10-15 18시 · 기준: dev `65d23e9c`(통합 `018dd3e4` 에 포함) ·
+확인 주소: 통합 실사용 `test_integration.bat` → 127.0.0.1:5173(dev 와 한 번에 하나) · 격리 5175 ·
+touched_paths: `frontend/src/lib/keyGate.ts` · `frontend/src/components/timeline/`(EditTab·EditPool·EditCard) · ThumbnailGrid·FolderCardGrid·SceneBoard ·
+`test_dev.bat` · [status/조작점검_2026-10-10.md](status/조작점검_2026-10-10.md)(68회차까지 — 정본) · [status/공유서버_배포준비_2026-10-15.md](status/공유서버_배포준비_2026-10-15.md)
+
+- **10-15 에 든 것**: Jay 결정 8A·7A·11A·14A·5A · 캔버스 카드 우클릭 = 폴더 보기 · 편집 풀 카드 = 라이브러리 카드 · 덮개 창·메뉴를 닫는
+  우클릭·휠 클릭(67·68회차, 68회차는 새 규칙의 첫 묶음 검토 — Codex 승인) · 통합 실사용 모드(`8d3f6d4c` + 통합 폴더의 Git 제외
+  `test_integration.bat` · 주 DB 사본 `data_test/db/content_hub.before-integration-20261015.db`, 설계·구현 Codex 승인).
+- **이어받을 일**: ① 통합 실사용 모드 첫 실행·생성 확인 — Jay(아직 아무도 켜 보지 않음) ② 67회차 관찰 셋(묶음 검토 때 — 태그 입력칸이
+  열린 채 카드 우클릭 → 폴더 창 · '생성 결과' 창 안 카드 우클릭 → 브라우저 메뉴 · 코멘트 창이 Esc 로 안 닫히고 풀을 덮음)
+  ③ 공유 서버 배포 준비 — Jay 답 1B 2A 3A 4B 5A 6A 7A 8B, **서버 백업 사본(Jay 복사) 대기** → 실제 데이터 연습·게이트·섞인 판 측정 → 저녁 날짜 재확인
+  ④ 66회차 후보 ①③ · 29회차 서버 셋 설계안 [status/서버셋_설계_2026-10-13.md](status/서버셋_설계_2026-10-13.md) — Jay 답 대기
+  ⑤ 1시간마다 경과 보고는 Claude 세션의 반복 — 이어받으면 따로 정한다.
+- [문서·운영](status/문서정리_운영안_2026-10-14.md)·[번들](status/번들최적화_2026-10-14.md).
 
 ## 최근 완료(상세는 링크)
 
