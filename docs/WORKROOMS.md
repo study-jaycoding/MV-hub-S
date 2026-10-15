@@ -50,7 +50,8 @@ dev 판 docs/WORKROOMS.md '구현과 사용자 확인'에 있다.
 | 통합 시험실 | `codex/mvhub-integration` · 모든 작업실 병합 + MCP 사본 | 5173 / 8012(실사용) · 5175 / 8017(격리) |
 
 통합 작업 폴더는 `C:\Users\FX-PC06\.codex\worktrees\mvhub-integration\MV-hub-S-dev`다.
-여기의 `test_workroom.bat`를 실행한다. 데이터·브라우저 프로필은
+Jay 가 dev 처럼 쓰는 **실사용 모드는 여기의 `test_integration.bat`**(dev 창을 닫고 켠다)다.
+생성이 막힌 **격리 모드**는 `test_workroom.bat`이며, 그 데이터·브라우저 프로필은
 `C:\Users\FX-PC06\AppData\Local\MVHub-Workrooms\integration-20261015`에 있다.
 이 경로와 포트는 이 PC의 준비값이며 실행 코드에 고정하지 않았다. 기존 편집 개선 작업실은
 해당 작업자의 작업을 이어가고, 커밋하면 그 차례에 이 통합 브랜치로 병합한다.
@@ -85,7 +86,9 @@ Resolve 조작, 설치·업데이트·전역 MCP 등록 검증은 이 시험실�
 정상 종료·처리된 오류에서 종료 해시를 기록한다. 부모 창을 강제로 종료하면 Job이 자식을 즉시
 정리하므로 종료 기록은 남지 않을 수 있다. 이 경로의 보존 여부는 별도 실측에서 대조한다.
 
-## 실행 방법
+## 실행 방법 (격리 모드)
+
+실사용 모드(`test_integration.bat`)는 위 '흐름'을 따른다. 아래는 생성이 막힌 격리 모드다.
 
 작업실 루트에 Git에서 제외되는 `.mvhub-workroom.json`을 만든 뒤 `test_workroom.bat`를 연다.
 경로는 자신의 환경에 맞춘다. 의존성은 각 소스 폴더에 먼저 준비하며 실행기가 자동 설치하지 않는다.
