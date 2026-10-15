@@ -494,6 +494,9 @@ const EN: Record<string, string> = {
   "없음": "None",
   "보는 중": "Viewing", // 보는 자리 ≠ 생성 위치일 때의 사이드바 표
   "생성": "Gen here",
+  "지금 목록이 보는 폴더": "The folder the list is showing",
+  "새 생성이 들어갈 기본 위치 — 재생성은 원본 폴더로, 씬의 Set 에 이어 만든 것은 그 Set 의 폴더로 갑니다":
+    "Default place for new generations — regenerations go to the original folder, and ones made from a scene Set go to that Set's folder",
   // 라이브러리 툴바
   "필터 사이드바 닫기": "Hide filter sidebar",
   "필터 사이드바 열기": "Show filter sidebar",

@@ -156,6 +156,8 @@ it("④ 다빈치 따라가기로 다른 프로젝트 폴더를 보게 돼도 '�
   expect(lib.generationScope).toEqual({ project_id: "pA" }); // 따라가기는 생성 위치를 바꾸지 않는다
   expect(marks()).toEqual([["e035"], ["A"]]);
   expect(host.querySelector('[data-project-id="pB"] .side-mark.see')).not.toBeNull(); // 보는 e035 는 B 의 것
+  // '생성'은 새 생성의 기본 위치다 — 재생성(원본 폴더)·씬 Set(그 폴더)은 다른 곳으로 간다고 알린다(Codex 8A 재검토)
+  expect(host.querySelector(".side-mark.gen")!.getAttribute("title")).toContain("재생성은 원본 폴더로");
   const rowB = [...host.querySelectorAll(".proj-tree-wrap > .proj-row")].find((row) => row.textContent?.includes("B"))!;
   expect(rowB.classList.contains("sel-target")).toBe(true); // 분홍 규칙은 그대로(보는 프로젝트) — 고치지 않는다
 });
