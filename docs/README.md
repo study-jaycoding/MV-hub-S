@@ -6,7 +6,7 @@ tags:
   - mvhub
   - mvhub/문서
 status: active
-updated: 2026-10-14
+updated: 2026-10-15
 ---
 
 # MV Hub 개발 문서 안내
@@ -173,7 +173,7 @@ YAML의 `status`는 위 표의 **문서 위상**이다. 본문 인계 블록의 
 | 상태 | 문서 |
 |---|---|
 | **문서 색인·갱신 규칙** | [README](README.md)(이 문서) |
-| **에이전트 운영 기준** | [AGENT_WORKFLOW](AGENT_WORKFLOW.md) |
+| **에이전트 운영 기준** | [AGENT_WORKFLOW](AGENT_WORKFLOW.md), [WORKROOMS](WORKROOMS.md)(작업실 선택·통합 시험실) |
 | **코드 탐색 지도** | [CODE_MAP](CODE_MAP.md) |
 | **자동 생성 목록** | [엔드포인트](inventory/endpoints.md), [환경변수](inventory/env_vars.md), [DB 표](inventory/db_tables.md), [백그라운드 작업](inventory/background_jobs.md) |
 | **현황·작업 기준** | [CURRENT_STATUS](CURRENT_STATUS.md), [RISK_REDUCTION_PLAN_2026-08-15](RISK_REDUCTION_PLAN_2026-08-15.md) |
