@@ -12,7 +12,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { EditCardMenu, EditCutFolder } from "../src/components/timeline/EditTab";
 import type { EditTree } from "../src/lib/useEditSequence";
-import { backgroundKeysBlocked } from "../src/lib/keyGate";
+import { backgroundKeysBlocked, closeLayer, nextLayerSeq, openLayer } from "../src/lib/keyGate";
 import type { CardMark, Generation, PreviewTarget } from "../src/types";
 
 const gen = (id: string, cut: string, extra: Partial<Generation> = {}) => ({
@@ -115,8 +115,13 @@ const typeIn = (input: HTMLInputElement, value: string) => act(() => {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
   input.dispatchEvent(new Event("input", { bubbles: true }));
 });
-// 마우스 우클릭의 contextmenu 는 button 2, 키보드 메뉴 키의 것은 누름 없이 button −1 로 온다(2026-10-13 크롬 실측)
+// 마우스 우클릭의 contextmenu 는 button 2, 키보드 메뉴 키의 것은 누름 없이 button −1 로 온다(2026-10-13 크롬 실측).
+//  마우스는 누름(pointerdown — 문서가 그때의 가림을 적는다, lib/keyGate)이 먼저다.
 const rightClick = (target: Element, button = 2) => {
+  if (button === 2) {
+    act(() => { target.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 2 })); });
+    act(() => { target.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, button: 2 })); }); // 윈도는 뗀 뒤에 contextmenu
+  }
   const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button, clientX: 30, clientY: 40 });
   act(() => { target.dispatchEvent(event); });
   return event;
@@ -273,6 +278,16 @@ it("미디어 풀은 뷰어 왼쪽에 있다 — 누르면 고르고, 더블클�
     marks: { a: { label: "V1 - 선택 카드 · 방금 누른 카드", lead: true }, b: { label: "V2 - 선택 카드", lead: true } },
   }]);
   expect(storedTracks()).toEqual([["a", 1], ["b", 2]]); // 창을 여는 것은 타임라인을 바꾸지 않는다
+
+  // 위에 뜬 창(정보 창 등)을 닫는 우클릭 — 덮개가 누름을 가져가 닫힌다. 폴더 창까지 열지 않는다(67회차 격리 실측)
+  const cover = {};
+  openLayer(cover, nextLayerSeq());
+  act(() => { poolCards()[0].dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 2 })); });
+  closeLayer(cover);
+  act(() => { poolCards()[0].dispatchEvent(new MouseEvent("pointerup", { bubbles: true, button: 2 })); });
+  const closing = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: 30, clientY: 40 });
+  act(() => { poolCards()[0].dispatchEvent(closing); });
+  expect([closing.defaultPrevented, opened.length, trackMenu()]).toEqual([true, 1, null]);
 
   // 키보드의 메뉴 키(누름 없이 오는 contextmenu) = 전처럼 트랙 메뉴 — 휠 클릭은 키보드로 할 수 없다(Codex 코드 리뷰)
   expect(menuKey(poolCards()[0]).defaultPrevented).toBe(true);

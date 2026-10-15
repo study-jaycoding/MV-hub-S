@@ -181,10 +181,18 @@ export function usePageSelectAllGuard(): void {
 //  mousedown 처리가 볼 때는 이미 떠 있지 않다(Codex 코드 리뷰·2026-10-10 재실측: 검토 메뉴·카드 확인 덮개·담기 메뉴의 바깥을 누르면
 //  메뉴가 닫히며 선택도 풀렸다). 그래서 누름의 첫 이벤트(pointerdown)의 캡처에서 적어 두고, 뒤 화면의 누름 처리들이 이것을 본다.
 let coveredAtPress = false;
+// 마지막 누름이 시작될 때의 가림 — 다음 누름이 덮어쓴다(손을 떼도 남는다). 우클릭 메뉴(contextmenu)가 본다: 윈도는 단추를 뗀 뒤에
+//  contextmenu 를 보내 그때는 coveredAtPress 가 이미 지워졌고, 정보 창처럼 화면 전체 덮개가 누름을 받아 닫히는 창은 뒤 화면의 mousedown 도
+//  안 와서 격자마다 적던 기록도 없었다(67회차 격리 실측: 정보 창이 떠 있을 때 카드 우클릭이 창을 닫으며 폴더 창까지 열었다 — 라이브러리·캔버스).
+let lastPressCovered: boolean | null = null;
 let focusByTab = false; // 마지막 초점 이동이 Tab 이었나 — 누르면(pointerdown) 꺼진다
 if (typeof document !== "undefined") {
   document.addEventListener("keydown", (e) => { if (e.key === "Tab") focusByTab = true; }, true);
-  document.addEventListener("pointerdown", () => { coveredAtPress = backgroundKeysBlocked(); focusByTab = false; }, true);
+  document.addEventListener("pointerdown", () => {
+    coveredAtPress = backgroundKeysBlocked();
+    lastPressCovered = coveredAtPress;
+    focusByTab = false;
+  }, true);
   const release = () => { coveredAtPress = false; }; // 그 누름의 것만 — 다음 누름으로 넘기지 않는다
   document.addEventListener("pointerup", release, true);
   document.addEventListener("pointercancel", release, true);
@@ -223,6 +231,12 @@ if (typeof document !== "undefined") {
 /** 이 누름이 시작될 때(또는 지금) 위에 창·메뉴가 떠 있었나 — 뒤 화면의 mousedown 처리가 첫 줄에서 본다. */
 export function pressStartedCovered(): boolean {
   return coveredAtPress || backgroundKeysBlocked();
+}
+
+/** 이 우클릭 메뉴(contextmenu)는 위에 뜬 창·메뉴를 닫는 누름에서 왔나 — 그렇다면 뒤 화면의 우클릭 조작(폴더 창 열기)을 하지 않는다.
+ *  마우스(button 2)는 그 누름이 시작될 때의 가림, 키보드의 메뉴 키(누름 없이 온다 — button 0·-1)는 지금의 가림을 본다. */
+export function contextMenuCovered(button: number): boolean {
+  return button === 2 && lastPressCovered !== null ? lastPressCovered : backgroundKeysBlocked();
 }
 
 /** 지금의 초점이 Tab 으로 옮겨 온 것인가(마우스로 눌러 남은 초점이 아니라). `:focus-visible` 은 못 쓴다 — 마우스로 누른 단추도 그 뒤에

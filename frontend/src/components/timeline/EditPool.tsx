@@ -11,7 +11,7 @@ import { POOL_SIZE, type EditUi, type PoolSort, type PoolView } from "../../lib/
 import { formatGenerationDateTime, generationListMeta } from "../../lib/generationDisplay";
 import { reviewState } from "../../lib/generationReview";
 import { useT } from "../../lib/i18n";
-import { pressStartedCovered } from "../../lib/keyGate";
+import { contextMenuCovered, pressStartedCovered } from "../../lib/keyGate";
 import { computeMarquee, marqueeHits, type MarqueeRect } from "../../lib/marquee";
 import { thumbOf } from "../../lib/media";
 import { editTick, type EditListState } from "../../lib/useEditSequence";
@@ -280,6 +280,7 @@ export function EditPool({
     //  2026-10-13 크롬 실측 −1) — 그때는 전처럼 트랙 메뉴다: 휠 클릭은 키보드로 할 수 없어, 이 길이 없으면 키보드로는 넣지 못한다.
     onContextMenu: (event) => {
       event.preventDefault();
+      if (contextMenuCovered(event.button)) return; // 위에 뜬 창·메뉴(정보 창·검토 메뉴…)를 닫는 우클릭 — 열지 않는다(67회차 실측)
       if (event.button === 2) onFolder(item.gen);
       else onMenu(item.gen, event.clientX, event.clientY);
     },

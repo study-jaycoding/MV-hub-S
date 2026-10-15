@@ -134,9 +134,11 @@ const boardWith = async (gens: Generation[], onOpenFolder?: (g: Generation) => v
 };
 const cardEl = (id: string) => host.querySelector<HTMLElement>(`.scene-card[data-id="c-${id}"]`)!;
 const target = (id: string) => cardEl(id).querySelector<HTMLElement>(".card-folder") ?? cardEl(id).querySelector<HTMLElement>(".linb-node, .scene-card-genbody")!;
-// 실제 우클릭의 순서 — 누름(button 2) · 뗌 · contextmenu(윈도는 뗀 뒤에 온다)
+// 실제 우클릭의 순서 — 누름(pointerdown · mousedown, button 2) · 뗌 · contextmenu(윈도는 뗀 뒤에 온다)
 const rightClick = async (el: Element, between: () => void = noop) => {
+  await act(async () => { el.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 2, buttons: 2 })); });
   await act(async () => { el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 2, buttons: 2, clientX: 180, clientY: 180 })); });
+  await act(async () => { el.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, button: 2 })); });
   await act(async () => { window.dispatchEvent(new MouseEvent("mouseup", { button: 2, clientX: 180, clientY: 180 })); });
   between();
   const menu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: 180, clientY: 180 });
@@ -199,6 +201,25 @@ it("the cover record also works on a card's overlay button — a closing right-c
   openLayer(other, nextLayerSeq());
   await rightClick(host.querySelector(".scene-board")!, () => closeLayer(other)); // 빈 곳 우클릭으로 닫음 — 기록이 소비되지 않고 남는다
   await rightClick(button()); // 가림 없는 단추 위 우클릭은 연다
+  expect(onOpenFolder).toHaveBeenCalledTimes(1);
+});
+
+// 67회차 격리 실측: 정보 창처럼 화면 전체 덮개가 누름을 받아 닫히는 창 — 보드에 mousedown 이 안 오고, contextmenu(뗀 뒤)는 덮개가 걷힌 카드에
+//  떨어진다. 그 우클릭은 창만 닫아야 한다(폴더 창까지 열었다 — 라이브러리 격자도 같았다). 가림은 문서의 pointerdown 이 적은 것을 본다.
+it("a right-click that closes a full-screen catcher (info popup) opens nothing — the press never reaches the board", async () => {
+  const onOpenFolder = vi.fn();
+  await boardWith([gen()], onOpenFolder);
+  const card = target("g1");
+  const info = {};
+  openLayer(info, nextLayerSeq());
+  await act(async () => { card.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 2, buttons: 2 })); });
+  closeLayer(info); // 덮개가 누름을 받아 창을 닫았다 — 그 누름의 mousedown 은 덮개가 가져가 보드에 오지 않는다
+  await act(async () => { card.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, button: 2 })); });
+  await act(async () => { window.dispatchEvent(new MouseEvent("mouseup", { button: 2 })); });
+  const menu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 });
+  await act(async () => { card.dispatchEvent(menu); });
+  expect(onOpenFolder).not.toHaveBeenCalled();
+  await rightClick(card); // 다음 우클릭은 연다
   expect(onOpenFolder).toHaveBeenCalledTimes(1);
 });
 
