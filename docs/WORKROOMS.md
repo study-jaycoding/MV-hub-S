@@ -34,8 +34,10 @@ flowchart LR
 보고한다. 병합 뒤 통합 화면이 새 코드를 주는지 확인하고서 "반영됨"이라고 말한다. 지침 문서
 (AGENTS.md·CLAUDE.md·docs/AGENT_WORKFLOW.md)는 dev 판을 따르고, 이 문서는 통합 시험실 판을 유지한다.
 MCP 작업은 아직 미커밋 변경의 고정 사본(`234fcb00`)으로만 들어와 있다 — MCP 작업실이 자기 브랜치에
-커밋해 병합하는 방식으로 옮긴다. 실제 생성까지 되는 실사용 모드(dev 와 같은 `data_test`·같은 포트,
-한 번에 하나만)는 설계·검토 중이며, 그 전의 격리 모드(`test_workroom.bat`)는 생성이 막혀 있다.
+커밋해 병합하는 방식으로 옮긴다. **실사용 모드** = 이 폴더의 이 PC 전용 `test_integration.bat`(Git 제외):
+dev 와 같은 `data_test`·같은 포트(5173/8012)로 실제 생성까지, dev 와 한 번에 하나만. 격리 모드
+(`test_workroom.bat`, 5175/8017)는 생성이 막혀 있다. 실사용 모드의 주의(DB 사본 범위·MCP 캔버스 복원·동시 실행)는
+dev 판 docs/WORKROOMS.md '구현과 사용자 확인'에 있다.
 어느 화면이든 백엔드는 수동 재시작하며 `uvicorn --reload`를 쓰지 않는다.
 
 ## 현재 작업실 배치
@@ -45,7 +47,7 @@ MCP 작업은 아직 미커밋 변경의 고정 사본(`234fcb00`)으로만 들�
 | 기존 dev | `dev` · 기존 Claude 작업 유지 | 5173 / 8012 |
 | 기존 MCP | `codex/mvhub-mcp` · MCP 원본 구현 유지 | 기존 5174 / 8016, 수동 실행 |
 | 실행기 구현 | `codex/dev-workrooms` · 새 실행기·운영 정책 | 시험 때 임시 포트 |
-| 통합 시험실 | `codex/mvhub-integration` · 모든 작업실 병합 + MCP 사본 | 5175 / 8017(격리 모드) |
+| 통합 시험실 | `codex/mvhub-integration` · 모든 작업실 병합 + MCP 사본 | 5173 / 8012(실사용) · 5175 / 8017(격리) |
 
 통합 작업 폴더는 `C:\Users\FX-PC06\.codex\worktrees\mvhub-integration\MV-hub-S-dev`다.
 여기의 `test_workroom.bat`를 실행한다. 데이터·브라우저 프로필은
