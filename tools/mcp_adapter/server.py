@@ -62,6 +62,7 @@ ERRORS = {
     "wait_limit": ("대기가 종료됐습니다. 기존 결과를 조회하세요. 재생성하지 마세요.", True, "wait_results"),
     "state_conflict": ("연결 또는 작업 상태를 확인하세요. 기존 계획을 확인하고 자동 재실행하지 마세요.", False, "get_plan"),
     "transport_unknown": ("허브 응답을 확인하지 못했습니다. 접수됐을 수 있으므로 자동 재실행하지 마세요.", False, "get_plan"),
+    "upstream_unavailable": ("공유 서버에 잠시 연결하지 못했습니다. 잠시 뒤 연결 확인이나 기존 계획 조회만 하세요. 생성을 다시 제출하지 마세요.", True, "check_connection"),
     "request_failed": ("허브가 요청을 처리하지 못했습니다. 앱에서 상태를 확인하세요.", False, "check_connection"),
 }
 
@@ -507,6 +508,10 @@ class Broker:
                 or capability.get("protocol") != 1 or capability.get("transport") != "stdio-local"):
             return {"status": "wrong_app", "hub_url": self.url,
                     "message": "이 주소의 앱은 호환되는 MV Hub MCP를 제공하지 않습니다. MCP 지원 버전과 포트를 확인하세요."}
+        if self.profile and capability.get("persistent_protocol") == 2 and not capability.get("hub_id"):
+            # 허브가 잠시 자기 식별값을 못 읽었다(DB 확인 불가) — 다른 앱으로 보지 않고, 연결 비밀도 보내지 않는다
+            return {"status": "unavailable", "hub_url": self.url,
+                    "message": "MV Hub가 잠시 상태를 확인하지 못했습니다. 잠시 뒤 다시 연결을 확인하세요."}
         if self.profile and (capability.get("persistent_protocol") != 2
                              or capability.get("hub_id") != self.profile["hub_id"]):
             return {"status": "wrong_app", "hub_url": self.url,

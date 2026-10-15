@@ -519,6 +519,45 @@ def test_auth_off_upstream_account_required_and_pinned(local, monkeypatch):
         api._capture(request, "s" * 43)
 
 
+@pytest.mark.parametrize("answer", [(500, {"detail": "x"}), (503, "busy"), (200, "<html>portal</html>"), (200, {}), "unreachable"])
+def test_capture_upstream_failure_is_not_permission_denied(local, monkeypatch, answer):
+    # 공유 서버 장애(연결 실패·5xx·형식이 틀린 200)는 403 '로그인 확인 불가 → 다시 연결'이 아니라 502 '잠시 뒤'(Codex 리뷰 ②)
+    from starlette.requests import Request
+    monkeypatch.setattr(config, "AUTH_ENABLED", False)
+    monkeypatch.setattr(deps, "AUTH_ENABLED", False)
+    monkeypatch.setattr(active_account, "_cache", [True, {"email": local[2]["email"], "uid": "local-uid"}])
+    monkeypatch.setattr(_proxy, "is_worker_hub", lambda: True)
+    monkeypatch.setattr(_proxy, "_stored_base_url", lambda: "http://isolated.test")
+    monkeypatch.setattr(_proxy, "_stored_token", lambda: "stored-test-token")
+
+    def probe(*args, **kwargs):
+        if answer == "unreachable":
+            raise HTTPException(502, "공유 서버 연결 실패: refused")
+        return answer
+    monkeypatch.setattr(_proxy, "raw_request", probe)
+    request = Request({"type": "http", "method": "POST", "path": "/api/mcp/v2/client/action", "headers": [], "state": {}})
+    with pytest.raises(HTTPException) as caught:
+        api._capture(request)
+    assert (caught.value.status_code, caught.value.headers.get("X-MVHub-MCP-Error")) == (502, "upstream_unavailable")
+    assert "refused" not in caught.value.detail  # 원문(주소·사유)을 내보내지 않는다
+
+
+@pytest.mark.parametrize("answer", [(401, {}), (403, {"detail": "no"}), (200, {"email": "someone-else@example.test", "status": "approved"})])
+def test_capture_real_auth_refusals_stay_permission_denied(local, monkeypatch, answer):
+    from starlette.requests import Request
+    monkeypatch.setattr(config, "AUTH_ENABLED", False)
+    monkeypatch.setattr(deps, "AUTH_ENABLED", False)
+    monkeypatch.setattr(active_account, "_cache", [True, {"email": local[2]["email"], "uid": "local-uid"}])
+    monkeypatch.setattr(_proxy, "is_worker_hub", lambda: True)
+    monkeypatch.setattr(_proxy, "_stored_base_url", lambda: "http://isolated.test")
+    monkeypatch.setattr(_proxy, "_stored_token", lambda: "stored-test-token")
+    monkeypatch.setattr(_proxy, "raw_request", lambda *args, **kwargs: answer)
+    request = Request({"type": "http", "method": "POST", "path": "/api/mcp/v2/client/action", "headers": [], "state": {}})
+    with pytest.raises(HTTPException) as caught:
+        api._capture(request)
+    assert caught.value.status_code == 403
+
+
 def test_empty_canvas_poll_skips_upstream_auth_but_pending_poll_authenticates(local, monkeypatch):
     configure(local)
     monkeypatch.setattr(config, "AUTH_ENABLED", False)

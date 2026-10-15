@@ -10,6 +10,7 @@ import io
 import json
 import math
 import secrets
+import sqlite3
 import threading
 from dataclasses import dataclass
 from functools import lru_cache
@@ -48,8 +49,25 @@ def hub_id():
 def _required_hub_id():
     try:
         return hub_id()
-    except auth.AuthSecretUnavailable as exc:
+    except (auth.AuthSecretUnavailable, sqlite3.Error) as exc:  # 비밀값을 DB 에서 다시 읽다 실패한 것도 같은 '잠시 뒤'(Codex 리뷰 ①)
         raise HTTPException(503, "DB 유지보수 중입니다. 잠시 후 다시 시도하세요.", headers={"Retry-After": "5"}) from exc
+
+
+_UPSTREAM_DOWN = "공유 서버 응답을 확인하지 못했습니다. 잠시 뒤 다시 시도하세요."
+
+
+def _upstream_me(base, token):
+    """공유 서버의 현재 로그인 — 장애(연결 실패·5xx·형식이 틀린 200)는 권한 문제가 아니다. 재등록 안내 대신 '잠시 뒤'로
+    (Codex 리뷰 ②: 5xx·잘못된 200 까지 403 '로그인을 확인할 수 없음'으로 바꿔 다시 연결하라고 안내했다). 401·403 만 권한 거부다."""
+    try:
+        status, account = _proxy.raw_request("GET", base + "/api/auth/me", token=token, timeout=5)
+    except HTTPException as exc:  # 연결 실패·시간 초과(502)
+        raise HTTPException(502, _UPSTREAM_DOWN, headers={"X-MVHub-MCP-Error": "upstream_unavailable"}) from exc
+    if status in (401, 403):
+        raise HTTPException(403, "현재 앱 로그인을 확인할 수 없습니다.")
+    if status != 200 or not isinstance(account, dict) or not account.get("email"):
+        raise HTTPException(502, _UPSTREAM_DOWN, headers={"X-MVHub-MCP-Error": "upstream_unavailable"})
+    return account
 
 
 @dataclass
@@ -93,8 +111,8 @@ def _capture(request, client_secret=None):
             if not email or not token:
                 raise HTTPException(401, "앱에서 공유 서버에 로그인하세요.")
             upstream = (base, token)
-            status, account = _proxy.raw_request("GET", base + "/api/auth/me", token=token, timeout=5)
-            if status != 200 or not isinstance(account, dict) or norm_email(account.get("email")) != email:
+            account = _upstream_me(base, token)
+            if norm_email(account.get("email")) != email:
                 raise HTTPException(403, "현재 앱 로그인을 확인할 수 없습니다.")
         else:
             email = norm_email(pin[0])

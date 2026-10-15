@@ -522,6 +522,29 @@ def test_setup_real_middleware_never_proxies(local, monkeypatch):
         client.close()
 
 
+def test_health_survives_sqlite_error_and_mcp_paths_close_with_503(local, monkeypatch):
+    # 비밀값을 DB 에서 다시 읽다 sqlite 오류가 나도 health 는 200·hub_id 만 빠진다. MCP 업무 경로는 503(Codex 리뷰 ①)
+    import sqlite3
+    from fastapi import HTTPException
+    from app import main
+    from app.routers import mcp_v2
+
+    def broken():
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(mcp_v2, "hub_id", broken)
+    client = TestClient(main.app, base_url="http://127.0.0.1:8012", client=("127.0.0.1", 50123))
+    try:
+        response = client.get("/api/health")
+        assert response.status_code == 200
+        assert "hub_id" not in response.json()["mcp_bridge"]
+    finally:
+        client.close()
+    with pytest.raises(HTTPException) as caught:
+        mcp_v2._required_hub_id()
+    assert caught.value.status_code == 503
+
+
 def test_capability_probe_is_public_and_never_proxied(local, monkeypatch):
     from app import main
     from app.routers import _proxy

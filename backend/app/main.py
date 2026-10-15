@@ -13,6 +13,7 @@ import asyncio
 import time
 import logging
 import os
+import sqlite3
 import sys
 import warnings
 from contextlib import asynccontextmanager, suppress
@@ -1061,7 +1062,8 @@ def health():
               "features": ["generation_result", "batch_results", "history_cursor", "plan_estimate"]}
     try:
         bridge["hub_id"] = mcp_v2.hub_id()
-    except auth_svc.AuthSecretUnavailable:
+    except (auth_svc.AuthSecretUnavailable, sqlite3.Error):
+        # 비밀값을 DB 에서 다시 읽다 실패해도 health 는 200 — hub_id 만 뺀다(어댑터는 '잠시 뒤'로 안내, Codex 리뷰 ①)
         pass
 
     return {

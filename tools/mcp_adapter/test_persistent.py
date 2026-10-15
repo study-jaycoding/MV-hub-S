@@ -116,6 +116,28 @@ class PersistentTests(unittest.TestCase):
         self.assertEqual(self.http.calls, [])
         self.assertTrue(all(value is None for value in self.http.probes))
 
+    def test_missing_hub_identity_is_unavailable_without_credentials(self):
+        # 허브가 잠시 DB 를 못 읽어 health 에 hub_id 가 빠졌다 — '다른 앱'이 아니라 '잠시 뒤', 연결 비밀은 보내지 않는다(Codex 리뷰 ①)
+        config, _ = self.profile()
+        broker = Broker(self.url, config["args"][-1])
+        self.http.hub_id = None
+        self.assertEqual(broker.check_connection()["status"], "unavailable")
+        with self.assertRaises(ToolError):
+            broker.connect()
+        self.assertEqual(self.http.calls, [])
+        self.assertTrue(all(value is None for value in self.http.probes))
+
+    def test_upstream_outage_is_retryable_and_not_a_permission_problem(self):
+        # 공유 서버 장애는 '권한 없음 → 다시 연결'이 아니다(Codex 리뷰 ②) — 잠시 뒤 확인, 생성은 다시 내지 않는다
+        config, _ = self.profile()
+        broker = Broker(self.url, config["args"][-1])
+        self.http.failure = (502, "upstream_unavailable")
+        with self.assertRaises(ToolError) as caught:
+            broker.action("execute_generation_plan", {"plan_id": "p"})
+        error = json.loads(str(caught.exception))["error"]
+        self.assertEqual((error["code"], error["retryable"], error["next_action"]), ("upstream_unavailable", True, "check_connection"))
+        self.assertIn("다시 제출하지 마세요", error["message"])
+
     def test_real_sdk_two_clients_without_browser_or_codes(self):
         first, _ = self.profile()
         second, _ = self.profile()
