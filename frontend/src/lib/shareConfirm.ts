@@ -4,7 +4,7 @@
 import { HttpError, jsonFetch } from "./http";
 import { t } from "./i18n";
 
-export type IntentRef = { gen_id: string; intent_id: string; seq: number };
+export type IntentRef = { gen_id: string; intent_id: string; seq: number; scope?: string };
 type Outcome = { state: "pending" | "confirmed" | "failed" | "unknown"; reason?: string };
 export type SettledCounts = { confirmed: number; failed: number; unknown: number; reasons: string[] };
 
@@ -18,6 +18,28 @@ export function slowRefs(error: unknown): IntentRef[] | null {
 
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 
+// 한 번 묻기 — 응답·본문이 멈춰도 기한(ms)에 끊고 null(다음 차례에 다시). 허브가 멎으면 기다림이 기한을 넘지 않게(Codex 10A 리뷰).
+async function ask(ref: IntentRef, ms: number): Promise<Outcome | null> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const scope = ref.scope === undefined ? "" : `&scope=${encodeURIComponent(ref.scope)}`;
+  try {
+    return await Promise.race([
+      jsonFetch<Outcome>(`/api/share/intents/${encodeURIComponent(ref.intent_id)}?seq=${ref.seq}${scope}`, { signal: controller.signal }),
+      new Promise<null>((done) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          done(null);
+        }, ms);
+      }),
+    ]);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** 원장이 끝날 때까지 묻는다 — pollMs 간격, limitMs 가 지나도 끝나지 않은 것은 '확인 불가'로 센다. 묻기 실패는 다음 차례에 다시. */
 export async function settleIntents(refs: IntentRef[], pollMs = 5000, limitMs = 10 * 60_000): Promise<SettledCounts> {
   const left = new Map(refs.map((ref) => [`${ref.intent_id}:${ref.seq}`, ref]));
@@ -25,13 +47,10 @@ export async function settleIntents(refs: IntentRef[], pollMs = 5000, limitMs = 
   const until = Date.now() + limitMs;
   for (;;) {
     for (const [key, ref] of [...left]) {
-      let outcome: Outcome;
-      try {
-        outcome = await jsonFetch<Outcome>(`/api/share/intents/${encodeURIComponent(ref.intent_id)}?seq=${ref.seq}`);
-      } catch {
-        continue;
-      }
-      if (outcome.state === "pending") continue;
+      const remaining = until - Date.now();
+      if (remaining <= 0) break;
+      const outcome = await ask(ref, Math.min(15_000, remaining));
+      if (!outcome || outcome.state === "pending") continue;
       left.delete(key);
       counts[outcome.state] += 1;
       if (outcome.reason) counts.reasons.push(outcome.reason);
@@ -46,6 +65,7 @@ export async function settleIntents(refs: IntentRef[], pollMs = 5000, limitMs = 
 const REASONS: Record<string, string> = {
   composite_reverted: "최종 지정이 들어가지 않아 공유도 되돌렸습니다",
   composite_final_refused: "최종 지정이 들어가지 않았습니다(공유는 그대로)",
+  account_changed: "그사이 계정이 바뀌어 확인하지 못했습니다",
 };
 
 /** 확인이 끝난 뒤의 한 줄. */

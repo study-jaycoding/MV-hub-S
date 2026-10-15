@@ -8,6 +8,7 @@ vi.mock("../src/lib/http", async (importOriginal) => {
   return {
     ...real,
     jsonFetch: (url: string) => {
+      if (url.includes("/hang?")) return new Promise(() => {}); // 응답이 끝나지 않는다
       const queue = answers.get(url) ?? [];
       const next = queue.length > 1 ? queue.shift()! : queue[0];
       return next ? Promise.resolve(next) : Promise.reject(new TypeError("Failed to fetch"));
@@ -48,6 +49,13 @@ describe("원장으로 끝을 묻기", () => {
     expect(counts).toEqual({ confirmed: 1, failed: 1, unknown: 2, reasons: ["composite_reverted"] });
     expect(settledSummary(counts)).toBe(
       "늦었던 요청 확인: 반영 1 · 실패 1 · 확인 불가 2 · 최종 지정이 들어가지 않아 공유도 되돌렸습니다 · 확인하지 못한 것은 카드 상태를 보세요.");
+  });
+
+  it("응답이 끝나지 않아도 기한에 끊고 확인 불가로 센다 — 기다림이 기한을 넘지 않는다(Codex 10A 리뷰)", async () => {
+    const started = Date.now();
+    const counts = await settleIntents([{ gen_id: "g1", intent_id: "hang", seq: 1 }], 1, 40);
+    expect(counts.unknown).toBe(1);
+    expect(Date.now() - started).toBeLessThan(2000);
   });
 
   it("묻기 자체가 실패하면(허브 불통) 끝난 것으로 세지 않고 다시 묻는다", async () => {

@@ -219,9 +219,12 @@ def _record_proxy_failure(
 
 
 @router.get("/share/intents/{intent_id}")
-def share_intent_state(intent_id: str, seq: int):
-    """늦은 공유·최종 요청의 끝 — pending | confirmed | failed | unknown(+reason). 이 허브의 원장(지금 계정 DB)만 본다(Jay 결정 10A)."""
+def share_intent_state(intent_id: str, seq: int, scope: str | None = None):
+    """늦은 공유·최종 요청의 끝 — pending | confirmed | failed | unknown(+reason). 이 허브의 원장(지금 계정 DB)만 본다(Jay 결정 10A).
+    scope = 요청할 때의 계정 — 그사이 허브 계정이 바뀌었으면 남의 원장을 묻지 않고 모름으로 끝낸다(Codex 10A 리뷰)."""
     with _pinned_account_scope():
+        if scope is not None and scope != (active_account.account_key() or ""):
+            return {"state": "unknown", "reason": "account_changed"}
         return repo.share_intent_outcome(intent_id, seq)
 
 

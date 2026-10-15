@@ -416,10 +416,13 @@ def share_intent_outcome(intent_id: str, seq: int) -> dict[str, str]:
     if row["status"] not in SHARE_STATE_TERMINAL_STATUSES:
         return {"state": "pending"}
     code = str(row.get("last_error_code") or "")
-    if row["status"] == "rejected" and code.startswith("finalize_remote_"):
-        return {"state": "failed", "reason": "composite_final_refused" if row.get("base_shared") else "composite_reverted"}
     if row["status"] == "rejected" and (code == "remote_blocked" or (code.startswith("remote_4") and code[7:].isdigit())):
         return {"state": "failed"}
+    # 합성 최종 지정이 들어가지 않았다 — 조정기가 보상(원래 비공유면 공유도 되돌림)까지 마치면 로컬 적용이 오류 코드를 지우므로
+    #  작업 종류로 가린다(Codex 10A 리뷰). 24시간 지켜보다 닫은 것은 모름이다.
+    expired = isinstance(observed, dict) and observed.get("unknown_watch_expired") is True
+    if row["status"] == "rejected" and row.get("operation_kind") == "composite_finalize" and not expired:
+        return {"state": "failed", "reason": "composite_final_refused" if row.get("base_shared") else "composite_reverted"}
     return {"state": "unknown"}
 
 

@@ -81,7 +81,9 @@ def test_slow_finalize_answers_with_intent_ref_instead_of_plain_failure(isolated
     assert slow.value.status_code == 502 and detail["code"] == "upstream_timeout"
     [ref] = detail["refs"]
     assert ref["gen_id"] == gid
-    assert share.share_intent_state(ref["intent_id"], ref["seq"]) == {"state": "pending"}  # 원장은 결과 불명으로 남아 있다
+    assert share.share_intent_state(ref["intent_id"], ref["seq"], ref["scope"]) == {"state": "pending"}  # 원장은 결과 불명으로 남아 있다
+    # 그사이 허브 계정이 바뀌었으면 남의 원장을 묻지 않는다(Codex 10A 리뷰)
+    assert share.share_intent_state(ref["intent_id"], ref["seq"], "other@example.test") == {"state": "unknown", "reason": "account_changed"}
 
 
 def test_plain_502_stays_a_plain_failure(isolated_content_db):
@@ -109,7 +111,8 @@ def test_slow_bundle_publish_returns_a_ref_per_item_and_folder_share_counts_them
     monkeypatch.setattr(publish.repo, "folder_share_candidates", lambda *a: [f"g{i}" for i in range(250)])
     monkeypatch.setattr(publish, "publish_bundle_to_server", _raiser(slow.value))
     out = publish._publish_folder_pinned("p1", "ep01", _request())
-    assert (len(out["confirming"]), out["unprocessed"], out["accepted"]) == (2, 50, 0)  # 이 묶음은 확인 중, 보내지 않은 뒤 묶음만 미처리
+    # 확인 중이 아닌 것은 모두 미처리 — 이 묶음에서 허브가 걸러 보내지 않은 것도 빠지지 않는다(Codex 10A 리뷰)
+    assert (len(out["confirming"]), out["unprocessed"], out["accepted"]) == (2, 248, 0)
 
 
 def _intent(**fields) -> dict:
@@ -117,7 +120,7 @@ def _intent(**fields) -> dict:
         "http://share.example.test",
         job_anchor="server-1",
         local_id="local-1",
-        operation_kind="finalize",
+        operation_kind=fields.pop("operation_kind", "finalize"),
         desired_shared=True,
         desired_final=True,
         base_shared=bool(fields.pop("base_shared", True)),
@@ -145,9 +148,14 @@ def _intent(**fields) -> dict:
          {"state": "unknown"}),
         ({"status": "rejected", "last_error_code": "remote_403"}, {"state": "failed"}),
         ({"status": "rejected", "last_error_code": "remote_blocked"}, {"state": "failed"}),
-        ({"status": "rejected", "last_error_code": "finalize_remote_409", "base_shared": False},
-         {"state": "failed", "reason": "composite_reverted"}),
-        ({"status": "rejected", "last_error_code": "finalize_remote_409"}, {"state": "failed", "reason": "composite_final_refused"}),
+        # 합성 최종 지정이 들어가지 않았다 — 보상까지 마친 로컬 적용은 오류 코드를 지운다(작업 종류로 가린다, Codex 10A 리뷰)
+        ({"operation_kind": "composite_finalize", "status": "rejected", "base_shared": False,
+          "observed_state_json": {"shared": False, "is_final": False}}, {"state": "failed", "reason": "composite_reverted"}),
+        ({"operation_kind": "composite_finalize", "status": "rejected", "observed_state_json": {"shared": True, "is_final": False}},
+         {"state": "failed", "reason": "composite_final_refused"}),
+        ({"operation_kind": "composite_finalize", "status": "rejected", "last_error_code": "remote_409"}, {"state": "failed"}),
+        ({"operation_kind": "composite_finalize", "status": "rejected",
+          "observed_state_json": {"shared": True, "is_final": False, "unknown_watch_expired": True}}, {"state": "unknown"}),
         ({"status": "rejected", "last_error_code": "remote_result_unknown_expired",
           "observed_state_json": {"shared": True, "is_final": False}}, {"state": "unknown"}),
         ({"status": "superseded", "observed_state_json": {"shared": False, "is_final": False}}, {"state": "unknown"}),

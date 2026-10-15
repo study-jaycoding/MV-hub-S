@@ -1357,7 +1357,8 @@ def _publish_folder_pinned(project_id: str, folder_path: str, request: Request) 
                 # 이 묶음은 서버가 늦어 결과 불명 — '확인 중'(원장 참조)으로 따로 돌려주고, 보내지 않은 뒤 묶음만 미처리로 센다(Jay 결정 10A)
                 out["confirming"] = slow.get("refs") or []
                 out["error"] = slow.get("message")
-                out["unprocessed"] = len(ids) - offset - len(chunk)
+                # 확인 중이 아닌 것은 모두 미처리 — 이 묶음에서 허브가 보내지 않고 걸러 낸 것도 빠지지 않게(Codex 10A 리뷰)
+                out["unprocessed"] = len(ids) - offset - len(out["confirming"])
             else:
                 out["error"] = str(e.detail)
                 out["unprocessed"] = len(ids) - offset

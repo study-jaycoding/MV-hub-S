@@ -32,7 +32,7 @@ from typing import Any, Optional
 from fastapi import HTTPException, Request
 from fastapi.responses import Response
 
-from .. import repo
+from .. import active_account, repo
 from ..config import AUTH_ENABLED, MEDIA_DIR
 from ..mutation_notify import (
     CLIENT_ID_HEADER,
@@ -128,9 +128,11 @@ def slow_with_refs(error: HTTPException, refs: list[dict[str, Any]]) -> HTTPExce
     refs = [{gen_id, intent_id, seq}] · 원장이 없으면 그대로(일반 502)."""
     if not refs:
         return error
+    # 원장은 계정 DB 마다 있다 — 어느 계정의 원장인지 실어, 그사이 허브 계정이 바뀌면 남의 원장을 묻지 않게 한다(Codex 10A 리뷰)
+    scope = active_account.account_key() or ""
     return HTTPException(
         status_code=502,
-        detail={"code": "upstream_timeout", "message": UPSTREAM_SLOW_MESSAGE, "refs": refs},
+        detail={"code": "upstream_timeout", "message": UPSTREAM_SLOW_MESSAGE, "refs": [{**ref, "scope": scope} for ref in refs]},
         headers=error.headers,
     )
 

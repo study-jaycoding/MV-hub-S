@@ -714,6 +714,7 @@ const EN: Record<string, string> = {
   "확인하지 못한 것은 카드 상태를 보세요.": "For unconfirmed items, check the card state.",
   "최종 지정이 들어가지 않아 공유도 되돌렸습니다": "Final selection did not go through, so sharing was undone too",
   "최종 지정이 들어가지 않았습니다(공유는 그대로)": "Final selection did not go through (still shared)",
+  "그사이 계정이 바뀌어 확인하지 못했습니다": "The account changed meanwhile, so it could not be confirmed",
   " · {count}개 확인 중": " · {count} being confirmed",
   "팀 서버에는 옮겼지만 이 PC 에는 반영하지 못했습니다. 목록을 새로고침한 뒤 다시 옮겨 주세요.":
     "Moved on the team server, but not on this PC. Refresh the list and move the items again.",
