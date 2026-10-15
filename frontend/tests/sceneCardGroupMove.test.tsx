@@ -776,14 +776,16 @@ it("범위 선택·화면 이동도 같은 끝맺음을 쓴다 — 단추를 뗀
   expect(marquee().hidden).toBe(true);
   // 가운데 단추로 화면을 미는 동안의 움직임은 buttons 가 4 다 — 왼쪽 단추(1)만 보고 '뗐다'고 하면 화면 이동이 첫 걸음에 끊긴다
   await act(async () => { board().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 1, clientX: 100, clientY: 100 })); });
+  // 끄는 표시(보드 위 덮개)는 움직였을 때만 — 누르기만 한 휠은 카드 정보(auxclick)다(66회차 ③)
+  expect(board().classList.contains("scene-panning")).toBe(false);
   await act(async () => {
     window.dispatchEvent(new MouseEvent("mousemove", { clientX: 150, clientY: 130, buttons: 4 }));
     frames.splice(0).forEach((cb) => cb(0));
   });
-  expect(board().classList.contains("panning")).toBe(true);
+  expect(board().classList.contains("scene-panning")).toBe(true);
   expect(canvas().style.transform).toContain("translate(50px, 30px)");
   await hoverTo(400, 400); // 가운데 단추를 뗀 것을 놓쳤다
-  expect(board().classList.contains("panning")).toBe(false);
+  expect(board().classList.contains("scene-panning")).toBe(false);
   expect(canvas().style.transform).toContain("translate(50px, 30px)");
 });
 

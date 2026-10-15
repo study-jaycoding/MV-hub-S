@@ -243,7 +243,11 @@ export function useSceneViewport({
       const startY = event.clientY;
       let moved = false; // 정지 휠 클릭은 카드 정보(auxclick)다 — 실제로 끌었을 때만 놓는 순간의 auxclick 을 삼킨다
       const move = (moveEvent: MouseEvent) => {
-        if (Math.abs(moveEvent.clientX - startX) + Math.abs(moveEvent.clientY - startY) > 3) moved = true;
+        if (!moved && Math.abs(moveEvent.clientX - startX) + Math.abs(moveEvent.clientY - startY) > 3) {
+          moved = true;
+          // 끄는 표시(보드 위 덮개 — scene.css)는 실제로 움직였을 때만 — 누를 때 붙이면 덮개가 정지 휠 클릭(카드 정보)을 가로챈다(계보 보드와 같다)
+          scrollRef.current?.classList.add("scene-panning");
+        }
         const next = panSceneCamera(
           start,
           moveEvent.clientX - startX,
@@ -253,10 +257,9 @@ export function useSceneViewport({
         applyTransform();
       };
       const finish = () => {
-        scrollRef.current?.classList.remove("panning");
+        scrollRef.current?.classList.remove("scene-panning");
         persistCamera();
       };
-      scrollRef.current?.classList.add("panning");
       // 놓는 순간(up)에만 삼킨다 — 놓친 끌기를 다음 누름이 정리할 때(onCancel)는 그 놓기의 auxclick 이 이미 지나갔다(Codex 66회차 리뷰)
       beginDrag(move, () => {
         finish();
