@@ -19,6 +19,7 @@ import {
 import { ThumbnailGrid } from "./components/ThumbnailGrid";
 import { ensureTeamBase } from "./lib/teamSeen";
 import { TopBar } from "./components/TopBar";
+const McpConnection = lazy(() => import("./components/mcp/McpConnection").then((m) => ({ default: m.McpConnection })));
 import { SceneBar } from "./components/scene/SceneBar";
 import { SceneBoardBoundary } from "./components/scene/SceneBoardBoundary";
 const SceneBoard = lazy(() =>
@@ -36,6 +37,7 @@ import {
   LibrarySelectionActionBar,
 } from "./components/app/SelectionActionBar";
 import { KEY_COLORS } from "./lib/appConstants";
+import { useMcpCanvasTasks } from "./lib/mcpCanvasTasks";
 import { folderPeekQuery, generationQueryKey } from "./lib/appGenerationQuery";
 import { useResolveLibraryFollow } from "./lib/useResolveLibraryFollow";
 import { generationsByIds, uniqueTagNames } from "./lib/generationTags";
@@ -257,7 +259,7 @@ export default function App() {
     sceneBinding, setSceneBinding, sceneSelGens, setSceneSelGens, sceneActionRef,
     flushScenePending, selectScene, addScene, importSceneSnapshot, relinkSceneRefsNow, findSceneRefs, renameScene,
     removeSceneById,
-    patchSceneById, patchActiveScene, reorderScenes, setSceneWorkspace, backupOnly, importBackupScenes,
+    patchSceneById, refreshSceneById, patchActiveScene, reorderScenes, setSceneWorkspace, backupOnly, importBackupScenes,
     sceneSaveFailing, sceneBackupSkippedIds,
   } = useSceneCoordination(flash);
   // 위에서 고른 워크스페이스가 바뀌면 탭에 공간이 없는 씬의 참조를 새 공간으로 한 번 묻는다(2026-10-01 점검 R2-2).
@@ -437,6 +439,8 @@ export default function App() {
   const disabledGen = useDisabledGenerations();
   const disabledFolders = useDisabledFolders(); // 폴더 단위 비활성(그 폴더·하위 생성물 자동 회색)
   const [adminOpen, setAdminOpen] = useState(false); // 관리자 창(로고 클릭)
+  const [mcpOpen, setMcpOpen] = useState(false);
+  const [mcpLoaded, setMcpLoaded] = useState(false);
   const askPrompt = useAskPrompt(); // 플로팅 입력(네이티브 prompt 대체)
   const {
     account,
@@ -466,6 +470,7 @@ export default function App() {
     resetKey: selectionResetKey,
   });
   const libraryAuthKey = JSON.stringify([hubAccount?.email, account?.email, account?.creator_uid, sharedSrv?.url]);
+  useMcpCanvasTasks({ authReady, authKey: libraryAuthKey, workspace: workspaceContext, flushScenePending, refreshSceneById });
   // 보는 자리의 문맥(계정·서버·공간 범위) — 브라우저 기록(lib/useAppNavigation)과 공유 탭의 마지막 자리 기억이 같은 문맥의 자리만 되살린다.
   //  탭마다 센다 — 기록의 자리는 **그 기록의 탭**이 지금 갖게 될 문맥과 견준다(공유 탭의 폴더 → 작업 공간 탭 → 뒤로 가기).
   const locationCtxFor = useCallback(
@@ -798,8 +803,10 @@ export default function App() {
   const prepareCanvasGenerationBatch = useCallback(async (
     sceneId: string,
     cardIds: string[],
+    fixedLinks?: CanvasGenerationLink[],
   ): Promise<CanvasGenerationLink[]> => {
-    const links = cardIds.flatMap((cardId) =>
+    if (fixedLinks && (fixedLinks.length !== cardIds.length || fixedLinks.some((link, index) => link.scene_id !== sceneId || link.card_id !== cardIds[index]))) return [];
+    const links = fixedLinks ?? cardIds.flatMap((cardId) =>
       createCanvasGenerationLinks({ sceneId, cardId }, 1),
     );
     flushScenePending(sceneId);
@@ -2715,6 +2722,7 @@ export default function App() {
           flash(msg);
         }}
         onOpenAssets={openAssetsWindow}
+        onOpenMcp={() => { setMcpLoaded(true); setMcpOpen(true); }}
         onOpenManage={canOpenManage ? openManageWindow : undefined}
         onOpenAdmin={openAdmin}
         account={hubAccount}
@@ -2727,6 +2735,19 @@ export default function App() {
         onNotificationsChanged={() => void reload(true, true)}
         inert={behindInert}
       />
+      {mcpLoaded && <Suspense fallback={null}><McpConnection
+        open={mcpOpen}
+        onClose={() => setMcpOpen(false)}
+        authReady={authReady}
+        authKey={libraryAuthKey}
+        workspace={workspaceContext}
+        activeSceneId={activeSceneId}
+        flushScenePending={flushScenePending}
+        patchSceneById={patchSceneById}
+        prepareCanvasGenerationBatch={prepareCanvasGenerationBatch}
+        settleCanvasGeneration={settleCanvasGeneration}
+        discardCanvasGeneration={discardCanvasGeneration}
+      /></Suspense>}
       {/* 폴더 창이 떠 있는 동안 뒤 화면(사이드바·본문)은 inert — 위 behindInert(React 18 타입에 inert 가 없어 spread 로 넘긴다). */}
       <div className="body" {...(behindInert ? { inert: "" } : {})}>
         {editOpen ? (

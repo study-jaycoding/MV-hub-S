@@ -446,6 +446,9 @@ const EN: Record<string, string> = {
   "목록 범위 밖 미확인 코멘트 {n}개 · 모두 읽음으로 정리할 수 있습니다.":
     "{n} unread comments outside this list · use Mark all as read.",
   // 설정
+  "AI·MCP 연결": "AI · MCP connection",
+  "AI·MCP 연결 열기": "Open AI · MCP connection",
+  "이 PC의 로컬 앱에서 Codex·Claude 등록 안내, 연결 확인과 생성 실행 허용을 관리합니다.": "Manage Codex/Claude setup, connection checks and generation access in this PC's local app.",
   "설정": "Settings",
   "모션": "Motion",
   "모션 끄기 (골드 글로우 등 애니메이션 정지)": "Reduce motion (stop gold glow etc.)",

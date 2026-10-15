@@ -82,6 +82,8 @@ from .routers import (
     ingest,
     library,
     members,
+    mcp,
+    mcp_v2,
     notifications,
     projects,
     publish,
@@ -761,6 +763,8 @@ app.include_router(db_transfer.router)
 app.include_router(db_backup.router)
 app.include_router(comfy.router)
 app.include_router(scenes.router)
+app.include_router(mcp.router)
+app.include_router(mcp_v2.router)
 app.include_router(asset_registry.router)
 app.include_router(registry_helper.router)
 
@@ -796,6 +800,11 @@ _AUTH_PUBLIC_PATHS = frozenset(
         # 각 라우터에서 현재 PC 요청만 허용하므로 인증 예외를 정확히 이 경로에만 둔다.
         "/api/resolve/transfers/pending",
         "/api/resolve/transfers/manual-result",
+        "/api/mcp/client/connect",
+        "/api/mcp/client/action",
+        "/api/mcp/client/result",
+        "/api/mcp/v2/client/connect",
+        "/api/mcp/v2/client/action",
     }
 )
 _SNAPSHOT_SERVER_PATHS = frozenset({SNAPSHOT_EXPORT_PATH, "/api/health", "/api/ready"})
@@ -1048,8 +1057,16 @@ def _pinned_cli_version() -> str | None:
 def health():
     from .services import cli_bridge
 
+    bridge = {"protocol": 1, "transport": "stdio-local", "persistent_protocol": 2,
+              "features": ["generation_result", "batch_results", "history_cursor", "plan_estimate"]}
+    try:
+        bridge["hub_id"] = mcp_v2.hub_id()
+    except auth_svc.AuthSecretUnavailable:
+        pass
+
     return {
         "status": "ok",
+        "mcp_bridge": bridge,
         "cli_available": cli_bridge.cli_available(),
         # 로컬 허브에서 공유 서버 실시간 연결이 살아 있는지 토큰·주소 없이 확인한다.
         "remote_realtime": remote_realtime_bridge.stats(),

@@ -6,11 +6,16 @@ tags:
   - mvhub
   - mvhub/구조
   - 기준문서
-updated: 2026-09-30
+updated: 2026-10-15
 status: active
 ---
 
 # ARCHITECTURE.md — MV-hub-S 구조 원칙
+
+로컬 MCP v2는 stdio 어댑터 → 계정·공간에 묶인 영속 권한 → 기존 생성 API·로컬 작업 큐로 연결한다.
+앱 연결 버튼이 최초 등록과 실행 권한을 설정하고, 어댑터 권한은 Windows DPAPI로 보관한다. 로그인 토큰은 LLM에 전달하지 않는다.
+기본 생성은 캔버스를 요구하지 않는다. 명시한 캔버스 추가만 DB 대기 작업 → 해당 계정 화면 → IndexedDB 저장 확인 순서로 처리한다.
+구형 탭 브로커(v1)는 호환용이다. 구현·검증 상태와 상세 경계는 [MCP 계약](docs/MCP_INTEGRATION.md)을 따른다.
 
 > [!NOTE]
 > 이 문서는 **유지보수성 개선의 기준선(baseline)** 이다.

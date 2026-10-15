@@ -13,6 +13,9 @@ updated: 2026-10-15
 
 MCP 연동은 `codex/mvhub-mcp` 브랜치의 별도 worktree에서 관리한다. 설계·사용 안내는 그 브랜치의 `docs/MCP_INTEGRATION.md`를 참조한다. dev에는 로컬 AI 연결(MCP 브리지) 구현을 포함하지 않는다. 기존 Higgsfield 수집 기능은 유지한다.
 
+이 통합 시험실에는 선택한 MCP 사본도 포함한다. 계약은 [MCP_INTEGRATION](MCP_INTEGRATION.md),
+현재 시험 범위와 실제 생성 제한은 [WORKROOMS](WORKROOMS.md)를 함께 따른다.
+
 Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·공유 툴.
 현재 작업 상태는 [CURRENT_STATUS.md](CURRENT_STATUS.md)에서 먼저 확인한다.
 현행 설계는 [ARCHITECTURE.md](ARCHITECTURE.md)와 [AI_CONTEXT.md](AI_CONTEXT.md)를 참조한다.
@@ -41,6 +44,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 2026-09-17 종합 점검·중복 구현 조사·당시 설계 합의와 실측 기록 | [PROGRAM_AUDIT_2026-09-17.md](PROGRAM_AUDIT_2026-09-17.md) |
 | 날짜별 상세 기록(회귀·실측·구현 근거) | [CURRENT_STATUS](CURRENT_STATUS.md)가 연결하는 해당 [status/](status/) 노트 |
 | Claude·Codex 역할 호출·설계 합의·독립 리뷰·검증 완료 기준 | [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md) |
+| 기능 작업실·통합 시험실·동시 개발과 실행 분리 | [WORKROOMS.md](WORKROOMS.md) |
 | 프로그램 사용 | [사용설명서.md](사용설명서.md), [기능설명서.md](기능설명서.md) |
 | 현재 구조와 데이터 흐름 | [ARCHITECTURE.md](ARCHITECTURE.md), [AI_CONTEXT.md](AI_CONTEXT.md) |
 | 무엇을 고치려면 어느 파일을 여나(파일 단위 색인·함정 지도) | [CODE_MAP.md](CODE_MAP.md) — 계층 원칙·흐름 설명과 충돌하면 위 두 문서가 이긴다 |

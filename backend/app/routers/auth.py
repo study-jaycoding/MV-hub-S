@@ -158,6 +158,10 @@ def _set_session_cookie(response: Response, token: str) -> None:
 
 def _activate_local_agent(request: Request, email: str) -> None:
     """test_dev에서 브라우저 로그인 계정을 로컬 에이전트가 이어받도록 깨운다."""
+    if AUTH_ENABLED and os.environ.get("CONTENT_HUB_NO_PROXY", "").lower() in ("1", "true", "yes", "on"):
+        from ..services.request_guards import is_loopback_request
+        if is_loopback_request(request) and repo.get_setting("mcp_active_account") != norm_email(email):
+            repo.set_setting("mcp_active_account", norm_email(email))
     previous = local_agent_pair.activate(request, email)
     if previous and previous != norm_email(email):
         agent_signals.signal(previous, "pair-change")
@@ -301,6 +305,9 @@ def me(request: Request, response: Response):
 def logout(response: Response, request: Request):
     """토큰은 무상태라 서버 저장이 없다 — 클라이언트가 토큰을 버리고 세션 쿠키를 지운다."""
     acc = getattr(request.state, "account", None)
+    if acc:
+        from ..repo.mcp_v2 import revoke_account
+        revoke_account(acc["email"])
     previous = local_agent_pair.clear(request, (acc or {}).get("email"))
     if previous:
         agent_signals.signal(previous, "pair-change")

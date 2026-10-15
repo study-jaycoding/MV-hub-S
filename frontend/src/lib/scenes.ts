@@ -172,6 +172,7 @@ export interface Scene {
   // 같은 씬이 또 엇갈렸을 때 '손대지 않은 사본'이면 새 탭을 늘리지 않고 이 탭을 갈아 끼우려고 둔다.
   recoveredFrom?: { id: string; sum: string };
   created_at: number;
+  mcpAttachmentReceipts?: string[]; // 저장 확인 응답이 유실돼도 삭제한 카드를 다시 붙이지 않는 처리 기록.
 }
 
 // 계정×프로젝트 버킷 → 그 버킷의 씬 목록. 저장소 계층(sceneStore·sceneAbsorb)이 같은 모양을 쓴다.
@@ -913,6 +914,7 @@ export function readStoredScene(raw: unknown): Scene {
     ...(body.camera ? { camera: body.camera } : {}),
     ...(body.workspace ? { workspace: body.workspace } : {}),
     ...(hint ? { refWorkspaceHint: hint } : {}),
+    ...(Array.isArray(r.mcpAttachmentReceipts) ? { mcpAttachmentReceipts: safeIds(r.mcpAttachmentReceipts) } : {}),
     ...(from && typeof from.id === "string" && typeof from.sum === "string"
       ? { recoveredFrom: { id: from.id, sum: from.sum } }
       : {}),

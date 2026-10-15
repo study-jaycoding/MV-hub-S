@@ -26,6 +26,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from contextvars import ContextVar
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
@@ -49,12 +50,34 @@ from ..mutation_notify import (
 # 기존 내부 사용명 유지용이고, base_url/token 은 테스트가 이 모듈 속성으로 패치한다.
 from ..services.shared_connection import (  # noqa: E402
     K_TOKEN as _K_TOKEN,
-    base_url,
+    base_url as _stored_base_url,
     elevation_token,
-    token,
+    token as _stored_token,
 )
 from ..services.path_safety import safe_join
 from ..services.request_guards import require_local_browser_context
+
+_PINNED_CONNECTION: ContextVar[Optional[tuple[str, str]]] = ContextVar("pinned_proxy_connection", default=None)
+
+
+@contextmanager
+def pinned_connection(connection):
+    """Keep an authenticated local request on its captured upstream connection."""
+    marker = _PINNED_CONNECTION.set(connection)
+    try:
+        yield
+    finally:
+        _PINNED_CONNECTION.reset(marker)
+
+
+def base_url():
+    pin = _PINNED_CONNECTION.get()
+    return pin[0] if pin else _stored_base_url()
+
+
+def token():
+    pin = _PINNED_CONNECTION.get()
+    return pin[1] if pin else _stored_token()
 
 # ── 공유 서버 연결: TCP 연결 단계만 짧게 ─────────────────────────────────────
 # 응답 없는 주소(서버 PC 꺼짐)에 붙으면 Windows 는 연결을 21초 붙잡았다(10-02 운영·격리 재현, WinError 10060).
@@ -559,6 +582,7 @@ def _cleanup_file(path: str) -> None:
 _LOCAL_PREFIXES = (
     "/api/assets/",        # 파일 I/O(트리/파일/썸/업로드/zip/reveal/마운트) — assets.py 가 메타만 자체 프록시
     "/api/gen-requests",   # 로컬 실행 큐(에이전트가 폴링해 자기 CLI 로 실행)
+    "/api/mcp/",          # 로컬 MCP 연결·계획은 공유 서버에 위임하지 않는다
     "/api/agent/",         # 에이전트 롱폴·상태·다운로드(이 허브에 붙음)
     "/api/models",         # CLI 모델 목록·params
     "/api/comfy",          # ComfyUI 연결·파싱·실행(이 PC 의 로컬/Cloud 자원 — 서버 위임 금지)

@@ -161,8 +161,10 @@ def hub(tmp_path, monkeypatch, request):
 
     try:
         assert db.get_db_path is db_paths.get_db_path
-        assert _proxy.token is shared_connection.token
-        assert _proxy.base_url is shared_connection.base_url
+        # MCP wraps these getters to pin a captured connection; the unpinned path must still use the real store.
+        assert _proxy._stored_token is shared_connection.token
+        assert _proxy._stored_base_url is shared_connection.base_url
+        assert _proxy._PINNED_CONNECTION.get() is None
         assert _proxy.elevation_token is shared_connection.elevation_token
         for email, path in paths.items():
             path.parent.mkdir(parents=True)
@@ -181,6 +183,8 @@ def hub(tmp_path, monkeypatch, request):
                     conn.execute("INSERT INTO app_setting(key,value) VALUES(?,?) "
                                  "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
         active_account.set_active(A, UIDS[A])
+        assert _proxy.token() == shared_connection.token() == NORMAL[A]
+        assert _proxy.base_url() == shared_connection.base_url() == URLS[A]
         before = {email: snapshot(email) for email in (A, B)}
         initialized = True
         yield SimpleNamespace(paths=paths, observations=observations, settings=settings, snapshot=snapshot,
@@ -204,6 +208,17 @@ def hub(tmp_path, monkeypatch, request):
             db.flush_pool()
             active_account.reset_uid_override(uid_token)
             active_account.reset_override(key_token)
+
+
+def test_mcp_connection_pin_survives_account_switch_and_restores_real_getters(hub):
+    assert (_proxy.base_url(), _proxy.token()) == (URLS[A], NORMAL[A])
+    with _proxy.pinned_connection((URLS[A], NORMAL[A])):
+        active_account.set_active(B, UIDS[B])
+        assert (shared_connection.base_url(), shared_connection.token()) == (URLS[B], NORMAL[B])
+        assert (_proxy.base_url(), _proxy.token()) == (URLS[A], NORMAL[A])
+    assert _proxy._PINNED_CONNECTION.get() is None
+    assert (_proxy.base_url(), _proxy.token()) == (URLS[B], NORMAL[B])
+    hub.assert_outer(B)
 
 
 def _remote(hub, monkeypatch, *, switch=None, error=None):

@@ -66,9 +66,11 @@ import { reloadIfFree, reloadNow, unsavedNote, unsavedPlaces } from "../lib/unlo
 export function SettingsPanel({
   onClose,
   onImported,
+  onOpenMcp,
 }: {
   onClose: () => void;
   onImported?: (msg: string) => void; // 라이브러리 변경 후 리로드+안내(휴지통 이동 등)
+  onOpenMcp?: () => void;
 }) {
   const t = useT();
   const [accent, setAccent] = useState(loadAccent());
@@ -626,6 +628,12 @@ export function SettingsPanel({
               onRefreshConnection={refreshResolveConnection}
             />
           </SettingsGroup>
+
+          {onOpenMcp && <section className="settings-section">
+            <h4>{t("AI·MCP 연결")}</h4>
+            <button className="settings-action" onClick={() => { onClose(); onOpenMcp(); }}>{t("AI·MCP 연결 열기")}</button>
+            <p className="settings-desc">{t("이 PC의 로컬 앱에서 Codex·Claude 등록 안내, 연결 확인과 생성 실행 허용을 관리합니다.")}</p>
+          </section>}
 
           <section className="settings-section">
             <h4>{t("생성물 재점검")}</h4>

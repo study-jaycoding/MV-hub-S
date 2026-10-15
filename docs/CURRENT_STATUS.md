@@ -16,6 +16,8 @@ updated: 2026-10-15
 > [README.md `현황판에 무엇을 남기나`](README.md#현황판에-무엇을-남기나) 가 정본이다.
 > 작업이 끝나면 상세는 `status/` 새 노트에 넣고 여기서는 **내려놓는다**.
 
+[작업실](WORKROOMS.md) 완료.
+
 ## 10-13 dev 배포 전 검토 — dev(미푸시·미배포)
 
 owner: Claude(통합) · 'MV hub'·'MV hub 편집' 세션(구현) · reviewer: Codex · status: 검증 중(main 미병합 — 푸시·병합·릴리스는 Jay 의 말이 있을 때)

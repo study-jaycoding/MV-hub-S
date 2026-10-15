@@ -311,3 +311,20 @@ $components = Get-UpdateComponents -ExtractDir {_quote(package)}
     assert ".update.lock" not in components
     assert "VERSION.txt" not in components
     assert "update_release.bat" in components
+
+
+def test_mcp_adapter_and_sdk_are_one_existing_tools_update_component(tmp_path):
+    package = tmp_path / "fake-package"
+    for relative in ("backend/app", "frontend/dist", "runtime/node", "runtime/higgsfield", "runtime/python",
+                     "tools/mcp_adapter/site-packages/mcp"):
+        (package / relative).mkdir(parents=True)
+    (package / "tools/mcp_adapter/server.py").write_text("adapter", encoding="ascii")
+    (package / "tools/mcp_adapter/site-packages/mcp/__init__.py").write_text("sdk", encoding="ascii")
+    result = _run(_helper(_payload(), "Get-UpdateComponents") + f"""
+$components = Get-UpdateComponents -ExtractDir {_quote(package)}
+@($components | ForEach-Object {{ $_.Relative }}) | ConvertTo-Json -Compress
+""")
+    assert result.returncode == 0, result.stdout + result.stderr
+    components = json.loads(result.stdout)
+    assert components.count("tools") == 1
+    assert not any(item.startswith("tools\\") for item in components)
