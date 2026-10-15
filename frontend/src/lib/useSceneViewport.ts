@@ -255,10 +255,13 @@ export function useSceneViewport({
       const finish = () => {
         scrollRef.current?.classList.remove("panning");
         persistCamera();
-        if (moved) swallowPanAuxClick();
       };
       scrollRef.current?.classList.add("panning");
-      beginDrag(move, finish, finish);
+      // 놓는 순간(up)에만 삼킨다 — 놓친 끌기를 다음 누름이 정리할 때(onCancel)는 그 놓기의 auxclick 이 이미 지나갔다(Codex 66회차 리뷰)
+      beginDrag(move, () => {
+        finish();
+        if (moved) swallowPanAuxClick();
+      }, finish);
       return true;
     },
     [applyTransform, getCamera, persistCamera],
