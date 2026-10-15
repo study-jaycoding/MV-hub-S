@@ -434,6 +434,22 @@ it("미디어 풀: 끌어서 고른 바로 뒤(타이머가 돌기 전)에 누�
   expect(pickedCount()).toBe(1);
 });
 
+// Jay 2026-10-15 A — 타임라인에서 클립을 고르면 풀에서 그 카드에 다빈치에서 고른 것과 같은 빨간 고리(다빈치처럼). '다빈치' 글·빨간 표는 다빈치 것에만.
+it("타임라인에서 고른 클립의 카드 — 풀의 카드·목록 보기에 빨간 고리 · '다빈치' 글은 붙지 않는다 · 고르기를 풀면 사라진다", () => {
+  seed([{ cut: "c1", gen: "b", track: 1 }]);
+  mount();
+  act(() => cutCell("c1").click());
+  expect(document.querySelectorAll(".ed-tlsel")).toHaveLength(0);
+  mouse(clips()[0], "pointerdown"); // b 의 클립을 고른다
+  expect(poolCards().map((card) => [card.classList.contains("ed-tlsel"), card.classList.contains("ed-dv"), card.textContent!.includes("다빈치")]))
+    .toEqual([[false, false, false], [true, false, false]]);
+  act(() => poolButton("보기 방식").click());
+  act(() => popItem("목록 보기").click());
+  expect(poolRows("list").map((row) => [row.classList.contains("ed-tlsel"), row.querySelector(".ed-dv-chip")])).toEqual([[false, null], [true, null]]);
+  act(() => cutCell("c1").click()); // 컷 칸을 누르면 클립 고르기가 풀린다
+  expect(document.querySelectorAll(".ed-tlsel")).toHaveLength(0);
+});
+
 // Jay 2026-10-14 — "풀에서도 내가 다빈치에 클릭하면 어떤거 클릭했는지 표시가 되게 한다. 카드일때도 리스트일때도 … 타임라인에서도".
 //  모의 그림의 기본값(ⓐ): 표시만 한다 — 재생헤드·풀은 그대로, 다른 컷의 클립이면 타임라인이 그 컷까지 넘어간다(화면 밖일 때).
 it("다빈치에서 고른 것 — 풀의 세 보기와 타임라인 클립에 빨간 '다빈치' 표 · 표시만 · 새로 고르면 그 컷까지 넘긴다 · 풀면 사라진다", () => {

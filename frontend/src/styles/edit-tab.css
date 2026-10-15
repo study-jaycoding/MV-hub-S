@@ -238,11 +238,12 @@
 .ed-prow-head:hover { background: var(--panel); }
 /* 다빈치(미디어 풀)에서 고른 것(Jay 2026-10-14) — 공유 탭의 다빈치 확인 표시(resolve-library.css)와 같은 빨강·빛.
    썸네일 = 카드 둘레 + 아래 표 · 메타데이터 = 그림 둘레 + 이름 줄의 표 · 목록 = 줄 바탕 + 왼쪽 막대 + 표 · 타임라인은 아래 .ed-clip.ed-dv */
-.ed-card.ed-dv { box-shadow: 0 0 0 2px #ff304f, 0 0 16px 4px rgba(255, 48, 79, 0.6); }
+/* 타임라인에서 고른 클립의 카드(.ed-tlsel — Jay 2026-10-15 A)도 같은 고리·빛. 표('다빈치' 글·빨간 표)는 다빈치 것에만 */
+.ed-card.ed-dv, .ed-card.ed-tlsel { box-shadow: 0 0 0 2px #ff304f, 0 0 16px 4px rgba(255, 48, 79, 0.6); }
 .ed-card.ed-dv .card-bottom > .card-here { color: #fff; background: #ff304f; border-color: #ff304f; text-shadow: none; }
 .cd-mark.ed-dv-chip { color: #fff; background: #ff304f; border-color: #ff304f; }
-.ed-prow.ed-dv .ed-pthumb { box-shadow: 0 0 0 2px #ff304f, 0 0 10px 2px rgba(255, 48, 79, 0.55); }
-.ed-prow-list.ed-dv { background: rgba(255, 48, 79, 0.14); box-shadow: inset 3px 0 0 #ff304f; }
+.ed-prow.ed-dv .ed-pthumb, .ed-prow.ed-tlsel .ed-pthumb { box-shadow: 0 0 0 2px #ff304f, 0 0 10px 2px rgba(255, 48, 79, 0.55); }
+.ed-prow-list.ed-dv, .ed-prow-list.ed-tlsel { background: rgba(255, 48, 79, 0.14); box-shadow: inset 3px 0 0 #ff304f; }
 .ed-prow-list .ed-dv-chip { margin: 0 6px 0 0; }
 
 /* 여러 장을 골랐을 때 — 풀 아래의 막대(비교) */

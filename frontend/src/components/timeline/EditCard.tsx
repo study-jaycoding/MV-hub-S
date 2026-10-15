@@ -13,6 +13,7 @@ export interface PoolItem {
   showing: boolean; // 지금 타임라인 뷰어에 보이는 것
   source?: "S" | "L" | "R" | "LR"; // 소스 클립 판에 떠 있다(Jay 2026-10-14) — S = 싱글 뷰어, 듀얼이면 왼쪽·오른쪽·둘 다
   resolve?: boolean; // 다빈치(미디어 풀)에서 고른 것(Jay 2026-10-14) — 빨간 테두리와 '다빈치' 표
+  timeline?: boolean; // 타임라인에서 고른 클립의 카드(Jay 2026-10-15 A) — 다빈치 것과 같은 빨간 고리·빛, 표는 그대로
 }
 
 // 풀 카드의 호버 단추가 부르는 앱의 동작 — 라이브러리 격자에 주는 것과 같은 것(App). 편집 탭을 떠나게 하는 것(⬇ 가져오기·가계)과
@@ -78,7 +79,7 @@ export function EditCard({
     event.currentTarget.click();
   };
   return (
-    <div role="button" tabIndex={0} className={"ed-card" + (picked ? " ed-picked" : "") + (item.resolve ? " ed-dv" : "")}
+    <div role="button" tabIndex={0} className={"ed-card" + (picked ? " ed-picked" : "") + (item.resolve ? " ed-dv" : "") + (item.timeline ? " ed-tlsel" : "")}
       {...handlers} onKeyDown={press}
       // 라이브러리 카드는 HTML 끌기(프롬프트 재사용)다 — 풀의 끌기(타임라인에 넣기)는 마우스 끌기라 HTML 끌기가 시작되면 멈춘다
       onDragStart={(event) => event.preventDefault()}>

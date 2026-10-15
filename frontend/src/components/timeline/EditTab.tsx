@@ -479,12 +479,16 @@ function EditTabInner({
     const right = id === srcIn1;
     return !left && !right ? undefined : !ui.dual ? "S" : left && right ? "LR" : left ? "L" : "R";
   }, [srcIn0, srcIn1, ui.dual]);
+  // 타임라인에서 고른 클립의 카드 — 풀에서 다빈치에서 고른 것과 같은 빨간 고리로 보인다(Jay 2026-10-15 A, 다빈치처럼)
+  const timelinePicked = useMemo(() => new Set([...selected].map((key) => links.get(key)?.gen?.id)), [selected, links]);
   const poolItems = useMemo<PoolItem[]>(() => cutItems.map((item) => {
     const source = sourceOfGen(item.gen.id);
     const showing = item.track !== null && item.track === showingTrack;
     const resolved = resolvePicked.has(item.gen.id); // 다빈치에서 고른 것(빨간 표)
-    return showing || source || resolved ? { ...item, showing, ...(source && { source }), ...(resolved && { resolve: true }) } : item;
-  }), [cutItems, showingTrack, sourceOfGen, resolvePicked]);
+    const onTimeline = timelinePicked.has(item.gen.id);
+    return showing || source || resolved || onTimeline
+      ? { ...item, showing, ...(source && { source }), ...(resolved && { resolve: true }), ...(onTimeline && { timeline: true }) } : item;
+  }), [cutItems, showingTrack, sourceOfGen, resolvePicked, timelinePicked]);
   const tlOrder = slots.indexOf("timeline");
   const tlShown = tlOrder >= 0;
   // 재생 키(Space·J·K·L·←→·↑↓·Home·End)는 마지막에 누른 판의 시계로 간다(다빈치). 편집 키는 언제나 타임라인 것이다. 싱글이면 보이는 판.
