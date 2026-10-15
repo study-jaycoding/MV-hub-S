@@ -374,6 +374,54 @@ def test_cancelled_execute_leaves_attention(local, monkeypatch):
     assert (row["status"], json.loads(row["items"])[0]["state"]) == ("attention", "uncertain")
 
 
+@pytest.mark.parametrize("claimed", [True, False])
+def test_cancel_while_claiming_leaves_attention_only_for_a_real_claim(local, monkeypatch, claimed):
+    # Codex 리뷰 P2 — 실행권을 잡는 동안 응답이 끊겨 취소되면 큐 0·항목 pending·계획 executing 으로 멈췄다.
+    #  실제로 잡았으면 '주의'로, 못 잡았으면(경쟁 실행) 손대지 않는다
+    import threading
+    from starlette.requests import Request
+    configure(local)
+    plan = prepare(local)
+    release, entered = threading.Event(), threading.Event()
+    real_claim = store.claim_plan
+    def slow_claim(*args):
+        entered.set()
+        release.wait(5)
+        return real_claim(*args) if claimed else False
+    monkeypatch.setattr(store, "claim_plan", slow_claim)
+    async def never(*args):
+        raise AssertionError("cancelled before claiming must not submit")
+    monkeypatch.setattr(gen_requests, "create_gen_request", never)
+    request = Request({"type": "http", "method": "POST", "path": "/api/mcp/v2/client/action", "headers": [], "state": {}})
+    ctx = api._capture(request, local[1]["codex"]["secret"])
+    async def run():
+        task = asyncio.create_task(api._execute(ctx, plan["id"]))
+        await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    with active_account.pinned_account_scope(ctx.pin):
+        asyncio.run(run())
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT status FROM mcp_generation_plan WHERE id=?", (plan["id"],)).fetchone()[0] == ("attention" if claimed else "planned")
+
+
+def test_backup_copy_scene_is_marked_in_the_listing(local):
+    # 옛 창 사본(bk_*)은 그 사본을 연 브라우저에서만 붙는다 — 목록에서 사본임을 알린다(Codex 리뷰 P2)
+    configure(local)
+    client = store.client_for_secret(api.mcp.digest(local[1]["codex"]["secret"]))
+    _scene_row(client, "original")
+    copy = json.dumps({"id": "bk_copy", "name": "x (옛 창 사본)", "backupForkOf": {"id": "original", "sum": "s"}})
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO scene_backup(owner_uid,project_id,scene_id,name,data,data_hash) VALUES(?,?,?,?,?,?)",
+                     (client["owner_uid"], "", "bk_copy", "x (옛 창 사본)", copy, hashlib.sha256(copy.encode()).hexdigest()))
+    scenes = {scene["id"]: scene for scene in action(local, "read_context", {"kind": "scenes"}).json()["scenes"]}
+    assert scenes["bk_copy"]["backup_copy"] is True and "원래 씬" in scenes["bk_copy"]["note"]
+    assert "backup_copy" not in scenes["original"]
+
+
 def test_attention_plan_shows_submitted_once_the_queue_confirms_every_item(local):
     configure(local)
     plan = prepare(local)

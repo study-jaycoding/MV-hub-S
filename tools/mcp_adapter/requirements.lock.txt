@@ -1,6 +1,6 @@
 # MCP 어댑터 번들 의존성 — 판과 지문(SHA256)을 고정한다. 릴리스는 --require-hashes --only-binary=:all: 로 설치해
-# 지문이 다르거나 휠이 없으면 멈춘다(소스 빌드로 우회하지 않음). 갱신: Python 3.14 x64 로 `pip download --only-binary=:all: --no-deps`
-# 한 뒤 받은 휠의 SHA256 을 적는다(tools/mcp_adapter/README.md '번들 의존성 갱신').
+# 지문이 다르거나 휠이 없으면 멈춘다(소스 빌드로 우회하지 않음). 갱신 순서는 tools/mcp_adapter/README.md 의 '번들 의존성 갱신'
+# (직접 요구 requirements.txt 로 하위 의존성까지 새로 받아 전부의 SHA256 을 적는다).
 
 annotated-types==0.8.0 \
     --hash=sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0

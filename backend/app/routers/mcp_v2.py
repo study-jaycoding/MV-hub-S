@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import hmac
 import importlib.util
@@ -405,7 +406,11 @@ def _scenes(ctx, ws):
         else:
             matches = not assigned or (isinstance(assigned, dict) and assigned.get("scope") == "personal")
         if matches:
-            result.append({"id": row["id"], "name": row.get("name") or scene.get("name")})
+            entry = {"id": row["id"], "name": row.get("name") or scene.get("name")}
+            if scene.get("backupForkOf"):
+                # 옛 창 사본(bk_*) — 그 사본을 가져온 브라우저에서만 붙는다. 원래 씬에서 갈라진 사본이라 고르지 않게 알린다(Codex 리뷰 P2)
+                entry.update(backup_copy=True, note="옛 창 사본입니다. 이 사본을 연 브라우저에서만 캔버스에 붙습니다 — 보통은 원래 씬을 고르세요.")
+            result.append(entry)
     return result
 
 
@@ -956,7 +961,19 @@ async def _execute(ctx, plan_id):
     if plan["status"] != "planned":
         return _public_plan(plan)
     ws = await _validate_items(ctx, plan["items"], plan["workspace"])
-    if not await asyncio.to_thread(store.claim_plan, ctx.client, plan_id, plan["workspace"]):
+    # 실행권 선점도 끝까지 기다린다 — 선점 중 응답이 끊겨 취소되면, 실제로 선점했을 때만 '주의'로 남긴다(아무 항목도 안 보냈다).
+    #  그냥 두면 큐 0·항목 pending·계획 executing 으로 멈춰 같은 프로세스에선 다시 실행도 못 했다(Codex 리뷰 P2). 경쟁 실행의 계획은 건드리지 않는다.
+    claim = asyncio.ensure_future(asyncio.to_thread(store.claim_plan, ctx.client, plan_id, plan["workspace"]))
+    try:
+        claimed = await asyncio.shield(claim)
+    except asyncio.CancelledError:
+        while not claim.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(claim)
+        if not claim.cancelled() and claim.exception() is None and claim.result():
+            await to_thread_non_abandon(store.update_plan, plan_id, plan["items"], "attention")
+        raise
+    if not claimed:
         return _public_plan(await asyncio.to_thread(store.get_plan, ctx.client, plan_id))
     # 계획 쓰기는 끝까지 기다린다(to_thread_non_abandon) — 응답이 끊겨 이 작업이 취소돼도 뒤늦게 끝난 쓰기가 아래 '주의'를 덮지 않게.
     try:
