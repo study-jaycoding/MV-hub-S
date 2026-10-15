@@ -223,6 +223,24 @@ it("a right-click that closes a full-screen catcher (info popup) opens nothing �
   expect(onOpenFolder).toHaveBeenCalledTimes(1);
 });
 
+// 왼쪽을 누른 채 오른쪽을 더 누르면 새 pointerdown 이 없다(pointermove 의 button 2) — 그 사이 열린 메뉴가 있으면 폴더 창을 열지 않는다(Codex 리뷰)
+it("a chorded right press (another button still held) records the cover too — a menu opened meanwhile keeps the folder closed", async () => {
+  const onOpenFolder = vi.fn();
+  await boardWith([gen()], onOpenFolder);
+  const card = target("g1");
+  await act(async () => { card.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, buttons: 1 })); }); // 왼쪽을 누른 채
+  const menu = {};
+  openLayer(menu, nextLayerSeq()); // 그 사이 키보드로 메뉴를 열었다
+  await act(async () => { card.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, button: 2, buttons: 3 })); }); // 오른쪽을 더 누름
+  const opened = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 });
+  await act(async () => { card.dispatchEvent(opened); });
+  closeLayer(menu);
+  await act(async () => { card.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, button: 0 })); });
+  expect(onOpenFolder).not.toHaveBeenCalled();
+  await rightClick(card); // 다음 우클릭은 연다
+  expect(onOpenFolder).toHaveBeenCalledTimes(1);
+});
+
 it("the chip's rules add no compositing layers — no backdrop-filter, mask, will-change, transform or animation", () => {
   const strip = (name: string) => readFileSync(new NodeURL(`../src/styles/${name}.css`, import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   const rules = ["generations", "scene"].flatMap((name) => [...strip(name).matchAll(/([^{}]+)\{([^{}]*)\}/g)])
