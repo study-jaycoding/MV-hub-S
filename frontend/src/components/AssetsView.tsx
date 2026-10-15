@@ -822,6 +822,9 @@ export function AssetsView({ onInfo, onPreview }: Props) {
                 {p}
               </option>
             ))}
+            {/* 목록에 없는 지금 프로젝트(다른 팀 목록이 왔는데 쓰던 코멘트 때문에 머물렀다 — Jay 결정 5A) — 상자가 엉뚱한 이름을 보이지 않고,
+                새 목록의 프로젝트를 고르면 바뀌게 그대로 둔다(Codex 5A 재검토) */}
+            {project && !projects.includes(project) && <option value={project}>{project}</option>}
           </select>
           {searchActive ? (
             <span className="crumb-search">
