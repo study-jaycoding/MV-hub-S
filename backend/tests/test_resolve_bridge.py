@@ -541,6 +541,47 @@ class ResolveBridgeTests(unittest.TestCase):
             [item["generation_id"] for item in result["items"]], ["g1", "g2"]
         )
 
+    def _episode(self):
+        return self._child(self._child(self._child(self.pool.root, "MV Hub"), "프로젝트_테스트"), "ep001")
+
+    def _send_one(self, folder_path, name="extra"):
+        source = self.root / f"{name}.mp4"
+        source.write_bytes(name.encode())
+        item = {"generation_id": name, "folder_path": folder_path, "local_path": str(source), "status": "downloaded"}
+        return import_manifest_to_current_project(
+            {**self._manifest(), "folder_paths": [folder_path], "items": [item]}, resolve=self.resolve
+        )
+
+    def test_sending_into_an_existing_bin_does_not_look_up_every_sibling_again(self):
+        # 실제 Resolve 21.1.1(시험 프로젝트): 형제 300 이면 클립 1개 보내기 9.5초 — 그중 8.8~9.0초가 이미 있는 Bin 을 모두 다시 찾는 데 갔다.
+        #  찾는 수가 형제 수와 무관해야 한다(MV Hub·프로젝트·에피소드·컷 각 1번 = 4).
+        import_manifest_to_current_project(self._manifest(), resolve=self.resolve)
+        counts = []
+        for siblings in (10, 60):
+            episode = self._episode()
+            while len(episode.children) < siblings:
+                episode.children.append(FakeFolder(f"c{len(episode.children) + 1:04d}0"))
+            with mock.patch.object(resolve_bridge, "_subfolder", wraps=resolve_bridge._subfolder) as lookups:
+                result = self._send_one("ep001/c0010", f"one-{siblings}")
+            counts.append((result["status"], result["imported"], lookups.call_count, len(episode.children)))
+        self.assertEqual(counts, [("complete", 1, 4, 10), ("complete", 1, 4, 60)])
+
+    def test_case_and_korean_normalization_differences_reuse_the_existing_bin(self):
+        import unicodedata
+        nfc = "컷0010"
+        self._send_one(f"ep001/{nfc}", "first")
+        self._send_one(f"EP001/{unicodedata.normalize('NFD', nfc)}", "second")  # 대소문자·자모 분리만 다르다
+        project = self._child(self._child(self.pool.root, "MV Hub"), "프로젝트_테스트")
+        self.assertEqual([folder.name for folder in project.children], ["ep001"])
+        self.assertEqual([(folder.name, len(folder.clips)) for folder in self._episode().children], [(nfc, 2)])
+
+    def test_a_missing_bin_is_still_created_after_the_existing_ones(self):
+        import_manifest_to_current_project(self._manifest(), resolve=self.resolve)
+        result = self._send_one("ep001/c0030", "third")
+        self.assertEqual((result["status"], result["imported"]), ("complete", 1))
+        self.assertEqual([folder.name for folder in self._episode().children], ["c0010", "c0020", "c0030"])
+        self.assertEqual(self.manager.saved, 2)  # 새 Bin·클립이 들었으니 저장한다
+
     def test_previous_folder_catalog_does_not_create_unselected_bins(self):
         manifest = self._manifest()
         manifest["items"] = [manifest["items"][0]]

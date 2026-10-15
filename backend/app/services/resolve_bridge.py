@@ -946,6 +946,7 @@ def _reconcile_folder_tree_visible(
     옮기기·Bin 지우기 **하나마다** 부른다(Codex 재검토 2026-10-13: 묶음 경계만 보면 그 사이의 여러 쓰기가 바뀐 프로젝트로 간다).
     다시 짓는 도중에 바뀌면 되돌리지도 저장하지도 않고, 남은 임시 Bin·백업을 담은 _ProjectChanged 로 끝낸다."""
     actual_nodes, actual_children = _scan_actual_tree(managed_root)
+    requested_paths = set(desired_paths)
     # 과거 목록 파일은 읽지 않는다. Resolve에 이미 있는 Bin은 보존하고,
     # 이번에 선택한 경로만 더해 자연 정렬 대상을 만든다.
     desired_paths = set(desired_paths)
@@ -964,7 +965,15 @@ def _reconcile_folder_tree_visible(
 
     if not rebuild_needed:
         before_count = len(actual_nodes)
-        _create_tree(media_pool, managed_root, desired_paths, guard)
+        # 없는 경로만 만든다 — 있는 Bin 까지 모두 다시 찾으면(형제마다 이름 비교 + 프로젝트 확인) 형제 수의 제곱으로 늘어
+        # 형제 300 이면 클립 1개 보내기가 9.5초였다(실제 Resolve 21.1.1 시험 프로젝트, 그중 이 단계 8.8~9.0초).
+        # 요청 경로만 본다 — 실제 Bin 이름은 생성 이름 정리를 거치지 않았을 수 있어 정리하면 다른 키가 된다(Codex 설계 검토).
+        missing = {
+            path for path in requested_paths
+            if _path_identity(tuple(_folder_name(part, "미분류") for part in path if part)) not in actual_nodes
+        }
+        if missing:
+            _create_tree(media_pool, managed_root, missing, guard)
         return len(desired_nodes) > before_count, ""
 
     move_clips = getattr(media_pool, "MoveClips", None)
