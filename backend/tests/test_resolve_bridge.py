@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,9 +14,16 @@ from app.services.resolve_bridge import import_manifest_to_current_project
 
 
 class FakeClip:
+    _next_id = 0
+
     def __init__(self, path: str):
+        type(self)._next_id += 1
+        self.unique_id = f"clip-{type(self)._next_id}"
         self.path = path
         self.third_party_metadata = {}
+
+    def GetUniqueId(self):
+        return self.unique_id
 
     def GetClipProperty(self, key=None):
         props = {"File Path": self.path, "Clip Name": Path(self.path).name}
@@ -541,6 +550,47 @@ class ResolveBridgeTests(unittest.TestCase):
             [item["generation_id"] for item in result["items"]], ["g1", "g2"]
         )
 
+    def _episode(self):
+        return self._child(self._child(self._child(self.pool.root, "MV Hub"), "프로젝트_테스트"), "ep001")
+
+    def _send_one(self, folder_path, name="extra"):
+        source = self.root / f"{name}.mp4"
+        source.write_bytes(name.encode())
+        item = {"generation_id": name, "folder_path": folder_path, "local_path": str(source), "status": "downloaded"}
+        return import_manifest_to_current_project(
+            {**self._manifest(), "folder_paths": [folder_path], "items": [item]}, resolve=self.resolve
+        )
+
+    def test_sending_into_an_existing_bin_does_not_look_up_every_sibling_again(self):
+        # 실제 Resolve 21.1.1(시험 프로젝트): 형제 300 이면 클립 1개 보내기 9.5초 — 그중 8.8~9.0초가 이미 있는 Bin 을 모두 다시 찾는 데 갔다.
+        #  찾는 수가 형제 수와 무관해야 한다(MV Hub·프로젝트·에피소드·컷 각 1번 = 4).
+        import_manifest_to_current_project(self._manifest(), resolve=self.resolve)
+        counts = []
+        for siblings in (10, 60):
+            episode = self._episode()
+            while len(episode.children) < siblings:
+                episode.children.append(FakeFolder(f"c{len(episode.children) + 1:04d}0"))
+            with mock.patch.object(resolve_bridge, "_subfolder", wraps=resolve_bridge._subfolder) as lookups:
+                result = self._send_one("ep001/c0010", f"one-{siblings}")
+            counts.append((result["status"], result["imported"], lookups.call_count, len(episode.children)))
+        self.assertEqual(counts, [("complete", 1, 4, 10), ("complete", 1, 4, 60)])
+
+    def test_case_and_korean_normalization_differences_reuse_the_existing_bin(self):
+        import unicodedata
+        nfc = "컷0010"
+        self._send_one(f"ep001/{nfc}", "first")
+        self._send_one(f"EP001/{unicodedata.normalize('NFD', nfc)}", "second")  # 대소문자·자모 분리만 다르다
+        project = self._child(self._child(self.pool.root, "MV Hub"), "프로젝트_테스트")
+        self.assertEqual([folder.name for folder in project.children], ["ep001"])
+        self.assertEqual([(folder.name, len(folder.clips)) for folder in self._episode().children], [(nfc, 2)])
+
+    def test_a_missing_bin_is_still_created_after_the_existing_ones(self):
+        import_manifest_to_current_project(self._manifest(), resolve=self.resolve)
+        result = self._send_one("ep001/c0030", "third")
+        self.assertEqual((result["status"], result["imported"]), ("complete", 1))
+        self.assertEqual([folder.name for folder in self._episode().children], ["c0010", "c0020", "c0030"])
+        self.assertEqual(self.manager.saved, 2)  # 새 Bin·클립이 들었으니 저장한다
+
     def test_previous_folder_catalog_does_not_create_unselected_bins(self):
         manifest = self._manifest()
         manifest["items"] = [manifest["items"][0]]
@@ -889,6 +939,497 @@ class ResolveBridgeTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "unavailable")
         self.assertIn("API disconnected", result["error"])
+
+
+# ── 빠른 Bin 정렬(MoveFolders) — 꼬리만 옮기기·고유 ID 검증·되돌리기·복구 기록 (Codex 설계 v3 승인 2026-10-16) ─────────────
+
+
+class Crash(BaseException):
+    """프로세스가 그 자리에서 죽은 것 — 같은 실행의 되돌리기 코드가 돌지 않는다."""
+
+
+class MovingMediaPool(FakeMediaPool):
+    """MoveFolders 를 흉내 낸다 — 목록 순서대로 대상의 끝에 붙인다. fail[n] 이 있으면 n 번째(1부터) 호출을 그 함수로 바꾼다."""
+
+    def __init__(self):
+        super().__init__()
+        self.move_calls: list[list[str]] = []
+        self.fail = {}
+
+    def do_move(self, folders, target):
+        for folder in folders:
+            self._parent_of(folder).children.remove(folder)
+            target.children.append(folder)
+        return True
+
+    def MoveFolders(self, folders, target):
+        self.move_calls.append([folder.name for folder in folders])
+        hook = self.fail.get(len(self.move_calls))
+        return hook(list(folders), target) if hook else self.do_move(folders, target)
+
+
+class FastBinSortTests(unittest.TestCase):
+    VERSION = [21, 1, 1, 8, ""]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.pool = MovingMediaPool()
+        self.manager = FakeProjectManager(FakeProject(self.pool))
+        self.resolve = FakeResolve(self.manager)
+        self.resolve.GetVersion = lambda: list(self.VERSION)
+        patcher = mock.patch.object(
+            resolve_bridge, "_MOVE_FOLDERS_TESTED", frozenset({tuple(str(part) for part in self.VERSION)})
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        project = self._add(self._add(self.pool.root, "MV Hub"), "프로젝트_테스트")
+        self.episode = self._add(project, "ep001")
+        self.episode.clips.append(self._clip("ep-direct"))
+        self.existing = {name: self._add(self.episode, name) for name in ("c0020", "c0030", "c0040")}
+        self.existing["c0020"].clips.append(self._clip("a"))
+        self._add(self.existing["c0030"], "sub").clips.append(self._clip("b"))
+        self.saved_before = self.manager.saved
+        self.clip_ids_before = self._clip_ids()
+
+    def _clip_ids(self):
+        return ([c.unique_id for c in self.existing["c0020"].clips], [c.unique_id for c in self.existing["c0030"].children[0].clips],
+                [c.unique_id for c in self.episode.clips])
+
+    @staticmethod
+    def _add(parent, name):
+        folder = FakeFolder(name)
+        parent.children.append(folder)
+        return folder
+
+    def _clip(self, name):
+        return FakeClip(str(self.root / f"{name}.mp4"))
+
+    def _send(self, *folders):
+        items = []
+        for index, folder in enumerate(folders or ("ep001/c0010",), 1):
+            source = self.root / f"new-{index}-{folder.replace('/', '_')}.mp4"
+            source.write_bytes(b"x")
+            items.append({"generation_id": f"g{index}", "folder_path": folder, "local_path": str(source), "status": "downloaded"})
+        manifest = {
+            "project_id": "p1",
+            "project_name": "프로젝트/테스트",
+            "manifest_root": str(self.root / "@davinci"),
+            "folder_paths": [item["folder_path"] for item in items],
+            "items": items,
+        }
+        return import_manifest_to_current_project(manifest, resolve=self.resolve)
+
+    def _current_episode(self):
+        # 기존 다시 짓기는 Bin 을 지우고 새로 만든다 — 이름으로 다시 찾는다
+        folder = self.pool.root
+        for name in ("MV Hub", "프로젝트_테스트", "ep001"):
+            folder = next(child for child in folder.children if child.name == name)
+        return folder
+
+    def _names(self, folder=None):
+        return [child.name for child in (folder or self._current_episode()).children]
+
+    def _records(self):
+        return sorted((self.root / "@davinci" / ".mvhub" / "resolve-recovery").glob("*.json"))
+
+    def _staging(self):
+        return [folder for folder in self.pool.root.children if folder.name.startswith("__MVHUB_SORT_")]
+
+    def _assert_old_bins_kept(self):
+        for name, folder in self.existing.items():
+            self.assertIs(next(child for child in self.episode.children if child.name == name), folder)
+        self.assertEqual(self._clip_ids(), self.clip_ids_before)  # 같은 클립(고유 ID)이 같은 Bin 에
+
+    def _assert_sorted_and_clean(self, result):
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(self._names(), ["c0010", "c0020", "c0030", "c0040"])
+        self.assertEqual((self._staging(), self._records()), ([], []))
+
+    # 정상
+    def test_front_insert_moves_only_the_tail_and_keeps_the_same_bins_and_clips(self):
+        with mock.patch.object(self.pool, "MoveClips", wraps=self.pool.MoveClips) as move_clips:
+            result = self._send()
+        self._assert_sorted_and_clean(result)
+        self._assert_old_bins_kept()
+        self.assertEqual(self.pool.move_calls, [["c0020", "c0030", "c0040"], ["c0010", "c0020", "c0030", "c0040"]])
+        move_clips.assert_not_called()  # 클립을 옮겨 다시 짓지 않았다
+        self.assertTrue(Path(result["folder_order_backup"]).is_file())
+        self.assertEqual(len(next(c for c in self.episode.children if c.name == "c0010").clips), 1)
+
+    def test_middle_insert_moves_only_the_bins_after_it(self):
+        result = self._send("ep001/c0035")
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(self._names(), ["c0020", "c0030", "c0035", "c0040"])
+        self.assertEqual(self.pool.move_calls, [["c0040"], ["c0035", "c0040"]])
+        self._assert_old_bins_kept()
+
+    def test_two_broken_parents_are_sorted_one_after_another(self):
+        other = self._add(self.pool._parent_of(self.episode), "ep002")
+        self._add(other, "c0020")
+        result = self._send("ep001/c0010", "ep002/c0010")
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual((self._names(), self._names(other)), (["c0010", "c0020", "c0030", "c0040"], ["c0010", "c0020"]))
+        self.assertEqual(len(self.pool.move_calls), 4)
+        self.assertEqual((self._staging(), self._records()), ([], []))
+
+    # 자격 없음 — 옮기지 않고 기존 다시 짓기
+    def _assert_old_rebuild(self, result):
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(self._names(), ["c0010", "c0020", "c0030", "c0040"])
+        self.assertEqual((self._staging(), self._records()), ([], []))
+        episode = self._current_episode()
+        self.assertEqual(sum(len(c.clips) for c in episode.children), 2)  # c0020 의 클립 + 새로 가져온 것
+        self.assertEqual((len(episode.clips), len(next(c for c in episode.children if c.name == "c0030").children[0].clips)), (1, 1))
+
+    def test_untested_build_of_the_same_minor_version_uses_the_old_rebuild(self):
+        self.resolve.GetVersion = lambda: [21, 1, 1, 9, ""]
+        self._assert_old_rebuild(self._send())
+        self.assertEqual(self.pool.move_calls, [])
+
+    def test_empty_allow_list_or_unreadable_version_uses_the_old_rebuild(self):
+        with mock.patch.object(resolve_bridge, "_MOVE_FOLDERS_TESTED", frozenset()):
+            self._assert_old_rebuild(self._send())
+        self.assertEqual(self.pool.move_calls, [])
+
+    def test_unreadable_clip_id_or_folder_list_uses_the_old_rebuild(self):
+        self.existing["c0020"].clips[0].unique_id = ""
+        self._assert_old_rebuild(self._send())
+        self.assertEqual(self.pool.move_calls, [])
+
+    def test_folder_list_that_answers_none_is_not_treated_as_empty(self):
+        self.existing["c0040"].GetSubFolderList = lambda: None
+        self._assert_old_rebuild(self._send())
+        self.assertEqual(self.pool.move_calls, [])
+
+    # 실패 → 처음 상태로 돌아간 것을 확인 → 기존 다시 짓기
+    def test_first_move_refused_without_moving_falls_back(self):
+        self.pool.fail[1] = lambda folders, target: False
+        self._assert_old_rebuild(self._send())
+        self.assertEqual(len(self.pool.move_calls), 1)
+
+    def test_first_move_partly_done_is_moved_back_then_falls_back(self):
+        self.pool.fail[1] = lambda folders, target: (self.pool.do_move(folders[:1], target), False)[1]
+        self._assert_old_rebuild(self._send())
+        self.assertEqual(self.pool.move_calls[1], ["c0020"])  # 되돌리기
+
+    def test_second_move_in_the_wrong_order_is_undone_then_falls_back(self):
+        self.pool.fail[2] = lambda folders, target: self.pool.do_move(list(reversed(folders)), target)
+        self._assert_old_rebuild(self._send())
+
+    def test_second_move_partly_done_then_error_is_undone_then_falls_back(self):
+        def half(folders, target):
+            self.pool.do_move(folders[:2], target)
+            raise RuntimeError("API 끊김")
+        self.pool.fail[2] = half
+        self._assert_old_rebuild(self._send())
+
+    def test_staging_call_failed_without_making_anything_falls_back(self):
+        real = self.pool.AddSubFolder
+
+        def add(parent, name):
+            if name.startswith("__MVHUB_SORT_"):
+                raise RuntimeError("API 끊김")  # 아무것도 만들지 않고 실패
+            return real(parent, name)
+
+        self.pool.AddSubFolder = add
+        self._assert_old_rebuild(self._send())
+        self.assertEqual(self.pool.move_calls, [])
+
+    def test_staging_bin_made_but_the_call_failed_stops_without_guessing(self):
+        # 설계 D — 부수효과가 남았으면 추측으로 지우지 않고 멈춘다(Codex 구현 리뷰 P1)
+        real = self.pool.AddSubFolder
+
+        def add(parent, name):
+            folder = real(parent, name)
+            if name.startswith("__MVHUB_SORT_"):
+                raise RuntimeError("API 끊김")
+            return folder
+
+        self.pool.AddSubFolder = add
+        result = self._send()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        self.assertEqual((self.pool.move_calls, self.pool.import_calls, len(self._staging())), ([], [], 1))
+
+    def test_name_read_error_after_making_the_staging_bin_stops(self):
+        # Codex 재확인 P1 — 이름 읽기의 일반 예외가 정렬 오류로 삼켜져 가져오기·저장이 이어졌다
+        real = self.pool.AddSubFolder
+
+        def add(parent, name):
+            folder = real(parent, name)
+            if name.startswith("__MVHUB_SORT_"):
+                folder.GetName = mock.Mock(side_effect=RuntimeError("API 끊김"))
+            return folder
+
+        self.pool.AddSubFolder = add
+        result = self._send()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        self.assertEqual((self.pool.import_calls, self.manager.saved), ([], self.saved_before + 1))
+
+    def test_stop_at_the_first_check_leaves_a_record_the_next_send_settles(self):
+        other = FakeProject(FakeMediaPool())
+        other.unique_id = "resolve-project-2"
+        started = self.manager.project
+        real = resolve_bridge._write_recovery_record
+
+        def write_then_switch(path, record):
+            real(path, record)
+            if record["stage"] == "planned":
+                self.manager.project = other  # 첫 쓰기 직전 확인에서 멈춘다
+
+        with mock.patch.object(resolve_bridge, "_write_recovery_record", side_effect=write_then_switch):
+            result = self._send()
+        self.assertEqual(result["error_code"], "project_changed")
+        self.assertEqual((len(self._records()), self._staging(), self.pool.move_calls), (1, [], []))
+        self.manager.project = started
+        self._assert_sorted_and_clean(self._send())  # (가) 처음 상태 — 풀고 이어 간다
+
+    def test_new_bin_whose_id_cannot_be_read_is_kept_and_stops(self):
+        real = self.pool.AddSubFolder
+
+        def add(parent, name):
+            folder = real(parent, name)
+            if name == "c0010":
+                folder.GetUniqueId = mock.Mock(side_effect=RuntimeError("API 끊김"))  # 만들었지만 기록할 고유 ID 가 없다
+            return folder
+
+        self.pool.AddSubFolder = add
+        result = self._send()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        self.assertIn("c0010", [folder.name for folder in self._staging()[0].children])  # 모르는 Bin 은 지우지 않았다
+        self.assertEqual(self.pool.import_calls, [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction")
+    def test_record_behind_a_junction_still_blocks(self):
+        import _winapi
+
+        outside = self.root / "elsewhere"
+        outside.mkdir()
+        key = resolve_bridge._recovery_record_path(
+            outside, "resolve-project-1", resolve_bridge._path_identity(("MV Hub", "프로젝트_테스트"))
+        )
+        key.write_text("{not json", encoding="utf-8")
+        mvhub = self.root / "@davinci" / ".mvhub"
+        mvhub.mkdir(parents=True)
+        link = mvhub / "resolve-recovery"
+        _winapi.CreateJunction(str(outside), str(link))
+        self.addCleanup(os.rmdir, link)  # junction 은 지우기 전에 뗀다(안의 것을 따라 지우지 않게)
+        self.assertEqual(self._send()["error_code"], "rebuild_recovery_pending")
+        self.assertEqual(self.pool.import_calls, [])
+
+    def test_record_update_failure_mid_way_stops_and_keeps_the_last_record(self):
+        real, calls = resolve_bridge._write_recovery_record, []
+
+        def flaky(path, record):
+            calls.append(record["stage"])
+            if len(calls) == 3:  # planned · staging_created · (moved_out 에서 실패)
+                raise OSError("디스크 가득")
+            return real(path, record)
+
+        with mock.patch.object(resolve_bridge, "_write_recovery_record", side_effect=flaky):
+            result = self._send()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        self.assertEqual((len(self.pool.move_calls), self.pool.import_calls), (1, []))  # 되돌리지 않았다
+        self.assertEqual(json.loads(self._records()[0].read_text(encoding="utf-8"))["stage"], "staging_created")
+        self.assertEqual(self._send()["error_code"], "rebuild_recovery_pending")
+
+    def test_restore_never_deletes_a_bin_it_did_not_make(self):
+        def half_then_user_bin(folders, target):
+            self.pool.do_move(folders[:2], target)
+            self._add(self.episode, "사람이 만든 Bin")  # 비어 있지만 이번에 만든 것이 아니다
+            return False
+
+        self.pool.fail[2] = half_then_user_bin
+        result = self._send()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        self.assertIn("사람이 만든 Bin", self._names())
+
+    def test_duplicate_clip_ids_are_not_trusted(self):
+        self.existing["c0030"].children[0].clips[0].unique_id = self.existing["c0020"].clips[0].unique_id
+        self._assert_old_rebuild(self._send())
+        self.assertEqual(self.pool.move_calls, [])
+
+    def test_second_parent_failure_keeps_the_first_parent_sorted(self):
+        other = self._add(self.pool._parent_of(self.episode), "ep002")
+        self._add(other, "c0020")
+        self.pool.fail[3] = lambda folders, target: (self.pool.do_move(folders, target), False)[1]  # ep002 빼기: 다 옮기고 거짓
+        self.pool.fail[4] = lambda folders, target: False  # 되돌리기 거절
+        result = self._send("ep001/c0010", "ep002/c0010")
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        self.assertEqual(self._names(), ["c0010", "c0020", "c0030", "c0040"])  # 앞 부모는 끝난 그대로
+        self._assert_old_bins_kept()
+
+    def test_unreadable_state_during_restore_stops(self):
+        def half_then_unreadable(folders, target):
+            self.pool.do_move(folders[:2], target)
+            self.existing["c0040"].GetClipList = lambda: None
+            return False
+
+        self.pool.fail[2] = half_then_unreadable
+        self.assertEqual(self._send()["error_code"], "rebuild_recovery_needed")
+
+    def test_record_that_cannot_be_removed_after_sorting_stops(self):
+        real_unlink = Path.unlink
+
+        def unlink(path, *args, **kwargs):
+            if path.parent.name == "resolve-recovery":
+                raise OSError("잠김")
+            return real_unlink(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "unlink", autospec=True, side_effect=unlink):
+            result = self._send()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        self.assertEqual(self.pool.import_calls, [])
+        self._assert_settles_now_that_the_record_can_be_removed()
+
+    def _assert_settles_now_that_the_record_can_be_removed(self):
+        self._assert_sorted_and_clean(self._send())  # (나) 끝난 상태 — 다음 보내기가 풀고 이어 간다
+
+    # 확인이 안 되면 멈춘다 — 가져오기·추가 저장 없음, 기록은 남는다
+    def _stop_with_tails_in_staging(self):
+        self.pool.fail[1] = lambda folders, target: (self.pool.do_move(folders, target), False)[1]
+        self.pool.fail[2] = lambda folders, target: False  # 되돌리기도 거절
+        return self._send()
+
+    def test_unconfirmed_restore_stops_everything_and_keeps_the_record(self):
+        result = self._stop_with_tails_in_staging()
+        self.assertEqual((result["status"], result["error_code"]), ("unavailable", "rebuild_recovery_needed"))
+        self.assertTrue(result["rebuild_staging_bin"].startswith("__MVHUB_SORT_"))
+        self.assertTrue(Path(result["rebuild_recovery_record"]).is_file())
+        self.assertTrue(Path(result["folder_order_backup"]).is_file())
+        self.assertEqual(self.pool.import_calls, [])
+        self.assertEqual(self.manager.saved, self.saved_before + 1)  # 백업 직전 저장 하나뿐 — 실패 뒤 추가 저장 없음
+        self.assertEqual([f.name for f in self._staging()[0].children], ["c0020", "c0030", "c0040"])
+
+    def test_next_send_is_blocked_until_the_bins_are_back_then_continues(self):
+        self._stop_with_tails_in_staging()
+        self.pool.fail.clear()
+        blocked = self._send("ep001/c0050")  # 정렬이 필요 없는 보내기도 막힌다
+        self.assertEqual(blocked["error_code"], "rebuild_recovery_pending")
+        self.assertNotIn("c0050", self._names())
+        self.assertEqual(self.pool.import_calls, [])
+
+        staging = self._staging()[0]  # 사람이 원래 자리로 옮기고 빈 임시 Bin 을 지웠다
+        for name in ("c0020", "c0030", "c0040"):
+            self.pool.do_move([self.existing[name]], self.episode)
+        self.pool.root.children.remove(staging)
+        self._assert_sorted_and_clean(self._send())
+
+    def test_unreadable_or_foreign_record_blocks(self):
+        self._stop_with_tails_in_staging()
+        record = self._records()[0]
+        record.write_text("{not json", encoding="utf-8")
+        self.assertEqual(self._send()["error_code"], "rebuild_recovery_pending")
+        self.manager.project.unique_id = ""  # 프로젝트 ID 를 못 읽으면 기록의 주인을 모른다
+        self.assertEqual(self._send()["error_code"], "rebuild_recovery_pending")
+
+    # 프로세스가 죽은 뒤의 다음 보내기 — (가) 처음 상태 · (나) 끝난 상태만 풀린다
+    def _move_then_crash(self, folders, target):
+        self.pool.do_move(folders, target)
+        raise Crash()
+
+    def test_crash_after_moving_out_blocks_until_restored(self):
+        self.pool.fail[1] = self._move_then_crash
+        with self.assertRaises(Crash):
+            self._send()
+        self.pool.fail.clear()
+        self.assertEqual(self._send()["error_code"], "rebuild_recovery_pending")
+        staging = self._staging()[0]
+        self.pool.do_move([self.existing[name] for name in ("c0040", "c0020", "c0030")], self.episode)  # 순서는 달라도 된다
+        self.pool.root.children.remove(staging)
+        self._assert_sorted_and_clean(self._send())
+
+    def test_crash_after_moving_back_settles_once_the_empty_staging_bin_is_gone(self):
+        self.pool.fail[2] = self._move_then_crash
+        with self.assertRaises(Crash):
+            self._send()
+        self.pool.fail.clear()
+        self.assertEqual(self._send()["error_code"], "rebuild_recovery_pending")  # 빈 임시 Bin 이 남았다
+        self.pool.root.children.remove(self._staging()[0])
+        self._assert_sorted_and_clean(self._send())  # (나) — 정렬은 이미 끝나 있다
+        self.assertEqual(len(self.pool.move_calls), 2)
+
+    def test_crash_then_a_different_empty_bin_in_the_new_bins_place_does_not_settle(self):
+        self.pool.fail[2] = self._move_then_crash
+        with self.assertRaises(Crash):
+            self._send()
+        self.pool.fail.clear()
+        self.pool.root.children.remove(self._staging()[0])
+        index = self._names().index("c0010")
+        self.episode.children[index] = FakeFolder("c0010")  # 이름은 같지만 이번에 만든 Bin 이 아니다
+        self.assertEqual(self._send()["error_code"], "rebuild_recovery_pending")
+
+    def test_crash_then_an_unexpected_root_bin_does_not_settle(self):
+        self.pool.fail[2] = self._move_then_crash
+        with self.assertRaises(Crash):
+            self._send()
+        self.pool.fail.clear()
+        self._staging()[0].name = "이름이 바뀐 임시 Bin"  # 지운 줄 알았는데 남아 있다
+        self.assertEqual(self._send()["error_code"], "rebuild_recovery_pending")
+
+    def test_crash_after_moving_back_with_something_put_in_the_new_bin_does_not_settle(self):
+        self.pool.fail[2] = self._move_then_crash
+        with self.assertRaises(Crash):
+            self._send()
+        self.pool.fail.clear()
+        self.pool.root.children.remove(self._staging()[0])
+        next(c for c in self.episode.children if c.name == "c0010").clips.append(self._clip("manual"))  # 사람이 새 Bin 에 넣었다
+        self.assertEqual(self._send()["error_code"], "rebuild_recovery_pending")
+
+    def test_restore_that_cannot_bring_back_a_clip_stops_instead_of_rebuilding(self):
+        def half_and_lose(folders, target):
+            self.pool.do_move(folders[:2], target)
+            self.existing["c0030"].children[0].clips.clear()  # 이동 중에 손자 Bin 의 클립이 사라졌다
+            return False
+
+        self.pool.fail[2] = half_and_lose
+        result = self._send()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")  # 되돌리기 동작은 다 됐지만 처음 상태가 아니다
+        self.assertEqual(self.pool.import_calls, [])
+
+    def test_crash_with_a_missing_clip_does_not_settle(self):
+        self.pool.fail[1] = self._move_then_crash
+        with self.assertRaises(Crash):
+            self._send()
+        self.pool.fail.clear()
+        staging = self._staging()[0]
+        self.pool.do_move([self.existing[name] for name in ("c0020", "c0030", "c0040")], self.episode)
+        self.pool.root.children.remove(staging)
+        self.existing["c0030"].children[0].clips.clear()  # 손자 Bin 의 클립이 빠졌다
+        self.assertEqual(self._send()["error_code"], "rebuild_recovery_pending")
+
+    # 쓰기 경계
+    def test_record_cannot_be_written_so_nothing_moves(self):
+        with mock.patch.object(resolve_bridge, "_write_recovery_record", side_effect=OSError("디스크 가득")):
+            result = self._send()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        self.assertEqual((self.pool.move_calls, self._staging(), self.pool.import_calls), ([], [], []))
+        self.assertEqual(self._names(), ["c0020", "c0030", "c0040"])
+
+    def test_switching_projects_mid_sort_stops_without_undoing_and_keeps_the_record(self):
+        other = FakeProject(FakeMediaPool())
+        other.unique_id = "resolve-project-2"
+
+        def then_switch(folders, target):
+            self.pool.do_move(folders, target)
+            self.manager.project = other
+            return True
+
+        self.pool.fail[1] = then_switch
+        result = self._send()
+        self.assertEqual(result["error_code"], "project_changed")
+        self.assertTrue(result["rebuild_staging_bin"].startswith("__MVHUB_SORT_"))
+        self.assertTrue(Path(result["rebuild_recovery_record"]).is_file())
+        self.assertEqual(len(self.pool.move_calls), 1)  # 되돌리기를 하지 않았다
+        self.assertEqual(other.media_pool.root.children, [])
+
+
+class FastBinSortContractTests(unittest.TestCase):
+    def test_fast_sort_is_on_only_for_builds_that_passed_the_real_resolve_test(self):
+        # 시험 프로젝트에서 실기기 시험을 통과한 판만 넣는다(Codex 설계 v3 C). 넣을 때 이 시험도 같은 커밋에서 고친다.
+        self.assertEqual(resolve_bridge._MOVE_FOLDERS_TESTED, frozenset({("21", "1", "1", "10", "")}))  # 2026-10-16 통과
+        self.assertNotIn(("21", "1", "1", "9", ""), resolve_bridge._MOVE_FOLDERS_TESTED)  # 같은 21.1.1 의 다른 빌드는 아니다
 
 
 if __name__ == "__main__":
