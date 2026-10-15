@@ -1,4 +1,4 @@
-﻿/* Canvas 씬 — 구성 탭의 빈 캔버스 워크스페이스(S1: 씬 바 + 빈 보드) */
+/* Canvas 씬 — 구성 탭의 빈 캔버스 워크스페이스(S1: 씬 바 + 빈 보드) */
 .scene-bar {
   display: flex; align-items: center; gap: 6px; padding: 6px 12px;
   border-bottom: 1px solid var(--border2); flex-wrap: wrap;
@@ -68,8 +68,12 @@
   position: absolute; inset: -64px; pointer-events: none; will-change: transform;
   background: radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.11) 1px, transparent 0) 64px 64px / 22px 22px;
 }
-.scene-board.panning { cursor: grabbing; }
-.scene-board.panning * { cursor: grabbing !important; }
+.scene-board.scene-panning { cursor: grabbing; }
+/* 화면을 끄는 동안(useSceneViewport — 실제로 움직였을 때만) 보드 위 덮개 하나가 커서를 잡은 손으로 두고 카드의 hover 를 막는다(Jay 66회차 ③).
+   전엔 `.scene-board.panning *` 로 자손 전부의 커서를 바꿔 끌기의 시작·끝마다 보드 아래 전부를 다시 계산했다(66회차 격리 실측 40~48ms) —
+   크롬은 무효화를 클래스 이름 단위로 해 계보 보드의 `.linb-scroll.panning *` 에도 걸리므로 이름도 캔버스 전용이다. 덮개는 카드(캔버스 층) 위,
+   보드 안의 안내·사각형(z 10~) 아래. 자손을 고르는 규칙을 다시 달지 않는다(tests/sceneRound7Perf). */
+.scene-board.scene-panning::after { content: ""; position: absolute; inset: 0; z-index: 9; cursor: grabbing; }
 /* 카드를 끄는 동안 다른 카드가 마우스 영향을 받지 않게 하는 일(겹친 뒤 카드의 hover·포트가 끄는 카드 위로 튀어나오던 문제,
    2026-07-24)은 여기 규칙이 아니라 포인터 캡처가 한다(lib/useSceneCardMove.holdSceneDragPointer). 전엔
    `.scene-board.dragging .scene-card { pointer-events: none }` 이었는데, pointer-events 는 자식으로 내려가는 속성이라 dragging 이
@@ -93,6 +97,13 @@
   background: rgba(var(--accent-rgb), 0.16); border: 1px solid var(--accent); border-radius: 2px;
 }
 .scene-canvas { position: absolute; top: 0; left: 0; will-change: transform; }
+/* 캔버스 맨 아래 거의 투명한 바닥 한 장(Jay 66회차 ①) — 그룹·카드가 한 레이어로 합쳐지지 못하고 흩어진 섬(12% 에서 레이어 72)이 되던 것을
+   바닥 위로 모은다(격리 실측: 레이어 72→17 · Layerize 964→174ms · 33ms 넘는 프레임 8→6). 크롬의 레이어 합치기에 기대는 방법이다 — 안 통하게
+   되면 전과 같을 뿐이다. GPU 메모리는 재지 않았다. 누름은 받지 않는다. */
+.scene-canvas::before {
+  content: ""; position: absolute; left: -60000px; top: -60000px; width: 120000px; height: 120000px;
+  background: rgba(0, 0, 0, 0.004); pointer-events: none;
+}
 /* 보드를 통째로 끄는 동안(lib/useSceneCardMove 의 빠른 길 — 캔버스 층을 translate 로 민다) 값이 0 인 '더하기' 애니메이션을 걸어 둔다.
    그림은 그대로인데, 이게 걸려 있어야 크롬이 translate 가 바뀔 때마다 전체 합성 갱신(레이어 130여 개, 약 40ms)을 하지 않고 합성기에서만
    민다 — will-change 로는 그 길을 타지 않았다(2026-10-10 격리 실측, 412장 전부 끌기: 초당 화면 갱신 18번 → 55~59번, 합성 갱신 37번 →

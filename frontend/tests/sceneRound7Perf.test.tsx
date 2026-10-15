@@ -128,8 +128,8 @@ it("끄는 동안의 표시(.scene-board.dragging)에 카드나 그 자손을 �
     const css = readFileSync(dir + file, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
     for (const match of css.matchAll(/([^{}]+)\{/g)) {
       for (const selector of match[1].split(",")) {
-        // `.scene-board.dragging` 뒤에 무엇이든 이어지면(자손·자식·형제) 그 클래스의 변화가 아래 요소들을 다시 계산시킨다
-        if (/\.scene-board[^\s>+~]*\.dragging[^\s>+~]*\s*[\s>+~]\s*\S/.test(selector) || /\.dragging[^\s>+~]*\.scene-board[^\s>+~]*\s*[\s>+~]\s*\S/.test(selector))
+        // `.scene-board.dragging`(끄는 표시 `.scene-panning` 도 — 66회차 ③) 뒤에 무엇이든 이어지면(자손·자식·형제) 그 클래스의 변화가 아래 요소들을 다시 계산시킨다
+        if (/\.scene-board[^\s>+~]*\.(dragging|scene-panning)[^\s>+~]*\s*[\s>+~]\s*\S/.test(selector) || /\.(dragging|scene-panning)[^\s>+~]*\.scene-board[^\s>+~]*\s*[\s>+~]\s*\S/.test(selector))
           offenders.push(`${file}: ${selector.trim()}`);
       }
     }

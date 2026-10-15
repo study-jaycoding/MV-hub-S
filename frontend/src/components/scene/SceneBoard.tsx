@@ -2066,7 +2066,7 @@ export function SceneBoard({
     releaseSceneDragPointer(); // 버린 끌기가 보드에 쥐여 둔 포인터도 놓는다 — abort 는 끌기의 끝맺음(콜백)을 부르지 않는다
     layerMoveRef.current?.drop(); // 버린 끌기가 캔버스 층에만 밀어 둔 이동량도 버린다 — 새 씬이 밀려 보이지 않게
     endGesture(); // 버린 끌기의 되돌리기 묶음도 닫는다
-    scrollRef.current?.classList.remove("dragging", "panning");
+    scrollRef.current?.classList.remove("dragging", "scene-panning");
     setMarquee(null);
     // 버린 범위 선택은 확정하지 않고(다음 키 입력이 새 씬에서 확정하지 않게) 직접 켜 둔 선택 표시도 지운다 — 새 씬에
     //  id 가 같은 카드가 있으면 요소가 재사용돼 선택돼 보였다.
