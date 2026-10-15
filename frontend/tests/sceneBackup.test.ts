@@ -720,4 +720,19 @@ describe("sceneBackup — 판(1A)", () => {
     expect(putBody(again!)).toMatchObject({ fork_avoid: ["bk_f"] });
     expect(putBody(again!).upserts.find((u: { id: string }) => u.id === "x")).toMatchObject({ base_hash: "x0" });
   });
+
+  it("63회차 — 피할 자리는 이번에 올리는 행의 사본만(원본을 모르는 사본은 늘) — 자동 복구로 사본이 많아도 상한(2,000)에 걸려 백업이 멈추지 않게", async () => {
+    const { scenes, backup, settle } = await boot();
+    const copyOf = (id: string, origin?: string) =>
+      ({ ...JSON.parse(sceneJson(id, id)), ...(origin ? { backupForkOf: { id: origin, sum: "s" } } : {}) });
+    scenes.saveScenes(null, [JSON.parse(sceneJson("x", "원본")), copyOf("bk_x", "x"), copyOf("bk_y", "y"), copyOf("bk_unknown")]);
+    await settle();
+    getMeta = () => Promise.resolve({ items: [] });
+    putReply = hashReply;
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500);
+    const [first] = puts();
+    expect(putBody(first).upserts.map((u: { id: string }) => u.id)).toEqual(["x", "bk_x", "bk_y", "bk_unknown"]);
+    expect(putBody(first).fork_avoid).toEqual(["bk_x", "bk_unknown"]); // y 는 이번에 올리지 않는다 — bk_y 는 피할 까닭이 없다
+  });
 });

@@ -161,6 +161,22 @@ function forkText(text: string, forkId: string, originalId: string, sum: string)
   }
 }
 
+// 사본 씬이 어느 행의 사본인가(backupForkOf.id — 허브·forkText 가 적는다). 모르면 null. 글자가 바뀔 때만 다시 읽는다(큰 씬을 동기화마다 파싱하지 않게).
+const forkOriginCache = new Map<string, { text: string; of: string | null }>();
+function forkOrigin(id: string, text: string): string | null {
+  const hit = forkOriginCache.get(id);
+  if (hit?.text === text) return hit.of;
+  let of: string | null = null;
+  try {
+    const origin = (JSON.parse(text) as { backupForkOf?: { id?: unknown } }).backupForkOf?.id;
+    of = typeof origin === "string" && origin ? origin : null;
+  } catch {
+    /* 못 읽으면 모름 — 늘 피할 목록에 넣는다 */
+  }
+  forkOriginCache.set(id, { text, of });
+  return of;
+}
+
 // 다른 창에 더 새로 저장된 백업이 있어 덮지 않고 사본으로 남긴 씬(이름) — 화면이 한 번 알린다.
 const forkSubs = new Set<(names: string[]) => void>();
 export function subscribeSceneBackupForked(fn: (names: string[]) => void): () => void {
@@ -497,6 +513,10 @@ async function syncNow(): Promise<void> {
     if (fresh.length < upserts.length) rerun = true;
     upserts.splice(0, upserts.length, ...fresh);
     const allDeleted = [...deleteOf.keys()].filter((id) => !nowText.has(deleteOf.get(id)!)); // 그사이 되살아난 씬은 지우지 않는다
+    // 이 브라우저의 사본 씬(bk_)과 그 원본 — 허브의 사본 자리는 올리는 행 id 에서만 나오므로 그 행의 사본만 피하라고 알린다(전부 보내면
+    //  자동 복구로 사본이 2,000개를 넘을 때 상한에 걸려 백업이 멈췄다, Codex 63회차). 원본을 모르면 늘 보낸다.
+    const localForks = [...nowText].filter(([id]) => id.startsWith("bk_")).map(([id, text]) => ({ id, of: forkOrigin(id, text) }));
+    for (const id of forkOriginCache.keys()) if (!nowText.has(id)) forkOriginCache.delete(id);
     if (!upserts.length && !allDeleted.length) return;
     if (ns() !== scope) return; // 변경 적용(PUT) 직전 최종 확인
     // 청크 전송 — upsert 는 개수+UTF-8 바이트, delete 는 개수 기준(서버 상한과 동일).
@@ -520,7 +540,7 @@ async function syncNow(): Promise<void> {
           deleted_ids: dels,
           delete_bases: Object.fromEntries(dels.map((id) => [id, deleteBases[id] ?? ""])),
           // 이 브라우저에서 이미 별도 씬이 된 사본 행 — 허브가 새 사본 자리로 쓰지 않게(옛 허브는 모르는 칸이라 무시)
-          fork_avoid: [...localIds].filter((id) => id.startsWith("bk_")),
+          fork_avoid: localForks.filter(({ of }) => of === null || chunk.some((u) => u.id === of)).map(({ id }) => id),
         }),
       });
       if (ns() !== scope) return; // 응답 후 상태 반영도 같은 scope 일 때만
