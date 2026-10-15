@@ -44,6 +44,25 @@ it("놓으면 그 자리로 한 번 확정한다", () => {
   expect(onNavigate).toHaveBeenCalledTimes(calls);
 });
 
+// 70회차 격리 실측 — 렌더마다 도는 update() 가 보드의 clientWidth 를 읽어 막 붙은 카드 전부의 배치를 강제로 계산했다(첫 씬 열기 긴 작업의 65ms).
+//  보드 크기는 크기 감시가 알려 줄 때만 읽는다.
+it("does not read the board size on render — only when the resize observer reports", () => {
+  const observers: Array<() => void> = [];
+  vi.stubGlobal("ResizeObserver", class { constructor(cb: () => void) { observers.push(cb); } observe() {} disconnect() {} });
+  const board = document.createElement("div");
+  let reads = 0;
+  Object.defineProperty(board, "clientWidth", { get: () => { reads += 1; return 800; } });
+  Object.defineProperty(board, "clientHeight", { get: () => 600 });
+  const ref = <T,>(current: T) => ({ current }) as MutableRefObject<T>;
+  const props = { boxes: [], bounds: { minX: 0, minY: 0, maxX: 3000, maxY: 3000 }, selected: new Set<string>(), scrollRef: ref(board),
+    panRef: ref({ x: 0, y: 0 }), zoomRef: ref(1), updateRef: ref<(() => void) | null>(null), onNavigate };
+  act(() => root.render(<SceneMinimap {...props} />));
+  act(() => root.render(<SceneMinimap {...props} selected={new Set(["x"])} />)); // 다시 그려도
+  expect(reads).toBe(0);
+  act(() => observers.forEach((cb) => cb())); // 크기를 알려 오면 그때 읽고 갱신한다
+  expect([reads, map().style.display]).toEqual([1, "block"]); // 카드(3000)가 화면(800) 밖 — 미니맵을 보인다
+});
+
 it.each([
   ["단추를 뗀 채 온 움직임", () => mouse("mousemove", window, { clientX: 100, clientY: 100, buttons: 0 })],
   ["창을 떠남(blur)", () => act(() => { window.dispatchEvent(new Event("blur")); })],

@@ -65,14 +65,28 @@ export function SceneMinimap({
   const mmW = Math.max(40, worldW * scale);
   const mmH = Math.max(30, worldH * scale);
 
+  // 보드(뷰포트) 크기 — 크기 감시가 알려 준 값을 기억한다. update() 에서 clientWidth 를 읽으면 렌더마다(아래 layout effect) 막 붙은
+  //  카드 전부의 배치를 그 자리에서 강제로 계산했다(70회차 격리 실측: 세션 첫 씬 열기 긴 작업 108ms 중 이 함수 자기 시간 65ms).
+  //  감시의 알림은 배치가 끝난 뒤(그리기 전)에 와서 그때 읽는 값은 이미 계산돼 있다. 모르는 동안(첫 알림 전)은 갱신하지 않는다.
+  const vpRef = useRef<{ width: number; height: number } | null>(null);
+  useLayoutEffect(() => {
+    const sc = scrollRef.current;
+    if (!sc || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      vpRef.current = { width: sc.clientWidth, height: sc.clientHeight };
+      updateRef.current?.();
+    });
+    ro.observe(sc);
+    return () => ro.disconnect();
+  }, [scrollRef, updateRef]);
+
   // 표시여부(화면 밖 카드 존재)와 뷰포트 박스를 DOM 에 직접 반영 — 리렌더 없이 팬/줌에 반응.
   //  팬은 매 프레임 불리므로 바뀐 값만 쓰고, 박스 이동은 transform 으로 한다(위치·크기를 매번 쓰면 보드를 다시 칠했다).
   const update = () => {
     const wrap = wrapRef.current;
     const view = viewRef.current;
-    const sc = scrollRef.current;
-    if (!wrap || !view || !sc) return;
-    const vp = { width: sc.clientWidth, height: sc.clientHeight };
+    const vp = vpRef.current;
+    if (!wrap || !view || !vp) return;
     const z = zoomRef.current;
     const pan = panRef.current;
     // 월드 콘텐츠의 화면상 사각형 — 한 변이라도 뷰포트를 벗어나면 '화면 밖 카드 있음'.
