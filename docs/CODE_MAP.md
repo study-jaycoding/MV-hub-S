@@ -617,7 +617,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `timeline/EditExportConfirm.tsx`(약 105줄) | 편집 탭 막대의 [타임라인 Resolve 보내기] 확인 창 — 이름·트랙별 클립 수·길이·받는 곳을 보여 주고, Resolve 연결을 열릴 때 묻는다([다시 확인]). 못 이은 클립·빈 타임라인·원본 전송 조건에 걸리면 [보내기]가 안 눌린다. 틀은 `GradeStepModal` 의 것(`gradestep-*`) | `EditExportConfirm` |
 | `timeline/EditMarkerMenu.tsx`(약 100줄) | 북마크의 메뉴 둘 — 편집 창(이름: Enter·바깥 = 저장, Esc = 버림 · 색 16개 · 지우기)과 막대의 색 메뉴(새 북마크의 색·모두 지우기 — 다빈치의 마커 색 메뉴). 껍데기는 `EditMenu` | `EditMarkerMenu`, `EditMarkerColorMenu` |
 | `timeline/EditTrimPop.tsx`(약 250줄) | 클립 길이 조절 창 — 타임라인의 클립을 휠 클릭하면 뜬다. **떠 있는 창**(`lib/useFloatingPanel` — 머리 끌기·자리 기억, body 포털. 밖을 눌러도 안 닫히고 떠 있는 동안 타임라인을 쓴다 · 키는 초점을 따른다). 큰 화면(그 길이의 마지막 프레임 — 타임라인 재생헤드와 무관)·창 안 재생·띠·`±1f`/`±10f`·숫자 칸(초·프레임)·원본 길이로. 값은 24fps 프레임, 걸음마다 부르는 쪽(`EditTab`)이 `setClipTrim` 으로 적고 이어진 걸음이 되돌리기 한 단계 | `EditTrimPop` |
-| `timeline/EditCard.tsx`(약 65줄) | 편집 탭 미디어 풀(썸네일 보기)의 생성물 카드 — 라이브러리 카드의 CSS 클래스를 그대로 써서 같은 모양으로 '보이기만' 한다. 아래 변의 표 = "V1 - 선택 카드"(폴더 창의 표와 같은 글) | `EditCard`, `PoolItem`, `editMarkLabel` |
+| `timeline/EditCard.tsx`(약 90줄) | 편집 탭 미디어 풀(썸네일 보기)의 생성물 카드 — 라이브러리 카드(`GenerationCard`)를 그대로 쓴다(호버 단추 S·T·C·ⓘ·⤓ 까지, Jay 2026-10-15). 껍데기는 role=button(단추 안에 단추를 못 둔다). 동작은 앱이 `EditTab.cardActions` 로 준다(`PoolCardActions`). 아래 변의 표 = "V1 - 선택 카드"(폴더 창의 표와 같은 글) | `EditCard`, `PoolItem`, `PoolCardActions`, `editMarkLabel` |
 | `timeline/EditSidebar.tsx`(약 150줄) | 프로젝트·폴더에서 시퀀스 고르기(`FolderTreeView` 만 쓴다 — `ProjectSection` 아님). 폴더 우클릭 = 폴더 메뉴(`EditFolderMenu` — 실행은 App 의 `onFolderAction`) | `EditSidebar` |
 | `FloatingPrompt.tsx`(104줄) | `window.prompt` 대체 플로팅 입력 | `FloatingPrompt` |
 

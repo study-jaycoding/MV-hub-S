@@ -74,7 +74,7 @@ export function GenerationThumbOverlay({
           </button>
         )}
         <button
-          className="ov-icon"
+          className="ov-icon ov-ref"
           title="레퍼런스로 사용 — 이 생성물을 @레퍼런스로 추가 (끌어내리면 프롬프트 재사용)"
           onClick={(event) => {
             event.stopPropagation();
@@ -86,7 +86,7 @@ export function GenerationThumbOverlay({
         {tab === "team" ? (
           gen.creator_uid !== myCreatorUid ? (
             <button
-              className="ov-icon"
+              className="ov-icon ov-import"
               title="내 워크스페이스로 가져오기"
               onClick={() => onImport(gen)}
             >

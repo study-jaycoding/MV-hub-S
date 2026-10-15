@@ -529,6 +529,7 @@ export type InfoTarget =
 export interface CardMark {
   label: string;
   lead: boolean;
+  short?: string; // 작은 카드에 보이는 짧은 글("V1"·"V1·L") — 편집 탭 풀만 준다(CSS 가 data-short 로 바꿔 보인다)
 }
 
 // 클릭 시 떠오르는 미디어 미리보기(이미지 표시 / 영상 재생)

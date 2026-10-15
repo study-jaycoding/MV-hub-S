@@ -17,7 +17,7 @@ import type { CardMark, Generation, PreviewTarget } from "../src/types";
 
 const gen = (id: string, cut: string, extra: Partial<Generation> = {}) => ({
   id, job_id: `job-${id}`, status: "done", params: {}, prompt: `prompt ${id}`, folder_path: `e070/${cut}`,
-  shared: true, is_final: false, is_held: false, is_mine: false, creator_name: "리버",
+  shared: true, is_final: false, is_held: false, is_mine: false, tags: [], creator_name: "리버",
   assets: [{ id: `a-${id}`, generation_id: id, type: "image", file_path: `/media/${id}.png`,
     thumbnail_path: null, source_url: null, cached: true }],
   ...extra,

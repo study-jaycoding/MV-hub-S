@@ -2745,6 +2745,11 @@ export default function App() {
                 canFinalize, apply: (gens, action) => onReviewSelection(gens, action, canFinalize),
                 release: (gens) => onReviewSelection(gens, "shared", canFinalize, true),
               }}
+              // 풀 카드의 호버 단추(Jay 2026-10-15) — 공유 & 리뷰 격자에 주는 것과 같은 동작. 정보는 라이브러리 선택(여러 장이면 비교)을 보지 않는다
+              cardActions={{
+                canFinalize, onReview, onPublish, onUnpublish, onFinalize, onUnfinalize, onSetTags, onSetAutoTags,
+                autoTagOptions: facets.auto_tags, onOpenComments: (g) => openComment(g.id), onInfo: setInfo,
+              }}
             />
           </Suspense>
         ) : filters.tab === "compose" ? (

@@ -12,7 +12,7 @@ import type { Generation } from "../src/types";
 
 const gen = (id: string, cut: string, type: "image" | "video", duration?: number) => ({
   id, job_id: `job-${id}`, status: "done", params: duration ? { duration } : {}, prompt: `prompt ${id}`, folder_path: `e070/${cut}`,
-  shared: true, is_final: false, is_held: false, is_mine: false, creator_name: "리버", model: "seedance",
+  shared: true, is_final: false, is_held: false, is_mine: false, tags: [], creator_name: "리버", model: "seedance",
   assets: [{ id: `a-${id}`, generation_id: id, type, file_path: `/media/${id}.${type === "video" ? "mp4" : "png"}`,
     thumbnail_path: null, source_url: null, cached: true }],
 } as unknown as Generation);

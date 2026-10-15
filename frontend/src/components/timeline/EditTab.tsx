@@ -81,7 +81,7 @@ import {
   useEditProjects,
 } from "../../lib/useEditSequence";
 import { dropQueuedVideoMeasures, knownVideoSeconds, measureVideoSeconds, measuredExactly } from "../../lib/videoDuration";
-import { editMarkLabel, sourceMarkLabel } from "./EditCard";
+import { editMarkLabel, sourceMarkLabel, type PoolCardActions } from "./EditCard";
 import { EditExportConfirm } from "./EditExportConfirm";
 import { EditMarkerColorMenu, EditMarkerMenu } from "./EditMarkerMenu";
 import { arrangePool, EditPool, type PoolItem } from "./EditPool";
@@ -137,6 +137,8 @@ interface Props {
     // 최종 해제(Jay 2026-10-14) — '공유로'(고른 전환)와 다르다: 최종 전에 보류였던 것은 보류로 돌아온다. 최종인 것만 넘긴다
     release: (gens: Generation[]) => void | Promise<void>;
   };
+  // 풀의 썸네일 카드 호버 단추(S·T·C·ⓘ·⤓ — Jay 2026-10-15) — 라이브러리 격자에 주는 앱의 동작 그대로. 안 주면 단추는 보이되 하는 일이 없다
+  cardActions?: PoolCardActions;
 }
 
 export type EditCardMenu = (gen: Pick<Generation, "id">, x: number, y: number) => void;
@@ -168,7 +170,7 @@ const isTyping = (target: EventTarget | null) => {
 
 function EditTabInner({
   authKey, workspace, keysActive, flash, onOpenCutFolder, reloadSignal, peekPath, onPeekMarks, cardMenuRef, onPreview, onCompare,
-  resolve, onFolderAction, review, resolvePicked = NO_CUTS, resolveScroll = 0,
+  resolve, onFolderAction, review, resolvePicked = NO_CUTS, resolveScroll = 0, cardActions,
 }: Props) {
   const t = useT();
   const [target, setTarget] = useState<EditTarget | null>(loadEditTarget);
@@ -936,17 +938,22 @@ function EditTabInner({
   useEffect(() => () => {
     if (reloadTimer.current !== null) window.clearTimeout(reloadTimer.current);
   }, []);
-  useCustomEvent(APP_EVENTS.libraryChanged, (event) => {
-    // 밑의 탭이 공유 & 리뷰면 그 목록의 15초 폴링이 끝날 때마다 이 알림이 온다(실제 변경이 아니다 — 사이드바 숫자를 깨우는 틱).
-    //  왼쪽의 숫자만 다시 받는다. 공유 목록은 다시 받지 않는다(§3 '폴링 없음' — 그 틱마다 목록 전체를 다시 받고 화면을 다시 그렸다).
-    if (isLibraryPollTick(event)) return reloadCounts();
+  const reloadSoon = () => {
     if (reloadTimer.current !== null) window.clearTimeout(reloadTimer.current);
     reloadTimer.current = window.setTimeout(() => {
       reloadTimer.current = null;
       reloadList();
       reloadCounts(); // 왼쪽 폴더 옆의 개수·최종·보류·새 항목
     }, 400);
+  };
+  useCustomEvent(APP_EVENTS.libraryChanged, (event) => {
+    // 밑의 탭이 공유 & 리뷰면 그 목록의 15초 폴링이 끝날 때마다 이 알림이 온다(실제 변경이 아니다 — 사이드바 숫자를 깨우는 틱).
+    //  왼쪽의 숫자만 다시 받는다. 공유 목록은 다시 받지 않는다(§3 '폴링 없음' — 그 틱마다 목록 전체를 다시 받고 화면을 다시 그렸다).
+    if (isLibraryPollTick(event)) return reloadCounts();
+    reloadSoon();
   });
+  // 태그 저장 묶음이 끝났다(풀 카드의 T — 앱의 태그 저장은 이 알림만 낸다) — 서버 값으로 다시 받는다(풀이 덧입힌 태그는 그때 걷힌다)
+  useCustomEvent(APP_EVENTS.generationTagsSettled, reloadSoon);
   const seenSignal = useRef(reloadSignal);
   useEffect(() => {
     if (seenSignal.current === reloadSignal) return;
@@ -1378,6 +1385,7 @@ function EditTabInner({
               onToggleSide={() => patchUi({ sideHidden: sideOpen })}
               onFolder={(gen) => cut && openCut(cut, gen.id)}
               onCardDrag={onCardDrag}
+              cardActions={cardActions}
             />
           </ResizableSidebar>
           {/* 타임라인 판 — 안 보일 때도 붙어 있다(엔진의 영상 요소를 떼면 안 된다). 안 보이면 소리를 끈다. */}

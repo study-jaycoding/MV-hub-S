@@ -19,9 +19,11 @@ import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../../lib/windowDrag";
 import { FilterPanelIcon } from "../common/ViewIcons";
-import { EditCard, poolMark, type PoolItem } from "./EditCard";
+import { EditCard, NO_CARD_ACTIONS, poolMark, type PoolCardActions, type PoolItem } from "./EditCard";
 
 export type { PoolItem };
+// 썸네일 카드 안의 단추(라이브러리 카드의 호버 단추) — 그 누름은 카드의 누르기·끌기·더블클릭이 아니다(라이브러리 격자와 같은 약속)
+const CARD_BUTTON = ".ed-card button";
 
 const ICONS: Record<PoolView | "search" | "sort", JSX.Element> = {
   thumb: <svg viewBox="0 0 16 16" aria-hidden="true">{[1, 6.5, 12].flatMap((y) => [1, 6.5, 12].map((x) => <rect key={`${x}-${y}`} x={x} y={y} width="3.5" height="3.5" />))}</svg>,
@@ -69,6 +71,7 @@ export function EditPool({
   onToggleSide,
   onFolder,
   onCardDrag,
+  cardActions = NO_CARD_ACTIONS,
 }: {
   // 왼쪽 폴더 목록 여닫기(Jay 2026-10-13 — 공유 탭 도구 줄의 '필터 사이드바 닫기'와 같은 단추·같은 자리 관계: 사이드바 바로 옆 줄의 첫 단추).
   //  닫아도 단추는 여기 남아 다시 연다. 닫힘은 편집 탭의 화면 설정(EditUi.sideHidden)에만 적는다 — 공유 탭의 것과 따로다.
@@ -93,6 +96,7 @@ export function EditPool({
   // 카드를 끌어 타임라인에 넣기(Jay 2026-10-13) — 여기서는 몸짓만 알린다(무엇이 어디에 놓이는지는 EditTab 이 정한다).
   //  start = 5px 을 넘겨 끌기가 됐다 · move = 따라가는 자리 · drop = 놓았다 · cancel = 놓는 이벤트 없이 끝났다(창 밖에서 뗌·초점 잃음).
   onCardDrag: (phase: "start" | "move" | "drop" | "cancel", id: string, x: number, y: number) => void;
+  cardActions?: PoolCardActions; // 썸네일 카드의 호버 단추(S·T·C·ⓘ)가 부르는 앱의 동작(Jay 2026-10-15)
 }) {
   const t = useT();
   const [open, setOpen] = useState<"view" | "sort" | null>(null);
@@ -111,6 +115,29 @@ export function EditPool({
   useEscapeClose(() => setOpen(null), open !== null, true, true);
   const shown = useMemo(() => arrangePool(items, searching ? query : "", ui.sort), [items, searching, query, ui.sort]);
   const placed = items.filter((item) => item.track !== null).length;
+  // 썸네일 카드의 T(태그 고치기) — 한 번에 한 장. 고친 태그는 공유 목록을 다시 받을 때까지(받은 생성물이 바뀔 때까지) 여기서 덧입힌다:
+  //  앱의 낙관적 갱신은 라이브러리 목록에만 닿아, 안 그러면 잇달아 넣는 태그가 옛 태그에서 계산돼 앞에 넣은 것을 지운다.
+  const [tagging, setTagging] = useState<string | null>(null);
+  const [retag, setRetag] = useState<Record<string, { base: Generation; tags?: string[]; auto_tags?: string[] }>>({});
+  const withTags = (gen: Generation) => {
+    const kept = retag[gen.id];
+    return kept?.base === gen ? { ...gen, ...(kept.tags && { tags: kept.tags }), ...(kept.auto_tags && { auto_tags: kept.auto_tags }) } : gen;
+  };
+  const keepTags = (gen: Generation, patch: { tags?: string[]; auto_tags?: string[] }) => {
+    const base = items.find((item) => item.gen.id === gen.id)?.gen;
+    if (base) setRetag((prev) => ({ ...prev, [gen.id]: { ...(prev[gen.id]?.base === base ? prev[gen.id] : {}), ...patch, base } }));
+  };
+  const actions: PoolCardActions = {
+    ...cardActions,
+    onSetTags: (gen, tags) => {
+      keepTags(gen, { tags });
+      cardActions.onSetTags(gen, tags);
+    },
+    onSetAutoTags: (gen, names) => {
+      keepTags(gen, { auto_tags: names });
+      cardActions.onSetAutoTags(gen, names);
+    },
+  };
 
   // 여기를 눌러도 편집 화면이 키를 받게 초점을 옮기지 않는다. 입력칸(검색·크기)만 초점을 받고, 그 밖을 누르면 입력칸에서
   //  초점을 뗀다 — 안 떼면 Space·J·K·L 이 계속 입력칸으로 간다.
@@ -173,7 +200,7 @@ export function EditPool({
     };
   }, [drag]);
   const startDrag = (event: ReactMouseEvent) => {
-    if (event.button !== 0 || dragRef.current) return;
+    if (event.button !== 0 || dragRef.current || (event.target as HTMLElement).closest(CARD_BUTTON)) return;
     // 새 누름이다 — 앞 끌기에 딸린 click 은 이미 지나갔다. 안 풀면 끌어서 고른 바로 뒤(타이머가 돌기 전)에 누른 카드가 전부 안 골라진다
     //  (입력은 타이머보다 먼저 처리된다 — 캔버스의 swallowDropClick 과 같은 약속. Codex 코드 리뷰)
     draggedRef.current = false;
@@ -197,7 +224,7 @@ export function EditPool({
     const active = document.activeElement;
     if (active instanceof HTMLInputElement && event.currentTarget.contains(active)) active.blur();
   };
-  const handlersOf = (item: PoolItem): HTMLAttributes<HTMLButtonElement> & { "data-id": string } => ({
+  const handlersOf = (item: PoolItem): HTMLAttributes<HTMLElement> & { "data-id": string } => ({
     "data-id": item.gen.id, // 끌어서 고르기가 이 값으로 카드를 찾는다
     title: t("끌기 = 타임라인에 넣기 · 더블클릭 = 크게 보기 · 우클릭 = 폴더 창 · 휠 클릭 = 넣을 트랙 고르기 · Ctrl+클릭 = 여러 장 고르기"),
     onClick: (event) => {
@@ -211,7 +238,9 @@ export function EditPool({
       }
       onPick(item.gen, event.ctrlKey || event.metaKey || event.shiftKey);
     },
-    onDoubleClick: () => onOpen(item.gen, shown.map((entry) => entry.gen)),
+    onDoubleClick: (event) => {
+      if (!(event.target as HTMLElement).closest(CARD_BUTTON)) onOpen(item.gen, shown.map((entry) => entry.gen));
+    },
     // 마우스 우클릭(contextmenu 의 button = 2) = 폴더 창. 키보드의 메뉴 키는 누름 없이 contextmenu 만 온다(button 이 2 가 아니다 —
     //  2026-10-13 크롬 실측 −1) — 그때는 전처럼 트랙 메뉴다: 휠 클릭은 키보드로 할 수 없어, 이 길이 없으면 키보드로는 넣지 못한다.
     onContextMenu: (event) => {
@@ -219,10 +248,12 @@ export function EditPool({
       if (event.button === 2) onFolder(item.gen);
       else onMenu(item.gen, event.clientX, event.clientY);
     },
-    // 휠 클릭(가운데 단추) — 누름의 자동 스크롤은 풀 뿌리의 keepFocus 가 이미 막는다(어느 단추든 preventDefault)
-    onAuxClick: (event) => {
+    // 휠 클릭(가운데 단추) — 누름의 자동 스크롤은 풀 뿌리의 keepFocus 가 이미 막는다(어느 단추든 preventDefault).
+    //  잡는 단계에서 받아 전파를 막는다 — 썸네일 카드(라이브러리 카드)의 휠 클릭 = 정보 창이 같이 뜨지 않게(폴더 창의 격자와 같다)
+    onAuxClickCapture: (event) => {
       if (event.button !== 1) return;
       event.preventDefault();
+      event.stopPropagation();
       if (dragRef.current?.moved) return; // 끄는 중의 휠 클릭은 메뉴가 아니다(끌기는 이어진다)
       onMenu(item.gen, event.clientX, event.clientY);
     },
@@ -353,7 +384,9 @@ export function EditPool({
           style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${ui.size}px, 1fr))` }}>
           {marqueeBox}
           {shown.map((item) => (
-            <EditCard key={item.gen.id} item={item} picked={picked.includes(item.gen.id)} handlers={handlersOf(item)} />
+            <EditCard key={item.gen.id} item={{ ...item, gen: withTags(item.gen) }} picked={picked.includes(item.gen.id)}
+              handlers={handlersOf(item)} actions={actions} tagging={tagging === item.gen.id}
+              onTagging={(on) => setTagging((now) => (on ? item.gen.id : now === item.gen.id ? null : now))} />
           ))}
         </div>
       )}
