@@ -129,3 +129,14 @@ it("the chip's rules add no compositing layers — no backdrop-filter, mask, wil
     expect(body, selector.trim()).not.toMatch(/backdrop-filter|mask|will-change|transform|animation|overflow\s*:\s*auto/);
   }
 });
+
+// 65회차 실측 — 안 보이는(opacity 0) 호버 단추에 흐림이 늘 걸려 카드마다 레이어 ~8개, 그 위의 이름표까지 레이어가 됐다(88% 끌기 Layerize 약 2.8배).
+//  흐림은 보일 때(호버·초점)만 건다.
+it("hover buttons blur only while shown — the always-on rule has no backdrop-filter", () => {
+  const css = readFileSync(new NodeURL("../src/styles/history.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => [selector.trim(), body] as const);
+  const base = rules.find(([selector]) => selector === ".linb-ov-btn");
+  expect(base?.[1]).toBeDefined();
+  expect(base![1]).not.toMatch(/backdrop-filter/);
+  expect(rules.some(([selector, body]) => selector.includes(".linb-node:hover .linb-ov-btn") && /backdrop-filter/.test(body))).toBe(true);
+});
