@@ -157,6 +157,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
         thumb={thumb}
         isVideo={asset?.type === "video"}
         src={asset?.file_path}
+        keep // 씬을 다시 열 때 그림이 늦게 차지 않게(lib/keptThumbs)
         fallback={
           <span className={"linb-ph status-" + generation.status} title={generationStatusTitle(
             generation.status, generation.error, generation.execution_phase, generation.provider_status,

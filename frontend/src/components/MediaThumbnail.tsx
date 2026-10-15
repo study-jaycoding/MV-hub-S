@@ -5,6 +5,7 @@
 // node 모델)은 구조가 달라 포함하지 않는다.
 import type { ReactNode, Ref } from "react";
 import { useEffect, useState } from "react";
+import { keepThumb } from "../lib/keptThumbs";
 
 export interface MediaThumbnailLoadState {
   thumbBroken: boolean;
@@ -64,6 +65,8 @@ interface Props {
   // 이미지 썸네일이 깨졌을 때 원본 src 로 한 번 재시도(교차서버 팀 레퍼런스처럼 캐시 썸네일만 죽은 경우).
   // opt-in — 기본 off 라 기존 소비처 동작은 그대로. src 가 thumb 와 다를 때만 유효.
   retrySrcOnThumbError?: boolean;
+  // 그려진 썸네일을 씬을 떠난 뒤에도 쥐고 있는다(캔버스 카드 — lib/keptThumbs). 기본 off.
+  keep?: boolean;
 }
 
 export function MediaThumbnail({
@@ -76,6 +79,7 @@ export function MediaThumbnail({
   fallback,
   onError,
   retrySrcOnThumbError,
+  keep,
 }: Props) {
   const [loadState, setLoadState] = useState<MediaThumbnailLoadState>(
     INITIAL_MEDIA_THUMBNAIL_LOAD_STATE,
@@ -100,6 +104,7 @@ export function MediaThumbnail({
           alt=""
           aria-hidden="true"
           style={{ display: "none" }}
+          onLoad={keep ? () => keepThumb(thumb) : undefined}
           onError={() => setLoadState(nextVideoPosterErrorState(loadState))}
         />
         <video
@@ -129,6 +134,7 @@ export function MediaThumbnail({
         decoding="async"
         alt={alt}
         draggable={false}
+        onLoad={keep ? () => keepThumb(imgSrc) : undefined}
         onError={() => {
           const next = nextMediaThumbnailErrorState(loadState, !!canRetry);
           if (next.mediaBroken && !loadState.mediaBroken) onError?.();

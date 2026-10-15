@@ -186,6 +186,7 @@ export const ReferenceCard = memo(function ReferenceCard({
                     thumb={refThumbSrc(r)}
                     isVideo={isVid}
                     src={refMediaSrc(r)}
+                    keep // 씬을 다시 열 때 그림이 늦게 차지 않게(lib/keptThumbs)
                     fallback={
                       // 그림이 안 뜨는데 서버가 아직 판정 전이면 '확인 중'(아무 말 없는 빗금은 판정 전에만 남긴다)
                       !single || refJudged(workspaceId, r) ? (

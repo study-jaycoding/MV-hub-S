@@ -391,6 +391,7 @@ export function ComfyCard({
                             thumb={displayThumb(o.url, 512)}
                             isVideo
                             src={o.url}
+                            keep // 씬을 다시 열 때 그림이 늦게 차지 않게(lib/keptThumbs)
                             fallback={<span className="thumb-placeholder" />}
                           />
                         ) : (
