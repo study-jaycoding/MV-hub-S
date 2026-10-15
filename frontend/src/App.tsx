@@ -159,7 +159,7 @@ import { FETCH_ALL_MAX } from "./lib/fetchAllGenerations";
 import { useLocalFolderCards } from "./lib/useLocalFolderCards";
 import { placeViewKey } from "./lib/placeViews";
 import { usePlaceView } from "./lib/usePlaceView";
-import { useFolderCards, useSameQueryRevision } from "./lib/useFolderCards";
+import { prefetchFolderCards, useFolderCards, useSameQueryRevision } from "./lib/useFolderCards";
 import { CutInfoPopup } from "./components/CutInfoPopup";
 import { CutReel, type ReelMode } from "./components/CutReel";
 import { buildSpotlightCreateBody } from "./lib/spotlightSubmit";
@@ -1189,6 +1189,14 @@ export default function App() {
     setArmedFolder({ projectId, path: folder.path });
     patch({ project_id: projectId, folder_path: folder.path });
   }, [setArmedFolder, patch]);
+  // 들어가기 직전의 누름(두 번 클릭의 둘째·[열기]) — 들어간 뒤의 묶음(위 cardsScope 와 같은 자리)을 미리 묻는다(Jay 10-16 2A — 에피소드로
+  //  들어갈 때 빈 칸). 들어간 훅의 첫 조회가 이 요청을 이어받는다. 묶음 보기가 아니거나 옛 서버면 묻지 않는다.
+  const prefetchFolderCard = useCallback((folder: FolderCard) => {
+    const projectId = folder.cover.project_id;
+    if (!projectId || !cutView || folderCardsUnsupported) return;
+    const workspaceId = singleTeamWorkspace(genQuery);
+    prefetchFolderCards(libraryAuthKey, { projectId, parent: folder.path, ...(workspaceId ? { workspaceId } : {}) });
+  }, [cutView, folderCardsUnsupported, genQuery, libraryAuthKey]);
   // 폴더 창의 [대표] — 그 폴더의 대표를 정한다. 누르자마자 먼저 그리지 않는다: 저장하는 동안 단추를 잠그고, 끝나면(성공·실패
   //  모두) 서버 값을 다시 읽은 뒤에 푼다 — 먼저 그리면 저장 전에 출발한 조회가 늦게 와서 방금 고른 대표를 지운다(Codex 설계 검토).
   //  다시 읽기는 '지금' 문맥의 것을 부른다: 저장 중에 창을 닫으면 닫기 전의 것은 옛 폴더를 받아 뒤 묶음의 카드를 밀어낸다.
@@ -3103,6 +3111,7 @@ export default function App() {
               {cutCards ? (
                 <FolderCardGrid
                   folders={cutCards.folders} scale={scale} fill={fill} layout={layout} onEnter={enterFolderCard} onOpen={openFolderCard}
+                  onPrefetch={prefetchFolderCard}
                   table={groupByDate} onPreview={openPreview} // 리스트 단추 한 번 더(낱장 목록의 '날짜별 구분' 자리) = 표 · 컷 줄의 생성물 띠 = 크게 보기
                   placeKey={hereKey} // 두 번 누름의 둘째가 들어간 화면에 닿는 것을 버린다(조작 규칙 61)
                   top={!cutScope?.parent} selected={cutSel} onSelect={setCutSel}

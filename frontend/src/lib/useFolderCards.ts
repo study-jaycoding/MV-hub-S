@@ -39,8 +39,30 @@ function remember(key: string, cards: FolderCards): void {
 /** 시험용 — 모듈에 든 기억을 비운다. */
 export function forgetFolderCards(): void {
   remembered.clear();
+  warming.clear();
 }
 const UNSUPPORTED_RETRY_MS = 5 * 60_000; // 옛 서버로 기억한 문맥을 다시 물어보는 간격
+
+// 들어가기 직전의 미리 받기(Jay 10-16 2A — 에피소드로 들어갈 때 빈 칸). 두 번 클릭의 둘째 누름·[열기] 누름에서 그 폴더의 묶음을 미리 묻는다.
+//  들어간 훅의 **첫 조회가 그 요청을 이어받는다** — 같은 묶음을 두 번 묻지 않는다(Codex 검토 10-16). 대표 저장 뒤의 다시 받기(discard)는
+//  이어받지 않는다(저장 전에 출발한 미리 받기가 방금 고른 대표를 덮지 않게). 들어가지 않으면 WARM_MS 뒤 버린다.
+const WARM_MS = 3000;
+const warming = new Map<string, { promise: Promise<FolderCards>; at: number }>();
+export function prefetchFolderCards(authKey: string, scope: FolderCardsScope): void {
+  const key = JSON.stringify([authKey, scope.projectId, scope.parent, scope.workspaceId ?? null]);
+  const now = Date.now();
+  for (const [old, warm] of warming) if (now - warm.at > WARM_MS) warming.delete(old);
+  if (warming.has(key)) return; // 이미 묻는 중 — 빠른 두 번 클릭·[열기] 연타
+  const promise = api.folderCards(scope.projectId, scope.parent, scope.workspaceId);
+  promise.catch(() => {}); // 들어가지 않으면 아무도 기다리지 않는다 — 실패는 이어받은 조회가 처리한다
+  warming.set(key, { promise, at: now });
+}
+function takeWarm(key: string): Promise<FolderCards> | null {
+  const warm = warming.get(key);
+  if (!warm) return null;
+  warming.delete(key); // 한 번만 이어받는다 — 그 뒤의 다시 받기는 새로 묻는다
+  return Date.now() - warm.at <= WARM_MS ? warm.promise : null;
+}
 
 /** 목록이 **같은 조회를 다시 받았을 때만** 오르는 값(주기 조회·통보·내 조작 뒤의 다시 받기) — 폴더 카드를 다시 받는 신호.
  *  조회가 바뀐 뒤의 첫 revision 은 그 조회의 첫 답이지 변경 통보가 아니다(빠르게 여러 번 옮겨도 목록 훅은 마지막 조회의 첫 쪽만 적용한다). */
@@ -100,7 +122,7 @@ export function useFolderCards({ scope, authKey, reloadKey }: Options) {
     if (nowKey === null || pid === undefined || dir === undefined) return true;
     if (off && Date.now() - unsupportedAtRef.current < UNSUPPORTED_RETRY_MS) return true; // 옛 서버 — 가끔만 다시 물어본다
     try {
-      const fresh = await api.folderCards(pid, dir, ws);
+      const fresh = await (takeWarm(nowKey) ?? api.folderCards(pid, dir, ws)); // 미리 받은 요청이 있으면 이어받는다
       if (seq !== seqRef.current) return false;
       if (off) setUnsupportedFor(null); // 서버가 갱신됐다
       const kept = remembered.get(nowKey);
@@ -129,6 +151,8 @@ export function useFolderCards({ scope, authKey, reloadKey }: Options) {
   const request = useCallback((discard: boolean): Promise<void> => {
     const running = runningRef.current;
     const nowKey = argsRef.current.key;
+    // 저장 전에 출발한 미리 받기는 버린다 — 바로 보내는 조회도, 받는 중인 조회에 얹혀 끝난 뒤 보내는 조회도 이어받지 않게
+    if (discard && nowKey !== null) warming.delete(nowKey);
     if (running && nowKey !== null && running.key === nowKey) {
       if (discard) seqRef.current += 1;
       if (!running.pending) {

@@ -17,7 +17,7 @@ vi.mock("../src/lib/modelCatalog", () => ({
 import { FolderCardGrid } from "../src/components/FolderCardGrid";
 import { folderCardsPlace, folderCardsScope, hasFindFilters, parentFolder, singleTeamWorkspace, type FolderCardsScope } from "../src/lib/folderCards";
 import { HttpError } from "../src/lib/http";
-import { forgetFolderCards, useFolderCards, useSameQueryRevision } from "../src/lib/useFolderCards";
+import { forgetFolderCards, prefetchFolderCards, useFolderCards, useSameQueryRevision } from "../src/lib/useFolderCards";
 import { forgetCoverCredits } from "../src/lib/coverCredits";
 
 const base: GenQuery = { tab: "team", project_id: "p1", folder_path: "e035", colors: [], tags: [], auto_tags: [] };
@@ -1196,4 +1196,114 @@ it("키보드 — Ctrl+A 모두 · 방향키 옮기기(Shift = 누른 카드부�
   key("ArrowRight");
   expect([...selected]).toEqual(["e035/C0040"]);
   expect(key("ArrowLeft", { altKey: true }).defaultPrevented).toBe(false); // Alt+← 는 브라우저의 뒤로
+});
+
+// ── 들어가기 직전의 미리 받기(Jay 10-16 2A — 에피소드로 들어갈 때 빈 칸) ──
+//  두 번 클릭의 둘째 누름·[열기] 누름에서 그 폴더의 묶음을 미리 묻고, 들어간 훅의 첫 조회가 그 요청을 이어받는다(같은 묶음을 두 번 묻지 않는다).
+it("미리 받기: 들어간 훅의 첫 조회가 이어받는다 — 다 받았으면 빈 칸 없이 바로, 받는 중이면 그 응답을 기다리고 새로 묻지 않는다", async () => {
+  folderCardsApi.mockResolvedValueOnce(cards(card("C0010", 3)));
+  prefetchFolderCards("account-a", e035);
+  await settle();
+  show({ scope: e035 });
+  await settle();
+  expect(folderCardsApi).toHaveBeenCalledTimes(1);
+  expect(seen.cards?.folders.map((folder) => folder.name)).toEqual(["C0010"]);
+  // 받는 중인 미리 받기
+  forgetFolderCards();
+  folderCardsApi.mockReset();
+  const slow = hold();
+  const e036: FolderCardsScope = { projectId: "p1", parent: "e036" };
+  prefetchFolderCards("account-a", e036);
+  prefetchFolderCards("account-a", e036); // 빠른 두 번 — 한 번만 묻는다
+  show({ scope: e036 });
+  expect(seen.loading).toBe(true);
+  expect(folderCardsApi).toHaveBeenCalledTimes(1);
+  await slow.release(cards(card("C0020", 2)));
+  await settle();
+  expect([folderCardsApi.mock.calls.length, seen.loading, seen.cards?.folders[0].name]).toEqual([1, false, "C0020"]);
+});
+
+it("미리 받기: 다른 계정·오래된(3초 넘은) 미리 받기는 이어받지 않는다 · 대표 저장 뒤의 다시 받기는 미리 받은 응답을 쓰지 않는다", async () => {
+  folderCardsApi.mockResolvedValue(cards(card("C0010", 3)));
+  prefetchFolderCards("account-b", e035);
+  show({ scope: e035, authKey: "account-a" });
+  await settle();
+  expect(folderCardsApi).toHaveBeenCalledTimes(2); // 계정이 다르다 — 새로 묻는다
+  forgetFolderCards();
+  folderCardsApi.mockClear();
+  const now = vi.spyOn(Date, "now");
+  now.mockReturnValue(1_000_000);
+  const e037: FolderCardsScope = { projectId: "p1", parent: "e037" };
+  prefetchFolderCards("account-a", e037);
+  now.mockReturnValue(1_000_000 + 3_500);
+  show({ scope: e037 });
+  await settle();
+  expect(folderCardsApi).toHaveBeenCalledTimes(2); // 3초 넘게 들어가지 않았다 — 새로 묻는다
+  now.mockRestore();
+  // 대표 저장 뒤의 다시 받기 — 저장 전에 출발한 미리 받기를 쓰면 방금 고른 대표를 덮는다
+  folderCardsApi.mockClear();
+  const before = hold();
+  prefetchFolderCards("account-a", e037);
+  folderCardsApi.mockResolvedValueOnce(cards({ ...card("C0010", 3), rep: true }));
+  let done = false;
+  await act(async () => { void seen.reload().then(() => { done = true; }); });
+  await before.release(cards(card("C0010", 3)));
+  await settle();
+  expect([folderCardsApi.mock.calls.length, done, seen.cards?.folders[0].rep]).toEqual([2, true, true]);
+  // 받는 중인 조회에 얹힌 다시 받기도 — 그 조회가 끝난 뒤 보내는 조회가 저장 전의 미리 받기를 이어받지 않는다
+  folderCardsApi.mockClear();
+  const running = hold();
+  show({ scope: e037, reloadKey: 1 }); // 주기 조회가 출발했다(받는 중)
+  const stale = hold();
+  prefetchFolderCards("account-a", e037); // 저장 전에 출발한 미리 받기
+  folderCardsApi.mockResolvedValueOnce(cards({ ...card("C0010", 3), rep: false, count: 9 }));
+  done = false;
+  await act(async () => { void seen.reload().then(() => { done = true; }); });
+  await running.release(cards(card("C0010", 3)));
+  await settle();
+  await stale.release(cards({ ...card("C0010", 3), rep: true, count: 1 }));
+  await settle();
+  expect([folderCardsApi.mock.calls.length, done, seen.cards?.folders[0].count]).toEqual([3, true, 9]);
+});
+
+it("미리 받기: 옛 서버(경로 없음)면 이어받은 실패가 그대로 '지원 안 함'이 된다", async () => {
+  folderCardsApi.mockRejectedValueOnce(new HttpError(404, "404: Not Found", "Not Found"));
+  prefetchFolderCards("account-a", e035);
+  show({ scope: e035 });
+  await settle();
+  expect([folderCardsApi.mock.calls.length, seen.unsupported, seen.cards]).toEqual([1, true, null]);
+});
+
+it("미리 받기: 격자는 두 번 클릭의 둘째 누름과 [열기]·'+N' 누름에서만 묻는다 — 고르는 한 번 누름·컷 띠·하위 폴더 없는 카드는 묻지 않는다", () => {
+  const asked: string[] = [];
+  const cuts = [{ path: "e035/C0010", name: "C0010", count: 3, rep: false, cover: { id: "c", assets: [] } }];
+  const episode: FolderCard = { ...card("e035", 14), path: "e035", subfolders: 4, children: cuts };
+  const leaf: FolderCard = { ...card("e099", 2), path: "e099", subfolders: 0, children: [] };
+  for (const layout of ["list", "grid"] as const) {
+    asked.length = 0;
+    act(() => root.render(
+      <FolderCardGrid {...gridProps} layout={layout} folders={[episode, leaf]} top outside={0} onPrefetch={(folder) => asked.push(folder.path)} />,
+    ));
+    const tile = (path: string) => host.querySelector<HTMLElement>(`.cut-card[data-path="${path}"]`)!;
+    mouse("mousedown", tile("e035"), { detail: 1 });
+    mouse("mouseup", window);
+    expect([layout, asked]).toEqual([layout, []]); // 한 번 누름 = 고르기
+    mouse("mousedown", tile("e035"), { detail: 2 });
+    mouse("mouseup", window);
+    expect([layout, asked]).toEqual([layout, ["e035"]]);
+    mouse("mousedown", tile("e099"), { detail: 2 });
+    mouse("mouseup", window);
+    expect([layout, asked]).toEqual([layout, ["e035"]]); // 하위 폴더가 없다 — 들어가도 묶음이 없다
+    const cutButton = tile("e035").querySelector<HTMLElement>(".ep-cut:not(.more)");
+    if (cutButton) {
+      mouse("mousedown", cutButton);
+      mouse("mouseup", window);
+    }
+    expect([layout, asked]).toEqual([layout, ["e035"]]); // 컷 띠의 컷은 그 컷으로 간다
+    const enter = tile("e035").querySelector<HTMLElement>(".ep-enter, .ep-cut.more");
+    expect([layout, enter !== null]).toEqual([layout, true]);
+    mouse("mousedown", enter!);
+    mouse("mouseup", window);
+    expect([layout, asked]).toEqual([layout, ["e035", "e035"]]);
+  }
 });

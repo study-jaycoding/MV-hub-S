@@ -46,6 +46,8 @@ interface Props {
   outside: number; // 고른 폴더에 직접 든 수 — 어느 카드에도 들지 않아 맨 끝 칸으로 알린다
   onShowAll: () => void; // 그 칸을 누르면 한 장씩 보기로
   placeKey?: string; // 지금 보여 주는 자리의 열쇠 — 바뀌면 다른 화면이다(두 번 누름의 둘째가 새 화면에 닿는 것을 버리는 근거, lib/useStaleMultiClick)
+  // 들어가기 직전의 누름(두 번 클릭의 둘째 · [열기]·'+N' 누름) — 하위 폴더가 있는 카드만. 그 폴더의 묶음을 미리 묻는다(Jay 10-16 2A).
+  onPrefetch?: (folder: FolderCard) => void;
 }
 
 // 한 줄에 놓인 카드 수 — 화면에 놓인 자리로 센다(열 수는 CSS 가 폭에 맞춰 정한다).
@@ -76,6 +78,7 @@ function inCardAction(target: EventTarget | null): boolean {
 
 export function FolderCardGrid({
   folders, scale, fill, layout, table, selected, onSelect, onEnter, onOpen, onInfo, onReel, onPreview, top, outside, onShowAll, placeKey = "",
+  onPrefetch,
 }: Props) {
   const t = useT();
   const view = boardView(folders, layout, table); // 줄·카드·표 — 모양만 다르다(머리말). null = 겹친 종이 카드(컷 화면의 그리드)
@@ -306,6 +309,11 @@ export function FolderCardGrid({
     actionCoveredRef.current = false;
     return covered;
   };
+  const prefetchAt = (el: HTMLElement) => {
+    const path = el.closest<HTMLElement>(".cut-card[data-path]")?.dataset.path;
+    const folder = path === undefined ? undefined : opsRef.current.folders.find((one) => one.path === path);
+    if (folder?.subfolders) onPrefetch?.(folder);
+  };
   const onGridMouseDown = (e: React.MouseEvent) => {
     if (e.button === 1) {
       e.preventDefault(); // 휠 클릭의 자동 스크롤 막기(정보는 카드의 auxclick)
@@ -319,6 +327,8 @@ export function FolderCardGrid({
       // 카드 안 단추(컷 띠·[열기]) — 고르기를 바꾸지 않고 그 단추가 제 일을 한다. 다만 위에 뜬 메뉴를 닫는 누름이었으면 그 일도 하지 않는다:
       //  단추의 click 은 누름 뒤에 와서 그때는 가림이 이미 풀려 있다 — 누름의 시작에 적어 두고 click 에서 본다(우클릭의 기록과 같은 이유).
       actionCoveredRef.current = pressStartedCovered();
+      // [열기]·'+N' 은 누르면 들어간다 — 누르는 동안 그 폴더의 묶음을 미리 묻는다(컷 띠의 컷·그림은 다른 곳으로 간다)
+      if (!actionCoveredRef.current && target.closest(".ep-enter, .ep-cut.more")) prefetchAt(target);
       return;
     }
     // 컷 카드 아래의 정보판을 누른 것도 그 카드를 누른 것이다(카드와 한 칸 — .cut-slot)
@@ -326,6 +336,8 @@ export function FolderCardGrid({
       ?? target.closest(".cut-slot")?.querySelector(".cut-card[data-path]") ?? null) as HTMLElement | null;
     e.preventDefault(); // 끌 때 글자·그림이 긁히지 않게(카드 위에서 시작해도 마퀴)
     if (pressStartedCovered()) return; // 위에 뜬 메뉴를 닫는 누름 — 고른 것을 바꾸지 않는다
+    // 두 번 클릭의 둘째 누름 — 뗄 때 들어간다(카드의 dblclick). 한 번 누름(고르기)에는 묻지 않는다(Codex 검토 10-16).
+    if (e.detail === 2 && card) prefetchAt(card);
     gridRef.current?.focus();
     dragRef.current = {
       x: e.clientX, y: e.clientY, path: card?.dataset.path ?? null,
