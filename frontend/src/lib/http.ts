@@ -233,9 +233,10 @@ export async function jsonFetch<T>(
     try {
       res = await fetch(url, { ...init, headers });
     } catch (error) {
+      // 다시 보내기가 어떤 까닭으로든(멈춤 — 다른 탭 로그아웃 포함) 못 나가도 첫 요청은 들어갔을 수 있다 — 실패로 바꾸지 않는다(Codex 61회차)
+      if (attempt > 1) throw new Error(NO_RESPONSE_MESSAGE);
       const noResponse = error instanceof TypeError; // AbortError(DOMException)·그 밖의 예외는 그대로
       if (!noResponse || !opts.retryNoResponse) throw error;
-      if (last) throw new Error(NO_RESPONSE_MESSAGE);
       await sleep(1000);
       continue;
     }

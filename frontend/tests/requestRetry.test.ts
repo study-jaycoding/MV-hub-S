@@ -3,12 +3,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../src/api";
 import { comfyApi } from "../src/lib/comfyApi";
-import { HttpError, jsonFetch, NO_RESPONSE_MESSAGE } from "../src/lib/http";
+import { ApiPausedError, HttpError, jsonFetch, NO_RESPONSE_MESSAGE } from "../src/lib/http";
 import { setHubFeatures } from "../src/lib/hubFeatures";
 
 const ok = (value: unknown) => ({ ok: true, status: 200, headers: new Headers(), json: () => Promise.resolve(value) }) as unknown as Response;
 const httpFail = (status: number) => ({ ok: false, status, headers: new Headers(), json: () => Promise.resolve({ detail: "x" }), text: () => Promise.resolve("x") }) as unknown as Response;
 const lost = () => Promise.reject(new TypeError("Failed to fetch"));
+const paused = () => Promise.reject(new ApiPausedError("paused")); // 관문(4B)이 다른 탭 로그아웃으로 멈췄다
 const workspace = { scope: "team", id: "ws", name: "공간" } as const;
 let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -68,6 +69,26 @@ describe("전송 층 재전송(jsonFetch retryNoResponse)", () => {
     const off = await settle(jsonFetch("/x", { method: "POST" }));
     expect((off as { error: Error }).error).toBeInstanceOf(TypeError);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Codex 61회차(2A×4B) — 첫 요청의 답이 끊긴 뒤 다시 보내기 직전에 멈추면, 첫 요청이 들어갔을 수 있다. 실패로 보이면 다시 눌러 두 번 과금된다.
+describe("다시 보내기 전에 멈추면(다른 탭 로그아웃) 결과 불명을 유지", () => {
+  it("jsonFetch: 둘째 전송이 멈춤으로 못 나가도 '들어갔을 수 있다' · 첫 전송부터 멈춤이면 보내지 않은 것(멈춤 그대로)", async () => {
+    fetchMock.mockImplementationOnce(lost).mockImplementationOnce(paused);
+    const out = await settle(jsonFetch("/api/gen-requests", { method: "POST", body: "{}" }, undefined, { retryNoResponse: true }));
+    expect((out as { error: Error }).error.message).toBe(NO_RESPONSE_MESSAGE);
+
+    fetchMock.mockReset().mockImplementation(paused);
+    const before = await settle(jsonFetch("/api/gen-requests", { method: "POST", body: "{}" }, undefined, { retryNoResponse: true }));
+    expect((before as { error: Error }).error).toBeInstanceOf(ApiPausedError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("Comfy [실행]: 둘째 전송이 멈춤으로 못 나가도 '들어갔을 수 있다'", async () => {
+    fetchMock.mockImplementationOnce(lost).mockImplementationOnce(paused);
+    const out = await settle(comfyApi.run("{}"));
+    expect((out as { error: Error }).error.message).toBe(NO_RESPONSE_MESSAGE);
   });
 });
 

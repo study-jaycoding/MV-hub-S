@@ -197,7 +197,7 @@ export const comfyApi = {
       try {
         first = await send();
       } catch (again) {
-        if (again instanceof HttpError || again instanceof ApiPausedError) throw again;
+        if (again instanceof HttpError) throw again; // 멈춤으로 다시 못 보냈어도 첫 요청은 들어갔을 수 있다(Codex 61회차)
         throw new Error(NO_RESPONSE_MESSAGE);
       }
     }
