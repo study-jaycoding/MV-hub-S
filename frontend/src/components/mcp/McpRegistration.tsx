@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { WorkspaceContext } from "../../types";
 import { getAuthToken, HttpError, jsonBody, jsonFetch } from "../../lib/http";
 import type { McpCanvasTask } from "../../lib/mcpCanvasTasks";
+import { SettingsDescription } from "../settings/SettingsDescription";
 
 interface Client {
   id: string; name: string; scope?: "account" | "workspace"; workspace: WorkspaceContext | { scope: "account" } | null; can_execute: boolean;
@@ -88,9 +89,11 @@ export function McpRegistration({ authReady, authKey, workspace }: { authReady: 
     catch { if (active.current && key === scopeRef.current) setNote("자동 복사를 사용할 수 없습니다. 아래 설정을 선택해서 복사하세요."); }
   }
   const disabled = busy || !authReady;
+  // 모양은 설정 패널 규칙(Jay 2026-10-16 모의 그림): 작은 제목 · 회색 안내 · 라임 동의 칸 + 주 단추 · 보조(ghost) 단추 둘 ·
+  // 긴 안내는 한 줄 요약 + 더보기(SettingsDescription 그대로). 단추 글자·순서·동작은 그대로(시험이 글자로 누른다).
   return <section className="mcp-reg" aria-label="계속 사용하는 MCP 연결">
     <h3 className="mcp-reg-title">LLM 프로그램 연결</h3>
-    <p className="mcp-reg-lead">한 번 연결하면 LLM에서 MV Hub의 자료를 조회하고 생성할 수 있습니다.</p>
+    <p className="mcp-reg-lead">한 번 연결하면 Codex·Claude Code에서 MV Hub의 자료를 조회하고 생성할 수 있습니다.</p>
     <div className="mcp-reg-consent">
       <p>현재 계정이 접근 가능한 모든 공간의 자료 조회와 사용자 요청에 따른 크레딧 사용을 허용합니다. 이후 생성마다 앱 승인을 누르지 않습니다.</p>
       <button className="mcp-primary" disabled={disabled} onClick={() => void request("configure", ["codex", "claude"])}>Codex·Claude Code 연결 허용</button>
@@ -99,14 +102,12 @@ export function McpRegistration({ authReady, authKey, workspace }: { authReady: 
       <button disabled={disabled} onClick={() => void request("configure", ["other"])}>다른 MCP 프로그램 설정</button>
       <button disabled={disabled} onClick={() => void request("list")}>저장된 연결 확인</button>
     </div>
-    <ul className="mcp-reg-notes">
-      <li>브라우저 창을 닫아도 생성할 수 있습니다. 이 PC의 MV Hub 서버와 작업자는 실행 중이어야 합니다.</li>
-      <li>사용할 워크스페이스·폴더·장면은 LLM에 말해 주세요. 앱에서 선택한 공간과 관계없이 요청한 곳에 생성합니다.</li>
-      <li>생성물과 기록은 MV Hub에 저장하고, 결과 미리보기는 지원하는 LLM 대화창에서도 확인합니다. 캔버스에는 요청한 경우에만 추가합니다.</li>
-      <li>처음 등록한 뒤에는 LLM 프로그램의 MCP 다시 불러오기·재시작 또는 신뢰 확인이 필요할 수 있습니다.
-        Claude Desktop 등 다른 로컬 앱은 ‘다른 MCP 프로그램 설정’을 사용하세요.</li>
-      <li>이전의 공간 고정 연결은 위 버튼으로 다시 등록하면 계정 기준 연결로 바뀝니다.</li>
-    </ul>
+    <SettingsDescription summary="브라우저 창을 닫아도 생성됩니다. 이 PC의 MV Hub 서버와 작업자는 켜져 있어야 합니다.">
+      <p>사용할 워크스페이스·폴더·장면은 LLM에 말해 주세요. 앱에서 고른 공간과 관계없이 요청한 곳에 생성합니다.</p>
+      <p>생성물과 기록은 MV Hub에 저장하고, 결과 미리보기는 지원하는 LLM 대화창에서도 봅니다. 캔버스에는 요청한 경우에만 추가합니다.</p>
+      <p>처음 등록한 뒤에는 LLM 프로그램의 MCP 다시 불러오기·재시작이 필요할 수 있습니다. Claude Desktop 등 다른 로컬 앱은 ‘다른 MCP 프로그램 설정’을 쓰세요.</p>
+      <p>이전의 공간 고정 연결은 위 버튼으로 다시 등록하면 계정 기준 연결로 바뀝니다.</p>
+    </SettingsDescription>
     {note && <p className="mcp-reg-status" role="status">{note}</p>}
     {results.map((result, index) => {
       const config = result.config ? (typeof result.config === "string" ? result.config : JSON.stringify(result.config, null, 2)) : "";
