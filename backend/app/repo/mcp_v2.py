@@ -156,7 +156,8 @@ def add_canvas_task(client, plan_id, scene_id, generation_ids, workspace=None):
     with get_connection() as conn:
         conn.execute(
             "INSERT INTO mcp_canvas_task(id,plan_id,owner_uid,account_email,workspace,scene_id,generation_ids) VALUES(?,?,?,?,?,?,?) "
-            "ON CONFLICT(plan_id,scene_id) DO NOTHING",
+            "ON CONFLICT(plan_id,scene_id) DO UPDATE SET id=excluded.id,status='pending',generation_ids=excluded.generation_ids "
+            "WHERE mcp_canvas_task.status='cancelled'",
             (task_id, plan_id, client["owner_uid"], client["account_email"], encode(workspace), scene_id, encode(generation_ids)),
         )
         row = conn.execute("SELECT * FROM mcp_canvas_task WHERE plan_id=? AND scene_id=?", (plan_id, scene_id)).fetchone()
@@ -193,6 +194,17 @@ def complete_canvas_task(task_id, owner, email, workspace):
     with get_connection() as conn:
         return bool(conn.execute(
             "UPDATE mcp_canvas_task SET status='done' WHERE id=? AND owner_uid=? AND account_email=? "
-            "AND json_extract(workspace,'$.scope')=? AND COALESCE(json_extract(workspace,'$.id'),'')=?",
+            "AND json_extract(workspace,'$.scope')=? AND COALESCE(json_extract(workspace,'$.id'),'')=? "
+            "AND status IN ('pending','done')",
+            (task_id, owner, email, workspace["scope"], workspace.get("id") or ""),
+        ).rowcount)
+
+
+def cancel_canvas_task(task_id, owner, email, workspace):
+    with get_connection() as conn:
+        return bool(conn.execute(
+            "UPDATE mcp_canvas_task SET status='cancelled' WHERE id=? AND owner_uid=? AND account_email=? "
+            "AND json_extract(workspace,'$.scope')=? AND COALESCE(json_extract(workspace,'$.id'),'')=? "
+            "AND status IN ('pending','cancelled')",
             (task_id, owner, email, workspace["scope"], workspace.get("id") or ""),
         ).rowcount)

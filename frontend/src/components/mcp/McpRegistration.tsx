@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { WorkspaceContext } from "../../types";
-import { getAuthToken, jsonBody, jsonFetch } from "../../lib/http";
+import { getAuthToken, HttpError, jsonBody, jsonFetch } from "../../lib/http";
+import type { McpCanvasTask } from "../../lib/mcpCanvasTasks";
 
 interface Client {
   id: string; name: string; scope?: "account" | "workspace"; workspace: WorkspaceContext | { scope: "account" } | null; can_execute: boolean;
@@ -10,18 +11,54 @@ interface Registration {
   client: string; status: "configured" | "manual" | "error"; message: string; config?: unknown;
 }
 
-export function McpRegistration({ authReady, authKey }: { authReady: boolean; authKey: string }) {
+export function McpRegistration({ authReady, authKey, workspace }: { authReady: boolean; authKey: string; workspace: WorkspaceContext }) {
   const [clients, setClients] = useState<Client[]>([]);
   const [results, setResults] = useState<Registration[]>([]);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [tasks, setTasks] = useState<McpCanvasTask[]>([]);
+  const [taskNote, setTaskNote] = useState("");
   const tab = useRef(crypto.randomUUID());
   const pending = useRef(false);
   const active = useRef(true);
   const scope = JSON.stringify([authReady, authKey]);
   const scopeRef = useRef(scope); scopeRef.current = scope;
+  const taskScope = JSON.stringify([scope, workspace.scope, workspace.id]);
+  const taskScopeRef = useRef(taskScope);
+  const taskEpoch = useRef(0);
+  if (taskScopeRef.current !== taskScope) { taskScopeRef.current = taskScope; taskEpoch.current += 1; }
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
   useEffect(() => { setClients([]); setResults([]); setNote(""); }, [scope]);
+  useEffect(() => { setTasks([]); setTaskNote(""); }, [taskScope]);
+
+  async function requestTasks(cancelId?: string) {
+    if (pending.current || !authReady || workspace.scope === "unknown") return;
+    pending.current = true; setBusy(true); setTaskNote("");
+    const epoch = taskEpoch.current, token = getAuthToken();
+    const fresh = () => active.current && epoch === taskEpoch.current && token === getAuthToken();
+    const headers = { "X-MVHub-Tab": tab.current };
+    let alreadyFinished = false;
+    try {
+      if (cancelId) {
+        try {
+          await jsonFetch(`/api/mcp/v2/app/canvas-tasks/${encodeURIComponent(cancelId)}/cancel`, { method: "POST", headers, body: jsonBody({ workspace }) });
+        } catch (error) {
+          if (!(error instanceof HttpError) || error.status !== 404) throw error;
+          alreadyFinished = true;
+        }
+        if (!fresh()) return;
+      }
+      const query = new URLSearchParams({ workspace_scope: workspace.scope });
+      if (workspace.id) query.set("workspace_id", workspace.id);
+      const result = await jsonFetch<{ tasks: McpCanvasTask[] }>(`/api/mcp/v2/app/canvas-tasks?${query}`, { headers });
+      if (fresh()) {
+        setTasks(result.tasks);
+        setTaskNote(alreadyFinished ? "이 요청은 더 이상 대기 중이 아닙니다. 목록을 갱신했습니다." : cancelId ? "대기 요청을 취소했습니다. 이미 처리 중인 카드는 추가될 수 있습니다." : result.tasks.length ? "현재 공간의 대기 요청입니다." : "현재 공간에 대기 요청이 없습니다.");
+      }
+    } catch {
+      if (fresh()) setTaskNote(cancelId ? "취소 결과를 확인하지 못했습니다. 대기 작업을 다시 확인하세요." : "대기 작업을 불러오지 못했습니다. 다시 확인하세요.");
+    } finally { pending.current = false; if (active.current) setBusy(false); }
+  }
 
   async function request(action: "list" | "configure" | "revoke", value?: string[] | string) {
     if (pending.current || !authReady) return;
@@ -39,7 +76,7 @@ export function McpRegistration({ authReady, authKey }: { authReady: boolean; au
         if (!fresh()) return;
       }
       const result = await jsonFetch<{ clients: Client[] }>("/api/mcp/v2/app/clients", { headers });
-      if (fresh()) { setClients(result.clients); setNote(action === "revoke" ? "실행 권한을 해제했습니다." : "저장된 연결을 확인했습니다. 등록 완료와 실제 LLM 응답은 다릅니다."); }
+      if (fresh()) { setClients(result.clients); setNote(action === "revoke" ? "자료 조회와 생성 실행 권한을 해제했습니다." : "저장된 연결을 확인했습니다. 등록 완료와 실제 LLM 응답은 다릅니다."); }
     } catch {
       if (fresh()) setNote("처리 결과를 확인하지 못했습니다. 연결 목록을 다시 확인하세요. 프로그램 등록은 일부만 반영됐을 수 있습니다.");
     } finally { pending.current = false; if (active.current) setBusy(false); }
@@ -88,5 +125,16 @@ export function McpRegistration({ authReady, authKey }: { authReady: boolean; au
       </div>
       {!client.revoked_at && <button className="mcp-revoke" disabled={disabled} onClick={() => void request("revoke", client.id)}>권한 해제</button>}
     </li>)}</ul>
+    <details className="mcp-legacy">
+      <summary>캔버스 대기 작업</summary>
+      <p>대기 중인 추가 요청만 취소합니다. 이미 추가됐거나 처리 중인 카드는 삭제하지 않습니다.</p>
+      <p>취소 후 LLM에 다시 추가를 요청할 수 있습니다. 이미 붙은 카드가 있으면 중복될 수 있으니 먼저 캔버스를 확인하세요.</p>
+      <button disabled={disabled || workspace.scope === "unknown"} onClick={() => void requestTasks()}>대기 작업 확인</button>
+      {taskNote && <p role="status">{taskNote}</p>}
+      <ul className="mcp-clients">{tasks.map((task) => <li key={task.id}>
+        <span>장면 {task.scene_id} · 생성물 {task.generation_ids.length}개</span>
+        <button disabled={disabled} onClick={() => void requestTasks(task.id)}>추가 요청 취소</button>
+      </li>)}</ul>
+    </details>
   </section>;
 }

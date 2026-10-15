@@ -66,8 +66,10 @@ export function useMcpCanvasTasks(props: CanvasPorts & { authReady: boolean; aut
     const account = getAccountNamespace(), token = getAuthToken(), tab = crypto.randomUUID();
     const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let retryDelay = 15_000;
     const fresh = () => !abort.signal.aborted && scopeRef.current === scope && account === getAccountNamespace() && token === getAuthToken();
     const poll = async () => {
+      let failed = false;
       try {
         if (!sceneStoreReady() || !fresh()) return;
         const query = new URLSearchParams({ workspace_scope: props.workspace.scope });
@@ -76,12 +78,19 @@ export function useMcpCanvasTasks(props: CanvasPorts & { authReady: boolean; aut
         if (!fresh()) return;
         for (const task of result.tasks) {
           if (!fresh()) return;
-          if (await attachMcpCanvasTask(task, props.workspace, current.current, fresh) && fresh()) {
-            await jsonFetch(`/api/mcp/v2/app/canvas-tasks/${encodeURIComponent(task.id)}/complete`, { method: "POST", headers: { "X-MVHub-Tab": tab }, body: jsonBody({ workspace: props.workspace }), signal: abort.signal });
-          }
+          try {
+            if (await attachMcpCanvasTask(task, props.workspace, current.current, fresh) && fresh()) {
+              await jsonFetch(`/api/mcp/v2/app/canvas-tasks/${encodeURIComponent(task.id)}/complete`, { method: "POST", headers: { "X-MVHub-Tab": tab }, body: jsonBody({ workspace: props.workspace }), signal: abort.signal });
+            } else failed = true;
+          } catch { failed = true; }
         }
-      } catch { /* 카드 추가만 재확인하며 생성 API는 호출하지 않는다. */ }
-      finally { if (fresh()) timer = setTimeout(() => void poll(), 15_000); }
+      } catch { failed = true; }
+      finally {
+        // 카드 추가만 재확인하며, 막힌 작업을 완료 처리하거나 생성을 다시 요청하지 않는다.
+        const delay = failed ? retryDelay : 15_000;
+        retryDelay = failed ? Math.min(retryDelay * 2, 120_000) : 15_000;
+        if (fresh()) timer = setTimeout(() => void poll(), delay);
+      }
     };
     void poll();
     return () => { abort.abort(); if (timer) clearTimeout(timer); };

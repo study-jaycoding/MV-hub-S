@@ -175,6 +175,107 @@ def test_uncertain_never_automatically_resubmits(local, monkeypatch):
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("error,expected", [
+    (ValueError("MCP 실행 파일이 없습니다. 앱 설치 상태를 확인하세요."), "MCP 실행 파일이 없습니다."),
+    (ValueError("설정이 다른 프로그램에서 바뀌었습니다. 다시 연결하세요."), "다른 프로그램에서 바뀌었습니다"),
+    (ValueError("이 Windows 계정에서 MCP 연결 권한을 읽거나 저장할 수 없습니다."), "권한을 읽거나 저장할 수 없습니다"),
+    (PermissionError("private credential text"), "저장할 권한이 없습니다"),
+    (RuntimeError("private credential text"), "설정 파일 상태를 확인"),
+])
+def test_registration_diagnostics_are_safe_and_failed_grant_revoked(local, monkeypatch, error, expected):
+    configure(local)
+    old_headers = headers(local)
+    def fail(name, setup, credential):
+        local[1][name] = credential
+        raise error
+    monkeypatch.setattr(api, "_configure_local", fail)
+    response = local[0].post("/api/mcp/v2/app/configure", headers=APP_HEADERS,
+        json={"clients": ["codex"], "scope": "account", "allow_execution": True})
+    assert response.status_code == 200
+    result = response.json()["clients"][0]
+    assert result["status"] == "error" and expected in result["message"]
+    assert "private credential text" not in response.text
+    assert local[0].post("/api/mcp/v2/client/connect", headers=headers(local), json={}).status_code == 403
+    assert local[0].post("/api/mcp/v2/client/connect", headers=old_headers, json={}).status_code == 200
+
+
+def test_registration_account_change_after_config_write_is_explained(local, monkeypatch):
+    original = api._configure_local
+    def switch_after_write(*args):
+        result = original(*args)
+        repo.set_setting("mcp_active_account", "changed@example.test")
+        return result
+    monkeypatch.setattr(api, "_configure_local", switch_after_write)
+    response = local[0].post("/api/mcp/v2/app/configure", headers=APP_HEADERS,
+        json={"clients": ["codex"], "scope": "account", "allow_execution": True})
+    result = response.json()["clients"][0]
+    assert result["status"] == "error" and "계정이나 허브 연결이 바뀌었습니다" in result["message"]
+    assert "changed@example.test" not in response.text
+    failed = store.client_for_secret(api.mcp.digest(local[1]["codex"]["secret"]))
+    assert failed["revoked_at"]
+
+
+def test_partial_failure_explains_unattempted_items_without_replaying(local, monkeypatch):
+    configure(local)
+    calls = []
+    async def submit(*args):
+        calls.append(1)
+        if len(calls) == 2:
+            raise TimeoutError()
+        return {"id": "already-submitted"}
+    monkeypatch.setattr(gen_requests, "create_gen_request", submit)
+    plan = action(local, "prepare_generation_plan", {"title": "partial", "items": [
+        {"label": str(i), "prompt": "hello", "model": "test_model", "params": {}} for i in range(3)]}).json()
+    result = action(local, "execute_generation_plan", {"plan_id": plan["id"]}).json()
+    assert [item["state"] for item in result["items"]] == ["submitted", "uncertain", "pending"]
+    for word in ("submitted", "uncertain/submitting", "pending", "새 계획", "재생성하지"):
+        assert word in result["next_step"]
+    again = action(local, "execute_generation_plan", {"plan_id": plan["id"]}).json()
+    assert again["next_step"] == result["next_step"] and len(calls) == 2
+
+
+def test_cancel_and_explicit_retry_use_new_task_id_without_stale_completion(local):
+    configure(local)
+    plan = prepare(local)
+    client = store.client_for_secret(api.mcp.digest(local[1]["codex"]["secret"]))
+    task = store.add_canvas_task(client, plan["id"], "missing-scene", ["existing-generation"])
+    cancel_url = f"/api/mcp/v2/app/canvas-tasks/{task['id']}/cancel"
+    complete_url = f"/api/mcp/v2/app/canvas-tasks/{task['id']}/complete"
+    body = {"workspace": {"scope": "personal"}}
+    assert local[0].post(cancel_url, json=body).status_code == 403
+    for _ in range(2):
+        assert local[0].post(cancel_url, headers=APP_HEADERS, json=body).status_code == 200
+    assert local[0].post(complete_url, headers=APP_HEADERS, json=body).status_code == 404
+    assert store.canvas_tasks(client["owner_uid"], client["account_email"], body["workspace"]) == []
+    retry = store.add_canvas_task(client, plan["id"], "missing-scene", ["existing-generation"])
+    assert retry["id"] != task["id"] and retry["status"] == "pending"
+    assert store.add_canvas_task(client, plan["id"], "missing-scene", ["existing-generation"])["id"] == retry["id"]
+    assert local[0].post(cancel_url, headers=APP_HEADERS, json=body).status_code == 404
+    assert local[0].post(complete_url, headers=APP_HEADERS, json=body).status_code == 404
+    new_complete = f"/api/mcp/v2/app/canvas-tasks/{retry['id']}/complete"
+    for _ in range(2):
+        assert local[0].post(new_complete, headers=APP_HEADERS, json=body).status_code == 200
+    assert local[0].post(f"/api/mcp/v2/app/canvas-tasks/{retry['id']}/cancel", headers=APP_HEADERS, json=body).status_code == 404
+    assert store.add_canvas_task(client, plan["id"], "missing-scene", ["existing-generation"])["status"] == "done"
+
+
+def test_cancel_checks_workspace_owner_and_membership(local, monkeypatch):
+    configure(local)
+    plan = prepare(local)
+    client = store.client_for_secret(api.mcp.digest(local[1]["codex"]["secret"]))
+    task = store.add_canvas_task(client, plan["id"], "scene", ["generation"])
+    workspace = {"scope": "personal"}
+    assert not store.cancel_canvas_task(task["id"], "someone-else", client["account_email"], workspace)
+    assert not store.cancel_canvas_task(task["id"], client["owner_uid"], "other@example.test", workspace)
+    assert not store.cancel_canvas_task(task["id"], client["owner_uid"], client["account_email"], {"scope": "team", "id": "other"})
+    def denied(*args):
+        raise HTTPException(403, "membership lost")
+    monkeypatch.setattr(api, "_workspace", denied)
+    result = local[0].post(f"/api/mcp/v2/app/canvas-tasks/{task['id']}/cancel", headers=APP_HEADERS, json={"workspace": workspace})
+    assert result.status_code == 403
+    assert store.canvas_tasks(client["owner_uid"], client["account_email"], workspace)[0]["status"] == "pending"
+
+
 def test_model_reference_and_path_inputs_fail_closed(local):
     configure(local)
     for item in ({"model": "unknown"}, {"params": {"file_path": "C:\\secret"}},
@@ -200,12 +301,19 @@ def test_explicit_canvas_attachment_scoped_and_idempotent(local, monkeypatch):
     second = action(local, "add_to_canvas", {"plan_id": plan["id"], "scene_id": "personal-scene"}).json()
     assert first["id"] == second["id"]
     assert first["generation_ids"] == ["existing-generation"]
+    cancel_url = f"/api/mcp/v2/app/canvas-tasks/{first['id']}/cancel"
+    assert local[0].post(cancel_url, headers=APP_HEADERS, json={"workspace": {"scope": "personal"}}).status_code == 200
+    retry = action(local, "add_to_canvas", {"plan_id": plan["id"], "scene_id": "personal-scene"}).json()
+    assert retry["id"] != first["id"] and retry["status"] == "pending"
+    first = retry
     listed = local[0].get("/api/mcp/v2/app/canvas-tasks?workspace_scope=personal", headers=APP_HEADERS).json()
     assert listed["tasks"] == [first]
     url = f"/api/mcp/v2/app/canvas-tasks/{first['id']}/complete"
     assert local[0].post(url, headers=APP_HEADERS, json={"workspace": {"scope": "team", "id": "wrong"}}).status_code == 404
     for _ in range(2):
         assert local[0].post(url, headers=APP_HEADERS, json={"workspace": {"scope": "personal"}}).status_code == 200
+    done = action(local, "add_to_canvas", {"plan_id": plan["id"], "scene_id": "personal-scene"}).json()
+    assert done["id"] == first["id"] and done["status"] == "done"
 
 
 def test_browser_cannot_use_client_credentials(local):

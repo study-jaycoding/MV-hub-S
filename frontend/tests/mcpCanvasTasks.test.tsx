@@ -73,6 +73,54 @@ it("상시 소비자는 ACK 실패 뒤 다시 확인하며 생성 API 없이 저
   expect(io.http.mock.calls.map(([url]) => String(url)).every((url) => url.startsWith("/api/mcp/v2/app/canvas-tasks"))).toBe(true);
 });
 
+it.each(["missing scene", "generation 404"])("%s 작업은 완료하지 않고 15/30/60/120초 간격으로 재확인하며 복구하면 간격을 되돌린다", async (failure) => {
+  vi.useFakeTimers();
+  const scene = clone(io.working);
+  if (failure === "missing scene") io.working = [];
+  else io.get.mockRejectedValue(new Error("404"));
+  let polls = 0;
+  io.http.mockImplementation(async (url: string) => {
+    if (url.endsWith("/complete")) return {};
+    polls += 1; return { tasks: [task] };
+  });
+  function Consumer() { useMcpCanvasTasks({ ...ports, authReady: true, authKey: "a", workspace }); return null; }
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  await act(async () => root!.render(<Consumer />));
+  expect(polls).toBe(1);
+  for (const delay of [15_000, 30_000, 60_000, 120_000, 120_000]) {
+    const previous = polls;
+    await act(async () => vi.advanceTimersByTimeAsync(delay - 1));
+    expect(polls).toBe(previous);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(polls).toBe(previous + 1);
+  }
+  expect(io.write).not.toHaveBeenCalled();
+  expect(io.http.mock.calls.some(([url]) => String(url).endsWith("/complete"))).toBe(false);
+  io.working = scene; io.get.mockResolvedValue(generation);
+  await act(async () => vi.advanceTimersByTimeAsync(120_000));
+  expect(io.saved[0].cards).toHaveLength(1);
+  const recovered = polls;
+  await act(async () => vi.advanceTimersByTimeAsync(14_999));
+  expect(polls).toBe(recovered);
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  expect(polls).toBe(recovered + 1);
+  io.http.mockRejectedValueOnce(new Error("temporary network failure"));
+  await act(async () => vi.advanceTimersByTimeAsync(15_000));
+  await act(async () => vi.advanceTimersByTimeAsync(15_000));
+  expect(polls).toBe(recovered + 2);
+});
+
+it("앞 작업의 조회 실패가 뒤의 정상 작업 저장과 완료를 막지 않는다", async () => {
+  const broken = { ...task, id: "broken", generation_ids: ["missing"] };
+  io.get.mockImplementation(async (id: string) => { if (id === "missing") throw new Error("404"); return generation; });
+  io.http.mockImplementation(async (url: string) => url.endsWith("/complete") ? {} : { tasks: [broken, task] });
+  function Consumer() { useMcpCanvasTasks({ ...ports, authReady: true, authKey: "a", workspace }); return null; }
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  await act(async () => root!.render(<Consumer />));
+  expect(io.saved[0].mcpAttachmentReceipts).toEqual(["task1"]);
+  expect(io.http.mock.calls.filter(([url]) => String(url).endsWith("/complete")).map(([url]) => url)).toEqual(["/api/mcp/v2/app/canvas-tasks/task1/complete"]);
+});
+
 it("소비자가 생성물을 기다리는 중 실제 계정이 바뀌면 저장과 ACK를 중단한다", async () => {
   let finish!: (value: Generation) => void;
   io.get.mockReturnValueOnce(new Promise<Generation>((resolve) => { finish = resolve; }));

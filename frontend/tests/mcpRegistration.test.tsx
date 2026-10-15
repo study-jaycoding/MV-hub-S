@@ -4,12 +4,13 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { WorkspaceContext } from "../src/types";
 const io = vi.hoisted(() => ({ http: vi.fn(), token: "a" }));
-vi.mock("../src/lib/http", () => ({ jsonFetch: io.http, jsonBody: JSON.stringify, getAuthToken: () => io.token }));
+vi.mock("../src/lib/http", async (original) => ({ ...await original<typeof import("../src/lib/http")>(), jsonFetch: io.http, jsonBody: JSON.stringify, getAuthToken: () => io.token }));
+import { HttpError } from "../src/lib/http";
 import { McpRegistration } from "../src/components/mcp/McpRegistration";
 let root: Root, host: HTMLDivElement;
 const workspace: WorkspaceContext = { scope: "team", id: "w1", name: "작업 공간" };
 const client = { id: "c1", name: "Codex", workspace, can_execute: true, revoked_at: null, last_seen_at: null };
-const render = async (authKey = "a") => { await act(async () => root.render(<McpRegistration authReady authKey={authKey} />)); };
+const render = async (authKey = "a", currentWorkspace = workspace) => { await act(async () => root.render(<McpRegistration authReady authKey={authKey} workspace={currentWorkspace} />)); };
 const click = async (text: string) => { await act(async () => [...host.querySelectorAll("button")].find((b) => b.textContent === text)!.click()); };
 beforeEach(async () => {
   vi.resetAllMocks(); io.token = "a";
@@ -35,6 +36,7 @@ it("명시적인 최초 버튼만 두 클라이언트를 허용하고 등록과 
   await click("권한 해제");
   expect(io.http).toHaveBeenCalledWith("/api/mcp/v2/app/clients/c1/revoke", expect.objectContaining({ method: "POST" }));
   expect(host.textContent).toContain("권한 해제됨");
+  expect(host.textContent).toContain("자료 조회와 생성 실행 권한을 해제했습니다.");
 });
 
 it("계정 전환 뒤 늦게 도착한 등록 결과를 표시하거나 권한을 자동 해제하지 않는다", async () => {
@@ -56,6 +58,55 @@ it("공간 선택 없이 계정 기준 연결을 등록하고 저장된 범위�
   expect(host.textContent).not.toContain("공간 선택 필요");
   expect(host.textContent).not.toContain("공간 고정:");
   expect(host.textContent).toContain("현재 계정이 접근 가능한 모든 공간");
+});
+
+it("캔버스 대기 요청은 버튼으로 현재 공간만 조회하고 명시적으로 취소한다", async () => {
+  const task = { id: "task/1", scene_id: "scene1", generation_ids: ["g1"], workspace, status: "pending" };
+  io.http.mockResolvedValueOnce({ tasks: [task] });
+  await render();
+  expect(io.http).not.toHaveBeenCalled();
+  expect(host.querySelector("details")!.open).toBe(false);
+  await click("대기 작업 확인");
+  expect(io.http.mock.calls[0][0]).toBe("/api/mcp/v2/app/canvas-tasks?workspace_scope=team&workspace_id=w1");
+  expect(host.textContent).toContain("장면 scene1");
+  io.http.mockResolvedValueOnce({ ok: true }).mockResolvedValueOnce({ tasks: [] });
+  await click("추가 요청 취소");
+  expect(io.http.mock.calls[1][0]).toBe("/api/mcp/v2/app/canvas-tasks/task%2F1/cancel");
+  expect(JSON.parse(io.http.mock.calls[1][1].body)).toEqual({ workspace });
+  expect(host.textContent).toContain("대기 요청을 취소했습니다");
+  expect(host.textContent).not.toContain("장면 scene1");
+});
+
+it.each(["workspace", "account"])("%s 변경 뒤 돌아와도 이전 대기 목록 응답을 표시하지 않는다", async (change) => {
+  let finish!: (value: unknown) => void;
+  io.http.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+  await render(); await click("대기 작업 확인");
+  if (change === "workspace") await render("a", { ...workspace, id: "w2" });
+  else { io.token = "b"; await render("b"); }
+  io.token = "a"; await render();
+  await act(async () => finish({ tasks: [{ id: "old", scene_id: "old-scene", generation_ids: ["g1"], workspace, status: "pending" }] }));
+  expect(host.textContent).not.toContain("old-scene");
+  expect(io.http).toHaveBeenCalledTimes(1);
+});
+
+it("취소 실패는 원문을 숨기고 재확인을 안내하며 목록을 보존한다", async () => {
+  io.http.mockResolvedValueOnce({ tasks: [{ id: "task1", scene_id: "scene1", generation_ids: ["g1"], workspace, status: "pending" }] });
+  await render(); await click("대기 작업 확인");
+  io.http.mockRejectedValueOnce(new Error("secret-account-token"));
+  await click("추가 요청 취소");
+  expect(host.textContent).toContain("취소 결과를 확인하지 못했습니다");
+  expect(host.textContent).not.toContain("secret-account-token");
+  expect(host.textContent).toContain("장면 scene1");
+});
+
+it("이미 완료된 요청의 취소 404는 목록을 새로 받아 정리한다", async () => {
+  io.http.mockResolvedValueOnce({ tasks: [{ id: "task1", scene_id: "scene1", generation_ids: ["g1"], workspace, status: "pending" }] });
+  await render(); await click("대기 작업 확인");
+  io.http.mockRejectedValueOnce(new HttpError(404, "private detail")).mockResolvedValueOnce({ tasks: [] });
+  await click("추가 요청 취소");
+  expect(host.textContent).toContain("더 이상 대기 중이 아닙니다");
+  expect(host.textContent).not.toContain("장면 scene1");
+  expect(host.textContent).not.toContain("private detail");
 });
 
 it("오류 원문을 숨기며 수동 설정은 복사 실패 후에도 남긴다", async () => {

@@ -199,6 +199,26 @@ def _configure_local(client, setup, credential):
     return _setup_module().configure_client(client, setup, credential)
 
 
+def _setup_error_message(exc):
+    # Only fixed, known diagnostics may cross the credential/configuration boundary.
+    if isinstance(exc, HTTPException) and exc.status_code == 403:
+        return "등록 도중 활성 계정이나 허브 연결이 바뀌었습니다. 현재 앱 로그인을 확인한 뒤 다시 연결하세요."
+    for message in (
+        "MV Hub와 LLM을 같은 Windows 로그인 사용자로 실행하세요. 서비스 계정에서는 자동 연결할 수 없습니다.",
+        "MCP 자동 연결은 Windows 사용자 계정에서 설정하세요.",
+        "이 Windows 계정에서 MCP 연결 권한을 읽거나 저장할 수 없습니다.",
+        "MCP 실행 파일이 없습니다. 앱 설치 상태를 확인하세요.",
+        "Windows 사용자 저장 폴더를 확인할 수 없습니다.",
+        "설정이 다른 프로그램에서 바뀌었습니다. 다시 연결하세요.",
+        "클라이언트 설정이 너무 커 자동 등록할 수 없습니다.",
+    ):
+        if isinstance(exc, ValueError) and exc.args == (message,):
+            return message
+    if isinstance(exc, PermissionError):
+        return "MCP 연결 파일이나 LLM 설정 파일을 읽거나 저장할 권한이 없습니다. 파일 접근 권한을 확인하세요."
+    return "MCP 설정을 완료하지 못했습니다. 앱 설치와 LLM 설정 파일 상태를 확인한 뒤 다시 연결하세요."
+
+
 def _register_client(ctx, name, setup, workspace, allow_execution):
     # Serialize config replacement and grant rotation together; no await holds this lock.
     with _registration_lock:
@@ -214,9 +234,9 @@ def _register_client(ctx, name, setup, workspace, allow_execution):
             _still_current(ctx)
             if result["status"] == "configured" and name in ("codex", "claude"):
                 store.revoke_replaced_clients(cid, ctx.owner, email, name)
-        except Exception:
+        except Exception as exc:
             store.revoke(cid, ctx.owner, email)
-            result = {"client": name, "status": "error", "message": "설정을 완료하지 못했습니다. MV Hub와 LLM을 같은 Windows 로그인 사용자로 실행했는지 확인하세요. 앱에서 다시 연결하세요."}
+            result = {"client": name, "status": "error", "message": _setup_error_message(exc)}
         return {**result, "id": cid}
 
 
@@ -534,8 +554,16 @@ async def _validate_items(ctx, items, ws):
 def _public_plan(plan):
     if plan is None:
         raise HTTPException(404, "계획을 찾을 수 없습니다.")
-    return {"id": plan["id"], "plan_id": plan["id"], "title": plan["title"], "status": plan["status"], "workspace": plan["workspace"],
+    result = {"id": plan["id"], "plan_id": plan["id"], "title": plan["title"], "status": plan["status"], "workspace": plan["workspace"],
             "items": [{key: value for key, value in item.items() if key not in ("references", "idempotency_key")} for item in plan["items"]]}
+    if plan["status"] in ("attention", "executing"):
+        result["next_step"] = (
+            "이 계획을 다시 실행해도 남은 항목을 재개하지 않습니다. get_plan으로 항목별 상태를 확인하세요. "
+            "submitted 항목은 이미 접수되었으므로 재생성하지 마세요. uncertain/submitting 항목은 접수 여부가 "
+            "확정되기 전 새 계획으로 재시도하지 마세요. attention 상태에서는 pending(미시도) 또는 "
+            "rejected(거절) 항목만 원인을 해결한 뒤 새 계획에 넣으세요. executing 상태에서는 먼저 실행 종료를 확인하세요."
+        )
+    return result
 
 
 class PlanId(StrictModel):
@@ -720,4 +748,13 @@ class CompleteIn(StrictModel):
 async def complete_task(task_id: UUID, body: CompleteIn, ctx=Depends(_app_context)):
     if not await asyncio.to_thread(store.complete_canvas_task, str(task_id), ctx.owner, norm_email(ctx.account["email"]), body.workspace.model_dump()):
         raise HTTPException(404, "캔버스 작업을 찾을 수 없습니다.")
+    return {"ok": True}
+
+
+@router.post("/app/canvas-tasks/{task_id}/cancel")
+async def cancel_task(task_id: UUID, body: CompleteIn, ctx=Depends(_app_context)):
+    workspace = await asyncio.to_thread(_workspace, ctx, body.workspace.model_dump())
+    await asyncio.to_thread(_still_current, ctx)
+    if not await asyncio.to_thread(store.cancel_canvas_task, str(task_id), ctx.owner, norm_email(ctx.account["email"]), workspace):
+        raise HTTPException(404, "취소할 대기 작업을 찾을 수 없습니다. 이미 완료되었을 수 있습니다.")
     return {"ok": True}
