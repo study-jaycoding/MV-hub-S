@@ -2,7 +2,7 @@
 
 ## 현재 작업: 영속 연결 v2
 
-같은 PC의 Codex·Claude Code는 MV Hub의 **AI·MCP 연결 → Codex·Claude Code 연결 허용**에서 등록한다.
+같은 PC의 Codex·Claude Code는 MV Hub의 **설정 → MV·MCP 연결 열기 → Codex·Claude Code 연결 허용**에서 등록한다.
 다른 로컬 stdio MCP 앱은 그 화면에서 제공하는 설정을 한 번 복사한다. 클라이언트 자체 신뢰 승인과
 최초 MCP 새로고침/재시작이 필요할 수 있다. 웹·휴대폰 원격 커넥터는 이번 범위가 아니다.
 MV Hub와 LLM은 같은 Windows 로그인 사용자로 실행한다. 서비스 계정이나 다른 사용자 실행은 자동 등록을 차단한다.
