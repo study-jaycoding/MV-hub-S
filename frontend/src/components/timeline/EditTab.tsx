@@ -1347,8 +1347,10 @@ function EditTabInner({
         grabFocus();
         // 입력칸(풀의 검색·크기)에 초점이 남은 채 타임라인·뷰어를 누르면 키를 편집 화면으로 돌려받는다 — 화면 안의 단추들은 초점을
         //  가져가지 않아(mousedown 을 막는다), 안 돌려받으면 Space·J·K·L 이 계속 그 입력칸으로 갔다(2026-10-10 점검).
+        //  같은 태그 편집기 안의 단추(× · 전역 태그)는 입력칸 초점을 지킨 채 눌린다 — 여기서 풀면 편집기가 닫혀 뒤따를 click 이 사라졌다(68회차 Codex)
         const typing = document.activeElement as HTMLElement | null;
-        if (typing && typing !== event.target && isTyping(typing) && !isTyping(event.target)) {
+        if (typing && typing !== event.target && isTyping(typing) && !isTyping(event.target) &&
+          !typing.closest(".tag-editor")?.contains(event.target as Node)) {
           typing.blur();
           rootRef.current?.focus({ preventScroll: true });
         }
