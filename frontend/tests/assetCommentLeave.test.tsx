@@ -50,6 +50,52 @@ it("코멘트 창은 보내지 않은 글이 생기고 없어질 때 알리고, 
   expect(onUnsentChange).toHaveBeenLastCalledWith(false);
 });
 
+// Codex 5A 리뷰 P1 — A 파일에서 보내는 중에 B 로 옮겨 글을 쓰면, 사라진 A 창의 늦게 끝난 전송이 '없음'을 알려 B 의 표시를 지웠다(그 뒤 C 로 가면 묻지 않음).
+it("늦게 끝난 앞 파일의 전송이 다음 파일 창의 '보내지 않은 글' 표시를 지우지 않는다", async () => {
+  const onUnsentChange = vi.fn();
+  let finish!: (saved: boolean) => void;
+  const show = (path: string) => act(() => root.render(
+    <CommentPanel key={path} comments={[]} label={path} myId="me" panelRef={() => {}} pos={null} onHeadMouseDown={() => {}}
+      onClose={() => {}} onSend={() => new Promise<boolean>((done) => { finish = done; })} onEdit={async () => true} onDelete={() => {}}
+      onUnsentChange={onUnsentChange} />));
+  show("A");
+  const a = host.querySelector<HTMLInputElement>('input[name="c"]')!;
+  type(a, "A 의 글");
+  act(() => { a.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); }); // 보내는 중
+  show("B"); // 응답 전에 B 로 옮김(확인함)
+  type(host.querySelector<HTMLInputElement>('input[name="c"]')!, "B 의 글");
+  expect(onUnsentChange).toHaveBeenLastCalledWith(true);
+  await act(async () => { finish(true); }); // A 의 전송이 이제 끝난다
+  expect(onUnsentChange).toHaveBeenLastCalledWith(true); // 전엔 false — B 의 글이 보호받지 못했다
+});
+
+// Codex 5A 리뷰 P1 — 다른 창에서 워크스페이스를 바꾸면 목록을 다시 받아 프로젝트가 저절로 바뀌고, 코멘트 창이 닫혀 글이 묻지 않고 사라졌다.
+it("목록을 다시 받아 프로젝트가 저절로 바뀌기 전에도 묻는다 — 머무르면 지금 프로젝트를 둔다", async () => {
+  const { api } = await import("../src/api");
+  const { useAssetProjectData } = await import("../src/components/assets/useAssetProjectData");
+  const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
+  mocked.assetProjects = vi.fn(async (ws?: string) => (ws === "w2" ? { projects: ["Q"], linked: [], default: "Q" } : { projects: ["P"], linked: [], default: "P" }));
+  mocked.assetTree = vi.fn(async () => ({ children: [] }));
+  mocked.assetMeta = vi.fn(async () => ({}));
+  let data!: ReturnType<typeof useAssetProjectData>;
+  const canLeave = vi.fn(() => false);
+  function Host({ ws }: { ws: string }) {
+    data = useAssetProjectData({ workspaceId: ws, canLeaveProject: canLeave });
+    return null;
+  }
+  const settle = async () => { await act(async () => { for (let i = 0; i < 10; i += 1) await Promise.resolve(); }); };
+  act(() => root.render(<Host ws="w1" />));
+  await settle();
+  expect([data.project, canLeave.mock.calls.length]).toEqual(["P", 0]); // 처음 고르는 것은 묻지 않는다
+  act(() => root.render(<Host ws="w2" />)); // 다른 창에서 워크스페이스를 바꿨다
+  await settle();
+  expect([data.project, canLeave.mock.calls.length]).toEqual(["P", 1]); // 머무르기
+  canLeave.mockReturnValue(true);
+  act(() => data.reloadProjects());
+  await settle();
+  expect(data.project).toBe("Q"); // 버리고 이동
+});
+
 it("다른 파일의 코멘트로 옮기기 전에 묻는다 — 머무르면 그 파일 그대로, 같은 파일을 다시 열면 묻지 않는다", () => {
   let actions!: ReturnType<typeof useAssetCommentActions>;
   let path!: string | null;

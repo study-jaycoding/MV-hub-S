@@ -27,10 +27,13 @@ function persistCache(key: string, obj: unknown) {
 export function useAssetProjectData({
   onTreeLoaded,
   workspaceId,
+  canLeaveProject,
 }: {
   onTreeLoaded?: (children: AssetNode[]) => void;
   /** 선택 팀 워크스페이스 — 바뀌면 프로젝트 유래 폴더 목록을 그 팀으로 다시 좁힌다. */
   workspaceId?: string;
+  /** 목록을 다시 받아 프로젝트를 저절로 옮기기 전에 — 보내지 않은 코멘트가 있으면 묻는다(Jay 결정 5A). 거짓이면 지금 프로젝트를 둔다. */
+  canLeaveProject?: () => boolean;
 }) {
   const [projects, setProjects] = useState<string[]>([]);
   // PM 프로젝트에 연결된(자동 마운트) 이름 — 드롭다운에서 라임색으로 구분 표시.
@@ -97,6 +100,8 @@ export function useAssetProjectData({
   };
   const projectRef = useRef(project); // 최신 선택 프로젝트 — 느린 응답이 돌아와도 딴 프로젝트를 덮지 않게
   projectRef.current = project;
+  const canLeaveProjectRef = useRef(canLeaveProject); // 목록 조회는 워크스페이스가 바뀔 때만 새로 만든다 — 묻는 함수는 늘 지금 것으로
+  canLeaveProjectRef.current = canLeaveProject;
   // 화면의 tree/meta 를 **함수형 갱신(prev => …) 없이** 바꾼다(조작 규칙 54 — 27회차 실측 M02, Assets 창이 React #185 로 깨짐): 같은 값이라
   //  버려진(밀린) 갱신이 큐에 남아 있으면 React 는 뒤의 함수형 갱신을 **렌더마다 그 위에서 다시 계산**한다 — reconcile 은 내용이 다르면 매번
   //  새 객체를 돌려주니 meta 참조가 커밋마다 바뀌고 → files 새 배열 → 선택 정리 레이아웃 효과 → 동기 재렌더 → 반복. 지금 상태(ref)로 한 번만
@@ -122,13 +127,15 @@ export function useAssetProjectData({
         setProjectsError(null);
         setProjects((prev) => reconcileArrayState(prev, info.projects));
         setLinkedProjects(new Set(info.linked || []));
-        setProject((current) => {
-          // 워크스페이스를 옮기면 이전 팀 폴더는 목록에서 빠진다 — 그때는 저장된 선택도
-          // 되살리지 않고 새 목록의 기본값으로 내려간다(남의 팀 폴더에 머무르지 않게).
-          if (keepCurrent && current && info.projects.includes(current)) return current;
-          const saved = STORE.get("project", "");
-          return saved && info.projects.includes(saved) ? saved : info.default;
-        });
+        // 워크스페이스를 옮기면 이전 팀 폴더는 목록에서 빠진다 — 그때는 저장된 선택도
+        // 되살리지 않고 새 목록의 기본값으로 내려간다(남의 팀 폴더에 머무르지 않게).
+        const current = projectRef.current;
+        const saved = STORE.get("project", "");
+        const next = keepCurrent && current && info.projects.includes(current) ? current
+          : saved && info.projects.includes(saved) ? saved : info.default;
+        // 쓰던 코멘트가 있으면 저절로 옮기기 전에도 묻는다 — 옮기면 코멘트 창이 닫혀 글이 사라졌다(Codex 5A 리뷰). 머무르면 지금 프로젝트를 둔다.
+        if (current && next !== current && canLeaveProjectRef.current && !canLeaveProjectRef.current()) return;
+        setProject(next);
       })
       .catch((err) => {
         if (seq === projectsSeqRef.current) setProjectsError(String(err));

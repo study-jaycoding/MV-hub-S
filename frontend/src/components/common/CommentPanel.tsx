@@ -127,7 +127,12 @@ export function CommentPanel<T extends CommentPanelItem>({
   const holdName = `comment:${useId()}`;
   const syncUnsent = () => {
     const panel = document.querySelector(`[data-cmt-hold="${holdName}"]`);
-    const inputs = panel ? [...panel.querySelectorAll<HTMLInputElement>('input[name="c"], input[name="r"], input[name="e"]')] : [];
+    // 사라진 패널(늦게 끝난 전송)은 부모에게 알리지 않는다 — 그사이 다음 파일의 패널이 알린 '보내지 않은 글 있음'을 지웠다(Codex 5A 리뷰)
+    if (!panel) {
+      holdUnload(holdName, false);
+      return;
+    }
+    const inputs = [...panel.querySelectorAll<HTMLInputElement>('input[name="c"], input[name="r"], input[name="e"]')];
     // 고치는 칸(data-original 있음)은 다 지운 것도 고친 것이다
     const unsent = inputs.some((input) => input.dataset.original !== undefined ? input.value !== input.dataset.original : input.value.trim() !== "");
     holdUnload(holdName, unsent);

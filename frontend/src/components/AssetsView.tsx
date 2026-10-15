@@ -94,6 +94,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     expandedSeeded.current = true;
     setExpanded(new Set(children.filter((node) => node.type === "dir").map((node) => node.path)));
   }, []);
+  const canLeaveCommentRef = useRef<() => boolean>(() => true); // 아래 canLeaveComment — 코멘트 창보다 먼저 만드는 훅이 쓴다(Jay 결정 5A)
   const {
     error,
     loading,
@@ -109,7 +110,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     setMeta,
     setProject,
     tree,
-  } = useAssetProjectData({ onTreeLoaded: seedInitialExpandedDirs, workspaceId });
+  } = useAssetProjectData({ onTreeLoaded: seedInitialExpandedDirs, workspaceId, canLeaveProject: () => canLeaveCommentRef.current() });
   const displayTree = useMemo(() => visibleAssetTree(project, tree), [project, tree]);
   useEffect(() => {
     if (isAssetFolderHidden(project, dir)) {
@@ -628,6 +629,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   const canLeaveComment = () => !commentUnsentRef.current || window.confirm(
     t("보내지 않은 코멘트가 있습니다 — '{name}' 에 쓰던 글이 사라집니다. 버리고 옮길까요?").replace("{name}", commentPath?.split("/").pop() || ""),
   );
+  canLeaveCommentRef.current = canLeaveComment; // 프로젝트 목록 조회(위 useAssetProjectData)가 저절로 옮기기 전에도 같은 물음
   const { openComments, refreshComments, sendComment, editComment, delComment } = useAssetCommentActions({
     project,
     commentPath,
