@@ -967,8 +967,9 @@ async def _execute(ctx, plan_id):
     try:
         claimed = await asyncio.shield(claim)
     except asyncio.CancelledError:
+        # 선점 스레드의 예외(DB 오류 등)가 원래 취소를 덮지 않게 함께 삼키고 끝난 상태만 본다(Codex 재리뷰 P2) — 취소는 아래 raise 로 그대로
         while not claim.done():
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await asyncio.shield(claim)
         if not claim.cancelled() and claim.exception() is None and claim.result():
             await to_thread_non_abandon(store.update_plan, plan_id, plan["items"], "attention")

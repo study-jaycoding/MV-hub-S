@@ -80,14 +80,17 @@ class SetupTests(unittest.TestCase):
         claude = home / ".claude.json"
         claude.parent.mkdir(parents=True)
         claude.write_text('{"theme":"first"}', encoding="utf-8")
+        first = claude.read_bytes()
         previous = None
         for _ in range(3):
             previous = claude.read_bytes()
             result = configure_client("claude", self.setup, {**self.credential, "client_id": str(uuid4())}, home=home, local_appdata=local)
             self.assertEqual(result["status"], "configured")
-        backups = list(home.glob(".claude.json.mvhub-backup*"))
-        self.assertEqual([path.name for path in backups], [".claude.json.mvhub-backup"])
-        self.assertEqual(backups[0].read_bytes(), previous)
+        # 사본은 두 개로 끝난다 — 처음 등록 전 원본(한 번만, 다시 안 씀)과 바로 앞 내용(재리뷰 P2: 하나만 두면 원래 설정이 사라졌다)
+        self.assertEqual(sorted(path.name for path in home.glob(".claude.json.mvhub-*")),
+                         [".claude.json.mvhub-backup", ".claude.json.mvhub-original"])
+        self.assertEqual((home / ".claude.json.mvhub-original").read_bytes(), first)
+        self.assertEqual((home / ".claude.json.mvhub-backup").read_bytes(), previous)
 
     def test_remove_profiles_deletes_only_the_listed_connections(self):
         local = self.root / "local"

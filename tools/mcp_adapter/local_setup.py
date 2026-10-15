@@ -248,7 +248,12 @@ def configure_client(client: str, setup: dict, credential: dict, *, home: Path |
         except (ValueError, UnicodeError, AttributeError):
             return {"client": client, "status": "manual", "message": "기존 mvhub 설정과 충돌하거나 형식을 확인하지 못했습니다. 설정을 확인한 뒤 아래 내용을 수동 등록하세요.", "config": config}
         if previous is not None:
-            # 설정 파일마다 직전 사본 한 개만(원자 교체) — 등록할 때마다 새 이름으로 쌓였다(Codex 리뷰 P2 ⑤). 예전 이름(…-<uuid>)은 지우지 않는다.
+            # 설정 파일마다 사본 두 개로 끝난다 — 등록할 때마다 새 이름으로 쌓였다(Codex 리뷰 P2 ⑤). 예전 이름(…-<uuid>)은 지우지 않는다.
+            #  ① 처음 등록 전 원본(사용자 원래 설정)은 한 번만 남기고 다시 쓰지 않는다 ② 바로 앞 내용은 등록마다 원자 교체(재리뷰 P2:
+            #  하나만 두면 두 번째 등록에서 원래 설정이 사라졌다). 바로 앞 사본의 mvhub 항목은 회수된 옛 프로필이라 되살리면 다시 등록해야 한다.
+            original = path.with_name(path.name + ".mvhub-original")
+            if not original.exists():
+                _atomic(original, previous)
             _atomic(path.with_name(path.name + ".mvhub-backup"), previous)
         _atomic(path, updated.encode("utf-8"), previous, compare=True)
     return {"client": client, "status": "configured", "message": "등록했습니다. 실행 중인 LLM에서 MCP를 새로고침하거나 프로그램을 다시 시작하세요."}

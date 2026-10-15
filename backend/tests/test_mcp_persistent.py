@@ -408,6 +408,35 @@ def test_cancel_while_claiming_leaves_attention_only_for_a_real_claim(local, mon
         assert conn.execute("SELECT status FROM mcp_generation_plan WHERE id=?", (plan["id"],)).fetchone()[0] == ("attention" if claimed else "planned")
 
 
+def test_cancel_while_claiming_keeps_the_cancellation_when_the_claim_thread_fails(local, monkeypatch):
+    # Codex 재리뷰 P2 — 선점 대기 중 취소된 뒤 선점 스레드가 DB 오류를 내면 원래 취소가 DB 예외로 바뀌었다
+    import sqlite3
+    import threading
+    from starlette.requests import Request
+    configure(local)
+    plan = prepare(local)
+    release, entered = threading.Event(), threading.Event()
+    def failing_claim(*args):
+        entered.set()
+        release.wait(5)
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(store, "claim_plan", failing_claim)
+    request = Request({"type": "http", "method": "POST", "path": "/api/mcp/v2/client/action", "headers": [], "state": {}})
+    ctx = api._capture(request, local[1]["codex"]["secret"])
+    async def run():
+        task = asyncio.create_task(api._execute(ctx, plan["id"]))
+        await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    with active_account.pinned_account_scope(ctx.pin):
+        asyncio.run(run())
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT status FROM mcp_generation_plan WHERE id=?", (plan["id"],)).fetchone()[0] == "planned"
+
+
 def test_backup_copy_scene_is_marked_in_the_listing(local):
     # 옛 창 사본(bk_*)은 그 사본을 연 브라우저에서만 붙는다 — 목록에서 사본임을 알린다(Codex 리뷰 P2)
     configure(local)
