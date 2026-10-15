@@ -1,0 +1,29 @@
+#!/bin/sh
+# Local consistency only, not authorization; --no-verify can bypass this hook.
+root=$(git rev-parse --show-toplevel) || exit 1
+cd "$root" || exit 1
+if test -n "$(git ls-files --unmerged)"; then
+    echo '[guidance] Resolve unmerged index entries first.' >&2
+    exit 1
+fi
+# A quiet pathspec query is safe for spaces/newlines and needs no Python.
+git diff --cached --quiet --no-renames -- \
+    AGENTS.md CLAUDE.md docs/AGENT_WORKFLOW.md docs/WORKROOMS.md \
+    docs/TESTING.md docs/RISK_REDUCTION_PLAN_2026-08-15.md \
+    tools/check_agent_guidance.py tools/tests/test_agent_guidance.py .githooks \
+    ':(glob).claude/**/*.json' ':(glob).claude/**/*.toml' ':(glob).claude/agents/**/*.md' \
+    ':(glob).codex/**/*.json' ':(glob).codex/**/*.toml' ':(glob).codex/agents/**/*.md'
+status=$?
+test "$status" -eq 0 && exit 0
+test "$status" -eq 1 || exit "$status"
+if test -f "$root/.venv/Scripts/python.exe"; then
+    exec "$root/.venv/Scripts/python.exe" "$root/tools/check_agent_guidance.py"
+elif command -v python >/dev/null 2>&1; then
+    exec python "$root/tools/check_agent_guidance.py"
+elif command -v python3 >/dev/null 2>&1; then
+    exec python3 "$root/tools/check_agent_guidance.py"
+elif command -v py >/dev/null 2>&1; then
+    exec py -3 "$root/tools/check_agent_guidance.py"
+fi
+echo '[guidance] Python 3.11+ is required for staged guidance changes.' >&2
+exit 1
