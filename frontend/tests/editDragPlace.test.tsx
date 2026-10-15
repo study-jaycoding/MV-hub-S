@@ -842,6 +842,33 @@ it("풀 카드의 호버 단추 — S·T·C·ⓘ 는 앱의 동작을 부르고,
   expect(flashed).toEqual([]);
 });
 
+// 카드 껍데기는 이제 단추가 아니다(라이브러리 카드의 단추를 안에 두려면 — 단추 안에 단추를 둘 수 없다). Tab 으로 간 카드의 Enter·Space 는
+//  지금처럼 누르기(고르기)이고, 마우스로 누른 뒤 남은 초점의 Space 는 편집 키(재생)다(조작 규칙 8).
+it("풀 카드는 키보드로 누를 수 있다 — Tab 으로 간 초점의 Enter·Space = 고르기, 마우스로 남은 초점의 Space 는 카드가 쓰지 않는다", () => {
+  mountOn("c1");
+  const [a, b] = poolCards();
+  const picked = () => poolCards().map((item) => item.classList.contains("ed-picked"));
+  const key = (target: HTMLElement, name: string) => {
+    const event = new KeyboardEvent("keydown", { key: name, code: name === " " ? "Space" : "Enter", bubbles: true, cancelable: true });
+    act(() => { target.dispatchEvent(event); });
+    return event;
+  };
+  expect([a.tabIndex, a.getAttribute("role")]).toEqual([0, "button"]);
+  act(() => {
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    a.focus();
+  });
+  key(a, "Enter");
+  expect(picked()).toEqual([true, false]);
+  act(() => b.focus());
+  key(b, " ");
+  expect(picked()).toEqual([false, true]);
+  fire(a, "pointerdown"); // 마우스로 눌렀다 — 'Tab 으로 온 초점'이 꺼진다
+  act(() => a.focus());
+  const space = key(a, " ");
+  expect([picked(), space.defaultPrevented]).toEqual([[false, true], true]); // 편집 탭이 썼다(재생) — 카드는 고르지 않는다
+});
+
 // Jay 2026-10-15 — 풀 맨 윗줄 카드가 위에서 잘렸다: 스크롤 칸은 제 안쪽 끝에서 자르는데 위 여백이 0 이라, 고른 카드의 바깥 흰 테두리
 //  (outline 2px + 간격 2px)와 호버로 들리는 카드(.card:hover 의 translateY(-3px))가 잘렸다. 진짜 CSS 를 올려 계산된 값을 본다.
 it("풀 격자의 위 여백은 고른 카드의 바깥 테두리·호버로 들리는 높이를 담는다 · 뺀 단추는 숨고 넣은 카드의 단추는 호버 때만", () => {
