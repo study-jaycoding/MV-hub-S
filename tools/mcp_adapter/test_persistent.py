@@ -17,7 +17,7 @@ from mcp import Client, StdioServerParameters
 from mcp.server.mcpserver.exceptions import ToolError
 
 from local_setup import configure_client
-from server import Broker, MAX_RESPONSE, MAX_RESULT_RESPONSE, write_result_display, validate_display_directory
+from server import Broker, MAX_RESPONSE, MAX_RESULT_RESPONSE, write_result_display, validate_display_directory, present_result
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -273,6 +273,48 @@ class PersistentTests(unittest.TestCase):
         with patch("ctypes.windll.kernel32.GetDriveTypeW", return_value=4):
             with self.assertRaises(ToolError):
                 validate_display_directory(str(self.root))
+
+    def test_common_card_distinguishes_scope_and_escapes_html(self):
+        item = {"model": "test-model", "params": {"aspect_ratio": "16:9", "resolution": "1k", "prompt": "DO NOT DISPLAY"},
+                "folder_path": "<script>alert(1)</script>", "project_id": "project"}
+        metadata = {"presentation": {"version": 1, "scope": "plan", "message": "전체 계획 · 생성 중 · 완료 1/3"},
+                    "workspace": {"scope": "team", "name": "<team>"}}
+        plan = present_result({**metadata, "items": [item]})
+        selected = present_result({**metadata, **item, "presentation": {
+            "version": 1, "scope": "item", "item_index": 0, "message": "선택 항목 1 · 생성 완료 · 완료 1/1"}})
+        self.assertNotEqual(plan["card_text"], selected["card_text"])
+        self.assertIn("전체 계획", plan["card_text"])
+        self.assertIn("선택 항목 1", selected["card_text"])
+        self.assertEqual(plan["card_text"].splitlines()[1:], selected["card_text"].splitlines()[1:])
+        self.assertEqual([line.split(":")[0] for line in selected["card_text"].splitlines()], ["상태", "조건", "위치"])
+        self.assertNotIn("DO NOT DISPLAY", selected["card_text"])
+        saved = write_result_display("safe-base64", self.root, selected["card_text"])
+        html = Path(saved["path"]).read_text(encoding="utf-8")
+        self.assertNotIn("<script>", html)
+        self.assertIn("&lt;script&gt;", html)
+        self.assertIn("&lt;team&gt;", html)
+        self.assertEqual(saved["rendered"], "unverified")
+
+    def test_two_clients_get_identical_card_and_native_image(self):
+        configs = [self.profile()[0], self.profile()[0]]
+        self.http.result_value = {
+            "generation_status": "done", "model": "test-model", "params": {"resolution": "1k"},
+            "workspace": {"scope": "personal"}, "presentation": {"version": 1, "scope": "item", "stage": "completed", "message": "생성 완료 · 완료 1/1"},
+            "media": {"mime": "image/jpeg", "data_base64": base64.b64encode(b"\xff\xd8\xffx\xff\xd9").decode()},
+        }
+        async def exercise():
+            cards = []
+            with anyio.fail_after(30):
+                for cfg in configs:
+                    async with Client(StdioServerParameters(**cfg)) as client:
+                        result = await client.call_tool("get_result", {"plan_id": "p", "display_directory": str(self.root)})
+                        self.assertFalse(result.is_error)
+                        cards.append(result.structured_content["card_text"])
+                        self.assertTrue(any(c.type == "image" for c in result.content))
+                        self.assertEqual(result.content[-1].text, cards[-1])
+                        self.assertIn(cards[-1], Path(result.structured_content["display"]["path"]).read_text(encoding="utf-8"))
+                self.assertEqual(*cards)
+        anyio.run(exercise)
 
 
 if __name__ == "__main__":

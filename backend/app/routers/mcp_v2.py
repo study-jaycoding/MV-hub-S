@@ -553,10 +553,68 @@ async def _validate_items(ctx, items, ws):
     return ws
 
 
+def _presentation(items, *, scope="plan", item_index=None):
+    """One observed-state contract for plan and selected-result responses; never an ETA."""
+    labels = {"planned": "생성 준비 완료", "queued": "생성 대기 중", "running": "생성 중",
+              "completed": "생성 완료", "failed": "생성 실패", "cancelled": "생성 취소",
+              "attention": "상태 확인 필요", "unknown": "상태 확인 중"}
+    stages = []
+    for item in items:
+        state, queue, generation = item.get("state"), item.get("queue_status"), item.get("generation_status")
+        if state == "pending":
+            stage = "planned"
+        elif state == "rejected":
+            stage = "failed"
+        elif state == "uncertain":
+            stage = "attention"
+        elif state != "submitted":
+            stage = "unknown"
+        elif queue in {"failed", "rejected"} or generation == "failed":
+            stage = "failed"
+        elif queue in {"cancelled", "canceled"} or generation in {"cancelled", "canceled"}:
+            stage = "cancelled"
+        elif generation == "done":
+            stage = "completed"
+        elif generation == "running":
+            stage = "running"
+        elif generation in {None, "pending"}:
+            stage = "queued"
+        else:
+            stage = "unknown"
+        stages.append(stage)
+    counts = {stage: stages.count(stage) for stage in labels}
+    distinct = set(stages)
+    if not stages:
+        stage = "unknown"
+    elif len(distinct) == 1:
+        stage = stages[0]
+    elif distinct & {"unknown", "attention"}:
+        stage = "attention"
+    elif "running" in distinct:
+        stage = "running"
+    elif "queued" in distinct:
+        stage = "queued"
+    else:
+        stage = "attention"
+    target = f"선택 항목 {item_index + 1}" if scope == "item" else "전체 계획"
+    message = f"{target} · {labels[stage]} · 완료 {counts['completed']}/{len(items)}"
+    for key, label in (("failed", "실패"), ("cancelled", "취소"), ("attention", "확인 필요"), ("unknown", "미확인")):
+        if counts[key]:
+            message += f" · {label} {counts[key]}"
+    if len(distinct) > 1 and counts["planned"]:
+        message += f" · 미실행 {counts['planned']}"
+    result = {"version": 1, "scope": scope, "stage": stage, "message": message,
+              "details": {"completed": counts["completed"], "total": len(items), "by_stage": counts}}
+    if scope == "item":
+        result["item_index"] = item_index
+    return result
+
+
 def _public_plan(plan):
     if plan is None:
         raise HTTPException(404, "계획을 찾을 수 없습니다.")
     result = {"id": plan["id"], "plan_id": plan["id"], "title": plan["title"], "status": plan["status"], "workspace": plan["workspace"],
+            "presentation": _presentation(plan["items"]),
             "items": [{key: value for key, value in item.items() if key not in ("references", "idempotency_key")} for item in plan["items"]]}
     if plan["status"] in ("attention", "executing"):
         result["next_step"] = (
@@ -624,6 +682,14 @@ async def _result_once(ctx, args, *, preview=True):
               "generation_id": item.get("generation_id"), "generation_status": item.get("generation_status"),
               "item_state": item.get("state"), "queue_status": item.get("queue_status"),
               "asset_type": None, "media": None, "note": "아직 완료된 미리보기가 없습니다."}
+    # These are already-authorized display fields, not another lookup or the raw prompt.
+    result.update(title=plan["title"][:200], workspace=plan["workspace"],
+                  **{key: item.get(key) for key in ("label", "model", "project_id", "folder_path")})
+    result["params"] = {key: value[:100] if isinstance(value, str) else value
+                        for key, value in item.get("params", {}).items()
+                        if key in {"aspect_ratio", "resolution", "duration"}
+                        and isinstance(value, (str, int, float, bool))
+                        and (not isinstance(value, float) or math.isfinite(value))}
     if result["generation_id"]:
         row = await asyncio.to_thread(library.get_generation, result["generation_id"],
                                       _internal(ctx, "/api/generations/" + result["generation_id"]))
@@ -663,6 +729,8 @@ async def _result_once(ctx, args, *, preview=True):
         result["note"] = "생성 진행 중입니다. 같은 항목의 get_result(wait_seconds=25)로 계속 확인하세요. 재생성하지 마세요."
     elif result["generation_status"] != "done":
         result["note"] = "완료 대기를 중단했습니다. 항목·생성 상태를 확인하고 실패·취소·불명확한 접수를 자동 재제출하지 마세요."
+    result["presentation"] = _presentation(
+        [{**item, "generation_status": result["generation_status"]}], scope="item", item_index=args.item_index)
     await asyncio.to_thread(_workspace, ctx, plan["workspace"])
     await asyncio.to_thread(_still_current, ctx)
     return result

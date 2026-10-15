@@ -13,6 +13,44 @@ from app.routers import auth as auth_router, gen_requests, mcp_v2 as api, _proxy
 APP_HEADERS = {"X-MVHub-Tab": "t" * 40}
 
 
+@pytest.mark.parametrize("state,queue,generation,expected", [
+    ("pending", None, None, "planned"), ("rejected", None, None, "failed"),
+    ("uncertain", "preparing", None, "attention"), ("submitting", None, None, "unknown"),
+    ("submitted", "failed", "running", "failed"), ("submitted", "rejected", None, "failed"),
+    ("submitted", "cancelled", "pending", "cancelled"), ("submitted", "canceled", None, "cancelled"),
+    ("submitted", "done", "done", "completed"), ("submitted", None, "failed", "failed"),
+    ("submitted", "tracking", "running", "running"), ("submitted", "pending", None, "queued"),
+    ("submitted", None, "pending", "queued"), ("submitted", None, "verifying", "unknown"),
+    (None, None, None, "unknown"),
+])
+def test_presentation_observed_stage(state, queue, generation, expected):
+    item = {"state": state, "queue_status": queue, "generation_status": generation}
+    result = api._presentation([item])
+    assert result["stage"] == expected
+    assert result["version"] == 1 and result["scope"] == "plan"
+    assert result["details"]["by_stage"][expected] == 1
+    assert "%" not in result["message"]
+
+
+def test_presentation_partial_failure_and_selected_item_are_distinct():
+    done = {"state": "submitted", "generation_status": "done"}
+    failed = {"state": "submitted", "generation_status": "failed"}
+    running = {"state": "submitted", "generation_status": "running"}
+    partial = api._presentation([done, done, failed])
+    assert partial["stage"] == "attention"
+    assert partial["details"]["completed"] == 2 and partial["details"]["total"] == 3
+    active = api._presentation([done, failed, running])
+    assert active["stage"] == "running" and "실패 1" in active["message"]
+    assert "미실행 1" in api._presentation([running, failed, {"state": "pending"}])["message"]
+    selected = api._presentation([done], scope="item", item_index=2)
+    assert selected["stage"] == "completed" and selected["scope"] == "item"
+    assert selected["details"]["total"] == 1 and selected["item_index"] == 2
+    assert "선택 항목 3" in selected["message"] and "전체 계획" in active["message"]
+    assert api._presentation([])["stage"] == "unknown"
+    assert api._presentation([{"state": "pending"}] * 3)["stage"] == "planned"
+    assert api._presentation([done, {"state": "unknown"}])["stage"] == "attention"
+
+
 @pytest.fixture
 def local(tmp_path, monkeypatch):
     monkeypatch.setenv("CONTENT_HUB_DB", str(tmp_path / "hub.db"))
@@ -657,6 +695,27 @@ def result_plan(local, monkeypatch):
     return plan, row
 
 
+def test_result_of_one_item_does_not_complete_three_item_plan(local, result_plan):
+    import json
+    plan, row = result_plan
+    row["assets"] = []
+    with db.get_connection() as conn:
+        items = json.loads(conn.execute("SELECT items FROM mcp_generation_plan WHERE id=?", (plan["id"],)).fetchone()[0])
+        items[0]["generation_status"] = "done"
+        items.extend({**items[0], "label": f"other-{index}", "generation_id": f"other-{index}",
+                      "generation_status": "running", "idempotency_key": str(uuid4())} for index in (1, 2))
+        conn.execute("UPDATE mcp_generation_plan SET items=? WHERE id=?", (json.dumps(items), plan["id"]))
+    selected = action(local, "get_result", {"plan_id": plan["id"], "item_index": 0})
+    whole = action(local, "get_plan", {"plan_id": plan["id"]})
+    assert selected.status_code == whole.status_code == 200
+    selected, whole = selected.json()["presentation"], whole.json()["presentation"]
+    assert selected["stage"] == "completed" and selected["scope"] == "item"
+    assert selected["details"]["total"] == 1 and "선택 항목 1" in selected["message"]
+    assert whole["stage"] == "running" and whole["scope"] == "plan"
+    assert whole["details"]["completed"] == 1 and whole["details"]["total"] == 3
+    assert "전체 계획" in whole["message"] and "1/3" in whole["message"]
+
+
 @pytest.mark.parametrize("wait_seconds", [0, 25])
 def test_result_returns_bounded_jpeg_without_source_and_does_not_mutate_plan(local, result_plan, tmp_path, monkeypatch, wait_seconds):
     from PIL import Image
@@ -677,6 +736,11 @@ def test_result_returns_bounded_jpeg_without_source_and_does_not_mutate_plan(loc
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["generation_status"] == "done" and result["asset_type"] == "image"
+    assert result["presentation"]["stage"] == "completed"
+    assert result["presentation"]["scope"] == "item" and result["presentation"]["item_index"] == 0
+    assert result["model"] == plan["items"][0]["model"]
+    assert result["workspace"] == plan["workspace"]
+    assert "prompt" not in result and "seed" not in result["params"]
     assert base64.b64decode(result["media"]["data_base64"]) == path.read_bytes()
     assert calls == [("/media/poster.jpg", 512)]
     assert "file_path" not in response.text and "original.png" not in response.text and str(root) not in response.text
