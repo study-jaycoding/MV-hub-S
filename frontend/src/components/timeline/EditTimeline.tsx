@@ -332,7 +332,11 @@ export const EditTimeline = memo(function EditTimeline({
   const moveTip = (event?: { clientX: number; clientY: number }) => {
     if (event) tipAt.current = [event.clientX, event.clientY];
     const [x, y] = tipAt.current;
-    if (tipRef.current) tipRef.current.style.transform = `translate(${x + 12}px, ${y - 40}px)`;
+    const tip = tipRef.current;
+    if (!tip) return;
+    // 오른쪽에 자리가 없으면 포인터 왼쪽에 — 창 끝에서 이름표가 화면 밖으로 나갔다(Codex 11A 리뷰)
+    const left = x + 12 + tip.offsetWidth > window.innerWidth ? x - 12 - tip.offsetWidth : x + 12;
+    tip.style.transform = `translate(${left}px, ${y - 40}px)`;
   };
   const grabStart = (cut: string, key?: string) => {
     const cell = [...(lanesRef.current?.querySelectorAll<HTMLElement>(".ed-cutcell") ?? [])].find((el) => el.dataset.cut === cut);

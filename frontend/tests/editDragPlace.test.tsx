@@ -725,6 +725,9 @@ it("많이 줄여 컷 이름이 칸에 안 보이면 끄는 동안 포인터 옆
     expect(tip()!.textContent).toBe("c2 · 5.0s");
     fire(cell, "pointermove", { clientX: 300, clientY: 200 }); // 포인터를 따라온다(오른쪽 위)
     expect(tip()!.style.transform).toBe("translate(312px, 160px)");
+    Object.defineProperty(tip()!, "offsetWidth", { configurable: true, value: 80 });
+    fire(cell, "pointermove", { clientX: 1000, clientY: 200 }); // 창 오른쪽 끝(jsdom 1024) — 자리가 없으면 포인터 왼쪽에(Codex 11A 리뷰)
+    expect(tip()!.style.transform).toBe("translate(908px, 160px)");
     press({ key: "Escape", code: "Escape" }); // 끌기가 끝나면 사라진다
     expect(tip()).toBeNull();
     fire(cell, "pointerup", { buttons: 0 });
