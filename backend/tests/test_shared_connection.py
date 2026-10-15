@@ -62,8 +62,12 @@ class SharedConnectionContractTests(unittest.TestCase):
     def test_proxy_and_publish_delegate_to_single_source(self):
         from app.routers import _proxy, publish
 
-        self.assertIs(_proxy.base_url, shared_connection.base_url)
-        self.assertIs(_proxy.token, shared_connection.token)
+        # MCP v2(2026-10-15)가 _proxy.base_url·token 을 '고정 연결' 래퍼로 감쌌다 — 고정이 없으면 공유 연결로 되돌아간다.
+        #  원천이 공유 연결 함수 그 자체이고 고정이 없을 때 같은 값을 주는지 본다(test_comment_byid_account_pin 의 f637b8e3 과 같은 맞춤).
+        self.assertIsNone(_proxy._PINNED_CONNECTION.get())
+        self.assertIs(_proxy._stored_base_url, shared_connection.base_url)
+        self.assertIs(_proxy._stored_token, shared_connection.token)
+        self.assertEqual((_proxy.base_url(), _proxy.token()), (shared_connection.base_url(), shared_connection.token()))
         self.assertIs(_proxy.elevation_token, shared_connection.elevation_token)
         self.assertIs(publish._effective_url, shared_connection.base_url)
         self.assertEqual(_proxy._K_TOKEN, shared_connection.K_TOKEN)
