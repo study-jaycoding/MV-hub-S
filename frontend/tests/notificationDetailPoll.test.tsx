@@ -124,6 +124,19 @@ describe("열린 알림 패널의 상세 폴", () => {
     expect(generationStats).toHaveBeenCalledTimes(2);
   });
 
+  // Codex 70회차 리뷰 P2 — 라이브러리 0 → 벨이 스스로 받은 1 → 다른 곳에서 읽음 → 라이브러리는 새 0 을 받았지만 props 도 0 이라 동기화가 안 돈다.
+  //  그때 '라이브러리가 방금 받았다'만 보고 건너뛰면 벨은 1 인 채 남았다.
+  it("does not skip while the bell shows a different number than the library's stats", async () => {
+    generationStats.mockResolvedValueOnce({ unread_count: 1, failed: 0 });
+    render({ commentUnreadCount: 0 });
+    await act(async () => {}); // 벨 스스로 받은 1
+    expect(container.textContent).toContain("1");
+    act(() => vi.advanceTimersByTime(55_000));
+    markLibraryStatsApplied(); // 라이브러리는 새 0 을 받았다(props 0 그대로)
+    await act(async () => { vi.advanceTimersByTime(5_000); }); // 60초 폴링 — 다르니 묻는다
+    expect(generationStats).toHaveBeenCalledTimes(2);
+  });
+
   it("패널을 닫으면 폴이 멈춘다", () => {
     render({ commentUnreadCount: 0 });
     openPanel();

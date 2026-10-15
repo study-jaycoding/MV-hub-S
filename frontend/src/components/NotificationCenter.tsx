@@ -101,6 +101,11 @@ export function NotificationCenter({
   useEffect(() => {
     setUnreadComments(commentUnreadCount ?? (hasUnreadComments ? 1 : 0));
   }, [commentUnreadCount, hasUnreadComments]);
+  // 벨이 보이는 숫자 vs 라이브러리 통계가 준 숫자 — 60초 폴링(아래)은 둘이 같을 때만 건너뛴다. 타이머에서 읽으므로 ref.
+  const badgeRef = useRef({ shown: unreadComments, given: commentUnreadCount ?? (hasUnreadComments ? 1 : 0) });
+  useEffect(() => {
+    badgeRef.current = { shown: unreadComments, given: commentUnreadCount ?? (hasUnreadComments ? 1 : 0) };
+  });
 
   const loadComments = useCallback(async (showLoading = false) => {
     if (!commentsSupportedRef.current) {
@@ -177,9 +182,11 @@ export function NotificationCenter({
   useEffect(() => {
     const refreshBadge = () => {
       loadReleaseItems();
-      // 라이브러리가 10초 안에 받아 반영했으면 벨 숫자는 그 props 로 이미 새것이다 — 같은 것을 다시 묻지 않는다(70회차).
+      // 라이브러리가 10초 안에 받아 반영했고 벨 숫자가 그것과 같으면 같은 것을 다시 묻지 않는다(70회차).
+      //  다르면(벨이 스스로 받은 수가 남았는데 라이브러리의 새 수가 props 와 같아 동기화가 안 돈 경우) 묻는다 — 낡은 수가 남지 않게(Codex 리뷰 P2).
       //  받은 값을 따로 쓰지 않으므로(건너뛰기만) 읽음 처리 직후의 숫자를 옛 값으로 되돌릴 일이 없다.
-      if (libraryStatsFresh(10_000)) return;
+      const badge = badgeRef.current;
+      if (libraryStatsFresh(10_000) && badge.shown === badge.given) return;
       api
         .generationStats()
         .then((stats) => {

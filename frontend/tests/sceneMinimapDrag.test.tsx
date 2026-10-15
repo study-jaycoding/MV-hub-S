@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // 미니맵 끌기의 끝 — 놓으면(mouseup) 그 자리로 확정하고, mouseup 을 놓치면(단추를 뗀 채 온 움직임·창을 떠남) 정리만 한다.
-import { act, createRef, type MutableRefObject } from "react";
+import { act, createRef, useRef, type MutableRefObject } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SceneMinimap } from "../src/components/scene/SceneMinimap";
@@ -61,6 +61,35 @@ it("does not read the board size on render — only when the resize observer rep
   expect(reads).toBe(0);
   act(() => observers.forEach((cb) => cb())); // 크기를 알려 오면 그때 읽고 갱신한다
   expect([reads, map().style.display]).toEqual([1, "block"]); // 카드(3000)가 화면(800) 밖 — 미니맵을 보인다
+});
+
+// Codex 70회차 리뷰 P2 — 실제 캔버스처럼 보드(조상)와 미니맵이 함께 처음 붙으면 미니맵의 effect 가 보드 ref 보다 먼저 돈다.
+//  그때 한 번 보고 말면 크기 감시가 안 걸려 미니맵이 영영 숨었다.
+it("watches the board even when board and minimap mount together (the board ref attaches after the child's effects)", () => {
+  const observed: Element[] = [];
+  const callbacks: Array<() => void> = [];
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(cb: () => void) { callbacks.push(cb); }
+    observe(el: Element) { observed.push(el); }
+    disconnect() {}
+  });
+  const ref = <T,>(current: T) => ({ current }) as MutableRefObject<T>;
+  function Board() {
+    const scroll = useRef<HTMLDivElement>(null);
+    return (
+      <div className="board" ref={scroll}>
+        <SceneMinimap boxes={[]} bounds={{ minX: 0, minY: 0, maxX: 3000, maxY: 3000 }} selected={new Set()} scrollRef={scroll}
+          panRef={ref({ x: 0, y: 0 })} zoomRef={ref(1)} updateRef={ref<(() => void) | null>(null)} onNavigate={onNavigate} />
+      </div>
+    );
+  }
+  act(() => root.render(<Board />));
+  const board = host.querySelector<HTMLElement>(".board")!;
+  expect(observed).toEqual([board]);
+  Object.defineProperty(board, "clientWidth", { get: () => 800 });
+  Object.defineProperty(board, "clientHeight", { get: () => 600 });
+  act(() => callbacks.forEach((cb) => cb()));
+  expect(map().style.display).toBe("block"); // 카드(3000)가 화면(800) 밖 — 미니맵을 보인다
 });
 
 it.each([

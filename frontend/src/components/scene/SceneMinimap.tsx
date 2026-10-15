@@ -69,16 +69,23 @@ export function SceneMinimap({
   //  카드 전부의 배치를 그 자리에서 강제로 계산했다(70회차 격리 실측: 세션 첫 씬 열기 긴 작업 108ms 중 이 함수 자기 시간 65ms).
   //  감시의 알림은 배치가 끝난 뒤(그리기 전)에 와서 그때 읽는 값은 이미 계산돼 있다. 모르는 동안(첫 알림 전)은 갱신하지 않는다.
   const vpRef = useRef<{ width: number; height: number } | null>(null);
-  useLayoutEffect(() => {
+  //  보드는 이 미니맵의 조상이라 처음 붙을 때는 자식(이 컴포넌트)의 effect 가 보드 ref 가 붙기 전에 돈다 — 그때 한 번만 보고 말면
+  //  감시가 영영 안 걸려 미니맵이 계속 숨었다(Codex 70회차 리뷰 P2). 커밋마다 지금 보드가 감시 중인 것과 같은지 보고, 다르면 다시 건다.
+  const watchRef = useRef<{ el: HTMLElement; ro: ResizeObserver } | null>(null);
+  useEffect(() => {
     const sc = scrollRef.current;
-    if (!sc || typeof ResizeObserver === "undefined") return;
+    if (watchRef.current?.el === sc || typeof ResizeObserver === "undefined") return;
+    watchRef.current?.ro.disconnect();
+    watchRef.current = null;
+    if (!sc) return;
     const ro = new ResizeObserver(() => {
       vpRef.current = { width: sc.clientWidth, height: sc.clientHeight };
       updateRef.current?.();
     });
     ro.observe(sc);
-    return () => ro.disconnect();
-  }, [scrollRef, updateRef]);
+    watchRef.current = { el: sc, ro };
+  });
+  useEffect(() => () => watchRef.current?.ro.disconnect(), []);
 
   // 표시여부(화면 밖 카드 존재)와 뷰포트 박스를 DOM 에 직접 반영 — 리렌더 없이 팬/줌에 반응.
   //  팬은 매 프레임 불리므로 바뀐 값만 쓰고, 박스 이동은 transform 으로 한다(위치·크기를 매번 쓰면 보드를 다시 칠했다).
