@@ -38,6 +38,7 @@ const EN: Record<string, string> = {
   "트랙 줄 위에 놓으세요": "Drop on a track row",
   "놓으면 소스 클립으로 봅니다": "Drop to view it as the source clip",
   "끌어서 순서 바꾸기": "drag to reorder",
+  "끼울 자리": "Drop point",
   "폴더 순서: 내 순서": "Folder order: mine",
   "이름순으로 되돌립니다": "Back to name order",
   "{count}개 선택": "{count} selected",

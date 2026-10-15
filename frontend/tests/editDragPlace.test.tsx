@@ -694,3 +694,77 @@ it("길이 조절 창: 영상을 못 받으면 까닭을 적고 재생 단추를
   act(() => [...pop.querySelectorAll("button")].find((item) => item.textContent === "−1f")!.click());
   expect((stored().clips as { trim?: number }[])[0].trim).toBeCloseTo(119 / 24);
 });
+
+// Jay 2026-10-15 11A ⓐ — 많이 줄이면 컷 칸이 몇 px 라 끄는 동안 무엇을 잡았는지 안 보였다 → 포인터 옆에 '컷 이름 · 길이'.
+//  jsdom 에는 배치가 없다 — 컷 칸의 이름이 잘렸는지(scrollWidth > clientWidth)는 시험이 정한다(그대로면 0 = 0, 다 보인다).
+it("많이 줄여 컷 이름이 칸에 안 보이면 끄는 동안 포인터 옆에 잡은 것의 이름표가 뜬다 — 컷 끌기·클립 끌기 모두, 이름이 보이면 없다", () => {
+  seed([{ cut: "c1", gen: "a", track: 2, ...{ dur: 4.1 } }]);
+  mountOn("c1");
+  const tip = () => document.querySelector<HTMLElement>(".ed-grabtip");
+  const squeeze = (name: string) => {
+    Object.defineProperty(cutCell(name), "scrollWidth", { configurable: true, value: 30 });
+    Object.defineProperty(cutCell(name), "clientWidth", { configurable: true, value: 3 });
+  };
+  const clip = lane(2).querySelector<HTMLElement>(".ed-clip")!;
+  const pointDoc = document as unknown as { elementsFromPoint?: unknown };
+  const savedPoint = pointDoc.elementsFromPoint;
+  pointDoc.elementsFromPoint = () => [lane(2)]; // 놓는 곳은 제 트랙 — 클립은 옮겨지지 않는다
+  try {
+    // 이름이 보이면 이름표는 없다
+    let cell = dragCut("c2", right("c3") + 4);
+    expect([document.querySelector(".ed-cutdrop") !== null, tip()]).toEqual([true, null]);
+    press({ key: "Escape", code: "Escape" });
+    fire(clip, "pointerdown", { clientX: 10, clientY: 100 });
+    fire(clip, "pointermove", { clientX: 10, clientY: 40 });
+    expect([clip.style.transform, tip()]).toEqual(["translateY(-60px)", null]);
+    fire(clip, "pointerup", { clientX: 10, clientY: 40, buttons: 0 });
+
+    squeeze("c1");
+    squeeze("c2");
+    cell = dragCut("c2", right("c3") + 4); // 컷 끌기 = 그 컷의 이름 · 컷 길이(빈 컷 = 기본 5초)
+    expect(tip()!.textContent).toBe("c2 · 5.0s");
+    fire(cell, "pointermove", { clientX: 300, clientY: 200 }); // 포인터를 따라온다(오른쪽 위)
+    expect(tip()!.style.transform).toBe("translate(312px, 160px)");
+    press({ key: "Escape", code: "Escape" }); // 끌기가 끝나면 사라진다
+    expect(tip()).toBeNull();
+    fire(cell, "pointerup", { buttons: 0 });
+
+    fire(clip, "pointerdown", { clientX: 10, clientY: 100 }); // 클립 끌기 = 그 클립의 컷 이름 · 클립의 쓰는 길이
+    fire(clip, "pointermove", { clientX: 10, clientY: 40 });
+    expect([tip()!.textContent, tip()!.style.transform]).toEqual(["c1 · 4.1s", "translate(22px, 0px)"]);
+    fire(clip, "pointerup", { clientX: 10, clientY: 40, buttons: 0 });
+    expect(tip()).toBeNull();
+    expect([cuts(), storedTracks()]).toEqual([["c1", "c2", "c3"], [["a", 2]]]);
+  } finally {
+    pointDoc.elementsFromPoint = savedPoint;
+  }
+});
+
+// Jay 2026-10-15 11A ⓑ — 끌다가 가장자리에서 화면이 넘어가면 끼울 자리(줄)가 화면 밖일 수 있다 → 그쪽 가장자리에 '끼울 자리'.
+it("컷을 끄는 중 끼울 자리가 화면 밖이면 그쪽 가장자리에 '끼울 자리' 가 뜬다 — 화면 안·제자리면 없다", () => {
+  mount();
+  const scroll = document.querySelector<HTMLElement>(".ed-scroll")!;
+  vi.spyOn(scroll, "getBoundingClientRect").mockReturnValue({ left: 0, right: 5000 } as DOMRect); // 포인터는 가장자리(저절로 넘김)가 아니다
+  Object.defineProperty(scroll, "clientWidth", { configurable: true, value: right("c2") + 10 }); // 보이는 칸 = c1·c2 와 c3 의 앞쪽
+  const mark = () => document.querySelector<HTMLElement>(".ed-edgemark");
+  const seen = () => mark() && [mark()!.textContent, mark()!.className, mark()!.parentElement!.dataset.track];
+
+  let cell = dragCut("c1", right("c3") + 4); // 맨 뒤 — 끼울 자리가 화면 오른쪽 밖
+  expect(seen()).toEqual(["끼울 자리 ▶", "ed-edgemark ed-edgemark-right", "1"]);
+  fire(cell, "pointermove", { clientX: left("c3") + 1 }); // c3 앞 — 화면 안
+  expect([document.querySelector(".ed-cutdrop") !== null, mark()]).toEqual([true, null]);
+  press({ key: "Escape", code: "Escape" });
+  fire(cell, "pointerup", { buttons: 0 });
+
+  scroll.scrollLeft = right("c1") + 1; // c2 부터 보인다 — c1 의 앞·끝(= c2 의 앞)은 화면 왼쪽 밖
+  cell = dragCut("c3", 1); // 맨 앞
+  expect(seen()).toEqual(["◀ 끼울 자리", "ed-edgemark ed-edgemark-left", "1"]);
+  press({ key: "Escape", code: "Escape" }); // 끌기가 끝나면 사라진다
+  expect(mark()).toBeNull();
+  fire(cell, "pointerup", { buttons: 0 });
+
+  cell = dragCut("c1", left("c2") + 3); // 제자리(c2 앞) — 화면 밖이어도 줄도 표시도 없다
+  expect([document.querySelector(".ed-cutdrop"), mark()]).toEqual([null, null]);
+  fire(cell, "pointerup", { buttons: 0 });
+  expect(cuts()).toEqual(["c1", "c2", "c3"]);
+});

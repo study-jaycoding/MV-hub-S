@@ -16,6 +16,8 @@ import {
 import type { Generation } from "../../types";
 import {
   clipKey,
+  cutDropTime,
+  grabLabel,
   timecode,
   visibleSegments,
   type EditDoc,
@@ -322,10 +324,26 @@ export const EditTimeline = memo(function EditTimeline({
   useEffect(() => marqueeLive.current.measure(), [layout, zoom, rev]); // 끄는 사이 배율·배치(실측 길이)가 바뀜 · 문서가 갈리면 걷는다
   useEffect(() => () => marqueeLive.current.end(), []);
 
+  // 끄는 동안 포인터 옆의 잡은 것 이름표(Jay 2026-10-15 11A ⓐ) — 클립 끌기·컷 순서 끌기. 많이 줄여 그 컷의 이름이 칸에 다 안 보일
+  //  때만(컷 칸은 넘친 글자를 자른다) — 끌기를 시작할 때 한 번 잰다. 자리는 ref 로 옮긴다(움직일 때마다 다시 그리지 않는다).
+  const [grab, setGrab] = useState<{ cut: string; key?: string } | null>(null);
+  const tipRef = useRef<HTMLDivElement | null>(null);
+  const tipAt = useRef<[number, number]>([0, 0]);
+  const moveTip = (event?: { clientX: number; clientY: number }) => {
+    if (event) tipAt.current = [event.clientX, event.clientY];
+    const [x, y] = tipAt.current;
+    if (tipRef.current) tipRef.current.style.transform = `translate(${x + 12}px, ${y - 40}px)`;
+  };
+  const grabStart = (cut: string, key?: string) => {
+    const cell = [...(lanesRef.current?.querySelectorAll<HTMLElement>(".ed-cutcell") ?? [])].find((el) => el.dataset.cut === cut);
+    if (cell && cell.scrollWidth > cell.clientWidth) setGrab({ cut, key });
+  };
+  const grabText = grab && grabLabel(layout, grab.cut, grab.key);
+
   // 클립 끌기 — 6px 넘게 움직이면 끌기로 보고, 놓은 자리의 트랙으로 옮긴다(찬 자리면 맞바꿈).
   //  끄는 중(6px 를 넘긴 뒤)이라는 것은 상태로도 든다(clipDragging) — Esc 겹과 키 막기를 켜는 데 쓴다. 전에는 ref 뿐이라 Esc 가 고른 것만
   //  풀고 놓으면 그대로 옮겨졌고, 끄는 동안 Space·Delete 가 뒤에서 먹었다(Codex 코드 리뷰 3회째 — 카드·컷 끌기와 같은 규칙으로 맞춘다).
-  const drag = useRef<{ key: string; track: number; y: number; rev: number; moved: boolean; el: HTMLElement; id: number } | null>(null);
+  const drag = useRef<{ key: string; cut: string; track: number; y: number; rev: number; moved: boolean; el: HTMLElement; id: number } | null>(null);
   const [clipDragging, setClipDragging] = useState(false);
   // 클립 끌기를 걷는다 — 누르기만 한 것(문턱 전)도. ref·요소의 스타일·포인터 쥐기·상태를 한 곳에서 정리한다(놓기·Esc·창이 초점을
   //  잃음·문서가 갈림·그 클립이 사라짐·다른 단추로 창을 엶 — Codex 코드 리뷰 4회째: 끌던 요소가 사라지면 놓는 이벤트가 오지 않아 끄는 중
@@ -335,6 +353,7 @@ export const EditTimeline = memo(function EditTimeline({
     drag.current = null;
     setClipDragging(false);
     if (!current) return;
+    setGrab(null);
     current.el.style.transform = "";
     current.el.style.zIndex = "";
     if (current.el.hasPointerCapture(current.id)) current.el.releasePointerCapture(current.id);
@@ -347,7 +366,7 @@ export const EditTimeline = memo(function EditTimeline({
     onPickCut(cut); // 그림을 누르면 그 컷으로 간다(보는 것은 편집이 아니라 잠긴 트랙도 된다)
     if (locked) return; // 잠긴 트랙의 클립은 고르지도 못한다
     onSelect(key, event.ctrlKey || event.metaKey || event.shiftKey);
-    drag.current = { key, track: from, y: event.clientY, rev, moved: false, el: event.currentTarget, id: event.pointerId };
+    drag.current = { key, cut, track: from, y: event.clientY, rev, moved: false, el: event.currentTarget, id: event.pointerId };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
   const clipMove = (event: ReactPointerEvent<HTMLElement>) => {
@@ -358,8 +377,12 @@ export const EditTimeline = memo(function EditTimeline({
     if (!(event.buttons & 1)) return clipUp(event, true);
     const dy = event.clientY - current.y;
     if (!current.moved && Math.abs(dy) < DRAG_START) return;
-    if (!current.moved) setClipDragging(true);
+    if (!current.moved) {
+      setClipDragging(true);
+      grabStart(current.cut, current.key);
+    }
     current.moved = true;
+    moveTip(event);
     event.currentTarget.style.transform = `translateY(${dy}px)`;
     event.currentTarget.style.zIndex = "4";
   };
@@ -377,7 +400,8 @@ export const EditTimeline = memo(function EditTimeline({
   //  끼울 자리 = 포인터가 가운데를 넘지 않은 첫 컷의 앞(없으면 맨 뒤). 제자리(자기 앞·바로 다음 컷의 앞)면 표시하지 않고, 놓아도
   //  아무 일도 없다. 옮기는 길은 놓기뿐이다 — Esc · 창이 초점을 잃음 · 단추가 떼어진 채 온 움직임 · 쥐기를 잃음 · 그사이 문서가
   //  갈림(rev) · 끌던 컷이 사라짐은 전부 버린다. 끄는 동안 재생·편집 키는 쉰다(Esc 겹이 켜져 있다 — lib/useEscapeClose).
-  const [cutDrag, setCutDrag] = useState<{ path: string; before: string | null } | null>(null); // 그리기용 — 놓을 자리의 원본은 cutPress
+  // 그리기용 — 놓을 자리의 원본은 cutPress. side = 끼울 자리가 화면 밖이면 그쪽(Jay 2026-10-15 11A ⓑ — 가장자리에 '끼울 자리 ▶')
+  const [cutDrag, setCutDrag] = useState<{ path: string; before: string | null; side: "left" | "right" | null } | null>(null);
   const cutPress = useRef<{
     path: string; x: number; at: number; rev: number; moved: boolean; el: HTMLElement; id: number; before: string | null;
   } | null>(null);
@@ -396,8 +420,14 @@ export const EditTimeline = memo(function EditTimeline({
   const placeCutDrag = (clientX: number) => {
     const press = cutPress.current;
     if (!press) return;
-    press.before = cutBefore(clientX);
-    setCutDrag((old) => (old && old.before === press.before ? old : { path: press.path, before: press.before }));
+    const before = cutBefore(clientX);
+    press.before = before;
+    // 끼울 자리가 보이는 칸 밖인가 — 위에서 줄의 자리를 잰 뒤라 스크롤 값을 읽어도 배치를 다시 계산하지 않는다
+    const view = scrollRef.current;
+    const x = cutDropTime(layout, before) * zoom;
+    const side = !view || cutStays(press.path, before) ? null
+      : x < view.scrollLeft ? "left" : x > view.scrollLeft + view.clientWidth ? "right" : null;
+    setCutDrag((old) => (old && old.before === before && old.side === side ? old : { path: press.path, before, side }));
   };
   const endCutDrag = (drop: boolean) => {
     const press = cutPress.current;
@@ -407,6 +437,7 @@ export const EditTimeline = memo(function EditTimeline({
     cutSwallow.current = true;
     cutDragEnded.current = performance.now();
     setCutDrag(null);
+    setGrab(null);
     if (press.el.hasPointerCapture(press.id)) press.el.releasePointerCapture(press.id);
     if (!drop) return;
     // 놓는 순간에 다시 잰다 — 적어 둔 자리(press.before)는 마지막으로 움직였을 때의 것이라, 포인터를 멈춘 채 휠로 넘겼거나 그사이
@@ -447,8 +478,10 @@ export const EditTimeline = memo(function EditTimeline({
     if (!press.moved) {
       if (Math.abs(event.clientX - press.x) < DRAG_START) return;
       press.moved = true;
+      grabStart(press.path);
       edgeFrame.current = requestAnimationFrame(edgeScroll);
     }
+    moveTip(event);
     placeCutDrag(event.clientX);
   };
   // 클립 끌기 — Esc 는 끌기를 버린다(제자리로). 그 뒤의 놓기는 아무것도 옮기지 않는다(drag 가 비어 있다).
@@ -636,7 +669,7 @@ export const EditTimeline = memo(function EditTimeline({
             {layout.cuts.map((slot) => (
               // 컷 이름 = 폴더. 누르면 그 컷 처음으로 가고 클립 고르기를 푼다 — 이어서 누르는 D 가 이 폴더에 걸린다.
               //  좌우로 끌면 폴더의 순서를 바꾼다(위의 컷 순서 끌기).
-              <button type="button" key={slot.path} style={{ left: slot.start * zoom, width: slot.len * zoom }}
+              <button type="button" key={slot.path} style={{ left: slot.start * zoom, width: slot.len * zoom }} data-cut={slot.path}
                 className={"ed-cutcell" + (slot.path === currentCut ? " ed-cur" : "") + (slot.clips.length ? "" : " ed-nopick") +
                   (offCuts.has(slot.path) ? " ed-cutoff" : "") + (cutDrag?.path === slot.path ? " ed-cutdrag" : "")}
                 title={`${offCuts.has(slot.path) ? `${slot.path} — ${t("비활성 폴더")}` : slot.path} · ${t("끌어서 순서 바꾸기")}`}
@@ -679,6 +712,12 @@ export const EditTimeline = memo(function EditTimeline({
                   {dropLabel(dropHint, t)}
                 </div>
               )}
+              {/* 컷을 끄는 중 끼울 자리가 화면 밖 — 그쪽 가장자리에(V1 줄 안에서 sticky 로 보이는 칸의 끝에 붙는다 — 프레임마다 옮기지 않는다) */}
+              {track === 1 && cutDrag?.side && (
+                <div className={`ed-edgemark ed-edgemark-${cutDrag.side}`} aria-hidden="true">
+                  {cutDrag.side === "left" ? `◀ ${t("끼울 자리")}` : `${t("끼울 자리")} ▶`}
+                </div>
+              )}
             </div>
           ))}
           <div className={"ed-lane ed-l-a" + (doc.muted ? " ed-lane-off" : "")}>
@@ -694,13 +733,18 @@ export const EditTimeline = memo(function EditTimeline({
           <div className="ed-cutline" style={{ left: layout.total * zoom }} />
           {/* 컷을 끄는 중 — 놓으면 끼워질 자리 */}
           {cutDrag && !cutStays(cutDrag.path, cutDrag.before) && (
-            <div className="ed-cutdrop"
-              style={{ left: (layout.cuts.find((slot) => slot.path === cutDrag.before)?.start ?? layout.total) * zoom }} />
+            <div className="ed-cutdrop" style={{ left: cutDropTime(layout, cutDrag.before) * zoom }} />
           )}
           {marks.band && <div className="ed-inout-shade" style={{ left: marks.band.from * zoom, width: (marks.band.to - marks.band.from) * zoom }} />}
           <div className="ed-phead" ref={headRef} />
         </div>
       </div>
+      {grabText && (
+        <div className="ed-grabtip" aria-hidden="true" ref={(el) => {
+          tipRef.current = el;
+          moveTip();
+        }}>{grabText}</div>
+      )}
     </div>
   );
 });

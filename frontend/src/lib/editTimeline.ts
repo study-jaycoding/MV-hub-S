@@ -373,6 +373,19 @@ export function buildLayout(
   return { cuts: slots, total: start, tracks: trackCount(doc) };
 }
 
+// 컷 순서 끌기의 끼울 자리(초) — before 컷의 앞, 없으면(null·사라짐) 맨 뒤
+export function cutDropTime(layout: EditLayout, before: string | null): number {
+  return layout.cuts.find((slot) => slot.path === before)?.start ?? layout.total;
+}
+
+// 끄는 동안 포인터 옆에 적는 잡은 것의 이름표(Jay 2026-10-15 11A) — '컷 이름 · 길이'. key 가 있으면 그 클립의 쓰는 길이(클립에 적힌
+//  길이와 같다), 없으면 컷 길이. 그 컷·클립이 배치에 없으면 null.
+export function grabLabel(layout: EditLayout, cut: string, key?: string): string | null {
+  const slot = layout.cuts.find((item) => item.path === cut);
+  const held = key === undefined ? slot : slot?.clips.find((clip) => clipKey(clip) === key);
+  return slot && held ? `${slot.name} · ${held.len.toFixed(1)}s` : null;
+}
+
 // 그 순간 보이는 클립 = 꺼지지 않은 것(클립 off·트랙 off) 중 아직 안 끝난 가장 높은 트랙.
 // 위 클립이 짧으면 끝난 뒤 아래 클립이 비친다. 잠금은 보이기와 무관하다.
 export function visibleClip(doc: EditDoc, slot: CutSlot, local: number): SlotClip | null {
