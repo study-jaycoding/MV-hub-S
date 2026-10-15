@@ -1033,6 +1033,8 @@ body[data-modal-open] .resolve-notices { z-index: 140; }
 .auth-pause-banner > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 /* 띠가 떠 있는 동안 알림은 띠 아래로 — 같은 자리라 띠(z 1000)가 알림(z 400)을 다 덮어, 멈춘 동안의 안내가 안 보였다(64회차 실측) */
 body:has(.auth-pause-banner) .toast { top: 100px; }
+/* 남겨 둔 Resolve 결과 안내도 같이 내린다 — 평소처럼 알림 아래(96 = 24 + 72)에 서게. 안 내리면 내린 알림을 덮는다(Codex 리뷰) */
+body:has(.auth-pause-banner) .resolve-notices { top: 172px; }
 .auth-pause-banner > button {
   flex: none; padding: 6px 12px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.2);
   background: rgba(255, 255, 255, 0.08); color: #fff; font-weight: 600; cursor: pointer;
