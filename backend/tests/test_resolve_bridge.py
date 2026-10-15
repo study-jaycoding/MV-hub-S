@@ -1426,9 +1426,10 @@ class FastBinSortTests(unittest.TestCase):
 
 
 class FastBinSortContractTests(unittest.TestCase):
-    def test_fast_sort_stays_off_until_a_build_passes_the_real_resolve_test(self):
+    def test_fast_sort_is_on_only_for_builds_that_passed_the_real_resolve_test(self):
         # 시험 프로젝트에서 실기기 시험을 통과한 판만 넣는다(Codex 설계 v3 C). 넣을 때 이 시험도 같은 커밋에서 고친다.
-        self.assertEqual(resolve_bridge._MOVE_FOLDERS_TESTED, frozenset())
+        self.assertEqual(resolve_bridge._MOVE_FOLDERS_TESTED, frozenset({("21", "1", "1", "10", "")}))  # 2026-10-16 통과
+        self.assertNotIn(("21", "1", "1", "9", ""), resolve_bridge._MOVE_FOLDERS_TESTED)  # 같은 21.1.1 의 다른 빌드는 아니다
 
 
 if __name__ == "__main__":
