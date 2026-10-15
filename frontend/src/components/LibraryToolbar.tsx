@@ -40,6 +40,7 @@ interface Props {
     onChange: (on: boolean) => void;
     // top = 프로젝트 맨 위(에피소드 단계) → '에피소드 N · M건'. note = 덧붙일 말(걸러 보는 중의 '거르는 중…'·'최근 N건 기준' — 이미 번역된 글)
     summary?: { folders: number; items: number; top?: boolean; note?: string };
+    pending?: { top: boolean }; // 묶음 답을 기다리는 중 — 낱장 숫자 대신 '컷 · 불러오는 중…'
   };
   loading: boolean;
   failedCount: number; // 실패 항목 수(>0 이면 '실패 정리' 노출)
@@ -248,6 +249,8 @@ export function LibraryToolbar({
         {folderCards?.summary
           ? `${t(folderCards.summary.top ? "에피소드" : "컷")} ${folderCards.summary.folders} · ${folderCards.summary.items}${t("건")}`
             + (folderCards.summary.note ? ` · ${folderCards.summary.note}` : "")
+          : folderCards?.pending
+          ? `${t(folderCards.pending.top ? "에피소드" : "컷")} · ${t("불러오는 중…")}`
           : <>{t(typeLabel)} · {count}{countMore ? "+" : ""}{t("건")}{loading && ` · ${t("로딩…")}`}</>}
       </span>
       {folderCards && (

@@ -772,6 +772,9 @@
 .grid-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .empty { padding: 56px; color: var(--muted); text-align: center; line-height: 1.8; }
 .empty b { color: var(--text); }
+/* 묶음 답 기다림 안내 — 0.3초 넘게 걸릴 때만 보인다(빨리 오면 글자가 번쩍이지 않게). 한 번만 도는 움직임이라 가만둔 탭의 CPU 와 무관 */
+.grid-wait { animation: grid-wait-in 0s linear 0.3s both; }
+@keyframes grid-wait-in { from { visibility: hidden; } to { visibility: visible; } }
 
 /* 캔버스 '폴더 보기' — 사이드바 폴더 클릭 시 가운데 플로팅 창에 라이브러리 격자 그대로(툴바 필터·날짜 구분 동일).
    씬 위(캔버스 상단 패널 z 20)·씬 모달(200)·플로팅 입력창(300) 아래. 격자는 .gen-grid 가 스스로 스크롤·추가 로드. */

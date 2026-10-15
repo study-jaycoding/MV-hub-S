@@ -1902,11 +1902,13 @@ it("App 공유·리뷰: 폴더를 옮기면 묶음 응답 전엔 낱장 격자�
   localStorage.setItem("ch.lib.cutView", "1");
   await mountTeamFolder({ folderCards, setFolderCover: vi.fn() });
   expect(cutGrid()).not.toBeNull();
-  const busy = () => document.querySelector("main.main .grid-wrap[aria-busy='true']:empty");
+  const busy = () => document.querySelector("main.main .grid-wrap[aria-busy='true'] > .grid-wait:only-child");
   // 잎으로 — 응답 전: 컷 격자도 낱장 격자도 없고 자리만 비어 있다, 전환 단추는 남는다
   act(() => sidebarSnapshot!.onChange({ folder_path: "episode/shot" }));
   await settle();
   expect([cutGrid(), gridOutputs().length, busy() !== null, toolbarSnapshot!.folderCards?.on]).toEqual([null, 0, true, true]);
+  // 70회차: 기다리는 동안 막대 숫자는 낱장 목록의 것('전체 · N건 · 로딩…')이 아니라 '컷 · 불러오는 중…' — 답이 오면 그 수로
+  expect([toolbarSnapshot!.folderCards?.pending, busy()!.textContent]).toEqual([{ top: false }, "불러오는 중…"]);
   await act(async () => { held.get("episode/shot")!.resolve({ parent: "episode/shot", own_count: 3, folders: [] }); });
   await settle();
   expect([gridOutputs().length, busy(), toolbarSnapshot!.folderCards]).toEqual([1, null, undefined]); // 잎 — 낱장. 바꿀 것이 없으니 단추 없음
@@ -1943,7 +1945,7 @@ it("App 공유·리뷰: 에피소드에서 컷으로 들어가면 받아 둔 목
   expect(cutGrid()).not.toBeNull();
   const main = () => document.querySelector<HTMLElement>("main.main")!;
   const shown = () => gridSnapshot!.generations.map((item) => item.id);
-  const busy = () => document.querySelector("main.main .grid-wrap[aria-busy='true']:empty");
+  const busy = () => document.querySelector("main.main .grid-wrap[aria-busy='true'] > .grid-wait:only-child");
   // 컷으로 — 새 목록이 오기 전(listBehind): 그 컷(하위 포함)의 것만, 지운 것·이름만 비슷한 폴더는 빼고. 격자는 잠기고 더 받지 않는다
   act(() => { sidebarSnapshot!.onChange({ folder_path: "episode/shot" }); setListBehind(true); });
   await settle();
@@ -1991,7 +1993,7 @@ it("App 공유·리뷰: 자리를 옮긴 뒤 새 목록 전에는 옛 자리의 
   const at = (id: string, folder: string): Generation => ({ ...libraryGeneration(id), folder_path: folder });
   const main = () => document.querySelector<HTMLElement>("main.main")!;
   const shown = () => gridSnapshot!.generations.map((item) => item.id);
-  const busy = () => document.querySelector("main.main .grid-wrap[aria-busy='true']:empty");
+  const busy = () => document.querySelector("main.main .grid-wrap[aria-busy='true'] > .grid-wait:only-child");
   // A(episode/shot)에 선다 — 목록이 지금 조회의 것이고 묶음 답도 안다
   act(() => { sidebarSnapshot!.onChange({ folder_path: "episode/shot" }); setLibraryGens([at("a", "episode/shot")]); });
   await settle();

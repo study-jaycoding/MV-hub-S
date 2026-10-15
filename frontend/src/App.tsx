@@ -2471,6 +2471,8 @@ export default function App() {
       ? {
           on: cutView,
           onChange: setCutView,
+          // 묶음 답을 기다리는 동안 — 숫자는 낱장 목록 것이라 '전체 · N건 · 로딩…' 이 비쳤다가 '컷 N · M건' 으로 바뀌었다(70회차)
+          pending: cutPending && cutView ? { top: cutScope.parent === "" } : undefined,
           summary: cutCards
             ? {
                 top: cutScope.parent === "",
@@ -3090,7 +3092,8 @@ export default function App() {
                   outside={cutCards.own_count} onShowAll={() => setCutView(false)}
                 />
               ) : listPeek ? null : cutPending ? (
-                <div className="grid-wrap" aria-busy="true" /> // 묶음 응답 전 — 낱장을 잠깐 보이지 않는다(③)
+                // 묶음 응답 전 — 낱장을 잠깐 보이지 않는다(③). 안내는 오래 걸릴 때만(0.3초 뒤 — 빨리 오면 글자가 번쩍이지 않게, 70회차)
+                <div className="grid-wrap" aria-busy="true"><div className="empty grid-wait" role="status">{t("불러오는 중…")}</div></div>
               ) : !workspaceQueryReady ? (
                 <div className="grid-wrap"><div className="empty" role="status">
                   <p>{t("워크스페이스를 확인한 뒤 공유물을 표시합니다.")}</p>
