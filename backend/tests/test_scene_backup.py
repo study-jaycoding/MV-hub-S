@@ -136,6 +136,21 @@ class SceneBackupTests(unittest.TestCase):
         self.assertNotEqual(again["target_id"], target)  # 고쳐진 사본은 덮지 않고 새 사본
         self.assertEqual(self._data_of(target)["name"], "사본을 고침")
 
+    def test_fork_avoid_picks_another_copy_row(self):
+        # 사본 행이 그 브라우저의 별도 씬이 됐으면(fork_avoid) 같은 입력이어도 그 자리를 쓰지 않는다 — 두 씬이 한 행을 미러하지 않게(Codex 1A 5차).
+        repo.sync_scene_backups("u1", "", [{"id": "s1", "data": _scene("s1", "A")}], [])
+        first = repo.sync_scene_backups("u1", "", [{"id": "s1", "data": _scene("s1", "옛"), "base_hash": "x"}], [])["results"][0]
+        again = repo.sync_scene_backups(
+            "u1", "", [{"id": "s1", "data": _scene("s1", "옛"), "base_hash": "x"}], [], None, [first["target_id"]]
+        )["results"][0]
+        self.assertEqual(again["status"], "copied")
+        self.assertNotEqual(again["target_id"], first["target_id"])
+        resend = repo.sync_scene_backups(
+            "u1", "", [{"id": "s1", "data": _scene("s1", "옛"), "base_hash": "x"}], [], None, [first["target_id"]]
+        )["results"][0]
+        self.assertEqual(resend["target_id"], again["target_id"])  # 같은 입력·같은 피할 자리면 같은 새 자리(재전송이 사본을 늘리지 않음)
+        self.assertEqual(len(repo.list_scene_backups("u1")), 3)
+
     def test_delete_bases_keep_newer_row(self):
         repo.sync_scene_backups("u1", "", [{"id": "s1", "data": _scene("s1", "A")}], [])
         old = self._hash_of()

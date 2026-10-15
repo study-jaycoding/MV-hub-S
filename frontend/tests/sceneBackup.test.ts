@@ -697,4 +697,27 @@ describe("sceneBackup — 판(1A)", () => {
     expect(sent).toContainEqual(["x", "원본 고침"]);
     expect(sent.filter(([id]: string[]) => id === "bk_f")).toEqual([]);
   });
+
+  it("5차 P1 — 갈래를 끊으면 이 씬 내용을 다시 올린다(사본 행 자리는 피하라고 알림) — 사본 씬만 지워도 이 씬 내용의 백업이 남게", async () => {
+    const { scenes, backup, settle } = await boot();
+    const store = await import("../src/lib/sceneStore");
+    scenes.saveScenes(null, [JSON.parse(sceneJson("x", "원본"))]);
+    await settle();
+    localStorage.setItem(ledgerKey("x"), JSON.stringify({ b: "x0", fork: { id: "bk_f", b: "f0" } }));
+    getMeta = () => Promise.resolve({ items: [{ id: "x", data_hash: "남의 새 판" }, { id: "bk_f", data_hash: "f0" }] });
+    putReply = hashReply;
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500); // x 의 내용은 bk_f 에 올라갔다
+    const forkData = putBody(puts()[0]).upserts[0].data as string;
+    store.writeSceneStoreAsOtherWindowForTest((all) => {
+      all[`acct:user${acctSeq}@test::_none`] = [JSON.parse(sceneJson("x", "원본")), JSON.parse(forkData)];
+    });
+    await store.refreshSceneStoreForTest();
+    await settle();
+    await vi.advanceTimersByTimeAsync(2500);
+    const again = puts().slice(1).find((c) => putBody(c).upserts.some((u: { id: string }) => u.id === "x"));
+    expect(again).toBeTruthy(); // 전엔 '올린 그대로'로 보고 건너뛰어 x 내용은 bk_f(이제 남의 씬) 에만 있었다
+    expect(putBody(again!)).toMatchObject({ fork_avoid: ["bk_f"] });
+    expect(putBody(again!).upserts.find((u: { id: string }) => u.id === "x")).toMatchObject({ base_hash: "x0" });
+  });
 });

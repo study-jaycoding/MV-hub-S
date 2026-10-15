@@ -404,6 +404,9 @@ async function syncNow(): Promise<void> {
         //  이 씬은 제 행으로 돌아가 판으로 판정받는다(그사이 바뀌었으면 새 사본) — Codex 1A 4차 P1.
         entry = { b: entry.b };
         setLedger(scope, s.id, entry);
+        // 이 씬의 내용은 지금껏 그 사본 행에만 있었다 — 올린 기억을 무효로 해 제 판정(새 사본 행)을 다시 받게 한다.
+        //  안 그러면 사본 씬만 지울 때 이 씬 내용의 유일한 백업이 지워진다(Codex 1A 5차). 새 사본 자리는 fork_avoid 로 그 행을 피한다.
+        if (lastPushed.has(s.id)) lastPushed.set(s.id, "");
       }
       const target = entry?.fork?.id ?? s.id;
       // 이 세션에서 이미 올린(또는 복구한) 그대로 — 다만 서버 행이 사라졌으면 다시 넣는다(Codex C2)
@@ -512,6 +515,8 @@ async function syncNow(): Promise<void> {
           upserts: chunk.map(({ id, name, data, base_hash }) => ({ id, name, data, base_hash })),
           deleted_ids: dels,
           delete_bases: Object.fromEntries(dels.map((id) => [id, deleteBases[id] ?? ""])),
+          // 이 브라우저에서 이미 별도 씬이 된 사본 행 — 허브가 새 사본 자리로 쓰지 않게(옛 허브는 모르는 칸이라 무시)
+          fork_avoid: [...localIds].filter((id) => id.startsWith("bk_")),
         }),
       });
       if (ns() !== scope) return; // 응답 후 상태 반영도 같은 scope 일 때만

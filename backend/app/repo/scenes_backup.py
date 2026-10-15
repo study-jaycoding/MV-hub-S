@@ -102,6 +102,7 @@ def sync_scene_backups(
     upserts: list[dict[str, Any]],
     deleted_ids: list[str],
     delete_bases: Optional[dict[str, str]] = None,
+    fork_avoid: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """변경분 upsert + 삭제 미러를 한 트랜잭션으로. 검증 실패는 ValueError(라우터가 400 변환).
     data 는 JSON 원문 그대로 보관하되 파싱·id 일치·크기만 검증(이중 데이터 불일치 방지).
@@ -109,7 +110,7 @@ def sync_scene_backups(
     판(Jay 결정 1A, 10-15) — upsert 의 `base_hash` 는 '이 창이 마지막으로 서버와 맞춘 지문'(""=모름). 칸이 없으면(옛 앱) 지금처럼 덮는다.
     행 지문이 그 판과 다르면(그사이 다른 창이 올렸다) 덮지 않고 **사본 행**으로 남긴다. `delete_bases` 를 주면 행 지문이 그 판과 같을 때만
     지운다(옛 창이 다른 창의 새 내용을 지우지 않게 — 칸에 없는 id 는 판 "" 로 본다). 결과는 씬마다 `results: [{id, status, target_id, hash}]`(saved|same|copied|too_big),
-    지우지 않고 남긴 것은 `kept`."""
+    지우지 않고 남긴 것은 `kept`. `fork_avoid` = 사본 자리로 쓰지 않을 id(그 브라우저에서 이미 별도 씬이 된 사본 행 — 두 씬이 한 행을 쓰지 않게)."""
     if len(upserts) > MAX_SCENE_UPSERTS:
         raise ValueError(f"upserts 가 너무 많음(최대 {MAX_SCENE_UPSERTS}) — 분할 전송 필요")
     if len(deleted_ids) > MAX_SCENE_DELETES:
@@ -126,6 +127,7 @@ def sync_scene_backups(
     deleted = 0
     results: list[dict[str, Any]] = []
     kept: list[str] = []
+    avoid = {str(a) for a in (fork_avoid or [])}
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -159,9 +161,9 @@ def sync_scene_backups(
                 for _ in range(8):
                     target, copy_data = _fork_copy(sid, parsed, incoming, salt)
                     existing = _row_hash(conn, owner_uid, project_id, target)
-                    if existing is None or existing == _hash(copy_data):
+                    if target not in avoid and (existing is None or existing == _hash(copy_data)):
                         break
-                    salt = existing
+                    salt = existing or target  # 고쳐진 사본·피할 자리 — 그 값을 섞어 다음 자리로(같은 입력이면 같은 자리)
                 else:
                     raise ValueError(f"사본 자리를 정하지 못함: {sid}")
                 if len(copy_data.encode("utf-8")) > MAX_SCENE_BYTES:

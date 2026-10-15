@@ -31,6 +31,8 @@ class SceneSyncIn(BaseModel):
     deleted_ids: list[str] = []
     # 지울 씬의 판 — 행 지문이 다르면 남긴다(옛 창이 새 내용을 지우지 않게). 칸을 보냈는데 빠진 id 는 '모름'이라 남긴다. 없음(옛 앱) = 지금처럼 지운다.
     delete_bases: Optional[dict[str, str]] = None
+    # 사본 자리로 쓰지 않을 id — 그 브라우저에서 이미 별도 씬이 된 사본 행(bk_…). 두 씬이 한 행을 미러하지 않게(1A).
+    fork_avoid: list[str] = Field(default_factory=list, max_length=2000)
 
 
 class CardLinkIn(BaseModel):
@@ -64,6 +66,7 @@ def sync_scene_backups(body: SceneSyncIn, request: Request):
             [u.model_dump(exclude_unset=True) for u in body.upserts],  # base_hash 를 안 보낸 옛 앱은 칸 자체가 없다
             body.deleted_ids,
             body.delete_bases,
+            body.fork_avoid,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
