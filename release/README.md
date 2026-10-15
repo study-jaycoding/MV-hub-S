@@ -78,7 +78,7 @@ backend               # 백엔드 코드
 현재 MCP 브랜치의 제작 코드는 `tools/mcp_adapter` 아래 어댑터·`local_setup.py`·의존성 명세·전용 `site-packages`를 동봉한다.
 `local_setup.py`는 v2 Windows 암호화 연결 프로필과 로컬 클라이언트 등록에 필요하며, 누락된 ZIP은 검사에서 거부한다.
 아래 7개 도구 실증은 v1 당시 기록이다. v2 영속 연결·선택적 캔버스 도구의 최신 시험 상태는 [MCP 운영 문서](../docs/MCP_INTEGRATION.md)를 따른다.
-`requirements.lock.txt`의 고정 의존성 29개를 `--no-deps`로 설치하여 백엔드 패키지와 분리하고,
+`requirements.lock.txt`의 고정 의존성 29개를 지문(SHA256)까지 맞춰 `--require-hashes --only-binary=:all:`로 설치하여(다르면 멈춤) 백엔드 패키지와 분리하고,
 설치본 `runtime/python/python.exe -I -S`로 실행한다. `-I -S`는 환경변수·사용자 패키지와
 백엔드 `.pth`의 개입을 막는 실행 계약이다. 설정 화면이 반환하는 `python_args`를 어댑터 경로 앞에 둔다.
 

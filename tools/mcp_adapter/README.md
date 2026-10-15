@@ -84,8 +84,12 @@ Claude·Codex 같은 MCP 클라이언트가 **열려 있는 MV Hub 앱**과 연�
 ## 릴리스 번들 계약 (개발 검증 완료)
 
 릴리스 제작 코드는 `server.py`, `requirements.txt`, `requirements.lock.txt`와 전용
-`tools/mcp_adapter/site-packages`를 함께 포장한다. 잠근 의존성 29개를 `--no-deps`로 설치하며,
-백엔드 Python 패키지와 별도로 관리한다. 실행 파일은 설치 폴더의 `runtime/python/python.exe`이고
+`tools/mcp_adapter/site-packages`를 함께 포장한다. 잠근 의존성 29개를 판과 지문(SHA256)까지 고정해
+`pip --isolated install --require-hashes --only-binary=:all:`(이 PC 의 `pip.ini` 무시, 소스 빌드 금지)로 설치하며 —
+지문이 다르거나 휠이 없거나 잠금에서 빠진 하위 의존성이 있으면 릴리스가 멈춘다 — 백엔드 Python 패키지와 별도로 관리한다.
+**번들 의존성 갱신**: Python 3.14 x64 로 `pip --isolated download --only-binary=:all: --no-deps -r requirements.lock.txt -d <빈 폴더>`
+→ 받은 휠의 SHA256 을 잠금 파일의 각 핀 아래 `--hash=sha256:…` 로 적는다 → 빈 대상에 같은 설치 명령으로 의존성까지 확인한다.
+판을 올릴 때만 다시 받는다(매 릴리스마다 새로 고르지 않는다). 시험 `backend/tests/test_release_frontend_build.py`(`mcp_lock`·`mcp_install`). 실행 파일은 설치 폴더의 `runtime/python/python.exe`이고
 인자 순서는 `-I`, `-S`, 어댑터 절대 경로, `--url`, 로컬 허브 주소다.
 두 격리 옵션을 생략하지 않는다. `/api/mcp/app/setup`의 `python_args`가 이 순서를 제공한다.
 개발 환경은 빈 목록이며 예전 응답에 필드가 없어도 기존 설정을 유지한다.

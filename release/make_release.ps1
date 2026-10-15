@@ -157,6 +157,25 @@ print('MCP ' + version + ' isolated imports OK')
     Write-Host "      MCP runtime verified ($Label): $($Output -join ' ')"
 }
 
+function Install-McpAdapterPackages {
+    param([string]$PythonExe, [string]$LockPath, [string]$Target)
+
+    # 잠금 파일의 판·지문(SHA256)이 다르거나 휠이 없으면 멈춘다 — 받은 파일이 바뀌었거나 소스 빌드·이 PC 의 pip 설정
+    # (pip.ini·환경변수)으로 다른 것이 들어가지 않게(배포 전 P1, 2026-10-16). --no-deps 를 쓰지 않아 잠금에서 빠진 하위 의존성도 실패로 잡힌다.
+    $PreviousPipConfig = $env:PIP_CONFIG_FILE
+    $env:PIP_CONFIG_FILE = "nul"
+    try {
+        & $PythonExe -m pip --isolated install --require-hashes --only-binary=:all: `
+            --index-url https://pypi.org/simple --no-compile --ignore-installed --target $Target -r $LockPath
+        $PipExit = $LASTEXITCODE
+    } finally {
+        $env:PIP_CONFIG_FILE = $PreviousPipConfig
+    }
+    if ($PipExit -ne 0) {
+        throw "pip install into bundled MCP packages failed"
+    }
+}
+
 function Assert-ReleaseArchive {
     param(
         [string]$ArchivePath,
@@ -616,11 +635,7 @@ if (-not $SkipPythonRuntime) {
 
     # The SDK shares only Python's executable/stdlib, never the backend dependencies.
     $McpPackages = Join-Path $McpAdapterDir "site-packages"
-    & $Python.Exe -m pip install --no-deps --no-compile --ignore-installed --target $McpPackages `
-        -r (Join-Path $McpAdapterDir "requirements.lock.txt")
-    if ($LASTEXITCODE -ne 0) {
-        throw "pip install into bundled MCP packages failed"
-    }
+    Install-McpAdapterPackages -PythonExe $Python.Exe -LockPath (Join-Path $McpAdapterDir "requirements.lock.txt") -Target $McpPackages
     Assert-McpAdapterTree -Root $Stage -Label "staging"
 
     $RequirementsHash = Get-FileDigestHex -Path (Join-Path $ProjectRoot "backend\requirements.txt") -Algorithm MD5

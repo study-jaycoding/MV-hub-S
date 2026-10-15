@@ -50,6 +50,52 @@ def test_release_reinstalls_locked_dependencies_and_stops_on_failure(
     assert (calls.read_text().splitlines() if calls.exists() else []) == expected
 
 
+_MCP_LOCK = Path(__file__).resolve().parents[2] / "tools/mcp_adapter/requirements.lock.txt"
+
+
+def test_release_mcp_lock_has_hash_for_every_pin() -> None:
+    # 배포 전 P1(2026-10-16): 번들 SDK 를 판만 고정해 받으면 받은 파일이 바뀌어도 모른다 — 모든 핀에 SHA256 지문
+    lines = [line.strip() for line in _MCP_LOCK.read_text(encoding="utf-8").splitlines() if line.strip() and not line.startswith("#")]
+    pins = [line.split()[0] for line in lines if "==" in line]
+    hashes = [line for line in lines if line.startswith("--hash=sha256:")]
+    assert len(pins) == len(hashes) > 20
+    assert all(len(h.split(":", 1)[1]) == 64 for h in hashes)
+    assert all(line.endswith("\\") for line in lines if "==" in line)  # 핀과 지문이 한 항목으로 묶인다
+    direct = (_MCP_LOCK.parent / "requirements.txt").read_text(encoding="utf-8").split()
+    assert set(direct) <= set(pins)  # 직접 요구(mcp 판)가 잠금과 같다
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell release build")
+@pytest.mark.parametrize("pip_exit", [0, 3])
+def test_release_mcp_install_requires_hashes_and_wheels(tmp_path: Path, pip_exit: int) -> None:
+    source = (Path(__file__).resolve().parents[2] / "release/make_release.ps1").read_text(encoding="utf-8-sig")
+    function = "function Install-McpAdapterPackages {" + source.split("function Install-McpAdapterPackages {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+    log = tmp_path / "pip.txt"
+    fake = tmp_path / "python.cmd"
+    fake.write_text(f"@echo off\r\necho ARGS %*> \"{log}\"\r\necho CFG %PIP_CONFIG_FILE%>> \"{log}\"\r\nexit /b {pip_exit}\r\n", encoding="ascii")
+    harness = tmp_path / "mcp-probe.ps1"
+    harness.write_text(
+        "param([string]$Py,[string]$Lock,[string]$Target)\n$ErrorActionPreference = 'Stop'\n$env:PIP_CONFIG_FILE = 'C:\\custom\\pip.ini'\n"
+        + function
+        + "try { Install-McpAdapterPackages -PythonExe $Py -LockPath $Lock -Target $Target; Write-Output 'INSTALLED' } catch { Write-Output ('THREW ' + $_) }\n"
+        "Write-Output ('AFTER ' + $env:PIP_CONFIG_FILE)\n",
+        encoding="utf-8-sig",
+    )
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(harness),
+         "-Py", str(fake), "-Lock", str(_MCP_LOCK), "-Target", str(tmp_path / "site-packages")],
+        capture_output=True, text=True, timeout=30,
+    )
+    args, cfg = log.read_text().splitlines()[:2]
+    for flag in ("--isolated", "--require-hashes", "--only-binary=:all:", "--index-url https://pypi.org/simple", "--ignore-installed"):
+        assert flag in args
+    assert "--no-deps" not in args  # 잠금에서 빠진 하위 의존성도 실패로 잡힌다
+    assert cfg.strip() == "CFG nul"  # 이 PC 의 pip.ini 를 읽지 않는다
+    assert ("INSTALLED" in result.stdout) == (pip_exit == 0)
+    assert ("THREW" in result.stdout) == (pip_exit != 0)  # 실패면 뒤 단계로 가지 않는다
+    assert "AFTER C:\\custom\\pip.ini" in result.stdout  # 성공·실패 모두 원래 설정으로 되돌린다
+
+
 def _archive_probe(
     tmp_path: Path, assets: list[str], *, extra: tuple[str, ...] = (),
     missing: str = "", python: bool = False,
