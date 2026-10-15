@@ -196,8 +196,8 @@ export const comfyApi = {
       await new Promise((done) => setTimeout(done, 1000));
       try {
         first = await send();
-      } catch (again) {
-        if (again instanceof HttpError) throw again; // 멈춤으로 다시 못 보냈어도 첫 요청은 들어갔을 수 있다(Codex 61회차)
+      } catch {
+        // 다시 보내기가 멈춤으로 못 나갔거나(Codex 61회차) 거절됐어도(62회차) 첫 요청은 들어갔을 수 있다
         throw new Error(NO_RESPONSE_MESSAGE);
       }
     }

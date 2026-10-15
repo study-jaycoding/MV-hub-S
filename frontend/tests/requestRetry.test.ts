@@ -85,6 +85,24 @@ describe("다시 보내기 전에 멈추면(다른 탭 로그아웃) 결과 불�
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  // Codex 62회차 — 허브는 업데이트 중·그사이 계정 바뀜이면 요청표를 보기 전에 409 로 거절한다. 다시 보낸 요청의 거절은 첫 요청이 안 됐다는 뜻이 아니다.
+  it("jsonFetch: 다시 보낸 요청이 거절(409)돼도 '들어갔을 수 있다' — 답이 없었을 때도, 본문이 끊겼을 때도", async () => {
+    fetchMock.mockImplementationOnce(lost).mockResolvedValueOnce(httpFail(409));
+    const afterLost = await settle(jsonFetch("/api/gen-requests", { method: "POST", body: "{}" }, undefined, { retryNoResponse: true }));
+    expect((afterLost as { error: Error }).error.message).toBe(NO_RESPONSE_MESSAGE);
+
+    const broken = { ...ok(null), json: () => Promise.reject(new SyntaxError("Unexpected end")) } as unknown as Response;
+    fetchMock.mockReset().mockResolvedValueOnce(broken).mockResolvedValueOnce(httpFail(409));
+    const afterCut = await settle(jsonFetch("/api/gen-requests", { method: "POST", body: "{}" }, undefined, { retryNoResponse: true }));
+    expect((afterCut as { error: Error }).error.message).toBe(NO_RESPONSE_MESSAGE);
+  });
+
+  it("Comfy [실행]: 다시 보낸 요청이 거절돼도 '들어갔을 수 있다'", async () => {
+    fetchMock.mockImplementationOnce(lost).mockResolvedValueOnce(httpFail(409));
+    const out = await settle(comfyApi.run("{}"));
+    expect((out as { error: Error }).error.message).toBe(NO_RESPONSE_MESSAGE);
+  });
+
   it("Comfy [실행]: 둘째 전송이 멈춤으로 못 나가도 '들어갔을 수 있다'", async () => {
     fetchMock.mockImplementationOnce(lost).mockImplementationOnce(paused);
     const out = await settle(comfyApi.run("{}"));

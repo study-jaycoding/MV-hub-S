@@ -246,7 +246,8 @@ export async function jsonFetch<T>(
       await sleep(1000);
       continue;
     }
-    if (!res.ok) await throwHttpError(res, url);
+    // 다시 보낸 요청의 거절(업데이트 중·그사이 계정 바뀜 409 등 — 요청표를 보기 전에 거절한다)은 첫 요청이 안 됐다는 증거가 아니다(Codex 62회차)
+    if (!res.ok) await throwHttpError(res, url).catch((error) => { throw attempt > 1 ? new Error(NO_RESPONSE_MESSAGE) : error; });
     validateResponse?.(res);
     if (mutationOrigin) {
       const domainHeader = res.headers?.get(MUTATION_DOMAINS_HEADER) ?? null;
