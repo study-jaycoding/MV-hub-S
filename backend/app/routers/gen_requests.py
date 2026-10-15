@@ -167,6 +167,11 @@ async def _paid_claim_blocked(
     return True
 
 
+# 아무것도 만들거나 줄 세우기 전에 거절한 409 표식 — MCP 계획(routers/mcp_v2)은 이것만 '거절(다시 계획해도 됨)'으로,
+#  표식 없는 409(같은 열쇠의 기존 요청·복구 보류 — 이미 접수됐을 수 있다)는 '불명확'으로 본다(Codex 리뷰 P2 ④). 문구로 가르지 않는다.
+NOT_STARTED = {"X-MVHub-Submission": "not-started"}
+
+
 def _require_matching_project_workspace(pid: str, workspace) -> None:
     """팀 프로젝트 생성물이 다른 워크스페이스 계정으로 제출되는 것을 차단한다."""
     project = repo.get_project(pid)
@@ -178,6 +183,7 @@ def _require_matching_project_workspace(pid: str, workspace) -> None:
         raise HTTPException(
             status_code=409,
             detail="현재 워크스페이스와 프로젝트 워크스페이스가 다릅니다",
+            headers=dict(NOT_STARTED),
         )
 
 
@@ -195,6 +201,7 @@ def _validated_generation_workspace(
                 "생성할 워크스페이스 정보가 확인되지 않았습니다 — 프로그램을 최신 버전으로 "
                 "업데이트한 뒤 워크스페이스를 다시 선택하세요"
             ),
+            headers=dict(NOT_STARTED),
         )
     if workspace.scope != "team":
         return workspace
@@ -226,6 +233,7 @@ def _validated_generation_workspace(
             "현재 계정에서 워크스페이스 이름을 확인할 수 없습니다 "
             "— 에이전트 동기화 후 다시 시도하세요"
         ),
+        headers=dict(NOT_STARTED),
     )
 
 def _require_account(request: Request) -> dict:
@@ -243,11 +251,13 @@ async def create_gen_request(body: GenRequestIn, request: Request):
         raise HTTPException(
             status_code=409,
             detail="업데이트 중이거나 상태를 확인할 수 없어 새 생성을 시작할 수 없습니다. 프로그램을 다시 실행한 뒤에도 계속되면 관리자에게 문의하세요",
+            headers=dict(NOT_STARTED),
         )
     acc = _require_account(request)
     # 답을 잃고 다시 보내는 사이 다른 탭이 다른 계정으로 로그인했으면 그 계정 DB 엔 이 요청표가 없어 새로 만든다 — 보내지 않는다(Jay 결정 2A)
     if expected_account_differs(request, acc["email"]):
-        raise HTTPException(status_code=409, detail="그사이 이 PC 의 계정이 바뀌어 보내지 않았습니다 — 화면을 새로 고친 뒤 다시 눌러 주세요")
+        raise HTTPException(status_code=409, detail="그사이 이 PC 의 계정이 바뀌어 보내지 않았습니다 — 화면을 새로 고친 뒤 다시 눌러 주세요",
+                            headers=dict(NOT_STARTED))
     await _require_generation_deployment_open()
     workspace = await asyncio.to_thread(
         _validated_generation_workspace, body.workspace, acc["email"]

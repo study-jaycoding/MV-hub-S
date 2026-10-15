@@ -31,6 +31,7 @@ from ..mcp_models import StrictModel
 from ..models import GenRequestIn, WorkspaceContext
 from ..repo import mcp_v2 as store
 from ..services import auth, cli_bridge, thumbs
+from ..services.async_tools import to_thread_non_abandon
 from ..services.path_safety import safe_join
 from . import _proxy, assets, gen_requests, generation, library, manage, mcp, projects
 
@@ -95,6 +96,7 @@ def _capture(request, client_secret=None):
     pin = active_account.capture_account_pin()
     with active_account.pinned_account_scope(pin):
         path, identity = get_db_path().resolve(), _required_hub_id()
+        store.recover_interrupted_plans(str(path).casefold())  # 이 프로세스에서 이 DB 를 처음 볼 때 한 번(앞 프로세스가 남긴 'executing')
         client = store.client_for_secret(mcp.digest(client_secret)) if client_secret else None
         if client_secret and (not client or client["revoked_at"] or not hmac.compare_digest(client["hub_id"], identity)):
             raise HTTPException(403, "MCP 연결이 해제되었거나 허브가 바뀌었습니다. 앱에서 다시 연결하세요.")
@@ -946,23 +948,35 @@ async def _execute(ctx, plan_id):
     ws = await _validate_items(ctx, plan["items"], plan["workspace"])
     if not await asyncio.to_thread(store.claim_plan, ctx.client, plan_id, plan["workspace"]):
         return _public_plan(await asyncio.to_thread(store.get_plan, ctx.client, plan_id))
-    for item in plan["items"]:
-        item["state"] = "submitting"
-        await asyncio.to_thread(store.update_plan, plan_id, plan["items"], "executing")
-        try:
-            await asyncio.to_thread(_still_current, ctx)
-            body = GenRequestIn.model_validate({"workspace": ws, "kind": "create", "idempotency_key": item["idempotency_key"],
-                "create": {key: item[key] for key in ("prompt", "model", "params", "references", "project_id", "folder_path")}})
-            result = await gen_requests.create_gen_request(body, _internal(ctx, "/api/gen-requests", submit=True))
-            item.update(state="submitted", generation_id=result["id"])
-        except Exception as exc:
-            code = exc.status_code if isinstance(exc, HTTPException) else None
-            item.update(state="rejected" if code and 400 <= code < 500 and code not in (408, 409, 429) else "uncertain",
-                        error="생성 요청이 거부되었습니다." if code and code < 500 else "접수 여부를 확인할 수 없습니다. get_plan으로 확인하세요.")
-            await asyncio.to_thread(store.update_plan, plan_id, plan["items"], "attention")
-            return _public_plan(await asyncio.to_thread(store.get_plan, ctx.client, plan_id))
-        await asyncio.to_thread(store.update_plan, plan_id, plan["items"], "executing")
-    await asyncio.to_thread(store.update_plan, plan_id, plan["items"], "submitted")
+    # 계획 쓰기는 끝까지 기다린다(to_thread_non_abandon) — 응답이 끊겨 이 작업이 취소돼도 뒤늦게 끝난 쓰기가 아래 '주의'를 덮지 않게.
+    try:
+        for item in plan["items"]:
+            item["state"] = "submitting"
+            await to_thread_non_abandon(store.update_plan, plan_id, plan["items"], "executing")
+            try:
+                await asyncio.to_thread(_still_current, ctx)
+                body = GenRequestIn.model_validate({"workspace": ws, "kind": "create", "idempotency_key": item["idempotency_key"],
+                    "create": {key: item[key] for key in ("prompt", "model", "params", "references", "project_id", "folder_path")}})
+                result = await gen_requests.create_gen_request(body, _internal(ctx, "/api/gen-requests", submit=True))
+                item.update(state="submitted", generation_id=result["id"])
+            except Exception as exc:
+                code = exc.status_code if isinstance(exc, HTTPException) else None
+                # 409 는 '아무것도 만들기 전 거절' 표식이 있을 때만 거절이다 — 같은 열쇠의 기존 요청 등은 접수됐을 수 있다(Codex 리뷰 P2 ④)
+                not_started = code == 409 and (exc.headers or {}).get("X-MVHub-Submission") == "not-started"
+                rejected = bool(code) and 400 <= code < 500 and (code not in (408, 409, 429) or not_started)
+                item.update(state="rejected" if rejected else "uncertain",
+                            error="생성 요청이 거부되었습니다." if code and code < 500 else "접수 여부를 확인할 수 없습니다. get_plan으로 확인하세요.")
+                await to_thread_non_abandon(store.update_plan, plan_id, plan["items"], "attention")
+                return _public_plan(await asyncio.to_thread(store.get_plan, ctx.client, plan_id))
+            await to_thread_non_abandon(store.update_plan, plan_id, plan["items"], "executing")
+        await to_thread_non_abandon(store.update_plan, plan_id, plan["items"], "submitted")
+    except asyncio.CancelledError:
+        # 실행 중 취소 — 보내던 항목은 접수됐을 수 있다. '주의'로 남기고 취소를 전파한다(자동 재제출 없음)
+        for item in plan["items"]:
+            if item.get("state") == "submitting":
+                item.update(state="uncertain", error="접수 여부를 확인할 수 없습니다. get_plan으로 확인하세요.")
+        await to_thread_non_abandon(store.update_plan, plan_id, plan["items"], "attention")
+        raise
     return _public_plan(await asyncio.to_thread(store.get_plan, ctx.client, plan_id))
 
 

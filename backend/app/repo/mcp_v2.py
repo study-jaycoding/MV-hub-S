@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from uuid import uuid4
 
 from ..db import get_connection
@@ -128,7 +129,33 @@ def get_plan(client, plan_id):
                 item["queue_status"] = queued["status"]
                 item["generation_status"] = queued["generation_status"]
                 item["state"] = "uncertain" if queued["status"] == "preparing" else "submitted"
+        # 큐가 모든 항목의 접수를 확인했으면 '주의'로 남은 계획도 '제출됨'으로 보인다(표시만 — 저장값·planned 로 되돌리기 없음, Codex 리뷰 ④)
+        if result["status"] == "attention" and result["items"] and all(item.get("state") == "submitted" for item in result["items"]):
+            result["status"] = "submitted"
     return result
+
+
+_recovered_dbs: set[str] = set()
+_recover_lock = threading.Lock()
+
+
+def recover_interrupted_plans(db_key: str) -> None:
+    """이 허브 프로세스가 이 계정 DB 를 처음 볼 때 한 번 — 앞 프로세스가 실행하다 죽어 'executing' 으로 남은 계획을 '주의'로,
+    보내던('submitting') 항목은 '불명확'으로 바꾼다(접수됐을 수 있다 — 자동 재제출 없음). 남겨 두면 영원히 실행 중으로 보였다(Codex 리뷰 P2 ④).
+    매 init_db 가 아니라 프로세스당 한 번이다 — 이 프로세스의 실행은 반드시 이 뒤에 시작하므로 살아 있는 실행을 건드리지 않는다.
+    같은 DB 를 쓰는 허브가 하나라는 현행 운영 조건에 기댄다."""
+    with _recover_lock:
+        if db_key in _recovered_dbs:
+            return
+        with get_connection() as conn:
+            for row in conn.execute("SELECT id, items FROM mcp_generation_plan WHERE status='executing'").fetchall():
+                items = json.loads(row["items"])
+                for item in items:
+                    if item.get("state") == "submitting":
+                        item.update(state="uncertain", error="허브가 실행 중에 멈췄습니다. 접수 여부를 get_plan으로 확인하세요.")
+                conn.execute("UPDATE mcp_generation_plan SET items=?, status='attention' WHERE id=? AND status='executing'",
+                             (encode(items), row["id"]))
+        _recovered_dbs.add(db_key)
 
 
 def claim_plan(client, plan_id, workspace=None):

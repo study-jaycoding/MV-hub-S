@@ -282,6 +282,90 @@ def _scene_row(client, scene_id):
                      (client["owner_uid"], "", scene_id, scene_id, data, hashlib.sha256(data.encode()).hexdigest()))
 
 
+@pytest.mark.parametrize("headers,expected", [(dict(gen_requests.NOT_STARTED), "rejected"), (None, "uncertain")])
+def test_409_is_rejected_only_when_marked_not_started(local, monkeypatch, headers, expected):
+    # Codex 리뷰 P2 ④ — 409 를 모두 '불명확'으로 두면 업데이트 중·계정 바뀜처럼 아무것도 안 만든 거절도 '주의'에 고착됐다.
+    #  표식이 있는 409 만 거절, 표식 없는 409(같은 열쇠의 기존 요청 — 접수됐을 수 있다)는 그대로 불명확
+    configure(local)
+    async def refused(*args):
+        raise HTTPException(409, "refused", headers=headers)
+    monkeypatch.setattr(gen_requests, "create_gen_request", refused)
+    plan = prepare(local)
+    result = action(local, "execute_generation_plan", {"plan_id": plan["id"]}).json()
+    assert [item["state"] for item in result["items"]] == [expected]
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM gen_request").fetchone()[0] == 0
+
+
+def test_real_pre_submit_refusals_carry_the_not_started_marker(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(gen_requests, "update_in_progress", lambda: True)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(gen_requests.create_gen_request(SimpleNamespace(), SimpleNamespace()))
+    assert (caught.value.status_code, caught.value.headers) == (409, gen_requests.NOT_STARTED)
+    with pytest.raises(HTTPException) as caught:
+        gen_requests._validated_generation_workspace(api.WorkspaceContext(scope="unknown"), "a@example.test")
+    assert caught.value.headers == gen_requests.NOT_STARTED
+
+
+def test_restart_recovers_executing_without_resubmission(local, monkeypatch):
+    # 실행 중에 허브가 죽으면 계획이 영원히 'executing' 이었다 — 새 프로세스가 이 DB 를 처음 볼 때 '주의'·보내던 항목 '불명확'으로
+    configure(local)
+    plan = prepare(local)
+    with db.get_connection() as conn:
+        items = json.loads(conn.execute("SELECT items FROM mcp_generation_plan WHERE id=?", (plan["id"],)).fetchone()[0])
+        items[0]["state"] = "submitting"
+        conn.execute("UPDATE mcp_generation_plan SET items=?, status='executing' WHERE id=?", (json.dumps(items), plan["id"]))
+    monkeypatch.setattr(store, "_recovered_dbs", set())  # 새 프로세스
+    calls = []
+    async def submit(*args):
+        calls.append(1)
+        return {"id": "should-not-happen"}
+    monkeypatch.setattr(gen_requests, "create_gen_request", submit)
+    seen = action(local, "get_plan", {"plan_id": plan["id"]}).json()
+    assert (seen["status"], seen["items"][0]["state"]) == ("attention", "uncertain")
+    again = action(local, "execute_generation_plan", {"plan_id": plan["id"]}).json()
+    assert again["status"] == "attention" and calls == []  # 자동 재제출 없음
+    # 같은 프로세스 안에서는 다시 돌지 않는다 — 이 프로세스가 지금 실행 중인 계획을 '주의'로 바꾸지 않게
+    with db.get_connection() as conn:
+        conn.execute("UPDATE mcp_generation_plan SET status='executing' WHERE id=?", (plan["id"],))
+    action(local, "get_plan", {"plan_id": plan["id"]})
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT status FROM mcp_generation_plan WHERE id=?", (plan["id"],)).fetchone()[0] == "executing"
+
+
+def test_cancelled_execute_leaves_attention(local, monkeypatch):
+    # 실행 중 응답이 끊겨 작업이 취소돼도 'executing' 으로 남지 않는다 — 보내던 항목은 불명확, 계획은 주의(자동 재제출 없음)
+    from starlette.requests import Request
+    configure(local)
+    plan = prepare(local)
+    async def cancelled(*args):
+        raise asyncio.CancelledError()
+    monkeypatch.setattr(gen_requests, "create_gen_request", cancelled)
+    request = Request({"type": "http", "method": "POST", "path": "/api/mcp/v2/client/action", "headers": [], "state": {}})
+    ctx = api._capture(request, local[1]["codex"]["secret"])
+    with active_account.pinned_account_scope(ctx.pin), pytest.raises(asyncio.CancelledError):
+        asyncio.run(api._execute(ctx, plan["id"]))
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT status, items FROM mcp_generation_plan WHERE id=?", (plan["id"],)).fetchone()
+    assert (row["status"], json.loads(row["items"])[0]["state"]) == ("attention", "uncertain")
+
+
+def test_attention_plan_shows_submitted_once_the_queue_confirms_every_item(local):
+    configure(local)
+    plan = prepare(local)
+    client = store.client_for_secret(api.mcp.digest(local[1]["codex"]["secret"]))
+    with db.get_connection() as conn:
+        items = json.loads(conn.execute("SELECT items FROM mcp_generation_plan WHERE id=?", (plan["id"],)).fetchone()[0])
+        conn.execute("UPDATE mcp_generation_plan SET status='attention' WHERE id=?", (plan["id"],))
+    assert store.get_plan(client, plan["id"])["status"] == "attention"  # 큐 확인 전
+    with db.get_connection() as conn:
+        for item in items:
+            conn.execute("INSERT INTO gen_request(id, gen_id, account_email, idempotency_key, status) VALUES(?,?,?,?,?)",
+                         (str(uuid4()), str(uuid4()), client["account_email"], item["idempotency_key"], "pending"))
+    assert store.get_plan(client, plan["id"])["status"] == "submitted"
+
+
 def test_cancel_and_explicit_retry_use_new_task_id_without_stale_completion(local):
     configure(local)
     plan = prepare(local)
