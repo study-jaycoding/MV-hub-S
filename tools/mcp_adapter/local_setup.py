@@ -12,7 +12,7 @@ import shutil
 import tempfile
 import threading
 import tomllib
-from uuid import UUID, uuid4
+from uuid import UUID
 
 _LOCK = threading.RLock()
 
@@ -186,6 +186,30 @@ def update_claude(text: str, entry: dict, setup: dict) -> str:
     return json.dumps(after, ensure_ascii=False, indent=2) + "\n"
 
 
+def remove_profiles(hub_id: str, client_ids: list[str], *, local_appdata: Path | None = None) -> int:
+    """다시 등록하며 실제로 회수한 연결의 프로필 파일만 지운다(Codex 리뷰 P2 ⑤) — 폴더를 통째로 훑지 않는다
+    (수동 등록·다른 클라이언트·지금 쓰는 프로필은 그대로). 이름 형식이 아니면 건너뛴다 — 경로 밖을 가리키지 못하게."""
+    if not isinstance(hub_id, str) or not re.fullmatch(r"[a-f0-9]{32,64}", hub_id):
+        return 0
+    local = Path(local_appdata) if local_appdata is not None else Path(os.environ.get("LOCALAPPDATA", ""))
+    if local_appdata is None and not os.environ.get("LOCALAPPDATA"):
+        return 0
+    removed = 0
+    with _LOCK:
+        for client_id in client_ids:
+            try:
+                if str(UUID(client_id)) != client_id:
+                    continue
+            except (TypeError, ValueError, AttributeError):
+                continue
+            try:
+                (local / "MVHub-MCP" / "connections" / hub_id / (client_id + ".bin")).unlink()
+                removed += 1
+            except FileNotFoundError:
+                pass
+    return removed
+
+
 def configure_client(client: str, setup: dict, credential: dict, *, home: Path | None = None,
                      local_appdata: Path | None = None) -> dict:
     """Called only after app-side account/scope consent. Never returns credential contents."""
@@ -224,8 +248,7 @@ def configure_client(client: str, setup: dict, credential: dict, *, home: Path |
         except (ValueError, UnicodeError, AttributeError):
             return {"client": client, "status": "manual", "message": "기존 mvhub 설정과 충돌하거나 형식을 확인하지 못했습니다. 설정을 확인한 뒤 아래 내용을 수동 등록하세요.", "config": config}
         if previous is not None:
-            backup = path.with_name(path.name + ".mvhub-backup-" + uuid4().hex)
-            with backup.open("xb") as stream:
-                stream.write(previous)
+            # 설정 파일마다 직전 사본 한 개만(원자 교체) — 등록할 때마다 새 이름으로 쌓였다(Codex 리뷰 P2 ⑤). 예전 이름(…-<uuid>)은 지우지 않는다.
+            _atomic(path.with_name(path.name + ".mvhub-backup"), previous)
         _atomic(path, updated.encode("utf-8"), previous, compare=True)
     return {"client": client, "status": "configured", "message": "등록했습니다. 실행 중인 LLM에서 MCP를 새로고침하거나 프로그램을 다시 시작하세요."}

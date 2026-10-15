@@ -67,6 +67,9 @@ def local(tmp_path, monkeypatch):
         credentials[name] = credential
         return {"client": name, "status": "configured", "message": "ok"}
     monkeypatch.setattr(api, "_configure_local", configure)
+    removed_profiles = []
+    monkeypatch.setattr(api, "_remove_profiles", lambda hub, ids: removed_profiles.append((hub, list(ids))))  # 실제 %LOCALAPPDATA% 를 건드리지 않게
+    monkeypatch.setattr(api, "_test_removed_profiles", removed_profiles, raising=False)
     async def models():
         return [{"job_set_type": "test_model", "type": "image"}]
     async def params(model):
@@ -122,6 +125,26 @@ def test_multiclient_restart_and_independent_revocation(local):
     assert local[0].post(f"/api/mcp/v2/app/clients/{cid}/revoke", headers=APP_HEADERS).status_code == 200
     assert action(local, "read_context").status_code == 403
     assert action(local, "read_context", name="claude").status_code == 200
+
+
+def test_reregistration_removes_only_the_revoked_profiles(local):
+    # Codex 리뷰 P2 ⑤ — 다시 등록하면 앞 연결이 회수되지만 프로필 파일은 남아 쌓였다. 실제로 회수한 그 연결의 파일만 지운다
+    configure(local, ["codex", "claude"])
+    first = local[1]["codex"]["client_id"]
+    configure(local, ["codex"])
+    removed = api._test_removed_profiles
+    assert [ids for _hub, ids in removed if ids] == [[first]]  # claude 의 연결·새 codex 연결은 그대로(처음 등록은 회수한 것이 없다)
+
+
+def test_reference_reissue_reuses_handle(local):
+    configure(local)
+    client = store.client_for_secret(api.mcp.digest(local[1]["codex"]["secret"]))
+    source = {"kind": "generation", "id": "gen", "asset_id": "asset"}
+    first = store.save_reference(client, source, "v1", {"path": "/media/a.png"})
+    assert store.save_reference(client, source, "v1", {"path": "/media/a.png"}) == first  # 같은 조회 — 줄이 쌓이지 않는다
+    assert store.save_reference(client, source, "v2", {"path": "/media/a.png"}) != first  # 판이 바뀌면 새 핸들
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM mcp_reference").fetchone()[0] == 2
 
 
 @pytest.mark.parametrize("name", ["codex", "claude"])

@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from local_setup import configure_client, read_profile, update_codex, update_claude, _atomic
+from local_setup import configure_client, read_profile, remove_profiles, update_codex, update_claude, _atomic
 
 
 class SetupTests(unittest.TestCase):
@@ -69,9 +69,42 @@ class SetupTests(unittest.TestCase):
             self.assertNotIn(credential["secret"].encode(), profile.read_bytes())
             self.assertEqual(read_profile(profile), credential)
         self.assertEqual(len(list(local.rglob("*.bin"))), 3)
-        self.assertEqual(len(list(home.rglob("*.mvhub-backup-*"))), 2)
+        self.assertEqual(len(list(home.rglob("*.mvhub-backup"))), 2)
         self.assertEqual(tomllib.loads(codex.read_text())["model"], "keep")
         self.assertNotIn(self.credential["secret"], codex.read_text() + claude.read_text())
+
+    @unittest.skipUnless(os.name == "nt", "Windows DPAPI")
+    def test_config_backup_is_bounded_and_contains_previous_bytes(self):
+        # Codex 리뷰 P2 ⑤ — 등록할 때마다 새 이름의 백업이 쌓였다. 설정 파일마다 직전 사본 한 개(바로 앞 내용)만
+        home, local = self.root / "home", self.root / "local"
+        claude = home / ".claude.json"
+        claude.parent.mkdir(parents=True)
+        claude.write_text('{"theme":"first"}', encoding="utf-8")
+        previous = None
+        for _ in range(3):
+            previous = claude.read_bytes()
+            result = configure_client("claude", self.setup, {**self.credential, "client_id": str(uuid4())}, home=home, local_appdata=local)
+            self.assertEqual(result["status"], "configured")
+        backups = list(home.glob(".claude.json.mvhub-backup*"))
+        self.assertEqual([path.name for path in backups], [".claude.json.mvhub-backup"])
+        self.assertEqual(backups[0].read_bytes(), previous)
+
+    def test_remove_profiles_deletes_only_the_listed_connections(self):
+        local = self.root / "local"
+        hub = "a" * 64
+        folder = local / "MVHub-MCP" / "connections" / hub
+        folder.mkdir(parents=True)
+        revoked, active = str(uuid4()), str(uuid4())
+        for client_id in (revoked, active):
+            (folder / (client_id + ".bin")).write_bytes(b"x")
+        other_hub = local / "MVHub-MCP" / "connections" / ("b" * 64)
+        other_hub.mkdir(parents=True)
+        (other_hub / (revoked + ".bin")).write_bytes(b"x")
+        self.assertEqual(remove_profiles(hub, [revoked, "../escape", str(uuid4())], local_appdata=local), 1)
+        self.assertEqual(sorted(path.name for path in local.rglob("*.bin")), sorted([active + ".bin", revoked + ".bin"]))
+        self.assertTrue((other_hub / (revoked + ".bin")).exists())  # 다른 허브의 같은 이름은 그대로
+        self.assertEqual(remove_profiles("../x", [active], local_appdata=local), 0)
+        self.assertTrue((folder / (active + ".bin")).exists())
 
     def test_concurrent_config_edit_is_preserved(self):
         path = self.root / "config.toml"

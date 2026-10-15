@@ -222,6 +222,16 @@ def _configure_local(client, setup, credential):
     return _setup_module().configure_client(client, setup, credential)
 
 
+def _remove_profiles(hub, client_ids):
+    """다시 등록하며 회수한 연결의 프로필 파일만 지운다 — 실패해도 등록은 그대로(정리일 뿐)."""
+    if not client_ids:
+        return
+    try:
+        _setup_module().remove_profiles(hub, client_ids)
+    except Exception:  # noqa: BLE001 - 남은 파일은 연결이 이미 회수돼 쓸 수 없다
+        pass
+
+
 def _setup_error_message(exc):
     # Only fixed, known diagnostics may cross the credential/configuration boundary.
     if isinstance(exc, HTTPException) and exc.status_code == 403:
@@ -256,7 +266,7 @@ def _register_client(ctx, name, setup, workspace, allow_execution):
                 raise ValueError("configuration failed")
             _still_current(ctx)
             if result["status"] == "configured" and name in ("codex", "claude"):
-                store.revoke_replaced_clients(cid, ctx.owner, email, name)
+                _remove_profiles(ctx.hub, store.revoke_replaced_clients(cid, ctx.owner, email, name))
         except Exception as exc:
             store.revoke(cid, ctx.owner, email)
             result = {"client": name, "status": "error", "message": _setup_error_message(exc)}

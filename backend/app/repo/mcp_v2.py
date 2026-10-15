@@ -57,21 +57,37 @@ def revoke_account(email):
 
 
 def revoke_replaced_clients(client_id, owner, email, name):
+    """같은 이름의 앞 연결을 회수하고 **실제로 회수한 id** 를 돌려준다 — 그 연결의 프로필 파일만 지우게(Codex 리뷰 P2 ⑤)."""
+    where = "id<>? AND owner_uid=? AND account_email=? AND name=? AND revoked_at IS NULL"
+    params = (client_id, owner, email, name)
     with get_connection() as conn:
-        conn.execute(
-            "UPDATE mcp_client SET revoked_at=datetime('now') "
-            "WHERE id<>? AND owner_uid=? AND account_email=? AND name=? AND revoked_at IS NULL",
-            (client_id, owner, email, name),
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            ids = [row["id"] for row in conn.execute(f"SELECT id FROM mcp_client WHERE {where}", params).fetchall()]
+            conn.execute(f"UPDATE mcp_client SET revoked_at=datetime('now') WHERE {where}", params)
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    return ids
 
 
 def save_reference(client, source, version, reference):
-    reference_id = str(uuid4())
+    """같은 연결·자료·판의 핸들은 그대로 돌려준다 — 같은 조회마다 새 줄이 쌓였다(Codex 리뷰 P2 ⑤). 계획이 쓰는 핸들은 지우지 않는다."""
+    values = (client["id"], encode(source), version, encode(reference))
     with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO mcp_reference(id,client_id,source,version,reference) VALUES(?,?,?,?,?)",
-            (reference_id, client["id"], encode(source), version, encode(reference)),
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute("SELECT id FROM mcp_reference WHERE client_id=? AND source=? AND version=? AND reference=?",
+                               values).fetchone()
+            reference_id = row["id"] if row else str(uuid4())
+            if not row:
+                conn.execute("INSERT INTO mcp_reference(id,client_id,source,version,reference) VALUES(?,?,?,?,?)",
+                             (reference_id, *values))
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     return reference_id
 
 
