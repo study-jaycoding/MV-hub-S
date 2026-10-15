@@ -32,11 +32,13 @@ it("명시적인 최초 버튼만 두 클라이언트를 허용하고 등록과 
   expect(io.http.mock.calls[0][1].headers["X-MVHub-Tab"]).toBeTruthy();
   expect(host.textContent).toContain("LLM 응답 미확인");
   expect(host.textContent).toContain("claude · 등록 실패");
+  expect(host.querySelector(".mcp-reg-status strong")?.textContent).toBe("저장된 연결을 확인했습니다."); // 첫 문장만 굵게(모의 그림)
   io.http.mockResolvedValueOnce({}).mockResolvedValueOnce({ clients: [{ ...client, revoked_at: "2026-10-15" }] });
   await click("권한 해제");
   expect(io.http).toHaveBeenCalledWith("/api/mcp/v2/app/clients/c1/revoke", expect.objectContaining({ method: "POST" }));
   expect(host.textContent).toContain("권한 해제됨");
   expect(host.textContent).toContain("자료 조회와 생성 실행 권한을 해제했습니다.");
+  expect(host.querySelector(".mcp-reg-status strong")?.textContent).toBe("자료 조회와 생성 실행 권한을 해제했습니다."); // 한 문장이면 통째로
 });
 
 it("계정 전환 뒤 늦게 도착한 등록 결과를 표시하거나 권한을 자동 해제하지 않는다", async () => {

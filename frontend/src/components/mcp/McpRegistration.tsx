@@ -4,6 +4,12 @@ import { getAuthToken, HttpError, jsonBody, jsonFetch } from "../../lib/http";
 import type { McpCanvasTask } from "../../lib/mcpCanvasTasks";
 import { SettingsDescription } from "../settings/SettingsDescription";
 
+// 상태 줄은 첫 문장만 굵게 — 결과, 그 뒤는 덧붙인 설명(Jay 2026-10-16 모의 그림)
+function leadBold(text: string) {
+  const cut = text.indexOf(". ") + 1;
+  return cut > 0 ? <><strong>{text.slice(0, cut)}</strong>{text.slice(cut)}</> : <strong>{text}</strong>;
+}
+
 interface Client {
   id: string; name: string; scope?: "account" | "workspace"; workspace: WorkspaceContext | { scope: "account" } | null; can_execute: boolean;
   last_seen_at: string | null; revoked_at: string | null;
@@ -103,12 +109,14 @@ export function McpRegistration({ authReady, authKey, workspace }: { authReady: 
       <button disabled={disabled} onClick={() => void request("list")}>저장된 연결 확인</button>
     </div>
     <SettingsDescription summary="브라우저 창을 닫아도 생성됩니다. 이 PC의 MV Hub 서버와 작업자는 켜져 있어야 합니다.">
-      <p>사용할 워크스페이스·폴더·장면은 LLM에 말해 주세요. 앱에서 고른 공간과 관계없이 요청한 곳에 생성합니다.</p>
-      <p>생성물과 기록은 MV Hub에 저장하고, 결과 미리보기는 지원하는 LLM 대화창에서도 봅니다. 캔버스에는 요청한 경우에만 추가합니다.</p>
-      <p>처음 등록한 뒤에는 LLM 프로그램의 MCP 다시 불러오기·재시작이 필요할 수 있습니다. Claude Desktop 등 다른 로컬 앱은 ‘다른 MCP 프로그램 설정’을 쓰세요.</p>
-      <p>이전의 공간 고정 연결은 위 버튼으로 다시 등록하면 계정 기준 연결로 바뀝니다.</p>
+      <ul className="mcp-reg-notes">
+        <li>사용할 워크스페이스·폴더·장면은 LLM에 말해 주세요. 앱에서 고른 공간과 관계없이 요청한 곳에 생성합니다.</li>
+        <li>생성물과 기록은 MV Hub에 저장하고, 결과 미리보기는 지원하는 LLM 대화창에서도 봅니다. 캔버스에는 요청한 경우에만 추가합니다.</li>
+        <li>처음 등록한 뒤에는 LLM 프로그램의 MCP 다시 불러오기·재시작이 필요할 수 있습니다. Claude Desktop 등 다른 로컬 앱은 ‘다른 MCP 프로그램 설정’을 쓰세요.</li>
+        <li>이전의 공간 고정 연결은 위 버튼으로 다시 등록하면 계정 기준 연결로 바뀝니다.</li>
+      </ul>
     </SettingsDescription>
-    {note && <p className="mcp-reg-status" role="status">{note}</p>}
+    {note && <p className="mcp-reg-status" role="status">{leadBold(note)}</p>}
     {results.map((result, index) => {
       const config = result.config ? (typeof result.config === "string" ? result.config : JSON.stringify(result.config, null, 2)) : "";
       return <div className="mcp-result" data-status={result.status} key={`${result.client}:${index}`}>
