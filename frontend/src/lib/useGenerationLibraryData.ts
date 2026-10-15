@@ -8,6 +8,7 @@ import { isStructurallyEqual, reconcileArrayState, reconcileValueState } from ".
 import { hasWorkspaceFilter, matchesWorkspaceFilter, workspaceFilterOf } from "./libraryWorkspaceScope";
 import { t } from "./i18n";
 import { timedLibraryRequest } from "./libraryRequestTimeout";
+import { API_PAUSED_MESSAGE, ApiPausedError } from "./http";
 import type { Facets, Filters, GenQuery, GenStats, Generation, Project } from "../types";
 
 interface UseGenerationLibraryDataArgs {
@@ -488,7 +489,10 @@ export function useGenerationLibraryData({
         // 이 목록 요청을 시작하기 전에 성공한 내 변경 id들은 이제 화면 데이터에 포함됐다.
         finishSync(true);
       } catch (e) {
-        if (seq === reloadSeqRef.current) {
+        if (e instanceof ApiPausedError) {
+          // 다른 탭 로그아웃으로 멈췄다(4B) — 실패가 아니다. 띠가 이미 알리니 목록·실패 표시는 그대로 두고, 사람이 누른 다시 받기만 멈춤을 알린다(64회차 실측)
+          if (!silent && seq === reloadSeqRef.current) flash(API_PAUSED_MESSAGE);
+        } else if (seq === reloadSeqRef.current) {
           // 조용한 다시 받기(자동 조회 — 3초·15초마다)는 이미 실패 표시가 떠 있으면 다시 알리지 않는다: 매번 알리면 다른 조작의 안내를
           //  덮었다(60회차). 사람이 직접 한 다시 받기는 전처럼 알린다. 성공하면 표시가 걷혀 다음 실패는 또 알린다.
           if (!silent || !loadErrorRef.current) flash("로드 실패: " + String(e));

@@ -243,6 +243,21 @@ it("이미 줄을 넘긴 옛 실행의 종료는 그 뒤에 출발한 실행의 
   expect(data.loading).toBe(false);
 });
 
+// 64회차 실측 — 다른 탭 로그아웃으로 멈춘 동안(4B)의 목록 조회는 실패가 아니다: 자동 조회가 "로드 실패: ApiPausedError…"를 띄우고 실패 표시를
+//  켰다. 띠가 이미 알리니 자동 조회는 조용히, 사람이 누른 다시 받기는 멈춤만 알리고, 목록·실패 표시는 그대로 둔다.
+it("멈춘 동안의 목록 조회 — '로드 실패'·실패 표시 없이 목록을 그대로 둔다(누른 다시 받기만 멈춤을 알린다)", async () => {
+  const { ApiPausedError, API_PAUSED_MESSAGE } = await import("../src/lib/http");
+  await mount();
+  expect(ids()).toEqual(["m1", "m2"]);
+  vi.mocked(api.listGenerations).mockRejectedValueOnce(new ApiPausedError(API_PAUSED_MESSAGE));
+  await act(async () => { await data.reload(true, true); }); // 자동 조회(15초·창 복귀)
+  expect([flash.mock.calls.length, data.loadError, ids()]).toEqual([0, null, ["m1", "m2"]]);
+  vi.mocked(api.listGenerations).mockRejectedValueOnce(new ApiPausedError(API_PAUSED_MESSAGE));
+  await act(async () => { await data.reload(); });
+  expect(flash).toHaveBeenCalledExactlyOnceWith(API_PAUSED_MESSAGE);
+  expect([data.loadError, ids()]).toEqual([null, ["m1", "m2"]]);
+});
+
 it("목록이 실패해도 줄은 넘어가고 메타는 처리된다 — 살아 있는 실행의 실패만 화면에 남는다", async () => {
   await mount();
   const meta = hold(api.projects);

@@ -297,6 +297,32 @@ it("생성물 코멘트 — 다시 읽기에 실패해도 보이던 코멘트는
   expect(shown()).toEqual(["b1"]);
 });
 
+// 64회차 실측 — 다른 탭 로그아웃으로 멈춘 동안(4B)의 전송은 '다시 시도하세요'가 아니다(다시 해도 안 된다). 멈춤을 알리고 글은 남긴다.
+it("코멘트 — 멈춘 동안의 전송은 멈춤을 알리고 글을 남긴다(생성물·에셋)", async () => {
+  const { ApiPausedError, API_PAUSED_MESSAGE } = await import("../src/lib/http");
+  mocks.genCommentsCached.mockReturnValue(null);
+  mocks.genComments.mockResolvedValue([]);
+  mocks.addGenComment.mockRejectedValueOnce(new ApiPausedError(API_PAUSED_MESSAGE));
+  await act(async () => { root.render(<GenCommentPanel genId="g1" label="g1" myId="me" syncTick={0} onClose={() => {}} onChanged={() => {}} />); });
+  const input = field("c")!;
+  submit(input, "글");
+  await settle();
+  expect([input.value, flashes]).toEqual(["글", [API_PAUSED_MESSAGE]]);
+
+  let actions!: ReturnType<typeof useAssetCommentActions>;
+  function Host() {
+    const [path, setPath] = useState<string | null>("shots/cut01.png");
+    const [, setComments] = useState<AssetComment[]>([]);
+    actions = useAssetCommentActions({ project: "P", commentPath: path, setCommentPath: setPath, setComments, reconcile: async () => {} });
+    return null;
+  }
+  act(() => root.render(<Host />));
+  mocks.addAssetComment.mockRejectedValueOnce(new ApiPausedError(API_PAUSED_MESSAGE));
+  let saved = true;
+  await act(async () => { saved = await actions.sendComment("글", null, false); });
+  expect([saved, flashes]).toEqual([false, [API_PAUSED_MESSAGE, API_PAUSED_MESSAGE]]);
+});
+
 it("에셋 코멘트 — 전송·수정은 '저장됐는가'를 돌려준다(다시 읽기 실패는 저장 실패가 아니다)", async () => {
   const alerts = vi.fn();
   vi.stubGlobal("alert", alerts);

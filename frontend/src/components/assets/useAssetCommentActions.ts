@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { api } from "../../api";
 import { flashMsg } from "../../lib/flash";
+import { API_PAUSED_MESSAGE, ApiPausedError } from "../../lib/http";
 import type { AssetComment } from "../../types";
 
 interface Params {
@@ -77,8 +78,9 @@ export function useAssetCommentActions({
         void refreshComments().then(reconcile).catch(() => {});
         return true;
       },
-      () => {
-        flashMsg("코멘트 전송 실패 — 다시 시도하세요");
+      (error) => {
+        // 멈춤(다른 탭 로그아웃 — 4B)은 다시 해도 안 된다 — 멈춤을 알린다(64회차 실측). 글은 칸에 남는다.
+        flashMsg(error instanceof ApiPausedError ? API_PAUSED_MESSAGE : "코멘트 전송 실패 — 다시 시도하세요");
         return false;
       },
     );
