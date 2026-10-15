@@ -1137,6 +1137,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `test_workroom.bat`, `tools/workroom.py` | 기능·통합 시험실 전용 실행, 포트 충돌 거부·브라우저/자식 프로세스 분리 | → `run_agent_session.py`, `tools/workroom_data.py`, `tools/workroom_backend.py`; [운영](WORKROOMS.md) |
 | `tools/workroom_data.py` | 최초 DB 사본·세션 비밀 제거·전용 환경·실제 LLM 설정 해시 | → `tools/browser_measure/servers.py`, `services/db_scrub.py` |
 | `tools/workroom_backend.py` | app import 전 개발 사고 방지: 외부 쓰기/연결/프로세스 차단·실제 생성 입구 제한 | → 기존 `serve.py`; OS 샌드박스 아님 |
+| `tools/workroom_materials.py` | 중지한 시험실에 미디어·캐시와 Render 폴더 구조를 추가 복사, 기존 파일·개인 연결 보존 | → `tools/workroom.py`의 runtime 잠금; `backend/tests/test_workroom_materials.py` |
 | `test_dev_server.bat`(65줄) | 격리DB(`data_test`) 로 빌드된 프론트+단일서버 최종시험(8011) | → `MV_server.bat` |
 | `test_pull-db.bat`(61줄) | 서버가 발행한 스냅샷을 1회용 코드로 내려받아 `data_test` 채움 | → `tools/refresh_pm_test_data.py` |
 | `test_push-db.bat`(112줄) | 라이브 DB 를 읽기전용 원본으로 스냅샷 발행 서버(8011) 기동 | → `tools/refresh_pm_test_data.py` |

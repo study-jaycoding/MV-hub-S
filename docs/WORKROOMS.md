@@ -167,3 +167,59 @@ shutil 복사/이동 검사를 추가해 통과시켰다. 모델 목록은 cold 
 
 최종 정리 검사: 두 트리 모두 graft wiring graph in sync, 코드 맵 누락 0, 생성 목록 최신,
 문서 린트·diff 공백 검사·AGENTS/CLAUDE 본문 일치를 확인했다. 현황판은 20,472 bytes·6개 항목이다.
+
+## 자료 표시 보완 (2026-10-15)
+
+기존 구축 완료는 실행·격리 범위였다. 실제 dev 자료를 보는 시험실로 안내한 것은 불충분했다.
+원래 snapshot 함수가 실제 프로젝트 폴더 연결을 제거하고 미디어를 복사하지 않아, 폴더가 사라지고
+카드가 원본 없음으로 표시됐다. 이제 별도 명시 도구로 사본 자료를 추가한다. 자동 시작 때 동기화하지 않는다.
+
+```powershell
+# 소스 폴더에서, 먼저 계획만 확인한다. source-data는 개발 자료 폴더다.
+& '<venv>\Scripts\python.exe' tools\workroom_materials.py --source-data '<dev>\backend\data_test' --runtime '<시험실 runtime>'
+# 시험실 창을 닫은 후 같은 명령에 --apply를 붙여 적용한다.
+```
+
+기존 DB·미디어를 덮거나 지우지 않는다. 기존 파일 내용이 다르면 보존하고 수량을 보고한다.
+미디어의 숨김 원본 캐시(.thumb-sources)도 실제 바이트로 복사하며 원본 hardlink/junction을 만들지 않는다.
+media 바로 아래 .thumbs는 절대 경로 기반의 재생성 캐시라 제외한다. 중첩·assets의 동명 폴더는 보존한다. Render는
+실제 디렉터리 구조만 복제하므로 NAS 파일 자체와 폴더 파일 수·최종본 저장 상태까지 복제하는 것은 아니다.
+프로젝트 ID·이름을 확인하고 사본 content_hub.db의 개인 project_folder_link만 추가하거나 빈 root만 채운다.
+기존 selected_path·공유 root·시험실 작업은 유지한다. 적용 직전 사본 DB 백업을 runtime에 남긴다.
+
+로컬 조사: media 32,307개·2,231,544,097 bytes, assets 5개·17,427,669 bytes.
+뻘뻘뻘 Render 396개 폴더(e001/c0010 포함), RnD 10개 폴더를 확인했다. 산해학원 원본 경로는 접근 불가다.
+이미지755개와 영상467개의 썸네일 자료는 로컬에 있지만, 영상131개는 썸네일이 없고 DB의
+로컬 영상 원본 경로139개는 dev에도 파일이 없다. 모든 원본 확대·재생을 보장하지 않는다.
+
+실제 Claude 설계 합의: Fable5.1, 세션051d428a-60eb-4d22-9cf3-ece9b34ac43d.
+저장 DB는 content_hub.db라는 실제 소스 근거로 초기 manage_hub 표기를 정정하고 합의했다.
+보완 검증: 회귀 28개 통과, 통합 트리의 신규 회귀 6개 통과. 독립 Claude 리뷰에서 필수 지적 없음.
+코드 커밋은 실행기 브랜치 2a19e389, 통합 브랜치 d4131408이다.
+
+실제 적용 대상 1,380개(재생성 캐시 제외), 신규 1,336개·기존 44개 해시 일치·충돌 0개.
+뻘뻘뻘·RnD 개인 폴더 연결 2개를 추가했다. 원본 DB 해시·전체 테이블 내용은 동일했고,
+사본에서 바뀐 테이블은 project_folder_link 하나뿐이었다(앱 재시작 전에 비교).
+최초 복사 중 발견한 재사용 불가 .thumbs는 Claude와 계약을 수정해 후속 복사에서 제외했다.
+앞서 복사된 캐시와 남은 임시 파일은 삭제하지 않았다.
+
+독립 UI 확인 8/8 통과: 시험 계정의 카드 4개 실제 표시, 뻘뻘뻘/e001/c0010 표시,
+폴더 API 397개 노드(루트 포함), 대표 이미지3·영상 포스터2의 HTTP200·이미지 해독 성공.
+사본에서 이미지755·영상포스터467개의 썸네일 파일 존재를 확인했다. 전체 HTTP 전수검사는 아니다.
+PNG·MP4·WebP 표본3개의 SHA일치·다른 파일·링크수1 확인, 원본 DB 해시 보존, 유료/등록/외부요청0,
+JS예외0. 로그인 전401과 시험 모드503은 관측됐다. 검증 브라우저만 종료했고 전용 사용자 창은 유지했다.
+
+증거: runtime의 materials-apply-result-v2.json, materials-preservation-result.json,
+%TEMP%/mvhub-material-ui-independent/{result.json,target-coverage.json,01-grid.png,02-folders.png}.
+Claude 독립 세션97a8b09c-43c8-4035-80ba-870514208d8c, 실제Fable5.1. 최초180초 호출은
+최종판정 미회수였고 추가56초에서 실제 판정을 회수했다. 재생성 캐시 제외는 추가30초 계약 검토를 받았다.
+
+Ponytail 최소 변경 원칙과 graft callers prepare_runtime·blast·build/check를 적용했다.
+이 보완은 프로젝트별 사본 준비 절차이므로 볼트에는 별도 사본을 기록하지 않았다.
+
+최종 공동 마감: 실제 Claude Fable5.1이 정확한 cache 제외 delta와 집계 결과3개를 읽고
+자료 표시 복구 범위에 동의했다(필수 미해결 없음, evidence-final.json, 27.43초).
+처음 증거읽기는 권한경계로 거부돼 통과로 처리하지 않았고, 허용된 리뷰 TEMP에 집계 JSON만
+바이트 복사해 원본/사본 SHA3개 일치를 확인한 뒤 판정을 회수했다.
+근거 폴더: %TEMP%/mvhub-material-review-ccac0e97a5754b82b19bcadd3e210a52.
+진행률 100%는 이 자료 표시 보완 범위이며 원본 누락·원격 원본 재생·실제 유료생성의 해결을 뜻하지 않는다.
