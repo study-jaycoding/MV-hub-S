@@ -10,8 +10,31 @@ owner: Codex · reviewer: Claude · status: 검증 중 · updated: 2026-10-15
 이번 변경의 범위는 **로컬 코드 구현·비유료 격리 검증**이다. 실제 사용자 클라이언트 등록·유료 생성·배포는 별도다.
 
 통합 시험실에서 실행하는 경우 [WORKROOMS](WORKROOMS.md)의 제한이 우선한다. 아래 완료 기록은
-원래 MCP 작업실의 검증 이력이며 최신 dev와 합친 대상의 검증 결과는 WORKROOMS에 따로 기록한다.
+원래 MCP 작업실의 검증 이력이며, dev와 합친 대상의 검증 결과는 바로 아래 'dev 병합과 독립 리뷰'에 적는다.
 시험실 실행기에서는 실제 생성·CLI 모델 조회·전역 LLM 등록을 검증하지 않는다.
+
+## dev 병합과 독립 리뷰 (2026-10-16)
+
+owner: Claude(통합) · reviewer: Claude 별도 세션(읽기만 — 구현은 Codex) · status: 승인(dev 병합) / 배포 전 P1 1 미해결 · updated: 2026-10-16
+
+- 대상: `codex/mvhub-mcp-fixes` `dfcb7391`(어댑터 2026.10.15.4)을 dev `e6a2d36a` 위에 합친 `int/mcp-v4`(66파일 +10,966/-110).
+  충돌은 `docs/WORKROOMS.md` 하나 → dev 판(그 문서 스스로 "통합 시험실은 자기 판을 유지"). Jay 2026-10-15 "mcp .4 버전으로 dev 에 넣어서 검토 진행".
+- 검증(합친 트리): 프런트 4,024 · 어댑터 시험 37(test_server 9·test_local_setup 7·test_persistent 21) · 빌드·경계 검사 · inventory 재생성·린트 ·
+  백엔드 전체 5,515 통과 + **`test_comment_byid_account_pin.py` 18건 실패** → 원인은 MCP가 `_proxy.token`·`base_url`을 '고정 연결' 래퍼로
+  감싼 것(요청 동안 잡아 둔 상류 연결을 쓰고, 고정이 없으면 공유 연결로 되돌아감)과 dev 시험의 동일성(`is`) 지킴줄의 충돌. 동작은 같아
+  시험 지킴줄을 "고정 없음 + 래퍼의 원천이 공유 연결 함수"로 바꿈(제품 코드 무변경) → 그 파일과 `_proxy.token` 관련 시험 244 통과.
+  Codex 통합 검증은 백엔드 169건(부분)이라 이 파일을 거치지 않았다. Claude 쪽 .4 실측: 어댑터 재시작 뒤 버전 `.4`·도구 14개, 완료 결과 카드 수신.
+- **P1(배포 전 필수)** `release/make_release.ps1` 번들 pip가 해시·`--only-binary`·`--no-index` 없이 인터넷에서 받는다 — 오프라인·pip.ini 변경·소스
+  빌드면 릴리스 전체가 멈추거나 다른 패키지가 든다(fail-closed). 잠금 해시 + `--require-hashes --only-binary=:all:` 또는 검증된 휠 폴더 `--no-index --find-links`.
+- **P2(원인 작업실 Codex 몫)**: ① `/api/health`가 `hub_id()`로 DB를 읽어 sqlite 오류면 500 ② 공유 서버 불통을 403 '권한 없음'으로 보여 재등록 안내
+  ③ `wait_results`가 항목·2초마다 공간 확인(`credit-plan/my-models`)을 서버에 물음(8개면 초당 ~8회, 정적 계산) ④ 생성 API 409도 `uncertain`→`attention` 고착 ·
+  실행 중 허브가 죽으면 `executing` 영구 ⑤ `mcp_reference`·계획·배치·프로필 .bin·`.claude.json.mvhub-backup-*`(≤4MB) 정리 없음 ⑥ 씬이 지워져도 캔버스
+  추가 `pending` 영구 재시도 ⑦ AUTH off 허브는 루프백 헤더만으로 등록 가능(새 구멍 아님 — "앱에서 동의 뒤 등록"은 이 모드에선 헤더 수준이라고 적을 것)
+  ⑧ 문서 어긋남(이 병합에서 고침) ⑨ `logout`의 `revoke_account`는 AUTH off 허브에선 공유 서버 0행 UPDATE — 해제가 아니라 차단(같은 계정 재로그인이면 되살아남).
+- 리뷰어가 확인한 것: 새 표는 `init_db`의 `executescript`로 기존 DB에 덧붙기만 함(옛 앱은 무시·되돌려도 안 깨짐) · 중복 실행은 `claim_plan` 조건부 UPDATE로 막힘 ·
+  `_proxy` 내부 요청은 헤더를 비워 MCP 비밀값이 서버로 안 넘어감 · dev 70회차 변경과 겹쳐 지워진 것 없음 · 격리 실행기는 opt-in·포트 점유 시 멈춤·실사용 데이터 못 건드림.
+- 못 본 것: 시험 본문 일부·`server.py` 도구 정의부·`mcpContext.ts`·`mcp_models.py`·실제 ZIP 제작·설치, Python 3.14 휠 존재. 대기 부하는 코드 계산값.
+- 남은 것: 통합 시험실에 dev 반영은 Codex 미커밋 13파일(지침·WORKROOMS)과 겹쳐 보류(가상 병합 충돌 없음) · P1·P2는 Codex 작업실에서 묶어 고친 뒤 재검토 1회.
 
 ## 안내 문구·진행 카드·미리보기 개선 (2026-10-15)
 

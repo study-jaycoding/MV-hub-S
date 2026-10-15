@@ -58,8 +58,9 @@ updated: 2026-10-15
 이 표는 배치 정보이며 현재 실행 중이라는 뜻은 아니다. 새 작업실의 포트는 사용 여부를 확인해
 따로 정한다. 사용 중인 포트를 비우기 위해 기존 프로세스를 종료하지 않는다.
 
-이번 dev 변경은 지침·문서만 반영한다. `test_workroom.bat`와 `tools/workroom*.py`는 아직
-별도 구현·통합 브랜치에 있으며, dev에서 새로 분기했다고 실행기도 포함되는 것은 아니다.
+`test_workroom.bat`와 `tools/workroom*.py`(격리 실행기)는 2026-10-16 MCP 병합(`int/mcp-v4`)으로 dev에
+들어왔다. 켜야만 돌고(opt-in) 포트가 쓰이고 있으면 기존 프로그램을 끄지 않고 멈춘다(독립 리뷰 확인).
+실행기 설정·자료 준비 명령·실측 기록은 dev 판이 아니라 **통합 작업 폴더의** `docs\WORKROOMS.md`에 있다(아래).
 실행기가 필요한 새 작업실은 검증된 실행기 변경의 적용 범위와 의존성을 먼저 확인한다.
 
 현재 통합 작업 폴더는 `C:\Users\FX-PC06\.codex\worktrees\mvhub-integration\MV-hub-S-dev`다.
