@@ -2,11 +2,18 @@
 import { useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { DRAG_TYPES } from "../../lib/dragTypes";
 import { useDragEndReset } from "../../lib/useDragEndReset";
+import { useT } from "../../lib/i18n";
 import type { FolderReviewCounts } from "../../types";
 import { FolderReviewCount } from "./FolderReviewCount";
 
 // 폴더 줄이 받는 끌기 — 생성물 카드(여럿·하나). 놓는 쪽(onDropFolder)이 읽는 것과 같다.
 const GENERATION_DRAG_TYPES: string[] = [DRAG_TYPES.generationList, DRAG_TYPES.generation];
+
+/** 사이드바 줄의 '보는 중'·'생성' 표 — 보는 자리와 생성 위치가 갈렸을 때만 붙는다(판정은 ProjectSection, Jay 2026-10-15 8A). */
+export function SideMark({ kind }: { kind: "see" | "gen" }) {
+  const t = useT();
+  return <span className={"side-mark " + kind}>{t(kind === "see" ? "보는 중" : "생성")}</span>;
+}
 
 export interface FolderTreeItem {
   name: string;
@@ -23,6 +30,8 @@ export function FolderTreeView({
   nodes,
   selectedPath = "",
   viewedPath,
+  seePath,
+  markSelected = false,
   expanded,
   onToggle,
   onSelect,
@@ -37,6 +46,8 @@ export function FolderTreeView({
   nodes: FolderTreeItem[];
   selectedPath?: string;
   viewedPath?: string; // 외부 확인 위치 — 생성 목적지(selectedPath)와 독립
+  seePath?: string; // 목록이 보는 폴더 — 생성 위치와 갈렸을 때만 온다('보는 중')
+  markSelected?: boolean; // selectedPath 줄에 '생성' 표
   expanded?: Set<string>;
   onToggle?: (path: string) => void;
   onSelect: (path: string) => void;
@@ -63,6 +74,8 @@ export function FolderTreeView({
           depth={0}
           selectedPath={selectedPath}
           viewedPath={viewedPath}
+          seePath={seePath}
+          markSelected={markSelected}
           expanded={expanded}
           onToggle={onToggle}
           onSelect={onSelect}
@@ -82,6 +95,8 @@ function FolderTreeRow({
   depth,
   selectedPath,
   viewedPath,
+  seePath,
+  markSelected,
   expanded,
   onToggle,
   onSelect,
@@ -95,6 +110,8 @@ function FolderTreeRow({
   depth: number;
   selectedPath: string;
   viewedPath?: string;
+  seePath?: string;
+  markSelected?: boolean;
   expanded?: Set<string>;
   onToggle?: (path: string) => void;
   onSelect: (path: string) => void;
@@ -110,6 +127,7 @@ function FolderTreeRow({
   const controlled = !!expanded && !!onToggle;
   const open = !hasChildren || (controlled ? expanded.has(node.path) : true);
   const selected = selectedPath === node.path;
+  const seeing = seePath === node.path;
   const disabled = isDisabled ? isDisabled(node.path) : false;
   const count = node.count || 0;
   // 배지에는 생성물 수만 둔다(좁은 사이드바). 폴더의 실제 파일 수는 호버 설명에 덧붙여,
@@ -151,6 +169,7 @@ function FolderTreeRow({
           (depth === 0 ? " root" : "") +
           (selected ? " selected" : "") +
           (viewedPath === node.path ? " viewed-resolve" : "") +
+          (seeing ? " see-here" : "") +
           (disabled ? " disabled" : "") +
           (node.virtual ? " virtual" : "") +
           (dropOver ? " drop-over" : "")
@@ -235,6 +254,8 @@ function FolderTreeRow({
         </span>
         <span className="folder-tree-icon" />
         <span className="folder-tree-name">{node.name}</span>
+        {seeing && <SideMark kind="see" />}
+        {selected && markSelected && <SideMark kind="gen" />}
         {(node.newCount || 0) > 0 && (
           <span className="folder-tree-newcount" title="마지막 방문 이후 새로 공유됨">
             +{node.newCount}
@@ -256,6 +277,8 @@ function FolderTreeRow({
             depth={depth + 1}
             selectedPath={selectedPath}
             viewedPath={viewedPath}
+            seePath={seePath}
+            markSelected={markSelected}
             expanded={expanded}
             onToggle={onToggle}
             onSelect={onSelect}

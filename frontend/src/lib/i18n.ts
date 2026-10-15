@@ -491,6 +491,8 @@ const EN: Record<string, string> = {
   "지운 것만 보기": "Trash only",
   "미분류": "Unsorted",
   "없음": "None",
+  "보는 중": "Viewing", // 보는 자리 ≠ 생성 위치일 때의 사이드바 표
+  "생성": "Gen here",
   // 라이브러리 툴바
   "필터 사이드바 닫기": "Hide filter sidebar",
   "필터 사이드바 열기": "Show filter sidebar",

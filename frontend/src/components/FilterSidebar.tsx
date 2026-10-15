@@ -107,6 +107,7 @@ export function FilterSidebar({
           countContextKey={JSON.stringify([creatorContextKey, creatorWorkspaceFilter?.workspace_ids,
             creatorWorkspaceFilter?.workspace_scope])}
           deletedOnly={!!filters.deleted_only}
+          viewPath={filters.folder_path}
           armedFolder={armedFolder}
           viewedFolder={viewedFolder}
           // 프로젝트/라이브러리/미분류 선택 시 휴지통 보기는 해제(메인으로 복귀)

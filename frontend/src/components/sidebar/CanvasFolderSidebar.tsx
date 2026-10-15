@@ -42,6 +42,7 @@ export function CanvasFolderSidebar({
           activeId={filters.project_id}
           tab={filters.tab === "team" ? "team" : "my"}
           deletedOnly={!!filters.deleted_only}
+          viewPath={filters.folder_path}
           armedFolder={armedFolder}
           onFilter={(pid) =>
             onChange({

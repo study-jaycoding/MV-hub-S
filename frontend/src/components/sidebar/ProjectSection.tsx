@@ -59,7 +59,7 @@ import {
   type ProjectFolderEntry,
 } from "../../lib/projectFolderTree";
 import type { FolderReviewCounts, Project, ProjectFolderState } from "../../types";
-import { FolderTreeView, type FolderTreeItem } from "../common/FolderTreeView";
+import { FolderTreeView, SideMark, type FolderTreeItem } from "../common/FolderTreeView";
 
 function SidebarFolderTree({
   state,
@@ -69,6 +69,8 @@ function SidebarFolderTree({
   reviewCounts,
   selectedPath,
   viewedPath,
+  seePath,
+  markSelected,
   expanded,
   onToggle,
   onSelect,
@@ -87,6 +89,8 @@ function SidebarFolderTree({
   // — 무장이 풀리면(기본 라이브러리로 감) 하이라이트도 사라져 '어디로 생성되는지'와 정확히 일치.
   selectedPath?: string;
   viewedPath?: string;
+  seePath?: string;
+  markSelected?: boolean;
   expanded: Set<string>;
   onToggle: (path: string) => void;
   onSelect: (path: string) => void;
@@ -131,6 +135,8 @@ function SidebarFolderTree({
         nodes={roots}
         selectedPath={selectedPath || ""}
         viewedPath={viewedPath}
+        seePath={seePath}
+        markSelected={markSelected}
         expanded={expanded}
         onToggle={onToggle}
         onSelect={onSelect}
@@ -159,6 +165,7 @@ export function ProjectSection({
   countContextKey = "",
   countQueryReady = true,
   deletedOnly,
+  viewPath,
   armedFolder,
   viewedFolder,
   onFilter,
@@ -179,6 +186,7 @@ export function ProjectSection({
   countContextKey?: string; // 계정/서버/공간 문맥이 바뀌면 이전 배지를 즉시 숨긴다.
   countQueryReady?: boolean;
   deletedOnly: boolean;
+  viewPath?: string; // 목록이 보는 폴더(filters.folder_path) — activeId 와 합쳐 '보는 자리'
   // 실제 생성 목적지(무장 폴더). 폴더 트리의 빨간 하이라이트를 이것에 연동 — 서버 selected_path 아님.
   armedFolder?: { projectId: string; path: string } | null;
   viewedFolder?: { projectId: string; projectName?: string; path: string; nonce: number } | null;
@@ -196,6 +204,12 @@ export function ProjectSection({
   onFolderAction?: (kind: FolderMenuKind, projectId: string, path: string, name: string) => void | Promise<void>;
 }) {
   const tr = useT();
+  // 보는 자리(목록 필터)와 생성 위치(분홍)가 갈렸나(Jay 2026-10-15 8A) — 앱을 새로 켜면 둘이 다를 수 있다. 갈렸을 때만 보는 줄에 라임 테두리+'보는 중',
+  //  분홍 줄에 '생성'. 같으면 지금처럼 아무 표시 없다. 생성 위치 = 무장 폴더, 없으면 분홍인 보는 프로젝트 줄(아래 sel-target 과 같은 규칙).
+  //  생성 위치는 고치지 않는다(켤 때 맞추기 = B안, 고르지 않음). 휴지통 보기는 생성 목적지가 아니다.
+  const seeFolder = activeId && activeId !== "none" ? viewPath || undefined : undefined;
+  const split = !deletedOnly &&
+    (armedFolder ? armedFolder.projectId !== activeId || armedFolder.path !== seeFolder : !!seeFolder);
   const disabledFolders = useDisabledFolders(); // 폴더 단위 비활성(생략) — d 로 토글, 회색 표시
   // 폴더 우클릭 메뉴 — body 포털·고정 위치(사이드바 overflow 에 잘리지 않게). 행 밖에 그려 드래그·클릭과 분리.
   //  닫기: Esc(캡처·소비 — 폴더 행이 keydown 전파를 막아 기본 훅엔 안 닿는다), 바깥 mousedown, 드래그 시작, 탭 전환.
@@ -591,16 +605,18 @@ export function ProjectSection({
         <div className="proj-list">
           <button
             className={
-              "proj-row" + (!activeId && !deletedOnly ? " on sel-target" : "")
+              "proj-row" + (!activeId && !deletedOnly ? " on sel-target" : "") + (split && !activeId ? " see-here" : "")
             }
             onClick={() => onFilter(undefined)}
           >
             <span className="proj-name">{tr("라이브러리")}</span>
+            {split && !activeId && <SideMark kind="see" />}
           </button>
           <button
             className={
               "proj-row proj-unassigned" +
               (activeId === "none" && !deletedOnly ? " on sel-target" : "") +
+              (split && activeId === "none" ? " see-here" : "") +
               (unassignOver ? " drop-over" : "")
             }
             onClick={() => onFilter("none")} // 다시 눌러도 미분류(프로젝트 줄과 같다 — 해제는 '라이브러리' 줄)
@@ -631,6 +647,7 @@ export function ProjectSection({
             }
           >
             <span className="proj-name">{tr("미분류")}</span>
+            {split && activeId === "none" && <SideMark kind="see" />}
             {(fresh?.unassigned || 0) > 0 && (
               <span className="proj-newcount" title="마지막 확인 이후 새로 공유됨">
                 +{fresh!.unassigned}
@@ -694,6 +711,7 @@ export function ProjectSection({
                     // 이 프로젝트가 활성이면서 그 안의 폴더를 무장하지 않았을 때만 프로젝트 행이 빨강
                     // (=프로젝트 루트가 목적지). 폴더 무장 중이면 빨강은 그 폴더에만.
                     (projectActive && armedFolder?.projectId !== project.id ? " sel-target" : "") +
+                    (split && projectActive && !seeFolder ? " see-here" : "") +
                     (dragId === project.id ? " row-dragging" : "") +
                     (overIdx === index && dragId !== project.id ? " row-dragover" : "")
                   }
@@ -773,6 +791,8 @@ export function ProjectSection({
                     ⠿
                   </span>
                   <span className="proj-name">{project.name}</span>
+                  {split && projectActive && !seeFolder && <SideMark kind="see" />}
+                  {split && projectActive && !armedFolder && <SideMark kind="gen" />}
                   {(fresh?.byProject[project.id] || 0) > 0 && (
                     <span className="proj-newcount" title="마지막 확인 이후 새로 공유됨">
                       +{fresh!.byProject[project.id]}
@@ -792,6 +812,8 @@ export function ProjectSection({
                       armedFolder?.projectId === project.id ? armedFolder.path : ""
                     }
                     viewedPath={viewedProjectId === project.id ? viewedPath : undefined}
+                    seePath={split && projectActive ? seeFolder : undefined}
+                    markSelected={split && armedFolder?.projectId === project.id}
                     expanded={expandedFolders[project.id] || new Set()}
                     onToggle={(path) => toggleProjectFolderNode(project.id, path)}
                     onSelect={(path) => selectFolder(project.id, path)}
@@ -864,11 +886,13 @@ export function ProjectSection({
                 archived.map((project) => (
                   <button
                     key={project.id}
-                    className={"proj-row archived" + (activeId === project.id ? " on sel-target" : "")}
+                    className={"proj-row archived" + (activeId === project.id ? " on sel-target" : "") +
+                      (split && activeId === project.id ? " see-here" : "")}
                     onClick={() => onFilter(project.id)} // 다시 눌러도 그 프로젝트(일반 줄과 같다 — Codex 코드 리뷰)
                     title={project.name}
                   >
                     <span className="proj-name">{project.name}</span>
+                    {split && activeId === project.id && <SideMark kind="see" />}
                     <span className="proj-count">{creatorUid ? currentCountSnapshot?.projectCounts?.[project.id] ?? "—" : project.count}</span>
                   </button>
                 ))}
