@@ -43,6 +43,7 @@ const RETRY_MS = 30_000; // 실패 백오프 — 다음 변경이 없어도 이 
 const MAX_UPSERTS = 200; // 서버 상한과 동일
 const MAX_UPSERT_BYTES = 8 * 1024 * 1024; // 청크당 대략 바이트 상한(서버 총량 20MB 의 여유 하한)
 const MAX_DELETES = 500; // 서버 상한과 동일
+const MAX_FORK_AVOID = 2000; // 서버 상한과 동일(routers/scenes.SceneSyncIn.fork_avoid)
 // 씬 1개의 서버 상한(UTF-8 바이트) — backend/app/repo/scenes_backup.py 의 MAX_SCENE_BYTES 와 같아야 한다.
 // 서버는 이를 넘는 씬이 하나라도 있으면 **그 요청 전체**를 거절한다. 그대로 보내면 같은 청크를 영영 다시
 // 보내고, 같은 청크·뒤 청크의 멀쩡한 씬도 백업되지 않는다(Codex 설계 검토 P1) — 넘는 씬만 빼고 보낸다.
@@ -515,12 +516,38 @@ async function syncNow(): Promise<void> {
     const allDeleted = [...deleteOf.keys()].filter((id) => !nowText.has(deleteOf.get(id)!)); // 그사이 되살아난 씬은 지우지 않는다
     // 이 브라우저의 사본 씬(bk_)과 그 원본 — 허브의 사본 자리는 올리는 행 id 에서만 나오므로 그 행의 사본만 피하라고 알린다(전부 보내면
     //  자동 복구로 사본이 2,000개를 넘을 때 상한에 걸려 백업이 멈췄다, Codex 63회차). 원본을 모르면 늘 보낸다.
-    const localForks = [...nowText].filter(([id]) => id.startsWith("bk_")).map(([id, text]) => ({ id, of: forkOrigin(id, text) }));
+    const forksOf = new Map<string, string[]>(); // 원본 행 id → 그 사본 씬들
+    const unknownForks: string[] = [];
+    for (const [id, text] of nowText) {
+      if (!id.startsWith("bk_")) continue;
+      const of = forkOrigin(id, text);
+      if (of === null) unknownForks.push(id);
+      else forksOf.set(of, [...(forksOf.get(of) ?? []), id]);
+    }
     for (const id of forkOriginCache.keys()) if (!nowText.has(id)) forkOriginCache.delete(id);
+    const forkAvoidOf = (chunk: Up[]) => [...unknownForks, ...chunk.flatMap((u) => forksOf.get(u.id) ?? [])];
     if (!upserts.length && !allDeleted.length) return;
     if (ns() !== scope) return; // 변경 적용(PUT) 직전 최종 확인
-    // 청크 전송 — upsert 는 개수+UTF-8 바이트, delete 는 개수 기준(서버 상한과 동일).
-    const upChunks = chunkUpserts(upserts);
+    // 청크 전송 — upsert 는 개수+UTF-8 바이트, delete 는 개수 기준(서버 상한과 동일). 피할 사본의 합계도 상한 안으로 다시 나눈다 —
+    //  원본 여럿의 사본을 합치면 넘는다(Codex 63회차 재검토). 목록을 자르지는 않는다(자르면 사본이 남의 씬 행을 덮는다).
+    //  shortcut: 원본을 모르는 사본 + 한 행의 사본만으로 2,000개를 넘으면 여전히 거절된다 — 그런 일이 생기면 서버 상한을 올린다.
+    const upChunks = chunkUpserts(upserts).flatMap((chunk) => {
+      const parts: Up[][] = [];
+      let part: Up[] = [];
+      let count = unknownForks.length;
+      for (const u of chunk) {
+        const more = forksOf.get(u.id)?.length ?? 0;
+        if (part.length && count + more > MAX_FORK_AVOID) {
+          parts.push(part);
+          part = [];
+          count = unknownForks.length;
+        }
+        part.push(u);
+        count += more;
+      }
+      if (part.length) parts.push(part);
+      return parts;
+    });
     const delChunks: string[][] = [];
     for (let i = 0; i < allDeleted.length; i += MAX_DELETES) {
       delChunks.push(allDeleted.slice(i, i + MAX_DELETES));
@@ -540,7 +567,7 @@ async function syncNow(): Promise<void> {
           deleted_ids: dels,
           delete_bases: Object.fromEntries(dels.map((id) => [id, deleteBases[id] ?? ""])),
           // 이 브라우저에서 이미 별도 씬이 된 사본 행 — 허브가 새 사본 자리로 쓰지 않게(옛 허브는 모르는 칸이라 무시)
-          fork_avoid: localForks.filter(({ of }) => of === null || chunk.some((u) => u.id === of)).map(({ id }) => id),
+          fork_avoid: forkAvoidOf(chunk),
         }),
       });
       if (ns() !== scope) return; // 응답 후 상태 반영도 같은 scope 일 때만

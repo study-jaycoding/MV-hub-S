@@ -733,6 +733,27 @@ describe("sceneBackup — 판(1A)", () => {
     await vi.advanceTimersByTimeAsync(2500);
     const [first] = puts();
     expect(putBody(first).upserts.map((u: { id: string }) => u.id)).toEqual(["x", "bk_x", "bk_y", "bk_unknown"]);
-    expect(putBody(first).fork_avoid).toEqual(["bk_x", "bk_unknown"]); // y 는 이번에 올리지 않는다 — bk_y 는 피할 까닭이 없다
+    expect([...putBody(first).fork_avoid].sort()).toEqual(["bk_unknown", "bk_x"]); // y 는 이번에 올리지 않는다 — bk_y 는 피할 까닭이 없다
+  });
+
+  it("63회차 재검토 — 원본 여럿의 사본 합계가 상한을 넘으면 요청을 나눈다(목록은 자르지 않는다)", async () => {
+    const { scenes, backup, settle } = await boot();
+    const copies = (origin: string) => Array.from({ length: 700 }, (_, i) =>
+      ({ ...JSON.parse(sceneJson(`bk_${origin}_${i}`, "사본")), backupForkOf: { id: origin, sum: "s" } }));
+    scenes.saveScenes(null, [
+      JSON.parse(sceneJson("x1")), JSON.parse(sceneJson("x2")), JSON.parse(sceneJson("x3")),
+      ...copies("x1"), ...copies("x2"), ...copies("x3"),
+    ]);
+    await settle();
+    getMeta = () => Promise.resolve({ items: [] });
+    putReply = hashReply;
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500);
+    const bodies = puts().map(putBody);
+    expect(Math.max(...bodies.map((b) => b.fork_avoid.length))).toBeLessThanOrEqual(2000);
+    const sentWith = (id: string) => bodies.find((b) => b.upserts.some((u: { id: string }) => u.id === id));
+    for (const origin of ["x1", "x2", "x3"]) {
+      expect(sentWith(origin)!.fork_avoid.filter((id: string) => id.startsWith(`bk_${origin}_`))).toHaveLength(700); // 자르지 않았다
+    }
   });
 });
