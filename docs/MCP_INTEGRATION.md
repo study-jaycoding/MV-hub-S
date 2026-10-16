@@ -15,7 +15,7 @@ owner: Codex · reviewer: Claude · status: 검증 중 · updated: 2026-10-15
 
 ## Claude native 결과의 자동 UI 연결 제거 (2026-10-16)
 
-owner: Codex · reviewer: Claude · status: 검증 중 · updated: 2026-10-16
+owner: Codex · reviewer: Claude · status: 완료(소스·통합 검증 및 휴대폰 사용자 확인) · updated: 2026-10-16
 
 - Jay가 Claude 'MV hub MCP'의 진단을 이 작업실에 인계하고 native 이미지 중복 수정을 요청했다.
   상대 보고: Claude Code 탭에서 본문 이미지 추가 없이도 중복되며 설치본 `.15.4`의 Apps 협상은 false였다.
@@ -42,9 +42,20 @@ owner: Codex · reviewer: Claude · status: 검증 중 · updated: 2026-10-16
   Apps 광고 false/true 각각 UI 자동 연결 0개·JPEG ImageContent 1개·설명 보존을 확인했다.
   새 생성 0건, 표시 파일 저장 0건, 설치본·전역 등록 설정·공유 서버 변경 0건이다. 8012 서버는 시작하지 않았다.
   증거: `%TEMP%/mvhub-native-single-20261016/{design,review,before,after}.json`.
-- 실제 Claude 데스크톱 중복 해소는 아직 미확인이다. 통합 소스 반영 후 8012를 켜고 Claude의 mvhub-test를
-  재연결하여 `.16.3`/native 확인 후 기존 결과를 한 번 조회해야 한다. 캐시된 도구 목록이나 이미 열린 옛 카드는
-  소스 수정만으로 갱신됐다고 볼 수 없다. 프로젝트 전용 계약은 이 문서에 남기고 볼트에 복제하지 않는다.
+- 후속 실제 사용 확인(2026-10-16 15:4x, 사용자 전달 Claude 세션 'MV hub MCP' 보고):
+  mvhub-test/8012, `.16.3`/native에서 그 DB의 달걀·팬 결과 `f0094b2e-…`를 get_generation으로 1회 조회하여
+  ImageContent 1장을 받았다. 전체 ID는 인계되지 않아 축약형만 기록하며 조회 인자로 사용하지 않는다.
+  Jay는 Claude 휴대폰 앱에서 이미지 1번·그 아래 일반 텍스트 설명 1번, 중복 없음을 확인했다.
+  이미지는 작은 썸네일이며 탭하면 크게 열린다는 사용자 확인도 받았다. Codex가 해당 화면을 직접 본 것은 아니다.
+- Jay 결정 **A안 확정**: native는 ImageContent만 사용하고 Apps UI 자동 연결은 하지 않는다.
+  B안(협상 시 UI)·C안(별도 파일 전송)은 구현하지 않는다. Codex conversation 계약은 유지한다.
+- DB 구분(같은 인계 보고): `d332ed4f-…`는 설치본 8010에만 있어 8012의 not_found는 정상이다.
+  이후 시험은 대상 허브에서 조회한 실제 ID를 사용하며 서로 다른 DB의 ID를 혼용하지 않는다.
+- 남은 범위: Claude 데스크톱 화면 재확인은 하지 않았다. 옛 카드·캐시의 실제 동작도 여전히 미확인이다.
+  설치본 반영은 Jay의 별도 "병합" 지시 뒤 선택 변경의 main·릴리스 절차로 진행한다.
+  인계의 "origin/main보다 3커밋 뒤"는 현재 로컬 참조의 차이와 일치하지 않아 배포 근거로 채택하지 않는다.
+  원격 상태는 이번 기록 작업에서 갱신하지 않았으며 병합 시 실제 기준 SHA·차이·선행 의존성을 다시 확인한다.
+  프로젝트 전용 결정·확인 결과는 이 문서에 남기고 볼트에 복제하지 않는다.
 
 ## 휴대폰에서 빠진 결과 설명 복원 (2026-10-16)
 
