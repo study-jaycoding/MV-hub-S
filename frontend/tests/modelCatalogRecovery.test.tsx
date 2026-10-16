@@ -225,6 +225,58 @@ describe("표시명 카탈로그 실패 복구", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  // 81회차 S-1: CLI 가 깨진 PC 에서 서버는 params 실패를 캐시하지 않는다 — 창을 열어 useModels 가 다시 붙을 때마다 허용 모델 수만큼
+  //  CLI 를 다시 띄웠다. 자동 예열만 1·2·4초…(최대 1분) 기다리고, 실제 선택의 조회는 막지 않는다.
+  it("failed model warmup backs off across remounts — 실제 선택 조회는 막지 않고, 성공하면 기록을 지운다. 빈 스키마는 성공으로 저장하지 않는다", async () => {
+    mocks.models.mockResolvedValue([]);
+    mocks.modelParams.mockRejectedValue(new Error("502"));
+    const { useModels, ALLOWED } = await import("../src/lib/useModels");
+    const all = [...ALLOWED.image, ...ALLOWED.video];
+    const allowed = new Set<string>(); // 화면처럼 같은 객체 — 렌더마다 새로 만들면 예열이 다시 돈다
+    function Picker({ initialModel }: { initialModel?: string }) {
+      useModels(() => {}, { allowed, ready: true, initialModel });
+      return null;
+    }
+    const open = async (initialModel?: string) => {
+      const view = await mount(<Picker initialModel={initialModel} />);
+      await act(async () => { await Promise.resolve(); });
+      await unmount(view);
+    };
+    const asked = () => mocks.modelParams.mock.calls.map(([model]) => model as string);
+
+    await open(); // 첫 예열 — 모델마다 한 번
+    expect(asked()).toEqual(all);
+    vi.setSystemTime(999);
+    await open(); // 실패 1번 뒤 1초 안 — 예열하지 않는다
+    expect(asked()).toHaveLength(all.length);
+    vi.setSystemTime(1000);
+    await open();
+    expect(asked()).toHaveLength(all.length * 2);
+    vi.setSystemTime(2999);
+    await open(); // 실패 2번 뒤 2초 안
+    expect(asked()).toHaveLength(all.length * 2);
+
+    // 실제 선택은 기다리지 않는다 — 고른 모델만 바로 묻는다. 성공하면 기록을 지우고 캐시해 다음 예열은 묻지 않는다
+    const picked = ALLOWED.image[0];
+    mocks.modelParams.mockImplementation((model: string) => (model === picked
+      ? Promise.resolve({ job_set_type: model, type: "image", params: [{ name: "seed", type: "integer", default: 1, required: false }] })
+      : Promise.reject(new Error("502"))));
+    await open(picked);
+    expect(asked().slice(all.length * 2)).toEqual([picked]);
+    // 빈 스키마는 서버의 폴백(CLI 출력 이상)이다 — 성공으로 저장하지 않고 실패처럼 기다린다
+    mocks.modelParams.mockReset().mockImplementation((model: string) => Promise.resolve({ job_set_type: model, type: "image", params: [] }));
+    const rest = all.filter((model) => model !== picked);
+    vi.setSystemTime(3000);
+    await open();
+    expect(asked()).toEqual(rest);
+    vi.setSystemTime(6999);
+    await open(); // 실패 3번 뒤 4초 안
+    expect(asked()).toEqual(rest);
+    vi.setSystemTime(7000);
+    await open(); // 캐시하지 않았으니 다시 묻는다(고른 모델은 캐시 적중)
+    expect(asked()).toEqual([...rest, ...rest]);
+  });
+
   it("이름 재시도 제한 중에도 picker를 새로 열면 명시적 재요청을 막지 않는다", async () => {
     mocks.models.mockRejectedValueOnce(new Error("synthetic unavailable")).mockResolvedValueOnce(MODELS);
     await catalog.ensureModelCatalog();

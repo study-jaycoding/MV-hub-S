@@ -288,6 +288,15 @@ export function costKey(
 const paramsCache = new Map<string, ModelParamsOut>(); // 완료된 결과 — 동기 적중(토글 딜레이 0)
 const paramsInflight = new Map<string, Promise<ModelParamsOut>>(); // 진행 중 요청 — 중복 요청 흡수
 const costCache = new Map<string, number>(); // cost(예상 크레딧) 결과 — 키=model+옵션값
+// 모델별 잇단 실패 수·마지막 실패 시각 — **자동 예열만** 이만큼 기다린다(1초에서 두 배씩, 최대 1분 — modelCatalog 와 같다).
+//  CLI 가 깨진 PC 에서 서버는 실패를 캐시하지 않아, 창을 열 때마다 허용 모델 수만큼 CLI 를 다시 띄웠다(81회차 S-1). 실제 선택의 조회는 막지 않는다.
+const paramsFailures = new Map<string, { count: number; at: number }>();
+const noteParamsFailure = (model: string) =>
+  paramsFailures.set(model, { count: (paramsFailures.get(model)?.count ?? 0) + 1, at: Date.now() });
+function warmDue(model: string): boolean {
+  const f = paramsFailures.get(model);
+  return !f || Date.now() - f.at >= Math.min(60_000, 1000 * 2 ** (f.count - 1));
+}
 
 // 같은 모델 요청이 겹치면 하나로 합친다(모달과 프리페치가 동시에 부르는 경우).
 function loadModelParams(model: string): Promise<ModelParamsOut> {
@@ -298,12 +307,17 @@ function loadModelParams(model: string): Promise<ModelParamsOut> {
   const p = api
     .modelParams(model)
     .then((r) => {
-      paramsCache.set(model, r);
+      // 빈 스키마는 서버의 폴백(CLI 출력 이상 — 서버도 캐시 안 함)이다 — 성공으로 저장하지 않는다
+      if (r.params.length > 0) {
+        paramsCache.set(model, r);
+        paramsFailures.delete(model);
+      } else noteParamsFailure(model);
       paramsInflight.delete(model);
       return r;
     })
     .catch((e) => {
       paramsInflight.delete(model); // 실패는 캐시하지 않는다 — 다음 시도에 재요청
+      noteParamsFailure(model);
       throw e;
     });
   paramsInflight.set(model, p);
@@ -566,6 +580,7 @@ export function useModels(
         warmCost(m, cached.params);
         continue;
       }
+      if (!warmDue(m)) continue; // 잇달아 실패한 모델 — 기다리는 중(실제 선택은 위 모델 effect 가 바로 묻는다)
       loadModelParams(m)
         .then((r) => {
           warmCost(m, r.params);
