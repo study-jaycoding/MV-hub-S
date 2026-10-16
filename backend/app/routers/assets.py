@@ -2255,6 +2255,7 @@ def clipboard_copy_files(body: ClipboardCopyIn, request: Request):
                 env={**os.environ, "MVHUB_CLIP_LIST": list_path},
                 capture_output=True,
                 text=True,
+                errors="replace",
                 timeout=15,
             )
         except subprocess.TimeoutExpired:

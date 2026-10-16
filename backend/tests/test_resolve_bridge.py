@@ -1432,5 +1432,25 @@ class FastBinSortContractTests(unittest.TestCase):
         self.assertNotIn(("21", "1", "1", "9", ""), resolve_bridge._MOVE_FOLDERS_TESTED)  # 같은 21.1.1 의 다른 빌드는 아니다
 
 
+@unittest.skipUnless(os.name == "nt", "tasklist 확인은 Windows 전용")
+class ProcessCheckEncodingTests(unittest.TestCase):
+    def test_korean_not_running_message_in_utf8_mode_means_not_running(self):
+        # 10-16 현장: 한국어 Windows 는 Resolve 가 꺼져 있으면 tasklist 가 '정보: …'를 CP949 로 낸다. 배치가 PYTHONUTF8=1 로
+        #  허브를 띄우므로 엄격 UTF-8 해석이면 읽기 스레드가 죽고(0xc1) stdout=None → '꺼져 있음' 대신 예외로 끝났다.
+        import subprocess
+        import sys
+
+        real_run = subprocess.run
+
+        def run_like_utf8_mode(_args, **kwargs):
+            kwargs.setdefault("encoding", "utf-8")  # PYTHONUTF8=1 에서 text=True 의 기본
+            kwargs["timeout"] = 30  # 자식 파이썬 기동 — 2초 제한은 부하 중 시험만 흔든다
+            child = "import sys; sys.stdout.buffer.write(b'\\xc1\\xa4\\xba\\xb8: \\xc1\\xf6\\xc1\\xa4')"  # '정보: 지정'(CP949)
+            return real_run([sys.executable, "-c", child], **kwargs)
+
+        with mock.patch.object(resolve_bridge.subprocess, "run", run_like_utf8_mode):
+            self.assertIs(resolve_bridge._resolve_process_running(), False)
+
+
 if __name__ == "__main__":
     unittest.main()

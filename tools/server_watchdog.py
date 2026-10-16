@@ -329,7 +329,7 @@ def _powershell_json(script: str) -> tuple[list[object], bool]:
     try:
         out = subprocess.run(
             ["powershell", "-NoProfile", "-Command", script + " | ConvertTo-Json -Compress"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, errors="replace", timeout=30,
         )
         if out.returncode != 0:
             return [], False
@@ -530,7 +530,7 @@ def kill_pids(
             continue
         r = subprocess.run(
             ["taskkill", "/PID", str(pid), "/T", "/F"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, errors="replace", timeout=30,
         )
         log(args, f"taskkill PID {pid} → rc={r.returncode} {(r.stdout or r.stderr or '').strip()}")
         if r.returncode == 0:

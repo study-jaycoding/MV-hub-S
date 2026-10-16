@@ -640,7 +640,7 @@ def _ffprobe_has_audio(ffprobe: Optional[str], path: Path) -> bool:
         out = subprocess.run(
             [ffprobe, "-v", "error", "-select_streams", "a", "-show_entries",
              "stream=index", "-of", "csv=p=0", str(path)],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True, text=True, errors="replace", timeout=20,
         ).stdout.strip()
         return bool(out)
     except Exception:  # noqa: BLE001
@@ -654,7 +654,7 @@ def _ffprobe_wh(ffprobe: Optional[str], path: Path) -> Optional[tuple[int, int]]
         out = subprocess.run(
             [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
              "stream=width,height", "-of", "csv=p=0:s=x", str(path)],
-            capture_output=True, text=True, timeout=20, check=True,
+            capture_output=True, text=True, errors="replace", timeout=20, check=True,
         ).stdout.strip()
         w, h = out.split("x")[:2]
         return int(w), int(h)

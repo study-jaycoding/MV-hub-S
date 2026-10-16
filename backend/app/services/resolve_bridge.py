@@ -186,6 +186,8 @@ def _resolve_process_running() -> bool | None:
             check=False,
             capture_output=True,
             text=True,
+            # 한국어 Windows 는 '없음' 안내를 CP949 로 낸다 — UTF-8 모드(PYTHONUTF8=1)에서 엄격 해석하면 멈춘다(10-16 현장).
+            errors="replace",
             timeout=2,
             creationflags=creation_flags,
         )

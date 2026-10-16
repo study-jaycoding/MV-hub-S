@@ -82,7 +82,7 @@ def _server_is_system() -> bool:
     """서버 프로세스가 LocalSystem(S-1-5-18)으로 도나 — 예약 작업(SYSTEM)과 같은 계정이어야 저장 때 확인이 실제와 같다."""
     try:
         out = subprocess.run(
-            ["whoami", "/user", "/fo", "csv", "/nh"], capture_output=True, text=True, timeout=10
+            ["whoami", "/user", "/fo", "csv", "/nh"], capture_output=True, text=True, errors="replace", timeout=10
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return False
@@ -125,7 +125,7 @@ def _task_info() -> Optional[dict[str, Any]]:
     try:
         out = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True, text=True, errors="replace", timeout=20,
         )
         raw = json.loads(out.stdout.strip() or "null")
     except (OSError, subprocess.SubprocessError, ValueError):
