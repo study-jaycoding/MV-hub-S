@@ -325,20 +325,29 @@ def check_ready(url: str, timeout: float) -> tuple[str, str]:
 
 
 def _powershell_json(script: str) -> tuple[list[object], bool]:
-    """PowerShell 조회 결과와 성공 여부. '결과 없음'과 '조회 실패'를 구분한다."""
+    """PowerShell 조회 결과와 성공 여부. '결과 없음'과 '조회 실패'를 구분한다.
+
+    출력은 UTF-8 로 고정해 엄격히 읽는다 — 한국어 Windows 의 기본 출력(CP949)을 대체 문자로 읽으면 한글 설치
+    경로가 깨진 채 '조회 성공'이 되어 살아 있는 서버를 못 본다. 0행은 '[]' 로 받아 출력 누락(=실패)과 가르고,
+    Stop 은 문장 하나의 오류가 다음 줄의 '[]' 로 새지 않게 한다."""
+    wrapped = (
+        "$ErrorActionPreference = 'Stop'; "
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+        "$rows = @(" + script + "); "
+        "if ($rows.Count) { $rows | ConvertTo-Json -Compress } else { '[]' }"
+    )
     try:
         out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", script + " | ConvertTo-Json -Compress"],
-            capture_output=True, text=True, errors="replace", timeout=30,
+            ["powershell", "-NoProfile", "-Command", wrapped],
+            capture_output=True, timeout=30,
+            # 자기 숨은 콘솔에서 — OutputEncoding 변경이 부모 콘솔의 코드 페이지에 남지 않게
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if out.returncode != 0:
             return [], False
-        raw = (out.stdout or "").strip()
-        if not raw:
-            return [], True
-        data = json.loads(raw)
+        data = json.loads(out.stdout.decode("utf-8"))
         return (data if isinstance(data, list) else [data]), True
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — 출력 누락·글자 해석·JSON 실패 모두 조회 실패
         return [], False
 
 

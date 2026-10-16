@@ -30,7 +30,8 @@ def launcher():
 
 
 def _ps_result(returncode: int, stdout: str):
-    return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+    # 조회는 바이트로 받아 UTF-8 엄격 해석한다(81회차 R-3) — 실제 파이프 경계는 test_windows_powershell_utf8 이 본다.
+    return SimpleNamespace(returncode=returncode, stdout=stdout.encode("utf-8"), stderr=b"")
 
 
 def test_browser_processes_three_states(launcher, monkeypatch: pytest.MonkeyPatch):
@@ -41,8 +42,11 @@ def test_browser_processes_three_states(launcher, monkeypatch: pytest.MonkeyPatc
         {"pid": 42, "exe": "C:\\x\\chrome.exe", "cmdline": "chrome --user-data-dir=C:\\p"}
     ]
 
+    monkeypatch.setattr(launcher.subprocess, "run", lambda *a, **k: _ps_result(0, "[]"))
+    assert launcher._browser_processes("chrome.exe") == []  # 성공 + 없음(0행은 PowerShell 이 '[]' 를 낸다)
+
     monkeypatch.setattr(launcher.subprocess, "run", lambda *a, **k: _ps_result(0, ""))
-    assert launcher._browser_processes("chrome.exe") == []  # 성공 + 없음
+    assert launcher._browser_processes("chrome.exe") is None  # 출력 누락 = 조회 실패
 
     monkeypatch.setattr(launcher.subprocess, "run", lambda *a, **k: _ps_result(1, ""))
     assert launcher._browser_processes("chrome.exe") is None  # cmdlet 실패

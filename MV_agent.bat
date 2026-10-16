@@ -151,6 +151,7 @@ REM started would leave the hub (model list/cost/workspace APIs) blind to a bund
 REM CLI on release PCs.
 set "RUN_AGENT=1"
 set "HF="
+set "_CLI_UNCONFIRMED="
 set "HF_CLI_VERSION="
 set "HF_CLI_PIN_FILE=%ROOT%hf_cli_version.txt"
 REM Match the backend's utf-8-sig rule. set /p leaves a UTF-8 BOM in the value.
@@ -166,9 +167,11 @@ if not defined HF_CLI_VERSION (
 REM Pick the CLI whose version == the pin: prefer the bundled copy (zero-install),
 REM then a matching global install, else install the pinned version globally.
 REM @latest is intentionally avoided: Higgsfield ships breaking changes often.
+REM Install only when no CLI was found, or a version was READ and is wrong. If any CLI's version
+REM could not be confirmed (_CLI_UNCONFIRMED), skip the unbounded npm install and go on.
 if exist "%BUNDLED%" call :try_cli "%BUNDLED%"
 where higgsfield >nul 2>nul && call :try_cli "higgsfield"
-if not defined HF if defined HAVE_NPM (
+if not defined HF if not defined _CLI_UNCONFIRMED if defined HAVE_NPM (
   echo     Installing pinned Higgsfield CLI @%HF_CLI_VERSION% ^(one time^)...
   call %NPM_CMD% install -g @higgsfield/cli@%HF_CLI_VERSION%
   where higgsfield >nul 2>nul && call :try_cli "higgsfield"
@@ -179,6 +182,11 @@ if defined HF (
   REM Global installs are already on PATH; a bundled match must be prepended here so
   REM BOTH the hub (started next) and agent_push resolve the same pinned CLI.
   if /i "%HF%"=="%BUNDLED%" set "PATH=%ROOT%runtime\higgsfield;%PATH%"
+) else if defined _CLI_UNCONFIRMED (
+  echo [warn] Could not confirm the Higgsfield CLI version - no answer in time, an error, or
+  echo        unreadable output. Generation off for this run; browsing/Assets still work.
+  echo        Re-run MV_agent.bat later.
+  set "RUN_AGENT=0"
 ) else (
   echo [warn] No pinned Higgsfield CLI available - generation off; browsing/Assets still work.
   set "RUN_AGENT=0"
@@ -261,9 +269,14 @@ if /i "%_CLICHK%"=="code_stale" (
 )
 
 REM --- Higgsfield login + workspace (AFTER the hub is up; interactive). ---
+REM Every non-interactive CLI call on this startup path goes through agent_push.py with a time
+REM limit, and a stalled CLI tree is killed, so a hung CLI cannot block the app window. Only
+REM 'auth login' is unbounded on purpose - a person signs in in the browser.
+REM --startup-token exits 0 = signed in, 4 = sign-in needed, anything else = could not confirm
+REM (no login prompt then; the account check below reports it).
 if not defined HF goto :agent_stage
-call "%HF%" auth token >nul 2>nul
-if errorlevel 1 (
+"%PY_EXE%" %PY_ARGS% "%ROOT%agent_push.py" --startup-token "%HF%" >nul 2>nul
+if "%ERRORLEVEL%"=="4" (
   echo     Login required - a browser window will open to sign in to Higgsfield.
   call "%HF%" auth login
 )
@@ -273,30 +286,47 @@ REM Only kicks in if nothing is chosen yet - an existing choice (incl. personal)
 REM 'team' AND 'enterprise' plans both count as shared (enterprise upgrade broke the old
 REM plan_type=='team' filter and new installs fell through to the manual prompt).
 REM Falls back to the single workspace. Multiple shared candidates -> ask below (avoid wrong billing).
-"%PY_EXE%" %PY_ARGS% -c "import subprocess,sys,json; hf=sys.argv[1]; r=subprocess.run([hf,'workspace','list','--json'],capture_output=True,text=True); ws=json.loads(r.stdout or '[]') if r.returncode==0 else []; ws=ws if isinstance(ws,list) else []; sel=any(w.get('is_selected') for w in ws); shared=[w for w in ws if str(w.get('plan_type') or '').lower() not in ('', 'free', 'private', 'personal')]; pick=(shared[0] if len(shared)==1 else (ws[0] if len(ws)==1 else None)); (not sel and pick) and subprocess.run([hf,'workspace','set',pick['id']])" "%HF%" >nul 2>nul
-REM One CLI call only - keep both the exit code (health check) and the output (display).
-REM The old flow ran 'account status' twice back to back (check, then show) = 2 CLI startups.
-call "%HF%" account status > "%TEMP%\mvhub_acct_status.tmp" 2>&1
-if errorlevel 1 (
-  echo.
-  echo  [action needed] No Higgsfield workspace selected - generation is OFF until you set one:
-  call "%HF%" workspace list
-  echo     run:  higgsfield workspace set [id]   then re-run MV_agent.bat.
-  echo.
-  set "RUN_AGENT=0"
+REM agent_push.py --startup-autoselect: list and set each have a time limit and the stalled CLI tree
+REM is killed, so a hung CLI cannot block the account check below. A failed list skips quietly;
+REM the set is never retried.
+"%PY_EXE%" %PY_ARGS% "%ROOT%agent_push.py" --startup-autoselect "%HF%" >nul 2>nul
+REM Read-only account check, classified - not one exit code. A single 'account status' failure,
+REM even a brief network error, used to read as 'no workspace selected' and kept the agent OFF
+REM for the whole run. agent_push.py --startup-check asks up to 3 times, 1s and 2s apart, and
+REM exits 0 = OK, 3 = no workspace selected, 4 = sign-in needed, anything else = could not confirm.
+REM Healthy = one CLI call; its output is captured once and shown below.
+"%PY_EXE%" %PY_ARGS% "%ROOT%agent_push.py" --startup-check "%HF%" > "%TEMP%\mvhub_acct_status.tmp" 2>&1
+set "_ACCT_RC=%ERRORLEVEL%"
+if "%_ACCT_RC%"=="0" goto :acct_ok
+echo.
+if "%_ACCT_RC%"=="3" (
+  echo  [action needed] No Higgsfield workspace selected - generation is OFF until you set one.
+  echo     run:  higgsfield workspace set [id]   then re-run MV_agent.bat. Your workspaces:
+) else if "%_ACCT_RC%"=="4" (
+  echo  [action needed] Higgsfield sign-in is missing or expired - generation is OFF.
+  echo     run:  higgsfield auth login   then re-run MV_agent.bat.
 ) else (
-  echo.
-  echo  ===========================================================================
-  echo   YOUR HIGGSFIELD CLI ACCOUNT ^(verify FIRST^) - shown below.
-  echo   Log in to the hub with the SAME email. Your generations are pushed to the
-  echo   team server under that account; a different hub login will be REJECTED.
-  echo   If they differ, the running agent will OFFER to switch the CLI account
-  echo   for you ^(answer y^) - no separate login script needed.
-  echo  ===========================================================================
-  type "%TEMP%\mvhub_acct_status.tmp"
-  echo  ===========================================================================
-  echo.
+  echo  [warn] Could not confirm the Higgsfield account after 3 tries - network or CLI did not answer.
+  echo         This is not a login or workspace problem. Generation is OFF for this run;
+  echo         check the connection, then re-run MV_agent.bat.
 )
+type "%TEMP%\mvhub_acct_status.tmp"
+echo.
+set "RUN_AGENT=0"
+goto :acct_done
+:acct_ok
+echo.
+echo  ===========================================================================
+echo   YOUR HIGGSFIELD CLI ACCOUNT ^(verify FIRST^) - shown below.
+echo   Log in to the hub with the SAME email. Your generations are pushed to the
+echo   team server under that account; a different hub login will be REJECTED.
+echo   If they differ, the running agent will OFFER to switch the CLI account
+echo   for you ^(answer y^) - no separate login script needed.
+echo  ===========================================================================
+type "%TEMP%\mvhub_acct_status.tmp"
+echo  ===========================================================================
+echo.
+:acct_done
 if exist "%TEMP%\mvhub_acct_status.tmp" del "%TEMP%\mvhub_acct_status.tmp" >nul 2>nul
 
 :agent_stage
@@ -421,11 +451,18 @@ REM :try_cli  %1 = a Higgsfield CLI (quoted path or bare name).
 REM Sets HF=%~1 only if that CLI reports the pinned version. No-op once HF is set.
 REM Used to choose the exact binary matching hf_cli_version.txt (avoids the stale
 REM bundled-CLI shadowing a good global install, and vice-versa).
+REM 'version' runs through agent_push.py --startup-version: time limit + stalled CLI tree killed,
+REM always prints one word: the version read from a clean run (second word of the first line
+REM with two or more words, as tokens=2 did), or ? when it could not be confirmed - bad exit,
+REM empty or unreadable output, no answer in time, could not run. No output at all (the helper
+REM itself failed) also counts as ?. Then _CLI_UNCONFIRMED is set and npm install is skipped.
 REM ---------------------------------------------------------------------------
 :try_cli
 if defined HF exit /b 0
 set "_CLIVER="
-for /f "usebackq tokens=2" %%v in (`"%~1" version 2^>nul`) do if not defined _CLIVER set "_CLIVER=%%v"
+for /f "delims=" %%v in ('""%PY_EXE%" %PY_ARGS% "%ROOT%agent_push.py" --startup-version "%~1""') do if not defined _CLIVER set "_CLIVER=%%v"
+if not defined _CLIVER set "_CLIVER=?"
+if "%_CLIVER%"=="?" set "_CLI_UNCONFIRMED=1"
 if "%_CLIVER%"=="%HF_CLI_VERSION%" set "HF=%~1"
 exit /b 0
 

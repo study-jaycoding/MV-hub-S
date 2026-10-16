@@ -422,16 +422,40 @@ def _sanitize_diagnostic(text: str | bytes | None) -> str:
     return _DIAGNOSTIC_AUTH_RE.sub(lambda m: f"{m.group(1)} <자격값 숨김>", text)
 
 
-def _run_cli_json(cli: str, *args: str, timeout: int = 120, env: dict | None = None):
+def _run_with_tree_kill(argv: list, timeout: float, env: dict | None = None) -> subprocess.CompletedProcess:
+    """subprocess.run(capture_output=True, text=True, timeout=…) 과 같되, 시간 초과면 프로세스 트리째 끝내고
+    제한 시간 안에 회수한다(cli_bridge._terminate_cli_process 와 같은 꼴). 셰임(Node)만 죽이면 출력 파이프를
+    물려받은 자식 CLI 가 남아 회수가 끝나지 않고 다음 재시도로 못 갔다(81회차 F-C-04 리뷰 P1)."""
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        if os.name == "nt":
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+        proc.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):  # 트리 밖으로 빠진 자식이 파이프를 쥐면 더 기다리지 않는다
+            exc.stdout, exc.stderr = proc.communicate(timeout=5)
+        raise
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+
+
+def _run_cli_json(cli: str, *args: str, timeout: int = 120, env: dict | None = None, kill_tree: bool = False):
     """higgsfield CLI 를 --json 으로 실행하고 (파싱 결과, 오류문구) 반환.
 
     env 를 주면 **이 자식 프로세스에만** 적용한다(부모 os.environ 은 건드리지 않는다 — 동시에 도는
-    다른 요청의 환경을 오염시키면 그게 곧 엉뚱한 공간 과금이다). 안 주면 종전대로 부모 환경을 상속한다."""
+    다른 요청의 환경을 오염시키면 그게 곧 엉뚱한 공간 과금이다). 안 주면 종전대로 부모 환경을 상속한다.
+    kill_tree 면 시간 초과 때 CLI 프로세스 트리째 끝내고 회수한다(기동 점검의 제한 재시도용)."""
     try:
-        out = subprocess.run(
-            [*_cli_argv(cli), *args, "--json"],
-            capture_output=True, text=True, timeout=timeout, env=env,
-        )
+        argv = [*_cli_argv(cli), *args, "--json"]
+        if kill_tree:
+            out = _run_with_tree_kill(argv, timeout, env)
+        else:
+            out = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired as e:
         # 타임아웃이어도 CLI 가 이미 찍은 부분 출력에 방금 만든 job id 가 있을 수 있다 → 버리지 않고
         # (순수 CLI 출력만) 담아, _extract_created_id 가 그 UUID 로 job_id 를 되찾게 한다(가짜 실패 방지).
@@ -3102,6 +3126,110 @@ def _cli_account_email(cli: str) -> str | None:
     return acct.get("email") if isinstance(acct, dict) else None
 
 
+# 기동 때 CLI 계정 확인 — MV_agent.bat(--startup-check)과 에이전트 첫 확인이 같은 규칙을 쓴다(81회차 F-C-04).
+# 한 번의 실패(일시 통신 오류 포함)를 '워크스페이스 미선택'으로 단정해 그 실행 내내 에이전트를 끄던 것을 고친다.
+# 미선택은 해석된 workspace 목록에 선택이 없을 때만, 로그인 필요는 확인된 CLI 오류 형식('auth')일 때만이다.
+# 시간 초과·통신·잘못된 JSON·모르는 실패는 '확인 불가' — 최초 포함 3회, 1초·2초 쉬고 다시 묻는다. 읽기만 한다.
+_STARTUP_CHECK_TIMEOUT = 20
+_STARTUP_EXIT_CODES = {"ok": 0, "unselected": 3, "auth": 4, "unknown": 5}
+_STARTUP_FAILURES = {
+    "unselected": "[오류] Higgsfield 워크스페이스가 선택되지 않았습니다. `higgsfield workspace set [id]` 후 다시 실행하세요.",
+    "auth": "[오류] Higgsfield CLI 로그인이 필요합니다. `hf auth login` 후 다시 실행하세요.",
+    "unknown": "[오류] Higgsfield CLI 계정을 3번 물었지만 확인하지 못했습니다(통신·CLI 응답 문제). 연결을 확인한 뒤 다시 실행하세요.",
+}
+
+
+def _startup_account_status(cli: str, attempts: int = 3) -> tuple[str, dict | list | str]:
+    """('ok', 계정) · ('unselected', 받은 workspace 목록) · ('auth' | 'unknown', 사유)."""
+    detail = ""
+    for attempt in range(attempts):
+        if attempt:
+            time.sleep(attempt)
+        acct, err = _run_cli_json(cli, "account", "status", timeout=_STARTUP_CHECK_TIMEOUT, kill_tree=True)
+        if isinstance(acct, dict) and acct.get("email"):
+            return "ok", acct
+        detail = err or "account status 응답에 email 이 없습니다"
+        if _classify_cli_error(err) == "auth":
+            return "auth", detail
+        workspaces, ws_err = _run_cli_json(cli, "workspace", "list", timeout=_STARTUP_CHECK_TIMEOUT, kill_tree=True)
+        if _classify_cli_error(ws_err) == "auth":
+            return "auth", ws_err
+        if isinstance(workspaces, list) and not any(isinstance(w, dict) and w.get("is_selected") for w in workspaces):
+            return "unselected", workspaces
+    return "unknown", detail
+
+
+def _startup_cli(argv: list[str]) -> str:
+    """MV_agent.bat 이 넘긴 CLI — 맨 이름이면 PATH 에서 .cmd 셰임까지 찾는다(그래야 _cli_argv 가 Node 로 직접 부른다)."""
+    return (shutil.which(argv[0]) or argv[0]) if argv else _cli()
+
+
+def _startup_autoselect(cli: str) -> None:
+    """기동 때 워크스페이스 자동 선택(MV_agent.bat) — 아무것도 선택돼 있지 않을 때만, 공유 공간이 하나면 그것,
+    공간이 하나뿐이면 그것(기존 규칙 그대로). 목록 조회 실패·시간 초과면 조용히 건너뛴다. 선택 쓰기는 한 번만 —
+    다시 시도하지 않는다. 둘 다 제한 시간 + 트리 회수라 CLI 가 멈춰도 뒤의 계정 점검으로 넘어간다(81회차 리뷰 P1)."""
+    workspaces, _err = _run_cli_json(cli, "workspace", "list", timeout=_STARTUP_CHECK_TIMEOUT, kill_tree=True)
+    if not isinstance(workspaces, list) or not all(isinstance(w, dict) for w in workspaces):
+        return
+    if any(w.get("is_selected") for w in workspaces):
+        return
+    shared = [w for w in workspaces if str(w.get("plan_type") or "").lower() not in ("", "free", "private", "personal")]
+    pick = shared[0] if len(shared) == 1 else (workspaces[0] if len(workspaces) == 1 else None)
+    if not pick or not pick.get("id"):
+        return
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        _run_with_tree_kill([*_cli_argv(cli), "workspace", "set", str(pick["id"])], _STARTUP_CHECK_TIMEOUT)
+
+
+def _startup_token(cli: str) -> int:
+    """`auth token` 확인(MV_agent.bat) — 0 로그인됨 · 4 로그인 필요 · 5 확인 불가(배치는 로그인 창을 띄우지 않고 계정
+    점검으로 넘어간다). 4 는 명시적 인증 오류(_classify_cli_error 'auth')일 때만 — 토큰 저장소 읽기 오류 같은 다른
+    실패로 제한 없는 대화형 로그인에 들어가지 않게. 토큰 값은 버린다 — 화면·로그에 남기지 않는다."""
+    try:
+        done = _run_with_tree_kill([*_cli_argv(cli), "auth", "token"], _STARTUP_CHECK_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return 5
+    if done.returncode == 0:
+        return 0
+    error = "\n".join(part for part in (done.stderr, done.stdout) if part)
+    return 4 if _classify_cli_error(error) == "auth" else 5
+
+
+def _startup_version(cli: str) -> str:
+    """`version` 출력의 판(MV_agent.bat :try_cli) — 늘 한 단어를 돌려준다(배치가 빈 값을 판 불일치로 읽지 않게).
+    정상 종료한 출력에서 배치 for /f "tokens=2" 처럼 첫 '두 단어 이상' 줄의 둘째 단어가 숫자 판(예: 1.1.26)이면
+    그 판 — 이것만 확인된 값이다. 비정상 종료·빈 출력·해석 불가·시간 초과·실행 실패는 모두 '?'(확인 불가)라 배치는
+    제한 없는 npm install 로 넘어가지 않는다(81회차 리뷰 P1). '미설치'는 배치가 CLI 를 못 찾은 경우뿐이다."""
+    try:
+        done = _run_with_tree_kill([*_cli_argv(cli), "version"], _STARTUP_CHECK_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return "?"
+    if done.returncode != 0:
+        return "?"
+    for line in (done.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and not parts[0].startswith(";"):
+            return parts[1] if re.fullmatch(r"\d+(?:\.\d+)+", parts[1]) else "?"  # 단어 전체가 숫자 판일 때만
+    return "?"
+
+
+def _startup_check_main(argv: list[str]) -> int:
+    """MV_agent.bat 용 — 상태는 종료 코드(_STARTUP_EXIT_CODES)로, 보일 글은 stdout 으로."""
+    cli = _startup_cli(argv)
+    state, found = _startup_account_status(cli)
+    if isinstance(found, dict):
+        for key, value in found.items():
+            if value is not None and not isinstance(value, (dict, list)):
+                print(f"  {key}: {value}")
+    elif isinstance(found, list):  # 미선택 — 점검이 이미 받은 목록으로 안내한다(배치가 다시 묻다 멈추지 않게)
+        for workspace in found:
+            if isinstance(workspace, dict):
+                print(f"  {workspace.get('id')}  {workspace.get('name') or ''}  ({workspace.get('plan_type') or '-'})")
+    else:
+        print(f"  {found}")
+    return _STARTUP_EXIT_CODES[state]
+
+
 # ── 사이클 범위 계정 snapshot (R2 이월 3-A) ─────────────────────────────────
 # 한 연속 사이클(_initial_cycle 1회, 또는 롱폴 복귀 후 한 반복) 안에서 execute/tracking/
 # push/보고가 같은 CLI `account status`/`workspace list` 를 각각 다시 부르지 않게 한다.
@@ -3836,9 +3964,12 @@ def main() -> None:
         token = login(server, args.email, password)
         creds = {"email": args.email, "password": password}
 
-    cli_email = _cli_account_email(cli)
-    if not cli_email:
-        sys.exit("[오류] Higgsfield CLI 로그인 계정을 확인할 수 없습니다. `hf auth login` 후 다시 실행하세요.")
+    state, found = _startup_account_status(cli)
+    if state != "ok":
+        if isinstance(found, str):
+            print(f"[경고] {found}")
+        sys.exit(_STARTUP_FAILURES[state])
+    cli_email = found["email"]
     if not _acquire_account_mutex(cli_email):
         sys.exit(
             f"[오류] {cli_email} 계정의 생성 에이전트가 이미 실행 중입니다. "
@@ -3932,4 +4063,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--startup-check"]:
+        sys.exit(_startup_check_main(sys.argv[2:]))
+    if sys.argv[1:2] == ["--startup-autoselect"]:
+        _startup_autoselect(_startup_cli(sys.argv[2:]))
+        sys.exit(0)
+    if sys.argv[1:2] == ["--startup-token"]:
+        sys.exit(_startup_token(_startup_cli(sys.argv[2:])))
+    if sys.argv[1:2] == ["--startup-version"]:
+        print(_startup_version(_startup_cli(sys.argv[2:])))
+        sys.exit(0)
     main()

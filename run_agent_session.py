@@ -428,27 +428,25 @@ def _parse_command_line(command_line: str) -> list[str]:
         ctypes.windll.kernel32.LocalFree(argv)
 
 
-def _browser_processes(exe_basename: str) -> list[dict] | None:
-    """해당 브라우저 프로세스의 {pid, exe, cmdline} 목록 — PowerShell CIM 1회 조회.
+def _powershell_rows(script: str) -> list | None:
+    """PowerShell 조회의 행 목록 — 조회 실패(종료 코드·출력 누락·글자 해석·JSON)는 None.
 
-    반환 3상태(코덱스 합의): 목록=성공, []=성공했고 프로세스 없음, None=조회 실패.
-    실패를 '없음'으로 합치면 앱 창이 떠 있는데 감시가 종료로 오판한다. cmdlet 오류가
-    non-terminating 으로 exit 0 이 되지 않게 ErrorAction Stop 을 강제하고, 구조가
-    예상과 다르거나 CommandLine 을 못 읽는 행(권한·종료 중)이 있으면 '우리 프로필이
-    아님'을 증명할 수 없으므로 보수적으로 None."""
+    출력은 UTF-8 로 고정해 엄격히 읽는다 — 한국어 Windows 의 기본 출력(CP949)을 그냥 읽으면 읽기가 죽어
+    stdout=None 이 '조회 성공·없음'으로 보였다. 0행은 '[]' 로 받아 출력 누락과 가른다. cmdlet 오류가
+    non-terminating 으로 exit 0 이 되거나 '[]' 로 새지 않게 ErrorAction Stop 을 강제한다."""
     powershell = str(
         Path(os.environ["SystemRoot"]) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
     )
-    script = (
+    wrapped = (
         "$ErrorActionPreference='Stop'; "
-        f"Get-CimInstance Win32_Process -Filter \"Name='{exe_basename}'\" -ErrorAction Stop | "
-        "Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress"
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+        "$rows = @(" + script + "); "
+        "if ($rows.Count) { $rows | ConvertTo-Json -Compress } else { '[]' }"
     )
     try:
         proc = subprocess.run(
-            [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
+            [powershell, "-NoProfile", "-NonInteractive", "-Command", wrapped],
             capture_output=True,
-            text=True,
             timeout=15,
             creationflags=CREATE_NO_WINDOW,
         )
@@ -456,14 +454,26 @@ def _browser_processes(exe_basename: str) -> list[dict] | None:
         return None
     if proc.returncode != 0:
         return None
-    raw = (proc.stdout or "").strip()
-    if not raw:
-        return []  # 조회 성공 + 해당 프로세스 없음
     try:
-        data = json.loads(raw)
-    except ValueError:
+        data = json.loads(proc.stdout.decode("utf-8"))
+    except ValueError:  # UnicodeDecodeError·JSONDecodeError 모두 ValueError
         return None
-    rows = data if isinstance(data, list) else [data]
+    return data if isinstance(data, list) else [data]
+
+
+def _browser_processes(exe_basename: str) -> list[dict] | None:
+    """해당 브라우저 프로세스의 {pid, exe, cmdline} 목록 — PowerShell CIM 1회 조회.
+
+    반환 3상태(코덱스 합의): 목록=성공, []=성공했고 프로세스 없음, None=조회 실패.
+    실패를 '없음'으로 합치면 앱 창이 떠 있는데 감시가 종료로 오판한다. 구조가
+    예상과 다르거나 CommandLine 을 못 읽는 행(권한·종료 중)이 있으면 '우리 프로필이
+    아님'을 증명할 수 없으므로 보수적으로 None."""
+    rows = _powershell_rows(
+        f"Get-CimInstance Win32_Process -Filter \"Name='{exe_basename}'\" -ErrorAction Stop | "
+        "Select-Object ProcessId,ExecutablePath,CommandLine"
+    )
+    if rows is None:
+        return None
     out: list[dict] = []
     for row in rows:
         if not isinstance(row, dict) or not row.get("ProcessId") or not row.get("CommandLine"):
@@ -655,35 +665,14 @@ def _console_cmd_cmdlines(pids: list) -> list | None:
     콘솔 숨김 직전 1회만 불려 CIM 비용은 수용된다."""
     if not pids:
         return []
-    powershell = str(
-        Path(os.environ["SystemRoot"]) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
-    )
     cond = " or ".join(f"ProcessId={int(p)}" for p in pids)
-    script = (
-        "$ErrorActionPreference='Stop'; "
+    rows = _powershell_rows(
         f"Get-CimInstance Win32_Process -Filter \"{cond}\" -ErrorAction Stop | "
-        "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
+        "Select-Object ProcessId,CommandLine"
     )
-    try:
-        proc = subprocess.run(
-            [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            creationflags=CREATE_NO_WINDOW,
-        )
-    except (OSError, subprocess.SubprocessError):
+    if rows is None:
         return None
-    if proc.returncode != 0:
-        return None
-    raw = (proc.stdout or "").strip()
-    if not raw:
-        return [None for _ in pids]  # 조회는 성공했지만 행 없음 — 미독으로 취급(fail-open)
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        return None
-    rows = data if isinstance(data, list) else [data]
+    # 조회는 성공했지만 행 없는 PID 는 아래에서 None 자리 — 미독으로 취급(fail-open)
     by_pid: dict[int, str | None] = {}
     for row in rows:
         if not isinstance(row, dict):
