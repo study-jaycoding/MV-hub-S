@@ -2,6 +2,7 @@
 //  목록 한 쪽은 MB 단위라 쪽을 크게(500) 받아 요청 수를 줄이고, 수천 건짜리 조회는 상한에서 자른다(truncated — '최근 N건 기준').
 import { api, type GenCursor } from "../api";
 import type { GenQuery, Generation } from "../types";
+import { timedLibraryRequest } from "./libraryRequestTimeout";
 
 export const FETCH_ALL_PAGE = 500;
 export const FETCH_ALL_MAX = 2000; // 이만큼까지(4쪽)
@@ -13,7 +14,8 @@ export async function fetchAllGenerations(
   const all: Generation[] = [];
   let cursor: GenCursor | null = null;
   for (;;) {
-    const page: Generation[] = await api.listGenerations(query, cursor, FETCH_ALL_PAGE, opts);
+    // 쪽마다 30초 제한 + 실제 취소(본문 읽기까지) — 멈춘 요청이 폴더 카드의 한 줄 대기열을 끝없이 막았다(81회차 F-B-03)
+    const page: Generation[] = await timedLibraryRequest((signal) => api.listGenerations(query, cursor, FETCH_ALL_PAGE, { ...opts, signal }));
     if (!alive()) return null;
     all.push(...page);
     if (page.length < FETCH_ALL_PAGE) return { gens: all, truncated: false };
