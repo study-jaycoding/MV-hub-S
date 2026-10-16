@@ -45,7 +45,7 @@ status: 고침 dev 반영 · Codex 묶음 리뷰 승인(P2 셋 고침) · update
 
 ## dev 병합과 독립 리뷰 (2026-10-16)
 
-owner: Claude(통합) · reviewer: Claude 별도 세션(읽기만 — 구현은 Codex) · status: 승인(dev 병합) / 배포 전 P1 1 미해결 · updated: 2026-10-16
+owner: Claude(통합) · reviewer: Claude 별도 세션(읽기만 — 구현은 Codex) · status: 당시 승인(dev 병합), P1은 위 후속 고침에서 해소 · updated: 2026-10-16
 
 - 대상: `codex/mvhub-mcp-fixes` `dfcb7391`(어댑터 2026.10.15.4)을 dev `e6a2d36a` 위에 합친 `int/mcp-v4`(66파일 +10,966/-110).
   충돌은 `docs/WORKROOMS.md` 하나 → dev 판(그 문서 스스로 "통합 시험실은 자기 판을 유지"). Jay 2026-10-15 "mcp .4 버전으로 dev 에 넣어서 검토 진행".
@@ -79,6 +79,7 @@ owner: Codex · reviewer: Claude · status: 검증 중 · updated: 2026-10-16
   직접 회귀를 추가해 수정 전 실패를 확인했다. `.16.5`는 native 묶음 이미지 뒤에 합친 설명 텍스트 블록을 한 번 반환한다.
   conversation은 구조화된 설명만 유지하며 별도 텍스트 블록을 추가하지 않는다.
 - 수정 후 native·conversation 관련 2개 시험과 소스 어댑터 전체 40개가 통과했다(42.064초).
+  통합 시험실 어댑터 44개도 통과했다(46.013초). 기존 다른 작업자 파일 13개의 SHA256을 보존했다.
   Claude의 관련 재확인에서 P2 해결 판정과 후보 병합·회귀·문서 보완 조건부 승인을 받았다.
   SDK 실측은 별도 Codex 세션에서 수행했으나 등록된 설치본 허브가 TCP 연결 거부로 unavailable이었다(상대 보고).
   기존 결과 발견·실제 이미지 표시 성공을 주장하지 않는다. 두 앱의 기존 전역 등록에는 표시 모드 플래그가 없다(상대 보고).
@@ -87,6 +88,13 @@ owner: Codex · reviewer: Claude · status: 검증 중 · updated: 2026-10-16
   공개 배포·새 유료 생성·설치본 변경은 아직 수행하지 않았다. 고정 후보의 전체 게이트 결과는 배포 전 대조한다.
   증거: `%TEMP%/mvhub-mcp-release-20261016/`의 리뷰·수정 전후 회귀·verify 요약·게이트 로그.
   프로젝트 전용 기록이므로 볼트에 복제하지 않는다.
+
+- 후보 `37035b69` 전체 게이트: 백엔드 5,605개·961 subtests 통과, 2개 건너뜀, Comfy 요청표 동시성 시험 1개 실패.
+  프런트 4,043개·빌드·아키텍처 검사와 로컬 DB 사본 복원 검증은 통과했다.
+  직접 확인 및 별도 Codex 읽기 분석: 시험 fixture가 `len(state.staged)`로 경로를 정한 뒤 쓰고 목록을 늘려 두 스레드가
+  같은 파일을 열 수 있다. 제품은 `NamedTemporaryFile`로 각 파일을 분리한다. 실패한 파일의 단독 재실행은 15개 통과했다.
+  배포 후보의 `backend/tests/test_comfy_run_key.py`에서 파일명만 UUID로 분리하고 최종 후보 전체 게이트를 다시 실행한다.
+  제품 Comfy 코드·인증·DB 변경은 없다. 최종 결과·후보 SHA는 같은 증거 폴더의 최종 게이트 로그로 대조한다.
 
 ## 현재 연결된 허브 기준 조회·생성·표시 (2026-10-16)
 
