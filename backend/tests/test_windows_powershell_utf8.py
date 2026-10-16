@@ -116,3 +116,70 @@ def test_cp949_process_list_never_counts_as_server_stopped(monkeypatch, tmp_path
 
     with pytest.raises(sm.ServerActive, match="프로세스 목록을 조회하지 못"):
         sm.ensure_server_stopped(8010)
+
+
+# ── R-2 backend/app/routers/backup_replica.py `_task_info` ────────────────────────────────────
+
+
+def _backup_task_fakes(arguments: str) -> str:
+    return (
+        "function Get-ScheduledTask { [pscustomobject]@{ State = 'Ready'; "
+        "Principal = [pscustomobject]@{ UserId = 'SYSTEM' }; "
+        "Actions = @([pscustomobject]@{ Execute = 'cmd.exe'; Arguments = '" + arguments + "' }); "
+        "Settings = [pscustomobject]@{ MultipleInstances = 'IgnoreNew' } } }; "
+        "function Get-ScheduledTaskInfo { [pscustomobject]@{ LastRunTime = [datetime]'2026-10-16'; "
+        "LastTaskResult = 0; NextRunTime = [datetime]'2026-10-17' } }; "
+    )
+
+
+def test_task_info_matches_korean_install_path(monkeypatch, tmp_path):
+    from app.routers import backup_replica as route
+
+    root = tmp_path / "한글 설치 폴더"
+    monkeypatch.setattr(route, "ROOT", root)
+    _pipe(monkeypatch, fakes=_backup_task_fakes('/c call "' + str(root / "task_launch.bat") + '" backup'))
+
+    task = route._task_info()
+
+    assert task is not None
+    assert (task["exists"], task["system"], task["ignore_new"]) == (True, True, True)
+    assert task["matches_install"] is True
+
+
+def test_task_query_failure_returns_503_without_running_task(monkeypatch, tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app import deps
+    from app.routers import backup_replica as route
+
+    mod = route._replicator()
+    monkeypatch.setattr(mod, "TARGET_FILE", tmp_path / "backup_replica_target.txt")
+    monkeypatch.setattr(mod, "STATUS_FILE", tmp_path / "backup_replica_status.json")
+    (tmp_path / "backup_replica_target.txt").write_text("\\\\NAS\\backup\\mvhub\n", encoding="utf-8")
+    for name in ("CONTENT_HUB_BACKUP_REPLICA_DIR", "CONTENT_HUB_DATA", "CONTENT_HUB_NO_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(deps, "AUTH_ENABLED", True)
+    monkeypatch.setattr(route, "AUTH_ENABLED", True)
+    root = tmp_path / "한글 설치 폴더"
+    monkeypatch.setattr(route, "ROOT", root)
+    task = {
+        "exists": True, "state": "Ready", "user": "SYSTEM", "action_count": 1, "execute": "cmd.exe",
+        "arguments": '/c call "' + str(root / "task_launch.bat") + '" backup', "multi": "IgnoreNew",
+        "last_run": "2026-10-16T00:00:00.0000000Z", "last_result": 0, "next_run": "",
+    }
+    # 출력 인코딩 고정이 듣지 않은 옛 출력(CP949) — 깨진 경로를 '설치 불일치'로 읽지 말고 '모름'으로 다뤄야 한다.
+    others = _pipe(monkeypatch, emit=lambda _script: json.dumps(task, ensure_ascii=False).encode("cp949"))
+
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def admin(request, call_next):
+        request.state.account = {"status": "approved", "global_role": "admin", "global_roles": ["admin"]}
+        return await call_next(request)
+
+    app.include_router(route.router)
+    response = TestClient(app).post("/api/admin/backup-replica/run", json={})
+
+    assert response.status_code == 503, response.text
+    assert [args for args in others if args and args[0] == "schtasks"] == []

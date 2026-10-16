@@ -109,8 +109,12 @@ def _is_our_backup_action(raw: dict[str, Any]) -> bool:
 
 
 def _task_info() -> Optional[dict[str, Any]]:
-    """예약 작업 상태. 조회 자체가 실패하면 None(호출자가 '모름' 으로 다룬다)."""
+    """예약 작업 상태. 조회 자체가 실패하면 None(호출자가 '모름' 으로 다룬다).
+
+    출력은 UTF-8 로 고정해 엄격히 읽는다 — 한국어 Windows 의 기본 출력(CP949)을 대체 문자로 읽으면 한글 설치 경로가
+    깨져 정상 작업이 '설치 불일치'(409)가 됐다. 종료 코드·글자 해석·JSON 실패는 모두 '모름'이다."""
     script = (
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
         "$t = Get-ScheduledTask -TaskName '" + TASK_NAME + "' -ErrorAction SilentlyContinue; "
         "if (-not $t) { '{\"exists\":false}'; exit 0 }; "
         "$i = $t | Get-ScheduledTaskInfo; "
@@ -125,10 +129,12 @@ def _task_info() -> Optional[dict[str, Any]]:
     try:
         out = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output=True, text=True, errors="replace", timeout=20,
+            capture_output=True, timeout=20,
         )
-        raw = json.loads(out.stdout.strip() or "null")
-    except (OSError, subprocess.SubprocessError, ValueError):
+        if out.returncode != 0:
+            return None
+        raw = json.loads(out.stdout.decode("utf-8").strip() or "null")
+    except (OSError, subprocess.SubprocessError, ValueError):  # UnicodeDecodeError 도 ValueError
         return None
     if not isinstance(raw, dict):
         return None
