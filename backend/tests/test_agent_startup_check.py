@@ -40,11 +40,12 @@ def _load_agent():
 
 def _fake_cli(monkeypatch, agent, script: dict) -> tuple[list, list]:
     """script: {"account status": [결과…], "workspace list": [결과…]} — 결과 = (rc, stdout, stderr) 또는 "timeout".
-    목록의 마지막 결과는 계속 반복한다. 적히지 않은 명령(workspace set·generate 등)을 부르면 시험이 실패한다."""
+    목록의 마지막 결과는 계속 반복한다. 적히지 않은 명령(workspace set·generate 등)을 부르면 시험이 실패한다.
+    분류만 보는 가짜다 — 시간 초과 때 프로세스를 실제로 끝내고 회수하는지는 아래 실제 프로세스 시험이 본다."""
     calls: list = []
     sleeps: list = []
 
-    def run(args, **kwargs):
+    def run(args, timeout, env=None):
         key = " ".join(arg for arg in args[1:] if arg != "--json")
         calls.append(key)
         outcomes = script.get(key)
@@ -52,11 +53,11 @@ def _fake_cli(monkeypatch, agent, script: dict) -> tuple[list, list]:
             raise AssertionError(f"기동 점검이 부르면 안 되는 CLI 명령: {key}")
         outcome = outcomes.pop(0) if len(outcomes) > 1 else outcomes[0]
         if outcome == "timeout":
-            raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+            raise subprocess.TimeoutExpired(args, timeout)
         returncode, stdout, stderr = outcome
         return subprocess.CompletedProcess(args, returncode, stdout, stderr)
 
-    monkeypatch.setattr(agent.subprocess, "run", run)
+    monkeypatch.setattr(agent, "_run_with_tree_kill", run)
     monkeypatch.setattr(agent.time, "sleep", sleeps.append)
     return calls, sleeps
 
@@ -114,6 +115,79 @@ def test_agent_first_account_check_retries_a_transient_failure(monkeypatch):
 
     assert reached == ["worker@example.test"]
     assert slept == [1]
+
+
+# ── 시간 초과된 CLI 를 실제로 끝내고 회수하는가(실제 프로세스) ─────────────────────────────────────
+
+_HANGING_HF = r'''
+import os, subprocess, sys, time
+here = os.path.dirname(os.path.abspath(__file__))
+args = [a for a in sys.argv[1:] if a != "--json"]
+with open(os.path.join(here, "hf_calls.txt"), "a", encoding="ascii") as log:
+    log.write(" ".join(args) + "\n")
+if args[:2] == ["workspace", "list"]:
+    print('[{"id": "ws-team", "name": "Team", "is_selected": true}]')
+    sys.exit(0)
+# account status: 출력 파이프를 물려받은 손자를 띄우고 자신도 멈춘다(설치된 CLI 의 Node -> hf.exe 꼴)
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+with open(os.path.join(here, "pids.txt"), "a", encoding="ascii") as log:
+    log.write(f"{os.getpid()} {child.pid}\n")
+time.sleep(60)
+'''
+
+_DRIVER = r'''
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("mvhub_agent_hang_target", sys.argv[1])
+agent = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(agent)
+agent._STARTUP_CHECK_TIMEOUT = 1  # 20초 제한을 시험에서만 줄인다
+agent.time.sleep = lambda _seconds: None
+state, _detail = agent._startup_account_status(sys.argv[2])
+print("STATE=" + state)
+'''
+
+
+def _alive(pid: int) -> bool:
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(0x00100000 | 0x1000, False, pid)  # SYNCHRONIZE | QUERY_LIMITED_INFORMATION
+    if not handle:
+        return False
+    try:
+        return kernel32.WaitForSingleObject(handle, 0) == 0x102  # WAIT_TIMEOUT = 아직 살아 있음
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")
+def test_startup_check_timeout_kills_the_cli_tree_and_retries(tmp_path):
+    """시간 초과 때 셰임만 죽이면 출력 파이프를 쥔 자식이 남아 회수가 끝나지 않고 재시도로 못 간다(Codex 리뷰 P1)."""
+    assert _load_agent()._STARTUP_CHECK_TIMEOUT == 20  # 요청마다 제한 시간
+    (tmp_path / "fake_hf.py").write_text(_HANGING_HF, encoding="utf-8")
+    hf = tmp_path / "hf.cmd"
+    hf.write_text(f'@"{sys.executable}" "%~dp0fake_hf.py" %*\r\n', encoding="ascii")
+    driver = subprocess.Popen(
+        [sys.executable, "-c", _DRIVER, str(AGENT_PATH), str(hf)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    try:
+        try:
+            out, err = driver.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            subprocess.run(["taskkill", "/PID", str(driver.pid), "/T", "/F"], capture_output=True)
+            driver.communicate()
+            pytest.fail("시간 초과된 CLI 를 회수하지 못해 기동 점검이 30초 안에 돌아오지 않았다")
+        assert "STATE=unknown" in out, out + err
+        calls = (tmp_path / "hf_calls.txt").read_text(encoding="ascii").splitlines()
+        assert calls.count("account status") == 3  # 시간 초과 뒤에도 다음 재시도로 갔다
+        pids = [int(pid) for line in (tmp_path / "pids.txt").read_text(encoding="ascii").split("\n") for pid in line.split()]
+        assert len(pids) == 6 and not [pid for pid in pids if _alive(pid)]  # 가짜 CLI 와 손자까지 끝났다
+    finally:
+        pid_file = tmp_path / "pids.txt"
+        for pid in (pid_file.read_text(encoding="ascii").split() if pid_file.exists() else []):
+            subprocess.run(["taskkill", "/PID", pid, "/T", "/F"], capture_output=True)
 
 
 # ── MV_agent.bat 의 실제 구간 + 실제 agent_push.py + 가짜 CLI ───────────────────────────────────

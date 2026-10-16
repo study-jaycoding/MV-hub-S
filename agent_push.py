@@ -422,16 +422,40 @@ def _sanitize_diagnostic(text: str | bytes | None) -> str:
     return _DIAGNOSTIC_AUTH_RE.sub(lambda m: f"{m.group(1)} <자격값 숨김>", text)
 
 
-def _run_cli_json(cli: str, *args: str, timeout: int = 120, env: dict | None = None):
+def _run_with_tree_kill(argv: list, timeout: float, env: dict | None = None) -> subprocess.CompletedProcess:
+    """subprocess.run(capture_output=True, text=True, timeout=…) 과 같되, 시간 초과면 프로세스 트리째 끝내고
+    제한 시간 안에 회수한다(cli_bridge._terminate_cli_process 와 같은 꼴). 셰임(Node)만 죽이면 출력 파이프를
+    물려받은 자식 CLI 가 남아 회수가 끝나지 않고 다음 재시도로 못 갔다(81회차 F-C-04 리뷰 P1)."""
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        if os.name == "nt":
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+        proc.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):  # 트리 밖으로 빠진 자식이 파이프를 쥐면 더 기다리지 않는다
+            exc.stdout, exc.stderr = proc.communicate(timeout=5)
+        raise
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+
+
+def _run_cli_json(cli: str, *args: str, timeout: int = 120, env: dict | None = None, kill_tree: bool = False):
     """higgsfield CLI 를 --json 으로 실행하고 (파싱 결과, 오류문구) 반환.
 
     env 를 주면 **이 자식 프로세스에만** 적용한다(부모 os.environ 은 건드리지 않는다 — 동시에 도는
-    다른 요청의 환경을 오염시키면 그게 곧 엉뚱한 공간 과금이다). 안 주면 종전대로 부모 환경을 상속한다."""
+    다른 요청의 환경을 오염시키면 그게 곧 엉뚱한 공간 과금이다). 안 주면 종전대로 부모 환경을 상속한다.
+    kill_tree 면 시간 초과 때 CLI 프로세스 트리째 끝내고 회수한다(기동 점검의 제한 재시도용)."""
     try:
-        out = subprocess.run(
-            [*_cli_argv(cli), *args, "--json"],
-            capture_output=True, text=True, timeout=timeout, env=env,
-        )
+        argv = [*_cli_argv(cli), *args, "--json"]
+        if kill_tree:
+            out = _run_with_tree_kill(argv, timeout, env)
+        else:
+            out = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired as e:
         # 타임아웃이어도 CLI 가 이미 찍은 부분 출력에 방금 만든 job id 가 있을 수 있다 → 버리지 않고
         # (순수 CLI 출력만) 담아, _extract_created_id 가 그 UUID 로 job_id 를 되찾게 한다(가짜 실패 방지).
@@ -3121,13 +3145,13 @@ def _startup_account_status(cli: str, attempts: int = 3) -> tuple[str, dict | st
     for attempt in range(attempts):
         if attempt:
             time.sleep(attempt)
-        acct, err = _run_cli_json(cli, "account", "status", timeout=_STARTUP_CHECK_TIMEOUT)
+        acct, err = _run_cli_json(cli, "account", "status", timeout=_STARTUP_CHECK_TIMEOUT, kill_tree=True)
         if isinstance(acct, dict) and acct.get("email"):
             return "ok", acct
         detail = err or "account status 응답에 email 이 없습니다"
         if _classify_cli_error(err) == "auth":
             return "auth", detail
-        workspaces, ws_err = _run_cli_json(cli, "workspace", "list", timeout=_STARTUP_CHECK_TIMEOUT)
+        workspaces, ws_err = _run_cli_json(cli, "workspace", "list", timeout=_STARTUP_CHECK_TIMEOUT, kill_tree=True)
         if _classify_cli_error(ws_err) == "auth":
             return "auth", ws_err
         if isinstance(workspaces, list) and not any(isinstance(w, dict) and w.get("is_selected") for w in workspaces):
