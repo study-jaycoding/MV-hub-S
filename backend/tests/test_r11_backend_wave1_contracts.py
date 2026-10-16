@@ -180,7 +180,10 @@ def test_validate_hub_db_leaves_no_sidecar_droppings(tmp_path: Path) -> None:
 
     validate_hub_db(path, require_integrity=True)
 
-    assert sorted(child.name for child in tmp_path.iterdir()) == ["uploaded.db"]
+    # 이 PC 의 외부 프로세스(백신·색인기 추정)가 잠깐 만드는 '제품 이름을 대문자로 + .tmp' 사본(`UPLOADED.DB-SHM.tmp`, 10-16 게이트 1회)은
+    #  제품 파일이 아니다 — test_db_restore_account_boundary 와 같은 규칙. 제품의 소문자 곁파일(-wal·-shm·-journal)은 그대로 잡는다.
+    names = sorted(n for n in (child.name for child in tmp_path.iterdir()) if not (n.endswith(".tmp") and n[:-4].isupper()))
+    assert names == ["uploaded.db"]
     assert path.read_bytes() == before
 
 
