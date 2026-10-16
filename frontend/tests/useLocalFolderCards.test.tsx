@@ -146,7 +146,8 @@ it("한 번에 하나만 받는다 — 받는 중에 조회가 연달아 바뀌�
 });
 
 // 81회차 F-B-03: 앞 요청이 답 없이 멈추면 한 줄 대기열이 끝없이 막혀 뒤 조회가 출발하지 못했다 — 쪽마다 30초 뒤 실제로 끊는다.
-it.each([["첫 쪽", 0], ["다음 쪽", 1]])("stalled page releases the lane and starts the latest query — %s이 멈추면 30초 뒤 실제로 끊고, 건너뛴 조회는 보내지 않고 마지막만 보낸다", async (_name, stallAt) => {
+//  제한은 쪽마다다 — 첫 쪽이 20초 걸려도 다음 쪽은 제 30초를 받는다(전체 30초면 20+10초에 끊긴다, Codex 리뷰 P3).
+it.each([["첫 쪽", 0, 0], ["다음 쪽", 1, 20_000]])("stalled page releases the lane and starts the latest query — %s이 멈추면 30초 뒤 실제로 끊고, 건너뛴 조회는 보내지 않고 마지막만 보낸다", async (_name, stallAt, firstDelay) => {
   vi.useFakeTimers();
   try {
     let inFlight = 0;
@@ -156,7 +157,7 @@ it.each([["첫 쪽", 0], ["다음 쪽", 1]])("stalled page releases the lane and
     listGenerations.mockImplementation((_q: GenQuery, _cursor: unknown, _limit: number, opts: { signal?: AbortSignal } = {}) => {
       const at = signals.length;
       signals.push(opts.signal);
-      if (at < stallAt) return Promise.resolve(full);
+      if (at < stallAt) return new Promise<Generation[]>((resolve) => { setTimeout(() => resolve(full), firstDelay); });
       inFlight += 1;
       maxInFlight = Math.max(maxInFlight, inFlight);
       return new Promise<Generation[]>((_resolve, reject) => {
@@ -165,6 +166,7 @@ it.each([["첫 쪽", 0], ["다음 쪽", 1]])("stalled page releases the lane and
     });
     draw({}); // A — 멈춘다
     await settle();
+    await act(async () => { await vi.advanceTimersByTimeAsync(firstDelay); }); // 앞 쪽이 늦게(20초) 끝나고 다음 쪽이 나간다(그 쪽의 30초는 여기서부터)
     draw({ query: query({ media_type: "video" }) }); // B — 건너뛴다
     await settle();
     draw({ query: query({ media_type: "image" }) }); // C — 마지막
