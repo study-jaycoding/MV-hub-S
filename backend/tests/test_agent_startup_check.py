@@ -271,11 +271,15 @@ def stall():
 if args[:1] == ["version"]:
     if mode == "version-stalls":
         stall()
-    print("higgsfield 1.1.26")
+    print("higgsfield 1.0.0" if mode == "version-old" else "higgsfield 1.1.26")
     sys.exit(0)
 if args[:2] == ["auth", "token"]:
     if mode == "token-stalls":
         stall()
+    if mode in ("token-error", "token-auth"):
+        sys.stderr.write(("Error: Not authenticated. Hint: Run: hf auth login" if mode == "token-auth"
+                          else "Error: failed to read the token store") + "\n")
+        sys.exit(1)
     print("TOKEN-VALUE-MUST-NOT-SHOW")
     sys.exit(0)
 if args[:2] == ["auth", "login"]:
@@ -298,8 +302,9 @@ sys.exit(9)
 '''
 
 
-def _run_stalling_probe(tmp_path: Path, body: list[str], mode: str) -> tuple[str, list[str], list[int]]:
-    """agent_push.py 사본(제한 1초) + 멈추는 가짜 CLI 로 배치 줄들을 실제 cmd 에서 돌린다. 40초 안에 못 끝나면 실패."""
+def _run_stalling_probe(tmp_path: Path, body: list[str], mode: str) -> tuple[str, list[str], list[int], list[int]]:
+    """agent_push.py 사본(제한 1초) + 멈추는 가짜 CLI 로 배치 줄들을 실제 cmd 에서 돌린다. 40초 안에 못 끝나면 실패.
+    (출력, CLI 호출, 멈춘 CLI·손자 PID, 그중 아직 살아 있던 PID) — 생존은 시험이 강제로 정리하기 **전에** 본다."""
     source = AGENT_PATH.read_text(encoding="utf-8")
     assert source.count("_STARTUP_CHECK_TIMEOUT = 20\n") == 1
     (tmp_path / "agent_push.py").write_text(
@@ -333,7 +338,8 @@ def _run_stalling_probe(tmp_path: Path, body: list[str], mode: str) -> tuple[str
             pytest.fail("멈춘 CLI 호출에 묶여 40초 안에 다음 단계로 넘어가지 못했다")
         calls = (tmp_path / "hf_calls.txt").read_text(encoding="ascii").splitlines()
         pids = [int(pid) for pid in (pid_file.read_text(encoding="ascii").split() if pid_file.exists() else [])]
-        return out + err, calls, pids
+        alive = [pid for pid in pids if _alive(pid)]  # 아래 강제 정리 전에 — 제품이 끝냈는지를 본다
+        return out + err, calls, pids, alive
     finally:
         for pid in (pid_file.read_text(encoding="ascii").split() if pid_file.exists() else []):
             subprocess.run(["taskkill", "/PID", pid, "/T", "/F"], capture_output=True)
@@ -342,21 +348,34 @@ def _run_stalling_probe(tmp_path: Path, body: list[str], mode: str) -> tuple[str
 @pytest.mark.skipif(os.name != "nt", reason="Windows cmd 전용")
 def test_agent_bat_token_check_cannot_hang(tmp_path):
     """auth token 확인이 멈추면 제한 시간 뒤 로그인 창을 띄우지 않고 계정 점검으로 넘어간다(Codex 재확인 2 P1)."""
-    out, calls, pids = _run_stalling_probe(
+    out, calls, pids, alive = _run_stalling_probe(
         tmp_path, [f'set "HF={tmp_path / "hf.cmd"}"', 'set "RUN_AGENT=1"', *_bat_segment(), "echo RUN_AGENT=%RUN_AGENT%"],
         "token-stalls",
     )
     assert "YOUR HIGGSFIELD CLI ACCOUNT" in out and "RUN_AGENT=1" in out, out
     assert "auth login" not in calls  # 모르는 상태로 사람에게 로그인을 띄우지 않는다
     assert "TOKEN-VALUE-MUST-NOT-SHOW" not in out
-    assert len(pids) == 2 and not [pid for pid in pids if _alive(pid)]
+    assert len(pids) == 2 and alive == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cmd 전용")
+@pytest.mark.parametrize("mode, login", [("token-error", False), ("token-auth", True)])
+def test_agent_bat_opens_login_only_for_an_explicit_auth_error(tmp_path, mode, login):
+    """제한 없는 대화형 auth login 은 명시적 인증 오류(_classify_cli_error 'auth')일 때만 — 토큰 저장소 읽기 오류 같은
+    비인증 실패는 '확인 불가'로 로그인 창 없이 계정 점검으로 간다(Codex 재확인 3 P2)."""
+    out, calls, _pids, _alive_pids = _run_stalling_probe(
+        tmp_path, [f'set "HF={tmp_path / "hf.cmd"}"', 'set "RUN_AGENT=1"', *_bat_segment(), "echo RUN_AGENT=%RUN_AGENT%"],
+        mode,
+    )
+    assert ("auth login" in calls) is login, calls
+    assert "YOUR HIGGSFIELD CLI ACCOUNT" in out and "RUN_AGENT=1" in out, out
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows cmd 전용")
 def test_agent_bat_unselected_guidance_does_not_query_again(tmp_path):
     """공유 공간이 여럿이라 자동 선택을 건너뛰고 점검이 '미선택'을 내면, 안내는 점검이 이미 받은 목록으로 한다 —
     사람용 목록을 다시 물어 멈추면 앱 창 단계까지 못 갔다(Codex 재확인 2 P1)."""
-    out, calls, pids = _run_stalling_probe(
+    out, calls, pids, _alive_pids = _run_stalling_probe(
         tmp_path, [f'set "HF={tmp_path / "hf.cmd"}"', 'set "RUN_AGENT=1"', *_bat_segment(), "echo RUN_AGENT=%RUN_AGENT%"],
         "unselected",
     )
@@ -375,7 +394,7 @@ def test_try_cli_version_check_cannot_hang(tmp_path, mode, chosen):
     start = lines.index(":try_cli")
     block = lines[start:lines.index("exit /b 0", start) + 1]
     hf = tmp_path / "hf.cmd"
-    out, calls, pids = _run_stalling_probe(tmp_path, [
+    out, calls, _pids, alive = _run_stalling_probe(tmp_path, [
         'set "HF="',
         'set "HF_CLI_VERSION=1.1.26"',
         f'call :try_cli "{hf}"',
@@ -385,7 +404,51 @@ def test_try_cli_version_check_cannot_hang(tmp_path, mode, chosen):
     ], mode)
     assert (f"HF=[{hf}]" if chosen else "HF=[]") in out, out
     assert calls == ["version"]
-    assert not [pid for pid in pids if _alive(pid)]
+    assert alive == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cmd 전용")
+@pytest.mark.parametrize(
+    "mode, npm_calls, chosen, shown",
+    [
+        ("version-stalls", 0, False, "did not answer the version check"),
+        ("version-old", 1, False, "No pinned Higgsfield CLI available"),
+        ("version-ok", 0, True, "Using Higgsfield CLI 1.1.26"),
+    ],
+)
+def test_agent_bat_cli_selection_never_installs_on_an_unconfirmed_version(tmp_path, mode, npm_calls, chosen, shown):
+    """[3/5] 흐름 전체 — 판 확인이 '확인 불가'(시간 초과·실행 실패)면 제한 없는 npm install 로 떨어지지 않고 다음 단계로
+    간다. 설치는 판이 확인된 불일치·미설치일 때만(Codex 재확인 3 P1)."""
+    lines = (ROOT / "MV_agent.bat").read_bytes().decode("ascii").split("\r\n")
+    start = next(i for i, line in enumerate(lines) if line.startswith("echo [3/5]"))
+    end = next(i for i, line in enumerate(lines) if line.startswith("echo [4/5]"))
+    sub = lines.index(":try_cli")
+    try_cli = lines[sub:lines.index("exit /b 0", sub) + 1]
+    helper = tmp_path / "backend" / "app" / "services" / "read_utf8_sig_first_line.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_bytes((ROOT / "backend" / "app" / "services" / "read_utf8_sig_first_line.py").read_bytes())
+    (tmp_path / "hf_cli_version.txt").write_text("1.1.26\n", encoding="ascii")
+    bundled = tmp_path / "runtime" / "higgsfield" / "higgsfield.cmd"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_text(f'@"{sys.executable}" "{tmp_path / "fake_hf.py"}" %*\r\n', encoding="ascii")
+    npm = tmp_path / "npm.cmd"
+    npm.write_text(f'@echo %*>>"{tmp_path / "npm_calls.txt"}"\r\n', encoding="ascii")
+    out, calls, _pids, alive = _run_stalling_probe(tmp_path, [
+        'set "HAVE_NPM=1"',
+        f'set "NPM_CMD={npm}"',
+        'set "PATH=%SystemRoot%\\system32;%SystemRoot%"',  # 이 PC 의 실제 전역 CLI 는 부르지 않는다
+        *lines[start:end],
+        "echo NEXT-STAGE RUN_AGENT=%RUN_AGENT% HF=[%HF%]",
+        "exit /b 0",
+        *try_cli,
+    ], mode)
+
+    npm_log = tmp_path / "npm_calls.txt"
+    assert len(npm_log.read_text(encoding="ascii").splitlines() if npm_log.exists() else []) == npm_calls
+    assert f"NEXT-STAGE RUN_AGENT={1 if chosen else 0} HF=[{bundled if chosen else ''}]" in out, out
+    assert shown in out
+    assert calls == ["version"]  # 판 확인만 — 같은 CLI 를 다시 묻지 않는다
+    assert alive == []
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows cmd 전용")

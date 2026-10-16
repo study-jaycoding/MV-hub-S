@@ -3182,22 +3182,27 @@ def _startup_autoselect(cli: str) -> None:
 
 
 def _startup_token(cli: str) -> int:
-    """`auth token` 확인(MV_agent.bat) — 0 로그인됨 · 4 로그인 필요(CLI 실패) · 5 확인 불가(시간 초과 등 — 배치는 로그인
-    창을 띄우지 않고 계정 점검으로 넘어간다). 토큰 값은 버린다 — 화면·로그에 남기지 않는다."""
+    """`auth token` 확인(MV_agent.bat) — 0 로그인됨 · 4 로그인 필요 · 5 확인 불가(배치는 로그인 창을 띄우지 않고 계정
+    점검으로 넘어간다). 4 는 명시적 인증 오류(_classify_cli_error 'auth')일 때만 — 토큰 저장소 읽기 오류 같은 다른
+    실패로 제한 없는 대화형 로그인에 들어가지 않게. 토큰 값은 버린다 — 화면·로그에 남기지 않는다."""
     try:
         done = _run_with_tree_kill([*_cli_argv(cli), "auth", "token"], _STARTUP_CHECK_TIMEOUT)
     except (OSError, subprocess.SubprocessError):
         return 5
-    return 0 if done.returncode == 0 else 4
+    if done.returncode == 0:
+        return 0
+    error = "\n".join(part for part in (done.stderr, done.stdout) if part)
+    return 4 if _classify_cli_error(error) == "auth" else 5
 
 
 def _startup_version(cli: str) -> str:
     """`version` 출력의 판(MV_agent.bat :try_cli) — 배치 for /f "tokens=2" 처럼 첫 '두 단어 이상' 줄의 둘째 단어.
-    실패·시간 초과는 '' (그 CLI 를 고르지 않는다)."""
+    판을 못 읽으면 '' (미설치·판 불일치와 같게 — 설치로 고칠 수 있다). 시간 초과·실행 실패는 '?' — 확인 불가라
+    배치는 제한 없는 npm install 로 넘어가지 않는다."""
     try:
         done = _run_with_tree_kill([*_cli_argv(cli), "version"], _STARTUP_CHECK_TIMEOUT)
     except (OSError, subprocess.SubprocessError):
-        return ""
+        return "?"
     for line in (done.stdout or "").splitlines():
         parts = line.split()
         if len(parts) >= 2 and not parts[0].startswith(";"):

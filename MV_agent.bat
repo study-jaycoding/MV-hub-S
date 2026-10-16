@@ -151,6 +151,7 @@ REM started would leave the hub (model list/cost/workspace APIs) blind to a bund
 REM CLI on release PCs.
 set "RUN_AGENT=1"
 set "HF="
+set "_CLI_UNCONFIRMED="
 set "HF_CLI_VERSION="
 set "HF_CLI_PIN_FILE=%ROOT%hf_cli_version.txt"
 REM Match the backend's utf-8-sig rule. set /p leaves a UTF-8 BOM in the value.
@@ -166,9 +167,11 @@ if not defined HF_CLI_VERSION (
 REM Pick the CLI whose version == the pin: prefer the bundled copy (zero-install),
 REM then a matching global install, else install the pinned version globally.
 REM @latest is intentionally avoided: Higgsfield ships breaking changes often.
+REM Install only when a version was READ and is wrong/missing. If a CLI did not answer the
+REM version check in time (_CLI_UNCONFIRMED), skip the unbounded npm install and go on.
 if exist "%BUNDLED%" call :try_cli "%BUNDLED%"
 where higgsfield >nul 2>nul && call :try_cli "higgsfield"
-if not defined HF if defined HAVE_NPM (
+if not defined HF if not defined _CLI_UNCONFIRMED if defined HAVE_NPM (
   echo     Installing pinned Higgsfield CLI @%HF_CLI_VERSION% ^(one time^)...
   call %NPM_CMD% install -g @higgsfield/cli@%HF_CLI_VERSION%
   where higgsfield >nul 2>nul && call :try_cli "higgsfield"
@@ -179,6 +182,10 @@ if defined HF (
   REM Global installs are already on PATH; a bundled match must be prepended here so
   REM BOTH the hub (started next) and agent_push resolve the same pinned CLI.
   if /i "%HF%"=="%BUNDLED%" set "PATH=%ROOT%runtime\higgsfield;%PATH%"
+) else if defined _CLI_UNCONFIRMED (
+  echo [warn] The Higgsfield CLI did not answer the version check in time - generation off
+  echo        for this run; browsing/Assets still work. Re-run MV_agent.bat later.
+  set "RUN_AGENT=0"
 ) else (
   echo [warn] No pinned Higgsfield CLI available - generation off; browsing/Assets still work.
   set "RUN_AGENT=0"
@@ -444,12 +451,14 @@ REM Sets HF=%~1 only if that CLI reports the pinned version. No-op once HF is se
 REM Used to choose the exact binary matching hf_cli_version.txt (avoids the stale
 REM bundled-CLI shadowing a good global install, and vice-versa).
 REM 'version' runs through agent_push.py --startup-version: time limit + stalled CLI tree killed,
-REM prints the second word of the first line with two or more words (same as tokens=2 here).
+REM prints the second word of the first line with two or more words (same as tokens=2 here),
+REM or ? when the CLI did not answer in time / could not run - then _CLI_UNCONFIRMED is set.
 REM ---------------------------------------------------------------------------
 :try_cli
 if defined HF exit /b 0
 set "_CLIVER="
 for /f "delims=" %%v in ('""%PY_EXE%" %PY_ARGS% "%ROOT%agent_push.py" --startup-version "%~1""') do if not defined _CLIVER set "_CLIVER=%%v"
+if "%_CLIVER%"=="?" set "_CLI_UNCONFIRMED=1"
 if "%_CLIVER%"=="%HF_CLI_VERSION%" set "HF=%~1"
 exit /b 0
 
