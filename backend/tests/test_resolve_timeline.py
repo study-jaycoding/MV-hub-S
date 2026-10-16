@@ -878,7 +878,7 @@ class TimelineRouteTests(unittest.IsolatedAsyncioTestCase):
             timeline=timeline if timeline is not None else plan([clip("g1", 1, 0, 120)], tracks=1),
         )
 
-    async def call(self, body, *, built=None, events=None, save_error_after_build=None):
+    async def call(self, body, *, built=None, events=None, save_error_after_build=None, save_error_before_build=None, prepare_error=None):
         manifest = {"transfer_id": "t-1", "project_id": "p1", "items": [], "total": 1}
         built = built or {"import": {"status": "complete"}, "timeline": {"status": "complete", "timeline_name": "뻘뻘뻘_e035"}}
         events = events if events is not None else []
@@ -899,6 +899,8 @@ class TimelineRouteTests(unittest.IsolatedAsyncioTestCase):
             events.append("save:" + ("timeline" if "timeline" in manifest_arg else "plain"))
             if save_error_after_build is not None and "worker" in events:
                 raise save_error_after_build
+            if save_error_before_build is not None and "worker" not in events:
+                raise save_error_before_build
 
         with (
             mock.patch.object(resolve_integration.repo, "get_generations_batch", return_value={"g1": self.GENERATION}),
@@ -908,7 +910,7 @@ class TimelineRouteTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(resolve_integration.active_account, "active_email", return_value=""),
             mock.patch.object(resolve_integration, "account_scope_uid", return_value=None),
             mock.patch.object(resolve_integration._proxy, "proxying", return_value=False),
-            mock.patch.object(resolve_integration, "transfer_generations", new=mock.AsyncMock(return_value=manifest)) as transfer,
+            mock.patch.object(resolve_integration, "transfer_generations", new=mock.AsyncMock(return_value=manifest, side_effect=prepare_error)) as transfer,
             mock.patch.object(resolve_integration, "run_resolve_timeline_isolated", side_effect=run) as worker,
             mock.patch.object(resolve_integration, "save_manifest", new=save),
             mock.patch.object(resolve_integration.resolve_selection_monitor, "suspended", suspended),
@@ -935,6 +937,16 @@ class TimelineRouteTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((response["timeline"]["status"], response["timeline"]["timeline_name"]), ("complete", "뻘뻘뻘_e035"))
             self.assertEqual(response["timeline"]["warnings"], [f"전송 기록을 저장하지 못했습니다: {error}"])
             self.assertEqual(response["transfer"]["resolve_import"], {"status": "complete"})
+
+    async def test_a_record_write_failure_before_resolve_is_touched_is_a_400(self):
+        # 81회차 P2b 2-a — 원본 준비·대상 기록의 NAS 쓰기 실패는 시작 전 거절(4xx)이다. 500 이면 화면이 '만들어졌을 수 있습니다'로 읽었다.
+        for kwargs in ({"prepare_error": OSError(5, "Input/output error")}, {"save_error_before_build": OSError(28, "No space left on device")}):
+            events: list[str] = []
+            with self.assertRaises(HTTPException) as raised:
+                await self.call(self.body(), events=events, **kwargs)
+            self.assertEqual(raised.exception.status_code, 400)
+            self.assertIn("이미 복사한 파일은 건너뜁니다", raised.exception.detail)
+            self.assertNotIn("worker", events)
 
     async def test_a_bad_plan_is_rejected_before_any_file_is_prepared(self):
         for bad in ({"format": "nope"}, plan([clip("stranger", 1, 0, 120)], tracks=1), plan([clip("g1", 1, 0, 120), clip("g1", 1, 100, 200)], tracks=1)):

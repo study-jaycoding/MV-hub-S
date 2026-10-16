@@ -495,6 +495,37 @@ class AcceptAccountPinTests(ResolveQueueTestBase):
         # 오버라이드는 라우트가 끝나면 반드시 풀린다.
         self.assertIsNone(active_account._override.get())
 
+    async def test_record_write_failure_while_preparing_is_a_clear_400_and_resolve_is_untouched(self):
+        """81회차 P2b 2-a — 원본 준비 중 전송 기록(NAS) 쓰기가 멈추면 'Internal Server Error'(500) 대신 다시 보내라는 안내."""
+        generation = self._generation(1)
+        body = resolve_integration.ResolveTransferIn(
+            gen_ids=["generation-01"], resolve_project_id="resolve-1", resolve_project_name="EP01_EDIT"
+        )
+        manifest = {"transfer_id": "t-prep", "project_id": "p1", "items": []}
+        # 원본 준비 안(체크포인트)에서 / 준비 뒤 가져올 대상을 적다가 — 둘 다 Resolve 를 건드리기 전이다.
+        for prepare_error, target_save_error in ((OSError(5, "Input/output error"), None), (None, OSError(28, "No space left on device"))):
+            with (
+                mock.patch.object(active_account.config, "AUTH_ENABLED", False),
+                mock.patch.object(resolve_integration, "_capture_account_pin", return_value=("local", None)),
+                mock.patch.object(resolve_integration.repo, "get_generations_batch", return_value={"generation-01": generation}),
+                mock.patch.object(resolve_integration, "batch_view_member_projects", return_value=set()),
+                mock.patch.object(resolve_integration, "can_view_generation_with_member_projects", return_value=True),
+                mock.patch.object(resolve_integration, "account_scope_uid", return_value=None),
+                mock.patch.object(resolve_integration._proxy, "proxying", return_value=False),
+                mock.patch.object(
+                    resolve_integration, "transfer_generations",
+                    new=mock.AsyncMock(return_value=dict(manifest), side_effect=prepare_error),
+                ),
+                mock.patch.object(resolve_integration, "save_manifest", new=mock.AsyncMock(side_effect=target_save_error)),
+                mock.patch.object(resolve_integration, "run_resolve_import_isolated") as import_isolated,
+            ):
+                with self.assertRaises(resolve_integration.HTTPException) as caught:
+                    await resolve_integration.create_resolve_transfer(body, _local_request())
+
+            self.assertEqual(caught.exception.status_code, 400)
+            self.assertIn("이미 복사한 파일은 건너뜁니다", caught.exception.detail)
+            import_isolated.assert_not_called()
+
 
 class ImportItemErrorCodeTests(ResolveQueueTestBase):
     """2단계 P2 — 배치 실패 항목도 error_code 를 남긴다(문자열 파싱 금지)."""

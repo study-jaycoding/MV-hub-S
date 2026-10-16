@@ -269,10 +269,13 @@ async def _authorized_generations(ids: list[str], request: Request) -> tuple[str
     return next(iter(project_ids)), generations
 
 
-async def _create_resolve_transfer_pinned(body: ResolveTransferIn, request: Request):
-    project_id, generations = await _authorized_generations(_clean_gen_ids(body.gen_ids), request)
+async def _prepare_sources(project_id: str, generations: list[dict], body: ResolveTransferIn) -> dict:
+    """원본 준비 + 가져올 대상 기록 — Resolve 를 건드리기 전 단계다. 전송 기록(NAS)을 쓰다 멈추면 'Internal Server Error'
+    만 보였고, 타임라인 화면은 '만들어졌을 수 있습니다'로 읽었다(81회차 P2b 2-a). 4xx = 시작 전 거절이 화면 계약이다.
 
-    async def _transfer_and_import() -> dict:
+    이미 복사한 파일은 장부에 표식이 남아 다시 보내면 건너뛰므로(skipped) 그대로 다시 보내라고 알린다.
+    """
+    try:
         manifest = await transfer_generations(project_id, generations)
         if body.resolve_project_id or body.resolve_project_name:
             manifest["resolve_target"] = {
@@ -281,6 +284,18 @@ async def _create_resolve_transfer_pinned(body: ResolveTransferIn, request: Requ
             }
             # 가져오기 전에 대상 프로젝트를 먼저 기록해 연결이 끊겨도 재시도할 수 있게 한다.
             await save_manifest(manifest)
+    except OSError as exc:
+        raise ResolveTransferError(
+            f"원본 준비 중 전송 기록을 쓰지 못해 멈췄습니다 — 다시 보내면 이미 복사한 파일은 건너뜁니다 ({exc})"
+        ) from exc
+    return manifest
+
+
+async def _create_resolve_transfer_pinned(body: ResolveTransferIn, request: Request):
+    project_id, generations = await _authorized_generations(_clean_gen_ids(body.gen_ids), request)
+
+    async def _transfer_and_import() -> dict:
+        manifest = await _prepare_sources(project_id, generations, body)
         async with resolve_selection_monitor.suspended():
             manifest["resolve_import"] = await asyncio.to_thread(
                 run_resolve_import_isolated, manifest
@@ -318,13 +333,7 @@ async def create_resolve_timeline(body: ResolveTimelineIn, request: Request):
             async def _transfer_and_build() -> dict:
                 # ★준비·가져오기·타임라인·결과 저장은 한 단위다(run_non_abandon) — 요청이 끊겨도 선택 감시 멈춤과 전송 보호가
                 #  작업보다 먼저 풀리지 않는다(Codex 설계 검토).
-                manifest = await transfer_generations(project_id, generations)
-                if body.resolve_project_id or body.resolve_project_name:
-                    manifest["resolve_target"] = {
-                        "project_id": body.resolve_project_id.strip(),
-                        "project_name": body.resolve_project_name.strip(),
-                    }
-                    await save_manifest(manifest)
+                manifest = await _prepare_sources(project_id, generations, body)
                 async with resolve_selection_monitor.suspended():
                     result = await asyncio.to_thread(run_resolve_timeline_isolated, manifest, plan)
                 manifest["resolve_import"] = result["import"]
