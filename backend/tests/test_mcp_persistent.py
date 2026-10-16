@@ -437,6 +437,77 @@ def test_cancel_while_claiming_keeps_the_cancellation_when_the_claim_thread_fail
         assert conn.execute("SELECT status FROM mcp_generation_plan WHERE id=?", (plan["id"],)).fetchone()[0] == "planned"
 
 
+def _two_item_plan(local):
+    return action(local, "prepare_generation_plan", {"title": "two", "items": [
+        {"label": str(i), "prompt": "hello", "model": "test_model", "params": {}} for i in range(2)]}).json()
+
+
+# 실행 중 계획 저장(update_plan) 순서: ①0번 submitting ②0번 submitted ③1번 submitting ④1번 submitted ⑤계획 submitted.
+# 제출이 실패하면 ②가 '주의' 저장이다(997줄).
+@pytest.mark.parametrize("fail_at,submit_fails,states,submits", [
+    (1, False, ["pending", "pending"], 0),  # 보내기 전 저장 실패 — 아무것도 안 보냈다
+    (2, False, ["submitted", "pending"], 1),  # 접수 뒤 저장 실패 — 접수 id 보존, 뒤 항목 안 보냄
+    (3, False, ["submitted", "pending"], 1),  # 둘째 항목 보내기 전
+    (5, False, ["submitted", "submitted"], 2),  # 마지막 '계획 접수' 저장
+    (2, True, ["uncertain", "pending"], 1),  # 제출 실패 뒤 '주의' 저장마저 실패
+])
+def test_execute_plan_write_failure_stops_and_marks_attention(local, monkeypatch, fail_at, submit_fails, states, submits):
+    # F-A-04 — 선점 뒤 계획 저장이 일반 예외(SQLite 쓰기 오류)를 내면 계획이 executing 으로 고착됐다(허브 재시작 전까지)
+    import sqlite3
+    configure(local)
+    calls = []
+    async def submit(body, request):
+        calls.append(body)
+        if submit_fails:
+            raise TimeoutError()
+        return {"id": f"gen-{len(calls)}"}
+    monkeypatch.setattr(gen_requests, "create_gen_request", submit)
+    plan = _two_item_plan(local)
+    real_update, writes = store.update_plan, []
+    def flaky(*args):
+        writes.append(args[2])
+        if len(writes) == fail_at:
+            raise sqlite3.OperationalError("disk I/O error")
+        return real_update(*args)
+    monkeypatch.setattr(store, "update_plan", flaky)
+    result = action(local, "execute_generation_plan", {"plan_id": plan["id"]})
+    assert result.status_code == 200, result.text
+    # 모든 항목이 접수된 '주의' 계획은 조회에서 '제출됨'으로 보인다(get_plan 표시 규칙, 저장값은 아래 attention)
+    assert result.json()["status"] == ("submitted" if set(states) == {"submitted"} else "attention")
+    assert len(calls) == submits
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT status, items FROM mcp_generation_plan WHERE id=?", (plan["id"],)).fetchone()
+    items = json.loads(row["items"])
+    assert (row["status"], [item["state"] for item in items]) == ("attention", states)
+    for index, item in enumerate(items):
+        if item["state"] == "submitted":
+            assert item["generation_id"] == f"gen-{index + 1}"
+    action(local, "execute_generation_plan", {"plan_id": plan["id"]})
+    assert len(calls) == submits  # 자동 재제출 없음
+
+
+def test_execute_plan_cleanup_write_failure_is_not_hidden(local, monkeypatch):
+    # 정리('주의') 저장까지 계속 실패하면 성공으로 숨기지 않고 오류로 돌려준다 — 남은 executing 은 재시작 복구가 맡는다
+    import sqlite3
+    configure(local)
+    calls = []
+    async def submit(body, request):
+        calls.append(body)
+        return {"id": "gen-1"}
+    monkeypatch.setattr(gen_requests, "create_gen_request", submit)
+    plan = _two_item_plan(local)
+    real_update, writes = store.update_plan, []
+    def failing(*args):
+        writes.append(args[2])
+        if len(writes) >= 2:
+            raise sqlite3.OperationalError("disk I/O error")
+        return real_update(*args)
+    monkeypatch.setattr(store, "update_plan", failing)
+    with pytest.raises(sqlite3.OperationalError):
+        action(local, "execute_generation_plan", {"plan_id": plan["id"]})
+    assert len(calls) == 1 and writes[-1] == "attention"
+
+
 def test_backup_copy_scene_is_marked_in_the_listing(local):
     # 옛 창 사본(bk_*)은 그 사본을 연 브라우저에서만 붙는다 — 목록에서 사본임을 알린다(Codex 리뷰 P2)
     configure(local)
@@ -722,6 +793,39 @@ def test_real_asset_tree_issues_handle_and_detects_replacement(local, tmp_path, 
     image.write_bytes(b"changed-version")
     assert action(local, "execute_generation_plan", {"plan_id": plan["id"]}).status_code == 409
     assert action(local, "read_context", {"kind": "references", "asset_project": str(folder)}).status_code == 404
+
+
+def test_plan_validation_scans_each_asset_project_once_per_pass(local, tmp_path, monkeypatch):
+    # F-B-01 — 계획 검증이 참고 자료 하나마다 에셋 트리를 fresh 로 다시 훑었다(항목 20 × 자료 8 = 최대 160번, NAS).
+    #  한 검증 회차 안에서는 프로젝트당 한 번, 계획 준비와 실행 직전 검증 사이에는 다시 훑는다.
+    configure(local)
+    folder = tmp_path / "authorized-assets"
+    folder.mkdir()
+    for name in ("a.png", "b.png"):
+        (folder / name).write_bytes(name.encode())
+    monkeypatch.setattr(api.assets, "_owner_mounts", lambda owner: [{"name": "my-assets"}])
+    monkeypatch.setattr(api.assets, "_mount_dir", lambda name, owner: folder if name == "my-assets" else None)
+    monkeypatch.setattr(api.assets, "_auto_project_mounts", lambda *args: [])
+    monkeypatch.setattr(api.assets.asset_watcher, "watch", lambda *args, **kwargs: None)
+    refs = action(local, "read_context", {"kind": "references", "asset_project": "my-assets"}).json()["references"]
+    ids = [ref["id"] for ref in refs]
+    assert len(ids) == 2
+    real_tree, scans = api.assets.project_tree, []
+    def counting(*args, **kwargs):
+        scans.append(args[2])
+        return real_tree(*args, **kwargs)
+    monkeypatch.setattr(api.assets, "project_tree", counting)
+    response = action(local, "prepare_generation_plan", {"title": "refs", "items": [
+        {"label": str(i), "prompt": "hello", "model": "test_model", "params": {}, "reference_ids": ids} for i in range(3)]})
+    assert response.status_code == 200, response.text
+    assert scans == ["my-assets"]  # 3항목 × 자료 2 = 6번이던 것
+    with db.get_connection() as conn:
+        items = json.loads(conn.execute("SELECT items FROM mcp_generation_plan WHERE id=?", (response.json()["id"],)).fetchone()[0])
+    for item in items:  # 순서·역할 번호는 그대로
+        assert [(ref["role"], ref["name"]) for ref in item["references"]] == [("@Image1", refs[0]["name"]), ("@Image2", refs[1]["name"])]
+    (folder / "b.png").write_bytes(b"changed-version")
+    assert action(local, "execute_generation_plan", {"plan_id": response.json()["id"]}).status_code == 409
+    assert scans == ["my-assets", "my-assets"]  # 실행 직전 검증은 준비 때 것을 다시 쓰지 않고 새로 한 번
 
 
 def test_auth_off_upstream_account_required_and_pinned(local, monkeypatch):

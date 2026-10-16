@@ -31,6 +31,7 @@ from .. import active_account, db, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MEDIA_PRESERVATION_ENABLED
 from ._telemetry import touch_generation_telemetry
 from ..deps import actor_id, current_account, final_move_actor, require_edit_generation
+from ..emailnorm import norm_email
 from ..repo import identity
 from ..services import agent_signals, net_guard, server_relocation
 from ..services.request_guards import require_loopback_browser_request
@@ -273,6 +274,7 @@ def receive_published_bundle(body: PublishBundleIn, request: Request):
     if not isinstance(bundle.get("generations"), list):
         raise HTTPException(status_code=400, detail="번들 형식이 올바르지 않습니다")
     acc = getattr(request.state, "account", None)
+    author_uids = None
     if acc:
         bundle_uid = _single_bundle_creator_uid(bundle)
         acc_uid = acc.get("creator_uid")
@@ -302,12 +304,15 @@ def receive_published_bundle(body: PublishBundleIn, request: Request):
                 "email": acc.get("email"),
             },
         }
+        # 작성자 판정 신원 = 인증 계정의 uid 와 그 계정 자신의 acct: 별칭뿐 — 번들의 provider·creator_uid 는
+        #  근거가 아니다. 판정은 id·job_id·URL 로 실제 고른 행에 한다(F-A-01, import_bundle_item).
+        author_uids = {bundle["provider"]["uid"], f"acct:{norm_email(acc.get('email'))}"}
     # 서버 수신 길 — 최종본의 프로젝트를 바꾸려는 항목은 발행자가 양쪽 검수자일 때만(아니면 그 항목 blocked, Jay 결정 3A).
     #  판정 신원은 위에서 갱신한 계정의 것 — 이 요청에서 acct:→user_ 로 연결됐으면 프로젝트 역할도 새 신원으로 옮겨졌다(Codex 3A 리뷰 P2)
     actor = final_move_actor(request)
     if actor is not None and acc and acc.get("creator_uid"):
         actor = dataclasses.replace(actor, uid=acc["creator_uid"])
-    counts = repo.import_bundle_payload(bundle, DEFAULT_WORKER_ID, actor)
+    counts = repo.import_bundle_payload(bundle, DEFAULT_WORKER_ID, actor, author_uids)
     # 공유 서버의 정식 발행 입구는 개별 publish 라우트가 아니라 이 번들 수신이다.
     # 따라서 운영자가 나중에 "누가 어떤 생성물을 공유했나"를 복원할 수 있도록 여기서
     # 요청 단위 감사 이력을 남긴다. 500개 전체를 빠뜨리지 않되 DB 쓰기는 50개 묶음으로 제한한다.

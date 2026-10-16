@@ -676,7 +676,8 @@ async def transfer_generations(
         resolve_transfer_roots, project_id
     )
     transfer_id = transfer_id or _new_transfer_id()
-    manifest_path = _manifest_path(manifest_root, transfer_id)
+    manifest_path = await asyncio.to_thread(_manifest_path, manifest_root, transfer_id)
+    catalog_path = await asyncio.to_thread(_folder_catalog_path, manifest_root)
     manifest: dict[str, Any] = {
         "format": MANIFEST_FORMAT,
         "version": MANIFEST_VERSION,
@@ -686,7 +687,7 @@ async def transfer_generations(
         "source_root": str(source_root),
         "manifest_root": str(manifest_root),
         "manifest_path": str(manifest_path),
-        "folder_catalog_path": str(_folder_catalog_path(manifest_root)),
+        "folder_catalog_path": str(catalog_path),
         "folder_paths": [],
         "created_at": _utc_now(),
         "completed_at": None,
@@ -731,7 +732,8 @@ async def transfer_generations(
         else:
             ext = project_folders.export_ext(source_hint, media_type)
             # 이름(번호)은 복사 직전에 장부에서 정한다. 여기서는 폴더 경로 자체가 안전한지만 확인한다.
-            if _folder_dir(source_root, folder_path) is None:
+            # 검사는 Path.resolve(NAS 왕복)라 작업 스레드에서 — 이벤트 루프에서 돌면 항목 수만큼 허브 전체가 멈췄다(F-B-02).
+            if await asyncio.to_thread(_folder_dir, source_root, folder_path) is None:
                 reason = "경로 안전성 위반"
             else:
                 # 장부의 열쇠 = job_id 우선(공유할 때 쓰는 앵커와 같은 규칙 — 만든 PC 와 받은 PC 가 같은 영상을 같은 번호로 본다).

@@ -34,8 +34,9 @@ def ensure_default_worker() -> None:
 
 
 # ── 생성자(팀 워크스페이스 작성자) ────────────────────────────────────────
-_MY_UID_CACHE: list[Any] = [None]  # [value] — None=미확정(매번 재조회), non-None=확정 캐시
-_MY_UID_PATH: list[Any] = [None]  # 캐시가 어느 DB 경로 기준인지 — 경로가 바뀌면 자동 무효화
+# [(DB 경로, uid)] 한 칸 — 경로와 값을 따로 적으면 계정 전환 경합에서 B 경로에 A 의 uid 가 짝지어졌다(F-A-03).
+# None=미확정·무효화(매번 재조회). 무효화 계약은 그대로 `_MY_UID_CACHE[0] = None`.
+_MY_UID_CACHE: list[Any] = [None]
 
 
 def get_my_uid() -> Optional[str]:
@@ -49,22 +50,24 @@ def get_my_uid() -> Optional[str]:
     # is_mine 을 오판할 위험이 있었다(기존 수동 리셋들은 방어적 중복으로 그대로 둠).
     from ..db import get_db_path
 
-    path = str(get_db_path())
-    if _MY_UID_PATH[0] != path:
-        _MY_UID_CACHE[0] = None
-        _MY_UID_PATH[0] = path
-    if _MY_UID_CACHE[0] is not None:
-        return _MY_UID_CACHE[0]
-    uid = get_setting("my_creator_uid")
-    if not uid:
-        with get_connection() as conn:
+    db_path = get_db_path()
+    path = str(db_path)
+    cached = _MY_UID_CACHE[0]  # 한 번만 읽는다 — 다른 스레드가 사이에 바꿔도 경로·값이 함께 온다
+    if isinstance(cached, tuple) and cached[0] == path:
+        return cached[1]
+    # 미스의 두 조회도 처음 잡은 경로로 — 중간에 활성 계정이 바뀌어도 다른 DB 의 값을 이 경로에 붙이지 않는다.
+    with get_connection(db_path) as conn:
+        row = conn.execute("SELECT value FROM app_setting WHERE key='my_creator_uid'").fetchone()
+        uid = row["value"] if row else None
+        if not uid:
             row = conn.execute(
                 "SELECT creator_uid FROM generation "
                 "WHERE id<>job_id AND job_id IS NOT NULL AND creator_uid IS NOT NULL "
                 "ORDER BY sort_ts DESC, created_at DESC, id DESC LIMIT 1"
             ).fetchone()
-        uid = row["creator_uid"] if row else None
-    _MY_UID_CACHE[0] = uid  # None 이면 캐시 안 됨(위 가드에서 매번 재시도)
+            uid = row["creator_uid"] if row else None
+    if uid is not None:  # None 이면 캐시 안 함(매번 재시도)
+        _MY_UID_CACHE[0] = (path, uid)
     return uid
 
 

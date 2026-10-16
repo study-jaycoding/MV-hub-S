@@ -43,6 +43,7 @@ def _upsert_synced(
     tombstoned: Optional[set[str]] = None,
     workspace: Optional[dict[str, Any]] = None,
     adopt_owner_uid: Optional[str] = None,
+    author_uids: Optional[set[str]] = None,
 ) -> str:
     """업서트 본체 — 주어진 커넥션에서 실행(트랜잭션 제어는 호출측). apply_synced_jobs 가
     한 트랜잭션에 묶어 호출하고, 단건 wrapper(upsert_synced_generation)는 자체 커넥션을 연다.
@@ -109,6 +110,12 @@ def _upsert_synced(
             ).fetchone()
             adopt = existing is not None
 
+        # 공유 서버 인증 발행(author_uids): id·job_id·URL 로 실제 고른 행이 발행자 것이 아니면 아무것도
+        # 쓰지 않는다(F-A-01). 번들의 creator_uid 는 주장일 뿐이라 URL 매칭으로 남의 행을 줍는다.
+        if author_uids is not None and existing and existing["creator_uid"] \
+                and existing["creator_uid"] not in author_uids:
+            return "blocked"
+
         result = "inserted"
         invalid_input_result = False
         if existing:
@@ -145,12 +152,18 @@ def _upsert_synced(
             # adopt(URL 매칭)면 job_id 를 권위값으로 덮어씀, 아니면 기존 보존(COALESCE).
             # sort_ts 는 힉스필드 정밀 epoch 으로 갱신 → 로컬 생성본도 힉스필드 순서에 정렬(있을 때만).
             job_id_set = "job_id=?" if adopt else "job_id=COALESCE(job_id, ?)"
+            # 작성자: 동기화·ingest 는 새 값 우선(종전). 공유 서버 인증 발행(author_uids)은 번들의 작성자가 주장일 뿐이라
+            # 기존의 비어 있지 않은 작성자를 지키고 빈 칸만 채운다 — 덮으면 B 가 자기 행을 A 의 것으로 넘길 수 있었다.
+            creator_set = (
+                "creator_uid=COALESCE(NULLIF(creator_uid, ''), ?)" if author_uids is not None
+                else "creator_uid=COALESCE(?, creator_uid)"
+            )
             # ★error 정합: failed→done 되살림 시 옛 실패 사유는 stored_error 가 비운다(done/pending/running → None).
             # 실패 사유는 COALESCE처럼 새 값 우선, None/빈 문자열이면 기존 보존 — 통째 교체하면
             # 힉스필드가 사유를 생략할 때 에이전트·복구 경로가 기록한 기존 사유가 유실된다.
             conn.execute(
                 f"UPDATE generation SET status=?, error=?, model=COALESCE(model,?), params=?, "
-                f"sort_ts=COALESCE(?, sort_ts), creator_uid=COALESCE(?, creator_uid), "
+                f"sort_ts=COALESCE(?, sort_ts), {creator_set}, "
                 f"workspace_scope=CASE WHEN workspace_scope='unknown' THEN ? ELSE workspace_scope END, "
                 f"workspace_id=CASE WHEN workspace_scope='unknown' THEN ? ELSE workspace_id END, "
                 f"workspace_name=CASE WHEN workspace_scope='unknown' THEN ? ELSE workspace_name END, "

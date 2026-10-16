@@ -34,7 +34,6 @@ def isolated_account_session(tmp_path, monkeypatch):
     """실제 계정 포인터·DB와 분리하고 A 로그인 상태에서 시작한다."""
     data_dir = tmp_path / "data"
     old_uid_cache = identity._MY_UID_CACHE[0]
-    old_uid_path = identity._MY_UID_PATH[0]
     override_token = active_account.set_override(None)
     monkeypatch.delenv("CONTENT_HUB_DB", raising=False)
     monkeypatch.setattr(config, "AUTH_ENABLED", False)
@@ -59,7 +58,6 @@ def isolated_account_session(tmp_path, monkeypatch):
     finally:
         db.flush_pool()
         identity._MY_UID_CACHE[0] = old_uid_cache
-        identity._MY_UID_PATH[0] = old_uid_path
         active_account.reset_override(override_token)
 
 
