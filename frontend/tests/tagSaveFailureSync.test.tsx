@@ -118,7 +118,8 @@ const leave = () => {
 };
 it("태그 저장이 남아 있는 동안 새로고침·창 닫기를 하면 묻는다 — 저장이 다 끝나면(실패도) 묻지 않는다", async () => {
   const first = deferred();
-  api.setTags.mockImplementationOnce(() => first.promise).mockResolvedValue({});
+  const second = deferred();
+  api.setTags.mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise).mockResolvedValue({});
   expect(leave()).toBe(false);
   act(() => {
     actions.onSetTags(generation, ["a"]);
@@ -129,6 +130,10 @@ it("태그 저장이 남아 있는 동안 새로고침·창 닫기를 하면 묻
   expect(api.setTags).toHaveBeenCalledTimes(1); // 뒤의 둘은 아직 출발도 못 했다
   expect(leave()).toBe(true);
   first.finish();
+  await settle();
+  expect(api.setTags).toHaveBeenCalledTimes(2); // 둘째 저장 중 — 셋째는 아직 줄에
+  expect(leave()).toBe(true); // 중간 저장이 끝나도 남은 저장이 있으면 계속 묻는다(Codex 리뷰 P3)
+  second.finish();
   await settle();
   expect(api.setTags).toHaveBeenCalledTimes(3);
   expect(leave()).toBe(false);
