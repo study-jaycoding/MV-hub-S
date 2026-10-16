@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-15
+updated: 2026-10-16
 ---
 
 # MV Hub 로컬 MCP
@@ -13,7 +13,47 @@ owner: Codex · reviewer: Claude · status: 검증 중 · updated: 2026-10-15
 원래 MCP 작업실의 검증 이력이며 최신 dev와 합친 대상의 검증 결과는 WORKROOMS에 따로 기록한다.
 시험실 실행기에서는 실제 생성·CLI 모델 조회·전역 LLM 등록을 검증하지 않는다.
 
+## Codex 결과 표시를 한 경로로 제한 (2026-10-16)
+
+owner: Codex · reviewer: Claude Opus 5.5 · status: 완료(소스·비유료 검증) · updated: 2026-10-16
+
+- 사용자 요청: PC·휴대폰 화면 비교 후 "코드를 수정하고 어떻게 나오는지 보여줘라".
+  첨부 PC 화면에는 Apps 카드와 최종 이미지가 중복되고 설명도 반복된다. 휴대폰 첨부에서는 기존 결과 이미지가
+  표시된 사실을 확인했다. 이번 새 코드의 휴대폰 실표시까지 확인한 것은 아니다.
+  touched_paths: `tools/mcp_adapter/{server.py,local_setup.py,test_persistent.py,test_local_setup.py,README.md}`, 이 문서.
+- 어댑터 `2026.10.16.1`: 한 서버에 `native`(기존 기본값) / `conversation` 표시 모드를 둔다.
+  Codex 등록 코드만 `--display-mode conversation`을 추가한다. 인증·프로필 스키마·생성·백엔드·DB는 바꾸지 않는다.
+  conversation은 Apps 자원·UI 메타·앱 전용 도구를 등록하지 않고, 검증된 JPEG와 공통 설명을 HTML에 각 한 번 넣는다.
+  이미지가 먼저 나오고 설명이 아래에 온다. ImageContent와 별도 설명 블록은 반환하지 않는다.
+- 실행은 두 모드 모두 UI 연결과 `live_plan_id`를 제거하고 대기 뒤 한 번 결과를 조회한다.
+  native의 기존 UI 폴링·앱 전용 읽기 도구는 이미 열린 카드 호환 코드이므로 삭제하지 않았다.
+  native 결과의 ImageContent/Apps 동시 표시는 기존 계약이며 실제 Claude 화면에서 중복 여부는 미확인이다.
+- conversation 조회는 기존 로컬 작업 폴더가 필수다. native에 폴더를 주거나 conversation에서 생략하면 허브 조회 전에 거부한다.
+  파일 저장 실패는 생성 결과를 유지하며 다른 이미지 경로를 자동 추가하지 않는다. 재생성이 아닌 결과 조회 재시도를 안내한다.
+  `delivery`는 묶음 설명 반복을 금지하고, 각 항목은 표시 파일 없는 실패·취소·미확인 때만 텍스트 안내를 허용한다.
+- **적용 경계**: 현재 실제 Codex 등록은 Desktop 릴리스 설치본을 가리킨다. 이번 작업은 설치본·등록 설정을 수정하지 않는다.
+  배포 후 MV Hub에서 Codex 재등록 → MCP 재연결 → `check_connection`의 버전·conversation 확인이 필요하다.
+  플래그 없는 옛 등록은 계속 native이므로 MCP 재연결만으로 전환되지 않는다. 백엔드 재시작은 이번 변경에 필요 없다.
+- 실제 Claude `claude-opus-5-5`와 설계·합의를 거쳤다(요청 medium, 실행 ID 확인).
+  설계 세션 `c64306b1-57af-4805-b6e5-28d84057dc76`, 독립 리뷰 세션 `aa208981-3b3e-42d1-b1a6-77d7b4c24dc2`
+  (요청 high, 실제 모델 ID 동일)는 차단 결함 없이 승인했다. 상대 보고와 직접 시험 결과는 구분한다.
+  리뷰의 묶음 delivery·실패 텍스트 의미·옛 등록 교체 시험 권고를 반영했다.
+  독립 리뷰 후 최종 대조에서도 실제 동일 모델이 소스 마감·통합 시험실 병합에 동의했다.
+  증거: `%TEMP%/mvhub-single-display-20261016/{design,agreement,review,closing,preview}.json`.
+- 직접 검증: 수정 전 render_result가 native 이미지 1개와 HTML 파일 1개를 함께 만드는 재현을 확보했다.
+  SDK·HTTP fixture를 사용하는 어댑터 시험 39개 통과(36.220초). 모드·묶음 부분 실패·잘못된 JPEG·저장 실패·재등록을 확인했다.
+  graft in sync, 코드 지도 누락 0, 문서 검사 통과(기존 CURRENT_STATUS 크기 경고 1건 유지).
+  실제 프로필을 메모리에서 사용한 새 소스 stdio 연결로 기존 달걀·팬 결과 `d332ed4f-72bc-4318-8e00-0e2ec19598d0`만 조회했다.
+  새 버전/conversation, UI 도구 0개, native 이미지 0개, HTML 이미지 1개·설명 1개를 확인했다.
+  새 생성·추가 과금·원본 외부 업로드·공유 서버 쓰기는 하지 않았다. 결과 파일 준비는 채팅 렌더링 성공과 구분한다.
+- 정책 대조: 작업실의 이전 지침과 dev의 공통 정책 `2026-10-15-r14`를 비교해 현행 규칙을 적용했다.
+  작업실 AGENTS/CLAUDE 본문 일치도 확인했고 지침·역할 파일은 자동 동기화하지 않았다.
+  다른 작업자의 통합 문서 변경을 보존하며 이 계약은 이 문서에만 기록한다.
+  프로젝트에 종속된 표시 계약이므로 볼트에는 복제하지 않는다.
+
 ## 안내 문구·진행 카드·미리보기 개선 (2026-10-15)
+
+아래는 `2026.10.15.4` 당시 기록이다. 실행 카드 자동 연결·Codex 이중 출력은 위 최신 계약으로 대체한다.
 
 owner: Codex · reviewer: Claude(설계 검토) · status: 검증 중 · updated: 2026-10-15
 
