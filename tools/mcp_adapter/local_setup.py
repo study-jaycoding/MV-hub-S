@@ -117,9 +117,10 @@ def _atomic(path: Path, data: bytes, previous: bytes | None = None, *, compare: 
             os.unlink(temporary)
 
 
-def _entry(setup: dict, profile: Path) -> dict:
+def _entry(setup: dict, profile: Path, client: str) -> dict:
     return {"command": setup["python"], "args": [*setup.get("python_args", []), setup["adapter"],
-            "--url", setup["url"], "--profile", str(profile)]}
+            "--url", setup["url"], *(["--display-mode", "conversation"] if client == "codex" else []),
+            "--profile", str(profile)]}
 
 
 def _known_entry(old: object, setup: dict) -> bool:
@@ -202,7 +203,7 @@ def configure_client(client: str, setup: dict, credential: dict, *, home: Path |
     if local_appdata is None and not os.environ.get("LOCALAPPDATA"):
         raise ValueError("Windows 사용자 저장 폴더를 확인할 수 없습니다.")
     profile = local / "MVHub-MCP" / "connections" / credential["hub_id"] / (credential["client_id"] + ".bin")
-    entry = _entry(setup, profile)
+    entry = _entry(setup, profile, client)
     config = _toml_entry(entry) if client == "codex" else json.dumps({"mcpServers": {"mvhub": entry}}, ensure_ascii=False, indent=2)
     with _LOCK:
         _atomic(profile, _crypt(json.dumps(credential).encode("utf-8")))

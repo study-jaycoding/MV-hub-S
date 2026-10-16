@@ -57,13 +57,20 @@ class SetupTests(unittest.TestCase):
         home, local = self.root / "home", self.root / "local"
         codex = home / ".codex" / "config.toml"
         codex.parent.mkdir(parents=True)
-        codex.write_text('model = "keep"\n', encoding="utf-8")
+        codex.write_text('model = "keep"\n[mcp_servers.mvhub]\ncommand = ' + json.dumps(str(self.python))
+                         + '\nargs = ' + json.dumps(self.entry["args"]) + '\n', encoding="utf-8")
         claude = home / ".claude.json"
         claude.write_text('{"theme":"keep"}', encoding="utf-8")
         for client in ("codex", "claude", "other"):
             credential = {**self.credential, "client_id": str(uuid4())}
             result = configure_client(client, self.setup, credential, home=home, local_appdata=local)
             self.assertEqual(result["status"], "manual" if client == "other" else "configured")
+            if client == "codex":
+                args = tomllib.loads(codex.read_text(encoding="utf-8"))["mcp_servers"]["mvhub"]["args"]
+                self.assertEqual(args[args.index("--display-mode") + 1], "conversation")
+            else:
+                args = json.loads(claude.read_text(encoding="utf-8") if client == "claude" else result["config"])["mcpServers"]["mvhub"]["args"]
+                self.assertNotIn("--display-mode", args)
             self.assertNotIn(credential["secret"], json.dumps(result))
             profile = local / "MVHub-MCP" / "connections" / credential["hub_id"] / (credential["client_id"] + ".bin")
             self.assertNotIn(credential["secret"].encode(), profile.read_bytes())
