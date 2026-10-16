@@ -47,7 +47,7 @@ MAX_PREVIEW = 512 * 1024
 REQUEST_TIMEOUT = 30
 RESULT_TIMEOUT = 90
 RESULT_UI_URI = "ui://mvhub/result.html"
-ADAPTER_VERSION = "2026.10.16.4"
+ADAPTER_VERSION = "2026.10.16.5"
 HUB_FEATURES = {"generation_result", "batch_results", "history_cursor", "plan_estimate"}
 ERRORS = {
     "invalid_input": ("입력 형식을 확인하세요.", False, "check_arguments"),
@@ -850,8 +850,10 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
                 cards.append(item["card_text"])
             result["card_text"] = "\n\n".join(cards)
             result["delivery"] = {"mode": display_mode, "repeat_card_text": False}
-            return CallToolResult(content=[TextContent(type="text", text=json.dumps(result, ensure_ascii=False)), *images],
-                                  structured_content=result)
+            content = [TextContent(type="text", text=json.dumps(result, ensure_ascii=False)), *images]
+            if directory is None and result["card_text"]:
+                content.append(TextContent(type="text", text=result["card_text"]))
+            return CallToolResult(content=content, structured_content=result)
 
         @tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True))
         def estimate_plan(plan_id: UUID) -> dict[str, Any]:
