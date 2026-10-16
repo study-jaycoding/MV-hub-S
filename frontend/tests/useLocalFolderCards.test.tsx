@@ -11,6 +11,7 @@ import type { GenQuery, Generation } from "../src/types";
 const listGenerations = vi.fn();
 vi.mock("../src/api", () => ({ api: { listGenerations: (...args: unknown[]) => listGenerations(...args) }, GEN_PAGE: 200 }));
 const { useLocalFolderCards } = await import("../src/lib/useLocalFolderCards");
+const { LIBRARY_LIST_TIMEOUT_MS } = await import("../src/lib/libraryRequestTimeout");
 type Scope = NonNullable<Parameters<typeof useLocalFolderCards>[0]["place"]>;
 
 const gen = (id: string, extra: Partial<Generation> = {}) =>
@@ -61,7 +62,7 @@ it("끝까지 받은 결과만 내놓는다 — 쪽을 넘겨 받고, 공간 필
   await settle();
   expect([latest.gens!.length, ids()!.slice(-1), latest.fresh, latest.truncated, latest.loading]).toEqual([501, ["tail"], true, false, false]);
   // 묶기는 프롬프트를 읽지 않는다 — 쪽마다 빈 글로 받는다(42회차)
-  expect(listGenerations.mock.calls.map((call) => call[3])).toEqual([{ leanPrompt: true }, { leanPrompt: true }]);
+  expect(listGenerations.mock.calls.map((call) => [call[3].leanPrompt, call[3].signal instanceof AbortSignal])).toEqual([[true, true], [true, true]]);
 });
 
 it("같은 자리에서 조회만 바뀌면 앞 결과를 쥔 채 새로 받고, 자리가 바뀌면 버린다", async () => {
@@ -142,6 +143,45 @@ it("한 번에 하나만 받는다 — 받는 중에 조회가 연달아 바뀌�
   await act(async () => { waiting[1]([gen("image-1")]); });
   await settle();
   expect([ids(), latest.fresh]).toEqual([["image-1"], true]);
+});
+
+// 81회차 F-B-03: 앞 요청이 답 없이 멈추면 한 줄 대기열이 끝없이 막혀 뒤 조회가 출발하지 못했다 — 쪽마다 30초 뒤 실제로 끊는다.
+//  제한은 쪽마다다 — 첫 쪽이 20초 걸려도 다음 쪽은 제 30초를 받는다(전체 30초면 20+10초에 끊긴다, Codex 리뷰 P3).
+it.each([["첫 쪽", 0, 0], ["다음 쪽", 1, 20_000]])("stalled page releases the lane and starts the latest query — %s이 멈추면 30초 뒤 실제로 끊고, 건너뛴 조회는 보내지 않고 마지막만 보낸다", async (_name, stallAt, firstDelay) => {
+  vi.useFakeTimers();
+  try {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const signals: Array<AbortSignal | undefined> = [];
+    const full = Array.from({ length: 500 }, (_, index) => gen("a" + index, { sort_ts: 1000 - index }));
+    listGenerations.mockImplementation((_q: GenQuery, _cursor: unknown, _limit: number, opts: { signal?: AbortSignal } = {}) => {
+      const at = signals.length;
+      signals.push(opts.signal);
+      if (at < stallAt) return new Promise<Generation[]>((resolve) => { setTimeout(() => resolve(full), firstDelay); });
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      return new Promise<Generation[]>((_resolve, reject) => {
+        opts.signal?.addEventListener("abort", () => { inFlight -= 1; reject(new DOMException("aborted", "AbortError")); });
+      });
+    });
+    draw({}); // A — 멈춘다
+    await settle();
+    await act(async () => { await vi.advanceTimersByTimeAsync(firstDelay); }); // 앞 쪽이 늦게(20초) 끝나고 다음 쪽이 나간다(그 쪽의 30초는 여기서부터)
+    draw({ query: query({ media_type: "video" }) }); // B — 건너뛴다
+    await settle();
+    draw({ query: query({ media_type: "image" }) }); // C — 마지막
+    await settle();
+    expect(listGenerations).toHaveBeenCalledTimes(stallAt + 1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(LIBRARY_LIST_TIMEOUT_MS - 1); });
+    expect([listGenerations.mock.calls.length, signals[stallAt]?.aborted]).toEqual([stallAt + 1, false]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    await settle();
+    const next = listGenerations.mock.calls[stallAt + 1];
+    expect([signals[stallAt]?.aborted, listGenerations.mock.calls.length, next?.[0].media_type, next?.[1], maxInFlight])
+      .toEqual([true, stallAt + 2, "image", null, 1]);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("ready 가 거짓이면 받기를 미룬다 — 참이 되면 받고, 그 뒤 들락날락해도 쥔 결과를 내놓은 채 다시 받지 않는다", async () => {

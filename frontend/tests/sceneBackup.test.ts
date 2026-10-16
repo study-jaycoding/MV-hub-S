@@ -79,6 +79,34 @@ describe("sceneBackup (DB 미러·복구)", () => {
     vi.unstubAllGlobals();
   });
 
+  // 81회차 F-A-02: 다른 브라우저 프로필에서 계정을 바꾸면 옛 화면의 자동 백업이 새 계정 DB 에 쓰였다 — 모든 백업 요청에 이 탭의 계정을
+  //  싣고(허브가 고정한 계정과 다르면 409), 409 를 받으면 로컬 씬·미전송 변경(올릴 것·지울 것)을 그대로 둔 채 다음 재시도로 넘긴다.
+  it("모든 백업 요청에 이 탭의 계정(X-MVHub-Expect-Account)을 싣고, 409(그사이 계정 바뀜)는 로컬 씬·미전송 상태를 보존한다", async () => {
+    vi.stubGlobal("crypto", {}); // 진짜 지문 계산은 가짜 타이머 밖에서 끝난다 — 해시 없는 창으로(바뀐 씬을 그대로 올린다)
+    const { HttpError } = await vi.importActual<typeof import("../src/lib/http")>("../src/lib/http");
+    const { scenes, backup } = await boot();
+    const scope = `acct:user${acctSeq}@test`;
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "남길 씬")), JSON.parse(sceneJson("s2", "지울 씬"))]);
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500); // 첫 미러 — s1·s2 올림
+    expect(putBody(puts()[0]).upserts.map((u: { id: string }) => u.id)).toEqual(["s1", "s2"]);
+
+    getMeta = () => Promise.resolve({ items: [{ id: "s1", data_hash: "x" }, { id: "s2", data_hash: "y" }] }); // 서버에 올라간 둘
+    // 허브가 실제로 던지는 오류 그대로 — 제품 jsonFetch 의 HttpError(409)
+    putReply = () => Promise.reject(new HttpError(409, "409: 그사이 이 PC 의 계정이 바뀌어 씬 백업을 하지 않았습니다", "그사이 이 PC 의 계정이 바뀌어 씬 백업을 하지 않았습니다"));
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "고친 씬"))]); // s1 고침 + s2 지움
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts()).toHaveLength(2);
+    expect(scenes.listScenes(null).map((s) => [s.id, s.name])).toEqual([["s1", "고친 씬"]]); // 로컬은 그대로
+    await vi.advanceTimersByTimeAsync(30_000); // 30초 뒤 재시도 — 같은 미전송 변경을 다시 보낸다
+    expect(puts()).toHaveLength(3);
+    const again = putBody(puts()[2]);
+    expect([again.upserts.map((u: { id: string; data: string }) => [u.id, JSON.parse(u.data).name]), again.deleted_ids])
+      .toEqual([[["s1", "고친 씬"]], ["s2"]]);
+    // 복구 판정 GET·메타 GET·PUT 모두 시작 때 잡은 이 탭의 계정을 싣는다
+    expect(calls.map((c) => (c.init?.headers as Record<string, string> | undefined)?.["X-MVHub-Expect-Account"])).toEqual(calls.map(() => scope));
+  });
+
   it("초기 reconcile — 배포 전부터 있던(수정 안 한) 씬도 1회 미러된다", async () => {
     const { scenes, backup } = await boot();
     scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "기존씬"))]);

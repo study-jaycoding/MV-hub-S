@@ -27,6 +27,7 @@ function rememberDuration(url: string, seconds: number): void {
   if (DURATION_CACHE.size > DURATION_KEEP_MAX) DURATION_CACHE.delete(DURATION_CACHE.keys().next().value as string);
 }
 const PRELOAD_AT_ONCE = 2; // 한꺼번에 읽으면 첫 클립의 재생과 대역폭을 다툰다(10-09 실측: 28개 동시 → 첫 재생 6.2초)
+const PRELOAD_TIMEOUT_MS = 30_000; // 답 없이 멈춘 미리 읽기가 자리를 영영 쥐어 뒤 길이·타임바를 잠그지 않게(81회차 F-B-04)
 // 영상 요소 둘(앞·뒤): 뒤의 것에 다음 영상을 미리 받아 두고 컷이 넘어갈 때 자리만 바꾼다 — 요소 하나에 주소만 갈면 받는 시간만큼
 //  화면이 선다(10-09 실측: 컷마다 130~200ms). 넘어가기 ROLL_AHEAD 초 전부터 뒤의 것을 소리 없이 굴려 둔다 — 다 받아 둔 영상도
 //  play() 뒤 첫 그림까지 시간이 든다(편집 탭 editVideoPair 와 같은 원리, Jay "끊김 없이"). 너무 멀리 굴러갔으면(ROLL_MAX) 되돌린다.
@@ -171,9 +172,10 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
   //  같은 주소의 클립은 한 번만 읽고, 끝나거나 닫히면 요소의 주소를 떼고 불러오기를 멈춘다(요소가 핸들러·주소를 쥔 채 남지 않게 —
   //  Codex 코드 검토 10-09).
   //  주소마다 한 번씩 순서대로, 한 번에 둘까지만 읽는다. 이미 아는 길이(DURATION_CACHE)는 읽지 않는다.
+  //  하나마다 30초 — 넘으면 깨진 영상과 같이 3초 멈춘 화면으로 두고 다음으로 간다(그 3초는 길이 기억에 넣지 않는다).
   useEffect(() => {
     let cancelled = false;
-    const active = new Set<HTMLVideoElement>();
+    const active = new Map<HTMLVideoElement, ReturnType<typeof setTimeout>>(); // 요소 → 제한 시간 타이머
     const byUrl = new Map<string, number[]>();
     clips.forEach((clip, i) => {
       if (clip.type === "image" || DURATION_CACHE.has(clip.url)) return;
@@ -183,6 +185,7 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
     });
     const queue = [...byUrl];
     const release = (v: HTMLVideoElement) => {
+      clearTimeout(active.get(v));
       active.delete(v);
       v.onloadedmetadata = null;
       v.onerror = null;
@@ -195,7 +198,6 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
       if (!item) return;
       const [url, indexes] = item;
       const v = document.createElement("video");
-      active.add(v);
       v.preload = "metadata";
       v.onloadedmetadata = () => {
         if (cancelled) return;
@@ -209,7 +211,7 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
         release(v);
         startNext();
       };
-      v.onerror = () => {
+      const fail = () => {
         if (cancelled) return;
         setFailed((f) => { const next = new Set(f); for (const i of indexes) next.add(i); return next; });
         setDurations((d) => {
@@ -220,12 +222,20 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
         release(v);
         startNext();
       };
+      v.onerror = fail;
+      // release 가 타이머·핸들러를 함께 떼므로 셋 중 하나만 완료한다. 그사이 재생 요소가 길이를 알았으면 정상 영상 — 예열만 정리한다(Codex 리뷰)
+      active.set(v, setTimeout(() => {
+        if (DURATION_CACHE.has(url) || indexes.every((i) => st.current.durations[i] > 0)) {
+          release(v);
+          startNext();
+        } else fail();
+      }, PRELOAD_TIMEOUT_MS));
       v.src = url;
     };
     for (let k = 0; k < PRELOAD_AT_ONCE; k++) startNext();
     return () => {
       cancelled = true;
-      [...active].forEach(release);
+      [...active.keys()].forEach(release);
     };
   }, [clips]);
 

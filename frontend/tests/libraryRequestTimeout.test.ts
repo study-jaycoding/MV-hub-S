@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, GEN_PAGE } from "../src/api";
 import { LIBRARY_LIST_TIMEOUT_MESSAGE, LIBRARY_LIST_TIMEOUT_MS, timedLibraryRequest } from "../src/lib/libraryRequestTimeout";
+import { fetchAllGenerations } from "../src/lib/fetchAllGenerations";
 
 let seen: RequestInit | undefined;
 
@@ -30,6 +31,27 @@ describe("목록 요청 30초 제한", () => {
   ])("%s — 30초가 지나면 fetch 의 signal 이 끊기고 그 뜻의 글로 실패한다", async (_name, run) => {
     const result = timedLibraryRequest(run);
     const settled = result.catch((error: Error) => error.message);
+    await vi.advanceTimersByTimeAsync(LIBRARY_LIST_TIMEOUT_MS - 1);
+    expect(seen?.signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(seen?.signal?.aborted).toBe(true);
+    await expect(settled).resolves.toBe(LIBRARY_LIST_TIMEOUT_MESSAGE);
+  });
+
+  // 81회차 F-B-03: 끝까지 받기는 signal·제한 없이 쪽을 받아, 멈춘 요청이 폴더 카드의 한 줄 대기열을 끝없이 막았다 — 쪽마다 30초 + 실제 취소.
+  it.each([["답(머리)이 안 옴", false], ["본문이 멈춤", true]])("끝까지 받기(fetchAllGenerations) — %s: 30초 뒤 그 쪽의 fetch signal 이 끊기고 그 뜻의 글로 실패한다", async (_name, headersArrive) => {
+    if (headersArrive) {
+      vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) => {
+        seen = init;
+        return Promise.resolve({
+          ok: true, status: 200, headers: new Headers(),
+          json: () => new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+          }),
+        });
+      }));
+    }
+    const settled = fetchAllGenerations({ tab: "my" } as never, () => true, { leanPrompt: true }).catch((error: Error) => error.message);
     await vi.advanceTimersByTimeAsync(LIBRARY_LIST_TIMEOUT_MS - 1);
     expect(seen?.signal?.aborted).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
