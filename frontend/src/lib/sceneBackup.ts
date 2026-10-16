@@ -16,7 +16,7 @@
 //    지우는 사고가 난다.
 //  · 계정 전환 레이스: 모든 await 뒤·적용 직전에 scope(ns)를 재검사 — 다른 계정 응답을 현재
 //    계정에 적용하지 않는다. scope 가 바뀌면 메타·lastPushed·초기화 상태를 폐기하고 새로 시작.
-//  · owner 는 서버가 actor_id 로 결정 — 여기서는 계정을 보내지 않는다.
+//  · owner 는 서버가 actor_id 로 결정 — 계정은 확인용(X-MVHub-Expect-Account, 다르면 409)으로만 싣는다.
 //  · 변경 대조: 서버 data_hash(sha256) vs 로컬 sha256(crypto.subtle). http LAN 등 insecure
 //    context 로 subtle 이 없으면 첫 동기화 때 전 씬을 한 번 올린다(누락보다 중복이 안전) —
 //    이후는 세션 내 lastPushed 문자열 비교로 변경분만.
@@ -26,6 +26,7 @@
 //    사본 행으로 받는다(갈래 — 그 뒤 이 씬의 편집은 그 사본 행으로 미러). 설계: docs/status/결정일곱_설계_2026-10-15.md 1A.
 import { jsonFetch } from "./http";
 import { getAccountNamespace } from "./accountScope";
+import { EXPECT_ACCOUNT_HEADER } from "./hubFeatures";
 import {
   confirmSceneWrite,
   hasPersistedSceneBucket,
@@ -54,6 +55,9 @@ const exceedsSceneLimit = (data: string): boolean =>
   data.length > MAX_SCENE_BYTES || (data.length * 3 > MAX_SCENE_BYTES && utf8.encode(data).byteLength > MAX_SCENE_BYTES);
 
 const ns = getAccountNamespace;
+// 작업을 시작할 때 잡은 이 탭의 계정을 싣는다 — 허브가 고정한 계정과 다르면(다른 브라우저 프로필에서 계정을 바꿈) 409 로 아무것도
+//  읽고 쓰지 않는다(81회차 F-A-02). 409 는 다른 실패처럼 재시도로 넘어가 로컬 씬·미전송 변경은 그대로다.
+const asAccount = (scope: string) => ({ headers: { [EXPECT_ACCOUNT_HEADER]: scope } });
 
 async function sha256hex(text: string): Promise<string | null> {
   try {
@@ -348,6 +352,7 @@ function ensureInit(scope: string): Promise<InitResult> {
     try {
       const r = await jsonFetch<{ items: BackupRow[] }>(
         `${API}?project_id=&include_data=1`,
+        asAccount(scope),
       );
       items = r.items || [];
     } catch {
@@ -408,6 +413,7 @@ async function ensureServerMeta(scope: string): Promise<Map<string, string> | nu
   try {
     const r = await jsonFetch<{ items: { id: string; data_hash: string }[] }>(
       `${API}?project_id=`,
+      asAccount(scope),
     );
     if (ns() !== scope) return null; // 계정 전환 중 응답 — 다른 계정 메타를 캐시하지 않는다
     serverHash = new Map(r.items.map((it) => [it.id, it.data_hash]));
@@ -608,6 +614,7 @@ async function syncNow(): Promise<void> {
       const seqAtSend = new Map(chunk.map((u) => [u.localId, externalSeq.get(u.localId) ?? 0]));
       const res = await jsonFetch<{ results?: { id: string; status: string; target_id: string; hash: string | null }[]; kept?: string[] }>(`${API}`, {
         method: "PUT",
+        ...asAccount(scope),
         body: JSON.stringify({
           project_id: "",
           upserts: chunk.map(({ id, name, data, base_hash }) => ({ id, name, data, base_hash })),
@@ -702,7 +709,7 @@ function schedule(): void {
 export async function countBackupOnlyScenes(): Promise<number> {
   const scope = enterScope();
   try {
-    const r = await jsonFetch<{ items: { id: string }[] }>(`${API}?project_id=`);
+    const r = await jsonFetch<{ items: { id: string }[] }>(`${API}?project_id=`, asAccount(scope));
     if (ns() !== scope) return 0;
     const localIds = new Set(listScenes(null).map((s) => s.id));
     const mine = forkIds(); // 이 탭 씬의 갈래 사본은 자기 것 — 다시 가져오라고 하지 않는다
@@ -731,6 +738,7 @@ async function runImport(): Promise<number> {
   const scope = enterScope();
   const r = await jsonFetch<{ items: BackupRow[] }>(
     `${API}?project_id=&include_data=1`,
+    asAccount(scope),
   );
   if (ns() !== scope) return 0;
   // 자동 복구와 같은 전 행 검증 — 하나라도 손상이면 부분 적용 없이 전체 포기.

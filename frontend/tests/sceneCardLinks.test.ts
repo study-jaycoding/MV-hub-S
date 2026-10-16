@@ -80,6 +80,24 @@ describe("sceneCardLinks (카드 소속 기록)", () => {
     vi.useRealTimers();
   });
 
+  // 81회차 F-A-02: 카드 소속 요청도 씬 백업과 같은 계정 확인 헤더를 싣는다. 409 를 받으면 제거 의도·백필을 그대로 두고 다시 보낸다.
+  it("소속 요청(GET·PUT)에 이 탭의 계정을 싣고, 409(그사이 계정 바뀜)는 제거 의도·백필을 보존해 다시 보낸다", async () => {
+    const { scenes, links } = await boot();
+    const scope = `acct:user${acctSeq}@test`;
+    scenes.saveScenes(null, [sceneWith("s1", "c1", ["g1"])]);
+    putFails = true; // 허브가 409 로 거절(목은 실패 종류를 가리지 않는다)
+    links.initSceneCardLinks();
+    await links.markCardGenerationsRemoved("s1", "c0", ["g0"]);
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().length).toBeGreaterThan(0);
+    putFails = false;
+    await vi.advanceTimersByTimeAsync(30_000);
+    const last = puts().slice(-2).map(putBody);
+    expect(last.flatMap((b) => b.removed.map((l: { generation_id: string }) => l.generation_id))).toContain("g0");
+    expect(last.flatMap((b) => b.backfill.map((l: { generation_id: string }) => l.generation_id))).toContain("g1");
+    expect(calls.map((c) => (c.init?.headers as Record<string, string> | undefined)?.["X-MVHub-Expect-Account"])).toEqual(calls.map(() => scope));
+  });
+
   it("백필 — 브라우저에만 있던 소속을 한 번 올린다", async () => {
     const { scenes, links } = await boot();
     scenes.saveScenes(null, [sceneWith("s1", "c1", ["g1", "g2"])]);

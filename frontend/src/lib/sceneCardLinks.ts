@@ -13,6 +13,7 @@
 //  · 계정 전환 레이스: 모든 await 뒤 scope 재검사(sceneBackup 과 같은 규칙).
 //  · 팀 서버로 가지 않는다 — 개인 편집물(백엔드 _proxy._LOCAL_PREFIXES '/api/scenes').
 import { getAccountNamespace } from "./accountScope";
+import { EXPECT_ACCOUNT_HEADER } from "./hubFeatures";
 import { jsonFetch } from "./http";
 import { listPersistedScenes, subscribeScenesPersisted, variantIds } from "./scenes";
 
@@ -228,7 +229,8 @@ function load(scope: string, force: boolean): Promise<boolean> {
     const epochAtStart = mutationEpoch;
     let items: CardLink[];
     try {
-      const r = await jsonFetch<{ items: CardLink[] }>(API);
+      // 이 탭의 계정을 싣는다 — 허브가 고정한 계정과 다르면 409(sceneBackup 과 같다, 81회차 F-A-02)
+      const r = await jsonFetch<{ items: CardLink[] }>(API, { headers: { [EXPECT_ACCOUNT_HEADER]: scope } });
       items = r.items || [];
     } catch {
       return false; // 오프라인·미로그인(401)·구백엔드 — 판정 미상. known 을 비워두면 백필이 안 돈다
@@ -326,6 +328,7 @@ export function mergeCardLinksIntoScenes<
 // 전송 계약(합의 B): backfill=자동 스캔(서버 tombstone 을 절대 해제하지 않음, INSERT OR IGNORE),
 // explicit=사용자 의도(undo 부활 등 — tombstone 해제 허용), removed=제거 표시.
 async function send(
+  scope: string,
   backfill: CardLink[],
   explicit: CardLink[],
   removed: CardLink[],
@@ -354,7 +357,8 @@ async function send(
     };
     chunk = { backfill: [], explicit: [], removed: [] };
     used = 0;
-    await jsonFetch(API, { method: "PUT", body: JSON.stringify(body) });
+    // 409(그사이 계정 바뀜)는 다른 실패처럼 대기열을 그대로 두고 재시도한다
+    await jsonFetch(API, { method: "PUT", headers: { [EXPECT_ACCOUNT_HEADER]: scope }, body: JSON.stringify(body) });
   };
   const items: [keyof typeof chunk, CardLink, number][] = [
     ...removed.map((l): [keyof typeof chunk, CardLink, number] => ["removed", l, 1]),
@@ -384,7 +388,7 @@ async function pushNew(): Promise<void> {
     const revives = [...pendingRevives];
     if (removals.length || revives.length) {
       try {
-        await send([], revives, removals);
+        await send(scope, [], revives, removals);
       } catch {
         scheduleRetry();
         return;
@@ -415,7 +419,7 @@ async function pushNew(): Promise<void> {
     }
     if (!fresh.length) return;
     try {
-      await send(fresh, [], []); // 자동 스캔은 backfill — 서버 tombstone 을 해제하지 못한다
+      await send(scope, fresh, [], []); // 자동 스캔은 backfill — 서버 tombstone 을 해제하지 못한다
     } catch {
       scheduleRetry(); // 서버 실패 — known 을 안 채우므로 다음 시도에 그대로 다시 올린다
       return;
