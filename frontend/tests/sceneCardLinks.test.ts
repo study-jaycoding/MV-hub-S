@@ -25,10 +25,12 @@ type Call = { url: string; init?: RequestInit };
 let calls: Call[] = [];
 let getLinks: () => Promise<{ items: unknown[] }>;
 let putFails = false;
+let putError: Error | null = null; // 허브가 돌려준 오류 그대로(예: 제품의 HttpError 409)
 vi.mock("../src/lib/http", () => ({
   jsonFetch: (url: string, init?: RequestInit) => {
     calls.push({ url, init });
     if (init?.method === "PUT") {
+      if (putError) return Promise.reject(putError);
       if (putFails) return Promise.reject(new Error("offline"));
       // 서버(repo/scene_cards)처럼 한 요청의 added(+backfill)·explicit·removed 합계 2000 을 넘으면 거절한다
       const body = JSON.parse(String(init.body));
@@ -70,6 +72,7 @@ describe("sceneCardLinks (카드 소속 기록)", () => {
     calls = [];
     mem.clear();
     putFails = false;
+    putError = null;
     acctSeq += 1;
     localStorage.setItem("ch.activeAccount", `user${acctSeq}@test`);
     getLinks = () => Promise.resolve({ items: [] });
@@ -82,19 +85,21 @@ describe("sceneCardLinks (카드 소속 기록)", () => {
 
   // 81회차 F-A-02: 카드 소속 요청도 씬 백업과 같은 계정 확인 헤더를 싣는다. 409 를 받으면 제거 의도·백필을 그대로 두고 다시 보낸다.
   it("소속 요청(GET·PUT)에 이 탭의 계정을 싣고, 409(그사이 계정 바뀜)는 제거 의도·백필을 보존해 다시 보낸다", async () => {
+    const { HttpError } = await vi.importActual<typeof import("../src/lib/http")>("../src/lib/http");
     const { scenes, links } = await boot();
     const scope = `acct:user${acctSeq}@test`;
     scenes.saveScenes(null, [sceneWith("s1", "c1", ["g1"])]);
-    putFails = true; // 허브가 409 로 거절(목은 실패 종류를 가리지 않는다)
+    // 허브가 실제로 던지는 오류 그대로 — 제품 jsonFetch 의 HttpError(409)
+    putError = new HttpError(409, "409: 그사이 이 PC 의 계정이 바뀌어 씬 백업을 하지 않았습니다", "그사이 이 PC 의 계정이 바뀌어 씬 백업을 하지 않았습니다");
     links.initSceneCardLinks();
     await links.markCardGenerationsRemoved("s1", "c0", ["g0"]);
     await vi.advanceTimersByTimeAsync(2500);
-    expect(puts().length).toBeGreaterThan(0);
-    putFails = false;
-    await vi.advanceTimersByTimeAsync(30_000);
-    const last = puts().slice(-2).map(putBody);
-    expect(last.flatMap((b) => b.removed.map((l: { generation_id: string }) => l.generation_id))).toContain("g0");
-    expect(last.flatMap((b) => b.backfill.map((l: { generation_id: string }) => l.generation_id))).toContain("g1");
+    const refused = puts().length;
+    expect(refused).toBeGreaterThan(0);
+    putError = null;
+    await vi.advanceTimersByTimeAsync(30_000); // 재시도 — 제거 의도를 먼저, 그다음 백필
+    const gens = (list: { generation_id: string }[]) => list.map((l) => l.generation_id);
+    expect(puts().slice(refused).map(putBody).map((b) => [gens(b.removed), gens(b.backfill)])).toEqual([[["g0"], []], [[], ["g1"]]]);
     expect(calls.map((c) => (c.init?.headers as Record<string, string> | undefined)?.["X-MVHub-Expect-Account"])).toEqual(calls.map(() => scope));
   });
 
