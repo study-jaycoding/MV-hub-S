@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { api } from "../src/api";
 import { folderPeekQuery } from "../src/lib/appGenerationQuery";
+import { LIBRARY_LIST_TIMEOUT_MESSAGE, LIBRARY_LIST_TIMEOUT_MS } from "../src/lib/libraryRequestTimeout";
 import { createLibraryMutationOrigin, decideLibrarySync, markMutationDomainsSucceeded } from "../src/lib/librarySync";
 import type { GenerationLocation } from "../src/lib/resolveLibraryLocation";
 import { useGenerationLibraryData } from "../src/lib/useGenerationLibraryData";
@@ -701,4 +702,40 @@ it("15초 안에 돌아온 탭: 목록은 캐시로 두되, 다른 범위의 폴
   const again = calls();
   await act(async () => { await data.reloadIfStale(); }); // 이미 이 범위의 것 — 더 받지 않는다
   expect(calls()).toEqual(again);
+});
+
+// 81회차 실측 1 F1: 다른 조회(전체 → 프로젝트)로 옮긴 뒤 그 조회가 실패로 끝나면(500·30초 무응답) 앞 조회의 목록이 그대로 남아, 토스트가 사라진 뒤
+//  옛 조건의 카드가 지금 조회의 결과처럼 보였고 재시도 화면(빈 격자 + 실패 표시)도 뜨지 않았다. 같은 조회를 다시 받다 실패한 것은 전처럼 목록을 둔다.
+it.each([["500", false], ["30초 무응답", true]])("다른 조회로 옮긴 뒤 그 조회가 실패하면(%s) 앞 조회의 목록을 걷고 재시도 화면 — 다시 시도 한 번에 새 조회의 것만", async (_name, hang) => {
+  const ALL: GenQuery = { tab: "my" };
+  const PROJECT: GenQuery = { tab: "my", project_id: "pa" };
+  const page = Array.from({ length: 200 }, (_, index) => gen(`c${index}`)); // 꽉 찬 첫 쪽 — 다음 쪽이 있다
+  vi.mocked(api.listGenerations).mockImplementation(async (query) => (query.project_id === "pa" ? [gen("a1")] : page));
+  await mount({ query: ALL });
+  expect([ids().length, data.hasMore]).toEqual([200, true]);
+  vi.mocked(api.listGenerations).mockRejectedValueOnce(new Error("500: boom"));
+  await act(async () => { await data.reload(true, true); }); // 같은 조회의 갱신 실패 — 보던 목록을 그대로 둔다
+  expect([ids().length, data.loadError]).toEqual([200, "500: boom"]);
+  await act(async () => { await data.reload(true, true); });
+  expect(data.loadError).toBeNull();
+  if (hang) {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.mocked(api.listGenerations).mockImplementationOnce((_query, _cursor, _limit, options) => new Promise((_resolve, reject) => {
+      options?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    }));
+  } else {
+    vi.mocked(api.listGenerations).mockRejectedValueOnce(new Error("500: boom"));
+  }
+  try {
+    show({ query: PROJECT });
+    expect(ids().length).toBe(200); // 기다리는 동안은 앞 목록을 둔다(§5-1)
+    if (hang) await act(async () => { await vi.advanceTimersByTimeAsync(LIBRARY_LIST_TIMEOUT_MS); });
+    await settle();
+  } finally {
+    vi.useRealTimers();
+  }
+  expect([ids(), data.hasMore, data.loading]).toEqual([[], false, false]); // 빈 격자 + 실패 표시 = 재시도 화면
+  expect(data.loadError).toBe(hang ? LIBRARY_LIST_TIMEOUT_MESSAGE : "500: boom");
+  await act(async () => { await data.reload(); }); // [다시 시도]
+  expect([ids(), data.loadError]).toEqual([["a1"], null]);
 });

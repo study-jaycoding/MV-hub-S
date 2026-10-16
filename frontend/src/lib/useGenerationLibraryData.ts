@@ -523,8 +523,15 @@ export function useGenerationLibraryData({
           //  다음 조용한 실패가 이것을 보게(Codex 검토).
           loadErrorRef.current = String(e).replace(/^Error:\s*/, "");
           setLoadError(loadErrorRef.current);
-          // 사본을 보이던 중이면 치운다 — 낡은 사본을 최신 목록처럼 남기지 않고 실패·재시도를 보인다
-          if (staleListRef.current) {
+          // 사본·다른 조회의 목록(탭 캐시의 sig = 마지막으로 적용된 조회)을 보이던 중이면 치운다 — 낡은 목록을 지금 조회의 것처럼 남기지
+          //  않고 실패·재시도를 보인다(81회차 F1). 같은 조회를 다시 받다 실패한 것이면 보던 목록을 그대로 둔다.
+          const shown = tabCacheRef.current[tab];
+          const otherQuery = !!shown && shown.sig !== sig;
+          if (staleListRef.current || otherQuery) {
+            if (otherQuery) delete tabCacheRef.current[tab]; // 비운 목록이 그 조회의 캐시로 적히지 않게
+            pageCursorRef.current = null; // 앞 조회의 커서로 다음 쪽을 받지 않게
+            trashOffsetRef.current = 0;
+            setHasMore(false);
             setGens([]);
             setStaleList(false);
           }
