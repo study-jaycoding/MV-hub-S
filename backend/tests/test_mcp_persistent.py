@@ -795,6 +795,39 @@ def test_real_asset_tree_issues_handle_and_detects_replacement(local, tmp_path, 
     assert action(local, "read_context", {"kind": "references", "asset_project": str(folder)}).status_code == 404
 
 
+def test_plan_validation_scans_each_asset_project_once_per_pass(local, tmp_path, monkeypatch):
+    # F-B-01 — 계획 검증이 참고 자료 하나마다 에셋 트리를 fresh 로 다시 훑었다(항목 20 × 자료 8 = 최대 160번, NAS).
+    #  한 검증 회차 안에서는 프로젝트당 한 번, 계획 준비와 실행 직전 검증 사이에는 다시 훑는다.
+    configure(local)
+    folder = tmp_path / "authorized-assets"
+    folder.mkdir()
+    for name in ("a.png", "b.png"):
+        (folder / name).write_bytes(name.encode())
+    monkeypatch.setattr(api.assets, "_owner_mounts", lambda owner: [{"name": "my-assets"}])
+    monkeypatch.setattr(api.assets, "_mount_dir", lambda name, owner: folder if name == "my-assets" else None)
+    monkeypatch.setattr(api.assets, "_auto_project_mounts", lambda *args: [])
+    monkeypatch.setattr(api.assets.asset_watcher, "watch", lambda *args, **kwargs: None)
+    refs = action(local, "read_context", {"kind": "references", "asset_project": "my-assets"}).json()["references"]
+    ids = [ref["id"] for ref in refs]
+    assert len(ids) == 2
+    real_tree, scans = api.assets.project_tree, []
+    def counting(*args, **kwargs):
+        scans.append(args[2])
+        return real_tree(*args, **kwargs)
+    monkeypatch.setattr(api.assets, "project_tree", counting)
+    response = action(local, "prepare_generation_plan", {"title": "refs", "items": [
+        {"label": str(i), "prompt": "hello", "model": "test_model", "params": {}, "reference_ids": ids} for i in range(3)]})
+    assert response.status_code == 200, response.text
+    assert scans == ["my-assets"]  # 3항목 × 자료 2 = 6번이던 것
+    with db.get_connection() as conn:
+        items = json.loads(conn.execute("SELECT items FROM mcp_generation_plan WHERE id=?", (response.json()["id"],)).fetchone()[0])
+    for item in items:  # 순서·역할 번호는 그대로
+        assert [(ref["role"], ref["name"]) for ref in item["references"]] == [("@Image1", refs[0]["name"]), ("@Image2", refs[1]["name"])]
+    (folder / "b.png").write_bytes(b"changed-version")
+    assert action(local, "execute_generation_plan", {"plan_id": response.json()["id"]}).status_code == 409
+    assert scans == ["my-assets", "my-assets"]  # 실행 직전 검증은 준비 때 것을 다시 쓰지 않고 새로 한 번
+
+
 def test_auth_off_upstream_account_required_and_pinned(local, monkeypatch):
     from starlette.requests import Request
     monkeypatch.setattr(config, "AUTH_ENABLED", False)

@@ -482,7 +482,9 @@ def _issue_references(ctx, ws, args):
     return result
 
 
-def _references(ctx, ws, ids):
+def _references(ctx, ws, ids, trees):
+    """trees = 한 검증 회차(_validate_items 한 번)의 프로젝트별 자료 지도 — 권한 확인·fresh 트리 조회를
+    회차마다 프로젝트당 한 번만 한다(F-B-01: 전엔 자료마다 NAS 트리를 다시 훑었다). 회차 사이에는 새로 만든다."""
     result = []
     for rid in ids:
         saved = store.get_reference(ctx.client, rid)
@@ -493,8 +495,10 @@ def _references(ctx, ws, ids):
         if _workspace_identity(issued_workspace) != _workspace_identity(ws):
             raise HTTPException(404, "다른 워크스페이스에서 발급한 참고 자료입니다.")
         if source["kind"] == "asset":
-            node = next((n for n in _flatten(_asset_tree(ctx, ws, source["project"])) if n.get("path") == source["path"]), None)
-            version = (node or {}).get("version")
+            nodes = trees.get(source["project"])
+            if nodes is None:
+                nodes = trees[source["project"]] = {n.get("path"): n for n in _flatten(_asset_tree(ctx, ws, source["project"]))}
+            version = (nodes.get(source["path"]) or {}).get("version")
         else:
             row = library.get_generation(source["id"], _internal(ctx, "/api/generations/" + source["id"]))
             if not _matches(row, ws):
@@ -603,6 +607,7 @@ async def _validate_items(ctx, items, ws):
     ws = await asyncio.to_thread(_workspace, ctx, ws)
     models = {model["job_set_type"] for model in await _models(ctx, ws)}
     available = await asyncio.to_thread(_projects, ctx, ws) if any(item.get("project_id") for item in items) else []
+    trees: dict[str, dict] = {}  # 이 회차의 에셋 자료 지도(_references)
     for item in items:
         if item["model"] not in models:
             raise HTTPException(422, "사용할 수 없는 모델입니다.")
@@ -612,7 +617,7 @@ async def _validate_items(ctx, items, ws):
         if item.get("folder_path"):
             if not item.get("project_id") or not _folder_exists(await asyncio.to_thread(_folder_tree, ctx, item["project_id"]), item["folder_path"]):
                 raise HTTPException(422, "프로젝트의 컷 폴더를 다시 조회하세요.")
-        item["references"] = await asyncio.to_thread(_references, ctx, ws, item["reference_ids"])
+        item["references"] = await asyncio.to_thread(_references, ctx, ws, item["reference_ids"], trees)
     await asyncio.to_thread(_still_current, ctx)
     return ws
 
