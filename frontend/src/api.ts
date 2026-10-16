@@ -906,8 +906,9 @@ export const api = {
     return generationFetch(`/api/generations/${pathPart(generation.id)}/${state === "final" ? "finalize" : "unpublish"}`, { method: "POST" });
   },
 
-  importToWorkspace: (id: string) =>
-    generationFetch(`/api/generations/${pathPart(id)}/import`, {
+  // 공유 탭 '내 워크스페이스 / 재생성' 앞단 — 남의 공유 원본을 이 PC 에서 찾거나 받아 온다(재생성은 prepareRegenerate 로)
+  regenSource: (id: string) =>
+    generationFetch(`/api/generations/${pathPart(id)}/regen-source`, {
       method: "POST",
       body: jsonBody({}),
     }),

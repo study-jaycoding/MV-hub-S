@@ -18,7 +18,6 @@ from types import SimpleNamespace
 import pytest
 
 from app import active_account, config, db, deps, repo
-from app.models import ImportIn
 from app.routers import share
 
 
@@ -115,11 +114,12 @@ def test_pinned_scope_freezes_active_uid_until_it_exits(two_accounts):
 
 
 # ── 라우트 계약 ──────────────────────────────────────────────────────────────
-def test_import_owner_uid_survives_a_switch_landing_right_after_the_capture(
+def test_regen_source_reads_the_captured_account_after_a_switch_right_after_the_capture(
     two_accounts, monkeypatch
 ):
-    """★핵심 회귀: 캡처 직후(라우트 본문 진입 전) A→B 전환이 착지해도 creator_uid 는 A 다."""
+    """★캡처 직후(라우트 본문 진입 전) A→B 전환이 착지해도 원본은 A DB 에서 읽는다 — B DB 엔 없어 404 가 났을 것."""
     monkeypatch.setattr(share._proxy, "proxying", lambda: True)
+    monkeypatch.setattr(share, "_materialize_remote_shared", lambda *_: (None, None))
     _seed_shared_source("r13-import-src")
     real_capture = share._capture_account_pin
 
@@ -133,9 +133,7 @@ def test_import_owner_uid_survives_a_switch_landing_right_after_the_capture(
 
     request = SimpleNamespace(state=SimpleNamespace(account=None))
 
-    child = share.import_to_workspace("r13-import-src", ImportIn(), request)
+    source = share.regen_source("r13-import-src", request)
 
-    assert child["creator_uid"] == A_UID, "포인터를 직독하면 여기서 B_UID 가 박힌다"
-    assert _for_account(A_EMAIL, lambda: repo.get_generation(child["id"])) is not None
-    assert _for_account(B_EMAIL, lambda: repo.get_generation(child["id"])) is None
+    assert source["id"] == "r13-import-src"
     assert active_account.account_key() == B_EMAIL, "override 는 라우트 안에서만"

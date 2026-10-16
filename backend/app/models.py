@@ -376,10 +376,6 @@ class FinalReviewIn(BaseModel):
     state: Literal["unshared", "shared", "held"]
 
 
-class ImportIn(BaseModel):
-    """팀 공유 항목을 내 워크스페이스로 가져오기(로컬 복제 + history)."""
-
-    worker_id: Optional[str] = None
 
 
 # ── 프로젝트(작업 묶음) ───────────────────────────────────────────────────

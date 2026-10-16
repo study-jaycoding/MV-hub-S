@@ -7,8 +7,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ prepareRegenerate: vi.fn(), finalize: vi.fn(), unfinalize: vi.fn() }));
-vi.mock("../src/api", () => ({ api: { prepareRegenerate: mocks.prepareRegenerate, finalize: mocks.finalize, unfinalize: mocks.unfinalize } }));
+const mocks = vi.hoisted(() => ({ prepareRegenerate: vi.fn(), finalize: vi.fn(), unfinalize: vi.fn(), regenSource: vi.fn() }));
+vi.mock("../src/api", () => ({ api: { prepareRegenerate: mocks.prepareRegenerate, finalize: mocks.finalize, unfinalize: mocks.unfinalize, regenSource: mocks.regenSource } }));
 vi.mock("../src/lib/modelPolicy", () => ({ modelBlockMessage: () => null }));
 vi.mock("../src/lib/workspaceContext", async (orig) => ({ ...(await orig<Record<string, unknown>>()), isGenerationWorkspaceReady: () => true }));
 vi.mock("../src/lib/libraryBroadcast", () => ({ postLibraryChanged: vi.fn() }));
@@ -83,6 +83,38 @@ it("재생성 — 멈춤으로 못 보냈거나 서버가 거절(4xx)했으면 �
   expect(await outcome(new HttpError(409, "충돌"))).toBe(1);
   expect(await outcome(new TypeError("Failed to fetch"))).toBe(0);
   expect(await outcome(new HttpError(429, "많음"))).toBe(0);
+});
+
+// Jay 10-16: 공유 탭 '내 워크스페이스로 가져오기'는 대기 행만 만들고 요청을 안 넣어 힉스필드로 나가지 않았다 —
+//  이제 원본을 받아 온 뒤 일반 재생성(prepareRegenerate = 요청행까지)으로 보낸다. 내 워크스페이스 탭으로 옮기는 것은 큐에 들어간 뒤에만.
+it("공유 탭 '내 워크스페이스 / 재생성' — 원본을 받아 온 뒤 일반 재생성 요청으로 보내고, 실패하면 탭을 옮기지 않는다", async () => {
+  const navTab = vi.fn();
+  const flash = vi.fn();
+  let actions!: ReturnType<typeof useGenerationCardActions>;
+  function Host() {
+    actions = useGenerationCardActions({ armedAutoTags: new Set(), bumpBoard: () => {}, canFinalize: () => true, flash, navTab,
+      reload: async () => {}, workspace: { scope: "team", id: "w1", name: "팀" } });
+    return null;
+  }
+  act(() => root.render(<Host />));
+  mocks.regenSource.mockResolvedValueOnce(generation("local-src"));
+  mocks.prepareRegenerate.mockImplementationOnce(() => () => Promise.resolve(generation("child")));
+  await actions.onImport(generation("server-id"));
+  expect(mocks.regenSource).toHaveBeenCalledWith("server-id");
+  expect(mocks.prepareRegenerate).toHaveBeenCalledWith("local-src", expect.objectContaining({ prompt: "p" }), { scope: "team", id: "w1", name: "팀" }, undefined);
+  expect(navTab).toHaveBeenCalledWith("my");
+  // 원본을 못 받아 오면 재생성도 탭 이동도 없다
+  mocks.prepareRegenerate.mockClear(); navTab.mockClear();
+  mocks.regenSource.mockRejectedValueOnce(new Error("404"));
+  await actions.onImport(generation("gone"));
+  expect(mocks.prepareRegenerate).not.toHaveBeenCalled();
+  expect(navTab).not.toHaveBeenCalled();
+  expect(flash).toHaveBeenLastCalledWith(expect.stringContaining("재생성 실패"));
+  // 재생성 요청이 거절되면 탭을 옮기지 않는다
+  mocks.regenSource.mockResolvedValueOnce(generation("local-src2"));
+  mocks.prepareRegenerate.mockImplementationOnce(() => () => Promise.reject(new Error("409")));
+  await actions.onImport(generation("server-id2"));
+  expect(navTab).not.toHaveBeenCalled();
 });
 
 it("최종 지정·해제가 권한 없음(403)으로 거절되면 최종 권한을 다시 읽으라고 알린다 — 다른 실패는 알리지 않는다(49회차)", async () => {

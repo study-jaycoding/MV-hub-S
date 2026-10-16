@@ -1,12 +1,11 @@
-"""R12-3 — import_to_workspace 계정 고정 + 소유 uid 계산 순서.
+"""R12-3 — 공유 원본 준비(regen_source, 옛 import_to_workspace) 계정 고정.
 
-가져오기는 중간에 _materialize_remote_shared 로 서버를 왕복한다. 그 사이 다른 창에서 A→B 로
-전환하면 'A 에서 읽은 원본을 B DB 에 복제'하는 섞인 조합이 조용히 생긴다 →
+공유 탭 '내 워크스페이스 / 재생성'의 앞단은 중간에 _materialize_remote_shared 로 서버를 왕복한다.
+그 사이 다른 창에서 A→B 로 전환하면 'A 에서 읽은 원본을 B DB 에 심는' 섞인 조합이 조용히 생긴다 →
 @_account_scoped_route 로 라우트 전체를 진입 시점 계정 DB 에 고정한다.
 
-★고정만 붙이면 새 구멍이 생긴다: creator_uid 폴백인 active_uid() 는 override 를 보지 않고
-active.json 포인터를 직독하므로, 서버 왕복 '뒤'에 계산하면 DB=A 인데 소유 uid=B 인 오귀속이
-된다. 그래서 uid 계산을 캡처 직후·네트워크 전으로 옮기는 것까지가 한 처방이다.
+2026-10-16: 예전 import 는 여기서 대기(pending) 복제 행을 만들고 요청행을 넣지 않아 힉스필드로 나가지 않았다.
+이제 원본만 돌려주고, 재생성은 화면이 일반 재생성 요청으로 보낸다(복제 행의 소유 uid 는 그쪽이 정한다).
 """
 
 from __future__ import annotations
@@ -18,7 +17,6 @@ from types import SimpleNamespace
 import pytest
 
 from app import active_account, config, db, deps, repo
-from app.models import ImportIn
 from app.routers import share
 
 
@@ -73,10 +71,10 @@ def _seed_shared_source(gen_id: str) -> None:
     repo.publish(gen_id, "me")  # shared_by 는 worker FK — 기본 작업자로
 
 
-def test_import_stays_on_the_captured_account_when_the_switch_lands_mid_flight(
+def test_source_stays_on_the_captured_account_when_the_switch_lands_mid_flight(
     two_accounts, monkeypatch
 ):
-    """서버 왕복 중 A→B 전환이 껴도 복제 행과 소유 uid 는 모두 A 다."""
+    """서버 왕복 중 A→B 전환이 껴도 받아 심은 원본은 A DB 에만 있다."""
     monkeypatch.setattr(share._proxy, "proxying", lambda: True)
     source_id = "r12-remote-src"
 
@@ -91,40 +89,42 @@ def test_import_stays_on_the_captured_account_when_the_switch_lands_mid_flight(
     monkeypatch.setattr(share, "_materialize_remote_shared", fake_materialize)
     request = SimpleNamespace(state=SimpleNamespace(account=None))
 
-    child = share.import_to_workspace("r12-remote-src", ImportIn(), request)
+    source = share.regen_source("r12-remote-src", request)
 
-    assert child, "복제본이 만들어져야 한다"
+    assert source["id"] == source_id
     assert active_account.account_key() == B_EMAIL, "override 는 라우트 안에서만"
-    # ① 복제 행은 캡처한 A DB 에만 있다.
-    assert _for_account(A_EMAIL, lambda: repo.get_generation(child["id"])) is not None
-    assert _for_account(B_EMAIL, lambda: repo.get_generation(child["id"])) is None
-    # ② 소유 uid 도 A — 네트워크 뒤에 계산했다면 포인터 직독으로 B_UID 가 박힌다.
-    assert child["creator_uid"] == A_UID
+    assert _for_account(A_EMAIL, lambda: repo.get_generation(source_id)) is not None
+    assert _for_account(B_EMAIL, lambda: repo.get_generation(source_id)) is None
 
 
-def test_import_without_the_switch_keeps_the_same_owner_uid(two_accounts, monkeypatch):
-    """전환이 없을 때의 폴백 순서·값 의미는 그대로다(계정=A → 소유 uid=A)."""
+def test_local_source_comes_back_as_is(two_accounts, monkeypatch):
+    """이미 이 PC 에 있는 공유 원본은 그대로 돌려준다(서버 왕복 없음)."""
     monkeypatch.setattr(share._proxy, "proxying", lambda: True)
+    monkeypatch.setattr(share, "_materialize_remote_shared", lambda *_: pytest.fail("로컬에 있으면 서버에 묻지 않는다"))
     _seed_shared_source("r12-local-src")
     request = SimpleNamespace(state=SimpleNamespace(account=None))
 
-    child = share.import_to_workspace("r12-local-src", ImportIn(), request)
-
-    assert child["creator_uid"] == A_UID
+    assert share.regen_source("r12-local-src", request)["id"] == "r12-local-src"
     assert active_account.account_key() == A_EMAIL
 
 
-def test_session_account_uid_still_wins_over_the_pointer(two_accounts, monkeypatch):
-    """세션 계정의 creator_uid 가 있으면 그대로 우선 — 폴백은 프록시 모드에서만."""
+def test_preparing_the_source_leaves_no_unsent_pending_row(two_accounts, monkeypatch):
+    """★10-16 회귀: 예전 가져오기는 대기(pending) 복제 행만 만들고 요청행을 안 넣어 힉스필드로 안 나갔다 —
+    원본 준비는 행을 만들지 않는다(재생성 요청이 placeholder 와 요청행을 함께 만든다)."""
     monkeypatch.setattr(share._proxy, "proxying", lambda: True)
-    _seed_shared_source("r12-session-src")
-    request = SimpleNamespace(
-        state=SimpleNamespace(account={"email": A_EMAIL, "creator_uid": "session-uid"})
-    )
+    _seed_shared_source("r12-count-src")
+    request = SimpleNamespace(state=SimpleNamespace(account=None))
 
-    child = share.import_to_workspace("r12-session-src", ImportIn(), request)
+    def counts():
+        with db.get_connection() as conn:
+            return (
+                conn.execute("SELECT COUNT(*) FROM generation").fetchone()[0],
+                conn.execute("SELECT COUNT(*) FROM generation WHERE status='pending'").fetchone()[0],
+            )
 
-    assert child["creator_uid"] == "session-uid"
+    before = counts()
+    share.regen_source("r12-count-src", request)
+    assert counts() == before
 
 
 # ── 소스 구조 계약(순서 회귀 차단) ───────────────────────────────────────────
@@ -147,23 +147,7 @@ def _decorator_names(func: ast.FunctionDef) -> set[str]:
     return names
 
 
-def _statement_index(func: ast.FunctionDef, symbol: str) -> int:
-    for index, statement in enumerate(func.body):
-        for node in ast.walk(statement):
-            if isinstance(node, ast.Name) and node.id == symbol:
-                return index
-    raise AssertionError(f"{symbol} 를 함수 본문에서 찾지 못했다")
-
-
-@pytest.mark.parametrize("route", ["import_to_workspace", "publish"])
+@pytest.mark.parametrize("route", ["regen_source", "publish"])
 def test_routes_carry_the_account_scope_decorator(route):
-    """가져오기·발행 모두 라우트 전체가 한 계정 DB 로 고정된다."""
+    """원본 준비·발행 모두 라우트 전체가 한 계정 DB 로 고정된다."""
     assert "_account_scoped_route" in _decorator_names(_route_function(route))
-
-
-def test_owner_uid_is_computed_before_the_remote_round_trip():
-    """★uid 계산이 네트워크(물질화)보다 앞에 있어야 한다 — 조용한 오귀속 회귀 차단."""
-    func = _route_function("import_to_workspace")
-    assert _statement_index(func, "active_uid") < _statement_index(
-        func, "_materialize_remote_shared"
-    )

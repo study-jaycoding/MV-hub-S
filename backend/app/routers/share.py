@@ -27,7 +27,7 @@ from ..deps import (
     require_project_role,
     require_view_generation,
 )
-from ..models import FinalReviewIn, GenerationOut, ImportIn, IntentOutcomesIn, PublishIn
+from ..models import FinalReviewIn, GenerationOut, IntentOutcomesIn, PublishIn
 from ..services.async_tools import to_thread_non_abandon
 from ..services.event_journal import journal_audit_event
 from ..services.media_preservation import preserve_generation_now
@@ -1004,7 +1004,7 @@ def _remote_generation_item(remote: dict[str, Any]) -> dict[str, Any]:
 def _materialize_remote_shared(gen_id: str, request: Request) -> tuple[dict[str, Any] | None, str | None]:
     """로컬 프록시 모드에서 서버에만 있는 팀 공유 항목을 로컬 DB 에 먼저 심는다.
 
-    가져오기(import_generation)는 로컬 DB 행을 원본으로 삼아 프롬프트·레퍼런스·히스토리를 복제하므로,
+    재생성(gen_requests → import_generation)은 로컬 DB 행을 원본으로 삼아 프롬프트·레퍼런스·히스토리를 복제하므로,
     팀 탭의 남의 카드처럼 로컬에 아직 없는 항목은 서버에서 단건 조회 후 동기화본으로 물질화한다.
     """
     if not _proxy.proxying():
@@ -1030,23 +1030,16 @@ def _materialize_remote_shared(gen_id: str, request: Request) -> tuple[dict[str,
     return repo.get_generation(source_id), source_id
 
 
-@router.post("/generations/{gen_id}/import", response_model=GenerationOut, status_code=201)
+@router.post("/generations/{gen_id}/regen-source", response_model=GenerationOut)
 @_account_scoped_route
-def import_to_workspace(gen_id: str, body: ImportIn, request: Request):
-    """공유 항목을 내 워크스페이스로 복제(프롬프트·레퍼런스 보존) + history.
-    ★finalize/unpublish 와 같은 계정 고정(_pinned_account_scope): 이 라우트는 중간에
-    _materialize_remote_shared 로 서버를 왕복하고, 그 사이 다른 창에서 A→B 로 전환하면
-    'A 에서 읽은 원본을 B DB 에 복제'하는 섞인 조합이 조용히 생긴다."""
-    # 복제본은 가져온 계정 소유로 — house uid 로 떨어지면 내 작업에 안 잡힘(격리 일관성).
-    # ★소유 uid 는 캡처 직후·네트워크 전에 확정한다. active_uid() 는 라우트 진입 때 계정 키와
-    # 한 쌍으로 캡처된 값을 돌려주므로(_pinned_account_scope) 서버 왕복 중 전환이 껴도 DB 와
-    # 소유 uid 가 갈리지 않는다 — 캡처보다 앞서 읽는 일이 없게 순서도 그대로 둔다.
-    acc = current_account(request)
-    creator_uid = acc.get("creator_uid") if acc else None
-    if not creator_uid and _proxy.proxying():
-        from ..active_account import active_uid
+def regen_source(gen_id: str, request: Request):
+    """공유 탭의 '내 워크스페이스에서 재생성' 앞단 — 그 공유 원본을 이 PC DB 에서 찾거나 서버에서 받아 심어 돌려준다.
 
-        creator_uid = active_uid()
+    재생성 자체는 화면이 일반 재생성 요청(gen_requests, kind=regenerate)으로 보낸다 — 워크스페이스·권한·중복 누름·
+    에이전트가 가져가는 요청행까지 일반 재생성과 같다. 예전 '가져오기'는 대기(pending) 행만 만들고 요청행을 안 넣어
+    힉스필드로 나가지 않았다(Jay 2026-10-16).
+    ★finalize/unpublish 와 같은 계정 고정(_pinned_account_scope): 중간에 _materialize_remote_shared 로 서버를
+    왕복한다 — 그 사이 다른 창에서 A→B 로 전환해도 'A 에서 읽은 원본을 B DB 에 심는' 섞인 조합이 생기지 않게."""
     src = repo.get_generation(gen_id)
     if not src and _proxy.proxying():
         # 팀 탭은 서버 id(job_id)로 표시 → 내 로컬 항목이면 job_id 로 재해석해 찾는다.
@@ -1064,9 +1057,4 @@ def import_to_workspace(gen_id: str, body: ImportIn, request: Request):
     require_view_generation(request, src)  # ⑥: 볼 수 있는 것만 가져올 수 있다(멤버십 경계 일치)
     if not src["shared"]:
         raise HTTPException(status_code=409, detail="공유되지 않은 항목은 가져올 수 없음")
-    worker_id = body.worker_id or DEFAULT_WORKER_ID
-    child_id = repo.import_generation(gen_id, worker_id, creator_uid=creator_uid)
-    child = repo.get_generation(child_id)
-    if not child:
-        raise HTTPException(status_code=500, detail="복제 실패")
-    return child
+    return src

@@ -498,8 +498,8 @@
 | `POST` | `/api/generations/{gen_id}/final-review` | `final_review` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `POST` | `/api/generations/{gen_id}/finalize` | `finalize` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `POST` | `/api/generations/{gen_id}/hold` | `hold_generation` | 로컬 예외 | — |
-| `POST` | `/api/generations/{gen_id}/import` | `import_to_workspace` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `POST` | `/api/generations/{gen_id}/publish` | `publish` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
+| `POST` | `/api/generations/{gen_id}/regen-source` | `regen_source` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `POST` | `/api/generations/{gen_id}/unfinalize` | `unfinalize` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `POST` | `/api/generations/{gen_id}/unhold` | `unhold_generation` | 로컬 예외 | — |
 | `POST` | `/api/generations/{gen_id}/unpublish` | `unpublish` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |

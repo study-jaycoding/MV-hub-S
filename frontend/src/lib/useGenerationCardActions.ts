@@ -242,15 +242,17 @@ export function useGenerationCardActions({
     }
   };
 
+  // 공유 탭 '내 워크스페이스 / 재생성' — 원본을 이 PC 에 찾거나 받아 온 뒤 일반 재생성 그대로(워크스페이스·권한·중복 누름·요청행).
+  //  예전 '가져오기'는 대기 행만 만들고 요청을 안 넣어 힉스필드로 나가지 않았다(Jay 2026-10-16).
   const onImport = async (g: Generation) => {
+    let source: Generation;
     try {
-      await api.importToWorkspace(g.id);
-      flash("내 워크스페이스에 다시 생성을 넣었습니다 (history 기록).");
-      navTab("my");
-      postLibraryChanged();
+      source = await api.regenSource(g.id);
     } catch (e) {
-      flash("다시 생성 실패: " + String(e));
+      flash("재생성 실패: " + String(e));
+      return;
     }
+    if (await onRegenerate(source)) navTab("my");
   };
 
   const onSetSource = async (g: Generation, name: string | null, isSource: boolean) => {
