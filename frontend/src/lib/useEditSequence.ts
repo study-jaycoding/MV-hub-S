@@ -85,7 +85,7 @@ export function useEditGenerations({
       for (;;) {
         // 상한까지 받았으면 다음 쪽이 있는지만 한 줄로 묻는다 — 표시는 2,000건까지, 딱 2,000건이면 끝까지 받은 것이다(81회차 M2-3)
         const probe = rows >= EDIT_LIST_CAP;
-        const page = await (probe ? api.listGenerations(query, cursor, 1) : api.listGenerations(query, cursor));
+        const page: Generation[] = await (probe ? api.listGenerations(query, cursor, 1) : api.listGenerations(query, cursor));
         if (!alive()) return; // 문맥이 바뀌었다 — 다음 쪽을 묻지 않는다
         if (probe) {
           capped = page.length > 0;
