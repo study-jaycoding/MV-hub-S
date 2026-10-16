@@ -183,3 +183,61 @@ def test_task_query_failure_returns_503_without_running_task(monkeypatch, tmp_pa
 
     assert response.status_code == 503, response.text
     assert [args for args in others if args and args[0] == "schtasks"] == []
+
+
+# ── R-3 run_agent_session.py `_browser_processes` · `_console_cmd_cmdlines` ───────────────────
+
+KOREAN_PROFILE = "D:\\한글 사용자\\MVHub\\app-profile"
+CHROME_EXE = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+BROWSER_ROW = {
+    "ProcessId": 4321,
+    "ExecutablePath": CHROME_EXE,
+    "CommandLine": '"' + CHROME_EXE + '" --user-data-dir="' + KOREAN_PROFILE + '" --app=http://127.0.0.1/',
+}
+CONSOLE_LINE = 'cmd /c ""D:\\한글 설치\\MV-hub\\MV_agent.bat" "'
+
+
+def _launcher():
+    return _load("mvhub_launcher_utf8_target", REPO / "run_agent_session.py")
+
+
+def _cim_fake(rows: list[dict]) -> str:
+    objects = []
+    for row in rows:
+        fields = "; ".join(
+            f"{key} = {value}" if isinstance(value, int) else f"{key} = '{value}'" for key, value in row.items()
+        )
+        objects.append("[pscustomobject]@{ " + fields + " }")
+    return "function Get-CimInstance { " + ", ".join(objects) + " }; "
+
+
+def test_browser_and_console_queries_keep_korean_paths(monkeypatch):
+    launcher = _launcher()
+    _pipe(monkeypatch, fakes=_cim_fake([BROWSER_ROW]))
+    assert launcher._browser_processes("chrome.exe") == [
+        {"pid": 4321, "exe": CHROME_EXE, "cmdline": BROWSER_ROW["CommandLine"]}
+    ]
+    assert launcher._profile_pids(CHROME_EXE, Path(KOREAN_PROFILE)) == ({4321}, {4321})
+
+    _pipe(monkeypatch, fakes=_cim_fake([{"ProcessId": 77, "CommandLine": CONSOLE_LINE}]))
+    assert launcher._console_cmd_cmdlines([77, 78]) == [CONSOLE_LINE, None]
+
+
+def test_browser_decode_failure_does_not_count_as_empty_scan(monkeypatch):
+    """CP949 옛 출력을 못 읽은 것을 '조회 성공·프로세스 없음'([])으로 바꾸면 앱 창이 떠 있는데 감시가 종료로 센다."""
+    launcher = _launcher()
+    _pipe(monkeypatch, emit=lambda _script: json.dumps([BROWSER_ROW], ensure_ascii=False).encode("cp949"))
+
+    assert launcher._browser_processes("chrome.exe") is None
+    assert launcher._profile_pids(CHROME_EXE, Path(KOREAN_PROFILE)) is None
+
+
+def test_console_decode_failure_keeps_console_visible(monkeypatch):
+    """못 읽은 조회는 '읽었지만 명령줄 없음'([None]) 이 아니라 조회 실패(None) — 호출측은 둘 다 숨기지 않는다."""
+    launcher = _launcher()
+    row = {"ProcessId": 77, "CommandLine": CONSOLE_LINE}
+    _pipe(monkeypatch, emit=lambda _script: json.dumps([row], ensure_ascii=False).encode("cp949"))
+
+    lines = launcher._console_cmd_cmdlines([77])
+
+    assert lines is None
