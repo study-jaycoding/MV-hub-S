@@ -607,6 +607,9 @@ class PersistentTests(unittest.TestCase):
                 gallery = await client.call_tool("show_results", {"plan_id": plan, "item_indexes": [0, 1]})
                 self.assertFalse(gallery.is_error)
                 self.assertEqual(sum(b.type == "image" for b in gallery.content), 1)
+                self.assertEqual([b.type for b in gallery.content], ["text", "image", "text"])
+                self.assertEqual(gallery.content[-1].text, gallery.structured_content["card_text"])
+                self.assertEqual(gallery.content[-1].text, "failed\n\ndone")
                 self.assertIsNone(gallery.structured_content["items"][0]["image_index"])
                 self.assertEqual(gallery.structured_content["items"][1]["image_index"], 0)
                 self.assertNotIn("media", gallery.structured_content["items"][1])
@@ -614,6 +617,7 @@ class PersistentTests(unittest.TestCase):
                 broken = await client.call_tool("show_results", {"plan_id": plan, "item_indexes": [0, 1]})
                 self.assertFalse(broken.is_error)
                 self.assertEqual(sum(b.type == "image" for b in broken.content), 1)
+                self.assertEqual(broken.content[-1].text, broken.structured_content["card_text"])
                 self.assertIn("미리보기를 읽지 못했습니다", broken.structured_content["items"][0]["card_text"])
                 for indexes in ([], list(range(9)), [-1], [True]):
                     bad = await client.call_tool("wait_results", {"plan_id": plan, "item_indexes": indexes})
@@ -656,6 +660,7 @@ class PersistentTests(unittest.TestCase):
                 self.assertEqual(items[0]["display"]["status"], "unavailable")
                 images = [b.data for b in gallery.content if b.type == "image"]
                 self.assertEqual(images, [])
+                self.assertEqual([b.type for b in gallery.content], ["text"])
                 self.assertEqual(len(list(output.iterdir())), 2)
                 for item in items[1:]:
                     self.assertTrue(item["delivery"]["repeat_card_text"])
