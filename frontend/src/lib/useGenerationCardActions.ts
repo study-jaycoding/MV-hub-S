@@ -43,6 +43,9 @@ export function useGenerationCardActions({
   // 재생성 요청이 나가 있는 생성물 — 응답 전의 다시 누름(더블클릭)은 받지 않는다. 누름마다 요청 키가 새로 만들어져 서버의 중복 제거로도
   //  합쳐지지 않고 유료 생성이 둘이 된다(조작 규칙 39). 응답이 오면 바로 푼다 — '큐에 등록' 안내를 보고 일부러 한 번 더 누르는 것은 새 요청이다.
   const regenInFlightRef = useRef(new Set<string>());
+  // 공유 탭 재생성은 원본 받기 → 재생성 두 단계라, 원본을 받는 동안의 다시 누름도 막아야 한다(Codex 10-16 P1 — 유료 생성 둘).
+  //  키는 공유 카드 id — 원본 id 와 같을 수 있어 regenInFlightRef 와 섞으면 onRegenerate 가 자기 자신을 막는다.
+  const importInFlightRef = useRef(new Set<string>());
   // 새로 만든 재생성 placeholder 를 반환한다(캔버스에서 그 카드에 변형으로 append 하려고). 실패 시 null.
   const onRegenerate = async (
     g: Generation,
@@ -245,14 +248,23 @@ export function useGenerationCardActions({
   // 공유 탭 '내 워크스페이스 / 재생성' — 원본을 이 PC 에 찾거나 받아 온 뒤 일반 재생성 그대로(워크스페이스·권한·중복 누름·요청행).
   //  예전 '가져오기'는 대기 행만 만들고 요청을 안 넣어 힉스필드로 나가지 않았다(Jay 2026-10-16).
   const onImport = async (g: Generation) => {
-    let source: Generation;
-    try {
-      source = await api.regenSource(g.id);
-    } catch (e) {
-      flash("재생성 실패: " + String(e));
+    if (importInFlightRef.current.has(g.id)) {
+      flash("재생성 처리 중입니다 — 완료 후 다시 누르세요.");
       return;
     }
-    if (await onRegenerate(source)) navTab("my");
+    importInFlightRef.current.add(g.id);
+    try {
+      let source: Generation;
+      try {
+        source = await api.regenSource(g.id);
+      } catch (e) {
+        flash("재생성 실패: " + String(e));
+        return;
+      }
+      if (await onRegenerate(source)) navTab("my");
+    } finally {
+      importInFlightRef.current.delete(g.id);
+    }
   };
 
   const onSetSource = async (g: Generation, name: string | null, isSource: boolean) => {

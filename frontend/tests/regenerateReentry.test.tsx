@@ -21,6 +21,7 @@ let root: Root;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   mocks.prepareRegenerate.mockReset();
+  mocks.regenSource.mockReset();
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
@@ -115,6 +116,34 @@ it("공유 탭 '내 워크스페이스 / 재생성' — 원본을 받아 온 뒤
   mocks.prepareRegenerate.mockImplementationOnce(() => () => Promise.reject(new Error("409")));
   await actions.onImport(generation("server-id2"));
   expect(navTab).not.toHaveBeenCalled();
+});
+
+// Codex 10-16 P1 — 잠금이 재생성 단계에만 있으면, 원본을 받는 동안의 둘째 누름이 첫 재생성이 끝난 뒤에 또 나가 유료 생성이 둘이 됐다.
+it("공유 탭 '내 워크스페이스 / 재생성' — 원본을 받는 동안의 다시 누름은 요청을 더 만들지 않는다(응답 순서가 엇갈려도)", async () => {
+  const flash = vi.fn();
+  let actions!: ReturnType<typeof useGenerationCardActions>;
+  function Host() {
+    actions = useGenerationCardActions({ armedAutoTags: new Set(), bumpBoard: () => {}, canFinalize: () => true, flash, navTab: () => {},
+      reload: async () => {}, workspace: { scope: "team", id: "w1", name: "팀" } });
+    return null;
+  }
+  act(() => root.render(<Host />));
+  const sources: Array<(value: Generation) => void> = [];
+  mocks.regenSource.mockImplementation(() => new Promise<Generation>((resolve) => { sources.push(resolve); }));
+  mocks.prepareRegenerate.mockImplementation(() => () => Promise.resolve(generation("child")));
+  const first = actions.onImport(generation("server-id"));
+  await actions.onImport(generation("server-id")); // 원본 응답 전의 둘째 누름
+  expect(mocks.regenSource).toHaveBeenCalledTimes(1);
+  expect(flash).toHaveBeenLastCalledWith(expect.stringContaining("처리 중"));
+  sources[0](generation("local-src"));
+  await first;
+  expect(mocks.prepareRegenerate).toHaveBeenCalledTimes(1);
+  // 끝난 뒤의 누름은 새 요청이다(풀린다)
+  const again = actions.onImport(generation("server-id"));
+  await settle();
+  sources[1]?.(generation("local-src"));
+  await again;
+  expect(mocks.prepareRegenerate).toHaveBeenCalledTimes(2);
 });
 
 it("최종 지정·해제가 권한 없음(403)으로 거절되면 최종 권한을 다시 읽으라고 알린다 — 다른 실패는 알리지 않는다(49회차)", async () => {

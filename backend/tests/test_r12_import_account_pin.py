@@ -127,6 +127,41 @@ def test_preparing_the_source_leaves_no_unsent_pending_row(two_accounts, monkeyp
     assert counts() == before
 
 
+def test_shared_source_regenerate_reaches_the_agent_queue(two_accounts, monkeypatch):
+    """★10-16 이어 붙이기(Codex P2): 원본 준비 → 일반 재생성 요청(usecase) → 에이전트가 같은 계정으로 요청을 가져간다.
+    예전 가져오기는 여기서 가져갈 요청행이 없었다."""
+    import asyncio
+    from unittest import mock
+
+    from app.models import RegenerateIn
+    from app.usecases.gen_requests import GenRequestCommand, submit_gen_request
+
+    monkeypatch.setattr(share._proxy, "proxying", lambda: True)
+    _seed_shared_source("r12-queue-src")
+    source = share.regen_source("r12-queue-src", SimpleNamespace(state=SimpleNamespace(account=None)))
+    command = GenRequestCommand(
+        kind="regenerate",
+        email=A_EMAIL,
+        creator_uid=A_UID,
+        worker_id=source["worker_id"] or config.DEFAULT_WORKER_ID,
+        source_gen_id=source["id"],
+        workspace={"scope": "team", "id": "ws-1", "name": "팀"},
+        regenerate=RegenerateIn(prompt=source["prompt"]),
+    )
+    with mock.patch("app.usecases.gen_requests.MANAGE_ENABLED", False), mock.patch(
+        "app.usecases.gen_requests.agent_signals.signal"
+    ) as signal, mock.patch("app.usecases.gen_requests.journal_generation_event"):
+        child = asyncio.run(submit_gen_request(command))
+
+    assert child and child["id"] != source["id"]
+    assert child["creator_uid"] == A_UID
+    signal.assert_called()  # 에이전트를 깨웠다
+    claimed = repo.claim_pending_requests(A_EMAIL, 1, workspace_capable=True)
+    assert [item["gen_id"] for item in claimed] == [child["id"]]
+    assert claimed[0]["prompt"] == "shared source"
+    assert claimed[0]["workspace"]["id"] == "ws-1"  # 과금 공간 = 화면이 보낸 지금 공간
+
+
 # ── 소스 구조 계약(순서 회귀 차단) ───────────────────────────────────────────
 def _route_function(name: str) -> ast.FunctionDef:
     tree = ast.parse(Path(share.__file__).read_text("utf-8"))
