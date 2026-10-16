@@ -24,6 +24,8 @@ it("명시적인 최초 버튼만 두 클라이언트를 허용하고 등록과 
   io.http.mockResolvedValueOnce({ clients: [{ client: "codex", status: "configured", message: "등록됨" }, { client: "claude", status: "error", message: "설정 파일을 확인하세요" }] }).mockResolvedValueOnce({ clients: [client] });
   await render(); expect(io.http).not.toHaveBeenCalled();
   expect(host.textContent).toContain("크레딧 사용을 허용");
+  // 켜 둘 것의 조건은 말줄임 되는 요약 말고 펼친 안내에도 있다
+  expect(host.querySelector(".mcp-reg-notes")?.textContent).toContain("서버와 작업자는 켜져 있어야");
   await click("Codex·Claude Code 연결 허용");
   expect(io.http.mock.calls[0][0]).toBe("/api/mcp/v2/app/configure");
   expect(JSON.parse(io.http.mock.calls[0][1].body)).toEqual({ clients: ["codex", "claude"], scope: "account", allow_execution: true });

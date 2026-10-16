@@ -7,6 +7,7 @@
   border-radius: 14px; padding: 16px 18px 14px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
   font-size: 13px; line-height: 1.45;
   word-break: keep-all; /* 한글이 낱말 가운데서 꺾이지 않게("허 / 용합니다") — 편집 탭 내보내기 창과 같다 */
+  overflow-wrap: break-word; /* 띄어쓰기 없는 긴 계획 제목·항목 이름(200자까지)은 넘칠 때만 꺾는다(Codex 10-16 P3) */
 }
 .mcp-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
 .mcp-dialog h2 { margin: 0; font-size: 15px; font-weight: 800; }
