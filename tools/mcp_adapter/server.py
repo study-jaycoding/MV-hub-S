@@ -47,7 +47,7 @@ MAX_PREVIEW = 512 * 1024
 REQUEST_TIMEOUT = 30
 RESULT_TIMEOUT = 90
 RESULT_UI_URI = "ui://mvhub/result.html"
-ADAPTER_VERSION = "2026.10.16.2"
+ADAPTER_VERSION = "2026.10.16.3"
 HUB_FEATURES = {"generation_result", "batch_results", "history_cursor", "plan_estimate"}
 ERRORS = {
     "invalid_input": ("입력 형식을 확인하세요.", False, "check_arguments"),
@@ -593,7 +593,6 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
     broker = Broker(url, profile)
     model_names = {}
     native = display_mode == "native"
-    result_meta = {"ui": {"resourceUri": RESULT_UI_URI}} if profile and native else None
     tool_count = (14 if native else 13) if profile else 7
     display_instructions = (
         "이 연결은 conversation 표시 모드입니다. 결과 조회에는 display_directory로 이미 존재하는 이 작업 소유 로컬 폴더의 절대경로를 지정하세요. "
@@ -603,7 +602,7 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
         "표시 파일이 없는 실패·취소·미확인 항목도 해당 card_text를 한 번 안내하세요. "
         "표시 파일 저장 실패는 기존 결과를 다른 유효 폴더로 다시 조회하세요. 새 생성은 금지합니다. "
         if not native else
-        "이 연결은 native 표시 모드입니다. display_directory를 지정하지 말고 네이티브 이미지 또는 MCP Apps를 사용하세요. "
+        "이 연결은 native 표시 모드입니다. display_directory를 지정하지 말고 도구의 ImageContent로만 이미지를 표시하세요. MCP Apps 화면을 추가로 열지 마세요. "
         "결과 이미지와 카드 문구를 최종 답변에 다시 삽입하지 마세요. Codex PC·모바일용 연결은 MV Hub 앱에서 Codex로 다시 등록하세요. "
     )
 
@@ -660,7 +659,7 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             "비용이 필요하면 estimate_plan을 선택적으로 호출하세요. null을 0으로 취급하지 마세요. "
             + display_instructions +
             "사용자가 파일·다운로드를 요청하지 않으면 URL·PC 경로·HTML 링크를 나열하지 마세요. 로컬 HTML을 Markdown 이미지로 삽입하지 마세요. "
-            "네이티브 표시를 지원하지 않으면 앱의 지원되는 이미지 표시 도구를 사용하고, 그것도 불가하면 표시 제한을 알리세요. "
+            "네이티브 이미지 표시를 지원하지 않으면 표시 제한을 알리고 MV Hub에서 결과를 확인하도록 안내하세요. MCP Apps 화면으로 자동 우회하지 마세요. "
             "이미지 수신은 실제 화면 표시 확인이 아닙니다. 확인하지 않은 표시 성공을 주장하지 마세요. "
             "미리보기 실패는 생성 실패가 아닙니다. 불명확한 실패는 자동 재제출하지 마세요. "
             "사용자 안내에는 card_text의 실제 모델명과 저장 위치를 사용하고 모델 코드·프로젝트 ID를 나열하지 마세요. "
@@ -767,8 +766,7 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             server.resource(RESULT_UI_URI, name="mvhub_result", title="MV Hub 생성 결과",
                             mime_type="text/html;profile=mcp-app", meta={"ui": {"prefersBorder": False}})(result_ui)
 
-        @tool(meta=result_meta,
-                     annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
+        @tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
         def get_result(
             plan_id: Annotated[str, Field(min_length=1, max_length=200)],
             item_index: Annotated[int, Field(ge=0, lt=20)] = 0,
@@ -776,7 +774,7 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             wait_seconds: Annotated[int, Field(ge=0, le=25, strict=True)] = 0,
             display_directory: Annotated[str | None, Field(min_length=1, max_length=1024, description="Codex PC·모바일 대화 표시용. 이미 존재하는 이 작업 소유 로컬 폴더 절대경로. 다른 앱은 생략.")] = None,
         ) -> CallToolResult:
-            """생성·과금 없이 선택 항목을 조회합니다. conversation 모드는 display_directory 필수, ready인 display.reference를 한 번 넣고 바로 아래 card_text를 일반 대화 텍스트로 한 번 안내하세요. 표시 파일 없는 항목도 card_text를 안내하세요. native 모드는 폴더 없이 기존 화면을 사용합니다. scope=item은 계획 전체 완료가 아닙니다. wait_seconds=25로 대기하며 재생성하지 않습니다. 영상은 기존 포스터만 반환합니다."""
+            """생성·과금 없이 선택 항목을 조회합니다. conversation 모드는 display_directory 필수, ready인 display.reference를 한 번 넣고 바로 아래 card_text를 일반 대화 텍스트로 한 번 안내하세요. 표시 파일 없는 항목도 card_text를 안내하세요. native 모드는 폴더 없이 ImageContent만 사용하고 MCP Apps 화면을 열지 마세요. scope=item은 계획 전체 완료가 아닙니다. wait_seconds=25로 대기하며 재생성하지 않습니다. 영상은 기존 포스터만 반환합니다."""
             directory = display_directory_for(display_directory)
             args = {"plan_id": plan_id, "item_index": item_index, "asset_index": asset_index}
             if wait_seconds:
@@ -784,8 +782,7 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             result = present(broker.action("get_result", args))
             return render_result(result, directory)
 
-        @tool(meta=result_meta,
-              annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
+        @tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
         def get_generation(
             generation_id: UUID,
             workspace_scope: Literal["personal", "team"],
@@ -793,7 +790,7 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             asset_index: Annotated[int, Field(ge=0, lt=100)] = 0,
             display_directory: Annotated[str | None, Field(min_length=1, max_length=1024, description="Codex PC·모바일 대화 표시용. 이미 존재하는 이 작업 소유 로컬 폴더 절대경로. 다른 앱은 생략.")] = None,
         ) -> CallToolResult:
-            """다른 LLM에서 만든 본인 생성물도 조회한 ID·공간으로 표시합니다. 새 생성·과금은 없습니다. conversation 모드는 display_directory 필수, ready인 display.reference를 한 번 넣고 바로 아래 card_text를 일반 대화 텍스트로 한 번 안내하세요. 표시 파일 없는 항목도 card_text를 안내하세요. native 모드는 폴더 없이 기존 화면을 사용합니다. 파일 준비는 화면 표시 확인이 아닙니다."""
+            """다른 LLM에서 만든 본인 생성물도 조회한 ID·공간으로 표시합니다. 새 생성·과금은 없습니다. conversation 모드는 display_directory 필수, ready인 display.reference를 한 번 넣고 바로 아래 card_text를 일반 대화 텍스트로 한 번 안내하세요. 표시 파일 없는 항목도 card_text를 안내하세요. native 모드는 폴더 없이 ImageContent만 사용하고 MCP Apps 화면을 열지 마세요. 파일 준비는 화면 표시 확인이 아닙니다."""
             directory = display_directory_for(display_directory)
             return render_result(present(broker.action("get_generation", {
                 "generation_id": str(generation_id), "workspace_scope": workspace_scope,
@@ -820,15 +817,14 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
                 """진행 카드가 기존 결과를 읽습니다. 파일 저장·새 생성 없이 권한을 재검사합니다."""
                 return show_results(plan_id, item_indexes)
 
-        @tool(meta=result_meta,
-              annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
+        @tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
         def show_results(
             plan_id: UUID,
             item_indexes: Annotated[list[Annotated[int, Field(ge=0, lt=20, strict=True)]], Field(min_length=1, max_length=8)],
             asset_index: Annotated[int, Field(ge=0, lt=100)] = 0,
             display_directory: Annotated[str | None, Field(min_length=1, max_length=1024, description="Codex PC·모바일 대화 표시용. 이미 존재하는 이 작업 소유 로컬 폴더 절대경로. 다른 앱은 생략.")] = None,
         ) -> CallToolResult:
-            """종료한 항목 1~8개를 한 경로로 표시합니다. 새 생성·대기는 없습니다. conversation 모드는 display_directory 필수, items별 ready인 display.reference 바로 아래 해당 card_text를 일반 대화 텍스트로 한 번씩 안내하세요. 맨 위 묶음 card_text는 출력하지 마세요. 표시 파일 없는 실패·취소·미확인 항목도 card_text를 안내합니다. native 모드는 폴더 없이 기존 화면을 사용합니다. 표시 실패로 재생성하지 마세요."""
+            """종료한 항목 1~8개를 한 경로로 표시합니다. 새 생성·대기는 없습니다. conversation 모드는 display_directory 필수, items별 ready인 display.reference 바로 아래 해당 card_text를 일반 대화 텍스트로 한 번씩 안내하세요. 맨 위 묶음 card_text는 출력하지 마세요. 표시 파일 없는 실패·취소·미확인 항목도 card_text를 안내합니다. native 모드는 폴더 없이 ImageContent만 사용하고 MCP Apps 화면을 열지 마세요. 표시 실패로 재생성하지 마세요."""
             directory = display_directory_for(display_directory)
             result = broker.action("show_results", {"plan_id": str(plan_id), "item_indexes": item_indexes, "asset_index": asset_index})
             images, cards = [], []

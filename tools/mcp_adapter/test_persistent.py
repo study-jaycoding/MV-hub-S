@@ -411,7 +411,7 @@ class PersistentTests(unittest.TestCase):
             async with Client(StdioServerParameters(**config)) as client:
                 tools = await client.list_tools()
                 tool = next(t for t in tools.tools if t.name == "get_result")
-                self.assertEqual(tool.meta["ui"]["resourceUri"], RESULT_UI_URI)
+                self.assertNotIn("resourceUri", (tool.meta or {}).get("ui", {}))
                 resource = await client.read_resource(RESULT_UI_URI)
                 self.assertEqual(resource.contents[0].mime_type, "text/html;profile=mcp-app")
                 self.assertEqual(resource.contents[0].text, result_ui())
@@ -442,6 +442,20 @@ class PersistentTests(unittest.TestCase):
                     self.assertEqual(info["apps_negotiated"], supported)
                     self.assertEqual(info["adapter"], {"version": ADAPTER_VERSION, "tools": 14})
                     self.assertIsNone(info["reload_required"])
+                    listing = {t.name: t for t in (await client.list_tools()).tools}
+                    self.assertTrue(all(not (t.meta or {}).get("ui", {}).get("resourceUri") for t in listing.values()))
+                    self.assertEqual(listing["read_display_results"].meta["ui"]["visibility"], ["app"])
+                    before = set(self.root.rglob("*"))
+                    for name, args in (("get_result", {"plan_id": "p"}),
+                                       ("get_generation", {"generation_id": str(uuid4()), "workspace_scope": "personal"}),
+                                       ("show_results", {"plan_id": str(uuid4()), "item_indexes": [0]})):
+                        item = {"media": {"mime": "image/jpeg", "data_base64": "/9j/eP/Z"}}
+                        self.http.result_value = {"items": [item]} if name == "show_results" else item
+                        result = await client.call_tool(name, args)
+                        self.assertFalse(result.is_error)
+                        self.assertEqual(sum(b.type == "image" for b in result.content), 1)
+                        self.assertNotIn("display", result.structured_content)
+                    self.assertEqual(set(self.root.rglob("*")), before)
             self.http.features = []
             async with Client(StdioServerParameters(**config)) as client:
                 response = await client.call_tool("check_connection", {})
@@ -464,6 +478,7 @@ class PersistentTests(unittest.TestCase):
             async with Client(StdioServerParameters(**config)) as client:
                 tools = await client.list_tools()
                 self.assertEqual(len(tools.tools), 14)
+                self.assertTrue(all(not (t.meta or {}).get("ui", {}).get("resourceUri") for t in tools.tools))
                 image = await client.call_tool("get_result", {"plan_id": "p"})
                 self.assertFalse(image.is_error)
                 self.assertTrue(any(b.type == "image" for b in image.content))
@@ -476,7 +491,7 @@ class PersistentTests(unittest.TestCase):
             async with Client(StdioServerParameters(**config)) as client:
                 tools = {t.name: t for t in (await client.list_tools()).tools}
                 self.assertFalse((tools["wait_results"].meta or {}).get("ui"))
-                self.assertEqual(tools["show_results"].meta["ui"]["resourceUri"], RESULT_UI_URI)
+                self.assertNotIn("resourceUri", (tools["show_results"].meta or {}).get("ui", {}))
                 self.http.result_value = {"items": [{"item_index": 0, "generation_status": "running"}], "all_terminal": False}
                 waiting = await client.call_tool("wait_results", {"plan_id": plan, "item_indexes": [0]})
                 self.assertFalse(waiting.is_error)
