@@ -83,17 +83,19 @@ export function useEditGenerations({
       let rows = 0;
       let capped = false;
       for (;;) {
-        const page = await api.listGenerations(query, cursor);
+        // 상한까지 받았으면 다음 쪽이 있는지만 한 줄로 묻는다 — 표시는 2,000건까지, 딱 2,000건이면 끝까지 받은 것이다(81회차 M2-3)
+        const probe = rows >= EDIT_LIST_CAP;
+        const page = await (probe ? api.listGenerations(query, cursor, 1) : api.listGenerations(query, cursor));
         if (!alive()) return; // 문맥이 바뀌었다 — 다음 쪽을 묻지 않는다
+        if (probe) {
+          capped = page.length > 0;
+          break;
+        }
         rows += page.length;
         gens.push(...page.filter((gen) => isUsableGen(gen) && matchesWorkspaceFilter(gen, query)));
         // 커서와 끝 판정은 거르기 전 원본 쪽으로 — 쓸 수 있는 것이 0개인 쪽에서 멈추면 뒤가 통째로 빠진다.
         const last = page[page.length - 1];
         if (!last || page.length < GEN_PAGE) break;
-        if (rows >= EDIT_LIST_CAP) {
-          capped = true;
-          break;
-        }
         cursor = { ts: last.sort_ts ?? 0, id: last.id };
       }
       // known 은 **지금 든 gens** 가 온전한가다 — 잘린 결과로 바꿔 넣었으면 전에 끝까지 받았더라도 거짓이다

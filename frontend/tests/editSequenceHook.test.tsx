@@ -25,6 +25,7 @@ vi.mock("../src/lib/teamSeen", async () => ({
 }));
 
 import { editTick, useEditGenerations, useEditProjects } from "../src/lib/useEditSequence";
+import { groupByCut, linkClip } from "../src/lib/editTimeline";
 
 const TEAM: WorkspaceContext = { scope: "team", id: "w1", name: "W" };
 const UNKNOWN: WorkspaceContext = { scope: "unknown", id: null, name: null };
@@ -151,10 +152,37 @@ it("2,000행에서 멈추고 '일부만'으로 알린다", async () => {
   render(<ListHarness seq="e070" />);
   await flush();
   await flush();
-  expect(mocks.list).toHaveBeenCalledTimes(10);
+  expect(mocks.list).toHaveBeenCalledTimes(11); // 10쪽 + 다음 쪽이 있는지 한 줄 확인(81회차 M2-3)
   expect(list.state).toBe("capped");
   expect(list.complete).toBe(false);
   expect(list.known).toBe(false); // 뒤가 잘렸다 — 여기 없다고 '빈 폴더'라 하지 않는다
+});
+
+// 81회차 실측 2 M2-3: 딱 2,000행이면 끝까지 받은 것인데 '일부만'(capped)이 되어 안내가 뜨고, 옛 생성물 id 의 클립을 같은 job 의 현재 생성물로
+//  다시 잇는 처리도 막혔다(linkClip 은 끝까지 받은 목록에서만 job 으로 잇는다). 상한에서 다음 쪽이 있는지 확인한다 — 표시 상한 2,000 은 그대로.
+it("딱 2,000행이면 끝까지 받은 것이다 — 다음 쪽이 비었으면 '일부만'이 아니고, 옛 id 클립도 같은 job 의 현재 생성물로 잇는다", async () => {
+  const pages = Array.from({ length: 10 }, (_, n) => page(`p${n}-`, true));
+  pages[9][199] = { ...row("now", true, 1), job_id: "j-old" }; // 다시 만든 생성물 — 클립이 든 옛 id 와 job 이 같다
+  for (const one of pages) mocks.list.mockResolvedValueOnce(one);
+  mocks.list.mockResolvedValueOnce([]); // 다음 쪽은 비었다
+  render(<ListHarness seq="e070" />);
+  for (let i = 0; i < 4; i++) await flush();
+  const clip = { cut: "e070/c1", gen: "old", job: "j-old", track: 1 };
+  const linked = linkClip(clip, groupByCut("e070", list.gens).get("e070/c1"), list.complete);
+  expect([linked.state, linked.gen?.id]).toEqual(["ok", "now"]);
+  expect([list.state, list.complete, list.known, list.gens.length]).toEqual(["ok", true, true, 2000]);
+  expect(mocks.list).toHaveBeenCalledTimes(11);
+  expect(mocks.list.mock.calls[10].slice(1, 3)).toEqual([{ ts: 1, id: "now" }, 1]); // 마지막 행 뒤를 한 줄만 묻는다
+});
+
+it("2,001행이면 그대로 '일부만'이다 — 표시는 2,000행까지", async () => {
+  for (let n = 0; n < 10; n++) mocks.list.mockResolvedValueOnce(page(`p${n}-`, true));
+  mocks.list.mockResolvedValueOnce([row("over")]);
+  render(<ListHarness seq="e070" />);
+  for (let i = 0; i < 4; i++) await flush();
+  expect(mocks.list).toHaveBeenCalledTimes(11);
+  expect([list.state, list.complete, list.known, list.gens.length]).toEqual(["capped", false, false, 2000]);
+  expect(list.gens.some((gen) => gen.id === "over")).toBe(false);
 });
 
 it("끝까지 받았던 문맥도 다음 조회가 잘리면 '빈 폴더' 판정을 멈춘다 — 든 목록이 더는 온전하지 않다", async () => {
