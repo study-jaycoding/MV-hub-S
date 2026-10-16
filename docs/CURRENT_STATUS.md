@@ -38,7 +38,7 @@ owner: Claude(통합) · 'MV hub'·'MV hub 편집' 세션(구현) · reviewer: C
 
 ## 10-10 조작·단축키 전반 점검 — dev(미배포) · 10-15 인계
 
-owner: Claude · reviewer: Codex · status: 검증 중(main 병합·푸시, 후보 1358 — 앱 [배포] 대기) · updated: 2026-10-16 14시 · 기준: main = dev `c2463e4f` ·
+owner: Claude · reviewer: Codex · status: 완료(10-16 14:17 1358 공개) · updated: 2026-10-16 14시 · 기준: main = dev `c2463e4f` ·
 확인 주소: 통합 실사용 `test_integration.bat` → 127.0.0.1:5173(dev 와 한 번에 하나) · 격리 5175 ·
 touched_paths: `frontend/src/lib/keyGate.ts` · `frontend/src/components/timeline/`(EditTab·EditPool·EditCard) · ThumbnailGrid·FolderCardGrid·SceneBoard ·
 `test_dev.bat` · [status/조작점검_2026-10-10.md](status/조작점검_2026-10-10.md)(72회차까지 — 정본) · [status/공유서버_배포준비_2026-10-15.md](status/공유서버_배포준비_2026-10-15.md)
@@ -67,7 +67,7 @@ touched_paths: `frontend/src/lib/keyGate.ts` · `frontend/src/components/timelin
   → 10-16 오후: 푸시·후보 `2026.10.16-1247` → Jay 13:07 1247 [배포](공개) · 공유 서버 새 코드 적용(14:02 `/api/health` 에 `mcp_bridge` 확인) ·
   Jay 13:2x **공유 탭 '가져오기'가 힉스필드로 안 나가던 것**(대기 행만 만들고 요청행 없음) → '내 워크스페이스 / 재생성'(↻)으로 바꿔 일반 재생성 길로
   (`regen-source` 원본 준비 + 화면이 재생성 요청 · 원본 받는 동안 다시 누름 잠금 — Codex P1·P2 고침 후 승인) → 검사 17 통과 → **main = dev `c2463e4f` 푸시 ·
-  후보 `2026.10.16-1358` 게시**(공개는 아직 1247). 남은 것 = Jay: 관리자 창 1358 [배포] · 옛 가져오기로 '생성 중'에 멈춘 카드는 휴지통(크레딧 안 씀).
+  후보 `2026.10.16-1358` 게시 → Jay 14:17 [배포](공개)**. 남은 것 = 옛 가져오기로 '생성 중'에 멈춘 카드는 휴지통(크레딧 안 씀).
   리졸브 보내기 속도(작업실 `MV-hub-S-wt-rsv`)는 1부·2부·21.1.1.10 켜기까지 dev 에 합침 — 다른 판은 그 판에서 같은 실기기 시험 뒤 목록에 더한다
   ⑤ 1시간마다 경과 보고는 Claude 세션의 반복 — 이어받으면 따로 정한다.
 - [문서·운영](status/문서정리_운영안_2026-10-14.md)·[번들](status/번들최적화_2026-10-14.md).
@@ -97,7 +97,7 @@ touched_paths: `frontend/src/lib/keyGate.ts` · `frontend/src/components/timelin
 | 코드 — `dev` | `main` 위 370여 커밋(로컬·**미푸시** — 위 '10-13' 절. 편집 탭이 들어 있다) |
 | 코드 — `main` = `origin/main` | `c2463e4f`(10-16 — 10-10 조작 점검 전부·MCP 창·리졸브 보내기·미리 받기·'내 워크스페이스 / 재생성'. 그 아래 `23e2eb74` = 1247, `a83afe20` = 0836) |
 | 릴리스 제작 기준 | `c2463e4f` — 고정 폴더 `MV-hub-S-release` 의 HEAD = `origin/main`·작업 트리 clean |
-| NAS 게시본 | 공개(`latest.json`) = **`2026.10.16-1247`**(main `23e2eb74`, SHA256 `9065ad36…`, **10-16 13:07:58 공개** — 10-16 14시대 직접 읽음, 공유 탭 가져오기 버그 있음) · 후보(`candidate.json`) = **`2026.10.16-1358`**(main `c2463e4f`, SHA256 `e83076f3…`, [배포] 전). 그 앞 판 = `2026.10.08-0836`(main `a83afe20`). 되돌리기 = 업데이트 탭의 옛 판 줄 [배포] 또는 `release/select_release.ps1 -PackagePath Z:\mvutil\MV_hub_S\packages\MVHub-2026.10.08-0836.zip` |
+| NAS 게시본 | 공개(`latest.json`) = 후보(`candidate.json`) = **`2026.10.16-1358`**(main `c2463e4f`, SHA256 `e83076f3…`, **10-16 14:17:36 공개** — 직접 읽음). 그 앞 판 = `2026.10.16-1247`(main `23e2eb74`, 13:07 공개 — 공유 탭 가져오기 버그 있음) · `2026.10.08-0836`(main `a83afe20`). 되돌리기 = 업데이트 탭의 옛 판 줄 [배포] 또는 `release/select_release.ps1 -PackagePath Z:\mvutil\MV_hub_S\packages\MVHub-2026.10.08-0836.zip`(1247 은 가져오기 버그가 있어 되돌릴 판으로 쓰지 말 것) |
 | 운영 적용본 | 공유 서버 = `192.168.1.171:8010`, 10-16 새 코드 적용(14:02 공개 `/api/health` 에 `mcp_bridge` 칸 확인 — 정확한 커밋은 서버 PC `git log -1` 미확인). 이사 공지 = .171 revision 2(10-02 확인). 작업자 PC 별 적용 판은 **미확인** |
 
 ## 최신 전체 검증 1회분
