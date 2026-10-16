@@ -302,7 +302,7 @@ class PersistentTests(unittest.TestCase):
             with self.assertRaises(ToolError):
                 validate_display_directory(str(self.root))
 
-    def test_common_card_distinguishes_scope_and_escapes_html(self):
+    def test_common_card_distinguishes_scope_and_stays_outside_html(self):
         item = {"model": "test-model", "params": {"aspect_ratio": "16:9", "resolution": "1k", "prompt": "DO NOT DISPLAY"},
                 "folder_path": "<script>alert(1)</script>", "project_id": "project"}
         metadata = {"presentation": {"version": 1, "scope": "plan", "message": "전체 계획 · 생성 중 · 완료 1/3"},
@@ -318,11 +318,11 @@ class PersistentTests(unittest.TestCase):
         self.assertNotIn("test-model", selected["card_text"])
         self.assertIn("저장 위치:", selected["card_text"])
         self.assertNotIn("DO NOT DISPLAY", selected["card_text"])
-        saved = write_result_display("safe-base64", self.root, selected["card_text"])
+        saved = write_result_display("safe-base64", self.root)
         html = Path(saved["path"]).read_text(encoding="utf-8")
         self.assertNotIn("<script>", html)
-        self.assertIn("&lt;script&gt;", html)
-        self.assertIn("&lt;team&gt;", html)
+        self.assertNotIn(selected["card_text"], html)
+        self.assertNotIn("<p", html)
         self.assertEqual(saved["rendered"], "unverified")
 
     def test_friendly_card_preserves_partial_failures_and_ids_only_in_data(self):
@@ -391,8 +391,12 @@ class PersistentTests(unittest.TestCase):
                         if index:
                             self.assertEqual(len(result.content), 1)
                             fragment = Path(result.meta["display"]["path"]).read_text(encoding="utf-8")
-                            self.assertEqual(fragment.count(cards[-1]), 1)
-                            self.assertLess(fragment.index('<img '), fragment.index('<p '))
+                            self.assertNotIn(cards[-1], fragment)
+                            self.assertNotIn('<p', fragment)
+                            self.assertEqual(fragment.count('<img '), 1)
+                            self.assertEqual(result.structured_content["delivery"], {
+                                "mode": "conversation", "card_in_display": False, "repeat_card_text": True})
+                            self.assertEqual(json.loads(result.content[0].text)["card_text"], cards[-1])
                         else:
                             self.assertEqual(result.content[-1].text, cards[-1])
                             self.assertNotIn("display", result.structured_content)
@@ -517,7 +521,7 @@ class PersistentTests(unittest.TestCase):
                     self.assertFalse(tools[name].annotations.idempotent_hint)
                     self.assertIn("display_directory", tools[name].input_schema["properties"])
                 self.http.result_value = {"items": [
-                    {"item_index": 0, "generation_status": "failed", "media": None},
+                    {"item_index": 0, "error": {"code": "not_found"}, "media": None},
                     *[{"item_index": i + 1, "generation_status": "done", "media": {
                         "mime": "image/jpeg", "data_base64": data}} for i, data in enumerate(encoded)]]}
                 args = {"plan_id": plan, "item_indexes": [0, 1, 2]}
@@ -526,12 +530,15 @@ class PersistentTests(unittest.TestCase):
                 items = gallery.structured_content["items"]
                 self.assertEqual(gallery.structured_content["delivery"], {"mode": "conversation", "repeat_card_text": False})
                 self.assertTrue(items[0]["delivery"]["repeat_card_text"])
+                self.assertEqual(items[0]["card_text"], "결과 상태를 확인하세요.")
+                self.assertEqual(items[0]["error"]["code"], "not_found")
                 self.assertEqual(items[0]["display"]["status"], "unavailable")
                 images = [b.data for b in gallery.content if b.type == "image"]
                 self.assertEqual(images, [])
                 self.assertEqual(len(list(output.iterdir())), 2)
                 for item in items[1:]:
-                    self.assertFalse(item["delivery"]["repeat_card_text"])
+                    self.assertTrue(item["delivery"]["repeat_card_text"])
+                    self.assertFalse(item["delivery"]["card_in_display"])
                     display = item["display"]
                     self.assertEqual(display["rendered"], "unverified")
                     path = Path(display["path"])

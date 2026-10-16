@@ -3,7 +3,6 @@
 import argparse
 import base64
 import binascii
-import html
 import ipaddress
 import importlib.util
 import json
@@ -48,7 +47,7 @@ MAX_PREVIEW = 512 * 1024
 REQUEST_TIMEOUT = 30
 RESULT_TIMEOUT = 90
 RESULT_UI_URI = "ui://mvhub/result.html"
-ADAPTER_VERSION = "2026.10.16.1"
+ADAPTER_VERSION = "2026.10.16.2"
 HUB_FEATURES = {"generation_result", "batch_results", "history_cursor", "plan_estimate"}
 ERRORS = {
     "invalid_input": ("입력 형식을 확인하세요.", False, "check_arguments"),
@@ -391,8 +390,8 @@ def present_result(result: dict, model_names: dict | None = None) -> dict:
     return result
 
 
-def write_result_display(data: str, directory: Path, card_text: str = "") -> dict[str, str]:
-    """Validated JPEG and escaped card text only; never raw prompts or remote URLs."""
+def write_result_display(data: str, directory: Path) -> dict[str, str]:
+    """Validated JPEG only; captions are delivered separately as conversation text."""
     path = validate_display_directory(str(directory)) / ("mvhub-preview-" + secrets.token_hex(16) + ".html")
     created = False
     try:
@@ -401,7 +400,6 @@ def write_result_display(data: str, directory: Path, card_text: str = "") -> dic
             stream.write(
                 '<div id="mvhub-result-image">\n'
                 f'  <img src="data:image/jpeg;base64,{data}" alt="MV Hub 생성 결과">\n'
-                + ('  <p style="white-space: pre-wrap; margin: 8px 0 0">' + html.escape(card_text) + '</p>\n' if card_text else '') +
                 '</div>\n<style>\n'
                 '  #mvhub-result-image img { display: block; max-width: 100%; height: auto; }\n'
                 '</style>\n'
@@ -436,13 +434,13 @@ def render_result(result: dict, directory: Path | None = None) -> CallToolResult
             blocks.append(ImageContent(type="image", data=data, mime_type="image/jpeg"))
         else:
             try:
-                result["display"] = write_result_display(data, directory, result.get("card_text", ""))
+                result["display"] = write_result_display(data, directory)
             except (OSError, ToolError):
                 result["display"] = {"status": "error", "reason": "표시 파일을 저장하지 못했습니다. 생성 결과는 유지됩니다. 재생성하지 마세요."}
     result["delivery"] = {"mode": "conversation" if directory is not None else "native",
-                          "card_in_display": result.get("display", {}).get("status") == "ready",
-                          "repeat_card_text": directory is not None and result.get("display", {}).get("status") != "ready"}
-    # A conversation export owns image and caption; never emit a second native copy.
+                          "card_in_display": False,
+                          "repeat_card_text": directory is not None}
+    # Mobile can omit HTML captions; keep conversation text outside the image display.
     meta = {"display": result["display"]} if "display" in result else None
     blocks.insert(0, TextContent(type="text", text=json.dumps(result, ensure_ascii=False)))
     if directory is None and result.get("card_text"):
@@ -600,8 +598,9 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
     display_instructions = (
         "이 연결은 conversation 표시 모드입니다. 결과 조회에는 display_directory로 이미 존재하는 이 작업 소유 로컬 폴더의 절대경로를 지정하세요. "
         "설치본·backend/data·NAS 폴더를 쓰지 마세요. display.status=ready인 display.reference만 최종 답변에 한 번씩 그대로 넣으세요. "
-        "이미지와 card_text는 표시 파일에 함께 있으므로 완료 문구·모델·저장 위치를 별도로 반복하지 마세요. "
-        "묶음 조회는 items의 display를 확인하고, 표시 파일이 없는 실패·취소·미확인 항목만 텍스트로 안내하세요. "
+        "표시 파일에는 이미지만 있습니다. 각 display.reference 바로 아래에 해당 card_text를 일반 대화 텍스트로 한 번 안내하세요. "
+        "묶음 조회는 items별 display와 card_text를 사용하고 맨 위의 묶음 card_text는 출력하지 마세요. "
+        "표시 파일이 없는 실패·취소·미확인 항목도 해당 card_text를 한 번 안내하세요. "
         "표시 파일 저장 실패는 기존 결과를 다른 유효 폴더로 다시 조회하세요. 새 생성은 금지합니다. "
         if not native else
         "이 연결은 native 표시 모드입니다. display_directory를 지정하지 말고 네이티브 이미지 또는 MCP Apps를 사용하세요. "
@@ -647,9 +646,9 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             "사용자가 명확히 요청한 범위만 execute_generation_plan으로 실행하세요. 매번 앱 승인은 필요 없고 크레딧이 소모될 수 있습니다. "
             "Codex와 Claude 모두 같은 진행·결과 규격을 사용하세요. prepare_generation_plan 응답을 받으면 다음 도구를 호출하기 전에 "
             "card_text를 사용자에게 별도 텍스트 메시지로 안내한 뒤 실행하세요. 도구 결과에 있는 텍스트만으로 안내를 대신하지 마세요. "
-            "진행 중에는 presentation.stage가 바뀔 때만 presentation.message를 짧게 안내하고 종료 문구는 결과 화면에 맡기세요. "
+            "진행 중에는 presentation.stage가 바뀔 때만 presentation.message를 짧게 안내하세요. "
             "진행 중 단계가 같으면 중복 설명하지 말고, 임의 진행률이나 예상 시간을 만들지 마세요. "
-            "종료 시 아래 표시 모드 지침을 따르고 card_text는 표시 화면과 별도로 반복하지 마세요. "
+            "종료 시 아래 표시 모드 지침에 따라 이미지와 card_text를 각각 한 번 표시하세요. "
             "presentation.scope=item은 선택 항목만의 상태이며 계획 전체 완료가 아닙니다. 여러 항목은 모두 확인하세요. "
             "실행 뒤 wait_results(plan_id,item_indexes,wait_seconds=25)로 최대 8개씩 기다리세요. 별도 sleep과 get_plan 반복은 불필요합니다. "
             "계획 status=submitted는 완료 여부가 아닙니다. 항목의 generation_status=done이 완료입니다. "
@@ -777,7 +776,7 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             wait_seconds: Annotated[int, Field(ge=0, le=25, strict=True)] = 0,
             display_directory: Annotated[str | None, Field(min_length=1, max_length=1024, description="Codex PC·모바일 대화 표시용. 이미 존재하는 이 작업 소유 로컬 폴더 절대경로. 다른 앱은 생략.")] = None,
         ) -> CallToolResult:
-            """생성·과금 없이 선택 항목을 조회합니다. conversation 모드는 display_directory 필수, ready인 display.reference만 최종 답변에 한 번 넣고 카드 문구는 반복하지 마세요. native 모드는 폴더 없이 기존 화면을 사용합니다. scope=item은 계획 전체 완료가 아닙니다. wait_seconds=25로 대기하며 재생성하지 않습니다. 영상은 기존 포스터만 반환합니다."""
+            """생성·과금 없이 선택 항목을 조회합니다. conversation 모드는 display_directory 필수, ready인 display.reference를 한 번 넣고 바로 아래 card_text를 일반 대화 텍스트로 한 번 안내하세요. 표시 파일 없는 항목도 card_text를 안내하세요. native 모드는 폴더 없이 기존 화면을 사용합니다. scope=item은 계획 전체 완료가 아닙니다. wait_seconds=25로 대기하며 재생성하지 않습니다. 영상은 기존 포스터만 반환합니다."""
             directory = display_directory_for(display_directory)
             args = {"plan_id": plan_id, "item_index": item_index, "asset_index": asset_index}
             if wait_seconds:
@@ -794,7 +793,7 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             asset_index: Annotated[int, Field(ge=0, lt=100)] = 0,
             display_directory: Annotated[str | None, Field(min_length=1, max_length=1024, description="Codex PC·모바일 대화 표시용. 이미 존재하는 이 작업 소유 로컬 폴더 절대경로. 다른 앱은 생략.")] = None,
         ) -> CallToolResult:
-            """다른 LLM에서 만든 본인 생성물도 조회한 ID·공간으로 표시합니다. 새 생성·과금은 없습니다. conversation 모드는 display_directory 필수, ready인 display.reference만 한 번 넣고 카드 문구는 반복하지 마세요. native 모드는 폴더 없이 기존 화면을 사용합니다. 파일 준비는 화면 표시 확인이 아닙니다."""
+            """다른 LLM에서 만든 본인 생성물도 조회한 ID·공간으로 표시합니다. 새 생성·과금은 없습니다. conversation 모드는 display_directory 필수, ready인 display.reference를 한 번 넣고 바로 아래 card_text를 일반 대화 텍스트로 한 번 안내하세요. 표시 파일 없는 항목도 card_text를 안내하세요. native 모드는 폴더 없이 기존 화면을 사용합니다. 파일 준비는 화면 표시 확인이 아닙니다."""
             directory = display_directory_for(display_directory)
             return render_result(present(broker.action("get_generation", {
                 "generation_id": str(generation_id), "workspace_scope": workspace_scope,
@@ -829,7 +828,7 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             asset_index: Annotated[int, Field(ge=0, lt=100)] = 0,
             display_directory: Annotated[str | None, Field(min_length=1, max_length=1024, description="Codex PC·모바일 대화 표시용. 이미 존재하는 이 작업 소유 로컬 폴더 절대경로. 다른 앱은 생략.")] = None,
         ) -> CallToolResult:
-            """종료한 항목 1~8개를 한 경로로 표시합니다. 새 생성·대기는 없습니다. conversation 모드는 display_directory 필수, items의 ready인 display.reference만 한 번씩 넣으세요. 이미지와 설명이 들어 있으니 card_text를 반복하지 마세요. 표시 파일 없는 실패·취소·미확인 항목은 별도 안내합니다. native 모드는 폴더 없이 기존 화면을 사용합니다. 표시 실패로 재생성하지 마세요."""
+            """종료한 항목 1~8개를 한 경로로 표시합니다. 새 생성·대기는 없습니다. conversation 모드는 display_directory 필수, items별 ready인 display.reference 바로 아래 해당 card_text를 일반 대화 텍스트로 한 번씩 안내하세요. 맨 위 묶음 card_text는 출력하지 마세요. 표시 파일 없는 실패·취소·미확인 항목도 card_text를 안내합니다. native 모드는 폴더 없이 기존 화면을 사용합니다. 표시 실패로 재생성하지 마세요."""
             directory = display_directory_for(display_directory)
             result = broker.action("show_results", {"plan_id": str(plan_id), "item_indexes": item_indexes, "asset_index": asset_index})
             images, cards = [], []
@@ -848,7 +847,8 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
                 blocks = [block for block in rendered.content if block.type == "image"]
                 item["image_index"] = len(images) if blocks else None
                 images.extend(blocks)
-                cards.append(item.get("card_text", item.get("note", "결과 상태를 확인하세요.")))
+                item.setdefault("card_text", item.get("note", "결과 상태를 확인하세요."))
+                cards.append(item["card_text"])
             result["card_text"] = "\n\n".join(cards)
             result["delivery"] = {"mode": display_mode, "repeat_card_text": False}
             return CallToolResult(content=[TextContent(type="text", text=json.dumps(result, ensure_ascii=False)), *images],
