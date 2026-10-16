@@ -1230,7 +1230,9 @@ def publish_bundle_to_server(
         if blocked:
             out["blocked"] = blocked
             out["message"] = (
-                f"{blocked}건은 서버가 반영하지 않았습니다(작성자가 다른 항목의 재공유 등) — "
+                # 막는 까닭은 둘 — 원 작성자만 발행 · 최종본의 프로젝트 변경은 양쪽 검수자만(3A, 80회차 섞임 실측)
+                f"{blocked}건은 서버가 반영하지 않았습니다(작성자가 다른 항목의 재공유, 또는 검수자만 옮길 수 있는 최종본의 "
+                "프로젝트 변경) — "
                 "공유 표시를 남기지 않았습니다."
             )
         return PublishBundleResult(out, refs_by_anchor, remote_accepted)
