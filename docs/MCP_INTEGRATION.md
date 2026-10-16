@@ -13,6 +13,37 @@ owner: Codex · reviewer: Claude · status: 검증 중 · updated: 2026-10-15
 원래 MCP 작업실의 검증 이력이며 최신 dev와 합친 대상의 검증 결과는 WORKROOMS에 따로 기록한다.
 시험실 실행기에서는 실제 생성·CLI 모델 조회·전역 LLM 등록을 검증하지 않는다.
 
+## Claude native 결과의 자동 UI 연결 제거 (2026-10-16)
+
+owner: Codex · reviewer: Claude · status: 검증 중 · updated: 2026-10-16
+
+- Jay가 Claude 'MV hub MCP'의 진단을 이 작업실에 인계하고 native 이미지 중복 수정을 요청했다.
+  상대 보고: Claude Code 탭에서 본문 이미지 추가 없이도 중복되며 설치본 `.15.4`의 Apps 협상은 false였다.
+  실제 화면은 이 작업실에서 확인하지 않았으므로 클라이언트가 두 경로를 그린다는 설명은 추정으로 유지한다.
+- 직접 확인: `.16.2` native에서 결과 도구 3개의 UI `resourceUri`와 응답 ImageContent가 동시에 존재한다.
+  새 SDK로 기존 달걀·팬 결과를 읽어 Apps 광고 false/true 모두 자동 연결 3개·이미지 1개임을 재현했다.
+  이 Codex 대화의 기존 연결은 mvhub `.15.4`/8010 available, mvhub-test `.15.4`/8012 unavailable였다.
+  소스 버전과 실행 중인 MCP 버전, 호스트별 Apps 협상 결과는 서로 다른 확인값이다.
+- touched_paths: `tools/mcp_adapter/{server.py,test_persistent.py,README.md}`, 이 문서.
+  `.16.3`은 세 결과 도구의 UI 자동 연결만 제거하고 native ImageContent를 유지한다.
+  Apps 광고/클라이언트 이름을 기준으로 분기하지 않는다. Codex conversation의 이미지 파일·일반 텍스트 계약은 유지한다.
+  지침·조회 도구 설명도 ImageContent 한 경로로 통일하고 Apps 화면 자동 우회를 금지한다.
+  옛 UI 리소스·앱 전용 읽기 도구·도구 수 14개는 호환 목적으로 보존한다. 새 도구 자동 연결은 없으며
+  이미 열린 카드가 계속 동작하는지는 실제 호스트에서 미확인이다. 확장 능력 필드는 자동 UI 선택을 뜻하지 않는다.
+- Claude 설계: 실제 `claude-opus-5-5`/medium, 세션 `07f67126-4a54-484a-aca3-44c882903384` 승인.
+  도구 설명 통일, 광고 유무/패키지 부재 시험, 옛 자원 보존·실화면 미확인 구분을 반영했다.
+  독립 리뷰는 별도 세션 `063e6e3b-28b9-4ad0-a3a2-db6d28beb998`, 실제 같은 모델/high로 수행했다.
+  차단 결함 없이 소스 계약에 동의했고 회귀 통과·일반 병합·타인 변경 보존 조건으로 소스/통합 마감에 동의했다.
+- 직접 시험: 어댑터 회귀 39개 통과(37.963초). 광고 false/true의 세 조회 도구, Apps 패키지 부재,
+  옛 자원 직접 읽기와 app-only visibility, conversation 경로의 이미지·설명 분리를 확인했다.
+- 직접 실측: 새 소스 stdio `.16.3` → 설치본 로컬 8010의 기존 달걀·팬 조회만 수행했다.
+  Apps 광고 false/true 각각 UI 자동 연결 0개·JPEG ImageContent 1개·설명 보존을 확인했다.
+  새 생성 0건, 표시 파일 저장 0건, 설치본·전역 등록 설정·공유 서버 변경 0건이다. 8012 서버는 시작하지 않았다.
+  증거: `%TEMP%/mvhub-native-single-20261016/{design,review,before,after}.json`.
+- 실제 Claude 데스크톱 중복 해소는 아직 미확인이다. 통합 소스 반영 후 8012를 켜고 Claude의 mvhub-test를
+  재연결하여 `.16.3`/native 확인 후 기존 결과를 한 번 조회해야 한다. 캐시된 도구 목록이나 이미 열린 옛 카드는
+  소스 수정만으로 갱신됐다고 볼 수 없다. 프로젝트 전용 계약은 이 문서에 남기고 볼트에 복제하지 않는다.
+
 ## 휴대폰에서 빠진 결과 설명 복원 (2026-10-16)
 
 owner: Codex · reviewer: Claude · status: 완료(소스 검증) · updated: 2026-10-16
@@ -41,6 +72,7 @@ owner: Codex · reviewer: Claude · status: 완료(소스 검증) · updated: 20
 ## Codex 결과 표시를 한 경로로 제한 (2026-10-16)
 
 이 절은 `.16.1` 당시 기록이다. 설명을 HTML 안에 넣는 방식은 위 `.16.2` 보완으로 대체한다.
+native 결과의 ImageContent/Apps 동시 연결은 위 `.16.3`에서 제거했다.
 
 owner: Codex · reviewer: Claude Opus 5.5 · status: 완료(소스·비유료 검증) · updated: 2026-10-16
 
@@ -208,6 +240,8 @@ owner: Codex · reviewer: Claude · status: 검증 중 · updated: 2026-10-15
   영상은 기존 포스터, 원본은 MV Hub에서 확인한다. 실제 PC·휴대폰 채팅 화면은 별도 확인 대상이다.
 
 ## 네이티브 결과 화면과 중복 링크 제거 (2026-10-15)
+
+이 절의 결과 도구 UI 자동 연결은 `.16.3`에서 제거했다. 아래는 당시 구현·검증 이력이다.
 
 owner: Codex · reviewer: Claude · status: 검증 중 · updated: 2026-10-15
 

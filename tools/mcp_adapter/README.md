@@ -20,13 +20,16 @@ v2 등록 설정에는 `--url`과 `--profile`이 들어간다. 프로필은 Wind
 한 번에 1~8개 항목을 선택하며 대기는 이미지 카드를 만들지 않는다. `all_terminal`이면 대기를 멈추고,
 `all_done`이 false이면 실패·취소·확인 필요 항목을 함께 안내한다. 25초는 대기 예산이며 조회·권한 확인 시간이 더해질 수 있다.
 `get_result`는 기존 단건 호출 호환용으로 유지한다.
-어댑터 `2026.10.16.2`는 같은 서버의 `--display-mode`로 표시 경로를 하나 선택한다.
+어댑터 `2026.10.16.3`은 같은 서버의 `--display-mode`로 표시 경로를 하나 선택한다.
 Codex 자동 등록은 `conversation`을 지정하며 다른 클라이언트와 플래그 없는 기존 설정은 `native`다.
 `conversation`은 MCP Apps 자원·UI 메타·앱 전용 도구를 등록하지 않는다(모델용 13개).
 `get_result`·`get_generation`·`show_results`는 표시 파일만 준비하고 ImageContent·별도 설명 블록을 보내지 않는다.
-`native`는 파일 없이 기존 ImageContent와 `ui://mvhub/result.html` 결과 화면을 제공한다(총 14개).
+`native`는 파일 없이 ImageContent로만 새 결과를 표시한다(총 14개).
+`get_result`·`get_generation`·`show_results`에 UI `resourceUri`를 붙이지 않아 Apps 화면을 자동으로 함께 열지 않는다.
+Apps 광고 여부로 분기하지 않으므로 미지원 클라이언트에도 기존 ImageContent를 유지한다.
 두 모드 모두 실행 도구에는 결과 UI를 붙이지 않는다. 실행 → 대기 → 결과 조회 순서로 한 번 표시한다.
-이전 실행 카드의 `live_plan_id` 처리와 앱 전용 `read_display_results`는 이미 열린 카드 호환용으로 유지한다.
+`ui://mvhub/result.html` 리소스·이전 실행 카드의 `live_plan_id` 처리·앱 전용 `read_display_results`는
+이미 열린 카드의 호환을 위해 보존한다. 새 결과 도구와 자동 연결하지 않으며 옛 카드의 실제 호스트 동작은 미확인이다.
 새 실행 응답은 `live_plan_id`를 만들지 않는다. 호환 코드의 자동 확인은 10분 뒤 또는 오류·숨김·해제 시 멈춘다.
 **기존 Codex는 어댑터 업데이트만으로 전환되지 않는다.** MV Hub에서 Codex 연결을 다시 등록하고
 MCP를 재연결한 뒤 `check_connection`의 버전과 `display_mode=conversation`을 확인한다.
@@ -47,14 +50,14 @@ MCP를 재연결한 뒤 `check_connection`의 버전과 `display_mode=conversati
 일반 URL·PC 경로·HTML Markdown 링크로 바꾸지 않는다.
 표시 파일은 검증한 JPEG를 포함하며 외부 요청이 없다. 로컬 사본과 경로가 대화에 남고,
 설치본·`backend/data`·NAS를 표시 폴더로 쓰지 않는다. 폴더 자동 생성·기존 파일 덮어쓰기는 하지 않는다.
-`native` 모드는 폴더를 생략하고 네이티브 이미지 또는 MCP Apps로 표시하며 답변에 중복 삽입하지 않는다.
+`native` 모드는 폴더를 생략하고 네이티브 이미지로만 표시하며 답변에 중복 삽입하거나 Apps 화면을 추가로 열지 않는다.
 모드와 폴더 인자가 맞지 않으면 허브 조회 전에 거부한다. 표시 파일 저장 실패 시 다른 표시 경로를
 추가하지 않고 오류를 안내한다. 새 생성 없이 유효한 작업 폴더로 결과 조회만 다시 한다.
 표시 정보는 content/structuredContent와 기존 호환용 `_meta.display`에 함께 반환한다.
 이미지 수신·파일 준비는 실제 화면 표시 확인과 다르다.
 Codex·Claude 공통으로 실행 전 조건·위치를 알리고 `presentation.stage` 변경 시 `message`를 안내한다.
 `card_text`(상태→조건→위치)는 공통으로 만들고 선택한 표시 경로에서만 보여 준다. 선택 항목 완료는 전체 완료가 아니다.
-이미지와 MCP Apps를 모두 지원하지 않는 호스트는 자체 이미지 표시 도구를 사용하거나 표시 제한을 알린다.
+네이티브 이미지 미지원 호스트에서는 표시 제한과 MV Hub 확인 방법을 안내하며 Apps로 자동 우회하지 않는다.
 Higgsfield의 전용 위젯 지원이 임의 로컬 MCP에도 적용된다고 가정하지 않는다. 앱별 실표시는 별도 확인한다.
 미리보기 조회는 생성·과금 없이 기존 결과만 읽는다. 영상은 기존 포스터만 표시하고, 원본은 MV Hub에서 확인한다.
 다른 LLM에서 만든 본인 결과는 `read_context(kind="generations")`로 찾아
@@ -66,6 +69,7 @@ Higgsfield의 전용 위젯 지원이 임의 로컬 MCP에도 적용된다고 �
 실제 차감액을 보장하지 않으며 견적 조회가 생성 실행을 승인하지 않는다.
 `check_connection`의 `adapter.version`, `hub_features`, `reload_required`, `apps_negotiated`로 실제 실행 버전과
 화면 확장 협상 여부를 확인한다. `available`만으로 계정 연결·생성 준비·화면 표시가 검증되지는 않는다.
+`apps_available`·`apps_negotiated`는 확장 능력 정보이며 결과 화면 자동 연결 여부를 뜻하지 않는다.
 실행 중인 구형 MCP는 새 파일을 자동으로 읽지 않으므로 LLM에서 MCP를 다시 불러와야 한다.
 오류는 `error={code,message,retryable,next_action}`으로 반환하며 비공개 서버 오류 원문을 전달하지 않는다.
 `retryable`은 지정한 조회를 다시 시도할 수 있다는 뜻이며 실패한 생성 요청을 재제출하라는 뜻이 아니다.
