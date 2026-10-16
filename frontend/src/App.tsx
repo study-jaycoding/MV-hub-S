@@ -549,6 +549,7 @@ export default function App() {
     reloadIfStale,
     revealLocated,
     locatedVisibleIds,
+    locatedSettle,
     isLocatedView,
     setFacets,
     setGens,
@@ -1595,7 +1596,7 @@ export default function App() {
     workspaceFilter: filters.tab === "team" ? genQuery : undefined,
     workspaceScopeKey,
     onWorkspaceFilterUnsupported: () => flash(t("워크스페이스별 다빈치 확인에는 공유 서버 업데이트가 필요합니다. 임시로 전체 보기를 사용할 수 있습니다.")),
-    manualRevision, gens: gridGens, locatedVisibleIds, followLocation, revealLocated, colorLedger, canFollow: canFollowResolve,
+    manualRevision, gens: gridGens, locatedVisibleIds, locatedSettle, followLocation, revealLocated, colorLedger, canFollow: canFollowResolve,
   });
   useCustomEvent(APP_EVENTS.resolveSelection, (event) => {
     const detail = (

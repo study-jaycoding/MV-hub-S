@@ -784,3 +784,28 @@ it("위치 주입: 새 자리의 목록을 기다리는 중에 따라가면 앞 
   await settle();
   expect([ids(), data.hasMore, data.loadError]).toEqual([["outside-page"], false, "500: boom"]);
 });
+
+// 81회차 P2b 3-a — 격자는 주입 카드 하나로 먼저 내려간다. 그 뒤 첫 정상 목록을 적용했다는 신호로 한 번 더 맞춘다.
+it("위치 주입 뒤 첫 정상 목록을 적용할 때 신호가 한 번 오른다 — 주기 조회나 실패 뒤의 성공으로는 오르지 않는다", async () => {
+  await mount({ query: MAIN });
+  const before = data.locatedSettle;
+  const slowB = hold<Generation[]>(api.listGenerations);
+  show({ query: LOCATED }); // 새 자리 — 목록은 아직
+  vi.mocked(api.locateGenerations).mockResolvedValue(locationOf(gen("outside-page")));
+  act(() => { data.revealLocated("my", locationOf(gen("outside-page"))); });
+  expect(data.locatedSettle).toBe(before); // 주입만으로는 오르지 않는다
+  await act(async () => { slowB.resolve([gen("b-old")]); }); // 주입 앞에 떠난 조회 — 낡아서 버린다
+  await settle();
+  expect([data.locatedSettle, [...ids()].sort()]).toEqual([before + 1, ["m1", "m2", "outside-page"]]);
+  await act(async () => { await data.reload(true); }); // 주기 조회
+  await settle();
+  expect(data.locatedSettle).toBe(before + 1);
+
+  vi.mocked(api.listGenerations).mockRejectedValueOnce(new Error("500: boom"));
+  act(() => { data.revealLocated("my", locationOf(gen("outside-2"))); }); // 목록 밖 대상 — 같은 자리를 다시 받다 실패
+  await settle();
+  expect(data.loadError).toBe("500: boom");
+  await act(async () => { await data.reload(true); }); // 실패 뒤의 성공 — 기다림은 이미 닫혔다
+  await settle();
+  expect(data.locatedSettle).toBe(before + 1);
+});

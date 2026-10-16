@@ -47,7 +47,8 @@ interface Props {
   selectedIds: Set<string>;
   resolveHighlightedIds?: ReadonlySet<string>; // 확인 표시 전용 — 일괄 작업 선택/Last viewed와 분리
   // focus = 이동과 함께 그 카드를 방향키·Shift 범위 선택의 기준으로 삼는다(캔버스 '생성 결과' 창의 다빈치 선택).
-  resolveScrollRequest?: { generationId: string; nonce: number; focus?: boolean } | null;
+  // settle = 목록 쪽의 '위치 주입 뒤 첫 정상 목록 적용' 신호 — 오르면 손대기 전일 때 한 번 더 맞춘다(아래 이동 효과)
+  resolveScrollRequest?: { generationId: string; nonce: number; focus?: boolean; settle?: number } | null;
   onClearResolveHighlight?: () => void;
   onSelectedChange: (next: Set<string>) => void; // 마퀴/클릭 선택 결과(전체 치환)
   onToggleSelect: (id: string) => void; // 리스트 모드 체크박스
@@ -106,6 +107,7 @@ export function ThumbnailGrid(props: Props) {
   const { generations, scale, layout, groupByDate, selectedIds } = props;
   const resolveScrollGuardRef = useRef(false);
   const handledResolveScrollRef = useRef<string | null>(null);
+  const handledResolveSettleRef = useRef<number | undefined>(undefined); // 마지막으로 맞춘 때의 목록 적용 신호(settle)
   const [resolveScrollRelease, setResolveScrollRelease] = useState(0);
   const releaseResolveScrollGuard = () => {
     if (!resolveScrollGuardRef.current) return;
@@ -415,19 +417,26 @@ export function ThumbnailGrid(props: Props) {
 
   // resetKey의 맨 위 이동·열 수 측정 다음 프레임에 대상 행으로 한 번만 이동한다.
   // 아직 대상이 없으면 행 모델 갱신을 기다린다(과거 페이지를 전부 읽지 않는다).
+  // 이미 이동한 요청이어도 목록 쪽이 '위치 주입 뒤 첫 정상 목록을 적용했다'(settle 이 오름)고 알리면 한 번 더 맞춘다 — 주입 카드 하나로
+  //  먼저 내려간 뒤 첫 쪽이 도착해 대상이 아래로 밀리면 첫 화면 밖에 남았다(81회차 P2b 3-a). 휠·누름·키로 손댔으면(가드 풀림) 그대로 둔다.
+  //  주기 조회로는 settle 이 오르지 않으니 보기만 하는 동안 끌고 가지 않는다.
   useEffect(() => {
     const target = props.resolveScrollRequest;
-    if (!target || resolveScrollKey === handledResolveScrollRef.current) return;
+    if (!target) return;
+    const again = resolveScrollKey === handledResolveScrollRef.current;
+    if (again && (!resolveScrollGuardRef.current || target.settle === handledResolveSettleRef.current)) return;
     const generationIndex = generations.findIndex((g) => g.id === target.generationId);
     const navRow = generationIndex < 0 ? undefined : rowModel.posByGen[generationIndex]?.navRow;
     if (navRow === undefined) return;
     const rowIndex = rowModel.rowIndexOfNavRow[navRow];
     const frame = requestAnimationFrame(() => {
       if (!vRef.current) return;
+      if (again && !resolveScrollGuardRef.current) return; // 예약한 뒤 이 프레임 전에 손댔다
       resolveScrollGuardRef.current = true;
       vRef.current.scrollToIndex(rowIndex, { align: "nearest" });
       handledResolveScrollRef.current = resolveScrollKey;
-      if (target.focus) setFocusedGenerationId(target.generationId);
+      handledResolveSettleRef.current = target.settle;
+      if (!again && target.focus) setFocusedGenerationId(target.generationId);
     });
     return () => cancelAnimationFrame(frame);
   }, [generations, rowModel, resolveScrollKey, props.resolveScrollRequest]);

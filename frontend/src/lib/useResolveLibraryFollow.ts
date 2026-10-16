@@ -14,6 +14,7 @@ interface Args {
   manualRevision: number;
   gens: Generation[];
   locatedVisibleIds?: ReadonlySet<string> | null;
+  locatedSettle?: number; // 위치 주입 뒤 첫 정상 목록 적용 신호(lib/useGenerationLibraryData) — 격자의 한 번 더 맞추기에 실어 보낸다
   followLocation: (location: { project_id?: string; folder_path?: string }) => void;
   revealLocated: (tab: "my" | "team", location: GenerationLocation, keepPainted?: ReturnType<ColorEditLedger["stamp"]>) => void;
   // 색 편집 장부(목록 훅의 것) — 위치 조회의 응답이 그사이 칠한 색을 덮지 않게, 조회가 출발할 때 도장을 찍어 revealLocated 에 함께 넘긴다.
@@ -134,7 +135,7 @@ export function useResolveLibraryFollow(args: Args) {
     clear,
     highlightedIds,
     scrollRequest: current?.location && firstId
-      ? { generationId: firstId, nonce: current.nonce } : null,
+      ? { generationId: firstId, nonce: current.nonce, settle: args.locatedSettle } : null,
     viewedFolder: current?.location?.project_id
       ? { projectId: current.location.project_id, projectName: current.location.items[0]?.project_name || undefined,
           path: current.location.folder_path || "", nonce: current.nonce }

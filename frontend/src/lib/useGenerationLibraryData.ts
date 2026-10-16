@@ -94,6 +94,10 @@ export function useGenerationLibraryData({
   const [gens, setGens] = useState<Generation[]>([]);
   const [locatedReload, setLocatedReload] = useState(0);
   const [locatedVisibleIds, setLocatedVisibleIds] = useState<ReadonlySet<string> | null>(null);
+  // 위치 주입 뒤 첫 정상 목록을 적용할 때마다 하나 오른다 — 격자가 주입 카드로 먼저 내려간 뒤 그 목록에서 대상이 옮겨 갔으면 한 번 더
+  //  맞추는 신호다(81회차 P2b 3-a). 그 목록이 실패하거나 조회가 바뀌면 기다림을 닫는다(주기 조회로는 오르지 않는다).
+  const [locatedSettle, setLocatedSettle] = useState(0);
+  const locatedSettlePendingRef = useRef(false);
   // Resolve의 오래된 대상은 페이지 밖에서도 보이지만, 다음 페이지 커서는 그 대상을 따라가지 않는다.
   const pageCursorRef = useRef<GenCursor | null>(null);
   // 휴지통은 offset 방식이다. 공간 필터로 숨긴 행도 소비한 원본 건수에 포함한다.
@@ -335,6 +339,7 @@ export function useGenerationLibraryData({
     if (located && !isLocatedQuery(genQueryRef.current, located.tab, located.location)) {
       delete tabCacheRef.current[located.tab];
       locatedRef.current = null;
+      locatedSettlePendingRef.current = false;
       setLocatedVisibleIds(null);
     }
   }, [queryKey]);
@@ -361,6 +366,7 @@ export function useGenerationLibraryData({
       generationTabCacheIsFresh(tabCacheRef.current[tab], sig) &&
       items.length > 0 && items.every((item) => visibleIds.has(item.id));
     locatedRef.current = { tab, location: { ...location, items } };
+    locatedSettlePendingRef.current = !reusePage; // 보던 쪽을 그대로 쓰면 기다릴 목록이 없다
     setLocatedVisibleIds(new Set(items.map((item) => item.id)));
     reloadSeqRef.current++;
     lastLoadedTabRef.current = tab; // 왕복 중 탭 전환도 기존 즉시 전환 가드를 유지한다.
@@ -507,6 +513,10 @@ export function useGenerationLibraryData({
           // locate만 일시 실패해도 정상 목록에서 확인된 행은 보존하되 Resolve 강조는 해제한다.
           g = checked ? mergeLocatedGenerations(g.filter((item) => !oldIds.has(item.id)), valid) : g;
           setLocatedVisibleIds(new Set(valid.map((item) => item.id)));
+          if (locatedSettlePendingRef.current) {
+            locatedSettlePendingRef.current = false;
+            setLocatedSettle((value) => value + 1);
+          }
         }
         g = keepPainted(g); // 화면·탭 캐시 둘 다 같은 값을 쓴다
         setGens((prev) => reconcileArrayState(prev, g));
@@ -532,6 +542,7 @@ export function useGenerationLibraryData({
           // 다른 탭 로그아웃으로 멈췄다(4B) — 실패가 아니다. 띠가 이미 알리니 목록·실패 표시는 그대로 두고, 사람이 누른 다시 받기만 멈춤을 알린다(64회차 실측)
           if (!silent && seq === reloadSeqRef.current) flash(API_PAUSED_MESSAGE);
         } else if (seq === reloadSeqRef.current) {
+          locatedSettlePendingRef.current = false; // 위치 주입 뒤 기다리던 목록이 실패했다 — 다음 성공에서 다시 맞추지 않는다
           // 조용한 다시 받기(자동 조회 — 3초·15초마다)는 이미 실패 표시가 떠 있으면 다시 알리지 않는다: 매번 알리면 다른 조작의 안내를
           //  덮었다(60회차). 사람이 직접 한 다시 받기는 전처럼 알린다. 성공하면 표시가 걷혀 다음 실패는 또 알린다.
           if (!silent || !loadErrorRef.current) flash("로드 실패: " + String(e));
@@ -779,6 +790,7 @@ export function useGenerationLibraryData({
     reloadIfStale,
     revealLocated,
     locatedVisibleIds,
+    locatedSettle,
     isLocatedView: !!locatedRef.current && isLocatedQuery(genQuery, locatedRef.current.tab, locatedRef.current.location),
     // 화면의 목록이 아직 지금 조회의 것이 아니다 — 조회(자리·필터)가 바뀐 뒤 새 첫 쪽이 적용되기 전. 탭 캐시의 sig = 마지막으로 **적용된**
     //  목록의 조회다(beginComposeList 의 출처 확인과 같은 기준). 캐시를 지운 구간(위치 주입·폴더 창·실패)에도 참이라 쓰는 쪽이 그것을 가린다.

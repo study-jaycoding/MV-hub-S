@@ -223,6 +223,31 @@ it("대상이 나중에 도착하면 이동하고 빠르게 바뀐 이전 요청
   expect(mocks.scroll).toHaveBeenCalledExactlyOnceWith(0, { align: "nearest" });
 });
 
+// 81회차 P2b 3-a — 새 자리의 목록을 기다리는 중에 따라가면 위치 카드 하나로 먼저 이동하고, 첫 쪽이 도착하면 대상이 아래로 밀렸다.
+it("위치 주입 뒤 첫 정상 목록 신호(settle)가 오르면 손대기 전일 때 한 번 더 맞춘다 — 주기 조회로 목록만 바뀌면 끌고 가지 않는다", () => {
+  const props = gridProps({ layout: "list", generations: [generations[1]], resolveScrollRequest: { generationId: "g2", nonce: 1, settle: 0 } });
+  renderGrid(props); // 위치 카드 하나 — 맨 위
+  expect(mocks.scroll).toHaveBeenLastCalledWith(0, { align: "nearest" });
+  const page = [generation("g0", 17), ...generations];
+  renderGrid({ ...props, generations: page, resolveScrollRequest: { generationId: "g2", nonce: 1, settle: 1 } }); // 첫 쪽 적용 — 대상이 셋째 줄로
+  expect(mocks.scroll).toHaveBeenCalledTimes(2);
+  expect(mocks.scroll).toHaveBeenLastCalledWith(2, { align: "nearest" });
+  renderGrid({ ...props, generations: [generation("g-1", 18), ...page], resolveScrollRequest: { generationId: "g2", nonce: 1, settle: 1 } }); // 주기 조회
+  expect(mocks.scroll).toHaveBeenCalledTimes(2);
+});
+
+it("손댄 뒤에는 첫 정상 목록 신호가 와도 맞추지 않는다 — 다시 맞추기를 예약한 뒤 그 프레임 전에 손대도 같다", () => {
+  const request = (settle: number) => ({ generationId: "g2", nonce: 1, settle });
+  const props = gridProps({ layout: "list", generations: [generations[1]], resolveScrollRequest: request(0) });
+  const grid = renderGrid(props);
+  act(() => root.render(<ThumbnailGrid {...props} generations={[generation("g0", 17), ...generations]} resolveScrollRequest={request(1)} />)); // 예약만
+  act(() => grid.dispatchEvent(new Event("wheel", { bubbles: true })));
+  flushFrames();
+  expect(mocks.scroll).toHaveBeenCalledTimes(1);
+  renderGrid({ ...props, generations: [generation("g-1", 18), generation("g0", 17), ...generations], resolveScrollRequest: request(2) });
+  expect(mocks.scroll).toHaveBeenCalledTimes(1);
+});
+
 it.each(["wheel", "touchstart", "pointerdown", "PageDown"])("자동 이동은 추가 조회를 막고 사용자 %s는 다시 허용한다", (gesture) => {
   const props = gridProps({ hasMore: true, onLoadMore: vi.fn(), resolveScrollRequest: { generationId: "g2", nonce: 1 } });
   const grid = renderGrid(props);
