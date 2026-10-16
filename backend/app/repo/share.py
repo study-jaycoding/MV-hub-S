@@ -453,7 +453,7 @@ def export_bundle(
 
         for r in conn.execute(
             f"SELECT gt.generation_id, t.name FROM gen_tag gt JOIN tag t ON t.id=gt.tag_id "
-            f"WHERE gt.generation_id IN ({ph})",
+            f"WHERE gt.generation_id IN ({ph}) ORDER BY t.name",
             ids,
         ).fetchall():
             by_id[r["generation_id"]]["_tags"].append(r["name"])

@@ -277,7 +277,7 @@ def _gather(conn: sqlite3.Connection, gen_id: str, gen: sqlite3.Row) -> dict[str
         "references": refs,
         "tags": [r["name"] for r in conn.execute(
             "SELECT t.name FROM gen_tag gt JOIN tag t ON t.id=gt.tag_id "
-            "WHERE gt.generation_id=?", (gen_id,)).fetchall()],
+            "WHERE gt.generation_id=? ORDER BY t.name", (gen_id,)).fetchall()],
         "auto_tags": [r["name"] for r in conn.execute(
             "SELECT a.name FROM gen_auto_tag gat JOIN auto_tag a ON a.id=gat.auto_tag_id "
             "WHERE gat.generation_id=?", (gen_id,)).fetchall()],

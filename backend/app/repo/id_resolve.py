@@ -148,7 +148,7 @@ def personal_meta_by_anchor(
             tags: dict[str, list[str]] = {}
             for row in conn.execute(
                 f"SELECT gt.generation_id AS gid, t.name AS name FROM gen_tag gt "
-                f"JOIN tag t ON t.id = gt.tag_id WHERE gt.generation_id IN ({gp})",
+                f"JOIN tag t ON t.id = gt.tag_id WHERE gt.generation_id IN ({gp}) ORDER BY t.name",
                 ids,
             ):
                 tags.setdefault(row["gid"], []).append(row["name"])

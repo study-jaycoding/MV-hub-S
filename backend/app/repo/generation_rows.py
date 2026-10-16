@@ -125,7 +125,8 @@ def _attach_children(
     for r in conn.execute(
         f"SELECT gt.generation_id, t.name FROM gen_tag gt "
         f"JOIN tag t ON t.id = gt.tag_id "
-        f"WHERE gt.generation_id IN ({placeholders})",
+        f"WHERE gt.generation_id IN ({placeholders}) "
+        f"ORDER BY t.name",  # 태그는 집합으로 저장된다 — 순서를 정해 두지 않으면 저장할 때마다 칩 순서가 바뀌었다(81회차 P2b 1-a)
         ids,
     ).fetchall():
         by_id[r["generation_id"]]["tags"].append(r["name"])

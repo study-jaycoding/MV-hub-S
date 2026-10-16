@@ -67,6 +67,19 @@ class GenerationMetaRepoBatchTests(unittest.TestCase):
         self.assertEqual(repo.get_generation("loc1")["tags"], ["last"])
         self.assertEqual(repo.get_generation("loc2")["tags"], ["side"])
 
+    def test_tags_come_back_in_name_order_not_storage_order(self) -> None:
+        # 81회차 P2b 1-a — 태그는 집합으로 저장된다. 순서를 정하지 않으면 저장할 때마다 칩 순서가 바뀌었다.
+        from app import db, repo
+
+        # 태그 id·저장 순서를 이름순과 거꾸로 고정한다 — 정렬이 없으면 id 순이든 저장 순이든 거꾸로 나와 반드시 실패한다.
+        backwards = [("a", "미드"), ("b", "검토"), ("c", "zeta"), ("d", "beta"), ("e", "alpha")]
+        with db.get_connection() as conn:
+            conn.execute("DELETE FROM gen_tag WHERE generation_id='loc1'")
+            conn.executemany("INSERT INTO tag(id, name) VALUES(?,?)", backwards)
+            conn.executemany("INSERT INTO gen_tag(generation_id, tag_id) VALUES('loc1', ?)", [(tid,) for tid, _ in backwards])
+
+        self.assertEqual(repo.get_generation("loc1")["tags"], ["alpha", "beta", "zeta", "검토", "미드"])
+
     def test_auto_tag_batch_keeps_owner_namespace_and_ignores_unknown(self) -> None:
         from app import repo
 
