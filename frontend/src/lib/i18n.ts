@@ -566,7 +566,28 @@ const EN: Record<string, string> = {
   "앱에서 직접 생성": "Generate from the app",
   "승인한 계획은 다시 실행하지 않습니다. 저장 실패·문맥 변경으로 제출하지 못한 항목도 자동 재시도하지 않습니다. 생성 카드와 작업 상태에서 기존 요청을 먼저 확인하고, 미제출이 확인된 항목만 새 계획으로 요청하세요.":
     "Approved plans don't run again, and items not submitted because of a save failure or context change aren't retried automatically. Check existing requests in the generation cards and job status first, and request only confirmed unsubmitted items in a new plan.",
+  "접수 여부 확인 필요": "Submission unconfirmed",
+  "거절됨": "Rejected",
+  // 등록 결과 문구(허브의 MCP 설정 도구가 보낸 고정 글 — tools/mcp_adapter/local_setup.py · routers/mcp_v2.py)
+  "등록했습니다. 실행 중인 LLM에서 MCP를 새로고침하거나 프로그램을 다시 시작하세요.": "Registered. Reload MCP in the running LLM app or restart it.",
+  "사용할 MCP 앱에 이 설정을 한 번 등록하세요.": "Register this configuration once in the MCP app you use.",
+  "Claude가 별도 설정 폴더를 사용합니다. 해당 프로그램에 이 설정을 등록하세요.": "Claude uses a separate config folder. Register this configuration in that app.",
+  "프로그램 설치를 확인하지 못했습니다. 설치 후 설정을 등록하세요.": "Couldn't confirm the app is installed. Install it, then register the configuration.",
+  "기존 mvhub 설정과 충돌하거나 형식을 확인하지 못했습니다. 설정을 확인한 뒤 아래 내용을 수동 등록하세요.":
+    "It conflicts with an existing mvhub entry or the format couldn't be checked. Check your settings, then register the content below manually.",
+  "등록 도중 활성 계정이나 허브 연결이 바뀌었습니다. 현재 앱 로그인을 확인한 뒤 다시 연결하세요.": "The active account or hub connection changed during registration. Check the app sign-in and connect again.",
+  "MV Hub와 LLM을 같은 Windows 로그인 사용자로 실행하세요. 서비스 계정에서는 자동 연결할 수 없습니다.": "Run MV Hub and the LLM as the same Windows user. Automatic connection doesn't work from a service account.",
+  "MCP 자동 연결은 Windows 사용자 계정에서 설정하세요.": "Set up automatic MCP connection from a Windows user account.",
+  "이 Windows 계정에서 MCP 연결 권한을 읽거나 저장할 수 없습니다.": "This Windows account can't read or save MCP connection access.",
+  "MCP 실행 파일이 없습니다. 앱 설치 상태를 확인하세요.": "The MCP executable is missing. Check the app installation.",
+  "Windows 사용자 저장 폴더를 확인할 수 없습니다.": "Couldn't find the Windows user storage folder.",
+  "설정이 다른 프로그램에서 바뀌었습니다. 다시 연결하세요.": "The settings were changed by another app. Connect again.",
+  "클라이언트 설정이 너무 커 자동 등록할 수 없습니다.": "The client configuration is too large to register automatically.",
+  "MCP 연결 파일이나 LLM 설정 파일을 읽거나 저장할 권한이 없습니다. 파일 접근 권한을 확인하세요.": "No permission to read or save the MCP connection file or LLM config file. Check file access.",
+  "MCP 설정을 완료하지 못했습니다. 앱 설치와 LLM 설정 파일 상태를 확인한 뒤 다시 연결하세요.": "Couldn't finish MCP setup. Check the app installation and LLM config files, then connect again.",
   // MV·MCP 창에 뜨는 오류(화면에서 번역 — 원문은 LLM 응답·계획 기록에 그대로)
+  "그룹 모델 설정을 확인하는 중입니다. 잠시 후 다시 시도하세요.": "Checking group model settings. Try again in a moment.",
+  "원본 생성물에 해당 자료가 없습니다. 캔버스에서 다시 선택하세요.": "The source result doesn't have that reference. Select it again on the canvas.",
   "로그인 상태를 확인한 뒤 연결하세요.": "Check that you're signed in, then connect.",
   "계정 또는 워크스페이스가 바뀌었습니다. AI 연결을 다시 허용하세요.": "The account or workspace changed. Allow the AI connection again.",
   "계정 또는 워크스페이스 변경으로 AI 연결을 해제했습니다.": "The AI connection was closed because the account or workspace changed.",

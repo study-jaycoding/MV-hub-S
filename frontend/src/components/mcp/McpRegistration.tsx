@@ -125,7 +125,7 @@ export function McpRegistration({ authReady, authKey, workspace }: { authReady: 
       const config = result.config ? (typeof result.config === "string" ? result.config : JSON.stringify(result.config, null, 2)) : "";
       return <div className="mcp-result" data-status={result.status} key={`${result.client}:${index}`}>
         <strong>{result.client} · {t(result.status === "configured" ? "등록 완료" : result.status === "manual" ? "수동 등록 필요" : "등록 실패")}</strong>
-        <p>{result.message}</p>
+        <p>{t(result.message)}</p>
         {config && <><button onClick={() => void copy(config)}>{t("MCP 설정 복사")}</button><pre>{config}</pre></>}
       </div>;
     })}

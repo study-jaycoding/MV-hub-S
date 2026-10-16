@@ -44,6 +44,12 @@ export interface McpSetup {
   python_args?: string[];
 }
 
+// 계획 항목 상태의 화면 이름 — 저장 값(영어)은 그대로 두고 보이는 이름만(Codex 10-16 P3)
+const ITEM_STATE_LABEL: Record<string, string> = {
+  pending: "대기", submitting: "제출 중", submitted: "접수 완료 (영상 완료 여부는 생성 카드에서 확인)",
+  uncertain: "접수 여부 확인 필요", rejected: "거절됨",
+};
+
 export function mcpSetupConfig(setup: McpSetup, client: "codex" | "claude"): string {
   if (!setup.adapter_exists || !setup.python || !setup.python_exists) return "";
   const args = [...(setup.python_args ?? []), setup.adapter, "--url", setup.url];
@@ -440,7 +446,7 @@ export function McpConnection(props: McpConnectionProps) {
           <pre>{item.request.create.display_prompt || item.request.create.prompt}</pre>
           <pre>{JSON.stringify(item.request.create.params || {}, null, 2)}</pre>
           <p>{t("자료:")} {item.reference_snapshot.length ? item.reference_snapshot.map((ref) => `${ref.name || t("자료")} [${ref.asset_version || t(ref.source_version ? "원본 생성물 확인" : "버전 미확인")}]`).join(", ") : t("없음")}</p>
-          <p>{t("요청 상태:")} {plan.items[index]?.state === "submitted" ? t("접수 완료 (영상 완료 여부는 생성 카드에서 확인)") : plan.items[index]?.state} · {t("결과 ID:")} {item.request.canvas_link.generation_id}</p>
+          <p>{t("요청 상태:")} {plan.items[index] ? t(ITEM_STATE_LABEL[plan.items[index].state] ?? plan.items[index].state) : ""} · {t("결과 ID:")} {item.request.canvas_link.generation_id}</p>
           {plan.items[index]?.error && <p className="mcp-error">{t(plan.items[index].error)}</p>}
         </li>)}</ol>
         <button className="mcp-approve" disabled={busy || !connected || plan.status !== "proposed"} onClick={() => { if (connected) void runPlan(plan, connected, "app"); }}>{t(busy ? "처리 중…" : "앱에서 직접 생성")}</button>

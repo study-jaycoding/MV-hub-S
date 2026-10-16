@@ -47,7 +47,11 @@ it("영어 화면: 등록 결과·연결 목록·상태 줄까지 한글이 남�
   const { setLang } = await import("../src/lib/i18n");
   act(() => setLang("en"));
   try {
-    io.http.mockResolvedValueOnce({ clients: [{ client: "codex", status: "configured", message: "ok" }, { client: "other", status: "manual", message: "ok", config: { mcpServers: {} } }] }).mockResolvedValueOnce({ clients: [{ ...client, scope: "account" }] });
+    // 허브 설정 도구가 실제로 보내는 글(tools/mcp_adapter/local_setup.py) — 'ok' 로는 번역 누락이 가려진다(Codex 10-16)
+    io.http.mockResolvedValueOnce({ clients: [
+      { client: "codex", status: "configured", message: "등록했습니다. 실행 중인 LLM에서 MCP를 새로고침하거나 프로그램을 다시 시작하세요." },
+      { client: "other", status: "manual", message: "사용할 MCP 앱에 이 설정을 한 번 등록하세요.", config: { mcpServers: {} } },
+    ] }).mockResolvedValueOnce({ clients: [{ ...client, scope: "account" }] });
     await render();
     await click("Allow Codex · Claude Code");
     expect((host.textContent!.match(/[가-힣][^.!?]*/g) ?? []).join(" | ")).toBe("");
