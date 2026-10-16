@@ -54,9 +54,11 @@ class Handler(BaseHTTPRequestHandler):
             failure = getattr(self.server, "failure", None)
             if failure:
                 return self.reply(failure[0], {"detail": "private upstream error"}, failure[1])
+            if body["method"] == "read_context" and hasattr(self.server, "context_values"):
+                return self.reply(200, self.server.context_values[body["args"]["kind"]])
             if body["method"] == "read_context" and body["args"].get("kind") == "models":
                 return self.reply(200, {"models": [{"job_set_type": "nano_banana_flash", "display_name": "Nano Banana 2"}]})
-            if body["method"] in {"execute_generation_plan", "get_plan"} and hasattr(self.server, "plan_value"):
+            if body["method"] in {"prepare_generation_plan", "execute_generation_plan", "get_plan"} and hasattr(self.server, "plan_value"):
                 return self.reply(200, self.server.plan_value)
             if body["method"] in {"get_result", "get_generation", "show_results", "wait_results"}:
                 callback = getattr(self.server, "before_result", None)
@@ -143,6 +145,88 @@ class PersistentTests(unittest.TestCase):
                         self.assertFalse(attached.is_error)
         anyio.run(exercise)
         self.assertTrue(all(path.startswith("/api/mcp/v2/client/") for path, _ in self.http.calls))
+
+    def test_workflow_uses_ids_from_each_registered_hub_on_arbitrary_ports(self):
+        other = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        other.hub_id = "c" * 64
+        other.clients, other.calls, other.probes = {}, [], []
+        thread = threading.Thread(target=other.serve_forever, daemon=True)
+        thread.start()
+
+        async def exercise():
+            for hub in (self.http, other):
+                url = f"http://127.0.0.1:{hub.server_port}"
+                ids = {kind: str(uuid4()) for kind in ("workspace", "project", "reference", "generation", "plan")}
+                hub.context_values = {
+                    "workspaces": {"workspaces": [{"scope": "team", "id": ids["workspace"]}]},
+                    "projects": {"projects": [{"id": ids["project"], "name": "same name"}]},
+                    "models": {"models": [{"job_set_type": "mock", "display_name": "Mock"}]},
+                    "references": {"references": [{"id": ids["reference"]}]},
+                    "generations": {"generations": [{"id": ids["generation"]}], "next_cursor": None},
+                }
+                hub.plan_value = {"plan_id": ids["plan"], "items": [{}]}
+                item = {"generation_id": ids["generation"], "generation_status": "done",
+                        "media": {"mime": "image/jpeg", "data_base64": "/9j/eP/Z"}}
+                credential = {"secret": uuid4().hex + uuid4().hex, "hub_id": hub.hub_id,
+                              "url": url, "client_id": str(uuid4())}
+                setup = configure_client("other", {"python": sys.executable,
+                    "adapter": str(Path(__file__).with_name("server.py")), "url": url},
+                    credential, home=self.root, local_appdata=self.root)
+                hub.clients[credential["secret"]] = credential["client_id"]
+                config = json.loads(setup["config"])["mcpServers"]["mvhub"]
+                with anyio.fail_after(30):
+                    async with Client(StdioServerParameters(**config)) as client:
+                        async def call(name, args):
+                            result = await client.call_tool(name, args)
+                            self.assertFalse(result.is_error, result.content)
+                            return result
+
+                        self.assertEqual((await call("check_connection", {})).structured_content["hub_url"], url)
+                        await call("connect", {})
+                        spaces = (await call("read_context", {"kind": "workspaces"})).structured_content
+                        scope = {"workspace_scope": "team", "workspace_id": spaces["workspaces"][0]["id"]}
+                        found = {}
+                        for kind in ("projects", "models", "references", "generations"):
+                            found[kind] = (await call("read_context", {"kind": kind, **scope})).structured_content[kind][0]
+                        plan = await call("prepare_generation_plan", {"title": "fixture only", **scope, "items": [{
+                            "label": "one", "prompt": "fixture only", "model": found["models"]["job_set_type"],
+                            "params": {}, "project_id": found["projects"]["id"],
+                            "reference_ids": [found["references"]["id"]]}]})
+                        plan_args = {"plan_id": plan.structured_content["plan_id"]}
+                        await call("execute_generation_plan", plan_args)
+                        hub.result_value = {"items": [{**item, "media": None}], "all_terminal": True, "all_done": True}
+                        await call("wait_results", {**plan_args, "item_indexes": [0], "wait_seconds": 0})
+                        hub.result_value = {"items": [item], "all_terminal": True, "all_done": True}
+                        shown = await call("show_results", {**plan_args, "item_indexes": [0]})
+                        self.assertEqual(sum(block.type == "image" for block in shown.content), 1)
+                        hub.result_value = item
+                        result_args = {"generation_id": found["generations"]["id"], **scope}
+                        existing = await call("get_generation", result_args)
+                        self.assertEqual(existing.structured_content["generation_id"], ids["generation"])
+                        self.assertEqual(sum(block.type == "image" for block in existing.content), 1)
+                        before = len(hub.calls)
+                        hub.failure = (404, "not_found")
+                        missing = await client.call_tool("get_generation", result_args)
+                        self.assertTrue(missing.is_error)
+                        error = missing.structured_content["error"]
+                        self.assertEqual(error["next_action"], "read_context")
+                        self.assertIn("현재 연결된 허브", error["message"])
+                        self.assertEqual(len(hub.calls), before + 1)
+                actions = [body for path, body in hub.calls if path.endswith("/action")]
+                prepared = next(body["args"] for body in actions if body["method"] == "prepare_generation_plan")
+                self.assertEqual(prepared["workspace_id"], ids["workspace"])
+                self.assertEqual(prepared["items"][0]["project_id"], ids["project"])
+                self.assertEqual(prepared["items"][0]["reference_ids"], [ids["reference"]])
+                self.assertEqual([body["args"]["plan_id"] for body in actions if "plan_id" in body["args"]], [ids["plan"]] * 3)
+                self.assertEqual([body["args"]["generation_id"] for body in actions if "generation_id" in body["args"]], [ids["generation"]] * 2)
+                self.assertEqual(sum(body["method"] == "execute_generation_plan" for body in actions), 1)
+
+        try:
+            anyio.run(exercise)
+        finally:
+            other.shutdown()
+            other.server_close()
+            thread.join(3)
 
     def test_real_sdk_image_content_and_text_only_pending(self):
         config, _ = self.profile()
