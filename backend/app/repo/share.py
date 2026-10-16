@@ -625,17 +625,23 @@ def _merge_comments(
 def import_bundle_item(
     item: dict[str, Any], worker_id: str, shared_by: Optional[str] = None,
     final_actor: Optional[FinalMoveActor] = None,
+    author_uids: Optional[set[str]] = None,
 ) -> str:
     """번들 항목 1건을 병합. 사실은 upsert(uuid 멱등), 오버레이는 union/append.
     shared_by(제공자 worker id)가 오면 '받은 공유' 표식으로 share 행을 1개 기록한다 —
     received 필터(shared_by <> 'me')가 가져온 작업물을 사이드바에 띄울 수 있게.
     final_actor(공유 서버 수신 길만 — 로컬 반영 길은 넘기지 않는다): 이 번들이 최종본의 프로젝트를 바꾸려는데 양쪽 검수자가 아니면
     항목 전체를 되돌리고 'blocked'(Jay 결정 3A — URL 로 채택한 기존 행도 같다).
+    author_uids(공유 서버 인증 발행만 — 인증 계정의 uid·자기 acct: 별칭): 주어지면 작성자 판정을
+    id·job_id·URL 로 실제 고른 행에 하고 DEFAULT_WORKER 예외를 두지 않는다(F-A-01).
     반환: 'inserted'|'updated'|'unchanged'|'skipped'|'blocked'(작성자 불일치·최종본 이동 권한 없음으로 미반영)."""
     g = item.get("generation") or {}
     job_id = g.get("id")
     if not job_id:
         return "skipped"
+    creator_uid = g.get("creator_uid")
+    if author_uids is not None and creator_uid == DEFAULT_WORKER_ID:
+        creator_uid = None  # 옛 'me' 는 인증 입구에서만 빈 작성자처럼 발행자로 본다(서버의 'me' 행을 URL 로 줍지 않게)
     # 공유 import 도 로컬 생성과 같은 정규화 적용 — 안 하면 ep001\c0010·ep001//c0010/ 같은
     # 값이 그대로 저장돼 자동작업/카운트/필터가 갈라진다(생성은 이미 clean_folder_path 적용).
     folder_path = clean_folder_path(g.get("folder_path"))
@@ -651,7 +657,7 @@ def import_bundle_item(
             # ★생성자 없으면 공유자(shared_by)로 귀속 — 공유에선 '누가 만들었나'가 핵심이라,
             # creator_uid 가 비면(예: user_<id> 없는 영상) 받는 쪽 화면에 '나'로 오표시되지 않게
             # 발신자(공유한 사람)를 생성자로 넣는다. resolve_display_names 가 그 사람 이름으로 표시.
-            "creator_uid": g.get("creator_uid") or shared_by,
+            "creator_uid": creator_uid or shared_by,
             "workspace_scope": g.get("workspace_scope") or "unknown",
             "workspace_id": g.get("workspace_id"),
             "workspace_name": g.get("workspace_name"),
@@ -676,7 +682,9 @@ def import_bundle_item(
                 "workspace_name, task_activity_at FROM generation WHERE id=? OR job_id=? LIMIT 1",
                 (job_id, job_id),
             ).fetchone()
-            fact_blocked = bool(
+            # 인증 발행(author_uids)은 아래 _upsert_synced 가 실제로 고른 행(id·job_id·URL)으로 판정한다 —
+            # 여기서 id·job_id 만 보면 새 앵커 + 남의 결과 URL 번들이 URL 매칭으로 남의 행을 바꿨다(F-A-01).
+            fact_blocked = author_uids is None and bool(
                 existing
                 and existing["creator_uid"]
                 and shared_by
@@ -689,7 +697,8 @@ def import_bundle_item(
                 #  확정되는 무음 유실이 났다. 발신 측이 이 값으로 share 표식을 건너뛴다.
                 result = "blocked"
             else:
-                result = generation_sync._upsert_synced(conn, parsed, worker_id)
+                result = generation_sync._upsert_synced(conn, parsed, worker_id, author_uids=author_uids)
+                fact_blocked = result == "blocked"
             # 오버레이 병합 — display_prompt(레퍼런스 위치)·태그(union)·코멘트(append).
             # ★기존 행의 작성자가 아닌 재공유자는 오버레이도 건드리지 않는다.
             # fact 만 막고 아래를 허용하면 빈 auto_tags 번들로 원 작성자의 자동태그를 지우거나,
@@ -706,12 +715,17 @@ def import_bundle_item(
                 # 위치(project_id·folder_path) 권위 = 작성자의 로컬. 소유자(=발행자)가 올린 것이면
                 # 로컬 값으로 덮어쓴다(미분류=NULL 반영 포함) → 한쪽에서 옮기면 발행 때 팀에도 반영.
                 # 남의 것을 재공유(creator≠shared_by)면 기존 서버값 보존(COALESCE, 침범 금지).
-                creator = g.get("creator_uid")
+                creator = creator_uid
                 is_owner = (not creator) or (creator == shared_by)
                 current = dict(conn.execute(
                     "SELECT project_id, folder_path, workspace_scope, workspace_id, workspace_name, "
-                    "task_activity_at, is_final FROM generation WHERE id=?", (gid,),
+                    "task_activity_at, is_final, creator_uid FROM generation WHERE id=?", (gid,),
                 ).fetchone())
+                row_creator = current.pop("creator_uid")
+                if author_uids is not None and row_creator and row_creator not in author_uids:
+                    # 같은 앵커의 행이 둘일 때 오버레이가 고를 행도 발행자 것이어야 한다(위 판정과 같은 규칙)
+                    conn.execute("ROLLBACK")
+                    return "blocked"
                 is_final = bool(current.pop("is_final"))
                 incoming = dict(current)
                 if is_owner:
@@ -758,10 +772,12 @@ def import_bundle_item(
 def import_bundle_payload(
     bundle: dict[str, Any], worker_id: str = DEFAULT_WORKER_ID,
     final_actor: Optional[FinalMoveActor] = None,
+    author_uids: Optional[set[str]] = None,
 ) -> dict[str, Any]:
     """번들 1개(provider + generations)를 통째로 병합. 항목별 결과를 카운트로 집계.
     provider.name 이 있으면 그 uid 의 creator 이름을 보강해 받은 작업물의 작성자가 표시되게.
-    final_actor = 공유 서버가 받은 발행의 요청자(최종본 이동 판정 — import_bundle_item)."""
+    final_actor = 공유 서버가 받은 발행의 요청자(최종본 이동 판정 — import_bundle_item).
+    author_uids = 공유 서버 인증 발행자 신원(작성자 판정 — import_bundle_item)."""
     # 작성자 이름 맵 적용 — 각 작업의 creator_uid(user_<id>) 가 'user_xxx' 아닌 사람 이름으로 뜨게.
     # overwrite=False: 이미 이름이 있는 작성자(특히 내 신원·내가 라벨링한 팀원)는 보존 → 받은 이름이
     # 내 로컬 명명을 침범하지 않는다(get_my_uid 가 아직 None 이어도 안전. provider 블록은 이메일 키라
@@ -791,7 +807,7 @@ def import_bundle_payload(
         if not isinstance(it, dict):
             counts["skipped"] += 1
             continue
-        result = import_bundle_item(it, worker_id, shared_by, final_actor)
+        result = import_bundle_item(it, worker_id, shared_by, final_actor, author_uids)
         counts[result] += 1
         if result == "blocked":
             anchor = (it.get("generation") or {}).get("id")

@@ -43,6 +43,7 @@ def _upsert_synced(
     tombstoned: Optional[set[str]] = None,
     workspace: Optional[dict[str, Any]] = None,
     adopt_owner_uid: Optional[str] = None,
+    author_uids: Optional[set[str]] = None,
 ) -> str:
     """업서트 본체 — 주어진 커넥션에서 실행(트랜잭션 제어는 호출측). apply_synced_jobs 가
     한 트랜잭션에 묶어 호출하고, 단건 wrapper(upsert_synced_generation)는 자체 커넥션을 연다.
@@ -108,6 +109,12 @@ def _upsert_synced(
                 (result_url, result_url, incoming_creator_uid, scoped_owner_uid),
             ).fetchone()
             adopt = existing is not None
+
+        # 공유 서버 인증 발행(author_uids): id·job_id·URL 로 실제 고른 행이 발행자 것이 아니면 아무것도
+        # 쓰지 않는다(F-A-01). 번들의 creator_uid 는 주장일 뿐이라 URL 매칭으로 남의 행을 줍는다.
+        if author_uids is not None and existing and existing["creator_uid"] \
+                and existing["creator_uid"] not in author_uids:
+            return "blocked"
 
         result = "inserted"
         invalid_input_result = False
