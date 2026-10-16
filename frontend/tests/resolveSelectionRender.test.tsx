@@ -493,6 +493,7 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
       stats: { has_unread: false, failed_count: 0, unread_count: 0 }, loading, loadingMore: false,
       hasMore: false, loadError: null, archivedCount: 0, unassignedCount: 0, loadMore: noop, beginComposeList: beginList,
       reload: noop, reloadIfStale: noop, staleList, listBehind, listRevision,
+      autoRefreshPaused: staleList || (listBehind && loading), // 진짜 훅과 같은 식(lib/useGenerationLibraryData)
     };
     },
   }));
@@ -1091,6 +1092,13 @@ it("App: 폴더 창을 닫은 직후 옛 첫 쪽을 보이는 동안에는 고�
   expect(autoRefreshSnapshot!.paused).toBe(false);
   act(() => gridSnapshot!.onSelectedChange(new Set(["target"])));
   expect(gridSnapshot!.selectedIds).toEqual(new Set(["target"]));
+
+  // 81회차 F2-2: 바뀐 조회의 첫 쪽을 받는 동안에도 쉰다 — App 이 목록 훅의 autoRefreshPaused 를 넘긴다(staleList 만 넘기면 여기서 걸린다)
+  act(() => { setListBehind(true); setLoadingList(true); });
+  expect(autoRefreshSnapshot!.paused).toBe(true);
+  act(() => setLoadingList(false)); // 받기가 끝나면(실패 포함) 다시 돈다
+  expect(autoRefreshSnapshot!.paused).toBe(false);
+  act(() => setListBehind(false));
 });
 
 // 15회차(조작 규칙 42): 선택은 id 집합이라, 목록에서 빠진 카드(다른 폴더로 담음·다른 창의 삭제·자동 새로고침)가 선택에 남았다 —

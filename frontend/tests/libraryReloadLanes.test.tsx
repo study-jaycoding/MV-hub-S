@@ -11,6 +11,7 @@ import { folderPeekQuery } from "../src/lib/appGenerationQuery";
 import { LIBRARY_LIST_TIMEOUT_MESSAGE, LIBRARY_LIST_TIMEOUT_MS } from "../src/lib/libraryRequestTimeout";
 import { createLibraryMutationOrigin, decideLibrarySync, markMutationDomainsSucceeded } from "../src/lib/librarySync";
 import type { GenerationLocation } from "../src/lib/resolveLibraryLocation";
+import { useGenerationAutoRefresh } from "../src/lib/useGenerationAutoRefresh";
 import { useGenerationLibraryData } from "../src/lib/useGenerationLibraryData";
 import type { Filters, GenQuery, Generation } from "../src/types";
 
@@ -23,6 +24,7 @@ type Props = {
   composeListEnabled?: boolean; // 캔버스의 '폴더 보기' 창이 열려 있다
   auto?: boolean; // false = 조회를 시험이 직접 부른다
   trash?: boolean; // 휴지통 보기
+  poll?: boolean; // App 과 같은 자동 조회(useGenerationAutoRefresh)를 붙인다
 };
 const MAIN: GenQuery = { tab: "my", search: "cat" };
 const LOCATED: GenQuery = { tab: "my", project_id: "project-b", folder_path: "e001/c0010" };
@@ -40,12 +42,13 @@ let host: HTMLDivElement;
 let data: ReturnType<typeof useGenerationLibraryData>;
 let clock: ReturnType<typeof vi.spyOn> | null = null;
 const flash = vi.fn();
-function Harness({ query, authReady = true, projectWorkspaceId, composeListEnabled, auto = true, trash = false }: Props) {
+function Harness({ query, authReady = true, projectWorkspaceId, composeListEnabled, auto = true, trash = false, poll = false }: Props) {
   const filters: Filters = { tab: query.tab, ...(trash ? { deleted_only: true } : {}) };
   data = useGenerationLibraryData({ authReady, filters, genQuery: query, flash, projectWorkspaceId, composeListEnabled });
   const key = JSON.stringify(query);
   // App 과 같은 배선 — 조회 조건·탭·인증이 바뀌면 신선도 확인을 거쳐 다시 받는다.
   useEffect(() => { if (auto) void data.reloadIfStale(); }, [auto, key, authReady, data.reloadIfStale]);
+  useGenerationAutoRefresh({ generations: data.gens, tab: poll ? query.tab : "compose", reload: data.reload, paused: data.autoRefreshPaused }); // compose = 주기 없음
   return null;
 }
 const show = (props: Props) => act(() => root.render(<Harness {...props} />));
@@ -808,4 +811,41 @@ it("위치 주입 뒤 첫 정상 목록을 적용할 때 신호가 한 번 오�
   await act(async () => { await data.reload(true); }); // 실패 뒤의 성공 — 기다림은 이미 닫혔다
   await settle();
   expect(data.locatedSettle).toBe(before + 1);
+});
+
+// 81회차 F2-2 — 직전 화면의 진행 중 카드로 3초 자동 조회가 남아 있으면, 자리를 옮길 때마다 받던 첫 쪽을 버리고 같은 목록을 한 번 더 받았다.
+it("바뀐 조회의 첫 쪽을 받는 동안 자동 조회는 쉰다 — 첫 응답을 그대로 쓰고, 실제 변경 통보의 다시 받기는 그대로 둔다", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const running = { ...gen("r1"), status: "running" } as Generation;
+    vi.mocked(api.listGenerations).mockImplementation(async (query) => (query.project_id === "project-b" ? [gen("b1")] : [running]));
+    await mount({ query: MAIN, poll: true });
+    expect(ids()).toEqual(["r1"]);
+    const slowB = hold<Generation[]>(api.listGenerations);
+    const before = calls().list;
+    show({ query: LOCATED, poll: true }); // 자리를 옮겼다 — 첫 쪽은 아직(직전 화면의 진행 중 카드로 3초 조회가 남아 있다)
+    await settle();
+    act(() => { vi.advanceTimersByTime(3_000); }); // 3초 자동 조회 차례 — 쉰다(끼어들면 받던 첫 쪽을 버리고 한 번 더 받는다)
+    await act(async () => { slowB.resolve([gen("b1")]); });
+    await settle();
+    expect([ids(), calls().list, data.autoRefreshPaused]).toEqual([["b1"], before + 1, false]);
+
+    // 대조: 첫 쪽을 기다리는 중의 실제 변경 통보(직접 다시 받기)는 그대로 받던 쪽을 무효화하고 다시 받는다
+    const slowMain = hold<Generation[]>(api.listGenerations);
+    show({ query: MAIN, poll: true });
+    await settle();
+    const before2 = calls().list;
+    act(() => { void data.reload(true, true); });
+    await act(async () => { slowMain.resolve([running]); });
+    await settle();
+    expect(calls().list).toBe(before2 + 1);
+
+    // 실패하면 쉬지 않는다 — 다음 주기에 다시 받는다
+    vi.mocked(api.listGenerations).mockRejectedValueOnce(new Error("500: boom"));
+    show({ query: LOCATED, poll: true });
+    await settle();
+    expect([data.loadError, data.autoRefreshPaused]).toEqual(["500: boom", false]);
+  } finally {
+    vi.useRealTimers();
+  }
 });
