@@ -118,6 +118,39 @@ def test_cp949_process_list_never_counts_as_server_stopped(monkeypatch, tmp_path
         sm.ensure_server_stopped(8010)
 
 
+_CONSOLE_CP_CHILD = (
+    "import ctypes, importlib.util, sys; k = ctypes.windll.kernel32; k.SetConsoleOutputCP(949); "
+    "spec = importlib.util.spec_from_file_location('server_watchdog', sys.argv[1]); "
+    "m = importlib.util.module_from_spec(spec); sys.modules['server_watchdog'] = m; spec.loader.exec_module(m); "
+    "rows, ok = m._powershell_json(\"Get-ChildItem -LiteralPath '\" + sys.argv[2] + \"' -Filter 'mvhub-none-*'\"); "
+    "print(ok, k.GetConsoleOutputCP())"
+)
+
+
+def test_powershell_query_leaves_the_parent_console_code_page_alone(tmp_path):
+    """[Console]::OutputEncoding 은 그 콘솔의 코드 페이지를 바꾼 채 남긴다(실측) — 워치독·서버의 PowerShell 은 자기 숨은
+    콘솔에서 돌아 부모 콘솔(예약 작업·서버 창)을 건드리지 않아야 한다(Codex 리뷰 권고)."""
+    out = _REAL_RUN(
+        [sys.executable, "-c", _CONSOLE_CP_CHILD, str(TOOLS / "server_watchdog.py"), str(tmp_path)],
+        capture_output=True, text=True, timeout=60, creationflags=_CREATE_NO_WINDOW,
+    )
+    assert out.stdout.split() == ["True", "949"], out.stdout + out.stderr
+
+
+def test_backup_task_query_runs_in_its_own_console(monkeypatch):
+    from app.routers import backup_replica as route
+
+    seen: list = []
+
+    def run(args, **kwargs):
+        seen.append(kwargs.get("creationflags", 0))
+        return subprocess.CompletedProcess(args, 0, b'{"exists":false}', b"")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert route._task_info()["exists"] is False
+    assert seen and seen[0] & _CREATE_NO_WINDOW
+
+
 # ── R-2 backend/app/routers/backup_replica.py `_task_info` ────────────────────────────────────
 
 

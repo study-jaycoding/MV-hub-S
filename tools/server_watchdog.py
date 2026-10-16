@@ -340,6 +340,8 @@ def _powershell_json(script: str) -> tuple[list[object], bool]:
         out = subprocess.run(
             ["powershell", "-NoProfile", "-Command", wrapped],
             capture_output=True, timeout=30,
+            # 자기 숨은 콘솔에서 — OutputEncoding 변경이 부모 콘솔의 코드 페이지에 남지 않게
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if out.returncode != 0:
             return [], False

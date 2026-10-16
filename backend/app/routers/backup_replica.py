@@ -133,6 +133,8 @@ def _task_info() -> Optional[dict[str, Any]]:
         out = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True, timeout=20,
+            # 자기 숨은 콘솔에서 — OutputEncoding 변경이 서버 콘솔의 코드 페이지에 남지 않게
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if out.returncode != 0:
             return None
