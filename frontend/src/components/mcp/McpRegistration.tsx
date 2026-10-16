@@ -110,6 +110,8 @@ export function McpRegistration({ authReady, authKey, workspace }: { authReady: 
     </div>
     <SettingsDescription summary="브라우저 창을 닫아도 생성됩니다. 이 PC의 MV Hub 서버와 작업자는 켜져 있어야 합니다.">
       <ul className="mcp-reg-notes">
+        {/* 요약은 좁은 창에서 말줄임이 된다 — 켜 둘 것의 조건은 펼친 안내에도 둔다(Codex 10-16 P2) */}
+        <li>브라우저 창은 닫아도 되지만, 이 PC의 MV Hub 서버와 작업자는 켜져 있어야 생성됩니다.</li>
         <li>사용할 워크스페이스·폴더·장면은 LLM에 말해 주세요. 앱에서 고른 공간과 관계없이 요청한 곳에 생성합니다.</li>
         <li>생성물과 기록은 MV Hub에 저장하고, 결과 미리보기는 지원하는 LLM 대화창에서도 봅니다. 캔버스에는 요청한 경우에만 추가합니다.</li>
         <li>처음 등록한 뒤에는 LLM 프로그램의 MCP 다시 불러오기·재시작이 필요할 수 있습니다. Claude Desktop 등 다른 로컬 앱은 ‘다른 MCP 프로그램 설정’을 쓰세요.</li>
