@@ -22,6 +22,7 @@ type Props = {
   query: GenQuery; authReady?: boolean; projectWorkspaceId?: string;
   composeListEnabled?: boolean; // 캔버스의 '폴더 보기' 창이 열려 있다
   auto?: boolean; // false = 조회를 시험이 직접 부른다
+  trash?: boolean; // 휴지통 보기
 };
 const MAIN: GenQuery = { tab: "my", search: "cat" };
 const LOCATED: GenQuery = { tab: "my", project_id: "project-b", folder_path: "e001/c0010" };
@@ -39,8 +40,8 @@ let host: HTMLDivElement;
 let data: ReturnType<typeof useGenerationLibraryData>;
 let clock: ReturnType<typeof vi.spyOn> | null = null;
 const flash = vi.fn();
-function Harness({ query, authReady = true, projectWorkspaceId, composeListEnabled, auto = true }: Props) {
-  const filters: Filters = { tab: query.tab };
+function Harness({ query, authReady = true, projectWorkspaceId, composeListEnabled, auto = true, trash = false }: Props) {
+  const filters: Filters = { tab: query.tab, ...(trash ? { deleted_only: true } : {}) };
   data = useGenerationLibraryData({ authReady, filters, genQuery: query, flash, projectWorkspaceId, composeListEnabled });
   const key = JSON.stringify(query);
   // App 과 같은 배선 — 조회 조건·탭·인증이 바뀌면 신선도 확인을 거쳐 다시 받는다.
@@ -738,4 +739,33 @@ it.each([["500", false], ["30초 무응답", true]])("다른 조회로 옮긴 �
   expect(data.loadError).toBe(hang ? LIBRARY_LIST_TIMEOUT_MESSAGE : "500: boom");
   await act(async () => { await data.reload(); }); // [다시 시도]
   expect([ids(), data.loadError]).toEqual([["a1"], null]);
+});
+
+// 81회차 F1 Codex 리뷰: '다른 조회인가'를 탭 캐시로 가리면, 캐시를 지운 구간(휴지통 추가 조회 실패·위치 주입)에서는 못 가려 앞 목록이 남았다.
+//  보이는 목록이 어느 조회의 것인지는 캐시와 따로 든다.
+it("휴지통(공간 필터): 추가 조회 실패로 캐시가 지워진 뒤 검색을 바꿔 그 조회도 실패하면 앞 목록을 걷는다", async () => {
+  const TRASH: GenQuery = { tab: "my", workspace_scope: "personal" };
+  const trashed = (id: string) => ({ ...gen(id), workspace_scope: "personal" }) as unknown as Generation;
+  vi.mocked(api.listTrash).mockResolvedValueOnce(Array.from({ length: 200 }, (_, index) => trashed(`t${index}`)));
+  await mount({ query: TRASH, trash: true });
+  expect([ids().length, data.hasMore]).toEqual([200, true]);
+  vi.mocked(api.listTrash).mockRejectedValueOnce(new Error("500: boom"));
+  await act(async () => { await data.loadMore(); }); // 추가 조회 실패 — 이 탭의 캐시를 지운다(목록은 같은 조회라 둔다)
+  expect([ids().length, data.hasMore, !!data.loadError]).toEqual([200, false, true]);
+  vi.mocked(api.listTrash).mockRejectedValueOnce(new Error("500: boom"));
+  show({ query: { ...TRASH, search: "dog" }, trash: true });
+  await settle();
+  expect([ids(), data.loadError]).toEqual([[], "500: boom"]);
+});
+
+it("위치 주입 뒤: 같은 자리를 다시 받다 실패하면 주입한 카드까지 둔다 — 다른 조회로 옮긴 뒤 실패하면 걷는다", async () => {
+  await mount({ query: LOCATED });
+  vi.mocked(api.listGenerations).mockRejectedValueOnce(new Error("500: boom"));
+  act(() => { data.revealLocated("my", locationOf(gen("outside-page"))); }); // 목록 밖 대상 — 캐시를 지우고 같은 자리를 다시 받는다(실패)
+  await settle();
+  expect([[...ids()].sort(), data.loadError]).toEqual([["m1", "m2", "outside-page"], "500: boom"]);
+  vi.mocked(api.listGenerations).mockRejectedValueOnce(new Error("500: boom"));
+  show({ query: MAIN });
+  await settle();
+  expect([ids(), data.loadError]).toEqual([[], "500: boom"]);
 });

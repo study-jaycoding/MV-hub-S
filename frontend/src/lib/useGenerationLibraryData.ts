@@ -29,6 +29,7 @@ interface UseGenerationLibraryDataArgs {
 
 export const GENERATION_TAB_CACHE_FRESH_MS = 15_000;
 const NO_GENS: Generation[] = []; // 탭 전환 렌더의 빈 목록 — 렌더마다 새 배열이면 쓰는 쪽의 effect 가 매번 다시 돈다
+const LOCATED_VIEW = "located"; // shownSigRef 의 '위치 주입 목록' 표시 — sig(JSON 배열 글)와 겹치지 않는다
 
 type GenerationTabCacheEntry = {
   gens: Generation[];
@@ -132,6 +133,10 @@ export function useGenerationLibraryData({
   const reloadSeqRef = useRef(0);
   const lastStatsAtRef = useRef(0); // stats(전역 집계) 마지막 조회 시각 — light 폴링 스로틀용
   const lastLoadedTabRef = useRef<string | null>(null); // 현재 gens 가 어느 탭 데이터인지
+  // 보이는 목록이 어느 조회의 것인가(sig) — 실패가 확정될 때 다른 조회의 목록이 남았는지 가린다(81회차 F1). 탭 캐시로는 못 가린다:
+  //  휴지통 추가 조회 실패·위치 주입·폴더 창에서 지워진다(Codex 리뷰). 위치 주입 목록은 LOCATED_VIEW — 그 자리를 보는 조회의 것으로 친다.
+  //  null = 빈 목록 또는 사본(사본은 staleList 가 맡는다). 목록을 갈아 끼우는 곳마다 같이 적는다.
+  const shownSigRef = useRef<string | null>(null);
   const loadErrorRef = useRef(loadError);
   loadErrorRef.current = loadError;
   // ── 목록 탭의 '폴더 보기' 창을 닫을 때 먼저 보일 '본 목록 첫 쪽 사본'(Jay 2026-10-07: 닫은 직후의 빈 화면을 없앤다) ──
@@ -234,6 +239,7 @@ export function useGenerationLibraryData({
     const next = reuse?.gens ?? [];
     gensRef.current = next;
     setGens(next);
+    shownSigRef.current = reuse ? sig : null;
     pageCursorRef.current = reuse?.cursor ?? null;
     trashOffsetRef.current = reuse?.trashOffset ?? 0;
     setHasMore(reuse?.hasMore ?? false);
@@ -266,6 +272,7 @@ export function useGenerationLibraryData({
     resetAuthRef.current = false;
     gensRef.current = [];
     setGens([]);
+    shownSigRef.current = null;
     setProjects([]);
     setFacets(EMPTY_FACETS);
     setHasMore(false);
@@ -292,12 +299,14 @@ export function useGenerationLibraryData({
     const cached = tabCacheRef.current[tab];
     if (cached && cached.sig === sig) {
       setGens(cached.gens);
+      shownSigRef.current = sig;
       pageCursorRef.current = cached.cursor ?? null;
       trashOffsetRef.current = cached.trashOffset ?? 0;
       setHasMore(cached.hasMore);
       setLoading(false);
     } else {
       setGens([]);
+      shownSigRef.current = null;
       pageCursorRef.current = null;
       trashOffsetRef.current = 0;
       setHasMore(false);
@@ -357,6 +366,7 @@ export function useGenerationLibraryData({
       setHasMore(false);
     }
     setGens((previous) => mergeLocatedGenerations(sameView ? previous : [], keepPainted ? keepPainted(items) : items));
+    shownSigRef.current = LOCATED_VIEW;
     setLoadError(null);
     if (sameView && !reusePage) setLocatedReload((value) => value + 1);
   }, [loadError]);
@@ -495,6 +505,7 @@ export function useGenerationLibraryData({
         }
         g = keepPainted(g); // 화면·탭 캐시 둘 다 같은 값을 쓴다
         setGens((prev) => reconcileArrayState(prev, g));
+        shownSigRef.current = sig;
         setHasMore(page.length >= GEN_PAGE);
         loadErrorRef.current = null; // 다시 그리기 전에 끝나는 다음 실패도 '새 실패'로 알린다(Codex 검토)
         setLoadError(null);
@@ -523,12 +534,14 @@ export function useGenerationLibraryData({
           //  다음 조용한 실패가 이것을 보게(Codex 검토).
           loadErrorRef.current = String(e).replace(/^Error:\s*/, "");
           setLoadError(loadErrorRef.current);
-          // 사본·다른 조회의 목록(탭 캐시의 sig = 마지막으로 적용된 조회)을 보이던 중이면 치운다 — 낡은 목록을 지금 조회의 것처럼 남기지
-          //  않고 실패·재시도를 보인다(81회차 F1). 같은 조회를 다시 받다 실패한 것이면 보던 목록을 그대로 둔다.
-          const shown = tabCacheRef.current[tab];
-          const otherQuery = !!shown && shown.sig !== sig;
-          if (staleListRef.current || otherQuery) {
-            if (otherQuery) delete tabCacheRef.current[tab]; // 비운 목록이 그 조회의 캐시로 적히지 않게
+          // 사본·다른 조회의 목록(shownSigRef)을 보이던 중이면 치운다 — 낡은 목록을 지금 조회의 것처럼 남기지 않고 실패·재시도를
+          //  보인다(81회차 F1). 같은 조회를 다시 받다 실패한 것이면(그 자리의 위치 주입 포함) 보던 목록을 그대로 둔다.
+          const shown = shownSigRef.current;
+          const sameList = shown === sig || (shown === LOCATED_VIEW && !!located && located === locatedRef.current &&
+            isLocatedQuery(query, located.tab, located.location));
+          if (staleListRef.current || !sameList) {
+            delete tabCacheRef.current[tab]; // 비운 목록이 이 탭의 캐시로 적히지 않게(돌아오면 첫 쪽부터 다시 받는다)
+            shownSigRef.current = null;
             pageCursorRef.current = null; // 앞 조회의 커서로 다음 쪽을 받지 않게
             trashOffsetRef.current = 0;
             setHasMore(false);
@@ -682,6 +695,7 @@ export function useGenerationLibraryData({
     trashOffsetRef.current = 0;
     lastLoadedTabRef.current = "compose";
     setGens(restored ?? []);
+    shownSigRef.current = null;
     setHasMore(false); // 사본을 보이는 동안에도 — 옛 커서로 다음 쪽을 받지 않는다
     setStaleList(!!restored);
     // 비운 그 자리에서 '불러오는 중'으로 — 조회 effect 가 돌기 전의 한 번에 "항목이 없습니다"가 비치지 않게.
