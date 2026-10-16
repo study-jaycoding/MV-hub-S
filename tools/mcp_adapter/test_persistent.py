@@ -54,9 +54,11 @@ class Handler(BaseHTTPRequestHandler):
             failure = getattr(self.server, "failure", None)
             if failure:
                 return self.reply(failure[0], {"detail": "private upstream error"}, failure[1])
+            if body["method"] == "read_context" and hasattr(self.server, "context_values"):
+                return self.reply(200, self.server.context_values[body["args"]["kind"]])
             if body["method"] == "read_context" and body["args"].get("kind") == "models":
                 return self.reply(200, {"models": [{"job_set_type": "nano_banana_flash", "display_name": "Nano Banana 2"}]})
-            if body["method"] in {"execute_generation_plan", "get_plan"} and hasattr(self.server, "plan_value"):
+            if body["method"] in {"prepare_generation_plan", "execute_generation_plan", "get_plan"} and hasattr(self.server, "plan_value"):
                 return self.reply(200, self.server.plan_value)
             if body["method"] in {"get_result", "get_generation", "show_results", "wait_results"}:
                 callback = getattr(self.server, "before_result", None)
@@ -87,11 +89,13 @@ class PersistentTests(unittest.TestCase):
         self.thread.join(3)
         self.temp.cleanup()
 
-    def profile(self):
+    def profile(self, display_mode="native"):
         credential = {"secret": uuid4().hex + uuid4().hex, "hub_id": self.http.hub_id, "url": self.url, "client_id": str(uuid4())}
         result = configure_client("other", {"python": sys.executable, "adapter": str(Path(__file__).with_name("server.py")), "url": self.url}, credential, home=self.root, local_appdata=self.root)
         self.http.clients[credential["secret"]] = credential["client_id"]
         config = json.loads(result["config"])["mcpServers"]["mvhub"]
+        if display_mode != "native":
+            config["args"] += ["--display-mode", display_mode]
         return config, credential
 
     def test_profile_survives_new_adapter_and_revocation_is_immediate(self):
@@ -164,6 +168,88 @@ class PersistentTests(unittest.TestCase):
         anyio.run(exercise)
         self.assertTrue(all(path.startswith("/api/mcp/v2/client/") for path, _ in self.http.calls))
 
+    def test_workflow_uses_ids_from_each_registered_hub_on_arbitrary_ports(self):
+        other = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        other.hub_id = "c" * 64
+        other.clients, other.calls, other.probes = {}, [], []
+        thread = threading.Thread(target=other.serve_forever, daemon=True)
+        thread.start()
+
+        async def exercise():
+            for hub in (self.http, other):
+                url = f"http://127.0.0.1:{hub.server_port}"
+                ids = {kind: str(uuid4()) for kind in ("workspace", "project", "reference", "generation", "plan")}
+                hub.context_values = {
+                    "workspaces": {"workspaces": [{"scope": "team", "id": ids["workspace"]}]},
+                    "projects": {"projects": [{"id": ids["project"], "name": "same name"}]},
+                    "models": {"models": [{"job_set_type": "mock", "display_name": "Mock"}]},
+                    "references": {"references": [{"id": ids["reference"]}]},
+                    "generations": {"generations": [{"id": ids["generation"]}], "next_cursor": None},
+                }
+                hub.plan_value = {"plan_id": ids["plan"], "items": [{}]}
+                item = {"generation_id": ids["generation"], "generation_status": "done",
+                        "media": {"mime": "image/jpeg", "data_base64": "/9j/eP/Z"}}
+                credential = {"secret": uuid4().hex + uuid4().hex, "hub_id": hub.hub_id,
+                              "url": url, "client_id": str(uuid4())}
+                setup = configure_client("other", {"python": sys.executable,
+                    "adapter": str(Path(__file__).with_name("server.py")), "url": url},
+                    credential, home=self.root, local_appdata=self.root)
+                hub.clients[credential["secret"]] = credential["client_id"]
+                config = json.loads(setup["config"])["mcpServers"]["mvhub"]
+                with anyio.fail_after(30):
+                    async with Client(StdioServerParameters(**config)) as client:
+                        async def call(name, args):
+                            result = await client.call_tool(name, args)
+                            self.assertFalse(result.is_error, result.content)
+                            return result
+
+                        self.assertEqual((await call("check_connection", {})).structured_content["hub_url"], url)
+                        await call("connect", {})
+                        spaces = (await call("read_context", {"kind": "workspaces"})).structured_content
+                        scope = {"workspace_scope": "team", "workspace_id": spaces["workspaces"][0]["id"]}
+                        found = {}
+                        for kind in ("projects", "models", "references", "generations"):
+                            found[kind] = (await call("read_context", {"kind": kind, **scope})).structured_content[kind][0]
+                        plan = await call("prepare_generation_plan", {"title": "fixture only", **scope, "items": [{
+                            "label": "one", "prompt": "fixture only", "model": found["models"]["job_set_type"],
+                            "params": {}, "project_id": found["projects"]["id"],
+                            "reference_ids": [found["references"]["id"]]}]})
+                        plan_args = {"plan_id": plan.structured_content["plan_id"]}
+                        await call("execute_generation_plan", plan_args)
+                        hub.result_value = {"items": [{**item, "media": None}], "all_terminal": True, "all_done": True}
+                        await call("wait_results", {**plan_args, "item_indexes": [0], "wait_seconds": 0})
+                        hub.result_value = {"items": [item], "all_terminal": True, "all_done": True}
+                        shown = await call("show_results", {**plan_args, "item_indexes": [0]})
+                        self.assertEqual(sum(block.type == "image" for block in shown.content), 1)
+                        hub.result_value = item
+                        result_args = {"generation_id": found["generations"]["id"], **scope}
+                        existing = await call("get_generation", result_args)
+                        self.assertEqual(existing.structured_content["generation_id"], ids["generation"])
+                        self.assertEqual(sum(block.type == "image" for block in existing.content), 1)
+                        before = len(hub.calls)
+                        hub.failure = (404, "not_found")
+                        missing = await client.call_tool("get_generation", result_args)
+                        self.assertTrue(missing.is_error)
+                        error = missing.structured_content["error"]
+                        self.assertEqual(error["next_action"], "read_context")
+                        self.assertIn("현재 연결된 허브", error["message"])
+                        self.assertEqual(len(hub.calls), before + 1)
+                actions = [body for path, body in hub.calls if path.endswith("/action")]
+                prepared = next(body["args"] for body in actions if body["method"] == "prepare_generation_plan")
+                self.assertEqual(prepared["workspace_id"], ids["workspace"])
+                self.assertEqual(prepared["items"][0]["project_id"], ids["project"])
+                self.assertEqual(prepared["items"][0]["reference_ids"], [ids["reference"]])
+                self.assertEqual([body["args"]["plan_id"] for body in actions if "plan_id" in body["args"]], [ids["plan"]] * 3)
+                self.assertEqual([body["args"]["generation_id"] for body in actions if "generation_id" in body["args"]], [ids["generation"]] * 2)
+                self.assertEqual(sum(body["method"] == "execute_generation_plan" for body in actions), 1)
+
+        try:
+            anyio.run(exercise)
+        finally:
+            other.shutdown()
+            other.server_close()
+            thread.join(3)
+
     def test_real_sdk_image_content_and_text_only_pending(self):
         config, _ = self.profile()
         # Transport fixture only; real JPEG decoding is covered by backend/integration tests.
@@ -223,8 +309,8 @@ class PersistentTests(unittest.TestCase):
         with self.assertRaises(ToolError):
             broker.action("get_result", {})
 
-    def test_display_file_roundtrip_and_failures_keep_image(self):
-        config, _ = self.profile()
+    def test_display_file_roundtrip_and_failures_never_duplicate_image(self):
+        config, _ = self.profile("conversation")
         output = self.root / "display"
         output.mkdir()
         encoded = base64.b64encode(b"\xff\xd8\xfftransport-fixture\xff\xd9").decode("ascii")
@@ -256,7 +342,8 @@ class PersistentTests(unittest.TestCase):
                         self.assertEqual(path.parent, output.resolve())
                         html = path.read_text(encoding="utf-8")
                         self.assertEqual(re.search(r"base64,([A-Za-z0-9+/=]+)", html).group(1), encoded)
-                        self.assertEqual(result.content[1].data, encoded)
+                        self.assertFalse(any(c.type == "image" for c in result.content))
+                        self.assertEqual(result.structured_content["delivery"]["mode"], "conversation")
                         self.assertEqual(html.count("<img "), 1)
                         self.assertNotIn("<script", html)
                         self.assertNotIn("http", html)
@@ -274,12 +361,14 @@ class PersistentTests(unittest.TestCase):
                     self.assertFalse(failed.is_error)
                     self.assertEqual(failed.structured_content["generation_status"], "done")
                     self.assertEqual(failed.meta["display"]["status"], "error")
-                    self.assertEqual(failed.content[1].data, encoded)
+                    self.assertFalse(any(c.type == "image" for c in failed.content))
+                    self.assertFalse(failed.structured_content["delivery"]["card_in_display"])
+                    self.assertTrue(failed.structured_content["delivery"]["repeat_card_text"])
         anyio.run(exercise)
         self.assertTrue(all(body["method"] == "get_result" for _, body in self.http.calls))
 
     def test_invalid_display_path_rejected_before_hub_request(self):
-        config, _ = self.profile()
+        config, _ = self.profile("conversation")
         regular = self.root / "regular.txt"
         regular.write_text("keep")
         async def exercise():
@@ -319,7 +408,7 @@ class PersistentTests(unittest.TestCase):
             with self.assertRaises(ToolError):
                 validate_display_directory(str(self.root))
 
-    def test_common_card_distinguishes_scope_and_escapes_html(self):
+    def test_common_card_distinguishes_scope_and_stays_outside_html(self):
         item = {"model": "test-model", "params": {"aspect_ratio": "16:9", "resolution": "1k", "prompt": "DO NOT DISPLAY"},
                 "folder_path": "<script>alert(1)</script>", "project_id": "project"}
         metadata = {"presentation": {"version": 1, "scope": "plan", "message": "전체 계획 · 생성 중 · 완료 1/3"},
@@ -335,11 +424,11 @@ class PersistentTests(unittest.TestCase):
         self.assertNotIn("test-model", selected["card_text"])
         self.assertIn("저장 위치:", selected["card_text"])
         self.assertNotIn("DO NOT DISPLAY", selected["card_text"])
-        saved = write_result_display("safe-base64", self.root, selected["card_text"])
+        saved = write_result_display("safe-base64", self.root)
         html = Path(saved["path"]).read_text(encoding="utf-8")
         self.assertNotIn("<script>", html)
-        self.assertIn("&lt;script&gt;", html)
-        self.assertIn("&lt;team&gt;", html)
+        self.assertNotIn(selected["card_text"], html)
+        self.assertNotIn("<p", html)
         self.assertEqual(saved["rendered"], "unverified")
 
     def test_friendly_card_preserves_partial_failures_and_ids_only_in_data(self):
@@ -367,7 +456,7 @@ class PersistentTests(unittest.TestCase):
         async def exercise():
             async with Client(StdioServerParameters(**config)) as client:
                 listing = {t.name: t for t in (await client.list_tools()).tools}
-                self.assertEqual(listing["execute_generation_plan"].meta["ui"]["resourceUri"], RESULT_UI_URI)
+                self.assertNotIn("ui", listing["execute_generation_plan"].meta or {})
                 reader = listing["read_display_results"]
                 self.assertTrue(reader.annotations.read_only_hint)
                 self.assertEqual(reader.meta["ui"]["visibility"], ["app"])
@@ -382,12 +471,12 @@ class PersistentTests(unittest.TestCase):
                 self.assertNotIn("display", forbidden.structured_content["items"][0])
                 self.assertEqual(set(self.root.rglob("*")), before)
                 executed = await client.call_tool("execute_generation_plan", {"plan_id": plan})
-                self.assertEqual(executed.structured_content["live_plan_id"], plan)
+                self.assertNotIn("live_plan_id", executed.structured_content)
         anyio.run(exercise)
         self.assertEqual([b["method"] for _, b in self.http.calls], ["show_results", "read_context", "show_results", "execute_generation_plan"])
 
-    def test_two_clients_get_identical_card_and_native_image(self):
-        configs = [self.profile()[0], self.profile()[0]]
+    def test_two_display_modes_get_identical_card_and_exactly_one_image_path(self):
+        configs = [self.profile()[0], self.profile("conversation")[0]]
         self.http.result_value = {
             "generation_status": "done", "model": "test-model", "params": {"resolution": "1k"},
             "workspace": {"scope": "personal"}, "presentation": {"version": 1, "scope": "item", "stage": "completed", "message": "생성 완료 · 완료 1/1"},
@@ -396,14 +485,27 @@ class PersistentTests(unittest.TestCase):
         async def exercise():
             cards = []
             with anyio.fail_after(30):
-                for cfg in configs:
+                for index, cfg in enumerate(configs):
                     async with Client(StdioServerParameters(**cfg)) as client:
-                        result = await client.call_tool("get_result", {"plan_id": "p", "display_directory": str(self.root)})
+                        args = {"plan_id": "p"}
+                        if index:
+                            args["display_directory"] = str(self.root)
+                        result = await client.call_tool("get_result", args)
                         self.assertFalse(result.is_error)
                         cards.append(result.structured_content["card_text"])
-                        self.assertTrue(any(c.type == "image" for c in result.content))
-                        self.assertEqual(result.content[-1].text, cards[-1])
-                        self.assertIn(cards[-1], Path(result.meta["display"]["path"]).read_text(encoding="utf-8"))
+                        self.assertEqual(any(c.type == "image" for c in result.content), index == 0)
+                        if index:
+                            self.assertEqual(len(result.content), 1)
+                            fragment = Path(result.meta["display"]["path"]).read_text(encoding="utf-8")
+                            self.assertNotIn(cards[-1], fragment)
+                            self.assertNotIn('<p', fragment)
+                            self.assertEqual(fragment.count('<img '), 1)
+                            self.assertEqual(result.structured_content["delivery"], {
+                                "mode": "conversation", "card_in_display": False, "repeat_card_text": True})
+                            self.assertEqual(json.loads(result.content[0].text)["card_text"], cards[-1])
+                        else:
+                            self.assertEqual(result.content[-1].text, cards[-1])
+                            self.assertNotIn("display", result.structured_content)
                 self.assertEqual(*cards)
         anyio.run(exercise)
 
@@ -415,7 +517,7 @@ class PersistentTests(unittest.TestCase):
             async with Client(StdioServerParameters(**config)) as client:
                 tools = await client.list_tools()
                 tool = next(t for t in tools.tools if t.name == "get_result")
-                self.assertEqual(tool.meta["ui"]["resourceUri"], RESULT_UI_URI)
+                self.assertNotIn("resourceUri", (tool.meta or {}).get("ui", {}))
                 resource = await client.read_resource(RESULT_UI_URI)
                 self.assertEqual(resource.contents[0].mime_type, "text/html;profile=mcp-app")
                 self.assertEqual(resource.contents[0].text, result_ui())
@@ -446,6 +548,20 @@ class PersistentTests(unittest.TestCase):
                     self.assertEqual(info["apps_negotiated"], supported)
                     self.assertEqual(info["adapter"], {"version": ADAPTER_VERSION, "tools": 14})
                     self.assertIsNone(info["reload_required"])
+                    listing = {t.name: t for t in (await client.list_tools()).tools}
+                    self.assertTrue(all(not (t.meta or {}).get("ui", {}).get("resourceUri") for t in listing.values()))
+                    self.assertEqual(listing["read_display_results"].meta["ui"]["visibility"], ["app"])
+                    before = set(self.root.rglob("*"))
+                    for name, args in (("get_result", {"plan_id": "p"}),
+                                       ("get_generation", {"generation_id": str(uuid4()), "workspace_scope": "personal"}),
+                                       ("show_results", {"plan_id": str(uuid4()), "item_indexes": [0]})):
+                        item = {"media": {"mime": "image/jpeg", "data_base64": "/9j/eP/Z"}}
+                        self.http.result_value = {"items": [item]} if name == "show_results" else item
+                        result = await client.call_tool(name, args)
+                        self.assertFalse(result.is_error)
+                        self.assertEqual(sum(b.type == "image" for b in result.content), 1)
+                        self.assertNotIn("display", result.structured_content)
+                    self.assertEqual(set(self.root.rglob("*")), before)
             self.http.features = []
             async with Client(StdioServerParameters(**config)) as client:
                 response = await client.call_tool("check_connection", {})
@@ -468,6 +584,7 @@ class PersistentTests(unittest.TestCase):
             async with Client(StdioServerParameters(**config)) as client:
                 tools = await client.list_tools()
                 self.assertEqual(len(tools.tools), 14)
+                self.assertTrue(all(not (t.meta or {}).get("ui", {}).get("resourceUri") for t in tools.tools))
                 image = await client.call_tool("get_result", {"plan_id": "p"})
                 self.assertFalse(image.is_error)
                 self.assertTrue(any(b.type == "image" for b in image.content))
@@ -480,7 +597,7 @@ class PersistentTests(unittest.TestCase):
             async with Client(StdioServerParameters(**config)) as client:
                 tools = {t.name: t for t in (await client.list_tools()).tools}
                 self.assertFalse((tools["wait_results"].meta or {}).get("ui"))
-                self.assertEqual(tools["show_results"].meta["ui"]["resourceUri"], RESULT_UI_URI)
+                self.assertNotIn("resourceUri", (tools["show_results"].meta or {}).get("ui", {}))
                 self.http.result_value = {"items": [{"item_index": 0, "generation_status": "running"}], "all_terminal": False}
                 waiting = await client.call_tool("wait_results", {"plan_id": plan, "item_indexes": [0]})
                 self.assertFalse(waiting.is_error)
@@ -490,6 +607,9 @@ class PersistentTests(unittest.TestCase):
                 gallery = await client.call_tool("show_results", {"plan_id": plan, "item_indexes": [0, 1]})
                 self.assertFalse(gallery.is_error)
                 self.assertEqual(sum(b.type == "image" for b in gallery.content), 1)
+                self.assertEqual([b.type for b in gallery.content], ["text", "image", "text"])
+                self.assertEqual(gallery.content[-1].text, gallery.structured_content["card_text"])
+                self.assertEqual(gallery.content[-1].text, "failed\n\ndone")
                 self.assertIsNone(gallery.structured_content["items"][0]["image_index"])
                 self.assertEqual(gallery.structured_content["items"][1]["image_index"], 0)
                 self.assertNotIn("media", gallery.structured_content["items"][1])
@@ -497,6 +617,7 @@ class PersistentTests(unittest.TestCase):
                 broken = await client.call_tool("show_results", {"plan_id": plan, "item_indexes": [0, 1]})
                 self.assertFalse(broken.is_error)
                 self.assertEqual(sum(b.type == "image" for b in broken.content), 1)
+                self.assertEqual(broken.content[-1].text, broken.structured_content["card_text"])
                 self.assertIn("미리보기를 읽지 못했습니다", broken.structured_content["items"][0]["card_text"])
                 for indexes in ([], list(range(9)), [-1], [True]):
                     bad = await client.call_tool("wait_results", {"plan_id": plan, "item_indexes": indexes})
@@ -511,8 +632,8 @@ class PersistentTests(unittest.TestCase):
                 self.assertEqual(page.structured_content["args"]["cursor_ts"], 100.5)
         anyio.run(exercise)
 
-    def test_sdk_codex_gallery_and_generation_export_keep_native_images(self):
-        config, _ = self.profile()
+    def test_sdk_codex_gallery_and_generation_export_only_conversation_images(self):
+        config, _ = self.profile("conversation")
         output = self.root / "display"
         output.mkdir()
         plan = str(uuid4())
@@ -525,29 +646,33 @@ class PersistentTests(unittest.TestCase):
                     self.assertFalse(tools[name].annotations.idempotent_hint)
                     self.assertIn("display_directory", tools[name].input_schema["properties"])
                 self.http.result_value = {"items": [
-                    {"item_index": 0, "generation_status": "failed", "media": None},
+                    {"item_index": 0, "error": {"code": "not_found"}, "media": None},
                     *[{"item_index": i + 1, "generation_status": "done", "media": {
                         "mime": "image/jpeg", "data_base64": data}} for i, data in enumerate(encoded)]]}
                 args = {"plan_id": plan, "item_indexes": [0, 1, 2]}
-                native = await client.call_tool("show_results", args)
-                self.assertFalse(native.is_error)
-                self.assertEqual(list(output.iterdir()), [])
-                self.assertTrue(all("display" not in item for item in native.structured_content["items"]))
                 gallery = await client.call_tool("show_results", {**args, "display_directory": str(output)})
                 self.assertFalse(gallery.is_error)
                 items = gallery.structured_content["items"]
+                self.assertEqual(gallery.structured_content["delivery"], {"mode": "conversation", "repeat_card_text": False})
+                self.assertTrue(items[0]["delivery"]["repeat_card_text"])
+                self.assertEqual(items[0]["card_text"], "결과 상태를 확인하세요.")
+                self.assertEqual(items[0]["error"]["code"], "not_found")
                 self.assertEqual(items[0]["display"]["status"], "unavailable")
                 images = [b.data for b in gallery.content if b.type == "image"]
-                self.assertEqual(images, encoded)
+                self.assertEqual(images, [])
+                self.assertEqual([b.type for b in gallery.content], ["text"])
                 self.assertEqual(len(list(output.iterdir())), 2)
                 for item in items[1:]:
+                    self.assertTrue(item["delivery"]["repeat_card_text"])
+                    self.assertFalse(item["delivery"]["card_in_display"])
                     display = item["display"]
                     self.assertEqual(display["rendered"], "unverified")
                     path = Path(display["path"])
                     self.assertEqual(path.parent, output.resolve())
                     self.assertEqual(json.loads(display["reference"].removeprefix("visualize").removesuffix("")), {"path": path.as_posix()})
                     html = path.read_text(encoding="utf-8")
-                    self.assertEqual(re.search(r"base64,([A-Za-z0-9+/=]+)", html).group(1), images[item["image_index"]])
+                    self.assertEqual(re.search(r"base64,([A-Za-z0-9+/=]+)", html).group(1), encoded[item["item_index"] - 1])
+                    self.assertIsNone(item["image_index"])
                     self.assertLess(path.stat().st_size, 1_000_000)
                 self.assertEqual(json.loads(gallery.content[0].text)["items"], items)
                 self.assertNotIn("display_directory", self.http.calls[-1][1]["args"])
@@ -559,15 +684,54 @@ class PersistentTests(unittest.TestCase):
                 self.assertFalse(failed.is_error)
                 self.assertEqual([b.data for b in failed.content if b.type == "image"], images)
                 self.assertEqual([i["display"]["status"] for i in failed.structured_content["items"]], ["unavailable", "error", "error"])
+                self.assertTrue(all(i["delivery"]["repeat_card_text"] for i in failed.structured_content["items"]))
                 self.http.result_value = {"generation_id": plan, "media": {"mime": "image/jpeg", "data_base64": encoded[0]}}
                 one = await client.call_tool("get_generation", {"generation_id": plan, "workspace_scope": "personal", "display_directory": str(output)})
                 self.assertFalse(one.is_error)
                 self.assertEqual(one.structured_content["display"], one.meta["display"])
                 self.assertEqual(one.structured_content["display"]["status"], "ready")
-                self.assertEqual([b.data for b in one.content if b.type == "image"], [encoded[0]])
+                self.assertEqual([b.data for b in one.content if b.type == "image"], [])
                 self.assertNotIn("display_directory", self.http.calls[-1][1]["args"])
         anyio.run(exercise)
-        self.assertEqual([body["method"] for _, body in self.http.calls], ["show_results"] * 3 + ["get_generation"])
+        self.assertEqual([body["method"] for _, body in self.http.calls], ["show_results"] * 2 + ["get_generation"])
+
+    def test_conversation_has_no_ui_registration_or_live_card_even_with_apps_host(self):
+        config, _ = self.profile("conversation")
+        plan = str(uuid4())
+        self.http.plan_value = {"plan_id": plan, "items": [{}]}
+        async def exercise():
+            async with Client(StdioServerParameters(**config), extensions=[advertise(
+                    "io.modelcontextprotocol/ui", {"mimeTypes": ["text/html;profile=mcp-app"]})]) as client:
+                listing = (await client.list_tools()).tools
+                self.assertEqual(len(listing), 13)
+                self.assertNotIn("read_display_results", [t.name for t in listing])
+                self.assertTrue(all("ui" not in (t.meta or {}) for t in listing))
+                self.assertEqual((await client.list_resources()).resources, [])
+                info = (await client.call_tool("check_connection", {})).structured_content
+                self.assertEqual(info["display_mode"], "conversation")
+                self.assertEqual(info["adapter"]["tools"], 13)
+                self.assertFalse(info["apps_available"])
+                executed = await client.call_tool("execute_generation_plan", {"plan_id": plan})
+                self.assertNotIn("live_plan_id", executed.structured_content)
+        anyio.run(exercise)
+
+    def test_display_mode_mismatch_fails_before_read_or_file_write(self):
+        async def exercise():
+            for mode in ("native", "conversation"):
+                config, _ = self.profile(mode)
+                async with Client(StdioServerParameters(**config)) as client:
+                    for name, args in (("get_result", {"plan_id": "p"}),
+                                       ("show_results", {"plan_id": str(uuid4()), "item_indexes": [0]}),
+                                       ("get_generation", {"generation_id": str(uuid4()), "workspace_scope": "personal"})):
+                        if mode == "native":
+                            args["display_directory"] = str(self.root)
+                        response = await client.call_tool(name, args)
+                        self.assertTrue(response.is_error)
+                        self.assertIn("다시 등록" if mode == "native" else "display_directory",
+                                      response.content[0].text)
+        anyio.run(exercise)
+        self.assertEqual(self.http.calls, [])
+        self.assertEqual(list(self.root.glob("*.html")), [])
 
     def test_sdk_gallery_handles_eight_maximum_bounded_previews(self):
         config, _ = self.profile()

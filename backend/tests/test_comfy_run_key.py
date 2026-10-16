@@ -6,6 +6,7 @@ from contextlib import nullcontext
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException, Request
@@ -42,7 +43,7 @@ def admission(monkeypatch, tmp_path):
     def stage(files):  # 파일 이름·바이트를 그대로 임시 파일로(크기가 같아도 내용이 다르면 다른 요청)
         uploads = []
         for index, (name, data) in enumerate(files):
-            path = tmp_path / f"staged-{len(state.staged)}-{index}.bin"
+            path = tmp_path / f"staged-{uuid4().hex}-{index}.bin"
             path.write_bytes(data)
             uploads.append(comfy._MediaUpload(name, path, len(data)))
         state.staged.append(uploads)
