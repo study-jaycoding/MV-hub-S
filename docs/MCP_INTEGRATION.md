@@ -13,6 +13,29 @@ owner: Codex · reviewer: Claude · status: 검증 중 · updated: 2026-10-15
 원래 MCP 작업실의 검증 이력이며 최신 dev와 합친 대상의 검증 결과는 WORKROOMS에 따로 기록한다.
 시험실 실행기에서는 실제 생성·CLI 모델 조회·전역 LLM 등록을 검증하지 않는다.
 
+## 설치본 배포 준비와 native 묶음 설명 보완 (2026-10-16)
+
+owner: Codex · reviewer: Claude · status: 검증 중 · updated: 2026-10-16
+
+- 사용자 요청: "설치본에도 반영해서 배포할수있도록 해라". touched_paths:
+  `tools/mcp_adapter/{server.py,test_persistent.py,README.md}`, 이 문서.
+- 최신 원격 main `c2463e4f`와 이 작업실의 미배포 11커밋으로 별도 후보 `37035b69`를 구성했다.
+  제품 diff는 어댑터·등록·시험, 문서까지 6파일이며 DB·백엔드·프런트 변경은 없다.
+  MCP 운영 문서 충돌은 양쪽 이력을 모두 보존했다. 후보는 통합 시험실 브랜치 전체를 배포하지 않는다.
+- Claude 독립 리뷰(별도 세션 `9b8bd7b5-fe12-416b-8321-1723c33e4003`, 실제 모델 `claude-opus-5-5`, high 요청):
+  native `show_results`가 항목의 설명 블록을 버리지만 최종 답변 반복도 금지하므로 설명이 빠질 수 있다는 P2를 제시했다.
+  직접 회귀를 추가해 수정 전 실패를 확인했다. `.16.5`는 native 묶음 이미지 뒤에 합친 설명 텍스트 블록을 한 번 반환한다.
+  conversation은 구조화된 설명만 유지하며 별도 텍스트 블록을 추가하지 않는다.
+- 수정 후 native·conversation 관련 2개 시험과 소스 어댑터 전체 40개가 통과했다(42.064초).
+  Claude의 관련 재확인에서 P2 해결 판정과 후보 병합·회귀·문서 보완 조건부 승인을 받았다.
+  SDK 실측은 별도 Codex 세션에서 수행했으나 등록된 설치본 허브가 TCP 연결 거부로 unavailable이었다(상대 보고).
+  기존 결과 발견·실제 이미지 표시 성공을 주장하지 않는다. 두 앱의 기존 전역 등록에는 표시 모드 플래그가 없다(상대 보고).
+- 설치 후 확인 순서: MV Hub에서 Codex 다시 등록 → Claude·Codex MCP 재연결 →
+  `check_connection`의 `.16.5`와 Codex `conversation`/Claude `native` 확인 → 같은 허브에서 기존 결과 조회·표시 확인.
+  공개 배포·새 유료 생성·설치본 변경은 아직 수행하지 않았다. 고정 후보의 전체 게이트 결과는 배포 전 대조한다.
+  증거: `%TEMP%/mvhub-mcp-release-20261016/`의 리뷰·수정 전후 회귀·verify 요약·게이트 로그.
+  프로젝트 전용 기록이므로 볼트에 복제하지 않는다.
+
 ## 현재 연결된 허브 기준 조회·생성·표시 (2026-10-16)
 
 owner: Codex · reviewer: Codex(자기 검토, 독립 리뷰 아님) · status: 완료(소스·통합 검증) · updated: 2026-10-16

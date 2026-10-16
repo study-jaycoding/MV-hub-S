@@ -25,11 +25,12 @@ v2 등록 설정에는 `--url`과 `--profile`이 들어간다. 프로필은 Wind
 한 번에 1~8개 항목을 선택하며 대기는 이미지 카드를 만들지 않는다. `all_terminal`이면 대기를 멈추고,
 `all_done`이 false이면 실패·취소·확인 필요 항목을 함께 안내한다. 25초는 대기 예산이며 조회·권한 확인 시간이 더해질 수 있다.
 `get_result`는 기존 단건 호출 호환용으로 유지한다.
-어댑터 `2026.10.16.4`는 같은 서버의 `--display-mode`로 표시 경로를 하나 선택한다.
+어댑터 `2026.10.16.5`는 같은 서버의 `--display-mode`로 표시 경로를 하나 선택한다.
 Codex 자동 등록은 `conversation`을 지정하며 다른 클라이언트와 플래그 없는 기존 설정은 `native`다.
 `conversation`은 MCP Apps 자원·UI 메타·앱 전용 도구를 등록하지 않는다(모델용 13개).
 `get_result`·`get_generation`·`show_results`는 표시 파일만 준비하고 ImageContent·별도 설명 블록을 보내지 않는다.
 `native`는 파일 없이 ImageContent로만 새 결과를 표시한다(총 14개).
+단건·묶음 조회 모두 이미지 뒤에 일반 `card_text` 텍스트 블록을 한 번 반환한다.
 `get_result`·`get_generation`·`show_results`에 UI `resourceUri`를 붙이지 않아 Apps 화면을 자동으로 함께 열지 않는다.
 Apps 광고 여부로 분기하지 않으므로 미지원 클라이언트에도 기존 ImageContent를 유지한다.
 두 모드 모두 실행 도구에는 결과 UI를 붙이지 않는다. 실행 → 대기 → 결과 조회 순서로 한 번 표시한다.
