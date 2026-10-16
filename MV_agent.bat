@@ -167,8 +167,8 @@ if not defined HF_CLI_VERSION (
 REM Pick the CLI whose version == the pin: prefer the bundled copy (zero-install),
 REM then a matching global install, else install the pinned version globally.
 REM @latest is intentionally avoided: Higgsfield ships breaking changes often.
-REM Install only when a version was READ and is wrong/missing. If a CLI did not answer the
-REM version check in time (_CLI_UNCONFIRMED), skip the unbounded npm install and go on.
+REM Install only when no CLI was found, or a version was READ and is wrong. If any CLI's version
+REM could not be confirmed (_CLI_UNCONFIRMED), skip the unbounded npm install and go on.
 if exist "%BUNDLED%" call :try_cli "%BUNDLED%"
 where higgsfield >nul 2>nul && call :try_cli "higgsfield"
 if not defined HF if not defined _CLI_UNCONFIRMED if defined HAVE_NPM (
@@ -183,8 +183,9 @@ if defined HF (
   REM BOTH the hub (started next) and agent_push resolve the same pinned CLI.
   if /i "%HF%"=="%BUNDLED%" set "PATH=%ROOT%runtime\higgsfield;%PATH%"
 ) else if defined _CLI_UNCONFIRMED (
-  echo [warn] The Higgsfield CLI did not answer the version check in time - generation off
-  echo        for this run; browsing/Assets still work. Re-run MV_agent.bat later.
+  echo [warn] Could not confirm the Higgsfield CLI version - no answer in time, an error, or
+  echo        unreadable output. Generation off for this run; browsing/Assets still work.
+  echo        Re-run MV_agent.bat later.
   set "RUN_AGENT=0"
 ) else (
   echo [warn] No pinned Higgsfield CLI available - generation off; browsing/Assets still work.
@@ -451,13 +452,16 @@ REM Sets HF=%~1 only if that CLI reports the pinned version. No-op once HF is se
 REM Used to choose the exact binary matching hf_cli_version.txt (avoids the stale
 REM bundled-CLI shadowing a good global install, and vice-versa).
 REM 'version' runs through agent_push.py --startup-version: time limit + stalled CLI tree killed,
-REM prints the second word of the first line with two or more words (same as tokens=2 here),
-REM or ? when the CLI did not answer in time / could not run - then _CLI_UNCONFIRMED is set.
+REM always prints one word: the version read from a clean run (second word of the first line
+REM with two or more words, as tokens=2 did), or ? when it could not be confirmed - bad exit,
+REM empty or unreadable output, no answer in time, could not run. No output at all (the helper
+REM itself failed) also counts as ?. Then _CLI_UNCONFIRMED is set and npm install is skipped.
 REM ---------------------------------------------------------------------------
 :try_cli
 if defined HF exit /b 0
 set "_CLIVER="
 for /f "delims=" %%v in ('""%PY_EXE%" %PY_ARGS% "%ROOT%agent_push.py" --startup-version "%~1""') do if not defined _CLIVER set "_CLIVER=%%v"
+if not defined _CLIVER set "_CLIVER=?"
 if "%_CLIVER%"=="?" set "_CLI_UNCONFIRMED=1"
 if "%_CLIVER%"=="%HF_CLI_VERSION%" set "HF=%~1"
 exit /b 0

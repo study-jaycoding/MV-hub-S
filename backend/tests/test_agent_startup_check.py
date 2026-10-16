@@ -271,7 +271,12 @@ def stall():
 if args[:1] == ["version"]:
     if mode == "version-stalls":
         stall()
-    print("higgsfield 1.0.0" if mode == "version-old" else "higgsfield 1.1.26")
+    if mode == "version-exit1":
+        sys.stderr.write("Error: EPERM: operation not permitted\n")
+        sys.exit(1)
+    if mode == "version-empty":
+        sys.exit(0)
+    print({"version-old": "higgsfield 1.0.0", "version-garbled": "something weird happened"}.get(mode, "higgsfield 1.1.26"))
     sys.exit(0)
 if args[:2] == ["auth", "token"]:
     if mode == "token-stalls":
@@ -302,13 +307,18 @@ sys.exit(9)
 '''
 
 
-def _run_stalling_probe(tmp_path: Path, body: list[str], mode: str) -> tuple[str, list[str], list[int], list[int]]:
+def _run_stalling_probe(
+    tmp_path: Path, body: list[str], mode: str, agent_source: str | None = None
+) -> tuple[str, list[str], list[int], list[int]]:
     """agent_push.py 사본(제한 1초) + 멈추는 가짜 CLI 로 배치 줄들을 실제 cmd 에서 돌린다. 40초 안에 못 끝나면 실패.
-    (출력, CLI 호출, 멈춘 CLI·손자 PID, 그중 아직 살아 있던 PID) — 생존은 시험이 강제로 정리하기 **전에** 본다."""
+    (출력, CLI 호출, 멈춘 CLI·손자 PID, 그중 아직 살아 있던 PID) — 생존은 시험이 강제로 정리하기 **전에** 본다.
+    agent_source 를 주면 agent_push.py 사본 대신 그 내용을 둔다(헬퍼 자체가 실패하는 경우)."""
     source = AGENT_PATH.read_text(encoding="utf-8")
     assert source.count("_STARTUP_CHECK_TIMEOUT = 20\n") == 1
     (tmp_path / "agent_push.py").write_text(
-        source.replace("_STARTUP_CHECK_TIMEOUT = 20\n", "_STARTUP_CHECK_TIMEOUT = 1\n"), encoding="utf-8"
+        agent_source if agent_source is not None
+        else source.replace("_STARTUP_CHECK_TIMEOUT = 20\n", "_STARTUP_CHECK_TIMEOUT = 1\n"),
+        encoding="utf-8",
     )
     (tmp_path / "fake_hf.py").write_text(_STEP_HF, encoding="utf-8")
     (tmp_path / "hf.cmd").write_text(f'@"{sys.executable}" "%~dp0fake_hf.py" %*\r\n', encoding="ascii")
@@ -336,7 +346,8 @@ def _run_stalling_probe(tmp_path: Path, body: list[str], mode: str) -> tuple[str
             subprocess.run(["taskkill", "/PID", str(runner.pid), "/T", "/F"], capture_output=True)
             runner.communicate()
             pytest.fail("멈춘 CLI 호출에 묶여 40초 안에 다음 단계로 넘어가지 못했다")
-        calls = (tmp_path / "hf_calls.txt").read_text(encoding="ascii").splitlines()
+        call_file = tmp_path / "hf_calls.txt"
+        calls = call_file.read_text(encoding="ascii").splitlines() if call_file.exists() else []
         pids = [int(pid) for pid in (pid_file.read_text(encoding="ascii").split() if pid_file.exists() else [])]
         alive = [pid for pid in pids if _alive(pid)]  # 아래 강제 정리 전에 — 제품이 끝냈는지를 본다
         return out + err, calls, pids, alive
@@ -411,14 +422,19 @@ def test_try_cli_version_check_cannot_hang(tmp_path, mode, chosen):
 @pytest.mark.parametrize(
     "mode, npm_calls, chosen, shown",
     [
-        ("version-stalls", 0, False, "did not answer the version check"),
+        ("version-stalls", 0, False, "Could not confirm the Higgsfield CLI version"),
+        ("version-exit1", 0, False, "Could not confirm the Higgsfield CLI version"),
+        ("version-empty", 0, False, "Could not confirm the Higgsfield CLI version"),
+        ("version-garbled", 0, False, "Could not confirm the Higgsfield CLI version"),
+        ("helper-crash", 0, False, "Could not confirm the Higgsfield CLI version"),
         ("version-old", 1, False, "No pinned Higgsfield CLI available"),
         ("version-ok", 0, True, "Using Higgsfield CLI 1.1.26"),
     ],
 )
 def test_agent_bat_cli_selection_never_installs_on_an_unconfirmed_version(tmp_path, mode, npm_calls, chosen, shown):
-    """[3/5] 흐름 전체 — 판 확인이 '확인 불가'(시간 초과·실행 실패)면 제한 없는 npm install 로 떨어지지 않고 다음 단계로
-    간다. 설치는 판이 확인된 불일치·미설치일 때만(Codex 재확인 3 P1)."""
+    """[3/5] 흐름 전체 — 판을 정상적으로 읽어 숫자 판을 얻은 것만 확인된 값이다. 시간 초과·비정상 종료·빈 출력·해석
+    불가·헬퍼 자체 실패는 '확인 불가'라 제한 없는 npm install 로 떨어지지 않고 다음 단계로 간다. 설치는 확인된 판
+    불일치(또는 CLI 를 못 찾은 미설치)일 때만(Codex 재확인 3·4 P1)."""
     lines = (ROOT / "MV_agent.bat").read_bytes().decode("ascii").split("\r\n")
     start = next(i for i, line in enumerate(lines) if line.startswith("echo [3/5]"))
     end = next(i for i, line in enumerate(lines) if line.startswith("echo [4/5]"))
@@ -441,13 +457,13 @@ def test_agent_bat_cli_selection_never_installs_on_an_unconfirmed_version(tmp_pa
         "echo NEXT-STAGE RUN_AGENT=%RUN_AGENT% HF=[%HF%]",
         "exit /b 0",
         *try_cli,
-    ], mode)
+    ], mode, agent_source="raise SystemExit(1)\n" if mode == "helper-crash" else None)
 
     npm_log = tmp_path / "npm_calls.txt"
     assert len(npm_log.read_text(encoding="ascii").splitlines() if npm_log.exists() else []) == npm_calls
     assert f"NEXT-STAGE RUN_AGENT={1 if chosen else 0} HF=[{bundled if chosen else ''}]" in out, out
     assert shown in out
-    assert calls == ["version"]  # 판 확인만 — 같은 CLI 를 다시 묻지 않는다
+    assert calls == ([] if mode == "helper-crash" else ["version"])  # 판 확인만 — 같은 CLI 를 다시 묻지 않는다
     assert alive == []
 
 

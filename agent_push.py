@@ -3196,18 +3196,21 @@ def _startup_token(cli: str) -> int:
 
 
 def _startup_version(cli: str) -> str:
-    """`version` 출력의 판(MV_agent.bat :try_cli) — 배치 for /f "tokens=2" 처럼 첫 '두 단어 이상' 줄의 둘째 단어.
-    판을 못 읽으면 '' (미설치·판 불일치와 같게 — 설치로 고칠 수 있다). 시간 초과·실행 실패는 '?' — 확인 불가라
-    배치는 제한 없는 npm install 로 넘어가지 않는다."""
+    """`version` 출력의 판(MV_agent.bat :try_cli) — 늘 한 단어를 돌려준다(배치가 빈 값을 판 불일치로 읽지 않게).
+    정상 종료한 출력에서 배치 for /f "tokens=2" 처럼 첫 '두 단어 이상' 줄의 둘째 단어가 숫자 판(예: 1.1.26)이면
+    그 판 — 이것만 확인된 값이다. 비정상 종료·빈 출력·해석 불가·시간 초과·실행 실패는 모두 '?'(확인 불가)라 배치는
+    제한 없는 npm install 로 넘어가지 않는다(81회차 리뷰 P1). '미설치'는 배치가 CLI 를 못 찾은 경우뿐이다."""
     try:
         done = _run_with_tree_kill([*_cli_argv(cli), "version"], _STARTUP_CHECK_TIMEOUT)
     except (OSError, subprocess.SubprocessError):
         return "?"
+    if done.returncode != 0:
+        return "?"
     for line in (done.stdout or "").splitlines():
         parts = line.split()
         if len(parts) >= 2 and not parts[0].startswith(";"):
-            return parts[1]
-    return ""
+            return parts[1] if re.fullmatch(r"\d+(?:\.\d+)+\S*", parts[1]) else "?"
+    return "?"
 
 
 def _startup_check_main(argv: list[str]) -> int:
