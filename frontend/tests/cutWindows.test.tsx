@@ -485,6 +485,46 @@ it.each([[1], [2]])("stalled metadata releases preload slots and unlocks the tim
   }
 });
 
+// 81회차 Codex 리뷰 P2: 예열이 멈춘 사이 재생 요소가 같은 주소의 길이를 먼저 받았으면 정상 영상이다 — 시간초과가 '깨진 영상'(3초 멈춘
+//  화면)으로 바꾸지 않고 예열 요소만 정리한다.
+it("stalled metadata timeout does not break a clip whose length the player already learned — 예열만 정리하고 다음으로 간다", () => {
+  vi.useFakeTimers();
+  const created: HTMLVideoElement[] = [];
+  const realCreate = document.createElement.bind(document);
+  const createSpy = vi.spyOn(document, "createElement").mockImplementation(((tag: string, options?: ElementCreationOptions) => {
+    const el = realCreate(tag, options);
+    if (tag === "video") created.push(el as HTMLVideoElement);
+    return el;
+  }) as typeof document.createElement);
+  const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 1);
+  const loadSpy = vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+  const pauseSpy = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+  const playSpy = vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(() => new Promise(() => {}));
+  const clips: ReelClip[] = [1, 2].map((k) => ({ path: `e/C${k}`, name: `C${k}`, url: `/m/learned-${k}.mp4`, type: "video", thumb: null, worker: "리버", rep: false }));
+  const probe = (k: number) => created.find((v) => !v.isConnected && v.getAttribute("src") === `/m/learned-${k}.mp4`)!;
+  const meta = (v: HTMLVideoElement, seconds: number) => act(() => {
+    Object.defineProperty(v, "duration", { value: seconds, configurable: true });
+    v.dispatchEvent(new Event("loadedmetadata"));
+  });
+  try {
+    act(() => root.render(<ReelPlayer clips={clips} />));
+    const stuck = probe(1); // 첫 영상의 예열은 답하지 않는다
+    meta(probe(2), 4);
+    meta(host.querySelector<HTMLVideoElement>(".reel-media:not(.spare)")!, 5); // 재생 요소가 첫 영상 길이를 먼저 받았다
+    act(() => { vi.advanceTimersByTime(30_000); });
+    expect(stuck.hasAttribute("src")).toBe(false); // 예열 요소는 정리됐다
+    expect([host.querySelector(".reel-broken"), host.querySelector(".reel-vtc")!.textContent]).toEqual([null, "0:00.0 / 0:09.0"]);
+    act(() => root.render(null)); // 닫기도 가짜 load·pause 아래에서
+  } finally {
+    createSpy.mockRestore();
+    raf.mockRestore();
+    loadSpy.mockRestore();
+    pauseSpy.mockRestore();
+    playSpy.mockRestore();
+    vi.useRealTimers();
+  }
+});
+
 it("연결 재생기 — 타임바로 컷을 넘긴 뒤 늦게 도는 옛 컷의 시간 틱은 새 자리를 덮지 않는다(이미지 컷을 건너뛰지 않는다)", () => {
   // 2026-10-10 실측: 재생 중 타임바를 끌어 다른 컷으로 가면(mousemove 는 React 가 바로 다시 그리지 않는다) 옛 컷의 틱이 한 번 더 돌아
   //  그 시각을 써 넣었고, 이미지 컷은 곧바로 '끝'으로 보고 다음 컷으로 넘어갔다. 여기서는 옛 틱을 잡아 두었다가 옮긴 뒤에 돌린다.

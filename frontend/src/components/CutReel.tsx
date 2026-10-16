@@ -223,7 +223,13 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
         startNext();
       };
       v.onerror = fail;
-      active.set(v, setTimeout(fail, PRELOAD_TIMEOUT_MS)); // release 가 타이머·핸들러를 함께 떼므로 셋 중 하나만 완료한다
+      // release 가 타이머·핸들러를 함께 떼므로 셋 중 하나만 완료한다. 그사이 재생 요소가 길이를 알았으면 정상 영상 — 예열만 정리한다(Codex 리뷰)
+      active.set(v, setTimeout(() => {
+        if (DURATION_CACHE.has(url) || indexes.every((i) => st.current.durations[i] > 0)) {
+          release(v);
+          startNext();
+        } else fail();
+      }, PRELOAD_TIMEOUT_MS));
       v.src = url;
     };
     for (let k = 0; k < PRELOAD_AT_ONCE; k++) startNext();
