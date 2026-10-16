@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { jsonFetch } from "./http";
 import { connectProgress } from "./progressSocket";
 
@@ -48,10 +48,14 @@ export function useMyCreditQuota(workspaceId: string | null, accountKey: string,
     key: "", value: null, loading: false,
   });
   const key = `${accountKey}:${workspaceId ?? ""}`;
+  // 조회는 문맥(계정·공간)마다 한 수명이고, 열림은 '지금 한 번 + 알림·30초·창 복귀 때 다시'만 붙인다 — 한 effect 로 묶으면 닫을 때도
+  //  다시 물어 창 한 번에 GET 이 2건이었다(81회차 M2-12). 닫는 것은 구독만 걷고 열 때 떠난 조회는 그대로 받는다.
+  const refreshRef = useRef<() => void>(() => {});
+  const wasOpenRef = useRef(open); // 처음 그릴 때 열려 있어도 아래 첫 조회가 이미 묻는다
+  const hasWorkspace = Boolean(workspaceId);
   useEffect(() => {
     let alive = true;
     let sequence = 0;
-    let timer: ReturnType<typeof setTimeout> | undefined;
     const controllers = new Set<AbortController>();
     setState((current) => current.key === key ? current : { key, value: null, loading: Boolean(workspaceId) });
     if (!workspaceId) return;
@@ -74,24 +78,35 @@ export function useMyCreditQuota(workspaceId: string | null, accountKey: string,
         controllers.delete(controller);
       }
     };
-    const schedule = () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => { void refresh(); }, 250);
-    };
+    refreshRef.current = () => { void refresh(); };
     void refresh();
-    const disconnect = open ? connectProgress((message) => {
-      if (["manage_changed", "synced", "progress", "done", "failed"].includes(message.type)) schedule();
-    }, schedule) : undefined;
-    const poll = open ? setInterval(() => { void refresh(); }, 30_000) : undefined;
-    if (open) window.addEventListener("focus", schedule);
     return () => {
       alive = false;
+      refreshRef.current = () => {};
       controllers.forEach((controller) => controller.abort());
+    };
+  }, [key, workspaceId]);
+  useEffect(() => {
+    const opened = open && !wasOpenRef.current;
+    wasOpenRef.current = open;
+    if (!open || !hasWorkspace) return;
+    if (opened) refreshRef.current();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
       if (timer) clearTimeout(timer);
-      if (poll) clearInterval(poll);
-      disconnect?.();
+      timer = setTimeout(() => refreshRef.current(), 250);
+    };
+    const disconnect = connectProgress((message) => {
+      if (["manage_changed", "synced", "progress", "done", "failed"].includes(message.type)) schedule();
+    }, schedule);
+    const poll = setInterval(() => refreshRef.current(), 30_000);
+    window.addEventListener("focus", schedule);
+    return () => {
+      if (timer) clearTimeout(timer);
+      clearInterval(poll);
+      disconnect();
       window.removeEventListener("focus", schedule);
     };
-  }, [key, workspaceId, open]);
+  }, [open, hasWorkspace]);
   return state.key === key ? state : { key, value: null, loading: Boolean(workspaceId) };
 }
