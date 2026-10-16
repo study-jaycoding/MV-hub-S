@@ -682,15 +682,24 @@ def import_bundle_item(
                 "workspace_name, task_activity_at FROM generation WHERE id=? OR job_id=? LIMIT 1",
                 (job_id, job_id),
             ).fetchone()
-            # 인증 발행(author_uids)은 아래 _upsert_synced 가 실제로 고른 행(id·job_id·URL)으로 판정한다 —
-            # 여기서 id·job_id 만 보면 새 앵커 + 남의 결과 URL 번들이 URL 매칭으로 남의 행을 바꿨다(F-A-01).
-            fact_blocked = author_uids is None and bool(
-                existing
-                and existing["creator_uid"]
-                and shared_by
-                and shared_by != DEFAULT_WORKER_ID
-                and existing["creator_uid"] != shared_by
-            )
+            if author_uids is not None:
+                # 인증 발행(F-A-01): 이 앵커의 기존 행 전부(아래 사실·오버레이가 고를 수 있는 행)가 발행자 것이어야 한다.
+                # URL 로 고르는 행은 _upsert_synced 가 같은 규칙으로 본다 — id·job_id 만 보면 새 앵커 + 남의 결과
+                # URL 번들이 남의 행을 바꿨다. 판정은 쓰기 전 행으로 한다(번들이 주장한 작성자로 덮인 뒤가 아니라).
+                fact_blocked = any(
+                    row["creator_uid"] and row["creator_uid"] not in author_uids
+                    for row in conn.execute(
+                        "SELECT creator_uid FROM generation WHERE id=? OR job_id=?", (job_id, job_id)
+                    )
+                )
+            else:
+                fact_blocked = bool(
+                    existing
+                    and existing["creator_uid"]
+                    and shared_by
+                    and shared_by != DEFAULT_WORKER_ID
+                    and existing["creator_uid"] != shared_by
+                )
             if fact_blocked:
                 # ★'unchanged' 가 아니라 'blocked' — 예전엔 발행자 화면에서 구분이 안 돼,
                 #  서버가 조용히 무시한 발행(작성자 불일치 재공유)이 로컬에선 "공유됨"으로
@@ -715,17 +724,15 @@ def import_bundle_item(
                 # 위치(project_id·folder_path) 권위 = 작성자의 로컬. 소유자(=발행자)가 올린 것이면
                 # 로컬 값으로 덮어쓴다(미분류=NULL 반영 포함) → 한쪽에서 옮기면 발행 때 팀에도 반영.
                 # 남의 것을 재공유(creator≠shared_by)면 기존 서버값 보존(COALESCE, 침범 금지).
+                # 인증 발행은 발행자 신원(계정 uid + 자기 acct: 별칭)이 소유자다 — 자기 별칭 행의 이동도 반영한다.
                 creator = creator_uid
-                is_owner = (not creator) or (creator == shared_by)
+                is_owner = (not creator) or (
+                    creator in author_uids if author_uids is not None else creator == shared_by
+                )
                 current = dict(conn.execute(
                     "SELECT project_id, folder_path, workspace_scope, workspace_id, workspace_name, "
-                    "task_activity_at, is_final, creator_uid FROM generation WHERE id=?", (gid,),
+                    "task_activity_at, is_final FROM generation WHERE id=?", (gid,),
                 ).fetchone())
-                row_creator = current.pop("creator_uid")
-                if author_uids is not None and row_creator and row_creator not in author_uids:
-                    # 같은 앵커의 행이 둘일 때 오버레이가 고를 행도 발행자 것이어야 한다(위 판정과 같은 규칙)
-                    conn.execute("ROLLBACK")
-                    return "blocked"
                 is_final = bool(current.pop("is_final"))
                 incoming = dict(current)
                 if is_owner:

@@ -17,6 +17,8 @@ URL_A = "https://cdn.example/a/result-a.png"
 URL_B = "https://cdn.example/b/result-b.png"
 URL_OLD = "https://cdn.example/old/result-old.png"
 URL_ME = "https://cdn.example/me/result-me.png"
+STAMP = "2026-10-05T01:02:03Z"
+STAMP_SAVED = "2026-10-05T01:02:03.000000Z"  # normalize_task_activity_at 꼴
 
 
 @pytest.fixture
@@ -72,6 +74,12 @@ def snapshot(gid):
     return row
 
 
+def location(gid):
+    with db.get_connection() as conn:
+        return tuple(conn.execute(
+            "SELECT project_id, folder_path, task_activity_at FROM generation WHERE id=?", (gid,)).fetchone())
+
+
 def rows_for(anchor):
     with db.get_connection() as conn:
         return [dict(r) for r in conn.execute(
@@ -115,10 +123,39 @@ def test_self_reshare_and_own_acct_alias_still_update(server):
     out = publish_as("a@test", item("job-A", URL_A, "user_A", status="done", params={"k": "v2"}))
     assert out["blocked"] == 0 and out["updated"] == 1
     assert repo.get_generation("orig")["params"]["k"] == "v2"
-    # 계정 자신의 acct: 별칭으로 남은 행도 그 계정의 것이다
+    # 계정 자신의 acct: 별칭으로 남은 행도 그 계정의 것이다 — 사실만이 아니라 위치·활동 시각 이동도 반영된다
     original("alias", "job-B", "acct:b@test", URL_B)
-    out = publish_as("b@test", item("job-B", URL_B, "acct:b@test", status="done"))
+    main = repo.create_project("본편")["id"]
+    side = repo.create_project("외전")["id"]
+    with db.get_connection() as conn:
+        conn.execute("UPDATE generation SET project_id=?, folder_path='ep09/c090', "
+                     "task_activity_at='2026-10-01T00:00:00.000000Z' WHERE id='alias'", (side,))
+    out = publish_as("b@test", item("job-B", URL_B, "acct:b@test", status="done", project_id=main,
+                                    folder_path="ep01/c010", task_activity_at=STAMP))
     assert out["blocked"] == 0
+    assert location("alias") == (main, "ep01/c010", STAMP_SAVED)
+
+
+def test_other_accounts_alias_or_uid_claim_cannot_move_location(server):
+    # 내 행이라도 번들이 남(A)의 별칭·uid 를 작성자로 주장하면 위치는 그대로(빈 칸 보강만) — 인증 발행자 신원만 소유자다
+    main = repo.create_project("본편")["id"]
+    side = repo.create_project("외전")["id"]
+    for gid, job, url, claim in (("own1", "job-O1", URL_B + "?1", "acct:a@test"), ("own2", "job-O2", URL_B + "?2", "user_A")):
+        original(gid, job, "user_B", url)
+        with db.get_connection() as conn:
+            conn.execute("UPDATE generation SET project_id=?, folder_path='ep01/c010', task_activity_at=? WHERE id=?",
+                         (main, STAMP_SAVED, gid))
+        out = publish_as("b@test", item(job, url, claim, status="done", project_id=side, folder_path="ep09/c090",
+                                        task_activity_at="2026-10-06T00:00:00Z"))
+        assert out["blocked"] == 0
+        assert location(gid) == (main, "ep01/c010", STAMP_SAVED)
+
+
+def test_received_copy_not_on_server_keeps_its_author(server):
+    # 서버에 아직 없는 받은 사본(작성자 A)을 B 가 올리면 새 행으로 받고, 작성자를 발행자로 바꾸지 않는다
+    out = publish_as("b@test", item("job-RC", "https://cdn.example/a/received.png", "user_A", status="done"))
+    assert (out["blocked"], out["inserted"]) == (0, 1)
+    assert [r["creator_uid"] for r in rows_for("job-RC")] == ["user_A"]
 
 
 def test_unlinked_old_author_first_link_stays_compatible(server):
