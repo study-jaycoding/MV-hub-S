@@ -977,6 +977,7 @@ async def _execute(ctx, plan_id):
     if not claimed:
         return _public_plan(await asyncio.to_thread(store.get_plan, ctx.client, plan_id))
     # 계획 쓰기는 끝까지 기다린다(to_thread_non_abandon) — 응답이 끊겨 이 작업이 취소돼도 뒤늦게 끝난 쓰기가 아래 '주의'를 덮지 않게.
+    sending = None  # 실제로 제출을 부른 항목 — 접수됐을 수 있다
     try:
         for item in plan["items"]:
             item["state"] = "submitting"
@@ -985,6 +986,7 @@ async def _execute(ctx, plan_id):
                 await asyncio.to_thread(_still_current, ctx)
                 body = GenRequestIn.model_validate({"workspace": ws, "kind": "create", "idempotency_key": item["idempotency_key"],
                     "create": {key: item[key] for key in ("prompt", "model", "params", "references", "project_id", "folder_path")}})
+                sending = item
                 result = await gen_requests.create_gen_request(body, _internal(ctx, "/api/gen-requests", submit=True))
                 item.update(state="submitted", generation_id=result["id"])
             except Exception as exc:
@@ -998,13 +1000,19 @@ async def _execute(ctx, plan_id):
                 return _public_plan(await asyncio.to_thread(store.get_plan, ctx.client, plan_id))
             await to_thread_non_abandon(store.update_plan, plan_id, plan["items"], "executing")
         await to_thread_non_abandon(store.update_plan, plan_id, plan["items"], "submitted")
-    except asyncio.CancelledError:
-        # 실행 중 취소 — 보내던 항목은 접수됐을 수 있다. '주의'로 남기고 취소를 전파한다(자동 재제출 없음)
+    except (asyncio.CancelledError, Exception) as exc:
+        # 실행 중 취소·계획 저장 실패(F-A-04 — 전엔 일반 예외면 executing 으로 고착). 보내던 항목만 불명확(접수됐을 수 있다),
+        #  보내기 전이면 대기로 되돌리고, 접수된 항목은 그대로 둔다. '주의'로 남기고 뒤 항목 제출·자동 재제출은 없다.
+        #  이 정리 저장마저 실패하면 그 오류가 그대로 나간다(성공으로 숨기지 않음 — 남은 executing 은 재시작 복구가 본다).
         for item in plan["items"]:
             if item.get("state") == "submitting":
-                item.update(state="uncertain", error="접수 여부를 확인할 수 없습니다. get_plan으로 확인하세요.")
+                if item is sending:
+                    item.update(state="uncertain", error="접수 여부를 확인할 수 없습니다. get_plan으로 확인하세요.")
+                else:
+                    item["state"] = "pending"
         await to_thread_non_abandon(store.update_plan, plan_id, plan["items"], "attention")
-        raise
+        if isinstance(exc, asyncio.CancelledError):
+            raise
     return _public_plan(await asyncio.to_thread(store.get_plan, ctx.client, plan_id))
 
 
