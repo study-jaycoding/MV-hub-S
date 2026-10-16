@@ -123,7 +123,7 @@ def test_cp949_process_list_never_counts_as_server_stopped(monkeypatch, tmp_path
 
 def _backup_task_fakes(arguments: str) -> str:
     return (
-        "function Get-ScheduledTask { [pscustomobject]@{ State = 'Ready'; "
+        "function Get-ScheduledTask { [pscustomobject]@{ TaskName = 'MVHub BackupCopy'; State = 'Ready'; "
         "Principal = [pscustomobject]@{ UserId = 'SYSTEM' }; "
         "Actions = @([pscustomobject]@{ Execute = 'cmd.exe'; Arguments = '" + arguments + "' }); "
         "Settings = [pscustomobject]@{ MultipleInstances = 'IgnoreNew' } } }; "
@@ -144,6 +144,36 @@ def test_task_info_matches_korean_install_path(monkeypatch, tmp_path):
     assert task is not None
     assert (task["exists"], task["system"], task["ignore_new"]) == (True, True, True)
     assert task["matches_install"] is True
+
+
+# 실제 Get-ScheduledTask 처럼 -TaskName 이 맞지 않으면 '없음'(ObjectNotFound) 비종료 오류를 낸다.
+_OTHER_TASK_ONLY = (
+    "function Get-ScheduledTask { [CmdletBinding()] param([string]$TaskName) "
+    "$all = @([pscustomobject]@{ TaskName = 'Other Task' }); "
+    "if (-not $TaskName) { return $all }; "
+    "$hit = @($all | Where-Object { $_.TaskName -eq $TaskName }); if ($hit.Count) { return $hit }; "
+    "$PSCmdlet.WriteError((New-Object System.Management.Automation.ErrorRecord "
+    "((New-Object System.Exception 'No MSFT_ScheduledTask objects found'), 'NotFound', 'ObjectNotFound', $TaskName))) }; "
+)
+# 권한·CIM 오류 — 결과 없이 비종료 오류만 낸다.
+_ACCESS_DENIED = (
+    "function Get-ScheduledTask { [CmdletBinding()] param([string]$TaskName) "
+    "$PSCmdlet.WriteError((New-Object System.Management.Automation.ErrorRecord "
+    "((New-Object System.UnauthorizedAccessException 'Access is denied'), 'AccessDenied', 'PermissionDenied', $null))) }; "
+)
+
+
+def test_task_query_error_is_unknown_not_missing(monkeypatch):
+    """정상 조회에서 확인된 부재만 '없음' — 권한·CIM 오류를 SilentlyContinue 뒤에서 '없음'(실행 409·저장 진행)으로
+    바꾸면 안 된다(Codex 리뷰 P2)."""
+    from app.routers import backup_replica as route
+
+    _pipe(monkeypatch, fakes=_OTHER_TASK_ONLY)
+    absent = route._task_info()
+    assert absent is not None and absent["exists"] is False
+
+    _pipe(monkeypatch, fakes=_ACCESS_DENIED)
+    assert route._task_info() is None
 
 
 def test_task_query_failure_returns_503_without_running_task(monkeypatch, tmp_path):

@@ -112,10 +112,13 @@ def _task_info() -> Optional[dict[str, Any]]:
     """예약 작업 상태. 조회 자체가 실패하면 None(호출자가 '모름' 으로 다룬다).
 
     출력은 UTF-8 로 고정해 엄격히 읽는다 — 한국어 Windows 의 기본 출력(CP949)을 대체 문자로 읽으면 한글 설치 경로가
-    깨져 정상 작업이 '설치 불일치'(409)가 됐다. 종료 코드·글자 해석·JSON 실패는 모두 '모름'이다."""
+    깨져 정상 작업이 '설치 불일치'(409)가 됐다. 종료 코드·글자 해석·JSON 실패는 모두 '모름'이다.
+    '없음'은 정상 조회에서 확인된 부재만이다 — -TaskName + SilentlyContinue 는 권한·CIM 오류도 '없음'으로 삼켰다.
+    tools/server_move.scheduled_task_states 처럼 전체를 Stop 으로 조회하고 이름으로 거른다."""
     script = (
+        "$ErrorActionPreference = 'Stop'; "
         "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
-        "$t = Get-ScheduledTask -TaskName '" + TASK_NAME + "' -ErrorAction SilentlyContinue; "
+        "$t = Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskName -eq '" + TASK_NAME + "' }; "
         "if (-not $t) { '{\"exists\":false}'; exit 0 }; "
         "$i = $t | Get-ScheduledTaskInfo; "
         "$a = @($t.Actions); "
