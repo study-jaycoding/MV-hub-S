@@ -348,9 +348,14 @@ export function useGenerationLibraryData({
     const items = locatedItems(location, tab, genQueryRef.current);
     const visibleIds = new Set(gensRef.current.map((item) => item.id));
     const sig = JSON.stringify([!!filtersRef.current.deleted_only, genQueryRef.current]);
+    // 보이는 목록이 이미 이 자리(지금 조회)의 것일 때만 거기에 합친다 — 새 자리의 목록을 기다리는 중에 따라가면 앞 조회의 카드가 이 자리의
+    //  위치 목록으로 남아, 뒤따른 조회가 실패해도 걷히지 않았다(81회차 F1 Codex 재확인). 아니면 주입한 카드만 두고 커서·다음 쪽도 처음부터.
+    const prevLocated = locatedRef.current;
+    const keep = sameView && (shownSigRef.current === sig || (shownSigRef.current === LOCATED_VIEW && !!prevLocated &&
+      isLocatedQuery(genQueryRef.current, prevLocated.tab, prevLocated.location)));
     // 선택 대상은 직전 locate에서 서버 확인했다. 필터 해제/폴더 이동이 필요 없고
     // 정상 페이지가 신선할 때만 추가 전체 재조회를 생략한다(캐시 수명은 연장하지 않는다).
-    const reusePage = sameView && !filtersRef.current.deleted_only &&
+    const reusePage = keep && !filtersRef.current.deleted_only &&
       lastLoadedTabRef.current === tab && !loadError &&
       !inflightRef.current && !pendingArgsRef.current && !metaBusyRef.current && !loadingMoreRef.current &&
       generationTabCacheIsFresh(tabCacheRef.current[tab], sig) &&
@@ -360,12 +365,12 @@ export function useGenerationLibraryData({
     reloadSeqRef.current++;
     lastLoadedTabRef.current = tab; // 왕복 중 탭 전환도 기존 즉시 전환 가드를 유지한다.
     if (!reusePage) delete tabCacheRef.current[tab];
-    if (!sameView) {
+    if (!keep) {
       pageCursorRef.current = null;
       trashOffsetRef.current = 0;
       setHasMore(false);
     }
-    setGens((previous) => mergeLocatedGenerations(sameView ? previous : [], keepPainted ? keepPainted(items) : items));
+    setGens((previous) => mergeLocatedGenerations(keep ? previous : [], keepPainted ? keepPainted(items) : items));
     shownSigRef.current = LOCATED_VIEW;
     setLoadError(null);
     if (sameView && !reusePage) setLocatedReload((value) => value + 1);

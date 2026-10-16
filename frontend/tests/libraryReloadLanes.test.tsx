@@ -769,3 +769,18 @@ it("위치 주입 뒤: 같은 자리를 다시 받다 실패하면 주입한 카
   await settle();
   expect([ids(), data.loadError]).toEqual([[], "500: boom"]);
 });
+
+// Codex 재확인 P2: 새 자리(B)의 목록을 기다리는 중에 따라가면(위치 주입) 앞 조회(A)의 목록에 B 카드를 합쳤고, 그 전체를 위치 목록으로 여겨 뒤따른
+//  B 조회가 실패해도 A 카드가 남았다. 보이는 목록이 이미 B 의 것일 때만 합친다.
+it("위치 주입: 새 자리의 목록을 기다리는 중에 따라가면 앞 조회의 카드에 합치지 않는다 — 뒤따른 조회가 실패해도 주입한 카드만 남는다", async () => {
+  await mount({ query: MAIN });
+  expect(ids()).toEqual(["m1", "m2"]);
+  const slowB = hold<Generation[]>(api.listGenerations);
+  show({ query: LOCATED }); // B 로 옮겼다 — 목록은 아직(그동안 A 목록을 둔다)
+  expect(ids()).toEqual(["m1", "m2"]);
+  act(() => { data.revealLocated("my", locationOf(gen("outside-page"))); });
+  vi.mocked(api.listGenerations).mockRejectedValueOnce(new Error("500: boom")); // 뒤따른 B 조회
+  await act(async () => { slowB.resolve([gen("b-old")]); }); // 주입 앞에 떠난 B 조회 — 낡아서 버린다
+  await settle();
+  expect([ids(), data.hasMore, data.loadError]).toEqual([["outside-page"], false, "500: boom"]);
+});
