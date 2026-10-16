@@ -6,7 +6,7 @@
 //    Codex 배포 전 재검토 2026-10-13). 그런 길 가운데 사용자가 미리 고를 수 있는 것(로그아웃·업데이트 완료)은 unloadHeld() 로 먼저 묻는다.
 const holders = new Set<string>();
 const PLACES: Record<string, string> = { "edit-docs": "편집 탭", "scene-save": "캔버스", "task-desc": "작업표 설명", "partial-edit": "부분 수정 창",
-  "member-planning": "PM 관리 표", comment: "코멘트" };
+  "member-planning": "PM 관리 표", comment: "코멘트", "tag-save": "태그" };
 
 /** 저장하지 못한 것을 쥔 쪽이 있는가 — 앱이 스스로 새로고침하기 전에 묻는 데 쓴다. */
 export const unloadHeld = (): boolean => holders.size > 0;

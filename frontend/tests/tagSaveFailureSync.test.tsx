@@ -109,6 +109,36 @@ it("앞선 정리를 기다리는 사이에 들어온 편집 — 그 저장이 �
   expect(settled).toHaveBeenCalledTimes(3); // C 가 저장된 뒤에도 한 번 — 여기서 씬이 최종 값으로 맞는다
 });
 
+// 81회차 실측 2 M2-6: 태그 저장은 한 줄로 차례를 선다 — 저장이 남은 채 새로고침(F5)·창 닫기(Ctrl+W)를 하면 브라우저가 묻지 않아,
+//  아직 출발하지 못한 저장이 경고 없이 사라졌다. 기존 종료 보호(lib/unloadGuard)에 '태그 저장 안 끝남'을 건다.
+const leave = () => {
+  const event = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(event);
+  return event.defaultPrevented; // 참 = 브라우저가 '떠날까요?'를 묻는다
+};
+it("태그 저장이 남아 있는 동안 새로고침·창 닫기를 하면 묻는다 — 저장이 다 끝나면(실패도) 묻지 않는다", async () => {
+  const first = deferred();
+  api.setTags.mockImplementationOnce(() => first.promise).mockResolvedValue({});
+  expect(leave()).toBe(false);
+  act(() => {
+    actions.onSetTags(generation, ["a"]);
+    actions.onSetTags(generation, ["a", "b"]);
+    actions.onSetTags(generation, ["a", "b", "c"]);
+  });
+  await settle();
+  expect(api.setTags).toHaveBeenCalledTimes(1); // 뒤의 둘은 아직 출발도 못 했다
+  expect(leave()).toBe(true);
+  first.finish();
+  await settle();
+  expect(api.setTags).toHaveBeenCalledTimes(3);
+  expect(leave()).toBe(false);
+  api.setTags.mockRejectedValueOnce(new Error("500: boom"));
+  act(() => { actions.onSetTags(generation, ["x"]); });
+  expect(leave()).toBe(true);
+  await settle();
+  expect(leave()).toBe(false); // 실패도 끝이다 — 안내는 실패 알림이 한다
+});
+
 // 14회차(조작 규칙 41): 전엔 "서버 상태로 되돌렸습니다"라고 했다. 서버에 닿지 않아 저장이 실패하면 되돌리려던 조회도 실패한다 —
 //  화면에는 저장 안 된 태그가 그대로 남고, 그 말을 믿으면 저장된 것으로 읽는다. 되돌렸는지는 여기서 다 확인할 수 없으니 단정하지 않는다.
 //  (목록 다시 받기는 실패해도 던지지 않는다 — 자기 안내 "로드 실패"를 띄우고 끝난다. 그래서 이 훅은 조회의 성패를 모른다.)

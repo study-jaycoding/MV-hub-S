@@ -10,6 +10,7 @@ import {
   replaceGenerationTags,
 } from "./generationTags";
 import { createMutationQueue } from "./mutationQueue";
+import { holdUnload } from "./unloadGuard";
 
 interface UseGenerationTagActionsArgs {
   flash: (message: string) => void;
@@ -37,6 +38,7 @@ export function useGenerationTagActions({
   const latestCallbacksRef = useRef({ flash, reload });
   latestCallbacksRef.current = { flash, reload };
   const tagQueueRef = useRef<ReturnType<typeof createMutationQueue> | null>(null);
+  const pendingSavesRef = useRef(0); // 줄에 넣고 아직 끝나지 않은 저장 수
   // 캔버스(씬)는 생성물 사본을 따로 들고 있고 완료 카드는 평소 다시 읽지 않는다. 그래서 저장 묶음이 끝날 때마다(성공·실패 모두)
   //  같은 창에 알려 그 사본을 서버 값으로 다시 읽게 한다(APP_EVENTS.generationTagsSettled → useSceneGenData).
   //  실패 때만 알리면 안 된다: 복구 조회나 앞선 다시 읽기를 기다리는 사이에 들어온 다음 편집은 그 뒤에야 저장되는데, 씬의 다시
@@ -88,15 +90,23 @@ export function useGenerationTagActions({
   };
 
   // 돌려주는 약속은 그 저장이 끝나면(실패도) 풀린다 — 사본을 든 화면(편집 탭 풀)이 '이 카드의 저장이 다 끝났나'를 본다
-  const enqueueSave = (operation: () => Promise<unknown>, total: number) =>
-    tagQueueRef.current?.enqueue(async () => {
+  //  저장이 남은 동안은 창을 닫거나 새로고침할 때 브라우저가 묻는다(lib/unloadGuard) — 줄에 선 저장은 아직 출발도 못 해, 묻지 않으면
+  //  경고 없이 사라졌다(81회차 M2-6). 마지막 저장이 끝나면(실패도) 놓는다 — 그 뒤의 목록 맞추기는 기다리지 않는다.
+  const enqueueSave = (operation: () => Promise<unknown>, total: number) => {
+    pendingSavesRef.current += 1;
+    holdUnload("tag-save", true);
+    return tagQueueRef.current?.enqueue(async () => {
       try {
         await operation();
       } catch (error) {
         if (error instanceof TagSaveError) throw error;
         throw new TagSaveError(total);
+      } finally {
+        pendingSavesRef.current -= 1;
+        if (!pendingSavesRef.current) holdUnload("tag-save", false);
       }
     });
+  };
 
   const onSetTags = (g: Generation, tags: string[]) => {
     applyGens((generations) => replaceGenerationTags(generations, g.id, "tags", tags));
