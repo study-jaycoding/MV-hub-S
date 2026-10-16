@@ -276,8 +276,13 @@ if args[:1] == ["version"]:
         sys.exit(1)
     if mode == "version-empty":
         sys.exit(0)
-    print({"version-old": "higgsfield 1.0.0", "version-garbled": "something weird happened"}.get(mode, "higgsfield 1.1.26"))
-    sys.exit(0)
+    print({
+        "version-old": "higgsfield 1.0.0",
+        "version-garbled": "something weird happened",
+        "version-suffix": "higgsfield 1.1.26???",
+        "version-old-exit1": "higgsfield 1.0.0",
+    }.get(mode, "higgsfield 1.1.26"))
+    sys.exit(1 if mode.endswith("-exit1") else 0)
 if args[:2] == ["auth", "token"]:
     if mode == "token-stalls":
         stall()
@@ -426,6 +431,10 @@ def test_try_cli_version_check_cannot_hang(tmp_path, mode, chosen):
         ("version-exit1", 0, False, "Could not confirm the Higgsfield CLI version"),
         ("version-empty", 0, False, "Could not confirm the Higgsfield CLI version"),
         ("version-garbled", 0, False, "Could not confirm the Higgsfield CLI version"),
+        ("version-suffix", 0, False, "Could not confirm the Higgsfield CLI version"),  # 둘째 단어 전체가 숫자 판이어야
+        # 판을 정상 형식으로 찍어도 종료 코드가 실패면 확인 불가 — 다른 판(설치로 가면 안 됨)·같은 판(고르면 안 됨)
+        ("version-old-exit1", 0, False, "Could not confirm the Higgsfield CLI version"),
+        ("version-ok-exit1", 0, False, "Could not confirm the Higgsfield CLI version"),
         ("helper-crash", 0, False, "Could not confirm the Higgsfield CLI version"),
         ("version-old", 1, False, "No pinned Higgsfield CLI available"),
         ("version-ok", 0, True, "Using Higgsfield CLI 1.1.26"),

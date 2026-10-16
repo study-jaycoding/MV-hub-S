@@ -3209,7 +3209,7 @@ def _startup_version(cli: str) -> str:
     for line in (done.stdout or "").splitlines():
         parts = line.split()
         if len(parts) >= 2 and not parts[0].startswith(";"):
-            return parts[1] if re.fullmatch(r"\d+(?:\.\d+)+\S*", parts[1]) else "?"
+            return parts[1] if re.fullmatch(r"\d+(?:\.\d+)+", parts[1]) else "?"  # 단어 전체가 숫자 판일 때만
     return "?"
 
 
