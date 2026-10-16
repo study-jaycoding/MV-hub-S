@@ -6,7 +6,8 @@ asyncio subprocess 로 `higgsfield` CLI 를 감싼다. 필드 매핑은 실제
 
 Windows 함정(검증 완료):
 - `higgsfield` 는 npm 셰임 `higgsfield.CMD` 다. PATH 이름이 아니라
-  `shutil.which()` 로 해석한 절대경로로 실행해야 FileNotFoundError 가 안 난다.
+  `shutil.which()` 로 해석한 절대경로로 찾고, 실행은 셰임이 아니라 옆 패키지의
+  JS 를 node 로 직접 한다(cli_argv — cmd.exe 가 인자의 & | 를 명령으로 읽는다).
 - subprocess 는 Proactor 이벤트 루프가 필요하다. Python 3.14 의 Windows 기본
   루프가 이미 Proactor 이고 uvicorn 도 이를 사용하므로 별도 정책 설정은 안 한다.
 
@@ -162,18 +163,57 @@ def cli_path() -> str:
     return _CLI_PATH
 
 
+_CLI_JS_REL = os.path.join("node_modules", "@higgsfield", "cli", "bin", "higgsfield.js")
+
+
+def cli_argv() -> list[str]:
+    """실행 인자 앞부분. Windows npm 셰임(.cmd/.bat)은 cmd.exe 가 인자의 & | 를 명령으로
+    읽으므로(F-C-01) 셰임 옆 패키지의 JS 를 node 로 직접 실행한다. 전역 npm·릴리스 번들
+    (runtime\\higgsfield) 모두 같은 상대 구조다. 못 찾으면 셰임으로 되돌아가지 않고 실패한다."""
+    path = cli_path()
+    if os.name != "nt" or not path.lower().endswith((".cmd", ".bat")):
+        return [path]
+    base = os.path.dirname(path)
+    js = os.path.join(base, _CLI_JS_REL)
+    if not os.path.isfile(js):
+        raise CLIError("higgsfield CLI 의 JS 진입점을 찾을 수 없음 (셰임 .cmd 는 실행하지 않음)")
+    # 셰임 옆 → 번들 runtime\node → PATH. PATH 는 'node.exe' 로 찾아 node.cmd 류 셰임을 피한다.
+    for node in (
+        os.path.join(base, "node.exe"),
+        os.path.join(os.path.dirname(base), "node", "node.exe"),
+        shutil.which("node.exe"),
+    ):
+        if node and os.path.isfile(node):
+            return [node, js]
+    raise CLIError("node.exe 를 찾을 수 없음 (셰임 .cmd 는 실행하지 않음)")
+
+
 def cli_available() -> bool:
     try:
-        cli_path()
+        cli_argv()
         return True
     except CLIError:
         return False
 
 
+# 모델 id 는 인자로 CLI 에 그대로 간다. 실제 카탈로그 꼴(영숫자 시작, _ . - : /)만 받는다 —
+# 공백·제어문자·셸 문자·'-' 로 시작하는 옵션 꼴은 거절(라우트·브리지 공용).
+_MODEL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
+
+
+def valid_model_id(value: Any) -> bool:
+    return isinstance(value, str) and _MODEL_ID_RE.fullmatch(value) is not None
+
+
+def _require_model_id(value: Any) -> None:
+    if not valid_model_id(value):
+        raise CLIError("모델 id 형식이 올바르지 않습니다")
+
+
 async def _run(*args: str, timeout: float = 60.0) -> str:
     """CLI 를 실행하고 stdout(텍스트)을 반환. 절대경로로 실행."""
     proc = await asyncio.create_subprocess_exec(
-        cli_path(),
+        *cli_argv(),
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -628,6 +668,7 @@ async def _list_models_uncached(timeout: float) -> list[dict[str, Any]]:
 async def get_model_params(job_set_type: str, timeout: float = 60.0) -> dict[str, Any]:
     """모델의 CLI 조절 가능 파라미터 스키마 — model get <job_set_type> --json. 1시간 TTL 캐시(불변).
     동시 miss 는 single-flight 로 CLI 1회에 합류(R5 2-C1)."""
+    _require_model_id(job_set_type)
     ckey = f"params:{job_set_type}"
     cached = _cache_get(ckey, 3600.0)
     if cached is not None:
@@ -945,6 +986,7 @@ async def estimate_cost(
     # semaphore-free 로 즉시 반환한다 — 종전엔 캐시 응답도 동시 2개 게이트 뒤에 줄서
     # 느린 CLI 견적이 즉시 응답을 막았다. 스키마 miss 가능 경로는 게이트 안에서만 CLI 를
     # 부른다(게이트 밖 무제한 model get 방지).
+    _require_model_id(model)
     _load_cost_cache()
     if model in _PARAM_NAMES_CACHE:
         # 스키마 확정 — _param_args 는 subprocess 없는 순수 계산

@@ -74,6 +74,8 @@ async def list_models():
 @router.get("/models/{job_set_type}/params")
 async def model_params(job_set_type: str):
     """모델의 CLI 조절 가능 파라미터 스키마(동적 옵션 렌더용)."""
+    if not cli_bridge.valid_model_id(job_set_type):
+        raise HTTPException(status_code=422, detail="모델 id 형식이 올바르지 않습니다")
     try:
         return await cli_bridge.get_model_params(job_set_type)
     except cli_bridge.CLIError as e:
@@ -302,6 +304,8 @@ async def unselect_workspace(request: Request):
 @router.post("/cost")
 async def estimate_cost(body: CostIn):
     """예상 크레딧 추정(잡 생성 안 함). Generate 버튼에 표시."""
+    if not cli_bridge.valid_model_id(body.model):
+        raise HTTPException(status_code=422, detail="모델 id 형식이 올바르지 않습니다")
     try:
         return await cli_bridge.estimate_cost(body.model, body.params, body.prompt)
     except cli_bridge.CLIError as e:
