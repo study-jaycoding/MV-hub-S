@@ -117,6 +117,31 @@ def test_agent_first_account_check_retries_a_transient_failure(monkeypatch):
     assert slept == [1]
 
 
+def _ws(*rows) -> str:
+    return json.dumps([{"id": i, "name": i, "plan_type": plan, "is_selected": sel} for i, plan, sel in rows])
+
+
+@pytest.mark.parametrize(
+    "listing, expected",
+    [
+        pytest.param((0, _ws(("me", "personal", True), ("team", "team", False)), ""), [], id="existing-choice-kept"),
+        pytest.param((0, _ws(("me", "personal", False), ("team", "enterprise", False)), ""), ["team"], id="one-shared"),
+        pytest.param((0, _ws(("me", "personal", False)), ""), ["me"], id="only-one"),
+        pytest.param((0, _ws(("a", "team", False), ("b", "team", False)), ""), [], id="several-shared-asks"),
+        pytest.param((1, "", NETWORK_ERROR), [], id="list-failure-skips"),
+    ],
+)
+def test_startup_autoselect_keeps_the_selection_rules(monkeypatch, listing, expected):
+    agent = _load_agent()
+    script = {"workspace list": [listing]}
+    script.update({f"workspace set {ws_id}": [(0, "", "")] for ws_id in ("me", "team", "a", "b")})
+    calls, _slept = _fake_cli(monkeypatch, agent, script)
+
+    agent._startup_autoselect("hf")
+
+    assert calls == ["workspace list"] + [f"workspace set {ws_id}" for ws_id in expected]
+
+
 # ── 시간 초과된 CLI 를 실제로 끝내고 회수하는가(실제 프로세스) ─────────────────────────────────────
 
 _HANGING_HF = r'''
@@ -184,6 +209,95 @@ def test_startup_check_timeout_kills_the_cli_tree_and_retries(tmp_path):
         assert calls.count("account status") == 3  # 시간 초과 뒤에도 다음 재시도로 갔다
         pids = [int(pid) for line in (tmp_path / "pids.txt").read_text(encoding="ascii").split("\n") for pid in line.split()]
         assert len(pids) == 6 and not [pid for pid in pids if _alive(pid)]  # 가짜 CLI 와 손자까지 끝났다
+    finally:
+        pid_file = tmp_path / "pids.txt"
+        for pid in (pid_file.read_text(encoding="ascii").split() if pid_file.exists() else []):
+            subprocess.run(["taskkill", "/PID", pid, "/T", "/F"], capture_output=True)
+
+
+# ── 배치의 자동 선택(점검 앞 단계)도 멈춘 CLI 에 묶이지 않는가(실제 배치 구간 + 실제 프로세스) ──────────
+
+_STALLING_HF = r'''
+import os, subprocess, sys, time
+here = os.path.dirname(os.path.abspath(__file__))
+mode = os.environ["FAKE_HF_MODE"]
+args = [a for a in sys.argv[1:] if a != "--json"]
+with open(os.path.join(here, "hf_calls.txt"), "a", encoding="ascii") as log:
+    log.write(" ".join(args) + "\n")
+
+
+def stall():
+    # 출력 파이프를 물려받은 손자를 띄우고 자신도 멈춘다(설치된 CLI 의 Node -> hf.exe 꼴)
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(90)"])
+    with open(os.path.join(here, "pids.txt"), "a", encoding="ascii") as log:
+        log.write(f"{os.getpid()} {child.pid}\n")
+    time.sleep(90)
+
+
+if args[:1] == ["auth"]:
+    sys.exit(0)
+if args[:2] == ["workspace", "list"]:
+    if mode == "list-stalls":
+        stall()
+    print('[{"id": "ws-team", "name": "Team", "plan_type": "team", "is_selected": false},'
+          ' {"id": "ws-me", "name": "Me", "plan_type": "personal", "is_selected": false}]')
+    sys.exit(0)
+if args[:2] == ["workspace", "set"]:
+    stall()
+if args[:2] == ["account", "status"]:
+    print('{"email": "worker@example.test"}')
+    sys.exit(0)
+sys.exit(9)
+'''
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cmd 전용")
+@pytest.mark.parametrize("mode, set_calls", [("list-stalls", 0), ("set-stalls", 1)])
+def test_agent_bat_autoselect_cannot_hang_before_the_account_check(tmp_path, mode, set_calls):
+    """점검 앞의 자동 선택(workspace list · 조건부 set)에 제한이 없으면 CLI 가 멈출 때 점검·앱 창 열기에 닿지 못한다
+    (Codex 재확인 P1). 목록이 멈추면 자동 선택을 건너뛰고, set 은 한 번만 — 재시도하지 않는다."""
+    source = AGENT_PATH.read_text(encoding="utf-8")
+    assert source.count("_STARTUP_CHECK_TIMEOUT = 20\n") == 1
+    # 시험에서만 20초 제한을 1초로 — 배치 구간은 그대로, agent_push.py 는 상수 하나만 바꾼 사본
+    (tmp_path / "agent_push.py").write_text(
+        source.replace("_STARTUP_CHECK_TIMEOUT = 20\n", "_STARTUP_CHECK_TIMEOUT = 1\n"), encoding="utf-8"
+    )
+    (tmp_path / "fake_hf.py").write_text(_STALLING_HF, encoding="utf-8")
+    hf = tmp_path / "hf.cmd"
+    hf.write_text(f'@"{sys.executable}" "%~dp0fake_hf.py" %*\r\n', encoding="ascii")
+    probe = tmp_path / "probe.bat"
+    probe.write_text("\r\n".join([
+        "@echo off",
+        "setlocal",
+        f'set "ROOT={tmp_path}\\"',
+        f'set "PY_EXE={sys.executable}"',
+        'set "PY_ARGS="',
+        f'set "HF={hf}"',
+        f'set "TEMP={tmp_path}"',
+        'set "RUN_AGENT=1"',
+        *_bat_segment(),
+        "echo RUN_AGENT=%RUN_AGENT%",
+    ]) + "\r\n", encoding="ascii")
+    runner = subprocess.Popen(
+        [os.environ.get("ComSpec", "cmd.exe"), "/d", "/c", "call", str(probe)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace",
+        env={**os.environ, "FAKE_HF_MODE": mode, "PYTHONUTF8": "1"},
+    )
+    try:
+        try:
+            out, err = runner.communicate(timeout=40)
+        except subprocess.TimeoutExpired:
+            subprocess.run(["taskkill", "/PID", str(runner.pid), "/T", "/F"], capture_output=True)
+            runner.communicate()
+            pytest.fail("자동 선택 단계의 CLI 가 멈춰 40초 안에 계정 점검으로 넘어가지 못했다")
+        assert "YOUR HIGGSFIELD CLI ACCOUNT" in out, out + err  # 다음 점검까지 갔다
+        assert "RUN_AGENT=1" in out
+        calls = (tmp_path / "hf_calls.txt").read_text(encoding="ascii").splitlines()
+        assert [call for call in calls if call.startswith("workspace set")] == ["workspace set ws-team"] * set_calls
+        assert calls.count("workspace list") == 1  # 자동 선택의 목록 조회도 재시도하지 않는다
+        pids = [int(pid) for pid in (tmp_path / "pids.txt").read_text(encoding="ascii").split()]
+        assert len(pids) == 2 and not [pid for pid in pids if _alive(pid)]  # 멈춘 CLI 와 손자까지 끝났다
     finally:
         pid_file = tmp_path / "pids.txt"
         for pid in (pid_file.read_text(encoding="ascii").split() if pid_file.exists() else []):

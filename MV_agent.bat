@@ -273,7 +273,10 @@ REM Only kicks in if nothing is chosen yet - an existing choice (incl. personal)
 REM 'team' AND 'enterprise' plans both count as shared (enterprise upgrade broke the old
 REM plan_type=='team' filter and new installs fell through to the manual prompt).
 REM Falls back to the single workspace. Multiple shared candidates -> ask below (avoid wrong billing).
-"%PY_EXE%" %PY_ARGS% -c "import subprocess,sys,json; hf=sys.argv[1]; r=subprocess.run([hf,'workspace','list','--json'],capture_output=True,text=True); ws=json.loads(r.stdout or '[]') if r.returncode==0 else []; ws=ws if isinstance(ws,list) else []; sel=any(w.get('is_selected') for w in ws); shared=[w for w in ws if str(w.get('plan_type') or '').lower() not in ('', 'free', 'private', 'personal')]; pick=(shared[0] if len(shared)==1 else (ws[0] if len(ws)==1 else None)); (not sel and pick) and subprocess.run([hf,'workspace','set',pick['id']])" "%HF%" >nul 2>nul
+REM agent_push.py --startup-autoselect: list and set each have a time limit and the stalled CLI tree
+REM is killed, so a hung CLI cannot block the account check below. A failed list skips quietly;
+REM the set is never retried.
+"%PY_EXE%" %PY_ARGS% "%ROOT%agent_push.py" --startup-autoselect "%HF%" >nul 2>nul
 REM Read-only account check, classified - not one exit code. A single 'account status' failure,
 REM even a brief network error, used to read as 'no workspace selected' and kept the agent OFF
 REM for the whole run. agent_push.py --startup-check asks up to 3 times, 1s and 2s apart, and

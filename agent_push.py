@@ -3159,9 +3159,31 @@ def _startup_account_status(cli: str, attempts: int = 3) -> tuple[str, dict | st
     return "unknown", detail
 
 
+def _startup_cli(argv: list[str]) -> str:
+    """MV_agent.bat 이 넘긴 CLI — 맨 이름이면 PATH 에서 .cmd 셰임까지 찾는다(그래야 _cli_argv 가 Node 로 직접 부른다)."""
+    return (shutil.which(argv[0]) or argv[0]) if argv else _cli()
+
+
+def _startup_autoselect(cli: str) -> None:
+    """기동 때 워크스페이스 자동 선택(MV_agent.bat) — 아무것도 선택돼 있지 않을 때만, 공유 공간이 하나면 그것,
+    공간이 하나뿐이면 그것(기존 규칙 그대로). 목록 조회 실패·시간 초과면 조용히 건너뛴다. 선택 쓰기는 한 번만 —
+    다시 시도하지 않는다. 둘 다 제한 시간 + 트리 회수라 CLI 가 멈춰도 뒤의 계정 점검으로 넘어간다(81회차 리뷰 P1)."""
+    workspaces, _err = _run_cli_json(cli, "workspace", "list", timeout=_STARTUP_CHECK_TIMEOUT, kill_tree=True)
+    if not isinstance(workspaces, list) or not all(isinstance(w, dict) for w in workspaces):
+        return
+    if any(w.get("is_selected") for w in workspaces):
+        return
+    shared = [w for w in workspaces if str(w.get("plan_type") or "").lower() not in ("", "free", "private", "personal")]
+    pick = shared[0] if len(shared) == 1 else (workspaces[0] if len(workspaces) == 1 else None)
+    if not pick or not pick.get("id"):
+        return
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        _run_with_tree_kill([*_cli_argv(cli), "workspace", "set", str(pick["id"])], _STARTUP_CHECK_TIMEOUT)
+
+
 def _startup_check_main(argv: list[str]) -> int:
     """MV_agent.bat 용 — 상태는 종료 코드(_STARTUP_EXIT_CODES)로, 보일 글은 stdout 으로."""
-    cli = (shutil.which(argv[0]) or argv[0]) if argv else _cli()
+    cli = _startup_cli(argv)
     state, found = _startup_account_status(cli)
     if isinstance(found, dict):
         for key, value in found.items():
@@ -4006,4 +4028,7 @@ def main() -> None:
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--startup-check"]:
         sys.exit(_startup_check_main(sys.argv[2:]))
+    if sys.argv[1:2] == ["--startup-autoselect"]:
+        _startup_autoselect(_startup_cli(sys.argv[2:]))
+        sys.exit(0)
     main()
