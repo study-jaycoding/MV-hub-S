@@ -410,6 +410,43 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(catalog["paths"], ["ep001/c0010"])
         self.assertEqual(second["folder_paths"], catalog["paths"])
 
+    async def test_transfer_folder_checks_do_not_block_event_loop(self):
+        """F-B-02 — 준비 단계의 폴더 안전 검사(_folder_dir, NAS 에선 Path.resolve 3회)가 이벤트 루프에서 돌아
+        항목 수만큼 허브 전체 응답을 멈췄다. 검사마다 50ms 를 넣고 20개를 보내는 동안 10ms 박동의 최대 지연을 잰다."""
+        import asyncio
+
+        generations = [self._generation(i, f"ep001/c{i:04d}") for i in range(1, 20)]
+        generations.insert(5, self._generation(20, "../outside"))
+        original = resolve_transfer._folder_dir
+
+        def slow_folder_dir(*args):
+            time.sleep(0.05)
+            return original(*args)
+
+        gaps: list[float] = []
+        done = asyncio.Event()
+
+        async def heartbeat():
+            last = time.perf_counter()
+            while not done.is_set():
+                await asyncio.sleep(0.01)
+                now = time.perf_counter()
+                gaps.append(now - last)
+                last = now
+
+        beat = asyncio.create_task(heartbeat())
+        await asyncio.sleep(0)
+        with mock.patch.object(resolve_transfer, "_folder_dir", side_effect=slow_folder_dir):
+            result = await self._transfer(generations, "heartbeat")
+        done.set()
+        await beat
+
+        self.assertLess(max(gaps), 0.3, f"이벤트 루프가 {max(gaps):.2f}초 멈춤")
+        self.assertEqual([item["generation_id"] for item in result["items"]], [g["id"] for g in generations])
+        self.assertEqual((result["downloaded"], result["error_count"]), (19, 1))
+        self.assertIn("경로 안전성", result["items"][5]["error"])
+        self.assertFalse((self.root / "outside").exists())
+
     async def test_unsafe_folder_is_reported_without_escape(self):
         result = await self._transfer(
             [self._generation(1, "../outside")], "unsafe-folder"
