@@ -1267,15 +1267,16 @@ def test_periodic_account_report_always_collects_fresh_status() -> None:
 
 
 def test_agent_bat_checks_account_status_with_single_cli_call() -> None:
-    """R3 3-A: MV_agent.bat 은 account status 를 검사·표시용으로 두 번 부르지 않는다(1회 캡처)."""
+    """R3 3-A: MV_agent.bat 은 account status 를 검사·표시용으로 두 번 부르지 않는다(1회 캡처).
+    81회차 F-C-04 부터 검사는 agent_push.py --startup-check 한 번이 맡는다 — 정상이면 CLI 1회
+    (test_agent_startup_check 의 healthy-asks-once), 배치는 account status 를 직접 부르지 않는다."""
     bat = (AGENT_PATH.parent / "MV_agent.bat").read_text(encoding="ascii")
-    status_calls = [
-        line for line in bat.splitlines()
-        if 'call "%HF%" account status' in line and not line.strip().startswith("REM")
-    ]
-    assert len(status_calls) == 1
-    assert ">" in status_calls[0]  # 출력 캡처(표시용 재호출 없이 type 로 재사용)
-    assert "2>&1" in status_calls[0]  # stderr 경고도 종전 표시 호출처럼 보존(코덱스 P3)
+    code = [line for line in bat.splitlines() if not line.strip().startswith("REM")]
+    assert not [line for line in code if 'call "%HF%" account status' in line]
+    checks = [line for line in code if '"%ROOT%agent_push.py" --startup-check' in line]
+    assert len(checks) == 1
+    assert ">" in checks[0]  # 출력 캡처(표시용 재호출 없이 type 로 재사용)
+    assert "2>&1" in checks[0]  # stderr 경고도 종전 표시 호출처럼 보존(코덱스 P3)
     assert 'type "%TEMP%\\mvhub_acct_status.tmp"' in bat
 
 

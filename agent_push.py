@@ -3102,6 +3102,52 @@ def _cli_account_email(cli: str) -> str | None:
     return acct.get("email") if isinstance(acct, dict) else None
 
 
+# 기동 때 CLI 계정 확인 — MV_agent.bat(--startup-check)과 에이전트 첫 확인이 같은 규칙을 쓴다(81회차 F-C-04).
+# 한 번의 실패(일시 통신 오류 포함)를 '워크스페이스 미선택'으로 단정해 그 실행 내내 에이전트를 끄던 것을 고친다.
+# 미선택은 해석된 workspace 목록에 선택이 없을 때만, 로그인 필요는 확인된 CLI 오류 형식('auth')일 때만이다.
+# 시간 초과·통신·잘못된 JSON·모르는 실패는 '확인 불가' — 최초 포함 3회, 1초·2초 쉬고 다시 묻는다. 읽기만 한다.
+_STARTUP_CHECK_TIMEOUT = 20
+_STARTUP_EXIT_CODES = {"ok": 0, "unselected": 3, "auth": 4, "unknown": 5}
+_STARTUP_FAILURES = {
+    "unselected": "[오류] Higgsfield 워크스페이스가 선택되지 않았습니다. `higgsfield workspace set [id]` 후 다시 실행하세요.",
+    "auth": "[오류] Higgsfield CLI 로그인이 필요합니다. `hf auth login` 후 다시 실행하세요.",
+    "unknown": "[오류] Higgsfield CLI 계정을 3번 물었지만 확인하지 못했습니다(통신·CLI 응답 문제). 연결을 확인한 뒤 다시 실행하세요.",
+}
+
+
+def _startup_account_status(cli: str, attempts: int = 3) -> tuple[str, dict | str]:
+    """('ok', 계정) · ('unselected' | 'auth' | 'unknown', 사유)."""
+    detail = ""
+    for attempt in range(attempts):
+        if attempt:
+            time.sleep(attempt)
+        acct, err = _run_cli_json(cli, "account", "status", timeout=_STARTUP_CHECK_TIMEOUT)
+        if isinstance(acct, dict) and acct.get("email"):
+            return "ok", acct
+        detail = err or "account status 응답에 email 이 없습니다"
+        if _classify_cli_error(err) == "auth":
+            return "auth", detail
+        workspaces, ws_err = _run_cli_json(cli, "workspace", "list", timeout=_STARTUP_CHECK_TIMEOUT)
+        if _classify_cli_error(ws_err) == "auth":
+            return "auth", ws_err
+        if isinstance(workspaces, list) and not any(isinstance(w, dict) and w.get("is_selected") for w in workspaces):
+            return "unselected", detail
+    return "unknown", detail
+
+
+def _startup_check_main(argv: list[str]) -> int:
+    """MV_agent.bat 용 — 상태는 종료 코드(_STARTUP_EXIT_CODES)로, 보일 글은 stdout 으로."""
+    cli = (shutil.which(argv[0]) or argv[0]) if argv else _cli()
+    state, found = _startup_account_status(cli)
+    if isinstance(found, dict):
+        for key, value in found.items():
+            if value is not None and not isinstance(value, (dict, list)):
+                print(f"  {key}: {value}")
+    else:
+        print(f"  {found}")
+    return _STARTUP_EXIT_CODES[state]
+
+
 # ── 사이클 범위 계정 snapshot (R2 이월 3-A) ─────────────────────────────────
 # 한 연속 사이클(_initial_cycle 1회, 또는 롱폴 복귀 후 한 반복) 안에서 execute/tracking/
 # push/보고가 같은 CLI `account status`/`workspace list` 를 각각 다시 부르지 않게 한다.
@@ -3836,9 +3882,11 @@ def main() -> None:
         token = login(server, args.email, password)
         creds = {"email": args.email, "password": password}
 
-    cli_email = _cli_account_email(cli)
-    if not cli_email:
-        sys.exit("[오류] Higgsfield CLI 로그인 계정을 확인할 수 없습니다. `hf auth login` 후 다시 실행하세요.")
+    state, found = _startup_account_status(cli)
+    if state != "ok":
+        print(f"[경고] {found}")
+        sys.exit(_STARTUP_FAILURES[state])
+    cli_email = found["email"]
     if not _acquire_account_mutex(cli_email):
         sys.exit(
             f"[오류] {cli_email} 계정의 생성 에이전트가 이미 실행 중입니다. "
@@ -3932,4 +3980,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--startup-check"]:
+        sys.exit(_startup_check_main(sys.argv[2:]))
     main()

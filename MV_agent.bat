@@ -274,29 +274,44 @@ REM 'team' AND 'enterprise' plans both count as shared (enterprise upgrade broke
 REM plan_type=='team' filter and new installs fell through to the manual prompt).
 REM Falls back to the single workspace. Multiple shared candidates -> ask below (avoid wrong billing).
 "%PY_EXE%" %PY_ARGS% -c "import subprocess,sys,json; hf=sys.argv[1]; r=subprocess.run([hf,'workspace','list','--json'],capture_output=True,text=True); ws=json.loads(r.stdout or '[]') if r.returncode==0 else []; ws=ws if isinstance(ws,list) else []; sel=any(w.get('is_selected') for w in ws); shared=[w for w in ws if str(w.get('plan_type') or '').lower() not in ('', 'free', 'private', 'personal')]; pick=(shared[0] if len(shared)==1 else (ws[0] if len(ws)==1 else None)); (not sel and pick) and subprocess.run([hf,'workspace','set',pick['id']])" "%HF%" >nul 2>nul
-REM One CLI call only - keep both the exit code (health check) and the output (display).
-REM The old flow ran 'account status' twice back to back (check, then show) = 2 CLI startups.
-call "%HF%" account status > "%TEMP%\mvhub_acct_status.tmp" 2>&1
-if errorlevel 1 (
-  echo.
+REM Read-only account check, classified - not one exit code. A single 'account status' failure,
+REM even a brief network error, used to read as 'no workspace selected' and kept the agent OFF
+REM for the whole run. agent_push.py --startup-check asks up to 3 times, 1s and 2s apart, and
+REM exits 0 = OK, 3 = no workspace selected, 4 = sign-in needed, anything else = could not confirm.
+REM Healthy = one CLI call; its output is captured once and shown below.
+"%PY_EXE%" %PY_ARGS% "%ROOT%agent_push.py" --startup-check "%HF%" > "%TEMP%\mvhub_acct_status.tmp" 2>&1
+set "_ACCT_RC=%ERRORLEVEL%"
+if "%_ACCT_RC%"=="0" goto :acct_ok
+echo.
+if "%_ACCT_RC%"=="3" (
   echo  [action needed] No Higgsfield workspace selected - generation is OFF until you set one:
   call "%HF%" workspace list
   echo     run:  higgsfield workspace set [id]   then re-run MV_agent.bat.
-  echo.
-  set "RUN_AGENT=0"
+) else if "%_ACCT_RC%"=="4" (
+  echo  [action needed] Higgsfield sign-in is missing or expired - generation is OFF.
+  echo     run:  higgsfield auth login   then re-run MV_agent.bat.
 ) else (
-  echo.
-  echo  ===========================================================================
-  echo   YOUR HIGGSFIELD CLI ACCOUNT ^(verify FIRST^) - shown below.
-  echo   Log in to the hub with the SAME email. Your generations are pushed to the
-  echo   team server under that account; a different hub login will be REJECTED.
-  echo   If they differ, the running agent will OFFER to switch the CLI account
-  echo   for you ^(answer y^) - no separate login script needed.
-  echo  ===========================================================================
-  type "%TEMP%\mvhub_acct_status.tmp"
-  echo  ===========================================================================
-  echo.
+  echo  [warn] Could not confirm the Higgsfield account after 3 tries - network or CLI did not answer.
+  echo         This is not a login or workspace problem. Generation is OFF for this run;
+  echo         check the connection, then re-run MV_agent.bat.
 )
+type "%TEMP%\mvhub_acct_status.tmp"
+echo.
+set "RUN_AGENT=0"
+goto :acct_done
+:acct_ok
+echo.
+echo  ===========================================================================
+echo   YOUR HIGGSFIELD CLI ACCOUNT ^(verify FIRST^) - shown below.
+echo   Log in to the hub with the SAME email. Your generations are pushed to the
+echo   team server under that account; a different hub login will be REJECTED.
+echo   If they differ, the running agent will OFFER to switch the CLI account
+echo   for you ^(answer y^) - no separate login script needed.
+echo  ===========================================================================
+type "%TEMP%\mvhub_acct_status.tmp"
+echo  ===========================================================================
+echo.
+:acct_done
 if exist "%TEMP%\mvhub_acct_status.tmp" del "%TEMP%\mvhub_acct_status.tmp" >nul 2>nul
 
 :agent_stage
