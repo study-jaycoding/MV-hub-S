@@ -5,6 +5,7 @@ import type { CanvasGenerationLink } from "../../lib/canvasGenerationRecovery";
 import { errorDetail, getAuthToken, jsonBody, jsonFetch } from "../../lib/http";
 import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
+import { useT } from "../../lib/i18n";
 import { modelBlockMessage } from "../../lib/modelPolicy";
 import { sameSceneContent } from "../../lib/sceneAbsorb";
 import { confirmSceneWrite, listPersistedScenes, listScenes, type Scene } from "../../lib/scenes";
@@ -68,6 +69,8 @@ export function mcpInstallCommand(setup: McpSetup): string {
 }
 
 export function McpConnection(props: McpConnectionProps) {
+  // 화면 글만 번역한다(Jay 2026-10-16). 상태·오류 글은 한국어 원문으로 두고 보일 때 t — LLM 응답·서버에 남는 글은 그대로.
+  const t = useT();
   const [code, setCode] = useState("");
   const [connected, setConnected] = useState<Connected | null>(null);
   const [error, setError] = useState("");
@@ -391,57 +394,57 @@ export function McpConnection(props: McpConnectionProps) {
 
   if (!visible) return null;
   return <div className="mcp-backdrop">
-    <div className="mcp-dialog" ref={modal} role="dialog" aria-modal="true" aria-label="MV·MCP 연결">
-      {/* 제목·✕ 는 설정 창과 같은 머리(Jay 2026-10-16 모의 그림) — 닫기 단추의 aria-label 은 시험·초점 복귀가 붙잡는다 */}
-      <div className="mcp-heading"><h2>MV·MCP 연결</h2><button className="mcp-close" onClick={closePanel} disabled={busy} aria-label="닫기">✕</button></div>
+    <div className="mcp-dialog" ref={modal} role="dialog" aria-modal="true" aria-label={t("MV·MCP 연결")}>
+      {/* 제목·✕ 는 설정 창과 같은 머리(Jay 2026-10-16 모의 그림) */}
+      <div className="mcp-heading"><h2>{t("MV·MCP 연결")}</h2><button className="mcp-close" onClick={closePanel} disabled={busy} aria-label={t("닫기")}>✕</button></div>
       <McpRegistration authReady={props.authReady} authKey={props.authKey} workspace={props.workspace} />
-      <details className="mcp-legacy"><summary>이전 방식 연결 · 고급 호환 설정</summary>
-      <p>아래 6자리 코드 방식은 이전 클라이언트용입니다. 이 방식은 연결한 브라우저 창을 열어 두어야 합니다.</p>
-      <p>현재 공간: <strong>{props.workspace.name || (props.workspace.scope === "personal" ? "개인 공간" : "선택 확인 필요")}</strong> · {connected ? `LLM 연결됨 · ${connected.canExecute ? "생성 실행 허용" : "조회·수동 생성만 허용"}` : "LLM 연결 안 됨"}</p>
+      <details className="mcp-legacy"><summary>{t("이전 방식 연결 · 고급 호환 설정")}</summary>
+      <p>{t("아래 6자리 코드 방식은 이전 클라이언트용입니다. 이 방식은 연결한 브라우저 창을 열어 두어야 합니다.")}</p>
+      <p>{t("현재 공간:")} <strong>{props.workspace.name || t(props.workspace.scope === "personal" ? "개인 공간" : "선택 확인 필요")}</strong> · {connected ? `${t("LLM 연결됨")} · ${t(connected.canExecute ? "생성 실행 허용" : "조회·수동 생성만 허용")}` : t("LLM 연결 안 됨")}</p>
       <div className="mcp-actions">
-        <button disabled={busy || checking || !props.authReady} onClick={() => void checkConnection(true)} aria-expanded={setupOpen} aria-controls="mcp-setup-guide">처음 연결 설정</button>
-        <button disabled={busy || checking || !props.authReady} onClick={() => void checkConnection()}>{checking ? "확인 중…" : "연결 상태 확인"}</button>
+        <button disabled={busy || checking || !props.authReady} onClick={() => void checkConnection(true)} aria-expanded={setupOpen} aria-controls="mcp-setup-guide">{t("처음 연결 설정")}</button>
+        <button disabled={busy || checking || !props.authReady} onClick={() => void checkConnection()}>{t(checking ? "확인 중…" : "연결 상태 확인")}</button>
       </div>
-      {connectionNote && <p role="status">{connectionNote}</p>}
+      {connectionNote && <p role="status">{t(connectionNote)}</p>}
       {setupOpen && <section id="mcp-setup-guide" className="mcp-setup">
-        <h3>1. LLM 프로그램에 한 번 등록</h3>
-        <p>같은 PC의 Codex 또는 Claude Code·Desktop용입니다. 웹·휴대폰 LLM의 원격 커넥터 주소로는 사용할 수 없습니다.</p>
-        {!setup ? <p>처음 연결 설정을 눌러 현재 허브의 등록 정보를 확인하세요.</p> : <>
-          <p>허브 주소: <code>{setup.url}</code></p>
-          {!setup.adapter_exists ? <p className="mcp-error">이 앱 폴더에는 MCP 어댑터가 없습니다. MCP가 포함된 개발 버전에서 연결하세요.</p> : !setup.python_exists ? <>
-            <p>MCP 실행 환경을 먼저 설치해야 합니다. Python 3.11 이상이 필요합니다. 설치 후 연결 상태를 다시 확인하세요.</p>
-            {setup.python ? <><button onClick={() => void copySetup(mcpInstallCommand(setup))}>PowerShell 설치 명령 복사</button><pre>{mcpInstallCommand(setup)}</pre></> : <p>Windows 사용자 환경 경로를 확인하지 못했습니다. 로컬 앱 실행 환경을 확인하세요.</p>}
+        <h3>{t("1. LLM 프로그램에 한 번 등록")}</h3>
+        <p>{t("같은 PC의 Codex 또는 Claude Code·Desktop용입니다. 웹·휴대폰 LLM의 원격 커넥터 주소로는 사용할 수 없습니다.")}</p>
+        {!setup ? <p>{t("처음 연결 설정을 눌러 현재 허브의 등록 정보를 확인하세요.")}</p> : <>
+          <p>{t("허브 주소:")} <code>{setup.url}</code></p>
+          {!setup.adapter_exists ? <p className="mcp-error">{t("이 앱 폴더에는 MCP 어댑터가 없습니다. MCP가 포함된 개발 버전에서 연결하세요.")}</p> : !setup.python_exists ? <>
+            <p>{t("MCP 실행 환경을 먼저 설치해야 합니다. Python 3.11 이상이 필요합니다. 설치 후 연결 상태를 다시 확인하세요.")}</p>
+            {setup.python ? <><button onClick={() => void copySetup(mcpInstallCommand(setup))}>{t("PowerShell 설치 명령 복사")}</button><pre>{mcpInstallCommand(setup)}</pre></> : <p>{t("Windows 사용자 환경 경로를 확인하지 못했습니다. 로컬 앱 실행 환경을 확인하세요.")}</p>}
           </> : <>
-            <label>사용할 프로그램 <select value={client} onChange={(event) => { setClient(event.target.value as "codex" | "claude"); setCopyNote(""); }}><option value="codex">Codex</option><option value="claude">Claude Code · Desktop</option></select></label>
-            <p>{client === "codex" ? "사용자 .codex\\config.toml에 아래 mvhub 항목을 추가하세요." : "Claude Code는 사용자 .claude.json, Claude Desktop은 claude_desktop_config.json의 mcpServers에 mvhub 항목을 추가하세요."} 기존 설정 전체를 덮어쓰지 말고, mvhub가 이미 있으면 주소와 경로를 비교하세요.</p>
-            <button onClick={() => void copySetup(mcpSetupConfig(setup, client))}>등록 설정 복사</button>
+            <label>{t("사용할 프로그램")} <select value={client} onChange={(event) => { setClient(event.target.value as "codex" | "claude"); setCopyNote(""); }}><option value="codex">Codex</option><option value="claude">Claude Code · Desktop</option></select></label>
+            <p>{t(client === "codex" ? "사용자 .codex\\config.toml에 아래 mvhub 항목을 추가하세요." : "Claude Code는 사용자 .claude.json, Claude Desktop은 claude_desktop_config.json의 mcpServers에 mvhub 항목을 추가하세요.")} {t("기존 설정 전체를 덮어쓰지 말고, mvhub가 이미 있으면 주소와 경로를 비교하세요.")}</p>
+            <button onClick={() => void copySetup(mcpSetupConfig(setup, client))}>{t("등록 설정 복사")}</button>
             <pre>{mcpSetupConfig(setup, client)}</pre>
-            <p>실행 파일 존재만 확인했습니다. 패키지 설치·LLM 등록 성공은 아직 확인하지 않았습니다.</p>
+            <p>{t("실행 파일 존재만 확인했습니다. 패키지 설치·LLM 등록 성공은 아직 확인하지 않았습니다.")}</p>
           </>}
         </>}
-        {copyNote && <p role="status">{copyNote}</p>}
-        <h3>2. LLM에서 연결 요청</h3>
-        <p>설정을 저장한 뒤 LLM 프로그램의 MCP를 다시 불러오고 “MV Hub에 연결해 줘”라고 요청하세요. LLM이 표시하는 6자리 코드를 아래에 입력합니다.</p>
-        <p>연결 후에는 “이 컷에 이미지 생성해”라고 요청하면 됩니다. 앱을 닫거나 계정·공간을 바꾸면 다시 연결해야 합니다.</p>
-        <button onClick={() => setSetupOpen(false)}>등록 안내 접기</button>
+        {copyNote && <p role="status">{t(copyNote)}</p>}
+        <h3>{t("2. LLM에서 연결 요청")}</h3>
+        <p>{t("설정을 저장한 뒤 LLM 프로그램의 MCP를 다시 불러오고 “MV Hub에 연결해 줘”라고 요청하세요. LLM이 표시하는 6자리 코드를 아래에 입력합니다.")}</p>
+        <p>{t("연결 후에는 “이 컷에 이미지 생성해”라고 요청하면 됩니다. 앱을 닫거나 계정·공간을 바꾸면 다시 연결해야 합니다.")}</p>
+        <button onClick={() => setSetupOpen(false)}>{t("등록 안내 접기")}</button>
       </section>}
-      {connected ? <p><strong>{connected.name || "AI 도구"}</strong> 연결됨 · {props.workspace.name || "개인 공간"} <button disabled={busy} onClick={() => { connectionRef.current = null; setConnected(null); context.current = null; setPlan(null); }}>연결 해제</button></p> : <div className="mcp-pair"><label>AI 도구에 표시된 6자리 연결 코드<input inputMode="numeric" autoComplete="off" value={code} maxLength={6} onChange={(event) => setCode(event.target.value.replace(/\D/g, ""))} /></label><button disabled={busy || !props.authReady || !/^\d{6}$/.test(code)} onClick={() => void pair()}>연결 허용</button></div>}
-      {error && <p role="alert" className="mcp-error">{error}</p>}
+      {connected ? <p><strong>{connected.name || t("AI 도구")}</strong> {t("연결됨")} · {props.workspace.name || t("개인 공간")} <button disabled={busy} onClick={() => { connectionRef.current = null; setConnected(null); context.current = null; setPlan(null); }}>{t("연결 해제")}</button></p> : <div className="mcp-pair"><label>{t("AI 도구에 표시된 6자리 연결 코드")}<input inputMode="numeric" autoComplete="off" value={code} maxLength={6} onChange={(event) => setCode(event.target.value.replace(/\D/g, ""))} /></label><button disabled={busy || !props.authReady || !/^\d{6}$/.test(code)} onClick={() => void pair()}>{t("연결 허용")}</button></div>}
+      {error && <p role="alert" className="mcp-error">{t(error)}</p>}
       {plan && <section>
         <h3>{plan.plan.title}</h3>
-        <p>과금 공간: <strong>{plan.plan.workspace.name || "개인 공간"}</strong> ({plan.plan.workspace.id || "personal"})<br />생성 {plan.plan.items.length}건 · 예상 {plan.plan.items.reduce((sum, item) => sum + item.estimated_credits, 0)} 크레딧</p>
-        <p>견적은 실제 과금 보장이 아닙니다. 승인 후 앱을 닫아도 이미 제출한 작업은 계속됩니다.</p>
+        <p>{t("과금 공간:")} <strong>{plan.plan.workspace.name || t("개인 공간")}</strong> ({plan.plan.workspace.id || "personal"})<br />{t("생성 {n}건 · 예상 {credits} 크레딧").replace("{n}", String(plan.plan.items.length)).replace("{credits}", String(plan.plan.items.reduce((sum, item) => sum + item.estimated_credits, 0)))}</p>
+        <p>{t("견적은 실제 과금 보장이 아닙니다. 승인 후 앱을 닫아도 이미 제출한 작업은 계속됩니다.")}</p>
         <ol className="mcp-items">{plan.plan.items.map((item, index) => <li key={item.request.canvas_link.attempt_id}>
-          <strong>{item.label}</strong> · {item.request.create.model} · {item.estimated_credits} 크레딧
-          <p>프로젝트: {projectNames[item.request.create.project_id || ""] || "이름 미확인"} ({item.request.create.project_id}) / 컷: {item.request.create.folder_path}</p>
+          <strong>{item.label}</strong> · {item.request.create.model} · {item.estimated_credits} {t("크레딧")}
+          <p>{t("프로젝트:")} {projectNames[item.request.create.project_id || ""] || t("이름 미확인")} ({item.request.create.project_id}) / {t("컷:")} {item.request.create.folder_path}</p>
           <pre>{item.request.create.display_prompt || item.request.create.prompt}</pre>
           <pre>{JSON.stringify(item.request.create.params || {}, null, 2)}</pre>
-          <p>자료: {item.reference_snapshot.length ? item.reference_snapshot.map((ref) => `${ref.name || "자료"} [${ref.asset_version || (ref.source_version ? "원본 생성물 확인" : "버전 미확인")}]`).join(", ") : "없음"}</p>
-          <p>요청 상태: {plan.items[index]?.state === "submitted" ? "접수 완료 (영상 완료 여부는 생성 카드에서 확인)" : plan.items[index]?.state} · 결과 ID: {item.request.canvas_link.generation_id}</p>
-          {plan.items[index]?.error && <p className="mcp-error">{plan.items[index].error}</p>}
+          <p>{t("자료:")} {item.reference_snapshot.length ? item.reference_snapshot.map((ref) => `${ref.name || t("자료")} [${ref.asset_version || t(ref.source_version ? "원본 생성물 확인" : "버전 미확인")}]`).join(", ") : t("없음")}</p>
+          <p>{t("요청 상태:")} {plan.items[index]?.state === "submitted" ? t("접수 완료 (영상 완료 여부는 생성 카드에서 확인)") : plan.items[index]?.state} · {t("결과 ID:")} {item.request.canvas_link.generation_id}</p>
+          {plan.items[index]?.error && <p className="mcp-error">{t(plan.items[index].error)}</p>}
         </li>)}</ol>
-        <button className="mcp-approve" disabled={busy || !connected || plan.status !== "proposed"} onClick={() => { if (connected) void runPlan(plan, connected, "app"); }}>{busy ? "처리 중…" : "앱에서 직접 생성"}</button>
-        {plan.status !== "proposed" && <p>승인한 계획은 다시 실행하지 않습니다. 저장 실패·문맥 변경으로 제출하지 못한 항목도 자동 재시도하지 않습니다. 생성 카드와 작업 상태에서 기존 요청을 먼저 확인하고, 미제출이 확인된 항목만 새 계획으로 요청하세요.</p>}
+        <button className="mcp-approve" disabled={busy || !connected || plan.status !== "proposed"} onClick={() => { if (connected) void runPlan(plan, connected, "app"); }}>{t(busy ? "처리 중…" : "앱에서 직접 생성")}</button>
+        {plan.status !== "proposed" && <p>{t("승인한 계획은 다시 실행하지 않습니다. 저장 실패·문맥 변경으로 제출하지 못한 항목도 자동 재시도하지 않습니다. 생성 카드와 작업 상태에서 기존 요청을 먼저 확인하고, 미제출이 확인된 항목만 새 계획으로 요청하세요.")}</p>}
       </section>}
       </details>
     </div>

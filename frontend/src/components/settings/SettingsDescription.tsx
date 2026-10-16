@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useT } from "../../lib/i18n";
 
 export function SettingsDescription({
   summary,
@@ -7,6 +8,7 @@ export function SettingsDescription({
   summary: ReactNode;
   children?: ReactNode;
 }) {
+  const t = useT();
   return (
     <div className="settings-description">
       <p
@@ -18,8 +20,8 @@ export function SettingsDescription({
       {children && (
         <details className="settings-help-more">
           <summary>
-            <span className="settings-more-open">더보기</span>
-            <span className="settings-more-close">접기</span>
+            <span className="settings-more-open">{t("더보기")}</span>
+            <span className="settings-more-close">{t("접기")}</span>
           </summary>
           <div className="settings-help-content">{children}</div>
         </details>

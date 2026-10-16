@@ -342,3 +342,24 @@ it.each(["scope", "unmount"])("%s 변경 뒤 늦게 도착한 등록 응답을 �
   expect(host.textContent).not.toContain(setup.url);
   expect(host.textContent).not.toContain("허브 응답 확인");
 });
+
+// Jay 2026-10-16 "번역 버전 있게" — 창에 보이는 글은 모두 영어 표가 있어야 한다. 데이터(계획 제목·프롬프트·설정 본문)는 그대로.
+it("영어 화면: 기본·처음 연결 설정·연결·계획까지 창의 글에 한글이 남지 않는다", async () => {
+  const { setLang } = await import("../src/lib/i18n");
+  const hangulLeft = () => {
+    const copy = host.cloneNode(true) as HTMLElement;
+    copy.querySelectorAll("pre, .mcp-legacy > section:not(.mcp-setup) > h3").forEach((data) => data.remove());
+    return copy.textContent!.match(/[가-힣][^.!?]*/g) ?? [];
+  };
+  try {
+    await showSetup();
+    await pair();
+    await prepare();
+    await until(() => !!host.querySelector(".mcp-items"));
+    act(() => setLang("en"));
+    expect(hangulLeft().join(" | ")).toBe("");
+    expect(host.textContent).toContain("1 generations · about 3 credits");
+  } finally {
+    act(() => setLang("ko"));
+  }
+});

@@ -43,6 +43,20 @@ it("명시적인 최초 버튼만 두 클라이언트를 허용하고 등록과 
   expect(host.querySelector(".mcp-reg-status strong")?.textContent).toBe("자료 조회와 생성 실행 권한을 해제했습니다."); // 한 문장이면 통째로
 });
 
+it("영어 화면: 등록 결과·연결 목록·상태 줄까지 한글이 남지 않고, 상태 줄은 영어에서도 첫 문장만 굵다", async () => {
+  const { setLang } = await import("../src/lib/i18n");
+  act(() => setLang("en"));
+  try {
+    io.http.mockResolvedValueOnce({ clients: [{ client: "codex", status: "configured", message: "ok" }, { client: "other", status: "manual", message: "ok", config: { mcpServers: {} } }] }).mockResolvedValueOnce({ clients: [{ ...client, scope: "account" }] });
+    await render();
+    await click("Allow Codex · Claude Code");
+    expect((host.textContent!.match(/[가-힣][^.!?]*/g) ?? []).join(" | ")).toBe("");
+    expect(host.querySelector(".mcp-reg-status strong")?.textContent).toBe("Saved connections checked.");
+  } finally {
+    act(() => setLang("ko"));
+  }
+});
+
 it("계정 전환 뒤 늦게 도착한 등록 결과를 표시하거나 권한을 자동 해제하지 않는다", async () => {
   let finish!: (value: unknown) => void;
   io.http.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
