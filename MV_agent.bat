@@ -261,9 +261,14 @@ if /i "%_CLICHK%"=="code_stale" (
 )
 
 REM --- Higgsfield login + workspace (AFTER the hub is up; interactive). ---
+REM Every non-interactive CLI call on this startup path goes through agent_push.py with a time
+REM limit, and a stalled CLI tree is killed, so a hung CLI cannot block the app window. Only
+REM 'auth login' is unbounded on purpose - a person signs in in the browser.
+REM --startup-token exits 0 = signed in, 4 = sign-in needed, anything else = could not confirm
+REM (no login prompt then; the account check below reports it).
 if not defined HF goto :agent_stage
-call "%HF%" auth token >nul 2>nul
-if errorlevel 1 (
+"%PY_EXE%" %PY_ARGS% "%ROOT%agent_push.py" --startup-token "%HF%" >nul 2>nul
+if "%ERRORLEVEL%"=="4" (
   echo     Login required - a browser window will open to sign in to Higgsfield.
   call "%HF%" auth login
 )
@@ -287,9 +292,8 @@ set "_ACCT_RC=%ERRORLEVEL%"
 if "%_ACCT_RC%"=="0" goto :acct_ok
 echo.
 if "%_ACCT_RC%"=="3" (
-  echo  [action needed] No Higgsfield workspace selected - generation is OFF until you set one:
-  call "%HF%" workspace list
-  echo     run:  higgsfield workspace set [id]   then re-run MV_agent.bat.
+  echo  [action needed] No Higgsfield workspace selected - generation is OFF until you set one.
+  echo     run:  higgsfield workspace set [id]   then re-run MV_agent.bat. Your workspaces:
 ) else if "%_ACCT_RC%"=="4" (
   echo  [action needed] Higgsfield sign-in is missing or expired - generation is OFF.
   echo     run:  higgsfield auth login   then re-run MV_agent.bat.
@@ -439,11 +443,13 @@ REM :try_cli  %1 = a Higgsfield CLI (quoted path or bare name).
 REM Sets HF=%~1 only if that CLI reports the pinned version. No-op once HF is set.
 REM Used to choose the exact binary matching hf_cli_version.txt (avoids the stale
 REM bundled-CLI shadowing a good global install, and vice-versa).
+REM 'version' runs through agent_push.py --startup-version: time limit + stalled CLI tree killed,
+REM prints the second word of the first line with two or more words (same as tokens=2 here).
 REM ---------------------------------------------------------------------------
 :try_cli
 if defined HF exit /b 0
 set "_CLIVER="
-for /f "usebackq tokens=2" %%v in (`"%~1" version 2^>nul`) do if not defined _CLIVER set "_CLIVER=%%v"
+for /f "delims=" %%v in ('""%PY_EXE%" %PY_ARGS% "%ROOT%agent_push.py" --startup-version "%~1""') do if not defined _CLIVER set "_CLIVER=%%v"
 if "%_CLIVER%"=="%HF_CLI_VERSION%" set "HF=%~1"
 exit /b 0
 

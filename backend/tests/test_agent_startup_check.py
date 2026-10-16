@@ -251,6 +251,143 @@ sys.exit(9)
 '''
 
 
+_STEP_HF = r'''
+import os, subprocess, sys, time
+here = os.path.dirname(os.path.abspath(__file__))
+mode = os.environ["FAKE_HF_MODE"]
+raw = sys.argv[1:]
+args = [a for a in raw if a != "--json"]
+with open(os.path.join(here, "hf_calls.txt"), "a", encoding="ascii") as log:
+    log.write(" ".join(raw) + "\n")
+
+
+def stall():
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(90)"])
+    with open(os.path.join(here, "pids.txt"), "a", encoding="ascii") as log:
+        log.write(f"{os.getpid()} {child.pid}\n")
+    time.sleep(90)
+
+
+if args[:1] == ["version"]:
+    if mode == "version-stalls":
+        stall()
+    print("higgsfield 1.1.26")
+    sys.exit(0)
+if args[:2] == ["auth", "token"]:
+    if mode == "token-stalls":
+        stall()
+    print("TOKEN-VALUE-MUST-NOT-SHOW")
+    sys.exit(0)
+if args[:2] == ["auth", "login"]:
+    sys.exit(0)
+if args[:2] == ["workspace", "list"]:
+    if "--json" not in raw:
+        stall()  # 배치의 미선택 안내용 재조회(사람용 표 출력)
+    print('[{"id": "ws-a", "name": "A", "plan_type": "team", "is_selected": false},'
+          ' {"id": "ws-b", "name": "B", "plan_type": "team", "is_selected": false}]')
+    sys.exit(0)
+if args[:2] == ["workspace", "set"]:
+    sys.exit(0)
+if args[:2] == ["account", "status"]:
+    if mode == "unselected":
+        sys.stderr.write("Error: no workspace\n")
+        sys.exit(1)
+    print('{"email": "worker@example.test"}')
+    sys.exit(0)
+sys.exit(9)
+'''
+
+
+def _run_stalling_probe(tmp_path: Path, body: list[str], mode: str) -> tuple[str, list[str], list[int]]:
+    """agent_push.py 사본(제한 1초) + 멈추는 가짜 CLI 로 배치 줄들을 실제 cmd 에서 돌린다. 40초 안에 못 끝나면 실패."""
+    source = AGENT_PATH.read_text(encoding="utf-8")
+    assert source.count("_STARTUP_CHECK_TIMEOUT = 20\n") == 1
+    (tmp_path / "agent_push.py").write_text(
+        source.replace("_STARTUP_CHECK_TIMEOUT = 20\n", "_STARTUP_CHECK_TIMEOUT = 1\n"), encoding="utf-8"
+    )
+    (tmp_path / "fake_hf.py").write_text(_STEP_HF, encoding="utf-8")
+    (tmp_path / "hf.cmd").write_text(f'@"{sys.executable}" "%~dp0fake_hf.py" %*\r\n', encoding="ascii")
+    probe = tmp_path / "probe.bat"
+    probe.write_text("\r\n".join([
+        "@echo off",
+        "setlocal",
+        f'set "ROOT={tmp_path}\\"',
+        f'set "PY_EXE={sys.executable}"',
+        'set "PY_ARGS="',
+        f'set "TEMP={tmp_path}"',
+        *body,
+    ]) + "\r\n", encoding="ascii")
+    runner = subprocess.Popen(
+        [os.environ.get("ComSpec", "cmd.exe"), "/d", "/c", "call", str(probe)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace",
+        env={**os.environ, "FAKE_HF_MODE": mode, "PYTHONUTF8": "1"},
+    )
+    pid_file = tmp_path / "pids.txt"
+    try:
+        try:
+            out, err = runner.communicate(timeout=40)
+        except subprocess.TimeoutExpired:
+            subprocess.run(["taskkill", "/PID", str(runner.pid), "/T", "/F"], capture_output=True)
+            runner.communicate()
+            pytest.fail("멈춘 CLI 호출에 묶여 40초 안에 다음 단계로 넘어가지 못했다")
+        calls = (tmp_path / "hf_calls.txt").read_text(encoding="ascii").splitlines()
+        pids = [int(pid) for pid in (pid_file.read_text(encoding="ascii").split() if pid_file.exists() else [])]
+        return out + err, calls, pids
+    finally:
+        for pid in (pid_file.read_text(encoding="ascii").split() if pid_file.exists() else []):
+            subprocess.run(["taskkill", "/PID", pid, "/T", "/F"], capture_output=True)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cmd 전용")
+def test_agent_bat_token_check_cannot_hang(tmp_path):
+    """auth token 확인이 멈추면 제한 시간 뒤 로그인 창을 띄우지 않고 계정 점검으로 넘어간다(Codex 재확인 2 P1)."""
+    out, calls, pids = _run_stalling_probe(
+        tmp_path, [f'set "HF={tmp_path / "hf.cmd"}"', 'set "RUN_AGENT=1"', *_bat_segment(), "echo RUN_AGENT=%RUN_AGENT%"],
+        "token-stalls",
+    )
+    assert "YOUR HIGGSFIELD CLI ACCOUNT" in out and "RUN_AGENT=1" in out, out
+    assert "auth login" not in calls  # 모르는 상태로 사람에게 로그인을 띄우지 않는다
+    assert "TOKEN-VALUE-MUST-NOT-SHOW" not in out
+    assert len(pids) == 2 and not [pid for pid in pids if _alive(pid)]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cmd 전용")
+def test_agent_bat_unselected_guidance_does_not_query_again(tmp_path):
+    """공유 공간이 여럿이라 자동 선택을 건너뛰고 점검이 '미선택'을 내면, 안내는 점검이 이미 받은 목록으로 한다 —
+    사람용 목록을 다시 물어 멈추면 앱 창 단계까지 못 갔다(Codex 재확인 2 P1)."""
+    out, calls, pids = _run_stalling_probe(
+        tmp_path, [f'set "HF={tmp_path / "hf.cmd"}"', 'set "RUN_AGENT=1"', *_bat_segment(), "echo RUN_AGENT=%RUN_AGENT%"],
+        "unselected",
+    )
+    assert "No Higgsfield workspace selected" in out and "RUN_AGENT=0" in out, out
+    assert "ws-a" in out and "ws-b" in out  # 고를 공간이 화면에 보인다
+    assert "workspace list" not in calls  # --json 없는 재조회 없음
+    assert not [call for call in calls if call.startswith("workspace set")]
+    assert pids == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cmd 전용")
+@pytest.mark.parametrize("mode, chosen", [("version-stalls", False), ("version-ok", True)])
+def test_try_cli_version_check_cannot_hang(tmp_path, mode, chosen):
+    """[3/5] CLI 판 고르기의 `version` 도 제한 시간 + 트리 회수 — 멈추면 그 CLI 를 고르지 않고 넘어간다."""
+    lines = (ROOT / "MV_agent.bat").read_bytes().decode("ascii").split("\r\n")
+    start = lines.index(":try_cli")
+    block = lines[start:lines.index("exit /b 0", start) + 1]
+    hf = tmp_path / "hf.cmd"
+    out, calls, pids = _run_stalling_probe(tmp_path, [
+        'set "HF="',
+        'set "HF_CLI_VERSION=1.1.26"',
+        f'call :try_cli "{hf}"',
+        "echo HF=[%HF%]",
+        "exit /b 0",
+        *block,
+    ], mode)
+    assert (f"HF=[{hf}]" if chosen else "HF=[]") in out, out
+    assert calls == ["version"]
+    assert not [pid for pid in pids if _alive(pid)]
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows cmd 전용")
 @pytest.mark.parametrize("mode, set_calls", [("list-stalls", 0), ("set-stalls", 1)])
 def test_agent_bat_autoselect_cannot_hang_before_the_account_check(tmp_path, mode, set_calls):

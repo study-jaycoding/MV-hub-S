@@ -3139,8 +3139,8 @@ _STARTUP_FAILURES = {
 }
 
 
-def _startup_account_status(cli: str, attempts: int = 3) -> tuple[str, dict | str]:
-    """('ok', 계정) · ('unselected' | 'auth' | 'unknown', 사유)."""
+def _startup_account_status(cli: str, attempts: int = 3) -> tuple[str, dict | list | str]:
+    """('ok', 계정) · ('unselected', 받은 workspace 목록) · ('auth' | 'unknown', 사유)."""
     detail = ""
     for attempt in range(attempts):
         if attempt:
@@ -3155,7 +3155,7 @@ def _startup_account_status(cli: str, attempts: int = 3) -> tuple[str, dict | st
         if _classify_cli_error(ws_err) == "auth":
             return "auth", ws_err
         if isinstance(workspaces, list) and not any(isinstance(w, dict) and w.get("is_selected") for w in workspaces):
-            return "unselected", detail
+            return "unselected", workspaces
     return "unknown", detail
 
 
@@ -3181,6 +3181,30 @@ def _startup_autoselect(cli: str) -> None:
         _run_with_tree_kill([*_cli_argv(cli), "workspace", "set", str(pick["id"])], _STARTUP_CHECK_TIMEOUT)
 
 
+def _startup_token(cli: str) -> int:
+    """`auth token` 확인(MV_agent.bat) — 0 로그인됨 · 4 로그인 필요(CLI 실패) · 5 확인 불가(시간 초과 등 — 배치는 로그인
+    창을 띄우지 않고 계정 점검으로 넘어간다). 토큰 값은 버린다 — 화면·로그에 남기지 않는다."""
+    try:
+        done = _run_with_tree_kill([*_cli_argv(cli), "auth", "token"], _STARTUP_CHECK_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return 5
+    return 0 if done.returncode == 0 else 4
+
+
+def _startup_version(cli: str) -> str:
+    """`version` 출력의 판(MV_agent.bat :try_cli) — 배치 for /f "tokens=2" 처럼 첫 '두 단어 이상' 줄의 둘째 단어.
+    실패·시간 초과는 '' (그 CLI 를 고르지 않는다)."""
+    try:
+        done = _run_with_tree_kill([*_cli_argv(cli), "version"], _STARTUP_CHECK_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    for line in (done.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and not parts[0].startswith(";"):
+            return parts[1]
+    return ""
+
+
 def _startup_check_main(argv: list[str]) -> int:
     """MV_agent.bat 용 — 상태는 종료 코드(_STARTUP_EXIT_CODES)로, 보일 글은 stdout 으로."""
     cli = _startup_cli(argv)
@@ -3189,6 +3213,10 @@ def _startup_check_main(argv: list[str]) -> int:
         for key, value in found.items():
             if value is not None and not isinstance(value, (dict, list)):
                 print(f"  {key}: {value}")
+    elif isinstance(found, list):  # 미선택 — 점검이 이미 받은 목록으로 안내한다(배치가 다시 묻다 멈추지 않게)
+        for workspace in found:
+            if isinstance(workspace, dict):
+                print(f"  {workspace.get('id')}  {workspace.get('name') or ''}  ({workspace.get('plan_type') or '-'})")
     else:
         print(f"  {found}")
     return _STARTUP_EXIT_CODES[state]
@@ -3930,7 +3958,8 @@ def main() -> None:
 
     state, found = _startup_account_status(cli)
     if state != "ok":
-        print(f"[경고] {found}")
+        if isinstance(found, str):
+            print(f"[경고] {found}")
         sys.exit(_STARTUP_FAILURES[state])
     cli_email = found["email"]
     if not _acquire_account_mutex(cli_email):
@@ -4030,5 +4059,10 @@ if __name__ == "__main__":
         sys.exit(_startup_check_main(sys.argv[2:]))
     if sys.argv[1:2] == ["--startup-autoselect"]:
         _startup_autoselect(_startup_cli(sys.argv[2:]))
+        sys.exit(0)
+    if sys.argv[1:2] == ["--startup-token"]:
+        sys.exit(_startup_token(_startup_cli(sys.argv[2:])))
+    if sys.argv[1:2] == ["--startup-version"]:
+        print(_startup_version(_startup_cli(sys.argv[2:])))
         sys.exit(0)
     main()
