@@ -85,12 +85,14 @@ export function GenerationThumbOverlay({
         </button>
         {tab === "team" ? (
           gen.creator_uid !== myCreatorUid ? (
+            // 가져오기 = 같은 프롬프트·레퍼런스로 내 계정에 새 생성(대기) — 하는 일이 재생성이라 같은 ↻(Jay 2026-10-16 A안).
+            //  ⬇ 는 옆의 다운로드 ⤓ 와 헷갈렸다.
             <button
               className="ov-icon ov-import"
-              title="내 워크스페이스로 가져오기"
+              title="내 워크스페이스에서 다시 생성 · 내 크레딧"
               onClick={() => onImport(gen)}
             >
-              ⬇
+              ↻
             </button>
           ) : null
         ) : (

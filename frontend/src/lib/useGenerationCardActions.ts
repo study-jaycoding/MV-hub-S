@@ -245,11 +245,11 @@ export function useGenerationCardActions({
   const onImport = async (g: Generation) => {
     try {
       await api.importToWorkspace(g.id);
-      flash("내 워크스페이스로 가져왔습니다 (history 기록).");
+      flash("내 워크스페이스에 다시 생성을 넣었습니다 (history 기록).");
       navTab("my");
       postLibraryChanged();
     } catch (e) {
-      flash("가져오기 실패: " + String(e));
+      flash("다시 생성 실패: " + String(e));
     }
   };
 

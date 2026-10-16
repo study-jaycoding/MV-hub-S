@@ -987,7 +987,7 @@ it("풀 격자의 위 여백은 고른 카드의 바깥 테두리·호버로 들
       <div className="ed-card ed-picked"><div className="card card-grid selected"><div className="card-clip"><div className="card-thumb">
         <span className="card-drag-grip">⠿</span>
         <div className="thumb-overlay"><div className="ov-bottom">
-          <button className="ov-icon">⤓</button><button className="ov-icon ov-ref">@</button><button className="ov-icon ov-import">⬇</button>
+          <button className="ov-icon">⤓</button><button className="ov-icon ov-ref">@</button><button className="ov-icon ov-import">↻</button>
         </div></div>
       </div></div></div></div>
     </div></>));
