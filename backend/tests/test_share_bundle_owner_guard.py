@@ -149,6 +149,12 @@ def test_other_accounts_alias_or_uid_claim_cannot_move_location(server):
                                         task_activity_at="2026-10-06T00:00:00Z"))
         assert out["blocked"] == 0
         assert location(gid) == (main, "ep01/c010", STAMP_SAVED)
+        assert rows_for(job) == [{"id": gid, "creator_uid": "user_B"}]  # 작성자도 주장값으로 바뀌지 않는다
+        # 그 뒤 B 의 정상 재공유는 그대로 반영된다(작성자가 A 로 넘어갔다면 여기서 막혔다)
+        out = publish_as("b@test", item(job, url, "user_B", status="done", project_id=side, folder_path="ep09/c090",
+                                        task_activity_at="2026-10-06T00:00:00Z"))
+        assert out["blocked"] == 0
+        assert location(gid) == (side, "ep09/c090", "2026-10-06T00:00:00.000000Z")
 
 
 def test_received_copy_not_on_server_keeps_its_author(server):
