@@ -20,7 +20,7 @@ v2 등록 설정에는 `--url`과 `--profile`이 들어간다. 프로필은 Wind
 한 번에 1~8개 항목을 선택하며 대기는 이미지 카드를 만들지 않는다. `all_terminal`이면 대기를 멈추고,
 `all_done`이 false이면 실패·취소·확인 필요 항목을 함께 안내한다. 25초는 대기 예산이며 조회·권한 확인 시간이 더해질 수 있다.
 `get_result`는 기존 단건 호출 호환용으로 유지한다.
-어댑터 `2026.10.16.1`은 같은 서버의 `--display-mode`로 표시 경로를 하나 선택한다.
+어댑터 `2026.10.16.2`는 같은 서버의 `--display-mode`로 표시 경로를 하나 선택한다.
 Codex 자동 등록은 `conversation`을 지정하며 다른 클라이언트와 플래그 없는 기존 설정은 `native`다.
 `conversation`은 MCP Apps 자원·UI 메타·앱 전용 도구를 등록하지 않는다(모델용 13개).
 `get_result`·`get_generation`·`show_results`는 표시 파일만 준비하고 ImageContent·별도 설명 블록을 보내지 않는다.
@@ -39,8 +39,11 @@ MCP를 재연결한 뒤 `check_connection`의 버전과 `display_mode=conversati
 **conversation 모드에서는** 이미 존재하는 이 작업 소유 로컬 폴더를 `display_directory`로 반드시 지정한다.
 예: `show_results(plan_id, item_indexes=[0,1,2], display_directory=<작업 폴더 절대경로>)`.
 응답의 `display.status=ready`인 `display.reference`를 최종 답변에 그대로 한 번 포함한다.
-묶음 조회는 `items[i].display`를 사용한다. 파일 안에 이미지와 설명이 각 한 번 들어 있으므로
-`card_text`를 답변에 다시 쓰지 않는다. 표시 파일 없는 실패·취소·미확인 항목만 별도 안내한다.
+표시 파일은 이미지만 담는다. 바로 아래에 해당 `card_text`를 일반 대화 텍스트로 한 번 안내한다.
+묶음 조회는 `items[i].display`와 `items[i].card_text`를 사용하며 맨 위 묶음 `card_text`는 출력하지 않는다.
+표시 파일 없는 실패·취소·미확인 항목도 해당 설명을 한 번 안내한다.
+`delivery.card_in_display=false`, conversation 항목의 `repeat_card_text=true`가 이 계약을 나타낸다.
+휴대폰 첨부에서 `.16.1`의 HTML 안 설명은 보이지 않았고 일반 대화 텍스트는 보였으므로 표시 위치를 분리했다.
 일반 URL·PC 경로·HTML Markdown 링크로 바꾸지 않는다.
 표시 파일은 검증한 JPEG를 포함하며 외부 요청이 없다. 로컬 사본과 경로가 대화에 남고,
 설치본·`backend/data`·NAS를 표시 폴더로 쓰지 않는다. 폴더 자동 생성·기존 파일 덮어쓰기는 하지 않는다.
