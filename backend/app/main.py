@@ -947,7 +947,7 @@ async def data_proxy(request: Request, call_next):
 
 # 생성물 목록만 gzip — data_proxy **바깥**에 둬야 위임 모드(팀 목록)의 응답까지 압축된다.
 # 실측 1,664,434 B → 85,501 B(5.1%). 경로·메서드를 좁혀 미디어·스트리밍·Range 에는 닿지 않는다.
-# 허브(AUTH off)는 같은 PC 브라우저(루프백)에는 압축하지 않는다 — list_gzip.py 머리말.
+# 허브(AUTH off)는 같은 PC 브라우저(루프백)에는 압축하지 않고, 공유 서버(AUTH on)는 레벨 1 — list_gzip.py 머리말.
 app.add_middleware(ListGzipMiddleware, **list_gzip_options(AUTH_ENABLED))
 
 

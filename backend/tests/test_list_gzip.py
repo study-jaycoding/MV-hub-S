@@ -245,14 +245,16 @@ def test_the_hub_still_compresses_for_anyone_else(client, extra):
     assert headers.get("content-encoding") == "gzip"
     assert int(headers["content-length"]) == len(wire)
     assert json.loads(gzip.decompress(wire)) == BIG
+    assert wire[8] == 0  # gzip 머리 XFL — 허브의 원격 응답은 레벨 6 그대로(1 이면 4)
 
 
 def test_the_shared_server_compresses_even_for_loopback():
-    """★공유 서버(AUTH on)는 루프백이어도 압축한다 — 허브만의 예외다."""
+    """★공유 서버(AUTH on)는 루프백이어도 압축한다 — 허브만의 예외다. 레벨은 1(82회차)."""
     headers, wire = _wire(_mode_app(auth_enabled=True), ("127.0.0.1", 50000))
     assert headers.get("content-encoding") == "gzip"
     assert int(headers["content-length"]) == len(wire)
     assert json.loads(gzip.decompress(wire)) == BIG
+    assert wire[8] == 4  # gzip 머리 XFL=4 = 가장 빠른 압축(레벨 1)
 
 
 def test_main_registers_the_options_for_its_mode():
