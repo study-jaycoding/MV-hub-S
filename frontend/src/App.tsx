@@ -657,11 +657,11 @@ export default function App() {
     && baseHere !== null && baseHere.folders.length > 0 && !(local.fresh && localCards !== null && localCards.folders.length === 0);
   const ownerSig = JSON.stringify([!!filters.deleted_only, listGenQuery]); // 목록 훅의 sig 꼴 — 이 판정이 어느 조회의 것인가
   const localRequest = local.request;
-  const localKey = local.queryKey;
+  const localContext = local.contextKey; // 조회 + 회차 — 컷 쪽 결과가 지금 주인의 것인지(A → B → A 의 옛 A 결과를 가린다, Codex fix8 P2)
   const localSide = cutFiltered && localWanted; // 낱장이어도 걸러진 목록이 표시 형태(묶음/낱장)를 정한다 — 실제 바뀜은 그쪽에도 넘긴다
   useLayoutEffect(() => {
     ownerRef.current = cutOwns
-      ? { kind: "cut", sig: ownerSig, key: localKey, request: (intent) => localRequest(intent, refreshFolderCards) }
+      ? { kind: "cut", sig: ownerSig, key: localContext(), request: (intent) => localRequest(intent, refreshFolderCards) }
       : { kind: "list", sig: ownerSig, key: null, request: localSide ? () => localRequest("invalidate") : null };
   });
   useLayoutEffect(() => {
@@ -765,7 +765,15 @@ export default function App() {
     const workspaceId = singleTeamWorkspace(genQuery);
     return { projectId: filters.project_id, parent: parentFolder(filters.folder_path), ...(workspaceId ? { workspaceId } : {}) };
   }, [filters.tab, filters.project_id, filters.folder_path, filters.deleted_only, authReady, workspaceQueryReady, listPeek, genQuery]);
-  const { cards: ownCards, reload: reloadOwnCards } = useFolderCards({ scope: ownScope, authKey: libraryAuthKey, reloadKey: cardsReloadKey });
+  const { cards: ownCards, reload: reloadOwnCards, refresh: refreshOwnCards } = useFolderCards({ scope: ownScope, authKey: libraryAuthKey, reloadKey: cardsReloadKey });
+  // 컷 화면이 주인인 동안 부모 범위의 카드(들어간 폴더의 [대표])는 다시 받지 않았다 — 컷 쪽 갱신은 하위 묶음 카드만 받는다. 본 목록이 주인을 되찾으면
+  //  (폴더 창 아님) 한 번 다시 받는다. 되찾은 첫 적용은 갱신 신호에서 빠지므로 그대로 두면 다음 주기 조회까지 옛 [대표]가 남는다(Codex fix8 P2).
+  const ownBackRef = useRef(cutOwns);
+  useEffect(() => {
+    const wasCut = ownBackRef.current;
+    ownBackRef.current = cutOwns;
+    if (wasCut && !cutOwns && !listPeek) void refreshOwnCards();
+  }, [cutOwns, listPeek, refreshOwnCards]);
   const ownFolderCard = ownScope ? ownCards?.folders.find((folder) => folder.path === filters.folder_path) : undefined;
   const ownCoverId = ownFolderCard?.rep ? ownFolderCard.cover.id : null;
   // 한 장씩 → 묶음으로 바뀌는 순간 고른 것을 비운다 — 남기면 보이지 않는 카드에 삭제·공유가 걸린다.

@@ -39,7 +39,7 @@ const INTENT_RANK: Record<LibraryIntent, number> = { ensure: 0, check: 1, invali
 export interface LibraryOwner {
   kind: "list" | "cut";
   sig: string;
-  key: string | null; // cut: 그쪽 조회의 키 — 결과(key)가 지금 주인의 것인지 가린다
+  key: string | null; // cut: 그쪽 조회 **회차**의 키(조회 + 회차) — 결과(key)가 지금 주인의 것인지 가린다(A → B → A 의 옛 A 결과 포함)
   request: ((intent: LibraryIntent) => Promise<{ status: string; key: string | null }>) | null;
 }
 
@@ -153,8 +153,14 @@ export function useGenerationLibraryData({
     if (own?.kind !== "cut" || !own.request) return null;
     return { owner: own, settled: own.sig === JSON.stringify([!!filtersRef.current.deleted_only, listQuery()]) };
   };
-  // 목록이 컷 화면에 자리를 내준 탭 — 그 탭에서는 옛 커서로 더 받지 않는다(그 탭의 새 첫 쪽을 적용할 때 풀린다)
+  // 목록이 컷 화면에 자리를 내준 탭 — 그 탭의 새 첫 쪽을 적용할 때까지 화면의 목록은 지금 조회의 것이 아니다(listBehind — 같은 조회로 돌아와도:
+  //  캐시 sig 는 같지만 그동안의 변경이 없다, Codex fix8 P1). 잠금·자동 조회 쉬기·더 받기 막기·실패 때 치우기가 이것을 본다.
   const asideRef = useRef<string | null>(null);
+  const [asideTab, setAsideTab] = useState<string | null>(null);
+  const setAside = useCallback((tab: string | null) => {
+    asideRef.current = tab;
+    setAsideTab(tab);
+  }, []);
   // 폴더 창을 열고 닫았다 — 다음 컷 진입은 확인(check)으로(창에서 바꾼 것이 뒤의 걸러진 목록에 아직 없다)
   const recheckRef = useRef(false);
   const gensRef = useRef(gens);
@@ -486,7 +492,7 @@ export function useGenerationLibraryData({
       reloadSeqRef.current++;
       const cached = tabCacheRef.current[tab];
       if (cached) tabCacheRef.current[tab] = { ...cached, loadedAt: -Infinity };
-      asideRef.current = tab;
+      setAside(tab);
       const metaDone = requestMeta(light);
       const done = await own.request!(syncToken.mutationIds.size ? "invalidate" : intent).catch(() => null);
       finishSync(done?.status === "applied" && done.key === own.key && cutOwnerNow()?.owner.key === own.key);
@@ -494,7 +500,7 @@ export function useGenerationLibraryData({
     } finally {
       finishSync(false);
     }
-  }, [requestMeta]);
+  }, [requestMeta, setAside]);
 
   // listSettled = 목록 구간이 끝났다(적용·실패·폐기 모두) — 부르는 쪽(launch)이 목록 줄을 다음 실행에 넘긴다.
   const runReload = useCallback(async (silent: boolean, light: boolean, intent: LibraryIntent, listSettled: () => void) => {
@@ -598,7 +604,7 @@ export function useGenerationLibraryData({
         loadErrorRef.current = null; // 다시 그리기 전에 끝나는 다음 실패도 '새 실패'로 알린다(Codex 검토)
         setLoadError(null);
         setStaleList(false); // 새 첫 쪽이 들어왔다 — 사본 구간 끝(내용이 사본과 같아도 푼다)
-        if (asideRef.current === tab) asideRef.current = null; // 이 탭의 새 첫 쪽과 커서 — 더 받기를 다시 연다
+        if (asideRef.current === tab) setAside(null); // 이 탭의 새 첫 쪽과 커서 — 지금 조회의 목록이 됐다(더 받기도 다시 연다)
         setListRevision((revision) => revision + 1);
         lastLoadedTabRef.current = tab;
         tabCacheRef.current[tab] = {
@@ -629,7 +635,8 @@ export function useGenerationLibraryData({
           const shown = shownSigRef.current;
           const sameList = shown === sig || (shown === LOCATED_VIEW && !!located && located === locatedRef.current &&
             isLocatedQuery(query, located.tab, located.location));
-          if (staleListRef.current || !sameList) {
+          //  컷 화면에 자리를 내준 뒤 되찾은 목록(asideRef)도 사본과 같다 — 같은 조회라도 그동안의 변경이 없다.
+          if (staleListRef.current || asideRef.current === tab || !sameList) {
             delete tabCacheRef.current[tab]; // 비운 목록이 이 탭의 캐시로 적히지 않게(돌아오면 첫 쪽부터 다시 받는다)
             shownSigRef.current = null;
             pageCursorRef.current = null; // 앞 조회의 커서로 다음 쪽을 받지 않게
@@ -650,7 +657,7 @@ export function useGenerationLibraryData({
       // 실패·탭/필터 전환으로 결과가 폐기된 reload는 변경을 덮었다고 표시하지 않는다.
       finishSync(false);
     }
-  }, [flash, requestMeta, runCut, setStaleList]);
+  }, [flash, requestMeta, runCut, setAside, setStaleList]);
 
   // 실제 실행 1건을 돌리고, **목록 구간이 끝나면** 큐에 쌓인(병합된) 다음 실행을 이어서 돌린다.
   // 병합 실행이 끝나면(메타 처리까지) 그동안 대기하던 호출자들의 promise 를 resolve → awaited 호출도 '자기 요청을
@@ -859,7 +866,8 @@ export function useGenerationLibraryData({
     }
   }, []);
 
-  const listBehind = filters.tab !== "compose" && tabCacheRef.current[filters.tab]?.sig !== JSON.stringify([!!filters.deleted_only, genQuery]);
+  const listBehind = filters.tab !== "compose" &&
+    (tabCacheRef.current[filters.tab]?.sig !== JSON.stringify([!!filters.deleted_only, genQuery]) || asideTab === filters.tab);
   return {
     archivedCount,
     facets,

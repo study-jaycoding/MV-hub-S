@@ -29,7 +29,7 @@ export type LocalCardsIntent = "ensure" | "check" | "invalidate";
  *  failed = 받지 못했다(쥔 답은 그대로 — 같이 받은 서버 카드만 실패해도) · obsolete = 조회가 바뀌어 버렸다(또는 미뤘다). 약속이 풀린 것 자체는 성공이 아니다. */
 export interface LocalCardsOutcome {
   status: "applied" | "reused" | "failed" | "obsolete";
-  key: string | null; // 어느 조회의 결과인가(queryKey)
+  key: string | null; // 어느 조회 **회차**의 결과인가(조회 + 회차 — contextKey() 와 견준다. A → B → A 로 돌아온 A 는 다른 회차다, Codex fix8 P2)
 }
 /** 같은 실행에서 서버 카드도 다시 받는 입구(lib/useFolderCards 의 refresh) — status "applied" 일 때만 그 카드를 믿는다. */
 export type RefreshFolderCards = () => Promise<{ status: string; cards: object | null }>;
@@ -56,6 +56,7 @@ interface Held { epoch: number; first: Generation[]; version: number }
 interface Flight { epoch: number; promise: Promise<LocalCardsOutcome> }
 interface Follow { epoch: number; cards?: RefreshFolderCards; promise: Promise<LocalCardsOutcome>; resolve: (outcome: LocalCardsOutcome) => void }
 
+const contextOf = (queryKey: string | null, epoch: number) => (queryKey === null ? null : JSON.stringify([queryKey, epoch]));
 const obsolete = (key: string | null): LocalCardsOutcome => ({ status: "obsolete", key });
 
 export function useLocalFolderCards({ place, query, authKey, listSig, base, ready = true }: Options) {
@@ -88,26 +89,29 @@ export function useLocalFolderCards({ place, query, authKey, listSig, base, read
   const seenRef = useRef<{ key: string; sig: string | null; base: object | null } | null>(null);
 
   const run = useCallback(async (
-    key: string, epoch: number, kind: "full" | "check", version: number, refreshCards?: RefreshFolderCards,
+    queryKey: string, epoch: number, kind: "full" | "check", version: number, refreshCards?: RefreshFolderCards,
   ): Promise<LocalCardsOutcome> => {
     const alive = () => liveRef.current && epochRef.current === epoch;
+    const key = contextOf(queryKey, epoch)!; // 결과에 싣는 것 — 조회 + 회차
     const { query: asked, placeKey: placeNow } = argsRef.current;
     if (!alive() || placeNow === null) return obsolete(key); // 기다리는 사이 조회가 또 바뀌었다 — 보내지 않는다
-    const seenBase = seenRef.current?.key === key ? seenRef.current.base : null; // 이 실행 전의 서버 카드 — check 의 비교 기준
+    const seenBase = seenRef.current?.key === queryKey ? seenRef.current.base : null; // 이 실행 전의 서버 카드 — check 의 비교 기준
     // 서버 카드도 같은 실행에서 — 첫 쪽과 함께 출발한다. 받은 카드는 곧바로 '본 것'으로 적는다: 그 카드가 화면에 오며 아래 감시가 같은 갱신을
     //  또 하나의 바뀜으로 읽지 않게(Codex FE-06). 대표 저장처럼 다른 길로 온 카드는 그 뒤에 와서 감시가 한 번 반영한다.
     const cards = refreshCards
       ? refreshCards().then((got) => {
           if (got.status === "applied" && got.cards && alive()) {
-            if (seenRef.current?.key === key) seenRef.current.base = got.cards;
-            else seenRef.current = { key, sig: null, base: got.cards };
+            if (seenRef.current?.key === queryKey) seenRef.current.base = got.cards;
+            else seenRef.current = { key: queryKey, sig: null, base: got.cards };
           }
           return got;
         }, () => ({ status: "failed", cards: null }))
       : null;
-    const cardsOk = async () => {
+    // 같이 받은 서버 카드까지 끝난 결과 — 그 사이 조회가 바뀌었으면(A → B → A 포함) 이 실행의 결과는 버린다(늦은 카드 응답이 적용으로 끝나지 않게, Codex fix8 P2)
+    const settle = async (): Promise<LocalCardsOutcome> => {
       const got = await cards;
-      return got === null || got.status === "applied" || got.status === "none";
+      if (!alive()) return obsolete(key);
+      return { status: got === null || got.status === "applied" || got.status === "none" ? "applied" : "failed", key };
     };
     try {
       let firstPage: Generation[] | undefined;
@@ -121,7 +125,7 @@ export function useLocalFolderCards({ place, query, authKey, listSig, base, read
         // 원본 첫 쪽의 행 전체를 견준다 — 묶음·표지가 읽는 칸(assets·공유 시각·작성자·삭제·프로젝트·모델·생성일·길이·정렬 시각…)이 빠지지 않게(Codex FE-08).
         //  확인하는 사이 온 invalidate 는 따로 얹혀 있다(끝난 뒤 한 번 더) — 여기서 키우지 않는다(같은 바뀜에 끝까지 두 번 받지 않게).
         if (held !== null && held.epoch === epoch && sameBase && isStructurallyEqual(page, held.first)) {
-          return { status: (await cardsOk()) ? "applied" : "failed", key };
+          return settle();
         }
         firstPage = page;
       }
@@ -129,13 +133,13 @@ export function useLocalFolderCards({ place, query, authKey, listSig, base, read
       if (!done || !alive()) return obsolete(key);
       heldRef.current = { epoch, first: done.first, version };
       failedRef.current = null;
-      setResult({ placeKey: placeNow, queryKey: key, gens: done.gens.filter((g) => matchesWorkspaceFilter(g, asked)), truncated: done.truncated });
+      setResult({ placeKey: placeNow, queryKey, gens: done.gens.filter((g) => matchesWorkspaceFilter(g, asked)), truncated: done.truncated });
       setFailedKey(null);
-      return { status: (await cardsOk()) ? "applied" : "failed", key };
+      return settle();
     } catch {
       if (!alive()) return obsolete(key);
-      failedRef.current = key;
-      setFailedKey(key); // 실패 — 쥐고 있던 앞 결과는 그대로 둔다(부르는 쪽이 failed 로 알린다)
+      failedRef.current = queryKey;
+      setFailedKey(queryKey); // 실패 — 쥐고 있던 앞 결과는 그대로 둔다(부르는 쪽이 failed 로 알린다)
       return { status: "failed", key };
     }
   }, []);
@@ -143,14 +147,14 @@ export function useLocalFolderCards({ place, query, authKey, listSig, base, read
   const start = useCallback((key: string, epoch: number, kind: "full" | "check", refreshCards?: RefreshFolderCards): Promise<LocalCardsOutcome> => {
     const version = wantOf(epoch);
     const flight: Flight = { epoch, promise: Promise.resolve(obsolete(key)) };
-    flight.promise = laneRef.current.then(() => run(key, epoch, kind, version, refreshCards)).catch((): LocalCardsOutcome => ({ status: "failed", key })).then((outcome) => {
+    flight.promise = laneRef.current.then(() => run(key, epoch, kind, version, refreshCards)).catch((): LocalCardsOutcome => ({ status: "failed", key: contextOf(key, epoch) })).then((outcome) => {
       if (flightRef.current === flight) flightRef.current = null;
       const follow = followRef.current;
       if (follow && follow.epoch === epoch) {
         followRef.current = null;
         // 받는 동안 온 '실제로 바뀌었다' — 끝난 뒤 한 번 더 끝까지(여럿이 와도 이 한 번). 조회가 바뀌었으면 버린다.
         if (liveRef.current && epochRef.current === epoch) void start(key, epoch, "full", follow.cards).then(follow.resolve);
-        else follow.resolve(obsolete(key));
+        else follow.resolve(obsolete(contextOf(key, epoch)));
       }
       return outcome;
     });
@@ -162,12 +166,13 @@ export function useLocalFolderCards({ place, query, authKey, listSig, base, read
   // refreshCards = 같은 실행에서 서버 카드도 다시 받는다(걸러 보는 컷 화면의 갱신 — App). 진입·안쪽 신호는 넘기지 않는다(카드는 제 훅이 받는다).
   const request = useCallback((intent: LocalCardsIntent, refreshCards?: RefreshFolderCards): Promise<LocalCardsOutcome> => {
     const { queryKey: key, placeKey: placeNow, ready: can } = argsRef.current;
-    if (key === null || placeNow === null) return Promise.resolve(obsolete(key));
     const epoch = epochRef.current;
+    const context = contextOf(key, epoch);
+    if (key === null || placeNow === null) return Promise.resolve(obsolete(context));
     if (intent === "invalidate") {
       wantRef.current = { epoch, version: wantOf(epoch) + 1 };
     }
-    if (!can) return Promise.resolve(obsolete(key)); // 미룬다 — ready 가 서면 진입(ensure)이 받는다(요구 번호는 남는다)
+    if (!can) return Promise.resolve(obsolete(context)); // 미룬다 — ready 가 서면 진입(ensure)이 받는다(요구 번호는 남는다)
     const flight = flightRef.current;
     if (flight && flight.epoch === epoch) {
       if (intent !== "invalidate") return flight.promise; // 받는 중(또는 줄 선) 실행에 합류 — 받던 응답을 버리지 않는다
@@ -176,7 +181,7 @@ export function useLocalFolderCards({ place, query, authKey, listSig, base, read
         follow.cards ??= refreshCards;
         return follow.promise;
       }
-      follow?.resolve(obsolete(key)); // 옛 회차의 것 — 그 실행이 끝날 때도 버렸을 것이다
+      follow?.resolve(obsolete(context)); // 옛 회차의 것 — 그 실행이 끝날 때도 버렸을 것이다
       let resolve!: (outcome: LocalCardsOutcome) => void;
       const promise = new Promise<LocalCardsOutcome>((done) => { resolve = done; });
       followRef.current = { epoch, cards: refreshCards, promise, resolve };
@@ -186,10 +191,13 @@ export function useLocalFolderCards({ place, query, authKey, listSig, base, read
     const have = held !== null && held.epoch === epoch && held.version >= wantOf(epoch);
     if (intent === "ensure") {
       // 진입 — 서버 카드는 제 훅이 자리마다 받는다(여기서 또 받지 않는다)
-      return have ? Promise.resolve({ status: "reused", key }) : start(key, epoch, "full");
+      return have ? Promise.resolve({ status: "reused", key: context }) : start(key, epoch, "full");
     }
     return start(key, epoch, intent === "check" && have && failedRef.current !== key ? "check" : "full", refreshCards);
   }, [start]);
+
+  // 지금 조회 회차 — 커밋 뒤(이 훅의 layout effect 가 회차를 올린 뒤)에 읽는다
+  const contextKey = useCallback(() => contextOf(argsRef.current.queryKey, epochRef.current), []);
 
   // 진입 — 조회가 바뀌었거나 ready 가 섰다
   useEffect(() => {
@@ -223,7 +231,7 @@ export function useLocalFolderCards({ place, query, authKey, listSig, base, read
     truncated: held?.truncated ?? false, // 상한에서 잘렸다 — '최근 N건 기준'
     loading: queryKey !== null && !fresh && !failed, // 지금 조회의 답을 아직 모른다
     failed, // 지금 조회를 받지 못했다(쥐고 있는 것은 앞 조회의 것이거나 없다)
-    queryKey, // 지금 조회 — request 결과의 key 와 견준다
+    contextKey, // 지금 조회 회차(조회 + 회차) — request 결과의 key 와 견준다
     request, // 기다릴 수 있는 받기(위 머리말)
   };
 }

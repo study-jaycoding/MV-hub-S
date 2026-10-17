@@ -386,3 +386,25 @@ it.each([[0, [null], false], [411, [null], false], [500, [null, "a499"], false],
   expect([cursors(before), ids()![0], latest.gens!.length, latest.truncated])
     .toEqual([[null, ...Array.from({ length: pages - 1 }, (_, page) => `a${500 * (page + 1) - 2}`)], "top", Math.min(count + 1, 2000), count + 1 >= 2000]);
 });
+
+// fix8 P2: 목록은 적용됐고 같이 받은 서버 카드만 늦는 동안 조회가 B → A 로 돌아오면, 그 옛 A 실행은 늦은 카드가 와도 '적용'으로 끝나지 않는다(obsolete) —
+//  돌아온 A 는 다른 회차다. 결과의 key 는 회차까지 실어 지금 조회 회차(contextKey)와 다르다.
+it("late_cards_after_A_B_A — 카드만 늦는 동안 B → A 로 돌아오면 옛 A 실행은 obsolete, 결과 key 는 지금 회차와 다르다", async () => {
+  server(rows(2, "a"));
+  draw({});
+  await flush();
+  let give!: () => void;
+  const refresh = vi.fn(() => new Promise<{ status: string; cards: object | null }>((resolve) => { give = () => resolve({ status: "applied", cards: { v: 2 } }); }));
+  let outcome: Outcome | null = null;
+  act(() => { void latest.request("invalidate", refresh).then((done) => { outcome = done; }); });
+  await flush();
+  expect([refresh.mock.calls.length, outcome]).toEqual([1, null]); // 목록은 적용 · 카드만 기다린다
+  draw({ query: query({ search: "b" }) });
+  await flush();
+  draw({});
+  await flush();
+  await act(async () => { give(); });
+  await flush();
+  expect(outcome!.status).toBe("obsolete");
+  expect(outcome!.key).not.toBe(latest.contextKey());
+});
