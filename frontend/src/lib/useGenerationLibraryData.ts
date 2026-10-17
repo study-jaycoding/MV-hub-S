@@ -25,6 +25,22 @@ interface UseGenerationLibraryDataArgs {
   //  서버 목록 API 의 tab 은 my|team 만 받으므로 compose 는 my 로 보낸다(캔버스 격자 = 내 작업).
   composeListEnabled?: boolean;
   workspaceScopeKey?: string;
+  // 지금 화면의 자료 주인을 **실행할 때** 읽는다(App 이 커밋마다 적는다 — 83회차). 없으면 늘 이 훅의 목록이 주인이다.
+  owner?: () => LibraryOwner | null;
+}
+
+/** 다시 받기가 바라는 것 — ensure = 진입(자료 확보) · check = 주기 조회·창 복귀의 확인 · invalidate = 실제로 바뀌었다(내 변경·통보·사람이 누른 다시 받기).
+ *  목록에는 전처럼 같은 조회다. 걸러 보는 컷 화면이 주인이면 그쪽이 뜻대로 받는다(lib/useLocalFolderCards). 셋 다 아니면 invalidate 로 본다. */
+export type LibraryIntent = "ensure" | "check" | "invalidate";
+const INTENT_RANK: Record<LibraryIntent, number> = { ensure: 0, check: 1, invalidate: 2 };
+/** 지금 화면의 자료 주인(App 이 커밋마다 적는다). cut = 걸러 보는 컷 화면 — 이 훅은 그 조회의 목록(200건 원문)을 보내지 않고 request 로 그쪽 갱신을 기다린다.
+ *  list = 이 훅의 목록 — request 가 있으면 낱장 판정에 쓰는 걸러진 목록이다(실제 바뀜만 넘긴다). sig = 판정한 조회([휴지통, 조회] — 이 훅의 sig 꼴).
+ *  cut 인데 sig 가 지금 조회와 다르면 아직 이 조회의 판정이 안 섰다 — 목록을 보내지 않고 다음 진입 요청에 맡긴다(일반 목록으로 대신 받지 않는다). */
+export interface LibraryOwner {
+  kind: "list" | "cut";
+  sig: string;
+  key: string | null; // cut: 그쪽 조회의 키 — 결과(key)가 지금 주인의 것인지 가린다
+  request: ((intent: LibraryIntent) => Promise<{ status: string; key: string | null }>) | null;
 }
 
 export const GENERATION_TAB_CACHE_FRESH_MS = 15_000;
@@ -90,6 +106,7 @@ export function useGenerationLibraryData({
   projectWorkspaceId,
   composeListEnabled = false,
   workspaceScopeKey = "",
+  owner,
 }: UseGenerationLibraryDataArgs) {
   const [gens, setGens] = useState<Generation[]>([]);
   const [locatedReload, setLocatedReload] = useState(0);
@@ -123,11 +140,23 @@ export function useGenerationLibraryData({
   projectWorkspaceIdRef.current = projectWorkspaceId;
   const composeListEnabledRef = useRef(composeListEnabled);
   composeListEnabledRef.current = composeListEnabled;
+  const ownerRef = useRef(owner);
+  ownerRef.current = owner;
   // compose 탭의 목록 쿼리 — 서버 tab 은 my|team 뿐이라 my 로 정규화(폴더 보기 창).
   const listQuery = () => {
     const q = genQueryRef.current;
     return q.tab === "compose" ? { ...q, tab: "my" as const } : q;
   };
+  // 주인이 걸러 보는 컷 화면이면 그 주인과, 그 판정이 지금 조회의 것인지(settled) — 아니면 null(이 훅의 목록이 주인)
+  const cutOwnerNow = (): { owner: LibraryOwner; settled: boolean } | null => {
+    const own = ownerRef.current?.() ?? null;
+    if (own?.kind !== "cut" || !own.request) return null;
+    return { owner: own, settled: own.sig === JSON.stringify([!!filtersRef.current.deleted_only, listQuery()]) };
+  };
+  // 목록이 컷 화면에 자리를 내준 탭 — 그 탭에서는 옛 커서로 더 받지 않는다(그 탭의 새 첫 쪽을 적용할 때 풀린다)
+  const asideRef = useRef<string | null>(null);
+  // 폴더 창을 열고 닫았다 — 다음 컷 진입은 확인(check)으로(창에서 바꾼 것이 뒤의 걸러진 목록에 아직 없다)
+  const recheckRef = useRef(false);
   const gensRef = useRef(gens);
   gensRef.current = gens;
   // 색 편집 장부 — 재조회의 응답이 그사이 칠한 색을 덮지 않게(lib/generationColorState). 색을 칠하는 쪽(색 단축키)이 begin/end 를 부른다.
@@ -181,7 +210,7 @@ export function useGenerationLibraryData({
   // reloadSeqRef 가 정합성(최신 결과만 반영)을 보장하므로, 여기선 중복 요청만 없앤다.
   // ★줄은 둘이다(2026-10-07): 아래 셋은 **목록 줄** — 한 실행의 목록 구간(첫 쪽 + 위치 확인)이 끝날 때까지만 잡는다.
   const inflightRef = useRef<Promise<void> | null>(null);
-  const pendingArgsRef = useRef<{ silent: boolean; light: boolean } | null>(null);
+  const pendingArgsRef = useRef<{ silent: boolean; light: boolean; intent: LibraryIntent } | null>(null);
   const pendingResolversRef = useRef<Array<() => void>>([]);
   // **앞지르기**(2026-10-13 Jay "아직 폴더 이동할 때 딜레이") — 조회(자리·필터·탭)가 바뀌었는데 앞 실행의 목록이 아직 안 왔으면, 그것이 끝나길
   //  기다리지 않고 줄을 바로 넘겨받는다. 앞 실행의 목록은 어차피 seq 로 버려진다 — 기다리면 새 폴더의 목록이 에피소드의 첫 쪽(200장)이나
@@ -437,9 +466,47 @@ export function useGenerationLibraryData({
     return new Promise<boolean>((done) => { (metaWaitersRef.current ??= []).push(done); });
   }, [sendMeta]);
 
-  // listSettled = 목록 구간이 끝났다(적용·실패·폐기 모두) — 부르는 쪽(launch)이 목록 줄을 다음 실행에 넘긴다.
-  const runReload = useCallback(async (silent: boolean, light: boolean, listSettled: () => void) => {
+  // ── 걸러 보는 컷 화면이 주인일 때의 다시 받기(83회차 — Codex FH) ──
+  //  이 조회의 목록(200건 원문)은 화면에 쓰이지 않는다 — 보내지 않고, 메타는 전처럼 맡긴 채 주인(걸러진 목록·서버 카드)의 갱신을 **기다린다**.
+  //  목록 줄에 서지 않는다(주인 쪽 줄이 한 번에 하나를 맡는다). 내 변경 표식(syncToken)은 **그 갱신이 지금 주인의 조회에 실제로 적용됐을 때만**
+  //  덮었다고 적는다 — 재사용·실패·폐기·메타만 성공은 아니다. 덮지 않은 내 변경이 있으면 ensure·check 라도 invalidate 로 올린다.
+  //  이 탭의 목록 캐시는 낡은 것으로 둔다(사본으로는 쓴다) — 목록이 주인을 되찾으면 첫 쪽부터 다시 확인한다(Codex FE-09). 받던 목록·더 받기는 버린다.
+  const runCut = useCallback(async (own: LibraryOwner, light: boolean, intent: LibraryIntent) => {
     if (!authReadyRef.current) return;
+    const syncToken = beginLibraryReload();
+    let syncFinished = false;
+    const finishSync = (applied: boolean) => {
+      if (syncFinished) return;
+      syncFinished = true;
+      finishLibraryReload(syncToken, applied);
+    };
+    try {
+      const tab = filtersRef.current.tab;
+      if (syncToken.mutationIds.size) staleOtherTabs(tabCacheRef.current, tab);
+      reloadSeqRef.current++;
+      const cached = tabCacheRef.current[tab];
+      if (cached) tabCacheRef.current[tab] = { ...cached, loadedAt: -Infinity };
+      asideRef.current = tab;
+      const metaDone = requestMeta(light);
+      const done = await own.request!(syncToken.mutationIds.size ? "invalidate" : intent).catch(() => null);
+      finishSync(done?.status === "applied" && done.key === own.key && cutOwnerNow()?.owner.key === own.key);
+      await metaDone; // 호출자의 `await reload()` 는 맡긴 메타까지 처리된 뒤에 풀린다(목록 쪽과 같다)
+    } finally {
+      finishSync(false);
+    }
+  }, [requestMeta]);
+
+  // listSettled = 목록 구간이 끝났다(적용·실패·폐기 모두) — 부르는 쪽(launch)이 목록 줄을 다음 실행에 넘긴다.
+  const runReload = useCallback(async (silent: boolean, light: boolean, intent: LibraryIntent, listSettled: () => void) => {
+    if (!authReadyRef.current) return;
+    // 줄을 서는 사이 주인이 컷 화면으로 바뀌었다 — 이 조회의 목록은 보내지 않는다(판정이 안 섰으면 메타만 — 다음 진입이 맡는다)
+    const cutOwner = cutOwnerNow();
+    if (cutOwner) {
+      listSettled();
+      if (cutOwner.settled) await runCut(cutOwner.owner, light, intent);
+      else await requestMeta(light);
+      return;
+    }
     const syncToken = beginLibraryReload();
     let syncFinished = false;
     const finishSync = (applied: boolean) => {
@@ -474,6 +541,12 @@ export function useGenerationLibraryData({
       const trashMode = !!filtersRef.current.deleted_only;
       const sig = JSON.stringify([trashMode, query]);
       laneSigRef.current = sig; // 이 실행이 줄을 잡은 조회 — 조회가 바뀌면 reload 가 앞지른다(여기까지 await 가 없다)
+      // 낱장으로 보이는 걸러진 컷 자리 — 실제 바뀜(내 변경·통보)은 낱장 판정에 쓰는 걸러진 목록에도 넘긴다(첫 쪽 밖의 변경으로 다시 컷이 될 수 있다).
+      //  진입·확인은 넘기지 않는다 — 처음 낱장으로 판정돼 원문을 받는 것 자체는 새 바뀜이 아니다(같은 500건을 다시 받지 않는다).
+      const side = ownerRef.current?.() ?? null;
+      if ((syncToken.mutationIds.size || intent === "invalidate") && side?.kind === "list" && side.request && side.sig === sig) {
+        void side.request("invalidate").catch(() => {});
+      }
       // 탭 전환의 '즉시 표시'는 위 filters.tab effect가 담당 — 여기(비동기 실행 시점)는 최신본 fetch만.
       // 1) 목록과 메타를 **함께 시작**한다(2026-09-12, C-6). 종전에는 목록을 다 받은 **뒤에야**
       //    메타를 시작해, 왼쪽 폴더·태그·배지가 목록 왕복(로컬 47ms·3.38MB)만큼 늦게 왔다.
@@ -525,6 +598,7 @@ export function useGenerationLibraryData({
         loadErrorRef.current = null; // 다시 그리기 전에 끝나는 다음 실패도 '새 실패'로 알린다(Codex 검토)
         setLoadError(null);
         setStaleList(false); // 새 첫 쪽이 들어왔다 — 사본 구간 끝(내용이 사본과 같아도 푼다)
+        if (asideRef.current === tab) asideRef.current = null; // 이 탭의 새 첫 쪽과 커서 — 더 받기를 다시 연다
         setListRevision((revision) => revision + 1);
         lastLoadedTabRef.current = tab;
         tabCacheRef.current[tab] = {
@@ -576,13 +650,13 @@ export function useGenerationLibraryData({
       // 실패·탭/필터 전환으로 결과가 폐기된 reload는 변경을 덮었다고 표시하지 않는다.
       finishSync(false);
     }
-  }, [flash, requestMeta, setStaleList]);
+  }, [flash, requestMeta, runCut, setStaleList]);
 
   // 실제 실행 1건을 돌리고, **목록 구간이 끝나면** 큐에 쌓인(병합된) 다음 실행을 이어서 돌린다.
   // 병합 실행이 끝나면(메타 처리까지) 그동안 대기하던 호출자들의 promise 를 resolve → awaited 호출도 '자기 요청을
   // 포함한' 실행이 끝난 뒤 신선한 데이터를 본다.
   const launch = useCallback(
-    (silent: boolean, light: boolean): Promise<void> => {
+    (silent: boolean, light: boolean, intent: LibraryIntent): Promise<void> => {
       // 줄 넘기기는 실행마다 한 번 — 목록 구간 끝(runReload 가 부른다)과 실행 종료 중 먼저 온 쪽. 이미 넘긴 옛 실행의
       //  종료가 그 뒤에 출발한 실행의 줄·스피너를 건드리지 않는다.
       let handed = false;
@@ -605,7 +679,7 @@ export function useGenerationLibraryData({
           pendingArgsRef.current = null;
           const resolvers = pendingResolversRef.current;
           pendingResolversRef.current = [];
-          void launch(next.silent, next.light)
+          void launch(next.silent, next.light, next.intent)
             .finally(() => {
               for (const r of resolvers) r();
             })
@@ -615,7 +689,7 @@ export function useGenerationLibraryData({
           setLoading(false);
         }
       };
-      const p = runReload(silent, light, handOver).finally(handOver);
+      const p = runReload(silent, light, intent, handOver).finally(handOver);
       // 목록이 없는 실행(캔버스)은 호출 도중에 이미 줄을 넘겼다 — 넘긴 줄에 자기를 다시 세우면 뒤의 요청이 영영 못 나간다.
       if (!handed) {
         inflightRef.current = p;
@@ -631,16 +705,19 @@ export function useGenerationLibraryData({
   );
 
   const reload = useCallback(
-    (silent = false, light = false): Promise<void> => {
-      if (!inflightRef.current) return launch(silent, light);
+    (silent = false, light = false, intent: LibraryIntent = "invalidate"): Promise<void> => {
+      // 걸러 보는 컷 화면이 주인이다 — 목록 줄에 서지 않고 그쪽 갱신을 기다린다(판정이 안 섰으면 메타만 — 다음 진입이 맡는다)
+      const cutOwner = cutOwnerNow();
+      if (cutOwner) return cutOwner.settled ? runCut(cutOwner.owner, light, intent) : requestMeta(light).then(() => undefined);
+      if (!inflightRef.current) return launch(silent, light, intent);
       // 실행 중인 stale run 을 즉시 무효화(seq++) — 그 run 은 완료돼도 결과를 적용하지 않는다.
       //  (새 필터로 바꿨을 때 옛 필터 결과가 잠깐 번쩍이거나, 그 run 이 실패해도 잔존하지 않게.)
       reloadSeqRef.current++;
-      // 큐에 병합. '강한' 옵션 우선: 하나라도 non-silent/non-light 면 그걸로(전체 로드·스피너).
+      // 큐에 병합. '강한' 옵션 우선: 하나라도 non-silent/non-light 면 그걸로(전체 로드·스피너). 바람도 강한 쪽(invalidate > check > ensure).
       const prev = pendingArgsRef.current;
       pendingArgsRef.current = prev
-        ? { silent: prev.silent && silent, light: prev.light && light }
-        : { silent, light };
+        ? { silent: prev.silent && silent, light: prev.light && light, intent: INTENT_RANK[prev.intent] >= INTENT_RANK[intent] ? prev.intent : intent }
+        : { silent, light, intent };
       const waiting = new Promise<void>((res) => pendingResolversRef.current.push(res));
       // 조회가 바뀌었다 — 줄을 잡은 실행의 목록을 기다리지 않는다(위 '앞지르기'). 줄을 넘기면 방금 세운 실행이 그 자리에서 출발한다.
       //  이미 앞지른 낡은 요청이 떠 있으면 줄을 선다(동시에 둘까지).
@@ -650,7 +727,7 @@ export function useGenerationLibraryData({
       }
       return waiting;
     },
-    [launch],
+    [launch, requestMeta, runCut],
   );
 
   // 탭 왕복용 stale-while-revalidate 게이트. 같은 필터의 목록을 방금 받았다면 캐시 화면을
@@ -661,6 +738,14 @@ export function useGenerationLibraryData({
       if (!authReadyRef.current) return Promise.resolve();
       const tab = filtersRef.current.tab;
       if (tab === "compose") return reload();
+      // 걸러 보는 컷 화면이 주인이면 그쪽의 진입(받는 중이면 합류 · 답이 있으면 그대로). 목록의 탭 캐시로 건너뛸지 정하지 않는다.
+      //  폴더 창을 열고 닫은 뒤의 첫 진입은 확인이다 — 창에서 바꾼 것이 뒤의 걸러진 목록에 아직 없다.
+      const cutOwner = cutOwnerNow();
+      if (cutOwner) {
+        const recheck = recheckRef.current;
+        recheckRef.current = false;
+        return reload(false, false, recheck ? "check" : "ensure");
+      }
       const sig = JSON.stringify([!!filtersRef.current.deleted_only, genQueryRef.current]);
       if (generationTabCacheIsFresh(tabCacheRef.current[tab], sig, Date.now(), maxAge)) {
         // 캐시를 쓰더라도 진행 중이던 '이전 탭' 요청은 무효화해야 한다 — 안 그러면 그 늦은
@@ -671,7 +756,7 @@ export function useGenerationLibraryData({
         if (metaScopeRef.current !== metaScopeKey()) return requestMeta(false).then(() => undefined);
         return Promise.resolve();
       }
-      return reload();
+      return reload(false, false, "ensure");
     },
     [reload, requestMeta],
   );
@@ -714,6 +799,7 @@ export function useGenerationLibraryData({
     shownSigRef.current = null;
     setHasMore(false); // 사본을 보이는 동안에도 — 옛 커서로 다음 쪽을 받지 않는다
     setStaleList(!!restored);
+    recheckRef.current = true; // 창을 열고 닫았다 — 뒤가 걸러 보는 컷 화면이면 돌아온 뒤 확인한다
     // 비운 그 자리에서 '불러오는 중'으로 — 조회 effect 가 돌기 전의 한 번에 "항목이 없습니다"가 비치지 않게.
     //  뒤따르는 조회(호출부가 반드시 건다)의 묶음이 끝나면 내려간다.
     setLoading(true);
@@ -722,6 +808,8 @@ export function useGenerationLibraryData({
   const loadMore = useCallback(async () => {
     if (loadingMoreRef.current || !authReadyRef.current) return;
     if (staleListRef.current) return; // 사본을 보이는 중 — 커서가 없다(새 첫 쪽이 온 뒤에 이어 받는다)
+    // 걸러 보는 컷 화면이 주인이거나, 주인을 막 되찾아 이 조회의 새 첫 쪽을 아직 적용하지 않았다 — 옛 커서로 더 받지 않는다(Codex FE-02)
+    if (asideRef.current === filtersRef.current.tab || cutOwnerNow()) return;
     if (filtersRef.current.tab === "compose" && !composeListEnabledRef.current) return;
     loadingMoreRef.current = true;
     setLoadingMore(true);

@@ -184,7 +184,10 @@ export function useLocalFolderCards({ place, query, authKey, listSig, base, read
     }
     const held = heldRef.current;
     const have = held !== null && held.epoch === epoch && held.version >= wantOf(epoch);
-    if (intent === "ensure" && have) return Promise.resolve({ status: "reused", key });
+    if (intent === "ensure") {
+      // 진입 — 서버 카드는 제 훅이 자리마다 받는다(여기서 또 받지 않는다)
+      return have ? Promise.resolve({ status: "reused", key }) : start(key, epoch, "full");
+    }
     return start(key, epoch, intent === "check" && have && failedRef.current !== key ? "check" : "full", refreshCards);
   }, [start]);
 
