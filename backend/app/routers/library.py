@@ -1010,6 +1010,7 @@ def list_generations(
         limit=limit,
         cursor_ts=cursor_ts,
         cursor_id=cursor_id,
+        lean_prompt=lean_prompt == 1,  # `== 1` — 직접 호출의 기본값 Query(0) 객체를 참으로 읽지 않게(_lean_list 와 같은 이유)
     )
     _prefer_remote_source_urls(result)
     # 발행본(서버 공유) 카드의 코멘트 뱃지는 로컬 카운트가 아니라 '서버 스레드' 기준으로 보강한다
