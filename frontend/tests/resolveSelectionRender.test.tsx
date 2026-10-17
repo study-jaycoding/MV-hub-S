@@ -2274,6 +2274,35 @@ it("FE-01 cut_peek_return_unlocks_and_resumes_polling — 창을 닫고 돌아�
   }
 });
 
+// fix8d P2: 원문 목록이 있는 폴더에서 검색으로 컷별 → 검색을 풀면 서버 카드로 컷 화면이 그대로다(주인은 본 목록). 뒤의 낱장 사본은 컷 갱신으로 낡았지만
+//  화면에 낱장으로 그리지 않는 동안에는 컷 카드·전환 단추를 잠그지 않는다. [전체]로 낱장을 그리는 순간부터 그 사본을 잠그고, 새 원문이 오면 푼다.
+it("FE-01 cut_peek_return_unlocks_and_resumes_polling(검색 해제) — 원문 재조회가 늦어도 컷 카드·전환 단추는 잠기지 않고, 낱장으로 넘어가면 그때부터 잠긴다", async () => {
+  let holdPlain = false;
+  let givePlain: ((rows: Generation[]) => void) | null = null;
+  const plain = [at("p1", "episode/shot"), at("p2", "episode/other")];
+  const listGenerations = vi.fn((query: GenQuery, _cursor: unknown, _limit: number, opts?: { leanPrompt?: boolean }) => {
+    if (query.search === "cat") return Promise.resolve(leanable([at("s1", "episode/shot")], opts));
+    if (holdPlain && !opts?.leanPrompt) return new Promise<Generation[]>((resolve) => { givePlain = resolve; });
+    return Promise.resolve(leanable(plain, opts));
+  });
+  await mountRealCut({ listGenerations, folderCards: byParent(() => false) });
+  act(() => sidebarSnapshot!.onChange({ search: "cat" }));
+  await flushAll();
+  expect(cutNames()).toEqual(["shot"]);
+  holdPlain = true;
+  act(() => sidebarSnapshot!.onChange({ search: undefined })); // 검색을 풀었다 — 원문 첫 쪽을 다시 받는다(붙잡음)
+  await flushAll();
+  const main = document.querySelector<HTMLElement>("main.main")!;
+  expect([cutNames(), main.hasAttribute("inert"), givePlain !== null, toolbarSnapshot!.folderCards!.summary])
+    .toEqual([["other", "shot"], false, true, { top: false, folders: 2, items: 9, note: undefined }]);
+  act(() => toolbarSnapshot!.folderCards!.onChange(false)); // [전체] — 이제 낡은 사본을 낱장으로 그린다
+  await flushAll();
+  expect([cutGrid(), main.hasAttribute("inert"), gridSnapshot!.selectLocked, gridSnapshot!.hasMore]).toEqual([null, true, true, false]);
+  await act(async () => { givePlain!(plain); });
+  await flushAll();
+  expect([main.hasAttribute("inert"), gridSnapshot!.selectLocked, gridSnapshot!.generations.map((g) => g.id)]).toEqual([false, false, ["p1", "p2"]]);
+});
+
 const placeWait = () => document.querySelector("main.main .grid-wrap[aria-busy='true'] > .grid-wait:only-child");
 const callReload = () => sidebarSnapshot!.onCreatorChanged!() as unknown as Promise<void>; // 사이드바가 받은 reload — 사람이 누른 다시 받기(invalidate)
 
