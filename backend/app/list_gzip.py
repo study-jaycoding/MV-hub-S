@@ -28,9 +28,10 @@
  `request_guards.is_loopback_request` 그대로(Vite 경유는 x-forwarded-for 마지막 값) — Host 헤더는 보지 않고,
  주소가 없거나 원격이면 압축한다. 공유 서버(AUTH on)는 루프백이어도 압축한다.
 
-★공유 서버(AUTH on)는 레벨 **1** 로 압축한다(82회차 FD 후보 2): 압축은 서버 한 프로세스의 이벤트 루프를
+★공유 서버(AUTH on)는 레벨 **2** 로 압축한다(82회차 FD 후보 2): 압축은 서버 한 프로세스의 이벤트 루프를
  잡아 동시 진입 때 줄을 세운다. 실제 팀 목록 200행(6,862,056 B) 30회 실측 — 레벨 6 = 1,077,366 B·중앙 55ms,
- 레벨 1 = 1,841,042 B·중앙 17ms. 형식은 같은 gzip 이라 옛 허브(`_proxy.decode_proxy_body`)도 그대로 푼다.
+ 레벨 2 = 1,407,172 B·중앙 26.5ms, 레벨 1 = 1,841,042 B·중앙 17ms. 1 은 크기가 판정선(1.5MB)을 넘고 100Mbps 에서는
+ 늘어난 전송(약 61ms)이 줄인 CPU 보다 커서 2 를 쓴다. 형식은 같은 gzip 이라 옛 허브(`_proxy.decode_proxy_body`)도 그대로 푼다.
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ COMPRESSED_PATHS = frozenset({"/api/generations"})
 
 MINIMUM_SIZE = 1024
 COMPRESS_LEVEL = 6
-SERVER_COMPRESS_LEVEL = 1  # 공유 서버(AUTH on) — 머리말의 82회차 실측
+SERVER_COMPRESS_LEVEL = 2  # 공유 서버(AUTH on) — 머리말의 82회차 실측
 
 
 def mode_options(auth_enabled: bool) -> dict:

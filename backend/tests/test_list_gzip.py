@@ -249,12 +249,15 @@ def test_the_hub_still_compresses_for_anyone_else(client, extra):
 
 
 def test_the_shared_server_compresses_even_for_loopback():
-    """★공유 서버(AUTH on)는 루프백이어도 압축한다 — 허브만의 예외다. 레벨은 1(82회차)."""
+    """★공유 서버(AUTH on)는 루프백이어도 압축한다 — 허브만의 예외다. 레벨은 2(82회차)."""
+    from app.list_gzip import mode_options
+
     headers, wire = _wire(_mode_app(auth_enabled=True), ("127.0.0.1", 50000))
     assert headers.get("content-encoding") == "gzip"
     assert int(headers["content-length"]) == len(wire)
     assert json.loads(gzip.decompress(wire)) == BIG
-    assert wire[8] == 4  # gzip 머리 XFL=4 = 가장 빠른 압축(레벨 1)
+    # 회선 머리(XFL)는 레벨 1 만 가린다(2~8 은 0) — 미들웨어에 실제로 넘긴 레벨을 본다
+    assert ListGzipMiddleware(_mode_app(False), **mode_options(True))._gzip.compresslevel == 2
 
 
 def test_main_registers_the_options_for_its_mode():
