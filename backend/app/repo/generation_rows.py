@@ -16,6 +16,12 @@ from ._common import ALERT_COMMENT_JOINS, ALERT_COMMENT_PREDICATE, GEN_BASE_JOIN
 from .identity import get_my_uid, resolve_display_names
 
 
+def _hides_personal_meta(viewer_uid: Optional[str], row: dict[str, Any]) -> bool:
+    """남의 공유물을 보는가 — 작성자 개인설정(컬러·태그)을 가린다. 본인·단독(viewer_uid 없음)·작성자 미상은 그대로.
+    가림과 태그 조회 생략이 같이 쓴다 — 한쪽만 바꾸면 보여야 할 태그가 빈 채로 나간다."""
+    return bool(viewer_uid and row.get("creator_uid") and row["creator_uid"] != viewer_uid)
+
+
 def _attach_children(
     conn: sqlite3.Connection,
     gens: list[dict[str, Any]],
@@ -122,23 +128,27 @@ def _attach_children(
         d["cached"] = bool(d.get("file_path", "").startswith("/media/"))
         by_id[gid]["references"].append(d)
 
-    for r in conn.execute(
-        f"SELECT gt.generation_id, t.name FROM gen_tag gt "
-        f"JOIN tag t ON t.id = gt.tag_id "
-        f"WHERE gt.generation_id IN ({placeholders}) "
-        f"ORDER BY t.name",  # 태그는 집합으로 저장된다 — 순서를 정해 두지 않으면 저장할 때마다 칩 순서가 바뀌었다(81회차 P2b 1-a)
-        ids,
-    ).fetchall():
-        by_id[r["generation_id"]]["tags"].append(r["name"])
+    # 아래에서 빈 배열로 덮일 남의 행은 태그를 읽지 않는다(83회차 — 공유 서버 500건 보강의 헛일). 남는 것이 없으면 두 조회 모두 건너뛴다.
+    tag_ids = [i for i in ids if not _hides_personal_meta(viewer_uid, by_id[i])]
+    if tag_ids:
+        tag_marks = ",".join("?" * len(tag_ids))
+        for r in conn.execute(
+            f"SELECT gt.generation_id, t.name FROM gen_tag gt "
+            f"JOIN tag t ON t.id = gt.tag_id "
+            f"WHERE gt.generation_id IN ({tag_marks}) "
+            f"ORDER BY t.name",  # 태그는 집합으로 저장된다 — 순서를 정해 두지 않으면 저장할 때마다 칩 순서가 바뀌었다(81회차 P2b 1-a)
+            tag_ids,
+        ).fetchall():
+            by_id[r["generation_id"]]["tags"].append(r["name"])
 
-    # 자동 태그(별도 네임스페이스) — 사이드바 필터 전용. 카드/# 피커는 gen.tags 만 읽으므로 누출 없음.
-    for r in conn.execute(
-        f"SELECT gat.generation_id, a.name FROM gen_auto_tag gat "
-        f"JOIN auto_tag a ON a.id = gat.auto_tag_id "
-        f"WHERE gat.generation_id IN ({placeholders})",
-        ids,
-    ).fetchall():
-        by_id[r["generation_id"]]["auto_tags"].append(r["name"])
+        # 자동 태그(별도 네임스페이스) — 사이드바 필터 전용. 카드/# 피커는 gen.tags 만 읽으므로 누출 없음.
+        for r in conn.execute(
+            f"SELECT gat.generation_id, a.name FROM gen_auto_tag gat "
+            f"JOIN auto_tag a ON a.id = gat.auto_tag_id "
+            f"WHERE gat.generation_id IN ({tag_marks})",
+            tag_ids,
+        ).fetchall():
+            by_id[r["generation_id"]]["auto_tags"].append(r["name"])
 
     for r in conn.execute(
         f"SELECT generation_id, MAX(shared_at) AS shared_at FROM share "
@@ -217,7 +227,7 @@ def _attach_children(
         g["project_name"] = pnames.get(g.get("project_id"))
         # 남의 공유물을 볼 때: 작성자 개인설정(컬러·태그)은 공유하지 않는다.
         # 공유되는 것은 프롬프트·소스(레퍼런스)·공유여부까지. 본인·단독(viewer_uid 없음)은 그대로.
-        if viewer_uid and g.get("creator_uid") and g["creator_uid"] != viewer_uid:
+        if _hides_personal_meta(viewer_uid, g):
             g["color"] = None
             g["tags"] = []
             g["auto_tags"] = []
