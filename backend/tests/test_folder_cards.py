@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -581,7 +582,10 @@ def test_the_cover_query_gives_exactly_what_the_team_list_rows_gave(catalog, sco
         new = folder_cover_repo._covers(
             conn, ids, project, None if scope["projects"] is None else list(scope["projects"]), scope["viewer"],
         )
-    assert new == _old_covers(ids, project=project, **scope)
+    old = _old_covers(ids, project=project, **scope)
+    assert new == old
+    # 형까지 같아야 한다 — 파이썬은 True == 1 이라 위 비교만으로는 bool 변환이 빠져도 통과한다(응답은 JSON true 대 1)
+    assert json.dumps(new, sort_keys=True, ensure_ascii=False) == json.dumps(old, sort_keys=True, ensure_ascii=False)
     if project == "member" and scope["viewer"] == "viewer" and scope["projects"]:
         assert set(new) == {*ids[:7], "multi", "flags", "held"}  # 지움·공유 해제·다른 프로젝트·없는 것은 빠진다
         assert [a["id"] for a in new["multi"]["assets"]] == ["z-first"]  # 넣은 순서의 첫 장(id 순서가 아니다)
