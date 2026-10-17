@@ -2583,6 +2583,51 @@ it("FE-09 list_reactivation_revalidates_same_sig_cache(시간) — 원문 첫 �
   expect([gridSnapshot!.generations.map((g) => g.id), gridSnapshot!.loadError !== null, main.hasAttribute("inert")]).toEqual([[], true, false]);
 });
 
+// fix8c P1: 같은 반례에서 원문을 기다리는 사이 사이드바로 다른 폴더로 옮긴다. 화면의 낱장은 여전히 컷 화면 동안 낡은 사본이다 — 자리 이동·4초 한도와 무관하게
+//  잠근 채 두고, 새 응답이나 실패 정리(목록 요청 30초 제한) 때 푼다. 잠금은 자리 표식이 아니라 그 사본의 수명을 따른다.
+it("FE-09 list_reactivation_revalidates_same_sig_cache(대기 중 폴더 이동) — 원문을 기다리는 사이 다른 폴더로 옮겨도 4초 뒤 옛 Q 사본이 눌리지 않는다", async () => {
+  const page = [at("s1", "episode/shot"), ...Array.from({ length: 199 }, (_, index) => at(`f${index}`, "episode/shot", { sort_ts: 900 - index }))];
+  let table = page;
+  let holdRaw = false;
+  const listGenerations = vi.fn((query: GenQuery, _cursor: unknown, _limit: number, opts?: { leanPrompt?: boolean; signal?: AbortSignal }) => {
+    if (query.search !== "cat") return Promise.resolve([]);
+    if (holdRaw && !opts?.leanPrompt) {
+      return new Promise<Generation[]>((_resolve, reject) => {
+        opts?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      });
+    }
+    return Promise.resolve(leanable(table, opts));
+  });
+  await mountRealCut({ listGenerations, folderCards: byParent(() => false) }, "0");
+  act(() => sidebarSnapshot!.onChange({ search: "cat" }));
+  await flushAll();
+  act(() => toolbarSnapshot!.folderCards!.onChange(true));
+  await flushAll();
+  table = [at("s2", "episode/shot", { sort_ts: 2000 }), ...page];
+  await act(async () => { await callReload(); });
+  await flushAll();
+  holdRaw = true;
+  const ticks = () => act(async () => { for (let index = 0; index < 60; index++) await Promise.resolve(); });
+  const main = document.querySelector<HTMLElement>("main.main")!;
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    act(() => toolbarSnapshot!.folderCards!.onChange(false));
+    await ticks();
+    act(() => sidebarSnapshot!.onChange({ folder_path: "ep2" })); // 기다리는 사이 다른 폴더로 — 그 폴더의 원문도 매달린다
+    await ticks();
+    act(() => { vi.advanceTimersByTime(5000); }); // 옮긴 뒤 기다림 한도(4초)를 넘겼다 — 화면은 여전히 낡은 사본이다
+    await ticks();
+    expect([main.hasAttribute("inert"), gridSnapshot!.selectLocked, gridSnapshot!.hasMore, gridSnapshot!.generations[0]?.id])
+      .toEqual([true, true, false, "s1"]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(35_000); }); // 목록 요청이 30초에 실제로 끊긴다
+    await ticks();
+  } finally {
+    vi.useRealTimers();
+  }
+  await flushAll();
+  expect([gridSnapshot!.generations.map((g) => g.id), gridSnapshot!.loadError !== null, main.hasAttribute("inert")]).toEqual([[], true, false]);
+});
+
 // fix8 P1(실패 쪽): 같은 조회로 돌아와 다시 받은 첫 쪽이 실패하면, 앞서 받은 Q 의 사본을 지금 조회의 것처럼 풀어 두지 않는다 — 치우고 실패·다시 받기를 보인다.
 it("FE-09 list_reactivation_revalidates_same_sig_cache(실패) — 같은 조회로 돌아와 다시 받기가 실패하면 옛 Q 사본을 남기지 않고 실패를 보인다", async () => {
   let failRaw = false;
@@ -2621,6 +2666,35 @@ it("list_return_rechecks_parent_cover — 컷 화면 동안 이 폴더의 대표
   await flushAll();
   expect(cutNames()).toEqual(["shot"]);
   repTop = true; // 컷 화면을 보는 동안 남이 이 폴더(episode)의 대표를 s1 로 정했다
+  act(() => toolbarSnapshot!.folderCards!.onChange(false));
+  await flushAll();
+  expect(pill("s1")).toMatchObject({ type: "span", props: { className: "scene-varpop-cur" } });
+});
+
+// fix8c P2: 컷 화면을 보며 부모 범위가 다른 곳으로 갔다 돌아온 뒤(A → B → A — A 의 부모는 돌아올 때 이미 물었다) 남이 이 폴더의 대표를 바꾸고 [전체]로
+//  돌아오면, 앞의 이동 이력으로 건너뛰지 않고 부모 범위를 다시 확인한다(건너뛰는 것은 넘김과 같은 커밋에 범위가 바뀐 때뿐).
+it("list_return_rechecks_parent_cover(A→B→A 뒤) — 이동 뒤 대표가 바뀌고 [전체]로 돌아오면 카드 위 [대표]가 새 값", async () => {
+  let repTop = false;
+  const xCards = { parent: "ep9/sub", own_count: 0, folders: [{ path: "ep9/sub/x", name: "x", count: 1, rep: false, subfolders: 0, cover: withAsset("y1") }] };
+  const folderCards = vi.fn((_pid: string, parent: string) => Promise.resolve(parent === "episode" ? cutCards(false)
+    : parent === "ep9/sub" ? xCards
+    : parent === "" ? { parent: "", own_count: 0, folders: [{ path: "episode", name: "episode", count: 2, rep: repTop, subfolders: 2, cover: withAsset(repTop ? "s1" : "ep") }] }
+    : { parent, own_count: 0, folders: [] }));
+  const listGenerations = vi.fn(async (query: GenQuery, _cursor: unknown, _limit: number, opts?: { leanPrompt?: boolean }) => {
+    if (query.search !== "cat") return [];
+    return leanable(query.folder_path === "ep9/sub" ? [at("y1", "ep9/sub/x")] : [at("s1", "episode/shot")], opts);
+  });
+  await mountRealCut({ listGenerations, folderCards });
+  act(() => sidebarSnapshot!.onChange({ search: "cat" }));
+  await flushAll();
+  expect(cutNames()).toEqual(["shot"]);
+  act(() => sidebarSnapshot!.onChange({ folder_path: "ep9/sub" })); // B — 부모 범위 ep9
+  await flushAll();
+  expect(cutNames()).toEqual(["x"]);
+  act(() => sidebarSnapshot!.onChange({ folder_path: "episode" })); // A 로 돌아왔다 — 부모 범위("")를 이때 묻는다
+  await flushAll();
+  expect(cutNames()).toEqual(["shot"]);
+  repTop = true; // 그 뒤 남이 이 폴더(episode)의 대표를 s1 로 정했다
   act(() => toolbarSnapshot!.folderCards!.onChange(false));
   await flushAll();
   expect(pill("s1")).toMatchObject({ type: "span", props: { className: "scene-varpop-cur" } });
@@ -2668,9 +2742,9 @@ it("FF-01 parent_direct_matches_switch_to_full_list — 부모 직속만 맞으�
   }
 });
 
-// Codex FF-02: 걸러 보는 컷 화면에서 [전체]로 — 원문 첫 쪽(붙잡음)이 오기 전에는 낱장을 그리지 않는다. 그 사이 화면의 목록은 앞 조건의 것이고, lean 행(빈
-//  프롬프트)은 본 목록에 들어가지 않는다 — 정보·복사·비교·히스토리가 닿을 카드가 없다. 오면 원문 프롬프트로.
-it("FF-02 cut_exit_never_exposes_lean_rows_to_actions — 컷 화면에서 [전체]로: 원문 첫 쪽 전에는 자리를 비우고(앞 조건·빈 프롬프트 카드 없음), 온 뒤에는 원문", async () => {
+// Codex FF-02: 걸러 보는 컷 화면에서 [전체]로 — 원문 첫 쪽(붙잡음)이 오기 전 화면의 낱장은 앞 조건의 원문 목록(컷 화면 동안 낡은 사본)뿐이고 잠겨 있다.
+//  lean 행(빈 프롬프트)은 본 목록에 들어가지 않는다 — 고르기·정보·복사·비교·히스토리가 닿지 않는다. 오면 원문 프롬프트로(fix8c — 자리 비움 대신 잠근 사본).
+it("FF-02 cut_exit_never_exposes_lean_rows_to_actions — 컷 화면에서 [전체]로: 원문 첫 쪽 전에는 앞 조건의 원문 사본을 잠근 채로만(빈 프롬프트 카드 없음), 온 뒤에는 원문", async () => {
   let giveList: ((rows: Generation[]) => void) | null = null;
   const rows = [at("s1", "episode/shot")];
   const listGenerations = vi.fn((query: GenQuery, _cursor: unknown, _limit: number, opts?: { leanPrompt?: boolean }) => {
@@ -2684,10 +2758,12 @@ it("FF-02 cut_exit_never_exposes_lean_rows_to_actions — 컷 화면에서 [전�
   expect([cutNames(), giveList]).toEqual([["shot"], null]); // 컷 화면 — 원문 목록은 보내지 않았다
   act(() => toolbarSnapshot!.folderCards!.onChange(false));
   await flushAll();
-  expect([cutGrid(), placeWait() !== null, gridOutputs().length, giveList !== null]).toEqual([null, true, 0, true]);
+  const main = document.querySelector<HTMLElement>("main.main")!;
+  expect([cutGrid(), giveList !== null, gridSnapshot!.generations.map((g) => [g.id, g.prompt]), main.hasAttribute("inert"), gridSnapshot!.selectLocked])
+    .toEqual([null, true, [["plain", "plain prompt"]], true, true]);
   await act(async () => { giveList!(rows); });
   await flushAll();
-  expect([placeWait(), gridSnapshot!.generations.map((g) => [g.id, g.prompt])]).toEqual([null, [["s1", "s1 prompt"]]]);
+  expect([placeWait(), gridSnapshot!.generations.map((g) => [g.id, g.prompt]), main.hasAttribute("inert")]).toEqual([null, [["s1", "s1 prompt"]], false]);
 });
 
 // Codex FF-03(보존): 서버 카드를 모르는 자리에 검색을 켠 채 들어가면 전처럼 원문 200건·걸러진 500건을 둘 다 받는다 — 카드가 와서 주인이 바뀌어도 목록 요청을

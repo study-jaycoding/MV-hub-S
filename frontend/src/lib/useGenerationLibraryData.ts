@@ -318,6 +318,7 @@ export function useGenerationLibraryData({
     setLoadError(null);
     setLocatedVisibleIds(null);
     setStaleList(false);
+    setAside(null); // 목록을 비웠다 — 보이는 사본이 없다
   }, [authScope]);
 
   // ★탭이 바뀌면 '그 자리에서' 화면 컨텍스트를 전환 — 진행 중 reload(코얼레싱 큐)가 끝나길 기다리면
@@ -892,6 +893,10 @@ export function useGenerationLibraryData({
     // 화면의 목록이 아직 지금 조회의 것이 아니다 — 조회(자리·필터)가 바뀐 뒤 새 첫 쪽이 적용되기 전. 탭 캐시의 sig = 마지막으로 **적용된**
     //  목록의 조회다(beginComposeList 의 출처 확인과 같은 기준). 캐시를 지운 구간(위치 주입·폴더 창·실패)에도 참이라 쓰는 쪽이 그것을 가린다.
     listBehind,
+    // 화면의 목록이 **컷 화면의 갱신으로 낡았다고 알려진 사본**이다 — 컷 화면이 이 탭을 갱신한 뒤 이 탭에 남아 있던(캐시에서 꺼낸) 행이고, 아직 어떤 조회의
+    //  응답으로도 바뀌지 않았다. 쓰는 쪽(App)은 이것이 참인 동안 자리 이동·기다림 한도(4초)와 무관하게 조작을 잠근다 — 새 응답으로 바뀌거나(그 탭의 첫 쪽 적용)
+    //  실패 정리로 비워질 때 풀린다(목록 요청은 30초 제한으로 끝난다). Codex fix8c P1.
+    shownStaleCopy: asideTab === filters.tab && shownGens.length > 0,
     // 자동 조회(주기·창 복귀)를 쉴 때 — 폴더 창을 닫은 직후 옛 첫 쪽을 보이는 동안(staleList), 그리고 바뀐 조회의 첫 쪽을 받는 동안.
     //  끼어들면 받던 첫 쪽이 seq 로 버려지고 같은 목록을 한 번 더 받았다 — 직전 화면의 진행 중 카드로 3초 조회가 남아 있으면
     //  자리를 옮길 때마다 생겼다(81회차 F2-2). 실패하면 loading 이 내려가 다시 돈다.
