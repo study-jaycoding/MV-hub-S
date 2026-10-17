@@ -21,13 +21,22 @@
 
 ★이 앱이 전부 무압축이었던 것은 아니다 — 관리 작업표(`routers/manage.py`)는 이미
  레벨 1 gzip + 압축 결과 캐시 + ETag 를 쓴다. 무압축이던 것은 **생성물 목록**이다.
+
+★허브(AUTH off)가 **같은 PC 브라우저**에 주는 목록은 압축하지 않는다(82회차, Codex 레인 FD 후보 1):
+ 목록 한 건(200행 6.86MB) 압축에 약 55~60ms(81·82회차 실측)가 드는데 같은 PC 안 전송은 네트워크를 타지 않는다
+ (대신 6.86MB 를 그대로 넘긴다 — 왕복 절감 폭은 별도 실측 대상). 루프백 판정은
+ `request_guards.is_loopback_request` 그대로(Vite 경유는 x-forwarded-for 마지막 값) — Host 헤더는 보지 않고,
+ 주소가 없거나 원격이면 압축한다. 공유 서버(AUTH on)는 루프백이어도 압축한다.
 """
 
 from __future__ import annotations
 
 from starlette.datastructures import Headers
 from starlette.middleware.gzip import GZipMiddleware
+from starlette.requests import Request
 from starlette.types import ASGIApp, Receive, Scope, Send
+
+from .services.request_guards import is_loopback_request
 
 #: 압축할 경로 — **정확히 일치**해야 한다. `/api/generations/{id}` 같은 하위 경로는 포함하지 않는다
 #: (상세·미디어·히스토리가 그 아래에 있다).
@@ -35,6 +44,11 @@ COMPRESSED_PATHS = frozenset({"/api/generations"})
 
 MINIMUM_SIZE = 1024
 COMPRESS_LEVEL = 6
+
+
+def mode_options(auth_enabled: bool) -> dict:
+    """운영 모드별 생성 인자 — `main.py` 가 등록할 때 쓴다(허브 = AUTH off)."""
+    return {"skip_loopback": not auth_enabled}
 
 
 def accepts_gzip(accept_encoding: str | None) -> bool:
@@ -73,8 +87,10 @@ class ListGzipMiddleware:
         *,
         minimum_size: int = MINIMUM_SIZE,
         compresslevel: int = COMPRESS_LEVEL,
+        skip_loopback: bool = False,
     ) -> None:
         self.app = app
+        self.skip_loopback = skip_loopback
         self._gzip = GZipMiddleware(app, minimum_size=minimum_size, compresslevel=compresslevel)
 
     @staticmethod
@@ -91,7 +107,7 @@ class ListGzipMiddleware:
         return accepts_gzip(headers.get("accept-encoding"))
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if self.eligible(scope):
+        if self.eligible(scope) and not (self.skip_loopback and is_loopback_request(Request(scope))):
             await self._gzip(scope, receive, send)
             return
         await self.app(scope, receive, send)

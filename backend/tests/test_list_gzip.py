@@ -172,6 +172,97 @@ def test_the_bytes_on_the_wire_really_are_gzip():
     assert len(wire) < len(json.dumps(BIG).encode()) // 4     # 실제로 훨씬 작다
 
 
+# ── 운영 모드: 허브(AUTH off)는 같은 PC 브라우저에 압축하지 않는다(82회차) ─────────────
+def _mode_app(auth_enabled: bool) -> Starlette:
+    from app.list_gzip import mode_options
+
+    async def generations(request):
+        return JSONResponse(BIG)
+
+    app = Starlette(routes=[Route("/api/generations", generations)])
+    app.add_middleware(ListGzipMiddleware, **mode_options(auth_enabled))
+    return app
+
+
+def _wire(app, client, extra_headers=()):
+    """ASGI 를 직접 태워 회선 바이트를 본다 — 주소 없음(client=None)도 만들 수 있다."""
+    import asyncio
+
+    chunks: list[bytes] = []
+    start: dict = {}
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            start.update(message)
+        elif message["type"] == "http.response.body":
+            chunks.append(message.get("body", b""))
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    scope = {
+        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+        "method": "GET", "path": "/api/generations", "raw_path": b"/api/generations",
+        "query_string": b"", "root_path": "", "scheme": "http",
+        "headers": [(b"accept-encoding", b"gzip, deflate"), *extra_headers],
+        "client": client, "server": ("t", 80),
+    }
+    asyncio.run(app(scope, receive, send))
+    headers = {k.decode().lower(): v.decode() for k, v in start["headers"]}
+    return headers, b"".join(chunks)
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1", "::ffff:127.0.0.1"])
+def test_the_hub_does_not_compress_for_its_own_browser(host):
+    """★허브 → 같은 PC 브라우저: 압축(목록 한 건 약 60ms)을 건너뛴다."""
+    headers, wire = _wire(_mode_app(auth_enabled=False), (host, 50000))
+    assert headers.get("content-encoding") is None
+    assert json.loads(wire) == BIG
+    assert int(headers["content-length"]) == len(wire)
+
+
+@pytest.mark.parametrize("forwarded", [b"127.0.0.1", b"::1", b"192.168.1.50, 127.0.0.1"])
+def test_a_local_browser_through_vite_is_not_compressed(forwarded):
+    """Vite 프록시는 루프백으로 붙고 x-forwarded-for **마지막**에 브라우저 주소를 남긴다."""
+    headers, wire = _wire(_mode_app(auth_enabled=False), ("127.0.0.1", 50000), [(b"x-forwarded-for", forwarded)])
+    assert headers.get("content-encoding") is None
+    assert json.loads(wire) == BIG
+
+
+@pytest.mark.parametrize(
+    "client,extra",
+    [
+        (("192.168.1.50", 50000), []),                                            # 허용된 원격(직접)
+        (("192.168.1.50", 50000), [(b"host", b"localhost")]),                       # Host 가 localhost 여도 원격이다
+        (("127.0.0.1", 50000), [(b"x-forwarded-for", b"192.168.1.50")]),            # Vite 경유 원격 브라우저
+        (("127.0.0.1", 50000), [(b"x-forwarded-for", b"127.0.0.1, 192.168.1.50")]),  # 앞에 넣은 루프백은 믿지 않는다
+        (("127.0.0.1", 50000), [(b"x-forwarded-for", b"unknown")]),                 # 못 읽는 주소 = 압축 유지
+        (None, []),                                                                # 주소 없음 = 압축 유지
+    ],
+)
+def test_the_hub_still_compresses_for_anyone_else(client, extra):
+    headers, wire = _wire(_mode_app(auth_enabled=False), client, extra)
+    assert headers.get("content-encoding") == "gzip"
+    assert int(headers["content-length"]) == len(wire)
+    assert json.loads(gzip.decompress(wire)) == BIG
+
+
+def test_the_shared_server_compresses_even_for_loopback():
+    """★공유 서버(AUTH on)는 루프백이어도 압축한다 — 허브만의 예외다."""
+    headers, wire = _wire(_mode_app(auth_enabled=True), ("127.0.0.1", 50000))
+    assert headers.get("content-encoding") == "gzip"
+    assert int(headers["content-length"]) == len(wire)
+    assert json.loads(gzip.decompress(wire)) == BIG
+
+
+def test_main_registers_the_options_for_its_mode():
+    from app import main
+    from app.list_gzip import mode_options
+
+    [item] = [m for m in main.app.user_middleware if m.cls is ListGzipMiddleware]
+    assert item.kwargs == mode_options(main.AUTH_ENABLED)
+
+
 @pytest.mark.parametrize(
     "header,expected",
     [
