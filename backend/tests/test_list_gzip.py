@@ -245,7 +245,10 @@ def test_the_hub_still_compresses_for_anyone_else(client, extra):
     assert headers.get("content-encoding") == "gzip"
     assert int(headers["content-length"]) == len(wire)
     assert json.loads(gzip.decompress(wire)) == BIG
-    assert wire[8] == 0  # gzip 머리 XFL — 허브의 원격 응답은 레벨 6 그대로(1 이면 4)
+    # 허브의 원격 응답은 레벨 6 그대로 — 회선 머리(XFL)는 2~8 을 못 가려서 넘긴 레벨을 본다
+    from app.list_gzip import mode_options
+
+    assert ListGzipMiddleware(_mode_app(False), **mode_options(False))._gzip.compresslevel == 6
 
 
 def test_the_shared_server_compresses_even_for_loopback():
