@@ -17,7 +17,8 @@ vi.mock("../src/lib/modelCatalog", () => ({
 import { FolderCardGrid } from "../src/components/FolderCardGrid";
 import { folderCardsPlace, folderCardsScope, hasFindFilters, parentFolder, singleTeamWorkspace, type FolderCardsScope } from "../src/lib/folderCards";
 import { HttpError } from "../src/lib/http";
-import { forgetFolderCards, prefetchFolderCards, useFolderCards, useSameQueryRevision } from "../src/lib/useFolderCards";
+import { forgetFolderCards, prefetchFolderCards, useFolderCards, useSameQueryRevision, type FolderCardsOutcome } from "../src/lib/useFolderCards";
+import { LIBRARY_LIST_TIMEOUT_MS } from "../src/lib/libraryRequestTimeout";
 import { forgetCoverCredits } from "../src/lib/coverCredits";
 
 const base: GenQuery = { tab: "team", project_id: "p1", folder_path: "e035", colors: [], tags: [], auto_tags: [] };
@@ -120,7 +121,7 @@ it("범위가 없으면 받지 않고, 생기면 받는다 — 목록이 새로 
   folderCardsApi.mockResolvedValue(cards(card("C0010", 8)));
   show({ scope: { ...e035, workspaceId: "ws-1" } });
   await settle();
-  expect(folderCardsApi).toHaveBeenLastCalledWith("p1", "e035", "ws-1");
+  expect(folderCardsApi).toHaveBeenLastCalledWith("p1", "e035", "ws-1", expect.any(AbortSignal)); // 넷째 = 30초 제한의 취소 신호(83회차)
   expect(seen.cards?.folders.map((folder) => folder.name)).toEqual(["C0010"]);
 
   folderCardsApi.mockResolvedValue(cards(card("C0010", 8, true)));
@@ -292,7 +293,7 @@ it("받아 둔 카드를 기억한다 — 다시 온 폴더는 응답 전에 그
   const real = hold();
   show({ scope: { projectId: "p1", parent: "e035/C0010" } });
   expect([seen.loading, seen.cards]).toEqual([false, { parent: "e035/C0010", own_count: 8, folders: [] }]);
-  expect(folderCardsApi).toHaveBeenLastCalledWith("p1", "e035/C0010", undefined);
+  expect(folderCardsApi).toHaveBeenLastCalledWith("p1", "e035/C0010", undefined, expect.any(AbortSignal));
   const seeded = seen.cards;
   await real.release({ parent: "e035/C0010", own_count: 8, folders: [] });
   expect(seen.cards).toBe(seeded); // 답이 미리 적은 것과 같다 — 같은 객체(다시 그리지 않는다)
@@ -322,6 +323,46 @@ it("받아 둔 카드를 기억한다 — 다시 온 폴더는 응답 전에 그
   hold();
   show({ scope: { ...e035, workspaceId: "ws-1" } });
   expect([seen.loading, seen.cards]).toEqual([true, null]);
+});
+
+// 83회차: 걸러 보는 컷 화면의 갱신이 서버 카드도 같은 실행에서 기다린다 — 결과를 돌려준다(실패를 삼킨 뒤 '적용'으로 답하지 않는다).
+//  요청에는 목록과 같은 30초 제한이 붙는다(갱신 완료를 끝없이 붙잡지 않게).
+it("refresh 결과 — applied(그 카드) · failed(받아 둔 카드는 그대로) · 받는 중이면 그 응답은 적용하고 끝난 뒤 한 번 더 받은 결과 · 30초면 실제로 끊고 failed", async () => {
+  show({ scope: e035 });
+  await settle();
+  let got: FolderCardsOutcome | undefined;
+  folderCardsApi.mockResolvedValueOnce(cards(card("C0020", 2)));
+  await act(async () => { got = await seen.refresh(); });
+  expect([got!.status, got!.cards?.folders.map((folder) => folder.name)]).toEqual(["applied", ["C0020"]]);
+  folderCardsApi.mockRejectedValueOnce(new Error("502"));
+  await act(async () => { got = await seen.refresh(); });
+  expect([got!.status, got!.cards, seen.cards?.folders.map((folder) => folder.name)]).toEqual(["failed", null, ["C0020"]]);
+  const slow = hold();
+  show({ scope: e035, reloadKey: 1 }); // 주기 조회가 받는 중
+  await settle();
+  folderCardsApi.mockResolvedValueOnce(cards(card("C0030", 3)));
+  let later: FolderCardsOutcome | undefined;
+  act(() => { void seen.refresh().then((outcome) => { later = outcome; }); });
+  await slow.release(cards(card("C0025", 1)));
+  await settle();
+  await settle();
+  expect([later?.status, later?.cards?.folders.map((folder) => folder.name), folderCardsApi.mock.calls.length]).toEqual(["applied", ["C0030"], 5]);
+  vi.useFakeTimers();
+  try {
+    let signal: AbortSignal | undefined;
+    folderCardsApi.mockImplementationOnce((_p: string, _d: string, _w: string | undefined, given: AbortSignal) => {
+      signal = given;
+      return new Promise((_resolve, reject) => { given.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))); });
+    });
+    let timed: FolderCardsOutcome | undefined;
+    act(() => { void seen.refresh().then((outcome) => { timed = outcome; }); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(LIBRARY_LIST_TIMEOUT_MS - 1); });
+    expect([signal?.aborted, timed]).toEqual([false, undefined]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect([signal?.aborted, timed?.status, seen.cards?.folders.map((folder) => folder.name)]).toEqual([true, "failed", ["C0030"]]);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("reload 는 서버 값을 다시 읽고 끝난 뒤에 풀린다 — 그 앞에 출발한 조회는 버리고 그 뒤 한 번만 더 보낸다(같은 문맥은 합친다)", async () => {

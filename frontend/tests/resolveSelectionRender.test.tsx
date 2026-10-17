@@ -1556,7 +1556,7 @@ it("App 공유·리뷰: 폴더를 고르면 바로 아래 폴더마다 카드 �
   act(() => toolbarSnapshot!.folderCards!.onChange(true));
   await settle();
   expect(localStorage.getItem("ch.lib.cutView")).toBe("1");
-  expect(folderCards).toHaveBeenLastCalledWith("resolve-project", "episode", "view-workspace");
+  expect(folderCards).toHaveBeenLastCalledWith("resolve-project", "episode", "view-workspace", expect.any(AbortSignal));
   expect([...cutGrid()!.querySelectorAll(".cut-tab > span")].map((name) => name.textContent)).toEqual(["other", "shot"]);
   expect(gridOutputs()).toHaveLength(0);
   expect(promptSnapshot?.topSlot).toBeUndefined();
