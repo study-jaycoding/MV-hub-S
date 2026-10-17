@@ -2,11 +2,13 @@ import { useEffect, useRef } from "react";
 import { APP_EVENTS, dispatchAppEvent, LIBRARY_POLL_TICK } from "./appEvents";
 import { hasActiveGenerationJob } from "./generationDisplay";
 import type { Filters, Generation } from "../types";
+import type { LibraryIntent } from "./useGenerationLibraryData";
 
 interface UseGenerationAutoRefreshArgs {
   generations: Generation[];
   tab: Filters["tab"];
-  reload: (silent?: boolean, light?: boolean) => void | Promise<void>;
+  // 주기 폴링·창 복귀는 "check" 로 부른다 — 실제 변경이 아니라 확인이다(걸러 보는 컷 화면은 받는 중이면 합류하고 첫 쪽만 본다, 83회차)
+  reload: (silent?: boolean, light?: boolean, intent?: LibraryIntent) => void | Promise<void>;
   // 지금은 자동으로 다시 받지 않는다 — 폴더 창을 닫은 직후 옛 첫 쪽을 보이며 새 첫 쪽을 기다리는 동안(목록 훅의 staleList).
   //  그 사이에 자동 조회가 끼면 받던 첫 쪽이 seq 로 버려지고 한 번 더 받느라 조작 잠금이 한 왕복 더 간다(2026-10-07 실측:
   //  0.63초 → 1.2초). 막는 것은 **여기서 시작하는 조회**(주기 폴링·창 복귀)뿐이다 — 실제 변경 통보(WS 동기화·알림)의 조회는
@@ -48,7 +50,7 @@ export function useGenerationAutoRefresh({
       if (inflight || pausedRef.current || document.visibilityState === "hidden") return;
       inflight = true;
       lastRefreshRef.current = Date.now();
-      void Promise.resolve(reload(true, true)).finally(() => {
+      void Promise.resolve(reload(true, true, "check")).finally(() => {
         inflight = false;
         // 팀 탭 유휴 폴링: light 리로드는 projects 를 안 갱신해 사이드바 폴더 카운트(+N 신규 배지)가
         // 낡는다 — 사이드바 카운트 갱신 채널을 깨운다(활성 잡 3초 폴링에선 스팸 방지 위해 제외).
@@ -68,7 +70,7 @@ export function useGenerationAutoRefresh({
       const now = Date.now();
       if (now - lastRefreshRef.current < 5000) return;
       lastRefreshRef.current = now;
-      void reload(true, true);
+      void reload(true, true, "check");
     };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onVisible);
