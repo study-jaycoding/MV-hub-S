@@ -749,10 +749,14 @@ export default function App() {
   const waitExpired = waitExpiredAt === hereKey;
   const cutLoading = cutLoadingRaw && !waitExpired;
   const behindAfterMove = behindRaw && !waitExpired;
+  // 컷 화면에서 넘어온 자리의 낱장이 아직 지금 조회의 응답이 아니다(앞서 받은 사본·앞 조건의 목록 — 그동안 컷 화면이 본 변경이 없다). 4초 장치는 자리 비움(표시
+  //  대기)만 푼다 — 조작 잠금·더 받기 막기는 첫 쪽이 적용되거나 실패할 때까지 둔다(목록 요청은 30초 제한으로 끝난다 — 81회차 15A, Codex fix8b P1).
+  //  옛 자리로 옮긴 뒤 매달린 응답의 4초 계약(31회차)은 그대로다 — 그때 화면의 목록은 앞 자리에서 실제로 받은 목록이다(사본이 아니다).
+  const handoffBehind = handoffHereRef.current === hereKey && behindRaw;
   //  컷 화면에서 낱장으로 넘어간 자리도 같다 — 받아 둔 넓은 목록에서 고를 것이 없으면 자리를 비운다([전체]로 넘어간 때 포함 — 앞 조건의 낱장을 그리지 않는다).
   const narrowing = (cutWaiting || handoffHereRef.current === hereKey) && behindAfterMove;
   // 낱장 격자를 보이는 중일 때만 — 컷 카드는 목록과 무관하게 눌린다. 컷 화면이 주인이면 뒤에 숨은 본 목록의 사본(staleList)으로 잠그지 않는다(Codex FE-01).
-  const listLocked = !cutOwns && (staleList || (behindAfterMove && !cutMode));
+  const listLocked = !cutOwns && (staleList || ((behindAfterMove || handoffBehind) && !cutMode));
   // 창이 보여 주는 폴더의 지금 대표 — 표지가 '가장 최근 것' 일 뿐이면 대표가 아니다(null).
   const peekFolderCard = listPeek ? folderCards?.folders.find((folder) => folder.path === listPeek.path) : undefined;
   const peekCoverId = peekFolderCard?.rep ? peekFolderCard.cover.id : null;
@@ -768,12 +772,18 @@ export default function App() {
   const { cards: ownCards, reload: reloadOwnCards, refresh: refreshOwnCards } = useFolderCards({ scope: ownScope, authKey: libraryAuthKey, reloadKey: cardsReloadKey });
   // 컷 화면이 주인인 동안 부모 범위의 카드(들어간 폴더의 [대표])는 다시 받지 않았다 — 컷 쪽 갱신은 하위 묶음 카드만 받는다. 본 목록이 주인을 되찾으면
   //  (폴더 창 아님) 한 번 다시 받는다. 되찾은 첫 적용은 갱신 신호에서 빠지므로 그대로 두면 다음 주기 조회까지 옛 [대표]가 남는다(Codex fix8 P2).
-  const ownBackRef = useRef(cutOwns);
+  //  그 사이 부모 범위가 바뀌었으면(폴더 이동 — 바뀐 범위는 제 훅이 이미 받는다) 다시 받지 않는다: 받는 중에 얹으면 같은 부모를 두 번 묻는다(Codex fix8b P2).
+  const ownKey = ownScope ? JSON.stringify([ownScope.projectId, ownScope.parent, ownScope.workspaceId ?? null]) : null;
+  const ownCutRef = useRef({ cut: cutOwns, key: ownKey, moved: false });
   useEffect(() => {
-    const wasCut = ownBackRef.current;
-    ownBackRef.current = cutOwns;
-    if (wasCut && !cutOwns && !listPeek) void refreshOwnCards();
-  }, [cutOwns, listPeek, refreshOwnCards]);
+    const was = ownCutRef.current;
+    if (cutOwns) {
+      ownCutRef.current = { cut: true, key: ownKey, moved: was.cut && (was.moved || was.key !== ownKey) };
+      return;
+    }
+    ownCutRef.current = { cut: false, key: ownKey, moved: false };
+    if (was.cut && !listPeek && !was.moved && was.key === ownKey) void refreshOwnCards();
+  }, [cutOwns, listPeek, ownKey, refreshOwnCards]);
   const ownFolderCard = ownScope ? ownCards?.folders.find((folder) => folder.path === filters.folder_path) : undefined;
   const ownCoverId = ownFolderCard?.rep ? ownFolderCard.cover.id : null;
   // 한 장씩 → 묶음으로 바뀌는 순간 고른 것을 비운다 — 남기면 보이지 않는 카드에 삭제·공유가 걸린다.
@@ -2584,7 +2594,7 @@ export default function App() {
       filtersOpen={showFilters}
       onToggleFilters={() => setShowFilters((v) => !v)}
       count={gridGens.length}
-      countMore={hasMore && !behindAfterMove}
+      countMore={hasMore && !behindAfterMove && !handoffBehind}
       folderCards={listPeek ? undefined : cutToggle} // 창 안의 툴바에는 전환 단추가 없다
       grayOn={grayOn}
       onToggleGray={toggleGray}
@@ -2688,7 +2698,7 @@ export default function App() {
             ? coverHeader(ownCoverId, (g) => void pickFolderCover(g, { projectId: ownScope.projectId, path: filters.folder_path ?? "" }))
             : undefined
       }
-      hasMore={hasMore && !behindAfterMove} // 자리를 옮긴 뒤 새 목록 전에는 더 받지 않는다 — 커서가 옛 조회의 것이다
+      hasMore={hasMore && !behindAfterMove && !handoffBehind} // 자리를 옮긴 뒤 새 목록 전에는 더 받지 않는다 — 커서가 옛 조회의 것이다
       loadingMore={loadingMore}
       onLoadMore={loadMore}
       resetKey={serverFilterKey}
