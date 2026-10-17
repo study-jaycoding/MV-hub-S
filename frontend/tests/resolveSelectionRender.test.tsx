@@ -40,6 +40,7 @@ let refreshProjects: () => void;
 const relinkOnWorkspaceChange = vi.fn();
 const beginList = vi.fn(); // 목록 훅의 beginComposeList — 폴더 창을 열고 닫을 때 목록을 비우는지 본다
 let setStaleList: (on: boolean) => void; // 목록 훅의 staleList(닫은 직후 옛 첫 쪽을 보이는 중)를 시험이 켜고 끈다
+let setShownStaleCopy: (on: boolean) => void; // 목록 훅의 shownStaleCopy(컷 화면의 갱신으로 낡았다고 알려진 사본을 보이는 중)
 let setLoadingList: (on: boolean) => void; // 목록 훅의 loading(받는 중)
 let setListBehind: (on: boolean) => void; // 목록 훅의 listBehind(화면의 목록이 아직 옛 조회의 것)
 let bumpListRevision: () => void; // 목록 훅의 listRevision — 새 첫 쪽을 적용했다(조회가 바뀌어 받았든 같은 조회를 다시 받았든)
@@ -473,6 +474,8 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
       const [projects, setProjects] = useState(initialProjects);
       const [staleList, setStale] = useState(false);
       setStaleList = setStale;
+      const [shownStaleCopy, setStaleCopy] = useState(false);
+      setShownStaleCopy = setStaleCopy;
       const [loading, setLoad] = useState(false);
       setLoadingList = setLoad;
       const [listBehind, setBehind] = useState(false);
@@ -492,7 +495,7 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
       isLocatedView: !!location && isLocatedQuery(args.genQuery, location.tab, location.value),
       stats: { has_unread: false, failed_count: 0, unread_count: 0 }, loading, loadingMore: false,
       hasMore: false, loadError: null, archivedCount: 0, unassignedCount: 0, loadMore: noop, beginComposeList: beginList,
-      reload: noop, reloadIfStale: noop, staleList, listBehind, listRevision,
+      reload: noop, reloadIfStale: noop, staleList, shownStaleCopy, listBehind, listRevision,
       autoRefreshPaused: staleList || (listBehind && loading), // 진짜 훅과 같은 식(lib/useGenerationLibraryData)
     };
     },
@@ -2046,6 +2049,26 @@ it("App 공유·리뷰: 자리를 옮긴 뒤 새 목록 전에는 옛 자리의 
   }
 });
 
+// fix8e: 낱장 목록에서 나오는 잠금 입력(staleList · shownStaleCopy · behindAfterMove)마다 — 컷 카드가 보이는 동안에는 컷 카드·전환 단추가 잠기지 않고, [전체]로
+//  낱장을 그리면 잠긴다(main inert · 고르기 잠금 · 더 받기 가림). 목록 훅은 가짜다 — 입력 하나씩을 따로 켜려면 실제 훅으로는 순서를 맞출 수 없어 배선만 본다
+//  (실제 훅 연결은 위 FE-01·FE-09·FF-02 시험이 맡는다). behindAfterMove 는 자리를 옮겨야 생긴다(프로젝트 맨 위로 — 받아 둔 카드가 바로 선다).
+it.each([
+  ["staleList", () => { setStaleList(true); }],
+  ["shownStaleCopy", () => { setShownStaleCopy(true); }],
+  ["behindAfterMove", () => { sidebarSnapshot!.onChange({ folder_path: undefined }); setListBehind(true); }],
+] as const)("App 공유·리뷰: 낱장 잠금 입력 %s — 컷 카드가 보이는 동안엔 잠기지 않고, [전체]로 낱장을 그리면 잠긴다", { timeout: 20_000 }, async (_input, make) => {
+  await mountTeamFolder({ folderCards: byParent(() => false), setFolderCover: vi.fn() });
+  act(() => setLibraryGens(Array.from({ length: 3 }, (_, index) => libraryGeneration(`g${index}`))));
+  await settle();
+  act(() => make());
+  await settle();
+  const main = () => document.querySelector<HTMLElement>("main.main")!;
+  expect([cutGrid() !== null, main().hasAttribute("inert"), main().getAttribute("aria-busy")]).toEqual([true, false, null]);
+  act(() => toolbarSnapshot!.folderCards!.onChange(false));
+  await settle();
+  expect([cutGrid(), main().hasAttribute("inert"), gridSnapshot!.selectLocked]).toEqual([null, true, true]);
+});
+
 it("App 공유·리뷰: 묶어 보이지 않는 경우 — 하위 폴더가 없는 폴더, 무엇을 찾는 중", { timeout: 20_000 }, async () => {
   // 하위 폴더가 없다 — 한 장씩 그대로이고, 바꿀 것이 없으니 전환 단추도 없다
   const leaf = vi.fn().mockResolvedValue({ parent: "episode", own_count: 5, folders: [] });
@@ -2296,6 +2319,40 @@ it("FE-01 cut_peek_return_unlocks_and_resumes_polling(검색 해제) — 원문 
   expect([cutNames(), main.hasAttribute("inert"), givePlain !== null, toolbarSnapshot!.folderCards!.summary])
     .toEqual([["other", "shot"], false, true, { top: false, folders: 2, items: 9, note: undefined }]);
   act(() => toolbarSnapshot!.folderCards!.onChange(false)); // [전체] — 이제 낡은 사본을 낱장으로 그린다
+  await flushAll();
+  expect([cutGrid(), main.hasAttribute("inert"), gridSnapshot!.selectLocked, gridSnapshot!.hasMore]).toEqual([null, true, true, false]);
+  await act(async () => { givePlain!(plain); });
+  await flushAll();
+  expect([main.hasAttribute("inert"), gridSnapshot!.selectLocked, gridSnapshot!.generations.map((g) => g.id)]).toEqual([false, false, ["p1", "p2"]]);
+});
+
+// fix8e P2: 같은 문제의 폴더 창 경로 — [전체]에서 검색 결과를 받고 컷별 → 폴더 창을 열고 닫으면(뒤 목록은 옛 첫 쪽 사본 = staleList) → 검색 해제(원문 재조회
+//  붙잡음). 컷 카드가 보이는 동안 숨은 사본으로 컷 카드·전환 단추를 잠그지 않는다. [전체]로 그 사본을 낱장으로 그리면 그때부터 잠그고, 새 원문이 오면 푼다.
+it("FE-01 cut_peek_return_unlocks_and_resumes_polling(창 → 검색 해제) — 창을 거쳐 검색을 풀어도 컷 화면은 잠기지 않고, [전체]로 넘어가면 잠긴다", async () => {
+  let holdPlain = false;
+  let givePlain: ((rows: Generation[]) => void) | null = null;
+  const plain = [at("p1", "episode/shot"), at("p2", "episode/other")];
+  const listGenerations = vi.fn((query: GenQuery, _cursor: unknown, _limit: number, opts?: { leanPrompt?: boolean }) => {
+    if (query.search === "cat") return Promise.resolve(leanable([at("s1", "episode/shot"), at("o1", "episode/other")], opts));
+    if (holdPlain && !opts?.leanPrompt) return new Promise<Generation[]>((resolve) => { givePlain = resolve; });
+    return Promise.resolve(leanable(plain, opts));
+  });
+  await mountRealCut({ listGenerations, folderCards: byParent(() => false) }, "0");
+  act(() => sidebarSnapshot!.onChange({ search: "cat" }));
+  await flushAll();
+  act(() => toolbarSnapshot!.folderCards!.onChange(true));
+  await flushAll();
+  act(() => { cutTile("shot").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); });
+  await flushAll();
+  expect(peekWindow()).not.toBeNull();
+  pressEscapeInPeek();
+  await flushAll();
+  holdPlain = true;
+  act(() => sidebarSnapshot!.onChange({ search: undefined }));
+  await flushAll();
+  const main = document.querySelector<HTMLElement>("main.main")!;
+  expect([peekWindow(), cutNames(), main.hasAttribute("inert"), givePlain !== null]).toEqual([null, ["other", "shot"], false, true]);
+  act(() => toolbarSnapshot!.folderCards!.onChange(false)); // [전체] — 이제 사본을 낱장으로 그린다
   await flushAll();
   expect([cutGrid(), main.hasAttribute("inert"), gridSnapshot!.selectLocked, gridSnapshot!.hasMore]).toEqual([null, true, true, false]);
   await act(async () => { givePlain!(plain); });

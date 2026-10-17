@@ -739,13 +739,16 @@ export default function App() {
   const cutLoading = cutLoadingRaw && !waitExpired;
   const behindAfterMove = behindRaw && !waitExpired;
   const narrowing = cutWaiting && behindAfterMove;
-  // 낱장 격자를 보이는 중일 때만 — 컷 카드는 목록과 무관하게 눌린다. 컷 화면이 주인이면 뒤에 숨은 본 목록의 사본(staleList)으로 잠그지 않는다(Codex FE-01).
-  //  화면의 낱장이 컷 화면의 갱신으로 낡았다고 알려진 사본(shownStaleCopy — 목록 훅)이면 자리 이동·기다림 한도(4초)와 무관하게 잠근다 — 그 사본이 새 응답으로
-  //  바뀌거나 실패로 치워질 때 풀린다(목록 요청은 30초 제한으로 끝난다 — 81회차 15A, Codex fix8b·fix8c P1). 옮긴 뒤 4초의 계약(31회차 — 앞 자리에서 실제로 받은
-  //  목록을 누르게 둔다)은 그 사본이 아닐 때 그대로다.
-  //  그 사본을 실제로 낱장으로 그릴 때만이다 — 컷 카드가 보이는 동안(검색을 풀어 서버 카드로 돌아온 때 등)에는 컷 카드·전환 단추를 잠그지 않는다(Codex fix8d P2).
-  const staleCopyShown = shownStaleCopy && !cutMode;
-  const listLocked = !cutOwns && (staleList || staleCopyShown || (behindAfterMove && !cutMode));
+  // ── 낱장 목록에서 나오는 잠금(main inert·고르기 잠금·더 받기 가리기)은 **낱장 격자를 실제로 그릴 때만** 건다(listShown) — 컷 카드가 보이는 동안에는 컷 카드·
+  //  전환 단추를 잠그지 않는다(뒤에 숨은 본 목록의 상태는 컷 카드와 무관하다 — Codex FE-01·fix8d·fix8e). 낱장 유래 입력은 셋이다:
+  //   · staleList — 폴더 창을 닫은 직후 옛 첫 쪽 사본을 보이는 중(새 첫 쪽이 오면 풀린다)
+  //   · shownStaleCopy — 컷 화면의 갱신으로 낡았다고 알려진 사본(목록 훅). 자리 이동·기다림 한도(4초)와 무관하게 새 응답·실패 정리 때 풀린다(목록 요청은
+  //     30초 제한 — 81회차 15A, Codex fix8b·fix8c)
+  //   · behindAfterMove — 자리를 옮긴 뒤 새 첫 쪽 전(4초 한도 — 31회차: 앞 자리에서 실제로 받은 목록은 4초 뒤 누르게 둔다. 위 사본이 아닐 때 그대로다)
+  //  컷 화면이 주인이면(cutOwns) 낱장이 없다. 컷 화면 자체의 기다림(cutLoading·cutPending)은 잠금이 아니라 자리 비움이다.
+  const listShown = !cutMode;
+  const listGate = listShown && (staleList || shownStaleCopy || behindAfterMove);
+  const listLocked = !cutOwns && listGate;
   // 창이 보여 주는 폴더의 지금 대표 — 표지가 '가장 최근 것' 일 뿐이면 대표가 아니다(null).
   const peekFolderCard = listPeek ? folderCards?.folders.find((folder) => folder.path === listPeek.path) : undefined;
   const peekCoverId = peekFolderCard?.rep ? peekFolderCard.cover.id : null;
@@ -2580,7 +2583,7 @@ export default function App() {
       filtersOpen={showFilters}
       onToggleFilters={() => setShowFilters((v) => !v)}
       count={gridGens.length}
-      countMore={hasMore && !behindAfterMove && !staleCopyShown}
+      countMore={hasMore && !listGate}
       folderCards={listPeek ? undefined : cutToggle} // 창 안의 툴바에는 전환 단추가 없다
       grayOn={grayOn}
       onToggleGray={toggleGray}
@@ -2684,7 +2687,7 @@ export default function App() {
             ? coverHeader(ownCoverId, (g) => void pickFolderCover(g, { projectId: ownScope.projectId, path: filters.folder_path ?? "" }))
             : undefined
       }
-      hasMore={hasMore && !behindAfterMove && !staleCopyShown} // 자리를 옮긴 뒤 새 목록 전에는 더 받지 않는다 — 커서가 옛 조회의 것이다
+      hasMore={hasMore && !listGate} // 자리를 옮긴 뒤 새 목록 전·낡은 사본·창을 닫은 뒤 사본에는 더 받지 않는다 — 커서가 옛 조회의 것이다
       loadingMore={loadingMore}
       onLoadMore={loadMore}
       resetKey={serverFilterKey}
