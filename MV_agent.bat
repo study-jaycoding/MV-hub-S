@@ -98,6 +98,20 @@ if not "%SESSION_EXIT%"=="0" (
 )
 exit /b %SESSION_EXIT%
 :session_guarded
+set "MVHUB_BOOT_NONCE="
+REM Only the installed local helper initializes activation. Inherited update intent
+REM must match this installation's fixed control/journal paths before it is accepted.
+if exist "%ROOT%update_release_contract.ps1" (
+  set "MVHUB_BOOT_ROOT=%ROOT%"
+  for /f "tokens=1,2 delims=:" %%A in ('powershell.exe -NoProfile -NonInteractive -Command "$ErrorActionPreference='Stop'; . (Join-Path $env:MVHUB_BOOT_ROOT 'update_release_contract.ps1'); Initialize-WorkerActivation -Root $env:MVHUB_BOOT_ROOT"') do if "%%A"=="READY" set "MVHUB_BOOT_NONCE=%%B"
+  if not defined MVHUB_BOOT_NONCE exit /b 1
+)
+if defined MVHUB_BOOT_NONCE (
+  set "MVHUB_EXECUTION_NONCE=%MVHUB_BOOT_NONCE%"
+  set "MVHUB_ACTIVATION_ROOT=%ROOT:~0,-1%"
+  set "MVHUB_ACTIVATION_CONTROL=%ROOT%.install-activation.json"
+  set "MVHUB_PROCESS_ROLE=worker"
+)
 echo     Using Python: "%PY_EXE%" %PY_ARGS%
 
 set "HAVE_NPM="

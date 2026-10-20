@@ -349,6 +349,7 @@ def create_project(body: ProjectCreate, request: Request):
             body.name,
             kind=body.kind,
             workspace=_validated_project_workspace(body.workspace, explicit=False),
+            asset_root_path=body.asset_root_path,
         )
     except repo.ProjectNameConflictError as e:
         raise HTTPException(status_code=409, detail=str(e))
@@ -399,6 +400,8 @@ def update_project(pid: str, body: ProjectUpdate, request: Request):
             repo.update_project_identity(pid, name=body.name, archived=body.archived)
         if body.render_root_path is not None:
             repo.set_render_root(pid, body.render_root_path)  # 팀 공유 렌더 폴더 경로
+        if body.asset_root_path is not None:
+            repo.set_asset_root(pid, body.asset_root_path)
         if body.workspace is not None:
             repo.set_project_workspace(pid, _validated_project_workspace(body.workspace, explicit=True))
     except repo.ProjectNameConflictError as e:

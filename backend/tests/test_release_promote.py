@@ -14,6 +14,7 @@ from fastapi import HTTPException
 
 from app.routers import release_update as router
 from app.services import release_update
+from release_contract_fixture import qualified_package
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="릴리스 폴더 잠금은 Windows 공유 모드로 한다")
 
@@ -30,9 +31,8 @@ def _folder(tmp_path: Path, *, published: str | None = "1.0", candidate: str | N
     (root / "INSTALL_SOURCE.txt").write_text(str(source), encoding="utf-8")
     for version, name in ((published, "latest.json"), (candidate, "candidate.json")):
         if version:
-            data = f"zip {version}".encode()
-            (source / f"MVHub-{version}.zip").write_bytes(data)
-            (source / name).write_text(json.dumps(_manifest(version, data)), encoding="utf-8")
+            _, raw = qualified_package(source, version)
+            (source / name).write_bytes(raw)
     return root, source
 
 
@@ -111,7 +111,9 @@ def test_promote_rejects_metadata_mismatch(tmp_path: Path, override: dict):
 
 def test_promote_rejects_tampered_or_missing_package(tmp_path: Path):
     root, source = _folder(tmp_path)
-    (source / "MVHub-2.0.zip").write_bytes(b"zip 2.X")  # 크기는 같고 지문만 다름
+    package = source / "MVHub-2.0.zip"
+    data = package.read_bytes()
+    package.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))  # same size, different digest
     with pytest.raises(release_update.ReleasePromoteError, match="지문"):
         release_update.promote_candidate(_item(source), root)
     (source / "MVHub-2.0.zip").unlink()

@@ -227,9 +227,34 @@ ON CONFLICT DO UPDATE SET
     last_error_code=NULL,
     observed_state_json=NULL,
     observed_at=NULL,
+    remote_command_json=NULL,
+    remote_result_json=NULL,
     updated_at=datetime('now'),
     last_attempt_at=NULL
 """
+
+
+def store_share_command(ref, command, result=None):
+    """Freeze the exact command before sending it; only this intent owner may do so."""
+    text = json.dumps(command, sort_keys=True, separators=(",", ":"))
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT remote_command_json,remote_result_json FROM share_state_intent WHERE intent_id=? AND intent_seq=? AND claim_token=?",
+                           (ref["intent_id"], ref["intent_seq"], ref["claim_token"])).fetchone()
+        if row is None:
+            return False
+        previous = json.loads(row["remote_command_json"]) if row["remote_command_json"] else None
+        if previous and previous["operation_id"] == command["operation_id"] and previous != command:
+            raise ValueError("share_command_input_changed")
+        result_text = (json.dumps(result, sort_keys=True, separators=(",", ":")) if result is not None
+                       else row["remote_result_json"] if row["remote_command_json"] == text else None)
+        if (row["remote_command_json"] == text and row["remote_result_json"] is not None
+                and result is not None and json.loads(row["remote_result_json"]) != result):
+            raise ValueError("share_receipt_changed")
+        conn.execute("UPDATE share_state_intent SET remote_command_json=?, remote_result_json=? WHERE intent_id=? AND intent_seq=? AND claim_token=?",
+                     (text, result_text, ref["intent_id"], ref["intent_seq"], ref["claim_token"]))
+    ref["remote_command_json"], ref["remote_result_json"] = text, result_text
+    return True
 
 
 def _clean_optional(value: Any) -> Optional[str]:

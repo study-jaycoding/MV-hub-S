@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 
 import pytest
@@ -509,6 +511,54 @@ def test_cut_cards_carry_recent_takes_and_workers_for_the_list_view(catalog, mon
     with db.get_connection() as conn:
         conn.execute("DELETE FROM folder_cover")
     assert [take["cover"]["id"] for take in cards("e035")[1]["e035/c0010"]["takes"]][:3] == ["t11", "t10", "t09"]
+
+
+@pytest.mark.parametrize("location", ["legacy-null", "content-only", "ready", "wrong-owner", "wrong-project", "inactive-origin"])
+def test_folder_previews_keep_content_identity_and_verified_location(catalog, location):
+    from app.repo import asset_sync as ledger
+
+    seed("preview", "e035/c0010", creator="owner")
+    sha = hashlib.sha256(b"folder preview bytes").hexdigest()
+    origin, location_id = "http://asset-fixture.test", "a" * 32
+    with db.get_connection() as conn:
+        cid = None if location == "legacy-null" else ledger.register_verified_blob(conn, sha, 20, "image")
+        conn.execute("INSERT INTO asset(id,generation_id,type,file_path,thumbnail_path,asset_content_id) "
+                     "VALUES('preview-asset','preview','image','/media/preview.png','/media/preview-thumb.jpg',?)", (cid,))
+        conn.execute("INSERT OR REPLACE INTO app_setting(key,value) VALUES('shared_server_url',?)", (origin,))
+        if location not in ("legacy-null", "content-only"):
+            owner = "other-owner" if location == "wrong-owner" else "owner"
+            project = "other" if location == "wrong-project" else "member"
+            server = "http://inactive.invalid" if location == "inactive-origin" else origin
+            ledger.register_local(conn, path="unused-local.png", file_path="asset:captures|preview.png",
+                digest=sha, size=20, media_type="image", owner_uid=owner, project_id=project,
+                server_origin=server, account_key="fixture")
+            receipt = {"state": "ready", "asset_content_id": cid, "owner_uid": owner, "project_id": project,
+                       "storage_id": "server-storage", "root_revision": "b" * 64, "server_origin": server,
+                       "location_id": location_id, "file_path": "asset-sync:" + location_id}
+            conn.execute("UPDATE asset_sync_outbox SET state='ready',receipt_json=?,storage_id=?,root_revision=? "
+                         "WHERE asset_content_id=? AND owner_uid=? AND project_id=? AND server_origin=?",
+                         (json.dumps(receipt), receipt["storage_id"], receipt["root_revision"], cid, owner, project, server))
+        before = dict(conn.execute("SELECT * FROM asset WHERE id='preview-asset'").fetchone())
+
+    listed = repo.list_generations(tab="team", team_member_projects=["member"], account_uid="viewer",
+                                   project_id="member", generation_ids=["preview"])[0]["assets"][:1]
+    cut = cards()[1]["e035/c0010"]
+    child = cards("")[1]["e035"]["children"][0]
+    routed = cards_router.project_folder_cards("member", request(), parent="e035")["folders"][0]
+    for cover in (cut["cover"], cut["takes"][0]["cover"], child["cover"], routed["takes"][0]["cover"]):
+        assert cover["assets"] == listed
+        asset = cover["assets"][0]
+        assert "asset_content_id" in asset and asset["asset_content_id"] == cid
+        assert "_creator_uid" not in asset and "_project_id" not in asset
+        if location == "ready":
+            assert asset["file_path"] == "asset-sync:" + location_id
+            assert asset["source_url"] == "/api/asset-sync/files/" + location_id
+            assert asset["target_project_id"] == "member" and asset["server_location"]["owner_uid"] == "owner"
+            assert asset["thumbnail_path"] is None
+        else:
+            assert asset["file_path"] == "/media/preview.png" and "server_location" not in asset
+    with db.get_connection() as conn:
+        assert dict(conn.execute("SELECT * FROM asset WHERE id='preview-asset'").fetchone()) == before
 
 
 def test_cards_count_final_and_held_like_the_sidebar_numbers(catalog):

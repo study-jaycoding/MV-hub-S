@@ -603,7 +603,8 @@ def test_malformed_marker_keeps_legacy_restore_behavior(isolated, bad_marker):
     before_request = snapshot(rid)["request"]
     assert trash.restore_from_trash(GEN, UID)
     after = snapshot(rid)
-    assert after["generation"] == original["generation"]
+    # Restoring the same payload advances its CAS revision; business fields stay unchanged.
+    assert after["generation"] == {**original["generation"], "share_revision": original["generation"]["share_revision"] + 1}
     assert after["request"] == before_request
 
 

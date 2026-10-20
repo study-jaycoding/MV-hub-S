@@ -10,6 +10,8 @@ import { boardView, episodeNumber, isEpisodeLevel, numberColumn, repProgress, re
 import type { FolderCard, FolderCardChild, Generation } from "../src/types";
 
 vi.mock("../src/lib/i18n", () => ({ useT: () => (text: string) => text }));
+vi.mock("../src/lib/modelCatalog", () => ({ useModelDisplayName: () => (code?: string) => code ?? "—" }));
+vi.mock("../src/lib/coverCredits", () => ({ useCoverCredits: () => null }));
 
 const gen = (id: string, type: "image" | "video" = "image") =>
   ({ id, project_id: "p1", assets: [{ id: "a-" + id, type, file_path: `/media/${id}.${type === "video" ? "mp4" : "png"}`, thumbnail_path: null }] }) as unknown as Generation;
@@ -39,10 +41,10 @@ describe("에피소드 화면의 규칙", () => {
       .toEqual([{ width: 50, size: 34 }, { width: 66, size: 30 }, { width: 74, size: 22 }, { width: 50, size: 34 }]);
   });
 
-  it("어느 모양으로 그리나 — 리스트 한 번 = 줄, 한 번 더 = 표(어느 단계든). 그리드는 에피소드 화면만 카드, 컷 화면은 겹친 종이(null)", () => {
+  it("어느 모양으로 그리나 — 리스트 한 번 = 줄, 한 번 더 = 표. 그리드는 컷·에피소드 모두 같은 카드", () => {
     const cuts = [episode({ subfolders: 0 })];
     expect([boardView([episode()], "list", false), boardView([episode()], "list", true), boardView([episode()], "grid", true)]).toEqual(["list", "table", "grid"]);
-    expect([boardView(cuts, "list", false), boardView(cuts, "list", true), boardView(cuts, "grid", false), boardView(cuts, "grid", true)]).toEqual(["list", "table", null, null]);
+    expect([boardView(cuts, "list", false), boardView(cuts, "list", true), boardView(cuts, "grid", false), boardView(cuts, "grid", true)]).toEqual(["list", "table", "grid", "grid"]);
   });
 
   it("컷의 생성물 띠는 열 칸 — 다 실리면 그대로, 못 실으면 아홉 장 + '+N'. 묶음(하위 폴더 있음)·옛 서버는 띠가 없다", () => {
@@ -52,6 +54,13 @@ describe("에피소드 화면의 규칙", () => {
     expect([takesOf(leaf(14))!.takes.length, takesOf(leaf(14))!.more]).toEqual([9, 5]);
     expect([takesOf(leaf(3, takes.slice(0, 3)))!.takes.length, takesOf(leaf(3, takes.slice(0, 3)))!.more]).toEqual([3, 0]);
     expect([takesOf(episode({ takes })), takesOf(episode({ subfolders: 0, takes: undefined }))]).toEqual([null, null]);
+  });
+
+  it("그리드 생성물 띠는 다섯 장과 남은 수, 다섯 장 이하면 추가 칸 없이 모두 표시한다", () => {
+    const takes = Array.from({ length: 10 }, (_, index) => ({ cover: { id: `t${index}`, assets: [] }, final: false, held: false, by: null }));
+    const leaf = (count: number) => episode({ subfolders: 0, count, takes: takes.slice(0, count) });
+    expect([takesOf(leaf(10), "grid")!.takes.length, takesOf(leaf(10), "grid")!.more]).toEqual([5, 5]);
+    expect([takesOf(leaf(4), "grid")!.takes.length, takesOf(leaf(4), "grid")!.more]).toEqual([4, 0]);
   });
 
   it("검토 개수는 서버가 최종·보류 수를 줄 때만 — 일반 공유 = 건수 − 둘", () => {
@@ -103,8 +112,10 @@ describe("에피소드 카드의 안쪽 그림", () => {
   const draw = (layout: "list" | "grid", folder: FolderCard) => {
     const onEnter = vi.fn();
     const onEnterCut = vi.fn();
-    act(() => root.render(<EpisodeCardBody folder={folder} layout={layout} thumbSize={512} fill now={NOW} onEnter={onEnter} onEnterCut={onEnterCut} onPreviewTake={() => {}} />));
-    return { onEnter, onEnterCut };
+    const onPreviewTake = vi.fn();
+    const onInfo = vi.fn();
+    act(() => root.render(<EpisodeCardBody folder={folder} layout={layout} thumbSize={512} fill now={NOW} onEnter={onEnter} onEnterCut={onEnterCut} onPreviewTake={onPreviewTake} onInfo={onInfo} />));
+    return { onEnter, onEnterCut, onPreviewTake, onInfo };
   };
   const text = (selector: string) => host.querySelector(selector)?.textContent ?? null;
   const texts = (selector: string) => [...host.querySelectorAll(selector)].map((one) => one.textContent);
@@ -112,7 +123,7 @@ describe("에피소드 카드의 안쪽 그림", () => {
   it("리스트 = 번호 · 표지 · 이름과 숫자 · 컷 띠(7칸 + '+N')", () => {
     draw("list", episode());
     expect([text(".ep-num"), text(".ep-name"), text(".ep-sub"), text(".ep-line"), text(".ep-rep")])
-      .toEqual(["020", "e020", "마지막 공유 어제 · 리버", "컷 16 · 73건 · 영상 9", "대표 정한 컷 3 / 16"]);
+      .toEqual([null, "e020", "마지막 공유 어제 · 리버", "컷 16 · 73건 · 영상 9", "썸네일 정한 컷 3 / 16"]);
     expect((host.querySelector(".ep-bar > i") as HTMLElement).style.width).toBe("19%");
     expect(host.querySelector(".ep-poster .play-badge")).not.toBeNull(); // 표지가 영상이면 재생 표시
     expect(texts(".ep-cut-name")).toEqual(NAMES);
@@ -124,16 +135,33 @@ describe("에피소드 카드의 안쪽 그림", () => {
   it("그리드 = 큰 표지(번호·대표 표시·이름) + 컷 띠(5칸 + '+N') + 진행 막대", () => {
     draw("grid", episode());
     expect([text(".ep-cover .ep-num"), text(".ep-chip"), text(".ep-cap > b"), text(".ep-cap > span")])
-      .toEqual(["020", "★ 대표 3/16", "e020", "컷 16 · 73건 · 영상 9"]);
+      .toEqual(["e020", "썸네일", null, "컷 16 · 73건 · 영상 9"]);
     expect(texts(".ep-cut-name")).toEqual(NAMES.slice(0, 5));
     expect(text(".ep-cut.more")).toBe("+11");
-    expect(texts(".ep-foot > span:not(.ep-bar)")).toEqual(["대표 3 / 16", "어제 · 리버"]);
+    expect(texts(".ep-foot > span:not(.ep-bar)")).toEqual(["썸네일 3 / 16", "어제 · 리버"]);
     expect(host.querySelector(".ep-enter")).toBeNull(); // 그리드에는 [열기] 가 없다 — 두 번 클릭·'+N' 으로 들어간다
   });
 
-  it("대표를 정한 컷이 없으면 그리드의 표시는 '대표 미정'", () => {
+  it("썸네일 지정 여부는 문구를 유지하고 색상 클래스로 표시한다", () => {
     draw("grid", episode({ rep_count: 0 }));
-    expect([text(".ep-chip"), host.querySelector(".ep-chip")!.className]).toEqual(["대표 미정", "ep-chip none"]);
+    expect([text(".ep-chip"), host.querySelector(".ep-chip")!.className]).toEqual(["썸네일", "ep-chip none"]);
+  });
+
+  it("말단 그리드도 큰 제목·건수·썸네일 표시·다섯 생성물과 메타를 같은 카드 본문에 그린다", () => {
+    const takes = Array.from({ length: 7 }, (_, index) => ({ cover: gen(`t${index}`), final: index === 1, held: false, by: null }));
+    const leaf = episode({ name: "C0010", subfolders: 0, count: 7, rep: true, cover: gen("t0"), takes });
+    const { onEnter, onPreviewTake } = draw("grid", leaf);
+    expect([text(".ep-num"), text(".ep-cap > b"), text(".ep-cap > span"), text(".ep-chip")]).toEqual(["C0010", null, "7건 · 영상 9", "썸네일"]);
+    expect(host.querySelector(".ep-chip.none")).toBeNull();
+    expect(host.querySelectorAll(".ep-take")).toHaveLength(5);
+    expect(text(".ep-cut.more")).toBe("+2");
+    expect([...host.querySelectorAll(".ep-meta > .k")].map((el) => el.textContent)).toEqual(["모델", "작업자", "크레딧", "생성일", "검토"]);
+    act(() => host.querySelector<HTMLButtonElement>(".ep-take")!.click());
+    act(() => host.querySelector<HTMLButtonElement>(".ep-cut.more")!.click());
+    expect(onPreviewTake).toHaveBeenCalledExactlyOnceWith(takes[0], expect.objectContaining({ type: "click" }));
+    expect(onEnter).toHaveBeenCalledOnce();
+    draw("grid", { ...leaf, rep: false });
+    expect(text(".ep-chip.none")).toBe("썸네일");
   });
 
   it("옛 서버(새 집계 없음) — 표지·이름·컷 수·건수만, 띠·진행·마지막 공유는 빠진다", () => {
@@ -160,15 +188,21 @@ describe("에피소드 카드의 안쪽 그림", () => {
   });
 
   it("카드 안의 누름 — 컷 띠의 컷은 그 컷으로, '+N'·[열기] 는 그 에피소드로. 모두 격자가 알아볼 표식을 단다", () => {
-    const { onEnter, onEnterCut } = draw("list", episode());
+    const { onEnter, onEnterCut, onInfo } = draw("list", episode());
     const buttons = [...host.querySelectorAll<HTMLButtonElement>("button")];
-    expect(buttons.length).toBe(9); // 컷 7 + '+N' + [열기]
-    expect(buttons.every((button) => button.hasAttribute("data-ep-action") && button.tabIndex === -1 && button.type === "button")).toBe(true);
+    expect(buttons.length).toBe(10); // 컷 7 + '+N' + [열기] + [컷 정보]
+    expect(buttons.every((button) => button.hasAttribute("data-ep-action") && button.type === "button")).toBe(true);
+    expect(buttons.filter((button) => !button.classList.contains("ep-info-button")).every((button) => button.tabIndex === -1)).toBe(true);
+    const info = host.querySelector<HTMLButtonElement>(".ep-info-button")!;
+    expect([info.textContent, info.tabIndex]).toEqual(["컷 정보", 0]);
     act(() => host.querySelectorAll<HTMLButtonElement>(".ep-cut")[2].click());
     expect(onEnterCut).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ path: "e020/c0030", name: "c0030" }), expect.objectContaining({ type: "click" }));
     expect(onEnter).not.toHaveBeenCalled();
     act(() => host.querySelector<HTMLButtonElement>(".ep-cut.more")!.click());
     act(() => host.querySelector<HTMLButtonElement>(".ep-enter")!.click());
+    expect(onEnter).toHaveBeenCalledTimes(2);
+    act(() => info.click());
+    expect(onInfo).toHaveBeenCalledOnce();
     expect(onEnter).toHaveBeenCalledTimes(2);
   });
 });

@@ -1,3 +1,5 @@
+import { api } from "../src/api";
+import { preparedFixture } from "./preparedSubmissionFixture";
 // @vitest-environment jsdom
 // 재생성 — 처리 중인 요청은 다시 받지 않는다(조작 규칙 39).
 // 2026-10-12(조작 점검 12회차, Codex 전수 검토): ↻ 를 응답 전에 한 번 더 누르면(더블클릭) 누름마다 요청 키가 새로 만들어져 서버의 중복 제거로도
@@ -170,3 +172,9 @@ it("최종 지정·해제가 권한 없음(403)으로 거절되면 최종 권한
     window.removeEventListener("ch:finalize-roles-stale", stale);
   }
 });
+
+vi.mock("../src/features/generation/api", async (original) => ({
+  ...await original<typeof import("../src/features/generation/api")>(),
+  prepareCreateSubmission: (...args: Parameters<typeof import("../src/features/generation/api").prepareCreateSubmission>) => preparedFixture(api.prepareCreate(args[0], args[1], args[2]), args[1], args[2], args[3]),
+  prepareRegenerateSubmission: (...args: Parameters<typeof import("../src/features/generation/api").prepareRegenerateSubmission>) => preparedFixture(api.prepareRegenerate(args[0], args[1], args[2], args[3]), args[2], args[3], args[4]),
+}));

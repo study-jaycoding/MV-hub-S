@@ -22,6 +22,7 @@ import { addWindowPointerDrag, keepHeadReachable, removeWindowPointerDrag } from
 import type { Generation, InfoTarget, PreviewTarget, Project, Reference } from "../types";
 import { InlinePromptRefs } from "./common/InlinePromptRefs";
 import { MediaThumbnail } from "./MediaThumbnail";
+import { GenerationBundleButton } from "./GenerationBundleButton";
 
 import { fmtElapsed } from "../lib/format";
 import { formatCredits } from "../lib/formatCredits";
@@ -539,6 +540,8 @@ export function InfoPopup({
           </button>
         </header>
         <div className="info-body">
+          {target.kind === "generation" && target.gen.status === "done" &&
+            <GenerationBundleButton key={target.gen.id} generationId={target.gen.id} />}
           {previewUrl && (
             <div className="info-preview">
               {isVideo ? (

@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AssetCell } from "../src/components/assets/AssetCell";
+import { AssetFolderGrid } from "../src/components/assets/AssetFolderGrid";
 import { copyAssetFiles } from "../src/components/assets/assetsViewModel";
 import { InfoPopup } from "../src/components/InfoPopup";
 import { api } from "../src/api";
@@ -32,6 +33,12 @@ afterEach(() => {
   host.remove(); vi.clearAllMocks(); vi.unstubAllGlobals();
 });
 function renderRoute(route: string) {
+  if (route === "folder-list" || route === "folder-table") {
+    act(() => root.render(<AssetFolderGrid project="fixture" groups={[]} directFiles={[node]} scale={1} fit="contain"
+      layout={route === "folder-list" ? "list" : "table"} scrollRef={null} onScroll={noop}
+      onEnter={noop} onOpenTab={noop} onPreview={noop} />));
+    return host.querySelector<HTMLButtonElement>(".assets-source-path")!;
+  }
   if (route === "info") {
     act(() => root.render(<InfoPopup target={{ kind: "file", project: "fixture", node, meta, x: 0, y: 0 }} onClose={noop} onPreview={noop} />));
     return host.querySelector<HTMLButtonElement>(".info-path-btn")!;
@@ -118,7 +125,7 @@ const failures = [
   [new HttpError(500, "raw", "private/explorer"), "파일 탐색기를 열지 못했습니다.", "Could not open the file browser."],
   [new Error("private/internal"), "원본 위치를 열지 못했습니다. 연결 상태와 파일 위치를 확인해 주세요.", "Could not open the source location. Check the connection and file location."],
 ] as const;
-for (const route of ["grid", "list", "info"]) {
+for (const route of ["grid", "list", "info", "folder-list", "folder-table"]) {
   for (const lang of ["ko", "en"] as const) {
     it.each(failures)(route + " " + lang + " 원본 열기 실패를 비차단 안내로 통일 (%#)", async (error, ko, en) => {
       act(() => setLang(lang));

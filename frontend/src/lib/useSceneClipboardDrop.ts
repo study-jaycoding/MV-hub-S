@@ -7,10 +7,8 @@ import { flashMsg } from "./flash";
 import { dataTransferHasFiles, filesFromDataTransfer } from "./media";
 import { SCENE_WINDOW_SELECTOR } from "./useSceneViewport";
 import {
-  appendSceneReferenceCards,
   copySceneSelection,
   partitionSceneDropFiles,
-  pasteSceneClipboard,
   scenePasteIntent,
   shouldRestoreRecipeFromDrop,
   type SceneClipboard,
@@ -25,8 +23,14 @@ import {
   type SpotlightAssetDragItem,
 } from "./spotlightAssetRefs";
 import { uid, type SceneCard, type SceneEdge, type SceneRef } from "./scenes";
+import type { useCanvasSession } from "../features/canvas/api";
+import { assetIdentityForProject, type AssetImportTarget } from "../shared/contracts/assets";
+import { captureOperationContext, isOperationContextCurrent } from "../app/operationContext";
+
+type ClipboardDocument = Pick<ReturnType<typeof useCanvasSession>, "target" | "addReferences" | "pasteNodes">;
 
 interface UseSceneClipboardDropOptions {
+  importTarget?: AssetImportTarget;
   // 씬을 바꾸는 틈(SceneBoard 의 switchingRef) — 그때 시작한 붙여넣기는 받지 않는다. 끝날 때의 검사(씬이 그대로인가)로는 못 거른다:
   //  틈에는 sceneIdRef 가 이미 새 씬이라, 0.18초 뒤의 폴백·업로드 응답이 틈이 끝난 뒤 새 씬에 붙는다(Codex 코드 리뷰).
   frozenRef: MutableRefObject<boolean>;
@@ -36,12 +40,9 @@ interface UseSceneClipboardDropOptions {
   selectedRef: MutableRefObject<Set<string>>;
   lastMouseRef: MutableRefObject<{ x: number; y: number; over: boolean }>;
   scrollRef: MutableRefObject<HTMLDivElement | null>;
-  setCards: Dispatch<SetStateAction<SceneCard[]>>;
-  setEdges: Dispatch<SetStateAction<SceneEdge[]>>;
+  document: ClipboardDocument;
   setSelected: Dispatch<SetStateAction<Set<string>>>;
   toCanvas: (clientX: number, clientY: number) => { x: number; y: number };
-  reconcileGenerationRefs: (cards: SceneCard[], edges: SceneEdge[]) => SceneCard[];
-  persist: (cards: SceneCard[], edges: SceneEdge[]) => void;
   onLoadSceneFile?: (file: File) => void;
   // 각인된 생성물 파일을 떨어뜨렸을 때 — 레시피를 노드로 여는 데 성공하면 true.
   // false 면 평범한 미디어 파일로 보고 레퍼런스 카드가 된다.
@@ -87,13 +88,11 @@ const IMPORT_FAILED = "넣지 못했습니다 — 다시 놓아 주세요";
 const hasAssetDrag = (dataTransfer: DataTransfer) =>
   Array.from(dataTransfer.types).includes(DRAG_TYPES.asset);
 
-const assetItemToRef = (item: SpotlightAssetDragItem): SceneRef => {
+const assetItemToRef = (item: SpotlightAssetDragItem, target?: AssetImportTarget): SceneRef => {
   const base = spotlightAssetRefBase(item);
   return {
-    file_path: base.file_path,
-    type: base.type,
-    name: base.name,
-    thumb: base.thumb,
+    ...base,
+    ...assetIdentityForProject(item, target?.target_project_id),
     // 지문을 함께 남긴다 — 나중에 원본이 옮겨져도 내용으로 다시 찾을 수 있다(2026-09-28).
     ...(item.sha256 ? { content_sha: item.sha256 } : {}),
     ...(item.bytes ? { bytes: item.bytes } : {}),
@@ -173,38 +172,22 @@ export function useSceneClipboardDrop(
   }
 
   const addReferenceCards = useCallback(
-    (refs: SceneRef[], centerX: number, centerY: number, connectToGenerationIds?: string[]) => {
-      if (!refs.length) return;
+    (refs: SceneRef[], centerX: number, centerY: number, connectToGenerationIds?: string[], documentAtStart = optionsRef.current.document) => {
+      if (!refs.length) return false;
       const current = optionsRef.current;
-      const appended = appendSceneReferenceCards({
-        cards: current.cardsRef.current,
-        edges: current.edgesRef.current,
-        refs,
-        center: { x: centerX, y: centerY },
-        connectToGenerationIds,
-        makeId: uid,
-        cardWidth: current.cardWidth,
-        cardHeight: current.cardHeight,
-      });
-      if (!appended.createdCards.length) return;
-
-      const nextCards = appended.connectedTargetIds.length
-        ? current.reconcileGenerationRefs(appended.cards, appended.edges)
-        : appended.cards;
-      current.cardsRef.current = nextCards;
-      current.edgesRef.current = appended.edges;
-      current.setCards(nextCards);
-      current.setEdges(appended.edges);
+      const appended = documentAtStart.addReferences(refs, { x: centerX, y: centerY },
+        { w: current.cardWidth, h: current.cardHeight }, connectToGenerationIds);
+      if (!appended) return false;
       if (!appended.connectedTargetIds.length) {
-        current.setSelected(new Set(appended.createdCards.map((card) => card.id)));
+        current.setSelected(new Set(appended.createdCardIds));
       }
-      current.persist(nextCards, appended.edges);
+      return true;
     },
     [],
   );
 
   const importExternalFiles = useCallback(
-    async (files: File[], centerX: number, centerY: number, sceneAtDrop?: string) => {
+    async (files: File[], centerX: number, centerY: number, sceneAtDrop?: string, documentAtDrop = optionsRef.current.document) => {
       const accepted = files.filter((file) => referenceDropTypeFromFile(file));
       // 놓은 것 가운데 들어가지 않은 파일은 알린다(조작 규칙 42) — 전엔 일부만 들어가도, 하나도 안 들어가도 아무 말이 없었다
       //  (미디어가 아닌 파일은 여기서, 빈 파일·너무 큰 파일은 서버가 건너뛴다 — backend reference-import 의 skipped).
@@ -223,8 +206,10 @@ export function useSceneClipboardDrop(
       const pendingId = uid();
       pendingOpsRef.current!.add({ id: pendingId, sceneId, x: centerX, y: centerY, count: accepted.length, names: accepted.map((file) => file.name), error: null });
       try {
-        // 로컬 파일은 이 PC 설치 폴더(imports)에만 둔다 — 서버에 올리지 않는다(Jay 2026-09-29 옛 방식).
-        const response = await api.uploadReferenceFiles(accepted);
+        const target = { ...optionsRef.current.importTarget };
+        const operation = captureOperationContext({ scope: "team", id: target.target_workspace_id || null, name: null });
+        const response = await api.uploadReferenceFiles(accepted, target);
+        if (!isOperationContextCurrent(operation)) { pendingOpsRef.current!.dismiss(pendingId); return; }
         pendingOpsRef.current!.dismiss(pendingId); // 카드를 넣는 것과 같은 묶음(React 가 한 번에 그린다) — 자리 표시가 카드로 바뀐다
         const items = response.saved || [];
         left.push(...(response.skipped || []));
@@ -232,10 +217,10 @@ export function useSceneClipboardDrop(
         if (items.length) {
           if (!aliveRef.current) {
             switched = `${items.length}개 파일을 가져왔지만, 그사이 캔버스를 떠나 넣지 않았습니다 — Assets 에서 끌어 넣으세요.`;
-          } else if (optionsRef.current.sceneIdRef.current === sceneId) {
+          } else if (optionsRef.current.document.target === documentAtDrop.target && optionsRef.current.sceneIdRef.current === sceneId) {
             const refs = items.map((item) => ({ ...assetItemToRef(item), origin: "upload" as const }));
-            addReferenceCards(refs, centerX, centerY);
-            optionsRef.current.onLocalRefsAdded?.(refs.map((ref) => ref.file_path));
+            if (addReferenceCards(refs, centerX, centerY, undefined, documentAtDrop))
+              optionsRef.current.onLocalRefsAdded?.(refs.map((ref) => ref.file_path));
           } else {
             // 올리는 사이 씬을 바꿨다 — 파일은 가져왔지만 떠난 씬에도 지금 씬에도 넣지 않는다. 그 사실을 알린다.
             switched = `${items.length}개 파일을 가져왔지만, 그사이 씬이 바뀌어 캔버스에는 넣지 않았습니다 — Assets 에서 끌어 넣으세요.`;
@@ -268,11 +253,12 @@ export function useSceneClipboardDrop(
       event.preventDefault();
       event.stopPropagation();
       const current = optionsRef.current;
+      if (current.frozenRef.current) return;
       if (hasAssetDrag(event.dataTransfer)) {
         const items = parseSpotlightAssetItems(readSpotlightAssetPayload(event.dataTransfer));
         if (!items.length) return;
         const point = current.toCanvas(event.clientX, event.clientY);
-        const refs = items.map((item) => ({ ...assetItemToRef(item), origin: "asset" as const }));
+        const refs = items.map((item) => ({ ...assetItemToRef(item, current.importTarget), origin: "asset" as const }));
         addReferenceCards(refs, point.x, point.y);
         // 한 번 물어 에셋 대장 번호(open_ids)를 받아 둔다 — 나중에 NAS 에서 이름을 바꾸거나 옮겨도 따라가게(2026-09-30).
         current.onLocalRefsAdded?.(refs.map((ref) => ref.file_path));
@@ -302,7 +288,7 @@ export function useSceneClipboardDrop(
           // 놓은 순간의 씬을 잡아 둔다 — 각인 판독(서버 왕복)을 기다리는 사이 씬을 바꾸면 파일이 그 씬에 들어갔다.
           const sceneAtDrop = current.sceneIdRef.current;
           void openRecipe(mediaFiles[0]).then((handled) => {
-            if (!handled) void importExternalFiles(mediaFiles, point.x, point.y, sceneAtDrop);
+            if (!handled) void importExternalFiles(mediaFiles, point.x, point.y, sceneAtDrop, current.document);
           });
           return;
         }
@@ -350,7 +336,7 @@ export function useSceneClipboardDrop(
     })();
   }, []);
 
-  const pasteCopiedNodes = useCallback((): boolean => {
+  const pasteCopiedNodes = useCallback((documentAtStart = optionsRef.current.document): boolean => {
     const clipboard = clipboardRef.current;
     if (!clipboard?.cards.length) return false;
     const current = optionsRef.current;
@@ -364,21 +350,9 @@ export function useSceneClipboardDrop(
           cardHeight: current.cardHeight,
         }
       : undefined;
-    const pasted = pasteSceneClipboard(
-      current.cardsRef.current,
-      current.edgesRef.current,
-      clipboard,
-      uid,
-      undefined,
-      pasteAt,
-    );
-    const nextCards = current.reconcileGenerationRefs(pasted.cards, pasted.edges);
-    current.cardsRef.current = nextCards;
-    current.edgesRef.current = pasted.edges;
-    current.setCards(nextCards);
-    current.setEdges(pasted.edges);
+    const pasted = documentAtStart.pasteNodes(clipboard, pasteAt);
+    if (!pasted) return false;
     current.setSelected(pasted.pastedCardIds);
-    current.persist(nextCards, pasted.edges);
     clipboardRef.current = pasted.nextClipboard;
     sceneClipboardSnapshot = pasted.nextClipboard;
     return true;
@@ -456,18 +430,22 @@ export function useSceneClipboardDrop(
         }
 
         const sceneId = current.sceneIdRef.current;
+        const documentAtPaste = current.document;
         const pendingId = uid();
         pendingOpsRef.current!.add({ id: pendingId, sceneId, x: centerX, y: centerY, count: 1, names: ["붙여 넣은 그림"], error: null });
-        // 붙여넣은 그림은 이 PC 설치 폴더(captures)에만 둔다(Jay 2026-09-29 옛 방식).
+        const target = { ...current.importTarget };
+        const operation = captureOperationContext({ scope: "team", id: target.target_workspace_id || null, name: null });
         void api
-          .uploadCapture(image)
+          .uploadCapture(image, target)
           .then((result) => {
             pendingOpsRef.current!.dismiss(pendingId);
+            if (!isOperationContextCurrent(operation)) return;
             if (!aliveRef.current) {
               flashMsg("붙여 넣은 그림을 가져왔지만, 그사이 캔버스를 떠나 넣지 않았습니다 — Assets 에서 끌어 넣으세요.");
-            } else if (optionsRef.current.sceneIdRef.current === sceneId) {
+            } else if (optionsRef.current.document.target === documentAtPaste.target && optionsRef.current.sceneIdRef.current === sceneId) {
               const ref = {
                 ...assetItemToRef({
+                  ...result,
                   project: result.project,
                   path: result.path,
                   name: result.name,
@@ -477,8 +455,8 @@ export function useSceneClipboardDrop(
                 }),
                 origin: "upload" as const,
               };
-              addReferenceCards([ref], centerX, centerY, connectTo);
-              optionsRef.current.onLocalRefsAdded?.([ref.file_path]);
+              if (addReferenceCards([ref], centerX, centerY, connectTo, documentAtPaste))
+                optionsRef.current.onLocalRefsAdded?.([ref.file_path]);
             }
             notifySpotlightAssetsChanged([
               {
@@ -528,9 +506,10 @@ export function useSceneClipboardDrop(
         window.clearTimeout(pasteFallbackTimerRef.current);
       }
       const sceneAtKey = optionsRef.current.sceneIdRef.current;
+      const documentAtKey = optionsRef.current.document;
       // 예약한 뒤(0.18초)·클립보드를 읽은 뒤에 창이 떴거나 씬이 바뀌었으면 붙이지 않는다 — 그 키는 이미 지나간 화면의 것이다.
       //  보드가 내려갔어도(캔버스를 떠남) 같다 — 이미 시작한 클립보드 읽기는 타이머를 지워도 끝까지 간다(Codex 코드 리뷰).
-      const stale = () => !aliveRef.current || backgroundKeysBlocked() || gridWindowOpen() || optionsRef.current.sceneIdRef.current !== sceneAtKey;
+      const stale = () => !aliveRef.current || backgroundKeysBlocked() || gridWindowOpen() || optionsRef.current.document.target !== documentAtKey.target || optionsRef.current.sceneIdRef.current !== sceneAtKey;
       pasteFallbackTimerRef.current = window.setTimeout(() => {
         pasteFallbackTimerRef.current = null;
         void (async () => {
@@ -546,7 +525,7 @@ export function useSceneClipboardDrop(
             }
           }
           if (stale()) return;
-          if (pasteCopiedNodes()) fallbackPasteAtRef.current = performance.now();
+          if (pasteCopiedNodes(documentAtKey)) fallbackPasteAtRef.current = performance.now();
         })();
       }, 180);
     };

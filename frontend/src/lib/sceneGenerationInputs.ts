@@ -3,6 +3,7 @@
 // 모델·파라미터·정적 텍스트·레퍼런스 및 동적 출력의 연결 순서만 비교한다.
 // 모델은 연결 모델 노드가 우선이고, 노드가 하나도 없으면 호출부가 넘긴 하단 프롬프트 모델(fallbackModel)을 쓴다.
 import type { ChipRef } from "./promptEditor";
+import { assetIdentity } from "../shared/contracts/assets";
 import {
   collectGenModel,
   collectGenRefs,
@@ -158,6 +159,7 @@ export function collectSceneGenerationCardInput(
     (ref) => !cardRefPaths.has(ref.file_path),
   );
   const refs: ChipRef[] = [...cardRefs, ...comfyRefs].map((ref) => ({
+    ...assetIdentity(ref),
     file_path: ref.file_path,
     type: ref.type === "video" ? "video" : ref.type === "audio" ? "audio" : "image",
     role: "", // buildSpotlightCreateBody가 최종 @Image/@Video/@Audio 번호를 매긴다.
@@ -265,7 +267,7 @@ function cardFingerprint(
       modelNodes: modelNodeCount(cardId, cardsById, resolvedEdges),
       text: input.text,
       refs: input.refs.map((ref) => ({
-        file_path: ref.file_path,
+        file_path: ref.asset_content_id || ref.file_path,
         type: ref.type,
         name: ref.name,
         source_gen_id: ref.source_gen_id ?? null,

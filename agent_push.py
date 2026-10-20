@@ -804,7 +804,7 @@ def _claim_pending(server: str, token: str, limit: int, agent_id: str | None = N
     # submission-stage: claim과 실제 유료 CLI 호출 사이를 서버 상태로 분리한다. 신 서버는 claimed로
     # 내려주고 begin-submission ACK 뒤에만 submitting으로 올린다. 구 서버는 capability를 무시하고
     # 기존 submitting 응답(새 필드 없음)을 주므로 혼합 업데이트 중에도 하위호환된다.
-    query = {"limit": limit, "capability": "workspace,submission-stage"}
+    query = {"limit": limit, "capability": "workspace,submission-stage,asset-content"}
     if agent_id:
         query["agent_id"] = agent_id
     return _http(
@@ -823,7 +823,7 @@ def _pending_exists(server: str, token: str) -> bool:
             server,
             action="pending-exists",
             query={
-                "capability": "workspace,submission-stage",
+                "capability": "workspace,submission-stage,asset-content",
                 "agent_id": _agent_instance_id(),
             },
         ),
@@ -2372,6 +2372,15 @@ def _download_ref(server: str, token: str, url: str, suffix: str, timeout: int =
         req.add_header("Authorization", f"Bearer {token}")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
+            if not suffix:
+                suffix = {
+                    "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp",
+                    "image/gif": ".gif", "video/mp4": ".mp4", "video/quicktime": ".mov",
+                    "video/webm": ".webm", "audio/mpeg": ".mp3", "audio/wav": ".wav",
+                    "audio/x-wav": ".wav", "audio/mp4": ".m4a", "audio/ogg": ".ogg",
+                    "image/bmp": ".bmp", "video/x-matroska": ".mkv", "video/x-msvideo": ".avi",
+                    "audio/flac": ".flac", "audio/aac": ".aac",
+                }.get(r.headers.get("Content-Type", "").split(";", 1)[0].strip(), ".bin")
             fd, tmp = tempfile.mkstemp(prefix="chref_", suffix=suffix or ".bin")
             with os.fdopen(fd, "wb") as f:
                 shutil.copyfileobj(r, f)
@@ -2380,6 +2389,43 @@ def _download_ref(server: str, token: str, url: str, suffix: str, timeout: int =
         # 서명 쿼리(CloudFront Policy/Signature 등)가 agent.log 에 영속되지 않게 경로만 기록
         print(f"[경고] 레퍼런스 다운로드 실패({_safe_ref_label(url)}): {e}")
         return None
+
+
+def _preserve_reference(server: str, token: str, original: str, path: str,
+                        digest: dict, request: dict, account_email: str | None = None) -> bool:
+    """과금 전에 실제 제출 사본을 로컬 허브에 보관한다(서버 업로드 완료는 기다리지 않음)."""
+    boundary = "mvhub-" + uuid.uuid4().hex
+    fields = {"original_file_path": original,
+              "target_project_id": request.get("project_id") or "",
+              "target_workspace_id": (request.get("workspace") or {}).get("id") or ""}
+    prefix = b"".join(
+        (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{key}\"\r\n\r\n{value}\r\n").encode("utf-8")
+        for key, value in fields.items()
+    )
+    name = os.path.basename(path).replace('"', '_').replace("\r", "_").replace("\n", "_")
+    prefix += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\n"
+               "Content-Type: application/octet-stream\r\n\r\n").encode("utf-8")
+    ending = f"\r\n--{boundary}--\r\n".encode("ascii")
+
+    def chunks():
+        yield prefix
+        with open(path, "rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                yield chunk
+        yield ending
+
+    req = urllib.request.Request(f"{server}/api/local-asset-sync/ingest", data=chunks(), method="POST")
+    req.add_header("Authorization", f"Bearer {token}")
+    if account_email:
+        req.add_header("X-MVHub-Expect-Account", account_email)
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    req.add_header("Content-Length", str(len(prefix) + os.path.getsize(path) + len(ending)))
+    try:
+        with urllib.request.urlopen(req, timeout=180) as response:
+            receipt = json.loads(response.read(65537))
+        return receipt.get("asset_content_id") == "sha256:" + digest["sha256"]
+    except (OSError, ValueError, urllib.error.URLError):
+        return False
 
 
 def _safe_ref_label(val):
@@ -2408,7 +2454,13 @@ def _resolve_ref(server: str, token: str, val: str):
         suffix = os.path.splitext(urlparse(val).path)[1]
         tmp = _download_ref(server, token, val, suffix, auth=False)
         return (tmp, tmp) if tmp else (None, None)
-    if val.startswith("asset:"):
+    if val.startswith("asset-sync:"):
+        location = val[len("asset-sync:"):]
+        if len(location) != 32 or any(c not in "0123456789abcdef" for c in location):
+            return None, None
+        suffix = ""
+        url = f"{server}/api/asset-sync/files/{location}"
+    elif val.startswith("asset:"):
         body = val[len("asset:"):]
         if "|" not in body:
             return None, None
@@ -2476,13 +2528,21 @@ def _submit_one(
         print(f"  ⚠ batch_size={params.get('batch_size')} → 1 강제(카드 1개=잡 1개 원칙)")
         params["batch_size"] = 1
     allowed_params = _allowed_params(cli, model)
+    if model == "seedance_2_5" and allowed_params:
+        allowed_params = allowed_params | {"draft", "draft_job_id"}
+    if params.get("draft_job_id") and params.get("draft") is True:
+        _fail(server, token, rid, "Draft 생성과 기존 Draft 완성은 동시에 요청할 수 없습니다")
+        return None
     refs, ref_error = _refs_for_cli(model, r.get("references") or [])
     if ref_error:
         _fail(server, token, rid, ref_error)
         print(f"  ✗ {model}: {ref_error}")
         return None
     # ★mode 는 레퍼런스 유무에 맞춰 제출 직전에 보정(_seedance_mode_for_refs) — 플래그·제출 지문 모두 보정값 기준.
-    params, mode_note = _seedance_mode_for_refs(model, params, refs, _param_enum(model, "mode"))
+    params, mode_note = (
+        (params, None) if model == "seedance_2_5" and params.get("draft_job_id")
+        else _seedance_mode_for_refs(model, params, refs, _param_enum(model, "mode"))
+    )
     if mode_note:
         print(f"  ⚠ {model}: {mode_note}")
     args += _param_flags(params, allowed_params)
@@ -2558,7 +2618,23 @@ def _submit_one(
         if val and resolved:
             digest = _reference_digest(resolved)
             if digest:
-                ref_digests[val] = digest
+                expected = ref.get("expected_asset_content_id") or ref.get("asset_content_id")
+                if expected and expected != "sha256:" + digest["sha256"]:
+                    _fail(server, token, rid, "레퍼런스 내용이 변경되어 생성을 중단했습니다")
+                    return None
+                if r.get("asset_content_protocol") == 1 and not _preserve_reference(
+                    server, token, val, resolved, digest, r, account_email
+                ):
+                    _fail(server, token, rid, "레퍼런스의 로컬 보관을 확인하지 못해 생성을 중단했습니다")
+                    return None
+                reference_id = ref.get("reference_id")
+                if isinstance(reference_id, str) and reference_id:
+                    ref_digests[reference_id] = {**digest, "reference_id": reference_id}
+                else:
+                    ref_digests[val] = digest
+            elif r.get("asset_content_protocol") == 1:
+                _fail(server, token, rid, "레퍼런스의 실제 파일 내용을 확인하지 못했습니다")
+                return None
     if ref_digests:
         submission_fingerprint["ref_digests"] = ref_digests
     # 프롬프트 원문은 agent.log 에 영속하지 않는다(Host 콘솔 /summary 로도 노출되므로) — 길이만

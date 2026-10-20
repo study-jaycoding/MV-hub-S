@@ -1,7 +1,8 @@
-// 캔버스 씬 DB 백업 — localStorage(원본)의 단방향 미러(로컬→DB) + 캐시 소실 시 복구.
+import { restoreCanvasDocuments } from "../features/canvas/api";
+// 캔버스 씬 DB 백업 — 브라우저 IndexedDB 확정본의 미러(로컬→DB) + 원본 소실 시 복구.
 //
 // 계약(코덱스 합의 설계 + P1 반영):
-//  · 로컬이 항상 정답. saveAll(쓰기 관문) 후 디바운스(2s) → 변경 씬만 벌크 PUT.
+//  · subscribeScenesPersisted의 로컬 저장 확정 통지 후 디바운스(2s) → 변경 씬만 벌크 PUT.
 //    실패는 30s 백오프·online 이벤트·다음 변경에서 재시도.
 //  · ★삭제 미러는 '이 세션에서 로컬에 있던 씬이 사라진 것'만 지운다(lastPushed 가 tombstone 역할).
 //    '서버에만 있는 id 전부'를 지우던 종전 계약은, 앱 전용 브라우저 프로필 도입(2026-09-01)으로
@@ -32,7 +33,6 @@ import {
   hasPersistedSceneBucket,
   listPersistedSceneTexts,
   listScenes,
-  mergeScenesFromBackup,
   subscribeScenesPersisted,
   type Scene,
 } from "./scenes";
@@ -378,7 +378,7 @@ function ensureInit(scope: string): Promise<InitResult> {
     // 로컬이 이긴다(로컬이 정답). ★종전엔 여기서 복구를 통째로 포기해, 빈 프로필에서 씬 하나만
     //  만들어도 DB 백업을 영영 못 가져왔다(코덱스 P0). 위쪽 '버킷 키 없을 때만' 게이트는 그대로다 —
     //  마지막 씬을 정상 삭제한 빈 배열 버킷은 여전히 복구 대상이 아니다.
-    const { value: merged, confirmed } = confirmSceneWrite(() => mergeScenesFromBackup(null, scenes));
+    const { value: merged, confirmed } = confirmSceneWrite(() => restoreCanvasDocuments(scope, scenes));
     const added = merged.added;
     if (!added.length) return "clean"; // 가져올 게 없다
     restoreSubs.forEach((f) => f()); // 화면 값에는 이미 들어갔다 — 열린 캔버스가 즉시 목록을 다시 읽게
@@ -759,8 +759,8 @@ async function runImport(): Promise<number> {
   }
   // ★요청이 오가는 동안 생긴 씬을 잃지 않게, 합치기를 저장과 한 임계 구역에서 한다.
   const { value: merged, confirmed } = confirmSceneWrite(() =>
-    mergeScenesFromBackup(
-      null,
+    restoreCanvasDocuments(
+      scope,
       scenes.slice().sort((a, b) => (a.created_at || 0) - (b.created_at || 0)),
     ),
   );

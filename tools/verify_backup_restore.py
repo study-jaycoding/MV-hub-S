@@ -19,7 +19,6 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
-from app.db import get_db_path  # noqa: E402
 from app.services.backup_verify import (  # noqa: E402
     create_sqlite_snapshot,
     verify_restore_drill,
@@ -81,7 +80,13 @@ def main() -> int:
                     backup = args.backup.resolve()
                     created_snapshot = False
                 else:
-                    source = (args.source or get_db_path()).resolve()
+                    if args.source:
+                        source = args.source.resolve()
+                    else:
+                        # Preserve the operator's current-DB default. Explicit
+                        # files must not import config/create default directories.
+                        from app.db import get_db_path
+                        source = get_db_path().resolve()
                     backup = temp_dir / "online-backup.db"
                     create_sqlite_snapshot(source, backup)
                     created_snapshot = True

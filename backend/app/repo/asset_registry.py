@@ -176,7 +176,18 @@ def plan_changes(prev_rows: list[dict[str, Any]], scan: RegistryScan) -> dict[st
 def apply_plan(conn: sqlite3.Connection, project_id: str, plan: dict[str, list], now: Optional[str] = None) -> dict[str, int]:
     """plan_changes 의 결과를 쓴다. 트랜잭션은 부르는 쪽이 연다(BEGIN IMMEDIATE — 한 번에 원자 반영)."""
     now = now or utc_now()
+    # 업로드 검증 뒤 생긴 행은 오래된 스캔이 missing/edited 로 되돌리지 않는다.
+    managed = set()
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='asset_location' AND type='table'").fetchone():
+        managed = {r[0] for r in conn.execute(
+            "SELECT registry_asset_id FROM asset_location WHERE project_id=? AND kind='server' "
+            "AND state='ready' AND registry_asset_id IS NOT NULL", (project_id,)
+        )}
+    skipped = set(managed)
     for rid, f in plan["inserts"]:
+        if conn.execute("SELECT 1 FROM asset_registry WHERE project_id=? AND path=?", (project_id, f.path)).fetchone():
+            skipped.add(rid)
+            continue
         conn.execute(
             "INSERT INTO asset_registry(registry_asset_id, project_id, path, path_cf, name_cf, sha256, bytes, mtime_ns, "
             "state, miss_count, first_seen, last_seen, updated_at) VALUES(?,?,?,?,?,?,?,?,'present',0,?,?,?)",
@@ -184,6 +195,8 @@ def apply_plan(conn: sqlite3.Connection, project_id: str, plan: dict[str, list],
              f.mtime_ns, now, now, now),
         )
     for rid, change in plan["updates"]:
+        if rid in skipped:
+            continue
         fields = {k: (now if v == "@now" else v) for k, v in change.items()}
         fields["updated_at"] = now
         if set(change) - {"miss_count", "mtime_ns"}:  # 실제 상태가 바뀐 것만 last_seen 을 올린다
@@ -191,6 +204,8 @@ def apply_plan(conn: sqlite3.Connection, project_id: str, plan: dict[str, list],
         cols = ", ".join(f"{k}=?" for k in fields)
         conn.execute(f"UPDATE asset_registry SET {cols} WHERE registry_asset_id=?", (*fields.values(), rid))
     for rid, kind, path, old_path, sha, size in plan["events"]:
+        if rid in skipped:
+            continue
         conn.execute(
             "INSERT INTO asset_registry_event(registry_asset_id, kind, project_id, path, old_path, sha256, bytes, at) "
             "VALUES(?,?,?,?,?,?,?,?)",
@@ -198,7 +213,8 @@ def apply_plan(conn: sqlite3.Connection, project_id: str, plan: dict[str, list],
         )
     kinds: dict[str, int] = {}
     for event in plan["events"]:
-        kinds[event[1]] = kinds.get(event[1], 0) + 1
+        if event[0] not in skipped:
+            kinds[event[1]] = kinds.get(event[1], 0) + 1
     return kinds
 
 

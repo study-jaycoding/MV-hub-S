@@ -19,6 +19,7 @@ from fastapi import HTTPException
 
 from app.routers import release_update as router
 from app.services import release_update
+from release_contract_fixture import qualified_package
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="릴리스 폴더 잠금은 Windows 공유 모드로 한다")
 
@@ -42,10 +43,12 @@ def _zip(source: Path, version: str, **meta: str | None) -> Path:
 
 def _write_manifest(source: Path, name: str, release: str, **override) -> dict:
     """make_release 처럼 — created_at 은 제작 시각(초 단위)이라 판 선택으로 만든 원문과 바이트가 다르다."""
-    data = (source / f"MVHub-{release}.zip").read_bytes()
-    body = {"version": release, "higgsfield_cli_version": "1.1.26", "file": f"MVHub-{release}.zip",
-            "sha256": hashlib.sha256(data).hexdigest(), "size": len(data), "created_at": "2026-10-05T12:54:52", **override}
-    (source / name).write_text(json.dumps(body), encoding="utf-8-sig")
+    raw = (source / f"MVHub-{release}.candidate.json").read_bytes()
+    body = json.loads(raw)
+    if override:
+        body.update(override)
+        raw = json.dumps(body).encode("utf-8")
+    (source / name).write_bytes(raw)
     return body
 
 
@@ -58,7 +61,7 @@ def _setup(tmp_path: Path, *, published: str | None = PUB, candidate: str | None
     (root / "INSTALL_SOURCE.txt").write_text(str(source), encoding="utf-8")
     (root / "update_release.bat").write_text("@echo off\r\n", encoding="utf-8")
     for version in (OLD, PUB, CAND):
-        _zip(source, version)
+        qualified_package(source, version)
     for version, name in ((published, "latest.json"), (candidate, "candidate.json")):
         if version:
             _write_manifest(source, name, version)
@@ -128,10 +131,11 @@ def test_package_manifest_reads_the_zip_and_is_the_same_every_time(tmp_path: Pat
     root, source = _setup(tmp_path)
     data = (source / f"MVHub-{OLD}.zip").read_bytes()
     first = release_update.package_manifest(f"MVHub-{OLD}.zip", root)
-    assert first == {"version": OLD, "higgsfield_cli_version": "1.1.26", "file": f"MVHub-{OLD}.zip",
-                     "sha256": hashlib.sha256(data).hexdigest(), "size": len(data), "created_at": "2026-10-01T09:06:00"}
+    assert first["version"] == OLD and first["sha256"] == hashlib.sha256(data).hexdigest() and first["size"] == len(data)
+    assert first["contract_status"] == "qualification-referenced"
     raw = release_update._package_manifest(source, f"MVHub-{OLD}.zip")[1]
-    assert raw.startswith(b"\xef\xbb\xbf") and raw == release_update._package_manifest(source, f"MVHub-{OLD}.zip")[1]
+    assert raw == (source / f"MVHub-{OLD}.candidate.json").read_bytes()
+    assert raw == release_update._package_manifest(source, f"MVHub-{OLD}.zip")[1]
     assert release_update._parse_manifest(raw) == {**first}
 
 

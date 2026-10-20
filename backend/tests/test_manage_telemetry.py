@@ -94,6 +94,8 @@ class ManageTelemetryTests(unittest.TestCase):
         from app.repo import manage_schema
 
         with db.get_connection() as conn:
+            # The core is upgraded, but this legacy PM sidecar has not recorded its baseline.
+            conn.execute("DELETE FROM schema_migrations WHERE migration_id='content_pm.baseline.v1'")
             conn.execute("DROP TABLE telemetry_outbox")
             conn.execute("DROP TABLE telemetry_delivery_state")
             conn.execute(

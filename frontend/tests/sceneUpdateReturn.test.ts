@@ -176,6 +176,26 @@ describe("씬 쓰기 계약", () => {
     }
   });
 
+  it("정상 저장도 확정 전에는 나갈 때 묻고 확정 후에는 푼다", async () => {
+    saveScenes(null, [mkScene("s1")]);
+    await settleSceneStoreForTest();
+    expect(unloadHeld()).toBe(false);
+    updateScene(null, "s1", { name: "확정 대기" });
+    expect(unsavedPlaces()).toBe("캔버스");
+    await settleSceneStoreForTest();
+    expect(unloadHeld()).toBe(false);
+  });
+
+  it("같은 묶음에서 원래 값으로 돌려도 큐 확정 후 나가기 경고를 푼다", async () => {
+    saveScenes(null, [mkScene("s1")]);
+    await settleSceneStoreForTest();
+    updateScene(null, "s1", { name: "잠깐 바꿈" });
+    updateScene(null, "s1", { name: "s1" });
+    expect(unsavedPlaces()).toBe("캔버스");
+    await settleSceneStoreForTest();
+    expect(unloadHeld()).toBe(false);
+  });
+
   // 56회차 — 확정되지 못한 편집은 메모리에만 있다. 그동안 창을 닫거나 새로고침하면 브라우저가 묻는다(전엔 편집 탭만 물었다).
   it("저장이 실패하는 동안만 나갈 때 묻는다", async () => {
     saveScenes(null, [mkScene("s1")]);

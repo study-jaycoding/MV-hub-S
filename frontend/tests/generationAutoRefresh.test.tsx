@@ -5,6 +5,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useGenerationAutoRefresh } from "../src/lib/useGenerationAutoRefresh";
+import { APP_EVENTS } from "../src/lib/appEvents";
 import type { Filters, Generation } from "../src/types";
 
 type Props = { tab?: Filters["tab"]; paused?: boolean; active?: boolean };
@@ -89,4 +90,102 @@ it("창 복귀(focus·visibilitychange)도 쉬는 동안에는 받지 않는다 
   expect(reload).toHaveBeenLastCalledWith(true, true);
   act(() => { window.dispatchEvent(new Event("focus")); }); // 방금 받았다 — 5초 가드
   expect(reload).toHaveBeenCalledTimes(1);
+});
+
+it("[stage5] 포커스 조회 직후 주기 틱이 같은 목록을 다시 받지 않는다", async () => {
+  show();
+  await pass(14_000);
+  await act(async () => { window.dispatchEvent(new Event("focus")); });
+  expect(reload).toHaveBeenCalledTimes(1);
+  await pass(1_000); // 15초 틱 — 포커스 조회가 끝난 지 1초다.
+  expect(reload).toHaveBeenCalledTimes(1);
+  await pass(15_000); // 다음 정상 주기의 안전망은 계속 돈다.
+  expect(reload).toHaveBeenCalledTimes(2);
+});
+
+it("[stage5] 느린 주기 조회 중 포커스가 와도 진행 중인 조회를 다시 요청하지 않는다", async () => {
+  let finish!: () => void;
+  reload.mockImplementationOnce(() => new Promise<void>((done) => { finish = done; }));
+  show();
+  await pass(15_000);
+  expect(reload).toHaveBeenCalledTimes(1);
+  try {
+    await pass(6_000); // 기존 5초 포커스 가드가 끝나도 앞 조회는 아직 진행 중이다.
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    expect(reload).toHaveBeenCalledTimes(1);
+  } finally {
+    await act(async () => { finish(); });
+  }
+  await pass(9_000);
+  expect(reload).toHaveBeenCalledTimes(2);
+});
+
+it("[stage5] 느린 포커스 조회는 주기와 추가 포커스를 막고 완료 뒤 정상 주기를 재개한다", async () => {
+  let finish!: () => void;
+  reload.mockImplementationOnce(() => new Promise<void>((done) => { finish = done; }));
+  show();
+  await pass(6_000);
+  act(() => { window.dispatchEvent(new Event("focus")); });
+  expect(reload).toHaveBeenCalledTimes(1);
+  try {
+    await pass(24_000); // 15초·30초 틱 모두 진행 중인 포커스 조회를 기다린다.
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    expect(reload).toHaveBeenCalledTimes(1);
+  } finally {
+    await act(async () => { finish(); });
+  }
+  await pass(15_000);
+  expect(reload).toHaveBeenCalledTimes(2);
+});
+
+it("[stage5] compose로 전환한 뒤 끝난 옛 팀 폴링은 새 화면에 변경 알림을 보내지 않는다", async () => {
+  let finish!: () => void;
+  reload.mockImplementationOnce(() => new Promise<void>((done) => { finish = done; }));
+  const changed = vi.fn();
+  window.addEventListener(APP_EVENTS.libraryChanged, changed);
+  try {
+    show();
+    await pass(15_000);
+    expect(reload).toHaveBeenCalledTimes(1);
+    show({ tab: "compose" });
+    await act(async () => { finish(); });
+    expect(changed).not.toHaveBeenCalled();
+  } finally {
+    window.removeEventListener(APP_EVENTS.libraryChanged, changed);
+  }
+});
+
+it("[stage5-review] 반복 포커스가 팀 주기 조회를 미뤄도 완료마다 사이드바 집계 알림을 보낸다", async () => {
+  const changed = vi.fn();
+  window.addEventListener(APP_EVENTS.libraryChanged, changed);
+  try {
+    show();
+    for (let i = 0; i < 6; i++) {
+      await pass(6_000); // 15초·30초 틱은 직전 포커스 조회 때문에 건너뛴다.
+      await act(async () => { window.dispatchEvent(new Event("focus")); });
+    }
+    expect(reload).toHaveBeenCalledTimes(6);
+    expect(changed).toHaveBeenCalledTimes(6);
+    expect(changed.mock.calls.every(([event]) => (event as CustomEvent).detail?.poll === true)).toBe(true);
+  } finally {
+    window.removeEventListener(APP_EVENTS.libraryChanged, changed);
+  }
+});
+
+it("[stage5-review] compose로 전환한 뒤 끝난 옛 팀 포커스 조회는 집계 알림을 보내지 않는다", async () => {
+  let finish!: () => void;
+  reload.mockImplementationOnce(() => new Promise<void>((done) => { finish = done; }));
+  const changed = vi.fn();
+  window.addEventListener(APP_EVENTS.libraryChanged, changed);
+  try {
+    show();
+    await pass(6_000);
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    expect(reload).toHaveBeenCalledTimes(1);
+    show({ tab: "compose" });
+    await act(async () => { finish(); });
+    expect(changed).not.toHaveBeenCalled();
+  } finally {
+    window.removeEventListener(APP_EVENTS.libraryChanged, changed);
+  }
 });

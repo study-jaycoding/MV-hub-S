@@ -506,6 +506,11 @@ _REMAP_PLAN: tuple[tuple[str, str, str], ...] = (
     ("project_member_removed", "creator_uid", "ignore_del"),
     ("auto_tag", "owner_uid", "autotag"),
     ("asset_meta", "owner_uid", "assetmeta"),
+    ("asset_location", "owner_uid", "assetsync"),
+    ("asset_sync_outbox", "owner_uid", "assetsync"),
+    ("asset_destination_outbox", "owner_uid", "assetsync"),
+    ("asset_owner_folder", "owner_uid", "assetsync"),
+    ("asset_upload_token", "owner_uid", "assetsync"),
     ("asset_comment", "author", "plain"),
     ("generation_comment", "author", "plain"),
     ("gen_request", "creator_uid", "plain"),
@@ -697,6 +702,61 @@ def _remap_scene_card(conn, old: str, new: str) -> int:
     return c
 
 
+def _remap_asset_sync(conn, table: str, old: str, new: str) -> int:
+    """내용 ID는 보존하고 충돌 위치는 별칭으로 잇는다. 실행 중 lease는 재승인한다."""
+    if table == "asset_upload_token":
+        return conn.execute("DELETE FROM asset_upload_token WHERE owner_uid=?", (old,)).rowcount
+    rows = conn.execute(f"SELECT * FROM {table} WHERE owner_uid=?", (old,)).fetchall()
+    keys = {
+        "asset_location": ("storage_id", "root_revision", "project_id", "asset_content_id", "kind"),
+        "asset_sync_outbox": ("asset_content_id", "project_id", "server_origin"),
+        "asset_destination_outbox": ("account_key", "server_origin", "project_name", "project_id", "destination_kind", "root_path", "relative_dir", "asset_content_id", "original_name"),
+        "asset_owner_folder": ("project_id", "root_revision"),
+    }[table]
+    for row in rows:
+        where = " AND ".join(f"{key}=?" for key in keys)
+        args = tuple(row[key] for key in keys)
+        existing = conn.execute(f"SELECT * FROM {table} WHERE owner_uid=? AND {where}", (new, *args)).fetchone()
+        if existing is not None:
+            if table == "asset_sync_outbox" and "deleted" in (row["state"], existing["state"]):
+                live = conn.execute(
+                    "SELECT 1 FROM generation g WHERE g.creator_uid=? AND g.deleted_at IS NULL "
+                    "AND COALESCE(g.project_id,'')=? AND (EXISTS "
+                    "(SELECT 1 FROM asset a WHERE a.generation_id=g.id AND a.asset_content_id=?) OR EXISTS "
+                    "(SELECT 1 FROM gen_reference gr JOIN reference r ON r.id=gr.reference_id "
+                    "WHERE gr.generation_id=g.id AND r.asset_content_id=?)) LIMIT 1",
+                    (new, row["project_id"], row["asset_content_id"], row["asset_content_id"]),
+                ).fetchone()
+                conn.execute(
+                    "UPDATE asset_sync_outbox SET state=?,last_error_code=?,lease_token=NULL,lease_until=NULL WHERE sync_id=?",
+                    ("queued" if live else "deleted", None if live else "asset_deleted_in_app", existing["sync_id"]),
+                )
+            if table == "asset_destination_outbox" and existing["state"] != "ready" and row["state"] == "ready":
+                conn.execute("UPDATE asset_destination_outbox SET target_name=?,state='ready',last_error_code=NULL WHERE sync_id=?",
+                             (row["target_name"], existing["sync_id"]))
+            if table == "asset_location":
+                # 기존 location 토큰은 별칭으로 보존하고 NAS 원본은 이동하지 않는다.
+                conn.execute("UPDATE asset_sync_outbox SET local_location_id=? WHERE local_location_id=?",
+                             (existing["location_id"], row["location_id"]))
+                if _col_exists(conn, "asset_destination_outbox", "local_location_id"):
+                    conn.execute("UPDATE asset_destination_outbox SET local_location_id=? WHERE local_location_id=?",
+                                 (existing["location_id"], row["location_id"]))
+                conn.execute("UPDATE asset_location_alias SET location_id=? WHERE location_id=?",
+                             (existing["location_id"], row["location_id"]))
+                conn.execute("INSERT OR REPLACE INTO asset_location_alias(alias_id,location_id) VALUES(?,?)",
+                             (row["location_id"], existing["location_id"]))
+            conn.execute(f"DELETE FROM {table} WHERE owner_uid=? AND {where}", (old, *args))
+        else:
+            conn.execute(f"UPDATE {table} SET owner_uid=? WHERE owner_uid=? AND {where}", (new, old, *args))
+    if table == "asset_sync_outbox" and rows:
+        conn.execute("UPDATE asset_sync_outbox SET state=CASE WHEN project_id='' THEN 'project_required' ELSE 'queued' END, "
+                     "receipt_json=NULL,lease_token=NULL,lease_until=NULL,next_retry_at=0 WHERE owner_uid=? AND state<>'deleted'", (new,))
+    if table == "asset_destination_outbox" and rows:
+        conn.execute("UPDATE asset_destination_outbox SET state=CASE WHEN state='ready' THEN state ELSE 'queued' END, "
+                     "lease_token=NULL,lease_until=NULL,next_retry_at=0 WHERE owner_uid=?", (new,))
+    return len(rows)
+
+
 def remap_creator_uid(conn, old_uid: Optional[str], new_uid: Optional[str]) -> int:
     """한 계정의 옛 신원(old=acct:<email>)을 새 신원(new=user_<id>)으로 _REMAP_PLAN 전 테이블 리맵.
 
@@ -730,6 +790,8 @@ def remap_creator_uid(conn, old_uid: Optional[str], new_uid: Optional[str]) -> i
             n += _remap_assetmeta(conn, old_uid, new_uid)
         elif strat == "scenecard":
             n += _remap_scene_card(conn, old_uid, new_uid)
+        elif strat == "assetsync":
+            n += _remap_asset_sync(conn, table, old_uid, new_uid)
         else:
             # 전략 문자열 오타(예: "plian")가 조용히 no-op 되어 신원이 안 옮겨지는 걸 막는다(런타임 방어).
             raise ValueError(f"_REMAP_PLAN 알 수 없는 전략: {table}.{col} = {strat!r}")

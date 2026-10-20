@@ -436,17 +436,19 @@ class AssetIoTests(unittest.TestCase):
             with (
                 patch.object(assets, "_safe_project_dir", return_value=root),
                 patch.object(assets.asset_tree, "invalidate_project_tree") as invalidate,
+                patch.object(assets, "_register_import_sync", return_value={"sync_state": "project_required"}),
             ):
                 result = asyncio.run(
                     assets.upload_assets(
                         SimpleNamespace(),
-                        project="demo",
+                        project="imports",
                         dir="",
                         files=[upload],
                     )
                 )
 
-            self.assertEqual(result, {"saved": ["frame.png"], "skipped": []})
+            self.assertEqual(result, {"saved": ["frame.png"], "skipped": [],
+                                      "registered": [{"sync_state": "project_required"}]})
             self.assertEqual((root / "frame.png").read_bytes(), b"test-image")
             invalidate.assert_called_once_with(root)
 
@@ -480,7 +482,8 @@ class AssetIoTests(unittest.TestCase):
             self.assertEqual((root / "captures" / result["path"]).read_bytes(), b"capture-image")
             self.assertEqual(list(nas.iterdir()), [])  # NAS 쪽에는 아무것도 안 생긴다
             self.assertEqual(list(root.rglob(".upload-*.part")), [])
-            self.assertEqual(offloaded, [assets._commit_capture_with_discard_token])
+            from app.routers.asset_sync import capture_local_operation
+            self.assertEqual(offloaded, [capture_local_operation, assets._commit_capture_and_sync])
             self.assertTrue(result["discard_token"])  # 신규 파일 — 정리 토큰 발급
             self.assertTrue(result["sha256"])  # 씬 참조의 내용 지문
             combined.assert_called_once_with(root, assets._INTERNAL_FOLDERS)  # Assets 의 imp/cap 합본
@@ -517,7 +520,8 @@ class AssetIoTests(unittest.TestCase):
             self.assertEqual(saved["bytes"], len(b"reference-image"))
             self.assertTrue(saved["sha256"])  # 나중에 내용으로 다시 찾기 위한 지문
             self.assertEqual(list(root.rglob(".upload-*.part")), [])
-            self.assertEqual(offloaded, [asset_io.find_or_commit_media])
+            from app.routers.asset_sync import capture_local_operation
+            self.assertEqual(offloaded, [capture_local_operation, assets._commit_import_and_sync])
             combined.assert_called_once_with(root, assets._INTERNAL_FOLDERS)  # Assets 의 imp/cap 합본
 
             failed = UploadFile(filename="broken.png", file=io.BytesIO(b"broken-image"))

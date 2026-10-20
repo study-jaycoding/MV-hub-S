@@ -4,6 +4,8 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
+from .. import schema_compat
+
 SQLITE_MAGIC = b"SQLite format 3"
 
 
@@ -14,6 +16,8 @@ class HubDbValidationError(ValueError):
 
 
 def hub_db_validation_detail(exc: HubDbValidationError, *, downloaded: bool = False) -> str:
+    if exc.reason.startswith("schema_"):
+        return "이 앱에서 안전하게 읽고 쓸 수 없는 DB 버전 또는 스키마입니다. 호환되는 앱으로 확인하세요"
     if exc.reason == "not_sqlite":
         return "받은 파일이 SQLite DB 가 아닙니다" if downloaded else "SQLite DB 파일이 아닙니다"
     if exc.reason == "integrity":
@@ -60,6 +64,10 @@ def validate_hub_db(path: Path, *, require_integrity: bool = False) -> None:
             ).fetchone()
             if not ok:
                 raise HubDbValidationError("missing_generation")
+            try:
+                schema_compat.inspect_schema(conn, "content")
+            except schema_compat.SchemaCompatibilityError as exc:
+                raise HubDbValidationError("schema_" + exc.reason) from exc
             if require_integrity:
                 integrity = conn.execute("PRAGMA quick_check").fetchone()
                 if not integrity or integrity[0] != "ok":
@@ -67,4 +75,14 @@ def validate_hub_db(path: Path, *, require_integrity: bool = False) -> None:
     except HubDbValidationError:
         raise
     except sqlite3.DatabaseError as exc:
+        raise HubDbValidationError("unreadable") from exc
+
+
+def validate_db_compatibility(path: Path, kind: str) -> None:
+    """Read-only admission check for content/trash before replacing live files."""
+    try:
+        schema_compat.inspect_database(path, kind)
+    except schema_compat.SchemaCompatibilityError as exc:
+        raise HubDbValidationError("schema_" + exc.reason) from exc
+    except (OSError, sqlite3.DatabaseError) as exc:
         raise HubDbValidationError("unreadable") from exc

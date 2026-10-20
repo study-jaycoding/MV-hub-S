@@ -35,6 +35,7 @@ from ..config import BACKEND_DIR, DATA_DIR
 from . import server_relocation, shared_connection
 from .async_tools import to_thread_non_abandon
 from .atomic_io import atomic_write_text
+from . import backup_manifest
 from .db_scrub import SESSION_KEYS, strip_transfer_secrets
 from .operational_logging import log_event
 from .sqlite_db import read_only_uri, validate_hub_db
@@ -76,7 +77,7 @@ _MAX_PENDING_PER_ACCOUNT = max(
 )
 _HISTORY_KEEP_PER_ACCOUNT = 100
 _FORMAT = "mvhub-worker-backup-set"
-_FORMAT_VERSION = 1
+_FORMAT_VERSION = backup_manifest.VERSION
 _SET_ID_RE = re.compile(r"[0-9a-f]{64}")
 _PREFIX = "content_hub_"
 _TRASH_PREFIX = "content_trash_"
@@ -86,7 +87,8 @@ _SUMMARY_TABLES = {
     "generations": ("generation",),
     "tags": ("tag", "auto_tag", "gen_tag_overlay"),
     "canvases": ("scene_backup", "scene_card_generation"),
-    "assets": ("asset_meta",),
+    "timelines": ("edit_doc_head", "edit_doc_copy"),
+    "assets": ("asset_meta", "asset_blob", "asset_location", "asset_sync_outbox", "asset_destination_outbox"),
     "projects": ("project",),
 }
 
@@ -113,12 +115,16 @@ def _connect() -> sqlite3.Connection:
         needs_ensure = key not in _STATE_SCHEMA_READY or not STATE_DB.exists()
         STATE_DB.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(STATE_DB), timeout=10)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA synchronous=FULL")
-        if needs_ensure:
-            conn.execute("PRAGMA journal_mode=WAL")
-            _ensure_schema(conn)  # 실패 시 ready 미기록 — 다음 연결이 재시도
-            _STATE_SCHEMA_READY.add(key)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA synchronous=FULL")
+            if needs_ensure:
+                conn.execute("PRAGMA journal_mode=WAL")
+                _ensure_schema(conn)  # 실패 시 ready 미기록 — 다음 연결이 재시도
+                _STATE_SCHEMA_READY.add(key)
+        except BaseException:
+            conn.close()
+            raise
     return conn
 
 
@@ -241,6 +247,8 @@ def _source_signature(content: Path, trash: Path) -> str | None:
                 # 24~27바이트 변경 카운터를 포함해 크기·mtime을 보존한 SQLite 쓰기도 잡는다.
                 "sqlite_header": header.hex(),
             }
+        metadata_path = backup_manifest.local_path(content)
+        metadata_digest = backup_manifest.file_digest(metadata_path) if metadata_path.is_file() else None
     except OSError:
         return None
     return json.dumps(
@@ -249,6 +257,7 @@ def _source_signature(content: Path, trash: Path) -> str | None:
             "format_version": _FORMAT_VERSION,
             "strip_keys": sorted(SESSION_KEYS),
             "files": files,
+            "local_manifest_sha256": metadata_digest,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -264,7 +273,7 @@ def _prechecked_duplicate(
     if source_signature is None:
         return None
     try:
-        with _connect() as conn:
+        with contextlib.closing(_connect()) as conn, conn:
             row = conn.execute(
                 "SELECT source.backup_set_id FROM worker_backup_source_state source "
                 "JOIN worker_backup_outbox outbox ON outbox.backup_set_id=source.backup_set_id "
@@ -288,7 +297,7 @@ def _remember_source_state(
     if source_signature is None:
         return
     try:
-        with _connect() as conn:
+        with contextlib.closing(_connect()) as conn, conn:
             conn.execute(
                 "INSERT INTO worker_backup_source_state"
                 "(account_slug,local_stamp,source_signature_json,backup_set_id) VALUES(?,?,?,?) "
@@ -406,7 +415,7 @@ def metadata_summary(content: Path, trash: Path | None = None) -> dict[str, int]
 
 def _lineage_parent(account_slug: str) -> str | None:
     """이 PC가 마지막으로 알고 있는 계정 백업을 새 스냅샷의 부모로 사용한다."""
-    with _connect() as conn:
+    with contextlib.closing(_connect()) as conn, conn:
         row = conn.execute(
             "SELECT backup_set_id FROM worker_backup_outbox "
             "WHERE account_slug=? AND status IN ('pending','running','done') "
@@ -428,7 +437,7 @@ def adopt_restored_backup(backup_set_id: str, *, account_email: str) -> None:
         raise ValueError("invalid backup set id")
     account_slug = active_account.slug(account_email)
     superseded: list[str] = []
-    with _connect() as conn:
+    with contextlib.closing(_connect()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
             rows = conn.execute(
@@ -465,7 +474,7 @@ def record_queue_failure(error_code: str, *, account_email: str | None = None) -
     account_slug = active_account.slug(email)
     now = _utc_now()
     try:
-        with _connect() as conn:
+        with contextlib.closing(_connect()) as conn, conn:
             conn.execute(
                 "INSERT INTO worker_backup_delivery_state"
                 "(account_slug,last_attempt_at,last_error_code) VALUES(?,?,?) "
@@ -502,8 +511,13 @@ def queue_backup_set(
     temp = account_root / f".stage-{secrets.token_hex(8)}"
     temp.mkdir(exist_ok=False)
     try:
+        local_manifest = backup_manifest.read_local(content_backup)
+        if local_manifest and local_manifest['account_scope_digest'] != account_key_digest(account_slug):
+            raise ValueError('backup account scope mismatch')
         content = temp / "content.db"
         shutil.copyfile(content_backup, content)
+        if local_manifest and backup_manifest.file_digest(content) != local_manifest['roles']['content']['sha256']:
+            raise ValueError('local backup changed during copy')
         strip_transfer_secrets(content)
         _verify_transfer_secrets_removed(content)
         validate_hub_db(content, require_integrity=True)
@@ -514,15 +528,28 @@ def queue_backup_set(
             shutil.copyfile(trash_source, trash)
             _validate_trash(trash)
             role_paths["trash"] = trash
+        if local_manifest:
+            if set(role_paths) != set(local_manifest['roles']) & {'content', 'trash'}:
+                raise ValueError('local backup members differ')
+            if 'trash' in role_paths and backup_manifest.file_digest(role_paths['trash']) != local_manifest['roles']['trash']['sha256']:
+                raise ValueError('local backup changed during copy')
 
-        roles = {role: _role_info(path) for role, path in sorted(role_paths.items())}
+        roles = {role: {**_role_info(path), 'schema': backup_manifest.schema_info(path, role)}
+                 for role, path in sorted(role_paths.items())}
+        capture = {
+            'captured_at': local_manifest['captured_at'] if local_manifest else None,
+            'consistency_kind': local_manifest['consistency_kind'] if local_manifest else backup_manifest.UNKNOWN,
+            'consistency_roles': local_manifest['consistency_roles'] if local_manifest else [],
+        }
+        if capture['consistency_kind'] == backup_manifest.INDEPENDENT:
+            capture['consistency_roles'] = sorted(roles)
         summary = metadata_summary(content, role_paths.get("trash"))
         # 새 PC 로그인 직후 만들어지는 스키마/기본 작업자뿐인 DB가 서버 최신본처럼 올라가면
         # 기존 작업을 찾기 어려워진다. 의미 있는 개인 기록이 생기기 전에는 자동 전송하지 않는다.
         if summary["meaningful_records"] <= 0:
             shutil.rmtree(temp)
             now = _utc_now()
-            with _connect() as conn:
+            with contextlib.closing(_connect()) as conn, conn:
                 conn.execute(
                     "INSERT INTO worker_backup_delivery_state"
                     "(account_slug,last_attempt_at,last_error_code) VALUES(?,?,?) "
@@ -540,11 +567,14 @@ def queue_backup_set(
         )
         device = device_identity()
         parent_backup_set_id = _lineage_parent(account_slug)
-        roles_json = json.dumps(roles, sort_keys=True, separators=(",", ":"))
+        roles_json = backup_manifest.canonical({
+            'format_version': _FORMAT_VERSION, 'roles': roles,
+            'consistency_kind': capture['consistency_kind'], 'consistency_roles': capture['consistency_roles'],
+        })
         # 같은 PC에서 DB 파일의 수정 시각만 달라진 경우에는 새 세트를 만들지 않는다.
         # 단, 사용자가 과거 버전을 복원해 기존 행이 superseded 된 경우에는 아래 ID 계산으로
         # 복원본을 부모로 둔 새 불변 세트를 만들어 계보를 이어간다.
-        with _connect() as conn:
+        with contextlib.closing(_connect()) as conn, conn:
             unchanged = conn.execute(
                 "SELECT backup_set_id FROM worker_backup_outbox "
                 "WHERE account_slug=? AND roles_json=? "
@@ -562,21 +592,12 @@ def queue_backup_set(
                 backup_set_id,
             )
             return backup_set_id
-        identity = json.dumps(
-            {
-                "account_slug": account_slug,
-                "device_id": device["device_id"],
-                "parent_backup_set_id": parent_backup_set_id,
-                "roles": roles,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        backup_set_id = hashlib.sha256(identity).hexdigest()
-        manifest = {
+        manifest = backup_manifest.seal({
             "format": _FORMAT,
             "format_version": _FORMAT_VERSION,
-            "backup_set_id": backup_set_id,
+            'payload_version': backup_manifest.PAYLOAD_VERSION,
+            'account_scope_digest': account_key_digest(account_slug),
+            **capture,
             "created_at": _utc_now(),
             "local_stamp": stamp,
             "schema_version": _sqlite_user_version(content),
@@ -585,13 +606,15 @@ def queue_backup_set(
             "parent_backup_set_id": parent_backup_set_id,
             "summary": summary,
             "roles": roles,
-        }
+        })
+        backup_manifest.verify_files(manifest, role_paths, expected_account_digest=account_key_digest(account_slug))
+        backup_set_id = manifest['backup_set_id']
         atomic_write_text(
             temp / "manifest.json",
             json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
         )
         final = _stage_dir(account_slug, backup_set_id)
-        with _connect() as conn:
+        with contextlib.closing(_connect()) as conn, conn:
             existing = conn.execute(
                 "SELECT status FROM worker_backup_outbox WHERE backup_set_id=?",
                 (backup_set_id,),
@@ -610,7 +633,7 @@ def queue_backup_set(
         os.replace(temp, final)
 
         superseded: list[str] = []
-        with _connect() as conn:
+        with contextlib.closing(_connect()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 conn.execute(
@@ -677,7 +700,7 @@ def queue_latest_local_backup() -> str | None:
 
 def recover_in_progress() -> int:
     """비정상 종료가 남긴 running을 재시도 가능 상태로 되돌린다."""
-    with _connect() as conn:
+    with contextlib.closing(_connect()) as conn, conn:
         cursor = conn.execute(
             "UPDATE worker_backup_outbox SET status='pending',last_error_code='interrupted',"
             "next_retry_ts=NULL WHERE status='running'"
@@ -693,7 +716,7 @@ def cleanup_stale_state() -> dict[str, int]:
     """
     active_ids: set[str] = set()
     removed_rows = 0
-    with _connect() as conn:
+    with contextlib.closing(_connect()) as conn, conn:
         active_ids = {
             str(row[0])
             for row in conn.execute(
@@ -758,7 +781,7 @@ def retry_pending(*, account_email: str | None = None) -> int:
     account_slug = active_account.slug(account_email) if account_email is not None else _active_slug()
     if not account_slug:
         return 0
-    with _connect() as conn:
+    with contextlib.closing(_connect()) as conn, conn:
         cursor = conn.execute(
             "UPDATE worker_backup_outbox SET next_retry_ts=NULL "
             "WHERE account_slug=? AND status='pending'",
@@ -774,7 +797,7 @@ def _active_slug() -> str | None:
 
 def account_key_digest(account_slug: str) -> str:
     """자식 기대값에는 원문 계정 폴더명 대신 같은 결정적 digest만 전달한다."""
-    return hashlib.sha256(account_slug.encode("utf-8")).hexdigest()
+    return backup_manifest.account_digest(account_slug)
 
 
 def _backup_set_owner(backup_set_id: str) -> str | None:
@@ -807,7 +830,7 @@ def has_due_backup() -> bool:
     account_slug = _active_slug()
     if not account_slug:
         return False
-    with _connect() as conn:
+    with contextlib.closing(_connect()) as conn, conn:
         return conn.execute(
             "SELECT 1 FROM worker_backup_outbox WHERE account_slug=? AND status='pending' "
             "AND (next_retry_ts IS NULL OR next_retry_ts<=?) LIMIT 1",
@@ -819,7 +842,7 @@ def _claim_due() -> dict[str, Any] | None:
     account_slug = _active_slug()
     if not account_slug:
         return None
-    with _connect() as conn:
+    with contextlib.closing(_connect()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
             row = conn.execute(
@@ -930,6 +953,16 @@ def _verify_ack(
         return False
     if response.get("backup_set_id") != manifest["backup_set_id"]:
         return False
+    if 'format_version' in response and (
+        type(response['format_version']) is not int
+        or response['format_version'] != manifest.get('format_version', 1)
+    ):
+        return False
+    if manifest.get('format_version') == backup_manifest.VERSION and (
+        response.get('format_version') != backup_manifest.VERSION
+        or response.get('manifest_sha256') != backup_manifest.manifest_digest(manifest)
+    ):
+        return False
     files = response.get("files")
     if not isinstance(files, dict) or set(files) != set(manifest["roles"]):
         return False
@@ -939,7 +972,10 @@ def _verify_ack(
             return False
         if actual.get("sha256") != expected["sha256"]:
             return False
-        if int(actual.get("size") or -1) != int(expected["size"]):
+        try:
+            if int(actual.get("size") or -1) != int(expected["size"]):
+                return False
+        except (ValueError, TypeError):
             return False
     return True
 
@@ -952,7 +988,7 @@ def _mark_failure(row: dict[str, Any], error_code: str) -> None:
         delay = 3600
     else:
         delay = min(3600, 60 * attempts * attempts)
-    with _connect() as conn:
+    with contextlib.closing(_connect()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
             conn.execute(
@@ -976,7 +1012,7 @@ def _mark_failure(row: dict[str, Any], error_code: str) -> None:
 
 def _mark_success(row: dict[str, Any]) -> None:
     now = _utc_now()
-    with _connect() as conn:
+    with contextlib.closing(_connect()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
             cursor = conn.execute(
@@ -1011,11 +1047,24 @@ def drain_one() -> dict[str, Any]:
     stage = _stage_dir(row["account_slug"], row["backup_set_id"])
     try:
         manifest = json.loads((stage / "manifest.json").read_text("utf-8"))
+        backup_manifest.check_version(manifest)
+        queued_roles = json.loads(row['roles_json'])
+        if not isinstance(queued_roles, dict):
+            raise ValueError('invalid queued metadata')
+        queued_version = queued_roles.get('format_version', 1)
+        if manifest['format_version'] != queued_version:
+            raise ValueError('staged manifest version changed')
+        if queued_version == backup_manifest.VERSION and queued_roles != {
+            'format_version': queued_version, 'roles': manifest['roles'],
+            'consistency_kind': manifest['consistency_kind'],
+            'consistency_roles': manifest['consistency_roles'],
+        }:
+            raise ValueError('staged metadata changed')
         if (
             not isinstance(manifest, dict)
             or manifest.get("backup_set_id") != row["backup_set_id"]
             or manifest.get("format") != _FORMAT
-            or manifest.get("format_version") != _FORMAT_VERSION
+            or manifest.get("format_version") not in {1, _FORMAT_VERSION}
         ):
             raise ValueError("invalid manifest")
         roles = manifest.get("roles")
@@ -1034,7 +1083,10 @@ def drain_one() -> dict[str, Any]:
             validate_hub_db(role_paths["content"], require_integrity=True)
         if role_paths.get("trash"):
             _validate_trash(role_paths["trash"])
-    except (OSError, ValueError, TypeError, sqlite3.Error):
+        if manifest['format_version'] == backup_manifest.VERSION:
+            backup_manifest.verify_files(manifest, role_paths,
+                                         expected_account_digest=account_key_digest(row['account_slug']))
+    except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
         _mark_failure(row, "staging_invalid")
         return {"state": "failed", "error_code": "staging_invalid"}
 
@@ -1090,7 +1142,7 @@ def status_snapshot() -> dict[str, Any]:
             "last_success_at": None,
             "last_error_code": "login_required",
         }
-    with _connect() as conn:
+    with contextlib.closing(_connect()) as conn, conn:
         counts = conn.execute(
             "SELECT "
             "SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) pending,"

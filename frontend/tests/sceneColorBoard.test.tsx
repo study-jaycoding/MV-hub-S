@@ -3,7 +3,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SceneBoard } from "../src/components/scene/SceneBoard";
-import { api } from "../src/api";
+import { api, setAuthToken } from "../src/api";
+import { configureOperationContext } from "../src/app/operationContext";
+import { setAccountScope } from "../src/lib/accountScope";
 import { KEY_COLORS } from "../src/lib/appConstants";
 import { hydrateGen, putGen } from "../src/lib/sceneGenDataStore";
 import type { Generation } from "../src/types";
@@ -44,6 +46,8 @@ beforeEach(() => {
   vi.stubGlobal("BroadcastChannel", undefined);
   vi.stubGlobal("WebSocket", class { constructor() { throw new Error("Network forbidden"); } });
   localStorage.clear(); sessionStorage.clear();
+  setAuthToken(null); setAccountScope("");
+  configureOperationContext({ key: "local", serverOrigin: location.origin, authority: "local", ready: true });
   gid = `board-color-${++serial}`;
   row = { id: gid, color: base, status: "done", prompt: "synthetic", shared: false, is_mine: true,
     tags: [], auto_tags: [], assets: [], references: [], created_at: "2026-09-17",

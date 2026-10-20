@@ -28,6 +28,15 @@ describe("buildSpotlightCreateBody — Seedance 2.5 모드 계약", () => {
   };
   const video = () => img({ type: "video", file_path: "asset:p|clip.mp4" });
 
+  it("480p 신규 생성은 Draft이며 복사된 원격 Draft 번호를 재사용하지 않는다", () => {
+    const { body, error } = buildSpotlightCreateBody({
+      ...seedance, optionValues: { resolution: "480p", draft_job_id: "old-remote-job", seed: 15 },
+    });
+    expect(error).toBeNull();
+    expect(body?.params).toMatchObject({ resolution: "480p", draft: true, seed: 15 });
+    expect(body?.params).not.toHaveProperty("draft_job_id");
+  });
+
   it.each([
     { trayRefs: [], inlineRefs: [], mode: "t2v" },
     { trayRefs: [img()], inlineRefs: [], mode: "omni_reference" },

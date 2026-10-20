@@ -14,6 +14,7 @@ import {
   spotlightValueLabel,
 } from "../../lib/spotlightPromptConfig";
 import { SpotlightOptionIcon } from "./SpotlightOptionIcon";
+import { normalizeSeedanceDraftParams } from "../../lib/seedanceDraft";
 
 type OptionValue = string | number | boolean;
 type OptionValues = Record<string, OptionValue>;
@@ -92,6 +93,8 @@ export function SpotlightOptionsBar({
   // (예: extension_mode 는 mode=video_extension 일 때만 — 다른 모드에 실으면 CLI 거부).
   const visibleTunable = tunable.filter((p) => paramGateAllows(model, p.name, optionValues));
   const ignored = spotlightIgnoredOptions(model, optionValues.mode);
+  const isDraftResolution = (name: string, value: unknown) => name === "resolution"
+    && normalizeSeedanceDraftParams(model, { resolution: value }).draft === true;
   const audioParam = visibleTunable.find((p) => p.name === "generate_audio");
   const advancedParams = visibleTunable
     .filter(
@@ -232,6 +235,7 @@ export function SpotlightOptionsBar({
             >
               <span className="sl-opt-ic"><SpotlightOptionIcon name={p.name} /></span>
               <span>{String(optionValues[p.name] ?? p.default ?? "")}</span>
+              {isDraftResolution(p.name, optionValues[p.name] ?? p.default) && <span className="sl-draft-pill">Draft</span>}
               <span className="sl-caret">›</span>
             </button>
             {/* 잠긴 값은 목록이 이미 열려 있어도 닫는다 — 비동기 복원(프롬프트 재사용)이 메뉴가 열린
@@ -260,6 +264,7 @@ export function SpotlightOptionsBar({
                         title={blocked ? con!.note : undefined}
                       >
                         {v}
+                        {isDraftResolution(p.name, v) && <span className="sl-draft-pill">Draft</span>}
                         {blocked && <span className="sl-dd-lock"> 🔒</span>}
                       </button>
                     );

@@ -380,6 +380,12 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext, teamP
     bumpViewFilter();
   }, [bumpViewFilter]);
 
+  const setFilterAutoTags = useCallback((value: Set<string>) => {
+    filterAutoTagsRef.current = value;
+    rawSetFilterAutoTags(value);
+    bumpViewFilter();
+  }, [bumpViewFilter]);
+
   const toggleAutoTag = useCallback((tag: string) => {
     if (!tag) return;
     const turnOn = !filterAutoTagsRef.current.has(tag);
@@ -497,7 +503,7 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext, teamP
     finalOnly, setFinalOnly,
     grayOn, setGrayOn,
     armedAutoTags, setArmedAutoTags,
-    filterAutoTags, toggleAutoTag,
+    filterAutoTags, setFilterAutoTags, toggleAutoTag,
     armedFolder, setArmedFolder,
     workspaceChips, setWorkspaceChips,
     genQuery, selectionResetKey, workspaceFollow, workspaceScopeKey, workspaceQueryReady,

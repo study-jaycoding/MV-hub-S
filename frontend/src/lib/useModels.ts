@@ -7,6 +7,7 @@ import { autoRatioForCost } from "./aspectAuto";
 import { EMPTY_MODEL_SET, modelAllowed } from "./modelPolicyCore";
 import type { ModelInfo, ModelParam, ModelParamsOut } from "../types";
 import { fetchModelCatalog } from "./modelCatalogCache";
+import { normalizeSeedanceDraftParams } from "./seedanceDraft";
 
 // 노출 모델 화이트리스트(타입별, 표시 순서대로).
 //  이미지: Nano Banana 2(nano_banana_flash) · Nano Banana 2.1(nano_banana_2_1, 2026-10-14 추가 — 첫 자리는 그대로 두어 기본 모델이 안 바뀐다) · Nano Banana 2 Lite(nano_banana_2_lite) · Nano Banana Pro(nano_banana_pro) · GPT Image 2.5(gpt_image_2_5) · GPT Image 2(gpt_image_2)
@@ -69,7 +70,7 @@ export const MODEL_DISPLAY_NAMES: Record<string, string> = {
 export const HIDDEN_PARAMS = new Set([
   "prompt", "medias", "input_images", "folder_id", "batch_size",
   "image_references", "video_references", "audio_references", "start_image", "end_image",
-  "is_inpaint", "mask",
+  "is_inpaint", "mask", "draft", "draft_job_id",
 ]);
 
 // 외부에서 들어오는 옵션 덩어리(씬 카드 저장분·initial.params 등)에서 숨김 파라미터 제거 —
@@ -568,7 +569,7 @@ export function useModels(
       const key = costKey(m, opts);
       if (costCache.has(key)) return;
       api
-        .estimateCost(m, opts)
+        .estimateCost(m, normalizeSeedanceDraftParams(m, opts))
         .then((r) => {
           putCost(key, r.credits);
         })
@@ -622,7 +623,7 @@ export function useModels(
     setCostLoading(true);
     const t = window.setTimeout(() => {
       api
-        .estimateCost(model, autoRatioForCost(optionValues, params))
+        .estimateCost(model, normalizeSeedanceDraftParams(model, autoRatioForCost(optionValues, params)))
         .then(
           (r) =>
             alive &&

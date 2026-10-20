@@ -454,6 +454,10 @@ def cmd_export(args: argparse.Namespace, *, next_steps: bool = True, live_snapsh
     if dest.exists() and any(dest.iterdir()):
         raise MoveError(f"패키지 대상 폴더가 비어 있지 않습니다: {dest}")
 
+    from app import schema_compat
+    for role in SET_ROLES:
+        schema_compat.inspect_database(live[role], role)
+
     if live_snapshot:
         _say("[1/5] 서버를 멈추지 않고 찍습니다(연습) — 정지 확인 생략")
         _say("[2/5] WAL 정리 생략 — 켜진 서버의 온라인 백업")
@@ -473,8 +477,15 @@ def cmd_export(args: argparse.Namespace, *, next_steps: bool = True, live_snapsh
     _say(f"[3/5] 스냅샷 (stamp {stamp})")
     # 세 DB 를 먼저 다 찍고 검사·해시는 그 뒤에 — 켜진 서버에서 찍을 때 DB 사이 시점 차를 줄인다.
     names = {role: f"{BACKUP_SET_MEMBERS[role]['prefix']}{stamp}.db" for role in SET_ROLES}
-    for role in SET_ROLES:
-        create_sqlite_snapshot(live[role], package_db / names[role])
+    from app.services import trash_transfer
+    with closing(sqlite3.connect(str(live["content"]))) as probe:
+        b1_enabled = trash_transfer.enabled(probe)
+    if b1_enabled:
+        from app.services.backup_verify import create_database_set_snapshot
+        create_database_set_snapshot(live, {role: package_db / names[role] for role in SET_ROLES})
+    else:
+        for role in SET_ROLES:
+            create_sqlite_snapshot(live[role], package_db / names[role])
     files: dict[str, Any] = {}
     for role in SET_ROLES:
         name = names[role]
@@ -832,6 +843,8 @@ def install_set(
             else:
                 _say(f"      {staged[role].name}  OK")
             staged_info[role] = info
+        from app.services.trash_transfer import validate_pair
+        validate_pair(staged["content"], staged.get("trash"))
         # 읽는 동안 바뀌지 않았는지 한 번 더 — verify_restore_set 과 같은 원리.
         _verify_expected_sha(package_files, expected_sha)
 
@@ -891,7 +904,10 @@ def install_set(
         if restored:
             journal.unlink(missing_ok=True)
             if archive_dir.is_dir() and not any(archive_dir.iterdir()):
-                archive_dir.rmdir()
+                try:
+                    archive_dir.rmdir()
+                except OSError as exc:
+                    _say(f"  !! 보존 폴더 정리 실패(파일은 보존): {archive_dir}: {exc}")
             _say("  롤백 완료 — 기존 DB 가 제자리에 있습니다")
         else:
             _journal_write(

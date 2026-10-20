@@ -3,8 +3,9 @@ import { displayRefThumb, displayThumb } from "./media";
 import { SEEDANCE_TOKEN_SRC, seedanceAtTokenKind, seedanceCanonToken } from "./seedancePrompt";
 import { loadJSON, saveJSON } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
+import type { AssetReferenceIdentity } from "../shared/contracts/assets";
 
-export interface ChipRef {
+export interface ChipRef extends AssetReferenceIdentity {
   file_path: string; // 레퍼런스 값(asset:proj|path 토큰 또는 원격 URL) — 백엔드가 resolve
   type: "image" | "video" | "audio";
   role: string; // @Image1 / @Video …

@@ -97,7 +97,7 @@ export function useGenerationShareActions({
           .replace("{count}", String(r.unprocessed)).replace("{error}", () => t(r.error!));
       flash(withMirrorPendingNotice(message, r, t));
       watchSlowRequests(confirming, flash, afterSettled);
-      if (succeeded) postLibraryChanged();
+      if (succeeded) postLibraryChanged({ projectId });
       await reload();
       bumpBoard();
     } catch (e) {

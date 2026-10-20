@@ -50,13 +50,22 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
 
 def strip_transfer_secrets(db_path: Path) -> None:
     """전송 프로파일: 주어진 .db 의 세션·보안 설정만 비운다(업로드 사본/복원 대상에 적용)."""
+    # workroom_data loads only SESSION_KEYS without importing the app package.
+    from . import trash_transfer
+
     c = sqlite3.connect(str(db_path))
     try:
+        trash_transfer.configure_connection(c)
         c.execute("BEGIN")
         for k in SESSION_KEYS:
             c.execute("DELETE FROM app_setting WHERE key=?", (k,))
+        if _table_exists(c, "asset_upload_token"):
+            c.execute("DELETE FROM asset_upload_token")
         c.execute("COMMIT")
     except sqlite3.DatabaseError:
+        # B1 pending/guard failures must never publish an unscrubbed copy.
+        if trash_transfer.enabled(c):
+            raise
         pass
     finally:
         c.close()
@@ -73,11 +82,16 @@ def scrub_test_snapshot_db(db_path: Path, *, create_test_admin: bool) -> None:
     전송 프로파일과 달리 실패를 삼키지 않는다 — 정제 안 된 스냅샷이 조용히
     나가는 것이 곧 비밀값 유출이므로, sqlite 오류는 호출자가 중단 처리한다.
     """
+    from . import trash_transfer
+
     with closing(sqlite3.connect(str(db_path))) as conn:
+        trash_transfer.configure_connection(conn)
         conn.execute("BEGIN")
         if _table_exists(conn, "app_setting"):
             for k in SESSION_KEYS:
                 conn.execute("DELETE FROM app_setting WHERE key=?", (k,))
+        if _table_exists(conn, "asset_upload_token"):
+            conn.execute("DELETE FROM asset_upload_token")
         if _table_exists(conn, "account"):
             conn.execute(
                 "UPDATE account SET password_hash=?, password_changed_at=datetime('now')",

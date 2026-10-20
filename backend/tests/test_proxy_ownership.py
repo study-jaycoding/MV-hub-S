@@ -37,6 +37,10 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/asset-registry/schedule/claim",
         "/api/asset-registry/status",
         "/api/asset-registry/usage/{registry_asset_id}",
+        "/api/asset-sync/prepare",
+        "/api/asset-sync/resolve",
+        "/api/asset-sync/verify",
+        "/api/asset-sync/locations/{location_id}",
         "/api/auth/access",
         "/api/auth/accounts",
         "/api/auth/accounts/{email}/global-roles",
@@ -111,6 +115,10 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/provider",
         # /api/ready 는 2026-10-03 부터 로컬 — 업데이터가 설치 확인에 쓰는 '이 허브'의 준비 상태다.
         "/api/share/publish-bundle",
+        # Shared command authority and its replay receipts belong to the team server.
+        "/api/share/capabilities",
+        "/api/share/command-state/{gen_id}",
+        "/api/share/commands",
         # 업데이트 공지 목록·고정·읽음은 팀 공용 상태라 공유 서버 DB가 진실원천이다.
         "/api/update-notices",
         "/api/update-notices/admin/item",

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { Creator } from "../types";
-import { APP_EVENTS } from "./appEvents";
+import { APP_EVENTS, isCurrentGenerationEvent, isLibraryPollTick } from "./appEvents";
 import { isHttpStatus } from "./http";
 import { onLibraryChanged } from "./libraryBroadcast";
 import { workspaceFilterOf, type LibraryWorkspaceFilter } from "./libraryWorkspaceScope";
@@ -52,7 +52,9 @@ export function useLibraryCreators({ tab, projectId, workspaceFilter, folderPath
     return () => { sequence.current += 1; };
   }, [reload]);
   useEffect(() => onLibraryChanged(() => { void reload(); }), [reload]);
-  useCustomEvent(APP_EVENTS.libraryChanged, () => { void reload(); });
+  useCustomEvent(APP_EVENTS.libraryChanged, event => {
+    if (isCurrentGenerationEvent(event) && !isLibraryPollTick(event)) void reload();
+  });
 
   // effect 정리 전의 렌더에서도 이전 공간·이전 계정의 행을 보이지 않는다.
   const current = ready && state?.key === key ? state : null;

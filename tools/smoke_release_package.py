@@ -19,6 +19,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from smoke_env import build_smoke_env
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -131,12 +133,21 @@ def main() -> int:
                 r"runtime\higgsfield\node_modules\@higgsfield\cli\package.json",
             )
 
+            env = build_smoke_env(
+                os.environ,
+                temp_path,
+                frontend_dist=root / "frontend" / "dist",
+                python_exe=python,
+                port=port,
+            )
+
             python_version = subprocess.run(
                 [str(python), "--version"],
                 capture_output=True,
                 text=True,
                 timeout=10,
                 check=True,
+                env=env,
             )
             python_version = (
                 python_version.stdout.strip() or python_version.stderr.strip()
@@ -160,18 +171,6 @@ def main() -> int:
 
             stdout_path = temp_path / "server.stdout.log"
             stderr_path = temp_path / "server.stderr.log"
-            env = os.environ.copy()
-            env.update(
-                {
-                    "CONTENT_HUB_PORT": str(port),
-                    "CONTENT_HUB_HOST": "127.0.0.1",
-                    "CONTENT_HUB_DATA": str(temp_path / "data"),
-                    "CONTENT_HUB_AUTH": "0",
-                    "CONTENT_HUB_MANAGE": "0",
-                    "CONTENT_HUB_EXTERNAL_RECOVERY": "0",
-                    "PYTHONUNBUFFERED": "1",
-                }
-            )
             help_probe = subprocess.run(
                 [str(python), str(serve), "--help"],
                 cwd=serve.parent,

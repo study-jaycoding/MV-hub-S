@@ -6,6 +6,7 @@
 """
 
 import json
+import hashlib
 import io
 import threading
 import time
@@ -66,8 +67,8 @@ class VideoPathSanitizeTests(unittest.TestCase):
                                [comfy._MediaUpload("../../evil.mp4", source, 4)], d)
             written = Path(wf["1"]["inputs"]["video"]).resolve()
             mvhub = (Path(d) / "mvhub").resolve()
-            # mvhub 안에 evil.mp4 로만 저장(상위로 탈출 금지).
-            self.assertEqual(written.name, "evil.mp4")
+            # mvhub 안의 실제 바이트 지문 이름으로만 저장(상위 탈출/동명 덮어쓰기 금지).
+            self.assertEqual(written.name, hashlib.sha256(b"data").hexdigest() + ".mp4")
             self.assertTrue(str(written).startswith(str(mvhub)))
             self.assertTrue(written.exists())
 

@@ -112,3 +112,11 @@ export function findFolder(nodes: AssetNode[], path: string): AssetNode[] {
   }
   return [];
 }
+
+// 현재 폴더 아래에서 온 파일에만 상대 폴더 경로를 붙인다(직접 파일은 이름표 없음).
+export function assetFolderLabel(path: string, dir: string): string {
+  const folder = path.replace(/\\/g, "/").split("/").slice(0, -1).filter(Boolean).join("/");
+  const root = dir.replace(/\\/g, "/").split("/").filter(Boolean).join("/");
+  if (root && !folder.startsWith(root + "/")) return "";
+  return (root ? folder.slice(root.length + 1) : folder).split("/").join(" / ");
+}

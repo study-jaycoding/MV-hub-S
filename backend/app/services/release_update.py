@@ -28,6 +28,7 @@ from typing import Any, Callable, Iterator, Literal
 from ..config import AUTH_ENABLED, BACKEND_DIR, PORT
 from .atomic_io import atomic_write_text
 from .read_utf8_sig_first_line import read_first_line
+from . import release_contract
 
 APP_ROOT = BACKEND_DIR.parent
 UPDATE_STATE_BASE = Path(
@@ -120,8 +121,21 @@ def install_mode(root: Path = APP_ROOT) -> str:
     return "release" if all((root / name).is_file() for name in required) else "development"
 
 
+def _unfinished_install(root: Path) -> bool:
+    path = root / 'update-journal.json'
+    if not path.exists():
+        return False
+    try:
+        value = release_contract.document(path.read_bytes())
+        return value.get('format_version') != 1 or value.get('phase') not in {'committed', 'rolled_back'}
+    except (OSError, ValueError):
+        return True
+
+
 def _installation_health(root: Path, expected_cli_version: str = "") -> tuple[bool, str]:
     """완료 버전 표식만 믿지 않고 실제 설치본이 실행 가능한지 확인한다."""
+    if _unfinished_install(root):
+        return False, '설치 journal이 완료되지 않았습니다. 같은 설치 산출물로 복구를 계속하세요.'
     required = (
         "MV_agent.bat",
         "update_release.bat",
@@ -413,7 +427,7 @@ _MANIFEST_MAX_BYTES = 1024 * 1024
 def _parse_manifest(raw: bytes, name: str = "latest.json") -> dict[str, Any]:
     """표지(latest.json)·후보(candidate.json) 공통 형식 검사 — 둘은 필드가 같다(B안)."""
     try:
-        latest = json.loads(raw.decode("utf-8-sig"))
+        latest = release_contract.document(raw)
     except (UnicodeDecodeError, ValueError, TypeError) as exc:
         raise ReleaseUpdateError(f"{name} 형식이 올바르지 않습니다") from exc
     if not isinstance(latest, dict):
@@ -429,6 +443,10 @@ def _parse_manifest(raw: bytes, name: str = "latest.json") -> dict[str, Any]:
         raise ReleaseUpdateError(f"{name}의 size가 올바르지 않습니다") from exc
     if size < 0:
         raise ReleaseUpdateError(f"{name}의 size가 올바르지 않습니다")
+    try:
+        contract_status = release_contract.candidate_contract(latest)
+    except release_contract.ContractError as exc:
+        raise ReleaseUpdateError(str(exc)) from exc
     return {
         "version": version,
         "file": filename,
@@ -437,6 +455,8 @@ def _parse_manifest(raw: bytes, name: str = "latest.json") -> dict[str, Any]:
         # 옛 latest.json 호환: 생성 시각이 없으면 안정적인 과거값으로 두고 등록은 허용한다.
         "created_at": str(latest.get("created_at") or "1970-01-01T00:00:00+00:00").strip(),
         "higgsfield_cli_version": str(latest.get("higgsfield_cli_version") or "").strip(),
+        "contract": latest.get("contract"),
+        "contract_status": contract_status,
     }
 
 
@@ -538,6 +558,7 @@ def release_overview(root: Path = APP_ROOT) -> dict[str, Any]:
         "published": None if pub is None else {"version": pub["version"], "sha256": pub["sha256"], "file": pub["file"]},
         "published_state": pub_state,
         "pending": pending,
+        "contract_status": shown["contract_status"],
     }
 
 
@@ -719,9 +740,11 @@ def promote_candidate(expected: dict[str, Any], root: Path = APP_ROOT) -> dict[s
         if published["sha256"] == cand["sha256"]:
             return {"promoted": False, "already": True, "version": cand["version"]}
     _verify_package(folder / cand["file"], cand["size"], cand["sha256"])
+    evidence = _qualified_artifact(folder, cand, cand_raw)
     with _release_lock(folder):
         if _read_manifest_bytes(candidate_path) != cand_raw or _read_manifest_bytes(published_path) != pub_raw:
             raise ReleasePromoteError("릴리스 폴더가 그새 바뀌었습니다 — 업데이트 탭을 다시 열어 확인하세요")
+        _check_qualification_evidence(evidence)
         if pub_raw is not None:
             _backup_published(folder, pub_raw)
         _replace_published(published_path, cand_raw, pub_raw)
@@ -820,6 +843,15 @@ def _package_manifest(folder: Path, file: str) -> tuple[dict[str, Any], bytes]:
         raise ReleasePromoteError("설치 파일 안의 버전이 파일 이름과 다릅니다 — 이 판은 배포할 수 없습니다", 400)
     if not cli_pin or cli_package != cli_pin:
         raise ReleasePromoteError("설치 파일 안의 Higgsfield CLI 정보가 맞지 않습니다 — 이 판은 배포할 수 없습니다", 400)
+    # A qualified build's original candidate is authoritative; never reconstruct it.
+    sidecar = path.with_suffix(".candidate.json")
+    if sidecar.is_file():
+        raw = _read_release_file(str(folder), sidecar.name, max_bytes=_MANIFEST_MAX_BYTES)
+        manifest = _parse_manifest(raw, sidecar.name)
+        if manifest["file"] != file:
+            raise ReleasePromoteError("선택한 ZIP과 후보 기록이 다릅니다", 400)
+        _qualified_artifact(folder, manifest, raw)
+        return manifest, raw
     created = datetime.strptime(version, "%Y.%m.%d-%H%M").isoformat(timespec="seconds")
     manifest = {
         "version": version,
@@ -828,9 +860,69 @@ def _package_manifest(folder: Path, file: str) -> tuple[dict[str, Any], bytes]:
         "sha256": digest.hexdigest(),
         "size": size,
         "created_at": created,
+        "contract_status": "legacy-unverified",
     }
     raw = b"\xef\xbb\xbf" + (json.dumps(manifest, ensure_ascii=False, indent=4) + "\r\n").encode("utf-8")
     return manifest, raw
+
+
+def _qualified_artifact(folder: Path, manifest: dict[str, Any], raw: bytes) -> dict[Path, bytes]:
+    """Validate before the existing publisher lock, then CAS these exact sidecars in it."""
+    try:
+        release_contract.require(release_contract.candidate_contract(manifest) != "legacy-unverified",
+                                 "legacy-unverified artifact cannot be published")
+        ref = manifest["contract"].get("validation_receipt")
+        release_contract.require(ref is not None, "validation receipt required before publication")
+        receipt_path = folder / ref["file"]
+        receipt_raw = _read_release_file(str(folder), ref["file"], max_bytes=_MANIFEST_MAX_BYTES)
+        package = folder / manifest["file"]
+        canonical_path = package.with_suffix(".candidate.json")
+        canonical_raw = _read_release_file(str(folder), canonical_path.name, max_bytes=_MANIFEST_MAX_BYTES)
+        release_contract.require(canonical_raw == raw, "candidate differs from immutable qualification record")
+        release_contract.verify_artifact(package, manifest, receipt_raw)
+        return {receipt_path: receipt_raw, canonical_path: canonical_raw}
+    except release_contract.ContractError as exc:
+        raise ReleasePromoteError(str(exc), 409) from exc
+    except ReleaseUpdateError as exc:
+        raise ReleasePromoteError("검증 영수증 또는 후보 정본을 읽을 수 없습니다", 409) from exc
+    except OSError as exc:
+        raise _safe_os_error(exc) from exc
+
+
+def _check_qualification_evidence(evidence: dict[Path, bytes]) -> None:
+    for path, raw in evidence.items():
+        if _read_manifest_bytes(path) != raw:
+            raise ReleasePromoteError("검증 기록이 그새 바뀌었습니다 — 다시 검증하세요")
+
+
+def _check_update_contract(target: dict[str, Any], root: Path, *, candidate_mode: bool) -> None:
+    """Only installed code is trusted here; the worker repeats checks before switching."""
+    try:
+        if release_contract.candidate_contract(target) == "legacy-unverified":
+            release_contract.require(not (root / 'build-manifest.json').is_file(),
+                                     'descriptor downgrade to an unverified legacy package is forbidden')
+            return  # Existing bridge/preinstall path; never reported as qualified.
+        caps_path = root / "installer-capabilities.json"
+        caps_record = release_contract.document(caps_path.read_bytes()) if caps_path.is_file() else {"format_version": 1, "capabilities": []}
+        release_contract.require(type(caps_record.get("format_version")) is int and caps_record["format_version"] == 1,
+                                 "unsupported installed capability format")
+        caps = caps_record.get("capabilities", [])
+        release_contract.require(isinstance(caps, list) and all(isinstance(c, str) for c in caps), "invalid installed capabilities")
+        release_contract.check_installer(target, caps)
+        ref = target["contract"].get("validation_receipt")
+        if candidate_mode and ref is None:
+            return  # Administrator preinstallation is an input to qualification.
+        release_contract.require(ref is not None, "published release requires qualification")
+        try:
+            raw = _read_release_file(install_source(root), ref["file"], max_bytes=_MANIFEST_MAX_BYTES)
+        except ReleaseUpdateError as exc:
+            raise release_contract.ContractError("validation receipt is unavailable") from exc
+        release_contract.require(release_contract.sha256(raw) == ref["sha256"], "validation receipt digest mismatch")
+        release_contract.validate_receipt(raw, target)
+    except release_contract.ContractError as exc:
+        raise ReleaseUpdateError(str(exc)) from exc
+    except OSError as exc:
+        raise ReleaseUpdateError("설치기 capability 기록을 읽을 수 없습니다") from exc
 
 
 def package_manifest(file: str, root: Path = APP_ROOT) -> dict[str, Any]:
@@ -878,9 +970,11 @@ def deploy_package(
         manifest, new_raw = _package_manifest(folder, str(expected.get("file") or ""))
         if _release_key(manifest) != _release_key(expected):
             raise ReleasePromoteError("설치 파일이 공지한 판과 다릅니다 — 업데이트 탭을 다시 열어 확인하세요")
+    evidence = _qualified_artifact(folder, manifest, new_raw)
     with _release_lock(folder):
         if _read_manifest_bytes(candidate_path) != cand_raw or _read_manifest_bytes(published_path) != pub_raw:
             raise ReleasePromoteError("릴리스 폴더가 그새 바뀌었습니다 — 업데이트 탭을 다시 열어 확인하세요")
+        _check_qualification_evidence(evidence)
         if pub_raw is not None:
             _backup_published(folder, pub_raw)
         if cand_raw != new_raw:
@@ -1218,7 +1312,7 @@ def start_update(
         # 강제는 복구와 같은 취급 — 버전이 같고 얕은 검사를 통과해도 워커를 돌려 다시 설치한다.
         # 사람이 강제를 누르는 상황이 바로 '버전은 맞는데 설치가 망가진' 경우다.
         carry = _carried_recovery(stored)
-        needs_recovery = bool(carry) or force
+        needs_recovery = bool(carry) or force or _unfinished_install(root)
         reinstall = force  # 워커에 '같은 버전이어도 다시 설치'를 알릴지
         try:
             write_state("checking", "최신 릴리스를 다시 확인하는 중…", root=root, current_version=current, recovery=carry)
@@ -1271,6 +1365,7 @@ def start_update(
             if activity_check() > 0:
                 raise ReleaseUpdateBusyError("확인 중 생성 작업이 시작됐습니다. 완료된 뒤 다시 시도하세요")
 
+            _check_update_contract(target, root, candidate_mode=candidate_mode)
             launcher = root / "update_release.bat"
             status_file = state_path(root)
             env = os.environ.copy()

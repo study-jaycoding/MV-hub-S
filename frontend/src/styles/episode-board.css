@@ -46,7 +46,7 @@
 /* ── 리스트: 번호 · 표지 · 이름과 숫자 · 컷 띠 ── */
 .cut-card.ep-card.ep-list {
   display: grid; align-items: center; gap: 14px; padding: 10px 14px 10px 6px;
-  grid-template-columns: var(--ep-num-w, 50px) calc(236px * var(--ep-scale, 1)) minmax(0, 1fr) minmax(0, 300px);
+  grid-template-columns: calc(236px * var(--ep-scale, 1)) minmax(0, 1fr) minmax(0, 300px);
 }
 /* 번호 — 이름의 숫자 그대로(003 · 0010). 칸의 폭과 글자 크기는 이 화면에서 가장 긴 번호에 맞춘다(격자가 --ep-num-* 로 준다) */
 .ep-list .ep-num, .ep-table .ep-num { font-weight: 900; color: #3b3f4b; text-align: center; letter-spacing: -1px; white-space: nowrap; }
@@ -63,11 +63,18 @@
   font-size: 11px; font-weight: 700; line-height: 1.5; cursor: pointer;
 }
 .ep-enter:active { transform: none; }
+.ep-info-button { align-self: flex-start; margin: 6px 12px 0; padding: 3px 9px; border: 1px solid var(--border2); border-radius: 6px; background: rgba(var(--accent-rgb), 0.06); color: var(--text); font-size: 11px; line-height: 1.4; white-space: nowrap; cursor: pointer; }
+.ep-info-button:hover { border-color: var(--accent); color: var(--accent); }
+.ep-info-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ep-info-button:active { transform: none; }
+.ep-list .ep-info-button { margin-left: 0; margin-right: 0; }
+.ep-card-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; padding: 3px 0; }
+.ep-card-actions .ep-enter, .ep-card-actions .ep-info-button { margin: 0; }
 .ep-list .ep-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 
 /* ── 컷 줄(하위 폴더가 없는 카드의 리스트 — Jay 2026-10-13 오후): 같은 줄 모양, 띠에는 컷 대신 그 컷의 생성물 ── */
 .cut-card.ep-card.ep-list.leaf {
-  grid-template-columns: var(--ep-num-w, 50px) calc(236px * var(--ep-scale, 1)) minmax(110px, 170px) minmax(0, 300px) minmax(0, 1fr);
+  grid-template-columns: calc(236px * var(--ep-scale, 1)) minmax(110px, 170px) minmax(0, 300px) minmax(0, 1fr);
 }
 .ep-list .ep-strip.takes { grid-template-columns: repeat(5, minmax(0, 1fr)); width: 100%; max-width: 380px; justify-self: end; }
 /* 가운데 정보판 — 그 그림의 모델·작업자·크레딧·생성일 + 폴더 안의 검토 개수(.reel-info 의 줄을 그대로 쓴다) */
@@ -99,10 +106,10 @@
 .cut-grid.ep-board.ep-table {
   gap: 0; align-content: start;
   /* 열 폭은 고정·비율만 쓴다(auto 금지) — 머리줄과 줄이 저마다의 격자라, 내용에 따라 달라지는 폭이 있으면 열이 어긋난다 */
-  --ep-t-cols: var(--ep-num-w, 50px) 76px minmax(72px, 1.1fr) 78px 52px 52px 52px 62px 62px minmax(76px, 0.8fr) minmax(110px, 1.6fr) 86px;
+  --ep-t-cols: 76px minmax(72px, 1.1fr) 78px 52px 52px 52px 62px 62px minmax(76px, 0.8fr) minmax(110px, 1.6fr) 86px;
 }
 .cut-grid.ep-board.ep-table.has-cuts {
-  --ep-t-cols: var(--ep-num-w, 50px) 76px minmax(72px, 1.1fr) 46px 78px 52px 52px 52px 62px 62px minmax(76px, 0.8fr) minmax(110px, 1.6fr) 86px;
+  --ep-t-cols: 76px minmax(72px, 1.1fr) 46px 78px 52px 52px 52px 62px 62px minmax(76px, 0.8fr) minmax(110px, 1.6fr) 86px;
 }
 .ep-table-head, .cut-card.ep-card.ep-table {
   display: grid; grid-template-columns: var(--ep-t-cols); align-items: center; column-gap: 12px; padding: 0 12px 0 4px;
@@ -144,18 +151,22 @@
 }
 /* 좁은 창 — 띠를 아래 줄로 내린다(한 줄 8칸). 표는 가로로 민다(위 min-width) */
 @media (max-width: 1000px) {
-  .cut-card.ep-card.ep-list { grid-template-columns: var(--ep-num-w, 50px) calc(200px * var(--ep-scale, 1)) minmax(0, 1fr); }
-  .cut-card.ep-card.ep-list.leaf { grid-template-columns: var(--ep-num-w, 50px) calc(200px * var(--ep-scale, 1)) minmax(110px, 170px) minmax(0, 1fr); }
+  .cut-card.ep-card.ep-list { grid-template-columns: calc(200px * var(--ep-scale, 1)) minmax(0, 1fr); }
+  .cut-card.ep-card.ep-list.leaf { grid-template-columns: calc(200px * var(--ep-scale, 1)) minmax(110px, 170px) minmax(0, 1fr); }
   .ep-list .ep-strip, .ep-list .ep-strip.takes { grid-column: 1 / -1; grid-template-columns: repeat(8, minmax(0, 1fr)); max-width: none; }
 }
 
 /* ── 그리드: 큰 표지 + 컷 띠 + 진행 막대 ── */
 .cut-card.ep-card.ep-grid { display: flex; flex-direction: column; }
+.ep-grid .ep-info-button { align-self: flex-end; }
 .ep-grid .ep-cover { aspect-ratio: 16 / 9; }
 .ep-grid .ep-num {
   position: absolute; left: 14px; top: 4px; z-index: 1; font-size: calc(44px * var(--ep-scale, 1)); font-weight: 900;
-  color: #fff; letter-spacing: -2px; line-height: 1.2; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.7); pointer-events: none;
+  color: #fff; letter-spacing: -2px; line-height: 1.2; text-shadow: none; filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.7)); pointer-events: none;
+  /* 두꺼운 글자의 좌우 돌출은 살리고, 긴 이름의 말줄임은 유지한다. */
+  max-width: calc(100% - 28px); padding: 0 0.12em; margin-left: -0.12em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.ep-grid .ep-cover:has(.ep-chip) .ep-num { max-width: calc(100% - 112px); }
 .ep-chip {
   position: absolute; right: 10px; top: 10px; z-index: 1; padding: 2px 10px; border-radius: 999px;
   background: var(--accent); color: #111; font-size: 11.5px; font-weight: 800; white-space: nowrap;
@@ -165,9 +176,17 @@
   position: absolute; left: 0; right: 0; bottom: 0; z-index: 1; display: flex; align-items: baseline; gap: 8px;
   padding: 26px 14px 9px; background: linear-gradient(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.85)); white-space: nowrap; overflow: hidden;
 }
-.ep-cap > b { font-size: 20px; color: #fff; }
+.ep-cap > b { flex-shrink: 0; min-width: 0; max-width: 50%; overflow: hidden; text-overflow: ellipsis; font-size: 20px; color: #fff; }
+.ep-cap > b:only-child { max-width: 100%; }
 .ep-cap > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12px; color: #c9cbd2; }
-.ep-grid .ep-strip { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 5px; padding: 9px 10px 6px; }
-.ep-grid .ep-cut { height: 44px; }
+.ep-grid .ep-strip { grid-template-columns: repeat(6, minmax(0, calc(44px * var(--ep-scale, 1)))); gap: 5px; padding: 9px 10px 6px; }
+.ep-grid .ep-cut { height: auto; aspect-ratio: 1; }
+.ep-grid .ep-meta { margin-top: 2px; padding: 8px 14px 12px; border-left: 0; border-top: 1px solid #262830; grid-template-columns: 50px minmax(0, 1fr); row-gap: 4px; }
+.ep-meta .model { display: flex; column-gap: 0.3em; }
+.ep-meta .model > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ep-meta .model > i { flex: none; }
+.ep-grid .ep-meta .when { min-height: 2.8em; }
+.ep-grid .ep-meta .when > span { display: block; }
+.ep-grid .ep-meta .reel-rv .all { display: none; }
 .ep-foot { display: flex; align-items: center; gap: 10px; padding: 3px 12px 11px; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .ep-foot .ep-bar { flex: 1; min-width: 20px; }

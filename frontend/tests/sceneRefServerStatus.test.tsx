@@ -135,7 +135,7 @@ it("로컬 파일을 끌어다 놓으면 프로젝트를 고르지 않아도 이
     host.querySelector(".scene-board")!.dispatchEvent(drop);
   });
 
-  expect(fixture.upload).toHaveBeenCalledWith([file]); // 프로젝트 없이 — 이 PC 설치 폴더로
+  expect(fixture.upload).toHaveBeenCalledWith([file], { target_project_id: undefined, target_workspace_id: "ws-drop" }); // 프로젝트를 추측하지 않는다
   const card = host.querySelector<HTMLElement>(".scene-card-ref");
   expect(card).not.toBeNull();
   // 서버가 확인하기 전에는 '이 PC에만'을 켜지 않는다 — NAS 에 있는 파일도 답이 올 때까지 빨갛게 보였다

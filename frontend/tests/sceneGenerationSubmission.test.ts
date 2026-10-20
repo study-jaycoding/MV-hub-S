@@ -1,3 +1,4 @@
+import { HttpError } from "../src/lib/http";
 import { describe, expect, it, vi } from "vitest";
 import {
   acquireSceneGeneration,
@@ -29,7 +30,7 @@ describe("sceneGenerationSubmission", () => {
       [{ cardId: "a", input: "fail" }, { cardId: "b", input: "unknown" }, { cardId: "c", input: "ok" }],
       async (input: string) => input,
       async (body: string) => {
-        if (body === "fail") throw new HttpError(500, "500: boom", "boom");
+        if (body === "fail") throw new HttpError(403, "403: denied", "denied");
         if (body === "unknown") throw new Error(NO_RESPONSE_MESSAGE);
         return body;
       },
@@ -96,7 +97,7 @@ describe("sceneGenerationSubmission", () => {
         return input;
       },
       async (body) => {
-        if (body === "reject") throw new Error("submit");
+        if (body === "reject") throw new HttpError(422, "invalid input");
         return body;
       },
     );

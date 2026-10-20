@@ -14,6 +14,7 @@ from typing import Any, Optional
 from ..config import DEFAULT_WORKER_ID
 from ._common import ALERT_COMMENT_JOINS, ALERT_COMMENT_PREDICATE, GEN_BASE_JOINS
 from .identity import get_my_uid, resolve_display_names
+from .asset_locations import project_generation_locations
 
 
 def _attach_children(
@@ -100,7 +101,7 @@ def _attach_children(
         g["creator_name"] = cnames.get(cu)
 
     for r in conn.execute(
-        f"SELECT id, generation_id, type, file_path, thumbnail_path, source_url "
+        f"SELECT id, generation_id, type, file_path, thumbnail_path, source_url, asset_content_id "
         f"FROM asset WHERE generation_id IN ({placeholders})",
         ids,
     ).fetchall():
@@ -111,16 +112,18 @@ def _attach_children(
     for r in conn.execute(
         f"SELECT gr.generation_id, r.id, r.type, r.file_path, r.thumbnail_path, "
         f"r.source, r.source_url, r.content_sha, r.content_bytes, r.registry_asset_id, "
-        f"r.version_verified, gr.role FROM gen_reference gr "
+        f"r.version_verified, r.asset_content_id, gr.role, gr.position FROM gen_reference gr "
         f"JOIN reference r ON r.id = gr.reference_id "
         f"WHERE gr.generation_id IN ({placeholders}) "
-        f"ORDER BY gr.rowid",  # 삽입(=제출) 순서 보장 → 인라인 칩 위치 매칭
+        f"ORDER BY COALESCE(gr.position, gr.rowid), gr.rowid",
         ids,
     ).fetchall():
         d = dict(r)
         gid = d.pop("generation_id")
         d["cached"] = bool(d.get("file_path", "").startswith("/media/"))
         by_id[gid]["references"].append(d)
+
+    project_generation_locations(conn, gens)
 
     for r in conn.execute(
         f"SELECT gt.generation_id, t.name FROM gen_tag gt "
@@ -140,13 +143,16 @@ def _attach_children(
     ).fetchall():
         by_id[r["generation_id"]]["auto_tags"].append(r["name"])
 
+    # Grade and CAS revision must describe the same SQLite read, including share membership.
     for r in conn.execute(
-        f"SELECT generation_id, MAX(shared_at) AS shared_at FROM share "
-        f"WHERE generation_id IN ({placeholders}) GROUP BY generation_id",
+        f"SELECT g.id, g.share_revision, g.is_final, g.is_held, g.final_by, g.final_at, "
+        f"s.generation_id IS NOT NULL AS shared, s.shared_at FROM generation g "
+        f"LEFT JOIN share s ON s.generation_id=g.id WHERE g.id IN ({placeholders})",
         ids,
     ).fetchall():
-        by_id[r["generation_id"]]["shared"] = True
-        by_id[r["generation_id"]]["shared_at"] = r["shared_at"]
+        g = by_id[r["id"]]
+        g.update({key: r[key] for key in ("share_revision", "final_by", "final_at", "shared_at")})
+        g.update({key: bool(r[key]) for key in ("shared", "is_final", "is_held")})
 
     # 파생 부모(강한 — derived만): 카드 ↻ 뱃지·버전 체인. reference 부모는 source_count 로 따로.
     for r in conn.execute(

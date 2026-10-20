@@ -1,10 +1,45 @@
-// 네이티브 OS 드래그-내보내기용 DownloadURL 구성.
-// 드롭한 폴더/앱에 파일이 그대로 저장된다(Chrome DownloadURL: "mimetype:filename:url").
-// 단일 = 원본 파일 그대로, 다중 = 백엔드가 묶어주는 zip 한 건.
-import { assetFileUrl, assetZipUrl } from "../../lib/assetUrls";
+// Windows 원본 파일 드래그와 구형 허브의 단건 URL 폴백. ZIP 드래그는 사용하지 않는다.
+import { assetFileUrl } from "../../lib/assetUrls";
 import { mimeOf } from "../../lib/media";
-import { API_PAUSED_MESSAGE, getApiPause } from "../../lib/http";
+import { API_PAUSED_MESSAGE, getApiPause, subscribeApiPause } from "../../lib/http";
 import { flashMsg } from "../../lib/flash";
+import { api } from "../../api";
+import { loadString, saveString } from "../../lib/storage";
+import { STORAGE_KEYS } from "../../lib/storageKeys";
+import type { SpotlightAssetDragItem } from "../../lib/spotlightAssetRefs";
+
+let nativeDragPending = false;
+
+export function nativeDragBrowserSupported(): boolean {
+  return ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname) &&
+    /Windows/.test(navigator.userAgent) && /(?:Chrome|Chromium|Edg)\//.test(navigator.userAgent);
+}
+
+export function startNativeAssetDrag(event: React.DragEvent, project: string, items: SpotlightAssetDragItem[]): (() => void) | null {
+  event.preventDefault(); // Stop browser DownloadURL/img drag before starting the Windows drag.
+  if (pausedExport() || nativeDragPending) return null;
+  nativeDragPending = true;
+  const payload = JSON.stringify(items);
+  try { saveString(STORAGE_KEYS.assetsDrag, payload); } catch { /* native custom MIME remains available */ }
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  const unsubscribePause = subscribeApiPause(() => { if (getApiPause()) cancel(); });
+  void api.nativeAssetDrag(project, items.map((item) => item.path), Date.now(), controller.signal)
+    .then((result) => {
+      if (result.reason === "expired" && !controller.signal.aborted) {
+        flashMsg("원본 준비에 시간이 걸려 드래그를 시작하지 않았습니다. 다시 끌어주세요.");
+      }
+    })
+    .catch((error) => { if (!controller.signal.aborted) flashMsg(String(error)); })
+    .finally(() => {
+      nativeDragPending = false;
+      unsubscribePause();
+      try {
+        if (loadString(STORAGE_KEYS.assetsDrag) === payload) saveString(STORAGE_KEYS.assetsDrag, "");
+      } catch { /* storage unavailable */ }
+    });
+  return cancel;
+}
 
 // 단일 파일(영상·오디오) — OS/탐색기로 내보내기 + URL 을 받는 웹앱용.
 //  ※ 이미지 단건은 이 함수를 쓰지 않는다. 크롬 '네이티브 이미지 드래그'(img 가 소스일 때 크롬이
@@ -27,12 +62,4 @@ export function setSingleFileDrag(dt: DataTransfer, project: string, path: strin
   // URL 을 받는 웹앱/에디터용 표준 타입(로컬 URL 이라 원격 앱이 못 가져올 수 있음 — 보조).
   dt.setData("text/uri-list", absUrl);
   dt.setData("text/plain", absUrl);
-}
-
-// 여러 파일 — 백엔드 zip 스트리밍 URL. 드롭 시 assets-N.zip 으로 저장.
-export function setZipDrag(dt: DataTransfer, project: string, paths: string[]) {
-  if (pausedExport()) return;
-  const url = location.origin + assetZipUrl(project, paths);
-  dt.effectAllowed = "copy";
-  dt.setData("DownloadURL", `application/zip:assets-${paths.length}.zip:${url}`);
 }

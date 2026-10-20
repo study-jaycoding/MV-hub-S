@@ -66,31 +66,26 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 type Saved = { saved: Array<{ project: string; path: string; name: string; type: string }>; skipped: string[] };
+const dropVideo = () => act(() => {
+  const file = new File(["x"], "clip_0412.mp4", { type: "video/mp4" });
+  board().dispatchEvent(Object.assign(new Event("drop", { bubbles: true, cancelable: true }), {
+    clientX: 300, clientY: 200, dataTransfer: { types: ["Files"], files: [file], items: [] },
+  }));
+});
 
 it("캔버스에 놓은 파일 — 올라가는 동안 놓은 자리에 점선 자리 표시가 있고, 끝나면 그 자리가 카드로 바뀐다; 실패하면 까닭이 남고 ✕ 로 치운다", async () => {
   const upload = deferred<Saved>();
   const uploadReferenceFiles = vi.fn(() => upload.promise);
   Object.assign(boundary.api, { uploadReferenceFiles });
   await mountBoard({ id: "s", name: "s", created_at: 1, edges: [], cards: [] } as unknown as Scene);
-  const drop = () => act(() => {
-    const file = new File(["x"], "clip_0412.mp4", { type: "video/mp4" });
-    board().dispatchEvent(Object.assign(new Event("drop", { bubbles: true, cancelable: true }), {
-      clientX: 300, clientY: 200, dataTransfer: { types: ["Files"], files: [file], items: [] },
-    }));
-  });
   const ghost = () => q(".scene-canvas .scene-import-ghost");
-  drop();
+  dropVideo();
   expect(uploadReferenceFiles).toHaveBeenCalledTimes(1);
   expect(ghost()).not.toBeNull(); // 캔버스 층 안(카드와 같은 좌표계)
   expect(ghost()!.textContent).toContain("가져오는 중…");
   expect(ghost()!.textContent).toContain("clip_0412.mp4");
   expect(ghost()!.querySelector(".busy-ring")).not.toBeNull();
   expect(view.container.querySelectorAll(".scene-card")).toHaveLength(0);
-  // 지금 씬의 것만 그린다 — 올리는 사이 다른 씬으로 갔다 돌아오면 그 씬에는 없고 돌아온 씬에는 있다
-  await mountBoard({ id: "t", name: "t", created_at: 1, edges: [], cards: [] } as unknown as Scene);
-  expect(ghost()).toBeNull();
-  await mountBoard({ id: "s", name: "s", created_at: 1, edges: [], cards: [] } as unknown as Scene);
-  expect(ghost()).not.toBeNull();
   await act(async () => { upload.resolve({ saved: [{ project: "p", path: "imports/clip_0412.mp4", name: "clip_0412.mp4", type: "video" }], skipped: [] }); });
   await settle();
   expect(ghost()).toBeNull(); // 자리 표시가 카드로 바뀌었다
@@ -98,7 +93,7 @@ it("캔버스에 놓은 파일 — 올라가는 동안 놓은 자리에 점선 �
 
   const failed = deferred<Saved>();
   uploadReferenceFiles.mockImplementation(() => failed.promise);
-  drop();
+  dropVideo();
   expect(ghost()).not.toBeNull();
   await act(async () => { failed.reject(new Error("offline")); });
   await settle();
@@ -108,6 +103,25 @@ it("캔버스에 놓은 파일 — 올라가는 동안 놓은 자리에 점선 �
   act(() => ghost()!.querySelector<HTMLButtonElement>(".scene-import-ghost-x")!.click());
   expect(ghost()).toBeNull();
   expect(view.container.querySelectorAll(".scene-card")).toHaveLength(1); // 실패한 것은 카드가 되지 않았다
+});
+
+it("업로드 자리 표시는 원래 씬에만 보이고, A→B→A 뒤 옛 업로드가 끝나도 새 문서에는 카드를 넣지 않는다", async () => {
+  const upload = deferred<Saved>();
+  const uploadReferenceFiles = vi.fn(() => upload.promise);
+  Object.assign(boundary.api, { uploadReferenceFiles });
+  const scene = (id: string) => ({ id, name: id, created_at: 1, edges: [], cards: [] }) as unknown as Scene;
+  await mountBoard(scene("s"));
+  dropVideo();
+  expect(q(".scene-canvas .scene-import-ghost")).not.toBeNull();
+  await mountBoard(scene("t"));
+  expect(q(".scene-canvas .scene-import-ghost")).toBeNull();
+  await mountBoard(scene("s"));
+  expect(q(".scene-canvas .scene-import-ghost")).not.toBeNull();
+  await act(async () => { upload.resolve({ saved: [{ project: "p", path: "imports/clip_0412.mp4", name: "clip_0412.mp4", type: "video" }], skipped: [] }); });
+  await settle();
+  expect(uploadReferenceFiles).toHaveBeenCalledTimes(1);
+  expect(q(".scene-canvas .scene-import-ghost")).toBeNull();
+  expect(view.container.querySelectorAll(".scene-card")).toHaveLength(0);
 });
 
 const gen = (id: string) => ({

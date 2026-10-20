@@ -14,6 +14,8 @@ import type { GenerationLocation } from "../src/lib/resolveLibraryLocation";
 import { useGenerationAutoRefresh } from "../src/lib/useGenerationAutoRefresh";
 import { useGenerationLibraryData } from "../src/lib/useGenerationLibraryData";
 import type { Filters, GenQuery, Generation } from "../src/types";
+import { APP_EVENTS } from "../src/lib/appEvents";
+import { generationChangeScope } from "../src/features/library/api";
 
 vi.mock("../src/api", () => ({ GEN_PAGE: 200, api: {
   listGenerations: vi.fn(), projects: vi.fn(), facets: vi.fn(), generationStats: vi.fn(), listTrash: vi.fn(), locateGenerations: vi.fn(),
@@ -78,6 +80,49 @@ const start = (request: () => Promise<void>) => {
   return state;
 };
 const spyNow = (at: number) => (clock = vi.spyOn(Date, "now").mockReturnValue(at));
+
+it("peer tags requery an idle Workspace filter including rows outside the old page and pagination", async () => {
+  class PeerChannel {
+    static all: PeerChannel[] = [];
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+    constructor() { PeerChannel.all.push(this); }
+    close() { PeerChannel.all = PeerChannel.all.filter(channel => channel !== this); }
+  }
+  vi.stubGlobal("BroadcastChannel", PeerChannel);
+  const broad = vi.fn(); window.addEventListener(APP_EVENTS.libraryChanged, broad);
+  try {
+    const initial = Array.from({ length: 200 }, (_, index) => ({ ...gen(`old-${index}`), tags: ["wanted"] }));
+    vi.mocked(api.listGenerations).mockResolvedValueOnce(initial);
+    await mount({ query: { tab: "my", tag: "wanted" } });
+    expect(data.gens).toHaveLength(200); expect(data.hasMore).toBe(true);
+    const oldCalls = calls().list;
+    const next = { ...gen("outside-old-page"), tags: ["wanted"] };
+    vi.mocked(api.listGenerations).mockResolvedValue([next]);
+    vi.mocked(api.facets).mockResolvedValue({ tags: ["wanted", "new-tag"], auto_tags: [], models: [] } as never);
+    const change = { version: 1, id: "peer-filter", scope: generationChangeScope(), resourceIds: [next.id],
+      changedFields: ["tags"], affectsMembership: false, source: "local" };
+    act(() => {
+      for (const channel of PeerChannel.all) channel.onmessage?.({ data: {
+        tab: "peer", event: APP_EVENTS.generationTagsSettled, change,
+      } });
+    });
+    await settle();
+    expect(calls().list).toBe(oldCalls + 1);
+    expect(ids()).toEqual([next.id]); expect(data.hasMore).toBe(false);
+    expect(data.facets.tags).toEqual(["wanted", "new-tag"]);
+    expect(vi.mocked(api.listGenerations).mock.calls.at(-1)?.[0]).toMatchObject({ tab: "my", tag: "wanted" });
+    expect(broad).not.toHaveBeenCalled();
+    act(() => {
+      for (const channel of PeerChannel.all) channel.onmessage?.({ data: {
+        tab: "peer", event: APP_EVENTS.generationTagsSettled, change,
+      } });
+    });
+    await settle(); expect(calls().list).toBe(oldCalls + 1);
+  } finally {
+    window.removeEventListener(APP_EVENTS.libraryChanged, broad);
+    vi.unstubAllGlobals();
+  }
+});
 
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

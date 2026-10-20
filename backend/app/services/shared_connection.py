@@ -16,13 +16,12 @@ _proxy(프록시 호출)·publish(로그인/발행)·worker_backup(백업 업로
 from __future__ import annotations
 
 import json
-import os
 from typing import Any, Optional
 
 from .. import repo
+from ..shared_server_config import DEFAULT_SHARED_URL, K_URL
 
 # app_setting 키 — 로컬 허브가 기억하는 공유 서버 연결 정보(이 PC 로컬 DB 에만 저장).
-K_URL = "shared_server_url"
 # 최근에 쓴 공유 서버 주소 목록(JSON 배열, 최신순). 서버 이사·IP 변경으로 로그인 화면에
 # 갇혔을 때 되돌아갈 후보를 보여주는 '탈출구'용 — 주소만 담는다(토큰·이메일 금지).
 K_URL_HISTORY = "shared_server_url_history"
@@ -48,9 +47,6 @@ K_ELEV_EXPIRES = "shared_server_elev_expires"
 
 # 팀이 한 번 정해 배포하는 기본 주소(env 로 덮어쓰기). 2026-10-02 서버 이사로 .199 → .171 — 이미 주소를 저장한 PC 는
 # 관리자 창 [팀에 공지](docs/SERVER_RELOCATION.md)로 옮기고, 이 값은 저장값이 없는 PC·새 설치의 첫 주소다.
-DEFAULT_SHARED_URL = (
-    os.environ.get("CONTENT_HUB_SHARED_URL") or "http://192.168.1.171:8010"
-).rstrip("/")
 
 
 def base_url() -> str:

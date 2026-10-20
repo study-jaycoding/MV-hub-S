@@ -14,7 +14,9 @@ param(
     [double]$MaxMemoryGrowthPercent = 20,
     [string]$CertFile = "",
     [string]$KeyFile = "",
-    [string]$ReportDirectory = ""
+    [string]$ReportDirectory = "",
+    [string]$PythonExe = "",
+    [string]$FrozenManifest = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,7 +37,9 @@ if (-not $KeyFile) {
     $KeyFile = Join-Path $ReportDirectory "tls-local\localhost-key.pem"
 }
 
-$PythonExe = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+if (-not $PythonExe) { $PythonExe = Join-Path $ProjectRoot ".venv\Scripts\python.exe" }
+$PythonExe = [System.IO.Path]::GetFullPath($PythonExe)
+if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) { throw 'Explicit Python executable is unavailable.' }
 $LoadTool = Join-Path $ProjectRoot "tools\load_test_100.py"
 $StatePath = Join-Path $ReportDirectory "https-soak-state.json"
 $QualificationReport = Join-Path $ReportDirectory "https-100-users-30m.json"
@@ -44,6 +48,9 @@ $StartedAt = (Get-Date).ToString("s")
 $CurrentStage = "initializing"
 $CurrentReport = ""
 $BaselineCommit = ""
+foreach ($ExistingOutput in @($StatePath, $QualificationReport, $SoakReport)) {
+    if (Test-Path -LiteralPath $ExistingOutput) { throw 'Report output already exists; choose a fresh ReportDirectory.' }
+}
 
 if ($Users -lt 1 -or $Users -gt 500) {
     throw "Users must be between 1 and 500."
@@ -227,9 +234,42 @@ function Assert-BaselineCommit {
     if ($LASTEXITCODE -ne 0 -or $CurrentCommit -ne $script:BaselineCommit) {
         throw "시험 도중 Git 커밋이 변경되었습니다. 시작=$($script:BaselineCommit), 현재=$CurrentCommit"
     }
+    if ($FrozenManifest) {
+        $ManifestSha = (Get-FileHash -LiteralPath $FrozenManifest -Algorithm SHA256).Hash
+        if ($script:FrozenManifestSha -and $script:FrozenManifestSha -ne $ManifestSha) {
+            throw 'Frozen manifest itself changed during the run.'
+        }
+        $script:FrozenManifestSha = $ManifestSha
+        Invoke-IsolatedPython @('-c', 'import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); from load_test_100 import _verify_frozen_manifest; _verify_frozen_manifest(Path(sys.argv[2]))', (Join-Path $ProjectRoot 'tools'), $FrozenManifest)
+        if ($LASTEXITCODE -ne 0) { throw 'Frozen source/dist/tools manifest mismatch.' }
+        return
+    }
     $Dirty = @(& git -C $ProjectRoot status --porcelain)
     if ($LASTEXITCODE -ne 0 -or $Dirty.Count -gt 0) {
         throw "시험 도중 작업 폴더가 변경되었습니다. 동일 코드 보장을 위해 중단합니다."
+    }
+}
+
+function Invoke-IsolatedPython {
+    param([string[]]$PythonArguments)
+    # Sanitise before interpreter startup, including PYTHON/NODE injection. Do not log values.
+    $Saved = @{}
+    Get-ChildItem Env: | ForEach-Object { $Saved[$_.Name] = $_.Value }
+    try {
+        Get-ChildItem Env: | ForEach-Object { [Environment]::SetEnvironmentVariable($_.Name, $null, 'Process') }
+        foreach ($Name in @('SYSTEMROOT', 'WINDIR', 'COMSPEC', 'SYSTEMDRIVE', 'TEMP', 'TMP')) {
+            if ($Saved.ContainsKey($Name)) { [Environment]::SetEnvironmentVariable($Name, $Saved[$Name], 'Process') }
+        }
+        $env:PATH = (Split-Path $PythonExe) + ';' + $Saved['SYSTEMROOT'] + '\System32'
+        $env:PYTHONNOUSERSITE = '1'
+        $env:PYTHONUTF8 = '1'
+        $env:PYTHONDONTWRITEBYTECODE = '1'
+        & $PythonExe @PythonArguments
+        $script:LASTEXITCODE = $LASTEXITCODE
+    }
+    finally {
+        Get-ChildItem Env: | ForEach-Object { [Environment]::SetEnvironmentVariable($_.Name, $null, 'Process') }
+        foreach ($Name in $Saved.Keys) { [Environment]::SetEnvironmentVariable($Name, $Saved[$Name], 'Process') }
     }
 }
 
@@ -247,23 +287,16 @@ function Invoke-LoadStage {
     Write-State -Status "running" -Message "$Stage 시험 실행 중"
     Write-Host "[$Stage] users=$Users duration=$DurationSeconds cycles=$Cycles"
 
-    & $PythonExe $LoadTool `
-        --users $Users `
-        --duration $DurationSeconds `
-        --cycles $Cycles `
-        --generations-per-user 20 `
-        --server-cpu-cores $ServerCpuCores `
-        --server-priority $ServerPriority `
-        --sample-interval $SampleIntervalSeconds `
-        --max-rss-mb $MaxRssMb `
-        --max-p95-ms $MaxP95Ms `
-        --max-login-p95-ms $MaxLoginP95Ms `
-        --max-memory-growth-percent $MaxMemoryGrowthPercent `
-        --tls-certfile $CertFile `
-        --tls-keyfile $KeyFile `
-        --tls-ca-file $CertFile `
-        --output $OutputPath `
-        --quiet
+    $FrozenArguments = @()
+    if ($FrozenManifest) { $FrozenArguments = @('--frozen-manifest', $FrozenManifest) }
+    Invoke-IsolatedPython (@($LoadTool) + $FrozenArguments + @(
+        '--users', $Users, '--duration', $DurationSeconds, '--cycles', $Cycles,
+        '--generations-per-user', 20, '--server-cpu-cores', $ServerCpuCores,
+        '--server-priority', $ServerPriority, '--sample-interval', $SampleIntervalSeconds,
+        '--max-rss-mb', $MaxRssMb, '--max-p95-ms', $MaxP95Ms,
+        '--max-login-p95-ms', $MaxLoginP95Ms, '--max-memory-growth-percent', $MaxMemoryGrowthPercent,
+        '--tls-certfile', $CertFile, '--tls-keyfile', $KeyFile, '--tls-ca-file', $CertFile,
+        '--output', $OutputPath, '--quiet'))
     $StageExitCode = $LASTEXITCODE
     if ($StageExitCode -ne 0) {
         Write-State -Status "failed" -Message "$Stage 시험 실패" -ExitCode $StageExitCode

@@ -2,7 +2,7 @@
 //  힉스필드 잡 기록엔 mode 가 없어 옛 생성물에서 복사한 설정은 mode 가 빈다(2026-09-09) — 화면은 기본값이 켜져 보이는데
 //  전송값은 비어 CLI 기본 t2v 로 나가던 불일치의 프론트 쪽 방어.
 import { describe, it, expect } from "vitest";
-import { withEffectiveDefaults } from "../src/lib/useModels";
+import { stripHiddenParams, withEffectiveDefaults } from "../src/lib/useModels";
 import type { ModelParam } from "../src/types";
 
 const params = [
@@ -13,6 +13,10 @@ const params = [
 ] as unknown as ModelParam[];
 
 describe("withEffectiveDefaults", () => {
+  it("Draft 내부 플래그와 원격 작업 번호를 편집 옵션으로 복원하지 않는다", () => {
+    expect(stripHiddenParams({ draft: true, draft_job_id: "remote", resolution: "480p" }))
+      .toEqual({ resolution: "480p" });
+  });
   it("mode 없는 저장값(옛 생성물에서 복사) → 기본값 omni_reference 가 채워지고 저장값은 그대로", () => {
     expect(withEffectiveDefaults(params, "seedance_2_5", { duration: 12 })).toEqual({
       mode: "omni_reference",

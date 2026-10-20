@@ -33,7 +33,7 @@ from typing import Any, Optional
 from fastapi import HTTPException, Request
 from fastapi.responses import Response
 
-from .. import active_account, repo
+from .. import active_account, db, repo
 from ..config import AUTH_ENABLED, MEDIA_DIR
 from ..mutation_notify import (
     CLIENT_ID_HEADER,
@@ -275,6 +275,7 @@ def raw_request(
     """공유 서버로 보내는 저수준 stdlib HTTP(새 의존성 0). `(status, parsed|text)` 반환.
     연결 실패만 502 로 올리고, 4xx/5xx 는 (code, 본문)으로 돌려준다(호출자가 해석).
     proxy_json(raise 계약)과 publish._http_json(tuple 계약) 양쪽의 단일 구현."""
+    db.require_share_operation_epoch()
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method.upper())
     req.add_header("Content-Type", "application/json")
@@ -289,48 +290,57 @@ def raw_request(
     if mutation_origin:
         req.add_header(CLIENT_ID_HEADER, mutation_origin[0])
         req.add_header(MUTATION_ID_HEADER, mutation_origin[1])
+    interrupted = False
     try:
-        with _open(req, timeout=timeout) as r:
-            if required_review_filter is not None and 200 <= r.status < 300:
-                if r.headers.get(REVIEW_FILTER_HEADER) != required_review_filter:
+        try:
+            with _open(req, timeout=timeout) as r:
+                if required_review_filter is not None and 200 <= r.status < 300:
+                    if r.headers.get(REVIEW_FILTER_HEADER) != required_review_filter:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="공유 서버가 검토 상태 필터를 지원하지 않습니다. 공유 서버를 업데이트해 주세요",
+                        )
+                raw = decode_proxy_body(r.read(), r.headers.get("Content-Encoding"))
+                try:
+                    return r.status, json.loads(raw.decode() or "null")
+                except (ValueError, UnicodeDecodeError) as exc:
+                    # 캡티브 포털·게이트웨이가 200 + HTML 을 주는 경우 — 서버 문제인데 그대로
+                    # 올리면 로컬 허브의 500(우리 버그처럼)이 됐다. 502 로 정확히 진단.
                     raise HTTPException(
-                        status_code=409,
-                        detail="공유 서버가 검토 상태 필터를 지원하지 않습니다. 공유 서버를 업데이트해 주세요",
-                    )
-            raw = decode_proxy_body(r.read(), r.headers.get("Content-Encoding"))
+                        status_code=502,
+                        detail=f"공유 서버 응답이 JSON 이 아닙니다(프록시/포털 간섭 의심): {raw[:120]!r}",
+                    ) from exc
+        except urllib.error.HTTPError as e:
             try:
-                return r.status, json.loads(raw.decode() or "null")
-            except (ValueError, UnicodeDecodeError) as exc:
-                # 캡티브 포털·게이트웨이가 200 + HTML 을 주는 경우 — 서버 문제인데 그대로
-                # 올리면 로컬 허브의 500(우리 버그처럼)이 됐다. 502 로 정확히 진단.
+                raw_detail = e.read()
+            except (TimeoutError, OSError):
+                # 상태 코드는 이미 받았다 — 본문만 못 읽었을 때 원래 코드(401·503 …)를 지킨다. 여기서 새면
+                # 부분 응답·보강 중단이 기대하는 HTTPException 이 아니라 날 예외로 500 이 됐다(Codex 2026-10-03).
+                raw_detail = b""
+            # ★오류 본문도 압축돼 올 수 있다 — 같은 해제를 거쳐야 401/403 진단이 깨지지 않는다.
+            detail: Any = decode_proxy_body(
+                raw_detail, e.headers.get("Content-Encoding") if e.headers else None
+            ).decode("utf-8", "replace") if raw_detail else ""
+            try:
+                detail = json.loads(detail)
+            except (ValueError, TypeError):
+                pass
+            return e.code, detail
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            if _timed_out(e):
                 raise HTTPException(
                     status_code=502,
-                    detail=f"공유 서버 응답이 JSON 이 아닙니다(프록시/포털 간섭 의심): {raw[:120]!r}",
-                ) from exc
-    except urllib.error.HTTPError as e:
-        try:
-            raw_detail = e.read()
-        except (TimeoutError, OSError):
-            # 상태 코드는 이미 받았다 — 본문만 못 읽었을 때 원래 코드(401·503 …)를 지킨다. 여기서 새면
-            # 부분 응답·보강 중단이 기대하는 HTTPException 이 아니라 날 예외로 500 이 됐다(Codex 2026-10-03).
-            raw_detail = b""
-        # ★오류 본문도 압축돼 올 수 있다 — 같은 해제를 거쳐야 401/403 진단이 깨지지 않는다.
-        detail: Any = decode_proxy_body(
-            raw_detail, e.headers.get("Content-Encoding") if e.headers else None
-        ).decode("utf-8", "replace") if raw_detail else ""
-        try:
-            detail = json.loads(detail)
-        except (ValueError, TypeError):
-            pass
-        return e.code, detail
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
-        if _timed_out(e):
-            raise HTTPException(
-                status_code=502,
-                detail=f"공유 서버가 {timeout}초 안에 답하지 않았습니다",
-                headers={UPSTREAM_STATE_HEADER: "timeout"},
-            )
-        raise HTTPException(status_code=502, detail=f"공유 서버 연결 실패: {e}")
+                    detail=f"공유 서버가 {timeout}초 안에 답하지 않았습니다",
+                    headers={UPSTREAM_STATE_HEADER: "timeout"},
+                )
+            raise HTTPException(status_code=502, detail=f"공유 서버 연결 실패: {e}")
+    except BaseException as exc:
+        # 취소/종료는 보존하고 HTTP/일반 오류에는 DB 문맥 검사를 유지한다.
+        interrupted = not isinstance(exc, Exception)
+        raise
+    finally:
+        if not interrupted:
+            db.require_share_operation_epoch()
 
 
 def _probe_token_state(tok: Optional[str]) -> str:
@@ -580,6 +590,9 @@ def _cleanup_file(path: str) -> None:
 
 # 로컬에서 직접 처리해야 하는 경로 — 이 PC 의 자원(디스크·CLI·에이전트·실행)에 의존.
 _LOCAL_PREFIXES = (
+    "/api/local-asset-sync/",  # 로컬 불변 파일·영속 전송 대기열
+    "/api/asset-sync/files/",  # 로컬 검증 캐시 우선, 서버 원본은 제한 스트리밍
+    "/api/asset-sync/uploads/",  # 전송 작업자가 원격으로 직접 스트리밍; 로컬 중계는 본문 버퍼 전 거절
     "/api/assets/",        # 파일 I/O(트리/파일/썸/업로드/zip/reveal/마운트) — assets.py 가 메타만 자체 프록시
     "/api/gen-requests",   # 로컬 실행 큐(에이전트가 폴링해 자기 CLI 로 실행)
     "/api/mcp/",          # 로컬 MCP 연결·계획은 공유 서버에 위임하지 않는다
@@ -607,6 +620,7 @@ _LOCAL_PREFIXES = (
     "/api/auto-tags",      # 전역 태그(계정별 owner_uid, 로컬)
     "/api/trash",          # 내 휴지통(로컬)
     "/api/scenes",         # 캔버스 씬 DB 백업(개인 편집물 — 로컬 DB 미러. 서버 전송 금지)
+    "/api/edit-docs",      # 개인 타임라인 백업·복구도 이 계정의 로컬 DB에서 처리
     "/api/generation-views",  # 내가 마지막으로 본 생성물(개인 표시 — 로컬 DB. 팀 항목은 기록 안 함)
     "/api/db/",            # 내 로컬 DB 내보내기/가져오기(교차 PC 연속성, 서버 무관)
     "/api/ingest",         # 에이전트→내 로컬 DB 동기화(generate list·mcp·known-jobs). 팀크레딧만 서버로 전달

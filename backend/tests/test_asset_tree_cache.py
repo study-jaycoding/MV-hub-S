@@ -448,7 +448,7 @@ class AssetTreeCacheTests(unittest.TestCase):
     def test_target_auto_project_keeps_render_hidden_too(self):
         self.assertEqual(
             assets._tree_hidden_names("뻘뻘뻘", auto_project=True),
-            {"mosaic", "reference", "render"},
+            {"mosaic", "reference", "render", "imp_cap"},
         )
 
     def test_combined_assets_router_registers_internal_folder_watches(self):

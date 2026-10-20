@@ -5,6 +5,7 @@
 임시 DB 만 쓴다.
 """
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,7 @@ import pytest
 from app import db, deps, repo
 from app.routers import publish
 from app.routers.publish import PublishBundleIn
+from app.usecases import gen_requests as gen_usecases
 
 URL_A = "https://cdn.example/a/result-a.png"
 URL_B = "https://cdn.example/b/result-b.png"
@@ -23,20 +25,23 @@ STAMP_SAVED = "2026-10-05T01:02:03.000000Z"  # normalize_task_activity_at 꼴
 
 @pytest.fixture
 def server(monkeypatch, tmp_path):
-    monkeypatch.setenv("CONTENT_HUB_DB", str(tmp_path / "content.db"))
-    db.flush_pool()
-    db.init_db()
-    repo.ensure_default_worker()
+    def initialize(path):
+        db.flush_pool()
+        monkeypatch.setenv("CONTENT_HUB_DB", str(path))
+        db.init_db()
+        repo.ensure_default_worker()
+        with db.get_connection() as conn:
+            # A·B 는 실제 uid 에 연결된 계정, C 는 아직 acct: 상태(번들로 첫 연결 전)
+            for email, uid in (("a@test", "user_A"), ("b@test", "user_B"), ("c@test", "acct:c@test")):
+                conn.execute(
+                    "INSERT INTO account(email, name, password_hash, status, creator_uid) "
+                    "VALUES(?,?,'x','approved',?)",
+                    (email, email[0].upper(), uid),
+                )
+
+    initialize(tmp_path / "content.db")
     monkeypatch.setattr(deps, "AUTH_ENABLED", True)
-    with db.get_connection() as conn:
-        # A·B 는 실제 uid 에 연결된 계정, C 는 아직 acct: 상태(번들로 첫 연결 전)
-        for email, uid in (("a@test", "user_A"), ("b@test", "user_B"), ("c@test", "acct:c@test")):
-            conn.execute(
-                "INSERT INTO account(email, name, password_hash, status, creator_uid) "
-                "VALUES(?,?,'x','approved',?)",
-                (email, email[0].upper(), uid),
-            )
-    yield
+    yield initialize
     db.flush_pool()
 
 
@@ -213,3 +218,132 @@ def test_received_copy_roundtrip_preserves_job_anchor(server):
     assert publish_as("b@test", copy)["blocked_ids"] == ["job-A"]  # 받은 사본을 남이 재공유 — 원본 불변
     assert publish_as("a@test", copy)["blocked"] == 0  # 작성자 본인 재공유는 반영
     assert rows_for("job-A") == [{"id": "orig", "creator_uid": "user_A"}]
+
+
+def _reference_link_rows(gid):
+    with db.get_connection() as conn:
+        return [dict(row) for row in conn.execute(
+            "SELECT rowid AS source_rowid, role, position FROM gen_reference "
+            "WHERE generation_id=? ORDER BY rowid", (gid,))]
+
+
+def _assert_reference_views(gid, expected_order, expected_positions):
+    refs = repo.get_generation(gid)["references"]
+    assert [(ref["role"], ref["file_path"]) for ref in refs] == expected_order
+    assert {ref["role"]: ref["position"] for ref in refs} == expected_positions
+    recipe = repo.gen_recipe(gid)["references"]
+    assert [(ref["role"], ref["file_path"]) for ref in recipe] == expected_order
+
+
+def _add_reference_filler():
+    repo.create_local_generation({
+        "prompt": "reference rowid gap",
+        "references": [{"type": "image", "file_path": f"https://cdn.example/filler/{i}.png"}
+                       for i in range(20)],
+    }, "me", creator_uid="user_A")
+    with db.get_connection() as conn:
+        return conn.execute("SELECT MAX(rowid) FROM gen_reference").fetchone()[0]
+
+
+def _regenerate_reference_copy(gid, monkeypatch):
+    monkeypatch.setattr(gen_usecases, "MANAGE_ENABLED", False)
+    monkeypatch.setattr(gen_usecases, "journal_generation_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gen_usecases.agent_signals, "signal", lambda *args, **kwargs: None)
+    command = gen_usecases.GenRequestCommand(
+        kind="regenerate", email="a@test", creator_uid="user_A", worker_id="me",
+        source_gen_id=gid, workspace={"scope": "personal"},
+    )
+    return asyncio.run(gen_usecases.submit_gen_request(command))["id"]
+
+
+@pytest.mark.parametrize("operation", ["regenerate", "roundtrip"])
+@pytest.mark.parametrize("positions,ordered_indices", [
+    pytest.param([None, 10], [0, 1], id="mixed"),
+    pytest.param([None, 1], [0, 1], id="mixed-tie"),
+    pytest.param([None, None], [0, 1], id="all-null"),
+    pytest.param([10, 3], [1, 0], id="all-explicit"),
+    pytest.param(None, [0, 1], id="all-missing"),
+])
+def test_reference_order_survives_source_copy(server, monkeypatch, tmp_path, operation, positions, ordered_indices):
+    source_item = item("order-source", "https://cdn.example/order/result.png", "user_A",
+                       status="done", model="nano-banana", params={}, workspace_scope="personal")
+    source_item["references"] = [
+        {"type": "image", "file_path": f"https://cdn.example/order/ref-{i}.png", "role": f"@Image{i + 1}"}
+        for i in range(2)
+    ]
+    if positions is not None:
+        for ref, position in zip(source_item["references"], positions):
+            ref["position"] = position
+    assert publish_as("a@test", source_item)["inserted"] == 1
+    parent = rows_for("order-source")[0]["id"]
+    source_rows = _reference_link_rows(parent)
+    source_positions = {row["role"]: row["position"] for row in source_rows}
+    supplied_positions = list(range(2)) if positions is None else positions
+    assert source_positions == {f"@Image{i + 1}": position for i, position in enumerate(supplied_positions)}
+    expected_order = [(source_item["references"][i]["role"], source_item["references"][i]["file_path"])
+                      for i in ordered_indices]
+    _assert_reference_views(parent, expected_order, source_positions)
+
+    mixed = any(row["position"] is None for row in source_rows) and any(
+        row["position"] is not None for row in source_rows)
+    copy_positions = {row["role"]: row["source_rowid"] if mixed and row["position"] is None else row["position"]
+                      for row in source_rows}
+    if positions == [None, 10]:
+        assert source_rows[0]["source_rowid"] < 10
+    if positions == [None, 1]:
+        assert source_rows[0]["source_rowid"] == 1
+
+    # 부모가 낮은 rowid를 얻은 다음에 간격을 만든다. 먼저 filler를 넣으면 혼합 반례가 사라진다.
+    largest_key = max((value for value in copy_positions.values() if value is not None), default=0)
+    assert _add_reference_filler() > largest_key
+    if operation == "regenerate":
+        child = _regenerate_reference_copy(parent, monkeypatch)
+        assert min(row["source_rowid"] for row in _reference_link_rows(child)) > largest_key
+        _assert_reference_views(child, expected_order, copy_positions)
+        assert _reference_link_rows(parent) == source_rows
+        return
+
+    bundle = repo.export_bundle(gen_ids=[parent])
+    exported = bundle["generations"][0]
+    assert [(ref["role"], ref["file_path"]) for ref in exported["references"]] == expected_order
+    assert {ref["role"]: ref["position"] for ref in exported["references"]} == copy_positions
+    assert _reference_link_rows(parent) == source_rows
+
+    # 별도 임시 DB의 높은 rowid에서도 실제 인증 수신과 재생성을 거친다.
+    server(tmp_path / "receiver.db")
+    assert _add_reference_filler() > largest_key
+    assert publish_as("a@test", exported)["inserted"] == 1
+    received = rows_for("order-source")[0]["id"]
+    received_rows = _reference_link_rows(received)
+    assert min(row["source_rowid"] for row in received_rows) > largest_key
+    _assert_reference_views(received, expected_order, copy_positions)
+    child = _regenerate_reference_copy(received, monkeypatch)
+    _assert_reference_views(child, expected_order, copy_positions)
+    assert _reference_link_rows(received) == received_rows
+
+
+def test_reference_order_export_detects_mixed_per_generation(server):
+    source_items = []
+    for anchor, positions in (("batch-null", [None, None]), ("batch-explicit", [10, 3])):
+        source_item = item(anchor, f"https://cdn.example/{anchor}/result.png", "user_A",
+                           status="done", model="nano-banana", params={}, workspace_scope="personal")
+        source_item["references"] = [
+            {"type": "image", "file_path": f"https://cdn.example/{anchor}/ref-{i}.png",
+             "role": f"@Image{i + 1}", "position": position}
+            for i, position in enumerate(positions)
+        ]
+        source_items.append(source_item)
+    assert publish_as("a@test", *source_items)["inserted"] == 2
+    gids = {source_item["generation"]["id"]: rows_for(source_item["generation"]["id"])[0]["id"]
+            for source_item in source_items}
+    before_rows = {anchor: _reference_link_rows(gid) for anchor, gid in gids.items()}
+    bundle = repo.export_bundle(gen_ids=list(gids.values()))
+    by_anchor = {entry["generation"]["id"]: entry for entry in bundle["generations"]}
+    for source_item in source_items:
+        anchor = source_item["generation"]["id"]
+        refs = by_anchor[anchor]["references"]
+        assert {ref["role"]: ref["position"] for ref in refs} == {
+            ref["role"]: ref["position"] for ref in source_item["references"]}
+        expected_indices = [0, 1] if anchor == "batch-null" else [1, 0]
+        assert [ref["role"] for ref in refs] == [f"@Image{i + 1}" for i in expected_indices]
+        assert _reference_link_rows(gids[anchor]) == before_rows[anchor]

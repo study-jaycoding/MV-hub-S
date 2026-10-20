@@ -79,6 +79,43 @@ class BackupRestoreTests(unittest.TestCase):
             create_sqlite_snapshot(self.source, destination)
         self.assertEqual(destination.read_text(encoding="utf-8"), "keep")
 
+    def test_online_snapshot_reads_active_wal_and_source_connection_rejects_writes(self):
+        source = self.root / "active # 한글.db"
+        real_connect = sqlite3.connect
+        with closing(real_connect(str(source))) as writer:
+            writer.execute("PRAGMA journal_mode=WAL")
+            writer.execute("PRAGMA wal_autocheckpoint=0")
+            writer.execute("CREATE TABLE evidence(value TEXT)")
+            writer.commit()
+            writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            writer.execute("INSERT INTO evidence VALUES('committed in WAL')")
+            writer.commit()
+            wal = Path(str(source) + "-wal")
+            self.assertGreater(wal.stat().st_size, 0)
+            before = (_sha(source), _sha(wal))
+            opened_source = []
+
+            def checked_connect(target, *args, **kwargs):
+                connection = real_connect(target, *args, **kwargs)
+                if not opened_source:
+                    opened_source.append(str(target))
+                    try:
+                        with self.assertRaisesRegex(sqlite3.OperationalError, "readonly"):
+                            connection.execute("INSERT INTO evidence VALUES('forbidden')")
+                    except BaseException:
+                        connection.rollback()
+                        connection.close()
+                        raise
+                return connection
+
+            with mock.patch("app.services.backup_verify.sqlite3.connect", side_effect=checked_connect):
+                backup = create_sqlite_snapshot(source, self.root / "wal-backup.db")
+            self.assertEqual((_sha(source), _sha(wal)), before)
+            with closing(real_connect(str(backup))) as restored:
+                self.assertEqual(restored.execute("SELECT value FROM evidence").fetchall(), [("committed in WAL",)])
+                self.assertEqual(restored.execute("PRAGMA quick_check").fetchone()[0], "ok")
+                self.assertEqual(restored.execute("PRAGMA foreign_key_check").fetchall(), [])
+
     def test_restore_handles_windows_safe_special_character_paths(self):
         special = self.root / "한글 # backup"
         backup = create_sqlite_snapshot(self.source, special / "content.db")

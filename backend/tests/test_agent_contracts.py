@@ -944,7 +944,7 @@ def test_gen_request_adapter_builds_claim_url_in_one_place():
     # submission-stage: 신 서버에서는 CLI 호출 전/후 상태를 분리한다.
     assert parse_qs(parsed.query) == {
         "limit": ["16"],
-        "capability": ["workspace,submission-stage"],
+        "capability": ["workspace,submission-stage,asset-content"],
         "agent_id": ["agent-1"],
     }
     assert call.kwargs == {"token": "token-1"}
@@ -962,7 +962,7 @@ def test_agent_pending_exists_uses_read_only_workspace_capable_route():
     assert call.args[0] == "GET"
     assert parsed.path == "/api/gen-requests/pending-exists"
     assert parse_qs(parsed.query) == {
-        "capability": ["workspace,submission-stage"],
+        "capability": ["workspace,submission-stage,asset-content"],
         "agent_id": ["agent-1"],
     }
     assert call.kwargs == {"token": "token-1"}
@@ -1868,6 +1868,39 @@ def test_staged_agent_never_creates_when_begin_ack_is_missing():
     create.assert_not_called()
     fail.assert_not_called()
     release.assert_called_once_with("http://hub", "token-1", "request-1", "agent-1")
+
+
+def test_seedance_finish_keeps_draft_flags_and_original_mode_before_submission():
+    agent = _load_agent()
+    request = {**_submission_request(), "model": "seedance_2_5",
+               "params": {"mode": "text_to_video", "draft": False, "draft_job_id": "remote-draft", "resolution": "1080p"}}
+    with patch.object(agent, "_allowed_params", return_value={"mode", "resolution"}), \
+         patch.object(agent, "_ensure_request_workspace", return_value=("ws-test", None)), \
+         patch.object(agent, "_begin_submission", return_value=False) as begin, \
+         patch.object(agent, "_release_claim", return_value=True), \
+         patch.object(agent, "_seedance_mode_for_refs") as normalize_mode, \
+         patch.object(agent, "_run_cli_json") as create:
+        agent._submit_one("http://hub", "token", "higgsfield", "user@example.com", request,
+                          {}, {}, agent.Lock(), agent.Lock(), "agent")
+    normalize_mode.assert_not_called()
+    create.assert_not_called()
+    fingerprint = begin.call_args.args[-1]
+    assert fingerprint["params"] == request["params"]
+
+
+def test_agent_rejects_conflicting_draft_options_before_submission():
+    agent = _load_agent()
+    request = {**_submission_request(), "model": "seedance_2_5",
+               "params": {"draft": True, "draft_job_id": "remote-draft"}}
+    with patch.object(agent, "_allowed_params", return_value=set()), \
+         patch.object(agent, "_fail") as fail, \
+         patch.object(agent, "_begin_submission") as begin, \
+         patch.object(agent, "_run_cli_json") as create:
+        assert agent._submit_one("http://hub", "token", "higgsfield", "user@example.com", request,
+                                 {}, {}, agent.Lock(), agent.Lock(), "agent") is None
+    fail.assert_called_once()
+    begin.assert_not_called()
+    create.assert_not_called()
 
 
 @pytest.mark.parametrize("prompt, blocked", [

@@ -427,6 +427,28 @@ def test_rollback_after_a_rebuilt_wal_copy_leaves_no_staged_files(tmp_path, monk
     assert not (db_dir / sm.JOURNAL_NAME).exists()
 
 
+def test_archive_cleanup_race_preserves_original_failure_and_foreign_file(tmp_path, monkeypatch, capsys):
+    import errno
+
+    original_rmdir = Path.rmdir
+    retained = []
+
+    def raced_rmdir(path):
+        if path.parent == tmp_path / "data" / "db" and path.name.startswith("_before_move_"):
+            foreign = path / "external.tmp"
+            foreign.write_bytes(b"retain me")
+            retained.append(foreign)
+            raise OSError(errno.ENOTEMPTY, "archive cleanup race")
+        return original_rmdir(path)
+
+    monkeypatch.setattr(Path, "rmdir", raced_rmdir)
+    test_rollback_after_a_rebuilt_wal_copy_leaves_no_staged_files(tmp_path, monkeypatch)
+    assert len(retained) == 1 and retained[0].read_bytes() == b"retain me"
+    assert "archive cleanup race" in capsys.readouterr().out
+    for role, target in _module().role_live_paths(tmp_path / "data").items():
+        assert _tag_of(target, ROLE_TABLES[role][0]) == "old"
+
+
 def test_staging_failure_never_touches_the_live_databases(tmp_path, monkeypatch):
     sm = _module()
     data = tmp_path / "data"

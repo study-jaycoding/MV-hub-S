@@ -2,16 +2,20 @@ import { ApiPausedError, authFormHeaders, HttpError, jsonBody, jsonFetch, NO_RES
 import { t } from "./i18n";
 import { getAccountNamespace } from "./accountScope";
 import { EXPECT_ACCOUNT_HEADER, hubHasFeature, REQUEST_RETRY_FEATURE } from "./hubFeatures";
+import type { AssetReferenceIdentity } from "../shared/contracts/assets";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const RUN_POLL_MS = 1500; // /run_status 폴링 간격
 const RUN_POLL_NET_TOLERANCE = 40; // 상태 폴링의 '일시적' 네트워크 실패 관용 횟수(잡은 서버에서 계속 진행)
 
 // 실행 시 연결된 레퍼런스를 타입별로 실어 보내는 미디어 항목(순서 = 슬롯 채움 순서).
-export interface ComfyRunMedia {
+export interface ComfyRunMedia extends AssetReferenceIdentity {
   type: "image" | "video";
   name: string;
   blob: Blob;
+  source_url?: string;
+  source_gen_id?: string | null;
+  role?: string;
 }
 
 // ComfyUI 통합 API — 연결 설정·파싱(노출 후보)·단독 실행. 항상 로컬 허브에서 처리(/api/comfy).
@@ -62,7 +66,7 @@ export interface ComfyRunResult {
 }
 
 // Comfy 출력 → '내 작업' 저장 요청/응답.
-export interface ComfySaveRef {
+export interface ComfySaveRef extends AssetReferenceIdentity {
   url: string;
   type: "image" | "video";
   source_gen_id?: string | null;
@@ -171,11 +175,14 @@ export const comfyApi = {
     content: string,
     paramValues?: Record<string, string | number | boolean>,
     media?: ComfyRunMedia[],
+    projectId?: string,
   ): Promise<ComfyRunResult> => {
     const fd = new FormData();
     fd.append("content", content);
     fd.append("param_values", JSON.stringify(paramValues ?? {}));
-    fd.append("media_meta", JSON.stringify((media ?? []).map((m) => ({ type: m.type }))));
+    fd.append("media_meta", JSON.stringify((media ?? []).map((m) => ({ type: m.type,
+      source_url: m.source_url, source_gen_id: m.source_gen_id, role: m.role, asset_content_id: m.asset_content_id }))));
+    if (projectId) fd.append("project_id", projectId);
     for (const m of media ?? []) fd.append("media", m.blob, m.name);
     // 요청표(run_key) — 허브가 재전송 계약을 알릴 때만. 답을 받지 못하면(전송 TypeError·본문 끊김) 1초 뒤 **같은 키·같은 FormData** 로
     //  한 번 더 보낸다 — 허브가 같은 요청이면 처음 잡을 돌려준다(Comfy Cloud 두 번 과금 방지, Jay 결정 2A). 옛 허브엔 지금처럼 한 번만.

@@ -14,6 +14,7 @@ export function AssetsSidebar({
   expanded,
   onToggleDir,
   onSelectDir,
+  onOpenTab,
 }: {
   project: string;
   typeFilter: AssetTypeFilter;
@@ -26,6 +27,7 @@ export function AssetsSidebar({
   expanded: Set<string>;
   onToggleDir: (path: string) => void;
   onSelectDir: (path: string) => void;
+  onOpenTab?: (path: string) => void;
 }) {
   // 타입 필터 행(All/Image/Video/Audio)은 하단 바의 4점 슬라이더로 대체됐고(Jay 요청),
   // 프로젝트 선택 드롭다운은 헤더 경로 첫 자리로 갔다. typeFilter 는 트리 배지 계산용.
@@ -37,6 +39,8 @@ export function AssetsSidebar({
           "folder-tree-row root assets-root-row" + (dir === "" ? " selected" : "")
         }
         onClick={onRoot}
+        onMouseDown={(e) => { if (e.button === 1 && onOpenTab) e.preventDefault(); }}
+        onAuxClick={(e) => { if (e.button === 1 && onOpenTab) { e.preventDefault(); onOpenTab(""); } }}
       >
         <span className="folder-tree-caret hidden" />
         <span className="folder-tree-icon" />
@@ -49,6 +53,7 @@ export function AssetsSidebar({
           nodes={tree}
           current={dir}
           onSelect={onSelectDir}
+          onOpenTab={onOpenTab}
           expanded={expanded}
           onToggle={onToggleDir}
           typeFilter={typeFilter}

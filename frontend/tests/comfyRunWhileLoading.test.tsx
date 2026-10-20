@@ -48,8 +48,8 @@ function mount(cards: SceneCard[], edges: SceneEdge[], loading: () => boolean) {
     const genDataRef = useRef<Record<string, Generation>>({});
     api = useSceneComfyExecution({
       sceneIdRef, cardsRef, edgesRef, genDataRef, refParents: {},
-      setCards: (next) => { cardsRef.current = typeof next === "function" ? next(cardsRef.current) : next; },
-      flushPending: () => {}, patchComfyCfg: () => {}, saveComfyToLibrary: async () => ({ saved: 0, failed: 0 }),
+      isDocumentCurrent: () => true,
+      flushPending: () => {}, commitDocument: () => true, saveComfyToLibrary: async () => ({ saved: 0, failed: 0 }),
       onRenderCards, isWorkflowLoading: loading,
     });
     return null;

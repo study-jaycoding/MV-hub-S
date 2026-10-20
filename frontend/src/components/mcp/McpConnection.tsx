@@ -1,3 +1,7 @@
+import { canvasTarget, type CanvasDocumentPort } from "../../features/canvas/api";
+import { captureSubmissionScope } from "../../app/operationContext";
+import { prepareCreateSubmission } from "../../features/generation/api";
+import { runSubmission } from "../../features/generation/api";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import type { Generation, WorkspaceContext } from "../../types";
@@ -8,7 +12,7 @@ import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useT } from "../../lib/i18n";
 import { modelBlockMessage } from "../../lib/modelPolicy";
 import { sameSceneContent } from "../../lib/sceneAbsorb";
-import { confirmSceneWrite, listPersistedScenes, listScenes, type Scene } from "../../lib/scenes";
+import { listPersistedScenes, listScenes, type Scene } from "../../lib/scenes";
 import { captureMcpContext, mcpProjects, prepareMcpPlan, sendMcpReply, summarizeMcpContext, versionMcpReferences, type McpContext, type McpReply } from "../../lib/mcpContext";
 import { boundedText, executeMcpPlan, McpPreflightError, mcpFailureMessage, mcpDraftMatches, mcpPlanCards, mcpSceneHash, strictObject, type McpPlanRecord } from "../../lib/mcpPlans";
 import "./mcp.css";
@@ -21,9 +25,9 @@ export interface McpConnectionProps {
   authKey: string;
   workspace: WorkspaceContext;
   activeSceneId: string | null;
-  flushScenePending: (sceneId: string) => void;
-  patchSceneById: (sceneId: string, patch: Partial<Scene>) => boolean;
+  canvasDocument: CanvasDocumentPort;
   prepareCanvasGenerationBatch: (sceneId: string, cardIds: string[], links?: CanvasGenerationLink[]) => Promise<CanvasGenerationLink[]>;
+  confirmCanvasGeneration?: (links: readonly CanvasGenerationLink[]) => boolean;
   settleCanvasGeneration: (link: CanvasGenerationLink, generation: Generation) => void;
   discardCanvasGeneration: (link: CanvasGenerationLink) => void;
 }
@@ -163,7 +167,8 @@ export function McpConnection(props: McpConnectionProps) {
   async function readScene(): Promise<Scene> {
     const id = current.current.activeSceneId;
     if (!id) throw new Error("MV Hub에서 사용할 캔버스를 먼저 여세요. 새 장면은 빈 캔버스를 만들면 됩니다.");
-    const { confirmed } = confirmSceneWrite(() => current.current.flushScenePending(id));
+    const document = current.current.canvasDocument;
+    const { confirmed } = document.flush(canvasTarget(id));
     if (!await confirmed) throw new Error("캔버스 저장을 확인하지 못했습니다.");
     const working = listScenes(null).find((scene) => scene.id === id);
     const persisted = listPersistedScenes(null).find((scene) => scene.id === id);
@@ -319,6 +324,7 @@ export function McpConnection(props: McpConnectionProps) {
   }
 
   async function runPlan(initial: McpPlanRecord, connection: Connected, source: "app" | "mcp") {
+    const operationScope = captureSubmissionScope(initial.plan.workspace);
     if (busyRef.current) return;
     busyRef.current = true; setBusy(true); setError("");
     const observation = { plan_id: initial.id, running: true, error: null as string | null };
@@ -346,8 +352,9 @@ export function McpConnection(props: McpConnectionProps) {
           assertConnection(connection);
           const latest = listScenes(null).find((candidate) => candidate.id === scene.id);
           if (!latest || current.current.activeSceneId !== scene.id || !sameSceneContent(latest, scene)) throw new Error("카드를 준비하는 동안 캔버스가 바뀌었습니다.");
-          const { value, confirmed } = confirmSceneWrite(() => current.current.patchSceneById(scene.id, patch));
-          if (!value || !await confirmed) throw new Error("계획 카드를 저장하지 못해 생성을 중단했습니다.");
+          const document = current.current.canvasDocument;
+          const { queued, confirmed } = document.commit(canvasTarget(scene.id), { type: "insertPlanCards", ...patch, expected: scene });
+          if (!queued || !await confirmed) throw new Error("계획 카드를 저장하지 못해 생성을 중단했습니다.");
           const stored = listPersistedScenes(null).find((candidate) => candidate.id === scene.id);
           if (!stored || await mcpSceneHash(stored) !== await mcpSceneHash({ ...scene, ...patch })) throw new Error("계획 카드 저장 내용이 달라 생성을 중단했습니다.");
         },
@@ -380,20 +387,29 @@ export function McpConnection(props: McpConnectionProps) {
           }
           assertConnection(connection);
           if (current.current.activeSceneId !== initial.plan.scene_id) throw new McpPreflightError("scene");
-          current.current.flushScenePending(initial.plan.scene_id);
+          current.current.canvasDocument.flush(canvasTarget(initial.plan.scene_id));
           const latest = listScenes(null).find((candidate) => candidate.id === initial.plan.scene_id);
           if (!latest || !mcpDraftMatches(initial.plan, latest)) throw new McpPreflightError("scene");
-          submissionAttempted = true;
-          const generation = await api.prepareCreate(item.request.create, item.request.workspace, item.request.canvas_link)();
-          assertConnection(connection);
-          current.current.settleCanvasGeneration(item.request.canvas_link, generation);
+          const prepared = prepareCreateSubmission(item.request.create, item.request.workspace, item.request.canvas_link, operationScope);
+          const result = await runSubmission({ ...prepared, send: () => { submissionAttempted = true; return prepared.send(); } }, {
+            confirm: () => { assertConnection(connection); return current.current.confirmCanvasGeneration?.([item.request.canvas_link]) ?? false; },
+            apply: generation => { assertConnection(connection); current.current.settleCanvasGeneration(item.request.canvas_link, generation); },
+          });
+          if (result.outcome.kind === "accepted_local_pending" && operationScope.isCurrent!()) {
+            observation.error = "생성 요청은 성공했지만 카드 연결에 실패했습니다. 다시 생성하지 말고 기존 요청을 확인하세요.";
+            setError(observation.error);
+          }
+          return result;
         },
         discard: (item) => { assertConnection(connection); current.current.discardCanvasGeneration(item.request.canvas_link); },
         changed: (record) => setPlan(record),
       });
     } catch (failure) {
-      observation.error = submissionAttempted ? mcpFailureMessage(failure) : "이 실행은 생성 요청 API 호출 전에 중단되었습니다. 앱의 오류와 계획·연결 상태를 확인하세요. 자동 재제출하지 않습니다.";
-      setError(errorDetail(failure));
+      if (!operationScope.isCurrent!()) return;
+      const previousError = observation.error;
+      const message = submissionAttempted ? mcpFailureMessage(failure) : "이 실행은 생성 요청 API 호출 전에 중단되었습니다. 앱의 오류와 계획·연결 상태를 확인하세요. 자동 재제출하지 않습니다.";
+      observation.error = [previousError, message].filter(Boolean).join("\n");
+      setError([previousError, errorDetail(failure)].filter(Boolean).join("\n"));
     }
     finally { observation.running = false; busyRef.current = false; setBusy(false); }
   }
@@ -435,7 +451,7 @@ export function McpConnection(props: McpConnectionProps) {
         <button onClick={() => setSetupOpen(false)}>{t("등록 안내 접기")}</button>
       </section>}
       {connected ? <p><strong>{connected.name || t("AI 도구")}</strong> {t("연결됨")} · {props.workspace.name || t("개인 공간")} <button disabled={busy} onClick={() => { connectionRef.current = null; setConnected(null); context.current = null; setPlan(null); }}>{t("연결 해제")}</button></p> : <div className="mcp-pair"><label>{t("AI 도구에 표시된 6자리 연결 코드")}<input inputMode="numeric" autoComplete="off" value={code} maxLength={6} onChange={(event) => setCode(event.target.value.replace(/\D/g, ""))} /></label><button disabled={busy || !props.authReady || !/^\d{6}$/.test(code)} onClick={() => void pair()}>{t("연결 허용")}</button></div>}
-      {error && <p role="alert" className="mcp-error">{t(error)}</p>}
+      {error && <p role="alert" className="mcp-error">{error.split("\n").map(line => t(line)).join("\n")}</p>}
       {plan && <section>
         <h3>{plan.plan.title}</h3>
         <p>{t("과금 공간:")} <strong>{plan.plan.workspace.name || t("개인 공간")}</strong> ({plan.plan.workspace.id || "personal"})<br />{t("생성 {n}건 · 예상 {credits} 크레딧").replace("{n}", String(plan.plan.items.length)).replace("{credits}", String(plan.plan.items.reduce((sum, item) => sum + item.estimated_credits, 0)))}</p>

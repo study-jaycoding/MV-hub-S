@@ -1,3 +1,7 @@
+import { captureSubmissionScope } from "../app/operationContext";
+import { prepareRegenerateSubmission } from "../features/generation/api";
+import { runSubmission } from "../features/generation/api";
+import type { SubmissionContext, SubmissionDestination } from "../shared/contracts/generation";
 import { useRef } from "react";
 import { t } from "./i18n";
 import { api } from "../api";
@@ -51,6 +55,7 @@ export function useGenerationCardActions({
     g: Generation,
     canvasLink?: CanvasGenerationLink,
     onDefinitiveReject?: () => void,
+    submission?: { scope: Pick<SubmissionContext, "operation" | "isCurrent">; destination?: SubmissionDestination },
   ): Promise<Generation | null> => {
     if (g.execution_phase === "recovery_required") {
       const issue = generationIssueFor(g.status, g.error, g.execution_phase);
@@ -73,31 +78,40 @@ export function useGenerationCardActions({
       flash("재생성 처리 중입니다 — 완료 후 다시 누르세요.");
       return null;
     }
+    const operationWorkspace = { ...workspace };
+    const operationScope = submission?.scope ?? captureSubmissionScope(operationWorkspace);
     regenInFlightRef.current.add(g.id);
     try {
       let ng: Generation;
+      let attachmentPending = false;
       try {
         // API 경계에서 구버전 PromptPart[] 문자열은 읽을 수 있는 prompt로 복원돼 있다. prompt를 명시해
         // 보내야 백엔드가 DB에 남은 옛 JSON 원문으로 다시 생성하지 않는다(정상 생성은 같은 값이라 무해).
-        const submit = api.prepareRegenerate(
+        const prepared = prepareRegenerateSubmission(
           g.id,
           {
             prompt: g.prompt,
             auto_tags: [...armedAutoTags],
           },
-          workspace,
+          operationWorkspace,
           canvasLink,
+          operationScope,
         );
-        ng = await submit();
+        const result = await runSubmission(prepared, submission?.destination);
+        if (!result.generation) throw result.error ?? new Error(result.outcome.kind === "prepare_failed" ? "재생성 위치를 확인하지 못해 제출을 중단했습니다." : "생성 요청 실패");
+        ng = result.generation;
+        if (!operationScope.isCurrent!()) return ng;
+        attachmentPending = result.outcome.kind === "accepted_local_pending";
       } finally {
         regenInFlightRef.current.delete(g.id); // 목록 갱신(reload)까지 잡고 있지 않는다
       }
-      flash("재생성 잡을 큐에 등록했습니다.");
+      if (!operationScope.isCurrent!()) return ng;
+      flash(attachmentPending ? t("생성 요청은 접수됐습니다. 화면 반영 실패 — 재시작 시 자동 복구") : "재생성 잡을 큐에 등록했습니다.");
       await reload();
-      bumpBoard();
-      postLibraryChanged();
+      if (operationScope.isCurrent!()) { bumpBoard(); postLibraryChanged(); }
       return ng;
     } catch (e) {
+      if (!operationScope.isCurrent!()) return null;
       if (surelyNotRun(e)) onDefinitiveReject?.(); // 멈춤(다른 탭 로그아웃)으로 못 보낸 것도 — 대기 표식이 남지 않게(Codex 62회차)
       flash("재생성 실패: " + String(e));
       return null;
@@ -141,7 +155,7 @@ export function useGenerationCardActions({
 
   const onUnpublish = async (g: Generation) => {
     try {
-      const result = await api.unpublish(g.id);
+      const result = await api.unpublish(g.id, g);
       flash(withMirrorPendingNotice(t("팀 공유를 해제했습니다."), result, t));
       await reload();
       bumpBoard();
@@ -182,7 +196,7 @@ export function useGenerationCardActions({
     try {
       // 기존 다중 등급 처리와 같은 부분 성공 방식. 요청 헤더는 이 호출 문맥에서 함께 고정한다.
       const results = await Promise.allSettled(targets.map((generation) =>
-        release && generation.is_final ? api.unfinalize(generation.id) : api.setReviewState(generation, action)));
+        release && generation.is_final ? api.unfinalize(generation.id, generation) : api.setReviewState(generation, action)));
       // 해제로 보류가 되살아난 것은 따로 알린다 — '최종 선택'을 풀었는데 카드가 보류(빨강)로 보이는 까닭이다
       const reheld = release ? results.filter((result) => result.status === "fulfilled" && result.value.is_held).length : 0;
       const succeeded = results.filter((result) => result.status === "fulfilled").length;
@@ -218,7 +232,7 @@ export function useGenerationCardActions({
   const onFinalize = async (g: Generation) => {
     armStateGlow([g.id]);
     try {
-      const result = await api.finalize(g.id);
+      const result = await api.finalize(g.id, g);
       flash(withMirrorPendingNotice(t("최종(골드)으로 지정했습니다."), result, t));
       await reload();
       postLibraryChanged();
@@ -232,7 +246,7 @@ export function useGenerationCardActions({
   const onUnfinalize = async (g: Generation) => {
     armStateGlow([g.id]);
     try {
-      const result = await api.unfinalize(g.id);
+      const result = await api.unfinalize(g.id, g);
       // 최종 전에 보류였던 것은 보류로 돌아온다(서버가 정한다 — api.unfinalize) — 그랬으면 그렇게 알린다
       flash(withMirrorPendingNotice(
         result.is_held ? t("최종 지정을 해제했습니다 — 원래의 보류로 돌아갔습니다.") : t("최종 지정을 해제했습니다."), result, t));
@@ -252,16 +266,18 @@ export function useGenerationCardActions({
       flash("재생성 처리 중입니다 — 완료 후 다시 누르세요.");
       return;
     }
+    const operationScope = captureSubmissionScope(workspace);
     importInFlightRef.current.add(g.id);
     try {
       let source: Generation;
       try {
         source = await api.regenSource(g.id);
       } catch (e) {
-        flash("재생성 실패: " + String(e));
+        if (operationScope.isCurrent!()) flash("재생성 실패: " + String(e));
         return;
       }
-      if (await onRegenerate(source)) navTab("my");
+      if (!operationScope.isCurrent!()) return;
+      if (await onRegenerate(source, undefined, undefined, { scope: operationScope }) && operationScope.isCurrent!()) navTab("my");
     } finally {
       importInFlightRef.current.delete(g.id);
     }

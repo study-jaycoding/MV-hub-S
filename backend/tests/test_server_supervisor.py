@@ -43,6 +43,10 @@ def test_restart_storm_stops_and_writes_isolated_alert(tmp_path, monkeypatch):
     monkeypatch.setenv("CONTENT_HUB_SERVER_ALERT_PATH", str(alert))
     monkeypatch.setattr(supervisor.time, "monotonic", lambda: 1.0)
     monkeypatch.setattr(supervisor.time, "sleep", sleeps.append)
+    monkeypatch.setattr(supervisor, 'ROOT', tmp_path)
+    monkeypatch.setattr(supervisor, 'BACKEND', tmp_path / 'backend')
+    monkeypatch.setattr(supervisor, 'SERVER_ENTRYPOINT', tmp_path / 'backend/serve.py')
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / 'tools'))
 
     def fake_popen(*args, **kwargs):
         launches.append((args, kwargs))
@@ -52,7 +56,8 @@ def test_restart_storm_stops_and_writes_isolated_alert(tmp_path, monkeypatch):
 
     assert supervisor.main() == 1
     assert len(launches) == 2
-    assert launches[0][0][0] == [sys.executable, str(supervisor.SERVER_ENTRYPOINT)]
+    assert launches[0][0][0] == [sys._base_executable, str(supervisor.SERVER_ENTRYPOINT)]
+    assert launches[0][1]['env']['__PYVENV_LAUNCHER__'] == sys.executable
     assert launches[0][1]["cwd"] == supervisor.BACKEND
     assert sleeps == [3]
     assert "restart storm blocked" in alert.read_text(encoding="utf-8")

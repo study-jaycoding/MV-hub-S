@@ -6,6 +6,14 @@ import { saveToDownloadDir } from "./downloadDir";
 import { flashMsg } from "./flash";
 import { API_PAUSED_MESSAGE, getApiPause, isApiRequest, jsonBody, jsonFetch } from "./http";
 import { withQuery } from "./url";
+import { managedAssetUrl } from "../shared/contracts/assets";
+import { captureOperationContext } from "../app/operationContext";
+import type { OperationContext } from "../shared/contracts/generation";
+
+export interface DownloadScope {
+  context: Readonly<OperationContext>;
+  assertCurrent: () => void;
+}
 
 // 다운로드 — bytes 를 받아 blob 으로 저장한다(파일명 보장 + 크롬 다운로드 목록 표시). 원격 URL
 // (cloudfront 등)은 cross-origin 이라 a[download] 가 무시되지만, 힉스필드 CDN 이 CORS(*)를 허용하므로
@@ -30,8 +38,11 @@ export async function fetchBlob(
   url: string,
   name: string,
   genId?: string,
-  init?: { signal?: AbortSignal }, // 호출측 타임아웃/중단 — 모든 내부 fetch(폴백 포함)에 전달
+  init?: { signal?: AbortSignal; assertCurrent?: () => void }, // 호출측 타임아웃/문맥 중단 — 폴백에도 적용
 ): Promise<Blob | null> {
+  const assertCurrent = init?.assertCurrent;
+  assertCurrent?.();
+  url = managedAssetUrl(url) || url;
   const signal = init?.signal;
   // genId 를 아는 다운로드는 허브를 거친다 — 허브가 파일에 '이 생성물이다'를 새겨서 준다(각인).
   // 브라우저가 CDN 에서 직접 받으면 각인할 기회가 없다. 허브가 실패하면 아래 직접 받기로 폴백해
@@ -42,25 +53,33 @@ export async function fetchBlob(
         withQuery("/api/download", { url, name, gen_id: genId }),
         { credentials: "include", signal },
       );
-      if (res.ok) return await res.blob();
+      assertCurrent?.();
+      if (res.ok) { const blob = await res.blob(); assertCurrent?.(); return blob; }
     } catch {
+      assertCurrent?.();
       /* 허브 경유 실패 → 아래 기존 경로로 폴백 */
     }
   }
   try {
+    assertCurrent?.();
     const res = await fetch(url, url.startsWith("/") ? { credentials: "include", signal } : { signal });
-    if (res.ok) return await res.blob();
+    assertCurrent?.();
+    if (res.ok) { const blob = await res.blob(); assertCurrent?.(); return blob; }
   } catch {
+    assertCurrent?.();
     /* 직접 실패 → 프록시 시도(로컬 제외) */
   }
   if (url.startsWith("/")) return null;
   try {
+    assertCurrent?.();
     const res = await fetch(
       withQuery("/api/download", { url, name }),
       { credentials: "include", signal },
     );
-    if (res.ok) return await res.blob();
+    assertCurrent?.();
+    if (res.ok) { const blob = await res.blob(); assertCurrent?.(); return blob; }
   } catch {
+    assertCurrent?.();
     /* 프록시도 실패 */
   }
   return null;
@@ -72,12 +91,16 @@ export async function fetchBlob(
 // 이름만 다른 같은 파일을 또 받는다(Codex 통합 검토 P2, 2026-10-13).
 type DownloadResult = { ok: boolean; savedToDir: boolean };
 const inFlight = new Map<string, Promise<DownloadResult>>();
-const fileKey = (url: string, name: string, genId?: string) => JSON.stringify(genId ? [url, "gen", genId] : [url, name]);
-function _download(url: string, name: string, genId?: string): Promise<DownloadResult> {
-  const key = fileKey(url, name, genId);
+const fileKey = (url: string, name: string, genId?: string, scope?: DownloadScope) => JSON.stringify([
+  genId ? [url, "gen", genId] : [url, name], !!scope,
+  scope?.context ?? captureOperationContext({ scope: "unknown", id: null, name: null }),
+]);
+function _download(url: string, name: string, genId?: string, scope?: DownloadScope): Promise<DownloadResult> {
+  scope?.assertCurrent();
+  const key = fileKey(url, name, genId, scope);
   const running = inFlight.get(key);
   if (running) return running;
-  const task = _downloadNow(url, name, genId).finally(() => inFlight.delete(key));
+  const task = _downloadNow(url, name, genId, scope).finally(() => inFlight.delete(key));
   inFlight.set(key, task);
   return task;
 }
@@ -88,11 +111,16 @@ async function _downloadNow(
   url: string,
   name: string,
   genId?: string,
+  scope?: DownloadScope,
 ): Promise<DownloadResult> {
-  const blob = await fetchBlob(url, name, genId);
+  scope?.assertCurrent();
+  const blob = await fetchBlob(url, name, genId, scope ? { assertCurrent: scope.assertCurrent } : undefined);
+  scope?.assertCurrent();
   if (blob) {
     // 지정 다운로드 폴더가 있으면 프롬프트 없이 그곳에 직접 저장. 없거나 실패하면 일반 다운로드.
-    if (await saveToDownloadDir(name, blob)) return { ok: true, savedToDir: true };
+    const saved = await (scope ? saveToDownloadDir(name, blob, scope.assertCurrent) : saveToDownloadDir(name, blob));
+    scope?.assertCurrent();
+    if (saved) return { ok: true, savedToDir: true };
     const blobUrl = URL.createObjectURL(blob);
     _anchor(blobUrl, name);
     setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
@@ -101,6 +129,7 @@ async function _downloadNow(
   // bytes 를 못 받음 — 로컬(/...)은 a[download] 가 동작하므로 저장 성공, 원격은 새 탭(저장 보장
   // 안 됨)이라 '실패'로 보고해 호출측·사용자가 알게 한다.
   if (url.startsWith("/")) {
+    scope?.assertCurrent();
     // 멈춤(다른 탭 로그아웃 — 4B) 때문에 못 받은 /api 주소를 링크로 다시 부르지 않는다 — 링크는 관문을 지나지 않는다(Codex E9)
     if (getApiPause() && isApiRequest(url)) {
       flashMsg(API_PAUSED_MESSAGE);
@@ -109,6 +138,7 @@ async function _downloadNow(
     _anchor(url, name);
     return { ok: true, savedToDir: false };
   }
+  scope?.assertCurrent();
   _anchor(url, undefined, true);
   flashMsg(`다운로드 직접 저장 실패 — 새 탭에서 열었습니다: ${name}`);
   return { ok: false, savedToDir: false };
@@ -118,8 +148,11 @@ async function _downloadNow(
 // Assets 마운트와 같은 로컬 폴더일 때만 새 파일이 실제로 보인다). FSA write flush 가 백엔드 디스크
 // 스캔에 반영될 짧은 시간을 준 뒤 브로드캐스트(레이스로 낡은 목록을 받는 것 방지). 빈 배열 =
 // 프로젝트 특정 없이 현재 열린 프로젝트 새로고침(useAssetBroadcastSync).
-function notifyAssetsMaybeChanged(): void {
-  setTimeout(() => postAssetsUpdated([]), 200);
+function notifyAssetsMaybeChanged(scope?: DownloadScope): void {
+  setTimeout(() => {
+    try { scope?.assertCurrent(); } catch { return; }
+    postAssetsUpdated([]);
+  }, 200);
 }
 
 // true = 파일명대로 디스크에 깔끔히 저장됨. false = 직접 저장 실패 → 새 탭 폴백(파일명 미적용·에러
@@ -134,11 +167,13 @@ export async function download(url: string, name: string, genId?: string): Promi
 // genId 를 주면 허브가 파일에 각인해서 내려준다(나중에 캔버스에 끌어다 놓으면 복원). 폴더에서
 // 고른 외부 파일처럼 생성물이 아닌 것은 genId 없이 부르면 된다.
 // announced = 시작 토스트를 부르는 쪽이 이미 띄웠다(downloadGeneration — 이름을 받기 전에 먼저 알린다).
-export async function downloadOne(url: string, name: string, genId?: string, announced = false): Promise<boolean> {
-  const joined = inFlight.has(fileKey(url, name, genId)); // 받는 중에 다시 누른 것 — 새로 받지 않는다
+export async function downloadOne(url: string, name: string, genId?: string, announced = false, scope?: DownloadScope): Promise<boolean> {
+  scope?.assertCurrent();
+  const joined = inFlight.has(fileKey(url, name, genId, scope)); // 같은 파일·문맥의 요청만 합류
   if (joined || !announced) flashMsg(joined ? "이미 받는 중입니다…" : "1개 다운로드 시작…");
-  const { ok, savedToDir } = await _download(url, name, genId);
-  if (savedToDir && !joined) notifyAssetsMaybeChanged();
+  const { ok, savedToDir } = await _download(url, name, genId, scope);
+  scope?.assertCurrent();
+  if (savedToDir && !joined) notifyAssetsMaybeChanged(scope);
   return ok;
 }
 

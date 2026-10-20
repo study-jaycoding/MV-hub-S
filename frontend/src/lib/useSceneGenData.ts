@@ -6,7 +6,7 @@
 import { ownEntry } from "./ownEntry";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import { APP_EVENTS } from "./appEvents";
+import { APP_EVENTS, isCurrentGenerationEvent, isLibraryPollTick, readGenerationTagsSettled, type GenerationTagsSettledDetail } from "./appEvents";
 import { onLibraryChanged } from "./libraryBroadcast";
 import { DISABLED_EVENT, loadDisabledFolders, loadDisabledGen } from "./deactivated";
 import { expandDisabledGenerationIds } from "./generationDisplay";
@@ -14,6 +14,7 @@ import { useCustomEvent } from "./useCustomEvent";
 import { variantIds, type SceneCard } from "./scenes";
 import {
   putGen,
+  putGenColor,
   putParents,
   markGenMissing,
   hydrateGen,
@@ -26,6 +27,7 @@ import type { Generation } from "../types";
 import { getAuthToken } from "./http";
 import { getAccountNamespace } from "./accountScope";
 import { ColorScopeChangedError } from "./generationColorState";
+import { getGenerationReadModel } from "../features/library/api";
 
 export interface SceneColorScope {
   sceneKey: string; // SceneBoard의 cardsSceneId: passive 씬 동기화 전에는 실제 카드의 옛 씬
@@ -87,21 +89,37 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
   colors: SceneColorLedger;
   refreshGenerationAfter(gid: string, settled: unknown): void;
 } {
+  const records = getGenerationReadModel(scope.authKey, "lookup");
+  const recordsRef = useRef(records);
+  recordsRef.current = records;
   // 마운트 초기값 = 캐시(sceneGenDataStore)에서 즉시 복원 — 탭 왕복(언마운트→재마운트) 시 빈 화면 없이 바로 표시.
   const initialGenIds = (): string[] =>
     cards
       .filter((c) => c.kind === "generation" || (c.kind === "comfy" && (c.genIds?.length || c.genId)))
       .flatMap((c) => variantIds(c));
-  const [genData, setGenData] = useState<Record<string, Generation>>(() => hydrateGen(initialGenIds()));
+  const [genData, setGenData] = useState<Record<string, Generation>>(() => hydrateGen(initialGenIds(), records));
   const genDataRef = useRef(genData);
   genDataRef.current = genData;
   // 외부(라이브러리)에서 삭제(휴지통 이동)돼 404 로 사라진 생성물 id — 카드가 무한 'Generating' 대신 '삭제됨' 표시.
-  const [missingIds, setMissingIds] = useState<Set<string>>(() => hydrateMissing(initialGenIds()));
-  const [refParents, setRefParents] = useState<Record<string, string[]>>(() => hydrateParents(initialGenIds()));
+  const [missingIds, setMissingIds] = useState<Set<string>>(() => hydrateMissing(initialGenIds(), records));
+  const [refParents, setRefParents] = useState<Record<string, string[]>>(() => hydrateParents(initialGenIds(), records));
   const [answeredIds, setAnsweredIds] = useState<Set<string>>(() => {
     const ids = initialGenIds();
-    return new Set([...Object.keys(hydrateGen(ids)), ...hydrateMissing(ids)]);
+    return new Set([...Object.keys(hydrateGen(ids, records)), ...hydrateMissing(ids, records)]);
   });
+  const displayedModel = useRef(records);
+  useLayoutEffect(() => {
+    const reset = () => {
+      const ids = initialGenIds();
+      const next = hydrateGen(ids, records);
+      genDataRef.current = next;
+      setGenData(next); setRefParents(hydrateParents(ids, records));
+      const missing = hydrateMissing(ids, records);
+      setMissingIds(missing); setAnsweredIds(new Set([...Object.keys(next), ...missing]));
+    };
+    if (displayedModel.current !== records) { displayedModel.current = records; reset(); }
+    return records.subscribe(change => { if (!change.ids.length) reset(); });
+  }, [records]);
   // 비활성(회색) 표시 — 라이브러리/계보와 같은 로컬 소스(deactivated). 어디서 토글해도 즉시 반영.
   const [disabledTick, setDisabledTick] = useState(0);
   useCustomEvent(DISABLED_EVENT, () => setDisabledTick((t) => t + 1));
@@ -122,6 +140,8 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
   const ledgerId = JSON.stringify([authId, scope.sceneKey]);
   const authRef = useRef({ epoch: 0, mounted: false, ready: scope.authReady });
   const ledgerRef = useRef(newColorGeneration(ledgerId, 0));
+  const singleReadsRef = useRef({ count: 0 });
+  const drainTagsRef = useRef<() => void>(() => {});
   const liveIdsRef = useRef(new Set<string>());
   useLayoutEffect(() => {
     authRef.current = { ...authRef.current, mounted: true, ready: scope.authReady };
@@ -131,6 +151,7 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
   }, [authId, scope.authReady]);
   useLayoutEffect(() => {
     ledgerRef.current = newColorGeneration(ledgerId, authRef.current.epoch);
+    singleReadsRef.current = { count: 0 }; // 옛 씬/계정의 finally는 자신이 잡은 객체만 내린다.
   }, [ledgerId]);
   useLayoutEffect(() => { liveIdsRef.current = new Set(genIdSig.split(",").filter(Boolean)); }, [genIdSig]);
   // 제출 표식이 붙었던 생성물은 '생성 중인 줄 아는' 것이다 — 표식이 지워진 뒤 첫 조회 응답 전에도 빈 바탕이 아니라 '생성 중' 로고(Codex 리뷰 P2)
@@ -155,7 +176,7 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
       for (const [id, color] of Object.entries(values)) {
         if (!canWrite(id) || !next[id]) continue;
         next[id] = { ...next[id], color };
-        putGen(next[id], id);
+        putGenColor(next[id], id, recordsRef.current);
         written.push(id);
       }
       if (!written.length) return written;
@@ -210,21 +231,29 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
       if (!current()) return;
       // action 대기 중 완료된 색 저장은 잠그지 않는다. 실제 GET 출발 시점이 읽기 기준이다.
       const { stamp, keepColor } = readStamp(ledgerRef.current, authRef.current.epoch, [gid]);
+      const singleReads = singleReadsRef.current;
+      const model = recordsRef.current;
+      const read = model.beginRead();
+      singleReads.count += 1;
       try {
         const fresh = await api.getGeneration(gid);
-        if (!fresh || !current() || !colors.isLive(stamp, true)) return;
+        if (!fresh || !current() || !colors.isLive(stamp, true) || !model.isCurrent(read)) return;
         const cached = keepColor(gid) ? ownEntry(genDataRef.current, gid) : undefined;
-        const record = cached ? { ...fresh, color: cached.color } : fresh;
-        putGen(record, gid);
+        const accepted = putGen(fresh, gid, model, read, keepColor(gid));
+        if (!accepted) return;
+        const record = cached ? { ...accepted, color: cached.color } : accepted;
         genDataRef.current = { ...genDataRef.current, [gid]: record };
         setGenData(prev => {
           const before = ownEntry(prev, gid);
           if (!current() || !colors.isLive(stamp, true) || !before) return prev;
-          const next = keepColor(gid) ? { ...fresh, color: before.color } : fresh;
+          const next = keepColor(gid) ? { ...accepted, color: before.color } : accepted;
           return reconcileRecordState(prev, { ...prev, [gid]: next });
         });
       } catch {
         // 단건 조회는 삭제 판정을 소유하지 않는다. 기존처럼 실패는 다음 일반 poll에 맡긴다.
+      } finally {
+        singleReads.count -= 1;
+        if (singleReadsRef.current === singleReads) drainTagsRef.current();
       }
     });
     // 색 외 필드는 이 응답값을 수용한다. 별도 공유 동작/일반 poll 사이의 메타 최신 순서는 보장하지 않는다.
@@ -237,15 +266,22 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
   // 화면에 보이는 상태가 아닌 재조회 트리거를 setState로 만들면 응답이 같아도 큰 SceneBoard가 먼저
   // 한 번 렌더된다. 실제 요청 함수는 ref로 직접 호출하고, 아래 state는 응답 내용이 달라질 때만 바꾼다.
   const refreshSceneDataRef = useRef<() => void>(() => {});
+  const refreshSceneTagsRef = useRef<(detail: GenerationTagsSettledDetail) => void>(() => {});
   const refreshTimerRef = useRef<number | undefined>(undefined);
   const bumpRefresh = () => {
     if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
     refreshTimerRef.current = window.setTimeout(() => refreshSceneDataRef.current(), 300);
   };
   useEffect(() => onLibraryChanged(bumpRefresh), []); // 창 간
-  useCustomEvent(APP_EVENTS.libraryChanged, bumpRefresh); // 같은 창(내 담기·생성 즉시)
+  useCustomEvent(APP_EVENTS.libraryChanged, event => {
+    if (isCurrentGenerationEvent(event) && !isLibraryPollTick(event)) bumpRefresh();
+  });
   // 태그 저장 묶음이 끝남 — 낙관적으로 고친 사본을 서버 값으로 맞춘다(저장 실패·겹친 편집에서 어긋난 채 남지 않게)
-  useCustomEvent(APP_EVENTS.generationTagsSettled, bumpRefresh);
+  useCustomEvent(APP_EVENTS.generationTagsSettled, event => {
+    const detail = readGenerationTagsSettled(event);
+    if (detail) refreshSceneTagsRef.current(detail);
+    else bumpRefresh();
+  });
   useEffect(() => () => { if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current); }, []);
   useEffect(() => {
     const ids = Array.from(new Set(genIdSig.split(",").filter(Boolean)));
@@ -257,98 +293,193 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
     let alive = true;
     let timer: number | undefined;
     let requestSeq = 0;
+    let tickInFlight = false;
+    let tagsInFlight = false;
+    let tagTimer: number | undefined;
+    type TagField = GenerationTagsSettledDetail["fields"][number];
+    let pendingTags = new Map<string, Set<TagField>>();
+    const queueTags = (entries: Map<string, Set<TagField>>) => {
+      for (const [id, fields] of entries) {
+        if (!liveIdsRef.current.has(id)) continue;
+        const queued = pendingTags.get(id) ?? new Set<TagField>();
+        for (const field of fields) queued.add(field);
+        pendingTags.set(id, queued);
+      }
+    };
+    const scheduleTags = (ms: number) => {
+      if (tagTimer !== undefined) clearTimeout(tagTimer);
+      tagTimer = window.setTimeout(() => { tagTimer = undefined; void drainTags(); }, ms);
+    };
+    const drainTags = async () => {
+      if (!alive || tagTimer !== undefined || tagsInFlight || tickInFlight || singleReadsRef.current.count || !pendingTags.size) return;
+      if (document.visibilityState === "hidden") { scheduleTags(2500); return; }
+      if ([...pendingTags.keys()].some(id => ownEntry(genDataRef.current, id) && !records.read(id))) {
+        pendingTags.clear(); refreshSceneDataRef.current(); return;
+      }
+      const captured = pendingTags;
+      pendingTags = new Map();
+      const tagIds = [...captured.keys()];
+      const reads = new Map([...captured].map(([id, fields]) => [id, records.beginRead([...fields])]));
+      const seq = requestSeq;
+      const { stamp } = readStamp(ledgerRef.current, authRef.current.epoch, tagIds);
+      const live = () => alive && colors.isLive(stamp, true);
+      const current = () => live() && seq === requestSeq;
+      const assertCurrent = () => { if (!current()) throw new ColorScopeChangedError(); };
+      tagsInFlight = true;
+      try {
+        const batch = await api.getGenerationsBatch(tagIds, assertCurrent, { allowPartial: true });
+        if (!current()) { if (live()) queueTags(captured); return; }
+        // 태그 조회는 상태·색·계보·삭제 판정과 일반 poll 주기를 소유하지 않는다.
+        const patches = new Map<string, Partial<Pick<Generation, "tags" | "auto_tags">>>();
+        const updated = { ...genDataRef.current };
+        for (const [id, fields] of captured) {
+          const fresh = ownEntry(batch.items, id);
+          const before = ownEntry(genDataRef.current, id);
+          if (!fresh || !before || !liveIdsRef.current.has(id)) continue;
+          const accepted = putGen(fresh, id, records, reads.get(id)!, true);
+          if (!accepted) continue;
+          const acceptedPatch = Object.fromEntries([...fields].map(field => [field, accepted[field]]));
+          patches.set(id, acceptedPatch);
+          updated[id] = { ...before, ...acceptedPatch };
+        }
+        genDataRef.current = updated;
+        setGenData(prev => {
+          if (!current()) return prev;
+          const next = { ...prev };
+          for (const [id, patch] of patches) {
+            if (ownEntry(prev, id) && liveIdsRef.current.has(id)) next[id] = { ...prev[id], ...patch };
+          }
+          return reconcileRecordState(prev, next);
+        });
+        const unavailable = new Set(batch.unavailable ?? []);
+        queueTags(new Map([...captured].filter(([id]) => unavailable.has(id))));
+        if (unavailable.size) scheduleTags(2500);
+      } catch {
+        if (live()) {
+          queueTags(captured);
+          if (seq === requestSeq) scheduleTags(2500);
+        }
+      } finally {
+        tagsInFlight = false;
+        void drainTags();
+      }
+    };
+    drainTagsRef.current = () => { void drainTags(); };
+    refreshSceneTagsRef.current = detail => {
+      const entries = new Map(detail.ids.filter(id => liveIdsRef.current.has(id)).map(id => [id, new Set(detail.fields)]));
+      if (!entries.size) return;
+      queueTags(entries);
+      scheduleTags(300);
+    };
     const tick = async (pollIds: string[]) => {
       const seq = ++requestSeq;
-      const { stamp, keepColor } = readStamp(ledgerRef.current, authRef.current.epoch, pollIds);
-      const gen = stamp.gen;
-      const current = () => alive && seq === requestSeq && colors.isLive(stamp, true);
-      const assertCurrent = () => { if (!current()) throw new ColorScopeChangedError(); };
-      // 숨겨진 탭에서는 활성 씬도 보이지 않는다. 서버 조회를 쉬고 복귀 뒤 기존 주기 안에 재개한다.
-      if (document.visibilityState === "hidden") {
-        if (alive && seq === requestSeq) timer = window.setTimeout(() => tick(pollIds), 2500);
-        return;
-      }
-      // 생성물 상태와 직접 레퍼런스 부모를 한 번에 조회 — 카드별 generation/history N+1 제거.
-      let batch: Awaited<ReturnType<typeof api.getGenerationsBatch>>;
+      const read = records.beginRead();
+      tickInFlight = true;
       try {
-        // 서버 장애 때도 내 로컬 카드 상태는 받는다 — 못 물어본 팀 카드는 unavailable(삭제 아님, 2026-10-03).
-        batch = await api.getGenerationsBatch(pollIds, assertCurrent, { allowPartial: true });
-      } catch (error) {
-        if (error instanceof ColorScopeChangedError || !current()) return;
-        setAnsweredIds((prev) => (current() ? addIds(prev, pollIds) : prev)); // 물었는데 못 받았다 — 다시 묻는 동안은 전처럼 '생성 중'
-        // 일시 오류는 기존 캐시를 유지하고 같은 묶음을 다시 시도한다. 캔버스가 열려 있는 동안은
-        // 중복 방지를 위해 App 보조 watcher가 쉬므로 여기서 재시도 책임을 가진다.
-        if (alive && seq === requestSeq) timer = window.setTimeout(() => tick(pollIds), 2500);
-        return;
-      }
-      const missing = new Set(batch.missing || []);
-      const rs = pollIds.map((id) => ({
-        id,
-        gen: ownEntry(batch.items, id) || null, // 응답 사전도 자기 속성만 — 상속 함수가 캐시에 들어가지 않게
-        gone: missing.has(id),
-      }));
-      // 새 변경 신호가 와서 전량 요청을 다시 시작했으면 그보다 먼저 출발한 응답은 폐기한다.
-      if (!current()) return;
-      setAnsweredIds((prev) => (current() ? addIds(prev, pollIds) : prev)); // 찾음·삭제·못 물어봄 모두 '답을 받음'
-      // 캐시에도 기록 — 탭 왕복·씬 전환 시 재조회 없이 즉시 복원되게(성공=저장/재등장, 삭제=missing 표시).
-      for (const r of rs) {
-        if (r.gen) {
-          const cached = keepColor(r.id) ? ownEntry(genDataRef.current, r.id) : undefined;
-          if (cached) r.gen = { ...r.gen, color: cached.color };
-          putGen(r.gen, r.id);
-          markGenMissing(r.id, false);
-          observeStatus(r.id, r.gen.status);
-        } else if (r.gone) {
-          gen.revisions.delete(r.id); // 삭제 우선. 살아 있는 티켓의 pending은 자신의 end에서만 감소한다.
-          if (!pendingAttemptIds.has(r.id)) markGenMissing(r.id, true);
+        const { stamp, keepColor } = readStamp(ledgerRef.current, authRef.current.epoch, pollIds);
+        const gen = stamp.gen;
+        const current = () => alive && seq === requestSeq && colors.isLive(stamp, true);
+        const assertCurrent = () => { if (!current()) throw new ColorScopeChangedError(); };
+        const retryRetiredRead = () => {
+          if (records.isCurrent(read)) return false;
+          if (current()) timer = window.setTimeout(() => { void tick(pollIds); }, 0);
+          return true;
+        };
+        // 숨겨진 탭에서는 활성 씬도 보이지 않는다. 서버 조회를 쉬고 복귀 뒤 기존 주기 안에 재개한다.
+        if (document.visibilityState === "hidden") {
+          if (alive && seq === requestSeq) timer = window.setTimeout(() => tick(pollIds), 2500);
+          return;
         }
-      }
-      for (const id of pollIds) {
-        const parents = ownEntry(batch.materials, id);
-        if (Array.isArray(parents)) putParents(id, parents);
-        else if (missing.has(id)) putParents(id, []);
-      }
-      setRefParents((prev) => {
-        if (!current()) return prev;
-        const next = { ...prev };
-        for (const id of pollIds) {
-          const parents = ownEntry(batch.materials, id);
-          if (Array.isArray(parents)) next[id] = parents;
-          else if (missing.has(id)) next[id] = [];
+        // 생성물 상태와 직접 레퍼런스 부모를 한 번에 조회 — 카드별 generation/history N+1 제거.
+        let batch: Awaited<ReturnType<typeof api.getGenerationsBatch>>;
+        try {
+          // 서버 장애 때도 내 로컬 카드 상태는 받는다 — 못 물어본 팀 카드는 unavailable(삭제 아님, 2026-10-03).
+          batch = await api.getGenerationsBatch(pollIds, assertCurrent, { allowPartial: true });
+        } catch (error) {
+          if (error instanceof ColorScopeChangedError || !current()) return;
+          setAnsweredIds((prev) => (current() ? addIds(prev, pollIds) : prev)); // 물었는데 못 받았다 — 다시 묻는 동안은 전처럼 '생성 중'
+          // 일시 오류는 기존 캐시를 유지하고 같은 묶음을 다시 시도한다. 캔버스가 열려 있는 동안은
+          // 중복 방지를 위해 App 보조 watcher가 쉬므로 여기서 재시도 책임을 가진다.
+          if (alive && seq === requestSeq) timer = window.setTimeout(() => tick(pollIds), 2500);
+          return;
         }
-        return reconcileRecordState(prev, next);
-      });
-      setGenData((prev) => {
-        if (!current()) return prev;
-        const next = { ...prev };
+        const missing = new Set(batch.missing || []);
+        const rs = pollIds.map((id) => ({
+          id,
+          gen: ownEntry(batch.items, id) || null, // 응답 사전도 자기 속성만 — 상속 함수가 캐시에 들어가지 않게
+          gone: missing.has(id),
+        }));
+        // 새 변경 신호가 와서 전량 요청을 다시 시작했으면 그보다 먼저 출발한 응답은 폐기한다.
+        if (!current() || retryRetiredRead()) return;
+        setAnsweredIds((prev) => (current() ? addIds(prev, pollIds) : prev)); // 찾음·삭제·못 물어봄 모두 '답을 받음'
+        // 캐시에도 기록 — 탭 왕복·씬 전환 시 재조회 없이 즉시 복원되게(성공=저장/재등장, 삭제=missing 표시).
         for (const r of rs) {
-          if (r.gen) next[r.id] = keepColor(r.id) && prev[r.id] ? { ...r.gen, color: prev[r.id].color } : r.gen;
-          else if (r.gone) delete next[r.id]; // 삭제 확정 → stale 결과 제거(캐시서도 제거됨) → '삭제됨' 표시가 드러나게
-        }
-        return reconcileRecordState(prev, next);
-      });
-      setMissingIds((prev) => {
-        if (!current()) return prev;
-        let changed = false;
-        const next = new Set(prev);
-        for (const r of rs) {
-          if (r.gen && next.delete(r.id)) changed = true; // 되살아나면(복원) 해제
-          else if (r.gone && !pendingAttemptIds.has(r.id) && !next.has(r.id)) {
-            next.add(r.id);
-            changed = true;
+          if (r.gen) {
+            r.gen = putGen(r.gen, r.id, records, read, keepColor(r.id)) ?? null;
+            if (!r.gen) continue;
+            const cached = keepColor(r.id) ? ownEntry(genDataRef.current, r.id) : undefined;
+            if (cached) r.gen = { ...r.gen, color: cached.color };
+            observeStatus(r.id, r.gen.status);
+          } else if (r.gone) {
+            gen.revisions.delete(r.id); // 삭제 우선. 살아 있는 티켓의 pending은 자신의 end에서만 감소한다.
+            if (!pendingAttemptIds.has(r.id)) markGenMissing(r.id, true, records, read);
           }
         }
-        return changed ? next : prev;
-      });
-      // 재폴은 '아직 진행 중'인 id + 서버 장애로 못 물어본 id — 완료 카드를 매 2.5초 다시 조회하던 N+1 폴링 제거.
-      const unavailable = new Set(batch.unavailable ?? []);
-      const stillPending = rs
-        .filter((r) =>
-          (r.gen && ["pending", "queued", "running", "processing"].includes(String(r.gen.status))) ||
-          (!r.gen && (pendingAttemptIds.has(r.id) || unavailable.has(r.id))),
-        )
-        .map((r) => r.id);
-      if (stillPending.length) timer = window.setTimeout(() => tick(stillPending), 2500);
+        // Eviction may retire an older ticket while this large response is being cached.
+        // Keep the current view and retry; a done row must not become a terminal blank card.
+        if (retryRetiredRead()) return;
+        for (const id of pollIds) {
+          const parents = ownEntry(batch.materials, id);
+          if (Array.isArray(parents)) putParents(id, parents, records);
+          else if (missing.has(id)) putParents(id, [], records);
+        }
+        setRefParents((prev) => {
+          if (!current()) return prev;
+          const next = { ...prev };
+          for (const id of pollIds) {
+            const parents = ownEntry(batch.materials, id);
+            if (Array.isArray(parents)) next[id] = parents;
+            else if (missing.has(id)) next[id] = [];
+          }
+          return reconcileRecordState(prev, next);
+        });
+        setGenData((prev) => {
+          if (!current()) return prev;
+          const next = { ...prev };
+          for (const r of rs) {
+            if (r.gen) next[r.id] = keepColor(r.id) && prev[r.id] ? { ...r.gen, color: prev[r.id].color } : r.gen;
+            else if (r.gone) delete next[r.id]; // 삭제 확정 → stale 결과 제거(캐시서도 제거됨) → '삭제됨' 표시가 드러나게
+          }
+          return reconcileRecordState(prev, next);
+        });
+        setMissingIds((prev) => {
+          if (!current()) return prev;
+          let changed = false;
+          const next = new Set(prev);
+          for (const r of rs) {
+            if (r.gen && next.delete(r.id)) changed = true; // 되살아나면(복원) 해제
+            else if (r.gone && !pendingAttemptIds.has(r.id) && !next.has(r.id)) {
+              next.add(r.id);
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+        // 재폴은 '아직 진행 중'인 id + 서버 장애로 못 물어본 id — 완료 카드를 매 2.5초 다시 조회하던 N+1 폴링 제거.
+        const unavailable = new Set(batch.unavailable ?? []);
+        const stillPending = rs
+          .filter((r) =>
+            (r.gen && ["pending", "queued", "running", "processing"].includes(String(r.gen.status))) ||
+            (!r.gen && (pendingAttemptIds.has(r.id) || unavailable.has(r.id))),
+          )
+          .map((r) => r.id);
+        if (stillPending.length) timer = window.setTimeout(() => tick(stillPending), 2500);
+      } finally {
+        if (seq === requestSeq) {
+          tickInFlight = false;
+          void drainTags();
+        }
+      }
     };
     refreshSceneDataRef.current = () => {
       if (!alive) return;
@@ -362,9 +493,12 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
       alive = false;
       requestSeq += 1;
       refreshSceneDataRef.current = () => {};
+      refreshSceneTagsRef.current = () => {};
+      drainTagsRef.current = () => {};
       if (timer) clearTimeout(timer);
+      if (tagTimer !== undefined) clearTimeout(tagTimer);
     };
-  }, [genIdSig, pendingAttemptSig, ledgerId, scope.authReady, colors]);
+  }, [genIdSig, pendingAttemptSig, ledgerId, scope.authReady, colors, records]);
 
   // 씬 전환(genIdSig 변경) 시 새 씬 카드들의 생성물을 캐시에서 즉시 복원 — tick 서버조회를 기다리는 빈 화면 제거.
   //  (prev 우선 병합이라 이미 최신인 값은 덮지 않는다. 아래 prune 이 현재 카드 밖 id 를 곧 정리한다.)
@@ -372,9 +506,9 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
   useLayoutEffect(() => {
     const ids = genIdSig.split(",").filter(Boolean);
     if (!ids.length) return;
-    const g = hydrateGen(ids);
-    const p = hydrateParents(ids);
-    const m = hydrateMissing(ids);
+    const g = hydrateGen(ids, records);
+    const p = hydrateParents(ids, records);
+    const m = hydrateMissing(ids, records);
     if (Object.keys(g).length || m.size) setAnsweredIds((prev) => addIds(prev, [...Object.keys(g), ...m]));
     if (Object.keys(g).length) {
       setGenData((prev) => reconcileRecordState(prev, { ...g, ...prev }));
@@ -390,7 +524,7 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
         for (const id of m) if (!next.has(id)) { next.add(id); changed = true; }
         return changed ? next : prev;
       });
-  }, [genIdSig]);
+  }, [genIdSig, records]);
 
   // 장기 누적 방지 — 현재 카드가 더 이상 참조하지 않는 id 의 캐시(genData/refParents/missingIds)를 정리.
   // 카드 삭제·씬 전환을 반복하는 긴 세션에서 옛 생성물 데이터가 무한 쌓이지 않게(옛 forward-merge 만 함).

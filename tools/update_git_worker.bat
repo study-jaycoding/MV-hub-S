@@ -1,4 +1,13 @@
 @echo off
+if "%~1"=="" (
+  echo [ERROR] update worker did not receive the repository path.
+  exit /b 1
+)
+REM Direct invocations use the same lock/role admission as update_git.bat.
+@"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~1\tools\run_update_git.ps1" -Root "%~1"
+@exit /b %errorlevel%
+REM MVHUB_ISOLATED_WORKER_BODY
+@echo off
 chcp 65001 >nul
 REM ============================================================================
 REM  MV Hub - isolated update worker
@@ -223,18 +232,7 @@ if defined FE_CHANGED (
 cd /d "%ROOT%"
 
 echo.
-set "UPDATE_STAGE=server-restart"
-set "SERVER_RESULT=not-registered"
-schtasks /Query /TN "MVHub Server" >nul 2>nul
-if not errorlevel 1 (
-  echo [server] Registered shared server detected - applying update by restart...
-  set "SERVER_RESULT=restart-failed"
-  set "CONTENT_HUB_NO_PAUSE=1"
-  call "%ROOT%restart_server_task.bat" || goto :err
-  set "SERVER_RESULT=restarted-ready"
-) else (
-  echo [server] No shared-server task on this PC - no server restart needed.
-)
+set "SERVER_RESULT=worker-only"
 
 echo.
 set "UPDATE_STAGE=complete"
@@ -246,7 +244,6 @@ if errorlevel 1 (
 del /q "!LEGACY_ISOLATED_UPDATER_READY!" >nul 2>nul
 call :write_update_log "SUCCESS" "before=!BEFORE! after=!AFTER! server=!SERVER_RESULT!"
 echo [done] updated to the latest version.
-echo        - registered server: restarted and readiness-checked automatically
 echo        - worker PC:         run MV_agent.bat again
 echo        - Higgsfield CLI:    run update_cli.bat separately if you want to update it
 pause

@@ -249,8 +249,10 @@ def test_backup_scope_rotation_and_callback_stay_on_a_during_switch(
     root = Path(account_scope)
     src_a = root / "source-a.db"
     src_b = root / "source-b.db"
-    src_a.write_bytes(b"source-a")
-    src_b.write_bytes(b"source-b")
+    for path, marker in ((src_a, "source-a"), (src_b, "source-b")):
+        db.init_db(path)
+        with db.get_connection(path) as conn:
+            conn.execute("INSERT INTO app_setting(key, value) VALUES('scope-marker', ?)", (marker,))
     monkeypatch.setattr(backup, "BACKUP_DIR", root / "backups")
     monkeypatch.setattr(
         backup,
@@ -259,7 +261,6 @@ def test_backup_scope_rotation_and_callback_stay_on_a_during_switch(
     )
     monkeypatch.setattr(backup, "BACKUP_KEEP", 1)
     monkeypatch.setattr(backup, "MANAGE_DB_PATH", root / "missing-manage.db")
-    monkeypatch.setattr(backup, "validate_hub_db", lambda *_args, **_kwargs: None)
 
     a_dir = backup.BACKUP_DIR / active_account.slug(A_EMAIL)
     b_dir = backup.BACKUP_DIR / active_account.slug(B_EMAIL)
@@ -271,12 +272,12 @@ def test_backup_scope_rotation_and_callback_stay_on_a_during_switch(
     old_b.write_bytes(b"old-b")
     started = threading.Event()
     release = threading.Event()
+    real_snapshot = backup._snapshot_database_set
 
-    def snapshot(_sources, snapshots) -> None:
+    def snapshot(sources, snapshots):
         started.set()
         assert release.wait(2)
-        for _label, _dest, tmp, _expected_table in snapshots:
-            tmp.write_bytes(b"new-a")
+        return real_snapshot(sources, snapshots)
 
     monkeypatch.setattr(backup, "_snapshot_database_set", snapshot)
     callback_paths: list[Path] = []
@@ -295,14 +296,18 @@ def test_backup_scope_rotation_and_callback_stay_on_a_during_switch(
             await asyncio.sleep(0)
         _switch_without_waiting_for_work(B_EMAIL, B_UID)
         release.set()
-        await task
+        assert await task is True
 
     asyncio.run(scenario())
 
-    assert src_a.read_bytes() == b"source-a"
-    assert src_b.read_bytes() == b"source-b"
     assert callback_scopes == [A_EMAIL]
     assert len(callback_paths) == 1 and callback_paths[0].parent == a_dir
+    for path, marker in ((src_a, "source-a"), (src_b, "source-b"), (callback_paths[0], "source-a")):
+        with db.get_connection(path) as conn:
+            assert conn.execute("SELECT value FROM app_setting WHERE key='scope-marker'").fetchone()[0] == marker
+    manifest = json.loads(backup.backup_manifest.local_path(callback_paths[0]).read_text("utf-8"))
+    assert manifest["account_scope_digest"] == backup.backup_manifest.account_digest(active_account.slug(A_EMAIL))
+    backup.backup_manifest.verify_files(manifest, {"content": callback_paths[0]}, local=True)
     assert not old_a.exists()
     assert old_b.exists()
     assert len(list(a_dir.glob("content_hub_*.db"))) == 1

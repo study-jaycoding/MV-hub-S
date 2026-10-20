@@ -17,6 +17,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+from smoke_env import build_smoke_env
+
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -55,24 +57,12 @@ def main() -> int:
         temp_path = Path(temp)
         stdout_path = temp_path / "server.stdout.log"
         stderr_path = temp_path / "server.stderr.log"
-        env = os.environ.copy()
-        env.update(
-            {
-                "PYEXE": sys.executable,
-                "PORT": str(port),
-                "CONTENT_HUB_DATA": str(temp_path / "data"),
-                "CONTENT_HUB_AUTH": "0",
-                "CONTENT_HUB_MANAGE": "0",
-                "PATH": os.pathsep.join(
-                    filter(
-                        None,
-                        (
-                            str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"),
-                            os.environ.get("SystemRoot", r"C:\Windows"),
-                        ),
-                    )
-                ),
-            }
+        env = build_smoke_env(
+            os.environ,
+            temp_path,
+            frontend_dist=ROOT / "frontend" / "dist",
+            python_exe=Path(sys.executable),
+            port=port,
         )
         with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open(
             "w", encoding="utf-8"

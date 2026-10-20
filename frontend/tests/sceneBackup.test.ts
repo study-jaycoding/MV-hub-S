@@ -18,6 +18,9 @@ const mem = new Map<string, string>();
 if (!(globalThis as Record<string, unknown>).addEventListener) {
   (globalThis as Record<string, unknown>).addEventListener = () => {};
 }
+if (!(globalThis as Record<string, unknown>).removeEventListener) {
+  (globalThis as Record<string, unknown>).removeEventListener = () => {};
+}
 
 // jsonFetch 목 — 테스트가 URL 별 응답을 지정한다.
 type Call = { url: string; init?: RequestInit };

@@ -12,7 +12,7 @@ import logging
 import os
 from typing import Any, Optional
 
-from .. import active_account, repo
+from .. import active_account, db, repo
 from ..usecases import generation_media_cache
 from .async_tools import to_thread_non_abandon
 from .operational_logging import log_event
@@ -62,6 +62,8 @@ async def _process_claim(claim: dict[str, Any]) -> dict[str, Any]:
     try:
         result = await generation_media_cache.cache_generation_media(generation)
     except asyncio.CancelledError:
+        raise
+    except db.DatabaseEpochChanged:
         raise
     except Exception as exc:  # noqa: BLE001
         outcome = generation_media_cache._outcome_from_error(exc)
@@ -127,6 +129,8 @@ async def _process_claim_safely(claim: dict[str, Any]) -> dict[str, Any]:
         return await _process_claim(claim)
     except asyncio.CancelledError:
         raise
+    except db.DatabaseEpochChanged:
+        raise
     except Exception:  # noqa: BLE001
         await asyncio.to_thread(
             repo.finish_media_preservation,
@@ -175,8 +179,13 @@ async def _claim_and_process_non_abandon(
     """호출 task가 취소돼도 이미 시작한 claim~finish 단위는 끝낸 뒤 취소를 전파한다."""
     # 캡처의 전환 락 획득은 워커 스레드에서(syncer.sync_now 와 같은 규율). 이 경로는 30초 주기
     # 무조건 실행이라, 루프에서 락을 기다리면 복원·로그인 전환 때마다 서버가 통째로 정지한다.
-    account_key = await asyncio.to_thread(_capture_account_scope)
-    worker = asyncio.create_task(_claim_and_process(gen_id, account_key))
+    operation = await asyncio.to_thread(db.capture_share_operation)
+
+    async def process():
+        with db.pinned_share_operation(operation):
+            return await _claim_and_process(gen_id, operation[0][0])
+
+    worker = asyncio.create_task(process())
     try:
         return await asyncio.shield(worker)
     except asyncio.CancelledError:

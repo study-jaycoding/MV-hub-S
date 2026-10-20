@@ -45,6 +45,7 @@ from .projects import *  # noqa: F401,F403
 from .folder_cover import *  # noqa: F401,F403  (폴더 카드·대표 — projects·generations_query 뒤)
 from .workspace_assignments import *  # noqa: F401,F403  (현재 워크스페이스 귀속 수동 보정)
 from .scenes_backup import *  # noqa: F401,F403  (캔버스 씬 DB 백업 — leaf)
+from .edit_docs import *  # noqa: F401,F403  (개인 타임라인 자동 백업·복구 — leaf)
 from .mcp_plans import *  # noqa: F401,F403
 from .scene_cards import *  # noqa: F401,F403  (캔버스 카드 소속 — leaf)
 from .generation_views import *  # noqa: F401,F403  (마지막으로 본 생성물 표시 — leaf)

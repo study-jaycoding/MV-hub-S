@@ -10,6 +10,8 @@ from ..config import DEFAULT_WORKER_ID
 from ..db import get_connection
 from ..task_activity import merge_task_activity_location
 from . import generation_sync, identity, tags
+from .asset_locations import project_generation_locations
+from .generation_references import _reference_copy_positions
 from .final_moves import FinalMoveActor, FinalMoveDenied, FinalProjectChanged, check_final_moves
 from ._common import (
     BUNDLE_FORMAT,
@@ -104,33 +106,28 @@ def set_generation_hold(gen_id: str, held: bool) -> None:
     """일반 공유와 보류 사이를 전환한다. transaction-root 전용이다."""
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        try:
-            state = conn.execute(
-                "SELECT g.status, g.deleted_at, g.is_final, "
-                "EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared "
-                "FROM generation g WHERE g.id=?", (gen_id,),
-            ).fetchone()
-            if state is None:
-                raise GenerationHoldStateError("not_found")
-            if state["deleted_at"]:
-                raise GenerationHoldStateError("deleted")
-            if state["status"] != "done":
-                raise GenerationHoldStateError("not_done")
-            if state["is_final"]:
-                raise GenerationHoldStateError("final")
-            if not state["shared"]:
-                raise GenerationHoldStateError("not_shared")
-            conn.execute(
-                "UPDATE generation SET is_held=? WHERE id=?", (int(held), gen_id),
-            )
-            conn.execute("COMMIT")
-        except BaseException:
-            try:
-                if conn.in_transaction:
-                    conn.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass
-            raise
+        return _set_generation_hold(conn, gen_id, held)
+
+
+def _set_generation_hold(conn, gen_id: str, held: bool) -> None:
+    state = conn.execute(
+        "SELECT g.status, g.deleted_at, g.is_final, "
+        "EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared "
+        "FROM generation g WHERE g.id=?", (gen_id,),
+    ).fetchone()
+    if state is None:
+        raise GenerationHoldStateError("not_found")
+    if state["deleted_at"]:
+        raise GenerationHoldStateError("deleted")
+    if state["status"] != "done":
+        raise GenerationHoldStateError("not_done")
+    if state["is_final"]:
+        raise GenerationHoldStateError("final")
+    if not state["shared"]:
+        raise GenerationHoldStateError("not_shared")
+    conn.execute(
+        "UPDATE generation SET is_held=? WHERE id=?", (int(held), gen_id),
+    )
 
 
 _ANY_PROJECT = object()  # 귀속 프로젝트를 확인하지 않는다(옛 호출)
@@ -159,40 +156,39 @@ def finalize_generation_with_share(
     트랜잭션 안 호출 금지): 공유 SELECT 전에 ``BEGIN IMMEDIATE``를 열어
     unpublish의 검사·삭제 루트와 직렬화한다. expect_project = 권한을 본 귀속 프로젝트(다르면 FinalProjectChanged).
     """
-    sid = new_id()
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        try:
-            _assert_project_unchanged(conn, gen_id, expect_project)
-            was_shared = bool(
-                conn.execute(
-                    "SELECT 1 FROM share WHERE generation_id=?", (gen_id,)
-                ).fetchone()
-            )
-            if not was_shared:
-                conn.execute(
-                    "INSERT INTO share(id, generation_id, shared_by, visibility) "
-                    "VALUES(?,?,?,?) ON CONFLICT(generation_id) DO NOTHING",
-                    (sid, gen_id, shared_by, visibility),
-                )
-            # held_before_final — 최종이 되는 순간의 보류를 적어 둔다(해제가 그리로 돌아간다 — release_final). 이미 최종인 행에
-            #  또 온 최종 지정은 덮지 않는다: 그때의 is_held 는 0 이라 기억이 지워진다. (SET 의 식은 바꾸기 전의 값을 본다.)
-            conn.execute(
-                "UPDATE generation "
-                "SET is_final=1, is_held=0, final_by=?, final_at=datetime('now'), "
-                "held_before_final=CASE WHEN is_final=1 THEN held_before_final ELSE is_held END WHERE id=?",
-                (final_by, gen_id),
-            )
-            conn.execute("COMMIT")
-            return was_shared
-        except BaseException:
-            # COMMIT 자체 실패나 취소 계열 예외에서도 원래 예외를 가리지 않고 정리한다.
-            try:
-                if conn.in_transaction:
-                    conn.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass
-            raise
+        return _finalize_generation_with_share(conn, gen_id, shared_by, final_by, visibility, expect_project)
+
+
+def _finalize_generation_with_share(
+    conn,
+    gen_id: str,
+    shared_by: str,
+    final_by: Optional[str] = None,
+    visibility: str = "team",
+    expect_project: Any = _ANY_PROJECT,
+) -> bool:
+    sid = new_id()
+    _assert_project_unchanged(conn, gen_id, expect_project)
+    was_shared = bool(
+        conn.execute(
+            "SELECT 1 FROM share WHERE generation_id=?", (gen_id,)
+        ).fetchone()
+    )
+    if not was_shared:
+        conn.execute(
+            "INSERT INTO share(id, generation_id, shared_by, visibility) "
+            "VALUES(?,?,?,?) ON CONFLICT(generation_id) DO NOTHING",
+            (sid, gen_id, shared_by, visibility),
+        )
+    conn.execute(
+        "UPDATE generation "
+        "SET is_final=1, is_held=0, final_by=?, final_at=datetime('now'), "
+        "held_before_final=CASE WHEN is_final=1 THEN held_before_final ELSE is_held END WHERE id=?",
+        (final_by, gen_id),
+    )
+    return was_shared
 
 
 def transition_final_review(
@@ -208,44 +204,42 @@ def transition_final_review(
         raise ValueError("target must be unshared, shared or held")
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        try:
-            _assert_project_unchanged(conn, gen_id, expect_project)
-            state = conn.execute(
-                "SELECT g.status, g.deleted_at, g.is_final, g.is_held, "
-                "EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared "
-                "FROM generation g WHERE g.id=?", (gen_id,),
-            ).fetchone()
-            if state is None:
-                raise GenerationHoldStateError("not_found")
-            if state["deleted_at"]:
-                raise GenerationHoldStateError("deleted")
-            if state["status"] != "done":
-                raise GenerationHoldStateError("not_done")
-            if not state["is_final"]:
-                raise GenerationHoldStateError("not_final")
-            previous = {key: bool(state[key]) for key in ("shared", "is_final", "is_held")}
-            if target == "unshared":
-                conn.execute("DELETE FROM share WHERE generation_id=?", (gen_id,))
-            else:
-                # 레거시 드리프트(is_final=1, share 없음)도 검수 권한 안에서 보강한다.
-                conn.execute(
-                    "INSERT INTO share(id, generation_id, shared_by, visibility) "
-                    "VALUES(?,?,?, 'team') ON CONFLICT(generation_id) DO NOTHING",
-                    (new_id(), gen_id, shared_by),
-                )
-            conn.execute(
-                "UPDATE generation SET is_final=0, final_by=NULL, final_at=NULL, held_before_final=0, is_held=? "
-                "WHERE id=?", (int(target == "held"), gen_id),
-            )
-            conn.execute("COMMIT")
-            return previous
-        except BaseException:
-            try:
-                if conn.in_transaction:
-                    conn.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass
-            raise
+        return _transition_final_review(conn, gen_id, target, shared_by, expect_project)
+
+
+def _transition_final_review(
+    conn,
+    gen_id: str, target: str, shared_by: str, expect_project: Any = _ANY_PROJECT,
+) -> dict[str, bool]:
+    _assert_project_unchanged(conn, gen_id, expect_project)
+    state = conn.execute(
+        "SELECT g.status, g.deleted_at, g.is_final, g.is_held, "
+        "EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared "
+        "FROM generation g WHERE g.id=?", (gen_id,),
+    ).fetchone()
+    if state is None:
+        raise GenerationHoldStateError("not_found")
+    if state["deleted_at"]:
+        raise GenerationHoldStateError("deleted")
+    if state["status"] != "done":
+        raise GenerationHoldStateError("not_done")
+    if not state["is_final"]:
+        raise GenerationHoldStateError("not_final")
+    previous = {key: bool(state[key]) for key in ("shared", "is_final", "is_held")}
+    if target == "unshared":
+        conn.execute("DELETE FROM share WHERE generation_id=?", (gen_id,))
+    else:
+        # 레거시 드리프트(is_final=1, share 없음)도 검수 권한 안에서 보강한다.
+        conn.execute(
+            "INSERT INTO share(id, generation_id, shared_by, visibility) "
+            "VALUES(?,?,?, 'team') ON CONFLICT(generation_id) DO NOTHING",
+            (new_id(), gen_id, shared_by),
+        )
+    conn.execute(
+        "UPDATE generation SET is_final=0, final_by=NULL, final_at=NULL, held_before_final=0, is_held=? "
+        "WHERE id=?", (int(target == "held"), gen_id),
+    )
+    return previous
 
 
 def release_final(gen_id: str, *, restore_held: bool = False, expect_project: Any = _ANY_PROJECT) -> Optional[bool]:
@@ -258,31 +252,24 @@ def release_final(gen_id: str, *, restore_held: bool = False, expect_project: An
     """
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        try:
-            _assert_project_unchanged(conn, gen_id, expect_project)
-            state = conn.execute(
-                "SELECT g.is_final, g.held_before_final, "
-                "EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared "
-                "FROM generation g WHERE g.id=?", (gen_id,),
-            ).fetchone()
-            if restore_held and not (state and state["is_final"]):
-                conn.execute("COMMIT")
-                return None
-            # 공유가 없는 최종(레거시 드리프트)은 보류가 될 수 없다 — 보류는 공유된 것의 상태다
-            restored = bool(restore_held and state["held_before_final"] and state["shared"])
-            conn.execute(
-                "UPDATE generation SET is_final=0, final_by=NULL, final_at=NULL, held_before_final=0, is_held=? "
-                "WHERE id=?", (int(restored), gen_id),
-            )
-            conn.execute("COMMIT")
-            return restored
-        except BaseException:
-            try:
-                if conn.in_transaction:
-                    conn.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass
-            raise
+        return _release_final(conn, gen_id, restore_held=restore_held, expect_project=expect_project)
+
+
+def _release_final(conn, gen_id: str, *, restore_held: bool = False, expect_project: Any = _ANY_PROJECT) -> Optional[bool]:
+    _assert_project_unchanged(conn, gen_id, expect_project)
+    state = conn.execute(
+        "SELECT g.is_final, g.held_before_final, "
+        "EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared "
+        "FROM generation g WHERE g.id=?", (gen_id,),
+    ).fetchone()
+    if restore_held and not (state and state["is_final"]):
+        return None
+    restored = bool(restore_held and state["held_before_final"] and state["shared"])
+    conn.execute(
+        "UPDATE generation SET is_final=0, final_by=NULL, final_at=NULL, held_before_final=0, is_held=? "
+        "WHERE id=?", (int(restored), gen_id),
+    )
+    return restored
 
 
 def unpublish_generation_if_not_final(gen_id: str) -> bool:
@@ -294,27 +281,22 @@ def unpublish_generation_if_not_final(gen_id: str) -> bool:
     """
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        try:
-            state = conn.execute(
-                "SELECT g.is_final, "
-                "EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared "
-                "FROM generation g WHERE g.id=?",
-                (gen_id,),
-            ).fetchone()
-            if state and state["is_final"]:
-                raise FinalGenerationUnpublishError(gen_id)
-            was_shared = bool(state and state["shared"])
-            conn.execute("DELETE FROM share WHERE generation_id=?", (gen_id,))
-            conn.execute("UPDATE generation SET is_held=0 WHERE id=?", (gen_id,))
-            conn.execute("COMMIT")
-            return was_shared
-        except BaseException:
-            try:
-                if conn.in_transaction:
-                    conn.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass
-            raise
+        return _unpublish_generation_if_not_final(conn, gen_id)
+
+
+def _unpublish_generation_if_not_final(conn, gen_id: str) -> bool:
+    state = conn.execute(
+        "SELECT g.is_final, "
+        "EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared "
+        "FROM generation g WHERE g.id=?",
+        (gen_id,),
+    ).fetchone()
+    if state and state["is_final"]:
+        raise FinalGenerationUnpublishError(gen_id)
+    was_shared = bool(state and state["shared"])
+    conn.execute("DELETE FROM share WHERE generation_id=?", (gen_id,))
+    conn.execute("UPDATE generation SET is_held=0 WHERE id=?", (gen_id,))
+    return was_shared
 
 
 def _bridge_derived_edges(
@@ -411,13 +393,13 @@ def export_bundle(
 
         # 결과물(asset) — generation 당 1개. 원격 URL 보존.
         for r in conn.execute(
-            f"SELECT generation_id, type, file_path, thumbnail_path, source_url FROM asset "
+            f"SELECT generation_id, type, file_path, thumbnail_path, source_url, asset_content_id FROM asset "
             f"WHERE generation_id IN ({ph})",
             ids,
         ).fetchall():
             url = _remote_url(r["file_path"], r["source_url"])
             if url and by_id[r["generation_id"]]["_asset"] is None:
-                a = {"type": r["type"], "file_path": url}
+                a = {"type": r["type"], "file_path": url, "asset_content_id": r["asset_content_id"]}
                 # 영상 포스터(CLI thumbnail_url) 등 원격 URL 썸네일만 공유 — 받는 쪽 _upsert_synced 가
                 # thumbnail_url 을 asset.thumbnail_path 로 복원(로컬 썸네일 경로는 남이 못 여니 제외).
                 thumb = r["thumbnail_path"]
@@ -428,28 +410,40 @@ def export_bundle(
         # 레퍼런스 위치(role = @Image1/@Video 슬롯) — 프롬프트 내 레퍼런스 위치 필터정보의 핵심.
         for r in conn.execute(
             f"SELECT gr.generation_id, gr.role, r.id, r.type, r.file_path, r.source, "
-            f"r.source_url, r.share_url, r.content_sha, r.content_bytes, r.registry_asset_id, r.version_verified "
+            f"r.source_url, r.share_url, r.content_sha, r.content_bytes, r.registry_asset_id, r.version_verified, r.asset_content_id, "
+            f"gr.position, gr.rowid AS source_rowid "
             f"FROM gen_reference gr JOIN reference r ON r.id = gr.reference_id "
-            f"WHERE gr.generation_id IN ({ph}) ORDER BY gr.rowid",
+            f"WHERE gr.generation_id IN ({ph}) ORDER BY COALESCE(gr.position, gr.rowid), gr.rowid",
             ids,
         ).fetchall():
-            by_id[r["generation_id"]]["_references"].append(
-                {
-                    "id": r["id"],
-                    "type": r["type"],
-                    # ★공유 전용 힉스필드 공개 URL(share_url) 우선 — 로컬 캡쳐 토큰(asset:...)도 받는 쪽이
-                    # 원본을 받을 수 있게. 없으면 기존 규칙(source_url 우선, 그다음 http file_path).
-                    "file_path": r["share_url"] or _remote_url(r["file_path"], r["source_url"]),
-                    "role": r["role"],
-                    # @소스명(칩 이름) — 받는 쪽 buildPromptParts 가 display_prompt 토큰과
-                    # 매칭해 인라인 소스 위치를 복원하는 키. 누락 시 'uploaded' 로 떨어져 위치 손실.
-                    "source": r["source"],
-                    "content_sha": r["content_sha"],
-                    "content_bytes": r["content_bytes"],
-                    "registry_asset_id": r["registry_asset_id"],
-                    "version_verified": r["version_verified"],
-                }
-            )
+            by_id[r["generation_id"]]["_references"].append(r)
+        for g in gens:
+            refs = g["_references"]
+            g["_references"] = []
+            for r, position in zip(refs, _reference_copy_positions(refs)):
+                g["_references"].append(
+                    {
+                        "id": r["id"],
+                        "type": r["type"],
+                        # ★공유 전용 힉스필드 공개 URL(share_url) 우선 — 로컬 캡쳐 토큰(asset:...)도 받는 쪽이
+                        # 원본을 받을 수 있게. 없으면 기존 규칙(source_url 우선, 그다음 http file_path).
+                        "file_path": (_remote_url(r["file_path"], r["source_url"])
+                                      if str(r["file_path"] or "").startswith("asset-sync:")
+                                      else r["share_url"] or _remote_url(r["file_path"], r["source_url"])),
+                        "role": r["role"],
+                        # @소스명(칩 이름) — 받는 쪽 buildPromptParts 가 display_prompt 토큰과
+                        # 매칭해 인라인 소스 위치를 복원하는 키. 누락 시 'uploaded' 로 떨어져 위치 손실.
+                        "source": r["source"],
+                        "content_sha": r["content_sha"],
+                        "content_bytes": r["content_bytes"],
+                        "registry_asset_id": r["registry_asset_id"],
+                        "version_verified": r["version_verified"],
+                        "asset_content_id": r["asset_content_id"],
+                        "position": position,
+                    }
+                )
+
+        project_generation_locations(conn, gens, references_key="_references", assets_key="_asset")
 
         for r in conn.execute(
             f"SELECT gt.generation_id, t.name FROM gen_tag gt JOIN tag t ON t.id=gt.tag_id "
@@ -635,6 +629,17 @@ def import_bundle_item(
     author_uids(공유 서버 인증 발행만 — 인증 계정의 uid·자기 acct: 별칭): 주어지면 작성자 판정을
     id·job_id·URL 로 실제 고른 행에 하고 DEFAULT_WORKER 예외를 두지 않는다(F-A-01).
     반환: 'inserted'|'updated'|'unchanged'|'skipped'|'blocked'(작성자 불일치·최종본 이동 권한 없음으로 미반영)."""
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        return _import_bundle_item(conn, item, worker_id, shared_by, final_actor, author_uids)
+
+
+def _import_bundle_item(conn,
+    item: dict[str, Any], worker_id: str, shared_by: Optional[str] = None,
+    final_actor: Optional[FinalMoveActor] = None,
+    author_uids: Optional[set[str]] = None,
+    validate_target=None,
+) -> str:
     g = item.get("generation") or {}
     job_id = g.get("id")
     if not job_id:
@@ -670,116 +675,109 @@ def import_bundle_item(
     # item 전체(fact upsert + overlay 병합)를 한 트랜잭션으로 — upsert 성공 후 overlay 중 실패해도
     # 반쪽(fact 만 있고 overlay 빠짐)이 남지 않게. 내부 함수라 wrapper 가 아닌 _upsert_synced(conn)
     # 를 직접 호출해 중첩 BEGIN 을 피한다(오버레이 헬퍼는 모두 conn 참여형).
-    with get_connection() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+    conn.execute("SAVEPOINT share_bundle_item")
+    existing = conn.execute(
+        "SELECT id, creator_uid, project_id, folder_path, workspace_scope, workspace_id, "
+        "workspace_name, task_activity_at FROM generation WHERE id=? OR job_id=? LIMIT 1",
+        (job_id, job_id),
+    ).fetchone()
+    if author_uids is not None:
+        # 인증 발행(F-A-01): 이 앵커의 기존 행 전부(아래 사실·오버레이가 고를 수 있는 행)가 발행자 것이어야 한다.
+        # URL 로 고르는 행은 _upsert_synced 가 같은 규칙으로 본다 — id·job_id 만 보면 새 앵커 + 남의 결과
+        # URL 번들이 남의 행을 바꿨다. 판정은 쓰기 전 행으로 한다(번들이 주장한 작성자로 덮인 뒤가 아니라).
+        fact_blocked = any(
+            row["creator_uid"] and row["creator_uid"] not in author_uids
+            for row in conn.execute(
+                "SELECT creator_uid FROM generation WHERE id=? OR job_id=?", (job_id, job_id)
+            )
+        )
+    else:
+        fact_blocked = bool(
+            existing
+            and existing["creator_uid"]
+            and shared_by
+            and shared_by != DEFAULT_WORKER_ID
+            and existing["creator_uid"] != shared_by
+        )
+    if fact_blocked:
+        # ★'unchanged' 가 아니라 'blocked' — 예전엔 발행자 화면에서 구분이 안 돼,
+        #  서버가 조용히 무시한 발행(작성자 불일치 재공유)이 로컬에선 "공유됨"으로
+        #  확정되는 무음 유실이 났다. 발신 측이 이 값으로 share 표식을 건너뛴다.
+        result = "blocked"
+    else:
+        result = generation_sync._upsert_synced(conn, parsed, worker_id, author_uids=author_uids, validate_target=validate_target)
+        fact_blocked = result == "blocked"
+    # 오버레이 병합 — display_prompt(레퍼런스 위치)·태그(union)·코멘트(append).
+    # ★기존 행의 작성자가 아닌 재공유자는 오버레이도 건드리지 않는다.
+    # fact 만 막고 아래를 허용하면 빈 auto_tags 번들로 원 작성자의 자동태그를 지우거나,
+    # share 행을 강제로 만들어 비공개 작업을 팀 공개로 바꿀 수 있다. 100명 운영에서는
+    # "id 를 아는 팀원"을 쓰기 권한으로 간주하지 않고 작성자 발행만 권위로 인정한다.
+    gid = _find_id_by_job(conn, job_id)
+    if gid and not fact_blocked:
+        dp = g.get("display_prompt")
+        if dp:
+            conn.execute(
+                "UPDATE generation SET display_prompt=COALESCE(display_prompt, ?) WHERE id=?",
+                (dp, gid),
+            )
+        # 위치(project_id·folder_path) 권위 = 작성자의 로컬. 소유자(=발행자)가 올린 것이면
+        # 로컬 값으로 덮어쓴다(미분류=NULL 반영 포함) → 한쪽에서 옮기면 발행 때 팀에도 반영.
+        # 남의 것을 재공유(creator≠shared_by)면 기존 서버값 보존(COALESCE, 침범 금지).
+        # 인증 발행은 발행자 신원(계정 uid + 자기 acct: 별칭)이 소유자다 — 자기 별칭 행의 이동도 반영한다.
+        creator = creator_uid
+        is_owner = (not creator) or (
+            creator in author_uids if author_uids is not None else creator == shared_by
+        )
+        current = dict(conn.execute(
+            "SELECT project_id, folder_path, workspace_scope, workspace_id, workspace_name, "
+            "task_activity_at, is_final FROM generation WHERE id=?", (gid,),
+        ).fetchone())
+        is_final = bool(current.pop("is_final"))
+        incoming = dict(current)
+        if is_owner:
+            incoming.update(project_id=g.get("project_id"), folder_path=folder_path,
+                            task_activity_at=g.get("task_activity_at"))
+        else:
+            # 비소유 발행은 기존 빈 위치 보강만 허용하고 활동 시각을 주장하지 못한다.
+            incoming.update(
+                project_id=current["project_id"] or g.get("project_id"),
+                folder_path=current["folder_path"] or folder_path,
+                task_activity_at=None,
+            )
+        merged = merge_task_activity_location(dict(existing) if existing else None, incoming)
         try:
-            # ★fact 갱신은 작성자 권위 — 기존 행의 작성자가 발행자(shared_by)와 다르면
-            # 사실(프롬프트·상태·에셋)은 덮지 않는다(남의 것을 재공유한 번들이 원본을 못 바꿈).
-            # 아래 위치(project/folder) 병합의 is_owner 규칙을 fact 층까지 확장한 것.
-            # shared_by 미상(레거시 로컬 흐름)은 기존 동작 보존.
-            existing = conn.execute(
-                "SELECT id, creator_uid, project_id, folder_path, workspace_scope, workspace_id, "
-                "workspace_name, task_activity_at FROM generation WHERE id=? OR job_id=? LIMIT 1",
-                (job_id, job_id),
-            ).fetchone()
-            if author_uids is not None:
-                # 인증 발행(F-A-01): 이 앵커의 기존 행 전부(아래 사실·오버레이가 고를 수 있는 행)가 발행자 것이어야 한다.
-                # URL 로 고르는 행은 _upsert_synced 가 같은 규칙으로 본다 — id·job_id 만 보면 새 앵커 + 남의 결과
-                # URL 번들이 남의 행을 바꿨다. 판정은 쓰기 전 행으로 한다(번들이 주장한 작성자로 덮인 뒤가 아니라).
-                fact_blocked = any(
-                    row["creator_uid"] and row["creator_uid"] not in author_uids
-                    for row in conn.execute(
-                        "SELECT creator_uid FROM generation WHERE id=? OR job_id=?", (job_id, job_id)
-                    )
-                )
-            else:
-                fact_blocked = bool(
-                    existing
-                    and existing["creator_uid"]
-                    and shared_by
-                    and shared_by != DEFAULT_WORKER_ID
-                    and existing["creator_uid"] != shared_by
-                )
-            if fact_blocked:
-                # ★'unchanged' 가 아니라 'blocked' — 예전엔 발행자 화면에서 구분이 안 돼,
-                #  서버가 조용히 무시한 발행(작성자 불일치 재공유)이 로컬에선 "공유됨"으로
-                #  확정되는 무음 유실이 났다. 발신 측이 이 값으로 share 표식을 건너뛴다.
-                result = "blocked"
-            else:
-                result = generation_sync._upsert_synced(conn, parsed, worker_id, author_uids=author_uids)
-                fact_blocked = result == "blocked"
-            # 오버레이 병합 — display_prompt(레퍼런스 위치)·태그(union)·코멘트(append).
-            # ★기존 행의 작성자가 아닌 재공유자는 오버레이도 건드리지 않는다.
-            # fact 만 막고 아래를 허용하면 빈 auto_tags 번들로 원 작성자의 자동태그를 지우거나,
-            # share 행을 강제로 만들어 비공개 작업을 팀 공개로 바꿀 수 있다. 100명 운영에서는
-            # "id 를 아는 팀원"을 쓰기 권한으로 간주하지 않고 작성자 발행만 권위로 인정한다.
-            gid = _find_id_by_job(conn, job_id)
-            if gid and not fact_blocked:
-                dp = g.get("display_prompt")
-                if dp:
-                    conn.execute(
-                        "UPDATE generation SET display_prompt=COALESCE(display_prompt, ?) WHERE id=?",
-                        (dp, gid),
-                    )
-                # 위치(project_id·folder_path) 권위 = 작성자의 로컬. 소유자(=발행자)가 올린 것이면
-                # 로컬 값으로 덮어쓴다(미분류=NULL 반영 포함) → 한쪽에서 옮기면 발행 때 팀에도 반영.
-                # 남의 것을 재공유(creator≠shared_by)면 기존 서버값 보존(COALESCE, 침범 금지).
-                # 인증 발행은 발행자 신원(계정 uid + 자기 acct: 별칭)이 소유자다 — 자기 별칭 행의 이동도 반영한다.
-                creator = creator_uid
-                is_owner = (not creator) or (
-                    creator in author_uids if author_uids is not None else creator == shared_by
-                )
-                current = dict(conn.execute(
-                    "SELECT project_id, folder_path, workspace_scope, workspace_id, workspace_name, "
-                    "task_activity_at, is_final FROM generation WHERE id=?", (gid,),
-                ).fetchone())
-                is_final = bool(current.pop("is_final"))
-                incoming = dict(current)
-                if is_owner:
-                    incoming.update(project_id=g.get("project_id"), folder_path=folder_path,
-                                    task_activity_at=g.get("task_activity_at"))
-                else:
-                    # 비소유 발행은 기존 빈 위치 보강만 허용하고 활동 시각을 주장하지 못한다.
-                    incoming.update(
-                        project_id=current["project_id"] or g.get("project_id"),
-                        folder_path=current["folder_path"] or folder_path,
-                        task_activity_at=None,
-                    )
-                merged = merge_task_activity_location(dict(existing) if existing else None, incoming)
-                try:
-                    check_final_moves(conn, final_actor, [(is_final, current["project_id"], merged.get("project_id"))])
-                except FinalMoveDenied:
-                    conn.execute("ROLLBACK")  # 사실·오버레이까지 이 항목 전체를 되돌린다(다른 항목은 계속 받는다)
-                    return "blocked"
-                fields = ("project_id", "folder_path", "workspace_scope", "workspace_id",
-                          "workspace_name", "task_activity_at")
-                conn.execute(
-                    "UPDATE generation SET project_id=?, folder_path=?, workspace_scope=?, "
-                    "workspace_id=?, workspace_name=?, task_activity_at=? WHERE id=?",
-                    (*[merged.get(field) for field in fields], gid),
-                )
-                tags._add_tags(conn, gid, item.get("tags") or [])
-                tags._set_auto_tags(conn, gid, item.get("auto_tags") or [])
-                _merge_comments(conn, gid, item.get("comments") or [])
-                # 받은 공유 표식 — 제공자를 발신자로 한 share 행 1개(멱등·race-safe: UNIQUE(generation_id)
-                # + ON CONFLICT DO NOTHING. 동시 import 두 개가 같은 gid 를 처리해도 IntegrityError 없이 통과).
-                if shared_by and shared_by != DEFAULT_WORKER_ID:
-                    conn.execute(
-                        "INSERT INTO share(id, generation_id, shared_by, visibility) "
-                        "VALUES(?,?,?,?) ON CONFLICT(generation_id) DO NOTHING",
-                        (new_id(), gid, shared_by, "team"),
-                    )
-            conn.execute("COMMIT")
-            return result
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
+            check_final_moves(conn, final_actor, [(is_final, current["project_id"], merged.get("project_id"))])
+        except FinalMoveDenied:
+            conn.execute("ROLLBACK TO share_bundle_item")
+            conn.execute("RELEASE share_bundle_item")  # 사실·오버레이까지 이 항목 전체를 되돌린다(다른 항목은 계속 받는다)
+            return "blocked"
+        fields = ("project_id", "folder_path", "workspace_scope", "workspace_id",
+                  "workspace_name", "task_activity_at")
+        conn.execute(
+            "UPDATE generation SET project_id=?, folder_path=?, workspace_scope=?, "
+            "workspace_id=?, workspace_name=?, task_activity_at=? WHERE id=?",
+            (*[merged.get(field) for field in fields], gid),
+        )
+        tags._add_tags(conn, gid, item.get("tags") or [])
+        tags._set_auto_tags(conn, gid, item.get("auto_tags") or [])
+        _merge_comments(conn, gid, item.get("comments") or [])
+        # 받은 공유 표식 — 제공자를 발신자로 한 share 행 1개(멱등·race-safe: UNIQUE(generation_id)
+        # + ON CONFLICT DO NOTHING. 동시 import 두 개가 같은 gid 를 처리해도 IntegrityError 없이 통과).
+        if shared_by and shared_by != DEFAULT_WORKER_ID:
+            conn.execute(
+                "INSERT INTO share(id, generation_id, shared_by, visibility) "
+                "VALUES(?,?,?,?) ON CONFLICT(generation_id) DO NOTHING",
+                (new_id(), gid, shared_by, "team"),
+            )
+    conn.execute("RELEASE share_bundle_item")
+    return result
 
 
 def import_bundle_payload(
     bundle: dict[str, Any], worker_id: str = DEFAULT_WORKER_ID,
     final_actor: Optional[FinalMoveActor] = None,
     author_uids: Optional[set[str]] = None,
+    command_handler=None,
 ) -> dict[str, Any]:
     """번들 1개(provider + generations)를 통째로 병합. 항목별 결과를 카운트로 집계.
     provider.name 이 있으면 그 uid 의 creator 이름을 보강해 받은 작업물의 작성자가 표시되게.
@@ -814,7 +812,8 @@ def import_bundle_payload(
         if not isinstance(it, dict):
             counts["skipped"] += 1
             continue
-        result = import_bundle_item(it, worker_id, shared_by, final_actor, author_uids)
+        result = (command_handler(it, worker_id, shared_by, final_actor, author_uids)
+                  if command_handler else import_bundle_item(it, worker_id, shared_by, final_actor, author_uids))
         counts[result] += 1
         if result == "blocked":
             anchor = (it.get("generation") or {}).get("id")

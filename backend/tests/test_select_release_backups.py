@@ -9,9 +9,10 @@ import re
 import shutil
 from pathlib import Path
 import subprocess
-from zipfile import ZipFile
 
 import pytest
+
+from release_contract_fixture import qualified_package
 
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell release tool")
@@ -25,16 +26,11 @@ def _quote(path: Path) -> str:
 def _package(tmp_path: Path, *, valid: bool = True) -> Path:
     directory = tmp_path / "packages [test]"
     directory.mkdir()
-    path = directory / "MVHub-test.zip"
-    with ZipFile(path, "w") as archive:
-        archive.writestr("VERSION.txt", "test-version")
-        archive.writestr("hf_cli_version.txt", "1.1.25")
-        if valid:
-            archive.writestr(
-                "runtime/higgsfield/node_modules/@higgsfield/cli/package.json",
-                json.dumps({"version": "1.1.25"}),
-            )
-    return path
+    payload = {"VERSION.txt": b"test-version", "hf_cli_version.txt": b"1.1.26"}
+    if valid:
+        payload["runtime/higgsfield/node_modules/@higgsfield/cli/package.json"] = b'{"version":"1.1.26"}'
+    candidate, _ = qualified_package(directory, "test-version", payload=payload)
+    return directory / candidate["file"]
 
 
 def _run(
@@ -85,9 +81,8 @@ function Get-Date {{
 @pytest.mark.parametrize("custom_latest", [False, True])
 def test_previous_manifest_is_preserved_in_backup_directory(tmp_path: Path, custom_latest: bool):
     package = _package(tmp_path)
-    directory = tmp_path / "separate source" if custom_latest else package.parent
-    directory.mkdir(exist_ok=True)
-    latest = directory / "latest.json"
+    directory = package.parent
+    latest = directory / ("custom-latest.json" if custom_latest else "latest.json")
     previous = b'\xef\xbb\xbf{"version":"previous", "keep":"all original bytes"}\r\n'
     latest.write_bytes(previous)
     legacy = directory / "latest.previous-20260911.json"
@@ -105,13 +100,27 @@ def test_previous_manifest_is_preserved_in_backup_directory(tmp_path: Path, cust
     assert legacy.read_bytes() == b"older backup remains untouched"
     selected = json.loads(latest.read_text("utf-8-sig"))
     assert selected["version"] == "test-version"
-    assert selected["higgsfield_cli_version"] == "1.1.25"
+    assert selected["higgsfield_cli_version"] == "1.1.26"
     assert selected["file"] == package.name
     assert selected["sha256"] == hashlib.sha256(package.read_bytes()).hexdigest()
     assert selected["size"] == package.stat().st_size
     assert not list(directory.glob("*.tmp-*"))
-    if custom_latest:
-        assert not (package.parent / "latest-backups").exists()
+
+
+def test_separate_manifest_directory_is_rejected_without_detaching_release_evidence(tmp_path: Path):
+    package = _package(tmp_path)
+    directory = tmp_path / "separate source"
+    directory.mkdir()
+    latest = directory / "latest.json"
+    original = b'{"version":"keep-public"}'
+    latest.write_bytes(original)
+    result = _run(package, latest)
+    assert result.returncode != 0
+    assert b"candidate, receipt and ZIP must stay together" in result.stderr
+    assert latest.read_bytes() == original
+    assert not (directory / "latest-backups").exists()
+    assert not (directory / "candidate.json").exists()
+    assert not (package.parent / "candidate.json").exists()
 
 
 def test_first_selection_has_no_previous_manifest_to_back_up(tmp_path: Path):

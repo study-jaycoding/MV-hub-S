@@ -582,7 +582,30 @@ CREATE TABLE IF NOT EXISTS gen_tag_overlay (
     PRIMARY KEY (anchor, tag)
 );
 
--- 캔버스 씬 백업 — 브라우저 localStorage(원본)의 단방향 미러(로컬→DB). 캐시 소실 시 복구용.
+-- 개인 타임라인 자동 백업 — doc_key는 계정 접두사를 제외한 브라우저 키 원문이다.
+CREATE TABLE IF NOT EXISTS edit_doc_head (
+    owner TEXT NOT NULL,
+    doc_key TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    data TEXT NOT NULL,
+    data_hash TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (owner, doc_key)
+);
+
+-- 충돌과 명시적 복원 직전 원문은 자동 삭제하지 않는다. owner는 안정된 계정 email 또는 local.
+CREATE TABLE IF NOT EXISTS edit_doc_copy (
+    owner TEXT NOT NULL,
+    doc_key TEXT NOT NULL,
+    data_hash TEXT NOT NULL,
+    data TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('conflict','pre_restore','pre_adopt','local_preserve')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (owner, doc_key, data_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_edit_doc_copy_order ON edit_doc_copy(owner,doc_key,created_at DESC,data_hash DESC);
+
+-- 캔버스 씬 백업 — 브라우저 IndexedDB(원본)의 단방향 미러(로컬→DB). 캐시 소실 시 복구용.
 -- 복구는 프론트가 '로컬 버킷 키 자체가 없을 때'만 수행(로컬이 항상 정답 — 코덱스 합의).
 -- owner_uid = deps.actor_id(개인 편집물, asset_meta 패턴) — identity._REMAP_PLAN 리맵 대상.
 -- project_id: 현재 씬은 전역(항상 '')이지만 미래 프로젝트별 분리를 위해 키에 포함.

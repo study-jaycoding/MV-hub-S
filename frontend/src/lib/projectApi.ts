@@ -133,6 +133,7 @@ export const projectApi = {
       name?: string;
       archived?: boolean;
       render_root_path?: string | null;
+      asset_root_path?: string | null;
       workspace?: WorkspaceContext;
     },
   ) =>

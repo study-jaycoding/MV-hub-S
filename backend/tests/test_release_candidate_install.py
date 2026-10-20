@@ -381,6 +381,7 @@ def test_worker_refuses_a_candidate_that_changed_after_approval(tmp_path, sha, v
     fn = payload[payload.index("function Read-ReleaseManifest"):payload.index("function Get-Sha256Hex")]
     script = (
         "$ErrorActionPreference = 'Stop'\n"
+        + f". '{Path(__file__).resolve().parents[2] / 'update_release_contract.ps1'}'\n"
         f"$TempRoot = '{tmp_path}'\n$ManifestName = 'candidate.json'\n"
         f"$ExpectSha256 = '{sha}'\n$ExpectVersion = '{version}'\n"
         "function Get-ReleaseFile { param([string]$Name, [string]$Destination) "

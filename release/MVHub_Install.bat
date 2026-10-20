@@ -4,7 +4,8 @@ setlocal
 
 REM MV Hub first installer.
 REM Run this from the company server release folder. It installs/updates MV Hub
-REM to the worker's Desktop, remembers the release source, and does NOT launch.
+REM to the worker's Desktop and remembers the release source.
+REM First installation verifies startup; existing installations keep manual restart.
 
 REM Keep this installer beside latest.json, or one folder above a packages folder.
 REM It discovers the release source from its own location, including UNC paths.
@@ -216,6 +217,13 @@ function Install-Package {
         [string]$TempRoot
     )
 
+    # This verifier is embedded by the trusted builder, never loaded from the candidate ZIP.
+    $BootstrapBytes = [Convert]::FromBase64String('__MVHUB_TRUSTED_BOOTSTRAP_BASE64__')
+    . ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString($BootstrapBytes).TrimStart([char]0xFEFF)))
+    $ExistingHelper = Join-Path $TargetDir 'update_release_contract.ps1'
+    $Fresh = -not (Test-Path -LiteralPath $ExistingHelper -PathType Leaf)
+    if ($Fresh) { $null = Get-FreshInstallProof -Root $TargetDir -Empty }
+    if ($Latest.file -match '[/\\:]' -or $Latest.file -in @('', '.', '..')) { throw 'Unsafe package name.' }
     $ZipPath = Join-Path $TempRoot $Latest.file
     $ExtractDir = Join-Path $TempRoot "extract"
 
@@ -227,6 +235,23 @@ function Install-Package {
         throw "SHA256 mismatch. Expected $($Latest.sha256), got $Actual"
     }
 
+    $Evidence = $null
+    if ($Latest.contract) {
+        $CandidatePath = [IO.Path]::ChangeExtension($ZipPath, '.candidate.json')
+        [IO.File]::Copy((Join-Path $TempRoot 'latest.json'), $CandidatePath, $false)
+        $Reference = $Latest.contract.validation_receipt
+        if (-not $Reference -or $Reference.file -match '[/\\:]' -or $Reference.file -in @('', '.', '..')) { throw 'A safe validation receipt is required.' }
+        Get-ReleaseFile -Name $Reference.file -Destination (Join-Path $TempRoot $Reference.file)
+        $Evidence = Get-QualifiedRelease -PackagePath $ZipPath
+    }
+    elseif ($Fresh) { throw 'Fresh installation requires a qualified release contract.' }
+    if (-not $Fresh) { Assert-InstalledCapability -Candidate $Latest -Root $TargetDir }
+    # Fresh capability is the embedded verifier, not a capability claim from the ZIP.
+    if ($Fresh) {
+        foreach ($Required in $Latest.contract.compatibility.required_installer_capabilities) {
+            if ($Required -cnotin @('artifact-receipt-v1', 'install-journal-v1')) { throw 'Fresh bootstrap lacks a required capability.' }
+        }
+    }
     Write-Host "[install] Extracting..."
     Expand-Archive -LiteralPath $ZipPath -DestinationPath $ExtractDir -Force
     $PackageUpdater = Join-Path $ExtractDir "update_release.bat"
@@ -239,14 +264,23 @@ function Install-Package {
     # swaps, rollback and the final VERSION commit. This prevents the installer
     # and updater from drifting into two different (and unsafe) copy behaviours.
     Write-Host "[install] Running the verified package installer..."
-    New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
+    if ($Evidence) {
+        Assert-ReleaseEvidenceUnchanged -Evidence $Evidence
+        Assert-InstalledReleasePayload -Root $ExtractDir -Candidate $Latest
+    }
+    if ($Fresh) {
+        $null = Get-FreshInstallProof -Root $TargetDir -Empty
+        New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
+        [IO.File]::WriteAllBytes($ExistingHelper, $BootstrapBytes)
+        [IO.File]::WriteAllText((Join-Path $TargetDir 'installer-capabilities.json'), '{"format_version":1,"capabilities":["artifact-receipt-v1","install-journal-v1"]}')
+    }
     Set-Content -LiteralPath (Join-Path $TargetDir "INSTALL_SOURCE.txt") -Value $TempRoot -Encoding UTF8
     $PreviousTarget = $env:MVHUB_UPDATE_TARGET_DIR
     $PreviousPause = $env:MVHUB_NO_PAUSE
     $PreviousRestart = $env:MVHUB_UPDATE_RESTART
     $env:MVHUB_UPDATE_TARGET_DIR = $TargetDir
     $env:MVHUB_NO_PAUSE = "1"
-    $env:MVHUB_UPDATE_RESTART = "0"
+    $env:MVHUB_UPDATE_RESTART = if ($Fresh) { "1" } else { "0" }
     try {
         $Command = 'call "' + $PackageUpdater + '"'
         & $env:ComSpec /d /c $Command

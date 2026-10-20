@@ -55,6 +55,8 @@ def _fake_db(monkeypatch: pytest.MonkeyPatch, referenced_paths: list[str]):
     def fake_connection():
         conn = sqlite3.connect(":memory:")
         conn.execute("CREATE TABLE reference (file_path TEXT)")
+        from app.db_asset_sync import DDL
+        conn.executescript(DDL)
         conn.executemany(
             "INSERT INTO reference VALUES (?)", [(p,) for p in referenced_paths]
         )

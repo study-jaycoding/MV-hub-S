@@ -68,14 +68,14 @@ it("컷 정보 — 폴더 창과 같은 조회를 끝까지 받아(쪽 넘김) �
   expect(listGenerations.mock.calls[1][1]).toEqual({ ts: 1, id: "g499" }); // 커서 = 첫 쪽 마지막
   // 컷 정보 창은 프롬프트 원문을 받는다(미리보기 이름에 쓴다) — 빈 글로 받는 것은 걸러 보는 컷 카드만(42회차)
   expect(listGenerations.mock.calls.some((call) => call[3]?.leanPrompt)).toBe(false);
-  expect(rows()["건수"]).toBe("501영상 501 · 이미지 0");
+  expect(rows()["건수"]).toBe("501영상 501");
   expect(rows()["작업자"]).toBe("리버 251 · 오지짱 250");
   expect(rows()["크레딧(실제)"]).toBe("건수가 많아 집계하지 않음");
   expect(generationMetrics).not.toHaveBeenCalled(); // 건마다 요청이라 많으면 안 보낸다
   expect(rows()["총 길이"]).toBe("2505.0s");
   expect(rows()["검토"]).toBe("공유 500보류 0 · 최종 1");
   expect(rows()["생성일"]).toContain("~");
-  expect(host.querySelector(".cutinfo-tag")!.textContent).toBe("대표 미정 · 최신 것");
+  expect(host.querySelector(".cutinfo-tag")!.textContent).toBe("썸네일 미정 · 최신 것");
   expect(host.querySelector(".info-sources-head")!.textContent).toBe("이 컷의 생성물 501개최근 200개만 · 외 301건");
   expect(host.querySelectorAll(".cutinfo-item")).toHaveLength(200);
 });
@@ -94,7 +94,7 @@ it("컷 정보 — 작은 컷은 크레딧(실제) 합계 + 미상 건수. ★ �
   await settle();
   expect(listGenerations).toHaveBeenCalledTimes(1);
   expect(generationMetrics).toHaveBeenCalledTimes(3);
-  expect(rows()["건수"]).toBe("3영상 3 · 이미지 0");
+  expect(rows()["건수"]).toBe("3영상 3");
   expect(rows()["크레딧(실제)"]).toBe("3 credits · 1건 미상"); // b 는 실제값 없음
   expect(rows()["검토"]).toBe("공유 2보류 0 · 최종 1");
   expect(host.querySelector(".info-sources-head")!.textContent).toBe("이 컷의 생성물 3개");
@@ -111,7 +111,7 @@ it("컷 정보 — 작은 컷은 크레딧(실제) 합계 + 미상 건수. ★ �
   act(() => root.render(
     <CutInfoPopup folder={repFolder} x={10} y={10} query={query} savingRep={false} previewOpen={false} onClose={() => {}} onOpen={onOpen} onPreview={onPreview} onPickCover={onPickCover} />,
   ));
-  expect(host.querySelector(".cutinfo-tag")!.textContent).toBe("★ 대표");
+  expect(host.querySelector(".cutinfo-tag")!.textContent).toBe("썸네일");
   expect(host.querySelector<HTMLButtonElement>(".cutinfo-item.cur .cutinfo-rep")!.disabled).toBe(true);
 });
 
@@ -167,10 +167,10 @@ it("모아보기 — 개별은 큰 카드 + 정보(크레딧은 표지마다), �
   const onEnter = vi.fn();
   act(() => root.render(<CutReel folders={folders} mode="grid" onModeChange={onModeChange} previewOpen={false} onClose={onClose} onPreview={onPreview} onEnter={onEnter} />));
   await settle();
-  expect(host.querySelector(".reel-sub")!.textContent).toBe("3컷 · 대표 1 · 최신 2");
+  expect(host.querySelector(".reel-sub")!.textContent).toBe("3컷 · 썸네일 1 · 최신 2");
   const cards = [...host.querySelectorAll(".reel-card")];
   expect(cards.map((c) => c.querySelector(".reel-ttl > b")!.textContent)).toEqual(["C0050", "C0080", "C0110"]);
-  expect(cards.map((c) => c.querySelector(".reel-rep")!.textContent)).toEqual(["최신 것", "★ 대표", "최신 것"]);
+  expect(cards.map((c) => c.querySelector(".reel-rep")!.textContent)).toEqual(["최신 것", "썸네일", "최신 것"]);
   expect(cards.map((c) => c.querySelector(".reel-order")!.textContent)).toEqual(["1", "2", "3"]);
   expect(cards[1].querySelector(".reel-info")!.textContent).toContain("1.5 credits");
   // 정보 줄의 순서 — 모델이 맨 위 한 줄(전엔 이름 오른쪽에 작게), 길이는 그 옆에
@@ -217,7 +217,7 @@ it("연결 재생기 — 컷 이동(단추·↑↓·이름)·반복·길이를 �
     expect([...host.querySelectorAll(".reel-labels button")].map((b) => b.textContent)).toEqual(["C0050", "C0080", "C0110"]);
     act(() => host.querySelector<HTMLButtonElement>(".reel-t-next")!.click());
     expect(chip()).toBe("2 / 3 · C0080 · 오지짱");
-    expect(host.querySelector(".reel-chip.r")!.textContent).toBe("★ 대표");
+    expect(host.querySelector(".reel-chip.r")!.textContent).toBe("썸네일");
     expect(host.querySelector(".reel-media:not(.spare)")!.getAttribute("src")).toBe("/m/b.mp4"); // 앞의 것
     // 재생 중 깨진 영상 — 3초 멈춘 안내 화면이 되고 길이를 알게 돼 타임바가 풀린다(3 + 3 + 3)
     act(() => { host.querySelector(".reel-media:not(.spare)")!.dispatchEvent(new Event("error")); });

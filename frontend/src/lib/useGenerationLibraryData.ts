@@ -11,6 +11,8 @@ import { timedLibraryRequest } from "./libraryRequestTimeout";
 import { markLibraryStatsApplied } from "./statsFreshness";
 import { API_PAUSED_MESSAGE, ApiPausedError } from "./http";
 import type { Facets, Filters, GenQuery, GenStats, Generation, Project } from "../types";
+import { getGenerationReadModel, storeGenerationRows } from "../features/library/api";
+import { onLibraryChanged } from "./libraryBroadcast";
 
 interface UseGenerationLibraryDataArgs {
   authReady: boolean;
@@ -123,6 +125,10 @@ export function useGenerationLibraryData({
   projectWorkspaceIdRef.current = projectWorkspaceId;
   const composeListEnabledRef = useRef(composeListEnabled);
   composeListEnabledRef.current = composeListEnabled;
+  const readModelFor = (query: GenQuery, trashMode: boolean) =>
+    getGenerationReadModel(authKey, trashMode ? "trash" : query.tab === "team" ? "team" : "local");
+  const readModelForRef = useRef(readModelFor);
+  readModelForRef.current = readModelFor;
   // compose 탭의 목록 쿼리 — 서버 tab 은 my|team 뿐이라 my 로 정규화(폴더 보기 창).
   const listQuery = () => {
     const q = genQueryRef.current;
@@ -473,6 +479,8 @@ export function useGenerationLibraryData({
       const query = listQuery();
       const trashMode = !!filtersRef.current.deleted_only;
       const sig = JSON.stringify([trashMode, query]);
+      const records = readModelForRef.current(query, trashMode);
+      const read = records.beginRead();
       laneSigRef.current = sig; // 이 실행이 줄을 잡은 조회 — 조회가 바뀌면 reload 가 앞지른다(여기까지 await 가 없다)
       // 탭 전환의 '즉시 표시'는 위 filters.tab effect가 담당 — 여기(비동기 실행 시점)는 최신본 fetch만.
       // 1) 목록과 메타를 **함께 시작**한다(2026-09-12, C-6). 종전에는 목록을 다 받은 **뒤에야**
@@ -495,7 +503,7 @@ export function useGenerationLibraryData({
         : Promise.resolve(null);
       try {
         const [page, checked] = await Promise.all([list, locationCheck]);
-        if (seq !== reloadSeqRef.current) {
+        if (seq !== reloadSeqRef.current || !records.isCurrent(read)) {
           // 낡은 실행 — 목록은 버린다. 다만 맡긴 메타 요구가 처리될 때까지는 끝나지 않는다(전체 요구는 다음 묶음이 이어받는다).
           finishSync(false);
           listSettled();
@@ -505,7 +513,7 @@ export function useGenerationLibraryData({
         const last = page[page.length - 1];
         pageCursorRef.current = last ? { ts: last.sort_ts ?? 0, id: last.id } : null;
         trashOffsetRef.current = trashMode ? page.length : 0;
-        let g = page.filter((item) => matchesWorkspaceFilter(item, query));
+        let g = storeGenerationRows(records, page, read).filter((item) => matchesWorkspaceFilter(item, query));
         if (located && located === locatedRef.current && isLocatedQuery(query, located.tab, located.location)) {
           const valid = checked && isLocatedQuery(query, located.tab, checked)
             ? locatedItems(checked, located.tab, query) : [];
@@ -653,6 +661,14 @@ export function useGenerationLibraryData({
     [launch],
   );
 
+  useEffect(() => onLibraryChanged(() => {}, () => {
+    // A peer tag edit may add/remove rows outside this page's current IDs. Reuse
+    // the authoritative query/meta lanes, including tag-filter membership and facets.
+    // This callback is peer-only: the writer already awaited its own reconciliation.
+    staleOtherTabs(tabCacheRef.current, null);
+    void reload(true, false);
+  }), [reload]);
+
   // 탭 왕복용 stale-while-revalidate 게이트. 같은 필터의 목록을 방금 받았다면 캐시 화면을
   // 그대로 쓰고, 팀 탭의 15초 안전망 폴링이 다음 최신화를 맡는다. 명시적 수정/재시도는 기존
   // reload()를 호출하므로 절대 생략되지 않는다.
@@ -728,6 +744,8 @@ export function useGenerationLibraryData({
     const seq = reloadSeqRef.current;
     const trashMode = !!filtersRef.current.deleted_only;
     const query = listQuery();
+    const records = readModelForRef.current(query, trashMode);
+    const read = records.beginRead();
     const keepPainted = colorLedger.stamp(); // 아래 합치기(위치 주입분)는 이미 있는 카드를 응답으로 갈아 끼운다 — 그사이 칠한 색을 덮지 않게
     try {
       // 시작 시점 seq 스냅샷 — 응답이 오기 전에 탭/필터가 바뀌었으면(reload 가 seq 를 올림) 폐기.
@@ -740,11 +758,11 @@ export function useGenerationLibraryData({
         const cursor = pageCursorRef.current;
         batch = await timedLibraryRequest((signal) => api.listGenerations(query, cursor, GEN_PAGE, { signal }));
       }
-      if (seq !== reloadSeqRef.current) return; // 다른 탭/쿼리로 바뀐 뒤 도착한 이전 컨텍스트 페이지
+      if (seq !== reloadSeqRef.current || !records.isCurrent(read)) return; // 다른 탭/쿼리로 바뀐 뒤 도착한 이전 컨텍스트 페이지
       if (trashMode) trashOffsetRef.current += batch.length;
       const last = batch[batch.length - 1];
       if (last) pageCursorRef.current = { ts: last.sort_ts ?? 0, id: last.id };
-      const visibleBatch = batch.filter((item) => matchesWorkspaceFilter(item, query));
+      const visibleBatch = storeGenerationRows(records, batch, read).filter((item) => matchesWorkspaceFilter(item, query));
       // ★gens 누적 캡(A5)은 넣지 않는다(코덱스 리뷰로 폐기): 앞부분 트림이 휴지통 offset 페이지네이션·
       //  virtua 스크롤 앵커·focusIdx(인덱스 기반)·선택 Set 을 동시에 깨뜨린다. 항목당 메타 수 KB 뿐이고
       //  진짜 메모리(썸네일 비트맵·DOM)는 가상 스크롤이 이미 상한 — 실이득 대비 회귀 위험이 커서 제외.

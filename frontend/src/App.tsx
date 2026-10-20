@@ -1,3 +1,8 @@
+import { getAccountNamespace } from "./lib/accountScope";
+import { captureSubmissionScope, configureOperationContext, watchOperationContext } from "./app/operationContext";
+import { prepareRegenerateSubmission, runSubmission } from "./features/generation/api";
+import { canFinishDraft } from "./lib/seedanceDraft";
+import { useDraftRequests } from "./lib/useDraftRequests";
 // 앱 루트: 탭·필터 상태, 데이터 로딩, WebSocket 진행률, 액션 오케스트레이션.
 import { cloneElement, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 // 코드 스플리팅 — 드물게 여는 구성보드는 지연 로드해 초기 번들에서 분리.
@@ -37,49 +42,31 @@ import {
   LibrarySelectionActionBar,
 } from "./components/app/SelectionActionBar";
 import { KEY_COLORS } from "./lib/appConstants";
+import { useCanvasGenerationLinks } from "./lib/useCanvasGenerationLinks";
+import { canvasTarget } from "./features/canvas/api";
+import { useSceneGenerationSubmission } from "./lib/useSceneGenerationSubmission";
 import { useMcpCanvasTasks } from "./lib/mcpCanvasTasks";
 import { folderPeekQuery, generationQueryKey } from "./lib/appGenerationQuery";
 import { useResolveLibraryFollow } from "./lib/useResolveLibraryFollow";
 import { generationsByIds, uniqueTagNames } from "./lib/generationTags";
 import { reloadedIntoEdit, useAppNavigation } from "./lib/useAppNavigation";
 import {
-  confirmSceneWrite,
-  subscribeSceneSaveState,
   exportSceneText,
-  listPersistedScenes,
   listScenes,
   parseSceneImport,
   SCENE_IMPORT_MAX_BYTES,
   variantIds,
-  type Scene,
-  type SceneModelCfg,
   type SceneRef,
 } from "./lib/scenes";
 import {
   collectGenText,
   collectGenModel,
   resolvePortEdges,
-  type SceneGenerationRun,
 } from "./lib/sceneEdges";
 import {
-  buildSceneGenerationJobInput,
   collectSceneGenerationAssignment,
   type SceneGenerationAssignment,
-  type SceneGenerationJobInput,
 } from "./lib/sceneGenerationInputs";
-import {
-  acquireSceneGeneration,
-  executeSceneGenerationBatch,
-} from "./lib/sceneGenerationSubmission";
-import {
-  createCanvasGenerationLinks,
-  discardCanvasGenerationAttempt,
-  prepareCanvasGenerationLinks,
-  reconcileCanvasGenerationAttempts,
-  settleCanvasGenerationAttempt,
-  type CanvasGenerationLink,
-  type CanvasGenerationTarget,
-} from "./lib/canvasGenerationRecovery";
 import { downloadText } from "./lib/download";
 import { downloadSceneArchive } from "./lib/sceneArchive";
 import { buildRecipeScene } from "./lib/recipeScene";
@@ -105,6 +92,8 @@ import { useGenerationTrashActions } from "./lib/useGenerationTrashActions";
 import { useGenerationUtilityActions } from "./lib/useGenerationUtilityActions";
 import { useResolveTransferActions } from "./lib/useResolveTransferActions";
 import { useHubAuth } from "./lib/useHubAuth";
+import { startEditDocBackup } from "./lib/editDocBackup";
+import { hubHasFeature } from "./lib/hubFeatures";
 import { useAppToast } from "./lib/useAppToast";
 import { useDisabledGenerations } from "./lib/useDisabledGenerations";
 import { useLibraryFilters } from "./lib/useLibraryFilters";
@@ -146,7 +135,6 @@ import type {
   Generation,
   History,
   InfoTarget,
-  ModelParam,
   PreviewTarget,
   WorkspaceContext,
 } from "./types";
@@ -158,22 +146,20 @@ import { fillFolderCards, groupGenerations, lacksCounts } from "./lib/folderCard
 import { FETCH_ALL_MAX } from "./lib/fetchAllGenerations";
 import { useLocalFolderCards } from "./lib/useLocalFolderCards";
 import { placeViewKey } from "./lib/placeViews";
+import { FolderTabs } from "./components/common/FolderTabs";
+import { useLibraryFolderTabs } from "./lib/useLibraryFolderTabs";
 import { usePlaceView } from "./lib/usePlaceView";
 import { prefetchFolderCards, useFolderCards, useSameQueryRevision } from "./lib/useFolderCards";
 import { CutInfoPopup } from "./components/CutInfoPopup";
 import { CutReel, type ReelMode } from "./components/CutReel";
-import { buildSpotlightCreateBody } from "./lib/spotlightSubmit";
-import { resolveAutoAspectRatio } from "./lib/aspectAuto";
 import {
-  isGenerationWorkspaceReady,
   loadStoredWorkspaceContext,
   saveStoredWorkspaceContext,
   UNKNOWN_WORKSPACE,
   sameWorkspace,
 } from "./lib/workspaceContext";
-import { configureModelPolicy, currentModelPolicy, modelBlockMessage } from "./lib/modelPolicy";
+import { configureModelPolicy } from "./lib/modelPolicy";
 import { normalizeSceneWorkspace, sceneMatchesWorkspace, type SceneMove, type SceneWorkspace } from "./lib/sceneWorkspace";
-import { modelAllowed } from "./lib/modelPolicyCore";
 import { STORAGE_KEYS } from "./lib/storageKeys";
 import { useT } from "./lib/i18n";
 import { hasWorkspaceFilter, workspaceViewKey } from "./lib/libraryWorkspaceScope";
@@ -207,9 +193,10 @@ export default function App() {
   //  teamPeek). 편집을 떠나면 그 렌더부터 꺼진 것으로 본다(&& editOpen) — 떠난 탭이 한순간 공유 & 리뷰로 그려지지 않게.
   const [teamPeek, setTeamPeek] = useState(false);
   // 라이브러리 필터/뷰 상태 + genQuery/selectionResetKey 파생 + LS 저장(useLibraryPersistence)은 useLibraryFilters 훅으로 추출.
+  const libraryFilters = useLibraryFilters(LS, workspaceContext, teamPeek && editOpen);
   const {
     filters, storedTab, setFilters, patch, restoreLocation, adoptShownLocation, restoredLocationRef, teamScopeKey, teamAutoReady,
-    typeFilter, setTypeFilter, scale, setScale, fill, setFill,
+    typeFilter, setTypeFilter, scale: legacyScale, fill: legacyFill,
     showFilters, setShowFilters, colorFilter, setColorFilter,
     sharedOnly, setSharedOnly, reviewFilter, setReviewFilter, tagFilter, setTagFilter, tagPanelOpen, setTagPanelOpen,
     commentOnly, setCommentOnly, finalOnly, setFinalOnly, grayOn, setGrayOn,
@@ -217,7 +204,7 @@ export default function App() {
     generationScope, filterAutoTags, followLocation, toggleAutoTag, manualRevision, followRevision,
     workspaceChips, setWorkspaceChips,
     genQuery, selectionResetKey, workspaceFollow, workspaceScopeKey, workspaceQueryReady,
-  } = useLibraryFilters(LS, workspaceContext, teamPeek && editOpen);
+  } = libraryFilters;
   // 공간 변경은 **동기**다 — 네트워크를 타지 않으므로 늦게 온 응답이 선택을 덮을 일이 없다.
   //  (예전엔 허브에 `workspace set` 을 보내느라 변경 순번으로 옛 응답을 걸러야 했다. 2026-09-11 에
   //   허브가 CLI 전역을 안 건드리게 되면서 그 장치가 통째로 필요 없어졌다.)
@@ -259,7 +246,7 @@ export default function App() {
     sceneBinding, setSceneBinding, sceneSelGens, setSceneSelGens, sceneActionRef,
     flushScenePending, selectScene, addScene, importSceneSnapshot, relinkSceneRefsNow, findSceneRefs, renameScene,
     removeSceneById,
-    patchSceneById, refreshSceneById, patchActiveScene, reorderScenes, setSceneWorkspace, backupOnly, importBackupScenes,
+    canvasDocument, writeBoardSnapshot, refreshSceneById, reorderScenes, setSceneWorkspace, backupOnly, importBackupScenes,
     sceneSaveFailing, sceneBackupSkippedIds,
   } = useSceneCoordination(flash);
   // 위에서 고른 워크스페이스가 바뀌면 탭에 공간이 없는 씬의 참조를 새 공간으로 한 번 묻는다(2026-10-01 점검 R2-2).
@@ -457,6 +444,10 @@ export default function App() {
     setAccount,
     sharedSrv,
   } = useHubAuth();
+  useEffect(() => {
+    if (authPending || !authReady || !hubAccount || apiPause || !hubHasFeature("edit_doc_backup_v1")) return;
+    return startEditDocBackup();
+  }, [authPending, authReady, hubAccount?.email, apiPause]);
   // 그룹 사용 모델 정책 — (공간, 로그인 이메일, 서버)가 바뀔 때만 다시 조회. 생성 창·캔버스 모델 노드·제출 가드가 함께 읽는다.
   useEffect(() => {
     configureModelPolicy({
@@ -470,6 +461,12 @@ export default function App() {
     resetKey: selectionResetKey,
   });
   const libraryAuthKey = JSON.stringify([hubAccount?.email, account?.email, account?.creator_uid, sharedSrv?.url]);
+  useLayoutEffect(() => {
+    configureOperationContext({ key: libraryAuthKey, ready: authReady && !apiPause && (!hubAccount?.email || getAccountNamespace() === `acct:${hubAccount.email}`),
+      serverOrigin: sharedSrv?.url || window.location.origin,
+      authority: authConfig?.auth_enabled ? "team" : "local" });
+    return watchOperationContext();
+  }, [libraryAuthKey, authReady, apiPause, sharedSrv?.url, authConfig?.auth_enabled]);
   useMcpCanvasTasks({ authReady, authKey: libraryAuthKey, workspace: workspaceContext, flushScenePending, refreshSceneById });
   // 보는 자리의 문맥(계정·서버·공간 범위) — 브라우저 기록(lib/useAppNavigation)과 공유 탭의 마지막 자리 기억이 같은 문맥의 자리만 되살린다.
   //  탭마다 센다 — 기록의 자리는 **그 기록의 탭**이 지금 갖게 될 문맥과 견준다(공유 탭의 폴더 → 작업 공간 탭 → 뒤로 가기).
@@ -525,9 +522,15 @@ export default function App() {
   //  보는 폴더다: 창 안에서 바꾼 모양은 그 폴더 것으로 적히고, 닫으면 뒤 화면은 제 모양 그대로다(뒤 폴더에 적히지 않는다 — Codex 코드 리뷰).
   //  창이 없을 때의 자리는 **저장된 탭**의 것이다 — 편집 탭이 연 창이 무효가 된 렌더(창은 닫혔는데 teamPeek 는 아직 참)에서는 filters.tab 이
   //  공유 & 리뷰라, 보지도 않은 공유 탭 자리에 모양이 적혔다(Codex 코드 리뷰).
-  const { layout, setLayout, groupByDate, setGroupByDate } = usePlaceView(LS, placeViewKey(
+  const { layout, setLayout, groupByDate, setGroupByDate, scale, setScale, fill, setFill,
+    folders: cutView, setFolders: setCutViewState } = usePlaceView(LS, placeViewKey(
     listPeek ? { tab: filters.tab, project_id: listPeek.projectId ?? undefined, folder_path: listPeek.path } : { ...filters, tab: storedTab },
-  ));
+  ), { scale: legacyScale, fill: legacyFill, folders: LS.get("cutView", "1") === "1" });
+  useEffect(() => {
+    LS.set("scale", String(scale));
+    LS.set("fill", fill ? "1" : "0");
+    LS.set("cutView", cutView ? "1" : "0");
+  }, [scale, fill, cutView]);
   const listGenQuery = useMemo(() => (listPeek ? folderPeekQuery(genQuery, listPeek) : genQuery), [genQuery, listPeek]);
   // 창의 격자는 열 때마다 새로 마운트되므로 nonce 는 고정값이면 된다(한 번 열 때 한 번만 이동).
   const listPeekScroll = useMemo(() => (listPeek?.genId ? { generationId: listPeek.genId, nonce: 0 } : null), [listPeek]);
@@ -579,7 +582,6 @@ export default function App() {
   //  **찾는 조건(종류·작성자·태그·색·검색·회색 숨김…)이 켜져 있어도 묶음은 풀리지 않는다**(Jay 2026-10-13 저녁 — 전엔 조건이 하나라도 켜지면
   //  낱장이 됐다). 그때는 서버 카드(그 폴더의 전부를 센다) 대신 걸러진 목록을 따로 끝까지 받아 화면이 직접 묶는다(lib/useLocalFolderCards ·
   //  lib/folderCardsLocal). cutScope 는 '자리'(프로젝트·폴더·공간)다 — 찾는 조건과 무관하다.
-  const [cutView, setCutViewState] = useState(() => LS.get("cutView", "1") === "1");
   const cutScope = useMemo(() => folderCardsPlace(genQuery), [genQuery]);
   const cutFiltered = cutScope !== null && hasFindFilters(genQuery, grayOn);
   // 창이 떠 있으면 그 폴더의 부모를 받는다 — 그 폴더의 지금 대표를 알려고. 컷 카드로 연 창이면 뒤의 묶음과 같은 요청이다.
@@ -729,7 +731,7 @@ export default function App() {
   const setCutView = useCallback((on: boolean) => {
     LS.set("cutView", on ? "1" : "0");
     setCutViewState(on);
-  }, []);
+  }, [setCutViewState]);
   // ── 컷 카드 고르기 · 컷 정보(휠 클릭) · 모아보기(Jay 2026-10-08) ──
   //  고른 것은 폴더 경로의 집합. 그릴 때 지금 카드로 걸러(없어진 폴더는 저절로 빠진다) 격자 순서의 목록을 만든다. 묶음의 범위
   //  (프로젝트·부모·공간)가 바뀌면 비운다. 두 창(컷 정보·모아보기)은 폴더 창처럼 연 시점의 문맥(listPeekCtx)을 들고 있어
@@ -792,198 +794,8 @@ export default function App() {
       }),
     [setFacets],
   );
-  // 생성 표식이 **저장소 확정본**에 실제로 들어 있는가. 확정 Promise 가 true 여도, 그사이 대상 카드가
-  // 지워졌거나 뒤 연산이 표식을 덮었을 수 있다 — 필요한 표식의 존재를 직접 본다(Codex).
-  const canvasMarksPersisted = (sceneId: string, links: CanvasGenerationLink[]): boolean => {
-    const cards = listPersistedScenes(null).find((scene) => scene.id === sceneId)?.cards || [];
-    return links.every((link) =>
-      (cards.find((card) => card.id === link.card_id)?.pendingGenerationAttempts || []).some(
-        (attempt) => attempt.attemptId === link.attempt_id,
-      ),
-    );
-  };
-  const prepareCanvasGenerationBatch = useCallback(async (
-    sceneId: string,
-    cardIds: string[],
-    fixedLinks?: CanvasGenerationLink[],
-  ): Promise<CanvasGenerationLink[]> => {
-    if (fixedLinks && (fixedLinks.length !== cardIds.length || fixedLinks.some((link, index) => link.scene_id !== sceneId || link.card_id !== cardIds[index]))) return [];
-    const links = fixedLinks ?? cardIds.flatMap((cardId) =>
-      createCanvasGenerationLinks({ sceneId, cardId }, 1),
-    );
-    flushScenePending(sceneId);
-    const latest = listScenes(null).find((scene) => scene.id === sceneId);
-    if (!latest) return [];
-    const prepared = prepareCanvasGenerationLinks(latest.cards, links);
-    if (!prepared.attachedCount) return [];
-    // ★표식이 **저장소에 확정된 뒤에만** 링크를 준다. 화면 값에는 그 틱에 들어가지만 저장소 확정은
-    //  뒤따르므로, 그것을 기다리지 않고 생성 요청을 보내면 그 사이 앱이 닫혔을 때 결과가 어느 카드
-    //  것인지 복구할 수 없다(적대 리뷰 r2 P1). 호출부는 links 수가 batch 와 다르면 제출을 멈추고
-    //  사용자에게 알린다(useSpotlightSubmit).
-    const { value: applied, confirmed } = confirmSceneWrite(() =>
-      patchSceneById(sceneId, { cards: prepared.cards }),
-    );
-    if (!applied) return [];
-    const durable = (await confirmed) && canvasMarksPersisted(sceneId, links);
-    if (!durable) {
-      // 확정 못 함 — **내 표식만** 걷어낸다. 남겨 두면 저장소가 나중에 다시 시도해 확정하고, 보내지도
-      // 않은 생성의 표식이 유령으로 살아난다.
-      const dropMarks = (): boolean => {
-        flushScenePending(sceneId);
-        const now = listScenes(null).find((scene) => scene.id === sceneId)?.cards;
-        if (!now) return true;
-        const cleaned = links.reduce(
-          (cards, link) => discardCanvasGenerationAttempt(cards, link.card_id, link.generation_id),
-          now,
-        );
-        return cleaned === now || patchSceneById(sceneId, { cards: cleaned });
-      };
-      if (!dropMarks()) {
-        // 밀린 편집이 상한에 닿아 걷어내기조차 받지 못했다(저장소가 오래 막힘) — 저장이 풀리면 다시 걷어낸다.
-        // 그냥 두면 앞서 접수된 표식만 뒤늦게 확정된다(Codex 코드 리뷰 P2. 2분 뒤 복구가 치우기는 한다).
-        const off = subscribeSceneSaveState((failed) => {
-          if (failed) return;
-          off();
-          dropMarks();
-        });
-      }
-      return [];
-    }
-    seedPending(links.map((link) => link.generation_id));
-    return links;
-  }, [flushScenePending, patchSceneById]);
-  const prepareCanvasGeneration = useCallback((
-    target: CanvasGenerationTarget,
-    count: number,
-  ): Promise<CanvasGenerationLink[]> => prepareCanvasGenerationBatch(
-    target.sceneId,
-    Array.from({ length: Math.max(1, Math.trunc(count) || 1) }, () => target.cardId),
-  ), [prepareCanvasGenerationBatch]);
-
-  const settleCanvasGeneration = useCallback((
-    link: CanvasGenerationLink,
-    generation: Generation,
-  ) => {
-    flushScenePending(link.scene_id);
-    const latest = listScenes(null).find((scene) => scene.id === link.scene_id);
-    if (latest) {
-      const cards = settleCanvasGenerationAttempt(
-        latest.cards,
-        link.card_id,
-        generation.id,
-      );
-      if (cards !== latest.cards) patchSceneById(link.scene_id, { cards });
-    }
-    seedPending([generation.id]);
-    setGens((previous) =>
-      previous.some((item) => item.id === generation.id)
-        ? previous
-        : [generation, ...previous],
-    );
-  }, [flushScenePending, patchSceneById, setGens]);
-  const discardCanvasGeneration = useCallback((link: CanvasGenerationLink) => {
-    flushScenePending(link.scene_id);
-    const latest = listScenes(null).find((scene) => scene.id === link.scene_id);
-    if (!latest) return;
-    const cards = discardCanvasGenerationAttempt(
-      latest.cards,
-      link.card_id,
-      link.generation_id,
-    );
-    if (cards !== latest.cards) patchSceneById(link.scene_id, { cards });
-  }, [flushScenePending, patchSceneById]);
-
-  // 응답 전에 앱을 닫은 생성 시도를 재시작 시 복구한다. 서버 연결표 + 미리 정한 generation id를
-  // 함께 확인하고, 서버에 도달하지 않은 표식만 2분 뒤 제거한다.
-  const canvasAttemptSig = useMemo(
-    () => scenes.flatMap((scene) =>
-      scene.cards.flatMap((card) =>
-        (card.pendingGenerationAttempts || []).map(
-          (attempt) => `${scene.id}:${card.id}:${attempt.attemptId}:${attempt.generationId}:${attempt.createdAt}`,
-        ),
-      ),
-    ).join("|"),
-    [scenes],
-  );
-  useEffect(() => {
-    if (!authReady || !canvasAttemptSig) return;
-    let alive = true;
-    let timer: number | undefined;
-    const recover = async () => {
-      const current = listScenes(null);
-      const attempts = current.flatMap((scene) =>
-        scene.cards.flatMap((card) =>
-          (card.pendingGenerationAttempts || []).map((attempt) => ({ scene, card, attempt })),
-        ),
-      );
-      if (!attempts.length) return;
-      // 숨은 창에선 서버를 찌르지 않는다(앱의 다른 폴러와 같은 규칙 — useSceneGenData·
-      // useSyncStatus 참고). ★탭이 아니라 '창이 보이는가'로만 쉰다: 이건 표시용 조회가 아니라
-      // 생성 시도 이어붙이기라 캔버스 탭 밖에서도 돌아야 한다.
-      // 체인이 끊기지 않게 다음 차례는 그대로 예약하고, 복귀 시엔 아래 리스너가 즉시 당겨온다.
-      if (document.visibilityState === "hidden") {
-        if (alive) timer = window.setTimeout(recover, 2500);
-        return;
-      }
-      try {
-        const [resolved, batch] = await Promise.all([
-          api.resolveCanvasGenerationLinks(attempts.map(({ attempt }) => attempt.attemptId)),
-          api.getGenerationsBatch(attempts.map(({ attempt }) => attempt.generationId)),
-        ]);
-        if (!alive) return;
-        const existing = new Set(Object.keys(batch.items));
-        if (existing.size) {
-          setGens((previous) => {
-            const known = new Set(previous.map((item) => item.id));
-            const fresh = Object.values(batch.items).filter((item) => !known.has(item.id));
-            return fresh.length ? [...fresh, ...previous] : previous;
-          });
-        }
-        const resolvedAttemptIds = new Set(resolved.links.map((link) => link.attempt_id));
-        const orphanLinks = attempts
-          .filter(({ attempt }) =>
-            existing.has(attempt.generationId) && !resolvedAttemptIds.has(attempt.attemptId),
-          )
-          .map(({ scene, card, attempt }) => ({
-            attempt_id: attempt.attemptId,
-            generation_id: attempt.generationId,
-            scene_id: scene.id,
-            card_id: card.id,
-          }));
-        const repaired = orphanLinks.length
-          ? await api.repairCanvasGenerationLinks(orphanLinks)
-          : { links: [] };
-        if (!alive) return;
-        const recoveryLinks = [...resolved.links, ...repaired.links];
-        for (const scene of listScenes(null)) {
-          const reconciled = reconcileCanvasGenerationAttempts(
-            scene.cards,
-            scene.id,
-            recoveryLinks,
-          );
-          if (reconciled.cards !== scene.cards) {
-            flushScenePending(scene.id);
-            patchSceneById(scene.id, { cards: reconciled.cards });
-          }
-        }
-      } catch {
-        // 백엔드가 아직 시작 중이거나 일시 끊김이면 표식을 그대로 두고 다음 주기에 재확인한다.
-      }
-      if (alive) timer = window.setTimeout(recover, 2500);
-    };
-    void recover();
-    const onVisible = () => {
-      if (document.visibilityState !== "visible") return;
-      if (timer) clearTimeout(timer);
-      void recover(); // 복귀 즉시 1회 — 숨어 있는 동안 끝난 생성이 바로 카드에 붙는다
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      alive = false;
-      if (timer) clearTimeout(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [authReady, canvasAttemptSig, flushScenePending, patchSceneById, setGens]);
+  const { prepareCanvasGenerationBatch, prepareCanvasGeneration, confirmCanvasGeneration, settleCanvasGeneration, discardCanvasGeneration } =
+    useCanvasGenerationLinks({ authReady, scenes, canvasDocument, setGens });
   const selectedGenerations = useMemo(() => generationsByIds(gens, selected), [gens, selected]);
   // 목록에서 사라진 카드는 선택에서도 뺀다(조작 규칙 42). 선택은 id 집합이라, 다른 폴더로 담거나 다른 창에서 지우거나 자동 새로고침으로
   //  목록에서 빠진 카드가 그대로 남았다 — 남은 카드를 더 골라 지우면 보이지 않는 그 카드까지 지워졌다(삭제·복원·담기·색·d 는 선택 id 를
@@ -1175,11 +987,6 @@ export default function App() {
   }, [restoreLocation, sceneActionRef]);
   // 컷 카드 우클릭·컷 정보 창의 [폴더 열기] → 그 폴더의 창. 누른 생성물 카드가 없으니 '방금 누른 카드'·이동 없이 맨 위부터 연다.
   //  (2026-10-13 낮 — 아침엔 두 번 클릭이 들어가기였고 창은 없었다. 그 전엔 컷 두 번 클릭이 이 창이었다.)
-  const openFolderCard = useCallback((folder: FolderCard) => {
-    openFolderPath({
-      projectId: folder.cover.project_id, path: folder.path, projectName: folder.cover.project_name ?? "", genId: null,
-    });
-  }, [openFolderPath]);
   // 에피소드 카드(하위 폴더 있음) 두 번 클릭 → 그 폴더로 들어간다 = 사이드바에서 그 폴더를 누른 것과 같다(생성 위치도 그 폴더, Jay 2026-10-09).
   //  컷(잎) 카드의 두 번 클릭은 모아보기(FolderCardGrid 가 가른다) — 컷에 들어가는 길은 사이드바다.
   const enterFolderCard = useCallback((folder: FolderCard) => {
@@ -1191,6 +998,15 @@ export default function App() {
     setArmedFolder({ projectId, path: folder.path });
     patch({ project_id: projectId, folder_path: folder.path });
   }, [setArmedFolder, patch]);
+  const openFolderCard = useCallback((folder: FolderCard) => {
+    if (folder.subfolders) {
+      enterFolderCard(folder);
+      return;
+    }
+    openFolderPath({
+      projectId: folder.cover.project_id, path: folder.path, projectName: folder.cover.project_name ?? "", genId: null,
+    });
+  }, [enterFolderCard, openFolderPath]);
   // 들어가기 직전의 누름(두 번 클릭의 둘째·[열기]) — 들어간 뒤의 묶음(위 cardsScope 와 같은 자리)을 미리 묻는다(Jay 10-16 2A — 에피소드로
   //  들어갈 때 빈 칸). 들어간 훅의 첫 조회가 이 요청을 이어받는다. 묶음 보기가 아니거나 옛 서버면 묻지 않는다.
   const prefetchFolderCard = useCallback((folder: FolderCard) => {
@@ -1219,7 +1035,7 @@ export default function App() {
       await api.setFolderCover(target.projectId, target.path, g.id);
       return true;
     } catch (error) {
-      flash(`${t("대표를 정하지 못했습니다")} — ${error instanceof Error ? error.message : String(error)}`);
+      flash(`${t("썸네일을 정하지 못했습니다")} — ${error instanceof Error ? error.message : String(error)}`);
       return false;
     } finally {
       await reloadFolderCardsRef.current();
@@ -1230,13 +1046,13 @@ export default function App() {
   // 카드 위의 대표 표시/지정 — 폴더 창(peek)과 들어간 폴더(own)가 같은 모양을 쓴다. 캔버스 '생성 결과' 창과 같은 자리·같은 모양이다.
   const coverHeader = (coverId: string | null, pick: (g: Generation) => void) => (g: Generation) =>
     g.id === coverId ? (
-      <span className="scene-varpop-cur">{t("★ 대표")}</span>
+      <span className="scene-varpop-cur">{t("썸네일")}</span>
     ) : g.assets?.[0] && !g.deleted ? (
       <button
         type="button"
         className="scene-varpop-rep"
         disabled={savingRep}
-        title={t("이 결과를 이 폴더의 대표로 지정 (팀이 같이 봅니다)")}
+        title={t("이 결과를 이 폴더의 썸네일로 지정 (팀이 같이 봅니다)")}
         // preventDefault = 단추가 초점을 가져가 격자가 움직이는 것을 막는다. mousedown 에서 바로 정한다(생성 결과 창과 같다).
         //  왼쪽 단추만 — 우클릭·휠 클릭으로 팀의 대표가 바뀌면 안 된다(Codex 코드 리뷰).
         onMouseDown={(e) => {
@@ -1249,7 +1065,7 @@ export default function App() {
           if (e.detail === 0) pick(g);
         }}
       >
-        {t("대표")}
+        {t("썸네일")}
       </button>
     ) : null;
   const closeFolderWindow = useCallback(() => {
@@ -1559,6 +1375,50 @@ export default function App() {
     locationCtxFor,
     setEditOpen,
   });
+  const libraryTabs = useLibraryFolderTabs({
+    library: libraryFilters, authKey: libraryAuthKey,
+    enabled: authReady && !editOpen && !listPeek,
+    canLeave: () => !editOpen && !listPeek && !listLocked,
+    onNavigate: () => {
+      clearSelect();
+      setCutSel(new Set());
+      setTagPanelOpen(false);
+      refocusGridRef.current = null;
+    },
+  });
+  const selectLibraryTab = (id: number) => {
+    const changed = id !== libraryTabs.active;
+    const selected = libraryTabs.select(id);
+    if (selected && changed) pushLocationRef.current = true;
+    return selected;
+  };
+  const openLibraryFolderTab = (projectId: string, path: string, name?: string) => {
+    return libraryTabs.openFolder(projectId, path, name);
+  };
+  const closeLibraryTab = (id: number) => {
+    if (id === libraryTabs.active && libraryTabs.tabs.length > 1 && !listLocked) pushLocationRef.current = true;
+    libraryTabs.close(id);
+  };
+  useEffect(() => {
+    const onBackspace = (event: KeyboardEvent) => {
+      if (storedTab === "compose" || editOpen || listPeek || listLocked || !authReady || filters.deleted_only
+        || event.key !== "Backspace" || event.defaultPrevented || isKeyHandled(event)
+        || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.repeat || event.isComposing
+        || isTypingTarget(event.target) || backgroundKeysBlocked()
+        || (!filters.folder_path && !filters.project_id)) return;
+      event.preventDefault();
+      markKeyHandled(event);
+      const path = filters.folder_path ? parentFolder(filters.folder_path.replace(/\\/g, "/")) : "";
+      pushLocationRef.current = true;
+      patch({ project_id: filters.folder_path ? filters.project_id : undefined, folder_path: path || undefined, search: undefined });
+      adoptShownLocation();
+      clearSelect();
+      setCutSel(new Set());
+      setTagPanelOpen(false);
+    };
+    window.addEventListener("keydown", onBackspace, true);
+    return () => window.removeEventListener("keydown", onBackspace, true);
+  });
   // 편집 탭에 들어오는 모든 길(단추·뒤로/앞으로)에서 밑의 목록 선택을 비운다 — 안 보이는 카드에 단축키·일괄 작업이 걸리지 않게.
   useEffect(() => {
     if (editOpen) setSelected((prev) => (prev.size ? new Set() : prev));
@@ -1798,9 +1658,7 @@ export default function App() {
     if (!activeScene || !sceneBinding) return;
     // 연결된 텍스트가 있으면 프롬프트는 파생(연결 텍스트 우선) — 에디터 편집을 카드에 저장하지 않는다.
     if (textDerived) return;
-    const cards = listScenes(null).find((s) => s.id === activeScene.id)?.cards || activeScene.cards;
-    const nextCards = cards.map((c) => (c.id === sceneBinding.cardId ? { ...c, prompt } : c));
-    patchActiveScene({ cards: nextCards });
+    canvasDocument.commit(canvasTarget(activeScene.id), { type: "editCardPrompt", cardId: sceneBinding.cardId, prompt });
   };
   // 생성 완료 → 결과 gen id 를 선택 카드에 바인딩(카드에 썸네일 표시). 씬 모드에선 구성보드 부모 자동연결은 건너뜀.
   const onPromptCreated = async (created?: Generation[], dragParentId?: string | null) => {
@@ -1808,17 +1666,7 @@ export default function App() {
       const newIds = (created || []).map((x) => x.id); // 복수 생성이면 여러 장 → 카드에 모두 누적
       if (newIds.length) seedPending(newIds); // 방금 생성 glow — 첫 폴링이 이미 done 이어도 뜨게 baseline 선등록
       if (newIds.length) {
-        flushScenePending(activeScene.id);
-        // 최신 씬을 다시 읽어(생성 대기 중 편집분 보존) 해당 카드에만 변형 append — 덮어쓰지 않는다.
-        // 재사용이든 아니든 '선택된 카드'에 쌓는다(사용자 결정: 카드 선택 후 재사용 = 그 카드에 누적).
-        const cards = listScenes(null).find((s) => s.id === activeScene.id)?.cards || activeScene.cards;
-        const nextCards = cards.map((c) => {
-          if (c.id !== sceneBinding.cardId) return c;
-          const genIds = [...variantIds(c)]; // legacy genId + 기존 genIds 병합(누락 방지)
-          for (const id of newIds) if (!genIds.includes(id)) genIds.push(id);
-          return { ...c, genId: newIds[0], genIds, status: "pending" as const }; // 첫 장을 대표로 표시
-        });
-        patchSceneById(activeScene.id, { cards: nextCards });
+        canvasDocument.commit(canvasTarget(activeScene.id), { type: "linkCardResults", cardId: sceneBinding.cardId, generationIds: newIds });
       }
       if (created?.length) {
         mergeFacetTags(created.flatMap((item) => item.tags || []));
@@ -1873,317 +1721,6 @@ export default function App() {
       flash(e instanceof Error ? e.message : "씬 불러오기에 실패했습니다.");
     }
   };
-  // 캔버스에서 '재생성' → 새 결과를 그 생성물이 속한 카드에 변형으로 쌓는다(라이브러리처럼 별도 카드가
-  // 아니라 같은 카드에 누적). 배치 생성(onPromptCreated)과 동일한 append 규칙 — 새 것을 대표로.
-  // 같은 생성물의 재생성이 도는 동안의 다시 누름은 pending 연결을 만들기 **전에** 막는다(조작 규칙 39 — 누름마다 유료 요청이 하나씩 나갔다).
-  const sceneRegenInFlightRef = useRef(new Set<string>());
-  const onSceneRegenerate = async (g: Generation) => {
-    if (!activeScene) return;
-    const blocked = modelBlockMessage(g.model); // 못 쓰는 모델은 pending 링크를 만들기 전에 거절
-    if (blocked) {
-      flash(blocked);
-      return;
-    }
-    if (sceneRegenInFlightRef.current.has(g.id)) {
-      flash("재생성 처리 중입니다 — 완료 후 다시 누르세요.");
-      return;
-    }
-    sceneRegenInFlightRef.current.add(g.id);
-    try {
-      flushScenePending(activeScene.id);
-      const latest = listScenes(null).find((scene) => scene.id === activeScene.id) || activeScene;
-      const target = latest.cards.find((card) => variantIds(card).includes(g.id));
-      if (!target) {
-        flash("재생성 결과를 쌓을 캔버스 카드를 찾지 못했습니다.");
-        return;
-      }
-      const link = (await prepareCanvasGenerationBatch(activeScene.id, [target.id]))[0];
-      if (!link) {
-        flash("재생성 위치를 저장하지 못해 제출을 중단했습니다.");
-        return;
-      }
-      const ng = await onRegenerate(g, link, () => discardCanvasGeneration(link));
-      if (ng) settleCanvasGeneration(link, ng);
-    } finally {
-      sceneRegenInFlightRef.current.delete(g.id);
-    }
-  };
-  // ── 렌더(배치) 노드 ── 연결된 생성카드들을 각자 자기 모델·refs·텍스트로 한 번에 생성한다.
-  //  · 각 카드의 연결 모델(collectGenModel)·연결 텍스트(collectGenText)·카드 refs 로 body 를 조립(하단 프롬프트 재사용).
-  //  · 모델 노드가 없는 카드는 Render 클릭 시점의 하단 프롬프트 모델로 생성(카드 Generate 바와 같은 규칙).
-  //    모델 노드가 2개 이상이거나 모델 미설정 노드면 건너뛴다. 잡은 전부 한 번에 제출하고 초과분은 서버 큐가 순서대로 처리.
-  const genParamsCacheRef = useRef<Record<string, ModelParam[]>>({}); // 모델별 파라미터 스키마 캐시(auto 비율 해석용)
-  // 씬별 렌더 진행 가드 — 같은 씬의 더블클릭만 막고, 느린 요청 중 다른 씬 작업은 허용한다.
-  const renderingSceneIdsRef = useRef(new Set<string>());
-  // 생성 1건의 조립 재료는 sceneGenerationInputs 공용 순수 함수가 만든다(실행 지문과 제출 규칙 공유).
-  // job 목록 제출(공통) — 모델 파라미터 선로드→body 조립→각 job 1회씩 병렬 create→카드에 결과 id 누적.
-  //  ★배치 반복은 호출자가 jobs 를 늘려서(같은 카드 N개) 결정한다 — 여기선 job 1개=1장.
-  const submitGenJobs = async (
-    requestedJobs: SceneGenerationJobInput[],
-    skipped: number, // 모델을 정할 수 없어 건너뛴 생성카드 수(카드 단위)
-    scene: Scene,
-    projectId: string | undefined,
-    folderPath: string | undefined,
-  ) => {
-    if (!isGenerationWorkspaceReady(workspaceContext)) {
-      flash("워크스페이스 정보를 확인하는 중입니다. 잠시 후 다시 실행하세요.");
-      return;
-    }
-    if (sceneWorkspaceBlock) {
-      flash(sceneWorkspaceBlock);
-      return;
-    }
-    // 그룹에서 못 쓰는 모델은 pending 기록·업로드보다 먼저 걸러낸다(로컬 거절이 유령 표식을 남기지 않게 — 코덱스 P1).
-    const policy = currentModelPolicy();
-    if (policy.status === "loading") {
-      flash("그룹 모델 설정을 확인하는 중입니다. 잠시 후 다시 실행하세요.");
-      return;
-    }
-    const blockedCards = new Set(
-      requestedJobs.filter((job) => !modelAllowed(policy, job.model)).map((job) => job.cardId),
-    );
-    const jobs = blockedCards.size
-      ? requestedJobs.filter((job) => modelAllowed(policy, job.model))
-      : requestedJobs;
-    if (!jobs.length && blockedCards.size) {
-      flash(
-        `선택한 카드의 모델을 모두 ${policy.groupName ? `'${policy.groupName}' 그룹` : "이 그룹"}에서 쓸 수 없습니다. ` +
-          "모델 노드에서 다른 모델을 고르세요.",
-      );
-      return;
-    }
-    if (!jobs.length) {
-      flash(
-        skipped
-          ? "모델을 정할 수 없는 생성 카드뿐입니다. 모델 노드를 하나만 연결해 모델을 고르거나, 모델 노드를 모두 떼고 하단 프롬프트에서 모델을 고르세요."
-          : "생성할 카드가 없습니다.",
-      );
-      return;
-    }
-    // 같은 모델 요청은 파라미터 조회 1회를 공유하되, 다른 모델 작업은 독립적으로 준비·제출한다.
-    // 예전처럼 모든 모델 조회·body 조립을 먼저 Promise.all로 기다리면 느린 1건이 전체 시작을 막는다.
-    const paramLoads = new Map<string, Promise<void>>();
-    const ensureModelParams = (model: string): Promise<void> => {
-      if (model in genParamsCacheRef.current) return Promise.resolve();
-      const pending = paramLoads.get(model);
-      if (pending) return pending;
-      const load = api
-        .modelParams(model)
-        .then((r) => {
-          genParamsCacheRef.current[model] = r.params;
-        })
-        .catch(() => {
-          // 실패는 캐시하지 않는다 — 다음 렌더에서 다시 시도한다. 이번 작업은 빈 스키마로 계속 진행.
-        });
-      paramLoads.set(model, load);
-      return load;
-    };
-
-    const applySuccess = (cardId: string, gen: Generation) => {
-      setGens((prev) => {
-        if (prev.some((item) => item.id === gen.id)) return prev;
-        return [gen, ...prev];
-      });
-      // 매 완료마다 최신 저장본 위에 붙인다. 카드/씬이 대기 중 삭제됐다면 되살리지 않는다.
-      flushScenePending(scene.id);
-      const latest = listScenes(null).find((item) => item.id === scene.id);
-      if (latest) {
-        const settled = settleCanvasGenerationAttempt(latest.cards, cardId, gen.id);
-        if (settled !== latest.cards) patchSceneById(scene.id, { cards: settled });
-      }
-    };
-
-    const canvasLinks = await prepareCanvasGenerationBatch(
-      scene.id,
-      jobs.map((job) => job.cardId),
-    );
-    if (canvasLinks.length !== jobs.length) {
-      flash("캔버스 생성 위치를 저장하지 못해 제출을 중단했습니다.");
-      return;
-    }
-    const linkedJobs = jobs.map((job, index) => ({
-      ...job,
-      canvasLink: canvasLinks[index],
-    }));
-
-    spotlightPromptRef.current?.reportError(null);
-    const invalidCards = new Map<string, string>();
-    const generationCards = scene.cards.filter((card) => card.kind === "generation");
-    const summary = await executeSceneGenerationBatch(
-      linkedJobs.map((job) => ({ cardId: job.cardId, input: job })),
-      async (j) => {
-        try {
-          await ensureModelParams(j.model);
-          const tunable = genParamsCacheRef.current[j.model] || [];
-          const assignmentProjectId = j.assignment?.projectId ?? projectId;
-          const assignmentFolderPath = j.assignment?.folderPath ?? folderPath;
-          const assignmentTags = j.assignment?.tags || [];
-          const { body, error } = buildSpotlightCreateBody({
-            text: j.text,
-            inlineRefs: [],
-            trayRefs: j.refs,
-            parts: [],
-            displayPrompt: j.text,
-            model: j.model,
-            optionValues: j.params,
-            tags: assignmentTags,
-            armedAutoTags: [...armedAutoTags],
-            activeProjectId: assignmentProjectId,
-            folderPath: assignmentFolderPath,
-          });
-          if (error || !body) {
-            if (j.canvasLink) discardCanvasGeneration(j.canvasLink);
-            // 같은 카드의 배치 반복은 한 번만 알리고, 유효한 다른 카드는 계속 제출한다.
-            const cardNumber = generationCards.findIndex((card) => card.id === j.cardId) + 1;
-            invalidCards.set(j.cardId, `생성 카드 ${cardNumber}: ${error || "생성 요청을 만들 수 없습니다."}`);
-            spotlightPromptRef.current?.reportError([...invalidCards.values()].join("\n"));
-            return null;
-          }
-          body.params = await resolveAutoAspectRatio(body.params || {}, tunable, j.refs);
-          return { body, canvasLink: j.canvasLink };
-        } catch (error) {
-          if (j.canvasLink) discardCanvasGeneration(j.canvasLink);
-          throw error;
-        }
-      },
-      async ({ body, canvasLink }) => {
-        try {
-          const submit = api.prepareCreate(body, workspaceContext, canvasLink);
-          return await submit();
-        } catch (error) {
-          const status = Number((error as { status?: number })?.status);
-          if (
-            canvasLink &&
-            status >= 400 &&
-            status < 500 &&
-            status !== 408 &&
-            status !== 429
-          ) {
-            discardCanvasGeneration(canvasLink);
-          }
-          throw error;
-        }
-      },
-      ({ cardId, result }) => applySuccess(cardId, result),
-    );
-    const { successes, buildFail, submitFail: createFail, submitUnknown, applyFail } = summary;
-    if (!successes.length && buildFail === jobs.length) {
-      flash(`생성 요청을 만들 수 없습니다(요청 ${buildFail}건 실패, 모델 미확정 카드 ${skipped}개).`);
-      return;
-    }
-    // 연결은 요청 전에 입력 순서대로 저장됐다. 여기서는 성공 수와 표시 데이터만 정산한다.
-    const byCard = new Map<string, string[]>();
-    const freshGens: Generation[] = successes.map((item) => item.result);
-    if (freshGens.length) mergeFacetTags(freshGens.flatMap((item) => item.tags || []));
-    for (const success of successes) {
-      const arr = byCard.get(success.cardId) || [];
-      arr.push(success.result.id);
-      byCard.set(success.cardId, arr);
-    }
-    const notes: string[] = [];
-    // 하단 프롬프트 모델로 나간 카드는 어떤 모델인지 드러낸다(숨은 '남은 모델' 방지).
-    const fallbackJobs = jobs.filter((job) => job.modelSource === "fallback");
-    if (fallbackJobs.length) {
-      const label = fallbackJobs[0].modelName || fallbackJobs[0].model;
-      const cardCount = new Set(fallbackJobs.map((job) => job.cardId)).size;
-      notes.push(`모델 노드 없음 → 하단 모델(${label}) ${cardCount}개`);
-    }
-    if (skipped) notes.push(`모델 미확정 ${skipped}개`);
-    if (blockedCards.size) notes.push(`쓸 수 없는 모델 제외 ${blockedCards.size}개`);
-    if (buildFail) notes.push(`요청 실패 ${buildFail}개`);
-    if (createFail) notes.push(`제출 실패 ${createFail}장`);
-    if (submitUnknown) notes.push(`접수 여부 모름 ${submitUnknown}장 — 다시 누르기 전에 목록 확인`); // 들어갔을 수 있다(Jay 결정 2A)
-    if (applyFail) notes.push("화면 반영 실패 — 재시작 시 자동 복구");
-    flash(
-      `${byCard.size}개 카드에서 생성 시작(${freshGens.length}장)` +
-        (notes.length ? ` · ${notes.join(" · ")}` : ""),
-    );
-    void reload();
-    bumpBoard();
-  };
-  // ── 렌더(배치) 노드 ── 연결된 생성카드들을 각자 연결 모델(없으면 fallbackModel)·refs·텍스트로 batch 장씩 한 번에 생성.
-  //  · comfy 없는(또는 comfy 결과를 짝으로 나누지 않는) 경로. 각 카드를 batch 수만큼 복제해 병렬 제출.
-  //  · fallbackModel 은 실행 훅이 Render 클릭 시점에 읽은 하단 프롬프트 모델 — 여기서 다시 읽지 않는다.
-  const generateCards = async (
-    cardIds: string[],
-    batchOverride?: number,
-    fallbackModel?: SceneModelCfg | null,
-  ) => {
-    if (!activeScene || !cardIds.length) return;
-    const sceneId = activeScene.id;
-    const release = acquireSceneGeneration(renderingSceneIdsRef.current, sceneId);
-    if (!release) {
-      flash("이 씬은 이미 생성 요청을 제출하고 있습니다.");
-      return;
-    }
-    try {
-      const scene = listScenes(null).find((s) => s.id === sceneId) || activeScene;
-      const cardsById = new Map(scene.cards.map((c) => [c.id, c] as const));
-      const resolved = resolvePortEdges(cardsById, scene.edges);
-      // 렌더 노드의 배치수(노드별)로 각 잡을 복제. 없으면 하단 스포트라이트 배치.
-      const batch = Math.max(1, batchOverride ?? batchCount);
-      const projectId =
-        generationScope.project_id && generationScope.project_id !== "none" ? generationScope.project_id : undefined;
-      const folderPath =
-        armedFolder && armedFolder.projectId === projectId ? armedFolder.path : undefined;
-      const jobs: SceneGenerationJobInput[] = [];
-      const unresolved = new Set<string>(); // 모델을 정할 수 없는 생성카드(노드 2개 이상·미설정 노드·폴백 없음)
-      for (const cid of cardIds) {
-        const job = buildSceneGenerationJobInput(cid, cardsById, resolved, undefined, fallbackModel);
-        if (!job) {
-          if (cardsById.get(cid)?.kind === "generation") unresolved.add(cid);
-          continue;
-        }
-        for (let i = 0; i < batch; i++) jobs.push({ ...job }); // 각 잡 × 배치수
-      }
-      await submitGenJobs(jobs, unresolved.size, scene, projectId, folderPath);
-    } finally {
-      release();
-    }
-  };
-  // ── 배치 짝 생성 ── 상류 comfy 를 배치수만큼 병렬 실행한 결과(runs)를 받아, 각 run 을 그 comfy 결과(overlay)와
-  //  짝지어 1장씩 병렬 생성한다. SceneBoard 오케스트레이터가 runs 를 만들어 이 함수를 1회 호출한다
-  //  (씬별 실행 가드에 조용히 막히지 않도록 반드시 1회). run 마다 overlay 가 달라 서로 다른 comfy 결과로 생성.
-  const generateCardRuns = async (
-    runs: SceneGenerationRun[],
-    fallbackModel?: SceneModelCfg | null,
-  ) => {
-    if (!activeScene || !runs.length) return;
-    const sceneId = activeScene.id;
-    const release = acquireSceneGeneration(renderingSceneIdsRef.current, sceneId);
-    if (!release) {
-      flash("이 씬은 이미 생성 요청을 제출하고 있습니다.");
-      return;
-    }
-    try {
-      const scene = listScenes(null).find((s) => s.id === sceneId) || activeScene;
-      const cardsById = new Map(scene.cards.map((c) => [c.id, c] as const));
-      const resolved = resolvePortEdges(cardsById, scene.edges);
-      const projectId =
-        generationScope.project_id && generationScope.project_id !== "none" ? generationScope.project_id : undefined;
-      const folderPath =
-        armedFolder && armedFolder.projectId === projectId ? armedFolder.path : undefined;
-      const jobs: SceneGenerationJobInput[] = [];
-      const unresolved = new Set<string>(); // 카드 단위 — run 수(배치)로 세면 알림이 부풀려진다
-      for (const run of runs) {
-        const job = buildSceneGenerationJobInput(
-          run.cardId,
-          cardsById,
-          resolved,
-          run.comfyOutputsById,
-          fallbackModel,
-        );
-        if (!job) {
-          if (cardsById.get(run.cardId)?.kind === "generation") unresolved.add(run.cardId);
-          continue;
-        }
-        jobs.push(job); // run 하나당 1장(overlay 로 그 짝의 comfy 결과 주입)
-      }
-      await submitGenJobs(jobs, unresolved.size, scene, projectId, folderPath);
-    } finally {
-      release();
-    }
-  };
   // 폴더 필터가 해제되거나(프로젝트/라이브러리/미분류 선택) 다른 프로젝트로 바뀌면 무장 폴더(armedFolder)도
   // 함께 해제한다 — 안 그러면 폴더 필터를 풀어도 새 생성이 예전 폴더로 저장되던 문제(라이브러리·캔버스 공통).
   useEffect(() => {
@@ -2213,6 +1750,59 @@ export default function App() {
     reload,
     workspace: workspaceContext,
   });
+  const { onSceneRegenerate, generateCards, generateCardRuns } = useSceneGenerationSubmission({
+    activeScene, workspaceContext, sceneWorkspaceBlock, generationProjectId: generationScope.project_id,
+    batchCount, armedFolder, armedAutoTags, flushScenePending, prepareCanvasGenerationBatch, confirmCanvasGeneration,
+    settleCanvasGeneration, discardCanvasGeneration, onRegenerate, flash,
+    reportPromptError: (message) => spotlightPromptRef.current?.reportError(message),
+    mergeFacetTags, reload, bumpBoard,
+  });
+  const draftRequests = useDraftRequests(gens);
+  const finishDraft = async (generation: Generation) => {
+    if (!canFinishDraft(generation)) return;
+    const scope = captureSubmissionScope(workspaceContext);
+    const attempt = draftRequests.begin(generation.id, scope);
+    if (!attempt) return;
+    let link: Awaited<ReturnType<typeof prepareCanvasGenerationBatch>>[number] | undefined;
+    let acceptedOrUnknown = false;
+    try {
+      if (activeScene) {
+        flushScenePending(activeScene.id);
+        const scene = listScenes(null).find((item) => item.id === activeScene.id) ?? activeScene;
+        const card = scene.cards.find((item) => variantIds(item).includes(generation.id));
+        if (!card) throw new Error("Draft 결과를 쌓을 캔버스 카드를 찾지 못했습니다.");
+        link = (await prepareCanvasGenerationBatch(scene.id, [card.id]))[0];
+        if (!link) throw new Error("캔버스 저장을 확인하지 못했습니다.");
+      }
+      const prepared = prepareRegenerateSubmission(generation.id, { finish_draft: true }, workspaceContext, link, scope);
+      const result = await runSubmission(prepared, link ? {
+        confirm: () => confirmCanvasGeneration([link!]),
+        apply: (next) => settleCanvasGeneration(link!, next),
+      } : undefined);
+      acceptedOrUnknown = result.outcome.kind === "accepted" || result.outcome.kind === "accepted_local_pending" || result.outcome.kind === "acceptance_unknown";
+      if (!scope.isCurrent!()) return;
+      if (!result.generation) {
+        if (result.outcome.kind === "acceptance_unknown") {
+          flash("Draft 요청의 접수 여부를 확인 중입니다. 중복 생성하지 말고 생성 목록을 확인하세요.");
+          return;
+        }
+        throw result.error ?? new Error("Draft 생성 요청을 제출하지 못했습니다.");
+      }
+      draftRequests.accept(attempt, result.generation);
+      flash(result.outcome.kind === "accepted_local_pending"
+        ? "Draft 생성 요청은 접수됐습니다. 캔버스 연결은 재시작 시 복구됩니다."
+        : "Draft 1080p 생성 요청을 접수했습니다.");
+      await reload();
+      if (scope.isCurrent!()) { bumpBoard(); postLibraryChanged(); }
+    } catch (error) {
+      if (scope.isCurrent!()) flash(`Draft 생성 실패: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      if (!acceptedOrUnknown) {
+        if (link && scope.isCurrent!()) discardCanvasGeneration(link);
+        draftRequests.release(attempt);
+      }
+    }
+  };
 
   // 정보팝업 '⧉ 히스토리' → 구성탭 계보 트리(뒤로가기로 직전 화면 복원).
   // ★씬 탭 바에서 고정 '히스토리' 탭이 빠져 이 버튼들이 유일한 진입로다 — 활성 씬을 내려놓아야
@@ -2399,7 +1989,7 @@ export default function App() {
         <span className="sb-count">{selectedCuts.length}{t("컷 선택")}</span>
         <button
           type="button"
-          title={t("고른 컷의 대표(없으면 최신 것)를 순서대로 모아 본다")}
+          title={t("고른 컷의 썸네일(없으면 최신 것)을 순서대로 모아 본다")}
           onClick={() => setCutReel({ paths: selectedCuts.map((folder) => folder.path), ctx: listPeekCtx })}
         >
           ▦ {t("모아보기")}
@@ -2449,6 +2039,9 @@ export default function App() {
         ) : sceneSelGens.length > 0 ? (
           <BoardSelectionActionBar
             selected={sceneSelGens}
+            onFinishDraft={finishDraft}
+            draftBusy={sceneSelGens.some((generation) => draftRequests.pending.has(generation.id))}
+            draftDone={sceneSelGens.some((generation) => draftRequests.completed.has(generation.id))}
             projects={projects}
             onShare={boardShare}
             onDownload={bulkDownload}
@@ -2465,6 +2058,9 @@ export default function App() {
       ) : boardSelected.length > 0 ? (
         <BoardSelectionActionBar
           selected={boardSelected}
+          onFinishDraft={finishDraft}
+          draftBusy={boardSelected.some((generation) => draftRequests.pending.has(generation.id))}
+          draftDone={boardSelected.some((generation) => draftRequests.completed.has(generation.id))}
           projects={projects}
           onShare={boardShare}
           onDownload={bulkDownload}
@@ -2627,7 +2223,7 @@ export default function App() {
       hasMore={hasMore && !behindAfterMove} // 자리를 옮긴 뒤 새 목록 전에는 더 받지 않는다 — 커서가 옛 조회의 것이다
       loadingMore={loadingMore}
       onLoadMore={loadMore}
-      resetKey={serverFilterKey}
+      resetKey={JSON.stringify([serverFilterKey, storedTab, libraryTabs.active])}
       loadError={loadError}
       onRetryLoad={() => void reload()}
     />
@@ -2698,9 +2294,10 @@ export default function App() {
     <div className="app">
       <TopBar
         filters={filters}
-        searchResetKey={followRevision}
+        searchResetKey={JSON.stringify([followRevision, storedTab, libraryTabs.active, libraryAuthKey, teamScopeKey, filters.project_id, filters.folder_path, filters.deleted_only])}
         onTab={(tab) => {
           navTab(tab); // 브라우저 히스토리 엔트리 추가(뒤로/앞으로 연동)
+          if ((tab === "my" || tab === "team") && libraryTabs.resume(tab)) return;
           // 직접 탭 클릭은 다른 필터를 초기화하되 무장된 워크스페이스 침 필터는 유지
           setFilters((previous) => ({ tab, workspace_ids: previous.workspace_ids }));
           // 공유 탭을 **직접 눌러** 들어오면 같은 문맥의 마지막 자리로(2026-10-13 ①). **사이드바의 표시(= 다음 생성 위치·무장 폴더)도 그 자리로
@@ -2752,9 +2349,9 @@ export default function App() {
         authKey={libraryAuthKey}
         workspace={workspaceContext}
         activeSceneId={activeSceneId}
-        flushScenePending={flushScenePending}
-        patchSceneById={patchSceneById}
+        canvasDocument={canvasDocument}
         prepareCanvasGenerationBatch={prepareCanvasGenerationBatch}
+        confirmCanvasGeneration={confirmCanvasGeneration}
         settleCanvasGeneration={settleCanvasGeneration}
         discardCanvasGeneration={discardCanvasGeneration}
       /></Suspense>}
@@ -2912,7 +2509,7 @@ export default function App() {
                 authKey={libraryAuthKey}
                 authReady={authReady}
                 scene={activeScene}
-                onChange={(patch) => patchActiveScene(patch)}
+                onChange={(snapshot) => writeBoardSnapshot(canvasTarget(activeScene.id), snapshot)}
                 // Ctrl+K 로 프롬프트 숨김 시 멀티선택 액션바를 캔버스 상단 중앙(씬 패널·미니맵 줄)에 얹는다.
                 topCenterOverlay={!promptVisible ? selectionBar : undefined}
                 onSaveScene={handleSaveScene}
@@ -2923,7 +2520,7 @@ export default function App() {
                 ioPanelHot={sceneBarHover}
                 onBindingChange={setSceneBinding}
                 // 세션 중 씬 전환했다 돌아와도 복원되게 카메라도 저장.
-                onCameraChange={(camera) => patchActiveScene({ camera })}
+                onCameraChange={(camera) => canvasDocument.commit(canvasTarget(activeScene.id), { type: "recordCamera", camera })}
                 resolveSelection={
                   resolveSceneSelection?.sceneId === activeScene.id &&
                   resolveSceneSelection.followEnabled === resolveSelectionFollow
@@ -3053,6 +2650,7 @@ export default function App() {
           <>
             {showFilters && (
               <FilterSidebar
+                onOpenFolderTab={openLibraryFolderTab}
                 facets={facets}
                 filters={filters}
                 onChange={(p) => {
@@ -3109,10 +2707,18 @@ export default function App() {
               ) : (
                 libraryToolbar
               )}
+              <FolderTabs label={storedTab === "team" ? "공유 & 리뷰 폴더 탭" : "워크스페이스 폴더 탭"}
+                tabs={libraryTabs.tabs.map((tab) => ({ id: tab.id, view: {
+                  dir: tab.view.filters.folder_path || "",
+                  project: projects.find((project) => project.id === tab.view.filters.project_id)?.name || tab.view.projectName || "",
+                  name: tab.view.filters.deleted_only ? t("휴지통") : tab.view.filters.project_id === "none" ? t("미분류") : undefined,
+                } }))}
+                active={libraryTabs.active} onSelect={selectLibraryTab} onClose={closeLibraryTab} onReorder={libraryTabs.reorder} />
               {/* 묶음 보기 — 격자 자리에 컷 카드. 폴더 창이 떠 있어도 뒤에 그대로 둔다(body 가 inert 라 눌리지 않는다). */}
               {cutCards ? (
                 <FolderCardGrid
                   folders={cutCards.folders} scale={scale} fill={fill} layout={layout} onEnter={enterFolderCard} onOpen={openFolderCard}
+                  onOpenTab={(folder) => { if (cutScope) openLibraryFolderTab(cutScope.projectId, folder.path); }}
                   onPrefetch={prefetchFolderCard}
                   table={groupByDate} onPreview={openPreview} // 리스트 단추 한 번 더(낱장 목록의 '날짜별 구분' 자리) = 표 · 컷 줄의 생성물 띠 = 크게 보기
                   placeKey={hereKey} // 두 번 누름의 둘째가 들어간 화면에 닿는 것을 버린다(조작 규칙 61)
@@ -3180,6 +2786,7 @@ export default function App() {
               : null
           }
           prepareCanvasGeneration={prepareCanvasGeneration}
+          confirmCanvasGeneration={confirmCanvasGeneration}
           settleCanvasGeneration={settleCanvasGeneration}
           discardCanvasGeneration={discardCanvasGeneration}
           onCanvasBatchCreated={(created) => {

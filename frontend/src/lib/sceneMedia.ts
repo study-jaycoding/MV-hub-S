@@ -2,6 +2,7 @@
 import { assetFileUrl } from "./assetUrls";
 import { displayRefThumb } from "./media";
 import type { SceneRef } from "./scenes";
+import { managedAssetUrl } from "../shared/contracts/assets";
 
 // 레퍼런스 카드 썸네일 src — 프롬프트 계열(트레이·칩·토큰)과 동일한 공통 헬퍼(displayRefThumb)로 통일.
 // asset 소스면 file_path 로 재생성해 전역 버전 표의 최신 버전을 붙인다(원본이 바뀌면 새 썸네일).
@@ -24,6 +25,8 @@ export function refTypeLabel(refs?: SceneRef[]): string {
 export function refMediaSrc(r: SceneRef): string | undefined {
   const p = r.file_path;
   if (!p) return undefined;
+  const managed = managedAssetUrl(p);
+  if (managed) return managed;
   if (p.startsWith("asset:")) {
     const [proj, path] = p.slice(6).split("|");
     return proj && path ? assetFileUrl(proj, path) : undefined;

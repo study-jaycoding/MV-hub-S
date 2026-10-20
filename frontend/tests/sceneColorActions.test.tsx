@@ -94,6 +94,8 @@ beforeEach(async () => {
   account = await import("../src/lib/accountScope");
   language = await import("../src/lib/i18n");
   http.setAuthToken("synthetic-A"); account.setAccountScope("synthetic-A"); language.setLang("ko");
+  (await import("../src/app/operationContext")).configureOperationContext({ key: "account-A", serverOrigin: location.origin, authority: "local", ready: true });
+  (await import("../src/features/library/readModels")).getGenerationReadModel(scope.authKey, "lookup");
   window.addEventListener("ch:flash", onFlash);
   seed(); host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
@@ -252,9 +254,8 @@ it.each(["ko", "en"] as const)("missing recovery rows count zero applied colors 
 });
 it("scope change during failure recovery silently discards response and flash", async () => {
   await render(); await read(0); await paint(); await save(0, ["a"]);
-  const before = cached();
   scope = { ...scope, authKey: "B" }; await render();
-  await read(1); expect(cached()).toBe(before); expect(flashes).toEqual([]);
+  await read(1); expect(cached()).toBeUndefined(); expect(value()).toBeUndefined(); expect(flashes).toEqual([]);
 });
 it("removing then re-adding the same gid cannot reuse an old recovery revision", async () => {
   await render(); await read(0); await paint(); await save(0, ["a"]);

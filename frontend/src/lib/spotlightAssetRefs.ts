@@ -5,8 +5,9 @@ import { referenceMediaTypeFromFile, type ReferenceMediaType } from "./media";
 import type { ChipRef } from "./promptEditor";
 import { loadJSON, loadString } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
+import { assetIdentity, managedAssetUrl, type AssetReferenceIdentity } from "../shared/contracts/assets";
 
-export type SpotlightAssetDragItem = {
+export type SpotlightAssetDragItem = AssetReferenceIdentity & {
   project: string;
   path: string;
   name: string;
@@ -15,6 +16,7 @@ export type SpotlightAssetDragItem = {
   // 내용 지문·크기(2026-09-28) — 원본이 옮겨져도 내용으로 다시 찾게 씬 레퍼런스까지 들고 간다.
   sha256?: string;
   bytes?: number;
+  file_path?: string;
 };
 
 export function readSpotlightAssetCtx(): { project: string; dir: string } {
@@ -88,10 +90,11 @@ export function readSpotlightAssetPayload(dataTransfer: DataTransfer): string {
 export function spotlightAssetRefBase(item: SpotlightAssetDragItem): Omit<ChipRef, "role"> {
   const type = item.type === "video" ? "video" : item.type === "audio" ? "audio" : "image";
   return {
-    file_path: `asset:${item.project}|${item.path}`,
+    ...assetIdentity(item),
+    file_path: item.file_path && managedAssetUrl(item.file_path) ? item.file_path : `asset:${item.project}|${item.path}`,
     type,
     name: item.name,
-    thumb:
+    thumb: item.file_path && managedAssetUrl(item.file_path) ? managedAssetUrl(item.file_path)! :
       type === "video"
         ? api.assetFileUrl(item.project, item.path)
         : type === "audio"

@@ -25,6 +25,8 @@ import { isGenerationWorkspaceReady } from "../../lib/workspaceContext";
 import { holdUnload } from "../../lib/unloadGuard";
 import { useModels } from "../../lib/useModels";
 import type { Generation, WorkspaceContext } from "../../types";
+import { assetIdentity, type AssetReferenceIdentity } from "../../shared/contracts/assets";
+import { captureOperationContext, isOperationContextCurrent } from "../../app/operationContext";
 import { CloseIcon } from "../common/ViewIcons";
 
 const MAX_WORK_PIXELS = 12_000_000; // 12MP — 주석/평면화 캔버스 동시 보유 상한
@@ -531,7 +533,7 @@ export function PartialEditModal({
   // 없으면 원본 URL 그대로. 업로드는 sha256 중복 재사용이라 재시도에도 파일이 늘지 않는다.
   // 업로드 후 생성이 최종 실패하면 캡처 파일 1개가 captures 에 남을 수 있다(잡 미연결) —
   // 롤백 없음은 수용(캡처는 Assets 에서 보이고 지울 수 있다, 코덱스 WARN 문서화).
-  const buildReference = async (): Promise<{
+  const buildReference = async (): Promise<AssetReferenceIdentity & {
     file_path: string;
     thumbnail?: string;
     discardToken?: string; // 신규 캡처에만 — 생성 요청 확정 거절(400/422) 시 고아 정리용
@@ -552,8 +554,10 @@ export function PartialEditModal({
     const blob = await new Promise<Blob | null>((resolve) => flat.toBlob(resolve, "image/png"));
     if (!blob) throw new Error("주석 이미지 인코딩 실패");
     // 주석 평면화 그림은 이 PC 설치 폴더(captures)에 저장한다(Jay 2026-09-29 옛 방식).
-    const up = await api.uploadCapture(blob);
+    const up = await api.uploadCapture(blob, { target_project_id: gen.project_id || undefined,
+      target_workspace_id: workspace.id || undefined });
     return {
+      ...assetIdentity(up),
       file_path: `asset:${up.project}|${up.path}`,
       thumbnail: api.assetThumbUrl(up.project, up.path, 256),
       // reused = 과거 잡이 같은 파일을 참조할 수 있음 → 정리 대상 아님(서버도 토큰 미발급)
@@ -563,9 +567,10 @@ export function PartialEditModal({
 
   const submit = async () => {
     if (!canSubmit || !src) return;
+    const operation = captureOperationContext(workspace);
     setError("");
     setSubmitting(true);
-    let refBits: { file_path: string; thumbnail?: string; discardToken?: string };
+    let refBits: AssetReferenceIdentity & { file_path: string; thumbnail?: string; discardToken?: string };
     try {
       refBits = await buildReference();
     } catch (e) {
@@ -576,12 +581,14 @@ export function PartialEditModal({
       return;
     }
     if (!mountedRef.current) return;
+    if (!isOperationContextCurrent(operation)) { setSubmitting(false); return; }
     const body: GenerationCreateBody = {
       prompt: prompt.trim(),
       model: m.model,
       params: aspect ? { aspect_ratio: aspect } : {},
       references: [
         {
+          ...assetIdentity(refBits),
           file_path: refBits.file_path,
           type: "image",
           role: "@Image1",

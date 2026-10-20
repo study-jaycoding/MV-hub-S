@@ -11,6 +11,7 @@ import type { Generation, InfoTarget, PreviewTarget } from "../../types";
 import { MediaThumbnail } from "../MediaThumbnail";
 import { GenerationConfirmOverlay } from "../generation/GenerationConfirmOverlay";
 import { InfoIcon } from "../common/ViewIcons";
+import { isDraftGeneration } from "../../lib/seedanceDraft";
 
 type SConfirm = { id: string; kind: "share" | "final" } | null;
 
@@ -168,6 +169,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
         }
       />
       {asset?.type === "video" && <span className="linb-vid">▶</span>}
+      {isDraftGeneration(generation) && <span className="linb-draft">Draft</span>}
       {isRoot && <span className="linb-tag root-tag">원본</span>}
       {(generation.shared || generation.is_final) && (
         <span

@@ -319,6 +319,13 @@
 .sl-caret { color: var(--muted); font-size: 16px; }
 /* 옵션 칩 라벨을 아이콘으로 — 텍스트 라벨 길이로 줄바꿈되던 것 해소(한 줄 유지) */
 .sl-opt-ic { display: inline-flex; align-items: center; color: var(--muted); }
+.sl-draft-pill {
+  display: inline-block; flex: none; padding: 1px 6px; border-radius: 999px;
+  background: var(--accent); color: var(--accent-ink); font-size: 9px; font-weight: 700;
+  line-height: 1.4; vertical-align: middle; pointer-events: none;
+}
+.sl-dd-item:has(.sl-draft-pill) { display: flex; align-items: center; gap: 6px; padding-right: 30px; }
+.sl-dd-item .sl-draft-pill { margin-left: auto; }
 /* 듀레이션 슬라이더 칩 — 아이콘 + 레인지 + 값(s) */
 .sl-opt-slider { gap: 8px; }
 /* CLI가 무시하는 값도 조작 가능하다. 안내는 별도 요소라 흐려지지 않는다. */

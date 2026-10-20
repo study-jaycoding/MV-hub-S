@@ -5,6 +5,7 @@
 import { loadJSON, saveJSON } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 import { getAccountNamespace } from "./accountScope";
+import type { AssetReferenceIdentity } from "../shared/contracts/assets";
 import { sceneBodySum } from "./sceneAbsorb";
 import { holdUnload } from "./unloadGuard";
 import {
@@ -75,7 +76,7 @@ export interface SceneComfyCfg {
 }
 
 // 카드가 담는 레퍼런스 — 하단 프롬프트의 레퍼런스와 호환되는 최소 필드.
-export interface SceneRef {
+export interface SceneRef extends AssetReferenceIdentity {
   file_path: string; // 'asset:{project}|{path}' 토큰 또는 원격 URL
   type: string; // 'image' | 'video'
   name?: string;
@@ -267,10 +268,11 @@ export function settleComfyRunning(cards: SceneCard[], keep?: (id: string) => bo
 //  ★from_card 포함: 소스 연결로 같은 참조의 출처만 바뀌어도(직접@→연결) 트레이가 최신화돼야 유령 참조를
 //   막는다. undefined 를 그대로 넣으면 JSON 이 null 로 직렬화돼 false 와 달라지므로 ?? false 로 정규화.
 export function sceneRefFingerprint(
-  refs: Pick<SceneRef, "file_path" | "type" | "name" | "thumb" | "source_gen_id" | "from_card">[],
+  refs: (Pick<SceneRef, "file_path" | "type" | "name" | "thumb" | "source_gen_id" | "from_card"> & AssetReferenceIdentity)[],
 ): string {
   return JSON.stringify(
-    refs.map((r) => [r.file_path, r.type, r.name ?? "", r.thumb ?? "", r.source_gen_id ?? "", r.from_card ?? false]),
+    refs.map((r) => [r.file_path, r.type, r.name ?? "", r.thumb ?? "", r.source_gen_id ?? "", r.from_card ?? false,
+      r.asset_content_id ?? "", r.target_project_id ?? "", r.server_location ?? null]),
   );
 }
 
@@ -344,6 +346,7 @@ function reportSaveState(failed: boolean): void {
 // 저장소가 확정에 성공/실패할 때마다 — 실패는 알림으로, 성공은 DB 미러로.
 // ★실패했으면 미러 구독자를 부르지 않는다 — 저장소 내용이 그대로라 올릴 것도 없다.
 setSceneFlushListener((ok) => {
+  holdUnload("scene-save:pending", sceneStoreHasPending());
   reportSaveState(!ok);
   if (ok) scenesPersistedSubs.forEach((fn) => fn());
 });
@@ -354,7 +357,10 @@ function commit<T, P = never>(
   mutate: (all: ScenesByProject) => { write: boolean; value: T },
   options?: { confirmedOnly?: boolean; merge?: SceneOpMerge<P> },
 ): { ok: boolean; value: T } {
-  return applySceneOp(mutate, options);
+  const result = applySceneOp(mutate, options);
+  // 정상 저장도 확정 전에는 메모리에만 있다. 실패 경고와 별도로 닫기·새로고침을 보호한다.
+  holdUnload("scene-save:pending", sceneStoreHasPending());
+  return result;
 }
 
 /**
@@ -702,6 +708,9 @@ function cleanRef(raw: unknown): SceneRef | null {
     content_sha: isStr,
     bytes: isFiniteNum,
     registry_asset_id: isStr,
+    asset_content_id: isStr,
+    target_project_id: isStr,
+    server_location: isPlain,
   });
   return ref as unknown as SceneRef;
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -14,6 +15,9 @@ from fastapi import HTTPException
 from app import db, repo
 from app.models import CanvasManualClaimIn
 from app.routers import gen_requests as gen_requests_router
+
+
+_MISSING_REFERENCES = object()
 
 
 class TestGenRequestCapabilityGate:
@@ -41,10 +45,15 @@ class TestGenRequestCapabilityGate:
         self.temp.cleanup()
 
     @staticmethod
-    def _request(workspace: dict | None = None) -> tuple[str, str]:
+    def _request(workspace: dict | None = None, *, asset_content_protocol: int | None = None,
+                 references=_MISSING_REFERENCES) -> tuple[str, str]:
         payload = {"model": "model", "prompt": "gate test", "params": {}}
+        if references is not _MISSING_REFERENCES:
+            payload["references"] = references
         if workspace is not None:
             payload["workspace"] = workspace
+        if asset_content_protocol is not None:
+            payload["asset_content_protocol"] = asset_content_protocol
         gen_id = repo.create_local_generation(
             payload,
             "me",
@@ -133,6 +142,142 @@ class TestGenRequestCapabilityGate:
 
         assert claimed == []
         assert repo.get_gen_request(rid)["status"] == "pending"
+
+    def test_old_asset_agent_sees_only_legacy_work_and_new_protocol_stays_pending(self):
+        new_id, new_gen = self._request(asset_content_protocol=1, references=[{"file_path": "input.png", "type": "image", "role": "@Image1"}])
+        with patch.object(gen_requests_router, "_require_account", return_value=self.account), patch.object(
+            gen_requests_router, "realtime_scope", return_value="acct:worker@example.com"
+        ), patch.object(gen_requests_router.manager, "broadcast", new_callable=AsyncMock) as broadcast, patch.object(
+            gen_requests_router, "schedule_telemetry_drain"
+        ):
+            before = asyncio.run(gen_requests_router.pending_gen_requests_exist(
+                object(), capability="workspace,submission-stage", agent_id="old-agent"))
+            assert before == {"pending": False}
+            assert asyncio.run(gen_requests_router.pending_gen_requests(
+                object(), capability="workspace,submission-stage", agent_id="old-agent")) == []
+            legacy_id, _ = self._request()
+            assert asyncio.run(gen_requests_router.pending_gen_requests_exist(
+                object(), capability="workspace,submission-stage", agent_id="old-agent")) == {"pending": True}
+            claimed = asyncio.run(gen_requests_router.pending_gen_requests(
+                object(), limit=1, capability="workspace,submission-stage", agent_id="old-agent"))
+        assert [item["id"] for item in claimed] == [legacy_id]
+        assert repo.get_gen_request(new_id)["status"] == "pending"
+        assert repo.get_generation(new_gen)["status"] == "pending"
+        # 선택적 새 프로토콜 필터는 기존 global paid-cap 안내 정책을 바꾸지 않는다.
+        assert all(call.args[0]["type"] != "flash" for call in broadcast.await_args_list)
+
+    def test_asset_content_agent_can_wake_and_claim_new_protocol(self):
+        request_id, _ = self._request(asset_content_protocol=1)
+        with patch.object(gen_requests_router, "_require_account", return_value=self.account), patch.object(
+            gen_requests_router, "realtime_scope", return_value="acct:worker@example.com"
+        ), patch.object(gen_requests_router.manager, "broadcast", new_callable=AsyncMock), patch.object(
+            gen_requests_router, "schedule_telemetry_drain"
+        ):
+            assert asyncio.run(gen_requests_router.pending_gen_requests_exist(
+                object(), capability="workspace,submission-stage,asset-content", agent_id="new-agent")) == {"pending": True}
+            claimed = asyncio.run(gen_requests_router.pending_gen_requests(
+                object(), capability="workspace,submission-stage,asset-content", agent_id="new-agent"))
+        assert [item["id"] for item in claimed] == [request_id]
+        assert claimed[0]["asset_content_protocol"] == 1
+        assert repo.get_gen_request(request_id)["status"] == "claimed"
+
+    def test_asset_content_sql_filter_does_not_starve_legacy_after_many_new_requests(self):
+        new_ids = [self._request(asset_content_protocol=1, references=[{"file_path": "input.png", "type": "image", "role": "@Image1"}])[0] for _ in range(20)]
+        legacy_id, _ = self._request()
+        claimed = repo.claim_pending_requests(self.account["email"], limit=1, workspace_capable=True,
+                                              asset_content_capable=False, lease_owner="old-agent", submission_stage_capable=True)
+        assert [item["id"] for item in claimed] == [legacy_id]
+        assert all(repo.get_gen_request(request_id)["status"] == "pending" for request_id in new_ids)
+        # 직접 DB 호출은 현행 호환 기본값(True)을 유지한다. HTTP는 항상 별도 광고값을 넘긴다.
+        assert len(repo.claim_pending_requests(self.account["email"], limit=1, workspace_capable=True)) == 1
+
+    @pytest.mark.parametrize("references", [_MISSING_REFERENCES, []], ids=["missing", "empty-array"])
+    def test_old_asset_agent_claims_stored_reference_free_protocol_without_rewriting_payload(self, references):
+        rid, gen_id = self._request({"scope": "personal"}, asset_content_protocol=1, references=references)
+        before = repo.get_gen_request(rid)["payload"]
+        with patch.object(gen_requests_router, "_require_account", return_value=self.account), patch.object(
+            gen_requests_router, "realtime_scope", return_value="acct:worker@example.com"
+        ), patch.object(gen_requests_router.manager, "broadcast", new_callable=AsyncMock), patch.object(
+            gen_requests_router, "schedule_telemetry_drain"
+        ):
+            assert asyncio.run(gen_requests_router.pending_gen_requests_exist(
+                object(), capability="workspace,submission-stage", agent_id="old-agent")) == {"pending": True}
+            claimed = asyncio.run(gen_requests_router.pending_gen_requests(
+                object(), capability="workspace,submission-stage", agent_id="old-agent"))
+        assert [item["id"] for item in claimed] == [rid]
+        assert claimed[0]["references"] == [] and claimed[0]["asset_content_protocol"] == 1
+        saved = repo.get_gen_request(rid)
+        assert saved["status"] == "claimed" and saved["lease_owner"] == "old-agent"
+        assert saved["payload"] == before
+        assert repo.get_generation(gen_id)["status"] == "pending"
+
+    @pytest.mark.parametrize("references", [None, {}, "[]", 0, False, [None], [{}], ["input.png"]])
+    def test_old_asset_agent_does_not_claim_uncertain_reference_payload(self, references):
+        # Corrupt only the stored queue payload, after creating a valid placeholder.
+        rid, gen_id = self._request(asset_content_protocol=1)
+        payload = json.loads(repo.get_gen_request(rid)["payload"])
+        payload["references"] = references
+        with db.get_connection() as conn:
+            conn.execute("UPDATE gen_request SET payload=? WHERE id=?", (json.dumps(payload), rid))
+        before = repo.get_gen_request(rid)
+        with patch.object(gen_requests_router, "_require_account", return_value=self.account), patch.object(
+            gen_requests_router, "realtime_scope", return_value="acct:worker@example.com"
+        ), patch.object(gen_requests_router.manager, "broadcast", new_callable=AsyncMock):
+            assert asyncio.run(gen_requests_router.pending_gen_requests_exist(
+                object(), capability="workspace,submission-stage", agent_id="old-agent")) == {"pending": False}
+            assert asyncio.run(gen_requests_router.pending_gen_requests(
+                object(), capability="workspace,submission-stage", agent_id="old-agent")) == []
+        assert repo.get_gen_request(rid) == before
+        assert repo.get_generation(gen_id)["status"] == "pending"
+
+    @pytest.mark.parametrize("references", [_MISSING_REFERENCES, []], ids=["missing", "empty-array"])
+    def test_old_asset_agent_does_not_starve_reference_free_protocol_after_reference_queue(self, references):
+        blocked = [self._request(asset_content_protocol=1, references=[{"file_path": "input.png"}])[0]
+                   for _ in range(20)]
+        rid, _ = self._request(asset_content_protocol=1, references=references)
+        assert repo.has_pending_requests(self.account["email"], workspace_capable=True, asset_content_capable=False)
+        claimed = repo.claim_pending_requests(self.account["email"], limit=1, workspace_capable=True,
+            asset_content_capable=False, lease_owner="old-agent", submission_stage_capable=True)
+        assert [item["id"] for item in claimed] == [rid]
+        assert all(repo.get_gen_request(item)["status"] == "pending" for item in blocked)
+        assert not repo.has_pending_requests(self.account["email"], workspace_capable=True, asset_content_capable=False)
+
+    @pytest.mark.parametrize("creation", ["new", "orphan-repair"])
+    def test_reference_free_new_and_repaired_requests_remain_protocol_and_old_agent_eligible(self, creation):
+        from app.usecases.gen_requests import GenRequestCommand, repair_canvas_generation_links, submit_gen_request
+
+        if creation == "new":
+            command = GenRequestCommand(kind="create", email=self.account["email"], creator_uid="creator-1",
+                worker_id="me", source_gen_id=None, workspace={"scope": "personal"},
+                data={"model": "model", "prompt": "gate test", "references": []})
+            with patch("app.usecases.gen_requests.MANAGE_ENABLED", False), patch(
+                "app.usecases.gen_requests.journal_generation_event"
+            ):
+                generation = asyncio.run(submit_gen_request(command))
+            gen_id = generation["id"]
+        else:
+            link = {"attempt_id": "attempt_empty_refs_1", "generation_id": "generation_empty_refs_1",
+                    "scene_id": "scene-empty", "card_id": "card-empty"}
+            gen_id = link["generation_id"]
+            repo.create_local_generation({"model": "model", "prompt": "gate test"}, "me",
+                creator_uid="creator-1", workspace={"scope": "personal"}, generation_id=gen_id)
+            repair_canvas_generation_links(self.account["email"], "creator-1", [link])
+        assert repo.has_pending_requests(self.account["email"], workspace_capable=True, asset_content_capable=False)
+        claimed = repo.claim_pending_requests(self.account["email"], workspace_capable=True,
+            asset_content_capable=False, lease_owner="old-agent", submission_stage_capable=True)
+        assert len(claimed) == 1 and claimed[0]["gen_id"] == gen_id
+        assert claimed[0]["references"] == [] and claimed[0]["asset_content_protocol"] == 1
+        saved = repo.get_gen_request(claimed[0]["id"])
+        assert json.loads(saved["payload"])["asset_content_protocol"] == 1
+        assert saved["status"] == "claimed" and repo.get_generation(gen_id)["status"] == "pending"
+
+    def test_asset_content_filter_preserves_previous_malformed_payload_behavior(self):
+        request_id, _ = self._request()
+        with db.get_connection() as conn:
+            conn.execute("UPDATE gen_request SET payload='not-json' WHERE id=?", (request_id,))
+        assert repo.has_pending_requests(self.account["email"], workspace_capable=True, asset_content_capable=False)
+        claimed = repo.claim_pending_requests(self.account["email"], workspace_capable=True, asset_content_capable=False)
+        assert [item["id"] for item in claimed] == [request_id]
 
     def test_submission_gate_does_not_bypass_existing_workspace_gate(self):
         rid, _ = self._request(

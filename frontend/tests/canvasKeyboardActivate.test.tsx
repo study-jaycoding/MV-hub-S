@@ -93,6 +93,26 @@ it("복구 창의 후보 줄: 안의 참조칩에서 누른 Enter 는 칩의 것
   expect(claim).toHaveBeenCalledWith("g1", "s", "empty");
 });
 
+it("복구 응답을 기다리다 같은 카드 id가 있는 다른 씬으로 옮기면 새 씬에 붙이지 않는다", async () => {
+  let release!: () => void;
+  const claim = vi.fn(() => new Promise<void>((done) => { release = done; }));
+  const onChange = vi.fn();
+  const candidate = { id: "g1", model: "m", prompt: "p", status: "done", created_at: "2026-10-17", assets: [] } as unknown as Generation;
+  const scene = (id: string) => ({ id, name: id, created_at: 1, edges: [], cards: [{ id: "empty", kind: "generation", genId: null, x: 0, y: 0 }] }) as Scene;
+  const props = { onChange, onGenerateCard: noop, onCanvasRecoveryCandidates: async () => [candidate], onCanvasRecoveryClaim: claim };
+  await mountBoard(scene("before"), props);
+  act(() => {
+    card("empty").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 10, clientY: 10 }));
+    window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0, clientX: 10, clientY: 10 }));
+  });
+  act(() => q(".scene-cardgen-recover")!.click()); await settle();
+  act(() => q(".scene-recovery-item")!.click()); await settle();
+  expect(claim).toHaveBeenCalledWith("g1", "before", "empty");
+  await mountBoard(scene("after"), props); onChange.mockClear();
+  await act(async () => { release(); }); await settle();
+  expect(onChange.mock.calls.some(([patch]) => patch.cards?.some((item: { genId?: string; genIds?: string[] }) => item.genId === "g1" || item.genIds?.includes("g1")))).toBe(false);
+});
+
 it("Tab 노드 선택기: Tab 으로 닿은 항목에서 Enter 를 누르면 그 노드가 만들어진다(전엔 mousedown 에만 걸려 아무 일도 없었다)", async () => {
   await mountBoard({ id: "s", name: "s", created_at: 1, edges: [], cards: [{ id: "t", kind: "text", x: 0, y: 0, text: "" }] } as Scene);
   act(() => { board().dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 50, clientY: 50 })); });

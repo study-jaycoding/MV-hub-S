@@ -7,8 +7,9 @@
     **JSON 페이로드 1건 + 검색용 컬럼**으로 보관. 메인 스키마가 바뀌어도 휴지통이 안 깨진다.
   · 검색·복원·영구삭제는 휴지통 창에서. 복원 = 페이로드를 메인 DB 에 그대로 재생성.
 
-원자성: ATTACH 로 메인+휴지통을 한 커넥션에 묶고 한 트랜잭션에서 이동/복원 → 중간 크래시에도
-  '양쪽에 다 있음/양쪽에 다 없음'이 생기지 않는다.
+기본 경로는 기존 ATTACH 트랜잭션을 유지한다(서로 다른 WAL 파일의 전원손실 원자성은 없음).
+명시적으로 활성화한 B1은 durable payload/작은 main 표식으로 이동·복원의 중단 단계를 재조정한다.
+저장장치 flush와 지원 구 writer 검증 전에는 사용자 DB에서 자동 활성화하지 않는다.
 
 미디어 파일(/media/<sha>)은 건드리지 않는다 — 내용주소·중복공유라 지우면 위험하고,
   그대로 두면 복원 즉시 다시 보인다(Phase 1 ③ 미디어 샤딩이 미디어 용량을 따로 관리).
@@ -21,11 +22,14 @@ import logging
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Iterator, Optional
 
-from ..db import get_connection, get_db_path
+from ..db import get_connection, get_db_path, open_transfer_connections, maintenance_gate, flush_pool
+from .. import schema_compat
 from ..emailnorm import norm_email
 from ..services import media_cache
+from ..services import trash_transfer
 from . import manage_telemetry as _manage_telemetry
 from . import tags
 from ._common import VERIFYING_NOTE
@@ -71,12 +75,15 @@ def _trash_path() -> Path:
 
 def _ensure_trash_schema(conn) -> None:
     """trash.trashed 보장(IF NOT EXISTS, 멱등). 검색용 컬럼 + JSON 페이로드."""
+    compatibility = schema_compat.inspect_schema(conn, "trash", schema="trash")
     # 메인 DB 는 schema.sql 의 PRAGMA 로 WAL 인데, ATTACH 로 처음 만들어지는 휴지통은
     # 기본 rollback journal 로 생성돼 쓰기마다 DB 전체 EXCLUSIVE 락을 잡았다(대량 삭제 중
     # /api/ready 의 휴지통 검사가 2초 타임아웃 → 워치독 오탐 재시작까지 연쇄). WAL 은 파일
     # 헤더에 남는 영속 설정이라 매번 실행해도 이미 WAL 이면 사실상 무비용. 트랜잭션 밖에서만
     # 유효하므로 attach 직후(BEGIN 전)에 호출되는 이 위치가 맞다.
     conn.execute("PRAGMA trash.journal_mode=WAL")
+    if "trash_transfer" in compatibility.components:
+        conn.execute("PRAGMA trash.synchronous=FULL")
     conn.execute(_TRASHED_DDL)
     _ensure_trash_job_id_col(conn)
     conn.execute(
@@ -84,6 +91,10 @@ def _ensure_trash_schema(conn) -> None:
     )
     # job_id 인덱스 — tombstoned_among 의 IN 조회와 백필 가드의 IS NULL 스캔을 전체스캔 없이(휴지통 커도 빠르게).
     conn.execute("CREATE INDEX IF NOT EXISTS trash.idx_trashed_job ON trashed(job_id)")
+    if "trash" not in compatibility.components:
+        record = (schema_compat.record_baseline_in_transaction if conn.in_transaction
+                  else schema_compat.record_baseline)
+        record(conn, "trash", schema="trash")
 
 
 def _ensure_trash_job_id_col(conn) -> None:
@@ -111,6 +122,9 @@ def attach_trash(conn) -> None:
     """주어진 커넥션에 휴지통 DB 를 ATTACH + 스키마 보장. 반드시 트랜잭션 '밖'에서 호출(sqlite ATTACH 제약).
     호출측이 BEGIN IMMEDIATE 를 열고 그 안에서 tombstoned_among 으로 최신 삭제상태를 조회한 뒤,
     끝나면 detach_trash 로 뗀다. (동기화가 삭제-경합에서도 방금 삭제된 잡을 보게 하는 경로)."""
+    if Path(str(_trash_path()) + "-journal").is_file():
+        schema_compat.inspect_database(_trash_path(), "trash")
+        raise schema_compat.SchemaCompatibilityError("trash_startup_recovery_required")
     conn.execute("ATTACH DATABASE ? AS trash", (str(_trash_path()),))
     _ensure_trash_schema(conn)
 
@@ -136,7 +150,12 @@ def tombstoned_among(conn, job_ids) -> set[str]:
     rows = conn.execute(
         f"SELECT job_id FROM trash.trashed WHERE job_id IN ({ph})", ids
     ).fetchall()
-    return {r["job_id"] for r in rows}
+    found = {r["job_id"] for r in rows}
+    if trash_transfer.enabled(conn):
+        found.update(r[0] for r in conn.execute(
+            f"SELECT job_id FROM generation_transfer WHERE direction='delete' AND job_id IN ({ph})", ids
+        ))
+    return found
 
 
 @contextmanager
@@ -147,8 +166,7 @@ def _with_trash() -> Iterator[Any]:
     별도 DB 파일을 ATTACH 하고 끝에 DETACH 한다.
     """
     with get_connection() as conn:
-        conn.execute("ATTACH DATABASE ? AS trash", (str(_trash_path()),))
-        _ensure_trash_schema(conn)
+        attach_trash(conn)
         try:
             yield conn
         finally:
@@ -186,6 +204,7 @@ def resolve_missing_target(
     owner = norm_email(account_email)
     with _with_trash() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        trash_transfer.assert_no_pending(conn)
         req = conn.execute(
             "SELECT * FROM gen_request WHERE id=? AND gen_id=? AND account_email=?",
             (request_id, gen_id, owner),
@@ -337,6 +356,13 @@ def move_to_trash_if_stuck_synced(
     다시 확인한다.
     조건이 하나라도 달라졌으면 이동하지 않는다.
     """
+    with get_connection() as probe:
+        if trash_transfer.enabled(probe):
+            def selector(conn):
+                scope = " AND g.creator_uid=?" if creator_uid is not None else ""
+                args = [gen_id, expected_job_id, cutoff] + ([creator_uid] if creator_uid is not None else [])
+                return conn.execute("SELECT * FROM generation g WHERE g.id=? AND g.origin='synced' AND g.status IN ('pending','running') AND g.job_id=? AND g.deleted_at IS NULL AND COALESCE(g.sort_ts,g.created_at)<? AND NOT EXISTS(SELECT 1 FROM gen_request r WHERE r.gen_id=g.id)" + scope, args).fetchone()
+            return trash_transfer.move(gen_id, selector, open_connections=open_transfer_connections, payload_port=_transfer_payload_port())
     with _with_trash() as conn:
         telemetry_enabled = _prepare_telemetry_outbox(conn)
         conn.execute("BEGIN IMMEDIATE")
@@ -366,6 +392,14 @@ def _move_to_trash_guarded(
     excluded_statuses: Optional[tuple[str, ...]],
     account_uid: Optional[str],
 ) -> bool:
+    with get_connection() as probe:
+        if trash_transfer.enabled(probe):
+            def selector(conn):
+                gen = conn.execute("SELECT * FROM generation WHERE id=?", (gen_id,)).fetchone()
+                if gen is None or (excluded_statuses is not None and gen["status"] in excluded_statuses) or (account_uid is not None and gen["creator_uid"] != account_uid):
+                    return None
+                return gen
+            return trash_transfer.move(gen_id, selector, open_connections=open_transfer_connections, payload_port=_transfer_payload_port())
     with _with_trash() as conn:
         telemetry_enabled = _prepare_telemetry_outbox(conn)
         # ★스냅샷(_gather)과 삭제를 같은 트랜잭션으로 — BEGIN 을 스냅샷 뒤에 열면
@@ -409,6 +443,12 @@ def _move_to_trash_on_conn(
             json.dumps(payload, ensure_ascii=False),
         ),
     )
+    _remove_main_for_transfer(conn, gen_id, tomb)
+
+
+def _remove_main_for_transfer(conn, gen_id, tomb):
+    from .asset_sync import generation_output_intent
+    generation_output_intent(conn, gen_id, deleted=True)
     _delete_generation(conn, gen_id)  # 메인에서 본체+자식 제거
     # 아직 유료 CLI 제출 전인 요청은 삭제 시점에 함께 종결한다. gen_request는 휴지통 payload에
     # 포함되지 않으므로 여기서 취소하지 않으면 복원 뒤 pending/claimed가 되살아 자동 과금될 수 있다.
@@ -580,9 +620,91 @@ def _restore_retired_request(conn: sqlite3.Connection, gen_id: str, payload: dic
     return True
 
 
+def _restore_payload(conn, gen_id, p, telemetry_enabled):
+    # payload 안 stale acct: 신원을 user_ 로 치환(재유입 차단) — admin·단독 복원 포함 항상.
+    _rewrite_payload_identities(p, _acct_remap(conn))
+    _insert_row(conn, "generation", p["generation"])
+    request_marker_applied = _restore_retired_request(conn, gen_id, p)
+    # 삭제할 때 미제출 요청이 취소된 카드는 복원해도 대기열로 되살리지 않는다. 카드가
+    # 무한 pending처럼 보이지 않도록 실패 상태와 고정 안내를 함께 복원한다.
+    if not request_marker_applied and conn.execute(
+        "SELECT 1 FROM gen_request r WHERE r.gen_id=? AND r.status='canceled' "
+        "AND r.error=? AND NOT EXISTS ("
+        "SELECT 1 FROM gen_request active WHERE active.gen_id=r.gen_id "
+        f"AND active.status IN ({','.join('?' for _ in _NONTERMINAL_REQUEST_PHASES)})) "
+        "LIMIT 1",
+        (gen_id, _DELETED_REQUEST_NOTE, *_NONTERMINAL_REQUEST_PHASES),
+    ).fetchone():
+        conn.execute(
+            "UPDATE generation SET status='failed', error=? WHERE id=? "
+            "AND status IN ('pending','running')",
+            (_DELETED_REQUEST_NOTE, gen_id),
+        )
+    for a in p.get("assets", []):
+        _insert_row(conn, "asset", a)
+    for r in p.get("references", []):  # 공유 가능 → 이미 있으면 무시
+        _insert_row(conn, "reference", r, or_ignore=True)
+    for gr in p.get("gen_references", []):
+        _insert_row(conn, "gen_reference", gr, or_ignore=True)
+    # 태그·자동태그는 이름으로 재연결(전역 tag/auto_tag 가 그새 바뀌어도 안전)
+    tags._set_tags(conn, gen_id, p.get("tags", []))
+    tags._set_auto_tags(conn, gen_id, p.get("auto_tags", []))
+    # 옛 휴지통 payload 는 "lineage" 키였다 → 둘 다 읽어 하위호환(테이블은 history 로 통일).
+    # ⚠️ history.parent/child_gen_id 는 NOT NULL FK(generation). 상대 끝이 아직 휴지통/영구삭제면
+    # INSERT OR IGNORE 도 FK 위반은 못 무시해 복원 트랜잭션 전체가 롤백된다(복원 자체가 실패).
+    # → 양 끝이 메인에 실재하는 엣지만 복원(나머지는 드롭하되 본체 복원은 진행). 상대를 나중에
+    # 복원하면 그쪽 payload 에서 엣지가 재생성된다.
+    # endpoint 실재 확인은 엣지당 2 SELECT → 전체 endpoint chunked IN 1회(R6 2-J).
+    # generation 본체 삽입 뒤 같은 트랜잭션에서 조회(history 우선/lineage 폴백 유지).
+    edges = [
+        l
+        for l in (p.get("history") or p.get("lineage") or [])
+        if l.get("parent_gen_id") and l.get("child_gen_id")
+    ]
+    if edges:
+        endpoints = list(
+            dict.fromkeys(
+                x
+                for l in edges
+                for x in (l["parent_gen_id"], l["child_gen_id"])
+            )
+        )
+        existing: set[str] = set()
+        for offset in range(0, len(endpoints), 900):
+            batch = endpoints[offset:offset + 900]
+            ph = ",".join("?" * len(batch))
+            existing.update(
+                r["id"]
+                for r in conn.execute(
+                    f"SELECT id FROM generation WHERE id IN ({ph})", batch
+                ).fetchall()
+            )
+        for l in edges:
+            # 양 끝이 메인에 실재하는 엣지만(FK 보호 — 상대를 나중에 복원하면 그쪽
+            # payload 가 엣지를 재생성한다).
+            if l["parent_gen_id"] in existing and l["child_gen_id"] in existing:
+                _insert_row(conn, "history", l, or_ignore=True)
+    for c in p.get("comments", []):
+        _insert_row(conn, "generation_comment", c, or_ignore=True)
+    for rd in p.get("comment_reads", []):
+        _insert_row(conn, "generation_comment_read", rd, or_ignore=True)
+    for sn in p.get("comment_seen", []):  # 코멘트 seen 복원(없으면 전부 NEW 로 재등장)
+        _insert_row(conn, "generation_comment_seen", sn, or_ignore=True)
+    for s in p.get("shares", []):
+        _insert_row(conn, "share", s, or_ignore=True)
+    if telemetry_enabled:
+        _manage_telemetry.mark_telemetry_dirty_in_connection(conn, [gen_id])
+    from .asset_sync import generation_output_intent
+    generation_output_intent(conn, gen_id, deleted=False)
+    return request_marker_applied
+
+
 def restore_from_trash(gen_id: str, account_uid: Optional[str] = None) -> bool:
     """휴지통 항목을 메인 DB 에 그대로 재생성 + 휴지통에서 제거(원자). 없으면 False.
     account_uid 가 주어지면(AUTH on) 본인 것만 복구 — 남의 삭제물 복구·재노출 차단."""
+    with get_connection() as probe:
+        if trash_transfer.enabled(probe):
+            return trash_transfer.restore(gen_id, account_uid, open_connections=open_transfer_connections, payload_port=_transfer_payload_port())
     with _with_trash() as conn:
         telemetry_enabled = _prepare_telemetry_outbox(conn)
         # ★잠금을 휴지통 SELECT '전'에 연다(코덱스 P1) — payload 를 읽은 뒤 purge 가
@@ -604,80 +726,8 @@ def restore_from_trash(gen_id: str, account_uid: Optional[str] = None) -> bool:
         ):
             raise PermissionError("본인 휴지통 항목만 복구할 수 있습니다")
         p = json.loads(row["payload"])
-        # payload 안 stale acct: 신원을 user_ 로 치환(재유입 차단) — admin·단독 복원 포함 항상.
-        _rewrite_payload_identities(p, _acct_remap(conn))
-        _insert_row(conn, "generation", p["generation"])
-        request_marker_applied = _restore_retired_request(conn, gen_id, p)
-        # 삭제할 때 미제출 요청이 취소된 카드는 복원해도 대기열로 되살리지 않는다. 카드가
-        # 무한 pending처럼 보이지 않도록 실패 상태와 고정 안내를 함께 복원한다.
-        if not request_marker_applied and conn.execute(
-            "SELECT 1 FROM gen_request r WHERE r.gen_id=? AND r.status='canceled' "
-            "AND r.error=? AND NOT EXISTS ("
-            "SELECT 1 FROM gen_request active WHERE active.gen_id=r.gen_id "
-            f"AND active.status IN ({','.join('?' for _ in _NONTERMINAL_REQUEST_PHASES)})) "
-            "LIMIT 1",
-            (gen_id, _DELETED_REQUEST_NOTE, *_NONTERMINAL_REQUEST_PHASES),
-        ).fetchone():
-            conn.execute(
-                "UPDATE generation SET status='failed', error=? WHERE id=? "
-                "AND status IN ('pending','running')",
-                (_DELETED_REQUEST_NOTE, gen_id),
-            )
-        for a in p.get("assets", []):
-            _insert_row(conn, "asset", a)
-        for r in p.get("references", []):  # 공유 가능 → 이미 있으면 무시
-            _insert_row(conn, "reference", r, or_ignore=True)
-        for gr in p.get("gen_references", []):
-            _insert_row(conn, "gen_reference", gr, or_ignore=True)
-        # 태그·자동태그는 이름으로 재연결(전역 tag/auto_tag 가 그새 바뀌어도 안전)
-        tags._set_tags(conn, gen_id, p.get("tags", []))
-        tags._set_auto_tags(conn, gen_id, p.get("auto_tags", []))
-        # 옛 휴지통 payload 는 "lineage" 키였다 → 둘 다 읽어 하위호환(테이블은 history 로 통일).
-        # ⚠️ history.parent/child_gen_id 는 NOT NULL FK(generation). 상대 끝이 아직 휴지통/영구삭제면
-        # INSERT OR IGNORE 도 FK 위반은 못 무시해 복원 트랜잭션 전체가 롤백된다(복원 자체가 실패).
-        # → 양 끝이 메인에 실재하는 엣지만 복원(나머지는 드롭하되 본체 복원은 진행). 상대를 나중에
-        # 복원하면 그쪽 payload 에서 엣지가 재생성된다.
-        # endpoint 실재 확인은 엣지당 2 SELECT → 전체 endpoint chunked IN 1회(R6 2-J).
-        # generation 본체 삽입 뒤 같은 트랜잭션에서 조회(history 우선/lineage 폴백 유지).
-        edges = [
-            l
-            for l in (p.get("history") or p.get("lineage") or [])
-            if l.get("parent_gen_id") and l.get("child_gen_id")
-        ]
-        if edges:
-            endpoints = list(
-                dict.fromkeys(
-                    x
-                    for l in edges
-                    for x in (l["parent_gen_id"], l["child_gen_id"])
-                )
-            )
-            existing: set[str] = set()
-            for offset in range(0, len(endpoints), 900):
-                batch = endpoints[offset:offset + 900]
-                ph = ",".join("?" * len(batch))
-                existing.update(
-                    r["id"]
-                    for r in conn.execute(
-                        f"SELECT id FROM generation WHERE id IN ({ph})", batch
-                    ).fetchall()
-                )
-            for l in edges:
-                # 양 끝이 메인에 실재하는 엣지만(FK 보호 — 상대를 나중에 복원하면 그쪽
-                # payload 가 엣지를 재생성한다).
-                if l["parent_gen_id"] in existing and l["child_gen_id"] in existing:
-                    _insert_row(conn, "history", l, or_ignore=True)
-        for c in p.get("comments", []):
-            _insert_row(conn, "generation_comment", c, or_ignore=True)
-        for rd in p.get("comment_reads", []):
-            _insert_row(conn, "generation_comment_read", rd, or_ignore=True)
-        for sn in p.get("comment_seen", []):  # 코멘트 seen 복원(없으면 전부 NEW 로 재등장)
-            _insert_row(conn, "generation_comment_seen", sn, or_ignore=True)
-        for s in p.get("shares", []):
-            _insert_row(conn, "share", s, or_ignore=True)
+        request_marker_applied = _restore_payload(conn, gen_id, p, telemetry_enabled)
         conn.execute("DELETE FROM trash.trashed WHERE id=?", (gen_id,))
-        if telemetry_enabled:
-            _manage_telemetry.mark_telemetry_dirty_in_connection(conn, [gen_id])
         conn.execute("COMMIT")
     if "provider_terminal" in p:
         try:
@@ -806,6 +856,15 @@ def reconcile_with_main() -> int:
     이동이면 삭제가 되돌려져 사용자가 재삭제, 중단된 복원이면 복원이 완결된다). 본체가 이미 영구
     삭제된 옛 요청은 canceled로 종결하고, 휴지통 미제출 요청도 복원 시 자동 과금되지 않게 종결한다.
     부팅 시 1회 호출."""
+    with get_connection() as probe:
+        if trash_transfer.enabled(probe):
+            repaired = trash_transfer.reconcile(open_transfer_connections)
+            # Keep the existing orphan/presubmit request policy after B1 replay.
+            with _with_trash() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                _cancel_orphan_requests(conn)
+                conn.execute("COMMIT")
+            return repaired
     with _with_trash() as conn:
         conn.execute("BEGIN IMMEDIATE")
         cur = conn.execute(
@@ -824,6 +883,7 @@ def purge_trashed_item(gen_id: str, account_uid: Optional[str] = None) -> bool:
     미디어 파일은 공유·내용주소라 건드리지 않음."""
     with _with_trash() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        trash_transfer.assert_no_pending(conn)
         if account_uid:
             aliases = _account_alias_uids(conn, account_uid)  # 옛 acct: 별칭 포함 — 전환 후에도 영구삭제 가능
             deleted = (
@@ -860,3 +920,16 @@ def purge_trashed_item(gen_id: str, account_uid: Optional[str] = None) -> bool:
             # 데이터 유실보다 안전하므로 보존하되 운영자가 알 수 있게 경고한다.
             _log.warning("purge_sidecar_cleanup_failed gen_id=%s", gen_id, exc_info=True)
     return deleted
+
+
+def _transfer_payload_port():
+    return SimpleNamespace(prepare_telemetry=_prepare_telemetry_outbox, gather=_gather,
+                           telemetry_snapshot=_telemetry_snapshot, remove_main=_remove_main_for_transfer,
+                           account_aliases=_account_alias_uids, restore_payload=_restore_payload)
+
+
+def activate_transfer(main_path, *, storage_evidence, writer_evidence):
+    """Explicit qualified activation; no ordinary startup calls this entry point."""
+    return trash_transfer.activate(main_path, storage_evidence=storage_evidence, writer_evidence=writer_evidence,
+                                   maintenance_gate=maintenance_gate, flush_pool=flush_pool,
+                                   ensure_trash_schema=_ensure_trash_schema)

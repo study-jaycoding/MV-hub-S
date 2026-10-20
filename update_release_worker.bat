@@ -75,10 +75,10 @@ if not "%UPDATE_EXIT%"=="0" (
 )
 
 echo.
-if "%MVHUB_UPDATE_RESTART%"=="1" (
-  echo [done] Update finished and MV Hub restarted.
+if "%MVHUB_UPDATE_RESTART%"=="0" (
+  echo [pending] Runtime verification is still required. Rerun the updater with restart enabled.
 ) else (
-  echo [done] Update check finished. Run MV_agent.bat when ready.
+  echo [done] Update check and requested runtime verification finished.
 )
 if not "%MVHUB_NO_PAUSE%"=="1" pause
 exit /b 0
@@ -87,7 +87,7 @@ exit /b 0
 param(
     [string]$TargetDir,
     [string]$StateFile = "",
-    [string]$RestartAfterInstall = "0",
+    [string]$RestartAfterInstall = "1",
     [string]$ReadyUrl = "",
     # "1" when the user pressed Force update. A matching version then still gets a
     # full reinstall: that is the "version is right but the tree is broken" case
@@ -96,6 +96,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ([string]::IsNullOrWhiteSpace($RestartAfterInstall)) { $RestartAfterInstall = '1' }
 
 # One-shot handoff from the hub (admin candidate pre-install, 2026-10-03): which release manifest
 # to read and what it must say. Read once, then removed from this process so the relaunched app
@@ -114,6 +115,16 @@ if (-not $TargetDir) {
 }
 
 $TargetDir = (Resolve-Path -LiteralPath $TargetDir).Path
+. (Join-Path $TargetDir 'update_release_contract.ps1')
+$script:FreshInstallProof = $null
+if (-not (Test-Path -LiteralPath (Join-Path $TargetDir 'VERSION.txt')) -and
+    -not (Test-Path -LiteralPath (Join-Path $TargetDir 'backend')) -and
+    -not (Test-Path -LiteralPath (Join-Path $TargetDir 'runtime'))) {
+    $script:FreshInstallProof = Get-FreshInstallProof -Root $TargetDir
+}
+$script:InstallJournal = $null
+$script:ResumeMutationPossible = $false
+$script:InstallationPendingRestart = $false
 $CurrentVersion = ""
 $LatestVersion = ""
 $SwapToken = [Guid]::NewGuid().ToString("N").Substring(0, 8)
@@ -359,6 +370,17 @@ function Restart-MvHubAndWaitReady {
         $ReadyUrl = "http://127.0.0.1:8010/api/ready"
     }
     Write-UpdateState -State "restarting" -Message "Restarting MV Hub on the new version..." -Latest $ExpectedVersion -Percent 95
+    $ControlPath = Join-Path $TargetDir '.install-activation.json'
+    Set-InstallPhase -Phase 'starting' -Changes @{ db_mutation_possible = $true; business_writes_possible = $true }
+    Write-InstallRecord -Path $ControlPath -Record @{ format_version = 1; state = 'pending'; execution_nonce = $script:InstallJournal.execution_nonce }
+    $ActivationBefore = @{}
+    foreach ($Name in @('MVHUB_ACTIVATION_ROOT', 'MVHUB_ACTIVATION_CONTROL', 'MVHUB_EXECUTION_NONCE', 'MVHUB_PROCESS_ROLE')) {
+        $ActivationBefore[$Name] = [Environment]::GetEnvironmentVariable($Name, 'Process')
+    }
+    $env:MVHUB_ACTIVATION_ROOT = $TargetDir
+    $env:MVHUB_ACTIVATION_CONTROL = $ControlPath
+    $env:MVHUB_EXECUTION_NONCE = $script:InstallJournal.execution_nonce
+    $env:MVHUB_PROCESS_ROLE = 'worker'
     # The updater itself is intentionally hidden, but the newly installed app must
     # not be hidden with it. Start a fresh, visible cmd so users get one durable
     # control window and the normal launcher opens the browser after readiness.
@@ -373,10 +395,12 @@ function Restart-MvHubAndWaitReady {
     $PreviousNoPause = $env:MVHUB_NO_PAUSE
     Remove-Item Env:MVHUB_NO_BROWSER -ErrorAction SilentlyContinue
     Remove-Item Env:MVHUB_NO_PAUSE -ErrorAction SilentlyContinue
+    $StartedAfter = [DateTime]::UtcNow
     try {
         $Started = [System.Diagnostics.Process]::Start($StartInfo)
     }
     finally {
+        foreach ($Name in $ActivationBefore.Keys) { [Environment]::SetEnvironmentVariable($Name, $ActivationBefore[$Name], 'Process') }
         if ($null -ne $PreviousNoBrowser) { $env:MVHUB_NO_BROWSER = $PreviousNoBrowser }
         if ($null -ne $PreviousNoPause) { $env:MVHUB_NO_PAUSE = $PreviousNoPause }
     }
@@ -386,16 +410,26 @@ function Restart-MvHubAndWaitReady {
 
     $Deadline = (Get-Date).AddMinutes(3)
     while ((Get-Date) -lt $Deadline) {
-        try {
-            $Ready = Invoke-RestMethod -Uri $ReadyUrl -TimeoutSec 2
+        $Ready = $null
+        try { $Ready = Invoke-RestMethod -Uri $ReadyUrl -TimeoutSec 2 } catch {}
+        if ($Ready) {
             $Installed = (Get-Content -LiteralPath (Join-Path $TargetDir "VERSION.txt") -Raw).Trim()
-            if ($Ready.status -eq "ready" -and $Installed -eq $ExpectedVersion) {
+            $Identity = Test-ReadyProcessIdentity -Ready $Ready -ExpectedBuild $script:InstallJournal.target.contract.build_id `
+                -Nonce $script:InstallJournal.execution_nonce -Port ([Uri]$ReadyUrl).Port -Root $TargetDir -NotBefore $StartedAfter
+            if ($Identity -and $Installed -eq $ExpectedVersion) {
+                Set-InstallPhase -Phase 'ready' -Changes @{ process = $Identity }
+                Write-InstallRecord -Path $ControlPath -Record @{ format_version = 1; state = 'activated';
+                    execution_nonce = $script:InstallJournal.execution_nonce; run_id = $script:InstallJournal.run_id; journal = $JournalPath }
+                Set-InstallPhase -Phase 'committed'
+                $History = Join-Path $TargetDir '.install-journals'
+                [System.IO.Directory]::CreateDirectory($History) | Out-Null
+                $CommittedPath = Join-Path $History ($script:InstallJournal.run_id + '.json')
+                [System.IO.File]::Copy($JournalPath, $CommittedPath, $false)
+                Write-InstallRecord -Path $ControlPath -Record @{ format_version = 1; state = 'activated';
+                    execution_nonce = $script:InstallJournal.execution_nonce; run_id = $script:InstallJournal.run_id; journal = $CommittedPath }
                 Write-UpdateState -State "complete" -Message "Update finished. MV Hub restarted." -Latest $ExpectedVersion -Percent 100
                 return
             }
-        }
-        catch {
-            # Connection failures are expected between old-process exit and new-hub boot.
         }
         Start-Sleep -Seconds 1
     }
@@ -433,12 +467,19 @@ function Start-MvHubAfterFailure {
         $StartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Normal
         $PreviousNoBrowser = $env:MVHUB_NO_BROWSER
         $PreviousNoPause = $env:MVHUB_NO_PAUSE
+        $RecoveryEnvironment = @{}
+        foreach ($Name in @('MVHUB_ACTIVATION_CONTROL', 'MVHUB_ACTIVATION_ROOT', 'MVHUB_EXECUTION_NONCE', 'MVHUB_PROCESS_ROLE')) {
+            $RecoveryEnvironment[$Name] = [Environment]::GetEnvironmentVariable($Name, 'Process')
+            [Environment]::SetEnvironmentVariable($Name, $null, 'Process')
+        }
         Remove-Item Env:MVHUB_NO_BROWSER -ErrorAction SilentlyContinue
         Remove-Item Env:MVHUB_NO_PAUSE -ErrorAction SilentlyContinue
+        $RecoveryStartedAfter = [DateTime]::UtcNow
         try {
             [void][System.Diagnostics.Process]::Start($StartInfo)
         }
         finally {
+            foreach ($Name in $RecoveryEnvironment.Keys) { [Environment]::SetEnvironmentVariable($Name, $RecoveryEnvironment[$Name], 'Process') }
             if ($null -ne $PreviousNoBrowser) { $env:MVHUB_NO_BROWSER = $PreviousNoBrowser }
             if ($null -ne $PreviousNoPause) { $env:MVHUB_NO_PAUSE = $PreviousNoPause }
         }
@@ -446,7 +487,10 @@ function Start-MvHubAfterFailure {
         while ((Get-Date) -lt $Deadline) {
             try {
                 $Ready = Invoke-RestMethod -Uri $ReadyUrl -TimeoutSec 2
-                if ($Ready.status -eq "ready") {
+                $Control = ConvertFrom-ReleaseJson ([IO.File]::ReadAllBytes((Join-Path $TargetDir '.install-activation.json')))
+                $Identity = Test-ReadyProcessIdentity -Ready $Ready -ExpectedBuild $script:InstallJournal.previous.build_id `
+                    -Nonce $Control.execution_nonce -Port ([Uri]$ReadyUrl).Port -Root $TargetDir -NotBefore $RecoveryStartedAfter
+                if ($Identity) {
                     Write-Host "[update] MV Hub is running again on the previous version."
                     return
                 }
@@ -503,13 +547,13 @@ function Read-ReleaseManifest {
     # before the app is stopped, so a candidate replaced after approval is never installed or skipped.
     $ManifestPath = Join-Path $TempRoot $ManifestName
     Get-ReleaseFile -Name $ManifestName -Destination $ManifestPath
-    $Manifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $Manifest = ConvertFrom-ReleaseJson ([System.IO.File]::ReadAllBytes($ManifestPath))
     if (-not $Manifest.version -or -not $Manifest.file -or -not $Manifest.sha256) {
         throw "$ManifestName must contain version, file, and sha256."
     }
     $ReleaseFileName = [string]$Manifest.file
     if ([IO.Path]::GetFileName($ReleaseFileName) -ne $ReleaseFileName -or
-        $ReleaseFileName.Contains("/") -or $ReleaseFileName.Contains("\")) {
+        $ReleaseFileName.Contains("/") -or $ReleaseFileName.Contains("\") -or $ReleaseFileName.Contains(':')) {
         throw "$ManifestName contains an unsafe release filename."
     }
     if (-not ([string]$Manifest.sha256 -match "^[0-9a-fA-F]{64}$")) {
@@ -645,7 +689,7 @@ function Assert-PythonRuntime {
         "import anyio,idna,click,h11,httptools,dotenv,yaml,watchfiles,colorama,pip",
         "print('%d.%d.%d|%d' % (*sys.version_info[:3], struct.calcsize('P') * 8))"
     ) -join ";"
-    $Result = Invoke-CheckedProcess -FilePath $Exe -ArgumentList @("-I", "-c", ('"' + $Probe + '"')) -Label $Label -TimeoutSeconds 60
+    $Result = Invoke-CheckedProcess -FilePath $Exe -ArgumentList @("-I", "-B", "-c", ('"' + $Probe + '"')) -Label $Label -TimeoutSeconds 60
     $OutputLines = @(([string]$Result.StdOut) -split "\r?\n" | Where-Object { $_.Trim() })
     if ($Result.ExitCode -ne 0 -or -not $OutputLines.Count) {
         $Detail = (($Result.StdOut + "`n" + $Result.StdErr)).Trim()
@@ -715,7 +759,7 @@ function Get-UpdateComponents {
     # Runtime locks identify the installation, not the package. Never replace
     # them, even if an incorrectly assembled package happens to include them.
     Get-ChildItem -LiteralPath $ExtractDir -Force | Where-Object {
-        $_.Name -notin @(".update.lock", ".resolve-transfer.lock")
+        $_.Name -notin @(".update.lock", ".resolve-transfer.lock", '.install-activation.json', '.install-checkpoints', '.install-journals', 'update-journal.json', 'INSTALL_SOURCE.txt')
     } | ForEach-Object {
         if ($_.PSIsContainer) {
             # backend/frontend/runtime are decomposed above; any other packaged
@@ -838,14 +882,15 @@ function Write-UpdateJournal {
                 swapped = [bool]$Component.Swapped
             }
         }
-        @{ token = $SwapToken; updated_at = [DateTime]::UtcNow.ToString("o"); components = $Entries } |
-            ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $JournalPath -Encoding UTF8
+        if ($script:InstallJournal) {
+            Set-InstallPhase -Phase $script:InstallJournal.phase -Changes @{ components = $Entries }
+        }
+        else {
+            Write-InstallRecord -Path $JournalPath -Record @{ token = $SwapToken; updated_at = [DateTime]::UtcNow.ToString('o'); components = $Entries }
+        }
     }
     catch {
-        if ($Required) {
-            throw "Could not write the update journal before swapping: $($_.Exception.Message)"
-        }
-        Write-Host "[update] warn: could not write update journal: $($_.Exception.Message)"
+        throw 'Could not persist install intent; no further install side effects are allowed.'
     }
 }
 
@@ -918,7 +963,7 @@ function Remove-SwapLeftovers {
     if ($IncludeQuarantine) {
         Get-ChildItem -Path (Join-Path $TargetDir "update-quarantine.*") -Force -ErrorAction SilentlyContinue |
             Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $JournalPath -Force -ErrorAction SilentlyContinue
+        # The durable committed record remains available to the next coordinator run.
     }
 }
 
@@ -959,7 +1004,7 @@ function Get-MvHubProcessIds {
     param([string]$ResolvedRoot)
 
     $Launcher = Join-Path $ResolvedRoot "MV_agent.bat"
-    $Ids = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+    $Ids = @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
         if ($_.ProcessId -eq $PID) {
             return
         }
@@ -1009,7 +1054,22 @@ function Stop-MvHubProcesses {
                 continue
             }
             Write-Host "      stop pid=$ProcessId $($Proc.ProcessName)"
-            Stop-Process -Id $ProcessId -Force -ErrorAction Stop
+            [void]$Proc.Handle
+            $Identity = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $ProcessId) -ErrorAction Stop
+            if (-not $Identity -or [Math]::Abs(($Proc.StartTime.ToUniversalTime() - $Identity.CreationDate.ToUniversalTime()).TotalMilliseconds) -gt 1) {
+                throw 'Process identity changed; refusing stop.'
+            }
+            $Executable = [string]$Identity.ExecutablePath
+            $Owned = ($Executable -and $Executable.StartsWith($ResolvedRoot, [StringComparison]::OrdinalIgnoreCase)) -or
+                ($Identity.Name -ieq 'cmd.exe' -and ([string]$Identity.CommandLine).IndexOf((Join-Path $ResolvedRoot 'MV_agent.bat'), [StringComparison]::OrdinalIgnoreCase) -ge 0)
+            if (-not $Owned) { throw 'Process no longer belongs to this installation; refusing stop.' }
+            if ($script:InstallJournal) {
+                $Stopped = @($script:InstallJournal.stopping_processes) + @(@{pid=$ProcessId; creation_time=$Identity.CreationDate.ToUniversalTime().ToString('o')})
+                Set-InstallPhase -Phase $script:InstallJournal.phase -Changes @{ stopping_processes=$Stopped }
+            }
+            # Kill through the retained Windows process handle, never a recycled PID.
+            $Proc.Kill()
+            if (-not $Proc.WaitForExit(10000)) { throw 'Owned process did not exit.' }
         }
         catch {
             Write-Host "      warn: could not stop pid=$ProcessId`: $($_.Exception.Message)"
@@ -1057,6 +1117,70 @@ function Assert-NoActiveResolveImport {
     }
 }
 
+function Wait-WorkerDrain {
+    $RootPrefix = (Resolve-Path -LiteralPath $TargetDir).Path.TrimEnd('\') + '\'
+    if (@(Get-MvHubProcessIds -ResolvedRoot $RootPrefix).Count -eq 0) { return }
+    if (-not $ReadyUrl) { $ReadyUrl = 'http://127.0.0.1:8010/api/ready' }
+    $Uri = [Uri]$ReadyUrl
+    if ($Uri.Scheme -ne 'http' -or $Uri.Host -notin @('127.0.0.1', 'localhost', '[::1]')) { throw 'Drain requires a loopback readiness endpoint.' }
+    $Ready = Invoke-RestMethod -Uri $ReadyUrl -TimeoutSec 2
+    $ControlPath = Join-Path $TargetDir '.install-activation.json'
+    $Record = ConvertFrom-ReleaseJson ([System.IO.File]::ReadAllBytes($ControlPath))
+    if (-not $Ready.runtime.execution_nonce -or $Ready.runtime.execution_nonce -cne $Record.execution_nonce -or
+        $Ready.runtime.role -cne 'worker' -or -not $Ready.runtime.update_blockers) {
+        throw 'Managed worker boot is required before automatic update; close legacy worker first.'
+    }
+    $script:PreviousControl = $Record
+    Write-InstallRecord -Path $ControlPath -Record @{ format_version = 1; state = 'draining'; execution_nonce = $Record.execution_nonce }
+    $Deadline = [DateTime]::UtcNow.AddSeconds(60)
+    while ([DateTime]::UtcNow -lt $Deadline) {
+        $Ready = Invoke-RestMethod -Uri $ReadyUrl -TimeoutSec 2
+        $Blocking = @($Ready.runtime.update_blockers.PSObject.Properties)
+        if ($Ready.runtime.execution_nonce -ceq $Record.execution_nonce -and $Ready.runtime.admission -ceq 'blocked' -and
+            $Ready.runtime.active_http -eq 0 -and $Blocking.Count -eq 3 -and
+            @($Blocking | Where-Object { $_.Value -ne 0 }).Count -eq 0) { return }
+        Start-Sleep -Milliseconds 500
+    }
+    throw 'Active work did not drain; the running installation has not been replaced.'
+}
+
+function Finalize-FailedInstall {
+    if (-not $script:InstallJournal -or $script:InstallJournal.phase -in @('committed', 'rolled_back', 'recovery_required')) { return }
+    if ($script:InstallJournal.fresh_install) {
+        $script:RecoveryState = 'recovery_required'
+        Set-InstallPhase -Phase 'recovery_required'
+        return # No previous installation exists; retain all files and any new business data.
+    }
+    if ($script:RecoveryState -eq 'recovery_required') {
+        Set-InstallPhase -Phase 'recovery_required'
+        return
+    }
+    if ($script:InstallJournal.db_mutation_possible) {
+        Stop-MvHubProcesses -Root $TargetDir
+        $Current = Invoke-InstallCheckpoint
+        if (-not (Test-PreviousDatabaseCompatibility -PreviousCompatibility $script:InstallJournal.previous.compatibility -Current $Current -Checkpoint $script:InstallJournal.checkpoints)) {
+            $script:RecoveryState = 'recovery_required'
+            Set-InstallPhase -Phase 'recovery_required'
+            return
+        }
+    }
+    if ($script:RecoveryState -eq 'new_committed') {
+        $Failures = Undo-ComponentSwaps -Components $script:InstalledComponents
+        if ($Failures.Count) { throw 'Program rollback incomplete; all recovery assets are retained.' }
+        Commit-VersionMarker -Version $script:InstallJournal.previous_version
+    }
+    if ($script:HadRecoveryAssets -or $script:InheritedRecovery) {
+        $script:RecoveryState = 'recovery_required'
+        Set-InstallPhase -Phase 'recovery_required'
+        return
+    }
+    $script:RecoveryState = 'rolled_back'
+    Set-InstallPhase -Phase 'rolled_back'
+    if ($script:PreviousControl -and -not $script:ProcessesStopped) {
+        Write-InstallRecord -Path (Join-Path $TargetDir '.install-activation.json') -Record $script:PreviousControl
+    }
+}
+
 function Install-Package {
     param(
         [object]$Latest,
@@ -1065,6 +1189,20 @@ function Install-Package {
 
     $ZipPath = Join-Path $TempRoot $Latest.file
     $ExtractDir = Join-Path $TempRoot "extract"
+    if ($script:FreshInstallProof -and (-not $Latest.contract -or -not $Latest.contract.validation_receipt)) {
+        throw 'Fresh installation requires a qualified release contract and receipt.'
+    }
+    $Previous = $null
+    $PreviousPath = Join-Path $TargetDir 'build-manifest.json'
+    if (Test-Path -LiteralPath $PreviousPath) { $Previous = ConvertFrom-ReleaseJson ([System.IO.File]::ReadAllBytes($PreviousPath)) }
+    $script:InstallJournal = @{ format_version = 1; run_id = [Guid]::NewGuid().ToString('N'); token = $SwapToken;
+        role = 'worker'; phase = 'prepare'; fresh_install = [bool]$script:FreshInstallProof; previous = $Previous; previous_version = $CurrentVersion; target = $Latest; components = @(); checkpoints = @();
+        execution_nonce = [Guid]::NewGuid().ToString('N'); db_mutation_possible = $script:ResumeMutationPossible;
+        business_writes_possible = $script:ResumeMutationPossible; updated_at = [DateTime]::UtcNow.ToString('o');
+        coordinator = @{ pid = $PID; worker_sha256 = $env:MVHUB_UPDATE_WORKER_SHA256;
+            verifier_sha256 = Get-ReleaseSha256 (Join-Path $TargetDir 'update_release_contract.ps1') } }
+    Write-InstallRecord -Path $JournalPath -Record $script:InstallJournal
+    Assert-InstalledCapability -Candidate $Latest -Root $TargetDir
 
     # ----- Prepare phase: the running app is untouched until the Commit phase. -----
     Write-Host "[update]  10%  Downloading $($Latest.file)..."
@@ -1079,6 +1217,22 @@ function Install-Package {
     if ($Actual -ne ([string]$Latest.sha256).ToLowerInvariant()) {
         throw "SHA256 mismatch. Expected $($Latest.sha256), got $Actual"
     }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $PackageArchive = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+    try { $HasDescriptor = $null -ne $PackageArchive.GetEntry('build-manifest.json') }
+    finally { $PackageArchive.Dispose() }
+    if ($HasDescriptor -ne [bool]$Latest.contract) { throw 'ZIP descriptor and release contract disagree; legacy downgrade is forbidden.' }
+    if ($Latest.contract) {
+        $CandidateCopy = [System.IO.Path]::ChangeExtension($ZipPath, '.candidate.json')
+        [System.IO.File]::Copy((Join-Path $TempRoot $ManifestName), $CandidateCopy, $false)
+        $Reference = $Latest.contract.validation_receipt
+        if ($Reference) {
+            if ($Reference.file -match '[/\\:]' -or $Reference.file -in @('', '.', '..')) { throw 'Unsafe receipt name.' }
+            Get-ReleaseFile -Name $Reference.file -Destination (Join-Path $TempRoot $Reference.file)
+        }
+        $AllowPreinstall = (-not $script:FreshInstallProof -and $ManifestName -ceq 'candidate.json' -and $ExpectSha256 -and $ExpectVersion)
+        $null = Get-QualifiedRelease -PackagePath $ZipPath -AllowUnqualified:$AllowPreinstall
+    }
 
     Write-Host "[update]  65%  Extracting..."
     Write-UpdateState -State "installing" -Message "Extracting update package..." -Latest ([string]$Latest.version) -Percent 65
@@ -1089,6 +1243,7 @@ function Install-Package {
     Assert-PythonRuntime -RuntimeDir (Join-Path $ExtractDir "runtime\python") -Label "package"
 
     $Components = Get-UpdateComponents -ExtractDir $ExtractDir
+    Assert-InstalledReleasePayload -Root $ExtractDir -Candidate $Latest
 
     # Staging duplicates the package next to the install; require the headroom up
     # front instead of dying halfway through a copy.
@@ -1103,11 +1258,45 @@ function Install-Package {
     Write-UpdateState -State "installing" -Message "Staging verified files..." -Latest ([string]$Latest.version) -Percent 70
     New-StagedComponents -ExtractDir $ExtractDir -Components $Components
     Assert-PythonRuntime -RuntimeDir (Join-Path $TargetDir ("runtime\python.next." + $SwapToken)) -Label "staged"
+    Set-InstallPhase -Phase 'verified'
+    if (-not $script:FreshInstallProof) {
+    # Copy the installed inspector before replacing code; checkpointing never imports the new app.
+    $script:ProbeTool = Join-Path $TempRoot 'install_db_probe.py'
+    $ProbeApp = Join-Path $TempRoot 'probe\app'
+    [System.IO.Directory]::CreateDirectory((Join-Path $ProbeApp 'services')) | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $ProbeApp '__init__.py'), '')
+    [System.IO.File]::WriteAllText((Join-Path $ProbeApp 'services\__init__.py'), '')
+    $script:ProbeInspector = Join-Path $ProbeApp 'schema_compat.py'
+    Copy-Item -LiteralPath (Join-Path $TargetDir 'tools\install_db_probe.py') -Destination $script:ProbeTool
+    Copy-Item -LiteralPath (Join-Path $TargetDir 'backend\app\schema_compat.py') -Destination $script:ProbeInspector
+    foreach ($Name in @('backup_verify.py', 'sqlite_db.py', 'trash_transfer.py')) {
+        Copy-Item -LiteralPath (Join-Path $TargetDir ('backend\app\services\' + $Name)) -Destination (Join-Path $ProbeApp ('services\' + $Name))
+    }
+    Set-InstallPhase -Phase 'verified' -Changes @{ checkpoint_tools = @{
+        probe = Get-ReleaseSha256 $script:ProbeTool; schema_inspector = Get-ReleaseSha256 $script:ProbeInspector;
+        snapshot = Get-ReleaseSha256 (Join-Path $ProbeApp 'services\backup_verify.py') } }
+
+    }
 
     # ----- Commit phase: stop the app, swap by rename only, verify, mark version. -----
     Assert-NoActiveResolveImport -Root $TargetDir
+    Set-InstallPhase -Phase 'draining'
+    Wait-WorkerDrain
     Stop-MvHubProcesses -Root $TargetDir
     $script:ProcessesStopped = $true
+    $script:RecoveryState = if ($script:HadRecoveryAssets -or $script:InheritedRecovery) { 'recovery_required' } else { 'rolled_back' }
+    Set-InstallPhase -Phase 'quiesced'
+    if ($script:FreshInstallProof) {
+        Assert-FreshInstallUnchanged -Proof $script:FreshInstallProof -Components $Components -Token $SwapToken
+        Set-InstallPhase -Phase 'checkpointed' -Changes @{ checkpoints = @(); database_set = 'verified_empty'; bootstrap = $script:FreshInstallProof }
+    }
+    else {
+        $Checkpoints = Invoke-InstallCheckpoint
+        Set-InstallPhase -Phase 'checkpointed' -Changes @{ checkpoints = @($Checkpoints) }
+        if (-not (Test-PreviousDatabaseCompatibility -PreviousCompatibility $Latest.contract.compatibility -Current $Checkpoints -Checkpoint $Checkpoints)) {
+            throw 'Target release database compatibility is not proven.'
+        }
+    }
     # From here until the version marker commits, the old tree is either untouched
     # or restorable from .previous - so a failure below reports recovery=rolled_back
     # unless the rollback itself breaks.
@@ -1122,6 +1311,7 @@ function Install-Package {
     $script:InstalledComponents = $Components
 
     try {
+        Set-InstallPhase -Phase 'activation_pending'
         Write-Host "[update]  80%  Swapping staged files into place..."
         Write-UpdateState -State "installing" -Message "Installing verified files..." -Latest ([string]$Latest.version) -Percent 80
         Invoke-ComponentSwap -Components $Components
@@ -1136,12 +1326,26 @@ function Install-Package {
         # transaction could leave it half-written (Codex review). The first-time
         # installer owns writing it.
         Commit-VersionMarker -Version ([string]$Latest.version)
+        Assert-InstalledReleasePayload -Root $TargetDir -Candidate $Latest
         $script:RecoveryState = "new_committed"
     }
     catch {
         $InstallError = $_.Exception.Message
+        if ($script:InstallJournal.fresh_install) {
+            $script:RecoveryState = 'recovery_required'
+            Set-InstallPhase -Phase 'recovery_required'
+            throw
+        }
+        if ($script:InstallJournal.db_mutation_possible) {
+            $CurrentDatabases = Invoke-InstallCheckpoint
+            if (-not (Test-PreviousDatabaseCompatibility -PreviousCompatibility $Previous.compatibility -Current $CurrentDatabases -Checkpoint $script:InstallJournal.checkpoints)) {
+                $script:RecoveryState = 'recovery_required'
+                Set-InstallPhase -Phase 'recovery_required'
+                throw 'Database compatibility is unknown; automatic program rollback is forbidden.'
+            }
+        }
         Write-Host "[update] Install failed - rolling back to the previous version: $InstallError"
-        $Failures = @(Undo-ComponentSwaps -Components $Components)
+        $Failures = Undo-ComponentSwaps -Components $Components
         if ($Failures.Count) {
             # Rollback is incomplete: keep .previous backups and the journal for
             # manual recovery, and never auto-restart a half-swapped tree.
@@ -1155,9 +1359,31 @@ function Install-Package {
             $script:RecoveryState = "recovery_required"
             throw "Recovery reinstall failed; the pre-existing tree is not trustworthy. Quarantined backups are preserved in $TargetDir\update-quarantine.*. Original error: $InstallError"
         }
+        try {
+            if (-not $CurrentVersion) { throw 'Previous version marker is unknown.' }
+            Commit-VersionMarker -Version $CurrentVersion
+        }
+        catch {
+            $script:RecoveryState = 'recovery_required'
+            throw 'Previous program files were restored but its version marker could not be confirmed.'
+        }
         Remove-SwapLeftovers -Components $Components
         throw
     }
+}
+
+function Invoke-InstallCheckpoint {
+    $Directory = Join-Path $TargetDir ('.install-checkpoints\' + $script:InstallJournal.run_id + '-' + [Guid]::NewGuid().ToString('N'))
+    [System.IO.Directory]::CreateDirectory((Split-Path -Parent $Directory)) | Out-Null
+    $Probe = Invoke-CheckedProcess -FilePath (Join-Path $TargetDir 'runtime\python\python.exe') `
+        -ArgumentList @(('"' + $script:ProbeTool + '"'), '--root', ('"' + $TargetDir + '"'), '--output', ('"' + $Directory + '"'), '--inspector', ('"' + $script:ProbeInspector + '"')) `
+        -Label 'stable database checkpoint' -TimeoutSeconds 180
+    if ($Probe.ExitCode -ne 0) { throw 'Stable database checkpoint failed; original databases were not replaced.' }
+    $Record = ConvertFrom-ReleaseJson ([System.Text.Encoding]::UTF8.GetBytes($Probe.StdOut))
+    foreach ($Database in $Record.databases) {
+        $Database.checkpoint = '.install-checkpoints/' + (Split-Path -Leaf $Directory) + '/' + $Database.checkpoint
+    }
+    return @($Record.databases)
 }
 
 $TempRoot = Join-Path $env:TEMP ("mvhub-update-" + [Guid]::NewGuid().ToString("N"))
@@ -1228,6 +1454,7 @@ try {
     Write-UpdateState -State "checking" -Message "Checking the release server..." -Percent 5
 
     $Latest = Read-ReleaseManifest
+    Assert-InstalledCapability -Candidate $Latest -Root $TargetDir
     $LatestVersion = [string]$Latest.version
 
     $VersionPath = Join-Path $TargetDir "VERSION.txt"
@@ -1242,6 +1469,25 @@ try {
     # Moving them aside never touches live targets, so this is safe while the
     # app is still running; the layout checks below then judge the real tree.
     New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
+    if (Test-Path -LiteralPath $JournalPath) {
+        $PreviousJournal = ConvertFrom-ReleaseJson ([System.IO.File]::ReadAllBytes($JournalPath))
+        if ($PreviousJournal.format_version -eq 1 -and $PreviousJournal.phase -in @('committed', 'rolled_back')) {
+            $History = Join-Path $TargetDir '.install-journals'
+            [System.IO.Directory]::CreateDirectory($History) | Out-Null
+            $CommittedPath = Join-Path $History ($PreviousJournal.run_id + '.json')
+            if (Test-Path -LiteralPath $CommittedPath) {
+                if ((Get-ReleaseSha256 $CommittedPath) -cne (Get-ReleaseSha256 $JournalPath)) { throw 'Committed journal history mismatch.' }
+                [System.IO.File]::Delete($JournalPath) # exact durable copy remains in history
+            }
+            else { [System.IO.File]::Move($JournalPath, $CommittedPath) }
+        }
+        elseif ($PreviousJournal.db_mutation_possible -or $PreviousJournal.format_version -ne 1) {
+            $script:ResumeMutationPossible = $true
+            if ($PreviousJournal.target.sha256 -and $PreviousJournal.target.sha256 -cne $Latest.sha256) {
+                throw 'Interrupted install may have changed databases; resume the same artifact or use reviewed forward recovery.'
+            }
+        }
+    }
     Move-LeftoversToQuarantine
 
     # Recovery assets prove the tree may be half-swapped: shallow layout checks
@@ -1282,16 +1528,17 @@ try {
             Restart-MvHubAndWaitReady -ExpectedVersion $LatestVersion
         }
         else {
-            Write-UpdateState -State "complete" -Message "Update installed. Start MV Hub again." -Latest $LatestVersion -Percent 100
+            $script:InstallationPendingRestart = $true
+            Write-UpdateState -State 'starting' -Message 'Files installed; verified restart is still required. Backups and journal are preserved.' -Latest $LatestVersion -Percent 90
         }
-        # Backups are only deleted after the new version is confirmed (readiness for
-        # auto-restart, commit for manual runs). Cleanup trouble never fails the update.
-        if ($script:InstalledComponents) {
+        # Backups remain until the new process has passed readiness verification.
+        if ($script:InstalledComponents -and -not $script:InstallationPendingRestart) {
             Remove-SwapLeftovers -Components $script:InstalledComponents -IncludeQuarantine
         }
     }
 
-    Write-Host "[3/3] Update complete."
+    if ($script:InstallationPendingRestart) { Write-Host '[3/3] Runtime verification pending; install journal remains open.' }
+    else { Write-Host "[3/3] Update complete." }
 }
 catch {
     if ($ResolveTransferBusy) {
@@ -1304,19 +1551,22 @@ catch {
         # the app are independent best-effort steps that must not mask it - and a
         # state-file hiccup must not leave the app dead (Codex review).
         $InstallFailure = $_
+        try { Finalize-FailedInstall }
+        catch {
+            $script:RecoveryState = 'recovery_required'
+            try { Set-InstallPhase -Phase 'recovery_required' } catch {}
+        }
         try {
             Write-UpdateState -State "failed" -Message ("Update failed: " + $InstallFailure.Exception.Message) -Latest $LatestVersion -Recovery $script:RecoveryState
         }
         catch {
             Write-Host "[update] warn: could not record the failed state: $($_.Exception.Message)"
         }
-        # If we killed the app and the old tree is intact (or the new one committed),
-        # bring MV Hub back up so nobody is stranded on a dead backend with a frozen
-        # progress screen. A half-swapped tree (recovery_required) must NOT be booted.
+        # Only restart a previous tree whose current DB compatibility was proved.
         if (
             $script:ProcessesStopped -and
             $RestartAfterInstall -eq "1" -and
-            ($script:RecoveryState -eq "rolled_back" -or $script:RecoveryState -eq "new_committed")
+            $script:RecoveryState -eq "rolled_back"
         ) {
             Start-MvHubAfterFailure
         }

@@ -1,4 +1,5 @@
 import { tagsProblem } from "./nameGuard";
+import { normalizeSeedanceDraftParams } from "./seedanceDraft";
 import type { ChipRef, PromptPart } from "./promptEditor";
 import {
   SEEDANCE_TOKEN_SRC,
@@ -20,6 +21,8 @@ import {
   type SeedanceRefType,
 } from "./seedancePrompt";
 
+import { assetIdentity, type AssetReferenceIdentity } from "../shared/contracts/assets";
+
 export interface SpotlightCreateBody {
   prompt: string;
   display_prompt?: string;
@@ -27,14 +30,14 @@ export interface SpotlightCreateBody {
   params?: Record<string, unknown>;
   tags?: string[];
   auto_tags?: string[];
-  references?: {
+  references?: (AssetReferenceIdentity & {
     file_path: string;
     type: string;
     role: string;
     name?: string;
     thumbnail?: string;
     source_gen_id?: string;
-  }[];
+  })[];
   project_id?: string;
   folder_path?: string;
 }
@@ -130,7 +133,7 @@ export function buildSpotlightCreateBody({
     return { ...ref, role: `@Image${++imgN}` };
   });
   const refs = [...trayWithRoles, ...inlineWithRoles];
-  const params = { ...optionValues };
+  const params = normalizeSeedanceDraftParams(model, optionValues);
   const effectiveMode = effectiveSeedanceMode(model, params.mode, refs.length);
   if (effectiveMode !== params.mode) params.mode = effectiveMode;
 
@@ -177,6 +180,7 @@ export function buildSpotlightCreateBody({
       tags: tags?.length ? tags : undefined,
       auto_tags: armedAutoTags,
       references: refs.map((ref) => ({
+        ...assetIdentity(ref),
         file_path: ref.file_path,
         type: ref.type,
         role: ref.role,

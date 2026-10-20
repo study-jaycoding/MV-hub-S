@@ -1,3 +1,8 @@
+import { useSceneCardRecovery } from "../../lib/useSceneCardRecovery";
+import { SceneRecoveryPanel } from "./SceneRecoveryPanel";
+import { useSceneCardLibraryActions } from "../../lib/useSceneCardLibraryActions";
+import { saveSceneComfyToLibrary } from "../../lib/sceneComfyLibrary";
+import { captureOperationContext, isOperationContextCurrent } from "../../app/operationContext";
 // Canvas 씬 보드 — 계보 탭과 동일한 조작감:
 //   · 좌드래그(배경)=마퀴 복수선택 · 미들버튼 드래그=화면이동(팬) · 휠=줌
 //   · 카드 좌드래그=이동(선택된 것 함께) · 클릭=단일선택 · Ctrl=토글(누적) · Shift=연결 체인선택 · 배경클릭=해제
@@ -16,7 +21,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import type { CSSProperties, Dispatch, MutableRefObject, ReactNode, SetStateAction } from "react";
+import type { CSSProperties, MutableRefObject, ReactNode } from "react";
 import { api } from "../../api";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../lib/workspaceCommand";
 import { inBoardFolder, matchesBoardFilters } from "../../lib/boardFilters";
@@ -59,31 +64,24 @@ import {
   computeBridgeEdges,
   buildGenerationExecutionPlan,
   type SceneGenerationRun,
-  incomingTextOf,
   comfyTextDriveKeys,
-  comfyGenMeta,
   edgePathXY,
   fanOffset,
   freezeLegacyCollectorOrder,
   refLaneOrderIndex,
   resolveEdgeRoles,
   resolvePortEdges,
-  withCollectorOrder,
 } from "../../lib/sceneEdges";
 import { arrangeNodes } from "../../lib/sceneLayout";
 import {
   GROUP_HEADER_HEIGHT,
   deriveGroupViews,
   groupRectFromCards,
-  pruneGroups,
   reconcileRefs,
 } from "../../lib/sceneDerive";
-import { gatherComfyMedia, hasTextConnection } from "../../lib/sceneComfyInputs";
-import { isSceneComfyConfigCurrent } from "../../lib/sceneComfyExecutor";
 import { refMediaSrc, refMediaType, refThumbSrc } from "../../lib/sceneMedia";
 import { shortSceneName } from "../../lib/sceneWorkspace";
 import {
-  buildSelectedConnections,
   SCENE_GRID as GRID,
   shouldStartListReorder,
 } from "../../lib/sceneInteractions";
@@ -111,7 +109,6 @@ import { comfyApi } from "../../lib/comfyApi";
 import {
   isRecentlyDone,
   observeStatus,
-  seedPending,
   subscribeRecentDone,
   getRecentDoneVersion,
 } from "../../lib/sceneRecentDoneStore";
@@ -120,14 +117,13 @@ import {
   getRefServerStatusVersion,
   recheckBrokenRef,
   refServerStatus,
-  relinkCards,
   sceneAssetTokens,
   sceneRefWorkspaceId,
   subscribeRefServerStatus,
   type RelinkTarget,
 } from "../../lib/sceneAssetRelink";
 import { copyText, flashMsg } from "../../lib/flash";
-import { useSceneHistory } from "../../lib/useSceneHistory";
+import { gatherCanvasReferences, useCanvasSession, type CanvasInputCommand, type CanvasGroupResizeHandle } from "../../features/canvas/api";
 import { useSceneKeyboardShortcuts } from "../../lib/useSceneKeyboardShortcuts";
 import { isSceneTextEntryTarget, sceneEscapeTarget } from "../../lib/sceneKeyboard";
 import { SCENE_NODE_CATALOG } from "../../lib/sceneNodeCatalog";
@@ -140,25 +136,15 @@ import { useSceneCardResize } from "../../lib/useSceneCardResize";
 import { releaseSceneDragPointer, useSceneCardMove } from "../../lib/useSceneCardMove";
 import { useSceneGroupMove } from "../../lib/useSceneGroupMove";
 import { useSceneMarqueeSelection } from "../../lib/useSceneMarqueeSelection";
-import { markCardGenerationsRemoved, reviveCardGenerations } from "../../lib/sceneCardLinks";
 import {
-  detachedCandidates,
-  readLocalCanvasState,
   type CardHistoryCursor,
   type CardHistoryLink,
-  type DetachedCandidate,
 } from "../../lib/canvasDetached";
-import type { SceneComfyCfg, SceneModelCfg } from "../../lib/scenes";
+import type { SceneModelCfg } from "../../lib/scenes";
 import type { SceneGenerationAssignment } from "../../lib/sceneGenerationInputs";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import { displayThumb, thumbOf } from "../../lib/media";
-import { useClickSeparation } from "../../lib/useClickSeparation";
-import { settleCanvasGenerationAttempt } from "../../lib/canvasGenerationRecovery";
 import { planAutoConnections } from "../../lib/sceneAutoConnect";
-import { formatGenerationDateTime, generationListMeta } from "../../lib/generationDisplay";
-import { useModelDisplayName } from "../../lib/modelCatalog";
-import { InlinePromptRefs } from "../common/InlinePromptRefs";
-import { ClockIcon, FrameIcon, GemIcon, ModelIcon } from "../generation/GenerationCardIcons";
 import { OutputCard } from "./cards/OutputCard";
 import { ReferenceCard } from "./cards/ReferenceCard";
 import { TextCard } from "./cards/TextCard";
@@ -234,11 +220,6 @@ function useStableHandlers<T extends Record<string, ((...args: never[]) => unkno
   }, []);
 }
 // 편집용 설정자 — 씬을 바꾸는 틈(SceneBoard 의 switchingRef)에는 넣지 않는다. 정체성은 바뀌지 않는다.
-function useUnlessSwitching<T>(set: Dispatch<SetStateAction<T>>, switching: MutableRefObject<boolean>): Dispatch<SetStateAction<T>> {
-  return useCallback((next) => {
-    if (!switching.current) set(next);
-  }, [set, switching]);
-}
 // 생성 카드에 넘기는 전역 태그 후보가 없을 때의 빈 목록 — 렌더마다 새 [] 를 만들면 카드(memo)가 매번 다시 그려진다.
 const NO_TAG_OPTIONS: string[] = [];
 // 여러 장을 고른 끌기의 그리기 상태 — 끌기 하나에 하나(첫 걸음에 조건이 맞으면 만들고, 조건을 잃거나 끝나거나 씬이 바뀌면 버린다).
@@ -329,7 +310,7 @@ interface Props {
   scene: Scene;
   authKey?: string;
   authReady?: boolean;
-  onChange: (patch: Partial<Scene>) => void;
+  onChange: (snapshot: { cards: SceneCard[]; edges: SceneEdge[]; groups?: SceneGroup[] }) => void;
   // 좌상단 패널 — 현재 씬을 텍스트 파일로 저장 / 파일에서 새 탭으로 불러오기.
   //  · onSaveScene 은 저장 시점의 '라이브 카메라'를 받아 debounce 로 지연된 stale 카메라 대신 최신을 쓴다.
   onSaveScene?: (camera?: { z: number; x: number; y: number }) => void;
@@ -381,6 +362,7 @@ interface Props {
   onSelectionGens?: (gens: Generation[]) => void;
   // 선택바의 '삭제'·트레이 편집이 부를 명령형 핸들.
   actionRef?: MutableRefObject<{
+    commitDocument: (command: CanvasInputCommand) => boolean;
     sceneId: string; // 이 캔버스가 보고 있는 씬 — App 이 비동기 결과를 입히기 전에 활성 씬과 같은지 본다
     deleteSelected: () => void;
     setCardRefs: (cardId: string, refs: SceneRef[]) => SceneRef[];
@@ -547,16 +529,13 @@ export function SceneBoard({
   //   · 저장(persist·파생 저장·flushPending)은 부모의 '지금 활성 씬'(= 새 씬)에 쓰인다 → 떠난 씬의 카드가 새 씬을 덮는다.
   //   · 편집의 setCards 는 밀려 있는 '새 씬의 카드로 바꾸기' 뒤에 줄을 서 **다시 적용**된다(React 는 건너뛴 갱신 뒤의 갱신을 순서대로
   //     다시 돌린다) → 떠난 씬의 편집본이 새 씬의 이름으로 남아 다음 저장에 실린다(Codex 코드 리뷰 P1).
-  //  막는 자리: 아래 편집용 설정자(setCards·setEdges·setGroups) · lib/useSceneHistory 의 frozenRef · flushPending.
+  //  문서 세션의 target/frozen 검사와 내부 history/input 엔진이 이 틈의 편집·저장을 거절한다.
   //  씬 동기화 effect 만 …Now 설정자로 바로 넣는다. 틈에 한 조작은 버려진다 — 그 화면은 곧 새 씬의 것으로 바뀐다.
   const switchingRef = useRef(false);
   switchingRef.current = cardsSceneId !== scene.id;
   // 레거시 수집기 순서 고정(order 없는 list·render 연결에 옛 표시 순서를 박음 — 변경 없으면 같은 참조). 저장은 다음 변경 때.
   const [edges, setEdgesNow] = useState<SceneEdge[]>(() => freezeLegacyCollectorOrder(scene.cards, scene.edges));
   const [groups, setGroupsNow] = useState<SceneGroup[]>(scene.groups || []);
-  const setCards = useUnlessSwitching(setCardsNow, switchingRef);
-  const setEdges = useUnlessSwitching(setEdgesNow, switchingRef);
-  const setGroups = useUnlessSwitching(setGroupsNow, switchingRef);
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null); // 이름 편집 중인 그룹
   const [colorPopId, setColorPopId] = useState<string | null>(null); // 색 팔레트 팝오버가 열린 그룹
   const [ejectedIds, setEjectedIds] = useState<Set<string>>(new Set()); // 드래그 중 속도로 그룹에서 튕겨낸 카드 — 이탈해도 박스 크기 유지
@@ -648,31 +627,6 @@ export function SceneBoard({
     onTypeCount?.(typeCount);
   }, [typeCount, onTypeCount]);
   const [cardMenu, setCardMenu] = useState<string | null>(null); // 변형(결과) 팝업이 열린 카드 id
-  const [tagEditCardId, setTagEditCardId] = useState<string | null>(null); // 태그 편집 팝업이 열린 카드 id(같은 생성물이 여러 카드여도 하나만)
-  const [tagEditNodeGenId, setTagEditNodeGenId] = useState<string | null>(null); // 카드 내부 HistoryBoardNode 의 태그 편집 대상 gen id
-  const [canvasRecovery, setCanvasRecovery] = useState<{
-    cardId: string;
-    items: Generation[]; // 아래 칸 '카드 생성물 담기' — 카드 기록이 원래 없는 것
-    detachedLinks: CardHistoryLink[]; // 서버가 준 지난 소속 원재료(다른 캔버스를 누르면 덧붙는다)
-    detached: DetachedCandidate[]; // 위 칸 '카드 생성물 복구' — 카드에 있었다가 떨어진 것(가까운 순)
-    detachedGens: Record<string, Generation>; // 위 칸 본문(일괄 조회 결과)
-    detachedStatus: "ok" | "unreadable"; // unreadable = 로컬 씬을 못 읽어 판정 불가
-    // ★칸마다 따로 기다린다 — 한쪽이 느리다고 다른 칸까지 붙잡아 두지 않는다(코덱스 P1).
-    loadingItems: boolean;
-    loadingDetached: boolean;
-    otherScenes: "idle" | "loading" | "done"; // 다른 캔버스까지 찾았나(누를 때만 읽는다)
-    // 쪽 상한에서 멈췄을 때의 이어 읽기 기준. null 이면 그 범위는 끝까지 봤다.
-    // ★버리면 오래된 복구 대상에 영영 못 닿는다(코덱스 재리뷰 P1) — '더 찾기'가 여기서 잇는다.
-    detachedNext: { scope: "scene" | "other"; cursor: CardHistoryCursor } | null;
-    detachedShown: number; // 위 칸에 지금 보여주는 개수('더 보기'로 늘어난다)
-    detachedTotal: number; // 이미 받아 둔 재료로 판정된 전체 후보 수(표시분 + 남은 것)
-    detachedExpanding: boolean; // '더 보기'로 받아 둔 재료의 본문을 더 받는 중 — 단추가 그대로라 또 눌렸다(28회차, Jay 결정): 잠그고 글을 바꾼다
-    claimingId: string | null;
-    error: string | null;
-    query: string; // 아래 칸 검색어
-    shown: number; // 아래 칸 표시 개수('더 보기'로 증가)
-  } | null>(null);
-  const recoveryModelName = useModelDisplayName(); // 복구 목록을 라이브러리 카드와 같은 표기로
   // Tab 노드 피커(Houdini식) — 커서 위치에 New/Model/List/Text 메뉴. sx/sy=보드기준 화면좌표(팝업 배치), cx/cy=새 노드 캔버스좌표.
   const [nodePicker, setNodePicker] = useState<{ sx: number; sy: number; cx: number; cy: number } | null>(null);
   const nodePickerRef = useRef<{ sx: number; sy: number; cx: number; cy: number } | null>(null);
@@ -682,14 +636,9 @@ export function SceneBoard({
   const [viewTextModal, setViewTextModal] = useState<string[] | null>(null); // View 텍스트 보기 모달 내용
   // 떠 있는 동안 Esc 는 이 창들이 갖는다(맨 위 겹만 닫힌다) — 뒤 보드의 단축키도 쉰다(lib/keyGate).
   useEscapeClose(() => setViewTextModal(null), !!viewTextModal);
-  useEscapeClose(() => {
-    if (!canvasRecovery?.claimingId) setCanvasRecovery(null); // 붙이는 중엔 닫지 않는다(바깥 클릭과 같은 규칙)
-  }, !!canvasRecovery);
   // 두 창 모두 막이 있는 모달 — 떠 있는 동안 초점을 창 안에 둔다(lib/keyGate '모달의 초점'). 닫으면 연 자리(보드의 단추)로 돌아간다.
   const viewTextRef = useRef<HTMLDivElement>(null);
   useModalFocus(viewTextRef, !!viewTextModal);
-  const recoveryRef = useRef<HTMLDivElement>(null);
-  useModalFocus(recoveryRef, !!canvasRecovery);
   const [viewTimeline, setViewTimeline] = useState<TimelineClip[] | null>(null); // View 재생 타임라인(연속 재생) 클립들
   const [editTextId, setEditTextId] = useState<string | null>(null); // 편집 중인 텍스트/제목 노드(그 외엔 @토큰 알약 미리보기)
   const editTextIdRef = useRef<string | null>(null);
@@ -875,57 +824,6 @@ export function SceneBoard({
   // '마지막으로 본' 표시 — 모듈 store 라 구성 탭을 벗어나 언마운트돼도 값이 남는다.
   // 생성물 변경(휴지통 이동·복원 등) 때 다시 읽는 것까지 훅이 맡는다 — 생성 탭과 같은 훅.
   const genViews = useGenerationViewsSynced(scene.id);
-  useEffect(() => {
-    // ★기존 저장분(레거시)에 박제된 status:"running" 치유 — 지금 실제로 실행 중(모듈 store)이 아니면
-    //  done/idle 로 정규화해 '영원히 생성중' 표시를 없앤다(persist 쪽 settleComfyRunning 과 짝).
-    const inCards = settleComfyRunning(scene.cards, isComfyRunning);
-    const inEdges = freezeLegacyCollectorOrder(inCards, scene.edges); // 레거시 수집기 순서 고정(변경 없으면 같은 참조)
-    const switched = sceneIdRef.current !== scene.id;
-    if (switched) {
-      const prevId = sceneIdRef.current;
-      // 떠나는 씬에서 누른 채 끌던 묶음을 **그 씬의 기록에 대해** 먼저 닫는다 — 단계를 쌓은 묶음이면 그 씬의 다시 하기를 비우고 상한을 정리한다
-      //  (lib/useSceneHistory endGesture). 아래 복원 뒤에 닫으면 들어온 씬의 기록을 건드린다(Codex 3차 리뷰 P2). 끌기 자체는 아래 uiSceneId 효과가 버린다.
-      endGesture();
-      persistSceneHistory(prevId); // 떠나는 씬의 undo 히스토리 보관(돌아오면 이어서)
-      sceneIdRef.current = scene.id;
-      setSelected(new Set());
-      setSelectedGroupIds(new Set());
-      setRowSel({ listId: "", cids: new Set() }); // 씬 전환 시 리스트/렌더 행 선택도 해제(stale 방지)
-      // 들어온 씬의 히스토리를 store 에서 복원(없거나 stale 이면 리셋). 씬마다 자기 Ctrl+Z 를 유지.
-      restoreSceneHistory(scene.id, { cards: inCards, edges: inEdges, groups: scene.groups || [] });
-    }
-    // 받은 것이 이미 손에 든 **그 객체**면 다시 넣지 않는다. 보드가 저장한 조각은 부모를 거쳐 같은 배열로 되돌아오는데
-    //  (lib/scenes.updateScene), 그것을 또 넣으면 값이 같아 자식은 안 그려도 보드 함수 전체가 한 번 더 돈다 — 편집·놓기마다였다.
-    //  참조로만 견준다: 내용이 같은 새 배열(밖에서 온 갱신)은 전처럼 넣는다. 견주는 쪽은 ref 다 — 핸들러가 방금 넣은 값까지 본다.
-    // ★씬이 바뀐 때에는 견주지 않고 **늘 넣는다**. ref 는 '지금 그려진 값'일 뿐, 앞 전환이 넣어 둔 갱신이 아직 밀려 있을 수 있다 —
-    //  탭 누름은 동기 렌더고 이 effect 가 넣는 갱신은 그 뒤의 낮은 우선순위 렌더다. X 로 갔다가 그것이 그려지기 전에 Y 로 돌아오면
-    //  ref 는 아직 Y 의 카드라 "같다"고 건너뛰었고, 밀려 있던 X 의 카드가 뒤늦게 Y 화면에 그려졌다. 기준(sceneIdRef·마지막 저장)은
-    //  Y 라 다음 탭 누름의 저장 확정이 그것을 Y 에 썼다(2026-10-11 격리 실측: 탭 연타에 Y 가 X 의 카드로 덮임 — 부하가 걸리면 절반).
-    //  늘 넣으면 밀린 갱신 뒤에 줄을 서 마지막 값이 이긴다(밀린 것이 없고 값이 같으면 React 가 그 자리에서 버린다).
-    //  카드의 주인 씬(cardsSceneId)도 **같은 자리에서** 넣는다 — 카드와 한 갱신으로 바뀌어야 이름과 내용이 어긋나지 않는다.
-    //  여기서는 …Now 설정자로 넣는다 — 편집용 설정자는 틈(지금이 그 틈이다)에는 넣지 않는다.
-    if (switched) setCardsSceneId(scene.id);
-    const inGroups = scene.groups || [];
-    // 같은 씬인데 밖에서 값이 갈렸는가(생성 결과 도착 등) — 아래에서 끄는 중인 끌기에 알린다
-    const replaced = !switched && (inCards !== cardsRef.current || inEdges !== edgesRef.current || inGroups !== groupsRef.current);
-    if (switched || inCards !== cardsRef.current) setCardsNow(inCards);
-    if (switched || inEdges !== edgesRef.current) setEdgesNow(inEdges);
-    if (switched || inGroups !== groupsRef.current) setGroupsNow(inGroups);
-    if (replaced) {
-      // ★끄는 중의 좌표·크기·네모는 저장 전이라 받은 값에 없다. 갈아 끼우기만 하면 끌던 카드가 끌기 전 자리로 돌아가 보이고, 더 움직이지
-      //  않고 놓으면 그 값이 저장됐다 — 카드 끌기·크기 조절은 한 일이 사라지고, 그룹 머리 끌기는 네모만 가고 멤버는 남았다
-      //  (2026-10-11 캔버스 실측 3/3 · Codex 설계 검토). ref 를 받은 값으로 먼저 맞추고(끌기가 **받은 값 위에** 얹도록 — 밖에서 온 내용은 살린다)
-      //  도는 끌기에 다시 얹게 한다(lib/sceneDragSession rebase — 값을 끄는 중에 바꾸는 끌기만 응한다). 끌기의 갱신은 위의 갈아 끼우기
-      //  뒤에 줄을 서 한 번에 그려진다. 끌기가 없으면 ref 만 한 렌더 일찍 맞는다(다음 렌더가 같은 값을 넣는다).
-      cardsRef.current = inCards;
-      edgesRef.current = inEdges;
-      groupsRef.current = inGroups;
-      rebaseDrag();
-    }
-    // 표시 중인 상태를 항상 '최근 커밋'으로 맞춘다 — 외부 갱신(생성 완료 등) 후 Ctrl+Z 가
-    // 그 갱신까지 되돌리는(스테일 복원) 문제 방지. (내 persist 는 이미 같은 값이라 무해)
-    syncCommitBaseline({ cards: inCards, edges: inEdges, groups: scene.groups || [] });
-  }, [scene.id, scene.cards, scene.edges, scene.groups]);
 
   const {
     scrollRef,
@@ -1114,22 +1012,22 @@ export function SceneBoard({
     }
   }, [structSig]);
 
-  // 저장 커밋과 undo/redo 스택은 전용 훅이 소유한다. 화면 상태와 ref는 SceneBoard가 계속 소유한다.
-  const {
-    persist,
-    syncCommitBaseline,
-    persistSceneHistory,
-    restoreSceneHistory,
-    commitDerivedState,
-    hasUncommittedCardsOrEdges,
-    beginGesture,
-    endGesture,
-    propagateGenIdsToHistory,
-    propagateAssetRelinkToHistory,
-    pruneGenIdsFromHistory,
-    undo,
-    redo,
-  } = useSceneHistory({
+  const layerMoveRef = useRef<SceneLayerMove | null>(null);
+  // 입력·Undo·저장 정책은 문서 세션이 소유한다. 화면 상태와 ref는 Board에 남긴다.
+  const canvasSession = useCanvasSession({
+    layerMoveRef,
+    generationDataRef: genDataRef,
+    cardSize: card => ({ w: widthOf(card), h: heightOf(card) }),
+    sourceScene: scene,
+    onReceiveScene: (sceneId, switched, replaced) => {
+      if (switched) {
+        setCardsSceneId(sceneId);
+        setSelected(new Set());
+        setSelectedGroupIds(new Set());
+        setRowSel({ listId: "", cids: new Set() });
+      }
+      if (replaced) rebaseDrag();
+    },
     sceneId: scene.id,
     initialSnapshot: {
       cards: settleComfyRunning(scene.cards, isComfyRunning),
@@ -1140,9 +1038,9 @@ export function SceneBoard({
     cardsRef,
     edgesRef,
     groupsRef,
-    setCards,
-    setEdges,
-    setGroups,
+    setCards: setCardsNow,
+    setEdges: setEdgesNow,
+    setGroups: setGroupsNow,
     // 되돌린 화면에는 고른 카드·그룹이 없다 — 카드만 비우면 되돌려 사라진 그룹이 선택에 남아, 그 뒤의 색 키가 없는 그룹에 저장을 냈다
     //  (조작 규칙 44)
     clearSelection: () => {
@@ -1152,462 +1050,26 @@ export function SceneBoard({
     onChange,
     frozenRef: switchingRef,
   });
-  // ── C3: 텍스트·comfy 파라미터 입력은 키 입력마다 persist 하면 대형 씬 localStorage 직렬화가 잦아 버벅인다.
-  //  화면(setCards)·cardsRef 는 즉시 갱신(생성이 최신값을 읽음), 저장(persist)만 디바운스. 밀린 저장은
-  //  입력 blur·언마운트·씬 전환(App 이 flushPending 호출) 시 확정 → 유실·스테일 없음.
-  const pendingPersistRef = useRef<number | undefined>(undefined);
-  // 아직 저장으로 넘기지 않은 입력이 **처음 생긴 시각**. 계속 치면 400ms 디바운스가 끝없이 밀려 저장이
-  // 한 번도 안 나가는데, 저장이 IndexedDB 로 가면서 창을 닫는 순간의 저장은 끝난다는 보장이 없어졌다
-  // (종전 localStorage 는 그 자리에서 끝났다). 그래서 첫 미저장 입력에서 2초가 지나면 치는 중이어도
-  // 저장을 내보낸다 — 잃을 수 있는 구간을 줄이는 것이지 없애는 것은 아니다.
-  const pendingSinceRef = useRef<number | undefined>(undefined);
-  // 보드를 통째로 끄는 동안 캔버스 층에만 밀어 둔 이동량의 손잡이(lib/useSceneCardMove 의 빠른 길). 좌표가 필요한 자리 —
-  //  저장 확정(아래 flushPending)·단축키 직전 — 에서 settle 로 먼저 좌표에 넣고, 씬 전환으로 끌기를 버릴 때 drop 한다.
-  const layerMoveRef = useRef<SceneLayerMove | null>(null);
-  const flushPending = () => {
-    if (pendingPersistRef.current !== undefined) {
-      clearTimeout(pendingPersistRef.current);
-      pendingPersistRef.current = undefined;
-    }
-    pendingSinceRef.current = undefined;
-    // 씬을 바꾸는 틈(새 씬은 왔고 그 카드는 아직 안 그려졌다 — 위 switchingRef)에는 확정할 것이 없다 — 손에 든 카드는 **떠난 씬**의 것이라,
-    //  여기서 저장하면 방금 연 씬이 앞 씬의 카드로 덮인다(2026-10-10 실측: 씬 탭을 25ms 안에 연달아 누르면 9/9, 새로 고침 뒤에도 남음).
-    //  떠난 씬의 밀린 편집은 전환 직전의 flushPending 이 이미 확정했다.
-    if (switchingRef.current) return;
-    // 층에만 있던 전체 끌기의 이동량을 좌표에 넣는다 — 안 넣으면 끄는 중 씬을 바꿀 때 그 이동이 저장에서 빠진다(걸음마다 좌표를
-    //  바꾸는 평소 길은 여기서 저장됐다).
-    layerMoveRef.current?.settle();
-    if (!hasUncommittedCardsOrEdges(cardsRef.current, edgesRef.current)) return; // 밀린 편집 없음
-    persist(cardsRef.current, edgesRef.current); // 사용자 편집 확정 → undo:true
-  };
+  const { commit: commitDocument, undo, redo } = canvasSession;
+  const comfyOperation = captureOperationContext({ scope: "personal", id: null, name: null });
+  const flushPending = () => { canvasSession.flush(); };
   const flushPendingRef = useRef(flushPending);
   flushPendingRef.current = flushPending;
-  // 파생 저장(실행 상태·생성 결과 반영·연결 레퍼런스 맞춤) 앞에서 부른다 — 치던 글이 있으면 그것부터 한 단계로 확정한다(조작 규칙 44).
-  //  파생 저장은 손에 든 카드 전체를 '저장된 것'으로 삼는데 거기에 아직 저장 전인 글도 들어 있어, 뒤의 입력 확정이 '바뀐 것 없음'으로
-  //  끝났다 — 그 글의 단계가 없어 Ctrl+Z 가 그 앞의 편집까지 되감았다. 밀린 입력이 있을 때만 한다: 늘 하면 순차 실행 중 화면에만 올려 둔
-  //  값(applyCards 의 live)이 사용자 단계로 쌓인다.
-  const confirmPendingInput = () => {
-    if (pendingSinceRef.current !== undefined) flushPending();
-  };
-  const scheduleInputPersist = () => {
-    const now = Date.now();
-    if (pendingSinceRef.current === undefined) pendingSinceRef.current = now;
-    if (pendingPersistRef.current !== undefined) clearTimeout(pendingPersistRef.current);
-    const wait = Math.max(0, Math.min(400, pendingSinceRef.current + 2000 - now));
-    pendingPersistRef.current = window.setTimeout(() => {
-      pendingPersistRef.current = undefined;
-      flushPendingRef.current();
-    }, wait);
-  };
-  // ── 카드 반영 어댑터 — 화면(cardsRef+setCards)은 항상 즉시, 저장은 mode 로 구분. Comfy 실행부가
-  //  persist/scheduleInputPersist 를 직접 부르지 않고 이 하나로만 카드를 반영하게 해 결합을 좁힌다(P4 준비).
-  //   · live          : 화면만(저장 안 함) — 순차 실행 중 다음 노드가 최신 출력을 읽게
-  //   · deferUser     : 사용자 입력 → 저장 디바운스(blur/실행 시 flush)
-  //   · persistUser   : 사용자 편집 확정 저장(undo 스택에 쌓임)
-  //   · persistDerived: 실행상태·파생 저장(undo 스택 제외)
-  type ApplyCardsMode = "live" | "deferUser" | "persistUser" | "persistDerived";
-  const applyCards = (
-    nextCards: SceneCard[],
-    mode: ApplyCardsMode,
-    persistOpts?: {
-      removedForward?: { cardId: string; genIds: string[] }[];
-      addedForward?: { cardId: string; genIds: string[] }[];
-    },
-  ) => {
-    if (mode === "persistDerived") confirmPendingInput(); // 손에 든 카드가 아직 '파생 변경 전'일 때
-    cardsRef.current = nextCards;
-    setCards(nextCards);
-    if (mode === "live") return;
-    if (mode === "deferUser") {
-      scheduleInputPersist();
-      return;
-    }
-    persist(nextCards, edgesRef.current, groupsRef.current, {
-      undo: mode !== "persistDerived",
-      ...persistOpts,
-    });
-  };
-  // 카드를 비울 때 DB 소속에도 '뺐음'을 남긴다. 화면에서 안 보인다고 부르면 안 되고, 사용자가
-  // 실제로 비운 순간(comfy 워크플로 교체)에만 부른다 — 아니면 다른 브라우저가 방금 담은 게 지워진다.
-  // 반환값 = 제거 delta — 이 커밋의 undo 엔트리에 실어야 undo 부활/redo 재제거가 정확해진다(검증 P1).
-  const forgetCardGenerations = (
-    sceneId: string,
-    cardId: string,
-  ): { cardId: string; genIds: string[] }[] => {
-    const card = cardsRef.current.find((c) => c.id === cardId);
-    const genIds = card ? variantIds(card).filter(Boolean) : [];
-    if (!genIds.length) return [];
-    void markCardGenerationsRemoved(sceneId, cardId, genIds);
-    return [{ cardId, genIds }];
-  };
-  const RECOVERY_PAGE = 12; // 아래 칸 한 번에 보여줄 개수 — 나머지는 '더 보기'
-  const DETACHED_SHOWN = 30; // 위 칸에 본문까지 받아올 상한(가까운 순 앞쪽만)
-  const DETACHED_MAX_PAGES = 5; // 이어 읽기 상한 — 여기까지 봐도 못 채우면 멈춘다
+  const canvasTargetRef = useRef(canvasSession.target);
+  canvasTargetRef.current = canvasSession.target;
+  // 보드를 통째로 끄는 동안 캔버스 층에만 밀어 둔 이동량의 손잡이(lib/useSceneCardMove 의 빠른 길). 좌표가 필요한 자리 —
+  //  저장 확정(아래 flushPending)·단축키 직전 — 에서 settle 로 먼저 좌표에 넣고, 씬 전환으로 끌기를 버릴 때 drop 한다.
 
-  // 창을 연 횟수. 응답이 자기 창의 것인지 대조한다 — 같은 카드에서 닫았다 다시 열면
-  // cardId 만으로는 옛 응답을 못 가려내 새 창을 덮는다(코덱스 리뷰 P1).
-  const recoverySeqRef = useRef(0);
-
-  // 위 칸(떨어진 것)을 만든다. 서버는 '있었던 자리'만 알고 '지금 붙었나'는 모르므로
-  // 로컬 씬 목록으로 거르고(canvasDetached), 살아남은 것만 본문을 일괄 조회한다.
-  const buildDetached = async (
-    cardId: string,
-    links: CardHistoryLink[],
-    shown: number,
-  ): Promise<{
-    detached: DetachedCandidate[];
-    detachedGens: Record<string, Generation>;
-    detachedStatus: "ok" | "unreadable";
-    detachedTotal: number;
-  }> => {
-    const empty = {
-      detached: [],
-      detachedGens: {},
-      detachedStatus: "ok" as const,
-      detachedTotal: 0,
-    };
-    if (!onLoadGenerations || !readLocalScenes) return empty;
-    const scenes = readLocalScenes();
-    const local = readLocalCanvasState(scenes, scenes !== null);
-    const result = detachedCandidates(links, local, { sceneId: scene.id, cardId });
-    if (result.status !== "ok" || !result.items.length) {
-      return { ...empty, detachedStatus: result.status };
-    }
-    // ★표시 개수는 늘어난다 — 늘 앞 30개로 자르면 이어 읽어도 31번째를 영영 못 고른다
-    //  (코덱스 최종 확인 P1). 본문은 보여줄 것만 받는다.
-    const head = result.items.slice(0, shown);
-    const detachedGens = await onLoadGenerations(head.map((item) => item.generationId));
-    // 본문을 못 받은 것(다른 설치본에만 있는 생성물)은 보여줄 게 없으므로 뺀다.
-    return {
-      detached: head.filter((item) => detachedGens[item.generationId]),
-      detachedGens,
-      detachedStatus: "ok",
-      detachedTotal: result.items.length,
-    };
-  };
-
-  // 지난 소속을 한 쪽씩 받아 이어 읽는다. **상한으로 끊으면 안 된다** — 최신 소속이 전부
-  // 붙어 있는 사람에게는 오래된 복구 대상이 영영 안 보인다(코덱스 리뷰 P1). 거른 결과가
-  // 화면 분량을 채울 때까지, 또는 서버가 더 없다고 할 때까지 다음 쪽을 청한다.
-  const fetchDetachedLinks = async (
-    cardId: string,
-    scope: "scene" | "other",
-    seed: CardHistoryLink[],
-    from: CardHistoryCursor | null = null,
-    want: number = DETACHED_SHOWN,
-  ): Promise<{ links: CardHistoryLink[]; next: CardHistoryCursor | null }> => {
-    if (!onCanvasCardHistory) return { links: seed, next: null };
-    // ★밀린 저장을 먼저 확정한다 — 방금 붙인 결과가 아직 메모리에만 있으면 '떨어진 것'으로 보인다.
-    flushPendingRef.current();
-    let links = seed;
-    let cursor: CardHistoryCursor | null = from;
-    for (let page = 0; page < DETACHED_MAX_PAGES; page++) {
-      const result = await onCanvasCardHistory(scene.id, scope, cursor);
-      links = links.concat(result.links);
-      if (!result.next) return { links, next: null }; // 서버가 끝이라고 한다
-      cursor = result.next;
-      const scenes = readLocalScenes?.() ?? null;
-      const local = readLocalCanvasState(scenes, scenes !== null);
-      const built = detachedCandidates(links, local, { sceneId: scene.id, cardId });
-      if (built.status !== "ok" || built.items.length >= want) break;
-    }
-    // 쪽 상한에서 멈췄다 — 어디까지 봤는지 남겨 '더 찾기'가 이어 갈 수 있게 한다.
-    return { links, next: cursor };
-  };
-
-  // 위 칸을 더 찾는다. 두 가지를 겸한다.
-  //  · 쪽 상한에서 멈췄으면(detachedNext) 그 자리에서 **이어 읽는다**
-  //  · 이 캔버스를 끝까지 봤으면 **다른 캔버스**로 범위를 넓힌다(훑어야 해서 누를 때만)
-  const loadMoreDetached = async () => {
-    const target = canvasRecovery;
-    if (!target || !onCanvasCardHistory) return;
-    const { cardId } = target;
-    const shown = target.detachedShown + DETACHED_SHOWN;
-    const mySeq = recoverySeqRef.current;
-    const patch = (next: Partial<NonNullable<typeof canvasRecovery>>) =>
-      setCanvasRecovery((current) =>
-        current?.cardId === cardId && mySeq === recoverySeqRef.current
-          ? { ...current, ...next }
-          : current,
-      );
-    // ① 이미 받아 둔 재료에 아직 안 보여준 후보가 남아 있으면 그것부터 편다(목록 조회는 없지만 본문(onLoadGenerations)은 받아 온다 —
-    //  그동안 단추를 잠그고 '불러오는 중'으로 보인다. 전엔 단추가 그대로라 또 눌려 같은 본문을 두 번 받았다).
-    if (target.detachedTotal > target.detachedShown) {
-      patch({ detachedExpanding: true }); // 응답 전의 다시 누름은 단추의 disabled 가 막는다(핸들러 가드는 두지 않는다 — 12회차)
-      try {
-        const part = await buildDetached(cardId, target.detachedLinks, shown);
-        patch({ ...part, detachedShown: shown, detachedExpanding: false });
-      } catch {
-        patch({ detachedExpanding: false });
-      }
-      return;
-    }
-    // ② 다 폈으면 더 읽어 온다 — 멈춘 자리부터, 없으면 다른 캔버스로 범위를 넓힌다.
-    const resume = target.detachedNext;
-    const scope = resume ? resume.scope : "other";
-    patch({ otherScenes: "loading" });
-    try {
-      const page = await fetchDetachedLinks(
-        cardId,
-        scope,
-        target.detachedLinks,
-        resume?.cursor ?? null,
-        shown,
-      );
-      if (mySeq !== recoverySeqRef.current) return; // 그 사이 창이 다시 열렸다
-      const part = await buildDetached(cardId, page.links, shown);
-      patch({
-        detachedLinks: page.links,
-        ...part,
-        detachedShown: shown,
-        detachedNext: page.next ? { scope, cursor: page.next } : null,
-        // 이 캔버스를 이어 읽은 것이면 다른 캔버스는 아직 안 본 것이다.
-        otherScenes: page.next ? "idle" : scope === "other" ? "done" : "idle",
-      });
-    } catch {
-      patch({ otherScenes: "idle" });
-    }
-  };
-
-  const openCanvasRecovery = (cardId: string) => {
-    if (!onCanvasRecoveryCandidates) return;
-    // 창은 즉시 띄운다. 두 칸은 서로 독립이라 각자 도착하는 대로 채운다 —
-    // 한쪽을 기다리느라 다른 칸까지 빈 채로 두지 않는다(코덱스 배포 전 점검 P1).
-    setCanvasRecovery({
-      cardId,
-      items: [],
-      detachedLinks: [],
-      detached: [],
-      detachedGens: {},
-      detachedStatus: "ok",
-      loadingItems: true,
-      loadingDetached: true,
-      otherScenes: "idle",
-      detachedNext: null,
-      detachedShown: DETACHED_SHOWN,
-      detachedTotal: 0,
-      detachedExpanding: false,
-      claimingId: null,
-      error: null,
-      query: "",
-      shown: RECOVERY_PAGE,
-    });
-    // 이 열기의 순번. 응답마다 대조해 옛 창의 답이 새 창을 덮지 못하게 한다.
-    const mySeq = ++recoverySeqRef.current;
-    const patch = (next: Partial<NonNullable<typeof canvasRecovery>>) =>
-      setCanvasRecovery((current) =>
-        current?.cardId === cardId && mySeq === recoverySeqRef.current
-          ? { ...current, ...next }
-          : current,
-      );
-
-    // 아래 칸 — 아직 어디에도 안 담긴 것
-    void onCanvasRecoveryCandidates()
-      .then((items) => patch({ items, loadingItems: false }))
-      .catch((error) => patch({ loadingItems: false, error: String(error) }));
-
-    // 위 칸 — 이 캔버스에서 떨어진 것(인덱스를 타는 범위만 먼저)
-    if (!onCanvasCardHistory) {
-      patch({ loadingDetached: false });
-      return;
-    }
-    void fetchDetachedLinks(cardId, "scene", [])
-      .then(async (page) => {
-        if (mySeq !== recoverySeqRef.current) return;
-        const part = await buildDetached(cardId, page.links, DETACHED_SHOWN);
-        patch({
-          detachedLinks: page.links,
-          ...part,
-          detachedNext: page.next ? { scope: "scene", cursor: page.next } : null,
-          loadingDetached: false,
-        });
-      })
-      .catch(() => patch({ loadingDetached: false }));
-  };
-  // 고른 생성물을 이 카드에 붙인다. attach 가 서버 기록을 맡고(경로는 호출부가 정한다),
-  // 여기서는 카드 반영·정렬·undo 전이만 공통으로 처리한다.
-  const attachToCard = async (
-    generation: Generation,
-    attach: (target: { cardId: string }) => Promise<void>,
-  ) => {
-    const target = canvasRecovery;
-    if (!target) return;
-    setCanvasRecovery({ ...target, claimingId: generation.id, error: null });
-    try {
-      await attach({ cardId: target.cardId });
-      // ★반영 직전에 대상 카드를 다시 본다(코덱스 P1). 창을 연 사이 카드가 사라졌을 수도,
-      //  서버 소속 병합이 같은 생성물을 이미 넣었을 수도 있다. 전이 메타에는 **이번에 내가
-      //  실제로 더한 것**만 실어야 한다 — 아니면 undo 가 원래 있던 소속까지 '뺐음'으로 보낸다.
-      const beforeCard = cardsRef.current.find((card) => card.id === target.cardId);
-      if (!beforeCard) {
-        setCanvasRecovery((current) =>
-          current
-            ? { ...current, claimingId: null, error: "대상 카드가 사라졌습니다. 창을 닫고 다시 여세요." }
-            : current,
-        );
-        return;
-      }
-      const addedNow = !variantIds(beforeCard).includes(generation.id);
-      const settled = settleCanvasGenerationAttempt(
-        cardsRef.current,
-        target.cardId,
-        generation.id,
-      );
-      // 복구 후 카드의 결과 목록을 생성 시각순으로 정렬 — 클릭 순서가 아니라 만들어진 순서대로 쌓이게.
-      // created_at 은 UTC "YYYY-MM-DD HH:MM:SS" 고정 형식이라 문자열 비교가 곧 시간 비교다.
-      // 시각을 모르는 id(genData 미로드)는 빈 키 → 정렬 안정성으로 기존 상대 순서 유지(맨 앞).
-      const createdOf = (id: string) =>
-        (id === generation.id ? generation.created_at : ownEntry(genDataRef.current, id)?.created_at) || "";
-      const nextCards = settled.map((card) => {
-        if (card.id !== target.cardId) return card;
-        const sortedIds = [...variantIds(card)].sort((a, b) =>
-          createdOf(a) < createdOf(b) ? -1 : createdOf(a) > createdOf(b) ? 1 : 0,
-        );
-        return { ...card, genIds: sortedIds };
-      });
-      // ★undo 가 실제로 떼어지게 전이 메타를 싣는다. 없으면 되돌려도 ②서버 소속 병합이
-      //  방금 붙인 것을 도로 살려 Ctrl+Z 가 안 먹는다(코덱스 P1).
-      applyCards(nextCards, "persistUser", {
-        addedForward: addedNow
-          ? [{ cardId: target.cardId, genIds: [generation.id] }]
-          : undefined,
-      });
-      setGenData((previous) => ({ ...previous, [generation.id]: generation }));
-      setCanvasRecovery(null);
-      flashMsg("생성물을 이 카드에 붙였습니다.");
-    } catch (error) {
-      setCanvasRecovery((current) =>
-        current
-          ? { ...current, claimingId: null, error: String(error) }
-          : current,
-      );
-    }
-  };
-  // 아래 칸(어디에도 안 담긴 것) — 서버가 요청표·소속표에 이 카드를 처음으로 새겨 준다.
-  const claimCanvasRecovery = (generation: Generation) =>
-    attachToCard(generation, ({ cardId }) => {
-      if (!onCanvasRecoveryClaim) return Promise.resolve();
-      return onCanvasRecoveryClaim(generation.id, scene.id, cardId);
-    });
-  // 위 칸(떨어진 것) — 이미 지난 소속이 있으므로 '사용자 의도'로 되살린다.
-  //  ★요청표의 원래 씬·카드는 건드리지 않는다. 덮어쓰면 그 요청의 재시도가 다른 요청으로
-  //   판정되고, 클라의 pending attempt 검사도 어긋난다(코덱스 P1). 소속만 추가한다.
-  //  ★reviveCardGenerations 가 네트워크보다 먼저 의도를 영속시켜, 그 사이 도착한 병합이
-  //   방금 살린 것을 도로 지우지 않는다. undo 부활이 쓰는 바로 그 경로다.
-  const claimDetachedGeneration = (generation: Generation) =>
-    attachToCard(generation, ({ cardId }) => {
-      reviveCardGenerations(scene.id, cardId, [generation.id]);
-      return Promise.resolve();
-    });
-  // 아래 칸은 목록이 길다 — 검색으로 좁히고 '더 보기'로 늘린다(옛 30개 고정에는 찾을 길이 없었다).
-  const recoveryQuery = (canvasRecovery?.query || "").trim().toLowerCase();
-  const recoveryFiltered = !canvasRecovery
-    ? []
-    : recoveryQuery
-      ? canvasRecovery.items.filter((generation) =>
-          [generation.prompt, generation.display_prompt, recoveryModelName(generation.model), generation.model]
-            .some((text) => (text || "").toLowerCase().includes(recoveryQuery)),
-        )
-      : canvasRecovery.items;
-  const recoveryVisible = canvasRecovery
-    ? recoveryFiltered.slice(0, canvasRecovery.shown)
-    : [];
-  // 두 칸이 같은 모양으로 항목을 그린다 — 라이브러리 리스트 카드 축소판.
-  // 프롬프트 칩이 자체 <button> 이라 겹침(중첩 버튼)이 안 되게 항목은 div+role=button 이다.
-  const renderRecoveryItem = (
-    generation: Generation,
-    badge: ReactNode,
-    pick: (generation: Generation) => void,
-  ) => {
-    const meta = generationListMeta((generation.params || {}) as Record<string, unknown>);
-    const thumb = thumbOf(generation, 256);
-    const busy = !!canvasRecovery?.claimingId;
-    return (
-      <div
-        key={generation.id}
-        className={"scene-recovery-item" + (busy ? " busy" : "")}
-        role="button"
-        tabIndex={busy ? -1 : 0}
-        onClick={() => !busy && void pick(generation)}
-        onKeyDown={(event) => {
-          // 항목 안의 참조칩(단추)에서 올라온 키는 그 단추의 것 — 크게 보려는 Enter 로 그 후보가 카드에 붙었다(조작 규칙 51)
-          if (event.target !== event.currentTarget) return;
-          if (!busy && (event.key === "Enter" || event.key === " ")) {
-            event.preventDefault();
-            void pick(generation);
-          }
-        }}
-      >
-        {thumb ? (
-          <img className="scene-recovery-thumb" src={thumb} alt="" loading="lazy" />
-        ) : (
-          <span className="scene-recovery-thumb scene-recovery-thumb-empty" />
-        )}
-        <span className="scene-recovery-detail">
-          <span className="scene-recovery-model">
-            <ModelIcon /> {recoveryModelName(generation.model) || generation.model || "모델 미상"}
-          </span>
-          <InlinePromptRefs
-            displayPrompt={generation.display_prompt}
-            prompt={generation.prompt || "(프롬프트 없음)"}
-            references={generation.references}
-            onPreview={(target) => onPreview?.(target)}
-            className="scene-recovery-prompt"
-            stopPropagation
-          />
-          <span className="scene-recovery-sub">
-            {badge}
-            {meta.resolution && (
-              <span className="cd-chip">
-                <GemIcon /> {meta.resolution}
-              </span>
-            )}
-            {meta.duration && (
-              <span className="cd-chip">
-                <ClockIcon /> {meta.duration}
-              </span>
-            )}
-            {meta.aspect && (
-              <span className="cd-chip">
-                <FrameIcon /> {meta.aspect}
-              </span>
-            )}
-            <span className="scene-recovery-date">
-              {formatGenerationDateTime(generation.created_at)}
-            </span>
-            {canvasRecovery?.claimingId === generation.id && <i>붙이는 중…</i>}
-          </span>
-        </span>
-      </div>
-    );
-  };
-  // 언마운트(탭 이탈·씬 언마운트) 시 밀린 저장 확정 — 그때 onChange 는 아직 현재 씬을 가리킨다.
-  //  + 새로고침/창닫기(pagehide) 에도 확정 — 디바운스 대기 중 편집 유실 방지.
-  useEffect(() => {
-    const onHide = () => flushPendingRef.current();
-    // 창이 가려질 때(다른 탭·최소화·닫기 시작)도 확정한다. pagehide 는 닫히는 바로 그 순간이라, 저장이
-    // 비동기(IndexedDB)가 된 뒤로는 거기서 시작한 쓰기가 끝난다는 보장이 없다 — 한 박자 먼저 내보낸다.
-    const onVisibility = () => {
-      if (document.visibilityState === "hidden") flushPendingRef.current();
-    };
-    window.addEventListener("pagehide", onHide);
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      window.removeEventListener("pagehide", onHide);
-      document.removeEventListener("visibilitychange", onVisibility);
-      flushPendingRef.current(); // 밀린 저장 확정(스택에 반영) 후
-      endGesture(); // 누른 채 탭을 떠난 끌기의 묶음을 닫는다 — 단계를 쌓았으면 다시 하기를 비운 뒤 보관한다(Codex 3차 리뷰 P2. 끌기 세션은 dispose 로 버려져 끝맺음이 없다)
-      persistSceneHistory(sceneIdRef.current); // 현재 씬 undo 히스토리를 store 에 보관 — 탭 복귀 시 Ctrl+Z 유지
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const { canvasRecovery, setCanvasRecovery, openCanvasRecovery, loadMoreDetached, claimCanvasRecovery, claimDetachedGeneration } = useSceneCardRecovery({
+    sceneId: scene.id, cardsRef, genDataRef, setGenData, commitDocument, flushPendingRef,
+    isDocumentCurrent: () => canvasSession.snapshot() !== undefined && isOperationContextCurrent(comfyOperation),
+    onCanvasRecoveryCandidates, onCanvasRecoveryClaim, onCanvasCardHistory, readLocalScenes, onLoadGenerations,
+  });
   // ── 선택된 단일 생성 카드를 하단 프롬프트에 바인딩(App 에 통지) ──
   // 카드 이동(위치 변경)만으론 다시 안 쏘도록 cardId+레퍼런스 지문으로 변화만 감지.
   const onBindingRef = useRef(onBindingChange);
   onBindingRef.current = onBindingChange;
   // 전역 keydown 핸들러([] deps)가 mount 시점 onSetTags 를 붙잡지 않게 미러(향후 undefined→정의 전환 방어).
-  const onSetTagsRef = useRef(onSetTags);
-  onSetTagsRef.current = onSetTags;
   // onNodePreview(안정 useCallback)가 최신 onPreview 를 참조하게 미러.
   const onPreviewRef = useRef(onPreview);
   onPreviewRef.current = onPreview;
@@ -1624,10 +1086,7 @@ export function SceneBoard({
         // 저장값과 다르면(=연결됐는데 refs 가 비었던 깨진 카드) 한 번 고쳐 저장(undo 대상). 재수집은
         //  idempotent 라 다음 커밋에서 지문이 같아 멈춘다(루프·undo 오염 없음).
         if (sceneRefFingerprint(c.refs || []) !== sceneRefFingerprint(normRefs)) {
-          const nextCards = cards.map((cc) => (cc.id === c.id ? { ...cc, refs: normRefs } : cc));
-          cardsRef.current = nextCards;
-          setCards(nextCards);
-          persist(nextCards, edgesRef.current);
+          commitDocument({ type: "setCardReferences", cardId: c.id, references: normRefs });
         }
         payload = { sceneId: cardsSceneId, cardId: c.id, refs: normRefs };
       }
@@ -1640,155 +1099,12 @@ export function SceneBoard({
   }, [selected, cards, edges]);
   useEffect(() => () => onBindingRef.current?.(null), []); // 언마운트(탭·씬 이탈) → 바인딩 해제
 
-  // 태그 적용 — App 핸들러(서버 저장 + 라이브러리 목록 + facet 갱신)에 위임하고, 씬 genData 도 낙관적으로 패치.
-  //  · 태그는 생성물 레코드에 저장되므로 내 작업/팀 작업/캔버스가 자동으로 같은 값을 공유한다(공용).
-  const applyCardTags = (g: Generation, tags: string[]) => {
-    setGenData((prev) => (prev[g.id] ? { ...prev, [g.id]: { ...prev[g.id], tags } } : prev));
-    onSetTags?.(g, tags);
-  };
-  const applyCardAutoTags = (g: Generation, names: string[]) => {
-    setGenData((prev) => (prev[g.id] ? { ...prev, [g.id]: { ...prev[g.id], auto_tags: names } } : prev));
-    onSetAutoTags?.(g, names);
-  };
-  // #+/#- 워크스페이스 변경 — App 핸들러(서버 저장+라이브러리 갱신)에 위임하고, 성공 시 씬
-  // genData 사본도 낙관 패치해 다시 열었을 때 활성 칩(현재 귀속)이 맞게 보이게 한다.
-  const applyCardWorkspace = onWorkspaceCommand
-    ? async (
-        g: Generation,
-        operation: WorkspaceCommandOperation,
-        workspace: WorkspaceCommandTarget,
-        targets?: Generation[], // 여러 장에 한 번에(결과 창) — 없으면 그 카드 하나
-      ): Promise<boolean> => {
-        const ok = await onWorkspaceCommand(g, operation, workspace, targets);
-        if (ok) {
-          setGenData((prev) => {
-            const next = { ...prev };
-            for (const { id } of targets?.length ? targets : [g]) {
-              const cur = prev[id];
-              if (!cur) continue;
-              if (operation === "assign") next[id] = { ...cur, workspace_id: workspace.id, workspace_name: workspace.name };
-              // remove 는 '그 공간 소속이었을 때만' 해제된다 — 다른 공간 소속이면 서버도 무변경
-              else if (cur.workspace_id === workspace.id) next[id] = { ...cur, workspace_id: null, workspace_name: null };
-            }
-            return next;
-          });
-        }
-        return ok;
-      }
-    : undefined;
-  // '생성 결과' 창 — 여러 장을 고른 채 그중 한 카드에서 내린 워크스페이스 명령은 고른 전체에(편집기가 그렇게 안내한다).
-  //  태그와 같은 규칙: 그 카드가 고른 묶음 안일 때만 묶음 전체, 아니면 그 카드 하나.
-  const variantWorkspace = applyCardWorkspace
-    ? (g: Generation, operation: WorkspaceCommandOperation, workspace: WorkspaceCommandTarget) => {
-        const ids = variantTargetIds();
-        const targets = ids.includes(g.id) && ids.length > 1
-          ? ids.map((id) => ownEntry(genDataRef.current, id)).filter((item): item is Generation => !!item)
-          : undefined;
-        return applyCardWorkspace(g, operation, workspace, targets);
-      }
-    : undefined;
-
-  // '생성 결과' 창 — 여러 장을 고른 채 한 카드에서 태그를 더하거나 빼면 고른 나머지에도 같이(라이브러리 카드와 같은 약속).
-  //  그 카드 자신은 편집기가 직접 바꾸므로 여기서는 나머지만. 카드마다 기존 경로(applyCardTags: 씬 사본 + App 저장)로 넣는다.
-  const bulkVariantTags = (focus: Generation, names: string[], field: "tags" | "auto_tags", mode: "add" | "remove") => {
-    for (const id of variantTargetIds()) {
-      if (id === focus.id) continue;
-      const g = ownEntry(genDataRef.current, id);
-      if (!g) continue;
-      const current = (field === "tags" ? g.tags : g.auto_tags) ?? [];
-      const next = mode === "add"
-        ? [...current, ...names.filter((name) => !current.includes(name))]
-        : current.filter((name) => !names.includes(name));
-      if (next.length === current.length) continue; // 더할 것도 뺄 것도 없다
-      if (field === "tags") applyCardTags(g, next);
-      else applyCardAutoTags(g, next);
-    }
-  };
-  // '생성 결과' 창 카드의 공유·최종 — 카드(라이브러리 부품)가 확인을 받은 뒤 부른다. 씬은 자체 사본을 쓰므로 먼저 뒤집어 보이고,
-  //  App 핸들러(서버 쓰기)가 끝난 뒤 서버 값으로 다시 맞춘다(아래 onNodeSConfirmYes 와 같은 순서).
-  const variantShareAct = (g: Generation, patch: Partial<Generation>, act?: (g: Generation) => void) => {
-    setGenData((prev) => (prev[g.id] ? { ...prev, [g.id]: { ...prev[g.id], ...patch } } : prev));
-    refreshGenerationAfter(g.id, Promise.resolve(act?.(g)));
-  };
-  const variantShare = {
-    onPublish: (g: Generation) => variantShareAct(g, { shared: true }, onPublish),
-    onUnpublish: (g: Generation) => variantShareAct(g, { shared: false, is_held: false }, onUnpublish),
-    onFinalize: (g: Generation) => variantShareAct(g, { is_final: true, shared: true, is_held: false }, onFinalize),
-    onUnfinalize: (g: Generation) => variantShareAct(g, { is_final: false, is_held: false }, onUnfinalize),
-  };
-
-  // ── 생성 결과 카드의 S(공유/최종) 확인 로직 — 히스토리 보드와 동일(단일클릭=공유, 더블=최종) ──
-  const [sConfirm, setSConfirm] = useState<{ id: string; kind: "share" | "final" } | null>(null);
-  const sClick = useClickSeparation(220);
-  const cbRef = useRef({ sClick, canFinalize, onPublish, onUnpublish, onFinalize, onUnfinalize });
-  cbRef.current = { sClick, canFinalize, onPublish, onUnpublish, onFinalize, onUnfinalize };
-  const sConfirmRef = useRef(sConfirm);
-  sConfirmRef.current = sConfirm;
-  const onNodeSClick = useCallback((g: Generation) => {
-    // 공유/해제=본인 것. 추가로 슈퍼바이저는 남의 '공유된' 카드를 해제할 수 있다(B안).
-    const may = cbRef.current.canFinalize ? cbRef.current.canFinalize(g) : true;
-    if (!g.is_mine && !(g.shared && may)) return;
-    cbRef.current.sClick.onClick(() => {
-      if (g.is_final) return; // 최종은 공유 잠금 — 해제는 더블클릭으로만
-      setSConfirm({ id: g.id, kind: "share" });
-    }, g.id);
-  }, []);
-  const onNodeSDouble = useCallback((g: Generation) => {
-    const { sClick, canFinalize, onPublish } = cbRef.current;
-    sClick.onDouble(() => {
-      const may = canFinalize ? canFinalize(g) : true;
-      if (!may) {
-        if (g.is_mine && !g.shared && !g.is_final) onPublish?.(g);
-        return;
-      }
-      if (g.shared || g.is_final) setSConfirm({ id: g.id, kind: "final" });
-      else onPublish?.(g);
-    });
-  }, []);
-  const onNodeSConfirmYes = useCallback((g: Generation) => {
-    const c = sConfirmRef.current;
-    setSConfirm(null);
-    if (!c) return;
-    const { onFinalize, onUnfinalize, onPublish, onUnpublish } = cbRef.current;
-    // 씬은 자체 genData 캐시를 쓰므로 App 핸들러(서버 반영)만으론 카드가 즉시 안 바뀐다.
-    // → 낙관적으로 로컬 캐시를 먼저 뒤집어 즉시 반영하고, 잠시 뒤 서버값으로 재확정한다.
-    const patch = (p: Partial<Generation>) =>
-      setGenData((prev) => (prev[g.id] ? { ...prev, [g.id]: { ...prev[g.id], ...p } } : prev));
-    let act: ((g: Generation) => void) | undefined;
-    if (c.kind === "final") {
-      if (g.is_final) {
-        patch({ is_final: false, is_held: false });
-        act = onUnfinalize;
-      } else {
-        patch({ is_final: true, shared: true, is_held: false }); // 최종 지정은 공유·보류 해제를 함께
-        act = onFinalize;
-      }
-    } else {
-      if (g.shared) {
-        patch({ shared: false, is_held: false });
-        act = onUnpublish;
-      } else {
-        patch({ shared: true });
-        act = onPublish;
-      }
-    }
-    // App 핸들러(서버 쓰기)가 끝난 뒤 재조회해 서버 확정값으로 맞춘다 — 고정 지연이면 느린 네트워크에서
-    // 쓰기 전 옛 값을 덮어써 카드가 되돌아갈 수 있어, 반드시 핸들러 완료 후에 조회한다.
-    const settled = Promise.resolve(act?.(g));
-    refreshGenerationAfter(g.id, settled);
-  }, [refreshGenerationAfter]);
-  const onNodeSConfirmNo = useCallback(() => setSConfirm(null), []);
-  // T(태그) — 이 생성물이 얹힌 캔버스 카드를 찾아 그 카드의 태그 편집 팝업을 연다(# 키와 동일 경로).
-  // 안정 참조(useCallback)라 HistoryBoardNode 의 memo 를 깨지 않는다.
-  const onNodeTag = useCallback((g: Generation) => {
-    const card = cardsRef.current.find(
-      (c) => (c.kind === "generation" || c.kind === "comfy") && variantIds(c).includes(g.id),
-    );
-    if (card) {
-      setTagEditCardId(card.id);
-      setTagEditNodeGenId(g.id);
-    }
-  }, []);
+  const { tagEditCardId, setTagEditCardId, tagEditNodeGenId, setTagEditNodeGenId, applyCardTags, applyCardAutoTags,
+    applyCardWorkspace, variantWorkspace, bulkVariantTags, variantShare, sConfirm, setSConfirm, onNodeSClick, onNodeSDouble,
+    onNodeSConfirmYes, onNodeSConfirmNo, onNodeTag, editSelectedTag } = useSceneCardLibraryActions({
+    cardsRef, selectedRef, genDataRef, setGenData, refreshGenerationAfter, variantTargetIds,
+    onSetTags, onSetAutoTags, onWorkspaceCommand, onPublish, onUnpublish, onFinalize, onUnfinalize, canFinalize,
+  });
   // 폴더 이름표가 붙은 카드의 우클릭 = 그 폴더의 '폴더 보기' 창(Jay 2026-10-15 — 라이브러리 카드의 우클릭과 같은 뜻). 브라우저 메뉴는 노드가 막는다.
   //  위에 뜬 메뉴·창을 닫는 우클릭은 열지 않는다(lib/keyGate 의 contextMenuCovered — 라이브러리 격자와 같은 규칙). 안정 참조라 노드의 memo 를 깨지 않는다.
   const onOpenFolderRef = useRef(onOpenFolder);
@@ -1849,76 +1165,13 @@ export function SceneBoard({
     for (const id of cache.keys()) if (!live.has(id)) cache.delete(id);
   }, [cards]);
 
-  // ── S5 토대: 생성 카드는 자신에게 연결된 레퍼런스 카드들의 레퍼런스를 순서대로 모아 보유한다. ──
-  // (연결/해제 시에만 재계산 — 이후 프롬프트에서 순서를 바꾸면 card.refs 를 직접 갱신한다)
-  // 연결된 레퍼런스/리스트 소스를 "공간 순서(위→아래, 그다음 좌→우)"로 정렬해 모은다 — 직접 연결이든
-  // 리스트 경유든 이미지 순서(→ Seedance <<<image1>>>/<<<image2>>> 위치 매핑)가 항상 같게(리스트도 order→y→x 기준).
-  const gatherTarget = (genId: string, cs: SceneCard[], es: SceneEdge[]): SceneRef[] => {
-    const byId = new Map(cs.map((c) => [c.id, c] as const));
-    const resolved = resolvePortEdges(byId, es); // input(무선)으로 연결한 레퍼런스도 실제 소스로 해석
-    const srcs = resolved
-      .filter((e) => e.to === genId)
-      .map((e) => byId.get(e.from))
-      .filter(
-        (c): c is SceneCard =>
-          !!c &&
-          (c.kind === "reference" || c.kind === "generation" ||
-            c.kind === "list" || c.kind === "render"),
-      )
-      .sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x)); // 위→아래, 같은 높이면 좌→우
-    const out: SceneRef[] = [];
-    const seenGid = new Set<string>(); // 같은 생성물이 직접+리스트/렌더 두 경로로 와도 한 번만(중복 방지)
-    // 카드/리스트가 제공한 참조엔 from_card 표시 — 소스 연결이 바뀌면(reconcileRefs) 함께 사라지게.
-    const tagged = (refs: SceneRef[]) => refs.map((r) => ({ ...r, from_card: true as const }));
-    // 생성물 카드(generation·generation-list·render 안 항목)를 그 asset 으로 SceneRef 화. genData 미로드/comfy 미저장이면 skip.
-    const pushGenRef = (gc?: SceneCard) => {
-      const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
-      const gen = gid ? ownEntry(genDataRef.current, gid) : undefined;
-      const asset = gen?.assets?.[0];
-      if (!gid || !asset || seenGid.has(gid)) return;
-      seenGid.add(gid);
-      const baseName = asset.type === "video" ? "vid" : "img";
-      out.push(
-        ...tagged([
-          {
-            file_path: asset.source_url || asset.file_path,
-            type: asset.type,
-            name: gen?.source_name || `${baseName}-${gid.slice(0, 8)}`,
-            thumb: asset.thumbnail_path || asset.file_path,
-            source_gen_id: gid,
-          },
-        ]),
-      );
-    };
-    for (const src of srcs) {
-      if (src.kind === "reference" && src.refs) out.push(...tagged(src.refs));
-      else if (src.kind === "generation") pushGenRef(src);
-      else if (src.kind === "list") {
-        const li = collectListInputs(src.id, byId, resolved);
-        // 레퍼런스 리스트 → 그 안 레퍼런스 전부(순서대로). 생성물 리스트 → 각 생성물을 asset ref 로.
-        if (li.kind === "reference")
-          for (const cid of li.referenceCardIds) {
-            const rc = byId.get(cid);
-            if (rc?.refs) out.push(...tagged(rc.refs));
-          }
-        else if (li.kind === "generation")
-          for (const cid of li.generationCardIds) pushGenRef(byId.get(cid));
-      } else if (src.kind === "render") {
-        for (const cid of collectRenderGenCardIds(src.id, byId, resolved)) pushGenRef(byId.get(cid));
-      }
-    }
-    return out;
-  };
-  // reconcileRefs(연결 refs 정규화·from_card 규칙)는 순수 계산이라 sceneDerive.ts 로 분리(테스트 대상).
-  const withGenRefs = (cs: SceneCard[], es: SceneEdge[]): SceneCard[] =>
-    cs.map((c) =>
-      c.kind === "generation"
-        ? { ...c, refs: reconcileRefs(c.refs || [], gatherTarget(c.id, cs, es)) }
-        : c,
-    );
+  const gatherTarget = (cardId: string, cards: SceneCard[], edges: SceneEdge[]): SceneRef[] =>
+    gatherCanvasReferences(cardId, cards, edges, genDataRef.current);
 
   // 노드 복사, 캡처 붙여넣기, 에셋/파일 드롭은 전용 훅이 브라우저 이벤트와 업로드 수명주기를 맡는다.
   const { copySelectedNodes, onDragOver, onDrop, pendingImports, dismissPendingImport } = useSceneClipboardDrop({
+    importTarget: { target_project_id: folderSel?.projectId, target_workspace_id: refWorkspaceId || undefined },
+    document: canvasSession,
     frozenRef: switchingRef,
     sceneIdRef,
     cardsRef,
@@ -1926,12 +1179,8 @@ export function SceneBoard({
     selectedRef,
     lastMouseRef,
     scrollRef,
-    setCards,
-    setEdges,
     setSelected,
     toCanvas,
-    reconcileGenerationRefs: withGenRefs,
-    persist,
     onLoadSceneFile,
     onDroppedGenerationFile,
     // 이 PC 설치 폴더에만 있는 새 참조 — 저장된 판정과 무관하게 한 번 묻게 하고 자동 복구를 부른다(같은 파일을 다시
@@ -1961,21 +1210,7 @@ export function SceneBoard({
     () => edges.map((e) => `${e.from}>${e.to}:${e.order ?? ""}:${e.role ?? ""}`).join("|"),
     [edges],
   );
-  const syncGenRefs = () => {
-    const cur = cardsRef.current;
-    const nextCards = withGenRefs(cur, edgesRef.current);
-    const changed = cur.some(
-      (c, i) =>
-        c.kind === "generation" &&
-        sceneRefFingerprint(c.refs || []) !== sceneRefFingerprint(nextCards[i].refs || []),
-    );
-    if (!changed) return;
-    confirmPendingInput(); // 치던 글이 있으면 먼저 한 단계로 — 아래 파생 저장에 섞여 되돌리기에서 빠지지 않게
-    cardsRef.current = nextCards;
-    setCards(nextCards);
-    // 파생 동기화 — undo 스택은 늘리지 않고(구조 변경 아님) lastCommit·부모만 최신화.
-    commitDerivedState({ cards: nextCards, edges: edgesRef.current, groups: groupsRef.current });
-  };
+  const syncGenRefs = () => { commitDocument({ type: "synchronizeReferences" }); };
   useEffect(() => {
     syncGenRefs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1983,10 +1218,7 @@ export function SceneBoard({
   // 되돌리기·다시 하기 뒤에도 맞춘다(조작 규칙 44) — 되살린 스냅샷이 '생성 결과가 오기 전'의 것이면 그 안의 연결 레퍼런스는 그때의
   //  것(비어 있다)인데, 위 effect 의 재료(카드의 결과 id·연결·생성물)는 그대로라 다시 돌지 않는다. 그대로 두면 그 카드를 고르는 순간
   //  선택 쪽의 정규화가 그것을 '사용자 저장'으로 고쳐, 고르기만 했는데 다시 하기가 지워졌다.
-  const undoThenSync = (step: () => void) => {
-    step();
-    syncGenRefs();
-  };
+
 
   // 하단 프롬프트 트레이 편집(직접ref 삭제·순서변경)을 카드에 저장한다. App 이 sceneActionRef 로 호출.
   //  · 연결 상태로 정규화(reconcileRefs+gatherTarget) → 연결된 레퍼런스는 트레이에서 지워도 다시 병합(연결=레퍼런스).
@@ -1994,33 +1226,16 @@ export function SceneBoard({
   //  ★정규화된 refs 를 반환한다 — 트레이가 이 값을 재채택해 자기 UI 를 맞춘다(전체비우기·재사용 등으로
   //   연결 ref 가 트레이에서 빠져도, 정규화가 되살린 값으로 트레이가 되돌아온다. stale tray·유령생성 방지).
   const setCardRefs = (cardId: string, refs: SceneRef[]): SceneRef[] => {
-    const cur = cardsRef.current.find((c) => c.id === cardId);
-    if (!cur || cur.kind !== "generation") return refs;
-    const nextRefs = reconcileRefs(refs, gatherTarget(cardId, cardsRef.current, edgesRef.current));
-    if (sceneRefFingerprint(cur.refs || []) === sceneRefFingerprint(nextRefs)) return nextRefs; // 값 동일 → 저장 생략, 정규화값만 반환
-    const nextCards = cardsRef.current.map((c) => (c.id === cardId ? { ...c, refs: nextRefs } : c));
-    cardsRef.current = nextCards;
-    setCards(nextCards);
-    persist(nextCards, edgesRef.current);
-    return nextRefs;
+    commitDocument({ type: "setCardReferences", cardId, references: refs });
+    return cardsRef.current.find(card => card.id === cardId && card.kind === "generation")?.refs || refs;
   };
 
   // 자산 자동 복구의 답을 **지금 메모리의 카드**에 입힌다(2026-09-29) — 저장본으로 화면을 갈아끼우지 않으므로
   //  디바운스 중인 글·끌고 있는 카드가 그대로 남는다(useSceneCardMove 는 매 프레임 cardsRef 를 쓴다). 예전에는
   //  복구가 저장소만 고치고 몇 초 뒤 화면을 통째로 바꿔, 그 사이 친 글이 지워지거나 옮긴 카드가 옛 참조를 도로
   //  저장했다. App 이 sceneActionRef 로, 이 캔버스가 활성 씬을 보고 있을 때만 부른다.
-  const applyAssetRelink = (found: Map<string, RelinkTarget>): number => {
-    flushPending(); // 밀린 입력을 undo 한 단계로 먼저 확정 — 아래 파생 저장에 섞여 undo 에서 빠지지 않게
-    const { cards: nextCards, changed } = relinkCards(cardsRef.current, refWorkspaceId, found);
-    if (!changed) return 0;
-    cardsRef.current = nextCards;
-    setCards(nextCards);
-    // 복구는 사용자 편집이 아니다 — undo 단계를 만들지 않고 저장·부모만 최신화(연결 refs 재동기화와 같은 관문).
-    commitDerivedState({ cards: nextCards, edges: edgesRef.current, groups: groupsRef.current });
-    // 과거 스냅샷에도 입힌다 — 안 그러면 Ctrl+Z 가 옛 참조를 되살린다.
-    propagateAssetRelinkToHistory(refWorkspaceId, found);
-    return changed;
-  };
+  const applyAssetRelink = (found: Map<string, RelinkTarget>): number =>
+    canvasSession.relinkAssets(refWorkspaceId, found);
 
   // '레퍼런스 찾기' 단추 — 도는 중에 다시 누르면 '대기 중단'(기다리기만 멈춘다, 서버는 하던 확인을 끝까지 한다).
   const onFindClick = () => {
@@ -2065,7 +1280,6 @@ export function SceneBoard({
     abortDrag();
     releaseSceneDragPointer(); // 버린 끌기가 보드에 쥐여 둔 포인터도 놓는다 — abort 는 끌기의 끝맺음(콜백)을 부르지 않는다
     layerMoveRef.current?.drop(); // 버린 끌기가 캔버스 층에만 밀어 둔 이동량도 버린다 — 새 씬이 밀려 보이지 않게
-    endGesture(); // 버린 끌기의 되돌리기 묶음도 닫는다
     scrollRef.current?.classList.remove("dragging");
     scrollRef.current?.removeAttribute("data-panning");
     setMarquee(null);
@@ -2100,53 +1314,17 @@ export function SceneBoard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scene.id]);
   const onResizeDown = useSceneCardResize({
-    cardsRef,
-    edgesRef,
-    zoomRef,
-    setCards,
-    persist,
-    beginDrag,
-    beginGesture,
-    // 아래에서 정의된다(끌기 훅들과 같이 쓴다) — 누를 때 불리므로 그때는 이미 있다
-    endGesture: () => endMoveGesture(),
-    hold: () => holdMove(),
-    defaultSize: { w: CARD_W, h: CARD_H },
-    minSize: { w: CARD_MIN_W, h: CARD_MIN_H },
+    cardsRef, zoomRef, gestures: canvasSession.gestures, beginDrag,
+    onEnd: () => endMoveGesture(), hold: () => holdMove(),
+    defaultSize: { w: CARD_W, h: CARD_H }, minSize: { w: CARD_MIN_W, h: CARD_MIN_H },
   });
 
   // ── S4: 출력 포트 드래그 → 입력 포트에 놓으면 연결 · 엣지 클릭으로 해제 ──
   // 여러 연결을 한 번에 추가(중복·자기연결 제외). 다중 레퍼런스 일괄 연결·c 자동연결에서 재사용.
-  const addEdges = (pairs: Array<[string, string]>) => {
-    const seen = new Set(edgesRef.current.map((e) => e.from + ">" + e.to));
-    const additions: SceneEdge[] = [];
-    for (const [from, to] of pairs) {
-      if (from === to) continue;
-      const k = from + ">" + to;
-      if (seen.has(k)) continue;
-      seen.add(k);
-      additions.push({ id: uid(), from, to });
-    }
-    if (!additions.length) return;
-    // list·render 로 가는 새 연결엔 연결 순서(order)를 지금 매긴다 — 리스트 항목 순서의 기준(카드 위치가 아니라).
-    const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
-    const ne = [...edgesRef.current, ...withCollectorOrder(edgesRef.current, additions, byId)];
-    const nc = withGenRefs(cardsRef.current, ne);
-    setEdges(ne);
-    setCards(nc);
-    persist(nc, ne);
-  };
+  const addEdges = (pairs: Array<[string, string]>) => { commitDocument({ type: "connectCards", pairs }); };
   const removeEdge = (id: string) => removeEdges([id]);
   // 여러 연결을 한 번에 끊기(가위 드래그) — 실제로 사라지는 게 있을 때만 반영/저장.
-  const removeEdges = (ids: string[]) => {
-    if (!ids.length) return;
-    const idset = new Set(ids);
-    const ne = edgesRef.current.filter((e) => !idset.has(e.id));
-    if (ne.length === edgesRef.current.length) return;
-    const nc = withGenRefs(cardsRef.current, ne);
-    setEdges(ne);
-    setCards(nc);
-    persist(nc, ne);
-  };
+  const removeEdges = (ids: string[]) => { commitDocument({ type: "disconnectEdges", edgeIds: ids }); };
 
   const onOutPortDown = (e: React.MouseEvent, cardId: string) => {
     e.stopPropagation();
@@ -2202,40 +1380,8 @@ export function SceneBoard({
   };
   // 새 노드 한 개 생성(연결 없음) — text/model/list/generation. 선택 후 저장.
   const createNode = (kind: SceneCardKind, pos?: { x: number; y: number }) => {
-    const at = pos ?? cursorSpawn();
-    const base = { id: uid(), x: at.x, y: at.y };
-    const card: SceneCard =
-      kind === "text"
-        ? { ...base, kind: "text", text: "" }
-        : kind === "set"
-          ? { ...base, kind: "set", w: 160, h: 136, setCfg: { tagsText: "" } } // 폴더·태그 두 칸이 다 보이는 크기(Jay 2026-09-09)
-        : kind === "model"
-          ? { ...base, kind: "model" }
-          : kind === "list"
-            ? { ...base, kind: "list" }
-            : kind === "view"
-              ? { ...base, kind: "view" }
-              : kind === "output"
-                ? { ...base, kind: "output", text: "" }
-                : kind === "input"
-                  ? { ...base, kind: "input" }
-                  : kind === "head"
-                    ? { ...base, kind: "head", text: "제목", color: "#e8c341", fontSize: 32 }
-                    : kind === "render"
-                      ? { ...base, kind: "render" }
-                      : kind === "comfy"
-                        ? {
-                            ...base,
-                            kind: "comfy",
-                            w: 210,
-                            h: 190,
-                            comfyCfg: { status: "idle", paramExposed: [], paramValues: {}, params: [] },
-                          }
-                        : { ...base, kind: "generation", status: "empty", refs: [], genId: null };
-    const nextCards = [...cardsRef.current, card];
-    setCards(nextCards);
-    setSelected(new Set([card.id]));
-    persist(nextCards, edgesRef.current);
+    const id = uid();
+    if (commitDocument({ type: "createNode", id, kind, position: pos ?? cursorSpawn() })) setSelected(new Set([id]));
   };
   // 'New'(빈 생성 카드) 생성 — 선택된 카드(들)에서 새 카드로 자동 연결(부적합 소스는 제외). 아무것도
   // 선택 안 했으면 단독. pos 있으면 그 위치(피커), 없으면 선택 오른쪽/마우스 위치에.
@@ -2256,114 +1402,39 @@ export function SceneBoard({
       nx = sp.x;
       ny = sp.y;
     }
-    const empty: SceneCard = {
-      id: uid(),
-      kind: "generation",
-      x: nx,
-      y: ny,
-      status: "empty",
-      refs: [],
-      genId: null,
-    };
-    const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
-    const newEdges: SceneEdge[] = srcCards
-      .filter((c) => canConnect(c, empty, byId, edgesRef.current)) // view 등 소스로 부적절한 카드 제외
-      .map((c) => ({ id: uid(), from: c.id, to: empty.id }));
-    const nextEdges = [...edgesRef.current, ...newEdges];
-    const nextCards = withGenRefs([...cardsRef.current, empty], nextEdges);
-    setCards(nextCards);
-    setEdges(nextEdges);
-    setSelected(new Set([empty.id]));
-    persist(nextCards, nextEdges);
+    const id = uid();
+    if (commitDocument({ type: "createConnectedGeneration", id, position: { x: nx, y: ny }, sourceIds: srcCards.map(card => card.id) }))
+      setSelected(new Set([id]));
   };
   // 선택 노드(2개 이상)를 키로 연결 — 포트 드래그 대신. 공간 순서(왼→오른쪽,위→아래)로 인접쌍을
   // canConnect 허용 방향으로 잇는다(a→b 불가면 b→a 시도). 이미 있는 엣지·불가쌍은 건너뛴다.
-  const connectSelected = () => {
-    const newEdges = buildSelectedConnections(
-      cardsRef.current,
-      edgesRef.current,
-      selectedRef.current,
-      uid,
-    );
-    if (!newEdges.length) return;
-    const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
-    const nextEdges = [...edgesRef.current, ...withCollectorOrder(edgesRef.current, newEdges, byId)];
-    const nextCards = withGenRefs(cardsRef.current, nextEdges); // 새 연결로 생성카드 refs 재계산
-    setCards(nextCards);
-    setEdges(nextEdges);
-    persist(nextCards, nextEdges);
-  };
+  const connectSelected = () => { commitDocument({ type: "connectSelectedCards", cardIds: [...selectedRef.current] }); };
   // text 노드 내용 편집 저장(디바운스 없이 즉시 — 로컬 저장이라 가벼움). output 노드의 채널 이름도 text 필드 공용.
   const setNodeText = (cardId: string, text: string) => {
-    const nextCards = cardsRef.current.map((c) => (c.id === cardId ? { ...c, text } : c));
-    cardsRef.current = nextCards; // 즉시 반영 — 생성/flush 가 최신 텍스트를 읽게
-    setCards(nextCards);
-    scheduleInputPersist(); // 저장은 디바운스(blur·언마운트·씬전환 시 flush)
+    commitDocument({ type: "editNodeText", cardId, text });
   };
   const setNodeSetFolder = (cardId: string, folder?: SceneSetFolder) => {
-    const nextCards = cardsRef.current.map((c) =>
-      c.id === cardId
-        ? { ...c, setCfg: { ...(c.setCfg || {}), folder } }
-        : c,
-    );
-    applyCards(nextCards, "persistUser");
+    commitDocument({ type: "setSetFolder", cardId, folder });
   };
   const setNodeSetTagsText = (cardId: string, tagsText: string) => {
-    const nextCards = cardsRef.current.map((c) =>
-      c.id === cardId
-        ? { ...c, setCfg: { ...(c.setCfg || {}), tagsText } }
-        : c,
-    );
-    applyCards(nextCards, "deferUser");
+    commitDocument({ type: "editSetTags", cardId, tagsText });
   };
   // head 노드 글씨 색 저장.
   const setNodeColor = (cardId: string, color: string) => {
-    const nextCards = cardsRef.current.map((c) => (c.id === cardId ? { ...c, color } : c));
-    cardsRef.current = nextCards; // 형제(setNodeText·setCardBatch)와 같이 즉시 반영 — 같은 틱의 다음 변경이 이 값을 잃지 않게
-    setCards(nextCards);
-    persist(nextCards, edgesRef.current);
+    commitDocument({ type: "setNodeColor", cardId, color });
   };
   // head 노드 글씨 크기 저장(12~200px 클램프). 박스는 측정으로 자동 맞춰진다.
   const setNodeFontSize = (cardId: string, fontSize: number) => {
-    const fs = Math.max(12, Math.min(200, Math.round(fontSize)));
-    const nextCards = cardsRef.current.map((c) => (c.id === cardId ? { ...c, fontSize: fs } : c));
-    cardsRef.current = nextCards;
-    setCards(nextCards);
-    persist(nextCards, edgesRef.current);
+    commitDocument({ type: "setNodeFontSize", cardId, fontSize });
   };
-  // comfy 노드: comfyCfg 부분 병합 저장(모달 저장·실행 상태 갱신·파라미터 값 변경 공용).
-  //  opts.undo=false = 실행상태(running/done/failed)·재파싱 등 파생 저장 → undo 스택에 안 쌓는다(사용자 편집만 undo).
-  const patchComfyCfg = (
-    cardId: string,
-    patch: Partial<SceneComfyCfg>,
-    opts?: { undo?: boolean; defer?: boolean }, // defer=true = 파라미터 입력 → 저장 디바운스(blur/실행 시 flush)
-  ) => {
-    const nextCards = cardsRef.current.map((c) =>
-      c.id === cardId && c.kind === "comfy"
-        ? { ...c, comfyCfg: { ...(c.comfyCfg || {}), ...patch } }
-        : c,
-    );
-    // 순차 comfy 실행 시 다음 comfy 가 최신 출력을 보게(체인 정확성) — applyCards 가 cardsRef 즉시 갱신.
-    const mode: ApplyCardsMode = opts?.defer
-      ? "deferUser"
-      : opts?.undo === false
-        ? "persistDerived"
-        : "persistUser";
-    applyCards(nextCards, mode);
-  };
+
   // 노드별 배치수 설정 — 카드에 저장해 노드마다 각자 관리(1~4). 씬 저장으로 유지.
   const setCardBatch = (cardId: string, n: number) => {
-    const b = Math.max(1, Math.min(4, n));
-    const nextCards = cardsRef.current.map((c) => (c.id === cardId ? { ...c, batchCount: b } : c));
-    cardsRef.current = nextCards;
-    setCards(nextCards);
-    persist(nextCards, edgesRef.current);
+    commitDocument({ type: "setCardBatch", cardId, count: n });
   };
   // comfy 노드: 노출 파라미터 1개 값 변경(카드 인라인 컨트롤에서).
   const setComfyParam = (cardId: string, key: string, value: string | number | boolean) => {
-    const card = cardsRef.current.find((c) => c.id === cardId);
-    const values = { ...(card?.comfyCfg?.paramValues || {}), [key]: value };
-    patchComfyCfg(cardId, { paramValues: values }, { defer: true }); // 파라미터 입력 저장 디바운스(blur/실행 시 flush)
+    commitDocument({ type: "editComfyParam", cardId, key, value });
   };
   // comfy 노드에 새 API(워크플로우 JSON)를 넣는다 — 빈 노드 최초 로드·기존 노드 교체 공용.
   //  파싱 성공해야 반영한다(실패 시 기존 유지). 다른 워크플로우로 바뀌므로 노출 파라미터·값·결과는 초기화한다.
@@ -2398,45 +1469,27 @@ export function SceneBoard({
     setComfyBusy(set);
   };
   const applyComfyApi = async (cardId: string, file: File): Promise<boolean> => {
-    const sid = sceneIdRef.current; // 파싱 대기 중 씬 전환되면 다른 씬에 반영 안 함
+    const sid = sceneIdRef.current;
+    const target = canvasTargetRef.current;
+    const documentSession = canvasSession;
+    const commit = commitDocument;
     const seq = ++comfyLoads.next;
     const key = comfyLoadKey(sid, cardId);
-    const stale = () => sceneIdRef.current !== sid || (comfyLoads.applied.get(key) ?? 0) > seq;
+    const stale = () => canvasTargetRef.current !== target || sceneIdRef.current !== sid
+      || !isOperationContextCurrent(comfyOperation)
+      || !documentSession.snapshot()?.cards.some(card => card.id === cardId && card.kind === "comfy")
+      || (comfyLoads.applied.get(key) ?? 0) > seq;
+    if (stale()) return false;
     beginComfyBusy(key);
     try {
       const content = await file.text();
       if (stale()) return false;
       const res = await comfyApi.parse(content, []);
       if (stale()) return false;
+      if (!commit({ type: "replaceComfyWorkflow", cardId, workflow: {
+        name: file.name.replace(/\.json$/i, ""), content, nodeCount: res.node_count,
+      } })) return false;
       comfyLoads.applied.set(key, seq);
-      const name = file.name.replace(/\.json$/i, "");
-      // 다른 워크플로우로 교체 → 노출·값·결과뿐 아니라 카드에 쌓인 생성물(대표 genId·목록 genIds)도 초기화한다.
-      // (안 지우면 옛 워크플로 결과가 대표·▤배지·렌더 입력으로 남아 새 워크플로에 잘못 딸려간다.)
-      // 사용자가 실제로 비운 것이므로 DB 소속에도 '뺐음'을 남긴다 — 안 남기면 다른 브라우저가 되살린다.
-      const removedForward = forgetCardGenerations(sid, cardId);
-      const nextCards = cardsRef.current.map((c) =>
-        c.id === cardId && c.kind === "comfy"
-          ? {
-              ...c,
-              genId: null,
-              genIds: [],
-              comfyCfg: {
-                ...(c.comfyCfg || {}),
-                name,
-                content,
-                nodeCount: res.node_count,
-                paramExposed: [],
-                paramValues: {},
-                params: [],
-                outputs: [],
-                output: null,
-                status: "idle" as const,
-                error: null,
-              },
-            }
-          : c,
-      );
-      applyCards(nextCards, "persistUser", { removedForward });
       return true;
     } catch (reason) {
       // 읽기·파싱 실패 — 기존 워크플로우 그대로 둔다(교체 취소). 그 사실을 알린다(조작 규칙 41): 전엔 아무 반응이 없어, 새 파일이
@@ -2461,20 +1514,24 @@ export function SceneBoard({
   };
   // comfy 노드: 현재 워크플로우를 다시 파싱(노드수 갱신 + 실행상태/에러 리셋 → 재실행 준비). 내용·노출은 유지.
   const refreshComfy = async (cardId: string) => {
-    const content = cardsRef.current.find((c) => c.id === cardId)?.comfyCfg?.content;
+    if (!isOperationContextCurrent(comfyOperation)) return;
+    const documentSession = canvasSession;
+    const content = documentSession.snapshot()?.cards.find((c) => c.id === cardId)?.comfyCfg?.content;
     if (!content) return;
     const sid = sceneIdRef.current;
+    const target = canvasTargetRef.current;
+    const commit = commitDocument;
     const key = comfyLoadKey(sid, cardId);
     beginComfyBusy(key);
     try {
       const res = await comfyApi.parse(content, []);
-      if (sceneIdRef.current !== sid) return;
+      if (canvasTargetRef.current !== target || sceneIdRef.current !== sid || !documentSession.snapshot() || !isOperationContextCurrent(comfyOperation)) return;
       // 다시 읽는 사이에 다른 워크플로로 바뀌었으면 버린다 — 옛 워크플로의 노드 수를 새것에 적고 그 상태를 지웠다(조작 규칙 39)
       if (cardsRef.current.find((c) => c.id === cardId)?.comfyCfg?.content !== content) return;
-      patchComfyCfg(cardId, { nodeCount: res.node_count, status: "idle", error: null }, { undo: false }); // 재파싱=파생, undo 제외
+      commit({ type: "refreshComfyMetadata", cardId, expectedContent: content, nodeCount: res.node_count });
     } catch (reason) {
       // 파싱 실패 — 카드는 그대로 둔다. 눌렀는데 아무 일도 없는 것처럼 보이지 않게 알린다(이 씬·이 워크플로를 아직 보고 있을 때만)
-      if (sceneIdRef.current === sid && cardsRef.current.find((c) => c.id === cardId)?.comfyCfg?.content === content) {
+      if (canvasTargetRef.current === target && sceneIdRef.current === sid && isOperationContextCurrent(comfyOperation) && documentSession.snapshot()?.cards.find((c) => c.id === cardId)?.comfyCfg?.content === content) {
         flashMsg(`워크플로를 다시 읽지 못했습니다. ${reason instanceof Error ? reason.message : ""}`.trim());
       }
     } finally {
@@ -2487,147 +1544,9 @@ export function SceneBoard({
   //  · 실행이 끝나 출력이 생기면 자동 호출(silent). 텍스트 출력은 서버가 제외.
   //  · 프롬프트=노출 text 파라미터 값(연결이면 연결텍스트), 없으면 워크플로명.
   //  · 저장 후 outputs[i].saved_generation_id 마킹(표시용). 멱등은 서버가 file_path 로 판정(재실행마다 새 파일=새 항목).
-  const saveComfyToLibrary = async (
-    cardId: string,
-    opts?: SaveComfyOptions,
-  ): Promise<SaveComfyResult> => {
-    const silent = opts?.silent;
-    const sid = sceneIdRef.current; // 저장 대기 중 씬 전환 시 다른 씬 카드에 반영 안 함
-    const card = cardsRef.current.find((c) => c.id === cardId);
-    const cfg = card?.comfyCfg;
-    const runContent = opts?.configSnapshot?.content ?? cfg?.content; // 저장 시작 시점 워크플로 — 응답 도착 전 교체되면 카드 상태는 안 건드린다
-    const configSnapshot =
-      opts?.configSnapshot ||
-      (runContent
-        ? {
-            name: cfg?.name,
-            content: runContent,
-            paramValues: { ...(cfg?.paramValues || {}) },
-            params: cfg?.params?.map((param) => ({
-              ...param,
-              choices: param.choices ? [...param.choices] : param.choices,
-            })),
-          }
-        : undefined);
-    const outs = (opts?.outputs ?? cfg?.outputs ?? []).filter(
-      (o) => (o.kind === "image" || o.kind === "video") && o.url,
-    );
-    if (!outs.length) {
-      if (!silent) flashMsg("저장할 이미지·영상 출력이 없습니다");
-      return { saved: 0, failed: 0 };
-    }
-    const map = new Map(cardsRef.current.map((c) => [c.id, c] as const));
-    // 프롬프트·입력 메타 수집은 '최선 노력' — 여기서 예외가 나도(엣지 순회·malformed 워크플로 등) 출력물 저장은
-    //  진행돼야 하고, 렌더 배치 실행(runPlanComfyCopies)이 중단되면 안 된다(silent 자동저장 규약). 이전엔 이 구간이
-    //  try 밖이라 의존이 섞인 복잡한 보드에서 예외 1개가 렌더 전체를 죽여 '노드는 완료·저장 실패·생성 미시작'을 유발했다.
-    //  실패 시 프롬프트=워크플로명, 입력=빈 목록으로 강등한다.
-    let promptText = configSnapshot?.name || "Comfy 출력";
-    let inputs: { url: string; type: "image" | "video"; name: string; source_gen_id: string | null }[] = [];
-    const executedParamValues =
-      opts?.inputSnapshot?.executedParamValues ?? configSnapshot?.paramValues ?? {};
-    try {
-      if (opts?.inputSnapshot) {
-        // 자동 저장은 '현재 그래프'를 다시 읽지 않고 실제 API에 들어간 텍스트·미디어를 사용한다.
-        // 실행 직후 연결을 바꿔도 옛 출력의 출처와 seed가 새 입력으로 잘못 기록되지 않는다.
-        promptText =
-          opts.inputSnapshot.textParamKeys
-            .map((key) => String(executedParamValues[key] ?? ""))
-            .filter((text) => text.trim())
-            .join("\n") || configSnapshot?.name || "Comfy 출력";
-        inputs = opts.inputSnapshot.media.map((item) => ({
-          url: item.url,
-          type: item.type,
-          name: item.name,
-          source_gen_id: item.source_gen_id ?? null,
-        }));
-      } else {
-        // 수동 저장은 현재 카드 기준으로 메타를 수집한다.
-        const driveKeys = [...comfyTextDriveKeys(cfg?.params, cfg?.content)];
-        const connected = hasTextConnection(cardId, map, edgesRef.current, refParents);
-        const linked = connected ? incomingTextOf(cardId, map, edgesRef.current) : "";
-        promptText =
-          driveKeys
-            .map((key) => (connected ? linked : String(executedParamValues[key] ?? "")))
-            .filter((text) => text.trim())
-            .join("\n") || configSnapshot?.name || "Comfy 출력";
-        inputs = gatherComfyMedia(cardId, cardsRef.current, edgesRef.current, genDataRef.current).map((item) => ({
-          url: item.url,
-          type: item.type,
-          name: item.name,
-          source_gen_id: item.source_gen_id ?? null, // 생성물 입력이면 계보 연결(서버가 열람권한 검증)
-        }));
-      }
-    } catch (e) {
-      console.warn("comfy 저장 메타(프롬프트/입력) 수집 실패 — 출력물만 저장:", e);
-    }
-    try {
-      const res = await comfyApi.saveToLibrary({
-        outputs: outs.map((o) => ({ url: o.url as string, kind: o.kind })),
-        name: configSnapshot?.name,
-        prompt: promptText,
-        // 파라미터값(노드|필드) + 생성 정보용 표준 메타(model·비율·해상도)를 함께 저장.
-        params: {
-          ...executedParamValues,
-          ...comfyGenMeta(configSnapshot?.content, configSnapshot?.params, executedParamValues),
-        },
-        inputs,
-        elapsed_seconds: opts?.elapsedSeconds ?? null,
-      });
-      if (sceneIdRef.current !== sid) return { saved: res.saved.length, failed: 0 }; // 저장 후 씬 전환됨 → 카드 상태 반영 생략(라이브러리엔 이미 저장됨)
-      if (opts?.isInputCurrent && !opts.isInputCurrent()) return { saved: res.saved.length, failed: 0 };
-      const byUrl = new Map(res.saved.map((s) => [s.url, s.generation_id]));
-      const savedIds = res.saved.map((s) => s.generation_id);
-      if (
-        configSnapshot &&
-        !isSceneComfyConfigCurrent(cardsRef.current, cardId, configSnapshot)
-      ) {
-        return { saved: res.saved.length, failed: 0 };
-      }
-      // ★현재 카드 기준으로 패치 — 저장 대기 중 재실행(outputs 교체)되면 늦게 온 응답이
-      //  옛 outputs 로 되돌리지 않게(레이스 방지). url 이 여전히 있는 것만 마킹.
-      //  + 이 노드가 만든 생성물 id 를 card.genIds 에 누적 → 생성카드처럼 관리·렌더 가능(kind='comfy' 유지).
-      const next = cardsRef.current.map((c) => {
-        if (c.id !== cardId || c.kind !== "comfy") return c;
-        // 저장 진행 중 워크플로가 교체됐으면(content 변경) 옛 결과를 새 워크플로 카드에 붙이지 않는다.
-        //  (라이브러리에는 이미 저장됨 — 여기선 카드의 genIds/genId/outputs 만 안 건드림.)
-        if (c.comfyCfg?.content !== runContent) return c;
-        const outputsToLink = opts?.outputs ?? c.comfyCfg?.outputs ?? [];
-        const linkedOutputs = outputsToLink.map((o) =>
-          o.url && byUrl.has(o.url) ? { ...o, saved_generation_id: byUrl.get(o.url) } : o,
-        );
-        const genIds = [...(c.genIds || [])];
-        for (const id of savedIds) if (id && !genIds.includes(id)) genIds.push(id); // 오래된→최신
-        // 대표(현재 표시)는 방금 만든 최신 결과로 갱신 — 생성하면 카드가 새 결과를 보여준다.
-        // (사용자가 팝업에서 다른 걸 대표로 고르면 setCardVariant 가 덮고, 다음 실행 때 다시 최신으로.)
-        const newestSaved = savedIds[savedIds.length - 1];
-        return {
-          ...c,
-          genIds,
-          genId: newestSaved || c.genId || genIds[genIds.length - 1] || null,
-          comfyCfg: { ...(c.comfyCfg || {}), outputs: linkedOutputs },
-        };
-      });
-      applyCards(next, "persistDerived"); // 저장된 gid 반영=파생, undo 제외(치던 글이 있으면 그것부터 확정한다)
-      const savedCard = next.find((c) => c.id === cardId);
-      if (savedCard) propagateGenIdsToHistory(cardId, savedCard); // 누적된 결과를 undo/redo 히스토리에도 반영(#3)
-      // 방금 만든 결과를 canvas glow 로 강조(#1b) — comfy 결과는 저장 즉시 done 이라 active baseline 을
-      //  먼저 심고 done 으로 전환시켜야 glow 규칙(active→done)이 발화한다(generation 카드와 동일 강조).
-      if (savedIds.length) {
-        seedPending(savedIds);
-        for (const id of savedIds) observeStatus(id, "done");
-      }
-      if (!silent) {
-        const created = res.saved.filter((s) => !s.existed).length;
-        flashMsg(created ? `${created}개 내 작업에 저장했습니다` : "이미 내 작업에 저장돼 있습니다");
-      }
-      return { saved: res.saved.length, failed: 0 };
-    } catch (e) {
-      // 자동(silent) 저장 실패는 조용히 로그만 — 매 실행 에러 토스트로 도배하지 않는다.
-      if (silent) console.warn("comfy 출력 자동 저장 실패:", e);
-      else flashMsg(e instanceof Error ? e.message : "내 작업 저장 실패");
-      return { saved: 0, failed: outs.length };
-    }
-  };
+  const saveComfyToLibrary = (cardId: string, opts?: SaveComfyOptions): Promise<SaveComfyResult> =>
+    saveSceneComfyToLibrary(cardId, opts, { sceneIdRef, cardsRef, edgesRef, genDataRef, refParents, commitDocument,
+      isOperationCurrent: () => isOperationContextCurrent(comfyOperation) });
   // Comfy 실행의 중복 방지·배치 정산·씬 전환 중단·실행 표시를 전용 훅에 위임한다.
   const {
     comfyWaitingIds,
@@ -2636,14 +1555,15 @@ export function SceneBoard({
     orchestrateGenerate,
     orchestrateRender,
   } = useSceneComfyExecution({
+    projectId: folderSel?.projectId,
+    isDocumentCurrent: () => canvasSession.snapshot() !== undefined && isOperationContextCurrent(comfyOperation),
     sceneIdRef,
     cardsRef,
     edgesRef,
     genDataRef,
     refParents,
-    setCards,
     flushPending,
-    patchComfyCfg,
+    commitDocument,
     saveComfyToLibrary,
     onGenerateCard,
     onRenderCards,
@@ -2663,68 +1583,14 @@ export function SceneBoard({
         ? [...rs.cids].filter((c) => exists.has(c))
         : [genCardId]
     );
-    const nextCards = cardsRef.current.map((c) => {
-      if (c.id !== renderId) return c;
-      const un = new Set(c.unchecked || []);
-      const willUncheck = !un.has(genCardId); // 클릭한 행의 새 상태로 통일
-      for (const t of targets) willUncheck ? un.add(t) : un.delete(t);
-      return { ...c, unchecked: [...un] };
-    });
-    setCards(nextCards);
-    persist(nextCards, edgesRef.current);
+    commitDocument({ type: "toggleRenderItems", renderId, clickedId: genCardId, targetIds: targets });
   };
   // input 노드가 참조할 output(채널) 선택 저장. channel = output 카드 id(빈 문자열이면 미선택).
   // ★채널이 바뀌면 무선으로 끌어오던 레퍼런스가 달라지므로 생성카드 refs 를 다시 계산해야 한다(안 하면 stale).
-  const setNodeChannel = (cardId: string, channel: string) => {
-    const patched = cardsRef.current.map((c) =>
-      c.id === cardId ? { ...c, channel: channel || undefined } : c,
-    );
-    const nextCards = withGenRefs(patched, edgesRef.current);
-    setCards(nextCards);
-    persist(nextCards, edgesRef.current);
-  };
+  const setNodeChannel = (cardId: string, channel: string) => { commitDocument({ type: "setInputChannel", cardId, channel }); };
   // 리스트 노드 항목 순서 변경. 직접 입력은 edge.order 로, 중첩/무선 레퍼런스는 연결선 하나 안에
   // 여러 항목이 있으므로 대상 list 카드의 listOrder 로 저장한다(원본 리스트 순서는 건드리지 않음).
-  const commitListOrder = (listId: string, order: string[]) => {
-    const currentCards = cardsRef.current;
-    const byId = new Map(currentCards.map((c) => [c.id, c] as const));
-    const resolved = resolvePortEdges(byId, edgesRef.current);
-    const isReferenceList = collectListInputs(listId, byId, resolved).kind === "reference";
-    const nextEdges = isReferenceList
-      ? edgesRef.current
-      : edgesRef.current.map((ed) => {
-          if (ed.to !== listId) return ed;
-          const idx = order.indexOf(ed.from);
-          return idx >= 0 ? { ...ed, order: idx } : ed;
-        });
-    const orderedCards = isReferenceList
-      ? currentCards.map((c) => (c.id === listId ? { ...c, listOrder: order } : c))
-      : currentCards;
-    // 순서 변경 후 refs 멤버십 재계산(추가/제거 정합).
-    let nextCards = withGenRefs(orderedCards, nextEdges);
-    // ★레퍼런스 리스트가 생성카드에 연결돼 있으면 '리스트 순서 우선' — 그 카드 refs 를 리스트(gatherTarget) 순서로 재배열.
-    //   (@·드래그로 넣은 참조 source_gen_id 는 뒤에 보존.) 사용자 결정: 연결 뒤 재정렬도 리스트 순서가 이긴다.
-    if (isReferenceList) {
-      const nextById = new Map(nextCards.map((c) => [c.id, c] as const));
-      const nextResolved = resolvePortEdges(nextById, nextEdges);
-      const genTargets = new Set(
-        nextResolved
-          .filter((e) => e.from === listId && nextById.get(e.to)?.kind === "generation")
-          .map((e) => e.to),
-      );
-      if (genTargets.size)
-        nextCards = nextCards.map((c) => {
-          if (c.kind !== "generation" || !genTargets.has(c.id)) return c;
-          const ordered = gatherTarget(c.id, nextCards, nextEdges); // listOrder가 반영된 레퍼런스들
-          const okey = new Set(ordered.map((r) => r.file_path + "#" + (r.source_gen_id || "")));
-          const extras = (c.refs || []).filter((r) => !okey.has(r.file_path + "#" + (r.source_gen_id || "")));
-          return { ...c, refs: [...ordered, ...extras] };
-        });
-    }
-    setEdges(nextEdges);
-    setCards(nextCards);
-    persist(nextCards, nextEdges);
-  };
+  const commitListOrder = (listId: string, order: string[]) => { commitDocument({ type: "orderListItems", listId, orderedIds: order }); };
   // fromCardId 를 insertIndex(원래 배열 기준 삽입 위치, 0..n) 로 옮긴다. 순서가 그대로면 아무것도 안 함.
   const reorderListToIndex = (listId: string, fromCardId: string, insertIndex: number) => {
     const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
@@ -2896,25 +1762,9 @@ export function SceneBoard({
   const setSelColor = (color: string) => applyColorToGids(canvasSelGids(), color);
 
   // 팝업/재생성에서 특정 변형을 카드의 '대표(현재 표시)'로 바꾼다.
-  const setCardVariant = (cardId: string, gid: string) => {
-    flushPending(); // 디바운스 중인 텍스트/파라미터 편집을 먼저 확정 — 대표선택의 파생저장에 흡수돼 undo 대상에서 빠지지 않게
-    const nc = cardsRef.current.map((c) => (c.id === cardId ? { ...c, genId: gid } : c));
-    applyCards(nc, "persistDerived"); // 대표 선택은 파생 저장(undo 스택 제외) — Ctrl+Z 에서 대표는 항상 유지(사용자 요구)
-  };
+  const setCardVariant = (cardId: string, gid: string) => { commitDocument({ type: "selectCardVariant", cardId, generationId: gid }); };
   // 삭제 성공한 변형 id 를 카드의 genIds/genId 에서 정리(대표가 지워졌으면 남은 것/없으면 빈 카드).
-  const pruneVariants = (cardId: string, removed: Set<string>) => {
-    if (!removed.size) return;
-    const nc = cardsRef.current.map((c) => {
-      if (c.id !== cardId) return c;
-      const genIds = variantIds(c).filter((id) => !removed.has(id));
-      const genId = c.genId && !removed.has(c.genId) ? c.genId : genIds[0] ?? null;
-      return { ...c, genIds, genId, status: genIds.length ? c.status : ("empty" as const) };
-    });
-    // 지운 결과를 카드에서 걷는 것은 파생 저장이다(대표 고르기와 같다) — 사용자 단계로 쌓으면 바로 아래에서 그 단계의 결과도 걷혀
-    //  '지금과 같은 단계'가 남는다(Ctrl+Z 가 한 번 헛돌았다 — 조작 규칙 44). cardsRef 도 바로 맞는다(restoreState 가 현재 대표를 거기서 읽는다).
-    applyCards(nc, "persistDerived");
-    pruneGenIdsFromHistory(cardId, removed); // 삭제된 변형을 히스토리에서도 제거 — undo 로 되살려 깨진 참조 방지
-  };
+  const pruneVariants = (cardId: string, removed: Set<string>) => { commitDocument({ type: "removeCardVariants", cardId, removedIds: [...removed] }); };
 
   // ── 그룹(Ctrl+G) — 선택 카드를 하나의 묶음으로. 테두리(rect)는 수동 지정·리사이즈, 멤버십은 드롭 위치로 ──
   // 카드 id 목록의 바운딩박스 → 그룹 테두리 rect(위쪽 헤더 높이 포함). 그룹 생성 시 초기 rect 로 사용.
@@ -2925,25 +1775,21 @@ export function SceneBoard({
       (card) => ({ w: widthOf(card), h: heightOf(card) }),
     );
   // pruneGroups(삭제·유령 카드 정리)는 순수 계산이라 sceneDerive.ts 로 분리(테스트 대상).
-  const applyGroups = (next: SceneGroup[]) => {
-    setGroups(next);
-    const validIds = new Set(next.map((group) => group.id));
-    setSelectedGroupIds((previous) => {
-      const pruned = new Set([...previous].filter((id) => validIds.has(id)));
-      return pruned.size === previous.size ? previous : pruned;
+  useEffect(() => {
+    const valid = new Set(groups.map(group => group.id));
+    setSelectedGroupIds(previous => {
+      const next = new Set([...previous].filter(id => valid.has(id)));
+      return next.size === previous.size ? previous : next;
     });
-    persist(cardsRef.current, edgesRef.current, next);
-  };
+  }, [groups]);
   const groupSelected = () => {
-    const ids = [...selectedRef.current].filter((id) => cardsRef.current.some((c) => c.id === id));
+    const ids = [...selectedRef.current].filter(id => cardsRef.current.some(card => card.id === id));
     if (!ids.length) return;
-    // 카드는 한 그룹에만 — 선택 카드를 기존 그룹에서 떼고(빈 그룹 제거) 새 그룹으로 묶는다.
-    const existing = new Set(cardsRef.current.map((c) => c.id));
-    const stripped = pruneGroups(groupsRef.current, new Set(ids), existing);
-    const grp: SceneGroup = { id: uid(), name: `그룹 ${stripped.length + 1}`, cardIds: ids, rect: rectFromCards(ids) };
-    applyGroups([...stripped, grp]);
-    setSelected(new Set());
-    setSelectedGroupIds(new Set([grp.id]));
+    const id = uid();
+    if (commitDocument({ type: "createGroup", id, cardIds: ids, rect: rectFromCards(ids) })) {
+      setSelected(new Set());
+      setSelectedGroupIds(new Set([id]));
+    }
   };
   const groupControlIds = (id: string) =>
     sceneGroupControlTargetIds(selectedGroupIdsRef.current, id);
@@ -2953,95 +1799,18 @@ export function SceneBoard({
     setSelectedGroupIds(new Set([id]));
   };
   // × 버튼 = 그룹 해제(멤버 카드는 그대로 두고 묶음만 제거).
-  const removeGroup = (id: string) => {
-    const targets = new Set(groupControlIds(id));
-    applyGroups(groupsRef.current.filter((g) => !targets.has(g.id)));
-  };
-  const renameGroup = (id: string, name: string) =>
-    applyGroups(groupsRef.current.map((g) => (g.id === id ? { ...g, name } : g)));
-  const toggleGroupCollapsed = (id: string) => {
-    const targets = new Set(groupControlIds(id));
-    const collapsed = !groupsRef.current.find((g) => g.id === id)?.collapsed;
-    applyGroups(groupsRef.current.map((g) => (targets.has(g.id) ? { ...g, collapsed } : g)));
-  };
-  const setGroupColor = (id: string, color?: string) => {
-    const targets = new Set(groupControlIds(id));
-    applyGroups(
-      groupsRef.current.map((g) =>
-        targets.has(g.id) ? { ...g, color: color || undefined } : g,
-      ),
-    );
-  };
+  const removeGroup = (id: string) => { commitDocument({ type: "removeGroups", groupIds: groupControlIds(id) }); };
+  const renameGroup = (id: string, name: string) => { commitDocument({ type: "renameGroup", groupId: id, name }); };
+  const toggleGroupCollapsed = (id: string) => { commitDocument({ type: "toggleGroupsCollapsed", groupIds: groupControlIds(id), anchorId: id }); };
+  const setGroupColor = (id: string, color?: string) => { commitDocument({ type: "colorGroups", groupIds: groupControlIds(id), color }); };
   const setSelectedGroupsColor = (color?: string) => {
-    const targets = selectedGroupIdsRef.current;
-    if (!targets.size) return;
-    applyGroups(
-      groupsRef.current.map((g) =>
-        targets.has(g.id) ? { ...g, color: color || undefined } : g,
-      ),
-    );
+    commitDocument({ type: "colorGroups", groupIds: [...selectedGroupIdsRef.current], color });
   };
-  // 카드 드롭 위치로 그룹 멤버십 재배정 — 다른 프레임 안에 놓으면 그 그룹으로 이동. 어느 프레임에도
-  //  안 들면 원래 그룹 유지(슬로우 드래그는 박스가 자동맞춤으로 담음). 그룹서 빼는 건 '빠르게 이탈'로만.
-  //  · startFrames: 드래그 시작 시점의 그룹 프레임 스냅샷(자동 그룹 프레임이 드래그 중 흔들리지 않게).
-  //  · setGroups 로 반영하고, persist 에 넘길 최신 그룹 배열을 반환(변화 없으면 현재 배열 그대로).
-  const reassignGroups = (
-    targetIds: string[],
-    startFrames: { id: string; frame: { x: number; y: number; w: number; h: number } }[],
-    ejected: Set<string> = new Set(), // 속도 이탈로 튕겨낸 카드 — 원래 그룹으로는 안 돌아감(이탈 확정)
-  ): SceneGroup[] => {
-    if (!startFrames.length) return groupsRef.current;
-    const cur = cardsRef.current;
-    const next = groupsRef.current.map((g) => ({ ...g, cardIds: [...g.cardIds] }));
-    let changed = false;
-    for (const tid of targetIds) {
-      const c = cur.find((cc) => cc.id === tid);
-      if (!c) continue;
-      const cx = c.x + widthOf(c) / 2;
-      const cy = c.y + heightOf(c) / 2;
-      let hitId: string | null = null;
-      for (const f of startFrames)
-        if (cx >= f.frame.x && cx <= f.frame.x + f.frame.w && cy >= f.frame.y && cy <= f.frame.y + f.frame.h)
-          hitId = f.id; // 겹치면 뒤에(위에) 그려진 그룹 우선
-      const curId = next.find((g) => g.cardIds.includes(tid))?.id ?? null;
-      // ★슬로우 드래그로 그룹 밖에 놓아도 원래 그룹을 유지한다(박스가 자동맞춤으로 그 카드를 담음) —
-      //  그룹에서 빼는 건 '빠르게 이탈'로만. (드롭 위치가 어느 프레임에도 안 들면 예전엔 해제됐다.)
-      if (!ejected.has(tid) && hitId === null) hitId = curId;
-      if (ejected.has(tid) && hitId === curId) hitId = null; // 튕겨낸 카드가 원래 그룹에 다시 떨어져도 이탈 확정
-      if (hitId === curId) continue; // 같은 그룹이면 변화 없음
-      for (const g of next) {
-        const i = g.cardIds.indexOf(tid);
-        if (i >= 0) g.cardIds.splice(i, 1);
-      }
-      if (hitId) next.find((g) => g.id === hitId)!.cardIds.push(tid);
-      changed = true;
-    }
-    if (!changed) return groupsRef.current;
-    const pruned = next.filter((g) => g.cardIds.length > 0); // 비게 된 그룹 정리
-    groupsRef.current = pruned; // ref 도 바로 — 남은 끌기를 끝낸 그 누름의 새 조작이 다음 렌더 전에 읽는다(lib/useSceneGroupMove 의 같은 주석)
-    setGroups(pruned);
-    return pruned;
-  };
-
   // ── 카드 삭제(선택) — 내 것·미공유·비최종 변형만 휴지통, 공유/최종/남의 것은 라이브러리에 보존 ──
   const deleteCards = (ids: string[]) => {
     if (!ids.length) return;
     const idset = new Set(ids);
-    // ★캔버스에서 카드를 지워도 서버 생성물('내 작업')은 건드리지 않는다(Jay 결정 ⓑ) — 캔버스 편집물만 제거.
-    //  (생성물을 실제로 지우려면 라이브러리에서 별도로. 이렇게 해야 삭제→Ctrl+Z 로 되살려도 생성물이 온전하다.)
-    const nextEdges = edgesRef.current.filter((e) => !idset.has(e.from) && !idset.has(e.to));
-    // 삭제된 output(채널)을 가리키던 input 은 channel 을 비운다(무효 참조 방지).
-    const survivingCards = cardsRef.current
-      .filter((c) => !idset.has(c.id))
-      .map((c) =>
-        c.kind === "input" && c.channel && idset.has(c.channel) ? { ...c, channel: undefined } : c,
-      );
-    const nextCards = withGenRefs(survivingCards, nextEdges);
-    // 삭제 후 카드 기준으로 그룹 정리 — 삭제 카드 제거 + 유령 멤버 id 도 정리.
-    const nextGroups = pruneGroups(groupsRef.current, idset, new Set(nextCards.map((c) => c.id)));
-    setCards(nextCards);
-    setEdges(nextEdges);
-    setGroups(nextGroups);
+    commitDocument({ type: "removeCards", cardIds: ids });
     setSelected(new Set());
     // 삭제된 카드가 리스트/렌더 행 선택에 있으면 그 항목만 걷어낸다(리스트 노드 자체가 지워지면 통째 해제).
     setRowSel((prev) => {
@@ -3051,7 +1820,6 @@ export function SceneBoard({
       return cids.size === prev.cids.size ? prev : { listId: prev.listId, cids };
     });
     setCardMenu((m) => (m && idset.has(m) ? null : m)); // 삭제된 카드의 팝업은 닫는다
-    persist(nextCards, nextEdges, nextGroups);
   };
 
   // ── 캔버스 선택 → App 선택바(프롬프트 위 topSlot)로 결과 카드들 올리기 + 삭제 명령형 핸들 ──
@@ -3091,6 +1859,7 @@ export function SceneBoard({
         // props 의 scene.id 가 아니라 **지금 cards 가 속한 씬** — 씬 전환 첫 렌더에는 cards·cardsRef 가 아직 옛 씬이다
         //  (동기화는 useEffect). 그때 비동기 결과가 새 씬 id 로 들어와 옛 카드를 새 씬에 저장하지 않게(Codex).
         sceneId: cardsSceneId,
+        commitDocument,
         deleteSelected: () => deleteCards(selResultCardIds()),
         setCardRefs,
         flushPending,
@@ -3180,14 +1949,7 @@ export function SceneBoard({
     );
     if (!changed) return true;
 
-    const moved = cardsRef.current.map((card) =>
-      positions[card.id]
-        ? { ...card, x: positions[card.id].x, y: positions[card.id].y }
-        : card,
-    );
-    const nextCards = withGenRefs(moved, edgesRef.current);
-    setCards(nextCards);
-    persist(nextCards, edgesRef.current);
+    commitDocument({ type: "arrangeCards", positions });
     return true;
   };
 
@@ -3197,23 +1959,6 @@ export function SceneBoard({
       .filter((id): id is string => !!id);
     if (!generationIds.length) return false;
     toggleDisabledGen(generationIds);
-    return true;
-  };
-
-  const editSelectedTag = (): boolean => {
-    if (!onSetTagsRef.current) return false;
-    const target = [...selectedRef.current]
-      .map((id) => cardsRef.current.find((card) => card.id === id))
-      .find(
-        (card) =>
-          !!card &&
-          card.kind === "generation" &&
-          !!card.genId &&
-          !!ownEntry(genDataRef.current, card.genId),
-      );
-    if (!target) return false;
-    setTagEditNodeGenId(null);
-    setTagEditCardId(target.id);
     return true;
   };
 
@@ -3262,8 +2007,8 @@ export function SceneBoard({
     onTogglePicker: toggleNodePicker,
     // 카드·그룹을 누르고 있는 동안(끌기 세션)에는 받지 않는다 — 끄는 중에 되돌리면 다음 움직임이 그 취소를 덮고 다시 실행 기록도
     //  지워졌다. 범위 선택 중의 Ctrl+Z 는 그대로다(세션은 카드·그룹 이동만 건다 — 아래 holdMove).
-    onUndo: () => { if (!moveHeldRef.current) undoThenSync(undo); },
-    onRedo: () => { if (!moveHeldRef.current) undoThenSync(redo); },
+    onUndo: () => { if (!moveHeldRef.current) undo(); },
+    onRedo: () => { if (!moveHeldRef.current) redo(); },
     onCopy: copySelectedNodes,
     onSelectAll: () => {
       setSelected(new Set(cardsRef.current.map((c) => c.id)));
@@ -3359,7 +2104,6 @@ export function SceneBoard({
   //  로만 내려갔는데, mouseup 을 놓친 끌기는 끝난 뒤에도 Ctrl+Z·묶기·정렬이 다음 mouseup 까지 잠겨 있었다.
   const endMoveGesture = () => {
     moveHeldRef.current = false;
-    endGesture();
   };
   // 카드 끌기 훅이 (판 밀기가 아닌) 끌기의 첫 걸음에 끌기 전 자리 표를 올리고, 끝나면 null 로 비운다(위 moveOrigins).
   //  켜는 조건은 여기서 한 번 본다 — 안 맞으면 올리지 않고, 그 끌기는 끝까지 전의 길이다(끄는 조건은 그릴 때마다 위 moveDraw 가 본다).
@@ -3390,51 +2134,16 @@ export function SceneBoard({
       (card) => ({ w: widthOf(card), h: heightOf(card) }),
     ).map(({ g, frame }) => ({ id: g.id, frame }));
   const beginCardMove = useSceneCardMove({
-    canvasRef,
-    layerMoveRef,
-    setMoveOrigins,
-    toCanvas,
-    cardsRef,
-    edgesRef,
-    groupsRef,
-    selectedRef,
-    selectedGroupIdsRef,
-    groupFrames: currentGroupFrames,
-    zoomRef,
-    scrollRef,
-    setCards,
-    setGroups,
-    setSelected,
-    setDraggingIds,
-    setEjectedIds,
-    beginDrag,
-    cardSize: (card) => ({ w: widthOf(card), h: heightOf(card) }),
-    collectRecipe,
-    reassignGroups,
-    reconcileGenerationRefs: withGenRefs,
-    persist,
-    beginGesture,
-    endGesture: endMoveGesture,
-    ejectSpeed: GROUP_EJECT_SPEED,
+    canvasRef, layerMoveRef, setMoveOrigins, toCanvas, cardsRef, groupsRef,
+    selectedRef, selectedGroupIdsRef, groupFrames: currentGroupFrames, zoomRef, scrollRef,
+    setSelected, setDraggingIds, setEjectedIds, beginDrag,
+    cardSize: card => ({ w: widthOf(card), h: heightOf(card) }), collectRecipe,
+    gestures: canvasSession.gestures, onEnd: endMoveGesture, ejectSpeed: GROUP_EJECT_SPEED,
   });
   const beginGroupMove = useSceneGroupMove({
-    cardsRef,
-    edgesRef,
-    groupsRef,
-    selectedGroupIdsRef,
-    selectedRef,
-    toCanvas,
-    scrollRef,
-    setCards,
-    setGroups,
-    setSelected,
-    setSelectedGroupIds,
-    setDraggingIds,
-    beginDrag,
-    reconcileGenerationRefs: withGenRefs,
-    persist,
-    beginGesture,
-    endGesture: endMoveGesture,
+    cardsRef, groupsRef, selectedGroupIdsRef, selectedRef, toCanvas, scrollRef,
+    setSelected, setSelectedGroupIds, setDraggingIds, beginDrag,
+    gestures: canvasSession.gestures, onEnd: endMoveGesture,
   });
   const {
     begin: beginBoardMarquee,
@@ -4278,93 +2987,31 @@ export function SceneBoard({
                     const pressed = rectNow();
                     if (!pressed) return;
                     activateGroupControl(g.id);
-                    const sx = e.clientX;
-                    const sy = e.clientY;
-                    let rect0 = pressed; // 늘리기의 출발 테두리
-                    let last = rect0; // 최종 rect — up 에서 명시적으로 persist(groupsRef 최신성 레이스 방지)
-                    let stretched = false; // 한 걸음이라도 넣었는가
-                    let written = groupsRef.current.find((x) => x.id === g.id)?.rect; // 끌기 전에 적혀 있던 네모(자동 그룹이면 없다) — 되돌리기의 시작점
+                    const sx = e.clientX, sy = e.clientY;
+                    let rect0 = pressed, last = rect0;
+                    let stretched = false;
+                    let handle: CanvasGroupResizeHandle;
                     const mv = (ev: MouseEvent) => {
                       const z = zoomRef.current;
-                      const w = Math.max(140, rect0.w + (ev.clientX - sx) / z);
-                      const h = Math.max(GROUP_HEADER_HEIGHT + 48, rect0.h + (ev.clientY - sy) / z);
-                      last = { x: rect0.x, y: rect0.y, w, h };
+                      last = { x: rect0.x, y: rect0.y,
+                        w: Math.max(140, rect0.w + (ev.clientX - sx) / z),
+                        h: Math.max(GROUP_HEADER_HEIGHT + 48, rect0.h + (ev.clientY - sy) / z) };
                       stretched = true;
-                      setGroups((prev) => prev.map((x) => (x.id === g.id ? { ...x, rect: last } : x)));
+                      handle.preview(last);
                     };
-                    const upr = () => {
-                      // 끄는 사이에 이 그룹이 밖에서 지워졌으면 아무것도 하지 않는다 — 아래는 대상이 없어도 마지막 테두리 안의 카드를 다른
-                      //  그룹에서 빼고 비게 된 그룹을 지워 저장했다(Codex 설계 검토)
-                      if (!groupsRef.current.some((x) => x.id === g.id)) return;
-                      const rect = last;
-                      // 늘린 rect 안에 중심이 든 카드를 이 그룹에 포함(다른 그룹에 있던 카드는 옮겨옴=한 카드 한 그룹).
-                      // 기존 멤버는 rect 밖이어도 유지 — '줄여서 제외'는 안 함(제외는 노드를 밖으로 드래그).
-                      const contained = new Set(
-                        cardsRef.current
-                          .filter((c) => {
-                            const cx = c.x + widthOf(c) / 2;
-                            const cy = c.y + heightOf(c) / 2;
-                            return cx >= rect.x && cx <= rect.x + rect.w && cy >= rect.y && cy <= rect.y + rect.h;
-                          })
-                          .map((c) => c.id),
-                      );
-                      const ng = groupsRef.current
-                        .map((x) => {
-                          if (x.id === g.id) {
-                            const keep = x.cardIds.filter((id) => cardsRef.current.some((c) => c.id === id));
-                            return { ...x, rect, cardIds: Array.from(new Set([...keep, ...contained])) };
-                          }
-                          return { ...x, cardIds: x.cardIds.filter((id) => !contained.has(id)) };
-                        })
-                        .filter((x) => x.id === g.id || x.cardIds.length > 0); // 비게 된 다른 그룹만 정리
-                      // 누르기만 했고 네모·멤버가 그대로면 저장할 것이 없다 — 저장하면 빈 되돌리기 단계가 쌓이고 다시 하기가 지워진다(조작 규칙 44,
-                      //  Codex 코드 리뷰. 끌기 묶음 안이라 저장 입구의 '안 바뀜' 검사는 돌지 않는다). 네모 없는 자동 그룹은 여기서 처음 네모가
-                      //  생기므로 그대로가 아니다(전처럼 저장한다).
-                      const was = groupsRef.current;
-                      const sameRect = (a: SceneGroup["rect"], b: SceneGroup["rect"]) =>
-                        a === b || (!!a && !!b && a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h);
-                      const sameIds = (a: string[], b: string[]) => a.length === b.length && a.every((id, at) => id === b[at]);
-                      if (!stretched && ng.length === was.length && ng.every((x, at) => sameRect(x.rect, was[at].rect) && sameIds(x.cardIds, was[at].cardIds))) return;
-                      groupsRef.current = ng; // ref 도 바로(위 reassignGroups 와 같은 까닭)
-                      setGroups(ng);
-                      persist(cardsRef.current, edgesRef.current, ng);
-                    };
-                    // blur: 현재 테두리로 멤버십 커밋(좌표·클릭 모호함 없어 upr 재사용 안전).
-                    // 끄는 중 밖에서 씬이 갱신되면(위 씬 동기화) 늘리던 테두리를 받은 그룹에 다시 넣는다 — 저장은 last 로 하니 값은 맞지만 화면이
-                    //  되돌아가 보였다. 누르기만 했으면 쥔 것이 없다 — 밖에서 온 테두리를 **새 출발점**으로 삼는다(넣지 않는다). 누른 순간의 값을
-                    //  쥐고 있으면 화면은 새 테두리인데 놓을 때 옛 테두리가 저장된다(Codex 코드 리뷰).
                     const end = () => {
-                      upr();
+                      const containedIds = cardsRef.current.filter(card => {
+                        const cx = card.x + widthOf(card) / 2, cy = card.y + heightOf(card) / 2;
+                        return cx >= last.x && cx <= last.x + last.w && cy >= last.y && cy <= last.y + last.h;
+                      }).map(card => card.id);
+                      handle.finish({ containedIds });
                       endMoveGesture();
                     };
                     beginDrag(mv, end, end, () => {
-                      if (!stretched) {
-                        rect0 = rectNow() ?? rect0;
-                        last = rect0;
-                        written = groupsRef.current.find((x) => x.id === g.id)?.rect;
-                        return;
-                      }
-                      const ng = groupsRef.current.map((x) => (x.id === g.id ? { ...x, rect: last } : x));
-                      groupsRef.current = ng;
-                      setGroups(ng);
-                    }, () => {
-                      // Esc — 늘린 네모를 버린다(29회차, Jay 안 A — 카드 크기 손잡이 lib/useSceneCardResize 와 같다): 끌기 전 네모(written — 자동
-                      //  그룹이면 없다)로 되돌리고 '버리는 저장'(lib/useSceneHistory 의 discard). 멤버 재배정(upr)은 하지 않는다 — 끌기 전 소속
-                      //  그대로다. 그룹이 그사이 밖에서 지워졌으면 아무것도 하지 않는다(Codex 코드 리뷰 P2).
-                      if (stretched && groupsRef.current.some((x) => x.id === g.id)) {
-                        const ng = groupsRef.current.map((x) => (x.id === g.id ? { ...x, rect: written } : x));
-                        groupsRef.current = ng;
-                        setGroups(ng);
-                        persist(cardsRef.current, edgesRef.current, ng, { discard: true });
-                      }
-                      endMoveGesture();
-                    });
-                    // 크기 조절도 끌기다(조작 규칙 44 — 카드 크기 손잡이 lib/useSceneCardResize 와 같다): 누르고 있는 동안의 Ctrl+Z 는 받지
-                    //  않고, 끄는 중에 낀 파생 저장이 중간 네모를 굳혀도 되돌리기는 끌기 전 네모로 간다.
-                    beginGesture((snapshot) => ({
-                      ...snapshot,
-                      groups: snapshot.groups.map((x) => (x.id === g.id ? { ...x, rect: written } : x)),
-                    }));
+                      if (!stretched) { rect0 = rectNow() ?? rect0; last = rect0; }
+                      handle.rebase(rectNow());
+                    }, () => { handle.cancel(); endMoveGesture(); });
+                    handle = canvasSession.gestures.beginGroupResize(g.id, pressed);
                     holdMove();
                   }}
                 />
@@ -4988,11 +3635,7 @@ export function SceneBoard({
               initial={c.modelCfg}
               onClose={() => setModelModalId(null)}
               onSave={(cfg) => {
-                const next = cardsRef.current.map((x) =>
-                  x.id === modelModalId ? { ...x, modelCfg: cfg } : x,
-                );
-                setCards(next);
-                persist(next, edgesRef.current);
+                commitDocument({ type: "saveModelConfig", cardId: modelModalId, config: cfg });
               }}
             />
           );
@@ -5010,29 +3653,7 @@ export function SceneBoard({
               onClose={() => setComfyModalId(null)}
               onSave={(cfg) => {
                 comfyLoads.applied.set(comfyLoadKey(scene.id, comfyModalId), ++comfyLoads.next); // 창에서 확정한 것이 최신이다 — 아직 파싱 중인 앞선 불러오기가 이것을 덮지 않는다
-                // 워크플로우(content)가 바뀌면 이전 실행 결과를 비운다 — 안 그러면 하류 생성카드가
-                // 예전 워크플로 출력을 참조한다(재실행 전까지 stale). content 그대로면 결과 보존.
-                const prev = cardsRef.current.find((x) => x.id === comfyModalId)?.comfyCfg;
-                const contentChanged = (prev?.content || "") !== (cfg.content || "");
-                if (contentChanged) {
-                  // content 교체 → 카드에 쌓인 생성물(대표·목록)까지 초기화(applyComfyApi 와 동일 규칙).
-                  const removedForward = forgetCardGenerations(scene.id, comfyModalId);
-                  const nextCards = cardsRef.current.map((c) =>
-                    c.id === comfyModalId && c.kind === "comfy"
-                      ? {
-                          ...c,
-                          genId: null,
-                          genIds: [],
-                          comfyCfg: { ...(c.comfyCfg || {}), ...cfg, outputs: [], output: null, status: "idle" as const, error: null },
-                        }
-                      : c,
-                  );
-                  cardsRef.current = nextCards;
-                  setCards(nextCards);
-                  persist(nextCards, edgesRef.current, groupsRef.current, { removedForward });
-                } else {
-                  patchComfyCfg(comfyModalId, cfg);
-                }
+                commitDocument({ type: "saveComfyConfig", cardId: comfyModalId, cfg });
               }}
             />
           );
@@ -5091,175 +3712,9 @@ export function SceneBoard({
         </div>
       )}
 
-      {canvasRecovery && (
-        <div
-          className="scene-modelmodal-backdrop"
-          onMouseDown={() => !canvasRecovery.claimingId && setCanvasRecovery(null)}
-        >
-          <div ref={recoveryRef} className="scene-modelmodal scene-recoverymodal" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="scene-modelmodal-hd">
-              <b>이 카드에 생성물 붙이기</b>
-              <button
-                className="scene-modelmodal-x"
-                disabled={!!canvasRecovery.claimingId}
-                onClick={() => setCanvasRecovery(null)}
-              >
-                ✕
-              </button>
-            </div>
-            <div className="scene-comfymodal-body scene-recovery-list">
-              {canvasRecovery.error ? (
-                <div className="scene-recovery-error">{canvasRecovery.error}</div>
-              ) : (
-                <>
-                  {/* ── 위 칸 '카드 생성물 복구' — 어느 카드에 있었는지 기록이 남아 있는 것 ── */}
-                  <div className="scene-recovery-sect">
-                    <div className="scene-recovery-sect-hd">
-                      <span className="scene-recovery-sect-title lime">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                          <path d="M3 12a9 9 0 1 0 3-6.7" />
-                          <path d="M3 4v5h5" />
-                        </svg>
-                        카드 생성물 복구
-                      </span>
-                      <span className="scene-recovery-count">{canvasRecovery.detached.length}</span>
-                    </div>
-                    <p className="scene-recovery-sect-sub">
-                      어느 카드에 있었는지가 기록에 남아 있습니다. 가까운 순 — 이 카드 → 이 캔버스 → 다른 캔버스.
-                    </p>
-                    {canvasRecovery.loadingDetached ? (
-                      <div className="scene-recovery-empty">이 캔버스 기록을 확인하는 중입니다…</div>
-                    ) : canvasRecovery.detachedStatus === "unreadable" ? (
-                      // ★로컬을 못 읽었으면 목록을 만들지 않는다 — 읽기 실패를 '전부 떨어짐'으로
-                      //  바꾸면 멀쩡한 생성물이 전부 미아로 보인다(코덱스 P1).
-                      <div className="scene-recovery-note">
-                        <b>지금은 판정할 수 없습니다.</b> 이 브라우저의 캔버스 목록을 읽지 못해,
-                        무엇이 떨어졌는지 가릴 수 없습니다. 창을 닫았다 다시 열어 보세요.
-                      </div>
-                    ) : canvasRecovery.detached.length ? (
-                      canvasRecovery.detached.map((candidate) => {
-                        const generation = canvasRecovery.detachedGens[candidate.generationId];
-                        if (!generation) return null;
-                        const tone =
-                          candidate.origin === "this-card"
-                            ? "this-card"
-                            : candidate.origin === "other-scene"
-                              ? "other-scene"
-                              : "this-scene";
-                        return renderRecoveryItem(
-                          generation,
-                          <span className={`scene-recovery-from ${tone}`}>
-                            {tone === "other-scene" && <i aria-hidden="true" />}
-                            {candidate.label}
-                          </span>,
-                          claimDetachedGeneration,
-                        );
-                      })
-                    ) : (
-                      <div className="scene-recovery-empty">
-                        이 캔버스에서 떨어진 생성물은 없습니다.
-                      </div>
-                    )}
-                    {/* 아직 다 못 본 자리가 있으면 반드시 길을 남긴다 — 쪽 상한에서 멈춘
-                        채 '없습니다'로 끝내면 오래된 복구 대상에 영영 못 닿는다(코덱스 P1).
-                        다른 캔버스는 훑어야 하는 범위라 누를 때만 읽는다. */}
-                    {!canvasRecovery.loadingDetached &&
-                      canvasRecovery.detachedStatus === "ok" &&
-                      (canvasRecovery.detachedTotal > canvasRecovery.detachedShown ||
-                        canvasRecovery.detachedNext ||
-                        canvasRecovery.otherScenes !== "done") && (
-                        <button
-                          type="button"
-                          className="scene-recovery-more"
-                          disabled={canvasRecovery.otherScenes === "loading" || canvasRecovery.detachedExpanding}
-                          aria-busy={canvasRecovery.otherScenes === "loading" || canvasRecovery.detachedExpanding || undefined}
-                          onClick={() => void loadMoreDetached()}
-                        >
-                          {(canvasRecovery.otherScenes === "loading" || canvasRecovery.detachedExpanding) && (
-                            <i className="busy-ring" aria-hidden="true" />
-                          )}
-                          {canvasRecovery.otherScenes === "loading"
-                            ? "찾는 중…"
-                            : canvasRecovery.detachedExpanding
-                              ? `불러오는 중… (${canvasRecovery.detachedShown} / ${canvasRecovery.detachedTotal})`
-                            : canvasRecovery.detachedTotal > canvasRecovery.detachedShown
-                              ? `더 보기 (${canvasRecovery.detachedTotal - canvasRecovery.detachedShown}개 남음)`
-                              : canvasRecovery.detachedNext
-                                ? "더 찾기 (여기까지만 확인했습니다)"
-                                : "다른 캔버스에서도 찾기"}
-                        </button>
-                      )}
-                  </div>
-
-                  <div className="scene-recovery-sep" />
-
-                  {/* ── 아래 칸 '카드 생성물 담기' — 어느 카드에서 나왔는지 기록이 원래 없는 것 ── */}
-                  <div className="scene-recovery-sect">
-                    <div className="scene-recovery-sect-hd">
-                      <span className="scene-recovery-sect-title">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                          <path d="M12 5v14M5 12h14" />
-                        </svg>
-                        카드 생성물 담기
-                      </span>
-                      <span className="scene-recovery-count">{recoveryFiltered.length}</span>
-                      <input
-                        className="scene-recovery-search"
-                        value={canvasRecovery.query}
-                        placeholder="프롬프트·모델로 찾기"
-                        aria-label="안 담긴 생성물 검색"
-                        onChange={(event) =>
-                          setCanvasRecovery((current) =>
-                            current
-                              ? { ...current, query: event.target.value, shown: RECOVERY_PAGE }
-                              : current,
-                          )
-                        }
-                      />
-                    </div>
-                    <p className="scene-recovery-sect-sub">
-                      힉스필드 웹·다른 PC·카드 없이 만든 생성물입니다. 어느 카드에서 나왔는지는 기록이 없어 최신순입니다.
-                    </p>
-                    {canvasRecovery.loadingItems ? (
-                      <div className="scene-recovery-empty">내 생성물을 확인하는 중입니다…</div>
-                    ) : recoveryVisible.length ? (
-                      <>
-                        {recoveryVisible.map((generation) =>
-                          renderRecoveryItem(generation, null, claimCanvasRecovery),
-                        )}
-                        {recoveryFiltered.length > recoveryVisible.length && (
-                          <button
-                            type="button"
-                            className="scene-recovery-more"
-                            onClick={() =>
-                              setCanvasRecovery((current) =>
-                                current
-                                  ? { ...current, shown: current.shown + RECOVERY_PAGE }
-                                  : current,
-                              )
-                            }
-                          >
-                            더 보기 ({recoveryFiltered.length - recoveryVisible.length})
-                          </button>
-                        )}
-                      </>
-                    ) : (
-                      <div className="scene-recovery-empty">
-                        {recoveryQuery ? "찾는 말과 맞는 것이 없습니다." : "아직 어디에도 안 담긴 생성물이 없습니다."}
-                      </div>
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
-            <div className="scene-modelmodal-ft">
-              <button disabled={!!canvasRecovery.claimingId} onClick={() => setCanvasRecovery(null)}>
-                닫기
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <SceneRecoveryPanel canvasRecovery={canvasRecovery} setCanvasRecovery={setCanvasRecovery}
+        loadMoreDetached={loadMoreDetached} claimCanvasRecovery={claimCanvasRecovery}
+        claimDetachedGeneration={claimDetachedGeneration} onPreview={onPreview} />
 
       {/* 다중 결과 팝업 — 라이브러리 그리드처럼 다중선택→액션바(다운로드/비교/담기/공유/삭제),
           ★대표 지정, 더블클릭 크게보기(방향키). .scene-board 직계(줌/팬 밖). 배경클릭/Esc 닫기. */}

@@ -104,6 +104,14 @@
   background: var(--play-tri) center / contain no-repeat; /* generations.css 의 둥근 흰 삼각형 */
 }
 .linb-node:hover .linb-vid { opacity: 0; }
+.linb-draft {
+  position: absolute; top: 7px; right: 7px; z-index: 2; padding: 3px 10px;
+  border-radius: 999px; background: #c8ef40; color: #111; font-weight: 800;
+  font-size: 12px; line-height: 1.4; pointer-events: none;
+}
+.linb-node:hover .linb-draft, .linb-node:focus-within .linb-draft,
+.linb-node.sel .linb-draft, .scene-card:hover .linb-draft,
+.scene-card:focus-within .linb-draft, .scene-card.sel .linb-draft { display: none; }
 /* r/g/b 카드 컬러 마커 — 좌측 세로 바(그리드 list-color-bar 와 동일 개념). 색 지정한 노드만 표시. */
 /* 노드 하단 컬러바 — 카드(.card-colorbar)와 동일. 색은 인라인, 최종이면 골드 + 빛(노드에 마우스를 올릴 때 한 번).
    ★여기서 끝없이 돌리면 안 된다 — 최종 노드는 content-visibility 가 풀려 있어(위 .linb-node.final) 화면 밖으로 밀려도 계속 그린다.

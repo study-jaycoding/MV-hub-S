@@ -41,6 +41,8 @@ def test_non_library_side_effect_posts_do_not_force_library_reload():
 
 def test_scene_backup_asset_metadata_and_comfy_settings_use_their_own_refresh_channels():
     assert not _notifies_library("PUT", "/api/scenes/backup", 200)
+    assert notification_domains("PUT", "/api/edit-docs/backup", 200) == ()
+    assert notification_domains("POST", "/api/edit-docs/backup/restore", 200) == ()
     assert not _notifies_library("PUT", "/api/comfy/settings", 200)
     assert not _notifies_library("PUT", "/api/assets/files/meta", 200)
     assert not _notifies_library("POST", "/api/assets/upload", 200)
@@ -59,6 +61,12 @@ def test_asset_writes_use_only_the_asset_refresh_channel():
     assert notification_domains("POST", "/api/assets/reveal", 200) == ()
     assert notification_domains("POST", "/api/assets/clipboard-copy", 200) == ()
     assert notification_domains("POST", "/api/assets/locate", 200) == ()  # 자동 복구 찾기는 읽기뿐
+
+
+def test_native_drag_does_not_broadcast_asset_changes():
+    # Both a completed drag and an expired gesture return 200 without a mutation.
+    assert notification_domains("POST", "/api/assets/native-drag", 200) == ()
+    assert notification_domains("POST", "/api/assets/native-drag-extra", 200) == (DOMAIN_ASSETS,)
 
 
 def test_manage_writes_use_manage_channel_and_hf_cleanup_also_changes_library():

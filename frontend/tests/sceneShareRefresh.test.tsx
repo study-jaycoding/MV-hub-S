@@ -80,6 +80,8 @@ beforeEach(async () => {
   });
   Board = (await import("../src/components/scene/SceneBoard")).SceneBoard;
   apiModule.setAuthToken("synthetic-A"); scopeModule.setAccountScope("synthetic-A");
+  (await import("../src/app/operationContext")).configureOperationContext({ key: "account-A", serverOrigin: location.origin, authority: "local", ready: true });
+  (await import("../src/features/library/api")).getGenerationReadModel("account-A", "lookup");
   cache.putGen(generation());
   scene = { id: "scene-A", name: "Synthetic", created_at: 0, edges: [],
     cards: [{ id: "card", kind: "generation", genId: "a", x: 0, y: 0 }] };

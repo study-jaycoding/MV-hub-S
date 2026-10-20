@@ -5,6 +5,8 @@
     [string]$PythonExe = "",
     [string]$NodeRoot = "",
     [string]$HiggsfieldRoot = "",
+    [string]$CompatibilityPath = "",
+    [string]$PublishCandidatePath = "",
     [switch]$SkipPythonRuntime,
     [switch]$SkipNodeRuntime,
     [switch]$SkipHiggsfieldCli,
@@ -12,6 +14,16 @@
 )
 
 $ErrorActionPreference = "Stop"
+
+
+function Write-TrustedFirstInstaller {
+    param([string]$Template, [string]$Verifier, [string]$Destination)
+    $Text = [IO.File]::ReadAllText($Template)
+    $Marker = '__MVHUB_TRUSTED_BOOTSTRAP_BASE64__'
+    if ([regex]::Matches($Text, $Marker).Count -ne 1) { throw 'Installer bootstrap template marker is invalid.' }
+    $Bytes = [IO.File]::ReadAllBytes($Verifier)
+    [IO.File]::WriteAllText($Destination, $Text.Replace($Marker, [Convert]::ToBase64String($Bytes)), (New-Object Text.UTF8Encoding($false)))
+}
 
 function Get-FileDigestHex {
     param(
@@ -199,6 +211,8 @@ function Assert-ReleaseArchive {
             "update_release.bat",
             "run_release_update.ps1",
             "update_release_worker.bat",
+            "update_release_contract.ps1",
+            "installer-capabilities.json",
             "agent_push.py",
             "run_agent_session.py",
             "hf_cli_version.txt",
@@ -253,6 +267,7 @@ function Assert-ReleaseArchive {
         # 조용히 추가되는 회귀도 압축을 배포하기 전에 막는다.
         $AllowedTopLevel = @(
             "VERSION.txt",
+            "build-manifest.json",
             "backend",
             "frontend",
             "runtime",
@@ -261,6 +276,8 @@ function Assert-ReleaseArchive {
             "update_release.bat",
             "run_release_update.ps1",
             "update_release_worker.bat",
+            "update_release_contract.ps1",
+            "installer-capabilities.json",
             "agent_push.py",
             "run_agent_session.py",
             "hf_cli_version.txt",
@@ -299,7 +316,7 @@ function Assert-ReleaseArchive {
             $_ -match "^frontend/.*\.(map|tsbuildinfo)$" -or
             $_ -match "^(docs|deploy|release|predeploy-reports)(/|$)" -or
             ($_ -match "^tools(/|$)" -and
-                $_ -notmatch "^tools/(stop_local_hub_on_port\.ps1|mcp_adapter/(server\.py|local_setup\.py|requirements\.txt|requirements\.lock\.txt))$" -and
+                $_ -notmatch "^tools/(install_db_probe\.py|stop_local_hub_on_port\.ps1|mcp_adapter/(server\.py|local_setup\.py|requirements\.txt|requirements\.lock\.txt))$" -and
                 $_ -notmatch "^tools/mcp_adapter/site-packages/") -or
             $_ -match "^tools/mcp_adapter/(.*/)?__pycache__(/|$)" -or
             $_ -match "^(test_.*\.bat|setup_clone_git\.bat|update_git\.bat)$" -or
@@ -485,6 +502,35 @@ $Stage = Join-Path $StagingRoot $PackageName
 $ReleaseCliVersion = ""
 . (Join-Path $PSScriptRoot "release_manifest_io.ps1")
 
+# Enforce the existing fixed-folder/clean-origin policy before any build or publish write.
+if ($ProjectRoot.TrimEnd('\') -ine 'D:\ClaudeCode\MV-hub-S-release') {
+    throw 'Releases must be built/published from the fixed MV-hub-S-release checkout.'
+}
+$Head = & git -C $ProjectRoot rev-parse HEAD
+if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve release HEAD.' }
+$Main = & git -C $ProjectRoot rev-parse origin/main
+if ($LASTEXITCODE -ne 0 -or $Head -cne $Main) { throw 'Release HEAD must equal origin/main.' }
+$Dirty = & git -C $ProjectRoot status --porcelain --untracked-files=normal
+if ($LASTEXITCODE -ne 0 -or $Dirty) { throw 'Release checkout must be clean.' }
+if ($PublishCandidatePath) {
+    if ($SkipPublish) { throw 'PublishCandidatePath and SkipPublish cannot be combined.' }
+    Publish-QualifiedRelease -CandidatePath $PublishCandidatePath -Directory $PublishDir
+    Write-Host 'Qualified candidate published without rebuilding. latest.json was not changed.'
+    return
+}
+if (-not $CompatibilityPath) { throw 'An explicit compatibility declaration is required (-CompatibilityPath).' }
+$BuildPython = Resolve-PythonRuntime -PreferredExe $PythonExe
+$ContractTool = Join-Path $ProjectRoot 'tools\release_contract.py'
+$SourceIdentityRaw = & $BuildPython.Exe $ContractTool source --root $ProjectRoot --compatibility $CompatibilityPath
+if ($LASTEXITCODE -ne 0) { throw 'Cannot fingerprint release source.' }
+$SourceHasher = [System.Security.Cryptography.SHA256]::Create()
+try {
+    # Python emits LF canonical JSON; PowerShell native output splits it into lines.
+    $SourceBytes = [System.Text.Encoding]::UTF8.GetBytes(($SourceIdentityRaw -join "`n").TrimEnd() + "`n")
+    $ExpectedSource = ([BitConverter]::ToString($SourceHasher.ComputeHash($SourceBytes))).Replace('-', '').ToLowerInvariant()
+}
+finally { $SourceHasher.Dispose() }
+
 # 한 번 만든 판(zip)은 바뀌지 않는다(B안 r3) — 같은 이름이 있으면 지우고 다시 만들지 않고 멈춘다.
 $ZipPath = Join-Path $OutputDir "$PackageName.zip"
 if (Test-Path -LiteralPath $ZipPath) {
@@ -566,6 +612,7 @@ $RootFiles = @(
     "update_release.bat",
     "run_release_update.ps1",
     "update_release_worker.bat",
+    "update_release_contract.ps1",
     "agent_push.py",
     "run_agent_session.py",
     "hf_cli_version.txt",
@@ -579,6 +626,7 @@ foreach ($Name in $RootFiles) {
         Copy-Item -LiteralPath $Src -Destination (Join-Path $Stage $Name) -Force
     }
 }
+[System.IO.File]::WriteAllText((Join-Path $Stage 'installer-capabilities.json'), '{"format_version":1,"capabilities":["artifact-receipt-v1","install-journal-v1"]}', (New-Object System.Text.UTF8Encoding($false)))
 
 # Port-cleanup helper - MV_agent.bat runs it before starting the hub. tools\ as a whole is
 # excluded from bundles; without this file worker PCs printed a red
@@ -590,6 +638,7 @@ if (Test-Path -LiteralPath $PortHelper) {
 }
 
 $McpAdapterDir = Join-Path $Stage "tools\mcp_adapter"
+Copy-Item -LiteralPath (Join-Path $ProjectRoot 'tools\install_db_probe.py') -Destination (Join-Path $Stage 'tools\install_db_probe.py')
 New-Item -ItemType Directory -Force -Path $McpAdapterDir | Out-Null
 foreach ($Name in @("server.py", "local_setup.py", "requirements.txt", "requirements.lock.txt")) {
     Copy-Item -LiteralPath (Join-Path $ProjectRoot "tools\mcp_adapter\$Name") -Destination (Join-Path $McpAdapterDir $Name)
@@ -723,6 +772,9 @@ if ($WorkerText -notmatch [regex]::Escape('[NullString]::Value')) {
 Write-Host "      Updater verified: VERSION commit uses [NullString]::Value."
 
 Write-Host "[7/8] Creating zip..."
+& $BuildPython.Exe $ContractTool descriptor --root $ProjectRoot --stage $Stage --version $Version `
+    --compatibility $CompatibilityPath --expected-source $ExpectedSource
+if ($LASTEXITCODE -ne 0) { throw 'Build descriptor failed; archive not created.' }
 Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $ZipPath -CompressionLevel Optimal
 try {
     Assert-ReleaseArchive -ArchivePath $ZipPath -ExpectedVersion $Version
@@ -749,24 +801,11 @@ catch {
 }
 
 Write-Host "[8/8] Writing candidate.json..."
-$Zip = Get-Item -LiteralPath $ZipPath
-$Hash = Get-FileDigestHex -Path $ZipPath -Algorithm SHA256
-$Latest = [ordered]@{
-    version = $Version
-    higgsfield_cli_version = $ReleaseCliVersion
-    file = $Zip.Name
-    sha256 = $Hash
-    size = $Zip.Length
-    created_at = (Get-Date).ToString("s")
-}
-# B안: 이 스크립트는 '후보'만 만든다. 팀원이 보는 표지(latest.json)는 관리자 창 [배포]로 바꾼다
-# (docs/UPDATE_ANNOUNCEMENTS.md). 후보와 공개 표지는 같은 원문(UTF-8 BOM)을 쓴다 — 후보 줄의 [배포]가 그대로 옮긴다.
-$ManifestBytes = (New-Object System.Text.UTF8Encoding($true)).GetPreamble() +
-    (New-Object System.Text.UTF8Encoding($false)).GetBytes(($Latest | ConvertTo-Json) + "`r`n")
+& $BuildPython.Exe $ContractTool candidate --package $ZipPath
+if ($LASTEXITCODE -ne 0) { throw 'Candidate contract creation failed.' }
 $CandidatePath = Join-Path $OutputDir "candidate.json"
-[System.IO.File]::WriteAllBytes($CandidatePath, $ManifestBytes)
 $InstallerPath = Join-Path $OutputDir "MVHub_Install.bat"
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot "MVHub_Install.bat") -Destination $InstallerPath -Force
+Write-TrustedFirstInstaller -Template (Join-Path $PSScriptRoot "MVHub_Install.bat") -Verifier (Join-Path $ProjectRoot "update_release_contract.ps1") -Destination $InstallerPath
 
 Write-Host ""
 Write-Host "Release ready:"
@@ -775,62 +814,7 @@ Write-Host "  $CandidatePath"
 Write-Host "  $InstallerPath"
 Write-Host ""
 
-# ── Auto-publish the CANDIDATE to the server packages folder (optional) ──────
-# Destination comes from -PublishDir, else from publish_target.txt (machine-local,
-# git-ignored), resolved before the build. The zip goes first (to a .part name, then
-# a no-overwrite rename), candidate.json last under release.lock. latest.json and the
-# shared installer are never touched here: an admin's [배포] publishes the candidate.
-if ($SkipPublish) {
-    Write-Host "[publish] skipped by -SkipPublish. Package remains local for validation."
-}
-elseif (-not $PublishTarget) {
-    Write-Host "Upload the zip first, then candidate.json, to your company server packages folder."
-    Write-Host "Never upload latest.json by hand - [배포] in the admin window (업데이트 tab) publishes it."
-    Write-Host "(To automate: put the server packages path in release\publish_target.txt)"
-}
-elseif ($PublishTarget -match "^https?://") {
-    Write-Host "[publish] '$PublishTarget' is an http URL - auto-copy not supported. Upload manually."
-}
-elseif (-not (Test-Path -LiteralPath $PublishTarget)) {
-    Write-Host "[publish] target folder not found: $PublishTarget"
-    Write-Host "          Check the network drive / permissions, or copy the zip and candidate.json manually."
-}
-else {
-    Write-Host "[publish] uploading the candidate to: $PublishTarget"
-    $PublishedZip = Join-Path $PublishTarget $Zip.Name
-    if (Test-Path -LiteralPath $PublishedZip) {
-        if ((Get-FileDigestHex -Path $PublishedZip -Algorithm SHA256) -ne $Hash) {
-            throw "A different $($Zip.Name) is already in $PublishTarget - a published zip must never change. Build with a new -Version."
-        }
-        Write-Host "[publish] the same zip is already there - not copied again."
-    }
-    else {
-        $PartZip = "$PublishedZip.part-" + [Guid]::NewGuid().ToString("N")
-        try {
-            [System.IO.File]::Copy($ZipPath, $PartZip, $false)
-            # 2인자 File.Move 는 대상이 있으면 실패한다 — 동시에 같은 이름을 올려도 덮어쓰지 않는다.
-            [System.IO.File]::Move($PartZip, $PublishedZip)
-        }
-        finally {
-            if (Test-Path -LiteralPath $PartZip) {
-                Remove-Item -LiteralPath $PartZip -Force -ErrorAction SilentlyContinue
-            }
-        }
-    }
-    $ReleaseLock = Open-ReleaseLock -Directory $PublishTarget -WaitSeconds 10
-    try {
-        Write-ManifestAtomic -Path (Join-Path $PublishTarget "candidate.json") -Bytes $ManifestBytes
-    }
-    finally {
-        $ReleaseLock.Dispose()
-    }
-    # 공용 첫 설치기는 공지 전에 바꾸지 않는다(Codex r2 P1-5) — 다르면 알리기만 한다.
-    $PublishedInstaller = Join-Path $PublishTarget "MVHub_Install.bat"
-    if ((-not (Test-Path -LiteralPath $PublishedInstaller)) -or
-        ((Get-FileDigestHex -Path $PublishedInstaller -Algorithm SHA256) -ne (Get-FileDigestHex -Path $InstallerPath -Algorithm SHA256))) {
-        Write-Host "[publish] NOTE: MVHub_Install.bat differs from the published one. Replace it after the announcement"
-        Write-Host "          (docs/UPDATE_ANNOUNCEMENTS.md - 'Installer'). It was NOT copied."
-    }
-    Write-Host "[publish] done - candidate uploaded. Teammates see nothing until an admin presses [배포]"
-    Write-Host "          in the admin window (업데이트 tab)."
-}
+# Building never publishes. Validate this exact ZIP, bind the resulting receipt with
+# tools/release_contract.py qualify, then explicitly use -PublishCandidatePath.
+Write-Host 'Candidate is local and unqualified. Build-time checks are not a release qualification.'
+Write-Host 'After artifact qualification, publish the same candidate using -PublishCandidatePath and -PublishDir.'

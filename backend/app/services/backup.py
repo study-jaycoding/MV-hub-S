@@ -34,6 +34,9 @@ from ..manage_db import MANAGE_DB_PATH
 from .async_tools import to_thread_non_abandon
 from .operational_logging import log_event
 from .sqlite_db import read_only_uri, validate_hub_db
+from .backup_verify import snapshot_database_set as _snapshot_database_set
+from . import backup_manifest
+from .atomic_io import atomic_write_text
 
 _backup_log = logging.getLogger("mvhub.backup")
 
@@ -186,6 +189,9 @@ def list_backups_info(backup_dir: Path | None = None) -> list[dict]:
             candidate = p.parent / f"{prefix}{stamp}.db"
             if candidate.is_file():
                 related.append(candidate)
+        manifest_path = backup_manifest.local_path(p)
+        if manifest_path.is_file():
+            related.append(manifest_path)
         out.append(
             {
                 "file": p.name,
@@ -206,6 +212,8 @@ def _rotate(backup_dir: Path) -> None:
         for prefix in (_PREFIX, _TRASH_PREFIX, _MANAGE_PREFIX):
             with contextlib.suppress(OSError):
                 (old.parent / f"{prefix}{stamp}.db").unlink()
+        with contextlib.suppress(OSError):
+            backup_manifest.local_path(old).unlink()
     # 검증·조회가 백업본(WAL 헤더)을 열 때 생긴 -wal/-shm 부산물 청소 — 회전이 .db 만 지워
     # 사이드카가 무기한 쌓였다(실측: 0바이트 -wal, 32KB -shm 다수). 짝 .db 가 없는 것과
     # 회전으로 방금 .db 가 사라진 것 모두 여기서 정리된다. 열려 있으면 unlink 가 거부되므로
@@ -254,45 +262,6 @@ def _validate_sidecar(path: Path, expected_table: str) -> None:
             raise sqlite3.DatabaseError(f"required table missing: {expected_table}")
 
 
-def _snapshot_database_set(
-    sources: list[tuple[str, Path, str, str | None]],
-    snapshots: list[tuple[str, Path, Path, str | None]],
-) -> None:
-    """첨부 DB를 한 연결의 읽기 트랜잭션에서 연 뒤 각각 온라인 백업한다.
-
-    SQLite/WAL은 ATTACH된 여러 DB 세트의 원자적 스냅샷을 보장하지 않는다. 별칭별 첫 읽기가
-    순차적이므로 DB 사이에는 미세한 시점 차와 이동 중 행의 중복·누락 가능성이 남는다. 복원 때는
-    세트 무결성·ready·핵심 수를 검사하고, content/trash 중복은 부팅 정합기가 main을 우선한다.
-    한쪽 누락·manage 의미 불일치는 완전히 검출할 수 없으므로 이전 세트와 요약을 대조하고,
-    의심되면 이전 정상 세트를 선택한다. WAL 읽기라 서버 쓰기를 장시간 막지는 않는다.
-    """
-    main_source = next(source for label, source, _, _ in sources if label == "content")
-    src_conn = sqlite3.connect(str(main_source), isolation_level=None)
-    try:
-        aliases = {"content": "main"}
-        for label, source, _, _ in sources:
-            if label == "content":
-                continue
-            alias = f"side_{label}"
-            src_conn.execute(f"ATTACH DATABASE ? AS {alias}", (str(source),))
-            aliases[label] = alias
-        src_conn.execute("BEGIN")
-        try:
-            # 각 DB의 스냅샷 경계를 가능한 한 가깝게 잡는다. DB 간 동일 시점 보장은 아니다.
-            for alias in aliases.values():
-                src_conn.execute(f"SELECT name FROM {alias}.sqlite_master LIMIT 1").fetchone()
-            for label, _, tmp, _ in snapshots:
-                dest_conn = sqlite3.connect(str(tmp))
-                try:
-                    src_conn.backup(dest_conn, name=aliases[label])
-                finally:
-                    dest_conn.close()
-        finally:
-            src_conn.execute("ROLLBACK")
-    finally:
-        src_conn.close()
-
-
 def _backup_now_for_scope(
     src: Path,
     backup_dir: Path,
@@ -328,12 +297,27 @@ def _backup_now_for_scope(
             tmp = d / f".{prefix}{stamp}.db{_TMP_MARK}{uuid4().hex[:8]}"
             snapshots.append((label, dest, tmp, expected_table))
         try:
-            _snapshot_database_set(sources, snapshots)
+            capture = _snapshot_database_set(sources, snapshots)
             for label, _, tmp, expected_table in snapshots:
                 if label == "content":
                     validate_hub_db(tmp, require_integrity=True)
                 else:
                     _validate_sidecar(tmp, expected_table or "")
+
+            role_paths = {label: tmp for label, _, tmp, _ in snapshots}
+            account_key = active_account.account_key() or ''
+            manifest = backup_manifest.seal({
+                'format': backup_manifest.LOCAL_FORMAT,
+                'format_version': backup_manifest.VERSION,
+                'payload_version': backup_manifest.PAYLOAD_VERSION,
+                'account_scope_digest': backup_manifest.account_digest(active_account.slug(account_key) if account_key else ''),
+                **capture,
+                'roles': {role: backup_manifest.role_info(path, role) for role, path in role_paths.items()},
+            })
+            backup_manifest.verify_files(manifest, role_paths, local=True)
+            # The metadata is durable before the representative content file is visible.
+            atomic_write_text(backup_manifest.local_path(d / f'{_PREFIX}{stamp}.db'),
+                              backup_manifest.canonical(manifest))
 
             # 콘텐츠 대표 파일을 마지막에 공개한다. 중간 크래시가 나도 목록에는 불완전한
             # 세트가 나타나지 않는다(앞서 공개된 sidecar는 다음 회전에서 함께 정리됨).

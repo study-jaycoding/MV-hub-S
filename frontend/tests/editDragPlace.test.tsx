@@ -19,7 +19,7 @@ const gen = (id: string, cut: string, extra: Partial<Generation> = {}) => ({
   ...extra,
 } as unknown as Generation);
 
-const world = vi.hoisted(() => ({ gens: [] as unknown[], disabled: {} as Record<string, string[]>, startedAt: 0 }));
+const world = vi.hoisted(() => ({ gens: [] as unknown[], disabled: {} as Record<string, string[]>, startedAt: 0, settledSeq: {} as Record<string, number> }));
 vi.mock("../src/lib/resolveTransfer", async () => ({
   ...(await vi.importActual<typeof import("../src/lib/resolveTransfer")>("../src/lib/resolveTransfer")),
   getResolveConnectionStatus: () => Promise.reject(new Error("안 물었다")),
@@ -35,7 +35,7 @@ vi.mock("../src/lib/useEditSequence", async () => {
     useEditProjects: () => ({
       projects: [{ id: "p1", name: "P1" }], projectsState: "ok", tree, reload: () => {}, reloadCounts: () => {}, freshByProject: {},
     }),
-    useEditGenerations: () => ({ state: "ok", gens: world.gens, error: null, complete: true, known: true, startedAt: world.startedAt, reload: () => {} }),
+    useEditGenerations: () => ({ state: "ok", gens: world.gens, error: null, complete: true, known: true, startedAt: world.startedAt, settledSeq: world.settledSeq, reload: () => {} }),
   };
 });
 vi.mock("../src/lib/useDisabledFolders", () => ({ useDisabledFolders: () => world.disabled }));
@@ -137,6 +137,7 @@ beforeEach(() => {
   flashed.length = 0;
   previewed.length = 0;
   cardActions = newCardActions();
+  world.settledSeq = {};
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -147,6 +148,37 @@ afterEach(() => {
   host.remove();
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+it("[C] 부분 확인은 해당 카드의 덧입힘만 걷고 다른 카드·저장 중인 카드는 지킨다", async () => {
+  world.startedAt = 0;
+  world.gens = [gen("a", "c1"), gen("b", "c1")];
+  mountOn("c1");
+  const saves: (() => void)[] = [];
+  cardActions.onSetTags.mockImplementation(() => new Promise<void>((resolve) => saves.push(resolve)));
+  const add = (index: number, text: string) => {
+    act(() => poolCards()[index].querySelector<HTMLElement>(".card-tl .card-cm")!.click());
+    const input = poolCards()[index].querySelector<HTMLInputElement>(".cs-tag-input")!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, text);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    act(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    act(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+  };
+  add(0, "local-a"); add(1, "local-b");
+  await act(async () => { saves.splice(0).forEach((resolve) => resolve()); });
+  world.gens = [gen("a", "c1", { tags: ["remote-a"] }), gen("b", "c1")];
+  world.settledSeq = { a: editTick() };
+  mount();
+  add(0, "next-a"); add(1, "next-b");
+  expect(cardActions.onSetTags.mock.calls.slice(2).map(([, tags]) => tags)).toEqual([["remote-a", "next-a"], ["local-b", "next-b"]]);
+  world.settledSeq = { a: editTick(), b: editTick() };
+  world.gens = [gen("a", "c1", { tags: ["too-early"] }), gen("b", "c1")];
+  mount(); // 다음 저장이 아직 끝나지 않아 새 순번으로도 걷으면 안 된다.
+  add(0, "still-saving");
+  expect(cardActions.onSetTags.mock.calls.at(-1)?.[1]).toEqual(["remote-a", "next-a", "still-saving"]);
+  await act(async () => { saves.splice(0).forEach((resolve) => resolve()); });
 });
 
 it("풀의 카드를 끌어 트랙 줄에 놓으면 그 컷의 그 트랙에 들어간다 — 빈 칸은 넣기, 찬 칸은 교체, 지금 있는 트랙·잠긴 트랙은 아무 일도 없다", () => {

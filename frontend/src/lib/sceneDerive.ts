@@ -4,6 +4,8 @@
 //  · pruneGroups: 삭제된/유령 카드 id 를 그룹 멤버에서 빼고 빈 그룹 제거.
 import type { SceneCard, SceneRef, SceneGroup } from "./scenes";
 
+export const CARD_W = 152;
+export const CARD_H = 130;
 export const GROUP_PADDING = 16;
 export const GROUP_HEADER_HEIGHT = 26;
 export const GROUP_COLLAPSED_WIDTH = 200;

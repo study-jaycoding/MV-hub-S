@@ -737,6 +737,9 @@ async def _param_args(model: str, params: Optional[dict[str, Any]]) -> list[str]
     스키마를 못 받았으면(빈 집합) 이름 필터를 적용하지 않는다 — 전부 비워 기본값으로
     엉뚱하게 생성(크레딧 소모)되는 것보다 기존 동작 유지가 안전(advisor)."""
     allowed = await _allowed_param_names(model)
+    if model == "seedance_2_5" and allowed:
+        # A cached pre-Draft schema must not change the quoted or submitted mode.
+        allowed = allowed | {"draft", "draft_job_id"}
     out: list[str] = []
     for k, v in (params or {}).items():
         if v is None or v == "":
@@ -987,6 +990,9 @@ async def estimate_cost(
     # 느린 CLI 견적이 즉시 응답을 막았다. 스키마 miss 가능 경로는 게이트 안에서만 CLI 를
     # 부른다(게이트 밖 무제한 model get 방지).
     _require_model_id(model)
+    if model == "seedance_2_5" and not (params or {}).get("draft_job_id"):
+        from .seedance_draft import fresh_params
+        params = fresh_params(model, params)
     _load_cost_cache()
     if model in _PARAM_NAMES_CACHE:
         # 스키마 확정 — _param_args 는 subprocess 없는 순수 계산

@@ -219,6 +219,7 @@ def test_claim_requests_updates_each_placeholder_and_broadcasts_in_scope():
             workspace_capable=False,
             lease_owner=None,
             submission_stage_capable=False,
+            asset_content_capable=True,
             sweep_expired=False,
         )
         assert repo.set_status.call_args_list == [
@@ -253,10 +254,12 @@ def test_staged_claim_waits_for_begin_before_marking_generation_started():
                 limit=1,
                 lease_owner="agent-1",
                 submission_stage_capable=True,
+                asset_content_capable=False,
             )
         )
 
     assert out == claimed
+    assert repo.claim_pending_requests.call_args.kwargs["asset_content_capable"] is False
     repo.set_status.assert_not_called()
     pm.assert_not_called()
     broadcast.assert_awaited_once_with({"type": "synced"}, account_uid="acct:a")
@@ -364,6 +367,7 @@ def test_recovery_requeue_reports_auto_probe_candidate_instead_of_requeueing():
 
 def test_fulfill_request_applies_result_once_and_broadcasts():
     result = SimpleNamespace(
+        params={"draft": True, "seed": 5},
         asset_type="image",
         asset_path="C:/result.png",
         asset_thumb="C:/thumb.png",
@@ -402,6 +406,7 @@ def test_fulfill_request_applies_result_once_and_broadcasts():
             status="done",
             error=None,
             request_status="done",
+            params={"draft": True, "seed": 5},
         )
         pm.assert_called_once()
         broadcast.assert_awaited_once_with(
@@ -421,6 +426,7 @@ def test_fulfill_request_cas_noop_does_not_repeat_side_effects():
         "app.usecases.gen_requests.cli_bridge.parse_job", return_value={}
     ), patch(
         "app.usecases.gen_requests.normalize_job_result", return_value=SimpleNamespace(
+            params=None,
             asset_type=None,
             asset_path=None,
             asset_thumb=None,
@@ -498,6 +504,7 @@ def test_reconcile_request_keeps_processing_in_tracking_without_terminal_write()
 
 def test_reconcile_request_applies_terminal_result_and_broadcasts():
     result = SimpleNamespace(
+        params=None,
         asset_type="video",
         asset_path="C:/result.mp4",
         asset_thumb="C:/poster.jpg",
@@ -546,6 +553,7 @@ def test_reconcile_request_applies_terminal_result_and_broadcasts():
             status="done",
             error=None,
             provider_status="done",
+            params=None,
         )
         pm.assert_called_once()
         broadcast.assert_awaited_once_with(

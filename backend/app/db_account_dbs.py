@@ -21,6 +21,8 @@ def _seed_default_worker(path: Path) -> None:
     try:
         c = sqlite3.connect(str(path))
         try:
+            from .services.trash_transfer import configure_connection
+            configure_connection(c)
             c.execute(
                 "INSERT INTO worker(id, name, account_type) VALUES(?,?,?) "
                 "ON CONFLICT(id) DO NOTHING",

@@ -103,7 +103,7 @@ describe("executeSceneComfy", () => {
 
     expect(fetchMedia).toHaveBeenCalledWith("/input.png", "image1.png");
     expect(run).toHaveBeenCalledWith("workflow", { prompt: "hello" }, [
-      { type: "image", name: "image1.png", blob },
+      { type: "image", name: "image1.png", blob, source_url: "/input.png", source_gen_id: undefined, role: "@Image1" },
     ]);
   });
 

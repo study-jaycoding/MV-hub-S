@@ -6,7 +6,7 @@
   · thumbs `.thumbs` 의 `*.tmp`(생성 중단) — eviction 이 `.jpg` 외엔 안 지웠다.
   · ComfyUI input `mvhub/` 업로드 원본 — 실행이 끝나도 삭제 주체가 없었다(잡별 유일
     이름이라 겹치지도 않아 영구 누적).
-  · %TEMP% 의 `mvhub-export-*.db`(DB 내보내기)·`mvhub-update-bootstrap-*.bat` — 클라이언트
+  · %TEMP% 의 `mvhub-export-*.db`(DB 내보내기)·`mvhub-bundle-*.zip`(자료 내보내기)·`mvhub-update-bootstrap-*.bat` — 클라이언트
     중단 시 BackgroundTask 가 못 돌아 잔류.
   · %TEMP% 의 `mvhub-comfy-input-*.part`·`mvhub-comfy-converted-*.mp4` — Comfy 백그라운드
     작업 전에 프로세스가 비정상 종료되면 정상 finally가 실행되지 못해 잔류.
@@ -94,6 +94,7 @@ def sweep_once(now: Optional[float] = None) -> dict[str, int]:
             (
                 "mvhub-export-*.db",
                 "mvhub-import-*.db",
+                "mvhub-bundle-*.zip",
                 "mvhub-update-bootstrap-*.bat",
                 "mvhub-update-*.ps1",
             ),

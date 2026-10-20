@@ -13,8 +13,9 @@ import {
 import { refMediaType, refMediaSrc, mediaFileName } from "./sceneMedia";
 import { variantIds, type SceneCard, type SceneEdge, type SceneRef } from "./scenes";
 import type { Generation } from "../types";
+import { assetIdentity, type AssetReferenceIdentity } from "../shared/contracts/assets";
 
-export interface ComfyMediaInput {
+export interface ComfyMediaInput extends AssetReferenceIdentity {
   type: "image" | "video";
   url: string;
   name: string;
@@ -98,7 +99,7 @@ function inputGraphFingerprint(
           kind: card.kind,
           refs: (card.refs || []).map((ref) => ({
             type: ref.type,
-            file_path: ref.file_path,
+            file_path: ref.asset_content_id || ref.file_path,
             source_gen_id: ref.source_gen_id || null,
           })),
         };
@@ -187,15 +188,16 @@ export function gatherComfyMedia(
     const url = refMediaSrc(r);
     if (!url) return;
     // 레퍼런스가 생성물에서 온 것이면 그 gid 를 계보용으로 전달(source_gen_id).
-    out.push({ type: mt, url, name: mediaFileName(r.name || url, mt, out.length + 1), source_gen_id: r.source_gen_id });
+    out.push({ ...assetIdentity(r), type: mt, url, name: mediaFileName(r.name || url, mt, out.length + 1), source_gen_id: r.source_gen_id });
   };
   const pushGen = (gc?: SceneCard) => {
     const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
     const a = gid ? ownEntry(genData, gid)?.assets?.[0] : undefined;
-    const url = a?.source_url || a?.file_path;
+    const raw = a?.asset_content_id ? a.file_path : a?.source_url || a?.file_path;
+    const url = raw ? refMediaSrc({ file_path: raw, type: a?.type || "image" }) : undefined;
     if (!url) return;
     const type = a?.type === "video" ? "video" : "image";
-    out.push({ type, url, name: mediaFileName(url, type, out.length + 1), source_gen_id: gid });
+    out.push({ ...assetIdentity(a!), type, url, name: mediaFileName(url, type, out.length + 1), source_gen_id: gid });
   };
   for (const s of srcs) {
     if (s.kind === "reference") (s.refs || []).forEach(pushRef);

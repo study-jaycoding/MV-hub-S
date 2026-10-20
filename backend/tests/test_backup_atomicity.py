@@ -180,7 +180,8 @@ class BackupAtomicityTests(unittest.TestCase):
             )
         info = backup.list_backups_info()[0]
         self.assertEqual(
-            set(info["files"]), {primary.name, trash_copy.name, manage_copy.name}
+            set(info["files"]), {primary.name, trash_copy.name, manage_copy.name,
+                                 backup.backup_manifest.local_path(primary).name}
         )
 
     def test_wal_sidecar_dbs_leave_no_temp_named_wal_or_shm(self):

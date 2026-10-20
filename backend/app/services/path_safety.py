@@ -10,9 +10,33 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import os
+import re
 from pathlib import Path, PurePath, PureWindowsPath
 from typing import Optional, Union
+
+
+def asset_storage_context(raw: str, drives: str = "") -> Optional[tuple[Path, str]]:
+    """Pure configured Assets root proof shared by writes and read projections."""
+    value=(raw or "").strip()
+    if not value:
+        return None
+    mapping={}
+    for item in drives.split(';'):
+        drive,sep,share=item.partition('=')
+        if sep and re.fullmatch('[A-Za-z]:',drive.strip()) and share.strip():
+            mapping[drive.strip().upper()]=share.strip().rstrip('\\/')
+    match=re.match(r'^([A-Za-z]:)[\\/]?(.*)$',value)
+    if match and match.group(1).upper() in mapping:
+        tail=match.group(2).replace('/','\\').strip('\\')
+        value=mapping[match.group(1).upper()]+('\\'+tail if tail else '')
+    root=Path(value)
+    if not root.is_absolute():
+        return None
+    # Proof is configuration identity; resolve symlinks only at actual confined file IO.
+    root=Path(os.path.normpath(str(root)))
+    return root,hashlib.sha256(os.path.normcase(str(root)).encode('utf-8')).hexdigest()
 
 
 def unc_for_drive(path: str) -> Optional[str]:

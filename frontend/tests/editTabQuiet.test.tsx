@@ -18,7 +18,7 @@ const gen = (id: string, cut: string, type: "image" | "video" = "image") => ({
     thumbnail_path: null, source_url: null, cached: true }],
 } as unknown as Generation);
 
-const world = vi.hoisted(() => ({ gens: [] as unknown[], reload: (() => {}) as () => void, reloadCounts: (() => {}) as () => void }));
+const world = vi.hoisted(() => ({ gens: [] as unknown[], reload: vi.fn(), reloadCounts: vi.fn(), reloadIds: vi.fn(), reloadFresh: vi.fn() }));
 vi.mock("../src/lib/resolveTransfer", async () => ({
   ...(await vi.importActual<typeof import("../src/lib/resolveTransfer")>("../src/lib/resolveTransfer")),
   getResolveConnectionStatus: () => Promise.reject(new Error("안 물었다")),
@@ -33,10 +33,10 @@ vi.mock("../src/lib/useEditSequence", async () => {
     ...actual,
     useEditProjects: () => ({
       projects: [{ id: "p1", name: "P1" }], projectsState: "ok", tree, reload: () => {},
-      reloadCounts: () => world.reloadCounts(), freshByProject: {},
+      reloadCounts: () => world.reloadCounts(), reloadFresh: () => world.reloadFresh(), freshByProject: {},
     }),
     useEditGenerations: () => ({
-      state: "ok", gens: world.gens, error: null, complete: true, known: true, reload: () => world.reload(),
+      state: "ok", gens: world.gens, error: null, complete: true, known: true, reload: () => world.reload(), reloadIds: (ids: string[]) => world.reloadIds(ids),
     }),
   };
 });
@@ -81,6 +81,8 @@ beforeEach(() => {
   world.gens = [gen("a", "c1"), gen("v", "c1", "video"), gen("x", "c2")];
   world.reload = vi.fn();
   world.reloadCounts = vi.fn();
+  world.reloadIds = vi.fn();
+  world.reloadFresh = vi.fn();
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -109,6 +111,73 @@ it("밑의 탭의 15초 폴링 틱에는 왼쪽의 숫자만 다시 받는다 �
   act(() => { dispatchAppEvent(APP_EVENTS.libraryChanged, LIBRARY_POLL_TICK); });
   act(() => { vi.advanceTimersByTime(400); });
   expect(world.reload).toHaveBeenCalledTimes(2);
+});
+
+it("[stage5] 태그 저장 알림은 목록만 다시 받고 폴더 숫자는 조회하지 않는다", () => {
+  mount();
+  act(() => { dispatchAppEvent(APP_EVENTS.generationTagsSettled); });
+  act(() => { vi.advanceTimersByTime(400); });
+  expect(world.reload).toHaveBeenCalledTimes(1);
+  expect(world.reloadCounts).not.toHaveBeenCalled();
+});
+
+it.each(["tag-first", "folder-first"])("[stage5] 태그와 폴더 변경이 섞여도 목록·숫자는 각각 한 번 갱신한다: %s", (order) => {
+  mount();
+  const events = order === "tag-first"
+    ? [APP_EVENTS.generationTagsSettled, APP_EVENTS.libraryChanged]
+    : [APP_EVENTS.libraryChanged, APP_EVENTS.generationTagsSettled];
+  act(() => { dispatchAppEvent(events[0]); });
+  act(() => { vi.advanceTimersByTime(200); });
+  act(() => { dispatchAppEvent(events[1]); });
+  act(() => { vi.advanceTimersByTime(399); });
+  expect(world.reload).not.toHaveBeenCalled();
+  expect(world.reloadCounts).not.toHaveBeenCalled();
+  act(() => { vi.advanceTimersByTime(1); });
+  expect(world.reload).toHaveBeenCalledTimes(1);
+  expect(world.reloadCounts).toHaveBeenCalledTimes(1);
+
+  // 다음 태그-only 묶음에는 이전 일반 변경의 집계 요구를 넘기지 않는다.
+  act(() => { dispatchAppEvent(APP_EVENTS.generationTagsSettled); });
+  act(() => { vi.advanceTimersByTime(400); });
+  expect(world.reload).toHaveBeenCalledTimes(2);
+  expect(world.reloadCounts).toHaveBeenCalledTimes(1);
+});
+
+it("[C] 유효한 태그 id만 묶어 부분 조회하고 빈 id는 조회하지 않는다", () => {
+  mount();
+  act(() => { dispatchAppEvent(APP_EVENTS.generationTagsSettled, { ids: [], fields: ["tags"] }); vi.advanceTimersByTime(400); });
+  expect(world.reloadIds).not.toHaveBeenCalled();
+  act(() => { dispatchAppEvent(APP_EVENTS.generationTagsSettled, { ids: ["a"], fields: ["tags"] }); });
+  act(() => { vi.advanceTimersByTime(200); dispatchAppEvent(APP_EVENTS.generationTagsSettled, { ids: ["a", "v"], fields: ["auto_tags"] }); });
+  act(() => { vi.advanceTimersByTime(400); });
+  expect(world.reloadIds).toHaveBeenCalledWith(["a", "v"]);
+  expect(world.reload).not.toHaveBeenCalled(); expect(world.reloadCounts).not.toHaveBeenCalled();
+});
+
+it.each([true, false])("[C] 부분 태그와 일반 변경의 요구를 순서와 관계없이 함께 보존한다: %s", (tagFirst) => {
+  mount();
+  const tag = () => dispatchAppEvent(APP_EVENTS.generationTagsSettled, { ids: ["a"], fields: ["tags"] });
+  const general = () => dispatchAppEvent(APP_EVENTS.libraryChanged);
+  act(() => { (tagFirst ? tag : general)(); vi.advanceTimersByTime(200); (tagFirst ? general : tag)(); vi.advanceTimersByTime(400); });
+  expect(world.reload).toHaveBeenCalledTimes(1); expect(world.reloadCounts).toHaveBeenCalledTimes(1);
+  expect(world.reloadIds).toHaveBeenCalledWith(["a"]);
+});
+
+it("[C] 다른 프로젝트 알림은 전 프로젝트 새 항목만 갱신하고 poll은 먼저 판정한다", () => {
+  mount();
+  act(() => { dispatchAppEvent(APP_EVENTS.libraryChanged, { projectId: "p2" }); vi.advanceTimersByTime(400); });
+  expect(world.reloadFresh).toHaveBeenCalledTimes(1); expect(world.reloadCounts).not.toHaveBeenCalled(); expect(world.reload).not.toHaveBeenCalled();
+  act(() => { dispatchAppEvent(APP_EVENTS.libraryChanged, { projectId: "p2", poll: true }); });
+  expect(world.reloadCounts).toHaveBeenCalledTimes(1); expect(world.reloadFresh).toHaveBeenCalledTimes(1);
+  act(() => { dispatchAppEvent(APP_EVENTS.generationTagsSettled, { ids: ["a"], fields: ["wrong"] }); vi.advanceTimersByTime(400); });
+  expect(world.reload).toHaveBeenCalledTimes(1); expect(world.reloadCounts).toHaveBeenCalledTimes(1);
+});
+
+it.each(["", "   "])("[C] 빈 프로젝트 힌트는 기존 전체 갱신으로 처리한다: '%s'", (projectId) => {
+  mount();
+  act(() => { dispatchAppEvent(APP_EVENTS.libraryChanged, { projectId }); vi.advanceTimersByTime(400); });
+  expect(world.reload).toHaveBeenCalledTimes(1); expect(world.reloadCounts).toHaveBeenCalledTimes(1);
+  expect(world.reloadFresh).not.toHaveBeenCalled();
 });
 
 it("타임코드는 글자 노드를 갈아 끼우지 않고 값만 고친다 — 막대와 뷰어 둘 다", () => {

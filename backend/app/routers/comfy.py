@@ -15,7 +15,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import tempfile
 import threading
 import time
@@ -27,6 +26,7 @@ from typing import Annotated, Any, Optional
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from .. import active_account, rbac, repo
@@ -46,9 +46,11 @@ from ..deps import (
     require_agent_account,
     require_project_role,
 )
-from ..services import comfy_client, comfy_run_journal as run_journal, comfy_run_keys, comfy_workflow, upload_limits, video_convert, worker_backup
+from ..services import comfy_asset_provenance as provenance, comfy_client, comfy_run_journal as run_journal, comfy_run_keys, comfy_workflow, shared_connection, upload_limits, video_convert, worker_backup
 from ..services.release_update import update_in_progress
 from ..services.request_guards import require_loopback_request
+from ..services.path_safety import safe_join
+from ..services.media_types import asset_content_type
 
 log = logging.getLogger("comfy")
 
@@ -126,6 +128,7 @@ class _ComfyIdentity:
     scope: str
     settings: dict
     auth_enabled: bool
+    server_origin: str = ""
 
 
 @contextmanager
@@ -145,7 +148,8 @@ def _comfy_request_scope(request: Request):
         except (OSError, ValueError, KeyError) as error:
             raise HTTPException(409, "이 PC의 식별정보를 저장할 수 없어 Comfy 작업을 진행할 수 없습니다") from error
         scope = hashlib.sha256(f"comfy-owner-v1|{owner}|{device}".encode()).hexdigest()[:16]
-        identity = _ComfyIdentity(pin, owner, creator_uid, device, scope, settings, AUTH_ENABLED)
+        identity = _ComfyIdentity(pin, owner, creator_uid, device, scope, settings, AUTH_ENABLED,
+                                 shared_connection.base_url())
         try:
             run_journal.bootstrap(owner, AUTH_ENABLED)
         except Exception as error:
@@ -810,6 +814,8 @@ class _MediaUpload:
     filename: str
     path: Path
     size: int
+    position: int = 0
+    metadata: Optional[dict] = None
 
 
 def _cleanup_media_uploads(uploads: list[_MediaUpload]) -> None:
@@ -820,13 +826,103 @@ def _cleanup_media_uploads(uploads: list[_MediaUpload]) -> None:
             log.warning("Comfy 입력 임시파일 정리 실패: %s", exc)
 
 
-def _fill_images(target: dict, wf: dict, slots: list, uploads: list[_MediaUpload]) -> int:
+def _archive_input(job_id: str, upload: _MediaUpload, kind: str, slot: dict,
+                   source: Optional[Path] = None, filename: Optional[str] = None) -> Path:
+    with _RUN_JOBS_LOCK:
+        job = _RUN_JOBS.get(job_id)
+        identity = job.get("identity") if job else None
+        project_id = job.get("asset_project_id") if job else None
+        server_origin = job.get("asset_server_origin", "") if job else ""
+    if identity is None:
+        return source or upload.path  # 기존 직접 helper 호출은 실행 신원/저널이 없다.
+    owner_uid = identity.creator_uid or identity.pin[1] or repo.get_my_uid() or (
+        "acct:" + identity.owner if identity.owner != "local" else "local")
+    original_sha = provenance.asset_io.sha256_file(upload.path)
+    if not original_sha:
+        raise ValueError("Comfy 입력 원본을 확인할 수 없습니다")
+    metadata = upload.metadata or {}
+    for key in ("asset_content_id", "source_gen_id", "source_url", "role"):
+        value = metadata.get(key)
+        if value is not None and (not isinstance(value, str) or len(value) > 8192):
+            raise ValueError("Comfy 입력의 출처 형식을 확인할 수 없습니다")
+    expected_content = metadata.get("asset_content_id")
+    if expected_content and expected_content != "sha256:" + original_sha:
+        raise ValueError("Comfy 입력이 선택한 자료의 바이트와 다릅니다")
+    original = None
+    original_name = Path(metadata.get("original_name") or upload.filename).name
+    if source is not None and source != upload.path:
+        original = provenance.archive(
+            upload.path, name=original_name, kind=kind, media_dir=MEDIA_DIR, scope=identity.scope,
+            owner_uid=owner_uid, project_id=project_id, server_origin=server_origin, expected_sha=original_sha,
+        )
+    evidence = provenance.archive(
+        source or upload.path, name=Path(original_name).stem + Path(filename or upload.filename).suffix, kind=kind,
+        media_dir=MEDIA_DIR, scope=identity.scope, owner_uid=owner_uid,
+        project_id=project_id, server_origin=server_origin,
+    )
+    evidence.update(position=upload.position, role=metadata.get("role"),
+                    slot={"node_id": slot["node_id"], "field": slot["field"]},
+                    source_asset_content_id="sha256:" + original_sha,
+                    source_gen_id=metadata.get("source_gen_id"),
+                    source_url=provenance._metadata_value(metadata.get("source_url"), "source_url"))
+    if original:
+        evidence["source_file_path"] = original["file_path"]
+    with _RUN_JOBS_LOCK:
+        _RUN_JOBS[job_id].setdefault("input_evidence", []).append(evidence)
+    return Path(evidence["path"])
+
+
+def _archive_output(url: str, kind: str, identity: _ComfyIdentity, *, project_id: Optional[str],
+                    server_origin: str, expected: Optional[dict] = None) -> Optional[dict]:
+    path = safe_join(MEDIA_DIR, url.removeprefix("/media/"))
+    if path is None:
+        raise HTTPException(400, "출력 경로를 확인할 수 없습니다")
+    if not path.is_file():
+        if expected and expected.get("sha256"):
+            raise HTTPException(409, "실행 결과 파일이 없어 저장하지 않았습니다")
+        return None  # 옛 경로만 남은 기록에는 내용 ID를 추정하지 않는다.
+    owner_uid = identity.creator_uid or identity.pin[1] or repo.get_my_uid() or (
+        "acct:" + identity.owner if identity.owner != "local" else "local")
+    expected = expected or {}
+    journal_bytes = (expected.get("rel") == url.removeprefix("/media/")
+                     and expected.get("downloaded") is True
+                     and isinstance(expected.get("sha256"), str)
+                     and re.fullmatch("[a-f0-9]{64}", expected["sha256"])
+                     and type(expected.get("bytes")) is int and expected["bytes"] > 0)
+    require_owned = not _OUTPUT_REL.fullmatch(url.removeprefix("/media/")) and not journal_bytes
+    try:
+        return provenance.archive(
+            path, name=path.name, kind=kind, media_dir=MEDIA_DIR, scope=identity.scope,
+            owner_uid=owner_uid, project_id=project_id, server_origin=server_origin, file_path=url,
+            expected_sha=expected.get("sha256"), expected_bytes=expected.get("bytes"),
+            require_owned=require_owned,
+        )
+    except PermissionError as error:
+        raise HTTPException(403, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+
+
+@router.get("/inputs/{scope}/{filename}")
+def input_file(scope: str, filename: str, request: Request):
+    with _comfy_request_scope(request) as identity:
+        path = provenance.local_input_path(f"/api/comfy/inputs/{scope}/{filename}", MEDIA_DIR, identity.scope)
+        if path is None or not path.is_file():
+            raise HTTPException(404, "Comfy 입력 보관본을 찾을 수 없습니다")
+        if provenance.asset_io.sha256_file(path) != path.stem:
+            raise HTTPException(409, "Comfy 입력 보관본의 바이트가 다릅니다")
+        return FileResponse(path, media_type=asset_content_type(path.name),
+                            headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+
+def _fill_images(target: dict, wf: dict, slots: list, uploads: list[_MediaUpload], job_id: str = "") -> int:
     """이미지 uploads 를 image_slots 에 순서대로 업로드·주입하고, 미사용 슬롯은 prune. 채운 개수 반환."""
     if not uploads:
         return 0
     used = 0
     for slot, upload in zip(slots, uploads):
-        name = comfy_client.upload_file(target, upload.filename, upload.path)
+        source = _archive_input(job_id, upload, "image", slot)
+        name = comfy_client.upload_file(target, upload.filename, source)
         node = wf.get(slot["node_id"])
         if isinstance(node, dict):
             node.setdefault("inputs", {})[slot["field"]] = name
@@ -842,6 +938,7 @@ def _fill_videos(
     slots: list,
     uploads: list[_MediaUpload],
     input_dir: str,
+    job_id: str = "",
 ) -> int:
     """영상 uploads 를 video_slots 에 채우고 미사용 슬롯 prune.
     파일 선택형(VHS_LoadVideo 등)은 /upload/image 로 올려 그 이름을 주입.
@@ -863,12 +960,10 @@ def _fill_videos(
                     f"영상 노드({slot['class_type']})가 경로 입력형입니다. "
                     "설정에서 ComfyUI input 폴더를 지정하거나 파일 선택형(VHS_LoadVideo) 노드를 쓰세요.",
                 )
-            # 파일명은 경로 성분을 제거해 mvhub 폴더 밖으로 못 빠지게 한다(경로 탈출 방어).
-            safe = Path(fname).name or "input.bin"
-            dest = Path(input_dir) / "mvhub" / safe
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(upload.path, dest)
-            node.setdefault("inputs", {})[slot["field"]] = str(dest.resolve())
+            source = _archive_input(job_id, upload, "video", slot)
+            snapshot_sha = source.stem if re.fullmatch("[a-f0-9]{64}", source.stem) else None
+            dest = provenance.materialize_path_input(source, input_dir, expected_sha=snapshot_sha)
+            node.setdefault("inputs", {})[slot["field"]] = str(dest)
         else:
             source = upload.path
             converted: Path | None = None
@@ -887,7 +982,8 @@ def _fill_videos(
                     source = converted
                     fname = os.path.splitext(fname)[0] + ".mp4"
             try:
-                name = comfy_client.upload_file(target, fname, source)
+                snapshot = _archive_input(job_id, upload, "video", slot, source, fname)
+                name = comfy_client.upload_file(target, fname, snapshot)
             finally:
                 if converted is not None and converted != upload.path:
                     try:
@@ -995,15 +1091,10 @@ def _inject_media_files(
     #  이미지를 입력으로 실행되는 무오류 오답이 났다. 잡 uuid + **업로드 순번** 접두로
     #  잡 간·잡 내(같은 원본 이름 2개 업로드) 충돌을 모두 차단한다
     #  (반환된 이름이 그대로 노드에 주입되므로 이 한 곳이 유일한 관문이다).
-    if job_id:
-        prefix = job_id[:12]
-        uploads = [
-            replace(
-                upload,
-                filename=f"{prefix}-{i}-{Path(upload.filename).name or 'input.bin'}",
-            )
-            for i, upload in enumerate(uploads)
-        ]
+    prefix = job_id[:12]
+    uploads = [replace(upload, position=i, metadata={**(meta[i] if isinstance(meta[i], dict) else {}), "original_name": upload.filename},
+                       filename=f"{prefix}-{i}-{Path(upload.filename).name or 'input.bin'}" if job_id else upload.filename)
+               for i, upload in enumerate(uploads)]
     slots = comfy_workflow.detect_slots(wf, set())
     images: list[_MediaUpload] = []
     videos: list[_MediaUpload] = []
@@ -1021,8 +1112,8 @@ def _inject_media_files(
         raise HTTPException(
             400, f"연결된 영상 {len(videos)}개가 워크플로우 영상 슬롯 "
             f"{len(slots['video_slots'])}개보다 많습니다")
-    ni = _fill_images(target, wf, slots["image_slots"], images)
-    nv = _fill_videos(target, wf, slots["video_slots"], videos, input_dir)
+    ni = _fill_images(target, wf, slots["image_slots"], images, job_id)
+    nv = _fill_videos(target, wf, slots["video_slots"], videos, input_dir, job_id)
     return {"images": ni, "videos": nv,
             "image_slots": len(slots["image_slots"]), "video_slots": len(slots["video_slots"])}
 
@@ -1096,11 +1187,11 @@ def _collect_run_outputs(job_id: str, target: dict, entry: dict, wf: Optional[di
         if time.monotonic() >= deadline:
             raise comfy_client.ComfyError("결과 회수 시간 예산을 초과했습니다", cause_kind="timeout")
         rel = item["rel"]
-        if item.get("downloaded") or item.get("unavailable"):
+        if item.get("unavailable"):
             continue
         dst = MEDIA_DIR / rel
         # 전체 파일 스캔/출력 추측은 하지 않는다. 이미 계획된 정확한 경로의 replace→flag 창만 회수.
-        if rel in previous and dst.is_file() and dst.stat().st_size > 0:
+        if (item.get("downloaded") or rel in previous) and dst.is_file() and dst.stat().st_size > 0:
             item["downloaded"] = True
         else:
             try:
@@ -1113,6 +1204,14 @@ def _collect_run_outputs(job_id: str, target: dict, entry: dict, wf: Optional[di
                     _patch_run_record(job_id, outputs=manifest, last_status_code=error.status_code,
                                       last_error_class="download_failed")
                     raise
+        if item.get("downloaded"):
+            evidence = _archive_output(
+                f"/media/{rel}", item["kind"], identity, project_id=record.get("asset_project_id"),
+                server_origin=record.get("asset_server_origin", ""), expected=item,
+            )
+            if evidence:
+                item.update(asset_content_id=evidence["asset_content_id"], sha256=evidence["sha256"],
+                            bytes=evidence["bytes"], snapshot_url=evidence["file_path"])
         _patch_run_record(job_id, outputs=manifest)
     results = [{"kind": item["kind"], "url": f"/media/{item['rel']}"}
                for item in manifest if item.get("downloaded")]
@@ -1159,6 +1258,17 @@ def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
         job = _RUN_JOBS[job_id]
         identity = job["identity"]
         record = _new_run_record(job_id, identity)
+        record.update(input_evidence=copy.deepcopy(job.get("input_evidence", [])),
+                      execution_snapshot=provenance.execution_snapshot(copy.deepcopy(wf)),
+                      asset_project_id=job.get("asset_project_id"),
+                      asset_server_origin=job.get("asset_server_origin", ""))
+    known_slots = {(item["slot"]["node_id"], item["slot"]["field"]) for item in record["input_evidence"]}
+    slots = comfy_workflow.detect_slots(wf, set())
+    record["comfy_unverified_input_slots"] = [
+        {"node_id": slot["node_id"], "field": slot["field"], "type": kind}
+        for kind, group in (("image", slots["image_slots"]), ("video", slots["video_slots"])) for slot in group
+        if (slot["node_id"], slot["field"]) not in known_slots
+    ]
     try:
         run_journal.admit(record, identity.auth_enabled)  # cap 최종 판정도 실제 제출 직전 같은 원자 구간.
     except run_journal.JournalFull as error:
@@ -1246,6 +1356,7 @@ def run(
     media_meta: str = Form("[]"),
     media: list[UploadFile] = File(default=[]),
     run_key: Annotated[str, Form()] = "",  # 함수를 직접 부르는 호출(시험)에서도 기본값이 빈 글이 되게 Annotated 로
+    project_id: Annotated[str, Form()] = "",
 ):
     """Comfy 노드 실행 '시작' — 실제 제출/폴링/다운로드는 백그라운드 스레드에서 처리하고 즉시 job_id 반환.
     (긴 HTTP 연결을 붙잡지 않아 배치 병렬 시 연결 끊김='Failed to fetch' 오판을 없앤다.)
@@ -1262,7 +1373,10 @@ def run(
     with _comfy_request_scope(request) as identity:
         if expected_account_differs(request, identity.owner):
             raise HTTPException(409, "그사이 이 PC 의 계정이 바뀌어 실행하지 않았습니다 — 화면을 새로 고친 뒤 다시 눌러 주세요")
-        return _start_run(content, param_values, media_meta, media, identity, run_key)
+        pid = (project_id or "").strip() or None
+        if pid and AUTH_ENABLED:
+            require_project_role(request, pid, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER)
+        return _start_run(content, param_values, media_meta, media, identity, run_key, pid)
 
 
 def _run_fingerprint(content: str, param_values: str, media_meta: str, uploads: list[_MediaUpload]) -> str:
@@ -1279,7 +1393,7 @@ def _run_fingerprint(content: str, param_values: str, media_meta: str, uploads: 
     return digest.hexdigest()
 
 
-def _start_run(content: str, param_values: str, media_meta: str, media: list[UploadFile], identity: _ComfyIdentity, run_key: str = ""):
+def _start_run(content: str, param_values: str, media_meta: str, media: list[UploadFile], identity: _ComfyIdentity, run_key: str = "", project_id: Optional[str] = None):
     try:
         wf = json.loads(content)
         pvals = json.loads(param_values or "{}")
@@ -1301,7 +1415,8 @@ def _start_run(content: str, param_values: str, media_meta: str, media: list[Upl
     if len(run_journal.read(identity.owner, identity.auth_enabled)) >= run_journal.CAP:
         raise HTTPException(409, "미해결 Comfy 실행 기록이 가득 찼습니다. 설정에서 확인·정리한 뒤 실행하세요")
     job_id = _create_run_job()
-    _update_run_job(job_id, identity=identity, owner=identity.owner)
+    _update_run_job(job_id, identity=identity, owner=identity.owner,
+                    asset_project_id=project_id, asset_server_origin=identity.server_origin)
     uploads: list[_MediaUpload] = []
     try:
         # UploadFile은 응답 후 닫히므로 제한 복사하고 스레드에는 경로만 넘긴다.
@@ -1311,7 +1426,7 @@ def _start_run(content: str, param_values: str, media_meta: str, media: list[Upl
         if run_key:
             # 준비 중 잡을 먼저 등록한 뒤(업데이트가 유휴로 오판하지 않게) 접수 장부에 적는다 — 장부를 못 적으면 실행하지 않는다(Codex D7).
             try:
-                verdict, known = comfy_run_keys.claim(identity.owner, run_key, _run_fingerprint(content, param_values, media_meta, uploads), job_id)
+                verdict, known = comfy_run_keys.claim(identity.owner, run_key, _run_fingerprint(content, param_values, media_meta + "\0" + (project_id or ""), uploads), job_id)
             except comfy_run_keys.RunKeyError as error:
                 raise HTTPException(409, f"{error} — 실행하지 않았습니다") from error
             if verdict == "conflict":
@@ -1642,8 +1757,12 @@ def _save_to_library_pinned(req: SaveToLibraryReq, request: Request, identity: _
         if output.kind not in ("image", "video"):
             continue
         _preflight_local_output(output.url, identity.scope)
+    journal_rows = [row for row in run_journal.read(identity.owner, identity.auth_enabled)
+                    if row.get("owner") == identity.owner]
     expected = {row["job_id"]: (row.get("collect_job_id"), row.get("collect_seq", 0), row.get("phase"))
-                for row in run_journal.read(identity.owner, identity.auth_enabled) if row.get("owner") == identity.owner}
+                for row in journal_rows}
+    by_output = {f"/media/{item['rel']}": (row, item) for row in journal_rows
+                 for item in row.get("outputs", []) if item.get("downloaded")}
 
     # project_id 검증(생성요청과 동일) — 존재 + 역할까지. 남의 프로젝트에 주입 방지. AUTH off 로컬은 통과.
     pid = (req.project_id or "").strip()
@@ -1665,7 +1784,9 @@ def _save_to_library_pinned(req: SaveToLibraryReq, request: Request, identity: _
     # 레퍼런스마다 get_generation+멤버십 재조회(N+1)를 배치 1+1회로(R7 1-E) —
     # 열람 불가·미존재=None 이라는 단건 의미는 그대로다.
     source_ids = list(
-        dict.fromkeys(r.source_gen_id for r in (req.inputs or []) if r.source_gen_id)
+        dict.fromkeys([r.source_gen_id for r in (req.inputs or []) if r.source_gen_id]
+                      + [item["source_gen_id"] for row in journal_rows
+                         for item in row.get("input_evidence", []) if item.get("source_gen_id")])
     )
     source_gens = repo.get_generations_batch(source_ids) if source_ids else {}
     member_projects = batch_view_member_projects(request, source_gens.values())
@@ -1688,11 +1809,45 @@ def _save_to_library_pinned(req: SaveToLibraryReq, request: Request, identity: _
         for o in req.outputs:
             if o.kind not in ("image", "video"):
                 continue
+            row, output = by_output.get(o.url, ({}, {}))
+            actual_kind = output.get("kind") or _media_kind(o.url) or o.kind
+            snapshot = row.get("execution_snapshot")
+            actual_prompt, actual_params, actual_refs = prompt, params, ref_dicts
+            actual_project = row.get("asset_project_id") or pid
+            if AUTH_ENABLED and actual_project and actual_project != pid:
+                require_project_role(request, actual_project, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER, read_only=True)
+            if isinstance(snapshot, dict):
+                # 결과를 저장할 때 바뀐 폼이 실제 실행의 프롬프트·슬롯을 덮어쓰지 못한다.
+                actual_prompt = snapshot.get("prompt") or "Comfy 출력"
+                actual_params = dict(snapshot.get("params") or {})
+                actual_params["comfy_workflow"] = snapshot.get("workflow")
+                actual_params["comfy_unverified_input_slots"] = row.get("comfy_unverified_input_slots", [])
+                actual_params["comfy_input_provenance"] = [
+                    {key: value for key, value in item.items() if key not in ("path", "server_location")}
+                    for item in sorted(row.get("input_evidence", []), key=lambda item: item["position"])
+                ]
+                actual_refs = []
+                for item in sorted(row.get("input_evidence", []), key=lambda item: item["position"]):
+                    sgid = item.get("source_gen_id")
+                    source_gen = source_gens.get(sgid) if sgid else None
+                    if sgid and (not source_gen or not can_view_generation_with_member_projects(request, source_gen, member_projects)):
+                        sgid = None
+                    actual_refs.append({
+                        "file_path": item["file_path"], "type": item["type"], "name": item["name"],
+                        "role": item.get("role"), "source_url": item["file_path"], "source_gen_id": sgid,
+                        "_submitted_sha": item["sha256"], "_submitted_bytes": item["bytes"],
+                    })
+            evidence = _archive_output(
+                o.url, actual_kind, identity, project_id=actual_project,
+                server_origin=row.get("asset_server_origin") or shared_connection.base_url(), expected=output,
+            )
             # 기존 generation의 권한/멱등/별도 트랜잭션 계약은 그대로다.
             gid, existed = repo.create_comfy_generation(
-                worker_id=DEFAULT_WORKER_ID, creator_uid=creator_uid, prompt=prompt,
-                display_prompt=None, params=params, kind=o.kind, file_path=o.url,
-                thumbnail_path=None, references=ref_dicts, project_id=pid, folder_path=req.folder_path,
+                worker_id=DEFAULT_WORKER_ID, creator_uid=creator_uid, prompt=actual_prompt,
+                display_prompt=None, params=actual_params, kind=actual_kind, file_path=o.url,
+                thumbnail_path=None, references=actual_refs, project_id=actual_project, folder_path=req.folder_path,
+                output_sha=evidence["sha256"] if evidence else None,
+                output_bytes=evidence["bytes"] if evidence else None,
             )
             saved.append({"url": o.url, "generation_id": gid, "existed": existed})
             if not existed and req.elapsed_seconds is not None:

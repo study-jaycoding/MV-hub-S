@@ -1,3 +1,4 @@
+import type { SubmissionResult } from "../shared/contracts/generation";
 import type { GenerationCreateBody } from "../api";
 import type { ModelParam, WorkspaceContext } from "../types";
 import type { CanvasGenerationLink } from "./canvasGenerationRecovery";
@@ -123,7 +124,7 @@ export interface McpExecutionPorts {
   persistCards: (plan: McpPlanBody) => Promise<void>;
   persistLinks: (plan: McpPlanBody) => Promise<void>;
   state: (record: McpPlanRecord, index: number, state: Exclude<McpItemState, "pending">, error?: string) => Promise<McpPlanRecord>;
-  submit: (item: McpPlanItem) => Promise<void>;
+  submit: (item: McpPlanItem) => Promise<void | SubmissionResult>;
   discard: (item: McpPlanItem) => void;
   changed: (record: McpPlanRecord) => void;
 }
@@ -178,8 +179,10 @@ export async function executeMcpPlan(initial: McpPlanRecord, ports: McpExecution
     record = await ports.state(record, index, "submitting");
     ports.changed(record);
     const item = record.plan.items[index];
+    let result: void | SubmissionResult;
     try {
-      await ports.submit(item);
+      result = await ports.submit(item);
+
     } catch (error) {
       const definite = isMcpDefiniteRejection(error);
       if (definite) ports.discard(item);
@@ -189,6 +192,15 @@ export async function executeMcpPlan(initial: McpPlanRecord, ports: McpExecution
       if (!definite) throw new Error("제출 결과를 확인할 수 없습니다. 기존 요청을 확인하세요. 자동 재생성하지 않습니다.");
       continue;
     }
+      if (result && result.outcome.kind !== "accepted" && result.outcome.kind !== "accepted_local_pending") {
+        const definite = result.outcome.kind === "prepare_failed" || result.outcome.kind === "rejected";
+        if (definite) ports.discard(item);
+        const error = result.error ?? new McpPreflightError("scene");
+        record = await ports.state(record, index, definite ? "rejected" : "uncertain", mcpFailureMessage(error));
+        ports.changed(record);
+        if (!definite) throw new Error("제출 결과를 확인할 수 없습니다. 기존 요청을 확인하세요. 자동 재생성하지 않습니다.");
+        continue;
+      }
     record = await ports.state(record, index, "submitted");
     ports.changed(record);
   }

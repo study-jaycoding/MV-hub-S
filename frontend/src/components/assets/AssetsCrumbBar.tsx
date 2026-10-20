@@ -25,6 +25,9 @@ export function AssetsCrumbBar({
   typeFilter,
   onTypeFilterChange,
   fileCount,
+  folderMode,
+  canShowFolders = true,
+  onFolderModeChange,
   onToggleColor,
   grayOn,
   onToggleGray,
@@ -62,6 +65,9 @@ export function AssetsCrumbBar({
   typeFilter: AssetTypeFilter;
   onTypeFilterChange: (value: AssetTypeFilter) => void;
   fileCount: number;
+  folderMode?: boolean;
+  canShowFolders?: boolean;
+  onFolderModeChange?: (value: boolean) => void;
   onToggleColor: (hex: string) => void;
   grayOn: boolean;
   onToggleGray: () => void;
@@ -146,8 +152,17 @@ export function AssetsCrumbBar({
       {/* 생성탭 툴바와 동일 — 슬라이더 옆에 '타입 · 건수' 표시 */}
       <span className="lib-count">
         {t(MEDIA_FILTER_OPTIONS[typeIndex].label)} · {fileCount}
-        {t("개")}
+        {t("건")}
       </span>
+
+      {onFolderModeChange && <span className="lib-cut-seg" role="group" aria-label={t("폴더 묶음 보기")}>
+        <button type="button" className={folderMode ? "on" : ""} aria-pressed={folderMode}
+          disabled={!canShowFolders}
+          title={t(canShowFolders ? "바로 아래 폴더마다 묶어 보기" : "현재 폴더는 파일을 한 장씩 표시합니다")}
+          onClick={() => onFolderModeChange(true)}>{t("폴더")}</button>
+        <button type="button" className={folderMode ? "" : "on"} aria-pressed={!folderMode}
+          title={t("하위 폴더의 파일까지 한 장씩 보기")} onClick={() => onFolderModeChange(false)}>{t("전체")}</button>
+      </span>}
 
       <div className="assets-tools">
         <div className="assets-filters">

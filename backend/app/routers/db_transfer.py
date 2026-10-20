@@ -40,7 +40,8 @@ from ..services.db_scrub import SESSION_KEYS as _SESSION_KEYS
 from ..services.db_scrub import strip_transfer_secrets as _strip_session
 from ..services.async_tools import to_thread_non_abandon
 from ..services.request_guards import require_loopback_request
-from ..services.sqlite_db import HubDbValidationError, hub_db_validation_detail, validate_hub_db
+from ..services.sqlite_db import HubDbValidationError, hub_db_validation_detail, validate_hub_db, validate_db_compatibility
+from ..services import trash_transfer
 from ..services import upload_limits
 from ..services.backup import backup_now, list_backups_info
 from ..services.worker_backup import (
@@ -52,6 +53,7 @@ from ..services.worker_backup import (
     retry_pending,
     status_snapshot as worker_backup_status,
 )
+from ..services import backup_manifest
 from ..services.test_snapshot import (
     SNAPSHOT_EXPORT_ENV,
     SNAPSHOT_TOKEN_ENV,
@@ -152,6 +154,7 @@ def _post_install_security_init(path: Path) -> None:
     역할 제거=로컬 캐시(shared_server_roles)만 — account.global_role 은 복원 데이터라 불가침."""
     conn = sqlite3.connect(str(path), timeout=10)
     try:
+        trash_transfer.configure_connection(conn)
         conn.execute("BEGIN IMMEDIATE")
         for key in _SESSION_KEYS:
             conn.execute("DELETE FROM app_setting WHERE key=?", (key,))
@@ -164,6 +167,8 @@ def _post_install_security_init(path: Path) -> None:
         conn.execute(
             "UPDATE account SET password_changed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')"
         )
+        conn.execute("INSERT INTO app_setting(key,value) VALUES('share_db_generation',?) "
+                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (secrets.token_hex(16),))
         conn.execute("COMMIT")
     except BaseException:
         with contextlib.suppress(sqlite3.Error):
@@ -298,6 +303,15 @@ def _install_db(
         # 게이트보다 먼저 잡는다(전환은 게이트를 안 잡아 락 순서 역전 없음).
         with active_account.transition_lock, contextlib.ExitStack() as gates:
             _check_restore_target(expected)
+            try:
+                validate_db_compatibility(tmp, "content")
+                if restore_trash_set and trash_tmp is not None:
+                    validate_db_compatibility(trash_tmp, "trash")
+                trash_transfer.validate_pair(tmp, trash_tmp if restore_trash_set else None)
+            except trash_transfer.TransferRecoveryRequired as exc:
+                raise HTTPException(status_code=400, detail="휴지통 이동 기록과 일치하는 DB 백업 세트가 필요합니다") from exc
+            except HubDbValidationError as exc:
+                _raise_validation_error(exc)
             gates.enter_context(db.maintenance_gate())
             # ★대상 경로·포인터 스냅샷도 게이트 '안'에서 확정(R7 0-B, 코덱스 P1) —
             # 게이트 전에 읽으면 계정 전환(set_active — 게이트 비참여)이 겹칠 때 설치
@@ -306,6 +320,13 @@ def _install_db(
             _check_restore_target(expected, path=path)
             path.parent.mkdir(parents=True, exist_ok=True)
             trash_path = path.parent / "content_hub_trash.db"
+            if not restore_trash_set and trash_path.is_file():
+                try:
+                    # A legacy single-file import must not strand an enabled
+                    # trash partner belonging to the previous content database.
+                    trash_transfer.validate_pair(tmp, trash_path)
+                except trash_transfer.TransferRecoveryRequired as exc:
+                    raise HTTPException(status_code=400, detail="활성 휴지통 DB와 함께 백업 세트를 복원해야 합니다") from exc
             staged = path.with_name(f".{path.name}.restore-{secrets.token_hex(8)}.tmp")
             staged_trash = trash_path.with_name(
                 f".{trash_path.name}.restore-{secrets.token_hex(8)}.tmp"
@@ -368,6 +389,17 @@ def _install_db(
             shutil.copy2(tmp, staged)
             if restore_trash_set and trash_tmp is not None:
                 shutil.copy2(trash_tmp, staged_trash)
+            # Recheck the actual local copies, not just the earlier source path.
+            # A source replaced while waiting must never install a future schema.
+            try:
+                validate_db_compatibility(staged, "content")
+                if restore_trash_set and trash_tmp is not None:
+                    validate_db_compatibility(staged_trash, "trash")
+                trash_transfer.validate_pair(staged, staged_trash if restore_trash_set else None)
+            except trash_transfer.TransferRecoveryRequired as exc:
+                raise HTTPException(status_code=400, detail="휴지통 이동 기록과 일치하는 DB 백업 세트가 필요합니다") from exc
+            except HubDbValidationError as exc:
+                _raise_validation_error(exc)
             # checkpoint 뒤 모든 SQLite 핸들이 닫힌 상태에서만 sidecar 를 지운다. Windows 는 열린
             # -wal/-shm 을 unlink 하지 못하므로 파일 교체보다 먼저 이 순서를 지켜야 한다.
             for current in targets:
@@ -522,12 +554,15 @@ def _extract_backup_set(archive: Path, destination: Path) -> tuple[Path, Path | 
             if manifest_info.file_size > 64 * 1024:
                 raise ValueError("manifest too large")
             manifest = json.loads(bundle.read(manifest_info).decode("utf-8"))
+            backup_manifest.check_version(manifest)
             if (
                 not isinstance(manifest, dict)
                 or manifest.get("format") != "mvhub-worker-backup-set"
-                or manifest.get("format_version") != 1
+                or manifest.get("format_version") not in {1, backup_manifest.VERSION}
             ):
                 raise ValueError("unsupported backup set")
+            if manifest['format_version'] == backup_manifest.VERSION:
+                backup_manifest.validate(manifest)
             roles = manifest.get("roles")
             if not isinstance(roles, dict) or "content" not in roles or not set(roles) <= {
                 "content",
@@ -559,11 +594,14 @@ def _extract_backup_set(archive: Path, destination: Path) -> tuple[Path, Path | 
                 if actual_size != expected_size or digest != expected.get("sha256"):
                     raise ValueError("role integrity mismatch")
                 extracted[role] = path
+            if manifest['format_version'] == backup_manifest.VERSION:
+                backup_manifest.verify_files(manifest, extracted)
     except (OSError, ValueError, KeyError, zipfile.BadZipFile, upload_limits.UploadLimitExceeded) as exc:
         raise HTTPException(status_code=400, detail="서버 백업 세트가 손상되었거나 형식이 다릅니다") from exc
 
     validate_hub_db(extracted["content"], require_integrity=True)
     if "trash" in extracted:
+        validate_db_compatibility(extracted["trash"], "trash")
         with contextlib.closing(sqlite3.connect(str(extracted["trash"]))) as conn:
             result = conn.execute("PRAGMA quick_check").fetchone()
             table = conn.execute(

@@ -85,8 +85,8 @@ def _email_localpart(email: Optional[str]) -> Optional[str]:
 def _cached_or_remote(url: str, is_image: bool) -> tuple[str, Optional[str], Optional[str]]:
     """원격 URL 이 이미 로컬에 보관돼 있으면 (로컬경로, 썸네일, 원본URL) 을,
     아니면 (원격URL, 원격썸네일, None) 을 반환. 재동기 시 캐시 보존용."""
-    if media_cache.is_cached(url):
-        local = media_cache.local_rel_for(url)
+    local = media_cache.cached_rel_for(url)
+    if local:
         return local, (local if is_image else None), url
     return url, (url if is_image else None), None
 
@@ -104,6 +104,10 @@ BUNDLE_VERSION = 1
 def _remote_url(file_path: Optional[str], source_url: Optional[str]) -> Optional[str]:
     """공유용 URL — 원본 원격 URL(source_url) 우선. 없으면 http 경로인 file_path.
     로컬 캐시(/media/...)만 있고 원격이 없으면 받는 쪽이 못 여므로 그대로 둔다(한계)."""
+    if (file_path and file_path.startswith("asset-sync:")
+            and len(file_path[11:]) == 32
+            and all(c in "0123456789abcdef" for c in file_path[11:])):
+        return file_path
     if source_url and source_url.startswith("http"):
         return source_url
     if file_path and file_path.startswith("http"):

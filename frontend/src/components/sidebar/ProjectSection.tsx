@@ -31,7 +31,7 @@ import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { isFolderDisabled, toggleDisabledFolder } from "../../lib/deactivated";
 import { buildFolderCountTree, hasMoreThanFolderNodes, normalizeFolderPath } from "../../lib/folderTreeModel";
 import { useDisabledFolders } from "../../lib/useDisabledFolders";
-import { APP_EVENTS } from "../../lib/appEvents";
+import { APP_EVENTS, isCurrentGenerationEvent } from "../../lib/appEvents";
 import { DRAG_TYPES } from "../../lib/dragTypes";
 import { encodeSceneFolderDrag } from "../../lib/sceneSet";
 import { onLibraryChanged } from "../../lib/libraryBroadcast";
@@ -74,6 +74,7 @@ function SidebarFolderTree({
   expanded,
   onToggle,
   onSelect,
+  onOpenTab,
   onDropFolder,
   onDragFolder,
   isDisabled,
@@ -94,6 +95,7 @@ function SidebarFolderTree({
   expanded: Set<string>;
   onToggle: (path: string) => void;
   onSelect: (path: string) => void;
+  onOpenTab?: (path: string) => void;
   onDropFolder?: (path: string, e: DragEvent) => void;
   onDragFolder?: (path: string, e: DragEvent) => void;
   isDisabled?: (path: string) => boolean;
@@ -140,6 +142,7 @@ function SidebarFolderTree({
         expanded={expanded}
         onToggle={onToggle}
         onSelect={onSelect}
+        onOpenTab={onOpenTab}
         onDropFolder={onDropFolder}
         onDragFolder={onDragFolder}
         isDisabled={isDisabled}
@@ -172,6 +175,7 @@ export function ProjectSection({
   onFilter,
   onViewDeleted,
   onArmFolder,
+  onOpenFolderTab,
   onDropToFolder,
   onDropToUnassigned,
   enableFolderDrag = false,
@@ -196,6 +200,7 @@ export function ProjectSection({
   onFilter: (projectId?: string) => void;
   onViewDeleted: () => void;
   // 폴더 선택 시 무장(전역변수) — 그 프로젝트로 생성 시 folder_path 로 자동 라벨링
+  onOpenFolderTab?: (projectId: string, path: string, projectName?: string) => void;
   onArmFolder?: (projectId: string, path: string) => void;
   // 카드를 폴더로 드래그해 담기 — 그 프로젝트+폴더로 귀속
   onDropToFolder?: (projectId: string, path: string, genId: string) => void;
@@ -511,7 +516,7 @@ export function ProjectSection({
   // 생성물 변경 브로드캐스트(담기/폴더이동/미분류/생성)를 구독한다. 캔버스 탭에서는
   // 프로젝트 목록 reload가 생략되므로 이 채널이 폴더 배지를 즉시 최신화한다.
   useEffect(() => onLibraryChanged(() => refreshCountsRef.current()), []); // 다른 창의 변경
-  useCustomEvent(APP_EVENTS.libraryChanged, () => refreshCountsRef.current()); // 같은 창의 변경
+  useCustomEvent(APP_EVENTS.libraryChanged, event => { if (isCurrentGenerationEvent(event)) refreshCountsRef.current(); });
 
   useEffect(() => {
     refreshCountsRef.current();
@@ -725,6 +730,8 @@ export function ProjectSection({
                   }
                   // 다시 눌러도 **그 프로젝트**(맨 위) — 전엔 해제(라이브러리)로 튀었다(Jay 2026-10-13: 고른 프로젝트를 다시 누르면 라이브러리로 가는 버그).
                   //  폴더 안에 있었으면 맨 위로 올라온다(onFilter 가 folder_path 를 지운다). 해제는 '라이브러리' 줄.
+                  onMouseDown={(event) => { if (onOpenFolderTab && event.button === 1) event.preventDefault(); }}
+                  onAuxClick={(event) => { if (onOpenFolderTab && event.button === 1) { event.preventDefault(); onOpenFolderTab(project.id, "", project.name); } }}
                   onClick={() => onFilter(project.id)}
                   onKeyDown={(e) => {
                     // 줄 안의 단추(접기·끌기 손잡이)에서 올라온 키는 그 단추의 것이다
@@ -825,6 +832,7 @@ export function ProjectSection({
                     expanded={expandedFolders[project.id] || new Set()}
                     onToggle={(path) => toggleProjectFolderNode(project.id, path)}
                     onSelect={(path) => selectFolder(project.id, path)}
+                    onOpenTab={onOpenFolderTab ? (path) => onOpenFolderTab(project.id, path, project.name) : undefined}
                     onDropFolder={
                       onDropToFolder
                         ? (path, e) => {
@@ -896,7 +904,9 @@ export function ProjectSection({
                     key={project.id}
                     className={"proj-row archived" + (activeId === project.id ? " on sel-target" : "") +
                       (split && activeId === project.id ? " see-here" : "")}
-                    onClick={() => onFilter(project.id)} // 다시 눌러도 그 프로젝트(일반 줄과 같다 — Codex 코드 리뷰)
+                    onMouseDown={(event) => { if (onOpenFolderTab && event.button === 1) event.preventDefault(); }}
+                  onAuxClick={(event) => { if (onOpenFolderTab && event.button === 1) { event.preventDefault(); onOpenFolderTab(project.id, "", project.name); } }}
+                  onClick={() => onFilter(project.id)} // 다시 눌러도 그 프로젝트(일반 줄과 같다 — Codex 코드 리뷰)
                     title={project.name}
                   >
                     <span className="proj-name">{project.name}</span>

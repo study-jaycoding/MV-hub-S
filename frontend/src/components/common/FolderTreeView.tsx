@@ -40,6 +40,7 @@ export function FolderTreeView({
   expanded,
   onToggle,
   onSelect,
+  onOpenTab,
   onDropFolder,
   onDragFolder,
   isDisabled,
@@ -56,6 +57,7 @@ export function FolderTreeView({
   expanded?: Set<string>;
   onToggle?: (path: string) => void;
   onSelect: (path: string) => void;
+  onOpenTab?: (path: string) => void;
   // 카드를 이 폴더로 드래그해 놓으면 호출(드롭). 지정 시 폴더 행이 드롭 타깃이 된다.
   onDropFolder?: (path: string, e: DragEvent) => void;
   // 이 폴더를 캔버스 Set 노드로 끌기 시작할 때 호출.
@@ -84,6 +86,7 @@ export function FolderTreeView({
           expanded={expanded}
           onToggle={onToggle}
           onSelect={onSelect}
+          onOpenTab={onOpenTab}
           onDropFolder={onDropFolder}
           onDragFolder={onDragFolder}
           isDisabled={isDisabled}
@@ -105,6 +108,7 @@ function FolderTreeRow({
   expanded,
   onToggle,
   onSelect,
+  onOpenTab,
   onDropFolder,
   onDragFolder,
   isDisabled,
@@ -120,6 +124,7 @@ function FolderTreeRow({
   expanded?: Set<string>;
   onToggle?: (path: string) => void;
   onSelect: (path: string) => void;
+  onOpenTab?: (path: string) => void;
   onDropFolder?: (path: string, e: DragEvent) => void;
   onDragFolder?: (path: string, e: DragEvent) => void;
   isDisabled?: (path: string) => boolean;
@@ -200,7 +205,14 @@ function FolderTreeRow({
         // 새 누름이다 — 앞 끌기에 딸린 click 은 이미 지나갔다. 깃발을 타이머(아래 onDragEnd)로만 내리면, 끌어 놓은 직후 타이머가 돌기 전에
         //  누른 이 폴더가 안 골라진다(입력은 타이머보다 먼저 처리된다 — Codex 코드 리뷰). 끌기는 이 누름 뒤의 dragstart 가 다시 세운다.
         //  앞 끌기가 예약해 둔 해제도 거둔다 — 남겨 두면 곧바로 시작한 다음 끌기 도중에 그 타이머가 깃발을 내려, 끌기에 딸린 click 이 폴더를 고른다.
-        onMouseDown={() => {
+        onAuxClick={(e) => {
+          if (e.button !== 1 || !onOpenTab) return;
+          e.preventDefault();
+          e.stopPropagation();
+          onOpenTab(node.path);
+        }}
+        onMouseDown={(e) => {
+          if (e.button === 1 && onOpenTab) e.preventDefault();
           folderDraggingRef.current = false;
           window.clearTimeout(dragReleaseRef.current);
         }}
@@ -287,6 +299,7 @@ function FolderTreeRow({
             expanded={expanded}
             onToggle={onToggle}
             onSelect={onSelect}
+          onOpenTab={onOpenTab}
             onDropFolder={onDropFolder}
             onDragFolder={onDragFolder}
             isDisabled={isDisabled}

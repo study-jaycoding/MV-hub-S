@@ -11,6 +11,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SceneBoard } from "../src/components/scene/SceneBoard";
 import type { Scene } from "../src/lib/scenes";
 import type { SceneGenDataApi } from "../src/lib/useSceneGenData";
+import { holdUnload, unloadHeld, unsavedPlaces } from "../src/lib/unloadGuard";
 
 // 바꾸는 것은 생성물 읽기뿐 — SceneBoard·입력·저장 예약은 실제 코드다.
 const fixture = vi.hoisted(() => ({ data: null as unknown as SceneGenDataApi }));
@@ -41,6 +42,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   act(() => root.unmount());
+  holdUnload("partial-edit:test", false);
   host.remove();
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -66,6 +68,20 @@ const type = (area: HTMLTextAreaElement, text: string) =>
     area.dispatchEvent(new Event("input", { bubbles: true }));
   });
 const wait = (ms: number) => act(async () => { vi.advanceTimersByTime(ms); });
+
+it("입력 저장 대기 중 새로고침을 경고하고 다른 편집의 경고는 보존한다", async () => {
+  const area = await openEditor();
+  expect(unloadHeld()).toBe(false);
+  await type(area, "아직 저장 전");
+  expect(unsavedPlaces()).toBe("캔버스");
+  const leaving = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(leaving);
+  expect(leaving.defaultPrevented).toBe(true);
+  holdUnload("partial-edit:test", true);
+  await wait(400); // 이 시험의 onChange는 저장 전달까지만 관측한다.
+  expect(savedTexts()).toEqual(["아직 저장 전"]);
+  expect(unsavedPlaces()).toBe("부분 수정 창");
+});
 
 it("계속 치는 중에도 첫 미저장 입력에서 2초 안에 저장한다", async () => {
   const area = await openEditor();

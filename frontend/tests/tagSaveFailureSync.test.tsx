@@ -9,11 +9,14 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { APP_EVENTS } from "../src/lib/appEvents";
 import { useGenerationTagActions } from "../src/lib/useGenerationTagActions";
 import type { Generation } from "../src/types";
+import { setAuthToken } from "../src/lib/http";
+import { setAccountScope } from "../src/lib/accountScope";
+import { clearGenerationReadModels, getGenerationReadModel } from "../src/features/library/readModels";
 
 const api = vi.hoisted(() => ({ setTags: vi.fn(), setGenAutoTags: vi.fn(), setTagsBatch: vi.fn() }));
 vi.mock("../src/api", () => ({ api }));
 
-const generation = { id: "g1", tags: [], auto_tags: [] } as unknown as Generation;
+let generation: Generation;
 const flash = vi.fn();
 const reload = vi.fn(async () => {});
 const settled = vi.fn();
@@ -21,11 +24,17 @@ const libraryChanged = vi.fn();
 let actions!: ReturnType<typeof useGenerationTagActions>;
 let root: Root;
 let host: HTMLDivElement;
+let selected: Set<string>;
+const peerMessages: unknown[] = [];
+class TagChannel {
+  postMessage(value: unknown) { peerMessages.push(value); }
+  close() {}
+}
 
 function Harness() {
   actions = useGenerationTagActions({
     flash, reload, onTagNamesAdded: () => {}, setGens: () => {},
-    gensRef: useRef([generation]), selectedRef: useRef(new Set<string>()),
+    gensRef: useRef([generation]), selectedRef: useRef(selected),
   });
   return null;
 }
@@ -34,14 +43,29 @@ const deferred = () => { let finish!: () => void; const promise = new Promise<vo
 
 beforeEach(() => {
   vi.resetAllMocks();
+  localStorage.clear(); sessionStorage.clear(); setAccountScope(""); setAuthToken(null); clearGenerationReadModels();
+  generation = { id: "g1", tags: [], auto_tags: [] } as unknown as Generation;
+  selected = new Set();
   reload.mockImplementation(async () => {});
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  peerMessages.length = 0;
+  vi.stubGlobal("BroadcastChannel", TagChannel);
   window.addEventListener(APP_EVENTS.generationTagsSettled, settled);
   window.addEventListener(APP_EVENTS.libraryChanged, libraryChanged);
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
   act(() => root.render(<Harness />));
+});
+
+it("broadcasts the exact settled change to peer tabs after reconciliation without broad notification", async () => {
+  api.setTags.mockResolvedValue({});
+  act(() => { actions.onSetTags(generation, ["peer-tag"]); });
+  await settle();
+  expect(peerMessages).toHaveLength(1);
+  expect(peerMessages[0]).toMatchObject({ event: APP_EVENTS.generationTagsSettled,
+    change: settled.mock.calls[0][0].detail.change });
+  expect(libraryChanged).not.toHaveBeenCalled();
 });
 afterEach(() => {
   act(() => root.unmount());
@@ -53,7 +77,7 @@ afterEach(() => {
 
 it("저장 실패 — 목록을 다시 받은 뒤 '태그 저장 끝'을 알린다(씬 사본이 서버 값으로 돌아간다)", async () => {
   api.setTags.mockRejectedValue(new Error("500: boom"));
-  act(() => actions.onSetTags(generation, ["x"]));
+  act(() => { actions.onSetTags(generation, ["x"]); });
   await settle();
   expect(reload).toHaveBeenCalledWith(false, false);
   expect(flash).toHaveBeenCalledWith(expect.stringContaining("태그 저장 1건 실패"));
@@ -87,17 +111,17 @@ it("앞선 정리를 기다리는 사이에 들어온 편집 — 그 저장이 �
   const saveC = deferred();
   reload.mockImplementationOnce(() => recovery.promise).mockImplementationOnce(() => reloadAfterB.promise);
   api.setTags.mockRejectedValueOnce(new Error("500: boom")).mockResolvedValueOnce({}).mockImplementationOnce(() => saveC.promise);
-  act(() => actions.onSetTags(generation, ["a"]));
+  act(() => { actions.onSetTags(generation, ["a"]); });
   await settle();
   expect(reload).toHaveBeenCalledTimes(1); // 복구 조회 대기 중
-  act(() => actions.onSetTags(generation, ["b"]));
+  act(() => { actions.onSetTags(generation, ["b"]); });
   await settle();
   expect(api.setTags).toHaveBeenCalledTimes(1); // B 는 복구가 끝나야 나간다
   recovery.finish();
   await settle();
   expect(settled).toHaveBeenCalledTimes(1);
   expect(api.setTags).toHaveBeenCalledTimes(2); // B 저장됨 → B 의 정리 조회 대기 중
-  act(() => actions.onSetTags(generation, ["c"]));
+  act(() => { actions.onSetTags(generation, ["c"]); });
   await settle();
   expect(api.setTags).toHaveBeenCalledTimes(2); // C 는 B 의 정리가 끝나야 나간다
   reloadAfterB.finish();
@@ -149,7 +173,81 @@ it("태그 저장이 남아 있는 동안 새로고침·창 닫기를 하면 묻
 //  (목록 다시 받기는 실패해도 던지지 않는다 — 자기 안내 "로드 실패"를 띄우고 끝난다. 그래서 이 훅은 조회의 성패를 모른다.)
 it("저장 실패 — '되돌렸다'고 단정하지 않는다(되돌리려던 조회까지 실패해도 안내가 거짓이 되지 않는다)", async () => {
   api.setTags.mockRejectedValue(new Error("502: 서버에 닿지 않습니다"));
-  act(() => actions.onSetTags(generation, ["x"]));
+  act(() => { actions.onSetTags(generation, ["x"]); });
   await settle();
   expect(flash).toHaveBeenCalledExactlyOnceWith("태그 저장 1건 실패 — 저장되지 않았습니다. 화면에 그 태그가 남아 있으면 새로 고치세요.");
+});
+
+it("settled detail contains only operations completed before this reconciliation, including failures", async () => {
+  const recovery = deferred();
+  reload.mockImplementationOnce(() => recovery.promise);
+  api.setTags.mockRejectedValueOnce(new Error("save failed"));
+  api.setGenAutoTags.mockResolvedValue({});
+  act(() => { actions.onSetTags(generation, ["x"]); });
+  await settle();
+  act(() => { actions.onSetAutoTags({ ...generation, id: "g2" }, ["later"]); });
+  await settle();
+  expect(api.setGenAutoTags).not.toHaveBeenCalled();
+  recovery.finish();
+  await settle();
+  expect(settled.mock.calls.map(([event]) => ({ ids: event.detail.ids, fields: event.detail.fields }))).toEqual([
+    { ids: ["g1"], fields: ["tags"] },
+    { ids: ["g2"], fields: ["auto_tags"] },
+  ]);
+});
+
+it("one settled burst deduplicates ids and retains both actual tag fields", async () => {
+  api.setTags.mockResolvedValue({}); api.setGenAutoTags.mockResolvedValue({});
+  act(() => {
+    actions.onSetTags(generation, ["a"]);
+    actions.onSetTags(generation, ["b"]);
+    actions.onSetAutoTags({ ...generation, id: "g2" }, ["c"]);
+  });
+  await settle();
+  expect(settled.mock.calls.map(([event]) => ({ ids: event.detail.ids, fields: event.detail.fields }))).toEqual([
+    { ids: ["g1", "g2"], fields: ["tags", "auto_tags"] },
+  ]);
+});
+
+it("failed reconciliation still announces its captured ids and leaves later saves usable", async () => {
+  reload.mockRejectedValueOnce(new Error("read failed"));
+  api.setTags.mockResolvedValue({}); api.setGenAutoTags.mockResolvedValue({});
+  act(() => { actions.onSetTags(generation, ["a"]); });
+  await settle();
+  act(() => { actions.onSetAutoTags(generation, ["b"]); });
+  await settle();
+  expect(settled.mock.calls.map(([event]) => ({ ids: event.detail.ids, fields: event.detail.fields }))).toEqual([
+    { ids: ["g1"], fields: ["tags"] }, { ids: ["g1"], fields: ["auto_tags"] },
+  ]);
+});
+
+it("bulk partial failure announces actual sent ids, not unloaded selection ids", async () => {
+  selected.add("g1"); selected.add("unloaded");
+  api.setTagsBatch.mockResolvedValue({ succeeded: [], failed: ["g1"] });
+  act(() => { actions.onBulkAddAutoTags(generation, ["x"]); });
+  await settle();
+  expect(api.setTagsBatch).toHaveBeenCalledWith([{ id: "g1", tags: ["x"] }], true, expect.any(Function));
+  expect(settled.mock.calls.map(([event]) => ({ ids: event.detail.ids, fields: event.detail.fields }))).toEqual([{ ids: ["g1"], fields: ["auto_tags"] }]);
+  expect(reload).toHaveBeenCalledWith(false, false);
+});
+
+it("queued old-account saves and notifications cannot run after A to B to A", async () => {
+  const first = deferred();
+  api.setTags.mockImplementationOnce(() => first.promise);
+  act(() => { actions.onSetTags(generation, ["first"]); actions.onSetTags(generation, ["queued"]); });
+  await settle(); expect(api.setTags).toHaveBeenCalledTimes(1);
+  getGenerationReadModel("B", "lookup"); getGenerationReadModel("", "lookup");
+  first.finish(); await settle();
+  expect(api.setTags).toHaveBeenCalledTimes(1);
+  expect(reload).not.toHaveBeenCalled(); expect(settled).not.toHaveBeenCalled(); expect(flash).not.toHaveBeenCalled();
+});
+
+it("captures tag input and discards a reconciliation that crosses account scope", async () => {
+  const waiting = deferred(); reload.mockImplementationOnce(() => waiting.promise);
+  const tags = ["captured"];
+  act(() => { actions.onSetTags(generation, tags); }); tags.push("later");
+  await settle(); expect(api.setTags).toHaveBeenCalledWith("g1", ["captured"], expect.any(Function));
+  setAuthToken("different-synthetic-account");
+  waiting.finish(); await settle();
+  expect(settled).not.toHaveBeenCalled(); expect(flash).not.toHaveBeenCalled();
 });

@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import random
+import re
 import shutil
 import socket
 import sqlite3
@@ -48,6 +49,119 @@ BACKEND = ROOT / "backend"
 PASSWORD = "load-test-password"
 LOAD_WORKSPACE_ID = "load-workspace"
 LOAD_PROJECT_ID = "load-project"
+
+
+def _source_files(root: Path) -> dict[str, str]:
+    """Positive executable scope, including ignored dist; never hash data/secrets."""
+    files = {}
+    candidates = [p for folder in ("backend/app", "frontend/src", "frontend/dist", "tools")
+                  for p in (root / folder).rglob("*")]
+    candidates += list((root / "backend").glob("*.py"))
+    candidates += list((root / "backend").glob("*.sql"))
+    candidates += list((root / "backend").glob("requirements*.txt"))
+    candidates += [root / "build-manifest.json", root / "backend/build-manifest.json"]
+    candidates += [p for p in (root / "frontend").glob("*")
+                   if p.suffix in {".json", ".ts", ".js"}]
+    for path in candidates:
+        relative = path.relative_to(root).as_posix()
+        if any(part.startswith(".") or part in {"__pycache__", "node_modules", "data", "profiles", "backups"}
+               for part in Path(relative).parts):
+            continue
+        if not relative.startswith("frontend/dist/") and path.suffix.lower() not in {".py", ".ps1", ".bat", ".ts", ".tsx", ".js", ".cjs", ".mjs", ".css", ".html", ".sql", ".json", ".toml", ".svg", ".png", ".webp", ".woff2", ".txt"}:
+            continue
+        if path.suffix.lower() in {".json", ".txt", ".ini"} and re.search(r"secret|password|credential|device_identity|machine_settings|publish_target", path.name, re.I):
+            continue
+        if path.is_symlink() or any(parent.is_symlink() or parent.is_junction() for parent in (path, *path.parents)):
+            raise ValueError("source traverses a link: " + relative)
+        if path.is_file():
+            files[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return dict(sorted(files.items()))
+
+
+def _verify_frozen_manifest(path: Path, root: Path = ROOT) -> str:
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate frozen manifest key")
+            result[key] = value
+        return result
+    manifest = json.loads(path.read_text(encoding="utf-8-sig"), object_pairs_hook=unique)
+    if manifest.get("format_version") != 1 or manifest.get("scope") != "soak-source-dist-tools-v1":
+        raise ValueError("unsupported frozen manifest scope")
+    expected = manifest.get("files")
+    actual = _source_files(root)
+    if not expected or expected != actual:
+        raise ValueError("frozen manifest mismatch (missing, additional or modified source/dist/tool)")
+    if not any(key.startswith("frontend/dist/") for key in actual):
+        raise ValueError("frozen production dist is missing")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _isolated_environment(root: Path, port: int, parent=None) -> dict[str, str]:
+    from smoke_env import build_smoke_env, validate_smoke_paths
+    env = build_smoke_env(os.environ if parent is None else parent, root,
+                          frontend_dist=ROOT / "frontend/dist", python_exe=Path(sys.executable), port=port)
+    env.update({"CONTENT_HUB_DB": str(root / "load.db"), "CONTENT_HUB_AUTH": "1",
+                "CONTENT_HUB_MANAGE": "1", "CONTENT_HUB_READ_ONLY": "0", "CONTENT_HUB_NO_PROXY": "0",
+                "CONTENT_HUB_AUTH_SECRET": "load-test-secret-not-for-production",
+                "CONTENT_HUB_BACKUP_INTERVAL": "0", "CONTENT_HUB_METRICS_LOG_INTERVAL": "0"})
+    validate_smoke_paths(root, env, allowed_frontend_root=ROOT / "frontend/dist")
+    return env
+
+
+def _redact(text: str) -> str:
+    text = text.replace(PASSWORD, "[redacted]").replace("load-test-secret-not-for-production", "[redacted]")
+    text = re.sub(r'(?i)\bBearer\s+[^\s,;]+', 'Bearer [redacted]', text)
+    return re.sub(r'(?i)((?:authorization|cookie|password|token|secret)[\"\x27]?\s*[:=]\s*)[^\r\n]+', r'\1[redacted]', text)
+
+
+def _owned_listener(process, port: int, ready: dict) -> int:
+    import psutil
+    owner = psutil.Process(process.pid)
+    owned = {owner.pid: owner, **{p.pid: p for p in owner.children(recursive=True)}}
+    pid = _listening_pid(port)
+    if pid not in owned or ready.get("runtime", {}).get("process_id") != pid:
+        raise RuntimeError("ready/listener is not owned by this load run")
+    listeners = [c for c in psutil.net_connections(kind="tcp")
+                 if c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port]
+    if not listeners or any(c.pid != pid or c.laddr.ip not in {"127.0.0.1", "::1"} for c in listeners):
+        raise RuntimeError("listener escaped loopback or ownership")
+    if owned[pid].create_time() < owner.create_time():
+        raise RuntimeError("listener predates its launcher")
+    return pid
+
+
+def _stop_owned(process, port: int) -> dict:
+    import psutil
+    try:
+        owner = psutil.Process(process.pid)
+        if owner.create_time() != process.load_create_time:
+            raise RuntimeError("launcher PID was reused; refusing cleanup of another process")
+        children = owner.children(recursive=True)
+    except psutil.NoSuchProcess as exc:
+        raise RuntimeError("launcher disappeared before cleanup; owned children are unknown") from exc
+    if process.poll() is None:
+        process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+    for child in children:
+        try:
+            child.terminate()
+        except psutil.NoSuchProcess:
+            pass
+    _, alive = psutil.wait_procs(children, timeout=5)
+    for child in alive:
+        child.kill()
+    _, alive = psutil.wait_procs(alive, timeout=5)
+    released = _listening_pid(port) is None
+    if alive or not released:
+        raise RuntimeError("owned process/port cleanup incomplete")
+    return {"launcher_pid": process.pid, "child_pids": [p.pid for p in children],
+            "exit_code": process.returncode, "port": port, "port_released": released}
 
 
 class _ExpectedSslCloseFilter(logging.Filter):
@@ -186,12 +300,40 @@ def _listening_pid(port: int) -> Optional[int]:
 
 
 @contextmanager
-def _temporary_load_root():
+def _temporary_load_root(port: int = 0, evidence: Optional[Path] = None):
     """Windows의 일시적인 로그 파일 잠금을 기다리며 테스트 폴더를 정리한다."""
-    temp_name = tempfile.mkdtemp(prefix="mvhub-load-")
+    from smoke_env import _local_path
+    temp_parent = _local_path(Path(tempfile.gettempdir()))
+    temp_name = tempfile.mkdtemp(prefix="mvhub-load-", dir=temp_parent)
+    original = dict(os.environ)
+    safe = {}
     try:
+        if port:
+            safe = _isolated_environment(Path(temp_name), port, original)
+            os.environ.clear()
+            os.environ.update(safe)
         yield temp_name
     finally:
+        os.environ.clear()
+        os.environ.update(original)
+        if evidence:
+            evidence.mkdir(parents=True, exist_ok=True)
+            log = Path(temp_name) / "server.log"
+            if log.exists():
+                (evidence / "server.redacted.log").write_text(_redact(log.read_text(encoding="utf-8", errors="replace")), encoding="utf-8")
+            database = Path(temp_name) / "load.db"
+            record = {"runtime": temp_name, "database": str(database), "python": sys.executable, "python_version": sys.version,
+                      "paths": {key: value for key, value in safe.items() if key in {
+                          "CONTENT_HUB_DATA", "CONTENT_HUB_DB", "CONTENT_HUB_MEDIA", "CONTENT_HUB_SHARED",
+                          "CONTENT_HUB_ASSETS_DIR", "CONTENT_HUB_BACKUP_DIR", "CONTENT_HUB_FRONTEND_DIST"}}}
+            if database.exists():
+                conn = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)
+                try:
+                    record["database_integrity"] = conn.execute("PRAGMA integrity_check").fetchone()[0]
+                finally:
+                    conn.close()
+                record["database_sha256"] = hashlib.sha256(database.read_bytes()).hexdigest()
+            _atomic_write_json(evidence / "runtime.json", record)
         for attempt in range(20):
             try:
                 shutil.rmtree(temp_name)
@@ -361,6 +503,9 @@ def _seed_database(
 ) -> list[dict[str, str]]:
     os.environ["CONTENT_HUB_DATA"] = str(data_dir)
     os.environ["CONTENT_HUB_DB"] = str(db_path)
+    loaded = sys.modules.get("app.config")
+    if loaded is not None and Path(loaded.DATA_DIR).resolve() != data_dir.resolve():
+        raise RuntimeError("app was already imported with another data directory")
     if str(BACKEND) not in sys.path:
         sys.path.insert(0, str(BACKEND))
 
@@ -453,7 +598,7 @@ def _server_environment(
     # 호출한 셸의 `CONTENT_HUB_*` 는 전부 버리고 아래에서 다시 짠다 — TLS 설정이 HTTP 회귀 시험에 섞이지 않게 하던 것을
     # 넓혔다. 경로 변수(ASSETS_DIR·LOG_DIR·WORKER_BACKUP_*·DEVICE_IDENTITY_FILE)는 DATA_DIR 보다 우선하므로, 하나라도
     # 물려받으면 격리 서버가 임시 폴더 밖에 폴더를 만들고 로그를 쓴다.
-    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("CONTENT_HUB_")}
+    env = _isolated_environment(data_dir.parent, port)
     env.update(
         {
             "PYTHONUTF8": "1",
@@ -472,7 +617,7 @@ def _server_environment(
             # 공유 서버 본체가 아닌 격리 경로(is_shared_team_server()=False·telemetry 로컬 저장)를 재게 된다.
             "CONTENT_HUB_NO_PROXY": "0",
             "CONTENT_HUB_METRICS_LOG_INTERVAL": "0",
-            "CONTENT_HUB_FRONTEND_DIST": str(data_dir / "no-frontend"),
+            "CONTENT_HUB_FRONTEND_DIST": str(ROOT / "frontend/dist"),
         }
     )
     if ssl_certfile and ssl_keyfile:
@@ -486,7 +631,7 @@ def _wait_ready(
     process: subprocess.Popen,
     timeout: float = 45.0,
     ssl_context: Optional[ssl.SSLContext] = None,
-) -> None:
+) -> dict:
     deadline = time.monotonic() + timeout
     last_status = 0
     last_detail: Any = {"error": "no response"}
@@ -499,8 +644,9 @@ def _wait_ready(
             timeout=2,
             ssl_context=ssl_context,
         )
-        if status == 200:
-            return
+        if status == 200 and isinstance(detail, dict) and detail.get("status") == "ready":
+            _owned_listener(process, int(urllib.parse.urlsplit(base_url).port), detail)
+            return detail
         last_status = status
         last_detail = detail
         time.sleep(0.25)
@@ -1154,6 +1300,19 @@ async def _run_load(
     return report
 
 
+def _login_control_probe_healthy(
+    probe: Optional[dict[str, Any]], max_p95_ms: float
+) -> bool:
+    if probe is None:
+        return True
+    statuses = {int(status) for status in probe.get("statuses", {})}
+    return (
+        probe.get("samples", 0) > 0
+        and statuses == {200}
+        and probe.get("p95_ms", float("inf")) <= max_p95_ms
+    )
+
+
 def _evaluate(report: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     workload = report["workload"]
     during = report["connections_during_load"]
@@ -1189,13 +1348,8 @@ def _evaluate(report: dict[str, Any], args: argparse.Namespace) -> dict[str, Any
         checks["task_rows_unchanged"] = bool(task_integrity.get("signature_unchanged"))
     login_probe = report["login"].get("control_probe")
     if login_probe is not None:
-        probe_statuses = {
-            int(k): v for k, v in login_probe.get("statuses", {}).items()
-        }
-        checks["login_control_probe_healthy"] = (
-            login_probe.get("samples", 0) > 0
-            and set(probe_statuses) == {200}
-            and login_probe.get("p95_ms", float("inf")) <= args.max_p95_ms
+        checks["login_control_probe_healthy"] = _login_control_probe_healthy(
+            login_probe, args.max_p95_ms
         )
     growth = report["server"].get("memory_growth_percent_after_warmup")
     if growth is not None:
@@ -1217,6 +1371,134 @@ def _evaluate(report: dict[str, Any], args: argparse.Namespace) -> dict[str, Any
     return {"passed": all(checks.values()), "checks": checks}
 
 
+def _aggregate_cycles(
+    cycle_reports: list[dict[str, Any]], args: argparse.Namespace
+) -> dict[str, Any]:
+    report = cycle_reports[-1]
+    first_after_rss = cycle_reports[0]["server"]["after"]["process"].get("rss_bytes") or 0
+    last_after_rss = cycle_reports[-1]["server"]["after"]["process"].get("rss_bytes") or 0
+    stabilized_growth = (
+        round((last_after_rss - first_after_rss) * 100.0 / first_after_rss, 2)
+        if first_after_rss
+        else None
+    )
+    if args.cycles > 1:
+        # 첫 전체 연결이 만든 정상 고수위를 워밍업으로 보고, 이후 사이클끼리 비교해 누수를 판정한다.
+        report["server"]["memory_growth_percent_after_warmup"] = stabilized_growth
+    report["cycle_summaries"] = [
+        {
+            "cycle": index + 1,
+            "requests": cycle["workload"]["requests"],
+            "statuses": cycle["workload"]["statuses"],
+            "p95_ms": cycle["workload"]["latency_ms"]["p95"],
+            "p99_ms": cycle["workload"]["latency_ms"]["p99"],
+            "login_p95_ms": cycle["login"]["p95_ms"],
+            "login_control_probe": cycle["login"].get("control_probe"),
+            "requests_per_second": cycle["workload"]["requests_per_second"],
+            "sqlite_locked_total": cycle["server"]["after"]["requests"].get(
+                "sqlite_locked_total", 0
+            ),
+            "after_rss_bytes": cycle["server"]["after"]["process"].get("rss_bytes"),
+            "max_rss_bytes": cycle["server"]["resource_summary"].get(
+                "max_rss_bytes"
+            ),
+            "max_cpu_percent_one_core": cycle["server"]["resource_summary"].get(
+                "max_cpu_percent_one_core"
+            ),
+            "runtime_sample_count": cycle["server"]["resource_summary"].get(
+                "sample_count"
+            ),
+            "min_agent_connected_accounts": cycle["server"][
+                "resource_summary"
+            ].get("min_agent_connected_accounts"),
+            "min_agent_long_poll_waiters": cycle["server"][
+                "resource_summary"
+            ].get("min_agent_long_poll_waiters"),
+            "within_cycle_memory_growth_percent": cycle["server"].get(
+                "memory_growth_percent_after_warmup"
+            ),
+            "websockets": cycle["connections_during_load"]["websocket"].get(
+                "connections", 0
+            ),
+            "long_poll_waiters": cycle["connections_during_load"]["agents"].get(
+                "long_poll_waiters", 0
+            ),
+            "websocket_errors": len(
+                cycle["connections_during_load"]["websocket_client_errors"]
+            ),
+            "long_poll_errors": len(
+                cycle["connections_during_load"]["long_poll_client_errors"]
+            ),
+            "task_read_commits_zero": (
+                cycle.get("task_workspace_read_integrity", {}).get(
+                    "data_version_unchanged"
+                )
+                if cycle.get("task_workspace_read_integrity") is not None
+                else None
+            ),
+            "task_rows_unchanged": (
+                cycle.get("task_workspace_read_integrity", {}).get(
+                    "signature_unchanged"
+                )
+                if cycle.get("task_workspace_read_integrity") is not None
+                else None
+            ),
+        }
+        for index, cycle in enumerate(cycle_reports)
+    ]
+    report["prior_cycles_functional_ok"] = all(
+        all(200 <= int(status) < 300 for status in cycle["workload"]["statuses"])
+        and cycle["server"]["after"]["requests"].get("sqlite_locked_total", 0) == 0
+        and cycle["connections_during_load"]["websocket"].get("connections", 0)
+        >= args.users
+        and cycle["connections_during_load"]["agents"].get("long_poll_waiters", 0)
+        >= max(1, int(args.users * 0.90))
+        and not cycle["connections_during_load"]["websocket_client_errors"]
+        and not cycle["connections_during_load"]["long_poll_client_errors"]
+        and not cycle["server"].get("runtime_monitor_errors")
+        and (
+            cycle.get("task_workspace_read_integrity") is None
+            or (
+                cycle["task_workspace_read_integrity"].get(
+                    "data_version_unchanged"
+                )
+                and cycle["task_workspace_read_integrity"].get(
+                    "signature_unchanged"
+                )
+            )
+        )
+        and cycle["workload"]["latency_ms"]["p95"] <= args.max_p95_ms
+        and cycle["login"]["p95_ms"] <= args.max_login_p95_ms
+        and _login_control_probe_healthy(
+            cycle["login"].get("control_probe"), args.max_p95_ms
+        )
+        and (
+            cycle["server"]["resource_summary"].get(
+                "min_websocket_connections"
+            )
+            or 0
+        )
+        >= args.users
+        and (
+            cycle["server"]["resource_summary"].get(
+                "min_agent_connected_accounts"
+            )
+            or 0
+        )
+        >= max(1, int(args.users * 0.90))
+        and (
+            args.max_rss_mb <= 0
+            or (
+                cycle["server"]["resource_summary"].get("max_rss_bytes")
+                or 0
+            )
+            <= args.max_rss_mb * 1024 * 1024
+        )
+        for cycle in cycle_reports
+    )
+    return report
+
+
 async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     port = args.port or _free_port()
     tls_enabled = bool(args.tls_certfile)
@@ -1228,21 +1510,32 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     if tls_enabled:
         ssl_context = ssl.create_default_context(cafile=str(args.tls_ca_file))
         ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
-    with _temporary_load_root() as temp_name:
+    evidence = args.output.with_name(args.output.stem + "-evidence") if args.output else None
+    with _temporary_load_root(port, evidence) as temp_name:
         temp_root = Path(temp_name)
         data_dir = temp_root / "data"
         db_path = temp_root / "load.db"
-        accounts = _seed_database(
-            data_dir,
-            db_path,
-            args.users,
-            args.generations_per_user,
-        )
+        # Guard is process-wide and cannot be removed. Seed in its own guarded
+        # process so the load client can still own/stop its server process.
+        try:
+            subprocess.run([sys.executable, "-B", str(Path(__file__).resolve()),
+                            "--seed-runtime", str(temp_root), "--port", str(port),
+                            "--users", str(args.users), "--generations-per-user", str(args.generations_per_user)],
+                           env=dict(os.environ), cwd=str(ROOT), check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        except subprocess.CalledProcessError as error:
+            if evidence:
+                evidence.mkdir(parents=True, exist_ok=True)
+                (evidence / "seed.redacted.log").write_text(_redact(error.stderr.decode("utf-8", errors="replace")), encoding="utf-8")
+            raise RuntimeError("isolated seed failed; see redacted evidence") from None
+        accounts = json.loads((temp_root / "seed-accounts.json").read_text(encoding="utf-8"))
         server_log = temp_root / "server.log"
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         with server_log.open("w", encoding="utf-8", errors="replace") as log_file:
             process = subprocess.Popen(
-                [sys.executable, str(BACKEND / "serve.py")],
+                [sys.executable, "-B", str(Path(__file__).resolve()), "--isolated-server", str(temp_root),
+                 "--port", str(port)],
                 cwd=str(BACKEND),
                 env=_server_environment(
                     data_dir,
@@ -1255,8 +1548,14 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 stderr=subprocess.STDOUT,
                 creationflags=creationflags,
             )
+            import psutil
+            process.load_create_time = psutil.Process(process.pid).create_time()
             try:
-                await asyncio.to_thread(
+                if evidence:
+                    _atomic_write_json(evidence / "owner.json", {"launcher_pid": process.pid,
+                                       "create_time": process.load_create_time, "port": port,
+                                       "runtime": str(temp_root), "python": sys.executable})
+                ready_identity = await asyncio.to_thread(
                     _wait_ready,
                     base_url,
                     process,
@@ -1265,8 +1564,8 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 # ★제한은 '실제 LISTEN 프로세스'에 건다(실측 M10 FAIL 반영) — Popen 런처 PID 에만
                 #   걸면 실제 서버는 전체 CPU·정상 우선순위로 돌면서 보고서만 저사양 합격이 된다.
                 #   준비 완료 후에야 자식이 LISTEN 하므로 이 시점에 조회·적용하고 두 PID 를 기록한다.
-                listen_pid = _listening_pid(port)
-                limited_pid = listen_pid or process.pid
+                listen_pid = _owned_listener(process, port, ready_identity)
+                limited_pid = listen_pid
                 server_limits = _apply_server_limits(
                     limited_pid,
                     cpu_cores=args.server_cpu_cores,
@@ -1328,133 +1627,14 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                                     },
                                 },
                             )
-                    report = cycle_reports[-1]
                 finally:
                     executor.shutdown(wait=True, cancel_futures=True)
             finally:
-                process.terminate()
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+                cleanup = _stop_owned(process, port)
+                if evidence:
+                    _atomic_write_json(evidence / "cleanup.json", cleanup)
 
-        first_after_rss = cycle_reports[0]["server"]["after"]["process"].get("rss_bytes") or 0
-        last_after_rss = cycle_reports[-1]["server"]["after"]["process"].get("rss_bytes") or 0
-        stabilized_growth = (
-            round((last_after_rss - first_after_rss) * 100.0 / first_after_rss, 2)
-            if first_after_rss
-            else None
-        )
-        if args.cycles > 1:
-            # 첫 전체 연결이 만든 정상 고수위를 워밍업으로 보고, 이후 사이클끼리 비교해 누수를 판정한다.
-            report["server"]["memory_growth_percent_after_warmup"] = stabilized_growth
-        report["cycle_summaries"] = [
-            {
-                "cycle": index + 1,
-                "requests": cycle["workload"]["requests"],
-                "statuses": cycle["workload"]["statuses"],
-                "p95_ms": cycle["workload"]["latency_ms"]["p95"],
-                "p99_ms": cycle["workload"]["latency_ms"]["p99"],
-                "requests_per_second": cycle["workload"]["requests_per_second"],
-                "sqlite_locked_total": cycle["server"]["after"]["requests"].get(
-                    "sqlite_locked_total", 0
-                ),
-                "after_rss_bytes": cycle["server"]["after"]["process"].get("rss_bytes"),
-                "max_rss_bytes": cycle["server"]["resource_summary"].get(
-                    "max_rss_bytes"
-                ),
-                "max_cpu_percent_one_core": cycle["server"]["resource_summary"].get(
-                    "max_cpu_percent_one_core"
-                ),
-                "runtime_sample_count": cycle["server"]["resource_summary"].get(
-                    "sample_count"
-                ),
-                "min_agent_connected_accounts": cycle["server"][
-                    "resource_summary"
-                ].get("min_agent_connected_accounts"),
-                "min_agent_long_poll_waiters": cycle["server"][
-                    "resource_summary"
-                ].get("min_agent_long_poll_waiters"),
-                "within_cycle_memory_growth_percent": cycle["server"].get(
-                    "memory_growth_percent_after_warmup"
-                ),
-                "websockets": cycle["connections_during_load"]["websocket"].get(
-                    "connections", 0
-                ),
-                "long_poll_waiters": cycle["connections_during_load"]["agents"].get(
-                    "long_poll_waiters", 0
-                ),
-                "websocket_errors": len(
-                    cycle["connections_during_load"]["websocket_client_errors"]
-                ),
-                "long_poll_errors": len(
-                    cycle["connections_during_load"]["long_poll_client_errors"]
-                ),
-                "task_read_commits_zero": (
-                    cycle.get("task_workspace_read_integrity", {}).get(
-                        "data_version_unchanged"
-                    )
-                    if cycle.get("task_workspace_read_integrity") is not None
-                    else None
-                ),
-                "task_rows_unchanged": (
-                    cycle.get("task_workspace_read_integrity", {}).get(
-                        "signature_unchanged"
-                    )
-                    if cycle.get("task_workspace_read_integrity") is not None
-                    else None
-                ),
-            }
-            for index, cycle in enumerate(cycle_reports)
-        ]
-        report["prior_cycles_functional_ok"] = all(
-            all(200 <= int(status) < 300 for status in cycle["workload"]["statuses"])
-            and cycle["server"]["after"]["requests"].get("sqlite_locked_total", 0) == 0
-            and cycle["connections_during_load"]["websocket"].get("connections", 0)
-            >= args.users
-            and cycle["connections_during_load"]["agents"].get("long_poll_waiters", 0)
-            >= max(1, int(args.users * 0.90))
-            and not cycle["connections_during_load"]["websocket_client_errors"]
-            and not cycle["connections_during_load"]["long_poll_client_errors"]
-            and not cycle["server"].get("runtime_monitor_errors")
-            and (
-                cycle.get("task_workspace_read_integrity") is None
-                or (
-                    cycle["task_workspace_read_integrity"].get(
-                        "data_version_unchanged"
-                    )
-                    and cycle["task_workspace_read_integrity"].get(
-                        "signature_unchanged"
-                    )
-                )
-            )
-            and cycle["workload"]["latency_ms"]["p95"] <= args.max_p95_ms
-            and cycle["login"]["p95_ms"] <= args.max_login_p95_ms
-            and (
-                cycle["server"]["resource_summary"].get(
-                    "min_websocket_connections"
-                )
-                or 0
-            )
-            >= args.users
-            and (
-                cycle["server"]["resource_summary"].get(
-                    "min_agent_connected_accounts"
-                )
-                or 0
-            )
-            >= max(1, int(args.users * 0.90))
-            and (
-                args.max_rss_mb <= 0
-                or (
-                    cycle["server"]["resource_summary"].get("max_rss_bytes")
-                    or 0
-                )
-                <= args.max_rss_mb * 1024 * 1024
-            )
-            for cycle in cycle_reports
-        )
+        report = _aggregate_cycles(cycle_reports, args)
         report["config"] = {
             "users": args.users,
             "duration_seconds": args.duration,
@@ -1470,6 +1650,9 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "max_login_p95_ms": args.max_login_p95_ms,
         }
         report["server_limits"] = server_limits
+        report["ready_identity"] = ready_identity
+        report["cleanup"] = cleanup
+        report["evidence_directory"] = str(evidence) if evidence else None
         report["acceptance"] = _evaluate(report, args)
         if progress_path is not None:
             _atomic_write_json(
@@ -1486,9 +1669,9 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 data_dir / "logs" / "mvhub-runtime.jsonl"
             )
             try:
-                report["server_log_tail"] = server_log.read_text(
+                report["server_log_tail"] = _redact(server_log.read_text(
                     encoding="utf-8", errors="replace"
-                ).splitlines()[-80:]
+                )).splitlines()[-80:]
             except OSError:
                 pass
         return report, 0 if report["acceptance"]["passed"] else 2
@@ -1507,6 +1690,28 @@ def _run_async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
 
 
 def main() -> int:
+    if "--seed-runtime" in sys.argv or "--isolated-server" in sys.argv:
+        internal = argparse.ArgumentParser()
+        internal.add_argument("--seed-runtime", type=Path)
+        internal.add_argument("--isolated-server", type=Path)
+        internal.add_argument("--port", type=int, required=True)
+        internal.add_argument("--users", type=int)
+        internal.add_argument("--generations-per-user", type=int)
+        options = internal.parse_args()
+        from workroom_backend import install_guard
+        runtime = (options.seed_runtime or options.isolated_server).resolve(strict=True)
+        # Runtime paths were validated by the launcher; reject hand-edited child env too.
+        from smoke_env import validate_smoke_paths
+        validate_smoke_paths(runtime, os.environ, allowed_frontend_root=ROOT / "frontend/dist")
+        install_guard(runtime, options.port)
+        if options.seed_runtime:
+            accounts = _seed_database(runtime / "data", runtime / "load.db", options.users, options.generations_per_user)
+            (runtime / "seed-accounts.json").write_text(json.dumps(accounts), encoding="utf-8")
+        else:
+            sys.path.insert(0, str(BACKEND))
+            import serve
+            serve.cli([])
+        return 0
     parser = argparse.ArgumentParser(description="MV Hub 격리 100명 부하 테스트")
     parser.add_argument("--users", type=int, default=100)
     parser.add_argument("--duration", type=float, default=60.0)
@@ -1561,8 +1766,20 @@ def main() -> int:
         help="클라이언트가 인증서 검증에 사용할 CA PEM(자체 서명은 certfile과 같은 파일)",
     )
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--frozen-manifest", type=Path,
+                        help="Explicit approved dirty source/dist/tools manifest; exact file set required")
+    parser.add_argument("--write-frozen-manifest", type=Path,
+                        help="Write current positive-scope fingerprint only; do not start a server")
     parser.add_argument("--quiet", action="store_true", help="콘솔에는 요약만 출력")
     args = parser.parse_args()
+    if args.write_frozen_manifest:
+        payload = {"format_version": 1, "scope": "soak-source-dist-tools-v1", "files": _source_files(ROOT)}
+        with args.write_frozen_manifest.open("x", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+        return 0
+    frozen_digest = _verify_frozen_manifest(args.frozen_manifest) if args.frozen_manifest else None
+    if args.output and (args.output.exists() or args.output.with_name(args.output.stem + "-evidence").exists()):
+        parser.error("output/evidence already exists; choose a new run path")
     if args.users < 1 or args.users > 500:
         parser.error("--users는 1~500")
     if args.duration <= 0:
@@ -1591,7 +1808,14 @@ def main() -> int:
                 parser.error(f"--{option_name.replace('_', '-')} 파일을 찾을 수 없습니다: {path}")
             setattr(args, option_name, resolved)
 
-    report, exit_code = _run_async_main(args)
+    try:
+        report, exit_code = _run_async_main(args)
+    finally:
+        if args.frozen_manifest:
+            if _verify_frozen_manifest(args.frozen_manifest) != frozen_digest:
+                raise ValueError("frozen manifest itself changed during the run")
+    if args.frozen_manifest:
+        report["frozen_manifest_sha256"] = _verify_frozen_manifest(args.frozen_manifest)
     text = json.dumps(report, ensure_ascii=False, indent=2)
     if args.quiet:
         summary = {

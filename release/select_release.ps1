@@ -90,24 +90,20 @@ if (-not $Version) {
     throw "VERSION.txt is empty in package: $($Package.FullName)"
 }
 
-$Latest = [ordered]@{
-    version = $Version
-    higgsfield_cli_version = $CliVersion
-    file = $Package.Name
-    sha256 = Get-Sha256Hex -Path $Package.FullName
-    size = $Package.Length
-    created_at = (Get-Date).ToString("s")
-}
-# 이전 Set-Content -Encoding UTF8 과 같은 바이트(UTF-8 BOM) — 후보와 공개 표지가 같은 원문을 갖는다.
-$ManifestBytes = (New-Object System.Text.UTF8Encoding($true)).GetPreamble() +
-    (New-Object System.Text.UTF8Encoding($false)).GetBytes(($Latest | ConvertTo-Json) + "`r`n")
+$Evidence = Get-QualifiedRelease -PackagePath $Package.FullName
+$Latest = $Evidence.Candidate
+$ManifestBytes = $Evidence.Bytes  # qualified candidate bytes, never a reconstructed manifest
 
 $LatestDirectory = Split-Path -Parent $LatestPath
+if ([System.IO.Path]::GetFullPath($LatestDirectory).TrimEnd('\') -ine $Package.DirectoryName.TrimEnd('\')) {
+    throw 'Select the qualified ZIP in its release folder; candidate, receipt and ZIP must stay together.'
+}
 New-Item -ItemType Directory -Force -Path $LatestDirectory | Out-Null
 $CandidatePath = Join-Path $LatestDirectory "candidate.json"
 $BackupPath = ""
 $Lock = Open-ReleaseLock -Directory $LatestDirectory -WaitSeconds $LockWaitSeconds
 try {
+    Assert-ReleaseEvidenceUnchanged $Evidence
     # 아직 공지·배포되지 않은 후보가 있으면 이 선택이 그것을 취소한다(B안 — 되돌린 판이 다시 배포되지 않게).
     $PendingSha = Read-ManifestSha -Path $CandidatePath
     if ($PendingSha -and $PendingSha -ne (Read-ManifestSha -Path $LatestPath) -and $PendingSha -ne $Latest.sha256) {

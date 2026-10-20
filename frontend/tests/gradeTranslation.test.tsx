@@ -11,6 +11,7 @@ import { MIRROR_PENDING_NOTICE, withMirrorPendingNotice } from "../src/lib/share
 import { useGenerationCardActions } from "../src/lib/useGenerationCardActions";
 import { useGradeStep } from "../src/lib/useGradeStep";
 import { useGenerationShareActions } from "../src/lib/useGenerationShareActions";
+import { postLibraryChanged } from "../src/lib/libraryBroadcast";
 import type { Generation } from "../src/types";
 
 vi.mock("../src/api", () => ({ api: {
@@ -104,12 +105,25 @@ it("mirror notices translate only for opted-in callers", () => {
   expect(withMirrorPendingNotice("Done.", { mirror_pending: false }, t)).toBe("Done.");
 });
 
+it("a later grade step uses the same authoritative current state and revision after unpublish", async () => {
+  let actions!: ReturnType<typeof useGradeStep>;
+  function Harness() { actions = useGradeStep({ canFinalize: () => true, flash: vi.fn(), reload: vi.fn().mockResolvedValue(undefined) }); return null; }
+  act(() => root.render(<Harness />));
+  const snapshot = { revision: 8, isCurrent: () => true };
+  vi.mocked(api.unpublish).mockResolvedValueOnce(gen({ shared: true, _shareSnapshot: snapshot }));
+  act(() => actions.requestGradeStep([gen()], "down"));
+  await act(async () => actions.confirm());
+  act(() => actions.requestGradeStep([gen()], "up"));
+  expect(actions.pending?.ops.map(op => op.action)).toEqual(["finalize"]);
+  expect(actions.pending?.ops[0].gen._shareSnapshot).toBe(snapshot);
+});
+
 it("bulk results translate counts, partial failures and mirror pending at completion", async () => {
   let actions!: ReturnType<typeof useGradeStep>;
   const flash = vi.fn(), reload = vi.fn().mockResolvedValue(undefined);
   function Harness() { actions = useGradeStep({ canFinalize: () => true, flash, reload }); return null; }
   act(() => root.render(<Harness />));
-  vi.mocked(api.unpublish).mockResolvedValueOnce(gen({ mirror_pending: true })).mockRejectedValueOnce(new Error("denied"));
+  vi.mocked(api.unpublish).mockResolvedValueOnce(gen({ shared: false, mirror_pending: true })).mockRejectedValueOnce(new Error("denied"));
   act(() => actions.requestGradeStep([gen(), gen({ id: "failed" })], "down"));
   await act(async () => actions.confirm());
   expect(flash).toHaveBeenLastCalledWith("1 applied · 1 failed/skipped Some local updates will sync automatically shortly.");
@@ -338,9 +352,11 @@ it("folder sharing translates UI while preserving folder names and raw server de
     error: null, message: null, mirror_pending: false, remote });
   await act(async () => actions.folderShare("project", "e001/c0010", name));
   expect(api.publishFolderToShared).toHaveBeenLastCalledWith("project", "e001/c0010");
+  expect(postLibraryChanged).toHaveBeenCalledExactlyOnceWith({ projectId: "project" });
   expect(flash).toHaveBeenLastCalledWith(`Shared 2 items from '${name}' with the team. 서버 응답 Stopped: 원문 $& {count} (1 remaining — run again to resume sharing) Some local updates will sync automatically shortly.`);
   await act(async () => actions.folderShare("project", "e001/c0010", name));
   expect(flash).toHaveBeenLastCalledWith(`No eligible items to share in '${name}' (your completed, unshared results only).`);
+  expect(postLibraryChanged).toHaveBeenCalledTimes(1);
 });
 
 it.each([

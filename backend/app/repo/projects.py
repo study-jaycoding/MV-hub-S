@@ -10,6 +10,7 @@ project_member 는 전방 호환용으로 기록만 한다(로드맵: 식별 먼
 from __future__ import annotations
 
 import sqlite3
+import ntpath
 from typing import Any, Optional
 
 from ..db import get_connection
@@ -21,7 +22,7 @@ from .console_guard import guard_project_change
 from .final_moves import FinalMoveActor, check_final_moves
 
 _SELECT = (
-    "SELECT p.id, p.name, p.kind, p.created_by, p.created_at, p.archived, p.render_root_path, "
+    "SELECT p.id, p.name, p.kind, p.created_by, p.created_at, p.archived, p.render_root_path, p.asset_root_path, "
     "p.workspace_scope, p.workspace_id, p.workspace_name, "
     # 그리드와 동일 기준(삭제분 제외) — 안 그러면 옛 소프트삭제 잔존이 카운트만 부풀린다.
     "(SELECT COUNT(*) FROM generation g WHERE g.project_id = p.id AND g.deleted_at IS NULL) AS count "
@@ -79,6 +80,7 @@ def create_project(
     kind: str = "team",
     created_by: Optional[str] = None,
     workspace: Optional[dict[str, Any]] = None,
+    asset_root_path: Optional[str] = None,
 ) -> dict[str, Any]:
     """새 프로젝트 생성. 같은 이름(미보관)이 이미 있으면 그것을 반환(멱등적 생성)."""
     name = (name or "").strip()
@@ -90,6 +92,7 @@ def create_project(
     # 트랜잭션 밖에서 미리 계산한다.
     creator = created_by or _provider_uid()
     workspace_scope, workspace_id, workspace_name = workspace_columns(workspace)
+    asset_root = _clean_asset_root(asset_root_path)
     with get_connection() as conn:
         # SELECT→INSERT 를 즉시 쓰기락으로 직렬화 — 동시 생성이 같은 이름 프로젝트 2개를 만들지 않게.
         conn.execute("BEGIN IMMEDIATE")
@@ -98,9 +101,9 @@ def create_project(
             return _row(conn, existing_id)  # type: ignore[return-value]
         pid = new_id()
         conn.execute(
-            "INSERT INTO project(id, name, kind, created_by, workspace_scope, workspace_id, workspace_name) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (pid, name, kind, creator, workspace_scope, workspace_id, workspace_name),
+            "INSERT INTO project(id, name, kind, created_by, workspace_scope, workspace_id, workspace_name, asset_root_path) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (pid, name, kind, creator, workspace_scope, workspace_id, workspace_name, asset_root),
         )
         if workspace_scope == "team" and workspace_id:
             _add_workspace_members_to_project(conn, pid, workspace_id)
@@ -194,7 +197,7 @@ def list_projects(
         count_args.append(viewer_uid)
     # count = viewer 의 것(사이드바 My Work), total = 프로젝트 전체(관리자 탭에서 표시).
     select = (
-        "SELECT p.id, p.name, p.kind, p.created_by, p.created_at, p.archived, p.render_root_path, "
+        "SELECT p.id, p.name, p.kind, p.created_by, p.created_at, p.archived, p.render_root_path, p.asset_root_path, "
         "p.workspace_scope, p.workspace_id, p.workspace_name, "
         f"(SELECT COUNT(*) FROM generation g WHERE {gen_cond}) AS count, "
         "(SELECT COUNT(*) FROM generation gt WHERE gt.project_id=p.id AND gt.deleted_at IS NULL"
@@ -319,6 +322,10 @@ def cache_projects(projects: list[dict[str, Any]]) -> None:
             "THEN project.workspace_name ELSE excluded.workspace_name END",
             upsert_args,
         )
+        # 구서버의 누락 필드는 기존 명시 연결을 지우지 않는다.
+        for p in projects:
+            if isinstance(p, dict) and p.get("id") and "asset_root_path" in p:
+                _set_asset_root(conn, p["id"], p.get("asset_root_path") or None)
         if team_targets:
             # 실제 unknown→team 으로 바뀌는 행만 수집(telemetry 대상 계약) 후 배치 UPDATE.
             pids = list(team_targets)
@@ -399,6 +406,31 @@ def set_project_workspace(pid: str, workspace: Optional[dict[str, Any]]) -> bool
         except Exception:  # noqa: BLE001
             pass
     return updated
+
+
+def _clean_asset_root(path: Optional[str]) -> Optional[str]:
+    value = (path or "").strip()
+    if value and (not ntpath.isabs(value) or "\x00" in value
+                  or ".." in value.replace("\\", "/").split("/")):
+        raise ValueError("Assets 보관 폴더는 절대 경로로 지정하세요")
+    return value or None
+
+
+def set_asset_root(pid: str, path: Optional[str]) -> None:
+    value = _clean_asset_root(path)
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _set_asset_root(conn, pid, value)
+
+
+def _set_asset_root(conn, pid: str, value: Optional[str]) -> None:
+    changed = conn.execute("UPDATE project SET asset_root_path=? WHERE id=? AND asset_root_path IS NOT ?",
+                           (value, pid, value)).rowcount
+    if changed:
+        # 서버 정의의 루트 변경만 이전 전송 pin을 해제한다. 옛 receipt는 CAS 이관 증거로 보존한다.
+        conn.execute("UPDATE asset_sync_outbox SET state='queued',storage_id='',root_revision='',"
+                     "next_retry_at=0,lease_token=NULL,lease_until=NULL WHERE project_id=?", (pid,))
+        conn.execute("UPDATE asset_registry SET state='missing',miss_count=0 WHERE project_id=?", (pid,))
 
 
 def get_render_root(pid: str) -> str:

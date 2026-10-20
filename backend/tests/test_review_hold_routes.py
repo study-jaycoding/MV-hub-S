@@ -1,7 +1,7 @@
 """공유 검토 보류의 권한·원장·세 축 수렴 계약. 임시 DB만 사용한다."""
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, call as mock_call
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -33,6 +33,10 @@ def item(monkeypatch, tmp_path):
     monkeypatch.setattr(share, "kick_share_state_reconciler", Mock())
     yield gid
     db.flush_pool()
+
+
+def assert_proxy_write(call, *args, **kwargs):
+    assert call.call_args_list == [mock_call("GET", "/api/share/capabilities"), mock_call(*args, **kwargs)]
 
 
 def req():
@@ -103,7 +107,7 @@ def test_proxy_hold_mirrors_server_held_axis(item, monkeypatch):
     monkeypatch.setattr(share._proxy, "proxy_json", call)
     out = share.hold_generation(item, req())
     assert out == remote
-    call.assert_called_once_with("POST", "/api/generations/remote-review/hold")
+    assert_proxy_write(call, "POST", "/api/generations/remote-review/hold")
     assert repo.get_generation(item)["is_held"]
     with db.get_connection() as conn:
         saved = dict(conn.execute("SELECT * FROM share_state_intent").fetchone())
@@ -119,7 +123,7 @@ def test_proxy_mirror_failure_keeps_server_success_and_pending_intent(item, monk
     out = share.hold_generation(item, req())
     assert isinstance(out, JSONResponse) and out.status_code == 200
     assert b'"mirror_pending":true' in out.body
-    assert call.call_count == 1  # 서버 판정을 되돌리는 요청 없음
+    assert call.call_count == 2 and call.call_args_list[0] == mock_call("GET", "/api/share/capabilities")  # 서버 판정을 되돌리는 요청 없음
 
 
 def test_prepare_failure_prevents_remote_write(item, monkeypatch):
@@ -197,7 +201,7 @@ def test_hold_rejected_without_replay_when_server_still_at_base():
 
 
 def test_missing_remote_generation_confirms_no_held_axis(monkeypatch):
-    monkeypatch.setattr(reconciler._proxy, "raw_request", Mock(return_value=(200, {"items": {}, "missing": ["x"]})))
+    monkeypatch.setattr(reconciler, "_proxy", SimpleNamespace(raw_request=Mock(return_value=(200, {"items": {}, "missing": ["x"]}))))
     saved = {"intent_id": "i", "server_generation_id": "x", "desired_shared": 0,
              "desired_final": 0, "desired_held": 0}
     observed = reconciler._observe_remote_states("http://review.example.test", "fixture", [saved])["i"]
@@ -207,7 +211,7 @@ def test_missing_remote_generation_confirms_no_held_axis(monkeypatch):
 
 @pytest.mark.parametrize("response", [(200, {}), (404, {"detail": "generation 없음"})])
 def test_composite_cleanup_clears_held_axis_even_without_response_field(monkeypatch, response):
-    monkeypatch.setattr(reconciler._proxy, "raw_request", Mock(return_value=response))
+    monkeypatch.setattr(reconciler, "_proxy", SimpleNamespace(raw_request=Mock(return_value=response)))
     observed = reconciler._unpublish_remote("http://review.example.test", "fixture", {"server_generation_id": "x"})
     assert not observed["shared"] and not observed["is_final"] and observed["is_held"] is False
 
@@ -262,7 +266,7 @@ def test_proxy_final_review_single_write_and_three_axis_intent(item, monkeypatch
     call = Mock(return_value=remote)
     monkeypatch.setattr(share._proxy, "proxy_json", call)
     assert share.final_review(item, FinalReviewIn(state=target), req()) == remote
-    call.assert_called_once_with("POST", "/api/generations/remote-review/final-review", body={"state": target})
+    assert_proxy_write(call, "POST", "/api/generations/remote-review/final-review", body={"state": target})
     local = repo.get_generation(item)
     assert local["shared"] == remote["shared"] and local["is_held"] == remote["is_held"]
     with db.get_connection() as conn:
@@ -281,7 +285,7 @@ def test_proxy_final_review_missing_route_never_falls_back_to_two_writes(item, m
     with pytest.raises(HTTPException) as error:
         share.final_review(item, FinalReviewIn(state=target), req())
     assert error.value.status_code == 409 and "업데이트" in error.value.detail
-    assert call.call_count == 1 and repo.get_generation(item)["is_final"]
+    assert call.call_count == 2 and call.call_args_list[0] == mock_call("GET", "/api/share/capabilities") and repo.get_generation(item)["is_final"]
 
 
 @pytest.mark.parametrize("target", ["unshared", "shared", "held"])
@@ -309,7 +313,7 @@ def test_final_review_mirror_failure_does_not_undo_server(item, monkeypatch):
     monkeypatch.setattr(repo, "apply_share_state_intent_local", Mock(side_effect=OSError("fixture")))
     result = share.final_review(item, FinalReviewIn(state="held"), req())
     assert isinstance(result, JSONResponse) and b'"mirror_pending":true' in result.body
-    assert call.call_count == 1
+    assert call.call_count == 2 and call.call_args_list[0] == mock_call("GET", "/api/share/capabilities")
 
 
 def test_final_review_http_request_and_response_contract(item):
@@ -459,7 +463,7 @@ def test_proxy_unfinalize_restore_forwards_the_flag_and_does_not_claim_the_held_
     monkeypatch.setattr(share._proxy, "proxy_json", call)
     out = share.unfinalize(item, req(), restore_held=True)
     assert out == remote
-    call.assert_called_once_with("POST", "/api/generations/remote-review/unfinalize", params={"restore_held": 1})
+    assert_proxy_write(call, "POST", "/api/generations/remote-review/unfinalize", params={"restore_held": 1})
     local = repo.get_generation(item)
     assert local["is_held"] and local["shared"] and not local["is_final"]  # 응답의 보류가 이 PC 에 미러된다
     with db.get_connection() as conn:
@@ -480,7 +484,7 @@ def test_proxy_unfinalize_without_the_flag_still_claims_not_held(item, monkeypat
         assert error.value.status_code == 409
     else:
         share.unfinalize(item, req())
-    call.assert_called_once_with("POST", "/api/generations/remote-review/unfinalize")
+    assert_proxy_write(call, "POST", "/api/generations/remote-review/unfinalize")
     with db.get_connection() as conn:
         saved = dict(conn.execute("SELECT * FROM share_state_intent").fetchone())
     assert saved["desired_held"] == 0 and saved["status"] == status

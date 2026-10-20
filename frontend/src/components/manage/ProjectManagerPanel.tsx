@@ -49,6 +49,7 @@ type ProjectDialogState =
       mode: "create";
       name: string;
       rootPath: string;
+      assetRootPath: string;
       workspaceId: string;
       planning: Planning;
       planningBaseline: Planning;
@@ -62,6 +63,7 @@ type ProjectDialogState =
       project: Project;
       name: string;
       rootPath: string;
+      assetRootPath: string;
       rootPathBaseline?: string; // 창을 열 때의 렌더 폴더 — 손대지 않았으면 다시 저장하지 않는다(50회차)
       workspaceId: string;
       planning: Planning;
@@ -284,6 +286,7 @@ export function ProjectManagerPanel({
       mode: "create",
       name: "",
       rootPath: "",
+      assetRootPath: "",
       workspaceId,
       planning: { status: "active", budget_period: "month" },
       planningBaseline: {},
@@ -309,6 +312,7 @@ export function ProjectManagerPanel({
         project: p,
         name: p.name,
         rootPath: folder?.root_path || "",
+        assetRootPath: p.asset_root_path || "",
         rootPathBaseline: folder?.root_path || "",
         workspaceId,
         planning: { status: "active", ...planning },
@@ -417,6 +421,12 @@ export function ProjectManagerPanel({
         }
       }
       if (pending.mode !== "rename") return;
+      const assetRoot = pending.assetRootPath.trim();
+      if (assetRoot !== (pending.project.asset_root_path || "")) {
+        const saved = await api.updateProject(pending.project.id, { asset_root_path: assetRoot || null });
+        pending = { ...pending, project: { ...pending.project, asset_root_path: saved.asset_root_path } };
+        savedParts.push("Assets 보관 폴더");
+      }
       const planning = await conflict.savePlanning(pending.project.id, pending.planningBaseline, planningResult.planning);
       pending = { ...pending, planning, planningBaseline: planning, budgetInput: planningBudgetInput(planning) };
       savedParts.push("일정·예산");
@@ -754,6 +764,14 @@ export function ProjectManagerPanel({
               <div className="admin-note-sub">
                 경로를 넣으면 그 안의 Render 폴더 구조가 프로젝트 아래에 표시됩니다.
               </div>
+              <label className="admin-field">
+                <span>Assets 보관 폴더</span>
+                <input className="settings-input" placeholder="예: Z:\\PROJECT_MUDX\\10_ai\\assets"
+                  value={projectDialog.assetRootPath}
+                  onChange={(e) => setProjectDialog({ ...projectDialog, assetRootPath: e.target.value, error: "" })}
+                  onKeyDown={(e) => e.key === "Enter" && saveProjectDialog()} />
+              </label>
+              <div className="admin-note-sub">캡처·가져온 자료를 이 폴더의 imp_cap/표시이름에 자동 보관합니다.</div>
               {projectDialog.mode === "create" && projectDialog.workspaceId && (
                 <div className="project-member-picker">
                   <div className="project-member-picker-head">

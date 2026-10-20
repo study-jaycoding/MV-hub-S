@@ -13,12 +13,14 @@ import type { AssetMeta, AssetNode, InfoTarget } from "../../types";
 export const AssetCell = memo(function AssetCell({
   project,
   node,
+  folderLabel,
   idx,
   layout,
   scale,
   fit,
   selected,
   focused,
+  lastViewed,
   deactivated,
   selectedCount,
   meta,
@@ -38,12 +40,14 @@ export const AssetCell = memo(function AssetCell({
 }: {
   project: string;
   node: AssetNode;
+  folderLabel?: string;
   idx: number;
   layout: "grid" | "list";
   scale: number;
   fit: "cover" | "contain";
   selected: boolean;
   focused: boolean;
+  lastViewed?: boolean;
   deactivated?: boolean; // 비활성(회색) 표시 — d 키. 색만 회색, 크기 유지(히스토리와 달리 축소 안 함)
   selectedCount?: number; // 이 카드가 다중선택에 포함될 때 N(에디터에 '선택 N개에 적용' 표시)
   meta: AssetMeta;
@@ -58,8 +62,8 @@ export const AssetCell = memo(function AssetCell({
   onBulkTagRemove: (path: string, names: string[]) => void; // 다중선택 시 ×해제를 선택 전체에(공통 삭제)
   onTagCancel: () => void;
   onInfo: (t: InfoTarget) => void;
-  // 네이티브 파일 드래그 시작 → 부모가 선택 상태를 보고 단일/다중(zip) DownloadURL 설정 + 마퀴 취소
-  onExportDrag: (path: string, dt: DataTransfer) => void;
+  // 본체 드래그 시작 → 부모가 선택 전체의 원본 파일 전달과 내부 드래그를 처리한다.
+  onExportDrag: (path: string, event: React.DragEvent) => void;
   // 다중 선택 복사 → 선택한 원본 이미지들을 OS 클립보드(파일 목록)에 올림(부모가 선택 전체를 앎)
   //  돌려주는 값 = 올리려던 수와 실제로 올라간 수(서버가 상한·미디어 아님으로 덜 올릴 수 있다)
   onCopyFiles?: (path: string) => Promise<{ asked: number; copied: number }>;
@@ -153,13 +157,14 @@ export const AssetCell = memo(function AssetCell({
   const info = (x: number, y: number) =>
     onInfo({ kind: "file", project, node, meta, x, y });
 
-  // OS·외부 앱으로 카드를 끌어다 놓으면 파일이 그 위치에 그대로 저장됨(브라우저 네이티브 다운로드 드래그).
-  // 단일/다중(zip) 판단은 현재 선택을 아는 부모가 처리. 이미지 표시는 썸네일이지만 내보내는 건 항상 원본.
+  // OS·외부 앱으로 끌어낼 원본 파일 선택은 부모가 처리한다.
+  // 선택 판단은 부모가 처리. 이미지 표시는 썸네일이지만 네이티브로 내보내는 건 원본이다.
   const onMediaDragStart = (e: React.DragEvent) => {
-    // OS·외부 앱 내보내기(DownloadURL) + 본창 트레이용 커스텀 타입(application/x-ch-asset)을
+    e.stopPropagation(); // img → media의 버블링으로 같은 원본 드래그를 두 번 시작하지 않는다.
+    // OS·외부 앱 내보내기 + 본창 트레이용 커스텀 타입(application/x-ch-asset)을
     // 부모 exportDrag 가 함께 심는다 — 다중선택이면 선택 전체를 한 번에 싣기 위해(선택 상태를 가진
     // 부모가 처리). 셀은 시작만 위임.
-    onExportDrag(node.path, e.dataTransfer);
+    onExportDrag(node.path, e);
   };
 
   // ── 이미지 복사(클립보드) ──────────────────────────────────────────────
@@ -375,7 +380,7 @@ export const AssetCell = memo(function AssetCell({
       <div
         className="asset-media"
         style={mediaStyle}
-        title={node.name}
+        title={folderLabel ? `${node.name}\n${folderLabel}` : node.name}
         draggable
         onDragStart={onMediaDragStart}
         onMouseEnter={onEnter}
@@ -404,7 +409,11 @@ export const AssetCell = memo(function AssetCell({
         )}
         {isVideo && <span className="play-badge">▶</span>}
         {isAudio && <span className="play-badge">♪</span>}
+        {lastViewed && <span className="asset-last-viewed">Last viewed</span>}
         {topLeft}
+        {folderLabel && <div className="card-bottom">
+          <span className="card-folder static"><span>{folderLabel}</span></span>
+        </div>}
 
         <div
           className="thumb-overlay"

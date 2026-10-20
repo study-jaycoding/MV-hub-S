@@ -755,6 +755,171 @@ def test_reference_handles_are_client_scoped_and_revalidated(local, monkeypatch)
     assert response.status_code == 404
 
 
+@pytest.fixture
+def content_source(local, monkeypatch):
+    configure(local, ["codex", "claude"])
+    row = {"id": "source-gen", "creator_uid": "source-owner", "project_id": "source-project",
+           "workspace_scope": "personal", "workspace_id": None,
+           "assets": [{"id": "source-asset", "type": "image", "file_path": "/media/source.png",
+                       "source_url": "/media/source.png", "asset_content_id": "sha256:" + "a" * 64}]}
+    monkeypatch.setattr(api, "_generations", lambda *args: [row])
+    monkeypatch.setattr(api.library, "get_generation", lambda *args: row)
+    return row
+
+
+@pytest.mark.parametrize("client_name", ["codex", "claude"])
+@pytest.mark.parametrize("before_prepare", [True, False])
+def test_content_reference_survives_location_promotion(local, monkeypatch, content_source, client_name, before_prepare):
+    from app.repo import asset_locations
+    row = content_source
+    cid = row["assets"][0]["asset_content_id"]
+    response = action(local, "read_context", {"kind": "references"}, client_name)
+    assert response.status_code == 200, response.text
+    rid = response.json()["references"][0]["id"]
+    credential = store.client_for_secret(api.mcp.digest(local[1][client_name]["secret"]))
+    original = store.get_reference(credential, rid)
+    location = {"location_id": "b" * 32, "project_id": row["project_id"], "owner_uid": row["creator_uid"],
+                "storage_id": "server-storage", "root_revision": "c" * 64, "server_origin": "https://hub.invalid"}
+    monkeypatch.setattr(asset_locations, "verified_locations", lambda *args: {
+        (row["creator_uid"], row["project_id"], cid): {"bytes": 123, "location": location}})
+    def promote():
+        asset_locations.project_generation_locations(None, [row])
+    if before_prepare:
+        promote()
+    args = {"title": "relocation", "items": [{"label": "one", "prompt": "hi", "model": "test_model", "reference_ids": [rid]}]}
+    response = action(local, "prepare_generation_plan", args, client_name)
+    assert response.status_code == 200, response.text
+    plan = response.json()
+    if not before_prepare:
+        promote()
+    calls = []
+    async def submit(body, request):
+        calls.append(body)
+        return {"id": "test-generation"}
+    monkeypatch.setattr(gen_requests, "create_gen_request", submit)
+    for _ in range(2):
+        response = action(local, "execute_generation_plan", {"plan_id": plan["id"]}, client_name)
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "submitted"
+    assert len(calls) == 1
+    reference = calls[0].create.references[0]
+    assert reference.file_path == "/api/asset-sync/files/" + location["location_id"]
+    assert reference.asset_content_id == cid
+    assert reference.source_gen_id == row["id"] and reference.role == "@Image1"
+    assert store.get_reference(credential, rid) == original  # 발급 기록은 덮어쓰지 않는다.
+    other = "claude" if client_name == "codex" else "codex"
+    assert action(local, "prepare_generation_plan", args, other).status_code == 404
+
+
+@pytest.mark.parametrize("change", ["content", "lost-content", "invalid-content", "asset-id", "type", "owner", "project", "removed", "permission"])
+def test_content_reference_rechecks_identity_and_access_before_submit(local, monkeypatch, content_source, change):
+    row = content_source
+    rid = action(local, "read_context", {"kind": "references"}).json()["references"][0]["id"]
+    plan = prepare(local, reference_ids=[rid])
+    asset = row["assets"][0]
+    if change == "content":
+        asset["asset_content_id"] = "sha256:" + "b" * 64
+    elif change == "lost-content":
+        asset.pop("asset_content_id")
+    elif change == "invalid-content":
+        asset["asset_content_id"] = "sha256:invalid"
+    elif change == "asset-id":
+        asset["id"] = "other-asset"
+    elif change == "type":
+        asset["type"] = "video"
+    elif change == "owner":
+        row["creator_uid"] = "other-owner"
+    elif change == "project":
+        row["project_id"] = "other-project"
+    elif change == "removed":
+        row["assets"] = []
+    else:
+        def denied(*args):
+            raise HTTPException(403, "source access revoked")
+        monkeypatch.setattr(api.library, "get_generation", denied)
+    async def forbidden(*args):
+        raise AssertionError("changed or inaccessible source must not submit")
+    monkeypatch.setattr(gen_requests, "create_gen_request", forbidden)
+    response = action(local, "execute_generation_plan", {"plan_id": plan["id"]})
+    assert response.status_code == (403 if change == "permission" else 409), response.text
+    assert action(local, "get_plan", {"plan_id": plan["id"]}).json()["status"] == "planned"
+
+
+def test_content_reference_ignores_unselected_output_and_preview_changes(local, content_source):
+    row = content_source
+    rid = action(local, "read_context", {"kind": "references"}).json()["references"][0]["id"]
+    row["assets"][0]["thumbnail_path"] = "/media/new-preview.jpg"
+    row["assets"].insert(0, {"id": "unselected", "type": "video", "file_path": "/media/other.mp4"})
+    prepare(local, reference_ids=[rid])
+
+
+@pytest.mark.parametrize("cid", [None, "sha256:invalid"])
+def test_reference_without_valid_content_keeps_path_version_guard(local, content_source, cid):
+    row = content_source
+    row["assets"][0]["asset_content_id"] = cid
+    rid = action(local, "read_context", {"kind": "references"}).json()["references"][0]["id"]
+    plan = prepare(local, reference_ids=[rid])
+    credential = store.client_for_secret(api.mcp.digest(local[1]["codex"]["secret"]))
+    assert "asset_content_id" not in store.get_reference(credential, rid)["reference"]
+    row["assets"][0]["file_path"] = "/media/replaced.png"
+    assert action(local, "execute_generation_plan", {"plan_id": plan["id"]}).status_code == 409
+
+
+def test_preupgrade_reference_keeps_original_version_guard(local, monkeypatch, content_source):
+    row = content_source
+    credential = store.client_for_secret(api.mcp.digest(local[1]["codex"]["secret"]))
+    rid = store.save_reference(credential, {"kind": "generation", "id": row["id"], "asset_id": row["assets"][0]["id"]},
+        api.mcp.digest(store.encode(row["assets"])), {"file_path": "/media/source.png", "type": "image", "source_gen_id": row["id"]})
+    plan = prepare(local, reference_ids=[rid])
+    row["assets"][0]["file_path"] = "asset-sync:" + "b" * 32
+    assert action(local, "execute_generation_plan", {"plan_id": plan["id"]}).status_code == 409
+
+
+def test_content_reference_promotion_reaches_real_queue_with_expected_digest(local, monkeypatch):
+    from app.repo import asset_sync as ledger
+    from app.usecases import gen_requests as usecase
+    from app.shared_server_config import DEFAULT_SHARED_URL
+    configure(local)
+    monkeypatch.setattr(gen_requests, "update_in_progress", lambda: False)
+    monkeypatch.setattr(gen_requests, "schedule_telemetry_drain", lambda: None)
+    monkeypatch.setattr(usecase, "_schedule_request_estimate", lambda *args: None)
+    repo.ensure_default_worker()
+    credential = store.client_for_secret(api.mcp.digest(local[1]["codex"]["secret"]))
+    owner, sha, location_id = credential["owner_uid"], "a" * 64, "b" * 32
+    cid = "sha256:" + sha
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO project(id,name) VALUES('source-project','Source')")
+        conn.execute("INSERT INTO generation(id,worker_id,prompt,model,status,creator_uid,project_id,workspace_scope) "
+                     "VALUES('source-gen','me','source','test_model','done',?,'source-project','personal')", (owner,))
+        ledger.register_verified_blob(conn, sha, 123, "image")
+        conn.execute("INSERT INTO asset(id,generation_id,type,file_path,source_url,asset_content_id) "
+                     "VALUES('source-asset','source-gen','image','/media/source.png','/media/source.png',?)", (cid,))
+    response = action(local, "read_context", {"kind": "references"})
+    assert response.status_code == 200, response.text
+    rid = response.json()["references"][0]["id"]
+    plan = prepare(local, reference_ids=[rid])
+    with db.get_connection() as conn:
+        ledger.register_local(conn, path="unused-local.png", file_path="/media/source.png", digest=sha,
+            size=123, media_type="image", owner_uid=owner, project_id="source-project",
+            server_origin=DEFAULT_SHARED_URL, account_key="fixture")
+        receipt = {"state": "ready", "asset_content_id": cid, "owner_uid": owner, "project_id": "source-project",
+                   "storage_id": "server-storage", "root_revision": "c" * 64, "server_origin": DEFAULT_SHARED_URL,
+                   "location_id": location_id, "file_path": "asset-sync:" + location_id}
+        conn.execute("UPDATE asset_sync_outbox SET state='ready',receipt_json=?,storage_id=?,root_revision=? WHERE asset_content_id=?",
+                     (json.dumps(receipt), receipt["storage_id"], receipt["root_revision"], cid))
+    response = action(local, "execute_generation_plan", {"plan_id": plan["id"]})
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "submitted", response.text
+    gen_id = response.json()["items"][0]["generation_id"]
+    with db.get_connection() as conn:
+        request = conn.execute("SELECT payload,status FROM gen_request WHERE gen_id=?", (gen_id,)).fetchone()
+        assert request["status"] == "pending"
+        reference = json.loads(request["payload"])["references"][0]
+        assert reference["file_path"] == "/api/asset-sync/files/" + location_id
+        assert reference["expected_asset_content_id"] == cid
+        assert conn.execute("SELECT file_path FROM asset WHERE id='source-asset'").fetchone()[0] == "/media/source.png"
+
+
 def test_real_normal_queue_no_canvas_and_status_observation(local, monkeypatch):
     from app.usecases import gen_requests as usecase
     configure(local)
@@ -1732,3 +1897,62 @@ def test_error_codes_preserve_existing_headers(local, monkeypatch):
     response = action(local, "read_context")
     assert response.headers["Retry-After"] == "5"
     assert response.headers["X-MVHub-MCP-Error"] == "request_failed"
+
+
+@pytest.mark.parametrize("allowed", [True, False])
+def test_sync_image_uses_authorized_file_without_stale_thumbnail_fallback(
+        local, result_plan, tmp_path, monkeypatch, allowed):
+    import base64
+    import io
+    from PIL import Image
+
+    plan, row = result_plan
+    location = "b" * 32
+    row["assets"][0].update(file_path="asset-sync:" + location,
+                            thumbnail_path="https://example.invalid/stale.jpg")
+    root = tmp_path / "thumbs"
+    root.mkdir()
+    monkeypatch.setattr(api.thumbs, "THUMB_DIR", root)
+    source = tmp_path / "authorized.png"
+    Image.new("RGB", (16, 16), "blue").save(source)
+    stale = root / "stale.jpg"
+    Image.new("RGB", (16, 16), "red").save(stale)
+    file_calls, resize_calls, fallback_calls = [], [], []
+
+    def authorized_file(value, request):
+        file_calls.append(value)
+        assert value == location
+        assert request.state.account["email"] == local[2]["email"]
+        assert request.url.path == "/api/asset-sync/files/" + location
+        if not allowed:
+            raise HTTPException(403, "project access revoked")
+        return api.FileResponse(source, media_type="image/png")
+
+    monkeypatch.setattr(api.asset_sync, "get_file", authorized_file)
+    original_thumb = api.thumbs.ensure_thumb
+
+    def thumbnail(target, width):
+        resize_calls.append((target, width))
+        return original_thumb(target, width)
+
+    monkeypatch.setattr(api.thumbs, "ensure_thumb", thumbnail)
+
+    async def old_thumbnail(src, w):
+        fallback_calls.append((src, w))
+        return api.FileResponse(stale, media_type="image/jpeg")
+
+    monkeypatch.setattr(api.library, "media_thumb", old_thumbnail)
+    response = action(local, "get_result", {"plan_id": plan["id"]})
+    assert response.status_code == 200
+    result = response.json()
+    assert file_calls == [location]
+    assert fallback_calls == []
+    if allowed:
+        assert resize_calls == [(source, 1024)]
+        raw = base64.b64decode(result["media"]["data_base64"], validate=True)
+        with Image.open(io.BytesIO(raw)) as image:
+            red, green, blue = image.convert("RGB").getpixel((0, 0))
+        assert blue > 200 and red < 10
+    else:
+        assert result["media"] is None
+        assert resize_calls == []

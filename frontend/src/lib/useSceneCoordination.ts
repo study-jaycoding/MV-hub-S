@@ -1,15 +1,17 @@
+import type { CanvasInputCommand, CanvasTarget } from "../features/canvas/api";
+import { createCanvasDocumentPort, importCanvasSnapshot, restoreCanvasCardLinks } from "../features/canvas/api";
+import { getAccountNamespace } from "./accountScope";
 // Canvas 씬(빈 캔버스) 상태·CRUD 를 App.tsx 에서 추출.
 //  · 씬 목록/활성/바인딩/선택 상태 + 씬 CRUD(선택·추가·이름변경·삭제)를 한곳에.
 //  · patchSceneById/patchActiveScene: 대상 씬을 갱신하고 목록을 다시 읽는 반복 패턴을 DRY.
-// 씬은 프로젝트 무관 전역(S1) — 모든 scenes 호출에 projectId=null. localStorage 데이터계층(scenes.ts).
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+// 씬은 프로젝트 무관 전역(S1) — 모든 scenes 호출에 projectId=null. scenes.ts/sceneStore.ts가 IndexedDB 확정본과 미저장 변경을 관리한다.
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Scene, SceneRef, SceneSnapshot } from "./scenes";
 import {
   createScene,
   deleteScene,
   getActiveSceneId,
   hasSceneConflicts,
-  importScene,
   isSceneSaveFailing,
   listScenes,
   recoverSceneConflicts,
@@ -23,6 +25,7 @@ import {
   findSummaryText,
   forceSceneRefsAsk,
   relinkSceneAssetRefs,
+  syncSceneAssetReferences,
   sceneRefWorkspaceId,
   type RelinkHooks,
   type RelinkTarget,
@@ -41,7 +44,6 @@ import {
 } from "./sceneBackup";
 import {
   initSceneCardLinks,
-  mergeCardLinksIntoScenes,
   serverCardLinks,
   subscribeCardLinksLoaded,
 } from "./sceneCardLinks";
@@ -168,7 +170,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
       // 합치기는 연산으로 넘긴다 — 저장소 내용 위에서 다시 계산되므로 다른 창이 그사이 더한 씬을
       // 덮지 않는다. 소속 목록은 지금 것으로 고정해 넣는다(연산은 바깥 상태를 읽지 않는다).
       const links = [...serverCardLinks()];
-      if (!updateScenesWith(null, (current) => mergeCardLinksIntoScenes(current, links))) return;
+      if (!restoreCanvasCardLinks(getAccountNamespace(), links)) return;
       setScenes(listScenes(null));
     });
     void initSceneBackup()
@@ -256,6 +258,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   // 씬 캔버스에서 선택된 결과 카드들 → 프롬프트 위 선택바. 삭제는 명령형 핸들로.
   const [sceneSelGens, setSceneSelGens] = useState<Generation[]>([]);
   const sceneActionRef = useRef<{
+    commitDocument: (command: CanvasInputCommand) => boolean;
     sceneId: string; // 이 캔버스가 보고 있는 씬 — 비동기 결과를 입히기 전에 활성 씬과 같은지 본다
     deleteSelected: () => void;
     setCardRefs: (cardId: string, refs: SceneRef[]) => SceneRef[];
@@ -267,7 +270,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   } | null>(null);
   // 비동기 결과가 현재 씬에 합쳐지기 직전, 아직 SceneBoard 메모리에만 있는 입력을 먼저 저장한다.
   // patchSceneById 안에서 자동 호출하면 flush→onChange→patch 재귀가 되므로 명시 관문으로 분리한다.
-  // ★참조 안정성(useCallback deps []): App 의 캔버스 복구 이펙트가 이 두 함수를 의존성으로
+  // ★참조 안정성(useCallback deps []): useCanvasGenerationLinks의 복구 이펙트가 이 두 함수를 의존성으로
   //  갖는다. 매 렌더 새 함수를 만들면 이펙트가 렌더마다 재실행돼 2.5초 백오프 폴링이
   //  '렌더 주기 폴링'으로 변질된다(생성 중 초당 수 건의 복구 API 폭주). 내부는 ref/모듈
   //  함수만 쓰므로 빈 deps 가 안전하다.
@@ -297,6 +300,18 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     relinkSceneAssetRefs(relinkHooks).then((changed) => {
       if (announce && changed) flashRef.current?.(`씬 그림 ${changed}개를 프로젝트 폴더의 원본으로 다시 이었습니다.`);
     });
+  const syncHooksRef = useRef(relinkHooks);
+  syncHooksRef.current = relinkHooks;
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const check = async () => {
+      try { await syncSceneAssetReferences(syncHooksRef.current, () => !stopped); } catch { /* 로컬 작업은 계속하고 다음 주기에 재시도한다. */ }
+      if (!stopped) timer = setTimeout(check, 5000);
+    };
+    void check();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, []);
   // '레퍼런스 찾기' 단추(씬 패널) — 이 씬만, 저장된 판정과 무관하게 render 폴더까지 다시 찾고 결과를 한 줄로 알린다.
   const findSceneRefs = (sceneId: string, signal: AbortSignal): Promise<void> =>
     findSceneAssetRefs(sceneId, relinkHooks, signal).then(
@@ -319,7 +334,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   };
   // 파일에서 불러온 스냅샷을 새 씬 탭으로 만들고 그 탭으로 전환(현재 캔버스는 보존).
   const importSceneSnapshot = (snap: SceneSnapshot): Scene => {
-    const s = importScene(null, snap);
+    const s = importCanvasSnapshot(getAccountNamespace(), snap)!;
     refreshScenes();
     selectScene(s.id);
     // 남이 준 씬 파일에 '그 사람 PC 안 사본'을 가리키는 그림이 있으면, 내 프로젝트 폴더의
@@ -364,7 +379,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
       // 구독 통지가 오지 않으므로, 여기서 한 번 직접 병합한다(코덱스 P2).
       if (added) {
         const links = [...serverCardLinks()];
-        updateScenesWith(null, (current) => mergeCardLinksIntoScenes(current, links));
+        restoreCanvasCardLinks(getAccountNamespace(), links);
       }
       refreshScenes();
       flashRef.current?.(
@@ -415,11 +430,14 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     );
     return result.ok;
   }, []);
-  // 동기 UI 편집용 활성 씬 관문.
-  const patchActiveScene = (patch: Partial<Scene>): boolean => {
-    if (!activeScene) return false;
-    return patchSceneById(activeScene.id, patch);
-  };
+  const canvasDocument = useMemo(() => createCanvasDocumentPort({ flushPending: flushScenePending, write: patchSceneById,
+    editPrompt: (sceneId, cardId, prompt) => sceneActionRef.current?.sceneId === sceneId
+      ? sceneActionRef.current.commitDocument({ type: "editCardPrompt", cardId, prompt }) : false,
+  }), [flushScenePending, patchSceneById]);
+  // 세션이 확정한 Board 투영은 조립부에서 기존 writer로 큐에 넣는다. 바깥 flush 안에 새 capture를 중첩하지 않는다.
+  const writeBoardSnapshot = useCallback((target: CanvasTarget, snapshot: Pick<Scene, "cards" | "edges" | "groups">) =>
+    target.accountNamespace === getAccountNamespace() && patchSceneById(target.sceneId,
+      { cards: snapshot.cards, edges: snapshot.edges, groups: snapshot.groups }), [patchSceneById]);
   const refreshSceneById = useCallback((sceneId: string) => {
     setScenes((previous) => mergePatchedSceneList(previous, listScenes(null), activeSceneIdRef.current, sceneId));
   }, []);
@@ -484,6 +502,8 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     setSceneSelGens,
     sceneActionRef,
     flushScenePending,
+    canvasDocument,
+    writeBoardSnapshot,
     selectScene,
     addScene,
     importSceneSnapshot,
@@ -491,9 +511,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     findSceneRefs,
     renameScene,
     removeSceneById,
-    patchSceneById,
     refreshSceneById,
-    patchActiveScene,
     reorderScenes,
     setSceneWorkspace,
     backupOnly,

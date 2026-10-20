@@ -117,8 +117,8 @@ def _switching_proxy(observed: dict, payload: dict):
     def proxy_json(_method, path, **_kwargs):
         observed["path"] = path
         observed["token"] = share._proxy.token()  # 호출 시점의 활성 계정 DB 에서 읽는다
+        observed.setdefault("calls", []).append((path, observed["token"]))
         active_account.set_active(B_EMAIL, B_UID)  # 다른 창에서 계정 전환
-        db.flush_pool()
         # 머신 포인터는 실제로 B 로 넘어갔지만, 라우트 안에서 보이는 계정은 고정된 A 여야 한다.
         observed["pointer_after_switch"] = (active_account._read_pointer() or {}).get("email")
         observed["scope_after_switch"] = active_account.account_key()
@@ -175,6 +175,7 @@ def test_p1_1_finalize_keeps_every_record_on_the_captured_account(
     assert out["is_final"] is True
     assert observed["path"] == "/api/generations/server-1/finalize"
     assert observed["token"] == "token-A", "프록시 토큰은 캡처한 A 계정 DB 에서 읽어야 한다"
+    assert all(token == "token-A" for _, token in observed["calls"])
     assert observed["pointer_after_switch"] == B_EMAIL, "전환 자체는 실제로 일어났다"
     assert observed["scope_after_switch"] == A_EMAIL, "라우트 안에서는 계속 A 로 보여야 한다"
     # override 는 라우트 안에서만 — 라우트가 끝나면 머신 포인터(B)가 다시 보인다.
@@ -254,6 +255,7 @@ def test_p1_1_unpublish_keeps_every_record_on_the_captured_account(
     assert out["shared"] is False
     assert observed["path"] == "/api/generations/server-1/unpublish"
     assert observed["token"] == "token-A"
+    assert all(token == "token-A" for _, token in observed["calls"])
 
     a_rows = _for_account(A_EMAIL, _ledger_rows)
     assert [row["status"] for row in a_rows] == ["converged"]
@@ -284,6 +286,7 @@ def test_p1_1_unfinalize_keeps_every_record_on_the_captured_account(
     assert out["is_final"] is False
     assert observed["path"] == "/api/generations/server-1/unfinalize"
     assert observed["token"] == "token-A"
+    assert all(token == "token-A" for _, token in observed["calls"])
     assert observed["scope_after_switch"] == A_EMAIL
 
     assert [row["status"] for row in _for_account(A_EMAIL, _ledger_rows)] == ["converged"]
@@ -315,7 +318,8 @@ def test_p1_1_unpinned_body_would_drift_to_the_other_account(
         unpinned(*args)
 
     # 전환 뒤의 단계들이 B 를 보게 되면서 A 원장은 converged 로 닫히지 못한다.
-    assert observed["token"] == "token-A", "전환 전에 읽은 토큰까지는 A 가 맞다"
+    assert observed["calls"][0] == ("/api/share/capabilities", "token-A")
+    assert observed["token"] == "token-B", "고정하지 않으면 capability 조회 뒤의 mutation은 B로 샌다"
     assert [row["status"] for row in _for_account(A_EMAIL, _ledger_rows)] != ["converged"]
 
 
@@ -330,6 +334,7 @@ def test_p1_1_decorated_routes_keep_their_fastapi_signature() -> None:
         "gen_id",
         "request",
         "background",
+        "expected_revision",
     ]
     # unfinalize 의 restore_held 는 쿼리(?restore_held=1 — 최종 전의 보류로 되돌린다, 2026-10-14)다
     for route_name, extra in (("unpublish", []), ("unfinalize", ["restore_held"])):
@@ -337,6 +342,7 @@ def test_p1_1_decorated_routes_keep_their_fastapi_signature() -> None:
             "gen_id",
             "request",
             *extra,
+            "expected_revision",
         ]
     # 동기 라우트로 남아야 threadpool 에서 돈다(전환 락을 직접 기다려도 루프가 안 멈춘다).
     assert not inspect.iscoroutinefunction(share.finalize)
@@ -346,6 +352,7 @@ def test_p1_1_decorated_routes_keep_their_fastapi_signature() -> None:
     assert [param.name for param in dependant.path_params] == ["gen_id"]
     assert dependant.request_param_name == "request"
     assert dependant.background_tasks_param_name == "background"
+    assert [param.name for param in dependant.query_params] == ["expected_revision"]
 
     routes = {
         (route.path, tuple(sorted(route.methods))): route
@@ -355,6 +362,10 @@ def test_p1_1_decorated_routes_keep_their_fastapi_signature() -> None:
     for route_name in _ROUTE_CASES:
         route = routes[(f"/api/generations/{{gen_id}}/{route_name}", ("POST",))]
         assert [param.name for param in route.dependant.path_params] == ["gen_id"]
+        assert {param.name for param in route.dependant.query_params} == (
+            {"restore_held", "expected_revision"} if route_name == "unfinalize"
+            else {"expected_revision"}
+        )
 
 
 def test_p1_1_route_restores_the_outer_scope_after_an_error(

@@ -239,6 +239,7 @@ export function EditListMenu({
   offCount,
   fillCount,
   finalAll,
+  archive,
   trigger,
   onHide,
   onFill,
@@ -253,13 +254,14 @@ export function EditListMenu({
   // 타임라인 최종 확정(Jay 2026-10-13 · 10-14 이름 '모두 최종으로 확정'에서 바꿈) — 타임라인의 생성물에 최종을 줄 수 있는 사람에게만 준다(안 주면 줄이 없다).
   //  count = 지금 최종으로 올라갈 생성물 수(이미 최종인 것은 뺀 수 — 0 이면 흐리다) · busy = 앞서 누른 것이 아직 도는 중
   finalAll?: { count: number; busy: boolean; onRun: () => void };
+  archive?: { canImport: boolean; onExport: () => void; onImport: () => void; onBackup?: () => void };
   trigger: RefObject<HTMLElement>; // 목록 단추 — 다시 누르면 그 단추가 닫는다(EditMenu)
   onHide: () => void;
   onFill: () => void;
   onClose: () => void;
 }) {
   const t = useT();
-  const height = HEAD_H - 22 + (finalAll ? 3 : 2) * ROW_H; // 제목 줄이 없다
+  const height = HEAD_H - 22 + ((finalAll ? 3 : 2) + (archive ? 2 + (archive.onBackup ? 1 : 0) : 0)) * ROW_H + (archive ? SEP_H : 0); // 제목 줄이 없다
   const y = bottom + 4 + height > window.innerHeight ? top - 4 - height : bottom + 4;
   return (
     <EditMenu x={x} y={y} width={190} height={height} label={t("타임라인 정리")} trigger={trigger} onClose={onClose}>
@@ -281,6 +283,12 @@ export function EditListMenu({
           <i>{finalAll.count || ""}</i>
         </button>
       )}
+      {archive && <>
+        <div className="ed-tmenu-sep" />
+        <button type="button" role="menuitem" className="ed-tmenu-item" onClick={archive.onExport}>{t("편집 파일 보관")}</button>
+        <button type="button" role="menuitem" className="ed-tmenu-item" disabled={!archive.canImport} onClick={archive.onImport}>{t("파일에서 편집 복원")}</button>
+        {archive.onBackup && <button type="button" role="menuitem" className="ed-tmenu-item" onClick={archive.onBackup}>{t("DB 백업 보기·복원")}</button>}
+      </>}
     </EditMenu>
   );
 }

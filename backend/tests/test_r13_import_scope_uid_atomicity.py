@@ -121,15 +121,15 @@ def test_regen_source_reads_the_captured_account_after_a_switch_right_after_the_
     monkeypatch.setattr(share._proxy, "proxying", lambda: True)
     monkeypatch.setattr(share, "_materialize_remote_shared", lambda *_: (None, None))
     _seed_shared_source("r13-import-src")
-    real_capture = share._capture_account_pin
+    real_capture = db.capture_share_operation
 
     def capture_then_switch():
-        pin = real_capture()
+        operation = real_capture()
         active_account.set_active(B_EMAIL, B_UID)  # 캡처와 본문 사이에 정확히 끼워 넣는다
-        db.flush_pool()
-        return pin
+        # 실제 계정 전환은 DB 교체가 아니다. 복원 epoch 변화는 전용 회귀에서 검증한다.
+        return operation
 
-    monkeypatch.setattr(share, "_capture_account_pin", capture_then_switch)
+    monkeypatch.setattr(db, "capture_share_operation", capture_then_switch)
 
     request = SimpleNamespace(state=SimpleNamespace(account=None))
 

@@ -102,3 +102,11 @@ select optgroup {
 /* 라임 탭 위에서는 옅은 배경이 안 보인다 — 어두운 바탕에 공간 색 글자로 뒤집는다. */
 .scene-tab-wrap.on .ws-mark-box { background: rgba(0, 0, 0, 0.74); color: hsl(var(--ws-h) 75% 64%); }
 .scene-tab-wrap.on .ws-mark-box.missing { background: rgba(0, 0, 0, 0.74); color: #ff8f80; }
+/* 저장 위치 안내는 성공 상태가 아니다. 작은 화면에서도 펼친 본문을 읽을 수 있게 한다. */
+.storage-scope { position: relative; font-size: 11px; color: var(--muted); flex-shrink: 0; }
+.scene-bar > .storage-scope { margin-left: auto; }
+.storage-scope > summary { cursor: pointer; padding: 4px; }
+.storage-scope > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.storage-scope > div { position: absolute; right: 0; top: 100%; z-index: 120; width: min(340px, calc(100vw - 32px)); padding: 12px; border: 1px solid var(--border2); border-radius: 8px; background: var(--bg); color: var(--text); white-space: normal; line-height: 1.6; box-shadow: 0 6px 24px #0005; }
+.storage-scope p { margin: 0 0 8px; }
+.storage-scope p:last-child { margin-bottom: 0; }

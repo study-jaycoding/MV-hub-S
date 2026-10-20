@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Literal, Optional
 from urllib.parse import urlsplit, urlunsplit
 
+from .. import db
 from ..config import MEDIA_DIR
 from .media_types import CACHE_MEDIA_EXTENSIONS
 from .net_guard import BlockedURLError, assert_public_http_url, guarded_opener
@@ -146,7 +147,16 @@ def local_media_exists(rel: str) -> bool:
 
 
 def is_cached(url: str) -> bool:
-    return _is_complete_file(_local_path(local_rel_for(url)))
+    return cached_rel_for(url) is not None
+
+
+def cached_rel_for(url: str) -> Optional[str]:
+    """Find an existing cache path without moving legacy files or rewriting DBs."""
+    rel = local_rel_for(url)
+    for candidate in (rel, f"/media/{rel.rsplit('/', 1)[-1]}"):
+        if _is_complete_file(_local_path(candidate)):
+            return candidate
+    return None
 
 
 def _complete_file_size(path: Path) -> "int | None":
@@ -238,6 +248,7 @@ def recalculate_preserved_media_usage() -> int:
         return _recalculate_preserved_media_usage_locked(state)
 
 
+@db.share_operation_write()
 def _enforce_preserved_quota(
     target: Path, *, newly_created: bool, known_size: "int | None" = None
 ) -> int:
@@ -333,6 +344,7 @@ async def _release_lock(rel: str) -> None:
 
 
 def _download_once(url: str, target: Path, max_bytes: int = _MAX_BYTES) -> None:
+    db.require_share_operation_epoch()
     # SSRF 방어 — 내부/사설 대역·리다이렉트 우회 차단(공개 CDN 만 허용). 차단은 영구 오류(재시도 안 함).
     try:
         assert_public_http_url(url)
@@ -343,49 +355,60 @@ def _download_once(url: str, target: Path, max_bytes: int = _MAX_BYTES) -> None:
     opener = guarded_opener()  # 3xx 리다이렉트로 내부망 우회 방지
     tmp = target.with_suffix(target.suffix + f".{uuid.uuid4().hex}.part")
     written = 0
+    interrupted = False
     try:
-        with opener.open(req, timeout=_TIMEOUT) as resp, open(tmp, "wb") as f:
-            length = _content_length(resp)
-            if length is not None and length > max_bytes:
-                raise MediaCachePermanentError(f"media too large: content_length={length}, max={max_bytes}")
-            _ensure_disk_space(target.parent, length or 0)
-            content_type = resp.headers.get("Content-Type") or ""
-            saw_head = False
-            while True:
-                chunk = resp.read(_CHUNK_SIZE)
-                if not chunk:
-                    break
-                if not saw_head:
-                    _validate_response(content_type, chunk[:512])
-                    saw_head = True
-                written += len(chunk)
-                if written > max_bytes:
-                    raise MediaCachePermanentError(f"media too large while streaming: bytes={written}, max={max_bytes}")
-                if written == len(chunk) or written % (16 * 1024 * 1024) < len(chunk):
-                    _ensure_disk_space(target.parent, 0)
-                f.write(chunk)
-        if written <= 0:
-            raise MediaCachePermanentError("empty media response")
-        # urllib은 본문 압축을 자동 해제하지 않는다. 향후 해제한다면 길이 검사는 전송 계층에서 한다.
-        if length is not None and length > 0 and written != length:
-            raise MediaCacheError(f"incomplete media response: expected={length}, received={written}")
-        tmp.replace(target)  # 원자적 교체(부분 파일 방지)
-    except urllib.error.HTTPError as e:
         try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
-        # 만료·권한없음·삭제된 CDN URL은 같은 주소로 재시도해도 복구되지 않는다. 408/429만
-        # 일시 오류로 남기고 나머지 4xx는 즉시 영구 실패 처리해 한 호출 안의 3회 재시도를 막는다.
-        if 400 <= e.code < 500 and e.code not in (408, 429):
-            raise MediaCachePermanentError(f"HTTP Error {e.code}: remote media unavailable") from e
+            with opener.open(req, timeout=_TIMEOUT) as resp, open(tmp, "wb") as f:
+                length = _content_length(resp)
+                if length is not None and length > max_bytes:
+                    raise MediaCachePermanentError(f"media too large: content_length={length}, max={max_bytes}")
+                _ensure_disk_space(target.parent, length or 0)
+                content_type = resp.headers.get("Content-Type") or ""
+                saw_head = False
+                while True:
+                    chunk = resp.read(_CHUNK_SIZE)
+                    db.require_share_operation_epoch()
+                    if not chunk:
+                        break
+                    if not saw_head:
+                        _validate_response(content_type, chunk[:512])
+                        saw_head = True
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise MediaCachePermanentError(f"media too large while streaming: bytes={written}, max={max_bytes}")
+                    if written == len(chunk) or written % (16 * 1024 * 1024) < len(chunk):
+                        _ensure_disk_space(target.parent, 0)
+                    f.write(chunk)
+            if written <= 0:
+                raise MediaCachePermanentError("empty media response")
+            # urllib은 본문 압축을 자동 해제하지 않는다. 향후 해제한다면 길이 검사는 전송 계층에서 한다.
+            if length is not None and length > 0 and written != length:
+                raise MediaCacheError(f"incomplete media response: expected={length}, received={written}")
+            with db.share_operation_write():
+                tmp.replace(target)  # 원자적 교체(부분 파일 방지)
+        except urllib.error.HTTPError as e:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            # 만료·권한없음·삭제된 CDN URL은 같은 주소로 재시도해도 복구되지 않는다. 408/429만
+            # 일시 오류로 남기고 나머지 4xx는 즉시 영구 실패 처리해 한 호출 안의 3회 재시도를 막는다.
+            if 400 <= e.code < 500 and e.code not in (408, 429):
+                raise MediaCachePermanentError(f"HTTP Error {e.code}: remote media unavailable") from e
+            raise
+        except Exception:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+    except BaseException as exc:
+        # 취소/종료는 보존하고 HTTP/일반 오류에는 DB 문맥 검사를 유지한다.
+        interrupted = not isinstance(exc, Exception)
         raise
-    except Exception:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+    finally:
+        if not interrupted:
+            db.require_share_operation_epoch()
 
 
 def _download(url: str, target: Path, max_bytes: int = _MAX_BYTES) -> None:
@@ -394,8 +417,8 @@ def _download(url: str, target: Path, max_bytes: int = _MAX_BYTES) -> None:
         try:
             _download_once(url, target, max_bytes)
             return
-        except (MediaCachePermanentError, BlockedURLError):
-            raise  # 내부망/사설·리다이렉트 차단은 영구 오류 — 재시도해도 소용없다
+        except (MediaCachePermanentError, BlockedURLError, db.DatabaseEpochChanged):
+            raise  # 차단·문맥 만료는 같은 입력으로 자동 재시도하지 않는다.
         except urllib.error.HTTPError as e:
             if 400 <= e.code < 500 and e.code not in (408, 429):
                 raise MediaCachePermanentError(
@@ -551,6 +574,7 @@ async def _cache_http_url_result(
     enforce_preserved_quota: bool = False,
 ) -> MediaCacheResult:
     """검증·락·다운로드 공용 구현. max_bytes=None이면 영구 미디어 기본 상한을 쓴다."""
+    db.require_share_operation_epoch()
     target = _local_path(rel)
     if _is_complete_file(target):
         if negative_thumb_cache:
@@ -561,6 +585,7 @@ async def _cache_http_url_result(
     lock = await _acquire_lock(rel)
     try:
         async with lock:
+            db.require_share_operation_epoch()
             if _is_complete_file(target):
                 if negative_thumb_cache:
                     _clear_thumb_failure(rel)
@@ -569,12 +594,14 @@ async def _cache_http_url_result(
             if negative_thumb_cache and _thumb_failure_active(rel):
                 return MediaCacheResult(None, "permanent", error_code="negative_cache")
             try:
-                target.parent.mkdir(parents=True, exist_ok=True)
+                with db.share_operation_write():
+                    target.parent.mkdir(parents=True, exist_ok=True)
                 existed_before = _is_complete_file(target)
                 if max_bytes is None:
                     await asyncio.to_thread(_download, url, target)
                 else:
                     await asyncio.to_thread(_download, url, target, max_bytes)
+                db.require_share_operation_epoch()
                 downloaded_size = _complete_file_size(target)
                 if downloaded_size is None:
                     return MediaCacheResult(None, "transient", error_code="incomplete_download")
@@ -589,6 +616,8 @@ async def _cache_http_url_result(
                 if negative_thumb_cache:
                     _clear_thumb_failure(rel)
                 return MediaCacheResult(rel, "cached", bytes_added=bytes_added)
+            except db.DatabaseEpochChanged:
+                raise
             except Exception as e:  # noqa: BLE001 — 호출부 동작 보존: 실패 시 원격 URL 유지
                 permanent = isinstance(e, (MediaCachePermanentError, BlockedURLError))
                 # 영구 실패(403/404/차단)는 같은 프로세스 락 안에서 복구될 수 없으므로 3초 대기를 생략.
@@ -658,6 +687,11 @@ async def cache_url_result(url: Optional[str]) -> MediaCacheResult:
         )
     if not url.startswith(("http://", "https://")):
         return MediaCacheResult(None, "skipped", error_code="non_http_source")
+    db.require_share_operation_epoch()
+    cached = await asyncio.to_thread(cached_rel_for, url)
+    if cached:
+        db.require_share_operation_epoch()
+        return MediaCacheResult(cached, "already")
     return await _cache_http_url_result(
         url,
         local_rel_for(url),
@@ -688,34 +722,9 @@ async def cache_thumb_source(url: Optional[str]) -> Optional[str]:
 
 
 def migrate_sharding() -> int:
-    """기존 평면 /media/<sha>.ext → 2단계 샤딩(/media/<2>/<sha>.ext)으로 1회 이전 + DB 경로 갱신.
+    """Keep legacy paths valid for inactive-account and trash DB references.
 
-    멱등: 평면 파일이 없으면 즉시 종료(샤딩 후 top-level 은 서브디렉터리뿐 → 매 부팅 빠르게 통과).
-    자기치유 순서: DB 경로를 먼저 갱신하고 파일을 옮긴다 → 이동 직전 크래시 시 재부팅의 재시도가
-    남은 평면 파일을 마저 옮겨 복구한다(반대 순서면 DB 가 새 경로를 가리키는데 파일은 평면에 남아 영구 손상).
+    New downloads already use sharded paths. Startup cannot safely rewrite only
+    the active DB and remove flat files shared by other databases.
     """
-    if not MEDIA_DIR.exists():
-        return 0
-    from ..db import get_connection  # 지연 import — db 는 media_cache 를 모름(순환 없음)
-
-    _COLS = (("asset", "file_path"), ("asset", "thumbnail_path"),
-             ("reference", "file_path"), ("reference", "thumbnail_path"))
-    moved = 0
-    for entry in list(MEDIA_DIR.iterdir()):
-        if not entry.is_file() or entry.name.endswith(".part"):
-            continue  # 이미 샤딩된 서브디렉터리·미완성 다운로드 잔재는 건너뜀
-        name = entry.name
-        old_rel, new_rel = f"/media/{name}", f"/media/{name[:2]}/{name}"
-        target = MEDIA_DIR / name[:2] / name
-        # 1) DB 경로 먼저 갱신(4개 컬럼) — 자기치유 순서
-        with get_connection() as conn:
-            for table, col in _COLS:
-                conn.execute(f"UPDATE {table} SET {col}=? WHERE {col}=?", (new_rel, old_rel))
-        # 2) 파일 이동(같은 볼륨 → 원자적). 이미 존재(내용주소 중복)면 평면본 제거.
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists():
-            entry.unlink()
-        else:
-            entry.replace(target)
-        moved += 1
-    return moved
+    return 0

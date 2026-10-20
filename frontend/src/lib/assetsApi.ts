@@ -15,6 +15,19 @@ import {
 } from "./assetUrls";
 import { authFormHeaders, jsonBody, jsonFetch, throwHttpError } from "./http";
 import { pathPart, withQuery } from "./url";
+import { getAccountNamespace } from "./accountScope";
+import { EXPECT_ACCOUNT_HEADER } from "./hubFeatures";
+import type { AssetImportTarget, AssetReferenceIdentity, AssetSyncReceipt } from "../shared/contracts/assets";
+
+export interface ImportedAsset extends AssetReferenceIdentity {
+  project: string; path: string; name: string; type: string;
+  reused?: boolean; sha256?: string; bytes?: number; discard_token?: string; sync_state?: string;
+}
+
+function appendImportTarget(fd: FormData, target?: AssetImportTarget): void {
+  if (target?.target_project_id) fd.append("target_project_id", target.target_project_id);
+  if (target?.target_workspace_id) fd.append("target_workspace_id", target.target_workspace_id);
+}
 
 export interface BackupContinuityStatus {
   local: {
@@ -49,6 +62,7 @@ export interface ServerBackupVersion {
     generations?: number;
     tags?: number;
     canvases?: number;
+    timelines?: number;
     assets?: number;
     projects?: number;
     trash?: number;
@@ -238,31 +252,26 @@ export const assetsApi = {
       headers: authFormHeaders(),
     });
     if (!res.ok) await throwHttpError(res, "/api/assets/upload");
-    return res.json() as Promise<{ saved: string[]; skipped: string[] }>;
+    return res.json() as Promise<{ saved: string[]; skipped: string[]; queued?: {
+      sync_id?: string; asset_content_id: string; file_path: string; name: string;
+      sync_state: string; destination_project?: string; destination_dir?: string;
+    }[] }>;
   },
 
   // 붙여넣은 그림·부분수정 결과를 **그 프로젝트 폴더**의 imports 에 저장 → 레퍼런스용 asset 정보 반환.
   // (2026-09-28: 전엔 이 PC 안 captures 폴더라 씬을 남에게 주면 빈칸이었다.)
   // 붙여넣기·부분수정 그림은 이 PC 설치 폴더(captures)에 저장된다(Jay 2026-09-29 옛 방식).
-  uploadCapture: async (blob: Blob) => {
+  uploadCapture: async (blob: Blob, target?: AssetImportTarget) => {
     const fd = new FormData();
     fd.append("file", blob, "capture.png");
+    appendImportTarget(fd, target);
     const res = await fetch("/api/assets/capture", {
       method: "POST",
       body: fd,
       headers: authFormHeaders(),
     });
     if (!res.ok) await throwHttpError(res, "/api/assets/capture", "캡쳐 업로드 실패");
-    return res.json() as Promise<{
-      project: string;
-      path: string;
-      name: string;
-      type: string;
-      reused?: boolean;
-      sha256?: string;
-      bytes?: number;
-      discard_token?: string; // 신규 파일에만 — 생성 확정 실패(4xx) 시 고아 정리용 1회용 토큰
-    }>;
+    return res.json() as Promise<ImportedAsset>;
   },
 
   // 캡처 고아 정리 — 부분 수정의 생성 요청이 서버에 커밋되지 않은 확정 실패(400/422)로
@@ -275,9 +284,10 @@ export const assetsApi = {
 
   // 프롬프트/캔버스/트레이 외부 드롭 파일 → **이 PC 설치 폴더(imports)** 에 저장(Jay 2026-09-29 옛 방식).
   // 서버에 같은 내용이 있으면 자동 복구(/locate)가 원본으로 이어 준다.
-  uploadReferenceFiles: async (files: File[]) => {
+  uploadReferenceFiles: async (files: File[], target?: AssetImportTarget) => {
     const fd = new FormData();
     for (const f of files) fd.append("files", f);
+    appendImportTarget(fd, target);
     const res = await fetch("/api/assets/reference-import", {
       method: "POST",
       body: fd,
@@ -286,18 +296,22 @@ export const assetsApi = {
     if (!res.ok) await throwHttpError(res, "/api/assets/reference-import");
     return res.json() as Promise<{
       // sha256·bytes = 나중에 원본이 옮겨져도 내용으로 다시 찾기 위한 지문(씬 레퍼런스에 함께 보관).
-      saved: {
-        project: string;
-        path: string;
-        name: string;
-        type: string;
-        reused?: boolean;
-        sha256?: string;
-        bytes?: number;
-      }[];
+      saved: ImportedAsset[];
       skipped: string[];
     }>;
   },
+
+  assetSyncStatus: () => jsonFetch<{ items: AssetSyncReceipt[]; destinations?: {
+    sync_id: string; state: string; project_name: string; last_error_code?: string | null;
+  }[] }>("/api/local-asset-sync/status"),
+  registerAssetReference: (file_path: string, target: AssetImportTarget, expected_asset_content_id?: string) =>
+    jsonFetch<ImportedAsset>("/api/local-asset-sync/register", {
+      method: "POST", body: jsonBody({ file_path, ...target, expected_asset_content_id }),
+    }),
+  resolveManagedAssets: (asset_content_ids: string[], project_id: string, previous_location_ids?: Record<string, string[]>) =>
+    jsonFetch<{ items: AssetSyncReceipt[] }>("/api/local-asset-sync/resolve", {
+      method: "POST", body: jsonBody({ asset_content_ids, project_id, previous_location_ids }),
+    }),
 
   // 옛 씬의 '이 PC 안 사본' 참조를 프로젝트 폴더 원본으로 옮겨 주는 조회(내용 지문으로 찾는다).
   // 정확히 한 프로젝트에서 찾혔을 때만 fixed 에 담겨 온다 — 나머지는 그대로 둔다.
@@ -380,6 +394,16 @@ export const assetsApi = {
     jsonFetch<{ ok: boolean; count: number; skipped: number }>(`/api/assets/clipboard-copy`, {
       method: "POST",
       body: jsonBody({ project, paths }),
+    }),
+
+  nativeAssetDragCapabilities: () =>
+    jsonFetch<{ supported: boolean }>("/api/assets/native-drag-capabilities"),
+  nativeAssetDrag: (project: string, paths: string[], startedAtMs: number, signal: AbortSignal) =>
+    jsonFetch<{ dropped: boolean; reason?: "expired" }>("/api/assets/native-drag", {
+      method: "POST",
+      headers: { [EXPECT_ACCOUNT_HEADER]: getAccountNamespace() },
+      body: jsonBody({ project, paths, started_at_ms: startedAtMs }),
+      signal,
     }),
 
   // 분리 창 파일별 메타데이터

@@ -10,6 +10,8 @@ safe_project_dir / safe_resolve 가드를 그대로 따른다.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
 import os
 import secrets
@@ -43,9 +45,11 @@ from ..config import (
 )
 from ..db import get_connection
 from ..deps import (
+    EXPECT_ACCOUNT_HEADER,
     account_global_roles,
     account_scope_uid,
     actor_id,
+    expected_account_differs,
 )
 from ..services.media_types import (
     AUDIO_EXTENSIONS,
@@ -71,6 +75,7 @@ from ..services import (
     resolve_status_runner,
     thumbs,
     upload_limits,
+    windows_drag,
 )
 from ..services.operational_logging import log_event
 from ..services.path_safety import extended_path, path_comparison_key, safe_join, unc_for_drive
@@ -106,6 +111,7 @@ _PROJECT_HIDDEN_FOLDERS: dict[str, set[str]] = {
 def _tree_hidden_names(project: str, *, auto_project: bool) -> Optional[set[str]]:
     """프로젝트별 표시 제외 폴더를 반환한다. 실제 폴더나 파일은 변경하지 않는다."""
     hidden = set(_PROJECT_HIDDEN_FOLDERS.get(project, set()))
+    hidden.add("imp_cap")  # 관리 보관본은 imp/cap 가상 항목에서 사용하고 프로젝트 트리에는 중복 표시하지 않는다.
     if auto_project:
         hidden.add("render")
     return hidden or None
@@ -276,7 +282,7 @@ def _auto_project_mounts(
         name = str(p.get("name") or "").strip()
         link = links.get(pid) or {}
         # 팀 공유 렌더경로(project.render_root_path) 우선, 없으면 레거시 로컬 링크.
-        root = str(p.get("render_root_path") or link.get("root_path") or "").strip()
+        root = str(p.get("asset_root_path") or p.get("render_root_path") or link.get("root_path") or "").strip()
         if not (pid and name and root) or name in used:
             continue
         # ★여기서 resolve() 하지 않는다(디스크 I/O 없음) — 죽은 NAS 루트가 섞여 있으면
@@ -996,9 +1002,19 @@ async def upload_assets(
     dir: str = Form(""),
     files: list[UploadFile] = File(...),
 ):
+    from ..db import pinned_share_operation
+    from ..services.asset_sync import capture_local_operation
+    operation = await to_thread_non_abandon(capture_local_operation, request)
+    with pinned_share_operation(operation):
+        return await _upload_assets(request, project, dir, files)
+
+
+async def _upload_assets(request, project, dir, files):
     """외부 파일을 현재 폴더(dir, 비면 프로젝트 루트)로 가져오기(드롭 업로드).
     파일명은 basename 만 사용(경로 traversal 차단), 미디어가 아닌 파일은 제외,
     이름 충돌은 _2, _3… 으로 회피(덮어쓰기 안 함)."""
+    if project not in _INTERNAL_FOLDERS and project != _COMBINED_INTERNAL:
+        return await _queue_folder_upload(request, project, dir, files)
     # SMB 경로 해석(_safe_project_dir — 죽은 NAS 는 최대 수십 초)·목적지 검사·배치 검증을
     # 스레드로(R7 2-G') — async 라우트 위 동기 파일시스템 대기가 전체 요청을 세웠다.
     def _resolve_destination() -> tuple[Path, Path]:
@@ -1022,16 +1038,86 @@ async def upload_assets(
 
     saved: list[str] = []
     skipped: list[str] = []
+    registered: list[dict] = []
     commit_attempted = [False]
     try:
-        await _upload_files_loop(files, dest, proj_dir, saved, skipped, commit_attempted)
+        await _upload_files_loop(files, dest, proj_dir, saved, skipped, commit_attempted, request, project, registered)
     finally:
         # 취소로 루프가 중단돼도 이미 커밋된 파일이 트리에 반영되게(코덱스 P1) —
         # ★saved 가 아니라 '커밋 시도' 기준(재확인 P1): 커밋 스레드는 완주해 파일을
         # 확정하지만 취소 전파로 saved.append 는 안 돌 수 있다. 무효화는 멱등·저렴.
         if saved or commit_attempted[0]:
             asset_tree.invalidate_project_tree(proj_dir)
-    return {"saved": saved, "skipped": skipped}
+    return {"saved": saved, "skipped": skipped, "registered": registered}
+
+
+async def _queue_folder_upload(request, project, relative_dir, files):
+    from .. import active_account
+    from ..services import asset_destination
+    account = getattr(getattr(request, "state", None), "account", None)
+    owner = actor_id(request) if account else (active_account.active_uid() or actor_id(request))
+    _validate_upload_batch(files)
+    try:
+        relative_dir = asset_destination.validate_relative(relative_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    def admission():
+        from ..deps import require_project_role
+        manual = next((m for m in _owner_mounts(actor_id(request)) if m["name"] == project), None)
+        auto = None if manual else next((m for m in _auto_project_mounts(request) if m["name"] == project), None)
+        mount = manual or auto
+        if mount:
+            if auto:
+                require_project_role(request, auto["project_id"], *rbac.PROJECT_ROLES)
+            root = Path(mount["path"]).expanduser()
+            if not root.is_absolute():
+                raise HTTPException(status_code=400, detail="대상 폴더 절대 경로가 필요합니다")
+            return {"kind": "manual" if manual else "project", "root_path": os.path.normpath(str(root)),
+                    "project_id": mount.get("project_id", ""), "project_name": project, "relative_dir": relative_dir}
+        if not project or asset_destination.validate_relative(project) != project or "/" in project:
+            raise HTTPException(status_code=404, detail="프로젝트 없음")
+        local_root = safe_join(ASSETS_ROOT, project)
+        if local_root is None or not local_root.is_dir():
+            raise HTTPException(status_code=404, detail="프로젝트 없음")
+        return {"kind": "internal", "root_path": os.path.normpath(str(local_root)),
+                "project_name": project, "relative_dir": relative_dir}
+    destination = await to_thread_non_abandon(admission)
+    local = ASSETS_ROOT / _PROMPT_IMPORT_PROJECT
+    await to_thread_non_abandon(local.mkdir, parents=True, exist_ok=True)
+    queued, skipped = [], []
+    for up in files:
+        name = Path((up.filename or "").replace("\\", "/")).name
+        media_type = _media_type(name)
+        if not media_type:
+            skipped.append(name)
+            continue
+        try:
+            asset_destination.validate_relative(name)
+            tmp, size, digest = await _stream_upload_tmp(up, local)
+        except _UploadTooLarge:
+            skipped.append(name)
+            continue
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            if not size:
+                skipped.append(name)
+                continue
+            def commit():
+                path, _ = asset_io.find_or_commit_media(tmp, local, name, digest, media_type, size)
+                file_path = f"asset:{_PROMPT_IMPORT_PROJECT}|{path.name}"
+                try:
+                    with get_connection() as conn:
+                        conn.execute("BEGIN IMMEDIATE")
+                        return asset_destination.register(conn, path=path, file_path=file_path, digest=digest,
+                            size=size, media_type=media_type, owner=owner, destination=destination, name=name)
+                except Exception:
+                    return {"name": name, "file_path": file_path, "asset_content_id": "sha256:" + digest,
+                            "sync_state": "registration_failed"}
+            queued.append(await to_thread_non_abandon(commit))
+        finally:
+            await to_thread_non_abandon(tmp.unlink, missing_ok=True)
+    return {"saved": [], "skipped": skipped, "queued": queued}
 
 
 async def _upload_files_loop(
@@ -1041,6 +1127,9 @@ async def _upload_files_loop(
     saved: list[str],
     skipped: list[str],
     commit_attempted: list[bool],
+    request: Request,
+    project: str,
+    registered: list[dict],
 ) -> None:
     for up in files:
         raw = os.path.basename((up.filename or "").replace("\\", "/"))
@@ -1050,7 +1139,7 @@ async def _upload_files_loop(
             skipped.append(raw)
             continue
         try:
-            tmp, size, _ = await _stream_upload_tmp(up, dest)  # 청크 스트리밍 + 크기 상한
+            tmp, size, digest = await _stream_upload_tmp(up, dest)  # 청크 스트리밍 + 크기 상한
         except _UploadTooLarge:
             skipped.append(raw)  # 상한 초과 파일은 건너뛰고 나머지는 저장
             continue
@@ -1065,10 +1154,47 @@ async def _upload_files_loop(
         commit_attempted[0] = True  # 취소돼도 finally 의 트리 무효화가 돌게 먼저 표시
         target = await to_thread_non_abandon(_commit_unique_tmp, tmp, dest, raw)
         saved.append(target.relative_to(proj_dir).as_posix())
+        registered.append(await to_thread_non_abandon(_register_import_sync, request, target,
+            f"asset:{project}|{saved[-1]}", digest, size, _media_type(raw), None))
+
+
+def _register_import_sync(request, path, file_path, digest, size, media_type, target_project_id):
+    from .. import active_account
+    from ..services import asset_sync
+    project_id = target_project_id if isinstance(target_project_id,str) else ""
+    if len(project_id)>100:
+        raise HTTPException(status_code=400,detail="invalid_asset_project")
+    try:
+        account = getattr(getattr(request,"state",None),"account",None)
+        return asset_sync.register_local(path,file_path,digest,size,media_type,
+            actor_id(request) if account else (active_account.active_uid() or actor_id(request)),project_id or None)
+    except Exception:  # 로컬 바이트는 보존하고 영속 예약 실패를 명시한다.
+        return {"asset_content_id":"sha256:"+digest,"sync_state":"registration_failed","target_project_id":project_id or None}
+
+
+def _commit_capture_and_sync(tmp,cap_dir,name,digest,size,project,proj_dir,request,target_project_id):
+    target,reused,token=_commit_capture_with_discard_token(tmp,cap_dir,name,digest,size,project,proj_dir)
+    info=_register_import_sync(request,target,f"asset:{project}|{target.relative_to(proj_dir).as_posix()}",digest,size,"image",target_project_id)
+    return target,reused,token,info
+
+
+def _commit_import_and_sync(tmp,dest,name,digest,media_type,size,request,target_project_id):
+    target,reused=asset_io.find_or_commit_media(tmp,dest,name,digest,media_type,size)
+    info=_register_import_sync(request,target,f"asset:{_PROMPT_IMPORT_PROJECT}|{target.name}",digest,size,media_type,target_project_id)
+    return target,reused,info
 
 
 @router.post("/capture", dependencies=[Depends(_require_local_assets)])
-async def upload_capture(request: Request, file: UploadFile = File(...)):
+async def upload_capture(request: Request, file: UploadFile = File(...),
+                         target_project_id: str = Form(""), target_workspace_id: str = Form("")):
+    from ..services.asset_sync import capture_local_operation
+    from ..db import pinned_share_operation
+    operation = await to_thread_non_abandon(capture_local_operation,request)
+    with pinned_share_operation(operation):
+        return await _upload_capture(request,file,target_project_id,target_workspace_id)
+
+
+async def _upload_capture(request, file, target_project_id, target_workspace_id):
     """붙여넣은 그림·부분수정 결과를 **이 PC 설치 폴더의 captures** 에 저장 + asset 토큰용 정보 반환.
 
     ★2026-09-29 Jay "옛 방식으로 해야한다": 09-28 에 프로젝트 폴더(NAS)로 옮겼던 것을 되돌렸다.
@@ -1097,8 +1223,8 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
     try:
         name = f"capture-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"  # 충돌은 _commit 이 _2 로 회피
         commit_attempted = True  # 취소 재전파 전 실제 파일 확정 가능 — finally 무효화 기준
-        target, reused, discard_token = await to_thread_non_abandon(
-            _commit_capture_with_discard_token,
+        target, reused, discard_token, sync_info = await to_thread_non_abandon(
+            _commit_capture_and_sync,
             tmp,
             cap_dir,
             name,
@@ -1106,6 +1232,8 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
             size,
             project,
             proj_dir,
+            request,
+            target_project_id,
         )
     except BaseException:
         # 스트리밍이 끝난 뒤 중복 검사·최종 확정에서 실패해도 .part 파일을 남기지 않는다.
@@ -1120,6 +1248,7 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
         return {
             "project": project, "path": rel, "name": target.name, "type": "image",
             "reused": True, "sha256": digest, "bytes": size,
+            **sync_info,
         }
     return {
         "project": project,
@@ -1128,6 +1257,7 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
         "type": "image",
         "sha256": digest,  # 나중에 원본이 옮겨져도 내용으로 다시 찾기 위한 표식
         "bytes": size,
+        **sync_info,
         # 신규 파일에만 1회용 정리 토큰 — 생성 요청이 확정 거절(4xx)로 끝난 고아만
         # 프론트가 이 토큰으로 지울 수 있다(아래 /capture-discard).
         "discard_token": discard_token,
@@ -1230,6 +1360,10 @@ def discard_capture(body: CaptureDiscardIn, request: Request):
                 "SELECT 1 FROM reference WHERE file_path = ? LIMIT 1",
                 (f"asset:{project}|{rel}",),
             ).fetchone()
+            managed = conn.execute("SELECT 1 FROM asset_sync_outbox o JOIN asset_location l ON l.location_id=o.local_location_id WHERE l.original_file_path=? AND o.project_id<>'' AND o.state IN ('queued','uploading','retrying','ready') LIMIT 1",(f"asset:{project}|{rel}",)).fetchone()
+            if managed:
+                raise HTTPException(status_code=409,detail="서버 보관이 예약된 자료라 로컬 캐시를 유지합니다")
+            conn.execute("UPDATE asset_location SET state='missing' WHERE original_file_path=? AND kind='local'",(f"asset:{project}|{rel}",))
         if row:
             raise HTTPException(status_code=409, detail="생성물이 참조하는 파일이라 지우지 않습니다")
         proj_dir = _safe_project_dir(project, request)
@@ -1872,7 +2006,17 @@ async def upload_reference_import(
     project: str = Form(""),
     dir: str = Form(""),
     files: list[UploadFile] = File(...),
+    target_project_id: str = Form(""),
+    target_workspace_id: str = Form(""),
 ):
+    from ..services.asset_sync import capture_local_operation
+    from ..db import pinned_share_operation
+    operation = await to_thread_non_abandon(capture_local_operation,request)
+    with pinned_share_operation(operation):
+        return await _upload_reference_import(request,project,dir,files,target_project_id,target_workspace_id)
+
+
+async def _upload_reference_import(request,project,dir,files,target_project_id,target_workspace_id):
     """프롬프트/캔버스/트레이에 외부 파일을 직접 드롭할 때 쓰는 가져오기 — **이 PC 설치 폴더의
     imports** 한 곳에 모은다(같은 내용은 지문으로 재사용).
 
@@ -1914,14 +2058,16 @@ async def upload_reference_import(
             # 중복 재검색부터 최종 확정까지 같은 동기 임계구역에서 수행하고, 취소돼도 스레드를 버리지 않는다.
             try:
                 commit_attempted = True  # 취소 재전파 전 실제 파일 확정 가능 — finally 무효화 기준
-                target, reused = await to_thread_non_abandon(
-                    asset_io.find_or_commit_media,
+                target, reused, sync_info = await to_thread_non_abandon(
+                    _commit_import_and_sync,
                     tmp,
                     dest,
                     raw,
                     digest,
                     mt,
                     size,
+                    request,
+                    target_project_id,
                 )
                 if reused:
                     saved.append({
@@ -1932,6 +2078,7 @@ async def upload_reference_import(
                         "reused": True,
                         "sha256": digest,
                         "bytes": size,
+                        **sync_info,
                     })
                     continue
             except BaseException:
@@ -1946,6 +2093,7 @@ async def upload_reference_import(
                 "type": mt,
                 "sha256": digest,
                 "bytes": size,
+                **sync_info,
             })
     finally:
         if committed_new or commit_attempted:
@@ -2048,6 +2196,111 @@ def reveal_file(body: RevealIn, request: Request):
 class ClipboardCopyIn(BaseModel):
     project: str
     paths: list[str]
+
+
+class NativeDragIn(BaseModel):
+    project: str = Field(min_length=1, max_length=200)
+    paths: list[Annotated[str, Field(min_length=1, max_length=4096)]] = Field(min_length=1, max_length=20)
+    started_at_ms: int = Field(ge=0)
+
+
+_native_drag_lock = threading.Lock()
+
+
+@router.get("/native-drag-capabilities", dependencies=[Depends(_require_local_assets)])
+def native_drag_capabilities(request: Request):
+    require_loopback_browser_request(request, "원본 파일 드래그는 이 PC의 로컬 허브에서만 가능합니다")
+    return {"supported": windows_drag.available()}
+
+
+def _native_drag_files(body: NativeDragIn, request: Request, cancelled: threading.Event):
+    if cancelled.is_set():
+        return [], "[]"
+    directory = _safe_project_dir(body.project, request)
+    if cancelled.is_set():
+        return [], "[]"
+    if directory is None:
+        raise HTTPException(404, "프로젝트를 찾을 수 없습니다")
+    paths, items, seen = [], [], set()
+    for relative in body.paths:
+        if cancelled.is_set():
+            return [], "[]"
+        target = _safe_project_resolve(body.project, directory, relative)
+        if cancelled.is_set():
+            return [], "[]"
+        if target is None or not target.is_file():
+            raise HTTPException(404, "선택한 원본 파일을 찾을 수 없습니다. 새로고침 후 다시 끌어주세요.")
+        suffix = target.suffix.lower()
+        kind = ("image" if suffix in IMAGE_EXTENSIONS else "video" if suffix in VIDEO_EXTENSIONS
+                else "audio" if suffix in AUDIO_EXTENSIONS else None)
+        if kind is None:
+            raise HTTPException(422, "이미지·영상·오디오 파일만 끌어낼 수 있습니다")
+        key = str(path_comparison_key(target))
+        if key.casefold() in seen:
+            continue
+        seen.add(key.casefold())
+        paths.append(key)
+        items.append({"project": body.project, "path": relative, "name": target.name, "type": kind})
+    return paths, json.dumps(items, ensure_ascii=False)
+
+
+@router.post("/native-drag", dependencies=[Depends(_require_local_assets)])
+async def native_drag(body: NativeDragIn, request: Request):
+    require_loopback_browser_request(request, "원본 파일 드래그는 이 PC의 로컬 허브에서만 가능합니다")
+    from ..active_account import capture_account_pin, pinned_account_scope
+    pin = await to_thread_non_abandon(capture_account_pin)
+    with pinned_account_scope(pin):
+        return await _native_drag_pinned(body, request)
+
+
+async def _native_drag_pinned(body: NativeDragIn, request: Request):
+    from ..active_account import active_email
+    account = getattr(request.state, "account", None)
+    if AUTH_ENABLED and not account:
+        raise HTTPException(401, "로그인이 필요합니다")
+    owner = account.get("email", "") if AUTH_ENABLED else active_email()
+    if not request.headers.get(EXPECT_ACCOUNT_HEADER) or expected_account_differs(request, owner):
+        raise HTTPException(409, "계정이 바뀌었습니다. 새로고침 후 다시 끌어주세요.")
+    if not windows_drag.available():
+        raise HTTPException(400, "원본 파일 드래그는 Windows 로컬 허브에서만 지원됩니다")
+    if not _native_drag_lock.acquire(blocking=False):
+        raise HTTPException(409, "이미 파일을 끌고 있습니다. 먼저 놓거나 Esc로 취소해주세요.")
+    try:
+        if not windows_drag.start_is_current(body.started_at_ms):
+            return {"dropped": False, "reason": "expired"}
+        source_window = windows_drag.capture_source()
+        if source_window is None:
+            return {"dropped": False}
+        cancelled = threading.Event()
+        owner_task = asyncio.current_task()
+
+        async def watch_disconnect():
+            while True:
+                if owner_task.cancelling() or await request.is_disconnected():
+                    cancelled.set()
+                    return
+                await asyncio.sleep(0.02)
+
+        watcher = asyncio.create_task(watch_disconnect())
+        try:
+            paths, payload = await to_thread_non_abandon(_native_drag_files, body, request, cancelled)
+            if cancelled.is_set() or await request.is_disconnected():
+                return {"dropped": False}
+            if not windows_drag.start_is_current(body.started_at_ms):
+                return {"dropped": False, "reason": "expired"}
+            dropped = await to_thread_non_abandon(windows_drag.drag_files, paths, payload, body.started_at_ms, cancelled, source_window)
+            return {"dropped": dropped}
+        finally:
+            cancelled.set()
+            watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watcher
+    except TimeoutError:
+        return {"dropped": False, "reason": "expired"}
+    except OSError:
+        raise HTTPException(503, "Windows 파일 드래그 결과를 확인하지 못했습니다. 놓은 폴더를 먼저 확인해주세요. 원본 파일은 이동하지 않았습니다.") from None
+    finally:
+        _native_drag_lock.release()
 
 
 class ResolveLibraryDialogIn(BaseModel):

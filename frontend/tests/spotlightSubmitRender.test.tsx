@@ -1,3 +1,5 @@
+import { configureOperationContext } from "../src/app/operationContext";
+import { preparedFixture } from "./preparedSubmissionFixture";
 // @vitest-environment jsdom
 import { act, useRef, useState, type MutableRefObject } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -84,6 +86,7 @@ function Harness({ options }: { options: Props }) {
       scene_id: destination.sceneId,
       card_id: destination.cardId,
     })),
+    confirmCanvasGeneration: () => true,
     settleCanvasGeneration,
     discardCanvasGeneration,
     onCanvasBatchCreated,
@@ -152,6 +155,28 @@ afterEach(async () => {
 });
 
 describe("실제 프롬프트 제출: 캔버스 연속 생성과 응답 후 편집 보존", () => {
+  it.each([false, true])("카드 반영 실패는 서버 성공을 보존하고 제출 실패와 구분한다(다른 요청 거절=%s)", async (rejectOther) => {
+    let call = 0;
+    prepareCreate.mockImplementation((_body, _workspace, link) => {
+      const index = call++;
+      return async () => {
+        if (rejectOther && index === 1) throw Object.assign(new Error("server rejected"), { status: 400 });
+        return generation(link!.generation_id);
+      };
+    });
+    // 상태 코드가 붙은 로컬 오류라도 서버 거절로 취급해 성공 표식을 버리면 안 된다.
+    settleCanvasGeneration.mockImplementationOnce(() => { throw Object.assign(new Error("card write failed"), { status: 400 }); });
+    await mount();
+    await run(2);
+    expect(onCanvasBatchCreated).toHaveBeenCalledTimes(1);
+    expect(onCanvasBatchCreated.mock.calls[0][0]).toHaveLength(rejectOther ? 1 : 2);
+    expect(discardCanvasGeneration).toHaveBeenCalledTimes(rejectOther ? 1 : 0);
+    expect(errors.at(-1)).toContain("1장 화면 반영 실패");
+    if (rejectOther) expect(errors.at(-1)).toContain("1장 제출 실패");
+    else expect(errors.at(-1)).not.toContain("제출 실패");
+    expect(prepareCreate).toHaveBeenCalledTimes(2);
+  });
+
   it("동일 캔버스 카드에서 두 번 제출해도 Text 노드 프롬프트·레퍼런스 10개가 같다", async () => {
     await mount();
     await run();
@@ -403,4 +428,25 @@ describe("실제 프롬프트 제출: 캔버스 연속 생성과 응답 후 편�
     expect(editor.innerHTML).toBe(before);
     expect(notifyPromptChanged).not.toHaveBeenCalled();
   });
+});
+
+vi.mock("../src/features/generation/api", async (original) => ({
+  ...await original<typeof import("../src/features/generation/api")>(),
+  prepareCreateSubmission: (...args: Parameters<typeof import("../src/features/generation/api").prepareCreateSubmission>) => preparedFixture(api.prepareCreate(args[0], args[1], args[2]), args[1], args[2], args[3]),
+  prepareRegenerateSubmission: (...args: Parameters<typeof import("../src/features/generation/api").prepareRegenerateSubmission>) => preparedFixture(api.prepareRegenerate(args[0], args[1], args[2], args[3]), args[2], args[3], args[4]),
+}));
+
+it("계정 세대가 바뀐 뒤 받은 접수 결과를 새 화면/카드에 쓰지 않는다", async () => {
+  let done!: (generation: Generation) => void;
+  prepareCreate.mockImplementation(() => () => new Promise(resolve => { done = resolve; }));
+  await mount();
+  const { pending } = await beginPending();
+  const before = editor.innerHTML;
+  configureOperationContext({ key: "different-account", serverOrigin: "http://different.invalid", authority: "team", ready: true });
+  await act(async () => { done(generation()); await pending; });
+  expect(settleCanvasGeneration).not.toHaveBeenCalled();
+  expect(discardCanvasGeneration).not.toHaveBeenCalled();
+  expect(onCreated).not.toHaveBeenCalled();
+  expect(onCanvasBatchCreated).not.toHaveBeenCalled();
+  expect(editor.innerHTML).toBe(before);
 });

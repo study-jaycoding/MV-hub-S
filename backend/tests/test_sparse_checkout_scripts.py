@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from test_git_update_admission import UpdaterFixture, fake_tool
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -16,6 +18,14 @@ def _read(name: str) -> str:
 
 def _read_updater() -> str:
     return _read("tools/update_git_worker.bat")
+
+
+def _copy_bootstrap(tools: Path):
+    script = _read("tools/run_update_git.ps1")
+    # These older tests cover immutable worker lifecycle; admission queries have dedicated fixtures.
+    script = script.replace('$ErrorActionPreference = "Stop"', '$ErrorActionPreference = "Stop"\n'
+                            'function Get-CimInstance {}\nfunction Get-ScheduledTask {}', 1)
+    (tools / "run_update_git.ps1").write_text(script, encoding="utf-8-sig")
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows batch BOM contract")
@@ -161,13 +171,15 @@ def test_scheduled_watchdog_uses_bounded_task_scheduler_retry():
     assert "exit /b %WATCHDOG_RC%" in watchdog
 
 
-def test_update_restarts_registered_server_and_checks_readiness():
+def test_update_routes_server_to_coordinator_and_restart_helper_checks_readiness():
     updater = _read_updater()
+    admission = _read("tools/run_update_git.ps1")
     wrapper = _read("restart_server_task.bat")
     restart = _read("restart_server_task.ps1")
 
-    assert 'schtasks /Query /TN "MVHub Server"' in updater
-    assert 'call "%ROOT%restart_server_task.bat"' in updater
+    assert 'schtasks /Query /TN "MVHub Server"' not in updater
+    assert 'restart_server_task.bat' not in updater
+    assert 'Get-GitUpdateRole' in admission and 'server_release_update.py' in admission
     assert "Start-Process" in wrapper and "-Verb RunAs" in wrapper
     assert "WindowsBuiltInRole]::Administrator" in wrapper
     assert "Start-ScheduledTask -TaskName $TaskName" in restart
@@ -248,7 +260,7 @@ def test_restart_identity_accepts_only_the_current_installation_path(tmp_path: P
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_update_persists_commit_and_restart_result():
+def test_update_persists_commit_and_worker_result():
     updater = _read_updater()
 
     assert 'set "UPDATE_LOG=%ROOT%logs\\update.log"' in updater
@@ -257,8 +269,7 @@ def test_update_persists_commit_and_restart_result():
         'call :write_update_log "SUCCESS" '
         '"before=!BEFORE! after=!AFTER! server=!SERVER_RESULT!"'
     ) in updater
-    assert 'set "SERVER_RESULT=restart-failed"' in updater
-    assert 'set "SERVER_RESULT=restarted-ready"' in updater
+    assert 'set "SERVER_RESULT=worker-only"' in updater
     assert (
         'call :write_update_log "FAILED" '
         '"stage=!UPDATE_STAGE! before=!BEFORE! after=!AFTER! '
@@ -266,7 +277,7 @@ def test_update_persists_commit_and_restart_result():
     ) in updater
 
 
-def test_failed_frontend_refresh_is_retried_before_server_restart():
+def test_failed_frontend_refresh_is_retried_before_worker_completion():
     updater = _read_updater()
 
     marker = 'set "FRONTEND_PENDING=!UPDATE_STATE_DIR!\\frontend-build.pending"'
@@ -280,7 +291,7 @@ def test_failed_frontend_refresh_is_retried_before_server_restart():
     install = "call npm ci --include=dev --no-audit --no-fund"
     build = "call npm run build"
     clear_pending = 'del /q "!FRONTEND_PENDING!"'
-    restart = 'call "%ROOT%restart_server_task.bat"'
+    completion = 'set "UPDATE_STAGE=complete"'
 
     for contract in (
         marker,
@@ -294,7 +305,7 @@ def test_failed_frontend_refresh_is_retried_before_server_restart():
     assert updater.index(persist_pending) < updater.index(install)
     assert updater.index(install) < updater.index(build)
     assert updater.index(build) < updater.index(clear_pending)
-    assert updater.index(clear_pending) < updater.index(restart)
+    assert updater.index(clear_pending) < updater.index(completion)
 
 
 def test_failed_backend_dependency_refresh_is_retried():
@@ -396,84 +407,28 @@ def test_marker_write_ignores_a_stale_errorlevel_and_verifies_content(tmp_path: 
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows git updater integration")
-def test_update_worker_persists_and_clears_markers_in_the_actual_git_dir(tmp_path: Path):
-    root = tmp_path / "repo"
-    tools = root / "tools"
-    backend = root / "backend"
-    frontend = root / "frontend"
-    fake_bin = tmp_path / "fake-bin"
-    tools.mkdir(parents=True)
-    backend.mkdir()
-    (frontend / "dist").mkdir(parents=True)
-    fake_bin.mkdir()
-    shutil.copy2(ROOT / "tools" / "update_git_worker.bat", tools / "update_git_worker.bat")
-    (tools / "verify_requirements.py").write_text("print('verified')\n", encoding="ascii")
-    (backend / "requirements.txt").write_text("", encoding="ascii")
-    (frontend / "dist" / "index.html").write_text("ok\n", encoding="ascii")
-    (fake_bin / "npm.cmd").write_text("@exit /b 0\n", encoding="ascii")
-    # A .cmd shim invoked without CALL would replace the worker's control flow.
-    # Use an executable that safely returns non-zero for schtasks-style arguments.
-    shutil.copy2(
-        Path(os.environ["SystemRoot"]) / "System32" / "where.exe",
-        fake_bin / "schtasks.exe",
-    )
-
-    def git(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", *args],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=True,
-        )
-
-    git("init")
-    git("config", "user.email", "test@example.com")
-    git("config", "user.name", "MV Hub Test")
-    git("add", ".")
-    git("commit", "-m", "fixture")
-    bare = tmp_path / "origin.git"
-    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
-    git("remote", "add", "origin", str(bare))
-    git("push", "-u", "origin", "HEAD")
-    (frontend / "node_modules").mkdir()
-    git_dir = Path(git("rev-parse", "--absolute-git-dir").stdout.strip())
-    state_dir = git_dir / "mvhub-update"
-    legacy_dir = root / "logs"
-    legacy_dir.mkdir()
-    legacy_backend = legacy_dir / "backend-deps.pending"
-    legacy_ready = legacy_dir / "isolated-updater-v1.ready"
-    head = git("rev-parse", "HEAD").stdout.strip()
-    legacy_backend.write_text(head + "\n", encoding="ascii")
-    legacy_ready.write_text(head + "\n", encoding="ascii")
-
-    env = os.environ.copy()
-    env["PATH"] = str(fake_bin) + os.pathsep + env["PATH"]
-    env["MVHUB_NO_PAUSE"] = "1"
-    completed = subprocess.run(
-        ["cmd.exe", "/d", "/c", str(tools / "update_git_worker.bat"), str(root)],
-        cwd=root,
-        env=env,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=60,
-        check=False,
-    )
-
-    output = completed.stdout + completed.stderr
-    assert completed.returncode == 0, output
-    assert "[done] updated to the latest version." in output
-    assert not (state_dir / "backend-deps.pending").exists()
-    assert not (state_dir / "frontend-build.pending").exists()
-    assert not legacy_backend.exists()
-    assert not legacy_ready.exists()
-    ready = state_dir / "isolated-updater-v2.ready"
-    assert ready.read_text(encoding="ascii").strip() == git("rev-parse", "HEAD").stdout.strip()
-    assert "SUCCESS" in (root / "logs" / "update.log").read_text(encoding="ascii")
+def test_update_worker_persists_and_clears_markers_in_the_resolved_git_dir(tmp_path: Path, fake_tool):
+    fixture = UpdaterFixture(tmp_path, fake_tool)
+    try:
+        state_dir = fixture.root / ".git/mvhub-update"
+        legacy_dir = fixture.root / "logs"
+        legacy_dir.mkdir()
+        legacy_backend = legacy_dir / "backend-deps.pending"
+        legacy_ready = legacy_dir / "isolated-updater-v1.ready"
+        head = "a" * 40  # executable Git boundary's selected commit
+        legacy_backend.write_text(head + "\n", encoding="ascii")
+        legacy_ready.write_text(head + "\n", encoding="ascii")
+        completed = fixture.run(direct=True)
+        output = completed.stdout + completed.stderr
+        assert completed.returncode == 0, output
+        assert "[done] updated to the latest version." in output
+        assert not (state_dir / "backend-deps.pending").exists()
+        assert not (state_dir / "frontend-build.pending").exists()
+        assert not legacy_backend.exists() and not legacy_ready.exists()
+        assert (state_dir / "isolated-updater-v2.ready").read_text(encoding="ascii").strip() == head
+        assert "SUCCESS" in (fixture.root / "logs/update.log").read_text(encoding="ascii")
+    finally:
+        fixture.close()
 
 
 def test_operational_text_logs_use_bounded_rotation_and_recovery_clears_alerts():
@@ -517,7 +472,7 @@ def test_git_updater_finishes_after_repository_scripts_are_overwritten(tmp_path:
     tools.mkdir(parents=True)
     temp_dir.mkdir()
     shutil.copy2(ROOT / "update_git.bat", root / "update_git.bat")
-    shutil.copy2(ROOT / "tools" / "run_update_git.ps1", tools / "run_update_git.ps1")
+    _copy_bootstrap(tools)
     (tools / "update_git_worker.bat").write_text(
         """@echo off
 set "ROOT=%~1"
@@ -552,7 +507,7 @@ def test_git_updater_propagates_the_isolated_worker_exit_code(tmp_path: Path):
     tools = root / "tools"
     tools.mkdir(parents=True)
     shutil.copy2(ROOT / "update_git.bat", root / "update_git.bat")
-    shutil.copy2(ROOT / "tools" / "run_update_git.ps1", tools / "run_update_git.ps1")
+    _copy_bootstrap(tools)
     (tools / "update_git_worker.bat").write_text("@exit /b 23\n", encoding="ascii")
 
     env = os.environ.copy()
@@ -577,7 +532,7 @@ def test_git_updater_retries_once_when_git_pull_replaces_a_failed_worker(tmp_pat
     tools.mkdir(parents=True)
     temp_dir.mkdir()
     shutil.copy2(ROOT / "update_git.bat", root / "update_git.bat")
-    shutil.copy2(ROOT / "tools" / "run_update_git.ps1", tools / "run_update_git.ps1")
+    _copy_bootstrap(tools)
     (tools / "replacement-worker.bat").write_text(
         '@echo off\n>"%~1\\retry-finished.txt" echo recovered\nexit /b 0\n',
         encoding="ascii",

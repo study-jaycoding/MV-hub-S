@@ -370,7 +370,7 @@ def pm_projects() -> list[tuple[str, str, str]]:
     out: list[tuple[str, str, str]] = []
     for p in repo.list_projects(include_archived=False).get("projects") or []:
         pid, name = str(p.get("id") or ""), str(p.get("name") or "")
-        root = project_folders.effective_root_path(pid).strip() if pid else ""
+        root = (p.get("asset_root_path") or project_folders.effective_root_path(pid)).strip() if pid else ""
         if pid and root:
             out.append((pid, name, root))
     return out
@@ -446,13 +446,14 @@ class HelperLeases:
                 return None
             return {"project_id": lease["project_id"], "name": lease["name"], "started_at": lease["started_at"]}
 
-    def acquire(self, project_id: str, name: str, owner: str, unc: str, busy) -> Optional[dict[str, Any]]:
+    def acquire(self, project_id: str, name: str, owner: str, unc: str, busy, *, results_unc: Optional[str] = None) -> Optional[dict[str, Any]]:
         """자리를 준다. 서버 훑기(busy())나 살아 있는 다른 자리가 있으면 None."""
         with self.lock:
             if busy() or self.alive_locked():
                 return None
             self._lease = {
                 "id": uuid.uuid4().hex, "project_id": project_id, "name": name, "owner": owner, "unc": unc,
+                "results_unc": unc if results_unc is None else results_unc,
                 "started_at": registry.utc_now(), "expires": time.monotonic() + LEASE_TTL_S, "applying": False,
                 "seq": 0, "digest": "", "ack": None,
             }
@@ -514,6 +515,7 @@ class AssetRegistryController:
         # 지문 캐시(프로젝트 → 경로 → [크기, 시각, sha]) — 큰 파일 전용 실행·지난 주기의 지문을 다음 목록에서 다시 안 읽게.
         # 메모리에만 둔다(재시작하면 다시 계산). ponytail: 재시작이 잦아 큰 파일을 자꾸 다시 읽으면 표로 옮긴다.
         self._cache: dict[str, dict[str, list]] = {}
+        self._cache_roots: dict[str,str] = {}
         self._priority: dict[str, list[str]] = {}
         self._waiting: dict[str, int] = {}  # 전용 실행으로도 못 끝낸 큰 파일 수('수동 스캔 대기')
 
@@ -666,6 +668,11 @@ class AssetRegistryController:
         """(project_id, 이름, 루트). 서버는 자기 PM 목록 — 도우미 PC 는 서버에 묻는다(services/asset_registry_helper)."""
         return pm_projects()
 
+
+    def _results_root(self, pid: str, asset_root: str) -> str:
+        project=repo.get_project(pid) or {}
+        return project_folders.effective_root_path(pid).strip() if project.get('asset_root_path') else asset_root
+
     async def _project_run(self, pid: str, name: str, root: str, rate: float, deadline: float) -> str:
         """프로젝트 하나: 일반 훑기 → 예산 밖 큰 파일이 있으면 전용 실행 → 다시 훑기. 첫 훑기의 상태를 돌려준다."""
         result = await self._scan_project(pid, name, root, rate, deadline)
@@ -676,7 +683,9 @@ class AssetRegistryController:
                 await self._scan_project(pid, name, root, rate, deadline)
         if result.get("state") != "stopped" and not self._halted():
             # 결과물 훑기(docs/NAS_RESULTS.md) — 같은 자리(서버 훑기·도우미 자리) 안에서 이어서. 대장 결과와 무관하게 돈다.
-            await self._results_project(pid, name, root, rate)
+            results_root=await to_thread_non_abandon(self._results_root,pid,root)
+            if results_root:
+                await self._results_project(pid, name, results_root, rate)
         return str(result.get("state") or "")
 
     async def _results_project(self, pid: str, name: str, root_raw: str, rate: float) -> None:
@@ -709,14 +718,27 @@ class AssetRegistryController:
         known.update(self._cache.get(pid) or {})
         return known
 
+
+    def _known_for_root(self,pid: str,root_raw: str) -> dict[str,list]:
+        with get_connection() as conn:
+            scan=conn.execute('SELECT root FROM asset_registry_scan WHERE project_id=?',(pid,)).fetchone()
+        if not scan or root_key(scan[0])!=root_key(root_raw):
+            return dict(self._cache.get(pid) or {})
+        return self._known(pid)
+
     async def _scan_project(self, pid: str, name: str, root_raw: str, rate: float, deadline_s: float) -> dict[str, Any]:
         root = resolve_root(root_raw)
+        proof=root_key(root_raw)
+        if self._cache_roots.get(pid)!=proof:
+            self._cache[pid]={}
+            self._priority[pid]=[]
+            self._cache_roots[pid]=proof
         started_at = registry.utc_now()
         t0 = time.monotonic()
         self._current = {"project_id": pid, "name": name, "phase": "scan", "started_at": started_at}
         job = {
             "root": root,
-            "known": await asyncio.to_thread(self._known, pid),
+            "known": await asyncio.to_thread(self._known_for_root, pid, root_raw),
             "priority": self._priority.get(pid, []),
             "rate_bytes": rate,
             "dir_rate": DIR_RATE,
@@ -760,6 +782,9 @@ class AssetRegistryController:
     def _apply(self, pid: str, name: str, scan: registry.RegistryScan, stats: dict[str, Any]) -> dict[str, int]:
         with get_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            current=conn.execute('SELECT asset_root_path FROM project WHERE id=?',(pid,)).fetchone()
+            if current and current[0] and root_key(current[0])!=root_key(stats.get('root') or ''):
+                return {'discarded_root_changed':1}
             kinds: dict[str, int] = {}
             if scan.complete:
                 plan = registry.plan_changes(registry.registry_rows(conn, pid), scan)

@@ -398,13 +398,16 @@ def test_https_soak_runner_enforces_the_documented_low_spec_profile():
     assert '[string]$ServerPriority = "below-normal"' in soak
     assert '[double]$SampleIntervalSeconds = 30' in soak
     assert '[double]$MaxRssMb = 512' in soak
-    assert "--server-cpu-cores $ServerCpuCores" in soak
-    assert "--server-priority $ServerPriority" in soak
-    assert "--sample-interval $SampleIntervalSeconds" in soak
-    assert "--max-rss-mb $MaxRssMb" in soak
-    assert "--max-p95-ms $MaxP95Ms" in soak
-    assert "--max-login-p95-ms $MaxLoginP95Ms" in soak
-    assert "--max-memory-growth-percent $MaxMemoryGrowthPercent" in soak
+    # The runner passes an argument array through the environment-cleaning wrapper.
+    assert "Invoke-IsolatedPython (@($LoadTool)" in soak
+    assert "& $PythonExe @PythonArguments" in soak
+    assert "'--server-cpu-cores', $ServerCpuCores" in soak
+    assert "'--server-priority', $ServerPriority" in soak
+    assert "'--sample-interval', $SampleIntervalSeconds" in soak
+    assert "'--max-rss-mb', $MaxRssMb" in soak
+    assert "'--max-p95-ms', $MaxP95Ms" in soak
+    assert "'--max-login-p95-ms', $MaxLoginP95Ms" in soak
+    assert "'--max-memory-growth-percent', $MaxMemoryGrowthPercent" in soak
     assert "server_cpu_cores = $ServerCpuCores" in soak
     assert "max_rss_mb = $MaxRssMb" in soak
     assert "$UsesManagedLocalTls" in soak
@@ -578,10 +581,12 @@ def test_release_builder_publishes_only_an_immutable_candidate():
     # 지우는 곳은 방금 만든 zip 의 검증 실패 정리뿐 — 만들기 전에 옛 zip 을 지우지 않는다
     assert builder.index("Remove-Item -LiteralPath $ZipPath") > builder.index("Compress-Archive")
     # 게시: 같은 이름 다른 지문 거부 → .part 복사 → 덮어쓰기 없는 Move → 잠금 안 후보 표지
-    assert "a published zip must never change" in builder
-    move = builder.index("[System.IO.File]::Move($PartZip, $PublishedZip)")
-    candidate = builder.index('Write-ManifestAtomic -Path (Join-Path $PublishTarget "candidate.json")')
-    assert builder.index("Open-ReleaseLock -Directory $PublishTarget") < candidate and move < candidate
+    publisher = (Path(__file__).resolve().parents[2] / 'release/release_manifest_io.ps1').read_text(encoding='utf-8-sig')
+    assert 'Publish-QualifiedRelease -CandidatePath $PublishCandidatePath' in builder
+    assert 'Immutable published file differs.' in publisher
+    move = publisher.index('[System.IO.File]::Move($Part, $Destination)')
+    candidate = publisher.index('Write-ManifestAtomic -Path $SelectedPath -Bytes $Evidence.Bytes')
+    assert publisher.index('Open-ReleaseLock -Directory $Directory') < candidate and move < candidate
     assert "-Destination $PublishTarget" not in builder  # 설치기·latest.json 을 공개 폴더에 복사하지 않는다
     assert 'Join-Path $PublishTarget "latest.json"' not in builder
     assert "Move-Item" not in builder  # PS 5.1 Move-Item -Force 는 '삭제 후 이동'(Codex r3)
@@ -785,11 +790,10 @@ def test_updater_restarts_the_app_after_failure_without_touching_state():
         "Start-MvHubAfterFailure"
     )
     assert "throw $InstallFailure" in main_catch
-    # 반쯤 스왑된 트리(recovery_required)는 부팅 금지 — 원상 복원·신버전 커밋 시만 재기동.
-    assert (
-        '$script:RecoveryState -eq "rolled_back" -or $script:RecoveryState -eq "new_committed"'
-        in main_catch
-    )
+    # 새 코드의 DB 쓰기 가능 뒤에는 현재 DB 호환 판정·원상 복원 후에만 재기동한다.
+    assert 'Finalize-FailedInstall' in main_catch
+    assert '$script:RecoveryState -eq "rolled_back"' in main_catch
+    assert '$script:RecoveryState -eq "new_committed"' not in main_catch
 
 
 def test_updater_quarantines_leftovers_without_guessing_and_before_version_checks():

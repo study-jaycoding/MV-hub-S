@@ -436,11 +436,12 @@ it("옛 문맥의 조회가 끝나며 새 문맥에 얹힌 요구를 가져가�
 // ── 컷 카드 격자 ──
 const gridProps = {
   scale: 1, fill: true, layout: "grid" as const, table: false, selected: new Set<string>(), onSelect: () => {}, onInfo: () => {}, onReel: () => {},
+  onOpenTab: () => {},
   onPreview: () => {}, onShowAll: () => {}, onEnter: () => {}, onOpen: () => {}, top: false,
 };
 const dbl = (el: Element) => act(() => { el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); });
 
-it("폴더마다 카드 한 장 — 이름·건수, 대표가 없으면 '대표 미정', 영상이면 재생 표시. 컷을 두 번 누르면 모아보기", () => {
+it("폴더마다 큰 카드 한 장 — 상단 이름·건수·썸네일 지정 색상과 영상 재생 표시. 컷을 두 번 누르면 모아보기", () => {
   const opened: string[] = [];
   const folders = [card("C0010", 8, true), card("C0040", 14, false, "video")];
   const showAll = vi.fn();
@@ -451,8 +452,11 @@ it("폴더마다 카드 한 장 — 이름·건수, 대표가 없으면 '대표 
 
   const tiles = [...host.querySelectorAll<HTMLButtonElement>(".cut-grid .cut-card")];
   expect(tiles).toHaveLength(2); // 고른 폴더에 직접 든 것이 없으면 '컷 밖' 칸도 없다
-  expect(tiles.map((tile) => tile.querySelector(".cut-tab")!.textContent)).toEqual(["C00108", "C004014"]);
-  expect(tiles.map((tile) => tile.querySelector(".cut-pill")?.textContent ?? null)).toEqual([null, "대표 미정"]);
+  expect(tiles.map((tile) => tile.querySelector(".ep-num")!.textContent)).toEqual(["C0010", "C0040"]);
+  expect(tiles.map((tile) => tile.querySelector(".ep-cap > span")!.textContent)).toEqual(["8건", "14건"]);
+  expect(tiles.map((tile) => tile.querySelector(".ep-cover > .ep-chip")?.textContent ?? null)).toEqual(["썸네일", "썸네일"]);
+  expect(tiles.map((tile) => tile.querySelector(".ep-chip")!.className)).toEqual(["ep-chip", "ep-chip none"]);
+  expect(host.querySelector(".cut-tab, .cut-slot")).toBeNull();
   expect(tiles.map((tile) => !!tile.querySelector(".play-badge"))).toEqual([false, true]);
   expect(tiles[0].querySelector("img")!.getAttribute("src")).toContain("cover-C0010");
   // 표지 그림이 깨진 뒤 대표가 바뀌면 다시 보인다(생성물 카드와 같은 분기 — 숨긴 채 남지 않는다)
@@ -463,7 +467,7 @@ it("폴더마다 카드 한 장 — 이름·건수, 대표가 없으면 '대표 
   // 포스터 없는 원격 영상은 첫 프레임(영상 요소)으로
   const bare = { ...card("C0900", 1, false, "video"), cover: { ...cover("bare", "video"), assets: [{ type: "video", file_path: "https://cdn.invalid/bare.mp4" }] } as unknown as Generation };
   draw(0, [bare]);
-  const face = host.querySelector(".cut-face")!;
+  const face = host.querySelector(".ep-cover")!;
   expect(face.querySelector("img")).toBeNull();
   expect(face.querySelector("video")!.getAttribute("src")).toBe("https://cdn.invalid/bare.mp4");
   draw(0, folders);
@@ -471,7 +475,7 @@ it("폴더마다 카드 한 장 — 이름·건수, 대표가 없으면 '대표 
   const second = host.querySelectorAll<HTMLButtonElement>(".cut-grid .cut-card")[1];
   expect(second.title).toBe("e035/C0040 · 14건");
   expect(host.querySelector<HTMLElement>(".cut-grid")!.tabIndex).toBe(-1); // 창을 닫은 뒤 초점을 돌려받는 자리
-  expect(host.querySelector<HTMLElement>(".cut-grid")!.style.gridTemplateColumns).toBe("repeat(auto-fill, minmax(180px, 1fr))");
+  expect(host.querySelector<HTMLElement>(".cut-grid")!.style.gridTemplateColumns).toBe("repeat(auto-fill, minmax(340px, 1fr))");
 
   act(() => second.click());
   expect(opened).toEqual([]); // 한 번 클릭은 고르기
@@ -501,8 +505,9 @@ it("두 번 클릭은 하위 폴더가 있으면(에피소드) 그 폴더로 들
   const tile = (path: string) => host.querySelector<HTMLElement>(`.cut-card[data-path="${path}"]`)!;
   // 하위 폴더를 가진 카드가 하나라도 있는 단계 = 에피소드 화면 — 카드 모양이 다르다(이름은 표지 위에)
   expect(host.querySelector(".cut-grid")!.className).toBe("cut-grid ep-board ep-grid");
-  expect(tile("e035").querySelector(".ep-cap")!.textContent).toBe("e035컷 5 · 14건");
-  expect(tile("e036").querySelector(".ep-cap")!.textContent).toBe("e0362건");
+  expect(tile("e035").querySelector(".ep-num")!.textContent).toBe("e035");
+  expect(tile("e035").querySelector(".ep-cap")!.textContent).toBe("컷 5 · 14건");
+  expect(tile("e036").querySelector(".ep-cap")!.textContent).toBe("2건");
   expect(tile("e035").title).toBe("e035 · 컷 5 · 14건");
   dbl(tile("e035"));
   dbl(tile("e036"));
@@ -533,7 +538,7 @@ it("에피소드 화면: 리스트는 한 줄에 하나·그리드는 폭에 맞
   const tile = () => host.querySelector<HTMLElement>('.cut-card[data-path="e035"]')!;
   expect([grid().className, grid().style.gridTemplateColumns, grid().style.getPropertyValue("--ep-scale")]).toEqual(["cut-grid ep-board ep-list", "minmax(0, 1fr)", "1.2"]);
   // 번호는 이름의 숫자 그대로(035) — 번호 칸은 가장 긴 번호에 맞춘다(세 자리 = 66px·30px)
-  expect([host.querySelector(".ep-num")!.textContent, grid().style.getPropertyValue("--ep-num-w"), grid().style.getPropertyValue("--ep-num-size")]).toEqual(["035", "66px", "30px"]);
+  expect(host.querySelector(".ep-num")).toBeNull();
   // 카드는 같은 .cut-card[data-path] — 안에 단추가 들어 있어 div(role=button)다
   expect([tile().tagName, tile().getAttribute("role"), tile().tabIndex, tile().className]).toEqual(["DIV", "button", 0, "cut-card ep-card ep-list"]);
   expect(host.querySelector(".cut-out-count")!.textContent).toBe("에피소드 밖 2건");
@@ -654,8 +659,8 @@ it("두 번 누름: 첫 누름([열기])이 자리를 옮기면 둘째 누름은
 });
 
 // 2026-10-13 오후(Jay): 컷 화면도 리스트를 누르면 다르게 — 한 번 = 프로젝트 화면과 같은 줄(띠에는 그 컷의 생성물), 한 번 더(table) = 표.
-//  그리드는 겹친 종이 카드 그대로다. 줄·표의 줄도 같은 .cut-card[data-path] 라 고르기·두 번 클릭(모아보기)·키는 격자의 것 그대로.
-it("컷 화면: 그리드는 겹친 종이 카드 그대로 · 리스트 = 줄(생성물 띠 = 크게 보기, [폴더로] = 그 컷으로) · 리스트 한 번 더 = 표", () => {
+//  그리드도 공통 큰 카드다. 모든 모양은 같은 .cut-card[data-path] 라 고르기·두 번 클릭(모아보기)·키는 격자의 것 그대로.
+it("컷 화면: 그리드는 공통 큰 카드 · 리스트 = 줄(생성물 띠 = 크게 보기, [폴더로] = 그 컷으로) · 리스트 한 번 더 = 표", () => {
   const take = (id: string, extra: object = {}) =>
     ({ cover: { id, assets: [{ id: "a-" + id, type: "video", file_path: `/m/${id}.mp4`, thumbnail_path: `/m/${id}.png` }] }, final: false, held: false, by: "리버", ...extra });
   const takes = Array.from({ length: 10 }, (_, index) => take("t" + index, index === 1 ? { final: true } : index === 2 ? { held: true, by: null } : {}));
@@ -677,10 +682,16 @@ it("컷 화면: 그리드는 겹친 종이 카드 그대로 · 리스트 = 줄(�
   const grid = () => host.querySelector<HTMLElement>(".cut-grid")!;
   const row = (name: string) => host.querySelector<HTMLElement>(`.cut-card[data-path="e035/${name}"]`)!;
 
-  // 그리드 — 겹친 종이 카드(리스트 단추의 두 번째 상태(table)는 그리드에 아무 영향이 없다)
+  // 그리드 — 공통 큰 카드(리스트 단추의 두 번째 상태(table)는 그리드에 아무 영향이 없다)
   draw();
   expect([grid().className, grid().style.gridTemplateColumns, row("C0010").tagName, grid().querySelectorAll(".cut-tab").length])
-    .toEqual(["cut-grid", "repeat(auto-fill, minmax(180px, 1fr))", "BUTTON", 2]);
+    .toEqual(["cut-grid ep-board ep-grid", "repeat(auto-fill, minmax(340px, 1fr))", "DIV", 0]);
+  expect(row("C0010").querySelector(".ep-num")!.textContent).toBe("C0010");
+  expect(row("C0010").querySelectorAll(".ep-take")).toHaveLength(5);
+  expect(row("C0010").querySelector(".ep-cut.more")!.textContent).toBe("+9");
+  act(() => row("C0010").querySelectorAll<HTMLButtonElement>(".ep-take")[3].click());
+  expect(previews[0].items!.map((item) => item.genId)).toEqual(["t0", "t1", "t2", "t3", "t4"]);
+  previews.length = 0;
 
   // 리스트 한 번 — 줄. 번호는 이름의 숫자 그대로(0010), 번호 칸은 네 자리에 맞춘다
   view = { layout: "list", table: false };
@@ -689,7 +700,7 @@ it("컷 화면: 그리드는 겹친 종이 카드 그대로 · 리스트 = 줄(�
     .toEqual(["cut-grid ep-board ep-list", "minmax(0, 1fr)", "74px", "cut-card ep-card ep-list leaf"]);
   const text = (el: Element, selector: string) => el.querySelector(selector)?.textContent ?? null;
   expect([text(row("C0010"), ".ep-num"), text(row("C0010"), ".ep-name"), text(row("C0010"), ".ep-pchip"), text(row("C0010"), ".ep-line"), text(row("C0010"), ".ep-enter")])
-    .toEqual(["0010", "C0010", "★ 대표", "14건 · 영상 13", "폴더로 ▸"]);
+    .toEqual([null, "C0010", "썸네일", "14건 · 영상 13", "폴더로 ▸"]);
   // 가운데 정보판 — 그 그림(대표)의 모델·작업자·크레딧·생성일 + 폴더 안의 검토 개수(모아보기 카드와 같은 줄)
   const meta = (el: Element) => [...el.querySelectorAll(".ep-meta > .k")].map((k) => [k.textContent, k.nextElementSibling!.textContent]);
   expect(meta(row("C0010")).map(([k]) => k)).toEqual(["모델", "작업자", "크레딧", "생성일", "검토"]);
@@ -702,7 +713,7 @@ it("컷 화면: 그리드는 겹친 종이 카드 그대로 · 리스트 = 줄(�
     .toEqual([9, "+5", "ep-cut ep-take rep", "★", "R", "리버", null]);
   // 옛 서버의 컷 — 번호·표지·이름·건수·단추만(띠·검토·대표 표시 중 서버 값이 필요한 것은 빠진다)
   expect([text(row("C0020"), ".ep-line"), row("C0020").querySelector(".ep-strip"), text(row("C0020"), ".ep-pchip"), text(row("C0020"), ".ep-enter")])
-    .toEqual(["2건", null, "대표 미정", "폴더로 ▸"]);
+    .toEqual(["2건", null, "썸네일", "폴더로 ▸"]);
   // 띠의 그림 = 크게 보기(띠에 실린 것끼리 넘겨 본다) — 카드를 고르거나 모아보기를 열지 않는다
   mouse("mousedown", tiles()[3]);
   mouse("mouseup", window);
@@ -734,10 +745,10 @@ it("컷 화면: 그리드는 겹친 종이 카드 그대로 · 리스트 = 줄(�
   draw();
   expect([grid().className, grid().style.gridTemplateColumns, row("C0010").className]).toEqual(["cut-grid ep-board ep-table", "minmax(0, 1fr)", "cut-card ep-card ep-table leaf sel"]);
   const cells = (el: Element) => [...el.children].map((one) => one.textContent);
-  expect(cells(host.querySelector(".ep-table-head")!)).toEqual(["", "", "컷", "대표", "건수", "영상", "공유", "★ 최종", "R 보류", "마지막 공유", "작업자", ""]);
+  expect(cells(host.querySelector(".ep-table-head")!)).toEqual(["", "컷", "썸네일", "건수", "영상", "공유", "★ 최종", "R 보류", "마지막 공유", "작업자", ""]);
   expect(host.querySelector(".ep-table-head")!.matches(".cut-card, [data-path]")).toBe(false);
-  expect(cells(row("C0010"))).toEqual(["0010", "", "C0010", "★ 대표", "14", "13", "11", "2", "1", "-", "리버 12 · 팀원 2", "폴더로 ▸"]);
-  expect(cells(row("C0020"))).toEqual(["0020", "", "C0020", "미정", "2", "-", "-", "-", "-", "-", "-", "폴더로 ▸"]); // 옛 서버 — 모르는 칸은 '-'
+  expect(cells(row("C0010"))).toEqual(["", "C0010", "썸네일", "14", "13", "11", "2", "1", "-", "리버 12 · 팀원 2", "폴더로 ▸컷 정보"]);
+  expect(cells(row("C0020"))).toEqual(["", "C0020", "썸네일", "2", "-", "-", "-", "-", "-", "-", "폴더로 ▸컷 정보"]); // 옛 서버 — 모르는 칸은 '-'
   act(() => row("C0020").querySelector<HTMLButtonElement>(".ep-enter")!.click());
   expect(entered[2]).toBe("e035/C0020");
 });
@@ -759,27 +770,27 @@ it("컷 카드(그리드) 아래 정보판 — 모델·작업자·크레딧·생
   ));
   draw();
   await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); }); // 크레딧 응답
-  const slots = [...host.querySelectorAll<HTMLElement>(".cut-grid > .cut-slot")];
-  expect(slots.map((slot) => [slot.querySelector(".cut-card")!.getAttribute("data-path"), slot.querySelector(".cut-meta") !== null]))
+  const slots = [...host.querySelectorAll<HTMLElement>(".cut-grid > .cut-card[data-path]")];
+  expect(slots.map((slot) => [slot.getAttribute("data-path"), slot.querySelector(".ep-meta") !== null]))
     .toEqual([["e035/C0010", true], ["e035/C0020", true]]);
-  const meta = (slot: Element) => [...slot.querySelectorAll(".cut-meta > .k")].map((k) => [k.textContent, k.nextElementSibling!.textContent]);
+  const meta = (slot: Element) => [...slot.querySelectorAll(".ep-meta > .k")].map((k) => [k.textContent, k.nextElementSibling!.textContent]);
   const lines = meta(slots[0]);
   expect(lines.map(([k]) => k)).toEqual(["모델", "작업자", "크레딧", "생성일", "검토"]);
   expect([lines[0][1], lines[1][1], lines[2][1], lines[4][1]]).toEqual(["seedance-2.0 · 6.0s", "리버", "54 credits", "공유 9★ 최종 2R 1전체 12"]);
   expect(meta(slots[1])[4][1]).toBe("공유");
   // 생성일은 날짜 / 시각 두 조각이다 — 컷 카드에서는 늘 두 줄로 그려 카드마다 줄 높이가 같다(Jay 2026-10-13 밤). 잘린 값은 title 로 다 보인다
-  const when = slots[0].querySelector<HTMLElement>(".cut-meta .when")!;
+  const when = slots[0].querySelector<HTMLElement>(".ep-meta .when")!;
   expect([...when.children].map((part) => [part.tagName, (part.textContent ?? "").length > 0])).toEqual([["SPAN", true], ["SPAN", true]]);
   expect(when.title).toBe(new Date("2026-08-31T02:22:08Z").toLocaleString());
-  expect([slots[0].querySelector<HTMLElement>(".cut-meta .model")!.title, slots[0].querySelector<HTMLElement>(".cut-meta .reel-rv")!.title])
+  expect([slots[0].querySelector<HTMLElement>(".ep-meta .model")!.title, slots[0].querySelector<HTMLElement>(".ep-meta .reel-rv")!.title])
     .toEqual(["seedance-2.0 · 6.0s", "공유 9 · 최종 2 · 보류 1 · 전체 12"]);
   expect(generationMetrics.mock.calls.map((call) => call[0])).toEqual(["cover-C0010", "cover-C0020"]); // 카드마다 한 번
   // 정보판을 누르면 그 카드를 고른다(빈 곳을 누른 것이 아니다) — 두 번 클릭은 카드와 같이 모아보기
-  const panel = slots[0].querySelector<HTMLElement>(".cut-meta")!;
+  const panel = slots[0].querySelector<HTMLElement>(".ep-meta")!;
   mouse("mousedown", panel);
   mouse("mouseup", window);
   expect([[...selected], host.querySelector('.cut-card[data-path="e035/C0010"]')!.classList.contains("sel")]).toEqual([["e035/C0010"], true]);
-  dbl(host.querySelector(".cut-meta")!);
+  dbl(host.querySelector(".ep-meta")!);
   expect(reels).toEqual([["e035/C0010"]]);
   // 다시 그려도 크레딧은 다시 묻지 않는다(한 번 받은 것은 기억한다)
   draw();
@@ -803,7 +814,7 @@ it("정보판의 크레딧은 화면에 들어온 카드만 묻는다 — 안 �
     act(() => root.render(<FolderCardGrid {...gridProps} folders={[card("C0010", 3), card("C0020", 2)]} outside={0} />));
     const flush = () => act(async () => { for (let i = 0; i < 4; i++) await Promise.resolve(); });
     await flush();
-    const panels = [...host.querySelectorAll<HTMLElement>(".cut-meta")];
+    const panels = [...host.querySelectorAll<HTMLElement>(".ep-meta")];
     const credit = (panel: Element) => panel.querySelectorAll(".v")[2].textContent;
     expect([generationMetrics.mock.calls.length, panels.map(credit)]).toEqual([0, ["…", "…"]]);
     act(() => fire.get(panels[1])!(true));
@@ -821,17 +832,15 @@ it("에피소드 화면의 표 — '컷' 열이 생기고 대표는 정한 컷 �
   act(() => root.render(<FolderCardGrid {...gridProps} layout="list" table top folders={[episode]} outside={0} />));
   expect(host.querySelector(".cut-grid")!.className).toBe("cut-grid ep-board ep-table has-cuts");
   const cells = (el: Element) => [...el.children].map((one) => one.textContent);
-  expect(cells(host.querySelector(".ep-table-head")!)).toEqual(["", "", "에피소드", "컷", "대표", "건수", "영상", "공유", "★ 최종", "R 보류", "마지막 공유", "작업자", ""]);
-  expect(cells(host.querySelector(".cut-card[data-path]")!)).toEqual(["035", "", "e035", "31", "★ 1/31", "201", "40", "187", "5", "9", "-", "-", "열기 ▸"]);
+  expect(cells(host.querySelector(".ep-table-head")!)).toEqual(["", "에피소드", "컷", "썸네일", "건수", "영상", "공유", "★ 최종", "R 보류", "마지막 공유", "작업자", ""]);
+  expect(cells(host.querySelector(".cut-card[data-path]")!)).toEqual(["", "e035", "31", "1/31", "201", "40", "187", "5", "9", "-", "-", "열기 ▸컷 정보"]);
 });
 // jsdom 은 자리를 안 재 준다 — 카드마다 가짜 네모(가로로 한 줄, 200px 간격)
 function placeTiles() {
   [...host.querySelectorAll<HTMLElement>(".cut-card[data-path]")].forEach((tile, i) => {
     const rect = (bottom: number) => () => ({ left: i * 200, right: i * 200 + 180, top: 0, bottom, width: 180, height: bottom, x: i * 200, y: 0, toJSON: () => ({}) });
-    tile.getBoundingClientRect = rect(180);
-    // 컷 카드는 아래 정보판까지가 한 칸이다(.cut-slot — 걸침 판정의 사각형). 카드 180 + 정보판 100
-    const slot = tile.closest<HTMLElement>(".cut-slot");
-    if (slot) slot.getBoundingClientRect = rect(280);
+    // 공통 카드의 사각형에 표지와 정보판을 모두 포함한다.
+    tile.getBoundingClientRect = rect(280);
   });
   host.querySelector<HTMLElement>(".cut-grid")!.getBoundingClientRect = () => ({ left: 0, right: 1000, top: 0, bottom: 400, width: 1000, height: 400, x: 0, y: 0, toJSON: () => ({}) });
 }
@@ -910,14 +919,71 @@ it("방향키의 출발 자리가 목록에서 사라졌으면 고른 것 중 �
   act(() => { host.querySelector(".cut-grid")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", shiftKey: true, bubbles: true, cancelable: true })); });
   expect([...selected]).toEqual(["e035/C0020", "e035/C0030"]); // 전엔 맨 앞의 C0010 한 장
 });
-it("빈 곳에서 끌면 걸친 카드를 모두 고른다 — 창을 떠나면(blur) 버린다. 휠 클릭 = 그 카드를 고르고 컷 정보", () => {
+it("모든 보기에서 미들클릭은 탭 열기만, 정보 버튼은 별도 동작이며 키보드 좌표와 가림을 지킨다", async () => {
+  const folder = card("C0010", 1);
+  const tabs = vi.fn(), info = vi.fn(), select = vi.fn(), reels = vi.fn();
+  for (const view of [{ layout: "grid" as const, table: false }, { layout: "list" as const, table: false }, { layout: "list" as const, table: true }]) {
+    tabs.mockClear(); info.mockClear(); select.mockClear(); reels.mockClear();
+    act(() => root.render(<FolderCardGrid {...gridProps} {...view} folders={[folder]} selected={new Set(["other"])} onOpenTab={tabs} onInfo={info} onSelect={select} onReel={reels} outside={0} />));
+    await settle();
+    const tile = host.querySelector<HTMLElement>(".cut-card[data-path]")!;
+    const button = tile.querySelector<HTMLButtonElement>(".ep-info-button")!;
+    expect([button.textContent, button.type, button.tabIndex, button.hasAttribute("data-ep-action")]).toEqual(["컷 정보", "button", 0, true]);
+    if (view.layout === "grid") expect(tile.querySelector(".ep-cover")!.nextElementSibling).toBe(button);
+    mouse("mousedown", tile, { button: 1 });
+    expect(tabs).not.toHaveBeenCalled();
+    act(() => tile.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1 })));
+    expect(tabs).toHaveBeenCalledExactlyOnceWith(folder);
+    expect(select).not.toHaveBeenCalled();
+    expect(info).not.toHaveBeenCalled();
+    mouse("mousedown", button);
+    mouse("mousemove", window, { clientX: 100, clientY: 100 });
+    mouse("mouseup", window);
+    expect(host.querySelector(".assets-marquee")).toBeNull();
+    act(() => button.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1, clientX: 23, clientY: 34 })));
+    expect(info).toHaveBeenLastCalledWith(folder, 23, 34);
+    dbl(button);
+    act(() => button.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, button: 1 })));
+    expect(tabs).toHaveBeenCalledTimes(1);
+    expect(select).not.toHaveBeenCalled();
+    expect(reels).not.toHaveBeenCalled();
+    button.getBoundingClientRect = () => ({ left: 100, top: 20, right: 180, bottom: 50, width: 80, height: 30, x: 100, y: 20, toJSON: () => ({}) });
+    button.focus();
+    const key = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" });
+    act(() => button.dispatchEvent(key));
+    expect(key.defaultPrevented).toBe(false); // native button 활성화를 격자가 삼키지 않는다.
+    act(() => button.click()); // jsdom은 native key→click을 합성하지 않는다.
+    expect(info).toHaveBeenLastCalledWith(folder, 140, 50);
+  }
+  const { useKeyOwner } = await import("../src/lib/keyGate");
+  function Owner({ on }: { on: boolean }) { useKeyOwner(on); return null; }
+  const owner = createRoot(document.body.appendChild(document.createElement("div")));
+  const button = host.querySelector<HTMLButtonElement>(".ep-info-button")!;
+  info.mockClear();
+  act(() => owner.render(<Owner on />));
+  act(() => button.click());
+  expect(info).not.toHaveBeenCalled();
+  act(() => button.dispatchEvent(new Event("pointerdown", { bubbles: true })));
+  act(() => owner.render(<Owner on={false} />));
+  mouse("mousedown", button);
+  act(() => button.dispatchEvent(new Event("pointerup", { bubbles: true })));
+  mouse("mouseup", window);
+  act(() => button.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
+  expect(info).not.toHaveBeenCalled();
+  act(() => button.click());
+  expect(info).toHaveBeenCalledOnce();
+  act(() => owner.unmount());
+});
+
+it("빈 곳에서 끌면 걸친 카드를 모두 고른다 — 창을 떠나면(blur) 버린다. 휠 클릭 = 선택을 바꾸지 않고 탭 열기", () => {
   const folders = [card("C0010", 1), card("C0020", 1), card("C0030", 1)];
   let selected = new Set<string>();
   const info: [string, number, number][] = [];
+  const tabs: string[] = [];
   const draw = () => act(() => root.render(
     <FolderCardGrid
       {...gridProps} folders={folders} selected={selected} onSelect={(next) => { selected = next; draw(); }}
-      onInfo={(folder, x, y) => info.push([folder.path, x, y])} outside={0}
+      onInfo={(folder, x, y) => info.push([folder.path, x, y])} onOpenTab={(folder) => tabs.push(folder.path)} outside={0}
     />,
   ));
   draw();
@@ -1012,15 +1078,17 @@ it("빈 곳에서 끌면 걸친 카드를 모두 고른다 — 창을 떠나면(
   } finally {
     raf.mockRestore();
   }
-  // 휠 클릭 — 안 고른 카드면 그것만 고르고 정보를 연다
+  // 휠 클릭은 탭 전환이 취소될 수도 있으므로 선택을 먼저 바꾸지 않는다.
   selected = new Set(["e035/C0010"]);
   draw();
   act(() => { host.querySelector('.cut-card[data-path="e035/C0030"]')!.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, button: 1, clientX: 450, clientY: 90 })); });
-  expect([...selected]).toEqual(["e035/C0030"]);
-  expect(info).toEqual([["e035/C0030", 450, 90]]);
+  expect([...selected]).toEqual(["e035/C0010"]);
+  expect(tabs).toEqual(["e035/C0030"]);
+  expect(info).toEqual([]);
   act(() => { host.querySelector('.cut-card[data-path="e035/C0030"]')!.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, button: 1, clientX: 1, clientY: 2 })); });
-  expect([...selected]).toEqual(["e035/C0030"]); // 이미 고른 카드면 선택은 그대로
-  expect(info).toHaveLength(2);
+  expect([...selected]).toEqual(["e035/C0010"]);
+  expect(tabs).toEqual(["e035/C0030", "e035/C0030"]);
+  expect(info).toEqual([]);
 });
 
 // 2026-10-13 낮(Jay): 컷 카드 두 번 클릭 = 모아보기(고른 카드 위면 고른 컷 전부(격자 순서), 아니면 그 컷만 골라서 — 29회차엔 우클릭이 이것이었다),
@@ -1310,6 +1378,7 @@ it("미리 받기: 격자는 두 번 클릭의 둘째 누름과 [열기]·'+N' �
     act(() => root.render(
       <FolderCardGrid {...gridProps} layout={layout} folders={[episode, leaf]} top outside={0} onPrefetch={(folder) => asked.push(folder.path)} />,
     ));
+    await settle(); // 새 leaf 정보판의 크레딧 응답도 이 렌더 안에서 마친다.
     const tile = (path: string) => host.querySelector<HTMLElement>(`.cut-card[data-path="${path}"]`)!;
     mouse("mousedown", tile("e035"), { detail: 1 });
     mouse("mouseup", window);

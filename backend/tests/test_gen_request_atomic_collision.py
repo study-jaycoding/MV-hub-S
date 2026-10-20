@@ -221,7 +221,9 @@ def test_atomic_classifier_state_machine_and_transaction_root(
     select_index = next(
         index for index, statement in enumerate(normalized)
         if statement.startswith("SELECT")
+        and ("FROM GEN_REQUEST" in statement or "FROM GENERATION" in statement)
     )
+    # Connection compatibility metadata may be read before the business transaction.
     assert begin_index < select_index
     assert any(statement.startswith("COMMIT") for statement in normalized)
     _assert_pool_connection_clean()

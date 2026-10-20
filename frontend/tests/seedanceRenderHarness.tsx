@@ -1,3 +1,4 @@
+import { preparedFixture } from "./preparedSubmissionFixture";
 // Seedance 렌더 시험 공통 장치. 제품 상태 훅/편집기/옵션 바는 대체하지 않는다.
 import { readFileSync } from "node:fs";
 import { URL as NodeURL } from "node:url";
@@ -102,6 +103,11 @@ export function installPromptBoundaryMocks() {
     getGenerationsBatch: vi.fn().mockResolvedValue({ items: {} }),
   };
   vi.doMock("../src/api", () => ({ api }));
+  vi.doMock("../src/features/generation/api", async (original) => ({
+  ...await original<typeof import("../src/features/generation/api")>(),
+    prepareCreateSubmission: (...args: Parameters<typeof import("../src/features/generation/api").prepareCreateSubmission>) => preparedFixture(api.prepareCreate(args[0], args[1], args[2]), args[1], args[2], args[3]),
+    prepareRegenerateSubmission: (...args: Parameters<typeof import("../src/features/generation/api").prepareRegenerateSubmission>) => preparedFixture(api.prepareRegenerate(args[0], args[1], args[2], args[3]), args[2], args[3], args[4]),
+  }));
   const policy = { key: "fixture", workspaceId: "", status: "ready", allowed: new Set<string>(), groupName: null, revision: 1, fetchedAt: 0 };
   vi.doMock("../src/lib/modelPolicy", () => ({
     useModelPolicy: () => policy,

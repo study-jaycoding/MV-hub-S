@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # ── 공통 타입 ────────────────────────────────────────────────────────────
 MediaType = Literal["image", "video"]
@@ -57,6 +57,9 @@ class AssetOut(BaseModel):
     file_path: str
     thumbnail_path: Optional[str] = None
     source_url: Optional[str] = None  # 원본 원격 URL(로컬 캐시 후에도 출처 보존)
+    asset_content_id: Optional[str] = None
+    target_project_id: Optional[str] = None
+    server_location: Optional[dict[str, Any]] = None
     cached: bool = False  # file_path 가 로컬(/media)인지
 
 
@@ -72,6 +75,10 @@ class ReferenceOut(BaseModel):
     content_bytes: Optional[int] = None
     registry_asset_id: Optional[str] = None
     version_verified: Optional[int] = None
+    asset_content_id: Optional[str] = None
+    position: Optional[int] = None
+    target_project_id: Optional[str] = None
+    server_location: Optional[dict[str, Any]] = None
     cached: bool = False
 
 
@@ -93,6 +100,8 @@ class GenerationOut(BaseModel):
     references: list[ReferenceOut] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     auto_tags: list[str] = Field(default_factory=list)  # 별도 네임스페이스(사이드바 필터 전용)
+    share_revision: int | None = None
+    remote_share_revision: int | None = None
     shared: bool = False
     # 마지막 공유 시각(UTC "YYYY-MM-DD HH:MM:SS") — 팀 탭 '새로 들어옴'(글로우) 판정 축.
     # ★response_model 이 모르는 키는 직렬화에서 잘려나간다 — repo 가 붙여도 여기 없으면 프론트에 안 간다.
@@ -198,6 +207,7 @@ class ReferenceIn(BaseModel):
     thumbnail: Optional[str] = None  # 표시용 썸네일 URL(에셋 소스 칩의 썸네일)
     source_url: Optional[str] = None  # 출처 URL(있으면 보존)
     source_gen_id: Optional[str] = None  # 이 @소스가 온 generation id → 히스토리 reference 엣지 기록용
+    asset_content_id: Optional[str] = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
 
 
 class GenerationCreate(BaseModel):
@@ -222,6 +232,7 @@ class RegenerateIn(BaseModel):
     color: Optional[str] = None
     worker_id: Optional[str] = None
     auto_tags: Optional[list[str]] = None  # 재생성 시점 무장된 자동태그(부모 자동태그에 더해 적용)
+    finish_draft: bool = False  # 원본 원격 Draft 작업을 고화질로 완성
 
 
 class CanvasGenerationLinkIn(BaseModel):
@@ -297,6 +308,8 @@ class PendingRequestOut(BaseModel):
     references: list[dict[str, Any]] = Field(default_factory=list)  # [{file_path(url), type, role}]
     workspace: WorkspaceContext = Field(default_factory=WorkspaceContext)
     claim_phase: Optional[str] = None  # 신 서버 claimed, 구 서버 응답에는 없음(혼합 배포 호환)
+    asset_content_protocol: Optional[int] = None
+    project_id: Optional[str] = None
 
 
 class SubmissionFingerprintIn(BaseModel):
@@ -389,6 +402,7 @@ class ProjectOut(BaseModel):
     count: int = 0  # 내 작업(viewer) 기준 결과물 수 — 사이드바 My Work 용
     total: int = 0  # 프로젝트 전체 결과물 수(작성자 무관) — 관리자 탭에서 표시
     render_root_path: Optional[str] = None  # 팀 공유 렌더 폴더 경로(각 PC 가 자기 디스크에서 읽음)
+    asset_root_path: Optional[str] = None
     workspace_scope: WorkspaceScope = "unknown"
     workspace_id: Optional[str] = None
     workspace_name: Optional[str] = None
@@ -404,12 +418,14 @@ class ProjectCreate(BaseModel):
     name: str = Field(min_length=1)
     kind: str = "team"
     workspace: WorkspaceContext = Field(default_factory=WorkspaceContext)
+    asset_root_path: Optional[str] = Field(default=None, max_length=4096)
 
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     archived: Optional[bool] = None
     render_root_path: Optional[str] = None  # 팀 공유 렌더 폴더 경로 설정(빈 문자열=연결 해제)
+    asset_root_path: Optional[str] = Field(default=None, max_length=4096)
     workspace: Optional[WorkspaceContext] = None
 
 
@@ -523,3 +539,34 @@ class ProjectMemberOut(BaseModel):
 class ProjectRolesIn(BaseModel):
     creator_uid: str
     project_roles: list[str] = Field(default_factory=list)  # 빈 리스트면 역할만 비움(멤버 유지)
+
+
+class ShareCommandIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation_id: str = Field(min_length=1, max_length=160, pattern=r"^[A-Za-z0-9:_-]+$")
+    target_id: str = Field(min_length=1, max_length=240)
+    workspace_scope: str = Field(min_length=1, max_length=240)
+    workspace_id: str | None = None
+    expected_revision: int = Field(ge=0, strict=True)
+    db_generation: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    command_kind: Literal["publish_bundle", "publish", "unpublish", "finalize", "unfinalize", "final_review", "hold", "unhold"]
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+    def as_command(self) -> dict[str, Any]:
+        # Keep legacy receipt hashes unchanged when the optional field is absent.
+        return self.model_dump(exclude={"db_generation"} if self.db_generation is None else set())
+
+    @model_validator(mode="after")
+    def validate_parameters(self):
+        allowed = {"publish_bundle": {"item", "provider"}, "publish": {"visibility"}, "unfinalize": {"restore_held"}, "final_review": {"state"}}.get(self.command_kind, set())
+        if self.command_kind == "publish_bundle" and not isinstance(self.parameters.get("item"), dict):
+            raise ValueError("publish item required")
+        if set(self.parameters) - allowed:
+            raise ValueError("unsupported command parameters")
+        if self.command_kind == "final_review" and self.parameters.get("state") not in {"unshared", "shared", "held"}:
+            raise ValueError("invalid review state")
+        if "restore_held" in self.parameters and type(self.parameters["restore_held"]) is not bool:
+            raise ValueError("restore_held must be boolean")
+        if "visibility" in self.parameters and self.parameters["visibility"] != "team":
+            raise ValueError("unsupported visibility")
+        return self

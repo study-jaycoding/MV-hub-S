@@ -10,10 +10,13 @@ import hashlib
 import re
 import sqlite3
 from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .sqlite_db import SQLITE_MAGIC, read_only_uri
+from .. import schema_compat
+from . import trash_transfer
 
 _REQUIRED_TABLES = {"generation", "worker", "account", "project", "share"}
 
@@ -60,15 +63,11 @@ def create_sqlite_snapshot(
     if destination.exists():
         raise FileExistsError(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    source_target = str(source)
-    source_uri = False
-    if immutable_source:
-        # 자동 백업은 독립된 단일 SQLite 파일이다. immutable 읽기로 열면 검증 과정이 백업 폴더에
-        # -wal/-shm 파일을 만들거나 원본 백업의 메타데이터를 바꿀 수 없다.
-        source_target = _sqlite_read_uri(source, immutable=True)
-        source_uri = True
+    # 온라인 원본은 mode=ro로 WAL까지 읽되 원본 쓰기/저널 복구를 허용하지 않는다.
+    # immutable은 WAL 없는 독립 백업 파일에만 호출자가 지정한다.
+    source_target = _sqlite_read_uri(source, immutable=immutable_source)
     try:
-        with closing(sqlite3.connect(source_target, uri=source_uri)) as src:
+        with closing(sqlite3.connect(source_target, uri=True)) as src:
             with closing(sqlite3.connect(str(destination))) as dst:
                 src.backup(dst)
     except BaseException:
@@ -79,6 +78,104 @@ def create_sqlite_snapshot(
             pass
         raise
     return destination
+
+
+def snapshot_database_set(
+    sources: list[tuple[str, Path, str, str | None]],
+    snapshots: list[tuple[str, Path, Path, str | None]],
+) -> dict[str, Any]:
+    """첨부 DB를 한 연결의 읽기 트랜잭션에서 연 뒤 각각 온라인 백업한다.
+
+    B1은 main 쓰기 잠금 아래 content/trash 읽기 시점을 고정하여 재조정 가능한 세트를 만든다.
+    기본 ATTACH 경로와 별도 manage DB는 동일 시점 스냅샷을 보장하지 않는다.
+    파일 복사는 읽기 시점 고정 뒤 쓰기 잠금을 풀고 수행한다. 모든 경로는 명시 입력만 쓴다.
+    """
+    for label, source, _, _ in sources:
+        schema_compat.inspect_database(source, label)
+        journal = Path(str(source) + "-journal")
+        if journal.is_file() and journal.stat().st_size:
+            # Snapshotting is not permission to recover a live source. Startup
+            # recovery owns maintenance; offline tools can recover their copy.
+            raise schema_compat.SchemaCompatibilityError("snapshot_source_recovery_required")
+    main_source = next(source for label, source, _, _ in sources if label == "content")
+    barrier = sqlite3.connect(str(main_source), isolation_level=None)
+    trash_transfer.register_connection(barrier)
+    pinned_pair = False
+    try:
+        if trash_transfer.enabled(barrier):
+            trash_source = next((source for label, source, _, _ in sources if label == "trash"), None)
+            trash_transfer.validate_pair(main_source, trash_source)
+            # All B1 phases take main before trash. Hold main only until every
+            # read snapshot is pinned, not during backup file I/O.
+            barrier.execute("BEGIN IMMEDIATE")
+            pinned_pair = True
+    except BaseException:
+        barrier.close()
+        raise
+    src_conn = None
+    try:
+        src_conn = sqlite3.connect(str(main_source), isolation_level=None)
+        aliases = {"content": "main"}
+        for label, source, _, _ in sources:
+            if label == "content":
+                continue
+            alias = f"side_{label}"
+            src_conn.execute(f"ATTACH DATABASE ? AS {alias}", (str(source),))
+            aliases[label] = alias
+        src_conn.execute("BEGIN")
+        try:
+            # 각 DB의 스냅샷 경계를 가능한 한 가깝게 잡는다. DB 간 동일 시점 보장은 아니다.
+            for alias in aliases.values():
+                src_conn.execute(f"SELECT name FROM {alias}.sqlite_master LIMIT 1").fetchone()
+            captured_at = datetime.now(timezone.utc).isoformat()
+            if barrier.in_transaction:
+                barrier.execute("ROLLBACK")
+            for label, _, tmp, _ in snapshots:
+                dest_conn = sqlite3.connect(str(tmp))
+                try:
+                    src_conn.backup(dest_conn, name=aliases[label])
+                finally:
+                    dest_conn.close()
+        finally:
+            src_conn.execute("ROLLBACK")
+    finally:
+        if src_conn is not None:
+            src_conn.close()
+        barrier.close()
+    return {
+        'captured_at': captured_at,
+        'consistency_kind': 'b1_pair_pinned_reconcilable' if pinned_pair else 'db_snapshots_independent',
+        'consistency_roles': ['content', 'trash'] if pinned_pair else sorted(aliases),
+    }
+
+
+
+def create_database_set_snapshot(sources: dict[str, Path], destinations: dict[str, Path]) -> None:
+    """Create an owned new checkpoint set, pinning B1 content/trash together.
+
+    Destination directory must be exclusively owned by the caller. No overwrite;
+    returned files retain database identities and can be hashed by the journal.
+    """
+    if set(sources) != set(destinations) or "content" not in sources:
+        raise ValueError("invalid_checkpoint_members")
+    for label, source in sources.items():
+        schema_compat.inspect_database(source, label)
+        if destinations[label].exists():
+            raise FileExistsError(destinations[label])
+    trash_transfer.validate_pair(sources["content"], sources.get("trash"))
+    for target in destinations.values():
+        target.parent.mkdir(parents=True, exist_ok=True)
+    inputs = [(label, path, "", None) for label, path in sources.items()]
+    outputs = [(label, path, path, None) for label, path in destinations.items()]
+    try:
+        snapshot_database_set(inputs, outputs)
+        for label, path in destinations.items():
+            inspect_sqlite_database(path, required_tables=set(BACKUP_SET_MEMBERS[label]["required_tables"]))
+        trash_transfer.validate_pair(destinations["content"], destinations.get("trash"))
+    except BaseException:
+        for path in destinations.values():
+            path.unlink(missing_ok=True)
+        raise
 
 
 def _tables(conn: sqlite3.Connection) -> list[str]:
@@ -177,6 +274,9 @@ def inspect_sqlite_database(
         wal_bytes = 0
     if wal_bytes > 0:
         raise ValueError(f"독립 백업 파일에 미반영 WAL이 남아 있습니다: {wal_path.name}")
+    journal = Path(str(path) + "-journal")
+    if journal.exists() and journal.stat().st_size:
+        raise schema_compat.SchemaCompatibilityError("rollback_journal_present")
     with path.open("rb") as handle:
         if handle.read(len(SQLITE_MAGIC)) != SQLITE_MAGIC:
             raise ValueError("SQLite DB 파일이 아닙니다")
@@ -187,6 +287,16 @@ def inspect_sqlite_database(
         missing = sorted(set(required_tables) - set(tables))
         if missing:
             raise ValueError(f"필수 테이블 누락: {', '.join(missing)}")
+        # All product restore callers specify their role's required tables.
+        # Keep the generic SQLite diagnostic (required_tables=set()) generic.
+        kind = next((kind for table, kind in (
+            ("generation", "content"), ("trashed", "trash"),
+            ("team_generation_fact", "manage"),
+        ) if table in required_tables), None)
+        if kind is not None:
+            schema_compat.inspect_schema(conn, kind)
+            if kind in ("content", "trash") and trash_transfer.enabled(conn):
+                trash_transfer.verify_guards(conn, kind)
         fk_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
         if fk_errors:
             raise ValueError(f"외래키 무결성 오류: {len(fk_errors)}건")
@@ -213,6 +323,7 @@ def verify_restore_drill(backup_path: Path, restored_path: Path) -> dict[str, An
     backup_path = backup_path.resolve()
     restored_path = restored_path.resolve()
     source_info = inspect_sqlite_database(backup_path, allow_index_drift=True)
+    trash_transfer.validate_pair(backup_path, None)
     create_sqlite_snapshot(backup_path, restored_path, immutable_source=True)
     try:
         if source_info["index_drift"]:
@@ -294,7 +405,11 @@ def verify_restore_set(content_backup: Path, restored_data_dir: Path) -> dict[st
     세 대상 파일을 모두 사전 검사해 하나라도 이미 존재하면 아무것도 쓰지 않는다. 복원 중
     오류가 나면 이 호출이 만든 파일만 회수해 부분 세트를 정상 복원으로 오인하지 않게 한다.
     """
+    from . import backup_manifest
+    manifest = backup_manifest.read_local(content_backup)
     stamp, backup_paths = discover_backup_set(content_backup)
+    if manifest and set(manifest['roles']) != set(backup_paths):
+        raise ValueError('backup manifest members differ')
     restored_db_dir = restored_data_dir.resolve() / "db"
     restored_paths = {
         label: restored_db_dir / str(spec["restored_name"])
@@ -314,6 +429,7 @@ def verify_restore_set(content_backup: Path, restored_data_dir: Path) -> dict[st
             source, required_tables=required, allow_index_drift=True
         )
         source_hashes[label] = _file_sha256(source)
+    trash_transfer.validate_pair(backup_paths["content"], backup_paths.get("trash"))
 
     created: list[Path] = []
     try:
@@ -370,4 +486,6 @@ def verify_restore_set(content_backup: Path, restored_data_dir: Path) -> dict[st
         "stamp": stamp,
         "restored_data_dir": str(restored_data_dir.resolve()),
         "files": files,
+        'manifest': manifest,
+        'consistency_kind': manifest['consistency_kind'] if manifest else backup_manifest.UNKNOWN,
     }

@@ -16,9 +16,9 @@ interface Args {
   flash: (message: string) => void;
 }
 
-interface GradeState { shared: boolean; is_final: boolean; is_held: boolean }
-const gradeOf = (g: Pick<Generation, "shared" | "is_final" | "is_held">): GradeState =>
-  ({ shared: !!g.shared, is_final: !!g.is_final, is_held: !!g.is_held });
+interface GradeState { shared: boolean; is_final: boolean; is_held: boolean; _shareSnapshot?: Generation["_shareSnapshot"] }
+const gradeOf = (g: Pick<Generation, "shared" | "is_final" | "is_held" | "_shareSnapshot">): GradeState =>
+  ({ shared: !!g.shared, is_final: !!g.is_final, is_held: !!g.is_held, _shareSnapshot: g._shareSnapshot });
 // 방금 한 조작의 답을 기억하는 시간 — 이어서 누르는 조작을 덮을 만큼(잰 값이 아니라 정한 값이다. 목록이 다시 오는 시간은 재지 않았다)
 const REMEMBER_MS = 10_000;
 
@@ -40,7 +40,7 @@ export function useGradeStep({ canFinalize, reload, flash }: Args) {
   const current = (g: Generation): Generation => {
     const known = fresh.current.get(g.id);
     if (!known) return g;
-    if (Date.now() >= known.until) {
+    if (Date.now() >= known.until || known.after._shareSnapshot?.isCurrent() === false) {
       fresh.current.delete(g.id);
       return g;
     }
@@ -107,12 +107,12 @@ export function useGradeStep({ canFinalize, reload, flash }: Args) {
     const results = await Promise.allSettled(
       rest.map((o) =>
         o.action === "unpublish"
-          ? api.unpublish(o.gen.id)
+          ? api.unpublish(o.gen.id, o.gen)
           : o.action === "finalize"
-            ? api.finalize(o.gen.id)
+            ? api.finalize(o.gen.id, o.gen)
             : o.action === "unhold"
-              ? api.unhold(o.gen.id)
-              : api.unfinalize(o.gen.id),
+              ? api.unhold(o.gen.id, o.gen)
+              : api.unfinalize(o.gen.id, o.gen),
       ),
     );
     ok += results.filter((x) => x.status === "fulfilled").length;
@@ -143,8 +143,8 @@ export function useGradeStep({ canFinalize, reload, flash }: Args) {
         return;
       }
       const value = result.value as Partial<Generation>;
-      note(gen.id, action === "unpublish" ? { shared: false, is_final: false, is_held: false }
-        : typeof value.shared === "boolean" && typeof value.is_final === "boolean" ? gradeOf(value as Generation) : null);
+      note(gen.id, typeof value.shared === "boolean" && typeof value.is_final === "boolean" ? gradeOf(value as Generation)
+        : action === "unpublish" ? { shared: false, is_final: false, is_held: false } : null);
     });
     setPending(null);
     setBusy(false);

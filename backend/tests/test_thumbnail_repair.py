@@ -241,10 +241,7 @@ class PosterInheritanceTests(_TempDbCase):
         repo.apply_synced_jobs([self.parsed("j1", file_path=VIDEO, thumb=POSTER)], "me")
         from app.repo import _common
 
-        with (
-            patch.object(_common.media_cache, "is_cached", return_value=True),
-            patch.object(_common.media_cache, "local_rel_for", return_value="/media/ab/x.mp4"),
-        ):
+        with patch.object(_common.media_cache, "cached_rel_for", return_value="/media/ab/x.mp4"):
             repo.apply_synced_jobs([self.parsed("j1", file_path=VIDEO)], "me")
         rows = self.assets("j1")
         self.assertEqual(len(rows), 1)

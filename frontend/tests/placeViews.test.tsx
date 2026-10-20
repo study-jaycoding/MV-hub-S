@@ -6,7 +6,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { PLACE_VIEWS_KEY, parsePlaceViews, placeViewKey, withPlaceView, type PlaceViews } from "../src/lib/placeViews";
+import { PLACE_VIEWS_KEY, parsePlaceViews, placeViewKey, withPlaceView, type PlaceView, type PlaceViews } from "../src/lib/placeViews";
 import type { Store } from "../src/lib/storage";
 import { usePlaceView } from "../src/lib/usePlaceView";
 
@@ -33,6 +33,28 @@ describe("lib/placeViews — 순수", () => {
       .toEqual({ a: { layout: "list", group: true }, d: { layout: "grid", group: false } });
     for (const broken of [null, "x", 3, [1, 2]]) expect(parsePlaceViews(broken)).toEqual({});
   });
+
+  it("선택한 context만 키 앞에 붙이고 기존 키는 유지한다", () => {
+    const filters = { tab: "team" as const, project_id: "p", folder_path: "a" };
+    expect(placeViewKey(filters)).toBe('["team","p","a"]');
+    expect(placeViewKey(filters, "owner/server/workspace")).toBe('["owner/server/workspace","team","p","a"]');
+    expect(placeViewKey(filters, "another")).not.toBe(placeViewKey(filters, "owner/server/workspace"));
+  });
+
+  it("새 설정을 검증하고 일부 설정만 바꿔도 기존 설정과 400개 상한을 보존한다", () => {
+    expect(parsePlaceViews({ a: { layout: "grid", group: false, scale: 4, fill: false, folders: false },
+      b: { layout: "list", scale: -3, fill: "true", folders: 1 }, c: { layout: "grid", scale: NaN } }))
+      .toEqual({ a: { layout: "grid", group: false, scale: 1.7, fill: false, folders: false },
+        b: { layout: "list", group: false, scale: 0.7 }, c: { layout: "grid", group: false } });
+    const initial = { a: { layout: "grid" as const, group: false, scale: 1.4, fill: false, folders: false } };
+    const changed = withPlaceView(initial, "a", { layout: "list", group: true });
+    expect(changed.a).toEqual({ ...initial.a, layout: "list", group: true });
+    expect(withPlaceView(changed, "a", changed.a)).toBe(changed);
+    let many: PlaceViews = {};
+    for (let n = 0; n <= 400; n++) many = withPlaceView(many, String(n), { layout: "grid", group: false });
+    expect(Object.keys(many)).toHaveLength(400);
+    expect(many["0"]).toBeUndefined();
+  });
 });
 
 function fakeStore(data: Record<string, string>): Store {
@@ -48,17 +70,17 @@ function fakeStore(data: Record<string, string>): Store {
 
 // 창 하나 = 훅 하나. 같은 저장소(data)를 두 창이 같이 쓸 수 있다.
 interface Win {
-  host: HTMLDivElement; root: Root; place: string; latest: ReturnType<typeof usePlaceView>; seen: string[]; draw: () => void;
+  host: HTMLDivElement; root: Root; place: string; defaults?: Partial<PlaceView>; latest: ReturnType<typeof usePlaceView>; seen: string[]; draw: () => void;
 }
 let data: Record<string, string>;
 const wins: Win[] = [];
-function open(place: string): Win {
+function open(place: string, defaults?: Partial<PlaceView>): Win {
   const store = fakeStore(data);
   const host = document.createElement("div");
   document.body.appendChild(host);
-  const win = { host, root: createRoot(host), place, seen: [] as string[] } as Win;
+  const win = { host, root: createRoot(host), place, defaults, seen: [] as string[] } as Win;
   function Probe() {
-    win.latest = usePlaceView(store, win.place);
+    win.latest = usePlaceView(store, win.place, win.defaults);
     win.seen.push(`${win.place}:${win.latest.layout}${win.latest.groupByDate ? "+" : ""}`); // 렌더마다 — 자리를 옮긴 첫 렌더를 본다
     return null;
   }
@@ -78,6 +100,117 @@ beforeEach(() => {
 afterEach(() => { for (const win of [...wins]) close(win); });
 
 describe("자리마다 본 모양(usePlaceView)", () => {
+  it("크기·맞춤·폴더 표시도 A→B→A와 새 창에서 복원하며 처음 본 자리는 직전 설정을 물려받는다", () => {
+    const a = open("a", { scale: 1.2, fill: false, folders: false });
+    act(() => { a.latest.setScale((n) => n + 0.2); a.latest.setLayout("list"); });
+    go(a, "b");
+    expect([a.latest.scale, a.latest.fill, a.latest.folders]).toEqual([1.4, false, false]);
+    act(() => { a.latest.setScale(0.8); a.latest.setFill(true); a.latest.setFolders(true); a.latest.setLayout("grid"); });
+    go(a, "a");
+    expect([view(a), a.latest.scale, a.latest.fill, a.latest.folders]).toEqual(["list", 1.4, false, false]);
+    close(a);
+    const restored = open("b");
+    expect([view(restored), restored.latest.scale, restored.latest.fill, restored.latest.folders]).toEqual(["grid", 0.8, true, true]);
+    go(restored, "a");
+    expect([view(restored), restored.latest.scale, restored.latest.fill, restored.latest.folders]).toEqual(["list", 1.4, false, false]);
+  });
+
+  it("새 설정을 쓰지 않는 기존 호출은 저장 모양 그대로이며 옛 행은 defaults를 물려받는다", () => {
+    const old = open("old");
+    expect([old.latest.scale, old.latest.fill, old.latest.folders]).toEqual([1, true, true]);
+    expect(JSON.parse(data[PLACE_VIEWS_KEY]).old).toEqual({ layout: "grid", group: false });
+    close(old);
+    const migrated = open("old", { layout: "list", group: true, scale: 1.3, fill: false, folders: false });
+    expect(view(migrated)).toBe("grid"); // 폴더의 기존 layout/group 우선
+    expect([migrated.latest.scale, migrated.latest.fill, migrated.latest.folders]).toEqual([1.3, false, false]);
+    expect(JSON.parse(data[PLACE_VIEWS_KEY]).old).toEqual({ layout: "grid", group: false, scale: 1.3, fill: false, folders: false });
+  });
+
+  it("손상된 크기는 무시하고 setter도 finite 범위만 저장한다", () => {
+    const a = open("a", { scale: Infinity, fill: true });
+    expect(a.latest.scale).toBe(1);
+    act(() => a.latest.setScale(-5));
+    expect(a.latest.scale).toBe(0.7);
+    act(() => a.latest.setScale(5));
+    expect(a.latest.scale).toBe(1.7);
+    act(() => a.latest.setScale(NaN));
+    expect(a.latest.scale).toBe(1.7);
+  });
+
+  it("같은 폴더에서 다른 창이 바꾼 추가 설정도 한 필드 저장이 지우지 않는다", () => {
+    const a = open("a", { scale: 1.2 });
+    const b = open("a");
+    act(() => a.latest.setFill(false));
+    act(() => b.latest.setFolders(false));
+    act(() => b.latest.setLayout("list"));
+    expect(JSON.parse(data[PLACE_VIEWS_KEY]).a).toEqual({ layout: "list", group: false, scale: 1.2, fill: false, folders: false });
+    go(a, "b"); go(a, "a");
+    expect([view(a), a.latest.fill, a.latest.folders]).toEqual(["list", false, false]);
+  });
+
+  it("한 이벤트에서 레이아웃과 그룹을 연달아 바꿔도 첫 변경을 덮지 않는다", () => {
+    const a = open("a", { scale: 1.1, fill: false });
+    act(() => { a.latest.setLayout("list"); a.latest.setGroupByDate(true); });
+    expect(view(a)).toBe("list+");
+    expect(JSON.parse(data[PLACE_VIEWS_KEY]).a).toEqual({ layout: "list", group: true, scale: 1.1, fill: false });
+  });
+
+  it("명시한 폴더 묶음은 그 자리에만 저장하고 새 자리의 암묵 기본값과 구분한다", () => {
+    const a = open("a");
+    act(() => { a.latest.setFolders(true); a.latest.setScale(1.3); });
+    go(a, "b");
+    expect([a.latest.folders, a.latest.scale]).toEqual([true, 1.3]);
+    expect(JSON.parse(data[PLACE_VIEWS_KEY]).a.folders).toBe(true);
+    expect(JSON.parse(data[PLACE_VIEWS_KEY]).b.folders).toBeUndefined();
+    act(() => a.latest.setFolders(false));
+    go(a, "a");
+    expect(a.latest.folders).toBe(true);
+    go(a, "b");
+    expect(a.latest.folders).toBe(false);
+  });
+
+  it("전역에서 읽은 초기 folders 기본값은 이후 다른 폴더의 전역값 변경으로 바뀌지 않는다", () => {
+    const a = open("a", { folders: false });
+    a.defaults = { folders: true };
+    go(a, "b");
+    expect(a.latest.folders).toBe(false);
+    expect(JSON.parse(data[PLACE_VIEWS_KEY]).b.folders).toBe(false);
+  });
+
+  it("전체 보기에서 처음 방문하는 부모는 false를 이어받고 초기 true 기본값이 이를 덮지 않는다", () => {
+    const a = open("parent/child", { folders: true });
+    act(() => a.latest.setFolders(false));
+    go(a, "parent");
+    expect(a.latest.folders).toBe(false);
+    expect(JSON.parse(data[PLACE_VIEWS_KEY]).parent.folders).toBe(false);
+    act(() => a.latest.setFolders(true));
+    go(a, "parent/child");
+    expect(a.latest.folders).toBe(false); // 이미 기억한 자리의 값이 초기값·직전 보기보다 우선
+  });
+
+  it("다른 context·새 탭 대상도 독립된 설정을 첫 렌더부터 읽는다", () => {
+    const f = { tab: "team" as const, project_id: "p", folder_path: "a" };
+    const ka = placeViewKey(f, "owner-a"); const kb = placeViewKey(f, "owner-b");
+    const a = open(ka); act(() => { a.latest.setScale(1.6); a.latest.setFolders(false); });
+    const b = open(kb, { scale: 0.9 });
+    expect([b.latest.scale, b.latest.folders]).toEqual([0.9, true]);
+    const tab = open(ka);
+    expect([tab.latest.scale, tab.latest.folders]).toEqual([1.6, false]);
+  });
+
+  it("저장 실패 중 바꾼 추가 설정은 다른 폴더 방문과 나중 저장에도 보존한다", () => {
+    const a = open("a");
+    const saved = data[PLACE_VIEWS_KEY]; let full = true; let value = saved;
+    Object.defineProperty(data, PLACE_VIEWS_KEY, { configurable: true, enumerable: true, get: () => value,
+      set: (next: string) => { if (!full) value = next; } });
+    act(() => { a.latest.setScale(1.5); a.latest.setFill(false); a.latest.setFolders(false); });
+    go(a, "b"); go(a, "a");
+    expect([a.latest.scale, a.latest.fill, a.latest.folders]).toEqual([1.5, false, false]);
+    expect(data[PLACE_VIEWS_KEY]).toBe(saved);
+    full = false;
+    act(() => a.latest.setLayout("list"));
+    expect(JSON.parse(data[PLACE_VIEWS_KEY]).a).toEqual({ layout: "list", group: false, scale: 1.5, fill: false, folders: false });
+  });
   it("폴더마다 따로 기억한다 — 처음 들어간 폴더는 방금 보던 모양을 물려받고, 본 폴더는 그때 본 모양 그대로", () => {
     const win = open("e035");
     expect(view(win)).toBe("grid");

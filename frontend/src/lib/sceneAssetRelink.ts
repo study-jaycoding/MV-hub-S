@@ -1,3 +1,6 @@
+import { relinkCanvasDocuments } from "../features/canvas/api";
+import { sceneRefWorkspaceId, relinkCards, applyRelink, relinkKey, type RelinkTarget } from "../features/canvas/api";
+export { relinkCards, applyRelink, relinkKey, type RelinkTarget } from "../features/canvas/api";
 // 씬의 에셋 참조 중 **이 PC 에서 열리지 않는 것**을 서버가 찾아 준 자리로 이어 준다(Jay 2026-09-28).
 //
 // 왜: "어느 방식으로 가져와도 서버에 그 파일이 있다면 모두에게 똑같이 보이게". 안 열리는 이유가 둘이다.
@@ -13,15 +16,17 @@ import {
   confirmSceneWrite,
   listPersistedScenes,
   listScenes,
-  updateScenesWith,
   type Scene,
-  type SceneCard,
   type SceneRef,
 } from "./scenes";
 import { loadSceneHistory, sameSnap, saveSceneHistory, type SceneSnap } from "./sceneUndoStore";
 import { loadJSON, saveJSON } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 import { loadStoredWorkspaceContext } from "./workspaceContext";
+import { captureOperationContext, isOperationContextCurrent } from "../app/operationContext";
+import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
+import { promoteAssetReference } from "../shared/contracts/assets";
+import { chunked } from "./batching";
 
 // 에셋 참조 토큰 전부. 이미 잘 열리는 것은 서버가 그대로 두므로 여기서 거르지 않는다 —
 // 어느 것이 안 열리는지는 폴더를 볼 수 있는 서버만 안다.
@@ -29,9 +34,7 @@ const ASSET_TOKEN = /^asset:[^|]+\|/;
 
 /** 이 씬의 그림을 **어느 공간 폴더부터** 찾을지 — 탭에 사람이 고른 공간, 없으면 씬 파일로 받은 힌트.
  *  묻기·답 반영·서버에 없음 표시가 모두 이 하나로 열쇠를 만든다(어긋나면 표시가 엉뚱한 참조에 붙는다). */
-export function sceneRefWorkspaceId(scene: Pick<Scene, "workspace" | "refWorkspaceHint">): string {
-  return scene.workspace?.id || scene.refWorkspaceHint?.id || "";
-}
+export { sceneRefWorkspaceId } from "../features/canvas/api";
 
 export interface RefFingerprint {
   sha256: string;
@@ -94,94 +97,13 @@ export function sceneAssetTokens(scenes: Scene[]): string[] {
   return [...out];
 }
 
-export interface RelinkTarget {
-  project: string;
-  path: string;
-  sha256?: string;
-  bytes?: number;
-  // 에셋 대장 번호 — 대장이 확인한 답(fixed)이거나, 토큰은 그대로인 번호 알림(open_ids)
-  registry_asset_id?: string;
-}
-
-/** 결과의 열쇠 — **공간 + 참조**. 같은 옛 참조라도 캔버스의 공간이 다르면 다른 파일로 찾힐 수 있다.
- *  참조만 열쇠로 쓰면 나중에 처리된 공간의 답이 다른 공간의 씬까지 덮는다(Codex 2026-09-28). */
-export const relinkKey = (workspaceId: string, token: string): string => `${workspaceId}\u0000${token}`;
-
-/** 한 씬(공간 ws)의 카드에서 찾은 참조만 갈아끼운다 — 안 바뀐 카드는 같은 객체 그대로. 썸네일은 새 주소로
- *  다시 만들게 비운다. 열린 캔버스는 이것을 **자기 메모리의 카드**에 바로 입힌다(SceneBoard applyAssetRelink). */
-export function relinkCards(
-  cards: SceneCard[],
-  ws: string,
-  found: Map<string, RelinkTarget>,
-): { cards: SceneCard[]; changed: number } {
-  let changed = 0;
-  const next = cards.map((card) => {
-    if (!card.refs?.length) return card;
-    let touched = false;
-    const refs = card.refs.map((ref) => {
-      const hit = ref.file_path ? found.get(relinkKey(ws, ref.file_path)) : undefined;
-      if (!hit) return ref;
-      const nextPath = `asset:${hit.project}|${hit.path}`;
-      if (nextPath === ref.file_path) {
-        // 토큰은 그대로 — 대장 번호만 알려 준 답(open_ids). 이미 번호가 있으면 덮지 않는다.
-        if (!hit.registry_asset_id || ref.registry_asset_id) return ref;
-        touched = true;
-        changed += 1;
-        return { ...ref, registry_asset_id: hit.registry_asset_id };
-      }
-      if (ref.registry_asset_id) {
-        // 대장 번호가 있는 참조는 **같은 번호의 답만** 받는다(Codex P0). 같은 번호면 논리 파일이 같으니, 넣을 때 판
-        //  (content_sha)과 지금 판이 달라도 따라간다 — 고쳐 저장한 새 판을 보여 주는 것이 지금 캔버스 동작과 같다.
-        if (hit.registry_asset_id !== ref.registry_asset_id) return ref;
-      } else if (
-        ref.content_sha &&
-        (hit.sha256 !== ref.content_sha || (ref.bytes && hit.bytes && ref.bytes !== hit.bytes))
-      ) {
-        // 이 참조가 든 지문과 다른 답은 적용하지 않는다 — 같은 토큰을 쓰는 다른 그림이거나(PC 마다 imports 이름이
-        //  겹친다), 지문 없이 경로로 찾은 답이다. 지문을 가진 참조는 내용으로만 잇는다(2026-09-29, Codex).
-        return ref;
-      }
-      touched = true;
-      changed += 1;
-      return {
-        ...ref,
-        file_path: nextPath,
-        thumb: null, // 옛 주소로 만든 썸네일은 버린다
-        // 넣을 때 판은 지킨다(대장 번호로 따라간 새 판과 다를 수 있다). 없던 참조만 이번에 찾은 판을 적는다.
-        content_sha: ref.content_sha ?? hit.sha256,
-        bytes: ref.content_sha
-          ? (ref.bytes ?? (hit.sha256 === ref.content_sha ? hit.bytes : undefined))
-          : (hit.bytes ?? ref.bytes),
-        ...(hit.registry_asset_id ? { registry_asset_id: hit.registry_asset_id } : {}),
-      };
-    });
-    return touched ? { ...card, refs } : card;
-  });
-  return { cards: changed ? next : cards, changed };
-}
-
-/** 찾은 것만 갈아끼운 새 씬 목록과 바뀐 참조 수. 각 씬은 **자기 공간의 답만** 받는다.
- *  안 바뀐 씬은 같은 객체 그대로 — 화면이 그 씬을 다시 그리지 않게. */
-export function applyRelink(
-  scenes: Scene[],
-  found: Map<string, RelinkTarget>,
-): { scenes: Scene[]; changed: number } {
-  let changed = 0;
-  const next = scenes.map((scene) => {
-    const relinked = relinkCards(scene.cards, sceneRefWorkspaceId(scene), found);
-    changed += relinked.changed;
-    return relinked.changed ? { ...scene, cards: relinked.cards } : scene;
-  });
-  return { scenes: changed ? next : scenes, changed };
-}
-
 // ── 서버 판정 기억(Jay 2026-09-29 "2 새 안") ────────────────────────────────────────────────────────────
 // 한 번 답을 받은 참조는 앱을 다시 켜도 자동으로 다시 묻지 않는다 — 켤 때마다 모든 씬의 그림으로 NAS 를 훑던 것을 없앤다.
 //  · 판정 = open(이미 열림)·fixed(원본으로 이음)·local(이 PC 에만)·missing(서버에 없음)·unresolved(끝까지 봤지만 못 이음 —
 //    후보 여럿·근거 없음). 서버가 incomplete(끝까지 못 훑음)라 한 것과 오류·시간 초과·대기 중단은 저장하지 않고 있던 판정도
 //    덮지 않는다 — 다음 앱 시작에 다시 묻는다. fixed 도 기억한다 — 지문이 달라 못 바꾼 옛 토큰을 시작마다 다시 훑지 않게.
 //  · 계정별 맵(STORAGE_KEYS.sceneRefVerdicts) — 서버가 계정의 등록 폴더로 판정한다. 열쇠 = (공간, 토큰, 묶음 지문)의 53비트
-//    해시(씬도 localStorage 에 있어 용량이 빠듯하다). 충돌하면(5,000건에 약 10억분의 1) 그 참조를 '이미 확인함'으로 잘못 알아
+//    해시(이 판정맵은 localStorage 용량을 나눠 쓴다). 충돌하면(5,000건에 약 10억분의 1) 그 참조를 '이미 확인함'으로 잘못 알아
 //    자동으로 안 묻는다 — '레퍼런스 찾기' 단추가 풀어 준다.
 //  · 만료는 없다. NAS 에 나중에 올린 파일은 단추를 눌러야 안다(Jay 가 받아들인 대가).
 //  · 정리: 자동 복구·단추가 끝날 때 지금 씬들이 쓰지 않는 열쇠를 버리고, 그래도 5,000건을 넘으면 오래 확인한 것부터 버린다.
@@ -377,6 +299,7 @@ function refReadKeys(workspaceId: string, ref: RefKeyed): string[] {
 }
 
 export function refServerStatus(workspaceId: string, ref: RefKeyed): RefServerStatus | undefined {
+  if (ref.file_path?.startsWith("asset-sync:")) return undefined;
   const { entry, incomplete } = refEntry(workspaceId, ref);
   const verdict = entry?.[0];
   if (verdict === "missing" || verdict === "local") return verdict;
@@ -624,7 +547,7 @@ async function attachOpenIds(
  *  그 사이 친 글·옮긴 카드가 남게). ② 나머지 씬은 저장 직전에 다시 읽어 고친다(다른 탭 변경을 덮지 않게).
  *  같은 (공간, 토큰)을 쓰는 씬은 모두 받는다 — 판정도 씬이 아니라 (공간, 토큰, 지문)으로 기억하기 때문이다.
  *  바꾼 수(화면 값 기준)와 저장소 확정 여부를 준다(확정 실패면 fixed 를 기억하지 않는다). */
-async function applyFound(
+export async function applyFound(
   found: Map<string, RelinkTarget>,
   hooks: RelinkHooks,
 ): Promise<{ total: number; saved: boolean }> {
@@ -646,21 +569,19 @@ async function applyFound(
     if (!changed) return true;
     // 실제 쓰기는 연산으로 넘긴다 — 저장소 내용 위에서 다시 계산되므로 다른 창이 그사이 한 변경을
     // 덮지 않는다(연산은 순수: 바깥에 적지 않는다. found 는 답을 받은 뒤 바뀌지 않는다).
-    return updateScenesWith(null, (current) => {
-      const again = applyRelink(current, found);
-      return again.changed ? again.scenes : null;
-    });
+    return relinkCanvasDocuments(getAccountNamespace(), found);
   });
   const total = (onBoard ?? 0) + (applied ? changed : 0);
   if (!applied) return { total, saved: false };
-  if (changed) {
+  const managedTransition = [...found.values()].some(target => !!target.sync_receipt);
+  if (changed || managedTransition) {
     // 화면 값은 이미 바뀌었다 — 확정을 기다리지 않고 **같은 동기 구간에서** 실행 취소 기록과 화면 목록을 맞춘다.
     //  확정 뒤로 미루면 그사이(확정이 실패하면 계속) 화면 목록이 저장소의 화면 값과 어긋난다.
     // 실행 취소 기록 — 열린 캔버스만 기록을 고쳤고(propagateAssetRelinkToHistory), 나머지 씬은 돌아갈 때 기록의 마지막 상태가
     //  씬과 달라 Ctrl+Z 가 지워졌다. 기록이 복구 전 씬과 이어질 때만(어긋난 낡은 기록은 종전대로 버려지게),
     //  전이 메타는 그대로(2026-10-03 점검 CXF-5).
     before.forEach((scene, i) => {
-      const history = next[i] !== scene ? loadSceneHistory(scene.id) : undefined;
+      const history = next[i] !== scene || managedTransition ? loadSceneHistory(scene.id) : undefined;
       if (!history || !sameSnap(history.lastCommit, { cards: scene.cards, edges: scene.edges, groups: scene.groups || [] })) return;
       const ws = sceneRefWorkspaceId(scene);
       const patch = (snap: SceneSnap): SceneSnap => {
@@ -669,12 +590,94 @@ async function applyFound(
       };
       saveSceneHistory(scene.id, { undo: history.undo.map(patch), redo: history.redo.map(patch), lastCommit: patch(history.lastCommit) });
     });
-    hooks.onSaved?.(next, onBoard !== null);
+    if (changed) hooks.onSaved?.(next, onBoard !== null);
   }
   // 확정 여부는 **확정본에 실제로 들어갔는지**까지 본다. 이 묶음에 연산이 없었어도(화면 값은 앞선 시도가
   //  이미 바꿔 놓았다) 그 앞선 연산이 아직 확정 전일 수 있다 — 그때 기억하면 위와 같은 구멍이 열린다.
   const saved = (await confirmed) && !applyRelink(listPersistedScenes(null), found).changed;
   return { total, saved };
+}
+
+function sceneReferencesWithHistory(scene: Scene): SceneRef[] {
+  const history = loadSceneHistory(scene.id);
+  const cards = [...scene.cards, ...(history ? [...history.undo, ...history.redo, history.lastCommit].flatMap(snap => snap.cards) : [])];
+  return cards.flatMap(card => card.refs || []);
+}
+
+/** 서버가 검증한 보관본만 같은 계정·서버 세대의 열린 보드/닫힌 씬/Undo에 파생 저장한다. */
+export async function syncSceneAssetReferences(hooks: RelinkHooks = {}, current: () => boolean = () => true): Promise<boolean> {
+  const operation = captureOperationContext(loadStoredWorkspaceContext() || { scope: "unknown", id: null, name: null });
+  const stillCurrent = () => current() && isOperationContextCurrent(operation);
+  if (!stillCurrent()) return false;
+  let reply = await api.assetSyncStatus();
+  if (!stillCurrent()) return false;
+  const registrations = new Map<string, RelinkTarget>();
+  const waiting = new Map<string, { workspaceId: string; ref: SceneRef }>();
+  for (const scene of listScenes(null)) for (const card of scene.cards) for (const ref of card.refs || []) {
+    if (ref.target_project_id && (!ref.asset_content_id || (!ref.server_location
+      && !reply.items.some(item => item.asset_content_id === ref.asset_content_id && item.project_id === ref.target_project_id
+        && item.server_origin?.replace(/\/$/, "") === operation.serverOrigin.replace(/\/$/, "")))))
+      waiting.set(relinkKey(sceneRefWorkspaceId(scene), ref.file_path, undefined, ref.target_project_id),
+        { workspaceId: sceneRefWorkspaceId(scene), ref });
+  }
+  for (const [key, item] of waiting) {
+    if (!stillCurrent()) return false;
+    try {
+      const registered = await api.registerAssetReference(item.ref.file_path, {
+        target_project_id: item.ref.target_project_id, target_workspace_id: item.workspaceId || undefined,
+      }, item.ref.asset_content_id);
+      if (!stillCurrent()) return false;
+      if (registered.asset_content_id) registrations.set(key, { project: "", path: "", registration: {
+        asset_content_id: registered.asset_content_id, target_project_id: item.ref.target_project_id!,
+        expected_content_sha: item.ref.content_sha, sha256: registered.sha256 || registered.asset_content_id.slice(7), bytes: registered.bytes } });
+    } catch { /* 없는 파일·잠시 끊긴 서버는 로컬 참조를 유지한다. */ }
+  }
+  if (registrations.size) await applyFound(registrations, hooks);
+  if (!stillCurrent()) return false;
+  if (registrations.size) reply = await api.assetSyncStatus();
+  if (!stillCurrent()) return false;
+  const resolveByProject = new Map<string, Set<string>>();
+  const previousLocations = new Map<string, Map<string, Set<string>>>();
+  for (const scene of listScenes(null)) for (const ref of sceneReferencesWithHistory(scene)) {
+    if (!ref.asset_content_id || !ref.target_project_id) continue;
+    if (reply.items.some(item => item.state === "ready" && item.asset_content_id === ref.asset_content_id
+      && item.project_id === ref.target_project_id && item.server_origin?.replace(/\/$/, "") === operation.serverOrigin.replace(/\/$/, "")
+      && (promoteAssetReference(ref, item) !== ref || ref.file_path === item.file_path))) continue;
+    let ids = resolveByProject.get(ref.target_project_id);
+    if (!ids) resolveByProject.set(ref.target_project_id, ids = new Set());
+    ids.add(ref.asset_content_id);
+    if (ref.server_location) {
+      let project = previousLocations.get(ref.target_project_id);
+      if (!project) previousLocations.set(ref.target_project_id, project = new Map());
+      let locations = project.get(ref.asset_content_id);
+      if (!locations) project.set(ref.asset_content_id, locations = new Set());
+      locations.add(ref.server_location.location_id);
+    }
+  }
+  for (const [project, ids] of resolveByProject) {
+    for (const chunk of chunked([...ids], 500)) {
+      const previous = Object.fromEntries(chunk.filter(id => previousLocations.get(project)?.has(id))
+        .map(id => [id, [...previousLocations.get(project)!.get(id)!]]));
+      try { reply.items.push(...(await api.resolveManagedAssets(chunk, project, previous)).items); } catch { /* 서버 단절 시 기존 로컬 참조를 유지한다. */ }
+      if (!stillCurrent()) return false;
+    }
+  }
+  const origin = operation.serverOrigin.replace(/\/$/, "");
+  const receipts = reply.items.filter(item => item.state === "ready" && !!item.owner_uid && !!item.storage_id
+    && item.server_origin?.replace(/\/$/, "") === origin);
+  const found = new Map<string, RelinkTarget>();
+  for (const scene of listScenes(null)) {
+    for (const ref of sceneReferencesWithHistory(scene)) {
+      const receipt = receipts.find(item => promoteAssetReference(ref, item) !== ref);
+      if (!receipt) continue;
+      found.set(relinkKey(sceneRefWorkspaceId(scene), ref.file_path, ref.asset_content_id, ref.target_project_id),
+        { project: "", path: "", sync_receipt: receipt });
+    }
+  }
+  const applied = await applyFound(found, hooks);
+  if (!stillCurrent()) return false;
+  dispatchAppEvent(APP_EVENTS.assetSyncReady, { receipts, items: reply.items, operation });
+  return applied.saved;
 }
 
 /** 묶음을 200개씩 물어, 답마다 곧바로 판정을 기억하고 찾은 것을 입힌다 — 중간에 실패·중단해도 이미 받은 답은 남는다

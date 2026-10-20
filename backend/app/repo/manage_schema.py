@@ -7,6 +7,7 @@ from collections import defaultdict
 from typing import Any
 
 from ..db import get_db_path, pool_epoch
+from .. import schema_compat
 
 # FK/ON DELETE CASCADE는 일부러 두지 않는다. 코어 project 삭제 경로와 사이드카 수명을 분리한다.
 _SCHEMA = (
@@ -765,6 +766,7 @@ def ensure_manage_schema(conn) -> None:
     key = (str(get_db_path()), pool_epoch())
     if key in _SCHEMA_ENSURED:
         return
+    compatibility = schema_compat.inspect_schema(conn, "content")
     for statement in _SCHEMA:
         conn.execute(statement)
 
@@ -919,7 +921,16 @@ def ensure_manage_schema(conn) -> None:
         "UPDATE project_task SET assignee_uid=NULL "
         "WHERE assignee_uid IS NOT NULL AND assignee_uid<>''"
     )
+    # A standalone partial legacy PM fixture can be upgraded without pretending
+    # its missing content core is current. Runtime init registers the core first.
+    if "content_core" in compatibility.components and "content_pm" not in compatibility.components:
+        record = (schema_compat.record_baseline_in_transaction if conn.in_transaction
+                  else schema_compat.record_baseline)
+        record(conn, "content_pm")
     # 호출자가 연 트랜잭션에서 롤백할 수 있으면 다음 호출이 다시 보장해야 한다.
+    from ..services import trash_transfer
+    if trash_transfer.enabled(conn):
+        trash_transfer.guard_tables(conn, "content")
     if not conn.in_transaction:
         _SCHEMA_ENSURED.add(key)
 

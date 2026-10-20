@@ -10,6 +10,9 @@ import type { Filters } from "../types";
 export interface PlaceView {
   layout: "grid" | "list";
   group: boolean; // 리스트 단추를 한 번 더 누른 상태(도구 줄의 '날짜별 구분' 값)
+  scale?: number;
+  fill?: boolean;
+  folders?: boolean;
 }
 export type PlaceViews = Readonly<Record<string, PlaceView>>;
 
@@ -17,8 +20,9 @@ export const PLACE_VIEWS_KEY = "placeViews";
 export const PLACE_VIEWS_MAX = 400;
 
 /** 그 조회가 보는 자리의 열쇠 — 휴지통·찾는 조건은 자리가 아니다(같은 폴더의 다른 보기다). */
-export function placeViewKey(filters: Pick<Filters, "tab" | "project_id" | "folder_path">): string {
-  return JSON.stringify([filters.tab, filters.project_id ?? null, filters.folder_path ?? null]);
+export function placeViewKey(filters: Pick<Filters, "tab" | "project_id" | "folder_path">, context?: string): string {
+  const parts = [filters.tab, filters.project_id ?? null, filters.folder_path ?? null];
+  return JSON.stringify(context === undefined ? parts : [context, ...parts]);
 }
 
 /** 저장된 것을 읽는다 — 모양이 깨진 줄은 버린다(손상·옛 형식). */
@@ -28,7 +32,12 @@ export function parsePlaceViews(raw: unknown): PlaceViews {
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     const view = value as Partial<PlaceView> | null;
     if (!view || (view.layout !== "grid" && view.layout !== "list")) continue;
-    views[key] = { layout: view.layout, group: view.group === true };
+    views[key] = {
+      layout: view.layout, group: view.group === true,
+      ...(typeof view.scale === "number" && Number.isFinite(view.scale) ? { scale: Math.max(0.7, Math.min(1.7, view.scale)) } : {}),
+      ...(typeof view.fill === "boolean" ? { fill: view.fill } : {}),
+      ...(typeof view.folders === "boolean" ? { folders: view.folders } : {}),
+    };
   }
   return views;
 }
@@ -36,10 +45,11 @@ export function parsePlaceViews(raw: unknown): PlaceViews {
 /** 그 자리의 모양을 적은 새 목록 — 같은 값이면 **같은 객체**를 돌려준다(다시 그리지도 저장하지도 않게). 적힌 자리는 맨 뒤(가장 새것)로 간다. */
 export function withPlaceView(views: PlaceViews, key: string, view: PlaceView, max = PLACE_VIEWS_MAX): PlaceViews {
   const known = views[key];
-  if (known && known.layout === view.layout && known.group === view.group) return views;
+  const clean = parsePlaceViews({ [key]: { ...known, ...view } })[key];
+  if (known && JSON.stringify(known) === JSON.stringify(clean)) return views;
   const next: Record<string, PlaceView> = {};
   for (const [other, value] of Object.entries(views)) if (other !== key) next[other] = value;
-  next[key] = { layout: view.layout, group: view.group };
+  next[key] = clean;
   const keys = Object.keys(next);
   for (let index = 0; index < keys.length - max; index++) delete next[keys[index]];
   return next;

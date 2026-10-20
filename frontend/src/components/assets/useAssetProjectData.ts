@@ -188,7 +188,7 @@ export function useAssetProjectData({
   }, [project]);
 
   const reloadTree = useCallback(async (targetProject = project, fresh = false) => {
-    if (!targetProject) return;
+    if (!targetProject) return false;
     seedProject(targetProject);
     const isCurrent = () => projectRef.current === targetProject;
     const cached = treeCacheRef.current[targetProject];
@@ -227,20 +227,23 @@ export function useAssetProjectData({
         setError(null);
         setLoading(false);
       }
+      return true;
     } catch (err) {
       if (isCurrent()) {
         setError(String(err));
         setLoading(false);
       }
+      return false;
     }
   }, [onTreeLoaded, project]);
 
   const refreshProjectData = useCallback(
     async (targetProject = project, fresh = false) => {
-      if (!targetProject) return;
+      if (!targetProject) return false;
       // fresh=true 면 트리를 캐시 우회로 다시 읽는다(실시간 변경 수신 시 — 백엔드 캐시 경합으로 옛 버전이
       // 남는 경우까지 방어).
-      await Promise.all([reloadTree(targetProject, fresh), reloadMeta(targetProject)]);
+      const results = await Promise.all([reloadTree(targetProject, fresh), reloadMeta(targetProject)]);
+      return results.every(Boolean);
     },
     [project, reloadMeta, reloadTree],
   );

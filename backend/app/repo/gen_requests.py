@@ -20,18 +20,28 @@ from ..workspace_context import normalize_workspace_context
 from . import tags
 from .generations import RECOVERY_REQUIRED_NOTE
 
+# protocol=1 remains on no-reference requests; only actual/uncertain references need preservation.
+_ASSET_CONTENT_REFERENCE_GATE = (
+    " AND CASE WHEN json_valid(payload) THEN "
+    "CASE WHEN coalesce(json_extract(payload, '$.asset_content_protocol'), 0) <> 1 THEN 1 "
+    "WHEN json_type(payload, '$.references') IS NULL THEN 1 "
+    "WHEN json_type(payload, '$.references') = 'array' THEN json_array_length(payload, '$.references') = 0 "
+    "ELSE 0 END ELSE 1 END"
+)
+
+
 # 복구 안내 뒤에 붙는 상세 진단의 머리말. 프론트 lib/generationIssue.ts 의 diagnosticBody 가 같은
 # 문자열로 이 뒤의 상세만 떼어 원인을 분류한다 — 바꾸면 그쪽도 함께 바꾼다. 원문 전체는 정보 팝업의
 # '오류 원문' 접힘 칸에 그대로 보인다.
 SUBMIT_DIAGNOSTIC_PREFIX = "제출 진단: "
 
 
-def _submission_ref_digests(fingerprint: Optional[dict[str, Any]]) -> list[tuple[str, str, int]]:
+def _submission_ref_digests(fingerprint: Optional[dict[str, Any]]) -> list[tuple[str, str, int, Optional[str]]]:
     """에이전트 보고에서 형식이 맞는 실제 제출판 지문만 고른다."""
     raw = fingerprint.get("ref_digests") if isinstance(fingerprint, dict) else None
     if not isinstance(raw, dict):
         return []
-    digests: list[tuple[str, str, int]] = []
+    digests: list[tuple[str, str, int, Optional[str]]] = []
     for file_path, value in raw.items():
         sha256 = value.get("sha256") if isinstance(value, dict) else None
         size = value.get("bytes") if isinstance(value, dict) else None
@@ -42,9 +52,12 @@ def _submission_ref_digests(fingerprint: Optional[dict[str, Any]]) -> list[tuple
             and all(ch in "0123456789abcdef" for ch in sha256)
             and isinstance(size, int)
             and not isinstance(size, bool)
-            and size >= 0
+            and size > 0
         ):
-            digests.append((file_path, sha256, size))
+            reference_id = value.get("reference_id")
+            if "reference_id" in value and (not isinstance(reference_id, str) or not reference_id):
+                continue
+            digests.append((file_path, sha256, size, reference_id))
     return digests
 
 
@@ -52,19 +65,23 @@ def _attach_submission_ref_digests(
     conn: sqlite3.Connection, gen_id: str, fingerprint: Optional[dict[str, Any]]
 ) -> None:
     """실제 CLI 제출 직전의 지문을 같은 generation의 정확한 레퍼런스에만 고정한다."""
-    from . import asset_registry
+    from . import asset_registry, asset_sync
 
-    for file_path, sha256, size in _submission_ref_digests(fingerprint):
+    for file_path, sha256, size, reference_id in _submission_ref_digests(fingerprint):
+        content_id = asset_sync.register_verified_blob(conn, sha256, size, "application/octet-stream")
         rows = conn.execute(
             "SELECT r.id FROM reference r JOIN gen_reference gr ON gr.reference_id=r.id "
-            "WHERE gr.generation_id=? AND r.file_path=?",
-            (gen_id, file_path),
+            "WHERE gr.generation_id=? AND " + ("r.id=?" if reference_id is not None else "r.file_path=?"),
+            (gen_id, reference_id if reference_id is not None else file_path),
         ).fetchall()
         for row in rows:
             conn.execute(
                 "UPDATE reference SET content_sha=COALESCE(content_sha, ?), "
-                "content_bytes=COALESCE(content_bytes, ?) WHERE id=?",
-                (sha256, size, row["id"]),
+                "content_bytes=COALESCE(content_bytes, ?), "
+                "asset_content_id=COALESCE(asset_content_id, ?) WHERE id=? "
+                "AND (content_sha IS NULL OR content_sha=?) AND (content_bytes IS NULL OR content_bytes=?) "
+                "AND (asset_content_id IS NULL OR asset_content_id=?)",
+                (sha256, size, content_id, row["id"], sha256, size, content_id),
             )
             asset_registry.attach_reference_registry(conn, row["id"])
 
@@ -175,7 +192,7 @@ def begin_request_submission(
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT r.gen_id, r.status, r.lease_owner, r.lease_expires_at, g.job_id "
+            "SELECT r.gen_id, r.status, r.lease_owner, r.lease_expires_at, r.payload, g.job_id "
             "FROM gen_request r JOIN generation g ON g.id=r.gen_id "
             "WHERE r.id=? AND r.account_email=?",
             (rid, email),
@@ -193,6 +210,19 @@ def begin_request_submission(
         ):
             conn.execute("ROLLBACK")
             return None
+        payload = json.loads(row["payload"] or "{}")
+        expected = payload.get("params") or {}
+        if payload.get("model") == "seedance_2_5" and (expected.get("draft") is True or expected.get("draft_job_id")):
+            actual = (submission_fingerprint or {}).get("params") or {}
+            if (
+                not isinstance(actual, dict)
+                or actual.get("draft") is not expected.get("draft")
+                or actual.get("draft_job_id") != expected.get("draft_job_id")
+                or actual.get("resolution") != expected.get("resolution")
+            ):
+                # 구 에이전트가 스키마 필터로 Draft 플래그를 버리면 과금 전에 중단한다.
+                conn.execute("ROLLBACK")
+                return None
         transitioned = row["status"] == "claimed"
         encoded_fingerprint = (
             json.dumps(submission_fingerprint, ensure_ascii=False, sort_keys=True)
@@ -515,19 +545,24 @@ def gen_recipe(gen_id: str) -> dict[str, Any]:
     references 의 file_path 는 결과/소스의 원격 URL(공개) — 에이전트가 upload 로 재업로드."""
     with get_connection() as conn:
         g = conn.execute(
-            "SELECT model, prompt, params, workspace_scope, workspace_id, workspace_name "
+            "SELECT model, prompt, params, workspace_scope, workspace_id, workspace_name, creator_uid, project_id "
             "FROM generation WHERE id=?",
             (gen_id,),
         ).fetchone()
         if not g:
             return {}
-        refs = conn.execute(
-            "SELECT r.type type, COALESCE(r.source_url, r.file_path) url, gr.role role "
+        refs = [dict(row) for row in conn.execute(
+            "SELECT r.id reference_id, r.type type, r.file_path, r.source_url, gr.role role, "
+            "COALESCE(r.asset_content_id, CASE WHEN length(r.content_sha)=64 "
+            "AND r.content_sha NOT GLOB '*[^0-9a-f]*' AND r.content_bytes>0 "
+            "THEN 'sha256:' || r.content_sha END) asset_content_id, r.content_sha, r.content_bytes "
             "FROM gen_reference gr JOIN reference r ON r.id=gr.reference_id "
             "WHERE gr.generation_id=? "
-            "ORDER BY gr.rowid",
+            "ORDER BY COALESCE(gr.position, gr.rowid), gr.rowid",
             (gen_id,),
-        ).fetchall()
+        ).fetchall()]
+        from .asset_locations import project_generation_locations
+        project_generation_locations(conn, [{**dict(g), "references": refs}])
     try:
         params = json.loads(g["params"]) if g["params"] else {}
     except (ValueError, TypeError):
@@ -537,7 +572,11 @@ def gen_recipe(gen_id: str) -> dict[str, Any]:
         "prompt": g["prompt"],
         "params": params,
         "references": [
-            {"file_path": r["url"], "type": r["type"], "role": r["role"]} for r in refs
+            {"reference_id": r["reference_id"], "file_path": (r["file_path"] if r.get("server_location") or str(r["file_path"]).startswith("asset-sync:")
+                           else r["source_url"] if r["source_url"] is not None else r["file_path"]), "type": r["type"], "role": r["role"],
+             **({"asset_content_id": r["asset_content_id"]} if r["asset_content_id"] else {}),
+             **({"server_location": r["server_location"], "target_project_id": r["target_project_id"]}
+                if r.get("server_location") else {})} for r in refs
         ],
         "workspace": {
             "scope": g["workspace_scope"] or "unknown",
@@ -1401,6 +1440,7 @@ def has_pending_requests(
     account_email: str,
     *,
     workspace_capable: bool = False,
+    asset_content_capable: bool = True,
 ) -> bool:
     """쓰기 상태를 바꾸지 않고 이 계정에서 실행 가능한 대기 요청 존재만 확인한다."""
     ws_gate = (
@@ -1408,10 +1448,11 @@ def has_pending_requests(
         " AND NOT (json_valid(payload) AND "
         "lower(coalesce(json_extract(payload, '$.workspace.scope'), '')) IN ('team','personal'))"
     )
+    asset_gate = "" if asset_content_capable else _ASSET_CONTENT_REFERENCE_GATE
     with get_connection() as conn:
         row = conn.execute(
             "SELECT 1 FROM gen_request "
-            f"WHERE account_email=? AND status='pending'{ws_gate} "
+            f"WHERE account_email=? AND status='pending'{ws_gate}{asset_gate} "
             "AND EXISTS (SELECT 1 FROM generation g WHERE g.id=gen_request.gen_id) LIMIT 1",
             (norm_email(account_email),),
         ).fetchone()
@@ -1425,6 +1466,7 @@ def claim_pending_requests(
     workspace_capable: bool = False,
     lease_owner: Optional[str] = None,
     submission_stage_capable: bool = False,
+    asset_content_capable: bool = True,
     sweep_expired: bool = True,
 ) -> list[dict[str, Any]]:
     """이 계정의 대기 요청을 원자적으로 claim한다.
@@ -1441,6 +1483,7 @@ def claim_pending_requests(
 
     lease_owner: 요청을 선점한 에이전트 인스턴스. 제출 도중 에이전트가 끊긴 요청을 구분한다.
     sweep_expired: 직접 호출자의 안전망. usecase는 전이 알림을 위해 먼저 별도 sweep하고 False로 호출한다.
+    asset_content_capable: 직접 DB 호출은 현행 호환을 위해 True. HTTP 경계는 미광고 시 False를 명시한다.
     """
     email = norm_email(account_email)
     out: list[dict[str, Any]] = []
@@ -1455,13 +1498,14 @@ def claim_pending_requests(
         " AND NOT (json_valid(payload) AND "
         "lower(coalesce(json_extract(payload, '$.workspace.scope'), '')) IN ('team','personal'))"
     )
+    asset_gate = "" if asset_content_capable else _ASSET_CONTENT_REFERENCE_GATE
     with get_connection() as conn:
         # 빈 폴은 가장 흔한 경로다. 먼저 읽기로 claim 가능한 pending 존재만 확인해, 0건이면
         # BEGIN IMMEDIATE(전역 쓰기락)를 잡지 않고 끝낸다. 이 읽기와 실제 claim 사이의 레이스는
         # 무해하다 — 새 요청을 못 본 경우에도 다음 폴에서 claim한다.
         has_pending = conn.execute(
             "SELECT 1 FROM gen_request "
-            f"WHERE account_email=? AND status='pending'{ws_gate} "
+            f"WHERE account_email=? AND status='pending'{ws_gate}{asset_gate} "
             "AND EXISTS (SELECT 1 FROM generation g WHERE g.id=gen_request.gen_id) LIMIT 1",
             (email,),
         ).fetchone()
@@ -1474,7 +1518,7 @@ def claim_pending_requests(
         conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
             "SELECT id, gen_id, kind, payload FROM gen_request "
-            f"WHERE account_email=? AND status='pending'{ws_gate} "
+            f"WHERE account_email=? AND status='pending'{ws_gate}{asset_gate} "
             "AND EXISTS (SELECT 1 FROM generation g WHERE g.id=gen_request.gen_id) "
             "ORDER BY created_at, rowid LIMIT ?",
             (email, limit),
@@ -1503,6 +1547,8 @@ def claim_pending_requests(
                 "references": p.get("references") or [],
                 "workspace": normalize_workspace_context(p.get("workspace")),
                 "claim_phase": claim_phase,
+                "asset_content_protocol": p.get("asset_content_protocol"),
+                "project_id": p.get("project_id"),
             }
         )
     return out

@@ -1,9 +1,10 @@
+import { createCanvasDocumentPort, canvasTarget } from "../features/canvas/api";
 import { useEffect, useRef } from "react";
 import { api } from "../api";
 import type { Generation, WorkspaceContext } from "../types";
 import { getAccountNamespace } from "./accountScope";
 import { getAuthToken, jsonBody, jsonFetch } from "./http";
-import { confirmSceneWrite, listPersistedScenes, listScenes, updateScenesWith, type Scene, type SceneCard } from "./scenes";
+import { listPersistedScenes, listScenes, type Scene, type SceneCard } from "./scenes";
 import { sceneStoreReady } from "./sceneStore";
 import { sceneMatchesWorkspace } from "./sceneWorkspace";
 
@@ -43,17 +44,17 @@ export async function attachMcpCanvasTask(task: McpCanvasTask, workspace: Worksp
     if (!isCurrent() || generation.id !== id || !sameWorkspace({ scope: generation.workspace_scope, id: generation.workspace_id, name: null }, workspace)) return false;
     generations.push(generation);
   }
-  const write = confirmSceneWrite(() => {
-    ports.flushScenePending(task.scene_id);
-    return updateScenesWith(null, (scenes) => {
-      const scene = scenes.find((item) => item.id === task.scene_id);
-      if (!scene || !sceneMatchesWorkspace(scene, workspace) || scene.mcpAttachmentReceipts?.includes(task.id)) return null;
-      return scenes.map((item) => item.id === scene.id ? appendMcpGenerations(item, task, generations) : item);
-    });
-  });
-  if (write.value && isCurrent()) ports.refreshSceneById(task.scene_id);
+  const document = createCanvasDocumentPort({ flushPending: ports.flushScenePending });
+  const target = canvasTarget(task.scene_id);
+  if (!isCurrent()) return false;
+  const latest = document.snapshot(target);
+  if (!latest || !sceneMatchesWorkspace(latest, workspace)) return false;
+  const appended = appendMcpGenerations(latest, task, generations);
+  const write = document.commit(target, { type: "appendTaskCards", receiptId: task.id,
+    cards: appended.cards.filter(card => !latest.cards.some(existing => existing.id === card.id)) });
+  if (write.queued && isCurrent()) ports.refreshSceneById(task.scene_id);
   // 저장 확인 응답이 유실돼도 처리 기록으로 삭제된 카드의 재부착을 막는다.
-  if (!write.value || !await write.confirmed || !isCurrent()) return false;
+  if (!write.queued || !await write.confirmed || !isCurrent()) return false;
   return !!listPersistedScenes(null).find((scene) => scene.id === task.scene_id)?.mcpAttachmentReceipts?.includes(task.id);
 }
 

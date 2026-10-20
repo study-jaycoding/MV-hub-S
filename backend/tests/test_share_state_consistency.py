@@ -105,6 +105,8 @@ def test_migration_is_idempotent_and_has_contract_indexes(isolated_content_db):
         "created_at",
         "updated_at",
         "last_attempt_at",
+        "remote_command_json",
+        "remote_result_json",
     } == columns
     assert {"idx_ssi_origin_uuid", "idx_ssi_origin_anchor", "idx_ssi_due"} <= indexes
 
@@ -563,7 +565,7 @@ def test_unfinalize_local_failure_is_200_mirror_pending_without_backout(isolated
     assert isinstance(response, JSONResponse)
     assert response.status_code == 200
     assert json.loads(response.body)["mirror_pending"] is True
-    assert remote_calls == ["/api/generations/server-1/unfinalize"]
+    assert remote_calls == ["/api/share/capabilities", "/api/generations/server-1/unfinalize"]
     assert repo.get_generation(gen_id)["is_final"] is True
     assert _ledger_rows()[0]["status"] == "waiting_local"
 
@@ -639,7 +641,7 @@ def test_unpublish_success_is_write_ahead_and_converges(isolated_content_db):
         result = share.unpublish(gen_id, _request())
 
     assert result["shared"] is False
-    assert remote_calls == ["/api/generations/server-1/unpublish"]
+    assert remote_calls == ["/api/share/capabilities", "/api/generations/server-1/unpublish"]
     assert repo.get_generation(gen_id)["shared"] is False
     assert _ledger_rows()[0]["status"] == "converged"
 
@@ -658,6 +660,8 @@ def test_composite_finalize_records_bases_and_keeps_partial_state_for_3b(isolate
 
     def proxy_json(_method, path, **_kwargs):
         remote_calls.append(path)
+        if path.endswith("capabilities"):
+            raise HTTPException(status_code=404, detail="Not Found")
         raise HTTPException(status_code=422, detail="finalize rejected")
 
     with (
@@ -669,7 +673,7 @@ def test_composite_finalize_records_bases_and_keeps_partial_state_for_3b(isolate
         share.finalize(gen_id, _request(), BackgroundTasks())
 
     assert raised.value.status_code == 422
-    assert remote_calls == ["/api/generations/server-1/finalize"]
+    assert remote_calls == ["/api/share/capabilities", "/api/generations/server-1/finalize"]
     row = _ledger_rows()[0]
     assert row["operation_kind"] == "composite_finalize"
     assert row["base_shared"] == 0

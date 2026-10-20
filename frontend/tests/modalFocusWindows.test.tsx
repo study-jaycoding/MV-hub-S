@@ -1,3 +1,4 @@
+import { createCanvasDocumentPort } from "../src/features/canvas/api";
 // @vitest-environment jsdom
 // 모달의 초점(lib/keyGate '모달의 초점') — 창별. 실제 창을 붙여 본다.
 // 2026-10-11 실측: 정보·비교·관리자 창은 연 직후 초점이 뒤에 그대로라 1번째 Tab 부터 뒤 카드 단추였고, 설정 창은 10번째에 상단바로 나갔다.
@@ -335,7 +336,7 @@ describe("상단바", () => {
           onOpenAssets={noop} onOpenAdmin={noop} hasUnreadComments={false} onOpenNotificationComment={noop} onNotificationsChanged={noop}
           onOpenMcp={() => { onOpenMcp(); setOpen(true); }} />
         <McpConnection open={open} onClose={() => setOpen(false)} authReady authKey="account" workspace={workspace}
-          activeSceneId={null} flushScenePending={noop} patchSceneById={() => false}
+          activeSceneId={null} canvasDocument={createCanvasDocumentPort({ flushPending: noop, write: () => false })}
           prepareCanvasGenerationBatch={async () => []} settleCanvasGeneration={noop} discardCanvasGeneration={noop} />
       </>;
     }

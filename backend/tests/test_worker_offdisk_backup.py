@@ -10,6 +10,7 @@ import threading
 import urllib.error
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from fastapi import HTTPException
 
 from app import active_account
 from app.routers import db_backup, db_transfer
-from app.services import worker_backup
+from app.services import worker_backup, backup_manifest
 
 
 def _content_db(path: Path, *, secret: bool = True) -> bytes:
@@ -103,6 +104,102 @@ def worker_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         yield tmp_path
     finally:
         active_account.reset_override(token)
+
+
+@pytest.fixture
+def state_db_connections(worker_store: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(worker_backup, "_STATE_SCHEMA_READY", set())
+    worker_backup._connect().close()
+    real_connect = sqlite3.connect
+    opened: list[sqlite3.Connection] = []
+
+    def track(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(worker_backup.sqlite3, "connect", track)
+    try:
+        yield opened, real_connect
+    finally:
+        for conn in opened:
+            conn.close()
+
+
+def _assert_state_connections_closed(opened: list[sqlite3.Connection]) -> None:
+    assert opened, "the operation must reach a real SQLite connection"
+    # Keep every reference alive: refcounting/GC must not hide a missing close.
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
+
+
+def test_state_connection_lifetime_read(state_db_connections):
+    opened, _ = state_db_connections
+    assert worker_backup.has_due_backup() is False
+    _assert_state_connections_closed(opened)
+
+
+def test_state_connection_lifetime_recovery_commits(state_db_connections):
+    opened, real_connect = state_db_connections
+    with closing(real_connect(worker_backup.STATE_DB)) as conn, conn:
+        conn.execute(
+            "INSERT INTO worker_backup_outbox"
+            "(backup_set_id,account_slug,created_at,local_stamp,roles_json,status) "
+            "VALUES('lifetime-set','lifetime-account','2026-10-20','stamp','{}','running')"
+        )
+    assert worker_backup.recover_in_progress() == 1
+    _assert_state_connections_closed(opened)
+    with closing(real_connect(worker_backup.STATE_DB)) as conn:
+        assert conn.execute("SELECT status FROM worker_backup_outbox").fetchone() == ("pending",)
+
+
+def test_state_connection_lifetime_query_failure(state_db_connections):
+    opened, real_connect = state_db_connections
+    with closing(real_connect(worker_backup.STATE_DB)) as conn, conn:
+        conn.execute("DROP TABLE worker_backup_outbox")
+    with pytest.raises(sqlite3.OperationalError):
+        worker_backup.has_due_backup()
+    _assert_state_connections_closed(opened)
+
+
+def test_state_connection_lifetime_failure_rolls_back(state_db_connections):
+    opened, real_connect = state_db_connections
+    with closing(real_connect(worker_backup.STATE_DB)) as conn, conn:
+        conn.execute(
+            "INSERT INTO worker_backup_outbox"
+            "(backup_set_id,account_slug,created_at,local_stamp,roles_json,status) "
+            "VALUES('lifetime-set','lifetime-account','2026-10-20','stamp','{}','running')"
+        )
+        conn.execute(
+            "CREATE TRIGGER reject_delivery BEFORE INSERT ON worker_backup_delivery_state "
+            "BEGIN SELECT RAISE(ABORT,'lifetime fixture'); END"
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        worker_backup._mark_success({
+            "backup_set_id": "lifetime-set", "account_slug": "lifetime-account",
+            "last_attempt_at": "2026-10-20",
+        })
+    _assert_state_connections_closed(opened)
+    with closing(real_connect(worker_backup.STATE_DB)) as conn:
+        assert conn.execute("SELECT status,last_success_at FROM worker_backup_outbox").fetchone() == ("running", None)
+
+
+@pytest.mark.parametrize("failure", [sqlite3.OperationalError, KeyboardInterrupt])
+def test_state_connection_lifetime_initialization_failure(
+    state_db_connections, monkeypatch: pytest.MonkeyPatch, failure,
+):
+    opened, _ = state_db_connections
+    worker_backup._STATE_SCHEMA_READY.clear()
+
+    def fail_schema(_conn):
+        raise failure("lifetime fixture")
+
+    monkeypatch.setattr(worker_backup, "_ensure_schema", fail_schema)
+    with pytest.raises(failure):
+        worker_backup._connect()
+    _assert_state_connections_closed(opened)
+    assert str(worker_backup.STATE_DB) not in worker_backup._STATE_SCHEMA_READY
 
 
 def _queued(worker_store: Path) -> tuple[str, Path, dict]:
@@ -244,6 +341,8 @@ def test_successful_ack_completes_exact_set(worker_store: Path, monkeypatch: pyt
                 "accepted": True,
                 "backup_set_id": backup_set_id,
                 "files": manifest["roles"],
+                "format_version": manifest["format_version"],
+                "manifest_sha256": backup_manifest.manifest_digest(manifest),
                 "count": 1,
             },
         ),
@@ -286,6 +385,8 @@ def test_network_outage_keeps_set_and_recovers_after_manual_retry(
                 "accepted": True,
                 "backup_set_id": backup_set_id,
                 "files": manifest["roles"],
+                "format_version": manifest["format_version"],
+                "manifest_sha256": backup_manifest.manifest_digest(manifest),
                 "count": 1,
             },
         ),
@@ -322,6 +423,8 @@ def test_login_expiry_never_discards_pending_set(
                 "accepted": True,
                 "backup_set_id": backup_set_id,
                 "files": manifest["roles"],
+                "format_version": manifest["format_version"],
+                "manifest_sha256": backup_manifest.manifest_digest(manifest),
                 "count": 1,
             },
         ),
@@ -640,9 +743,19 @@ def test_manifest_has_safe_device_summary_and_unchanged_data_is_not_requeued(
 ):
     backup_set_id, _stage, manifest = _queued(worker_store)
     assert manifest["summary"]["generations"] == 1
+    assert manifest["summary"]["timelines"] == 0
     assert manifest["summary"]["meaningful_records"] >= 1
     assert len(manifest["device"]["device_id"]) == 32
     assert manifest["device"]["device_name"]
+
+    with_timelines = backup_manifest.seal({**manifest, "summary": {**manifest["summary"], "timelines": 2}})
+    assert db_backup._normalise_set_manifest(json.dumps(with_timelines))["summary"]["timelines"] == 2
+    old_summary = {key: value for key, value in manifest["summary"].items() if key != "timelines"}
+    legacy = {key: value for key, value in manifest.items() if key not in {
+        'set_id', 'account_scope_digest', 'payload_version', 'captured_at', 'consistency_kind', 'consistency_roles'}}
+    legacy.update(format_version=1, summary=old_summary,
+                  roles={role: {key: info[key] for key in ('size', 'sha256')} for role, info in manifest['roles'].items()})
+    assert db_backup._normalise_set_manifest(json.dumps(legacy))["summary"]["timelines"] == 0
 
     second = worker_store / "local" / "content_hub_20260817_130000_000001.db"
     second_trash = worker_store / "local" / "content_trash_20260817_130000_000001.db"
@@ -1044,6 +1157,8 @@ def test_worker_upload_streams_a_complete_multipart_set(tmp_path: Path):
                     "accepted": True,
                     "backup_set_id": manifest["backup_set_id"],
                     "files": manifest["roles"],
+                "format_version": manifest["format_version"],
+                "manifest_sha256": backup_manifest.manifest_digest(manifest),
                     "count": 1,
                 }
             ).encode()

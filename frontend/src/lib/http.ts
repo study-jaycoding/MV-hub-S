@@ -221,7 +221,7 @@ export async function jsonFetch<T>(
   url: string,
   init?: RequestInit,
   validateResponse?: (response: Response) => void,
-  opts: { retryNoResponse?: boolean } = {},
+  opts: { retryNoResponse?: boolean; beforeAttempt?: () => void } = {},
 ): Promise<T> {
   const mutationOrigin = createLibraryMutationOrigin(init?.method);
   const headers: Record<string, string> = {
@@ -237,6 +237,7 @@ export async function jsonFetch<T>(
     const last = !opts.retryNoResponse || attempt >= 2;
     let res: Response;
     try {
+      opts.beforeAttempt?.();
       res = await fetch(url, { ...init, headers });
     } catch (error) {
       // 다시 보내기가 어떤 까닭으로든(멈춤 — 다른 탭 로그아웃 포함) 못 나가도 첫 요청은 들어갔을 수 있다 — 실패로 바꾸지 않는다(Codex 61회차)

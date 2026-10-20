@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, useCallback, useRef, useState, type ComponentProps, type SetStateAction } from "react";
+import { act, useCallback, useMemo, useRef, useState, type ComponentProps, type SetStateAction } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Scene, SceneCard } from "../src/lib/scenes";
 import type { Generation } from "../src/types";
@@ -29,6 +29,9 @@ const regenTarget = { id: "made-gen", prompt: "만든 것", model: "seedance_2_5
 let logoutResult = true;
 let logoutRun: Promise<unknown> | undefined;
 let gensWrites: unknown[] = [];
+let draftSelected = false;
+let draftRun: Promise<void> | undefined;
+const draftTarget = { ...regenTarget, job_id: "synthetic-draft", is_mine: true, params: { draft: true } } as Generation;
 const noop = () => {};
 const reload = vi.fn(async () => {});
 
@@ -57,12 +60,20 @@ function installAppBoundaries() {
     ["../src/components/LibraryToolbar", ["LibraryToolbar"]],
     ["../src/components/ThumbnailGrid", ["ThumbnailGrid"]],
     ["../src/components/scene/SceneBar", ["SceneBar"]],
-    ["../src/components/app/AppOverlays", ["AppOverlays"]],
     ["../src/components/app/SelectionActionBar", ["BoardSelectionActionBar", "LibrarySelectionActionBar"]],
     ["../src/components/edit/PartialEditHost", ["PartialEditHost"]],
   ] as const) {
     vi.doMock(path, () => Object.fromEntries(names.map((name) => [name, () => null])));
   }
+  vi.doMock("../src/components/app/SelectionActionBar", () => ({
+    LibrarySelectionActionBar: () => null,
+    BoardSelectionActionBar: ({ onFinishDraft }: { onFinishDraft?: (generation: Generation) => Promise<void> }) => draftSelected ? (
+      <button onClick={() => { draftRun = Promise.resolve(onFinishDraft?.(draftTarget)); }}>시험 Draft 완료</button>
+    ) : null,
+  }));
+  vi.doMock("../src/components/app/AppOverlays", () => ({
+    AppOverlays: ({ toast }: { toast: string | null }) => <div role="status">{toast}</div>,
+  }));
   vi.doMock("../src/components/scene/SceneBoard", () => ({
     SceneBoard: ({ onRenderCards, onRegenerate }: Pick<ComponentProps<typeof SceneBoard>, "onRenderCards" | "onRegenerate">) => (
       <>
@@ -107,7 +118,9 @@ function installAppBoundaries() {
     listPersistedScenes: () => (sceneConfirmFails ? [fixtureScene()] : [scene]),
     confirmSceneWrite: <T,>(run: () => T) => ({ value: run(), confirmed: Promise.resolve(!sceneConfirmFails) }),
   }));
-  vi.doMock("../src/lib/useSceneCoordination", () => ({
+  vi.doMock("../src/lib/useSceneCoordination", async () => {
+    const { createCanvasDocumentPort } = await import("../src/features/canvas/api");
+    return {
     useRelinkOnWorkspaceChange: noop,
     useSceneCoordination: () => {
       const [, bump] = useState(0);
@@ -123,14 +136,15 @@ function installAppBoundaries() {
       }, []);
       return {
         scenes: [scene], activeSceneId: scene.id, activeScene: scene,
-        sceneBinding: null, setSceneBinding: noop, sceneSelGens: [], setSceneSelGens: noop,
-        sceneActionRef, flushScenePending: noop, patchSceneById, patchActiveScene: noop,
+        sceneBinding: null, setSceneBinding: noop, sceneSelGens: draftSelected ? [draftTarget] : [], setSceneSelGens: noop,
+        sceneActionRef, flushScenePending: noop, canvasDocument: useMemo(() => createCanvasDocumentPort({ flushPending: noop, write: patchSceneById }), [patchSceneById]),
         selectScene: noop, addScene: noop, importSceneSnapshot: noop, renameScene: noop,
         removeSceneById: noop, reorderScenes: noop, setSceneWorkspace: noop,
         backupOnly: 0, importBackupScenes: noop,
       };
     },
-  }));
+    };
+  });
   vi.doMock("../src/lib/useGenerationLibraryData", () => ({
     useGenerationLibraryData: () => {
       const [gens, writeGens] = useState<Generation[]>([]);
@@ -166,6 +180,8 @@ beforeEach(() => {
   logoutResult = true;
   logoutRun = undefined;
   gensWrites = [];
+  draftSelected = false;
+  draftRun = undefined;
   reload.mockClear();
   installAppBoundaries();
   style = installPromptStyles();
@@ -175,11 +191,46 @@ beforeEach(() => {
 afterEach(() => {
   view?.dispose();
   style?.remove();
+  sessionStorage.clear();
+  vi.doUnmock("../src/lib/useDraftRequests");
   vi.unstubAllGlobals();
   expect(boundary.fetch).not.toHaveBeenCalled();
 });
 
 describe("App: 프롬프트 숨김 상태에서 씬의 부분 성공과 카드별 오류", () => {
+  it.each([false, true])("Draft 확정 거절 뒤 현재 문맥에서만 표식을 정리한다(계정 ABA=%s)", async (aba) => {
+    draftSelected = true;
+    const { setAccountScope } = await import("../src/lib/accountScope");
+    const { captureOperationContext } = await import("../src/app/operationContext");
+    setAccountScope("draft-a");
+    const reply = deferred<void>();
+    const send = vi.fn(async () => { await reply.promise; throw Object.assign(new Error("명시적 거절"), { status: 400 }); });
+    (boundary.api as unknown as Record<string, unknown>).prepareRegenerate = vi.fn(() => send);
+    const released = vi.fn();
+    vi.doMock("../src/lib/useDraftRequests", async () => {
+      const actual = await vi.importActual<typeof import("../src/lib/useDraftRequests")>("../src/lib/useDraftRequests");
+      return { useDraftRequests: (rows: Generation[]) => {
+        const requests = actual.useDraftRequests(rows);
+        return { ...requests, release: (attempt: Parameters<typeof requests.release>[0]) => { released(); requests.release(attempt); } };
+      } };
+    });
+    const { default: App } = await import("../src/App");
+    act(() => view.root.render(<App />));
+    await settle();
+    click(button(view.container, "시험 Draft 완료"));
+    await settle();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(scene.cards.find(card => card.id === "made")?.pendingGenerationAttempts).toHaveLength(1);
+    const writes = sceneWrites;
+    if (aba) {
+      setAccountScope("draft-b"); captureOperationContext({ scope: "personal", id: null, name: null });
+      setAccountScope("draft-a"); captureOperationContext({ scope: "personal", id: null, name: null });
+    }
+    await act(async () => { reply.resolve(); await draftRun; });
+    expect(sceneWrites).toBe(writes + (aba ? 0 : 1));
+    expect(scene.cards.find(card => card.id === "made")?.pendingGenerationAttempts || []).toHaveLength(aba ? 1 : 0);
+    expect(released).toHaveBeenCalledTimes(1);
+  });
   // 시간 제한 20초 — App 전체를 StrictMode 로 렌더하는 첫 마운트라 단독 1.4~1.8초인데, 전체 실행(파일 병렬·jsdom 기동 경합)에서는 기본 5초를 넘는다.
   // 2026-09-20 실측: 시험 파일이 하나 늘 때마다 넘었고 단독으로는 3/3 통과. 이 시험에만 올린다(전역 제한은 그대로 — 다른 시험의 무한 대기를 가리지 않게).
   it("실제 Ctrl+K로 숨긴 뒤 오류 두 줄을 띄우고 유효 카드의 배치 두 건만 제출한다", { timeout: 20_000 }, async () => {
@@ -230,6 +281,31 @@ describe("App: 프롬프트 숨김 상태에서 씬의 부분 성공과 카드�
       expect(card.genIds || []).toHaveLength(0);
       expect(card.pendingGenerationAttempts || []).toHaveLength(0);
     }
+  });
+
+  it("서버 성공 뒤 카드 저장이 거부돼도 결과를 목록에 보존하고 반영 실패로만 안내한다", { timeout: 20_000 }, async () => {
+    const submitted = deferred<void>();
+    boundary.api.prepareCreate.mockImplementation((_body, _workspace, link) => async () => {
+      await submitted.promise;
+      return { ...regenTarget, id: link!.generation_id };
+    });
+    const { default: App } = await import("../src/App");
+    act(() => view.root.render(<App />));
+    await settle();
+    click(button(view.container, "시험 씬 일괄 생성"));
+    await settle();
+    const ids = boundary.api.prepareCreate.mock.calls.map(([, , link]) => link!.generation_id);
+    expect(ids).toHaveLength(2);
+    sceneSaveFails = true;
+    await act(async () => { submitted.resolve(); await sceneRun; });
+    await settle();
+    const kept = gensWrites.reduce<Generation[]>((previous, next) =>
+      typeof next === "function" ? next(previous) : next as Generation[], []);
+    expect(new Set(kept.map((item) => item.id))).toEqual(new Set(ids));
+    expect(scene.cards.find((card) => card.id === "valid")?.pendingGenerationAttempts).toHaveLength(2);
+    expect(view.container.textContent).toContain("화면 반영 실패");
+    expect(view.container.textContent).not.toContain("제출 실패 2장");
+    expect(boundary.api.prepareCreate).toHaveBeenCalledTimes(2);
   });
 
   // 저장소가 꽉 차서 '어느 카드 것인지' 표식을 못 남기면, 생성 요청을 아예 보내지 않아야 한다.
@@ -301,7 +377,29 @@ describe("App: 프롬프트 숨김 상태에서 씬의 부분 성공과 카드�
     await act(async () => { await Promise.all(regenRuns); });
   });
 
-  // 14회차(조작 규칙 41): 전엔 목록을 먼저 비우고 로그아웃을 불렀다 — 로그아웃하지 못하면(허브가 실패를 답했다) 그 계정인 채로 빈 목록만 남았다.
+  it("재생성 성공 뒤 카드 저장 거부는 성공 결과와 표식을 보존하고 반영 실패로 안내한다", { timeout: 20_000 }, async () => {
+    const response = deferred<Generation>();
+    const prepareRegenerate = vi.fn(() => () => response.promise);
+    (boundary.api as unknown as Record<string, unknown>).prepareRegenerate = prepareRegenerate;
+    const { default: App } = await import("../src/App");
+    act(() => view.root.render(<App />));
+    await settle();
+    click(button(view.container, "시험 씬 재생성"));
+    await settle();
+    expect(prepareRegenerate).toHaveBeenCalledTimes(1);
+    const made = scene.cards.find((card) => card.id === "made")!;
+    const id = made.pendingGenerationAttempts![0].generationId;
+    sceneSaveFails = true;
+    await act(async () => { response.resolve({ ...regenTarget, id }); await Promise.all(regenRuns); });
+    const kept = gensWrites.reduce<Generation[]>((previous, next) =>
+      typeof next === "function" ? next(previous) : next as Generation[], []);
+    expect(kept.some((item) => item.id === id)).toBe(true);
+    expect(scene.cards.find((card) => card.id === "made")?.pendingGenerationAttempts).toHaveLength(1);
+    expect(view.container.textContent).toContain("생성 요청은 접수됐습니다. 화면 반영 실패");
+    expect(prepareRegenerate).toHaveBeenCalledTimes(1);
+  });
+
+  // 14회차(조작 규칙 41): 전엔 목록을 먼저 비우고 로그아웃을 불렀다 — 로그아웃하지 못했으면(허브가 실패를 답했다) 그 계정인 채로 빈 목록만 남았다.
   it("로그아웃 — 로그아웃하지 못했으면 목록을 비우지 않는다. 된 뒤에 비운다", { timeout: 20_000 }, async () => {
     const { default: App } = await import("../src/App");
     act(() => view.root.render(<App />));

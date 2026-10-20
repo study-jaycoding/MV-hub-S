@@ -48,6 +48,8 @@ beforeEach(async () => {
   const scopeModule = await import("../src/lib/accountScope");
   Board = (await import("../src/components/scene/SceneBoard")).SceneBoard;
   apiModule.setAuthToken("synthetic-A"); scopeModule.setAccountScope("synthetic-A");
+  (await import("../src/app/operationContext")).configureOperationContext({ key: "account-A", serverOrigin: location.origin, authority: "local", ready: true });
+  (await import("../src/features/library/readModels")).getGenerationReadModel("account-A", "lookup");
   polls = [];
   vi.stubGlobal("fetch", vi.fn((url: string) => {
     if (url === "/api/generations/batch") { const reply = deferred<Response>(); polls.push(reply); return reply.promise; }

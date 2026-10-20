@@ -19,6 +19,7 @@ from ..db import get_connection
 from ._common import clean_folder_path
 from .generations_query import list_generations
 from .identity import resolve_display_names
+from .asset_locations import project_generation_locations
 from .projects import _folder_counts_where
 
 __all__ = ["folder_cards", "set_folder_cover"]
@@ -72,17 +73,23 @@ def _card_cover(row: dict[str, Any]) -> dict[str, Any]:
 def _first_assets(conn: Any, generation_ids: list[str]) -> dict[str, dict[str, Any]]:
     """생성물마다 첫 에셋 한 장 — 목록 행(`_attach_children`)이 싣는 것과 같은 칸. 미리보기(컷 띠·생성물 띠)용이라 목록 행은 읽지 않는다."""
     first: dict[str, dict[str, Any]] = {}
+    projections: list[dict[str, Any]] = []
     for start in range(0, len(generation_ids), _COVER_CHUNK):
         chunk = generation_ids[start:start + _COVER_CHUNK]
         for row in conn.execute(
-            "SELECT id, generation_id, type, file_path, thumbnail_path, source_url "
-            f"FROM asset WHERE generation_id IN ({','.join('?' for _ in chunk)}) ORDER BY rowid",
+            "SELECT a.id, a.generation_id, a.type, a.file_path, a.thumbnail_path, a.source_url, a.asset_content_id, "
+            "g.creator_uid AS _creator_uid, g.project_id AS _project_id "
+            f"FROM asset a JOIN generation g ON g.id=a.generation_id "
+            f"WHERE a.generation_id IN ({','.join('?' for _ in chunk)}) ORDER BY a.rowid",
             chunk,
         ):
             if row["generation_id"] not in first:
                 item = dict(row)
+                projections.append({"creator_uid": item.pop("_creator_uid"),
+                                    "project_id": item.pop("_project_id"), "assets": [item]})
                 item["cached"] = bool((item.get("file_path") or "").startswith("/media/"))
                 first[row["generation_id"]] = item
+    project_generation_locations(conn, projections)
     return first
 
 

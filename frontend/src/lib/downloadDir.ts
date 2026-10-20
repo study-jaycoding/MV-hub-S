@@ -105,10 +105,11 @@ async function quietly(step: () => unknown): Promise<void> {
 /** 그 폴더(dir = 폴더 핸들)에 name 으로 저장한다. **같은 이름의 파일이 이미 있으면 덮지 않는다**(조작 규칙 49): 내용이 같으면(같은 것을 다시
  *  받았다) 그대로 두고, 다르면 번호를 붙인 이름("shot (1).png" — 브라우저의 기본 다운로드와 같다)으로 쓴다. 전엔 말없이 덮어, 소스 이름이
  *  같은 다른 그림을 받으면 먼저 받은 파일이 사라졌다(서로 다른 이름 `a:b`·`a?b` 도 금지 문자를 바꾸면 같은 `a_b` 다). */
-export async function writeIntoDir(dir: any, name: string, blob: Blob): Promise<boolean> {
+export async function writeIntoDir(dir: any, name: string, blob: Blob, assertCurrent?: () => void): Promise<boolean> {
   const dot = name.lastIndexOf(".");
   const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
   for (let n = 0; n < 1000; n += 1) {
+    assertCurrent?.();
     const candidate = n ? `${stem} (${n})${ext}` : name;
     const claim = candidate.toLowerCase(); // Windows 폴더는 대소문자만 다른 이름을 같은 파일로 본다(Shot.png · shot.png)
     if (claimed.has(claim)) continue;
@@ -120,16 +121,23 @@ export async function writeIntoDir(dir: any, name: string, blob: Blob): Promise<
       } catch (error) {
         if ((error as { name?: string } | null)?.name !== "NotFoundError") throw error;
       }
+      assertCurrent?.();
       if (existing) {
-        if (await sameBytes(await existing.getFile(), blob)) return true; // 같은 파일이 이미 있다 — 다시 쓰지 않는다
+        const same = await sameBytes(await existing.getFile(), blob);
+        assertCurrent?.();
+        if (same) return true; // 같은 파일이 이미 있다 — 다시 쓰지 않는다
         continue; // 다른 파일이다 — 다음 번호로
       }
       const handle = await dir.getFileHandle(candidate, { create: true }); // 여기서 빈 파일이 생긴다
       let writable: any = null;
       try {
+        assertCurrent?.();
         writable = await handle.createWritable();
+        assertCurrent?.();
         await writable.write(blob);
+        assertCurrent?.();
         await writable.close();
+        assertCurrent?.();
       } catch (error) {
         // 쓰다 실패하면(디스크 꽉 참·잠김·권한) 쓰기만 거두고 오류를 올린다 — 부르는 쪽이 알리고 일반 다운로드로 받는다.
         //  방금 생긴 빈 파일은 **지우지 않는다**: '없음'을 본 뒤 다른 창이 같은 이름으로 저장을 끝냈을 수 있고(create 는 그 파일을
@@ -148,16 +156,20 @@ export async function writeIntoDir(dir: any, name: string, blob: Blob): Promise<
 
 // 지정 폴더에 직접 저장(프롬프트 없음). 성공 true. 핸들/권한 없거나 실패하면 false(호출측이 일반
 // 다운로드로 폴백). 권한이 풀렸으면 requestPermission 으로 1회 재허용 시도(다운로드 클릭=제스처).
-export async function saveToDownloadDir(name: string, blob: Blob): Promise<boolean> {
+export async function saveToDownloadDir(name: string, blob: Blob, assertCurrent?: () => void): Promise<boolean> {
   let h: any = null;
   try {
     h = await _idbGet(KEY);
+    assertCurrent?.();
     if (!h) return false;
     let perm = await h.queryPermission({ mode: "readwrite" });
+    assertCurrent?.();
     if (perm !== "granted") perm = await h.requestPermission({ mode: "readwrite" });
+    assertCurrent?.();
     if (perm !== "granted") return false;
-    return await writeIntoDir(h, name, blob);
+    return await writeIntoDir(h, name, blob, assertCurrent);
   } catch {
+    assertCurrent?.(); // 문맥 중단은 일반 다운로드로 우회하지 않는다.
     // 핸들 무효·쓰기 실패 등 → 일반 다운로드 폴백. 폴더를 정해 둔 사람에게는 거기에 안 들어간 것을 알린다
     //  (47회차 — 전엔 말없이 다른 곳에 받았다). 폴더를 읽지도 못했으면(정한 적 없을 수 있다) 조용히 넘어간다.
     if (h) flashMsg(`다운로드 폴더에 저장하지 못해 브라우저 다운로드로 받습니다: ${name}`);

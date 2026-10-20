@@ -44,7 +44,9 @@ it("auth-enabled 401 changes actual auth scope, unmounts through App gates and r
     comment: null, comment_count: 0, has_unread: false, local_only: false, creator_uid: null, creator_name: null,
     is_mine: true, workspace_scope: "personal", workspace_id: null, workspace_name: null, project_id: null, deleted: false,
   };
+  const { configureOperationContext } = await import("../src/app/operationContext");
   setAuthToken("synthetic-token-A"); setAccountScope(account.email);
+  configureOperationContext({ key: "account-A", serverOrigin: location.origin, authority: "team", ready: true });
   localStorage.setItem(STORAGE_KEYS.activeAccount, account.email); // same-account path: no location.reload
   const reads: { token: string | null; reply: ReturnType<typeof deferred<Response>> }[] = [];
   vi.stubGlobal("fetch", vi.fn((url: string, init: RequestInit) => {
@@ -86,7 +88,11 @@ it("auth-enabled 401 changes actual auth scope, unmounts through App gates and r
   await act(async () => vi.advanceTimersByTimeAsync(3000));
   expect(reads).toHaveLength(stoppedCount);
   // Re-login transport is synthetic; actual public auth setters restart the gated child.
-  await act(async () => { setAuthToken("synthetic-token-A2"); auth.setAccount(account); });
+  await act(async () => {
+    setAuthToken("synthetic-token-A2");
+    configureOperationContext({ key: "account-A", serverOrigin: location.origin, authority: "team", ready: true });
+    auth.setAccount(account);
+  });
   expect(auth.authReady).toBe(true); expect(authKey).toBe(signedInKey);
   expect(reads).toHaveLength(stoppedCount + 1);
   expect(reads[reads.length - 1].token).toBe("Bearer synthetic-token-A2");

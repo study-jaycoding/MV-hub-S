@@ -45,7 +45,7 @@ def _write_alert(message: str) -> None:
         pass
 
 
-def main() -> int:
+def _supervise(activation) -> int:
     max_quick_exits = max(1, int(os.environ.get("CONTENT_HUB_RESTART_LIMIT", "5")))
     stable_seconds = max(10.0, float(os.environ.get("CONTENT_HUB_STABLE_SECONDS", "120")))
     quick_exits = 0
@@ -56,8 +56,23 @@ def main() -> int:
             # Use the absolute entrypoint in the child command line.  The
             # Windows restart helper can then prove that a listener belongs to
             # this exact MV Hub installation before it ever terminates it.
-            process = subprocess.Popen([sys.executable, str(SERVER_ENTRYPOINT)], cwd=BACKEND)
+            process = activation.process or activation.spawn(activation.current)
+            while process.poll() is None:
+                if activation.request.exists():
+                    try:
+                        activation.apply_request()
+                    except Exception as exc:
+                        print(f'[supervisor] update failed: {type(exc).__name__}', flush=True)
+                        if activation.request.exists():
+                            # Preserve rejected requests; do not retry malformed input forever.
+                            activation.request.replace(activation.request.with_name('server-update-rejected-' + str(time.time_ns()) + '.json'))
+                        if activation.process is None or activation.process.poll() is not None:
+                            _write_alert('Server update requires recovery; automatic startup is blocked.')
+                            return 1
+                    process = activation.process
+                time.sleep(.5)
             return_code = process.wait()
+            activation.process = None
         except KeyboardInterrupt:
             if "process" in locals() and process.poll() is None:
                 process.terminate()
@@ -93,6 +108,20 @@ def main() -> int:
             flush=True,
         )
         time.sleep(delay)
+
+
+def main() -> int:
+    # The scheduler continues to run this stable installation, never a moving stage.
+    sys.path.insert(0, str(ROOT / 'tools'))
+    from server_activation import ServerActivation, exclusive_lock
+    try:
+        with exclusive_lock(ROOT / 'logs/server-supervisor.lock'):
+            activation = ServerActivation(ROOT)
+            activation.resume()
+            return _supervise(activation)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        _write_alert('Server activation requires attention: ' + type(exc).__name__)
+        return 1
 
 
 if __name__ == "__main__":

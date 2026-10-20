@@ -1,9 +1,11 @@
 import { useCallback, useRef } from "react";
 import type { RefObject, MutableRefObject } from "react";
-import { api } from "../../api";
 import { resolveAutoAspectRatio } from "../../lib/aspectAuto";
 import { isGenerationWorkspaceReady } from "../../lib/workspaceContext";
-import { surelyNotRun } from "../../lib/http";
+import { prepareCreateSubmission } from "../../features/generation/api";
+import { runSubmission } from "../../features/generation/api";
+import { assertOperationContextCurrent, captureSubmissionScope } from "../../app/operationContext";
+import { t } from "../../lib/i18n";
 import {
   appendHistory,
   partsDisplay,
@@ -50,6 +52,7 @@ interface UseSpotlightSubmitOptions {
     target: CanvasGenerationTarget,
     count: number,
   ) => Promise<CanvasGenerationLink[]>;
+  confirmCanvasGeneration?: (links: readonly CanvasGenerationLink[]) => boolean;
   settleCanvasGeneration?: (link: CanvasGenerationLink, generation: Generation) => void;
   discardCanvasGeneration?: (link: CanvasGenerationLink) => void;
   onCanvasBatchCreated?: (created: Generation[]) => void;
@@ -89,6 +92,7 @@ export function useSpotlightSubmit({
   onCreated,
   canvasTarget,
   prepareCanvasGeneration,
+  confirmCanvasGeneration,
   settleCanvasGeneration,
   discardCanvasGeneration,
   onCanvasBatchCreated,
@@ -160,6 +164,9 @@ export function useSpotlightSubmit({
       return;
     }
 
+    const operationWorkspace = { ...workspace };
+    const operationScope = captureSubmissionScope(operationWorkspace);
+    const operationCurrent = () => operationScope.isCurrent!();
     const parts = serializeParts(editor);
     const submittedParts = JSON.stringify(parts);
     const submittedContext = promptContextRef.current;
@@ -203,6 +210,7 @@ export function useSpotlightSubmit({
       const effectiveCanvasTarget =
         canvasTargetOverride !== undefined ? canvasTargetOverride : canvasTarget;
       // 요청보다 먼저 generation id와 목적 카드를 저장한다. 이 다음 순간 창이 닫혀도 재시작 복구가 가능하다.
+      assertOperationContextCurrent(operationScope.operation!);
       const canvasLinks = effectiveCanvasTarget && prepareCanvasGeneration
         ? await prepareCanvasGeneration(effectiveCanvasTarget, batch)
         : [];
@@ -212,35 +220,33 @@ export function useSpotlightSubmit({
       const outcomes = await Promise.all(
         Array.from({ length: batch }, async (_, index) => {
           const link = canvasLinks[index];
-          try {
-            const submit = api.prepareCreate(body, workspace, link);
-            const generation = await submit();
-            if (link) settleCanvasGeneration?.(link, generation);
-            return { generation };
-          } catch (error) {
-            // 서버가 요청을 확실히 거절한 4xx·멈춤으로 못 보낸 것은 유령 표식을 즉시 치운다. 타임아웃·과부하·네트워크
-            // 단절은 서버 커밋 여부가 모호하므로 재시작 복구가 확인할 수 있게 남긴다.
-            if (link && surelyNotRun(error)) discardCanvasGeneration?.(link);
-            return { error };
-          }
+          const prepared = prepareCreateSubmission(body, operationWorkspace, link, operationScope);
+          const result = await runSubmission(prepared, link ? {
+            confirm: () => confirmCanvasGeneration?.([link]) ?? false,
+            apply: generation => settleCanvasGeneration?.(link, generation),
+          } : undefined);
+          if (link && (result.outcome.kind === "rejected" || result.outcome.kind === "prepare_failed") && operationCurrent()) discardCanvasGeneration?.(link);
+          return result;
+
         }),
       );
       const created = outcomes.flatMap((outcome) =>
         "generation" in outcome && outcome.generation ? [outcome.generation] : [],
       );
-      const failed = outcomes.filter((outcome) => "error" in outcome).length;
+      const failed = outcomes.filter(result => !result.generation).length;
+      const applyFailed = outcomes.filter(result => result.outcome.kind === "accepted_local_pending").length;
       if (!created.length) {
-        const firstError = outcomes.find((outcome) => "error" in outcome);
-        throw (firstError && "error" in firstError ? firstError.error : new Error("생성 요청 실패"));
+        throw outcomes.find(result => result.error)?.error ?? new Error("생성 요청 실패");
       }
 
+      if (!operationCurrent()) { setBusy(false); return; }
       const dragParent = dragParentRef.current;
       dragParentRef.current = null;
       // 캔버스는 요청 전에 이미 연결했다. 일반 생성만 기존 콜백으로 결과 카드를 추가한다.
       if (canvasLinks.length) onCanvasBatchCreated?.(created);
       else onCreated(created, dragParent);
 
-      if (displayPrompt) {
+      if (displayPrompt && promptContextRef.current === submittedContext) {
         const historyTray: ChipRef[] = trayRefs.map(({ uid: _uid, ...ref }) => ref);
         // 저장소의 최신 기록에 더한다(다른 창이 그사이 제출한 것을 지우지 않는다) — 이 창의 ↑↓ 탐색도 그 결과를 본다
         historyRef.current = appendHistory(
@@ -269,9 +275,12 @@ export function useSpotlightSubmit({
         });
       }
       setBusy(false);
-      if (failed) setError(`${batch}장 중 ${failed}장 제출 실패 — 성공한 요청은 계속 진행됩니다.`);
+      const notices: string[] = [];
+      if (failed) notices.push(`${batch}장 중 ${failed}장 제출 실패 — 성공한 요청은 계속 진행됩니다.`);
+      if (applyFailed) notices.push(t("접수된 요청 중 {count}장 화면 반영 실패 — 다시 제출하지 마세요. 재시작 시 자동 복구됩니다.").replace("{count}", String(applyFailed)));
+      if (notices.length && promptContextRef.current === submittedContext) setError(notices.join("\n"));
     } catch (error) {
-      setError(String(error));
+      if (operationCurrent() && promptContextRef.current === submittedContext) setError(String(error));
       setBusy(false);
     }
   }, [
@@ -295,7 +304,8 @@ export function useSpotlightSubmit({
     onHistorySaved,
     onCanvasBatchCreated,
     prepareCanvasGeneration,
-    settleCanvasGeneration,
+    confirmCanvasGeneration,
+  settleCanvasGeneration,
     optionValues,
     paramsLoading,
     paramsModel,

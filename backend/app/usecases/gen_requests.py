@@ -325,6 +325,8 @@ def _expected_create_recipe(cmd: GenRequestCommand) -> dict:
         "references": [
             {
                 "file_path": (
+                    ref.get("file_path")
+                    if str(ref.get("file_path") or "").startswith("asset-sync:") else
                     ref.get("source_url")
                     if ref.get("source_url") is not None
                     else ref.get("file_path")
@@ -413,6 +415,9 @@ def repair_canvas_generation_links(
             )
             continue
         payload["source_gen_id"] = None
+        payload["asset_content_protocol"] = 1
+        generation = repo.get_generation(link["generation_id"])
+        payload["project_id"] = (generation or {}).get("project_id")
         if repo.repair_orphaned_canvas_generation(email, creator_uid, link, payload):
             repaired = True
     if repaired:
@@ -431,6 +436,7 @@ async def claim_gen_requests(
     workspace_capable: bool = False,
     lease_owner: str | None = None,
     submission_stage_capable: bool = False,
+    asset_content_capable: bool = True,
 ) -> list[dict]:
     """에이전트의 빈 슬롯만큼 대기 요청을 claim하고 카드 상태·알림을 함께 갱신한다."""
     agent_signals.touch(email)
@@ -470,6 +476,7 @@ async def claim_gen_requests(
         workspace_capable=workspace_capable,
         lease_owner=lease_owner,
         submission_stage_capable=submission_stage_capable,
+        asset_content_capable=asset_content_capable,
         sweep_expired=False,
     )
     claimed_needs_refresh = False
@@ -747,6 +754,7 @@ async def fulfill_request(
         status=result.status,
         error=result.error,
         request_status="done" if result.status == "done" else "failed",
+        params=result.params,
     )
     if not applied:
         return await _sync_io(repo.get_generation, gen_id)
@@ -1151,6 +1159,7 @@ async def reconcile_request(
         status=result.status,
         error=result.error,
         provider_status=raw_provider_status,
+        params=result.params,
     )
     if applied:
         log_event(
@@ -1414,6 +1423,8 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
                 gen_id = reservation["gen_id"]
         else:  # regenerate
             import_kwargs = {"creator_uid": cmd.creator_uid}
+            if cmd.regenerate and cmd.regenerate.finish_draft:
+                import_kwargs["finish_draft"] = True
             if cmd.workspace is not None:
                 import_kwargs["workspace"] = cmd.workspace
             if reservation:
@@ -1448,10 +1459,14 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
         payload = await _sync_io(repo.gen_recipe, gen_id)
         if not payload:
             raise RuntimeError("placeholder 레시피를 만들 수 없습니다")
+        # 서버 내부 연결 ID는 사용자가 재시도한 생성 내용의 일부가 아니다.
+        comparison_payload = {**payload, "references": [
+            {key: value for key, value in ref.items() if key != "reference_id"}
+            for ref in payload.get("references") or []]}
         if (
             cmd.kind == "create"
             and existing_placeholder
-            and payload != _expected_create_recipe(cmd)
+            and comparison_payload != _expected_create_recipe(cmd)
         ):
             conflict_type = (
                 CanvasGenerationConflict
@@ -1462,6 +1477,17 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
                 "기존 placeholder 내용이 재시도한 생성 명령과 달라 자동 연결을 중단했습니다"
             )
         payload["source_gen_id"] = cmd.source_gen_id
+        # 구 에이전트는 무시하고, 지원 에이전트는 과금 전 실제 입력판 보존을 확인한다.
+        payload["asset_content_protocol"] = 1
+        if cmd.kind == "create":
+            payload["project_id"] = (cmd.data or {}).get("project_id")
+            # 화면의 기대 지문은 검증된 DB 지문과 분리해 과금 직전 실제 바이트와 대조한다.
+            for supplied, submitted in zip((cmd.data or {}).get("references") or [], payload.get("references") or []):
+                if supplied.get("asset_content_id"):
+                    submitted["expected_asset_content_id"] = supplied["asset_content_id"]
+        else:
+            generated = await _sync_io(repo.get_generation, gen_id)
+            payload["project_id"] = (generated or {}).get("project_id")
 
         if cmd.canvas_link:
             activation = await _sync_io(

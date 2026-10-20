@@ -263,6 +263,7 @@ export function MetadataContinuitySection({
                       <span>{created} · {formatBytes(backup.size)} · 앱 {backup.app_version || "—"}</span>
                       <span>
                         생성물 {summary.generations ?? 0} · 태그 {summary.tags ?? 0} · 캔버스 {summary.canvases ?? 0}
+                        {summary.timelines !== undefined && ` · 편집 백업 ${summary.timelines}`}
                         {` · 에셋 ${summary.assets ?? 0}`}
                       </span>
                     </div>

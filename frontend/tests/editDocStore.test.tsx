@@ -3,10 +3,11 @@
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { clipKey, insertClip, removeClips, setClipDurs, setClipRange } from "../src/lib/editTimeline";
-import { clearUndo, editDocKey, keepUnsavedEditDoc, readEditDoc } from "../src/lib/editTimelineStore";
-import { useEditDoc } from "../src/lib/useEditDoc";
-import { setLeaving } from "../src/lib/unloadGuard";
+import { clipKey, emptyEditDoc, insertClip, removeClips, setClipDurs, setClipRange, type EditDoc } from "../src/lib/editTimeline";
+import { clearUndo, editDocKey, keepPendingEditRestore, keepUnsavedEditDoc, pendingEditRestore, readEditDoc, readEditRaw, undoStack, unsavedEditDoc } from "../src/lib/editTimelineStore";
+import { useEditDoc, type ArchiveSnapshot, type VerifiedArchiveBackup } from "../src/lib/useEditDoc";
+import { createEditArchive, createRecoveryArchive, MAX_ARCHIVE_BYTES, utf8Bytes } from "../src/lib/editArchive";
+import { setLeaving, unloadHeld } from "../src/lib/unloadGuard";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -31,6 +32,7 @@ const storageEvent = (key: string) => act(() => { window.dispatchEvent(new Stora
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   localStorage.clear();
+  sessionStorage.setItem("ch.accountScope", "");
   KEY_A = `mvhub.editDoc:test:p${++serial}:e070`;
   KEY_B = `mvhub.editDoc:test:p${serial}:e071`;
   clearUndo(KEY_A);
@@ -47,6 +49,9 @@ afterEach(() => {
   // 저장 못 한 채 끝난 시험의 문서 — 남으면 '나갈 때 묻기'가 다음 시험에도 걸려 있다
   keepUnsavedEditDoc(KEY_A, null);
   keepUnsavedEditDoc(KEY_B, null);
+  keepPendingEditRestore(KEY_A, null);
+  keepPendingEditRestore(KEY_B, null);
+  setLeaving(false);
 });
 
 it("바꿀 때마다 저장하고, 다른 문서로 넘어가도 옛 문서가 새 키에 써지지 않는다", () => {
@@ -447,4 +452,434 @@ it("StrictMode — 저장 못 한 편집을 들고 돌아와 저장에 성공해
   expect(edit.dirty).toBe(false);
   expect(stored()).toEqual(["unsaved"]);
   expect(edit.canUndo).toBe(true);
+});
+
+const denyLocalReads = () => {
+  const realGet = Storage.prototype.getItem;
+  return vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key) {
+    if (this === localStorage) throw new Error("denied");
+    return realGet.call(this, key);
+  });
+};
+
+it("저장소 접근 실패는 문서 부재와 다르고 새 키 실패 뒤 옛 키를 읽지 않는다", () => {
+  expect(readEditRaw(KEY_A)).toEqual({ kind: "ok", raw: null });
+  const old = KEY_A.replace("mvhub.editDoc:", "ch.editTimeline:");
+  localStorage.setItem(old, theirs("legacy"));
+  const realGet = Storage.prototype.getItem;
+  const get = vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (key) {
+    if (key === KEY_A) throw new Error("denied");
+    return realGet.call(this, key);
+  });
+  expect(readEditRaw(KEY_A)).toEqual({ kind: "error" });
+  expect(readEditDoc(KEY_A)).toMatchObject({ inaccessible: true, bad: false, raw: null });
+  expect(get.mock.calls.every(([key]) => key === KEY_A)).toBe(true);
+  get.mockRestore();
+  expect(readEditRaw(KEY_A)).toEqual({ kind: "ok", raw: theirs("legacy") });
+});
+
+it("첫 읽기 실패는 편집·Undo·측정·이벤트·재마운트에서 쓰기 0, 재시도 성공은 새 rev로 기존 문서를 연다", () => {
+  localStorage.setItem(KEY_A, theirs("existing"));
+  const get = denyLocalReads();
+  const set = vi.spyOn(Storage.prototype, "setItem");
+  renderStrict(KEY_A);
+  const before = edit.rev;
+  expect([edit.readError, edit.hasValidDoc]).toEqual([true, false]);
+  expect(edit.captureArchiveSnapshot()?.valid).toBe(false);
+  add("blocked");
+  act(() => edit.undo());
+  act(() => edit.applyEdit((doc) => ({ ...doc, tracks: 4 }), { undo: false }));
+  storageEvent(KEY_A);
+  render(KEY_B);
+  render(KEY_A);
+  expect(set).not.toHaveBeenCalled();
+  expect(gens()).toEqual([]);
+  get.mockRestore();
+  act(() => edit.retryRead());
+  expect([edit.readError, edit.hasValidDoc, gens()]).toEqual([false, true, ["existing"]]);
+  expect(edit.rev).not.toBe(before);
+  expect(set).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("읽기 실패는 기존 작업본·Undo·dirty를 보존한다 (dirty=%s)", (dirty) => {
+  render(KEY_A);
+  add("saved");
+  if (dirty) {
+    const fail = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
+    add("unsaved");
+    fail.mockRestore();
+  }
+  const before = edit.doc;
+  const past = [...undoStack(KEY_A).past];
+  const unsaved = unsavedEditDoc(KEY_A);
+  const raw = localStorage.getItem(KEY_A);
+  const get = denyLocalReads();
+  const set = vi.spyOn(Storage.prototype, "setItem");
+  storageEvent(KEY_A);
+  add("blocked");
+  act(() => edit.undo());
+  act(() => edit.redo());
+  act(() => edit.applyEdit((doc) => setClipDurs(doc, new Map([[clipKey(clip("saved")), 9]])), { undo: false }));
+  act(() => edit.retryRead());
+  expect(edit.doc).toBe(before);
+  expect(edit.dirty).toBe(dirty);
+  expect(undoStack(KEY_A).past).toEqual(past);
+  expect(unsavedEditDoc(KEY_A)).toBe(unsaved);
+  expect(edit.captureArchiveSnapshot()).toMatchObject({ valid: true, raw, readError: true });
+  expect(edit.captureArchiveSnapshot(true)).toBeNull();
+  expect(set).not.toHaveBeenCalled();
+  get.mockRestore();
+  act(() => edit.retryRead());
+  expect(edit.readError).toBe(false);
+  expect(edit.doc).toBe(before);
+  expect(set).toHaveBeenCalledTimes(dirty ? 1 : 0);
+  expect(edit.dirty).toBe(false);
+  expect(undoStack(KEY_A).past).toEqual(past);
+});
+
+it("읽기 회복 중 다른 창 변경은 dirty 작업본과 Undo를 유지하며 충돌로 알린다", () => {
+  render(KEY_A);
+  const fail = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
+  add("unsaved");
+  fail.mockRestore();
+  const get = denyLocalReads();
+  storageEvent(KEY_A);
+  get.mockRestore();
+  localStorage.setItem(KEY_A, theirs("external"));
+  const set = vi.spyOn(Storage.prototype, "setItem");
+  act(() => edit.retryRead());
+  expect([gens(), edit.dirty, edit.canUndo]).toEqual([["unsaved"], true, true]);
+  expect(edit.conflict).not.toBe(0);
+  expect(edit.captureArchiveSnapshot(true)).toBeNull();
+  expect(set).not.toHaveBeenCalled();
+});
+
+it("dirty 문서를 읽기 실패 중 다시 열면 effect는 저장하지 않고 작업본과 Undo를 보존한다", () => {
+  render(KEY_A);
+  add("saved");
+  const fail = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
+  add("unsaved");
+  fail.mockRestore();
+  const before = edit.doc;
+  const past = [...undoStack(KEY_A).past];
+  act(() => root.render(null));
+  const get = denyLocalReads();
+  const set = vi.spyOn(Storage.prototype, "setItem");
+  renderStrict(KEY_A);
+  render(KEY_B);
+  render(KEY_A);
+  expect([edit.dirty, edit.readError, edit.hasValidDoc]).toEqual([true, true, true]);
+  expect(edit.doc).toBe(before);
+  expect(undoStack(KEY_A).past).toEqual(past);
+  expect(set).not.toHaveBeenCalled();
+  get.mockRestore();
+  act(() => edit.retryRead());
+  expect(edit.doc).toBe(before);
+  expect(set).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(localStorage.getItem(KEY_A)!)).toEqual(before);
+  expect([edit.dirty, edit.readError, unloadHeld()]).toEqual([false, false, false]);
+  expect(undoStack(KEY_A).past).toEqual(past);
+});
+
+it.each([false, true])("읽기 회복 뒤 손상 원문 백업이 먼저 성공해야 dirty 작업본을 저장한다 (backupBlocked=%s)", (backupBlocked) => {
+  localStorage.setItem(KEY_A, "damaged original");
+  render(KEY_A);
+  const fail = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
+  add("unsaved");
+  fail.mockRestore();
+  act(() => root.render(null));
+  const get = denyLocalReads();
+  render(KEY_A);
+  expect([edit.readError, edit.dirty]).toEqual([true, true]);
+  get.mockRestore();
+  const realSet = Storage.prototype.setItem;
+  const set = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (key, value) {
+    if (backupBlocked && key === `${KEY_A}.bad`) throw new Error("backup quota");
+    realSet.call(this, key, value);
+  });
+  act(() => edit.retryRead());
+  expect(set.mock.calls[0]).toEqual([`${KEY_A}.bad`, "damaged original"]);
+  expect(gens()).toEqual(["unsaved"]);
+  if (backupBlocked) {
+    expect(localStorage.getItem(KEY_A)).toBe("damaged original");
+    expect([edit.dirty, unloadHeld()]).toEqual([true, true]);
+    expect(set).toHaveBeenCalledTimes(1);
+  } else {
+    expect(localStorage.getItem(`${KEY_A}.bad`)).toBe("damaged original");
+    expect(JSON.parse(localStorage.getItem(KEY_A)!).clips[0].gen).toBe("unsaved");
+    expect(edit.dirty).toBe(false);
+  }
+});
+
+it("다른 창 변경을 읽은 뒤 재조회가 실패해도 이미 읽은 원문으로 일관되게 연다", () => {
+  render(KEY_A);
+  add("mine");
+  localStorage.setItem(KEY_A, theirs("external"));
+  const realGet = Storage.prototype.getItem;
+  let reads = 0;
+  vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (key) {
+    if (key === KEY_A && ++reads > 1) throw new Error("second read denied");
+    return realGet.call(this, key);
+  });
+  const set = vi.spyOn(Storage.prototype, "setItem");
+  storageEvent(KEY_A);
+  expect([gens(), edit.readError, edit.canUndo]).toEqual([["external"], false, false]);
+  expect(set).not.toHaveBeenCalled();
+});
+
+const candidateDoc = () => insertClip(emptyEditDoc(), clip("imported"))!;
+const capture = () => {
+  let snapshot: ArchiveSnapshot | null = null;
+  act(() => { snapshot = edit.captureArchiveSnapshot(true); });
+  expect(snapshot).not.toBeNull();
+  return snapshot!;
+};
+const recoveryText = (snapshot: ArchiveSnapshot) => {
+  const target = { projectId: `p${serial}`, seq: "e070" };
+  return createRecoveryArchive(target, snapshot.valid ? createEditArchive(snapshot.doc, target, snapshot.dirty) : null, snapshot.raw, snapshot.bad);
+};
+const backup = async (snapshot: ArchiveSnapshot) => {
+  const text = recoveryText(snapshot);
+  const verified = await edit.verifyArchiveBackup(snapshot, text, { size: utf8Bytes(text), text: async () => text });
+  expect(verified).not.toBeNull();
+  return verified!;
+};
+const restore = (candidate: EditDoc, snapshot: ArchiveSnapshot, verified: VerifiedArchiveBackup | null) => {
+  let outcome = "";
+  act(() => { outcome = edit.replaceFromArchive(candidate, snapshot, verified); });
+  return outcome;
+};
+const retryRestore = (acceptExternal = false) => {
+  let outcome = "";
+  act(() => { outcome = edit.retryRestore(acceptExternal); });
+  return outcome;
+};
+
+it("복원 토큰은 실제 읽기 성공이 필요하며 임의 객체·취소·크기/내용 불일치는 쓰지 않는다", async () => {
+  render(KEY_A);
+  add("original");
+  const snapshot = capture();
+  const text = recoveryText(snapshot);
+  const set = vi.spyOn(Storage.prototype, "setItem");
+  expect(restore(candidateDoc(), snapshot, null)).toBe("stopped");
+  expect(restore(candidateDoc(), snapshot, { snapshot })).toBe("stopped");
+  for (const size of [utf8Bytes(text) - 1, MAX_ARCHIVE_BYTES + 1]) {
+    const read = vi.fn(async () => text);
+    expect(await edit.verifyArchiveBackup(snapshot, text, { size, text: read })).toBeNull();
+    expect(read).not.toHaveBeenCalled();
+  }
+  expect(await edit.verifyArchiveBackup(snapshot, text, { size: utf8Bytes(text), text: async () => text.replace("original", "replaced") })).toBeNull();
+  expect(await edit.verifyArchiveBackup(snapshot, text, { size: utf8Bytes(text), text: async () => { throw new Error("cancelled"); } })).toBeNull();
+  expect(set).not.toHaveBeenCalled();
+  expect(gens()).toEqual(["original"]);
+});
+
+it.each(["target", "edit", "measure", "edit-undo", "unmount"])("파일 확인 지연 중 %s 변경은 값이 같아져도 토큰을 폐기한다", async (change) => {
+  render(KEY_A);
+  add("original");
+  const snapshot = capture();
+  const text = recoveryText(snapshot);
+  let resolve!: (value: string) => void;
+  const waiting = edit.verifyArchiveBackup(snapshot, text, { size: utf8Bytes(text), text: () => new Promise((done) => { resolve = done; }) });
+  if (change === "target") { render(KEY_B); render(KEY_A); }
+  if (change === "edit" || change === "edit-undo") add("new");
+  if (change === "edit-undo") act(() => edit.undo());
+  if (change === "measure") act(() => edit.applyEdit((doc) => setClipDurs(doc, new Map([[clipKey(clip("original")), 8]])), { undo: false }));
+  if (change === "unmount") { act(() => root.render(null)); render(KEY_A); }
+  const set = vi.spyOn(Storage.prototype, "setItem");
+  resolve(text);
+  expect(await waiting).toBeNull();
+  expect(restore(candidateDoc(), snapshot, { snapshot })).toBe("stopped");
+  expect(set).not.toHaveBeenCalled();
+});
+
+it("복원 성공만 새 rev와 Undo 한 단계를 만들고 옛 측정 콜백은 버린다", async () => {
+  render(KEY_A);
+  add("original");
+  const before = edit.doc;
+  const snapshot = capture();
+  const verified = await backup(snapshot);
+  const set = vi.spyOn(Storage.prototype, "setItem");
+  expect(restore(candidateDoc(), snapshot, verified)).toBe("saved");
+  expect(set.mock.calls.map(([key]) => key)).toEqual([KEY_A]);
+  expect([gens(), stored(), edit.dirty, unloadHeld()]).toEqual([["imported"], ["imported"], false, false]);
+  expect(edit.rev).not.toBe(snapshot.rev);
+  expect(undoStack(KEY_A).past.at(-1)).toBe(before);
+  set.mockClear();
+  act(() => edit.applyEdit(() => before, { undo: false, rev: snapshot.rev }));
+  expect(set).not.toHaveBeenCalled();
+  expect(gens()).toEqual(["imported"]);
+  act(() => edit.undo());
+  expect(gens()).toEqual(["original"]);
+});
+
+it("의미가 같은 복원은 사본 토큰 없이 모든 쓰기 0이며 Undo·rev·원문을 보존한다", () => {
+  render(KEY_A);
+  add("original");
+  const snapshot = capture();
+  const past = [...undoStack(KEY_A).past];
+  const set = vi.spyOn(Storage.prototype, "setItem");
+  expect(restore(JSON.parse(snapshot.docRaw), snapshot, null)).toBe("unchanged");
+  expect(set).not.toHaveBeenCalled();
+  expect([edit.rev, localStorage.getItem(KEY_A)]).toEqual([snapshot.rev, snapshot.raw]);
+  expect(undoStack(KEY_A).past).toEqual(past);
+});
+
+it("확인 뒤 늦은 다른 창 저장은 복원 직전에 다시 비교해 중단한다", async () => {
+  render(KEY_A);
+  add("original");
+  const snapshot = capture();
+  const verified = await backup(snapshot);
+  localStorage.setItem(KEY_A, theirs("external"));
+  const set = vi.spyOn(Storage.prototype, "setItem");
+  expect(restore(candidateDoc(), snapshot, verified)).toBe("stopped");
+  expect(stored()).toEqual(["external"]);
+  expect(set).not.toHaveBeenCalled();
+});
+
+it("검증된 사본도 다른 스냅샷에 재사용하거나 확인 뒤 계정이 바뀌면 복원하지 않는다", async () => {
+  render(KEY_A);
+  add("original");
+  const snapshot = capture();
+  const verified = await backup(snapshot);
+  const nextSnapshot = capture();
+  const set = vi.spyOn(Storage.prototype, "setItem");
+  expect(restore(candidateDoc(), nextSnapshot, verified)).toBe("stopped");
+  expect(set).not.toHaveBeenCalled();
+  sessionStorage.setItem("ch.accountScope", "another-test-account");
+  set.mockClear();
+  expect(edit.captureArchiveSnapshot()).toBeNull();
+  expect(restore(candidateDoc(), snapshot, verified)).toBe("stopped");
+  expect(set).not.toHaveBeenCalled();
+  expect(gens()).toEqual(["original"]);
+});
+
+it("본문 quota 실패는 기존 dirty·Undo·작업본을 보존하고 후보를 자동 저장하지 않는다", async () => {
+  render(KEY_A);
+  add("saved");
+  const set = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
+  add("unsaved");
+  const snapshot = capture();
+  const past = [...undoStack(KEY_A).past];
+  const verified = await backup(snapshot);
+  set.mockClear();
+  expect(restore(candidateDoc(), snapshot, verified)).toBe("failed");
+  expect(set.mock.calls.map(([key]) => key)).toEqual([KEY_A]);
+  expect(edit.doc).toBe(snapshot.doc);
+  expect(edit.dirty).toBe(true);
+  expect(undoStack(KEY_A).past).toEqual(past);
+  expect(unsavedEditDoc(KEY_A)?.doc).toBe(snapshot.doc);
+  expect(pendingEditRestore(KEY_A)).toBeUndefined();
+  set.mockRestore();
+  render(KEY_B);
+  render(KEY_A);
+  expect(stored()).toEqual(["saved", "unsaved"]);
+});
+
+it.each(["throw", "mismatch"])("손상 원문 .bad 보관 %s 실패면 본문과 legacy를 덮지 않는다", async (failure) => {
+  const old = KEY_A.replace("mvhub.editDoc:", "ch.editTimeline:");
+  localStorage.setItem(old, "{broken legacy");
+  render(KEY_A);
+  const snapshot = capture();
+  const verified = await backup(snapshot);
+  const realSet = Storage.prototype.setItem;
+  const set = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (key, value) {
+    if (key === `${KEY_A}.bad`) {
+      if (failure === "throw") throw new Error("quota");
+      return;
+    }
+    realSet.call(this, key, value);
+  });
+  expect(restore(candidateDoc(), snapshot, verified)).toBe("failed");
+  expect(set.mock.calls.map(([key]) => key)).toEqual([`${KEY_A}.bad`]);
+  expect(localStorage.getItem(KEY_A)).toBeNull();
+  expect(localStorage.getItem(old)).toBe("{broken legacy");
+  expect([edit.bad, edit.dirty, edit.canUndo]).toEqual([true, false, false]);
+});
+
+async function uncertainRestore(failure: "throw" | "mismatch" = "throw") {
+  render(KEY_A);
+  add("original");
+  const snapshot = capture();
+  const verified = await backup(snapshot);
+  const realGet = Storage.prototype.getItem;
+  let reads = 0;
+  const get = vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (key) {
+    if (key === KEY_A && ++reads > 1) {
+      if (failure === "throw") throw new Error("readback denied");
+      return theirs("third");
+    }
+    return realGet.call(this, key);
+  });
+  expect(restore(candidateDoc(), snapshot, verified)).toBe("uncertain");
+  get.mockRestore();
+  return snapshot;
+}
+
+it.each(["throw", "mismatch"] as const)("본문 확인 %s: 원작업본·Undo·후보·사본과 unload holder는 대상 왕복·재마운트에도 남는다", async (failure) => {
+  const snapshot = await uncertainRestore(failure);
+  const pending = pendingEditRestore(KEY_A);
+  expect(pending).toMatchObject({ doc: snapshot.doc, raw: snapshot.raw, candidate: candidateDoc(), backupText: expect.any(String) });
+  const past = [...undoStack(KEY_A).past];
+  expect([edit.restorePending, unloadHeld(), edit.dirty]).toEqual([true, true, false]);
+  const set = vi.spyOn(Storage.prototype, "setItem");
+  add("blocked");
+  act(() => edit.undo());
+  act(() => edit.applyEdit((doc) => ({ ...doc, tracks: 10 }), { undo: false }));
+  storageEvent(KEY_A);
+  render(KEY_B);
+  keepUnsavedEditDoc(KEY_B, null);
+  expect(unloadHeld()).toBe(true);
+  render(KEY_A);
+  act(() => root.render(null));
+  renderStrict(KEY_A);
+  expect([gens(), edit.restorePending]).toEqual([["original"], true]);
+  expect(pendingEditRestore(KEY_A)).toBe(pending);
+  expect(undoStack(KEY_A).past).toEqual(past);
+  expect(set).not.toHaveBeenCalled();
+  expect(unloadHeld()).toBe(true);
+  expect(retryRestore()).toBe("saved");
+  expect([gens(), edit.restorePending, unloadHeld()]).toEqual([["imported"], false, false]);
+  expect(undoStack(KEY_A).past.at(-1)).toBe(snapshot.doc);
+});
+
+it("불확실 재조회 원문 일치면 실패 정산하고 원래 Undo·문서를 유지한다", async () => {
+  const snapshot = await uncertainRestore();
+  const past = [...undoStack(KEY_A).past];
+  localStorage.setItem(KEY_A, snapshot.raw!);
+  const set = vi.spyOn(Storage.prototype, "setItem");
+  expect(retryRestore()).toBe("failed");
+  expect([gens(), edit.restorePending, edit.readError, unloadHeld()]).toEqual([["original"], false, false, false]);
+  expect(undoStack(KEY_A).past).toEqual(past);
+  expect(set).not.toHaveBeenCalled();
+});
+
+it("불확실 재조회 제3값은 사용자 수용 전 보존하고 수용 직전 다시 바뀌면 다시 확인한다", async () => {
+  await uncertainRestore();
+  localStorage.setItem(KEY_A, theirs("third"));
+  expect(retryRestore()).toBe("uncertain");
+  const pending = pendingEditRestore(KEY_A);
+  expect([gens(), edit.restoreExternal, unloadHeld()]).toEqual([["original"], true, true]);
+  localStorage.setItem(KEY_A, theirs("fourth"));
+  const set = vi.spyOn(Storage.prototype, "setItem");
+  expect(retryRestore(true)).toBe("uncertain");
+  expect(pendingEditRestore(KEY_A)).toBe(pending);
+  expect(gens()).toEqual(["original"]);
+  expect(retryRestore(true)).toBe("stopped");
+  expect([gens(), edit.restorePending, edit.canUndo, unloadHeld()]).toEqual([["fourth"], false, false, false]);
+  expect(set).not.toHaveBeenCalled();
+});
+
+it("불확실 재조회 접근 실패와 다른 key에서의 재시도는 후보를 적용하거나 holder를 해제하지 않는다", async () => {
+  await uncertainRestore();
+  const get = denyLocalReads();
+  const set = vi.spyOn(Storage.prototype, "setItem");
+  expect(retryRestore()).toBe("uncertain");
+  expect([edit.restorePending, edit.readError, unloadHeld()]).toEqual([true, true, true]);
+  get.mockRestore();
+  render(KEY_B);
+  expect(retryRestore()).toBe("stopped");
+  expect(pendingEditRestore(KEY_A)).toBeDefined();
+  expect(unloadHeld()).toBe(true);
+  expect(set).not.toHaveBeenCalled();
 });

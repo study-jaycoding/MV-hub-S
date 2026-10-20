@@ -385,6 +385,9 @@ class LoadToolTests(unittest.TestCase):
         self.assertIs(FakeHttpsConnection.received_context, ssl_context)
 
     def test_server_environment_adds_tls_only_when_configured(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        root = Path(scratch.name)
         with mock.patch.dict(
             load_tool.os.environ,
             {
@@ -396,8 +399,8 @@ class LoadToolTests(unittest.TestCase):
             },
         ):
             plain = load_tool._server_environment(
-                Path(r"C:\Temp\data"),
-                Path(r"C:\Temp\load.db"),
+                root / "data",
+                root / "load.db",
                 8443,
             )
         self.assertNotIn("CONTENT_HUB_SSL_CERTFILE", plain)
@@ -406,13 +409,13 @@ class LoadToolTests(unittest.TestCase):
         self.assertEqual(plain["CONTENT_HUB_EXTERNAL_RECOVERY"], "0")
         self.assertEqual(plain["CONTENT_HUB_NO_PROXY"], "0")
         # 부모 셸의 경로 변수는 하나도 넘어가지 않는다(DATA_DIR 보다 우선해서 격리 폴더 밖에 쓰게 된다).
-        self.assertNotIn("CONTENT_HUB_ASSETS_DIR", plain)
+        self.assertEqual(plain["CONTENT_HUB_ASSETS_DIR"], str(root / "data/assets"))
         self.assertNotIn("CONTENT_HUB_LOG_DIR", plain)
         self.assertFalse([v for v in plain.values() if v.startswith("D:/inherited")])
 
         tls = load_tool._server_environment(
-            Path(r"C:\Temp\data"),
-            Path(r"C:\Temp\load.db"),
+            root / "data",
+            root / "load.db",
             8443,
             ssl_certfile=Path(r"C:\Temp\cert.pem"),
             ssl_keyfile=Path(r"C:\Temp\key.pem"),
@@ -504,6 +507,114 @@ class LoadToolTests(unittest.TestCase):
 
         self.assertEqual(remove_mock.call_count, 2)
         sleep_mock.assert_called_once_with(0.25)
+
+
+class CycleAggregationTests(unittest.TestCase):
+    def setUp(self):
+        self.args = SimpleNamespace(
+            users=10, cycles=2, max_p95_ms=500, max_login_p95_ms=10_000,
+            max_memory_growth_percent=20, max_rss_mb=512,
+        )
+
+    @staticmethod
+    def cycle():
+        return {
+            "login": {"p95_ms": 200, "control_probe": {
+                "samples": 2, "statuses": {200: 2}, "p95_ms": 100, "max_ms": 100,
+            }},
+            "workload": {
+                "requests": 100, "statuses": {200: 100}, "requests_per_second": 10,
+                "latency_ms": {"p95": 100, "p99": 150},
+            },
+            "connections_during_load": {
+                "websocket": {"connections": 10}, "agents": {"long_poll_waiters": 10},
+                "websocket_client_errors": [], "long_poll_client_errors": [],
+            },
+            "server": {
+                "after": {"requests": {"sqlite_locked_total": 0}, "process": {"rss_bytes": 100 * 1024 * 1024}},
+                "memory_growth_percent_after_warmup": 5,
+                "runtime_monitor_errors": [],
+                "resource_summary": {
+                    "max_rss_bytes": 110 * 1024 * 1024, "sample_count": 2,
+                    "min_websocket_connections": 10, "min_agent_connected_accounts": 10,
+                    "min_agent_long_poll_waiters": 10,
+                },
+            },
+        }
+
+    @staticmethod
+    def bad_probes():
+        return (
+            {"samples": 2, "statuses": {200: 2}, "p95_ms": 600, "max_ms": 600},
+            {"samples": 2, "statuses": {200: 1, 500: 1}, "p95_ms": 100, "max_ms": 100},
+            {"samples": 0, "statuses": {}, "p95_ms": 0, "max_ms": 0},
+        )
+
+    def test_every_cycle_rejects_bad_control_even_when_last_cycle_is_healthy(self):
+        for position in (0, 1):
+            for probe in self.bad_probes():
+                with self.subTest(position=position, probe=probe):
+                    cycles = [self.cycle(), self.cycle()]
+                    cycles[position]["login"]["control_probe"] = probe
+                    self.assertFalse(load_tool._evaluate(cycles[position], self.args)["passed"])
+                    report = load_tool._aggregate_cycles(cycles, self.args)
+                    self.assertFalse(report["prior_cycles_functional_ok"])
+                    self.assertFalse(load_tool._evaluate(report, self.args)["passed"])
+
+    def test_cycle_summaries_preserve_each_login_and_control_measurement(self):
+        self.args.cycles = 3
+        cycles = [self.cycle() for _ in range(3)]
+        expected = []
+        for index, cycle in enumerate(cycles):
+            cycle["login"]["p95_ms"] = 200 + index
+            cycle["login"]["control_probe"]["p95_ms"] = 100 + index
+            cycle["login"]["control_probe"]["max_ms"] = 100 + index
+            if index == 1:
+                cycle["login"]["control_probe"].update(statuses={"200": 2}, p95_ms=500, max_ms=500)
+            expected.append((cycle["login"]["p95_ms"], dict(cycle["login"]["control_probe"])))
+        report = load_tool._aggregate_cycles(cycles, self.args)
+        self.assertTrue(load_tool._evaluate(report, self.args)["passed"])
+        self.assertEqual(
+            [(row.get("login_p95_ms"), row.get("login_control_probe")) for row in report["cycle_summaries"]],
+            expected,
+        )
+
+    def test_healthy_cycles_keep_first_memory_high_water_as_warmup(self):
+        cycles = [self.cycle(), self.cycle()]
+        cycles[0]["server"]["memory_growth_percent_after_warmup"] = 1000
+        cycles[1]["server"]["memory_growth_percent_after_warmup"] = 30
+        cycles[1]["server"]["after"]["process"]["rss_bytes"] = 105 * 1024 * 1024
+        report = load_tool._aggregate_cycles(cycles, self.args)
+        self.assertEqual(report["server"]["memory_growth_percent_after_warmup"], 5)
+        self.assertEqual(report["cycle_summaries"][0]["within_cycle_memory_growth_percent"], 1000)
+        self.assertTrue(load_tool._evaluate(report, self.args)["passed"])
+
+    def test_single_cycle_keeps_its_own_memory_growth_failure(self):
+        self.args.cycles = 1
+        cycle = self.cycle()
+        cycle["server"]["memory_growth_percent_after_warmup"] = 30
+        report = load_tool._aggregate_cycles([cycle], self.args)
+        self.assertEqual(report["server"]["memory_growth_percent_after_warmup"], 30)
+        self.assertFalse(load_tool._evaluate(report, self.args)["passed"])
+
+    def test_missing_and_none_control_probes_keep_optional_behavior(self):
+        for position in (0, 1):
+            with self.subTest(missing_position=position):
+                cycles = [self.cycle(), self.cycle()]
+                cycles[position]["login"].pop("control_probe")
+                cycles[1 - position]["login"]["control_probe"] = None
+                report = load_tool._aggregate_cycles(cycles, self.args)
+                self.assertTrue(report["prior_cycles_functional_ok"])
+                result = load_tool._evaluate(report, self.args)
+                self.assertTrue(result["passed"])
+                self.assertNotIn("login_control_probe_healthy", result["checks"])
+
+    def test_prior_workload_failure_is_still_required(self):
+        cycles = [self.cycle(), self.cycle()]
+        cycles[0]["workload"]["latency_ms"]["p95"] = 600
+        report = load_tool._aggregate_cycles(cycles, self.args)
+        self.assertFalse(report["prior_cycles_functional_ok"])
+        self.assertFalse(load_tool._evaluate(report, self.args)["passed"])
 
 
 if __name__ == "__main__":

@@ -32,6 +32,7 @@ export function FolderTree({
   nodes,
   current,
   onSelect,
+  onOpenTab,
   expanded,
   onToggle,
   typeFilter = null,
@@ -42,6 +43,7 @@ export function FolderTree({
   nodes: AssetNode[];
   current: string;
   onSelect: (p: string) => void;
+  onOpenTab?: (path: string) => void;
   expanded: Set<string>;
   onToggle: (p: string) => void;
   typeFilter?: TypeFilter;
@@ -64,6 +66,7 @@ export function FolderTree({
       expanded={expanded}
       onToggle={onToggle}
       onSelect={onSelect}
+      onOpenTab={onOpenTab}
     />
   );
 }

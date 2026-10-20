@@ -29,11 +29,15 @@ SECRET_NAME = re.compile(r"PASSWORD|SECRET|TOKEN|KEY")
 DB_FAMILY = {
     "backend/schema.sql": "content DB",
     "backend/app/db_migrations.py": "content DB",
+    "backend/app/db_share_commands.py": "content DB",
+    "backend/app/db_asset_sync.py": "content DB",
+    "backend/app/db_asset_destination.py": "content DB",
     "backend/app/repo/id_resolve.py": "content DB",
     "backend/app/repo/manage_schema.py": "content DB",
     "backend/app/manage_db.py": "manage_hub.db",
     "backend/app/repo/trash.py": "trash DB (ATTACH)",
     "backend/app/services/worker_backup.py": "worker_backup_state.db",
+    "backend/app/services/trash_transfer.py": "content / trash DB (B1 transfer)",
     "agent_push.py": "agent_state.db (작업자 PC)",
 }
 

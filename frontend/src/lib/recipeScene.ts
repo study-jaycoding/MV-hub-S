@@ -5,6 +5,7 @@
 //  · 팀 결과물도 동일(백엔드가 팀 생성물에도 references/params 를 채움).
 import type { Generation, History, Reference } from "../types";
 import type { SceneCard, SceneEdge, SceneModelCfg, SceneRef, SceneSnapshot } from "./scenes";
+import { assetIdentity } from "../shared/contracts/assets";
 import { uid } from "./scenes";
 import { MODEL_DEFAULT_OVERRIDE } from "./useModels";
 
@@ -42,7 +43,8 @@ function refToSceneRef(r: Reference, sourceGenId?: string): SceneRef {
   return {
     // 원본 토큰/URL(source_url) 우선 — file_path 는 로컬 캐시 경로일 수 있어 팀·교차서버에서 안 풀린다.
     //  (SceneRef.file_path 계약 = 'asset:' 토큰 또는 원격 URL, 즉 재해석 가능한 위치. promptParts 와 동일 패턴.)
-    file_path: r.source_url || r.file_path,
+    ...assetIdentity(r),
+    file_path: r.asset_content_id ? r.file_path : r.source_url || r.file_path,
     type: r.type === "video" ? "video" : r.type === "audio" ? "audio" : "image",
     name: r.source || r.role || undefined,
     thumb: r.thumbnail_path || null,

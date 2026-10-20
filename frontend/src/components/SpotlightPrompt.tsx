@@ -102,6 +102,10 @@ import type {
   CanvasGenerationTarget,
 } from "../lib/canvasGenerationRecovery";
 import type { Generation, PreviewTarget, WorkspaceContext } from "../types";
+import { captureOperationContext, isOperationContextCurrent } from "../app/operationContext";
+import { assetIdentityForProject, promoteAssetReference, type AssetSyncReceipt } from "../shared/contracts/assets";
+import type { OperationContext } from "../shared/contracts/generation";
+import { chunked } from "../lib/batching";
 
 interface Props {
   // created: 방금 만든 pending 생성본들 — 즉시 '대기' 카드로 띄우게(optimistic). 없으면 그냥 리로드.
@@ -154,6 +158,7 @@ interface Props {
     target: CanvasGenerationTarget,
     count: number,
   ) => Promise<CanvasGenerationLink[]>;
+  confirmCanvasGeneration?: (links: readonly CanvasGenerationLink[]) => boolean;
   settleCanvasGeneration?: (link: CanvasGenerationLink, generation: Generation) => void;
   discardCanvasGeneration?: (link: CanvasGenerationLink) => void;
   onCanvasBatchCreated?: (created: Generation[]) => void;
@@ -197,10 +202,13 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   onCountChange,
   canvasTarget,
   prepareCanvasGeneration,
+  confirmCanvasGeneration,
   settleCanvasGeneration,
   discardCanvasGeneration,
   onCanvasBatchCreated,
 }, ref) {
+  const importTarget = { target_project_id: trayBinding?.assignment?.projectId || activeProjectId,
+    target_workspace_id: workspace.id || undefined };
   // 모델/파라미터/비용 로직은 useModels 훅으로 추출(동작 100% 보존). 로드 실패는 setError 로 보고.
   // 그룹 사용 모델 정책(앱 수준 모듈 저장소) — 못 쓰는 모델은 목록에서 빼고, 이미 고른 것이면 제출만 막는다.
   const modelPolicy = useModelPolicy();
@@ -267,6 +275,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     addAssetToTray, removeTrayRef, onTrayKeyDown, onTrayDragOver, onTrayDrop,
     reorderTray,
   } = useSpotlightTray({
+    importTarget,
     trayBinding,
     onTrayBindingRefsChange,
     onImportFiles: (files) => importExternalFilesAsRefs(files),
@@ -297,6 +306,98 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   // 다시 읽어 전역 버전 표를 갱신한다. 트레이 전용 asset(캔버스 카드에 없는 것)도 실시간 반영되게.
   const trayRefsRef = useRef(trayRefs);
   trayRefsRef.current = trayRefs;
+  const registeringRefs = useRef(new Set<string>());
+  useCustomEvent(APP_EVENTS.assetSyncReady, async (event) => {
+    const detail = (event as CustomEvent<{ receipts: AssetSyncReceipt[]; items: AssetSyncReceipt[]; operation: OperationContext }>).detail;
+    if (!detail || !isOperationContextCurrent(detail.operation)) return;
+    const receipts = [...detail.receipts];
+    // 타 PC의 대기열·캔버스에는 없는 Library 전용 참조도 현재 루트를 검증받는다.
+    const stored = readLibraryDraft(libraryDraftStoreKey);
+    const references = [...localTrayRefs, ...(editorRef.current ? serialize(editorRef.current).refs : []),
+      ...(stored?.trayRefs || []), ...(stored?.parts.flatMap(part => part?.t === "chip" ? [part.ref] : []) || [])];
+    const byProject = new Map<string, Map<string, Set<string>>>();
+    for (const ref of references) {
+      if (!ref.asset_content_id || !ref.target_project_id || receipts.some(receipt =>
+        receipt.asset_content_id === ref.asset_content_id && receipt.project_id === ref.target_project_id
+        && (promoteAssetReference(ref, receipt) !== ref || ref.file_path === receipt.file_path))) continue;
+      let ids = byProject.get(ref.target_project_id);
+      if (!ids) byProject.set(ref.target_project_id, ids = new Map());
+      let previous = ids.get(ref.asset_content_id);
+      if (!previous) ids.set(ref.asset_content_id, previous = new Set());
+      if (ref.server_location) previous.add(ref.server_location.location_id);
+    }
+    for (const [project, ids] of byProject) for (const batch of chunked([...ids.keys()])) {
+      if (!isOperationContextCurrent(detail.operation)) return;
+      const previous = Object.fromEntries(batch.filter(cid => ids.get(cid)!.size).map(cid => [cid, [...ids.get(cid)!]]));
+      try {
+        const resolved = await api.resolveManagedAssets(batch, project, previous);
+        if (!isOperationContextCurrent(detail.operation)) return;
+        receipts.push(...resolved.items.filter(receipt => receipt.state === "ready" && !!receipt.owner_uid && !!receipt.storage_id
+          && receipt.server_origin?.replace(/\/$/, "") === detail.operation.serverOrigin.replace(/\/$/, "")));
+      } catch { /* 서버가 끊겼으면 기존 참조를 유지하고 다음 상태 확인에서 다시 묻는다. */ }
+    }
+    if (!isOperationContextCurrent(detail.operation)) return;
+    const promote = <T extends ChipRef>(ref: T): T => receipts.reduce((next, receipt) => promoteAssetReference(next, receipt), ref);
+    setLocalTrayRefs(previous => {
+      if (!isOperationContextCurrent(detail.operation)) return previous;
+      const next = previous.map(promote);
+      return next.some((ref, index) => ref !== previous[index]) ? next : previous;
+    });
+    let changed = false;
+    for (const node of editorRef.current?.querySelectorAll<HTMLElement>(".inline-ref[data-ref]") || []) {
+      try {
+        const before = JSON.parse(node.dataset.ref!) as ChipRef;
+        const after = promote(before);
+        if (after !== before) { node.dataset.ref = JSON.stringify(after); changed = true; }
+      } catch { /* 손상된 칩은 기존 편집 복구 경로로 남긴다. */ }
+    }
+    if (changed) setPromptTick(tick => tick + 1);
+    if (bindingKeyRef.current !== null) {
+      const stored = readLibraryDraft(libraryDraftStoreKey);
+      if (stored) {
+        const draft = { parts: stored.parts.map(part => part.t === "chip" ? { ...part, ref: promote(part.ref) } : part),
+          trayRefs: stored.trayRefs.map(promote) };
+        if (JSON.stringify(draft) !== JSON.stringify(stored)) writeLibraryDraft(libraryDraftStoreKey, draft);
+      }
+      const parts = draftParse(libraryDraftRef.current);
+      const promoted = parts.map(part => part.t === "chip" ? { ...part, ref: promote(part.ref) } : part);
+      if (JSON.stringify(parts) !== JSON.stringify(promoted)) libraryDraftRef.current = JSON.stringify(promoted);
+    }
+    const sources = [...localTrayRefs, ...(editorRef.current ? serialize(editorRef.current).refs : [])]
+      .filter(ref => !!ref.target_project_id && (!ref.asset_content_id || (!ref.server_location
+        && !detail.items.some(item => item.asset_content_id === ref.asset_content_id && item.project_id === ref.target_project_id
+          && item.server_origin?.replace(/\/$/, "") === detail.operation.serverOrigin.replace(/\/$/, "")))));
+    const unique = new Map(sources.map(ref => [`${ref.target_project_id}\u0000${ref.file_path}`, ref]));
+    void (async () => {
+      for (const ref of unique.values()) {
+        if (!isOperationContextCurrent(detail.operation)) return;
+        const key = `${detail.operation.sessionEpoch}\u0000${ref.target_project_id}\u0000${ref.file_path}`;
+        if (registeringRefs.current.has(key)) continue;
+        registeringRefs.current.add(key);
+        try {
+          const registered = await api.registerAssetReference(ref.file_path, { target_project_id: ref.target_project_id,
+            target_workspace_id: detail.operation.workspaceId || undefined }, ref.asset_content_id);
+          if (!isOperationContextCurrent(detail.operation)) return;
+          if (!registered.asset_content_id) continue;
+          const attach = <T extends ChipRef>(candidate: T): T => candidate.file_path === ref.file_path
+            && candidate.target_project_id === ref.target_project_id && !candidate.asset_content_id
+            ? { ...candidate, asset_content_id: registered.asset_content_id } : candidate;
+          setLocalTrayRefs(previous => {
+            const next = previous.map(attach);
+            return next.some((item, index) => item !== previous[index]) ? next : previous;
+          });
+          let attached = false;
+          for (const node of editorRef.current?.querySelectorAll<HTMLElement>(".inline-ref[data-ref]") || []) {
+            const before = JSON.parse(node.dataset.ref!) as ChipRef;
+            const after = attach(before);
+            if (before !== after) { node.dataset.ref = JSON.stringify(after); attached = true; }
+          }
+          if (attached) setPromptTick(tick => tick + 1);
+        } catch { /* 로컬 파일은 그대로 쓰고 다음 보관 상태 확인에서 재시도한다. */ }
+        finally { registeringRefs.current.delete(key); }
+      }
+    })();
+  });
   const promptAssetProjectsKey = useMemo(() => {
     const projects = new Set<string>();
     const inlineRefs = editorRef.current ? serialize(editorRef.current).refs : [];
@@ -753,14 +854,16 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     imagePasteHeldRef.current = true; // 아래 — 이 Ctrl+V 를 뗄 때까지 반복은 막는다
     // 붙여넣은 그림은 이 PC 설치 폴더(captures)에 저장한다(Jay 2026-09-29 옛 방식).
     const startedFor = bindingKeyRef.current;
+    const operation = captureOperationContext(workspace);
     setImportingRefs((n) => n + 1);
     api
-      .uploadCapture(blob)
+      .uploadCapture(blob, { ...importTarget })
       .then((r) => {
+        if (!isOperationContextCurrent(operation)) return;
         // 올리는 사이 고른 카드가 바뀌었으면 지금 카드의 레퍼런스에는 넣지 않는다(아래 importExternalFilesAsRefs 와 같다) — 넣으면 A 에서
         //  붙여 넣은 그림이 B 의 레퍼런스로 저장된다(조작 규칙 48). 그림은 가져왔다(Assets 에 있다).
         if (bindingKeyRef.current !== startedFor) setError("붙여 넣은 그림을 가져왔지만, 그사이 고른 카드가 바뀌어 레퍼런스에는 넣지 않았습니다 — Assets 에서 끌어 넣으세요.");
-        else addAssetRefs(JSON.stringify([{ project: r.project, path: r.path, name: r.name, type: "image" }]));
+        else addAssetRefs(JSON.stringify([{ ...r, type: "image" }]));
         // 임포트와 동일하게 에셋창에 변경 신호 — 캡쳐도 실시간 반영되도록.
         notifySpotlightAssetsChanged([{ project: r.project, path: r.path, name: r.name, type: r.type || "image" }]);
       })
@@ -858,7 +961,8 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     if (!a) return;
     const isVid = a.type === "video";
     const ref: ChipRef = {
-      file_path: a.source_url || a.file_path,
+      ...assetIdentityForProject(a, importTarget.target_project_id),
+      file_path: a.asset_content_id ? a.file_path : a.source_url || a.file_path,
       type: a.type,
       role: isVid ? "@Video" : `@Image${countImageChips(ed) + 1}`,
       name: s.source_name || "source",
@@ -944,6 +1048,9 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
         ) {
           opts[k] = v;
         }
+      }
+      if (g.model === "seedance_2_5" && g.params?.draft === true && !g.params.draft_job_id) {
+        opts.resolution = "480p";
       }
       setType(t);
       // 비교는 **응답이 도착한 지금**의 모델로 한다 — 요청 중에 정책이 바뀌어 모델이 교체됐을 수 있다(코덱스 P1).
@@ -1045,7 +1152,8 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       }
       const isVid = a.type === "video";
       const ref: ChipRef = {
-        file_path: a.source_url || a.file_path,
+        ...assetIdentityForProject(a, importTarget.target_project_id),
+        file_path: a.asset_content_id ? a.file_path : a.source_url || a.file_path,
         type: a.type,
         role: isVid ? "@Video" : `@Image${countImageChips(ed) + 1}`,
         // 칩 이름: 소스명(등록 시) 우선, 없으면 고유 ID(앞 8자리 — 4자리는 충돌 가능)
@@ -1073,6 +1181,8 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   };
 
   const importExternalFilesAsRefs = async (files: File[]) => {
+    const operation = captureOperationContext(workspace);
+    const target = { ...importTarget };
     const accepted = files.filter((f) => referenceDropTypeFromFile(f));
     const ignored = files.length - accepted.length;
     if (!accepted.length) {
@@ -1084,7 +1194,8 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     setImportingRefs((n) => n + 1);
     try {
       // 로컬 파일은 이 PC 설치 폴더(imports)에 저장한다(Jay 2026-09-29 옛 방식).
-      const res = await api.uploadReferenceFiles(accepted);
+      const res = await api.uploadReferenceFiles(accepted, target);
+      if (!isOperationContextCurrent(operation)) return;
       const items: SpotlightAssetDragItem[] = res.saved || [];
       const skipped = res.skipped || [];
       if (items.length && bindingKeyRef.current !== startedFor) {
@@ -1138,6 +1249,8 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
 
   // 에셋 드롭 공용(프롬프트 패널/트레이): 확장이면 트레이로, 접힘이면 인라인 칩으로 — 다중선택 일괄.
   const addAssetRefs = (raw: string) => {
+    raw = JSON.stringify(parseSpotlightAssetItems(raw).map(item => ({ ...item,
+      ...assetIdentityForProject(item, importTarget.target_project_id) })));
     if (expanded) {
       addAssetToTray(raw); // 트레이(배열 그대로 — 중복 허용)
       return;
@@ -1176,6 +1289,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     onCreated,
     canvasTarget,
     prepareCanvasGeneration,
+    confirmCanvasGeneration,
     settleCanvasGeneration,
     discardCanvasGeneration,
     onCanvasBatchCreated,

@@ -36,6 +36,7 @@ from ..services.asset_registry import (
 )
 from ..services.asset_registry_scan import hidden_name
 from ..services.media_types import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
+from ..services import project_folders
 from ..services.operational_logging import log_event
 from . import _proxy
 
@@ -363,15 +364,21 @@ def helper_lease(body: HelperLeaseIn, request: Request) -> dict[str, Any]:
     if unc is None:
         raise HTTPException(status_code=422, detail="서버가 이 프로젝트 루트의 공유 주소를 모릅니다(CONTENT_HUB_ASSET_REGISTRY_DRIVES)")
     # 훑는 곳도 같은 잠금 안에서 다시 본다 — 위 확인과 자리 발급 사이에 '서버'로 바뀌는 경쟁(set_mode 와 같은 잠금)
-    lease = leases.acquire(body.project_id, name, owner, unc, lambda: controller.busy() or registry_mode() != "local")
+    results_root=project_folders.effective_root_path(body.project_id)
+    results_unc=canonical_unc(results_root) or ''
+    lease = leases.acquire(body.project_id, name, owner, unc, lambda: controller.busy() or registry_mode() != "local",results_unc=results_unc)
     if lease is None:
         raise HTTPException(status_code=409, detail="이미 다른 곳에서 훑는 중입니다")
     with get_connection() as conn:
         rows = registry.registry_rows(conn, body.project_id)
+        scan=conn.execute('SELECT root FROM asset_registry_scan WHERE project_id=?',(body.project_id,)).fetchone()
+        from ..services.asset_registry import root_key
+        if not scan or root_key(scan[0])!=root_key(unc):
+            rows=[]
     known = [{"p": r["path"], "b": r["bytes"], "m": r["mtime_ns"] or 0, "s": r["sha256"]}
              for r in rows if r["state"] == "present"]
     log_event(_log, "asset_registry_helper_lease", project_id=body.project_id, known=len(known))
-    return {"lease_id": lease["id"], "unc": unc, "ttl_s": LEASE_TTL_S, "known": known}
+    return {"lease_id": lease["id"], "unc": unc, "results_unc":results_unc, "ttl_s": LEASE_TTL_S, "known": known}
 
 
 @router.post("/helper/renew")
@@ -420,7 +427,7 @@ def helper_result(body: HelperResultIn, request: Request) -> dict[str, Any]:
                 "elapsed_ms": body.stats.elapsed_ms, "note": "도우미 PC",
             }
             kinds = controller._apply(lease["project_id"], lease["name"], scan, stats)
-        ack = {"ok": True, "applied": body.complete, "clean": clean, "kinds": kinds}
+        ack = {"ok": True, "applied": body.complete and not kinds.get('discarded_root_changed'), "clean": clean, "kinds": kinds}
     finally:
         leases.finish_apply(body.lease_id, body.seq, digest, ack)
     log_event(_log, "asset_registry_helper_result", project_id=lease["project_id"], complete=body.complete,
@@ -444,7 +451,7 @@ def helper_results(body: HelperResultsIn, request: Request) -> dict[str, Any]:
     lease = value
     ack: Optional[dict[str, Any]] = None
     try:
-        ack = {"ok": True, **apply_results_snapshot(lease["project_id"], lease["unc"], "helper", files)}
+        ack = {"ok": True, **apply_results_snapshot(lease["project_id"], lease.get("results_unc",lease["unc"]), "helper", files)}
     finally:
         leases.finish_apply(body.lease_id, body.seq, digest, ack)
     log_event(_log, "nas_results_helper", project_id=lease["project_id"], files=len(files),

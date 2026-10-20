@@ -3,6 +3,7 @@ import type { SyntheticEvent } from "react";
 import { api } from "../api";
 import { getAssetVersion } from "./assetVersions";
 import type { Generation } from "../types";
+import { managedAssetUrl } from "../shared/contracts/assets";
 
 // 썸네일 로드 실패 시 공용 폴백 — 깨진 이미지 아이콘 대신 조용히 숨겨 컨테이너 배경(플레이스홀더)이 보이게.
 // media-thumb 프록시가 실패 시 원본으로 리다이렉트하는데 그 원본마저 브라우저에서 막히는 최종 케이스 방어.
@@ -113,6 +114,8 @@ export function filesFromDataTransfer(dataTransfer: DataTransfer): File[] {
 
 export function thumbUrl(path: string | null | undefined, size = 256): string | null {
   if (!path) return null;
+  const managed = managedAssetUrl(path);
+  if (managed) return managed;
   // 저장값(생성 ref 의 thumbnail_path 등)에 v 없는 /api/assets/thumb 원시 URL 이 남아 있다 —
   // 과거 빌드가 그 주소로 옛 썸네일을 브라우저에 장기 캐시해 둬서 그대로 쓰면 옛 이미지가 뜬다.
   // project/path 를 꺼내 전역 버전표 기반 URL 로 재생성한다(버전 없으면 b 버스터로 재검증 경로).
@@ -136,6 +139,8 @@ export function thumbUrl(path: string | null | undefined, size = 256): string | 
 //  · 이미 프록시(/api/…) URL 이면 그대로(중복 래핑·옛 저장값 호환), 오디오/빈값 → null
 export function displayThumb(pathOrToken: string | null | undefined, size = 256): string | null {
   if (!pathOrToken) return null;
+  const managed = managedAssetUrl(pathOrToken);
+  if (managed) return managed;
   if (pathOrToken.startsWith("asset:")) {
     const [proj, path] = pathOrToken.slice(6).split("|");
     // 전역 버전 표에 최신 버전이 있으면 붙인다 → 원본이 바뀌면 URL 이 바뀌어 새 썸네일을 불러온다.
@@ -165,7 +170,7 @@ export function displayRefThumb(
 ): string | undefined {
   if (ref.type === "audio") return undefined;
   const fp = ref.file_path || "";
-  const isAssetSrc = fp.startsWith("asset:") || fp.startsWith("/api/assets/file");
+  const isAssetSrc = fp.startsWith("asset:") || !!managedAssetUrl(fp) || fp.startsWith("/api/assets/file");
   // 원격 영상 원본만 있고 포스터가 없으면 media-thumb가 최대 128MB를 받으려 시도할 수 있다.
   // 그 경우는 undefined로 두어 MediaThumbnail의 Range metadata 폴백을 사용한다. 보존된 /media와
   // 에셋 영상은 서버가 로컬 파일에서 포스터를 싸게 만들 수 있으므로 원본 경로를 썸네일 입력으로 쓴다.

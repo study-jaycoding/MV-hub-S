@@ -207,7 +207,7 @@ export function CutInfoPopup({ folder, x, y, query, savingRep, previewOpen, onCl
               ) : (
                 <img src={coverAsset.file_path || coverAsset.thumbnail_path || undefined} alt="" />
               )}
-              <span className={"cutinfo-tag" + (folder.rep ? " rep" : "")}>{folder.rep ? `★ ${t("대표")}` : `${t("대표 미정")} · ${t("최신 것")}`}</span>
+              <span className={"cutinfo-tag" + (folder.rep ? " rep" : "")}>{folder.rep ? t("썸네일") : `${t("썸네일 미정")} · ${t("최신 것")}`}</span>
             </div>
           )}
           <div className="info-rows">
@@ -220,7 +220,7 @@ export function CutInfoPopup({ folder, x, y, query, savingRep, previewOpen, onCl
               <>
                 <Row
                   label={t("건수")}
-                  value={<>{summary.total}<span className="cutinfo-m">{t("영상")} {summary.videos} · {t("이미지")} {summary.images}{truncated ? ` · ${t("최근")} ${MAX}${t("건 기준")}` : ""}</span></>}
+                  value={<>{summary.total}<span className="cutinfo-m">{[summary.videos ? `${t("영상")} ${summary.videos}` : "", summary.images ? `${t("이미지")} ${summary.images}` : "", truncated ? `${t("최근")} ${MAX}${t("건 기준")}` : ""].filter(Boolean).join(" · ")}</span></>}
                 />
                 <Row label={t("작업자")} value={summary.workers.map((w) => `${w.name} ${w.count}`).join(" · ") || null} />
                 <Row label={t("크레딧(실제)")} value={creditsText} />
@@ -254,11 +254,11 @@ export function CutInfoPopup({ folder, x, y, query, savingRep, previewOpen, onCl
                       <button
                         type="button"
                         className={"cutinfo-rep" + (isCover && folder.rep ? " on" : "")}
-                        title={isCover && folder.rep ? t("지금 대표") : t("대표로")}
+                        title={isCover && folder.rep ? t("지금 썸네일") : t("썸네일로")}
                         disabled={savingRep || (isCover && folder.rep) || g.deleted}
                         onClick={() => void Promise.resolve(onPickCover(folder, g)).then((saved) => { if (saved === false) setRefetch((n) => n + 1); })}
                       >
-                        ★
+                        {t("썸네일")}
                       </button>
                     </div>
                   );

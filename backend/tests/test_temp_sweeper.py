@@ -124,6 +124,35 @@ class TempSweeperTests(unittest.TestCase):
             self.assertTrue(unrelated.exists())
             self.assertEqual(stats["comfy_staging"], 2)
 
+    def test_bundle_cleanup_only_removes_old_root_archives(self):
+        with TemporaryDirectory(ignore_cleanup_errors=True) as d:
+            root = Path(d)
+            nested = root / "nested"
+            nested.mkdir()
+            stale = root / "mvhub-bundle-stale.zip"
+            fresh = root / "mvhub-bundle-active.zip"
+            user_zip = root / "user-original.zip"
+            source = root / "mvhub-bundle-bytes-original.png"
+            nested_zip = nested / "mvhub-bundle-stale.zip"
+            for path in (stale, fresh, user_zip, source, nested_zip):
+                path.write_bytes(b"keep")
+                if path != fresh:
+                    old = time.time() - 3 * 86400
+                    os.utime(path, (old, old))
+            with (
+                mock.patch.object(temp_sweeper.tempfile, "gettempdir", return_value=str(root)),
+                mock.patch.object(temp_sweeper, "MEDIA_DIR", root / "media"),
+                mock.patch.object(temp_sweeper, "_comfy_input_mvhub_dir", return_value=None),
+                mock.patch.object(media_cache, "recalculate_preserved_media_usage"),
+                mock.patch.object(media_cache, "evict_thumb_source_cache", return_value=0),
+                mock.patch.object(thumbs, "evict_thumb_cache", return_value=0),
+            ):
+                stats = temp_sweeper.sweep_once()
+            self.assertEqual(stats["temp_exports"], 1)
+            self.assertFalse(stale.exists())
+            for path in (fresh, user_zip, source, nested_zip):
+                self.assertTrue(path.exists())
+
     def test_daily_sweep_recalculates_preserved_usage_after_external_changes(self):
         with TemporaryDirectory(ignore_cleanup_errors=True) as d:
             root = Path(d) / "media"

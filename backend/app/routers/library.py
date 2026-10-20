@@ -1238,6 +1238,7 @@ def locate_generation_targets(body: GenerationLocateIn, request: Request):
 
 class GenerationBatchIn(BaseModel):
     gen_ids: list[str]
+    authority: Literal["lookup", "local", "team"] = "lookup"
     # 새 캔버스 상태 조회만 켠다(2026-10-03) — 공유 서버 장애 때 로컬 결과를 버리지 않고 못 물어본 id 를
     # unavailable 로 돌려준다. 옛 화면·다른 소비자는 보내지 않으므로 지금처럼 502 를 받는다.
     allow_partial: bool = False
@@ -1248,6 +1249,14 @@ class GenerationBatchOut(BaseModel):
     materials: dict[str, list[str]]
     missing: list[str]
     unavailable: list[str] = []  # 서버 장애로 확인 못 한 id — 삭제(missing)가 아니다
+    authority: Optional[Literal["local", "team"]] = None
+
+    @model_serializer(mode="wrap")
+    def omit_legacy_authority(self, handler):
+        data = handler(self)
+        if self.authority is None:
+            data.pop("authority", None)
+        return data
 
 
 @router.post("/generations/batch", response_model=GenerationBatchOut)
@@ -1260,17 +1269,21 @@ def get_generations_batch(body: GenerationBatchIn, request: Request):
     ids = list(dict.fromkeys(str(gen_id).strip() for gen_id in (body.gen_ids or []) if str(gen_id).strip()))
     if len(ids) > 500:
         raise HTTPException(status_code=413, detail="한 번에 조회 가능한 생성물은 최대 500개입니다")
+    marker = {"authority": body.authority} if body.authority != "lookup" else {}
     if not ids:
-        return {"items": {}, "materials": {}, "missing": [], "unavailable": []}
+        return {"items": {}, "materials": {}, "missing": [], "unavailable": [], **marker}
 
     account_uid = _account_uid(request)
-    local_items, local_materials = repo.get_generations_with_materials(ids, account_uid=account_uid)
+    team_proxy = body.authority == "team" and _proxy.proxying()
+    local_items, local_materials = ({}, {}) if team_proxy else repo.get_generations_with_materials(ids, account_uid=account_uid)
     # 공유물 권한은 프로젝트 멤버십에만 의존한다. 요청 안에서는 멤버십이 변하지 않으므로
     # 필요한 경우 한 번만 집합으로 고정한다 — 규칙은 deps.batch_view_member_projects 단일 출처.
     member_project_ids = batch_view_member_projects(request, local_items.values())
     visible_items: dict[str, dict] = {}
     visible_materials: dict[str, list[str]] = {}
     for gen_id, gen in local_items.items():
+        if body.authority == "team" and (not gen.get("shared") or gen.get("deleted")):
+            continue
         if not can_view_generation_with_member_projects(request, gen, member_project_ids):
             continue  # 단건 GET과 같은 존재 은닉 — batch에서는 missing으로 합친다.
         visible_items[gen_id] = gen
@@ -1278,20 +1291,26 @@ def get_generations_batch(body: GenerationBatchIn, request: Request):
 
     unresolved = [gen_id for gen_id in ids if gen_id not in visible_items]
     unavailable: list[str] = []
-    if unresolved and _proxy.proxying():
+    if unresolved and body.authority != "local" and _proxy.proxying():
         try:
             remote = _proxy.proxy_json(
                 "POST",
                 "/api/generations/batch",
-                body={"gen_ids": unresolved},
+                body={"gen_ids": unresolved, **({"authority": "team"} if team_proxy else {})},
                 timeout=15,
             )
         except HTTPException as exc:
+            if team_proxy and exc.status_code in (400, 404, 405, 422, 501):
+                raise HTTPException(status_code=409, detail="공유 서버가 출처별 조회를 지원하지 않아 전체 팀 목록을 다시 확인해야 합니다") from None
             # 서버 장애(연결 실패·읽기 시간초과=502, 게이트웨이 503·504)만 부분 응답 — 인증·권한·다른 오류는 그대로.
             if not (body.allow_partial and exc.status_code in (502, 503, 504)):
                 raise
             remote, unavailable = None, unresolved
+        if team_proxy and not unavailable and not isinstance(remote, dict):
+            raise HTTPException(status_code=502, detail="공유 서버의 생성물 조회 응답을 확인할 수 없습니다")
         if isinstance(remote, dict):
+            if team_proxy and remote.get("authority") != "team":
+                raise HTTPException(status_code=409, detail="공유 서버가 출처별 조회를 지원하지 않아 전체 팀 목록을 다시 확인해야 합니다")
             remote_items = remote.get("items") if isinstance(remote.get("items"), dict) else {}
             _overlay_personal_meta(list(remote_items.values()), request)
             remote_materials = (
@@ -1300,6 +1319,8 @@ def get_generations_batch(body: GenerationBatchIn, request: Request):
             for requested_id in unresolved:
                 gen = remote_items.get(requested_id)
                 if isinstance(gen, dict):
+                    if team_proxy and (not gen.get("shared") or gen.get("deleted")):
+                        continue
                     visible_items[requested_id] = gen
                     parents = remote_materials.get(requested_id)
                     visible_materials[requested_id] = (
@@ -1312,6 +1333,7 @@ def get_generations_batch(body: GenerationBatchIn, request: Request):
         "materials": visible_materials,
         "missing": [gen_id for gen_id in ids if gen_id not in visible_items and gen_id not in unavailable],
         "unavailable": unavailable,
+        **marker,
     }
 
 

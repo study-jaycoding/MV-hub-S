@@ -7,6 +7,10 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { GenQuery, Generation } from "../src/types";
+import { APP_EVENTS, dispatchAppEvent } from "../src/lib/appEvents";
+import { generationChangeScope, getGenerationReadModel, type GenerationChange } from "../src/features/library/api";
+import { groupGenerations } from "../src/lib/folderCardsLocal";
+import { onLibraryChanged } from "../src/lib/libraryBroadcast";
 
 const listGenerations = vi.fn();
 vi.mock("../src/api", () => ({ api: { listGenerations: (...args: unknown[]) => listGenerations(...args) }, GEN_PAGE: 200 }));
@@ -34,9 +38,145 @@ const ids = () => latest.gens?.map((g) => g.id) ?? null;
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   listGenerations.mockReset();
+  getGenerationReadModel("auth", "local");
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
+});
+
+let tagSequence = 0;
+const tagChange = (overrides: Partial<GenerationChange> = {}): GenerationChange => ({
+  version: 1, id: `local-folder-tags:${++tagSequence}`, scope: generationChangeScope(), resourceIds: ["tail"],
+  changedFields: ["tags"], affectsMembership: false, source: "local", ...overrides,
+});
+function settleTags(change: GenerationChange, raw = false) {
+  const detail = { ids: change.resourceIds, fields: change.changedFields, change };
+  act(() => {
+    if (raw) window.dispatchEvent(new CustomEvent(APP_EVENTS.generationTagsSettled, { detail }));
+    else dispatchAppEvent(APP_EVENTS.generationTagsSettled, detail);
+  });
+}
+const groupedCount = () => {
+  const grouped = groupGenerations(latest.gens ?? [], place.projectId, place.parent, null);
+  return grouped.folders.reduce((sum, folder) => sum + folder.count, grouped.own_count);
+};
+
+it.each([
+  [{ tag: "wanted" }, "tags"],
+  [{ tags: ["wanted"] }, "tags"],
+  [{ search: "wanted" }, "tags"],
+  [{ auto_tags: ["wanted"] }, "auto_tags"],
+] as const)("T06 settled %j rechecks the 201st row with unchanged first page and folder cards", async (filter, field) => {
+  const firstPage = Array.from({ length: 200 }, (_, index) => gen(`first-${index}`, { sort_ts: 1000 - index }));
+  const before = [...firstPage, gen("tail")];
+  const cards = groupGenerations(before, place.projectId, place.parent, null);
+  cards.folders[0].rep = true; // 태그를 바꾸는 tail은 대표도 첫 쪽도 아니다.
+  const signature = firstPage.map((g) => g.id).join(",");
+  const props = { query: query({ ...filter }), listSig: signature, base: cards };
+  listGenerations.mockResolvedValue(before);
+  draw(props);
+  await settle();
+  expect([groupedCount(), latest.fresh]).toEqual([201, true]);
+
+  let release!: (rows: Generation[]) => void;
+  listGenerations.mockImplementationOnce(() => new Promise<Generation[]>((resolve) => { release = resolve; }));
+  settleTags(tagChange({ changedFields: [field] }));
+  draw(props); // App의 첫 쪽과 비필터 서버 집계 응답은 그대로다.
+  await settle();
+  expect([listGenerations.mock.calls.length, groupedCount(), latest.fresh, latest.loading]).toEqual([2, 201, false, true]);
+  await act(async () => { release(firstPage); });
+  await settle();
+  expect([groupedCount(), latest.fresh, latest.loading, latest.failed]).toEqual([200, true, false, false]);
+  expect(cards.folders[0].count).toBe(201); // 비필터 서버 집계/대표 객체는 바꾸지 않는다.
+  expect(cards.folders[0].rep).toBe(true);
+});
+
+it("T06 rejects foreign scopes, unrelated fields, empty and duplicate settled changes", async () => {
+  listGenerations.mockResolvedValue([gen("one")]);
+  const props = { query: query({ tags: ["wanted"] }), listSig: "one", base: {} };
+  draw(props);
+  await settle();
+  const valid = tagChange();
+  for (const change of [
+    tagChange({ scope: { ...valid.scope, accountNamespace: "other" } }),
+    tagChange({ scope: { ...valid.scope, serverOrigin: "https://other.invalid" } }),
+    tagChange({ scope: { ...valid.scope, connectionKey: "old-connection" } }),
+    tagChange({ resourceIds: [] }), tagChange({ changedFields: [] }),
+    tagChange({ changedFields: ["auto_tags"] }), tagChange({ changedFields: ["color"] }),
+    tagChange({ affectsMembership: true }),
+  ]) settleTags(change, true);
+  act(() => window.dispatchEvent(new CustomEvent(APP_EVENTS.generationTagsSettled, { detail: { ids: ["tail"], fields: ["tags"] } })));
+  await settle();
+  expect(listGenerations).toHaveBeenCalledTimes(1);
+  settleTags(valid, true);
+  await settle();
+  expect(listGenerations).toHaveBeenCalledTimes(2);
+  draw({ ...props, query: { ...props.query } });
+  settleTags(valid, true);
+  await settle();
+  expect(listGenerations).toHaveBeenCalledTimes(2);
+});
+
+it("T06 tag-free grouping and auto-tag filters ignore unrelated manual tags", async () => {
+  listGenerations.mockResolvedValue([gen("one")]);
+  for (const filter of [{}, { media_type: "video" }, { auto_tags: ["wanted"] }] as Partial<GenQuery>[]) {
+    draw({ query: query(filter) });
+    await settle();
+    const calls = listGenerations.mock.calls.length;
+    settleTags(tagChange());
+    await settle();
+    expect(listGenerations).toHaveBeenCalledTimes(calls);
+  }
+});
+
+it("T06 peer bridge revalidates filtered grouping once without waking broad consumers", async () => {
+  let channel!: { onmessage: ((event: { data: unknown }) => void) | null };
+  vi.stubGlobal("BroadcastChannel", class {
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+    constructor() { channel = this; }
+    close() {}
+  });
+  const broad = vi.fn(), peer = vi.fn();
+  const off = onLibraryChanged(broad, peer); // App 목록 훅이 갖는 실제 BC → DOM 연결.
+  try {
+    listGenerations.mockResolvedValue([gen("old"), gen("tail")]);
+    draw({ query: query({ tag: "wanted" }) });
+    await settle();
+    listGenerations.mockResolvedValue([gen("old")]);
+    const message = { tab: "peer", event: APP_EVENTS.generationTagsSettled, change: tagChange() };
+    act(() => { channel.onmessage?.({ data: message }); channel.onmessage?.({ data: message }); });
+    await settle();
+    expect([groupedCount(), listGenerations.mock.calls.length, latest.fresh]).toEqual([1, 2, true]);
+    expect(peer).toHaveBeenCalledTimes(1);
+    expect(broad).not.toHaveBeenCalled();
+  } finally {
+    off();
+    vi.unstubAllGlobals();
+  }
+});
+
+it("T06 settled requery failure stays stale and a later change retries; old-account responses are discarded", async () => {
+  const filtered = query({ tags: ["wanted"] });
+  listGenerations.mockResolvedValue([gen("old")]);
+  draw({ query: filtered });
+  await settle();
+  listGenerations.mockRejectedValueOnce(new Error("502"));
+  settleTags(tagChange());
+  await settle();
+  expect([ids(), latest.fresh, latest.failed, latest.loading]).toEqual([["old"], false, true, false]);
+
+  let release!: (rows: Generation[]) => void;
+  listGenerations.mockImplementationOnce(() => new Promise<Generation[]>((resolve) => { release = resolve; }));
+  settleTags(tagChange());
+  await settle();
+  expect([latest.fresh, latest.failed, latest.loading]).toEqual([false, false, true]);
+  getGenerationReadModel("new-auth", "local");
+  draw({ query: filtered, authKey: "new-auth" });
+  expect(latest.gens).toBeNull();
+  listGenerations.mockResolvedValue([gen("new-account")]);
+  await act(async () => { release([gen("stale-account")]); });
+  await settle();
+  expect([ids(), latest.fresh]).toEqual([["new-account"], true]);
 });
 afterEach(() => {
   act(() => root.unmount());

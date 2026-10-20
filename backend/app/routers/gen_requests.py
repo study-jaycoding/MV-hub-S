@@ -47,6 +47,7 @@ from ..models import (
     WorkspaceContext,
 )
 from ..services.agent_signals import agent_signals
+from ..services.seedance_draft import DraftFinishConflict, finish_params, fresh_params
 from ..services.operational_logging import log_event
 from ..services.release_update import update_in_progress
 from ..usecases.gen_requests import (
@@ -272,6 +273,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
         if not body.create:
             raise HTTPException(status_code=400, detail="create 본문이 필요합니다")
         data = body.create.model_dump()
+        data["params"] = fresh_params(data["model"], data.get("params"))
         # project_id 검증(AUTH on) — 남의 프로젝트 id 를 넣어 그 팀 영역에 작업을 주입하거나
         # 존재하지 않는 project_id 로 귀속시키는 것을 막는다. read_only=True 라 그 프로젝트 멤버이거나
         # 전역 read_all(admin·PM·PD)이면 통과. 로컬 허브(AUTH off)는 가드가 즉시 통과(개인 모드 보존).
@@ -350,6 +352,21 @@ async def create_gen_request(body: GenRequestIn, request: Request):
                 read_only=True,
             )
         reg = body.regenerate or RegenerateIn()
+        if reg.finish_draft:
+            if not creator_uid or parent.get("creator_uid") != creator_uid:
+                raise HTTPException(status_code=403, detail="내 계정의 Draft만 고화질로 생성할 수 있습니다")
+            if (
+                parent.get("workspace_scope") != workspace.scope
+                or (parent.get("workspace_id") or None) != workspace.id
+            ):
+                raise HTTPException(status_code=409, detail="원본 Draft의 워크스페이스를 선택하세요",
+                                    headers=dict(NOT_STARTED))
+            if any(getattr(reg, key) is not None for key in ("prompt", "model", "color", "worker_id", "auto_tags")):
+                raise HTTPException(status_code=400, detail="Draft 고화질 생성에서는 원본 옵션을 변경할 수 없습니다")
+            try:
+                finish_params(parent)
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc), headers=dict(NOT_STARTED)) from exc
         # worker_id 는 parent 기준으로 라우터가 계산(usecase 가 parent 를 다시 읽으면 동작이 달라짐).
         cmd = GenRequestCommand(
             kind="regenerate",
@@ -376,6 +393,9 @@ async def create_gen_request(body: GenRequestIn, request: Request):
 
     try:
         gen = await submit_gen_request(cmd)
+    except DraftFinishConflict as exc:
+        # shortcut: 빈 preparing 예약은 남는다. retention 연결 시 placeholder·완성 표식 없는 행만 정리한다.
+        raise HTTPException(status_code=409, detail=str(exc), headers=dict(NOT_STARTED)) from exc
     except (CanvasGenerationConflict, GenerationIdempotencyConflict) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not gen:
@@ -545,6 +565,7 @@ async def pending_gen_requests_exist(
             repo.has_pending_requests,
             acc["email"],
             workspace_capable="workspace" in caps,
+            asset_content_capable="asset-content" in caps,
         )
     }
 
@@ -582,6 +603,7 @@ async def pending_gen_requests(
         workspace_capable="workspace" in caps,
         lease_owner=lease_owner,
         submission_stage_capable=True,
+        asset_content_capable="asset-content" in caps,
     )
     if claimed:
         schedule_telemetry_drain()

@@ -69,6 +69,7 @@ from .services.test_snapshot import SNAPSHOT_EXPORT_ENV, SNAPSHOT_EXPORT_PATH
 from .routers import (
     _proxy,
     asset_registry,
+    asset_sync,
     backup_replica,
     assets,
     auth,
@@ -92,6 +93,7 @@ from .routers import (
     release_update,
     resolve_integration,
     scenes,
+    edit_docs,
     share,
     sync,
     update_notices,
@@ -126,10 +128,12 @@ from .services.operational_health import (
     OperationalAlertTracker,
     database_readiness,
     operations_snapshot,
+    generation_queue_snapshot,
 )
 from .services.request_guards import is_loopback_host
 from .services.upload_limits import UploadBodyLimitMiddleware
 from .services.runtime_metrics import metrics as runtime_metrics
+from .services.runtime_activation import ActivationAdmissionMiddleware, runtime_identity
 from .services.path_safety import safe_join
 from .services.remote_realtime import RemoteRealtimeBridge, relay_event
 from .services.resolve_selection_monitor import selection_monitor as resolve_selection_monitor
@@ -259,6 +263,7 @@ async def _application_lifespan(app: FastAPI):
     media_preservation_started = False
     result_probe_started = False
     asset_registry_started = False
+    asset_sync_started = False
     share_state_reconciler_started = False
     agent_loop_bound = False
     asset_watcher_started = False
@@ -526,6 +531,10 @@ async def _application_lifespan(app: FastAPI):
         )
         periodic_share_state_reconciler.start()  # 공유 서버 권위 상태 → 로컬 공유/골드 미러 수렴
         share_state_reconciler_started = True
+        from .services import asset_sync as asset_sync_worker
+        if not READ_ONLY:
+            asset_sync_worker.start()
+            asset_sync_started = True
         # 어셋 폴더 실시간 감시(watchdog) — 파일 추가/변경 시 WS 로 알려 프론트가 새로고침 없이 갱신.
         # 인증 여부와 분리한다. AUTH on 개발 모드도 로컬 브라우저가 /api/assets/tree 로 조회한 폴더는
         # 외부 편집기로 바뀔 수 있다. 접근 권한은 라우터가 강제하고, 감시기는 조회된 폴더만 lazy 등록한다.
@@ -600,6 +609,9 @@ async def _application_lifespan(app: FastAPI):
         # 에셋 대장 훑기 자식을 일찍 끝낸다 — 새 실행 금지 → taskkill /T /F → 반영 안 한 결과는 버린다.
         if asset_registry_started:
             await _attempt_async_cleanup(asset_registry_controller.stop)
+        if asset_sync_started:
+            from .services import asset_sync as asset_sync_worker
+            await _attempt_async_cleanup(asset_sync_worker.stop)
         # 도우미 훑기(이 PC 가 관리자 창에서 시작했을 때만 돈다) — 같은 방법으로 끝낸다. 안 돌았으면 할 일이 없다.
         if registry_schedule_task:  # 새 회차를 맡지 않게 먼저 멈춘 뒤 도는 도우미를 끝낸다
             await _attempt_async_cleanup(lambda: _cancel_background_task(registry_schedule_task))
@@ -764,9 +776,12 @@ app.include_router(db_transfer.router)
 app.include_router(db_backup.router)
 app.include_router(comfy.router)
 app.include_router(scenes.router)
+app.include_router(edit_docs.router)
 app.include_router(mcp.router)
 app.include_router(mcp_v2.router)
 app.include_router(asset_registry.router)
+app.include_router(asset_sync.router)
+app.include_router(asset_sync.local_router)
 app.include_router(registry_helper.router)
 
 # ── PM 대시보드(분리형 사이드카) — 플래그 on 일 때만 등록 ────────────────────────
@@ -954,6 +969,7 @@ app.add_middleware(ListGzipMiddleware, **list_gzip_options(AUTH_ENABLED))
 # multipart 파싱·로컬→공유서버 프록시가 본문을 읽기 전에 전체 바이트 상한을 강제한다.
 # AUTH off 원격 가드는 이 뒤에 등록되어 더 바깥에서 불필요한 원격 본문을 먼저 거부한다.
 app.add_middleware(UploadBodyLimitMiddleware)
+app.add_middleware(ActivationAdmissionMiddleware)
 
 
 # 사본 서버(서버 이사 연습·복원 드릴) — 로그인 외 업무 변경 요청을 막는다. 저장·미러(렌더 폴더 쓰기·이동)·
@@ -1091,7 +1107,14 @@ def ready():
         )
     result = database_readiness()
     if result["ready"]:
-        return {"status": "ready", "checks": result["checks"]}
+        identity = runtime_identity()
+        if identity["execution_nonce"]:
+            from .services.resolve_transfer import active_transfer_count
+            identity["update_blockers"] = {
+                "generation": generation_queue_snapshot()["update_blocking_total"],
+                "resolve": active_transfer_count(), "comfy": comfy.active_run_job_count(),
+            }
+        return {"status": "ready", "checks": result["checks"], "runtime": identity}
     log_event(
         logging.getLogger("mvhub.ready"),
         "readiness_failed",
@@ -1403,7 +1426,7 @@ if FRONTEND_DIST.is_dir():
             raise HTTPException(status_code=404, detail="Not Found")
         # 경로 탈출 방지: dist 바깥을 가리키면 거부(문자열 prefix 대신 safe_join=relative_to 검증)
         candidate = safe_join(FRONTEND_DIST, full_path)
-        if candidate and candidate.is_file():
+        if candidate and candidate.is_file() and candidate != (FRONTEND_DIST / "index.html").resolve():
             return FileResponse(str(candidate))
         # index.html 은 캐시 금지 — 빌드 때 바뀐 해시 자산(특히 CSS)을 가리키는데, 브라우저가
         # 옛 index.html 을 캐시하면 지워진 옛 CSS 를 요청해 404 → 디자인 깨짐(자산은 해시라 영구캐시 OK).

@@ -1,6 +1,47 @@
 ﻿# 릴리스 폴더 표지(latest.json·candidate.json) 쓰기 공통 — make_release.ps1·select_release.ps1 이 dot-source 한다.
 # 로컬 허브 promote(backend/app/services/release_update.py)와 같은 잠금·교체 규칙이다(B안 r4, docs/UPDATE_ANNOUNCEMENTS.md).
 
+. (Join-Path $PSScriptRoot '..\update_release_contract.ps1')
+
+function Publish-QualifiedRelease {
+    param([string]$CandidatePath, [string]$Directory)
+    if (-not $Directory -or $Directory -match '^https?://' -or -not (Test-Path -LiteralPath $Directory -PathType Container)) {
+        throw 'Explicit existing publish folder required.'
+    }
+    $InputRaw = [System.IO.File]::ReadAllBytes($CandidatePath)
+    $InputCandidate = ConvertFrom-ReleaseJson $InputRaw
+    if ($InputCandidate.file -match '[/\\:]' -or $InputCandidate.file -notlike '*.zip') { throw 'Unsafe package name.' }
+    $PackagePath = Join-Path (Split-Path -Parent $CandidatePath) $InputCandidate.file
+    $Evidence = Get-QualifiedRelease -PackagePath $PackagePath
+    if ([Convert]::ToBase64String($Evidence.Bytes) -cne [Convert]::ToBase64String($InputRaw)) { throw 'Candidate is not the qualified immutable record.' }
+    $SelectedPath = Join-Path $Directory 'candidate.json'
+    $Before = if (Test-Path -LiteralPath $SelectedPath) { [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($SelectedPath)) } else { '' }
+    foreach ($Source in @($PackagePath, $Evidence.CandidatePath, $Evidence.ReceiptPath)) {
+        $Destination = Join-Path $Directory (Split-Path -Leaf $Source)
+        if (Test-Path -LiteralPath $Destination) {
+            if ((Get-ReleaseSha256 $Destination) -cne (Get-ReleaseSha256 $Source)) { throw 'Immutable published file differs.' }
+            continue
+        }
+        $Part = $Destination + '.part-' + [Guid]::NewGuid().ToString('N')
+        try {
+            [System.IO.File]::Copy($Source, $Part, $false)
+            if ((Get-ReleaseSha256 $Part) -cne (Get-ReleaseSha256 $Source)) { throw 'Published copy digest mismatch.' }
+            [System.IO.File]::Move($Part, $Destination)
+        }
+        finally { if (Test-Path -LiteralPath $Part) { Remove-Item -LiteralPath $Part -Force } }
+    }
+    $PublishedEvidence = Get-QualifiedRelease -PackagePath (Join-Path $Directory $Evidence.Candidate.file)
+    $Lock = Open-ReleaseLock -Directory $Directory -WaitSeconds 10
+    try {
+        $Now = if (Test-Path -LiteralPath $SelectedPath) { [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($SelectedPath)) } else { '' }
+        if ($Now -cne $Before) { throw 'Candidate changed during publication.' }
+        Assert-ReleaseEvidenceUnchanged $Evidence
+        Assert-ReleaseEvidenceUnchanged $PublishedEvidence
+        Write-ManifestAtomic -Path $SelectedPath -Bytes $Evidence.Bytes
+    }
+    finally { $Lock.Dispose() }
+}
+
 function Open-ReleaseLock {
     # 릴리스 폴더 잠금 — release.lock 을 공유 없이 연 동안이 잠금이다(promote·make_release 와 같은 규칙).
     # 핸들을 닫으면 풀리므로 잠금 파일은 지우지 않는다.

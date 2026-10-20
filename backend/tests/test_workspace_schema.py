@@ -672,6 +672,13 @@ class WorkspaceContentDatabaseTests(unittest.TestCase):
                 "INSERT INTO generation(id,worker_id,prompt,status,created_at,sort_ts,project_id) "
                 "VALUES('legacy-g','me','keep-me','done','2026-01-01',1,'legacy-p')"
             )
+            # A pre-workspace fixture cannot retain newer ledger or cross-table revision triggers.
+            from app.schema_compat import SHARE_REVISION_TRIGGERS
+            for trigger in SHARE_REVISION_TRIGGERS:
+                conn.execute(f'DROP TRIGGER IF EXISTS "{trigger}"')
+            conn.execute("DROP TABLE schema_migrations")
+            conn.execute("DROP TABLE schema_meta")
+            conn.execute("PRAGMA user_version=0")
             # 실제 구버전처럼 두 테이블에서 workspace 컬럼만 없는 구조로 재구성한다.
             conn.execute("DROP TABLE IF EXISTS generation_fts")
             for table in ("generation", "project"):
@@ -704,6 +711,53 @@ class WorkspaceContentDatabaseTests(unittest.TestCase):
         self.assertEqual(tuple(project), ("Legacy Project", "unknown", None, None))
         self.assertIn("idx_generation_workspace_sort", indexes)
         self.assertIn("idx_project_workspace", indexes)
+
+    def test_pre_workspace_database_passes_real_init_and_records_v2_after_upgrade(self):
+        """Synthetic supported legacy boundary: PKs remain, workspace/receipt metadata do not."""
+        from app import schema_compat
+
+        legacy_path = Path(self.tmp.name) / "old-install" / "content_hub.db"
+        legacy_path.parent.mkdir()
+        with db.get_connection() as current:
+            definitions = {}
+            for table in ("worker", "project", "generation"):
+                columns = []
+                for row in current.execute(f"PRAGMA table_info({table})"):
+                    if row["name"] in {"workspace_scope", "workspace_id", "workspace_name", "share_revision"}:
+                        continue
+                    definition = f'"{row["name"]}" {row["type"]}'
+                    if row["pk"]:
+                        definition += " PRIMARY KEY"
+                    if row["notnull"]:
+                        definition += " NOT NULL"
+                    if row["dflt_value"] is not None:
+                        definition += f' DEFAULT ({row["dflt_value"]})'
+                    columns.append(definition)
+                definitions[table] = ",".join(columns)
+        with sqlite3.connect(legacy_path) as conn:
+            for table, columns in definitions.items():
+                conn.execute(f"CREATE TABLE {table} ({columns})")
+            conn.execute("INSERT INTO worker(id,name) VALUES('me','Legacy Worker')")
+            conn.execute("INSERT INTO project(id,name,kind) VALUES('legacy-p','Legacy Project','team')")
+            conn.execute("INSERT INTO generation(id,worker_id,prompt,status,created_at,sort_ts,project_id) "
+                         "VALUES('legacy-g','me','keep-through-init','done','2026-01-01',1,'legacy-p')")
+        self.assertEqual(schema_compat.inspect_database(legacy_path, "content").status, "unversioned")
+        db.init_db(legacy_path)
+        first = schema_compat.inspect_database(legacy_path, "content")
+        db.init_db(legacy_path)
+        self.assertEqual(schema_compat.inspect_database(legacy_path, "content"), first)
+        self.assertEqual(first.schema_version, 2)
+        self.assertIn("content_share_commands", first.components)
+        with sqlite3.connect(legacy_path) as conn:
+            self.assertEqual(conn.execute("SELECT prompt,workspace_scope,workspace_id,workspace_name FROM generation WHERE id='legacy-g'").fetchone(),
+                             ("keep-through-init", "unknown", None, None))
+            self.assertEqual(conn.execute("SELECT name,workspace_scope FROM project WHERE id='legacy-p'").fetchone(),
+                             ("Legacy Project", "unknown"))
+            before = conn.execute("SELECT share_revision FROM generation WHERE id='legacy-g'").fetchone()[0]
+            conn.execute("UPDATE generation SET is_final=1 WHERE id='legacy-g'")
+            self.assertGreater(conn.execute("SELECT share_revision FROM generation WHERE id='legacy-g'").fetchone()[0], before)
+            self.assertEqual(conn.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(), [])
 
     def test_intermediate_workspace_values_are_canonicalized_without_losing_identity(self):
         """복구 가능한 대소문자·공백 값은 unknown으로 버리지 않는다."""

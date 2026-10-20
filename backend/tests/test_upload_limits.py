@@ -244,6 +244,11 @@ def test_every_upload_route_has_a_positive_request_limit() -> None:
         "/api/assets/upload",
         "/api/assets/capture",
         "/api/assets/reference-import",
+        "/api/local-asset-sync/ingest",
+        "/api/local-asset-sync/register",
+        "/api/local-asset-sync/resolve",
+        "/api/asset-sync/prepare",
+        "/api/asset-sync/resolve",
         "/api/comfy/run",
         "/api/db/import",
         "/api/db-backup",
@@ -296,7 +301,7 @@ def test_assets_total_limit_rejects_before_any_file_is_saved(monkeypatch) -> Non
         with pytest.raises(HTTPException) as caught:
             asyncio.run(
                 assets.upload_assets(
-                    SimpleNamespace(), project="demo", dir="", files=files
+                    SimpleNamespace(state=SimpleNamespace()), project="demo", dir="", files=files
                 )
             )
 

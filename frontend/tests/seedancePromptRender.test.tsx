@@ -44,6 +44,34 @@ async function addReference() {
 }
 
 describe("Seedance 2.5 프롬프트의 실제 모드 표시", () => {
+  it.each(["seedance_2_5", "seedance_2_0", "nano_banana_flash"])("해상도 Draft 알약은 Seedance 2.5의 480p에만 표시: %s", async (model) => {
+    boundary.api.modelParams.mockResolvedValue({ params: [...SEEDANCE_PARAMS,
+      { name: "generate_audio", type: "boolean", required: false, default: false }], constraints: {} });
+    view = await mountPrompt({ trayBinding: { key: "draft-badge", refs: [], prompt: "표시 시험", modelKey: model,
+      model: { model, type: model === "nano_banana_flash" ? "image" : "video", params: { resolution: "720p", generate_audio: false } } } });
+    const chip = required<HTMLButtonElement>(view.container, 'button[title="resolution"]');
+    click(chip);
+    const row = [...view.container.querySelectorAll<HTMLButtonElement>(".sl-dd-item")].find((item) => item.firstChild?.textContent === "480p")!;
+    expect(row).toBeTruthy();
+    expect(row.querySelector(".sl-draft-pill")?.textContent ?? null).toBe(model === "seedance_2_5" ? "Draft" : null);
+    for (const resolution of ["480p", "720p", "1080p"]) {
+      if (!view.container.querySelector(".sl-dd-item")) click(chip);
+      const option = [...view.container.querySelectorAll<HTMLButtonElement>(".sl-dd-item")].find((item) => item.firstChild?.textContent === resolution)!;
+      expect(option.querySelector(".sl-draft-pill")?.textContent ?? null).toBe(model === "seedance_2_5" && resolution === "480p" ? "Draft" : null);
+      click(option);
+      await settle();
+      expect(chip.querySelector(".sl-draft-pill")?.textContent ?? null).toBe(model === "seedance_2_5" && resolution === "480p" ? "Draft" : null);
+      expect(view.ref.current?.currentModel()?.params?.resolution).toBe(resolution);
+    }
+    click(required(view.container, 'button[title="오디오 켜기"]'));
+    await settle();
+    expect(view.ref.current?.currentModel()?.params?.generate_audio).toBe(true);
+    click(required(view.container, 'button[title="오디오 끄기"]'));
+    await settle();
+    expect(view.ref.current?.currentModel()?.params?.generate_audio).toBe(false);
+    expect(boundary.api.prepareCreate).not.toHaveBeenCalled();
+  });
+
   it("트레이 추가/제거와 수동 t2v 선택을 따라 자동으로 맞춘다", async () => {
     view = await mountPrompt({ trayBinding: binding("omni_reference") });
     expectShownMode(view.container, "t2v");

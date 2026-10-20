@@ -2,6 +2,9 @@
 // (키, 문서)를 한 쌍으로 들어 옛 문서가 새 키에 저장되는 틈을 만들지 않는다. 계약은 docs/EDIT_TAB.md.
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { emptyEditDoc, keepClipDurs, type EditDoc } from "./editTimeline";
+import { createEditArchive, knownDocEquals, MAX_ARCHIVE_BYTES, parseEditArchive, utf8Bytes, type ArchiveTarget } from "./editArchive";
+import { captureEditBackupGuard, editBackupActive, loadEditBackup, restoreEditBackup, subscribeEditBackup } from "./editDocBackup";
+import { getAccountScope } from "./accountScope";
 import {
   clearUndo,
   editRawChanged,
@@ -13,11 +16,21 @@ import {
   undoStack,
   unsavedEditDoc,
   writeEditDoc,
+  writeEditRaw,
+  pendingEditRestore,
+  keepPendingEditRestore,
+  type StoredEditDoc,
 } from "./editTimelineStore";
 import { t } from "./i18n";
 import { isLeaving } from "./unloadGuard";
 
 interface Held {
+  account: string;
+  version: number;
+  readError: boolean;
+  valid: boolean;
+  restoreExternal: boolean;
+  restoreExternalRaw?: string | null;
   key: string | null;
   doc: EditDoc;
   rev: number; // 문서를 새로 열거나 다른 창의 문서를 받아들일 때마다 바뀐다 — 그 전에 시작한 지연 콜백을 버리는 기준
@@ -42,17 +55,38 @@ let lastRev = 0;
 let lastConflict = 0; // 충돌 번호 — 새 외부 저장을 알 때마다 새 번호
 
 // 읽기만 한다(렌더 중에 불리고 StrictMode 에서는 두 번 불린다) — 모듈 상태는 아래 effect 가 고친다.
-function open(key: string | null): Held {
-  const stored = key ? readEditDoc(key) : null;
+function open(key: string | null, stored: StoredEditDoc | null = key ? readEditDoc(key) : null): Held {
+  const pending = key ? pendingEditRestore(key) : undefined;
   const kept = key ? unsavedEditDoc(key) : undefined; // 저장하지 못한 채 떠났던 문서 — 버리지 않고 이어 간다
   const raw = stored?.raw ?? null;
-  return {
+  const value: Held = {
+    account: getAccountScope(),
+    version: 0, readError: !!stored?.inaccessible, valid: !!kept || (!!stored && !stored.bad && !stored.inaccessible), restoreExternal: false,
     key, rev: ++lastRev, doc: kept?.doc ?? stored?.doc ?? emptyEditDoc(),
     bad: !!stored?.bad, badRaw: stored?.bad ? raw : null, dirty: !!kept,
-    savedRaw: kept ? kept.base : raw, openRaw: raw, conflict: !!kept && kept.base !== raw, warned: false, checked: false,
-    seenRaw: kept && kept.base !== raw ? raw : null, conflictId: kept && kept.base !== raw ? ++lastConflict : 0,
+    savedRaw: kept ? kept.base : raw, openRaw: raw, conflict: !stored?.inaccessible && !!kept && kept.base !== raw, warned: false, checked: false,
+    seenRaw: kept && kept.base !== raw ? raw : null, conflictId: !stored?.inaccessible && kept && kept.base !== raw ? ++lastConflict : 0,
   };
+  if (pending) Object.assign(value, { doc: pending.doc, savedRaw: pending.raw, bad: pending.bad,
+    badRaw: pending.bad ? pending.raw : null, dirty: pending.dirty, valid: pending.valid, conflict: false });
+  return value;
 }
+
+export interface ArchiveSnapshot {
+  readonly key: string;
+  readonly rev: number;
+  readonly doc: EditDoc;
+  readonly docRaw: string;
+  readonly raw: string | null;
+  readonly bad: boolean;
+  readonly dirty: boolean;
+  readonly readError: boolean;
+  readonly valid: boolean;
+  readonly conflict: boolean;
+}
+export interface VerifiedArchiveBackup { readonly snapshot: ArchiveSnapshot }
+export type RestoreOutcome = "saved" | "unchanged" | "stopped" | "failed" | "uncertain";
+const READ_ERROR = "편집 저장소를 읽지 못했습니다. 편집을 멈췄습니다. 파일로 보관하거나 다시 읽기를 눌러 주세요.";
 
 export interface EditOptions {
   undo?: boolean; // false = 사용자의 편집이 아니다(확정 길이 기록 등) — Undo 단계가 아니고, 충돌 중에는 저장하지 않는다
@@ -71,7 +105,14 @@ export type EditOutcome = "done" | "none" | "stopped";
 //  아래 pull 의 주석). 그 일을 알림이 미리 말한다. 동작은 그대로다.
 const CHANGED_ELSEWHERE = "다른 창에서 이 편집이 바뀌었습니다. 이 창의 변경은 아직 저장되지 않았습니다. 계속 편집하면 이 창의 내용으로 저장되고 다른 창의 변경은 사라집니다.";
 
-export function useEditDoc(key: string | null, flash: (message: string) => void) {
+function backupCandidate(raw: string, target: ArchiveTarget): EditDoc | null {
+  const archive = createEditArchive(emptyEditDoc(), target, false);
+  archive.docRaw = raw;
+  const result = parseEditArchive(JSON.stringify(archive), target);
+  return result.ok ? result.doc : null;
+}
+
+export function useEditDoc(key: string | null, flash: (message: string) => void, target?: ArchiveTarget | null) {
   const held = useRef<Held | null>(null);
   // 문서 전환은 렌더 중에 확정한다.
   if (!held.current || held.current.key !== key) held.current = open(key);
@@ -79,11 +120,17 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
   const flashRef = useRef(flash);
   flashRef.current = flash;
   const group = useRef<{ id: string; doc: EditDoc } | null>(null); // 되돌리기 한 단계로 묶는 중인 편집(EditOptions.group)
+  const snapshots = useRef(new WeakMap<ArchiveSnapshot, { held: Held; version: number; account: string }>());
+  const verifiedFiles = useRef(new WeakMap<VerifiedArchiveBackup, string>());
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; snapshots.current = new WeakMap(); }; }, []);
 
   // user = 사용자의 편집(되돌리기 포함). 충돌 중에는 이것만 저장한다.
   const commit = useCallback((next: EditDoc, user: boolean) => {
     const cur = held.current!;
-    if (!cur.key) return;
+    if (!cur.key || cur.readError || pendingEditRestore(cur.key)) return;
+    cur.version += 1;
+    cur.valid = true;
     cur.doc = next;
     const raw = cur.conflict && !user ? null : writeEditDoc(cur.key, next, cur.bad ? cur.badRaw : null);
     if (raw !== null) {
@@ -102,7 +149,7 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
   // 그 편집과 다른 창의 저장이 겹쳤으면 덮지 않고 알리기만 한다.
   useEffect(() => {
     const cur = held.current!;
-    if (!cur.key || cur.key !== key) return;
+    if (!cur.key || cur.key !== key || cur.readError || pendingEditRestore(cur.key)) return;
     if (!cur.checked) {
       cur.checked = true; // 아래 재시도 저장이 원문을 바꾸므로, 두 번째 실행이 그것을 '다른 창의 저장'으로 보지 않게
       if (editRawChanged(cur.key, cur.openRaw)) {
@@ -129,12 +176,23 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
   //     편집은 전처럼 저장한다(사용자가 알고 이어 가는 것이다).
   const pull = useCallback((announced: boolean): boolean => {
     const cur = held.current!;
-    const raw = cur.key ? readEditRaw(cur.key) : null;
-    if (!cur.key || raw === cur.savedRaw) return false; // 이 창의 마지막 저장과 같다 = 바뀐 것 없음(낡은 알림 포함)
+    if (!cur.key) return false;
+    if (pendingEditRestore(cur.key) || cur.readError) return true;
+    const read = readEditRaw(cur.key);
+    if (read.kind === "error") {
+      cur.readError = true;
+      cur.version += 1;
+      flashRef.current(t(READ_ERROR));
+      bump();
+      return true;
+    }
+    const { raw } = read;
+    if (raw === cur.savedRaw) return false;
     if (cur.dirty) {
       // 저장 못 한 편집이 있다 — 받아들이지 않고, 자동 저장으로 덮지도 않는다. 알림이 올 때마다, 편집 직전에는 **그 원문을 처음 봤을 때만** 알린다.
       const known = cur.conflict && cur.seenRaw === raw;
       cur.conflict = true;
+      cur.version += 1;
       cur.seenRaw = raw;
       if (announced || !known) flashRef.current(t(CHANGED_ELSEWHERE));
       if (!known) {
@@ -144,7 +202,7 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
       return !known;
     }
     clearUndo(cur.key);
-    held.current = open(cur.key);
+    held.current = open(cur.key, readEditDoc(cur.key, read));
     noteEditRaw(cur.key, held.current.openRaw);
     held.current.checked = true; // 방금 읽은 것이 기준이다 — 연 직후의 확인을 다시 하지 않는다
     flashRef.current(t(announced
@@ -153,6 +211,194 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
     bump();
     return true;
   }, []);
+
+  const retryRead = useCallback(() => {
+    const cur = held.current!;
+    if (!cur.key || pendingEditRestore(cur.key) || isLeaving() || cur.account !== getAccountScope()) return;
+    const stored = readEditDoc(cur.key);
+    if (stored.inaccessible) { flashRef.current(t(READ_ERROR)); return; }
+    cur.readError = false;
+    cur.version += 1;
+    if (stored.raw === cur.savedRaw) {
+      cur.bad = stored.bad;
+      cur.badRaw = stored.bad ? stored.raw : null;
+    }
+    if (!cur.valid && !cur.dirty) {
+      if (editRawChanged(cur.key, stored.raw)) clearUndo(cur.key);
+      held.current = open(cur.key, stored);
+      held.current.checked = true;
+      noteEditRaw(cur.key, stored.raw);
+      bump();
+      return;
+    }
+    if (!pull(true) && cur.dirty && !cur.conflict) commit(cur.doc, false);
+    bump();
+  }, [commit, pull]);
+
+  const isArchiveSnapshotCurrent = useCallback((snapshot: ArchiveSnapshot): boolean => {
+    const captured = snapshots.current.get(snapshot);
+    const cur = held.current!;
+    return mounted.current && !isLeaving() && !!captured && captured.held === cur && captured.version === cur.version
+      && captured.account === getAccountScope() && cur.key === snapshot.key && cur.rev === snapshot.rev && cur.doc === snapshot.doc
+      && JSON.stringify(cur.doc) === snapshot.docRaw && cur.savedRaw === snapshot.raw;
+  }, []);
+
+  const captureArchiveSnapshot = useCallback((forRestore = false): ArchiveSnapshot | null => {
+    if (isLeaving()) return null;
+    if (forRestore && pull(false)) return null;
+    const cur = held.current!;
+    if (!cur.key || cur.account !== getAccountScope() || (forRestore && (cur.readError || cur.conflict || pendingEditRestore(cur.key)))) return null;
+    const snapshot: ArchiveSnapshot = Object.freeze({ key: cur.key, rev: cur.rev, doc: cur.doc,
+      docRaw: JSON.stringify(cur.doc), raw: cur.savedRaw, bad: cur.bad, dirty: cur.dirty,
+      readError: cur.readError, valid: cur.valid, conflict: cur.conflict });
+    snapshots.current.set(snapshot, { held: cur, version: cur.version, account: getAccountScope() });
+    return snapshot;
+  }, [pull]);
+
+  const verifyArchiveBackup = useCallback(async (snapshot: ArchiveSnapshot, expectedText: string,
+    file: { size: number; text(): Promise<string> }): Promise<VerifiedArchiveBackup | null> => {
+    if (!isArchiveSnapshotCurrent(snapshot) || file.size > MAX_ARCHIVE_BYTES || file.size !== utf8Bytes(expectedText)) return null;
+    try {
+      const text = await file.text();
+      if (!isArchiveSnapshotCurrent(snapshot) || text !== expectedText) return null;
+      const verified = Object.freeze({ snapshot });
+      verifiedFiles.current.set(verified, expectedText);
+      return verified;
+    } catch { return null; }
+  }, [isArchiveSnapshotCurrent]);
+
+  const finishRestore = useCallback((candidate: EditDoc, raw: string, recordUndo = true) => {
+    const cur = held.current!;
+    if (!cur.key) return;
+    if (recordUndo) pushUndo(cur.key, cur.doc);
+    else clearUndo(cur.key);
+    Object.assign(cur, { doc: candidate, savedRaw: raw, openRaw: raw, dirty: false, bad: false, badRaw: null,
+      conflict: false, seenRaw: null, readError: false, valid: true, restoreExternal: false, rev: ++lastRev, version: cur.version + 1 });
+    group.current = null;
+    noteEditRaw(cur.key, raw);
+    keepUnsavedEditDoc(cur.key, null);
+    keepPendingEditRestore(cur.key, null);
+    bump();
+  }, []);
+
+  // 복구는 두 저장 자리가 모두 없을 때만. 요청 중 편집·계정·문맥이 바뀌면 원문을 쓰기 전에 멈춘다.
+  useEffect(() => {
+    let disposed = false;
+    let running = false;
+    let checked = false;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const recover = async () => {
+      const cur = held.current!;
+      if (disposed || running || checked || !target || !key || cur.key !== key || !editBackupActive()
+        || cur.savedRaw !== null || cur.dirty || cur.bad || cur.readError || pendingEditRestore(key)) return;
+      const snapshot = captureArchiveSnapshot();
+      if (!snapshot) return;
+      const authorized = captureEditBackupGuard();
+      running = true;
+      try {
+        const listing = await loadEditBackup(key);
+        const raw = listing.head?.data;
+        if (disposed || !authorized() || !isArchiveSnapshotCurrent(snapshot)) return;
+        checked = true;
+        if (typeof raw !== "string") return;
+        const candidate = backupCandidate(raw, target);
+        const read = readEditRaw(key);
+        if (!candidate || read.kind !== "ok" || read.raw !== null || !isArchiveSnapshotCurrent(snapshot)) return;
+        if (writeEditRaw(key, raw) === null) return;
+        const check = readEditRaw(key);
+        if (check.kind !== "ok" || check.raw !== raw) { retryRead(); return; }
+        finishRestore(candidate, raw, false);
+        flashRef.current(t("DB 백업에서 편집을 복구했습니다."));
+      } catch {
+        if (!disposed) retry = setTimeout(() => { void recover(); }, 30_000);
+      } finally { running = false; }
+    };
+    void recover();
+    const unsubscribe = subscribeEditBackup(() => { void recover(); });
+    return () => { disposed = true; unsubscribe(); if (retry) clearTimeout(retry); };
+  }, [key, target?.projectId, target?.seq, captureArchiveSnapshot, isArchiveSnapshotCurrent, finishRestore, retryRead]);
+
+  const replaceFromBackup = useCallback(async (raw: string, expected: ArchiveSnapshot, baseRevision: number | null,
+    context: ArchiveTarget, adopt = false, copyHash?: string): Promise<RestoreOutcome> => {
+    if (!isArchiveSnapshotCurrent(expected) || !expected.key || expected.readError || expected.conflict || pendingEditRestore(expected.key)) return "stopped";
+    const candidate = backupCandidate(raw, context);
+    if (!candidate) return "failed";
+    const before = readEditRaw(expected.key);
+    if (before.kind !== "ok" || before.raw !== expected.raw) { pull(true); return "stopped"; }
+    const authorized = captureEditBackupGuard();
+    try {
+      const result = await restoreEditBackup(expected.key, baseRevision, copyHash ? { copy_hash: copyHash } : { data: raw },
+        expected.dirty ? expected.docRaw : expected.raw, adopt ? "pre_adopt" : "pre_restore");
+      if (!authorized() || result.status === "conflict" || !isArchiveSnapshotCurrent(expected)) return "stopped";
+      const read = readEditRaw(expected.key);
+      if (read.kind !== "ok" || read.raw !== expected.raw || !isArchiveSnapshotCurrent(expected)) { pull(true); return "stopped"; }
+      const restoredRaw = result.data;
+      if (typeof restoredRaw !== "string" || restoredRaw !== raw) return "uncertain";
+      if (writeEditRaw(expected.key, restoredRaw, expected.bad ? expected.raw : null) === null) return "failed";
+      const check = readEditRaw(expected.key);
+      if (check.kind !== "ok" || check.raw !== restoredRaw) { retryRead(); return "uncertain"; }
+      finishRestore(candidate, restoredRaw);
+      return "saved";
+    } catch { return "uncertain"; }
+  }, [finishRestore, isArchiveSnapshotCurrent, pull, retryRead]);
+
+  const replaceFromArchive = useCallback((candidate: EditDoc, expected: ArchiveSnapshot,
+    verified: VerifiedArchiveBackup | null): RestoreOutcome => {
+    const cur = held.current!;
+    if (!isArchiveSnapshotCurrent(expected) || !cur.key || cur.readError || cur.conflict || pendingEditRestore(cur.key)) return "stopped";
+    // shortcut: localStorage에는 비교와 쓰기를 묶는 잠금이 없다. 다른 창을 닫고 복원하며 다중 창 지원 때 저장 트랜잭션으로 바꾼다.
+    const read = readEditRaw(cur.key);
+    if (read.kind === "error" || read.raw !== expected.raw) { pull(true); return "stopped"; }
+    if (cur.valid && knownDocEquals(candidate, cur.doc)) return "unchanged";
+    const backupText = verified && verified.snapshot === expected ? verifiedFiles.current.get(verified) : undefined;
+    if (backupText === undefined) return "stopped";
+    verifiedFiles.current.delete(verified!);
+    const raw = writeEditDoc(cur.key, candidate, cur.bad ? cur.badRaw : null);
+    if (raw === null) return "failed";
+    const check = readEditRaw(cur.key);
+    if (check.kind === "error" || check.raw !== raw) {
+      keepPendingEditRestore(cur.key, { doc: cur.doc, raw: expected.raw, dirty: cur.dirty, bad: cur.bad,
+        valid: cur.valid, candidate, candidateRaw: raw, backupText });
+      cur.version += 1;
+      cur.readError = check.kind === "error";
+      bump();
+      return "uncertain";
+    }
+    finishRestore(candidate, raw);
+    return "saved";
+  }, [finishRestore, isArchiveSnapshotCurrent, pull]);
+
+  const retryRestore = useCallback((acceptExternal = false): RestoreOutcome => {
+    const cur = held.current!;
+    const pending = cur.key ? pendingEditRestore(cur.key) : undefined;
+    if (!cur.key || !pending || isLeaving() || cur.account !== getAccountScope()) return "stopped";
+    const read = readEditRaw(cur.key);
+    if (read.kind === "error") { cur.readError = true; bump(); return "uncertain"; }
+    if (read.raw === pending.candidateRaw) { finishRestore(pending.candidate, pending.candidateRaw); return "saved"; }
+    if (read.raw === pending.raw) {
+      keepPendingEditRestore(cur.key, null);
+      cur.readError = false;
+      cur.restoreExternal = false;
+      cur.version += 1;
+      bump();
+      return "failed";
+    }
+    if (acceptExternal && cur.restoreExternal && read.raw === cur.restoreExternalRaw) {
+      keepPendingEditRestore(cur.key, null);
+      keepUnsavedEditDoc(cur.key, null);
+      clearUndo(cur.key);
+      held.current = open(cur.key, readEditDoc(cur.key, read));
+      held.current.checked = true;
+      noteEditRaw(cur.key, held.current.openRaw);
+      bump();
+      return "stopped";
+    }
+    cur.restoreExternal = true;
+    cur.restoreExternalRaw = read.raw;
+    cur.readError = false;
+    bump();
+    return "uncertain";
+  }, [finishRestore]);
 
   const applyEdit = useCallback(
     (change: (doc: EditDoc) => EditDoc | null, options: EditOptions = {}): EditOutcome => {
@@ -209,6 +455,11 @@ export function useEditDoc(key: string | null, flash: (message: string) => void)
     rev: cur.rev,
     bad: cur.bad,
     dirty: cur.dirty,
+    readError: cur.readError,
+    hasValidDoc: cur.valid,
+    restorePending: !!cur.key && !!pendingEditRestore(cur.key),
+    restoreExternal: cur.restoreExternal,
+    captureArchiveSnapshot, isArchiveSnapshotCurrent, verifyArchiveBackup, replaceFromArchive, replaceFromBackup, retryRead, retryRestore,
     // 저장 못 한 편집이 있는데 다른 창이 저장했다(풀릴 때까지). 여러 걸음에 걸친 한 조작(길이 조절 창의 슬라이더 끌기)은 이것이 켜지면
     //  끝낸다 — 같은 끌기의 다음 걸음을 '알고 이어 가는 편집'으로 받으면 알림을 읽기도 전에 다른 창의 저장을 덮는다(Codex 코드 리뷰 P1).
     //  값 = 충돌 번호(0 = 없음). **새 외부 저장을 알 때마다 번호가 바뀐다** — 알고 다시 연 조작 도중 다른 창이 또 저장하면 그 조작도 끝낸다.

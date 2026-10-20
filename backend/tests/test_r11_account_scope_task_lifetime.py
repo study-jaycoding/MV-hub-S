@@ -188,11 +188,15 @@ def test_a6_finalize_routes_pass_the_captured_scope_to_the_task() -> None:
     ]
     assert len(registrations) == 2
     for node in registrations:
-        assert len(node.args) == 3, "local_id 와 계정 범위를 함께 넘겨야 한다"
+        assert len(node.args) == 4, "local_id·계정 범위와 원래 DB 세대를 함께 넘겨야 한다"
         scope_arg = node.args[2]
         assert isinstance(scope_arg, ast.Call)
         assert isinstance(scope_arg.func, ast.Name)
         assert scope_arg.func.id == "_capture_account_scope"
+        operation_arg = node.args[3]
+        assert isinstance(operation_arg, ast.Call)
+        assert isinstance(operation_arg.func, ast.Attribute)
+        assert operation_arg.func.attr == "capture_share_operation"
 
 
 # ── A7 · history 라우트가 루프에서 전환 락을 잡지 않는다 ─────────────────────

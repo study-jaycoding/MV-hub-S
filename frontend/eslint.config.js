@@ -2,6 +2,56 @@ import tsParser from "@typescript-eslint/parser";
 import tsPlugin from "@typescript-eslint/eslint-plugin";
 import importPlugin from "eslint-plugin-import";
 import reactHooksPlugin from "eslint-plugin-react-hooks";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const sourceRoot = fileURLToPath(new URL("./src/", import.meta.url));
+const relativeSource = value => path.relative(sourceRoot, value).replaceAll("\\", "/").replace(/\.(tsx?|jsx?)$/, "");
+// Canvas history is an existing internal engine. Importing the public React port here would form
+// api → useCanvasSession → useSceneHistory → api. This one adapter reads the pure relink calculation.
+export const boundaryCompatibility = Object.freeze([
+  Object.freeze({ from: "lib/useSceneHistory", to: "features/canvas/assetRefs", reason: "canvas history internal engine; avoid public React-port cycle" }),
+]);
+const pureLibrary = new Set(["features/library/readModel", "features/library/changes"]);
+const environmentImports = /^(react(?:-dom)?(?:\/|$)|node:)|(?:^|\/)(?:http|storage|[^/]*Store|[^/]*Api|api)(?:$|\.)/;
+
+function importViolation(filename, specifier, typeOnly) {
+  const from = relativeSource(filename);
+  const target = specifier.startsWith(".") ? relativeSource(path.resolve(path.dirname(filename), specifier))
+    : specifier.startsWith("/src/") ? specifier.slice(5).replace(/\.(tsx?|jsx?)$/, "") : specifier;
+  const feature = value => /^features\/([^/]+)\//.exec(value)?.[1];
+  const owner = feature(from), destination = feature(target);
+  if (destination && owner !== destination && target !== `features/${destination}/api`
+    && !boundaryCompatibility.some(item => item.from === from && item.to === target)) return "Feature 내부 대신 features/<name>/api 공개 포트를 사용하세요.";
+  if (owner && (/^(?:app|components)\//.test(target) || target === "App" || target === "api" || /^react-dom(?:\/|$)/.test(target))) return "Feature에서 App·UI 조립 계층을 역참조하지 마세요.";
+  if (from.startsWith("shared/contracts/")) {
+    if (!typeOnly || !(target === "types" || target.startsWith("shared/contracts/"))) return "shared/contracts는 공통 자료형의 type-only 의존성만 허용합니다.";
+  }
+  if (pureLibrary.has(from) && (environmentImports.test(specifier) || /^(?:app|components)\//.test(target))) return "Library 순수 모델에서 React·통신·저장소·UI에 의존하지 마세요.";
+  return null;
+}
+
+export const featureBoundaryRule = {
+  meta: { type: "problem", schema: [], messages: { boundary: "{{reason}}" } },
+  create(context) {
+    const check = (node, value, typeOnly = false) => {
+      if (typeof value !== "string") return;
+      const reason = importViolation(context.filename, value, typeOnly);
+      if (reason) context.report({ node, messageId: "boundary", data: { reason } });
+    };
+    return {
+      ImportDeclaration(node) { check(node, node.source.value, node.importKind === "type" || (node.specifiers.length > 0 && node.specifiers.every(item => item.importKind === "type"))); },
+      ExportNamedDeclaration(node) { if (node.source) check(node, node.source.value, node.exportKind === "type" || (node.specifiers.length > 0 && node.specifiers.every(item => item.exportKind === "type"))); },
+      ExportAllDeclaration(node) { check(node, node.source.value, node.exportKind === "type"); },
+      TSImportType(node) { check(node, node.source.value, true); },
+      ImportExpression(node) {
+        if (typeof node.source.value === "string") check(node, node.source.value);
+        else context.report({ node, messageId: "boundary", data: { reason: "동적 import는 경계를 검사할 수 있는 고정 경로를 사용하세요." } });
+      },
+      CallExpression(node) { if (node.callee.type === "Identifier" && node.callee.name === "require") check(node, node.arguments[0]?.value); },
+    };
+  },
+};
 
 const pureDomainFiles = [
   "src/lib/commentTree.ts",
@@ -44,6 +94,7 @@ export default [
       "@typescript-eslint": tsPlugin,
       import: importPlugin,
       "react-hooks": reactHooksPlugin,
+      mvhub: { rules: { boundaries: featureBoundaryRule } },
     },
     settings: {
       "import/resolver": {
@@ -56,6 +107,8 @@ export default [
     rules: {
       // P1은 warning-first다. 현재 순환을 보이게 하되 빌드와 테스트는 막지 않는다.
       "import/no-cycle": ["warn", { ignoreExternal: true }],
+      // P1–P3 전환 feature의 공개 포트·역방향 의존성만 error. 과거 warning-first 규칙은 유지한다.
+      "mvhub/boundaries": "error",
     },
   },
   {
@@ -110,6 +163,13 @@ export default [
           message: "순수 도메인에서는 DOM에 접근하지 마세요.",
         },
       ],
+    },
+  },
+  {
+    files: ["src/features/library/readModel.ts", "src/features/library/changes.ts", "src/shared/contracts/**/*.ts"],
+    rules: {
+      "no-restricted-globals": ["error", "fetch", "window", "document", "localStorage", "sessionStorage", "indexedDB", "WebSocket", "BroadcastChannel", "navigator"],
+      "no-restricted-properties": ["error", ...["fetch", "window", "document", "localStorage", "sessionStorage", "indexedDB", "WebSocket", "BroadcastChannel", "navigator"].map(property => ({ object: "globalThis", property }))],
     },
   },
 ];

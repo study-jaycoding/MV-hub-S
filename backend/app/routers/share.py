@@ -8,14 +8,18 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from functools import wraps
-from typing import Any
+from inspect import signature
+from uuid import uuid4
+import json
+from typing import Annotated, Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
 from . import _proxy
-from .. import active_account, rbac, repo
+from ._share_authority import authority, http_call
+from .. import active_account, db, rbac, repo
 from ..config import DEFAULT_WORKER_ID, MEDIA_PRESERVATION_ENABLED
 from ._telemetry import touch_generation_telemetry
 from ..db import get_connection
@@ -27,13 +31,16 @@ from ..deps import (
     require_project_role,
     require_view_generation,
 )
-from ..models import FinalReviewIn, GenerationOut, IntentOutcomesIn, PublishIn
+from ..models import ShareCommandIn, FinalReviewIn, GenerationOut, IntentOutcomesIn, PublishIn
 from ..services.async_tools import to_thread_non_abandon
 from ..services.event_journal import journal_audit_event
 from ..services.media_preservation import preserve_generation_now
 from ..services.share_state_reconciler import kick_share_state_reconciler
+from ..services import share_commands as remote_commands
 
 router = APIRouter(prefix="/api", tags=["share"])
+
+
 
 _FINAL_UNPUBLISH_DETAIL = (
     "최종(골드)으로 지정된 항목은 공유를 해제할 수 없습니다 (먼저 최종 해제)"
@@ -209,6 +216,8 @@ def _record_proxy_failure(
                 ref["intent_id"], ref["intent_seq"], ref["claim_token"]
             )
             should_kick = True
+    except db.DatabaseEpochChanged:
+        raise
     except Exception:  # noqa: BLE001 — 원래 서버 오류를 가리지 않으며 prepared 잔존도 안전하다
         pass
     if should_kick:
@@ -253,6 +262,8 @@ def _mirror_proxy_success(
     preservation_reason: str | None = None,
 ) -> bool:
     """서버 성공 관측을 pending으로 보강한 뒤 로컬 적용+converged CAS를 원자로 수행한다."""
+    if ref.get("remote_result_json") and isinstance(out, dict):
+        shared, is_final, final_by = bool(out.get("shared")), bool(out.get("is_final")), out.get("final_by")
     observed = {"shared": shared, "is_final": is_final}
     held = out.get("is_held") if isinstance(out, dict) else None
     if not shared or is_final:
@@ -297,6 +308,8 @@ def _mirror_proxy_success(
             )
             == repo.SHARE_STATE_APPLY_APPLIED
         )
+    except db.DatabaseEpochChanged:
+        raise
     except Exception:
         applied = False
     if not applied:
@@ -307,7 +320,7 @@ def _mirror_proxy_success(
         except Exception:  # noqa: BLE001 — prepared/pending 잔존 자체가 재시작 안전망
             pass
         kick_share_state_reconciler()
-    elif terminal_status == "superseded" and ref.get("operation_kind") in {"hold", "unhold", "final_review", "unfinalize"}:
+    elif terminal_status == "superseded" and not ref.get("remote_result_json") and ref.get("operation_kind") in {"hold", "unhold", "final_review", "unfinalize"}:
         if local_id:
             _touch_telemetry(local_id)
         raise HTTPException(409, "검토 상태가 다른 작업으로 변경되었습니다. 새로고침 후 다시 확인해 주세요")
@@ -366,8 +379,11 @@ def _pinned_account_scope():
     ★계정 키와 uid 는 한 쌍으로 캡처해 둘 다 고정한다. 키만 고정하면 라우트 본문의
     active_uid() 가 머신 포인터를 따로 읽어 'DB=A · 소유 uid=B' 오귀속이 남는다(R13-IMPORT-1).
     """
-    with active_account.pinned_account_scope(_capture_account_pin()):
-        yield
+    try:
+        with db.pinned_share_operation():
+            yield
+    except db.DatabaseEpochChanged as exc:
+        raise HTTPException(409, {"code": exc.code, "state": "unknown", "recheck_required": True}) from exc
 
 
 def _account_scoped_route(fn):
@@ -380,6 +396,15 @@ def _account_scoped_route(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
         with _pinned_account_scope():
+            bound = signature(fn).bind_partial(*args, **kwargs).arguments
+            expected = bound.get("expected_revision")
+            if expected is not None and not _proxy.proxying():
+                kind = {"hold_generation": "hold", "unhold_generation": "unhold"}.get(fn.__name__, fn.__name__)
+                if kind in {"publish", "unpublish", "finalize", "unfinalize", "final_review", "hold", "unhold"}:
+                    parameters = ({"state": bound["body"].state} if kind == "final_review" else
+                                  {"restore_held": bound.get("restore_held", False)} if kind == "unfinalize" else
+                                  {"visibility": bound["body"].visibility} if kind == "publish" else {})
+                    return _versioned_local(bound["request"], bound["gen_id"], kind, expected, parameters)
             return fn(*args, **kwargs)
 
     return wrapper
@@ -387,7 +412,7 @@ def _account_scoped_route(fn):
 
 @router.post("/generations/{gen_id}/publish", response_model=GenerationOut)
 @_account_scoped_route
-def publish(gen_id: str, body: PublishIn, request: Request):
+def publish(gen_id: str, body: PublishIn, request: Request, expected_revision: Annotated[int | None, Query(ge=0)] = None):
     """generation 을 팀에 발행한다(명시적). 한 generation 은 0~1개의 share.
     발행 = share-set 에 추가(서버 발행은 publish-to-shared 번들 경로가 담당).
     ★네트워크 왕복이 없는 로컬 전용 구간이지만, 읽기(get_generation)~쓰기(publish·보존요청·
@@ -421,7 +446,7 @@ def publish(gen_id: str, body: PublishIn, request: Request):
 
 @router.post("/generations/{gen_id}/unpublish", response_model=GenerationOut)
 @_account_scoped_route
-def unpublish(gen_id: str, request: Request):
+def unpublish(gen_id: str, request: Request, expected_revision: Annotated[int | None, Query(ge=0)] = None):
     """팀 공유 해제 — share 행을 제거한다(내가 공유한 것을 되돌림).
     ⚠️ 최종(골드)인 항목은 공유 해제 불가 — '최종인데 공유 안 됨' 모순 차단(먼저 최종 해제).
     ★finalize 와 동일하게 첫 DB 접근부터 응답까지 한 계정 DB 로 고정한다(_pinned_account_scope):
@@ -448,9 +473,9 @@ def unpublish(gen_id: str, request: Request):
                 base_final=bool(current.get("is_final")) if current else False,
             )
             try:
-                out = _proxy.proxy_json(
-                    "POST", f"/api/generations/{server_id}/unpublish"
-                )
+                out = remote_commands.send(_proxy, ref, server_id, "unpublish", expected_revision=expected_revision)
+                if out is None:
+                    out = _proxy.proxy_json("POST", f"/api/generations/{server_id}/unpublish")
             except HTTPException as exc:
                 if exc.status_code != 404 or not _is_remote_generation_missing(exc):
                     _record_proxy_failure(ref, exc)
@@ -476,7 +501,10 @@ def unpublish(gen_id: str, request: Request):
             )
             if mirrored and local_id:
                 _touch_telemetry(local_id)
-                return repo.get_generation(local_id)
+                local = repo.get_generation(local_id)
+                if local and isinstance(out, dict) and out.get("remote_share_revision") is not None:
+                    local.update({key: out.get(key) for key in ("shared", "is_final", "is_held", "final_by", "final_at", "remote_share_revision")})
+                return local
             if out is not None:
                 return _mirror_pending_response(out)
             if local_id:
@@ -531,7 +559,7 @@ def _capture_account_scope() -> str:
     return _capture_account_pin()[0]
 
 
-async def _preserve_final_media(local_id: str, account_scope: str) -> None:
+async def _preserve_final_media(local_id: str, account_scope: str, operation=None) -> None:
     """최종(골드) 지정 시 그 생성물의 원본을 로컬로 byte-cache 한다 — 힉스필드 CDN URL 이 나중에 죽어도
     최종본은 로컬 보존본으로 남는다(선택 보존). best-effort: 실패해도 finalize 결과엔 영향 없음.
     ★썸네일 LRU 삭제는 .thumbs 만 대상이라, 여기서 MEDIA_DIR 에 받은 원본 보존본은 지워지지 않는다.
@@ -541,21 +569,24 @@ async def _preserve_final_media(local_id: str, account_scope: str) -> None:
     뒤에 계정 전환이 끼면 B DB 를 읽어 gen 이 None 이 되고 골드 원본 보존이 조용히 유실됐다."""
     if not MEDIA_PRESERVATION_ENABLED:
         return
-    account_token = active_account.set_override(account_scope or "")
     try:
-        # 요청을 먼저 영속화하므로 프로세스가 여기서 중단돼도 다음 시작의 주기 워커가 이어간다.
-        gen = await to_thread_non_abandon(repo.get_generation, local_id)
-        if not gen or not gen.get("is_final"):
-            return
-        await to_thread_non_abandon(repo.request_media_preservation, local_id, "final")
-        await preserve_generation_now(local_id)
-    finally:
-        active_account.reset_override(account_token)
+        # 과거 2인자 호출에는 UID가 없으므로 다른 활성 계정의 UID를 섞지 않는다.
+        with active_account.pinned_account_scope((account_scope or "", None)):
+            operation = operation or await to_thread_non_abandon(db.capture_share_operation)
+            with db.pinned_share_operation(operation):
+                # 요청을 먼저 영속화하므로 프로세스가 중단돼도 새 문맥의 주기 워커가 이어간다.
+                gen = await to_thread_non_abandon(repo.get_generation, local_id)
+                if not gen or not gen.get("is_final"):
+                    return
+                await to_thread_non_abandon(repo.request_media_preservation, local_id, "final")
+                await preserve_generation_now(local_id)
+    except db.DatabaseEpochChanged:
+        return  # 복원된 DB에 예전 작업의 실패/완료 기록도 쓰지 않는다.
 
 
 @router.post("/generations/{gen_id}/finalize", response_model=GenerationOut)
 @_account_scoped_route
-def finalize(gen_id: str, request: Request, background: BackgroundTasks):
+def finalize(gen_id: str, request: Request, background: BackgroundTasks, expected_revision: Annotated[int | None, Query(ge=0)] = None):
     """생성본을 최종(골드)으로 지정 — 그 프로젝트의 Supervisor 만(검수권). AUTH off 면 통과.
     최종은 곧 후보 확정이므로 공유(share)가 없으면 함께 발행한다(게이트 아님: 공유는 이미 자유).
     로컬 우선: 골드는 '공유된 항목의 서버 상태'다. 프록시 모드면 (필요시 번들 발행 후) 서버에
@@ -581,6 +612,7 @@ def finalize(gen_id: str, request: Request, background: BackgroundTasks):
                     desired_final=True,
                     expected_final_by=finalizer_uid,
                     settle_intents=False,
+                    **({"expected_revision": expected_revision} if expected_revision is not None else {}),
                 )
                 ref = pub.intent_refs.get(server_id)
                 if not ref:
@@ -588,6 +620,8 @@ def finalize(gen_id: str, request: Request, background: BackgroundTasks):
                         status_code=503,
                         detail="합성 최종 원장을 찾지 못해 서버 finalize를 중단했습니다",
                     )
+                if ref.get("remote_result_json"):
+                    expected_revision = json.loads(ref["remote_result_json"])["share_revision"]
                 # 서버 발행 승인 여부로 판정한다. 로컬 미러 실패는 원장 대기일 뿐 finalize를
                 # 되돌리거나 중단할 이유가 아니다.
                 if not pub.remote_accepted:
@@ -609,9 +643,9 @@ def finalize(gen_id: str, request: Request, background: BackgroundTasks):
                 )
 
             try:
-                out = _proxy.proxy_json(
-                    "POST", f"/api/generations/{server_id}/finalize"
-                )
+                out = remote_commands.send(_proxy, ref, server_id, "finalize", expected_revision=expected_revision)
+                if out is None:
+                    out = _proxy.proxy_json("POST", f"/api/generations/{server_id}/finalize")
             except HTTPException as exc:
                 _record_proxy_failure(ref, exc, composite_partial=composite)
                 raise
@@ -632,7 +666,7 @@ def finalize(gen_id: str, request: Request, background: BackgroundTasks):
                 _touch_telemetry(local_id)
                 if MEDIA_PRESERVATION_ENABLED:
                     background.add_task(
-                        _preserve_final_media, local_id, _capture_account_scope()
+                        _preserve_final_media, local_id, _capture_account_scope(), db.capture_share_operation()
                     )
                 return out
             return _mirror_pending_response(out)
@@ -670,13 +704,13 @@ def finalize(gen_id: str, request: Request, background: BackgroundTasks):
     )
     # 기본 URL-only 모드에서는 최종 선택이 원본 다운로드를 시작하지 않는다.
     if MEDIA_PRESERVATION_ENABLED:
-        background.add_task(_preserve_final_media, gen_id, _capture_account_scope())
+        background.add_task(_preserve_final_media, gen_id, _capture_account_scope(), db.capture_share_operation())
     return repo.get_generation(gen_id)
 
 
 @router.post("/generations/{gen_id}/unfinalize", response_model=GenerationOut)
 @_account_scoped_route
-def unfinalize(gen_id: str, request: Request, restore_held: bool = False):
+def unfinalize(gen_id: str, request: Request, restore_held: bool = False, expected_revision: Annotated[int | None, Query(ge=0)] = None):
     """최종(골드) 해제 → 일반 공유 상태로 복귀(공유는 유지). Supervisor 만.
     ``?restore_held=1``(새 앱이 붙인다 — Jay 2026-10-14): 최종이 되던 순간에 보류였던 것은 **보류로** 돌아온다. 표식이 없으면
     전과 같다(공유로) — 옛 앱의 원장은 해제 뒤의 보류를 False 로 기대해서, 서버가 알아서 되살리면 맞게 바뀌고도 409 가 된다.
@@ -700,10 +734,10 @@ def unfinalize(gen_id: str, request: Request, restore_held: bool = False):
                 held_open=restore_held,
             )
             try:
-                out = _proxy.proxy_json(
-                    "POST", f"/api/generations/{server_id}/unfinalize",
-                    **({"params": {"restore_held": 1}} if restore_held else {}),
-                )
+                out = remote_commands.send(_proxy, ref, server_id, "unfinalize", {"restore_held": restore_held}, expected_revision=expected_revision)
+                if out is None:
+                    out = _proxy.proxy_json("POST", f"/api/generations/{server_id}/unfinalize",
+                                            **({"params": {"restore_held": 1}} if restore_held else {}))
             except HTTPException as exc:
                 _record_proxy_failure(ref, exc)
                 raise
@@ -759,7 +793,7 @@ def unfinalize(gen_id: str, request: Request, restore_held: bool = False):
 
 @router.post("/generations/{gen_id}/final-review", response_model=GenerationOut)
 @_account_scoped_route
-def final_review(gen_id: str, body: FinalReviewIn, request: Request):
+def final_review(gen_id: str, body: FinalReviewIn, request: Request, expected_revision: Annotated[int | None, Query(ge=0)] = None):
     """최종을 명시적으로 일반/공유/보류로 전환한다. 중간 상태는 노출하지 않는다."""
     target = body.state
     if _proxy.proxying():
@@ -773,7 +807,9 @@ def final_review(gen_id: str, body: FinalReviewIn, request: Request):
                 base_held=current.get("is_held") if current else None,
             )
             try:
-                out = _proxy.proxy_json("POST", f"/api/generations/{server_id}/final-review", body={"state": target})
+                out = remote_commands.send(_proxy, ref, server_id, "final_review", {"state": target}, expected_revision=expected_revision)
+                if out is None:
+                    out = _proxy.proxy_json("POST", f"/api/generations/{server_id}/final-review", body={"state": target})
             except HTTPException as exc:
                 if exc.status_code == 404 and _is_remote_generation_missing(exc) and target == "unshared":
                     if local_id is None:
@@ -840,7 +876,7 @@ def final_review(gen_id: str, body: FinalReviewIn, request: Request):
     return repo.get_generation(gen_id)
 
 
-def _change_generation_hold(gen_id: str, request: Request, *, held: bool):
+def _change_generation_hold(gen_id: str, request: Request, *, held: bool, expected_revision: Annotated[int | None, Query(ge=0)] = None):
     """검토 보류/복귀. 서버 판정만 미러하며 원본 다운로드는 시작하지 않는다."""
     if _proxy.proxying():
         with _stable_proxy_identity_lock(gen_id) as (local_id, server_id):
@@ -858,7 +894,9 @@ def _change_generation_hold(gen_id: str, request: Request, *, held: bool):
             )
             try:
                 action = "hold" if held else "unhold"
-                out = _proxy.proxy_json("POST", f"/api/generations/{server_id}/{action}")
+                out = remote_commands.send(_proxy, ref, server_id, action, expected_revision=expected_revision)
+                if out is None:
+                    out = _proxy.proxy_json("POST", f"/api/generations/{server_id}/{action}")
             except HTTPException as exc:
                 _record_proxy_failure(ref, exc)
                 if exc.status_code == 404 and not _is_remote_generation_missing(exc):
@@ -912,14 +950,14 @@ def _change_generation_hold(gen_id: str, request: Request, *, held: bool):
 
 @router.post("/generations/{gen_id}/hold", response_model=GenerationOut)
 @_account_scoped_route
-def hold_generation(gen_id: str, request: Request):
-    return _change_generation_hold(gen_id, request, held=True)
+def hold_generation(gen_id: str, request: Request, expected_revision: Annotated[int | None, Query(ge=0)] = None):
+    return _change_generation_hold(gen_id, request, held=True, expected_revision=expected_revision)
 
 
 @router.post("/generations/{gen_id}/unhold", response_model=GenerationOut)
 @_account_scoped_route
-def unhold_generation(gen_id: str, request: Request):
-    return _change_generation_hold(gen_id, request, held=False)
+def unhold_generation(gen_id: str, request: Request, expected_revision: Annotated[int | None, Query(ge=0)] = None):
+    return _change_generation_hold(gen_id, request, held=False, expected_revision=expected_revision)
 
 
 # ── 제공자 신원 ───────────────────────────────────────────────────────────
@@ -931,7 +969,8 @@ def get_provider() -> dict[str, Any]:
 
 def _remote_media_url(item: dict[str, Any]) -> str | None:
     """서버 GenerationOut 의 미디어 경로를 번들 import 가 먹을 수 있는 URL 로 정규화."""
-    raw = item.get("source_url") or item.get("file_path")
+    file_path = str(item.get("file_path") or "")
+    raw = file_path if file_path.startswith("asset-sync:") else (item.get("source_url") or file_path)
     url = str(raw).strip() if raw else ""
     return url or None
 
@@ -945,7 +984,8 @@ def _remote_generation_item(remote: dict[str, Any]) -> dict[str, Any]:
             continue
         url = _remote_media_url(a)
         if url:
-            asset = {"type": a.get("type") or "image", "file_path": url}
+            asset = {"type": a.get("type") or "image", "file_path": url,
+                     "asset_content_id": a.get("asset_content_id")}
             # 영상 포스터(원격 http 썸네일)도 보존 → _upsert_synced 가 thumbnail_path 로 복원.
             thumb = a.get("thumbnail_path")
             if thumb and thumb.startswith("http"):
@@ -970,6 +1010,8 @@ def _remote_generation_item(remote: dict[str, Any]) -> dict[str, Any]:
                 "content_bytes": r.get("content_bytes"),
                 "registry_asset_id": r.get("registry_asset_id"),
                 "version_verified": r.get("version_verified"),
+                "asset_content_id": r.get("asset_content_id"),
+                "position": r.get("position"),
             }
         )
 
@@ -1058,3 +1100,62 @@ def regen_source(gen_id: str, request: Request):
     if not src["shared"]:
         raise HTTPException(status_code=409, detail="공유되지 않은 항목은 가져올 수 없음")
     return src
+
+
+@router.get("/share/capabilities")
+def share_capabilities():
+    if _proxy.proxying():
+        try:
+            return _proxy.proxy_json("GET", "/api/share/capabilities")
+        except HTTPException as exc:
+            if exc.status_code in {404, 405}:
+                return {"share_command": 0, "receipt_replay": False}
+            raise
+    from ..repo import share_commands as commands
+    with db.get_connection() as conn:
+        return {"share_command": 1, "receipt_replay": True, "content_schema": 2,
+                "db_generation": commands.database_generation(conn)}
+
+
+@router.get("/share/command-state/{gen_id}")
+@_account_scoped_route
+def share_command_state(gen_id: str, request: Request):
+    if _proxy.proxying():
+        return _proxy.proxy_json("GET", f"/api/share/command-state/{gen_id}")
+    from ..usecases import share as share_usecase
+    return http_call(share_usecase.inspect_state, authority(request), gen_id)
+
+
+@router.post("/share/commands")
+@_account_scoped_route
+def share_command(body: ShareCommandIn, request: Request):
+    if _proxy.proxying():
+        return _proxy.proxy_json("POST", "/api/share/commands", body=body.as_command())
+    from ..usecases import share as share_usecase
+    if body.command_kind == "publish_bundle":
+        raise HTTPException(400, "번들 명령은 publish-bundle 입구를 사용하세요")
+    result = http_call(share_usecase.execute, authority(request), body.as_command())
+    if not result["replayed"]:
+        _touch_telemetry(result["current"]["id"])
+        current = result["current"]
+        journal_audit_event(
+            "generation.share_command", actor_uid=actor_id(request), target_type="generation",
+            target_id=current["id"], project_id=current.get("project_id"),
+            fields=["shared", "is_final", "is_held"],
+            details={"command_kind": body.command_kind, "share_revision": current["share_revision"]},
+        )
+        if MEDIA_PRESERVATION_ENABLED and current["shared"]:
+            repo.request_media_preservation(current["id"], "final" if current["is_final"] else "shared")
+    return result
+
+
+def _versioned_local(request, gen_id, kind, expected_revision, parameters):
+    from ..usecases import share as share_usecase
+    state = http_call(share_usecase.inspect_state, authority(request), gen_id)
+    command = ShareCommandIn(operation_id=str(uuid4()), target_id=gen_id, command_kind=kind,
+                             workspace_scope=state.get("workspace_scope") or "unknown", workspace_id=state.get("workspace_id"),
+                             expected_revision=expected_revision, parameters=parameters, db_generation=state.get("db_generation"))
+    share_command(command, request)
+    current = repo.get_generation(state["id"])
+    current["remote_share_revision"] = current["share_revision"]
+    return current

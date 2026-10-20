@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import pytest
 from contextlib import closing
 from pathlib import Path
 
@@ -23,6 +24,154 @@ def _sqlite(path: Path, value: str) -> None:
         conn.execute("CREATE TABLE sample(value TEXT)")
         conn.execute("INSERT INTO sample VALUES(?)", (value,))
         conn.commit()
+
+
+def _local_set(tmp_path, monkeypatch, stamp='20261018_010101_000001'):
+    from app.services import backup
+    source = tmp_path / 'content_hub.db'
+    if not source.exists():
+        with closing(sqlite3.connect(source)) as conn:
+            conn.execute('CREATE TABLE generation(id TEXT PRIMARY KEY)')
+            conn.execute("INSERT INTO generation VALUES('g1')")
+            conn.commit()
+        with closing(sqlite3.connect(tmp_path / 'content_hub_trash.db')) as conn:
+            conn.execute('CREATE TABLE trashed(id TEXT PRIMARY KEY)')
+    monkeypatch.setattr(backup, 'MANAGE_DB_PATH', tmp_path / 'no-manage.db')
+    return backup._backup_now_for_scope(source, tmp_path / 'backups', stamp)
+
+
+def test_local_set_replica_preserves_and_verifies_metadata(tmp_path, monkeypatch):
+    from app.services import backup_manifest
+    replicate = _module()
+    monkeypatch.setattr(replicate, 'log', lambda _: None)
+    content = _local_set(tmp_path, monkeypatch)
+    dest = tmp_path / 'replica' / content.name
+    assert replicate.copy_local_set(content, dest) == 'copied'
+    assert backup_manifest.read_local(dest) == backup_manifest.read_local(content)
+    assert replicate.copy_local_set(content, dest) == 'skip'
+    with closing(sqlite3.connect(dest)) as conn:
+        conn.execute("UPDATE generation SET id='broken'")
+        conn.commit()
+    assert replicate.copy_local_set(content, dest) == 'copied'
+    assert backup_manifest.read_local(dest) == backup_manifest.read_local(content)
+
+
+def test_local_set_replica_rejects_false_sidecar(tmp_path, monkeypatch):
+    from app.services import backup_manifest
+    replicate = _module()
+    monkeypatch.setattr(replicate, 'log', lambda _: None)
+    content = _local_set(tmp_path, monkeypatch)
+    path = backup_manifest.local_path(content)
+    manifest = json.loads(path.read_text('utf-8'))
+    manifest['roles']['trash']['sha256'] = '0' * 64
+    path.write_text(backup_manifest.canonical(backup_manifest.seal(manifest)), encoding='utf-8')
+    dest = tmp_path / 'replica' / content.name
+    assert replicate.copy_local_set(content, dest) == 'fail'
+    assert not dest.exists()
+
+
+def test_local_set_prune_keeps_or_removes_all_members(tmp_path, monkeypatch):
+    from app.services import backup_manifest
+    replicate = _module()
+    monkeypatch.setattr(replicate, 'log', lambda _: None)
+    monkeypatch.setattr(replicate, 'KEEP_PER_DIR', 1)
+    content = _local_set(tmp_path, monkeypatch)
+    dest = tmp_path / 'replica' / content.name
+    assert replicate.copy_local_set(content, dest) == 'copied'
+    trash = dest.with_name(dest.name.replace('content_hub_', 'content_trash_'))
+    # One member remains in the existing newest-N files: retain its entire set.
+    assert replicate.prune_dir(dest.parent, set()) == 0
+    assert all(path.exists() for path in (dest, trash, backup_manifest.local_path(dest)))
+    fresh = dest.parent / '20261018_020202_deadbeef.db'
+    _sqlite(fresh, 'new')
+    os.utime(fresh, (dest.stat().st_mtime + 10, dest.stat().st_mtime + 10))
+    assert replicate.prune_dir(dest.parent, set()) == 2
+    assert not any(path.exists() for path in (dest, trash, backup_manifest.local_path(dest)))
+
+
+def test_legacy_single_db_rotation_does_not_claim_foreign_metadata(tmp_path, monkeypatch):
+    replicate = _module()
+    monkeypatch.setattr(replicate, 'KEEP_PER_DIR', 0)
+    path = tmp_path / '20261018_020202_deadbeef.db'
+    _sqlite(path, 'legacy')
+    unrelated = path.with_suffix('.manifest.json')
+    unrelated.write_text('{}', encoding='utf-8')
+    assert replicate.prune_dir(tmp_path, set()) == 1
+    assert unrelated.exists()
+
+
+def test_main_copies_local_manifest_in_same_unit(tmp_path, monkeypatch):
+    from app.services import backup_manifest
+    replicate = _module()
+    monkeypatch.setattr(replicate, 'ROOT', tmp_path / 'code')
+    content = _local_set(tmp_path, monkeypatch)
+    target = tmp_path / 'replica'
+    monkeypatch.setattr(replicate, '_sources', lambda: [('backups', content.parent)])
+    monkeypatch.setattr(replicate, 'replica_root', lambda: target)
+    monkeypatch.setattr(replicate, 'STATUS_FILE', tmp_path / 'status.json')
+    monkeypatch.setattr(replicate, 'log', lambda _: None)
+    assert replicate.main() == 0
+    assert backup_manifest.read_local(target / 'backups' / content.name) == backup_manifest.read_local(content)
+
+
+def test_unpublished_local_set_does_not_poison_next_replica_cycle(tmp_path, monkeypatch):
+    from app.services import backup, backup_manifest
+    replicate = _module()
+    stamp = '20261018_010101_000001'
+    original = os.replace
+    def fail_content(source, dest):
+        if Path(dest).name == f'content_hub_{stamp}.db':
+            raise OSError('injected content publish failure')
+        return original(source, dest)
+    with monkeypatch.context() as patch:
+        patch.setattr(backup.os, 'replace', fail_content)
+        with pytest.raises(OSError, match='injected'):
+            _local_set(tmp_path, patch, stamp)
+    unpublished = tmp_path / 'backups' / f'content_hub_{stamp}.db'
+    assert backup_manifest.local_path(unpublished).exists() and not unpublished.exists()
+    fresh = _local_set(tmp_path, monkeypatch, '20261018_010102_000001')
+    target = tmp_path / 'replica'
+    monkeypatch.setattr(replicate, 'ROOT', tmp_path / 'code')
+    monkeypatch.setattr(replicate, '_sources', lambda: [('backups', fresh.parent)])
+    monkeypatch.setattr(replicate, 'replica_root', lambda: target)
+    monkeypatch.setattr(replicate, 'STATUS_FILE', tmp_path / 'status.json')
+    monkeypatch.setattr(replicate, 'log', lambda _: None)
+    assert replicate.main() == 0
+    assert backup_manifest.read_local(target / 'backups' / fresh.name) == backup_manifest.read_local(fresh)
+    assert backup_manifest.local_path(unpublished).exists()  # 원본 잔재 삭제가 해결책이 아니다.
+    assert not any(stamp in path.name for path in target.rglob('*'))
+
+
+def test_local_set_extra_destination_role_fails_without_overwriting(tmp_path, monkeypatch):
+    replicate = _module()
+    monkeypatch.setattr(replicate, 'log', lambda _: None)
+    content = _local_set(tmp_path, monkeypatch)
+    dest = tmp_path / 'replica' / content.name
+    assert replicate.copy_local_set(content, dest) == 'copied'
+    extra = dest.with_name(dest.name.replace('content_hub_', 'manage_hub_'))
+    _sqlite(extra, 'preserve me')
+    before = {path.name: path.read_bytes() for path in dest.parent.iterdir()}
+    assert replicate.copy_local_set(content, dest) == 'fail'
+    assert {path.name: path.read_bytes() for path in dest.parent.iterdir()} == before
+
+
+def test_local_set_source_stat_error_is_not_unpublished(tmp_path, monkeypatch):
+    replicate = _module()
+    content = _local_set(tmp_path, monkeypatch)
+    target = tmp_path / 'replica'
+    monkeypatch.setattr(replicate, 'ROOT', tmp_path / 'code')
+    monkeypatch.setattr(replicate, '_sources', lambda: [('backups', content.parent)])
+    monkeypatch.setattr(replicate, 'replica_root', lambda: target)
+    monkeypatch.setattr(replicate, 'STATUS_FILE', tmp_path / 'status.json')
+    monkeypatch.setattr(replicate, 'log', lambda _: None)
+    original = Path.stat
+    def denied(path, *args, **kwargs):
+        if path == content:
+            raise PermissionError('injected access denied')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'stat', denied)
+    assert replicate.main() == 1
+    assert json.loads(replicate.STATUS_FILE.read_text('utf-8'))['error_code'] == 'source_unavailable'
 
 
 def test_copy_validates_replica_before_publish(tmp_path):
@@ -153,6 +302,7 @@ def test_status_write_failure_returns_failure_without_exposing_exception(
 
 def test_source_enumeration_failure_records_safe_structured_failure(tmp_path, monkeypatch):
     replicate = _module()
+    monkeypatch.setattr(replicate, 'ROOT', tmp_path / 'code')
     source = tmp_path / "source"
     source.mkdir()
     target = tmp_path / "replica"
@@ -178,6 +328,7 @@ def test_source_enumeration_failure_records_safe_structured_failure(tmp_path, mo
 
 def test_main_replicates_legacy_and_set_backups_and_records_success(tmp_path, monkeypatch):
     replicate = _module()
+    monkeypatch.setattr(replicate, 'ROOT', tmp_path / 'code')
     auto = tmp_path / "source" / "backups"
     uploaded = tmp_path / "source" / "db-backups"
     auto.mkdir(parents=True)

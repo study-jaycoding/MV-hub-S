@@ -13,6 +13,7 @@ import {
 } from "./sceneComfySeeds";
 import type { ComfyOutputsById } from "./sceneEdges";
 import type { SceneCard, SceneComfyCfg, SceneEdge } from "./scenes";
+import { assetIdentity } from "../shared/contracts/assets";
 
 export interface SceneComfyConfigSnapshot {
   name?: string;
@@ -34,6 +35,7 @@ export interface SceneComfyExecutionResult {
 }
 
 export interface ExecuteSceneComfyOptions {
+  projectId?: string;
   cardId: string;
   cards: SceneCard[];
   edges: SceneEdge[];
@@ -146,7 +148,8 @@ export async function executeSceneComfy(
     assertRunCurrent(options);
     const blob = await deps.fetchMedia(item.url, item.name);
     if (!blob) throw new Error(`입력을 불러오지 못했습니다: ${item.name}`);
-    media.push({ type: item.type, name: item.name, blob });
+    media.push({ ...assetIdentity(item), type: item.type, name: item.name, blob,
+      source_url: item.url, source_gen_id: item.source_gen_id, role: `${item.type === "video" ? "@Video" : "@Image"}${media.filter(m => m.type === item.type).length + 1}` });
   }
 
   // 큰 입력을 받는 동안 교체됐다면 유료/장시간 API 호출 자체를 시작하지 않는다.
@@ -174,7 +177,9 @@ export async function executeSceneComfy(
   };
   options.onRunPrepared?.(inputSnapshot);
   try {
-    const result = await deps.run(content, paramValues, media);
+    const result = options.projectId
+      ? await deps.run(content, paramValues, media, options.projectId)
+      : await deps.run(content, paramValues, media);
     // API 호출은 취소할 수 없지만, 완료 전에 바뀐 입력의 결과도 라이브러리에는 남긴다.
     // superseded 표식만 붙여 현재 카드 연결을 막는다.
     let superseded = false;

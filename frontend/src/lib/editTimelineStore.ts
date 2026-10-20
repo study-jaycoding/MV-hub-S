@@ -1,5 +1,4 @@
 // 편집 문서의 저장(localStorage)과 Undo 스택. 계약은 docs/EDIT_TAB.md.
-// ponytail: 캔버스 씬과 달리 로컬 DB 백업이 없다 — 브라우저 프로필에만 남는다. 팀 공유·백업이 필요해지면 DB 로 옮긴다.
 import { getAccountNamespace } from "./accountScope";
 import { emptyEditDoc, isHexColor, MARKER_COLORS, parseEditDoc, type EditDoc } from "./editTimeline";
 import { STORAGE_KEYS } from "./storageKeys";
@@ -23,14 +22,15 @@ const NEW_DOCS = `${STORAGE_KEYS.editDocs}:`;
 const oldKeyOf = (key: string): string | null => (key.startsWith(NEW_DOCS) ? OLD_DOCS + key.slice(NEW_DOCS.length) : null);
 
 /** 저장돼 있는 원문 — 새 자리, 없으면 옛 자리. */
-export function readEditRaw(key: string): string | null {
+export type EditRawRead = { kind: "ok"; raw: string | null } | { kind: "error" };
+export function readEditRaw(key: string): EditRawRead {
   try {
     const raw = localStorage.getItem(key);
-    if (raw !== null) return raw;
+    if (raw !== null) return { kind: "ok", raw };
     const old = oldKeyOf(key);
-    return old ? localStorage.getItem(old) : null;
+    return { kind: "ok", raw: old ? localStorage.getItem(old) : null };
   } catch {
-    return null; // 저장소 접근 불가 = 저장된 것 없음으로 본다
+    return { kind: "error" };
   }
 }
 
@@ -38,30 +38,42 @@ export interface StoredEditDoc {
   doc: EditDoc;
   raw: string | null; // 저장돼 있던 원문(없으면 null)
   bad: boolean; // 원문이 있는데 읽지 못함 — 호출부는 그것을 빈 문서로 덮지 않는다
+  inaccessible: boolean;
 }
 
-export function readEditDoc(key: string): StoredEditDoc {
-  const raw = readEditRaw(key);
-  if (raw === null) return { doc: emptyEditDoc(), raw, bad: false };
+export function readEditDoc(key: string, read: EditRawRead = readEditRaw(key)): StoredEditDoc {
+  if (read.kind === "error") return { doc: emptyEditDoc(), raw: null, bad: false, inaccessible: true };
+  const { raw } = read;
+  if (raw === null) return { doc: emptyEditDoc(), raw, bad: false, inaccessible: false };
   let doc: EditDoc | null = null;
   try {
     doc = parseEditDoc(JSON.parse(raw));
   } catch {
     doc = null;
   }
-  return doc ? { doc, raw, bad: false } : { doc: emptyEditDoc(), raw, bad: true };
+  return doc ? { doc, raw, bad: false, inaccessible: false } : { doc: emptyEditDoc(), raw, bad: true, inaccessible: false };
 }
 
 // 저장에 성공하면 쓴 원문, 실패하면 null. keepBad 는 읽지 못한 옛 원문 — `<키>.bad` 로 옮겨 적힌 것을
 // 확인한 뒤에만 원래 키를 덮는다. 새 자리에만 쓴다 — 옛 자리의 것은 건드리지 않는다(위).
 export function writeEditDoc(key: string, doc: EditDoc, keepBad: string | null = null): string | null {
-  const raw = JSON.stringify(doc);
+  return writeEditRaw(key, JSON.stringify(doc), keepBad);
+}
+
+const rawSubscribers = new Set<(key: string, raw: string | null, source: "write" | "read") => void>();
+export function subscribeEditRaw(fn: (key: string, raw: string | null, source: "write" | "read") => void): () => void {
+  rawSubscribers.add(fn);
+  return () => { rawSubscribers.delete(fn); };
+}
+
+export function writeEditRaw(key: string, raw: string, keepBad: string | null = null): string | null {
   try {
     if (keepBad !== null) {
       localStorage.setItem(`${key}.bad`, keepBad);
       if (localStorage.getItem(`${key}.bad`) !== keepBad) return null;
     }
     localStorage.setItem(key, raw);
+    rawSubscribers.forEach((fn) => fn(key, raw, "write"));
     return raw;
   } catch {
     return null;
@@ -95,6 +107,7 @@ const seenRaw = new Map<string, string | null>();
 
 export function noteEditRaw(key: string, raw: string | null): void {
   seenRaw.set(key, raw);
+  rawSubscribers.forEach((fn) => fn(key, raw, "read"));
 }
 
 export function editRawChanged(key: string, raw: string | null): boolean {
@@ -120,6 +133,25 @@ export function keepUnsavedEditDoc(key: string, entry: UnsavedEditDoc | null): v
   if (entry) unsaved.set(key, entry);
   else unsaved.delete(key);
   holdUnload("edit-docs", unsaved.size > 0);
+}
+
+// 확인되지 않은 복원은 일반 미저장 큐와 분리한다 — 화면을 다시 열어도 자동 저장하지 않는다.
+export interface PendingEditRestore {
+  doc: EditDoc;
+  raw: string | null;
+  dirty: boolean;
+  bad: boolean;
+  valid: boolean;
+  candidate: EditDoc;
+  candidateRaw: string;
+  backupText: string;
+}
+const pendingRestores = new Map<string, PendingEditRestore>();
+export const pendingEditRestore = (key: string): PendingEditRestore | undefined => pendingRestores.get(key);
+export function keepPendingEditRestore(key: string, pending: PendingEditRestore | null): void {
+  if (pending) pendingRestores.set(key, pending);
+  else pendingRestores.delete(key);
+  holdUnload("edit-docs:restore", pendingRestores.size > 0);
 }
 
 // 마지막으로 연 시퀀스(프로젝트·폴더) — 탭을 다시 열 때 그 자리로 돌아간다.

@@ -10,6 +10,7 @@ import importlib.util
 import io
 import json
 import math
+import re
 import secrets
 import sqlite3
 import threading
@@ -32,9 +33,10 @@ from ..mcp_models import StrictModel
 from ..models import GenRequestIn, WorkspaceContext
 from ..repo import mcp_v2 as store
 from ..services import auth, cli_bridge, thumbs
+from ..services.seedance_draft import fresh_params
 from ..services.async_tools import to_thread_non_abandon
 from ..services.path_safety import safe_join
-from . import _proxy, assets, gen_requests, generation, library, manage, mcp, projects
+from . import _proxy, asset_sync, assets, gen_requests, generation, library, manage, mcp, projects
 
 router = APIRouter(prefix="/api/mcp/v2", tags=["mcp"])
 _registration_lock = threading.Lock()
@@ -455,6 +457,20 @@ def _flatten(nodes):
             yield node
 
 
+def _generation_reference(row, asset):
+    reference = {"file_path": asset.get("source_url") or asset["file_path"], "type": asset["type"],
+                 "source_gen_id": row["id"], "name": row.get("prompt", "")[:100]}
+    cid = asset.get("asset_content_id")
+    if isinstance(cid, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", cid):
+        reference["asset_content_id"] = cid
+        # Verified content survives location promotion; owner/project/type changes still invalidate it.
+        identity = {key: row.get(key) for key in ("id", "creator_uid", "project_id")}
+        identity["asset"] = {key: asset[key] for key in ("id", "type", "asset_content_id")}
+    else:
+        identity = row.get("assets", [])
+    return reference, mcp.digest(store.encode(identity))
+
+
 def _issue_references(ctx, ws, args):
     result = []
     if args.asset_project:
@@ -473,9 +489,8 @@ def _issue_references(ctx, ws, args):
             for asset in row.get("assets", []):
                 if asset.get("type") not in ("image", "video", "audio"):
                     continue
-                ref = {"file_path": asset.get("source_url") or asset["file_path"], "type": asset["type"],
-                       "source_gen_id": row["id"], "name": row.get("prompt", "")[:100]}
-                rid = store.save_reference(ctx.client, {"kind": "generation", "id": row["id"], "asset_id": asset["id"], "workspace": _workspace_identity(ws)}, mcp.digest(store.encode(row["assets"])), ref)
+                ref, version = _generation_reference(row, asset)
+                rid = store.save_reference(ctx.client, {"kind": "generation", "id": row["id"], "asset_id": asset["id"], "workspace": _workspace_identity(ws)}, version, ref)
                 result.append({"id": rid, "name": ref["name"], "type": ref["type"], "source_gen_id": row["id"]})
                 if len(result) >= args.limit:
                     return result
@@ -491,6 +506,7 @@ def _references(ctx, ws, ids, trees):
         if not saved:
             raise HTTPException(404, "참고 자료 핸들을 다시 조회하세요.")
         source = saved["source"]
+        reference = dict(saved["reference"])
         issued_workspace = source.get("workspace") or json.loads(ctx.client["workspace"])
         if _workspace_identity(issued_workspace) != _workspace_identity(ws):
             raise HTTPException(404, "다른 워크스페이스에서 발급한 참고 자료입니다.")
@@ -503,10 +519,17 @@ def _references(ctx, ws, ids, trees):
             row = library.get_generation(source["id"], _internal(ctx, "/api/generations/" + source["id"]))
             if not _matches(row, ws):
                 raise HTTPException(404, "참고 자료의 워크스페이스가 다릅니다.")
-            version = mcp.digest(store.encode(row.get("assets", [])))
+            if reference.get("asset_content_id"):
+                asset = next((a for a in row.get("assets", []) if a["id"] == source["asset_id"]), None)
+                if asset is None:
+                    version = None
+                else:
+                    reference, version = _generation_reference(row, asset)
+            else:
+                # Pre-upgrade handles retain their original whole-response version guard.
+                version = mcp.digest(store.encode(row.get("assets", [])))
         if not version or version != saved["version"]:
             raise HTTPException(409, "참고 자료가 바뀌었습니다. 다시 조회해 계획을 만드세요.", headers={"X-MVHub-MCP-Error": "reference_changed"})
-        reference = dict(saved["reference"])
         reference["role"] = "@" + reference["type"].capitalize() + str(sum(r["type"] == reference["type"] for r in result) + 1)
         result.append(reference)
     return result
@@ -611,7 +634,16 @@ async def _validate_items(ctx, items, ws):
     for item in items:
         if item["model"] not in models:
             raise HTTPException(422, "사용할 수 없는 모델입니다.")
-        _validate_params(item["params"], await generation.model_params(item["model"]))
+        if "draft_job_id" in item["params"]:
+            raise HTTPException(422, "Draft 완성은 앱에서 원본 생성물을 선택해 실행하세요.",
+                                headers={"X-MVHub-MCP-Error": "invalid_option"})
+        schema = await generation.model_params(item["model"])
+        if item["model"] == "seedance_2_5" and not any(
+            field.get("name") == "draft" for field in schema.get("params", []) if isinstance(field, dict)
+        ):
+            schema = {**schema, "params": [*schema.get("params", []), {"name": "draft", "type": "boolean"}]}
+        _validate_params(item["params"], schema)
+        item["params"] = fresh_params(item["model"], item["params"])
         if item.get("project_id") and item["project_id"] not in {p["id"] for p in available}:
             raise HTTPException(404, "선택한 워크스페이스의 프로젝트를 찾을 수 없습니다.")
         if item.get("folder_path"):
@@ -835,12 +867,25 @@ async def _result_once(ctx, args, *, preview=True, plan=None):
                   Path(urlsplit(source).path).suffix.lower() in library.VIDEO_EXTENSIONS):
                 source = None
             result["note"] = "미리보기를 사용할 수 없습니다. 앱에서 결과를 확인하세요."
-            sources = ([asset.get("file_path"), source] if asset.get("type") == "image" else [source])
+            synced_image = asset.get("type") == "image" and (asset.get("file_path") or "").startswith("asset-sync:")
+            # A denied synchronized file must not fall back to an older thumbnail.
+            sources = ([asset["file_path"]] if synced_image else
+                       [asset.get("file_path"), source] if asset.get("type") == "image" else [source])
             for source in dict.fromkeys(value for value in sources if value):
                 try:
-                    # Only server-selected assets reach the existing SSRF-safe thumbnail route.
+                    if synced_image:
+                        location_id = source.removeprefix("asset-sync:")
+                        original = await asyncio.to_thread(asset_sync.get_file, location_id,
+                            _internal(ctx, "/api/asset-sync/files/" + location_id))
                     for width in (1024, 512, 256):
-                        response = await library.media_thumb(src=source, w=width)
+                        if synced_image:
+                            cache = await asyncio.to_thread(thumbs.ensure_thumb, Path(original.path), width)
+                            if cache is None:
+                                break
+                            await asyncio.to_thread(thumbs.mark_thumb_used, cache)
+                            response = FileResponse(cache, media_type="image/jpeg")
+                        else:
+                            response = await library.media_thumb(src=source, w=width)
                         data = await asyncio.to_thread(_read_preview, response)
                         if data is not None:
                             result["media"] = {"mime": "image/jpeg", "data_base64": base64.b64encode(data).decode("ascii")}

@@ -244,6 +244,32 @@ it("머리글·모델·Set 카드: 받은 값이 그대로면 다시 그려지�
   expect(host.querySelector(".scene-headnode-text")?.textContent).toBe("바뀐 제목");
 });
 
+it.each([
+  ["seedance_2_5", "480p", true],
+  ["seedance_2_5", "720p", false],
+  ["seedance_2_5", "1080p", false],
+  ["seedance_2_0", "480p", false],
+  ["nano_banana_flash", "480p", false],
+] as const)("모델 노드 Draft 표시: %s / %s", async (model, resolution, draft) => {
+  const params = Object.freeze({ resolution, generate_audio: false });
+  const card = Object.freeze({ id: "draft-model", kind: "model", x: 0, y: 0,
+    modelCfg: Object.freeze({ model, modelName: model, type: "video", params }) }) as SceneCard;
+  const before = JSON.stringify(card);
+  const port = vi.fn(), resize = vi.fn();
+  await show(() => <ModelCard card={card} onOutPortDown={port} onResizeDown={resize} />);
+  const value = [...host.querySelectorAll(".scene-modelnode-param")].find((row) => row.querySelector(".k")?.textContent === "해상도")!.querySelector(".v")!;
+  expect(value.firstChild?.textContent).toBe(resolution);
+  expect(value.querySelector(".scene-modelnode-draft")?.textContent ?? null).toBe(draft ? "Draft" : null);
+  expect(host.querySelectorAll(".scene-modelnode-draft")).toHaveLength(draft ? 1 : 0);
+  expect([...host.querySelectorAll(".scene-modelnode-param")].find((row) => row.querySelector(".k")?.textContent === "generate_audio")?.querySelector(".v")?.textContent).toBe("false");
+  act(() => host.querySelector(".scene-port")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
+  act(() => host.querySelector(".scene-resize")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
+  expect(port).toHaveBeenCalledTimes(1);
+  expect(resize).toHaveBeenCalledTimes(1);
+  expect(JSON.stringify(card)).toBe(before);
+  expect(fetch).not.toHaveBeenCalled();
+});
+
 // ── R1-a ② 보드 — 움직인 카드만 다시 그린다 ──
 const boardCard = (id: string) => host.querySelector<HTMLElement>(`.scene-card[data-id="${id}"]`)!;
 const grab = (id: string, x: number, y: number) => act(async () => {

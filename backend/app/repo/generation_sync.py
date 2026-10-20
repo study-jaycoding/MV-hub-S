@@ -44,6 +44,7 @@ def _upsert_synced(
     workspace: Optional[dict[str, Any]] = None,
     adopt_owner_uid: Optional[str] = None,
     author_uids: Optional[set[str]] = None,
+    validate_target=None,
 ) -> str:
     """업서트 본체 — 주어진 커넥션에서 실행(트랜잭션 제어는 호출측). apply_synced_jobs 가
     한 트랜잭션에 묶어 호출하고, 단건 wrapper(upsert_synced_generation)는 자체 커넥션을 연다.
@@ -125,6 +126,8 @@ def _upsert_synced(
                 existing = None
                 invalid_input_result = True
 
+        if validate_target is not None:
+            validate_target(existing["id"] if existing else None)
         if existing:
             target_id = existing["id"]
             workspace_filled = (
@@ -248,7 +251,7 @@ def _upsert_synced(
             # 매번 DELETE+INSERT 하던 쓰기를 제거 → WAL 쓰기·fsync 급감). 다르면(또는 0/복수면) 교체.
             cur_assets = conn.execute(
                 "SELECT id, type, file_path, thumbnail_path, source_url, result_bytes, result_head_sha, "
-                "result_probe_fail, result_fp_sent_to FROM asset WHERE generation_id=?",
+                "result_probe_fail, result_fp_sent_to, asset_content_id FROM asset WHERE generation_id=?",
                 (target_id,),
             ).fetchall()
             # 포스터 없이 들어온 재동기화(MCP 이력 보충 등)가 CLI 가 넣어둔 정적 포스터를 지우지 않게 —
@@ -271,6 +274,11 @@ def _upsert_synced(
                 # 결과 파일 지문(docs/RESULT_FINGERPRINT.md)은 포스터와 같은 '같은 결과물' 판정일 때만
                 # 새 행에 승계한다 — 원본이 다르면 새 행은 비어 있고(다시 수집·다시 전송) 옛 값을 붙이지 않는다.
                 keep_fp = (None, None, 0, None)
+                content_id = a.get("asset_content_id")
+                if not (isinstance(content_id, str) and len(content_id) == 71
+                        and content_id.startswith("sha256:")
+                        and all(c in "0123456789abcdef" for c in content_id[7:])):
+                    content_id = None
                 if len(cur_assets) == 1 and cur_assets[0]["type"] == a["type"] and (
                     (cur_assets[0]["source_url"] or cur_assets[0]["file_path"]) == (src or fp)
                 ):
@@ -279,12 +287,13 @@ def _upsert_synced(
                         old["result_bytes"], old["result_head_sha"],
                         old["result_probe_fail"] or 0, old["result_fp_sent_to"],
                     )
+                    content_id = old["asset_content_id"] or content_id
                 conn.execute("DELETE FROM asset WHERE generation_id=?", (target_id,))
                 conn.execute(
                     "INSERT INTO asset(id, generation_id, type, file_path, thumbnail_path, source_url, "
-                    "result_bytes, result_head_sha, result_probe_fail, result_fp_sent_to) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    (new_id(), target_id, a["type"], fp, thumb, src, *keep_fp),
+                    "result_bytes, result_head_sha, result_probe_fail, result_fp_sent_to, asset_content_id) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (new_id(), target_id, a["type"], fp, thumb, src, *keep_fp, content_id),
                 )
                 if result == "unchanged":
                     result = "updated"  # asset(포스터 포함)만 바뀌어도 변경 신호(WS·changed_job_ids)를 낸다
@@ -296,7 +305,7 @@ def _upsert_synced(
             "SELECT 1 FROM gen_reference WHERE generation_id=? LIMIT 1", (target_id,)
         ).fetchone()
         if not has_refs:
-            for ref in parsed.get("references", []):
+            for position, ref in enumerate(parsed.get("references", [])):
                 is_img = ref["type"] == "image"
                 fp, thumb, src = _cached_or_remote(ref["file_path"], is_img)
                 rid = _upsert_reference(
@@ -312,7 +321,7 @@ def _upsert_synced(
                     content_sha=ref.get("content_sha"),
                     content_bytes=ref.get("content_bytes"),
                 )
-                _link_reference(conn, target_id, rid, ref.get("role"))
+                _link_reference(conn, target_id, rid, ref.get("role"), ref.get("position", position))
                 asset_registry.attach_reference_registry(conn, rid)
 
         # ★공유 전용 share_url 백필 — 로컬 토큰 레퍼런스(asset:캡쳐 등)에도 힉스필드 공개 URL 을 보관해

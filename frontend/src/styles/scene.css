@@ -21,12 +21,17 @@
 .scene-tab-wrap.on { border-color: var(--accent); background: var(--accent); }
 .scene-tab-wrap .scene-tab { border: 0; border-radius: 0; }
 .scene-tab-wrap.on .scene-tab { background: var(--accent); color: var(--accent-ink); }
-.scene-del {
+.scene-tab-wrap .scene-del {
   border: 0; background: transparent; color: var(--muted); cursor: pointer;
-  font-size: 14px; line-height: 1; padding: 4px 8px 4px 2px; font-weight: 700;
+  flex: 0 0 24px; width: 24px; opacity: 0;
+  font-size: 14px; line-height: 1; padding: 4px 0; font-weight: 700;
 }
+.scene-tab-wrap:hover .scene-del,
+.scene-tab:focus-visible + .scene-del,
+.scene-del:focus-visible { opacity: 1; }
+.scene-del:disabled { cursor: default; }
 .scene-del:hover { color: var(--danger, #f2777c); }
-.scene-tab-wrap.on .scene-del { color: var(--accent-ink); opacity: 0.75; }
+.scene-tab-wrap.on .scene-del { color: var(--accent-ink); opacity: 1; }
 .scene-tab-wrap.on .scene-del:hover { color: #7a1f22; opacity: 1; }
 /* 선택하지 않은 탭은 한 걸음 물러나 보이게 — 회색으로 낮추고 한 치수 작게(Jay 2026-09-15).
    활성 탭만 라임으로 도드라져, 지금 보고 있는 씬이 한눈에 들어온다. */
@@ -34,7 +39,7 @@
 /* 얹으면 거의 또렷해진다. 아래 .off-ws:hover 가 더 뒤에 있어 '다른 공간' 탭은 자기 값을 쓴다. */
 .scene-tab-wrap:not(.on):hover { opacity: 0.88; }
 .scene-tab-wrap:not(.on) .scene-tab { font-size: 11px; padding: 3px 9px; color: var(--muted2); }
-.scene-tab-wrap:not(.on) .scene-del { font-size: 12.5px; padding: 3px 7px 3px 2px; color: var(--muted2); }
+.scene-tab-wrap:not(.on) .scene-del { font-size: 12.5px; padding: 3px 0; color: var(--muted2); }
 /* 공간 표식도 같이 줄인다 — 탭만 작아지면 표식이 상대적으로 커 보인다. */
 .scene-tab-wrap:not(.on) .ws-mark-box { width: 13px; height: 13px; border-radius: 4px; font-size: 8px; }
 /* 얹으면 한 단계만 밝아진다 — --text 까지 올리면 비활성 탭이 활성 탭보다 튄다(Jay 지적).
@@ -599,6 +604,11 @@
 }
 .scene-modelnode-param .k { color: var(--muted); flex: none; }
 .scene-modelnode-param .v { color: var(--text); text-align: right; word-break: break-word; }
+.scene-modelnode-draft {
+  display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px;
+  background: var(--accent); color: var(--accent-ink); font-size: 9px; font-weight: 700;
+  line-height: 1.4; vertical-align: middle; white-space: nowrap; pointer-events: none;
+}
 
 /* ── 리스트 노드 — 연결된 생성 카드 모음(재생) ── */
 .scene-card-list { border: 2px solid #3a4a2b; }
@@ -1146,10 +1156,10 @@
   font-size: 12px; font-weight: 800; line-height: 1.6;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
 }
-.scene-varpop-cur { background: #ffd24a; color: #1a1c20; }
+.scene-varpop-cur { background: var(--accent); color: #111; }
 /* 미선택 후보 — 별표 없이 회색 '대표'(아직 선택 안 됨을 명확히). hover 시 노랑=이걸 대표로. */
 .scene-varpop-rep { border: 0; cursor: pointer; background: rgba(255, 255, 255, 0.06); color: var(--muted); }
-.scene-varpop-rep:hover { background: #ffd24a; color: #1a1c20; }
+.scene-varpop-rep:hover { background: var(--accent); color: #111; }
 /* 캔버스 카드는 폭이 152px 로 좁아 28px 버튼이 비율상 큼 → 라이브러리 좁은 카드(23px)에 준해 축소.
    .scene-card 스코프라 구성탭 히스토리 보드에는 영향 없음. */
 .scene-card .linb-ov-btn { width: 22px; height: 22px; font-size: 12px; }

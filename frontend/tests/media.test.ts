@@ -52,6 +52,12 @@ describe("외부 파일 드래그 판별", () => {
 });
 
 describe("미디어 썸네일 URL", () => {
+  it("서버 보관본으로 투영된 결과물의 canonical 토큰도 실제 파일 URL로 표시한다", () => {
+    const location = "a".repeat(32);
+    expect(mediaThumbUrl(`asset-sync:${location}`, null, "image", 256)).toBe(`/api/asset-sync/files/${location}`);
+    expect(thumbOf({ assets: [{ file_path: `asset-sync:${location}`, type: "image", thumbnail_path: null }] } as Parameters<typeof thumbOf>[0]))
+      .toBe(`/api/asset-sync/files/${location}`);
+  });
   it("포스터 없는 영상도 원본 대신 media-thumb 첫 프레임 캐시를 사용한다", () => {
     const generation = {
       assets: [{ type: "video", file_path: "/media/aa/result.mp4", thumbnail_path: null }],

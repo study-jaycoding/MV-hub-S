@@ -70,6 +70,7 @@ export function EditPool({
   authKey,
   listState,
   listStartedAt,
+  listSettledSeq,
   notice,
   onPick,
   onPickMany,
@@ -96,6 +97,7 @@ export function EditPool({
   authKey: string; // 계정·서버 — 태그 덧입힘을 계정마다 나눈다
   listState: EditListState;
   listStartedAt: number; // 지금 목록을 낸 조회가 출발한 순번(editTick) — 태그 덧입힘을 걷는 기준
+  listSettledSeq?: Record<string, number>;
   notice: string | null; // 목록 대신 보여 줄 안내(폴더를 안 골랐다·워크스페이스 미확인 등)
   onPick: (gen: Generation, additive: boolean) => void; // additive = Ctrl·Shift 를 누른 채(더하고 빼기)
   onPickMany: (ids: string[]) => void; // 끌어서 상자로 고른 것(전체 치환)
@@ -161,13 +163,14 @@ export function EditPool({
   useEffect(() => {
     let changed = false;
     for (const [key, kept] of tagOverlays) {
-      if (key.startsWith(`${authKey}\n`) && kept.saving === 0 && (kept.savedAt ?? Infinity) < listStartedAt) {
+      const prefix = `${authKey}\n`;
+      if (key.startsWith(prefix) && kept.saving === 0 && (kept.savedAt ?? Infinity) < Math.max(listStartedAt, listSettledSeq?.[key.slice(prefix.length)] ?? 0)) {
         tagOverlays.delete(key);
         changed = true;
       }
     }
     if (changed) overlaysChanged();
-  }, [authKey, listStartedAt]);
+  }, [authKey, listStartedAt, listSettledSeq]);
   const actions: PoolCardActions = {
     ...cardActions,
     onSetTags: (gen, tags) => keepTags(gen, { tags }, cardActions.onSetTags(gen, tags)),

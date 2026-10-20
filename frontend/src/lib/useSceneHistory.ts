@@ -4,7 +4,6 @@ import {
   preserveRepresentatives,
   settleComfyRunning,
   variantIds,
-  type Scene,
   type SceneCard,
   type SceneEdge,
   type SceneGroup,
@@ -23,7 +22,7 @@ import {
   reviveCardGenerations,
   serverCardLinks,
 } from "./sceneCardLinks";
-import { relinkCards, type RelinkTarget } from "./sceneAssetRelink";
+import { relinkCards, type RelinkTarget } from "../features/canvas/assetRefs";
 
 interface UseSceneHistoryOptions {
   sceneId: string;
@@ -36,7 +35,7 @@ interface UseSceneHistoryOptions {
   setEdges: Dispatch<SetStateAction<SceneEdge[]>>;
   setGroups: Dispatch<SetStateAction<SceneGroup[]>>;
   clearSelection: () => void;
-  onChange: (patch: Partial<Scene>) => void;
+  onChange: (snapshot: SceneSnap) => void;
   // 씬을 바꾸는 틈(SceneBoard 의 switchingRef) — 손에 든 카드가 떠난 씬의 것인 동안은 저장도 되돌리기도 받지 않는다.
   //  받으면 떠난 씬의 카드가 부모의 '지금 활성 씬'(새 씬)에 쓰이고, 새 씬의 되돌리기 기록에 떠난 씬의 모습이 쌓인다.
   frozenRef: MutableRefObject<boolean>;
@@ -253,8 +252,8 @@ export function useSceneHistory({
     persistSceneHistory(sceneIdRef.current);
   };
 
-  const hasUncommittedCardsOrEdges = (nextCards: SceneCard[], nextEdges: SceneEdge[]) =>
-    nextCards !== lastCommitRef.current.cards || nextEdges !== lastCommitRef.current.edges;
+  const hasUncommittedSnapshot = (nextCards: SceneCard[], nextEdges: SceneEdge[], nextGroups: SceneGroup[]) =>
+    nextCards !== lastCommitRef.current.cards || nextEdges !== lastCommitRef.current.edges || nextGroups !== lastCommitRef.current.groups;
 
   const restoreState = (
     snapshot: SceneSnap,
@@ -386,7 +385,7 @@ export function useSceneHistory({
     persistSceneHistory,
     restoreSceneHistory,
     commitDerivedState,
-    hasUncommittedCardsOrEdges,
+    hasUncommittedSnapshot,
     beginGesture,
     endGesture,
     propagateGenIdsToHistory,

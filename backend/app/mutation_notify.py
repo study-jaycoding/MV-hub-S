@@ -45,6 +45,8 @@ _NOTIFY_NO_LIBRARY_CHANGE_PATHS = frozenset(
         "/api/ingest/known-jobs",
         "/api/projects/folder-counts/batch",
         "/api/scenes/backup",
+        "/api/edit-docs/backup",
+        "/api/edit-docs/backup/restore",
         "/api/comfy/parse",
         "/api/comfy/run",
         # 내가 마지막으로 본 표시 — 생성물 자체는 안 바뀐다. 라이브러리 변경으로 치면
@@ -62,6 +64,7 @@ _ASSET_NO_CHANGE_PATHS = frozenset(
     {
         "/api/assets/reveal",
         "/api/assets/clipboard-copy",
+        "/api/assets/native-drag",
         # 자동 복구의 '찾기'는 읽기뿐이다 — 끌어다 놓을 때마다 돌아 다른 창이 에셋 목록을 매번 다시 읽었다(2026-09-29).
         "/api/assets/locate",
     }

@@ -34,7 +34,7 @@ interface Props {
   onOpenNotificationComment: (genId: string) => void;
   onNotificationsChanged: () => void;
   inert?: boolean; // 폴더 창이 떠 있는 동안 — 마우스는 창의 막이 막지만 Tab 으로는 닿았다(App 의 behindInert)
-  searchResetKey?: number; // 탭 누름 말고 필터가 통째로 갈린 횟수(Resolve 자동 따라가기) — 바뀌면 검색칸을 다시 올린다
+  searchResetKey?: string | number; // 폴더 탭·범위 변경과 자동 따라가기 때 예약 검색을 버린다
 }
 
 export function TopBar({

@@ -313,15 +313,14 @@ describe("분리 창(installPopupLogoutWatch)", () => {
 
   it("Assets 끌어 내보내기 — 멈춘 중엔 브라우저가 직접 받는 주소를 싣지 않는다", async () => {
     const http = await import("../src/lib/http");
-    const { setSingleFileDrag, setZipDrag } = await import("../src/components/assets/exportDrag");
+    const { setSingleFileDrag } = await import("../src/components/assets/exportDrag");
     const data = new Map<string, string>();
     const dt = { setData: (key: string, value: string) => data.set(key, value), effectAllowed: "" } as unknown as DataTransfer;
     http.setApiPause("shared");
-    setZipDrag(dt, "p1", ["a.png", "b.png"]);
     setSingleFileDrag(dt, "p1", "c.mp4", "c.mp4");
     expect(data.size).toBe(0);
     http.setApiPause(null);
-    setZipDrag(dt, "p1", ["a.png", "b.png"]);
+    setSingleFileDrag(dt, "p1", "c.mp4", "c.mp4");
     expect(data.has("DownloadURL")).toBe(true);
   });
 });

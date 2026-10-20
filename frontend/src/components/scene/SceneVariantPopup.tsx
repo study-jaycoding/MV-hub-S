@@ -165,12 +165,12 @@ export function SceneVariantPopup({
   // 대표 표시/지정 — 카드 '밖' 위(Jay). 대표면 표시, 아니면 지정 단추.
   const cellHeader = (g: Generation) =>
     g.id === card.genId ? (
-      <span className="scene-varpop-cur">★ 대표</span>
+      <span className="scene-varpop-cur">썸네일</span>
     ) : g.assets?.[0] ? (
       <button
         type="button"
         className="scene-varpop-rep"
-        title="이 결과를 카드 대표로 지정"
+        title="이 결과를 카드 썸네일로 지정"
         // preventDefault = 버튼이 포커스를 받아 격자가 스크롤되는 것 차단.
         // mousedown 에서 바로 지정 → 빠르게 눌러도 확실히 선택(클릭 타이밍 의존 제거).
         onMouseDown={(e) => {
@@ -185,7 +185,7 @@ export function SceneVariantPopup({
           if (e.detail === 0) actions.setCardVariant(card.id, g.id);
         }}
       >
-        대표
+        썸네일
       </button>
     ) : null;
 

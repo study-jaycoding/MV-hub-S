@@ -25,6 +25,7 @@ from .backup_verify import (
     inspect_sqlite_database,
     read_table_counts,
 )
+from .isolated_env import _local_path, build_smoke_env, validate_smoke_paths
 
 
 # 격리 서버를 종료한 직후에만 나타나는 일시적 열기 실패. 실측된 것만 재시도 대상으로 둔다 —
@@ -129,10 +130,11 @@ def verify_restored_set_runtime(
     timeout_seconds: float = 60.0,
 ) -> dict[str, Any]:
     """복원 세트로 격리 서버를 띄워 ready·로그인·핵심 수를 실제 확인한다."""
-    restored_data_dir = restored_data_dir.resolve()
+    restored_data_dir = _local_path(restored_data_dir)
+    log_path = _local_path(restored_data_dir / "restore-drill-server.log")
     db_dir = restored_data_dir / "db"
     paths = {
-        label: db_dir / str(spec["restored_name"])
+        label: _local_path(db_dir / str(spec["restored_name"]))
         for label, spec in BACKUP_SET_MEMBERS.items()
     }
     for label, path in paths.items():
@@ -140,6 +142,8 @@ def verify_restored_set_runtime(
             path,
             required_tables=set(BACKUP_SET_MEMBERS[label]["required_tables"]),
         )
+    from .trash_transfer import validate_pair
+    validate_pair(paths["content"], paths.get("trash"))
 
     before_counts = {
         label: read_table_counts(
@@ -159,18 +163,10 @@ def verify_restored_set_runtime(
     admin_email = f"restore-drill-{secrets.token_hex(8)}@localhost.invalid"
     admin_password = secrets.token_urlsafe(18)
     auth_secret = secrets.token_urlsafe(32)
-    log_path = restored_data_dir / "restore-drill-server.log"
 
-    env = os.environ.copy()
-    for key in (
-        "CONTENT_HUB_SSL_CERTFILE",
-        "CONTENT_HUB_SSL_KEYFILE",
-        "CONTENT_HUB_TEST_SNAPSHOT_EXPORT",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-    ):
-        env.pop(key, None)
+    frontend = restored_data_dir / "no-frontend"
+    env = build_smoke_env(os.environ, restored_data_dir, frontend_dist=frontend,
+                          python_exe=Path(sys.executable), port=port)
     env.update(
         {
             "CONTENT_HUB_DATA": str(restored_data_dir),
@@ -213,9 +209,11 @@ def verify_restored_set_runtime(
     ready_payload: dict[str, Any] | None = None
     login_ok = False
     process_stopped = False
+    log_path = _local_path(log_path)
+    validate_smoke_paths(restored_data_dir, env, allowed_frontend_root=frontend)
     with log_path.open("w", encoding="utf-8", errors="replace") as log_file:
         process = subprocess.Popen(
-            [sys.executable, str(serve_script)],
+            [sys.executable, "-E", "-s", "-B", "-X", "utf8", "-u", str(serve_script)],
             cwd=str(backend_dir),
             env=env,
             stdout=log_file,

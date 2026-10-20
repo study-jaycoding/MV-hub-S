@@ -83,7 +83,7 @@ def test_source_stays_on_the_captured_account_when_the_switch_lands_mid_flight(
         _seed_shared_source(source_id)
         materialized = repo.get_generation(source_id)
         active_account.set_active(B_EMAIL, B_UID)
-        db.flush_pool()
+        # 실제 계정 전환은 DB 교체 epoch를 올리지 않는다. 복원 반례는 전용 회귀에서 지킨다.
         return materialized, source_id
 
     monkeypatch.setattr(share, "_materialize_remote_shared", fake_materialize)

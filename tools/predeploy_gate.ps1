@@ -19,6 +19,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'validation_result.ps1')
 
 function Invoke-Checked {
     param(
@@ -28,10 +29,28 @@ function Invoke-Checked {
 
     Write-Host ""
     Write-Host "== $Label =="
-    & $Command
-    if ($LASTEXITCODE -ne 0) {
-        throw "$Label failed (exit code $LASTEXITCODE)"
+    $Step = [ordered]@{ name = $Label; status = 'running'; exit_code = $null }
+    $Run.Data.current_step = $Label
+    $Run.Data.steps += $Step
+    Save-ValidationRun $Run
+    $global:LASTEXITCODE = 0
+    try {
+        & $Command
+        $Step.exit_code = $LASTEXITCODE
+        if ($LASTEXITCODE -ne 0) {
+            throw "$Label failed (exit code $LASTEXITCODE)"
+        }
     }
+    catch {
+        $Step.status = 'failed'
+        $Step.exit_code = $LASTEXITCODE
+        # Evidence failure must not replace the command's original exception.
+        try { Save-ValidationRun $Run }
+        catch { Write-Warning 'Could not persist the failed validation step.' }
+        throw
+    }
+    $Step.status = 'passed'
+    Save-ValidationRun $Run
 }
 
 function Resolve-TestPython {
@@ -80,25 +99,28 @@ function Resolve-TestPython {
 }
 
 $ProjectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
-$PythonExe = Resolve-TestPython -ProjectRoot $ProjectRoot -PreferredExe $PythonExe
 if (-not $ReportDirectory) {
     $ReportDirectory = Join-Path $ProjectRoot "predeploy-reports"
 }
 $ReportDirectory = [System.IO.Path]::GetFullPath($ReportDirectory)
-New-Item -ItemType Directory -Force -Path $ReportDirectory | Out-Null
-
-Push-Location $ProjectRoot
+$Run = Start-ValidationRun -ReportDirectory $ReportDirectory -Options ([ordered]@{
+    allow_dirty = [bool]$AllowDirty; skip_load = [bool]$SkipLoad; skip_backup_drill = [bool]$SkipBackupDrill
+})
+$FinalizationAttempted = $false
+$LocationPushed = $false
 try {
-    $Commit = (& git rev-parse HEAD).Trim()
-    if ($LASTEXITCODE -ne 0) {
-        throw "Git commit could not be resolved."
-    }
-    $Branch = (& git branch --show-current).Trim()
-    $Dirty = @(& git status --porcelain)
-    if ($LASTEXITCODE -ne 0) {
-        throw "Git status could not be read."
-    }
-    if ($Dirty.Count -gt 0 -and -not $AllowDirty) {
+    $Run.Data.current_step = 'resolve-python'
+    Save-ValidationRun $Run
+    $PythonExe = Resolve-TestPython -ProjectRoot $ProjectRoot -PreferredExe $PythonExe
+    Push-Location $ProjectRoot
+    $LocationPushed = $true
+    $Run.Data.current_step = 'source-manifest'
+    Save-ValidationRun $Run
+    $Run.Data.source = Get-ValidationSourceManifest -ProjectRoot $ProjectRoot
+    Save-ValidationRun $Run
+    $Commit = $Run.Data.source.commit
+    $Branch = $Run.Data.source.branch
+    if ($Run.Data.source.dirty -and -not $AllowDirty) {
         throw "Working tree is not clean. Commit the intended release changes, or use -AllowDirty only for local rehearsal."
     }
 
@@ -168,6 +190,8 @@ try {
     else {
         Write-Host ""
         Write-Host "== SQLite backup drill skipped =="
+        $Run.Data.steps += [ordered]@{ name = 'SQLite online backup and restore drill'; status = 'skipped'; exit_code = $null }
+        Save-ValidationRun $Run
     }
 
     $LoadReport = $null
@@ -207,6 +231,8 @@ try {
     else {
         Write-Host ""
         Write-Host "== Load test skipped =="
+        $Run.Data.steps += [ordered]@{ name = 'Isolated load test'; status = 'skipped'; exit_code = $null }
+        Save-ValidationRun $Run
     }
 
     $Summary = [ordered]@{
@@ -228,16 +254,44 @@ try {
         load_max_rss_bytes_observed = $(if ($SkipLoad) { $null } else { $LoadResult.server.resource_summary.max_rss_bytes })
         load_report = $LoadReport
     }
-    $SummaryPath = Join-Path $ReportDirectory "predeploy-latest.json"
-    $Summary | ConvertTo-Json | Set-Content -LiteralPath $SummaryPath -Encoding UTF8
+    $Run.Data.current_step = 'verify-source-unchanged'
+    $Run.Data.source_after = Get-ValidationSourceManifest -ProjectRoot $ProjectRoot
+    $Run.Data.source_unchanged = ($Run.Data.source.sha256 -eq $Run.Data.source_after.sha256 -and
+        $Run.Data.source.commit -eq $Run.Data.source_after.commit)
+    Save-ValidationRun $Run
+    if (-not $Run.Data.source_unchanged) { throw 'Source changed during validation; results do not describe a fixed target.' }
+    $Run.Data['summary'] = $Summary
+    $Run.Data.current_step = 'complete'
+    $FinalizationAttempted = $true
+    Complete-ValidationRun -Run $Run -Status passed
 
     Write-Host ""
     Write-Host "PREDEPLOY GATE PASSED"
-    Write-Host "  summary: $SummaryPath"
+    Write-Host "  run    : $($Run.Path)"
+    Write-Host "  latest : $($Run.LatestPath)"
+    Write-Host "  scope  : source-only; release_eligible=false (artifact validation not implemented)"
     if ($LoadReport) {
         Write-Host "  load   : $LoadReport"
     }
 }
+catch {
+    # Preserve the original exception/exit details even if the evidence disk fails.
+    if (-not $FinalizationAttempted) {
+        $FinalizationAttempted = $true
+        $Failure = @{ type = $_.Exception.GetType().FullName; step = $Run.Data.current_step; exit_code = $LASTEXITCODE }
+        $FailureStatus = if ($_.Exception -is [System.Management.Automation.PipelineStoppedException]) { 'interrupted' } else { 'failed' }
+        try { Complete-ValidationRun -Run $Run -Status $FailureStatus -Failure $Failure }
+        catch { Write-Warning 'Validation failed and its final result could not be persisted; the run is incomplete.' }
+    }
+    throw
+}
 finally {
-    Pop-Location
+    try {
+        # Pipeline cancellation can bypass catch. Hard process termination may
+        # bypass finally too: the persisted running record then stays incomplete.
+        if (-not $FinalizationAttempted) { Complete-ValidationRun -Run $Run -Status interrupted }
+    }
+    finally {
+        if ($LocationPushed) { Pop-Location }
+    }
 }

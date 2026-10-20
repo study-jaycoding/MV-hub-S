@@ -19,7 +19,7 @@ from fastapi import HTTPException, Request
 
 from app import active_account, config
 from app.routers import db_transfer
-from app.services import worker_backup
+from app.services import worker_backup, backup_manifest
 
 
 A = "backup-a@example.invalid"
@@ -178,7 +178,7 @@ def test_expected_drain_pins_claim_and_connection_after_machine_switch(store, mo
 
     def upload(url, token, manifest, paths, **kwargs):
         observed.append((active_account.account_key(), active_account.active_uid()))
-        return 200, {"accepted": True, "backup_set_id": manifest["backup_set_id"], "files": manifest["roles"], "count": 1}
+        return 200, {"accepted": True, "backup_set_id": manifest["backup_set_id"], "files": manifest["roles"], "format_version": manifest["format_version"], "manifest_sha256": backup_manifest.manifest_digest(manifest), "count": 1}
 
     monkeypatch.setattr(worker_backup, "_claim_due", claim)
     monkeypatch.setattr(worker_backup, "_multipart_set_upload", upload)
@@ -479,7 +479,7 @@ def test_manual_blank_admission_does_not_queue_newly_logged_in_account(store, mo
 def test_done_expected_set_allows_existing_oldest_backlog_or_idle(store, monkeypatch, capsys, backlog, via_main):
     def acknowledge(url, token, manifest, paths, **kwargs):
         assert url == "http://a.invalid/api/db-backup/sets" and token == "synthetic-a"
-        return 200, {"accepted": True, "backup_set_id": manifest["backup_set_id"], "files": manifest["roles"], "count": 7}
+        return 200, {"accepted": True, "backup_set_id": manifest["backup_set_id"], "files": manifest["roles"], "format_version": manifest["format_version"], "manifest_sha256": backup_manifest.manifest_digest(manifest), "count": 7}
 
     upload = Mock(side_effect=acknowledge)
     monkeypatch.setattr(worker_backup, "_multipart_set_upload", upload)
@@ -537,7 +537,7 @@ def test_main_matching_pending_owner_and_set_returns_zero_after_actual_drain(sto
 
     def acknowledge(url, token, manifest, paths, **kwargs):
         assert manifest["backup_set_id"] == set_id
-        return 200, {"accepted": True, "backup_set_id": set_id, "files": manifest["roles"]}
+        return 200, {"accepted": True, "backup_set_id": set_id, "files": manifest["roles"], "format_version": manifest["format_version"], "manifest_sha256": backup_manifest.manifest_digest(manifest)}
 
     upload = Mock(side_effect=acknowledge)
     monkeypatch.setattr(worker_backup, "_multipart_set_upload", upload)

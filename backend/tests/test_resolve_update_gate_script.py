@@ -76,7 +76,7 @@ def _windows_handle(path: Path, *, shared: bool):
 
 def _isolated_main(
     tmp_path: Path, *, pause_install: bool = False, fail_install: bool = False,
-    fail_state: bool = False,
+    fail_state: bool = False, restart: str = '0', fail_restart: bool = False,
 ) -> str:
     installed = tmp_path / "installed"
     installed.mkdir(exist_ok=True)
@@ -92,9 +92,14 @@ def _isolated_main(
         "Read-ReleaseManifest",
     ))
     main = payload[payload.index('$TempRoot = Join-Path $env:TEMP ("mvhub-update-') :]
+    restart_default = re.search(r'\[string\]\$RestartAfterInstall = "([^"]*)"', payload).group(1)
+    normalization = next(line for line in payload.splitlines() if line.startswith('if ([string]::IsNullOrWhiteSpace($RestartAfterInstall))'))
     return f"""
 $ErrorActionPreference = 'Stop'
+. {_quote(_ROOT / 'update_release_contract.ps1')}
 $TargetDir = {_quote(installed)}
+$JournalPath = Join-Path $TargetDir 'update-journal.json'
+$script:InstallJournal = $null
 $StateFile = {_quote(tmp_path / 'state.json')}
 $env:TEMP = {_quote(temp)}
 $CurrentVersion = ''
@@ -103,7 +108,8 @@ $BaseUrl = 'isolated-stub'
 $ManifestName = 'latest.json'
 $ExpectSha256 = ''
 $ExpectVersion = ''
-$RestartAfterInstall = '0'
+$RestartAfterInstall = '{restart_default if restart == 'omitted' else restart}'
+{normalization}
 $script:RecoveryState = 'not_started'
 $script:ProcessesStopped = $false
 $script:InstalledComponents = $null
@@ -117,6 +123,11 @@ function Get-ReleaseFile {{
         ConvertTo-Json | Set-Content -LiteralPath $Destination -Encoding UTF8
 }}
 function Move-LeftoversToQuarantine {{}}
+function Finalize-FailedInstall {{}}
+function Restart-MvHubAndWaitReady {{
+    [IO.File]::WriteAllText({_quote(tmp_path / 'restart-called')}, 'yes')
+    {"throw 'isolated readiness failure'" if fail_restart else "Write-UpdateState -State 'complete' -Message 'fixture ready' -Latest $LatestVersion"}
+}}
 function Assert-AppLayout {{}}
 function Assert-PythonRuntime {{}}
 function Assert-BundledCli {{}}
@@ -188,10 +199,30 @@ def test_empty_gate_file_and_finished_transfer_do_not_block_retry(tmp_path):
     second = _run(script)
     assert second.returncode == 0, second.stdout + second.stderr
     assert (tmp_path / "install-called").exists()
-    assert _state(tmp_path)["state"] == "complete"
+    # Explicit no-restart mode cannot claim runtime verification.
+    assert _state(tmp_path)["state"] == "starting"
     _assert_clean(tmp_path)
     with _windows_handle(path, shared=True):
         pass
+
+
+@pytest.mark.parametrize('restart', ['omitted', ''])
+def test_manual_default_and_empty_wrapper_argument_require_verified_restart(tmp_path, restart):
+    result = _run(_isolated_main(tmp_path, restart=restart))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / 'restart-called').exists()
+    assert _state(tmp_path)['state'] == 'complete'
+    _assert_clean(tmp_path)
+
+
+def test_restart_failure_never_reports_complete(tmp_path):
+    result = _run(_isolated_main(tmp_path, restart='omitted', fail_restart=True))
+    assert result.returncode != 0
+    assert (tmp_path / 'restart-called').exists()
+    assert _state(tmp_path)['state'] == 'failed'
+    assert 'isolated readiness failure' in _state(tmp_path)['message']
+    assert '[3/3] Update complete.' not in result.stdout
+    _assert_clean(tmp_path)
 
 
 def test_duplicate_updater_still_exits_17_without_changing_live_state(tmp_path):

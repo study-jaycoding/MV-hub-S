@@ -111,7 +111,7 @@ it("'대표' 단추를 누르면 그 결과가 카드 대표가 되고, 카드 �
   const base = props([]);
   act(() => root.render(<SceneVariantPopup {...base} ui={{ ...base.ui, setSelected }} actions={{ ...base.actions, setCardVariant }} />));
   const cell = (id: string) => host.querySelector<HTMLElement>(`.scene-varwin .gen-cell[data-id="${id}"]`)!;
-  expect(cell("a").querySelector(".gen-cell-head")!.textContent).toBe("★ 대표"); // 지금 대표 — 표시만
+  expect(cell("a").querySelector(".gen-cell-head")!.textContent).toBe("썸네일"); // 지금 썸네일 — 표시만
   expect(cell("a").querySelector("button.scene-varpop-rep")).toBeNull();
   const button = cell("b").querySelector<HTMLButtonElement>("button.scene-varpop-rep")!;
   act(() => {

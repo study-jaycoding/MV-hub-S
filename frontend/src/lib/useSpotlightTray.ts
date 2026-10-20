@@ -16,8 +16,10 @@ import {
 import { sceneRefFingerprint, type SceneRef } from "./scenes";
 import type { ChipRef } from "./promptEditor";
 import type { SpotlightTrayRef } from "../components/spotlight/SpotlightRefTray";
+import { assetIdentity, assetIdentityForProject, type AssetImportTarget } from "../shared/contracts/assets";
 
 interface Params {
+  importTarget?: AssetImportTarget;
   // 씬의 생성 카드 1개를 선택하면 그 카드의 레퍼런스를 이 트레이에 바인딩. null=일반 모드.
   //  key = `${sceneId}:${cardId}` (카드 바뀜 감지) · refs = 카드에 연결된 레퍼런스(순서).
   trayBinding?: { key: string; refs: SceneRef[] } | null;
@@ -46,6 +48,7 @@ export interface SpotlightTrayApi {
 }
 
 export function useSpotlightTray({
+  importTarget,
   trayBinding,
   onTrayBindingRefsChange,
   onImportFiles,
@@ -84,6 +87,7 @@ export function useSpotlightTray({
     // 왕복(로드↔통지)이 지문 안정적이도록 name/thumb 는 값 보존(빈 값 대체 안 함).
     setBoundTrayRefs(
       bindingRefs.map((r) => ({
+        ...assetIdentity(r),
         file_path: r.file_path,
         type: r.type === "video" ? "video" : r.type === "audio" ? "audio" : "image",
         role: r.type === "video" ? "@Video" : r.type === "audio" ? "@Audio" : "@Image",
@@ -106,6 +110,7 @@ export function useSpotlightTray({
     const fp = sceneRefFingerprint(boundTrayRefs);
     if (fp === lastSyncFpRef.current) return;
     const proposed: SceneRef[] = boundTrayRefs.map((t) => ({
+      ...assetIdentity(t),
       file_path: t.file_path,
       type: t.type,
       name: t.name || undefined, // "" → undefined 로 되돌려 원본 SceneRef 와 지문 일치
@@ -120,6 +125,7 @@ export function useSpotlightTray({
       lastSyncFpRef.current = sceneRefFingerprint(accepted);
       setBoundTrayRefs(
         accepted.map((r) => ({
+          ...assetIdentity(r),
           file_path: r.file_path,
           type: r.type === "video" ? "video" : r.type === "audio" ? "audio" : "image",
           role: r.type === "video" ? "@Video" : r.type === "audio" ? "@Audio" : "@Image",
@@ -143,6 +149,7 @@ export function useSpotlightTray({
     // 중복 허용(같은 파일도 여러 번) — dedup 안 함. uid 로 구분. 다중선택은 배열로 한 번에 추가.
     const additions: SpotlightTrayRef[] = parseSpotlightAssetItems(raw).map((d) => ({
       ...spotlightAssetRefBase(d),
+      ...assetIdentityForProject(d, importTarget?.target_project_id),
       uid: `t${trayUidRef.current++}`,
       role: d.type === "video" ? "@Video" : "@Image", // 제출 시 순서대로 재번호
     }));

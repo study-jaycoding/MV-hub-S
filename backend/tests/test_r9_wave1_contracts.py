@@ -72,6 +72,8 @@ def test_asset_commit_cancellation_still_invalidates_both_tree_caches(
 
     async def commit_then_cancel(func, /, *args, **kwargs):
         result = func(*args, **kwargs)
+        if func not in (assets._commit_capture_and_sync, assets._commit_import_and_sync):
+            return result
         # capture 는 (target, reused, discard_token) 3-튜플(토큰 부기 원자화), 임포트는 2-튜플
         target, reused = result[0], result[1]
         assert target.is_file()

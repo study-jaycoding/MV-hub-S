@@ -162,6 +162,7 @@ class HelperController(AssetRegistryController):
                 raise _ProjectFail(str(exc)) from exc
             lease_id, unc = str(lease.get("lease_id") or ""), str(lease.get("unc") or "")
             self._lease = {"id": lease_id, "unc": unc, "seq": 0,
+                           "results_unc":lease.get("results_unc",unc) or '',
                            "known": {k["p"]: [k["b"], k["m"], k["s"]] for k in lease.get("known") or [] if isinstance(k, dict)}}
             renew = asyncio.create_task(self._renew_loop(lease_id))
             try:
@@ -211,6 +212,14 @@ class HelperController(AssetRegistryController):
         known = dict(self._lease.get("known") or {})
         known.update(self._cache.get(pid) or {})
         return known
+
+
+    def _known_for_root(self,pid: str,root_raw: str) -> dict[str,list]:
+        return self._known(pid)  # 서버 lease가 같은 root의 known만 제공한다.
+
+
+    def _results_root(self, pid: str, asset_root: str) -> str:
+        return str(self._lease.get('results_unc',asset_root) or '')
 
     def _apply(self, pid: str, name: str, scan: registry.RegistryScan, stats: dict[str, Any]) -> dict[str, int]:
         """결과를 DB 대신 서버로 올린다(완주만). 연결 오류는 같은 순번으로 한 번 더 — 서버가 같은 내용이면 같은 답을 준다."""

@@ -21,18 +21,49 @@ FORBIDDEN_IMPORTS: dict[str, tuple[str, ...]] = {
 # 현재는 예외 없이 계층 경계를 지킨다.
 KNOWN_DEBT: set[tuple[str, str]] = set()
 
+# P4로 실제 전환한 업무만 강화한다. repo는 SQL/receipt, usecase는 전달받은 권한 port를 사용한다.
+STRICT_BUSINESS_IMPORTS = {
+    "usecases/share.py": ("app.deps", "app.main", "__dynamic_import__"),
+    "repo/share_commands.py": ("app.deps", "app.main", "fastapi", "starlette", "__dynamic_import__"),
+}
+
 
 def _module_name(path: Path) -> str:
     relative = path.relative_to(APP_ROOT).with_suffix("")
     return ".".join(("app", *relative.parts))
 
 
-def _imported_modules(path: Path) -> list[tuple[int, str]]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+def _imported_modules(path: Path, source: str | None = None) -> list[tuple[int, str]]:
+    tree = ast.parse(path.read_text(encoding="utf-8") if source is None else source, filename=str(path))
     package = _module_name(path).split(".")[:-1]
     imported: list[tuple[int, str]] = []
+    importlib_aliases = {"importlib"}
+    importer_aliases = {"__import__"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            importlib_aliases.update(alias.asname or alias.name for alias in node.names if alias.name == "importlib")
+        elif isinstance(node, ast.ImportFrom) and node.module == "importlib" and not node.level:
+            importer_aliases.update(alias.asname or alias.name for alias in node.names if alias.name == "import_module")
 
     for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and node.args:
+            dynamic_import = (
+                isinstance(node.func, ast.Name) and node.func.id in importer_aliases
+            ) or (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in importlib_aliases
+                and node.func.attr == "import_module"
+            )
+            if dynamic_import:
+                target = node.args[0].value if isinstance(node.args[0], ast.Constant) else None
+                if isinstance(target, str):
+                    level = len(target) - len(target.lstrip("."))
+                    if level:
+                        target = ".".join((*package[:max(0, len(package) - level + 1)], target.lstrip(".")))
+                    imported.append((node.lineno, target))
+                else:
+                    imported.append((node.lineno, "__dynamic_import__"))
         if isinstance(node, ast.Import):
             imported.extend((node.lineno, alias.name) for alias in node.names)
             continue
@@ -62,6 +93,13 @@ def _imported_modules(path: Path) -> list[tuple[int, str]]:
     return imported
 
 
+def _boundary_violations(path: Path, source: str | None = None) -> list[tuple[int, str]]:
+    relative = path.relative_to(APP_ROOT)
+    forbidden = FORBIDDEN_IMPORTS.get(relative.parts[0], ()) + STRICT_BUSINESS_IMPORTS.get(relative.as_posix(), ())
+    return [(line, module) for line, module in _imported_modules(path, source)
+            if any(_matches_prefix(module, prefix) for prefix in forbidden)]
+
+
 def _matches_prefix(module: str, prefix: str) -> bool:
     return module == prefix or module.startswith(f"{prefix}.")
 
@@ -85,15 +123,10 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         violations: list[str] = []
         observed_debt: set[tuple[str, str]] = set()
 
-        for layer, forbidden_prefixes in FORBIDDEN_IMPORTS.items():
+        for layer in FORBIDDEN_IMPORTS:
             layer_root = APP_ROOT / layer
             for path in sorted(layer_root.rglob("*.py")):
-                for line, module in _imported_modules(path):
-                    if not any(
-                        _matches_prefix(module, prefix)
-                        for prefix in forbidden_prefixes
-                    ):
-                        continue
+                for line, module in _boundary_violations(path):
 
                     relative = path.relative_to(APP_ROOT.parent).as_posix()
                     debt_key = (relative, module)
@@ -112,6 +145,33 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             observed_debt,
             "KNOWN_DEBT가 실제 코드와 다릅니다. 해결된 항목은 예외 목록에서도 제거하세요.",
         )
+
+    def test_forbidden_synthetic_imports_are_rejected(self) -> None:
+        probes = [
+            ("repo/probe.py", "from app.usecases import share"),
+            ("repo/probe.py", "from ..routers import library"),
+            ("usecases/probe.py", "from fastapi import HTTPException"),
+            ("usecases/probe.py", "import app.routers.library"),
+            ("services/probe.py", "importlib.import_module('app.routers.library')"),
+            ("usecases/share.py", "from .. import deps"),
+            ("repo/share_commands.py", "__import__('fastapi')"),
+            ("usecases/share.py", "from importlib import import_module as load\nload('app.routers.library')"),
+            ("usecases/share.py", "import importlib as loader\nloader.import_module('..routers.library', __package__)"),
+            ("usecases/share.py", "__import__(variable_module)"),
+        ]
+        for relative, source in probes:
+            with self.subTest(relative=relative, source=source):
+                self.assertTrue(_boundary_violations(APP_ROOT / relative, source))
+
+    def test_forward_synthetic_imports_are_allowed(self) -> None:
+        probes = [
+            ("routers/probe.py", "from ..usecases import share"),
+            ("usecases/share.py", "from ..repo import share_commands"),
+            ("repo/share_commands.py", "from . import share"),
+        ]
+        for relative, source in probes:
+            with self.subTest(relative=relative, source=source):
+                self.assertEqual([], _boundary_violations(APP_ROOT / relative, source))
 
     def test_backend_internal_import_graph_has_no_cycles(self) -> None:
         paths = sorted(APP_ROOT.rglob("*.py"))

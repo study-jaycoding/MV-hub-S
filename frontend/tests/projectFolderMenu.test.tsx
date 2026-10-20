@@ -258,3 +258,23 @@ it("접어 둔 프로젝트 — 다른 창이 그사이 접은 프로젝트를 �
   await fold("A"); // 이 창이 편 것은 편다
   expect(stored()).toEqual(["B", "다른 창이 접은 프로젝트"].sort());
 });
+it.each(["my", "team"] as const)("%s 사이드바 미들클릭은 폴더·프로젝트 배경 탭만 열고 기존 선택을 쓰지 않는다", async (tab) => {
+  const pid = `tabs-${tab}`;
+  const state = { project_id: pid, root_path: "fixture", selected_path: "", tree: {
+    path: "", name: "Render", children: [{ path: "e001", name: "e001", children: [] }],
+  } } as unknown as ProjectFolderState;
+  mocks.links.mockResolvedValue({ links: { [pid]: state } }); mocks.folder.mockResolvedValue(state);
+  const open = vi.fn(), select = vi.fn(), arm = vi.fn();
+  await act(async () => root.render(<ProjectSection projects={[{ id: pid, name: "Tabs Project", count: 1 } as Project]}
+    unassignedCount={0} archivedCount={0} deletedOnly={false} tab={tab} activeId={pid}
+    onFilter={select} onViewDeleted={vi.fn()} onArmFolder={arm} onOpenFolderTab={open} />));
+  const row = host.querySelector<HTMLElement>(".folder-tree-row")!;
+  expect(row).toBeTruthy();
+  act(() => row.dispatchEvent(new MouseEvent("auxclick", { button: 1, bubbles: true })));
+  expect(open).toHaveBeenCalledExactlyOnceWith(pid, "e001", "Tabs Project");
+  const project = host.querySelector<HTMLElement>('[title="Tabs Project"]')!;
+  act(() => project.dispatchEvent(new MouseEvent("auxclick", { button: 1, bubbles: true })));
+  expect(open).toHaveBeenLastCalledWith(pid, "", "Tabs Project");
+  expect(select).not.toHaveBeenCalled();
+  expect(arm).not.toHaveBeenCalled();
+});

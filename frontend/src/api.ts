@@ -1,3 +1,7 @@
+import { captureSubmissionScope, OperationContextChangedError } from "./app/operationContext";
+import type { GenerationCreateBody, RegenerateBody, SubmissionCanvasLink } from "./shared/contracts/generation";
+import { createGeneration, regenerateGeneration, prepareCreateSubmission, prepareRegenerateSubmission } from "./features/generation/api";
+export type { GenerationCreateBody } from "./shared/contracts/generation";
 // 타입 안전 API 클라이언트. 모든 호출은 /api 프록시를 통해 로컬 백엔드로.
 import type {
   Facets,
@@ -28,11 +32,9 @@ import { projectApi } from "./lib/projectApi";
 import { sharedApi } from "./lib/sharedApi";
 import { pathPart } from "./lib/url";
 import { normalizeGenerationPromptCompatibility } from "./lib/generationPrompt";
-import { isGenerationWorkspaceReady } from "./lib/workspaceContext";
 import type { CanvasGenerationLink } from "./lib/canvasGenerationRecovery";
 import type { CardHistoryCursor, CardHistoryLink } from "./lib/canvasDetached";
 import { getAccountNamespace } from "./lib/accountScope";
-import { EXPECT_ACCOUNT_HEADER, hubHasFeature, REQUEST_RETRY_FEATURE } from "./lib/hubFeatures";
 import type { GenerationLocation, GenerationLocationRequest } from "./lib/resolveLibraryLocation";
 
 export { getAuthToken, jsonFetch, setAuthToken };
@@ -104,50 +106,71 @@ function buildQuery(q: GenQuery, cursor: GenCursor | null = null, limit = GEN_PA
   return p.toString();
 }
 
-function normalizeGenerations(generations: Generation[]): Generation[] {
-  return generations.map(normalizeGenerationPromptCompatibility);
+function normalizeGeneration(generation: Generation, isCurrent?: () => boolean, team = false): Generation {
+  const value = { ...normalizeGenerationPromptCompatibility(generation) };
+  delete value._shareSnapshot; // 네트워크/이전 저장본이 만든 클라이언트 표식은 신뢰하지 않는다.
+  if (isCurrent) {
+    const revision = team && Number.isSafeInteger(value.share_revision) && value.share_revision! >= 0 ? value.share_revision : undefined;
+    value._shareSnapshot = { revision, isCurrent };
+  }
+  return value;
 }
 
-function normalizeHistory(history: History): History {
+function normalizeGenerations(generations: Generation[], isCurrent?: () => boolean, team = false): Generation[] {
+  return generations.map(generation => normalizeGeneration(generation, isCurrent, team));
+}
+
+let shareReadScope: ReturnType<typeof captureSubmissionScope> | undefined;
+function captureShareRead(): () => boolean {
+  // 같은 세대의 함수 참조를 유지해 내용이 같은 조회가 화면 전체를 다시 그리지 않게 한다.
+  if (!shareReadScope?.isCurrent?.()) shareReadScope = captureSubmissionScope({ scope: "unknown", id: null, name: null });
+  return shareReadScope.isCurrent!;
+}
+
+function normalizeHistory(history: History, isCurrent: () => boolean): History {
   return {
     ...history,
-    ancestors: normalizeGenerations(history.ancestors),
-    materials: normalizeGenerations(history.materials),
-    target: normalizeGenerationPromptCompatibility(history.target),
-    children: normalizeGenerations(history.children),
-    used_by: normalizeGenerations(history.used_by),
-    siblings: normalizeGenerations(history.siblings),
+    ancestors: normalizeGenerations(history.ancestors, isCurrent),
+    materials: normalizeGenerations(history.materials, isCurrent),
+    target: normalizeGeneration(history.target, isCurrent),
+    children: normalizeGenerations(history.children, isCurrent),
+    used_by: normalizeGenerations(history.used_by, isCurrent),
+    siblings: normalizeGenerations(history.siblings, isCurrent),
   };
 }
 
-function normalizeHistoryGraph(graph: HistoryGraph): HistoryGraph {
-  return { ...graph, nodes: normalizeGenerations(graph.nodes) };
+function normalizeHistoryGraph(graph: HistoryGraph, isCurrent: () => boolean): HistoryGraph {
+  return { ...graph, nodes: normalizeGenerations(graph.nodes, isCurrent) };
 }
 
-function generationFetch(path: string, init?: RequestInit, retryNoResponse = false): Promise<Generation> {
-  return jsonFetch<Generation>(path, init, undefined, { retryNoResponse }).then(normalizeGenerationPromptCompatibility);
+function generationFetch(path: string, init?: RequestInit, retryNoResponse = false, beforeAttempt?: () => void): Promise<Generation> {
+  const isCurrent = captureShareRead();
+  return jsonFetch<Generation>(path, init, undefined, { retryNoResponse, beforeAttempt }).then(generation => normalizeGeneration(generation, isCurrent));
 }
 
-// 요청표가 있는 생성 POST — 허브가 재전송 계약(계정 확인 헤더)을 알릴 때만 답이 없으면 한 번 더 보낸다(Jay 결정 2A).
-//  같은 키·같은 내용이면 허브가 처음 카드를 돌려준다. 계정 헤더는 그사이 다른 계정으로 바뀐 허브가 새로 만들지 않게.
-function genRequestFetch(body: string): Promise<Generation> {
-  const retry = hubHasFeature(REQUEST_RETRY_FEATURE);
-  return generationFetch("/api/gen-requests", {
-    method: "POST",
-    body,
-    ...(retry ? { headers: { [EXPECT_ACCOUNT_HEADER]: getAccountNamespace() } } : {}),
-  }, retry);
+function shareFetch(id: string, action: string, init: RequestInit, generation?: Generation, params = new URLSearchParams()): Promise<Generation> {
+  const snapshot = generation?._shareSnapshot;
+  const isCurrent = snapshot?.isCurrent ?? captureShareRead();
+  if (snapshot?.revision !== undefined) params.set("expected_revision", String(snapshot.revision));
+  const query = params.toString();
+  return generationFetch(`/api/generations/${pathPart(id)}/${action}${query ? `?${query}` : ""}`, init, false, () => {
+    if (!isCurrent()) throw new OperationContextChangedError();
+  }).then(result => {
+    const revision = result.remote_share_revision;
+    if (Number.isSafeInteger(revision) && revision! >= 0) return { ...result, _shareSnapshot: { revision: revision!, isCurrent } };
+    return result;
+  });
 }
 
 function reviewCompatibilityError(): Error {
   return new Error(t("공유 보류 기능을 사용하려면 공유 서버와 이 PC의 MV Hub를 업데이트하세요."));
 }
 
-async function reviewFetch(id: string, action: "hold" | "unhold" | "final-review", state?: ReviewAction): Promise<Generation> {
+async function reviewFetch(id: string, action: "hold" | "unhold" | "final-review", state?: ReviewAction, generation?: Generation): Promise<Generation> {
   try {
-    const result = await generationFetch(`/api/generations/${pathPart(id)}/${action}`, {
+    const result = await shareFetch(id, action, {
       method: "POST", ...(state ? { body: jsonBody({ state }) } : {}),
-    });
+    }, generation);
     if (typeof result.is_held !== "boolean") throw reviewCompatibilityError();
     return result;
   } catch (error) {
@@ -156,103 +179,18 @@ async function reviewFetch(id: string, action: "hold" | "unhold" | "final-review
   }
 }
 
-export interface GenerationCreateBody {
-  prompt: string;
-  display_prompt?: string;
-  model: string;
-  params?: Record<string, unknown>;
-  color?: string | null;
-  tags?: string[];
-  auto_tags?: string[];
-  references?: {
-    file_path: string;
-    type: string;
-    role: string;
-    name?: string;
-    thumbnail?: string;
-    source_url?: string;
-    source_gen_id?: string;
-  }[];
-  project_id?: string;
-  folder_path?: string;
-}
-
-type RegenerateBody = {
-  prompt?: string;
-  color?: string | null;
-  auto_tags?: string[];
-};
-
-function newGenerationRequestKey(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  const bytes = new Uint8Array(16);
-  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
-    crypto.getRandomValues(bytes);
-  } else {
-    for (let index = 0; index < bytes.length; index++) {
-      bytes[index] = Math.floor(Math.random() * 256);
-    }
-  }
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-  return [
-    hex.slice(0, 8),
-    hex.slice(8, 12),
-    hex.slice(12, 16),
-    hex.slice(16, 20),
-    hex.slice(20),
-  ].join("-");
-}
-
-function createGeneration(
-  body: GenerationCreateBody,
-  workspace: WorkspaceContext = { scope: "unknown", id: null, name: null },
-  canvasLink?: CanvasGenerationLink,
-  idempotencyKey?: string,
-): Promise<Generation> {
-  if (!isGenerationWorkspaceReady(workspace)) {
-    return Promise.reject(new Error("워크스페이스 id와 이름이 모두 확인된 뒤 생성할 수 있습니다"));
-  }
-  const requestKey = canvasLink ? undefined : idempotencyKey || newGenerationRequestKey();
-  return genRequestFetch(jsonBody({
-    kind: "create",
-    workspace,
-    create: body,
-    canvas_link: canvasLink,
-    ...(requestKey ? { idempotency_key: requestKey } : {}),
-  }));
-}
-
-function regenerateGeneration(
-  id: string,
-  body: RegenerateBody,
-  workspace: WorkspaceContext = { scope: "unknown", id: null, name: null },
-  canvasLink?: CanvasGenerationLink,
-  idempotencyKey?: string,
-): Promise<Generation> {
-  if (!isGenerationWorkspaceReady(workspace)) {
-    return Promise.reject(new Error("워크스페이스 id와 이름이 모두 확인된 뒤 재생성할 수 있습니다"));
-  }
-  const requestKey = canvasLink ? undefined : idempotencyKey || newGenerationRequestKey();
-  return genRequestFetch(jsonBody({
-    kind: "regenerate",
-    workspace,
-    source_gen_id: id,
-    regenerate: body,
-    canvas_link: canvasLink,
-    ...(requestKey ? { idempotency_key: requestKey } : {}),
-  }));
-}
-
 interface GenerationBatchResponse {
   items: Record<string, Generation>;
   materials: Record<string, string[]>;
   missing: string[];
   // allowPartial 로 물었을 때만 — 공유 서버 장애로 확인 못 한 id(삭제가 아니다). 옛 허브 응답엔 없다.
   unavailable?: string[];
+  authority?: "local" | "team";
+}
+
+export class GenerationAuthorityUnsupportedError extends Error {
+  readonly status = 409;
+  constructor() { super("출처별 조회를 지원하지 않아 전체 목록을 다시 확인해야 합니다"); }
 }
 
 export interface GenerationWorkspaceBatchResponse {
@@ -272,27 +210,32 @@ function fetchGenerationBatchPage(
   genIds: string[],
   assertCurrent?: () => void,
   allowPartial = false,
+  authority?: "local" | "team",
 ): Promise<GenerationBatchResponse> {
   assertCurrent?.();
+  const isCurrent = captureShareRead();
   return jsonFetch<GenerationBatchResponse>("/api/generations/batch", {
     method: "POST",
-    body: jsonBody(allowPartial ? { gen_ids: genIds, allow_partial: true } : { gen_ids: genIds }),
-  }).then((batch) => ({
+    body: jsonBody({ gen_ids: genIds, ...(allowPartial ? { allow_partial: true } : {}), ...(authority ? { authority } : {}) }),
+  }).then((batch) => {
+    if (authority && batch.authority !== authority) throw new GenerationAuthorityUnsupportedError();
+    return {
     ...batch,
     items: Object.fromEntries(
       Object.entries(batch.items).map(([id, generation]) => [
         id,
-        normalizeGenerationPromptCompatibility(generation),
+        normalizeGeneration(generation, isCurrent, authority === "team"),
       ]),
     ),
-  }));
+    };
+  });
 }
 
 // allowPartial: 캔버스 상태 조회만 켠다 — 서버 장애 때 로컬 결과 + unavailable 로 받는다(다른 소비자는 지금처럼 실패를 받는다).
 async function getGenerationsBatch(
   genIds: string[],
   assertCurrent?: () => void,
-  { allowPartial = false }: { allowPartial?: boolean } = {},
+  { allowPartial = false, authority }: { allowPartial?: boolean; authority?: "local" | "team" } = {},
 ): Promise<GenerationBatchResponse> {
   const ids = Array.from(new Set(genIds.map((id) => id.trim()).filter(Boolean)));
   if (!ids.length) return { items: {}, materials: {}, missing: [] };
@@ -300,7 +243,7 @@ async function getGenerationsBatch(
   for (let i = 0; i < ids.length; i += GENERATION_BATCH_LIMIT) {
     chunks.push(ids.slice(i, i + GENERATION_BATCH_LIMIT));
   }
-  if (chunks.length === 1) return fetchGenerationBatchPage(chunks[0], assertCurrent, allowPartial);
+  if (chunks.length === 1) return fetchGenerationBatchPage(chunks[0], assertCurrent, allowPartial, authority);
 
   // 큰 씬도 서버 상한을 넘기지 않되 요청 수만큼 한꺼번에 연결하지 않는다. 한 페이지가 실패하면
   // 나머지 worker가 끝난 뒤 전체를 reject해 호출부가 기존 캐시를 유지하고 다음 tick에 다시 시도한다.
@@ -309,7 +252,7 @@ async function getGenerationsBatch(
   const worker = async () => {
     while (nextPage < chunks.length) {
       const index = nextPage++;
-      pages[index] = await fetchGenerationBatchPage(chunks[index], assertCurrent, allowPartial);
+      pages[index] = await fetchGenerationBatchPage(chunks[index], assertCurrent, allowPartial, authority);
     }
   };
   const workers = Array.from(
@@ -328,11 +271,13 @@ async function getGenerationsBatch(
   }
   // 켠 호출만 응답 모양이 바뀐다 — 다른 소비자의 응답은 지금 그대로.
   if (allowPartial) merged.unavailable = pages.flatMap((page) => page.unavailable ?? []);
+  if (authority) merged.authority = authority;
   return merged;
 }
 
 function historyFetch(path: string, init?: RequestInit): Promise<History> {
-  return jsonFetch<History>(path, init).then(normalizeHistory);
+  const isCurrent = captureShareRead();
+  return jsonFetch<History>(path, init).then(history => normalizeHistory(history, isCurrent));
 }
 
 // 코멘트 스레드 캐시(genId → 코멘트들) — 호버 prefetch + stale-while-revalidate.
@@ -355,10 +300,12 @@ function putGenComments(genId: string, comments: import("./types").GenComment[])
 
 export const api = {
   // signal — 제한 시간이 지나면 실제로 요청을 끊는다(목록 줄이 끝없이 막히지 않게 — Jay 결정 15A).
-  locateGenerations: (request: GenerationLocationRequest, signal?: AbortSignal) =>
-    jsonFetch<GenerationLocation>("/api/generations/locate", {
+  locateGenerations: (request: GenerationLocationRequest, signal?: AbortSignal) => {
+    const isCurrent = captureShareRead();
+    return jsonFetch<GenerationLocation>("/api/generations/locate", {
       method: "POST", body: jsonBody(request), signal,
-    }).then((location) => ({ ...location, items: normalizeGenerations(location.items) })),
+    }).then((location) => ({ ...location, items: normalizeGenerations(location.items, isCurrent, request.tab === "team") }));
+  },
   // 공유 & 리뷰 탭의 폴더 카드 — parent 바로 아래 폴더마다 건수·표지(팀이 정한 대표, 없으면 가장 최근 것).
   //  옛 공유 서버에는 이 경로가 없다(404 "Not Found" — isRouteMissing 으로 가려 묶음 보기를 끈다).
   folderCards: (projectId: string, parent: string, workspaceId?: string) => {
@@ -380,8 +327,9 @@ export const api = {
   //  ★옛 프론트는 이 인자를 안 보내므로 서버가 축약하지 않는다 — 공존 기간에 레시피가 상하지 않는다.
   //  leanPrompt = `lean_prompt=1` — prompt·display_prompt 를 빈 글로 받는다. 프롬프트를 읽지 않는 곳(걸러 보는 컷 카드의 끝까지 받기)만 쓴다
   //  (2026-10-15 42회차 — 500건 한 쪽 12.3MB 의 86% 가 이 두 칸). 옛 서버는 인자를 무시해 원문을 준다.
-  listGenerations: (query: GenQuery, cursor: GenCursor | null = null, limit = GEN_PAGE, opts: { leanPrompt?: boolean; signal?: AbortSignal } = {}) =>
-    jsonFetch<Generation[]>(
+  listGenerations: (query: GenQuery, cursor: GenCursor | null = null, limit = GEN_PAGE, opts: { leanPrompt?: boolean; signal?: AbortSignal } = {}) => {
+    const isCurrent = captureShareRead();
+    return jsonFetch<Generation[]>(
       `/api/generations?${buildQuery(query, cursor, limit)}&lean_params=1${opts.leanPrompt ? "&lean_prompt=1" : ""}`,
       opts.signal ? { signal: opts.signal } : undefined,
       query.review_filter ? (response) => {
@@ -393,8 +341,9 @@ export const api = {
       if (query.review_filter && items.some((item) => typeof item.is_held !== "boolean")) {
         throw reviewCompatibilityError();
       }
-      return normalizeGenerations(items);
-    }),
+      return normalizeGenerations(items, isCurrent, query.tab === "team");
+    });
+  },
 
   // 패널 파생값(내 실패 수·미확인 코멘트) — 클라이언트 전량 집계 대체.
   generationStats: () => jsonFetch<GenStats>("/api/generations-stats"),
@@ -412,11 +361,12 @@ export const api = {
   // ── 휴지통(별도 DB) — 지운 것 검색·복원·영구삭제 ────────────────────────
   // 지운 항목 목록(최근 삭제순, prompt·source_name 부분일치). 그리드가 그대로 그림(deleted=true).
   listTrash: (search?: string, offset = 0, limit = GEN_PAGE, signal?: AbortSignal) => {
+    const isCurrent = captureShareRead();
     const p = new URLSearchParams();
     if (search) p.set("search", search);
     p.set("limit", String(limit));
     p.set("offset", String(offset));
-    return jsonFetch<Generation[]>(`/api/trash?${p.toString()}`, signal ? { signal } : undefined).then(normalizeGenerations);
+    return jsonFetch<Generation[]>(`/api/trash?${p.toString()}`, signal ? { signal } : undefined).then(items => normalizeGenerations(items, isCurrent));
   },
   // 휴지통에서 영구 삭제(복원 불가)
   purgeTrashed: (id: string) =>
@@ -451,10 +401,10 @@ export const api = {
   history: (id: string) => historyFetch(`/api/generations/${pathPart(id)}/history`),
 
   // 연결된 가계 전체 그래프(노드+엣지+루트) — 구성탭 히스토리 트리용
-  historyTree: (id: string) =>
-    jsonFetch<HistoryGraph>(`/api/generations/${pathPart(id)}/history-tree`).then(
-      normalizeHistoryGraph,
-    ),
+  historyTree: (id: string) => {
+    const isCurrent = captureShareRead();
+    return jsonFetch<HistoryGraph>(`/api/generations/${pathPart(id)}/history-tree`).then(graph => normalizeHistoryGraph(graph, isCurrent));
+  },
 
   // 생성물의 실제 크레딧·소요시간(정보 팝업) — generation_metrics(매칭 실제값·허브 소요시간)
   generationMetrics: (id: string, signal?: AbortSignal) =>
@@ -574,26 +524,10 @@ export const api = {
 
   // prepare*가 제출 버튼 1회의 UUID를 클로저에 보관한다. 같은 클로저를 HTTP 재시도에
   // 다시 호출하면 키가 유지되고, 새 버튼 동작은 새 클로저라 별도 유료 요청이 된다.
-  prepareCreate: (
-    body: GenerationCreateBody,
-    workspace: WorkspaceContext,
-    canvasLink?: CanvasGenerationLink,
-  ) => {
-    const requestKey = canvasLink ? undefined : newGenerationRequestKey();
-    return () => createGeneration(body, workspace, canvasLink, requestKey);
-  },
-  create: createGeneration,
-
-  prepareRegenerate: (
-    id: string,
-    body: RegenerateBody,
-    workspace: WorkspaceContext,
-    canvasLink?: CanvasGenerationLink,
-  ) => {
-    const requestKey = canvasLink ? undefined : newGenerationRequestKey();
-    return () => regenerateGeneration(id, body, workspace, canvasLink, requestKey);
-  },
-  regenerate: regenerateGeneration,
+  prepareCreate: (body: GenerationCreateBody, workspace: WorkspaceContext, link?: SubmissionCanvasLink) => prepareCreateSubmission(body, workspace, link, captureSubmissionScope(workspace)).send,
+  create: (body: GenerationCreateBody, workspace: WorkspaceContext = { scope: "unknown", id: null, name: null }, link?: SubmissionCanvasLink, key?: string) => createGeneration(body, workspace, link, key, captureSubmissionScope(workspace)),
+  prepareRegenerate: (id: string, body: RegenerateBody, workspace: WorkspaceContext, link?: SubmissionCanvasLink) => prepareRegenerateSubmission(id, body, workspace, link, captureSubmissionScope(workspace)).send,
+  regenerate: (id: string, body: RegenerateBody, workspace: WorkspaceContext = { scope: "unknown", id: null, name: null }, link?: SubmissionCanvasLink, key?: string) => regenerateGeneration(id, body, workspace, link, key, captureSubmissionScope(workspace)),
 
   confirmGenerationNotSubmitted: (generationId: string) =>
     jsonFetch<{ ok: boolean; applied: boolean }>(
@@ -632,10 +566,12 @@ export const api = {
     return { links };
   },
 
-  canvasGenerationCandidates: (limit = 50) =>
-    jsonFetch<{ items: Generation[] }>(
+  canvasGenerationCandidates: (limit = 50) => {
+    const isCurrent = captureShareRead();
+    return jsonFetch<{ items: Generation[] }>(
       `/api/gen-requests/canvas-candidates?limit=${Math.max(1, Math.min(limit, 100))}`,
-    ).then((result) => ({ ...result, items: normalizeGenerations(result.items) })),
+    ).then((result) => ({ ...result, items: normalizeGenerations(result.items, isCurrent) }));
+  },
 
   // 지난 카드 소속 — (생성물, 씬, 카드)만 가볍게. '지금 붙어 있나'는 서버가 모르므로
   // 로컬 씬 목록으로 거르고(canvasDetached), 살아남은 것만 getGenerationsBatch 로 본문을 받는다.
@@ -668,13 +604,13 @@ export const api = {
       body: jsonBody({ generation_id: generationId, scene_id: sceneId, card_id: cardId }),
     }),
 
-  setTags: (id: string, tags: string[]) =>
+  setTags: (id: string, tags: string[], assertCurrent?: () => void) =>
     generationFetch(`/api/generations/${pathPart(id)}/tags`, {
       method: "PUT",
       body: jsonBody({ tags }),
-    }),
+    }, false, assertCurrent),
 
-  setTagsBatch: async (items: { id: string; tags: string[] }[], auto = false) => {
+  setTagsBatch: async (items: { id: string; tags: string[] }[], auto = false, assertCurrent?: () => void) => {
     // 서버 배치 상한(500) 초과 선택은 조각으로 나눠 순차 저장 — 예전 단건 fan-out처럼
     // 개수 무관하게 동작하되, 부분 실패는 succeeded/failed 로 합산해 그대로 알린다.
     const out = { succeeded: [] as string[], failed: [] as string[] };
@@ -684,7 +620,7 @@ export const api = {
       try {
         res = await jsonFetch<{ succeeded: string[]; failed: string[] }>(
           "/api/generations/tags/batch",
-          { method: "PUT", body: jsonBody({ items: chunks[index], auto }) },
+          { method: "PUT", body: jsonBody({ items: chunks[index], auto }) }, undefined, { beforeAttempt: assertCurrent },
         );
       } catch (error) {
         // 뒤 묶음의 요청이 실패해도 앞 묶음의 성공은 버리지 않는다(조작 규칙 42) — 전엔 통째로 던져, 500건이 저장됐는데 호출부가
@@ -734,11 +670,11 @@ export const api = {
     ),
 
   // 전역(auto) 태그를 이 카드에 부여/해제(교체). 신규 전역태그 생성은 사이드바 전용.
-  setGenAutoTags: (id: string, auto_tags: string[]) =>
+  setGenAutoTags: (id: string, auto_tags: string[], assertCurrent?: () => void) =>
     generationFetch(`/api/generations/${pathPart(id)}/auto-tags`, {
       method: "PUT",
       body: jsonBody({ auto_tags }),
-    }),
+    }, false, assertCurrent),
 
   // 태그 전역 삭제(모든 생성본에서 제거) — 에셋 T 패널 ✕ 와 동일
   deleteTag: (tag: string) =>
@@ -872,38 +808,39 @@ export const api = {
   // 스포트라이트 @/# 피커: 소스를 이름(query) 또는 태그(tag)로 검색.
   // assetProject/assetDir 를 주면 에셋 파트 소스(그 폴더로 스코프)도 합류한다.
   searchSources: (query?: string, tag?: string, assetProject?: string, assetDir?: string) => {
+    const isCurrent = captureShareRead();
     const q = new URLSearchParams();
     if (query) q.set("query", query);
     if (tag) q.set("tag", tag);
     if (assetProject) q.set("asset_project", assetProject);
     if (assetDir) q.set("asset_dir", assetDir);
-    return jsonFetch<Generation[]>(`/api/sources?${q.toString()}`).then(normalizeGenerations);
+    return jsonFetch<Generation[]>(`/api/sources?${q.toString()}`).then(items => normalizeGenerations(items, isCurrent));
   },
 
   // 팀 공유 해제(내가 공유한 것 되돌리기). ⚠️ 최종(골드)이면 409
-  unpublish: (id: string) =>
-    generationFetch(`/api/generations/${pathPart(id)}/unpublish`, {
+  unpublish: (id: string, generation?: Generation) =>
+    shareFetch(id, "unpublish", {
       method: "POST",
       body: jsonBody({}),
-    }),
+    }, generation),
 
   ...sharedApi,
 
   // v02 CMS — Supervisor 최종(골드) 지정/해제. 공유 없으면 finalize 가 함께 발행.
-  finalize: (id: string) =>
-    generationFetch(`/api/generations/${pathPart(id)}/finalize`, { method: "POST" }),
+  finalize: (id: string, generation?: Generation) =>
+    shareFetch(id, "finalize", { method: "POST" }, generation),
   // 해제는 '최종 전의 보류'로 되돌린다(restore_held — Jay 2026-10-14): 최종이 되던 순간에 보류였던 것은 보류로, 나머지는 공유로.
   //  옛 서버는 모르는 쿼리를 무시한다(전처럼 공유로). 목표를 고르는 전환(setReviewState 의 final-review)은 고른 대로다.
-  unfinalize: (id: string) =>
-    generationFetch(`/api/generations/${pathPart(id)}/unfinalize?restore_held=1`, { method: "POST" }),
-  hold: (id: string) => reviewFetch(id, "hold"),
-  unhold: (id: string) => reviewFetch(id, "unhold"),
+  unfinalize: (id: string, generation?: Generation) =>
+    shareFetch(id, "unfinalize", { method: "POST" }, generation, new URLSearchParams({ restore_held: "1" })),
+  hold: (id: string, generation?: Generation) => reviewFetch(id, "hold", undefined, generation),
+  unhold: (id: string, generation?: Generation) => reviewFetch(id, "unhold", undefined, generation),
   setReviewState: (generation: Generation, state: ReviewAction): Promise<Generation> => {
     // 최종 해제+다음 상태는 새 원자 API 한 번으로. 구서버에 옵션을 보내 무시당하지 않는다.
-    if (generation.is_final && state !== "final") return reviewFetch(generation.id, "final-review", state);
-    if (state === "held") return reviewFetch(generation.id, "hold");
-    if (state === "shared") return reviewFetch(generation.id, "unhold");
-    return generationFetch(`/api/generations/${pathPart(generation.id)}/${state === "final" ? "finalize" : "unpublish"}`, { method: "POST" });
+    if (generation.is_final && state !== "final") return reviewFetch(generation.id, "final-review", state, generation);
+    if (state === "held") return reviewFetch(generation.id, "hold", undefined, generation);
+    if (state === "shared") return reviewFetch(generation.id, "unhold", undefined, generation);
+    return shareFetch(generation.id, state === "final" ? "finalize" : "unpublish", { method: "POST" }, generation);
   },
 
   // 공유 탭 '내 워크스페이스 / 재생성' 앞단 — 남의 공유 원본을 이 PC 에서 찾거나 받아 온다(재생성은 prepareRegenerate 로)

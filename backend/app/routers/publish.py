@@ -27,6 +27,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from . import _proxy
+from ._share_authority import authority, http_call
 from .. import active_account, db, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MEDIA_PRESERVATION_ENABLED
 from ._telemetry import touch_generation_telemetry
@@ -246,6 +247,7 @@ def _flatten_detail(resp: Any) -> str:
 
 # ── 공유 서버(수신 측) ──────────────────────────────────────────────────────
 class PublishBundleIn(BaseModel):
+    commands: list[dict[str, Any]] | None = None
     bundle: dict[str, Any]
 
 
@@ -312,7 +314,39 @@ def receive_published_bundle(body: PublishBundleIn, request: Request):
     actor = final_move_actor(request)
     if actor is not None and acc and acc.get("creator_uid"):
         actor = dataclasses.replace(actor, uid=acc["creator_uid"])
-    counts = repo.import_bundle_payload(bundle, DEFAULT_WORKER_ID, actor, author_uids)
+    command_handler = None
+    command_results = {}
+    if body.commands is not None:
+        from ..models import ShareCommandIn
+        from ..usecases import share as share_usecase
+        from ..repo.share_commands import request_hash
+        try:
+            parsed_commands = [ShareCommandIn.model_validate(value).as_command() for value in body.commands]
+        except ValueError as exc:
+            raise HTTPException(422, "invalid_share_commands") from exc
+        by_anchor = {value["target_id"]: value for value in parsed_commands}
+        items = bundle.get("generations") or []
+        if len(by_anchor) != len(parsed_commands) or len(items) != len(parsed_commands):
+            raise HTTPException(422, "share_command_targets_mismatch")
+        for item in items:
+            anchor = str((item.get("generation") or {}).get("id") or "")
+            command = by_anchor.get(anchor)
+            if (not command or command["command_kind"] != "publish_bundle"
+                    or request_hash(item) != request_hash(command["parameters"]["item"])
+                    or request_hash(body.bundle.get("provider") or {}) != request_hash(command["parameters"].get("provider") or {})):
+                raise HTTPException(422, "share_command_payload_mismatch")
+        def command_handler(item, worker, sender, guard, uids):
+            anchor = item["generation"]["id"]
+            try:
+                result = http_call(share_usecase.execute, authority(request), by_anchor[anchor], (worker, sender, guard, uids))
+            except HTTPException as exc:
+                if exc.status_code not in {403, 404, 409}:
+                    raise
+                command_results[anchor] = {"error": {"status_code": exc.status_code, "detail": exc.detail}}
+                return "blocked"
+            command_results[anchor] = result
+            return result["receipt"]["import_result"]
+    counts = repo.import_bundle_payload(bundle, DEFAULT_WORKER_ID, actor, author_uids, command_handler=command_handler)
     # 공유 서버의 정식 발행 입구는 개별 publish 라우트가 아니라 이 번들 수신이다.
     # 따라서 운영자가 나중에 "누가 어떤 생성물을 공유했나"를 복원할 수 있도록 여기서
     # 요청 단위 감사 이력을 남긴다. 500개 전체를 빠뜨리지 않되 DB 쓰기는 50개 묶음으로 제한한다.
@@ -351,7 +385,7 @@ def receive_published_bundle(body: PublishBundleIn, request: Request):
             meta = resolved_meta.get(anchor)
             if meta and meta.get("id"):
                 repo.request_media_preservation(meta["id"], "shared")
-    return {"ok": True, **counts}
+    return {"ok": True, **counts, **({"protocol": "share-command-v1", "command_results": command_results} if body.commands is not None else {})}
 
 
 # ── 로컬 허브(발신 측) — 공유 서버 연결/설정 ────────────────────────────────
@@ -982,6 +1016,17 @@ def _transition_publish_ref(
     )
 
 
+@contextlib.contextmanager
+def _pinned_account_scope():
+    """계정/UID와 DB 세대를 함께 고정하며 중첩 발행은 원래 문맥을 이어받는다."""
+    try:
+        with db.pinned_share_operation():
+            yield
+    except db.DatabaseEpochChanged as exc:
+        raise HTTPException(409, {"code": exc.code, "state": "unknown", "recheck_required": True}) from exc
+
+
+@_pinned_account_scope()
 def publish_bundle_to_server(
     gen_ids: list[str],
     *,
@@ -989,11 +1034,13 @@ def publish_bundle_to_server(
     desired_final: Optional[bool] = None,
     expected_final_by: Optional[str] = None,
     settle_intents: bool = True,
+    expected_revision: Optional[int] = None,
 ) -> PublishBundleResult:
     """고른 로컬 생성물을 번들(export_bundle)로 공유 서버에 발행 + 로컬 share 표식.
     publish-to-shared 엔드포인트와 finalize(골드 동반 발행)가 공유한다.
     서버 호출 전에 번들 대상 전체를 한 트랜잭션으로 prepared 한다. 합성 finalize는 발행
     부분 상태를 같은 원장에 남긴 뒤 호출자가 서버 finalize 성공 후 종결한다.
+    expected_revision은 합성 finalize가 선택한 단일 대상의 초기 조건이며 그 앵커에만 적용한다.
     반환: {published, remote}. 토큰 없음=401, 서버 오류=502."""
     url = repo.get_setting(_K_URL) or _effective_url()
     token = repo.get_setting(_K_TOKEN)
@@ -1002,6 +1049,8 @@ def publish_bundle_to_server(
     gen_ids = [g for g in (gen_ids or []) if g]
     if not gen_ids:
         raise HTTPException(status_code=400, detail="발행할 항목을 선택하세요")
+    if expected_revision is not None and len(gen_ids) != 1:
+        raise HTTPException(400, "share_revision_requires_single_target")
     # 완료본만 발행 — 아래 로컬 share 표식과 같은 기준(done). 진행중/실패본이 번들에 실려
     # 서버에 미완성 fact 로 남지 않게 export 단계에서 거른다.
     # 잠금 전 스냅샷 1회 배치 조회 — 종전엔 필터와 anchor 수집이 항목마다 단건 직렬화를
@@ -1081,6 +1130,8 @@ def publish_bundle_to_server(
                     for target in targets
                 ],
             )
+        except db.DatabaseEpochChanged:
+            raise
         except Exception as exc:
             # write-ahead가 없으면 원격을 절대 건드리지 않는다.
             raise HTTPException(
@@ -1094,22 +1145,46 @@ def publish_bundle_to_server(
         # 타임아웃·연결 실패·프로세스 중단은 아래 전이까지 오지 않으므로 prepared가 남고,
         # 3b가 서버 현재 상태를 관측한다.
         try:
-            status, resp = _http_json(
-                "POST",
-                f"{url}/api/share/publish-bundle",
-                token=token,
-                body={"bundle": bundle},
+            from ..services import share_commands
+            commands = share_commands.prepare_bundle(
+                _http_json, url, token, bundle, refs_by_anchor,
+                **({"expected_revisions": {targets[0]["anchor"]: expected_revision}}
+                   if expected_revision is not None else {}),
             )
+            status, resp = _http_json(
+                "POST", f"{url}/api/share/publish-bundle", token=token,
+                body={"bundle": bundle, **({"commands": commands} if commands is not None else {})},
+            )
+            if commands is not None and status == 200:
+                if not isinstance(resp, dict) or resp.get("protocol") != "share-command-v1":
+                    raise HTTPException(503, "share_receipt_unconfirmed")
+                for command in commands:
+                    result = resp["command_results"][command["target_id"]]
+                    if "error" in result:
+                        continue
+                    share_commands.validate_result(command, result)
+                    if not repo.store_share_command(refs_by_anchor[command["target_id"]], command, result["receipt"]):
+                        raise HTTPException(409, "share_intent_superseded")
+        except db.DatabaseEpochChanged:
+            raise
         except Exception as exc:
-            # 응답을 못 받은 prepared는 명령을 재생하지 않고 워커가 서버를 관측해야 한다.
+            # receipt 지원 명령은 저장 입력으로 재전송하고, 구서버 prepared는 현재 상태만 관측한다.
+            conditional_unsupported = (isinstance(exc, HTTPException) and exc.status_code == 409
+                                       and exc.detail == "share_revision_precondition_unsupported")
             for ref in refs:
                 try:
-                    repo.release_share_state_intent_claim(
-                        ref["intent_id"], ref["intent_seq"], ref["claim_token"]
-                    )
+                    if conditional_unsupported:
+                        _transition_publish_ref(ref, "rejected", last_error_code="remote_409")
+                    else:
+                        repo.release_share_state_intent_claim(
+                            ref["intent_id"], ref["intent_seq"], ref["claim_token"]
+                        )
+                except db.DatabaseEpochChanged:
+                    raise
                 except Exception:  # noqa: BLE001 — 원래 서버 오류를 가리지 않는다.
                     pass
-            kick_share_state_reconciler()
+            if not conditional_unsupported:
+                kick_share_state_reconciler()
             if _proxy.upstream_timed_out(exc):
                 # 늦은 서버 — 항목마다 원장 참조를 실어 화면이 '확인 중'으로 세고 끝을 묻게 한다(Jay 결정 10A)
                 raise _proxy.slow_with_refs(exc, [repo.intent_ref_entry(ref) for ref in refs]) from exc
@@ -1120,6 +1195,8 @@ def publish_bundle_to_server(
                     _transition_publish_ref(
                         ref, "auth_required", last_error_code="remote_auth_required"
                     )
+                except db.DatabaseEpochChanged:
+                    raise
                 except Exception:  # noqa: BLE001 — 원래 401을 가리지 않고 prepared도 안전하다
                     pass
             raise HTTPException(status_code=401, detail="공유 서버 로그인이 만료됐습니다(다시 로그인).")
@@ -1130,6 +1207,8 @@ def publish_bundle_to_server(
                         _transition_publish_ref(
                             ref, "rejected", last_error_code=f"remote_{status}"
                         )
+                    except db.DatabaseEpochChanged:
+                        raise
                     except Exception:  # noqa: BLE001
                         pass
             else:
@@ -1138,6 +1217,8 @@ def publish_bundle_to_server(
                         repo.release_share_state_intent_claim(
                             ref["intent_id"], ref["intent_seq"], ref["claim_token"]
                         )
+                    except db.DatabaseEpochChanged:
+                        raise
                     except Exception:  # noqa: BLE001 — 원래 서버 오류를 가리지 않는다.
                         pass
                 kick_share_state_reconciler()
@@ -1162,6 +1243,8 @@ def publish_bundle_to_server(
                     _transition_publish_ref(
                         ref, "rejected", last_error_code="remote_blocked"
                     )
+                except db.DatabaseEpochChanged:
+                    raise
                 except Exception:  # noqa: BLE001
                     pass
                 continue
@@ -1175,6 +1258,9 @@ def publish_bundle_to_server(
                 "shared": True,
                 "is_final": bool(gen.get("is_final")) if not settle_intents else final_value,
             }
+            command_result = (resp.get("command_results") or {}).get(anchor)
+            if command_result:
+                observed = dict(command_result["current"])
             if not settle_intents:
                 observed["publish_confirmed"] = True
             try:
@@ -1190,16 +1276,19 @@ def publish_bundle_to_server(
                         ref["intent_seq"],
                         ref["claim_token"],
                         local_id=gid,
-                        shared=True,
-                        is_final=(final_value if settle_intents else bool(gen.get("is_final"))),
-                        final_by=(expected_final_by if settle_intents else gen.get("final_by")),
+                        shared=bool(observed["shared"]),
+                        is_final=bool(observed["is_final"]),
+                        is_held=observed.get("is_held"),
+                        final_by=observed.get("final_by", expected_final_by if settle_intents else gen.get("final_by")),
                         shared_by=gen.get("worker_id") or DEFAULT_WORKER_ID,
                         preservation_reason=("final" if final_value and settle_intents else "shared"),
-                        status=("converged" if settle_intents else "prepared"),
+                        status=(("converged" if observed["shared"] else "superseded") if settle_intents else "prepared"),
                         observed_state=observed,
                     )
                     == repo.SHARE_STATE_APPLY_APPLIED
                 )
+            except db.DatabaseEpochChanged:
+                raise
             except Exception:  # 로컬 SQLite 실패 — 서버 성공 응답은 유지하고 원장만 재시도 상태로 둔다.
                 applied = False
             if not applied:
@@ -1216,6 +1305,8 @@ def publish_bundle_to_server(
                             last_error_code="local_publish_mirror_failed",
                             increment_fail_streak=True,
                         )
+                except db.DatabaseEpochChanged:
+                    raise
                 except Exception:  # noqa: BLE001 — prepared/pending 잔존 자체가 안전망
                     pass
                 kick_share_state_reconciler()
@@ -1252,7 +1343,7 @@ def publish_to_shared(body: PublishToSharedIn, request: Request):
       이 DB에 바로 공유 표식만 남긴다(외부 서버 로그인 불필요 → 로그인창으로 튀지 않음).
       finalize 가 비프록시에서 로컬 repo.publish 로 처리하는 것과 동형.
     성공 시 로컬에도 share 표식을 남겨(공유됨 뱃지) 어떤 걸 올렸는지 보이게 한다."""
-    with active_account.pinned_account_scope():
+    with _pinned_account_scope():
         if not _proxy.proxying():
             published = 0
             # 상한 없는 gen_ids 의 단건 get_generation N회 → snapshot 배치 1회(R7 2-F).
@@ -1283,22 +1374,6 @@ def publish_to_shared(body: PublishToSharedIn, request: Request):
 _FOLDER_SHARE_CHUNK = 200
 _FOLDER_SHARE_INFLIGHT: set[str] = set()
 _FOLDER_SHARE_INFLIGHT_LOCK = threading.Lock()
-
-
-@contextlib.contextmanager
-def _pinned_account_scope():
-    """폴더 공유 전체(후보 조회~마지막 배치)를 진입 시점 계정으로 고정 — share._pinned_account_scope 와 같은 규칙.
-    share 를 import 하면 share→publish(함수 안 import)와 순환이라(아키텍처 경계 테스트) 작은 헬퍼를 여기 따로 둔다.
-    DB 키와 uid 는 전환 락 안에서 한 쌍으로 캡처한다 — 따로 읽으면 'DB=A · 소유 uid=B' 오귀속(R13-IMPORT-1)."""
-    with active_account.transition_lock:
-        account_key, account_uid = active_account.account_key() or "", active_account.active_uid()
-    account_token = active_account.set_override(account_key)
-    uid_token = active_account.set_uid_override(account_uid)
-    try:
-        yield
-    finally:
-        active_account.reset_uid_override(uid_token)
-        active_account.reset_override(account_token)
 
 
 @router.post("/publish-to-shared/folder")

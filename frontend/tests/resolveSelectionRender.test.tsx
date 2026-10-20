@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { SearchBox } from "../src/components/SearchBox";
 import { act, forwardRef, StrictMode, useCallback, useRef, useState, type ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -34,6 +35,8 @@ let gridSnapshot: ComponentProps<typeof import("../src/components/ThumbnailGrid"
 let promptSnapshot: PromptProps | null;
 let librarySnapshot: { filters: Filters; genQuery: GenQuery; projectWorkspaceId?: string } | null;
 let sidebarSnapshot: ComponentProps<typeof import("../src/components/FilterSidebar").FilterSidebar> | null;
+let enableSearchBox = false;
+let backspaceRoutes = false;
 let topBarOnTab: ((tab: Filters["tab"]) => void) | null; // 상단바 모의가 잡아 둔 탭 누름(2026-10-13 ① 공유 탭의 마지막 자리)
 let canvasSidebarSnapshot: ComponentProps<typeof import("../src/components/sidebar/CanvasFolderSidebar").CanvasFolderSidebar> | null;
 let refreshProjects: () => void;
@@ -105,7 +108,7 @@ beforeEach(() => {
   localStorage.setItem("ch.workspaceContext", JSON.stringify({ scope: "team", id: "view-workspace", name: "View workspace" }));
   boundary = installPromptBoundaryMocks();
   gridSnapshot = null; promptSnapshot = null; librarySnapshot = null; sidebarSnapshot = null; canvasSidebarSnapshot = null; topBarOnTab = null;
-  startAuthPending = false;
+  startAuthPending = false; enableSearchBox = false; backspaceRoutes = false;
   refreshProjects = () => {};
   locateGenerations = vi.fn().mockImplementation(async ({ gen_ids, workspace_ids, workspace_scope }: GenerationLocationRequest) => {
     const first = gen_ids[0] ? libraryGeneration(gen_ids[0]) : null;
@@ -405,11 +408,17 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
     canvasSidebarSnapshot = props;
     return null;
   } }));
-  vi.doMock("../src/components/FilterSidebar", () => ({ FilterSidebar: (props: NonNullable<typeof sidebarSnapshot>) => {
+  vi.doMock("../src/components/FilterSidebar", async () => {
+    const { FolderTreeView } = await vi.importActual<typeof import("../src/components/common/FolderTreeView")>("../src/components/common/FolderTreeView");
+    return { FilterSidebar: (props: NonNullable<typeof sidebarSnapshot>) => {
     sidebarSnapshot = props;
-    return <output data-testid="viewed-folder">{JSON.stringify(props.viewedFolder)}</output>;
-  } }));
-  vi.doMock("../src/components/ThumbnailGrid", () => ({ ThumbnailGrid: (props: NonNullable<typeof gridSnapshot>) => {
+    return <><output data-testid="viewed-folder">{JSON.stringify(props.viewedFolder)}</output>{backspaceRoutes && <FolderTreeView nodes={[{ name: "Keyboard folder", path: "e001/c0010" }]} onSelect={() => {}} onRowKeyDown={() => {}} />}</>;
+  } }; });
+  vi.doMock("../src/components/ThumbnailGrid", async () => {
+    const { useLooseKeys } = await vi.importActual<typeof import("../src/lib/keyGate")>("../src/lib/keyGate");
+    return { ThumbnailGrid: (props: NonNullable<typeof gridSnapshot>) => {
+    const looseRef = useRef<HTMLOutputElement>(null);
+    useLooseKeys(looseRef, () => {});
     // 캔버스 '생성 결과' 창도 이 격자를 쓴다 — 그쪽은 셀만 그려 선택·강조를 보이고, 목록 격자만 담는다.
     //  구분은 그 창만 주는 lastViewedId 로 한다: '대표' 칸(cellHeader)은 공유 탭의 폴더 창 격자도 쓴다.
     if (props.cellHeader && props.lastViewedId !== undefined) return <>{props.generations.map((g) => (
@@ -419,8 +428,8 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
     ))}</>;
     gridSnapshot = props;
     // 실제 격자처럼 초점을 받을 수 있는 .gen-grid — 폴더 창을 닫은 뒤의 초점 복원을 본다
-    return <output data-testid="library-highlight" className={gridClass} tabIndex={0}>{JSON.stringify([...props.resolveHighlightedIds || []])}</output>;
-  } }));
+    return <output ref={backspaceRoutes ? looseRef : undefined} data-testid="library-highlight" className={gridClass} tabIndex={0}>{JSON.stringify([...props.resolveHighlightedIds || []])}</output>;
+  } }; });
   vi.doMock("../src/components/SpotlightPrompt", async () => {
     const actual = await vi.importActual<typeof import("../src/components/SpotlightPrompt")>("../src/components/SpotlightPrompt");
     return { ...actual, SpotlightPrompt: forwardRef<SpotlightPromptHandle, PromptProps>((props, ref) => {
@@ -429,9 +438,9 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
     }) };
   });
   vi.doMock("../src/components/TopBar", () => ({
-    TopBar: ({ filters, inert, onTab }: { filters: { tab: string }; inert?: boolean; onTab: (tab: Filters["tab"]) => void }) => {
+    TopBar: ({ filters, inert, onTab, onSearch, searchResetKey }: { filters: Filters; inert?: boolean; onTab: (tab: Filters["tab"]) => void; onSearch: (q?: string) => void; searchResetKey: string | number }) => {
       topBarOnTab = onTab;
-      return <output data-testid="tab" data-inert={inert || undefined}>{filters.tab}</output>;
+      return <><output data-testid="tab" data-inert={inert || undefined}>{filters.tab}</output>{enableSearchBox && <SearchBox value={filters.search} onSearch={onSearch} resetKey={searchResetKey} />}</>;
     },
   }));
   vi.doMock("../src/lib/useHubAuth", () => ({
@@ -452,18 +461,21 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
     useWorkspaceFilterOptions: () => ({ options: [], loading: false, failed: false, reload: noop }),
   }));
   relinkOnWorkspaceChange.mockClear();
-  vi.doMock("../src/lib/useSceneCoordination", () => ({
+  vi.doMock("../src/lib/useSceneCoordination", async () => {
+    const { createCanvasDocumentPort } = await import("../src/features/canvas/api");
+    return {
     useRelinkOnWorkspaceChange: relinkOnWorkspaceChange,
     useSceneCoordination: () => {
       const [activeSceneId, setActiveSceneId] = useState(initialSceneId);
       return { scenes: appScenes, activeSceneId, activeScene: appScenes.find((scene) => scene.id === activeSceneId),
       sceneBinding: null, setSceneBinding: noop, sceneSelGens: [], setSceneSelGens: noop,
       // patchSceneById 의 반환은 '저장됐나' 다 — noop(undefined)이면 호출부가 저장 실패로 읽는다.
-      sceneActionRef: useRef(null), flushScenePending: noop, patchSceneById: () => true, patchActiveScene: noop,
+      sceneActionRef: useRef(null), flushScenePending: noop, canvasDocument: createCanvasDocumentPort({ flushPending: noop, write: () => true }),
       selectScene: setActiveSceneId, addScene: noop, importSceneSnapshot: noop, renameScene: noop, removeSceneById: noop,
       reorderScenes: noop, setSceneWorkspace: noop, backupOnly: 0, importBackupScenes: noop };
     },
-  }));
+    };
+  });
   vi.doMock("../src/lib/useGenerationLibraryData", () => ({
     useGenerationLibraryData: (args: NonNullable<typeof librarySnapshot>) => {
       librarySnapshot = args;
@@ -571,6 +583,17 @@ it("공유 탭을 떠났다 직접 눌러 돌아오면 마지막 자리로(사�
   const saved = JSON.parse(localStorage.getItem("ch.lib.teamLocationV1")!) as { ctx: string };
   localStorage.setItem("ch.lib.teamLocationV1", JSON.stringify({ ...saved, project_id: "archived-project", folder_path: "ep" }));
   act(() => topBarOnTab!("team")); await settle();
+  // 열린 탭은 다른 창이 고쳐 쓴 마지막 위치보다 우선한다. 배경 탭으로 연 보관 프로젝트도 선택 후 유지한다.
+  expect([librarySnapshot!.filters.project_id, librarySnapshot!.filters.folder_path]).toEqual(["resolve-project", "episode"]);
+  const beforeFolderTab = window.history.length;
+  act(() => sidebarSnapshot!.onOpenFolderTab!("archived-project", "ep")); await settle();
+  expect(window.history.length).toBe(beforeFolderTab);
+  expect([librarySnapshot!.filters.project_id, librarySnapshot!.filters.folder_path]).toEqual(["resolve-project", "episode"]);
+  const archivedTab = [...view.container.querySelectorAll<HTMLElement>('[role="tab"]')]
+    .find((tab) => tab.textContent?.endsWith("ep"))!;
+  expect(archivedTab).toBeTruthy();
+  click(archivedTab); await settle();
+  expect(window.history.length).toBe(beforeFolderTab + 1);
   expect([librarySnapshot!.filters.tab, librarySnapshot!.filters.project_id, librarySnapshot!.filters.folder_path]).toEqual(["team", "archived-project", "ep"]);
   act(() => refreshProjects()); await settle(); // 프로젝트 목록 갱신 — 목록에 없지만 되살린 자리는 둔다
   expect([librarySnapshot!.filters.project_id, librarySnapshot!.filters.folder_path]).toEqual(["archived-project", "ep"]);
@@ -586,11 +609,11 @@ it("공유 탭을 떠났다 직접 눌러 돌아오면 마지막 자리로(사�
   act(() => sidebarSnapshot!.onChange({ project_id: "archived-project", folder_path: "ep" })); await settle(); // 눌러서 고른 자리는 전처럼 — 목록에 없으면 지운다
   act(() => refreshProjects()); await settle();
   expect(librarySnapshot!.filters.project_id).toBeUndefined();
-  // 다른 문맥(다른 공간)의 기억은 되살리지 않는다 — 맨 위
+  // 외부 저장소의 다른 문맥 기억이 현재 공간에서 열어 둔 탭을 덮지 않는다.
   act(() => topBarOnTab!("my")); await settle();
   localStorage.setItem("ch.lib.teamLocationV1", JSON.stringify({ ctx: "다른 공간", project_id: "resolve-project", folder_path: "episode" }));
   act(() => topBarOnTab!("team")); await settle();
-  expect([librarySnapshot!.filters.tab, librarySnapshot!.filters.project_id]).toEqual(["team", undefined]);
+  expect([librarySnapshot!.filters.tab, librarySnapshot!.filters.project_id]).toEqual(["team", "archived-project"]);
 });
 
 it.each(["my", "team"])("%s 탭: 체크 시 캔버스 대신 현재 탭의 대상 폴더와 카드를 표시한다", async (tab) => {
@@ -1510,9 +1533,9 @@ const topCards = { parent: "", own_count: 0, folders: [{ path: "episode", name: 
 const byParent = (rep: () => boolean) => vi.fn((_pid: string, parent: string) =>
   Promise.resolve(parent === "episode" ? cutCards(rep()) : parent === "" ? topCards : { parent, own_count: 3, folders: [] }));
 const cutGrid = () => document.querySelector<HTMLElement>("main.main .cut-grid");
-// 컷 카드는 이름표(.cut-tab), 에피소드 화면의 카드는 표지 위 이름(.ep-cap > b · 리스트는 .ep-name) — 2026-10-13
+// 공유 폴더 카드의 공통 표지 제목, 리스트에서는 이름으로 찾는다.
 const cutTile = (name: string) => [...document.querySelectorAll<HTMLElement>("main.main .cut-card:not(.cut-out)")]
-  .find((tile) => tile.querySelector(".cut-tab > span, .ep-cap > b, .ep-name")!.textContent === name)!;
+  .find((tile) => tile.querySelector(".ep-cover .ep-num, .ep-name")?.textContent === name)!;
 type Pill = { type: string; props: {
   className: string; disabled?: boolean; onMouseDown?: (event: { preventDefault: () => void; button: number }) => void;
   onClick?: (event: { detail: number }) => void;
@@ -1557,7 +1580,7 @@ it("App 공유·리뷰: 폴더를 고르면 바로 아래 폴더마다 카드 �
   await settle();
   expect(localStorage.getItem("ch.lib.cutView")).toBe("1");
   expect(folderCards).toHaveBeenLastCalledWith("resolve-project", "episode", "view-workspace");
-  expect([...cutGrid()!.querySelectorAll(".cut-tab > span")].map((name) => name.textContent)).toEqual(["other", "shot"]);
+  expect([...cutGrid()!.querySelectorAll(".ep-cover .ep-num")].map((name) => name.textContent)).toEqual(["other", "shot"]);
   expect(gridOutputs()).toHaveLength(0);
   expect(promptSnapshot?.topSlot).toBeUndefined();
   expect(toolbarSnapshot!.folderCards).toMatchObject({ on: true, summary: { folders: 2, items: 9 } });
@@ -1627,8 +1650,8 @@ it("App 공유·리뷰: 폴더를 고르면 바로 아래 폴더마다 카드 �
   act(() => setStaleList(false));
   act(() => toolbarSnapshot!.folderCards!.onChange(true));
   await settle();
-  expect(cutTile("shot").querySelector(".cut-pill")).toBeNull();
-  expect(cutTile("other").querySelector(".cut-pill")!.textContent).toBe("대표 미정");
+  expect(cutTile("shot").querySelector(".ep-chip:not(.none)")!.textContent).toBe("썸네일");
+  expect(cutTile("other").querySelector(".ep-chip.none")!.textContent).toBe("썸네일");
   expect(gridOutputs()).toHaveLength(0);
 });
 
@@ -1682,6 +1705,12 @@ it("App 공유·리뷰: 컷 두 번 클릭 = 모아보기 · 우클릭 = 폴더 
   await settle();
   expect(cutTile("episode")).toBeDefined();
   const topEntry = window.history.state;
+  // 하위 폴더가 있는 묶음은 우클릭도 직계 하위폴더부터 탐색한다.
+  act(() => { cutTile("episode").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); });
+  await settle();
+  expect([peekWindow(), librarySnapshot!.filters.folder_path, cutTile("shot") !== undefined]).toEqual([null, "episode", true]);
+  act(() => { window.dispatchEvent(new PopStateEvent("popstate", { state: topEntry })); });
+  await settle();
   const mark = window.history.length;
   act(() => { cutTile("episode").dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); });
   await settle();
@@ -1772,8 +1801,8 @@ it("App 공유·리뷰: 찾는 조건을 켜도 묶음이 풀리지 않는다 �
     : Promise.resolve([at("o1", "episode/other"), at("s1", "episode/shot", { is_final: true }), at("s2", "episode/shot")])));
   localStorage.setItem("ch.lib.cutView", "1");
   await mountTeamFolder({ folderCards: byParent(() => false), setFolderCover: vi.fn(), listGenerations });
-  const names = () => [...(cutGrid()?.querySelectorAll(".cut-tab > span") ?? [])].map((name) => name.textContent);
-  const picked = () => [...document.querySelectorAll('main.main .cut-card[aria-pressed="true"]')].map((tile) => tile.querySelector(".cut-tab > span")!.textContent);
+  const names = () => [...(cutGrid()?.querySelectorAll(".ep-cover .ep-num") ?? [])].map((name) => name.textContent);
+  const picked = () => [...document.querySelectorAll('main.main .cut-card[aria-pressed="true"]')].map((tile) => tile.querySelector(".ep-cover .ep-num")!.textContent);
   const pick = (name: string, init: MouseEventInit = {}) => {
     act(() => { cutTile(name).dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, ...init })); });
     act(() => { window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); });
@@ -1795,7 +1824,7 @@ it("App 공유·리뷰: 찾는 조건을 켜도 묶음이 풀리지 않는다 �
   await settle();
   expect([names(), gridOutputs().length, toolbarSnapshot!.folderCards!.summary, picked()])
     .toEqual([["shot"], 0, { top: false, folders: 1, items: 3, note: undefined }, ["shot"]]);
-  expect(cutGrid()!.querySelector(".cut-tab > b")!.textContent).toBe("2"); // 건수는 걸러진 수
+  expect(cutGrid()!.querySelector(".ep-cap > span")!.textContent).toMatch(/^2건(?: ·|$)/); // 건수는 걸러진 수
   expect(cutGrid()!.querySelector(".cut-out-count")!.textContent).toBe("컷 밖 1건");
   // 전환 단추는 걸러 보는 중에도 그대로다(전엔 사라졌다)
   expect(toolbarSnapshot!.folderCards!.on).toBe(true);
@@ -1838,18 +1867,22 @@ it("App 공유·리뷰: 모양은 보는 폴더마다 기억한다 — 폴더 �
 
   await openWindow("shot"); // 처음 보는 폴더 — 방금 보던 그리드를 물려받는다
   expect([peekWindow() !== null, toolbarSnapshot!.layout, gridSnapshot!.layout]).toEqual([true, "grid", "grid"]);
-  act(() => toolbarSnapshot!.onLayout("list")); // 창 안에서 리스트로
+  act(() => { toolbarSnapshot!.onLayout("list"); toolbarSnapshot!.onScale(0.8); toolbarSnapshot!.onToggleFill(); });
   await settle();
   expect([toolbarSnapshot!.layout, gridSnapshot!.layout]).toEqual(["list", "list"]);
   await closeWindow();
-  expect([peekWindow(), toolbarSnapshot!.layout]).toEqual([null, "grid"]); // 뒤 화면(episode)은 그대로다
-  expect([stored()[key("episode")], stored()[key("episode/shot")]]).toEqual([{ layout: "grid", group: false }, { layout: "list", group: false }]);
+  expect([peekWindow(), toolbarSnapshot!.layout, toolbarSnapshot!.scale, toolbarSnapshot!.fill]).toEqual([null, "grid", 1, true]);
+  expect([stored()[key("episode")], stored()[key("episode/shot")]]).toEqual([
+    { layout: "grid", group: false, scale: 1, fill: true, folders: true },
+    { layout: "list", group: false, scale: 0.8, fill: false, folders: true },
+  ]);
 
   await openWindow("other"); // 다른 폴더의 창 — 방금 보던 것(뒤 화면의 그리드)을 물려받는다
   expect(gridSnapshot!.layout).toBe("grid");
   await closeWindow();
   await openWindow("shot"); // 다시 연 그 폴더는 본 모양 그대로
   expect([toolbarSnapshot!.layout, gridSnapshot!.layout]).toEqual(["list", "list"]);
+  expect([toolbarSnapshot!.scale, toolbarSnapshot!.fill]).toEqual([0.8, false]);
   await closeWindow();
   // 그 폴더로 들어가도(창이 아니라 자리로) 같은 폴더다 — 리스트
   act(() => sidebarSnapshot!.onChange({ folder_path: "episode/shot" }));
@@ -1873,7 +1906,7 @@ it("App 공유·리뷰: 걸러 받지 못하면 '걸러 보기 실패', 상한�
   });
   localStorage.setItem("ch.lib.cutView", "1");
   await mountTeamFolder({ folderCards: byParent(() => false), setFolderCover: vi.fn(), listGenerations });
-  const names = () => [...(cutGrid()?.querySelectorAll(".cut-tab > span") ?? [])].map((name) => name.textContent);
+  const names = () => [...(cutGrid()?.querySelectorAll(".ep-cover .ep-num") ?? [])].map((name) => name.textContent);
   act(() => toolbarSnapshot!.onTypeFilter("video"));
   await settle();
   await settle();
@@ -1932,10 +1965,10 @@ it("App 공유·리뷰: 폴더를 옮기면 묶음 응답 전엔 낱장 격자�
   act(() => sidebarSnapshot!.onChange({ folder_path: "episode" }));
   await settle();
   expect([cutGrid() !== null, gridOutputs().length, busy(), toolbarSnapshot!.folderCards?.on]).toEqual([true, 0, null, true]);
-  expect(cutTile("shot").querySelector(".cut-pill")!.textContent).toBe("대표 미정");
+  expect(cutTile("shot").querySelector(".ep-chip")!.textContent).toBe("썸네일");
   await act(async () => { held.get("episode")!.resolve(cutCards(true)); });
   await settle();
-  expect([cutGrid() !== null, cutTile("shot").querySelector(".cut-pill")]).toEqual([true, null]);
+  expect([cutGrid() !== null, cutTile("shot").querySelector(".ep-chip:not(.none)")?.textContent]).toEqual([true, "썸네일"]);
 });
 
 // 2026-10-13(Jay "아직 폴더 이동할 때 딜레이"): 에피소드(컷 카드)에서 컷으로 들어갈 때 서버 답 둘(묶음·목록)을 기다리지 않는다 — 컷의 묶음 답은 에피소드의
@@ -2179,4 +2212,51 @@ it("App: 인증 확인 중으로 한 번 그린 뒤 확인이 끝나도 예외 �
   expect(document.querySelector('[data-testid="library-highlight"]')).not.toBeNull(); // 격자
   expect(document.querySelector(".sl-dockbar")).not.toBeNull(); // 하단 프롬프트
   expect(gridSnapshot!.bulkReviewAllowed).toEqual({ unshared: false, shared: false, held: false, final: false });
+});
+
+it.each((["my", "team"] as const).flatMap((tab) => (["body", "toolbar", "folder"] as const).map((route) => [tab, route] as const)))("%s %s Backspace는 실제 키 경로에서 입력·잠금을 지키고 상위 폴더로 이동한다", async (tab, route) => {
+  backspaceRoutes = true;
+  installAppBoundaries([fixture], fixture.id, [{ id: "resolve-project", name: "Resolve" } as unknown as Project]);
+  enableSearchBox = true;
+  localStorage.setItem("ch.lib.filtersV2", JSON.stringify({ tab, project_id: "resolve-project", folder_path: "e001/c0010", __v: "2", __view: JSON.stringify(["team", "view-workspace"]) }));
+  const { default: App } = await import("../src/App");
+  act(() => view.root.render(<StrictMode><App /></StrictMode>)); await settle();
+  const toolbar = document.createElement("div"); toolbar.className = "topbar";
+  const button = document.createElement("button"); toolbar.append(button); view.container.append(toolbar);
+  const defaultTarget = route === "body" ? document.body : route === "toolbar" ? button : view.container.querySelector<HTMLElement>(".folder-tree-node button")!;
+  expect(defaultTarget).toBeTruthy();
+  const press = (target: EventTarget = defaultTarget, more: KeyboardEventInit = {}) => {
+    (document.activeElement as HTMLElement | null)?.blur();
+    if (target instanceof HTMLElement) target.focus();
+    const event = new KeyboardEvent("keydown", { key: "Backspace", bubbles: true, cancelable: true, ...more });
+    act(() => target.dispatchEvent(event)); return event;
+  };
+  const input = document.createElement("input"); view.container.append(input);
+  expect(press(input).defaultPrevented).toBe(false);
+  expect(press(window, { ctrlKey: true }).defaultPrevented).toBe(false);
+  expect(press(window, { repeat: true }).defaultPrevented).toBe(false);
+  expect(librarySnapshot!.filters.folder_path).toBe("e001/c0010");
+  act(() => setStaleList(true)); await settle();
+  expect(press().defaultPrevented).toBe(false);
+  act(() => setStaleList(false)); await settle();
+  const searchInput = view.container.querySelector<HTMLInputElement>(".assets-search input")!;
+  act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(searchInput, "pending child search");
+    searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  expect(searchInput.value).toBe("pending child search");
+  const before = window.history.length;
+  expect(press().defaultPrevented).toBe(true); await settle();
+  expect(librarySnapshot!.filters.folder_path).toBe("e001");
+  expect(sidebarSnapshot!.armedFolder).toEqual({ projectId: "resolve-project", path: "e001" });
+  expect(window.history.length).toBe(before + 1);
+  await act(async () => { await new Promise((done) => setTimeout(done, 350)); });
+  expect(librarySnapshot!.filters.search).toBeUndefined();
+  expect(searchInput.value).toBe("");
+  press(); await settle();
+  expect(librarySnapshot!.filters.project_id).toBe("resolve-project");
+  expect(librarySnapshot!.filters.folder_path).toBeUndefined();
+  press(); await settle();
+  expect(librarySnapshot!.filters.project_id).toBeUndefined();
+  expect(press().defaultPrevented).toBe(false);
 });

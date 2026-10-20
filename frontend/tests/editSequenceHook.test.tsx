@@ -7,12 +7,12 @@ import { ackTeamFreshKeys } from "../src/lib/teamSeen";
 import type { Generation, WorkspaceContext } from "../src/types";
 
 const mocks = vi.hoisted(() => ({
-  list: vi.fn(), projects: vi.fn(), links: vi.fn(), folder: vi.fn(), counts: vi.fn(), fresh: vi.fn(),
+  list: vi.fn(), batch: vi.fn(), projects: vi.fn(), links: vi.fn(), folder: vi.fn(), counts: vi.fn(), fresh: vi.fn(),
 }));
 vi.mock("../src/api", () => ({
   GEN_PAGE: 200,
   api: {
-    listGenerations: mocks.list, projects: mocks.projects, projectFolderLinks: mocks.links,
+    listGenerations: mocks.list, getGenerationsBatch: mocks.batch, projects: mocks.projects, projectFolderLinks: mocks.links,
     projectFolder: mocks.folder, projectFolderCountsBatch: mocks.counts, teamFreshAll: mocks.fresh,
   },
 }));
@@ -73,6 +73,19 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
+});
+
+it("unsupported authority falls back to a full team query without retrying the ambiguous partial endpoint", async () => {
+  mocks.list.mockResolvedValue([row("same")]);
+  render(<ListHarness seq="seq" />); await flush();
+  mocks.batch.mockRejectedValueOnce({ status: 409 });
+  act(() => list.reloadIds(["same"])); await flush();
+  expect(mocks.batch).toHaveBeenCalledTimes(1);
+  expect(mocks.batch.mock.calls[0][2]).toEqual({ allowPartial: true, authority: "team" });
+  expect(mocks.list).toHaveBeenCalledTimes(2);
+  act(() => list.reloadIds(["same"])); await flush();
+  expect(mocks.batch).toHaveBeenCalledTimes(1); expect(mocks.list).toHaveBeenCalledTimes(3);
+  expect(list.gens[0].id).toBe("same");
 });
 
 it("쓸 수 있는 것이 0개인 쪽 뒤에도 다음 쪽을 묻는다 — 커서는 거르기 전 마지막 행", async () => {
@@ -145,6 +158,145 @@ it("startedAt 은 지금 목록을 낸 조회의 출발 순번이다 — 다시 
   await flush();
   expect(list.startedAt).toBeGreaterThan(between);
   expect(list.gens.map((gen) => gen.id)).toEqual(["b1"]);
+});
+
+it("[C] 태그 부분 조회는 두 태그만 갱신하고 목록 순서·다른 메타·전체 순번을 보존한다", async () => {
+  const original = { ...row("a"), tags: ["old"], auto_tags: ["old-auto"], shared: true, color: "red" };
+  mocks.list.mockResolvedValue([original, row("b")]);
+  mocks.batch.mockResolvedValue({ items: { a: { ...original, tags: ["new"], auto_tags: ["new-auto"], shared: false, color: "blue" } }, missing: [] });
+  render(<ListHarness seq="e070" />); await flush();
+  const startedAt = list.startedAt;
+  const savedAt = editTick();
+  act(() => list.reloadIds(["a", "outside", "a"])); await flush();
+  expect(mocks.batch.mock.calls[0][0]).toEqual(["a"]);
+  expect(list.gens[0]).toEqual({ ...original, tags: ["new"], auto_tags: ["new-auto"] });
+  expect(list.gens.map((g) => g.id)).toEqual(["a", "b"]);
+  expect(list.startedAt).toBe(startedAt);
+  expect(list.settledSeq.a).toBeGreaterThan(savedAt);
+  expect(list.settledSeq.b).toBeUndefined();
+});
+
+it("[C] 전체 조회 중 태그 요청을 보관하고, 먼저 출발한 부분 조회도 전체 완료 뒤 다시 받는다", async () => {
+  const initial = deferred<Generation[]>(), full = deferred<Generation[]>(), batch = deferred<any>();
+  const a = { ...row("a"), tags: [], auto_tags: [] };
+  mocks.list.mockReturnValueOnce(initial.promise).mockReturnValueOnce(full.promise);
+  mocks.batch.mockReturnValueOnce(batch.promise).mockResolvedValue({ items: { a: { ...a, tags: ["latest"] } }, missing: [] });
+  render(<ListHarness seq="e070" />);
+  act(() => list.reloadIds(["a"])); await flush();
+  expect(mocks.batch).not.toHaveBeenCalled();
+  initial.resolve([a]); await flush();
+  expect(mocks.batch).toHaveBeenCalledTimes(1);
+  act(() => list.reload());
+  batch.resolve({ items: { a: { ...a, tags: ["stale"] } }, missing: [] }); await flush();
+  expect(list.gens[0].tags).toEqual([]);
+  full.resolve([a]); await flush();
+  expect(mocks.batch).toHaveBeenCalledTimes(2);
+  expect(list.gens[0].tags).toEqual(["latest"]);
+});
+
+it("[C] missing·unavailable·실패·불완전 태그 응답은 원래 값과 항목 순번을 보존한다", async () => {
+  const a = { ...row("a"), tags: ["keep"], auto_tags: ["keep-auto"] };
+  mocks.list.mockResolvedValue([a]);
+  render(<ListHarness seq="e070" />); await flush();
+  for (const reply of [{ items: {}, missing: ["a"] }, { items: {}, missing: [], unavailable: ["a"] }, { items: { a: { ...a, auto_tags: undefined } }, missing: [] }]) {
+    mocks.batch.mockResolvedValueOnce(reply);
+    act(() => list.reloadIds(["a"])); await flush();
+    expect(list.gens[0]).toEqual(a); expect(list.settledSeq.a).toBeUndefined();
+  }
+  mocks.batch.mockRejectedValueOnce(new Error("offline"));
+  act(() => list.reloadIds(["a"])); await flush();
+  expect(list.gens[0]).toEqual(a); expect(list.settledSeq.a).toBeUndefined();
+});
+
+it("[C] 문맥 전환 뒤 부분 조회 응답은 같은 id인 새 목록도 바꾸지 않는다", async () => {
+  const slow = deferred<any>();
+  const a = { ...row("a"), tags: [], auto_tags: [] };
+  mocks.list.mockResolvedValue([a]); mocks.batch.mockReturnValue(slow.promise);
+  render(<ListHarness seq="e070" />); await flush();
+  act(() => list.reloadIds(["a"])); await flush();
+  render(<ListHarness seq="e071" />); await flush();
+  slow.resolve({ items: { a: { ...a, tags: ["old-context"] } }, missing: [] }); await flush();
+  expect(list.gens[0].tags).toEqual([]); expect(list.settledSeq.a).toBeUndefined();
+});
+
+it("[C] 요청 중 다음 태그 알림은 직렬로 보내며 실제 출발 순번을 사용한다", async () => {
+  const slow = deferred<any>();
+  const a = { ...row("a"), tags: [], auto_tags: [] }, b = { ...row("b"), tags: [], auto_tags: [] };
+  mocks.list.mockResolvedValue([a, b]);
+  mocks.batch.mockReturnValueOnce(slow.promise).mockResolvedValue({ items: { b: { ...b, tags: ["second"] } }, missing: [] });
+  render(<ListHarness seq="e070" />); await flush();
+  act(() => list.reloadIds(["a"])); await flush();
+  act(() => list.reloadIds(["b"])); await flush();
+  const savedAt = editTick();
+  expect(mocks.batch).toHaveBeenCalledTimes(1);
+  slow.resolve({ items: { a }, missing: [] }); await flush();
+  expect(mocks.batch).toHaveBeenCalledTimes(2);
+  expect(list.settledSeq.a).toBeLessThan(savedAt);
+  expect(list.settledSeq.b).toBeGreaterThan(savedAt);
+});
+
+it("[C] 같은 틱의 전체 조회 예약도 부분 응답을 막고 해당 id를 다시 받는다", async () => {
+  const slow = deferred<any>(), full = deferred<Generation[]>();
+  const a = { ...row("a"), tags: [], auto_tags: [] };
+  mocks.list.mockResolvedValueOnce([a]).mockReturnValueOnce(full.promise);
+  mocks.batch.mockReturnValueOnce(slow.promise).mockResolvedValue({ items: { a: { ...a, tags: ["confirmed"] } }, missing: [] });
+  render(<ListHarness seq="e070" />); await flush();
+  act(() => list.reloadIds(["a"])); await flush();
+  await act(async () => {
+    list.reload();
+    slow.resolve({ items: { a: { ...a, tags: ["invalid"] } }, missing: [] });
+    await Promise.resolve();
+  });
+  expect(list.gens[0].tags).toEqual([]);
+  full.resolve([a]); await flush();
+  expect(list.gens[0].tags).toEqual(["confirmed"]);
+  expect(mocks.batch).toHaveBeenCalledTimes(2);
+});
+
+it("[C] 이전 문맥 부분 조회가 끝난 뒤 새 문맥 대기 요청도 출발한다", async () => {
+  const slow = deferred<any>();
+  const a = { ...row("a"), tags: [], auto_tags: [] };
+  mocks.list.mockResolvedValue([a]);
+  mocks.batch.mockReturnValueOnce(slow.promise).mockResolvedValue({ items: { a: { ...a, tags: ["new-context"] } }, missing: [] });
+  render(<ListHarness seq="e070" />); await flush();
+  act(() => list.reloadIds(["a"])); await flush();
+  render(<ListHarness seq="e071" />); await flush();
+  act(() => list.reloadIds(["a"])); await flush();
+  slow.resolve({ items: { a: { ...a, tags: ["old-context"] } }, missing: [] }); await flush();
+  expect(list.gens[0].tags).toEqual(["new-context"]);
+  expect(mocks.batch).toHaveBeenCalledTimes(2);
+});
+
+it("[C] 초기 전체 조회 실패 때 태그 대기를 보존하여 다음 전체 조회 뒤 확인한다", async () => {
+  const initial = deferred<Generation[]>();
+  const a = { ...row("a"), tags: ["old"], auto_tags: [] };
+  mocks.list.mockReturnValueOnce(initial.promise).mockResolvedValueOnce([a]);
+  mocks.batch.mockResolvedValue({ items: { a: { ...a, tags: ["new"] } }, missing: [] });
+  render(<ListHarness seq="e070" />);
+  act(() => list.reloadIds(["a"]));
+  initial.reject(new Error("offline")); await flush();
+  expect(list.state).toBe("error"); expect(mocks.batch).not.toHaveBeenCalled();
+  act(() => list.reload()); await flush();
+  expect(mocks.batch).toHaveBeenCalledTimes(1);
+  expect(list.gens[0].tags).toEqual(["new"]);
+});
+
+it("[C] A→B→A에서 옛 batch는 새 문맥 요청을 막거나 끝난 id를 되살리지 않는다", async () => {
+  const old = deferred<any>();
+  const a = { ...row("a"), tags: [], auto_tags: [] };
+  mocks.list.mockResolvedValue([a]);
+  mocks.batch.mockReturnValueOnce(old.promise).mockResolvedValue({ items: { a: { ...a, tags: ["current"] } }, missing: [] });
+  render(<ListHarness seq="e070" />); await flush();
+  act(() => list.reloadIds(["a"])); await flush();
+  render(<ListHarness seq="e071" />); await flush();
+  render(<ListHarness seq="e070" />); await flush();
+  act(() => list.reloadIds(["a"])); await flush();
+  expect(mocks.batch).toHaveBeenCalledTimes(2);
+  expect(list.gens[0].tags).toEqual(["current"]);
+  const stamp = list.settledSeq.a;
+  old.resolve({ items: { a: { ...a, tags: ["obsolete"] } }, missing: [] }); await flush();
+  expect(mocks.batch).toHaveBeenCalledTimes(2);
+  expect(list.gens[0].tags).toEqual(["current"]); expect(list.settledSeq.a).toBe(stamp);
 });
 
 it("2,000행에서 멈추고 '일부만'으로 알린다", async () => {

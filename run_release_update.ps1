@@ -48,6 +48,16 @@ try {
     # batch worker must therefore be copied outside the target before any package
     # file is touched. PowerShell has already parsed this runner into memory.
     Copy-Item -LiteralPath $Worker -Destination $TempWorker -Force
+    $Hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $Original = [System.IO.File]::OpenRead($Worker)
+        try { $OriginalHash = [Convert]::ToBase64String($Hasher.ComputeHash($Original)) } finally { $Original.Dispose() }
+        $Copied = [System.IO.File]::OpenRead($TempWorker)
+        try { $CopiedHash = [Convert]::ToBase64String($Hasher.ComputeHash($Copied)) } finally { $Copied.Dispose() }
+        if ($OriginalHash -cne $CopiedHash) { throw 'Isolated updater bytes differ from installed updater.' }
+        $env:MVHUB_UPDATE_WORKER_SHA256 = ([BitConverter]::ToString([Convert]::FromBase64String($CopiedHash))).Replace('-', '').ToLowerInvariant()
+    }
+    finally { $Hasher.Dispose() }
     if (-not $env:MVHUB_UPDATE_TARGET_DIR) {
         $env:MVHUB_UPDATE_TARGET_DIR = $RootPath
     }

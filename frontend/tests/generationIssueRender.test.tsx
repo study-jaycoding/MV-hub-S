@@ -1,3 +1,4 @@
+import { preparedFixture } from "./preparedSubmissionFixture";
 // @vitest-environment jsdom
 import { act, type ComponentProps, type ReactNode } from "react";
 import { flushSync } from "react-dom";
@@ -407,3 +408,9 @@ it.each(["nsfw", "failed"] as const)("%s 종료의 phase가 done이어도 원래
   expect(required(".info-error").textContent).toContain(g.error);
   expect(container.querySelector(".info-recovery")).toBeNull();
 });
+
+vi.mock("../src/features/generation/api", async (original) => ({
+  ...await original<typeof import("../src/features/generation/api")>(),
+  prepareCreateSubmission: (...args: Parameters<typeof import("../src/features/generation/api").prepareCreateSubmission>) => preparedFixture(api.prepareCreate(args[0], args[1], args[2]), args[1], args[2], args[3]),
+  prepareRegenerateSubmission: (...args: Parameters<typeof import("../src/features/generation/api").prepareRegenerateSubmission>) => preparedFixture(api.prepareRegenerate(args[0], args[1], args[2], args[3]), args[2], args[3], args[4]),
+}));

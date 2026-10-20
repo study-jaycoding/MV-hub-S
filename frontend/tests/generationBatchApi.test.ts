@@ -8,6 +8,31 @@ function okResponse(result: unknown): Pick<Response, "ok" | "json"> {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("generation batch API", () => {
+  it("checks the mutation scope before every tag save chunk", async () => {
+    let current = true;
+    const fetchMock = vi.fn((_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)); current = false;
+      return Promise.resolve(okResponse({ succeeded: body.items.map((item: {id: string}) => item.id), failed: [] }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const items = Array.from({ length: 501 }, (_, i) => ({ id: `g${i}`, tags: ["t"] }));
+    const result = await api.setTagsBatch(items, false, () => { if (!current) throw new Error("scope changed"); });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.succeeded).toHaveLength(500); expect(result.failed).toEqual(["g500"]);
+  });
+  it("requires explicit authority on every page and refuses legacy local-first answers", async () => {
+    const fetchMock = vi.fn((_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      return Promise.resolve(okResponse({ items: {}, materials: {}, missing: body.gen_ids, authority: body.authority }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ids = Array.from({ length: 501 }, (_, i) => `g${i}`);
+    const result = await api.getGenerationsBatch(ids, undefined, { authority: "team" });
+    expect(result.authority).toBe("team");
+    expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init.body)).authority)).toEqual(["team", "team"]);
+    fetchMock.mockImplementation(() => Promise.resolve(okResponse({ items: {}, materials: {}, missing: [] })));
+    await expect(api.getGenerationsBatch(["same"], undefined, { authority: "team" })).rejects.toMatchObject({ status: 409 });
+  });
   it("500개 서버 상한을 넘는 씬은 여러 요청으로 나누고 응답을 다시 합친다", async () => {
     const ids = Array.from({ length: 1001 }, (_, index) => `g${index}`);
     const fetchMock = vi.fn().mockImplementation((_url: string, init: RequestInit) => {

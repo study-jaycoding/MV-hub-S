@@ -124,6 +124,10 @@ export function isKnownGen(genId: string): boolean {
   return activeSeen.has(genId) || settled.has(genId) || watch.has(genId);
 }
 
+export function isWatchingGeneration(genId: string): boolean {
+  return watch.has(genId);
+}
+
 export function isRecentlyDone(genId: string): boolean {
   const ts = recent.get(genId);
   if (ts === undefined) return false;

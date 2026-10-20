@@ -27,6 +27,7 @@ export function useGenerationAutoRefresh({
   pausedRef.current = paused;
   // 마지막 갱신 시각 — 폴링 인터벌과 focus/visibility 복귀가 공유해 중복 리로드를 막는다.
   const lastRefreshRef = useRef(0);
+  const inflightRef = useRef(false);
 
   // 탭 전환 자체가 목록 reload 를 일으키므로, 직후 따라오는 브라우저 focus 이벤트는 중복 처리하지 않는다.
   useEffect(() => {
@@ -42,39 +43,51 @@ export function useGenerationAutoRefresh({
     // 팀원 변경은 공유서버에서 일어나 로컬 WS 로는 안 오므로 폴링 자체는 필요하지만,
     // 3초 전체 리로드(프록시 왕복+원격 썸네일 prewarm 재스케줄)는 과했다.
     const ms = hasActiveJob ? 3000 : 15000;
-    let inflight = false;
+    let alive = true;
     const id = setInterval(() => {
       // 창이 안 보이면 쉰다(복귀 시 아래 visibilitychange 가 즉시 1회 갱신).
-      if (inflight || pausedRef.current || document.visibilityState === "hidden") return;
-      inflight = true;
-      lastRefreshRef.current = Date.now();
+      if (inflightRef.current || pausedRef.current || document.visibilityState === "hidden") return;
+      const now = Date.now();
+      if (now - lastRefreshRef.current < ms) return;
+      inflightRef.current = true;
+      lastRefreshRef.current = now;
       void Promise.resolve(reload(true, true)).finally(() => {
-        inflight = false;
+        inflightRef.current = false;
         // 팀 탭 유휴 폴링: light 리로드는 projects 를 안 갱신해 사이드바 폴더 카운트(+N 신규 배지)가
         // 낡는다 — 사이드바 카운트 갱신 채널을 깨운다(활성 잡 3초 폴링에선 스팸 방지 위해 제외).
         // 실제 변경이 아니라는 표식을 단다(LIBRARY_POLL_TICK) — 편집 탭은 이것에 공유 목록을 다시 받지 않는다.
-        if (tab === "team" && !hasActiveJob) dispatchAppEvent(APP_EVENTS.libraryChanged, LIBRARY_POLL_TICK);
+        if (alive && tab === "team" && !hasActiveJob) dispatchAppEvent(APP_EVENTS.libraryChanged, LIBRARY_POLL_TICK);
       });
     }, ms);
-    return () => clearInterval(id);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
   }, [hasActiveJob, reload, tab]);
 
   useEffect(() => {
     // focus 와 visibilitychange 가 복귀 시 함께 터지고 앱 전환 중에도 반복된다 → 5초 공유 가드.
     // 방금 인터벌 폴이 돈 직후 복귀해도 중복 리로드하지 않는다(같은 lastRefreshRef 공유).
+    let alive = true;
     const onVisible = () => {
       // 쉬는 동안의 복귀는 시계(lastRefreshRef)도 건드리지 않는다 — 풀린 뒤의 복귀는 평소처럼 받는다.
-      if (pausedRef.current || document.visibilityState !== "visible") return;
+      if (inflightRef.current || pausedRef.current || document.visibilityState !== "visible") return;
       const now = Date.now();
       if (now - lastRefreshRef.current < 5000) return;
+      inflightRef.current = true;
       lastRefreshRef.current = now;
-      void reload(true, true);
+      void Promise.resolve(reload(true, true)).finally(() => {
+        inflightRef.current = false;
+        // 복귀 조회가 주기 조회를 대신해도 팀 사이드바 숫자는 갱신한다.
+        if (alive && tab === "team" && !hasActiveJob) dispatchAppEvent(APP_EVENTS.libraryChanged, LIBRARY_POLL_TICK);
+      });
     };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onVisible);
     return () => {
+      alive = false;
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
     };
-  }, [reload]);
+  }, [hasActiveJob, reload, tab]);
 }

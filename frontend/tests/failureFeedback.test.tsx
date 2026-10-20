@@ -34,6 +34,7 @@ import { EMPTY_ASSET_META } from "../src/components/assets/assetsViewModel";
 import { useAssetMetaActions } from "../src/components/assets/useAssetMetaActions";
 import { useAssetProjectData } from "../src/components/assets/useAssetProjectData";
 import { useSceneClipboardDrop } from "../src/lib/useSceneClipboardDrop";
+import { useCanvasSession } from "../src/features/canvas/api";
 import { unloadHeld, unsavedPlaces } from "../src/lib/unloadGuard";
 
 let host: HTMLDivElement;
@@ -490,17 +491,27 @@ it("에셋 메타 다시 받기(reloadMeta)는 '받았는가'를 돌려준다 �
 });
 
 // ── 캔버스에 놓은 파일·붙여 넣은 그림 ──
+function useDropDocument(sceneIdRef: { current: string }, cardsRef: { current: SceneCard[] }, edgesRef: { current: SceneEdge[] },
+  setCards: (cards: SceneCard[]) => void = () => {}, persist: () => void = () => {}) {
+  const groupsRef = useRef([]);
+  return useCanvasSession({ sceneId: sceneIdRef.current, sceneIdRef, cardsRef, edgesRef, groupsRef,
+    initialSnapshot: { cards: cardsRef.current, edges: edgesRef.current, groups: [] },
+    setCards: value => setCards(typeof value === "function" ? value(cardsRef.current) : value),
+    setEdges: () => {}, setGroups: () => {}, frozenRef: useRef(false), layerMoveRef: useRef(null),
+    clearSelection: () => {}, onChange: () => persist() });
+}
 function mountBoardDrop() {
   let handlers!: ReturnType<typeof useSceneClipboardDrop>;
   let sceneIdRef!: { current: string };
   const setCards = vi.fn();
   function Host() {
     sceneIdRef = useRef("s");
+    const cardsRef = useRef<SceneCard[]>([]), edgesRef = useRef<SceneEdge[]>([]);
+    const document = useDropDocument(sceneIdRef, cardsRef, edgesRef, setCards);
     handlers = useSceneClipboardDrop({
-      frozenRef: useRef(false), sceneIdRef, cardsRef: useRef<SceneCard[]>([]), edgesRef: useRef<SceneEdge[]>([]),
+      document, frozenRef: useRef(false), sceneIdRef, cardsRef, edgesRef,
       selectedRef: useRef(new Set<string>()), lastMouseRef: useRef({ x: 10, y: 10, over: true }), scrollRef: useRef<HTMLDivElement | null>(null),
-      setCards, setEdges: () => {}, setSelected: () => {}, toCanvas: (x, y) => ({ x, y }), reconcileGenerationRefs: (cards) => cards,
-      persist: () => {}, cardWidth: 100, cardHeight: 100,
+      setSelected: () => {}, toCanvas: (x, y) => ({ x, y }), cardWidth: 100, cardHeight: 100,
     });
     return null;
   }
@@ -508,6 +519,33 @@ function mountBoardDrop() {
   return { handlers: () => handlers, setCards, sceneIdRef: () => sceneIdRef };
 }
 const png = () => new File(["x"], "shot.png", { type: "image/png" });
+
+it("파일을 올리는 동안 A→B→A로 돌아와도 옛 세션에 붙이지 않고 새 놓기는 받는다", async () => {
+  const uploads = held<{ saved: { project: string; path: string; name: string; type: string }[] }>();
+  mocks.uploadReferenceFiles.mockImplementation(() => uploads.next());
+  let handlers!: ReturnType<typeof useSceneClipboardDrop>;
+  let readCards!: () => SceneCard[];
+  const persisted = vi.fn();
+  function Board({ sceneId }: { sceneId: string }) {
+    const sceneIdRef = useRef(sceneId); sceneIdRef.current = sceneId;
+    const cardsRef = useRef<SceneCard[]>([]), edgesRef = useRef<SceneEdge[]>([]);
+    const document = useDropDocument(sceneIdRef, cardsRef, edgesRef, undefined, persisted);
+    readCards = () => cardsRef.current;
+    handlers = useSceneClipboardDrop({ document, sceneIdRef, cardsRef, edgesRef, frozenRef: useRef(false),
+      selectedRef: useRef(new Set<string>()), lastMouseRef: useRef({ x: 10, y: 10, over: true }), scrollRef: useRef(null),
+      setSelected: () => {}, toCanvas: (x, y) => ({ x, y }), cardWidth: 100, cardHeight: 100 });
+    return null;
+  }
+  const show = (sceneId: string) => act(() => root.render(<Board sceneId={sceneId} />));
+  const drop = () => act(() => handlers.onDrop({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 10,
+    shiftKey: false, dataTransfer: { types: ["Files"], files: [png()], items: [] } } as never));
+  const result = { saved: [{ project: "p", path: "shot.png", name: "shot.png", type: "image" }] };
+  show("a"); drop(); show("b"); show("a");
+  uploads.waiting[0].resolve(result); await settle();
+  expect(readCards()).toEqual([]); expect(persisted).not.toHaveBeenCalled();
+  drop(); uploads.waiting[1].resolve(result); await settle();
+  expect(readCards()).toHaveLength(1); expect(persisted).toHaveBeenCalledTimes(1);
+});
 
 it("캔버스에 놓은 파일 — 들이지 못했으면 알린다(전엔 콘솔에만 남았다)", async () => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -555,11 +593,12 @@ it.each([".scene-modelmodal-backdrop", ".scene-varpop-backdrop", ".vtl-backdrop"
 //  올라온다. DOM 의 조상만 봐서는 못 거른다 — 진짜 포털과 보드의 처리기를 같이 올려 본다.
 it("캔버스 안의 창이 body 로 띄운 패널(포털)에 놓은 파일도 뒤 보드에 들어가지 않는다", async () => {
   function Board() {
+    const sceneIdRef = useRef("s"), cardsRef = useRef<SceneCard[]>([]), edgesRef = useRef<SceneEdge[]>([]);
+    const session = useDropDocument(sceneIdRef, cardsRef, edgesRef);
     const handlers = useSceneClipboardDrop({
-      frozenRef: useRef(false), sceneIdRef: useRef("s"), cardsRef: useRef<SceneCard[]>([]), edgesRef: useRef<SceneEdge[]>([]),
+      document: session, frozenRef: useRef(false), sceneIdRef, cardsRef, edgesRef,
       selectedRef: useRef(new Set<string>()), lastMouseRef: useRef({ x: 10, y: 10, over: true }), scrollRef: useRef<HTMLDivElement | null>(null),
-      setCards: () => {}, setEdges: () => {}, setSelected: () => {}, toCanvas: (x, y) => ({ x, y }), reconcileGenerationRefs: (cards) => cards,
-      persist: () => {}, cardWidth: 100, cardHeight: 100,
+      setSelected: () => {}, toCanvas: (x, y) => ({ x, y }), cardWidth: 100, cardHeight: 100,
     });
     return (
       <div className="board" onDragOver={handlers.onDragOver} onDrop={handlers.onDrop}>
@@ -672,7 +711,7 @@ it("캔버스에 붙여 넣은 그림 — 들이지 못했으면 알린다, 자�
     }));
   });
   await settle();
-  expect(mocks.uploadCapture).toHaveBeenCalledExactlyOnceWith(image);
+  expect(mocks.uploadCapture).toHaveBeenCalledExactlyOnceWith(image, {});
   expect(flashes).toEqual(["붙여 넣은 그림을 캔버스에 넣지 못했습니다 — 다시 붙여 넣어 주세요."]);
   expect(board.handlers().pendingImports).toEqual([expect.objectContaining({ sceneId: "s", count: 1, names: ["붙여 넣은 그림"], error: "넣지 못했습니다 — 다시 놓아 주세요" })]);
 });
@@ -703,12 +742,13 @@ it("캔버스의 노드 붙여넣기 폴백 — 클립보드를 읽는 사이 �
   const setCards = vi.fn();
   let handlers!: ReturnType<typeof useSceneClipboardDrop>;
   function Host() {
+    const sceneIdRef = useRef("s"), edgesRef = useRef<SceneEdge[]>([]);
+    const cardsRef = useRef<SceneCard[]>([{ id: "c1", kind: "reference", x: 0, y: 0 }]);
+    const document = useDropDocument(sceneIdRef, cardsRef, edgesRef, setCards, persist);
     handlers = useSceneClipboardDrop({
-      frozenRef: useRef(false), sceneIdRef: useRef("s"), edgesRef: useRef<SceneEdge[]>([]),
-      cardsRef: useRef<SceneCard[]>([{ id: "c1", kind: "reference", x: 0, y: 0 } as SceneCard]),
+      document, frozenRef: useRef(false), sceneIdRef, edgesRef, cardsRef,
       selectedRef: useRef(new Set<string>(["c1"])), lastMouseRef: useRef({ x: 10, y: 10, over: false }), scrollRef: useRef<HTMLDivElement | null>(null),
-      setCards, setEdges: () => {}, setSelected: () => {}, toCanvas: (x, y) => ({ x, y }), reconcileGenerationRefs: (cards) => cards,
-      persist, cardWidth: 100, cardHeight: 100,
+      setSelected: () => {}, toCanvas: (x, y) => ({ x, y }), cardWidth: 100, cardHeight: 100,
     });
     return null;
   }
@@ -745,12 +785,13 @@ it("캔버스 붙여넣기 — 클립보드에 그림이 아닌 파일만 있으
   const persist = vi.fn();
   let handlers!: ReturnType<typeof useSceneClipboardDrop>;
   function Host() {
+    const sceneIdRef = useRef("s"), edgesRef = useRef<SceneEdge[]>([]);
+    const cardsRef = useRef<SceneCard[]>([{ id: "c1", kind: "reference", x: 0, y: 0 }]);
+    const document = useDropDocument(sceneIdRef, cardsRef, edgesRef, undefined, persist);
     handlers = useSceneClipboardDrop({
-      frozenRef: useRef(false), sceneIdRef: useRef("s"), edgesRef: useRef<SceneEdge[]>([]),
-      cardsRef: useRef<SceneCard[]>([{ id: "c1", kind: "reference", x: 0, y: 0 } as SceneCard]),
+      document, frozenRef: useRef(false), sceneIdRef, edgesRef, cardsRef,
       selectedRef: useRef(new Set<string>(["c1"])), lastMouseRef: useRef({ x: 10, y: 10, over: false }), scrollRef: useRef<HTMLDivElement | null>(null),
-      setCards: () => {}, setEdges: () => {}, setSelected: () => {}, toCanvas: (x, y) => ({ x, y }), reconcileGenerationRefs: (cards) => cards,
-      persist, cardWidth: 100, cardHeight: 100,
+      setSelected: () => {}, toCanvas: (x, y) => ({ x, y }), cardWidth: 100, cardHeight: 100,
     });
     return null;
   }

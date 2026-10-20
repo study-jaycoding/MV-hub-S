@@ -2,7 +2,8 @@
 // 각 작업을 준비→제출까지 독립 실행해, 한 모델의 느린 파라미터 조회가 다른 모델의 제출을 막지 않게 한다.
 // 성공 콜백도 작업별 완료 즉시 호출하므로 전체 배치가 끝나기 전에 화면에 placeholder를 반영할 수 있다.
 
-import { NO_RESPONSE_MESSAGE } from "./http";
+import { surelyNotRun } from "./http";
+import type { SubmissionResult } from "../shared/contracts/generation";
 
 // 같은 씬의 중복 렌더만 막는 작은 실행권. 다른 sceneId는 동시에 획득할 수 있다.
 export function acquireSceneGeneration(
@@ -56,15 +57,24 @@ export async function executeSceneGenerationBatch<TInput, TBody, TResult>(
       if (!body) return { kind: "build-fail" as const };
 
       let result: TResult;
+      let attachmentFailed = false;
       try {
         result = await submit(body);
+        if (result && typeof result === "object" && "outcome" in result) {
+          const submission = result as SubmissionResult;
+          const kind = submission.outcome.kind;
+          if (kind === "prepare_failed") return { kind: "build-fail" as const };
+          if (kind === "rejected") return { kind: "submit-fail" as const };
+          if (kind === "acceptance_unknown") return { kind: "submit-unknown" as const };
+          attachmentFailed = kind === "accepted_local_pending";
+        }
       } catch (error) {
-        return { kind: error instanceof Error && error.message === NO_RESPONSE_MESSAGE ? "submit-unknown" as const : "submit-fail" as const };
+        return { kind: surelyNotRun(error) ? "submit-fail" as const : "submit-unknown" as const };
       }
       // 제출 성공 뒤의 로컬 반영 오류를 "서버 제출 실패"로 오분류하지 않는다. 콜백 오류는 호출부로
       // 별도 집계해 사용자가 같은 요청을 제출 실패로 오해해 중복 제출하지 않게 한다.
       const success = { cardId: job.cardId, result };
-      let applyFailed = false;
+      let applyFailed = attachmentFailed;
       try {
         onSuccess?.(success);
       } catch {

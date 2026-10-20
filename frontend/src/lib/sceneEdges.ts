@@ -1068,7 +1068,7 @@ export function collectGenRefs(
   cardsById: Map<string, SceneCard>,
   edges: SceneEdge[],
   overlay?: ComfyOutputsById,
-): Pick<SceneRef, "file_path" | "type" | "name" | "thumb" | "source_gen_id">[] {
+): SceneRef[] {
   const srcs = edges
     .filter((e) => e.to === genId)
     .map((e) => ({ e, c: cardsById.get(e.from) }))
@@ -1076,7 +1076,7 @@ export function collectGenRefs(
       (x): x is { e: SceneEdge; c: SceneCard } =>
         x.c?.kind === "comfy" || x.c?.kind === "list",
     );
-  const out: Pick<SceneRef, "file_path" | "type" | "name" | "thumb" | "source_gen_id">[] = [];
+  const out: SceneRef[] = [];
   const seen = new Set<string>();
   const pushComfyMedia = (c: SceneCard) => {
     // 워크플로우가 '텍스트 전용'을 선언하면 미디어 ref 로 붙이지 않는다(stale 미디어 오누출 방지).

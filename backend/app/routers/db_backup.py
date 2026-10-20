@@ -37,7 +37,7 @@ from ..active_account import slug
 from ..config import DATA_DIR
 from ..deps import current_account
 from ..services.sqlite_db import HubDbValidationError, hub_db_validation_detail, read_only_uri, validate_hub_db
-from ..services import upload_limits
+from ..services import upload_limits, backup_manifest
 from ..services.async_tools import to_thread_non_abandon
 from ..services.atomic_io import atomic_write_text
 
@@ -58,7 +58,7 @@ _HEAD_NAME = "head.json"
 _SERVER_META_NAME = "server.json"
 _DEVICE_ID_RE = re.compile(r"[0-9a-f]{32}")
 _SUMMARY_KEYS = frozenset(
-    {"generations", "tags", "canvases", "assets", "projects", "trash", "meaningful_records"}
+    {"generations", "tags", "canvases", "timelines", "assets", "projects", "trash", "meaningful_records"}
 )
 
 
@@ -181,6 +181,24 @@ def _normalise_set_manifest(raw: str) -> dict:
         raise BackupSetValidationError("invalid manifest json") from exc
     if not isinstance(value, dict):
         raise BackupSetValidationError("manifest must be object")
+    try:
+        backup_manifest.check_version(value)
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise BackupSetValidationError(str(exc)) from exc
+    if value.get('format_version') == backup_manifest.VERSION:
+        try:
+            backup_manifest.validate(value)
+            legacy = {key: item for key, item in value.items() if key in {
+                'format', 'format_version', 'backup_set_id', 'created_at', 'local_stamp',
+                'schema_version', 'app_version', 'device', 'parent_backup_set_id', 'summary', 'roles'}}
+            legacy['format_version'] = 1
+            legacy['roles'] = {role: {key: info[key] for key in ('size', 'sha256')}
+                               for role, info in value['roles'].items()}
+            if _normalise_set_manifest(json.dumps(legacy)) != legacy:
+                raise ValueError('invalid backup metadata')
+        except (ValueError, TypeError) as exc:
+            raise BackupSetValidationError(str(exc)) from exc
+        return value
     backup_set_id = str(value.get("backup_set_id") or "")
     if (
         value.get("format") != _SET_FORMAT
@@ -259,7 +277,18 @@ def _read_stored_manifest(folder: Path) -> dict | None:
         value = json.loads((folder / "manifest.json").read_text("utf-8"))
     except (OSError, ValueError, TypeError):
         return None
-    return value if isinstance(value, dict) else None
+    if not isinstance(value, dict):
+        return None
+    try:
+        backup_manifest.check_version(value)
+    except (ValueError, TypeError):
+        return None
+    if value.get('format_version') != 1:
+        try:
+            return _normalise_set_manifest(json.dumps(value))
+        except BackupSetValidationError:
+            return None
+    return value
 
 
 def _read_json_object(path: Path) -> dict:
@@ -300,6 +329,11 @@ def _ack_for_stored_set(folder: Path, manifest: dict, *, duplicate: bool, count:
     stored = _read_stored_manifest(folder)
     if stored != manifest:
         return None
+    if manifest.get('format_version') == backup_manifest.VERSION:
+        try:
+            backup_manifest.verify_files(manifest, {role: folder / f'{role}.db' for role in manifest['roles']})
+        except (OSError, ValueError, sqlite3.Error):
+            return None
     files: dict[str, dict[str, object]] = {}
     for role, expected in manifest["roles"].items():
         path = folder / f"{role}.db"
@@ -320,6 +354,9 @@ def _ack_for_stored_set(folder: Path, manifest: dict, *, duplicate: bool, count:
         "count": count,
         "conflict": bool(server_meta.get("conflict")),
         "is_current": _read_head(folder.parent) == manifest["backup_set_id"],
+        **({'format_version': backup_manifest.VERSION,
+            'manifest_sha256': backup_manifest.manifest_digest(manifest)}
+           if manifest.get('format_version') == backup_manifest.VERSION else {}),
     }
 
 
@@ -421,6 +458,11 @@ def _store_backup_set(
                     validate_hub_db(path, require_integrity=True)
                 else:
                     _validate_trash_db(path)
+            if manifest.get('format_version') == backup_manifest.VERSION:
+                try:
+                    backup_manifest.verify_files(manifest, {role: staged / f'{role}.db' for role in sources})
+                except (ValueError, sqlite3.Error) as exc:
+                    raise BackupSetValidationError('backup metadata verification failed') from exc
             atomic_write_text(
                 staged / "manifest.json",
                 json.dumps(manifest, sort_keys=True, separators=(",", ":")),
@@ -498,6 +540,9 @@ async def upload_backup_set(
     acc = _acct(request)
     try:
         parsed = _normalise_set_manifest(manifest)
+        if (parsed['format_version'] == backup_manifest.VERSION
+                and parsed['account_scope_digest'] != backup_manifest.account_digest(slug(acc['email']))):
+            raise BackupSetValidationError('backup account scope mismatch')
     except BackupSetValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     uploads: dict[str, UploadFile] = {"content": content}
@@ -586,6 +631,14 @@ def list_backups(request: Request):
                 "created_at": manifest.get("created_at"),
                 "app_version": manifest.get("app_version"),
                 "schema_version": manifest.get("schema_version"),
+                'format_version': manifest.get('format_version', 1),
+                'set_id': manifest.get('set_id'),
+                'account_scope_digest': manifest.get('account_scope_digest'),
+                'payload_version': manifest.get('payload_version'),
+                'captured_at': manifest.get('captured_at'),
+                'consistency_kind': manifest.get('consistency_kind', backup_manifest.UNKNOWN),
+                'consistency_roles': manifest.get('consistency_roles', []),
+                'role_metadata': manifest.get('roles', {}),
                 "device": manifest.get("device") or {},
                 "summary": manifest.get("summary") or {},
                 "parent_backup_set_id": manifest.get("parent_backup_set_id"),

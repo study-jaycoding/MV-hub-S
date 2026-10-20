@@ -2,6 +2,7 @@ import { ProjectAssignMenu } from "../ProjectAssignMenu";
 import { useT } from "../../lib/i18n";
 import type { GradeMode } from "../../lib/gradeStep";
 import type { Generation, Project } from "../../types";
+import { canFinishDraft } from "../../lib/seedanceDraft";
 
 type AssignHandlers = {
   projects: Project[];
@@ -21,6 +22,9 @@ export function BoardSelectionActionBar({
   resolveRetryProjectName,
   resolveTransferBusy,
   resolveTransferPendingCount,
+  onFinishDraft,
+  draftBusy = false,
+  draftDone = false,
 }: {
   selected: Generation[];
   onShare: (selected: Generation[]) => void;
@@ -33,6 +37,9 @@ export function BoardSelectionActionBar({
   resolveRetryProjectName?: string;
   resolveTransferBusy?: boolean;
   resolveTransferPendingCount?: number;
+  onFinishDraft?: (generation: Generation) => void;
+  draftBusy?: boolean;
+  draftDone?: boolean;
 } & AssignHandlers) {
   const t = useT();
   if (!selected.length) return null;
@@ -43,6 +50,13 @@ export function BoardSelectionActionBar({
         {selected.length}
         {t("개 선택")}
       </span>
+      {onFinishDraft && <button type="button" className="sb-draft"
+        disabled={draftBusy || draftDone || selected.length !== 1 || !canFinishDraft(selected[0])}
+        aria-busy={draftBusy}
+        title={draftDone ? t("이 Draft는 이미 1080p로 생성했습니다") : draftBusy ? t("Draft 요청을 처리 중입니다") : t("완료된 내 Draft 한 개를 선택하여 1080p로 생성")}
+        onClick={() => { if (selected.length === 1 && canFinishDraft(selected[0]) && !draftBusy && !draftDone) onFinishDraft(selected[0]); }}>
+        {t("Draft 생성")} <span>1080p</span>
+      </button>}
       <button onClick={() => onShare(selected)}>{t("↗ 팀 공유")}</button>
       <button
         onClick={() => onDownload(selected)}

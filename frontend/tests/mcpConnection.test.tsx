@@ -1,3 +1,5 @@
+import { createCanvasDocumentPort } from "../src/features/canvas/api";
+import { preparedFixture } from "./preparedSubmissionFixture";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -19,6 +21,7 @@ vi.mock("../src/api", () => ({ api: {
 
 import { api } from "../src/api";
 import { HttpError } from "../src/lib/http";
+import { setLang } from "../src/lib/i18n";
 import { McpConnection, mcpSetupConfig, mcpInstallCommand, type McpConnectionProps, type McpSetup } from "../src/components/mcp/McpConnection";
 
 type Command = { id: string; method: string; args: object };
@@ -82,8 +85,10 @@ beforeEach(async () => {
     workspace: { scope: "personal", id: null, name: null }, activeSceneId: "scene", flushScenePending: vi.fn(),
     patchSceneById: vi.fn((_id, patch) => { events.push("cards"); scene = { ...scene, ...patch }; return true; }),
     prepareCanvasGenerationBatch: vi.fn(async (_sceneId, _ids, links = []) => { events.push("links"); return links; }),
+    confirmCanvasGeneration: vi.fn(() => true),
     settleCanvasGeneration: vi.fn(), discardCanvasGeneration: vi.fn(),
   };
+  props.canvasDocument = createCanvasDocumentPort({ flushPending: props.flushScenePending, write: props.patchSceneById });
   vi.mocked(api.projects).mockResolvedValue({ projects: [{ id: "project", name: "Project", workspace_scope: "personal", workspace_id: null }], unassigned: 0 } as Awaited<ReturnType<typeof api.projects>>);
   vi.mocked(api.models).mockResolvedValue([{ job_set_type: "model", display_name: "Model", type: "image" }]);
   vi.mocked(api.projectFolder).mockResolvedValue({ project_id: "project", root_path: "", selected_path: "", render_path: "", truncated: false, tree: { path: "", name: "Render", count: 0, children: [{ path: "e001/c0010", name: "Cut", count: 0, children: [] }] }, error: null });
@@ -138,6 +143,59 @@ it("한 번 연결한 뒤 앱 승인 클릭 없이 카드·연결·제출·상�
   expect(await command("get_plan", plan)).toMatchObject({ result: { status: "submitted", execution: { running: false, error: null }, items: [{ state: "submitted", generation_status: "pending" }] } });
   expect((await command("execute_generation_plan", plan)).error).toContain("반복하지 말고");
   expect(api.prepareCreate).toHaveBeenCalledTimes(1);
+});
+
+it("카드 반영 오류는 서버 제출 성공으로 기록하고 MCP와 화면에 별도로 알린다", async () => {
+  vi.mocked(props.settleCanvasGeneration).mockImplementationOnce(() => {
+    throw Object.assign(new Error("local card write refused"), { status: 400 });
+  });
+  await pair();
+  const plan = await prepare(2);
+  await command("execute_generation_plan", plan);
+  await until(() => !!record && (record.items.every((item) => item.state !== "pending" && item.state !== "submitting") || record.items.some((item) => item.state === "uncertain")));
+  const result = await command("get_plan", plan);
+  expect(result).toMatchObject({ result: {
+    status: "submitted",
+    execution: { running: false, error: expect.stringContaining("생성 요청은 성공") },
+    items: [{ state: "submitted" }, { state: "submitted" }],
+  } });
+  expect(host.querySelector("[role=alert]")?.textContent).toContain("카드 연결에 실패");
+  expect(host.querySelector("[role=alert]")?.textContent).toContain("기존 요청을 확인");
+  expect(props.discardCanvasGeneration).not.toHaveBeenCalled();
+  expect(api.prepareCreate).toHaveBeenCalledTimes(2);
+  expect((await command("execute_generation_plan", plan)).error).toContain("반복하지 말고");
+  expect(api.prepareCreate).toHaveBeenCalledTimes(2);
+});
+
+it("앞 항목의 카드 연결 실패와 뒤 항목의 접수 불확실 안내를 MCP와 화면에 함께 남긴다", async () => {
+  vi.mocked(props.settleCanvasGeneration).mockImplementationOnce(() => {
+    throw new Error("local card write refused");
+  });
+  vi.mocked(api.prepareCreate)
+    .mockImplementationOnce(() => async () => ({ id: "first-generation", status: "pending" } as Generation))
+    .mockImplementationOnce(() => async () => { throw new TypeError("response lost"); });
+  await pair();
+  const plan = await prepare(2);
+  await command("execute_generation_plan", plan);
+  await until(() => record?.items[1].state === "uncertain");
+  const result = await command("get_plan", plan);
+  expect(result).toMatchObject({ result: {
+    execution: { running: false, error: expect.stringContaining("카드 연결에 실패") },
+    items: [{ state: "submitted" }, { state: "uncertain" }],
+  } });
+  const message = (result.result!.execution as { error: string }).error;
+  expect(message).toContain(record!.items[1].error);
+  expect(host.querySelector("[role=alert]")?.textContent).toContain("카드 연결에 실패");
+  expect(host.querySelector("[role=alert]")?.textContent).toContain("제출 결과를 확인할 수 없습니다");
+  try {
+    await act(async () => setLang("en"));
+    expect(host.querySelector("[role=alert]")?.textContent).toContain("linking it to the card failed");
+    expect(host.querySelector("[role=alert]")?.textContent).toContain("Couldn't confirm the submission");
+  } finally {
+    await act(async () => setLang("ko"));
+  }
+  expect(props.discardCanvasGeneration).not.toHaveBeenCalled();
+  expect(api.prepareCreate).toHaveBeenCalledTimes(2);
 });
 
 it("제출이 60초 걸려도 폴링과 상태 조회를 유지하고 중복 요청은 거절한다", async () => {
@@ -363,3 +421,9 @@ it("영어 화면: 기본·처음 연결 설정·연결·계획까지 창의 글
     act(() => setLang("ko"));
   }
 });
+
+vi.mock("../src/features/generation/api", async (original) => ({
+  ...await original<typeof import("../src/features/generation/api")>(),
+  prepareCreateSubmission: (...args: Parameters<typeof import("../src/features/generation/api").prepareCreateSubmission>) => preparedFixture(api.prepareCreate(args[0], args[1], args[2]), args[1], args[2], args[3]),
+  prepareRegenerateSubmission: (...args: Parameters<typeof import("../src/features/generation/api").prepareRegenerateSubmission>) => preparedFixture(api.prepareRegenerate(args[0], args[1], args[2], args[3]), args[2], args[3], args[4]),
+}));

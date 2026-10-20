@@ -6,7 +6,7 @@
 //  · generationViews.ts 와 파일을 나눈 이유: 그쪽은 순수 store 라 vitest 가 http 만 목으로 갈아끼운다.
 //    BroadcastChannel·DOM 이벤트 구독을 거기 넣으면 테스트 환경이 오염된다.
 import { useEffect, useRef } from "react";
-import { APP_EVENTS } from "./appEvents";
+import { APP_EVENTS, isCurrentGenerationEvent, isLibraryPollTick } from "./appEvents";
 import { onLibraryChanged } from "./libraryBroadcast";
 import { useCustomEvent } from "./useCustomEvent";
 import { refreshGenerationViews, useGenerationViews, type SceneViews } from "./generationViews";
@@ -26,7 +26,9 @@ export function useGenerationViewsSynced(sceneId = ""): SceneViews {
     }, 300);
   };
   useEffect(() => onLibraryChanged(bump), []); // 창 간
-  useCustomEvent(APP_EVENTS.libraryChanged, bump); // 같은 창(내 담기·삭제·복원 즉시)
+  useCustomEvent(APP_EVENTS.libraryChanged, event => {
+    if (isCurrentGenerationEvent(event) && !isLibraryPollTick(event)) bump();
+  });
   useEffect(
     () => () => {
       if (timer.current) clearTimeout(timer.current);

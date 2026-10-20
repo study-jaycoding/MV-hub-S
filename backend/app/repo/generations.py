@@ -14,8 +14,9 @@ from typing import Any, Callable, Literal, Optional, Sequence
 from ..db import get_connection
 from ..generation_result import ACTIVE_STATUSES, stored_error
 from ..workspace_context import workspace_columns
+from ..services.seedance_draft import DraftFinishConflict, finish_params, fresh_params
 from . import identity, tags
-from .generation_references import _link_reference, _upsert_reference
+from .generation_references import _link_reference, _reference_copy_positions, _upsert_reference
 from .generation_delete import delete_generation_rows as _delete_generation
 from .generation_sync import NO_REVIVE_ERROR
 from .lineage import _record_history  # generations 가 쓰는 lineage private helper (단방향: generations → lineage)
@@ -74,7 +75,7 @@ def create_local_generation(
             tags._set_tags(conn, gen_id, data.get("tags") or [])
             tags._set_auto_tags(conn, gen_id, data.get("auto_tags") or [])
             src_gen_ids: set[str] = set()
-            for ref in data.get("references") or []:
+            for position, ref in enumerate(data.get("references") or []):
                 rid = _upsert_reference(
                     conn,
                     ref_id=None,
@@ -87,7 +88,7 @@ def create_local_generation(
                     #  제출한 파일의 지문 하나다(begin-submission 의 ref_digests). 여기서 먼저 채우면 COALESCE 때문에
                     #  그 실제 지문이 기록되지 못한다(2026-09-30 Claude 검토, 에셋 대장 5단계).
                 )
-                _link_reference(conn, gen_id, rid, ref.get("role"))
+                _link_reference(conn, gen_id, rid, ref.get("role"), position)
                 sgid = ref.get("source_gen_id")
                 if sgid and sgid != gen_id:
                     src_gen_ids.add(sgid)
@@ -115,6 +116,8 @@ def create_comfy_generation(
     project_id: Optional[str] = None,
     folder_path: Optional[str] = None,
     workspace: Optional[dict[str, Any]] = None,
+    output_sha: Optional[str] = None,
+    output_bytes: Optional[int] = None,
 ) -> tuple[str, bool]:
     """캔버스 Comfy 노드 출력 1개를 라이브러리 generation(+asset)으로 물질화. (gen_id, existed) 반환.
 
@@ -167,13 +170,17 @@ def create_comfy_generation(
                     workspace_name,
                 ),
             )
+            output_content_id = None
+            if output_sha and output_bytes:
+                from .asset_sync import register_verified_blob
+                output_content_id = register_verified_blob(conn, output_sha, output_bytes, kind)
             conn.execute(
-                "INSERT INTO asset(id, generation_id, type, file_path, thumbnail_path) "
-                "VALUES(?,?,?,?,?)",
-                (new_id(), gen_id, kind, file_path, thumbnail_path or file_path),
+                "INSERT INTO asset(id, generation_id, type, file_path, thumbnail_path, asset_content_id) "
+                "VALUES(?,?,?,?,?,?)",
+                (new_id(), gen_id, kind, file_path, thumbnail_path or file_path, output_content_id),
             )
             src_gen_ids: set[str] = set()
-            for ref in references or []:
+            for position, ref in enumerate(references or []):
                 rid = _upsert_reference(
                     conn,
                     ref_id=None,
@@ -182,9 +189,11 @@ def create_comfy_generation(
                     thumbnail_path=ref.get("thumbnail"),
                     source=ref.get("name") or "uploaded",
                     source_url=ref.get("source_url"),
-                    # 판·대장 번호는 받지 않는다 — create_local_generation 과 같은 이유(실제 제출 지문만이 판).
+                    # Comfy 실행 저널이 확인한 실제 업로드 스냅샷만 전달한다.
+                    content_sha=ref.get("_submitted_sha"),
+                    content_bytes=ref.get("_submitted_bytes"),
                 )
-                _link_reference(conn, gen_id, rid, ref.get("role"))
+                _link_reference(conn, gen_id, rid, ref.get("role"), position)
                 sgid = ref.get("source_gen_id")
                 if sgid and sgid != gen_id:
                     src_gen_ids.add(sgid)
@@ -309,6 +318,7 @@ def apply_reconcile(
     error: Optional[str],
     force_fail_reason: Optional[str] = None,
     provider_status: Optional[str] = None,
+    params: Optional[dict] = None,
 ) -> bool:
     """재조정 권위 보정 — 에이전트가 `generate list/get` 으로 확보한 실제 상태를 로컬 카드에 적용한다.
     ★fulfill 의 CAS 와 달리 failed→done '되살리기'를 허용한다(가짜 실패 복구). 대신 조건이 강하다:
@@ -390,6 +400,7 @@ def apply_reconcile(
             "UPDATE generation SET status=?, error=? WHERE id=?",
             (status, stored_error(status, error), gen_id),
         )
+        _merge_result_params(conn, gen_id, params)
         request_status = "done" if status == "done" else "failed"
         conn.execute(
             "UPDATE gen_request SET status=?, provider_status=?, error=?, "
@@ -493,6 +504,21 @@ def apply_generation_media_cache_updates(
             _media_cache_batch_conn.reset(token)
 
 
+def _merge_result_params(conn: sqlite3.Connection, gen_id: str, params: Optional[dict]) -> None:
+    if not params:
+        return
+    row = conn.execute("SELECT params FROM generation WHERE id=?", (gen_id,)).fetchone()
+    if row:
+        try:
+            stored = json.loads(row["params"] or "{}")
+        except (ValueError, TypeError):
+            stored = {}
+        if not isinstance(stored, dict):
+            stored = {}
+        conn.execute("UPDATE generation SET params=? WHERE id=?",
+                     (json.dumps({**stored, **params}, ensure_ascii=False), gen_id))
+
+
 def apply_local_fulfillment(
     gen_id: str,
     rid: str,
@@ -506,6 +532,7 @@ def apply_local_fulfillment(
     status: str,
     error: Optional[str],
     request_status: str,
+    params: Optional[dict] = None,
 ) -> bool:
     """gen-request fulfill 의 다단계 쓰기(에셋 추가·job_id 병합·타임스탬프·상태·요청표시)를 한
     트랜잭션으로 묶는다 — 예전엔 5개 분리 커밋이라 중간에 주기 동기화가 끼면 부분 상태(예: job_id 만
@@ -549,6 +576,7 @@ def apply_local_fulfillment(
             "UPDATE generation SET status=?, error=? WHERE id=?",
             (status, stored_error(status, error), gen_id),
         )
+        _merge_result_params(conn, gen_id, params)
     return True
 
 
@@ -935,10 +963,43 @@ def migrate_legacy_soft_deleted() -> int:
     return sum(1 for gid in ids if trash.move_to_trash(gid))
 
 
+def _reserve_draft_finish(conn, creator_uid, remote_job_id, child_id):
+    """같은 원격 Draft의 과금 의도는 키·캔버스와 무관하게 한 번만 진행한다."""
+    requests = conn.execute(
+        "SELECT gen_id, status, terminal_at FROM gen_request WHERE creator_uid=? "
+        "AND gen_id<>? AND json_valid(payload) AND ("
+        "json_extract(payload,'$.params.draft_job_id')=? OR "
+        "json_extract(payload,'$._draft_finish_job_id')=?)",
+        (creator_uid, child_id, remote_job_id, remote_job_id),
+    ).fetchall()
+    confirmed_failed = set()
+    for row in requests:
+        if row["status"] != "failed" or not row["terminal_at"]:
+            raise DraftFinishConflict(row["gen_id"])
+        confirmed_failed.add(row["gen_id"])
+    children = conn.execute(
+        "SELECT id, status FROM generation WHERE creator_uid=? AND id<>? "
+        "AND model='seedance_2_5' AND json_valid(params) "
+        "AND json_extract(params,'$.draft_job_id')=?",
+        (creator_uid, child_id, remote_job_id),
+    ).fetchall()
+    for row in children:
+        if row["status"] not in ("failed", "nsfw") or row["id"] not in confirmed_failed:
+            raise DraftFinishConflict(row["id"])
+    # Bare preparing 예약끼리는 경쟁하지 않는다. clone에 성공한 의도만 잠근다.
+    # 이 표식은 자식이 삭제돼도 남고, activation 후에는 params.draft_job_id로 이어진다.
+    conn.execute(
+        "UPDATE gen_request SET payload=json_set(payload,'$._draft_finish_job_id',?) "
+        "WHERE gen_id=? AND creator_uid=? AND status='preparing' AND json_valid(payload)",
+        (remote_job_id, child_id, creator_uid),
+    )
+
+
 def import_generation(
     source_gen_id: str, worker_id: str, creator_uid: Optional[str] = None,
     workspace: Optional[dict[str, Any]] = None,
     generation_id: Optional[str] = None,
+    finish_draft: bool = False,
 ) -> str:
     """공유 항목을 내 워크스페이스로 복제(프롬프트·레퍼런스 보존) + history 기록.
 
@@ -955,14 +1016,35 @@ def import_generation(
         conn.execute("BEGIN IMMEDIATE")
         try:
             src = conn.execute(
-                "SELECT prompt, display_prompt, model, params, color, project_id, folder_path "
+                "SELECT prompt, display_prompt, model, params, color, project_id, folder_path, "
+                "job_id, status, deleted_at, creator_uid, workspace_scope, workspace_id "
                 "FROM generation WHERE id=?",
                 (source_gen_id,),
             ).fetchone()
             if not src:
                 raise ValueError(f"원본 generation 없음: {source_gen_id}")
+            if finish_draft and (
+                not my_uid or src["creator_uid"] != my_uid
+                or src["workspace_scope"] != workspace_scope
+                or src["workspace_id"] != workspace_id
+            ):
+                raise ValueError("원본 Draft의 계정 또는 워크스페이스가 달라졌습니다")
 
+            try:
+                source_params = json.loads(src["params"] or "{}")
+            except (ValueError, TypeError):
+                source_params = {}
+            if not isinstance(source_params, dict):
+                source_params = {}
+            if src["model"] == "seedance_2_5" and source_params.get("draft") is True:
+                source_params["resolution"] = "480p"
+            params = (
+                finish_params({**dict(src), "params": source_params})
+                if finish_draft else fresh_params(src["model"], source_params)
+            )
             child_id = generation_id or new_id()
+            if finish_draft:
+                _reserve_draft_finish(conn, my_uid, params["draft_job_id"], child_id)
             conn.execute(
                 "INSERT INTO generation"
                 "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, "
@@ -974,7 +1056,7 @@ def import_generation(
                     src["prompt"],
                     src["display_prompt"],  # @소스명 위치 보존 → 인라인 칩 정상 표시
                     src["model"],
-                    src["params"],
+                    json.dumps(params, ensure_ascii=False),
                     src["color"],
                     time.time(),  # 재생성/임포트 직후 맨 위에 보이게(완료 시 힉스필드 시각으로 갱신)
                     src["project_id"],  # 재생성본은 부모와 같은 프로젝트에 귀속(일관성)
@@ -985,13 +1067,23 @@ def import_generation(
                     workspace_name,
                 ),
             )
-            # 레퍼런스 연결 복제(원본 reference 레코드는 공유)
+            # 미확인 과거 입력은 자식의 새 제출 증거로 덮이지 않게 분리한다.
             refs = conn.execute(
-                "SELECT reference_id, role FROM gen_reference WHERE generation_id=?",
+                "SELECT r.*, gr.role, gr.position, gr.rowid AS source_rowid FROM gen_reference gr "
+                "JOIN reference r ON r.id=gr.reference_id WHERE gr.generation_id=? "
+                "ORDER BY COALESCE(gr.position,gr.rowid),gr.rowid",
                 (source_gen_id,),
             ).fetchall()
-            for r in refs:
-                _link_reference(conn, child_id, r["reference_id"], r["role"])
+            for r, position in zip(refs, _reference_copy_positions(refs)):
+                rid = r["id"]
+                if not r["asset_content_id"]:
+                    rid = _upsert_reference(conn, ref_id=None, type_=r["type"], file_path=r["file_path"],
+                        source=r["source"], thumbnail_path=r["thumbnail_path"], source_url=r["source_url"],
+                        content_sha=r["content_sha"], content_bytes=r["content_bytes"],
+                        registry_asset_id=r["registry_asset_id"], version_verified=r["version_verified"])
+                    if r["share_url"]:
+                        conn.execute("UPDATE reference SET share_url=? WHERE id=?", (r["share_url"], rid))
+                _link_reference(conn, child_id, rid, r["role"], position)
             # 태그 복제
             tag_rows = conn.execute(
                 "SELECT t.name FROM gen_tag gt JOIN tag t ON t.id=gt.tag_id "

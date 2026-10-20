@@ -4,10 +4,13 @@
 //    @이름 토큰도 같은 순서이므로 references 를 큐로 소비하며 위치를 매칭한다.
 import { assetFileUrl } from "./assetUrls";
 import type { Reference } from "../types";
+import { assetIdentity, managedAssetUrl, type AssetReferenceIdentity } from "../shared/contracts/assets";
 
 // 에셋 소스 레퍼런스(asset:proj|path 토큰)를 서빙 가능한 URL 로 변환(옛 생성 썸네일 구제).
 export function refSrc(s: string | null | undefined): string | undefined {
   if (!s) return undefined;
+  const managed = managedAssetUrl(s);
+  if (managed) return managed;
   if (s.startsWith("asset:")) {
     const [proj, path] = s.slice(6).split("|");
     if (proj && path) {
@@ -18,7 +21,7 @@ export function refSrc(s: string | null | undefined): string | undefined {
 }
 
 // SpotlightPrompt 의 ChipRef 와 동일 구조(구조적 호환).
-export interface PartChipRef {
+export interface PartChipRef extends AssetReferenceIdentity {
   file_path: string;
   type: "image" | "video" | "audio";
   role: string;
@@ -29,7 +32,8 @@ export type PromptPart = { t: "text"; v: string } | { t: "chip"; ref: PartChipRe
 
 function chipFromRef(ref: Reference, name: string): PartChipRef {
   return {
-    file_path: ref.source_url || ref.file_path, // 캐시 경로 대신 원본/토큰(CLI 재resolve)
+    ...assetIdentity(ref),
+    file_path: ref.asset_content_id ? ref.file_path : ref.source_url || ref.file_path,
     type: ref.type,
     role: ref.role || "@Image1",
     name,

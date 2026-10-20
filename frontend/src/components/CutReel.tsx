@@ -77,7 +77,7 @@ export function CutReel({ folders, mode, onModeChange, previewOpen, onClose, onP
       <div ref={reelRef} className="reel" role="dialog" aria-label={t("모아보기")} onMouseDown={(e) => e.stopPropagation()}>
         <div className="reel-hd">
           <span className="reel-title">{t("모아보기")}</span>
-          <span className="reel-sub">{folders.length}{t("컷")} · {t("대표")} {reps} · {t("최신")} {folders.length - reps}</span>
+          <span className="reel-sub">{folders.length}{t("컷")} · {t("썸네일")} {reps} · {t("최신")} {folders.length - reps}</span>
           <span className="reel-sp" />
           <span className="reel-seg" role="group" aria-label={t("보기 방식")}>
             <button type="button" className={mode === "grid" ? "on" : ""} aria-pressed={mode === "grid"} onClick={() => onModeChange("grid")}>▦ {t("개별")}</button>
@@ -115,7 +115,7 @@ function ReelCard({ folder, order, onPreview, onEnter }: { folder: FolderCard; o
         <MediaThumbnail thumb={thumbOf(g, 512)} isVideo={isVideo} src={asset?.file_path} alt="" fallback={null} />
         {isVideo && <span className="play-badge">▶</span>}
         <span className="reel-order">{order}</span>
-        <span className={"reel-rep" + (folder.rep ? " rep" : "")}>{folder.rep ? `★ ${t("대표")}` : t("최신 것")}</span>
+        <span className={"reel-rep" + (folder.rep ? " rep" : "")}>{folder.rep ? t("썸네일") : t("최신 것")}</span>
       </button>
       <div className="reel-ttl">
         <b>{folder.name}</b>
@@ -545,7 +545,7 @@ export function ReelPlayer({ clips, keys = true }: { clips: ReelClip[]; keys?: b
         {cur && (
           <>
             <span className="reel-chip l">{idx + 1} / {n} · {cur.name} · {cur.worker}</span>
-            <span className={"reel-chip r" + (cur.rep ? " rep" : "")}>{cur.rep ? `★ ${t("대표")}` : t("최신 것")}</span>
+            <span className={"reel-chip r" + (cur.rep ? " rep" : "")}>{cur.rep ? t("썸네일") : t("최신 것")}</span>
           </>
         )}
       </div>

@@ -28,6 +28,7 @@ class NormalizedJobResult:
     asset_thumb: Optional[str]
     created_at: Any
     sort_ts: Any
+    params: dict | None = None
 
 
 def normalize_job_result(parsed: Mapping[str, Any]) -> NormalizedJobResult:
@@ -55,4 +56,5 @@ def normalize_job_result(parsed: Mapping[str, Any]) -> NormalizedJobResult:
         asset_thumb=asset_thumb,
         created_at=generation.get("created_at"),
         sort_ts=generation.get("sort_ts"),
+        params=generation.get("params") if isinstance(generation.get("params"), dict) else None,
     )

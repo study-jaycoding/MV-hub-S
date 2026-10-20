@@ -44,6 +44,7 @@ interface Props {
   armedFolder?: { projectId: string; path: string } | null; // 무장 폴더 = 폴더 트리 빨간 하이라이트
   generationScope?: { project_id?: string }; // 생성 요청이 쓰는 프로젝트 — '보는 중'·'생성' 표(ProjectSection)
   viewedFolder?: { projectId: string; projectName?: string; path: string; nonce: number } | null;
+  onOpenFolderTab?: (projectId: string, path: string, projectName?: string) => void;
   onArmFolder?: (projectId: string, path: string) => void; // 폴더 선택 시 무장(생성 시 folder_path)
   onDropToFolder?: (projectId: string, path: string, genId: string) => void; // 카드 드래그 → 폴더 담기
   onDropToUnassigned?: (genId: string) => void; // 카드 드래그 → 미분류(귀속 해제)
@@ -77,6 +78,7 @@ export function FilterSidebar({
   generationScope,
   viewedFolder,
   onArmFolder,
+  onOpenFolderTab,
   onDropToFolder,
   onDropToUnassigned,
   onFolderAction,
@@ -126,6 +128,7 @@ export function FilterSidebar({
             onChange({ deleted_only: true, project_id: undefined, include_deleted: undefined })
           }
           onArmFolder={onArmFolder}
+          onOpenFolderTab={onOpenFolderTab}
           onDropToFolder={onDropToFolder}
           onDropToUnassigned={onDropToUnassigned}
           onFolderAction={onFolderAction}

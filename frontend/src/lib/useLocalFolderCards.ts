@@ -7,7 +7,7 @@
 //   ③ 자리(계정·서버·프로젝트·폴더·공간)가 바뀌면 버린다 — 남의 자리의 카드를 그리지 않는다.
 //  다시 받는 때: 조회가 바뀌었을 때, 그리고 같은 조회에서 **내용이 바뀌었다는 신호**가 왔을 때 — 본 목록 첫 쪽의 내용 서명(listSig)이 달라졌거나
 //  서버 카드(base — 내용이 같으면 같은 객체다)가 새로 왔을 때. 그 조회에서 처음 본 값은 기준일 뿐이다(그 조회는 이미 받고 있다).
-//  15초 주기 조회마다 끝까지 다시 받지 않는다(목록 한 쪽이 MB 단위다). 첫 쪽 밖의 것만 바뀌고 서버 카드도 그대로면 모른다(다음 변화까지 낡는다).
+//  태그 조건에 영향을 주는 저장 완료는 첫 쪽 밖의 변경도 다시 받는다. 내용이 같은 15초 주기 조회마다 전량 받지는 않는다.
 //  **한 번에 하나만 받는다** — 조건을 연달아 바꾸면 받던 것이 끝난 뒤 마지막 조회만 받는다(큰 요청이 쌓이지 않게, Codex 코드 리뷰).
 //  공간 필터는 목록 훅처럼 받은 뒤 한 번 더 거른다. 폴더 경로는 묶는 쪽(lib/folderCardsLocal)이 글자 그대로 다시 본다.
 import { useEffect, useRef, useState } from "react";
@@ -15,6 +15,8 @@ import type { GenQuery, Generation } from "../types";
 import { fetchAllGenerations } from "./fetchAllGenerations";
 import type { FolderCardsScope } from "./folderCards";
 import { matchesWorkspaceFilter } from "./libraryWorkspaceScope";
+import { APP_EVENTS } from "./appEvents";
+import { generationChangeReceiver, generationChangeScope, readGenerationChange } from "../features/library/api";
 
 interface Options {
   place: FolderCardsScope | null; // 묶을 자리 — null 이면 받지 않는다(쥐고 있던 것도 내놓지 않는다)
@@ -32,6 +34,7 @@ interface Result {
   queryKey: string;
   gens: Generation[];
   truncated: boolean;
+  tagRevision: number;
 }
 
 export function useLocalFolderCards({ place, query, authKey, listSig, base, ready = true }: Options) {
@@ -41,6 +44,24 @@ export function useLocalFolderCards({ place, query, authKey, listSig, base, read
   const [failedKey, setFailedKey] = useState<string | null>(null);
   const queryRef = useRef(query);
   queryRef.current = query;
+  const [tagRevision, setTagRevision] = useState(0);
+  const [receiveTags] = useState(generationChangeReceiver);
+  useEffect(() => {
+    if (queryKey === null) return;
+    const settled = (event: Event) => {
+      const change = readGenerationChange((event as CustomEvent<{ change?: unknown }>).detail?.change);
+      if (!change || change.scope.connectionKey !== authKey || receiveTags(change, generationChangeScope()) !== "fields") return;
+      const asked = queryRef.current;
+      const affectsQuery = change.changedFields?.some(field =>
+        field === "tags" ? !!(asked.tag || asked.tags?.length || asked.search?.trim())
+          : field === "auto_tags" && !!asked.auto_tags?.length);
+      if (!affectsQuery) return;
+      setFailedKey(null);
+      setTagRevision((revision) => revision + 1);
+    };
+    window.addEventListener(APP_EVENTS.generationTagsSettled, settled);
+    return () => window.removeEventListener(APP_EVENTS.generationTagsSettled, settled);
+  }, [queryKey, authKey, receiveTags]);
 
   // 같은 조회에서 내용이 바뀌었다는 신호 — 그 조회에서 처음 본 값(null 이 아닌 첫 값)은 기준이다.
   const seenRef = useRef<{ key: string; sig: string | null; base: object | null } | null>(null);
@@ -70,7 +91,7 @@ export function useLocalFolderCards({ place, query, authKey, listSig, base, read
   }, [queryKey]);
   useEffect(() => {
     if (placeKey === null || queryKey === null || !ready) return;
-    const runKey = `${changed}#${queryKey}`;
+    const runKey = `${changed}:${tagRevision}#${queryKey}`;
     if (doneRef.current === runKey) return;
     let alive = true;
     const run = laneRef.current.then(() => {
@@ -84,7 +105,7 @@ export function useLocalFolderCards({ place, query, authKey, listSig, base, read
       if (!alive || !done) return;
       doneRef.current = runKey;
       setResult({
-        placeKey, queryKey, gens: done.got.gens.filter((g) => matchesWorkspaceFilter(g, done.asked)), truncated: done.got.truncated,
+        placeKey, queryKey, tagRevision, gens: done.got.gens.filter((g) => matchesWorkspaceFilter(g, done.asked)), truncated: done.got.truncated,
       });
       setFailedKey(null);
     }).catch(() => {
@@ -93,10 +114,10 @@ export function useLocalFolderCards({ place, query, authKey, listSig, base, read
     return () => {
       alive = false;
     };
-  }, [placeKey, queryKey, changed, ready]);
+  }, [placeKey, queryKey, changed, tagRevision, ready]);
 
   const held = result !== null && result.placeKey === placeKey ? result : null;
-  const fresh = held !== null && held.queryKey === queryKey;
+  const fresh = held !== null && held.queryKey === queryKey && held.tagRevision === tagRevision;
   const failed = queryKey !== null && failedKey === queryKey;
   return {
     gens: held?.gens ?? null, // 끝까지 받은 목록(같은 자리의 앞 조회 것일 수 있다 — fresh 로 가린다)

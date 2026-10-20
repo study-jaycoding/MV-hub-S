@@ -4,7 +4,7 @@
 //  · 좌측 폴더 트리는 유지. 셀 휠클릭=정보, 클릭=미리보기.
 import { isKeyHandled } from "../lib/keyHandled";
 import { activationKeyOwned, backgroundKeysBlocked, isTypingTarget } from "../lib/keyGate";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { Virtualizer, type VirtualizerHandle } from "virtua";
 import { api } from "../api";
 import { DRAG_TYPES } from "../lib/dragTypes";
@@ -13,6 +13,8 @@ import { buildAssetRows, type AssetVirtualRow } from "../lib/assetVirtualRows";
 import { useT } from "../lib/i18n";
 import { computeMarquee, marqueeHits } from "../lib/marquee";
 import { makeStore, saveString } from "../lib/storage";
+import { usePlaceView } from "../lib/usePlaceView";
+import { PLACE_VIEWS_KEY, parsePlaceViews } from "../lib/placeViews";
 import { loadManageWorkspaceScope } from "../lib/manageWorkspaceScope";
 import { STORAGE_KEYS } from "../lib/storageKeys";
 import { flashMsg } from "../lib/flash";
@@ -24,8 +26,12 @@ import { FolderIcon } from "./FolderIcon";
 import { loadDisabledAssets, toggleDisabledAssets } from "../lib/deactivated";
 import { AssetsCrumbBar } from "./assets/AssetsCrumbBar";
 import { AssetsSidebar } from "./assets/AssetsSidebar";
+import { AssetFolderGrid } from "./assets/AssetFolderGrid";
+import { AssetFolderTabs } from "./assets/AssetFolderTabs";
+import { assetFolderGroups } from "./assets/assetFolderGroups";
+import { useAssetFolderTabs, type AssetFolderLayout } from "./assets/useAssetFolderTabs";
 import { MountManager } from "./assets/MountManager";
-import { setSingleFileDrag, setZipDrag } from "./assets/exportDrag";
+import { nativeDragBrowserSupported, setSingleFileDrag, startNativeAssetDrag } from "./assets/exportDrag";
 import {
   EMPTY_ASSET_META,
   INTERNAL_COMBINED_PROJECT,
@@ -42,6 +48,7 @@ import { CommentPanel } from "./common/CommentPanel";
 import { useAssetBroadcastSync } from "./assets/useAssetBroadcastSync";
 import { useAssetCommentActions } from "./assets/useAssetCommentActions";
 import { useAssetDropImport } from "./assets/useAssetDropImport";
+import { LocalImportCards } from "./assets/LocalImportCards";
 import { useAssetFilterActions } from "./assets/useAssetFilterActions";
 import { ASSET_META_NOT_READY, useAssetMetaActions } from "./assets/useAssetMetaActions";
 import { useAssetProjectData } from "./assets/useAssetProjectData";
@@ -50,7 +57,7 @@ import { useAssetViewData } from "./assets/useAssetViewData";
 import { useAssetViewPersistence } from "./assets/useAssetViewPersistence";
 import { useAssetViewerIdentity } from "./assets/useAssetViewerIdentity";
 import { ResolveProjectBrowser } from "./assets/ResolveProjectBrowser";
-import { isAssetFolderHidden, visibleAssetTree } from "./assets/treeUtils";
+import { assetFolderLabel, isAssetFolderHidden, visibleAssetTree } from "./assets/treeUtils";
 import { useOutsideDragSelect } from "../lib/useOutsideDragSelect";
 
 interface Props {
@@ -78,6 +85,10 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   }, []);
   // 마지막으로 보던 상태를 기억(localStorage) → 다음에 열 때 그대로 복원
   const [dir, setDir] = useState<string>(() => LS.get("dir", ""));
+  const gridRef = useRef<HTMLDivElement>(null);
+  const pendingTabScroll = useRef<number | null>(null);
+  const [folderModePath, setFolderModePath] = useState<string | undefined>(() => LS.get("folderModePath", "") || undefined);
+  useEffect(() => LS.set("folderModePath", folderModePath ?? ""), [folderModePath]);
   // 타입별 필터(이미지/영상/오디오) — 클릭하면 프로젝트 전체에서 그 타입만
   const [typeFilter, setTypeFilter] = useState<AssetTypeFilter>(
     () => {
@@ -125,19 +136,41 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       return n;
     });
   }, []);
-  // 생성탭과 동일 범위(0.7~1.7)로 clamp — 예전에 저장된 0.6 이하 값이면 카드가 생성탭보다 작게 떠서 겹침.
-  const [scale, setScale] = useState(() =>
-    Math.min(1.7, Math.max(0.7, Number(LS.get("scale", "1")) || 1)),
-  );
-  const [layout, setLayout] = useState<"grid" | "list">(() =>
-    LS.get("layout", "grid") === "list" ? "list" : "grid",
-  );
-  // 그리드에서 파일 날짜별로 구분(섹션 헤더) — 그리드 버튼을 한 번 더 누르면 토글
-  const [groupByDate, setGroupByDate] = useState(() => LS.get("groupByDate", "0") === "1");
-  // 그리드 썸네일 맞춤: cover=꽉 채움(크롭) / contain=전체 보임(블랙바)
-  const [fit, setFit] = useState<"cover" | "contain">(() =>
-    LS.get("fit", "cover") === "contain" ? "contain" : "cover",
-  );
+  const place = JSON.stringify([myId, workspaceId ?? "", project,
+    dir.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+|\/+$/g, "")]);
+  const fileView = usePlaceView(LS, place, {
+    layout: LS.get("layout", "grid") === "list" ? "list" : "grid",
+    group: LS.get("groupByDate", "0") === "1",
+    scale: Number(LS.get("scale", "1")) || 1,
+    fill: LS.get("fit", "cover") !== "contain",
+    ...(LS.get("folderMode", "1") === "0" ? { folders: false } : {}),
+  });
+  const folderView = usePlaceView(FOLDER_LS, place, {
+    layout: ["list", "table"].includes(LS.get("folderLayout", "grid")) ? "list" : "grid",
+    group: LS.get("folderLayout", "grid") === "table",
+    scale: Number(LS.get("folderScale", "1")) || 1,
+    fill: LS.get("folderFit", "cover") !== "contain",
+  });
+  const { layout, setLayout, groupByDate, setGroupByDate, scale, setScale, folders: folderMode, setFolders: setFolderMode } = fileView;
+  const { scale: folderScale, setScale: setFolderScale } = folderView;
+  const fit = fileView.fill ? "cover" : "contain";
+  const folderFit = folderView.fill ? "cover" : "contain";
+  const setFit = (action: SetStateAction<"cover" | "contain">) => fileView.setFill((fill) =>
+    (typeof action === "function" ? action(fill ? "cover" : "contain") : action) === "cover");
+  const setFolderFit = (action: SetStateAction<"cover" | "contain">) => folderView.setFill((fill) =>
+    (typeof action === "function" ? action(fill ? "cover" : "contain") : action) === "cover");
+  const folderLayout: AssetFolderLayout = folderView.layout === "grid" ? "grid" : folderView.groupByDate ? "table" : "list";
+  const setFolderLayout = (action: SetStateAction<AssetFolderLayout>) => {
+    const next = typeof action === "function" ? action(folderLayout) : action;
+    folderView.setLayout(next === "grid" ? "grid" : "list");
+    folderView.setGroupByDate(next === "table");
+  };
+  const [lastViewed, setLastViewed] = useState(() => LS.get("lastViewed", ""));
+  useEffect(() => LS.set("folderMode", folderMode ? "1" : "0"), [folderMode]);
+  useEffect(() => LS.set("folderScale", String(folderScale)), [folderScale]);
+  useEffect(() => LS.set("folderLayout", folderLayout), [folderLayout]);
+  useEffect(() => LS.set("folderFit", folderFit), [folderFit]);
+  useEffect(() => LS.set("lastViewed", lastViewed), [lastViewed]);
   // 정렬 기준·방향(정렬 버튼) — 기본은 날짜 내림차순(최신 먼저), 마지막 선택 복원.
   const [sortField, setSortField] = useState<AssetSortField>(() => {
     const v = LS.get("sortField", "date");
@@ -180,7 +213,6 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     return old ? new Set<string>([old]) : current;
   });
   // 그리드/리스트 스크롤 위치(보던 위치) — 폴더·레이아웃·검색별로 복원. 스크롤 컨테이너는 gridRef 재사용.
-  const scrollKey = `${project}|${dir}|${layout}|${query}|${typeFilter ?? ""}|${sortField}|${sortDir}`;
   const [tagPanelOpen, setTagPanelOpen] = useState(false);
   // 태그창 위치·크기를 마지막 상태로 기억(localStorage)
   const {
@@ -203,6 +235,24 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   // 등록 폴더(마운트) 관리 창
   const [mountOpen, setMountOpen] = useState(false);
   const isResolveLibraryRoot = dir.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase() === "@davinci";
+
+  const folderTabs = useAssetFolderTabs({
+    scope: `${myId}\u0000${workspaceId ?? ""}\u0000${project}`,
+    read: () => ({ dir, query, typeFilter, activeColors, activeTags, sourceOnly, commentOnly, grayOn,
+      sortField, sortDir, scale, fit, layout, folderScale, folderFit, folderLayout, groupByDate, folderMode, folderModePath, scrollTop: gridRef.current?.scrollTop ?? 0 }),
+    canLeave: () => canLeaveCommentRef.current(),
+    apply: (view) => {
+      pendingTabScroll.current = view.scrollTop;
+      setDir(view.dir); setQuery(view.query); setTypeFilter(view.typeFilter);
+      setActiveColors(view.activeColors); setActiveTags(view.activeTags);
+      setSourceOnly(view.sourceOnly); setCommentOnly(view.commentOnly); setGrayOn(view.grayOn);
+      setSortField(view.sortField); setSortDir(view.sortDir);
+      setFolderModePath(view.folderModePath);
+      setCommentPath(null); setTagEditPath(null); setTagPanelOpen(false);
+      setSelected(new Set()); setFocusIdx(-1);
+    },
+  });
+  const scrollKey = `${place}|${folderMode}|${folderModePath ?? ""}|${folderMode ? folderLayout : layout}|${query}|${typeFilter ?? ""}|${sortField}|${sortDir}`;
 
   useAssetViewPersistence({
     activeColors,
@@ -255,6 +305,21 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       typeFilter,
     });
 
+  const folderGroups = useMemo(() => assetFolderGroups(displayTree, dir, files, project), [displayTree, dir, files, project]);
+  const canShowFolders = folderGroups.groups.length > 0 && !isResolveLibraryRoot;
+  const rememberedFolderMode = parsePlaceViews(LS.loadJSON(PLACE_VIEWS_KEY))[place]?.folders;
+  // 혼합 폴더의 기본은 전체지만, 사용자가 누른 폴더 보기는 현재 경로에서 우선한다.
+  const showFolders = folderMode && canShowFolders
+    && (!folderGroups.hasDirectFiles || rememberedFolderMode === true
+      || folderModePath === `${project}|${dir}`);
+  // 트리가 온 뒤 첫 실제 보기를 기억한다. 암묵 폴더 보기를 비워두면 다른 폴더의
+  // '전체'를 다시 물려받고, 트리 도착 전에 true를 적으면 혼합 폴더의 기본이 바뀐다.
+  useEffect(() => {
+    if (project && !loading && canShowFolders && rememberedFolderMode === undefined) setFolderMode(showFolders);
+  }, [project, loading, canShowFolders, rememberedFolderMode, showFolders, setFolderMode]);
+  const visibleGroups = searchActive || typeFilter || grayOn
+    ? folderGroups.groups.filter((group) => group.files.length > 0) : folderGroups.groups;
+
   // 콘텐츠가 렌더된 뒤 보던 스크롤 위치 복원(같은 폴더/레이아웃/검색일 때만). 고정 높이라 이미지 로드 무관.
   // files.length 에만 의존 → 태그/소스/컬러 등 메타 편집(개수 불변)으로는 스크롤이 튀지 않음.
   //  **화면이 바뀌었을 때(scrollKey)와 그 화면의 파일이 처음 도착했을 때만** 맞춘다 — 같은 화면에서 파일 수만 바뀐 것(비활성 숨기기·자동 새로
@@ -265,14 +330,16 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     const el = gridRef.current;
     if (!el) {
       scrollRestored.current = { key: "", filled: false };
+      pendingTabScroll.current = null;
       return;
     }
-    if (scrollRestored.current.key === scrollKey && scrollRestored.current.filled) return;
+    if (pendingTabScroll.current === null && scrollRestored.current.key === scrollKey && scrollRestored.current.filled) return;
     scrollRestored.current = { key: scrollKey, filled: files.length > 0 };
     const s = LS.loadJSON<{ key: string; top: number }>("scroll");
-    el.scrollTop = s && s.key === scrollKey ? s.top || 0 : 0;
+    el.scrollTop = pendingTabScroll.current ?? (s && s.key === scrollKey ? s.top || 0 : 0);
+    pendingTabScroll.current = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scrollKey, files.length]);
+  }, [scrollKey, folderTabs.active, files.length]);
 
   // scrollKey 가 바뀌면(폴더·레이아웃·검색·정렬 변경) 아직 안 터진 스크롤 저장 타이머를 취소한다.
   // 안 그러면 옛 클로저 타이머가 150ms 뒤 '옛 key + 변경 후 위치'를 저장해 복원이 어긋난다.
@@ -283,10 +350,9 @@ export function AssetsView({ onInfo, onPreview }: Props) {
         scrollSaveTimer.current = null;
       }
     };
-  }, [scrollKey]);
+  }, [scrollKey, folderTabs.active]);
 
   // ── 선택 시스템(클릭/마퀴/키보드) ──
-  const gridRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [focusIdx, setFocusIdx] = useState(-1);
   const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
@@ -315,7 +381,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [scale, isList, files.length]);
+  }, [scale, isList, files.length, showFolders]);
   const rowModel = useMemo(
     () => buildAssetRows(files, isList ? 1 : columns, groupByDate),
     [files, isList, columns, groupByDate],
@@ -413,8 +479,23 @@ export function AssetsView({ onInfo, onPreview }: Props) {
 
   // 네이티브 파일 드래그(OS/외부로 내보내기) 시작:
   //  · 진행 중이던 선택 드래그(마퀴)만 정리(선택 상태는 유지)
-  //  · 드래그한 카드가 다중선택에 포함되면 선택 전체를 zip 으로, 아니면 그 파일 하나만 원본으로
-  const exportDrag = useCallback((path: string, dt: DataTransfer) => {
+  //  · 고른 카드에서 시작하면 선택 전체를 Windows 원본 파일 목록으로 전달한다.
+  const [nativeDragAvailable, setNativeDragAvailable] = useState(false);
+  const cancelNativeDragRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => {
+    cancelNativeDragRef.current?.();
+    cancelNativeDragRef.current = null;
+  }, []);
+  useEffect(() => {
+    if (!nativeDragBrowserSupported()) return;
+    let alive = true;
+    void api.nativeAssetDragCapabilities()
+      .then((result) => { if (alive) setNativeDragAvailable(result.supported); })
+      .catch(() => { /* old/non-local hubs keep internal HTML dragging */ });
+    return () => { alive = false; };
+  }, []);
+
+  const exportDrag = useCallback((path: string, event: React.DragEvent) => {
     dragRef.current = null;
     removeWindowMouseDrag(onDragMove, onDragUp);
     setMarquee(null);
@@ -426,8 +507,14 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       selected: selectedRef.current,
       path,
     });
+    if (nativeDragAvailable) {
+      const cancel = startNativeAssetDrag(event, proj, items);
+      if (cancel) cancelNativeDragRef.current = cancel;
+      return;
+    }
+    const dt = event.dataTransfer;
     if (multi) {
-      setZipDrag(dt, proj, items.map((item) => item.path));
+      flashMsg("이 허브에서는 앱 내부 다중 드래그만 지원합니다. 외부 첨부는 원본 복사(📋) 후 붙여넣기를 사용해주세요.");
     } else {
       const file = filesRef.current.find((f) => f.path === path);
       const name = file?.name || path.split("/").pop() || path;
@@ -451,7 +538,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     } catch {
       /* localStorage 불가 시 dataTransfer 폴백 */
     }
-  }, [onDragMove, onDragUp]);
+  }, [onDragMove, onDragUp, nativeDragAvailable]);
 
   // 복사: 선택한 원본 미디어(이미지·영상·오디오) 파일들을 OS 클립보드(파일 목록)에 올린다 → 대화창에서
   //  Ctrl+V 로 한 번에. (브라우저 클립보드는 이미지 1장 한계 → 로컬 백엔드가 CF_HDROP 을 채운다.
@@ -465,9 +552,11 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     [],
   );
 
+  const onAssetsImported = useCallback((targetProject: string) => refreshProjectData(targetProject, true), [refreshProjectData]);
   const {
     dropActive,
     importing,
+    localImports,
     onZoneDragEnter,
     onZoneDragLeave,
     onZoneDragOver,
@@ -475,8 +564,9 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   } = useAssetDropImport({
     dir,
     project,
-    onImported: refreshProjectData,
+    onImported: onAssetsImported,
   });
+  const visibleLocalImports = localImports.filter(item => item.project === project && item.dir === dir);
 
   const onGridMouseDown = (e: React.MouseEvent) => {
     if (e.button === 1) {
@@ -516,7 +606,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   const openPreview = useCallback(
     (f: AssetNode) => {
       const target = assetPreviewTarget(project, filesRef.current, f);
-      if (target) onPreview(target);
+      if (target) { setLastViewed(`${project}|${f.path}`); onPreview(target); }
     },
     [project, onPreview],
   );
@@ -640,8 +730,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   });
   useAssetBroadcastSync({
     project,
-    refreshProjectData,
-    refreshTree: reloadTree,
+    refreshProjectData: async (...args) => { await refreshProjectData(...args); },
+    refreshTree: async (...args) => { await reloadTree(...args); },
     reloadProjects,
     refreshComments,
   });
@@ -649,7 +739,25 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   useOutsideDragSelect(".assets-grid-wrap", (e) => {
     e.preventDefault(); // 글자 선택·네이티브 드래그 방지(격자 안 경로는 자체 처리)
     onGridMouseDown(e as unknown as React.MouseEvent);
-  });
+  }, !showFolders);
+
+  const enterFolder = useCallback((path: string) => {
+    if (!canLeaveCommentRef.current()) return;
+    setCommentPath(null); setTagEditPath(null); setQuery(""); setDir(path);
+  }, []);
+
+  useEffect(() => {
+    const onBackspace = (e: KeyboardEvent) => {
+      if (e.key !== "Backspace" || e.defaultPrevented || isKeyHandled(e)
+        || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.repeat || e.isComposing
+        || isTypingTarget(e.target) || backgroundKeysBlocked() || !dir) return;
+      e.preventDefault();
+      enterFolder(dir.replace(/\\/g, "/").split("/").filter(Boolean).slice(0, -1).join("/"));
+    };
+    // 폴더 카드가 사라져 초점이 BODY에 남거나 빈 폴더여도 같은 이동 키를 받는다.
+    window.addEventListener("keydown", onBackspace);
+    return () => window.removeEventListener("keydown", onBackspace);
+  }, [dir, enterFolder]);
 
   const gridHandlers = {
     ref: gridRef,
@@ -703,12 +811,14 @@ export function AssetsView({ onInfo, onPreview }: Props) {
         key={f.path}
         project={project}
         node={f}
+        folderLabel={assetFolderLabel(f.path, dir)}
         idx={idx}
         layout={layout}
         scale={scale}
         fit={fit}
         selected={selected.has(idx)}
         focused={focusIdx === idx}
+        lastViewed={lastViewed === `${project}|${f.path}`}
         deactivated={disabledAssets.has(f.path)}
         selectedCount={selected.has(idx) && selected.size > 1 ? selected.size : 1}
         tagEditing={tagEditingMulti}
@@ -881,18 +991,13 @@ export function AssetsView({ onInfo, onPreview }: Props) {
           dir={dir}
           meta={meta}
           sourceOnly={sourceOnly}
-          onRoot={() => {
-            setQuery("");
-            setDir("");
-          }}
+          onRoot={() => enterFolder("")}
           loading={loading}
           tree={displayTree}
           expanded={expanded}
           onToggleDir={toggleDir}
-          onSelectDir={(p) => {
-            setQuery("");
-            setDir(p);
-          }}
+          onSelectDir={enterFolder}
+          onOpenTab={folderTabs.open}
         />
 
         <main
@@ -928,6 +1033,9 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             typeFilter={typeFilter}
             onTypeFilterChange={setTypeFilter}
             fileCount={files.length}
+            folderMode={showFolders}
+            canShowFolders={canShowFolders}
+            onFolderModeChange={(value) => { setFolderMode(value); setFolderModePath(`${project}|${dir}`); setSelected(new Set()); setFocusIdx(-1); }}
             onToggleColor={toggleColor}
             grayOn={grayOn}
             onToggleGray={() => setGrayOn((v) => !v)}
@@ -941,19 +1049,24 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             commentOnly={commentOnly}
             hasAnyUnread={hasAnyUnread}
             onToggleCommentOnly={() => setCommentOnly((v) => !v)}
-            fit={fit}
-            onToggleFit={() => setFit((f) => (f === "cover" ? "contain" : "cover"))}
-            scale={scale}
-            onScale={setScale}
-            layout={layout}
-            groupByDate={groupByDate}
-            onSelectLayout={setLayout}
-            onToggleGroupByDate={() => setGroupByDate((v) => !v)}
+            fit={showFolders ? folderFit : fit}
+            onToggleFit={() => (showFolders ? setFolderFit : setFit)((f) => (f === "cover" ? "contain" : "cover"))}
+            scale={showFolders ? folderScale : scale}
+            onScale={showFolders ? setFolderScale : setScale}
+            layout={showFolders ? (folderLayout === "table" ? "list" : folderLayout) : layout}
+            groupByDate={showFolders ? folderLayout === "table" : groupByDate}
+            onSelectLayout={showFolders ? setFolderLayout : setLayout}
+            onToggleGroupByDate={() => showFolders
+              ? setFolderLayout((value) => value === "list" ? "table" : value === "table" ? "list" : value)
+              : setGroupByDate((v) => !v)}
             sortField={sortField}
             sortDir={sortDir}
             onSortField={setSortField}
             onSortDir={setSortDir}
           />}
+
+          <AssetFolderTabs tabs={folderTabs.tabs} active={folderTabs.active} project={project}
+            onSelect={folderTabs.select} onClose={folderTabs.close} onReorder={folderTabs.reorder} />
 
           {commentPath && (
             <CommentPanel
@@ -974,11 +1087,17 @@ export function AssetsView({ onInfo, onPreview }: Props) {
           )}
 
           {error && <div className="error" style={{ padding: 12 }}>{error}</div>}
+          <LocalImportCards items={visibleLocalImports} onPreview={onPreview} />
 
           {isResolveLibraryRoot && !loading ? (
             <ResolveProjectBrowser key={`${project}\u0000${dir}`} project={project} dir={dir} />
+          ) : showFolders ? (
+            <AssetFolderGrid key={`${project}|${dir}`} project={project} groups={visibleGroups}
+              directFiles={folderGroups.directFiles}
+              scale={folderScale} fit={folderFit} layout={folderLayout} lastViewedPath={lastViewed.startsWith(`${project}|`) ? lastViewed.slice(project.length + 1) : undefined} scrollRef={gridRef} onScroll={onContentScroll}
+              onEnter={enterFolder} onOpenTab={folderTabs.open} onPreview={openPreview} />
           ) : files.length === 0 && !loading ? (
-            isResolveLibraryRoot ? null : (
+            isResolveLibraryRoot || visibleLocalImports.length ? null : (
               <div className="assets-empty">{t("이 폴더에 미디어가 없습니다.")}</div>
             )
           ) : (
@@ -1018,3 +1137,4 @@ const indexOfPath = (files: AssetNode[], path: string | null) =>
 
 // 마지막으로 보던 Assets 상태 영속화(프로젝트·폴더·크기·레이아웃)
 const LS = makeStore("ch.assets.");
+const FOLDER_LS = makeStore("ch.assets.folder.");

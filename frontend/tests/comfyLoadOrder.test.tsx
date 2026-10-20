@@ -7,6 +7,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Scene } from "../src/lib/scenes";
+import { configureOperationContext } from "../src/app/operationContext";
+import { setAuthToken } from "../src/lib/http";
 
 const mocks = vi.hoisted(() => ({ parse: vi.fn() }));
 vi.mock("../src/lib/comfyApi", async (orig) => {
@@ -33,11 +35,13 @@ beforeEach(() => {
   }));
   localStorage.clear();
   sessionStorage.clear();
+  setAuthToken(null);
+  configureOperationContext({ key: "parse-original", serverOrigin: "http://synthetic-a.invalid", authority: "local", ready: true });
   parses = [];
   mocks.parse.mockReset().mockImplementation(() => new Promise<Parsed>((resolve, reject) => { parses.push({ resolve, reject }); }));
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
-afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
+afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); setAuthToken(null); });
 
 const settle = () => act(async () => { for (let i = 0; i < 8; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
 /** 파일을 그 자리에 놓는다. jsdom 의 File 에 text() 가 없을 수 있어 읽기를 직접 준다 — 기본은 즉시, read 를 주면 시험이 쥔다. */
@@ -233,6 +237,20 @@ async function board() {
 }
 const cardButton = (title: string) => host.querySelector<HTMLButtonElement>(`.scene-comfynode-act[title^="${title}"]`)!;
 
+it.each(["unmount", "delete", "server", "credential"])("캔버스 파일 읽기 중 %s되면 새 파싱 API를 시작하지 않는다", async change => {
+  const card = await board(); const slow = heldRead();
+  await dropFile(card.zone(), "late", slow.read);
+  expect(mocks.parse).not.toHaveBeenCalled();
+  await act(async () => {
+    if (change === "unmount") root.unmount();
+    else if (change === "delete") root.render(<SceneBoard scene={{ ...comfyScene(), cards: [] }} onChange={() => {}} />);
+    else if (change === "server") configureOperationContext({ key: "parse-next", serverOrigin: "http://synthetic-b.invalid", authority: "local", ready: true });
+    else setAuthToken("synthetic-b");
+  });
+  slow.finish('{"late":1}'); await settle();
+  expect(mocks.parse).not.toHaveBeenCalled();
+});
+
 it("캔버스의 Comfy 카드 — 같은 카드에 잇달아 넣은 워크플로는 나중 것이 저장된다", async () => {
   const card = await board();
   await dropFile(card.zone(), "first");
@@ -313,6 +331,11 @@ it("캔버스의 Comfy 카드 — 반영된 순번은 씬마다 따로다: 카�
   await show("x");
   slow.finish('{"forx":1}');
   await settle();
+  // 다시 연 x는 새 문서 세대다. 떠난 세대의 응답은 파싱도 반영도 하지 않는다.
+  expect(mocks.parse).toHaveBeenCalledTimes(1);
+  expect(label()).not.toContain("forx");
+  // 새 세대의 명시적 입력은 y의 같은 카드 id/순번에 막히지 않는다.
+  await dropFile(host.querySelector(".scene-comfynode-empty")!, "forx");
   await finish(1, 5);
   expect(label()).toContain("forx · 5노드"); // 전엔 y 의 순번에 밀려 말없이 버려졌다
 });

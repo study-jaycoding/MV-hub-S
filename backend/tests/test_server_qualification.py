@@ -1,0 +1,495 @@
+"""Copy-only tests. Fake build/probe/HTTP processes; no network, servers or database opens."""
+import copy
+import ast
+import hashlib
+import importlib
+import io
+import json
+import os
+from pathlib import Path
+import ssl
+import subprocess
+import sys
+from types import SimpleNamespace
+from unittest.mock import Mock
+import zipfile
+
+import pytest
+
+ROOT = Path(os.environ.get('P6_REPOSITORY_ROOT', str(Path(__file__).resolve().parents[2])))
+sys.path.insert(0, str(ROOT / 'backend'))
+sys.path.insert(0, str(ROOT / 'tools'))
+sys.path.insert(0, os.environ.get('P6_SOURCE_DIR', str(ROOT / 'tools')))
+activation = importlib.import_module('server_activation')
+builder = importlib.import_module('server_release_update')
+from app.services.release_contract import json_bytes
+from smoke_env import build_smoke_env
+
+
+@pytest.fixture(autouse=True)
+def cli_fixture(tmp_path, monkeypatch):
+    cli = tmp_path / 'fixture-cli'
+    package = cli / 'node_modules/@higgsfield/cli'
+    (package / 'bin').mkdir(parents=True)
+    (cli / 'higgsfield.cmd').write_bytes(b'fixture shim never executed')
+    (cli / 'npm.cmd').write_bytes(b'fixture npm never executed')
+    (cli / 'node.exe').write_bytes(b'fixture node never executed')
+    (package / 'package.json').write_bytes(json_bytes({'name': '@higgsfield/cli', 'version': '1.2.3'}))
+    (package / 'bin/higgsfield.js').write_bytes(b'fixture js never executed')
+    monkeypatch.setenv('PATH', str(cli))
+    monkeypatch.delenv('NODE_OPTIONS', raising=False)
+    monkeypatch.delenv('NODE_PATH', raising=False)
+    return cli
+
+
+def compat():
+    return {'protocol_version': 1, 'rollout': 'bridge', 'required_installer_capabilities': [],
+            'backward_compatible': True, 'db_schema': {'read_min': 1, 'read_max': 2, 'write_min': 1, 'write_max': 2},
+            'reader_protocol': 1, 'writer_protocol': 2, 'supported_components': ['content_core']}
+
+
+def write_venv_config(stage):
+    base=Path(sys._base_executable).resolve()
+    (stage/'.venv/pyvenv.cfg').write_text(
+        f'home = {base.parent}\ninclude-system-site-packages = false\nexecutable = {base}\n',encoding='utf-8')
+
+
+def seed_stage(root):
+    stage = root / 'logs/server-stages/build1'
+    inputs = ['backend/app/main.py', 'backend/serve.py', 'backend/schema.sql', 'backend/requirements.lock.txt',
+              'frontend/package.json', 'frontend/package-lock.json', 'tools/predeploy_gate.ps1',
+              'tools/validation_result.ps1', 'hf_cli_version.txt']
+    for name in inputs + ['.venv/Scripts/python.exe', 'frontend/dist/index.html']:
+        path = stage / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'fixture never executed ' + name.encode())
+    (stage / 'hf_cli_version.txt').write_bytes(b'1.2.3\n')
+    write_venv_config(stage)
+    hashes = {name: activation.digest(stage / name) for name in inputs}
+    source = {'commit': 'a' * 40, 'dirty': False, 'sha256': 'b' * 64,
+              'file_count': len(hashes), 'files': [{'path': n, 'tracked': True, 'size': (stage/n).stat().st_size, 'sha256': h} for n,h in hashes.items()]}
+    receipt = {'format_version': 1, 'scope': 'source-only', 'status': 'passed', 'passed': True,
+               'release_eligible': False, 'run_id': 'source-run', 'finished_at': '2026-10-18T00:00:01+00:00',
+               'source': source, 'source_after': copy.deepcopy(source), 'source_unchanged': True,
+               'cleanup': {'status': 'not_measured'},
+               'steps': [{'name': n, 'status': 'passed', 'exit_code': 0} for n in activation.SOURCE_STEPS]
+                        + [{'name': 'Isolated load test', 'status': 'skipped', 'exit_code': None}]}
+    raw = json_bytes(receipt)
+    descriptor = {'format_version': 1, 'role': 'server', 'build_id': 'build1', 'source_commit': 'a' * 40,
+                  'source_files': hashes, 'source_receipt_sha256': hashlib.sha256(raw).hexdigest(),
+                  'python_base': activation.stage_python_base(stage),
+                  'compatibility': compat(), 'files': {p.relative_to(stage).as_posix(): activation.digest(p) for p in stage.rglob('*') if p.is_file()}}
+    activation.atomic_json(stage / 'server-stage.json', descriptor)
+    target = {'path': str(stage), 'python': str(stage / '.venv/Scripts/python.exe'), 'build_id': 'build1',
+              'compatibility': compat(), 'manifest_sha256': activation.digest(stage/'server-stage.json')}
+    for name in (*activation.PROBE_TOOLS, *activation.COORDINATOR_TOOLS):
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'fixture trusted verifier never executed ' + name.encode())
+    verifier = root/'trusted/python.exe';verifier.parent.mkdir();verifier.write_bytes(b'trusted fixture')
+    return stage, target, receipt, raw, verifier
+
+
+def fake_probe(command, **kwargs):
+    assert command[1:7] == ['-E', '-s', '-B', '-X', 'utf8', '-u']
+    assert 'CONTENT_HUB_AUTH_SECRET' not in kwargs['env']
+    assert not Path(command[command.index('--work-root')+1]).exists()
+    path = Path(command[command.index('--descriptor')+1])
+    descriptor = json.loads(path.read_bytes())
+    runtime_python = Path(command[command.index('--runtime-python')+1])
+    assert runtime_python != Path(command[0])
+    value = {'status':'passed', 'scope':'fresh-data-runtime-probe',
+             'descriptor_file_sha256':activation.digest(path),
+             'descriptor_sha256':hashlib.sha256(json_bytes(descriptor)).hexdigest(),
+             'payload_sha256':hashlib.sha256(json_bytes({r['path'].casefold():r['sha256'] for r in descriptor['payload']})).hexdigest(),
+             'tool_sha256':{name: activation.digest(kwargs['cwd'] / name) for name in activation.PROBE_TOOLS},
+             'evidence':{'fresh_data':True, 'temp_removed':True, 'frontend_files':1, 'databases':[{'kind':'content'}],
+                         'runtime_python_sha256':activation.digest(runtime_python),
+                         'process_cleanup':{'port_released':True}, 'listener_pid':123,
+                         'ready':{'status':'ready','runtime':{'process_id':123,'execution_nonce':'fixture','build_id':descriptor['build_id'],'role':'server'}}}}
+    return subprocess.CompletedProcess(command,0,json_bytes(value),b'')
+
+
+def seed_tls(tmp_path, monkeypatch):
+    cert=tmp_path/'backend/local.crt';cert.parent.mkdir(parents=True,exist_ok=True);cert.write_text('synthetic cert')
+    key=cert.with_suffix('.key');key.write_text('mock key')
+    context=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    factory=Mock(return_value=context)
+    monkeypatch.setattr(ssl,'create_default_context',factory)
+    server_context=Mock()
+    constructor=Mock(return_value=server_context)
+    monkeypatch.setattr(ssl,'SSLContext',constructor)
+    return cert,key,context,factory,server_context,constructor
+
+
+def test_tls_ready_uses_explicit_certificate_and_https_without_disabling_validation(tmp_path, monkeypatch):
+    cert,key,context,factory,server_context,constructor=seed_tls(tmp_path,monkeypatch)
+    opener=Mock();opener.open.return_value=io.BytesIO(b'{"status":"ready"}')
+    monkeypatch.setattr(activation.urllib.request,'build_opener',Mock(return_value=opener))
+    manager=activation.ServerActivation(tmp_path,environ={'CONTENT_HUB_SSL_CERTFILE':'local.crt','CONTENT_HUB_SSL_KEYFILE':'local.key'})
+    manager.ready()
+    assert opener.open.call_args.args[0].startswith('https://127.0.0.1:')
+    factory.assert_called_once_with(cafile=str(cert.resolve()))
+    assert context.verify_mode==ssl.CERT_REQUIRED and context.check_hostname
+    assert manager.env['CONTENT_HUB_SSL_KEYFILE']==str(key.resolve())
+    constructor.assert_called_once_with(ssl.PROTOCOL_TLS_SERVER)
+    server_context.load_cert_chain.assert_called_once_with(str(cert.resolve()),str(key.resolve()),password='')
+
+
+def test_tls_key_chain_must_validate_before_manager_logs_or_process(tmp_path,monkeypatch):
+    cert,key,context,factory,server_context,constructor=seed_tls(tmp_path,monkeypatch)
+    server_context.load_cert_chain.side_effect=ssl.SSLError('synthetic cert/key mismatch')
+    with pytest.raises(ssl.SSLError):
+        activation.ServerActivation(tmp_path,environ={'CONTENT_HUB_SSL_CERTFILE':str(cert),'CONTENT_HUB_SSL_KEYFILE':str(key)})
+    assert not (tmp_path/'logs').exists()
+
+
+@pytest.mark.parametrize('damage',['cert_changed','key_changed','cert_missing','key_missing'])
+def test_changed_tls_files_are_rejected_before_journal_or_stop(tmp_path,monkeypatch,damage):
+    cert,key,context,factory,server_context,constructor=seed_tls(tmp_path,monkeypatch)
+    manager=activation.ServerActivation(tmp_path,environ={'CONTENT_HUB_SSL_CERTFILE':str(cert),'CONTENT_HUB_SSL_KEYFILE':str(key)})
+    activation.atomic_json(manager.request,{})
+    target=cert if damage.startswith('cert') else key
+    if damage.endswith('missing'): target.unlink()
+    else: target.write_bytes(b'synthetic changed TLS file')
+    stopped=Mock();monkeypatch.setattr(manager,'stop_owned',stopped)
+    with pytest.raises(ValueError,match='server_tls_files_changed'): manager.apply_request()
+    stopped.assert_not_called()
+    assert not manager.journal_path.exists()
+    assert manager.ready_context is context
+
+
+def test_changed_tls_immediately_before_stop_retains_old_context_and_process(tmp_path,monkeypatch):
+    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    target=builder.qualify_stage(tmp_path,stage,target,raw,verifier,probe_run=fake_probe)
+    cert,key,context,factory,server_context,constructor=seed_tls(tmp_path,monkeypatch)
+    manager=activation.ServerActivation(tmp_path,environ={**os.environ,'CONTENT_HUB_SSL_CERTFILE':str(cert),'CONTENT_HUB_SSL_KEYFILE':str(key)})
+    activation.atomic_json(manager.request,{'target':target})
+    def ready(current,*,drain=False):
+        if drain: key.write_bytes(b'synthetic changed key during drain')
+        return {'pid':123}
+    monkeypatch.setattr(manager,'wait_ready',ready)
+    stopped=Mock();monkeypatch.setattr(manager,'stop_owned',stopped)
+    checkpoint=Mock(return_value=[]);monkeypatch.setattr(manager,'checkpoint',checkpoint)
+    monkeypatch.setattr(manager,'spawn',Mock(side_effect=AssertionError('unexpected synthetic spawn')))
+    with pytest.raises(ValueError,match='server_tls_files_changed'): manager.apply_request()
+    stopped.assert_not_called();checkpoint.assert_not_called()
+    assert activation.read_journal(manager.journal_path)['phase']=='rolled_back'
+    assert manager.ready_context is context
+
+
+@pytest.mark.parametrize('values',[{'CONTENT_HUB_SSL_CERTFILE':'x'},{'CONTENT_HUB_SSL_KEYFILE':'x'}])
+def test_incomplete_tls_rejected_before_logs_or_process(tmp_path,values):
+    with pytest.raises(ValueError,match='incomplete_server_tls'):
+        activation.ServerActivation(tmp_path,environ=values)
+    assert not (tmp_path/'logs').exists()
+
+
+def test_http_remains_default_and_bad_certificate_fails_closed(tmp_path):
+    assert activation.ready_transport(tmp_path,{})==('http',None)
+    cert=tmp_path/'bad.pem';cert.write_text('invalid cert')
+    with pytest.raises(ssl.SSLError):
+        activation.ready_transport(tmp_path,{'CONTENT_HUB_SSL_CERTFILE':str(cert),'CONTENT_HUB_SSL_KEYFILE':str(cert)})
+
+
+def test_shared_probe_tools_import_has_no_app_or_optional_runtime_startup(tmp_path):
+    env=build_smoke_env(os.environ,tmp_path/'import-env',frontend_dist=tmp_path/'dist',
+                        python_exe=Path(sys.executable),port=19871)
+    code=('import sys; sys.path[:0]=sys.argv[1:]; '
+          'import server_activation as a; import qualify_release_artifact as q; '
+          'assert a.PROBE_TOOLS is q.TOOLS; '
+          'assert not ({"app.config","app.db","app.manage_db","psutil"} & sys.modules.keys()); '
+          'print("shared tools imported without app config/DB/psutil")')
+    result=subprocess.run([sys.executable,'-E','-s','-B','-X','utf8','-c',code,
+                           os.environ.get('P6_SOURCE_DIR',str(ROOT/'tools')),str(ROOT/'tools'),str(ROOT/'backend')],
+                          cwd=tmp_path,env=env,capture_output=True,text=True,timeout=15)
+    assert result.returncode==0,result.stderr
+    assert 'shared tools imported' in result.stdout
+
+
+def test_source_gate_optional_load_skip_is_not_artifact_eligibility(tmp_path):
+    stage,target,receipt,raw,verifier=seed_stage(tmp_path)
+    assert activation.validate_source_receipt(receipt,'a'*40,activation.source_inventory(stage))==receipt
+    assert receipt['release_eligible'] is False
+
+
+@pytest.mark.parametrize('damage',['dirty','commit','changed','step_skip','missing_step','file_hash','untracked','duplicate','unknown_inventory'])
+def test_bad_source_receipt_or_stage_input_rejected(tmp_path,damage):
+    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    if damage=='dirty': value['source']['dirty']=True
+    elif damage=='commit': value['source']['commit']='c'*40
+    elif damage=='changed': value['source_unchanged']=False
+    elif damage=='step_skip': value['steps'][0]['status']='skipped'
+    elif damage=='missing_step': value['steps'].pop(0)
+    elif damage=='file_hash': value['source']['files'][0]['sha256']='f'*64
+    elif damage=='untracked': value['source']['files'][0]['tracked']=False
+    elif damage=='duplicate': value['steps'].append(copy.deepcopy(value['steps'][0]))
+    else: value['source']['file_count']+=1
+    value['source_after']=copy.deepcopy(value['source'])
+    with pytest.raises(ValueError): activation.validate_source_receipt(value,'a'*40,activation.source_inventory(stage))
+
+
+def test_probe_receipt_binds_same_stage_and_source_without_self_hash_cycle(tmp_path):
+    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    before=activation.digest(stage/'server-stage.json')
+    result=builder.qualify_stage(tmp_path,stage,target,raw,verifier,probe_run=fake_probe)
+    proof=activation.verify_qualification(result,tmp_path/'logs/server-stages')
+    assert proof['source_receipt_sha256']==hashlib.sha256(raw).hexdigest()
+    assert before==activation.digest(stage/'server-stage.json')
+    assert Path(result['qualification_path']).parent!=stage
+
+
+@pytest.mark.parametrize('damage',['exit','identity','cleanup','descriptor','payload','tool','python','missing_db','stage_change','extra_stage_file'])
+def test_probe_failure_never_creates_request_or_passes_qualification(tmp_path,damage):
+    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    def probe(command,**kwargs):
+        result=fake_probe(command,**kwargs)
+        proof=json.loads(result.stdout)
+        if damage=='exit': return subprocess.CompletedProcess(command,1,b'{}',b'')
+        if damage=='identity': proof['evidence']['ready']['runtime']['build_id']='wrong'
+        if damage=='cleanup': proof['evidence']['process_cleanup']['port_released']=False
+        if damage=='descriptor': proof['descriptor_file_sha256']='0'*64
+        if damage=='payload': proof['payload_sha256']='0'*64
+        if damage=='tool': proof['tool_sha256']={}
+        if damage=='python': proof['evidence']['runtime_python_sha256']='0'*64
+        if damage=='missing_db': proof['evidence']['databases']=[]
+        if damage=='stage_change': (stage/'backend/serve.py').write_bytes(b'changed')
+        if damage=='extra_stage_file': (stage/'extra.py').write_bytes(b'changed')
+        return subprocess.CompletedProcess(command,0,json_bytes(proof),b'')
+    with pytest.raises(ValueError): builder.qualify_stage(tmp_path,stage,target,raw,verifier,probe_run=probe)
+    assert not (tmp_path/'logs/server-update-request.json').exists()
+
+
+def test_supervisor_checks_qualification_before_old_process_or_journal(tmp_path,monkeypatch):
+    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    manager=activation.ServerActivation(tmp_path,environ={})
+    activation.atomic_json(manager.request,{'target':target})
+    stopped=Mock();monkeypatch.setattr(manager,'stop_owned',stopped)
+    with pytest.raises((ValueError,KeyError)): manager.apply_request()
+    stopped.assert_not_called()
+    assert not manager.journal_path.exists()
+
+
+def test_receipt_tampering_is_rejected_on_supervisor_recheck(tmp_path):
+    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    target=builder.qualify_stage(tmp_path,stage,target,raw,verifier,probe_run=fake_probe)
+    Path(target['qualification_path']).write_text('{}')
+    with pytest.raises(ValueError,match='qualification_changed'):
+        activation.verify_qualification(target,tmp_path/'logs/server-stages')
+
+
+@pytest.mark.parametrize('damage', ['shim', 'node', 'javascript', 'package', 'probe', 'helper', 'activation', 'builder', 'venv', 'venv_config'])
+def test_supervisor_rechecks_actual_cli_and_verifier_bytes_before_stopping(tmp_path, monkeypatch, cli_fixture, damage):
+    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    target=builder.qualify_stage(tmp_path,stage,target,raw,verifier,probe_run=fake_probe)
+    manager=activation.ServerActivation(tmp_path,environ=dict(os.environ))
+    paths={'shim':cli_fixture/'higgsfield.cmd', 'node':cli_fixture/'node.exe',
+           'javascript':cli_fixture/'node_modules/@higgsfield/cli/bin/higgsfield.js',
+           'package':cli_fixture/'node_modules/@higgsfield/cli/package.json',
+           'probe':tmp_path/'tools/qualify_release_artifact.py',
+           'helper':tmp_path/'backend/app/services/isolated_env.py',
+           'activation':tmp_path/'tools/server_activation.py', 'builder':tmp_path/'tools/server_release_update.py',
+           'venv':stage/'.venv/Scripts/python.exe', 'venv_config':stage/'.venv/pyvenv.cfg'}
+    paths[damage].write_bytes(b'changed')
+    activation.atomic_json(manager.request,{'target':target})
+    stopped=Mock();monkeypatch.setattr(manager,'stop_owned',stopped)
+    with pytest.raises(ValueError): manager.apply_request()
+    stopped.assert_not_called()
+    assert not manager.journal_path.exists()
+
+
+def test_cli_environment_selected_by_supervisor_must_match(tmp_path, monkeypatch, cli_fixture):
+    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    target=builder.qualify_stage(tmp_path,stage,target,raw,verifier,probe_run=fake_probe)
+    other=tmp_path/'other-cli'
+    import shutil
+    shutil.copytree(cli_fixture,other)
+    with pytest.raises(ValueError,match='server_cli_entry_changed'):
+        activation.verify_qualification(target,tmp_path/'logs/server-stages',environ={**os.environ,'PATH':str(other)})
+
+
+def test_different_supervisor_base_python_is_rejected_before_journal(tmp_path, monkeypatch):
+    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    target=builder.qualify_stage(tmp_path,stage,target,raw,verifier,probe_run=fake_probe)
+    manager=activation.ServerActivation(tmp_path,environ=dict(os.environ))
+    other=tmp_path/'other-python.exe';other.write_bytes(b'other interpreter never executed')
+    monkeypatch.setattr(sys,'_base_executable',str(other))
+    activation.atomic_json(manager.request,{'target':target})
+    stopped=Mock();monkeypatch.setattr(manager,'stop_owned',stopped)
+    with pytest.raises(ValueError,match='stage_python_base_mismatch'): manager.apply_request()
+    stopped.assert_not_called()
+    assert not manager.journal_path.exists()
+
+
+def test_base_python_file_mutation_is_rejected_without_executing_it(tmp_path, monkeypatch):
+    base=tmp_path/'fixture-base/python.exe';base.parent.mkdir();base.write_bytes(b'base never executed')
+    monkeypatch.setattr(sys,'_base_executable',str(base))
+    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    target=builder.qualify_stage(tmp_path,stage,target,raw,verifier,probe_run=fake_probe)
+    manager=activation.ServerActivation(tmp_path,environ=dict(os.environ))
+    base.write_bytes(b'changed base')
+    activation.atomic_json(manager.request,{'target':target})
+    stopped=Mock();monkeypatch.setattr(manager,'stop_owned',stopped)
+    with pytest.raises(ValueError,match='stage_python_base_mismatch'): manager.apply_request()
+    stopped.assert_not_called()
+    assert not manager.journal_path.exists()
+
+
+@pytest.mark.parametrize('damage',['home_mismatch','global_site_packages','duplicate'])
+def test_venv_base_configuration_is_not_an_unchecked_hint(tmp_path,damage):
+    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    cfg=stage/'.venv/pyvenv.cfg';text=cfg.read_text()
+    if damage=='home_mismatch': text=text.replace(f'home = {Path(sys._base_executable).resolve().parent}',f'home = {tmp_path}')
+    elif damage=='global_site_packages': text=text.replace('false','true')
+    else: text+='home = duplicate\n'
+    cfg.write_text(text)
+    with pytest.raises(ValueError): activation.stage_python_base(stage)
+
+
+@pytest.mark.parametrize('layout', ['sibling', 'path', 'hf'])
+def test_read_only_cli_resolution_matches_runtime_node_precedence(tmp_path, monkeypatch, cli_fixture, layout):
+    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    if layout=='hf':
+        (cli_fixture/'higgsfield.cmd').rename(cli_fixture/'hf.cmd')
+        expected=cli_fixture/'node.exe'
+    else:
+        (cli_fixture/'node.exe').unlink()
+        if layout=='sibling':
+            expected=cli_fixture.parent/'node/node.exe'
+        else:
+            folder=tmp_path/'path-node';folder.mkdir()
+            monkeypatch.setenv('PATH',str(cli_fixture)+os.pathsep+str(folder))
+            expected=folder/'node.exe'
+        expected.parent.mkdir(parents=True,exist_ok=True)
+        expected.write_bytes(b'fixture alternative node never executed')
+    result=activation.inspect_server_cli(stage,tmp_path,os.environ)
+    assert result['argv']==[str(expected),str(cli_fixture/'node_modules/@higgsfield/cli/bin/higgsfield.js')]
+    assert result['execution_tested'] is False
+    # Execute only these pure lookup functions from the real CLI bridge; no app imports or CLI calls.
+    import shutil
+    tree=ast.parse((ROOT/'backend/app/services/cli_bridge.py').read_text(encoding='utf-8-sig'))
+    functions=[node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name in {'cli_path','cli_argv'}]
+    namespace={'os':os,'shutil':shutil,'CLIError':RuntimeError,'_CLI_PATH':None,
+               '_CLI_JS_REL':str(Path('node_modules/@higgsfield/cli/bin/higgsfield.js'))}
+    exec(compile(ast.Module(body=functions,type_ignores=[]),'<pure CLI lookups>','exec'),namespace)
+    assert namespace['cli_argv']()==result['argv']
+
+
+@pytest.mark.parametrize('damage', ['version', 'node_options', 'node_path', 'relative_path', 'native', 'cwd_shadow'])
+def test_unsupported_or_mismatched_cli_configuration_is_rejected(tmp_path, monkeypatch, cli_fixture, damage):
+    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    env=dict(os.environ)
+    if damage=='version': (stage/'hf_cli_version.txt').write_text('2.0.0')
+    elif damage=='node_options': env['NODE_OPTIONS']='--require fixture'
+    elif damage=='node_path': env['NODE_PATH']='fixture'
+    elif damage=='relative_path': env['PATH']='.'
+    elif damage=='native':
+        (cli_fixture/'higgsfield.cmd').unlink()
+        (cli_fixture/'higgsfield.exe').write_bytes(b'fixture native never executed')
+    else: (stage/'backend/higgsfield.cmd').write_bytes(b'shadow never executed')
+    with pytest.raises(ValueError): activation.inspect_server_cli(stage,tmp_path,env)
+
+
+def prepare_fixture(root, monkeypatch):
+    """Real coordinator, fake git/build and common probe subprocess, no executable runs."""
+    inputs={name:b'fixture source '+name.encode() for name in
+            ('backend/app/main.py','backend/serve.py','backend/schema.sql','backend/requirements.lock.txt',
+             'frontend/package.json','frontend/package-lock.json','tools/predeploy_gate.ps1',
+             'tools/validation_result.ps1','hf_cli_version.txt')}
+    inputs['hf_cli_version.txt']=b'1.2.3\n'
+    source={'commit':'a'*40,'dirty':False,'sha256':'b'*64,'file_count':len(inputs),
+            'files':[{'path':n,'size':len(raw),'sha256':hashlib.sha256(raw).hexdigest(),'tracked':True}
+                     for n,raw in inputs.items()]}
+    receipt={'format_version':1,'scope':'source-only','status':'passed','passed':True,'release_eligible':False,
+             'source':source,'source_after':copy.deepcopy(source),'source_unchanged':True,
+             'run_id':'clean-source-fixture','finished_at':'2026-10-18T00:00:01+00:00',
+             'steps':[{'name':n,'status':'passed','exit_code':0} for n in activation.SOURCE_STEPS]}
+    receipt_path=root/'source-receipt.json';receipt_path.write_bytes(json_bytes(receipt))
+    verifier=root/'trusted/python.exe';verifier.parent.mkdir();verifier.write_bytes(b'trusted never executed')
+    for name in (*activation.PROBE_TOOLS,*activation.COORDINATOR_TOOLS):
+        path=root/name;path.parent.mkdir(parents=True,exist_ok=True)
+        path.write_bytes(b'trusted module fixture '+name.encode())
+    monkeypatch.setenv('CONTENT_HUB_AUTH_SECRET','fixture secret not forwarded')
+    monkeypatch.setenv('CONTENT_HUB_DB',str(root/'outside.db'))
+    def git(command,**kwargs):
+        assert command[0]=='git'
+        return subprocess.CompletedProcess(command,0,'a'*40 if 'rev-parse' in command else '', '')
+    monkeypatch.setattr(builder.subprocess,'run',git)
+    calls=[]
+    def run(command,*,cwd,log,env=None):
+        calls.append(command)
+        if 'archive' in command:
+            archive=Path(next(c.split('=',1)[1] for c in command if c.startswith('--output=')))
+            with zipfile.ZipFile(archive,'w') as bundle:
+                for name,raw in inputs.items(): bundle.writestr(name,raw)
+        elif 'venv' in command:
+            python=Path(command[-1])/'Scripts/python.exe';python.parent.mkdir(parents=True)
+            python.write_bytes(b'stage Python never executed')
+            write_venv_config(Path(command[-1]).parent)
+        elif 'ci' in command:
+            (cwd/'node_modules').mkdir();(cwd/'node_modules/build-only.txt').write_bytes(b'build fixture')
+        elif 'build' in command:
+            (cwd/'dist').mkdir();(cwd/'dist/index.html').write_bytes(b'<div id="root"></div>')
+        if env is not None:
+            assert 'CONTENT_HUB_AUTH_SECRET' not in env
+            assert Path(env['CONTENT_HUB_DB']).is_relative_to(root/'logs')
+    return receipt_path,verifier,run,calls
+
+
+def test_complete_prepare_request_and_supervisor_verified_path(tmp_path, monkeypatch):
+    receipt,verifier,run,calls=prepare_fixture(tmp_path,monkeypatch)
+    run_id=builder.prepare(tmp_path,compat(),source_receipt=receipt,verification_python=verifier,
+                           run=run,probe_run=fake_probe)
+    request=json.loads((tmp_path/'logs/server-update-request.json').read_bytes())
+    target=request['target'];stage=Path(target['path'])
+    assert target['build_id']==run_id
+    assert not (tmp_path/'logs/server-current.json').exists()
+    assert not (stage/'frontend/node_modules').exists()
+    assert any('--require-hashes' in c for c in calls)
+    assert activation.verify_qualification(target,tmp_path/'logs/server-stages')['activation_eligible'] is True
+    manager=activation.ServerActivation(tmp_path,environ=dict(os.environ))
+    class Process:
+        def __init__(self): self.stopped=False
+        def poll(self): return 0 if self.stopped else None
+        def terminate(self): self.stopped=True
+        def wait(self,timeout=None): return 0
+    manager.process=Process();old=manager.process
+    phases=[];original_advance=activation.advance
+    def advance(path,journal,phase,**changes):
+        phases.append(phase)
+        return original_advance(path,journal,phase,**changes)
+    monkeypatch.setattr(activation,'advance',advance)
+    monkeypatch.setattr(manager,'wait_ready',lambda *a,**kw:{'pid':123,'creation_time':'synthetic'})
+    row={'key':'fixture','database_id':'fixture-db','status':'compatible','schema_version':1,
+         'minimum_reader_protocol':1,'minimum_writer_protocol':1,'components':['content_core']}
+    monkeypatch.setattr(manager,'checkpoint',lambda _:[row])
+    def spawn(current,*,pending=False):
+        assert activation.read_journal(manager.journal_path)['db_mutation_possible']
+        manager.process=Process()
+    monkeypatch.setattr(manager,'spawn',spawn)
+    journal=manager.apply_request()
+    assert phases[0]=='verified' and phases[-1]=='committed'
+    assert old.stopped and journal['phase']=='committed' and not manager.request.exists()
+
+
+@pytest.mark.parametrize('damage', ['receipt_commit','required_skip','probe_failure','verifier_mutation','source_mutation'])
+def test_prepare_failures_leave_old_tree_and_request_untouched(tmp_path, monkeypatch, damage):
+    receipt,verifier,run,calls=prepare_fixture(tmp_path,monkeypatch)
+    sentinel=tmp_path/'backend/running.txt';sentinel.write_bytes(b'old service unchanged')
+    if damage in {'receipt_commit','required_skip'}:
+        value=json.loads(receipt.read_bytes())
+        if damage=='receipt_commit': value['source']['commit']='c'*40;value['source_after']=copy.deepcopy(value['source'])
+        else: value['steps'][0]['status']='skipped'
+        receipt.write_bytes(json_bytes(value))
+    def probe(command,**kwargs):
+        if damage=='probe_failure': return subprocess.CompletedProcess(command,1,b'{}',b'')
+        result=fake_probe(command,**kwargs)
+        if damage=='verifier_mutation': verifier.write_bytes(b'changed verifier')
+        if damage=='source_mutation': receipt.write_bytes(receipt.read_bytes()+b' ')
+        return result
+    with pytest.raises(ValueError):
+        builder.prepare(tmp_path,compat(),source_receipt=receipt,verification_python=verifier,run=run,probe_run=probe)
+    assert sentinel.read_bytes()==b'old service unchanged'
+    assert not (tmp_path/'logs/server-current.json').exists()
+    assert not (tmp_path/'logs/server-update-request.json').exists()
+    assert json.loads((tmp_path/'logs/server-prepare.json').read_bytes())['status']=='failed'

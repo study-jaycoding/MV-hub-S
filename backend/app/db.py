@@ -24,18 +24,20 @@ CLI:
 from __future__ import annotations
 
 import os
+import secrets
 import shutil
 import sqlite3
 import sys
 import threading
 import time
 import weakref
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Iterator, Optional
 
 from . import config
-from . import db_migrations
+from . import db_migrations, schema_compat
 # 계정별 DB 순수 헬퍼(순환 없음) — ensure_account_db 가 호출하고, db._copy_sqlite 는 db_transfer.py 가 쓴다.
 from .db_account_dbs import _copy_sqlite, _legacy_owner, _seed_default_worker
 from .db_paths import DEFAULT_DB_PATH, LEGACY_DB_PATH as _LEGACY_DB_PATH, get_db_path
@@ -67,10 +69,18 @@ def ensure_account_db(email: str, owner_uid: Optional[str] = None) -> Path:
         init_db(path)  # 비활성 중 업그레이드를 놓친 기존 계정 DB 도 현재 스키마로 보강(멱등)
         _seed_default_worker(path)  # 이전 버전이 안 넣은 기존 계정 DB 도 로그인 때 보강(멱등)
         return path
-    path.parent.mkdir(parents=True, exist_ok=True)
     legacy = DEFAULT_DB_PATH
+    if legacy.is_file() and owner_uid:
+        _recover_hot_database(legacy, "content")
+        schema_compat.inspect_database(legacy, "content")
     if legacy.is_file() and owner_uid and _legacy_owner(legacy) == owner_uid:
+        schema_compat.inspect_database(legacy, "content")
+        legacy_trash = legacy.parent / "content_hub_trash.db"
+        if legacy_trash.is_file():
+            _recover_hot_database(legacy_trash, "trash")
+            schema_compat.inspect_database(legacy_trash, "trash")
         # 레거시 → 계정 DB 통째 이관(WAL 접은 일관 스냅샷). 휴지통도 같은 폴더로 복사.
+        path.parent.mkdir(parents=True, exist_ok=True)
         _copy_sqlite(legacy, path)
         legacy_trash = legacy.parent / "content_hub_trash.db"
         if legacy_trash.is_file():
@@ -93,6 +103,8 @@ def _migrate_db_location(path: Path) -> None:
     기본 경로를 쓰고 새 위치가 아직 없을 때만 이동(env 재정의·기존 데이터 보호)."""
     if path != DEFAULT_DB_PATH or path.exists() or not _LEGACY_DB_PATH.exists():
         return
+    _recover_hot_database(_LEGACY_DB_PATH, "content")
+    schema_compat.inspect_database(_LEGACY_DB_PATH, "content")
     path.parent.mkdir(parents=True, exist_ok=True)
     for suffix in ("", "-wal", "-shm"):
         src = Path(str(_LEGACY_DB_PATH) + suffix)
@@ -103,6 +115,8 @@ def _migrate_db_location(path: Path) -> None:
 
 def _connect(db_path: Path) -> sqlite3.Connection:
     """커넥션을 만들고 로컬-우선 워크로드에 맞는 PRAGMA 를 적용한다."""
+    if Path(str(db_path) + "-journal").is_file():
+        _recover_hot_database(db_path, "content")
     conn = sqlite3.connect(
         db_path,
         # 파이썬이 BEGIN 을 자동 삽입하지 않게 해 명시적 트랜잭션 제어를 가능케 한다.
@@ -110,10 +124,25 @@ def _connect(db_path: Path) -> sqlite3.Connection:
         check_same_thread=False,
     )
     conn.row_factory = sqlite3.Row
+    from .services import trash_transfer
+    trash_transfer.register_connection(conn, protocol=1)
+    try:
+        # Also guard direct repo/tool connections, before any write PRAGMA.
+        # Full boundary validation happens at initialization/restore; the cheap
+        # metadata check here avoids rewalking all indexes on every connection.
+        schema_compat.inspect_schema(conn, "content", validate_structure=False)
+    except BaseException:
+        conn.close()
+        raise
     # 커넥션마다 반드시 다시 켜야 하는 설정(SQLite 는 연결마다 꺼진 채 시작)
     conn.execute("PRAGMA foreign_keys = ON;")
     # WAL 과 함께 쓰는 권장 동기화 레벨 — 내구성과 속도의 균형
     conn.execute("PRAGMA synchronous = NORMAL;")
+    try:
+        trash_transfer.configure_connection(conn)
+    except BaseException:
+        conn.close()
+        raise
     # 동기화 쓰기(20초 주기)와 읽기가 겹쳐도 'database is locked' 즉시 실패 대신 대기.
     conn.execute("PRAGMA busy_timeout = 5000;")
     # 정렬/임시 B-tree(ORDER BY·GROUP BY)를 디스크 대신 메모리에서 — 목록 정렬 가속.
@@ -176,6 +205,9 @@ _pooled_holders: weakref.WeakSet[_PooledConnectionHolder] = weakref.WeakSet()
 _pool_epoch = 0
 _maintenance_active = False
 _active_connection_contexts = 0
+_share_operation: ContextVar[tuple[tuple[str, Optional[str]], int] | None] = ContextVar(
+    "share_operation", default=None
+)
 # 복원은 오래 열린 요청을 강제로 닫지 않는다. 이 시간 안에 끝나지 않으면 교체를 취소해 원본을
 # 지키고, 게이트를 풀어 해당 요청이 계속 처리되게 한다.
 _MAINTENANCE_DRAIN_SECONDS = 5.0
@@ -183,6 +215,72 @@ _MAINTENANCE_DRAIN_SECONDS = 5.0
 
 class DatabaseMaintenanceTimeout(RuntimeError):
     """진행 중 DB 요청이 유지보수 대기 시간 안에 끝나지 않았을 때의 안전 중단."""
+
+
+class DatabaseEpochChanged(RuntimeError):
+    """원격 결과는 불명이다. 이전 DB 문맥으로 새 DB에 정산하면 안 된다."""
+
+    code = "share_database_changed"
+
+
+def _check_share_epoch_locked() -> None:
+    operation = _share_operation.get()
+    if operation is not None and operation[1] != _pool_epoch:
+        raise DatabaseEpochChanged(DatabaseEpochChanged.code)
+
+
+def require_share_operation_epoch(*, wait: bool = False) -> None:
+    if _share_operation.get() is None:
+        return
+    with _pool_condition:
+        if wait:
+            while _maintenance_active and not getattr(_tls, "maintenance_owner", False):
+                _pool_condition.wait()
+        elif _maintenance_active and not getattr(_tls, "maintenance_owner", False):
+            raise DatabaseEpochChanged(DatabaseEpochChanged.code)
+        _check_share_epoch_locked()
+
+
+def capture_share_operation() -> tuple[tuple[str, Optional[str]], int]:
+    """계정/UID와 DB 세대를 transition → pool 순서의 같은 잠금 구간에서 캡처한다."""
+    from . import active_account
+
+    operation = _share_operation.get()
+    if operation is not None:
+        require_share_operation_epoch()
+        return operation
+    while True:
+        with active_account.transition_lock:
+            with _pool_condition:
+                if not _maintenance_active:
+                    return active_account.capture_account_pin(), _pool_epoch
+        # 유지보수 완료를 기다릴 때는 계정 전환 락을 잡지 않는다.
+        with _pool_condition:
+            while _maintenance_active:
+                _pool_condition.wait()
+
+
+@contextmanager
+def pinned_share_operation(operation=None):
+    """느린 IO 동안 락 없이 문맥만 유지한다. 중첩 작업은 원래 세대를 이어받는다."""
+    from . import active_account
+
+    operation = _share_operation.get() or operation or capture_share_operation()
+    token = _share_operation.set(operation)
+    try:
+        with active_account.pinned_account_scope(operation[0]):
+            require_share_operation_epoch()
+            try:
+                yield
+            except BaseException as exc:
+                # 취소/종료는 그대로 전파한다. 일반 오류만 새 DB 문맥의 결과 불명으로 바꾼다.
+                if isinstance(exc, Exception):
+                    require_share_operation_epoch()
+                raise
+            else:
+                require_share_operation_epoch()
+    finally:
+        _share_operation.reset(token)
 
 
 def maintenance_active() -> bool:
@@ -287,6 +385,7 @@ def _enter_connection_context() -> None:
     with _pool_condition:
         while _maintenance_active:
             _pool_condition.wait()
+        _check_share_epoch_locked()
         _active_connection_contexts += 1
 
 
@@ -299,6 +398,19 @@ def _leave_connection_context() -> None:
 
 
 @contextmanager
+def share_operation_write():
+    """공유 작업의 짧은 로컬 파일 확정만 교체와 직렬화한다. 원격 IO에는 쓰지 않는다."""
+    if _share_operation.get() is None:
+        yield
+        return
+    _enter_connection_context()
+    try:
+        yield
+    finally:
+        _leave_connection_context()
+
+
+@contextmanager
 def maintenance_gate(timeout: float = _MAINTENANCE_DRAIN_SECONDS) -> Iterator[None]:
     """DB 파일 교체 전용 게이트.
 
@@ -307,6 +419,9 @@ def maintenance_gate(timeout: float = _MAINTENANCE_DRAIN_SECONDS) -> Iterator[No
     flush_pool() → checkpoint/sidecar 정리 → 파일 교체 → init_db 순서만 수행해야 한다.
     """
     global _maintenance_active
+    if getattr(_tls, "maintenance_owner", False):
+        yield
+        return
     with _pool_condition:
         while _maintenance_active:
             _pool_condition.wait()
@@ -322,11 +437,24 @@ def maintenance_gate(timeout: float = _MAINTENANCE_DRAIN_SECONDS) -> Iterator[No
                 )
             _pool_condition.wait(remaining)
     try:
+        _tls.maintenance_owner = True
         yield
     finally:
+        _tls.maintenance_owner = False
         with _pool_condition:
             _maintenance_active = False
             _pool_condition.notify_all()
+
+
+def _recover_hot_database(path: Path, kind: str) -> None:
+    journal = Path(str(path) + "-journal")
+    if not journal.is_file() or not journal.stat().st_size:
+        return
+    with maintenance_gate():
+        with _pool_condition:
+            _check_share_epoch_locked()
+        flush_pool()
+        schema_compat.recover_compatible_database(path, kind)
 
 
 @contextmanager
@@ -336,11 +464,19 @@ def _get_connection_sqlite(db_path: Path | None = None) -> Iterator[sqlite3.Conn
     요청 경로(db_path=None)면 스레드별 풀 커넥션을 재사용(닫지 않음, 예외 시 폐기). 명시 경로나
     풀 비활성(CONTENT_HUB_DB_POOL=0)이면 1회용으로 열고 항상 닫는다. 정상 종료=commit, 예외=rollback.
     """
+    require_share_operation_epoch(wait=True)
+    _recover_hot_database(db_path or get_db_path(), "content")
     _enter_connection_context()
     pooled = db_path is None and _POOL_ENABLED
     conn: sqlite3.Connection | None = None
     try:
         conn = _pooled_conn(get_db_path()) if pooled else _connect(db_path or get_db_path())
+        if pooled:
+            # A long-lived connection must not keep writing after another
+            # supported process raises the writer floor in the same file.
+            schema_compat.inspect_schema(conn, "content", validate_structure=False)
+            from .services import trash_transfer
+            trash_transfer.configure_connection(conn)
         yield conn
         if conn.in_transaction:
             conn.execute("COMMIT;")
@@ -369,6 +505,18 @@ def _get_connection_sqlite(db_path: Path | None = None) -> Iterator[sqlite3.Conn
             _leave_connection_context()
 
 
+@contextmanager
+def open_transfer_connections(path: Path | None = None):
+    """B1 composition root: keep account selection and connection lifetime here."""
+    from . import active_account
+    from .services import trash_transfer
+    with active_account.transition_lock:
+        selected = Path(path) if path is not None else get_db_path()
+        main_context = closing(_connect(selected)) if path is not None else get_connection()
+        with trash_transfer.connections(main_context, selected) as pair:
+            yield pair
+
+
 def init_db(db_path: Path | None = None) -> Path:
     """schema.sql 을 적용해 DB 를 초기화한다(멱등). 적용된 DB 경로를 반환."""
     _assert_supported_backend()
@@ -376,15 +524,50 @@ def init_db(db_path: Path | None = None) -> Path:
     if not SCHEMA_PATH.exists():
         raise FileNotFoundError(f"스키마 파일을 찾을 수 없음: {SCHEMA_PATH}")
 
+    if path.is_file():
+        _recover_hot_database(path, "content")
+        schema_compat.inspect_database(path, "content")
+    trash_path = path.parent / "content_hub_trash.db"
+    _recover_hot_database(trash_path, "trash")
     path.parent.mkdir(parents=True, exist_ok=True)
     _migrate_db_location(path)  # 연결 전에 구버전 위치 → 새 위치 이동
     schema_sql = SCHEMA_PATH.read_text(encoding="utf-8")
 
     conn = _connect(path)
     try:
+        from .services import trash_transfer
+        if trash_transfer.enabled(conn):
+            trash_transfer.reconcile(lambda: open_transfer_connections(path))
         db_migrations._pre_migrate(conn)  # ★ executescript 이전 — 테이블 리네임(빈 테이블 충돌 회피)
         conn.executescript(schema_sql)
         db_migrations._migrate(conn)
+        # Existing migrations may have committed earlier steps. Only register
+        # their validated result; do not claim the whole legacy path is atomic.
+        schema_compat.record_baseline(conn, "content_core")
+        from . import db_share_commands
+        db_share_commands.migrate(conn)
+        conn.execute("INSERT INTO app_setting(key,value) VALUES('share_db_generation',?) ON CONFLICT(key) DO NOTHING",
+                     (secrets.token_hex(16),))
+        from . import db_asset_sync
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            db_asset_sync.migrate(conn)
+            schema_compat.record_baseline_in_transaction(conn, "content_asset_sync")
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        from . import db_asset_destination
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            db_asset_destination.migrate(conn)
+            schema_compat.record_baseline_in_transaction(conn, "content_asset_destination")
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        if trash_transfer.enabled(conn):
+            trash_transfer.guard_tables(conn, "content")
     finally:
         conn.close()
     return path

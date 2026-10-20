@@ -1,6 +1,6 @@
 """docs/CODE_MAP.md 와 저장소를 양방향으로 대조한다(읽기 전용, 수동 도구).
 
-  1. 문서에 백틱으로 적힌 코드 파일 이름이 전부 실제 추적 파일인가  (지어낸·옮겨진 파일)
+  1. 문서에 백틱으로 적힌 코드 파일 이름이 전부 실제 소스인가  (지어낸·옮겨진 파일)
   2. 코드 파일이 전부 문서에 이름으로 실려 있는가                  (지도에서 빠진 파일)
 
 사용:  python tools/check_code_map.py [문서 경로]
@@ -22,7 +22,7 @@ def main() -> int:
     doc_path = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "docs" / "CODE_MAP.md"
     doc = doc_path.read_text(encoding="utf-8")
     tracked = subprocess.run(
-        ["git", "-C", str(ROOT), "ls-files"], capture_output=True, text=True, encoding="utf-8", check=True
+        ["git", "-C", str(ROOT), "ls-files", "--cached", "--others", "--exclude-standard"], capture_output=True, text=True, encoding="utf-8", check=True
     ).stdout.splitlines()
 
     tokens = {

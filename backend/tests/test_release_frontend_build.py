@@ -151,6 +151,7 @@ def _archive_probe(
     archive = tmp_path / "fixture.zip"
     required = [
         "MV_agent.bat", "update_release.bat", "run_release_update.ps1", "update_release_worker.bat",
+        "update_release_contract.ps1", "installer-capabilities.json",
         "agent_push.py", "run_agent_session.py", "hf_cli_version.txt", "mvhub.ico",
         "backend/serve.py", "backend/app/main.py", "backend/app/routers/release_update.py",
         "backend/app/services/release_update.py", "backend/requirements.txt", "frontend/dist/index.html",

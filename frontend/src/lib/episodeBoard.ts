@@ -1,14 +1,15 @@
 // 공유 & 리뷰 탭의 폴더 카드 화면 — 줄·카드·표의 순수 규칙.
 //  에피소드 화면(프로젝트 맨 위처럼 '들어가는' 폴더가 놓인 단계): 리스트 보기 = 에피소드마다 가로 한 줄, 그리드 보기 = 컷 띠가 붙은 카드
-//  (Jay 2026-10-13). 컷 화면(겹친 종이 카드)과 확실히 다르게 보이려는 것이다.
-//  컷 화면의 리스트(2026-10-13 오후): 리스트 단추 한 번 = 같은 줄 모양(띠에는 컷 대신 그 컷의 생성물), 한 번 더 = 표. 그리드는 겹친 종이 카드 그대로.
+//  (Jay 2026-10-13). 컷 화면도 같은 큰 카드를 쓰되 띠에는 컷 대신 그 컷의 생성물을 싣는다.
+//  리스트 단추 한 번 = 줄, 한 번 더 = 표.
 //  숫자(영상 수·대표 정한 컷·마지막 공유·검토 개수·작업자)와 띠는 서버가 알려 줄 때만 그린다 — 옛 공유 서버면 그 표시만 빠진다.
 import type { FolderCard, FolderCardChild, FolderCardTake } from "../types";
 
 export type EpisodeLayout = "list" | "grid" | "table";
 
 // 컷 띠에 그리는 컷 수 — 리스트는 두 줄(4칸 × 2, 마지막 칸은 '+N'), 그리드는 한 줄. 표에는 띠가 없다.
-const STRIP_SHOWN: Record<EpisodeLayout, number> = { list: 7, grid: 5, table: 0 };
+export const STRIP_SHOWN: Record<EpisodeLayout, number> = { list: 7, grid: 5, table: 0 };
+export const EPISODE_CARD_WIDTH = 340;
 // 컷 줄의 생성물 띠 — 두 줄(5칸 × 2). 다 못 실으면 마지막 칸은 '+N'.
 const TAKES_SHOWN = 10;
 
@@ -17,11 +18,10 @@ export function isEpisodeLevel(folders: readonly FolderCard[]): boolean {
   return folders.some((folder) => (folder.subfolders ?? 0) > 0);
 }
 
-/** 이 화면을 어느 모양으로 그리나 — 리스트 단추 한 번 = 줄, 한 번 더(table) = 표. 그리드는 에피소드 화면만 카드 모양이고
- *  컷 화면은 겹친 종이 카드 그대로다(null). */
-export function boardView(folders: readonly FolderCard[], layout: "grid" | "list", table: boolean): EpisodeLayout | null {
+/** 이 화면을 어느 모양으로 그리나 — 리스트 단추 한 번 = 줄, 한 번 더(table) = 표. 그리드는 모든 단계에서 같은 큰 카드. */
+export function boardView(_folders: readonly FolderCard[], layout: "grid" | "list", table: boolean): EpisodeLayout {
   if (layout === "list") return table ? "table" : "list";
-  return isEpisodeLevel(folders) ? "grid" : null;
+  return "grid";
 }
 
 /** 줄·카드에 크게 얹는 번호 — 이름의 마지막 숫자 덩어리를 **쓴 그대로**("e003" → "003", "C0010" → "0010" — Jay 2026-10-13 오후. 전엔 두 자리로
@@ -55,9 +55,13 @@ export interface TakeStrip {
   more: number; // 띠에 못 실은 생성물 수 — '+N' 칸(누르면 그 컷 폴더로 간다)
 }
 
-/** 컷(하위 폴더 없음)의 생성물 띠 — 서버가 미리보기를 안 주면(옛 서버) null. 다 실리면 그대로, 못 실으면 한 칸을 '+N' 에 내준다. */
-export function takesOf(folder: FolderCard): TakeStrip | null {
+/** 컷의 생성물 띠 — 옛 서버는 null. 그리드는 5장 + 잔여 수, 리스트는 기존 10칸 중 마지막을 '+N'에 내준다. */
+export function takesOf(folder: FolderCard, layout: EpisodeLayout = "list"): TakeStrip | null {
   if (!folder.takes || (folder.subfolders ?? 0) > 0) return null;
+  if (layout === "grid") {
+    const takes = folder.takes.slice(0, STRIP_SHOWN.grid);
+    return { takes, more: Math.max(0, folder.count - takes.length) };
+  }
   if (folder.count <= folder.takes.length) return { takes: folder.takes.slice(0, TAKES_SHOWN), more: 0 };
   const takes = folder.takes.slice(0, TAKES_SHOWN - 1);
   return { takes, more: folder.count - takes.length };

@@ -13,6 +13,7 @@ import { matchesWorkspaceFilter, sharedWorkspaceFilter, workspaceViewKey } from 
 import type { TeamFreshItem } from "./projectApi";
 import { visibleProjectFolderRoots } from "./projectFolderTree";
 import { getTeamBase, getTeamSeenVersion, isAckedFor, subscribeTeamSeen } from "./teamSeen";
+import { getGenerationReadModel, storeGenerationRows } from "../features/library/api";
 
 export const EDIT_LIST_CAP = 2000; // ponytail: 시퀀스 하나에 이보다 많으면 '최대 2,000건 표시' — 넘는 팀이 생기면 컷 단위 조회로
 
@@ -40,9 +41,10 @@ export interface EditList {
   //  출렁이지 않는다). 잘린 결과(capped)로 바뀌면 거짓이다.
   known: boolean;
   startedAt: number; // 지금 든 gens 를 낸 조회가 출발한 순번(editTick) — 0 = 아직 받은 것 없음
+  settledSeq: Record<string, number>; // 두 태그를 확인한 부분 조회의 출발 순번(카드별)
 }
 
-const EMPTY_LIST: EditList = { state: "idle", gens: [], error: null, complete: false, known: false, startedAt: 0 };
+const EMPTY_LIST: EditList = { state: "idle", gens: [], error: null, complete: false, known: false, startedAt: 0, settledSeq: {} };
 
 export function useEditGenerations({
   authKey,
@@ -56,19 +58,47 @@ export function useEditGenerations({
   projectId: string | null;
   seq: string | null;
   allWorkspaces?: boolean;
-}): EditList & { reload: () => void } {
+}): EditList & { reload: () => void; reloadIds: (ids: string[]) => void } {
   const ready = !!projectId && !!seq && (allWorkspaces || editWorkspaceReady(workspace));
   const ctx = JSON.stringify([authKey, workspaceViewKey(workspace), allWorkspaces, projectId, seq]);
   const [held, setHeld] = useState<{ ctx: string } & EditList>({ ctx: "", ...EMPTY_LIST });
-  const [nonce, reload] = useReducer((n: number) => n + 1, 0);
+  const [nonce, requestFull] = useReducer((n: number) => n + 1, 0);
+  const [batchNonce, requestBatch] = useReducer((n: number) => n + 1, 0);
   const runRef = useRef(0);
+  const currentCtx = useRef(ctx);
+  currentCtx.current = ctx;
+  const batch = useRef<{ ctx: string; ids: string[]; run: number } | null>(null);
+  const pending = useRef({ ctx, ids: new Set<string>() });
+  if (pending.current.ctx !== ctx) {
+    pending.current = { ctx, ids: new Set() };
+    batch.current = null; // 옛 요청이 새 문맥의 대기열을 막지 않는다.
+  }
+  const fullPending = useRef(true);
+  const reload = useCallback(() => {
+    fullPending.current = true;
+    // 예약 즉시 무효화한다 — effect가 출발하기 전 도착한 부분 응답도 옛 응답이다.
+    runRef.current++;
+    requestFull();
+  }, []);
+  const reloadIds = useCallback((ids: string[]) => {
+    if (!partialCapability.current.supported) { if (ids.length) reload(); return; }
+    ids.forEach((id) => pending.current.ids.add(id));
+    requestBatch();
+  }, [reload]);
   const workspaceRef = useRef(workspace);
   workspaceRef.current = workspace;
+  const records = getGenerationReadModel(authKey, "team");
+  const partialCapability = useRef({ records, current: records.captureSession(), supported: true });
+  if (partialCapability.current.records !== records || !partialCapability.current.current()) {
+    partialCapability.current = { records, current: records.captureSession(), supported: true };
+  }
 
   useEffect(() => {
     const run = ++runRef.current;
     if (!ready) return;
-    const alive = () => run === runRef.current;
+    fullPending.current = true;
+    const read = records.beginRead();
+    const alive = () => run === runRef.current && currentCtx.current === ctx && records.isCurrent(read);
     const startedAt = editTick();
     // 같은 문맥의 마지막 성공 결과는 다시 받는 동안에도, 실패해도 그대로 둔다.
     // 다만 다시 받는 동안은 '끝까지 받음'이 아니다 — 그 사이 여기 없는 클립을 '없음'으로 판정하지 않는다.
@@ -92,7 +122,7 @@ export function useEditGenerations({
           break;
         }
         rows += page.length;
-        gens.push(...page.filter((gen) => isUsableGen(gen) && matchesWorkspaceFilter(gen, query)));
+        gens.push(...storeGenerationRows(records, page, read).filter((gen) => isUsableGen(gen) && matchesWorkspaceFilter(gen, query)));
         // 커서와 끝 판정은 거르기 전 원본 쪽으로 — 쓸 수 있는 것이 0개인 쪽에서 멈추면 뒤가 통째로 빠진다.
         const last = page[page.length - 1];
         if (!last || page.length < GEN_PAGE) break;
@@ -100,23 +130,75 @@ export function useEditGenerations({
       }
       // known 은 **지금 든 gens** 가 온전한가다 — 잘린 결과로 바꿔 넣었으면 전에 끝까지 받았더라도 거짓이다
       //  (뒤로 밀려 빠진 카드만 있는 폴더를 '빈 폴더'로 숨기게 된다 — Codex 코드 리뷰).
-      setHeld({ ctx, state: capped ? "capped" : "ok", gens, error: null, complete: !capped, known: !capped, startedAt });
+      setHeld({ ctx, state: capped ? "capped" : "ok", gens, error: null, complete: !capped, known: !capped, startedAt, settledSeq: {} });
     })().catch((error) => {
       if (!alive()) return;
       setHeld((prev) => ({
         ctx, state: "error", error: errorText(error),
         gens: prev.ctx === ctx ? prev.gens : [], complete: false, known: prev.ctx === ctx && prev.known,
         startedAt: prev.ctx === ctx ? prev.startedAt : 0, // 실패는 새 gens 가 아니다
+        settledSeq: prev.ctx === ctx ? prev.settledSeq : {},
       }));
+    }).finally(() => {
+      if (!alive()) return;
+      fullPending.current = false;
+      requestBatch();
     });
     return () => {
       runRef.current++;
     };
-  }, [ctx, ready, projectId, seq, allWorkspaces, nonce]);
+  }, [ctx, ready, projectId, seq, allWorkspaces, nonce, records]);
+
+  useEffect(() => {
+    if (!ready || !partialCapability.current.supported || fullPending.current || held.ctx !== ctx || !held.startedAt || batch.current || !pending.current.ids.size) return;
+    const queue = pending.current;
+    const members = new Set(held.gens.map((gen) => gen.id));
+    const ids = [...pending.current.ids].filter((id) => members.has(id));
+    pending.current.ids.clear();
+    if (!ids.length) return;
+    if (ids.some(id => !records.read(id))) { reload(); return; }
+    const requested = new Set(ids);
+    const attempt = { ctx, ids, run: runRef.current };
+    batch.current = attempt;
+    const alive = () => pending.current === queue && currentCtx.current === ctx && runRef.current === attempt.run && !fullPending.current;
+    const startedAt = editTick();
+    const read = records.beginRead(["tags", "auto_tags"]);
+    let capabilityFallback = false;
+    void api.getGenerationsBatch(ids, () => {
+      if (!alive()) throw new Error("Edit tag query superseded");
+    }, { allowPartial: true, authority: "team" }).then((result) => {
+      if (!alive() || !records.isCurrent(read)) return;
+      const unavailable = new Set([...(result.missing ?? []), ...(result.unavailable ?? [])]);
+      const updated = new Set(records.store(Object.fromEntries(Object.entries(result.items).filter(([id, item]) =>
+        requested.has(id) && item.id === id && !unavailable.has(id) && Array.isArray(item.tags) && Array.isArray(item.auto_tags))), read));
+      setHeld((prev) => {
+        if (prev.ctx !== ctx || !alive()) return prev;
+        const settledSeq = { ...prev.settledSeq };
+        const gens = prev.gens.map((gen) => {
+          const item = records.read(gen.id);
+          if (!updated.has(gen.id) || !item || item.id !== gen.id) return gen;
+          settledSeq[gen.id] = startedAt;
+          return { ...gen, tags: item.tags, auto_tags: item.auto_tags };
+        });
+        return { ...prev, gens, settledSeq };
+      });
+    }).catch((error) => {
+      if (alive() && (error as { status?: number } | null)?.status === 409) {
+        capabilityFallback = true; partialCapability.current.supported = false; reload();
+      }
+      // 다른 실패는 기존 목록과 덧입힘을 보존한다.
+    }).finally(() => {
+      if (batch.current !== attempt) return;
+      if (!capabilityFallback && pending.current === queue && !alive()) ids.forEach((id) => queue.ids.add(id));
+      batch.current = null;
+      requestBatch();
+    });
+  }, [ctx, ready, held, batchNonce, records, reload]);
 
   const list = !ready ? EMPTY_LIST : held.ctx === ctx ? held : { ...EMPTY_LIST, state: "loading" as const };
   return {
-    state: list.state, gens: list.gens, error: list.error, complete: list.complete, known: list.known, startedAt: list.startedAt, reload,
+    state: list.state, gens: list.gens, error: list.error, complete: list.complete, known: list.known, startedAt: list.startedAt,
+    settledSeq: list.settledSeq, reload, reloadIds,
   };
 }
 
@@ -168,6 +250,7 @@ export function useEditProjects({
   // 폴더 옆 숫자(개수·최종·보류·새 항목)만 다시 받는다 — 디스크 폴더는 다시 읽지 않고, 받는 동안 트리를 치우지도 않는다.
   reloadCounts: () => void;
   freshByProject: Record<string, number>; // 프로젝트 행의 +N(마지막 확인 이후 새로 공유된 것)
+  reloadFresh: () => void;
 } {
   const [nonce, reload] = useReducer((n: number) => n + 1, 0);
   const workspaceId = workspace.scope === "team" ? workspace.id || undefined : undefined;
@@ -308,6 +391,7 @@ export function useEditProjects({
     reload,
     reloadCounts,
     freshByProject: unseen.byProject,
+    reloadFresh: loadFresh,
   };
 }
 

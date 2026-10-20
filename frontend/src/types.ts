@@ -1,4 +1,5 @@
 // 백엔드 API 응답 타입 (backend/app/models.py 와 1:1)
+import type { AssetReferenceIdentity } from "./shared/contracts/assets";
 
 export type MediaType = "image" | "video";
 export type GenStatus = "pending" | "running" | "done" | "failed" | "nsfw";
@@ -10,7 +11,7 @@ export interface WorkspaceContext {
   name: string | null;
 }
 
-export interface Asset {
+export interface Asset extends AssetReferenceIdentity {
   id: string;
   generation_id: string;
   type: MediaType;
@@ -20,7 +21,7 @@ export interface Asset {
   cached: boolean;
 }
 
-export interface Reference {
+export interface Reference extends AssetReferenceIdentity {
   id: string;
   type: "image" | "video" | "audio";
   file_path: string;
@@ -82,6 +83,10 @@ export interface Generation {
   is_held?: boolean; // 공유 검토 보류 — shared && !is_final 에서만 유효
   final_by?: string | null; // 최종 지정자 creator_uid
   mirror_pending?: boolean; // 서버 성공·로컬 미러 대기 — 실패가 아니며 재조회 후 자동 수렴
+  share_revision?: number;
+  remote_share_revision?: number | null;
+  // 클라이언트 전용: 팀 조회/확정 응답의 번호만 전송하며 계정·서버 전환 뒤에는 폐기한다.
+  _shareSnapshot?: { revision?: number; isCurrent: () => boolean };
   depth?: number; // 히스토리 형제 전용: 자기 'derived' 체인 깊이(루트=0) — 깊이별 그룹화·연결 방향용
   _comfyPending?: boolean; // 클라이언트 전용: comfy 실행 중 '내 작업'에 잠깐 띄우는 임시 카드(Comfy 로고). 서버 미저장.
   media_preservation_reason?: "shared" | "final" | "manual" | "admin" | null;
@@ -120,6 +125,8 @@ export interface HistoryGraph {
 
 // 프로젝트(작업 묶음) — 공유·이동의 단위. Assets 패널의 폴더(ProjectsInfo)와 별개.
 export interface Project {
+  asset_root_path?: string | null;
+  asset_root_revision?: string;
   id: string;
   name: string;
   kind: string; // 'team' | 'personal'

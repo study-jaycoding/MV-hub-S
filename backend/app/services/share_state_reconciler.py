@@ -1,7 +1,7 @@
 """공유 서버 권위 상태를 로컬 공유/골드 미러에 수렴시키는 전용 워커.
 
-원장은 명령 재생 목록이 아니다. 각 항목을 처리할 때 서버의 현재 상태를 다시 읽고 그 관측값만
-로컬에 적용한다. 예외는 합성 finalize의 발행만 성공한 상태로, 설계된 조건부 정리만 수행한다.
+구서버 원장은 현재 상태 관측만 한다. receipt 지원 서버의 명령은 저장된 입력 그대로 재전송하고,
+역사적 receipt와 별도로 받은 현재 관측값만 로컬에 적용한다. 예외는 합성 finalize의 발행만 성공한 상태로, 설계된 조건부 정리만 수행한다.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from urllib.parse import quote
 
 from fastapi import HTTPException
 
-from .. import active_account, repo
+from .. import active_account, db, repo
 from .operational_logging import log_event
 
 
@@ -542,6 +542,34 @@ async def _process_composite_partial(
     return await apply(observed, status="rejected")
 
 
+async def _process_modern_composite_partial(intent, claim_token, server_origin, token,
+                                            observed, publish_revision, held):
+    """Compensate only the revision created by this composite's publish step."""
+    from . import share_commands
+    if observed.get("is_final"):
+        return await _apply_or_retry(intent, claim_token, observed, status="converged", held_anchors=held)
+    if intent.get("base_shared") or not observed.get("shared"):
+        return await _apply_or_retry(intent, claim_token, observed, status="rejected", held_anchors=held)
+    previous = json.loads(intent["remote_command_json"])
+    command = share_commands.build_command(f"{intent['intent_id']}:{intent['intent_seq']}:cleanup",
+        previous["target_id"], "unpublish", previous, expected_revision=publish_revision)
+    ref = dict(intent)
+    if not await asyncio.to_thread(repo.store_share_command, ref, command):
+        return repo.SHARE_STATE_APPLY_CAS_LOST
+    try:
+        response = await asyncio.to_thread(share_commands.replay, _proxy, ref, server_origin, token)
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            raise _RemoteAuthRequired() from exc
+        if exc.status_code not in {403, 404, 409}:
+            raise _RemoteObservationError("remote_receipt_unavailable") from exc
+        observed = await asyncio.to_thread(_observe_remote_state, server_origin, token, intent)
+        return await _apply_or_retry(intent, claim_token, observed, status="superseded", held_anchors=held)
+    if not await asyncio.to_thread(repo.store_share_command, ref, command, response["receipt"]):
+        return repo.SHARE_STATE_APPLY_CAS_LOST
+    return await _apply_or_retry(intent, claim_token, response["current"], status="rejected", held_anchors=held)
+
+
 async def _process_claimed_intent(
     intent: Mapping[str, Any],
     claim_token: str,
@@ -592,6 +620,36 @@ async def _process_claimed_intent(
             )
             if not still_claimed:
                 return repo.SHARE_STATE_APPLY_CAS_LOST
+            if intent.get("remote_command_json"):
+                from . import share_commands
+                command = json.loads(intent["remote_command_json"])
+                composite = intent.get("operation_kind") == "composite_finalize" and intent.get("desired_final")
+                try:
+                    response = await asyncio.to_thread(share_commands.replay, _proxy, intent, server_origin, token)
+                except HTTPException as exc:
+                    if exc.status_code == 401:
+                        raise _RemoteAuthRequired() from exc
+                    if exc.status_code in {403, 404, 409}:
+                        if composite and command["command_kind"] == "finalize":
+                            observed = await asyncio.to_thread(_observe_remote_state, server_origin, token, intent)
+                            return await _process_modern_composite_partial(
+                                intent, claim_token, server_origin, token, observed, command["expected_revision"], held)
+                        await asyncio.to_thread(functools.partial(
+                            repo.transition_share_state_intent, intent["intent_id"], intent["intent_seq"],
+                            claim_token, "rejected", last_error_code=f"remote_command_{exc.status_code}"))
+                        return "rejected"
+                    raise _RemoteObservationError("remote_receipt_unavailable") from exc
+                command = json.loads(intent["remote_command_json"])
+                saved = await asyncio.to_thread(repo.store_share_command, dict(intent), command, response["receipt"])
+                if not saved:
+                    return repo.SHARE_STATE_APPLY_CAS_LOST
+                observed = dict(response["current"])
+                if composite and command["command_kind"] == "publish_bundle":
+                    return await _process_modern_composite_partial(
+                        intent, claim_token, server_origin, token, observed, response["receipt"]["share_revision"], held)
+                status = _terminal_status({**intent, "status": "pending"}, observed)
+                return await _apply_or_retry(intent, claim_token, observed, status=status,
+                                             link_job_id=_link_job_id(intent, observed), held_anchors=held)
             if len(held) > 1:
                 # 묶음 관측은 원장의 키만 쥔 채 한 것이다. 이름이 둘 이상이면 모두 쥔 지금 다시 본 값만 판정과 적용에 쓴다.
                 # 이름이 하나뿐인 생성물은 그 키의 조작이 곧 이 원장의 새 seq 라, 전처럼 CAS 가 낡은 관측을 막는다.
@@ -702,6 +760,18 @@ async def run_share_state_reconciliation_cycle(
 ) -> dict[str, int]:
     """due 원장 한 묶음을 실제 sleep 없이 한 번 처리한다(서비스 테스트 진입점)."""
     counts: dict[str, int] = {"claimed": 0}
+    try:
+        operation = await asyncio.to_thread(db.capture_share_operation)
+        with db.pinned_share_operation(operation):
+            return await _run_pinned_reconciliation_cycle(claim_token, counts)
+    except db.DatabaseEpochChanged:
+        # 원격 처리는 이미 됐을 수 있다. 새 DB에 실패/해제 기록도 하지 않는다.
+        return {"claimed": counts["claimed"], "database_changed": 1}
+
+
+async def _run_pinned_reconciliation_cycle(
+    claim_token: str | None, counts: dict[str, int],
+) -> dict[str, int]:
     account_key = await asyncio.to_thread(active_account.account_key)
     account_override = active_account.set_override(account_key or "")
     try:
@@ -787,6 +857,8 @@ async def run_share_state_reconciliation_cycle(
                     )
                 counts["retry"] = len(processable)
                 observed_by_intent = {}
+            except db.DatabaseEpochChanged:
+                raise
             except Exception:  # noqa: BLE001 — batch 관측 결함도 원장 상태를 보존하고 재시도한다.
                 for intent in processable:
                     try:
@@ -833,6 +905,8 @@ async def run_share_state_reconciliation_cycle(
                 )
                 counts[result] = counts.get(result, 0) + 1
             except asyncio.CancelledError:
+                raise
+            except db.DatabaseEpochChanged:
                 raise
             except Exception:  # noqa: BLE001 — 한 행의 DB 장애가 뒤 항목까지 막지 않는다.
                 log_event(
@@ -905,4 +979,5 @@ periodic_share_state_reconciler = PeriodicShareStateReconciler()
 
 
 def kick_share_state_reconciler() -> None:
+    db.require_share_operation_epoch()
     periodic_share_state_reconciler.kick()

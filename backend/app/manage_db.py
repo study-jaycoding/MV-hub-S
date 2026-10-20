@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from .config import DATA_DIR
+from . import schema_compat
 from .task_activity import merge_task_activity_location, normalize_task_activity_at
 
 # 콘텐츠 DB(content_hub.db) 와 같은 폴더에 두되 파일만 분리 — 백업은 폴더 통째로 한 번에 된다.
@@ -137,13 +138,19 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
 
 def init_manage_db() -> Path:
     """manage_hub.db 를 만들고 스키마를 적용한다(멱등). 시작 시 MANAGE_ENABLED 일 때만 호출."""
+    if MANAGE_DB_PATH.is_file():
+        from .db import _recover_hot_database
+        _recover_hot_database(MANAGE_DB_PATH, "manage")
+        schema_compat.inspect_database(MANAGE_DB_PATH, "manage")
     MANAGE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(MANAGE_DB_PATH)
     try:
+        schema_compat.inspect_schema(conn, "manage")
         conn.execute("PRAGMA journal_mode=WAL")  # 동시 읽기(집계 조회) 중 쓰기 허용
         conn.executescript(_SCHEMA)
         _migrate_schema(conn)
         conn.commit()
+        schema_compat.record_baseline(conn, "manage")
     finally:
         conn.close()
     return MANAGE_DB_PATH
@@ -179,9 +186,13 @@ def backfill_workspace_names(workspaces: list[dict[str, Any]]) -> int:
 @contextmanager
 def get_connection() -> Iterator[sqlite3.Connection]:
     """매니징 DB 전용 커넥션(1회용). 정상 종료=commit, 예외=rollback. 콘텐츠 풀과 완전 별개."""
+    if Path(str(MANAGE_DB_PATH) + "-journal").is_file():
+        from .db import _recover_hot_database
+        _recover_hot_database(MANAGE_DB_PATH, "manage")
     conn = sqlite3.connect(MANAGE_DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
+        schema_compat.inspect_schema(conn, "manage", validate_structure=False)
         yield conn
         conn.commit()
     except Exception:
