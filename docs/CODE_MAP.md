@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-10-15
+updated: 2026-10-20
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -26,6 +26,31 @@ updated: 2026-10-15
 ---
 
 ## 1. 빠른 찾기
+
+### dev2 구조 개편의 업무별 입구 — 구현 중
+
+구조·계약·단계별 통과 조건은 [서비스 구조 설계 §11~20](status/서비스구조_근본진단_2026-10-18.md)을 따른다. 아래는 실제 추가된 소스의 책임이며 운영 배포 완료를 뜻하지 않는다.
+
+| 업무 | 소유 코드와 호출 입구 |
+|---|---|
+| 계정·서버 세대 | `frontend/src/app/operationContext.ts`: 비밀값을 DTO에 담지 않고 세대 변경을 감지하며 진행 중 제출·조회 적용을 차단 |
+| 생성 접수·목적지 반영 | `frontend/src/shared/contracts/generation.ts`(자료 계약), `frontend/src/features/generation/submit.ts`(접수 분류), feature의 `api.ts`(공개 입구). Spotlight·Scene·MCP는 입력·실행 순서를 소유 |
+| 화면 간 조회 일치 | `frontend/src/features/library/readModel.ts`(필드 순서·늦은 응답), `frontend/src/features/library/readModels.ts`(계정/출처별 인스턴스), `frontend/src/features/library/changes.ts`(순수 변경 신호). 외부에서는 feature의 `api.ts` 사용 |
+| 캔버스 명령·세션 | `frontend/src/features/canvas/session.ts`(영속 대상/명령), `frontend/src/features/canvas/useCanvasSession.ts`(열린 문서·수신/flush/dispose), `frontend/src/features/canvas/edits.ts`(사용자·파생 명령 변환), `frontend/src/features/canvas/gestures.ts`(대상 세대에 묶인 이동·크기/취소·Undo), `frontend/src/features/canvas/comfyCommands.ts`(실행·저장·복구 결과의 현재 카드 병합), `frontend/src/features/canvas/references.ts`(연결 참조 계산), `frontend/src/features/canvas/assetRefs.ts`(순수 참조 교체). 외부는 feature의 `api.ts`; 기존 Undo/IDB 엔진 하나를 보존 |
+| 타임라인 명령·세션 | `frontend/src/features/timeline/session.ts`: 문서 세대·명시 명령·닫기 전 수신 길이 flush. 외부는 feature의 `api.ts`; 기존 CAS/Undo 저장 엔진 유지 |
+| 공유 상태 명령 | `backend/app/usecases/share.py`(트랜잭션·권한·CAS·receipt), `backend/app/repo/share_commands.py`(원장 SQL), `backend/app/services/share_commands.py`(원격 capability/고정 재전송), `backend/app/routers/_share_authority.py`(HTTP 권한 어댑터), `backend/app/db_share_commands.py`(content v2 적용). 기존 share/publish 라우터가 입구 |
+| 자료 내용 ID·로컬 우선 자동 보관 | `backend/app/db_asset_sync.py`(추가 스키마), `backend/app/repo/asset_sync.py`(내용·위치·영속 대기열), `backend/app/services/asset_sync.py`(바이트 검증·전송), `backend/app/routers/asset_sync.py`(권한·스트리밍 API), `frontend/src/shared/contracts/assets.ts`(공유 자료 계약). 기존 캡처·반입 입구와 캔버스 공개 포트를 재사용 |
+| 자료 위치 읽기·타 PC 캐시 | `backend/app/repo/asset_locations.py`(owner/project/CID에 맞는 ready 위치의 배치 읽기 투영), `backend/app/shared_server_config.py`(순환 없는 서버 기본값), `backend/app/services/asset_sync_cache.py`(권한 확인 후 계정·서버별 검증 캐시와 동시 다운로드 합치기). 실행 payload와 DB 원출처는 바꾸지 않음 |
+| 폴더 드롭의 로컬 우선 보관 | `backend/app/db_asset_destination.py`(지정 폴더용 별도 대기열), `backend/app/services/asset_destination.py`(등록 루트·권한 재확인 후 비덮어쓰기 전송), `frontend/src/components/assets/useAssetDropImport.ts`(로컬 저장 응답·보관 완료 목록 갱신), `frontend/src/components/assets/LocalImportCards.tsx`(실제 imports 원본으로 즉시 미리보기·참조 사용). 캡처의 imp_cap 목적지와 구분 |
+| 생성 결과와 실제 참조 원본 묶음 | `backend/app/services/asset_bundle.py`(내용 ID·해시 확인 후 ZIP/manifest), `frontend/src/lib/generationBundle.ts`(계정 문맥을 고정한 다운로드), `frontend/src/components/GenerationBundleButton.tsx`(누락 경고·명시적인 부분 다운로드), `backend/app/routers/asset_sync.py`(기존 조회 권한 적용) |
+| Seedance 2.5 Draft 생성·원본 완성 | `backend/app/services/seedance_draft.py`(새 생성과 원격 작업 완성의 순수 규칙), `frontend/src/lib/seedanceDraft.ts`(실제 Draft 판별·완성 요청), `frontend/src/lib/useDraftRequests.ts`(중복 제출 잠금과 확정 실패 해제). 기존 생성 요청·견적·MCP 계획·worker ACK 경계를 재사용 |
+| Comfy 실제 입력 보존 | `backend/app/services/comfy_asset_provenance.py`(입력 바이트 스냅샷·내용 ID·자격증명 제외), `backend/app/routers/comfy.py`(제출 직전 기록·보호된 입력 조회·결과 연결). 실행 장부를 재사용하고 StaticFiles 밖에 입력 보관 |
+| DB 호환·휴지통 이동 | `backend/app/schema_compat.py`(지원 범위·baseline·검사), `backend/app/services/trash_transfer.py`(전달받은 연결/payload 포트로 단계별 이동/복원). 연결 수명은 db, 기존 payload 의미는 repo.trash가 소유 |
+| 공유·DB 복원 세대 | `backend/app/db.py`의 `capture_share_operation`/`pinned_share_operation`: account/UID+pool epoch를 함께 캡처하고 SQL 진입과 교체를 직렬화. `_proxy.py`·`share_state_reconciler.py`·선택 미디어 보존은 늦은 I/O의 추가 요청·새 DB 정산을 거절 |
+| 백업 세트 신원 | `backend/app/services/backup_manifest.py`: 실제 파일 hash/DB schema·identity/account digest/일관성 범위의 공통 v2 계약과 v1 읽기 호환. 생산·수신·다운로드·복원·ACK·복제에서 같은 메타를 검증 |
+| 산출물·설치 확정 | `backend/app/services/release_contract.py`와 `tools/release_contract.py`(descriptor/candidate/receipt), `tools/qualify_release_artifact.py`(명시 ZIP·격리 기동·정리 후 artifact receipt 생산 및 server fresh-data probe), `backend/app/services/install_journal.py`(단계·복구 판단), `backend/app/services/runtime_activation.py`(접수 gate), `tools/install_db_probe.py`(사본 호환 검사), `update_release_contract.ps1`(설치된 검증기·빈 설치 증명) |
+| 서버 전환 | `tools/server_release_update.py`(선택 commit의 source receipt·격리 stage probe 후 요청), `tools/server_activation.py`(안정 supervisor의 stage/proof·CLI·Python base 재검증과 전환, TLS pair 파싱·메모리 불변 검사). 기존 server_supervisor가 실행 중인 환경·listener 소유권을 유지 |
+| 안전한 검증 | `backend/app/services/isolated_env.py`(표준 라이브러리 전용 환경/경로 검사), `tools/smoke_env.py`(app import 없이 공통 helper를 읽는 호환 입구), `tools/validation_result.ps1`(고유 run·소스 지문·실패/Skip), `tools/check_code_map.py`(추적·미추적 소스와 지도 대조). 사용자 DB·실사용 설치 실행은 별도 승인 범위 |
 
 통합 시험실의 MCP 계약은 [MCP_INTEGRATION](MCP_INTEGRATION.md)이다.
 프런트 연결은 `McpRegistration.tsx`, `McpConnection.tsx`, `mcp.css`, `mcpContext.ts`, `mcpPlans.ts`,
@@ -46,7 +71,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | 공유 & 리뷰 탭의 프로젝트·폴더 선택을 다시 켤 때 되살리기 | `lib/useLibraryFilters.ts`(`sharedView` 시작 키·`restoreViewKey`), `lib/useLibraryPersistence.ts`(`FILTERS_VIEW_KEY`) | — | 저장한 filters JSON 에 **어느 공간의 자동 범위에서 고른 것인지**(`__view` = `[scope, id]`)를 같이 남기고, 다시 켤 때 지금 공간과 같으면 첫 렌더가 지우지 않는다(2026-10-08 — 전엔 `sharedView` 가 `""` 로 시작해 첫 렌더를 늘 '공간이 바뀐 것'으로 보고 공유 탭의 프로젝트·폴더를 지웠다). 다른 공간·전체 보기(키 없음)·옛 저장(키 없음)은 전처럼 지운다. 시험 `frontend/tests/libraryFilterRemember.test.tsx` |
 | 새 API 엔드포인트 추가하기 | `api.ts` | `routers/_proxy.py`(경로 소유권) + 해당 도메인 라우터. **새 라우터 파일이면 `main.py` 의 `include_router()` 등록도** | 로컬 전용 경로는 `_proxy._LOCAL_PREFIXES/_LOCAL_EXACT` 갱신 + `backend/tests/test_proxy_ownership.py` 골든 스냅샷도 같이 고쳐야 함(§5-c) |
 | 캔버스(씬) 단축키 바꾸기 | `lib/useSceneKeyboardShortcuts.ts`, `lib/sceneKeyboard.ts` | — | |
-| 편집 탭(다빈치식 컷 타임라인 — 공유물을 폴더 순서로 이어 보기) | `components/timeline/EditTab.tsx`(조립·편집 키), `lib/editTimeline.ts`(순수 — 배치·보이는 클립·문서 편집), `lib/useEditPlayback.ts`(재생)·`lib/editVideoPair.ts`(영상 요소 둘 — 넘어갈 때 서지 않게), `lib/useEditDoc.ts`·`lib/editTimelineStore.ts`(문서 저장), `lib/useEditSequence.ts`(조회) · 타임라인 Resolve 보내기: `lib/editResolveExport.ts`(순수 — 계획)·`components/timeline/EditExportConfirm.tsx`(확인 창) | 보기·편집은 없음(기존 목록·폴더 API) · 타임라인 Resolve 보내기만 `routers/resolve_integration.py`(`POST /api/resolve/timelines`)·`services/resolve_timeline.py`·`services/resolve_timeline_worker.py` | 계약 [EDIT_TAB.md](EDIT_TAB.md). **`Filters["tab"]` 의 값이 아니다** — `lib/useAppNavigation.ts` 의 `edit` 보기 + `App.tsx` 의 `editOpen`(떠 있는 동안 폴더 창·다빈치 따라가기·라이브러리 단축키가 쉰다). 사이드바는 `ProjectSection` 을 쓰지 않는다(폴더 클릭이 생성 목적지를 저장한다). 편집 문서는 localStorage 뿐(백업 없음). 편집 키는 고정(단축키 설정 창에 없음) |
+| 편집 탭(다빈치식 컷 타임라인 — 공유물을 폴더 순서로 이어 보기) | `components/timeline/EditTab.tsx`(조립·편집 키), `lib/editTimeline.ts`(순수 — 배치·보이는 클립·문서 편집), `lib/useEditPlayback.ts`(재생)·`lib/editVideoPair.ts`(영상 요소 둘 — 넘어갈 때 서지 않게), `lib/useEditDoc.ts`·`lib/editTimelineStore.ts`(문서 저장), `lib/useEditSequence.ts`(조회) · 타임라인 Resolve 보내기: `lib/editResolveExport.ts`(순수 — 계획)·`components/timeline/EditExportConfirm.tsx`(확인 창) | 보기·편집은 없음(기존 목록·폴더 API) · 타임라인 Resolve 보내기만 `routers/resolve_integration.py`(`POST /api/resolve/timelines`)·`services/resolve_timeline.py`·`services/resolve_timeline_worker.py` | 계약 [EDIT_TAB.md](EDIT_TAB.md). **`Filters["tab"]` 의 값이 아니다** — `lib/useAppNavigation.ts` 의 `edit` 보기 + `App.tsx` 의 `editOpen`(떠 있는 동안 폴더 창·다빈치 따라가기·라이브러리 단축키가 쉰다). 사이드바는 `ProjectSection` 을 쓰지 않는다(폴더 클릭이 생성 목적지를 저장한다). 편집 원본은 localStorage, dev2 후속 A는 계정 DB 자동 백업과 충돌 사본을 구현·검증했다. 편집 키는 고정(단축키 설정 창에 없음) |
 | 캔버스 카드의 '생성 결과' 창 | `components/scene/SceneVariantPopup.tsx`(창 — 라이브러리 `ThumbnailGrid`·`BoardSelectionActionBar` 조립), `components/scene/SceneBoard.tsx`(`variantView` — 보일 결과·선택·조작 어댑터), `App.tsx`(`renderVariantToolbar`·`variantOpen`), `lib/boardFilters.ts`, `lib/keyHandled.ts` | — (씬의 `genData` 를 그대로 쓴다 — 목록 조회를 빌리지 않는다) | 폴더 창과 같은 모양이지만 **`.folder-peek` 클래스는 달지 않는다**(그 클래스는 '이 안의 키는 라이브러리 몫' 표시라, 달면 씬의 색·비활성 단축키가 창에서 죽는다) — 뼈대 CSS 만 선택자 묶음으로 같이 쓴다(`.scene-varwin`). 툴바 필터에 안 맞는 결과는 **걸러 내고 선택에서도 뺀다**(다빈치가 고른 것은 예외로 보인다). 대표 단추는 격자의 `cellHeader` 칸(카드 위), 폴더 표는 표시만(`showFolder`). Esc = 선택 해제 → 닫기(격자가 쓴 Esc 는 `keyHandled` 표시로 씬이 다시 처리하지 않는다). 창의 아래 끝은 하단 프롬프트 위에서 멈춘다(프롬프트 높이를 재서 `--dock-gap`). '폴더 보기' 창과는 겹쳐 두지 않는다(나중에 연 쪽만). 조작 대상은 **보이는 카드뿐**(`shownIds` — 아직 안 불러온 결과는 선택에 남아도 대상이 아니다). 여러 장을 고른 채 한 카드에서 한 태그·S·워크스페이스 명령은 고른 전체에(`bulkVariantTags`·`onVariantGradeStep`·`variantWorkspace`). 창이 떠 있는 동안 바깥에서 시작한 끌기 선택은 창의 격자만 받는다(캔버스 쪽 `useOutsideDragSelect` 는 끔) |
 | 생성 제출 흐름(프롬프트→요청→CLI) | `components/spotlight/useSpotlightSubmit.ts`, `lib/spotlightSubmit.ts`, `lib/hubFeatures.ts`(허브 기능 표식 — 답이 끊긴 생성·Comfy 요청을 같은 요청표로 한 번 다시 보낼지, Jay 결정 2A) | `routers/gen_requests.py`, `usecases/gen_requests.py`, `repo/gen_requests.py` | 실제 CLI 제출·추적·완료 판정은 작업자 PC 의 `agent_push.py` 가 한다 — 서버 쪽만 봐서는 흐름이 끝까지 안 보인다 |
 | 팀 공유·검토(공유/최종/보류) | `lib/useGenerationShareActions.ts`, `components/generation/GenerationReviewOverlay.tsx`, `lib/shareConfirm.ts`(공유 서버가 늦어 결과 불명인 요청을 '확인 중'으로 세고 허브 원장으로 끝을 묻는다 — `GET /api/share/intents/{id}`, Jay 결정 10A) | `routers/share.py`, `repo/share.py`, `services/share_state_reconciler.py`, `repo/final_moves.py`(최종본의 프로젝트 이동은 양쪽 검수자 — 쓰기 트랜잭션 안 판정, Jay 결정 3A) | |
@@ -80,7 +105,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | 히스토리 보드(계보 그래프) | `components/HistoryBoard.tsx` | `routers/generation.py`(`/history`·`/history-tree`), `repo/history.py`, `repo/lineage.py` | |
 | 스포트라이트 프롬프트 도크(@/# 피커) | `components/SpotlightPrompt.tsx`, `components/spotlight/SpotlightMentionPicker.tsx`, `lib/libraryPromptDraft.ts`(라이브러리 프롬프트 초안 자동 저장, Jay 결정 5B) | — | |
 | 씬 캔버스에 카드 종류 추가 | `lib/sceneNodeCatalog.ts`, `components/scene/cards/` | — | |
-| 씬 저장·undo/redo | `lib/scenes.ts`, `lib/sceneStore.ts`, `lib/useSceneHistory.ts` | `repo/scenes_backup.py`, `routers/scenes.py` | 계약: `docs/CANVAS_SCENE_STORAGE.md` |
+| 씬 저장·undo/redo | `lib/scenes.ts`, `lib/sceneStore.ts`, `lib/useSceneInputCommit.ts`, `lib/useSceneHistory.ts` | `repo/scenes_backup.py`, `routers/scenes.py` | 계약: `docs/CANVAS_SCENE_STORAGE.md` |
 | 공유 서버 주소 이전(서버 이사) | — | `services/server_relocation.py` | 스크립트: `server_move_export.bat`/`server_move_import.bat`/`tools/server_move.py` |
 | 서버 자동시작·워치독·복구 | — | — | `MV_watchdog.bat`, `tools/server_watchdog.py`, `tools/server_supervisor.py`, `restart_server_task.ps1`(⚠ 진입 bat 는 실행금지 — §4) |
 | Higgsfield CLI 버전 핀 교체 | — | — | `hf_cli_version.txt`, `update_cli.bat`, `tools/hf_cli_check_update.py` |
@@ -187,6 +212,8 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 
 **DB 이전·백업**
 
+개인 편집 백업은 `routers/edit_docs.py`의 `GET·PUT /api/edit-docs/backup`·`POST /api/edit-docs/backup/restore`(3개)에서 처리한다. 기대 계정 헤더 필수·요청 동안 계정 DB 고정·로컬 전용 경로다.
+
 | 파일 | URL·라우트 수 | 한 줄 책임 | 프록시 위임 |
 |---|---|---|---|
 | `db_transfer.py`(977줄) | `GET /api/db/export`·`POST /import\|/server-backup\|/server-restore` (9) | 로컬 DB export/import, 서버 백업 업로드·연속성, 서버 복원 | 4곳 |
@@ -267,6 +294,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `folder_cover.py` | 150 | 폴더 카드 집계(한 번 훑어 하위 폴더별 건수·최신·대표 유효성)와 대표 저장(`folder_cover`). 범위는 `projects._folder_counts_where`(사이드바 숫자와 같은 조건) + 폴더 접두(목록과 같은 LIKE 이스케이프) + 팀 공간 하나. 카드의 표지는 목록 행에서 화면이 쓰는 칸만(`_COVER_FIELDS` — 프런트 `types.FolderCover` 와 같은 목록), 미리보기(컷 띠·생성물 띠)는 목록 행을 읽지 않고 첫 에셋만(`_first_assets`) | `repo.folder_cards`·`set_folder_cover` |
 | `scene_cards.py` | 140 | 캔버스 카드 ↔ 생성물 소속 사실 | `repo.list_scene_card_links` |
 | `scenes_backup.py` | 130 | 캔버스 씬(브라우저 IndexedDB)의 DB 미러 | `repo.list_scene_backups` |
+| `edit_docs.py` | 160 | 개인 타임라인 백업 최신본 버전 비교·충돌 사본·복원 직전 원문 트랜잭션 보존 | `repo.get_edit_backup`·`save_edit_backup`·`restore_edit_backup` |
 
 **프로젝트·워크스페이스(repo 부분)**
 
@@ -355,6 +383,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
 | `asset_io.py` | 청크 업로드 저장·지문·중복 탐색·충돌 없는 확정 | `routers/assets` |
+| `windows_drag.py` | Windows 원본 파일 COPY 드래그 · 같은 스레드·COM 범위에서 취소·Esc·버튼 해제 판정과 정리 | `routers/assets` |
 | `asset_mounts.py` | 계정별 마운트 JSON 저장소(파일 잠금 + 원자 저장) | `routers/assets` |
 | `asset_tree.py`(309줄) | 폴더 트리 재귀 탐색 + TTL 캐시 + 무효화 | `routers/assets` |
 | `asset_watcher.py`(881줄) | watchdog 감시 → 캐시 무효화 + `assets_changed` WS 브로드캐스트 | `main`·`projects` |
@@ -406,7 +435,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `backup.py`(522줄) | DB 세트 자동 백업(ATTACH 다중 DB 온라인 스냅샷)·회전·주기 워커 | `main`·`db_transfer`·`operational_health` |
 | `backup_verify.py` | 백업 복원 훈련(별도 파일 복원 후 무결성·FK·행수). `allow_index_drift`+`rebuild_drifted_indexes` — 다른 SQLite 엔진이 만든 **계산식 색인 어긋남만** 쓰기 가능한 사본(복원·설치 staged)에서 다시 만들고 엄격 재검사(2026-10-01, 옛 서버 3.45 → 새 PC 3.49) | `restore_runtime_verify`·tools |
 | `restore_runtime_verify.py` | 복원 사본으로 격리 서버 기동·로그인·행수 검증(읽기 전용·대장 끔·로그는 사본 안) | tools 전용(`server_move`·`verify_backup_restore`) |
-| `worker_backup.py`(1329줄) | 작업자 개인 DB 백업 세트의 공유 서버 자동 전달(별도 프로세스, §2.6) | `main`·`comfy`·`db_transfer` |
+| `worker_backup.py` | 작업자 개인 DB 백업 세트의 공유 서버 자동 전달(별도 프로세스, §2.6). 정제 후 실제 바이트의 manifest를 생산하고 ACK의 정확한 manifest digest를 확인 | `main`·`comfy`·`db_transfer` |
 | `db_scrub.py` | 전송/테스트 스냅샷용 비밀값 정제 프로파일 2종 | `db_transfer`·`test_snapshot`·`worker_backup` |
 | `test_snapshot.py` | 서버형 테스트용 다중 SQLite 스냅샷 ZIP 생성·검증·설치 | `main`·`db_transfer`·tools |
 
@@ -470,7 +499,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 
 | 파일 | 한 줄 책임 | 비고 |
 |---|---|---|
-| `App.tsx` | 화면 조립·탭/필터 상태·데이터 로딩·씬 생성 오케스트레이션·모든 액션 훅 배선 | 약 2,331줄. 핵심: `submitGenJobs`·`generateCards`·`onPromptCreated`·`trayBinding` |
+| `App.tsx` | 화면 조립·탭/필터 상태·데이터 로딩·생성 제출과 액션 훅 배선 | 생성 연결·복구는 `useCanvasGenerationLinks.ts`, 제출 업무는 `useSceneGenerationSubmission.ts`. `onPromptCreated`·`trayBinding` |
 | `api.ts` | 타입 안전 API 클라이언트(`/api` 프록시), 100여 메서드 | 약 859줄 |
 | `types.ts` | 백엔드 모델과 1:1 타입 56개 | 약 513줄 |
 | `main.tsx` | 부트스트랩 — `?embed=` 로 App/AssetsWindow/ManageWindow 분기, 테마 선적용 | §3.5 |
@@ -483,7 +512,8 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
-| `scene/SceneBoard.tsx` | 캔버스 전체 소유 — 카드·엣지·그룹 state, 드래그/마퀴/가위/줌, undo, comfy 실행, 렌더링 | 약 4,452줄. `SceneBoard({...55 props})`·`actionRef` |
+| `scene/SceneBoard.tsx` | 카드·엣지·그룹의 화면 투영, 드래그/마퀴/가위/줌·실측, 선택·실행 훅 배선 | 문서 변환·저장 시점·Undo·gesture 원본은 `useCanvasSession.ts` 내부 소유. UI가 전체 문서 사본이나 저장 모드를 명령으로 넘기지 않음 |
+| `scene/SceneRecoveryPanel.tsx` | 카드 생성물 복구 후보·페이지·선택 표시 | 조회·연결은 `useSceneCardRecovery.ts` |
 | `scene/SceneBoardBoundary.tsx` | 지연 로딩·렌더 실패를 캔버스 영역 안에 가두고 수동 새로고침 안내 표시 | `App.tsx`가 `lazy`·`Suspense`와 함께 조립. 바깥 탭·도구 막대 유지 |
 | `scene/SceneBar.tsx`(286줄) | 씬 탭 바 — 전환·추가·이름변경·삭제·드래그 순서변경·우클릭 메뉴 | `SceneBar` |
 | `scene/SceneMinimap.tsx`(184줄) | 우상단 네비게이터 — 카드 축소도·뷰포트 박스, 클릭/드래그 이동 | `SceneMinimap` |
@@ -544,6 +574,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `FolderCardGrid.tsx`(약 195줄) | 공유 & 리뷰 탭의 폴더 묶음 보기 — 폴더마다 카드 한 장(표지·이름·건수·'대표 미정', 종이를 겹친 모양) + 맨 끝 '컷 밖(맨 위에선 에피소드 밖) N건' 칸. 한 번 클릭 = 고르기(Ctrl·Shift·끌기 = 마퀴 — **카드 위에서 시작해도**(꽉 찬 격자엔 빈 곳이 없다, 10-09 실측 100장에서 0장), `ThumbnailGrid` 와 같은 5px 판정·rAF 코얼레스·blur 면 버림), 두 번 클릭·Enter = 컷(하위 폴더 없음)이면 `onReel`(모아보기 — 고른 카드 위면 고른 컷 전부), 에피소드면 `onEnter`(그 폴더로 들어가기) — 10-13 낮(아침엔 컷도 들어가기, 그 전엔 폴더 창), 휠 클릭 = 컷 정보, 우클릭·메뉴 키 = `onOpen`(그 폴더의 창). 카드 크기는 `ThumbnailGrid` 와 같은 식(180×배율). `.cut-grid` 는 폴더 창을 닫은 뒤 초점을 돌려받는 자리 | `FolderCardGrid` |
 | `CoverInfo.tsx` | 폴더 카드의 정보 줄(모델 · 작업자 · 크레딧 · 생성일 · 검토) — 모아보기 [개별] 카드(`CutReel`)·컷 카드(그리드, `FolderCardGrid` 의 `.cut-meta`)·컷 줄(리스트, `EpisodeCardBody` 의 `.ep-meta`)이 같이 쓴다. 앞의 넷은 그 카드에 보이는 그림 한 장(대표, 없으면 가장 최근 것)의 것, 검토는 그 폴더 안의 개수(모르면 그 그림의 상태). 크레딧은 `lib/coverCredits` — 화면에 들어온 카드만 묻는다(`IntersectionObserver`). 컷 카드(그리드)에서는 줄 높이가 고정이다 — 값은 한 줄(말줄임), 생성일만 늘 두 줄(날짜 / 시각). 규칙은 `styles/generations.css` 의 `.reel-info.cut-meta` |
 | `EpisodeCardBody.tsx` | 에피소드 화면 카드의 안쪽 그림 — `FolderCardGrid` 가 하위 폴더를 가진 카드가 놓인 단계(`isEpisodeLevel`)에서 카드(`.cut-card.ep-card`, 안에 단추가 있어 div) 안에 그린다. 리스트 보기 = 가로 한 줄(번호 · 표지 · 이름과 숫자 · 컷 띠 4×2 · [열기]), 그리드 보기 = 큰 표지 + 컷 띠 한 줄 + 대표 진행 막대(Jay 2026-10-13). 카드 안 단추(`data-ep-action` — 컷 띠의 컷 = 그 컷으로, '+N'·[열기] = 그 에피소드로)의 누름은 격자가 카드 고르기·두 번 클릭으로 읽지 않는다. 서버가 새 집계를 안 주면(옛 공유 서버) 그 표시만 빠진다. **컷 화면의 리스트**(2026-10-13 오후)도 여기서 그린다: 줄 = 같은 모양에 띠만 그 컷의 생성물(`takes` — 그림 = 크게 보기, [폴더로] = 그 컷 폴더로)·검토 개수·표지 위 대표 표시 / 표(`layout="table"`, 리스트 단추 한 번 더) = 번호·작은 그림·숫자 열 |
+| `FolderCardVisuals.tsx` | 공유 카드와 Assets가 함께 쓰는 표지·이름/통계·하단 미리보기 표시. 조작 콜백과 집계는 호출자가 소유 |
 | `CutInfoPopup.tsx`(약 235줄) | 컷 정보(휠 클릭) — 정보 창과 같은 틀(`.info-popup`, 머리 끌기, Esc·바깥 클릭). 표지(대표/최신 것) + 그 폴더의 목록을 커서로 끝까지 받아 센 집계(`lib/cutSummary`) + '이 컷의 생성물' 줄(크게 보기·★ 대표). 폴더가 바뀌면 순번으로 늦은 응답을 버리고, **닫으면(정리) 남은 쪽·건별 metrics 요청을 보내지 않는다**(`alive()`). 조회 조건(`query`)은 App 이 폴더 경로·조회로만 메모해 카드가 다시 와도 다시 받지 않는다(10-09 실측: 열어 둔 채 32초에 metrics +300 → 0). 크게 보기가 위에 있으면 Esc 를 넘긴다 | `CutInfoPopup` |
 | `CutReel.tsx`(약 370줄) | 모아보기 — [개별] 큰 카드(표지·순번·★ 대표/최신 것·작업자·크레딧·생성일·검토) / [연결] `ReelPlayer`: 대표를 이어서 재생(가상 시간, 이미지·깨진 영상 3초, 길이를 다 알기 전 타임바 잠금, 반복 끄면 끝에서 멈춤, ↑↓·Space·Home/End). 클립은 보이는 값 전부의 JSON 으로 메모(카드가 다시 와도 그대로), 바뀌면 key 로 다시 올린다. 영상 길이는 **주소마다 한 번**(`DURATION_CACHE`, 모듈 수준)·**한 번에 둘씩** 읽고 끝나거나 닫히면 요소의 주소를 뗀다(10-09 실측: 28개 동시 읽기 → 첫 재생 6.2초 → 0.6초, 열고 닫기 5번 영상 요청 +334 → +7). 화면 영상의 loadedmetadata 로도 길이를 채운다. **영상 요소 둘(앞·뒤, 떼지 않음)**: 뒤의 것에 다음 영상(이미지 컷은 건너뛴 그 뒤 영상)을 미리 올려 두고 넘어갈 때 자리만 바꾼다, 끝 0.3초 전부터 뒤의 것을 소리 없이 굴린다(`ROLL_AHEAD`·`ROLL_MAX`, 편집 탭 `editVideoPair` 와 같은 원리) — 전환 간격 130~200ms → **0**(10-09 실측, Jay "끊김 없이"). 이벤트는 앞의 것·지금 컷이 영상일 때만 엔진에 간다, 세우면 굴리던 뒤의 것도 세운다, 정리 때 두 요소의 주소·기록을 비운다(StrictMode). `ViewTimeline` 과 원리는 같지만 요구가 달라 따로 둔다 | `CutReel`, `ReelPlayer` |
 | `FilterSidebar.tsx`(232줄) | 좌측 필터(프로젝트/컬러/자동태그/생성자/공유) 껍데기 | `FilterSidebar` |
@@ -588,10 +619,11 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `admin/ProjectRenderTree.tsx`(29줄) | 프로젝트 렌더 폴더 트리 표시 | 〃 |
 | `LoginScreen.tsx`(92줄) / `ServerLoginScreen.tsx`(230줄) | 로컬 AUTH 로그인 / 팀 서버 로그인·가입 | 각 컴포넌트 |
 
-#### 공용 부품(`common/`, 11파일)
+#### 공용 부품(`common/`, 12파일)
 
 | 파일 | 한 줄 책임 | 쓰는 곳 수(실측) |
 |---|---|---:|
+| `FolderTabs.tsx` | Assets·워크스페이스·공유 리뷰의 폴더 탭 표시·선택·닫기·순서 조작 | 2 |
 | `FolderTreeView.tsx`(248줄) | 공통 폴더 트리(재귀 행·드롭·우클릭) | 8 |
 | `CommentPanel.tsx`(301줄) | 코멘트 패널 UI(에셋·생성 공용) | 4 |
 | `TagFilterPanel.tsx`(204줄) | 태그 필터 플로팅 패널 | 4 |
@@ -621,6 +653,8 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `timeline/EditViewer.tsx`(약 230줄) | 뷰어 한 판 — 위 줄(지금 시각·무엇을 볼지·전체 길이·싱글/듀얼)·무대(`<video>` — 자기 시계로 이어 트는 판은 둘: 앞 · 다음 것을 미리 받는 뒤 `spareRef`)·아래 줄(타임바: 북마크·마크 인/아웃 · 버튼·반복·배속 · 오른쪽의 구간 반복·마크 인·마크 아웃). 타임라인·소스(클립·테이프)·한 트랙만이 같은 판을 쓰고, 시계는 편집 탭이 가진 엔진의 것이다. 다이나믹 재생 모드의 두 판은 아래 단추 줄 없이(`bare`) 두 판 밑의 공용 줄(`TransportButtons`·`VolumeControl`)을 쓴다 | `EditViewer`, `ViewerProps`, `ViewerMarking` |
 | `timeline/EditPool.tsx`(약 310줄) | 미디어 풀 — 재생헤드가 있는 컷의 공유 생성물을 폴더 목록 옆에 보인다. 보기 방식(썸네일·메타데이터·목록)·크기·검색·정렬. 누르기·Ctrl/Shift·끌어서 상자 = 고르기(마지막 것이 듀얼 뷰어의 소스, 2장 이상이면 비교) · 더블클릭 = 크게 보기 · 휠 클릭 = 넣을 트랙 고르기 · 우클릭 = 이 컷의 폴더 창. 폭은 `ResizableSidebar` 로 끌어서 바꾼다 | `EditPool`, `arrangePool` |
 | `timeline/EditSoloViewer.tsx`(약 25줄) | 한 트랙만 보는 판 — `useEditFollow` 로 타임라인의 시계를 따라간다 | `EditSoloViewer` |
+| `timeline/EditImportConfirm.tsx` | 타임라인 작업본·저장 원문 보관 창과 파일 복원 확인 창 — 직전 파일 재선택 검증·문맥 변경 차단 | `EditImportConfirm`, `EditArchiveExportConfirm` |
+| `timeline/EditBackupPanel.tsx` | 타임라인 DB 백업 상태·사본 선택·직전 편집 보존 후 복원 | `EditBackupNotice`, `EditBackupPanel` |
 | `timeline/EditTrackMenu.tsx`(약 320줄) | 편집 탭의 메뉴들 — 껍데기 `EditMenu`(body 포털·자리·바깥 누르기·Esc/Tab·↑↓·뒤 화면 키 차단) 위에 카드 휠 클릭 메뉴(지금 있는 트랙을 보여 주고 고르면 그 트랙에 넣는다 — 미디어 풀과 편집 탭이 연 폴더 창 공용)와 트랙 머리 메뉴(트랙 추가·위/아래로·삭제·빈 트랙 삭제·색), 막대의 목록 메뉴(비활성 숨기기·빈 곳 채우기·모두 최종으로 확정), 클립 우클릭 메뉴(Resolve 보내기·길이 조절·최종 선택), 왼쪽 폴더 트리의 폴더 메뉴(공유 저장·최종 저장·원본 위치 열기 — 공유 & 리뷰 탭의 폴더 메뉴와 같은 규칙·모양) | `EditMenu`, `EditTrackMenu`, `EditTrackHeadMenu`, `EditListMenu`, `EditClipMenu`, `EditFolderMenu`, `EditSwatches`, `TrackRow`, `TrackAct` |
 | `timeline/EditExportConfirm.tsx`(약 105줄) | 편집 탭 막대의 [타임라인 Resolve 보내기] 확인 창 — 이름·트랙별 클립 수·길이·받는 곳을 보여 주고, Resolve 연결을 열릴 때 묻는다([다시 확인]). 못 이은 클립·빈 타임라인·원본 전송 조건에 걸리면 [보내기]가 안 눌린다. 틀은 `GradeStepModal` 의 것(`gradestep-*`) | `EditExportConfirm` |
 | `timeline/EditMarkerMenu.tsx`(약 100줄) | 북마크의 메뉴 둘 — 편집 창(이름: Enter·바깥 = 저장, Esc = 버림 · 색 16개 · 지우기)과 막대의 색 메뉴(새 북마크의 색·모두 지우기 — 다빈치의 마커 색 메뉴). 껍데기는 `EditMenu` | `EditMarkerMenu`, `EditMarkerColorMenu` |
@@ -633,7 +667,13 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 
 | 파일 | 한 줄 책임 |
 |---|---|
-| `AssetsView.tsx`(940줄) | Assets 뷰 본체 — 가상 그리드·마퀴 선택·드롭 임포트·플로팅 패널 오케스트레이션 |
+| `AssetsView.tsx`(1103줄) | Assets 뷰 본체 — 가상 그리드·마퀴 선택·드롭 임포트·플로팅 패널·폴더 보기와 탭 연결·Backspace 상위 이동 |
+| `assets/assetFolderGroups.ts` | 현재 폴더 직계 구조 판정·하위 묶음/직접 미디어 분리·분류/미디어 수와 직계 하위폴더 미리보기 집계 |
+| `assets/AssetFolderGrid.tsx` | 공유 FolderCardVisuals·340px 배율 규격을 재사용하는 폴더 카드. 선택·더블클릭/Enter 진입·미들클릭 배경 탭·분류/통계·접근성 이름과 직계 하위폴더 띠(5개/+N) |
+| `assets/AssetFolderTable.tsx` | Assets 폴더·직접 파일 표 보기. 실제 파일 집계·미리보기와 폴더 진입, 경로 원본 열기를 같은 Grid props 계약으로 표시 |
+| `assets/AssetSourcePath.tsx` | Assets 목록·표의 공통 원본 경로 버튼. 기존 로컬 reveal API·오류 피드백과 행 이벤트 분리를 재사용 |
+| `assets/useAssetFolderTabs.ts` | 배경 탭·순서·탭별 보기 상태·이탈 보호·계정/공간/프로젝트 범위 초기화 |
+| `assets/AssetFolderTabs.tsx` | 기존 씬 탭 디자인·끌기 계산을 재사용하는 폴더 탭·정렬·닫기·키보드 이동 |
 | `AssetsWindow.tsx`(27줄) | `?embed=assets` 분리 창 껍데기(§3.5) |
 | `assets/AssetCell.tsx`(454줄) | 셀 1개(썸네일·호버 오버레이·상태줄) memo |
 | `assets/AssetsCrumbBar.tsx`(216줄) · `AssetsSidebar.tsx`(62줄) · `FolderTree.tsx`(69줄) | 경로 빵부스러기 / 좌측 패널 / 폴더 트리(`common/FolderTreeView.tsx` 와 다른 에셋 전용 트리, §5-b) |
@@ -706,9 +746,9 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
-| `appEvents.ts` | 브라우저 | 전역 커스텀 이벤트·BroadcastChannel 이름 사전 + 발행 · `generationTagsSettled` = 태그 저장 묶음이 끝남(성공·실패 모두) — 생성물 사본을 따로 든 캔버스만 듣는다(`libraryChanged` 와 달리 폴더 집계·생성자 목록은 안 깨운다) |
+| `appEvents.ts` | 브라우저 | 전역 커스텀 이벤트·BroadcastChannel 이름 사전 + 발행 · `generationTagsSettled`의 완료 ID·태그 필드 형식 검증 — 캔버스·편집 풀의 부분 조회에 사용하며 폴더 집계·생성자 목록은 깨우지 않는다 |
 | `librarySync.ts` | store | 내 변경 id 추적 → WS 동기화 신호의 자기-echo/중복 reload 판정 |
-| `libraryBroadcast.ts` | store | 생성물 변경을 창 간 즉시 통지(탭 id 로 자기창 제외) |
+| `libraryBroadcast.ts` | store | 생성물 변경을 창 간 즉시 통지(탭 id 로 자기창 제외) · 같은 창 알림에 선택적 projectId 힌트 전달, 창 간 메시지는 기존 형식 유지 |
 | `assetBroadcast.ts` | 브라우저 | Assets 창 간 `BroadcastChannel` 메시지 래퍼(WS 아님) |
 | `progressSocket.ts` | 브라우저+api | 진행률 WS 연결·재접속 지연 계산 |
 | `useManageRealtime.ts` | 훅 | 관리 창의 실시간 재조회 배선 |
@@ -761,13 +801,15 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `modelPolicyCore.ts` | 순수 | 정책 키 계산·상태 전이·차단 문구(도메인) |
 | `aspectAuto.ts` | 브라우저 | `aspect_ratio:"auto"` 를 모델별 실제 비율로 해석 |
 
-**6. 생성 라이브러리 — 데이터·필터·진행(11)**
+**6. 생성 라이브러리 — 데이터·필터·진행(13)**
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `useGenerationLibraryData.ts` | 훅 | 목록 로드·페이징·seq 가드·동기화 판정(§6 계약 지점). `beginComposeList` = 목록을 비우고 다시 받기(캔버스·목록 탭의 '폴더 보기' 창이 열고 닫을 때 — 지금 탭 캐시를 지우고 진행 중 응답을 버린다). 목록 탭 창은 `{ keep }`/`{ restore }` 로 본 목록 첫 쪽 사본을 담았다 먼저 보인다(`backListRef` — 탭 캐시와 별개 칸, 출처는 탭 캐시의 sig 로 확인). `staleList` = 그 사본을 보이는 중 — **지금 문맥의 첫 쪽 응답을 적용한 순간**(성공·실패)에만 꺼진다(버려진 응답·메타 종료로는 안 꺼짐). `listRevision` = 새 첫 쪽을 적용할 때마다 오르는 값(목록과 같은 때에 다시 받을 것 — 폴더 카드 — 의 신호. 목록 배열은 내용이 같으면 그대로라 쓸 수 없다). **다시 받기는 줄이 둘**이다 — 목록 줄(`inflightRef`·대기 병합)은 한 실행의 목록 구간(첫 쪽 + 위치 확인)까지만 잡고, 메타(통계·태그·폴더)는 메타 줄(`sendMeta`/`requestMeta` — 한 번에 한 묶음, 그동안의 요구는 하나로 합쳐 앞 묶음이 끝난 뒤 그때의 문맥으로)이 받아 적용한다. 줄이 비어 있으면 목록과 메타는 같은 순간에 출발한다. 다음 실행의 목록은 앞 실행의 메타를 기다리지 않는다. `reload()` 의 약속은 자기 실행과 맡긴 메타가 **처리**된 뒤에 풀린다(적용 보장은 아니다). 전체 메타 요구는 seq 로 버려져도 다음 묶음이 이어받는다(`metaOwedRef` — 빚만으로 스스로 다시 보내지는 않는다). 시험 `tests/libraryReloadLanes.test.tsx` |
+| `useViewTabs.ts` | 훅 | 범위별 메모리 탭·배경 열기·보기 복원·닫기·순서·이탈 보호(Assets·Library 공용) |
+| `useLibraryFolderTabs.ts` | 훅 | my/team 세션·조회 필터 복원·계정/공유 공간 경계; 생성 태그는 보존 |
 | `useLibraryFilters.ts` | 훅 | 필터·뷰 상태(localStorage 백업) + 파생 쿼리. 세 번째 인자 `teamPeek`(편집 탭이 연 폴더 창) — 밖에 내주는 `filters`·조회만 공유 & 리뷰로 보이고 저장된 값·`storedTab`(뒤로가기 기록용)은 그대로다([EDIT_TAB.md](EDIT_TAB.md) §7). `sharedView` 의 시작 키 = 저장된 `__view` 가 지금 공간이면 지금 공간(공유 탭의 프로젝트·폴더를 되살린다), 아니면 `""`(지운다) — `restoreViewKey`. 모양(`layout`·`groupByDate`)은 여기 없다 — `usePlaceView` |
-| `usePlaceView.ts` | 훅 | 모양(리스트/그리드 · 리스트 한 번 더)을 **보는 폴더마다** 기억한다 — App 이 보는 폴더의 열쇠를 준다(폴더 창이 떠 있으면 그 창의 폴더). 렌더에서 '그 자리에 적힌 것 ?? 방금 보던 것'으로 정하고, 적을 때는 저장된 것을 다시 읽어 이 자리만 고친다(다른 창의 기억을 덮지 않게). 규칙은 `placeViews.ts` |
+| `usePlaceView.ts` | 훅 | 모양·크기·맞춤·폴더/전체 보기를 **보는 폴더마다** 기억한다 — App 이 보는 폴더의 열쇠를 준다(폴더 창이 떠 있으면 그 창의 폴더). 렌더에서 '그 자리에 적힌 것 ?? 방금 보던 것'으로 정하고, 적을 때는 저장된 것을 다시 읽어 이 자리만 고친다(다른 창의 기억을 덮지 않게). 규칙은 `placeViews.ts` |
 | `placeViews.ts` | 순수 | 자리(탭·프로젝트·폴더)마다 마지막으로 본 모양(리스트/그리드 · 리스트 한 번 더) — 열쇠 `placeViewKey` · 저장 읽기 `parsePlaceViews` · 적기 `withPlaceView`(같은 값이면 같은 객체 · 400 자리 상한). 본 자리는 본 모양으로 적히고, 처음 들어간 자리는 방금 보던 모양을 물려받는다(Jay 2026-10-13) |
 | `useLibraryPersistence.ts` | 훅 | 필터 저장 포맷·키·마이그레이션. `FILTERS_VIEW_KEY`(`__view`) = 자동 범위 공간 키(전체 보기 중이면 안 남김) |
 | `appGenerationQuery.ts` | 순수 | 필터 → 서버 쿼리 객체·캐시 키 · 목록 탭 '폴더 보기' 창의 조회(`folderPeekQuery` — 탭·공간 범위·창 툴바 조건만 따른다) |
@@ -802,7 +844,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `useGenerationCardActions.ts` | 훅 | 카드 재생성·복구 재실행·최종·삭제 등 주 액션 |
-| `useGenerationTagActions.ts` | 훅 | 태그 추가/삭제(변경 큐 경유) · 저장 묶음이 끝날 때마다 `generationTagsSettled` 를 알린다(목록 조회 뒤에 — 캔버스의 사본이 서버 값으로 맞는다) |
+| `useGenerationTagActions.ts` | 훅 | 태그 추가/삭제(기존 변경 큐 경유) · 실제 완료한 작업의 ID·필드를 묶어 목록 조회 뒤 `generationTagsSettled` 발행, 아직 대기 중인 저장은 포함하지 않는다 |
 | `useGenerationAutoTagActions.ts` | 훅 | 자동 태그 생성·삭제·선택 + `#+` 워크스페이스 칩 등록 |
 | `useGenerationTrashActions.ts` | 훅 | 휴지통 이동·복구·영구삭제 |
 | `useGenerationShareActions.ts` | 훅 | 팀 공유·미러 대기 안내 |
@@ -855,12 +897,17 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `marquee.ts` | 순수 | 러버밴드 사각형·적중 판정(생성·에셋 공용) |
 | `recipeScene.ts` | 순수 | 생성물 → "어떻게 만들었나" 씬 변환 |
 
-**11. 씬·캔버스 — 컨테이너 훅(15)**
+**11. 씬·캔버스 — 컨테이너 훅과 저장소(17)**
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `useSceneCoordination.ts` | 훅 | 씬 목록·CRUD·백업·소속 병합 배선(App.tsx 추출) |
-| `useSceneGenData.ts` | 훅 | genId→생성물 바인딩·폴링·계보·색 원장 · `libraryChanged`·`generationTagsSettled` 를 받으면 0.3초 모아 다시 읽는다 |
+| `useCanvasGenerationLinks.ts` | 훅 | 생성 위치 표식 저장 확정·정착·폐기·미결 연결 복구. App의 제출/입력 조립 도우미와 함께 사용 |
+| `useSceneGenerationSubmission.ts` | 훅 | 씬 생성·재생성의 정책 확인·클릭 시 입력·중복 가드·제출·실패 정산. 성공 결과 연결은 기존 연결 훅 재사용 |
+| `useSceneCardRecovery.ts` | 훅 | 카드 복구 후보·기록 페이지·본문 조회·선택 연결. 씬/창 순번 확인과 기존 카드 저장 관문 사용 |
+| `useSceneCardLibraryActions.ts` | 훅 | 캔버스 생성물의 태그·공간·공유·최종 조작과 S 키 확인 |
+| `sceneComfyLibrary.ts` | 비동기 업무 | Comfy 실행 스냅샷 메타·출력 라이브러리 저장·현재 카드 연결·Undo 기록 결과 ID 보존. React 상태 소유 없음 |
+| `useSceneGenData.ts` | 훅 | genId→생성물 바인딩·폴링·계보·색 원장 · 일반 알림은 0.3초 모아 전체 재조회, 유효한 태그 알림은 교집합 ID·해당 필드만 갱신. 진행 중 일반/공유 단건 조회 뒤 태그 확인, 새 일반 조회에 밀린 태그 대상 재큐잉 |
 | `useSceneViewport.ts` | 훅 | 카메라 상태·휠/드래그 배선·저장 지연 |
 | `useSceneCardMove.ts` | 훅 | 카드 드래그 이동·그룹 재배정·이탈. 끄는 동안 보드가 포인터를 쥔다(`holdSceneDragPointer`·`endSceneDragPointer` — 그룹 끌기도 같이 쓴다) |
 | `useSceneGroupMove.ts` | 훅 | 그룹 드래그 이동 |
@@ -868,6 +915,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `useSceneMarqueeSelection.ts` | 훅 | 캔버스 마퀴 선택(캔버스 사각형은 상태 없이 요소를 직접 옮김 · `previewSelection` 이 있으면 끄는 동안은 선택 표시만, 손 떼거나 blur 때 한 번 확정 · `settle` = 다른 입력 전에 지금 확정, `forget` = 버린 끌기 잊기) |
 | `useSceneDragSession.ts` | 훅 | `createSceneDragSession` 에 window/rAF 주입 · `abort`(마지막 움직임 반영 없이 버림 — 씬 전환용) |
 | `useSceneHistory.ts` | 훅 | 씬 undo/redo 조작 |
+| `useSceneInputCommit.ts` | 내부 훅 | 입력 저장400ms 지연·2초 상한·미확정 입력 종료 경고·카드 반영4모드. `useCanvasSession.ts`만 모드를 선택하며 취소/종료와 유효 대상 검사를 연결 |
 | `useSceneKeyboardShortcuts.ts` | 훅 | 캔버스 단축키 배선 · 안쪽에서 이미 쓴 Esc(`keyHandled`)는 건너뛴다 |
 | `useSceneClipboardDrop.ts` | 훅 | 붙여넣기·파일/에셋 드롭 처리 |
 | `useSceneColorActions.ts` | 훅 | 캔버스 카드 색 변경(범위 티켓) |
@@ -899,9 +947,11 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `folderTreeModel.ts` | 순수 | 폴더 경로 정규화 + 개수 트리 구성 |
 | `editTimeline.ts` | 순수 | 편집 탭 계산 — 컷 순서(이름 자연 정렬)·배치·보이는 클립(위 트랙 우선)·위치((컷, 컷 안 시각))·문서 편집(클립·트랙 더하기/빼기/옮기기/색·마크 인/아웃·북마크·빈 컷 채우기 `fillEmptyCuts`)·공유 목록과 잇기([EDIT_TAB.md](EDIT_TAB.md)) |
 | `editResolveExport.ts` | 순수 | 편집 탭의 타임라인 Resolve 보내기 — 지금 배치를 프레임 단위 계획(`mvhub.edit-timeline` v1: 클립·소리·북마크·인/아웃, 절대 시각을 한 번씩 반올림)으로 옮긴다 · 타임라인 이름. 받는 쪽은 `services/resolve_timeline.py` 의 `validate_plan` — 계획의 칸을 바꾸면 두 곳을 같이 |
-| `editTimelineStore.ts` | 저장 | 편집 문서 localStorage 읽기/쓰기(읽지 못한 문서는 `.bad` 로 보존)·되돌리기 스택·마지막 시퀀스·화면 설정(`EditUi` — 판이 보는 것 `ViewMode`(타임라인·소스 클립·소스 테이프·한 트랙)·새 북마크의 색) |
+| `editArchive.ts` | 순수 | 타임라인 보관·복구 JSON 봉투·외부 파일 검사(알 수 없는 필드/대상/크기·트랙·시간 상한)·작업본/직전 파일 만들기·문서 의미 비교 |
+| `editDocBackup.ts` | 상태·IO | 성공 저장·수용한 원문 구독, 탭별 버전 기준·자동 백업·충돌 사본·재시도·계정 전환 응답 차단 |
+| `editTimelineStore.ts` | 저장 | 편집 문서 localStorage 읽기/쓰기(접근 오류 구분·손상 원문은 `.bad`로 보존)·불확실 복원의 키별 보존·되돌리기 스택·마지막 시퀀스·화면 설정(`EditUi`) |
 | `useEditDoc.ts` | 훅 | 편집 문서 상태 — 바꾸기·저장·되돌리기·다른 창의 변경 받아들이기((키, 문서) 한 쌍·`rev`) |
-| `useEditSequence.ts` | 훅+api | 편집 탭 조회 — 프로젝트·폴더 트리(온전성 표시)와 시퀀스의 공유 생성물 전부(쪽 넘김·문맥 가드·상한 2,000) |
+| `useEditSequence.ts` | 훅+api | 편집 탭 조회 — 프로젝트·폴더 트리(온전성 표시)와 시퀀스 공유물 전체(쪽 넘김·문맥 가드·상한 2,000). 태그 변경은 기존 항목만 두 태그 필드 갱신·항목별 조회 출발 순번 기록, 전 프로젝트 새 항목 수 전용 갱신 제공 |
 | `useEditPlayback.ts` | 훅 | 편집 탭 재생 — 시계 주인(영상/rAF)·보이는 소스 전환·훑기·배속·반복·구간 반복(`range` — 전체 반복과 따로, 켜는 순간은 `playRange`)·다음 영상 미리 받기와 미리 굴리기(`upcoming`·`prepare` — 영상 요소가 둘일 때)·고른 배속(`speed`). 멈추면 멈춘 자리를 그린다. 프레임마다 React 를 건드리지 않는다. 타임라인용·소스용(클립·테이프) 두 인스턴스 |
 | `editVideoPair.ts` | 순수 + 훅 | 편집 탭의 영상 요소 둘을 하나처럼(`pairVideo`) — 앞의 것이 보이고 뒤의 것은 다음 영상을 미리 받아 세워 둔다. 넘어갈 때 받지 않고 앞뒤만 바꾸고(`swap`), 직전에는 소리 없이 미리 굴린다(`roll`). `useVideoPair` = 판 하나의 요소 둘과 묶음 |
 | `useEditFollow.ts` | 훅 | 편집 탭 '한 트랙만 보기' — 타임라인의 시각을 프레임마다 읽어 그 트랙의 클립을 맞춰 보인다(시계에 영향 없음) |
@@ -1045,11 +1095,11 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `base.css` | 104 | 전역 변수(`:root` 24개)·리셋 — 화면 특정 아님 |
 | `app-shell.css` | 906 | 최상위 앱 셸(`TopBar`·상단 메뉴) |
 | `generations.css` | 954 | 라이브러리 그리드·카드(`ThumbnailGrid`·`GenerationCard`). ★**끝없이 도는 CSS 애니메이션은 합성 가능한 속성(transform·opacity)만** — `background-position`·`box-shadow` 를 무한으로 움직이면 요소 하나만 화면에 있어도 브라우저가 매 프레임 다시 그려 가만히 둔 탭이 CPU 를 계속 쓴다(골드 광택 실측: 0장 1% · 1장 24~38% of one core). 팀 탭 새 항목 글로우(`.card.fresh`)도 같은 이유로 **멈춘 빛**이다(box-shadow 무한: 1장 42~49% · 19장 86~124% → 정지 2~3%. opacity 층으로 바꿔도 절반이 남았다 — 끝없이 도는 한 합성 비용은 남는다). ★**부드러운 무한 애니메이션은 opacity·transform 이어도 비싸다**(화면에 하나만 있어도 페이지를 초당 60번 새로 합친다 — '생성 중' 로고 1장 17%). 그래서 장식은 멈추고 '진행 중' 표시만 계단식 `steps(4)`(17% → 3%)로 남긴다. 계약 시험 = `frontend/tests/idleCssAnimations.test.ts`(모든 CSS 의 `infinite` 는 같은 선언에 `steps(` — 예외는 재서 비용이 없던 11px 알림 스피너 선언 하나). 전수 조사 기록 = `docs/status/브라우저실측_2026-09-19.md` "부하 전수 조사" |
-| `episode-board.css` | 173 | 공유 & 리뷰 탭의 에피소드 화면·컷 화면의 리스트(`EpisodeCardBody`) — 같은 `.cut-card` 의 모양만 덮는다(`.ep-card.ep-list`(+`.leaf` 컷 줄)·`.ep-grid`·`.ep-table` 표와 `.ep-table-head`). 크기는 격자가 주는 `--ep-scale`(크기 슬라이더), 번호 칸은 `--ep-num-w`·`--ep-num-size`. 표의 열 폭은 고정·비율만(`auto` 금지 — 머리줄과 줄이 저마다의 격자) |
+| `episode-board.css` | 175 | 공유 & 리뷰 탭의 에피소드 화면·컷 화면의 리스트(`EpisodeCardBody`) — 같은 `.cut-card` 의 모양만 덮는다(`.ep-card.ep-list`(+`.leaf` 컷 줄)·`.ep-grid`·`.ep-table` 표와 `.ep-table-head`). 크기는 격자가 주는 `--ep-scale`(크기 슬라이더), 번호 칸은 `--ep-num-w`·`--ep-num-size`. 표의 열 폭은 고정·비율만(`auto` 금지 — 머리줄과 줄이 저마다의 격자) |
 | `scene.css` | 1574 | 씬 캔버스(`scene/`) — 비슷한 이름의 클래스가 많다(§5-b). ★**카드 안에 스크롤 칸을 새로 만들 때 기본 규칙에 `overflow:auto` 를 쓰지 않는다** — 파일 앞쪽 "카드 안 스크롤 칸" 규칙 한 쌍의 목록에 넣는다(평소 hidden, 호버·포커스한 카드만 auto, 막대 숨김). 넘치는 auto 칸은 합성 레이어가 되고 그 위에 겹친 포트·배지까지 레이어가 되어, 큰 씬에서 화면 이동·확대가 끊겼다(기록 = `docs/status/캔버스_버벅임_2026-09-29.md`) |
 | `prompt-dock.css` | 566 | 스포트라이트 프롬프트 도크(`SpotlightPrompt`·`spotlight/`) |
 | `history.css` | 216 | 히스토리 보드(계보 그래프). 최종 노드는 `content-visibility` 가 풀려 있어 화면 밖에서도 그린다 — 여기에 무한 애니메이션을 두지 않는다 |
-| `assets.css` | 963 | Assets 분리창(`AssetsView`·`assets/`) |
+| `assets.css` | 1065 | Assets 분리창(`AssetsView`·`assets/`) |
 | `project-sidebar.css` | 318 | 프로젝트 사이드바(`sidebar/ProjectSection`) |
 | `composition-manage.css` | 1098 | 관리(PM)창 구성·대시보드 화면. 옛 합성보드·옛 통계 위젯(도넛·퍼널 등)의 규칙은 2026-09-18 에 걷어냈다. 남은 휴면 규칙은 §5-d |
 | `admin-auth-compare.css` | 682 | 로그인·관리자 창·계정 비교 화면 |
@@ -1105,7 +1155,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | 파일 | 한 줄 책임 | 호출 사슬 |
 |---|---|---|
 | `update_git.bat`(1줄) | `run_update_git.ps1` 1줄 호출 | → `tools/run_update_git.ps1` |
-| `tools/run_update_git.ps1`(99줄) | worker.bat 를 TEMP 로 복사해 격리 실행(자기교체 생존)+실패시 1회 재시도 | → `tools/update_git_worker.bat` |
+| `tools/run_update_git.ps1` | 갱신 중복을 직렬화하고 실제 서버 신원/기존 잠금으로 coordinator와 worker를 구분. 불명확한 프로세스·예약작업 조회는 갱신 거절. worker는 TEMP 격리와 1회 재시도 유지 | → `tools/update_git_worker.bat`·`tools/server_release_update.py` |
 | `tools/update_git_worker.bat`(289줄) | 실제 git pull+backend deps+frontend build+등록서버면 재시작까지 | → `tools/repair_package_lock.py`, `tools/verify_requirements.py`, `restart_server_task.bat` |
 | `tools/repair_package_lock.py`(62줄) | npm 버전차이로 재정렬된 package-lock.json 을 HEAD 와 의미상 같을 때만 복원 | |
 | `setup_clone_git.bat`(31줄)/`setup_clone_git.ps1`(165줄) | 최초 설치: winget 으로 git/node/python 설치+sparse clone+빌드+CLI 설치 | |
@@ -1290,7 +1340,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 - **"키별 잠금"이 한 폴더(`services/`) 안에 3가지 해법으로 있다.** refcount+pop(`media_cache`·`thumbs`·`resolve_transfer`), `setdefault` 후 영구 보존(`asset_tree`·`project_folders`), 이벤트 루프별 `WeakKeyDictionary`(`cli_bridge`). 새 동시성 코드를 어느 쪽으로 맞춰야 하는지 코드에 근거가 없다.
 - **확인 대화상자·팝오버가 세 계보로 갈려 있다(프런트).** `generation/ConfirmQuestion`(`.cs-final-*`) / `admin-confirm-*`(5곳 손구현) / `gradestep-*`(1곳). 팝오버도 `lib/useMenuPlacement`(1곳) / `SettingsGroup` 자체 구현 / `AccountMenu`·`NotificationCenter` 의 간이 포털 계산으로 셋. 어느 계보에 붙일지 판단에 시간이 든다.
 - **로깅 경로가 둘이다(services).** 구조화 `log_event`(10개 파일)와 맨 `print()`(`asset_watcher`·`syncer`·`backup`·`thumbs`). `print` 중 일부(`resolve_probe`·`resolve_import_worker`·`resolve_selection_worker`·`server_relocation`·`read_utf8_sig_first_line`)는 **자식 프로세스의 IPC 채널**이라 로거로 바꾸면 안 된다 — 그 구별이 코드에서 바로 안 보인다.
-- **저장 모드가 4가지(`live`/`deferUser`/`persistUser`/`persistDerived`, `SceneBoard.applyCards`)인데 이를 우회하는 직접 `persist()` 호출이 아직 10곳 넘게 남아 있다.** 어느 편집이 undo 스택에 쌓이는지 호출부마다 확인해야 한다.
+- **Canvas 저장 모드와 Undo는 세션 내부 계약이다.** 2026-10-18 보완 전에는 화면·gesture에 직접 `persist()`가 흩어져 있었다. 현재 UI는 의미 명령과 대상 세대에 묶인 geometry handle을 사용하고, `useSceneInputCommit.applyCards`의4모드와 history의 discard/전이메타는 feature 내부에서만 선택한다. 새 화면에서 raw 엔진이나 전체 사본 교체를 다시 공개하지 않는다. 전체 후보 검증 상태는 구조 개편 정본 §20을 확인한다.
 - **"파이썬 실행파일 찾기"가 스크립트마다 3가지 변종(4단계/3단계/2단계)으로 8개 이상 파일에 흩어져 있다**(`run_py.bat`·`MV_agent.bat`·`MV_watchdog.bat`·`MV_server.bat`·`test_push-db.bat`·`test_pull-db.bat`·`tools/update_git_worker.bat` 등). 새 후보 경로를 넣으려면 이 파일들을 다 찾아 고쳐야 한다.
 - **캔버스 선택을 읽는 길이 둘이다 — React 상태(`selected`·`selectedRef`)와 화면의 `.scene-card.sel`·그룹 `.selected`.** 범위 선택을 끄는 동안에는 `SceneBoard.paintMarqueePreview` 가 화면 표시만 직접 바꾸고 상태는 손을 뗄 때 바뀌므로 둘이 다르다(2026-09-30). 선택이 필요한 코드는 상태를 읽고, 화면의 `.sel` 로 판단하지 않는다.
 

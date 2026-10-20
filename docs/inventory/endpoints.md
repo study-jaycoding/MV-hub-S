@@ -10,7 +10,7 @@
 - `로컬 예외 · 핸들러가 _proxy 호출` 은 핸들러 **본문이 `_proxy` 를 직접 참조**할 때만 붙는다(팀 탭 등에서 핸들러가 골라서 위임). 헬퍼·usecase 를 거쳐 위임하면 안 보이므로, 이 표시가 없다고 위임이 없다는 뜻은 아니다.
 - `Depends` 칸은 라우터·데코레이터·핸들러 인자에 직접 적힌 것만이다. 인증 미들웨어와 핸들러 본문의 권한 검사는 안 나온다.
 
-전체 366개.
+전체 388개.
 
 ## `backend/app/main.py` — 10개
 
@@ -45,7 +45,25 @@
 | `GET` | `/api/asset-registry/status` | `status` | 기본 중계 | — |
 | `GET` | `/api/asset-registry/usage/{registry_asset_id}` | `usage` | 기본 중계 | — |
 
-## `backend/app/routers/assets.py` — 25개
+## `backend/app/routers/asset_sync.py` — 13개
+
+| 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
+| --- | --- | --- | --- | --- |
+| `GET` | `/api/asset-sync/files/{location_id}` | `get_file` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
+| `GET` | `/api/asset-sync/locations/{location_id}` | `location_info` | 기본 중계 | — |
+| `POST` | `/api/asset-sync/prepare` | `prepare` | 기본 중계 | — |
+| `POST` | `/api/asset-sync/resolve` | `resolve` | 기본 중계 | — |
+| `PUT` | `/api/asset-sync/uploads/{token}` | `upload` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
+| `POST` | `/api/asset-sync/verify` | `verify` | 기본 중계 | — |
+| `GET` | `/api/local-asset-sync/generations/{gen_id}/bundle` | `generation_bundle` | 로컬 예외 · 핸들러가 `_proxy` 호출 | `local_guard` |
+| `POST` | `/api/local-asset-sync/ingest` | `local_ingest` | 로컬 예외 | `local_guard` |
+| `GET` | `/api/local-asset-sync/receipts` | `local_status` | 로컬 예외 | `local_guard` |
+| `POST` | `/api/local-asset-sync/register` | `local_register` | 로컬 예외 · 핸들러가 `_proxy` 호출 | `local_guard` |
+| `POST` | `/api/local-asset-sync/resolve` | `local_resolve` | 로컬 예외 · 핸들러가 `_proxy` 호출 | `local_guard` |
+| `POST` | `/api/local-asset-sync/retry` | `retry` | 로컬 예외 | `local_guard` |
+| `GET` | `/api/local-asset-sync/status` | `local_status` | 로컬 예외 | `local_guard` |
+
+## `backend/app/routers/assets.py` — 27개
 
 | 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
 | --- | --- | --- | --- | --- |
@@ -57,6 +75,8 @@
 | `DELETE` | `/api/assets/mounts/{name:path}` | `del_mount` | 로컬 예외 | `_require_mount_manager` |
 | `GET` | `/api/assets/mounts` | `list_mounts` | 로컬 예외 | `_require_local_assets` |
 | `POST` | `/api/assets/mounts` | `add_mount` | 로컬 예외 | `_require_mount_manager` |
+| `GET` | `/api/assets/native-drag-capabilities` | `native_drag_capabilities` | 로컬 예외 | `_require_local_assets` |
+| `POST` | `/api/assets/native-drag` | `native_drag` | 로컬 예외 | `_require_local_assets` |
 | `GET` | `/api/assets/projects` | `list_projects` | 로컬 예외 | `_require_local_assets` |
 | `POST` | `/api/assets/reference-import` | `upload_reference_import` | 로컬 예외 | `_require_local_assets` |
 | `POST` | `/api/assets/resolve-library/connect-dialog` | `open_resolve_library_connect_dialog` | 로컬 예외 | `_require_local_assets` |
@@ -124,11 +144,12 @@
 | `GET` | `/api/shared-server/backup-replica` | `relay_backup_replica_status` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `PUT` | `/api/shared-server/backup-replica` | `relay_save_backup_replica` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 
-## `backend/app/routers/comfy.py` — 11개
+## `backend/app/routers/comfy.py` — 12개
 
 | 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
 | --- | --- | --- | --- | --- |
 | `GET` | `/api/comfy/health` | `health` | 로컬 예외 | `_require_local_comfy` |
+| `GET` | `/api/comfy/inputs/{scope}/{filename}` | `input_file` | 로컬 예외 | `_require_local_comfy` |
 | `POST` | `/api/comfy/parse` | `parse` | 로컬 예외 | `_require_local_comfy` |
 | `GET` | `/api/comfy/run_status` | `run_status` | 로컬 예외 | `_require_local_comfy` |
 | `POST` | `/api/comfy/run` | `run` | 로컬 예외 | `_require_local_comfy` |
@@ -172,6 +193,14 @@
 | `GET` | `/api/db/server-backups` | `server_backups` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `POST` | `/api/db/server-restore/{backup_set_id}` | `server_restore_version` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `POST` | `/api/db/server-restore` | `server_restore` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
+
+## `backend/app/routers/edit_docs.py` — 3개
+
+| 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
+| --- | --- | --- | --- | --- |
+| `POST` | `/api/edit-docs/backup/restore` | `restore_backup` | 로컬 예외 | — |
+| `GET` | `/api/edit-docs/backup` | `get_backup` | 로컬 예외 | — |
+| `PUT` | `/api/edit-docs/backup` | `put_backup` | 로컬 예외 | — |
 
 ## `backend/app/routers/folder_cards.py` — 2개
 
@@ -491,7 +520,7 @@
 | `GET` | `/api/scenes/cards` | `list_scene_card_links` | 로컬 예외 | — |
 | `PUT` | `/api/scenes/cards` | `sync_scene_card_links` | 로컬 예외 | — |
 
-## `backend/app/routers/share.py` — 11개
+## `backend/app/routers/share.py` — 14개
 
 | 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
 | --- | --- | --- | --- | --- |
@@ -504,6 +533,9 @@
 | `POST` | `/api/generations/{gen_id}/unhold` | `unhold_generation` | 로컬 예외 | — |
 | `POST` | `/api/generations/{gen_id}/unpublish` | `unpublish` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `GET` | `/api/provider` | `get_provider` | 기본 중계 | — |
+| `GET` | `/api/share/capabilities` | `share_capabilities` | 기본 중계 | — |
+| `GET` | `/api/share/command-state/{gen_id}` | `share_command_state` | 기본 중계 | — |
+| `POST` | `/api/share/commands` | `share_command` | 기본 중계 | — |
 | `POST` | `/api/share/intents/outcomes` | `share_intent_outcomes` | 로컬 예외 | — |
 | `GET` | `/api/share/intents/{intent_id}` | `share_intent_state` | 로컬 예외 | — |
 

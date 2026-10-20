@@ -6,10 +6,13 @@ tags:
   - mvhub
   - mvhub/설계
 status: active
-updated: 2026-10-03
+updated: 2026-10-20
 ---
 
 # 에셋 대장(Asset Registry)
+
+내용 ID·로컬 우선·프로젝트 `imp_cap` 자동 보관/서버 참조 전환의 격리 구현은 [ASSET_LOCAL_SYNC](ASSET_LOCAL_SYNC.md) §12를 따른다.
+기존 `registry_asset_id`는 논리 파일 번호이며 새 전체 SHA 내용 ID와 역할이 다르다. 원본 dev2 반영·운영 활성화는 아직 하지 않았다.
 
 공유 서버가 PM 프로젝트 폴더(NAS)의 그림·영상마다 **번호(registry_asset_id)** 를 붙여 관리한다. 누가 탐색기에서 이름을
 바꾸거나 옮기거나 같은 자리에 고쳐 저장해도 대장이 따라가 기록한다. 그래서 캔버스 레퍼런스가 끊기지 않고, 레퍼런스 찾기가

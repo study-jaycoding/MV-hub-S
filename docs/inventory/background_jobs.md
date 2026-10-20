@@ -27,6 +27,7 @@
 | `periodic_media_preservation` | start() | MEDIA_PRESERVATION_ENABLED and not READ_ONLY | `backend/app/services/media_preservation.py` |
 | `asset_registry_controller` | start() | ASSET_REGISTRY_ENABLED and not READ_ONLY | `backend/app/services/asset_registry.py` |
 | `periodic_share_state_reconciler` | start() | 항상 | `backend/app/services/share_state_reconciler.py` |
+| `asset_sync_worker` | start() | not READ_ONLY | `backend/app/services/asset_sync.py` |
 | `asset_watcher` | start() | 항상 | `backend/app/services/asset_watcher.py` |
 | `startup_history_audit() (name=history-startup-audit)` | create_task | 항상 | `backend/app/services/history_autofill.py` |
 | `startup_thumbnail_repair() (name=thumbnail-repair)` | create_task | 항상 | `backend/app/services/thumbnail_repair.py` |
@@ -52,6 +53,7 @@
 | `backend/app/main.py` | `_start_worker_backup_bootstrap` | create_task | `_worker_backup_bootstrap() (name=worker-backup-bootstrap)` |
 | `backend/app/repo/share_state_intents.py` | `async_share_state_action_locks` | create_task | `asyncio.to_thread(_hold_sync_gate) (name=share-state-identity-gate)` |
 | `backend/app/routers/_telemetry.py` | `_schedule_on_loop` | create_task | `_drain_soon() (name=telemetry-drain)` |
+| `backend/app/routers/assets.py` | `_native_drag_pinned` | create_task | `watch_disconnect()` |
 | `backend/app/routers/comfy.py` | `_start_run` | Thread | `_run_comfy_job_worker` |
 | `backend/app/routers/comfy.py` | `collect_unresolved_run` | Thread | `_collect_run_worker` |
 | `backend/app/routers/gen_requests.py` | `_release_claim_on_abort` | create_task | `release_claim(acc["email"], realtime_scope(acc), rid, agent_id)` |
@@ -59,6 +61,7 @@
 | `backend/app/services/asset_registry.py` | `AssetRegistryController.request_scan` | create_task | `self._run(project_ids, mode)` |
 | `backend/app/services/asset_registry.py` | `AssetRegistryController.start` | create_task | `self._loop() (name=asset-registry-loop)` |
 | `backend/app/services/asset_registry_helper.py` | `HelperController._project_run` | create_task | `self._renew_loop(lease_id)` |
+| `backend/app/services/asset_sync.py` | `start` | create_task | `run_worker() (name=asset-sync-worker)` |
 | `backend/app/services/asset_watcher.py` | `_Watcher._ensure_health_timer_locked` | Timer | `self._health_check` |
 | `backend/app/services/asset_watcher.py` | `_Watcher._flush` | run_coroutine_threadsafe | `manager.broadcast_all( {"type": "assets_changed", "projects": projects…` |
 | `backend/app/services/asset_watcher.py` | `_Watcher._start_timer_locked` | Timer | `self._flush` |
@@ -69,7 +72,7 @@
 | `backend/app/services/history_autofill.py` | `_start_history_task` | create_task | `_run_history_import(key, dict(acc), account_scope=captured_scope)` |
 | `backend/app/services/history_autofill.py` | `schedule_history_auto_start._spawn` | create_task | `auto_start_history_import(account_email, reason="gap") (name=history-gap-auto-start)` |
 | `backend/app/services/media_preservation.py` | `PeriodicMediaPreservation.start` | create_task | `self._run() (name=media-preservation)` |
-| `backend/app/services/media_preservation.py` | `_claim_and_process_non_abandon` | create_task | `_claim_and_process(gen_id, account_key)` |
+| `backend/app/services/media_preservation.py` | `_claim_and_process_non_abandon` | create_task | `process()` |
 | `backend/app/services/remote_realtime.py` | `RemoteRealtimeBridge._consume` | create_task | `websocket.recv()` |
 | `backend/app/services/remote_realtime.py` | `RemoteRealtimeBridge.start` | create_task | `self._run() (name=remote-realtime-bridge)` |
 | `backend/app/services/resolve_queue.py` | `run_non_abandon` | create_task | `coro` |
@@ -79,6 +82,10 @@
 | `backend/app/services/share_state_reconciler.py` | `PeriodicShareStateReconciler.start` | create_task | `self._run() (name=share-state-reconciler)` |
 | `backend/app/services/syncer.py` | `PeriodicSync.start` | create_task | `self._run() (name=periodic-sync)` |
 | `backend/app/services/temp_sweeper.py` | `PeriodicSweeper.start` | create_task | `self._run() (name=temp-sweeper)` |
+| `backend/app/services/windows_drag.py` | `_run_worker` | Thread | `commands` |
+| `backend/app/services/windows_drag.py` | `_run_worker` | Thread | `watch_owner` |
+| `backend/app/services/windows_drag.py` | `drag_files` | Thread | `read_messages` |
+| `backend/app/services/windows_drag.py` | `drag_files` | Thread | `write_messages` |
 | `backend/app/services/worker_backup.py` | `PeriodicWorkerBackupUpload.start` | create_task | `self._run() (name=periodic-worker-backup)` |
 | `backend/app/usecases/gen_requests.py` | `_schedule_request_estimate` | create_task | `_record_request_estimate(gen_id, account_email, payload)` |
 | `backend/app/usecases/hf_missing.py` | `trash_missing_generations.existence` | create_task | `_ask(key)` |

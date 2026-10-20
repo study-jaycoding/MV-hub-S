@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-14
+updated: 2026-10-21
 status: active
 ---
 
@@ -53,6 +53,7 @@ MV Hub는 브라우저와 서버 하나로 끝나는 일반 웹앱이 아니다.
 | 팀 프로젝트 정의·프로젝트 역할 | 공유 서버 DB | 프로젝트 이름·보관·멤버·역할은 팀 공통 |
 | 내 비공개 생성물·히스토리·개인 메타 | 계정별 로컬 SQLite | `data/db/acct/<계정>/content_hub.db` |
 | 팀에 발행된 생성물·공유 댓글 | 공유 서버 DB | 로컬 허브가 팀 항목을 조회·수정할 때 서버로 재분기 |
+| 공유 명령의 복원 세대 | 대상 content DB의 `app_setting.share_db_generation` | 초기화 시 기존 값을 보존하고 API 복원마다 회전한다. 새 명령은 받은 `db_generation`을 동결하며 서버는 적용 트랜잭션 안에서 대조한다. 이미 남은 receipt 재생은 허용한다. 필드 없는 구명령과 수동 파일 복원은 이 보호 범위 밖이다 |
 | 비공개 코멘트(`is_private`) | 작성자 로컬 SQLite | 서버·번들로 나가지 않는다. 공유 팀 서버는 비공개 저장 요청을 거절(`routers/generation.py`·`assets_metadata.py`) |
 | 슈퍼 관리자 세션 · 10분 elev 토큰 | 서버 DB(`super_admin_session`) · 로컬 `app_setting`(`shared_server_elev_token`) | 토큰은 로그아웃·계정 전환 시 삭제 |
 | 업데이트 공지 후보·고정·읽음 | 공유 서버 DB(`release_update_notice*`) | 관리 쓰기는 서버 `Admin` 만 |
@@ -64,9 +65,14 @@ MV Hub는 브라우저와 서버 하나로 끝나는 일반 웹앱이 아니다.
 | 워크스페이스 등록부·멤버·해석·계정 보고 | 공유 서버 DB | `workspace_registry`·`workspace_member`(`repo/identity.py` `record_account_status`). `/api/workspaces/resolve`·`/api/account/hf` 는 프록시 모드에서 서버 위임 |
 | Comfy 설정·실행·결과 저장 | 로컬 PC | 이 PC의 Comfy/Cloud 연결과 디스크를 사용 |
 | 에셋 원본·마운트·트리·썸네일 | 로컬 파일 시스템 | 파일 I/O를 공유 서버에 위임하지 않음 |
+| 자료 내용 ID·로컬 사본·업로드 대기열 | 반입 계정의 로컬 SQLite·파일 | 전체 SHA 기반 `asset_content_id`, `asset_blob`·`asset_location`·`asset_sync_outbox`. 로컬 즉시 사용, 목적 프로젝트/계정/연결을 고정한 영속 재시도. 별도 레퍼런스 DB를 만들지 않음 |
+| 프로젝트 imp_cap 보관본·서버 위치 | 공유 서버 DB·명시 Assets 루트 | 서버가 바이트·권한을 확인한 뒤 `imp_cap/표시이름`에 확정. 같은 owner/project/root에서 중복 방지. 서버 원본은 권한 있는 전용 스트리밍 API로 읽고, 로컬 사본은 계정별 캐시. 기존 파일 API의 로컬 소유권을 전역 변경하지 않음 |
+| 자료의 정식 위치 전환 | 서버 ready receipt → 기존 문서 포트 | 내용 ID·역할·생성 당시 입력은 고정하고 위치만 전환. 계정/프로젝트/서버/루트 문맥과 이전 위치를 대조. 씬·Undo는 공개 canvas 포트, 생성 정보·재생성·공유는 읽기 투영을 사용. 이미 접수한 실행 payload는 불변 |
 | 에셋 댓글 등 팀 메타 | 공유 서버 또는 로컬 | `assets` 라우터가 항목 성격에 따라 명시적으로 재분기 |
 | 씬 원본 | 브라우저 IndexedDB | 씬별 확정 저장본. 화면에 남은 미확정 편집과 구분한다([씬 저장 계약](CANVAS_SCENE_STORAGE.md)). ⚠️ 앱 창은 브라우저·설치 경로별 **전용 프로필**로 뜨므로(`run_agent_session.py` `_app_profile_dir`) 한 PC 에도 씬 원본이 여러 벌 존재할 수 있다 |
 | 씬 백업 | 계정별 로컬 SQLite | 캐시 소실 복구용 미러이며 공유 서버로 보내지 않음. 삭제 미러는 **이 세션에서 로컬에 있던 씬**만 지운다 — 서버에만 있는 id 는 다른 프로필 것일 수 있어 건드리지 않는다 |
+| 편집 타임라인 문서 | 현재 브라우저의 계정별 localStorage | 프로젝트·시퀀스별 편집 원본. dev2 후속 A는 계정 DB의 `edit_doc_head`·`edit_doc_copy`에 자동 보존·충돌 사본을 추가한다(구현·검증 중). DB 백업에 이 표가 포함되지만 미전송 편집·원본 미디어·Undo는 포함되지 않는다. 파일 보관·복원은 [EDIT_TAB](EDIT_TAB.md) 참조 |
+| 편집 타임라인 Undo | 페이지 실행 중 메모리 | 새로고침하면 지워진다. 문서 파일 복원과 Undo 기록 복원은 다르다 |
 | 미디어 캐시·다운로드·병합 | 로컬 파일 시스템 | 원격 바이트를 이 PC에 저장·가공 |
 | ComfyUI 연결·실행 (`/api/comfy`) | 로컬 | 이 PC 의 로컬/Cloud Comfy 자원 — 서버 위임 금지 |
 | DaVinci Resolve 전송 (`/api/resolve/`) | 로컬 | Render 원본 저장·Resolve 제어 — 이 PC 디스크/앱 대상 |
@@ -76,6 +82,10 @@ MV Hub는 브라우저와 서버 하나로 끝나는 일반 웹앱이 아니다.
 | PM 배치 활동 시각 | 실제 배치 변경을 처리한 콘텐츠 DB → 기존 관리 팩트/공유 번들 | nullable `task_activity_at`. 원래 생성일과 구분하며 조회·동기화 수신 시각으로 대체하지 않음. 명시 복원 외 과거 보관 유지 |
 | PM 본인 미공유 미리보기 | 계정별 로컬 SQLite | `/api/manage/local-task-previews`는 로컬 전용. 본인·팀 공간·프로젝트·폴더 재검증, 서버 폴백/다운로드/변경 알림 없음 |
 | PM 프로젝트 폴더 연결 | 로컬 허브 DB | 각 PC의 렌더 경로와 연결되는 로컬 정보 |
+
+자료 보관 기능의 구현·검증·미확인 범위는 [ASSET_LOCAL_SYNC](ASSET_LOCAL_SYNC.md) §12가 기준이다.
+DB 백업에는 새 표가 포함되지만 실제 미디어 바이트는 포함되지 않는다. 만료 가능한 업로드 허가는 내보내기 사본에서 제거한다.
+`content_asset_sync.v1` 이관 기록을 모르는 구버전은 해당 DB를 열지 못한다. 구버전 롤백은 이관 전 DB 사본으로 해야 한다.
 | 완료본 판정·원본 바이트 | 공유 서버 | 팀이 판정한 최종본과 원본 조회 권위 |
 | 완료본 실제 파일 저장 | 로컬 파일 시스템 | NAS·렌더 폴더에 쓰는 작업은 현재 PC에서 실행 |
 | 로컬 DB 내보내기·가져오기 | 계정별 로컬 SQLite | 서버 DB를 통째로 교체하는 경로가 아님 |

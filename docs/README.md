@@ -6,10 +6,13 @@ tags:
   - mvhub
   - mvhub/문서
 status: active
-updated: 2026-10-15
+updated: 2026-10-20
 ---
 
 # MV Hub 개발 문서 안내
+
+Asset ID·로컬 우선·프로젝트 보관/자동 서버 전환: [설계·구현·검증 인계](ASSET_LOCAL_SYNC.md) §12.
+검증 후보29a9의 원본 dev2 반영·재시작은 완료했다. 실제 범위·미해결은 [구조 개편 정본](status/서비스구조_근본진단_2026-10-18.md) §20.79를 따른다. 운영 배포·전체 완료는 남아 있다.
 
 MCP 연동은 `codex/mvhub-mcp` 브랜치의 별도 worktree에서 관리한다. 설계·사용 안내는 그 브랜치의 `docs/MCP_INTEGRATION.md`를 참조한다. dev에는 로컬 AI 연결(MCP 브리지) 구현을 포함하지 않는다. 기존 Higgsfield 수집 기능은 유지한다.
 

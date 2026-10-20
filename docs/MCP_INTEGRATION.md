@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-16
+updated: 2026-10-20
 ---
 
 # MV Hub 로컬 MCP
@@ -1151,3 +1151,35 @@ Claude Fable 5.1 설계 세션 `8a70162f-8729-42dd-934b-41043f94ab71`의 실제 
 - [앱 연결·승인](../frontend/src/components/mcp/McpConnection.tsx)
 - [문맥 조회](../frontend/src/lib/mcpContext.ts), [계획·카드·실행](../frontend/src/lib/mcpPlans.ts)
 - [stdio 어댑터](../tools/mcp_adapter/server.py)
+
+## 2026-10-19 Assets 내용 ID와 MCP 참고 자료 위치 전환
+
+owner: Codex(해변 수영 강아지 3장 생성 세션)
+reviewer: 별도 Codex 읽기 검토 담당(Claude 독립 리뷰 아님)
+status: 검토 요청
+touched_paths: `backend/app/routers/mcp_v2.py`, `backend/tests/test_mcp_persistent.py`, 본 문서
+updated: 2026-10-19
+
+- 사용자 요청: 검토 결과를 dev2 작업 세션에 전달하고, 부하 실험은 변경하지 않은 채 별도 사본에서 MCP 참조 전환 오류부터 수정한다.
+- 기준은 Assets의 후속 3건 수정이 들어간 `predeploy-reports/asset-sync-dev2/source`다. 이를 새 독립 사본 `mcp-reference-transition-20261019/source`로 복사하고 원본 파일 지문을 기록했다. Git 커밋이 없는 검토용 사본이며 Assets 원본·dev2 원본·설치본·운영 DB·NAS·부하 실험 프로세스는 수정하지 않는다. 이 패치는 Assets 변경 위에 적용하는 증분이며 그 선행 변경을 포함하지 않는다.
+- 범위 판단: 기존 참고 자료의 내용 동일성·접근 권한 계약을 유지하는 국소 오류 수정이다. 새 공개 인자·DB 스키마·파일 저장 동작·MCP 표시 방식·CLI 버전 변경은 없다. 원본 통합과 실사용 검토는 별도다.
+
+### 원인과 수정
+
+- 기존 발급/검증은 생성 결과의 `assets` 전체 JSON을 해시했다. 보관 완료 후 읽기 응답의 `file_path`, `source_url`, `server_location`이 바뀌면 같은 내용 ID라도 `reference_changed`가 발생했다.
+- 유효한 서버 측 `asset_content_id`가 있는 새 핸들은 선택한 asset의 ID·종류·내용 ID와 generation의 ID·소유자·프로젝트를 비교한다. 썸네일·저장 위치·선택하지 않은 다른 결과의 변화는 같은 파일을 무효화하지 않는다.
+- 계획 작성과 실행 검증에서 기존 권한 있는 조회 경로를 다시 호출하고 정확한 asset ID를 찾는다. 내용·종류·소유자·프로젝트가 달라지거나 파일이 사라지면 거절한다. 워크스페이스·클라이언트·현재 계정 검사는 유지한다.
+- 비교를 통과하면 최신 위치와 내용 ID로 실행용 reference를 다시 구성한다. `ReferenceIn.asset_content_id`와 기존 큐의 `expected_asset_content_id`를 통해 작업자의 실제 입력 바이트 검사로 이어진다. 이미 발급한 핸들 기록과 원본 asset 경로는 덮어쓰지 않는다.
+- 내용 ID가 없거나 형식이 잘못된 결과 및 업데이트 전에 발급한 핸들은 종전 전체 응답 비교를 유지한다. 과거 핸들에는 당시 내용 ID의 증거가 없으므로 위치 전환으로 거절되면 `read_context(kind="references")`로 다시 조회해 계획을 만들어야 한다. 과거 핸들의 검사를 생략하거나 추정 내용 ID를 덧씌우지 않는다.
+
+### 검증·전달 경계
+
+- 수정 전 실제 API 시험 5개 실패: Claude/Codex 각각 계획 작성 전·후 위치 전환 4개, 선택하지 않은 결과/미리보기 변화 1개. 실패는 예상한 `409 reference_changed`였다.
+- 수정 후 신규 관련 시험 18개 통과: 위 5개, 내용·ID·종류·소유자·프로젝트·접근권한 변경, 구형/내용 미확인 자료 보수적 검사, 실제 임시 DB→조회→계획→보관 완료→실제 큐 전달. 실제 큐 시험은 최신 경로와 기대 내용 ID 및 원본 경로 보존을 확인했다.
+- 최종 관련 회귀: `test_mcp_persistent.py`, `test_asset_location_projection.py`, `test_asset_provenance.py` **243개 통과, 100.20초**. 신규 시험의 중간 결과와 합산하지 않는다. 테스트는 사본에서 임시 데이터로 수행하며 생성 제공자 호출·과금은 하지 않는다. 테스트 실행용 프로세스만 논리 CPU 4~7/BelowNormal로 제한하며 기존 실측의 설정은 바꾸지 않는다. 호스트 자원 영향이 0이라는 의미는 아니다.
+- 별도 Codex 담당의 읽기 검토에서 조치할 결함 보고는 없었다. 이는 상대 보고이며 Claude 합의·독립 승인이나 실제 앱 검증으로 표시하지 않는다.
+- 실제 Claude/Codex 앱 화면·실제 NAS 다운로드·두 PC·유료 생성·혼합 버전은 미검증이다. 구형 작업자의 과금 전 바이트 검사 지원 여부는 Assets 통합 검증 범위에서 따로 확인해야 한다.
+
+프로젝트 문서: 본 절에 근거·수정·검증·과거 핸들 처리와 원본 미반영 경계를 기록한다.
+기억: 개인·전역 기억과 지침·역할 설정은 변경하지 않았다.
+볼트: 프로젝트 종속 코드 계약이므로 복제하지 않았다.
