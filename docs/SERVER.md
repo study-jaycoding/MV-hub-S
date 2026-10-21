@@ -175,9 +175,11 @@ DB를 되돌리거나 실패 표식을 임의로 지우지 않는다. 옛 워커
 근거는 총괄이 제공한 **1358 서버 DB 사본 격리 리허설 보고**다: dev2 변환 후 compatible·ready 200,
 옛 1358 코드로 ready·로그인·팀 목록 200, 다시 dev2 compatible을 확인했다. 이는 해당 사본과 코드의
 왕복 호환성 근거이며, `serve.py` 직접 기동이었다. supervisor·예약 작업·옛 워커 전체 전환과
-그 이후의 모든 데이터 변경까지 검증한 결과는 아니다. **작업자 계정 DB의 dev2 → 1358 → dev2
-역방향 호환성 실측 결과는 이 근거에 포함되지 않는다.** 총괄의 별도 실측 결과와 적용 대상 DB를
-배포 전에 대조해야 하며, 서버 DB 사본의 결과를 작업자 계정 DB 전체로 확대하지 않는다.
+그 이후의 모든 데이터 변경까지 검증한 결과는 아니다. 작업자 쪽은 별도 격리 리허설로 확인했다:
+작업자 DB 사본(content·trash·manage)과 계정 하위 DB(`data/db/acct/<계정>/`) 사본 1개를 dev2 변환 →
+1358 코드로 읽기·쓰기(열람 기록·휴지통 이동) → 다시 dev2 compatible·읽기·쓰기, quick_check ok.
+기록은 [dev2 대체 검토](status/dev2_대체검토_2026-10-21.md)의 실측 절이다. 사본 몇 개의 결과이므로
+모든 PC의 계정 DB 로 확대하지 않는다.
 
 두 번째 업데이트부터는 새 supervisor와 coordinator를 확인한 뒤 위 **정기 업데이트** 절을 따른다.
 선택 커밋의 명시적 rollout·capability 선언과 소스 검증 영수증이 필요하며, 첫 전환판의 선언은
@@ -195,16 +197,15 @@ ZIP·불변 후보 기록·artifact 검증 영수증을 함께 게시한 뒤, **
 재구성해 `contract`와 영수증 참조를 잃는다. **기존 1358 설치 폴더 위에 새 `MVHub_Install.bat`을
 실행하지 않는다.** 새 설치기는 새 설치 또는 이미 새 계약을 지원하는 설치본을 위한 경로이며,
 1358 폴더의 첫 전환을 대신하지 않는다. 전환 후 해당 PC의 새 설치 기능과 `artifact-receipt-v1`
-capability를 확인하고, 그 PC를 기준으로 다음 `enforced` 판을 적용한다.
+capability를 확인하고, 그 PC를 기준으로 다음 `enforced` 판을 적용한다. 확인 방법: 설치 폴더에
+`update_release_contract.ps1` 이 있고, `installer-capabilities.json` 의 `capabilities` 배열에
+`artifact-receipt-v1` 이 들어 있다(없으면 그 PC 는 아직 bridge 를 받지 않았다 — enforced 판은 그 PC 에서
+"Install the compatible bridge before this release." 로 거부된다).
 
-2026-10-21 적용 준비 기록: owner=Codex(mvhub-implement), reviewer=독립 리뷰 미실시(설계는 사용자 전달 Claude 안),
-status=검증 중(독립 리뷰 전), touched_paths=`release/compatibility.json`·
-`backend/tests/test_release_contract.py`·`docs/SERVER.md`, updated=2026-10-21.
-범위는 선언·기존 Python/PowerShell 거부 조건의 회귀 시험·이 안내이며, 커밋·통합·배포는 포함하지 않는다.
-수정 전 `rollout=None`의 선언 시험 실패를 재현했고, 수정 후 선언·Python 거부 5건·기본 경로/명시 경로
-시험 7건이 통과했다. PowerShell 계약 시험 7건은 임시 폴더 생성의 `WinError 5`로 실행 전 차단됐다.
-Ponytail과 직접 소스/호출부 검토를 적용했다. graft는 실행 정책 차단으로 사용하지 못했으며,
-실제 DB 왕복·ZIP 배포 자격·설치 검증은 이 작업에서 수행하지 않았다.
+bridge 선언 기록(2026-10-21): 구현 Codex(`dc2d522c`), 통합 후보 병합 `9d49a199`, 구현하지 않은 Claude 별도 세션
+독립 리뷰 승인(`test_release_contract.py` 92 통과, PowerShell 계약 시험 포함). 근거·남은 결정은
+[dev2 대체 검토](status/dev2_대체검토_2026-10-21.md)에 둔다. 다음 `enforced` 판으로 바꿀 때는
+`test_release_contract.py` 의 bridge 고정 단언을 값과 함께 바꾼다.
 
 ## 업데이트(롤아웃) 순서 — ★생성 fence 후 공유 서버 먼저
 
