@@ -222,8 +222,9 @@ export function useGenerationLibraryData({
   // reloadSeqRef 가 정합성(최신 결과만 반영)을 보장하므로, 여기선 중복 요청만 없앤다.
   // ★줄은 둘이다(2026-10-07): 아래 셋은 **목록 줄** — 한 실행의 목록 구간(첫 쪽 + 위치 확인)이 끝날 때까지만 잡는다.
   const inflightRef = useRef<Promise<void> | null>(null);
-  const pendingArgsRef = useRef<{ silent: boolean; light: boolean; intent: LibraryIntent } | null>(null);
+  const pendingArgsRef = useRef<{ silent: boolean; light: boolean; intent: LibraryIntent; retirementCheck: boolean } | null>(null);
   const pendingResolversRef = useRef<Array<() => void>>([]);
+  const recheckRetiredRef = useRef<() => void>(() => {});
   // **앞지르기**(2026-10-13 Jay "아직 폴더 이동할 때 딜레이") — 조회(자리·필터·탭)가 바뀌었는데 앞 실행의 목록이 아직 안 왔으면, 그것이 끝나길
   //  기다리지 않고 줄을 바로 넘겨받는다. 앞 실행의 목록은 어차피 seq 로 버려진다 — 기다리면 새 폴더의 목록이 에피소드의 첫 쪽(200장)이나
   //  주기 조회만큼 늦는다. **같은 조회를 다시 받는 것은 전처럼 줄을 선다**(동시 요청 하나로 합치기는 그대로).
@@ -510,7 +511,7 @@ export function useGenerationLibraryData({
   }, [requestMeta, setAside]);
 
   // listSettled = 목록 구간이 끝났다(적용·실패·폐기 모두) — 부르는 쪽(launch)이 목록 줄을 다음 실행에 넘긴다.
-  const runReload = useCallback(async (silent: boolean, light: boolean, intent: LibraryIntent, listSettled: () => void) => {
+  const runReload = useCallback(async (silent: boolean, light: boolean, intent: LibraryIntent, listSettled: () => void, retirementCheck: boolean) => {
     if (!authReadyRef.current) return;
     // 줄을 서는 사이 주인이 컷 화면으로 바뀌었다 — 이 조회의 목록은 보내지 않는다(판정이 안 섰으면 메타만 — 다음 진입이 맡는다)
     const cutOwner = cutOwnerNow();
@@ -595,6 +596,8 @@ export function useGenerationLibraryData({
           // 낡은 실행 — 목록은 버린다. 다만 맡긴 메타 요구가 처리될 때까지는 끝나지 않는다(전체 요구는 다음 묶음이 이어받는다).
           finishSync(false);
           listSettled();
+          // 재시도까지 은퇴한 최신 실행만 check 한 번을 남긴다. 그 check는 다시 check를 걸지 않는다.
+          if (seq === reloadSeqRef.current && !retirementCheck) recheckRetiredRef.current();
           await metaDone;
           return;
         }
@@ -680,7 +683,7 @@ export function useGenerationLibraryData({
   // 병합 실행이 끝나면(메타 처리까지) 그동안 대기하던 호출자들의 promise 를 resolve → awaited 호출도 '자기 요청을
   // 포함한' 실행이 끝난 뒤 신선한 데이터를 본다.
   const launch = useCallback(
-    (silent: boolean, light: boolean, intent: LibraryIntent): Promise<void> => {
+    (silent: boolean, light: boolean, intent: LibraryIntent, retirementCheck: boolean): Promise<void> => {
       // 줄 넘기기는 실행마다 한 번 — 목록 구간 끝(runReload 가 부른다)과 실행 종료 중 먼저 온 쪽. 이미 넘긴 옛 실행의
       //  종료가 그 뒤에 출발한 실행의 줄·스피너를 건드리지 않는다.
       let handed = false;
@@ -703,7 +706,7 @@ export function useGenerationLibraryData({
           pendingArgsRef.current = null;
           const resolvers = pendingResolversRef.current;
           pendingResolversRef.current = [];
-          void launch(next.silent, next.light, next.intent)
+          void launch(next.silent, next.light, next.intent, next.retirementCheck)
             .finally(() => {
               for (const r of resolvers) r();
             })
@@ -713,7 +716,7 @@ export function useGenerationLibraryData({
           setLoading(false);
         }
       };
-      const p = runReload(silent, light, intent, handOver).finally(handOver);
+      const p = runReload(silent, light, intent, handOver, retirementCheck).finally(handOver);
       // 목록이 없는 실행(캔버스)은 호출 도중에 이미 줄을 넘겼다 — 넘긴 줄에 자기를 다시 세우면 뒤의 요청이 영영 못 나간다.
       if (!handed) {
         inflightRef.current = p;
@@ -729,19 +732,20 @@ export function useGenerationLibraryData({
   );
 
   const reload = useCallback(
-    (silent = false, light = false, intent: LibraryIntent = "invalidate"): Promise<void> => {
+    (silent = false, light = false, intent: LibraryIntent = "invalidate", retirementCheck = false): Promise<void> => {
       // 걸러 보는 컷 화면이 주인이다 — 목록 줄에 서지 않고 그쪽 갱신을 기다린다(판정이 안 섰으면 메타만 — 다음 진입이 맡는다)
       const cutOwner = cutOwnerNow();
       if (cutOwner) return cutOwner.settled ? runCut(cutOwner.owner, light, intent) : requestMeta(light).then(() => undefined);
-      if (!inflightRef.current) return launch(silent, light, intent);
+      if (!inflightRef.current) return launch(silent, light, intent, retirementCheck);
       // 실행 중인 stale run 을 즉시 무효화(seq++) — 그 run 은 완료돼도 결과를 적용하지 않는다.
       //  (새 필터로 바꿨을 때 옛 필터 결과가 잠깐 번쩍이거나, 그 run 이 실패해도 잔존하지 않게.)
       reloadSeqRef.current++;
       // 큐에 병합. '강한' 옵션 우선: 하나라도 non-silent/non-light 면 그걸로(전체 로드·스피너). 바람도 강한 쪽(invalidate > check > ensure).
       const prev = pendingArgsRef.current;
       pendingArgsRef.current = prev
-        ? { silent: prev.silent && silent, light: prev.light && light, intent: INTENT_RANK[prev.intent] >= INTENT_RANK[intent] ? prev.intent : intent }
-        : { silent, light, intent };
+        ? { silent: prev.silent && silent, light: prev.light && light, intent: INTENT_RANK[prev.intent] >= INTENT_RANK[intent] ? prev.intent : intent,
+            retirementCheck: prev.retirementCheck && retirementCheck }
+        : { silent, light, intent, retirementCheck };
       const waiting = new Promise<void>((res) => pendingResolversRef.current.push(res));
       // 조회가 바뀌었다 — 줄을 잡은 실행의 목록을 기다리지 않는다(위 '앞지르기'). 줄을 넘기면 방금 세운 실행이 그 자리에서 출발한다.
       //  이미 앞지른 낡은 요청이 떠 있으면 줄을 선다(동시에 둘까지).
@@ -753,6 +757,7 @@ export function useGenerationLibraryData({
     },
     [launch, requestMeta, runCut],
   );
+  recheckRetiredRef.current = () => { void reload(true, true, "check", true); };
 
   useEffect(() => onLibraryChanged(() => {}, (detail) => {
     // A peer tag edit may add/remove rows outside this page's current IDs. Reuse

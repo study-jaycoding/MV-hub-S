@@ -52,9 +52,9 @@ export function usePromptCreatedActions({
     if (parents.size && created?.length) {
       await Promise.all(created.map((g) => api.deriveFrom(g.id, [...parents]).catch(() => {})));
     }
+    postLibraryChanged(); // 새 생성물(폴더 라벨 포함)이 관리탭 보드에 즉시 뜨게
     void reload();
     bumpBoard();
-    postLibraryChanged(); // 새 생성물(폴더 라벨 포함)이 관리탭 보드에 즉시 뜨게
   };
 
   return { handlePromptCreated };

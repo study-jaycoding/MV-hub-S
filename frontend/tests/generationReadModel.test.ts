@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { GenerationReadModel } from "../src/features/library/readModel";
+import { storeGenerationRows } from "../src/features/library/readModels";
 import type { Generation } from "../src/types";
 
 const row = (id: string, patch: Partial<Generation> = {}) =>
@@ -109,5 +110,15 @@ describe("generation record ownership", () => {
     expect(m.read("c")?.id).toBe("c");
     expect(m.store({ a: row("a", { tags: ["fresh"] }) }, m.beginRead())).toEqual(["a"]);
     expect(m.read("a")?.tags).toEqual(["fresh"]);
+  });
+  it("[R5-1] keeps an invalidated oldest row when an older page inserts a new row first", () => {
+    const m = model("local", 2);
+    m.store({ a: row("a"), b: row("b") }, m.beginRead());
+    const old = m.beginRead();
+    m.invalidate(["a"], ["tags"]);
+    const page = storeGenerationRows(m, [row("new"), row("a", { tags: ["obsolete"], status: "done" })], old);
+    expect(page.map(item => item.id)).toEqual(["new", "a"]);
+    expect(m.read("a")).toMatchObject({ tags: ["old"], status: "done" });
+    expect(m.isFresh("a", ["tags"])).toBe(false);
   });
 });
