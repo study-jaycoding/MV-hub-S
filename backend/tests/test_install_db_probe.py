@@ -144,3 +144,101 @@ def test_startup_skips_failed_database_and_prepares_rest(tmp_path, monkeypatch, 
     assert str(failed) not in caplog.text and 'unopened' not in caplog.text
     if failure == 'locked':
         assert schema_compat.inspect_database(failed, kind).status == 'unversioned'
+
+
+@pytest.mark.parametrize('kind', ['content', 'trash', 'manage'])
+@pytest.mark.parametrize('fail_copy', [False, 'copy', 'verify'])
+def test_baseline_snapshot_precedes_first_write(tmp_path, monkeypatch, kind, fail_copy):
+    from app import manage_db
+    from app.repo import trash
+    from app.services import backup_verify
+
+    initialize = {'content': db.init_db, 'trash': trash.init_trash_db,
+                  'manage': manage_db.init_manage_db}[kind]
+    source = tmp_path / 'data/db' / (kind + '.db')
+    source.parent.mkdir(parents=True)
+    if kind == 'trash':
+        with closing(sqlite3.connect(source)) as conn:
+            conn.execute('CREATE TABLE trashed(id TEXT PRIMARY KEY, trashed_at TEXT NOT NULL, '
+                         'project_id TEXT, creator_uid TEXT, status TEXT, prompt TEXT, '
+                         'source_name TEXT, payload TEXT NOT NULL)')
+    else:
+        initialize(source)
+        with closing(sqlite3.connect(source, isolation_level=None)) as conn:
+            conn.execute('DROP TABLE schema_migrations')
+            conn.execute('DROP TABLE schema_meta')
+            conn.execute('PRAGMA user_version=0')
+    if kind == 'content':
+        with closing(sqlite3.connect(source)) as conn:
+            conn.execute('DROP TABLE gen_request')
+    before = source.read_bytes()
+    snapshots = []
+    original = backup_verify.create_sqlite_snapshot
+
+    def snapshot(path, target, **kwargs):
+        assert path == source
+        assert source.read_bytes() == before
+        if fail_copy == 'copy':
+            raise OSError('injected disk failure: private source path')
+        result = original(path, target, **kwargs)
+        assert source.read_bytes() == before
+        if fail_copy == 'verify':
+            target.write_bytes(b'corrupted backup fixture')
+            return result
+        assert schema_compat.inspect_database(target, kind).status == 'unversioned'
+        with closing(sqlite3.connect(target)) as conn:
+            assert conn.execute('PRAGMA quick_check').fetchall() == [('ok',)]
+        snapshots.append(target)
+        return result
+
+    monkeypatch.setattr(backup_verify, 'create_sqlite_snapshot', snapshot)
+    if fail_copy:
+        with pytest.raises(schema_compat.SchemaCompatibilityError, match='baseline_backup_failed'):
+            initialize(source)
+        assert source.read_bytes() == before
+        assert schema_compat.inspect_database(source, kind).status == 'unversioned'
+    else:
+        initialize(source)
+        assert len(snapshots) == 1
+        assert snapshots[0].parent == source.parent.parent / 'backups'
+        assert source.name in snapshots[0].name and 'pre-dev2-baseline' in snapshots[0].name
+        assert schema_compat.inspect_database(source, kind).status == 'compatible'
+        initialize(source)
+        assert len(snapshots) == 1
+
+
+def test_baseline_snapshot_failure_skips_only_other_account(tmp_path, monkeypatch, caplog):
+    from app.services import backup_verify
+
+    root = tmp_path / 'install'
+    paths = legacy_install(root, monkeypatch)
+    failed = next(path for kind, path in paths if kind == 'content' and path.parent.name == 'unopened')
+    before = failed.read_bytes()
+    original = backup_verify.create_sqlite_snapshot
+
+    def snapshot(source, target, **kwargs):
+        if source == failed:
+            raise OSError('private account path must not be logged')
+        return original(source, target, **kwargs)
+
+    monkeypatch.setattr(backup_verify, 'create_sqlite_snapshot', snapshot)
+    db.init_existing_databases(root, {})
+    assert failed.read_bytes() == before
+    assert schema_compat.inspect_database(failed, 'content').status == 'unversioned'
+    assert all(schema_compat.inspect_database(path, kind).status == 'compatible'
+               for kind, path in paths if path != failed)
+    assert 'baseline_backup_failed' in caplog.text and 'database_prepare_failed' in caplog.text
+    assert str(failed) not in caplog.text and 'private account' not in caplog.text
+
+
+def test_baseline_snapshot_lock_failure_preserves_source(tmp_path):
+    source = tmp_path / 'locked.db'
+    with closing(sqlite3.connect(source, isolation_level=None)) as lock:
+        lock.execute('CREATE TABLE worker(id TEXT PRIMARY KEY)')
+        before = source.read_bytes()
+        lock.execute('BEGIN EXCLUSIVE')
+        with pytest.raises(schema_compat.SchemaCompatibilityError, match='baseline_backup_failed'):
+            db.init_db(source)
+        assert source.read_bytes() == before
+        lock.rollback()
+    assert schema_compat.inspect_database(source, 'content').status == 'unversioned'

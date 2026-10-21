@@ -115,7 +115,7 @@ def test_server_only_location_requires_current_root_and_storage_identity(storage
         size=len(PNG), media_type='image', original_name='source.png')
     temporary = base / 'input.png'
     temporary.write_bytes(PNG)
-    receipt = sync.accept_upload(conn, ticket['token'], 'owner', temporary, SHA, len(PNG))
+    receipt = sync.accept_upload(ticket['token'], 'owner', temporary, SHA, len(PNG))
     assert conn.execute('SELECT count(*) FROM asset_sync_outbox').fetchone()[0] == 0
     assert _fetch_generation(conn, 'g')['references'][0]['file_path'] == receipt['file_path']
     conn.execute("UPDATE project SET asset_root_path=? WHERE id='p'", (str(base / 'changed-root'),))

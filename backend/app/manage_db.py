@@ -142,7 +142,7 @@ def init_manage_db(db_path: Path | None = None) -> Path:
     if path.is_file():
         from .db import _recover_hot_database
         _recover_hot_database(path, "manage")
-        schema_compat.inspect_database(path, "manage")
+        schema_compat.backup_before_baseline(path, "manage")
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     try:

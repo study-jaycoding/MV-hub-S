@@ -271,6 +271,8 @@ def test_hot_journal_future_runtime_does_not_recover_original(content):
 
 
 def test_runtime_hot_recovery_admission_runs_inside_maintenance_gate(content, monkeypatch):
+    with connect(content) as conn:
+        compat.record_baseline(conn, 'content_core')
     _leave_hot_journal(content)
     original = compat._inspect_recovered_copy
     def inspect(path, kind):
@@ -281,6 +283,8 @@ def test_runtime_hot_recovery_admission_runs_inside_maintenance_gate(content, mo
 
 
 def test_recovery_rechecks_original_after_copy_admission(content, monkeypatch):
+    with connect(content) as conn:
+        compat.record_baseline(conn, 'content_core')
     _leave_hot_journal(content)
     original = compat.inspect_database
     journal = content.with_name(content.name + '-journal')
@@ -292,6 +296,13 @@ def test_recovery_rechecks_original_after_copy_admission(content, monkeypatch):
     monkeypatch.setattr(compat, 'inspect_database', changed)
     assert_reason('recovery_source_changed', lambda: db._recover_hot_database(content, 'content'))
     assert journal.exists()
+
+
+def test_unversioned_hot_journal_backup_failure_preserves_original(content):
+    _leave_hot_journal(content)
+    before = compat._recovery_signature(content)
+    assert_reason('baseline_backup_failed', lambda: db.init_db(content))
+    assert compat._recovery_signature(content) == before
 
 
 def test_runtime_init_registers_core_without_enabling_pm(tmp_path):

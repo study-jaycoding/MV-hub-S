@@ -105,7 +105,7 @@ def _migrate_db_location(path: Path) -> None:
     if path != DEFAULT_DB_PATH or path.exists() or not _LEGACY_DB_PATH.exists():
         return
     _recover_hot_database(_LEGACY_DB_PATH, "content")
-    schema_compat.inspect_database(_LEGACY_DB_PATH, "content")
+    schema_compat.backup_before_baseline(_LEGACY_DB_PATH, "content")
     path.parent.mkdir(parents=True, exist_ok=True)
     for suffix in ("", "-wal", "-shm"):
         src = Path(str(_LEGACY_DB_PATH) + suffix)
@@ -454,6 +454,7 @@ def _recover_hot_database(path: Path, kind: str) -> None:
     with maintenance_gate():
         with _pool_condition:
             _check_share_epoch_locked()
+        schema_compat.backup_before_baseline(path, kind)
         flush_pool()
         schema_compat.recover_compatible_database(path, kind)
 
@@ -527,7 +528,7 @@ def init_db(db_path: Path | None = None) -> Path:
 
     if path.is_file():
         _recover_hot_database(path, "content")
-        schema_compat.inspect_database(path, "content")
+        schema_compat.backup_before_baseline(path, "content")
     trash_path = path.parent / "content_hub_trash.db"
     _recover_hot_database(trash_path, "trash")
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -177,72 +177,80 @@ def canonical_extension(path):
     raise SyncError('asset_media_mismatch')
 
 
-def accept_upload(conn, token, owner_uid, tmp, digest, size):
-    ticket = conn.execute('SELECT * FROM asset_upload_token WHERE token=? AND owner_uid=? AND expires_at>?',(token,owner_uid,time.time())).fetchone()
-    if not ticket:
-        raise SyncError('asset_upload_expired')
-    if ticket['asset_content_id'] != 'sha256:'+digest or ticket['bytes'] != size:
-        raise SyncError('asset_digest_mismatch')
-    root, revision, sid = root_context(conn,ticket['project_id'])
-    if revision != ticket['root_revision'] or sid != ticket['storage_id']:
-        raise SyncError('asset_context_changed')
-    deleted_args = (ticket['asset_content_id'], owner_uid, ticket['project_id'], sid, revision)
-    deleted_query = ("SELECT 1 FROM asset_location WHERE asset_content_id=? AND owner_uid=? "
-                     "AND project_id=? AND storage_id=? AND root_revision=? AND kind='server' AND state='deleted'")
-    if conn.execute(deleted_query, deleted_args).fetchone():
-        raise SyncError('asset_deleted')
-    extension=canonical_extension(tmp)
-    kind=asset_media_type('asset'+extension,include_audio=True)
-    if kind != ticket['media_type'] and not (extension in ('.mp4','.mov','.m4a') and ticket['media_type'] in ('audio','video')):
-        raise SyncError('asset_media_mismatch')
-    relative=str(Path(ticket['relative_path']).with_suffix(extension)).replace('\\','/')
-    target = _file_path(root,relative)
-    target.parent.mkdir(parents=True,exist_ok=True)
-    target = _file_path(root,relative)  # Recheck after creating parents (symlink/junction confinement).
-    stage = target.parent / ('.asset-sync-'+uuid.uuid4().hex+'.part')
-    try:
-        with tmp.open('rb') as source, stage.open('xb') as dest:
-            for chunk in iter(lambda:source.read(1024*1024),b''):
-                dest.write(chunk)
-            dest.flush()
-            os.fsync(dest.fileno())
+def accept_upload(token, owner_uid, tmp, digest, size):
+    with db.pinned_share_operation():
+        with db.get_connection() as conn:
+            ticket = conn.execute('SELECT * FROM asset_upload_token WHERE token=? AND owner_uid=? AND expires_at>?',(token,owner_uid,time.time())).fetchone()
+            if not ticket:
+                raise SyncError('asset_upload_expired')
+            if ticket['asset_content_id'] != 'sha256:'+digest or ticket['bytes'] != size:
+                raise SyncError('asset_digest_mismatch')
+            root, revision, sid = root_context(conn,ticket['project_id'])
+            if revision != ticket['root_revision'] or sid != ticket['storage_id']:
+                raise SyncError('asset_context_changed')
+            deleted_args = (ticket['asset_content_id'], owner_uid, ticket['project_id'], sid, revision)
+            deleted_query = ("SELECT 1 FROM asset_location WHERE asset_content_id=? AND owner_uid=? "
+                             "AND project_id=? AND storage_id=? AND root_revision=? AND kind='server' AND state='deleted'")
+            if conn.execute(deleted_query, deleted_args).fetchone():
+                raise SyncError('asset_deleted')
+        extension=canonical_extension(tmp)
+        kind=asset_media_type('asset'+extension,include_audio=True)
+        if kind != ticket['media_type'] and not (extension in ('.mp4','.mov','.m4a') and ticket['media_type'] in ('audio','video')):
+            raise SyncError('asset_media_mismatch')
+        relative=str(Path(ticket['relative_path']).with_suffix(extension)).replace('\\','/')
+        target = _file_path(root,relative)
+        target.parent.mkdir(parents=True,exist_ok=True)
+        target = _file_path(root,relative)  # Recheck after creating parents (symlink/junction confinement).
+        stage = target.parent / ('.asset-sync-'+uuid.uuid4().hex+'.part')
         try:
-            os.link(stage,target)
-        except FileExistsError:
-            if target.stat().st_size != size or asset_io.sha256_file(target) != digest:
-                raise SyncError('asset_destination_conflict')
-        except OSError:
-            # Windows rename is atomic and refuses to replace an existing target on SMB.
-            if os.name != 'nt':
-                raise
+            with tmp.open('rb') as source, stage.open('xb') as dest:
+                for chunk in iter(lambda:source.read(1024*1024),b''):
+                    dest.write(chunk)
+                dest.flush()
+                os.fsync(dest.fileno())
             try:
-                os.rename(stage,target)
+                os.link(stage,target)
             except FileExistsError:
                 if target.stat().st_size != size or asset_io.sha256_file(target) != digest:
                     raise SyncError('asset_destination_conflict')
-    finally:
-        stage.unlink(missing_ok=True)
-    if target.stat().st_size != size or asset_io.sha256_file(target) != digest:
-        raise SyncError('asset_storage_verification_failed')
-    # NAS copying/hashing must finish before taking the short DB write lock.
-    if not conn.in_transaction:
-        conn.execute('BEGIN IMMEDIATE')
-    current_root,current_revision,current_sid=root_context(conn,ticket['project_id'])
-    if current_root != root or current_revision != revision or current_sid != sid:
-        raise SyncError('asset_context_changed')
-    if conn.execute(deleted_query, deleted_args).fetchone():
-        raise SyncError('asset_deleted')
-    ledger.register_verified_blob(conn,digest,size,ticket['media_type'])
-    now = time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())
-    rid = uuid.uuid4().hex
-    old = conn.execute('SELECT registry_asset_id FROM asset_registry WHERE project_id=? AND path_cf=?',(ticket['project_id'],relative.casefold())).fetchone()
-    rid = old[0] if old else rid
-    conn.execute("INSERT OR IGNORE INTO asset_registry(registry_asset_id,project_id,path,path_cf,name_cf,sha256,bytes,mtime_ns,state,first_seen,last_seen,updated_at) VALUES(?,?,?,?,?,?,?,?,'present',?,?,?)",(rid,ticket['project_id'],relative,relative.casefold(),target.name.casefold(),digest,size,target.stat().st_mtime_ns,now,now,now))
-    conn.execute("UPDATE asset_registry SET state='present',sha256=?,bytes=?,mtime_ns=?,miss_count=0,missing_since=NULL,last_seen=?,updated_at=? WHERE registry_asset_id=?",(digest,size,target.stat().st_mtime_ns,now,now,rid))
-    conn.execute("INSERT OR IGNORE INTO asset_location(location_id,asset_content_id,owner_uid,project_id,storage_id,root_revision,kind,path,original_name,registry_asset_id) VALUES(?,?,?,?,?,?,'server',?,?,?)",(uuid.uuid4().hex,ticket['asset_content_id'],owner_uid,ticket['project_id'],sid,revision,relative,ticket['original_name'],rid))
-    row = conn.execute("SELECT * FROM asset_location WHERE asset_content_id=? AND owner_uid=? AND project_id=? AND root_revision=? AND storage_id=? AND kind='server'",(ticket['asset_content_id'],owner_uid,ticket['project_id'],revision,sid)).fetchone()
-    conn.execute('DELETE FROM asset_upload_token WHERE token=?',(token,))
-    return _receipt(row)
+            except OSError:
+                # Windows rename is atomic and refuses to replace an existing target on SMB.
+                if os.name != 'nt':
+                    raise
+                try:
+                    os.rename(stage,target)
+                except FileExistsError:
+                    if target.stat().st_size != size or asset_io.sha256_file(target) != digest:
+                        raise SyncError('asset_destination_conflict')
+        finally:
+            stage.unlink(missing_ok=True)
+        if target.stat().st_size != size or asset_io.sha256_file(target) != digest:
+            raise SyncError('asset_storage_verification_failed')
+        target_stat = target.stat()
+        with db.get_connection() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            current = conn.execute('SELECT * FROM asset_upload_token WHERE token=? AND owner_uid=? AND expires_at>?',
+                                   (token, owner_uid, time.time())).fetchone()
+            if not current:
+                raise SyncError('asset_upload_expired')
+            if dict(current) != dict(ticket):
+                raise SyncError('asset_upload_changed')
+            current_root,current_revision,current_sid=root_context(conn,ticket['project_id'])
+            if current_root != root or current_revision != revision or current_sid != sid:
+                raise SyncError('asset_context_changed')
+            if conn.execute(deleted_query, deleted_args).fetchone():
+                raise SyncError('asset_deleted')
+            ledger.register_verified_blob(conn,digest,size,ticket['media_type'])
+            now = time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())
+            rid = uuid.uuid4().hex
+            old = conn.execute('SELECT registry_asset_id FROM asset_registry WHERE project_id=? AND path_cf=?',(ticket['project_id'],relative.casefold())).fetchone()
+            rid = old[0] if old else rid
+            conn.execute("INSERT OR IGNORE INTO asset_registry(registry_asset_id,project_id,path,path_cf,name_cf,sha256,bytes,mtime_ns,state,first_seen,last_seen,updated_at) VALUES(?,?,?,?,?,?,?,?,'present',?,?,?)",(rid,ticket['project_id'],relative,relative.casefold(),target.name.casefold(),digest,size,target_stat.st_mtime_ns,now,now,now))
+            conn.execute("UPDATE asset_registry SET state='present',sha256=?,bytes=?,mtime_ns=?,miss_count=0,missing_since=NULL,last_seen=?,updated_at=? WHERE registry_asset_id=?",(digest,size,target_stat.st_mtime_ns,now,now,rid))
+            conn.execute("INSERT OR IGNORE INTO asset_location(location_id,asset_content_id,owner_uid,project_id,storage_id,root_revision,kind,path,original_name,registry_asset_id) VALUES(?,?,?,?,?,?,'server',?,?,?)",(uuid.uuid4().hex,ticket['asset_content_id'],owner_uid,ticket['project_id'],sid,revision,relative,ticket['original_name'],rid))
+            row = conn.execute("SELECT * FROM asset_location WHERE asset_content_id=? AND owner_uid=? AND project_id=? AND root_revision=? AND storage_id=? AND kind='server'",(ticket['asset_content_id'],owner_uid,ticket['project_id'],revision,sid)).fetchone()
+            conn.execute('DELETE FROM asset_upload_token WHERE token=?',(token,))
+            return _receipt(row)
 
 
 def register_local(path, file_path, digest, size, media_type, owner_uid, project_id=None, server_origin=None, original_name=''):
