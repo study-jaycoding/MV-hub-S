@@ -387,6 +387,47 @@ def test_powershell_verifies_compress_archive_and_rejects_normalized_unsafe_path
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell adapter")
+@pytest.mark.parametrize("name,unsafe", [
+    ("BACKEN~1/payload.txt", True),
+    ("TOOLS~1.PS1", True),
+    ("backend/TOOLS~1.PS1", True),
+    ("backend/tools.ps1", False),
+])
+def test_powershell_compress_archive_short_names(tmp_path, name, unsafe):
+    payload = {"VERSION.txt": b"fixture", "hf_cli_version.txt": b"1.1.26", name: b"fixture"}
+    value, _ = qualified_package(tmp_path, "fixture", payload=payload)
+    package = tmp_path / value['file']
+    source = tmp_path / 'source'
+    with zipfile.ZipFile(package) as archive:
+        archive.extractall(source)
+    compressed = tmp_path / 'compressed.zip'
+    result = subprocess.run([
+        'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+        f"$ErrorActionPreference='Stop'; Compress-Archive -Path '{source}\\*' -DestinationPath '{compressed}'",
+    ], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    with zipfile.ZipFile(compressed) as archive:
+        assert name in {entry.replace('\\', '/') for entry in archive.namelist()}
+    value.update(file=compressed.name, size=compressed.stat().st_size, sha256=c.file_sha256(compressed))
+    proof_path = receipt(tmp_path, value)
+    proof = c.document(proof_path.read_bytes())
+    proof['artifact'] = {'sha256': value['sha256'], 'size': value['size']}
+    proof_path.write_bytes(c.json_bytes(proof))
+    value['contract']['validation_receipt']['sha256'] = c.file_sha256(proof_path)
+    compressed.with_suffix('.candidate.json').write_bytes(c.json_bytes(value))
+    helper = Path(__file__).resolve().parents[2] / 'update_release_contract.ps1'
+    script = (f"$ErrorActionPreference='Stop'; . '{helper}'; "
+              "$Failure=''; try { "
+              f"$null=Get-QualifiedRelease -PackagePath '{compressed}' "
+              "} catch { $Failure=$_.Exception.Message }; "
+              f"if($Failure -cne '{'Unsafe ZIP path.' if unsafe else ''}'){{throw ('Wrong ZIP verdict: '+$Failure)}}")
+    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                             '-Command', script],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell adapter")
 def test_powershell_adapter_accepts_same_fixture_and_rejects_failed_receipt(tmp_path):
     _, folder, value, _ = fixture(tmp_path)
     helper = Path(__file__).resolve().parents[2] / "release" / "release_manifest_io.ps1"

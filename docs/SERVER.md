@@ -158,13 +158,17 @@ try {
     if ($LASTEXITCODE -ne 0) { throw '프런트 빌드 실패' }
     if (-not (Test-Path .\dist\index.html)) { throw '프런트 산출물 누락' }
 } finally { Pop-Location }
+$env:CONTENT_HUB_NO_PAUSE = '1'
 .\restart_server_task.bat
 if ($LASTEXITCODE -ne 0) { throw '서버 재시작 실패' }
 ```
 
 각 명령의 종료 코드 0, 의존성 import·버전 확인, `frontend\dist\index.html` 생성을 확인한 다음
 위 성공 확인 1~3(ready·로그인·팀 목록, activation 상태, DB 지원 범위)을 다시 확인한다.
-DB를 되돌리거나 실패 표식을 임의로 지우지 않는다.
+`restart_server_task.bat`은 `CONTENT_HUB_NO_PAUSE=1`이 없으면 종료 전에 `pause`로 입력을 기다린다.
+DB를 되돌리거나 실패 표식을 임의로 지우지 않는다. 옛 워커가 남긴 `backend-deps.pending`·
+`frontend-build.pending` 표식은 수동 완료로 지워지지 않는다. 다음 staged 갱신은 새 stage에
+의존성을 설치하고 프런트를 빌드하므로 수동 완료 뒤에도 이 작업을 한 번 더 수행한다.
 
 근거는 총괄이 제공한 **1358 서버 DB 사본 격리 리허설 보고**다: dev2 변환 후 compatible·ready 200,
 옛 1358 코드로 ready·로그인·팀 목록 200, 다시 dev2 compatible을 확인했다. 이는 해당 사본과 코드의
