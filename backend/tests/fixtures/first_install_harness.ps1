@@ -33,8 +33,12 @@ $Needle='& $env:ComSpec /d /c $Command'
 if (($Caller.Split(@($Needle),[StringSplitOptions]::None)).Count -ne 2) { throw 'Worker boundary changed.' }
 $Caller=$Caller.Replace($Needle,'Invoke-MockWorker -PackageUpdater $PackageUpdater')
 Invoke-Expression $Caller
-$script:Trace=@{worker_calls=0;runtime_checks=0;checkpoint_calls=0;process_starts=0;stops=0;ready_calls=0;undo_calls=0}
-function Write-UpdateState {}
+$script:Trace=@{worker_calls=0;runtime_checks=0;checkpoint_calls=0;process_starts=0;stops=0;ready_calls=0;undo_calls=0;drain_calls=0}
+function Write-UpdateState {
+    param($State)
+    $script:Trace.last_state=$State
+    if ($State -eq 'complete') {$script:Trace.phase_at_complete=$script:InstallJournal.phase}
+}
 function Get-ReleaseFileWithProgress { param($Name,$Destination,$ExpectedSize); Copy-Item -LiteralPath (Join-Path $BaseUrl $Name) -Destination $Destination }
 function Assert-PythonRuntime { param($RuntimeDir,$Label)
     $script:Trace.runtime_checks++
@@ -48,9 +52,13 @@ function Assert-PythonRuntime { param($RuntimeDir,$Label)
 }
 function Assert-BundledCli { param($Root,$ExpectedVersion,$Label) }
 function Assert-NoActiveResolveImport {}
-function Wait-WorkerDrain {}
+function Wait-WorkerDrain { $script:Trace.drain_calls++ }
 function Stop-MvHubProcesses { $script:Trace.stops++ }
-function Invoke-InstallCheckpoint { $script:Trace.checkpoint_calls++; throw 'Old runtime checkpoint must not run in a proven fresh install.' }
+function Invoke-InstallCheckpoint {
+    $script:Trace.checkpoint_calls++
+    if ($Scenario -ne 'existing_install') { throw 'Old runtime checkpoint must not run in a proven fresh install.' }
+    return @{key='fixture';database_id='fixture-db';status='compatible';schema_version=0;minimum_reader_protocol=1;minimum_writer_protocol=1;components=@()}
+}
 function Undo-ComponentSwaps { $script:Trace.undo_calls++; throw 'No rollback allowed in this fresh harness.' }
 function Start-Sleep {}
 function Get-Date { $script:Tick++; return ([DateTime]'2026-10-18T00:00:00Z').AddMinutes($script:Tick) }
@@ -61,7 +69,9 @@ function Invoke-FakeProcessStart {
     if ($Scenario -eq 'restart_failed') { throw 'injected process start failure' }
     $Data=Join-Path $TargetDir 'backend\data\db'
     [IO.Directory]::CreateDirectory($Data)|Out-Null
-    [IO.File]::Copy((Join-Path $CaseRoot 'synthetic.db'),(Join-Path $Data 'content_hub.db'))
+    if ($Scenario -ne 'existing_install') {
+        [IO.File]::Copy((Join-Path $CaseRoot 'synthetic.db'),(Join-Path $Data 'content_hub.db'))
+    }
     return [pscustomobject]@{Id=424242}
 }
 function Invoke-RestMethod {

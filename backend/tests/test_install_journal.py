@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from app.services import install_journal as journal, runtime_activation as runtime
+from app.services import install_journal as journal, release_contract, runtime_activation as runtime
 
 
 def test_startup_intent_is_durable_before_any_database_access(tmp_path):
@@ -87,3 +87,30 @@ def test_normal_boot_and_health_remain_available_while_pending_requests_are_refu
     assert messages[0]["status"] == 503 and calls == ["/api/example"]
     asyncio.run(middleware({"type": "http", "path": "/api/ready"}, None, send))
     assert calls[-1] == "/api/ready"
+
+
+@pytest.mark.parametrize("size", [1024 * 1024 + 1, release_contract.MAX_JSON, release_contract.MAX_JSON + 1])
+def test_runtime_build_identity_uses_release_contract_size_limit(tmp_path, monkeypatch, size):
+    monkeypatch.setattr(runtime, "_ROOT", tmp_path)
+    monkeypatch.setenv("MVHUB_BUILD_ID", "fallback")
+    monkeypatch.delenv("MVHUB_ACTIVATION_CONTROL", raising=False)
+    raw = json.dumps({"build_id": "installed-build"}).encode()
+    (tmp_path / "build-manifest.json").write_bytes(raw.ljust(size, b" "))
+    expected = "installed-build" if size <= release_contract.MAX_JSON else "fallback"
+    assert runtime.runtime_identity()["build_id"] == expected
+
+
+@pytest.mark.parametrize("size", [1024 * 1024 + 1, release_contract.MAX_JSON, release_contract.MAX_JSON + 1])
+def test_activation_journal_uses_release_contract_size_limit(tmp_path, monkeypatch, size):
+    control = tmp_path / "control.json"
+    path = tmp_path / "journal.json"
+    monkeypatch.setenv("MVHUB_ACTIVATION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MVHUB_ACTIVATION_CONTROL", str(control))
+    monkeypatch.setenv("MVHUB_EXECUTION_NONCE", "expected")
+    control.write_text(json.dumps({"format_version": 1, "state": "activated", "execution_nonce": "expected",
+                                   "journal": str(path), "run_id": "run"}))
+    raw = json.dumps({"run_id": "run", "execution_nonce": "expected", "phase": "committed",
+                      "db_mutation_possible": True, "business_writes_possible": True}).encode()
+    path.write_bytes(raw.ljust(size, b" "))
+    expected = "activated" if size <= release_contract.MAX_JSON else "blocked"
+    assert runtime.admission_state() == expected

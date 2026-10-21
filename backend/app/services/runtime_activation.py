@@ -6,13 +6,15 @@ import os
 from pathlib import Path
 import threading
 
+from . import release_contract
+
 _ROOT = Path(__file__).resolve().parents[3]
 _LOCK = threading.Lock()
 _ACTIVE = 0
 
 
 def _read(path: Path) -> dict:
-    if path.stat().st_size > 1024 * 1024:
+    if path.stat().st_size > release_contract.MAX_JSON:
         raise ValueError("activation_record_too_large")
     value = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(value, dict):
