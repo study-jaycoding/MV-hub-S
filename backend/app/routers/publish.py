@@ -301,7 +301,7 @@ def receive_published_bundle(body: PublishBundleIn, request: Request):
         bundle = {
             **bundle,
             "provider": {
-                "uid": acc.get("creator_uid") or acc.get("email"),
+                "uid": acc.get("creator_uid") or "acct:" + norm_email(acc.get("email")),
                 "name": acc.get("name") or acc.get("email"),
                 "email": acc.get("email"),
             },

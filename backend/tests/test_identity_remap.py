@@ -74,6 +74,81 @@ class IdentityRemapTests(unittest.TestCase):
         self.assertEqual(plan["account_map"], {"acct:a@x.com": "user_A"})
         self.assertIn("acct:ghost@x.com", plan["unmapped"])  # 고아는 여전히 unmapped 로 보고
 
+    def test_batch_remaps_legacy_email_only_for_linked_accounts(self):
+        with db.get_connection() as conn:
+            _seed_account(conn, "a@x.com", "user_A")
+            _seed_account(conn, "b@x.com", "acct:b@x.com")
+            for gid, uid in [("linked", "a@x.com"), ("unlinked", "b@x.com"), ("orphan", "ghost@x.com")]:
+                conn.execute(
+                    "INSERT INTO generation(id,worker_id,creator_uid,prompt,status) VALUES(?,'me',?,'p','done')",
+                    (gid, uid),
+                )
+        self.assertGreaterEqual(identity.migrate_all_acct_to_creator_uid(), 1)
+        self.assertEqual(identity.migrate_all_acct_to_creator_uid(), 0)
+        with db.get_connection() as conn:
+            actual = dict(conn.execute("SELECT id,creator_uid FROM generation").fetchall())
+        self.assertEqual(actual, {"linked": "user_A", "unlinked": "b@x.com", "orphan": "ghost@x.com"})
+
+    def test_legacy_reserved_email_cannot_remap_another_accounts_uid(self):
+        with db.get_connection() as conn:
+            _seed_account(conn, "a@x.com", "acct:a@x.com")
+            _seed_account(conn, "acct:a@x.com", "acct:acct:a@x.com")
+            conn.execute(
+                "INSERT INTO generation(id,worker_id,creator_uid,prompt,status) "
+                "VALUES('victim','me','acct:a@x.com','p','done')"
+            )
+        identity.set_account_hf_creator("acct:a@x.com", "user_other")
+        identity.migrate_all_acct_to_creator_uid()
+        self.assertEqual(repo.get_generation("victim")["creator_uid"], "acct:a@x.com")
+
+    def test_inferred_link_remaps_own_legacy_email(self):
+        with db.get_connection() as conn:
+            _seed_account(conn, "a@x.com", "acct:a@x.com")
+            identity.ensure_worker(conn, "acct:a@x.com", "A", "team")
+            for gid, uid in [("hf", "user_A"), ("email", "a@x.com")]:
+                conn.execute(
+                    "INSERT INTO generation(id,worker_id,creator_uid,prompt,status) VALUES(?,'me',?,'p','done')",
+                    (gid, uid),
+                )
+            conn.execute("INSERT INTO share(id,generation_id,shared_by) VALUES('share','hf','acct:a@x.com')")
+        identity.link_accounts_to_creators()
+        self.assertEqual(repo.get_account("a@x.com")["creator_uid"], "user_A")
+        self.assertEqual(repo.get_generation("email")["creator_uid"], "user_A")
+
+    def test_email_remap_failure_rolls_back_link_and_batch(self):
+        from unittest import mock
+
+        with db.get_connection() as conn:
+            _seed_account(conn, "a@x.com", "acct:a@x.com")
+            for gid, uid in [("alias", "acct:a@x.com"), ("email", "a@x.com")]:
+                conn.execute(
+                    "INSERT INTO generation(id,worker_id,creator_uid,prompt,status) VALUES(?,'me',?,'p','done')",
+                    (gid, uid),
+                )
+        original = identity.remap_creator_uid
+
+        def fail_after_email(conn, old, new):
+            result = original(conn, old, new)
+            if old == "a@x.com":
+                raise RuntimeError("email remap failure")
+            return result
+
+        for batch in (False, True):
+            if batch:
+                with db.get_connection() as conn:
+                    conn.execute("UPDATE account SET creator_uid='user_A'")
+            with mock.patch.object(identity, "remap_creator_uid", side_effect=fail_after_email):
+                with self.assertRaisesRegex(RuntimeError, "email remap failure"):
+                    if batch:
+                        identity.migrate_all_acct_to_creator_uid()
+                    else:
+                        identity.set_account_hf_creator("a@x.com", "user_A")
+            with db.get_connection() as conn:
+                actual = dict(conn.execute("SELECT id,creator_uid FROM generation").fetchall())
+                account = conn.execute("SELECT creator_uid FROM account").fetchone()[0]
+            self.assertEqual(actual, {"alias": "acct:a@x.com", "email": "a@x.com"})
+            self.assertEqual(account, "user_A" if batch else "acct:a@x.com")
+
     def test_remap_updates_core_identity_columns(self):
         # acct:a → user_A 전환 시 핵심 신원 컬럼이 모두 정합돼야(remap 누락=신원 단절).
         with db.get_connection() as conn:

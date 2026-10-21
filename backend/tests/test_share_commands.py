@@ -264,7 +264,7 @@ def test_authenticated_bundle_first_publish_republish_and_other_account_denied(g
     first = publish("owner@test", 0, "first")
     assert "error" not in first, first
     gid = first["current"]["id"]
-    assert repo.get_generation(gid)["creator_uid"] == (creator_uid or "owner@test")
+    assert repo.get_generation(gid)["creator_uid"] == (creator_uid or "acct:owner@test")
     owner_request = SimpleNamespace(state=SimpleNamespace(account=repo.get_account("owner@test")))
     assert http_call(share.inspect_state, authority(owner_request), gid)["id"] == gid
     second = publish("owner@test", first["current"]["share_revision"], "second")
@@ -272,12 +272,61 @@ def test_authenticated_bundle_first_publish_republish_and_other_account_denied(g
     assert publish("owner@test", first["current"]["share_revision"], "second")["replayed"]
     denied = publish("other@test", second["current"]["share_revision"], "other")
     assert denied["error"] == {"status_code": 403, "detail": "publish_blocked"}
-    assert repo.get_generation(gid)["creator_uid"] == (creator_uid or "owner@test")
+    assert repo.get_generation(gid)["creator_uid"] == (creator_uid or "acct:owner@test")
     assert repo.get_generation(gid)["share_revision"] == second["current"]["share_revision"]
     other_request = SimpleNamespace(state=SimpleNamespace(account=repo.get_account("other@test")))
     with pytest.raises(HTTPException) as invisible:
         http_call(share.inspect_state, authority(other_request), gid)
     assert invisible.value.status_code == 404
+
+
+@pytest.mark.parametrize("legacy_email", [False, True])
+def test_unlinked_publication_survives_hf_link(generation, monkeypatch, legacy_email):
+    from app import deps
+    from app.routers.publish import receive_published_bundle, PublishBundleIn
+
+    monkeypatch.setattr(deps, "AUTH_ENABLED", True)
+    with db.get_connection() as conn:
+        for email in ("owner@test", "other@test"):
+            conn.execute("INSERT INTO account(email,name,password_hash,status) VALUES(?,'Artist','unused','approved')", (email,))
+    item = {"generation": {"id": "unlinked-job", "prompt": "fixture", "status": "done", "workspace_scope": "unknown"}}
+    bundle = {"provider": {"uid": "owner@test", "name": "Artist"}, "generations": [item]}
+
+    def publish(operation, revision):
+        req = SimpleNamespace(state=SimpleNamespace(account=repo.get_account("owner@test")))
+        cmd = ShareCommandIn(operation_id=operation, target_id="unlinked-job", command_kind="publish_bundle",
+                             workspace_scope="unknown", expected_revision=revision,
+                             parameters={"item": item, "provider": bundle["provider"]}).as_command()
+        return receive_published_bundle(PublishBundleIn(bundle=bundle, commands=[cmd]), req)["command_results"]["unlinked-job"]
+
+    if legacy_email:
+        # The old receiver persisted the authenticated email as provider uid.
+        repo.import_bundle_payload(bundle)
+        with db.get_connection() as conn:
+            gid = conn.execute("SELECT id FROM generation WHERE job_id='unlinked-job'").fetchone()[0]
+    else:
+        first = publish("before-link", 0)
+        assert "error" not in first, first
+        gid = first["current"]["id"]
+    with db.get_connection() as conn:
+        conn.execute("UPDATE generation SET creator_uid='other@test' WHERE id=?", (generation,))
+
+    assert repo.set_account_hf_creator("owner@test", "user_owner")
+    assert repo.set_account_hf_creator("owner@test", "user_owner")  # idempotent
+    linked = SimpleNamespace(state=SimpleNamespace(account=repo.get_account("owner@test")))
+    state = http_call(share.inspect_state, authority(linked), gid)
+    assert repo.get_generation(gid)["creator_uid"] == "user_owner"
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT shared_by FROM share WHERE generation_id=?", (gid,)).fetchone()[0] == "user_owner"
+        assert repo.resolve_display_names(conn, ["user_owner"])["user_owner"] == "Artist"
+    after = publish("after-link", state["share_revision"])
+    assert "error" not in after, after
+    assert after["current"]["id"] == gid
+    assert publish("after-link", state["share_revision"])["replayed"]
+    assert repo.get_generation(generation)["creator_uid"] == "other@test"
+    with pytest.raises(HTTPException) as denied:
+        http_call(share.inspect_state, authority(linked), generation)
+    assert denied.value.status_code == 404
 
 
 def test_linked_account_does_not_gain_email_authority(generation, monkeypatch):
