@@ -162,10 +162,10 @@ export function useGenerationProgress({
         // bare와 요청 출처가 같은 debounce 묶음에 섞여도, HTTP 응답보다 먼저 온 내 mutation id를
         // 곧 시작할 reload가 함께 덮도록 별도로 추적한다. 순수 bare에서는 빈 배열이라 no-op이다.
         trackOwnSyncedForReload(flushedOrigins);
-        void reload(true);
         // 외부 기기·다른 창 변경은 현재 SceneBoard의 완료 카드 데이터와 사이드바 카운트도
         // 갱신해야 한다. 전체 목록 reload만으로는 compose 탭의 useSceneGenData가 깨어나지 않는다.
         dispatchAppEvent(APP_EVENTS.libraryChanged);
+        void reload(true);
       }
       // 목록 reload를 생략해도 현재 보이는 코멘트와 히스토리 보드는 가벼운 자기 갱신 신호를 받는다.
       refreshVisibleSyncConsumers({

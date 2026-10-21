@@ -1,8 +1,9 @@
-import { getAccountNamespace } from "../../lib/accountScope";
+import { getAccountNamespace, getConnectionKey } from "../../lib/accountScope";
 import { GenerationReadModel, type GenerationField, type GenerationReadScope, type GenerationReadTicket } from "./readModel";
 import type { Generation } from "../../types";
 
 let context = "";
+// Implicit cache readers follow the last explicit selection; event scope is owned by App.
 let activeAuthKey = "";
 const models = new Map<GenerationReadScope["authority"], GenerationReadModel>();
 
@@ -12,8 +13,7 @@ export function clearGenerationReadModels(): void {
 }
 
 export function generationChangeScope() {
-  const model = getGenerationReadModel(undefined, "local");
-  return { serverOrigin: model.scope.serverOrigin, accountNamespace: model.scope.accountNamespace, connectionKey: activeAuthKey };
+  return { serverOrigin: globalThis.location?.origin ?? "", accountNamespace: getAccountNamespace(), connectionKey: getConnectionKey() };
 }
 
 export function invalidateGenerationReadModels(ids?: readonly string[], fields?: readonly GenerationField[]): void {

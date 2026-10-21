@@ -94,4 +94,20 @@ describe("generation record ownership", () => {
     m.store({ a:row("a") },m.beginRead());m.store({ b:row("b") },m.beginRead());
     expect(m.read("a")).toBeUndefined();expect(m.store({ a:row("a") },old)).toEqual([]);
   });
+  it("[R4-4] eviction preserves unrelated in-flight reads and per-ID invalidation watermarks", () => {
+    const m = model("local", 1);
+    m.store({ a: row("a") }, m.beginRead());
+    const unrelated = m.beginRead();
+    const old = m.beginRead();
+    m.invalidate(["a"], ["tags"]);
+    m.store({ b: row("b") }, m.beginRead());
+    expect(m.isCurrent(unrelated)).toBe(true);
+    expect(m.store({ a: row("a", { tags: ["obsolete"] }) }, old)).toEqual([]);
+    m.markMissing(["a"], old);
+    expect(m.isMissing("a")).toBe(false);
+    expect(m.store({ c: row("c") }, unrelated)).toEqual(["c"]);
+    expect(m.read("c")?.id).toBe("c");
+    expect(m.store({ a: row("a", { tags: ["fresh"] }) }, m.beginRead())).toEqual(["a"]);
+    expect(m.read("a")?.tags).toEqual(["fresh"]);
+  });
 });

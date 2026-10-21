@@ -1,5 +1,5 @@
 import { APP_EVENTS } from "../lib/appEvents";
-import { getAccountNamespace } from "../lib/accountScope";
+import { getAccountNamespace, setConnectionKey } from "../lib/accountScope";
 import { getApiPause, getAuthToken } from "../lib/http";
 import { STORAGE_KEYS } from "../lib/storageKeys";
 import type { WorkspaceContext } from "../types";
@@ -21,6 +21,7 @@ export function invalidateOperationContext(): void { epoch++; clearGenerationRea
 export function configureOperationContext(next: {
   key: string; serverOrigin: string; authority: "local" | "team"; ready: boolean;
 }): void {
+  setConnectionKey(next.key);
   if (JSON.stringify(next) !== JSON.stringify(scope)) { scope = { ...next }; invalidateOperationContext(); }
   synchronizeCredentials();
 }

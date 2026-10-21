@@ -6,6 +6,10 @@ import { STORAGE_KEYS } from "./storageKeys";
 // 이미 열려 있던 탭이 상대 계정 버킷에 저장할 수 있다. sessionStorage 에 탭의 계정을 고정하고
 // 실제 인증 계정이 확정될 때 useHubAuth 가 갱신한다. 빈 문자열은 AUTH off 로컬 범위다.
 const SESSION_ACCOUNT_KEY = "ch.accountScope";
+let connectionKey = "";
+
+export const getConnectionKey = (): string => connectionKey;
+export function setConnectionKey(key: string): void { connectionKey = key; }
 
 function readSessionAccount(): string | null {
   try {

@@ -28,8 +28,11 @@ describe("목록 요청 30초 제한", () => {
     ["목록", (signal: AbortSignal) => api.listGenerations({ tab: "my" } as never, null, GEN_PAGE, { signal })],
     ["휴지통", (signal: AbortSignal) => api.listTrash("", 0, GEN_PAGE, signal)],
     ["위치 확인", (signal: AbortSignal) => api.locateGenerations({ tab: "my", gen_ids: ["g"] } as never, signal)],
+    ["[R4-3] 통계", (signal: AbortSignal) => api.generationStats(signal)],
+    ["[R4-3] 태그", (signal: AbortSignal) => api.facets("team", signal)],
+    ["[R4-3] 프로젝트", (signal: AbortSignal) => api.projects("team", false, "workspace", signal)],
   ])("%s — 30초가 지나면 fetch 의 signal 이 끊기고 그 뜻의 글로 실패한다", async (_name, run) => {
-    const result = timedLibraryRequest(run);
+    const result = timedLibraryRequest<unknown>(run);
     const settled = result.catch((error: Error) => error.message);
     await vi.advanceTimersByTimeAsync(LIBRARY_LIST_TIMEOUT_MS - 1);
     expect(seen?.signal?.aborted).toBe(false);

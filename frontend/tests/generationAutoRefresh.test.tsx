@@ -21,6 +21,26 @@ function Harness({ tab = "team", paused, active }: Props) {
 const show = (props: Props = {}) => act(() => root.render(<Harness {...props} />));
 const pass = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
 
+it.each(["poll", "focus"])("[R4-3] %s cleanup releases A, but A finishing cannot release B", async (source) => {
+  let finishA!: () => void, finishB!: () => void;
+  reload.mockImplementationOnce(() => new Promise<void>(done => { finishA = done; }))
+    .mockImplementationOnce(() => new Promise<void>(done => { finishB = done; }));
+  show({ tab: "team" });
+  if (source === "poll") await pass(15_000);
+  else { await pass(6_000); act(() => window.dispatchEvent(new Event("focus"))); }
+  expect(reload).toHaveBeenCalledTimes(1);
+  show({ tab: "my", active: true });
+  await pass(6_000);
+  expect(reload).toHaveBeenCalledTimes(2);
+  await act(async () => finishA());
+  await pass(6_000);
+  act(() => window.dispatchEvent(new Event("focus")));
+  expect(reload).toHaveBeenCalledTimes(2);
+  await act(async () => finishB());
+  await pass(3_000);
+  expect(reload).toHaveBeenCalledTimes(3);
+});
+
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.useFakeTimers();

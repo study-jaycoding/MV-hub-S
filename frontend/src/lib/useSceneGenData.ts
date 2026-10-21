@@ -108,6 +108,7 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
     return new Set([...Object.keys(hydrateGen(ids, records)), ...hydrateMissing(ids, records)]);
   });
   const displayedModel = useRef(records);
+  const [resetEpoch, setResetEpoch] = useState(0);
   useLayoutEffect(() => {
     const reset = () => {
       const ids = initialGenIds();
@@ -118,7 +119,10 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
       setMissingIds(missing); setAnsweredIds(new Set([...Object.keys(next), ...missing]));
     };
     if (displayedModel.current !== records) { displayedModel.current = records; reset(); }
-    return records.subscribe(change => { if (!change.ids.length) reset(); });
+    return records.subscribe(change => {
+      // 전환과 초기화를 같은 조회 effect에서 처리해 옛 씬의 추가 요청을 막는다.
+      if (!change.ids.length) { reset(); setResetEpoch(epoch => epoch + 1); }
+    });
   }, [records]);
   // 비활성(회색) 표시 — 라이브러리/계보와 같은 로컬 소스(deactivated). 어디서 토글해도 즉시 반영.
   const [disabledTick, setDisabledTick] = useState(0);
@@ -498,7 +502,7 @@ export function useSceneGenData(cards: SceneCard[], scope = DEFAULT_COLOR_SCOPE)
       if (timer) clearTimeout(timer);
       if (tagTimer !== undefined) clearTimeout(tagTimer);
     };
-  }, [genIdSig, pendingAttemptSig, ledgerId, scope.authReady, colors, records]);
+  }, [genIdSig, pendingAttemptSig, ledgerId, scope.authReady, colors, records, resetEpoch]);
 
   // 씬 전환(genIdSig 변경) 시 새 씬 카드들의 생성물을 캐시에서 즉시 복원 — tick 서버조회를 기다리는 빈 화면 제거.
   //  (prev 우선 병합이라 이미 최신인 값은 덮지 않는다. 아래 prune 이 현재 카드 밖 id 를 곧 정리한다.)

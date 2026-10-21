@@ -43,6 +43,16 @@ async function read(index: number, items?: Record<string, Generation>, extra = {
   })));
 }
 async function ready(items?: Record<string, Generation>) { await render(); await read(0, items); }
+
+it("[R4-5] clearing read models reloads unchanged, completed scene cards", async () => {
+  await ready();
+  const { clearGenerationReadModels } = await import("../src/features/library/api");
+  await act(async () => clearGenerationReadModels());
+  expect(reads).toHaveLength(2);
+  await read(1, { a: row("a", { tags: ["after-reset"] }), b: row("b") });
+  expect(current.genData.a.tags).toEqual(["after-reset"]);
+  expect(current.answeredIds.has("a")).toBe(true);
+});
 beforeEach(async () => {
   vi.resetModules(); vi.useFakeTimers();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -191,6 +201,21 @@ it("scene/account switch discards old partial response and queued retry", async 
   await render(); await read(2, { a: row("a", { tags: ["B"] }), b: row("b") });
   await read(1, { a: row("a", { tags: ["A-late"] }) });
   await advance(2500); expect(reads).toHaveLength(3);
+  expect(current.genData.a.tags).toEqual(["B"]);
+});
+
+it("[R4-5] scene switch and model reset share one replacement full read", async () => {
+  await ready();
+  const { clearGenerationReadModels } = await import("../src/features/library/api");
+  await act(async () => {
+    clearGenerationReadModels();
+    scope = { ...scope, sceneKey: "B" };
+    root.render(<Harness />);
+  });
+  expect(reads).toHaveLength(2);
+  await read(1, { a: row("a", { tags: ["B"] }), b: row("b") });
+  await advance(5000);
+  expect(reads).toHaveLength(2);
   expect(current.genData.a.tags).toEqual(["B"]);
 });
 
