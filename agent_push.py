@@ -3586,7 +3586,7 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
             except (ValueError, AttributeError):
                 detail = body
         if status == 409 and str(detail).startswith("creator_uid_link_"):
-            print("[보류] 이 PC 의 힉스필드 계정이 이미 다른 MV Hub 계정에 연결돼 있어 동기화를 멈췄습니다 — 관리자에게 문의하세요(재로그인으로는 풀리지 않습니다)")
+            print(f"[보류] 이 PC 의 힉스필드 계정이 이미 다른 MV Hub 계정에 연결돼 있어 동기화를 멈췄습니다 — 관리자에게 문의하세요(재로그인으로는 풀리지 않습니다) (코드: {detail})")
             return
         print(f"[보류] 적재 실패(status={status}): {detail}")
         # 계정 불일치(409) → 별도 배치 없이 이 에이전트 창에서 바로 CLI 재로그인 제안 후 즉시 재시도.

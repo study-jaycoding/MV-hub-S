@@ -2312,7 +2312,7 @@ def test_suppressed_result_is_still_sent_to_library_ingest():
 @pytest.mark.parametrize("allow_relogin", [True, False])
 def test_push_once_ingest_409_guidance(detail, body_format, allow_relogin, capsys):
     agent = _load_agent()
-    body = {"detail": detail}
+    body = {"detail": detail, "email": "user@example.com", "creator_uid": "user_private_uid"}
     if body_format == "json":
         body = json.dumps(body)
     elif body_format == "text":
@@ -2338,8 +2338,9 @@ def test_push_once_ingest_409_guidance(detail, body_format, allow_relogin, capsy
         relogin.assert_not_called()
         assert "관리자에게 문의하세요(재로그인으로는 풀리지 않습니다)" in output
         assert "이미 다른 MV Hub 계정에 연결" in output
-        assert detail not in output
+        assert f"(코드: {detail})" in output
         assert "user@example.com" not in output
+        assert "user_private_uid" not in output
         assert "올바른 계정으로 허브에 로그인" not in output
     else:
         if allow_relogin:
