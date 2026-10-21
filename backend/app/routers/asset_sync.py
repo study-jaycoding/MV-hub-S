@@ -131,17 +131,17 @@ def verify(body: VerifyIn, request: Request):
             "SELECT * FROM asset_location WHERE location_id=? AND owner_uid=? AND project_id=? "
             "AND asset_content_id=? AND storage_id=? AND root_revision=? AND kind='server'",
             (body.location_id, owner, body.project_id, body.asset_content_id, body.storage_id, body.root_revision)).fetchone()
-        if row is None:
-            return result
-        try:
-            sync.checked_server_location(conn, row)
-            result['state'] = 'ready'
-        except sync.SyncError as exc:
-            result['state'] = {
-                'asset_server_copy_missing': 'missing', 'asset_server_copy_changed': 'changed',
-                'asset_storage_unavailable': 'unavailable', 'asset_deleted': 'deleted',
-                'asset_context_changed': 'context_changed',
-            }.get(str(exc), 'unavailable')
+    if row is None:
+        return result
+    try:
+        sync.checked_server_location(row, force_hash=True)
+        result['state'] = 'ready'
+    except sync.SyncError as exc:
+        result['state'] = {
+            'asset_server_copy_missing': 'missing', 'asset_server_copy_changed': 'changed',
+            'asset_storage_unavailable': 'unavailable', 'asset_deleted': 'deleted',
+            'asset_context_changed': 'context_changed',
+        }.get(str(exc), 'unavailable')
     return result
 
 
@@ -149,12 +149,11 @@ def verify(body: VerifyIn, request: Request):
 def prepare(body: PrepareIn,request: Request):
     require_project_role(request,body.project_id,*rbac.PROJECT_ROLES)
     account = getattr(request.state,'account',None) or {}
-    with db.get_connection() as conn:
-        try:
-            return sync.prepare(conn,owner_uid=actor_id(request),display_name=account.get('name') or '',
-                project_id=body.project_id,digest=body.sha256,size=body.bytes,media_type=body.media_type,original_name=body.original_name)
-        except sync.SyncError as exc:
-            _translate(exc)
+    try:
+        return sync.prepare(owner_uid=actor_id(request),display_name=account.get('name') or '',
+            project_id=body.project_id,digest=body.sha256,size=body.bytes,media_type=body.media_type,original_name=body.original_name)
+    except sync.SyncError as exc:
+        _translate(exc)
 
 
 @router.put('/uploads/{token}')
@@ -168,11 +167,12 @@ async def upload(token: str,request: Request):
     def ticket_info():
         with db.get_connection() as conn:
             row = conn.execute('SELECT * FROM asset_upload_token WHERE token=? AND owner_uid=?',(token,owner)).fetchone()
-            return dict(row) if row else None
+        if row:
+            require_project_role(request,row['project_id'],*rbac.PROJECT_ROLES)
+        return dict(row) if row else None
     ticket = await to_thread_non_abandon(ticket_info)
     if not ticket:
         raise HTTPException(status_code=404,detail='asset_upload_expired')
-    require_project_role(request,ticket['project_id'],*rbac.PROJECT_ROLES)
     length = request.headers.get('content-length')
     if length is not None and (not length.isdecimal() or int(length) != ticket['bytes']):
         raise HTTPException(status_code=400,detail='asset_size_mismatch')
@@ -203,22 +203,23 @@ def resolve(body: ResolveIn,request: Request):
     if sum(map(len,body.previous_location_ids.values()))>1000:
         raise HTTPException(status_code=413,detail='too_many_asset_locations')
     require_project_role(request,body.project_id,*rbac.PROJECT_ROLES,read_only=True)
-    with db.get_connection() as conn:
-        items=[]
-        # Owner scoped lookup avoids exposing the existence of another user's content.
-        for cid in set(body.asset_content_ids):
+    items=[]
+    # Owner scoped lookup avoids exposing the existence of another user's content.
+    for cid in set(body.asset_content_ids):
+        with db.get_connection() as conn:
             rows=conn.execute("SELECT * FROM asset_location WHERE asset_content_id=? AND project_id=? AND owner_uid=? AND kind='server'",(cid,body.project_id,actor_id(request))).fetchall()
-            for row in rows:
-                try:
-                    sync.checked_server_location(conn,row)
-                    receipt=sync._receipt(row)
-                    items.append(receipt)
+        for row in rows:
+            try:
+                sync.checked_server_location(row)
+                receipt=sync._receipt(row)
+                items.append(receipt)
+                with db.get_connection() as conn:
                     for previous_id in set(body.previous_location_ids.get(cid,[])):
                         previous=conn.execute("SELECT * FROM asset_location WHERE location_id=? AND owner_uid=? AND project_id=? AND asset_content_id=? AND storage_id=? AND kind='server'",(ledger.resolve_location_id(conn,previous_id),actor_id(request),body.project_id,cid,row['storage_id'])).fetchone()
                         if previous and previous_id!=receipt['location_id']:
                             items.append({**receipt,'supersedes_location_id':previous_id})
-                except sync.SyncError:
-                    continue
+            except sync.SyncError:
+                continue
     return {'items':items}
 
 
@@ -272,11 +273,11 @@ def get_file(location_id: str,request: Request):
         if not row:
             raise HTTPException(status_code=404,detail='asset_not_found')
         require_project_role(request,row['project_id'],*rbac.PROJECT_ROLES,read_only=True)
-        try:
-            path=sync.checked_server_location(conn,row)
-        except sync.SyncError as exc:
-            _translate(exc)
-        return _response(path,row['original_name'])
+    try:
+        path=sync.checked_server_location(row)
+    except sync.SyncError as exc:
+        _translate(exc)
+    return _response(path,row['original_name'])
 
 
 @router.get('/locations/{location_id}')
@@ -289,9 +290,9 @@ def location_info(location_id: str,request: Request):
         if not row:
             raise HTTPException(status_code=404,detail='asset_not_found')
         require_project_role(request,row['project_id'],*rbac.PROJECT_ROLES,read_only=True)
-        try: sync.checked_server_location(conn,row)
-        except sync.SyncError as exc: _translate(exc)
-        return {**sync._receipt(row),'sha256':row['sha256'],'bytes':row['bytes'],'name':Path(row['path']).name}
+    try: sync.checked_server_location(row)
+    except sync.SyncError as exc: _translate(exc)
+    return {**sync._receipt(row),'sha256':row['sha256'],'bytes':row['bytes'],'name':Path(row['path']).name}
 
 
 @local_router.get('/receipts')
@@ -342,20 +343,21 @@ def _registration_source(file_path,request):
             raise HTTPException(status_code=400,detail='invalid_asset_location')
         with db.get_connection() as conn:
             rows=conn.execute("SELECT o.receipt_json,l.path,b.sha256,b.bytes FROM asset_sync_outbox o JOIN asset_location l ON l.location_id=o.local_location_id JOIN asset_blob b ON b.asset_content_id=o.asset_content_id WHERE o.owner_uid=? AND o.receipt_json IS NOT NULL AND o.server_origin=?",(owner,_proxy.base_url())).fetchall()
-            for row in rows:
-                receipt=json.loads(row['receipt_json'])
-                if location_id in (receipt.get('location_id'),receipt.get('supersedes_location_id')):
-                    path=Path(row['path'])
-                    if path.is_file() and path.stat().st_size==row['bytes'] and asset_io.sha256_file(path)==row['sha256']:
-                        return path,False
-            if not _proxy.proxying():
+        for row in rows:
+            receipt=json.loads(row['receipt_json'])
+            if location_id in (receipt.get('location_id'),receipt.get('supersedes_location_id')):
+                path=Path(row['path'])
+                if path.is_file() and path.stat().st_size==row['bytes'] and asset_io.sha256_file(path)==row['sha256']:
+                    return path,False
+        if not _proxy.proxying():
+            with db.get_connection() as conn:
                 canonical=ledger.resolve_location_id(conn,location_id)
                 row=conn.execute("SELECT * FROM asset_location WHERE location_id=? AND kind='server'",(canonical,)).fetchone()
                 if not row:
                     raise HTTPException(status_code=404,detail='asset_not_found')
                 require_project_role(request,row['project_id'],*rbac.PROJECT_ROLES,read_only=True)
-                try: return sync.checked_server_location(conn,row),False
-                except sync.SyncError as exc: _translate(exc)
+            try: return sync.checked_server_location(row),False
+            except sync.SyncError as exc: _translate(exc)
         path,_=_remote_cached_file(location_id,request)
         return path,False
     if file_path.startswith('/media/'):

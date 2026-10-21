@@ -73,6 +73,43 @@ def test_cache_is_separated_by_account_owner_and_server(isolated_cache):
     assert len(list(isolated_cache.rglob('*.png'))) == 4
 
 
+def test_local_cache_reuses_hash_and_rechecks_changed_file(isolated_cache, monkeypatch):
+    import os
+
+    original = cache.asset_io.sha256_file
+    hashes = []
+    def tracked(path):
+        hashes.append(path)
+        return original(path)
+    monkeypatch.setattr(cache.asset_io, 'sha256_file', tracked)
+    path = get_cached()
+    assert get_cached() == path
+    assert len(hashes) == 1
+    previous = path.stat()
+    path.write_bytes(b'x' * len(PNG))
+    os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns + 1_000_000))
+    assert get_cached().read_bytes() == PNG
+    assert len(hashes) == 3  # Changed cache and replacement download are both verified.
+
+
+def test_file_changed_during_hash_is_not_cached(isolated_cache, monkeypatch):
+    import os
+
+    path = isolated_cache / 'changing.png'
+    path.write_bytes(PNG)
+    original = cache.asset_io.sha256_file
+    def change_while_hashing(file):
+        digest = original(file)
+        before = file.stat()
+        file.write_bytes(b'x' * len(PNG))
+        os.utime(file, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000))
+        return digest
+    monkeypatch.setattr(cache.asset_io, 'sha256_file', change_while_hashing)
+    assert cache.file_digest(path) is None
+    monkeypatch.setattr(cache.asset_io, 'sha256_file', original)
+    assert cache.file_digest(path) != DIGEST
+
+
 def test_corrupted_cache_is_not_returned_and_download_failure_is_cleaned(isolated_cache):
     path = get_cached()
     path.write_bytes(b'x' * len(PNG))

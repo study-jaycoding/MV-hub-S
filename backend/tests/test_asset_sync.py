@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
+import threading
 import sqlite3
 import time
 from pathlib import Path
@@ -31,7 +33,7 @@ def storage(tmp_path,monkeypatch):
 
 
 def prep(conn,*,owner='user_a',name='제이',digest=None,project='p',filename='capture.png',size=len(PNG)):
-    result=sync.prepare(conn,owner_uid=owner,display_name=name,project_id=project,digest=digest or hashlib.sha256(PNG).hexdigest(),size=size,media_type='image',original_name=filename)
+    result=sync.prepare(owner_uid=owner,display_name=name,project_id=project,digest=digest or hashlib.sha256(PNG).hexdigest(),size=size,media_type='image',original_name=filename)
     conn.commit()
     return result
 
@@ -151,6 +153,141 @@ def test_http_upload_stream_and_immutable_file_download(storage,monkeypatch):
         assert client.post('/api/asset-sync/prepare',json={'project_id':'p','sha256':'bad','bytes':1,'media_type':'image','original_name':'bad.png'}).status_code==422
 
 
+def test_upload_permission_db_wait_keeps_event_loop_responsive(storage, monkeypatch):
+    import httpx
+
+    conn, _ = storage
+    ticket = prep(conn)
+    entered = threading.Event()
+    progressed = threading.Event()
+    workers = []
+    monkeypatch.setattr(api, 'actor_id', lambda request: 'user_a')
+    monkeypatch.setattr(api._proxy, 'proxying', lambda: False)
+
+    def maintenance():
+        with db.maintenance_gate():
+            entered.set()
+            progressed.wait(1)
+
+    def permission(*args, **kwargs):
+        worker = threading.Thread(target=maintenance)
+        workers.append(worker)
+        worker.start()
+        assert entered.wait(2)
+        with db.get_connection() as connection:
+            connection.execute('SELECT 1')
+
+    monkeypatch.setattr(api, 'require_project_role', permission)
+    app = FastAPI()
+    app.include_router(api.router)
+
+    @app.get('/ping')
+    async def ping():
+        return {'ok': True}
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            async def other_request():
+                while not entered.is_set():
+                    await asyncio.sleep(0)
+                response = await client.get('/ping')
+                assert response.status_code == 200
+                progressed.set()
+            other = asyncio.create_task(other_request())
+            try:
+                response = await client.put('/api/asset-sync/uploads/' + ticket['token'], content=b'')
+                assert response.status_code == 400
+                assert response.json()['detail'] == 'asset_size_mismatch'
+                # Inspect before yielding again: /ping must respond during the DB wait.
+                assert progressed.is_set()
+            finally:
+                await other
+                for worker in workers:
+                    worker.join(2)
+                    assert not worker.is_alive()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('route', ['file', 'location', 'resolve', 'verify', 'prepare', 'register'])
+def test_server_reads_hash_outside_db_and_reuse_unchanged_file(storage, monkeypatch, route):
+    from types import SimpleNamespace
+
+    conn, base = storage
+    receipt = upload(conn, base, prep(conn))
+    request = SimpleNamespace(state=SimpleNamespace(account={}))
+    monkeypatch.setattr(api, 'actor_id', lambda request: 'user_a')
+    monkeypatch.setattr(api, '_local_owner', lambda request: 'user_a')
+    monkeypatch.setattr(api, 'require_project_role', lambda *a, **kw: None)
+    monkeypatch.setattr(api._proxy, 'proxying', lambda: False)
+    actual_hash = sync.asset_io.sha256_file
+    active_contexts = []
+
+    def tracked_hash(path):
+        active_contexts.append(db._active_connection_contexts)
+        return actual_hash(path)
+
+    monkeypatch.setattr(sync.asset_io, 'sha256_file', tracked_hash)
+    verify_body = api.VerifyIn(**{key: receipt[key] for key in
+        ('location_id', 'asset_content_id', 'project_id', 'storage_id', 'root_revision')})
+    calls = {
+        'file': lambda: api.get_file(receipt['location_id'], request),
+        'location': lambda: api.location_info(receipt['location_id'], request),
+        'resolve': lambda: api.resolve(api.ResolveIn(project_id='p', asset_content_ids=[receipt['asset_content_id']]), request),
+        'verify': lambda: api.verify(verify_body, request),
+        'prepare': lambda: api.prepare(api.PrepareIn(project_id='p', sha256=receipt['asset_content_id'][7:],
+            bytes=len(PNG), media_type='image', original_name='capture.png'), request),
+        'register': lambda: api._registration_source(receipt['file_path'], request),
+    }
+    calls[route]()
+    calls[route]()
+    assert active_contexts == ([0, 0] if route == 'verify' else [0])
+
+
+@pytest.mark.parametrize('change', ['size', 'mtime'])
+def test_server_hash_cache_rejects_changed_file(storage, monkeypatch, change):
+    import os
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+
+    conn, base = storage
+    receipt = upload(conn, base, prep(conn))
+    monkeypatch.setattr(api, 'require_project_role', lambda *a, **kw: None)
+    request = SimpleNamespace()
+    api.location_info(receipt['location_id'], request)
+    row = conn.execute('SELECT path FROM asset_location WHERE location_id=?', (receipt['location_id'],)).fetchone()
+    path = base / 'assets' / row['path']
+    previous = path.stat()
+    path.write_bytes(PNG + b'x' if change == 'size' else b'x' * len(PNG))
+    os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns + 1_000_000))
+    with pytest.raises(HTTPException) as raised:
+        api.location_info(receipt['location_id'], request)
+    assert raised.value.detail == 'asset_server_copy_changed'
+
+
+def test_verify_bypasses_and_refreshes_hash_cache(storage, monkeypatch):
+    import os
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+
+    conn, base = storage
+    receipt = upload(conn, base, prep(conn))
+    monkeypatch.setattr(api, 'actor_id', lambda request: 'user_a')
+    monkeypatch.setattr(api, 'require_project_role', lambda *a, **kw: None)
+    request = SimpleNamespace()
+    api.location_info(receipt['location_id'], request)
+    row = conn.execute('SELECT path FROM asset_location WHERE location_id=?', (receipt['location_id'],)).fetchone()
+    path = base / 'assets' / row['path']
+    previous = path.stat()
+    path.write_bytes(b'x' * len(PNG))
+    os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+    body = api.VerifyIn(**{key: receipt[key] for key in
+        ('location_id', 'asset_content_id', 'project_id', 'storage_id', 'root_revision')})
+    assert api.verify(body, request)['state'] == 'changed'
+    with pytest.raises(HTTPException, match='asset_server_copy_changed'):
+        api.location_info(receipt['location_id'], request)
+
+
 def test_project_tree_hides_only_display_not_registry_scan():
     from app.routers.assets import _tree_hidden_names
     from app.services.asset_registry_scan import hidden_name
@@ -171,8 +308,7 @@ def test_worker_queues_local_first_and_settles_only_verified_server_receipt(stor
     assert local['sync_state']=='queued' and not (base/'assets').exists()
     def call(server,token,path,body):
         assert server==origin and path=='/api/asset-sync/prepare'
-        with db.get_connection() as connection:
-            return sync.prepare(connection,owner_uid='user_a',display_name='제이',project_id=body['project_id'],digest=body['sha256'],size=body['bytes'],media_type=body['media_type'],original_name=body['original_name'])
+        return sync.prepare(owner_uid='user_a',display_name='제이',project_id=body['project_id'],digest=body['sha256'],size=body['bytes'],media_type=body['media_type'],original_name=body['original_name'])
     def transfer(server,token,ticket,row):
         with db.get_connection() as connection:
             return sync.accept_upload(connection,ticket['token'],'user_a',Path(row['path']),row['sha256'],row['bytes'])
@@ -371,8 +507,7 @@ def test_root_change_requeues_with_cas_receipt_and_remote_resolve_proof(storage,
     monkeypatch.setattr(api,'require_project_role',lambda *args,**kw:None)
     sync.register_local(source,'asset:captures|one.png',hashlib.sha256(PNG).hexdigest(),len(PNG),'image','user_a','p')
     def call(server,token,path,body):
-        with db.get_connection() as connection:
-            return sync.prepare(connection,owner_uid='user_a',display_name='제이',project_id=body['project_id'],digest=body['sha256'],size=body['bytes'],media_type=body['media_type'],original_name=body['original_name'])
+        return sync.prepare(owner_uid='user_a',display_name='제이',project_id=body['project_id'],digest=body['sha256'],size=body['bytes'],media_type=body['media_type'],original_name=body['original_name'])
     def transfer(server,token,ticket,row):
         with db.get_connection() as connection:
             return sync.accept_upload(connection,ticket['token'],'user_a',Path(row['path']),row['sha256'],row['bytes'])
@@ -414,8 +549,7 @@ def test_unknown_upload_result_keeps_server_context_pin(storage,monkeypatch):
     monkeypatch.setattr(sync.shared_connection,'token',lambda:'test-only-token')
     sync.register_local(source,'asset:captures|one.png',hashlib.sha256(PNG).hexdigest(),len(PNG),'image','user_a','p')
     def prepare_call(server,token,path,body):
-        with db.get_connection() as connection:
-            return sync.prepare(connection,owner_uid='user_a',display_name='제이',project_id=body['project_id'],digest=body['sha256'],size=body['bytes'],media_type=body['media_type'],original_name=body['original_name'])
+        return sync.prepare(owner_uid='user_a',display_name='제이',project_id=body['project_id'],digest=body['sha256'],size=body['bytes'],media_type=body['media_type'],original_name=body['original_name'])
     monkeypatch.setattr(sync,'_json_call',prepare_call)
     monkeypatch.setattr(sync,'_upload',lambda *args:(_ for _ in ()).throw(OSError('unknown result')))
     assert sync.process_one()

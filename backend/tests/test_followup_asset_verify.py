@@ -19,13 +19,13 @@ def test_missing_unavailable_and_changed_are_distinct(storage, monkeypatch):
     path = base / "assets" / row["path"]
     path.unlink()
     with pytest.raises(sync.SyncError, match="asset_server_copy_missing"):
-        sync.checked_server_location(conn, row)
+        sync.checked_server_location(row)
     monkeypatch.setattr(sync.os, "scandir", lambda _: (_ for _ in ()).throw(PermissionError()))
     with pytest.raises(sync.SyncError, match="asset_storage_unavailable"):
-        sync.checked_server_location(conn, row)
+        sync.checked_server_location(row)
     path.write_bytes(PNG + b"changed")
     with pytest.raises(sync.SyncError, match="asset_server_copy_changed"):
-        sync.checked_server_location(conn, row)
+        sync.checked_server_location(row)
 
 
 def test_reverification_is_bounded_and_confirmed_loss_requeues(storage, monkeypatch):

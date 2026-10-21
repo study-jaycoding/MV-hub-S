@@ -111,7 +111,7 @@ def test_queued_old_receipt_and_records_without_verified_content_keep_current_be
 
 def test_server_only_location_requires_current_root_and_storage_identity(storage):
     conn, base, _ = storage
-    ticket = sync.prepare(conn, owner_uid='owner', display_name='제이', project_id='p', digest=SHA,
+    ticket = sync.prepare(owner_uid='owner', display_name='제이', project_id='p', digest=SHA,
         size=len(PNG), media_type='image', original_name='source.png')
     temporary = base / 'input.png'
     temporary.write_bytes(PNG)
