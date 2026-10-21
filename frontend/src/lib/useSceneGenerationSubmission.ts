@@ -4,6 +4,7 @@ import { runSubmission } from "../features/generation/api";
 // 캔버스 제출의 준비·정책 검사·중복 방지·결과 정산을 조정한다. 문서 상태와 저장 확정은 기존 소유자에 둔다.
 import { useRef } from "react";
 import { api } from "../api";
+import { t } from "./i18n";
 import type { Generation, ModelParam, WorkspaceContext } from "../types";
 import { listScenes, variantIds, type Scene, type SceneModelCfg } from "./scenes";
 import { resolvePortEdges, type SceneGenerationRun } from "./sceneEdges";
@@ -249,7 +250,7 @@ export function useSceneGenerationSubmission({
     if (blockedCards.size) notes.push(`쓸 수 없는 모델 제외 ${blockedCards.size}개`);
     if (buildFail) notes.push(`요청 실패 ${buildFail}개`);
     if (createFail) notes.push(`제출 실패 ${createFail}장`);
-    if (submitUnknown) notes.push(`접수 여부 모름 ${submitUnknown}장 — 다시 누르기 전에 목록 확인`); // 들어갔을 수 있다(Jay 결정 2A)
+    if (submitUnknown) notes.push(t("{count}장 요청의 접수 여부를 확인하지 못했습니다. 다시 제출하지 말고 생성 목록에서 기존 요청을 확인하세요.").replace("{count}", String(submitUnknown)));
     if (applyFail) notes.push("화면 반영 실패 — 재시작 시 자동 복구");
     flash(
       `${byCard.size}개 카드에서 생성 시작(${freshGens.length}장)` +

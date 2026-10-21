@@ -136,7 +136,7 @@ export async function mountPrompt(overrides: Partial<PromptProps> = {}) {
   let props: PromptProps = {
     workspace: { scope: "personal", id: null, name: null },
     armedAutoTags: [], expanded: true, inCompose: true,
-    onCreated: vi.fn(), onToggleExpand: vi.fn(), ...overrides,
+    onCreated: vi.fn(), reload: vi.fn(), onToggleExpand: vi.fn(), ...overrides,
   };
   const render = async (changes: Partial<PromptProps> = {}) => {
     props = { ...props, ...changes };

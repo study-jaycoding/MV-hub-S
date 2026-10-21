@@ -9,6 +9,7 @@ import { useSpotlightSubmit } from "../src/components/spotlight/useSpotlightSubm
 import type { SpotlightTrayRef } from "../src/components/spotlight/SpotlightRefTray";
 import type { HistEntry } from "../src/lib/promptEditor";
 import { restoreParts } from "../src/lib/promptEditor";
+import { setLang } from "../src/lib/i18n";
 import type { Generation } from "../src/types";
 
 // 실제 제출 훅·contentEditable 직렬화·Seedance 빌더·비율 처리·히스토리 저장을 실행한다.
@@ -55,6 +56,7 @@ let linkNumber: number;
 const clearMention = vi.fn();
 const notifyPromptChanged = vi.fn();
 const onCreated = vi.fn();
+const reload = vi.fn();
 const onCanvasBatchCreated = vi.fn();
 const settleCanvasGeneration = vi.fn();
 const discardCanvasGeneration = vi.fn();
@@ -79,6 +81,7 @@ function Harness({ options }: { options: Props }) {
     promptContextKey: "scene-fixture:card-fixture:text-source",
     model: "seedance_2_5",
     onCreated,
+    reload,
     canvasTarget: target,
     prepareCanvasGeneration: (destination, count) => Array.from({ length: count }, () => ({
       attempt_id: `attempt-${++linkNumber}`,
@@ -131,6 +134,7 @@ async function beginPending() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  setLang("ko");
   prepareCreate.mockImplementation(() => async () => generation());
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 0; });
@@ -147,6 +151,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  setLang("ko");
   await act(async () => { root.unmount(); });
   host.remove();
   editor.remove();
@@ -315,9 +320,11 @@ describe("실제 프롬프트 제출: 캔버스 연속 생성과 응답 후 편�
     if (failed) expect(errors.at(-1)).toContain(`${failed}장 제출 실패`);
     else expect(errors.at(-1)).not.toContain("제출 실패");
     expect(onCanvasBatchCreated).toHaveBeenCalledTimes(kinds.includes("accepted") ? 1 : 0);
+    expect(reload).not.toHaveBeenCalled();
   });
 
-  it("라이브러리의 접수 불명도 입력을 보존하고 새 재제출 잠금은 만들지 않는다", async () => {
+  it.each(["ko", "en"] as const)("라이브러리 접수 불명은 목록을 한 번 갱신하고 %s 안내와 입력을 보존한다", async (lang) => {
+    setLang(lang);
     prepareCreate.mockImplementationOnce(() => async () => { throw new TypeError("Failed to fetch"); });
     await mount({ inCompose: false, canvasTarget: null, preservePromptAfterSubmit: false, promptContextKey: null });
     const before = editor.innerHTML;
@@ -325,10 +332,29 @@ describe("실제 프롬프트 제출: 캔버스 연속 생성과 응답 후 편�
     expect(editor.innerHTML).toBe(before);
     expect(history.current).toEqual([]);
     expect(onCreated).not.toHaveBeenCalled();
-    expect(errors.at(-1)).toContain("다시 제출하지 말고");
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(errors.at(-1)).toBe(lang === "ko"
+      ? "1장 요청의 접수 여부를 확인하지 못했습니다. 다시 제출하지 말고 생성 목록에서 기존 요청을 확인하세요."
+      : "Could not confirm acceptance of 1 requests. Do not submit again; check existing requests in the generation list.");
     await run();
     expect(prepareCreate).toHaveBeenCalledTimes(2);
     expect(editor.innerHTML).toBe("");
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])("영어 부분 실패 안내는 성공 유무를 구분한다(성공=%s)", async (accepted) => {
+    setLang("en");
+    prepareCreate.mockImplementationOnce(() => async () => { throw Object.assign(new Error("rejected"), { status: 400 }); });
+    prepareCreate.mockImplementationOnce(() => async () => {
+      if (!accepted) throw new TypeError("Failed to fetch");
+      return generation();
+    });
+    await mount();
+    await run(2);
+    expect(errors.at(-1)).toContain(accepted
+      ? "1 of 2 requests failed to submit — accepted requests will continue."
+      : "1 of 2 requests failed to submit.");
+    expect(reload).not.toHaveBeenCalled();
   });
 
   // Codex 62회차(4B) — 다른 탭 로그아웃으로 멈춰 보내지 못한 요청은 '나갔을 수 있는' 것이 아니다. 표식을 남기면 대기 카드가 남는다.
