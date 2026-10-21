@@ -203,6 +203,15 @@ def test_agent_launcher_enters_guard_before_starting_children():
     assert 'run_agent_session.py" --open-url "%MVHUB_OPEN_URL%"' in script
 
 
+def test_agent_launcher_script_loads_bypass_execution_policy():
+    # 실행 정책이 Restricted·AllSigned 인 PC 에서도 .ps1 을 불러 기동해야 한다(10-21 P1-1)
+    script = (ROOT / "MV_agent.bat").read_text(encoding="utf-8")
+    loads = [line for line in script.splitlines() if "powershell" in line.lower() and ".ps1" in line]
+
+    assert loads
+    assert all("-ExecutionPolicy Bypass" in line for line in loads)
+
+
 def test_release_contains_session_guard():
     script = (ROOT / "release" / "make_release.ps1").read_text(encoding="utf-8")
 

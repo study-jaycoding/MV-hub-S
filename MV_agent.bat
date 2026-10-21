@@ -103,7 +103,7 @@ REM Only the installed local helper initializes activation. Inherited update int
 REM must match this installation's fixed control/journal paths before it is accepted.
 if exist "%ROOT%update_release_contract.ps1" (
   set "MVHUB_BOOT_ROOT=%ROOT%"
-  for /f "tokens=1,2 delims=:" %%A in ('powershell.exe -NoProfile -NonInteractive -Command "$ErrorActionPreference='Stop'; . (Join-Path $env:MVHUB_BOOT_ROOT 'update_release_contract.ps1'); Initialize-WorkerActivation -Root $env:MVHUB_BOOT_ROOT"') do if "%%A"=="READY" set "MVHUB_BOOT_NONCE=%%B"
+  for /f "tokens=1,2 delims=:" %%A in ('powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; . (Join-Path $env:MVHUB_BOOT_ROOT 'update_release_contract.ps1'); Initialize-WorkerActivation -Root $env:MVHUB_BOOT_ROOT"') do if "%%A"=="READY" set "MVHUB_BOOT_NONCE=%%B"
   if not defined MVHUB_BOOT_NONCE exit /b 1
 )
 if defined MVHUB_BOOT_NONCE (
