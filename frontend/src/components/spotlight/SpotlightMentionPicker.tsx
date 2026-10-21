@@ -68,7 +68,8 @@ export function SpotlightMentionPicker({
     return () => window.removeEventListener("resize", onResize);
   }, []);
   return (
-    <div className="sl-mention" ref={boxRef}>
+    // 피커의 머리글·빈 안내·스크롤 막대를 눌러도 입력칸 초점을 지킨다 — 초점이 떠나면 피커가 닫힌다(입력칸 blur).
+    <div className="sl-mention" ref={boxRef} onMouseDown={(e) => e.preventDefault()}>
       <div className="sl-mention-head">
         {mention.kind === "@"
           ? trayList.length

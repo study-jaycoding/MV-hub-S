@@ -1498,6 +1498,12 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     }
   };
 
+  // 입력칸을 떠나면 @/# 피커도 닫는다 — 카드·그리드를 누르거나 카드 전환으로 글이 바뀐 뒤에도 피커가 남았다(Jay 10-22).
+  //  피커 안을 누르는 건 초점을 안 뺏으므로(mousedown preventDefault) 여기 오지 않는다.
+  const onPromptBlur = () => {
+    setMention(null);
+    onTrayBindingPromptBlur?.();
+  };
   const onPromptCompositionStart = () => {
     composingRef.current = true;
   };
@@ -1586,7 +1592,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
             onToggleExpand={onToggleExpand}
             onClearTagFilter={clearTagFilter}
             onInput={onEditorInput}
-            onBlur={onTrayBindingPromptBlur}
+            onBlur={onPromptBlur}
             onCaretMove={onCaretMove}
             onKeyDown={onEditorKeyDown}
             onPaste={onEditorPaste}

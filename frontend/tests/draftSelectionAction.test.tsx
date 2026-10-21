@@ -5,7 +5,7 @@ import { expect, it, vi } from "vitest";
 import { BoardSelectionActionBar } from "../src/components/app/SelectionActionBar";
 import type { Generation } from "../src/types";
 
-it("Draft 버튼은 선택 수 뒤에 오며 실제 완료된 내 Draft 한 개에만 동작한다", () => {
+it("Draft 버튼은 Draft 생성물 하나를 골랐을 때만 선택 수 뒤에 보이고, 완료된 내 Draft 에만 동작한다", () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const host = document.createElement("div");
   const root = createRoot(host);
@@ -24,10 +24,15 @@ it("Draft 버튼은 선택 수 뒤에 오며 실제 완료된 내 Draft 한 개�
     expect(button().disabled).toBe(false);
     act(() => button().click());
     expect(finish).toHaveBeenCalledExactlyOnceWith(draft);
-    for (const selected of [[{ ...draft, params: { resolution: "480p" } }], [draft, draft], [{ ...draft, is_mine: false }]]) {
+    // Draft 가 아닌 하나·두 개 이상 선택에는 단추가 없다(Jay 10-22)
+    for (const selected of [[{ ...draft, params: { resolution: "480p" } }], [{ ...draft, model: "nano_banana_flash" }], [draft, draft]]) {
       render(selected);
-      expect(button().disabled).toBe(true);
+      expect(host.querySelector(".sb-draft")).toBeNull();
+      expect(host.querySelector(".sb-count")).not.toBeNull();
     }
+    // 남의 Draft 는 보이되 눌리지 않는다
+    render([{ ...draft, is_mine: false }]);
+    expect(button().disabled).toBe(true);
     render([draft], true);
     expect(button().disabled).toBe(true);
     expect(button().getAttribute("aria-busy")).toBe("true");

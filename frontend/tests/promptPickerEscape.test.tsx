@@ -26,6 +26,8 @@ it("피커를 닫는 Esc·태그 고정을 푸는 Esc 는 쓴 것으로 표시�
   view = await mountPrompt();
   const editor = required(view.container, '[contenteditable="true"]');
   act(() => {
+    // 실제처럼 입력칸을 눌러 초점을 얻는다 — 캔버스(inCompose)에선 누르지 않은 프로그램 초점을 바로 빼고, 초점이 빠지면 피커가 닫힌다
+    editor.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     editor.focus();
     editor.textContent = "#";
     const range = document.createRange();

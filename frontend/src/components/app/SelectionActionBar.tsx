@@ -2,7 +2,7 @@ import { ProjectAssignMenu } from "../ProjectAssignMenu";
 import { useT } from "../../lib/i18n";
 import type { GradeMode } from "../../lib/gradeStep";
 import type { Generation, Project } from "../../types";
-import { canFinishDraft } from "../../lib/seedanceDraft";
+import { canFinishDraft, isDraftGeneration } from "../../lib/seedanceDraft";
 
 type AssignHandlers = {
   projects: Project[];
@@ -50,8 +50,9 @@ export function BoardSelectionActionBar({
         {selected.length}
         {t("개 선택")}
       </span>
-      {onFinishDraft && <button type="button" className="sb-draft"
-        disabled={draftBusy || draftDone || selected.length !== 1 || !canFinishDraft(selected[0])}
+      {/* Draft 생성물 하나를 골랐을 때만 보인다(Jay 10-22). 남의 것·이미 1080p 로 만든 것은 보이되 눌리지 않는다(이유는 title). */}
+      {onFinishDraft && selected.length === 1 && isDraftGeneration(selected[0]) && <button type="button" className="sb-draft"
+        disabled={draftBusy || draftDone || !canFinishDraft(selected[0])}
         aria-busy={draftBusy}
         title={draftDone ? t("이 Draft는 이미 1080p로 생성했습니다") : draftBusy ? t("Draft 요청을 처리 중입니다") : t("완료된 내 Draft 한 개를 선택하여 1080p로 생성")}
         onClick={() => { if (selected.length === 1 && canFinishDraft(selected[0]) && !draftBusy && !draftDone) onFinishDraft(selected[0]); }}>
