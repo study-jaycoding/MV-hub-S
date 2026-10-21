@@ -413,6 +413,8 @@ export function ThumbnailGrid(props: Props) {
   const dragRef = useRef<{
     x: number; y: number; base: Set<string>; additive: boolean; range: boolean;
     anchor: string | null; moved: boolean; cellId: string | null;
+    applied?: boolean; // 누를 때 이미 골랐다 — 뗄 때 다시 고르지 않는다(Ctrl 이 두 번 뒤집히지 않게)
+    focus?: string | null; // 누르기 전의 초점 카드 — 누를 때 고른 것을 놓친 끝에서 되돌릴 때 쓴다
   } | null>(null);
 
   // 대상이 실제로 목록에서 빠진 경우만 포커스를 해제한다.
@@ -501,6 +503,31 @@ export function ThumbnailGrid(props: Props) {
     [flushMarquee],
   );
 
+  // 누른 카드 고르기(+ 방향키 앵커 갱신) — 고르지 않은 카드는 누를 때(onGridMouseDown), 이미 고른 카드는 움직이지 않고 뗄 때(onDragUp) 부른다.
+  const pickCell = useCallback((d: NonNullable<typeof dragRef.current>) => {
+    if (!d.cellId) return;
+    const gens = opsRef.current.generations;
+    const clickedIdx = gens.findIndex((g) => g.id === d.cellId);
+    const anchorIdx = gens.findIndex((g) => g.id === d.anchor);
+    if (d.range && anchorIdx >= 0 && clickedIdx >= 0) {
+      // Shift-클릭 = 앵커~클릭 사이 전부 선택(앵커는 유지 → 연속 Shift-클릭으로 범위 조정).
+      const lo = Math.min(anchorIdx, clickedIdx), hi = Math.max(anchorIdx, clickedIdx);
+      const range = new Set(gens.slice(lo, hi + 1).map((g) => g.id));
+      opsRef.current.onSelectedChange(range);
+      rangeAnchorRef.current = { anchor: gens[anchorIdx].id, ids: range }; // 위 호출이 지운 뒤에 적는다 — 다음 Shift 클릭의 기준
+    } else if (d.additive) {
+      setFocusedGenerationId(d.cellId);
+      const n = new Set(d.base);
+      if (n.has(d.cellId)) n.delete(d.cellId);
+      else n.add(d.cellId);
+      keepFocusRef.current = n.size === 0;
+      opsRef.current.onSelectedChange(n);
+    } else {
+      setFocusedGenerationId(d.cellId);
+      opsRef.current.onSelectedChange(new Set([d.cellId]));
+    }
+  }, []);
+
   const onDragUp = useCallback((e?: Event) => {
     // 놓친 끌기(창을 떠남·단추를 뗀 채 온 움직임 — lib/windowDrag) — 버린다(Alt+Tab 뒤 돌아온 움직임·클릭이 선택으로 이어지지 않게)
     const left = dragLost(e);
@@ -517,34 +544,20 @@ export function ThumbnailGrid(props: Props) {
     // 마퀴로 고른 뒤에는 초점 카드를 비운다 — 먼저 누른 카드가 남아 있으면 방향키·Shift 클릭이 (고르지도 않은) 그 카드에서 출발했다
     //  (최종 재실측). 비우면 '고른 것 중 마지막 카드'가 기준이 된다.
     if (d && d.moved && !d.cellId && !left) setFocusedGenerationId(null);
+    // 놓친 끝(누른 채 창을 떠남·단추를 뗀 채 온 움직임)은 클릭이 아니다 — 누를 때 고른 것을 누르기 전으로 되돌린다(조작 규칙: 클릭으로 확정하지 않는다)
+    if (d?.applied && left) {
+      setFocusedGenerationId(d.focus ?? null);
+      opsRef.current.onSelectedChange(new Set(d.base));
+    }
     if (!d || d.moved || left) return;
-    // 드래그 없이 클릭만 → 선택 처리(+ 방향키 앵커 갱신)
+    // 드래그 없이 클릭만 → 선택 처리(누를 때 이미 고른 카드는 그대로)
     if (d.cellId) {
-      const gens = opsRef.current.generations;
-      const clickedIdx = gens.findIndex((g) => g.id === d.cellId);
-      const anchorIdx = gens.findIndex((g) => g.id === d.anchor);
-      if (d.range && anchorIdx >= 0 && clickedIdx >= 0) {
-        // Shift-클릭 = 앵커~클릭 사이 전부 선택(앵커는 유지 → 연속 Shift-클릭으로 범위 조정).
-        const lo = Math.min(anchorIdx, clickedIdx), hi = Math.max(anchorIdx, clickedIdx);
-        const range = new Set(gens.slice(lo, hi + 1).map((g) => g.id));
-        opsRef.current.onSelectedChange(range);
-        rangeAnchorRef.current = { anchor: gens[anchorIdx].id, ids: range }; // 위 호출이 지운 뒤에 적는다 — 다음 Shift 클릭의 기준
-      } else if (d.additive) {
-        setFocusedGenerationId(d.cellId);
-        const n = new Set(d.base);
-        if (n.has(d.cellId)) n.delete(d.cellId);
-        else n.add(d.cellId);
-        keepFocusRef.current = n.size === 0;
-        opsRef.current.onSelectedChange(n);
-      } else {
-        setFocusedGenerationId(d.cellId);
-        opsRef.current.onSelectedChange(new Set([d.cellId]));
-      }
+      if (!d.applied) pickCell(d);
     } else if (!d.additive && !d.range) {
       setFocusedGenerationId(null);
       opsRef.current.onSelectedChange(new Set());
     }
-  }, [onDragMove, flushMarquee]);
+  }, [onDragMove, flushMarquee, pickCell]);
   // 언마운트(폴더 창·결과 창이 닫히며 격자가 사라짐) — 누르고 있던 선택 끌기를 버린다. 안 버리면 window 에 남은 리스너가
   //  나중의 mouseup 에서 **사라진 격자의 옛 콜백**으로 선택을 만든다. 폴더 창을 닫은 직후의 조작 잠금도 그 옛 콜백은
   //  모른다 — 카드를 누른 채 Esc 로 닫고 마우스를 떼면 낡은 사본에 선택이 생겼다(Codex 코드 리뷰 2026-10-07).
@@ -734,6 +747,14 @@ export function ThumbnailGrid(props: Props) {
     // 툴바·상단바 위를 지날 때 그쪽 글자가 파랗게 긁히고 마퀴가 묻힌다(포커스는 위에서 직접 준다).
     if (!cellEl) e.preventDefault();
     beginDrag(e, cellEl?.dataset.id ?? null);
+    // 고르지 않은 카드는 누르는 순간 고른다 — 뗄 때만 고르면 빠르게 이어 누르는 동안 손이 움직여(5px 문턱·카드의 브라우저 끌기) 클릭이
+    //  버려졌다(Jay 10-22). 이미 고른 카드는 뗄 때 정한다 — 누를 때 줄이면 여러 장 끌기가 깨진다.
+    const d = dragRef.current;
+    if (d?.cellId && !d.base.has(d.cellId)) {
+      d.applied = true;
+      d.focus = startRef.current.focusedGenerationId;
+      pickCell(d);
+    }
   };
 
   const onGridDblClick = (e: React.MouseEvent) => {

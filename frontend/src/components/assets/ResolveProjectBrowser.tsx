@@ -206,6 +206,7 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
     base: string[];
     additive: boolean;
     fromCard: boolean; // 카드 위에서 시작한 끌기 — 상자는 안 그리고 '클릭 아님'만 기억한다
+    fromPicked: boolean; // 그 카드가 이미 고른 것이었다 — 흔든 뒤의 클릭이 여러 장을 한 장으로 줄이지 않게
     hits?: Set<string>; // 상자로 고른 마지막 결과 — 끝낼 때 Shift 의 기준을 여기에 맞춘다
   } | null>(null);
   const suppressClickRef = useRef(false); // 끌고 난 뒤의 클릭은 고르기로 치지 않는다(Codex)
@@ -623,8 +624,9 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
     if (drag.hits) anchorRef.current = [...orderRef.current].reverse().find((key) => drag.hits!.has(key)) ?? "";
     // 놓친 끌기는 정리만 한다 — 빈 자리를 누른 채 창을 떠난 것이 '풀기'로 확정되지 않게(뒤따르는 click 도 없다)
     if (dragLost(event)) return;
-    // 끌고 난 뒤에 오는 클릭은 고르기가 아니다 — 안 그러면 여러 장 고른 것이 한 장으로 줄어든다(Codex).
-    suppressClickRef.current = drag.moved;
+    // 끌고 난 뒤에 오는 클릭은 고르기가 아니다 — 안 그러면 여러 장 고른 것이 한 장으로 줄어든다(Codex). 다만 **고르지 않은 카드**에서
+    //  시작한 끌기는 상자를 만들지 않아(카드 옮기기 기능 없음) 빠르게 누르다 조금 움직인 클릭이다 — 버리면 빠른 클릭이 안 골라졌다(Jay 10-22).
+    suppressClickRef.current = drag.moved && (!drag.fromCard || drag.fromPicked);
     if (drag.moved) {
       // 브라우저의 합성 click은 mouseup과 같은 task에서 먼저 온다. 그 click만 삼킨 뒤 자동으로
       // 풀어야, 빈자리 marquee처럼 click이 아예 안 온 드래그가 다음 정상 클릭까지 먹지 않는다.
@@ -639,7 +641,8 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
   const onBodyMouseDown = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     const target = event.target as HTMLElement;
-    const fromCard = !!target.closest(".resolve-project-card");
+    const cardEl = target.closest<HTMLElement>(".resolve-project-card");
+    const fromCard = !!cardEl;
     // 카드 말고 다른 조작거리(날짜줄의 label·input 등) 위에서는 아무것도 시작하지 않는다.
     if (!fromCard && target.closest("button, label, input")) return;
     if (!fromCard) event.preventDefault(); // 빈 자리에서 끌 때 글자가 잡히지 않게(카드는 초점·클릭을 살린다)
@@ -650,6 +653,7 @@ export function ResolveProjectBrowser({ project, dir }: { project: string; dir: 
       base: [...picked],
       additive: event.ctrlKey || event.metaKey || event.shiftKey,
       fromCard,
+      fromPicked: !!cardEl && picked.has(cardEl.dataset.rpKey ?? ""),
     };
     addWindowMouseDrag(onDragMove, onDragUp);
   };

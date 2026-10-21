@@ -362,6 +362,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     x: number; y: number; basePaths: Set<string>; additive: boolean; range: boolean;
     anchorPath: string | null; moved: boolean; cellPath: string | null; onCell: boolean;
     hitPaths?: string[]; // 끌어 고른(마퀴) 마지막 결과 — 끝낼 때 초점을 여기에 맞춘다
+    applied?: boolean; // 누를 때 이미 골랐다 — 뗄 때 다시 고르지 않는다(Ctrl 이 두 번 뒤집히지 않게)
   } | null>(null);
   const filesRef = useRef(files);
   filesRef.current = files;
@@ -424,6 +425,31 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     setSelected(hits);
   }, []);
 
+  // 누른 파일 고르기 — 고르지 않은 파일은 누를 때(onGridMouseDown), 이미 고른 파일은 움직이지 않고 뗄 때(onDragUp) 부른다.
+  const pickCell = useCallback((d: NonNullable<typeof dragRef.current>) => {
+    const cellIdx = indexOfPath(filesRef.current, d.cellPath);
+    const anchor = indexOfPath(filesRef.current, d.anchorPath);
+    if (cellIdx < 0) return; // 누른 파일이 그사이 목록에서 사라졌다 — 그 자리에 온 다른 파일을 고르지 않는다
+    if (d.range && anchor >= 0) {
+      // Shift-클릭 = 앵커~클릭 사이 전부 선택(앵커 유지 → 연속 Shift-클릭으로 범위 조정).
+      const lo = Math.min(anchor, cellIdx), hi = Math.max(anchor, cellIdx);
+      const r = new Set<number>();
+      for (let i = lo; i <= hi; i++) r.add(i);
+      setSelected(r);
+    } else if (d.additive) {
+      setFocusIdx(cellIdx);
+      setSelected((prev) => {
+        const n = new Set(prev);
+        if (n.has(cellIdx)) n.delete(cellIdx);
+        else n.add(cellIdx);
+        return n;
+      });
+    } else {
+      setFocusIdx(cellIdx);
+      setSelected(new Set([cellIdx]));
+    }
+  }, []);
+
   const onDragUp = useCallback((e?: Event) => {
     const d = dragRef.current;
     dragRef.current = null;
@@ -438,38 +464,25 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       const picked = new Set(d.hitPaths);
       setFocusIdx(filesRef.current.reduce((last, file, idx) => (picked.has(file.path) ? idx : last), -1));
     }
-    if (dragLost(e)) return;
+    if (dragLost(e)) {
+      // 놓친 끝·Esc 는 클릭이 아니다 — 누를 때 고른 것을 누르기 전으로 되돌린다(번호는 지금 목록에서 다시 찾는다)
+      if (d.applied) {
+        setSelected(new Set(filesRef.current.flatMap((file, idx) => (d.basePaths.has(file.path) ? [idx] : []))));
+        setFocusIdx(indexOfPath(filesRef.current, d.anchorPath));
+      }
+      return;
+    }
     if (!d.moved) {
-      // 드래그 없이 클릭만 → 선택 처리
+      // 드래그 없이 클릭만 → 선택 처리(누를 때 이미 고른 파일은 그대로)
       if (d.onCell) {
-        const cellIdx = indexOfPath(filesRef.current, d.cellPath);
-        const anchor = indexOfPath(filesRef.current, d.anchorPath);
-        if (cellIdx < 0) return; // 누른 파일이 그사이 목록에서 사라졌다 — 그 자리에 온 다른 파일을 고르지 않는다
-        if (d.range && anchor >= 0) {
-          // Shift-클릭 = 앵커~클릭 사이 전부 선택(앵커 유지 → 연속 Shift-클릭으로 범위 조정).
-          const lo = Math.min(anchor, cellIdx), hi = Math.max(anchor, cellIdx);
-          const r = new Set<number>();
-          for (let i = lo; i <= hi; i++) r.add(i);
-          setSelected(r);
-        } else if (d.additive) {
-          setFocusIdx(cellIdx);
-          setSelected((prev) => {
-            const n = new Set(prev);
-            if (n.has(cellIdx)) n.delete(cellIdx);
-            else n.add(cellIdx);
-            return n;
-          });
-        } else {
-          setFocusIdx(cellIdx);
-          setSelected(new Set([cellIdx]));
-        }
+        if (!d.applied) pickCell(d);
       } else if (!d.additive && !d.range) {
         // 빈 공간 클릭 → 선택 + 포커스 링 모두 해제(생성탭과 동일)
         setFocusIdx(-1);
         setSelected(new Set());
       }
     }
-  }, [onDragMove]);
+  }, [onDragMove, pickCell]);
 
   // 최신 선택/프로젝트를 ref 로 — exportDrag 를 안정 참조로 유지(React.memo 동작 보존).
   const selectedRef = useRef(selected);
@@ -592,6 +605,12 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       onCell: cellIdx >= 0,
     };
     addWindowMouseDrag(onDragMove, onDragUp);
+    // 고르지 않은 파일은 누르는 순간 고른다 — 뗄 때만 고르면 빠르게 이어 누르는 동안 손이 움직여(5px 문턱·파일의 브라우저 끌기) 클릭이
+    //  버려졌다(Jay 10-22). 이미 고른 파일은 뗄 때 정한다 — 누를 때 줄이면 여러 장 끌어 내보내기가 깨진다.
+    if (cellIdx >= 0 && !selected.has(cellIdx)) {
+      dragRef.current.applied = true;
+      pickCell(dragRef.current);
+    }
   };
 
   const onGridAux = (e: React.MouseEvent) => {

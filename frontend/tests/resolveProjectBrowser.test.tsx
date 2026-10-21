@@ -898,6 +898,24 @@ it("여러 장 고르기 — 빈 자리에서 끌면 상자로, Ctrl+A 는 보�
   expect(host.querySelector(".assets-marquee")).toBeNull(); // 카드에서 시작한 끌기는 상자를 만들지 않는다
   expect(pickedCount()).toBe(2);
 
+  // Jay 10-22 빠른 클릭: **고르지 않은** 카드를 누르다 손이 조금 움직인 클릭은 고른다(전엔 끌기로 보고 버렸다)
+  await act(async () => {
+    body().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: 5, clientY: 5, button: 0 }));
+    window.dispatchEvent(new MouseEvent("mouseup", { clientX: 5, clientY: 5 })); // 빈 자리 = 풀기
+  });
+  expect(pickedCount()).toBe(0);
+  await act(async () => {
+    card.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: 10, clientY: 10, button: 0 }));
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 22, clientY: 14, buttons: 1 }));
+    window.dispatchEvent(new MouseEvent("mouseup", { clientX: 22, clientY: 14 }));
+    card.click();
+  });
+  expect(pickedCount()).toBe(1);
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true }));
+  });
+  expect(pickedCount()).toBe(2); // 아래 단계를 위해 다시 둘
+
   // 창 밖에서 놓아 mouseup 을 못 받아도, 단추를 뗀 채 움직이면 끌기가 끝나 있다
   await act(async () => {
     body().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: 0, clientY: 0, button: 0 }));

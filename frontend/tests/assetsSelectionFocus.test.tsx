@@ -94,6 +94,34 @@ const key = (init: KeyboardEventInit) => act(async () => {
   grid().dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
 });
 
+// Jay 10-22: 빠르게 이어 누르면 손이 움직여(5px 문턱·브라우저 끌기) 파일이 안 골라졌다 — 고르지 않은 파일은 누르는 순간 고른다.
+it("빠른 클릭 — 고르지 않은 파일은 누르는 순간 골라진다(움직여도). 이미 고른 파일은 뗄 때 정하고 Ctrl 은 한 번만 뒤집힌다", async () => {
+  await mount();
+  const press = (name: string, init: MouseEventInit = {}) => act(async () => {
+    cell(name).dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientX: 5, clientY: 5, ...init }));
+  });
+  const release = (x = 5) => act(async () => {
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: x, clientY: 5, buttons: 1 }));
+    window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0, clientX: x, clientY: 5 }));
+  });
+  await press("a.png");
+  expect(picked()).toEqual(["a.png"]); // 떼기 전에 골라졌다
+  await release(40); // 손이 움직였다(5px 넘게)
+  expect([picked(), focusedName()]).toEqual([["a.png"], "a.png"]); // 전엔 아무것도 안 골랐다
+  await click("b.png", { ctrlKey: true });
+  expect(picked()).toEqual(["a.png", "b.png"]); // 더하기 — 한 번만
+  await press("a.png"); // 이미 고른 파일 — 여러 장 끌기를 위해 떼기 전에는 그대로
+  expect(picked()).toEqual(["a.png", "b.png"]);
+  await release();
+  expect(picked()).toEqual(["a.png"]); // 움직이지 않고 떼면 그 파일 하나로(전과 같다)
+  await press("c.png"); // 고르지 않은 파일 — 누르는 순간 골라진다
+  expect(picked()).toEqual(["c.png"]);
+  await key({ key: "Escape" }); // Esc 는 클릭이 아니다 — 누르기 전으로 돌아간다
+  expect([picked(), focusedName()]).toEqual([["a.png"], "a.png"]);
+  await act(async () => { window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0 })); });
+  expect(picked()).toEqual(["a.png"]);
+});
+
 it("Esc preserves the selected files like Explorer", async () => {
   await mount();
   await click("a.png");
@@ -245,13 +273,22 @@ it("Shift 로 더해 고르는 끌기 중에 목록이 바뀌면, 시작할 때 
   expect([picked(), focusedName()]).toEqual([[], null]); // 전엔 b 의 번호(1)에 온 c.png 가 골라지고 초점도 갔다
 });
 
-it("파일을 누르고 있는 사이 그 파일이 목록에서 사라지면, 놓아도 그 자리에 온 다른 파일을 고르지 않는다 — 고른 것은 그대로다", async () => {
+it("파일을 누르고 있는 사이 그 파일이 목록에서 사라지면, 놓아도 그 자리에 온 다른 파일을 고르지 않는다", async () => {
   await mount();
   await click("a.png");
+  // 고르지 않은 b 를 누르면 누르는 순간 b 가 골라진다(10-22) — b 가 사라지면 고른 것도 없다. 그 자리에 온 c 는 골라지지 않는다.
   await act(async () => { cell("b.png").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientX: 105, clientY: 5 })); });
   await setFiles(["a.png", "c.png", "d.png"]);
   await act(async () => { window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0 })); });
-  expect([picked(), focusedName()]).toEqual([["a.png"], "a.png"]); // 전엔 c.png 가 골라졌다
+  expect([picked(), focusedName()]).toEqual([[], null]); // 전엔 c.png 가 골라졌다
+  // 이미 고른 파일을 누른 채 사라져도(뗄 때 정하는 길) 그 자리의 다른 파일을 고르지 않고 남은 선택은 그대로다
+  await setFiles(["a.png", "b.png", "c.png", "d.png"]);
+  await click("a.png");
+  await click("b.png", { ctrlKey: true });
+  await act(async () => { cell("b.png").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientX: 105, clientY: 5 })); });
+  await setFiles(["a.png", "c.png", "d.png"]);
+  await act(async () => { window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0 })); });
+  expect(picked()).toEqual(["a.png"]);
 });
 
 // Codex 코드 리뷰: 선택·초점을 새 목록에 맞추는 일이 '그린 뒤'에 돌면, 새 목록은 그려졌는데 선택·초점은 아직 옛 번호인 한 박자가 생긴다 —

@@ -397,10 +397,13 @@ it("격자가 사라지면(창이 닫힘) 누르고 있던 선택 끌기를 버�
   });
   const release = () => act(() => { window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); });
   press(renderGrid(gridProps({ onSelectedChange })));
+  // 고르지 않은 카드는 누르는 순간(창이 떠 있을 때) 골라진다(10-22 빠른 클릭) — 이 한 번은 살아 있는 격자의 것이다
+  expect(onSelectedChange).toHaveBeenCalledExactlyOnceWith(new Set(["g1"]));
   act(() => root.render(<div />)); // 격자 언마운트
   release();
-  expect(onSelectedChange).not.toHaveBeenCalled();
-  // 대조: 격자가 그대로면 떼는 순간 그 카드가 선택된다
+  expect(onSelectedChange).toHaveBeenCalledTimes(1); // 떼는 순간 옛 콜백이 다시 부르지 않는다
+  // 대조: 격자가 그대로면 떼어도 한 번뿐이다(누를 때 골랐다)
+  onSelectedChange.mockClear();
   press(renderGrid(gridProps({ onSelectedChange })));
   release();
   expect(onSelectedChange).toHaveBeenCalledExactlyOnceWith(new Set(["g1"]));

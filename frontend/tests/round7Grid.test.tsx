@@ -136,6 +136,30 @@ afterEach(() => {
   vi.unstubAllGlobals(); vi.restoreAllMocks();
 });
 
+// Jay 10-22: 빠르게 이어 누르면 손이 움직여(5px 문턱·브라우저 끌기) 카드가 안 골라졌다 — 고르지 않은 카드는 누르는 순간 고른다.
+it("빠른 클릭 — 고르지 않은 카드는 누르는 순간 골라진다(움직여도·끌기가 시작돼도). 이미 고른 카드는 뗄 때 정하고 Ctrl 은 한 번만 뒤집힌다", () => {
+  mount();
+  mouse("mousedown", cell("g1"));
+  expect(chosen()).toEqual(["g1"]); // 떼기 전에 골라졌다
+  mouse("mousemove", window, { clientX: 30, clientY: 30 }); // 손이 움직였다(5px 넘게)
+  mouse("mouseup", window, { clientX: 30, clientY: 30 });
+  expect(chosen()).toEqual(["g1"]); // 전엔 끌기로 보고 아무것도 안 골랐다
+  mouse("mousedown", cell("g2"));
+  act(() => { // 브라우저 끌기(카드가 프롬프트를 싣는다) — mouseup 이 오지 않는다
+    cell("g2").dispatchEvent(Object.assign(new Event("dragstart", { bubbles: true }), { dataTransfer: { setData: () => {}, effectAllowed: "" } }));
+  });
+  expect(chosen()).toEqual(["g2"]);
+  click("g3", { ctrlKey: true }); // 더하기 — 누를 때 한 번, 뗄 때는 다시 뒤집지 않는다
+  expect(chosen()).toEqual(["g2", "g3"]);
+  mouse("mousedown", cell("g2")); // 이미 고른 카드 — 여러 장 끌기를 위해 떼기 전에는 그대로
+  expect(chosen()).toEqual(["g2", "g3"]);
+  mouse("mouseup", window);
+  expect(chosen()).toEqual(["g2"]); // 움직이지 않고 떼면 그 카드 하나로(전과 같다)
+  click("g3", { ctrlKey: true });
+  click("g3", { ctrlKey: true }); // 고른 카드의 Ctrl 클릭은 뗄 때 뺀다
+  expect(chosen()).toEqual(["g2"]);
+});
+
 it("R43-a 선택이 이미 빈 채로 격자 밖을 누르면 Space 로 남긴 초점 카드도 지운다 — 방향키·Shift 클릭의 기준 자리만 남는다", () => {
   mount();
   flushFrames();
