@@ -452,3 +452,58 @@ def test_after_ack_terminal_result_reaps_child_that_does_not_exit(workers):
     assert not watchdog_fired and not guard.is_alive()
     assert workers.created[0].poll() is not None
     assert workers.created[0].stdin.closed and workers.created[0].stdout.closed
+
+
+def test_terminal_result_does_not_wait_for_an_unrelated_stdout_inheritor(workers, monkeypatch):
+    import io
+    import os
+
+    workers.source[0] = _success_worker()
+    launch = native.subprocess.Popen
+    inheritors = []
+
+    def inherited_stdout(command, **kwargs):
+        read_fd, write_fd = os.pipe()
+        with os.fdopen(write_fd, "wb") as write_stream:
+            kwargs["stdout"] = write_stream
+            child = launch(command, **kwargs)
+            child.stdout = io.TextIOWrapper(os.fdopen(read_fd, "rb"), encoding="utf-8")
+            inheritors.append(_POPEN(
+                [sys.executable, "-c", "import sys; sys.stdin.buffer.read(1)"],
+                stdin=subprocess.PIPE, stdout=write_stream, stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            ))
+        return child
+
+    monkeypatch.setattr(native.subprocess, "Popen", inherited_stdout)
+    done, outcome = threading.Event(), []
+
+    def run():
+        try:
+            outcome.append(_drag())
+        except BaseException as error:
+            outcome.append(error)
+        finally:
+            done.set()
+
+    caller = threading.Thread(target=run)
+    caller.start()
+    finished_before_inheritor_exit = False
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and (not workers.created or workers.created[0].poll() is None):
+            time.sleep(.005)
+        assert workers.created and workers.created[0].poll() == 0
+        assert len(inheritors) == 1 and inheritors[0].poll() is None
+        finished_before_inheritor_exit = done.wait(1)
+    finally:
+        for child in inheritors:
+            child.stdin.close()
+            child.wait(timeout=3)
+            child._handle.Close()
+        caller.join(timeout=3)
+    assert not caller.is_alive() and outcome == [True]
+    assert finished_before_inheritor_exit
+    assert workers.created[0].stdin.closed and workers.created[0].stdout.closed
+    monkeypatch.setattr(native.subprocess, "Popen", launch)
+    assert _drag() is True

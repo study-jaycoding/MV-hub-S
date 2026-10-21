@@ -437,3 +437,71 @@ def test_actual_windows_object_contains_three_files_and_internal_payload(tmp_pat
         custom = read_format(api.user.RegisterClipboardFormatW(native.CUSTOM_FORMAT))
         assert custom == native.custom_data(payload)
     assert all(Path(path).read_bytes() == b"fixture-not-uploaded" for path in paths)
+
+
+def test_disconnect_watcher_absorbed_cancellation_finishes_and_next_drag_works(env):
+    folder, drag = env
+    (folder / "a.png").write_bytes(b"original")
+    entered = threading.Event()
+    control = {"entered": False, "stop": False, "swallowed": 0}
+
+    def worker(*_args):
+        assert entered.wait(2)
+        return True
+
+    drag.side_effect = worker
+
+    async def run():
+        owner, watchers = [], []
+
+        async def receive():
+            task = asyncio.current_task()
+            if task is owner[0]:
+                return {"type": "http.request", "body": b"", "more_body": False}
+            if not control["entered"]:
+                watchers.append(task)
+                control["entered"] = True
+                entered.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    control["swallowed"] += 1
+                    return {"type": "http.request", "body": b"", "more_body": False}
+            return {"type": "http.disconnect"} if control["stop"] else {"type": "http.request", "body": b"", "more_body": False}
+
+        req = Request(request().scope, receive)
+
+        async def is_disconnected():
+            return (await req.receive())["type"] == "http.disconnect"
+
+        req.is_disconnected = is_disconnected
+
+        async def invoke():
+            owner.append(asyncio.current_task())
+            return await assets.native_drag(body(["a.png"]), req)
+
+        first = asyncio.create_task(invoke())
+        finished_without_fixture_cleanup = False
+        try:
+            await asyncio.wait({first}, timeout=.4)
+            finished_without_fixture_cleanup = first.done()
+            assert control["swallowed"] == 1 and drag.call_count == 1
+            if first.done():
+                assert first.result() == {"dropped": True}
+                assert not assets._native_drag_lock.locked()
+            else:
+                assert assets._native_drag_lock.locked()
+                with pytest.raises(HTTPException) as error:
+                    await assets.native_drag(body(["a.png"]), request())
+                assert error.value.status_code == 409
+        finally:
+            control["stop"] = True
+            done, pending = await asyncio.wait({first}, timeout=1)
+            assert not pending and first.result() == {"dropped": True}
+            assert watchers and all(task.done() for task in watchers)
+            assert not assets._native_drag_lock.locked()
+        assert finished_without_fixture_cleanup
+        assert await assets.native_drag(body(["a.png"]), request()) == {"dropped": True}
+        assert drag.call_count == 2 and not assets._native_drag_lock.locked()
+
+    asyncio.run(run())

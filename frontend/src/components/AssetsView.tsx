@@ -652,7 +652,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       if (f) openPreview(f);
     } else if (e.key === "Escape") {
       if (isKeyHandled(e.nativeEvent)) return; // 위에 떠 있던 창이 이미 쓴 Esc
-      setSelected(new Set());
+      onDragUp(e.nativeEvent); // Esc는 끌기만 취소한다. 선택과 뒤늦은 mouseup의 클릭 판정을 분리한다.
     } else if (e.key === " ") {
       e.preventDefault();
       if (focusIdx >= 0)

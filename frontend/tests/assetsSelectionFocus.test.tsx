@@ -94,6 +94,28 @@ const key = (init: KeyboardEventInit) => act(async () => {
   grid().dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
 });
 
+it("Esc preserves the selected files like Explorer", async () => {
+  await mount();
+  await click("a.png");
+  await click("b.png", { ctrlKey: true });
+  await key({ key: "Escape" });
+  expect([picked(), focusedName()]).toEqual([["a.png", "b.png"], "b.png"]);
+});
+
+it("Esc cancels a pressed card without committing its later mouseup as a single selection", async () => {
+  await mount();
+  await click("a.png");
+  await click("b.png", { ctrlKey: true });
+  await act(async () => {
+    cell("a.png").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientX: 5, clientY: 5 }));
+  });
+  await key({ key: "Escape" });
+  await act(async () => { window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0 })); });
+  expect([picked(), focusedName()]).toEqual([["a.png", "b.png"], "b.png"]);
+  await click("c.png");
+  expect(picked()).toEqual(["c.png"]);
+});
+
 it("목록이 바뀌면 초점도 그 파일을 따라간다 — 앞의 파일이 사라져도 Enter 는 고른 파일을 연다(전엔 그 자리에 온 다른 파일)", async () => {
   await mount();
   expect(names()).toEqual(["a.png", "b.png", "c.png", "d.png"]);

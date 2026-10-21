@@ -2275,7 +2275,7 @@ async def _native_drag_pinned(body: NativeDragIn, request: Request):
         owner_task = asyncio.current_task()
 
         async def watch_disconnect():
-            while True:
+            while not cancelled.is_set():
                 if owner_task.cancelling() or await request.is_disconnected():
                     cancelled.set()
                     return

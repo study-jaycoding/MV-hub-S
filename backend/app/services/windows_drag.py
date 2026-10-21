@@ -340,6 +340,8 @@ def drag_files(paths: list[str], payload: str, started_at_ms: int, cancelled: th
                 if message["event"] == "result" and not isinstance(message.get("dropped"), bool):
                     break
                 messages.put(message)
+                if message["event"] == "result":
+                    return
         except (ValueError, OSError):
             pass
         finally:
