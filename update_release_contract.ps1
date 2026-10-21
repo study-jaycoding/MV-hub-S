@@ -170,13 +170,16 @@ function Assert-InstalledReleasePayload {
     if ((Get-ReleaseSha256 $DescriptorPath) -cne $Candidate.contract.descriptor_sha256) { throw 'Installed build descriptor changed.' }
     $Descriptor = ConvertFrom-ReleaseJson ([IO.File]::ReadAllBytes($DescriptorPath))
     $Prefix = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+    $CheckedDirectories = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($Entry in $Descriptor.payload) {
         $Path = [IO.Path]::GetFullPath((Join-Path $Root $Entry.path))
         if (-not $Path.StartsWith($Prefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Payload escaped its installation.' }
         $Item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
         $Ancestor = $Item
         while ($Ancestor) {
+            if ($Ancestor -is [IO.DirectoryInfo] -and $CheckedDirectories.Contains($Ancestor.FullName)) { break }
             if ($Ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Installed payload traverses a reparse point.' }
+            if ($Ancestor -is [IO.DirectoryInfo]) { $null = $CheckedDirectories.Add($Ancestor.FullName) }
             $Ancestor = if ($Ancestor -is [IO.FileInfo]) { $Ancestor.Directory } else { $Ancestor.Parent }
         }
         if ($Item.Length -ne $Entry.size -or (Get-ReleaseSha256 $Path) -cne $Entry.sha256) { throw 'Installed payload digest mismatch.' }

@@ -144,7 +144,9 @@ def prepare(root: Path, *, source_receipt: Path, verification_python: Path,
         if len(commit) != 40 or any(c not in '0123456789abcdef' for c in commit):
             raise ValueError('invalid_source_revision')
         result = subprocess.run(['git', '-C', str(root), 'show', commit + ':release/compatibility.json'],
-                                check=True, capture_output=True)
+                                check=False, capture_output=True)
+        if result.returncode != 0:
+            raise ValueError('selected_commit_declaration_missing')
         declared = compatibility(document(result.stdout))
         for field in ('reader_protocol', 'writer_protocol'):
             if type(declared.get(field)) is not int:

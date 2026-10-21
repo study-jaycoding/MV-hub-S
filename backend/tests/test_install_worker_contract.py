@@ -26,8 +26,10 @@ def legacy_install(root):
         'MV_agent.bat', 'update_release.bat', 'run_release_update.ps1',
         'update_release_worker.bat', 'run_agent_session.py', 'agent_push.py',
         'backend/serve.py', 'backend/app/main.py', 'frontend/dist/index.html',
-        'runtime/node/node.exe', 'runtime/higgsfield/cli.js', 'runtime/python/python.exe',
-        'tools/helper.ps1', 'backend/extra/helper.py',
+        'runtime/node/node.exe', 'runtime/higgsfield/node_modules/@higgsfield/cli/bin/higgsfield.js',
+        'runtime/python/python.exe',
+        # Match release/make_release.ps1's allowed tools and backend files.
+        'tools/install_db_probe.py', 'backend/schema.sql',
     )}
     files['VERSION.txt'] = b'2026.10.21-1200\r\n'
     for name, raw in files.items():
@@ -40,7 +42,7 @@ def legacy_install(root):
     (root / 'build-manifest.json').write_text(json.dumps(descriptor))
     components = [('backend/app', 'dir'), ('frontend/dist', 'dir'), ('runtime/node', 'dir'),
                   ('runtime/higgsfield', 'dir'), ('runtime/python', 'dir'),
-                  ('tools', 'dir'), ('backend/extra', 'dir'), ('build-manifest.json', 'file')]
+                  ('tools', 'dir'), ('backend/schema.sql', 'file'), ('build-manifest.json', 'file')]
     components += [(name, 'file') for name in files if '/' not in name and name != 'VERSION.txt']
     components.append(('backend/serve.py', 'file'))
     journal = {'token': '1234abcd', 'updated_at': '2026-10-21T12:00:00.0000000Z',
@@ -58,6 +60,28 @@ def test_legacy_committed_install_boots_and_preserves_journal(tmp_path):
     assert result.returncode == 0 and result.stdout.startswith('READY:'), result.stderr
     assert (tmp_path / 'update-journal.json').read_bytes() == before
     assert json.loads((tmp_path / '.install-activation.json').read_text())['state'] == 'normal'
+
+
+def test_payload_ancestor_checks_are_once_per_directory_per_call(tmp_path):
+    _, descriptor = legacy_install(tmp_path)
+    directories = {parent for row in descriptor['payload'] for parent in (tmp_path / row['path']).parents}
+    expected = len(descriptor['payload']) + len(directories)
+    verifier = ROOT / 'update_release_contract.ps1'
+    check_line = next(i for i, line in enumerate(verifier.read_text().splitlines(), 1)
+                      if 'if ($Ancestor.Attributes -band' in line)
+    code = f"""
+$Candidate=[pscustomobject]@{{contract=@{{descriptor_sha256=(Get-ReleaseSha256 '{tmp_path / 'build-manifest.json'}')}}}}
+$global:ReparseChecks=0
+$Breakpoint=Set-PSBreakpoint -Script '{verifier}' -Line {check_line} -Action {{ $global:ReparseChecks++ }}
+try {{
+    Assert-InstalledReleasePayload -Root '{tmp_path}' -Candidate $Candidate
+    if($global:ReparseChecks -ne {expected}){{throw "repeated ancestor checks: $global:ReparseChecks, expected {expected}"}}
+    Assert-InstalledReleasePayload -Root '{tmp_path}' -Candidate $Candidate
+    if($global:ReparseChecks -ne {expected * 2}){{throw 'cache survived the validation call'}}
+}} finally {{ Remove-PSBreakpoint $Breakpoint }}
+"""
+    result = ps(tmp_path, code)
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize('damage', [
