@@ -95,7 +95,7 @@ interface Props {
   hasMore?: boolean; // 서버에 더 받을 페이지가 있나
   loadingMore?: boolean;
   onLoadMore?: () => void;
-  resetKey?: string; // 필터/정렬 변경 신호(genQuery 직렬화) — 바뀌면 점진 렌더(shown)를 초기화
+  resetKey?: string; // 필터/정렬 변경 신호 — 스크롤 위치와 자동 보정 기록을 초기화
   loadError?: string | null; // 목록 첫 로드 실패 사유 — 빈 상태와 구분해 재시도 UI 를 띄운다
   loading?: boolean; // 목록을 받는 중 — 비어 있을 때 "항목이 없습니다" 대신 "불러오는 중…"(받는 중인데 없다고 말하지 않는다)
   selectLocked?: boolean; // 바깥(상단바·사이드바 여백)에서 시작하는 끌기 선택을 끈다 — 낡은 사본을 보이는 동안
@@ -201,6 +201,7 @@ export function ThumbnailGrid(props: Props) {
   // 같은 목록에서는 최초 요청 + 재시도 한 번만: 응답 폐기는 재개하되 오류로 끝없이 재시도하지 않는다.
   // 숨긴 쪽은 새 배열이어도 화면을 늘리지 않으므로, 보이는 개수가 늘기 전 자동 요청은 10회로 묶는다.
   const autoLoadRef = useRef({ generations, attempts: 0, noGrowthAttempts: 0 });
+  const [autoLoadCapped, setAutoLoadCapped] = useState(false);
   useEffect(() => {
     if (!props.hasMore || props.loadingMore) return;
     const el = gridRef.current;
@@ -214,7 +215,9 @@ export function ThumbnailGrid(props: Props) {
           noGrowthAttempts: generations.length > autoLoadRef.current.generations.length ? 0 : autoLoadRef.current.noGrowthAttempts,
         };
       }
-      if (autoLoadRef.current.attempts >= 2 || autoLoadRef.current.noGrowthAttempts >= 10) return;
+      const capped = autoLoadRef.current.attempts >= 2 || autoLoadRef.current.noGrowthAttempts >= 10;
+      setAutoLoadCapped(capped);
+      if (capped) return;
       if (el.scrollHeight - el.scrollTop - el.clientHeight < 800) {
         autoLoadRef.current.attempts++;
         autoLoadRef.current.noGrowthAttempts++;
@@ -425,6 +428,9 @@ export function ThumbnailGrid(props: Props) {
       resetKeyFirstRef.current = false;
       return;
     }
+    autoLoadRef.current.attempts = 0;
+    autoLoadRef.current.noGrowthAttempts = 0;
+    // 새 목록 판단 전까지 수동 단추를 유지한다 — 결과가 같아도 다시 받을 길을 남긴다.
     setFocusedGenerationId(null);
     lastSpotRef.current = null;
     gridRef.current?.scrollTo({ top: 0 });
@@ -887,6 +893,11 @@ export function ThumbnailGrid(props: Props) {
         >
           {(row: VirtualRow) => renderVirtualRow(row)}
         </Virtualizer>
+        {autoLoadCapped && props.hasMore && !props.loadingMore && (
+          <button className="settings-action" disabled={props.loadingMore} onClick={props.onLoadMore}>
+            {props.loadingMore ? t("불러오는 중…") : t("더 보기")}
+          </button>
+        )}
         <div className="gen-grid-tail" />
         {props.loadingMore && <div className="grid-sentinel">더 불러오는 중…</div>}
         {marquee && (

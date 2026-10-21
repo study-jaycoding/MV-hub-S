@@ -40,6 +40,7 @@ type Props = {
   progress?: boolean;
   grid?: boolean;
   hideGridRows?: boolean;
+  resetKey?: string;
 };
 const MAIN: GenQuery = { tab: "my", search: "cat" };
 const LOCATED: GenQuery = { tab: "my", project_id: "project-b", folder_path: "e001/c0010" };
@@ -61,7 +62,7 @@ let ownerNow: LibraryOwner | null = null; // App 이 커밋마다 적는 자료 
 let promptCreated: ReturnType<typeof usePromptCreatedActions>["handlePromptCreated"];
 const noop = () => {};
 const readOwner = () => ownerNow;
-function Harness({ query, authReady = true, projectWorkspaceId, composeListEnabled, auto = true, trash = false, poll = false, progress = false, grid = false, hideGridRows = false }: Props) {
+function Harness({ query, authReady = true, projectWorkspaceId, composeListEnabled, auto = true, trash = false, poll = false, progress = false, grid = false, hideGridRows = false, resetKey }: Props) {
   const filters: Filters = { tab: query.tab, ...(trash ? { deleted_only: true } : {}) };
   data = useGenerationLibraryData({ authReady, filters, genQuery: query, flash, projectWorkspaceId, composeListEnabled, owner: readOwner });
   const key = JSON.stringify(query);
@@ -79,7 +80,7 @@ function Harness({ query, authReady = true, projectWorkspaceId, composeListEnabl
     onSelectedChange={noop} onToggleSelect={noop} onSetSource={noop} onSetTags={noop}
     onOpenComments={noop} onRegenerate={noop} onPublish={noop} onUnpublish={noop}
     onFinalize={noop} onUnfinalize={noop} onImport={noop} onRestore={noop} dimDeleted={false}
-    onInfo={noop} onPreview={noop} hasMore={data.hasMore} loadingMore={data.loadingMore} onLoadMore={data.loadMore}
+    onInfo={noop} onPreview={noop} hasMore={data.hasMore} loadingMore={data.loadingMore} onLoadMore={data.loadMore} resetKey={resetKey ?? key}
   /> : null;
 }
 const show = (props: Props) => act(() => root.render(<Harness {...props} />));
@@ -291,6 +292,7 @@ describe("[F9-9] grid resumes discarded pages without an error retry loop", () =
   };
   beforeEach(() => {
     frames = new Map(); frameId = 0; scrollHeight = 4000; scrollTop = 0;
+    HTMLElement.prototype.scrollTo = vi.fn();
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { frames.set(++frameId, callback); return frameId; });
     vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
     vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
@@ -300,6 +302,127 @@ describe("[F9-9] grid resumes discarded pages without an error retry loop", () =
     vi.spyOn(HTMLElement.prototype, "scrollTop", "get").mockImplementation(() => scrollTop);
   });
   afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  it.each([false, true])("[F9-11 P3-1] a smaller query gets a fresh automatic budget without remounting: trash=%s", async (trash) => {
+    const list = vi.mocked(trash ? api.listTrash : api.listGenerations);
+    let page = 0;
+    const hiddenPage = () => Array.from({ length: 200 }, (_, i) => gen(`hidden-${page}-${i}`));
+    list.mockResolvedValueOnce(firstPage).mockImplementation(async () => { page++; return hiddenPage(); });
+    scrollHeight = 400;
+    await mount({ query: MAIN, trash, grid: true, hideGridRows: true });
+    const grid = host.querySelector(".gen-grid");
+    for (let i = 0; i < 14; i++) await frame();
+    expect(list).toHaveBeenCalledTimes(11);
+
+    list.mockResolvedValueOnce([gen("query-b"), ...hiddenPage().slice(1)]);
+    show({ query: { ...MAIN, search: "dog" }, trash, grid: true, hideGridRows: true });
+    await settle();
+    expect(host.querySelector(".gen-grid")).toBe(grid);
+    expect(data.gens.filter(g => !g.id.startsWith("hidden-"))).toHaveLength(1);
+    const before = list.mock.calls.length;
+    await frame();
+    expect(list).toHaveBeenCalledTimes(before + 1);
+    expect(host.querySelector(".gen-grid .settings-action")).toBeNull();
+  });
+
+  it.each(["hidden", "error"] as const)("[F9-11 P3-1] resetKey waits for the next list before using the fresh %s budget", async (limit) => {
+    const list = vi.mocked(api.listGenerations);
+    let page = 0;
+    list.mockResolvedValueOnce(firstPage).mockImplementation(async () => {
+      if (limit === "error") throw new Error("offline");
+      return Array.from({ length: 200 }, (_, i) => gen(`hidden-${page}-${i}`));
+    });
+    scrollHeight = 400;
+    await mount({ query: MAIN, grid: true, hideGridRows: true });
+    for (let i = 0; i < 14; i++) { page++; await frame(); }
+    expect(list).toHaveBeenCalledTimes(limit === "hidden" ? 11 : 3);
+    const unchanged = data.gens;
+    show({ query: MAIN, resetKey: "another-tab", grid: true, hideGridRows: true });
+    await settle();
+    expect(data.gens).toBe(unchanged);
+    const before = list.mock.calls.length;
+    for (let i = 0; i < 3; i++) await frame();
+    expect(list).toHaveBeenCalledTimes(before);
+
+    const next = hold<Generation[]>(list);
+    start(() => data.reload(true, true, "check"));
+    await frame();
+    expect(list).toHaveBeenCalledTimes(before + 1); // silent 첫 쪽 대기 중에도 추가 요청하지 않는다.
+    await act(async () => next.resolve([gen("new-first"), ...firstPage.slice(1)]));
+    await settle();
+    await frame();
+    expect(list).toHaveBeenCalledTimes(before + 2);
+  });
+
+  it("[F9-11 P3-1] an unchanged result keeps the button and a manual request resumes the fresh budget", async () => {
+    const list = vi.mocked(api.listGenerations);
+    list.mockResolvedValueOnce(firstPage).mockRejectedValue(new Error("offline"));
+    scrollHeight = 400;
+    await mount({ query: MAIN, grid: true });
+    for (let i = 0; i < 5; i++) await frame();
+    expect(list).toHaveBeenCalledTimes(3);
+    const button = () => host.querySelector<HTMLButtonElement>(".gen-grid .settings-action");
+    expect(button()?.textContent).toBe("더 보기");
+    const unchanged = data.gens;
+    show({ query: MAIN, resetKey: "another-tab", grid: true });
+    await settle();
+    const next = hold<Generation[]>(list);
+    start(() => data.reload(true, true, "check"));
+    await act(async () => next.resolve(firstPage));
+    await settle();
+    expect(data.gens).toBe(unchanged);
+    const before = list.mock.calls.length;
+    for (let i = 0; i < 3; i++) await frame();
+    expect(list).toHaveBeenCalledTimes(before);
+    expect(button()?.textContent).toBe("더 보기");
+
+    const manual = hold<Generation[]>(list);
+    act(() => button()!.click());
+    expect(list).toHaveBeenCalledTimes(before + 1);
+    expect(button()).toBeNull();
+    await act(async () => manual.reject(new Error("offline")));
+    await settle();
+    expect(data.gens).toBe(unchanged);
+    await frame();
+    expect(list).toHaveBeenCalledTimes(before + 2); // 목록 참조가 같아도 loadingMore 변화로 자동 재개한다.
+    for (let i = 0; i < 4; i++) await frame();
+    expect(list).toHaveBeenCalledTimes(before + 3); // 새 예산도 같은 목록에서는 두 번까지만.
+    expect(button()?.textContent).toBe("더 보기");
+  });
+
+  it.each([[400, "hidden"], [2400, "hidden"], [400, "error"], [2400, "error"]] as const)(
+    "[F9-11 P3-2] a manual button resumes the capped grid: height=%s limit=%s", async (height, limit) => {
+      const list = vi.mocked(api.listGenerations);
+      let page = 0;
+      list.mockResolvedValueOnce(firstPage).mockImplementation(async () => {
+        if (limit === "error") throw new Error("offline");
+        const prefix = `hidden-${++page}`;
+        return Array.from({ length: 200 }, (_, i) => gen(`${prefix}-${i}`));
+      });
+      scrollHeight = height; scrollTop = Math.max(0, height - 600);
+      await mount({ query: MAIN, grid: true, hideGridRows: true });
+      const button = () => host.querySelector<HTMLButtonElement>(".gen-grid .settings-action");
+      expect(button()).toBeNull();
+      await frame();
+      expect(button()).toBeNull(); // 상한 전에 단추를 추가하지 않는다.
+      for (let i = 0; i < 13; i++) await frame();
+      expect(list).toHaveBeenCalledTimes(limit === "hidden" ? 11 : 3);
+      expect(button()?.textContent).toBe("더 보기");
+      const before = list.mock.calls.length;
+      const later = hold<Generation[]>(list);
+      act(() => button()!.click());
+      expect(list).toHaveBeenCalledTimes(before + 1);
+      expect(button()).toBeNull(); // loadingMore 중에는 숨긴다.
+      await frame();
+      expect(list).toHaveBeenCalledTimes(before + 1);
+      await act(async () => later.resolve([]));
+      await settle();
+      await frame();
+      expect(data.hasMore).toBe(false);
+      expect(button()).toBeNull();
+      expect(list).toHaveBeenCalledTimes(before + 1);
+    },
+  );
 
   it.each([false, true])("[F9-10] stops after ten hidden pages but allows manual scroll: trash=%s", async (trash) => {
     const list = vi.mocked(trash ? api.listTrash : api.listGenerations);
