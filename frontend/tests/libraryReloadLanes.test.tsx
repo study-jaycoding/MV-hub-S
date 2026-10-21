@@ -18,7 +18,7 @@ import { APP_EVENTS, dispatchAppEvent } from "../src/lib/appEvents";
 import { useGenerationProgress } from "../src/lib/useGenerationProgress";
 import { usePromptCreatedActions } from "../src/lib/usePromptCreatedActions";
 import { onLibraryChanged } from "../src/lib/libraryBroadcast";
-import { generationChangeScope } from "../src/features/library/api";
+import { clearGenerationReadModels, generationChangeScope, getGenerationReadModel } from "../src/features/library/api";
 
 vi.mock("../src/api", () => ({ GEN_PAGE: 200, connectProgress: vi.fn(() => () => {}), api: {
   listGenerations: vi.fn(), projects: vi.fn(), facets: vi.fn(), generationStats: vi.fn(), listTrash: vi.fn(), locateGenerations: vi.fn(),
@@ -161,6 +161,64 @@ it("[R5-2] a single execution retries once and its one follow-up check cannot ch
   expect(ids()).not.toContain("keeps-changing");
 });
 
+const evictRow = (id: string) => {
+  const records = getGenerationReadModel(undefined, "local");
+  const newer = records.beginRead();
+  records.store({ [id]: gen(id) }, newer);
+  records.store(Object.fromEntries(Array.from({ length: 3000 }, (_, i) => [`cached-${i}`, gen(`cached-${i}`)])), newer);
+  expect(records.read(id)).toBeUndefined();
+};
+
+it.each([false, true])("[F9-7 R1] retries an evicted row without advancing the page: more=%s", async (more) => {
+  const initial = Array.from({ length: 200 }, (_, i) => gen(`initial-${i}`));
+  vi.mocked(api.listGenerations).mockResolvedValueOnce(initial);
+  await mount();
+  const before = calls().list;
+  const old = hold<Generation[]>(api.listGenerations);
+  const done = start(() => more ? data.loadMore() : data.reload());
+  evictRow("evicted");
+  vi.mocked(api.listGenerations).mockResolvedValue([gen("evicted")]);
+  await act(async () => old.resolve([gen("evicted")]));
+  await settle();
+  expect(done.done).toBe(true);
+  expect(ids()).toEqual(more ? [...initial.map(g => g.id), "evicted"] : ["evicted"]);
+  expect(data.hasMore).toBe(false);
+  expect(data.loadError).toBeNull();
+  expect(calls().list).toBe(before + 2);
+  const requests = vi.mocked(api.listGenerations).mock.calls.slice(before);
+  expect(requests.map(call => call[1])).toEqual(more
+    ? [{ ts: 10, id: "initial-199" }, { ts: 10, id: "initial-199" }] : [null, null]);
+});
+
+it.each([false, true])("[F9-7 R1] repeated eviction cannot chain follow-up checks: more=%s", async (more) => {
+  await mount();
+  const before = calls().list;
+  vi.mocked(api.listGenerations).mockImplementation(async () => {
+    evictRow("keeps-evicting");
+    return [gen("keeps-evicting")];
+  });
+  const done = start(() => more ? data.loadMore() : data.reload());
+  await settle();
+  expect(done.done).toBe(true);
+  expect(calls().list).toBe(before + 4); // two attempts + one check with two attempts
+  expect(ids()).toEqual(mainRows.map(g => g.id));
+});
+
+it.each([[false, false], [false, true], [true, false], [true, true]])("[F9-7 IDs] accepts pages without retries: more=%s invalid=%s", async (more, invalid) => {
+  await mount();
+  const before = calls().list;
+  const missing = { ...gen("missing") } as Partial<Generation>;
+  delete missing.id;
+  vi.mocked(api.listGenerations).mockResolvedValue([gen("valid"), ...(invalid ? [missing as Generation, gen("")] : [])]);
+  const done = start(() => more ? data.loadMore() : data.reload());
+  await settle();
+  expect(done.done).toBe(true);
+  expect(ids()).toEqual(more ? [...mainRows.map(g => g.id), "valid"] : ["valid"]);
+  expect(data.loadError).toBeNull();
+  expect(data.hasMore).toBe(false);
+  expect(calls().list).toBe(before + 1);
+});
+
 it("[R5-2] a follow-up check applies fresh rows without waiting for stalled metadata", async () => {
   await mount();
   const before = calls();
@@ -248,6 +306,7 @@ it("peer tags requery an idle Workspace filter including rows outside the old pa
 });
 
 beforeEach(() => {
+  clearGenerationReadModels();
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   for (const call of Object.values(api)) vi.mocked(call as () => unknown).mockReset(); // 안 쓰고 남은 '한 번' 응답까지 지운다
   flash.mockReset();
