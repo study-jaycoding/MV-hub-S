@@ -7,6 +7,13 @@ import { type Lang, loadLang, saveLang } from "./theme";
 
 // 한국어 → 영어. 없으면 한국어를 그대로 보여준다(점진 적용 안전).
 const EN: Record<string, string> = {
+  "모델 노드 없음 → 하단 모델({model}) {count}개": "No model node → prompt bar model ({model}) for {count} cards",
+  "모델 미확정 {count}개": "{count} cards without a model",
+  "쓸 수 없는 모델 제외 {count}개": "{count} cards with unavailable models excluded",
+  "요청 실패 {count}개": "{count} requests failed",
+  "제출 실패 {count}장": "{count} submissions failed",
+  "화면 반영 실패 — 재시작 시 자동 복구": "View update failed — recovery runs after restart",
+  "{cards}개 카드에서 생성 시작({images}장)": "Generation started for {cards} cards ({images} images)",
   "DB 백업 연결 대기": "Waiting for database backup connection",
   "DB 백업 연결을 확인할 수 없습니다. 편집 메뉴에서 파일로 보관하세요.": "Database backup is not connected. Save a file archive from the edit menu.",
   "이 문서의 저장된 원문 없음": "No saved source for this edit",

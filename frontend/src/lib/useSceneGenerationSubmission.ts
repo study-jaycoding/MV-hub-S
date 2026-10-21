@@ -244,16 +244,16 @@ export function useSceneGenerationSubmission({
     if (fallbackJobs.length) {
       const label = fallbackJobs[0].modelName || fallbackJobs[0].model;
       const cardCount = new Set(fallbackJobs.map((job) => job.cardId)).size;
-      notes.push(`모델 노드 없음 → 하단 모델(${label}) ${cardCount}개`);
+      notes.push(t("모델 노드 없음 → 하단 모델({model}) {count}개").replace("{model}", label).replace("{count}", String(cardCount)));
     }
-    if (skipped) notes.push(`모델 미확정 ${skipped}개`);
-    if (blockedCards.size) notes.push(`쓸 수 없는 모델 제외 ${blockedCards.size}개`);
-    if (buildFail) notes.push(`요청 실패 ${buildFail}개`);
-    if (createFail) notes.push(`제출 실패 ${createFail}장`);
+    if (skipped) notes.push(t("모델 미확정 {count}개").replace("{count}", String(skipped)));
+    if (blockedCards.size) notes.push(t("쓸 수 없는 모델 제외 {count}개").replace("{count}", String(blockedCards.size)));
+    if (buildFail) notes.push(t("요청 실패 {count}개").replace("{count}", String(buildFail)));
+    if (createFail) notes.push(t("제출 실패 {count}장").replace("{count}", String(createFail)));
     if (submitUnknown) notes.push(t("{count}장 요청의 접수 여부를 확인하지 못했습니다. 다시 제출하지 말고 생성 목록에서 기존 요청을 확인하세요.").replace("{count}", String(submitUnknown)));
-    if (applyFail) notes.push("화면 반영 실패 — 재시작 시 자동 복구");
+    if (applyFail) notes.push(t("화면 반영 실패 — 재시작 시 자동 복구"));
     flash(
-      `${byCard.size}개 카드에서 생성 시작(${freshGens.length}장)` +
+      t("{cards}개 카드에서 생성 시작({images}장)").replace("{cards}", String(byCard.size)).replace("{images}", String(freshGens.length)) +
         (notes.length ? ` · ${notes.join(" · ")}` : ""),
     );
     void reload();
