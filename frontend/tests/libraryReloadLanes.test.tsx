@@ -219,6 +219,43 @@ it.each([[false, false], [false, true], [true, false], [true, true]])("[F9-7 IDs
   expect(calls().list).toBe(before + 1);
 });
 
+it.each([false, true])("[F9-8 P3-1] discards loadMore overtaken by a first page and resumes from that page: trash=%s", async (trash) => {
+  const list = vi.mocked(trash ? api.listTrash : api.listGenerations);
+  const firstPage = Array.from({ length: 200 }, (_, i) => gen(`first-${i}`));
+  const secondPage = Array.from({ length: 200 }, (_, i) => gen(`second-${i}`));
+  list.mockResolvedValueOnce(firstPage);
+  await mount({ query: MAIN, trash });
+  list.mockResolvedValueOnce(secondPage);
+  await act(async () => { await data.loadMore(); });
+  expect(ids()).toEqual([...firstPage, ...secondPage].map(g => g.id));
+
+  const first = hold<Generation[]>(list);
+  const reload = start(() => data.reload(true, true, "check"));
+  const later = hold<Generation[]>(list);
+  const more = start(() => data.loadMore());
+  expect(list.mock.calls.at(-1)?.[1]).toEqual(trash ? 400 : { ts: 10, id: "second-199" });
+  expect(data.loadingMore).toBe(true);
+
+  await act(async () => first.resolve(firstPage));
+  await settle();
+  expect(reload.done).toBe(true);
+  expect(ids()).toEqual(firstPage.map(g => g.id));
+  expect(data.hasMore).toBe(true);
+  await act(async () => later.resolve([gen("stale-third-page")]));
+  await settle();
+  expect(more.done).toBe(true);
+  expect(data.loadingMore).toBe(false);
+  expect(data.hasMore).toBe(true);
+  expect(ids()).toEqual(firstPage.map(g => g.id));
+
+  list.mockResolvedValueOnce([gen("fresh-next-page")]);
+  await act(async () => { await data.loadMore(); });
+  expect(list.mock.calls.at(-1)?.[1]).toEqual(trash ? 200 : { ts: 10, id: "first-199" });
+  expect(ids()).toEqual([...firstPage.map(g => g.id), "fresh-next-page"]);
+  expect(data.hasMore).toBe(false);
+  expect(data.loadingMore).toBe(false);
+});
+
 it("[R5-2] a follow-up check applies fresh rows without waiting for stalled metadata", async () => {
   await mount();
   const before = calls();

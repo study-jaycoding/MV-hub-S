@@ -883,6 +883,8 @@ export function useGenerationLibraryData({
         }
         read = records.beginRead();
       }
+      // 같은 seq 안에서도 첫 쪽이 먼저 적용되면 옛 페이지 뒤를 이어 붙이지 않는다.
+      if (pageCursorRef.current !== cursor || trashOffsetRef.current !== offset) return;
       if (trashMode) trashOffsetRef.current += batch.length;
       const last = batch[batch.length - 1];
       if (last) pageCursorRef.current = { ts: last.sort_ts ?? 0, id: last.id };
