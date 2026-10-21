@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -10,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 import zipfile
@@ -31,7 +33,28 @@ def run_checked(command, *, cwd, log, env=None):
         raise RuntimeError(f'prepare_step_exit_{code}')
 
 
-def qualify_stage(root, stage, target, source_raw, verification_python, *, probe_run=subprocess.run):
+def _run_cli_version(command, *, cwd, env, timeout, creationflags):
+    # A descendant can keep a pipe open after Node exits; file output never waits for EOF.
+    with tempfile.TemporaryFile(dir=cwd) as output:
+        process = subprocess.Popen(command, cwd=cwd, env=env, stdout=output,
+                                   stderr=subprocess.DEVNULL, creationflags=creationflags)
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            if os.name == 'nt':
+                with contextlib.suppress(OSError, subprocess.SubprocessError):
+                    subprocess.run(['taskkill', '/F', '/T', '/PID', str(process.pid)],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   timeout=5, creationflags=creationflags)
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                process.kill()
+                process.wait(timeout=5)
+            raise ValueError('isolated_stage_cli_version_failed') from exc
+        output.seek(0)
+        return subprocess.CompletedProcess(command, process.returncode, output.read(), b'')
+
+
+def qualify_stage(root, stage, target, source_raw, verification_python, *, probe_run=None):
     """Trusted probe supervisor runs the stage interpreter; no supplied success flags."""
     descriptor = verify_stage(stage, root / 'logs/server-stages', target['manifest_sha256'])
     cli = inspect_server_cli(stage, root, os.environ)
@@ -58,15 +81,20 @@ def qualify_stage(root, stage, target, source_raw, verification_python, *, probe
     env = build_smoke_env(os.environ, env_root, frontend_dist=stage / 'frontend/dist',
                           python_exe=verification_python, port=19871)
     # Metadata alone cannot prove the bundled native CLI can execute; version is offline.
-    cli_result = probe_run([*cli['argv'], 'version'], cwd=env_root, env=env,
-                           capture_output=True, timeout=60,
-                           creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-    version_line = (cli_result.stdout.decode('utf-8', errors='replace')
-                    if isinstance(cli_result.stdout, bytes) else cli_result.stdout).strip()
-    expected = 'higgsfield ' + cli['version']
-    if cli_result.returncode != 0 or (version_line != expected and not version_line.startswith(expected + ' ')):
+    cli_result = (probe_run or _run_cli_version)(
+        [*cli['argv'], 'version'], cwd=env_root, env=env, timeout=60,
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    version_text = (cli_result.stdout.decode('utf-8', errors='replace')
+                    if isinstance(cli_result.stdout, bytes) else cli_result.stdout)
+    reported_version = None
+    for line in version_text.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].casefold() == 'higgsfield':
+            reported_version = parts[1]
+            break
+    if cli_result.returncode != 0 or reported_version != cli['version']:
         raise ValueError('isolated_stage_cli_version_failed')
-    result = probe_run([str(verification_python), '-E', '-s', '-B', '-X', 'utf8', '-u', str(probe_tool),
+    result = (probe_run or subprocess.run)([str(verification_python), '-E', '-s', '-B', '-X', 'utf8', '-u', str(probe_tool),
                         'probe', '--root', str(stage), '--work-root', str(work),
                         '--descriptor', str(input_path), '--runtime-python', target['python'], '--timeout', '90'],
                        cwd=root, env=env, capture_output=True,
@@ -111,7 +139,7 @@ def qualify_stage(root, stage, target, source_raw, verification_python, *, probe
 
 
 def prepare(root: Path, *, source_receipt: Path, verification_python: Path,
-            run=run_checked, probe_run=subprocess.run):
+            run=run_checked, probe_run=None):
     local_child(root, root)
     root = root.resolve()
     source_receipt = local_child(source_receipt, source_receipt.parent)

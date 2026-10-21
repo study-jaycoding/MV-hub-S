@@ -570,7 +570,8 @@ def test_failed_stage_cli_install_preserves_running_source_and_never_requests_ac
     assert not (tmp_path/'logs/server-current.json').exists()
 
 
-@pytest.mark.parametrize('failure', ['wrong_version', 'version_prefix', 'empty', 'exit', 'broken_node', 'timeout'])
+@pytest.mark.parametrize('failure', ['wrong_version', 'version_prefix', 'first_version',
+                                     'banner_version_prefix', 'empty', 'exit', 'broken_node', 'timeout'])
 def test_failed_cli_execution_blocks_prepare_without_touching_running_server(tmp_path, monkeypatch, failure):
     receipt,verifier,run,calls=prepare_fixture(tmp_path,monkeypatch)
     sentinel=tmp_path/'backend/serve.py';sentinel.write_bytes(b'old running server')
@@ -582,6 +583,8 @@ def test_failed_cli_execution_blocks_prepare_without_touching_running_server(tmp
         if failure=='broken_node': raise OSError('fixture invalid executable')
         if failure=='timeout': raise subprocess.TimeoutExpired(command,60)
         output={'wrong_version':b'higgsfield 1.2.4', 'version_prefix':b'higgsfield 1.2.30',
+                'first_version':b'notice\nhiggsfield 1.2.4\nhiggsfield 1.2.3\n',
+                'banner_version_prefix':b'notice\nhiggsfield 1.2.30\n',
                 'empty':b'', 'exit':b'higgsfield 1.2.3'}[failure]
         return subprocess.CompletedProcess(command,1 if failure=='exit' else 0,output,b'')
     with pytest.raises((ValueError,OSError,subprocess.TimeoutExpired)):
@@ -594,19 +597,108 @@ def test_failed_cli_execution_blocks_prepare_without_touching_running_server(tmp
 
 
 @pytest.mark.parametrize('suffix', ['', ' (windows-amd64)'])
-def test_cli_version_probe_runs_once_before_runtime_qualification(tmp_path, monkeypatch, suffix):
+@pytest.mark.parametrize('prefix', ['', 'startup notice\r\n', 'startup notice\r\n\r\n  '])
+def test_cli_version_probe_runs_once_before_runtime_qualification(tmp_path, monkeypatch, suffix, prefix):
     receipt,verifier,run,calls=prepare_fixture(tmp_path,monkeypatch)
     probes=[]
     def probe(command,**kwargs):
         probes.append(command)
         result=fake_probe(command,**kwargs)
-        if command[-1]=='version': result.stdout=('higgsfield 1.2.3'+suffix+'\r\n').encode()
+        if command[-1]=='version': result.stdout=(prefix+'higgsfield 1.2.3'+suffix+'\r\n').encode()
         return result
     builder.prepare(tmp_path,source_receipt=receipt,verification_python=verifier,run=run,probe_run=probe)
     assert len(probes)==2 and probes[0][-1]=='version' and 'probe' in probes[1]
     target=json.loads((tmp_path/'logs/server-update-request.json').read_bytes())['target']
     assert probes[0]==[str(Path(target['path'])/'runtime/higgsfield/node.exe'),
                        str(Path(target['path'])/'runtime/higgsfield/node_modules/@higgsfield/cli/bin/higgsfield.js'),'version']
+
+
+def test_default_cli_probe_uses_file_output_and_bounded_tree_cleanup(tmp_path, monkeypatch):
+    stage,target,receipt,raw,verifier=seed_stage(tmp_path)
+    process=Mock(pid=123456)
+    process.wait.side_effect=[subprocess.TimeoutExpired('fixture',60), 0]
+    def launch(command, **kwargs):
+        assert command[-1]=='version'
+        assert kwargs['stdout'] != subprocess.PIPE
+        assert Path(kwargs['cwd']).is_relative_to(tmp_path/'logs')
+        return process
+    monkeypatch.setattr(builder.subprocess,'Popen',launch)
+    # Even an unavailable or stuck taskkill must not restore an unbounded wait.
+    kill=Mock(side_effect=subprocess.TimeoutExpired('taskkill',5))
+    monkeypatch.setattr(builder.subprocess,'run',kill)
+    with pytest.raises(ValueError,match='^isolated_stage_cli_version_failed$'):
+        builder.qualify_stage(tmp_path,stage,target,raw,verifier)
+    assert process.wait.call_args_list[0].kwargs=={'timeout':60}
+    assert process.wait.call_args_list[1].kwargs=={'timeout':5}
+    process.kill.assert_called_once()
+    process.communicate.assert_not_called()
+    if os.name=='nt':
+        assert kill.call_args.args[0]==['taskkill','/F','/T','/PID','123456']
+        assert kill.call_args.kwargs['timeout']==5
+    assert not (tmp_path/'logs/server-update-request.json').exists()
+
+
+@pytest.mark.skipif(os.name!='nt', reason='Windows process-tree timeout regression')
+def test_cli_descendant_cannot_hang_prepare_or_touch_running_server(tmp_path):
+    import psutil
+    # A separate driver bounds the old subprocess.run/communicate deadlock too.
+    driver_code=r'''
+import sys
+from pathlib import Path
+import pytest
+import test_server_qualification as t
+root=Path(sys.argv[1])
+with pytest.MonkeyPatch.context() as mp:
+    receipt,verifier,run,calls=t.prepare_fixture(root,mp)
+    git=t.builder.subprocess.run
+    mp.setattr(t.builder.subprocess,'run',lambda command,**kw:
+               t.REAL_RUN(command,**kw) if command[0]=='taskkill' else git(command,**kw))
+    sentinel=root/'backend/serve.py'
+    sentinel.write_bytes(b'old running server')
+    pids=root/'cli-pids.txt'
+    child_code='import time; time.sleep(60)'
+    cli_code=("import os,subprocess,sys,time; from pathlib import Path; "
+              f"child=subprocess.Popen([sys.executable,'-c',{child_code!r}]); "
+              f"Path({str(pids)!r}).write_text(str(os.getpid())+' '+str(child.pid)); "
+              "print('higgsfield 1.2.3',flush=True); time.sleep(60)")
+    def probe(command,**kwargs):
+        assert command[-1]=='version', 'runtime probe must not start'
+        t.fake_probe(command,**kwargs)
+        kwargs['timeout']=1
+        runner=getattr(t.builder,'_run_cli_version',t.REAL_RUN)
+        return runner([sys.executable,'-c',cli_code],**kwargs)
+    with pytest.raises(ValueError,match='^isolated_stage_cli_version_failed$'):
+        t.builder.prepare(root,source_receipt=receipt,verification_python=verifier,
+                          run=run,probe_run=probe)
+    assert sentinel.read_bytes()==b'old running server'
+    assert not (root/'logs/server-current.json').exists()
+    assert not (root/'logs/server-update-request.json').exists()
+    assert t.json.loads((root/'logs/server-prepare.json').read_bytes())['status']=='failed'
+'''
+    with (tmp_path/'driver.log').open('w+b') as output:
+        driver=subprocess.Popen([sys.executable,'-B','-c',driver_code,str(tmp_path)],
+                                cwd=Path(__file__).parent, stdout=output, stderr=output,
+                                creationflags=subprocess.CREATE_NO_WINDOW)
+        try:
+            try:
+                driver.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                pytest.fail('CLI descendant held output open beyond the preparation deadline')
+            output.seek(0)
+            assert driver.returncode==0, output.read().decode('utf-8',errors='replace')
+            pids=[int(pid) for pid in (tmp_path/'cli-pids.txt').read_text().split()]
+            assert len(pids)==2
+            assert not [pid for pid in pids if psutil.pid_exists(pid)]
+        finally:
+            if driver.poll() is None:
+                REAL_RUN(['taskkill','/F','/T','/PID',str(driver.pid)],
+                         stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=5)
+                driver.wait(timeout=5)
+            pid_file=tmp_path/'cli-pids.txt'
+            for pid in (pid_file.read_text().split() if pid_file.exists() else []):
+                if psutil.pid_exists(int(pid)):
+                    REAL_RUN(['taskkill','/F','/T','/PID',pid],
+                             stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=5)
 
 
 @pytest.mark.parametrize('pin', ['latest', '1.2.2 & echo unsafe'])
