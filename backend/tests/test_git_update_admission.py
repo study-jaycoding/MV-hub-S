@@ -26,6 +26,31 @@ def test_server_entry_uses_selected_commit_declaration():
     assert "'--source-receipt', $env:MVHUB_SERVER_SOURCE_RECEIPT" in script
     assert "'--verification-python', $env:MVHUB_SERVER_VERIFICATION_PYTHON" in script
 
+
+@pytest.mark.parametrize('administrator', [False, True])
+def test_administrator_guard_precedes_all_update_work(tmp_path, administrator):
+    # Evaluate only the admission guard, never the updater body.
+    script = tmp_path / 'admin-guard.ps1'
+    script.write_text(f"""
+$ErrorActionPreference='Stop'
+$Tokens=$null; $Errors=$null
+$Tree=[System.Management.Automation.Language.Parser]::ParseFile('{SOURCE / 'tools/run_update_git.ps1'}',[ref]$Tokens,[ref]$Errors)
+if($Errors){{throw 'parse failure'}}
+$Try=$Tree.EndBlock.Statements | Where-Object {{ $_ -is [System.Management.Automation.Language.TryStatementAst] }} | Select-Object -First 1
+$Guard=$Try.Body.Statements[0]
+if($Guard -isnot [System.Management.Automation.Language.IfStatementAst] -or $Guard.Extent.Text -notmatch 'Test-UpdateAdministrator'){{throw 'administrator guard must be first'}}
+function Test-UpdateAdministrator {{ return ${str(administrator).lower()} }}
+Invoke-Expression $Guard.Extent.Text
+Write-Output 'admitted'
+""", encoding='utf-8-sig')
+    result = subprocess.run([POWERSHELL, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', str(script)],
+                            capture_output=True, text=True, timeout=20)
+    if administrator:
+        assert result.returncode == 0 and 'admitted' in result.stdout, result.stderr
+    else:
+        assert result.returncode != 0 and 'administrator console' in result.stderr, result.stderr
+        assert 'admitted' not in result.stdout
+
 MOCK_QUERIES = r'''
 function Get-ScheduledTask {
     $fixture = Get-Content -LiteralPath $env:MVHUB_QUERY_FIXTURE -Raw | ConvertFrom-Json
@@ -174,6 +199,8 @@ class UpdaterFixture:
         shutil.copy2(SOURCE / "tools/update_git_worker.bat", self.tools / "update_git_worker.bat")
         wrapper = (SOURCE / "tools/run_update_git.ps1").read_text(encoding="utf-8-sig")
         wrapper = wrapper.replace('$ErrorActionPreference = "Stop"', '$ErrorActionPreference = "Stop"\n' + MOCK_QUERIES, 1)
+        wrapper = wrapper.replace('try {\n    if (-not (Test-UpdateAdministrator))',
+                                  'function Test-UpdateAdministrator { return $true }\ntry {\n    if (-not (Test-UpdateAdministrator))', 1)
         (self.tools / "run_update_git.ps1").write_text(wrapper, encoding="utf-8-sig")
         self.processes = []
 

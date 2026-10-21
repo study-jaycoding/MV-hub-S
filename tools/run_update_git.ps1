@@ -10,6 +10,11 @@ $GitLock = $null
 $UpdateLock = $null
 $SupervisorLock = $null
 
+function Test-UpdateAdministrator {
+    $Principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    return $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
 function Assert-LocalUpdatePath([string]$Path) {
     if (-not [IO.Path]::IsPathRooted($Path) -or $Path.StartsWith("\\") -or $Path -match '["%!\r\n]') {
         throw "The updater requires an absolute local path without cmd expansion characters."
@@ -209,6 +214,9 @@ function Invoke-IsolatedWorker {
 }
 
 try {
+    if (-not (Test-UpdateAdministrator)) {
+        throw "Administrator privileges required. Run this updater in an administrator console."
+    }
     $RootPath = [System.IO.Path]::GetFullPath($Root).TrimEnd("\", "/")
     Assert-LocalUpdatePath $RootPath
     $Worker = Join-Path $RootPath "tools\update_git_worker.bat"

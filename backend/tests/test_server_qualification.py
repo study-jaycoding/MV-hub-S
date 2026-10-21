@@ -623,7 +623,8 @@ def test_missing_or_invalid_commit_declaration_creates_no_request(tmp_path, monk
         path.write_bytes(json_bytes(declared))
     git(selected, 'add', '.')
     git(selected, 'commit', '-m', 'Fixture invalid declaration')
-    with pytest.raises((ValueError, subprocess.CalledProcessError)):
+    expected = '^selected_commit_declaration_missing$' if damage == 'missing' else None
+    with pytest.raises(ValueError, match=expected):
         builder.prepare(root, source_receipt=receipt, verification_python=verifier, run=run)
     assert not (root/'logs/server-update-request.json').exists()
     assert not any('archive' in c for c in calls)

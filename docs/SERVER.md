@@ -29,7 +29,7 @@ status: active
 ## 새 supervisor를 사용하는 서버의 정기 업데이트
 
 이 절은 이미 `tools/server_supervisor.py`와 staged coordinator를 사용하는 서버용이다.
-1358 서버의 최초 전환 절차는 아직 검증되지 않았으며 이 절로 대신하지 않는다.
+1358 서버의 최초 전환은 [아래 별도 절](#1358--dev2-최초-전환)을 따른다.
 실제 배포는 아래 생성 fence와 [배포 Gate](RISK_REDUCTION_PLAN_2026-08-15.md)의 승인을 함께 따른다.
 
 판별 선언은 [release/compatibility.json](../release/compatibility.json) 하나를 코드와 함께 커밋한다.
@@ -87,6 +87,52 @@ CRLF를 포함해 checkout과 같은 바이트를 stage에 담고, `release/comp
 준비·격리 runtime 검증 후 supervisor가 전환·ready 확인을 마쳐야 성공이다.
 실패 시 `logs\server-prepare.json`, 해당 run 기록과 `logs\server-install-journal.json`을 확인하고,
 기존 서버 파일이나 DB를 수동 덮어써 복구하지 않는다.
+
+## 1358 → dev2 최초 전환
+
+1358(`c2463e4f`)에서 시작한 `update_git.bat`은 정상 진행 시 pull 전에 복사한 **옛 워커**를 계속 쓴다.
+실패했고 워커 파일도 바뀐 경우에만 새 워커로 한 차례 재시도한다.
+따라서 첫 전환은 위 staged 경로가 아니며, 옛 워커는 `backend/requirements.txt`의 변경 여부와
+누락·미완료 표식으로 의존성 설치를 판단한다. 새 `requirements.lock.txt`만 바뀌었다고 설치된다고
+가정하지 않는다. 새 코드의 관리자 사전 검사도 이미 시작된 옛 워커에 소급 적용되지 않는다.
+
+이 절은 전환 경로 안내이며 배포 승인이나 Gate 통과를 대신하지 않는다. 실행 전 다음을 준비한다.
+
+- **관리자 권한으로 연 콘솔**에서 서버 저장소 루트를 확인한다. 서버 트리와 그 조상 경로는 로컬
+  디스크에 있어야 하며 UNC·junction·그 밖의 reparse point를 통과하면 안 된다.
+- 선택한 배포 커밋, 깨끗한 작업 트리, 필요한 Python·Node와 의존성 설치 조건을 확인한다.
+  최초 전환에도 아래 [생성 fence와 서버 우선 순서](#업데이트롤아웃-순서--생성-fence-후-공유-서버-먼저)를 적용한다.
+- **실행 직전 최신 DB 세트의 수동 사본**을 별도 보관한다. 콘텐츠·휴지통·관리 DB와 계정별 DB가
+  있으면 함께 보존한다. [DB 자동 백업](#db-자동-백업)의 일관 사본 방법을 따르거나 서버·감시 작업을
+  정상 중지해 쓰기가 멈춘 상태에서 복사한다. 실행 중인 `.db` 파일만 복사해 WAL 변경을 빠뜨리지 않는다.
+  기존 자동 백업만 믿거나 최초 스키마 기준선 생성 전에 자동 사본이 생긴다고 가정하지 않는다.
+
+준비 후 서버 루트에서 `update_git.bat`을 실행한다. 성공 메시지만으로 끝내지 않고 다음을 확인한다.
+
+1. `/api/ready`가 HTTP 200이며 로그인·팀 목록 조회가 정상이다.
+2. `logs\server-activation.json`의 `state`가 `normal`이다.
+3. 실제 사용 DB 세트의 `schema_meta`를 읽기 전용으로 확인한다.
+   `SELECT database_kind, schema_version, minimum_reader_protocol, minimum_writer_protocol FROM schema_meta;`
+   결과를 선택한 코드의 지원 범위와 대조한다. 최초 기준선은 버전 1이고 콘텐츠 DB는
+   적용된 component에 따라 버전 2가 될 수 있으므로 모든 DB가 같은 숫자여야 한다고 판단하지 않는다.
+
+실패하면 **화면의 마지막 메시지**와 `logs\update.log`의 실패 단계를 보존한다. ready 대기 실패의
+실제 기동 예외는 `logs\server_console.log` 마지막 부분에서 확인한다. `Cannot inspect`가 나오면
+관리자 권한과 프로세스 조회 가능 여부를 확인한다. 비관리자 콘솔에서 SYSTEM 프로세스의
+CommandLine을 읽지 못하는 경우는 가능한 원인이며 이번 리허설에서 재현·확정된 원인은 아니다.
+
+승인된 복귀가 필요하면 서버의 새 작업을 멈추고 작업 트리가 깨끗한지 확인한 다음,
+서버 루트의 관리자 콘솔에서 `git checkout c2463e4f` 후 `restart_server_task.bat`을 실행한다.
+**DB는 그대로 둔다.** 다시 ready·로그인·팀 목록을 확인하며, 미커밋 변경이나 다른 DB 비호환이
+있으면 강제 checkout·DB 덮어쓰기를 하지 않고 별도 복구 판단을 받는다.
+
+근거는 총괄이 제공한 **1358 서버 DB 사본 격리 리허설 보고**다: dev2 변환 후 compatible·ready 200,
+옛 1358 코드로 ready·로그인·팀 목록 200, 다시 dev2 compatible을 확인했다. 이는 해당 사본과 코드의
+왕복 호환성 근거이며, `serve.py` 직접 기동이었다. supervisor·예약 작업·옛 워커 전체 전환과
+그 이후의 모든 데이터 변경까지 검증한 결과는 아니다.
+
+두 번째 업데이트부터는 새 supervisor와 coordinator를 확인한 뒤 위 **정기 업데이트** 절을 따른다.
+선택 커밋의 rollout·capability 결정과 소스 검증 영수증이 필요하며, 현재 미결정인 선언을 자동 승인하지 않는다.
 
 ## 업데이트(롤아웃) 순서 — ★생성 fence 후 공유 서버 먼저
 

@@ -25,6 +25,8 @@ def _copy_bootstrap(tools: Path):
     # These older tests cover immutable worker lifecycle; admission queries have dedicated fixtures.
     script = script.replace('$ErrorActionPreference = "Stop"', '$ErrorActionPreference = "Stop"\n'
                             'function Get-CimInstance {}\nfunction Get-ScheduledTask {}', 1)
+    script = script.replace('try {\n    if (-not (Test-UpdateAdministrator))',
+                            'function Test-UpdateAdministrator { return $true }\ntry {\n    if (-not (Test-UpdateAdministrator))', 1)
     (tools / "run_update_git.ps1").write_text(script, encoding="utf-8-sig")
 
 
