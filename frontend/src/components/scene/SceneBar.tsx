@@ -7,7 +7,10 @@
 //  5px 임계 전에는 클릭이고, 드래그가 끝나면 그 뒤에 합성되는 click/dblclick 을 한 번 삼킨다 —
 //  안 그러면 순서만 바꾸려다 씬이 열리고 워크스페이스까지 바뀐다(코덱스 P1).
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useModalFocus } from "../../lib/keyGate";
 import type { Scene } from "../../lib/scenes";
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import {
   dropIndexAt,
   normalizeSceneWorkspace,
@@ -65,6 +68,37 @@ function BackupSkippedBadge({ name }: { name: string }) {
   );
 }
 
+// 씬 삭제 확인 — 브라우저 기본 확인창 대신 앱 확인창('MV Hub 종료'와 같은 모양, Jay 2026-10-22 B안). × 는 탭 닫기가 아니라 저장된
+//  카드·연결까지 지우는 삭제라 문구도 삭제로 쓴다. 삭제 단추에 초점 — Enter 가 삭제를 누른다(window.confirm 의 확인 자리). Esc = 취소.
+function SceneDeleteConfirm({ name, onConfirm, onCancel }: { name: string; onConfirm: () => void; onCancel: () => void }) {
+  useEscapeClose(onCancel); // 떠 있는 동안 뒤 화면(캔버스)의 단축키도 쉰다
+  const boxRef = useRef<HTMLDivElement>(null);
+  useModalFocus(boxRef);
+  return createPortal(
+    <div ref={boxRef} className="manage-float host-exit-confirm" role="alertdialog" aria-label="씬 삭제">
+      <header className="admin-head">
+        <span className="admin-title">🗑 씬 삭제</span>
+      </header>
+      <div className="admin-body">
+        <p className="host-exit-text">
+          '{name}' 씬을 삭제할까요?
+          <br />
+          이 씬의 카드·연결이 모두 사라집니다.
+        </p>
+        <div className="host-exit-actions">
+          <button type="button" className="settings-action danger" autoFocus onClick={onConfirm}>
+            삭제
+          </button>
+          <button type="button" className="settings-action ghost" onClick={onCancel}>
+            취소
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 interface DragState {
   sceneId: string;
   pointerId: number;
@@ -96,6 +130,8 @@ export function SceneBar({
   const t = useT();
   const [drag, setDrag] = useState<DragState | null>(null);
   const [menu, setMenu] = useState<SceneMenuTarget | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null); // 삭제 확인창의 씬
+  const deleting = deleteId ? scenes.find((scene) => scene.id === deleteId) : undefined; // 그사이 다른 창이 지웠으면 닫는다
   const tabRefs = useRef(new Map<string, HTMLElement>());
   const suppressClickRef = useRef(false); // 드래그 직후의 합성 클릭 한 번을 삼킨다
   const suppressTimerRef = useRef<number | undefined>(undefined); // 그 억제를 푸는 예약(releaseSuppression) — 새 누름이 거둔다
@@ -291,13 +327,7 @@ ${sceneTabTitle(scene, workspaceContext, label, missing)}`}
               <span className="scene-tab-name">{shortSceneName(scene.name)}</span>
               {backupSkippedIds?.has(scene.id) ? <BackupSkippedBadge name={scene.name} /> : null}
             </button>
-            <button
-              className="scene-del"
-              title="씬 삭제"
-              onClick={() => {
-                if (window.confirm(`'${scene.name}' 씬을 삭제할까요?`)) onDelete(scene.id);
-              }}
-            >
+            <button className="scene-del" title="씬 삭제" onClick={() => setDeleteId(scene.id)}>
               ×
             </button>
           </span>
@@ -346,6 +376,17 @@ ${sceneTabTitle(scene, workspaceContext, label, missing)}`}
           onAssign={onAssignWorkspace}
           onRename={onRename}
           onClose={() => setMenu(null)}
+        />
+      ) : null}
+      {deleting ? (
+        <SceneDeleteConfirm
+          key={deleting.id} // 다른 탭의 × 로 바뀌면 새로 띄운다(초점도 다시 삭제 단추로)
+          name={deleting.name}
+          onConfirm={() => {
+            setDeleteId(null);
+            onDelete(deleting.id);
+          }}
+          onCancel={() => setDeleteId(null)}
         />
       ) : null}
     </div>

@@ -4,7 +4,7 @@ import { act, useLayoutEffect, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SceneBoard } from "../src/components/scene/SceneBoard";
-import { relinkKey, relinkSceneAssetRefs, resetRelinkSessionForTest } from "../src/lib/sceneAssetRelink";
+import { refJudged, relinkKey, relinkSceneAssetRefs, resetRelinkSessionForTest } from "../src/lib/sceneAssetRelink";
 import { saveScenes, type Scene, type SceneRef } from "../src/lib/scenes";
 import type { SceneGenDataApi } from "../src/lib/useSceneGenData";
 
@@ -314,6 +314,55 @@ it("다른 공간으로 물어본 판정은 이 캔버스에 번지지 않는다
   });
   expect(cardEl("b").classList.contains("off-server")).toBe(false);
   expect(cardEl("b").querySelector(".scene-ref-offmsg")).toBeNull();
+});
+
+// Jay 2026-10-22: 다른 탭에서 복사해 붙인 레퍼런스가 '서버에 없음' — 원본은 서버에 있다. 판정 열쇠에 탭 공간이 들어 있어, 붙인 탭 공간에
+//  남은 옛 판정(만료 없음 — 그 그림이 없던 때의 답)을 읽었고 붙여넣기는 다시 묻지 않았다.
+it("다른 공간 탭에서 복사해 붙인 레퍼런스 — 그 공간의 옛 '서버에 없음'을 지우고 한 번 다시 묻는다. 원본 공간의 판정은 그대로", async () => {
+  const token = "asset:뻘뻘뻘|Assets/CH/대하/대하.png";
+  const source = refScene("src", "ws-a", [{ id: "a", refs: [ref(token, "대하.png")] }]);
+  const target = refScene("dst", "ws-b", [{ id: "old", refs: [ref(token, "대하.png")] }]);
+  await saveScenes(null, [source, target]);
+  fixture.locate.mockImplementation(async (tokens: string[], ws: string) =>
+    ws === "ws-b"
+      ? { fixed: [], unresolved: tokens, missing: tokens, local: [] } // 예전 답 — 그때는 없었다
+      : { fixed: [], unresolved: tokens, open: tokens, missing: [], local: [] });
+  await relinkSceneAssetRefs();
+
+  const onLocalRefsAdded = vi.fn();
+  await act(async () => {
+    root.render(<SceneBoard scene={source} onChange={noop} onLocalRefsAdded={onLocalRefsAdded} />);
+  });
+  const keys = (key: string) => act(async () => {
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key, code: `Key${key.toUpperCase()}`, ctrlKey: true, bubbles: true, cancelable: true }));
+  });
+  await keys("a");
+  await keys("c");
+  act(() => root.unmount()); // 다른 탭으로 — 보드가 새로 뜬다(복사한 노드는 남는다)
+  root = createRoot(host);
+  await act(async () => {
+    root.render(<SceneBoard scene={target} onChange={noop} onLocalRefsAdded={onLocalRefsAdded} />);
+  });
+  expect(cardEl("old").classList.contains("off-server")).toBe(true); // 붙이기 전 — 이 공간의 옛 판정
+
+  await act(async () => {
+    document.body.dispatchEvent(Object.assign(new Event("paste", { bubbles: true, cancelable: true }), {
+      clipboardData: { items: [], getData: () => "" },
+    }));
+  });
+  const pasted = [...host.querySelectorAll<HTMLElement>(".scene-card-ref")].filter((el) => el.dataset.id !== "old");
+  expect(pasted).toHaveLength(1);
+  expect(pasted[0].classList.contains("off-server")).toBe(false); // 전엔 붙인 순간 '서버에 없음'
+  expect(pasted[0].querySelector(".scene-ref-offmsg")).toBeNull();
+  expect(onLocalRefsAdded).toHaveBeenCalledTimes(1); // 자동 복구를 부른다
+  expect(refJudged("ws-a", ref(token, "대하.png"))).toBe(true); // 원본 공간의 판정은 지우지 않는다
+
+  fixture.locate.mockClear();
+  await act(async () => {
+    await relinkSceneAssetRefs();
+  });
+  expect(fixture.locate).toHaveBeenCalledTimes(1);
+  expect(fixture.locate.mock.calls[0].slice(0, 2)).toEqual([[token], "ws-b"]); // 붙인 탭 공간으로 한 번 다시 묻는다
 });
 
 it("리스트도 같은 판정 — 첫 장이 서버에 없으면 붉은 빗금 + 아이콘·테두리 빨강, 이 PC 에만 있으면 오른쪽 위 마크만", async () => {

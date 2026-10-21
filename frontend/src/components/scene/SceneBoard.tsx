@@ -116,6 +116,7 @@ import {
   forceRefsAsk,
   getRefServerStatusVersion,
   recheckBrokenRef,
+  recheckPastedRefs,
   refServerStatus,
   sceneAssetTokens,
   sceneRefWorkspaceId,
@@ -1188,6 +1189,10 @@ export function SceneBoard({
     onLocalRefsAdded: (tokens) => {
       forceRefsAsk(refWorkspaceId, tokens);
       onLocalRefsAdded?.();
+    },
+    // 붙여 넣은 카드 — 다른 공간의 탭에서 복사했으면 이 공간에 남은 옛 판정이 먼저 보인다. 지우고 한 번 다시 묻는다(Jay 2026-10-22).
+    onNodesPasted: (refs) => {
+      if (recheckPastedRefs(refWorkspaceId, refs)) onLocalRefsAdded?.();
     },
     cardWidth: CARD_W,
     cardHeight: CARD_H,

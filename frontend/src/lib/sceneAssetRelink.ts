@@ -371,6 +371,29 @@ export function recheckBrokenRef(workspaceId: string, ref: RefKeyed): boolean {
   return true;
 }
 
+/** 붙여 넣은 카드의 참조 — 판정 열쇠에 탭 공간이 들어 있어, 다른 공간의 탭에서 복사해 온 카드는 이 공간에 남은 옛 판정(만료 없음)을
+ *  읽는다. 원본 탭에서는 열리는 그림이 붙인 순간 '서버에 없음'이었다(Jay 2026-10-22). 이 공간에서 그 참조들이 읽는 판정을 지우고
+ *  다음 자동 복구에서 한 번 묻는다 — 판정은 서버가 다시 한다. 다른 공간의 판정은 건드리지 않는다. 물을 것이 생겼으면 true. */
+export function recheckPastedRefs(workspaceId: string, refs: RefKeyed[]): boolean {
+  const assets = refs.filter((ref) => !!ref.file_path && ASSET_TOKEN.test(ref.file_path));
+  if (!assets.length) return false;
+  const store = loadVerdicts();
+  const dropped = new Set<string>();
+  for (const ref of assets) {
+    for (const key of refReadKeys(workspaceId, ref)) {
+      if (!store[key]) continue;
+      delete store[key];
+      dropped.add(key);
+    }
+  }
+  if (dropped.size) {
+    saveVerdicts(undefined, dropped);
+    notifyStatus();
+  }
+  forceRefsAsk(workspaceId, assets.map((ref) => ref.file_path));
+  return true;
+}
+
 /** 씬 파일·DB 백업으로 방금 들어온 씬의 참조를 forceRefsAsk — 남이 준 씬은 열 때 그 씬만 한 번 확인한다. */
 export function forceSceneRefsAsk(scenes: Scene[]): void {
   for (const group of sceneAssetGroups(scenes)) forceRefsAsk(group.workspaceId, group.tokens);

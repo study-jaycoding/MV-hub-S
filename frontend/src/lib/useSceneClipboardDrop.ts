@@ -50,6 +50,8 @@ interface UseSceneClipboardDropOptions {
   // 로컬 파일(끌어다 놓기·붙여넣기)로 레퍼런스 카드를 만든 직후 — 새 참조 토큰을 넘긴다.
   //  이 PC 설치 폴더에만 있으므로 부르는 쪽이 서버에 없음을 표시하고 자동 복구를 부른다(2026-09-29).
   onLocalRefsAdded?: (tokens: string[]) => void;
+  // 복사해 둔 노드를 붙인 직후 — 붙인 카드들의 참조를 넘긴다. 다른 공간의 탭에서 온 카드면 이 공간의 옛 판정을 지우고 다시 묻게(2026-10-22).
+  onNodesPasted?: (refs: SceneRef[]) => void;
   cardWidth: number;
   cardHeight: number;
 }
@@ -355,6 +357,7 @@ export function useSceneClipboardDrop(
     current.setSelected(pasted.pastedCardIds);
     clipboardRef.current = pasted.nextClipboard;
     sceneClipboardSnapshot = pasted.nextClipboard;
+    current.onNodesPasted?.(clipboard.cards.flatMap((card) => card.refs || []));
     return true;
   }, []);
 
