@@ -337,14 +337,16 @@ export function getRefServerStatusVersion(): number {
 const asked = new Set<string>();
 const askedKey = (workspaceId: string, askWs: string, token: string): string =>
   relinkKey(workspaceId, relinkKey(askWs, token));
-// 저장된 판정과 무관하게 한 번 물을 참조(공간+토큰) — 답을 받으면 뺀다.
-const forced = new Set<string>();
+// 저장된 판정과 무관하게 한 번 물을 참조(공간+토큰) → 건 순번. 답을 받으면 빼되, **그 질문을 보낸 뒤에 건 것**은 남긴다 — 묻는 중에 붙여 넣은
+//  참조의 다시 묻기를 붙이기 전에 보낸 질문의 늦은 답이 지웠다(Codex R1 2026-10-22).
+const forced = new Map<string, number>();
+let forceSeq = 0;
 
 /** 이 참조들은 저장된 판정과 무관하게 다음 자동 복구에서 한 번 묻는다 — 방금 끌어다 놓은 파일(같은 파일을 다시 넣으면
  *  같은 사본 토큰이 되는데, 저장된 판정으로 건너뛰면 원본으로 못 잇는다). ★서버 답 전에 '이 PC에만'을 먼저 켜지 않는다
  *  — 판정은 서버가 한다(Jay 규칙). 예전에는 NAS 에 있는 파일도 답이 올 때까지 빨갛게 보였다(2026-09-29). */
 export function forceRefsAsk(workspaceId: string, tokens: string[]): void {
-  tokens.forEach((token) => forced.add(relinkKey(workspaceId, token)));
+  tokens.forEach((token) => forced.set(relinkKey(workspaceId, token), ++forceSeq));
 }
 
 // 이 세션에 '그림이 안 떠' 다시 물은 참조(공간+토큰) — 한 번만(파일 자체가 깨져 늘 안 뜨는 참조가 되풀이해 묻지 않게).
@@ -366,7 +368,7 @@ export function recheckBrokenRef(workspaceId: string, ref: RefKeyed): boolean {
     dropped.add(key);
   }
   saveVerdicts(undefined, dropped);
-  forced.add(at);
+  forced.set(at, ++forceSeq);
   notifyStatus();
   return true;
 }
@@ -456,6 +458,7 @@ function noteReply(
   registryIds: Record<string, string>,
   reply: LocateReply,
   counts: FindCounts,
+  askedAt: number, // 이 배치를 보낼 때의 forceSeq — 그 뒤에 건 다시 묻기는 이 답이 지우지 않는다
 ): void {
   const answer = new Map<string, Answer>();
   reply.unresolved.forEach((token) => answer.set(token, "unresolved"));
@@ -472,7 +475,7 @@ function noteReply(
   for (const token of batch) {
     const at = relinkKey(ws, token);
     asked.add(askedKey(ws, askWs, token));
-    forced.delete(at);
+    if ((forced.get(at) ?? 0) <= askedAt) forced.delete(at);
     const got = answer.get(token);
     if (!got) continue;
     counts[got] += 1;
@@ -733,9 +736,10 @@ async function askGroups(
       );
       const timeout = AbortSignal.timeout(LOCATE_TIMEOUT_MS);
       const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
+      const askedAt = forceSeq;
       const reply = await api.locateAssets(batch, askWs, opts.scanId, fingerprints, signal, opts.includeRender, registryIds);
       if (getAccountNamespace() !== ns) throw new Error("account changed while locating");
-      noteReply(ws, askWs, batch, group.fingerprints, group.registryIds, reply, opts.counts);
+      noteReply(ws, askWs, batch, group.fingerprints, group.registryIds, reply, opts.counts, askedAt);
       const found = new Map(reply.fixed.map((item) => [relinkKey(ws, item.token), item] as const));
       const applied = await applyFound(found, opts.hooks);
       opts.done.total += applied.total;

@@ -11,6 +11,7 @@ import {
   heldText,
   getRefServerStatusVersion,
   recheckBrokenRef,
+  recheckPastedRefs,
   refHeldInfo,
   refJudged,
   refServerStatus,
@@ -1234,6 +1235,38 @@ describe("판정을 받았는데 그림이 안 뜨면 한 번 다시 묻는다(2
     await relinkSceneAssetRefs();
     expect(locate).toHaveBeenCalledTimes(2);
     expect(recheckBrokenRef("", { file_path: "asset:P|a.png" })).toBe(false); // 다시 '열림'인데 또 깨짐 — 더 묻지 않는다
+  });
+});
+
+describe("붙여 넣은 참조의 다시 묻기(2026-10-22)", () => {
+  beforeEach(async () => {
+    localStorage.clear();
+    resetRelinkSessionForTest();
+    locate.mockReset();
+  });
+
+  // Codex R1: 같은 공간·토큰을 자동 복구가 묻는 중에 붙이면, 붙이기 전에 보낸 질문의 늦은 답이 붙여넣기의 '한 번 다시 묻기'를 지웠다.
+  it("묻는 중에 붙여도 늦게 온 앞 답이 다시 묻기를 지우지 않는다 — 그 답 뒤에 한 번 더 묻는다", async () => {
+    const token = "asset:P|CH/a.png";
+    await saveScenes(null, [scene([{ file_path: token }], { id: "ws-b", name: "나" })]);
+    let release!: (reply: unknown) => void;
+    locate.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const running = relinkSceneAssetRefs();
+    await vi.waitFor(() => expect(locate).toHaveBeenCalledTimes(1));
+
+    expect(recheckPastedRefs("ws-b", [{ file_path: token }])).toBe(true);
+    void relinkSceneAssetRefs(); // 붙여넣기가 부르는 자동 복구 — 도는 중이라 끝난 뒤 한 바퀴 더
+    locate.mockResolvedValueOnce(answer({ unresolved: [token], open: [token] }));
+    release(answer({ unresolved: [token], missing: [token] })); // 붙이기 전에 보낸 질문의 답(그때는 없었다)
+    await running;
+
+    expect(locate).toHaveBeenCalledTimes(2);
+    expect(locate.mock.calls[1].slice(0, 2)).toEqual([[token], "ws-b"]);
+    expect(status("ws-b", token)).toBeUndefined(); // 다시 물은 답(열림)이 남는다
+  });
+
+  it("에셋 참조가 없으면 묻지 않는다", () => {
+    expect(recheckPastedRefs("ws-b", [{ file_path: "gen:abc" }, { file_path: "asset:깨진것" }])).toBe(false);
   });
 });
 

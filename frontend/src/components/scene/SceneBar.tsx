@@ -70,12 +70,21 @@ function BackupSkippedBadge({ name }: { name: string }) {
 
 // 씬 삭제 확인 — 브라우저 기본 확인창 대신 앱 확인창('MV Hub 종료'와 같은 모양, Jay 2026-10-22 B안). × 는 탭 닫기가 아니라 저장된
 //  카드·연결까지 지우는 삭제라 문구도 삭제로 쓴다. 삭제 단추에 초점 — Enter 가 삭제를 누른다(window.confirm 의 확인 자리). Esc = 취소.
+//  창 밖 누름은 투명한 막이 받아 취소로 닫는다 — 막이 없으면 뒤의 + ·탭 단추가 눌리고 초점이 그리로 옮겨 Enter 가 그것을 눌렀다(Codex R2).
 function SceneDeleteConfirm({ name, onConfirm, onCancel }: { name: string; onConfirm: () => void; onCancel: () => void }) {
   useEscapeClose(onCancel); // 떠 있는 동안 뒤 화면(캔버스)의 단축키도 쉰다
   const boxRef = useRef<HTMLDivElement>(null);
   useModalFocus(boxRef);
   return createPortal(
-    <div ref={boxRef} className="manage-float host-exit-confirm" role="alertdialog" aria-label="씬 삭제">
+    <>
+    <div
+      className="scene-del-catcher"
+      onMouseDown={(event) => {
+        event.preventDefault(); // 초점을 옮기지 않는다
+        onCancel();
+      }}
+    />
+    <div ref={boxRef} className="manage-float host-exit-confirm" role="alertdialog" aria-modal="true" aria-label="씬 삭제">
       <header className="admin-head">
         <span className="admin-title">🗑 씬 삭제</span>
       </header>
@@ -94,7 +103,8 @@ function SceneDeleteConfirm({ name, onConfirm, onCancel }: { name: string; onCon
           </button>
         </div>
       </div>
-    </div>,
+    </div>
+    </>,
     document.body,
   );
 }

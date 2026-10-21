@@ -82,6 +82,23 @@ it("Esc·취소는 지우지 않고 닫는다", () => {
   expect(onDelete).not.toHaveBeenCalled();
 });
 
+// Codex R2: 막이 없어 창 밖의 + ·탭 단추가 눌리고 초점이 그리로 옮겨, Enter 가 확인창이 아니라 뒤 단추를 눌렀다.
+it("창 밖 누름은 투명한 막이 받아 취소로 닫는다 — 뒤 단추로 초점이 가지 않는다", () => {
+  const onDelete = mount([scene("a", "오프닝")]);
+  pressX(0);
+  const catcher = document.body.querySelector<HTMLElement>(".scene-del-catcher");
+  expect(catcher).not.toBeNull();
+  expect(dialog()?.getAttribute("aria-modal")).toBe("true");
+  const press = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+  act(() => {
+    catcher!.dispatchEvent(press);
+  });
+  expect(press.defaultPrevented).toBe(true); // 누름이 초점을 옮기지 않는다
+  expect(dialog()).toBeNull();
+  expect(document.body.querySelector(".scene-del-catcher")).toBeNull();
+  expect(onDelete).not.toHaveBeenCalled();
+});
+
 it("떠 있는 동안 그 씬이 다른 창에서 지워지면 확인창도 닫힌다 — 남은 씬을 대신 지우지 않는다", () => {
   const onDelete = mount([scene("a", "오프닝"), scene("b", "씬 7")]);
   pressX(1);

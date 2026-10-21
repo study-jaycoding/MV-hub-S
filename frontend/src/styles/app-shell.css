@@ -539,6 +539,8 @@
 /* 지우는 확인(씬 삭제) — 선택바 🗑 삭제(.sb-del)와 같은 빨강 */
 .settings-action.danger { background: rgba(244,63,94,0.18); border-color: rgba(244,63,94,0.5); color: #f2777c; }
 .settings-action.danger:hover:not(:disabled) { background: rgba(244,63,94,0.32); color: #f2777c; }
+/* 씬 삭제 확인창 뒤의 투명한 막 — 창 밖 누름을 받아 취소한다(뒤 단추가 눌리지 않게). 창(.host-exit-confirm 340) 바로 아래 */
+.scene-del-catcher { position: fixed; inset: 0; z-index: 339; }
 .settings-details { margin-top: 8px; }
 .settings-details > summary { margin-bottom: 4px; }
 .settings-details[open] > summary { margin-bottom: 8px; }
