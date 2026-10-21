@@ -1,8 +1,8 @@
 {
   "protocol_version": 1,
-  "rollout": null,
-  "required_installer_capabilities": null,
-  "backward_compatible": null,
+  "rollout": "bridge",
+  "required_installer_capabilities": [],
+  "backward_compatible": true,
   "db_schema": {
     "read_min": 1,
     "read_max": 2,

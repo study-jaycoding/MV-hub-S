@@ -39,10 +39,11 @@ status: active
 서버는 fetch 뒤 선택한 `origin/main` SHA의 선언을 읽고 같은 SHA에서 stage를 만든다.
 현재 선언은 reader 1 / writer 2, DB 읽기·쓰기 범위 1..2,
 `schema_compat.py`의 9개 지원 component를 담는다. 지원 목록은 기능 활성화 설정이 아니다.
-**rollout·필수 capability·하위 호환성은 Jay·총괄 결정 필요**로 `null`이다.
-현재 값은 기존 계약 검증에서 거부되므로 결정·커밋 전에는 서버 업데이트와 기본 릴리스 제작을 진행할 수 없다.
-`bridge`는 빈 capability와 `backward_compatible=true`에 대한 구판 전환·혼용 근거가 필요하고,
-`enforced`는 `artifact-receipt-v1`을 요구한다. 이 값만으로 1358 워커의 거부 동작을 보장하지 않는다.
+첫 판은 **`rollout="bridge"`(전환판), `required_installer_capabilities=[]`,
+`backward_compatible=true`**로 선언한다. 이는 계약 검사를 통과하는 선언이며 배포 승인이나
+모든 DB의 역방향 호환성 검증 완료를 뜻하지 않는다. 현재 근거와 남은 확인은 아래 최초 전환 절에 적는다.
+전환판이 설치된 작업자 PC를 기준으로 다음 판부터 `enforced`와 `artifact-receipt-v1` 요구로 전환한다.
+1358 워커는 새 계약을 검사하지 않으므로 이 선언만으로 거부 동작을 보장하지 않는다.
 
 1. 고정 폴더 `D:\ClaudeCode\MV-hub-S-release`에서 원격을 갱신하고, 승인된 main SHA와
    `HEAD`·`origin/main`이 같으며 작업 트리가 깨끗한지 확인한다. 불일치나 미커밋 변경이 있으면
@@ -127,8 +128,9 @@ CommandLine을 읽지 못하는 경우는 가능한 원인이며 이번 리허�
 **pull 뒤 의존성 설치·빌드·재시작에서 실패하면 단순 재실행으로 옛 워커의 남은 단계를 이어갈 수 없다.**
 옛 ps1은 워커 파일 전체를 복사하므로 새 워커 1회 재시도도, `update_git.bat` 재실행도 새
 `tools\run_update_git.ps1`의 staged 경로로 들어간다. 옛 supervisor는 새 잠금을 잡지 않아
-`server without its active supervisor`로 거부된다. `MV_server.bat`으로 새 supervisor를 띄워도
-현재 선언의 `rollout=null`에서 막힌다. 실패 원인을 보존하고 아래 둘 중 승인된 복구 경로를 따른다.
+`server without its active supervisor`로 거부된다. 현재 `bridge` 선언은 계약 검사를 통과하지만,
+`MV_server.bat`으로 새 supervisor를 띄우는 것만으로 옛 워커의 남은 단계를 이어가지는 않는다.
+실패 원인을 보존하고 아래 둘 중 승인된 복구 경로를 따른다.
 
 승인된 복귀가 필요하면 서버의 새 작업을 멈추고 작업 트리가 깨끗한지 확인한 다음,
 서버 루트의 관리자 콘솔에서 `git checkout c2463e4f` 후 `restart_server_task.bat`을 실행한다.
@@ -173,10 +175,36 @@ DB를 되돌리거나 실패 표식을 임의로 지우지 않는다. 옛 워커
 근거는 총괄이 제공한 **1358 서버 DB 사본 격리 리허설 보고**다: dev2 변환 후 compatible·ready 200,
 옛 1358 코드로 ready·로그인·팀 목록 200, 다시 dev2 compatible을 확인했다. 이는 해당 사본과 코드의
 왕복 호환성 근거이며, `serve.py` 직접 기동이었다. supervisor·예약 작업·옛 워커 전체 전환과
-그 이후의 모든 데이터 변경까지 검증한 결과는 아니다.
+그 이후의 모든 데이터 변경까지 검증한 결과는 아니다. **작업자 계정 DB의 dev2 → 1358 → dev2
+역방향 호환성 실측 결과는 이 근거에 포함되지 않는다.** 총괄의 별도 실측 결과와 적용 대상 DB를
+배포 전에 대조해야 하며, 서버 DB 사본의 결과를 작업자 계정 DB 전체로 확대하지 않는다.
 
 두 번째 업데이트부터는 새 supervisor와 coordinator를 확인한 뒤 위 **정기 업데이트** 절을 따른다.
-선택 커밋의 rollout·capability 결정과 소스 검증 영수증이 필요하며, 현재 미결정인 선언을 자동 승인하지 않는다.
+선택 커밋의 명시적 rollout·capability 선언과 소스 검증 영수증이 필요하며, 첫 전환판의 선언은
+다음 판의 배포를 자동 승인하지 않는다.
+
+### 작업자 PC의 첫 bridge 릴리스
+
+첫 전환판은 **새 릴리스 도구로 같은 ZIP의 검증을 마치고 게시한 현재 후보**만 대상으로 한다.
+ZIP·불변 후보 기록·artifact 검증 영수증을 함께 게시한 뒤, **1358 앱의 설정 → 프로그램 업데이트에서
+현재 후보 줄의 [배포]**를 사용한다. 이 경로는 `candidate.json` 원문을 `latest.json`으로 옮겨
+`contract`와 영수증 참조를 보존한다. 1358 앱 자체가 새 계약을 검증하는 것은 아니므로,
+새 도구의 검증·게시 완료를 먼저 확인해야 한다.
+
+**후보가 아닌 옛 ZIP 줄의 [배포]는 사용하지 않는다.** 1358의 그 경로는 ZIP에서 옛 형식의 표지를
+재구성해 `contract`와 영수증 참조를 잃는다. **기존 1358 설치 폴더 위에 새 `MVHub_Install.bat`을
+실행하지 않는다.** 새 설치기는 새 설치 또는 이미 새 계약을 지원하는 설치본을 위한 경로이며,
+1358 폴더의 첫 전환을 대신하지 않는다. 전환 후 해당 PC의 새 설치 기능과 `artifact-receipt-v1`
+capability를 확인하고, 그 PC를 기준으로 다음 `enforced` 판을 적용한다.
+
+2026-10-21 적용 준비 기록: owner=Codex(mvhub-implement), reviewer=독립 리뷰 미실시(설계는 사용자 전달 Claude 안),
+status=검증 중(독립 리뷰 전), touched_paths=`release/compatibility.json`·
+`backend/tests/test_release_contract.py`·`docs/SERVER.md`, updated=2026-10-21.
+범위는 선언·기존 Python/PowerShell 거부 조건의 회귀 시험·이 안내이며, 커밋·통합·배포는 포함하지 않는다.
+수정 전 `rollout=None`의 선언 시험 실패를 재현했고, 수정 후 선언·Python 거부 5건·기본 경로/명시 경로
+시험 7건이 통과했다. PowerShell 계약 시험 7건은 임시 폴더 생성의 `WinError 5`로 실행 전 차단됐다.
+Ponytail과 직접 소스/호출부 검토를 적용했다. graft는 실행 정책 차단으로 사용하지 못했으며,
+실제 DB 왕복·ZIP 배포 자격·설치 검증은 이 작업에서 수행하지 않았다.
 
 ## 업데이트(롤아웃) 순서 — ★생성 fence 후 공유 서버 먼저
 

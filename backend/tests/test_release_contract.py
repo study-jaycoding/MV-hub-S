@@ -36,7 +36,7 @@ def receipt(folder, value):
     return folder / value["contract"]["validation_receipt"]["file"]
 
 
-def test_repository_compatibility_matches_database_contract_and_blocks_undecided_rollout():
+def test_repository_compatibility_matches_database_contract_and_declares_bridge():
     from app import schema_compat
     path = Path(__file__).resolve().parents[2] / 'release/compatibility.json'
     declaration = c.document(path.read_bytes())
@@ -50,16 +50,69 @@ def test_repository_compatibility_matches_database_contract_and_blocks_undecided
         'write_min': min(schema_compat.SCHEMA_VERSIONS.values()),
         'write_max': max(schema_compat.SCHEMA_VERSIONS.values()),
     }
-    assert declaration['rollout'] is None
-    assert declaration['backward_compatible'] is None
-    assert declaration['required_installer_capabilities'] is None
-    with pytest.raises(c.ContractError, match='unknown rollout'):
-        c.compatibility(declaration)
+    assert declaration['rollout'] == 'bridge'
+    assert declaration['backward_compatible'] is True
+    assert declaration['required_installer_capabilities'] == []
+    assert c.compatibility(declaration) == declaration
     # These branches validate the format only, not old-version compatibility.
-    c.compatibility({**declaration, 'rollout': 'bridge', 'backward_compatible': True,
-                     'required_installer_capabilities': []})
     c.compatibility({**declaration, 'rollout': 'enforced', 'backward_compatible': False,
                      'required_installer_capabilities': ['artifact-receipt-v1']})
+
+
+@pytest.mark.parametrize('changes,error', [
+    ({'rollout': None}, 'unknown rollout'),
+    ({'rollout': 'bridge', 'required_installer_capabilities': ['artifact-receipt-v1']}, 'bridge must'),
+    ({'rollout': 'bridge', 'backward_compatible': False}, 'bridge must'),
+    ({'rollout': 'enforced', 'required_installer_capabilities': []}, 'enforced release requires'),
+    ({'rollout': 'enforced', 'required_installer_capabilities': ['other']}, 'enforced release requires'),
+])
+def test_compatibility_rejects_invalid_rollout(changes, error):
+    declaration = c.document((Path(__file__).resolve().parents[2] / 'release/compatibility.json').read_bytes())
+    declaration.update(rollout='bridge', backward_compatible=True, required_installer_capabilities=[])
+    with pytest.raises(c.ContractError, match=error):
+        c.compatibility({**declaration, **changes})
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell adapter')
+@pytest.mark.parametrize('rollout,caps,backward,error', [
+    ('bridge', [], True, ''),
+    ('enforced', ['artifact-receipt-v1'], False, ''),
+    (None, [], True, 'Unsupported compatibility declaration.'),
+    ('bridge', ['artifact-receipt-v1'], True, 'Bridge must be backward compatible.'),
+    ('bridge', [], False, 'Bridge must be backward compatible.'),
+    ('enforced', [], False, 'Enforced release requires artifact-receipt-v1.'),
+    ('enforced', ['other'], False, 'Enforced release requires artifact-receipt-v1.'),
+])
+def test_powershell_compatibility_rollout_contract(tmp_path, rollout, caps, backward, error):
+    _, folder, value, _ = fixture(tmp_path)
+    package = folder / value['file']
+    with zipfile.ZipFile(package) as archive:
+        entries = {info.filename: archive.read(info) for info in archive.infolist()}
+    descriptor = c.document(entries[c.DESCRIPTOR])
+    descriptor['compatibility'].update(rollout=rollout, required_installer_capabilities=caps,
+                                       backward_compatible=backward)
+    entries[c.DESCRIPTOR] = c.json_bytes(descriptor)
+    with zipfile.ZipFile(package, 'w') as archive:
+        for name, raw in entries.items():
+            archive.writestr(name, raw)
+    value.update(sha256=c.file_sha256(package), size=package.stat().st_size)
+    value['contract'].update(compatibility=descriptor['compatibility'],
+                             descriptor_sha256=c.sha256(entries[c.DESCRIPTOR]))
+    proof = c.document(receipt(folder, value).read_bytes())
+    proof.update(artifact={'sha256': value['sha256'], 'size': value['size']},
+                 descriptor_sha256=value['contract']['descriptor_sha256'])
+    receipt(folder, value).write_bytes(c.json_bytes(proof))
+    value['contract']['validation_receipt']['sha256'] = c.file_sha256(receipt(folder, value))
+    package.with_suffix('.candidate.json').write_bytes(c.json_bytes(value))
+    helper = Path(__file__).resolve().parents[2] / 'update_release_contract.ps1'
+    script = (f"$ErrorActionPreference='Stop'; . '{helper}'; "
+              "$Failure=''; "
+              f"try {{ $null=Get-QualifiedRelease -PackagePath '{package}' }} "
+              "catch { $Failure=$_.Exception.Message }; "
+              f"if($Failure -cne '{error}'){{throw ('Wrong rollout verdict: '+$Failure)}}")
+    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_release_default_compatibility_and_explicit_override():
