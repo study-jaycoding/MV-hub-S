@@ -76,7 +76,7 @@ function Harness({ query, authReady = true, projectWorkspaceId, composeListEnabl
   // App의 표시 목록처럼 원본이 바뀔 때만 새 배열을 만든다. loadingMore만 바뀌면 같은 참조다.
   const gridGens = useMemo(() => hideGridRows ? data.gens.filter(g => !g.id.startsWith("hidden-")) : data.gens, [data.gens, hideGridRows]);
   // App의 더 받기 게이트를 재현한다(listGate 사본·자리 이동은 이 하네스에 없다). App 배선은 resolveSelectionRender에서 별도로 검증한다.
-  const canLoadMore = data.hasMore && !data.listBehind;
+  const canLoadMore = data.hasMore && (!data.listBehind || (data.isLocatedView && !!data.loadError));
   return grid ? <ThumbnailGrid generations={gridGens} tab={query.tab === "team" ? "team" : "my"}
     scale={1} fill layout="grid" groupByDate={false} selectedIds={new Set()}
     onSelectedChange={noop} onToggleSelect={noop} onSetSource={noop} onSetTags={noop}
@@ -383,6 +383,38 @@ describe("[F9-9] grid resumes discarded pages without an error retry loop", () =
     expect(data.listBehind).toBe(false);
     await frame();
     expect(list).toHaveBeenCalledTimes(before + 1);
+  });
+
+  it("[F9-13 P3-1] a failed located refresh resumes scrolling with the retained cursor without refreshing the cache", async () => {
+    const list = vi.mocked(api.listGenerations);
+    list.mockResolvedValueOnce(firstPage);
+    await mount({ query: LOCATED, grid: true });
+    const first = hold<Generation[]>(list);
+    const location = locationOf(gen("outside-page"));
+    vi.mocked(api.locateGenerations).mockResolvedValue(location);
+    act(() => data.revealLocated("my", location));
+    await settle();
+    const before = list.mock.calls.length;
+    scroll();
+    await frame();
+    expect(list).toHaveBeenCalledTimes(before);
+    await act(async () => first.reject(new Error("offline")));
+    await settle();
+    expect(data.loadError).toBe("offline");
+    expect(data.hasMore).toBe(true);
+    expect(ids()).toContain("first-199");
+    expect(ids()).toContain("outside-page");
+
+    list.mockResolvedValueOnce([gen("next-page")]);
+    scrollTop = 3400;
+    scroll();
+    await frame();
+    expect(list).toHaveBeenCalledTimes(before + 1);
+    expect(list.mock.calls.at(-1)?.[1]).toEqual({ ts: 10, id: "first-199" });
+    expect(ids()).toContain("next-page");
+    await act(async () => data.reloadIfStale());
+    expect(list).toHaveBeenCalledTimes(before + 2);
+    expect(list.mock.calls.at(-1)?.[1]).toBeNull();
   });
 
   it.each([false, true])("[F9-11 P3-1] a smaller query gets a fresh automatic budget without remounting: trash=%s", async (trash) => {
