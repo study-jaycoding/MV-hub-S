@@ -42,6 +42,9 @@ interface UseGenerationProgressArgs {
   commentsVisible: boolean;
   // 색 편집 장부(목록 훅의 것) — 완료 뒤 상세 조회의 응답이 그사이 칠한 색을 덮지 않게, 조회가 출발할 때 도장을 찍는다.
   colorLedger?: ColorEditLedger;
+  // 지금 화면의 주인이 걸러 보는 컷 화면인가(83회차) — 그 화면의 자료(걸러진 목록)는 이 setGens 로 고칠 수 없다. 참이면 완료 뒤 상세 보정 대신
+  //  실제 변경으로 다시 받게 한다(reload — 그쪽 invalidate).
+  cutOwned?: () => boolean;
 }
 
 const ACTIVE_PROGRESS_STATUSES = new Set(["pending", "queued", "running", "processing"]);
@@ -90,6 +93,7 @@ export function useGenerationProgress({
   historyBoardVisible,
   commentsVisible,
   colorLedger,
+  cutOwned,
 }: UseGenerationProgressArgs) {
   const committedRef = useRef({ scopeKey, gens });
   const bookRef = useRef<DetailBook | null>(null);
@@ -102,6 +106,8 @@ export function useGenerationProgress({
   // 표시 상태 변화만으로 WebSocket 연결을 다시 만들지 않도록 최신값은 ref로 읽는다.
   const visibleConsumersRef = useRef({ historyBoardVisible, commentsVisible });
   visibleConsumersRef.current = { historyBoardVisible, commentsVisible };
+  const cutOwnedRef = useRef(cutOwned);
+  cutOwnedRef.current = cutOwned;
   useEffect(() => {
     // 로그인 화면·승인 대기 화면에서는 서버가 거절할 연결 자체를 만들지 않는다.
     if (!enabled) return;
@@ -223,6 +229,13 @@ export function useGenerationProgress({
           const reloadIfCurrent = () => Promise.resolve()
             .then(() => { if (guarded()) return reload(true, true); })
             .catch(() => {}); // 동기 throw도 한 번만 처리하고 finally까지 연결한다.
+          if (cutOwnedRef.current?.()) {
+            // 걸러 보는 컷 화면이 주인이다 — 목록 setter 로 고친 값은 그 화면에 닿지 않는다. 다시 받기(그쪽 invalidate) 한 번만 — 상세 보정 뒤의
+            //  다시 받기와 겹치면 끝까지 받기가 두 번 돈다.
+            void reloadIfCurrent().finally(() => { token.inFlight = false; }); // 상세 보정과 같이 — 확인 전에 장부가 이 표식을 지우지 않게
+            bumpBoard();
+            return;
+          }
           // 출발 시점을 찍는다 — 아래 병합의 값 비교는 '지웠다 다시 칠해 출발 때의 색으로 돌아온 것'을 편집으로 보지 못한다
           //  (색은 장부에 편집 번호가 있다 — 출발 뒤에 칠했거나 저장이 대기 중이면 응답의 색 대신 칠한 색을 쓴다).
           const keepPainted = colorLedger?.stamp();

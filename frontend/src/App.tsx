@@ -76,7 +76,7 @@ import { useGenerationAutoTagActions } from "./lib/useGenerationAutoTagActions";
 import { useGenerationCardActions } from "./lib/useGenerationCardActions";
 import { useGenerationFilterActions } from "./lib/useGenerationFilterActions";
 import { useGenerationKeyboardActions } from "./lib/useGenerationKeyboardActions";
-import { useGenerationLibraryData } from "./lib/useGenerationLibraryData";
+import { useGenerationLibraryData, type LibraryOwner } from "./lib/useGenerationLibraryData";
 import { useGenerationProgress } from "./lib/useGenerationProgress";
 import { useGenerationProjectActions } from "./lib/useGenerationProjectActions";
 import { useGenerationSelection, withoutHidden } from "./lib/useGenerationSelection";
@@ -168,6 +168,7 @@ import { hasWorkspaceFilter, workspaceViewKey } from "./lib/libraryWorkspaceScop
 const LS = makeStore("ch.lib.");
 // 폴더를 옮긴 뒤 격자 자리를 비우거나 잠가 두는 최대 시간 — 응답이 매달려도 이 뒤엔 전처럼 화면의 목록을 보이고 누르게 둔다(아래 waitExpired).
 const LIST_WAIT_MAX_MS = 4000;
+const NO_GENERATIONS: Generation[] = []; // 자동 조회가 보는 행이 없을 때 — 렌더마다 새 배열이면 그 훅의 판정이 매번 다시 돈다
 
 // 3색(빨강·초록·파랑) 필터 도트 — 툴바 여러 곳에 같은 값이라 모듈 상수로(매 렌더 배열 재생성 제거).
 const COLOR_DOTS = [
@@ -532,6 +533,11 @@ export default function App() {
     LS.set("cutView", cutView ? "1" : "0");
   }, [scale, fill, cutView]);
   const listGenQuery = useMemo(() => (listPeek ? folderPeekQuery(genQuery, listPeek) : genQuery), [genQuery, listPeek]);
+  // 지금 화면의 자료 주인 — 아래(걸러진 목록까지 본 뒤)에서 판정해 커밋마다 적는다. 목록 훅은 다시 받을 때 이것을 읽는다(83회차 — 늦은 state 로
+  //  넘기면 판정이 오기 전에 200건이 먼저 출발한다).
+  const ownerRef = useRef<LibraryOwner | null>(null);
+  const readOwner = useCallback(() => ownerRef.current, []);
+  const readCutOwned = useCallback(() => ownerRef.current?.kind === "cut", []);
   // 창의 격자는 열 때마다 새로 마운트되므로 nonce 는 고정값이면 된다(한 번 열 때 한 번만 이동).
   const listPeekScroll = useMemo(() => (listPeek?.genId ? { generationId: listPeek.genId, nonce: 0 } : null), [listPeek]);
   const {
@@ -559,6 +565,7 @@ export default function App() {
     beginComposeList,
     colorLedger,
     staleList,
+    shownStaleCopy,
     listBehind,
     autoRefreshPaused,
     stats,
@@ -572,13 +579,15 @@ export default function App() {
     workspaceScopeKey,
     projectWorkspaceId,
     composeListEnabled: folderPeek, // 창이 열려 있을 때만 compose 탭에서 목록 조회·추가 로드
+    owner: readOwner,
   });
   // ── 폴더 묶음 보기(공유 & 리뷰 탭, Jay 2026-10-08) ──
   //  폴더를 고르면 그 바로 아래 폴더(컷)마다 카드 한 장으로 보인다. 컷 카드 두 번 클릭 = 모아보기, 우클릭 = 그 폴더의 창(Jay 2026-10-13 낮 —
   //  아침의 ② '두 번 클릭 = 들어가기' 를 뒤집음), 에피소드 카드 두 번 클릭 = 들어가기. 창 안·들어간 낱장 목록의 카드 위 [대표] 로 그 폴더의
   //  대표(팀이 같이 보는 값 — 공유 서버가 권위)를 정한다. 묶어 보일 수 있는 조회인지는 lib/folderCards 가 정한다(무엇을 찾는 조건이 켜져
   //  있으면 지금처럼 한 장씩).
-  //  ponytail: 묶어 보이는 동안에도 본 목록(한 장씩)은 지금처럼 받는다 — 그 요청까지 줄이려면 목록 훅에 '목록 끄기'가 필요하다.
+  //  shortcut: 안 거른 묶음 보기(서버 카드만)에서는 본 목록(한 장씩)도 지금처럼 받는다 — 그 화면의 유일한 갱신 신호다(옛 서버 채우기 포함).
+  //   걸러 보는 컷 화면은 본 목록을 받지 않는다(아래 '이 화면의 자료 주인', 83회차). 안 거른 화면까지 줄이려면 서버 카드에 바뀜 신호가 필요하다.
   //  **찾는 조건(종류·작성자·태그·색·검색·회색 숨김…)이 켜져 있어도 묶음은 풀리지 않는다**(Jay 2026-10-13 저녁 — 전엔 조건이 하나라도 켜지면
   //  낱장이 됐다). 그때는 서버 카드(그 폴더의 전부를 센다) 대신 걸러진 목록을 따로 끝까지 받아 화면이 직접 묶는다(lib/useLocalFolderCards ·
   //  lib/folderCardsLocal). cutScope 는 '자리'(프로젝트·폴더·공간)다 — 찾는 조건과 무관하다.
@@ -595,11 +604,16 @@ export default function App() {
   // 폴더 카드를 다시 받는 신호 = 목록이 **같은 조회를 다시 받았을 때**(주기 조회·통보·내 조작 뒤의 다시 받기). 조회가 바뀌어(폴더 이동·찾는 조건·
   //  폴더 창) 받은 첫 쪽은 변경 통보가 아니다 — 자리가 바뀐 것은 훅이 스스로 받는다. 둘 다 따라가면 폴더를 옮길 때마다 같은 묶음 조회가 두 번
   //  나간다(아래 두 훅이면 네 번 — Codex 코드 리뷰 10-13).
+  //  주인(아래 cutOwns — 커밋된 값)도 조회의 일부다 — 컷 화면이 주인이던 동안 뒤 목록을 되찾은 첫 적용은 같은 조회의 재갱신이 아니다
+  //  (그동안의 서버 카드는 컷 쪽 갱신이 같이 받았다, Codex FE-05).
+  const [ownerKind, setOwnerKind] = useState<LibraryOwner["kind"]>("list");
   const listQueryKey = useMemo(
-    () => JSON.stringify([libraryAuthKey, workspaceScopeKey, listGenQuery]), [libraryAuthKey, workspaceScopeKey, listGenQuery],
+    () => JSON.stringify([libraryAuthKey, workspaceScopeKey, listGenQuery, ownerKind]), [libraryAuthKey, workspaceScopeKey, listGenQuery, ownerKind],
   );
   const cardsReloadKey = useSameQueryRevision(listQueryKey, listRevision);
-  const { cards: folderCards, unsupported: folderCardsUnsupported, loading: folderCardsLoading, reload: reloadFolderCards } = useFolderCards({
+  const {
+    cards: folderCards, unsupported: folderCardsUnsupported, loading: folderCardsLoading, reload: reloadFolderCards, refresh: refreshFolderCards,
+  } = useFolderCards({
     scope: cardsScope, authKey: libraryAuthKey, reloadKey: cardsReloadKey,
   });
   // 지금 고른 자리의 서버 카드(안 거른 것) — 어느 폴더가 묶음인지·팀이 정한 대표가 무엇인지의 근거다.
@@ -637,6 +651,25 @@ export default function App() {
     () => (localVisible && cutScope && baseHere ? groupGenerations(localVisible, cutScope.projectId, cutScope.parent, baseHere) : null),
     [localVisible, cutScope, baseHere],
   );
+  // ── 이 화면의 자료 주인(83회차 — Codex FH 1~4절) ──
+  //  걸러 보는 컷 화면 — 서버 카드로 이 자리에 하위 폴더가 있음을 알고, 지금 조회로 거른 결과에도 묶을 폴더가 있거나 아직 모른다 — 은 걸러진 목록과
+  //  서버 카드가 화면의 자료다. 본 목록 훅은 그 조회의 목록(200건 원문)을 보내지 않고 다시 받기(주기·통보·내 조작·창 복귀)를 이쪽에 맡긴다.
+  //  그 밖(폴더 창·위치 주입·[전체]·옛 서버·서버 카드를 아직 모름·거른 결과에 폴더가 없어 낱장)은 본 목록이 주인이다. 서버 카드를 모르는 첫 진입은
+  //  전처럼 둘 다 받는다(그 자리에 하위 폴더가 있는지 모른다) — 카드가 와서 주인이 바뀌어도 목록 요청을 더 만들지 않는다(Codex FF-03).
+  const cutOwns = filters.tab === "team" && !listPeek && !isLocatedView && !folderCardsUnsupported && cutFiltered && localWanted
+    && baseHere !== null && baseHere.folders.length > 0 && !(local.fresh && localCards !== null && localCards.folders.length === 0);
+  const ownerSig = JSON.stringify([!!filters.deleted_only, listGenQuery]); // 목록 훅의 sig 꼴 — 이 판정이 어느 조회의 것인가
+  const localRequest = local.request;
+  const localContext = local.contextKey; // 조회 + 회차 — 컷 쪽 결과가 지금 주인의 것인지(A → B → A 의 옛 A 결과를 가린다, Codex fix8 P2)
+  const localSide = cutFiltered && localWanted; // 낱장이어도 걸러진 목록이 표시 형태(묶음/낱장)를 정한다 — 실제 바뀜은 그쪽에도 넘긴다
+  useLayoutEffect(() => {
+    ownerRef.current = cutOwns
+      ? { kind: "cut", sig: ownerSig, key: localContext(), request: (intent) => localRequest(intent, refreshFolderCards) }
+      : { kind: "list", sig: ownerSig, key: null, request: localSide ? () => localRequest("invalidate") : null };
+  });
+  useLayoutEffect(() => {
+    setOwnerKind(cutOwns ? "cut" : "list");
+  }, [cutOwns]);
   // 본문에 그릴 묶음 — 하위 폴더가 하나라도 있을 때만. 창이 떠 있어도 뒤에 그대로 둔다.
   //  · 걸러 보는 중: 걸러진 목록을 묶은 것. 지금 조회의 답이 아직이면 같은 자리의 앞 결과(local 이 쥐고 있다)를, 그것도 없으면(막 켰다) 안 거른
   //    서버 카드를 그대로 둔다 — **같은 자리에서 조건만 바뀌는 동안 묶음이 null 이 되면 안 된다**: 낱장이 번쩍이고 고른 것이 지워진다(규칙 55).
@@ -678,8 +711,10 @@ export default function App() {
     settledHereRef.current = null;
   }
   useEffect(() => {
-    // 창이 떠 있으면 목록은 창의 것이다 — 적지 않는다(창은 자리를 바꾸지 않는다)
-    if (!listBehind && !listPeek && !(cutWaiting && folderCardsLoading)) settledHereRef.current = hereKey;
+    // '다 섰다' = 지금 조회·지금 주인의 자료가 왔다 — 컷 화면이 주인이면 걸러진 목록의 지금 조회 답, 아니면 본 목록의 지금 조회 첫 쪽.
+    //  목록을 받지 않는 것은 증거가 아니다(Codex FE-02). 창이 떠 있으면 목록은 창의 것이다 — 적지 않는다(창은 자리를 바꾸지 않는다)
+    const ready = cutOwns ? local.fresh : !listBehind;
+    if (ready && !listPeek && !(cutWaiting && folderCardsLoading)) settledHereRef.current = hereKey;
   });
   const moved = settledHereRef.current !== hereKey;
   const cutLoadingRaw = cutWaiting && folderCardsLoading && moved;
@@ -687,7 +722,8 @@ export default function App() {
   //  무관하다**: 기다리는 사이 검색어를 치면 묶음 조건이 풀리는데, 그때 잠금까지 풀면 옛 자리의 카드가 눌린다(Codex 31회차).
   //  먼저 골라 그리기(narrowing)·자리 비우기만 묶음 보기의 것이다. **조회를 보낼 수 있을 때만** — 공간을 아직 모르면(workspaceQueryReady 거짓)
   //  조회가 나가지 않아 목록이 영영 안 오고, 그 화면의 [전체 보기](main 안)까지 잠긴다(Codex 31회차 코드 리뷰).
-  const behindRaw = authReady && workspaceQueryReady && filters.tab === "team" && !listPeek && moved && !!listBehind
+  //  컷 화면이 주인인 동안은 본 목록을 기다리지 않는다(받지 않는다) — 낱장으로 넘어간 때부터 잰다.
+  const behindRaw = !cutOwns && authReady && workspaceQueryReady && filters.tab === "team" && !listPeek && moved && !!listBehind
     && !staleList && !isLocatedView && !loadError;
   // 기다림은 길어야 LIST_WAIT_MAX_MS — 응답이 실패도 없이 매달리면(허브가 멎는 등) 자리를 비우거나 잠근 채로 남는다. 그 뒤엔 오늘 고치기 전처럼
   //  화면의 목록을 그대로 보이고 누르게 둔다(Codex 31회차 코드 리뷰 — 요청 자체의 제한 시간은 없다, 기록만). 자리마다 따로 잰다.
@@ -705,7 +741,16 @@ export default function App() {
   const cutLoading = cutLoadingRaw && !waitExpired;
   const behindAfterMove = behindRaw && !waitExpired;
   const narrowing = cutWaiting && behindAfterMove;
-  const listLocked = staleList || (behindAfterMove && !cutMode); // 낱장 격자를 보이는 중일 때만 — 컷 카드는 목록과 무관하게 눌린다
+  // ── 낱장 목록에서 나오는 잠금(main inert·고르기 잠금·더 받기 가리기)은 **낱장 격자를 실제로 그릴 때만** 건다(listShown) — 컷 카드가 보이는 동안에는 컷 카드·
+  //  전환 단추를 잠그지 않는다(뒤에 숨은 본 목록의 상태는 컷 카드와 무관하다 — Codex FE-01·fix8d·fix8e). 낱장 유래 입력은 셋이다:
+  //   · staleList — 폴더 창을 닫은 직후 옛 첫 쪽 사본을 보이는 중(새 첫 쪽이 오면 풀린다)
+  //   · shownStaleCopy — 컷 화면의 갱신으로 낡았다고 알려진 사본(목록 훅). 자리 이동·기다림 한도(4초)와 무관하게 새 응답·실패 정리 때 풀린다(목록 요청은
+  //     30초 제한 — 81회차 15A, Codex fix8b·fix8c)
+  //   · behindAfterMove — 자리를 옮긴 뒤 새 첫 쪽 전(4초 한도 — 31회차: 앞 자리에서 실제로 받은 목록은 4초 뒤 누르게 둔다. 위 사본이 아닐 때 그대로다)
+  //  컷 화면이 주인이면(cutOwns) 낱장이 없다. 컷 화면 자체의 기다림(cutLoading·cutPending)은 잠금이 아니라 자리 비움이다.
+  const listShown = !cutMode;
+  const listGate = listShown && (staleList || shownStaleCopy || behindAfterMove);
+  const listLocked = !cutOwns && listGate;
   // 창이 보여 주는 폴더의 지금 대표 — 표지가 '가장 최근 것' 일 뿐이면 대표가 아니다(null).
   const peekFolderCard = listPeek ? folderCards?.folders.find((folder) => folder.path === listPeek.path) : undefined;
   const peekCoverId = peekFolderCard?.rep ? peekFolderCard.cover.id : null;
@@ -718,7 +763,18 @@ export default function App() {
     const workspaceId = singleTeamWorkspace(genQuery);
     return { projectId: filters.project_id, parent: parentFolder(filters.folder_path), ...(workspaceId ? { workspaceId } : {}) };
   }, [filters.tab, filters.project_id, filters.folder_path, filters.deleted_only, authReady, workspaceQueryReady, listPeek, genQuery]);
-  const { cards: ownCards, reload: reloadOwnCards } = useFolderCards({ scope: ownScope, authKey: libraryAuthKey, reloadKey: cardsReloadKey });
+  const { cards: ownCards, reload: reloadOwnCards, refresh: refreshOwnCards } = useFolderCards({ scope: ownScope, authKey: libraryAuthKey, reloadKey: cardsReloadKey });
+  // 컷 화면이 주인인 동안 부모 범위의 카드(들어간 폴더의 [대표])는 다시 받지 않았다 — 컷 쪽 갱신은 하위 묶음 카드만 받는다. 본 목록이 주인을 되찾으면
+  //  (폴더 창 아님) 한 번 다시 받는다. 되찾은 첫 적용은 갱신 신호에서 빠지므로 그대로 두면 다음 주기 조회까지 옛 [대표]가 남는다(Codex fix8 P2).
+  //  건너뛰는 것은 **넘김과 같은 커밋에 부모 범위가 바뀐 때**뿐이다 — 그 이동이 바뀐 범위를 방금 묻는다(받는 중에 얹으면 같은 부모를 두 번 묻는다, fix8b P2).
+  //  그 앞의 이동 이력(A → B → A 등)으로는 건너뛰지 않는다 — 그 조회 뒤에 대표가 바뀌었을 수 있다(fix8c P2).
+  const ownKey = ownScope ? JSON.stringify([ownScope.projectId, ownScope.parent, ownScope.workspaceId ?? null]) : null;
+  const ownCutRef = useRef({ cut: cutOwns, key: ownKey });
+  useEffect(() => {
+    const was = ownCutRef.current;
+    ownCutRef.current = { cut: cutOwns, key: ownKey };
+    if (was.cut && !cutOwns && !listPeek && was.key === ownKey) void refreshOwnCards();
+  }, [cutOwns, listPeek, ownKey, refreshOwnCards]);
   const ownFolderCard = ownScope ? ownCards?.folders.find((folder) => folder.path === filters.folder_path) : undefined;
   const ownCoverId = ownFolderCard?.rep ? ownFolderCard.cover.id : null;
   // 한 장씩 → 묶음으로 바뀌는 순간 고른 것을 비운다 — 남기면 보이지 않는 카드에 삭제·공유가 걸린다.
@@ -831,10 +887,11 @@ export default function App() {
     const projectScopeChanged = reloadedWorkspaceScopeRef.current !== projectWorkspaceId;
     reloadedWorkspaceScopeRef.current = projectWorkspaceId;
     // 공간/필터를 한 번에 반영한다. my/compose의 목록 조건이 같아도 프로젝트는 다시 받는다.
+    //  자료 주인이 바뀌어도(cutOwns) 새 주인의 진입이다 — 낱장으로 넘어가면 본 목록이 그 조회의 첫 쪽을 받고, 컷 화면이 되면 걸러진 목록에 합류한다.
     if (projectScopeChanged) void reload(true);
     else void reloadIfStale();
   }, [serverFilterKey, filters.tab, authReady, libraryAuthKey, reloadIfStale, reload,
-    projectWorkspaceId, workspaceScopeKey, workspaceQueryReady]);
+    projectWorkspaceId, workspaceScopeKey, workspaceQueryReady, cutOwns]);
 
   // 프로젝트 미배정 = Supervisor 개념이 없음 → 본인 것이면 최종 가능(백엔드 require_edit 와 일치).
   const canFinalize = (g: Generation) => canFinalizeGeneration(g, finalizeProjects);
@@ -862,12 +919,17 @@ export default function App() {
     historyBoardVisible: filters.tab === "compose" && !activeScene,
     commentsVisible: commentGenId !== null,
     colorLedger, // 완료 뒤 상세 조회의 응답도 색 장부를 탄다 — 출발 뒤에 칠한 색을 덮지 않게(규칙 6)
+    cutOwned: readCutOwned, // 걸러 보는 컷 화면이 주인이면 완료 통지는 그쪽을 다시 받게 한다(목록 setter 로는 그 화면에 닿지 않는다)
   });
 
   // 진행중 잡·팀 탭 폴링 + 탭 재포커스 새로고침.
   // 새 첫 쪽을 기다리는 동안(폴더 창을 닫은 직후 staleList · 바뀐 조회의 첫 쪽 — 목록 훅의 autoRefreshPaused)에는 자동 조회를 쉰다
   //  — 끼어들면 받던 첫 쪽을 버리고 같은 목록을 한 번 더 받는다.
-  useGenerationAutoRefresh({ generations: gens, tab: filters.tab, reload, paused: autoRefreshPaused });
+  //  걸러 보는 컷 화면이 주인이면 활성 잡은 그쪽이 쥔 행 전체로 보고(뒤 목록은 앞 조건의 것이다), 쉬지 않는다 — 그쪽의 확인은 받는 중이면 합류해
+  //  받던 응답을 버리지 않는다. 숨은 본 목록의 사본·대기로 컷 화면의 갱신이 멈추지 않게(Codex FE-01).
+  useGenerationAutoRefresh({
+    generations: cutOwns ? local.gens ?? NO_GENERATIONS : gens, tab: filters.tab, reload, paused: !cutOwns && autoRefreshPaused,
+  });
 
   // 코멘트 배지 실시간 갱신: 공유 카드의 미확인 여부만 가볍게 주기 조회해 제자리 갱신.
   // 새 미확인이 잡히면 syncTick 을 올려 열린 코멘트 패널도 즉시 새로고침.
@@ -880,7 +942,7 @@ export default function App() {
     openCommentGenId: commentGenId,
     onNewUnread: () => {
       setSyncTick((t) => t + 1);
-      void reload(true, true); // 공유 카드 폴링이 새 코멘트를 잡으면 전역 벨 stats도 같은 값으로 갱신
+      void reload(true, true, "check"); // 공유 카드 폴링이 새 코멘트를 잡으면 전역 벨 stats도 같은 값으로 갱신(목록은 확인 — 묶음이 바뀐 것은 아니다)
     },
   });
 
@@ -1915,7 +1977,8 @@ export default function App() {
   //  (메뉴에서 설정 창을 연 직후 등)에 남이 시작한 일 뒤의 격자로 초점을 보내게 된다(Codex 코드 리뷰).
   useEffect(() => {
     if (refocusGridRef.current !== null && refocusGridRef.current !== "*" && refocusGridRef.current !== listPeekCtx) refocusGridRef.current = null;
-    if (refocusGridRef.current === null || listLocked || loading) return;
+    // 컷 화면이 주인이면 컷 카드 격자가 그 자리다 — 숨은 본 목록의 '받는 중'을 기다리지 않는다(Codex FE-01)
+    if (refocusGridRef.current === null || listLocked || (!cutOwns && loading)) return;
     // 묶음 응답을 기다리는 동안(③ cutPending)은 격자가 비어 있다 — 어느 복원이든 **최종 격자가 선 뒤**에. 에피소드로 들어간 뒤("*")만이 아니라
     //  폴더 창을 닫은 뒤도(낱장 조회가 묶음 조회보다 먼저 끝나면 빈 격자에서 표식이 소비돼 초점이 안 돌아왔다 — Codex 코드 리뷰). 옛 서버·실패면
     //  낱장 격자가 최종이다(실패 뒤에도 기다리던 것 — Codex 설계 검토).
@@ -1923,7 +1986,7 @@ export default function App() {
     refocusGridRef.current = null; // 한 번만 — 격자가 없으면(빈 목록·실패) 그대로 끝낸다
     // 묶음 보기면 컷 카드 격자가 그 자리다(둘 중 하나만 떠 있다)
     document.querySelector<HTMLElement>("main.main .gen-grid, main.main .cut-grid")?.focus({ preventScroll: true });
-  }, [listLocked, loading, listPeekCtx, cutPending]);
+  }, [listLocked, loading, listPeekCtx, cutPending, cutOwns]);
   useEffect(() => {
     const cancel = () => { refocusGridRef.current = null; };
     document.addEventListener("focusin", cancel);
@@ -2116,7 +2179,7 @@ export default function App() {
       filtersOpen={showFilters}
       onToggleFilters={() => setShowFilters((v) => !v)}
       count={gridGens.length}
-      countMore={hasMore && !behindAfterMove}
+      countMore={hasMore && !listGate}
       folderCards={listPeek ? undefined : cutToggle} // 창 안의 툴바에는 전환 단추가 없다
       grayOn={grayOn}
       onToggleGray={toggleGray}
@@ -2220,7 +2283,7 @@ export default function App() {
             ? coverHeader(ownCoverId, (g) => void pickFolderCover(g, { projectId: ownScope.projectId, path: filters.folder_path ?? "" }))
             : undefined
       }
-      hasMore={hasMore && !behindAfterMove} // 자리를 옮긴 뒤 새 목록 전에는 더 받지 않는다 — 커서가 옛 조회의 것이다
+      hasMore={hasMore && !listGate} // 자리를 옮긴 뒤 새 목록 전·낡은 사본·창을 닫은 뒤 사본에는 더 받지 않는다 — 커서가 옛 조회의 것이다
       loadingMore={loadingMore}
       onLoadMore={loadMore}
       resetKey={JSON.stringify([serverFilterKey, storedTab, libraryTabs.active])}
@@ -2339,7 +2402,7 @@ export default function App() {
         hasUnreadComments={stats.has_unread}
         notificationUnreadCount={stats.unread_count}
         onOpenNotificationComment={openComment}
-        onNotificationsChanged={() => void reload(true, true)}
+        onNotificationsChanged={() => void reload(true, true, "check")}
         inert={behindInert}
       />
       {mcpLoaded && <Suspense fallback={null}><McpConnection

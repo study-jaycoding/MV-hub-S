@@ -63,8 +63,8 @@ let block: Promise<never>;
 const book = () => books.at(-1)!;
 const token = (id = "g1") => book()?.get(id);
 const asset = () => seen[0]?.assets[0]?.id;
-function Probe({ scope = "A", enabled = true, seed = [initial], reload = mocks.reload }: {
-  scope?: string; enabled?: boolean; seed?: Generation[]; reload?: typeof mocks.reload;
+function Probe({ scope = "A", enabled = true, seed = [initial], reload = mocks.reload, cutOwned }: {
+  scope?: string; enabled?: boolean; seed?: Generation[]; reload?: typeof mocks.reload; cutOwned?: () => boolean;
 }) {
   const [gens, update] = useState(seed);
   const [blocked, setBlocked] = useState(false);
@@ -79,7 +79,7 @@ function Probe({ scope = "A", enabled = true, seed = [initial], reload = mocks.r
       startTransition(() => { update(action); setBlocked(true); });
     } else update(action);
   }, []);
-  const args = { enabled, scopeKey: scope, gens, gensRef, setGens, reload,
+  const args = { enabled, scopeKey: scope, gens, gensRef, setGens, reload, cutOwned,
     bumpBoard: mocks.bumpBoard, setSyncTick: mocks.tick, historyBoardVisible: false, commentsVisible: false };
   useGenerationProgress(args);
   useLayoutEffect(() => { seen = gens; commits.push({ scope, noise, asset: gens[0]?.assets[0]?.id }); });
@@ -113,6 +113,17 @@ afterEach(() => {
   unmount(); host.remove(); vi.unstubAllGlobals();
   expect(globalThis.Map).toBe(NativeMap);
   expect(invalidDeletes).toEqual([]);
+});
+
+// 83회차: 걸러 보는 컷 화면이 자료 주인이면 완료 뒤 상세 보정(목록 setter)은 그 화면에 닿지 않는다 — 다시 받기(그쪽 invalidate)를 한 번만 부른다.
+//  상세 보정 뒤의 다시 받기(목록에 없는 카드)와 겹치면 끝까지 받기가 두 번 돈다.
+it("cut owner: 완료 통지는 상세 보정 대신 다시 받기 한 번 — 목록에 있는 카드도 없는 카드도", async () => {
+  mocks.getGeneration.mockResolvedValue(fresh(1)); // 상세 보정 길로 가면 그 응답을 받는다(그 길로 가면 안 된다)
+  render({ cutOwned: () => true });
+  act(() => emit("done"));
+  act(() => emit("done", "absent"));
+  await act(async () => {});
+  expect([mocks.getGeneration.mock.calls.length, mocks.reload.mock.calls]).toEqual([0, [[true, true], [true, true]]]);
 });
 
 describe("actual progress hook: late detail authority", () => {

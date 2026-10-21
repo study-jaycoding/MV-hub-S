@@ -488,12 +488,12 @@ def test_cut_cards_carry_recent_takes_and_workers_for_the_list_view(catalog, mon
     }
     assert (cover["model"], cover["creator_name"], cover["is_final"]) == ("seedance-2.0", "리버", True)
     assert cover["assets"] == listed["assets"][:1] and takes[0]["cover"]["assets"] == listed["assets"][:1]  # 미리보기의 그림도 목록 행의 것과 같다
-    # 목록 행으로 읽는 것은 카드의 표지뿐이다 — 미리보기(생성물 띠 열 장)까지 목록 행으로 읽으면 읽는 시간의 대부분이 거기서 나간다
+    # 표지 조회로 읽는 것은 카드의 표지뿐이다 — 미리보기(생성물 띠 열 장)는 첫 에셋만 읽는다
     asked = []
-    real = folder_cover_repo.list_generations
-    monkeypatch.setattr(folder_cover_repo, "list_generations", lambda **kw: asked.append(sorted(kw["generation_ids"])) or real(**kw))
+    real = folder_cover_repo._covers
+    monkeypatch.setattr(folder_cover_repo, "_covers", lambda conn, ids, *a: asked.append(sorted(ids)) or real(conn, ids, *a))
     cards("e035")
-    monkeypatch.setattr(folder_cover_repo, "list_generations", real)
+    monkeypatch.setattr(folder_cover_repo, "_covers", real)
     assert asked == [["sub", "t01"]]
     # 작업자별 건수 — 많은 순, 이름을 모르면 이름 없이(uid 를 내보내지 않는다)
     assert cut["workers"] == [{"name": "리버", "count": 8}, {"name": None, "count": 4}]
@@ -559,6 +559,115 @@ def test_folder_previews_keep_content_identity_and_verified_location(catalog, lo
             assert asset["file_path"] == "/media/preview.png" and "server_location" not in asset
     with db.get_connection() as conn:
         assert dict(conn.execute("SELECT * FROM asset WHERE id='preview-asset'").fetchone()) == before
+
+
+def _asset(gen_id, asset_id, kind="image", source_url=None):
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO asset(id, generation_id, type, file_path, thumbnail_path, source_url) VALUES(?, ?, ?, ?, ?, ?)",
+            (asset_id, gen_id, kind, f"/media/{asset_id}.bin", f"/media/{asset_id}.jpg", source_url),
+        )
+
+
+def _old_covers(ids, *, projects, viewer, project="member"):
+    """바꾸기 전 표지 — 팀 목록 행 그대로 읽어 화면이 쓰는 칸만 남겼다(`list_generations` + `_card_cover`)."""
+    rows = repo.list_generations(
+        tab="team", team_member_projects=None if projects is None else list(projects), account_uid=viewer,
+        project_id=project, generation_ids=ids, limit=max(len(ids), 1),
+    )
+    return {row["id"]: folder_cover_repo._card_cover(row) for row in rows}
+
+
+def _cover_fixture():
+    """표지가 다르게 나올 수 있는 것을 모두 — 가시성(지움·공유 해제·다른 프로젝트·남의 비멤버 프로젝트·내 것)·보관 프로젝트·
+    에셋 여러 장(넣은 순서 ≠ id 순서)·길이(duration) 변형·최종/보류·이름 있는/없는/모르는 작성자 ·
+    서버 제공자 신원(보는 계정이 없을 때 is_mine 이 기대는 값)."""
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO app_setting(key, value) VALUES('my_creator_uid', 'river')")
+        conn.execute("INSERT INTO project(id, name, archived) VALUES('old', 'old', 1)")
+        conn.execute("INSERT INTO project_member(project_id, creator_uid, project_role) VALUES('old', 'viewer', 'creator')")
+    repo.identity.set_creator_name("river", "리버")
+    params = {
+        "d-none": None, "d-empty": "", "d-nokey": '{"seed": 1}', "d-null": '{"duration": null}',
+        "d-str": '{"duration": "6", "big": "' + "x" * 3000 + '"}', "d-int": '{"duration": 5}', "d-float": '{"duration": 5.5}',
+    }
+    for gen_id, value in params.items():
+        seed(gen_id, "e035/C0010", creator="river")
+        with db.get_connection() as conn:
+            conn.execute("UPDATE generation SET params = ?, model = 'seedance-2.0' WHERE id = ?", (value, gen_id))
+    seed("multi", "e035/C0020", creator="viewer")
+    _asset("multi", "z-first", "video", source_url="https://cdn.example.test/z.mp4")
+    _asset("multi", "a-second", "image")
+    _asset("d-int", "only", "image")
+    seed("flags", "e035/C0030", creator=None)
+    with db.get_connection() as conn:
+        conn.execute("UPDATE generation SET is_final = 1, is_held = 1 WHERE id = 'flags'")
+    seed("held", "e035/C0030", creator="nameless")
+    with db.get_connection() as conn:
+        conn.execute("UPDATE generation SET is_held = 1 WHERE id = 'held'")
+    seed("gone", "e035/C0040", deleted=True)
+    seed("private", "e035/C0040", shared=False)
+    seed("foreign", "e035/C0040", project="other")
+    seed("mine-foreign", "e035/C0040", project="other", creator="viewer")
+    seed("archived", "e035/C0050", project="old")
+    return [*params, "multi", "flags", "held", "gone", "private", "foreign", "mine-foreign", "archived", "missing"]
+
+
+SCOPES = [
+    dict(projects=("member",), viewer="viewer"),            # 멤버
+    dict(projects=(), viewer="viewer"),                     # 비멤버 — 내 것만
+    dict(projects=None, viewer="boss"),                     # 전체를 보는 계정(남의 개인 메타는 그대로 가린다)
+    dict(projects=None, viewer=None),                       # 단독
+    dict(projects=(), viewer="\x00"),                       # 미확정 계정 — 아무것도 안 보인다
+]
+
+
+@pytest.mark.parametrize("scope", SCOPES)
+@pytest.mark.parametrize("project", ["member", "other", "old"])
+def test_the_cover_query_gives_exactly_what_the_team_list_rows_gave(catalog, scope, project):
+    """같은 id 묶음 → 전용 표지 조회 = 바꾸기 전(목록 행 + `_card_cover`) — 어떤 것이 빠지는지(가시성)와 칸·값 모두."""
+    ids = _cover_fixture()
+    with db.get_connection() as conn:
+        new = folder_cover_repo._covers(
+            conn, ids, project, None if scope["projects"] is None else list(scope["projects"]), scope["viewer"],
+        )
+    old = _old_covers(ids, project=project, **scope)
+    assert new == old
+    # 형까지 같아야 한다 — 파이썬은 True == 1 이라 위 비교만으로는 bool 변환이 빠져도 통과한다(응답은 JSON true 대 1)
+    assert json.dumps(new, sort_keys=True, ensure_ascii=False) == json.dumps(old, sort_keys=True, ensure_ascii=False)
+    if project == "member" and scope["viewer"] == "viewer" and scope["projects"]:
+        assert set(new) == {*ids[:7], "multi", "flags", "held"}  # 지움·공유 해제·다른 프로젝트·없는 것은 빠진다
+        assert [a["id"] for a in new["multi"]["assets"]] == ["z-first"]  # 넣은 순서의 첫 장(id 순서가 아니다)
+        assert new["d-null"]["params"] == {"duration": None} and new["d-nokey"]["params"] is None
+
+
+@pytest.mark.parametrize("scope", SCOPES)
+def test_every_card_cover_matches_the_old_list_row_cover(catalog, scope):
+    """폴더 카드 전체를 같은 입력으로 — 각 카드의 표지가 바꾸기 전 길(목록 행 + `_card_cover`)의 것과 같다(바꾸기 전 코드에서도 통과한다)."""
+    _cover_fixture()
+    choose("e035/C0020", "multi", projects=None)  # 대표가 정해진 카드와 최신 것이 표지인 카드를 같이
+    for parent, project in (("e035", "member"), ("", "member"), ("e035", "other"), ("e035", "old")):
+        data, _ = cards(parent, projects=scope["projects"], viewer=scope["viewer"], project=project)
+        for folder in data["folders"]:
+            cover = folder["cover"]
+            assert cover == _old_covers([cover["id"]], project=project, **scope)[cover["id"]], folder["path"]
+
+
+def test_folder_cards_never_run_the_full_list_enrichment(catalog, monkeypatch):
+    """표지는 화면이 쓰는 칸만 읽는다 — 목록 행 전체 보강(레퍼런스·태그·계보·코멘트 …)을 한 번도 거치지 않는다."""
+    from app.repo import generation_rows, generations_query
+
+    _cover_fixture()
+    choose("e035/C0020", "multi")
+    calls = []
+    for module in (generations_query, generation_rows):
+        real = module._attach_children
+        monkeypatch.setattr(
+            module, "_attach_children", lambda conn, rows, _real=real, **kw: calls.append(len(rows)) or _real(conn, rows, **kw),
+        )
+    for parent in ("e035", ""):
+        assert cards(parent)[0]["folders"]
+    assert calls == []
 
 
 def test_cards_count_final_and_held_like_the_sidebar_numbers(catalog):

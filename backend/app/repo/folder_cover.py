@@ -13,12 +13,13 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Optional
 
 from ..db import get_connection
 from ._common import clean_folder_path
-from .generations_query import list_generations
-from .identity import resolve_display_names
+from ._visibility import team_generation_visibility_clause
+from .identity import get_my_uid, resolve_display_names
 from .asset_locations import project_generation_locations
 from .projects import _folder_counts_where
 
@@ -68,6 +69,49 @@ def _card_cover(row: dict[str, Any]) -> dict[str, Any]:
         "params": {"duration": params["duration"]} if isinstance(params, dict) and "duration" in params else None,
         "assets": (row.get("assets") or [])[:1],
     }
+
+
+def _covers(
+    conn: Any,
+    ids: list[str],
+    project_id: str,
+    team_member_projects: Optional[list[str]],
+    viewer_uid: Optional[str],
+) -> dict[str, dict[str, Any]]:
+    """id → 카드의 표지. 바꾸기 전에는 팀 목록 행(`list_generations(tab='team', project_id=…)`)을 통째로 보강해 읽고
+    `_card_cover` 로 줄였다 — 레퍼런스·태그·계보·코멘트 …까지 다 붙인 뒤 버렸다(83회차). 이제 화면이 쓰는 칸만 읽는다. 값은 그때와 같다.
+
+    가시성도 그 목록 조회와 같은 조건이다(지우지 않음 · 공유됨 · 팀 가시성 · 그 프로젝트) — 집계에서 나온 id 라도 다시 본다
+    (그 사이 지워지거나 옮겨졌으면 표지가 없고 카드를 싣지 않는다). 보관 프로젝트도 프로젝트를 고른 목록처럼 제외하지 않는다.
+    """
+    if not ids:
+        return {}
+    visibility, visibility_args = team_generation_visibility_clause(team_member_projects, viewer_uid)
+    rows = [dict(row) for row in conn.execute(
+        "SELECT g.id, g.project_id, p.name AS project_name, g.folder_path, g.model, g.created_at, "
+        "g.is_final, g.is_held, g.params, g.creator_uid "
+        "FROM generation g LEFT JOIN project p ON p.id = g.project_id "
+        f"WHERE g.id IN ({','.join('?' for _ in ids)}) AND g.deleted_at IS NULL "
+        "AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id) AND g.project_id = ?"
+        + (f" AND {visibility}" if visibility else ""),
+        [*ids, project_id, *visibility_args],
+    )]
+    names = resolve_display_names(conn, {row["creator_uid"] for row in rows})
+    my_uid = viewer_uid or get_my_uid()  # 목록 행의 is_mine 과 같은 규칙(generation_rows._attach_children)
+    first = _first_assets(conn, [row["id"] for row in rows])
+    covers = {}
+    for row in rows:
+        uid = row["creator_uid"]
+        covers[row["id"]] = _card_cover({
+            **row,
+            "creator_name": names.get(uid),
+            "is_mine": (uid == my_uid) if uid else (my_uid is None),
+            "is_final": bool(row["is_final"]),
+            "is_held": bool(row["is_held"]),
+            "params": json.loads(row["params"]) if row["params"] else None,
+            "assets": [first[row["id"]]] if row["id"] in first else [],
+        })
+    return covers
 
 
 def _first_assets(conn: Any, generation_ids: list[str]) -> dict[str, dict[str, Any]]:
@@ -199,7 +243,7 @@ def folder_cards(
         path: sorted(entry["subs"], key=lambda one: (one.casefold(), one))[:_STRIP]
         for path, entry in folders.items()
     }
-    # 카드의 표지만 목록 행으로 읽는다(카드 수만큼). 미리보기(컷 띠·생성물 띠)는 그림 한 장이면 된다 — 목록 행으로 읽으면 컷마다 열 장씩이라
+    # 표지 조회(`_covers`)는 카드의 표지만(카드 수만큼). 미리보기(컷 띠·생성물 띠)는 그림 한 장이면 된다 — 표지처럼 읽으면 컷마다 열 장씩이라
     #  읽는 시간의 대부분이 거기서 나갔다(배포 전 실측: 컷 300 × 12 에서 396ms 중 349ms). 미리보기의 것은 위 집계가 이미 같은 가시성
     #  (`_visible_where` = 목록의 tab=team·그 프로젝트와 같은 조건)으로 거른 것이라 다시 거르지 않는다.
     cover_ids = list(dict.fromkeys(entry["cover_id"] for entry in folders.values()))
@@ -208,16 +252,11 @@ def folder_cards(
         + [one["id"] for rows_of in takes.values() for one in rows_of]
     ))
     covers: dict[str, dict[str, Any]] = {}
-    for start in range(0, len(cover_ids), _COVER_CHUNK):
-        chunk = cover_ids[start:start + _COVER_CHUNK]
-        # project_id 를 같이 준다 — 빼면 보관(archived) 프로젝트가 목록의 기본 제외 조건에 걸려 표지가 사라진다.
-        for cover in list_generations(
-            tab="team", team_member_projects=team_member_projects, account_uid=viewer_uid,
-            project_id=project_id, generation_ids=chunk, limit=len(chunk),
-        ):
-            covers[cover["id"]] = cover
-
     with get_connection() as conn:
+        for start in range(0, len(cover_ids), _COVER_CHUNK):
+            covers.update(_covers(
+                conn, cover_ids[start:start + _COVER_CHUNK], project_id, team_member_projects, viewer_uid,
+            ))
         # 이름은 목록 행의 creator_name 과 같은 해석기다 — 생성물 띠의 '만든 사람'도 여기서 읽는다(폴더의 모든 만든 사람이 들어 있다).
         names = resolve_display_names(
             conn, {entry["last"][1] for entry in folders.values()} | {uid for entry in folders.values() for uid in entry["by"]},
@@ -243,7 +282,7 @@ def folder_cards(
         ]
         out.append({
             "path": path, "name": path[len(prefix):], "count": entry["count"],
-            "subfolders": len(entry["subs"]), "rep": entry["rep"], "cover": _card_cover(cover),
+            "subfolders": len(entry["subs"]), "rep": entry["rep"], "cover": cover,
             "video_count": entry["videos"],
             "rep_count": sum(1 for sub in entry["subs"].values() if sub["rep"]),
             "last_shared_at": entry["last"][0] or None,

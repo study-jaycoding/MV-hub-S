@@ -80,6 +80,9 @@ def list_generations(
     # OFFSET 을 대체(건너뛴 N행 스캔 제거) → 수만 번째 페이지도 일정 속도.
     cursor_ts: Optional[float] = None,
     cursor_id: Optional[str] = None,
+    # 돌려줄 행의 prompt·display_prompt 를 처음부터 빈 글로 읽는다(라우터 `lean_prompt=1` — 컷 카드 끝까지 받기, 83회차).
+    #  검색 조건(WHERE)은 그대로 원문 칸(g.prompt·FTS)을 본다.
+    lean_prompt: bool = False,
 ) -> list[dict[str, Any]]:
     """필터 적용된 generation 목록(DESIGN.md §4 좌측 필터).
 
@@ -258,8 +261,9 @@ def list_generations(
         args += [cursor_ts, cursor_ts, cursor_id]
 
     clause = (" WHERE " + " AND ".join(where)) if where else ""
+    prompt_cols = "'' AS prompt, '' AS display_prompt" if lean_prompt else "g.prompt, g.display_prompt"
     sql = (
-        "SELECT g.id, g.worker_id, w.name AS worker_name, g.prompt, g.display_prompt, g.model, "
+        f"SELECT g.id, g.worker_id, w.name AS worker_name, {prompt_cols}, g.model, "
         "g.params, g.color, g.status, g.created_at, g.sort_ts, g.is_source, g.source_name, "
         "g.comment, g.error, gr.status AS execution_phase, gr.provider_status, "
         "gr.recovery_probe_status, "  # 모호 제출 자동조사 결론 — 복구 UI 문구(외부 작업 없음 확인)용
