@@ -419,7 +419,7 @@ def helper_result(body: HelperResultIn, request: Request) -> dict[str, Any]:
             scan = registry.RegistryScan(True, files)
             clean = scan.clean
             stats = {
-                "root": lease["unc"], "state": "ok" if clean else "partial", "started_at": lease["started_at"],
+                "root": lease["unc"], "state": "ok" if clean else "partial", "started_at": lease.get("acked_at", lease["started_at"]),
                 "finished_at": registry.utc_now(), "complete": True, "clean": clean, "files": len(files),
                 "hashed": body.stats.hashed, "hashed_bytes": body.stats.hashed_bytes,
                 "undetermined": sum(1 for f in files if f.status == "undetermined"),

@@ -781,8 +781,9 @@ def _remap_asset_sync(conn, table: str, old: str, new: str) -> int:
         else:
             conn.execute(f"UPDATE {table} SET owner_uid=? WHERE owner_uid=? AND {where}", (new, old, *args))
     if table == "asset_sync_outbox" and rows:
-        conn.execute("UPDATE asset_sync_outbox SET state=CASE WHEN project_id='' THEN 'project_required' ELSE 'queued' END, "
-                     "receipt_json=NULL,lease_token=NULL,lease_until=NULL,next_retry_at=0 WHERE owner_uid=? AND state<>'deleted'", (new,))
+        conn.execute("UPDATE asset_sync_outbox SET state=CASE WHEN state='deleted' THEN state "
+                     "WHEN project_id='' THEN 'project_required' ELSE 'queued' END, "
+                     "storage_id='',root_revision='',lease_token=NULL,lease_until=NULL,next_retry_at=0 WHERE owner_uid=?", (new,))
     if table == "asset_destination_outbox" and rows:
         conn.execute("UPDATE asset_destination_outbox SET state=CASE WHEN state='ready' THEN state ELSE 'queued' END, "
                      "lease_token=NULL,lease_until=NULL,next_retry_at=0 WHERE owner_uid=?", (new,))
