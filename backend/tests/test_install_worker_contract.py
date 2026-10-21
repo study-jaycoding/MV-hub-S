@@ -247,6 +247,24 @@ def test_installed_descriptor_cannot_be_downgraded_to_legacy_manifest(tmp_path):
     assert result.returncode != 0
 
 
+@pytest.mark.parametrize('capabilities', [[], ['artifact-receipt-v1']])
+def test_enforced_release_requires_installed_bridge_capability(tmp_path, capabilities):
+    from release_contract_fixture import qualified_package
+    _, raw = qualified_package(tmp_path, '2026.10.18-1200', rollout='enforced')
+    candidate = tmp_path / 'candidate.json'
+    candidate.write_bytes(raw)
+    (tmp_path / 'installer-capabilities.json').write_text(json.dumps({
+        'format_version': 1, 'capabilities': capabilities,
+    }))
+    code = f"$Candidate=ConvertFrom-ReleaseJson ([IO.File]::ReadAllBytes('{candidate}')); Assert-InstalledCapability -Candidate $Candidate -Root '{tmp_path}'"
+    result = ps(tmp_path, code)
+    if capabilities:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode != 0
+        assert 'Install the compatible bridge before this release.' in result.stderr
+
+
 def test_extracted_payload_is_rechecked_before_and_after_component_swap(tmp_path):
     from release_contract_fixture import qualified_package
     value, raw = qualified_package(tmp_path, '2026.10.18-1200')

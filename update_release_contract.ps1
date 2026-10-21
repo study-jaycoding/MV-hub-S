@@ -93,7 +93,10 @@ function Get-QualifiedRelease {
             throw 'Compatibility declaration mismatch.'
         }
         if ($Compatibility.protocol_version -isnot [int] -or $Compatibility.protocol_version -ne 1 -or $Compatibility.rollout -cnotin @('bridge', 'enforced') -or
-            $null -eq $Compatibility.required_installer_capabilities) { throw 'Unsupported compatibility declaration.' }
+            $Compatibility.required_installer_capabilities -isnot [array]) { throw 'Unsupported compatibility declaration.' }
+        foreach ($Capability in $Compatibility.required_installer_capabilities) {
+            if ($Capability -isnot [string]) { throw 'Unsupported compatibility declaration.' }
+        }
         if ($Compatibility.rollout -ceq 'bridge' -and
             ($Compatibility.backward_compatible -isnot [bool] -or -not $Compatibility.backward_compatible -or
              @($Compatibility.required_installer_capabilities).Count -ne 0)) { throw 'Bridge must be backward compatible.' }
