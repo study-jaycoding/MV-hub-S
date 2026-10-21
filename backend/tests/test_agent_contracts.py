@@ -2305,6 +2305,51 @@ def test_suppressed_result_is_still_sent_to_library_ingest():
     assert ingest_call.kwargs["body"]["jobs"] == [job]
 
 
+@pytest.mark.parametrize("detail", [
+    "creator_uid_link_conflict", "creator_uid_link_reserved", "account identity mismatch",
+])
+@pytest.mark.parametrize("body_format", ["dict", "json", "text"])
+@pytest.mark.parametrize("allow_relogin", [True, False])
+def test_push_once_ingest_409_guidance(detail, body_format, allow_relogin, capsys):
+    agent = _load_agent()
+    body = {"detail": detail}
+    if body_format == "json":
+        body = json.dumps(body)
+    elif body_format == "text":
+        body = detail
+    with patch.object(agent, "_cli_json", return_value=[]), patch.object(
+        agent, "_job_ids_to_sync", return_value=set()
+    ), patch.object(
+        agent, "_cycle_collect_account_status", return_value=({"email": "user@example.com"}, None)
+    ), patch.object(agent, "_load_txn_marks", return_value={}), patch.object(
+        agent, "_collect_workspace_transactions", return_value=([], {})
+    ), patch.object(agent, "_cached_models", return_value=[]), patch.object(
+        agent, "_load_suppressed", return_value=set()
+    ), patch.object(agent, "_http", return_value=(409, body)) as http, patch.object(
+        agent, "offer_cli_relogin", return_value=False
+    ) as relogin, patch.object(agent, "_save_txn_marks") as save_marks:
+        agent.push_once("http://hub", "token-1", "higgsfield", 100, _allow_relogin=allow_relogin)
+
+    output = capsys.readouterr().out
+    http.assert_called_once()
+    save_marks.assert_not_called()
+    assert output.count("[보류]") == 1
+    if detail.startswith("creator_uid_link_"):
+        relogin.assert_not_called()
+        assert "관리자에게 문의하세요(재로그인으로는 풀리지 않습니다)" in output
+        assert "이미 다른 MV Hub 계정에 연결" in output
+        assert detail not in output
+        assert "user@example.com" not in output
+        assert "올바른 계정으로 허브에 로그인" not in output
+    else:
+        if allow_relogin:
+            relogin.assert_called_once_with("higgsfield", detail)
+        else:
+            relogin.assert_not_called()
+        assert f"[보류] 적재 실패(status=409): {detail}" in output
+        assert "올바른 계정으로 허브에 로그인" in output
+
+
 def test_submission_stage_adapters_retry_only_transient_response_loss():
     agent = _load_agent()
     with patch.object(
