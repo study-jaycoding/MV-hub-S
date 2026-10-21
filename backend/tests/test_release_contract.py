@@ -63,6 +63,8 @@ def test_repository_compatibility_matches_database_contract_and_declares_bridge(
     ({'rollout': None}, 'unknown rollout'),
     ({'rollout': 'bridge', 'required_installer_capabilities': ['artifact-receipt-v1']}, 'bridge must'),
     ({'rollout': 'bridge', 'backward_compatible': False}, 'bridge must'),
+    ({'rollout': 'bridge', 'backward_compatible': None}, 'bridge must'),
+    ({'rollout': 'bridge', 'required_installer_capabilities': None}, 'invalid installer capabilities'),
     ({'rollout': 'enforced', 'required_installer_capabilities': []}, 'enforced release requires'),
     ({'rollout': 'enforced', 'required_installer_capabilities': ['other']}, 'enforced release requires'),
 ])
@@ -73,10 +75,21 @@ def test_compatibility_rejects_invalid_rollout(changes, error):
         c.compatibility({**declaration, **changes})
 
 
+def test_compatibility_rejects_bridge_without_backward_compatible():
+    declaration = c.document((Path(__file__).resolve().parents[2] / 'release/compatibility.json').read_bytes())
+    del declaration['backward_compatible']
+    with pytest.raises(c.ContractError, match='bridge must'):
+        c.compatibility(declaration)
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell adapter')
 @pytest.mark.parametrize('rollout,caps,backward,error', [
     ('bridge', [], True, ''),
     ('enforced', ['artifact-receipt-v1'], False, ''),
+    ('enforced', 'artifact-receipt-v1', False, 'Unsupported compatibility declaration.'),
+    ('enforced', [1], False, 'Unsupported compatibility declaration.'),
+    ('enforced', ['artifact-receipt-v1', 1], False, 'Unsupported compatibility declaration.'),
+    ('enforced', None, False, 'Unsupported compatibility declaration.'),
     (None, [], True, 'Unsupported compatibility declaration.'),
     ('bridge', ['artifact-receipt-v1'], True, 'Bridge must be backward compatible.'),
     ('bridge', [], False, 'Bridge must be backward compatible.'),
