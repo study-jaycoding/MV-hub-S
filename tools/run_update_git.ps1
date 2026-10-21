@@ -234,7 +234,6 @@ try {
         }
         $ExitCode = Invoke-UpdateBatch (Join-Path $RootPath 'run_py.bat') @(
             (Join-Path $RootPath 'tools\server_release_update.py'), '--root', $RootPath,
-            '--compatibility', (Join-Path $RootPath 'server-release-compatibility.json'),
             '--source-receipt', $env:MVHUB_SERVER_SOURCE_RECEIPT,
             '--verification-python', $env:MVHUB_SERVER_VERIFICATION_PYTHON)
     }

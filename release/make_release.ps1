@@ -518,7 +518,7 @@ if ($PublishCandidatePath) {
     Write-Host 'Qualified candidate published without rebuilding. latest.json was not changed.'
     return
 }
-if (-not $CompatibilityPath) { throw 'An explicit compatibility declaration is required (-CompatibilityPath).' }
+if (-not $CompatibilityPath) { $CompatibilityPath = Join-Path $ProjectRoot 'release\compatibility.json' }
 $BuildPython = Resolve-PythonRuntime -PreferredExe $PythonExe
 $ContractTool = Join-Path $ProjectRoot 'tools\release_contract.py'
 $SourceIdentityRaw = & $BuildPython.Exe $ContractTool source --root $ProjectRoot --compatibility $CompatibilityPath

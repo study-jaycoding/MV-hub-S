@@ -100,14 +100,8 @@ def qualify_stage(root, stage, target, source_raw, verification_python, *, probe
     return target
 
 
-def prepare(root: Path, declared: dict, *, source_receipt: Path, verification_python: Path,
+def prepare(root: Path, *, source_receipt: Path, verification_python: Path,
             run=run_checked, probe_run=subprocess.run):
-    compatibility(declared)
-    for field in ('reader_protocol', 'writer_protocol'):
-        if type(declared.get(field)) is not int:
-            raise ValueError('explicit_server_database_protocol_required')
-    if not isinstance(declared.get('supported_components'), list):
-        raise ValueError('explicit_server_database_components_required')
     local_child(root, root)
     root = root.resolve()
     source_receipt = local_child(source_receipt, source_receipt.parent)
@@ -149,6 +143,14 @@ def prepare(root: Path, declared: dict, *, source_receipt: Path, verification_py
         commit = result.stdout.strip()
         if len(commit) != 40 or any(c not in '0123456789abcdef' for c in commit):
             raise ValueError('invalid_source_revision')
+        result = subprocess.run(['git', '-C', str(root), 'show', commit + ':release/compatibility.json'],
+                                check=True, capture_output=True)
+        declared = compatibility(document(result.stdout))
+        for field in ('reader_protocol', 'writer_protocol'):
+            if type(declared.get(field)) is not int:
+                raise ValueError('explicit_server_database_protocol_required')
+        if not isinstance(declared.get('supported_components'), list):
+            raise ValueError('explicit_server_database_components_required')
         current_path = logs / 'server-current.json'
         journal_path = logs / 'server-install-journal.json'
         if current_path.exists() and journal_path.exists():
@@ -157,14 +159,17 @@ def prepare(root: Path, declared: dict, *, source_receipt: Path, verification_py
             if current.get('manifest_sha256') and journal.get('phase') == 'committed' and journal.get('target') == current:
                 installed = verify_stage(Path(current['path']), logs / 'server-stages', current['manifest_sha256'])
                 verify_qualification(current, logs / 'server-stages', installed)
-                if installed.get('source_commit') == commit and installed.get('compatibility') == declared:
+                if (installed.get('source_commit') == commit and installed.get('compatibility') == declared
+                        and 'release/compatibility.json' in installed['source_files']):
                     validate_source_receipt(source_proof, commit, installed['source_files'])
                     write_progress('up_to_date')
                     return current['build_id']
         stage.mkdir(parents=True, exist_ok=False)
         archive = stage.parent / (run_id + '.source.zip')
+        # Git archive applies the selected tree's attributes, including checkout EOLs.
         run(['git', 'archive', '--format=zip', '--output=' + str(archive), commit,
-             'backend/app', 'backend/serve.py', 'backend/schema.sql', 'backend/requirements.lock.txt', 'hf_cli_version.txt', 'frontend', 'tools'], cwd=root, log=log)
+             'backend/app', 'backend/serve.py', 'backend/schema.sql', 'backend/requirements.lock.txt',
+             'hf_cli_version.txt', 'frontend', 'tools', 'release/compatibility.json'], cwd=root, log=log)
         with zipfile.ZipFile(archive) as bundle:
             for entry in bundle.infolist():
                 if entry.is_dir():
@@ -178,6 +183,8 @@ def prepare(root: Path, declared: dict, *, source_receipt: Path, verification_py
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with bundle.open(entry) as source, path.open('xb') as target:
                     shutil.copyfileobj(source, target)
+        if document((stage / 'release/compatibility.json').read_bytes()) != declared:
+            raise ValueError('staged_compatibility_mismatch')
         source_files = source_inventory(stage)
         validate_source_receipt(source_proof, commit, source_files)
         env = build_smoke_env(os.environ, logs / ('server-prepare-env-' + run_id),
@@ -231,7 +238,6 @@ def prepare(root: Path, declared: dict, *, source_receipt: Path, verification_py
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, required=True)
-    parser.add_argument('--compatibility', type=Path, required=True)
     parser.add_argument('--source-receipt', type=Path, required=True,
                         help='trusted clean selected-commit source-only gate JSON; required source steps must pass')
     parser.add_argument('--verification-python', type=Path, required=True,
@@ -239,8 +245,8 @@ def main():
     args = parser.parse_args()
     try:
         with exclusive_lock(args.root / 'logs/server-update.lock'):
-            run_id = prepare(args.root, json.loads(args.compatibility.read_text(encoding='utf-8-sig')),
-                             source_receipt=args.source_receipt, verification_python=args.verification_python)
+            run_id = prepare(args.root, source_receipt=args.source_receipt,
+                             verification_python=args.verification_python)
         deadline = time.monotonic() + 300
         journal_path = args.root / 'logs/server-install-journal.json'
         while time.monotonic() < deadline:

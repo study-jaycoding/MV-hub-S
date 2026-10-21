@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import zipfile
 
@@ -33,6 +34,51 @@ def fixture(tmp_path, rollout="bridge"):
 
 def receipt(folder, value):
     return folder / value["contract"]["validation_receipt"]["file"]
+
+
+def test_repository_compatibility_matches_database_contract_and_blocks_undecided_rollout():
+    from app import schema_compat
+    path = Path(__file__).resolve().parents[2] / 'release/compatibility.json'
+    declaration = c.document(path.read_bytes())
+    assert declaration['reader_protocol'] == schema_compat.READER_PROTOCOL
+    assert declaration['writer_protocol'] == schema_compat.WRITER_PROTOCOL
+    assert set(declaration['supported_components']) == set(schema_compat.BASELINES)
+    assert len(declaration['supported_components']) == len(schema_compat.BASELINES)
+    assert declaration['db_schema'] == {
+        'read_min': min(schema_compat.SCHEMA_VERSIONS.values()),
+        'read_max': max(schema_compat.SCHEMA_VERSIONS.values()),
+        'write_min': min(schema_compat.SCHEMA_VERSIONS.values()),
+        'write_max': max(schema_compat.SCHEMA_VERSIONS.values()),
+    }
+    assert declaration['rollout'] is None
+    assert declaration['backward_compatible'] is None
+    assert declaration['required_installer_capabilities'] is None
+    with pytest.raises(c.ContractError, match='unknown rollout'):
+        c.compatibility(declaration)
+    # These branches validate the format only, not old-version compatibility.
+    c.compatibility({**declaration, 'rollout': 'bridge', 'backward_compatible': True,
+                     'required_installer_capabilities': []})
+    c.compatibility({**declaration, 'rollout': 'enforced', 'backward_compatible': False,
+                     'required_installer_capabilities': ['artifact-receipt-v1']})
+
+
+def test_release_default_compatibility_and_explicit_override():
+    """Evaluate only the default expression, never the release script body."""
+    import re
+    root = Path(__file__).resolve().parents[2]
+    script = (root/'release/make_release.ps1').read_text(encoding='utf-8-sig')
+    match = re.search(r'if \(-not \$CompatibilityPath\) \{[^\r\n]+\}', script)
+    assert match and "$CompatibilityPath = Join-Path $ProjectRoot 'release\\compatibility.json'" in match[0]
+    powershell = shutil.which('powershell.exe')
+    if not powershell:
+        pytest.skip('PowerShell is required for the default expression check')
+    command = ("$ProjectRoot = 'C:\\fixture\\release-root'; "
+               "foreach ($value in @('', 'C:\\external\\explicit.json')) { "
+               "$CompatibilityPath = $value; " + match[0] + "; $CompatibilityPath }")
+    result = subprocess.run([powershell, '-NoProfile', '-NonInteractive', '-Command', command],
+                            check=True, capture_output=True, text=True)
+    assert result.stdout.splitlines() == [r'C:\fixture\release-root\release\compatibility.json',
+                                           r'C:\external\explicit.json']
 
 
 def test_descriptor_is_non_circular_and_payload_is_verified(tmp_path):
