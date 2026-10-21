@@ -51,17 +51,72 @@ class GuidanceTests(unittest.TestCase):
     def body(self, name, suffix=""):
         return "# 지침\n\n> 이 파일({}용)과 짝 지침은 같아야 한다.\n\n공통 본문{}\n".format(PAIR[name], suffix)
 
-    def check(self, expected=0, cwd=None, hook=False):
+    def check(self, expected=0, cwd=None, hook=False, tree=None):
         if hook:
             command = ["git", "-c", "core.hooksPath=.githooks", "hook", "run", "pre-commit"]
         else:
             command = [sys.executable, str(self.root / "tools/check_agent_guidance.py")]
+            if tree is not None:
+                command.append("--tree=" + tree)
         start = time.perf_counter()
         result = self.run_command(command, cwd=cwd or self.root)
         self.last_duration = time.perf_counter() - start
         output = (result.stdout + result.stderr).decode("utf-8", "replace")
         self.assertEqual(result.returncode, expected, output)
         return output
+
+    def test_clean_tree_is_checked(self):
+        self.assertEqual(self.check(), "")
+        self.assertIn("[통과]", self.check(tree="HEAD"))
+
+    def test_committed_pair_mismatch_fails_on_clean_checkout(self):
+        self.write("AGENTS.md", self.body("AGENTS.md", " changed"))
+        self.git("add", "AGENTS.md")
+        self.git("commit", "-qm", "mismatched pair fixture")
+        self.assertEqual(self.check(), "")
+        self.assertIn("본문이 다릅니다", self.check(1, tree="HEAD"))
+
+    def test_tree_ignores_index_and_worktree(self):
+        tree = self.git("rev-parse", "HEAD^{tree}").stdout.decode().strip()
+        self.write("AGENTS.md", self.body("AGENTS.md", " staged change"))
+        self.git("add", "AGENTS.md")
+        self.write("CLAUDE.md", "unfinished worktree edit")
+        before = self.git("ls-files", "--stage").stdout
+        self.assertIn("[통과]", self.check(tree=tree))
+        self.assertEqual(self.git("ls-files", "--stage").stdout, before)
+        self.assertEqual((self.root / "CLAUDE.md").read_text(), "unfinished worktree edit")
+        self.assertIn("본문이 다릅니다", self.check(1))
+
+    def test_invalid_tree_and_option_like_ref_fail(self):
+        for ref in ("missing-ref", "--help", ""):
+            with self.subTest(ref=ref):
+                self.assertIn("Git 또는 검사기 실행 실패", self.check(1, tree=ref))
+
+    def test_tree_requires_both_guidance_files(self):
+        self.git("rm", "-q", *PAIR)
+        self.git("commit", "-qm", "missing pair fixture")
+        self.assertIn("지침 두 파일", self.check(1, tree="HEAD"))
+
+    def test_tree_uses_committed_settings_not_worktree_fix(self):
+        self.write(".claude/settings.json", '{"secret": "do-not-print-this",}')
+        self.git("add", ".claude/settings.json")
+        self.git("commit", "-qm", "invalid settings fixture")
+        self.write(".claude/settings.json", "{}")
+        output = self.check(1, tree="HEAD")
+        self.assertIn("JSONDecodeError", output)
+        self.assertNotIn("do-not-print-this", output)
+
+    def test_tree_rejects_non_regular_guidance(self):
+        oid = self.git("hash-object", "-w", "--stdin", input=b"CLAUDE.md").stdout.decode().strip()
+        self.git("update-index", "--cacheinfo", "120000," + oid + ",AGENTS.md")
+        self.git("commit", "-qm", "symlink guidance fixture")
+        self.assertIn("일반 파일만", self.check(1, tree="HEAD"))
+
+    def test_tree_rejects_workflow_conflict(self):
+        self.write(".github/workflows/ci.yml", "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n")
+        self.git("add", ".github/workflows/ci.yml")
+        self.git("commit", "-qm", "workflow conflict fixture")
+        self.assertIn("충돌 표시", self.check(1, tree="HEAD"))
 
     def test_unrelated_change_ignores_unstaged_guidance(self):
         self.write("AGENTS.md", "broken unstaged instruction")
@@ -144,9 +199,10 @@ class GuidanceTests(unittest.TestCase):
 
     def test_old_python_version_only_blocks_relevant_changes(self):
         command = [sys.executable, "-c",
-                   "import json, os, re, subprocess, runpy, sys; "
+                   "import argparse, json, os, re, subprocess, runpy, sys; "
                    "sys.version_info = (3, 10, 0); "
-                   "runpy.run_path(sys.argv[1], run_name='__main__')",
+                   "script = sys.argv[1]; sys.argv = [script]; "
+                   "runpy.run_path(script, run_name='__main__')",
                    str(self.root / "tools/check_agent_guidance.py")]
         self.write("normal.py", "x = 1\n")
         self.git("add", "normal.py")
@@ -167,7 +223,8 @@ class GuidanceTests(unittest.TestCase):
         patterns = tokens[start:tokens.index("status=$?")]
         for path in (".githooks/new-hook", ".claude/settings.json", ".codex/config.toml",
                      ".claude/nested/settings.toml", ".codex/nested/settings.json",
-                     ".claude/agents/nested/reviewer.md", ".codex/agents/implement.md"):
+                     ".claude/agents/nested/reviewer.md", ".codex/agents/implement.md",
+                     ".github/workflows/ci.yml", ".github/workflows/nested/ci.yaml"):
             with self.subTest(path=path):
                 self.assertTrue(checker["relevant"](path))
                 self.write(path, "")

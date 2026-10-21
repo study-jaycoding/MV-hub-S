@@ -1,0 +1,45 @@
+name: PR policy
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-policy-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  policy-check:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
+      GIT_OPTIONAL_LOCKS: '0'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - name: Check the actual Git snapshot
+        run: python -B tools/check_agent_guidance.py --tree HEAD
+      - name: Test the checker in isolated Git fixtures
+        run: python -B -m unittest discover -s tools/tests -p test_agent_guidance.py
+      - name: Record reviewed and checked revisions
+        if: always()
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        shell: python {0}
+        run: |
+          import os, subprocess
+          sha = subprocess.check_output(['git', '--no-optional-locks', 'rev-parse', 'HEAD'], text=True).strip()
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as report:
+              report.write('PR head: ' + os.environ['PR_HEAD_SHA'] + '\n\n')
+              report.write('Base: ' + os.environ['PR_BASE_SHA'] + '\n\n')
+              report.write('Checked merge snapshot: ' + sha + '\n\n')
+              report.write('Policy consistency only; not product tests, independent review, Gate 6-A, or user approval.\n')

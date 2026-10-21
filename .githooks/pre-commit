@@ -1,16 +1,18 @@
 #!/bin/sh
 # Local consistency only, not authorization; --no-verify can bypass this hook.
-root=$(git rev-parse --show-toplevel) || exit 1
+root=$(git --no-optional-locks rev-parse --show-toplevel) || exit 1
 cd "$root" || exit 1
-if test -n "$(git ls-files --unmerged)"; then
+if test -n "$(git --no-optional-locks ls-files --unmerged)"; then
     echo '[guidance] Resolve unmerged index entries first.' >&2
     exit 1
 fi
 # A quiet pathspec query is safe for spaces/newlines and needs no Python.
-git diff --cached --quiet --no-renames -- \
+git --no-optional-locks diff --cached --quiet --no-renames -- \
     AGENTS.md CLAUDE.md docs/AGENT_WORKFLOW.md docs/WORKROOMS.md \
     docs/TESTING.md docs/RISK_REDUCTION_PLAN_2026-08-15.md \
+    docs/PR_GATE.md .github/pull_request_template.md \
     tools/check_agent_guidance.py tools/tests/test_agent_guidance.py .githooks \
+    ':(glob).github/workflows/**/*.yml' ':(glob).github/workflows/**/*.yaml' \
     ':(glob).claude/**/*.json' ':(glob).claude/**/*.toml' ':(glob).claude/agents/**/*.md' \
     ':(glob).codex/**/*.json' ':(glob).codex/**/*.toml' ':(glob).codex/agents/**/*.md'
 status=$?
