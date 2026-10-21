@@ -5,7 +5,8 @@
 //  StrictMode 의 이중 effect 는 호출 수 세기를 흐리므로 여기서는 쓰지 않는다(listFolderPeek.test.tsx 가 StrictMode 로 본다).
 import { act, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ThumbnailGrid } from "../src/components/ThumbnailGrid";
 import { api, connectProgress } from "../src/api";
 import { folderPeekQuery } from "../src/lib/appGenerationQuery";
 import { LIBRARY_LIST_TIMEOUT_MESSAGE, LIBRARY_LIST_TIMEOUT_MS } from "../src/lib/libraryRequestTimeout";
@@ -23,6 +24,12 @@ import { clearGenerationReadModels, generationChangeScope, getGenerationReadMode
 vi.mock("../src/api", () => ({ GEN_PAGE: 200, connectProgress: vi.fn(() => () => {}), api: {
   listGenerations: vi.fn(), projects: vi.fn(), facets: vi.fn(), generationStats: vi.fn(), listTrash: vi.fn(), locateGenerations: vi.fn(),
 } }));
+vi.mock("virtua", async () => {
+  const { forwardRef } = await import("react");
+  return { Virtualizer: forwardRef(() => null) };
+});
+vi.mock("../src/components/GenerationCard", () => ({ GenerationCard: () => null }));
+vi.mock("../src/lib/useGenerationViewsSynced", () => ({ useGenerationViewsSynced: () => ({ card: {}, asset: {} }) }));
 
 type Props = {
   query: GenQuery; authReady?: boolean; projectWorkspaceId?: string;
@@ -31,6 +38,7 @@ type Props = {
   trash?: boolean; // 휴지통 보기
   poll?: boolean; // App 과 같은 자동 조회(useGenerationAutoRefresh)를 붙인다
   progress?: boolean;
+  grid?: boolean;
 };
 const MAIN: GenQuery = { tab: "my", search: "cat" };
 const LOCATED: GenQuery = { tab: "my", project_id: "project-b", folder_path: "e001/c0010" };
@@ -52,7 +60,7 @@ let ownerNow: LibraryOwner | null = null; // App 이 커밋마다 적는 자료 
 let promptCreated: ReturnType<typeof usePromptCreatedActions>["handlePromptCreated"];
 const noop = () => {};
 const readOwner = () => ownerNow;
-function Harness({ query, authReady = true, projectWorkspaceId, composeListEnabled, auto = true, trash = false, poll = false, progress = false }: Props) {
+function Harness({ query, authReady = true, projectWorkspaceId, composeListEnabled, auto = true, trash = false, poll = false, progress = false, grid = false }: Props) {
   const filters: Filters = { tab: query.tab, ...(trash ? { deleted_only: true } : {}) };
   data = useGenerationLibraryData({ authReady, filters, genQuery: query, flash, projectWorkspaceId, composeListEnabled, owner: readOwner });
   const key = JSON.stringify(query);
@@ -63,7 +71,13 @@ function Harness({ query, authReady = true, projectWorkspaceId, composeListEnabl
     bumpBoard: noop, setSyncTick: noop, historyBoardVisible: false, commentsVisible: false });
   promptCreated = usePromptCreatedActions({ boardFocusIdRef: { current: null }, boardSelectedRef: { current: [] },
     filtersRef: { current: filters }, bumpBoard: noop, flash, reload: data.reload, setGens: data.setGens }).handlePromptCreated;
-  return null;
+  return grid ? <ThumbnailGrid generations={data.gens} tab={query.tab === "team" ? "team" : "my"}
+    scale={1} fill layout="grid" groupByDate={false} selectedIds={new Set()}
+    onSelectedChange={noop} onToggleSelect={noop} onSetSource={noop} onSetTags={noop}
+    onOpenComments={noop} onRegenerate={noop} onPublish={noop} onUnpublish={noop}
+    onFinalize={noop} onUnfinalize={noop} onImport={noop} onRestore={noop} dimDeleted={false}
+    onInfo={noop} onPreview={noop} hasMore={data.hasMore} loadingMore={data.loadingMore} onLoadMore={data.loadMore}
+  /> : null;
 }
 const show = (props: Props) => act(() => root.render(<Harness {...props} />));
 const settle = async () => { await act(async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); }); };
@@ -254,6 +268,132 @@ it.each([false, true])("[F9-8 P3-1] discards loadMore overtaken by a first page 
   expect(ids()).toEqual([...firstPage.map(g => g.id), "fresh-next-page"]);
   expect(data.hasMore).toBe(false);
   expect(data.loadingMore).toBe(false);
+});
+
+describe("[F9-9] grid resumes discarded pages without an error retry loop", () => {
+  let frames: Map<number, FrameRequestCallback>;
+  let frameId: number;
+  let scrollHeight: number;
+  let scrollTop: number;
+  const firstPage = Array.from({ length: 200 }, (_, i) => gen(`first-${i}`));
+  const secondPage = Array.from({ length: 200 }, (_, i) => gen(`second-${i}`));
+  const scroll = () => act(() => host.querySelector(".gen-grid")!.dispatchEvent(new Event("scroll")));
+  const frame = async () => {
+    act(() => {
+      const pending = [...frames.values()];
+      frames.clear();
+      pending.forEach(callback => callback(0));
+    });
+    await settle();
+  };
+  beforeEach(() => {
+    frames = new Map(); frameId = 0; scrollHeight = 4000; scrollTop = 0;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { frames.set(++frameId, callback); return frameId; });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+    vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(400);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(600);
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(() => scrollHeight);
+    vi.spyOn(HTMLElement.prototype, "scrollTop", "get").mockImplementation(() => scrollTop);
+  });
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  it.each(["cursor", "offset", "seq"] as const)("%s discard at a filled bottom fetches the current next page once without another scroll", async (reason) => {
+    const trash = reason === "offset";
+    const list = vi.mocked(trash ? api.listTrash : api.listGenerations);
+    list.mockResolvedValueOnce(firstPage);
+    await mount({ query: MAIN, trash, grid: true });
+    await frame();
+    list.mockResolvedValueOnce(secondPage);
+    await act(async () => { await data.loadMore(); });
+    await frame();
+    const first = deferred<Generation[]>();
+    const later = deferred<Generation[]>();
+    scrollTop = 3400;
+    if (reason === "seq") {
+      list.mockReturnValueOnce(later.promise);
+      scroll();
+      list.mockReturnValueOnce(first.promise);
+      start(() => data.reload(true, true, "check"));
+    } else {
+      list.mockReturnValueOnce(first.promise);
+      start(() => data.reload(true, true, "check"));
+      list.mockReturnValueOnce(later.promise);
+      scroll();
+    }
+    expect(data.loadingMore).toBe(true);
+    await act(async () => first.resolve(firstPage));
+    await settle();
+    scrollHeight = 2400; scrollTop = 1800;
+    scroll(); // 첫 쪽으로 줄며 바닥에 걸린 이벤트는 아직 loadingMore라 무시된다.
+    await frame();
+    const before = list.mock.calls.length;
+    list.mockResolvedValueOnce([gen("fresh-next-page")]);
+    await act(async () => later.resolve([gen("stale-third-page")]));
+    await settle();
+    expect(ids()).toEqual(firstPage.map(g => g.id));
+    await frame();
+    await frame();
+    expect(list).toHaveBeenCalledTimes(before + 1);
+    expect(list.mock.calls.at(-1)?.[1]).toEqual(trash ? 200 : { ts: 10, id: "first-199" });
+    expect(ids()).toEqual([...firstPage.map(g => g.id), "fresh-next-page"]);
+    expect(data.hasMore).toBe(false);
+  });
+
+  it("retries an automatic seq-discard once even when the first page is unchanged", async () => {
+    const list = vi.mocked(api.listGenerations);
+    list.mockResolvedValueOnce(firstPage);
+    await mount({ query: MAIN, grid: true });
+    const unchanged = data.gens;
+    scrollHeight = 2400; scrollTop = 1800;
+    const later = hold<Generation[]>(list);
+    await frame(); // 자동으로 시작한 다음 쪽도 폐기되면 한 번은 다시 받는다.
+    expect(data.loadingMore).toBe(true);
+    list.mockResolvedValueOnce(firstPage);
+    await act(async () => { await data.reload(true, true, "check"); });
+    expect(data.gens).toBe(unchanged);
+    list.mockResolvedValueOnce([gen("fresh-next-page")]);
+    await act(async () => later.resolve([gen("stale-page")]));
+    await settle();
+    await frame();
+    await frame();
+    expect(list).toHaveBeenCalledTimes(4); // 첫 쪽, 폐기된 다음 쪽, 같은 첫 쪽, 재시도.
+    expect(ids()).toEqual([...firstPage.map(g => g.id), "fresh-next-page"]);
+  });
+
+  it.each([400, 2400])("repeated loadMore errors at height %s cap automatic requests at two and still allow manual scroll", async (height) => {
+    const list = vi.mocked(api.listGenerations);
+    list.mockResolvedValueOnce(firstPage);
+    await mount({ query: MAIN, grid: true });
+    await frame();
+    scrollHeight = height; scrollTop = Math.max(0, height - 600);
+    list.mockRejectedValue(new Error("offline"));
+    const before = calls().list;
+    scroll();
+    await settle();
+    for (let i = 0; i < 12; i++) await frame();
+    expect(calls().list - before).toBe(3); // 사용자 요청 1 + 자동 보정 최대 2, 이후 같은 목록에서는 멈춤.
+    expect(data.loadingMore).toBe(false);
+    expect(data.hasMore).toBe(true);
+    expect(data.loadError).toBeNull(); // 일반 목록 오류는 더 없음으로 바꾸지 않는다.
+    scroll();
+    await settle();
+    await frame();
+    expect(calls().list - before).toBe(4);
+  });
+
+  it.each([800, 1200])("does not fetch when the bottom is %s px away, including after a failed request", async (distance) => {
+    vi.mocked(api.listGenerations).mockResolvedValueOnce(firstPage);
+    await mount({ query: MAIN, grid: true });
+    scrollTop = scrollHeight - 600 - distance;
+    await frame();
+    scroll();
+    expect(calls().list).toBe(1);
+    vi.mocked(api.listGenerations).mockRejectedValue(new Error("offline"));
+    await act(async () => { await data.loadMore(); });
+    await frame();
+    expect(calls().list).toBe(2);
+  });
 });
 
 it("[R5-2] a follow-up check applies fresh rows without waiting for stalled metadata", async () => {
