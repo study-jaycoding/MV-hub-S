@@ -284,6 +284,82 @@ def test_baseline_failed_attempts_keep_first_and_latest_two(tmp_path, monkeypatc
     assert all(p.read_bytes() == b'keep' for p in unrelated)
 
 
+def test_baseline_same_name_databases_keep_separate_first_copies(tmp_path, monkeypatch):
+    from app import config
+
+    data = tmp_path / 'backend/data'
+    monkeypatch.setattr(config, 'DATA_DIR', data)
+    sources = [tmp_path / 'backend/content_hub.db', data / 'db/content_hub.db']
+    first = {}
+    copies = {source: [] for source in sources}
+    for source in sources:
+        source.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(source)) as conn:
+            conn.execute('CREATE TABLE worker(id TEXT)')
+    folder = data / 'backups/pre-dev2-baseline'
+    folder.mkdir(parents=True)
+    legacy = folder / ('content_hub.db.pre-dev2-baseline-20260101_000000_000000-'
+                       + 'a' * 32 + '.db')
+    legacy.write_bytes(b'unknown original database')
+    for _ in range(4):
+        for source in sources:
+            copy = schema_compat.backup_before_baseline(source, 'content')
+            copies[source].append(copy)
+            first.setdefault(source, copy)
+    assert len(list(folder.glob('*.db'))) == 7
+    assert legacy.read_bytes() == b'unknown original database'
+    for source in sources:
+        assert first[source].is_file()
+        assert first[source].name.endswith('-first.db')
+        assert all(schema_compat.database_key(source)[:8] in p.name for p in copies[source])
+        assert [p.is_file() for p in copies[source]] == [True, False, True, True]
+
+
+def test_baseline_cleans_only_old_temporary_files_for_same_database(tmp_path):
+    source = tmp_path / 'content_hub.db'
+    with closing(sqlite3.connect(source)) as conn:
+        conn.execute('CREATE TABLE worker(id TEXT)')
+    folder = tmp_path / 'backups/pre-dev2-baseline'
+    folder.mkdir(parents=True)
+    prefix = f'.{source.name}.pre-dev2-baseline-{schema_compat.database_key(source)[:8]}-'
+    stamp = schema_compat.datetime.now(schema_compat.timezone.utc).timestamp()
+    stale, keep = [], []
+    for age, token, group in [(172800, 'a', stale), (0, 'b', keep)]:
+        for first in ['', '-first']:
+            for suffix in ['', '-journal', '-wal', '-shm']:
+                path = folder / (prefix + '20260101_000000_000000-' + token * 32
+                                 + first + '.db.tmp' + suffix)
+                path.write_bytes(b'private copy')
+                os.utime(path, (stamp - age, stamp - age))
+                group.append(path)
+    for name in [prefix.replace(schema_compat.database_key(source)[:8], 'ffffffff')
+                 + '20260101_000000_000000-' + 'a' * 32 + '.db.tmp',
+                 prefix + 'unrecognized.db.tmp', '.pending.tmp']:
+        path = folder / name
+        path.write_bytes(b'keep')
+        os.utime(path, (stamp - 172800, stamp - 172800))
+        keep.append(path)
+    schema_compat.backup_before_baseline(source, 'content')
+    assert all(not p.exists() for p in stale)
+    assert all(p.is_file() for p in keep)
+
+
+def test_baseline_first_copy_survives_clock_rollback(tmp_path, monkeypatch):
+    source = tmp_path / 'content_hub.db'
+    with closing(sqlite3.connect(source)) as conn:
+        conn.execute('CREATE TABLE worker(id TEXT)')
+    times = iter([schema_compat.datetime(2026, 10, day, tzinfo=schema_compat.timezone.utc)
+                  for day in [21, 19, 22, 23]])
+    class Clock:
+        @staticmethod
+        def now(_timezone):
+            return next(times)
+    monkeypatch.setattr(schema_compat, 'datetime', Clock)
+    copies = [schema_compat.backup_before_baseline(source, 'content') for _ in range(4)]
+    assert [p.is_file() for p in copies] == [True, False, True, True]
+    assert copies[0].name.endswith('-first.db')
+
+
 @pytest.mark.parametrize('failure', ['empty', 'corrupt', 'exception', 'rename'])
 def test_baseline_never_publishes_incomplete_copy(tmp_path, monkeypatch, failure):
     from app.services import backup_verify
