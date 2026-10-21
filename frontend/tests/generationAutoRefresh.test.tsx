@@ -36,6 +36,31 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+it.each([false, true])("[r5b] 주기 틱이 수 ms 일찍 와도 매번 조회한다 (active=%s)", async (active) => {
+  show({ active });
+  const ms = active ? 3_000 : 15_000;
+  for (const [index, early] of [1, 3, 5].entries()) {
+    // 타이머 주기와 벽시계의 미세한 차이를 재현한다.
+    vi.setSystemTime(Date.now() - early);
+    await pass(ms);
+    expect(reload).toHaveBeenCalledTimes(index + 1);
+    expect(reload).toHaveBeenLastCalledWith(true, true, "check");
+  }
+});
+
+it.each([false, true])("[r5b] 직전 창 복귀 조회는 그 틱만 막고 다음 주기는 이어진다 (active=%s)", async (active) => {
+  const ms = active ? 3_000 : 15_000;
+  show({ active, paused: true });
+  await pass(ms * 2 - 100);
+  show({ active });
+  await act(async () => { window.dispatchEvent(new Event("focus")); });
+  expect(reload).toHaveBeenCalledTimes(1);
+  await pass(100);
+  expect(reload).toHaveBeenCalledTimes(1);
+  await pass(ms);
+  expect(reload).toHaveBeenCalledTimes(2);
+});
+
 it("쉬는 동안에는 주기 폴링이 다시 받지 않고, 풀리면 원래 주기의 다음 틱부터 받는다 — 주기를 처음부터 다시 세지 않는다", async () => {
   show(); // 팀 탭 유휴: 15초
   await pass(15_000);
