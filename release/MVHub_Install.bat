@@ -5,7 +5,7 @@ setlocal
 REM MV Hub first installer.
 REM Run this from the company server release folder. It installs/updates MV Hub
 REM to the worker's Desktop and remembers the release source.
-REM First installation verifies startup; existing installations keep manual restart.
+REM First and existing installations start MV Hub and verify readiness.
 
 REM Keep this installer beside latest.json, or one folder above a packages folder.
 REM It discovers the release source from its own location, including UNC paths.
@@ -52,8 +52,8 @@ if not "%INSTALL_EXIT%"=="0" (
 )
 
 echo.
-echo [done] MV Hub is installed.
-echo        Run: the "MV Hub" icon on your Desktop
+echo [done] MV Hub is installed and running.
+echo        To open it later: the "MV Hub" icon on your Desktop
 echo             (or "%TARGET_DIR%\MV_agent.bat")
 echo        Update later: "%TARGET_DIR%\update_release.bat"
 if not "%MVHUB_NO_PAUSE%"=="1" pause
@@ -278,9 +278,13 @@ function Install-Package {
     $PreviousTarget = $env:MVHUB_UPDATE_TARGET_DIR
     $PreviousPause = $env:MVHUB_NO_PAUSE
     $PreviousRestart = $env:MVHUB_UPDATE_RESTART
+    $PreviousReadyUrl = $env:MVHUB_UPDATE_READY_URL
     $env:MVHUB_UPDATE_TARGET_DIR = $TargetDir
     $env:MVHUB_NO_PAUSE = "1"
     $env:MVHUB_UPDATE_RESTART = "1"
+    # Match MV_agent.bat: PORT takes precedence, otherwise use 8010.
+    $Port = if ($env:PORT) { $env:PORT } else { '8010' }
+    $env:MVHUB_UPDATE_READY_URL = "http://127.0.0.1:$Port/api/ready"
     try {
         $Command = 'call "' + $PackageUpdater + '"'
         & $env:ComSpec /d /c $Command
@@ -295,6 +299,8 @@ function Install-Package {
         else { $env:MVHUB_NO_PAUSE = $PreviousPause }
         if ($null -eq $PreviousRestart) { Remove-Item Env:MVHUB_UPDATE_RESTART -ErrorAction SilentlyContinue }
         else { $env:MVHUB_UPDATE_RESTART = $PreviousRestart }
+        if ($null -eq $PreviousReadyUrl) { Remove-Item Env:MVHUB_UPDATE_READY_URL -ErrorAction SilentlyContinue }
+        else { $env:MVHUB_UPDATE_READY_URL = $PreviousReadyUrl }
         Set-Content -LiteralPath (Join-Path $TargetDir "INSTALL_SOURCE.txt") -Value $BaseUrl -Encoding UTF8
     }
 }

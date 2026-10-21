@@ -57,6 +57,15 @@ def qualify_stage(root, stage, target, source_raw, verification_python, *, probe
     env_root = root / 'logs' / ('server-verifier-env-' + uuid.uuid4().hex)
     env = build_smoke_env(os.environ, env_root, frontend_dist=stage / 'frontend/dist',
                           python_exe=verification_python, port=19871)
+    # Metadata alone cannot prove the bundled native CLI can execute; version is offline.
+    cli_result = probe_run([*cli['argv'], 'version'], cwd=env_root, env=env,
+                           capture_output=True, timeout=60,
+                           creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    version_line = (cli_result.stdout.decode('utf-8', errors='replace')
+                    if isinstance(cli_result.stdout, bytes) else cli_result.stdout).strip()
+    expected = 'higgsfield ' + cli['version']
+    if cli_result.returncode != 0 or (version_line != expected and not version_line.startswith(expected + ' ')):
+        raise ValueError('isolated_stage_cli_version_failed')
     result = probe_run([str(verification_python), '-E', '-s', '-B', '-X', 'utf8', '-u', str(probe_tool),
                         'probe', '--root', str(stage), '--work-root', str(work),
                         '--descriptor', str(input_path), '--runtime-python', target['python'], '--timeout', '90'],

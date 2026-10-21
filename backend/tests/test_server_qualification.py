@@ -103,6 +103,16 @@ def seed_stage(root):
 
 
 def fake_probe(command, **kwargs):
+    if command[-1] == 'version':
+        node, javascript, _ = command
+        cli = Path(javascript).parents[4]
+        assert Path(node) == cli / 'node.exe' or Path(node) == cli.parent / 'node/node.exe'
+        assert Path(kwargs['env']['HOME']).is_relative_to(kwargs['cwd'])
+        assert 'CONTENT_HUB_AUTH_SECRET' not in kwargs['env']
+        assert 'NODE_OPTIONS' not in kwargs['env'] and 'NODE_PATH' not in kwargs['env']
+        assert kwargs['timeout'] == 60
+        pin = json.loads((cli / 'node_modules/@higgsfield/cli/package.json').read_bytes())['version']
+        return subprocess.CompletedProcess(command, 0, f'higgsfield {pin}\n'.encode(), b'')
     assert command[1:7] == ['-E', '-s', '-B', '-X', 'utf8', '-u']
     assert 'CONTENT_HUB_AUTH_SECRET' not in kwargs['env']
     assert not Path(command[command.index('--work-root')+1]).exists()
@@ -256,6 +266,7 @@ def test_probe_failure_never_creates_request_or_passes_qualification(tmp_path,da
     stage,target,value,raw,verifier=seed_stage(tmp_path)
     def probe(command,**kwargs):
         result=fake_probe(command,**kwargs)
+        if command[-1]=='version': return result
         proof=json.loads(result.stdout)
         if damage=='exit': return subprocess.CompletedProcess(command,1,b'{}',b'')
         if damage=='identity': proof['evidence']['ready']['runtime']['build_id']='wrong'
@@ -406,6 +417,29 @@ def test_unsupported_or_mismatched_cli_configuration_is_rejected(tmp_path, monke
     with pytest.raises(ValueError): activation.inspect_server_cli(stage,tmp_path,env)
 
 
+@pytest.mark.parametrize('empty_path', ['', ';', ';;'])
+def test_empty_path_entries_are_removed_from_inspection_and_server_child(tmp_path, monkeypatch, empty_path):
+    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    target=builder.qualify_stage(tmp_path,stage,target,raw,verifier,probe_run=fake_probe)
+    system_path=str(tmp_path/'system-tools')
+    env={**os.environ,'PATH':empty_path+system_path+';'}
+    proof=activation.verify_qualification(target,tmp_path/'logs/server-stages',environ=env)
+    manager=activation.ServerActivation(tmp_path,environ=env)
+    popen=Mock();monkeypatch.setattr(activation.subprocess,'Popen',popen)
+    manager.spawn(target)
+    child=popen.call_args.kwargs['env']
+    assert child['PATH'].split(os.pathsep)==[str(stage/'runtime/higgsfield'),system_path]
+    assert activation.inspect_server_cli(stage,tmp_path,child)==proof['server_cli']
+    assert env['PATH']==empty_path+system_path+';'
+
+
+@pytest.mark.parametrize('unsafe_path', ['.;', r'\\server\share;', 'relative;;'])
+def test_empty_path_filter_does_not_allow_relative_or_remote_search(tmp_path, unsafe_path):
+    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    with pytest.raises(ValueError,match='absolute_local_path_required'):
+        activation.inspect_server_cli(stage,tmp_path,{**os.environ,'PATH':unsafe_path})
+
+
 def prepare_fixture(root, monkeypatch, pin='1.2.3'):
     """Real coordinator, fake git/build and common probe subprocess, no executable runs."""
     inputs={name:b'fixture source '+name.encode() for name in
@@ -534,6 +568,45 @@ def test_failed_stage_cli_install_preserves_running_source_and_never_requests_ac
     assert sentinel.read_bytes()==b'legacy running source'
     assert not (tmp_path/'logs/server-update-request.json').exists()
     assert not (tmp_path/'logs/server-current.json').exists()
+
+
+@pytest.mark.parametrize('failure', ['wrong_version', 'version_prefix', 'empty', 'exit', 'broken_node', 'timeout'])
+def test_failed_cli_execution_blocks_prepare_without_touching_running_server(tmp_path, monkeypatch, failure):
+    receipt,verifier,run,calls=prepare_fixture(tmp_path,monkeypatch)
+    sentinel=tmp_path/'backend/serve.py';sentinel.write_bytes(b'old running server')
+    probes=[]
+    def probe(command,**kwargs):
+        probes.append(command)
+        if command[-1]!='version': return fake_probe(command,**kwargs)
+        fake_probe(command,**kwargs)  # Also enforce isolation and staged executable identity.
+        if failure=='broken_node': raise OSError('fixture invalid executable')
+        if failure=='timeout': raise subprocess.TimeoutExpired(command,60)
+        output={'wrong_version':b'higgsfield 1.2.4', 'version_prefix':b'higgsfield 1.2.30',
+                'empty':b'', 'exit':b'higgsfield 1.2.3'}[failure]
+        return subprocess.CompletedProcess(command,1 if failure=='exit' else 0,output,b'')
+    with pytest.raises((ValueError,OSError,subprocess.TimeoutExpired)):
+        builder.prepare(tmp_path,source_receipt=receipt,verification_python=verifier,run=run,probe_run=probe)
+    assert len(probes)==1 and probes[0][-1]=='version'
+    assert sentinel.read_bytes()==b'old running server'
+    assert not (tmp_path/'logs/server-current.json').exists()
+    assert not (tmp_path/'logs/server-update-request.json').exists()
+    assert json.loads((tmp_path/'logs/server-prepare.json').read_bytes())['status']=='failed'
+
+
+@pytest.mark.parametrize('suffix', ['', ' (windows-amd64)'])
+def test_cli_version_probe_runs_once_before_runtime_qualification(tmp_path, monkeypatch, suffix):
+    receipt,verifier,run,calls=prepare_fixture(tmp_path,monkeypatch)
+    probes=[]
+    def probe(command,**kwargs):
+        probes.append(command)
+        result=fake_probe(command,**kwargs)
+        if command[-1]=='version': result.stdout=('higgsfield 1.2.3'+suffix+'\r\n').encode()
+        return result
+    builder.prepare(tmp_path,source_receipt=receipt,verification_python=verifier,run=run,probe_run=probe)
+    assert len(probes)==2 and probes[0][-1]=='version' and 'probe' in probes[1]
+    target=json.loads((tmp_path/'logs/server-update-request.json').read_bytes())['target']
+    assert probes[0]==[str(Path(target['path'])/'runtime/higgsfield/node.exe'),
+                       str(Path(target['path'])/'runtime/higgsfield/node_modules/@higgsfield/cli/bin/higgsfield.js'),'version']
 
 
 @pytest.mark.parametrize('pin', ['latest', '1.2.2 & echo unsafe'])
