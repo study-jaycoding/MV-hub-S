@@ -27,6 +27,7 @@ from typing import Any, Iterator, Optional
 
 from ..db import get_connection, get_db_path, open_transfer_connections, maintenance_gate, flush_pool
 from .. import schema_compat
+from ..services.schema_backup import backup_before_baseline
 from ..emailnorm import norm_email
 from ..services import media_cache
 from ..services import trash_transfer
@@ -79,7 +80,7 @@ def _ensure_trash_schema(conn) -> None:
     if compatibility.status == 'unversioned':
         path = next(row[2] for row in conn.execute('PRAGMA database_list') if row[1] == 'trash')
         if path:
-            schema_compat.backup_before_baseline(Path(path), 'trash')
+            backup_before_baseline(Path(path), 'trash')
     # 메인 DB 는 schema.sql 의 PRAGMA 로 WAL 인데, ATTACH 로 처음 만들어지는 휴지통은
     # 기본 rollback journal 로 생성돼 쓰기마다 DB 전체 EXCLUSIVE 락을 잡았다(대량 삭제 중
     # /api/ready 의 휴지통 검사가 2초 타임아웃 → 워치독 오탐 재시작까지 연쇄). WAL 은 파일

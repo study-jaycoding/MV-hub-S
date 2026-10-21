@@ -27,6 +27,7 @@ from typing import Any, Iterator, Optional
 
 from .config import DATA_DIR
 from . import schema_compat
+from .services.schema_backup import backup_before_baseline
 from .task_activity import merge_task_activity_location, normalize_task_activity_at
 
 # 콘텐츠 DB(content_hub.db) 와 같은 폴더에 두되 파일만 분리 — 백업은 폴더 통째로 한 번에 된다.
@@ -142,7 +143,7 @@ def init_manage_db(db_path: Path | None = None) -> Path:
     if path.is_file():
         from .db import _recover_hot_database
         _recover_hot_database(path, "manage")
-        schema_compat.backup_before_baseline(path, "manage")
+        backup_before_baseline(path, "manage")
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     try:
