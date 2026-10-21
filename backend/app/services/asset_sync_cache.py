@@ -8,6 +8,7 @@ import re
 import tempfile
 import threading
 import weakref
+from collections import OrderedDict
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -20,6 +21,30 @@ from .path_safety import safe_join
 
 _locks_guard = threading.Lock()
 _locks = weakref.WeakValueDictionary()
+_digests = OrderedDict()
+
+
+def file_digest(path, *, force=False):
+    """Cache bytes, never authorization; only reuse an unchanged file stamp."""
+    # shortcut: same-size edits preserving mtime need forced /verify hashing to be detected.
+    stamp = path.stat()
+    key = (path, stamp.st_size, stamp.st_mtime_ns)
+    with _locks_guard:
+        if not force and key in _digests:
+            _digests.move_to_end(key)
+            return _digests[key]
+        _digests.pop(key, None)
+    digest = asset_io.sha256_file(path)
+    after = path.stat()
+    if (after.st_size, after.st_mtime_ns) != key[1:]:
+        return None
+    if digest is not None:
+        with _locks_guard:
+            _digests[key] = digest
+            _digests.move_to_end(key)
+            if len(_digests) > 1024:
+                _digests.popitem(last=False)
+    return digest
 
 
 def _metadata(info):
@@ -49,7 +74,7 @@ def _metadata(info):
 
 def _verified(path, digest, size):
     try:
-        return path.is_file() and path.stat().st_size == size and asset_io.sha256_file(path) == digest
+        return path.is_file() and path.stat().st_size == size and file_digest(path) == digest
     except OSError:
         return False
 
@@ -86,10 +111,17 @@ def cached_file(info, *, account_key, owner_uid, server_origin, download, check_
             check_context()
             if not _verified(temporary, digest, size):
                 raise HTTPException(status_code=502, detail='asset_download_mismatch')
+            stamp = temporary.stat()
             with temporary.open('r+b') as handle:
                 os.fsync(handle.fileno())
             check_context()
             os.replace(temporary, path)
+            # Rename preserves the verified stamp; carry its digest to the final path.
+            with _locks_guard:
+                key = (temporary, stamp.st_size, stamp.st_mtime_ns)
+                verified = _digests.pop(key, None)
+                if verified is not None:
+                    _digests[(path, stamp.st_size, stamp.st_mtime_ns)] = verified
             check_context()
             return path
         finally:

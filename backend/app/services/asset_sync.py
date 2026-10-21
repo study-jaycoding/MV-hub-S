@@ -18,7 +18,7 @@ from .. import active_account, config, db
 from ..deps import expected_account_differs
 from ..emailnorm import norm_email
 from ..repo import asset_sync as ledger
-from . import asset_io, shared_connection
+from . import asset_io, asset_sync_cache, shared_connection
 from .async_tools import to_thread_non_abandon
 from .media_types import ASSET_CONTENT_TYPES, asset_media_type
 from .path_safety import safe_join, asset_storage_context
@@ -80,14 +80,15 @@ def _receipt(row):
         'url':'/api/asset-sync/files/'+row['location_id']}
 
 
-def checked_server_location(conn, row):
+def checked_server_location(row, *, force_hash=False):
     if row['state'] == 'deleted':
         raise SyncError('asset_deleted')
-    root, revision, sid = root_context(conn,row['project_id'],allow_archived=True)
-    if row['root_revision'] != revision or row['storage_id'] != sid:
-        raise SyncError('asset_context_changed')
-    path = _file_path(root,row['path'])
-    blob = conn.execute('SELECT sha256,bytes FROM asset_blob WHERE asset_content_id=?',(row['asset_content_id'],)).fetchone()
+    with db.get_connection() as conn:
+        root, revision, sid = root_context(conn,row['project_id'],allow_archived=True)
+        if row['root_revision'] != revision or row['storage_id'] != sid:
+            raise SyncError('asset_context_changed')
+        path = _file_path(root,row['path'])
+        blob = conn.execute('SELECT sha256,bytes FROM asset_blob WHERE asset_content_id=?',(row['asset_content_id'],)).fetchone()
     try:
         size = path.stat().st_size
     except FileNotFoundError:
@@ -105,7 +106,10 @@ def checked_server_location(conn, row):
         raise SyncError('asset_storage_unavailable')
     except OSError as exc:
         raise SyncError('asset_storage_unavailable') from exc
-    digest = asset_io.sha256_file(path)
+    try:
+        digest = asset_sync_cache.file_digest(path, force=force_hash)
+    except OSError as exc:
+        raise SyncError('asset_storage_unavailable') from exc
     if digest is None:
         raise SyncError('asset_storage_unavailable')
     if size != blob['bytes'] or digest != blob['sha256']:
@@ -113,13 +117,14 @@ def checked_server_location(conn, row):
     return path
 
 
-def prepare(conn, *, owner_uid, display_name, project_id, digest, size, media_type, original_name):
-    root, revision, sid = root_context(conn,project_id)
+def prepare(*, owner_uid, display_name, project_id, digest, size, media_type, original_name):
     cid = 'sha256:' + digest
-    row = conn.execute("SELECT * FROM asset_location WHERE asset_content_id=? AND owner_uid=? AND project_id=? AND root_revision=? AND storage_id=? AND kind='server'",(cid,owner_uid,project_id,revision,sid)).fetchone()
+    with db.get_connection() as conn:
+        root, revision, sid = root_context(conn,project_id)
+        row = conn.execute("SELECT * FROM asset_location WHERE asset_content_id=? AND owner_uid=? AND project_id=? AND root_revision=? AND storage_id=? AND kind='server'",(cid,owner_uid,project_id,revision,sid)).fetchone()
     if row:
         try:
-            checked_server_location(conn,row)
+            checked_server_location(row)
             return _receipt(row)
         except SyncError as exc:
             if str(exc) != 'asset_server_copy_missing':
@@ -127,13 +132,15 @@ def prepare(conn, *, owner_uid, display_name, project_id, digest, size, media_ty
     ext = Path(original_name).suffix.lower()
     if ext not in ASSET_CONTENT_TYPES or asset_media_type(original_name,include_audio=True) != media_type:
         raise SyncError('unsupported_asset_type')
-    if not conn.in_transaction:
+    with db.get_connection() as conn:
         conn.execute('BEGIN IMMEDIATE')
-    folder = _folder(conn,project_id,revision,owner_uid,display_name)
-    relative = row['path'] if row else f'imp_cap/{folder}/{digest}{ext}'
-    token = uuid.uuid4().hex
-    conn.execute('DELETE FROM asset_upload_token WHERE expires_at<?', (time.time(),))
-    conn.execute('INSERT INTO asset_upload_token VALUES(?,?,?,?,?,?,?,?,?,?,?)', (token,cid,owner_uid,project_id,sid,revision,relative,Path(original_name).name,size,media_type,time.time()+600))
+        if root_context(conn,project_id) != (root, revision, sid):
+            raise SyncError('asset_context_changed')
+        folder = _folder(conn,project_id,revision,owner_uid,display_name)
+        relative = row['path'] if row else f'imp_cap/{folder}/{digest}{ext}'
+        token = uuid.uuid4().hex
+        conn.execute('DELETE FROM asset_upload_token WHERE expires_at<?', (time.time(),))
+        conn.execute('INSERT INTO asset_upload_token VALUES(?,?,?,?,?,?,?,?,?,?,?)', (token,cid,owner_uid,project_id,sid,revision,relative,Path(original_name).name,size,media_type,time.time()+600))
     return {'state':'upload_required','token':token,'asset_content_id':cid,'owner_uid':owner_uid,'project_id':project_id,'storage_id':sid,'root_revision':revision}
 
 
