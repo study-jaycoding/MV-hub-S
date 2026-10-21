@@ -205,6 +205,18 @@ def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None) -> Inge
             uid_votes[g["creator_uid"]] += 1
         staged.append(parsed)
 
+    # 적재·학습·거래 처리 전에 연결을 판정해야 거부된 UID가 이 요청의 신원으로도 쓰이지 않는다.
+    if linked_real:
+        linked = cur_uid
+    else:
+        linked = creator_uid or (uid_votes.most_common(1)[0][0] if uid_votes else None)
+        if linked:
+            link_result = repo.set_account_hf_creator(acc["email"], linked)
+            if link_result in ("conflict", "reserved"):
+                reason = "creator_uid_link_" + link_result
+                _logger.warning("Ingest identity link rejected: %s", reason)
+                raise HTTPException(status_code=409, detail=reason)
+
     # 보강 기준 uid 선결정: 명시 creator_uid / 링크된 계정 uid(own_uid) > 잡 다수결(URL user_<id>).
     boost_uid = own_uid or (uid_votes.most_common(1)[0][0] if uid_votes else None)
 
@@ -233,12 +245,6 @@ def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None) -> Inge
             counts[k] += bcounts.get(k, 0)
         errors = bcounts.get("errors", 0)
 
-    if linked_real:
-        linked = cur_uid
-    else:
-        linked = creator_uid or (uid_votes.most_common(1)[0][0] if uid_votes else None)
-        if linked:
-            repo.set_account_hf_creator(acc["email"], linked)
     # ★로컬 허브(AUTH off): 이 허브는 내 PC·내 것이라, 에이전트가 올린 내 CLI uid 를 '나'로 학습한다.
     #   안 하면 my_creator_uid 미설정 → get_my_uid()=None → 내 생성물조차 is_mine=false 라 전부
     #   '팀원'으로 뜬다(동기화 잡은 id==job_id 라 id<>job_id 추론도 안 됨). set-if-empty 라 멱등,

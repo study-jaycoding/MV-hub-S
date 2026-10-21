@@ -7,6 +7,12 @@ import json
 import os
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+from types import SimpleNamespace
+from unittest import mock
+
+from fastapi import HTTPException
 
 from app import db, repo
 from app.repo import identity, manage, trash
@@ -37,6 +43,133 @@ class IdentityRemapTests(unittest.TestCase):
             os.environ["CONTENT_HUB_DB"] = self.old_db
         db.flush_pool()
         self.tmp.cleanup()
+
+    def test_hf_link_rejects_another_accounts_uid_without_remapping(self):
+        with db.get_connection() as conn:
+            _seed_account(conn, "a@x.com", "user_A")
+            _seed_account(conn, "b@x.com", "acct:b@x.com")
+        with mock.patch.object(identity, "remap_creator_uid") as remap:
+            self.assertEqual(identity.set_account_hf_creator("b@x.com", "user_A"), "conflict")
+        remap.assert_not_called()
+        self.assertEqual(repo.get_account("b@x.com")["creator_uid"], "acct:b@x.com")
+
+    def test_hf_link_rejects_reserved_account_alias(self):
+        with db.get_connection() as conn:
+            _seed_account(conn, "b@x.com", "acct:b@x.com")
+        for uid in ("acct:a@x.com", " acct:unregistered@x.com ", "acct:b@x.com"):
+            with self.subTest(uid=uid):
+                self.assertEqual(identity.set_account_hf_creator("b@x.com", uid), "reserved")
+                self.assertEqual(repo.get_account("b@x.com")["creator_uid"], "acct:b@x.com")
+
+    def test_hf_link_same_uid_is_idempotent(self):
+        with db.get_connection() as conn:
+            _seed_account(conn, "a@x.com", "acct:a@x.com")
+        self.assertIs(identity.set_account_hf_creator("a@x.com", "user_A"), True)
+        self.assertIs(identity.set_account_hf_creator("a@x.com", "user_A"), True)
+        self.assertEqual(repo.get_account("a@x.com")["creator_uid"], "user_A")
+
+    def test_hf_link_race_has_only_one_owner(self):
+        emails = ("a@x.com", "b@x.com")
+        with db.get_connection() as conn:
+            for email in emails:
+                _seed_account(conn, email, "acct:" + email)
+        barrier = Barrier(2)
+
+        def link(email):
+            barrier.wait(timeout=5)
+            return identity.set_account_hf_creator(email, "user_race")
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(link, emails))
+        self.assertCountEqual(results, [True, "conflict"])
+        for email, result in zip(emails, results):
+            self.assertEqual(
+                repo.get_account(email)["creator_uid"],
+                "user_race" if result is True else "acct:" + email,
+            )
+
+    def test_inferred_link_cannot_take_another_accounts_uid(self):
+        with db.get_connection() as conn:
+            _seed_account(conn, "a@x.com", "user_A")
+            _seed_account(conn, "b@x.com", "acct:b@x.com")
+            identity.ensure_worker(conn, "acct:b@x.com", "B", "team")
+            conn.execute(
+                "INSERT INTO generation(id,worker_id,creator_uid,prompt,status) "
+                "VALUES('hf','me','user_A','p','done')"
+            )
+            conn.execute("INSERT INTO share(id,generation_id,shared_by) VALUES('s','hf','acct:b@x.com')")
+        identity.link_accounts_to_creators()
+        self.assertEqual(repo.get_account("b@x.com")["creator_uid"], "acct:b@x.com")
+        with db.get_connection() as conn:
+            self.assertEqual(conn.execute("SELECT shared_by FROM share").fetchone()[0], "acct:b@x.com")
+
+    def test_provider_inference_cannot_take_owned_or_reserved_uid(self):
+        with db.get_connection() as conn:
+            _seed_account(conn, "a@x.com", "user_A")
+            _seed_account(conn, "b@x.com", None)
+        identity.set_setting("provider_email", "b@x.com")
+        for uid in ("user_A", "acct:unregistered@x.com"):
+            with self.subTest(uid=uid):
+                with db.get_connection() as conn:
+                    conn.execute("UPDATE account SET creator_uid=NULL WHERE email='b@x.com'")
+                identity.set_setting("my_creator_uid", uid)
+                identity.link_accounts_to_creators()
+                self.assertEqual(repo.get_account("b@x.com")["creator_uid"], "acct:b@x.com")
+
+    def test_duplicate_links_are_counted_without_repair_or_private_log_fields(self):
+        with db.get_connection() as conn:
+            for email in ("a@x.com", "b@x.com"):
+                _seed_account(conn, email, "user_A")
+        with self.assertLogs(identity.__name__, level="WARNING") as logs:
+            identity.link_accounts_to_creators()
+        self.assertEqual(logs.records[0].getMessage(), "Duplicate account creator_uid links: rows=2")
+        for email in ("a@x.com", "b@x.com"):
+            self.assertEqual(repo.get_account(email)["creator_uid"], "user_A")
+            self.assertNotIn(email, " ".join(logs.output))
+        self.assertNotIn("user_A", " ".join(logs.output))
+
+    def test_ingest_rejection_preserves_identity_and_cannot_gain_project_role(self):
+        from app import deps
+        from app.routers import ingest
+
+        with db.get_connection() as conn:
+            _seed_account(conn, "a@x.com", "user_A")
+            _seed_account(conn, "b@x.com", "acct:b@x.com")
+            conn.execute("INSERT INTO project(id,name) VALUES('p','A project')")
+            conn.execute("INSERT INTO creator(uid,name) VALUES('user_A','A')")
+            conn.execute("INSERT INTO project_member(project_id,creator_uid,project_role) VALUES('p','user_A','editor')")
+        for auth in (True, False):
+            for reported, parsed_uid, reason in (
+                ("user_A", None, "conflict"),
+                (None, "user_A", "conflict"),
+                ("acct:unregistered@x.com", None, "reserved"),
+            ):
+                with self.subTest(auth=auth, reported=reported, parsed_uid=parsed_uid):
+                    parsed = {"generation": {"id": "incoming", "creator_uid": parsed_uid}}
+                    with (
+                        mock.patch.object(ingest, "AUTH_ENABLED", auth),
+                        mock.patch("app.active_account.account_key", return_value="b@x.com"),
+                        mock.patch.object(ingest.cli_bridge, "parse_job", return_value=parsed),
+                        mock.patch.object(repo, "apply_synced_jobs") as sync,
+                        mock.patch.object(repo, "learn_my_creator_uid") as learn,
+                        self.assertLogs(ingest._logger, level="WARNING") as logs,
+                        self.assertRaises(HTTPException) as caught,
+                    ):
+                        ingest._ingest_core(repo.get_account("b@x.com"), [{}], reported, {"email": "b@x.com"})
+                    self.assertEqual(caught.exception.status_code, 409)
+                    self.assertEqual(caught.exception.detail, "creator_uid_link_" + reason)
+                    self.assertNotIn("@", " ".join(logs.output))
+                    self.assertNotIn("user_A", " ".join(logs.output))
+                    sync.assert_not_called()
+                    learn.assert_not_called()
+                    account = repo.get_account("b@x.com")
+                    self.assertEqual(account["creator_uid"], "acct:b@x.com")
+                    request = SimpleNamespace(state=SimpleNamespace(account=account))
+                    with mock.patch.object(deps, "AUTH_ENABLED", True):
+                        self.assertEqual(deps.project_roles_of(request, "p"), "")
+                        with self.assertRaises(HTTPException) as denied:
+                            deps.require_project_role(request, "p", "editor")
+                        self.assertEqual(denied.exception.status_code, 403)
 
     def test_migrate_batch_does_not_rerun_full_plan_scan(self):
         """기동 배치는 account_map 만 새로 만들고 전 테이블 dry-run 스캔을 반복하지 않는다.
