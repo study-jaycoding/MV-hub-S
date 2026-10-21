@@ -114,6 +114,30 @@ def test_main_copies_local_manifest_in_same_unit(tmp_path, monkeypatch):
     assert backup_manifest.read_local(target / 'backups' / content.name) == backup_manifest.read_local(content)
 
 
+@pytest.mark.parametrize('sub', ['backups', 'db-backups'])
+def test_main_excludes_local_baseline_copies(tmp_path, monkeypatch, sub):
+    replicate = _module()
+    source = tmp_path / 'source'
+    private = source / 'account/pre-dev2-baseline'
+    private.mkdir(parents=True)
+    _sqlite(private / 'content_hub.db.pre-dev2-baseline-20261021.db', 'local only')
+    # Even a normal-looking set under the private folder must not be replicated.
+    content = _local_set(private, monkeypatch)
+    legacy = source / '20261021_010101_deadbeef.db'
+    _sqlite(legacy, 'normal')
+    target = tmp_path / 'replica'
+    monkeypatch.setattr(replicate, 'ROOT', tmp_path / 'code')
+    monkeypatch.setattr(replicate, 'DATA_DIR', tmp_path / 'data')
+    monkeypatch.setattr(replicate, '_sources', lambda: [(sub, source)])
+    monkeypatch.setattr(replicate, 'replica_root', lambda: target)
+    monkeypatch.setattr(replicate, 'STATUS_FILE', tmp_path / 'status.json')
+    monkeypatch.setattr(replicate, 'log', lambda _: None)
+    assert replicate.main() == 0
+    assert (target / sub / legacy.name).is_file()
+    assert not (target / sub / private.relative_to(source)).exists()
+    assert content.is_file()
+
+
 def test_unpublished_local_set_does_not_poison_next_replica_cycle(tmp_path, monkeypatch):
     from app.services import backup, backup_manifest
     replicate = _module()

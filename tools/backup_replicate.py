@@ -634,6 +634,8 @@ def main() -> int:
             local_members: set[Path] = set()
             if sub == 'backups':
                 for metadata in source.rglob('content_hub_*.manifest.json'):
+                    if 'pre-dev2-baseline' in metadata.relative_to(source).parts:
+                        continue
                     src = metadata.with_name(metadata.name[:-len('.manifest.json')] + '.db')
                     if not _OWNED_SINGLE_DB_RE.fullmatch(src.name):
                         continue
@@ -653,6 +655,9 @@ def main() -> int:
                     dirs.add(dest.parent)
                     protected_by_dir.setdefault(dest.parent, set()).update(path.name for path in members)
             for src in source.rglob("*.db"):
+                # These are local conversion safeguards, not off-disk backup sets.
+                if 'pre-dev2-baseline' in src.relative_to(source).parts:
+                    continue
                 if src in local_members:
                     continue
                 # 새 작업자 백업은 manifest와 함께 디렉터리 단위로 아래에서 복제한다.
@@ -670,6 +675,8 @@ def main() -> int:
                 protected_by_dir.setdefault(dest.parent, set()).add(dest.name)
             if sub == "db-backups":
                 for sets_dir in source.rglob("sets"):
+                    if 'pre-dev2-baseline' in sets_dir.relative_to(source).parts:
+                        continue
                     if not sets_dir.is_dir():
                         continue
                     dest_root = target / sub / sets_dir.relative_to(source)

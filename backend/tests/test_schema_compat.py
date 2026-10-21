@@ -298,11 +298,34 @@ def test_recovery_rechecks_original_after_copy_admission(content, monkeypatch):
     assert journal.exists()
 
 
-def test_unversioned_hot_journal_backup_failure_preserves_original(content):
+def test_unversioned_hot_journal_backup_preserves_original_then_migrates(content):
     _leave_hot_journal(content)
     before = compat._recovery_signature(content)
+    copy = compat.backup_before_baseline(content, 'content')
+    assert compat._recovery_signature(content) == before
+    with connect(copy) as conn:
+        assert conn.execute('PRAGMA quick_check').fetchall() == [('ok',)]
+        assert conn.execute('SELECT COUNT(*) FROM recovery_probe WHERE data=zeroblob(8000)').fetchone()[0] == 100
+    db.init_db(content)
+    assert compat.inspect_database(content, 'content').status == 'compatible'
+    with connect(content) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM recovery_probe WHERE data=zeroblob(8000)').fetchone()[0] == 100
+
+
+def test_hot_journal_backup_copy_failure_cleans_private_files(content, monkeypatch):
+    _leave_hot_journal(content)
+    before = compat._recovery_signature(content)
+    folder = content.parent / 'backups/pre-dev2-baseline'
+    original = compat.shutil.copyfile
+    def fail(source, target):
+        result = original(source, target)
+        if target.parent == folder and str(target).endswith('-journal'):
+            raise OSError('injected journal copy failure')
+        return result
+    monkeypatch.setattr(compat.shutil, 'copyfile', fail)
     assert_reason('baseline_backup_failed', lambda: db.init_db(content))
     assert compat._recovery_signature(content) == before
+    assert not list(folder.iterdir())
 
 
 def test_runtime_init_registers_core_without_enabling_pm(tmp_path):

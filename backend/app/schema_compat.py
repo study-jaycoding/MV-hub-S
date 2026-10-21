@@ -9,7 +9,7 @@ The optional PM component lives in content, never in manage_hub.db.
 """
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -304,6 +304,7 @@ def backup_before_baseline(path: Path, kind: str) -> Path | None:
     from .services.backup_verify import create_sqlite_snapshot
     from .services.sqlite_db import read_only_uri
 
+    temporary = None
     try:
         if not path.is_file() or not path.stat().st_size:
             return None
@@ -314,14 +315,35 @@ def backup_before_baseline(path: Path, kind: str) -> Path | None:
             folder = parent.parent.parent.parent / 'backups' / parent.name
         elif parent.name == 'db':
             folder = parent.parent / 'backups'
+        elif parent.name == 'backend':
+            from .config import DATA_DIR
+            folder = DATA_DIR / 'backups'
         else:
             folder = parent / 'backups'
+        folder /= 'pre-dev2-baseline'
+        folder.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')
         target = folder / f'{path.name}.pre-dev2-baseline-{stamp}-{uuid4().hex}.db'
-        create_sqlite_snapshot(path, target)
-        with closing(sqlite3.connect(read_only_uri(target, immutable=True), uri=True)) as conn:
+        temporary = target.with_name(f'.{target.name}.tmp')
+        journal = Path(str(path) + '-journal')
+        if journal.is_file() and journal.stat().st_size:
+            _recover_database_copy(path, kind, temporary)
+        else:
+            create_sqlite_snapshot(path, temporary)
+        if not temporary.stat().st_size:
+            raise sqlite3.DatabaseError('baseline_backup_empty')
+        with closing(sqlite3.connect(read_only_uri(temporary, immutable=True), uri=True)) as conn:
             if conn.execute('PRAGMA quick_check').fetchall() != [('ok',)]:
                 raise sqlite3.DatabaseError('baseline_backup_integrity_failed')
+        temporary.rename(target)
+        # Keep the original pre-conversion state plus the two latest attempts.
+        pattern = re.compile(re.escape(path.name) + r'\.pre-dev2-baseline-\d{8}_\d{6}_\d{6}-[0-9a-f]{32}\.db')
+        copies = sorted(p for p in folder.iterdir() if pattern.fullmatch(p.name) and p.is_file())
+        for old in copies[1:-2]:
+            try:
+                old.unlink(missing_ok=True)
+            except OSError as exc:
+                logging.getLogger(__name__).warning('baseline_backup_prune_failed: error=%s', type(exc).__name__)
         return target
     except SchemaCompatibilityError:
         raise
@@ -331,6 +353,11 @@ def backup_before_baseline(path: Path, kind: str) -> Path | None:
             'baseline_backup_failed: kind=%s error=%s code=%s', kind,
             type(exc).__name__, getattr(exc, 'sqlite_errorname', None) or getattr(exc, 'errno', None))
         raise SchemaCompatibilityError('baseline_backup_failed') from None
+    finally:
+        if temporary is not None:
+            for suffix in ('', '-journal', '-wal', '-shm'):
+                with suppress(OSError):
+                    Path(str(temporary) + suffix).unlink(missing_ok=True)
 
 
 def _recovery_signature(path: Path) -> tuple:
@@ -352,6 +379,12 @@ def _inspect_recovered_copy(path: Path, expected_kind: str) -> SchemaInspection:
     concurrent source change fails admission, rather than retrying a moving DB.
     Super-journals require a complete multi-file recovery and are not guessed.
     """
+    with tempfile.TemporaryDirectory(prefix="mvhub-schema-recovery-") as folder:
+        return _recover_database_copy(path, expected_kind, Path(folder) / "recovery.db")
+
+
+def _recover_database_copy(path: Path, expected_kind: str, copy: Path) -> SchemaInspection:
+    """Recover a private copy under the same admission rules as inspection."""
     journal = Path(str(path) + "-journal")
     magic = b"\xd9\xd5\x05\xf9\x20\xa1\x63\xd7"
     with journal.open("rb") as handle:
@@ -363,20 +396,20 @@ def _inspect_recovered_copy(path: Path, expected_kind: str) -> SchemaInspection:
     if Path(str(path) + "-wal").exists():
         raise SchemaCompatibilityError("mixed_recovery_journals")
     before = _recovery_signature(path)
-    with tempfile.TemporaryDirectory(prefix="mvhub-schema-recovery-") as folder:
-        copy = Path(folder) / "recovery.db"
-        shutil.copyfile(path, copy)
-        shutil.copyfile(journal, Path(str(copy) + "-journal"))
-        if _recovery_signature(path) != before:
-            raise SchemaCompatibilityError("recovery_source_changed")
-        with closing(sqlite3.connect(copy)) as conn:
-            # The first read invokes SQLite's own rollback recovery on the copy.
-            result = inspect_schema(conn, expected_kind)
-            if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
-                raise SchemaCompatibilityError("recovery_integrity_failed")
-        if _recovery_signature(path) != before:
-            raise SchemaCompatibilityError("recovery_source_changed")
-        return result
+    with copy.open('xb'):
+        pass
+    shutil.copyfile(path, copy)
+    shutil.copyfile(journal, Path(str(copy) + "-journal"))
+    if _recovery_signature(path) != before:
+        raise SchemaCompatibilityError("recovery_source_changed")
+    with closing(sqlite3.connect(copy)) as conn:
+        # The first read invokes SQLite's own rollback recovery on the copy.
+        result = inspect_schema(conn, expected_kind)
+        if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+            raise SchemaCompatibilityError("recovery_integrity_failed")
+    if _recovery_signature(path) != before:
+        raise SchemaCompatibilityError("recovery_source_changed")
+    return result
 
 
 def recover_compatible_database(path: Path, expected_kind: str) -> None:
