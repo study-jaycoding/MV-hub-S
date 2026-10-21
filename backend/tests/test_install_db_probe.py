@@ -7,7 +7,8 @@ import sqlite3
 
 import pytest
 
-from app import db, schema_compat
+from app import db, db_startup, schema_compat
+from app.services import schema_backup
 
 
 @pytest.fixture
@@ -118,13 +119,13 @@ def test_startup_prepares_entire_probe_set(probe, tmp_path, monkeypatch):
     root = tmp_path / 'install'
     paths = legacy_install(root, monkeypatch)
     assert all(schema_compat.inspect_database(path, kind).status == 'unversioned' for kind, path in paths)
-    db.init_existing_databases(root, {})
+    db_startup.init_existing_databases(root, {})
     assert set(probe.database_paths(root, {})) == set(paths)
     result = probe.snapshot(root, tmp_path / 'checkpoint', {}, schema_compat.inspect_database)
     assert len(result) == len(paths)
     assert all(row['status'] == 'compatible' for row in result)
     identities = [schema_compat.inspect_database(path, kind).database_id for kind, path in paths]
-    db.init_existing_databases(root, {}, active_path=paths[0][1])
+    db_startup.init_existing_databases(root, {}, active_path=paths[0][1])
     assert [schema_compat.inspect_database(path, kind).database_id for kind, path in paths] == identities
 
 
@@ -140,7 +141,7 @@ def test_startup_skips_failed_database_and_prepares_rest(tmp_path, monkeypatch, 
         else:
             lock.close()
             failed.write_bytes(b'not a sqlite database')
-        db.init_existing_databases(root, {})
+        db_startup.init_existing_databases(root, {})
     assert all(schema_compat.inspect_database(path, kind).status == 'compatible'
                for kind, path in paths if path != failed)
     expected_key = hashlib.sha256(os.path.normcase(str(failed.resolve())).encode('utf-8')).hexdigest()
@@ -230,7 +231,7 @@ def test_baseline_snapshot_failure_skips_only_other_account(tmp_path, monkeypatc
         return original(source, target, **kwargs)
 
     monkeypatch.setattr(backup_verify, 'create_sqlite_snapshot', snapshot)
-    db.init_existing_databases(root, {})
+    db_startup.init_existing_databases(root, {})
     assert failed.read_bytes() == before
     assert schema_compat.inspect_database(failed, 'content').status == 'unversioned'
     assert all(schema_compat.inspect_database(path, kind).status == 'compatible'
@@ -303,7 +304,7 @@ def test_baseline_same_name_databases_keep_separate_first_copies(tmp_path, monke
     legacy.write_bytes(b'unknown original database')
     for _ in range(4):
         for source in sources:
-            copy = schema_compat.backup_before_baseline(source, 'content')
+            copy = schema_backup.backup_before_baseline(source, 'content')
             copies[source].append(copy)
             first.setdefault(source, copy)
     assert len(list(folder.glob('*.db'))) == 7
@@ -322,7 +323,7 @@ def test_baseline_cleans_only_old_temporary_files_for_same_database(tmp_path):
     folder = tmp_path / 'backups/pre-dev2-baseline'
     folder.mkdir(parents=True)
     prefix = f'.{source.name}.pre-dev2-baseline-{schema_compat.database_key(source)[:8]}-'
-    stamp = schema_compat.datetime.now(schema_compat.timezone.utc).timestamp()
+    stamp = schema_backup.datetime.now(schema_backup.timezone.utc).timestamp()
     stale, keep = [], []
     for age, token, group in [(172800, 'a', stale), (0, 'b', keep)]:
         for first in ['', '-first']:
@@ -339,7 +340,7 @@ def test_baseline_cleans_only_old_temporary_files_for_same_database(tmp_path):
         path.write_bytes(b'keep')
         os.utime(path, (stamp - 172800, stamp - 172800))
         keep.append(path)
-    schema_compat.backup_before_baseline(source, 'content')
+    schema_backup.backup_before_baseline(source, 'content')
     assert all(not p.exists() for p in stale)
     assert all(p.is_file() for p in keep)
 
@@ -348,14 +349,14 @@ def test_baseline_first_copy_survives_clock_rollback(tmp_path, monkeypatch):
     source = tmp_path / 'content_hub.db'
     with closing(sqlite3.connect(source)) as conn:
         conn.execute('CREATE TABLE worker(id TEXT)')
-    times = iter([schema_compat.datetime(2026, 10, day, tzinfo=schema_compat.timezone.utc)
+    times = iter([schema_backup.datetime(2026, 10, day, tzinfo=schema_backup.timezone.utc)
                   for day in [21, 19, 22, 23]])
     class Clock:
         @staticmethod
         def now(_timezone):
             return next(times)
-    monkeypatch.setattr(schema_compat, 'datetime', Clock)
-    copies = [schema_compat.backup_before_baseline(source, 'content') for _ in range(4)]
+    monkeypatch.setattr(schema_backup, 'datetime', Clock)
+    copies = [schema_backup.backup_before_baseline(source, 'content') for _ in range(4)]
     assert [p.is_file() for p in copies] == [True, False, True, True]
     assert copies[0].name.endswith('-first.db')
 
@@ -387,7 +388,7 @@ def test_baseline_never_publishes_incomplete_copy(tmp_path, monkeypatch, failure
             raise OSError('injected publish failure')
         monkeypatch.setattr(Path, 'rename', fail_rename)
     with pytest.raises(schema_compat.SchemaCompatibilityError, match='baseline_backup_failed'):
-        schema_compat.backup_before_baseline(source, 'content')
+        schema_backup.backup_before_baseline(source, 'content')
     assert source.read_bytes() == before
     assert not list(folder.iterdir())
 
@@ -400,7 +401,7 @@ def test_baseline_trash_excluded_from_normal_backup_consumers(tmp_path, monkeypa
     source.parent.mkdir(parents=True)
     with closing(sqlite3.connect(source)) as conn:
         conn.execute('CREATE TABLE trashed(id TEXT)')
-    copy = schema_compat.backup_before_baseline(source, 'trash')
+    copy = schema_backup.backup_before_baseline(source, 'trash')
     folder = tmp_path / 'backups'
     if layout != 'db':
         folder /= 'account'
@@ -431,7 +432,7 @@ def test_legacy_location_baseline_uses_data_backups(tmp_path, monkeypatch, overr
     monkeypatch.setattr(config, 'DATA_DIR', data)
     with closing(sqlite3.connect(source)) as conn:
         conn.execute('CREATE TABLE worker(id TEXT)')
-    copy = schema_compat.backup_before_baseline(source, 'content')
+    copy = schema_backup.backup_before_baseline(source, 'content')
     assert copy.parent == data / 'backups/pre-dev2-baseline'
     assert not (source.parent / 'backups').exists()
     destination = data / 'db/content_hub.db'
@@ -459,7 +460,7 @@ def test_concurrent_baseline_copies_are_private_until_complete(tmp_path, monkeyp
         return result
     monkeypatch.setattr(backup_verify, 'create_sqlite_snapshot', snapshot)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(schema_compat.backup_before_baseline, source, 'content') for _ in range(2)]
+        futures = [pool.submit(schema_backup.backup_before_baseline, source, 'content') for _ in range(2)]
         try:
             ready.wait(timeout=10)
             assert not list(folder.glob('*.db'))

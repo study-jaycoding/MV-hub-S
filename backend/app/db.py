@@ -39,6 +39,7 @@ from typing import Iterator, Optional
 
 from . import config
 from . import db_migrations, schema_compat
+from .services.schema_backup import backup_before_baseline
 # 계정별 DB 순수 헬퍼(순환 없음) — ensure_account_db 가 호출하고, db._copy_sqlite 는 db_transfer.py 가 쓴다.
 from .db_account_dbs import _copy_sqlite, _legacy_owner, _seed_default_worker
 from .db_paths import DEFAULT_DB_PATH, LEGACY_DB_PATH as _LEGACY_DB_PATH, get_db_path
@@ -105,7 +106,7 @@ def _migrate_db_location(path: Path) -> None:
     if path != DEFAULT_DB_PATH or path.exists() or not _LEGACY_DB_PATH.exists():
         return
     _recover_hot_database(_LEGACY_DB_PATH, "content")
-    schema_compat.backup_before_baseline(_LEGACY_DB_PATH, "content")
+    backup_before_baseline(_LEGACY_DB_PATH, "content")
     path.parent.mkdir(parents=True, exist_ok=True)
     for suffix in ("", "-wal", "-shm"):
         src = Path(str(_LEGACY_DB_PATH) + suffix)
@@ -454,7 +455,7 @@ def _recover_hot_database(path: Path, kind: str) -> None:
     with maintenance_gate():
         with _pool_condition:
             _check_share_epoch_locked()
-        schema_compat.backup_before_baseline(path, kind)
+        backup_before_baseline(path, kind)
         flush_pool()
         schema_compat.recover_compatible_database(path, kind)
 
@@ -528,7 +529,7 @@ def init_db(db_path: Path | None = None) -> Path:
 
     if path.is_file():
         _recover_hot_database(path, "content")
-        schema_compat.backup_before_baseline(path, "content")
+        backup_before_baseline(path, "content")
     trash_path = path.parent / "content_hub_trash.db"
     _recover_hot_database(trash_path, "trash")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -573,29 +574,6 @@ def init_db(db_path: Path | None = None) -> Path:
     finally:
         conn.close()
     return path
-
-
-def init_existing_databases(root: Path, env: dict[str, str], *, active_path: Path | None = None) -> None:
-    """설치 검사가 볼 비활성 DB도 기존 초기화로 준비하되 실패는 해당 DB에 한정한다."""
-    from .schema_compat import database_paths
-    from .manage_db import init_manage_db
-    from .repo.trash import init_trash_db
-
-    log = logging.getLogger(__name__)
-    try:
-        paths = database_paths(root, env)
-    except Exception as exc:
-        log.warning("database_discovery_failed: %s", type(exc).__name__)
-        return
-    initializers = {"content": init_db, "trash": init_trash_db, "manage": init_manage_db}
-    for kind, path in paths:
-        if active_path is not None and path == active_path.resolve():
-            continue
-        try:
-            initializers[kind](path)
-        except Exception as exc:
-            log.warning("database_prepare_failed: kind=%s key=%s error=%s",
-                        kind, schema_compat.database_key(path), type(exc).__name__)
 
 
 def check_db(db_path: Path | None = None) -> dict[str, str]:

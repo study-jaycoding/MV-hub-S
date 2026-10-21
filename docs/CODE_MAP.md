@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-10-20
+updated: 2026-10-21
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -134,6 +134,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `db_account_dbs.py` | 계정 DB 순수 헬퍼(기본 작업자 시드·레거시 소유자 판별·sqlite 일관 복사) | |
 | `db_migrations.py` | schema.sql 전후 멱등 구조 보강(`_pre_migrate`/`_migrate`) | 약 900줄. 1회성·상시 보강이 시간순으로 섞여 있음(§5) |
 | `db_paths.py` | SQLite 파일 위치 결정 단일 출처 | |
+| `db_startup.py` | 기동 시 기존 content·trash·manage DB 초기화 조립. 개별 DB 실패 로그·계속 처리 | `main` → 초기화 함수들 |
 | `deps.py` | 요청 의존성 — 토큰·계정·역할·가시성 게이트 | 약 314줄 |
 | `emailnorm.py` | 이메일 정규화 단일 정의 | |
 | `generation_result.py` | CLI 파싱 결과 → 저장 필드 변환 순수 규칙 | |
@@ -341,6 +342,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `net_guard.py` | SSRF: `assert_public_http_url`·`guarded_opener`·TLS strict 해제 | `library`·`manage`·`publish`·`comfy_client`·`media_cache` |
 | `request_guards.py` | 로컬 전용 라우트 출처 가드 3종(§6) | `main`·라우터 10곳 |
 | `operational_logging.py` | JSON 회전 로그 + 비밀값 redact + `log_event` | `main`·라우터 6곳·서비스 9곳 |
+| `schema_backup.py` | 변환 전 사본 생성·검증·보존. `schema_compat`의 검사를 사용하며 검사 모듈은 백업 IO에 의존하지 않음 | `db`·`manage_db`·`repo/trash` |
 | `sqlite_db.py` | 허브 DB 형식·무결성 검증(`validate_hub_db`) + 읽기 전용 SQLite URI(`read_only_uri` — `f"file:{path}?mode=ro"` 로 손수 조립하지 않는다: 경로의 `#`·`%` 에서 깨진다. 안에서 `Path.resolve()` 도 쓰지 않는다: 네트워크 드라이브를 UNC 로 바꿔 SQLite 가 거부한다) | `db_backup`·`db_transfer`·`backup*`·`worker_backup`·`test_snapshot` |
 | `media_types.py` | 이미지/영상/오디오 확장자 상수 + 판정 | 서비스 7곳·`assets`·`library`·`repo/sources` |
 | `asset_paths.py` | Assets 내장 프로젝트명·메타키 변환 | `assets_metadata` |

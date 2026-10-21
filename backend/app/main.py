@@ -52,7 +52,8 @@ from .config import (
     READ_ONLY,
     ensure_dirs,
 )
-from .db import init_db, init_existing_databases, maintenance_active
+from .db import init_db, maintenance_active
+from .db_startup import init_existing_databases
 from .deps import session_token
 from .mutation_notify import (
     CLIENT_ID_HEADER,

@@ -8,6 +8,7 @@ import pytest
 
 from app import db, manage_db
 from app import schema_compat as compat
+from app.services.schema_backup import backup_before_baseline
 from app.repo import manage_schema, trash
 
 
@@ -301,7 +302,7 @@ def test_recovery_rechecks_original_after_copy_admission(content, monkeypatch):
 def test_unversioned_hot_journal_backup_preserves_original_then_migrates(content):
     _leave_hot_journal(content)
     before = compat._recovery_signature(content)
-    copy = compat.backup_before_baseline(content, 'content')
+    copy = backup_before_baseline(content, 'content')
     assert compat._recovery_signature(content) == before
     with connect(copy) as conn:
         assert conn.execute('PRAGMA quick_check').fetchall() == [('ok',)]
