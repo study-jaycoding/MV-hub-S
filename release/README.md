@@ -197,14 +197,20 @@ MV Hub를 종료하고 파일을 교체한 뒤 새 버전의 준비 완료까지
    dev2가 바꾼 DB를 1358이 읽고 쓰는 것은 서버·작업자·계정 하위 DB 사본의 격리 리허설로 확인했다.
    배포 전 DB 사본으로 바꾸면 그 뒤의 작업이 사라지므로 데이터 손상이 확인된 경우에만 따로 판단한다.
 4. 1358이 켜지고 생성물 목록이 보이는지 확인한다.
-5. 복구 폴더 설치기는 `INSTALL_SOURCE.txt`를 **복구 폴더로 바꾼다.** 문제가 풀린 뒤 팀 폴더의 설치기를 다시
-   실행해 원래 출처로 돌려 놓지 않으면 그 PC는 계속 1358에 머문다.
+5. 복구 폴더 설치기는 `INSTALL_SOURCE.txt`를 **복구 폴더로 바꾼다.** 그대로 두면 그 PC는 계속 1358에 머문다.
 
-**다시 dev2로 올릴 때:** 1358 설치기는 dev2가 남긴 `build-manifest.json`·`installer-capabilities.json`·
-`update_release_contract.ps1`·`.install-activation.json`을 지우지 않는다. 앱과 업데이터가 모두 꺼진 상태에서
-`.install-activation.json`의 `state`가 `normal`·`activated`가 아니면(중단된 dev2 업데이트의 잔재) 그 파일을
-다른 이름으로 옮겨 보관한 뒤 dev2를 받는다 — 남겨 두면 dev2 첫 기동이 거부된다. 업데이트가 진행 중이면 옮기지 않는다.
-이 표지에는 대상 판 정보가 없어 코드가 잔재인지 자동으로 가릴 수 없으므로 사람이 확인한다.
+**다시 dev2로 올릴 때(팀 폴더의 새 `MVHub_Install.bat`을 쓰지 않는다):**
+
+1. 앱과 업데이터를 모두 끈다.
+2. 2단계에서 통째로 복사해 둔 사본의 `INSTALL_SOURCE.txt`를 설치 폴더에 되돌려 놓아 출처를 팀 릴리스 폴더로 돌린다.
+3. 1358 설치기는 dev2가 남긴 `build-manifest.json`·`installer-capabilities.json`·`update_release_contract.ps1`·
+   `.install-activation.json`을 지우지 않는다. `.install-activation.json`의 `state`가 `normal`·`activated`가 아니면
+   (중단된 dev2 업데이트의 잔재) 그 파일을 다른 이름으로 옮겨 보관한다 — 남겨 두면 dev2 첫 기동이 거부된다.
+   업데이트가 진행 중이면 옮기지 않는다. 이 표지에는 대상 판 정보가 없어 코드가 잔재인지 자동으로 가릴 수 없으므로 사람이 확인한다.
+4. **설치된 1358의 업데이트**(앱 설정 → 프로그램 업데이트, 또는 설치 폴더의 `update_release.bat`)로 dev2 bridge 판을 받는다.
+   팀 폴더의 새 `MVHub_Install.bat`은 남은 `update_release_contract.ps1` 때문에 기존 설치로 판단하고 새 워커를 쓰는데,
+   새 워커는 1358이 지운 dev2 검사 파일(`tools/install_db_probe.py`·`backend/app/schema_compat.py`)을 설치 폴더에서
+   찾다가 멈춘다.
 
 이 절차는 코드 정적 분석으로 만든 것이다. 에이전트는 설치 스크립트를 실행할 수 없어 실제 리허설을 하지 않았다.
 팀 배포 전에 여분의 PC 한 대에서 한 번 해 보기를 권한다.
