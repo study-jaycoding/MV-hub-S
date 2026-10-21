@@ -146,6 +146,8 @@ def prepare(root: Path, *, source_receipt: Path, verification_python: Path,
         result = subprocess.run(['git', '-C', str(root), 'show', commit + ':release/compatibility.json'],
                                 check=False, capture_output=True)
         if result.returncode != 0:
+            with log.open('ab') as output:
+                output.write(b' '.join(result.stderr.splitlines()) + b'\n')
             raise ValueError('selected_commit_declaration_missing')
         declared = compatibility(document(result.stdout))
         for field in ('reader_protocol', 'writer_protocol'):

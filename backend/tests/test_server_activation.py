@@ -153,6 +153,27 @@ def test_prepare_failure_does_not_touch_running_tree_or_pointer(module, tmp_path
     assert json.loads((tmp_path / 'logs/server-prepare.json').read_text())['status'] == 'failed'
 
 
+def test_prepare_logs_missing_declaration_stderr(module, tmp_path, monkeypatch):
+    builder = importlib.import_module('server_release_update')
+    receipt = tmp_path / 'receipt.json'
+    receipt.write_text('{}')
+    verifier = tmp_path / 'verifier.exe'
+    verifier.write_bytes(b'never executed')
+    responses = iter([
+        subprocess.CompletedProcess([], 0, '', ''),
+        subprocess.CompletedProcess([], 0, 'a' * 40, ''),
+        subprocess.CompletedProcess([], 128, b'', b'fatal: declaration missing\nsecond line\n'),
+    ])
+    monkeypatch.setattr(builder.subprocess, 'run', lambda *a, **k: next(responses))
+    with pytest.raises(ValueError, match='^selected_commit_declaration_missing$'):
+        builder.prepare(tmp_path, source_receipt=receipt, verification_python=verifier,
+                        run=lambda *a, **k: None)
+    progress = json.loads((tmp_path / 'logs/server-prepare.json').read_text())
+    assert progress['status'] == 'failed'
+    assert (tmp_path / 'logs' / progress['log']).read_text() == 'fatal: declaration missing second line\n'
+    assert not (tmp_path / 'logs/server-update-request.json').exists()
+
+
 def test_prepared_stage_uses_clean_build_environment_and_waits_for_supervisor(module, tmp_path, monkeypatch):
     builder = importlib.import_module('server_release_update')
     receipt, verifier, run, calls = prepare_fixture(tmp_path, monkeypatch)

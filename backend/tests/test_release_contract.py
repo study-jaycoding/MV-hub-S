@@ -349,6 +349,7 @@ def test_powershell_verifies_compress_archive_and_rejects_normalized_unsafe_path
     unsafe = ['..\\escape', '\\absolute', 'C:\\drive', 'backend\\..\\escape',
               'backend\\.\\escape', 'backend\\\\empty', 'backend/file:stream',
               'backend\\data\\user.db', 'backend\\content_hub.db',
+              'BACKEN~1/content_hub.db', 'backend/DATA~12/user.db', 'backend/CONTEN~1.DB',
               'backend.\\alias', 'backend \\alias', 'tail\\\\']
     for index, name in enumerate([None, *unsafe, 'runtime\\higgsfield\\node_modules\\@higgsfield\\cli\\package.json']):
         target = folder / f'case-{index}.zip'
@@ -460,6 +461,16 @@ def test_backend_program_file_is_still_allowed(tmp_path):
     "data./fixture.txt", "data /fixture.txt",
 ])
 def test_package_rejects_windows_normalized_path_aliases(tmp_path, name):
+    payload = {"VERSION.txt": b"fixture", "hf_cli_version.txt": b"1.1.26", name: b"synthetic alias"}
+    candidate, _ = qualified_package(tmp_path, "fixture", payload=payload)
+    with pytest.raises(c.ContractError, match="unsafe ZIP path"):
+        c.read_descriptor(tmp_path / candidate["file"])
+
+
+@pytest.mark.parametrize("name", [
+    "BACKEN~1/content_hub.db", "backend/DATA~12/user.db", "backend/CONTEN~1.DB",
+])
+def test_package_rejects_windows_short_name_aliases(tmp_path, name):
     payload = {"VERSION.txt": b"fixture", "hf_cli_version.txt": b"1.1.26", name: b"synthetic alias"}
     candidate, _ = qualified_package(tmp_path, "fixture", payload=payload)
     with pytest.raises(c.ContractError, match="unsafe ZIP path"):

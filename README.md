@@ -5,7 +5,7 @@ aliases:
 tags:
   - mvhub
   - mvhub/진입점
-updated: 2026-10-14
+updated: 2026-10-21
 status: active
 ---
 
@@ -65,6 +65,8 @@ git sparse-checkout set backend frontend tools
 ## 업데이트
 
 - **git 클론(서버 PC·개발)**:
+  `update_git.bat`은 서버·개발 클론 모두 **관리자 콘솔**에서 실행합니다. 비관리자는 SYSTEM 예약 작업을 못 봐 서버를 작업자로 오판할 수 있으므로 역할 판정 전에 거부합니다.
+
   ```sh
   update_git.bat       # 변경분 설치·빌드. 등록된 공유 서버는 안전 재시작+ready 확인까지 수행
   update_cli.bat       # higgsfield CLI 를 hf_cli_version.txt 의 고정 버전으로 맞춤

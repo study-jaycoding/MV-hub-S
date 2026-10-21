@@ -32,6 +32,9 @@ status: active
 1358 서버의 최초 전환은 [아래 별도 절](#1358--dev2-최초-전환)을 따른다.
 실제 배포는 아래 생성 fence와 [배포 Gate](RISK_REDUCTION_PLAN_2026-08-15.md)의 승인을 함께 따른다.
 
+`update_git.bat`은 서버·개발 git 클론 모두 **관리자 콘솔**에서 실행한다. 비관리자는 SYSTEM 예약 작업을
+못 봐 서버를 작업자로 오판할 수 있으므로 역할 판정 전에 거부한다.
+
 판별 선언은 [release/compatibility.json](../release/compatibility.json) 하나를 코드와 함께 커밋한다.
 서버는 fetch 뒤 선택한 `origin/main` SHA의 선언을 읽고 같은 SHA에서 stage를 만든다.
 현재 선언은 reader 1 / writer 2, DB 읽기·쓰기 범위 1..2,
@@ -121,10 +124,47 @@ CRLF를 포함해 checkout과 같은 바이트를 stage에 담고, `release/comp
 관리자 권한과 프로세스 조회 가능 여부를 확인한다. 비관리자 콘솔에서 SYSTEM 프로세스의
 CommandLine을 읽지 못하는 경우는 가능한 원인이며 이번 리허설에서 재현·확정된 원인은 아니다.
 
+**pull 뒤 의존성 설치·빌드·재시작에서 실패하면 단순 재실행으로 옛 워커의 남은 단계를 이어갈 수 없다.**
+옛 ps1은 워커 파일 전체를 복사하므로 새 워커 1회 재시도도, `update_git.bat` 재실행도 새
+`tools\run_update_git.ps1`의 staged 경로로 들어간다. 옛 supervisor는 새 잠금을 잡지 않아
+`server without its active supervisor`로 거부된다. `MV_server.bat`으로 새 supervisor를 띄워도
+현재 선언의 `rollout=null`에서 막힌다. 실패 원인을 보존하고 아래 둘 중 승인된 복구 경로를 따른다.
+
 승인된 복귀가 필요하면 서버의 새 작업을 멈추고 작업 트리가 깨끗한지 확인한 다음,
 서버 루트의 관리자 콘솔에서 `git checkout c2463e4f` 후 `restart_server_task.bat`을 실행한다.
 **DB는 그대로 둔다.** 다시 ready·로그인·팀 목록을 확인하며, 미커밋 변경이나 다른 DB 비호환이
 있으면 강제 checkout·DB 덮어쓰기를 하지 않고 별도 복구 판단을 받는다.
+복귀 뒤 원인을 해결하고 다시 올릴 때는 detached HEAD 상태를 끝내도록 **`git checkout main`으로 돌아온 뒤
+최초 전환 절차를 처음부터** 수행한다. detached HEAD에서는 옛 워커의 `git pull --ff-only`가 실패한다.
+
+복귀 대신 옛 워커의 남은 단계를 수동 완료하기로 승인했다면, 서버 루트의 관리자 PowerShell에서
+`logs\update.log`의 `Using Python`에 나온 **같은 Python 실행 파일·인자**를 사용한다. 아래 `$PythonExe`는
+그 실행 파일로 바꾸고, `py.exe -3`처럼 인자가 있었다면 각 Python 명령에 같은 인자도 붙인다.
+
+```powershell
+$PythonExe = '<update.log의 Python 실행 파일 절대 경로>'
+$env:PYTHONUTF8 = '1'
+& $PythonExe -m pip install -r .\backend\requirements.txt
+if ($LASTEXITCODE -ne 0) { throw '의존성 설치 실패' }
+& $PythonExe -c "import fastapi,uvicorn,pydantic,websockets,multipart,PIL,watchdog"
+if ($LASTEXITCODE -ne 0) { throw '의존성 import 실패' }
+& $PythonExe .\tools\verify_requirements.py .\backend\requirements.txt
+if ($LASTEXITCODE -ne 0) { throw '의존성 버전 확인 실패' }
+Push-Location .\frontend
+try {
+    npm.cmd ci --include=dev --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) { throw 'npm ci 실패' }
+    npm.cmd run build
+    if ($LASTEXITCODE -ne 0) { throw '프런트 빌드 실패' }
+    if (-not (Test-Path .\dist\index.html)) { throw '프런트 산출물 누락' }
+} finally { Pop-Location }
+.\restart_server_task.bat
+if ($LASTEXITCODE -ne 0) { throw '서버 재시작 실패' }
+```
+
+각 명령의 종료 코드 0, 의존성 import·버전 확인, `frontend\dist\index.html` 생성을 확인한 다음
+위 성공 확인 1~3(ready·로그인·팀 목록, activation 상태, DB 지원 범위)을 다시 확인한다.
+DB를 되돌리거나 실패 표식을 임의로 지우지 않는다.
 
 근거는 총괄이 제공한 **1358 서버 DB 사본 격리 리허설 보고**다: dev2 변환 후 compatible·ready 200,
 옛 1358 코드로 ready·로그인·팀 목록 200, 다시 dev2 compatible을 확인했다. 이는 해당 사본과 코드의

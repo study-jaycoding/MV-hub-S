@@ -149,6 +149,8 @@ def read_descriptor(package: Path, *, verify_payload: bool = True) -> tuple[dict
             for info in archive.infolist():
                 name = info.filename.rstrip("/")
                 require(payload_name(name), "unsafe ZIP path")
+                require(not any(re.fullmatch(r'[^/.]{1,6}~[0-9]+(?:\.[^/]{1,3})?', part)
+                                for part in name.split('/')), "unsafe ZIP path")
                 require(not re.match(r'^(backend/data|data|logs|\.install-checkpoints|\.install-journals)(/|$)', name, re.I)
                         and not re.fullmatch(r'backend/content_hub(?:_trash)?\.db(?:-(?:wal|shm|journal))?', name, re.I)
                         and name.casefold() not in {'install_source.txt', 'update-journal.json', '.install-activation.json',
