@@ -751,7 +751,7 @@ export default function App() {
   const listShown = !cutMode;
   const listGate = listShown && (staleList || shownStaleCopy || behindAfterMove);
   const listLocked = !cutOwns && listGate;
-  const canLoadMore = hasMore && !listGate && !listBehind; // 모든 더 받기는 지금 조회의 첫 쪽·커서가 온 뒤에만.
+  const canLoadMore = hasMore && !listGate && (!listBehind || (isLocatedView && !!loadError)); // 위치 보기 갱신 실패 때는 같은 조회에서 유지한 커서로 이어 받는다.
   // 창이 보여 주는 폴더의 지금 대표 — 표지가 '가장 최근 것' 일 뿐이면 대표가 아니다(null).
   const peekFolderCard = listPeek ? folderCards?.folders.find((folder) => folder.path === listPeek.path) : undefined;
   const peekCoverId = peekFolderCard?.rep ? peekFolderCard.cover.id : null;
