@@ -197,17 +197,24 @@ export function ThumbnailGrid(props: Props) {
     return Math.round(180 * scale) * dpr <= 256 ? 256 : 512;
   }, [isList, scale, dpr]);
 
-  // underfill 보정 — 첫 화면이 뷰포트를 못 채우면 스크롤바가 없어 onScroll 이 안 오고 다음 페이지를
-  // 못 당긴다. 렌더 후 높이를 재보고 안 채워졌으면 서버 다음 페이지 요청.
+  // 첫 쪽 적용 뒤 추가 응답이 버려지면 새 scroll 이벤트가 없어도 바닥 근처에서 이어 받는다.
+  // 같은 목록에서는 최초 요청 + 재시도 한 번만: 응답 폐기는 재개하되 오류로 끝없이 재시도하지 않는다.
+  const autoLoadRef = useRef({ generations, attempts: 0 });
   useEffect(() => {
     if (!props.hasMore || props.loadingMore) return;
     const el = gridRef.current;
     if (!el) return;
     const id = requestAnimationFrame(() => {
-      if (!resolveScrollGuardRef.current && el.scrollHeight <= el.clientHeight + 40) props.onLoadMore?.();
+      if (resolveScrollGuardRef.current) return;
+      if (autoLoadRef.current.generations !== generations) autoLoadRef.current = { generations, attempts: 0 };
+      if (autoLoadRef.current.attempts >= 2) return;
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < 800) {
+        autoLoadRef.current.attempts++;
+        props.onLoadMore?.();
+      }
     });
     return () => cancelAnimationFrame(id);
-  }, [rowModel, props.hasMore, props.loadingMore, props.onLoadMore, resolveScrollRelease]);
+  }, [rowModel, generations, props.hasMore, props.loadingMore, props.onLoadMore, resolveScrollRelease]);
 
   const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
   const [focusedGenerationId, setFocusedGenerationId] = useState<string | null>(null);
