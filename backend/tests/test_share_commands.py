@@ -240,6 +240,61 @@ def test_bundle_receipt_replays_item_without_reimport(generation):
     assert second["command_results"]["new-job"]["current"]["shared"] is False
 
 
+@pytest.mark.parametrize("creator_uid", [None, "acct:owner@test", "user_owner"])
+def test_authenticated_bundle_first_publish_republish_and_other_account_denied(generation, monkeypatch, creator_uid):
+    from app import deps
+    from app.routers.publish import receive_published_bundle, PublishBundleIn
+
+    monkeypatch.setattr(deps, "AUTH_ENABLED", True)
+    with db.get_connection() as conn:
+        for email, uid in [("owner@test", creator_uid), ("other@test", None)]:
+            conn.execute("INSERT INTO account(email,password_hash,creator_uid,status) VALUES(?,'unused',?,'approved')",
+                         (email, uid))
+    item = {"generation": {"id": "authorless-job", "prompt": "fixture", "status": "done", "workspace_scope": "unknown"}}
+    # The provider is deliberately untrusted; only the authenticated account may grant ownership.
+    bundle = {"provider": {"uid": "forged@test", "email": "forged@test"}, "generations": [item]}
+
+    def publish(email, revision, operation):
+        req = SimpleNamespace(state=SimpleNamespace(account=repo.get_account(email)))
+        cmd = ShareCommandIn(operation_id=operation, target_id="authorless-job", command_kind="publish_bundle",
+                             workspace_scope="unknown", expected_revision=revision,
+                             parameters={"item": item, "provider": bundle["provider"]}).as_command()
+        return receive_published_bundle(PublishBundleIn(bundle=bundle, commands=[cmd]), req)["command_results"]["authorless-job"]
+
+    first = publish("owner@test", 0, "first")
+    assert "error" not in first, first
+    gid = first["current"]["id"]
+    assert repo.get_generation(gid)["creator_uid"] == (creator_uid or "owner@test")
+    owner_request = SimpleNamespace(state=SimpleNamespace(account=repo.get_account("owner@test")))
+    assert http_call(share.inspect_state, authority(owner_request), gid)["id"] == gid
+    second = publish("owner@test", first["current"]["share_revision"], "second")
+    assert "error" not in second, second
+    assert publish("owner@test", first["current"]["share_revision"], "second")["replayed"]
+    denied = publish("other@test", second["current"]["share_revision"], "other")
+    assert denied["error"] == {"status_code": 403, "detail": "publish_blocked"}
+    assert repo.get_generation(gid)["creator_uid"] == (creator_uid or "owner@test")
+    assert repo.get_generation(gid)["share_revision"] == second["current"]["share_revision"]
+    other_request = SimpleNamespace(state=SimpleNamespace(account=repo.get_account("other@test")))
+    with pytest.raises(HTTPException) as invisible:
+        http_call(share.inspect_state, authority(other_request), gid)
+    assert invisible.value.status_code == 404
+
+
+def test_linked_account_does_not_gain_email_authority(generation, monkeypatch):
+    from app import deps
+
+    monkeypatch.setattr(deps, "AUTH_ENABLED", True)
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO account(email,password_hash,creator_uid,status) VALUES('owner@test','unused','user_owner','approved')")
+        conn.execute("UPDATE generation SET creator_uid='owner@test' WHERE id=?", (generation,))
+    req = SimpleNamespace(state=SimpleNamespace(account=repo.get_account("owner@test")))
+    with db.get_connection() as conn:
+        assert authority(req)(conn).author_uids == {"user_owner", "acct:owner@test"}
+    with pytest.raises(HTTPException) as denied:
+        http_call(share.inspect_state, authority(req), generation)
+    assert denied.value.status_code == 404
+
+
 def test_receipt_rechecks_read_authority_but_not_revoked_write_role(generation, monkeypatch):
     from app import deps
     monkeypatch.setattr(deps, "AUTH_ENABLED", True)

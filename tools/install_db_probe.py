@@ -21,26 +21,9 @@ def file_digest(path: Path) -> str:
     return result.hexdigest()
 
 
-def local_database_path(path: Path) -> None:
-    if not path.is_absolute() or str(path).startswith('\\\\'):
-        raise ValueError('database_path_must_be_local_absolute')
-    for ancestor in (path, *path.parents):
-        if ancestor.is_symlink() or (ancestor.exists() and getattr(ancestor.stat(), 'st_file_attributes', 0) & 1024):
-            raise ValueError('database_link_forbidden')
-
-
 def database_paths(root: Path, env: dict[str, str]) -> list[tuple[str, Path]]:
-    data = Path(env.get("CONTENT_HUB_DATA") or root / "backend/data").expanduser()
-    primary = Path(env.get("CONTENT_HUB_DB") or data / "db/content_hub.db").expanduser()
-    local_database_path(data)
-    local_database_path(primary)
-    content = {primary, data / "db/content_hub.db", root / "backend/content_hub.db", *(data / "db/acct").glob("*/content_hub.db")}
-    rows = [("content", path) for path in content]
-    rows += [("trash", path.with_name("content_hub_trash.db")) for path in content]
-    rows.append(("manage", data / "db/manage_hub.db"))
-    for _, path in rows:
-        local_database_path(path)
-    return sorted(((kind, path.resolve()) for kind, path in rows if path.is_file()), key=lambda row: str(row[1]))
+    from app.schema_compat import database_paths as existing_database_paths
+    return existing_database_paths(root, env)
 
 
 def file_set(paths: list[tuple[str, Path]]) -> dict[Path, tuple[int, str]]:

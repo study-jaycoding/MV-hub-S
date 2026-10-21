@@ -1,5 +1,7 @@
 import importlib
+from contextlib import closing
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -79,3 +81,66 @@ def test_relative_or_network_db_override_is_refused_before_copy(probe, tmp_path)
     for override in ['relative.db', r'\\fixture-server\share\content.db']:
         with pytest.raises(ValueError, match='local_absolute'):
             probe.database_paths(tmp_path, {'CONTENT_HUB_DB': override})
+
+
+def legacy_install(root, monkeypatch):
+    from app import manage_db
+    from app.repo import trash
+
+    data = root / 'backend/data'
+    content = [data / 'db/content_hub.db', data / 'db/acct/unopened/content_hub.db',
+               root / 'backend/content_hub.db']
+    paths = []
+    for path in content:
+        db.init_db(path)
+        paths.append(('content', path))
+        trash_path = path.with_name('content_hub_trash.db')
+        with closing(sqlite3.connect(':memory:', isolation_level=None)) as conn:
+            conn.execute('ATTACH DATABASE ? AS trash', (str(trash_path),))
+            trash._ensure_trash_schema(conn)
+        paths.append(('trash', trash_path))
+    manage = data / 'db/manage_hub.db'
+    monkeypatch.setattr(manage_db, 'MANAGE_DB_PATH', manage)
+    manage_db.init_manage_db()
+    paths.append(('manage', manage))
+    for _, path in paths:
+        with closing(sqlite3.connect(path, isolation_level=None)) as conn:
+            conn.execute('DROP TABLE schema_migrations')
+            conn.execute('DROP TABLE schema_meta')
+            conn.execute('PRAGMA user_version=0')
+    return paths
+
+
+def test_startup_prepares_entire_probe_set(probe, tmp_path, monkeypatch):
+    root = tmp_path / 'install'
+    paths = legacy_install(root, monkeypatch)
+    assert all(schema_compat.inspect_database(path, kind).status == 'unversioned' for kind, path in paths)
+    db.init_existing_databases(root, {})
+    assert set(probe.database_paths(root, {})) == set(paths)
+    result = probe.snapshot(root, tmp_path / 'checkpoint', {}, schema_compat.inspect_database)
+    assert len(result) == len(paths)
+    assert all(row['status'] == 'compatible' for row in result)
+    identities = [schema_compat.inspect_database(path, kind).database_id for kind, path in paths]
+    db.init_existing_databases(root, {}, active_path=paths[0][1])
+    assert [schema_compat.inspect_database(path, kind).database_id for kind, path in paths] == identities
+
+
+@pytest.mark.parametrize('failure', ['locked', 'corrupt'])
+@pytest.mark.parametrize('kind', ['content', 'trash', 'manage'])
+def test_startup_skips_failed_database_and_prepares_rest(tmp_path, monkeypatch, caplog, failure, kind):
+    root = tmp_path / 'install'
+    paths = legacy_install(root, monkeypatch)
+    failed = next(path for role, path in paths if role == kind)
+    with closing(sqlite3.connect(failed, isolation_level=None)) as lock:
+        if failure == 'locked':
+            lock.execute('BEGIN IMMEDIATE')
+        else:
+            lock.close()
+            failed.write_bytes(b'not a sqlite database')
+        db.init_existing_databases(root, {})
+    assert all(schema_compat.inspect_database(path, kind).status == 'compatible'
+               for kind, path in paths if path != failed)
+    assert 'database_prepare_failed' in caplog.text
+    assert str(failed) not in caplog.text and 'unopened' not in caplog.text
+    if failure == 'locked':
+        assert schema_compat.inspect_database(failed, kind).status == 'unversioned'

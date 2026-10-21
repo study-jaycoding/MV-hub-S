@@ -39,6 +39,12 @@ def account_actor_uid(request: Request) -> Optional[str]:
     return None
 
 
+def account_author_uids(account: dict) -> set[str]:
+    """인증 계정의 번들 작성자 표기. 미연결 계정만 옛 이메일 표기를 허용한다."""
+    email = norm_email(account.get("email"))
+    return {account.get("creator_uid") or email, f"acct:{email}"}
+
+
 def require_agent_account(request: Request) -> dict:
     """에이전트·텔레메트리·생성요청 공용 신원 폴백(단일 출처).
 
