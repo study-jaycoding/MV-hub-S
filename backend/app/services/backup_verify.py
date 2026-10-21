@@ -60,14 +60,18 @@ def create_sqlite_snapshot(
         raise ValueError("원본과 백업 경로가 같습니다")
     if not source.is_file():
         raise FileNotFoundError(source)
-    if destination.exists():
-        raise FileExistsError(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open('xb'):
+        pass
     # 온라인 원본은 mode=ro로 WAL까지 읽되 원본 쓰기/저널 복구를 허용하지 않는다.
     # immutable은 WAL 없는 독립 백업 파일에만 호출자가 지정한다.
     source_target = _sqlite_read_uri(source, immutable=immutable_source)
     try:
         with closing(sqlite3.connect(source_target, uri=True)) as src:
+            # Pin the read before backup's retry loop so a locked source fails on the busy timeout.
+            if not src.in_transaction:
+                src.execute('BEGIN')
+            src.execute('SELECT name FROM sqlite_master LIMIT 1').fetchone()
             with closing(sqlite3.connect(str(destination))) as dst:
                 src.backup(dst)
     except BaseException:

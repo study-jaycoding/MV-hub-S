@@ -41,9 +41,81 @@ def prep(conn,*,owner='user_a',name='제이',digest=None,project='p',filename='c
 def upload(conn,base,ticket,*,owner='user_a',content=PNG):
     tmp=base/'input.png'
     tmp.write_bytes(content)
-    result=sync.accept_upload(conn,ticket['token'],owner,tmp,hashlib.sha256(content).hexdigest(),len(content))
+    result=sync.accept_upload(ticket['token'],owner,tmp,hashlib.sha256(content).hexdigest(),len(content))
     conn.commit()
     return result
+
+
+@pytest.mark.parametrize('phase', ['fsync', 'hash'])
+def test_upload_file_io_releases_maintenance_gate(storage, monkeypatch, phase):
+    conn, base = storage
+    ticket = prep(conn)
+    module, name = (sync.os, 'fsync') if phase == 'fsync' else (sync.asset_io, 'sha256_file')
+    original = getattr(module, name)
+    observed = []
+
+    def checked(*args, **kwargs):
+        started = time.monotonic()
+        with db.maintenance_gate(timeout=4):
+            observed.append(time.monotonic() - started)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, name, checked)
+    monkeypatch.setattr(api, 'require_project_role', lambda *a, **kw: None)
+    monkeypatch.setattr(api, 'actor_id', lambda request: 'user_a')
+    monkeypatch.setattr(api._proxy, 'proxying', lambda: False)
+    app = FastAPI()
+    app.include_router(api.router)
+    with TestClient(app) as client:
+        response = client.put('/api/asset-sync/uploads/' + ticket['token'], content=PNG)
+    assert response.status_code == 200, response.text
+    assert observed and max(observed) < 5
+
+
+@pytest.mark.parametrize('mutation', [
+    'DELETE FROM asset_upload_token WHERE token=?',
+    'UPDATE asset_upload_token SET expires_at=0 WHERE token=?',
+    "UPDATE asset_upload_token SET original_name='changed.png' WHERE token=?",
+    "UPDATE asset_upload_token SET project_id='q' WHERE token=?",
+])
+def test_upload_rechecks_ticket_after_file_io(storage, monkeypatch, mutation):
+    conn, base = storage
+    ticket = prep(conn)
+    original = sync.asset_io.sha256_file
+
+    def changed(path):
+        with db.get_connection() as other:
+            other.execute(mutation, (ticket['token'],))
+        return original(path)
+
+    monkeypatch.setattr(sync.asset_io, 'sha256_file', changed)
+    with pytest.raises(sync.SyncError, match='asset_upload_(expired|changed)'):
+        upload(conn, base, ticket)
+    assert conn.execute('SELECT count(*) FROM asset_location').fetchone()[0] == 0
+    assert conn.execute('SELECT count(*) FROM asset_blob').fetchone()[0] == 0
+
+
+def test_upload_rejects_database_replacement_during_file_io(storage, monkeypatch):
+    conn, base = storage
+    ticket = prep(conn)
+    original = sync.asset_io.sha256_file
+
+    def replaced(path):
+        with db.maintenance_gate(timeout=4):
+            db.flush_pool()
+        return original(path)
+
+    monkeypatch.setattr(sync.asset_io, 'sha256_file', replaced)
+    monkeypatch.setattr(api, 'require_project_role', lambda *a, **kw: None)
+    monkeypatch.setattr(api, 'actor_id', lambda request: 'user_a')
+    monkeypatch.setattr(api._proxy, 'proxying', lambda: False)
+    app = FastAPI()
+    app.include_router(api.router)
+    with TestClient(app) as client:
+        response = client.put('/api/asset-sync/uploads/' + ticket['token'], content=PNG)
+    assert response.status_code == 409
+    assert response.json()['detail'] == 'share_database_changed'
+    assert conn.execute('SELECT count(*) FROM asset_location').fetchone()[0] == 0
 
 
 def test_roundtrip_owner_folder_dedup_restore_and_content_identity(storage):
@@ -310,8 +382,7 @@ def test_worker_queues_local_first_and_settles_only_verified_server_receipt(stor
         assert server==origin and path=='/api/asset-sync/prepare'
         return sync.prepare(owner_uid='user_a',display_name='제이',project_id=body['project_id'],digest=body['sha256'],size=body['bytes'],media_type=body['media_type'],original_name=body['original_name'])
     def transfer(server,token,ticket,row):
-        with db.get_connection() as connection:
-            return sync.accept_upload(connection,ticket['token'],'user_a',Path(row['path']),row['sha256'],row['bytes'])
+        return sync.accept_upload(ticket['token'],'user_a',Path(row['path']),row['sha256'],row['bytes'])
     monkeypatch.setattr(sync,'_json_call',call)
     monkeypatch.setattr(sync,'_upload',transfer)
     assert sync.process_one()
@@ -509,8 +580,7 @@ def test_root_change_requeues_with_cas_receipt_and_remote_resolve_proof(storage,
     def call(server,token,path,body):
         return sync.prepare(owner_uid='user_a',display_name='제이',project_id=body['project_id'],digest=body['sha256'],size=body['bytes'],media_type=body['media_type'],original_name=body['original_name'])
     def transfer(server,token,ticket,row):
-        with db.get_connection() as connection:
-            return sync.accept_upload(connection,ticket['token'],'user_a',Path(row['path']),row['sha256'],row['bytes'])
+        return sync.accept_upload(ticket['token'],'user_a',Path(row['path']),row['sha256'],row['bytes'])
     monkeypatch.setattr(sync,'_json_call',call)
     monkeypatch.setattr(sync,'_upload',transfer)
     assert sync.process_one()

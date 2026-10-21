@@ -11,8 +11,10 @@ from __future__ import annotations
 
 from contextlib import closing
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 from pathlib import Path
 import re
 import sqlite3
@@ -289,6 +291,40 @@ def inspect_database(path: Path, expected_kind: str) -> SchemaInspection:
     with closing(sqlite3.connect(uri, uri=True)) as conn:
         conn.execute("BEGIN")  # one consistent read snapshot across metadata queries
         return inspect_schema(conn, expected_kind)
+
+
+def backup_before_baseline(path: Path, kind: str) -> Path | None:
+    """Preserve an existing unversioned DB before any migration or recovery write."""
+    from .services.backup_verify import create_sqlite_snapshot
+    from .services.sqlite_db import read_only_uri
+
+    try:
+        if not path.is_file() or not path.stat().st_size:
+            return None
+        if inspect_database(path, kind).status != 'unversioned':
+            return None
+        parent = path.parent
+        if parent.parent.name == 'acct' and parent.parent.parent.name == 'db':
+            folder = parent.parent.parent.parent / 'backups' / parent.name
+        elif parent.name == 'db':
+            folder = parent.parent / 'backups'
+        else:
+            folder = parent / 'backups'
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')
+        target = folder / f'{path.name}.pre-dev2-baseline-{stamp}-{uuid4().hex}.db'
+        create_sqlite_snapshot(path, target)
+        with closing(sqlite3.connect(read_only_uri(target, immutable=True), uri=True)) as conn:
+            if conn.execute('PRAGMA quick_check').fetchall() != [('ok',)]:
+                raise sqlite3.DatabaseError('baseline_backup_integrity_failed')
+        return target
+    except SchemaCompatibilityError:
+        raise
+    except Exception as exc:
+        # Exception text can contain account paths; log only the safe error category/code.
+        logging.getLogger(__name__).error(
+            'baseline_backup_failed: kind=%s error=%s code=%s', kind,
+            type(exc).__name__, getattr(exc, 'sqlite_errorname', None) or getattr(exc, 'errno', None))
+        raise SchemaCompatibilityError('baseline_backup_failed') from None
 
 
 def _recovery_signature(path: Path) -> tuple:

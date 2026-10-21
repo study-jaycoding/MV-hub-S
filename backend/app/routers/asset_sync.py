@@ -188,11 +188,8 @@ async def upload(token: str,request: Request):
     except asset_io.UploadTooLarge as exc:
         raise HTTPException(status_code=413,detail='asset_size_mismatch') from exc
     try:
-        def commit():
-            with db.get_connection() as conn:
-                return sync.accept_upload(conn,token,owner,tmp,digest,size)
-        return await to_thread_non_abandon(commit)
-    except sync.SyncError as exc:
+        return await to_thread_non_abandon(sync.accept_upload,token,owner,tmp,digest,size)
+    except (sync.SyncError, db.DatabaseEpochChanged) as exc:
         _translate(exc)
     finally:
         await to_thread_non_abandon(tmp.unlink,missing_ok=True)
