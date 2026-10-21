@@ -132,12 +132,38 @@ CommandLine을 읽지 못하는 경우는 가능한 원인이며 이번 리허�
 `MV_server.bat`으로 새 supervisor를 띄우는 것만으로 옛 워커의 남은 단계를 이어가지는 않는다.
 실패 원인을 보존하고 아래 둘 중 승인된 복구 경로를 따른다.
 
-승인된 복귀가 필요하면 서버의 새 작업을 멈추고 작업 트리가 깨끗한지 확인한 다음,
-서버 루트의 관리자 콘솔에서 `git checkout c2463e4f` 후 `restart_server_task.bat`을 실행한다.
-**DB는 그대로 둔다.** 다시 ready·로그인·팀 목록을 확인하며, 미커밋 변경이나 다른 DB 비호환이
-있으면 강제 checkout·DB 덮어쓰기를 하지 않고 별도 복구 판단을 받는다.
-복귀 뒤 원인을 해결하고 다시 올릴 때는 detached HEAD 상태를 끝내도록 **`git checkout main`으로 돌아온 뒤
-최초 전환 절차를 처음부터** 수행한다. detached HEAD에서는 옛 워커의 `git pull --ff-only`가 실패한다.
+승인된 복귀가 필요하면 서버의 새 작업을 멈추고 작업 트리가 깨끗한지 확인한 다음, 서버 루트의
+관리자 PowerShell에서 1358 소스로 되돌리고 **그 소스로 의존성·프런트를 다시 만든 뒤** 재시작한다.
+`frontend\dist`는 Git 밖이라 checkout으로 돌아오지 않고, 1358의 `MV_server.bat`은 `dist\index.html`이
+있으면 빌드를 건너뛰므로 다시 만들지 않으면 1358 백엔드에 dev2 화면이 서빙된다.
+`$PythonExe`는 위와 같이 `logs\update.log`의 `Using Python` 실행 파일이다.
+
+```powershell
+git checkout c2463e4f
+if ($LASTEXITCODE -ne 0) { throw 'checkout 실패' }
+& $PythonExe -m pip install -r .\backend\requirements.txt
+if ($LASTEXITCODE -ne 0) { throw '의존성 설치 실패' }
+Push-Location .\frontend
+try {
+    npm.cmd ci --include=dev --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) { throw 'npm ci 실패' }
+    npm.cmd run build
+    if ($LASTEXITCODE -ne 0) { throw '프런트 빌드 실패' }
+} finally { Pop-Location }
+$env:CONTENT_HUB_NO_PAUSE = '1'
+.\restart_server_task.bat
+if ($LASTEXITCODE -ne 0) { throw '서버 재시작 실패' }
+```
+
+**DB는 그대로 둔다**(dev2가 바꾼 DB를 1358이 읽고 쓰는 것은 격리 리허설로 확인 — 아래 근거). 다시
+ready·로그인·팀 목록을 확인하며, 미커밋 변경이나 다른 DB 비호환이 있으면 강제 checkout·DB 덮어쓰기를
+하지 않고 별도 복구 판단을 받는다.
+
+복귀 뒤 원인을 해결하고 **다시 올릴 때는 `update_git.bat`을 쓰지 않는다.** 첫 pull이 이미 로컬
+`main`을 dev2로 옮겨 두었으므로 `git checkout main`은 새 `update_git.bat`을 꺼내 오고, 새 진입점
+(`tools\run_update_git.ps1`)은 실행 중인 1358 supervisor가 새 잠금을 갖지 않아
+`server without its active supervisor`로 거부한다. 재시도는 `git checkout main`(detached HEAD 종료)
+뒤 **아래 '옛 워커의 남은 단계 수동 완료' 명령을 그대로** 실행하고, 성공 확인 1~3을 다시 본다.
 
 복귀 대신 옛 워커의 남은 단계를 수동 완료하기로 승인했다면, 서버 루트의 관리자 PowerShell에서
 `logs\update.log`의 `Using Python`에 나온 **같은 Python 실행 파일·인자**를 사용한다. 아래 `$PythonExe`는
