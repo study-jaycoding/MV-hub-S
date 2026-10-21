@@ -594,7 +594,8 @@ def init_existing_databases(root: Path, env: dict[str, str], *, active_path: Pat
         try:
             initializers[kind](path)
         except Exception as exc:
-            log.warning("database_prepare_failed: kind=%s error=%s", kind, type(exc).__name__)
+            log.warning("database_prepare_failed: kind=%s key=%s error=%s",
+                        kind, schema_compat.database_key(path), type(exc).__name__)
 
 
 def check_db(db_path: Path | None = None) -> dict[str, str]:

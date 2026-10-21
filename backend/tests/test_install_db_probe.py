@@ -1,4 +1,6 @@
 import importlib
+import hashlib
+import os
 from contextlib import closing
 from pathlib import Path
 import sqlite3
@@ -23,6 +25,7 @@ def test_checkpoint_uses_private_copies_and_preserves_original_set(probe, tmp_pa
     result = probe.snapshot(root, tmp_path / 'checkpoint', {}, schema_compat.inspect_database)
     assert probe.file_set([('content', path)]) == before
     assert result[0]['status'] == 'compatible'
+    assert result[0]['key'] == hashlib.sha256(os.path.normcase(str(path.resolve())).encode('utf-8')).hexdigest()
     assert result[0]['database_id'] == schema_compat.inspect_database(path, 'content').database_id
     assert 'install' not in str(result) and str(path) not in str(result)
     checkpoint = tmp_path / 'checkpoint' / result[0]['checkpoint']
@@ -140,7 +143,10 @@ def test_startup_skips_failed_database_and_prepares_rest(tmp_path, monkeypatch, 
         db.init_existing_databases(root, {})
     assert all(schema_compat.inspect_database(path, kind).status == 'compatible'
                for kind, path in paths if path != failed)
-    assert 'database_prepare_failed' in caplog.text
+    expected_key = hashlib.sha256(os.path.normcase(str(failed.resolve())).encode('utf-8')).hexdigest()
+    warnings = [record.message for record in caplog.records if 'database_prepare_failed' in record.message]
+    assert len(warnings) == 1
+    assert f'kind={kind} key={expected_key} error=' in warnings[0]
     assert str(failed) not in caplog.text and 'unopened' not in caplog.text
     if failure == 'locked':
         assert schema_compat.inspect_database(failed, kind).status == 'unversioned'
