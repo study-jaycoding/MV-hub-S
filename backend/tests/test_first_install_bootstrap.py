@@ -16,7 +16,7 @@ SCENARIOS = ('success', 'restart_failed', 'ready_nonce_mismatch', 'unknown_file'
              'existing_db', 'external_data', 'receipt_missing', 'receipt_wrong_artifact',
              'zip_tamper', 'capability_unknown', 'existing_helper', 'stage_failed',
              'late_data', 'bootstrap_tamper', 'contract_missing', 'receipt_reference_missing',
-             'worker_receipt_missing')
+             'worker_receipt_missing', 'existing_install')
 
 
 @pytest.mark.parametrize('scenario', SCENARIOS)
@@ -39,7 +39,25 @@ def test_empty_install_requires_qualified_bootstrap_and_verified_startup(tmp_pat
         files[name] = b'NEVER EXECUTE'
     for name in ('update_release_worker.bat', 'update_release_contract.ps1', 'run_release_update.ps1'):
         files[name] = (ROOT / name).read_bytes()
-    candidate, _ = qualified_package(feed, 'fixture1', rollout='enforced', payload=files)
+    candidate, _ = qualified_package(feed, 'fixture1', rollout='enforced', payload=files,
+                                    compatibility={'reader_protocol': 1, 'writer_protocol': 1}
+                                    if scenario == 'existing_install' else None)
+    if scenario == 'existing_install':
+        target = case / 'target'
+        for name, raw in files.items():
+            path = target / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(raw)
+        (target / 'VERSION.txt').write_text('old')
+        for name in ('tools/install_db_probe.py', 'backend/app/schema_compat.py',
+                     'backend/app/services/backup_verify.py', 'backend/app/services/sqlite_db.py',
+                     'backend/app/services/trash_transfer.py'):
+            path = target / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'NEVER EXECUTE')
+        data = target / 'backend/data/db/content_hub.db'
+        data.parent.mkdir(parents=True)
+        data.write_bytes((case / 'synthetic.db').read_bytes())
     receipt = feed / candidate['contract']['validation_receipt']['file']
     if scenario == 'receipt_missing':
         receipt.unlink()
@@ -67,7 +85,18 @@ def test_empty_install_requires_qualified_bootstrap_and_verified_startup(tmp_pat
     assert process.returncode == 0, (process.stdout + process.stderr).decode(errors='replace')
     result = json.loads((case / 'result.json').read_text(encoding='utf-8-sig'))
     journal, trace = result['journal'], result['trace']
-    if scenario == 'success':
+    if scenario == 'existing_install':
+        assert result['error'] is None, result
+        assert journal['phase'] == 'committed' and not journal['fresh_install'], result
+        assert journal['db_mutation_possible'] and journal['business_writes_possible'], result
+        assert trace['requested_restart'] == '1', result
+        assert trace['worker_calls'] == trace['process_starts'] == trace['checkpoint_calls'] == 1, result
+        assert trace['drain_calls'] == trace['stops'] == 1 and trace['ready_calls'] > 0, result
+        assert trace['last_state'] == 'complete' and trace['phase_at_complete'] == 'committed', result
+        assert (case / 'target/backend/data/db/content_hub.db').read_bytes() == (case / 'synthetic.db').read_bytes()
+        assert (case / 'target/VERSION.txt').read_text().strip() == candidate['version']
+        assert len(list((case / 'target/.install-journals').glob('*.json'))) == 1
+    elif scenario == 'success':
         assert result['error'] is None, result
         assert journal['phase'] == 'committed' and journal['fresh_install'], result
         assert journal['database_set'] == 'verified_empty' and journal['db_mutation_possible'], result

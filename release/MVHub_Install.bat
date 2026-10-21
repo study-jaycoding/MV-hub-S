@@ -280,7 +280,7 @@ function Install-Package {
     $PreviousRestart = $env:MVHUB_UPDATE_RESTART
     $env:MVHUB_UPDATE_TARGET_DIR = $TargetDir
     $env:MVHUB_NO_PAUSE = "1"
-    $env:MVHUB_UPDATE_RESTART = if ($Fresh) { "1" } else { "0" }
+    $env:MVHUB_UPDATE_RESTART = "1"
     try {
         $Command = 'call "' + $PackageUpdater + '"'
         & $env:ComSpec /d /c $Command

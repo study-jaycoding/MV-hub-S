@@ -5,12 +5,14 @@ from pathlib import Path
 from app.services import release_contract as c
 
 
-def qualified_package(folder: Path, version: str, *, rollout="bridge", payload=None) -> tuple[dict, bytes]:
+def qualified_package(folder: Path, version: str, *, rollout="bridge", payload=None, compatibility=None) -> tuple[dict, bytes]:
     files = payload or {"VERSION.txt": version.encode(), "hf_cli_version.txt": b"1.1.26",
                         "runtime/higgsfield/node_modules/@higgsfield/cli/package.json": b'{"version":"1.1.26"}'}
     compat = {"protocol_version": 1, "rollout": rollout, "backward_compatible": rollout == "bridge",
               "required_installer_capabilities": [] if rollout == "bridge" else ["artifact-receipt-v1"],
               "db_schema": {"read_min": 0, "read_max": 0, "write_min": 0, "write_max": 0}}
+    if compatibility:
+        compat.update(compatibility)
     descriptor = {"format_version": 1, "build_id": "fixture-" + version, "version": version, "role": "worker",
                   "source": {"commit": "f" * 40, "tree": "e" * 40, "dirty": False, "sha256": "a" * 64},
                   "lock_sha256": {"fixture.lock": "b" * 64}, "runtime": {"higgsfield_cli": "1.1.26"},
