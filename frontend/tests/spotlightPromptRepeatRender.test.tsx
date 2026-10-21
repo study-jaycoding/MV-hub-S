@@ -65,6 +65,14 @@ afterEach(() => {
 });
 
 describe("실제 SpotlightPrompt: Text 노드 바인딩의 반복 Generate", () => {
+  it("프롬프트 초점을 벗어나면 밀린 씬 입력의 저장을 요청한다", async () => {
+    const onBlur = vi.fn();
+    view = await mountPrompt({ trayBinding: binding(false), onTrayBindingPromptBlur: onBlur });
+    const editor = required(view.container, '[contenteditable="true"]');
+    act(() => { editor.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); });
+    expect(onBlur).toHaveBeenCalledTimes(1);
+  });
+
   it("바인딩 key가 그대로여도 두 번 클릭한 프롬프트·레퍼런스 10개가 동일하다", async () => {
     const originalBinding = binding(true);
     view = await mountPrompt({ trayBinding: originalBinding });

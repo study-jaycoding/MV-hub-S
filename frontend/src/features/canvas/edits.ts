@@ -74,7 +74,7 @@ export function applyCanvasEdit(
   switch (command.type) {
     case "editCardPrompt":
       if (!patchCard(command.cardId, card => ({ ...card, prompt: command.prompt }))) return null;
-      break;
+      policy = "deferred"; break;
     case "editNodeText":
       if (!patchCard(command.cardId, card => ({ ...card, text: command.text }))) return null;
       policy = "deferred"; break;

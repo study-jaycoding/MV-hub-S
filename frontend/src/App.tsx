@@ -2843,6 +2843,7 @@ export default function App() {
           inCompose={filters.tab === "compose"}
           onTrayBindingRefsChange={setSceneCardRefs}
           onTrayBindingPromptChange={setSceneCardPrompt}
+          onTrayBindingPromptBlur={() => { if (activeScene) flushScenePending(activeScene.id); }}
           count={batchCount}
           onCountChange={setBatchCount}
           canvasTarget={
