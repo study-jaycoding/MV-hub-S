@@ -55,7 +55,8 @@ def source_inventory(stage):
     result = {}
     for path in stage.rglob('*'):
         name = path.relative_to(stage).as_posix()
-        if (not path.is_file() or name == 'server-stage.json' or any(p in {'.venv', 'node_modules', 'dist', '__pycache__'} for p in Path(name).parts)
+        if (not path.is_file() or name == 'server-stage.json' or name.startswith('runtime/')
+                or any(p in {'.venv', 'node_modules', 'dist', '__pycache__'} for p in Path(name).parts)
                 or any(p.startswith('.') for p in Path(name).parts)):
             continue
         if (re.search(r'\.(py|ps1|bat|ts|tsx|js|cjs|mjs|json|toml|ini|sql|html|css|xml|ya?ml)$', name)
@@ -97,8 +98,15 @@ def validate_source_receipt(value, commit, inputs):
     return value
 
 
+def server_cli_environment(stage, env):
+    # Bind qualification and the SYSTEM child to this stage, not the admin's npm profile.
+    cli_dir = str(stage / 'runtime/higgsfield')
+    return {**env, 'PATH': os.pathsep.join(p for p in (cli_dir, env.get('PATH', '')) if p)}
+
+
 def inspect_server_cli(stage, server_root, env):
     """Read the Windows npm entry selected by cli_bridge.cli_argv; never run CLI code."""
+    env = server_cli_environment(stage, env)
     if os.name != 'nt' or any(env.get(k) for k in ('NODE_OPTIONS', 'NODE_PATH')):
         raise ValueError('unsupported_server_cli_environment')
     # shutil.which uses these ambient Windows options. Reject a different child interpretation.
@@ -118,20 +126,22 @@ def inspect_server_cli(stage, server_root, env):
     found = shutil.which('higgsfield', path=search) or shutil.which('hf', path=search)
     if not found or Path(found).suffix.lower() not in {'.cmd', '.bat'}:
         raise ValueError('server_cli_npm_shim_required')
-    shim = local_child(Path(found), Path(found).parent)
+    shim = local_child(Path(found), stage / 'runtime/higgsfield')
     package = shim.parent / 'node_modules/@higgsfield/cli/package.json'
     js = shim.parent / 'node_modules/@higgsfield/cli/bin/higgsfield.js'
+    binary = package.parent / 'vendor/hf.exe'
     candidates = (shim.parent / 'node.exe', shim.parent.parent / 'node/node.exe',
                   shutil.which('node.exe', path=search))
     node = next((Path(p) for p in candidates if p and Path(p).is_file()), None)
-    if node is None or not package.is_file() or not js.is_file():
+    if node is None or not package.is_file() or not js.is_file() or not binary.is_file():
         raise ValueError('server_cli_entry_missing')
+    local_child(node, stage / 'runtime')
     expected = (stage / 'hf_cli_version.txt').read_text(encoding='utf-8-sig').strip()
     metadata = document(package.read_bytes())
     if (not re.fullmatch(r'\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?', expected)
             or metadata.get('name') != '@higgsfield/cli' or metadata.get('version') != expected):
         raise ValueError('server_cli_version_mismatch')
-    paths = {'shim': shim, 'package': package, 'javascript': js, 'node': node}
+    paths = {'shim': shim, 'package': package, 'javascript': js, 'node': node, 'binary': binary}
     files = {name: {'path': str(local_child(path, path.parent)), 'sha256': digest(path)}
              for name, path in paths.items()}
     return {'profile': 'windows-npm-cli-read-v1', 'version': expected, 'files': files,
@@ -349,6 +359,8 @@ class ServerActivation:
                'MVHUB_EXECUTION_NONCE': self.nonce, 'MVHUB_ACTIVATION_ROOT': str(self.root),
                'MVHUB_ACTIVATION_CONTROL': str(self.control),
                'CONTENT_HUB_FRONTEND_DIST': str(Path(current['path']) / 'frontend/dist')}
+        if current.get('manifest_sha256'):
+            env = server_cli_environment(Path(current['path']), env)
         self.control_state('pending' if pending else 'normal')
         python = current['python']
         # A Windows venv launcher spawns another Python. Own the actual server handle.
