@@ -63,6 +63,41 @@ it("T09: 사용자 입력 다음 실행상태 반영이 입력 Undo를 소비하
   act(() => { session.redo(); }); expect(readCards()[0].prompt).toBe("typed");
 });
 
+it.each(["debounce", "flush", "maxWait"])("프롬프트 연속 입력은 최신값을 즉시 반영하고 %s에서 Undo 한 단계로 확정한다", mode => {
+  vi.useFakeTimers();
+  try {
+    show("session-a");
+    const count = mode === "maxWait" ? 7 : 3;
+    for (let i = 0; i < count; i++) {
+      act(() => { session.commit({ type: "editCardPrompt", cardId: "card", prompt: `typed-${i}` }); });
+      expect(session.snapshot()?.cards[0].prompt).toBe(`typed-${i}`);
+      act(() => { vi.advanceTimersByTime(mode === "maxWait" ? 300 : 100); });
+    }
+    if (mode !== "maxWait") {
+      expect(changed).not.toHaveBeenCalled();
+      act(() => { if (mode === "flush") session.flush(); else vi.advanceTimersByTime(400); });
+    }
+    expect(changed).toHaveBeenCalledTimes(1);
+    act(() => { session.undo(); });
+    expect(readCards()[0].prompt).toBe("before");
+    act(() => { session.undo(); });
+    expect(readCards()[0].prompt).toBe("before");
+    act(() => { session.redo(); });
+    expect(readCards()[0].prompt).toBe(`typed-${count - 1}`);
+  } finally { vi.useRealTimers(); }
+});
+
+it("프롬프트 값이 같은 갱신은 저장이나 Undo 단계를 만들지 않는다", () => {
+  vi.useFakeTimers();
+  try {
+    show("session-a");
+    act(() => { session.commit({ type: "editCardPrompt", cardId: "card", prompt: "before" }); vi.advanceTimersByTime(400); });
+    expect(changed).not.toHaveBeenCalled();
+    act(() => { session.undo(); });
+    expect(readCards()[0].prompt).toBe("before");
+  } finally { vi.useRealTimers(); }
+});
+
 it("dispose 후 수신한 결과는 문서나 Undo를 쓰지 않는다", () => {
   show("session-a"); const old = session;
   act(() => root.unmount());

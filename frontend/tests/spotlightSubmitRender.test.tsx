@@ -274,8 +274,8 @@ describe("실제 프롬프트 제출: 캔버스 연속 생성과 응답 후 편�
     ]);
   });
 
-  it("모든 요청이 실패하면 캔버스 입력·히스토리를 보존한다", async () => {
-    prepareCreate.mockImplementation(() => async () => { throw new Error("fixture failure"); });
+  it("모든 요청이 확실히 거절되면 캔버스 입력·히스토리를 보존한다", async () => {
+    prepareCreate.mockImplementation(() => async () => { throw Object.assign(new Error("fixture failure"), { status: 400 }); });
     await mount();
     const before = editor.innerHTML;
     await run();
@@ -283,6 +283,52 @@ describe("실제 프롬프트 제출: 캔버스 연속 생성과 응답 후 편�
     expect(history.current).toEqual([]);
     expect(errors.filter(Boolean)).toEqual(["Error: fixture failure"]);
     expect(onCanvasBatchCreated).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["모름 1건", ["unknown"]],
+    ["모름 1건과 성공", ["unknown", "accepted"]],
+    ["전부 모름", ["unknown", "unknown"]],
+    ["모름과 확실한 실패", ["unknown", "rejected", "prepare_failed"]],
+  ])("%s은 접수 확인을 안내하고 입력과 미확정 표식을 보존한다", async (_name, kinds) => {
+    for (const kind of kinds) {
+      prepareCreate.mockImplementationOnce(() => {
+        return async () => {
+          if (kind === "unknown") throw new TypeError("Failed to fetch");
+          if (kind === "rejected") throw Object.assign(new Error("rejected"), { status: 400 });
+          return generation();
+        };
+      });
+    }
+    let confirmation = 0;
+    await mount({ preservePromptAfterSubmit: false,
+      confirmCanvasGeneration: () => kinds[confirmation++] !== "prepare_failed" });
+    const before = editor.innerHTML;
+    await run(kinds.length);
+    expect(editor.innerHTML).toBe(before);
+    expect(notifyPromptChanged).not.toHaveBeenCalled();
+    expect(errors.at(-1)).toContain("접수 여부를 확인하지 못했습니다");
+    expect(errors.at(-1)).toContain("다시 제출하지 말고");
+    expect(errors.at(-1)).not.toContain("Failed to fetch");
+    const failed = kinds.filter(kind => kind === "rejected" || kind === "prepare_failed").length;
+    expect(discardCanvasGeneration).toHaveBeenCalledTimes(failed);
+    if (failed) expect(errors.at(-1)).toContain(`${failed}장 제출 실패`);
+    else expect(errors.at(-1)).not.toContain("제출 실패");
+    expect(onCanvasBatchCreated).toHaveBeenCalledTimes(kinds.includes("accepted") ? 1 : 0);
+  });
+
+  it("라이브러리의 접수 불명도 입력을 보존하고 새 재제출 잠금은 만들지 않는다", async () => {
+    prepareCreate.mockImplementationOnce(() => async () => { throw new TypeError("Failed to fetch"); });
+    await mount({ inCompose: false, canvasTarget: null, preservePromptAfterSubmit: false, promptContextKey: null });
+    const before = editor.innerHTML;
+    await run();
+    expect(editor.innerHTML).toBe(before);
+    expect(history.current).toEqual([]);
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(errors.at(-1)).toContain("다시 제출하지 말고");
+    await run();
+    expect(prepareCreate).toHaveBeenCalledTimes(2);
+    expect(editor.innerHTML).toBe("");
   });
 
   // Codex 62회차(4B) — 다른 탭 로그아웃으로 멈춰 보내지 못한 요청은 '나갔을 수 있는' 것이 아니다. 표식을 남기면 대기 카드가 남는다.
@@ -301,7 +347,7 @@ describe("실제 프롬프트 제출: 캔버스 연속 생성과 응답 후 편�
   it("배치 일부만 성공해도 같은 캔버스 프롬프트로 다시 제출할 수 있다", async () => {
     prepareCreate
       .mockImplementationOnce(() => async () => generation("successful-part"))
-      .mockImplementationOnce(() => async () => { throw new Error("failed part"); });
+      .mockImplementationOnce(() => async () => { throw Object.assign(new Error("failed part"), { status: 400 }); });
     await mount();
     await run(2);
     expect(errors).toContain("2장 중 1장 제출 실패 — 성공한 요청은 계속 진행됩니다.");

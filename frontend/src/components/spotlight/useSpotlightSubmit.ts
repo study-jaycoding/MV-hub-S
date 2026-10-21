@@ -233,20 +233,23 @@ export function useSpotlightSubmit({
       const created = outcomes.flatMap((outcome) =>
         "generation" in outcome && outcome.generation ? [outcome.generation] : [],
       );
-      const failed = outcomes.filter(result => !result.generation).length;
+      const failed = outcomes.filter(result => result.outcome.kind === "rejected" || result.outcome.kind === "prepare_failed").length;
+      const unknown = outcomes.filter(result => result.outcome.kind === "acceptance_unknown").length;
       const applyFailed = outcomes.filter(result => result.outcome.kind === "accepted_local_pending").length;
-      if (!created.length) {
+      if (!created.length && !unknown) {
         throw outcomes.find(result => result.error)?.error ?? new Error("생성 요청 실패");
       }
 
       if (!operationCurrent()) { setBusy(false); return; }
       const dragParent = dragParentRef.current;
-      dragParentRef.current = null;
       // 캔버스는 요청 전에 이미 연결했다. 일반 생성만 기존 콜백으로 결과 카드를 추가한다.
-      if (canvasLinks.length) onCanvasBatchCreated?.(created);
-      else onCreated(created, dragParent);
+      if (created.length) {
+        dragParentRef.current = null;
+        if (canvasLinks.length) onCanvasBatchCreated?.(created);
+        else onCreated(created, dragParent);
+      }
 
-      if (displayPrompt && promptContextRef.current === submittedContext) {
+      if (created.length && displayPrompt && promptContextRef.current === submittedContext) {
         const historyTray: ChipRef[] = trayRefs.map(({ uid: _uid, ...ref }) => ref);
         // 저장소의 최신 기록에 더한다(다른 창이 그사이 제출한 것을 지우지 않는다) — 이 창의 ↑↓ 탐색도 그 결과를 본다
         historyRef.current = appendHistory(
@@ -257,7 +260,7 @@ export function useSpotlightSubmit({
       }
       // 파생 Text는 같은 카드/원문이면 복원 effect가 다시 돌지 않으므로 비우지 않는다.
       // 일반 입력도 요청 대기 중 다른 카드로 이동하거나 새로 편집했으면 그대로 보존한다.
-      if (!preservePromptAfterSubmit && editorRef.current === editor &&
+      if (!unknown && !preservePromptAfterSubmit && editorRef.current === editor &&
           promptContextRef.current === submittedContext &&
           JSON.stringify(serializeParts(editor)) === submittedParts) {
         editor.innerHTML = "";
@@ -276,7 +279,8 @@ export function useSpotlightSubmit({
       }
       setBusy(false);
       const notices: string[] = [];
-      if (failed) notices.push(`${batch}장 중 ${failed}장 제출 실패 — 성공한 요청은 계속 진행됩니다.`);
+      if (failed) notices.push(`${batch}장 중 ${failed}장 제출 실패${created.length ? " — 성공한 요청은 계속 진행됩니다." : "."}`);
+      if (unknown) notices.push(`${unknown}장 요청의 접수 여부를 확인하지 못했습니다. 다시 제출하지 말고 생성 목록에서 기존 요청을 확인하세요.`);
       if (applyFailed) notices.push(t("접수된 요청 중 {count}장 화면 반영 실패 — 다시 제출하지 마세요. 재시작 시 자동 복구됩니다.").replace("{count}", String(applyFailed)));
       if (notices.length && promptContextRef.current === submittedContext) setError(notices.join("\n"));
     } catch (error) {

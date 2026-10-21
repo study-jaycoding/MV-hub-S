@@ -15,6 +15,7 @@ interface Props {
   onToggleExpand: () => void;
   onClearTagFilter: () => void;
   onInput: FormEventHandler<HTMLDivElement>;
+  onBlur?: () => void;
   onCaretMove: () => void;
   onKeyDown: KeyboardEventHandler<HTMLDivElement>;
   onPaste: ClipboardEventHandler<HTMLDivElement>;
@@ -33,6 +34,7 @@ export function SpotlightPromptRow({
   onToggleExpand,
   onClearTagFilter,
   onInput,
+  onBlur,
   onCaretMove,
   onKeyDown,
   onPaste,
@@ -83,6 +85,7 @@ export function SpotlightPromptRow({
             : "Describe the scene you imagine --- @Source, #Tag"
         }
         onInput={onInput}
+        onBlur={onBlur}
         onKeyUp={onCaretMove}
         onClick={onCaretMove}
         onKeyDown={onKeyDown}
