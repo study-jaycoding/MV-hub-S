@@ -266,7 +266,23 @@ def test_enforced_release_requires_installed_bridge_capability(tmp_path, capabil
         assert 'Install the compatible bridge before this release.' in result.stderr
 
 
-@pytest.mark.parametrize('capabilities', [None, 'artifact-receipt-v1', [1]])
+@pytest.mark.parametrize('capabilities', [None, [], ['artifact-receipt-v1']])
+def test_bridge_release_accepts_empty_required_capabilities(tmp_path, capabilities):
+    from release_contract_fixture import qualified_package
+    _, raw = qualified_package(tmp_path, '2026.10.18-1200', rollout='bridge')
+    candidate = tmp_path / 'candidate.json'
+    candidate.write_bytes(raw)
+    if capabilities is not None:
+        (tmp_path / 'installer-capabilities.json').write_text(json.dumps({
+            'format_version': 1, 'capabilities': capabilities,
+        }))
+    code = f"$Candidate=ConvertFrom-ReleaseJson ([IO.File]::ReadAllBytes('{candidate}')); Assert-InstalledCapability -Candidate $Candidate -Root '{tmp_path}'"
+    result = ps(tmp_path, code)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize('capabilities', [None, 'artifact-receipt-v1', [1], [''],
+                                        ['artifact-receipt-v1', 'artifact-receipt-v1']])
 def test_installed_capability_check_rejects_malformed_candidate_directly(tmp_path, capabilities):
     from release_contract_fixture import qualified_package
     _, raw = qualified_package(tmp_path, '2026.10.18-1200', rollout='enforced')
