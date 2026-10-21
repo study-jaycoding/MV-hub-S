@@ -206,7 +206,9 @@ def test_baseline_snapshot_precedes_first_write(tmp_path, monkeypatch, kind, fai
     else:
         initialize(source)
         assert len(snapshots) == 1
-        assert snapshots[0].parent == source.parent.parent / 'backups'
+        assert snapshots[0].parent == source.parent.parent / 'backups/pre-dev2-baseline'
+        assert not snapshots[0].exists()  # Only the verified, renamed file is published.
+        assert len(list(snapshots[0].parent.glob('*.db'))) == 1
         assert source.name in snapshots[0].name and 'pre-dev2-baseline' in snapshots[0].name
         assert schema_compat.inspect_database(source, kind).status == 'compatible'
         initialize(source)
@@ -248,3 +250,150 @@ def test_baseline_snapshot_lock_failure_preserves_source(tmp_path):
         assert source.read_bytes() == before
         lock.rollback()
     assert schema_compat.inspect_database(source, 'content').status == 'unversioned'
+
+
+def test_baseline_failed_attempts_keep_first_and_latest_two(tmp_path, monkeypatch):
+    source = tmp_path / 'data/db/content_hub.db'
+    source.parent.mkdir(parents=True)
+    with closing(sqlite3.connect(source)) as conn:
+        conn.execute('CREATE TABLE worker(id TEXT PRIMARY KEY)')
+        conn.execute("INSERT INTO worker VALUES('0')")
+        conn.commit()
+    def fail(_conn):
+        raise RuntimeError('injected migration failure')
+    monkeypatch.setattr(db.db_migrations, '_pre_migrate', fail)
+    folder = source.parent.parent / 'backups/pre-dev2-baseline'
+    folder.mkdir(parents=True)
+    unrelated = [folder / 'other.db', folder / '.pending.tmp',
+                 folder / 'content_hub.db.pre-dev2-baseline-unrecognized.db']
+    for item in unrelated:
+        item.write_bytes(b'keep')
+    for attempt in range(4):
+        with closing(sqlite3.connect(source)) as conn:
+            conn.execute('UPDATE worker SET id=?', (str(attempt),))
+            conn.commit()
+        with pytest.raises(RuntimeError, match='injected'):
+            db.init_db(source)
+    copies = sorted(p for p in folder.glob('*.db') if p not in unrelated)
+    assert len(copies) == 3
+    values = []
+    for copy in copies:
+        with closing(sqlite3.connect(copy)) as conn:
+            values.append(conn.execute('SELECT id FROM worker').fetchone()[0])
+    assert values == ['0', '2', '3']
+    assert all(p.read_bytes() == b'keep' for p in unrelated)
+
+
+@pytest.mark.parametrize('failure', ['empty', 'corrupt', 'exception', 'rename'])
+def test_baseline_never_publishes_incomplete_copy(tmp_path, monkeypatch, failure):
+    from app.services import backup_verify
+    source = tmp_path / 'content_hub.db'
+    with closing(sqlite3.connect(source)) as conn:
+        conn.execute('CREATE TABLE worker(id TEXT)')
+    before = source.read_bytes()
+    folder = tmp_path / 'backups/pre-dev2-baseline'
+    original = backup_verify.create_sqlite_snapshot
+    def snapshot(path, target, **kwargs):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.touch()
+        assert not list(folder.glob('*.db'))
+        if failure == 'corrupt':
+            target.write_bytes(b'corrupt')
+        elif failure == 'exception':
+            raise OSError('injected copy failure')
+        elif failure == 'rename':
+            target.unlink()
+            original(path, target, **kwargs)
+        return target
+    monkeypatch.setattr(backup_verify, 'create_sqlite_snapshot', snapshot)
+    if failure == 'rename':
+        def fail_rename(self, target):
+            raise OSError('injected publish failure')
+        monkeypatch.setattr(Path, 'rename', fail_rename)
+    with pytest.raises(schema_compat.SchemaCompatibilityError, match='baseline_backup_failed'):
+        schema_compat.backup_before_baseline(source, 'content')
+    assert source.read_bytes() == before
+    assert not list(folder.iterdir())
+
+
+@pytest.mark.parametrize('layout', ['db', 'db/acct/account'])
+def test_baseline_trash_excluded_from_normal_backup_consumers(tmp_path, monkeypatch, layout):
+    from app.services import backup, operational_health, worker_backup
+    from app.routers import db_backup
+    source = tmp_path / layout / 'content_hub_trash.db'
+    source.parent.mkdir(parents=True)
+    with closing(sqlite3.connect(source)) as conn:
+        conn.execute('CREATE TABLE trashed(id TEXT)')
+    copy = schema_compat.backup_before_baseline(source, 'trash')
+    folder = tmp_path / 'backups'
+    if layout != 'db':
+        folder /= 'account'
+    monkeypatch.setattr(backup, '_backup_dir', lambda: folder)
+    monkeypatch.setattr(backup, 'BACKUP_KEEP', 1)
+    monkeypatch.setattr(db_backup, '_acct', lambda _: {'email': 'test'})
+    monkeypatch.setattr(db_backup, '_dir', lambda _: folder)
+    assert backup.latest_backup_path() is None
+    assert backup.list_backups_info() == []
+    assert worker_backup.queue_latest_local_backup() is None
+    assert operational_health.backup_snapshot() == {
+        'set_count': 0, 'latest_age_seconds': None, 'latest_file_count': 0}
+    assert db_backup.list_backups(None) == {'backups': []}
+    normal = folder / 'content_hub_20261021_010101.db'
+    normal.write_bytes(b'normal backup')
+    assert backup.latest_backup_path() == normal
+    assert [item['file'] for item in backup.list_backups_info()] == [normal.name]
+    backup._rotate(folder)
+    assert copy.is_file() and normal.is_file()
+
+
+@pytest.mark.parametrize('override', [False, True])
+def test_legacy_location_baseline_uses_data_backups(tmp_path, monkeypatch, override):
+    from app import config
+    source = tmp_path / 'backend/content_hub.db'
+    source.parent.mkdir(parents=True)
+    data = tmp_path / 'custom-data' if override else source.parent / 'data'
+    monkeypatch.setattr(config, 'DATA_DIR', data)
+    with closing(sqlite3.connect(source)) as conn:
+        conn.execute('CREATE TABLE worker(id TEXT)')
+    copy = schema_compat.backup_before_baseline(source, 'content')
+    assert copy.parent == data / 'backups/pre-dev2-baseline'
+    assert not (source.parent / 'backups').exists()
+    destination = data / 'db/content_hub.db'
+    monkeypatch.setattr(db, '_LEGACY_DB_PATH', source)
+    monkeypatch.setattr(db, 'DEFAULT_DB_PATH', destination)
+    db._migrate_db_location(destination)
+    assert destination.is_file() and not source.exists()
+    assert len(list(copy.parent.glob('*.db'))) == 2
+
+
+def test_concurrent_baseline_copies_are_private_until_complete(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier, Event
+    from app.services import backup_verify
+    source = tmp_path / 'content_hub.db'
+    with closing(sqlite3.connect(source)) as conn:
+        conn.execute('CREATE TABLE worker(id TEXT)')
+    folder = tmp_path / 'backups/pre-dev2-baseline'
+    ready, release = Barrier(3), Event()
+    original = backup_verify.create_sqlite_snapshot
+    def snapshot(path, target, **kwargs):
+        result = original(path, target, **kwargs)
+        ready.wait(timeout=10)
+        assert release.wait(timeout=10)
+        return result
+    monkeypatch.setattr(backup_verify, 'create_sqlite_snapshot', snapshot)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(schema_compat.backup_before_baseline, source, 'content') for _ in range(2)]
+        try:
+            ready.wait(timeout=10)
+            assert not list(folder.glob('*.db'))
+            assert len(list(folder.glob('*.tmp'))) == 2
+        finally:
+            release.set()
+        copies = [future.result(timeout=10) for future in futures]
+    assert len(set(copies)) == 2
+    assert set(folder.iterdir()) == set(copies)
+    for copy in copies:
+        assert copy.stat().st_size > 0
+        with closing(sqlite3.connect(copy)) as conn:
+            assert conn.execute('PRAGMA quick_check').fetchall() == [('ok',)]
