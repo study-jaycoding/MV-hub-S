@@ -75,12 +75,14 @@ function Harness({ query, authReady = true, projectWorkspaceId, composeListEnabl
     filtersRef: { current: filters }, bumpBoard: noop, flash, reload: data.reload, setGens: data.setGens }).handlePromptCreated;
   // App의 표시 목록처럼 원본이 바뀔 때만 새 배열을 만든다. loadingMore만 바뀌면 같은 참조다.
   const gridGens = useMemo(() => hideGridRows ? data.gens.filter(g => !g.id.startsWith("hidden-")) : data.gens, [data.gens, hideGridRows]);
+  // App의 더 받기 게이트를 재현한다(listGate 사본·자리 이동은 이 하네스에 없다). App 배선은 resolveSelectionRender에서 별도로 검증한다.
+  const canLoadMore = data.hasMore && !data.listBehind;
   return grid ? <ThumbnailGrid generations={gridGens} tab={query.tab === "team" ? "team" : "my"}
     scale={1} fill layout="grid" groupByDate={false} selectedIds={new Set()}
     onSelectedChange={noop} onToggleSelect={noop} onSetSource={noop} onSetTags={noop}
     onOpenComments={noop} onRegenerate={noop} onPublish={noop} onUnpublish={noop}
     onFinalize={noop} onUnfinalize={noop} onImport={noop} onRestore={noop} dimDeleted={false}
-    onInfo={noop} onPreview={noop} hasMore={data.hasMore} loadingMore={data.loadingMore} onLoadMore={data.loadMore} resetKey={resetKey ?? key}
+    onInfo={noop} onPreview={noop} hasMore={canLoadMore} loadingMore={data.loadingMore} onLoadMore={data.loadMore} resetKey={resetKey ?? key}
   /> : null;
 }
 const show = (props: Props) => act(() => root.render(<Harness {...props} />));
@@ -302,6 +304,86 @@ describe("[F9-9] grid resumes discarded pages without an error retry loop", () =
     vi.spyOn(HTMLElement.prototype, "scrollTop", "get").mockImplementation(() => scrollTop);
   });
   afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  it.each([
+    ["my", false, "button"], ["my", false, "scroll"], ["my", false, "automatic"],
+    ["team", false, "button"], ["team", false, "scroll"], ["team", false, "automatic"],
+    ["my", true, "button"], ["my", true, "scroll"], ["my", true, "automatic"],
+  ] as const)("[F9-12 P3-A] no old-cursor request before the new first page: tab=%s trash=%s trigger=%s", async (tab, trash, trigger) => {
+    const list = vi.mocked(trash ? api.listTrash : api.listGenerations);
+    list.mockResolvedValueOnce(firstPage).mockRejectedValue(new Error("offline"));
+    scrollHeight = 400;
+    await mount({ query: { ...MAIN, tab }, trash, grid: true });
+    for (let i = 0; i < 5; i++) await frame();
+    const button = () => host.querySelector<HTMLButtonElement>(".gen-grid .settings-action");
+    expect(button()?.textContent).toBe("더 보기");
+    // 전환 전에 떠 있던 더 받기가 끝나면 loadingMore가 바뀌어 자동 effect가 깨어난다.
+    const oldMore = trigger === "automatic" ? hold<Generation[]>(list) : null;
+    if (oldMore) act(() => button()!.click());
+    const first = hold<Generation[]>(list);
+    show({ query: { ...MAIN, tab, search: "dog" }, trash, grid: true });
+    await settle();
+    expect(data.listBehind).toBe(true);
+    const before = list.mock.calls.length;
+    if (oldMore) { await act(async () => oldMore.resolve([])); await settle(); }
+    if (trigger === "button") act(() => button()?.click());
+    if (trigger === "scroll") scroll();
+    for (let i = 0; i < 3; i++) await frame();
+    expect(list).toHaveBeenCalledTimes(before);
+    expect(button()).toBeNull();
+
+    await act(async () => first.resolve(secondPage));
+    await settle();
+    expect(data.listBehind).toBe(false);
+    await frame();
+    expect(list).toHaveBeenCalledTimes(before + 1);
+    expect(list.mock.calls.at(-1)?.[1]).toEqual(trash ? 200 : { ts: 10, id: "second-199" });
+  });
+
+  it.each([false, true])("[F9-12 P3-A] identical first-page results resume without a new array: trash=%s", async (trash) => {
+    const list = vi.mocked(trash ? api.listTrash : api.listGenerations);
+    list.mockResolvedValueOnce(firstPage).mockRejectedValue(new Error("offline"));
+    scrollHeight = 400;
+    await mount({ query: MAIN, trash, grid: true });
+    for (let i = 0; i < 5; i++) await frame();
+    const unchanged = data.gens;
+    const first = hold<Generation[]>(list);
+    show({ query: { ...MAIN, search: "dog" }, trash, grid: true });
+    await settle();
+    const before = list.mock.calls.length;
+    await frame();
+    expect(list).toHaveBeenCalledTimes(before);
+    await act(async () => first.resolve(firstPage));
+    await settle();
+    expect(data.gens).toBe(unchanged);
+    await frame();
+    expect(list).toHaveBeenCalledTimes(before + 1);
+  });
+
+  it("[F9-12 P3-A] kept located rows pause pagination until their refreshed first page arrives", async () => {
+    const list = vi.mocked(api.listGenerations);
+    list.mockResolvedValueOnce(firstPage).mockRejectedValue(new Error("offline"));
+    await mount({ query: LOCATED, grid: true });
+    const first = hold<Generation[]>(list);
+    const location = locationOf(gen("outside-page"));
+    vi.mocked(api.locateGenerations).mockResolvedValue(location);
+    act(() => data.revealLocated("my", location));
+    await settle();
+    expect(ids()).toContain("first-199"); // keep=true
+    expect(ids()).toContain("outside-page");
+    expect(data.hasMore).toBe(true);
+    expect(data.listBehind).toBe(true); // reusePage=false
+    const before = list.mock.calls.length;
+    scrollHeight = 400;
+    scroll();
+    await frame();
+    expect(list).toHaveBeenCalledTimes(before);
+    await act(async () => first.resolve(firstPage));
+    await settle();
+    expect(data.listBehind).toBe(false);
+    await frame();
+    expect(list).toHaveBeenCalledTimes(before + 1);
+  });
 
   it.each([false, true])("[F9-11 P3-1] a smaller query gets a fresh automatic budget without remounting: trash=%s", async (trash) => {
     const list = vi.mocked(trash ? api.listTrash : api.listGenerations);

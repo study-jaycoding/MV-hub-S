@@ -894,8 +894,8 @@ export function ThumbnailGrid(props: Props) {
           {(row: VirtualRow) => renderVirtualRow(row)}
         </Virtualizer>
         {autoLoadCapped && props.hasMore && !props.loadingMore && (
-          <button className="settings-action" disabled={props.loadingMore} onClick={props.onLoadMore}>
-            {props.loadingMore ? t("불러오는 중…") : t("더 보기")}
+          <button className="settings-action" onClick={props.onLoadMore}>
+            {t("더 보기")}
           </button>
         )}
         <div className="gen-grid-tail" />

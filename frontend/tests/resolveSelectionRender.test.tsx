@@ -48,6 +48,8 @@ let setStaleList: (on: boolean) => void; // 목록 훅의 staleList(닫은 직�
 let setShownStaleCopy: (on: boolean) => void; // 목록 훅의 shownStaleCopy(컷 화면의 갱신으로 낡았다고 알려진 사본을 보이는 중)
 let setLoadingList: (on: boolean) => void; // 목록 훅의 loading(받는 중)
 let setListBehind: (on: boolean) => void; // 목록 훅의 listBehind(화면의 목록이 아직 옛 조회의 것)
+let setHasMore: (on: boolean) => void;
+const loadMore = vi.fn();
 let bumpListRevision: () => void; // 목록 훅의 listRevision — 새 첫 쪽을 적용했다(조회가 바뀌어 받았든 같은 조회를 다시 받았든)
 let setLibraryGens: (next: Generation[]) => void; // 목록 훅의 gens — 다시 받아 목록이 바뀐 것을 시험이 만든다
 let startAuthPending = false; // 인증 훅을 '확인 중'으로 시작한다(새로 고친 직후) — 기본은 처음부터 끝난 상태
@@ -112,6 +114,7 @@ beforeEach(() => {
   boundary = installPromptBoundaryMocks();
   gridSnapshot = null; promptSnapshot = null; librarySnapshot = null; sidebarSnapshot = null; canvasSidebarSnapshot = null; topBarOnTab = null;
   startAuthPending = false; enableSearchBox = false; backspaceRoutes = false;
+  loadMore.mockClear();
   refreshProjects = () => {};
   locateGenerations = vi.fn().mockImplementation(async ({ gen_ids, workspace_ids, workspace_scope }: GenerationLocationRequest) => {
     const first = gen_ids[0] ? libraryGeneration(gen_ids[0]) : null;
@@ -494,6 +497,8 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
       setLoadingList = setLoad;
       const [listBehind, setBehind] = useState(false);
       setListBehind = setBehind;
+      const [hasMore, setMore] = useState(false);
+      setHasMore = setMore;
       const [listRevision, setRevision] = useState(0);
       bumpListRevision = () => setRevision((revision) => revision + 1);
       refreshProjects = () => setProjects((previous) => [...previous]);
@@ -508,7 +513,7 @@ function installAppBoundaries(appScenes = [fixture], initialSceneId = fixture.id
       revealLocated, locatedVisibleIds: new Set(gens.map((item) => item.id)),
       isLocatedView: !!location && isLocatedQuery(args.genQuery, location.tab, location.value),
       stats: { has_unread: false, failed_count: 0, unread_count: 0 }, loading, loadingMore: false,
-      hasMore: false, loadError: null, archivedCount: 0, unassignedCount: 0, loadMore: noop, beginComposeList: beginList,
+      hasMore, loadError: null, archivedCount: 0, unassignedCount: 0, loadMore, beginComposeList: beginList,
       reload: noop, reloadIfStale: noop, staleList, shownStaleCopy, listBehind, listRevision,
       autoRefreshPaused: staleList || (listBehind && loading), // 진짜 훅과 같은 식(lib/useGenerationLibraryData)
     };
@@ -710,6 +715,33 @@ async function mountApp(tab = "compose") {
     } }),
   );
 }
+
+it.each(["my", "team"] as const)("[F9-12 P3-A] App gates grid, count and gray pulls until the %s first page belongs to the query", async (tab) => {
+  installAppBoundaries([fixture, otherScene]);
+  vi.doMock("../src/components/LibraryToolbar", () => ({ LibraryToolbar: (props: ToolbarProps) => {
+    toolbarSnapshot = props;
+    return null;
+  } }));
+  localStorage.setItem("ch.lib.filtersV2", JSON.stringify({ tab, __v: "2" }));
+  localStorage.setItem("ch.lib.grayOn", "1");
+  const { default: App } = await import("../src/App");
+  act(() => view.root.render(<StrictMode><App /></StrictMode>));
+  await settle();
+
+  // 첫 쪽 대기/실패 상태: loading에 기대지 않고 조회의 소유권으로 막는다.
+  act(() => { setListBehind(true); setHasMore(true); });
+  await settle();
+  expect(gridSnapshot!.hasMore).toBe(false);
+  expect(toolbarSnapshot!.countMore).toBe(false);
+  expect(loadMore).not.toHaveBeenCalled();
+
+  // 목록 참조가 그대로여도 첫 쪽 적용만으로 세 경로가 함께 다시 열린다.
+  act(() => setListBehind(false));
+  await settle();
+  expect(gridSnapshot!.hasMore).toBe(true);
+  expect(toolbarSnapshot!.countMore).toBe(true);
+  expect(loadMore).toHaveBeenCalledTimes(1);
+});
 
 async function waitForBoard() {
   // 열린 창을 전제로 한 다음 신호는 청크 로드가 아니라 실제 캔버스 마운트 뒤에 보낸다.
