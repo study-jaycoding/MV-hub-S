@@ -15,7 +15,7 @@ def seed_output(conn):
     conn.execute("INSERT OR IGNORE INTO asset(id,generation_id,type,file_path) VALUES('a1','g1','image','local.png')")
     conn.execute("UPDATE asset SET asset_content_id=? WHERE id='a1'", (cid,))
     conn.execute("INSERT INTO asset_location(location_id,asset_content_id,owner_uid,storage_id,kind,path) VALUES('local',?,'owner','storage','local','local.png')", (cid,))
-    conn.execute("INSERT INTO asset_sync_outbox(sync_id,asset_content_id,local_location_id,owner_uid,account_key,project_id,server_origin,state,receipt_json,updated_at) VALUES('sync',?,'local','owner','','','https://example.invalid','ready','{}',0)", (cid,))
+    conn.execute("INSERT INTO asset_sync_outbox(sync_id,asset_content_id,local_location_id,owner_uid,account_key,project_id,server_origin,state,receipt_json,storage_id,root_revision,updated_at) VALUES('sync',?,'local','owner','','','https://example.invalid','ready','{}','storage','root',0)", (cid,))
     return cid
 
 
@@ -64,4 +64,11 @@ def test_asset_root_change_preserves_trashed_transfer_and_delete_reason(trash_db
         assert before['state'] == 'deleted' and before['last_error_code'] == 'asset_deleted_in_app'
     projects.set_asset_root(project['id'], str(tmp_path / 'new'))
     with db.get_connection() as conn:
-        assert dict(conn.execute('SELECT * FROM asset_sync_outbox').fetchone()) == before
+        after = dict(conn.execute('SELECT * FROM asset_sync_outbox').fetchone())
+        assert {key: after[key] for key in ('state', 'last_error_code', 'receipt_json')} == {
+            key: before[key] for key in ('state', 'last_error_code', 'receipt_json')}
+        assert (after['storage_id'], after['root_revision'], after['next_retry_at'],
+                after['lease_token'], after['lease_until']) == ('', '', 0, None, None)
+    assert trash.restore_from_trash('g1')
+    with db.get_connection() as conn:
+        assert conn.execute('SELECT state FROM asset_sync_outbox').fetchone()[0] == 'queued'

@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from app import db_asset_destination, db_asset_sync
-from app.repo import identity
+from app.repo import asset_sync as ledger, identity
 
 
 def test_destination_merge_retargets_local_location_and_keeps_completed_copy():
@@ -29,19 +29,32 @@ def test_destination_merge_retargets_local_location_and_keeps_completed_copy():
     conn.close()
 
 
-def test_identity_merge_does_not_requeue_app_deleted_assets():
+@pytest.mark.parametrize('state', ['deleted', 'ready', 'uploading'])
+def test_identity_merge_resets_pins_and_preserves_receipt_and_deleted_intent(state):
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     for table in ("project", "reference", "asset", "gen_reference"):
         conn.execute(f'CREATE TABLE "{table}" (id TEXT)')
+    conn.execute("ALTER TABLE asset ADD COLUMN generation_id TEXT")
+    conn.execute("CREATE TABLE generation(id TEXT,creator_uid TEXT,project_id TEXT)")
     db_asset_sync.migrate(conn)
     digest = hashlib.sha256(b"image").hexdigest()
     cid = "sha256:" + digest
     conn.execute("INSERT INTO asset_blob VALUES(?,?,5,'image',datetime('now'))", (cid, digest))
     conn.execute("INSERT INTO asset_location(location_id,asset_content_id,owner_uid,storage_id,kind,path) VALUES('loc',?,'old','s','local','image.png')", (cid,))
-    conn.execute("INSERT INTO asset_sync_outbox(sync_id,asset_content_id,local_location_id,owner_uid,account_key,project_id,state,updated_at) VALUES('sync',?,'loc','old','account','p','deleted',0)", (cid,))
+    receipt = '{"location_id":"old-location","storage_id":"s","root_revision":"old-root"}'
+    error = 'asset_deleted_in_app' if state == 'deleted' else None
+    conn.execute("INSERT INTO asset_sync_outbox(sync_id,asset_content_id,local_location_id,owner_uid,account_key,project_id,state,receipt_json,storage_id,root_revision,last_error_code,lease_token,lease_until,next_retry_at,updated_at) VALUES('sync',?,'loc','old','account','p',?,?,'s','old-root',?,'lease',999,999,0)", (cid,state,receipt,error))
     identity._remap_asset_sync(conn, "asset_sync_outbox", "old", "new")
-    assert conn.execute("SELECT owner_uid,state FROM asset_sync_outbox").fetchone()[:] == ("new", "deleted")
+    row = conn.execute("SELECT * FROM asset_sync_outbox").fetchone()
+    assert (row['owner_uid'], row['state'], row['receipt_json'], row['last_error_code']) == (
+        'new', 'deleted' if state == 'deleted' else 'queued', receipt, error)
+    assert (row['storage_id'], row['root_revision'], row['lease_token'], row['lease_until'], row['next_retry_at']) == ('', '', None, None, 0)
+    if state == 'deleted':
+        conn.execute("INSERT INTO generation VALUES('g','new','p')")
+        conn.execute("INSERT INTO asset(id,generation_id,asset_content_id) VALUES('a','g',?)", (cid,))
+        ledger.generation_output_intent(conn, 'g', deleted=False)
+        assert conn.execute("SELECT state FROM asset_sync_outbox").fetchone()[0] == 'queued'
     conn.close()
 
 

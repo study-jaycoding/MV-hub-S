@@ -492,7 +492,7 @@ class HelperLeases:
             lease["applying"] = False
             lease["expires"] = time.monotonic() + LEASE_TTL_S
             if ack is not None:
-                lease.update(seq=seq, digest=digest, ack=ack)
+                lease.update(seq=seq, digest=digest, ack=ack, acked_at=registry.utc_now())
 
     def release(self, lease_id: str, owner: str) -> None:
         with self.lock:

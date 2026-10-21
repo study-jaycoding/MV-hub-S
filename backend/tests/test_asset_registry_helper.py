@@ -85,6 +85,27 @@ class _ServerCase(unittest.TestCase):
 
 
 class HelperServerTests(_ServerCase):
+    def test_second_result_uses_previous_ack_and_still_protects_newer_writes(self) -> None:
+        with patch.object(registry, 'utc_now', return_value='2026-10-21T00:00:00Z'):
+            lease = self.lease()
+        files = [_ok('assets/CH/a.png', b'A'), _ok('assets/CH/b.png', b'B')]
+        with patch.object(registry, 'utc_now', return_value='2026-10-21T00:00:01Z'):
+            self.assertEqual(self.result(lease['lease_id'], 1, files).status_code, 200)
+        acked_at = svc.leases._lease['acked_at']
+        self.assertEqual(acked_at, '2026-10-21T00:00:01Z')
+        with patch.object(registry, 'utc_now', return_value='2026-10-21T00:00:02Z'):
+            self.assertEqual(self.result(lease['lease_id'], 1, files).status_code, 200)
+        self.assertEqual(svc.leases._lease['acked_at'], acked_at)  # 재전송은 읽기 기준을 옮기지 않는다.
+        with get_connection() as conn:
+            conn.execute("UPDATE asset_registry SET updated_at='2026-10-21T00:00:03Z' WHERE project_id=? AND path='assets/CH/b.png'", (self.pid,))
+        with patch.object(registry, 'utc_now', return_value='2026-10-21T00:00:04Z'):
+            response = self.result(lease['lease_id'], 2, [_ok('assets/CH/a.png', b'AA'), _ok('assets/CH/b.png', b'BB')])
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['kinds'].get('edited'), 1)
+        rows = self.rows()
+        self.assertEqual(rows['assets/CH/a.png']['sha256'], _sha(b'AA'))
+        self.assertEqual(rows['assets/CH/b.png']['sha256'], _sha(b'B'))
+
     def test_complete_results_follow_the_same_rules_as_a_server_scan(self) -> None:
         lease = self.lease()
         self.assertEqual(lease["unc"], UNC)

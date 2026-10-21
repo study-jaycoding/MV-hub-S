@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app import db
-from app.repo import asset_sync as ledger
+from app.repo import asset_sync as ledger, projects, trash
 from app.routers import asset_sync as api
 from app.services import asset_sync as sync
 
@@ -567,7 +567,8 @@ def test_same_content_with_conflicting_extensions_has_one_server_file(storage):
     assert len(list((base/'assets'/'imp_cap'/'제이').glob('*')))==1
 
 
-def test_root_change_requeues_with_cas_receipt_and_remote_resolve_proof(storage,monkeypatch):
+@pytest.mark.parametrize('trashed', [False, True])
+def test_root_change_requeues_with_cas_receipt_and_remote_resolve_proof(storage,monkeypatch,trashed):
     conn,base=storage
     source=base/'local.png'
     source.write_bytes(PNG)
@@ -586,8 +587,15 @@ def test_root_change_requeues_with_cas_receipt_and_remote_resolve_proof(storage,
     monkeypatch.setattr(sync,'_upload',transfer)
     assert sync.process_one()
     first=ledger.status_rows(conn,'user_a')[0]
-    conn.execute("UPDATE project SET asset_root_path=? WHERE id='p'",(str(base/'new-root'),))
-    conn.execute("UPDATE asset_sync_outbox SET state='queued',storage_id='',root_revision='',next_retry_at=0")
+    if trashed:
+        from app import repo
+        repo.ensure_default_worker()
+        conn.execute("INSERT INTO generation(id,worker_id,prompt,status,created_at,creator_uid,project_id) VALUES('g','me','test','done','2026-10-21','user_a','p')")
+        conn.execute("INSERT INTO asset(id,generation_id,type,file_path,asset_content_id) VALUES('a','g','image','local.png',?)", (first['asset_content_id'],))
+        assert trash.move_to_trash('g')
+    projects.set_asset_root('p', str(base/'new-root'))
+    if trashed:
+        assert trash.restore_from_trash('g')
     assert ledger.status_rows(conn,'user_a')[0]['state']=='queued'  # old receipt cannot override row state
     assert sync.process_one()
     second=ledger.status_rows(conn,'user_a')[0]

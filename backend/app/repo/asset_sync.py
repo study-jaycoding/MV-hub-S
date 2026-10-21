@@ -103,7 +103,7 @@ def generation_output_intent(conn, generation_id, *, deleted):
             continue
         conn.execute(
             "UPDATE asset_sync_outbox SET state=CASE WHEN ? THEN 'deleted' "
-            "WHEN receipt_json IS NOT NULL THEN 'ready' ELSE 'queued' END,"
+            "WHEN receipt_json IS NOT NULL AND root_revision<>'' THEN 'ready' ELSE 'queued' END,"
             "lease_token=NULL,lease_until=NULL,next_retry_at=0,"
             "last_error_code=?,updated_at=? WHERE asset_content_id=? AND owner_uid=? AND project_id=?"
             + (" AND state<>'deleted'" if deleted else " AND state='deleted' AND last_error_code='asset_deleted_in_app'"),
