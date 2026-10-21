@@ -11,6 +11,7 @@ import { APP_EVENTS, dispatchAppEvent } from "../src/lib/appEvents";
 import { generationChangeScope, getGenerationReadModel, type GenerationChange } from "../src/features/library/api";
 import { groupGenerations } from "../src/lib/folderCardsLocal";
 import { onLibraryChanged } from "../src/lib/libraryBroadcast";
+import { configureOperationContext } from "../src/app/operationContext";
 
 const listGenerations = vi.fn();
 vi.mock("../src/api", () => ({ api: { listGenerations: (...args: unknown[]) => listGenerations(...args) }, GEN_PAGE: 200 }));
@@ -38,6 +39,7 @@ const ids = () => latest.gens?.map((g) => g.id) ?? null;
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   listGenerations.mockReset();
+  configureOperationContext({ key: "auth", serverOrigin: location.origin, authority: "local", ready: true });
   getGenerationReadModel("auth", "local");
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -108,6 +110,9 @@ it("T06 rejects foreign scopes, unrelated fields, empty and duplicate settled ch
   act(() => window.dispatchEvent(new CustomEvent(APP_EVENTS.generationTagsSettled, { detail: { ids: ["tail"], fields: ["tags"] } })));
   await settle();
   expect(listGenerations).toHaveBeenCalledTimes(1);
+  // 읽기 캐시 선택은 App이 확정한 이벤트 연결 키를 바꾸지 않는다(R4-6).
+  getGenerationReadModel("view-only-cache-key", "team");
+  expect(generationChangeScope().connectionKey).toBe("auth");
   settleTags(valid, true);
   await settle();
   expect(listGenerations).toHaveBeenCalledTimes(2);
@@ -170,9 +175,14 @@ it("T06 settled requery failure stays stale and a later change retries; old-acco
   settleTags(tagChange());
   await settle();
   expect([latest.fresh, latest.failed, latest.loading]).toEqual([false, false, true]);
+  const oldChange = tagChange();
+  configureOperationContext({ key: "new-auth", serverOrigin: location.origin, authority: "local", ready: true });
   getGenerationReadModel("new-auth", "local");
   draw({ query: filtered, authKey: "new-auth" });
   expect(latest.gens).toBeNull();
+  settleTags(oldChange, true);
+  await settle();
+  expect(listGenerations).toHaveBeenCalledTimes(3);
   listGenerations.mockResolvedValue([gen("new-account")]);
   await act(async () => { release([gen("stale-account")]); });
   await settle();
