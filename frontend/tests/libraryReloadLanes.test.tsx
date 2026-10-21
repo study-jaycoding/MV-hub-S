@@ -3,7 +3,7 @@
 //  지키는 것: 다음 목록이 앞 실행의 메타를 기다리지 않는다 · 메타 묶음은 한 번에 하나 · 전체 메타 요구는 버려져도 다음 묶음이
 //  이어받는다 · `await reload()` 는 맡긴 메타가 처리된 뒤에 풀린다 · 낡은 응답은 적용하지 않는다.
 //  StrictMode 의 이중 effect 는 호출 수 세기를 흐리므로 여기서는 쓰지 않는다(listFolderPeek.test.tsx 가 StrictMode 로 본다).
-import { act, useEffect } from "react";
+import { act, useEffect, useMemo } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThumbnailGrid } from "../src/components/ThumbnailGrid";
@@ -39,6 +39,7 @@ type Props = {
   poll?: boolean; // App 과 같은 자동 조회(useGenerationAutoRefresh)를 붙인다
   progress?: boolean;
   grid?: boolean;
+  hideGridRows?: boolean;
 };
 const MAIN: GenQuery = { tab: "my", search: "cat" };
 const LOCATED: GenQuery = { tab: "my", project_id: "project-b", folder_path: "e001/c0010" };
@@ -60,7 +61,7 @@ let ownerNow: LibraryOwner | null = null; // App 이 커밋마다 적는 자료 
 let promptCreated: ReturnType<typeof usePromptCreatedActions>["handlePromptCreated"];
 const noop = () => {};
 const readOwner = () => ownerNow;
-function Harness({ query, authReady = true, projectWorkspaceId, composeListEnabled, auto = true, trash = false, poll = false, progress = false, grid = false }: Props) {
+function Harness({ query, authReady = true, projectWorkspaceId, composeListEnabled, auto = true, trash = false, poll = false, progress = false, grid = false, hideGridRows = false }: Props) {
   const filters: Filters = { tab: query.tab, ...(trash ? { deleted_only: true } : {}) };
   data = useGenerationLibraryData({ authReady, filters, genQuery: query, flash, projectWorkspaceId, composeListEnabled, owner: readOwner });
   const key = JSON.stringify(query);
@@ -71,7 +72,9 @@ function Harness({ query, authReady = true, projectWorkspaceId, composeListEnabl
     bumpBoard: noop, setSyncTick: noop, historyBoardVisible: false, commentsVisible: false });
   promptCreated = usePromptCreatedActions({ boardFocusIdRef: { current: null }, boardSelectedRef: { current: [] },
     filtersRef: { current: filters }, bumpBoard: noop, flash, reload: data.reload, setGens: data.setGens }).handlePromptCreated;
-  return grid ? <ThumbnailGrid generations={data.gens} tab={query.tab === "team" ? "team" : "my"}
+  // App의 표시 목록처럼 원본이 바뀔 때만 새 배열을 만든다. loadingMore만 바뀌면 같은 참조다.
+  const gridGens = useMemo(() => hideGridRows ? data.gens.filter(g => !g.id.startsWith("hidden-")) : data.gens, [data.gens, hideGridRows]);
+  return grid ? <ThumbnailGrid generations={gridGens} tab={query.tab === "team" ? "team" : "my"}
     scale={1} fill layout="grid" groupByDate={false} selectedIds={new Set()}
     onSelectedChange={noop} onToggleSelect={noop} onSetSource={noop} onSetTags={noop}
     onOpenComments={noop} onRegenerate={noop} onPublish={noop} onUnpublish={noop}
@@ -297,6 +300,49 @@ describe("[F9-9] grid resumes discarded pages without an error retry loop", () =
     vi.spyOn(HTMLElement.prototype, "scrollTop", "get").mockImplementation(() => scrollTop);
   });
   afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  it.each([false, true])("[F9-10] stops after ten hidden pages but allows manual scroll: trash=%s", async (trash) => {
+    const list = vi.mocked(trash ? api.listTrash : api.listGenerations);
+    let page = 0;
+    list.mockResolvedValueOnce(firstPage).mockImplementation(async () => {
+      const prefix = `hidden-${++page}`;
+      return Array.from({ length: 200 }, (_, i) => gen(`${prefix}-${i}`));
+    });
+    await mount({ query: MAIN, trash, grid: true, hideGridRows: true });
+    scrollTop = 3400;
+    const before = list.mock.calls.length;
+    for (let i = 0; i < 14; i++) await frame();
+    expect(list).toHaveBeenCalledTimes(before + 10);
+    expect(data.gens).toHaveLength(2200);
+    expect(data.hasMore).toBe(true);
+    expect(data.loadingMore).toBe(false);
+    scroll();
+    await settle();
+    await frame();
+    expect(list).toHaveBeenCalledTimes(before + 11);
+  });
+
+  it.each([false, true])("[F9-10] visible growth renews the ten automatic requests: trash=%s", async (trash) => {
+    const list = vi.mocked(trash ? api.listTrash : api.listGenerations);
+    let page = 0;
+    list.mockResolvedValueOnce(firstPage).mockImplementation(async () => {
+      const prefix = `hidden-${++page}`;
+      return Array.from({ length: 200 }, (_, i) => gen(`${prefix}-${i}`));
+    });
+    await mount({ query: MAIN, trash, grid: true, hideGridRows: true });
+    scrollTop = 3400;
+    for (let i = 0; i < 14; i++) await frame();
+    expect(list).toHaveBeenCalledTimes(11);
+    list.mockResolvedValueOnce(secondPage);
+    scroll();
+    await settle();
+    expect(ids()).toContain("second-199");
+    const before = list.mock.calls.length;
+    for (let i = 0; i < 14; i++) await frame();
+    expect(list).toHaveBeenCalledTimes(before + 10);
+    expect(data.hasMore).toBe(true);
+    expect(data.loadingMore).toBe(false);
+  });
 
   it.each(["cursor", "offset", "seq"] as const)("%s discard at a filled bottom fetches the current next page once without another scroll", async (reason) => {
     const trash = reason === "offset";

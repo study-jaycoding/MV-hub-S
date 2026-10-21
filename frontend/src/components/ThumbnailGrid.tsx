@@ -199,17 +199,25 @@ export function ThumbnailGrid(props: Props) {
 
   // 첫 쪽 적용 뒤 추가 응답이 버려지면 새 scroll 이벤트가 없어도 바닥 근처에서 이어 받는다.
   // 같은 목록에서는 최초 요청 + 재시도 한 번만: 응답 폐기는 재개하되 오류로 끝없이 재시도하지 않는다.
-  const autoLoadRef = useRef({ generations, attempts: 0 });
+  // 숨긴 쪽은 새 배열이어도 화면을 늘리지 않으므로, 보이는 개수가 늘기 전 자동 요청은 10회로 묶는다.
+  const autoLoadRef = useRef({ generations, attempts: 0, noGrowthAttempts: 0 });
   useEffect(() => {
     if (!props.hasMore || props.loadingMore) return;
     const el = gridRef.current;
     if (!el) return;
     const id = requestAnimationFrame(() => {
       if (resolveScrollGuardRef.current) return;
-      if (autoLoadRef.current.generations !== generations) autoLoadRef.current = { generations, attempts: 0 };
-      if (autoLoadRef.current.attempts >= 2) return;
+      if (autoLoadRef.current.generations !== generations) {
+        autoLoadRef.current = {
+          generations,
+          attempts: 0,
+          noGrowthAttempts: generations.length > autoLoadRef.current.generations.length ? 0 : autoLoadRef.current.noGrowthAttempts,
+        };
+      }
+      if (autoLoadRef.current.attempts >= 2 || autoLoadRef.current.noGrowthAttempts >= 10) return;
       if (el.scrollHeight - el.scrollTop - el.clientHeight < 800) {
         autoLoadRef.current.attempts++;
+        autoLoadRef.current.noGrowthAttempts++;
         props.onLoadMore?.();
       }
     });
