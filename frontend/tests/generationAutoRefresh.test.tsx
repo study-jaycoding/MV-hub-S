@@ -11,7 +11,7 @@ import type { Filters, Generation } from "../src/types";
 type Props = { tab?: Filters["tab"]; paused?: boolean; active?: boolean };
 let root: Root;
 let host: HTMLDivElement;
-const reload = vi.fn<(silent?: boolean, light?: boolean) => Promise<void>>();
+const reload = vi.fn<(silent?: boolean, light?: boolean, intent?: string) => Promise<void>>();
 const idle: Generation[] = [];
 const running = [{ id: "g", status: "running" }] as unknown as Generation[];
 function Harness({ tab = "team", paused, active }: Props) {
@@ -40,7 +40,7 @@ it("쉬는 동안에는 주기 폴링이 다시 받지 않고, 풀리면 원래 
   show(); // 팀 탭 유휴: 15초
   await pass(15_000);
   expect(reload).toHaveBeenCalledTimes(1);
-  expect(reload).toHaveBeenLastCalledWith(true, true);
+  expect(reload).toHaveBeenLastCalledWith(true, true, "check"); // 확인이지 실제 변경이 아니다(83회차)
   await pass(10_000); // 25초
   show({ paused: true });
   await pass(5_000); // 30초 — 쉬는 중의 틱
@@ -87,7 +87,7 @@ it("창 복귀(focus·visibilitychange)도 쉬는 동안에는 받지 않는다 
   show({ tab: "my", paused: false });
   act(() => { document.dispatchEvent(new Event("visibilitychange")); });
   expect(reload).toHaveBeenCalledTimes(1);
-  expect(reload).toHaveBeenLastCalledWith(true, true);
+  expect(reload).toHaveBeenLastCalledWith(true, true, "check"); // 확인이지 실제 변경이 아니다(83회차)
   act(() => { window.dispatchEvent(new Event("focus")); }); // 방금 받았다 — 5초 가드
   expect(reload).toHaveBeenCalledTimes(1);
 });

@@ -308,11 +308,12 @@ export const api = {
   },
   // 공유 & 리뷰 탭의 폴더 카드 — parent 바로 아래 폴더마다 건수·표지(팀이 정한 대표, 없으면 가장 최근 것).
   //  옛 공유 서버에는 이 경로가 없다(404 "Not Found" — isRouteMissing 으로 가려 묶음 보기를 끈다).
-  folderCards: (projectId: string, parent: string, workspaceId?: string) => {
+  // signal = 목록과 같은 제한 시간의 실제 취소(lib/useFolderCards) — 걸러 보는 컷 화면의 갱신이 이 응답을 기다린다
+  folderCards: (projectId: string, parent: string, workspaceId?: string, signal?: AbortSignal) => {
     const params = new URLSearchParams({ parent });
     if (workspaceId) params.set("workspace_id", workspaceId);
     // 표지는 화면이 쓰는 칸만 온다(types.FolderCover) — 프롬프트가 없으니 목록 행의 프롬프트 호환 처리도 하지 않는다
-    return jsonFetch<FolderCards>(`/api/projects/${pathPart(projectId)}/folder-cards?${params.toString()}`);
+    return jsonFetch<FolderCards>(`/api/projects/${pathPart(projectId)}/folder-cards?${params.toString()}`, signal ? { signal } : undefined);
   },
   // 그 폴더의 대표를 정한다(팀이 같이 본다). 서버가 '그 폴더 아래에서 내가 볼 수 있는 공유물' 인지 확인한다.
   setFolderCover: (projectId: string, folderPath: string, generationId: string) =>

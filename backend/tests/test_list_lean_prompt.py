@@ -21,6 +21,7 @@ from app import db, repo
 from app.deps import resolve_agent_account
 from app.main import app
 from app.routers import library
+from app.repo import generations_query
 from app.routers.library import _blank_list_prompt_text, _lean_list
 
 LONG = "긴 프롬프트 " * 50
@@ -173,3 +174,97 @@ def test_a_direct_call_without_the_argument_keeps_the_prompt():
             mock.patch.object(library._proxy, "proxying", return_value=False):
         result = library.list_generations(_Request(), BackgroundTasks(), tab="my", colors=[], tags=[], auto_tags=[], limit=500)
     assert result[0]["prompt"] == LONG and result[0]["display_prompt"] == "보이는 글"
+
+
+# ── 83회차 A②: 빈 글을 조회(SELECT) 단계에서 — 다 읽고 보강한 뒤 비우던 것을 처음부터 안 읽는다 ──
+
+
+def _set(sql, *args):
+    with db.get_connection() as conn:
+        conn.execute(sql, args)
+
+
+def test_the_rows_handed_to_enrichment_never_carry_the_prompt_text(client, monkeypatch):
+    """lean 이면 보강(_attach_children)에 넘어가는 행의 두 칸이 이미 빈 글이다 — 반환 직전에 비우기만 하면 실패한다."""
+    gid = _make()
+    _set("UPDATE generation SET display_prompt = ? WHERE id = ?", "보이는 " + LONG, gid)
+    seen: list = []
+    real = generations_query._attach_children
+
+    def spy(conn, rows, **kwargs):
+        seen.extend((row["prompt"], row["display_prompt"]) for row in rows)
+        return real(conn, rows, **kwargs)
+
+    monkeypatch.setattr(generations_query, "_attach_children", spy)
+    assert client.get("/api/generations?limit=50&lean_params=1&lean_prompt=1").status_code == 200
+    assert seen and set(seen) == {("", "")}
+    seen.clear()
+    client.get("/api/generations?limit=50&lean_params=1")  # 인자가 없으면 지금처럼 원문을 읽는다
+    assert (LONG, "보이는 " + LONG) in seen
+
+
+def _fixture_for_the_comparison():
+    """검색(긴 글 = FTS·짧은 글 = LIKE)·태그 검색·태그 거르기·커서·팀 탭이 모두 걸리는 자료."""
+    cat = _make("고양이가 창가에 앉아 있다 " + LONG)
+    _set("UPDATE generation SET display_prompt = '@고양이 가 창가에' WHERE id = ?", cat)
+    dog = _make("강아지 산책")                     # 프롬프트에는 'cat' 이 없다 — 태그로만 찾힌다
+    _set("INSERT INTO tag(id, name) VALUES('t-cat', 'cat')")
+    _set("INSERT INTO gen_tag(generation_id, tag_id) VALUES(?, 't-cat')", dog)
+    plain = _make("아무 것도 아닌 글", params={"seed": 2})
+    _set("UPDATE generation SET display_prompt = NULL WHERE id = ?", plain)
+    for gid in (cat, dog):
+        _set("INSERT INTO share(id, generation_id, shared_by, visibility) VALUES(?, ?, 'me', 'team')", "s-" + gid, gid)
+    return cat, dog, plain
+
+
+@pytest.mark.parametrize("query, expect", [
+    ("limit=50", 3),
+    ("limit=50&lean_params=1", 3),
+    ("limit=2", 2),
+    ("limit=50&search=%EA%B3%A0%EC%96%91%EC%9D%B4%EA%B0%80", 1),   # '고양이가' — 3자 이상(FTS)
+    ("limit=50&search=%EC%82%B0%EC%B1%85", 1),                     # '산책' — 2자(LIKE)
+    ("limit=50&search=cat", 1),                                     # 프롬프트 말고 태그 이름으로 찾힌다
+    ("limit=50&tag=cat", 1),
+    ("limit=50&tab=team", 2),
+    ("limit=50&search=zzqq", 0),
+])
+def test_lean_answers_exactly_what_blanking_the_full_answer_gave(client, query, expect):
+    """바꾸기 전/후 같은 입력: lean 응답 = 원문 응답에서 두 칸만 비운 것(바꾸기 전 lean 이 정확히 그것이었다) — 행·순서·나머지 칸 모두.
+    검색은 원문으로 건다 — 빈 글로 검색했다면 lean 쪽이 비어 이 비교가 깨진다."""
+    _fixture_for_the_comparison()
+    full = client.get(f"/api/generations?{query}").json()
+    lean = client.get(f"/api/generations?{query}&lean_prompt=1").json()
+    assert len(full) == expect
+    assert lean == _blank_list_prompt_text(full)
+    if full:  # 커서로 받는 둘째 쪽도 같다
+        last = full[-1]
+        tail = f"{query}&cursor_ts={last['sort_ts']}&cursor_id={last['id']}"
+        assert client.get(f"/api/generations?{tail}&lean_prompt=1").json() == _blank_list_prompt_text(
+            client.get(f"/api/generations?{tail}").json()
+        )
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"tab": "my"},
+    {"tab": "my", "account_uid": "u-nobody"},
+    {"tab": "team"},
+    {"tab": "team", "team_member_projects": [], "account_uid": "u-nobody"},
+    {"tab": "my", "search": "고양이가"},
+    {"tab": "my", "search": "산책"},
+    {"tab": "my", "search": "cat"},
+    {"tab": "my", "tags": ["cat"]},
+])
+def test_the_repo_projection_matches_blanking_its_full_rows(client, kwargs):
+    """repo 를 직접 불러도 같다 — 보는 계정·가시성·검색 조합마다 lean 행 = 원문 행에서 두 칸만 비운 것."""
+    _fixture_for_the_comparison()
+    assert repo.list_generations(**kwargs, lean_prompt=True) == _blank_list_prompt_text(repo.list_generations(**kwargs))
+
+
+def test_the_router_hands_the_flag_to_the_repo_only_when_it_is_1():
+    """직접 호출(MCP 등)의 기본값은 Query(0) 객체다 — 그것을 참으로 읽어 repo 에 넘기면 상세가 아닌 목록 원문이 빈다."""
+    with mock.patch.object(library.repo, "list_generations", return_value=[]) as listed, \
+            mock.patch.object(library._proxy, "proxying", return_value=False):
+        library.list_generations(_Request(), BackgroundTasks(), tab="my", colors=[], tags=[], auto_tags=[], limit=500)
+        assert listed.call_args.kwargs["lean_prompt"] is False
+        library.list_generations(_Request(), BackgroundTasks(), tab="my", colors=[], tags=[], auto_tags=[], limit=500, lean_prompt=1)
+        assert listed.call_args.kwargs["lean_prompt"] is True

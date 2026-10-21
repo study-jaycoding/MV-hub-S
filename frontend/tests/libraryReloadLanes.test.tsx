@@ -12,7 +12,7 @@ import { LIBRARY_LIST_TIMEOUT_MESSAGE, LIBRARY_LIST_TIMEOUT_MS } from "../src/li
 import { createLibraryMutationOrigin, decideLibrarySync, markMutationDomainsSucceeded } from "../src/lib/librarySync";
 import type { GenerationLocation } from "../src/lib/resolveLibraryLocation";
 import { useGenerationAutoRefresh } from "../src/lib/useGenerationAutoRefresh";
-import { useGenerationLibraryData } from "../src/lib/useGenerationLibraryData";
+import { useGenerationLibraryData, type LibraryOwner } from "../src/lib/useGenerationLibraryData";
 import type { Filters, GenQuery, Generation } from "../src/types";
 import { APP_EVENTS } from "../src/lib/appEvents";
 import { generationChangeScope } from "../src/features/library/api";
@@ -44,9 +44,11 @@ let host: HTMLDivElement;
 let data: ReturnType<typeof useGenerationLibraryData>;
 let clock: ReturnType<typeof vi.spyOn> | null = null;
 const flash = vi.fn();
+let ownerNow: LibraryOwner | null = null; // App 이 커밋마다 적는 자료 주인(83회차) — 시험이 바꾼다
+const readOwner = () => ownerNow;
 function Harness({ query, authReady = true, projectWorkspaceId, composeListEnabled, auto = true, trash = false, poll = false }: Props) {
   const filters: Filters = { tab: query.tab, ...(trash ? { deleted_only: true } : {}) };
-  data = useGenerationLibraryData({ authReady, filters, genQuery: query, flash, projectWorkspaceId, composeListEnabled });
+  data = useGenerationLibraryData({ authReady, filters, genQuery: query, flash, projectWorkspaceId, composeListEnabled, owner: readOwner });
   const key = JSON.stringify(query);
   // App 과 같은 배선 — 조회 조건·탭·인증이 바뀌면 신선도 확인을 거쳐 다시 받는다.
   useEffect(() => { if (auto) void data.reloadIfStale(); }, [auto, key, authReady, data.reloadIfStale]);
@@ -128,6 +130,7 @@ beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   for (const call of Object.values(api)) vi.mocked(call as () => unknown).mockReset(); // 안 쓰고 남은 '한 번' 응답까지 지운다
   flash.mockReset();
+  ownerNow = null;
   vi.mocked(api.listGenerations).mockImplementation(async (query) => (query.folder_path && query.project_id === "p1" ? folderRows : mainRows));
   vi.mocked(api.projects).mockResolvedValue(folders(0) as never);
   vi.mocked(api.facets).mockResolvedValue({ tags: [], auto_tags: [], models: [] } as never);
@@ -893,4 +896,48 @@ it("바뀐 조회의 첫 쪽을 받는 동안 자동 조회는 쉰다 — 첫 �
   } finally {
     vi.useRealTimers();
   }
+});
+
+// ── 83회차: 걸러 보는 컷 화면이 자료 주인일 때(App 이 owner 로 알린다 — Codex FH) ──
+//  이 조회의 목록(200건 원문)은 보내지 않고 주인의 갱신을 기다린다 · 바람(ensure·check·invalidate)은 그대로 넘기되 덮지 않은 내 변경이 있으면 invalidate ·
+//  결과가 '적용'이 아니면 내 변경을 덮었다고 적지 않는다 · 더 받기는 보내지 않는다 · 판정이 다른 조회의 것이면 목록도 주인 요청도 보내지 않는다(메타만) ·
+//  주인을 되찾으면 같은 조회의 캐시라도 첫 쪽을 다시 받고, 그 전에는 옛 커서로 더 받지 않는다(Codex FE-02·FE-03·FE-09).
+it("cut owner — 목록 대신 주인을 기다리고(바람 그대로·내 변경이면 invalidate), 더 받지 않으며, 되찾으면 첫 쪽부터 · 그 전엔 옛 커서를 쓰지 않는다", async () => {
+  const page = Array.from({ length: 200 }, (_, index) => ({ ...gen(`p${index}`), sort_ts: 1000 - index }) as Generation);
+  vi.mocked(api.listGenerations).mockResolvedValue(page);
+  await mount();
+  expect(data.hasMore).toBe(true);
+  const asked: string[] = [];
+  let finish!: () => void;
+  const request = vi.fn((intent: string) => {
+    asked.push(intent);
+    return new Promise<{ status: string; key: string }>((resolve) => { finish = () => resolve({ status: "applied", key: "k" }); });
+  });
+  ownerNow = { kind: "cut", sig: JSON.stringify([false, MAIN]), key: "k", request };
+  const before = calls();
+  const polled = start(() => data.reload(true, true, "check"));
+  await settle();
+  expect([calls().list - before.list, asked, polled.done]).toEqual([0, ["check"], false]); // 주인의 갱신을 기다린다
+  await act(async () => { finish(); });
+  await settle();
+  expect(polled.done).toBe(true);
+  request.mockImplementation(async (intent: string) => { asked.push(intent); return { status: "reused", key: "k" }; });
+  await act(async () => { await data.reloadIfStale(); }); // 진입 — 탭 캐시로 건너뛰지 않고 주인에게
+  await act(async () => { await data.loadMore(); });
+  expect([calls().list - before.list, asked]).toEqual([0, ["check", "ensure"]]);
+  const origin = createLibraryMutationOrigin("POST")!;
+  markMutationDomainsSucceeded(origin, origin.mutation_id, ["library"]);
+  await act(async () => { await data.reload(true, true, "ensure"); });
+  expect([asked.at(-1), decideLibrarySync([origin])]).toEqual(["invalidate", "reload"]); // 결과가 reused — 덮었다고 적지 않았다
+  ownerNow = { ...ownerNow, sig: "다른 조회" };
+  await act(async () => { await data.reload(); });
+  expect([calls().list - before.list, asked.length]).toEqual([0, 3]);
+  ownerNow = { kind: "list", sig: JSON.stringify([false, MAIN]), key: null, request: null };
+  await act(async () => { await data.loadMore(); });
+  expect(calls().list - before.list).toBe(0); // 아직 새 첫 쪽 전 — 옛 커서로 더 받지 않는다
+  await act(async () => { await data.reloadIfStale(); }); // 같은 조회의 캐시(15초 안)라도 다시 받는다
+  await settle();
+  expect(calls().list - before.list).toBe(1);
+  await act(async () => { await data.loadMore(); });
+  expect([calls().list - before.list, vi.mocked(api.listGenerations).mock.calls.at(-1)?.[1]]).toEqual([2, { ts: 801, id: "p199" }]);
 });

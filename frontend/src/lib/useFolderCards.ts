@@ -28,6 +28,7 @@ import { api } from "../api";
 import type { FolderCards } from "../types";
 import type { FolderCardsScope } from "./folderCards";
 import { isRouteMissing } from "./http";
+import { timedLibraryRequest } from "./libraryRequestTimeout";
 
 const remembered = new Map<string, FolderCards>();
 const REMEMBER_MAX = 400; // 에피소드 하나가 컷 수십 개의 답을 미리 적는다 — 넘치면 가장 오래 안 쓴 것부터 버린다
@@ -47,17 +48,19 @@ const UNSUPPORTED_RETRY_MS = 5 * 60_000; // 옛 서버로 기억한 문맥을 �
 //  들어간 훅의 **첫 조회가 그 요청을 이어받는다** — 같은 묶음을 두 번 묻지 않는다(Codex 검토 10-16). 대표 저장 뒤의 다시 받기(discard)는
 //  이어받지 않는다(저장 전에 출발한 미리 받기가 방금 고른 대표를 덮지 않게). 들어가지 않으면 응답이 온 뒤 WARM_MS 지나 버린다.
 //  받는 중인 요청은 버리지 않는다 — 느린 서버에서 다시 눌러도 같은 묶음을 두 번 묻지 않게(Codex 10-16 P2). 걸린 요청을 기다리는 것은
-//  훅이 스스로 물었을 때와 같다(요청에 시간 한도가 없다).
+//  훅이 스스로 물었을 때와 같다 — 둘 다 목록과 같은 제한 시간(30초)에 실제로 끊는다(83회차: 걸러 보는 컷 화면의 갱신이 이 응답을 기다린다).
 const WARM_MS = 3000;
 type Warm = { promise: Promise<FolderCards>; done?: number };
 const warming = new Map<string, Warm>();
 const stale = (warm: Warm, now: number) => warm.done !== undefined && now - warm.done > WARM_MS;
+const askCards = (projectId: string, parent: string, workspaceId?: string) =>
+  timedLibraryRequest((signal) => api.folderCards(projectId, parent, workspaceId, signal));
 export function prefetchFolderCards(authKey: string, scope: FolderCardsScope): void {
   const key = JSON.stringify([authKey, scope.projectId, scope.parent, scope.workspaceId ?? null]);
   const now = Date.now();
   for (const [old, warm] of warming) if (stale(warm, now)) warming.delete(old);
   if (warming.has(key)) return; // 이미 묻는 중 — 빠른 두 번 클릭·[열기] 연타
-  const warm: Warm = { promise: api.folderCards(scope.projectId, scope.parent, scope.workspaceId) };
+  const warm: Warm = { promise: askCards(scope.projectId, scope.parent, scope.workspaceId) };
   warm.promise.then(
     () => { warm.done = Date.now(); },
     () => { if (warming.get(key) === warm) warming.delete(key); }, // 실패는 이어받지 않는다 — 들어간 훅이 새로 묻는다
@@ -90,13 +93,22 @@ interface Options {
   reloadKey: number;
 }
 
+/** 한 번 받기의 결과 — applied = 지금 문맥의 응답을 적용했다(cards = 그 카드) · failed = 받지 못했다(옛 서버 포함 — 받아 둔 카드는 그대로)
+ *  · obsolete = 더 새 조회·문맥에 버려졌다 · none = 받을 것이 없었다(범위 없음·옛 서버로 기억한 동안). 걸러 보는 컷 화면의 갱신은 applied 만 성공으로 친다. */
+export interface FolderCardsOutcome {
+  status: "applied" | "failed" | "obsolete" | "none";
+  cards: FolderCards | null;
+}
+const OBSOLETE: FolderCardsOutcome = { status: "obsolete", cards: null };
+const NONE: FolderCardsOutcome = { status: "none", cards: null };
+
 interface Pending {
-  promise: Promise<void>;
-  resolve: () => void;
+  promise: Promise<FolderCardsOutcome>;
+  resolve: (outcome: FolderCardsOutcome) => void;
 }
 
 interface Run {
-  promise: Promise<void>; // 이 조회가 끝나면(응답 적용·버림·실패 모두) 풀린다
+  promise: Promise<FolderCardsOutcome>; // 이 조회가 끝나면(응답 적용·버림·실패 모두) 풀린다
   key: string;
   pending: Pending | null; // 이 조회에 얹힌 요구 — 끝난 뒤 한 번 더 받아 그 응답이 적용되면 풀린다
 }
@@ -122,15 +134,15 @@ export function useFolderCards({ scope, authKey, reloadKey }: Options) {
   argsRef.current = { key, projectId, parent, workspaceId, authKey, unsupported };
   const runningRef = useRef<Run | null>(null);
 
-  // 돌려주는 값: 응답을 적용했거나(또는 받을 것이 없거나) true, 더 새 조회·문맥에 버려졌으면 false.
-  const fetchOnce = useCallback(async (): Promise<boolean> => {
+  // 돌려주는 값: FolderCardsOutcome(위) — 실패를 삼킨 뒤에도 '적용했다'로 답하지 않는다(83회차 — 컷 화면의 갱신이 이 결과를 기다린다).
+  const fetchOnce = useCallback(async (): Promise<FolderCardsOutcome> => {
     const seq = ++seqRef.current; // 문맥이 바뀌거나 다시 받기 시작하면 앞선 응답은 버린다
     const { key: nowKey, projectId: pid, parent: dir, workspaceId: ws, authKey: auth, unsupported: off } = argsRef.current;
-    if (nowKey === null || pid === undefined || dir === undefined) return true;
-    if (off && Date.now() - unsupportedAtRef.current < UNSUPPORTED_RETRY_MS) return true; // 옛 서버 — 가끔만 다시 물어본다
+    if (nowKey === null || pid === undefined || dir === undefined) return NONE;
+    if (off && Date.now() - unsupportedAtRef.current < UNSUPPORTED_RETRY_MS) return NONE; // 옛 서버 — 가끔만 다시 물어본다
     try {
-      const fresh = await (takeWarm(nowKey) ?? api.folderCards(pid, dir, ws)); // 미리 받은 요청이 있으면 이어받는다
-      if (seq !== seqRef.current) return false;
+      const fresh = await (takeWarm(nowKey) ?? askCards(pid, dir, ws)); // 미리 받은 요청이 있으면 이어받는다
+      if (seq !== seqRef.current) return OBSOLETE;
       if (off) setUnsupportedFor(null); // 서버가 갱신됐다
       const kept = remembered.get(nowKey);
       // 내용이 같다 — 같은 객체를 돌려줘 아래가 다시 그리지 않게
@@ -145,17 +157,18 @@ export function useFolderCards({ scope, authKey, reloadKey }: Options) {
         }
       }
       setLoaded((previous) => (previous !== null && previous.key === nowKey && previous.cards === cards ? previous : { key: nowKey, cards }));
+      return { status: "applied", cards };
     } catch (error) {
-      if (seq !== seqRef.current) return false;
+      if (seq !== seqRef.current) return OBSOLETE;
       if (off || isRouteMissing(error)) unsupportedAtRef.current = Date.now(); // 다시 물어본 것이 실패해도 다음 물음은 그 간격 뒤
       if (isRouteMissing(error)) setUnsupportedFor(auth);
       else setFailedKey(nowKey);
+      return { status: "failed", cards: null };
     }
-    return true;
   }, []);
 
   // discard = 받는 중인 같은 문맥의 응답을 버린다(대표 저장 뒤). 아니면 그 응답은 적용하고 끝난 뒤 한 번 더 받는다.
-  const request = useCallback((discard: boolean): Promise<void> => {
+  const request = useCallback((discard: boolean): Promise<FolderCardsOutcome> => {
     const running = runningRef.current;
     const nowKey = argsRef.current.key;
     // 저장 전에 출발한 미리 받기는 버린다 — 바로 보내는 조회도, 받는 중인 조회에 얹혀 끝난 뒤 보내는 조회도 이어받지 않게
@@ -163,14 +176,14 @@ export function useFolderCards({ scope, authKey, reloadKey }: Options) {
     if (running && nowKey !== null && running.key === nowKey) {
       if (discard) seqRef.current += 1;
       if (!running.pending) {
-        let resolve!: () => void;
-        const promise = new Promise<void>((done) => { resolve = done; });
+        let resolve!: (outcome: FolderCardsOutcome) => void;
+        const promise = new Promise<FolderCardsOutcome>((done) => { resolve = done; });
         running.pending = { promise, resolve };
       }
       return running.pending.promise;
     }
-    const run: Run = { promise: Promise.resolve(), key: nowKey ?? "", pending: null };
-    run.promise = fetchOnce().then(async (applied) => {
+    const run: Run = { promise: Promise.resolve(NONE), key: nowKey ?? "", pending: null };
+    run.promise = fetchOnce().then(async (outcome) => {
       if (runningRef.current === run) runningRef.current = null;
       const pending = run.pending;
       if (pending) {
@@ -179,7 +192,8 @@ export function useFolderCards({ scope, authKey, reloadKey }: Options) {
       }
       // 이 조회의 응답이 버려졌으면(문맥이 바뀌었다 돌아오는 등) 그 자리를 대신한 조회가 끝날 때까지 풀지 않는다 — 저장이 옛 값
       //  표시로 잠금을 풀지 않게(Codex 코드 검토 10-09 3차). 대신할 조회가 없으면(받을 것이 없어졌다) 그냥 푼다.
-      if (!applied && runningRef.current && runningRef.current !== run) await runningRef.current.promise;
+      if (outcome.status === "obsolete" && runningRef.current && runningRef.current !== run) return runningRef.current.promise;
+      return outcome;
     });
     runningRef.current = run;
     return run.promise;
@@ -191,9 +205,12 @@ export function useFolderCards({ scope, authKey, reloadKey }: Options) {
 
   // 끝나면 풀리는 약속을 돌려준다(대표를 저장한 쪽이 서버 값을 다시 읽은 뒤에 잠금을 풀 수 있게). 실패해도 던지지 않는다.
   //  약속은 '이 요구 뒤에 출발한 조회의 응답이 적용됐을 때' 풀린다 — 받는 중이던 응답은 버린다.
-  const reload = useCallback((): Promise<void> => request(true), [request]);
+  const reload = useCallback((): Promise<void> => request(true).then(() => undefined), [request]);
+  // 걸러 보는 컷 화면의 갱신이 같은 실행에서 서버 카드도 다시 받는 입구 — 받는 중인 응답은 버리지 않고 끝난 뒤 한 번 더 받아(이 요구 뒤에
+  //  출발한 조회) 그 결과를 돌려준다. 성공 여부는 결과의 status 로 — 약속이 풀린 것 자체는 성공이 아니다.
+  const refresh = useCallback((): Promise<FolderCardsOutcome> => request(false), [request]);
 
   // 이 훅이 받은 것이 지금 문맥의 것이면 그것, 아니면 기억해 둔 것(다시 온 폴더·미리 적은 컷) — 조회는 위 effect 가 늘 다시 보낸다.
   const cards = unsupported || key === null ? null : loaded !== null && loaded.key === key ? loaded.cards : remembered.get(key) ?? null;
-  return { cards, unsupported, loading: key !== null && !unsupported && cards === null && failedKey !== key, reload };
+  return { cards, unsupported, loading: key !== null && !unsupported && cards === null && failedKey !== key, reload, refresh };
 }
