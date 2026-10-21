@@ -49,6 +49,8 @@ def load_inspector(root: Path, path: Path | None = None):
 
 def snapshot(root: Path, output: Path, env: dict[str, str], inspect_database=None, snapshotter=None, recover_database=None) -> list[dict]:
     """Caller proves quiescence. A changed source set aborts; no DB restore is offered."""
+    from app.schema_compat import database_key
+
     paths = database_paths(root, env)
     inspect_database = inspect_database or load_inspector(root)
     recover_database = recover_database or getattr(sys.modules[inspect_database.__module__], 'recover_compatible_database')
@@ -65,7 +67,7 @@ def snapshot(root: Path, output: Path, env: dict[str, str], inspect_database=Non
         temporary = Path(directory)
         copies = {}
         for kind, source in paths:
-            key = hashlib.sha256(os.path.normcase(str(source)).encode("utf-8")).hexdigest()
+            key = database_key(source)
             private = temporary / (key + ".db")
             for suffix in ("", "-wal", "-shm", "-journal"):
                 path = Path(str(source) + suffix)

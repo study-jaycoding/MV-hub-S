@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -36,6 +37,11 @@ def _local_database_path(path: Path) -> None:
     for ancestor in (path, *path.parents):
         if ancestor.is_symlink() or (ancestor.exists() and getattr(ancestor.stat(), 'st_file_attributes', 0) & 1024):
             raise ValueError('database_link_forbidden')
+
+
+def database_key(path: Path) -> str:
+    """Stable path fingerprint shared by startup diagnostics and install checkpoints."""
+    return hashlib.sha256(os.path.normcase(str(path)).encode("utf-8")).hexdigest()
 
 
 def database_paths(root: Path, env: dict[str, str]) -> list[tuple[str, Path]]:
