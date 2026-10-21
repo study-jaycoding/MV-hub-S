@@ -78,6 +78,13 @@ status: active
    if ($LASTEXITCODE -ne 0) { throw '서버 업데이트 실패: logs의 준비·전환 기록 확인' }
    ```
 
+**준비 단계의 전제(staged CLI):** 준비는 stage 안 `runtime\higgsfield`에 `hf_cli_version.txt`의 핀 버전
+Higgsfield CLI를 `npm install --global --prefix`로 새로 설치하고 Node를 함께 복사한다. 그래서 관리자 콘솔의
+PATH에 `npm.cmd`와 `node.exe`가 있어야 하고, 서버 PC가 `registry.npmjs.org`와 CLI 설치 스크립트가 내려받는
+`github.com`에 닿아야 한다(격리 실행이라 프록시 설정·`.npmrc`는 쓰지 않는다 — 프록시로만 나가는 망에서는
+준비가 실패하고 실행 중 서버는 그대로 남는다). 관리자·SYSTEM의 전역 CLI는 서버가 더 이상 쓰지 않는다 —
+관리자 검증과 SYSTEM 서버 실행 모두 stage의 CLI를 쓴다.
+
 루트에 `server-release-compatibility.json`을 만들지 않는다. 비추적 파일도 dirty 검사에 걸린다.
 서버 coordinator의 외부 `--compatibility` 인자는 제거됐으며, 선언은 선택 SHA에서만 읽는다.
 반면 릴리스 제작의 `-CompatibilityPath` 명시 인자는 유지되고, 생략하면 `ProjectRoot` 아래의
