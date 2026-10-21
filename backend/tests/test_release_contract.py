@@ -65,6 +65,8 @@ def test_repository_compatibility_matches_database_contract_and_declares_bridge(
     ({'rollout': 'bridge', 'backward_compatible': False}, 'bridge must'),
     ({'rollout': 'bridge', 'backward_compatible': None}, 'bridge must'),
     ({'rollout': 'bridge', 'required_installer_capabilities': None}, 'invalid installer capabilities'),
+    ({'rollout': 'enforced', 'required_installer_capabilities': ['']}, 'invalid installer capabilities'),
+    ({'rollout': 'enforced', 'required_installer_capabilities': ['artifact-receipt-v1', 'artifact-receipt-v1']}, 'invalid installer capabilities'),
     ({'rollout': 'enforced', 'required_installer_capabilities': []}, 'enforced release requires'),
     ({'rollout': 'enforced', 'required_installer_capabilities': ['other']}, 'enforced release requires'),
 ])
@@ -86,6 +88,9 @@ def test_compatibility_rejects_bridge_without_backward_compatible():
 @pytest.mark.parametrize('rollout,caps,backward,error', [
     ('bridge', [], True, ''),
     ('enforced', ['artifact-receipt-v1'], False, ''),
+    ('enforced', ['artifact-receipt-v1', 'ARTIFACT-RECEIPT-V1'], False, ''),
+    ('enforced', [''], False, 'Unsupported compatibility declaration.'),
+    ('enforced', ['artifact-receipt-v1', 'artifact-receipt-v1'], False, 'Unsupported compatibility declaration.'),
     ('enforced', 'artifact-receipt-v1', False, 'Unsupported compatibility declaration.'),
     ('enforced', [1], False, 'Unsupported compatibility declaration.'),
     ('enforced', ['artifact-receipt-v1', 1], False, 'Unsupported compatibility declaration.'),
