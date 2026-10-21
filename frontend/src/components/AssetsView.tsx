@@ -363,6 +363,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     anchorPath: string | null; moved: boolean; cellPath: string | null; onCell: boolean;
     hitPaths?: string[]; // 끌어 고른(마퀴) 마지막 결과 — 끝낼 때 초점을 여기에 맞춘다
     applied?: boolean; // 누를 때 이미 골랐다 — 뗄 때 다시 고르지 않는다(Ctrl 이 두 번 뒤집히지 않게)
+    madePaths?: string[]; // 누름이 만든 선택 — 그사이 사용자가 바꿨으면 놓친 끝에서 되돌리지 않는다(Codex 검토 2)
   } | null>(null);
   const filesRef = useRef(files);
   filesRef.current = files;
@@ -425,8 +426,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     setSelected(hits);
   }, []);
 
-  // 누른 파일 고르기 — 고르지 않은 파일은 누를 때(onGridMouseDown), 이미 고른 파일은 움직이지 않고 뗄 때(onDragUp) 부른다.
-  const pickCell = useCallback((d: NonNullable<typeof dragRef.current>) => {
+  // 누른 파일 고르기 — 고르지 않은 파일은 누를 때(onGridMouseDown), 이미 고른 파일은 움직이지 않고 뗄 때(onDragUp) 부른다. 만든 선택을 돌려준다.
+  const pickCell = useCallback((d: NonNullable<typeof dragRef.current>): Set<number> | undefined => {
     const cellIdx = indexOfPath(filesRef.current, d.cellPath);
     const anchor = indexOfPath(filesRef.current, d.anchorPath);
     if (cellIdx < 0) return; // 누른 파일이 그사이 목록에서 사라졌다 — 그 자리에 온 다른 파일을 고르지 않는다
@@ -436,18 +437,20 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       const r = new Set<number>();
       for (let i = lo; i <= hi; i++) r.add(i);
       setSelected(r);
-    } else if (d.additive) {
-      setFocusIdx(cellIdx);
-      setSelected((prev) => {
-        const n = new Set(prev);
-        if (n.has(cellIdx)) n.delete(cellIdx);
-        else n.add(cellIdx);
-        return n;
-      });
-    } else {
-      setFocusIdx(cellIdx);
-      setSelected(new Set([cellIdx]));
+      return r;
     }
+    if (d.additive) {
+      setFocusIdx(cellIdx);
+      const n = new Set(selectedRef.current);
+      if (n.has(cellIdx)) n.delete(cellIdx);
+      else n.add(cellIdx);
+      setSelected(n);
+      return n;
+    }
+    setFocusIdx(cellIdx);
+    const one = new Set([cellIdx]);
+    setSelected(one);
+    return one;
   }, []);
 
   const onDragUp = useCallback((e?: Event) => {
@@ -465,8 +468,10 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       setFocusIdx(filesRef.current.reduce((last, file, idx) => (picked.has(file.path) ? idx : last), -1));
     }
     if (dragLost(e)) {
-      // 놓친 끝·Esc 는 클릭이 아니다 — 누를 때 고른 것을 누르기 전으로 되돌린다(번호는 지금 목록에서 다시 찾는다)
-      if (d.applied) {
+      // 놓친 끝·Esc 는 클릭이 아니다 — 누를 때 고른 것을 누르기 전으로 되돌린다(번호는 지금 목록에서 다시 찾는다). 지금 선택이 그 누름이
+      //  만든 것 그대로일 때만 — 누르는 사이 Ctrl+A·방향키로 바꾼 선택은 덮지 않는다(Codex 검토 2 R1).
+      const now = new Set([...selectedRef.current].map((idx) => filesRef.current[idx]?.path));
+      if (d.applied && d.madePaths && d.madePaths.length === now.size && d.madePaths.every((path) => now.has(path))) {
         setSelected(new Set(filesRef.current.flatMap((file, idx) => (d.basePaths.has(file.path) ? [idx] : []))));
         setFocusIdx(indexOfPath(filesRef.current, d.anchorPath));
       }
@@ -609,7 +614,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     //  버려졌다(Jay 10-22). 이미 고른 파일은 뗄 때 정한다 — 누를 때 줄이면 여러 장 끌어 내보내기가 깨진다.
     if (cellIdx >= 0 && !selected.has(cellIdx)) {
       dragRef.current.applied = true;
-      pickCell(dragRef.current);
+      const made = pickCell(dragRef.current);
+      dragRef.current.madePaths = made ? [...made].map(pathAt).filter((path): path is string => path !== null) : [];
     }
   };
 

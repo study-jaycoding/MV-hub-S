@@ -414,7 +414,10 @@ export function ThumbnailGrid(props: Props) {
     x: number; y: number; base: Set<string>; additive: boolean; range: boolean;
     anchor: string | null; moved: boolean; cellId: string | null;
     applied?: boolean; // 누를 때 이미 골랐다 — 뗄 때 다시 고르지 않는다(Ctrl 이 두 번 뒤집히지 않게)
-    focus?: string | null; // 누르기 전의 초점 카드 — 누를 때 고른 것을 놓친 끝에서 되돌릴 때 쓴다
+    // 놓친 끝에서 되돌릴 때 쓰는 누르기 전의 초점·Shift 기준과, 누름이 만든 선택(그사이 사용자가 바꿨으면 되돌리지 않는다 — Codex 검토 2)
+    focus?: string | null;
+    rangeAnchor?: { anchor: string; ids: ReadonlySet<string> } | null;
+    made?: ReadonlySet<string>;
   } | null>(null);
 
   // 대상이 실제로 목록에서 빠진 경우만 포커스를 해제한다.
@@ -504,7 +507,8 @@ export function ThumbnailGrid(props: Props) {
   );
 
   // 누른 카드 고르기(+ 방향키 앵커 갱신) — 고르지 않은 카드는 누를 때(onGridMouseDown), 이미 고른 카드는 움직이지 않고 뗄 때(onDragUp) 부른다.
-  const pickCell = useCallback((d: NonNullable<typeof dragRef.current>) => {
+  //  만든 선택을 돌려준다.
+  const pickCell = useCallback((d: NonNullable<typeof dragRef.current>): Set<string> | undefined => {
     if (!d.cellId) return;
     const gens = opsRef.current.generations;
     const clickedIdx = gens.findIndex((g) => g.id === d.cellId);
@@ -515,17 +519,21 @@ export function ThumbnailGrid(props: Props) {
       const range = new Set(gens.slice(lo, hi + 1).map((g) => g.id));
       opsRef.current.onSelectedChange(range);
       rangeAnchorRef.current = { anchor: gens[anchorIdx].id, ids: range }; // 위 호출이 지운 뒤에 적는다 — 다음 Shift 클릭의 기준
-    } else if (d.additive) {
+      return range;
+    }
+    if (d.additive) {
       setFocusedGenerationId(d.cellId);
       const n = new Set(d.base);
       if (n.has(d.cellId)) n.delete(d.cellId);
       else n.add(d.cellId);
       keepFocusRef.current = n.size === 0;
       opsRef.current.onSelectedChange(n);
-    } else {
-      setFocusedGenerationId(d.cellId);
-      opsRef.current.onSelectedChange(new Set([d.cellId]));
+      return n;
     }
+    setFocusedGenerationId(d.cellId);
+    const one = new Set([d.cellId]);
+    opsRef.current.onSelectedChange(one);
+    return one;
   }, []);
 
   const onDragUp = useCallback((e?: Event) => {
@@ -544,10 +552,13 @@ export function ThumbnailGrid(props: Props) {
     // 마퀴로 고른 뒤에는 초점 카드를 비운다 — 먼저 누른 카드가 남아 있으면 방향키·Shift 클릭이 (고르지도 않은) 그 카드에서 출발했다
     //  (최종 재실측). 비우면 '고른 것 중 마지막 카드'가 기준이 된다.
     if (d && d.moved && !d.cellId && !left) setFocusedGenerationId(null);
-    // 놓친 끝(누른 채 창을 떠남·단추를 뗀 채 온 움직임)은 클릭이 아니다 — 누를 때 고른 것을 누르기 전으로 되돌린다(조작 규칙: 클릭으로 확정하지 않는다)
-    if (d?.applied && left) {
+    // 놓친 끝(누른 채 창을 떠남·단추를 뗀 채 온 움직임)은 클릭이 아니다 — 누를 때 고른 것을 누르기 전으로 되돌린다(조작 규칙: 클릭으로 확정하지 않는다).
+    //  지금 선택이 그 누름이 만든 것 그대로일 때만 — 누르는 사이 Ctrl+A·방향키·Esc 로 바꾼 선택은 덮지 않는다(Codex 검토 2 R1). Shift 기준도 돌린다(R2).
+    const current = startRef.current.selectedIds;
+    if (d?.applied && left && d.made && d.made.size === current.size && [...d.made].every((id) => current.has(id))) {
       setFocusedGenerationId(d.focus ?? null);
       opsRef.current.onSelectedChange(new Set(d.base));
+      rangeAnchorRef.current = d.rangeAnchor ?? null; // 위 호출이 지운 뒤에 적는다
     }
     if (!d || d.moved || left) return;
     // 드래그 없이 클릭만 → 선택 처리(누를 때 이미 고른 카드는 그대로)
@@ -753,7 +764,8 @@ export function ThumbnailGrid(props: Props) {
     if (d?.cellId && !d.base.has(d.cellId)) {
       d.applied = true;
       d.focus = startRef.current.focusedGenerationId;
-      pickCell(d);
+      d.rangeAnchor = rangeAnchorRef.current;
+      d.made = pickCell(d);
     }
   };
 

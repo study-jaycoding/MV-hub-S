@@ -120,6 +120,12 @@ it("빠른 클릭 — 고르지 않은 파일은 누르는 순간 골라진다(�
   expect([picked(), focusedName()]).toEqual([["a.png"], "a.png"]);
   await act(async () => { window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0 })); });
   expect(picked()).toEqual(["a.png"]);
+  // Codex 검토 2 R1: 누르는 사이 사용자가 바꾼 선택(Ctrl+A)은 창을 떠나도 되돌리지 않는다
+  await press("c.png");
+  await key({ key: "a", ctrlKey: true });
+  expect(picked()).toEqual(["a.png", "b.png", "c.png", "d.png"]);
+  await act(async () => { window.dispatchEvent(new Event("blur")); });
+  expect(picked()).toEqual(["a.png", "b.png", "c.png", "d.png"]); // 전엔 a.png 로 되돌아갔다
 });
 
 it("Esc preserves the selected files like Explorer", async () => {
@@ -288,7 +294,7 @@ it("파일을 누르고 있는 사이 그 파일이 목록에서 사라지면, �
   await act(async () => { cell("b.png").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientX: 105, clientY: 5 })); });
   await setFiles(["a.png", "c.png", "d.png"]);
   await act(async () => { window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0 })); });
-  expect(picked()).toEqual(["a.png"]);
+  expect([picked(), focusedName()]).toEqual([["a.png"], null]); // 초점이던 b 가 사라졌다 — 그 자리에 온 파일로 가지 않고 내려놓는다(Codex 검토 2)
 });
 
 // Codex 코드 리뷰: 선택·초점을 새 목록에 맞추는 일이 '그린 뒤'에 돌면, 새 목록은 그려졌는데 선택·초점은 아직 옛 번호인 한 박자가 생긴다 —

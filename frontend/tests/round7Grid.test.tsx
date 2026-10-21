@@ -160,6 +160,31 @@ it("빠른 클릭 — 고르지 않은 카드는 누르는 순간 골라진다(�
   expect(chosen()).toEqual(["g2"]);
 });
 
+// Codex 검토 2(10-22): 누를 때 고른 것을 놓친 끝에서 되돌리면 — R1 누르는 사이 바꾼 선택을 덮었다 · R2 Shift 범위 기준을 잃었다.
+it("빠른 클릭 — 놓친 끝의 되돌리기는 이번 누름이 만든 선택일 때만, Shift 기준까지 돌아온다", () => {
+  mount();
+  flushFrames();
+  click("g1");
+  mouse("mousedown", cell("g2")); // 고르지 않은 카드 — 누르는 순간 g2
+  expect(chosen()).toEqual(["g2"]);
+  key("a", grid(), { ctrlKey: true }); // 누른 채 Ctrl+A — 사용자가 선택을 바꿨다
+  expect(chosen()).toEqual(generations.map((g) => g.id));
+  act(() => { window.dispatchEvent(new Event("blur")); }); // 창을 떠났다(놓친 끝)
+  expect(chosen()).toEqual(generations.map((g) => g.id)); // R1 — 전엔 g1 로 되돌아갔다
+  mouse("mouseup", window);
+
+  key("Escape", grid()); // 선택·초점 카드를 비운다(앞 누름이 g2 에 초점을 남겼다)
+  act(() => select.setSelected(new Set(["g2", "g3"]))); // 초점 카드 없이 골랐다
+  click("g5", { shiftKey: true }); // 기준 g3 → g3·g4·g5
+  expect(chosen()).toEqual(["g3", "g4", "g5"]);
+  mouse("mousedown", cell("g1")); // 고르지 않은 g1 을 누른 채
+  act(() => { window.dispatchEvent(new Event("blur")); }); // 창을 떠났다 — 누르기 전으로
+  mouse("mouseup", window);
+  expect(chosen()).toEqual(["g3", "g4", "g5"]);
+  click("g2", { shiftKey: true }); // R2 — 기준은 그대로 g3(전엔 g5 로 바뀌어 g2~g5)
+  expect(chosen()).toEqual(["g2", "g3"]);
+});
+
 it("R43-a 선택이 이미 빈 채로 격자 밖을 누르면 Space 로 남긴 초점 카드도 지운다 — 방향키·Shift 클릭의 기준 자리만 남는다", () => {
   mount();
   flushFrames();
