@@ -111,6 +111,7 @@ interface Props {
   // created: 방금 만든 pending 생성본들 — 즉시 '대기' 카드로 띄우게(optimistic). 없으면 그냥 리로드.
   // dragParentId: 카드를 드래그해 불러와 만든 경우 그 원본 gen id → 자동 히스토리(원본→파생) 부모.
   onCreated: (created?: Generation[], dragParentId?: string | null) => void;
+  reload: () => unknown;
   armedAutoTags: string[]; // 무장된 자동 태그 — 생성 시 결과물에 자동 적용(별도 네임스페이스)
   // 무장된 폴더 — 그 프로젝트로 생성 시 folder_path 로 자동 라벨링(전역변수식). 프로젝트 불일치면 미적용.
   armedFolder?: { projectId: string; path: string } | null;
@@ -184,6 +185,7 @@ export interface SpotlightPromptHandle {
 
 export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function SpotlightPrompt({
   onCreated,
+  reload,
   armedAutoTags,
   armedFolder,
   topSlot,
@@ -1289,6 +1291,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     model,
     modelBlockedMessage,
     onCreated,
+    reload,
     canvasTarget,
     prepareCanvasGeneration,
     confirmCanvasGeneration,

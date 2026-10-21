@@ -2873,6 +2873,7 @@ export default function App() {
           topSlot={promptVisible && !listPeek ? selectionBar : undefined}
           onErrorChange={setPromptError}
           onCreated={onPromptCreated}
+          reload={reload}
         />
       </div>
       {grade.pending && (

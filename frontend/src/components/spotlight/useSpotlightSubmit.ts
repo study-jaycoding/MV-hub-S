@@ -45,6 +45,7 @@ interface UseSpotlightSubmitOptions {
   // 그룹 사용 모델 가드 문구(modelPolicyCore.submitBlockMessage) — 값이 있으면 pending 기록·업로드 전에 막는다.
   modelBlockedMessage?: string | null;
   onCreated: (created?: Generation[], dragParentId?: string | null) => void;
+  reload: () => unknown;
   canvasTarget?: CanvasGenerationTarget | null;
   // ★비동기다 — 생성 요청보다 '어느 카드 것인지' 표식이 **먼저 저장돼야** 한다. 저장이 IndexedDB 로
   //  옮겨가며 기다리는 일이 됐으므로, 호출부는 반드시 await 한 뒤 제출한다.
@@ -90,6 +91,7 @@ export function useSpotlightSubmit({
   model,
   modelBlockedMessage = null,
   onCreated,
+  reload,
   canvasTarget,
   prepareCanvasGeneration,
   confirmCanvasGeneration,
@@ -248,6 +250,7 @@ export function useSpotlightSubmit({
         if (canvasLinks.length) onCanvasBatchCreated?.(created);
         else onCreated(created, dragParent);
       }
+      if (!inCompose && !created.length && unknown) void reload();
 
       if (created.length && displayPrompt && promptContextRef.current === submittedContext) {
         const historyTray: ChipRef[] = trayRefs.map(({ uid: _uid, ...ref }) => ref);
@@ -279,8 +282,10 @@ export function useSpotlightSubmit({
       }
       setBusy(false);
       const notices: string[] = [];
-      if (failed) notices.push(`${batch}장 중 ${failed}장 제출 실패${created.length ? " — 성공한 요청은 계속 진행됩니다." : "."}`);
-      if (unknown) notices.push(`${unknown}장 요청의 접수 여부를 확인하지 못했습니다. 다시 제출하지 말고 생성 목록에서 기존 요청을 확인하세요.`);
+      if (failed) notices.push(t(created.length
+        ? "{total}장 중 {failed}장 제출 실패 — 성공한 요청은 계속 진행됩니다."
+        : "{total}장 중 {failed}장 제출 실패.").replace("{total}", String(batch)).replace("{failed}", String(failed)));
+      if (unknown) notices.push(t("{count}장 요청의 접수 여부를 확인하지 못했습니다. 다시 제출하지 말고 생성 목록에서 기존 요청을 확인하세요.").replace("{count}", String(unknown)));
       if (applyFailed) notices.push(t("접수된 요청 중 {count}장 화면 반영 실패 — 다시 제출하지 마세요. 재시작 시 자동 복구됩니다.").replace("{count}", String(applyFailed)));
       if (notices.length && promptContextRef.current === submittedContext) setError(notices.join("\n"));
     } catch (error) {
@@ -305,6 +310,7 @@ export function useSpotlightSubmit({
     model,
     notifyPromptChanged,
     onCreated,
+    reload,
     onHistorySaved,
     onCanvasBatchCreated,
     prepareCanvasGeneration,
