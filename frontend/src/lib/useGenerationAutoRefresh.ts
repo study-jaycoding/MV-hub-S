@@ -50,7 +50,8 @@ export function useGenerationAutoRefresh({
       // 창이 안 보이면 쉰다(복귀 시 아래 visibilitychange 가 즉시 1회 갱신).
       if (inflightRef.current || pausedRef.current || document.visibilityState === "hidden") return;
       const now = Date.now();
-      if (now - lastRefreshRef.current < ms) return;
+      // 직전 복귀 조회는 중복을 막되, 주기보다 수 ms 일찍 온 틱은 버리지 않는다.
+      if (now - lastRefreshRef.current < ms / 2) return;
       inflightRef.current = true;
       lastRefreshRef.current = now;
       void Promise.resolve(reload(true, true, "check")).finally(() => {
