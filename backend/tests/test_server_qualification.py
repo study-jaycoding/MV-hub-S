@@ -30,16 +30,23 @@ GIT = shutil.which('git')
 REAL_RUN = subprocess.run
 
 
-@pytest.fixture(autouse=True)
-def cli_fixture(tmp_path, monkeypatch):
-    cli = tmp_path / 'fixture-cli'
+def write_cli(cli, version='1.2.3'):
     package = cli / 'node_modules/@higgsfield/cli'
     (package / 'bin').mkdir(parents=True)
     (cli / 'higgsfield.cmd').write_bytes(b'fixture shim never executed')
-    (cli / 'npm.cmd').write_bytes(b'fixture npm never executed')
+    (cli / 'higgsfield.ps1').write_bytes(b'fixture PowerShell shim never executed')
     (cli / 'node.exe').write_bytes(b'fixture node never executed')
-    (package / 'package.json').write_bytes(json_bytes({'name': '@higgsfield/cli', 'version': '1.2.3'}))
+    (package / 'package.json').write_bytes(json_bytes({'name': '@higgsfield/cli', 'version': version}))
     (package / 'bin/higgsfield.js').write_bytes(b'fixture js never executed')
+    (package / 'vendor').mkdir()
+    (package / 'vendor/hf.exe').write_bytes(b'fixture native CLI never executed')
+
+
+@pytest.fixture(autouse=True)
+def cli_fixture(tmp_path, monkeypatch):
+    cli = tmp_path / 'fixture-cli'
+    write_cli(cli)
+    (cli / 'npm.cmd').write_bytes(b'fixture npm never executed')
     monkeypatch.setenv('PATH', str(cli))
     monkeypatch.delenv('NODE_OPTIONS', raising=False)
     monkeypatch.delenv('NODE_PATH', raising=False)
@@ -68,6 +75,7 @@ def seed_stage(root):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b'fixture never executed ' + name.encode())
     (stage / 'hf_cli_version.txt').write_bytes(b'1.2.3\n')
+    write_cli(stage / 'runtime/higgsfield')
     write_venv_config(stage)
     hashes = {name: activation.digest(stage / name) for name in inputs}
     source = {'commit': 'a' * 40, 'dirty': False, 'sha256': 'b' * 64,
@@ -282,14 +290,17 @@ def test_receipt_tampering_is_rejected_on_supervisor_recheck(tmp_path):
         activation.verify_qualification(target,tmp_path/'logs/server-stages')
 
 
-@pytest.mark.parametrize('damage', ['shim', 'node', 'javascript', 'package', 'probe', 'helper', 'activation', 'builder', 'venv', 'venv_config'])
+@pytest.mark.parametrize('damage', ['shim', 'powershell_shim', 'node', 'javascript', 'package', 'binary', 'probe', 'helper', 'activation', 'builder', 'venv', 'venv_config'])
 def test_supervisor_rechecks_actual_cli_and_verifier_bytes_before_stopping(tmp_path, monkeypatch, cli_fixture, damage):
     stage,target,value,raw,verifier=seed_stage(tmp_path)
+    cli_fixture=stage/'runtime/higgsfield'
     target=builder.qualify_stage(tmp_path,stage,target,raw,verifier,probe_run=fake_probe)
     manager=activation.ServerActivation(tmp_path,environ=dict(os.environ))
     paths={'shim':cli_fixture/'higgsfield.cmd', 'node':cli_fixture/'node.exe',
+           'powershell_shim':cli_fixture/'higgsfield.ps1',
            'javascript':cli_fixture/'node_modules/@higgsfield/cli/bin/higgsfield.js',
            'package':cli_fixture/'node_modules/@higgsfield/cli/package.json',
+           'binary':cli_fixture/'node_modules/@higgsfield/cli/vendor/hf.exe',
            'probe':tmp_path/'tools/qualify_release_artifact.py',
            'helper':tmp_path/'backend/app/services/isolated_env.py',
            'activation':tmp_path/'tools/server_activation.py', 'builder':tmp_path/'tools/server_release_update.py',
@@ -302,14 +313,14 @@ def test_supervisor_rechecks_actual_cli_and_verifier_bytes_before_stopping(tmp_p
     assert not manager.journal_path.exists()
 
 
-def test_cli_environment_selected_by_supervisor_must_match(tmp_path, monkeypatch, cli_fixture):
+def test_cli_environment_selected_by_supervisor_ignores_user_path(tmp_path, monkeypatch, cli_fixture):
     stage,target,value,raw,verifier=seed_stage(tmp_path)
     target=builder.qualify_stage(tmp_path,stage,target,raw,verifier,probe_run=fake_probe)
     other=tmp_path/'other-cli'
     import shutil
     shutil.copytree(cli_fixture,other)
-    with pytest.raises(ValueError,match='server_cli_entry_changed'):
-        activation.verify_qualification(target,tmp_path/'logs/server-stages',environ={**os.environ,'PATH':str(other)})
+    proof=activation.verify_qualification(target,tmp_path/'logs/server-stages',environ={**os.environ,'PATH':str(other)})
+    assert proof['server_cli']['files']['shim']['path']==str(stage/'runtime/higgsfield/higgsfield.cmd')
 
 
 def test_different_supervisor_base_python_is_rejected_before_journal(tmp_path, monkeypatch):
@@ -350,20 +361,17 @@ def test_venv_base_configuration_is_not_an_unchecked_hint(tmp_path,damage):
     with pytest.raises(ValueError): activation.stage_python_base(stage)
 
 
-@pytest.mark.parametrize('layout', ['sibling', 'path', 'hf'])
+@pytest.mark.parametrize('layout', ['sibling', 'hf'])
 def test_read_only_cli_resolution_matches_runtime_node_precedence(tmp_path, monkeypatch, cli_fixture, layout):
     stage,target,value,raw,verifier=seed_stage(tmp_path)
+    cli_fixture=stage/'runtime/higgsfield'
+    monkeypatch.setenv('PATH',str(cli_fixture))
     if layout=='hf':
         (cli_fixture/'higgsfield.cmd').rename(cli_fixture/'hf.cmd')
         expected=cli_fixture/'node.exe'
     else:
         (cli_fixture/'node.exe').unlink()
-        if layout=='sibling':
-            expected=cli_fixture.parent/'node/node.exe'
-        else:
-            folder=tmp_path/'path-node';folder.mkdir()
-            monkeypatch.setenv('PATH',str(cli_fixture)+os.pathsep+str(folder))
-            expected=folder/'node.exe'
+        expected=cli_fixture.parent/'node/node.exe'
         expected.parent.mkdir(parents=True,exist_ok=True)
         expected.write_bytes(b'fixture alternative node never executed')
     result=activation.inspect_server_cli(stage,tmp_path,os.environ)
@@ -379,9 +387,10 @@ def test_read_only_cli_resolution_matches_runtime_node_precedence(tmp_path, monk
     assert namespace['cli_argv']()==result['argv']
 
 
-@pytest.mark.parametrize('damage', ['version', 'node_options', 'node_path', 'relative_path', 'native', 'cwd_shadow'])
+@pytest.mark.parametrize('damage', ['version', 'node_options', 'node_path', 'relative_path', 'native', 'cwd_shadow', 'missing_shim', 'missing_node', 'missing_binary'])
 def test_unsupported_or_mismatched_cli_configuration_is_rejected(tmp_path, monkeypatch, cli_fixture, damage):
     stage,target,value,raw,verifier=seed_stage(tmp_path)
+    cli_fixture=stage/'runtime/higgsfield'
     env=dict(os.environ)
     if damage=='version': (stage/'hf_cli_version.txt').write_text('2.0.0')
     elif damage=='node_options': env['NODE_OPTIONS']='--require fixture'
@@ -390,17 +399,20 @@ def test_unsupported_or_mismatched_cli_configuration_is_rejected(tmp_path, monke
     elif damage=='native':
         (cli_fixture/'higgsfield.cmd').unlink()
         (cli_fixture/'higgsfield.exe').write_bytes(b'fixture native never executed')
+    elif damage=='missing_shim': (cli_fixture/'higgsfield.cmd').unlink()
+    elif damage=='missing_node': (cli_fixture/'node.exe').unlink()
+    elif damage=='missing_binary': (cli_fixture/'node_modules/@higgsfield/cli/vendor/hf.exe').unlink()
     else: (stage/'backend/higgsfield.cmd').write_bytes(b'shadow never executed')
     with pytest.raises(ValueError): activation.inspect_server_cli(stage,tmp_path,env)
 
 
-def prepare_fixture(root, monkeypatch):
+def prepare_fixture(root, monkeypatch, pin='1.2.3'):
     """Real coordinator, fake git/build and common probe subprocess, no executable runs."""
     inputs={name:b'fixture source '+name.encode() for name in
             ('backend/app/main.py','backend/serve.py','backend/schema.sql','backend/requirements.lock.txt',
              'frontend/package.json','frontend/package-lock.json','tools/predeploy_gate.ps1',
              'tools/validation_result.ps1','hf_cli_version.txt')}
-    inputs['hf_cli_version.txt']=b'1.2.3\n'
+    inputs['hf_cli_version.txt']=(pin+'\n').encode()
     inputs['release/compatibility.json']=json_bytes(compat())
     source={'commit':'a'*40,'dirty':False,'sha256':'b'*64,'file_count':len(inputs),
             'files':[{'path':n,'size':len(raw),'sha256':hashlib.sha256(raw).hexdigest(),'tracked':True}
@@ -437,10 +449,100 @@ def prepare_fixture(root, monkeypatch):
             (cwd/'node_modules').mkdir();(cwd/'node_modules/build-only.txt').write_bytes(b'build fixture')
         elif 'build' in command:
             (cwd/'dist').mkdir();(cwd/'dist/index.html').write_bytes(b'<div id="root"></div>')
+        elif '--prefix' in command:
+            assert command[-1]=='@higgsfield/cli@'+pin
+            cli_dir=Path(command[command.index('--prefix')+1])
+            write_cli(cli_dir, version=pin)
+            (cli_dir/'node.exe').unlink()  # npm installs the package and shims, not Node.
         if env is not None:
             assert 'CONTENT_HUB_AUTH_SECRET' not in env
             assert Path(env['CONTENT_HUB_DB']).is_relative_to(root/'logs')
     return receipt_path,verifier,run,calls
+
+
+@pytest.mark.parametrize('layout', ['sibling', 'path', 'missing'])
+def test_prepare_copies_npm_node_into_stage(tmp_path, monkeypatch, cli_fixture, layout):
+    receipt,verifier,run,calls=prepare_fixture(tmp_path,monkeypatch)
+    path_dir=tmp_path/'path-node';path_dir.mkdir()
+    path_node=path_dir/'node.exe'
+    if layout!='missing': path_node.write_bytes(b'fixture PATH node never executed')
+    monkeypatch.setenv('PATH',str(cli_fixture)+os.pathsep+str(path_dir))
+    if layout!='sibling': (cli_fixture/'node.exe').unlink()
+    expected=cli_fixture/'node.exe' if layout=='sibling' else path_node
+    def install(command,**kwargs):
+        if '--prefix' in command:
+            assert Path(command[command.index('--prefix')+1]).is_dir()
+            assert Path(shutil.which('node.exe',path=kwargs['env']['PATH']))==expected
+        return run(command,**kwargs)
+    if layout=='missing':
+        with pytest.raises(ValueError,match='node_not_found'):
+            builder.prepare(tmp_path,source_receipt=receipt,verification_python=verifier,
+                            run=install,probe_run=fake_probe)
+        assert not any('--prefix' in c for c in calls)
+        assert not (tmp_path/'logs/server-update-request.json').exists()
+        return
+    builder.prepare(tmp_path,source_receipt=receipt,verification_python=verifier,
+                    run=install,probe_run=fake_probe)
+    target=json.loads((tmp_path/'logs/server-update-request.json').read_bytes())['target']
+    node=Path(target['path'])/'runtime/higgsfield/node.exe'
+    assert node.read_bytes()==expected.read_bytes()
+    proof=activation.verify_qualification(target,tmp_path/'logs/server-stages')
+    assert proof['server_cli']['files']['node']=={'path':str(node),'sha256':activation.digest(expected)}
+
+
+@pytest.mark.parametrize('old_cli', ['missing', '1.1.26'])
+def test_post_1358_next_stage_prepares_pinned_cli_for_admin_and_system(tmp_path, monkeypatch, cli_fixture, old_cli):
+    receipt,verifier,run,calls=prepare_fixture(tmp_path,monkeypatch,pin='1.2.2')
+    if old_cli=='missing':
+        (cli_fixture/'higgsfield.cmd').unlink()
+    else:
+        (cli_fixture/'node_modules/@higgsfield/cli/package.json').write_bytes(
+            json_bytes({'name':'@higgsfield/cli','version':old_cli}))
+    old_package=(cli_fixture/'node_modules/@higgsfield/cli/package.json').read_bytes()
+    # The first git transition left no stage pointer and did not update the user's CLI.
+    (tmp_path/'VERSION.txt').write_text('2026.10.16-1358')
+    builder.prepare(tmp_path,source_receipt=receipt,verification_python=verifier,run=run,probe_run=fake_probe)
+    target=json.loads((tmp_path/'logs/server-update-request.json').read_bytes())['target']
+    stage=Path(target['path'])
+    system_env={**os.environ,'PATH':str(tmp_path/'system-only')}
+    proof=activation.verify_qualification(target,tmp_path/'logs/server-stages',environ=system_env)
+    assert proof['server_cli']['version']=='1.2.2'
+    assert proof['server_cli']['files']['shim']['path']==str(stage/'runtime/higgsfield/higgsfield.cmd')
+    assert any(c[-1]=='@higgsfield/cli@1.2.2' and '--prefix' in c and '--global' in c
+               and '--ignore-scripts=false' in c for c in calls)
+    assert (cli_fixture/'node_modules/@higgsfield/cli/package.json').read_bytes()==old_package
+    popen=Mock();monkeypatch.setattr(activation.subprocess,'Popen',popen)
+    manager=activation.ServerActivation(tmp_path,environ=system_env)
+    manager.spawn(target)
+    launched_env=popen.call_args.kwargs['env']
+    assert activation.inspect_server_cli(stage,tmp_path,launched_env)==proof['server_cli']
+    assert Path(shutil.which('higgsfield',path=launched_env['PATH'])).resolve()==stage/'runtime/higgsfield/higgsfield.cmd'
+    assert proof['server_cli']['files']['node']['path']==str(stage/'runtime/higgsfield/node.exe')
+
+
+def test_failed_stage_cli_install_preserves_running_source_and_never_requests_activation(tmp_path, monkeypatch):
+    receipt,verifier,run,calls=prepare_fixture(tmp_path,monkeypatch)
+    sentinel=tmp_path/'backend/serve.py'
+    sentinel.write_bytes(b'legacy running source')
+    def fail_install(command,**kwargs):
+        if '--prefix' in command:
+            raise RuntimeError('fixture CLI install failed')
+        return run(command,**kwargs)
+    with pytest.raises(RuntimeError,match='fixture CLI install failed'):
+        builder.prepare(tmp_path,source_receipt=receipt,verification_python=verifier,
+                        run=fail_install,probe_run=fake_probe)
+    assert sentinel.read_bytes()==b'legacy running source'
+    assert not (tmp_path/'logs/server-update-request.json').exists()
+    assert not (tmp_path/'logs/server-current.json').exists()
+
+
+@pytest.mark.parametrize('pin', ['latest', '1.2.2 & echo unsafe'])
+def test_invalid_stage_cli_pin_is_rejected_before_npm_install(tmp_path, monkeypatch, pin):
+    receipt,verifier,run,calls=prepare_fixture(tmp_path,monkeypatch,pin=pin)
+    with pytest.raises(ValueError,match='server_cli_version_invalid'):
+        builder.prepare(tmp_path,source_receipt=receipt,verification_python=verifier,run=run,probe_run=fake_probe)
+    assert not any('--prefix' in c for c in calls)
+    assert not (tmp_path/'logs/server-update-request.json').exists()
 
 
 def test_complete_prepare_request_and_supervisor_verified_path(tmp_path, monkeypatch):
@@ -571,6 +673,12 @@ def real_prepare_fixture(tmp_path, monkeypatch):
         elif 'build' in command:
             (cwd / 'dist').mkdir()
             (cwd / 'dist/index.html').write_bytes(b'fixture')
+        elif '--prefix' in command:
+            pin=(cwd/'hf_cli_version.txt').read_text(encoding='utf-8-sig').strip()
+            assert command[-1]=='@higgsfield/cli@'+pin
+            cli_dir=Path(command[command.index('--prefix')+1])
+            write_cli(cli_dir, version=pin)
+            (cli_dir/'node.exe').unlink()  # Node is copied separately by prepare.
 
     return root, selected, checkout, declared, receipt, verifier, run, calls, git
 

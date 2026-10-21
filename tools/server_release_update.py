@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -201,7 +202,24 @@ def prepare(root: Path, *, source_receipt: Path, verification_python: Path,
         npm = shutil.which('npm.cmd')
         if not npm:
             raise ValueError('npm_not_found')
-        env['PATH'] = str(Path(npm).parent) + os.pathsep + env['PATH']
+        pin = (stage / 'hf_cli_version.txt').read_text(encoding='utf-8-sig').strip()
+        if not re.fullmatch(r'\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?', pin):
+            raise ValueError('server_cli_version_invalid')
+        # npm.cmd prefers its sibling Node, then falls back to PATH.
+        node = Path(npm).parent / 'node.exe'
+        if not node.is_file():
+            found = shutil.which('node.exe')
+            if not found:
+                raise ValueError('node_not_found')
+            node = Path(found)
+        node = local_child(node, node.parent)
+        env['PATH'] = os.pathsep.join((str(Path(npm).parent), str(node.parent), env['PATH']))
+        cli_dir = stage / 'runtime/higgsfield'
+        cli_dir.mkdir(parents=True, exist_ok=True)
+        # The CLI's postinstall downloads its pinned native binary into the package.
+        run([npm, 'install', '--global', '--prefix', str(cli_dir), '--ignore-scripts=false',
+             '--no-audit', '--no-fund', '@higgsfield/cli@' + pin], cwd=stage, log=log, env=env)
+        shutil.copyfile(node, cli_dir / 'node.exe')
         run([npm, 'ci', '--include=dev', '--no-audit', '--no-fund'], cwd=stage / 'frontend', log=log, env=env)
         run([npm, 'run', 'build'], cwd=stage / 'frontend', log=log, env=env)
         if not all((stage / name).is_file() for name in ('frontend/dist/index.html', 'backend/schema.sql', 'backend/serve.py', 'hf_cli_version.txt')) or not python.is_file():
