@@ -101,7 +101,8 @@ def validate_source_receipt(value, commit, inputs):
 def server_cli_environment(stage, env):
     # Bind qualification and the SYSTEM child to this stage, not the admin's npm profile.
     cli_dir = str(stage / 'runtime/higgsfield')
-    return {**env, 'PATH': os.pathsep.join(p for p in (cli_dir, env.get('PATH', '')) if p)}
+    # Empty PATH entries search cwd; remove them from both inspection and the child.
+    return {**env, 'PATH': os.pathsep.join(p for p in (cli_dir, *env.get('PATH', '').split(os.pathsep)) if p)}
 
 
 def inspect_server_cli(stage, server_root, env):

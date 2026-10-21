@@ -16,7 +16,8 @@ SCENARIOS = ('success', 'restart_failed', 'ready_nonce_mismatch', 'unknown_file'
              'existing_db', 'external_data', 'receipt_missing', 'receipt_wrong_artifact',
              'zip_tamper', 'capability_unknown', 'existing_helper', 'stage_failed',
              'late_data', 'bootstrap_tamper', 'contract_missing', 'receipt_reference_missing',
-             'worker_receipt_missing', 'existing_install')
+             'worker_receipt_missing', 'existing_install', 'existing_install_custom_port',
+             'existing_install_restart_failed')
 
 
 @pytest.mark.parametrize('scenario', SCENARIOS)
@@ -41,14 +42,17 @@ def test_empty_install_requires_qualified_bootstrap_and_verified_startup(tmp_pat
         files[name] = (ROOT / name).read_bytes()
     candidate, _ = qualified_package(feed, 'fixture1', rollout='enforced', payload=files,
                                     compatibility={'reader_protocol': 1, 'writer_protocol': 1}
-                                    if scenario == 'existing_install' else None)
-    if scenario == 'existing_install':
+                                    if scenario.startswith('existing_install') else None)
+    if scenario.startswith('existing_install'):
         target = case / 'target'
         for name, raw in files.items():
             path = target / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(raw)
         (target / 'VERSION.txt').write_text('old')
+        (target / 'MV_agent.bat').write_bytes(b'old launcher NEVER EXECUTE')
+        (target / 'build-manifest.json').write_bytes(c.json_bytes({
+            'compatibility': candidate['contract']['compatibility']}))
         for name in ('tools/install_db_probe.py', 'backend/app/schema_compat.py',
                      'backend/app/services/backup_verify.py', 'backend/app/services/sqlite_db.py',
                      'backend/app/services/trash_transfer.py'):
@@ -78,6 +82,10 @@ def test_empty_install_requires_qualified_bootstrap_and_verified_startup(tmp_pat
     (feed / 'latest.json').write_bytes(c.json_bytes(candidate))
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith(('CONTENT_HUB_', 'MVHUB_'))}
+    environment.pop('PORT', None)
+    environment['MVHUB_UPDATE_READY_URL'] = 'http://127.0.0.1:19998/api/ready'
+    if scenario == 'existing_install_custom_port':
+        environment['PORT'] = '18999'
     process = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-File',
                               str(HARNESS),
                               '-Tree', str(ROOT), '-CaseRoot', str(case), '-Scenario', scenario],
@@ -85,11 +93,29 @@ def test_empty_install_requires_qualified_bootstrap_and_verified_startup(tmp_pat
     assert process.returncode == 0, (process.stdout + process.stderr).decode(errors='replace')
     result = json.loads((case / 'result.json').read_text(encoding='utf-8-sig'))
     journal, trace = result['journal'], result['trace']
-    if scenario == 'existing_install':
+    assert result['restored_ready_url'] == environment['MVHUB_UPDATE_READY_URL'], result
+    if scenario.startswith('existing_install'):
+        assert journal['previous_version'] == 'old', result
+    if scenario == 'existing_install_restart_failed':
+        assert result['error'] == 'Verified package updater failed with exit code 1.', result
+        assert journal['phase'] == 'rolled_back' and not journal['fresh_install'], result
+        assert trace['undo_calls'] == trace['worker_calls'] == trace['process_starts'] == 1, result
+        assert trace['checkpoint_calls'] == 2 and trace['requested_restart'] == '1', result
+        assert (case / 'target/VERSION.txt').read_text().strip() == 'old'
+        assert (case / 'target/MV_agent.bat').read_bytes() == b'old launcher NEVER EXECUTE'
+        assert (case / 'target/backend/data/db/content_hub.db').read_bytes() == (case / 'synthetic.db').read_bytes()
+        # The BAT is not executed: verify its nonzero payload exit reaches [ERROR].
+        installer = (ROOT / 'release/MVHub_Install.bat').read_text(encoding='ascii')
+        failure = installer.split('if not "%INSTALL_EXIT%"=="0" (', 1)[1].split('\n)', 1)[0]
+        assert 'echo [ERROR] MV Hub install/update failed.' in failure
+        assert 'exit /b %INSTALL_EXIT%' in failure
+    elif scenario in ('existing_install', 'existing_install_custom_port'):
         assert result['error'] is None, result
         assert journal['phase'] == 'committed' and not journal['fresh_install'], result
         assert journal['db_mutation_possible'] and journal['business_writes_possible'], result
         assert trace['requested_restart'] == '1', result
+        port = environment.get('PORT', '8010')
+        assert trace['requested_ready_url'] == trace['observed_ready_url'] == f'http://127.0.0.1:{port}/api/ready', result
         assert trace['worker_calls'] == trace['process_starts'] == trace['checkpoint_calls'] == 1, result
         assert trace['drain_calls'] == trace['stops'] == 1 and trace['ready_calls'] > 0, result
         assert trace['last_state'] == 'complete' and trace['phase_at_complete'] == 'committed', result
@@ -102,6 +128,7 @@ def test_empty_install_requires_qualified_bootstrap_and_verified_startup(tmp_pat
         assert journal['database_set'] == 'verified_empty' and journal['db_mutation_possible'], result
         assert trace['worker_calls'] == trace['process_starts'] == 1 and trace['checkpoint_calls'] == 0, result
         assert trace['requested_restart'] == '1' and result['data_preserved'], result
+        assert trace['requested_ready_url'] == trace['observed_ready_url'] == 'http://127.0.0.1:8010/api/ready', result
         assert (case / 'target/backend/data/db/content_hub.db').read_bytes() == (case / 'synthetic.db').read_bytes()
         assert len(list((case / 'target/.install-journals').glob('*.json'))) == 1
     elif scenario in ('restart_failed', 'ready_nonce_mismatch', 'stage_failed', 'late_data', 'bootstrap_tamper'):
@@ -123,6 +150,15 @@ def test_empty_install_requires_qualified_bootstrap_and_verified_startup(tmp_pat
             assert (case / 'target/unknown.txt').read_text() == 'preserve'
         elif scenario != 'worker_receipt_missing':
             assert not result['target_exists'], result
+
+
+def test_installer_instructions_match_automatic_startup():
+    installer = (ROOT / 'release/MVHub_Install.bat').read_bytes().decode('ascii')
+    assert 'existing installations keep manual restart' not in installer
+    assert 'First and existing installations start MV Hub and verify readiness.' in installer
+    assert 'echo [done] MV Hub is installed and running.' in installer
+    assert 'echo        Run:' not in installer
+    assert 'To open it later:' in installer
 
 
 def test_installer_contract_rejects_legacy_db_and_windows_path_aliases(tmp_path):

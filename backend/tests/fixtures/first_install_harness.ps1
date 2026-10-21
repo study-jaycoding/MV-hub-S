@@ -17,6 +17,7 @@ $Latest=Get-Content (Join-Path $TempRoot 'latest.json') -Raw | ConvertFrom-Json
 $WorkerRaw=[IO.File]::ReadAllText((Join-Path $Tree 'update_release_worker.bat'))
 $WorkerFunctions=Get-FunctionText (Join-Path $Tree 'update_release_worker.bat')
 $WorkerFunctions=$WorkerFunctions.Replace('function Install-Package {','function Install-WorkerPackage {')
+$WorkerFunctions=$WorkerFunctions.Replace('function Undo-ComponentSwaps {','function Undo-RealComponentSwaps {')
 $Needle='[System.Diagnostics.Process]::Start($StartInfo)'
 if ([regex]::Matches($WorkerFunctions, [regex]::Escape($Needle)).Count -ne 2) { throw 'Process boundary changed.' }
 $WorkerFunctions=$WorkerFunctions.Replace($Needle,'(Invoke-FakeProcessStart $StartInfo)')
@@ -56,26 +57,33 @@ function Wait-WorkerDrain { $script:Trace.drain_calls++ }
 function Stop-MvHubProcesses { $script:Trace.stops++ }
 function Invoke-InstallCheckpoint {
     $script:Trace.checkpoint_calls++
-    if ($Scenario -ne 'existing_install') { throw 'Old runtime checkpoint must not run in a proven fresh install.' }
+    if (-not $Scenario.StartsWith('existing_install')) { throw 'Old runtime checkpoint must not run in a proven fresh install.' }
     return @{key='fixture';database_id='fixture-db';status='compatible';schema_version=0;minimum_reader_protocol=1;minimum_writer_protocol=1;components=@()}
 }
-function Undo-ComponentSwaps { $script:Trace.undo_calls++; throw 'No rollback allowed in this fresh harness.' }
+function Undo-ComponentSwaps {
+    param($Components)
+    $script:Trace.undo_calls++
+    if ($Scenario -ne 'existing_install_restart_failed') { throw 'No rollback allowed in this fresh harness.' }
+    Undo-RealComponentSwaps -Components $Components
+}
 function Start-Sleep {}
 function Get-Date { $script:Tick++; return ([DateTime]'2026-10-18T00:00:00Z').AddMinutes($script:Tick) }
 function Invoke-FakeProcessStart {
     param($StartInfo)
     $script:Trace.process_starts++
     if (-not $script:InstallJournal.db_mutation_possible -or $script:InstallJournal.phase -cne 'starting') { throw 'Missing durable startup intent' }
-    if ($Scenario -eq 'restart_failed') { throw 'injected process start failure' }
+    if ($Scenario -in @('restart_failed','existing_install_restart_failed')) { throw 'injected process start failure' }
     $Data=Join-Path $TargetDir 'backend\data\db'
     [IO.Directory]::CreateDirectory($Data)|Out-Null
-    if ($Scenario -ne 'existing_install') {
+    if (-not $Scenario.StartsWith('existing_install')) {
         [IO.File]::Copy((Join-Path $CaseRoot 'synthetic.db'),(Join-Path $Data 'content_hub.db'))
     }
     return [pscustomobject]@{Id=424242}
 }
 function Invoke-RestMethod {
+    param($Uri)
     $script:Trace.ready_calls++
+    $script:Trace.observed_ready_url=[string]$Uri
     $Nonce=if ($Scenario -eq 'ready_nonce_mismatch') {'wrong'} else {$script:InstallJournal.execution_nonce}
     return [pscustomobject]@{status='ready';runtime=[pscustomobject]@{execution_nonce=$Nonce;build_id=$script:InstallJournal.target.contract.build_id;role='worker';process_id=424242}}
 }
@@ -95,8 +103,14 @@ function Invoke-MockWorker {
     $ManifestName='latest.json';$ExpectSha256='';$ExpectVersion=''
     $RestartAfterInstall=$env:MVHUB_UPDATE_RESTART
     $script:Trace.requested_restart=$RestartAfterInstall
-    $ReadyUrl='http://127.0.0.1:18999/api/ready'
+    $ReadyUrl=$env:MVHUB_UPDATE_READY_URL
+    $script:Trace.requested_ready_url=$ReadyUrl
     $Latest=Read-ReleaseManifest
+    # Mirror the worker's main-body version read before creating the install journal.
+    $VersionPath=Join-Path $TargetDir 'VERSION.txt'
+    if (Test-Path -LiteralPath $VersionPath) {
+        $CurrentVersion=(Get-Content -LiteralPath $VersionPath -Raw).Trim()
+    }
     if ($Scenario -eq 'worker_receipt_missing') {
         $Latest.contract.validation_receipt=$null
         $ManifestName='candidate.json';$ExpectSha256=$Latest.sha256;$ExpectVersion=$Latest.version
@@ -107,6 +121,7 @@ function Invoke-MockWorker {
     } catch {
         $Failure=$_
         Finalize-FailedInstall
+        if ($Scenario -eq 'existing_install_restart_failed') { $global:LASTEXITCODE=1; return }
         throw $Failure
     }
     $global:LASTEXITCODE=0
@@ -130,6 +145,6 @@ $Failure=$null
 try {Install-Package -Latest $Latest -TempRoot $TempRoot} catch {$Failure=$_.Exception.Message; $Stack=$_.ScriptStackTrace}
 $Journal=$null
 if (Test-Path (Join-Path $TargetDir 'update-journal.json')) {$Journal=Get-Content (Join-Path $TargetDir 'update-journal.json') -Raw|ConvertFrom-Json}
-$Result=@{scenario=$Scenario;error=$Failure;stack=$Stack;trace=$script:Trace;journal=$Journal;target_exists=(Test-Path $TargetDir);data_preserved=(Test-Path (Join-Path $TargetDir 'backend\data\db\content_hub.db'))}
+$Result=@{scenario=$Scenario;error=$Failure;stack=$Stack;trace=$script:Trace;journal=$Journal;restored_ready_url=$env:MVHUB_UPDATE_READY_URL;target_exists=(Test-Path $TargetDir);data_preserved=(Test-Path (Join-Path $TargetDir 'backend\data\db\content_hub.db'))}
 $Result|ConvertTo-Json -Depth 24|Set-Content -LiteralPath (Join-Path $CaseRoot 'result.json') -Encoding UTF8
 if ($Failure) {Write-Host ('OBSERVED FAILURE: '+$Failure)}
