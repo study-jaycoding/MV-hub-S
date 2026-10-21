@@ -149,6 +149,7 @@ export class GenerationReadModel {
       const staleFields = fields ?? Object.keys(entry.value ?? {}) as GenerationField[];
       for (const field of staleFields) { entry.versions.set(field, sequence); entry.stale.add(field); }
       if (fields === undefined) entry.identityVersion = sequence;
+      this.entries.delete(id);
       this.entries.set(id, entry);
       this.evictedVersions.delete(id);
       this.trim();

@@ -107,14 +107,14 @@ it("[R4-1] real reconnect dispatch invalidates before real reload starts", async
   } finally { vi.useRealTimers(); }
 });
 
-it("[R4-2] prompt-created reload recovers from the following real local broadcast", async () => {
-  await mount();
+it.each(["my", "team"] as const)("[R5-3] prompt-created %s reload follows the real local broadcast without retrying", async (tab) => {
+  await mount({ query: { ...MAIN, tab } });
   const before = calls().list;
   vi.mocked(api.listGenerations).mockResolvedValue([gen("created")]);
   await act(async () => promptCreated());
   await settle();
   expect(ids()).toEqual(["created"]);
-  expect(calls().list).toBe(before + 2);
+  expect(calls().list).toBe(before + 1);
 });
 
 it("[R4-2] a peer broadcast retiring an ongoing read still applies a fresh page", async () => {
@@ -128,6 +128,7 @@ it("[R4-2] a peer broadcast retiring an ongoing read still applies a fresh page"
   const off = onLibraryChanged(noop);
   try {
     await mount();
+    const before = calls().list;
     const first = hold<Generation[]>(api.listGenerations);
     const done = start(() => data.reload());
     vi.mocked(api.listGenerations).mockResolvedValue([gen("after-peer")]);
@@ -139,19 +140,46 @@ it("[R4-2] a peer broadcast retiring an ongoing read still applies a fresh page"
     await act(async () => first.resolve([gen("obsolete")]));
     await settle();
     expect(ids()).toEqual(["after-peer"]); expect(done.done).toBe(true);
+    expect(calls().list).toBe(before + 2);
   } finally { off(); vi.unstubAllGlobals(); }
 });
 
-it("[R4-2] a single execution retries a retired ticket at most once", async () => {
+it("[R5-2] a single execution retries once and its one follow-up check cannot chain", async () => {
   await mount();
   const before = calls().list;
-  vi.mocked(api.listGenerations).mockImplementation(async () => {
-    dispatchAppEvent(APP_EVENTS.libraryChanged);
-    return [gen("keeps-changing")];
-  });
-  await act(async () => data.reload());
-  expect(calls().list).toBe(before + 2);
+  const pages = Array.from({ length: 4 }, () => deferred<Generation[]>());
+  for (const page of pages) vi.mocked(api.listGenerations).mockReturnValueOnce(page.promise);
+  const done = start(() => data.reload());
+  expect(calls().list).toBe(before + 1);
+  for (let index = 0; index < pages.length; index++) {
+    act(() => dispatchAppEvent(APP_EVENTS.libraryChanged));
+    await act(async () => pages[index].resolve([gen("keeps-changing")]));
+    await settle();
+    expect(calls().list).toBe(before + Math.min(index + 2, 4));
+  }
+  expect(done.done).toBe(true);
   expect(ids()).not.toContain("keeps-changing");
+});
+
+it("[R5-2] a follow-up check applies fresh rows without waiting for stalled metadata", async () => {
+  await mount();
+  const before = calls();
+  const metadata = hold<Awaited<ReturnType<typeof api.projects>>>(api.projects);
+  let retired = 0;
+  vi.mocked(api.listGenerations).mockImplementation(async () => {
+    if (retired++ < 2) dispatchAppEvent(APP_EVENTS.libraryChanged);
+    return [gen("after-two-retirements")];
+  });
+  const done = start(() => data.reload());
+  await settle();
+  expect(calls().list).toBe(before.list + 3);
+  expect(ids()).toEqual(["after-two-retirements"]);
+  expect(done.done).toBe(false);
+  expect(calls().facets).toBe(before.facets + 1); // 메타는 기존 줄에서 기다리고 목록만 먼저 끝난다.
+  await act(async () => metadata.resolve(folders(0)));
+  await settle();
+  expect(done.done).toBe(true);
+  expect(calls().list).toBe(before.list + 3);
 });
 
 it("[R4-3] a stalled metadata bundle times out, releases await reload and drains queued metadata", async () => {
