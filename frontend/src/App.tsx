@@ -751,6 +751,7 @@ export default function App() {
   const listShown = !cutMode;
   const listGate = listShown && (staleList || shownStaleCopy || behindAfterMove);
   const listLocked = !cutOwns && listGate;
+  const canLoadMore = hasMore && !listGate && !listBehind; // 모든 더 받기는 지금 조회의 첫 쪽·커서가 온 뒤에만.
   // 창이 보여 주는 폴더의 지금 대표 — 표지가 '가장 최근 것' 일 뿐이면 대표가 아니다(null).
   const peekFolderCard = listPeek ? folderCards?.folders.find((folder) => folder.path === listPeek.path) : undefined;
   const peekCoverId = peekFolderCard?.rep ? peekFolderCard.cover.id : null;
@@ -1341,11 +1342,11 @@ export default function App() {
       grayAutoLoadCountRef.current = 0;
       return;
     }
-    if (hasMore && !loading && !loadingMore && grayAutoLoadCountRef.current < 10) {
+    if (canLoadMore && !loading && !loadingMore && grayAutoLoadCountRef.current < 10) {
       grayAutoLoadCountRef.current += 1;
       loadMore();
     }
-  }, [grayOn, scopedTrash, gridGens.length, hasMore, loading, loadingMore, loadMore, workspaceScopeKey]);
+  }, [grayOn, scopedTrash, gridGens.length, canLoadMore, loading, loadingMore, loadMore, workspaceScopeKey]);
 
   // 미확인 코멘트 여부·내 실패 수는 서버 stats 에서 계산한다(전량 로드 대체).
   const hasAnyUnread = stats.has_unread;
@@ -2181,7 +2182,7 @@ export default function App() {
       filtersOpen={showFilters}
       onToggleFilters={() => setShowFilters((v) => !v)}
       count={gridGens.length}
-      countMore={hasMore && !listGate}
+      countMore={canLoadMore}
       folderCards={listPeek ? undefined : cutToggle} // 창 안의 툴바에는 전환 단추가 없다
       grayOn={grayOn}
       onToggleGray={toggleGray}
@@ -2285,7 +2286,7 @@ export default function App() {
             ? coverHeader(ownCoverId, (g) => void pickFolderCover(g, { projectId: ownScope.projectId, path: filters.folder_path ?? "" }))
             : undefined
       }
-      hasMore={hasMore && !listGate} // 자리를 옮긴 뒤 새 목록 전·낡은 사본·창을 닫은 뒤 사본에는 더 받지 않는다 — 커서가 옛 조회의 것이다
+      hasMore={canLoadMore}
       loadingMore={loadingMore}
       onLoadMore={loadMore}
       resetKey={JSON.stringify([serverFilterKey, storedTab, libraryTabs.active])}
