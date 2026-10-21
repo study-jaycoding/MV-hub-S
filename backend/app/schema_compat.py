@@ -21,6 +21,7 @@ import re
 import sqlite3
 import shutil
 import tempfile
+import time
 from types import MappingProxyType
 from uuid import UUID, uuid4
 
@@ -322,8 +323,17 @@ def backup_before_baseline(path: Path, kind: str) -> Path | None:
             folder = parent / 'backups'
         folder /= 'pre-dev2-baseline'
         folder.mkdir(parents=True, exist_ok=True)
+        prefix = f'{path.name}.pre-dev2-baseline-{database_key(path)[:8]}-'
+        pattern = re.compile(re.escape(prefix) + r'\d{8}_\d{6}_\d{6}-[0-9a-f]{32}(-first)?\.db')
+        temporary_pattern = re.compile(r'\.' + pattern.pattern + r'\.tmp(?:-journal|-wal|-shm)?')
+        cutoff = time.time() - 86400.0
+        for old in folder.iterdir():
+            if temporary_pattern.fullmatch(old.name):
+                with suppress(OSError):
+                    if old.stat().st_mtime < cutoff:
+                        old.unlink()
         stamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')
-        target = folder / f'{path.name}.pre-dev2-baseline-{stamp}-{uuid4().hex}.db'
+        target = folder / f'{prefix}{stamp}-{uuid4().hex}.db'
         temporary = target.with_name(f'.{target.name}.tmp')
         journal = Path(str(path) + '-journal')
         if journal.is_file() and journal.stat().st_size:
@@ -335,11 +345,15 @@ def backup_before_baseline(path: Path, kind: str) -> Path | None:
         with closing(sqlite3.connect(read_only_uri(temporary, immutable=True), uri=True)) as conn:
             if conn.execute('PRAGMA quick_check').fetchall() != [('ok',)]:
                 raise sqlite3.DatabaseError('baseline_backup_integrity_failed')
+        # shortcut: concurrent first publications may both be retained; serialize if a strict cap is needed.
+        if not any(pattern.fullmatch(p.name) and p.name.endswith('-first.db') and p.is_file()
+                   for p in folder.iterdir()):
+            target = target.with_name(target.stem + '-first.db')
         temporary.rename(target)
         # Keep the original pre-conversion state plus the two latest attempts.
-        pattern = re.compile(re.escape(path.name) + r'\.pre-dev2-baseline-\d{8}_\d{6}_\d{6}-[0-9a-f]{32}\.db')
-        copies = sorted(p for p in folder.iterdir() if pattern.fullmatch(p.name) and p.is_file())
-        for old in copies[1:-2]:
+        copies = sorted(p for p in folder.iterdir() if pattern.fullmatch(p.name)
+                        and not p.name.endswith('-first.db') and p.is_file())
+        for old in copies[:-2]:
             try:
                 old.unlink(missing_ok=True)
             except OSError as exc:
