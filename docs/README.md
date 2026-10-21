@@ -6,7 +6,7 @@ tags:
   - mvhub
   - mvhub/문서
 status: active
-updated: 2026-10-20
+updated: 2026-10-21
 ---
 
 # MV Hub 개발 문서 안내
@@ -48,6 +48,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 날짜별 상세 기록(회귀·실측·구현 근거) | [CURRENT_STATUS](CURRENT_STATUS.md)가 연결하는 해당 [status/](status/) 노트 |
 | Claude·Codex 역할 호출·설계 합의·독립 리뷰·검증 완료 기준 | [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md) |
 | 기능 작업실·통합 시험실·동시 개발과 실행 분리 | [WORKROOMS.md](WORKROOMS.md) |
+| 기능 묶음 PR·수정 영향 재검토·승인 기록 | [PR_GATE.md](PR_GATE.md) |
 | 프로그램 사용 | [사용설명서.md](사용설명서.md), [기능설명서.md](기능설명서.md) |
 | 현재 구조와 데이터 흐름 | [ARCHITECTURE.md](ARCHITECTURE.md), [AI_CONTEXT.md](AI_CONTEXT.md) |
 | 무엇을 고치려면 어느 파일을 여나(파일 단위 색인·함정 지도) | [CODE_MAP.md](CODE_MAP.md) — 계층 원칙·흐름 설명과 충돌하면 위 두 문서가 이긴다 |
