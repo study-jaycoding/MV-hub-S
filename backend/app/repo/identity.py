@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from ..config import DEFAULT_WORKER_ID, DEFAULT_WORKER_NAME
 from ..db import get_connection
@@ -375,6 +376,17 @@ def _single_shared_creator_uid(conn, account_uid: str) -> Optional[str]:
     return next(iter(uids), None) if len(uids) == 1 else None
 
 
+def _hf_creator_link_rejection(conn, email: str, uid: str) -> Literal["conflict", "reserved"] | None:
+    """연결 쓰기와 같은 BEGIN IMMEDIATE 안에서 검사해야 동시 선점도 막는다."""
+    if uid.startswith("acct:"):
+        return "reserved"
+    if conn.execute(
+        "SELECT 1 FROM account WHERE creator_uid=? AND email<>? LIMIT 1", (uid, email)
+    ).fetchone():
+        return "conflict"
+    return None
+
+
 def link_accounts_to_creators() -> int:
     """각 account 에 creator_uid 를 보장하고 creator 행 이름·역할을 account 기준으로 맞춘다(멱등).
     이래야 신규 로그인 계정이 멤버 목록·프로젝트 배정 후보에 뜨고(생성물 0이어도),
@@ -389,15 +401,26 @@ def link_accounts_to_creators() -> int:
         # 이전에는 context manager의 autocommit에만 의존해 중간 예외 때 부분 연결이 남을 수 있었다.
         conn.execute("BEGIN IMMEDIATE")
         try:
+            duplicate_rows = conn.execute(
+                "SELECT COALESCE(SUM(n), 0) FROM ("
+                "SELECT COUNT(*) n FROM account WHERE creator_uid IS NOT NULL AND creator_uid<>'' "
+                "GROUP BY creator_uid HAVING COUNT(*)>1)"
+            ).fetchone()[0]
+            if duplicate_rows:
+                logging.getLogger(__name__).warning(
+                    "Duplicate account creator_uid links: rows=%d", duplicate_rows
+                )
             rows = conn.execute(
                 "SELECT email, name, global_role, creator_uid FROM account"
             ).fetchall()
             for r in rows:
                 uid = r["creator_uid"] or account_creator_uid(r["email"], owner_email, my_uid)
+                if not r["creator_uid"] and _hf_creator_link_rejection(conn, r["email"], uid):
+                    uid = account_creator_uid(r["email"], None, None)
                 updated_account = False
                 if uid and str(uid).startswith("acct:"):
                     inferred = _single_shared_creator_uid(conn, uid)
-                    if inferred and inferred != uid:
+                    if inferred and inferred != uid and not _hf_creator_link_rejection(conn, r["email"], inferred):
                         ensure_worker(conn, inferred, (r["name"] or "").strip() or inferred, "team")
                         conn.execute(
                             "UPDATE account SET creator_uid=? WHERE email=?", (inferred, r["email"])
@@ -445,10 +468,11 @@ def uid_owner_email(uid: str) -> Optional[str]:
     return r["email"] if r else None
 
 
-def set_account_hf_creator(email: str, uid: str) -> bool:
+def set_account_hf_creator(email: str, uid: str) -> bool | Literal["conflict", "reserved"]:
     """push 시 계정을 '실제 힉스필드 생성자 uid'에 연결(합성 acct: uid 를 대체).
     이래야 그 계정 '내 작업'이 자기 힉스필드 생성물(creator_uid=uid)로 채워진다.
-    이미 같은 실제 uid 면 그대로. creator 행 표시이름은 계정 이름 우선(authoritative)."""
+    이미 같은 실제 uid 면 그대로. creator 행 표시이름은 계정 이름 우선(authoritative).
+    타 계정 소유는 conflict, 합성 acct: 별칭은 reserved를 반환하며 아무것도 쓰지 않는다."""
     email = norm_email(email)
     uid = (uid or "").strip()
     if not email or not uid:
@@ -466,6 +490,10 @@ def set_account_hf_creator(email: str, uid: str) -> bool:
                 conn.execute("ROLLBACK")
                 return False
             old_uid = row["creator_uid"]
+            rejection = _hf_creator_link_rejection(conn, email, uid)
+            if rejection == "reserved" or (old_uid != uid and rejection):
+                conn.execute("ROLLBACK")
+                return rejection
             ensure_worker(conn, uid, (row["name"] or "").strip() or email or uid, "team")
             if old_uid != uid:
                 conn.execute(
