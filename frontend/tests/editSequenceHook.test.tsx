@@ -26,6 +26,7 @@ vi.mock("../src/lib/teamSeen", async () => ({
 
 import { editTick, useEditGenerations, useEditProjects } from "../src/lib/useEditSequence";
 import { groupByCut, linkClip } from "../src/lib/editTimeline";
+import { clearGenerationReadModels, getGenerationReadModel } from "../src/features/library/readModels";
 
 const TEAM: WorkspaceContext = { scope: "team", id: "w1", name: "W" };
 const UNKNOWN: WorkspaceContext = { scope: "unknown", id: null, name: null };
@@ -64,6 +65,7 @@ const render = (node: React.ReactNode) => act(() => root.render(node));
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   Object.values(mocks).forEach((mock) => mock.mockReset());
+  clearGenerationReadModels();
   localStorage.clear();
   seenBase.value = null;
   host = document.createElement("div");
@@ -73,6 +75,133 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
+  vi.useRealTimers();
+});
+
+it.each(["invalidate", "clear", "reject", "trim"])("retries_full_read_after_invalidate_all: %s", async (mode) => {
+  vi.useFakeTimers();
+  const old = deferred<Generation[]>();
+  mocks.list.mockReturnValueOnce(old.promise).mockResolvedValue([row("fresh")]);
+  render(<ListHarness seq="e070" />);
+  const records = getGenerationReadModel("auth", "team");
+  if (mode === "clear") clearGenerationReadModels();
+  else if (mode === "trim") {
+    const newer = records.beginRead();
+    const cached = page("cached", true, 3001);
+    records.store(Object.fromEntries(cached.map(g => [g.id, g])), newer);
+  }
+  else records.invalidateAll();
+  if (mode === "reject") old.reject(new Error("obsolete failure"));
+  else old.resolve([row("stale")]);
+  await flush();
+  expect(list.state).toBe("loading");
+  await act(async () => { await vi.advanceTimersByTimeAsync(399); });
+  expect(mocks.list).toHaveBeenCalledTimes(1);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+  expect(mocks.list).toHaveBeenCalledTimes(2);
+  expect(list.state).toBe("ok");
+  expect(list.gens.map(g => g.id)).toEqual(["fresh"]);
+});
+
+it("restarts_pagination_and_uses_retry_start_time", async () => {
+  vi.useFakeTimers();
+  const second = deferred<Generation[]>();
+  mocks.list.mockResolvedValueOnce(page("old", true)).mockReturnValueOnce(second.promise).mockResolvedValue([row("fresh")]);
+  render(<ListHarness seq="e070" />); await flush();
+  getGenerationReadModel("auth", "team").invalidateAll();
+  second.resolve([row("old-tail")]); await flush();
+  const beforeRetry = editTick();
+  await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+  expect(mocks.list).toHaveBeenCalledTimes(3);
+  expect(mocks.list.mock.calls[2][1]).toBeNull();
+  expect(list.gens.map(g => g.id)).toEqual(["fresh"]);
+  expect(list.startedAt).toBeGreaterThan(beforeRetry);
+});
+
+it("retries_when_final_page_storage_retires_ticket", async () => {
+  vi.useFakeTimers();
+  const old = deferred<Generation[]>();
+  mocks.list.mockReturnValueOnce(old.promise).mockResolvedValue([row("fresh")]);
+  render(<ListHarness seq="e070" />);
+  const records = getGenerationReadModel("auth", "team");
+  const newer = records.beginRead();
+  const cached = page("cached", true, 3000);
+  records.store(Object.fromEntries(cached.map(g => [g.id, g])), newer);
+  old.resolve([row("overflow")]); await flush();
+  expect(list.state).toBe("loading");
+  await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+  expect(mocks.list).toHaveBeenCalledTimes(2);
+  expect(list.state).toBe("ok");
+  expect(list.gens.map(g => g.id)).toEqual(["fresh"]);
+});
+
+it("retry_exhaustion_settles_error_without_tag_reload_loop", async () => {
+  vi.useFakeTimers();
+  const a = { ...row("a"), tags: [], auto_tags: [] };
+  mocks.list.mockResolvedValueOnce([a]);
+  render(<ListHarness seq="e070" />); await flush();
+  const startedAt = list.startedAt;
+  const records = getGenerationReadModel("auth", "team");
+  mocks.list.mockImplementation(async () => { records.invalidateAll(); return [row("stale")]; });
+  act(() => { list.reload(); list.reloadIds(["a"]); }); await flush();
+  await act(async () => { await vi.advanceTimersByTimeAsync(800); });
+  expect(mocks.list).toHaveBeenCalledTimes(4); // initial success + three attempts
+  expect(list.state).toBe("error");
+  expect(list.error).toBeTruthy();
+  expect(list.gens).toEqual([a]);
+  expect(list.startedAt).toBe(startedAt);
+  expect(list.complete).toBe(false);
+  expect(list.known).toBe(true);
+  act(() => list.reloadIds(["a"]));
+  await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+  expect(mocks.list).toHaveBeenCalledTimes(4);
+  expect(mocks.batch).not.toHaveBeenCalled();
+  mocks.list.mockResolvedValue([a]);
+  mocks.batch.mockResolvedValue({ items: { a: { ...a, tags: ["confirmed"] } }, missing: [] });
+  act(() => list.reload()); await flush();
+  expect(list.state).toBe("ok");
+  expect(list.gens[0].tags).toEqual(["confirmed"]);
+});
+
+it("discards_old_full_read_after_a_b_a", async () => {
+  const old = deferred<Generation[]>();
+  mocks.list.mockReturnValueOnce(old.promise).mockResolvedValueOnce([row("b")]).mockResolvedValueOnce([row("new-a")]);
+  render(<ListHarness seq="e070" />);
+  render(<ListHarness seq="e071" />); await flush();
+  render(<ListHarness seq="e070" />); await flush();
+  old.resolve(page("old-a", true)); await flush();
+  expect(list.gens.map(g => g.id)).toEqual(["new-a"]);
+  expect(mocks.list).toHaveBeenCalledTimes(3);
+});
+
+it.each(["invalidate", "clear"])("preserves_pending_tag_ids_across_read_retirement: %s", async (mode) => {
+  const old = deferred<any>();
+  const a = { ...row("a"), tags: [], auto_tags: [] };
+  mocks.list.mockResolvedValue([a]);
+  mocks.batch.mockReturnValueOnce(old.promise).mockResolvedValue({ items: { a: { ...a, tags: ["fresh"] } }, missing: [] });
+  render(<ListHarness seq="e070" />); await flush();
+  act(() => list.reloadIds(["a"])); await flush();
+  if (mode === "clear") clearGenerationReadModels();
+  else getGenerationReadModel("auth", "team").invalidateAll();
+  old.resolve({ items: { a: { ...a, tags: ["stale"] } }, missing: [] }); await flush();
+  expect(mocks.batch).toHaveBeenCalledTimes(2);
+  expect(list.gens[0].tags).toEqual(["fresh"]);
+  expect(list.settledSeq.a).toBeGreaterThan(0);
+});
+
+it.each(["context", "unmount"])("cancels_pending_retry_on_context_change_or_unmount: %s", async (mode) => {
+  vi.useFakeTimers();
+  const old = deferred<Generation[]>();
+  mocks.list.mockReturnValueOnce(old.promise).mockResolvedValue([row("b")]);
+  render(<ListHarness seq="e070" />);
+  getGenerationReadModel("auth", "team").invalidateAll();
+  old.resolve([row("old")]); await flush();
+  expect(vi.getTimerCount()).toBe(1);
+  render(mode === "context" ? <ListHarness seq="e071" /> : null); await flush();
+  expect(vi.getTimerCount()).toBe(0);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(mocks.list).toHaveBeenCalledTimes(mode === "context" ? 2 : 1);
+  if (mode === "context") expect(list.gens.map(g => g.id)).toEqual(["b"]);
 });
 
 it("unsupported authority falls back to a full team query without retrying the ambiguous partial endpoint", async () => {

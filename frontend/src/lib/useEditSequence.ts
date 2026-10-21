@@ -97,9 +97,9 @@ export function useEditGenerations({
     const run = ++runRef.current;
     if (!ready) return;
     fullPending.current = true;
-    const read = records.beginRead();
-    const alive = () => run === runRef.current && currentCtx.current === ctx && records.isCurrent(read);
-    const startedAt = editTick();
+    const alive = () => run === runRef.current && currentCtx.current === ctx;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let finishWait: (() => void) | undefined;
     // 같은 문맥의 마지막 성공 결과는 다시 받는 동안에도, 실패해도 그대로 둔다.
     // 다만 다시 받는 동안은 '끝까지 받음'이 아니다 — 그 사이 여기 없는 클립을 '없음'으로 판정하지 않는다.
     setHeld((prev) => (prev.ctx === ctx ? { ...prev, state: "loading", complete: false } : { ctx, ...EMPTY_LIST, state: "loading" }));
@@ -108,29 +108,50 @@ export function useEditGenerations({
         tab: "team", ...(allWorkspaces ? {} : sharedWorkspaceFilter(workspaceRef.current)),
         project_id: projectId!, folder_path: seq!,
       };
-      const gens: Generation[] = [];
-      let cursor: GenCursor | null = null;
-      let rows = 0;
-      let capped = false;
-      for (;;) {
-        // 상한까지 받았으면 다음 쪽이 있는지만 한 줄로 묻는다 — 표시는 2,000건까지, 딱 2,000건이면 끝까지 받은 것이다(81회차 M2-3)
-        const probe = rows >= EDIT_LIST_CAP;
-        const page: Generation[] = await (probe ? api.listGenerations(query, cursor, 1) : api.listGenerations(query, cursor));
-        if (!alive()) return; // 문맥이 바뀌었다 — 다음 쪽을 묻지 않는다
-        if (probe) {
-          capped = page.length > 0;
-          break;
+      const retired = Symbol("retired edit read");
+      // 재시도는 같은 run 안에서 제한한다 — reload()로 시작하면 상한이 초기화된다.
+      for (let attempt = 0; attempt < 3 && alive(); attempt++) {
+        const read = records.beginRead();
+        const startedAt = editTick();
+        const checkRead = () => { if (!alive() || !records.isCurrent(read)) throw retired; };
+        try {
+          const gens: Generation[] = [];
+          let cursor: GenCursor | null = null;
+          let rows = 0;
+          let capped = false;
+          for (;;) {
+            // 상한까지 받았으면 다음 쪽이 있는지만 한 줄로 묻는다 — 표시는 2,000건까지, 딱 2,000건이면 끝까지 받은 것이다(81회차 M2-3)
+            const probe = rows >= EDIT_LIST_CAP;
+            const page: Generation[] = await (probe ? api.listGenerations(query, cursor, 1) : api.listGenerations(query, cursor));
+            checkRead();
+            if (probe) {
+              capped = page.length > 0;
+              break;
+            }
+            rows += page.length;
+            gens.push(...storeGenerationRows(records, page, read).filter((gen) => isUsableGen(gen) && matchesWorkspaceFilter(gen, query)));
+            checkRead(); // 저장 중 캐시 trim으로도 티켓이 은퇴할 수 있다.
+            // 커서와 끝 판정은 거르기 전 원본 쪽으로 — 쓸 수 있는 것이 0개인 쪽에서 멈추면 뒤가 통째로 빠진다.
+            const last = page[page.length - 1];
+            if (!last || page.length < GEN_PAGE) break;
+            cursor = { ts: last.sort_ts ?? 0, id: last.id };
+          }
+          checkRead();
+          // known 은 지금 든 gens 가 온전한가다 — 잘린 결과로 바꾸면 전에 끝까지 받았더라도 거짓이다.
+          setHeld({ ctx, state: capped ? "capped" : "ok", gens, error: null, complete: !capped, known: !capped, startedAt, settledSeq: {} });
+          return;
+        } catch (error) {
+          if (!alive()) return;
+          if (error !== retired && records.isCurrent(read)) throw error;
+          if (attempt === 2) throw new Error(t("목록이 계속 변경되어 불러오지 못했습니다. 다시 시도해 주세요."));
+          await new Promise<void>((resolve) => {
+            finishWait = resolve;
+            retryTimer = setTimeout(resolve, 400);
+          });
+          retryTimer = undefined;
+          finishWait = undefined;
         }
-        rows += page.length;
-        gens.push(...storeGenerationRows(records, page, read).filter((gen) => isUsableGen(gen) && matchesWorkspaceFilter(gen, query)));
-        // 커서와 끝 판정은 거르기 전 원본 쪽으로 — 쓸 수 있는 것이 0개인 쪽에서 멈추면 뒤가 통째로 빠진다.
-        const last = page[page.length - 1];
-        if (!last || page.length < GEN_PAGE) break;
-        cursor = { ts: last.sort_ts ?? 0, id: last.id };
       }
-      // known 은 **지금 든 gens** 가 온전한가다 — 잘린 결과로 바꿔 넣었으면 전에 끝까지 받았더라도 거짓이다
-      //  (뒤로 밀려 빠진 카드만 있는 폴더를 '빈 폴더'로 숨기게 된다 — Codex 코드 리뷰).
-      setHeld({ ctx, state: capped ? "capped" : "ok", gens, error: null, complete: !capped, known: !capped, startedAt, settledSeq: {} });
     })().catch((error) => {
       if (!alive()) return;
       setHeld((prev) => ({
@@ -146,17 +167,19 @@ export function useEditGenerations({
     });
     return () => {
       runRef.current++;
+      clearTimeout(retryTimer);
+      finishWait?.();
     };
   }, [ctx, ready, projectId, seq, allWorkspaces, nonce, records]);
 
   useEffect(() => {
-    if (!ready || !partialCapability.current.supported || fullPending.current || held.ctx !== ctx || !held.startedAt || batch.current || !pending.current.ids.size) return;
+    if (!ready || !partialCapability.current.supported || fullPending.current || held.ctx !== ctx || held.state === "error" || !held.startedAt || batch.current || !pending.current.ids.size) return;
     const queue = pending.current;
     const members = new Set(held.gens.map((gen) => gen.id));
     const ids = [...pending.current.ids].filter((id) => members.has(id));
-    pending.current.ids.clear();
-    if (!ids.length) return;
+    if (!ids.length) { pending.current.ids.clear(); return; }
     if (ids.some(id => !records.read(id))) { reload(); return; }
+    pending.current.ids.clear();
     const requested = new Set(ids);
     const attempt = { ctx, ids, run: runRef.current };
     batch.current = attempt;
@@ -171,8 +194,9 @@ export function useEditGenerations({
       const unavailable = new Set([...(result.missing ?? []), ...(result.unavailable ?? [])]);
       const updated = new Set(records.store(Object.fromEntries(Object.entries(result.items).filter(([id, item]) =>
         requested.has(id) && item.id === id && !unavailable.has(id) && Array.isArray(item.tags) && Array.isArray(item.auto_tags))), read));
+      if (!records.isCurrent(read)) return;
       setHeld((prev) => {
-        if (prev.ctx !== ctx || !alive()) return prev;
+        if (prev.ctx !== ctx || !alive() || !records.isCurrent(read)) return prev;
         const settledSeq = { ...prev.settledSeq };
         const gens = prev.gens.map((gen) => {
           const item = records.read(gen.id);
@@ -189,7 +213,7 @@ export function useEditGenerations({
       // 다른 실패는 기존 목록과 덧입힘을 보존한다.
     }).finally(() => {
       if (batch.current !== attempt) return;
-      if (!capabilityFallback && pending.current === queue && !alive()) ids.forEach((id) => queue.ids.add(id));
+      if (!capabilityFallback && pending.current === queue && (!alive() || !records.isCurrent(read))) ids.forEach((id) => queue.ids.add(id));
       batch.current = null;
       requestBatch();
     });
