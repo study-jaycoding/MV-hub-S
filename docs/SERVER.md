@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-14
+updated: 2026-10-21
 status: active
 ---
 
@@ -25,6 +25,68 @@ status: active
                        ├─ /ws           → 진행률 push (WebSocket)
                        └─ /media/*      → 로컬 미디어
 ```
+
+## 새 supervisor를 사용하는 서버의 정기 업데이트
+
+이 절은 이미 `tools/server_supervisor.py`와 staged coordinator를 사용하는 서버용이다.
+1358 서버의 최초 전환 절차는 아직 검증되지 않았으며 이 절로 대신하지 않는다.
+실제 배포는 아래 생성 fence와 [배포 Gate](RISK_REDUCTION_PLAN_2026-08-15.md)의 승인을 함께 따른다.
+
+판별 선언은 [release/compatibility.json](../release/compatibility.json) 하나를 코드와 함께 커밋한다.
+서버는 fetch 뒤 선택한 `origin/main` SHA의 선언을 읽고 같은 SHA에서 stage를 만든다.
+현재 선언은 reader 1 / writer 2, DB 읽기·쓰기 범위 1..2,
+`schema_compat.py`의 9개 지원 component를 담는다. 지원 목록은 기능 활성화 설정이 아니다.
+**rollout·필수 capability·하위 호환성은 Jay·총괄 결정 필요**로 `null`이다.
+현재 값은 기존 계약 검증에서 거부되므로 결정·커밋 전에는 서버 업데이트와 기본 릴리스 제작을 진행할 수 없다.
+`bridge`는 빈 capability와 `backward_compatible=true`에 대한 구판 전환·혼용 근거가 필요하고,
+`enforced`는 `artifact-receipt-v1`을 요구한다. 이 값만으로 1358 워커의 거부 동작을 보장하지 않는다.
+
+1. 고정 폴더 `D:\ClaudeCode\MV-hub-S-release`에서 원격을 갱신하고, 승인된 main SHA와
+   `HEAD`·`origin/main`이 같으며 작업 트리가 깨끗한지 확인한다. 불일치나 미커밋 변경이 있으면
+   배포 담당자가 먼저 해결한다. 실행 중인 서버 트리에서 소스 검증 영수증을 만들지 않는다.
+2. 이 고정 폴더의 `tools\predeploy_gate.ps1`로 선택 SHA를 검증한다. 검증 Python은
+   `backend\requirements-dev.txt`의 의존성이 준비된 신뢰할 수 있는 환경을 지정하고,
+   백업 복구 시험에는 사용자 DB 원본 대신 준비된 사본을 지정한다. 예시 경로는 실제 준비 위치로 바꾼다.
+
+   ```powershell
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\predeploy_gate.ps1 `
+     -PythonExe "D:\MVHub-operations\verifier\Scripts\python.exe" `
+     -BackupSource "D:\MVHub-operations\backup-copy\content_hub.db" `
+     -ReportDirectory "D:\MVHub-operations\receipts"
+   ```
+
+   종료 코드 0과 출력된 `validation-<run_id>.json`을 확인한다. 영수증은 `scope=source-only`,
+   `status=passed`, `passed=true`, `source_unchanged=true`, `source.dirty=false`여야 하며
+   `source.commit`은 선택한 SHA와 같아야 한다. 문서 lint·구조 lint·백엔드 시험·프런트 시험·
+   프런트 빌드는 모두 통과해야 한다. 이것은 소스 검증이며 ZIP 배포 자격 영수증은 아니다.
+3. 그 JSON 원본을 서버 PC의 **저장소 밖** 로컬 폴더로 복사하고, 복사 전후 `Get-FileHash -Algorithm SHA256`이
+   같은지 확인한다. 서버의 별도 검증 Python에는 `psutil`이 준비돼 있어야 한다.
+   이번에 만드는 stage의 `.venv`를 검증 Python으로 지정하지 않는다.
+4. 서버 PC의 PowerShell에서 두 환경변수를 설정한 뒤, 서버 저장소 루트에서 실행한다.
+   Python 경로에는 실행 가능한 파일을, receipt 경로에는 3단계의 원본 JSON을 지정한다.
+
+   ```powershell
+   $env:MVHUB_SERVER_SOURCE_RECEIPT = 'D:\MVHub-operations\receipts\validation-<run_id>.json'
+   $env:MVHUB_SERVER_VERIFICATION_PYTHON = 'D:\MVHub-operations\verifier\Scripts\python.exe'
+   & $env:MVHUB_SERVER_VERIFICATION_PYTHON -E -s -B -c "import psutil"
+   if ($LASTEXITCODE -ne 0) { throw '검증 Python 준비 실패' }
+   .\update_git.bat
+   if ($LASTEXITCODE -ne 0) { throw '서버 업데이트 실패: logs의 준비·전환 기록 확인' }
+   ```
+
+루트에 `server-release-compatibility.json`을 만들지 않는다. 비추적 파일도 dirty 검사에 걸린다.
+서버 coordinator의 외부 `--compatibility` 인자는 제거됐으며, 선언은 선택 SHA에서만 읽는다.
+반면 릴리스 제작의 `-CompatibilityPath` 명시 인자는 유지되고, 생략하면 `ProjectRoot` 아래의
+`release\compatibility.json`을 사용한다.
+
+Git archive는 기본적으로 선택 커밋의 `.gitattributes`를 적용한다. 따라서 PowerShell 파일의
+CRLF를 포함해 checkout과 같은 바이트를 stage에 담고, `release/compatibility.json`도
+`source_files`·receipt의 실제 SHA-256 비교 대상에 포함한다. 줄끝을 무시하는 해시 비교는 하지 않는다.
+검증 후 main이 바뀌었거나 환경의 Git 속성 때문에 바이트가 달라지면 준비가 거부된다.
+새 선택 SHA의 검증을 다시 받아야 하며 영수증 내용을 손으로 맞추지 않는다.
+준비·격리 runtime 검증 후 supervisor가 전환·ready 확인을 마쳐야 성공이다.
+실패 시 `logs\server-prepare.json`, 해당 run 기록과 `logs\server-install-journal.json`을 확인하고,
+기존 서버 파일이나 DB를 수동 덮어써 복구하지 않는다.
 
 ## 업데이트(롤아웃) 순서 — ★생성 fence 후 공유 서버 먼저
 

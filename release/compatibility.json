@@ -1,0 +1,25 @@
+{
+  "protocol_version": 1,
+  "rollout": null,
+  "required_installer_capabilities": null,
+  "backward_compatible": null,
+  "db_schema": {
+    "read_min": 1,
+    "read_max": 2,
+    "write_min": 1,
+    "write_max": 2
+  },
+  "reader_protocol": 1,
+  "writer_protocol": 2,
+  "supported_components": [
+    "content_core",
+    "content_pm",
+    "content_share_commands",
+    "content_asset_sync",
+    "content_asset_destination",
+    "content_transfer",
+    "trash_transfer",
+    "trash",
+    "manage"
+  ]
+}

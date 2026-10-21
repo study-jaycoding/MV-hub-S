@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import ssl
 import subprocess
 import sys
@@ -24,6 +25,9 @@ activation = importlib.import_module('server_activation')
 builder = importlib.import_module('server_release_update')
 from app.services.release_contract import json_bytes
 from smoke_env import build_smoke_env
+
+GIT = shutil.which('git')
+REAL_RUN = subprocess.run
 
 
 @pytest.fixture(autouse=True)
@@ -397,6 +401,7 @@ def prepare_fixture(root, monkeypatch):
              'frontend/package.json','frontend/package-lock.json','tools/predeploy_gate.ps1',
              'tools/validation_result.ps1','hf_cli_version.txt')}
     inputs['hf_cli_version.txt']=b'1.2.3\n'
+    inputs['release/compatibility.json']=json_bytes(compat())
     source={'commit':'a'*40,'dirty':False,'sha256':'b'*64,'file_count':len(inputs),
             'files':[{'path':n,'size':len(raw),'sha256':hashlib.sha256(raw).hexdigest(),'tracked':True}
                      for n,raw in inputs.items()]}
@@ -413,6 +418,8 @@ def prepare_fixture(root, monkeypatch):
     monkeypatch.setenv('CONTENT_HUB_DB',str(root/'outside.db'))
     def git(command,**kwargs):
         assert command[0]=='git'
+        if 'show' in command:
+            return subprocess.CompletedProcess(command,0,inputs['release/compatibility.json'],b'')
         return subprocess.CompletedProcess(command,0,'a'*40 if 'rev-parse' in command else '', '')
     monkeypatch.setattr(builder.subprocess,'run',git)
     calls=[]
@@ -438,7 +445,7 @@ def prepare_fixture(root, monkeypatch):
 
 def test_complete_prepare_request_and_supervisor_verified_path(tmp_path, monkeypatch):
     receipt,verifier,run,calls=prepare_fixture(tmp_path,monkeypatch)
-    run_id=builder.prepare(tmp_path,compat(),source_receipt=receipt,verification_python=verifier,
+    run_id=builder.prepare(tmp_path,source_receipt=receipt,verification_python=verifier,
                            run=run,probe_run=fake_probe)
     request=json.loads((tmp_path/'logs/server-update-request.json').read_bytes())
     target=request['target'];stage=Path(target['path'])
@@ -488,8 +495,185 @@ def test_prepare_failures_leave_old_tree_and_request_untouched(tmp_path, monkeyp
         if damage=='source_mutation': receipt.write_bytes(receipt.read_bytes()+b' ')
         return result
     with pytest.raises(ValueError):
-        builder.prepare(tmp_path,compat(),source_receipt=receipt,verification_python=verifier,run=run,probe_run=probe)
+        builder.prepare(tmp_path,source_receipt=receipt,verification_python=verifier,run=run,probe_run=probe)
     assert sentinel.read_bytes()==b'old service unchanged'
     assert not (tmp_path/'logs/server-current.json').exists()
     assert not (tmp_path/'logs/server-update-request.json').exists()
     assert json.loads((tmp_path/'logs/server-prepare.json').read_bytes())['status']=='failed'
+
+
+def real_prepare_fixture(tmp_path, monkeypatch):
+    """Local Git history/checkout/fetch; build, probe and service activation stay fake."""
+    if not GIT:
+        pytest.skip('Git is required')
+    monkeypatch.setenv('PATH', str(Path(GIT).parent) + os.pathsep + os.environ['PATH'])
+    root = tmp_path / 'repository'
+    root.mkdir()
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith('GIT_')}
+    env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull)
+
+    def git(folder, *args):
+        return REAL_RUN([GIT, '-C', str(folder), '-c', 'user.name=Fixture',
+                         '-c', 'user.email=fixture@example.invalid', '-c', 'core.autocrlf=false',
+                         *args], check=True, capture_output=True, env=env).stdout
+
+    git(root, 'init', '-b', 'main')
+    for name in ('backend/app/main.py', 'backend/serve.py', 'backend/schema.sql',
+                 'backend/requirements.lock.txt', 'frontend/package.json', 'frontend/package-lock.json',
+                 'tools/predeploy_gate.ps1', 'tools/validation_result.ps1',
+                 *activation.PROBE_TOOLS, *activation.COORDINATOR_TOOLS):
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'fixture never executed\n')
+    (root / 'hf_cli_version.txt').write_bytes(b'1.2.3\n')
+    (root / '.gitignore').write_bytes(b'logs/\n')
+    (root / '.gitattributes').write_bytes(b'* text=auto eol=lf\n')
+    (root / 'release').mkdir()
+    (root / 'release/compatibility.json').write_bytes(json_bytes(compat()))
+    (root / 'frontend/binary.bin').write_bytes(b'\0binary\nunchanged\r\n')
+    git(root, 'add', '.')
+    git(root, 'commit', '-m', 'Fixture old tree')
+    selected = tmp_path / 'selected'
+    git(tmp_path, 'clone', str(root), str(selected))
+    declared = {**compat(), 'supported_components': ['content_core', 'manage']}
+    (selected / 'release/compatibility.json').write_bytes(json_bytes(declared))
+    (selected / '.gitattributes').write_bytes(b'* text=auto eol=lf\n*.ps1 text eol=crlf\n')
+    (selected / 'frontend/.gitattributes').write_bytes(b'*.json text eol=crlf\n')
+    git(selected, 'add', '.')
+    git(selected, 'commit', '-m', 'Fixture selected declaration and line endings')
+    # A fresh checkout supplies the same physical bytes as the gate machine.
+    checkout = tmp_path / 'gate-checkout'
+    git(tmp_path, 'clone', str(selected), str(checkout))
+    commit = git(selected, 'rev-parse', 'HEAD').decode().strip()
+    git(root, 'remote', 'add', 'origin', str(selected))
+    source_files = activation.source_inventory(checkout)
+    source = {'commit': commit, 'dirty': False, 'sha256': 'b' * 64, 'file_count': len(source_files),
+              'files': [{'path': n, 'size': (checkout/n).stat().st_size, 'sha256': h, 'tracked': True}
+                        for n, h in source_files.items()]}
+    receipt = tmp_path / 'source-receipt.json'
+    receipt.write_bytes(json_bytes({'format_version': 1, 'scope': 'source-only', 'status': 'passed',
+        'passed': True, 'release_eligible': False, 'source': source, 'source_after': copy.deepcopy(source),
+        'source_unchanged': True, 'run_id': 'fixture-real-git', 'finished_at': '2026-10-21T00:00:00+00:00',
+        'steps': [{'name': n, 'status': 'passed', 'exit_code': 0} for n in activation.SOURCE_STEPS]}))
+    verifier = tmp_path / 'verifier.exe'
+    verifier.write_bytes(b'never executed')
+    calls = []
+
+    def run(command, *, cwd, log, env=None):
+        calls.append(command)
+        if command[0] == 'git':
+            git(cwd, *command[1:])
+        elif 'venv' in command:
+            python = Path(command[-1]) / 'Scripts/python.exe'
+            python.parent.mkdir(parents=True)
+            python.write_bytes(b'never executed')
+            write_venv_config(Path(command[-1]).parent)
+        elif 'build' in command:
+            (cwd / 'dist').mkdir()
+            (cwd / 'dist/index.html').write_bytes(b'fixture')
+
+    return root, selected, checkout, declared, receipt, verifier, run, calls, git
+
+
+def test_prepare_reads_compatibility_from_selected_commit(tmp_path, monkeypatch):
+    root, selected, checkout, declared, receipt, verifier, run, calls, git = real_prepare_fixture(tmp_path, monkeypatch)
+    assert json.loads((root/'release/compatibility.json').read_bytes()) != declared
+    builder.prepare(root, source_receipt=receipt, verification_python=verifier, run=run, probe_run=fake_probe)
+    target = json.loads((root/'logs/server-update-request.json').read_bytes())['target']
+    descriptor = json.loads((Path(target['path'])/'server-stage.json').read_bytes())
+    assert target['compatibility'] == descriptor['compatibility'] == declared
+    assert descriptor['source_commit'] == git(selected, 'rev-parse', 'HEAD').decode().strip()
+    assert descriptor['source_files']['release/compatibility.json'] == activation.digest(checkout/'release/compatibility.json')
+    assert git(root, 'status', '--porcelain') == b''
+
+
+def test_windows_checkout_bytes_match_prepared_stage(tmp_path, monkeypatch):
+    root, selected, checkout, declared, receipt, verifier, run, calls, git = real_prepare_fixture(tmp_path, monkeypatch)
+    builder.prepare(root, source_receipt=receipt, verification_python=verifier, run=run, probe_run=fake_probe)
+    stage = Path(json.loads((root/'logs/server-update-request.json').read_bytes())['target']['path'])
+    for name in ('tools/predeploy_gate.ps1', 'tools/validation_result.ps1', 'frontend/package.json'):
+        assert b'\r\n' in (checkout/name).read_bytes()
+        assert (stage/name).read_bytes() == (checkout/name).read_bytes()
+    assert (stage/'backend/serve.py').read_bytes() == (checkout/'backend/serve.py').read_bytes()
+    assert (stage/'frontend/binary.bin').read_bytes() == (checkout/'frontend/binary.bin').read_bytes()
+
+
+def test_prepare_rejects_real_untracked_source(tmp_path, monkeypatch):
+    root, selected, checkout, declared, receipt, verifier, run, calls, git = real_prepare_fixture(tmp_path, monkeypatch)
+    (root/'untracked.txt').write_bytes(b'operator file')
+    with pytest.raises(ValueError, match='server_source_is_dirty'):
+        builder.prepare(root, source_receipt=receipt, verification_python=verifier, run=run)
+    assert not calls
+    assert not (root/'logs/server-update-request.json').exists()
+
+
+@pytest.mark.parametrize('damage', ['missing', 'invalid', 'undecided', 'duplicate_component', 'no_reader', 'no_components'])
+def test_missing_or_invalid_commit_declaration_creates_no_request(tmp_path, monkeypatch, damage):
+    root, selected, checkout, declared, receipt, verifier, run, calls, git = real_prepare_fixture(tmp_path, monkeypatch)
+    path = selected/'release/compatibility.json'
+    if damage == 'missing':
+        path.unlink()
+    elif damage == 'invalid':
+        path.write_bytes(b'{invalid')
+    else:
+        if damage == 'undecided': declared['rollout'] = None
+        elif damage == 'duplicate_component': declared['supported_components'] = ['content_core', 'content_core']
+        elif damage == 'no_reader': declared.pop('reader_protocol')
+        else: declared.pop('supported_components')
+        path.write_bytes(json_bytes(declared))
+    git(selected, 'add', '.')
+    git(selected, 'commit', '-m', 'Fixture invalid declaration')
+    with pytest.raises((ValueError, subprocess.CalledProcessError)):
+        builder.prepare(root, source_receipt=receipt, verification_python=verifier, run=run)
+    assert not (root/'logs/server-update-request.json').exists()
+    assert not any('archive' in c for c in calls)
+    assert not any('venv' in c for c in calls)
+
+
+def test_checkout_line_endings_are_not_ignored_by_receipt(tmp_path, monkeypatch):
+    root, selected, checkout, declared, receipt, verifier, run, calls, git = real_prepare_fixture(tmp_path, monkeypatch)
+    proof = json.loads(receipt.read_bytes())
+    for row in proof['source']['files']:
+        if row['path'] == 'tools/predeploy_gate.ps1':
+            lf_bytes = (checkout/row['path']).read_bytes().replace(b'\r\n', b'\n')
+            row['sha256'] = hashlib.sha256(lf_bytes).hexdigest()
+    proof['source_after'] = copy.deepcopy(proof['source'])
+    receipt.write_bytes(json_bytes(proof))
+    with pytest.raises(ValueError, match='source_gate_stage_bytes_mismatch'):
+        builder.prepare(root, source_receipt=receipt, verification_python=verifier, run=run)
+    assert not (root/'logs/server-update-request.json').exists()
+    assert not any('venv' in c for c in calls)
+
+
+def test_selected_declaration_is_bound_to_source_receipt(tmp_path, monkeypatch):
+    root, selected, checkout, declared, receipt, verifier, run, calls, git = real_prepare_fixture(tmp_path, monkeypatch)
+    proof = json.loads(receipt.read_bytes())
+    for row in proof['source']['files']:
+        if row['path'] == 'release/compatibility.json':
+            row['sha256'] = activation.digest(root/'release/compatibility.json')
+    proof['source_after'] = copy.deepcopy(proof['source'])
+    receipt.write_bytes(json_bytes(proof))
+    with pytest.raises(ValueError, match='source_gate_stage_bytes_mismatch'):
+        builder.prepare(root, source_receipt=receipt, verification_python=verifier, run=run)
+    assert not (root/'logs/server-update-request.json').exists()
+    assert not any('venv' in c for c in calls)
+
+
+def test_archive_declaration_must_match_selected_commit(tmp_path, monkeypatch):
+    receipt, verifier, run, calls = prepare_fixture(tmp_path, monkeypatch)
+
+    def altered_archive(command, **kwargs):
+        run(command, **kwargs)
+        if 'archive' in command:
+            path = Path(next(c.split('=', 1)[1] for c in command if c.startswith('--output=')))
+            with zipfile.ZipFile(path) as archive:
+                entries = {name: archive.read(name) for name in archive.namelist()}
+            entries['release/compatibility.json'] = json_bytes({**compat(), 'supported_components': ['manage']})
+            with zipfile.ZipFile(path, 'w') as archive:
+                for name, raw in entries.items():
+                    archive.writestr(name, raw)
+
+    with pytest.raises(ValueError, match='staged_compatibility_mismatch'):
+        builder.prepare(tmp_path, source_receipt=receipt, verification_python=verifier, run=altered_archive)
+    assert not (tmp_path/'logs/server-update-request.json').exists()
+    assert not any('venv' in c for c in calls)

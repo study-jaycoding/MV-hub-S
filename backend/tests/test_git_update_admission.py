@@ -18,6 +18,14 @@ SOURCE = Path(os.environ.get("MVHUB_ADMISSION_SOURCE_ROOT", ROOT))
 POWERSHELL = str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe")
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows updater admission")
 
+
+def test_server_entry_uses_selected_commit_declaration():
+    script = (SOURCE / 'tools/run_update_git.ps1').read_text(encoding='utf-8-sig')
+    assert 'server-release-compatibility.json' not in script
+    assert "'--compatibility'" not in script
+    assert "'--source-receipt', $env:MVHUB_SERVER_SOURCE_RECEIPT" in script
+    assert "'--verification-python', $env:MVHUB_SERVER_VERIFICATION_PYTHON" in script
+
 MOCK_QUERIES = r'''
 function Get-ScheduledTask {
     $fixture = Get-Content -LiteralPath $env:MVHUB_QUERY_FIXTURE -Raw | ConvertFrom-Json
@@ -145,7 +153,6 @@ class UpdaterFixture:
             encoding="utf-8",
         )
         (self.root / "run_py.bat").write_text(f'@"{sys._base_executable}" -I -S -B "{coordinator}" %*\n@exit /b %errorlevel%\n', encoding="utf-8")
-        (self.root / "server-release-compatibility.json").write_text("{}")
         self.trace_path = folder / "tools.trace"
         self.query = folder / "queries.json"
         self.queries = {"tasks": [], "process_ids": [], "processes": []}
