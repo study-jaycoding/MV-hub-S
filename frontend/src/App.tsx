@@ -1783,7 +1783,9 @@ export default function App() {
       if (!scope.isCurrent!()) return;
       if (!result.generation) {
         if (result.outcome.kind === "acceptance_unknown") {
-          flash("Draft 요청의 접수 여부를 확인 중입니다. 중복 생성하지 말고 생성 목록을 확인하세요.");
+          // 서버의 Draft 예약이 중복 생성을 막으므로, 결과 id가 없는 시도는 다시 확인할 수 있게 한다.
+          draftRequests.release(attempt);
+          flash("Draft 요청의 접수 여부를 확인하지 못했습니다. 생성 목록에서 기존 요청을 확인하세요.");
           return;
         }
         throw result.error ?? new Error("Draft 생성 요청을 제출하지 못했습니다.");

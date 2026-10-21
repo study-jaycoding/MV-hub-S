@@ -106,10 +106,22 @@ describe("prepared generation submission contract", () => {
     expect(operation.send).not.toHaveBeenCalled();
   });
 
-  it.each([400, 401, 403, 404, 409, 422])("classifies definite HTTP %s rejection without attachment", async status => {
+  it.each([400, 401, 403, 404, 422])("classifies definite HTTP %s rejection without attachment", async status => {
     const error = new HttpError(status, "synthetic rejection"); const operation = prepared(vi.fn().mockRejectedValue(error)); const target = destination();
     const result = await runSubmission(operation, target);
     expect(result.outcome.kind).toBe("rejected"); expect(result.error).toBe(error);
+    expect(target.apply).not.toHaveBeenCalled();
+  });
+
+  // 서버 계약(gen_requests NOT_STARTED): 409 는 X-MVHub-Submission: not-started 가 붙었을 때만 '안 했음'이다. 표식 없는 409(같은 열쇠의 기존 요청·캔버스 충돌)는 이미 접수됐을 수 있다.
+  it("treats HTTP 409 as rejected only when the server marks it not-started", async () => {
+    const conflict = (headers?: Record<string, string>) => new Response(JSON.stringify({ detail: "synthetic conflict" }), { status: 409, headers });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(conflict()).mockResolvedValueOnce(conflict({ "X-MVHub-Submission": "not-started" })));
+    const target = destination();
+    const unmarked = await runSubmission(prepareCreateSubmission(body, workspace, link), target);
+    expect(unmarked.outcome).toEqual({ kind: "acceptance_unknown", operationId: link.attempt_id });
+    const marked = await runSubmission(prepareCreateSubmission(body, workspace, link), target);
+    expect(marked.outcome.kind).toBe("rejected");
     expect(target.apply).not.toHaveBeenCalled();
   });
 

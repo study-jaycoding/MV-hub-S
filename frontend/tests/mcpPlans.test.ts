@@ -1,6 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { prepareCreateSubmission } from "../src/features/generation/api";
+import { runSubmission } from "../src/features/generation/submit";
 import { executeMcpPlan, McpPreflightError, mcpFailureMessage, mcpDraftMatches, mcpPlanCards, mcpSceneHash, parseMcpPlan, type McpExecutionPorts, type McpPlanRecord } from "../src/lib/mcpPlans";
 import type { Scene } from "../src/lib/scenes";
+
+afterEach(() => { vi.unstubAllGlobals(); });
 
 const workspace = { scope: "personal" as const, id: null, name: null };
 const scene: Scene = { id: "scene", name: "Scene", cards: [], edges: [], created_at: 1 };
@@ -17,6 +21,16 @@ function ports(): McpExecutionPorts {
     state: vi.fn(async (row, index, state) => ({ ...row, revision: row.revision + 1, items: row.items.map((item, i) => i === index ? { ...item, state } : item) })),
     submit: vi.fn(async () => {}), discard: vi.fn(), changed: vi.fn(),
   };
+}
+const twoItems = (): McpPlanRecord => {
+  const row = record();
+  return { ...row, items: [...row.items, { state: "pending", error: null }], plan: { ...row.plan, items: [row.plan.items[0], row.plan.items[0]] } };
+};
+const conflict = (headers?: Record<string, string>) => new Response(JSON.stringify({ detail: "synthetic conflict" }), { status: 409, headers });
+// McpConnection 처럼 실제 공통 제출(runSubmission → jsonFetch)을 지난다. 캔버스 연결은 이 경계와 무관해 뺀다.
+function submitThroughCommonPath(io: McpExecutionPorts): McpExecutionPorts {
+  io.submit = vi.fn((item) => runSubmission(prepareCreateSubmission(item.request.create, item.request.workspace)));
+  return io;
 }
 
 describe("MCP plan execution boundaries", () => {
@@ -58,6 +72,23 @@ describe("MCP plan execution boundaries", () => {
     await expect(executeMcpPlan(record(), io)).rejects.toThrow("제출 결과");
     expect(io.discard).not.toHaveBeenCalled();
     expect(io.state).toHaveBeenLastCalledWith(expect.anything(), 0, "uncertain", expect.any(String));
+  });
+  // 개편 전 계약(16508543): 표식 없는 409 는 같은 열쇠의 기존 요청일 수 있다 — 공통 제출 결과로 와도 표식을 지우거나 다음 항목으로 넘어가지 않는다.
+  it("공통 제출의 표식 없는 409 는 uncertain — 표식 유지·뒤 항목 멈춤", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => conflict()));
+    const io = submitThroughCommonPath(ports());
+    await expect(executeMcpPlan(twoItems(), io)).rejects.toThrow("제출 결과");
+    expect(io.discard).not.toHaveBeenCalled();
+    expect(io.submit).toHaveBeenCalledTimes(1);
+    expect(io.state).toHaveBeenLastCalledWith(expect.anything(), 0, "uncertain", expect.any(String));
+  });
+  it("공통 제출의 not-started 409 만 rejected — 표식을 정리하고 다음 항목으로", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(conflict({ "X-MVHub-Submission": "not-started" }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "gen-2", prompt: "A bird", assets: [] }), { status: 200 })));
+    const io = submitThroughCommonPath(ports());
+    const result = await executeMcpPlan(twoItems(), io);
+    expect(result.items.map((item) => item.state)).toEqual(["rejected", "submitted"]);
+    expect(io.discard).toHaveBeenCalledTimes(1);
   });
   it("확정 422 거절만 표식을 정리한다", async () => {
     const io = ports();

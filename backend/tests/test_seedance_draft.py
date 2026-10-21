@@ -7,7 +7,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 from app import db, repo
 from app.generation_result import normalize_job_result
@@ -237,6 +238,26 @@ def test_duplicate_finish_route_reports_not_started():
     assert "existing-child" in error.value.detail
 
 
+def test_recovery_pending_regenerate_reports_not_started():
+    # 복구 확인이 남은 원본의 재생성은 새 요청을 만들기 전에 막는다 — 표식이 없으면 화면이 '접수 불명'으로 남긴다
+    body = GenRequestIn(kind="regenerate", source_gen_id="local-123",
+                        regenerate=RegenerateIn(), workspace={"scope": "personal"})
+    with patch.object(routes, "update_in_progress", return_value=False), \
+         patch.object(routes, "_require_account", return_value={"email": "artist@example.invalid", "creator_uid": "artist"}), \
+         patch.object(routes, "expected_account_differs", return_value=False), \
+         patch.object(routes, "AUTH_ENABLED", False), \
+         patch.object(routes, "_require_generation_deployment_open", AsyncMock()), \
+         patch.object(routes, "require_view_generation"), \
+         patch.object(routes.repo, "get_generation", return_value=draft()), \
+         patch.object(routes.repo, "get_recovery_request_id_for_generation", return_value="r1"), \
+         patch.object(routes, "submit_gen_request", AsyncMock()) as submit:
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(routes.create_gen_request(body, SimpleNamespace()))
+    assert error.value.status_code == 409
+    assert (error.value.headers or {}).get("X-MVHub-Submission") == "not-started"
+    submit.assert_not_called()
+
+
 @pytest.mark.parametrize("params", [
     {"draft": True, "resolution": "480p"},
     {"draft": False, "draft_job_id": "remote-123", "resolution": "1080p"},
@@ -292,3 +313,23 @@ def test_completed_result_saves_reported_seed_and_draft(content, completion):
         rid = repo.create_gen_request("artist@example.invalid", "artist", parent, "create", {})
         assert repo.apply_local_fulfillment(parent, rid, job_id=result.job_id, request_status="done", **fields)
     assert repo.get_generation(parent)["params"] == {"duration": 5, "draft": True, "seed": 99}
+
+
+@pytest.mark.parametrize("not_started", [True, False])
+def test_asgi_submission_marker_matches_actual_route_outcome(not_started):
+    app = FastAPI()
+    app.include_router(routes.router)
+    body = GenRequestIn(kind="create", create={"prompt": "synthetic", "model": "seedance_2_5", "params": {}},
+                        workspace={"scope": "personal"})
+    with patch.object(routes, "update_in_progress", return_value=not_started), \
+         patch.object(routes, "_require_account", return_value={"email": "artist@example.invalid", "creator_uid": "artist"}), \
+         patch.object(routes, "expected_account_differs", return_value=False), \
+         patch.object(routes, "AUTH_ENABLED", False), \
+         patch.object(routes, "_validated_generation_workspace", return_value=body.workspace), \
+         patch.object(routes, "_require_generation_deployment_open", AsyncMock()), \
+         patch.object(routes, "submit_gen_request", AsyncMock(side_effect=routes.CanvasGenerationConflict("synthetic-collision"))) as submit:
+        with TestClient(app) as client:
+            response = client.post("/api/gen-requests", json=body.model_dump(mode="json"))
+    assert response.status_code == 409
+    assert response.headers.get("X-MVHub-Submission") == ("not-started" if not_started else None)
+    assert submit.call_count == (0 if not_started else 1)

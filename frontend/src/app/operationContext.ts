@@ -56,6 +56,7 @@ export function isOperationContextCurrent(context: OperationContext): boolean {
 
 export class OperationContextChangedError extends Error {
   readonly status = 409; // 전송 전 확정 중단: 기존 surelyNotRun 분류를 재사용한다.
+  readonly notStarted = true; // 409 는 이 표식이 있어야 '안 보냄'이다(surelyNotRun).
   constructor() { super("계정 또는 서버가 바뀌어 제출을 중단했습니다. 원래 요청을 확인한 뒤 다시 실행하세요."); }
 }
 

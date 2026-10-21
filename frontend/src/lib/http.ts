@@ -40,10 +40,12 @@ export const API_PAUSED_MESSAGE = "다른 탭에서 로그아웃해 이 탭의 �
 export class ApiPausedError extends Error {
   name = "ApiPausedError";
 }
-/** 요청이 실행되지 않은 것이 확실한가 — 멈춤으로 보내지 않았거나 서버가 거절했다(4xx, 408·429 제외). 답을 못 받은 것은 모른다. */
+/** 요청이 실행되지 않은 것이 확실한가 — 멈춤으로 보내지 않았거나 서버가 거절했다(4xx, 408·429 제외). 답을 못 받은 것은 모른다.
+ *  409 는 서버가 not-started 표식을 붙였을 때만 — 표식 없는 409(같은 열쇠의 기존 요청·캔버스 충돌)는 이미 접수됐을 수 있다(gen_requests NOT_STARTED). */
 export function surelyNotRun(error: unknown): boolean {
   if (error instanceof ApiPausedError) return true;
   const status = Number((error as { status?: number })?.status);
+  if (status === 409) return (error as { notStarted?: boolean }).notStarted === true;
   return status >= 400 && status < 500 && status !== 408 && status !== 429;
 }
 let apiPause: ApiPause = null;
@@ -121,13 +123,15 @@ export class HttpError extends Error {
   status: number;
   detail: string;
   info?: Record<string, unknown>; // 서버가 구조로 준 오류의 나머지(code·refs …)
+  notStarted: boolean; // 응답의 X-MVHub-Submission: not-started — 서버가 아무것도 만들기 전에 거절했다
 
-  constructor(status: number, message: string, detail = message, info?: Record<string, unknown>) {
+  constructor(status: number, message: string, detail = message, info?: Record<string, unknown>, notStarted = false) {
     super(message);
     this.name = "HttpError";
     this.status = status;
     this.detail = detail;
     this.info = info;
+    this.notStarted = notStarted;
   }
 
   // 글로 바꾸면 여느 Error 와 같은 모양이다("Error: 500: …"). 안내를 만드는 곳들이 `String(e)` 의 "Error: " 앞머리만 떼는데, 이름이
@@ -188,7 +192,7 @@ export async function throwHttpError(res: Response, url: string, fallback?: stri
     dispatchAppEvent(APP_EVENTS.authRequired);
   }
   const { detail, info } = await responseErrorDetail(res, fallback);
-  throw new HttpError(res.status, `${res.status}: ${detail}`, detail, info);
+  throw new HttpError(res.status, `${res.status}: ${detail}`, detail, info, res.headers?.get("X-MVHub-Submission") === "not-started");
 }
 
 /**

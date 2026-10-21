@@ -83,7 +83,9 @@ it("재생성 — 멈춤으로 못 보냈거나 서버가 거절(4xx)했으면 �
     return dropLink.mock.calls.length;
   };
   expect(await outcome(new ApiPausedError("paused"))).toBe(1);
-  expect(await outcome(new HttpError(409, "충돌"))).toBe(1);
+  // 409 는 서버가 not-started 를 붙였을 때만 거절이다 — 표식 없는 409 는 같은 열쇠의 기존 요청일 수 있어 남긴다(gen_requests NOT_STARTED 계약)
+  expect(await outcome(new HttpError(409, "충돌"))).toBe(0);
+  expect(await outcome(new HttpError(409, "충돌", "충돌", undefined, true))).toBe(1);
   expect(await outcome(new TypeError("Failed to fetch"))).toBe(0);
   expect(await outcome(new HttpError(429, "많음"))).toBe(0);
 });

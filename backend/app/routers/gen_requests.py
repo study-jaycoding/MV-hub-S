@@ -169,7 +169,7 @@ async def _paid_claim_blocked(
 
 
 # 아무것도 만들거나 줄 세우기 전에 거절한 409 표식 — MCP 계획(routers/mcp_v2)은 이것만 '거절(다시 계획해도 됨)'으로,
-#  표식 없는 409(같은 열쇠의 기존 요청·복구 보류 — 이미 접수됐을 수 있다)는 '불명확'으로 본다(Codex 리뷰 P2 ④). 문구로 가르지 않는다.
+#  표식 없는 409(같은 열쇠의 기존 요청·캔버스 충돌 — 이미 접수됐을 수 있다)는 '불명확'으로 본다(Codex 리뷰 P2 ④). 문구로 가르지 않는다.
 NOT_STARTED = {"X-MVHub-Submission": "not-started"}
 
 
@@ -335,6 +335,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
                     "외부 제출 여부를 먼저 확인해야 합니다 — 생성 정보에서 "
                     "'미제출 확인 후 다시 실행'을 사용하세요"
                 ),
+                headers=dict(NOT_STARTED),
             )
         # 재생성본은 부모 project_id 를 상속(import_generation) — 부모가 프로젝트에 속하면 그 프로젝트
         # 접근권도 확인한다. 안 하면 '옛날엔 그 프로젝트 멤버였다가 빠진' 사용자가 자기 옛 생성물을

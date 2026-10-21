@@ -231,6 +231,33 @@ describe("App: 프롬프트 숨김 상태에서 씬의 부분 성공과 카드�
     expect(scene.cards.find(card => card.id === "made")?.pendingGenerationAttempts || []).toHaveLength(aba ? 1 : 0);
     expect(released).toHaveBeenCalledTimes(1);
   });
+  it.each([409, 408, 429, 500, 503, undefined])("Draft 접수 불명(%s) 뒤 재확인과 확정 거절은 기존 표식만 보존한다", { timeout: 20_000 }, async status => {
+    draftSelected = true;
+    const unknown = status === undefined ? new TypeError("synthetic lost response")
+      : Object.assign(new Error("synthetic uncertain response"), { status });
+    const rejected = Object.assign(new Error("synthetic not-started conflict"), { status: 409, notStarted: true });
+    const send = vi.fn().mockRejectedValueOnce(unknown).mockRejectedValue(rejected);
+    (boundary.api as unknown as Record<string, unknown>).prepareRegenerate = vi.fn(() => send);
+    const { default: App } = await import("../src/App");
+    act(() => view.root.render(<App />));
+    await settle();
+    click(button(view.container, "시험 Draft 완료"));
+    await act(async () => { await draftRun; });
+    await settle();
+    expect(send).toHaveBeenCalledTimes(1);
+    const first = scene.cards.find(card => card.id === "made")!.pendingGenerationAttempts!;
+    expect(first).toHaveLength(1);
+    const notice = view.container.textContent;
+    for (const count of [2, 3]) {
+      click(button(view.container, "시험 Draft 완료"));
+      await act(async () => { await draftRun; });
+      await settle();
+      expect(send).toHaveBeenCalledTimes(count);
+      expect(scene.cards.find(card => card.id === "made")!.pendingGenerationAttempts).toEqual(first);
+      expect(view.container.textContent).toContain("Draft 생성 실패");
+    }
+    expect(notice).toContain("기존 요청을 확인하세요");
+  });
   // 시간 제한 20초 — App 전체를 StrictMode 로 렌더하는 첫 마운트라 단독 1.4~1.8초인데, 전체 실행(파일 병렬·jsdom 기동 경합)에서는 기본 5초를 넘는다.
   // 2026-09-20 실측: 시험 파일이 하나 늘 때마다 넘었고 단독으로는 3/3 통과. 이 시험에만 올린다(전역 제한은 그대로 — 다른 시험의 무한 대기를 가리지 않게).
   it("실제 Ctrl+K로 숨긴 뒤 오류 두 줄을 띄우고 유효 카드의 배치 두 건만 제출한다", { timeout: 20_000 }, async () => {
