@@ -113,6 +113,7 @@ function Get-QualifiedRelease {
             if (-not $Name -or $Name -match '(^/|:|(^|/)\.\.?(/|$)|//|[. ](/|$))') { throw 'Unsafe ZIP path.' }
             $IsDirectory = $Name.EndsWith('/')
             $Name = $Name.TrimEnd('/')
+            if (@($Name.Split('/') | Where-Object { $_ -match '^[^/.]{1,6}~[0-9]+(\.[^/]{1,3})?$' }).Count) { throw 'Unsafe ZIP path.' }
             if ($Name -match '^(backend/data|data|logs|\.install-checkpoints|\.install-journals)(/|$)' -or
                 $Name -match '^backend/(content_hub|content_hub_trash)\.db(?:-(?:wal|shm|journal))?$' -or
                 $Name -match '^(INSTALL_SOURCE\.txt|update-journal\.json|\.install-activation\.json|\.update\.lock|\.resolve-transfer\.lock)$') { throw 'Package targets installation-owned data.' }
