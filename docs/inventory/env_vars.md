@@ -137,15 +137,15 @@
 | `CONTENT_HUB_WORKER_ID` | `"me"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_WORKER_NAME` | `"나"` | `backend/app/config.py` | — |
 | `DEV` | — | `frontend/src/lib/sceneStore.ts` | — |
-| `MVHUB_ACTIVATION_CONTROL` | `""` | `backend/app/services/runtime_activation.py` | `MV_agent.bat` `update_release_worker.bat` |
-| `MVHUB_ACTIVATION_ROOT` | — | `backend/app/services/runtime_activation.py` | `MV_agent.bat` `update_release_worker.bat` |
+| `MVHUB_ACTIVATION_CONTROL` | `""` `''` | `backend/app/services/release_update.py` `backend/app/services/runtime_activation.py` | `MV_agent.bat` `update_release_worker.bat` |
+| `MVHUB_ACTIVATION_ROOT` | `''` | `backend/app/services/release_update.py` `backend/app/services/runtime_activation.py` | `MV_agent.bat` `update_release_worker.bat` |
 | `MVHUB_APP_BROWSER` | `""` | `run_agent_session.py` | — |
 | `MVHUB_BUILD_ID` | `""` | `backend/app/services/runtime_activation.py` | — |
 | `MVHUB_CLI_MAX_IN_FLIGHT` | `64` | `agent_push.py` | — |
 | `MVHUB_CLI_SUBMIT_WORKERS` | `8` | `agent_push.py` | — |
 | `MVHUB_CLI_TRACK_BUDGET` | `10` | `agent_push.py` | — |
 | `MVHUB_CMDCMDLINE` | `""` | `run_agent_session.py` | `MV_agent.bat` |
-| `MVHUB_EXECUTION_NONCE` | `""` | `backend/app/services/runtime_activation.py` | `MV_agent.bat` `update_release_worker.bat` |
+| `MVHUB_EXECUTION_NONCE` | `""` `''` | `backend/app/services/release_update.py` `backend/app/services/runtime_activation.py` | `MV_agent.bat` `update_release_worker.bat` |
 | `MVHUB_LOCAL_URLS` | `"http://127.0.0.1:8010,http://127.0.0.1:8012"` | `backend/app/resources/resolve/MVHub_Importer.py` | — |
 | `MVHUB_NAMES_READONLY` | — | `backend/app/routers/library.py` | `test_dev.bat` `test_dev_server.bat` |
 | `MVHUB_PROCESS_ROLE` | `"unknown"` | `backend/app/services/runtime_activation.py` | `MV_agent.bat` `update_release_worker.bat` |

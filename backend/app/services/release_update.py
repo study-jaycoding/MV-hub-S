@@ -28,7 +28,7 @@ from typing import Any, Callable, Iterator, Literal
 from ..config import AUTH_ENABLED, BACKEND_DIR, PORT
 from .atomic_io import atomic_write_text
 from .read_utf8_sig_first_line import read_first_line
-from . import release_contract
+from . import release_contract, runtime_activation
 
 APP_ROOT = BACKEND_DIR.parent
 UPDATE_STATE_BASE = Path(
@@ -127,6 +127,16 @@ def _unfinished_install(root: Path) -> bool:
         return False
     try:
         value = release_contract.document(path.read_bytes())
+        if 'format_version' not in value:
+            # Reuse launcher admission, without duplicating its legacy payload/journal checks.
+            control = os.environ.get('MVHUB_ACTIVATION_CONTROL', '')
+            return not (
+                control
+                and Path(control).resolve() == (root / '.install-activation.json').resolve()
+                and Path(os.environ.get('MVHUB_ACTIVATION_ROOT', '')).resolve() == root.resolve()
+                and re.fullmatch(r'[0-9a-f]{32}', os.environ.get('MVHUB_EXECUTION_NONCE', ''))
+                and runtime_activation.admission_state() == 'normal'
+            )
         return value.get('format_version') != 1 or value.get('phase') not in {'committed', 'rolled_back'}
     except (OSError, ValueError):
         return True

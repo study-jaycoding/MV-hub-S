@@ -109,13 +109,15 @@ function Get-QualifiedRelease {
         }
         $Names = @{}
         foreach ($Entry in $Archive.Entries) {
-            $Name = $Entry.FullName.TrimEnd('/')
-            if (-not $Name -or $Name -match '(^/|\\|:|(^|/)\.\.?(/|$)|//|[. ](/|$))') { throw 'Unsafe ZIP path.' }
+            $Name = $Entry.FullName.Replace('\', '/')
+            if (-not $Name -or $Name -match '(^/|:|(^|/)\.\.?(/|$)|//|[. ](/|$))') { throw 'Unsafe ZIP path.' }
+            $IsDirectory = $Name.EndsWith('/')
+            $Name = $Name.TrimEnd('/')
             if ($Name -match '^(backend/data|data|logs|\.install-checkpoints|\.install-journals)(/|$)' -or
                 $Name -match '^backend/(content_hub|content_hub_trash)\.db(?:-(?:wal|shm|journal))?$' -or
                 $Name -match '^(INSTALL_SOURCE\.txt|update-journal\.json|\.install-activation\.json|\.update\.lock|\.resolve-transfer\.lock)$') { throw 'Package targets installation-owned data.' }
             if ((($Entry.ExternalAttributes -shr 16) -band 61440) -eq 40960) { throw 'ZIP symlink forbidden.' }
-            if ($Entry.FullName.EndsWith('/')) { continue }
+            if ($IsDirectory) { continue }
             if ($Names.ContainsKey($Name)) { throw 'Duplicate ZIP path.' }
             $Names[$Name] = $Entry
         }
@@ -130,7 +132,7 @@ function Get-QualifiedRelease {
         }
         foreach ($Row in $Descriptor.payload) {
             $Name = [string]$Row.path
-            if ($Seen.ContainsKey($Name) -or -not $Names.ContainsKey($Name) -or $Names[$Name].FullName -cne $Name -or
+            if ($Seen.ContainsKey($Name) -or -not $Names.ContainsKey($Name) -or $Names[$Name].FullName.Replace('\', '/') -cne $Name -or
                 $Names[$Name].Length -ne $Row.size -or $Row.sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'Payload inventory mismatch.' }
             $Seen[$Name] = $true
             $PayloadStream = $Names[$Name].Open()
@@ -384,7 +386,7 @@ function Initialize-WorkerActivation {
         $Intent = ConvertFrom-ReleaseJson ([IO.File]::ReadAllBytes($Journal))
         if ($Intent.PSObject.Properties.Name -notcontains 'format_version') {
             Assert-LegacyCommittedInstall -Root $Root -Intent $Intent
-            # The old updater owns journal cleanup; a leftover may still show recovery in the update UI.
+            # The app reuses this normal activation decision; the old updater owns journal cleanup.
         }
         elseif ($Intent.format_version -ne 1 -or $Intent.phase -notin @('committed', 'rolled_back')) {
             throw 'Interrupted installation requires updater recovery before normal boot.'

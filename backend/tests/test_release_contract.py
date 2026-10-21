@@ -101,6 +101,67 @@ def test_pending_install_journal_prevents_same_version_health_shortcut(tmp_path,
     assert not update._unfinished_install(tmp_path)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows launcher approval")
+def test_legacy_launcher_approval_allows_same_version_health(tmp_path, monkeypatch):
+    from test_install_worker_contract import legacy_install, ps
+
+    legacy_install(tmp_path)
+    before = (tmp_path / 'update-journal.json').read_bytes()
+    result = ps(tmp_path, f"Initialize-WorkerActivation -Root '{tmp_path}'")
+    assert result.returncode == 0, result.stderr
+    nonce = result.stdout.strip().removeprefix('READY:')
+    monkeypatch.setenv('MVHUB_ACTIVATION_ROOT', str(tmp_path))
+    monkeypatch.setenv('MVHUB_ACTIVATION_CONTROL', str(tmp_path / '.install-activation.json'))
+    monkeypatch.setenv('MVHUB_EXECUTION_NONCE', nonce)
+    assert not update._unfinished_install(tmp_path)
+
+    (tmp_path / 'runtime/python/python314.dll').write_bytes(b'fixture')
+    (tmp_path / 'hf_cli_version.txt').write_text('1.1.26')
+    (tmp_path / 'runtime/higgsfield/node_modules/@higgsfield/cli/package.json').write_text('{"version":"1.1.26"}')
+    (tmp_path / 'INSTALL_SOURCE.txt').write_text(str(tmp_path))
+    monkeypatch.setattr(update, 'AUTH_ENABLED', False)
+    monkeypatch.setattr(update, 'UPDATE_STATE_BASE', tmp_path / 'state')
+    monkeypatch.setattr(update, 'fetch_latest', lambda root: {'version': '2026.10.21-1200', 'higgsfield_cli_version': '1.1.26'})
+    monkeypatch.setattr(update.subprocess, 'run', lambda args, **kw: subprocess.CompletedProcess(
+        args, 0, '3.14.0|64' if '-I' in args else 'higgsfield 1.1.26', ''))
+    status = update.get_status(refresh=True, root=tmp_path)
+    assert status['state'] == 'up_to_date' and not status.get('repair_required')
+    assert (tmp_path / 'update-journal.json').read_bytes() == before
+
+
+@pytest.mark.parametrize('damage', [
+    'missing', 'missing_record', 'invalid_record', 'missing_nonce', 'nonce', 'root', 'control',
+    'pending', 'activated', 'format', 'new_journal',
+])
+def test_legacy_journal_requires_current_normal_launcher_approval(tmp_path, monkeypatch, damage):
+    (tmp_path / 'update-journal.json').write_text('{"token":"1234abcd"}')
+    record = {'format_version': 1, 'state': 'normal', 'execution_nonce': 'a' * 32}
+    monkeypatch.setenv('MVHUB_ACTIVATION_ROOT', str(tmp_path))
+    monkeypatch.setenv('MVHUB_ACTIVATION_CONTROL', str(tmp_path / '.install-activation.json'))
+    monkeypatch.setenv('MVHUB_EXECUTION_NONCE', 'a' * 32)
+    if damage == 'missing':
+        monkeypatch.delenv('MVHUB_ACTIVATION_CONTROL')
+    elif damage == 'missing_nonce':
+        monkeypatch.delenv('MVHUB_EXECUTION_NONCE')
+    elif damage == 'nonce':
+        monkeypatch.setenv('MVHUB_EXECUTION_NONCE', 'b' * 32)
+    elif damage == 'root':
+        monkeypatch.setenv('MVHUB_ACTIVATION_ROOT', str(tmp_path.parent))
+    elif damage == 'control':
+        monkeypatch.setenv('MVHUB_ACTIVATION_CONTROL', str(tmp_path / 'other.json'))
+        (tmp_path / 'other.json').write_text(json.dumps(record))
+    elif damage in {'pending', 'activated'}:
+        record['state'] = damage
+    elif damage == 'format':
+        (tmp_path / 'update-journal.json').write_text('{"format_version":null}')
+    elif damage == 'new_journal':
+        (tmp_path / 'update-journal.json').write_text('{"format_version":1,"phase":"starting"}')
+    if damage != 'missing_record':
+        (tmp_path / '.install-activation.json').write_text('{' if damage == 'invalid_record' else json.dumps(record))
+    assert update._unfinished_install(tmp_path)
+    assert update._installation_health(tmp_path)[0] is False
+
+
 def test_backend_rejects_legacy_downgrade_before_launching_installed_updater(tmp_path):
     (tmp_path / 'build-manifest.json').write_text('{}')
     with pytest.raises(update.ReleaseUpdateError, match='descriptor downgrade'):
@@ -263,6 +324,65 @@ def test_qualify_failure_preserves_candidate_zip_and_sidecars(tmp_path):
     with pytest.raises(c.ContractError):
         load_cli().qualify(folder / "candidate.json", receipt_path)
     assert {p.name: p.read_bytes() for p in folder.iterdir()} == before
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell adapter")
+def test_powershell_verifies_compress_archive_and_rejects_normalized_unsafe_paths(tmp_path):
+    _, folder, value, _ = fixture(tmp_path)
+    package = folder / value['file']
+    source = tmp_path / 'source'
+    with zipfile.ZipFile(package) as archive:
+        archive.extractall(source)
+    compressed = folder / 'compressed.zip'
+    result = subprocess.run([
+        'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+        f"$ErrorActionPreference='Stop'; Compress-Archive -Path '{source}\\*' -DestinationPath '{compressed}'; "
+        f"Add-Type -AssemblyName System.IO.Compression.FileSystem; $Zip=[IO.Compression.ZipFile]::OpenRead('{compressed}'); "
+        "try { if(-not @($Zip.Entries | Where-Object {$_.FullName.Contains('\')})){throw 'No backslash entries'} } finally {$Zip.Dispose()}",
+    ], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    with zipfile.ZipFile(compressed) as archive:
+        entries = [(info.filename, archive.read(info)) for info in archive.infolist()]
+    original_receipt = c.document(receipt(folder, value).read_bytes())
+
+    cases = []
+    unsafe = ['..\\escape', '\\absolute', 'C:\\drive', 'backend\\..\\escape',
+              'backend\\.\\escape', 'backend\\\\empty', 'backend/file:stream',
+              'backend\\data\\user.db', 'backend\\content_hub.db',
+              'backend.\\alias', 'backend \\alias', 'tail\\\\']
+    for index, name in enumerate([None, *unsafe, 'runtime\\higgsfield\\node_modules\\@higgsfield\\cli\\package.json']):
+        target = folder / f'case-{index}.zip'
+        if name is None:
+            target.write_bytes(compressed.read_bytes())
+        else:
+            with zipfile.ZipFile(target, 'w') as archive:
+                for path, raw in entries:
+                    archive.writestr(path, raw)
+                info = zipfile.ZipInfo()
+                info.filename = name  # Preserve raw separators even when Python normalizes Windows names.
+                archive.writestr(info, b'unsafe or duplicate')
+        candidate = {**value, 'file': target.name, 'size': target.stat().st_size, 'sha256': c.file_sha256(target),
+                     'contract': dict(value['contract'])}
+        proof = {**original_receipt, 'artifact': {'sha256': candidate['sha256'], 'size': candidate['size']}}
+        proof_path = target.with_suffix('.validation.json')
+        proof_path.write_bytes(c.json_bytes(proof))
+        candidate['contract']['validation_receipt'] = {'file': proof_path.name, 'sha256': c.file_sha256(proof_path)}
+        target.with_suffix('.candidate.json').write_bytes(c.json_bytes(candidate))
+        error = '' if name is None else (
+            'Duplicate ZIP path.' if name.startswith('runtime') else
+            'Package targets installation-owned data.' if name in {'backend\\data\\user.db', 'backend\\content_hub.db'} else
+            'Unsafe ZIP path.')
+        cases.append({'path': str(target), 'error': error})
+    cases_path = tmp_path / 'cases.json'
+    cases_path.write_bytes(c.json_bytes(cases))
+    helper = Path(__file__).resolve().parents[2] / 'update_release_contract.ps1'
+    script = (f"$ErrorActionPreference='Stop'; . '{helper}'; "
+              f"foreach($Case in (Get-Content -Raw -LiteralPath '{cases_path}' | ConvertFrom-Json)) {{ "
+              "$Failure=''; try { $null=Get-QualifiedRelease -PackagePath $Case.path } catch { $Failure=$_.Exception.Message }; "
+              "if($Failure -cne $Case.error){throw ('Wrong ZIP verdict: '+$Case.path+' '+$Failure)} }")
+    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                             '-Command', script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell adapter")
