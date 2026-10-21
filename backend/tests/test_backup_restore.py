@@ -348,7 +348,10 @@ class BackupRestoreTests(unittest.TestCase):
 
         with self.assertRaises(sqlite3.IntegrityError):
             verify_restore_set(content_backup, self.root / "collide")
-        self.assertEqual(list((self.root / "collide" / "db").glob("*")), [])
+        # 이 드릴이 만드는 DB/곁파일만 검사한다. 무관한 대문자 .tmp 사본의 작성자는 미확정이다.
+        for name in ("content_hub.db", "content_hub_trash.db", "manage_hub.db"):
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                self.assertFalse((self.root / "collide" / "db" / (name + suffix)).exists())
 
     def test_single_drill_cleans_up_its_copy_when_the_rebuild_collides(self):
         with db.get_connection() as conn:
@@ -363,7 +366,8 @@ class BackupRestoreTests(unittest.TestCase):
 
         with self.assertRaises(sqlite3.IntegrityError):
             verify_restore_drill(backup, restored)
-        self.assertEqual(list(self.root.glob("single-restored.db*")), [])
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            self.assertFalse(Path(str(restored) + suffix).exists())
 
     def test_integrity_error_message_stays_one_short_line(self):
         """외부 DB 의 색인 이름에 줄바꿈·긴 글자가 있어도 오류는 한 줄로 짧게(로그·콘솔 오염 방지)."""
