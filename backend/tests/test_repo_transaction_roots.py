@@ -31,6 +31,19 @@ def _assert_pool_connection_clean() -> None:
         assert not conn.in_transaction
 
 
+@pytest.mark.parametrize("email", ["acct:owner@test", " ACCT:owner@test ", "user_owner@test", " UsEr_owner@test "])
+@pytest.mark.parametrize("create", ["register", "ensure_admin_account"])
+def test_account_creation_rejects_internal_uid_prefixes(pooled_db, email, create):
+    if create == "register":
+        with pytest.raises(ValueError, match="이메일"):
+            repo.register(email, "password123")
+    else:
+        assert repo.ensure_admin_account(email, "password123") is False
+    assert repo.count_accounts() == 0
+    assert repo.register("owner@test", "password123")["status"] == "approved"
+    _assert_pool_connection_clean()
+
+
 def test_trash_cancels_unsubmitted_request_and_restore_does_not_requeue(pooled_db):
     """삭제한 미제출 카드는 복원해도 유료 생성 대기열로 조용히 되살아나지 않는다."""
     from app.repo import trash

@@ -66,7 +66,7 @@ def register(email: str, password: str, name: Optional[str] = None) -> dict[str,
     """신규 계정 등록. 첫 계정 → 부트스트랩 관리자(admin/approved), 그 외 → member/pending.
     이미 있는 이메일이면 ValueError. password 는 해시로만 저장."""
     email = norm_email(email)
-    if not email or "@" not in email:
+    if not email or "@" not in email or email.startswith(("acct:", "user_")):
         raise ValueError("올바른 이메일이 필요합니다")
     if not password or len(password) < 6:
         raise ValueError("비밀번호는 6자 이상이어야 합니다")
@@ -108,7 +108,8 @@ def ensure_admin_account(email: str, password: str) -> bool:
     이미 있으면 절대 건드리지 않는다(비밀번호·역할 보존). 서버(AUTH on) 시작 시 호출해서
     '관리자 계정을 따로 안 만들어도 처음부터 있게' 한다. True=새로 만듦."""
     email = norm_email(email)
-    if not email or "@" not in email or not password or len(password) < 6:
+    if (not email or "@" not in email or email.startswith(("acct:", "user_"))
+            or not password or len(password) < 6):
         return False
     password_hash = auth.hash_password(password)  # 느린 해시는 잠금 밖(R6 2-A)
     with get_connection() as conn:

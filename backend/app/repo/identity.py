@@ -403,6 +403,7 @@ def link_accounts_to_creators() -> int:
                             "UPDATE account SET creator_uid=? WHERE email=?", (inferred, r["email"])
                         )
                         remap_creator_uid(conn, uid, inferred)
+                        _remap_legacy_account_email(conn, r["email"], inferred)
                         uid = inferred
                         updated_account = True
                         n += 1
@@ -479,6 +480,9 @@ def set_account_hf_creator(email: str, uid: str) -> bool:
             #   정합한다(account 만 user_ 였던 부분 전환도 복구). acct: 가 아니면 remap 은 멱등 0.
             if old_uid and str(old_uid).startswith("acct:"):
                 remap_creator_uid(conn, old_uid, uid)
+            if old_uid != "acct:" + email:
+                remap_creator_uid(conn, "acct:" + email, uid)
+            _remap_legacy_account_email(conn, email, uid)
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
@@ -807,6 +811,14 @@ def remap_creator_uid(conn, old_uid: Optional[str], new_uid: Optional[str]) -> i
     return n
 
 
+def _remap_legacy_account_email(conn, email: str, uid: str) -> int:
+    email = norm_email(email)
+    # 예약 접두사의 기존 계정은 타인의 내부 uid와 구별할 수 없어 이메일 리맵에서 제외한다.
+    if not email or email.startswith(("acct:", "user_")):
+        return 0
+    return remap_creator_uid(conn, email, uid)
+
+
 def _creator_uid_account_map(conn) -> dict[str, str]:
     """acct:<email> → 실제 creator_uid(user_) 매핑 — plan(dry-run)과 migrate 가 공유하는
     단일 소스. account.creator_uid 가 이미 user_ 인 계정만(acct: 인 계정은 매핑 소스가 못 됨)."""
@@ -861,7 +873,7 @@ def creator_uid_remap_plan() -> dict[str, Any]:
 
 
 def migrate_all_acct_to_creator_uid() -> int:
-    """부팅 1회·멱등: account_map(acct:<email>→user_) 기준 모든 계정의 과거 acct: 잔재를 user_ 로 일괄 정합.
+    """부팅 1회·멱등: account_map 기준 연결된 계정의 과거 acct:·이메일 잔재를 일괄 정합.
 
     앞으로의 전환은 set_account_hf_creator 가 push 시점에 자동 정합하므로, 이 배치는 '과거에 쌓인'
     잔재(전환 자동화 이전 데이터)를 청소하는 용도다. account 에 대응 없는 고아 acct: 는 account_map 에
@@ -870,11 +882,13 @@ def migrate_all_acct_to_creator_uid() -> int:
     dry-run 이 이미 한 번 수행한다(이중 스캔 제거)."""
     total = 0
     with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         amap = _creator_uid_account_map(conn)
         if not amap:
             return 0
         for old, new in amap.items():
             total += remap_creator_uid(conn, old, new)
+            total += _remap_legacy_account_email(conn, old.removeprefix("acct:"), new)
     return total
 
 
