@@ -347,7 +347,7 @@ export const api = {
   },
 
   // 패널 파생값(내 실패 수·미확인 코멘트) — 클라이언트 전량 집계 대체.
-  generationStats: () => jsonFetch<GenStats>("/api/generations-stats"),
+  generationStats: (signal?: AbortSignal) => jsonFetch<GenStats>("/api/generations-stats", { signal }),
 
   notificationComments: (limit = 50) =>
     jsonFetch<import("./types").NotificationComment[]>(
@@ -427,8 +427,8 @@ export const api = {
       body: jsonBody({ parent_ids: parentIds }),
     }),
 
-  facets: (tab: "my" | "team" = "my") =>
-    jsonFetch<Facets>(`/api/facets?tab=${tab}`),
+  facets: (tab: "my" | "team" = "my", signal?: AbortSignal) =>
+    jsonFetch<Facets>(`/api/facets?tab=${tab}`, { signal }),
 
   models: () => jsonFetch<ModelInfo[]>("/api/models"),
 

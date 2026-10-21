@@ -34,6 +34,8 @@ export class GenerationReadModel {
   private sequence = 0;
   private retiredBefore = 0;
   private readonly entries = new Map<string, Entry>();
+  // shortcut: watermarks live until clear(); prune when read tickets gain a completion lifecycle.
+  private readonly evictedVersions = new Map<string, number>();
   private readonly listeners = new Set<(change: GenerationReadChange) => void>();
 
   constructor(scope: GenerationReadScope, private readonly capacity = 3000) {
@@ -86,6 +88,7 @@ export class GenerationReadModel {
     const changed: string[] = [];
     for (const [id, fresh] of Object.entries(items)) {
       if (!id || !fresh || typeof fresh.id !== "string" || !fresh.id) continue;
+      if (ticket.sequence < (this.evictedVersions.get(id) ?? 0)) continue;
       let entry = this.entries.get(id);
       // A field patch cannot establish identity or restore a record confirmed missing.
       if (ticket.fields && (!entry?.value || entry.missing || entry.value.id !== fresh.id)) continue;
@@ -112,6 +115,7 @@ export class GenerationReadModel {
       entry.value = was && isStructurallyEqual(was, next) ? was : next;
       if (!was) entry.identityVersion = ticket.sequence;
       entry.missing = false;
+      this.evictedVersions.delete(id);
       this.entries.delete(id);
       this.entries.set(id, entry);
       accepted.push(id);
@@ -126,10 +130,12 @@ export class GenerationReadModel {
     if (!this.isCurrent(ticket)) return;
     const changed: string[] = [];
     for (const id of ids) {
+      if (ticket.sequence < (this.evictedVersions.get(id) ?? 0)) continue;
       const previous = this.entries.get(id);
       const newest = previous ? Math.max(previous.identityVersion, ...previous.versions.values()) : 0;
       if (ticket.sequence < newest) continue;
       this.entries.set(id, { versions: new Map(), stale: new Set(), identityVersion: ticket.sequence, missing: true });
+      this.evictedVersions.delete(id);
       changed.push(id);
       this.trim();
     }
@@ -139,11 +145,12 @@ export class GenerationReadModel {
   invalidate(ids: readonly string[], fields?: readonly GenerationField[]): void {
     const sequence = ++this.sequence;
     for (const id of ids) {
-      const entry: Entry = this.entries.get(id) ?? { versions: new Map(), stale: new Set(), identityVersion: 0, missing: false };
+      const entry: Entry = this.entries.get(id) ?? { versions: new Map(), stale: new Set(), identityVersion: this.evictedVersions.get(id) ?? 0, missing: false };
       const staleFields = fields ?? Object.keys(entry.value ?? {}) as GenerationField[];
       for (const field of staleFields) { entry.versions.set(field, sequence); entry.stale.add(field); }
       if (fields === undefined) entry.identityVersion = sequence;
       this.entries.set(id, entry);
+      this.evictedVersions.delete(id);
       this.trim();
     }
   }
@@ -156,6 +163,7 @@ export class GenerationReadModel {
   clear(notify = true): void {
     this.epoch++;
     this.entries.clear();
+    this.evictedVersions.clear();
     if (notify) this.notify({ ids: [] });
   }
 
@@ -166,9 +174,12 @@ export class GenerationReadModel {
   private trim(): void {
     while (this.entries.size > this.capacity) {
       const oldest = this.entries.keys().next().value;
-      if (oldest !== undefined) this.entries.delete(oldest);
-      // An evicted field watermark must not let an older in-flight read resurrect it.
-      this.retiredBefore = this.sequence;
+      if (oldest !== undefined) {
+        const entry = this.entries.get(oldest)!;
+        // Retain only this ID's watermark; unrelated in-flight reads remain valid.
+        this.evictedVersions.set(oldest, Math.max(entry.identityVersion, ...entry.versions.values()));
+        this.entries.delete(oldest);
+      }
     }
   }
 }

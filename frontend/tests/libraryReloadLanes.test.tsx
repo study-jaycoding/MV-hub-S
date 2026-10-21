@@ -6,7 +6,7 @@
 import { act, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { api } from "../src/api";
+import { api, connectProgress } from "../src/api";
 import { folderPeekQuery } from "../src/lib/appGenerationQuery";
 import { LIBRARY_LIST_TIMEOUT_MESSAGE, LIBRARY_LIST_TIMEOUT_MS } from "../src/lib/libraryRequestTimeout";
 import { createLibraryMutationOrigin, decideLibrarySync, markMutationDomainsSucceeded } from "../src/lib/librarySync";
@@ -14,10 +14,13 @@ import type { GenerationLocation } from "../src/lib/resolveLibraryLocation";
 import { useGenerationAutoRefresh } from "../src/lib/useGenerationAutoRefresh";
 import { useGenerationLibraryData, type LibraryOwner } from "../src/lib/useGenerationLibraryData";
 import type { Filters, GenQuery, Generation } from "../src/types";
-import { APP_EVENTS } from "../src/lib/appEvents";
+import { APP_EVENTS, dispatchAppEvent } from "../src/lib/appEvents";
+import { useGenerationProgress } from "../src/lib/useGenerationProgress";
+import { usePromptCreatedActions } from "../src/lib/usePromptCreatedActions";
+import { onLibraryChanged } from "../src/lib/libraryBroadcast";
 import { generationChangeScope } from "../src/features/library/api";
 
-vi.mock("../src/api", () => ({ GEN_PAGE: 200, api: {
+vi.mock("../src/api", () => ({ GEN_PAGE: 200, connectProgress: vi.fn(() => () => {}), api: {
   listGenerations: vi.fn(), projects: vi.fn(), facets: vi.fn(), generationStats: vi.fn(), listTrash: vi.fn(), locateGenerations: vi.fn(),
 } }));
 
@@ -27,6 +30,7 @@ type Props = {
   auto?: boolean; // false = 조회를 시험이 직접 부른다
   trash?: boolean; // 휴지통 보기
   poll?: boolean; // App 과 같은 자동 조회(useGenerationAutoRefresh)를 붙인다
+  progress?: boolean;
 };
 const MAIN: GenQuery = { tab: "my", search: "cat" };
 const LOCATED: GenQuery = { tab: "my", project_id: "project-b", folder_path: "e001/c0010" };
@@ -45,14 +49,20 @@ let data: ReturnType<typeof useGenerationLibraryData>;
 let clock: ReturnType<typeof vi.spyOn> | null = null;
 const flash = vi.fn();
 let ownerNow: LibraryOwner | null = null; // App 이 커밋마다 적는 자료 주인(83회차) — 시험이 바꾼다
+let promptCreated: ReturnType<typeof usePromptCreatedActions>["handlePromptCreated"];
+const noop = () => {};
 const readOwner = () => ownerNow;
-function Harness({ query, authReady = true, projectWorkspaceId, composeListEnabled, auto = true, trash = false, poll = false }: Props) {
+function Harness({ query, authReady = true, projectWorkspaceId, composeListEnabled, auto = true, trash = false, poll = false, progress = false }: Props) {
   const filters: Filters = { tab: query.tab, ...(trash ? { deleted_only: true } : {}) };
   data = useGenerationLibraryData({ authReady, filters, genQuery: query, flash, projectWorkspaceId, composeListEnabled, owner: readOwner });
   const key = JSON.stringify(query);
   // App 과 같은 배선 — 조회 조건·탭·인증이 바뀌면 신선도 확인을 거쳐 다시 받는다.
   useEffect(() => { if (auto) void data.reloadIfStale(); }, [auto, key, authReady, data.reloadIfStale]);
   useGenerationAutoRefresh({ generations: data.gens, tab: poll ? query.tab : "compose", reload: data.reload, paused: data.autoRefreshPaused }); // compose = 주기 없음
+  useGenerationProgress({ enabled: progress, scopeKey: "test", gens: data.gens, setGens: data.setGens, reload: data.reload,
+    bumpBoard: noop, setSyncTick: noop, historyBoardVisible: false, commentsVisible: false });
+  promptCreated = usePromptCreatedActions({ boardFocusIdRef: { current: null }, boardSelectedRef: { current: [] },
+    filtersRef: { current: filters }, bumpBoard: noop, flash, reload: data.reload, setGens: data.setGens }).handlePromptCreated;
   return null;
 }
 const show = (props: Props) => act(() => root.render(<Harness {...props} />));
@@ -82,6 +92,89 @@ const start = (request: () => Promise<void>) => {
   return state;
 };
 const spyNow = (at: number) => (clock = vi.spyOn(Date, "now").mockReturnValue(at));
+
+it("[R4-1] real reconnect dispatch invalidates before real reload starts", async () => {
+  vi.useFakeTimers();
+  try {
+    await mount({ query: MAIN, progress: true });
+    const before = calls().list;
+    vi.mocked(api.listGenerations).mockResolvedValue([gen("after-reconnect")]);
+    act(() => vi.mocked(connectProgress).mock.calls.at(-1)?.[1]?.());
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    await settle();
+    expect(ids()).toEqual(["after-reconnect"]);
+    expect(calls().list).toBe(before + 1);
+  } finally { vi.useRealTimers(); }
+});
+
+it("[R4-2] prompt-created reload recovers from the following real local broadcast", async () => {
+  await mount();
+  const before = calls().list;
+  vi.mocked(api.listGenerations).mockResolvedValue([gen("created")]);
+  await act(async () => promptCreated());
+  await settle();
+  expect(ids()).toEqual(["created"]);
+  expect(calls().list).toBe(before + 2);
+});
+
+it("[R4-2] a peer broadcast retiring an ongoing read still applies a fresh page", async () => {
+  class PeerChannel {
+    static all: PeerChannel[] = [];
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+    constructor() { PeerChannel.all.push(this); }
+    close() { PeerChannel.all = PeerChannel.all.filter(channel => channel !== this); }
+  }
+  vi.stubGlobal("BroadcastChannel", PeerChannel);
+  const off = onLibraryChanged(noop);
+  try {
+    await mount();
+    const first = hold<Generation[]>(api.listGenerations);
+    const done = start(() => data.reload());
+    vi.mocked(api.listGenerations).mockResolvedValue([gen("after-peer")]);
+    act(() => {
+      for (const channel of PeerChannel.all) channel.onmessage?.({ data: { tab: "peer", change: {
+        version: 1, id: "R4-peer", scope: generationChangeScope(), resourceIds: [], affectsMembership: true, source: "bc",
+      } } });
+    });
+    await act(async () => first.resolve([gen("obsolete")]));
+    await settle();
+    expect(ids()).toEqual(["after-peer"]); expect(done.done).toBe(true);
+  } finally { off(); vi.unstubAllGlobals(); }
+});
+
+it("[R4-2] a single execution retries a retired ticket at most once", async () => {
+  await mount();
+  const before = calls().list;
+  vi.mocked(api.listGenerations).mockImplementation(async () => {
+    dispatchAppEvent(APP_EVENTS.libraryChanged);
+    return [gen("keeps-changing")];
+  });
+  await act(async () => data.reload());
+  expect(calls().list).toBe(before + 2);
+  expect(ids()).not.toContain("keeps-changing");
+});
+
+it("[R4-3] a stalled metadata bundle times out, releases await reload and drains queued metadata", async () => {
+  vi.useFakeTimers();
+  try {
+    await mount();
+    const signals: AbortSignal[] = [];
+    const stall = (signal: AbortSignal) => {
+      signals.push(signal);
+      return new Promise<never>((_resolve, reject) => signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+    };
+    vi.mocked(api.generationStats).mockImplementationOnce(signal => stall(signal!));
+    vi.mocked(api.facets).mockImplementationOnce((_tab, signal) => stall(signal!));
+    vi.mocked(api.projects).mockImplementationOnce((_tab, _archived, _workspace, signal) => stall(signal!));
+    const first = start(() => data.reload()); await settle();
+    const second = start(() => data.reload()); await settle();
+    expect(first.done).toBe(false); expect(second.done).toBe(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(LIBRARY_LIST_TIMEOUT_MS); });
+    await settle();
+    expect(signals).toHaveLength(3); expect(signals.every(signal => signal?.aborted)).toBe(true);
+    expect([first.done, second.done]).toEqual([true, true]);
+  } finally { vi.useRealTimers(); }
+});
 
 it("peer tags requery an idle Workspace filter including rows outside the old page and pagination", async () => {
   class PeerChannel {
@@ -387,8 +480,8 @@ it("못 보낸 메타 요구는 보내는 순간의 탭·공간으로 나간다 
   vi.mocked(api.projects).mockResolvedValueOnce(folders(3) as never);
   await act(async () => { metaA.resolve(folders(99)); });
   await settle();
-  expect(vi.mocked(api.projects).mock.calls.at(-1)).toEqual(["team", false, "ws-b"]);
-  expect(vi.mocked(api.facets).mock.calls.at(-1)).toEqual(["team"]);
+  expect(vi.mocked(api.projects).mock.calls.at(-1)).toEqual(["team", false, "ws-b", expect.any(AbortSignal)]);
+  expect(vi.mocked(api.facets).mock.calls.at(-1)).toEqual(["team", expect.any(AbortSignal)]);
   expect(data.unassignedCount).toBe(3);
 });
 
@@ -517,7 +610,7 @@ it("캔버스(목록 없음): 메타가 멈춘 사이 연달아 불러도 모두
   await settle();
   expect([b.done, c.done]).toEqual([true, true]);
   expect(api.projects).toHaveBeenCalledTimes(2);
-  expect(api.projects).toHaveBeenLastCalledWith("my", false, "ws-a");
+  expect(api.projects).toHaveBeenLastCalledWith("my", false, "ws-a", expect.any(AbortSignal));
   expect(data.unassignedCount).toBe(6);
   expect(api.listGenerations).not.toHaveBeenCalled(); // 캔버스는 목록도
   expect(api.generationStats).not.toHaveBeenCalled(); //  통계도 받지 않는다
@@ -749,7 +842,7 @@ it("15초 안에 돌아온 탭: 목록은 캐시로 두되, 다른 범위의 폴
   const before = calls();
   await mount({ query: { tab: "team" } });
   expect(calls().list).toBe(before.list); // 목록은 신선한 캐시 그대로
-  expect(vi.mocked(api.facets).mock.calls.at(-1)).toEqual(["team"]);
+  expect(vi.mocked(api.facets).mock.calls.at(-1)).toEqual(["team", expect.any(AbortSignal)]);
   expect(data.unassignedCount).toBe(2);
   const again = calls();
   await act(async () => { await data.reloadIfStale(); }); // 이미 이 범위의 것 — 더 받지 않는다

@@ -439,12 +439,12 @@ export function useGenerationLibraryData({
     const bare = tab === "compose" && !composeListEnabledRef.current;
     const workspaceId = projectWorkspaceIdRef.current;
     const scopeKey = metaScopeKey();
-    const ask =<T,>(wanted: boolean, fetch: () => Promise<T>): Promise<T | null> =>
-      wanted && authReadyRef.current ? fetch().catch(() => null) : Promise.resolve(null);
+    const ask =<T,>(wanted: boolean, fetch: (signal: AbortSignal) => Promise<T>): Promise<T | null> =>
+      wanted && authReadyRef.current ? timedLibraryRequest(fetch).catch(() => null) : Promise.resolve(null);
     const [st, f, pr] = await Promise.all([
-      ask(!bare && (full || now - lastStatsAtRef.current > 10000), () => api.generationStats()), // stats는 비싸 10초 스로틀
-      ask(full, () => api.facets(scope)),
-      ask(full || bare, () => api.projects(scope, false, workspaceId)),
+      ask(!bare && (full || now - lastStatsAtRef.current > 10000), signal => api.generationStats(signal)), // stats는 비싸 10초 스로틀
+      ask(full, signal => api.facets(scope, signal)),
+      ask(full || bare, signal => api.projects(scope, false, workspaceId, signal)),
     ]);
     const current = seq === reloadSeqRef.current;
     if (current) {
@@ -554,7 +554,7 @@ export function useGenerationLibraryData({
       const trashMode = !!filtersRef.current.deleted_only;
       const sig = JSON.stringify([trashMode, query]);
       const records = readModelForRef.current(query, trashMode);
-      const read = records.beginRead();
+      let read = records.beginRead();
       laneSigRef.current = sig; // 이 실행이 줄을 잡은 조회 — 조회가 바뀌면 reload 가 앞지른다(여기까지 await 가 없다)
       // 낱장으로 보이는 걸러진 컷 자리 — 실제 바뀜(내 변경·통보)은 낱장 판정에 쓰는 걸러진 목록에도 넘긴다(첫 쪽 밖의 변경으로 다시 컷이 될 수 있다).
       //  진입·확인은 넘기지 않는다 — 처음 낱장으로 판정돼 원문을 받는 것 자체는 새 바뀜이 아니다(같은 500건을 다시 받지 않는다).
@@ -568,21 +568,29 @@ export function useGenerationLibraryData({
       //    그리드 표시는 목록만 기다린다. 메타는 메타 줄이 받아 적용한다 — 줄이 비어 있으면 지금 이 자리에서 출발하고,
       //    앞 묶음이 떠 있으면 그 뒤에 선다(이 실행의 목록은 그것을 기다리지 않는다).
       const keepPainted = colorLedger.stamp(); // 출발 시점을 찍는다 — 이 뒤에 칠한 색은 아래 응답이 덮지 못한다
-      const list = timedLibraryRequest((signal) =>
-        trashMode ? api.listTrash(query.search, 0, GEN_PAGE, signal) : api.listGenerations(query, null, GEN_PAGE, { signal }));
-      const metaDone = requestMeta(light);
       const located = locatedRef.current;
       // 共有解除・削除・移動は毎回の通常更新と一緒に再確認。古い注入カードを復活させない。
-      const locationCheck = located && isLocatedQuery(query, located.tab, located.location)
-        ? timedLibraryRequest((signal) => api.locateGenerations({
-            tab: located.tab, gen_ids: located.location.focus_ids,
-            ...workspaceFilterOf(query),
-            project_id: located.location.project_id || "none",
-            folder_path: located.location.folder_path,
-          }, signal)).catch(() => null)
-        : Promise.resolve(null);
+      const fetchPage = () => Promise.all([
+        timedLibraryRequest((signal) => trashMode ? api.listTrash(query.search, 0, GEN_PAGE, signal)
+          : api.listGenerations(query, null, GEN_PAGE, { signal })),
+        located && isLocatedQuery(query, located.tab, located.location)
+          ? timedLibraryRequest((signal) => api.locateGenerations({
+              tab: located.tab, gen_ids: located.location.focus_ids,
+              ...workspaceFilterOf(query),
+              project_id: located.location.project_id || "none",
+              folder_path: located.location.folder_path,
+            }, signal)).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+      const pageDone = fetchPage();
+      const metaDone = requestMeta(light);
       try {
-        const [page, checked] = await Promise.all([list, locationCheck]);
+        let [page, checked] = await pageDone;
+        // 이 실행이 여전히 최신이면 변경 통보가 은퇴시킨 읽기 표만 한 번 갱신한다.
+        if (seq === reloadSeqRef.current && !records.isCurrent(read)) {
+          read = records.beginRead();
+          [page, checked] = await fetchPage();
+        }
         if (seq !== reloadSeqRef.current || !records.isCurrent(read)) {
           // 낡은 실행 — 목록은 버린다. 다만 맡긴 메타 요구가 처리될 때까지는 끝나지 않는다(전체 요구는 다음 묶음이 이어받는다).
           finishSync(false);

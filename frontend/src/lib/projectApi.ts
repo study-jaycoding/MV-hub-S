@@ -104,11 +104,11 @@ export function fetchAllTeamFresh(since: string, contextKey = ""): Promise<TeamF
 
 export const projectApi = {
   // 프로젝트(작업 묶음) — 공유·이동의 단위
-  projects: (tab: "my" | "team" = "my", includeArchived = false, workspaceId?: string) => {
+  projects: (tab: "my" | "team" = "my", includeArchived = false, workspaceId?: string, signal?: AbortSignal) => {
     const p = new URLSearchParams({ tab });
     if (includeArchived) p.set("include_archived", "true");
     if (workspaceId) p.set("workspace_id", workspaceId);
-    return jsonFetch<ProjectsResponse>(`/api/projects?${p.toString()}`);
+    return jsonFetch<ProjectsResponse>(`/api/projects?${p.toString()}`, { signal });
   },
   workspaceOptions: () =>
     jsonFetch<{ workspaces: WorkspaceOption[] }>("/api/projects/workspace-options"),

@@ -55,7 +55,7 @@ export function useGenerationAutoRefresh({
       inflightRef.current = true;
       lastRefreshRef.current = now;
       void Promise.resolve(reload(true, true, "check")).finally(() => {
-        inflightRef.current = false;
+        if (alive) inflightRef.current = false;
         // 팀 탭 유휴 폴링: light 리로드는 projects 를 안 갱신해 사이드바 폴더 카운트(+N 신규 배지)가
         // 낡는다 — 사이드바 카운트 갱신 채널을 깨운다(활성 잡 3초 폴링에선 스팸 방지 위해 제외).
         // 실제 변경이 아니라는 표식을 단다(LIBRARY_POLL_TICK) — 편집 탭은 이것에 공유 목록을 다시 받지 않는다.
@@ -64,6 +64,7 @@ export function useGenerationAutoRefresh({
     }, ms);
     return () => {
       alive = false;
+      inflightRef.current = false;
       clearInterval(id);
     };
   }, [hasActiveJob, reload, tab]);
@@ -80,7 +81,7 @@ export function useGenerationAutoRefresh({
       inflightRef.current = true;
       lastRefreshRef.current = now;
       void Promise.resolve(reload(true, true, "check")).finally(() => {
-        inflightRef.current = false;
+        if (alive) inflightRef.current = false;
         // 복귀 조회가 주기 조회를 대신해도 팀 사이드바 숫자는 갱신한다.
         if (alive && tab === "team" && !hasActiveJob) dispatchAppEvent(APP_EVENTS.libraryChanged, LIBRARY_POLL_TICK);
       });
@@ -89,6 +90,7 @@ export function useGenerationAutoRefresh({
     window.addEventListener("focus", onVisible);
     return () => {
       alive = false;
+      inflightRef.current = false;
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
     };

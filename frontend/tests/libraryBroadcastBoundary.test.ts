@@ -15,6 +15,26 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
+it("[R4-6] a window with no open read model receives configured connection changes", async () => {
+  const { configureOperationContext } = await import("../src/app/operationContext");
+  const { generationChangeScope, getGenerationReadModel } = await import("../src/features/library/readModels");
+  const { onLibraryChanged } = await import("../src/lib/libraryBroadcast");
+  configureOperationContext({ key: "connection-A", serverOrigin: location.origin, authority: "local", ready: true });
+  expect(generationChangeScope().connectionKey).toBe("connection-A");
+  const changed = vi.fn(), off = onLibraryChanged(changed), peer = new Channel("ch-generations");
+  const send = (connectionKey: string, id: string) => peer.postMessage({ tab: "peer", change: {
+    version: 1, id, scope: { ...generationChangeScope(), connectionKey }, resourceIds: [], affectsMembership: true, source: "bc",
+  } });
+  try {
+    send("connection-A", "a"); expect(changed).toHaveBeenCalledTimes(1);
+    getGenerationReadModel("view-specific-cache-key", "local");
+    expect(generationChangeScope().connectionKey).toBe("connection-A");
+    configureOperationContext({ key: "connection-B", serverOrigin: location.origin, authority: "local", ready: true });
+    send("connection-A", "stale-a"); expect(changed).toHaveBeenCalledTimes(1);
+    send("connection-B", "b"); expect(changed).toHaveBeenCalledTimes(2);
+  } finally { off(); peer.close(); }
+});
+
 it("receives a peer tag change once as the same narrow DOM signal without broad subscribers", async () => {
   const { onLibraryChanged } = await import("../src/lib/libraryBroadcast");
   const { getGenerationReadModel, generationChangeScope } = await import("../src/features/library/readModels");
@@ -68,7 +88,10 @@ it("delivers local DOM once and rejects own BC echoes, duplicate and foreign-acc
 it("scoped old-account DOM notifications cannot invalidate the current model", async () => {
   const { dispatchAppEvent, APP_EVENTS } = await import("../src/lib/appEvents");
   const { getGenerationReadModel, generationChangeScope } = await import("../src/features/library/readModels");
+  const { configureOperationContext } = await import("../src/app/operationContext");
+  configureOperationContext({ key: "a", serverOrigin: location.origin, authority: "local", ready: true });
   getGenerationReadModel("a", "local"); const old = generationChangeScope();
+  configureOperationContext({ key: "b", serverOrigin: location.origin, authority: "local", ready: true });
   const model = getGenerationReadModel("b", "local"), read = model.beginRead();
   const listener = vi.fn(); window.addEventListener(APP_EVENTS.generationTagsSettled, listener);
   dispatchAppEvent(APP_EVENTS.generationTagsSettled, { ids: ["same"], fields: ["tags"], change: {
