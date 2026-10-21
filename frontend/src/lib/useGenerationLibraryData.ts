@@ -746,12 +746,14 @@ export function useGenerationLibraryData({
     [launch, requestMeta, runCut],
   );
 
-  useEffect(() => onLibraryChanged(() => {}, () => {
+  useEffect(() => onLibraryChanged(() => {}, (detail) => {
     // A peer tag edit may add/remove rows outside this page's current IDs. Reuse
     // the authoritative query/meta lanes, including tag-filter membership and facets.
     // This callback is peer-only: the writer already awaited its own reconciliation.
     staleOtherTabs(tabCacheRef.current, null);
-    void reload(true, false);
+    // 유효한 태그 통지(detail)는 같은 DOM 이벤트로 걸러진 목록 훅(lib/useLocalFolderCards)이 이미 invalidate 를 걸었다 — 걸러 보는 컷 화면이
+    //  주인이면 여기는 check 로 그 실행에 합류한다(한 통지에 500건 lean 을 두 번 받지 않게, 84회차 Codex P2). 목록이 주인이면 전처럼 목록을 다시 받는다.
+    void reload(true, false, detail ? "check" : "invalidate");
   }), [reload]);
 
   // 탭 왕복용 stale-while-revalidate 게이트. 같은 필터의 목록을 방금 받았다면 캐시 화면을

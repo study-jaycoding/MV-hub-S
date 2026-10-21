@@ -10,6 +10,8 @@ import { isLocatedQuery, type GenerationLocation, type GenerationLocationRequest
 import type { SpotlightPromptHandle } from "../src/components/SpotlightPrompt";
 import type { PromptProps } from "./seedanceRenderHarness";
 import { createRenderRoot, deferred, installPromptBoundaryMocks, settle } from "./seedanceRenderHarness";
+import { APP_EVENTS } from "../src/lib/appEvents";
+import type { GenerationChange } from "../src/features/library/api";
 
 const variantScroll = vi.hoisted(() => vi.fn());
 vi.mock("virtua", async () => {
@@ -2289,6 +2291,44 @@ it("G1 known_cut_search_requests_one_lean_first_page — 서버 카드가 준비
   await settle();
   await settle();
   expect(searched()).toEqual([[500, true, null]]); // 메타가 늦게 끝나도 첫 쪽 확인을 더하지 않는다
+});
+
+// 84회차 Codex P2: 다른 창의 태그 저장 한 번 — 창 간 다리(lib/libraryBroadcast)가 같은 통지를 DOM 이벤트(걸러진 목록 훅 → invalidate)와 peer 콜백
+//  (본 목록 훅 → reload)으로 둘 다 전한다. 컷 화면이 주인일 때 peer 쪽이 invalidate 면 끝난 뒤 한 번 더 받아 500건 lean 이 두 번 나갔다 — check 로 합류한다.
+it("G1 peer_tag_settle_fetches_the_filtered_list_once — 다른 창의 태그 저장 1회에 걸러진 목록(500 lean)은 한 번만 다시 받는다", async () => {
+  const channels: Array<{ onmessage: ((event: { data: unknown }) => void) | null }> = [];
+  const had = Object.getOwnPropertyDescriptor(globalThis, "BroadcastChannel");
+  (globalThis as { BroadcastChannel?: unknown }).BroadcastChannel = class {
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+    constructor() { channels.push(this); }
+    postMessage() {}
+    addEventListener() {} // SpotlightPrompt 도 채널을 연다
+    removeEventListener() {}
+    close() {}
+  };
+  try {
+    const rows = Array.from({ length: 411 }, (_, index) => ({
+      ...withAsset(`c${index}`), folder_path: index % 3 ? "episode/shot" : "episode/other", sort_ts: 10_000 - index,
+    }) as Generation);
+    const listGenerations = vi.fn(async (query: GenQuery) => (query.search === "cat" ? rows : []));
+    await mountRealCut({ listGenerations, folderCards: byParent(() => false) });
+    const searched = () => asksOf(listGenerations).filter((ask) => ask.search === "cat").map((ask) => [ask.limit, ask.lean, ask.cursor]);
+    act(() => sidebarSnapshot!.onChange({ search: "cat" }));
+    await flushAll();
+    expect([searched(), cutNames()]).toEqual([[[500, true, null]], ["other", "shot"]]);
+    // 통지의 범위(연결 키)는 App 이 쓰는 모듈 인스턴스에서 읽는다 — 이 하네스는 모듈을 초기화해 정적 import 는 다른 인스턴스(키 "")다
+    const { generationChangeScope } = await import("../src/features/library/api");
+    const change: GenerationChange = {
+      version: 1, id: "peer-tab:1", scope: generationChangeScope(), resourceIds: ["c400"], changedFields: ["tags"], affectsMembership: false, source: "bc",
+    };
+    const message = { data: { tab: "peer-tab", event: APP_EVENTS.generationTagsSettled, change } };
+    act(() => { for (const channel of channels) channel.onmessage?.(message); }); // 다른 창의 한 통지 — 구독 채널 모두가 받는다
+    await flushAll();
+    expect([searched(), cutNames()]).toEqual([[[500, true, null], [500, true, null]], ["other", "shot"]]); // 두 번이 아니라 한 번 더
+  } finally {
+    if (had) Object.defineProperty(globalThis, "BroadcastChannel", had);
+    else delete (globalThis as { BroadcastChannel?: unknown }).BroadcastChannel;
+  }
 });
 
 const at = (id: string, folder: string, extra: Partial<Generation> = {}): Generation =>
