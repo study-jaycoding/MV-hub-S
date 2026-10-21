@@ -175,10 +175,11 @@ DB를 되돌리거나 실패 표식을 임의로 지우지 않는다. 옛 워커
 근거는 총괄이 제공한 **1358 서버 DB 사본 격리 리허설 보고**다: dev2 변환 후 compatible·ready 200,
 옛 1358 코드로 ready·로그인·팀 목록 200, 다시 dev2 compatible을 확인했다. 이는 해당 사본과 코드의
 왕복 호환성 근거이며, `serve.py` 직접 기동이었다. supervisor·예약 작업·옛 워커 전체 전환과
-그 이후의 모든 데이터 변경까지 검증한 결과는 아니다. 작업자 쪽은 별도 격리 리허설로 확인했다:
-작업자 DB 사본(content·trash·manage)과 계정 하위 DB(`data/db/acct/<계정>/`) 사본 1개를 dev2 변환 →
-1358 코드로 읽기·쓰기(열람 기록·휴지통 이동) → 다시 dev2 compatible·읽기·쓰기, quick_check ok.
-기록은 [dev2 대체 검토](status/dev2_대체검토_2026-10-21.md)의 실측 절이다. 사본 몇 개의 결과이므로
+그 이후의 모든 데이터 변경까지 검증한 결과는 아니다. 작업자 쪽은 별도 격리 리허설 두 가지로 확인했다.
+(1) 작업자 DB 사본(content·trash·manage)으로 격리 허브를 띄워 dev2 변환 → 1358 코드로 ready·목록·쓰기
+(열람 기록) 200 → 다시 dev2 compatible. (2) 계정 하위 DB(`data/db/acct/<계정>/`) 사본 1개를 그 트리 코드로
+직접 준비해 dev2 변환 → 1358 읽기·쓰기(열람 기록·휴지통 이동) → 다시 dev2 compatible·읽기·쓰기, 단계마다
+quick_check ok. 기록은 [dev2 대체 검토](status/dev2_대체검토_2026-10-21.md)의 실측 절이다. 사본 몇 개의 결과이므로
 모든 PC의 계정 DB 로 확대하지 않는다.
 
 두 번째 업데이트부터는 새 supervisor와 coordinator를 확인한 뒤 위 **정기 업데이트** 절을 따른다.
@@ -199,11 +200,14 @@ ZIP·불변 후보 기록·artifact 검증 영수증을 함께 게시한 뒤, **
 1358 폴더의 첫 전환을 대신하지 않는다. 전환 후 해당 PC의 새 설치 기능과 `artifact-receipt-v1`
 capability를 확인하고, 그 PC를 기준으로 다음 `enforced` 판을 적용한다. 확인 방법: 설치 폴더에
 `update_release_contract.ps1` 이 있고, `installer-capabilities.json` 의 `capabilities` 배열에
-`artifact-receipt-v1` 이 들어 있다(없으면 그 PC 는 아직 bridge 를 받지 않았다 — enforced 판은 그 PC 에서
-"Install the compatible bridge before this release." 로 거부된다).
+`artifact-receipt-v1` 이 들어 있다. **bridge 를 받지 않은 PC(1358 그대로)는 새 계약을 검사하지 않으므로
+enforced 판을 거부해 주지 않는다** — 모든 대상 PC 의 bridge 설치를 확인한 뒤에 enforced 판을 공개한다.
+새 검증기는 있는데 이 capability 가 없는 PC 는 앱 업데이트에서 "installer bridge required before this release",
+업데이터를 직접 실행하면 "Install the compatible bridge before this release." 로 거부된다.
 
 bridge 선언 기록(2026-10-21): 구현 Codex(`dc2d522c`), 통합 후보 병합 `9d49a199`, 구현하지 않은 Claude 별도 세션
-독립 리뷰 승인(`test_release_contract.py` 92 통과, PowerShell 계약 시험 포함). 근거·남은 결정은
+독립 리뷰 승인(리뷰어가 `9d49a199` 에서 직접 실행한 `test_release_contract.py` 92 통과, PowerShell 계약 시험 포함).
+뒤이은 r10·r11 은 PowerShell 선언 검사를 Python 규칙과 맞추고 시험을 보강했다. 근거·남은 결정은
 [dev2 대체 검토](status/dev2_대체검토_2026-10-21.md)에 둔다. 다음 `enforced` 판으로 바꿀 때는
 `test_release_contract.py` 의 bridge 고정 단언을 값과 함께 바꾼다.
 
