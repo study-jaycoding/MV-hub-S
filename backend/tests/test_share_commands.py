@@ -868,6 +868,135 @@ def test_composite_revision_requires_one_selected_input(generation, monkeypatch)
     remote.assert_not_called()
 
 
+def test_bundle_state_reads_are_bounded_parallel_and_keep_order(monkeypatch):
+    from threading import Barrier, Lock
+    from app.services import share_commands as service
+
+    anchors = [f"job-{index}" for index in range(200)]
+    bundle = {"provider": {"uid": "fixture"}, "generations": [
+        {"generation": {"id": anchor, "workspace_scope": "unknown"}} for anchor in anchors
+    ]}
+    refs = [{"intent_id": anchor, "intent_seq": 1} for anchor in anchors]
+    refs_by_anchor = dict(zip(anchors, refs, strict=True))
+    barrier, lock = Barrier(8, timeout=5), Lock()
+    active = peak = 0
+    reads, saved = [], []
+
+    def store(ref, cmd):
+        assert ref is refs_by_anchor[cmd["target_id"]]
+        saved.append(cmd)
+        return True
+
+    def remote(method, url, **kwargs):
+        nonlocal active, peak
+        assert method == "GET" and kwargs == {"token": "fixture"}
+        if url.endswith("capabilities"):
+            return 200, {"share_command": 1, "receipt_replay": True, "db_generation": "b" * 32}
+        anchor = url.rsplit("/", 1)[1]
+        with lock:
+            reads.append(anchor)
+            active += 1
+            peak = max(peak, active)
+        try:
+            barrier.wait()
+            index = anchors.index(anchor)
+            return ((404, {}) if index % 3 == 0 else
+                    (200, {"share_revision": index + 3, "db_generation": "c" * 32}))
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(service, "store_share_command", store)
+    commands = service.prepare_bundle(remote, "http://parallel.fixture", "fixture", bundle,
+                                      refs_by_anchor, expected_revisions={anchors[1]: 0})
+    expected = [service.build_command(
+        f"{ref['intent_id']}:{ref['intent_seq']}:publish", anchor, "publish_bundle",
+        ({**item["generation"], "share_revision": 0, "db_generation": "b" * 32} if index % 3 == 0
+         else {"share_revision": index + 3, "db_generation": "c" * 32}),
+        {"item": item, "provider": bundle["provider"]},
+        expected_revision=0 if index == 1 or index % 3 == 0 else index + 3,
+    ) for index, (anchor, item, ref) in enumerate(zip(anchors, bundle["generations"], refs, strict=True))]
+    assert 1 < peak <= 8
+    assert sorted(reads) == sorted(anchors)
+    assert commands == saved == expected
+
+
+def test_bundle_parallel_reads_persist_all_commands_before_publish(generation):
+    from app.services import share_commands as service
+
+    refs = repo.prepare_share_state_intents("http://parallel.fixture", [
+        {"job_anchor": f"job-{index}", "operation_kind": "publish", "desired_shared": True,
+         "desired_final": False, "base_shared": False, "base_final": False} for index in range(200)
+    ])
+    refs_by_anchor = {ref["job_anchor"]: ref for ref in refs}
+    bundle = {"generations": [{"generation": {"id": anchor}} for anchor in refs_by_anchor]}
+
+    def remote(method, url, **kwargs):
+        assert method == "GET"
+        if url.endswith("capabilities"):
+            return 200, {"share_command": 1, "receipt_replay": True}
+        return 200, {"share_revision": 3}
+
+    commands = service.prepare_bundle(remote, "http://parallel.fixture", None, bundle, refs_by_anchor)
+    assert [json.loads(repo.get_share_state_intent(ref["intent_id"])["remote_command_json"])
+            for ref in refs] == commands
+
+
+@pytest.mark.parametrize("failure", [401, 403, 500, 302, "timeout"])
+def test_bundle_state_failure_keeps_first_error_and_journal_prefix(monkeypatch, failure):
+    from app.services import share_commands as service
+
+    bundle = {"generations": [{"generation": {"id": anchor}} for anchor in ("first", "bad", "later")]}
+    refs = {anchor: {"intent_id": anchor, "intent_seq": 1} for anchor in ("first", "bad", "later")}
+    saved = []
+    timeout = HTTPException(502, "fixture timeout", headers={"X-MVHub-Upstream": "timeout"})
+
+    def remote(method, url, **kwargs):
+        if url.endswith("capabilities"):
+            return 200, {"share_command": 1, "receipt_replay": True}
+        if url.endswith("/bad"):
+            if failure == "timeout":
+                raise timeout
+            return failure, {}
+        # A later failure must not replace the earlier error in bundle order.
+        if url.endswith("/later"):
+            raise HTTPException(409, "later failure")
+        return 200, {"share_revision": 3}
+
+    monkeypatch.setattr(service, "store_share_command", lambda ref, cmd: saved.append(cmd) or True)
+    with pytest.raises(HTTPException) as error:
+        service.prepare_bundle(remote, "http://parallel.fixture", None, bundle, refs)
+    if failure == "timeout":
+        assert error.value is timeout
+    else:
+        assert error.value.status_code == (failure if failure >= 400 else 503)
+        assert error.value.detail == "share_state_unavailable"
+    assert [cmd["target_id"] for cmd in saved] == ["first"]
+
+
+def test_bundle_parallel_reads_inherit_share_operation_context(monkeypatch):
+    from threading import get_ident
+    from app.services import share_commands as service
+
+    caller_thread = get_ident()
+    operation = (("fixture@test", "fixture-user"), db._pool_epoch)
+    worker_threads = []
+
+    def remote(method, url, **kwargs):
+        assert db.capture_share_operation() == operation
+        if url.endswith("capabilities"):
+            return 200, {"share_command": 1, "receipt_replay": True}
+        worker_threads.append(get_ident())
+        return 200, {"share_revision": 3}
+
+    monkeypatch.setattr(service, "store_share_command", lambda ref, cmd: True)
+    with db.pinned_share_operation(operation):
+        service.prepare_bundle(remote, "http://parallel.fixture", None,
+                               {"generations": [{"generation": {"id": "job"}}]},
+                               {"job": {"intent_id": "fixture", "intent_seq": 1}})
+    assert worker_threads and caller_thread not in worker_threads
+
+
 def test_modern_send_fetches_remote_primary_key_after_job_anchor_command(modern_composite):
     from app.routers import share as routes
     from app.services.share_commands import send

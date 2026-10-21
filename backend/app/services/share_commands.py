@@ -1,5 +1,7 @@
 """Capability-negotiated share commands; the existing intent owns retries."""
 import json
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 
 from fastapi import HTTPException
 
@@ -104,19 +106,28 @@ def prepare_bundle(http_json, url, token, bundle, refs_by_anchor, *, expected_re
     if status != 200:
         raise HTTPException(status if status >= 400 else 503, "share_capability_unavailable")
     commands = []
-    for item in bundle["generations"]:
-        generation = item["generation"]
-        anchor = generation["id"]
-        status, state = http_json("GET", f"{url}/api/share/command-state/{anchor}", token=token)
-        if status == 404:
-            state = {**generation, "share_revision": 0, "db_generation": capability.get("db_generation")}
-        elif status != 200:
-            raise HTTPException(status if status >= 400 else 503, "share_state_unavailable")
-        ref = refs_by_anchor[anchor]
-        command = build_command(f"{ref['intent_id']}:{ref['intent_seq']}:publish", anchor, "publish_bundle", state,
-                                {"item": item, "provider": bundle.get("provider", {})},
-                                expected_revision=(expected_revisions or {}).get(anchor, state["share_revision"]))
-        if not store_share_command(ref, command):
-            raise HTTPException(409, "share_intent_superseded")
-        commands.append(command)
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        # Each read keeps the caller's pinned account/DB epoch; writes stay in bundle order.
+        reads = [executor.submit(copy_context().run, http_json, "GET",
+                                 f"{url}/api/share/command-state/{item['generation']['id']}", token=token)
+                 for item in bundle["generations"]]
+        try:
+            for item, read in zip(bundle["generations"], reads, strict=True):
+                generation = item["generation"]
+                anchor = generation["id"]
+                status, state = read.result()
+                if status == 404:
+                    state = {**generation, "share_revision": 0, "db_generation": capability.get("db_generation")}
+                elif status != 200:
+                    raise HTTPException(status if status >= 400 else 503, "share_state_unavailable")
+                ref = refs_by_anchor[anchor]
+                command = build_command(f"{ref['intent_id']}:{ref['intent_seq']}:publish", anchor, "publish_bundle", state,
+                                        {"item": item, "provider": bundle.get("provider", {})},
+                                        expected_revision=(expected_revisions or {}).get(anchor, state["share_revision"]))
+                if not store_share_command(ref, command):
+                    raise HTTPException(409, "share_intent_superseded")
+                commands.append(command)
+        finally:
+            for read in reads:
+                read.cancel()
     return commands
