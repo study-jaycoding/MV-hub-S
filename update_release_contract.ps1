@@ -94,8 +94,11 @@ function Get-QualifiedRelease {
         }
         if ($Compatibility.protocol_version -isnot [int] -or $Compatibility.protocol_version -ne 1 -or $Compatibility.rollout -cnotin @('bridge', 'enforced') -or
             $Compatibility.required_installer_capabilities -isnot [array]) { throw 'Unsupported compatibility declaration.' }
+        $SeenCapabilities = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
         foreach ($Capability in $Compatibility.required_installer_capabilities) {
-            if ($Capability -isnot [string]) { throw 'Unsupported compatibility declaration.' }
+            if ($Capability -isnot [string] -or $Capability.Length -eq 0 -or -not $SeenCapabilities.Add($Capability)) {
+                throw 'Unsupported compatibility declaration.'
+            }
         }
         if ($Compatibility.rollout -ceq 'bridge' -and
             ($Compatibility.backward_compatible -isnot [bool] -or -not $Compatibility.backward_compatible -or
@@ -240,6 +243,11 @@ function Assert-InstalledCapability {
         if (Test-Path -LiteralPath (Join-Path $Root 'build-manifest.json')) { throw 'Descriptor downgrade to an unverified legacy package is forbidden.' }
         return
     }
+    $RequiredCapabilities = $Candidate.contract.compatibility.required_installer_capabilities
+    if ($RequiredCapabilities -isnot [array]) { throw 'Unsupported compatibility declaration.' }
+    foreach ($Required in $RequiredCapabilities) {
+        if ($Required -isnot [string]) { throw 'Unsupported compatibility declaration.' }
+    }
     $Path = Join-Path $Root 'installer-capabilities.json'
     $Capabilities = @()
     if (Test-Path -LiteralPath $Path) {
@@ -247,7 +255,7 @@ function Assert-InstalledCapability {
         if ($Installed.format_version -ne 1) { throw 'Unsupported installed capabilities.' }
         $Capabilities = @($Installed.capabilities)
     }
-    foreach ($Required in $Candidate.contract.compatibility.required_installer_capabilities) {
+    foreach ($Required in $RequiredCapabilities) {
         if ($Capabilities -cnotcontains $Required) { throw 'Install the compatible bridge before this release.' }
     }
 }
