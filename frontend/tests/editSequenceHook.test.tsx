@@ -78,23 +78,26 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it.each(["invalidate", "clear", "reject", "trim"])("retries_full_read_after_invalidate_all: %s", async (mode) => {
+it.each(["invalidate", "clear", "reject", "evicted"])("retries_full_read_after_retirement_or_evicted_row: %s", async (mode) => {
   vi.useFakeTimers();
   const old = deferred<Generation[]>();
   mocks.list.mockReturnValueOnce(old.promise).mockResolvedValue([row("fresh")]);
   render(<ListHarness seq="e070" />);
   const records = getGenerationReadModel("auth", "team");
   if (mode === "clear") clearGenerationReadModels();
-  else if (mode === "trim") {
+  else if (mode === "evicted") {
     const newer = records.beginRead();
-    const cached = page("cached", true, 3001);
+    records.store({ stale: row("stale") }, newer);
+    const cached = page("cached", true, 3000);
     records.store(Object.fromEntries(cached.map(g => [g.id, g])), newer);
+    expect(records.read("stale")).toBeUndefined();
   }
   else records.invalidateAll();
   if (mode === "reject") old.reject(new Error("obsolete failure"));
   else old.resolve([row("stale")]);
   await flush();
   expect(list.state).toBe("loading");
+  expect(list.complete).toBe(false);
   await act(async () => { await vi.advanceTimersByTimeAsync(399); });
   expect(mocks.list).toHaveBeenCalledTimes(1);
   await act(async () => { await vi.advanceTimersByTimeAsync(1); });
@@ -118,15 +121,17 @@ it("restarts_pagination_and_uses_retry_start_time", async () => {
   expect(list.startedAt).toBeGreaterThan(beforeRetry);
 });
 
-it("retries_when_final_page_storage_retires_ticket", async () => {
+it.each(["invalidate", "clear"])("retries_when_final_page_storage_retires_ticket: %s", async (mode) => {
   vi.useFakeTimers();
   const old = deferred<Generation[]>();
   mocks.list.mockReturnValueOnce(old.promise).mockResolvedValue([row("fresh")]);
   render(<ListHarness seq="e070" />);
   const records = getGenerationReadModel("auth", "team");
-  const newer = records.beginRead();
-  const cached = page("cached", true, 3000);
-  records.store(Object.fromEntries(cached.map(g => [g.id, g])), newer);
+  const off = records.subscribe(() => {
+    off();
+    if (mode === "clear") records.clear();
+    else records.invalidateAll();
+  });
   old.resolve([row("overflow")]); await flush();
   expect(list.state).toBe("loading");
   await act(async () => { await vi.advanceTimersByTimeAsync(400); });
@@ -135,14 +140,38 @@ it("retries_when_final_page_storage_retires_ticket", async () => {
   expect(list.gens.map(g => g.id)).toEqual(["fresh"]);
 });
 
-it("retry_exhaustion_settles_error_without_tag_reload_loop", async () => {
+it.each([3000, 3001])("capacity_trim_keeps_unrelated_edit_read_complete: %i cached rows", async (count) => {
+  vi.useFakeTimers();
+  const old = deferred<Generation[]>();
+  mocks.list.mockReturnValueOnce(old.promise);
+  render(<ListHarness seq="e070" />);
+  const records = getGenerationReadModel("auth", "team");
+  const newer = records.beginRead();
+  const cached = page("cached", true, count);
+  records.store(Object.fromEntries(cached.map(g => [g.id, g])), newer);
+  old.resolve([row("unrelated")]); await flush();
+  expect([list.state, list.complete, list.gens.map(g => g.id)]).toEqual(["ok", true, ["unrelated"]]);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
+  expect(mocks.list).toHaveBeenCalledTimes(1);
+});
+
+it.each(["invalidate", "evicted"])("retry_exhaustion_settles_error_without_tag_reload_loop: %s", async (mode) => {
   vi.useFakeTimers();
   const a = { ...row("a"), tags: [], auto_tags: [] };
   mocks.list.mockResolvedValueOnce([a]);
   render(<ListHarness seq="e070" />); await flush();
   const startedAt = list.startedAt;
   const records = getGenerationReadModel("auth", "team");
-  mocks.list.mockImplementation(async () => { records.invalidateAll(); return [row("stale")]; });
+  mocks.list.mockImplementation(async () => {
+    if (mode === "invalidate") records.invalidateAll();
+    else {
+      const newer = records.beginRead();
+      records.store({ stale: row("stale") }, newer);
+      const cached = page("cached", true, 3000);
+      records.store(Object.fromEntries(cached.map(g => [g.id, g])), newer);
+    }
+    return [row("stale")];
+  });
   act(() => { list.reload(); list.reloadIds(["a"]); }); await flush();
   await act(async () => { await vi.advanceTimersByTimeAsync(800); });
   expect(mocks.list).toHaveBeenCalledTimes(4); // initial success + three attempts

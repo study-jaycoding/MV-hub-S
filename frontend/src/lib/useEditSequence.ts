@@ -129,8 +129,11 @@ export function useEditGenerations({
               break;
             }
             rows += page.length;
-            gens.push(...storeGenerationRows(records, page, read).filter((gen) => isUsableGen(gen) && matchesWorkspaceFilter(gen, query)));
-            checkRead(); // 저장 중 캐시 trim으로도 티켓이 은퇴할 수 있다.
+            const stored = storeGenerationRows(records, page, read);
+            // 축출 묘비로 거절된 행을 빼고 '끝까지 받음'으로 확정하지 않는다.
+            if (stored.length !== page.length) throw retired;
+            gens.push(...stored.filter((gen) => isUsableGen(gen) && matchesWorkspaceFilter(gen, query)));
+            checkRead(); // 저장 알림을 받는 쪽이 전체 무효화·clear를 할 수도 있다.
             // 커서와 끝 판정은 거르기 전 원본 쪽으로 — 쓸 수 있는 것이 0개인 쪽에서 멈추면 뒤가 통째로 빠진다.
             const last = page[page.length - 1];
             if (!last || page.length < GEN_PAGE) break;
