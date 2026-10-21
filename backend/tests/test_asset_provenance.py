@@ -267,7 +267,8 @@ def test_project_assets_root_is_explicit_and_mirror_omission_preserves(content, 
         projects.set_asset_root(pid, r'..\outside')
 
 
-def test_root_change_requeues_with_old_receipt_but_cancels_stale_lease(content, tmp_path):
+@pytest.mark.parametrize('state', ['queued', 'uploading', 'ready', 'retrying', 'verification_failed', 'project_required'])
+def test_root_change_requeues_with_old_receipt_but_cancels_stale_lease(content, tmp_path, state):
     project = projects.create_project('Root migration', created_by='user_a', asset_root_path=str(tmp_path / 'old-assets'))
     source = tmp_path / 'capture.png'
     source.write_bytes(b'old bytes')
@@ -276,13 +277,14 @@ def test_root_change_requeues_with_old_receipt_but_cancels_stale_lease(content, 
             digest=hashlib.sha256(source.read_bytes()).hexdigest(), size=9, media_type='image',
             owner_uid='user_a', project_id=project['id'], server_origin='http://example.invalid', account_key='a')
         receipt = json.dumps({'location_id': 'a' * 32, 'root_revision': 'old-root'})
-        conn.execute("UPDATE asset_sync_outbox SET state='ready',receipt_json=?,storage_id='old',root_revision='old-root',lease_token='stale',lease_until=9999999999", (receipt,))
+        conn.execute("UPDATE asset_sync_outbox SET state=?,receipt_json=?,storage_id='old',root_revision='old-root',lease_token='stale',lease_until=9999999999,next_retry_at=123", (state, receipt))
         file = asset_registry.RegistryFile('old.png', 9, 1, 'a' * 64, 'ok')
         asset_registry.apply_plan(conn, project['id'], {'inserts': [('old-reg', file)], 'updates': [], 'events': []})
     projects.cache_projects([{'id': project['id'], 'name': project['name'], 'asset_root_path': str(tmp_path / 'new-assets')}])
     with db.get_connection() as conn:
         row = conn.execute('SELECT * FROM asset_sync_outbox').fetchone()
         assert row['state'] == 'queued' and row['lease_token'] is None and row['storage_id'] == ''
+        assert row['root_revision'] == '' and row['lease_until'] is None and row['next_retry_at'] == 0
         assert row['receipt_json'] == receipt
         assert conn.execute('SELECT state FROM asset_registry').fetchone()[0] == 'missing'
         assert not asset_sync.settle(conn, {**dict(row), 'lease_token': 'stale'}, receipt={'location_id': 'b' * 32})
@@ -388,21 +390,46 @@ def test_ephemeral_upload_capabilities_are_not_exported(content, profile):
         assert conn.execute('SELECT count(*) FROM asset_upload_token').fetchone()[0] == 0
 
 
-def test_stale_registry_scan_cannot_override_verified_upload(content):
+@pytest.mark.parametrize('managed,updated_at', [
+    (False, '2026-10-21T00:00:02Z'),
+    (True, '2026-10-21T00:00:01Z'),
+    (True, '2026-10-21T00:00:02Z'),
+])
+def test_stale_registry_scan_cannot_override_verified_upload(content, managed, updated_at):
     with db.get_connection() as conn:
         conn.execute("INSERT INTO project(id,name) VALUES('p','P')")
         file = asset_registry.RegistryFile('imp_cap/User/a.png', 1, 1, 'a' * 64, 'ok')
-        asset_registry.apply_plan(conn, 'p', {'inserts': [('reg', file)], 'updates': [], 'events': []})
+        asset_registry.apply_plan(conn, 'p', {'inserts': [('reg', file)], 'updates': [], 'events': []}, now=updated_at)
         cid = asset_sync.register_verified_blob(conn, 'a' * 64, 1, 'image')
-        conn.execute("INSERT INTO asset_location(location_id,asset_content_id,owner_uid,project_id,storage_id,kind,path,registry_asset_id) "
-                     "VALUES(?,?, 'user_a','p','storage','server','imp_cap/User/a.png','reg')", ('b' * 32, cid))
+        if managed:
+            conn.execute("INSERT INTO asset_location(location_id,asset_content_id,owner_uid,project_id,storage_id,kind,path,registry_asset_id) "
+                         "VALUES(?,?, 'user_a','p','storage','server','imp_cap/User/a.png','reg')", ('b' * 32, cid))
         stale = {'inserts': [('duplicate', file)], 'updates': [('reg', {'state': 'missing'})],
                  'events': [('reg', 'missing', file.path, None, file.sha256, 1),
                             ('duplicate', 'new', file.path, None, file.sha256, 1)]}
-        assert asset_registry.apply_plan(conn, 'p', stale) == {}
+        assert asset_registry.apply_plan(conn, 'p', stale, scan_started_at='2026-10-21T00:00:01Z') == {}
         rows = conn.execute('SELECT registry_asset_id,state FROM asset_registry').fetchall()
         assert [tuple(r) for r in rows] == [('reg', 'present')]
         assert conn.execute('SELECT count(*) FROM asset_registry_event').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('location', [None, ('server', 'missing'), ('local', 'ready')])
+def test_same_second_scan_detects_move_without_server_ready_location(content, location):
+    started_at = '2026-10-21T00:00:01Z'
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO project(id,name) VALUES('p','P')")
+        original = asset_registry.RegistryFile('assets/CH/a.png', 1, 1, 'a' * 64, 'ok')
+        asset_registry.apply_plan(conn, 'p', {'inserts': [('reg', original)], 'updates': [], 'events': []}, now=started_at)
+        if location:
+            cid = asset_sync.register_verified_blob(conn, original.sha256, original.bytes, 'image')
+            conn.execute("INSERT INTO asset_location(location_id,asset_content_id,owner_uid,project_id,storage_id,kind,state,path,registry_asset_id) "
+                         "VALUES(?,?,'user_a','p','storage',?,?,?,'reg')", ('b' * 32, cid, *location, original.path))
+        moved = asset_registry.RegistryFile('assets/CH/a_final.png', 1, 1, original.sha256, 'ok')
+        plan = asset_registry.plan_changes(asset_registry.registry_rows(conn, 'p'), asset_registry.RegistryScan(True, [moved]))
+        assert asset_registry.apply_plan(conn, 'p', plan, now=started_at, scan_started_at=started_at) == {'moved': 1}
+        assert [tuple(r) for r in conn.execute('SELECT registry_asset_id,path FROM asset_registry')] == [('reg', moved.path)]
+        assert [tuple(r) for r in conn.execute('SELECT kind,path,old_path FROM asset_registry_event')] == [
+            ('moved', moved.path, original.path)]
 
 
 def _agent():

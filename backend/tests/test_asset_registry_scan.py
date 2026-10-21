@@ -230,6 +230,25 @@ class ControllerTests(unittest.TestCase):
         # 작업 파일을 남기지 않는다
         self.assertEqual(list((svc.DATA_DIR / "asset_registry").glob("*")), [])
 
+    def test_scan_start_is_captured_after_known_rows_and_reaches_apply(self) -> None:
+        clock = ["2026-10-21T00:00:00Z"]
+
+        def known(*_args):
+            clock[0] = "2026-10-21T00:00:01Z"
+            return {}
+
+        async def run_child(*_args):
+            self.assertEqual(self.ctl._current["started_at"], clock[0])
+            clock[0] = "2026-10-21T00:00:02Z"
+            return {"complete": True}, [], [], ""
+
+        with patch.object(self.ctl, "_known_for_root", side_effect=known), \
+                patch.object(self.ctl, "_run_child", side_effect=run_child), \
+                patch.object(registry, "utc_now", side_effect=lambda: clock[0]), \
+                patch.object(registry, "apply_plan", return_value={}) as apply:
+            asyncio.run(self.ctl._scan_project(self.pid, "", str(self.root), MIB, 10))
+        self.assertEqual(apply.call_args.kwargs["scan_started_at"], "2026-10-21T00:00:01Z")
+
     def test_large_file_gets_a_dedicated_run_then_a_clean_rescan(self) -> None:
         (self.root / "assets" / "CH" / "big.mp4").write_bytes(b"B" * 400)
         # 자동 주기 예산을 아주 작게: 초당 100바이트 · 1초 → big.mp4(400B)는 '큰 파일'

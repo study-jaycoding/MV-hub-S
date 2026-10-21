@@ -5,6 +5,7 @@ import asyncio
 import threading
 import sqlite3
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -671,6 +672,60 @@ def test_registry_discards_scan_from_previous_explicit_asset_root(storage):
     result=asset_registry.AssetRegistryController()._apply('p','Project',scan,{'root':str(base/'old-root'),'state':'ok','complete':True,'clean':True})
     assert result=={'discarded_root_changed':1}
     assert not conn.execute("SELECT 1 FROM asset_registry WHERE project_id='p'").fetchone()
+
+
+@pytest.mark.parametrize('change', ['missing', 'edited'])
+def test_later_registry_scans_recheck_verified_upload(storage,monkeypatch,change):
+    from app.repo import asset_registry as registry
+    from app.services import asset_registry
+    conn,base=storage
+    receipt=upload(conn,base,prep(conn))
+    row=conn.execute('SELECT * FROM asset_registry').fetchone()
+    path=base/'assets'/row['path']
+    if change=='missing':
+        path.unlink()
+        files=[]
+    else:
+        path.write_bytes(PNG+b'edited')
+        files=[registry.RegistryFile(row['path'],path.stat().st_size,path.stat().st_mtime_ns,
+                                    hashlib.sha256(path.read_bytes()).hexdigest(),'ok')]
+    uploaded_at=datetime.strptime(row['updated_at'],'%Y-%m-%dT%H:%M:%SZ')
+    ctl=asset_registry.AssetRegistryController()
+    for count in range(1,registry.MISSING_AFTER+1 if change=='missing' else 2):
+        started_at=(uploaded_at+timedelta(seconds=count*2)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        monkeypatch.setattr(registry,'utc_now',lambda:started_at)
+        kinds=ctl._apply('p','',registry.RegistryScan(True,files),{
+            'root':str(base/'assets'),'state':'ok','started_at':started_at,'complete':True,'clean':True})
+        current=conn.execute('SELECT * FROM asset_registry').fetchone()
+        assert current['registry_asset_id']==row['registry_asset_id']
+        if change=='missing':
+            assert current['miss_count']==count
+            assert current['state']==('missing' if count>=registry.MISSING_AFTER else 'present')
+        else:
+            assert current['sha256']==files[0].sha256
+            assert current['bytes']==files[0].bytes
+    assert kinds=={change:1}
+    assert conn.execute('SELECT count(*) FROM asset_registry_event WHERE kind=?',(change,)).fetchone()[0]==1
+    assert conn.execute('SELECT state FROM asset_location WHERE location_id=?',(receipt['location_id'],)).fetchone()[0]=='ready'
+
+
+@pytest.mark.parametrize('upload_delay', [0, 1])
+def test_registry_scan_preserves_upload_completed_after_start(storage,upload_delay):
+    from app.repo import asset_registry as registry
+    from app.services import asset_registry
+    conn,base=storage
+    started_at=registry.utc_now()
+    upload(conn,base,prep(conn))
+    uploaded_at=(datetime.strptime(started_at,'%Y-%m-%dT%H:%M:%SZ')+
+                 timedelta(seconds=upload_delay)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    conn.execute('UPDATE asset_registry SET updated_at=?',(uploaded_at,))
+    before=dict(conn.execute('SELECT * FROM asset_registry').fetchone())
+    ctl=asset_registry.AssetRegistryController()
+    for files in ([],[registry.RegistryFile(before['path'],3,1,'b'*64,'ok')]):
+        assert ctl._apply('p','',registry.RegistryScan(True,files),{
+            'root':str(base/'assets'),'state':'ok','started_at':started_at,'complete':True,'clean':True})=={}
+        assert dict(conn.execute('SELECT * FROM asset_registry').fetchone())==before
+    assert conn.execute('SELECT count(*) FROM asset_registry_event').fetchone()[0]==0
 
 
 def test_register_rejects_adopting_another_accounts_unshared_media(storage,monkeypatch):
