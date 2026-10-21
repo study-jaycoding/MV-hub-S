@@ -587,12 +587,16 @@ export function useGenerationLibraryData({
       const metaDone = requestMeta(light);
       try {
         let [page, checked] = await pageDone;
-        // 이 실행이 여전히 최신이면 변경 통보가 은퇴시킨 읽기 표만 한 번 갱신한다.
-        if (seq === reloadSeqRef.current && !records.isCurrent(read)) {
+        let stored = seq === reloadSeqRef.current ? storeGenerationRows(records, page, read) : [];
+        const completePage = () => records.isCurrent(read) &&
+          stored.length === page.filter(row => typeof row.id === "string" && !!row.id).length;
+        // 은퇴한 읽기·축출 묘비로 빠진 유효 행은 같은 상한 안에서 한 번 다시 받는다.
+        if (seq === reloadSeqRef.current && !completePage()) {
           read = records.beginRead();
           [page, checked] = await fetchPage();
+          stored = seq === reloadSeqRef.current ? storeGenerationRows(records, page, read) : [];
         }
-        if (seq !== reloadSeqRef.current || !records.isCurrent(read)) {
+        if (seq !== reloadSeqRef.current || !completePage()) {
           // 낡은 실행 — 목록은 버린다. 다만 맡긴 메타 요구가 처리될 때까지는 끝나지 않는다(전체 요구는 다음 묶음이 이어받는다).
           finishSync(false);
           listSettled();
@@ -604,7 +608,7 @@ export function useGenerationLibraryData({
         const last = page[page.length - 1];
         pageCursorRef.current = last ? { ts: last.sort_ts ?? 0, id: last.id } : null;
         trashOffsetRef.current = trashMode ? page.length : 0;
-        let g = storeGenerationRows(records, page, read).filter((item) => matchesWorkspaceFilter(item, query));
+        let g = stored.filter((item) => matchesWorkspaceFilter(item, query));
         if (located && located === locatedRef.current && isLocatedQuery(query, located.tab, located.location)) {
           const valid = checked && isLocatedQuery(query, located.tab, checked)
             ? locatedItems(checked, located.tab, query) : [];
@@ -856,24 +860,33 @@ export function useGenerationLibraryData({
     const trashMode = !!filtersRef.current.deleted_only;
     const query = listQuery();
     const records = readModelForRef.current(query, trashMode);
-    const read = records.beginRead();
+    let read = records.beginRead();
     const keepPainted = colorLedger.stamp(); // 아래 합치기(위치 주입분)는 이미 있는 카드를 응답으로 갈아 끼운다 — 그사이 칠한 색을 덮지 않게
     try {
       // 시작 시점 seq 스냅샷 — 응답이 오기 전에 탭/필터가 바뀌었으면(reload 가 seq 를 올림) 폐기.
       // 가드 없이는 '내 작업' 추가 페이지가 팀 탭 목록에 합쳐지고 탭 캐시까지 오염된다(코덱스 P1).
-      let batch: Generation[];
-      if (trashMode) {
-        const offset = trashOffsetRef.current;
-        batch = await timedLibraryRequest((signal) => api.listTrash(query.search, offset, GEN_PAGE, signal));
-      } else {
-        const cursor = pageCursorRef.current;
-        batch = await timedLibraryRequest((signal) => api.listGenerations(query, cursor, GEN_PAGE, { signal }));
+      let batch: Generation[] = [];
+      let stored: Generation[] = [];
+      const offset = trashOffsetRef.current;
+      const cursor = pageCursorRef.current;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        batch = await timedLibraryRequest((signal) => trashMode
+          ? api.listTrash(query.search, offset, GEN_PAGE, signal)
+          : api.listGenerations(query, cursor, GEN_PAGE, { signal }));
+        if (seq !== reloadSeqRef.current) return;
+        stored = storeGenerationRows(records, batch, read);
+        if (seq !== reloadSeqRef.current) return;
+        if (records.isCurrent(read) && stored.length === batch.filter(row => typeof row.id === "string" && !!row.id).length) break;
+        if (attempt === 1) {
+          recheckRetiredRef.current();
+          return;
+        }
+        read = records.beginRead();
       }
-      if (seq !== reloadSeqRef.current || !records.isCurrent(read)) return; // 다른 탭/쿼리로 바뀐 뒤 도착한 이전 컨텍스트 페이지
       if (trashMode) trashOffsetRef.current += batch.length;
       const last = batch[batch.length - 1];
       if (last) pageCursorRef.current = { ts: last.sort_ts ?? 0, id: last.id };
-      const visibleBatch = storeGenerationRows(records, batch, read).filter((item) => matchesWorkspaceFilter(item, query));
+      const visibleBatch = stored.filter((item) => matchesWorkspaceFilter(item, query));
       // ★gens 누적 캡(A5)은 넣지 않는다(코덱스 리뷰로 폐기): 앞부분 트림이 휴지통 offset 페이지네이션·
       //  virtua 스크롤 앵커·focusIdx(인덱스 기반)·선택 Set 을 동시에 깨뜨린다. 항목당 메타 수 KB 뿐이고
       //  진짜 메모리(썸네일 비트맵·DOM)는 가상 스크롤이 이미 상한 — 실이득 대비 회귀 위험이 커서 제외.

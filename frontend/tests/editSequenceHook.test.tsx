@@ -106,6 +106,17 @@ it.each(["invalidate", "clear", "reject", "evicted"])("retries_full_read_after_r
   expect(list.gens.map(g => g.id)).toEqual(["fresh"]);
 });
 
+it("ignores_missing_and_empty_ids_without_retrying_or_error", async () => {
+  vi.useFakeTimers();
+  const missing = { ...row("missing") } as Partial<Generation>;
+  delete missing.id;
+  mocks.list.mockResolvedValue([row("valid"), missing as Generation, row("")]);
+  render(<ListHarness seq="e070" />); await flush();
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  expect(mocks.list).toHaveBeenCalledTimes(1);
+  expect([list.state, list.complete, list.error, list.gens.map(g => g.id)]).toEqual(["ok", true, null, ["valid"]]);
+});
+
 it("restarts_pagination_and_uses_retry_start_time", async () => {
   vi.useFakeTimers();
   const second = deferred<Generation[]>();
