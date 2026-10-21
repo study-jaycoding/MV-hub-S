@@ -3,7 +3,7 @@ import hashlib
 import pytest
 
 from app import db
-from app.repo import asset_sync as ledger, trash
+from app.repo import asset_sync as ledger, projects, trash
 from test_asset_sync import PNG
 from test_trash_telemetry_atomic import trash_db, _seed_generation
 from test_trash_transfer import enabled_db
@@ -49,3 +49,19 @@ def test_another_live_reference_preserves_recovery_and_server_deletion_stays_del
         conn.execute("UPDATE asset_sync_outbox SET state='deleted',last_error_code='asset_deleted'")
         ledger.generation_output_intent(conn, "g1", deleted=False)
         assert conn.execute("SELECT state FROM asset_sync_outbox").fetchone()[0] == "deleted"
+
+
+def test_asset_root_change_preserves_trashed_transfer_and_delete_reason(trash_db, tmp_path):
+    _seed_generation()
+    project = projects.create_project('Root change', created_by='owner', asset_root_path=str(tmp_path / 'old'))
+    with db.get_connection() as conn:
+        seed_output(conn)
+        conn.execute("UPDATE generation SET project_id=? WHERE id='g1'", (project['id'],))
+        conn.execute("UPDATE asset_sync_outbox SET project_id=?,storage_id='old',root_revision='old-root'", (project['id'],))
+    assert trash.move_to_trash('g1')
+    with db.get_connection() as conn:
+        before = dict(conn.execute('SELECT * FROM asset_sync_outbox').fetchone())
+        assert before['state'] == 'deleted' and before['last_error_code'] == 'asset_deleted_in_app'
+    projects.set_asset_root(project['id'], str(tmp_path / 'new'))
+    with db.get_connection() as conn:
+        assert dict(conn.execute('SELECT * FROM asset_sync_outbox').fetchone()) == before

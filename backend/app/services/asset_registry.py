@@ -733,9 +733,7 @@ class AssetRegistryController:
             self._cache[pid]={}
             self._priority[pid]=[]
             self._cache_roots[pid]=proof
-        started_at = registry.utc_now()
         t0 = time.monotonic()
-        self._current = {"project_id": pid, "name": name, "phase": "scan", "started_at": started_at}
         job = {
             "root": root,
             "known": await asyncio.to_thread(self._known_for_root, pid, root_raw),
@@ -746,6 +744,8 @@ class AssetRegistryController:
             "max_entries": MAX_ENTRIES,
             "hide_render": True,
         }
+        started_at = registry.utc_now()
+        self._current = {"project_id": pid, "name": name, "phase": "scan", "started_at": started_at}
         end, files, pending, note = await self._run_child(job, deadline_s)
         if note == "stopping":
             # 서버가 끄느라 끊은 것이지 NAS 상태가 아니다 — 결과는 버리고 마지막 훑기 기록도 덮지 않는다. 덮으면 그 프로젝트는
@@ -788,7 +788,7 @@ class AssetRegistryController:
             kinds: dict[str, int] = {}
             if scan.complete:
                 plan = registry.plan_changes(registry.registry_rows(conn, pid), scan)
-                kinds = registry.apply_plan(conn, pid, plan)
+                kinds = registry.apply_plan(conn, pid, plan, scan_started_at=stats.get("started_at"))
                 if scan.clean and name:
                     kinds.update({f"backfill_{k}": v for k, v in registry.backfill_reference_links(conn, {name: pid}).items()})
             registry.record_scan(conn, pid, **stats)

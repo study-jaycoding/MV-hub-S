@@ -429,7 +429,7 @@ def _set_asset_root(conn, pid: str, value: Optional[str]) -> None:
     if changed:
         # 서버 정의의 루트 변경만 이전 전송 pin을 해제한다. 옛 receipt는 CAS 이관 증거로 보존한다.
         conn.execute("UPDATE asset_sync_outbox SET state='queued',storage_id='',root_revision='',"
-                     "next_retry_at=0,lease_token=NULL,lease_until=NULL WHERE project_id=?", (pid,))
+                     "next_retry_at=0,lease_token=NULL,lease_until=NULL WHERE project_id=? AND state!='deleted'", (pid,))
         conn.execute("UPDATE asset_registry SET state='missing',miss_count=0 WHERE project_id=?", (pid,))
 
 

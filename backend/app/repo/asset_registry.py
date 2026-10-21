@@ -173,17 +173,21 @@ def plan_changes(prev_rows: list[dict[str, Any]], scan: RegistryScan) -> dict[st
     return plan
 
 
-def apply_plan(conn: sqlite3.Connection, project_id: str, plan: dict[str, list], now: Optional[str] = None) -> dict[str, int]:
+def apply_plan(
+    conn: sqlite3.Connection, project_id: str, plan: dict[str, list], now: Optional[str] = None,
+    *, scan_started_at: Optional[str] = None,
+) -> dict[str, int]:
     """plan_changes 의 결과를 쓴다. 트랜잭션은 부르는 쪽이 연다(BEGIN IMMEDIATE — 한 번에 원자 반영)."""
     now = now or utc_now()
-    # 업로드 검증 뒤 생긴 행은 오래된 스캔이 missing/edited 로 되돌리지 않는다.
-    managed = set()
-    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='asset_location' AND type='table'").fetchone():
-        managed = {r[0] for r in conn.execute(
-            "SELECT registry_asset_id FROM asset_location WHERE project_id=? AND kind='server' "
-            "AND state='ready' AND registry_asset_id IS NOT NULL", (project_id,)
+    # 시작 뒤 갱신과 같은 초의 서버 업로드만 보호해, 같은 초 훑기끼리의 이동 판정은 허용한다.
+    skipped = set()
+    if scan_started_at is not None:
+        skipped = {r[0] for r in conn.execute(
+            "SELECT registry_asset_id FROM asset_registry WHERE project_id=? AND (updated_at>? OR "
+            "(updated_at=? AND registry_asset_id IN (SELECT registry_asset_id FROM asset_location "
+            "WHERE project_id=? AND kind='server' AND state='ready')))",
+            (project_id, scan_started_at, scan_started_at, project_id),
         )}
-    skipped = set(managed)
     for rid, f in plan["inserts"]:
         if conn.execute("SELECT 1 FROM asset_registry WHERE project_id=? AND path=?", (project_id, f.path)).fetchone():
             skipped.add(rid)
