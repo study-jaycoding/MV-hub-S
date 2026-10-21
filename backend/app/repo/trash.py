@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterator, Optional
@@ -116,6 +116,17 @@ def _ensure_trash_job_id_col(conn) -> None:
             f"UPDATE trash.trashed SET job_id = json_extract(payload, '$.generation.job_id') "
             f"WHERE {_NULL_BACKFILL}"
         )
+
+
+def init_trash_db(path: Path) -> None:
+    """비활성 계정의 기존 휴지통을 활성 계정 전환 없이 준비한다."""
+    from ..db import _recover_hot_database
+
+    _recover_hot_database(path, "trash")
+    schema_compat.inspect_database(path, "trash")
+    with closing(sqlite3.connect(":memory:", isolation_level=None)) as conn:
+        conn.execute("ATTACH DATABASE ? AS trash", (str(path),))
+        _ensure_trash_schema(conn)
 
 
 def attach_trash(conn) -> None:

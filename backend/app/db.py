@@ -24,6 +24,7 @@ CLI:
 from __future__ import annotations
 
 import os
+import logging
 import secrets
 import shutil
 import sqlite3
@@ -571,6 +572,28 @@ def init_db(db_path: Path | None = None) -> Path:
     finally:
         conn.close()
     return path
+
+
+def init_existing_databases(root: Path, env: dict[str, str], *, active_path: Path | None = None) -> None:
+    """설치 검사가 볼 비활성 DB도 기존 초기화로 준비하되 실패는 해당 DB에 한정한다."""
+    from .schema_compat import database_paths
+    from .manage_db import init_manage_db
+    from .repo.trash import init_trash_db
+
+    log = logging.getLogger(__name__)
+    try:
+        paths = database_paths(root, env)
+    except Exception as exc:
+        log.warning("database_discovery_failed: %s", type(exc).__name__)
+        return
+    initializers = {"content": init_db, "trash": init_trash_db, "manage": init_manage_db}
+    for kind, path in paths:
+        if active_path is not None and path == active_path.resolve():
+            continue
+        try:
+            initializers[kind](path)
+        except Exception as exc:
+            log.warning("database_prepare_failed: kind=%s error=%s", kind, type(exc).__name__)
 
 
 def check_db(db_path: Path | None = None) -> dict[str, str]:

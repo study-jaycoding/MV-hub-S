@@ -31,7 +31,7 @@ from ._share_authority import authority, http_call
 from .. import active_account, db, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MEDIA_PRESERVATION_ENABLED
 from ._telemetry import touch_generation_telemetry
-from ..deps import actor_id, current_account, final_move_actor, require_edit_generation
+from ..deps import account_author_uids, actor_id, current_account, final_move_actor, require_edit_generation
 from ..emailnorm import norm_email
 from ..repo import identity
 from ..services import agent_signals, net_guard, server_relocation
@@ -308,7 +308,7 @@ def receive_published_bundle(body: PublishBundleIn, request: Request):
         }
         # 작성자 판정 신원 = 인증 계정의 uid 와 그 계정 자신의 acct: 별칭뿐 — 번들의 provider·creator_uid 는
         #  근거가 아니다. 판정은 id·job_id·URL 로 실제 고른 행에 한다(F-A-01, import_bundle_item).
-        author_uids = {bundle["provider"]["uid"], f"acct:{norm_email(acc.get('email'))}"}
+        author_uids = account_author_uids(acc)
     # 서버 수신 길 — 최종본의 프로젝트를 바꾸려는 항목은 발행자가 양쪽 검수자일 때만(아니면 그 항목 blocked, Jay 결정 3A).
     #  판정 신원은 위에서 갱신한 계정의 것 — 이 요청에서 acct:→user_ 로 연결됐으면 프로젝트 역할도 새 신원으로 옮겨졌다(Codex 3A 리뷰 P2)
     actor = final_move_actor(request)

@@ -52,7 +52,7 @@ from .config import (
     READ_ONLY,
     ensure_dirs,
 )
-from .db import init_db, maintenance_active
+from .db import init_db, init_existing_databases, maintenance_active
 from .deps import session_token
 from .mutation_notify import (
     CLIENT_ID_HEADER,
@@ -314,7 +314,7 @@ async def _application_lifespan(app: FastAPI):
             )
 
     # 시작: DB 스키마 적용(멱등) + 기본 작업자 + 미디어 디렉터리 + 잡 큐 워커
-    init_db()
+    active_db = init_db()
     ensure_dirs()
     # 팀 매니징 텔레메트리 저장소(manage_hub.db) — 콘텐츠 DB와 분리된 별도 파일. MANAGE 켰을 때만.
     if MANAGE_ENABLED:
@@ -322,6 +322,7 @@ async def _application_lifespan(app: FastAPI):
 
         init_manage_db()
         backfill_workspace_names(repo.list_workspace_options())
+    init_existing_databases(BACKEND_DIR.parent, dict(os.environ), active_path=active_db)
     repo.ensure_default_worker()
     # Comfy in-flight 잡은 메모리만으로는 재시작 뒤 결과를 회수할 수 없다. 풀 자동복구 대신
     # 이전 prompt_id 를 운영 로그에 남기고 Cloud 취소를 best-effort 로 시도한 뒤 흔적을 비운다.

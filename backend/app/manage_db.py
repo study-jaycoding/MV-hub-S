@@ -136,14 +136,15 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
-def init_manage_db() -> Path:
-    """manage_hub.db 를 만들고 스키마를 적용한다(멱등). 시작 시 MANAGE_ENABLED 일 때만 호출."""
-    if MANAGE_DB_PATH.is_file():
+def init_manage_db(db_path: Path | None = None) -> Path:
+    """관리 DB의 스키마를 적용한다(멱등). 기동 준비는 기존 파일에 한해 호출한다."""
+    path = db_path or MANAGE_DB_PATH
+    if path.is_file():
         from .db import _recover_hot_database
-        _recover_hot_database(MANAGE_DB_PATH, "manage")
-        schema_compat.inspect_database(MANAGE_DB_PATH, "manage")
-    MANAGE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(MANAGE_DB_PATH)
+        _recover_hot_database(path, "manage")
+        schema_compat.inspect_database(path, "manage")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
     try:
         schema_compat.inspect_schema(conn, "manage")
         conn.execute("PRAGMA journal_mode=WAL")  # 동시 읽기(집계 조회) 중 쓰기 허용
@@ -153,7 +154,7 @@ def init_manage_db() -> Path:
         schema_compat.record_baseline(conn, "manage")
     finally:
         conn.close()
-    return MANAGE_DB_PATH
+    return path
 
 
 def backfill_workspace_names(workspaces: list[dict[str, Any]]) -> int:
