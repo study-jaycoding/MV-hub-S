@@ -168,6 +168,10 @@
 }
 /* 생성자 뱃지 — 다른 작업자가 만든 것(팀 워크스페이스). 카드 우측 상단(상시).
    z-index:1 — 호버 오버레이(z2)보다 아래라 호버 시 ⓘ(정보) 버튼이 위로 떠 클릭 가능. */
+/* 격자 카드의 Draft 표시 — 모양은 캔버스 카드와 같은 .linb-draft(history.css). 오른쪽 위는 마우스를 올리거나 고르면 단추 줄(.ov-top)이
+   뜨는 자리라 그때는 비켜 준다. 남의 카드는 작성자 배지 아래. */
+.card-thumb .linb-draft.below-creator { top: 34px; }
+.card-thumb:hover .linb-draft, .card.selected .linb-draft, .card-thumb:focus-within .linb-draft { display: none; }
 .creator-badge {
   position: absolute; top: 8px; right: 8px; z-index: 1;
   max-width: 75%; font-size: 11px; font-weight: 700;

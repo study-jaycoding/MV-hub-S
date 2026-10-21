@@ -9,6 +9,29 @@ type AssignHandlers = {
   onAssign: (projectId: string | null, folderPath?: string | null) => void;
 };
 
+type DraftHandlers = {
+  onFinishDraft?: (generation: Generation) => void;
+  draftBusy?: boolean;
+  draftDone?: boolean;
+};
+
+/** Draft 생성 단추 — Draft 생성물 하나를 골랐을 때만 보인다(Jay 10-22, 캔버스·워크스페이스 선택바 공용). 남의 것·이미 1080p 로 만든 것은
+ *  보이되 눌리지 않는다(이유는 title). */
+function DraftFinishButton({ selected, onFinishDraft, draftBusy = false, draftDone = false }: { selected: Generation[] } & DraftHandlers) {
+  const t = useT();
+  if (!onFinishDraft || selected.length !== 1 || !isDraftGeneration(selected[0])) return null;
+  const generation = selected[0];
+  return (
+    <button type="button" className="sb-draft"
+      disabled={draftBusy || draftDone || !canFinishDraft(generation)}
+      aria-busy={draftBusy}
+      title={draftDone ? t("이 Draft는 이미 1080p로 생성했습니다") : draftBusy ? t("Draft 요청을 처리 중입니다") : t("완료된 내 Draft 한 개를 선택하여 1080p로 생성")}
+      onClick={() => { if (canFinishDraft(generation) && !draftBusy && !draftDone) onFinishDraft(generation); }}>
+      {t("Draft 생성")} <span>1080p</span>
+    </button>
+  );
+}
+
 export function BoardSelectionActionBar({
   selected,
   projects,
@@ -37,10 +60,7 @@ export function BoardSelectionActionBar({
   resolveRetryProjectName?: string;
   resolveTransferBusy?: boolean;
   resolveTransferPendingCount?: number;
-  onFinishDraft?: (generation: Generation) => void;
-  draftBusy?: boolean;
-  draftDone?: boolean;
-} & AssignHandlers) {
+} & AssignHandlers & DraftHandlers) {
   const t = useT();
   if (!selected.length) return null;
 
@@ -50,14 +70,7 @@ export function BoardSelectionActionBar({
         {selected.length}
         {t("개 선택")}
       </span>
-      {/* Draft 생성물 하나를 골랐을 때만 보인다(Jay 10-22). 남의 것·이미 1080p 로 만든 것은 보이되 눌리지 않는다(이유는 title). */}
-      {onFinishDraft && selected.length === 1 && isDraftGeneration(selected[0]) && <button type="button" className="sb-draft"
-        disabled={draftBusy || draftDone || !canFinishDraft(selected[0])}
-        aria-busy={draftBusy}
-        title={draftDone ? t("이 Draft는 이미 1080p로 생성했습니다") : draftBusy ? t("Draft 요청을 처리 중입니다") : t("완료된 내 Draft 한 개를 선택하여 1080p로 생성")}
-        onClick={() => { if (selected.length === 1 && canFinishDraft(selected[0]) && !draftBusy && !draftDone) onFinishDraft(selected[0]); }}>
-        {t("Draft 생성")} <span>1080p</span>
-      </button>}
+      <DraftFinishButton selected={selected} onFinishDraft={onFinishDraft} draftBusy={draftBusy} draftDone={draftDone} />
       <button onClick={() => onShare(selected)}>{t("↗ 팀 공유")}</button>
       <button
         onClick={() => onDownload(selected)}
@@ -123,6 +136,9 @@ export function LibrarySelectionActionBar({
   onDelete,
   onRestore,
   onPurge,
+  onFinishDraft,
+  draftBusy,
+  draftDone,
 }: {
   selectedCount: number;
   selectedGenerations: Generation[];
@@ -139,7 +155,7 @@ export function LibrarySelectionActionBar({
   onDelete: () => void;
   onRestore: () => void;
   onPurge: () => void;
-} & AssignHandlers) {
+} & AssignHandlers & DraftHandlers) {
   const t = useT();
   const hasActive = selectedGenerations.some((generation) => !generation.deleted);
   const hasDeleted = selectedGenerations.some((generation) => generation.deleted);
@@ -152,6 +168,9 @@ export function LibrarySelectionActionBar({
         {selectedCount}
         {t("개 선택")}
       </span>
+      {selectedCount === 1 && (
+        <DraftFinishButton selected={selectedGenerations} onFinishDraft={onFinishDraft} draftBusy={draftBusy} draftDone={draftDone} />
+      )}
       {/* 캔버스 선택바와 동일 — 휴지통 항목만 선택했을 땐 숨김(공유 대상 없음).
           공유&리뷰 탭(onGradeStep)에서는 '팀 공유' 대신 ↑/↓ 등급 한 칸 이동 버튼 2개. */}
       {hasActive &&

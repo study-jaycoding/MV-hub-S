@@ -1821,7 +1821,8 @@ export default function App() {
     mergeFacetTags, reload, bumpBoard,
   });
   const draftRequests = useDraftRequests(gens);
-  const finishDraft = async (generation: Generation) => {
+  // onCanvas = 캔버스 선택바에서 눌렀다 — 결과를 그 카드에 쌓는다. 워크스페이스(라이브러리)에서 누르면 보이지 않는 캔버스에 잇지 않는다(10-22).
+  const finishDraft = async (generation: Generation, onCanvas = true) => {
     if (!canFinishDraft(generation)) return;
     const scope = captureSubmissionScope(workspaceContext);
     const attempt = draftRequests.begin(generation.id, scope);
@@ -1829,7 +1830,7 @@ export default function App() {
     let link: Awaited<ReturnType<typeof prepareCanvasGenerationBatch>>[number] | undefined;
     let acceptedOrUnknown = false;
     try {
-      if (activeScene) {
+      if (onCanvas && activeScene) {
         flushScenePending(activeScene.id);
         const scene = listScenes(null).find((item) => item.id === activeScene.id) ?? activeScene;
         const card = scene.cards.find((item) => variantIds(item).includes(generation.id));
@@ -1854,7 +1855,7 @@ export default function App() {
         throw result.error ?? new Error("Draft 생성 요청을 제출하지 못했습니다.");
       }
       draftRequests.accept(attempt, result.generation);
-      flash(result.outcome.kind === "accepted_local_pending"
+      flash(result.outcome.kind === "accepted_local_pending" && link
         ? "Draft 생성 요청은 접수됐습니다. 캔버스 연결은 재시작 시 복구됩니다."
         : "Draft 1080p 생성 요청을 접수했습니다.");
       await reload();
@@ -2084,6 +2085,9 @@ export default function App() {
         onDelete={bulkDelete}
         onRestore={bulkRestore}
         onPurge={bulkPurge}
+        onFinishDraft={(generation) => finishDraft(generation, false)}
+        draftBusy={selectedGenerations.some((generation) => draftRequests.pending.has(generation.id))}
+        draftDone={selectedGenerations.some((generation) => draftRequests.completed.has(generation.id))}
       />
     ) : undefined);
 

@@ -13,6 +13,7 @@ import type { GradeMode } from "../lib/gradeStep";
 import { thumbOf, thumbUrl } from "../lib/media";
 import { folderChipLabel, folderFullLabel } from "../lib/folderLabel";
 import { useClickSeparation } from "../lib/useClickSeparation";
+import { isDraftGeneration } from "../lib/seedanceDraft";
 import { MediaThumbnail } from "./MediaThumbnail";
 import comfyLogo from "../assets/comfy-logo.svg";
 import higgsfieldLogo from "../assets/higgsfield-logo.svg";
@@ -482,6 +483,10 @@ function GenerationCardImpl({
         >
           입력 검증 실패
         </span>
+      )}
+      {/* Draft 생성물(Jay 10-22) — 캔버스 카드와 같은 라임 알약. 남의 카드는 작성자 배지 아래. 목록 보기는 썸네일이 작아 뺀다. */}
+      {!isList && isDraftGeneration(gen) && (
+        <span className={"linb-draft" + (gen.is_mine ? "" : " below-creator")}>Draft</span>
       )}
       {/* 다른 작업자가 만든 결과물 — 카드 우측 상단 뱃지(상시 표시). */}
       {!gen.is_mine && (
