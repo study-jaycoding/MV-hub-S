@@ -280,6 +280,75 @@ function Test-ReadyProcessIdentity {
     return @{ pid = [int]$Process.ProcessId; creation_time = [string]$Process.CreationDate.ToUniversalTime().ToString('o'); executable_sha256 = Get-ReleaseSha256 $Process.ExecutablePath }
 }
 
+function Assert-LegacyCommittedInstall {
+    param([string]$Root, $Intent)
+    if (@($Intent.PSObject.Properties).Count -ne 3 -or
+        $Intent.token -isnot [string] -or $Intent.token -cnotmatch '^[0-9a-f]{8}$' -or
+        $Intent.updated_at -isnot [string] -or $Intent.updated_at -cnotmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$' -or
+        $Intent.components -isnot [array] -or $Intent.components.Count -eq 0) { throw 'Invalid legacy install journal.' }
+    $null = [DateTimeOffset]::Parse($Intent.updated_at)
+    foreach ($Name in @('build-manifest.json', 'VERSION.txt')) {
+        $Item = Get-Item -LiteralPath (Join-Path $Root $Name) -Force -ErrorAction Stop
+        if ($Item.PSIsContainer -or ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Invalid legacy install metadata.' }
+    }
+    $DescriptorPath = Join-Path $Root 'build-manifest.json'
+    $DescriptorHash = Get-ReleaseSha256 $DescriptorPath
+    $Descriptor = ConvertFrom-ReleaseJson ([IO.File]::ReadAllBytes($DescriptorPath))
+    if ($Descriptor.format_version -isnot [int] -or $Descriptor.format_version -ne 1 -or $Descriptor.role -cne 'worker' -or
+        $Descriptor.version -isnot [string] -or -not $Descriptor.version -or
+        $Descriptor.version -cne ([IO.File]::ReadAllText((Join-Path $Root 'VERSION.txt'))).Trim() -or
+        $Descriptor.payload -isnot [array] -or $Descriptor.payload.Count -eq 0) { throw 'Legacy install version or payload is invalid.' }
+
+    # Reconstruct the old worker's replacement list from the installed inventory, not its progress flags.
+    $Expected = @{ 'backend/app' = 'dir'; 'frontend/dist' = 'dir'; 'runtime/node' = 'dir';
+        'runtime/higgsfield' = 'dir'; 'runtime/python' = 'dir'; 'build-manifest.json' = 'file' }
+    $Covered = @{}
+    $Payload = @{}
+    foreach ($Entry in $Descriptor.payload) {
+        $Name = $Entry.path
+        if ($Name -isnot [string] -or -not $Name -or $Name -match '(^/|[\\<>:"|?*\x00-\x1f]|(^|/)\.\.?(/|$)|//|[. ](/|$)|/$)' -or
+            $Name -match '^(backend/data|data|logs|\.install-checkpoints|\.install-journals)(/|$)' -or
+            $Name -match '^backend/(content_hub|content_hub_trash)\.db(?:-(?:wal|shm|journal))?$' -or
+            $Name -match '^(build-manifest\.json|INSTALL_SOURCE\.txt|update-journal\.json|\.install-activation\.json|\.update\.lock|\.resolve-transfer\.lock)$' -or
+            $Payload.ContainsKey($Name) -or ($Entry.size -isnot [int] -and $Entry.size -isnot [long]) -or
+            $Entry.size -lt 0 -or $Entry.sha256 -isnot [string] -or $Entry.sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'Invalid legacy payload inventory.' }
+        $Payload[$Name] = $true
+        if ($Name -ceq 'VERSION.txt') { continue }
+        $Parts = $Name.Split('/')
+        $Relative = $Parts[0]
+        $Kind = if ($Parts.Count -eq 1) { 'file' } else { 'dir' }
+        if ($Parts.Count -gt 1 -and $Parts[0] -cin @('backend', 'frontend', 'runtime')) {
+            $Relative = $Parts[0] + '/' + $Parts[1]
+            $Kind = if ($Parts.Count -eq 2) { 'file' } else { 'dir' }
+            if ($Parts[0] -cin @('frontend', 'runtime') -and -not $Expected.ContainsKey($Relative)) { throw 'Payload is outside legacy replacement components.' }
+        }
+        if ($Expected.ContainsKey($Relative) -and $Expected[$Relative] -cne $Kind) { throw 'Conflicting legacy component kinds.' }
+        $Expected[$Relative] = $Kind
+        $Covered[$Relative] = $true
+    }
+    foreach ($Required in @('VERSION.txt', 'MV_agent.bat', 'update_release.bat', 'run_release_update.ps1',
+        'update_release_worker.bat', 'run_agent_session.py', 'agent_push.py', 'backend/serve.py',
+        'backend/app/main.py', 'frontend/dist/index.html')) {
+        if (-not $Payload.ContainsKey($Required)) { throw 'Required legacy payload is missing.' }
+    }
+    foreach ($Required in @('backend/app', 'frontend/dist', 'runtime/node', 'runtime/higgsfield', 'runtime/python')) {
+        if (-not $Covered.ContainsKey($Required)) { throw 'Required legacy component is empty.' }
+    }
+    $Seen = @{}
+    foreach ($Component in $Intent.components) {
+        if (@($Component.PSObject.Properties).Count -ne 5 -or $Component.relative -isnot [string] -or
+            $Component.had_previous -isnot [bool] -or $Component.old_moved -isnot [bool] -or -not $Component.old_moved -or
+            $Component.swapped -isnot [bool] -or -not $Component.swapped) { throw 'Legacy component swap is incomplete.' }
+        $Relative = $Component.relative.Replace('\', '/')
+        if ($Seen.ContainsKey($Relative) -or -not $Expected.ContainsKey($Relative) -or
+            $Component.kind -cne $Expected[$Relative]) { throw 'Legacy component list does not match installed payload.' }
+        $Seen[$Relative] = $true
+    }
+    if ($Seen.Count -ne $Expected.Count) { throw 'Legacy component list is incomplete.' }
+    # Rollback leaves swap flags set, so verify actual files even when VERSION matches.
+    Assert-InstalledReleasePayload -Root $Root -Candidate ([pscustomobject]@{ contract = @{ descriptor_sha256 = $DescriptorHash } })
+}
+
 function Initialize-WorkerActivation {
     param([string]$Root)
     $Root = [System.IO.Path]::GetFullPath($Root).TrimEnd('\')
@@ -310,7 +379,11 @@ function Initialize-WorkerActivation {
     $Intent = $null
     if (Test-Path -LiteralPath $Journal) {
         $Intent = ConvertFrom-ReleaseJson ([IO.File]::ReadAllBytes($Journal))
-        if ($Intent.format_version -ne 1 -or $Intent.phase -notin @('committed', 'rolled_back')) {
+        if ($Intent.PSObject.Properties.Name -notcontains 'format_version') {
+            Assert-LegacyCommittedInstall -Root $Root -Intent $Intent
+            # The old updater owns journal cleanup; a leftover may still show recovery in the update UI.
+        }
+        elseif ($Intent.format_version -ne 1 -or $Intent.phase -notin @('committed', 'rolled_back')) {
             throw 'Interrupted installation requires updater recovery before normal boot.'
         }
     }
