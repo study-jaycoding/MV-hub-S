@@ -347,6 +347,70 @@ def test_registered_server_needs_its_live_coordinator(updater, active):
     assert ("coordinator" in updater.trace()) is active
 
 
+@pytest.mark.parametrize("source", ["task", "process"])
+@pytest.mark.parametrize("active", [False, True])
+def test_redirected_command_lines_keep_the_same_admission(updater, source, active):
+    # Windows PowerShell 5.1 의 IsPathRooted 는 '>' 조각에 예외를 던졌다 — 2026-10-22 실제 서버 전환에서 멈춤.
+    log = updater.root / "logs/server_console.log"
+    if source == "task":
+        updater.queries["tasks"] = [{"TaskName": "MVHub Server", "Actions": [
+            {"Execute": "cmd.exe", "Arguments": f'/c call "{updater.root / "task_launch.bat"}" server > "{log}" 2>&1'}]}]
+    else:
+        updater.queries["processes"] = [{"Name": "cmd.exe", "ProcessId": 4242, "CommandLine":
+            f'cmd.exe /d /c "{sys._base_executable}" "{updater.root / "backend/serve.py"}" > "{log}" 2>&1'}]
+    updater.write_queries()
+    if active: updater.holder()
+    result = updater.run()
+    output = result.stdout + result.stderr
+    assert "IsPathRooted" not in output, output
+    assert result.returncode == (0 if active else 1), output
+    assert "git pull" not in updater.trace()
+    assert ("coordinator" in updater.trace()) is active
+
+
+@pytest.mark.parametrize("process", [
+    # cmd 의 바깥 두 겹 따옴표 + 공백 경로는 조각 나누기가 경로를 잃는다 — 작업자로 떨어지지 않고 멈춰야 한다.
+    {"Name": "cmd.exe", "line": 'cmd.exe /d /c ""{py}" "{serve}" > "{log}" 2>&1"'},
+    # 경로 API 가 예외를 던지는 조각('a|b')이 python 명령줄에 있어도 판정은 이어진다(서버 → supervisor 없음 거부).
+    {"Name": "python.exe", "line": '"{py}" -I "{serve}" "a|b"'},
+])
+def test_unparsed_or_invalid_server_command_line_never_enters_worker_update(updater, process):
+    line = process["line"].format(py=sys._base_executable, serve=updater.root / "backend/serve.py",
+                                  log=updater.root / "logs/server_console.log")
+    updater.queries["processes"] = [{"Name": process["Name"], "ProcessId": 4343, "CommandLine": line}]
+    updater.write_queries()
+    result = updater.run()
+    output = result.stdout + result.stderr
+    assert "IsPathRooted" not in output and "GetFileName" not in output, output
+    assert result.returncode != 0, output
+    assert updater.trace() == "", updater.trace()
+
+
+@pytest.mark.parametrize("arguments", [
+    '/c ""{launcher}" > "{log}" 2>&1"',
+    '/c ""{task_launch}" server > "{log}" 2>&1"',
+])
+def test_unparsed_server_task_of_any_name_never_enters_worker_update(updater, arguments):
+    # 이름이 'MVHub Server' 가 아니어도 이 설치의 서버 실행을 해석 못 하면 작업자로 떨어지지 않는다.
+    args = arguments.format(launcher=updater.root / "MV_server.bat", task_launch=updater.root / "task_launch.bat",
+                            log=updater.root / "logs/server_console.log")
+    updater.queries["tasks"] = [{"TaskName": "MVHub Custom", "Actions": [{"Execute": "cmd.exe", "Arguments": args}]}]
+    updater.write_queries()
+    result = updater.run()
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert updater.trace() == "", updater.trace()
+
+
+def test_supervisor_path_in_a_wrapper_process_is_server_evidence(updater):
+    log = updater.root / "logs/server_console.log"
+    updater.queries["processes"] = [{"Name": "cmd.exe", "ProcessId": 4444, "CommandLine":
+        f'cmd.exe /d /c "{sys._base_executable}" "{updater.root / "tools/server_supervisor.py"}" > "{log}" 2>&1'}]
+    updater.write_queries()
+    result = updater.run()
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert updater.trace() == "", updater.trace()
+
+
 def test_foreign_task_and_supervisor_do_not_reclassify_worker_clone(updater):
     updater.holder(own=False)
     foreign = updater.folder / "foreign repo/task_launch.bat"

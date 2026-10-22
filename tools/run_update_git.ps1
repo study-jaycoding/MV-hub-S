@@ -57,8 +57,17 @@ function Split-UpdateCommandLine([string]$CommandLine) {
     return $tokens.ToArray()
 }
 
+# Windows PowerShell 5.1 throws on <>|" in path APIs; redirect tokens such as '>' or '2>&1' are never paths.
+function Test-RootedUpdatePath([string]$Value) {
+    try { return [IO.Path]::IsPathRooted($Value) } catch { return $false }
+}
+
+function Get-UpdatePathLeaf([string]$Value) {
+    try { return [IO.Path]::GetFileName($Value) } catch { return '' }
+}
+
 function Test-UpdatePathArgument([string]$Value, [string]$Expected) {
-    if (-not [IO.Path]::IsPathRooted($Value)) { return $false }
+    if (-not (Test-RootedUpdatePath $Value)) { return $false }
     try { return [string]::Equals([IO.Path]::GetFullPath($Value), $Expected, [StringComparison]::OrdinalIgnoreCase) }
     catch { return $false }
 }
@@ -81,6 +90,7 @@ function Get-GitUpdateRole([string]$RootPath, [bool]$SupervisorFree) {
         if ($process.CommandLine.IndexOf($RootPath, [StringComparison]::OrdinalIgnoreCase) -lt 0 -and
             $process.CommandLine -notmatch '(serve|server_supervisor)\.py') { continue }
         $tokens = @(Split-UpdateCommandLine $process.CommandLine)
+        $proved = $false
         $scriptIndex = 1
         while ($scriptIndex -lt $tokens.Count -and $tokens[$scriptIndex] -match '^-(B|E|I|S|s|u)$') { $scriptIndex++ }
         while ($scriptIndex + 1 -lt $tokens.Count -and $tokens[$scriptIndex] -match '^-(X|W)$') { $scriptIndex += 2 }
@@ -91,16 +101,29 @@ function Get-GitUpdateRole([string]$RootPath, [bool]$SupervisorFree) {
                 throw "The supervisor's live process identity is unavailable."
             }
             $supervisors += $process
+            $proved = $true
         }
         foreach ($token in $tokens) {
-            if ((Test-UpdatePathArgument $token $expectedServe) -or (Test-UpdatePathArgument $token $expectedLauncher)) {
+            # A supervisor path outside a verified supervisor process is server evidence too, never a worker.
+            if ((Test-UpdatePathArgument $token $expectedServe) -or (Test-UpdatePathArgument $token $expectedLauncher) -or
+                (Test-UpdatePathArgument $token $expectedSupervisor)) {
                 $otherServerProcess = $true
+                $proved = $true
             }
             # An unproved relative server argument stays ambiguous regardless of Python option order.
             if ($process.Name -match '^(python[0-9.]*w?|py)\.exe$' -and
                 $token -notmatch '^(?:[A-Za-z]:[\\/]|[\\/]{2})' -and
-                [IO.Path]::GetFileName($token) -in @('serve.py', 'server_supervisor.py')) {
+                (Get-UpdatePathLeaf $token) -in @('serve.py', 'server_supervisor.py')) {
                 throw "A server process uses a relative entrypoint; its installation cannot be established. Stop it before updating."
+            }
+        }
+        # The token split does not model every cmd quoting form (e.g. cmd /c ""exe" "a b\serve.py""); an entry
+        # path visible in the raw command line but not in its tokens must never fall through to a worker update.
+        if (-not $proved) {
+            foreach ($entry in @($expectedServe, $expectedSupervisor, $expectedLauncher)) {
+                if ($process.CommandLine.IndexOf($entry, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                    throw "A server command line could not be parsed; its installation cannot be established. Stop it before updating."
+                }
             }
         }
     }
@@ -112,16 +135,23 @@ function Get-GitUpdateRole([string]$RootPath, [bool]$SupervisorFree) {
                 ([string]$action.Arguments).IndexOf($RootPath, [StringComparison]::OrdinalIgnoreCase) -lt 0 -and
                 -not (Test-UpdatePathArgument ([string]$action.Execute) $expectedLauncher)) { continue }
             $tokens = @($action.Execute) + @(Split-UpdateCommandLine ([string]$action.Arguments))
+            $actionProved = $false
             for ($i = 0; $i -lt $tokens.Count; $i++) {
-                if (Test-UpdatePathArgument $tokens[$i] $expectedLauncher) { $scheduledServer = $true }
+                if (Test-UpdatePathArgument $tokens[$i] $expectedLauncher) { $scheduledServer = $true; $actionProved = $true }
                 if ((Test-UpdatePathArgument $tokens[$i] $taskLauncher) -and $i + 1 -lt $tokens.Count -and $tokens[$i + 1] -eq 'server') {
-                    $scheduledServer = $true
+                    $scheduledServer = $true; $actionProved = $true
                 }
-                if ([IO.Path]::IsPathRooted($tokens[$i]) -and
+                if ((Test-RootedUpdatePath $tokens[$i]) -and
                     (([IO.Path]::GetFileName($tokens[$i]) -eq 'MV_server.bat') -or
                      ([IO.Path]::GetFileName($tokens[$i]) -eq 'task_launch.bat' -and $i + 1 -lt $tokens.Count -and $tokens[$i + 1] -eq 'server'))) {
                     $knownServerTask = $true
                 }
+            }
+            # Same rule as processes: this installation's server launch in the raw action text must be proved by tokens.
+            $raw = [string]$action.Execute + ' ' + [string]$action.Arguments
+            if (-not $actionProved -and ($raw.IndexOf($expectedLauncher, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                $raw -match ([regex]::Escape($taskLauncher) + '"*\s+"*server(?![\w.])'))) {
+                throw "A scheduled server action could not be parsed; its installation cannot be established."
             }
         }
         if ($task.TaskName -eq 'MVHub Server' -and -not $knownServerTask) {
