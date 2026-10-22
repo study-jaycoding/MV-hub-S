@@ -18,7 +18,7 @@ from contextlib import contextmanager
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 from app.services.install_journal import atomic_json, advance, new_journal, read_journal, rollback_decision
 from install_db_probe import snapshot
-from app.services.release_contract import document, digest as is_digest
+from app.services.release_contract import compatibility as release_compatibility, document, digest as is_digest
 from qualify_release_artifact import TOOLS as PROBE_TOOLS
 
 
@@ -295,6 +295,41 @@ def source_identity(root):
     return hashlib.sha256(json.dumps(rows, separators=(',', ':')).encode()).hexdigest()
 
 
+def legacy_compatibility(root: Path):
+    """The source tree's own committed declaration for program-only rollback; (None, None) keeps manual recovery.
+
+    The declaration is outside source_identity, so its bytes must equal Git HEAD (normalized like checkout)."""
+    path = root / 'release/compatibility.json'
+    # The supervisor may run as SYSTEM over a user-owned clone; trust exactly this root for these two reads.
+    git = ['git', '-c', 'safe.directory=' + root.as_posix(), '-C', str(root)]
+    flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    try:
+        local_child(path, root)
+        raw = path.read_bytes()
+        committed = subprocess.run([*git, 'rev-parse', '--verify', 'HEAD:release/compatibility.json'],
+                                   capture_output=True, text=True, timeout=30, creationflags=flags)
+        working = subprocess.run([*git, 'hash-object', '--path=release/compatibility.json', '--stdin'],
+                                 input=raw, capture_output=True, timeout=30, creationflags=flags)
+        blobs = [value.decode('ascii', 'replace') if isinstance(value, bytes) else str(value or '')
+                 for value in (committed.stdout, working.stdout)]
+        if committed.returncode != 0 or working.returncode != 0 or not blobs[0].strip() or blobs[0].strip() != blobs[1].strip():
+            return None, None
+        value = release_compatibility(document(raw))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None, None
+    if (type(value.get('reader_protocol')) is not int or type(value.get('writer_protocol')) is not int
+            or not isinstance(value.get('supported_components'), list)):
+        return None, None
+    return value, hashlib.sha256(raw).hexdigest()
+
+
+def file_sha256(path: Path):
+    try:
+        return digest(path)
+    except OSError:
+        return None
+
+
 def listener_identity(port: int) -> dict:
     # Local Windows observations only; never sends a signal to an observed PID.
     command = ("$ErrorActionPreference='Stop'; $ids=@(Get-NetTCPConnection -State Listen -LocalPort " + str(int(port)) +
@@ -336,8 +371,13 @@ class ServerActivation:
 
     def read_pointer(self):
         if not self.pointer.exists():
+            identity = source_identity(self.root)
+            declared, declared_sha = legacy_compatibility(self.root)
+            # A declaration read while the tree was being replaced must not pair with either version.
+            if source_identity(self.root) != identity:
+                raise ValueError('legacy_source_changed_during_capture')
             return {'path': str(self.root), 'build_id': 'legacy-source', 'python': sys.executable,
-                    'compatibility': None, 'source_sha256': source_identity(self.root)}
+                    'compatibility': declared, 'compatibility_sha256': declared_sha, 'source_sha256': identity}
         value = json.loads(self.pointer.read_text(encoding='utf-8'))
         if value.get('path') == str(self.root):
             if value.get('source_sha256') != source_identity(self.root):
@@ -455,7 +495,9 @@ class ServerActivation:
         previous = journal['previous']
         if previous['path'] != str(self.root):
             verify_qualification(previous, self.stages, environ=self.env)
-        elif previous.get('source_sha256') != source_identity(self.root):
+        elif (previous.get('source_sha256') != source_identity(self.root) or
+              (previous.get('compatibility_sha256') and
+               previous['compatibility_sha256'] != file_sha256(self.root / 'release/compatibility.json'))):
             raise ValueError('previous_source_changed')
         atomic_json(self.pointer, previous)
         self.current = previous

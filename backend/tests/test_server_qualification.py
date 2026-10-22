@@ -763,6 +763,9 @@ def test_prepare_failures_leave_old_tree_and_request_untouched(tmp_path, monkeyp
         return result
     with pytest.raises(ValueError):
         builder.prepare(tmp_path,source_receipt=receipt,verification_python=verifier,run=run,probe_run=probe)
+    if damage in {'receipt_commit','required_skip'}:
+        # A receipt for another commit (e.g. origin/main moved after it was chosen) stops before any install.
+        assert not any({'venv','pip','ci','build','--prefix'} & set(c) for c in calls), calls
     assert sentinel.read_bytes()==b'old service unchanged'
     assert not (tmp_path/'logs/server-current.json').exists()
     assert not (tmp_path/'logs/server-update-request.json').exists()

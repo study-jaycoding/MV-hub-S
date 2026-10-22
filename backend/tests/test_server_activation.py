@@ -1,11 +1,12 @@
 """Only temporary files and fake child processes; no server/update scripts run."""
 import importlib
 import json
+import os
 from pathlib import Path
 import subprocess
 
 import pytest
-from test_server_qualification import cli_fixture, prepare_fixture, fake_probe
+from test_server_qualification import GIT, cli_fixture, prepare_fixture, fake_probe
 
 
 @pytest.fixture
@@ -36,11 +37,12 @@ class Process:
         return 0
 
 
-def prepared(module, tmp_path, monkeypatch):
+def prepared(module, tmp_path, monkeypatch, *, legacy_capture=False):
     # These journal/recovery units use a minimal stage; full qualification is tested separately.
     monkeypatch.setattr(module, 'verify_qualification', lambda *a, **kw: None)
     manager = module.ServerActivation(tmp_path, environ={'CONTENT_HUB_PORT': '19871'})
-    manager.current['compatibility'] = compatibility()
+    if not legacy_capture:
+        manager.current['compatibility'] = compatibility()
     stage = manager.stages / 'new'
     (stage / '.venv/Scripts').mkdir(parents=True)
     (stage / '.venv/Scripts/python.exe').write_bytes(b'fixture-never-executed')
@@ -220,3 +222,100 @@ def test_server_process_retains_original_data_secret_and_uses_target_frontend(mo
     assert env['CONTENT_HUB_DATA'] == str(tmp_path / 'backend/owned-data')
     assert env['CONTENT_HUB_AUTH_SECRET'] == 'fixture'
     assert env['CONTENT_HUB_FRONTEND_DIST'] == str(tmp_path / 'frontend/dist')
+
+
+def legacy_declaration(**changes):
+    value = {'protocol_version': 1, 'rollout': 'bridge', 'backward_compatible': True,
+             'required_installer_capabilities': [],
+             'db_schema': {'read_min': 1, 'read_max': 2, 'write_min': 1, 'write_max': 2},
+             'reader_protocol': 1, 'writer_protocol': 2, 'supported_components': ['content_core']}
+    value.update(changes)
+    return {k: v for k, v in value.items() if v is not None}
+
+
+def legacy_clone(root, declaration, monkeypatch):
+    """A real Git clone whose committed release/compatibility.json belongs to the running source tree."""
+    if not GIT:
+        pytest.skip('Git is required')
+    monkeypatch.setenv('PATH', str(Path(GIT).parent) + os.pathsep + os.environ.get('PATH', ''))
+    path = root / 'release/compatibility.json'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(json.dumps(declaration).encode())  # one line: no checkout EOL difference
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith('GIT_')}
+    env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull)
+    for args in (['init', '-b', 'main'], ['add', 'release/compatibility.json'], ['commit', '-m', 'fixture']):
+        subprocess.run([GIT, '-C', str(root), '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', *args],
+                       check=True, capture_output=True, env=env)
+    return path
+
+
+def start_fails_after_db_check(manager, monkeypatch, *, schema=1):
+    count = 0
+    def ready(current, **kwargs):
+        if current['build_id'] == 'new':
+            raise TimeoutError('fixture readiness failure')
+        return {'pid': 123}
+    def checkpoint(_):
+        nonlocal count
+        count += 1
+        return [{**row(), 'schema_version': schema if count > 1 else 1}]
+    monkeypatch.setattr(manager, 'wait_ready', ready)
+    monkeypatch.setattr(manager, 'checkpoint', checkpoint)
+
+
+def test_legacy_source_captures_its_committed_declaration_and_rolls_back(module, tmp_path, monkeypatch):
+    path = legacy_clone(tmp_path, legacy_declaration(), monkeypatch)
+    manager, events, _ = prepared(module, tmp_path, monkeypatch, legacy_capture=True)
+    assert manager.current['compatibility'] == legacy_declaration()
+    assert manager.current['compatibility_sha256'] == module.digest(path)
+    start_fails_after_db_check(manager, monkeypatch)
+    with pytest.raises(TimeoutError):
+        manager.apply_request()
+    assert module.read_journal(manager.journal_path)['phase'] == 'rolled_back'
+    assert events == [('spawn', 'new', True), ('spawn', 'legacy-source', False)]
+
+
+@pytest.mark.parametrize('damage', ['uncommitted_edit', 'missing_protocol', 'no_declaration', 'incompatible_db'])
+def test_unproven_legacy_declaration_or_database_keeps_manual_recovery(module, tmp_path, monkeypatch, damage):
+    if damage == 'missing_protocol':
+        legacy_clone(tmp_path, legacy_declaration(writer_protocol=None), monkeypatch)
+    elif damage != 'no_declaration':
+        path = legacy_clone(tmp_path, legacy_declaration(), monkeypatch)
+        if damage == 'uncommitted_edit':
+            path.write_bytes(json.dumps(legacy_declaration(db_schema={'read_min': 1, 'read_max': 9, 'write_min': 1, 'write_max': 9})).encode())
+    manager, events, _ = prepared(module, tmp_path, monkeypatch, legacy_capture=True)
+    assert (manager.current['compatibility'] is None) is (damage != 'incompatible_db')
+    start_fails_after_db_check(manager, monkeypatch, schema=3 if damage == 'incompatible_db' else 1)
+    with pytest.raises(ValueError, match='manual_database_recovery_required'):
+        manager.apply_request()
+    assert module.read_journal(manager.journal_path)['phase'] == 'recovery_required'
+    assert events == [('spawn', 'new', True)]
+
+
+def test_declaration_changed_after_capture_blocks_program_rollback(module, tmp_path, monkeypatch):
+    path = legacy_clone(tmp_path, legacy_declaration(), monkeypatch)
+    manager, events, _ = prepared(module, tmp_path, monkeypatch, legacy_capture=True)
+    path.write_bytes(path.read_bytes() + b' ')
+    start_fails_after_db_check(manager, monkeypatch)
+    with pytest.raises(ValueError, match='previous_source_changed'):
+        manager.apply_request()
+    assert module.read_journal(manager.journal_path)['phase'] != 'rolled_back'
+    assert events == [('spawn', 'new', True)]
+
+
+def test_source_replaced_during_capture_stops_supervisor_start(module, tmp_path, monkeypatch):
+    legacy_clone(tmp_path, legacy_declaration(), monkeypatch)
+    identities = iter(['before', 'after'])
+    monkeypatch.setattr(module, 'source_identity', lambda root: next(identities))
+    with pytest.raises(ValueError, match='legacy_source_changed_during_capture'):
+        module.ServerActivation(tmp_path, environ={})
+
+
+def test_existing_pointer_without_compatibility_is_not_backfilled(module, tmp_path, monkeypatch):
+    legacy_clone(tmp_path, legacy_declaration(), monkeypatch)
+    (tmp_path / 'logs').mkdir()
+    module.atomic_json(tmp_path / 'logs/server-current.json',
+                       {'path': str(tmp_path), 'build_id': 'legacy-source', 'python': 'python.exe',
+                        'compatibility': None, 'source_sha256': module.source_identity(tmp_path)})
+    manager = module.ServerActivation(tmp_path, environ={})
+    assert manager.current['compatibility'] is None and 'compatibility_sha256' not in manager.current

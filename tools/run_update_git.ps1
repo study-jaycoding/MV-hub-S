@@ -1,6 +1,10 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string]$Root
+    [string]$Root,
+    [switch]$Elevated,
+    [string]$SourceReceipt = "",
+    [string]$VerificationPython = "",
+    [switch]$NoPause
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,6 +13,7 @@ $TempWorkers = New-Object System.Collections.Generic.List[string]
 $GitLock = $null
 $UpdateLock = $null
 $SupervisorLock = $null
+$PauseAtEnd = -not ($NoPause -or $env:MVHUB_NO_PAUSE -eq "1")
 
 function Test-UpdateAdministrator {
     $Principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -24,6 +29,147 @@ function Assert-LocalUpdatePath([string]$Path) {
             throw "Update paths must not traverse a reparse point."
         }
     }
+}
+
+function Assert-ElevationArgument([string]$Value) {
+    # A quote, cmd expansion character or trailing backslash would split or rewrite the relaunched argument.
+    if (-not $Value -or $Value -match '["%!\r\n]' -or $Value.EndsWith("\")) {
+        throw "Updater arguments must not contain quotes, %, !, line breaks or a trailing backslash."
+    }
+}
+
+function Get-UpdateOverride([string]$Argument, [string]$Name) {
+    $Value = if ($Argument) { $Argument } else { [Environment]::GetEnvironmentVariable($Name, "Process") }
+    if ($Value) {
+        Assert-ElevationArgument $Value
+        if (-not (Test-RootedUpdatePath $Value)) { throw "$Name must be an absolute path." }
+    }
+    return $Value
+}
+
+function Format-UpdateArgument([string]$Value) {
+    Assert-ElevationArgument $Value
+    return '"' + $Value + '"'
+}
+
+function Wait-UpdateKey {
+    # Without a console keyboard (redirected input) there is nobody to wait for.
+    if ([Console]::IsInputRedirected) { return }
+    Write-Host "Press any key to continue . . ."
+    [void][Console]::ReadKey($true)
+}
+
+function Invoke-ElevatedUpdate([string]$RootPath, [bool]$Quiet) {
+    # Elevation does not reliably carry this window's environment: pass only explicit, re-checked values.
+    # Fixed switches stay bare; every value is quoted, so a value can never become a separate option.
+    $Parts = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Format-UpdateArgument $PSCommandPath),
+               "-Root", (Format-UpdateArgument $RootPath), "-Elevated")
+    $Receipt = Get-UpdateOverride $SourceReceipt "MVHUB_SERVER_SOURCE_RECEIPT"
+    $Verifier = Get-UpdateOverride $VerificationPython "MVHUB_SERVER_VERIFICATION_PYTHON"
+    if ($Receipt) { $Parts += @("-SourceReceipt", (Format-UpdateArgument $Receipt)) }
+    if ($Verifier) { $Parts += @("-VerificationPython", (Format-UpdateArgument $Verifier)) }
+    if ($Quiet) { $Parts += "-NoPause" }
+    $Line = $Parts -join " "
+    try {
+        $Process = Start-Process -FilePath (Join-Path $PSHOME "powershell.exe") -Verb RunAs `
+            -WorkingDirectory $RootPath -ArgumentList $Line -PassThru
+    }
+    catch {
+        Write-Host "[ERROR] Administrator approval was cancelled or failed: $($_.Exception.Message)"
+        if (-not $Quiet) { Wait-UpdateKey }
+        return 1
+    }
+    # Hold the handle so ExitCode survives; -Wait would also wait for long-lived grandchildren.
+    $null = $Process.Handle
+    $Process.WaitForExit()
+    return $Process.ExitCode
+}
+
+function Read-UpdateBytes([string]$Path) {
+    return ,([System.IO.File]::ReadAllBytes($Path))
+}
+
+function Get-BytesSha256([byte[]]$Bytes) {
+    $Hasher = [System.Security.Cryptography.SHA256]::Create()
+    try { return [System.BitConverter]::ToString($Hasher.ComputeHash($Bytes)).Replace("-", "") }
+    finally { $Hasher.Dispose() }
+}
+
+function Initialize-ServerVerifier([string]$RootPath) {
+    $Code = Invoke-UpdateBatch (Join-Path $RootPath "run_py.bat") @(
+        (Join-Path $RootPath "tools\server_verifier.py"), "--root", $RootPath)
+    if ($Code -ne 0) { throw "The server verifier Python could not be prepared (see the message above)." }
+    $Path = Join-Path $RootPath "logs\server-verifier\Scripts\python.exe"
+    Assert-LocalUpdatePath $Path
+    return $Path
+}
+
+function Get-SelectedCommit([string]$RootPath) {
+    & git -C $RootPath fetch origin main
+    if ($LASTEXITCODE -ne 0) { throw "git fetch origin main failed." }
+    $Output = @(& git -C $RootPath rev-parse origin/main)
+    $Commit = if ($Output.Count) { [string]$Output[0] } else { "" }
+    if ($LASTEXITCODE -ne 0 -or $Commit -notmatch '^[0-9a-f]{40}$') { throw "Could not read origin/main." }
+    return $Commit
+}
+
+function Import-ServerReceipt([string]$RootPath, [string]$Commit) {
+    $Config = Join-Path $RootPath "logs\server-update.local.json"
+    if (-not (Test-Path -LiteralPath $Config -PathType Leaf)) {
+        throw ("The server receipt folder is not configured. Create $Config with " +
+            '{"receipt_dir": "\\\\NAS\\share\\MV_hub_S\\server-receipts"} (docs/SERVER.md).')
+    }
+    $Directory = [string]((Get-Content -LiteralPath $Config -Raw -Encoding UTF8 | ConvertFrom-Json).receipt_dir)
+    if (-not $Directory) { throw "receipt_dir is missing in $Config." }
+    $Short = $Commit.Substring(0, 12)
+    $Source = Join-Path $Directory ($Commit + ".json")
+    try { $Bytes = [byte[]](Read-UpdateBytes $Source) }
+    catch {
+        throw ("No readable server receipt for $Short at $Source. Publish it from the release PC with " +
+            "tools\publish_server_receipt.py; if it exists, this administrator window may lack saved Windows " +
+            "credentials for that NAS share. ($($_.Exception.Message))")
+    }
+    $Hash = Get-BytesSha256 $Bytes
+    if ([string](([System.Text.Encoding]::UTF8.GetString($Bytes) | ConvertFrom-Json).source.commit) -ne $Commit) {
+        throw "The published receipt for $Short names a different commit."
+    }
+    $Store = Join-Path $RootPath "logs\server-receipts"
+    Assert-LocalUpdatePath $Store
+    [void][System.IO.Directory]::CreateDirectory($Store)
+    $Final = Join-Path $Store ($Commit + ".json")
+    $Temp = $Final + ".tmp-" + [Guid]::NewGuid().ToString("N")
+    try {
+        # Creation, write, verification and publish share one cleanup scope (a failed write leaves no .tmp).
+        $Stream = [System.IO.File]::Open($Temp, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        try { $Stream.Write($Bytes, 0, $Bytes.Length); $Stream.Flush($true) }
+        finally { $Stream.Dispose() }
+        if ((Get-BytesSha256 ([byte[]](Read-UpdateBytes $Source))) -ne $Hash) {
+            throw "The published receipt for $Short changed while it was being copied. Run update_git.bat again."
+        }
+        if (Test-Path -LiteralPath $Final) {
+            if ((Get-BytesSha256 ([byte[]](Read-UpdateBytes $Final))) -ne $Hash) {
+                throw "A different local receipt copy already exists: $Final"
+            }
+        }
+        else { [System.IO.File]::Move($Temp, $Final) }
+    }
+    finally {
+        if (Test-Path -LiteralPath $Temp) { Remove-Item -LiteralPath $Temp -Force }
+    }
+    return $Final
+}
+
+function Write-RemoteChangeNote([string]$RootPath, [string]$Commit) {
+    # Diagnostic only: its own failure must never replace the coordinator's exit code.
+    try {
+        # Read all output: Select-Object -First would stop git early and leave LASTEXITCODE = -1.
+        $Output = @(& git -C $RootPath rev-parse origin/main 2>$null)
+        $Now = if ($Output.Count) { [string]$Output[0] } else { "" }
+        if ($LASTEXITCODE -eq 0 -and $Now -and $Now -ne $Commit) {
+            Write-Host "[note] origin/main also moved from $($Commit.Substring(0, 12)) to $($Now.Substring(0, [Math]::Min(12, $Now.Length))) during preparation. Check the error above, then run update_git.bat again."
+        }
+    }
+    catch { }
 }
 
 function Open-UpdateLock([string]$Path) {
@@ -245,7 +391,11 @@ function Invoke-IsolatedWorker {
 
 try {
     if (-not (Test-UpdateAdministrator)) {
-        throw "Administrator privileges required. Run this updater in an administrator console."
+        if ($Elevated) {
+            throw "Administrator privileges required. Run this updater in an administrator console."
+        }
+        # Relaunch once through UAC before any lock, role query or Git work; no state exists yet to clean up.
+        exit (Invoke-ElevatedUpdate ([System.IO.Path]::GetFullPath($Root).TrimEnd("\", "/")) (-not $PauseAtEnd))
     }
     $RootPath = [System.IO.Path]::GetFullPath($Root).TrimEnd("\", "/")
     Assert-LocalUpdatePath $RootPath
@@ -267,13 +417,20 @@ try {
         # The existing coordinator owns this lock itself; do not self-deadlock.
         $UpdateLock.Dispose()
         $UpdateLock = $null
-        if (-not $env:MVHUB_SERVER_SOURCE_RECEIPT -or -not $env:MVHUB_SERVER_VERIFICATION_PYTHON) {
-            throw "Set MVHUB_SERVER_SOURCE_RECEIPT and MVHUB_SERVER_VERIFICATION_PYTHON for the staged server update."
+        # Each input: explicit argument or environment variable first, otherwise the automatic local setup.
+        $ReceiptPath = Get-UpdateOverride $SourceReceipt "MVHUB_SERVER_SOURCE_RECEIPT"
+        $VerifierPath = Get-UpdateOverride $VerificationPython "MVHUB_SERVER_VERIFICATION_PYTHON"
+        $SelectedCommit = $null
+        if (-not $VerifierPath) { $VerifierPath = Initialize-ServerVerifier $RootPath }
+        if (-not $ReceiptPath) {
+            $SelectedCommit = Get-SelectedCommit $RootPath
+            $ReceiptPath = Import-ServerReceipt $RootPath $SelectedCommit
         }
         $ExitCode = Invoke-UpdateBatch (Join-Path $RootPath 'run_py.bat') @(
             (Join-Path $RootPath 'tools\server_release_update.py'), '--root', $RootPath,
-            '--source-receipt', $env:MVHUB_SERVER_SOURCE_RECEIPT,
-            '--verification-python', $env:MVHUB_SERVER_VERIFICATION_PYTHON)
+            '--source-receipt', $ReceiptPath,
+            '--verification-python', $VerifierPath)
+        if ($ExitCode -ne 0 -and $SelectedCommit) { Write-RemoteChangeNote $RootPath $SelectedCommit }
     }
     else {
 
@@ -293,10 +450,6 @@ try {
 }
 catch {
     Write-Host "[ERROR] Could not start the safe updater: $($_.Exception.Message)"
-    if ($env:MVHUB_NO_PAUSE -ne "1") {
-        Write-Host "Press any key to continue . . ."
-        [void][Console]::ReadKey($true)
-    }
     $ExitCode = 1
 }
 finally {
@@ -308,4 +461,11 @@ finally {
     }
 }
 
+# Every administrator run (relaunched or opened directly) shows its result once. The non-administrator
+# window that relaunched has already exited inside the try block, and waits only when UAC was cancelled.
+if ($PauseAtEnd) {
+    Write-Host ""
+    Write-Host "MV Hub update ended (exit code $ExitCode)."
+    Wait-UpdateKey
+}
 exit $ExitCode
