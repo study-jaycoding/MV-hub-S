@@ -292,6 +292,7 @@
   font-size: 12.5px; font-weight: 500;
 }
 .acct-action:hover { background: rgba(255,255,255,0.07); }
+.acct-action-icon { vertical-align: -2px; margin-right: 5px; }
 .acct-signout { color: #f87171; }
 .acct-signout:hover { background: rgba(248,113,113,0.12); }
 
@@ -536,9 +537,9 @@
   background: transparent; color: var(--muted); border-color: var(--border2);
 }
 .settings-action.ghost:hover:not(:disabled) { background: rgba(255,255,255,0.05); color: var(--text); }
-/* 지우는 확인(씬 삭제) — 선택바 🗑 삭제(.sb-del)와 같은 빨강 */
-.settings-action.danger { background: rgba(244,63,94,0.18); border-color: rgba(244,63,94,0.5); color: #f2777c; }
-.settings-action.danger:hover:not(:disabled) { background: rgba(244,63,94,0.32); color: #f2777c; }
+/* 지우는 확인(씬 삭제) — 눈에 띄게 꽉 찬 밝은 빨강(Jay 2026-10-22 모의 이미지 안 B) */
+.settings-action.danger { background: #ff3b30; border-color: #ff3b30; color: #fff; font-weight: 700; }
+.settings-action.danger:hover:not(:disabled) { background: #ff5247; border-color: #ff5247; color: #fff; }
 /* 씬 삭제 확인창 뒤의 투명한 막 — 창 밖 누름을 받아 취소한다(뒤 단추가 눌리지 않게). 창(.host-exit-confirm 340) 바로 아래 */
 .scene-del-catcher { position: fixed; inset: 0; z-index: 339; }
 .settings-details { margin-top: 8px; }

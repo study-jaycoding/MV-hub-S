@@ -66,6 +66,15 @@ export function StepIcon({ plus, size = 12, stroke = 3 }: { plus?: boolean; size
     </svg>
   );
 }
+// 계정(머리·어깨) — 계정 메뉴의 Manage Account 앞(Jay 2026-10-22, 모의 이미지 후보 ②).
+export function AccountIcon() {
+  return (
+    <svg {...TOGGLE_ICON} width={14} height={14} className="acct-action-icon" aria-hidden="true">
+      <circle cx="12" cy="7" r="4" />
+      <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" />
+    </svg>
+  );
+}
 // 닫기 — 글자 ✕·× 는 1.3~1.5px 아래였다(2026-09-22 실측). 크기는 옛 글자의 잉크 높이에 맞춘 값.
 export function CloseIcon({ size = 20 }: { size?: number }) {
   return (

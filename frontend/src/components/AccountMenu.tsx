@@ -28,6 +28,7 @@ import {
 } from "../lib/workspaceContext";
 import { ManageAccount } from "./ManageAccount";
 import { SettingsPanel } from "./SettingsPanel";
+import { AccountIcon } from "./common/ViewIcons";
 import { manageApi } from "../lib/manageApi";
 import { formatCredits } from "../lib/formatCredits";
 import { hasPersonalQuota, quotaUncertainty, showsWorkspacePool, useMyCreditQuota } from "../lib/myCreditQuota";
@@ -514,7 +515,7 @@ export function AccountMenu({
               setSettingsOpen(true);
             }}
           >
-            {t("⚙ Setting")}
+            {t("⚙ Hub Setting")}
           </button>
           <button
             className="acct-action"
@@ -523,7 +524,7 @@ export function AccountMenu({
               setManageOpen(true);
             }}
           >
-            ⚙ Manage Account
+            <AccountIcon />Manage Account
           </button>
           {onLogout && (
             <button
