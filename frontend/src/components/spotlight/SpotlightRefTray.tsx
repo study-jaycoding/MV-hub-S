@@ -15,6 +15,7 @@ import {
 } from "../../lib/seedancePrompt";
 import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../../lib/windowDrag";
 import { MediaThumbnail } from "../MediaThumbnail";
+import { EraserIcon } from "../common/ViewIcons";
 
 // from_card: 이 참조가 씬의 연결된 레퍼런스 카드/리스트에서 온 것인지(SceneRef 와 왕복 시 보존해야
 //   disconnect 후에도 유령 참조로 남지 않는다). 일반 트레이 항목엔 없음.
@@ -210,14 +211,16 @@ export function SpotlightRefTray({
             </div>
           );
         })}
-        {/* 레퍼런스 전체 비우기 — 생성 후에도 트레이는 남으므로(연속 변형용) 한 번에 초기화 */}
+        {/* 레퍼런스 비우기 — 생성 후에도 트레이는 남으므로(연속 변형용) 한 번에 초기화. 칸 오른쪽 위, 프롬프트의 복사 단추와 같은 세로줄(Jay 2026-10-22) */}
         <button
+          type="button"
           className="sl-reftray-clear"
-          title="레퍼런스 전체 비우기"
+          title="레퍼런스 비우기 (캔버스에 연결된 레퍼런스는 남김)"
+          aria-label="레퍼런스 비우기"
           onMouseDown={(e) => e.preventDefault()}
           onClick={onClearAll}
         >
-          <span className="sl-reftray-clear-ic" aria-hidden>⌫</span>
+          <EraserIcon />
         </button>
         </>
       )}

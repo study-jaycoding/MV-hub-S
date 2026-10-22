@@ -286,6 +286,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     trayBinding,
     onTrayBindingRefsChange,
     onImportFiles: (files) => importExternalFilesAsRefs(files),
+    onClearBoth: () => clearPromptAndReferences(), // 레퍼런스 칸의 Shift+Backspace 도 둘 다(같은 TDZ 회피)
   });
   const [promptTick, setPromptTick] = useState(0); // contentEditable 텍스트 변경 신호(트레이 역할 배지 갱신)
   const editorRef = useRef<HTMLDivElement>(null);
@@ -1339,29 +1340,43 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   }, [visible]);
   useEscapeClose(() => setOpen(null), !!open && visible, true, true);
 
+  // 프롬프트 글·인라인 칩 비우기 — 프롬프트 비우기 단추와 Shift+Backspace 가 같이 쓴다. 한글 조합 중에도 무조건.
+  const clearPrompt = () => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    const hadFocus = document.activeElement === ed;
+    ed.blur(); // 조합 강제 종료 후 clear — IME 잔존 방지
+    ed.innerHTML = "";
+    composingRef.current = false;
+    dragParentRef.current = null; // 입력 비우면 '재사용 원본' 부모 참조도 폐기(엉뚱한 계보 방지)
+    updatePlaceholder();
+    bumpPromptTick(); // 수동 비우기도 바인딩 카드 초안에 반영
+    setMention(null);
+    histIdxRef.current = -1;
+    // 위의 blur 로 내려놓은 초점을 다음 프레임에 돌려받는다(프롬프트에 있었을 때만 — 레퍼런스 칸에서 비우면 그 칸에 둔다).
+    //  그사이 다른 곳(검색칸 등)을 눌렀으면 그 초점을 둔다.
+    if (hadFocus)
+      requestAnimationFrame(() => {
+        if (!document.activeElement || document.activeElement === document.body) ed.focus();
+      });
+  };
+  // 레퍼런스 비우기 — 캔버스 연결(from_card)은 남긴다(연결선이 진실 — 레퍼런스 비우기 단추와 Shift+Backspace 가 같은 범위, Codex 10-22).
+  const clearReferences = () =>
+    setTrayRefs((prev) => (prev.some((r) => !r.from_card) ? prev.filter((r) => r.from_card) : prev));
+  // Shift+Backspace = 둘 다(Jay 2026-10-22 — 전엔 초점 자리만 비웠다). 위에 창·메뉴가 떠 있으면 쉰다(레퍼런스 칸과 같은 규칙).
+  const clearPromptAndReferences = () => {
+    clearPrompt();
+    clearReferences();
+  };
+
   const onEditorKeyDown = (e: React.KeyboardEvent) => {
-    // Shift+Backspace(프롬프트 포커스): 프롬프트 텍스트·인라인 칩만 비운다(트레이 레퍼런스는 유지 —
-    // 트레이는 그 영역에 포커스 두고 Shift+Backspace 로 따로 비운다). 한글 조합 중에도 무조건.
     const isBackspace =
       e.key === "Backspace" || e.code === "Backspace" || e.nativeEvent.keyCode === 8;
     if (isBackspace && e.shiftKey) {
       e.preventDefault();
       e.stopPropagation();
-      const ed = editorRef.current;
-      if (ed) {
-        ed.blur(); // 조합 강제 종료 후 clear — IME 잔존 방지
-        ed.innerHTML = "";
-        composingRef.current = false;
-        dragParentRef.current = null; // 입력 비우면 '재사용 원본' 부모 참조도 폐기(엉뚱한 계보 방지)
-        updatePlaceholder();
-        bumpPromptTick(); // 수동 비우기(Shift+Backspace)도 바인딩 카드 초안에 반영
-        setMention(null);
-        histIdxRef.current = -1;
-        // 위의 blur 로 내려놓은 초점을 다음 프레임에 돌려받는다 — 그사이 다른 곳(검색칸 등)을 눌렀으면 그 초점을 둔다
-        requestAnimationFrame(() => {
-          if (!document.activeElement || document.activeElement === document.body) ed.focus();
-        });
-      }
+      // 프롬프트 자신의 드롭다운(open — 옵션·모델)도 막는 층으로 잡히지만 프롬프트의 일부라 전처럼 비운다. 다른 창·메뉴가 떠 있을 때만 쉰다.
+      if (open || !backgroundKeysBlocked()) clearPromptAndReferences();
       return;
     }
 
@@ -1577,7 +1592,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
               onKeyDown={onTrayKeyDown}
               onReorder={reorderTray}
               onRemove={removeTrayRef}
-              onClearAll={() => setTrayRefs([])}
+              onClearAll={clearReferences}
               onPreview={onPreview}
               onRoleContextMenu={roleMenu.openMenu}
             />
@@ -1605,6 +1620,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
             onDrop={onPromptChipDrop}
             onDragLeave={onPromptChipDragLeave}
             onCopyPrompt={copyPrompt}
+            onClearPrompt={clearPrompt}
           />
 
           {/* 컨트롤 행 */}

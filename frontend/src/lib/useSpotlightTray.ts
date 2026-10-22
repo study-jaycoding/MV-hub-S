@@ -26,6 +26,8 @@ interface Params {
   onTrayBindingRefsChange?: (refs: SceneRef[]) => SceneRef[] | void;
   // 외부 파일 드롭을 레퍼런스로 임포트 — 컴포넌트가 주입(카드/에셋 도메인). 렌더마다 최신 클로저를 받는다.
   onImportFiles: (files: File[]) => void;
+  // 트레이에 초점을 둔 Shift+Backspace — 주면 프롬프트까지 함께 비운다(Jay 2026-10-22). 없으면 레퍼런스만(전과 같다).
+  onClearBoth?: () => void;
 }
 
 export interface SpotlightTrayApi {
@@ -52,6 +54,7 @@ export function useSpotlightTray({
   trayBinding,
   onTrayBindingRefsChange,
   onImportFiles,
+  onClearBoth,
 }: Params): SpotlightTrayApi {
   // ── 확장(+) 레퍼런스 트레이 — 에셋 폴더 드래그 전용. 순서 = 생성 --image 순서 ──
   // uid: 같은 파일을 중복으로 넣을 수 있어 file_path 가 겹치므로 React key·재정렬용 고유키.
@@ -158,7 +161,7 @@ export function useSpotlightTray({
   //  연결된(from_card) 레퍼런스는 트레이에서 못 뺀다 — 캔버스 엣지를 끊어야 한다(연결=레퍼런스). × 는 이미 숨김.
   const removeTrayRef = (i: number) =>
     setTrayRefs((prev) => (prev[i]?.from_card ? prev : prev.filter((_, j) => j !== i)));
-  // 트레이에 포커스를 둔 채 Shift+Backspace = 레퍼런스만 전체 삭제(프롬프트는 그대로).
+  // 트레이에 포커스를 둔 채 Shift+Backspace = 레퍼런스 전체 삭제, onClearBoth 를 주면 프롬프트도 함께(Jay 2026-10-22).
   const onTrayKeyDown = (e: React.KeyboardEvent) => {
     if (backgroundKeysBlocked()) return; // 위에 메뉴(레퍼런스 역할 메뉴 등)·창이 떠 있으면 쉰다 — 메뉴 뒤에서 레퍼런스가 전부 지워지지 않게
     const isBackspace =
@@ -166,8 +169,9 @@ export function useSpotlightTray({
     if (isBackspace && e.shiftKey) {
       e.preventDefault();
       e.stopPropagation();
+      if (onClearBoth) onClearBoth();
       // 연결된(from_card) 레퍼런스는 남긴다 — 캔버스 연결이 진실. 수동 추가분만 비운다.
-      setTrayRefs((prev) => prev.filter((r) => r.from_card));
+      else setTrayRefs((prev) => prev.filter((r) => r.from_card));
     }
   };
   const onTrayDragOver = (e: React.DragEvent) => {

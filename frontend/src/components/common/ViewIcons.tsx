@@ -85,6 +85,15 @@ export function PromptIcon() {
     </svg>
   );
 }
+// 지우개 — 프롬프트·레퍼런스 비우기 단추(Jay 2026-10-22). 14px, 복사 단추의 CopyIcon 과 같은 선 굵기.
+export function EraserIcon() {
+  return (
+    <svg {...TOGGLE_ICON} width={14} height={14} aria-hidden="true">
+      <path d="M19 20h-10.5l-4.21 -4.3a1 1 0 0 1 0 -1.41l10 -10a1 1 0 0 1 1.41 0l5 5a1 1 0 0 1 0 1.41l-9.2 9.3" />
+      <path d="M18 13.3l-6.3 -6.3" />
+    </svg>
+  );
+}
 // 닫기 — 글자 ✕·× 는 1.3~1.5px 아래였다(2026-09-22 실측). 크기는 옛 글자의 잉크 높이에 맞춘 값.
 export function CloseIcon({ size = 20 }: { size?: number }) {
   return (

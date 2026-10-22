@@ -82,24 +82,22 @@
   flex: 1; min-height: 30px; max-height: 200px; overflow-y: auto;
   background: transparent; border: none; outline: none;
   color: var(--text); font: inherit; font-size: 16px; line-height: 1.7;
-  padding: 4px 52px 4px 6px; white-space: pre-wrap; word-break: break-word;
+  padding: 4px 84px 4px 6px; white-space: pre-wrap; word-break: break-word; /* 오른쪽 84 = 복사·비우기 두 단추 자리 */
   text-align: left; /* 입력란은 항상 왼쪽 정렬(플레이스홀더·입력 텍스트) — 가운데로 쏠리지 않게 명시 */
 }
-/* 프롬프트 입력부 우측 상단 — 전체 복사 버튼 */
-.sl-copy-btn {
-  position: absolute; top: 8px; right: 24px; z-index: 3;
-  width: 26px; height: 26px;
+/* 프롬프트 입력부 우측 상단 — 전체 복사·프롬프트 비우기, 그리고 레퍼런스 칸의 비우기. 같은 모양(26px·선 아이콘)이고 마우스를 올리면
+   아이콘·테두리·바탕이 함께 바뀐다 — 비우기는 빨강, 복사는 라임(Jay 2026-10-22). 복사 아이콘은 앞장을 검게 칠하던 CSS 그림 대신 선만 쓴 SVG. */
+.sl-copy-btn, .sl-prompt-clear, .sl-reftray-clear {
+  width: 26px; height: 26px; padding: 0; box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center;
   background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: 7px;
   color: #aab0bd; cursor: pointer; transition: color .12s, border-color .12s, background .12s;
 }
-/* 순수 CSS 복사 아이콘 — 두 겹친 사각형(앞 페이지가 배경으로 뒤 페이지를 가림). SVG/폰트 무의존. */
-.sl-copy-btn::before, .sl-copy-btn::after {
-  content: ""; position: absolute; box-sizing: border-box;
-  width: 9px; height: 11px; border: 1.6px solid currentColor; border-radius: 2.5px;
-}
-.sl-copy-btn::before { top: 5px; left: 6px; }   /* 뒤 페이지(좌상) */
-.sl-copy-btn::after { top: 9px; left: 10px; background: var(--panel2); }  /* 앞 페이지(우하) */
-.sl-copy-btn:hover { color: var(--text); border-color: var(--accent); background: rgba(255,255,255,0.08); }
+.sl-copy-btn svg, .sl-prompt-clear svg, .sl-reftray-clear svg { width: 14px; height: 14px; }
+.sl-copy-btn { position: absolute; top: 8px; right: 24px; z-index: 3; }
+.sl-prompt-clear { position: absolute; top: 8px; right: 56px; z-index: 3; }
+.sl-copy-btn:hover { color: #c8ef40; border-color: rgba(200,239,64,0.55); background: rgba(44,54,12,0.5); }
+.sl-prompt-clear:hover, .sl-reftray-clear:hover { color: #ff9a9a; border-color: rgba(255,91,91,0.55); background: rgba(54,12,17,0.45); }
 /* contentEditable placeholder — data-empty 속성을 JS 가 토글 */
 .sl-prompt[data-empty]::before {
   content: attr(data-placeholder);
@@ -198,18 +196,12 @@
   max-width: 66px; font-size: 10.5px; color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
 }
-/* 레퍼런스 전체 비우기 버튼 — 썸네일들 끝에 붙는 아이콘 버튼(있을 때만 렌더) */
+/* 레퍼런스 비우기 — 칸 오른쪽 위(복사 단추와 같은 세로줄: 트레이 padding 10 + 14 = 복사 단추 right 24), 레퍼런스가 있을 때만.
+   트레이는 가로로 넘치면 스크롤되므로 끝 칸을 sticky 로 붙여 둔다. 모양·마우스 올림은 아래 .sl-copy-btn 무리와 같다(Jay 2026-10-22). */
 .sl-reftray-clear {
-  flex: 0 0 auto; align-self: center;
-  display: flex; align-items: center; justify-content: center;
-  width: 40px; height: 50px; border-radius: 8px; padding: 0;
-  background: rgba(255, 255, 255, 0.04); border: 1px dashed var(--border2);
-  color: var(--muted); cursor: pointer;
+  flex: 0 0 auto; align-self: flex-start; margin: 0 14px 0 auto;
+  position: sticky; right: 14px; z-index: 2;
 }
-.sl-reftray-clear:hover {
-  color: #ff9a9a; border-color: rgba(255, 91, 91, 0.5); background: rgba(54, 12, 17, 0.4);
-}
-.sl-reftray-clear-ic { font-size: 18px; line-height: 1; }
 /* 인라인 소스 칩(썸네일+이름+×) */
 .inline-ref {
   display: inline-flex; align-items: center; gap: 5px;

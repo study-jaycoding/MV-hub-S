@@ -7,6 +7,7 @@ import type {
   MouseEventHandler,
   RefObject,
 } from "react";
+import { CopyIcon, EraserIcon } from "../common/ViewIcons";
 
 interface Props {
   expanded: boolean;
@@ -25,6 +26,7 @@ interface Props {
   onDrop: DragEventHandler<HTMLDivElement>;
   onDragLeave: DragEventHandler<HTMLDivElement>;
   onCopyPrompt: MouseEventHandler<HTMLButtonElement>;
+  onClearPrompt: MouseEventHandler<HTMLButtonElement>; // 프롬프트만 비우기(레퍼런스는 그대로 — Jay 2026-10-22)
 }
 
 export function SpotlightPromptRow({
@@ -44,6 +46,7 @@ export function SpotlightPromptRow({
   onDrop,
   onDragLeave,
   onCopyPrompt,
+  onClearPrompt,
 }: Props) {
   return (
     <div className={"sl-prompt-row" + (tagFilter ? " tag-active" : "")}>
@@ -98,12 +101,24 @@ export function SpotlightPromptRow({
       />
       <button
         type="button"
+        className="sl-prompt-clear"
+        title="프롬프트 비우기"
+        aria-label="프롬프트 비우기"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={onClearPrompt}
+      >
+        <EraserIcon />
+      </button>
+      <button
+        type="button"
         className="sl-copy-btn"
         title="프롬프트 전체 복사"
         aria-label="프롬프트 전체 복사"
         onMouseDown={(e) => e.preventDefault()}
         onClick={onCopyPrompt}
-      />
+      >
+        <CopyIcon />
+      </button>
     </div>
   );
 }
