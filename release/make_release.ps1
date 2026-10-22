@@ -680,7 +680,7 @@ if (-not $SkipPythonRuntime) {
     Write-Host "      Installing backend packages into runtime..."
     # 원본 Python의 site-packages는 복사하지 않으므로 pip도 명시적으로 넣는다(잠금의 pip==25.3). MV_agent.bat이
     # 누락된 앱 의존성을 자동 복구할 때 `python -m pip`가 실제로 동작해야 한다.
-    # 판은 requirements.txt, 지문은 requirements.lock.txt(Python 3.14 x64 휠) — 둘이 어긋나면 시험이 잡는다.
+    # 판은 requirements.txt, 지문은 requirements.lock.txt(CPython 3.14·3.12 Windows x64 휠 — 여기서는 3.14 지문이 맞는다) — 둘이 어긋나면 시험이 잡는다.
     # 완성 런타임은 아래 import/ZIP 검증으로 별도 확정한다.
     Install-HashLockedPackages -PythonExe $Python.Exe -LockPath (Join-Path $ProjectRoot "backend\requirements.lock.txt") `
         -Target $SitePackages -Label "backend"

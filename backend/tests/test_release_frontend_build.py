@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import subprocess
 import zipfile
 
@@ -66,19 +67,41 @@ def test_release_mcp_lock_has_hash_for_every_pin() -> None:
 
 
 _BACKEND = Path(__file__).resolve().parents[1]
+# 컴파일 휠 — 배포판 Python(CPython 3.14)과 공유 서버 staged 업데이트 Python(CPython 3.12) Windows x64 지문을 함께 둔다(2026-10-23).
+_COMPILED_WHEELS = {"websockets", "Pillow", "pydantic-core", "httptools", "PyYAML", "watchfiles"}
+
+
+def _lock_entries(text: str) -> list[dict]:
+    """판 한 줄과 그 뒤 지문 줄들을 한 항목으로 — 줄 이음(\\) 실수가 보이게 원래 줄도 남긴다."""
+    entries: list[dict] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "==" in line:
+            entries.append({"pin": line.split()[0], "lines": [line], "hashes": []})
+        else:
+            assert entries, line  # 판보다 먼저 나온 지문 줄
+            entries[-1]["lines"].append(line)
+            entries[-1]["hashes"].append(line.removesuffix("\\").strip())
+    return entries
 
 
 def test_release_backend_lock_pins_every_requirement_with_a_hash() -> None:
     # Jay 2026-10-16 3A — 백엔드 번들 의존성도 판만 고정해 받던 것을 지문까지(MCP 와 같은 방식)
-    lines = [line.strip() for line in (_BACKEND / "requirements.lock.txt").read_text(encoding="utf-8").splitlines()
-             if line.strip() and not line.startswith("#")]
-    pins = [line.split()[0] for line in lines if "==" in line]
-    hashes = [line for line in lines if line.startswith("--hash=sha256:")]
-    assert len(pins) == len(hashes) and all(len(h.split(":", 1)[1]) == 64 for h in hashes)
-    assert all(line.endswith("\\") for line in lines if "==" in line)
+    entries = _lock_entries((_BACKEND / "requirements.lock.txt").read_text(encoding="utf-8"))
+    for entry in entries:
+        assert entry["hashes"], entry["pin"]  # 판마다 지문 1개 이상(여러 개 허용)
+        assert all(re.fullmatch(r"--hash=sha256:[0-9a-f]{64}", h) for h in entry["hashes"]), entry["pin"]
+        assert len(set(entry["hashes"])) == len(entry["hashes"]), entry["pin"]
+        # 항목 안에서 마지막 줄만 이음(\) 없이 끝난다 — 하나라도 빠지면 다음 지문 줄이 떨어져 pip 가 거부한다.
+        assert all(line.endswith("\\") for line in entry["lines"][:-1]), entry["pin"]
+        assert not entry["lines"][-1].endswith("\\"), entry["pin"]
+    counts = {entry["pin"].split("==")[0].split("[")[0]: len(entry["hashes"]) for entry in entries}
+    assert all(counts.get(name, 0) >= 2 for name in _COMPILED_WHEELS), counts
     required = [line.split("#")[0].strip() for line in (_BACKEND / "requirements.txt").read_text(encoding="utf-8").splitlines()
                 if line.split("#")[0].strip()]
-    assert sorted(pins) == sorted(["pip==25.3", *required])  # 판이 requirements.txt 와 같고 빠진 것·더한 것이 없다
+    assert sorted(entry["pin"] for entry in entries) == sorted(["pip==25.3", *required])  # 판이 requirements.txt 와 같고 빠진 것·더한 것이 없다
 
 
 def test_release_backend_install_uses_the_hash_lock() -> None:
