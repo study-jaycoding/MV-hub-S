@@ -124,7 +124,6 @@ export function SpotlightRefTray({
 
   return (
     <div
-      ref={containerRef}
       className="sl-reftray"
       tabIndex={0}
       onDragOver={onDragOver}
@@ -135,13 +134,14 @@ export function SpotlightRefTray({
         if (!(e.target as HTMLElement).closest("button")) e.currentTarget.focus();
       }}
     >
+      {/* 썸네일만 가로로 넘쳐 스크롤된다 — 비우기 단추는 이 칸 밖(바깥 틀)에 있어 스크롤 중에도 썸네일 위를 덮지 않는다(Codex C3) */}
+      <div ref={containerRef} className="sl-reftray-scroll">
       {trayRefs.length === 0 ? (
         <div className="sl-reftray-empty">
           에셋 창 또는 탐색기에서 파일을 여기로 드래그하세요 - 번호 순서대로 레퍼런스가 됩니다
         </div>
       ) : (
-        <>
-        {trayRefs.map((ref, index) => {
+        trayRefs.map((ref, index) => {
           // 타입 순번(@image1, @video1 …)은 레퍼런스 토큰 쓰는 모든 모델에서 보인다(이미지 모델 포함).
           const tokenVisible = usesMediaRefTokens(model) || seedanceHasTokenRoles(liveSeedanceRoles);
           const badgeRole = seedanceTrayRole(trayRefs, index, liveSeedanceRoles);
@@ -210,8 +210,15 @@ export function SpotlightRefTray({
               )}
             </div>
           );
-        })}
-        {/* 레퍼런스 비우기 — 생성 후에도 트레이는 남으므로(연속 변형용) 한 번에 초기화. 칸 오른쪽 위, 프롬프트의 복사 단추와 같은 세로줄(Jay 2026-10-22) */}
+        })
+      )}
+      {/* 순서변경 삽입 위치 — 화면좌표(fixed) 흰 세로선 */}
+      {line && (
+        <div className="sl-reftray-line" style={{ left: line.x, top: line.y, height: line.h }} />
+      )}
+      </div>
+      {/* 레퍼런스 비우기 — 생성 후에도 트레이는 남으므로(연속 변형용) 한 번에 초기화. 칸 오른쪽 위, 프롬프트의 복사 단추와 같은 세로줄(Jay 2026-10-22) */}
+      {trayRefs.length > 0 && (
         <button
           type="button"
           className="sl-reftray-clear"
@@ -222,11 +229,6 @@ export function SpotlightRefTray({
         >
           <EraserIcon />
         </button>
-        </>
-      )}
-      {/* 순서변경 삽입 위치 — 화면좌표(fixed) 흰 세로선 */}
-      {line && (
-        <div className="sl-reftray-line" style={{ left: line.x, top: line.y, height: line.h }} />
       )}
     </div>
   );

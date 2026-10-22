@@ -2,7 +2,7 @@
 //  · contentEditable 프롬프트 + 선택 소스를 인라인 이미지 칩으로 삽입
 //  · @ → 소스 피커, # → 태그 목록 피커. 태그 선택 시 tagFilter 고정 + @ 피커가 그 태그로 필터되어 열림
 //  · Esc → 피커 닫기 / tagFilter 해제. 제출 시 본문 텍스트 + 칩→references 직렬화.
-import { backgroundKeysBlocked } from "../lib/keyGate";
+import { backgroundBlockCount, backgroundKeysBlocked } from "../lib/keyGate";
 import { markKeyHandled } from "../lib/keyHandled";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import {
@@ -286,7 +286,6 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     trayBinding,
     onTrayBindingRefsChange,
     onImportFiles: (files) => importExternalFilesAsRefs(files),
-    onClearBoth: () => clearPromptAndReferences(), // 레퍼런스 칸의 Shift+Backspace 도 둘 다(같은 TDZ 회피)
   });
   const [promptTick, setPromptTick] = useState(0); // contentEditable 텍스트 변경 신호(트레이 역할 배지 갱신)
   const editorRef = useRef<HTMLDivElement>(null);
@@ -1355,28 +1354,28 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     histIdxRef.current = -1;
     // 위의 blur 로 내려놓은 초점을 다음 프레임에 돌려받는다(프롬프트에 있었을 때만 — 레퍼런스 칸에서 비우면 그 칸에 둔다).
     //  그사이 다른 곳(검색칸 등)을 눌렀으면 그 초점을 둔다.
+    //  캔버스에서는 '직접 누르지 않은' 초점을 곧바로 튕기므로(위 focusin — allowFocusRef) 되돌리는 초점은 허용해 둔다(Codex C2).
     if (hadFocus)
       requestAnimationFrame(() => {
-        if (!document.activeElement || document.activeElement === document.body) ed.focus();
+        if (document.activeElement && document.activeElement !== document.body) return;
+        allowFocusRef.current = true;
+        ed.focus();
       });
   };
-  // 레퍼런스 비우기 — 캔버스 연결(from_card)은 남긴다(연결선이 진실 — 레퍼런스 비우기 단추와 Shift+Backspace 가 같은 범위, Codex 10-22).
+  // 레퍼런스 비우기 단추 — 캔버스 연결(from_card)은 남긴다(연결선이 진실 — 레퍼런스 칸의 Shift+Backspace 와 같은 범위, Codex 10-22).
   const clearReferences = () =>
     setTrayRefs((prev) => (prev.some((r) => !r.from_card) ? prev.filter((r) => r.from_card) : prev));
-  // Shift+Backspace = 둘 다(Jay 2026-10-22 — 전엔 초점 자리만 비웠다). 위에 창·메뉴가 떠 있으면 쉰다(레퍼런스 칸과 같은 규칙).
-  const clearPromptAndReferences = () => {
-    clearPrompt();
-    clearReferences();
-  };
 
   const onEditorKeyDown = (e: React.KeyboardEvent) => {
+    // Shift+Backspace(프롬프트 포커스): 프롬프트만 비운다 — 레퍼런스는 그 칸에 초점을 두고 따로(Jay 2026-10-22 '각각 나눠서').
     const isBackspace =
       e.key === "Backspace" || e.code === "Backspace" || e.nativeEvent.keyCode === 8;
     if (isBackspace && e.shiftKey) {
       e.preventDefault();
       e.stopPropagation();
-      // 프롬프트 자신의 드롭다운(open — 옵션·모델)도 막는 층으로 잡히지만 프롬프트의 일부라 전처럼 비운다. 다른 창·메뉴가 떠 있을 때만 쉰다.
-      if (open || !backgroundKeysBlocked()) clearPromptAndReferences();
+      // 다른 창·메뉴가 떠 있으면 쉰다(레퍼런스 칸과 같은 규칙). 프롬프트 자신의 드롭다운(open — 옵션·모델, 아래 useEscapeClose 한 겹)도
+      //  막는 겹으로 잡히지만 프롬프트의 일부라 그 한 겹만 빼고 센다 — 역할 메뉴가 같이 떠 있으면 쉰다(Codex C1).
+      if (backgroundBlockCount() <= (open && visible ? 1 : 0)) clearPrompt();
       return;
     }
 

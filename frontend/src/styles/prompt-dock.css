@@ -98,10 +98,13 @@
 .sl-prompt-clear { position: absolute; top: 8px; right: 56px; z-index: 3; }
 .sl-copy-btn:hover { color: #c8ef40; border-color: rgba(200,239,64,0.55); background: rgba(44,54,12,0.5); }
 .sl-prompt-clear:hover, .sl-reftray-clear:hover { color: #ff9a9a; border-color: rgba(255,91,91,0.55); background: rgba(54,12,17,0.45); }
-/* contentEditable placeholder — data-empty 속성을 JS 가 토글 */
+/* contentEditable placeholder — data-empty 속성을 JS 가 토글. 글줄 밖에 겹쳐 그린다 — 글줄 안에 두면 빈 칸을 눌렀을 때 커서가
+   안내 문구 **뒤**에 섰다(Jay 2026-10-22). 자리는 .sl-prompt 의 padding(위 4·왼 6·오른 84 — 단추 자리)과 같다. */
+.sl-prompt { position: relative; }
 .sl-prompt[data-empty]::before {
   content: attr(data-placeholder);
   color: var(--muted2); pointer-events: none;
+  position: absolute; top: 4px; left: 6px; right: 84px;
 }
 /* 확장(레퍼런스 트레이 펼침) 시 프롬프트 입력 영역을 ~3줄 더 크게(행 높이 112px). 위 레퍼런스
    트레이(.sl-reftray)는 현 크기 유지. 에디터에 높이를 주는 대신 '행'에 높이를 주고 가운데 정렬해,
@@ -120,17 +123,24 @@
 /* 라임 배경 위 라벨은 검은색(--accent-ink) — 흰색 금지 */
 .sl-expand-btn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 
+/* 바깥 틀(초점·키·놓기·아래 선)과 안쪽 스크롤 칸(.sl-reftray-scroll)으로 나눈다 — 비우기 단추를 스크롤 밖에 두어
+   넘친 썸네일 위를 덮지 않게(Codex C3, 2026-10-22). */
 .sl-reftray {
+  display: flex; align-items: stretch;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+  min-height: 86px; outline: none;
+}
+.sl-reftray-scroll {
   position: relative; /* 순서변경 흰 선(absolute)의 기준 */
+  flex: 1; min-width: 0;
   display: flex; align-items: stretch; gap: 8px; flex-wrap: nowrap;
   overflow-x: auto; overflow-y: hidden;
   /* 위아래 여백은 눈에 보이는 선을 기준으로 맞춘다 — 위는 패널 테두리(패널 padding 6px 이
      더 붙는다), 아래는 이 트레이의 border-bottom. 위 8 + 아래 14 로 그 6px 을 상쇄해 둘 다
      15px 이 된다. 위를 6 까지 줄이면 항목 번호 배지(top:-5px)가 패널 테두리에 1px 까지
      붙으므로 8 이 하한이다. */
-  padding: 8px 10px 14px; margin-bottom: 2px;
-  border-bottom: 1px solid var(--border);
-  min-height: 86px; outline: none;
+  padding: 8px 10px 14px;
 }
 /* 레퍼런스 영역 포커스(클릭) — 여기서 Shift+Backspace 면 레퍼런스만 전체 삭제됨을 시각화 */
 .sl-reftray:focus { border-bottom-color: var(--accent); box-shadow: inset 0 -2px 0 -1px var(--accent); }
@@ -196,12 +206,9 @@
   max-width: 66px; font-size: 10.5px; color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
 }
-/* 레퍼런스 비우기 — 칸 오른쪽 위(복사 단추와 같은 세로줄: 트레이 padding 10 + 14 = 복사 단추 right 24), 레퍼런스가 있을 때만.
-   트레이는 가로로 넘치면 스크롤되므로 끝 칸을 sticky 로 붙여 둔다. 모양·마우스 올림은 아래 .sl-copy-btn 무리와 같다(Jay 2026-10-22). */
-.sl-reftray-clear {
-  flex: 0 0 auto; align-self: flex-start; margin: 0 14px 0 auto;
-  position: sticky; right: 14px; z-index: 2;
-}
+/* 레퍼런스 비우기 — 바깥 틀의 오른쪽 위(스크롤 칸 밖). 위 8 = 스크롤 칸 padding-top, 오른쪽 24 = 프롬프트 복사 단추 right 24 와 같은
+   세로줄. 레퍼런스가 있을 때만. 모양·마우스 올림은 .sl-copy-btn 무리와 같다(Jay 2026-10-22). */
+.sl-reftray-clear { flex: 0 0 auto; align-self: flex-start; margin: 8px 24px 0 0; }
 /* 인라인 소스 칩(썸네일+이름+×) */
 .inline-ref {
   display: inline-flex; align-items: center; gap: 5px;

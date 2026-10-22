@@ -91,6 +91,11 @@ export function backgroundKeysBlocked(): boolean {
   return owners > 0 || layers.size > 0;
 }
 
+/** 막고 있는 겹·덮개의 수 — 자기 겹 하나를 뺀 나머지가 막는지 볼 때(프롬프트의 드롭다운이 열린 채 Shift+Backspace, Codex C1 2026-10-22). */
+export function backgroundBlockCount(): number {
+  return owners + layers.size;
+}
+
 // ── 초점 잃은 키 ──
 //  창·입력을 닫으면 초점이 BODY 로 떨어지고, 탭·툴바 단추를 누르면 초점이 그 단추에 남는다 — 카드를 다시 누르기 전까지 격자의
 //  방향키·Ctrl+A·#·c 가 죽고 Ctrl+A 는 화면 글자를 긁었다(2026-10-10 실측: 태그 입력 Esc·크게 보기·코멘트·정보 닫기·탭 전환 뒤).
