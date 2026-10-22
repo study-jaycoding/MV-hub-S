@@ -124,6 +124,7 @@ import {
   type RelinkTarget,
 } from "../../lib/sceneAssetRelink";
 import { copyText, flashMsg } from "../../lib/flash";
+import { notifyPeekDropAdded } from "../../lib/peekDragOut";
 import { gatherCanvasReferences, useCanvasSession, type CanvasInputCommand, type CanvasGroupResizeHandle } from "../../features/canvas/api";
 import { useSceneKeyboardShortcuts } from "../../lib/useSceneKeyboardShortcuts";
 import { isSceneTextEntryTarget, sceneEscapeTarget } from "../../lib/sceneKeyboard";
@@ -1170,6 +1171,36 @@ export function SceneBoard({
     gatherCanvasReferences(cardId, cards, edges, genDataRef.current);
 
   // 노드 복사, 캡처 붙여넣기, 에셋/파일 드롭은 전용 훅이 브라우저 이벤트와 업로드 수명주기를 맡는다.
+  // 폴더 창 등에서 끌어 놓은 생성물 → 놓은 자리에 생성물 카드(Draft 소스 카드와 같은 종류, Jay 2026-10-22). 생성물을 실제로 읽어
+  //  상태를 정하고 genData 를 먼저 채운다 — 새 카드에 연결하자마자 레퍼런스가 잡혀 '레퍼런스가 빠진 생성'이 나지 않게(Codex 설계 검토).
+  //  미디어가 없는 생성물(생성 중·실패)은 레퍼런스가 될 수 없어 넣지 않고 알린다. 읽는 사이 씬·보드가 바뀌었으면 넣지 않는다.
+  const dropGenerations = async (ids: string[], point: { x: number; y: number }) => {
+    const target = canvasSession.target;
+    const sceneAtDrop = sceneIdRef.current;
+    const results = await Promise.allSettled(ids.map((id) => ownEntry(genDataRef.current, id) ?? api.getGeneration(id)));
+    if (canvasSession.target !== target || sceneIdRef.current !== sceneAtDrop || switchingRef.current) return;
+    const usable = results.flatMap((result) => (result.status === "fulfilled" && result.value?.assets?.[0] ? [result.value] : []));
+    const skipped = ids.length - usable.length;
+    if (!usable.length) {
+      flashMsg("놓은 생성물을 캔버스에 넣지 못했습니다 — 미디어가 없거나(생성 중·실패) 불러오지 못했습니다.");
+      return;
+    }
+    const step = CARD_W + 30;
+    const cards: SceneCard[] = usable.map((generation, index) => ({
+      id: uid(), kind: "generation",
+      x: Math.round(point.x - CARD_W / 2 + (index - (usable.length - 1) / 2) * step), y: Math.round(point.y - CARD_H / 2),
+      genId: generation.id, genIds: [generation.id], prompt: generation.display_prompt || generation.prompt,
+      status: generation.status === "nsfw" ? "failed" : generation.status,
+    }));
+    const loaded = Object.fromEntries(usable.map((generation) => [generation.id, generation]));
+    genDataRef.current = { ...genDataRef.current, ...loaded }; // 다음 렌더 전에 연결해도 레퍼런스가 잡히게(미러를 먼저)
+    setGenData((prev) => ({ ...prev, ...loaded }));
+    if (!commitDocument({ type: "addGenerationCards", cards })) return;
+    setSelected(new Set(cards.map((card) => card.id)));
+    notifyPeekDropAdded();
+    if (skipped) flashMsg(`${skipped}개는 미디어가 없거나 불러오지 못해 넣지 않았습니다.`);
+  };
+
   const { copySelectedNodes, onDragOver, onDrop, pendingImports, dismissPendingImport } = useSceneClipboardDrop({
     importTarget: { target_project_id: folderSel?.projectId, target_workspace_id: refWorkspaceId || undefined },
     document: canvasSession,
@@ -1194,6 +1225,7 @@ export function SceneBoard({
     onNodesPasted: (refs) => {
       if (recheckPastedRefs(refWorkspaceId, refs)) onLocalRefsAdded?.();
     },
+    onDropGenerations: (ids, point) => void dropGenerations(ids, point),
     cardWidth: CARD_W,
     cardHeight: CARD_H,
   });

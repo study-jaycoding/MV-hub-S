@@ -787,6 +787,14 @@
 /* 바깥 막 — 모아보기(.reel-backdrop)와 같은 어둡기·흐림(Jay 2026-10-13: 뒤가 그대로 흐려 보이게). 막은 창의 **형제**라 창 안에
    position:fixed 로 띄운 것의 기준이 되지 않는다(창을 감싼 요소에 backdrop-filter 를 걸면 그 안의 fixed 가 어긋난다 — scene.css 의 .scene-varpop-backdrop 주석). */
 .folder-peek-catcher { position: fixed; inset: 0; z-index: 150; background: rgba(4, 5, 8, 0.6); backdrop-filter: blur(4px); }
+/* 캔버스 폴더 창에서 생성물을 끄는 동안(App peekDragOut, Jay 2026-10-22) — 창·막은 비켜 보드가 보이고, 놓기는 보드(.scene-board)만 받는다:
+   본문의 다른 것(사이드바 폴더 — 놓으면 생성물이 그 폴더로 옮겨진다·툴바)은 지나간다. 보드 안의 씬 창(useSceneViewport SCENE_WINDOW_SELECTOR)은
+   남겨 그 위에 놓으면 받지 않는다(뒤에 숨은 카드가 생기지 않게). */
+body.peek-drag-out .folder-peek,
+body.peek-drag-out .folder-peek-catcher { pointer-events: none; opacity: 0.15; transition: opacity 0.12s; }
+body.peek-drag-out .body * { pointer-events: none; }
+body.peek-drag-out .body .scene-board,
+body.peek-drag-out .body .scene-board :is(.scene-varpop-backdrop, .scene-modelmodal-backdrop, .vtl-backdrop) { pointer-events: auto; }
 /* 창 뒤에 남기는 도구 줄 사본(App) — 자리만 차지하는 그림이다. 감싼 칸이 줄 배치를 바꾸지 않게 한다. */
 .lib-toolbar-behind { display: contents; }
 .folder-peek {

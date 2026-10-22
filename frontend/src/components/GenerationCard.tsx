@@ -7,6 +7,7 @@ import { memo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "../api";
 import type { CardMark, Generation, InfoTarget, PreviewTarget } from "../types";
 import { DRAG_TYPES } from "../lib/dragTypes";
+import { notifyGenerationDragStart } from "../lib/peekDragOut";
 import { APP_EVENTS, dispatchAppEvent } from "../lib/appEvents";
 import { ackTeamFresh } from "../lib/teamSeen";
 import type { GradeMode } from "../lib/gradeStep";
@@ -313,6 +314,7 @@ function GenerationCardImpl({
   const onCardDragStart = (e: React.DragEvent) => {
     e.dataTransfer.setData(DRAG_TYPES.generation, gen.id);
     e.dataTransfer.effectAllowed = "copy";
+    notifyGenerationDragStart(e.currentTarget); // 캔버스 폴더 창이면 창이 비켜 보드에 놓을 수 있다(lib/peekDragOut)
   };
   const onEnter = () => {
     const v = videoRef.current;
@@ -582,6 +584,7 @@ function GenerationCardImpl({
           e.stopPropagation();
           e.dataTransfer.setData(DRAG_TYPES.generation, gen.id);
           e.dataTransfer.effectAllowed = "copy";
+          notifyGenerationDragStart(e.currentTarget);
         }}
       >
         ⠿

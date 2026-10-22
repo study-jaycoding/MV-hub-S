@@ -26,6 +26,9 @@ export type CanvasEditCommand =
   | { type: "connectSelectedCards"; cardIds: string[] }
   | { type: "createNode"; id: string; kind: SceneCardKind; position: { x: number; y: number } }
   | { type: "createConnectedGeneration"; id: string; position: { x: number; y: number }; sourceIds: string[] }
+  // 이미 있는 생성물을 결과 그대로(genId·genIds·상태) 카드로 놓는다 — 폴더 창에서 끌어 놓기(Jay 2026-10-22). 붙여넣기(pasteNodes)는
+  //  결과를 지워 빈 카드로 만들므로 쓰지 않는다(Codex 설계 검토).
+  | { type: "addGenerationCards"; cards: SceneCard[] }
   | { type: "setInputChannel"; cardId: string; channel: string }
   | { type: "orderListItems"; listId: string; orderedIds: string[] }
   | { type: "toggleRenderItems"; renderId: string; clickedId: string; targetIds: string[] }
@@ -148,6 +151,11 @@ export function applyCanvasEdit(
         edges = [...edges, ...additions];
       }
       cards = withRefs([...cards, card]); break;
+    }
+    case "addGenerationCards": {
+      const fresh = command.cards.filter(card => card.kind === "generation" && !!card.genId && !cards.some(item => item.id === card.id));
+      if (!fresh.length) return null;
+      cards = withRefs([...cards, ...fresh]); break;
     }
     case "setInputChannel":
       if (!patchCard(command.cardId, card => ({ ...card, channel: command.channel || undefined }))) return null;

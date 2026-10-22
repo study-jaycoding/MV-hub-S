@@ -52,6 +52,8 @@ interface UseSceneClipboardDropOptions {
   onLocalRefsAdded?: (tokens: string[]) => void;
   // 복사해 둔 노드를 붙인 직후 — 붙인 카드들의 참조를 넘긴다. 다른 공간의 탭에서 온 카드면 이 공간의 옛 판정을 지우고 다시 묻게(2026-10-22).
   onNodesPasted?: (refs: SceneRef[]) => void;
+  // 생성물 카드 끌기(폴더 창 등)를 놓았다 — 놓은 자리(캔버스 좌표)에 그 생성물의 생성물 카드를 만든다(Jay 2026-10-22).
+  onDropGenerations?: (generationIds: string[], point: { x: number; y: number }) => void;
   cardWidth: number;
   cardHeight: number;
 }
@@ -89,6 +91,12 @@ const IMPORT_FAILED = "넣지 못했습니다 — 다시 놓아 주세요";
 
 const hasAssetDrag = (dataTransfer: DataTransfer) =>
   Array.from(dataTransfer.types).includes(DRAG_TYPES.asset);
+// 생성물 카드 끌기 — 끄는 동안(dragover)은 종류만 보이고 값은 놓을 때 읽힌다.
+const hasGenerationDrag = (dataTransfer: DataTransfer) =>
+  Array.from(dataTransfer.types).some((type) => type === DRAG_TYPES.generationList || type === DRAG_TYPES.generation);
+const droppedGenerationIds = (dataTransfer: DataTransfer): string[] =>
+  [...new Set((dataTransfer.getData(DRAG_TYPES.generationList) || dataTransfer.getData(DRAG_TYPES.generation))
+    .split(",").map((id) => id.trim()).filter(Boolean))];
 
 const assetItemToRef = (item: SpotlightAssetDragItem, target?: AssetImportTarget): SceneRef => {
   const base = spotlightAssetRefBase(item);
@@ -244,7 +252,8 @@ export function useSceneClipboardDrop(
     if (overSceneWindow(event)) return;
     event.preventDefault();
     event.stopPropagation();
-    if (hasAssetDrag(event.dataTransfer) || dataTransferHasFiles(event.dataTransfer)) {
+    if (hasAssetDrag(event.dataTransfer) || dataTransferHasFiles(event.dataTransfer)
+      || (hasGenerationDrag(event.dataTransfer) && !!optionsRef.current.onDropGenerations)) {
       event.dataTransfer.dropEffect = "copy";
     }
   }, []);
@@ -264,6 +273,11 @@ export function useSceneClipboardDrop(
         addReferenceCards(refs, point.x, point.y);
         // 한 번 물어 에셋 대장 번호(open_ids)를 받아 둔다 — 나중에 NAS 에서 이름을 바꾸거나 옮겨도 따라가게(2026-09-30).
         current.onLocalRefsAdded?.(refs.map((ref) => ref.file_path));
+        return;
+      }
+      if (hasGenerationDrag(event.dataTransfer) && current.onDropGenerations) {
+        const ids = droppedGenerationIds(event.dataTransfer);
+        if (ids.length) current.onDropGenerations(ids, current.toCanvas(event.clientX, event.clientY));
         return;
       }
 

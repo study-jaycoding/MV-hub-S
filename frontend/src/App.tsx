@@ -83,6 +83,7 @@ import { useGenerationSelection, withoutHidden } from "./lib/useGenerationSelect
 import { useGenerationShareActions } from "./lib/useGenerationShareActions";
 import { useBackgroundEscape } from "./lib/useEscapeClose";
 import { backgroundKeysBlocked, floatHost, isTypingTarget, usePageSelectAllGuard } from "./lib/keyGate";
+import { onPeekDropAdded, onPeekGenerationDragStart } from "./lib/peekDragOut";
 import { isKeyHandled, markKeyHandled } from "./lib/keyHandled";
 import { manageApi } from "./lib/manageApi";
 import { folderMenuLabel, type FolderMenuKind } from "./lib/folderContextMenu";
@@ -2017,6 +2018,66 @@ export default function App() {
     [allowUnshared, allowShared, allowHeld, allowFinal],
   );
 
+  // 폴더 창이 떠 있는 동안 그 뒤(상단바·사이드바·본문)는 inert 다 — 마우스는 창의 바깥 막이 막지만 Tab 으로는 닿았다(2026-10-11 실측:
+  //  목록 탭의 창은 48번째 Tab 부터 상단바로, 캔버스의 창은 72번째부터 사이드바·상단바로 나갔다. 사이드바의 폴더 줄에 초점이 놓이면
+  //  그 줄의 키 처리가 전파를 막아(common/FolderTreeView) Esc 로 창이 닫히지도 않았다). 그 밖에 남는 것 = 창·하단 프롬프트·창에서 연 것.
+  //  창이 실제로 그려지는 조건과 같은 값으로 건다 — 상태(folderPeek)만 보면 창 없이 화면만 잠길 수 있다.
+  //  편집 탭이 열려 있으면 캔버스는 그려지지 않는다 — 창도 같이 빠진다(창을 닫는 effect 는 한 박자 뒤에 돈다).
+  //  아래 끌기 훅 때문에 조기 return 위에 둔다(그 뒤에 훅이 있으면 인증 확인이 끝나는 렌더에서 훅 수가 늘어 앱이 멈춘다).
+  const canvasPeek = !editOpen && filters.tab === "compose" && folderPeek && !!activeScene && !!folderSel;
+  const behindInert = !!listPeek || canvasPeek;
+  // 캔버스 폴더 창에서 생성물을 끄는 동안(peekDragOut) — 창·막은 비키고(app-shell.css body.peek-drag-out) 본문의 inert 를 잠깐 푼다.
+  //  놓기는 보드만 받는다(CSS 가 사이드바·툴바는 지나가게 한다). 상단바는 그대로 잠근다. 넣기에 성공했으면 끌기가 끝난 뒤 창을 닫는다
+  //  (Jay 2026-10-22 '폴더 창에서 끌어와 바로 씬에', Codex 설계 검토).
+  const [peekDragOut, setPeekDragOut] = useState(false);
+  useEffect(() => {
+    if (!canvasPeek) return;
+    let frame = 0;
+    let dragging = false;
+    let addedDuringDrag = false;
+    const end = () => {
+      cancelAnimationFrame(frame);
+      frame = 0;
+      if (!dragging) return;
+      dragging = false;
+      setPeekDragOut(false);
+      if (addedDuringDrag) setFolderPeek(false);
+      addedDuringDrag = false;
+    };
+    const offStart = onPeekGenerationDragStart(() => {
+      dragging = true;
+      cancelAnimationFrame(frame);
+      // dragstart 안에서 창을 바꾸면 크롬이 끌기를 끊을 수 있다 — 다음 프레임에. 그 사이 끝났으면(빠른 취소) 비키지 않는다.
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (dragging) setPeekDragOut(true);
+      });
+    });
+    // 보드는 생성물을 읽은 뒤(비동기) 넣는다 — 대개 끌기가 끝난 뒤라 바로 닫고, 아직 끄는 중이면 끝날 때 닫는다.
+    const offAdded = onPeekDropAdded(() => {
+      if (dragging) addedDuringDrag = true;
+      else setFolderPeek(false);
+    });
+    const endSoon = () => window.setTimeout(end, 0);
+    window.addEventListener("dragend", end, true);
+    window.addEventListener("drop", endSoon, true);
+    window.addEventListener("pointerdown", end, true); // dragend 를 놓쳤을 때(끌던 카드가 사라짐)의 마지막 정리
+    return () => {
+      offStart();
+      offAdded();
+      window.removeEventListener("dragend", end, true);
+      window.removeEventListener("drop", endSoon, true);
+      window.removeEventListener("pointerdown", end, true);
+      cancelAnimationFrame(frame);
+      setPeekDragOut(false);
+    };
+  }, [canvasPeek]);
+  useEffect(() => {
+    document.body.classList.toggle("peek-drag-out", peekDragOut);
+    return () => document.body.classList.remove("peek-drag-out");
+  }, [peekDragOut]);
+  const bodyInert = !!listPeek || (canvasPeek && !peekDragOut);
+
   // 인증 검증이 끝나기 전(authConfig 로딩 중 또는 토큰 me 검증 중)에는 화면을 보류한다.
   // → 새로고침 시 메인(전역 provider 이름)·로그인 화면이 잠깐 깜빡이는 것을 방지.
   if (authPending) {
@@ -2353,14 +2414,6 @@ export default function App() {
     </>
   );
 
-  // 폴더 창이 떠 있는 동안 그 뒤(상단바·사이드바·본문)는 inert 다 — 마우스는 창의 바깥 막이 막지만 Tab 으로는 닿았다(2026-10-11 실측:
-  //  목록 탭의 창은 48번째 Tab 부터 상단바로, 캔버스의 창은 72번째부터 사이드바·상단바로 나갔다. 사이드바의 폴더 줄에 초점이 놓이면
-  //  그 줄의 키 처리가 전파를 막아(common/FolderTreeView) Esc 로 창이 닫히지도 않았다). 그 밖에 남는 것 = 창·하단 프롬프트·창에서 연 것.
-  //  창이 실제로 그려지는 조건과 같은 값으로 건다 — 상태(folderPeek)만 보면 창 없이 화면만 잠길 수 있다.
-  //  편집 탭이 열려 있으면 캔버스는 그려지지 않는다 — 창도 같이 빠진다(창을 닫는 effect 는 한 박자 뒤에 돈다).
-  const canvasPeek = !editOpen && filters.tab === "compose" && folderPeek && !!activeScene && !!folderSel;
-  const behindInert = !!listPeek || canvasPeek;
-
   return (
     <div className="app">
       <TopBar
@@ -2426,8 +2479,8 @@ export default function App() {
         settleCanvasGeneration={settleCanvasGeneration}
         discardCanvasGeneration={discardCanvasGeneration}
       /></Suspense>}
-      {/* 폴더 창이 떠 있는 동안 뒤 화면(사이드바·본문)은 inert — 위 behindInert(React 18 타입에 inert 가 없어 spread 로 넘긴다). */}
-      <div className="body" {...(behindInert ? { inert: "" } : {})}>
+      {/* 폴더 창이 떠 있는 동안 뒤 화면(사이드바·본문)은 inert — 위 bodyInert(캔버스 폴더 창에서 생성물을 끄는 동안만 푼다. React 18 타입에 inert 가 없어 spread 로 넘긴다). */}
+      <div className="body" {...(bodyInert ? { inert: "" } : {})}>
         {editOpen ? (
           <Suspense fallback={null}>
             <EditTab

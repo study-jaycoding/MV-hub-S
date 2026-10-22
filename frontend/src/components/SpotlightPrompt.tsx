@@ -609,8 +609,10 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     // 라이브러리 → 씬 진입: 현재(라이브러리) 프롬프트를 보관해 이탈 시 되살린다.
     if (prev === null) libraryDraftRef.current = JSON.stringify(serializeParts(ed));
     // 카드 전환마다 그 카드 초안 복원. lastPromptFp 를 맞춰 (B)가 복원을 편집으로 오인해 되-저장하지 않게.
-    lastPromptFpRef.current = bindingPrompt;
+    //  지문은 원문이 아니라 되살린 편집기의 저장 형식이다 — 평문·빈 글자 원문은 저장 형식(`[]`·조각 JSON)과 달라, 고르기만 해도 카드에
+    //  다시 저장돼 되돌리기 기록이 하나 늘었다(첫 Ctrl+Z 가 헛돎 — 2026-10-22 격리 실측).
     restoreParts(ed, draftParse(bindingPrompt));
+    lastPromptFpRef.current = JSON.stringify(serializeParts(ed));
     scheduleLiveWrap(); // 트레이 refs 정착 후 @토큰 알약화(미디어 해석 타이밍 안전)
     updatePlaceholder();
     bumpPromptTick();
