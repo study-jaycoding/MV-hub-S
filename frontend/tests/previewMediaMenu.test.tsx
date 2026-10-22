@@ -65,10 +65,13 @@ describe("크게 보기 우클릭", () => {
     expect(rows()).toEqual([["프레임 캡쳐", "Ctrl+우클릭"], ["프레임 저장", "Ctrl+Shift+우클릭"]]);
   });
 
-  it("Alt+우클릭은 브라우저 원래 메뉴 — 막지도 띄우지도 않는다", async () => {
+  it("Shift+우클릭·Alt+우클릭은 브라우저 원래 메뉴 — 막지도 띄우지도 않는다(윈도 크롬은 Alt 를 누른 채면 메뉴를 닫아 Shift 가 확실한 길)", async () => {
     await show(VIDEO);
+    expect(rightClick({ shiftKey: true }).defaultPrevented).toBe(false);
     expect(rightClick({ altKey: true }).defaultPrevented).toBe(false);
     expect(menu()).toBeNull();
+    expect(capture.copyPng).not.toHaveBeenCalled();
+    expect(capture.saveBlobAs).not.toHaveBeenCalled();
   });
 
   it("Ctrl+우클릭은 메뉴 없이 바로 캡쳐, Ctrl+Shift+우클릭은 바로 저장(영상 = 그 시각의 PNG 이름)", async () => {
@@ -111,6 +114,26 @@ describe("크게 보기 우클릭", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("키보드로도 쓴다 — 열면 첫 줄에 초점, ↑↓·Tab 은 메뉴 안에서 돌고, 줄 위의 Enter·Space 는 영상 재생 키가 가로채지 않는다", async () => {
+    await show(VIDEO);
+    rightClick();
+    const items = [...document.body.querySelectorAll<HTMLButtonElement>(".preview-menu-item")];
+    expect(document.activeElement).toBe(items[0]);
+    act(() => { items[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })); });
+    expect(document.activeElement).toBe(items[1]);
+    act(() => { items[1].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })); });
+    expect(document.activeElement).toBe(items[0]);
+    const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    act(() => { items[0].focus(); });
+    act(() => { items[1].focus(); items[1].dispatchEvent(tab); }); // 끝 줄의 Tab → 첫 줄(창 뒤로 새지 않는다)
+    expect(document.activeElement).toBe(items[0]);
+    for (const key of ["Enter", " "]) {
+      const press = new KeyboardEvent("keydown", { key, code: key === " " ? "Space" : "Enter", bubbles: true, cancelable: true });
+      act(() => { items[0].dispatchEvent(press); });
+      expect(press.defaultPrevented).toBe(false); // 막으면 Enter 는 안 먹고 Space 는 영상 재생/정지가 된다
+    }
+  });
+
   it("오디오는 손대지 않는다", async () => {
     await show({ url: "/a.mp3", type: "audio", name: "a" });
     expect(rightClick().defaultPrevented).toBe(false);
@@ -121,6 +144,49 @@ describe("크게 보기 우클릭", () => {
 describe("클립보드·저장(lib/mediaCapture 실물)", () => {
   const real = () => vi.importActual<typeof import("../src/lib/mediaCapture")>("../src/lib/mediaCapture");
   const png = new Blob(["png"], { type: "image/png" });
+
+  it("CDN 영상은 누른 순간의 시각으로 CORS 사본을 옮겨 뜬다 — 사본을 읽는 사이 원본이 흘러가도", async () => {
+    const { videoFramePng } = await real();
+    const video = document.createElement("video");
+    Object.defineProperties(video, {
+      videoWidth: { value: 854 }, videoHeight: { value: 480 },
+      currentSrc: { value: "https://cdn.example/v.mp4" }, currentTime: { value: 1.5, writable: true },
+    });
+    let encodes = 0;
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ drawImage: () => {} } as unknown as CanvasRenderingContext2D);
+    const toBlob = vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation(function (done: BlobCallback) {
+      encodes += 1;
+      if (encodes === 1) throw new DOMException("tainted", "SecurityError"); // 보이는 영상은 다른 출처라 막힌다
+      done(png);
+    });
+    const copies: HTMLVideoElement[] = [];
+    const make = document.createElement.bind(document);
+    const create = vi.spyOn(document, "createElement").mockImplementation(((tag: string) => {
+      const element = make(tag);
+      if (tag === "video") {
+        Object.defineProperty(element, "currentTime", { value: 0, writable: true });
+        Object.defineProperty(element, "load", { value: () => {} });
+        copies.push(element as HTMLVideoElement);
+      }
+      return element;
+    }) as typeof document.createElement);
+    try {
+      const task = videoFramePng(video);
+      await vi.waitFor(() => expect(copies).toHaveLength(1));
+      video.currentTime = 9; // 사본을 읽는 동안 원본은 계속 재생된다
+      const [copy] = copies;
+      expect(copy.crossOrigin).toBe("anonymous");
+      expect(copy.src).toBe("https://cdn.example/v.mp4");
+      copy.dispatchEvent(new Event("loadedmetadata"));
+      await vi.waitFor(() => expect(copy.currentTime).toBe(1.5));
+      copy.dispatchEvent(new Event("seeked"));
+      expect(await task).toBe(png);
+    } finally {
+      create.mockRestore();
+      toBlob.mockRestore();
+      getContext.mockRestore();
+    }
+  });
 
   it("저장 창이 있으면 그 파일에 쓰고, 취소면 cancelled, 그림을 못 만들면 쓰던 것을 버린다", async () => {
     const { saveBlobAs } = await real();

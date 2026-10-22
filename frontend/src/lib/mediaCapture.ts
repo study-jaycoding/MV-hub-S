@@ -30,6 +30,9 @@ export async function videoFramePng(video: HTMLVideoElement): Promise<Blob> {
   const width = video.videoWidth;
   const height = video.videoHeight;
   if (!width || !height) throw new Error("video not ready");
+  // 누른 순간의 장면 — 사본을 읽는 동안에도 원본은 계속 재생된다(Codex 검토 10-22: 뒤의 장면을 떴다)
+  const at = video.currentTime;
+  const src = video.currentSrc || video.src;
   try {
     return await canvasPng(video, width, height);
   } catch (error) {
@@ -39,11 +42,11 @@ export async function videoFramePng(video: HTMLVideoElement): Promise<Blob> {
   copy.crossOrigin = "anonymous";
   copy.muted = true;
   copy.preload = "auto";
-  copy.src = video.currentSrc || video.src;
+  copy.src = src;
   try {
     await mediaEvent(copy, "loadedmetadata");
     const seeked = mediaEvent(copy, "seeked");
-    copy.currentTime = video.currentTime;
+    copy.currentTime = at;
     await seeked;
     return await canvasPng(copy, width, height);
   } finally {

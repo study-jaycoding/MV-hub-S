@@ -137,6 +137,9 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
   //  (재생/정지). 뒤 격자의 초점 카드는 격자가 따로 쥐고 있어 그대로고, 닫으면 초점은 연 자리(격자)로 돌아간다.
   const boxRef = useRef<HTMLDivElement>(null);
   useModalFocus(boxRef);
+  // 메뉴도 막이 있는 겹이다 — 떠 있는 동안 Tab 은 메뉴 안에서 돌고, 닫히면 초점이 연 자리로 돌아간다(키보드로 쓸 수 있게 — Codex 검토 10-22)
+  const menuRef = useRef<HTMLDivElement>(null);
+  useModalFocus(menuRef, !!menu);
   useEffect(() => {
     // 크게 보기는 정보팝업/그리드 위에 떠 있으므로 키를 캡처 단계에서 먼저 가로챈다.
     // ←/→ → 목록 내 이동(뒤 그리드 포커스 이동과 충돌 방지).
@@ -155,7 +158,8 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
         //  창 밖(뒤 화면)의 단추에 초점이 남아 있을 때는 이 창이 키를 갖는다 — 넘기면 Space·Enter 가 그 단추(이 창을 연 썸네일)를
         //  다시 눌러 보던 장이 처음 것으로 돌아가고, 기록이 한 겹 더 쌓여 Esc 가 두 번 필요했다(2026-10-10 실측 3/3).
         const t = e.target instanceof Element ? e.target : null;
-        if (t?.closest(".media-preview") && t.closest("button, a, input, textarea, select, audio, [role=button], [contenteditable]")) return;
+        // 우클릭 메뉴(.preview-menu — body 에 그려진다)의 줄도 이 창 안의 단추다(Enter·Space = 그 줄 실행 — Codex 검토 10-22)
+        if (t?.closest(".media-preview, .preview-menu") && t.closest("button, a, input, textarea, select, audio, [role=button], [contenteditable]")) return;
         if (t?.closest("input, textarea, select, [contenteditable]")) return; // 글자 입력(코멘트 패널 등)은 그대로
         e.preventDefault();
         e.stopPropagation();
@@ -202,7 +206,9 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
     removeWindowPointerDrag(onDragMove, onDragEnd);
   };
 
-  // ── 우클릭: 메뉴 · Ctrl = 바로 캡쳐 · Ctrl+Shift = 바로 저장 · Alt = 브라우저 원래 메뉴 ──
+  // ── 우클릭: 메뉴 · Ctrl = 바로 캡쳐 · Ctrl+Shift = 바로 저장 · Shift·Alt = 브라우저 원래 메뉴 ──
+  //  Shift 가 확실한 길이다 — 윈도 크롬은 메뉴가 떠 있을 때 Alt 키가 눌리면 메뉴를 닫는다(Chromium menu_controller.cc). Alt 를 누른 채면
+  //  자동 반복이 들어와 뜬 메뉴가 바로 사라졌다(Jay 2026-10-22). Alt 도 막지는 않는다(빨리 떼면 남는다).
   //  클립보드·저장 창은 누른 자리에서 부른다(lib/mediaCapture 머리말 — 사용자 동작이 식기 전에).
   const isVideo = cur.type === "video";
   const mediaPng = () => isVideo
@@ -229,7 +235,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
   };
   const onMediaContextMenu = (e: React.MouseEvent) => {
     // 전체 화면 영상 위에는 앱 메뉴가 안 보인다(그 영상만 그려진다) — 그때의 그냥 우클릭은 브라우저 메뉴로 둔다
-    if (cur.type === "audio" || e.altKey || (document.fullscreenElement && !e.ctrlKey)) return;
+    if (cur.type === "audio" || e.altKey || (e.shiftKey && !e.ctrlKey) || (document.fullscreenElement && !e.ctrlKey)) return;
     e.preventDefault();
     if (e.ctrlKey && e.shiftKey) saveMedia();
     else if (e.ctrlKey) captureMedia();
@@ -351,12 +357,20 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
             onContextMenu={(e) => { e.preventDefault(); setMenu(null); }}
           >
             <div
+              ref={menuRef}
               className="preview-menu"
               role="menu"
               style={{ left: Math.max(4, Math.min(menu.x, window.innerWidth - 244)), top: Math.max(4, Math.min(menu.y, window.innerHeight - 84)) }}
               onMouseDown={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+                e.preventDefault();
+                const rows = [...e.currentTarget.querySelectorAll<HTMLButtonElement>(".preview-menu-item")];
+                const at = rows.indexOf(document.activeElement as HTMLButtonElement);
+                rows[(at + (e.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length]?.focus();
+              }}
             >
-              <button type="button" role="menuitem" className="preview-menu-item" onClick={captureMedia}>
+              <button type="button" role="menuitem" className="preview-menu-item" onClick={captureMedia} autoFocus>
                 <CopyIcon />
                 <span>{isVideo ? "프레임 캡쳐" : "이미지 캡쳐"}</span>
                 <kbd>Ctrl+우클릭</kbd>
