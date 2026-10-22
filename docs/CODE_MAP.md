@@ -642,7 +642,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
-| `MediaPreview.tsx`(281줄) | 이미지/영상 미리보기 플로팅 창. 원본이 오는 동안 연 곳이 넘긴 썸네일(`PreviewItem.thumb`)을 그림은 바탕·영상은 표지로 깐다 | `MediaPreview`·`fitPreviewBox` |
+| `MediaPreview.tsx`(369줄) | 이미지/영상 미리보기 플로팅 창. 원본이 오는 동안 연 곳이 넘긴 썸네일(`PreviewItem.thumb`)을 그림은 바탕·영상은 표지로 깐다. 우클릭 = 앱 메뉴(캡쳐·저장), Ctrl = 바로 캡쳐, Ctrl+Shift = 바로 저장, Alt = 브라우저 메뉴(`lib/mediaCapture`) | `MediaPreview`·`fitPreviewBox` |
 | `InfoPopup.tsx`(549줄) | 생성 정보 팝업(드래그 이동·프롬프트·레퍼런스·오류). 크기가 바뀔 때마다 화면 아래로 넘치지 않게 올린다(끌어 옮긴 뒤에는 그대로). ★높이는 `offsetHeight` 로 — 열리는 애니메이션(scale 0.98) 중의 `getBoundingClientRect` 는 2% 작다 | `InfoPopup` |
 | `CompareModal.tsx`(398줄) | 생성본 N개 비교(프롬프트 diff + 창 이동/리사이즈/최대화 + A/B 와이프) | `CompareModal` |
 | `VideoCompareModal.tsx`(251줄) | 생성정보 없는 미디어 N개 비교(+ 같은 A/B 와이프) | `VideoCompareModal` — 이름과 달리 이미지도 다룸(§5-b) |
@@ -1020,13 +1020,14 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `useResolveLibraryFollow.ts` | 훅 | Resolve 선택에 라이브러리 페이지 따라가기 |
 | `sourceLocationFeedback.ts` | api | 원본 위치 열기 실패 보고 |
 
-**17. 미디어·다운로드·비교·히스토리(10)**
+**17. 미디어·다운로드·비교·히스토리(11)**
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `media.ts` | 순수+브라우저(+훅 1) | 썸네일 URL·미디어 종류·DataTransfer 파일 판정 |
 | `keptThumbs.ts` | 브라우저 | 그려진 캔버스 카드 썸네일을 씬을 떠난 뒤에도 최근 300장 쥐기(`keepThumb` — `MediaThumbnail` 의 `keep`, 긴 변 640px 넘는 것·원본 재시도분은 안 쥔다). 다시 연 씬의 빈 썸네일 95→0ms(71회차). 시험 `tests/keptThumbs.test.tsx` |
 | `download.ts` | api | 다운로드 공용(허브 각인 → 직접 → 프록시 → 새 탭 폴백). 생성물의 파일 이름은 허브가 정한다(`POST /api/download/names` — `downloadGeneration`·`nameGenerationItems`, 받을 때만 묻는다. 규칙은 `docs/EXPORT_SYNC_DESIGN.md` §7) |
+| `mediaCapture.ts` | 브라우저 | 크게 보기 우클릭의 캡쳐·저장 — 영상의 지금 장면(CDN 영상은 CORS 사본을 같은 시각으로)·이미지 원본을 PNG 로, 클립보드 담기·다른 이름으로 저장(저장 창 없으면 내려받기). 클립보드·저장 창은 누른 자리에서 부른다(사용자 동작이 식기 전) |
 | `compareDiff.ts` | 순수 | 비교 모달의 프롬프트·파라미터 차이 계산 |
 | `compareWindow.ts` | 순수 | 비교 창 이동·크기·뷰포트 맞춤 |
 | `synchronizedVideos.ts` | 브라우저 | 비교 영상 재생·탐색 동기화 바인더 |
