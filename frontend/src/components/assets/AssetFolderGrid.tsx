@@ -1,6 +1,8 @@
-import { useState, type CSSProperties, type Ref, type UIEventHandler } from "react";
+import { useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type RefObject, type UIEventHandler } from "react";
 import { api } from "../../api";
 import { useT } from "../../lib/i18n";
+import { backgroundKeysBlocked, isTypingTarget, useLooseKeys } from "../../lib/keyGate";
+import { isKeyHandled, markKeyHandled } from "../../lib/keyHandled";
 import { EPISODE_CARD_WIDTH, STRIP_SHOWN } from "../../lib/episodeBoard";
 import type { AssetNode } from "../../types";
 import { FolderIcon } from "../FolderIcon";
@@ -19,18 +21,75 @@ export interface AssetFolderGridProps {
   fit: "cover" | "contain";
   layout: AssetFolderLayout;
   lastViewedPath?: string;
-  scrollRef: Ref<HTMLDivElement>;
+  scrollRef: RefObject<HTMLDivElement>;
   onScroll: UIEventHandler<HTMLDivElement>;
   onEnter: (path: string) => void;
   onOpenTab: (path: string) => void;
   onPreview: (file: AssetNode) => void;
 }
 
+/** 표 보기(AssetFolderTable)에 넘기는 선택·키 — 카드·목록·표가 같은 선택과 키 처리를 쓴다. */
+export interface AssetFolderSelection {
+  selected: string | null;
+  setSelected: (path: string | null) => void;
+  onGridKeyDown: (e: ReactKeyboardEvent) => void;
+}
+
+// 카드가 한 줄에 몇 장인가 — 위·아래 방향키의 걸음(공유 탭 컷 카드 격자와 같은 셈).
+function columnsOf(grid: HTMLElement): number {
+  const cards = grid.querySelectorAll<HTMLElement>(":scope > [data-folder-path], :scope > [data-file-path]");
+  let count = 0;
+  for (const card of cards) {
+    if (card.offsetTop !== cards[0].offsetTop) break;
+    count += 1;
+  }
+  return Math.max(1, count);
+}
+
 export function AssetFolderGrid(props: AssetFolderGridProps) {
   const { project, groups, directFiles, scale, fit, layout, lastViewedPath, scrollRef, onScroll, onEnter, onOpenTab, onPreview } = props;
   const t = useT();
   const [selected, setSelected] = useState<string | null>(null);
-  if (layout === "table") return <AssetFolderTable {...props} />;
+  // 키보드(Jay 10-22 — 워크스페이스·공유처럼): 방향키 = 옆·위아래 카드를 고르고 초점도 옮긴다 · Enter = 고른 폴더로 들어가기/파일 크게 보기 ·
+  //  Esc = 고른 것 풀기. 초점이 BODY·툴바에 있어도 받는다(useLooseKeys). 카드 안 단추에 초점이 있으면 Enter·Space 는 그 단추의 키다.
+  const items = [...groups.map(({ folder }) => ({ path: folder.path, file: null as AssetNode | null })),
+    ...directFiles.map((file) => ({ path: file.path, file }))];
+  const onGridKey = (e: KeyboardEvent) => {
+    if (backgroundKeysBlocked() || isTypingTarget(e.target) || e.isComposing || !items.length) return;
+    const grid = scrollRef.current;
+    if (!grid) return;
+    const target = e.target as HTMLElement | null;
+    const onControl = !!target?.closest?.("button, tr[tabindex]") && grid.contains(target);
+    const at = items.findIndex((item) => item.path === selected);
+    if (e.key.startsWith("Arrow")) {
+      if (e.altKey) return; // Alt+←/→ 는 브라우저의 뒤로/앞으로
+      e.preventDefault();
+      const rows = layout !== "grid";
+      const step = e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1
+        : (e.key === "ArrowUp" ? -1 : 1) * (rows ? 1 : columnsOf(grid));
+      const next = at < 0 ? 0 : Math.min(items.length - 1, Math.max(0, at + step));
+      const path = items[next].path;
+      setSelected(path);
+      const attr = items[next].file ? "data-file-path" : "data-folder-path";
+      const card = [...grid.querySelectorAll<HTMLElement>(`[${attr}]`)].find((el) => el.getAttribute(attr) === path);
+      const focusable = card?.matches("tr") ? card : card?.querySelector<HTMLElement>(".ep-cover");
+      focusable?.focus({ preventScroll: true });
+      card?.scrollIntoView?.({ block: "nearest" });
+    } else if (e.key === "Enter") {
+      if (onControl || e.repeat || at < 0) return; // 초점 놓인 카드 단추·줄은 제 Enter 로 연다
+      e.preventDefault();
+      const item = items[at];
+      if (item.file) onPreview(item.file);
+      else onEnter(item.path);
+    } else if (e.key === "Escape") {
+      if (isKeyHandled(e) || selected === null) return;
+      markKeyHandled(e);
+      setSelected(null);
+    }
+  };
+  useLooseKeys(scrollRef, onGridKey, (e) => e.key !== "Backspace"); // Backspace 는 어셋 창의 '상위 폴더로' 처리 몫(AssetsView)
+  const onGridKeyDown = (e: ReactKeyboardEvent) => onGridKey(e.nativeEvent);
+  if (layout === "table") return <AssetFolderTable {...props} selected={selected} setSelected={setSelected} onGridKeyDown={onGridKeyDown} />;
   const thumb = (file: AssetNode, size: number) => <MediaThumbnail
     thumb={file.type === "audio" ? null : api.assetThumbUrl(project, file.path, size, file.version)}
     isVideo={false} alt={file.name}
@@ -38,6 +97,7 @@ export function AssetFolderGrid(props: AssetFolderGridProps) {
   />;
   return <div ref={scrollRef} onScroll={onScroll} className={"assets-folder-grid" + (layout === "list" ? " list" : "")}
     onClick={(event) => { if (event.target === event.currentTarget) setSelected(null); }}
+    onKeyDown={onGridKeyDown}
     style={{ "--ep-scale": scale, gridTemplateColumns: layout === "list" ? "1fr" : `repeat(auto-fill, minmax(min(100%, ${Math.round(EPISODE_CARD_WIDTH * scale)}px), 1fr))` } as CSSProperties}>
     {groups.map(({ folder, files, category, folderCount, imageCount, videoCount, audioCount, children }) => {
       const summary = [folderCount ? `${t("폴더")} ${folderCount}` : "", `${files.length}${t("건")}`,
@@ -83,9 +143,9 @@ export function AssetFolderGrid(props: AssetFolderGridProps) {
       </span>}
     </article>;
     })}
-    {directFiles.map((file) => <article key={file.path} className="cut-card ep-card ep-grid assets-folder-card" data-file-path={file.path}>
+    {directFiles.map((file) => <article key={file.path} className={"cut-card ep-card ep-grid assets-folder-card" + (selected === file.path ? " sel" : "")} data-file-path={file.path}>
       <button type="button" className={"ep-cover" + (fit === "contain" ? " contain" : "")}
-        aria-label={`${file.name} ${t("미리보기")}`} title={file.name} onClick={() => onPreview(file)}>
+        aria-label={`${file.name} ${t("미리보기")}`} title={file.name} onClick={() => { setSelected(file.path); onPreview(file); }}>
         {thumb(file, 512)}
         {lastViewedPath === file.path && <span className="asset-last-viewed">Last viewed</span>}
         <span className="ep-cap"><b>{file.name}</b></span>

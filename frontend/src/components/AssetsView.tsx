@@ -3,7 +3,7 @@
 //  · 영상 호버 자동재생 + 미디어 호버 오버레이(정보·미리보기·다운로드)
 //  · 좌측 폴더 트리는 유지. 셀 휠클릭=정보, 클릭=미리보기.
 import { isKeyHandled } from "../lib/keyHandled";
-import { activationKeyOwned, backgroundKeysBlocked, isTypingTarget } from "../lib/keyGate";
+import { activationKeyOwned, backgroundKeysBlocked, isTypingTarget, useLooseKeys } from "../lib/keyGate";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { Virtualizer, type VirtualizerHandle } from "virtua";
 import { api } from "../api";
@@ -645,10 +645,11 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     if (f) openPreview(f);
   };
 
-  const onGridKeyDown = (e: React.KeyboardEvent) => {
+  // 격자의 키 — 격자에 초점이 있을 때(onKeyDown)와 초점 잃은 키(useLooseKeys, 아래)가 같이 쓴다. 그래서 원래 이벤트를 받는다(워크스페이스 격자와 같다).
+  const onGridKey = (e: KeyboardEvent) => {
     if (isTypingTarget(e.target)) return; // 인라인 입력 중엔 단축키 무시
     if (backgroundKeysBlocked()) return; // 위에 뜬 창·메뉴의 키(lib/keyGate)
-    if (activationKeyOwned(e.nativeEvent)) return; // Tab 으로 찾아간 카드 단추(S·T·C)의 Enter·Space 는 그 단추를 누르는 키
+    if (activationKeyOwned(e)) return; // Tab 으로 찾아간 카드 단추(S·T·C)의 Enter·Space 는 그 단추를 누르는 키
     if (!filesRef.current.length) return;
     // 길게 눌러 반복된 keydown — 반복이 뜻인 것은 방향키(이동)뿐이다. 나머지(Space 선택·s·r/g/b·d·Enter·#·c)는 토글·열기라 반복마다
     //  뒤집힌다: 기본 동작(Space 의 스크롤)만 막고 다시 하지 않는다(조작 규칙 38).
@@ -676,8 +677,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       const f = filesRef.current[focusIdx];
       if (f) openPreview(f);
     } else if (e.key === "Escape") {
-      if (isKeyHandled(e.nativeEvent)) return; // 위에 떠 있던 창이 이미 쓴 Esc
-      onDragUp(e.nativeEvent); // Esc는 끌기만 취소한다. 선택과 뒤늦은 mouseup의 클릭 판정을 분리한다.
+      if (isKeyHandled(e)) return; // 위에 떠 있던 창이 이미 쓴 Esc
+      onDragUp(e); // Esc는 끌기만 취소한다. 선택과 뒤늦은 mouseup의 클릭 판정을 분리한다.
     } else if (e.key === " ") {
       e.preventDefault();
       if (focusIdx >= 0)
@@ -784,13 +785,17 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     return () => window.removeEventListener("keydown", onBackspace);
   }, [dir, enterFolder]);
 
+  // 초점 잃은 키(BODY·툴바 단추)도 파일 격자가 받는다(Jay 10-22 — 워크스페이스·공유처럼). 받은 키는 '처리됨'으로 표시되므로 거르는 것이 중요하다:
+  //  같은 ref 를 폴더 보기(AssetFolderGrid — 자기 키 처리)도 쓰므로 파일 격자일 때만, Backspace 는 위의 window 처리(상위 폴더로) 몫이라 뺀다.
+  useLooseKeys(gridRef, onGridKey, (e) => assetGridTakesKey(e) && !!gridRef.current?.classList.contains("assets-virtual"));
+
   const gridHandlers = {
     ref: gridRef,
     tabIndex: 0,
     onMouseDown: onGridMouseDown,
     onAuxClick: onGridAux,
     onDoubleClick: onGridDblClick,
-    onKeyDown: onGridKeyDown,
+    onKeyDown: (e: React.KeyboardEvent) => onGridKey(e.nativeEvent),
   };
 
   // 셀에 넘기는 핸들러를 안정 참조로 고정(React.memo 가 변화 없는 셀을 건너뛰게).
@@ -1157,6 +1162,9 @@ export function AssetsView({ onInfo, onPreview }: Props) {
 }
 
 /** 그 경로의 파일이 지금 목록의 몇 번째인가(없으면 -1). */
+/** 파일 격자가 초점 잃은 키로 받는 키 — Backspace 는 창의 '상위 폴더로' 처리 몫이다(폴더 보기 AssetFolderGrid 도 같은 규칙). */
+const assetGridTakesKey = (e: KeyboardEvent) => e.key !== "Backspace";
+
 const indexOfPath = (files: AssetNode[], path: string | null) =>
   path === null ? -1 : files.findIndex((file) => file.path === path);
 

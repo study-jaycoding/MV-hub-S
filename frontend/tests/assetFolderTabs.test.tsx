@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, createRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AssetNode } from "../src/types";
@@ -313,6 +313,58 @@ it("폴더 카드는 클릭으로 선택하고 더블클릭·Enter로 열며 미
   await settle();
   expect(localStorage.getItem("ch.assets.dir")).toBe("assets/CH/매튜");
 });
+// Jay 10-22: 공유 탭 컷 카드처럼 폴더 보기도 방향키로 옮겨 고르고 Enter 로 연다 — 초점이 BODY 에 있어도.
+it("폴더 보기 — 방향키로 카드를 옮겨 고르고(초점도) Enter 로 들어가며 Esc 로 푼다", async () => {
+  mocks.assetTree.mockResolvedValue({ children: [folder("assets", tree[0].children!.filter((node) => node.type === "dir"))] });
+  await mount();
+  // 브라우저처럼 초점이 놓인 요소에 보낸다(처음엔 BODY — 초점 잃은 키)
+  const key = async (init: KeyboardEventInit) => {
+    await act(async () => (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init })));
+    await settle();
+  };
+  const chosen = () => [...host.querySelectorAll(".assets-folder-card.sel")].map((el) => el.getAttribute("data-folder-path"));
+  expect(document.activeElement).toBe(document.body);
+  await key({ key: "ArrowRight" });
+  expect(chosen()).toEqual(["assets/CH"]);
+  expect(document.activeElement).toBe(card("assets/CH"));
+  await key({ key: "ArrowRight" });
+  expect(chosen()).toEqual(["assets/BG"]);
+  await key({ key: "ArrowLeft" });
+  expect(chosen()).toEqual(["assets/CH"]);
+  await key({ key: "Escape" });
+  expect(chosen()).toEqual([]);
+  await key({ key: "ArrowRight", altKey: true }); // Alt+방향키는 브라우저의 뒤로/앞으로
+  expect(chosen()).toEqual([]);
+  await key({ key: "ArrowRight" });
+  (document.activeElement as HTMLElement).blur(); // 초점이 BODY 여도 Enter 는 고른 카드를 연다
+  await key({ key: "Enter" });
+  expect(localStorage.getItem("ch.assets.dir")).toBe("assets/CH");
+});
+
+it("폴더 표 보기도 같은 키 — ↓↑ 로 줄을 옮겨 고르고(초점도) Enter 로 폴더는 열고 파일은 크게 본다", async () => {
+  const onEnter = vi.fn();
+  const onPreview = vi.fn();
+  const group = (path: string) => ({ folder: folder(path, []), files: [], category: path, folderCount: 0, imageCount: 0, videoCount: 0, audioCount: 0, children: [] });
+  const direct = file("assets/x.png");
+  const ref = createRef<HTMLDivElement>();
+  await act(async () => root.render(<AssetFolderGrid project="P" groups={[group("assets/CH"), group("assets/BG")]} directFiles={[direct]}
+    scale={1} fit="cover" layout="table" scrollRef={ref} onScroll={() => {}} onEnter={onEnter} onOpenTab={() => {}} onPreview={onPreview} />));
+  const key = async (name: string) => {
+    await act(async () => (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true })));
+  };
+  const row = () => (document.activeElement as HTMLElement).getAttribute("data-folder-path") ?? (document.activeElement as HTMLElement).getAttribute("data-file-path");
+  await key("ArrowDown");
+  expect([row(), host.querySelector("tr.sel")?.getAttribute("data-folder-path")]).toEqual(["assets/CH", "assets/CH"]);
+  await key("ArrowDown");
+  await key("ArrowDown");
+  expect(row()).toBe("assets/x.png");
+  await key("Enter"); // 줄 자신의 Enter — 파일은 크게 보기
+  expect(onPreview).toHaveBeenCalledExactlyOnceWith(direct);
+  await key("ArrowUp");
+  await key("Enter");
+  expect(onEnter).toHaveBeenCalledExactlyOnceWith("assets/BG");
+});
+
 const backspace = async (target: EventTarget = document.body, options: KeyboardEventInit = {}) => {
   const event = new KeyboardEvent("keydown", { key: "Backspace", bubbles: true, cancelable: true, ...options });
   await act(async () => target.dispatchEvent(event)); await settle();

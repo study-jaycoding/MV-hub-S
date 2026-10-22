@@ -131,14 +131,23 @@ function takesLooseKey(grid: HTMLElement, e: KeyboardEvent): boolean {
   return !!win && (!active || active === document.body || win.contains(floatHost(active)));
 }
 
-/** 초점 잃은 키를 이 격자의 키 처리로 넘긴다(위 주석). onKey 는 격자의 onKeyDown 과 같은 함수. */
-export function useLooseKeys(gridRef: RefObject<HTMLElement | null>, onKey: (e: KeyboardEvent) => void): void {
+/** 초점 잃은 키를 이 격자의 키 처리로 넘긴다(위 주석). onKey 는 격자의 onKeyDown 과 같은 함수.
+ *  accepts = 이 격자가 받지 않을 키를 거른다 — 받은 키는 '처리됨'으로 표시되므로, 같은 창의 다른 window 키 처리(어셋 창의 Backspace)가 쓰는
+ *  키는 여기서 빼야 한다. 없으면 모든 키(종전과 같다). */
+export function useLooseKeys(
+  gridRef: RefObject<HTMLElement | null>,
+  onKey: (e: KeyboardEvent) => void,
+  accepts?: (e: KeyboardEvent) => boolean,
+): void {
   const onKeyRef = useRef(onKey);
   onKeyRef.current = onKey;
+  const acceptsRef = useRef(accepts);
+  acceptsRef.current = accepts;
   useEffect(() => {
     const onLoose = (e: KeyboardEvent) => {
       const grid = gridRef.current;
       if (!grid || e.key === "Escape" || isKeyHandled(e) || backgroundKeysBlocked() || !takesLooseKey(grid, e)) return;
+      if (acceptsRef.current && !acceptsRef.current(e)) return;
       markKeyHandled(e); // 격자가 둘이어도 한 번만
       const active = document.activeElement;
       onKeyRef.current(e);

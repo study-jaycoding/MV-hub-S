@@ -128,6 +128,21 @@ it("빠른 클릭 — 고르지 않은 파일은 누르는 순간 골라진다(�
   expect(picked()).toEqual(["a.png", "b.png", "c.png", "d.png"]); // 전엔 a.png 로 되돌아갔다
 });
 
+// Jay 10-22: 어셋도 워크스페이스·공유처럼 키보드로 — 초점이 격자 밖(BODY)에 있어도 격자 키를 받는다.
+it("초점이 격자 밖이어도 방향키·Ctrl+A 가 파일 격자에 닿는다", async () => {
+  await mount();
+  await click("a.png");
+  await act(async () => { (document.activeElement as HTMLElement | null)?.blur(); }); // 크게 보기를 닫은 뒤처럼 초점이 BODY
+  // 브라우저처럼 초점이 놓인 요소에 보낸다 — 처음엔 BODY, 격자가 쓴 키 뒤에는 초점이 격자로 온다(lib/keyGate useLooseKeys)
+  const bodyKey = (init: KeyboardEventInit) => act(async () => {
+    (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+  });
+  await bodyKey({ key: "ArrowDown" }); // jsdom 은 폭이 0 이라 격자가 한 줄에 한 장 — 다음 파일은 아래
+  expect([picked(), focusedName()]).toEqual([["b.png"], "b.png"]);
+  await bodyKey({ key: "a", ctrlKey: true });
+  expect(picked()).toEqual(["a.png", "b.png", "c.png", "d.png"]);
+});
+
 it("Esc preserves the selected files like Explorer", async () => {
   await mount();
   await click("a.png");

@@ -18,7 +18,7 @@ vi.mock("virtua", async () => {
   }) };
 });
 import { AssetsView } from "../src/components/AssetsView";
-import { AssetFolderTable } from "../src/components/assets/AssetFolderTable";
+import { AssetFolderGrid, type AssetFolderGridProps } from "../src/components/assets/AssetFolderGrid";
 import { assetFolderGroups } from "../src/components/assets/assetFolderGroups";
 import { flattenFiles } from "../src/components/assets/treeUtils";
 
@@ -64,12 +64,13 @@ const setSize = async (value: string) => {
   await settle();
 };
 
-async function mountTable(overrides: Partial<Parameters<typeof AssetFolderTable>[0]> = {}) {
+// 표는 폴더 격자의 한 보기다 — 선택·키는 AssetFolderGrid 가 쥐고 넘긴다(10-22 어셋 키보드). 앱처럼 그 길로 그린다.
+async function mountTable(overrides: Partial<AssetFolderGridProps> = {}) {
   const grouped = assetFolderGroups(tree, "assets", flattenFiles(tree), "P");
   const props = { project: "P", groups: grouped.groups, directFiles: grouped.directFiles, scale: 1.2,
-    fit: "contain" as const, scrollRef: createRef<HTMLDivElement>(), onScroll: vi.fn(),
+    fit: "contain" as const, layout: "table" as const, scrollRef: createRef<HTMLDivElement>(), onScroll: vi.fn(),
     onEnter: vi.fn(), onOpenTab: vi.fn(), onPreview: vi.fn(), ...overrides };
-  await act(async () => root.render(<AssetFolderTable {...props} />));
+  await act(async () => root.render(<AssetFolderGrid {...props} />));
   return props;
 }
 
@@ -123,7 +124,7 @@ it("직접 파일의 행/버튼 미리보기와 빈 표를 유지한다", async 
   await fire(row, new KeyboardEvent("keydown", { key: " ", bubbles: true }));
   expect(props.onPreview).toHaveBeenCalledTimes(3);
   expect(props.onOpenTab).not.toHaveBeenCalled();
-  await act(async () => root.render(<AssetFolderTable {...props} groups={[]} directFiles={[]} />));
+  await act(async () => root.render(<AssetFolderGrid {...props} groups={[]} directFiles={[]} />));
   expect(host.querySelector("table")).toBeNull();
   expect(host.querySelector(".assets-empty")?.textContent).toBe("이 폴더에 미디어가 없습니다.");
 });

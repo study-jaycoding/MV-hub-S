@@ -1,17 +1,17 @@
-import { useState, type CSSProperties } from "react";
+import type { CSSProperties } from "react";
 import { api } from "../../api";
 import { useT } from "../../lib/i18n";
 import type { AssetNode } from "../../types";
 import { FolderIcon } from "../FolderIcon";
 import { MediaThumbnail } from "../MediaThumbnail";
-import type { AssetFolderGridProps } from "./AssetFolderGrid";
+import type { AssetFolderGridProps, AssetFolderSelection } from "./AssetFolderGrid";
 import { AssetSourcePath } from "./AssetSourcePath";
 
-type Props = Omit<AssetFolderGridProps, "layout">;
+// 선택·키는 AssetFolderGrid 가 쥔다 — 카드·목록·표가 같은 선택과 방향키를 쓴다(Jay 10-22 어셋 키보드).
+type Props = Omit<AssetFolderGridProps, "layout"> & AssetFolderSelection;
 
-export function AssetFolderTable({ project, groups, directFiles, scale, fit, lastViewedPath, scrollRef, onScroll, onEnter, onOpenTab, onPreview }: Props) {
+export function AssetFolderTable({ project, groups, directFiles, scale, fit, lastViewedPath, scrollRef, onScroll, onEnter, onOpenTab, onPreview, selected, setSelected, onGridKeyDown }: Props) {
   const t = useT();
-  const [selected, setSelected] = useState<string | null>(null);
   const preview = (file?: AssetNode) => file ? <button type="button"
     className={"assets-folder-table-preview" + (fit === "contain" ? " contain" : "")}
     data-folder-preview data-folder-action aria-label={`${file.name} ${t("미리보기")}`} title={file.name}
@@ -24,7 +24,8 @@ export function AssetFolderTable({ project, groups, directFiles, scale, fit, las
   const isAction = (target: EventTarget) => target instanceof Element && !!target.closest("[data-folder-action]");
   return <div ref={scrollRef} onScroll={onScroll} className="assets-folder-grid table assets-folder-table"
     style={{ "--ep-scale": scale } as CSSProperties}
-    onClick={(event) => { if (event.target === event.currentTarget) setSelected(null); }}>
+    onClick={(event) => { if (event.target === event.currentTarget) setSelected(null); }}
+    onKeyDown={onGridKeyDown}>
     {groups.length || directFiles.length ? <table>
       <thead><tr>
         <th scope="col">{t("미리보기")}</th><th scope="col">{t("이름")}</th>
@@ -53,7 +54,8 @@ export function AssetFolderTable({ project, groups, directFiles, scale, fit, las
           <td>{imageCount}</td><td>{videoCount}</td><td>{audioCount}</td>
         </tr>)}
         {directFiles.map((file) => <tr key={file.path} data-file-path={file.path} tabIndex={0}
-          onClick={() => onPreview(file)}
+          aria-selected={selected === file.path} className={selected === file.path ? "sel" : undefined}
+          onClick={() => { setSelected(file.path); onPreview(file); }}
           onKeyDown={(event) => {
             if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ") && !event.repeat && !event.nativeEvent.isComposing) {
               event.preventDefault(); onPreview(file);
