@@ -75,6 +75,24 @@ export function AccountIcon() {
     </svg>
   );
 }
+// 톱니·문+나가는 화살표 — 계정 메뉴 Setting·Sign Out 앞. 사람 아이콘과 같은 14px 선 그림이라 세 줄의 글자 시작점이 같다(Jay 2026-10-22 B안).
+export function SettingIcon() {
+  return (
+    <svg {...TOGGLE_ICON} width={14} height={14} className="acct-action-icon" aria-hidden="true">
+      <path d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+export function SignOutIcon() {
+  return (
+    <svg {...TOGGLE_ICON} width={14} height={14} className="acct-action-icon" aria-hidden="true">
+      <path d="M14 8v-2a2 2 0 0 0 -2 -2h-7a2 2 0 0 0 -2 2v12a2 2 0 0 0 2 2h7a2 2 0 0 0 2 -2v-2" />
+      <path d="M9 12h12l-3 -3" />
+      <path d="M18 15l3 -3" />
+    </svg>
+  );
+}
 // 프롬프트(입력칸 + 커서) — Host 상태줄 끝의 프롬프트 열기·닫기 칸(Jay 2026-10-22).
 export function PromptIcon() {
   return (

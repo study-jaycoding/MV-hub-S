@@ -177,6 +177,7 @@ export function TopBar({
         localHub={localHub}
         manageEnabled={manageEnabled}
         onOpenMcp={onOpenMcp}
+        onOpenManage={onOpenManage}
       />
     </header>
   );

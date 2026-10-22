@@ -102,7 +102,7 @@ import {
 import { useT } from "../../lib/i18n";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
 import { SceneMinimap } from "./SceneMinimap";
-import { SceneVariantPopup, type VariantResolveControls } from "./SceneVariantPopup";
+import { SceneVariantPopup, type VariantDraftControls, type VariantResolveControls } from "./SceneVariantPopup";
 import { SceneModelModal } from "./SceneModelModal";
 import { SceneComfyModal } from "./SceneComfyModal";
 import { comfyApi } from "../../lib/comfyApi";
@@ -359,6 +359,7 @@ interface Props {
     folderPath?: string | null,
   ) => void;
   variantResolve?: VariantResolveControls; // ▤ 팝업 선택바의 Resolve 전송(캔버스 선택바와 동일)
+  variantDraft?: VariantDraftControls; // ▤ 팝업 선택바의 Draft 생성(캔버스 선택바와 동일)
   onVariantDelete?: (sel: Generation[]) => Promise<string[]>; // 삭제 성공 id 반환
   // 캔버스에서 선택된 '결과 카드'들의 Generation 을 App 에 올려 프롬프트 위 선택바를 띄운다.
   onSelectionGens?: (gens: Generation[]) => void;
@@ -481,6 +482,7 @@ export function SceneBoard({
   onSelectionCompare,
   onVariantAssign,
   variantResolve,
+  variantDraft,
   onVariantDelete,
   onSelectionGens,
   actionRef,
@@ -3814,6 +3816,7 @@ export function SceneBoard({
             onVariantCompare,
             onVariantAssign,
             variantResolve,
+            variantDraft,
           }}
         />
       )}

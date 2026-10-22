@@ -1648,8 +1648,13 @@ export default function App() {
     reload,
     setGens,
   });
+  // 캔버스 폴더 창이 떠 있는가 — 아래 canvasPeek 와 같은 조건(folderSel 은 아래 훅이라 같은 식으로 직접 본다).
+  //  떠 있는 동안 하단 프롬프트·레퍼런스 칸·선택 막대는 그 창(폴더 = 라이브러리 공간)의 것이다: 뒤 캔버스 카드에 묶지 않고, 그 사이의
+  //  생성은 그 카드에 붙지 않는다. 닫으면 보던 카드로 돌아간다(SpotlightPrompt 가 씬 ↔ 라이브러리 초안을 각자 보관·복원 — Jay 2026-10-22).
+  const canvasPeekOpen = !editOpen && filters.tab === "compose" && folderPeek && !!activeScene
+    && !!filters.project_id && filters.project_id !== "none" && !!filters.folder_path;
   // ── Canvas 씬 모드 ── 구성 탭에서 씬 생성 카드 1개를 선택하면 하단 프롬프트가 그 카드에 바인딩된다.
-  const sceneMode = filters.tab === "compose" && !!activeScene && !!sceneBinding;
+  const sceneMode = filters.tab === "compose" && !!activeScene && !!sceneBinding && !canvasPeekOpen;
   // compose 탭 + 활성 씬이면 트레이는 항상 '캔버스 바인딩' 모드 —
   //  · 카드 선택 시: 그 카드의 refs 를 트레이에 로드
   //  · 아무것도 선택 안 함: refs=[] 로 줘서 트레이를 비운다(→ '선택 없음'을 시각적으로 알 수 있게).
@@ -1680,7 +1685,7 @@ export default function App() {
       ? collectSceneGenerationAssignment(sceneBinding.cardId, boundCardsById, boundResolvedEdges)
       : undefined;
   const trayBinding =
-    filters.tab === "compose" && activeScene
+    filters.tab === "compose" && activeScene && !canvasPeekOpen
       ? sceneBinding
         ? {
             key: `${activeScene.id}:${sceneBinding.cardId}`,
@@ -2024,7 +2029,7 @@ export default function App() {
   //  창이 실제로 그려지는 조건과 같은 값으로 건다 — 상태(folderPeek)만 보면 창 없이 화면만 잠길 수 있다.
   //  편집 탭이 열려 있으면 캔버스는 그려지지 않는다 — 창도 같이 빠진다(창을 닫는 effect 는 한 박자 뒤에 돈다).
   //  아래 끌기 훅 때문에 조기 return 위에 둔다(그 뒤에 훅이 있으면 인증 확인이 끝나는 렌더에서 훅 수가 늘어 앱이 멈춘다).
-  const canvasPeek = !editOpen && filters.tab === "compose" && folderPeek && !!activeScene && !!folderSel;
+  const canvasPeek = canvasPeekOpen;
   const behindInert = !!listPeek || canvasPeek;
   // 캔버스 폴더 창에서 생성물을 끄는 동안(peekDragOut) — 창·막은 비키고(app-shell.css body.peek-drag-out) 본문의 inert 를 잠깐 푼다.
   //  놓기는 보드만 받는다(CSS 가 사이드바·툴바는 지나가게 한다). 상단바는 그대로 잠근다. 넣기에 성공했으면 끌기가 끝난 뒤 창을 닫는다
@@ -2679,6 +2684,11 @@ export default function App() {
                   busy: resolveTransfer.busy,
                   pendingCount: resolveTransfer.pendingCount,
                 }}
+                variantDraft={{
+                  finish: (generation) => void finishDraft(generation),
+                  busy: (id) => draftRequests.pending.has(id),
+                  done: (id) => draftRequests.completed.has(id),
+                }}
                 onVariantDelete={deleteReturningIds}
                 onSelectionGens={setSceneSelGens}
                 actionRef={sceneActionRef}
@@ -2907,7 +2917,7 @@ export default function App() {
           count={batchCount}
           onCountChange={setBatchCount}
           canvasTarget={
-            activeScene && sceneBinding
+            activeScene && sceneBinding && !canvasPeek
               ? { sceneId: activeScene.id, cardId: sceneBinding.cardId }
               : null
           }
@@ -2929,8 +2939,9 @@ export default function App() {
               : undefined
           }
           workspace={workspaceContext}
-          // 목록 탭의 폴더 창이 떠 있으면 선택 막대는 창 바닥에만 그린다(같은 막대가 두 곳에 뜨지 않게)
-          topSlot={promptVisible && !listPeek ? selectionBar : undefined}
+          // 폴더 창(목록 탭·캔버스)이 떠 있으면 선택 막대는 창 바닥에만 그린다 — 같은 막대가 두 곳에 뜨거나, 캔버스 폴더 창 아래에 뒤 캔버스
+          //  카드의 막대가 겹쳐 뜨지 않게(Jay 2026-10-22)
+          topSlot={promptVisible && !listPeek && !canvasPeek ? selectionBar : undefined}
           onErrorChange={setPromptError}
           onCreated={onPromptCreated}
           reload={reload}

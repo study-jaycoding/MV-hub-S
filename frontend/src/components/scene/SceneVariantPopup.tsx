@@ -22,6 +22,13 @@ export interface VariantResolveControls {
   pendingCount: number;
 }
 
+// Draft 생성 컨트롤 — App 의 finishDraft·draftRequests 를 SceneBoard 를 거쳐 그대로 전달(캔버스 선택바와 같은 처리).
+export interface VariantDraftControls {
+  finish: (generation: Generation) => void;
+  busy: (generationId: string) => boolean;
+  done: (generationId: string) => boolean;
+}
+
 const noop = () => {};
 
 export function SceneVariantPopup({
@@ -97,6 +104,8 @@ export function SceneVariantPopup({
     ) => void;
     // Resolve 전송(캔버스 선택바와 동일 파이프라인) — 있으면 창의 선택 막대에도 버튼 노출.
     variantResolve?: VariantResolveControls;
+    // Draft 생성(캔버스 선택바와 같은 처리·바쁨/완료 표시) — 있으면 창의 선택 막대에도 Draft 단추(Jay 2026-10-22)
+    variantDraft?: VariantDraftControls;
   };
 }) {
   // 배경 클릭 닫기는 '배경에서 누르기 시작한' 경우만. 창 안에서 시작한 드래그(마퀴·카드 끌기)가
@@ -312,6 +321,9 @@ export function SceneVariantPopup({
               resolveRetryProjectName={actions.variantResolve?.retryProjectName || ""}
               resolveTransferBusy={actions.variantResolve?.busy}
               resolveTransferPendingCount={actions.variantResolve?.pendingCount}
+              onFinishDraft={actions.variantDraft?.finish}
+              draftBusy={selected.some((generation) => !!actions.variantDraft?.busy(generation.id))}
+              draftDone={selected.some((generation) => !!actions.variantDraft?.done(generation.id))}
             />
           </div>
         )}

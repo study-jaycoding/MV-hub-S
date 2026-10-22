@@ -28,7 +28,7 @@ import {
 } from "../lib/workspaceContext";
 import { ManageAccount } from "./ManageAccount";
 import { SettingsPanel } from "./SettingsPanel";
-import { AccountIcon } from "./common/ViewIcons";
+import { AccountIcon, SettingIcon, SignOutIcon } from "./common/ViewIcons";
 import { manageApi } from "../lib/manageApi";
 import { formatCredits } from "../lib/formatCredits";
 import { hasPersonalQuota, quotaUncertainty, showsWorkspacePool, useMyCreditQuota } from "../lib/myCreditQuota";
@@ -42,6 +42,8 @@ const MONTHLY_CREDIT_MAX = 200000;
 const FIXED_MAX_WORKSPACE = "MILLIONVOLT";
 // 점 세그먼트 게이지(힉스필드 스타일)의 총 칸 수.
 const DOT_COUNT = 20;
+// 메뉴 키보드 이동·첫 초점의 대상 — 단추 + 단추처럼 누르는 칸(머리 = 내 계정, 잔액 = 대시보드: 안에 블록·게이지가 있어 div 로 둔다)
+const MENU_ITEMS = 'button:not(:disabled), [role="button"][tabindex="0"]';
 
 export function AccountMenu({
   provider,
@@ -55,6 +57,7 @@ export function AccountMenu({
   localHub,
   manageEnabled,
   onOpenMcp,
+  onOpenManage,
 }: {
   provider: ProviderIdentity | null;
   account?: Account | null;
@@ -67,12 +70,21 @@ export function AccountMenu({
   localHub?: boolean; // 로컬 허브(MV_agent, AUTH off) = 내 CLI 가 이 PC 에 있음 → 워크스페이스 전환 가능
   manageEnabled?: boolean; // PM 관리 기능 on — 꺼진 서버엔 예산(planning) 조회를 아예 안 보낸다
   onOpenMcp?: () => void;
+  onOpenManage?: () => void; // PM 대시보드(프로젝트 관리 창) — 그 창을 쓸 수 있는 계정만 받는다. '워크스페이스 잔액'을 누르면 연다
 }) {
   const [list, setList] = useState<Workspace[]>([]);
   const [reported, setReported] = useState<ReportedHfStatus | null>(null);
   const [open, setOpen] = useState(false);
   const [manageOpen, setManageOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const openManageAccount = () => {
+    setOpen(false);
+    setManageOpen(true);
+  };
+  const openDashboard = () => {
+    setOpen(false);
+    onOpenManage?.();
+  };
   const [healthCliVersion, setHealthCliVersion] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const avatarRef = useRef<HTMLButtonElement>(null);
@@ -187,7 +199,7 @@ export function AccountMenu({
   }, [open]);
   const menuReady = open && popPos !== null;
   useLayoutEffect(() => {
-    if (menuReady) popRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+    if (menuReady) popRef.current?.querySelector<HTMLElement>(MENU_ITEMS)?.focus();
   }, [menuReady]);
   // 메뉴를 열 때마다 워크스페이스/보고값을 새로고침 — 에이전트 동기화·계정상태 보고가 나중에
   // 끝나도 즉시 반영된다(예전엔 마운트 때 한 번만 받아 '미연결'이 옛 상태로 박혀 있었다).
@@ -347,9 +359,9 @@ export function AccountMenu({
         <div className="acct-pop" ref={popRef} style={{ top: popPos.top, right: popPos.right, maxHeight: `calc(100vh - ${popPos.top + 8}px)` }}
           onKeyDown={(event) => {
             if (!["Tab", "ArrowDown", "ArrowUp"].includes(event.key)) return;
-            const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+            const items = [...event.currentTarget.querySelectorAll<HTMLElement>(MENU_ITEMS)];
             if (!items.length) return;
-            const at = items.indexOf(document.activeElement as HTMLButtonElement);
+            const at = items.indexOf(document.activeElement as HTMLElement);
             if (event.key === "Tab") {
               if (event.shiftKey ? at === 0 : at === items.length - 1) {
                 // 포털의 DOM 순서 대신 아바타를 기준으로 앞뒤 화면 탐색을 이어 간다.
@@ -362,12 +374,24 @@ export function AccountMenu({
             event.stopPropagation();
             items[(at + (event.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
           }}>
-          <div className="acct-head">
+          {/* 머리(아바타·이름·이메일·역할)를 누르면 '내 계정' 창 — 따로 있던 Manage Account 줄을 대신한다(Jay 2026-10-22) */}
+          <div
+            className="acct-head acct-head-btn"
+            role="button"
+            tabIndex={0}
+            title="내 계정"
+            onClick={openManageAccount}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter" && e.key !== " ") return;
+              e.preventDefault();
+              openManageAccount();
+            }}
+          >
             <span className={"acct-ring acct-ring-lg" + ringOn} style={ringStyle}>
               <span className="acct-av-lg">{initial}</span>
             </span>
             <div className="acct-id">
-              <div className="acct-name">{displayName}</div>
+              <div className="acct-name"><AccountIcon />{displayName}</div>
               {/* 이메일은 한 줄(잘림 OK), 역할은 별도 줄에 여러 줄 허용 → "Admin/Product Manager" 안 잘림 */}
               <div className="acct-sub">
                 {account
@@ -457,7 +481,23 @@ export function AccountMenu({
           {/* 잔여 크레딧(힉스필드 스타일) — "Credits  N left" + 점 세그먼트 게이지(남은 비율).
               로그인 계정=내 에이전트 보고값(검증), 비로그인=라이브 활성 워크스페이스 */}
           {(quotaWorkspaceId || activeCredits != null && creditPct != null) && (
-            <div className="acct-credits">
+            // 누르면 PM 대시보드(프로젝트 관리 창) — 그 창을 쓸 수 있는 계정만(onOpenManage 를 받은 때만) 눌린다(Jay 2026-10-22)
+            <div
+              className={"acct-credits" + (onOpenManage ? " acct-credits-btn" : "")}
+              {...(onOpenManage
+                ? {
+                    role: "button",
+                    tabIndex: 0,
+                    title: "대시보드 열기",
+                    onClick: openDashboard,
+                    onKeyDown: (e: React.KeyboardEvent) => {
+                      if (e.key !== "Enter" && e.key !== " ") return;
+                      e.preventDefault();
+                      openDashboard();
+                    },
+                  }
+                : {})}
+            >
               <div className="acct-credits-top">
                 <span className="acct-credits-label">{poolQuota ? "워크스페이스 잔액" : quotaWorkspaceId ? "내 크레딧" : "Credits"}</span>
                 <span className="acct-credits-left" title={uncertainty || undefined}>
@@ -508,6 +548,7 @@ export function AccountMenu({
 
           {/* 'HF 생성물 체크'·'HF 삭제물 체크'는 설정 패널로 이동(중복 제거). */}
           <div className="acct-sep" />
+          {/* '내 계정'은 위 머리를 눌러 연다(Manage Account 줄 없앰). 아래 두 줄의 아이콘은 머리와 같은 14px 선 그림 — 글자 시작점이 같다(Jay 2026-10-22 B안) */}
           <button
             className="acct-action"
             onClick={() => {
@@ -515,16 +556,7 @@ export function AccountMenu({
               setSettingsOpen(true);
             }}
           >
-            {t("⚙ Hub Setting")}
-          </button>
-          <button
-            className="acct-action"
-            onClick={() => {
-              setOpen(false);
-              setManageOpen(true);
-            }}
-          >
-            <AccountIcon />Manage Account
+            <SettingIcon />{t("Setting")}
           </button>
           {onLogout && (
             <button
@@ -534,7 +566,7 @@ export function AccountMenu({
                 onLogout();
               }}
             >
-              ⏏ Sign Out
+              <SignOutIcon />Sign Out
             </button>
           )}
         </div>,

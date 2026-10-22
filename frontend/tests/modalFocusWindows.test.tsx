@@ -332,7 +332,9 @@ describe("상단바", () => {
     const avatar = host.querySelector<HTMLElement>(".acct-avatar-btn")!;
     act(() => { avatar.focus(); avatar.click(); });
     await settle();
-    const items = [...document.querySelectorAll<HTMLButtonElement>(".acct-pop button")];
+    // 항목 = 단추 + 단추처럼 누르는 칸(머리 = 내 계정 — Jay 10-22). 첫 초점은 머리.
+    const items = [...document.querySelectorAll<HTMLElement>('.acct-pop button:not(:disabled), .acct-pop [role="button"][tabindex="0"]')];
+    expect(items[0].classList.contains("acct-head-btn")).toBe(true);
     expect(active()).toBe(items[0]);
     key("ArrowDown"); expect(active()).toBe(items[1]);
     key("ArrowUp"); expect(active()).toBe(items[0]);

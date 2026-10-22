@@ -228,6 +228,9 @@
   box-shadow: 0 16px 44px rgba(0,0,0,0.55);
 }
 .acct-head { display: flex; align-items: center; gap: 10px; padding: 8px 8px 12px; }
+/* 머리를 누르면 '내 계정' 창(Jay 2026-10-22) — 메뉴 줄처럼 호버·초점이 보인다 */
+.acct-head-btn { border-radius: 10px; cursor: pointer; }
+.acct-head-btn:hover, .acct-head-btn:focus-visible { background: rgba(255,255,255,0.07); outline: none; }
 .acct-av-lg {
   width: 40px; height: 40px; border-radius: 50%; flex: none;
   background: var(--grad); color: var(--accent-ink); font-weight: 800; font-size: 16px;
@@ -332,6 +335,9 @@
 .acct-credits {
   padding: 9px; margin-top: 4px; border-radius: 8px; background: rgba(255,255,255,0.03);
 }
+/* 누르면 PM 대시보드(그 창을 쓸 수 있는 계정만, Jay 2026-10-22) */
+.acct-credits-btn { cursor: pointer; }
+.acct-credits-btn:hover, .acct-credits-btn:focus-visible { background: rgba(255,255,255,0.07); outline: none; }
 .acct-credits-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
 .acct-credits-label { font-size: 12px; color: var(--muted); }
 .acct-credits-left { font-size: 13px; font-weight: 700; color: var(--text); }
