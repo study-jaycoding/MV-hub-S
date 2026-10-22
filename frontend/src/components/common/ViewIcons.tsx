@@ -75,6 +75,16 @@ export function AccountIcon() {
     </svg>
   );
 }
+// 프롬프트(입력칸 + 커서) — Host 상태줄 끝의 프롬프트 열기·닫기 칸(Jay 2026-10-22).
+export function PromptIcon() {
+  return (
+    <svg {...TOGGLE_ICON} width={15} height={15} aria-hidden="true">
+      <rect x="3" y="5" width="18" height="14" rx="3.5" />
+      <path d="M8 10v4" />
+      <path d="M12 12h5" />
+    </svg>
+  );
+}
 // 닫기 — 글자 ✕·× 는 1.3~1.5px 아래였다(2026-09-22 실측). 크기는 옛 글자의 잉크 높이에 맞춘 값.
 export function CloseIcon({ size = 20 }: { size?: number }) {
   return (

@@ -147,6 +147,8 @@ interface Props {
   inCompose?: boolean;
   // Ctrl+K 표시 여부. false 면 도크 안쪽(패널·오류)만 감추고 상태줄은 우측 하단에 남긴다.
   visible?: boolean;
+  // 상태줄 끝 칸으로 위 표시 여부를 뒤집는다(Ctrl+K 와 같은 상태, Jay 2026-10-22). 없으면 칸을 그리지 않는다(편집 탭).
+  onTogglePrompt?: () => void;
   // 폴더 창이 뜬 동안 켠다 — 상태 줄(Host 콘솔 단추·공간 선택)과 그 줄이 그리는 떠 있는 창이 키보드로도 닿지 않게 된다.
   //  마우스는 app-shell.css(`body:has(.folder-peek) …`)가 막지만 Tab·Enter 로는 닿아 폴더 창 위로 콘솔이 떴다.
   statusInert?: boolean;
@@ -197,6 +199,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   trayBinding,
   inCompose = false,
   visible = true,
+  onTogglePrompt,
   statusInert = false,
   onTrayBindingRefsChange,
   onTrayBindingPromptChange,
@@ -1647,6 +1650,8 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
             account={account}
             workspace={workspace}
             onCheckAccount={checkAccount}
+            promptOpen={visible}
+            onTogglePrompt={onTogglePrompt}
           />
         </div>
       </div>

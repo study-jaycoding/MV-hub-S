@@ -6,7 +6,8 @@ import type { WorkspaceContext } from "../../types";
 import { isAppWindow } from "../../lib/appWindow";
 import { formatCredits } from "../../lib/formatCredits";
 import type { ConsoleSummary } from "../../types";
-import { CloseIcon } from "../common/ViewIcons";
+import { getBinding, prettyBinding } from "../../lib/shortcuts";
+import { CloseIcon, PromptIcon } from "../common/ViewIcons";
 
 const MODE_LABEL: Record<string, string> = {
   release: "릴리스 설치본",
@@ -56,13 +57,19 @@ export function ServerConsolePanel({
   account,
   workspace,
   onCheckAccount,
+  promptOpen = true,
+  onTogglePrompt,
 }: {
   hubOk: boolean | null; // 허브(로컬 서버) 응답 여부 — null=확인 전
   agentOn: boolean | null; // 생성 에이전트 롱폴 연결 여부
   account: AccountInfo | null;
   workspace?: WorkspaceContext; // 지금 쓰는 워크스페이스 — 상태줄 가운데에 이름을 보여 준다(Jay)
   onCheckAccount: () => void; // '연결됨' 클릭 = 크레딧 수동 확인(종전 동작)
+  promptOpen?: boolean;
+  // 상태줄 끝 칸 = Ctrl+K 와 같은 프롬프트 열기·닫기(Jay 2026-10-22). 없으면(편집 탭 — 프롬프트 없음) 칸도 없다.
+  onTogglePrompt?: () => void;
 }) {
+  const promptToggleLabel = `프롬프트 ${promptOpen ? "접기" : "열기"} (${prettyBinding(getBinding("focusPrompt"))})`;
   // 상태줄에 보여줄 워크스페이스 이름 — 개인 공간은 '개인', 아직 못 정했으면 빈 값.
   const workspaceLabel =
     workspace?.scope === "personal" ? "개인" : workspace?.scope === "team" ? workspace.name || "팀 공간" : "";
@@ -292,6 +299,11 @@ export function ServerConsolePanel({
               {account.email}
             </span>
           </>
+        )}
+        {onTogglePrompt && (
+          <button type="button" className="sl-status-toggle" title={promptToggleLabel} aria-label={promptToggleLabel} onClick={onTogglePrompt}>
+            <PromptIcon />
+          </button>
         )}
       </div>
     </>

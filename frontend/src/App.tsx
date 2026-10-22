@@ -950,6 +950,7 @@ export default function App() {
   const {
     composerExpanded,
     promptVisible,
+    setPromptVisible,
     toggleComposerExpanded,
   } = usePromptDock(LS, editOpenRef);
   usePageSelectAllGuard(); // 입력칸 밖의 Ctrl+A 가 화면 글자를 긁지 않게(lib/keyGate)
@@ -2839,6 +2840,7 @@ export default function App() {
         <SpotlightPrompt
           ref={spotlightPromptRef}
           visible={promptVisible && !editOpen} // 편집 탭에는 프롬프트가 없다(상태줄은 남는다)
+          onTogglePrompt={editOpen ? undefined : () => setPromptVisible(!promptVisible)}
           // 폴더 창(캔버스·목록 탭)이 뜬 동안 상태 줄은 키보드로도 닿지 않는다 — 마우스는 app-shell.css 가 막는다(규칙 16)
           statusInert={peekOpen}
           expanded={composerExpanded || sceneMode}
