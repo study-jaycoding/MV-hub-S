@@ -169,7 +169,7 @@ export function AccountMenu({
   }, []);
   // 팝업은 body 로 옮겨 그린다(아래 createPortal) — 상단바 안에 있으면 모달 막에 덮인다.
   //  그래서 바깥클릭 판정에 팝업 자신도 함께 넘긴다. 안 그러면 메뉴 안을 눌러도 닫힌다.
-  useOutsideMouseDown(ref, closeMenu, open, popRef);
+  useOutsideMouseDown(ref, closeMenu, open, popRef, true);
   // 캡처 단계에서 Esc 를 소비해 뒤의 라이브러리 전역 Esc(선택 해제)까지 전달되지 않게 한다.
   useEscapeClose(closeMenuOnEscape, open, true, true);
   // 아바타 버튼 기준 위치. 상단바는 앱 바깥 틀(.app)의 flex 칸이라 본문만 스크롤되고 제자리에
@@ -184,6 +184,10 @@ export function AccountMenu({
     window.addEventListener("resize", place);
     return () => window.removeEventListener("resize", place);
   }, [open]);
+  const menuReady = open && popPos !== null;
+  useLayoutEffect(() => {
+    if (menuReady) popRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+  }, [menuReady]);
   // 메뉴를 열 때마다 워크스페이스/보고값을 새로고침 — 에이전트 동기화·계정상태 보고가 나중에
   // 끝나도 즉시 반영된다(예전엔 마운트 때 한 번만 받아 '미연결'이 옛 상태로 박혀 있었다).
   useEffect(() => {
@@ -339,7 +343,24 @@ export function AccountMenu({
       {open && popPos && createPortal(
         // 높이는 아바타 아래에 남은 화면까지만 — 워크스페이스가 많으면 메뉴가 화면보다 길어져, 아래의 설정·계정 관리·로그아웃에 닿을 수
         //  없었다(화면에 고정된 메뉴라 페이지 스크롤로도 안 내려간다 — 조작 규칙 50). 넘치면 메뉴 안에서 스크롤한다(app-shell.css).
-        <div className="acct-pop" ref={popRef} style={{ top: popPos.top, right: popPos.right, maxHeight: `calc(100vh - ${popPos.top + 8}px)` }}>
+        <div className="acct-pop" ref={popRef} style={{ top: popPos.top, right: popPos.right, maxHeight: `calc(100vh - ${popPos.top + 8}px)` }}
+          onKeyDown={(event) => {
+            if (!["Tab", "ArrowDown", "ArrowUp"].includes(event.key)) return;
+            const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+            if (!items.length) return;
+            const at = items.indexOf(document.activeElement as HTMLButtonElement);
+            if (event.key === "Tab") {
+              if (event.shiftKey ? at === 0 : at === items.length - 1) {
+                // 포털의 DOM 순서 대신 아바타를 기준으로 앞뒤 화면 탐색을 이어 간다.
+                closeMenuOnEscape();
+                if (event.shiftKey) event.preventDefault();
+              }
+              return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+            items[(at + (event.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
+          }}>
           <div className="acct-head">
             <span className={"acct-ring acct-ring-lg" + ringOn} style={ringStyle}>
               <span className="acct-av-lg">{initial}</span>

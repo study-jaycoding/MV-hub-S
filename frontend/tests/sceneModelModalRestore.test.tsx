@@ -51,7 +51,7 @@ let root: Root;
 let saved: Record<string, unknown>[] = [];
 
 /** 모듈을 새로 들여 모달을 띄운다(모듈 전역 캐시를 비우기 위해). */
-async function mount(initial: Record<string, unknown> | undefined) {
+async function mount(initial: Record<string, unknown> | undefined, onClose = () => {}) {
   vi.resetModules();
   const { SceneModelModal } = await import("../src/components/scene/SceneModelModal");
   act(() => {
@@ -59,7 +59,7 @@ async function mount(initial: Record<string, unknown> | undefined) {
       <SceneModelModal
         initial={initial as never}
         onSave={(cfg) => saved.push(cfg as Record<string, unknown>)}
-        onClose={() => {}}
+        onClose={onClose}
       />,
     );
   });
@@ -124,6 +124,24 @@ afterEach(() => {
 });
 
 describe("모델 키로 타입을 판정한다", () => {
+  it("모델 목록의 Escape는 모델 설정창을 남기고 열기 버튼으로 초점을 돌린다", async () => {
+    const close = vi.fn();
+    await mount({ model: "seedance_2_5", params: {} }, close);
+    const trigger = chip("Seedance 2.5");
+    act(() => trigger.focus()); click(trigger);
+    const item = container.querySelector<HTMLElement>(".sl-dropdown .sl-dd-item")!;
+    act(() => item.focus());
+    act(() => item.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    await settle();
+    expect(container.querySelector(".sl-dropdown")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(shownModel()).toContain("Seedance 2.5");
+    expect(saved).toEqual([]);
+    expect(close).not.toHaveBeenCalled();
+    act(() => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it("한쪽 목록에만 있을 때만 확정한다", async () => {
     const { inferModelType } = await import("../src/lib/useModels");
     expect(inferModelType("seedance_2_0_mini")).toBe("video");

@@ -1,4 +1,5 @@
-import type { Dispatch, SetStateAction } from "react";
+import { useRef, type Dispatch, type SetStateAction } from "react";
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import type { MediaType, ModelInfo, ModelParam } from "../../types";
 import { effectiveDefault, numericRange, paramGateAllows } from "../../lib/useModels";
 import {
@@ -88,6 +89,12 @@ export function SpotlightOptionsBar({
   open,
   setOpen,
 }: Props) {
+  const modelButtonRef = useRef<HTMLButtonElement>(null);
+  // 두 호출 화면에서 같은 Esc 겹을 사용하고, 바깥 클릭에는 초점을 돌리지 않는다.
+  useEscapeClose(() => {
+    setOpen(null);
+    modelButtonRef.current?.focus({ preventScroll: true });
+  }, open === "model", true, true);
   // 조건부 게이트 — 현재 옵션 조합에서 허용 안 되는 파라미터는 표시하지 않는다
   // (예: extension_mode 는 mode=video_extension 일 때만 — 다른 모드에 실으면 CLI 거부).
   const visibleTunable = tunable.filter((p) => paramGateAllows(model, p.name, optionValues));
@@ -125,6 +132,8 @@ export function SpotlightOptionsBar({
 
       <div className="sl-chip-wrap">
         <button
+          ref={modelButtonRef}
+          aria-expanded={open === "model"}
           className={"sl-chip" + (open === "model" ? " active" : "") + (modelBlocked ? " blocked" : "")}
           title={modelBlocked ? blockedNote || "이 모델은 이 그룹에서 쓸 수 없습니다" : undefined}
           onClick={() => setOpen(open === "model" ? null : "model")}

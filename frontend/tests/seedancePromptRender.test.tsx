@@ -44,6 +44,29 @@ async function addReference() {
 }
 
 describe("Seedance 2.5 프롬프트의 실제 모드 표시", () => {
+  it("모델 목록의 Escape는 선택을 바꾸지 않고 열기 버튼으로 초점을 돌린다", async () => {
+    view = await mountPrompt({ trayBinding: binding("t2v") });
+    const trigger = required(view.container, ".sl-chip-label").closest("button")!;
+    const label = trigger.textContent;
+    act(() => trigger.focus()); click(trigger); await settle();
+    const item = required(view.container, ".sl-dropdown .sl-dd-item");
+    act(() => item.focus());
+    act(() => item.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    await settle();
+    expect(view.container.querySelector(".sl-dropdown")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(trigger.textContent).toBe(label);
+    // 바깥 누름은 누른 컨트롤의 초점을 유지한다.
+    click(trigger); await settle();
+    const outside = document.createElement("button"); document.body.append(outside);
+    try {
+      act(() => { outside.dispatchEvent(new Event("pointerdown", { bubbles: true })); outside.focus(); });
+      await settle();
+      expect(view.container.querySelector(".sl-dropdown")).toBeNull();
+      expect(document.activeElement).toBe(outside);
+    } finally { outside.remove(); }
+  });
+
   it("트레이 추가/제거와 수동 t2v 선택을 따라 자동으로 맞춘다", async () => {
     view = await mountPrompt({ trayBinding: binding("omni_reference") });
     expectShownMode(view.container, "t2v");

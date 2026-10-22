@@ -324,6 +324,28 @@ describe("매체에 초점이 있을 때의 Esc — 앱은 양보하지 않는�
 
 // 폴더 창이 뜬 동안 App 이 상단바에 inert 를 넘긴다(tests/resolveSelectionRender) — 여기서는 상단바가 그것을 머리 전체에 거는지만 본다.
 describe("상단바", () => {
+  it("계정 메뉴는 열릴 때 내부에 초점을 두고 방향키·Escape·Tab 이탈을 처리한다", async () => {
+    act(() => root.render(<TopBar filters={{ tab: "my" } as never} onTab={noop} onSearch={noop} onWorkspaceSwitched={noop}
+      workspaceContext={{ scope: "personal", id: null, name: null }} onWorkspaceContextChange={noop} onImported={noop}
+      onOpenAssets={noop} onOpenAdmin={noop} hasUnreadComments={false} onOpenNotificationComment={noop} onNotificationsChanged={noop} />));
+    const avatar = host.querySelector<HTMLElement>(".acct-avatar-btn")!;
+    act(() => { avatar.focus(); avatar.click(); });
+    await settle();
+    const items = [...document.querySelectorAll<HTMLButtonElement>(".acct-pop button")];
+    expect(active()).toBe(items[0]);
+    key("ArrowDown"); expect(active()).toBe(items[1]);
+    key("ArrowUp"); expect(active()).toBe(items[0]);
+    key("Escape");
+    expect(document.querySelector(".acct-pop")).toBeNull();
+    expect(active()).toBe(avatar);
+    act(() => avatar.click()); await settle();
+    expect(document.querySelector(".acct-pop")?.contains(active())).toBe(true);
+    // 포털 앞의 마지막 상단바 컨트롤로 Shift+Tab: 메뉴 밖 초점을 빼앗지 않는다.
+    tab(true);
+    expect(document.querySelector(".acct-pop")).toBeNull();
+    expect(host.contains(active())).toBe(true);
+  });
+
   it.each(["닫기", "Escape"])("설정에서 MCP를 연 뒤 %s로 닫으면 계정 아바타로 초점을 돌린다", async (close) => {
     const onOpenMcp = vi.fn();
     function Screen() {
