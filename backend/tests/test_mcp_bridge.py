@@ -378,7 +378,7 @@ def test_setup_before_pair_only_returns_paths_and_existing_files(local, monkeypa
     assert response.status_code == 200, response.text
     assert response.json() == {
         "url": "http://127.0.0.1:8012", "adapter": str(expected_adapter), "adapter_exists": True,
-        "python": str(expected_python), "python_exists": False, "python_args": [],
+        "adapter_version": None, "python": str(expected_python), "python_exists": False, "python_args": [],
     }
     assert mcp.broker.client is None and mcp.broker.requests == {}
     # An inert file is enough: setup must inspect existence, never execute Python.
@@ -388,7 +388,7 @@ def test_setup_before_pair_only_returns_paths_and_existing_files(local, monkeypa
     before = copy.deepcopy(mcp.broker.client)
     response = client.get("/api/mcp/app/setup", headers=APP_HEADERS)
     assert response.status_code == 200 and response.json()["python_exists"] is True
-    assert set(response.json()) == {"url", "adapter", "adapter_exists", "python", "python_exists", "python_args"}
+    assert set(response.json()) == {"url", "adapter", "adapter_exists", "adapter_version", "python", "python_exists", "python_args"}
     assert response.json()["python"] == str(expected_python) and response.json()["python_args"] == []
     assert SECRET not in response.text and TAB not in response.text
     assert connected["pair_code"] not in response.text
@@ -419,9 +419,31 @@ def test_setup_complete_bundle_works_without_localappdata(local, monkeypatch, tm
     assert response.status_code == 200, response.text
     assert response.json() == {
         "url": "http://127.0.0.1:8012", "adapter": str(adapter), "adapter_exists": True,
-        "python": str(python), "python_exists": True, "python_args": ["-I", "-S"],
+        "adapter_version": None, "python": str(python), "python_exists": True, "python_args": ["-I", "-S"],
     }
     assert mcp.broker.client is None
+
+
+def test_setup_reports_adapter_version_without_running_it(local, monkeypatch, tmp_path):
+    client, _ = local
+    root = tmp_path / "app"
+    adapter = root / "tools" / "mcp_adapter" / "server.py"
+    adapter.parent.mkdir(parents=True)
+    # 실행되면 시험이 깨지는 줄을 앞에 둔다 — 버전은 글자로만 읽어야 한다.
+    adapter.write_bytes(b'raise SystemExit("must not run")\r\nADAPTER_VERSION = "2026.10.16.5"\r\n')
+    monkeypatch.setattr(mcp, "_ROOT", root)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    response = client.get("/api/mcp/app/setup", headers=APP_HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json()["adapter_version"] == "2026.10.16.5"
+    adapter.unlink()
+    assert client.get("/api/mcp/app/setup", headers=APP_HEADERS).json()["adapter_version"] is None
+
+
+def test_real_adapter_version_line_is_readable():
+    # 어댑터의 ADAPTER_VERSION 줄 모양이 바뀌면 내 계정 창의 'MCP 버전' 이 조용히 사라진다.
+    real = mcp._ROOT / "tools" / "mcp_adapter" / "server.py"
+    assert mcp._adapter_version(real)
 
 
 @pytest.mark.parametrize("missing", ["python", "adapter", "sdk", "runtime"])

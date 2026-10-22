@@ -9,6 +9,7 @@ import {
   roleLabelList,
   type ProviderIdentity,
 } from "../lib/accountIdentity";
+import { jsonFetch } from "../lib/http";
 import { useModalFocus } from "../lib/keyGate";
 import { getReleaseUpdateStatus } from "../lib/releaseUpdate";
 import { useEscapeClose } from "../lib/useEscapeClose";
@@ -48,11 +49,19 @@ export function ManageAccount({
   // release-update status 에 이미 실려 오므로 패널이 열릴 때 1회만 조회한다.
   // 서버 원격 접속(403)·개발 실행(빈 값)은 보여줄 버전이 없어 행 자체를 숨긴다.
   const [appVersion, setAppVersion] = useState("");
+  // MCP 버전 — 이 앱 폴더의 MCP 어댑터(ADAPTER_VERSION). MCP 연결 창의 '처음 연결 설정'과 같은 조회라
+  //  이 PC 앱에서만 답한다 — 원격 접속·어댑터 없음이면 줄을 숨긴다(앱 버전과 같다).
+  const [mcpVersion, setMcpVersion] = useState("");
   useEffect(() => {
     let alive = true;
     getReleaseUpdateStatus()
       .then((s) => {
         if (alive && s.current_version) setAppVersion(s.current_version);
+      })
+      .catch(() => {});
+    jsonFetch<{ adapter_version?: string | null }>("/api/mcp/app/setup", { headers: { "X-MVHub-Tab": crypto.randomUUID() } })
+      .then((s) => {
+        if (alive && s.adapter_version) setMcpVersion(s.adapter_version);
       })
       .catch(() => {});
     return () => {
@@ -209,6 +218,7 @@ export function ManageAccount({
             />
             <Row label="계정 식별자" value={accountUid(account, provider)} mono />
             <Row label="CLI 버전" value={cliVersion || "—"} mono />
+            {mcpVersion && <Row label="MCP 버전" value={mcpVersion} mono />}
             {appVersion && <Row label="앱 버전" value={appVersion} mono />}
           </section>
         </div>

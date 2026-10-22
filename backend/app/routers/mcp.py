@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -20,6 +21,16 @@ from ..services.request_guards import require_loopback_browser_request
 router = APIRouter(prefix="/api/mcp", tags=["mcp"])
 broker = McpBroker()
 _ROOT = Path(__file__).resolve().parents[3]
+_ADAPTER_VERSION = re.compile(rb'^ADAPTER_VERSION = "([0-9A-Za-z.+-]{1,40})"\s*$', re.M)
+
+
+def _adapter_version(adapter: Path) -> str | None:
+    # 글자로만 읽는다 — 어댑터를 import 하면 MCP SDK 를 불러온다(내 계정 창의 'MCP 버전').
+    try:
+        match = _ADAPTER_VERSION.search(adapter.read_bytes())
+    except OSError:
+        return None
+    return match.group(1).decode("ascii") if match else None
 
 
 def _translate(fn, *args, **kwargs):
@@ -142,6 +153,7 @@ async def setup(request: Request, identity=Depends(app_headers)):
         local = os.environ.get("LOCALAPPDATA")
         python = Path(local) / "MVHub-MCP" / "venv" / "Scripts" / "python.exe" if local else None
     return {"url": f"http://{host}:{server[1]}", "adapter": str(adapter), "adapter_exists": adapter.is_file(),
+            "adapter_version": _adapter_version(adapter),
             "python": str(python) if python else None, "python_exists": bool(python and python.is_file()),
             "python_args": python_args}
 
