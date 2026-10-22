@@ -1,7 +1,7 @@
 // 모델 설정 저장 → 카드가 설정 줄을 모두 담게 늘어나는가(Jay 2026-10-22) — 실제 SceneBoard 로 본다(저장·Undo 는 실제 코드).
 //  jsdom 은 레이아웃이 없어 높이만 흉내 낸다: 카드 = style.height, 본문 = 카드 − 테두리 4, 내용 = 머리 53 + 줄마다 19.
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SceneBoard } from "../src/components/scene/SceneBoard";
@@ -47,9 +47,22 @@ beforeEach(async () => {
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+// App 처럼 저장받은 배열을 그대로 씬에 넣어 다시 내려준다(writeBoardSnapshot → patchSceneById). 콜백을 비워 두면
+//  '돌려받은 씬이 방금 늘린 높이를 덮는' 실제 앱의 결함이 안 보인다(Jay 2026-10-22 화면에서만 났다).
+function Host({ initial }: { initial: Scene }) {
+  const [scene, setScene] = useState(initial);
+  return (
+    <SceneBoard
+      scene={scene}
+      onChange={(patch) => {
+        if (patch.cards) saved = patch.cards;
+        setScene((current) => ({ ...current, ...patch }));
+      }}
+    />
+  );
+}
 const open = (card: SceneCard) => act(async () => {
-  const scene = { id: "model-fit", name: "S", created_at: 0, edges: [], cards: [card] } as Scene;
-  root.render(<SceneBoard scene={scene} onChange={(patch) => { if (patch.cards) saved = patch.cards; }} />);
+  root.render(<Host initial={{ id: "model-fit", name: "S", created_at: 0, edges: [], cards: [card] } as Scene} />);
 });
 const cardEl = () => host.querySelector<HTMLElement>('.scene-card[data-id="m"]')!;
 const saveSettings = async (params: SceneModelCfg["params"]) => {

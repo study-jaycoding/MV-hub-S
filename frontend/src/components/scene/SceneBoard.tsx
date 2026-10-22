@@ -1062,8 +1062,10 @@ export function SceneBoard({
   const canvasTargetRef = useRef(canvasSession.target);
   canvasTargetRef.current = canvasSession.target;
   // 모델 설정을 저장하면 설정 줄이 모두 보이게 카드를 늘린다(Jay 2026-10-22) — 새 설정이 그려진 뒤 넘친 만큼 잰다. 줄이지는 않는다.
+  //  useLayoutEffect 금지: 그 단계에서 늘리면 뒤이어 도는 씬 수신(useCanvasSession — App 이 돌려준 '설정만 바뀐' 씬)이
+  //  늘린 카드를 남의 변경으로 보고 되돌린다. 위 canvasSession 의 수신 effect 뒤에 돌도록 여기(그 아래)의 useEffect 로 둔다.
   const fitModelIdRef = useRef<string | null>(null);
-  useLayoutEffect(() => {
+  useEffect(() => {
     const id = fitModelIdRef.current;
     if (!id) return;
     fitModelIdRef.current = null;
