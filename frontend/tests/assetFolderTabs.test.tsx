@@ -335,10 +335,11 @@ it("폴더 보기 — 방향키로 카드를 옮겨 고르고(초점도) Enter �
   expect(chosen()).toEqual([]);
   await key({ key: "ArrowRight", altKey: true }); // Alt+방향키는 브라우저의 뒤로/앞으로
   expect(chosen()).toEqual([]);
-  await key({ key: "ArrowRight" });
+  await key({ key: "ArrowRight" }); // 고른 것은 풀렸지만 초점은 CH 에 남아 있다 — 초점 카드에서 출발해 BG(Codex 검토 3 K2)
+  expect(chosen()).toEqual(["assets/BG"]);
   (document.activeElement as HTMLElement).blur(); // 초점이 BODY 여도 Enter 는 고른 카드를 연다
   await key({ key: "Enter" });
-  expect(localStorage.getItem("ch.assets.dir")).toBe("assets/CH");
+  expect(localStorage.getItem("ch.assets.dir")).toBe("assets/BG");
 });
 
 it("폴더 표 보기도 같은 키 — ↓↑ 로 줄을 옮겨 고르고(초점도) Enter 로 폴더는 열고 파일은 크게 본다", async () => {
@@ -363,6 +364,11 @@ it("폴더 표 보기도 같은 키 — ↓↑ 로 줄을 옮겨 고르고(초�
   await key("ArrowUp");
   await key("Enter");
   expect(onEnter).toHaveBeenCalledExactlyOnceWith("assets/BG");
+  // Codex 검토 3 K2: Tab 으로 초점을 옮긴 줄이 있으면 방향키는 그 줄에서 출발한다(이전 선택이 아니라)
+  await key("ArrowUp"); // 선택 = CH
+  await act(async () => host.querySelector<HTMLElement>('tr[data-file-path="assets/x.png"]')!.focus()); // Tab 으로 맨 아래 줄에
+  await key("ArrowUp");
+  expect(row()).toBe("assets/BG"); // 전엔 선택(CH) 기준이라 맨 위에 머물렀다
 });
 
 const backspace = async (target: EventTarget = document.body, options: KeyboardEventInit = {}) => {

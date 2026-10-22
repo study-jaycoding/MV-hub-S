@@ -60,7 +60,11 @@ export function AssetFolderGrid(props: AssetFolderGridProps) {
     if (!grid) return;
     const target = e.target as HTMLElement | null;
     const onControl = !!target?.closest?.("button, tr[tabindex]") && grid.contains(target);
-    const at = items.findIndex((item) => item.path === selected);
+    // 출발 카드 = 초점이 놓인 카드·줄(Tab 으로 옮겼을 수 있다), 없으면 고른 것(Codex 검토 3 K2 — 공유 탭 컷 카드와 같은 순서)
+    const focusedCard = (document.activeElement as HTMLElement | null)?.closest?.<HTMLElement>("[data-folder-path], [data-file-path]");
+    const focusedPath = focusedCard && grid.contains(focusedCard)
+      ? focusedCard.getAttribute("data-folder-path") ?? focusedCard.getAttribute("data-file-path") : null;
+    const at = items.findIndex((item) => item.path === (focusedPath ?? selected));
     if (e.key.startsWith("Arrow")) {
       if (e.altKey) return; // Alt+←/→ 는 브라우저의 뒤로/앞으로
       e.preventDefault();

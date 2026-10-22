@@ -124,7 +124,8 @@ function takesLooseKey(grid: HTMLElement, e: KeyboardEvent): boolean {
     if (active === grid || grid.contains(active)) return false; // 격자 안 — 격자의 onKeyDown 이 이미 받았다
     if (active.contains(grid)) return !isTypingTarget(active); // 격자를 품은 창(폴더 창·결과 창)에 초점
     if (e.key === "Enter" || e.key === " ") return false;
-    if (!active.matches("button, a") || !floatHost(active).closest(".topbar, .lib-toolbar, .select-bar")) return false;
+    // .assets-crumb = 어셋 창의 툴바(전체·폴더·리스트 …) — 누른 뒤에도 방향키는 그 창의 격자 것(Codex 검토 3 K1, 10-22)
+    if (!active.matches("button, a") || !floatHost(active).closest(".topbar, .lib-toolbar, .select-bar, .assets-crumb")) return false;
   }
   if (!document.querySelector(".scene-board")) return true;
   const win = grid.closest(".folder-peek, .scene-varwin");

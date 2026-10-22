@@ -141,6 +141,13 @@ it("초점이 격자 밖이어도 방향키·Ctrl+A 가 파일 격자에 닿는�
   expect([picked(), focusedName()]).toEqual([["b.png"], "b.png"]);
   await bodyKey({ key: "a", ctrlKey: true });
   expect(picked()).toEqual(["a.png", "b.png", "c.png", "d.png"]);
+  // Codex 검토 3 K1: 툴바(.assets-crumb) 단추를 누른 뒤 — 초점이 그 단추에 남아도 방향키는 격자의 것
+  await click("a.png");
+  const toolbarButton = host.querySelector<HTMLButtonElement>(".assets-crumb button")!;
+  await act(async () => { toolbarButton.focus(); });
+  expect(document.activeElement).toBe(toolbarButton);
+  await bodyKey({ key: "ArrowDown" });
+  expect(picked()).toEqual(["b.png"]);
 });
 
 it("Esc preserves the selected files like Explorer", async () => {
