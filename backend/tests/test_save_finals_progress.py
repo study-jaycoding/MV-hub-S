@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -99,88 +100,48 @@ class SaveProgressTests(unittest.TestCase):
         done = manage_router._progress_view("p1")
         self.assertEqual((done["done"], done["total"], done["running"], done["saved"]), (6, 6, False, 6))
 
-    def test_nas_path_lookup_does_not_stall_the_hub(self):
-        """2026-10-03 L2-3 — 대상마다의 경로 해석(NAS resolve 3회)이 이벤트 루프에서 돌아, 저장하는 동안 허브 전체가 잠깐씩 섰다."""
-        import time
-
-        block = 0.2
+    def _assert_path_lookup_off_loop(self, save) -> None:
+        """경로 해석(느린 SMB 의 resolve)이 이벤트 루프 스레드에서 한 번도 돌지 않았는지 — 벽시계 지연은 PC 부하에
+        흔들려(게이트 59분 때 1.4초) 쓰지 않는다(2026-10-22)."""
+        callers: list[int] = []
         real = project_folders.safe_dest
 
-        def slow_safe_dest(*args):
-            time.sleep(block)  # 느린 SMB 의 resolve() 를 흉내 낸다
+        def recorded_safe_dest(*args):
+            callers.append(threading.get_ident())
             return real(*args)
 
-        async def run() -> float:
-            loop = asyncio.get_running_loop()
-            worst = [0.0]
-            done = asyncio.Event()
+        async def run() -> int:
+            await save()
+            return threading.get_ident()
 
-            async def heartbeat():  # 저장이 끝날 때까지 10ms 마다 — 가장 크게 밀린 값을 남긴다
-                while not done.is_set():
-                    started = loop.time()
-                    await asyncio.sleep(0.01)
-                    worst[0] = max(worst[0], loop.time() - started)
+        with mock.patch.object(project_folders, "safe_dest", side_effect=recorded_safe_dest):
+            loop_thread = asyncio.run(run())
+        self.assertTrue(callers, "경로 해석이 한 번도 불리지 않았다 — 시험이 엉뚱한 길을 본다")
+        self.assertNotIn(loop_thread, callers, "경로 해석이 이벤트 루프 스레드에서 돌았다 — 저장하는 동안 허브가 선다")
 
-            beat = asyncio.create_task(heartbeat())
-            try:
-                await manage_router.save_finals("p1", mock.Mock(), kind="shared")
-            finally:
-                done.set()
-                await beat
-            return worst[0]
-
+    def test_nas_path_lookup_does_not_stall_the_hub(self):
+        """2026-10-03 L2-3 — 대상마다의 경로 해석(NAS resolve 3회)이 이벤트 루프에서 돌아, 저장하는 동안 허브 전체가 잠깐씩 섰다."""
         from contextlib import ExitStack
         with ExitStack() as stack:
             for item in self._patches():
                 stack.enter_context(item)
-            stack.enter_context(mock.patch.object(project_folders, "safe_dest", side_effect=slow_safe_dest))
-            lag = asyncio.run(run())
-        self.assertLess(lag, block / 2, f"이벤트 루프가 막혔다 — 10ms 타이머가 {lag:.3f}s 에 실행")
+            self._assert_path_lookup_off_loop(lambda: manage_router.save_finals("p1", mock.Mock(), kind="shared"))
 
     def test_nas_path_lookup_does_not_stall_the_hub_when_delegating(self):
         """L2-3 의 위임 분기(팀원 PC — 대상은 서버, 파일은 서버에서 받아 NAS 에 둔다)도 같은 규칙(Codex 리뷰)."""
-        import time
-
-        block = 0.2
-        real = project_folders.safe_dest
-
-        def slow_safe_dest(*args):
-            time.sleep(block)
-            return real(*args)
-
         def fake_download(_path, tmp):
             Path(tmp).write_bytes(b"png")
 
         facts = [{"gen_id": f"srv{i}", "folder_path": f"ep/c{i}", "filename": f"c{i}.png"} for i in range(2)]
-
-        async def run() -> float:
-            loop = asyncio.get_running_loop()
-            worst = [0.0]
-            done = asyncio.Event()
-
-            async def heartbeat():
-                while not done.is_set():
-                    started = loop.time()
-                    await asyncio.sleep(0.01)
-                    worst[0] = max(worst[0], loop.time() - started)
-
-            beat = asyncio.create_task(heartbeat())
-            try:
-                await manage_router._save_finals_locked("p1", mock.Mock(), self.render, kind="shared")
-            finally:
-                done.set()
-                await beat
-            return worst[0]
 
         with (
             mock.patch.object(manage_router._proxy, "proxying", return_value=True),
             mock.patch.object(manage_router, "_save_finals_facts", return_value=(facts, False)),
             mock.patch.object(manage_router._proxy, "stream_download", side_effect=fake_download),
             mock.patch.object(file_stamp, "stamp_file", return_value=True),
-            mock.patch.object(project_folders, "safe_dest", side_effect=slow_safe_dest),
         ):
-            lag = asyncio.run(run())
-        self.assertLess(lag, block / 2, f"이벤트 루프가 막혔다 — 10ms 타이머가 {lag:.3f}s 에 실행")
+            self._assert_path_lookup_off_loop(
+                lambda: manage_router._save_finals_locked("p1", mock.Mock(), self.render, kind="shared"))
 
     def test_cancel_stops_before_the_next_file_and_keeps_what_was_saved(self):
         """취소하면 받던 파일 하나는 끝내고 멈춘다. 이미 저장한 것은 그대로 두고, 다시 누르면 이어서 한다."""
