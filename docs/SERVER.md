@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-22
+updated: 2026-10-23
 status: active
 ---
 
@@ -64,6 +64,9 @@ status: active
    업데이터가 검증 Python(`logs\server-verifier`)을 확인·준비하고, coordinator 가 `origin/main` 을 받아 그 커밋으로
    별도 stage 를 만들고 격리 기동으로 확인한 뒤 supervisor 가 바꿔 끼운다. 준비 단계에서 실패하면 실행 중인 서버와
    DB 를 전환하지 않고 이유를 보여 주며 멈춘다. NAS·설정 파일·검사 기록은 필요 없다.
+   바꿔 끼우는 동안 서버가 멈추는 시간은 이 PC 실측 약 30초다(그중 약 24초는 옛 서버를 멈춘 뒤 stage 를 다시 검사하는
+   시간). 새 판이 기동 중 죽으면 준비 확인 한도(90초) 뒤 이전 판으로 돌아가 약 2분 뒤 다시 응답한다(2026-10-23 실측).
+   전환이 실패하면 supervisor 콘솔(`logs\server_console.log`)에 `update failed: ValueError (<코드>)` 처럼 원인 코드가 남는다.
 
 검증 Python 은 첫 실행 때 `logs\server-verifier` 에 자동으로 만들어진다(`tools/server_verifier.lock.txt` 의 해시 고정
 psutil, 인터넷 필요). 깨졌거나 판이 다르면 그 폴더를 `server-verifier.broken-<id>` 로 옮겨 두고 다시 만든다.
@@ -90,6 +93,43 @@ stage 의 `.venv` 는 준비 단계(`prepare`)를 실행한 Python 으로 만들
 같고 프로토콜·구성요소를 명시하면 그것을 '이전 판 호환 근거'로 기록한다(앞뒤 소스 지문 확인, 선언 해시 기록).
 그래서 첫 staged 전환에서 새 판이 기동에 실패해도 DB 가 그 선언 범위 안이면 이전 프로그램으로 자동 복귀한다.
 이 기록은 supervisor 코드에 들어 있으므로 이 판을 받은 뒤 **통제된 재시작을 한 번** 해야 적용된다.
+
+**supervisor 코드는 루트에 있다 — `update_git.bat` 으로 바뀌지 않는다.** supervisor·coordinator
+(`tools/server_supervisor.py`·`tools/server_activation.py`·`tools/server_release_update.py`·
+`backend/app/services/install_journal.py`·`tools/install_db_probe.py`)는 저장소 루트에서 돌고(`server_supervisor.py` 의 ROOT 는
+파일 위치), `update_git.bat` 서버 역할은 루트를 바꾸지 않는다(새 판은 `logs\server-stages` 에만 만든다). 그래서 이 코드의
+고침은 **루트에 수동 반입**해야 적용된다. 첫 사례: staged 전환이 `journal_changed` 로 매번 이전 판으로 돌아가던 것
+([기록](status/서버전환_기록모양_2026-10-23.md)). 반입은 staged 자격 검사를 거치지 않고 실행 중 소스 트리 서버를
+새 main 으로 바꾸는 배포다. 관리자 PowerShell 에서, 2~5단계 동안 공유 서버가 멈추니 팀원에게 생성·업로드를 끝내 달라고
+먼저 알린 뒤 진행한다.
+
+1. **읽기만 확인(하나라도 다르면 멈추고 보고)**: `logs\server-install-journal.json` 의 `phase` 가 `rolled_back` ·
+   `logs\server-update-request.json` 없음 · `logs\server-current.json` 의 `path` = 루트, `build_id` = `legacy-source`,
+   그 내용이 journal 의 `previous` 와 같음 · `git status` 깨끗 · 루트 `HEAD` 가 예상 기준 커밋 ·
+   `git diff --name-only HEAD <SHA>` 에서 `backend/app` 아래는 이번에 고친 파일만, `frontend/` 변경 없음,
+   `backend/requirements.txt` 변경 없음(`backend/requirements.lock.txt` 는 지문만 바뀌어도 된다).
+   `failed` 에서 루트를 바꾸면 재시작 때 `resume → recover` 가 바뀐 루트로 막힌다.
+2. **자동 재기동을 막고 실제로 멈춘다**: `Disable-ScheduledTask` 로 `MVHub Watchdog`·`MVHub Server` 를 끄고
+   `Stop-ScheduledTask` → 이 루트의 `server_supervisor.py`·`server_watchdog.py` 프로세스를 트리째 종료
+   (`restart_server_task.ps1` 의 종료 규칙과 같다) → 8010 을 듣는 프로세스가 없음을 확인. supervisor 를 켜 둔 채 바꾸면
+   그사이 서버가 죽었을 때 supervisor 가 바뀌는 중인 루트에서 다시 띄운다.
+3. `git fetch origin` → `git merge --ff-only <SHA>`. (1의 조건이면 의존성 설치·프런트 빌드는 필요 없다.)
+4. ff 가 성공했을 때만 `logs\server-current.json` 을 **지우지 않고** `server-current.before-intake-<날짜>.json` 으로 이름을
+   바꿔 보존한다 — 옛 소스 지문 기록이라 그대로 두면 supervisor 가 `previous_source_changed` 로 시작을 거부한다.
+   journal·`install-checkpoints` 는 그대로 둔다.
+5. `Enable-ScheduledTask` 로 두 작업을 다시 켜고(꺼진 작업은 `Start-ScheduledTask` 로 켜지지 않는다)
+   `restart_server_task.bat`(운영 단계) → `/api/ready` 의 `runtime.build_id = legacy-source`·`admission = normal` 확인.
+6. 남은 이전 stage 는 재사용하지 않는다(요청 파일은 실패 때 이미 지워졌다). 이어서 `update_git.bat` 더블클릭으로
+   새 stage 를 준비·전환해 staged 경로를 확인한다.
+
+실패 처리: ff 가 루트를 바꾸기 전에 실패했으면(`fetch` 실패, ff 거부로 `HEAD` 그대로) 4단계를 건너뛰고 5단계로 다시
+켠다. 루트가 바뀐 뒤 실패하면 꺼 둔 채 보고한다.
+
+> [!WARNING]
+> 서버가 stage 로 돌기 시작한 뒤에는 supervisor 가 시작할 때마다 현재 stage 의 자격을 루트의 검사 도구 지문
+> (`tools/server_activation.py`·`tools/server_release_update.py`·`qualify_release_artifact.TOOLS`)과 대조한다. 그 뒤 이 파일들을
+> 수동 반입으로 바꾸면 supervisor 가 `stage_qualification_tools_changed` 로 **시작하지 못하고**, 이전 stage 로의 복구도
+> 같은 이유로 실패한다. 이런 반입은 서버가 소스 트리(legacy)로 돌 때만 한다.
 그래도 `recovery_required`(선언이 없거나 HEAD 와 다르거나 DB 가 범위 밖)이면 서버는 멈춘 채로 남는다 —
 journal·`install-checkpoints`·DB 를 그대로 두고 별도 복구 판단을 받는다. 아래 '1358 → dev2 최초 전환'의 되돌리기 절은
 이 경우의 절차가 아니며, 사전 DB 사본은 보관용이지 덮어쓰기 복구에 쓰지 않는다.
