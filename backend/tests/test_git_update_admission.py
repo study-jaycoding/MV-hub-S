@@ -23,10 +23,11 @@ def test_server_entry_uses_selected_commit_declaration():
     script = (SOURCE / 'tools/run_update_git.ps1').read_text(encoding='utf-8-sig')
     assert 'server-release-compatibility.json' not in script
     assert "'--compatibility'" not in script
-    assert "'--source-receipt', $ReceiptPath" in script
     assert "'--verification-python', $VerifierPath" in script
-    assert 'Get-UpdateOverride $SourceReceipt "MVHUB_SERVER_SOURCE_RECEIPT"' in script
     assert 'Get-UpdateOverride $VerificationPython "MVHUB_SERVER_VERIFICATION_PYTHON"' in script
+    # No source-gate receipt anywhere in the server entry (Jay 10-22).
+    for gone in ('--source-receipt', 'SourceReceipt', 'MVHUB_SERVER_SOURCE_RECEIPT', 'server-update.local.json'):
+        assert gone not in script
 
 
 @pytest.mark.parametrize('administrator,elevated', [(False, True), (False, False), (True, False)])
@@ -96,14 +97,6 @@ public class FakeTool {
         File.AppendAllText(trace, tool + " " + String.Join(" ", args) + "\n");
         if (tool == "schtasks") return 1;
         if (tool == "git") {
-            int offset = (args.Length > 2 && args[0] == "-C") ? 2 : 0;
-            if (args.Length > offset + 1 && args[offset] == "rev-parse" && args[offset + 1] == "origin/main") {
-                string remote = Environment.GetEnvironmentVariable("MVHUB_FIXTURE_REMOTE_FILE");
-                string value = !String.IsNullOrEmpty(remote) && File.Exists(remote) ? File.ReadAllText(remote).Trim() : new String('b', 40);
-                if (value == "fail") { Console.Error.WriteLine("fatal: fixture remote unavailable"); return 128; }
-                Console.WriteLine(value);
-                return 0;
-            }
             if (args.Length > 1 && args[0] == "sparse-checkout" && args[1] == "list") return 1;
             if (args.Length > 1 && args[0] == "rev-parse") {
                 Console.WriteLine(args[1] == "HEAD" ? new String('a', 40) : Environment.GetEnvironmentVariable("MVHUB_FIXTURE_GIT_DIR"));
@@ -199,7 +192,6 @@ class UpdaterFixture:
             " lock.seek(0); msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)\n"
             " with open(os.environ['MVHUB_TOOL_TRACE'], 'a', encoding='utf-8') as trace: trace.write('coordinator '+ ' '.join(sys.argv[1:])+'\\n')\n"
             "staged=any(a.endswith('server_release_update.py') for a in sys.argv)\n"
-            "if staged and os.environ.get('MVHUB_FIXTURE_MOVE_REMOTE'): pathlib.Path(os.environ['MVHUB_FIXTURE_REMOTE_FILE']).write_text(os.environ['MVHUB_FIXTURE_MOVE_REMOTE'])\n"
             "raise SystemExit(int(os.environ.get('MVHUB_COORDINATOR_EXIT','0')) if staged else 0)\n",
             encoding="utf-8",
         )
@@ -216,7 +208,6 @@ class UpdaterFixture:
         self.env.update({"MVHUB_NO_PAUSE": "1", "MVHUB_QUERY_FIXTURE": str(self.query),
                          "MVHUB_ELEVATION_TRACE": str(self.elevation_trace),
                          "MVHUB_TOOL_TRACE": str(self.trace_path), "MVHUB_FIXTURE_GIT_DIR": str(self.root / ".git"),
-                         "MVHUB_SERVER_SOURCE_RECEIPT": str(folder / "source-receipt.json"),
                          "MVHUB_SERVER_VERIFICATION_PYTHON": str(sys._base_executable),
                          "CONTENT_HUB_NO_PROXY": "1", "CONTENT_HUB_READ_ONLY": "1",
                          "CONTENT_HUB_DATA": str(folder / "data"), "CONTENT_HUB_DB": str(folder / "data/db/content_hub.db"),
@@ -460,7 +451,6 @@ def non_admin(tmp_path, fake_tool):
 
 
 def test_non_admin_relaunches_once_with_explicit_arguments(non_admin):
-    receipt = non_admin.env["MVHUB_SERVER_SOURCE_RECEIPT"]
     verifier = non_admin.env["MVHUB_SERVER_VERIFICATION_PYTHON"]
     result = non_admin.run()
     assert result.returncode == 7, result.stdout + result.stderr  # the relaunched window's exit code
@@ -469,27 +459,25 @@ def test_non_admin_relaunches_once_with_explicit_arguments(non_admin):
     assert call["Verb"] == "RunAs" and call["FilePath"].lower().endswith("powershell.exe")
     assert call["WorkingDirectory"] == str(non_admin.root)
     assert call["ArgumentList"] == (f'-NoProfile -ExecutionPolicy Bypass -File "{script}" -Root "{non_admin.root}" '
-                                    f'-Elevated -SourceReceipt "{receipt}" -VerificationPython "{verifier}" -NoPause')
+                                    f'-Elevated -VerificationPython "{verifier}" -NoPause')
     assert non_admin.trace() == ""
 
 
 def test_relaunch_command_line_binds_every_value_unchanged(non_admin):
     # Parse the recorded command line with a real powershell.exe and a parameter probe.
-    weird = non_admin.folder / "-receipt copy 한글.json"
-    non_admin.env["MVHUB_SERVER_SOURCE_RECEIPT"] = str(weird)
+    weird = non_admin.folder / "-verifier copy 한글.exe"
+    non_admin.env["MVHUB_SERVER_VERIFICATION_PYTHON"] = str(weird)
     assert non_admin.run().returncode == 7
     [call] = non_admin.elevations()
     probe = non_admin.folder / "probe.ps1"
-    probe.write_text('param([string]$Root, [switch]$Elevated, [string]$SourceReceipt = "", '
-                     '[string]$VerificationPython = "", [switch]$NoPause)\n'
-                     '@{Root=$Root; Elevated=[bool]$Elevated; SourceReceipt=$SourceReceipt; '
+    probe.write_text('param([string]$Root, [switch]$Elevated, [string]$VerificationPython = "", [switch]$NoPause)\n'
+                     '@{Root=$Root; Elevated=[bool]$Elevated; '
                      'VerificationPython=$VerificationPython; NoPause=[bool]$NoPause} | ConvertTo-Json -Compress\n',
                      encoding="utf-8-sig")
     line = call["ArgumentList"].replace(f'"{non_admin.tools / "run_update_git.ps1"}"', f'"{probe}"')
     result = subprocess.run(f'"{POWERSHELL}" {line}', capture_output=True, timeout=30)
     bound = json.loads(result.stdout.decode("utf-8", "replace").strip().splitlines()[-1])
-    assert bound == {"Root": str(non_admin.root), "Elevated": True, "SourceReceipt": str(weird),
-                     "VerificationPython": non_admin.env["MVHUB_SERVER_VERIFICATION_PYTHON"], "NoPause": True}
+    assert bound == {"Root": str(non_admin.root), "Elevated": True, "VerificationPython": str(weird), "NoPause": True}
 
 
 def test_direct_administrator_run_shows_its_result_once(updater):
@@ -501,7 +489,7 @@ def test_direct_administrator_run_shows_its_result_once(updater):
 
 
 def test_relative_override_is_refused_before_relaunch(non_admin):
-    non_admin.env["MVHUB_SERVER_SOURCE_RECEIPT"] = "-receipt copy.json"
+    non_admin.env["MVHUB_SERVER_VERIFICATION_PYTHON"] = "-verifier copy.exe"
     result = non_admin.run()
     assert result.returncode != 0 and "must be an absolute path" in result.stdout, result.stdout
     assert non_admin.elevations() == [] and non_admin.trace() == ""
@@ -515,7 +503,7 @@ def test_cancelled_uac_ends_without_update_work(non_admin):
 
 
 def test_relaunch_refuses_an_argument_that_would_break_quoting(non_admin):
-    non_admin.env["MVHUB_SERVER_SOURCE_RECEIPT"] = "C:\\receipts\\"
+    non_admin.env["MVHUB_SERVER_VERIFICATION_PYTHON"] = "C:\\verifier\\"
     result = non_admin.run()
     assert result.returncode != 0 and "trailing backslash" in result.stdout, result.stdout
     assert non_admin.elevations() == [] and non_admin.trace() == ""
@@ -527,120 +515,24 @@ def test_elevated_relaunch_without_admin_rights_is_refused(non_admin):
     assert non_admin.elevations() == [] and non_admin.trace() == ""
 
 
-def auto_server(updater, *, commit="c" * 40, receipt_commit=None, config=True, publish=True):
-    """A registered supervisor with no manual inputs: the updater must find the verifier and receipt."""
-    updater.holder()
-    for key in ("MVHUB_SERVER_SOURCE_RECEIPT", "MVHUB_SERVER_VERIFICATION_PYTHON"):
-        updater.env.pop(key, None)
-    remote = updater.folder / "remote.sha"
-    remote.write_text(commit)
-    updater.env["MVHUB_FIXTURE_REMOTE_FILE"] = str(remote)
-    share = updater.folder / "nas share"
-    share.mkdir()
-    if config:
-        (updater.root / "logs/server-update.local.json").write_text(json.dumps({"receipt_dir": str(share)}), encoding="utf-8")
-    raw = json.dumps({"source": {"commit": receipt_commit or commit}}).encode()
-    if publish:
-        (share / (commit + ".json")).write_bytes(raw)
-    return raw
-
-
 def coordinator_lines(updater):
     return [line for line in updater.trace().splitlines() if line.startswith("coordinator ")]
 
 
-def test_server_update_finds_verifier_and_receipt_automatically(updater):
-    raw = auto_server(updater)
+def test_server_update_needs_only_the_automatic_verifier(updater):
+    # No receipt, NAS or local config: leftovers from the receipt era are ignored, the coordinator fetches.
+    updater.holder()
+    updater.env.pop("MVHUB_SERVER_VERIFICATION_PYTHON")
+    updater.env["MVHUB_SERVER_SOURCE_RECEIPT"] = str(updater.folder / "old-receipt.json")
+    (updater.root / "logs/server-update.local.json").write_text('{"receipt_dir": "\\\\\\\\nas\\\\gone"}', encoding="utf-8")
     result = updater.run()
     assert result.returncode == 0, result.stdout + result.stderr
     verifier_call, update_call = coordinator_lines(updater)
     assert "server_verifier.py" in verifier_call and "server_release_update.py" in update_call
-    local = updater.root / "logs/server-receipts" / ("c" * 40 + ".json")
-    assert local.read_bytes() == raw
-    assert f"--source-receipt {local}" in update_call
-    assert f"--verification-python {updater.root / 'logs/server-verifier/Scripts/python.exe'}" in update_call
-    assert "fetch origin main" in updater.trace()
-    assert [p.name for p in local.parent.iterdir()] == [local.name]
-
-
-@pytest.mark.parametrize("case,message", [
-    ("no_config", "not configured"),
-    ("no_receipt", "No readable server receipt"),
-    ("other_commit", "names a different commit"),
-    ("different_local_copy", "different local receipt copy"),
-])
-def test_missing_or_mismatched_receipt_never_reaches_the_coordinator(updater, case, message):
-    auto_server(updater, config=case != "no_config", publish=case != "no_receipt",
-                receipt_commit="d" * 40 if case == "other_commit" else None)
-    if case == "different_local_copy":
-        store = updater.root / "logs/server-receipts"
-        store.mkdir()
-        (store / ("c" * 40 + ".json")).write_bytes(b"older different bytes")
-    result = updater.run()
-    assert result.returncode != 0 and message in result.stdout, result.stdout + result.stderr
-    assert not any("server_release_update.py" in line for line in coordinator_lines(updater))
-
-
-def test_identical_local_receipt_copy_is_reused(updater):
-    raw = auto_server(updater)
-    store = updater.root / "logs/server-receipts"
-    store.mkdir()
-    (store / ("c" * 40 + ".json")).write_bytes(raw)
-    assert updater.run().returncode == 0
-    assert "server_release_update.py" in coordinator_lines(updater)[-1]
-
-
-def test_explicit_receipt_is_used_without_fetching(updater):
-    auto_server(updater, publish=False)
-    given = updater.folder / "given-receipt.json"
-    given.write_bytes(b"{}")
-    updater.env["MVHUB_SERVER_SOURCE_RECEIPT"] = str(given)
-    assert updater.run().returncode == 0
-    assert f"--source-receipt {given}" in coordinator_lines(updater)[-1]
+    assert update_call.endswith(f"--verification-python {updater.root / 'logs/server-verifier/Scripts/python.exe'}")
+    assert "receipt" not in update_call
     assert "fetch origin main" not in updater.trace()
-
-
-def test_remote_change_during_prepare_is_reported_without_retry(updater):
-    auto_server(updater)
-    updater.env.update(MVHUB_COORDINATOR_EXIT="1", MVHUB_FIXTURE_MOVE_REMOTE="e" * 40)
-    result = updater.run()
-    assert result.returncode == 1
-    assert "origin/main also moved from cccccccccccc to eeeeeeeeeeee" in result.stdout, result.stdout
-    assert sum("server_release_update.py" in line for line in coordinator_lines(updater)) == 1
-
-
-def test_failed_remote_diagnostic_keeps_the_coordinator_exit_code(updater):
-    auto_server(updater)
-    updater.env.update(MVHUB_COORDINATOR_EXIT="7", MVHUB_FIXTURE_MOVE_REMOTE="fail")
-    result = updater.run()
-    assert result.returncode == 7, result.stdout + result.stderr
-    assert "origin/main also moved" not in result.stdout
-
-
-def test_receipt_changed_during_copy_is_never_published(tmp_path):
-    commit = "c" * 40
-    share = tmp_path / "share"
-    share.mkdir()
-    (share / (commit + ".json")).write_bytes(json.dumps({"source": {"commit": commit}}).encode())
-    root = tmp_path / "root"
-    (root / "logs").mkdir(parents=True)
-    (root / "logs/server-update.local.json").write_text(json.dumps({"receipt_dir": str(share)}), encoding="utf-8")
-    script = tmp_path / "copy-probe.ps1"
-    script.write_text(f"""
-$ErrorActionPreference='Stop'
-$Tree=[System.Management.Automation.Language.Parser]::ParseFile('{SOURCE / 'tools/run_update_git.ps1'}',[ref]$null,[ref]$null)
-foreach($Name in 'Assert-LocalUpdatePath','Get-BytesSha256','Import-ServerReceipt'){{
-  $Node=$Tree.Find({{param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name}},$true)
-  . ([scriptblock]::Create($Node.Extent.Text))
-}}
-$script:Reads = 0
-function Read-UpdateBytes([string]$Path) {{ $script:Reads++; $b=[IO.File]::ReadAllBytes($Path); if($script:Reads -eq 2){{ $b += [byte]32 }}; return ,$b }}
-try {{ Import-ServerReceipt '{root}' '{commit}' }} catch {{ Write-Output ('ERROR ' + $_.Exception.Message) }}
-""", encoding="utf-8-sig")
-    result = subprocess.run([POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script)],
-                            capture_output=True, text=True, timeout=20)
-    assert "changed while it was being copied" in result.stdout, result.stdout + result.stderr
-    assert list((root / "logs/server-receipts").iterdir()) == []
+    assert not (updater.root / "logs/server-receipts").exists()
 
 
 def test_foreign_task_and_supervisor_do_not_reclassify_worker_clone(updater):

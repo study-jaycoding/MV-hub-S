@@ -17,7 +17,7 @@ import uuid
 import zipfile
 
 from server_activation import (atomic_json, digest, local_child, verify_stage, exclusive_lock,
-                               validate_source_receipt, source_inventory, verify_qualification,
+                               require_source_inputs, source_inventory, verify_qualification,
                                validate_runtime_proof, inspect_server_cli, qualification_tools,
                                stage_python_base, PROBE_TOOLS, SOURCE_PROFILE)
 from app.services.release_contract import compatibility, document, json_bytes
@@ -54,7 +54,7 @@ def _run_cli_version(command, *, cwd, env, timeout, creationflags):
         return subprocess.CompletedProcess(command, process.returncode, output.read(), b'')
 
 
-def qualify_stage(root, stage, target, source_raw, verification_python, *, probe_run=None):
+def qualify_stage(root, stage, target, verification_python, *, probe_run=None):
     """Trusted probe supervisor runs the stage interpreter; no supplied success flags."""
     descriptor = verify_stage(stage, root / 'logs/server-stages', target['manifest_sha256'])
     cli = inspect_server_cli(stage, root, os.environ)
@@ -112,18 +112,12 @@ def qualify_stage(root, stage, target, source_raw, verification_python, *, probe
             or qualification_tools(root) != tool_hashes or digest(verification_python) != verifier_hash):
         raise ValueError('isolated_stage_probe_identity_mismatch')
     verify_stage(stage, root / 'logs/server-stages', target['manifest_sha256'])
-    validate_source_receipt(document(source_raw), descriptor['source_commit'], descriptor['source_files'])
-    if hashlib.sha256(source_raw).hexdigest() != descriptor['source_receipt_sha256']:
-        raise ValueError('source_receipt_changed')
     validate_runtime_proof(value.get('evidence', {}), value.get('tool_sha256', {}), descriptor)
     record = {'format_version': 1, 'scope': 'server-stage', 'profile': SOURCE_PROFILE, 'status': 'passed',
               'release_eligible': False, 'activation_eligible': True,
               'build_id': descriptor['build_id'], 'role': 'server', 'source_commit': descriptor['source_commit'],
               'manifest_sha256': target['manifest_sha256'],
-              'source_receipt_sha256': hashlib.sha256(source_raw).hexdigest(),
-              'source_receipt_raw': source_raw.decode('utf-8'),
-              'checks': {'source_validation': 'passed', 'isolated_runtime': 'passed',
-                         'server_cli_entry': 'passed', 'cleanup': 'passed'},
+              'checks': {'isolated_runtime': 'passed', 'server_cli_entry': 'passed', 'cleanup': 'passed'},
               'runtime': value['evidence'], 'tool_sha256': value['tool_sha256'], 'server_cli': cli,
               'qualification_tools': tool_hashes,
               'verification_python': {'path': str(verification_python), 'sha256': verifier_hash}}
@@ -138,13 +132,9 @@ def qualify_stage(root, stage, target, source_raw, verification_python, *, probe
     return target
 
 
-def prepare(root: Path, *, source_receipt: Path, verification_python: Path,
-            run=run_checked, probe_run=None):
+def prepare(root: Path, *, verification_python: Path, run=run_checked, probe_run=None):
     local_child(root, root)
     root = root.resolve()
-    source_receipt = local_child(source_receipt, source_receipt.parent)
-    source_raw = source_receipt.read_bytes()
-    source_proof = document(source_raw)
     verification_python = local_child(verification_python, verification_python.parent)
     if not verification_python.is_file():
         raise ValueError('trusted_verification_python_required')
@@ -203,7 +193,6 @@ def prepare(root: Path, *, source_receipt: Path, verification_python: Path,
                 verify_qualification(current, logs / 'server-stages', installed)
                 if (installed.get('source_commit') == commit and installed.get('compatibility') == declared
                         and 'release/compatibility.json' in installed['source_files']):
-                    validate_source_receipt(source_proof, commit, installed['source_files'])
                     write_progress('up_to_date')
                     return current['build_id']
         stage.mkdir(parents=True, exist_ok=False)
@@ -228,7 +217,7 @@ def prepare(root: Path, *, source_receipt: Path, verification_python: Path,
         if document((stage / 'release/compatibility.json').read_bytes()) != declared:
             raise ValueError('staged_compatibility_mismatch')
         source_files = source_inventory(stage)
-        validate_source_receipt(source_proof, commit, source_files)
+        require_source_inputs(source_files)
         env = build_smoke_env(os.environ, logs / ('server-prepare-env-' + run_id),
                               frontend_dist=stage / 'frontend/dist', python_exe=Path(sys.executable), port=19871)
         base_python = {'path': str(Path(sys._base_executable).resolve()), 'sha256': digest(sys._base_executable)}
@@ -274,17 +263,14 @@ def prepare(root: Path, *, source_receipt: Path, verification_python: Path,
                  if p.is_file() and '__pycache__' not in p.parts}
         descriptor = {'format_version': 1, 'role': 'server', 'build_id': run_id, 'source_commit': commit,
                       'compatibility': declared, 'files': files, 'source_archive_sha256': digest(archive),
-                      'source_files': source_files, 'source_receipt_sha256': hashlib.sha256(source_raw).hexdigest(),
-                      'python_base': base_python,
+                      'source_files': source_files, 'python_base': base_python,
                       'prepare_log': log.name, 'tool_sha256': digest(Path(__file__))}
         atomic_json(stage / 'server-stage.json', descriptor)
         manifest_sha = digest(stage / 'server-stage.json')
         verify_stage(stage, logs / 'server-stages', manifest_sha)
         target = {'path': str(stage), 'python': str(python), 'build_id': run_id,
                   'compatibility': declared, 'manifest_sha256': manifest_sha}
-        target = qualify_stage(root, stage, target, source_raw, verification_python, probe_run=probe_run)
-        if source_receipt.read_bytes() != source_raw:
-            raise ValueError('source_receipt_changed_during_prepare')
+        target = qualify_stage(root, stage, target, verification_python, probe_run=probe_run)
         verify_qualification(target, logs / 'server-stages')
         atomic_json(request, {'format_version': 1, 'run_id': run_id, 'target': target})
         write_progress('prepared')
@@ -297,15 +283,12 @@ def prepare(root: Path, *, source_receipt: Path, verification_python: Path,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, required=True)
-    parser.add_argument('--source-receipt', type=Path, required=True,
-                        help='trusted clean selected-commit source-only gate JSON; required source steps must pass')
     parser.add_argument('--verification-python', type=Path, required=True,
                         help='trusted verifier interpreter with psutil; separate from the prepared server runtime')
     args = parser.parse_args()
     try:
         with exclusive_lock(args.root / 'logs/server-update.lock'):
-            run_id = prepare(args.root, source_receipt=args.source_receipt,
-                             verification_python=args.verification_python)
+            run_id = prepare(args.root, verification_python=args.verification_python)
         deadline = time.monotonic() + 300
         journal_path = args.root / 'logs/server-install-journal.json'
         while time.monotonic() < deadline:

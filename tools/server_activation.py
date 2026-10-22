@@ -22,9 +22,12 @@ from app.services.release_contract import compatibility as release_compatibility
 from qualify_release_artifact import TOOLS as PROBE_TOOLS
 
 
-SOURCE_STEPS = frozenset({'Documentation lint', 'Architecture lint', 'Backend tests',
-                          'Frontend tests', 'Production frontend build'})
-SOURCE_PROFILE = 'server-source-v1'
+# v2: no source-gate receipt; only gated commits reach main (Jay 10-22). v1 records are rejected.
+SOURCE_PROFILE = 'server-source-v2'
+# Server runtime inputs every stage must carry; checked before building and on every supervisor recheck.
+REQUIRED_SOURCE_INPUTS = frozenset({'backend/app/main.py', 'backend/serve.py', 'backend/schema.sql',
+                                    'backend/requirements.lock.txt', 'frontend/package.json',
+                                    'frontend/package-lock.json', 'hf_cli_version.txt'})
 COORDINATOR_TOOLS = ('tools/server_activation.py', 'tools/server_release_update.py')
 
 
@@ -66,36 +69,9 @@ def source_inventory(stage):
     return result
 
 
-def validate_source_receipt(value, commit, inputs):
-    """Consume the existing source-only gate; never turn its result into ZIP eligibility."""
-    source = value.get('source', {})
-    steps = value.get('steps', [])
-    if (value.get('format_version') != 1 or value.get('scope') != 'source-only'
-            or value.get('status') != 'passed' or value.get('passed') is not True
-            or value.get('source_unchanged') is not True or source.get('dirty') is not False
-            or source.get('commit') != commit or value.get('source_after') != source
-            or not is_digest(source.get('sha256')) or not value.get('run_id')
-            or not value.get('finished_at')):
-        raise ValueError('source_gate_not_clean_selected_commit')
-    names = [s.get('name') for s in steps]
-    if (len(set(names)) != len(names) or not SOURCE_STEPS <= set(names)
-            or any(s.get('status') != 'passed' or type(s.get('exit_code')) is not int or s['exit_code'] != 0
-                   for s in steps if s.get('name') in SOURCE_STEPS)):
-        raise ValueError('source_gate_required_step_not_passed')
-    rows = source.get('files', [])
-    by_name = {row.get('path'): row for row in rows}
-    if len(by_name) != len(rows) or source.get('file_count') != len(rows):
-        raise ValueError('source_gate_inventory_invalid')
-    required = {'backend/app/main.py', 'backend/serve.py', 'backend/schema.sql',
-                'backend/requirements.lock.txt', 'frontend/package.json', 'frontend/package-lock.json',
-                'tools/predeploy_gate.ps1', 'tools/validation_result.ps1', 'hf_cli_version.txt'}
-    if not required <= inputs.keys():
+def require_source_inputs(inputs):
+    if not REQUIRED_SOURCE_INPUTS <= inputs.keys() or not all(is_digest(h) for h in inputs.values()):
         raise ValueError('stage_source_inputs_missing')
-    for name, expected in inputs.items():
-        row = by_name.get(name, {})
-        if row.get('tracked') is not True or not is_digest(expected) or row.get('sha256') != expected:
-            raise ValueError('source_gate_stage_bytes_mismatch')
-    return value
 
 
 def server_cli_environment(stage, env):
@@ -165,18 +141,14 @@ def verify_qualification(target, stages, descriptor=None, *, environ=None):
             or value.get('build_id') != descriptor['build_id'] or value.get('role') != 'server'
             or value.get('manifest_sha256') != target['manifest_sha256']
             or value.get('source_commit') != descriptor['source_commit']
-            or value.get('source_receipt_sha256') != descriptor['source_receipt_sha256']
-            or value.get('checks') != {'source_validation': 'passed', 'isolated_runtime': 'passed',
-                                       'server_cli_entry': 'passed', 'cleanup': 'passed'}):
+            or value.get('checks') != {'isolated_runtime': 'passed', 'server_cli_entry': 'passed',
+                                       'cleanup': 'passed'}):
         raise ValueError('stage_qualification_mismatch')
-    raw = value.get('source_receipt_raw', '').encode('utf-8')
-    if hashlib.sha256(raw).hexdigest() != descriptor['source_receipt_sha256']:
-        raise ValueError('source_receipt_changed')
     inputs = descriptor['source_files']
     if (inputs != source_inventory(Path(target['path']))
             or any(descriptor['files'].get(name) != hashed for name, hashed in inputs.items())):
         raise ValueError('stage_source_changed')
-    validate_source_receipt(document(raw), descriptor['source_commit'], inputs)
+    require_source_inputs(inputs)
     validate_runtime_proof(value.get('runtime', {}), value.get('tool_sha256', {}), descriptor)
     current_tools = qualification_tools(stages.parent.parent)
     if (value.get('qualification_tools') != current_tools

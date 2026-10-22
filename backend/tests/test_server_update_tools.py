@@ -1,25 +1,16 @@
-"""Server update helpers: verifier interpreter provisioning and receipt publishing (temporary files only)."""
-import hashlib
+"""Server update helper: verifier interpreter provisioning (temporary files only)."""
 import importlib
-import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
-import threading
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools'))
 verifier = importlib.import_module('server_verifier')
-publisher = importlib.import_module('publish_server_receipt')
-activation = importlib.import_module('server_activation')
-
-REQUIRED = ('backend/app/main.py', 'backend/serve.py', 'backend/schema.sql', 'backend/requirements.lock.txt',
-            'frontend/package.json', 'frontend/package-lock.json', 'tools/predeploy_gate.ps1',
-            'tools/validation_result.ps1', 'hf_cli_version.txt')
 
 
 def test_verifier_pin_matches_dev_requirements_and_is_hash_locked():
@@ -118,87 +109,3 @@ def test_redirected_verifier_path_never_runs_a_python(tmp_path, link):
 def test_real_verifier_install_matches_the_lock(tmp_path):
     python = verifier.ensure(tmp_path)
     assert verifier.check(python)
-
-
-def receipt(commit='a' * 40, *, skipped=False, dirty=False):
-    files = [{'path': name, 'size': 1, 'sha256': hashlib.sha256(name.encode()).hexdigest(), 'tracked': True}
-             for name in REQUIRED]
-    source = {'commit': commit, 'dirty': dirty, 'sha256': 'b' * 64, 'file_count': len(files), 'files': files}
-    steps = [{'name': name, 'status': 'passed', 'exit_code': 0} for name in sorted(activation.SOURCE_STEPS)]
-    if skipped:
-        steps[0]['status'] = 'skipped'
-    value = {'format_version': 1, 'scope': 'source-only', 'status': 'passed', 'passed': True,
-             'source': source, 'source_after': json.loads(json.dumps(source)), 'source_unchanged': True,
-             'run_id': 'fixture', 'finished_at': '2026-10-22T00:00:00+00:00', 'steps': steps}
-    return json.dumps(value, indent=2).encode()
-
-
-def write(path, raw):
-    path.write_bytes(raw)
-    return path
-
-
-def test_valid_receipt_is_published_byte_for_byte_by_commit(tmp_path):
-    raw = receipt()
-    dest = tmp_path / 'share'
-    dest.mkdir()
-    published = publisher.publish(write(tmp_path / 'validation.json', raw), dest)
-    assert published == dest / ('a' * 40 + '.json') and published.read_bytes() == raw
-    assert [p.name for p in dest.iterdir()] == [published.name]
-    assert publisher.publish(write(tmp_path / 'again.json', raw), dest) == published  # identical: reused
-
-
-def test_different_receipt_for_a_published_commit_is_refused(tmp_path):
-    dest = tmp_path / 'share'
-    dest.mkdir()
-    first = publisher.publish(write(tmp_path / 'one.json', receipt()), dest)
-    before = first.read_bytes()
-    with pytest.raises(ValueError, match='published_receipt_differs'):
-        publisher.publish(write(tmp_path / 'two.json', receipt() + b'\n'), dest)
-    assert first.read_bytes() == before and [p.name for p in dest.iterdir()] == [first.name]
-
-
-@pytest.mark.parametrize('raw,error', [
-    (receipt('../../outside'), 'receipt_commit_invalid'),
-    (receipt('A' * 40), 'receipt_commit_invalid'),
-    (receipt(skipped=True), 'source_gate_required_step_not_passed'),
-    (receipt(dirty=True), 'source_gate_not_clean_selected_commit'),
-])
-def test_receipts_the_server_would_refuse_are_never_published(tmp_path, raw, error):
-    dest = tmp_path / 'share'
-    dest.mkdir()
-    with pytest.raises(ValueError, match=error):
-        publisher.publish(write(tmp_path / 'validation.json', raw), dest)
-    assert list(dest.iterdir()) == [] and not (tmp_path / 'outside.json').exists()
-
-
-def test_failed_write_leaves_no_partial_file(tmp_path, monkeypatch):
-    dest = tmp_path / 'share'
-    dest.mkdir()
-    def full_disk(_):
-        raise OSError(28, 'No space left on device')
-    monkeypatch.setattr(publisher.os, 'fsync', full_disk)
-    with pytest.raises(OSError):
-        publisher.publish(write(tmp_path / 'validation.json', receipt()), dest)
-    assert list(dest.iterdir()) == []
-
-
-def test_concurrent_publishers_leave_one_complete_file(tmp_path):
-    raw = receipt()
-    dest = tmp_path / 'share'
-    dest.mkdir()
-    sources = [write(tmp_path / f'{i}.json', raw) for i in range(4)]
-    errors = []
-    def run(path):
-        try:
-            publisher.publish(path, dest)
-        except Exception as exc:  # pragma: no cover - reported below
-            errors.append(exc)
-    threads = [threading.Thread(target=run, args=(path,)) for path in sources]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-    assert not errors
-    assert [p.name for p in dest.iterdir()] == ['a' * 40 + '.json']
-    assert (dest / ('a' * 40 + '.json')).read_bytes() == raw

@@ -1,5 +1,4 @@
 """Copy-only tests. Fake build/probe/HTTP processes; no network, servers or database opens."""
-import copy
 import ast
 import hashlib
 import importlib
@@ -65,8 +64,8 @@ def write_venv_config(stage):
         f'home = {base.parent}\ninclude-system-site-packages = false\nexecutable = {base}\n',encoding='utf-8')
 
 
-def seed_stage(root):
-    stage = root / 'logs/server-stages/build1'
+def seed_stage(root, build='build1'):
+    stage = root / 'logs/server-stages' / build
     inputs = ['backend/app/main.py', 'backend/serve.py', 'backend/schema.sql', 'backend/requirements.lock.txt',
               'frontend/package.json', 'frontend/package-lock.json', 'tools/predeploy_gate.ps1',
               'tools/validation_result.ps1', 'hf_cli_version.txt']
@@ -78,28 +77,18 @@ def seed_stage(root):
     write_cli(stage / 'runtime/higgsfield')
     write_venv_config(stage)
     hashes = {name: activation.digest(stage / name) for name in inputs}
-    source = {'commit': 'a' * 40, 'dirty': False, 'sha256': 'b' * 64,
-              'file_count': len(hashes), 'files': [{'path': n, 'tracked': True, 'size': (stage/n).stat().st_size, 'sha256': h} for n,h in hashes.items()]}
-    receipt = {'format_version': 1, 'scope': 'source-only', 'status': 'passed', 'passed': True,
-               'release_eligible': False, 'run_id': 'source-run', 'finished_at': '2026-10-18T00:00:01+00:00',
-               'source': source, 'source_after': copy.deepcopy(source), 'source_unchanged': True,
-               'cleanup': {'status': 'not_measured'},
-               'steps': [{'name': n, 'status': 'passed', 'exit_code': 0} for n in activation.SOURCE_STEPS]
-                        + [{'name': 'Isolated load test', 'status': 'skipped', 'exit_code': None}]}
-    raw = json_bytes(receipt)
-    descriptor = {'format_version': 1, 'role': 'server', 'build_id': 'build1', 'source_commit': 'a' * 40,
-                  'source_files': hashes, 'source_receipt_sha256': hashlib.sha256(raw).hexdigest(),
-                  'python_base': activation.stage_python_base(stage),
+    descriptor = {'format_version': 1, 'role': 'server', 'build_id': build, 'source_commit': 'a' * 40,
+                  'source_files': hashes, 'python_base': activation.stage_python_base(stage),
                   'compatibility': compat(), 'files': {p.relative_to(stage).as_posix(): activation.digest(p) for p in stage.rglob('*') if p.is_file()}}
     activation.atomic_json(stage / 'server-stage.json', descriptor)
-    target = {'path': str(stage), 'python': str(stage / '.venv/Scripts/python.exe'), 'build_id': 'build1',
+    target = {'path': str(stage), 'python': str(stage / '.venv/Scripts/python.exe'), 'build_id': build,
               'compatibility': compat(), 'manifest_sha256': activation.digest(stage/'server-stage.json')}
     for name in (*activation.PROBE_TOOLS, *activation.COORDINATOR_TOOLS):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b'fixture trusted verifier never executed ' + name.encode())
-    verifier = root/'trusted/python.exe';verifier.parent.mkdir();verifier.write_bytes(b'trusted fixture')
-    return stage, target, receipt, raw, verifier
+    verifier = root/'trusted/python.exe';verifier.parent.mkdir(exist_ok=True);verifier.write_bytes(b'trusted fixture')
+    return stage, target, verifier
 
 
 def fake_probe(command, **kwargs):
@@ -182,8 +171,8 @@ def test_changed_tls_files_are_rejected_before_journal_or_stop(tmp_path,monkeypa
 
 
 def test_changed_tls_immediately_before_stop_retains_old_context_and_process(tmp_path,monkeypatch):
-    stage,target,value,raw,verifier=seed_stage(tmp_path)
-    target=builder.qualify_stage(tmp_path,stage,target,raw,verifier,probe_run=fake_probe)
+    stage,target,verifier=seed_stage(tmp_path)
+    target=builder.qualify_stage(tmp_path,stage,target,verifier,probe_run=fake_probe)
     cert,key,context,factory,server_context,constructor=seed_tls(tmp_path,monkeypatch)
     manager=activation.ServerActivation(tmp_path,environ={**os.environ,'CONTENT_HUB_SSL_CERTFILE':str(cert),'CONTENT_HUB_SSL_KEYFILE':str(key)})
     activation.atomic_json(manager.request,{'target':target})
@@ -229,41 +218,30 @@ def test_shared_probe_tools_import_has_no_app_or_optional_runtime_startup(tmp_pa
     assert 'shared tools imported' in result.stdout
 
 
-def test_source_gate_optional_load_skip_is_not_artifact_eligibility(tmp_path):
-    stage,target,receipt,raw,verifier=seed_stage(tmp_path)
-    assert activation.validate_source_receipt(receipt,'a'*40,activation.source_inventory(stage))==receipt
-    assert receipt['release_eligible'] is False
+@pytest.mark.parametrize('missing', sorted(activation.REQUIRED_SOURCE_INPUTS))
+def test_stage_without_a_required_source_input_is_rejected(tmp_path, missing):
+    stage,target,verifier=seed_stage(tmp_path)
+    inputs=activation.source_inventory(stage)
+    activation.require_source_inputs(inputs)
+    inputs.pop(missing)
+    with pytest.raises(ValueError,match='stage_source_inputs_missing'): activation.require_source_inputs(inputs)
 
 
-@pytest.mark.parametrize('damage',['dirty','commit','changed','step_skip','missing_step','file_hash','untracked','duplicate','unknown_inventory'])
-def test_bad_source_receipt_or_stage_input_rejected(tmp_path,damage):
-    stage,target,value,raw,verifier=seed_stage(tmp_path)
-    if damage=='dirty': value['source']['dirty']=True
-    elif damage=='commit': value['source']['commit']='c'*40
-    elif damage=='changed': value['source_unchanged']=False
-    elif damage=='step_skip': value['steps'][0]['status']='skipped'
-    elif damage=='missing_step': value['steps'].pop(0)
-    elif damage=='file_hash': value['source']['files'][0]['sha256']='f'*64
-    elif damage=='untracked': value['source']['files'][0]['tracked']=False
-    elif damage=='duplicate': value['steps'].append(copy.deepcopy(value['steps'][0]))
-    else: value['source']['file_count']+=1
-    value['source_after']=copy.deepcopy(value['source'])
-    with pytest.raises(ValueError): activation.validate_source_receipt(value,'a'*40,activation.source_inventory(stage))
-
-
-def test_probe_receipt_binds_same_stage_and_source_without_self_hash_cycle(tmp_path):
-    stage,target,value,raw,verifier=seed_stage(tmp_path)
+def test_probe_record_binds_same_stage_without_receipt_or_self_hash_cycle(tmp_path):
+    stage,target,verifier=seed_stage(tmp_path)
     before=activation.digest(stage/'server-stage.json')
-    result=builder.qualify_stage(tmp_path,stage,target,raw,verifier,probe_run=fake_probe)
+    result=builder.qualify_stage(tmp_path,stage,target,verifier,probe_run=fake_probe)
     proof=activation.verify_qualification(result,tmp_path/'logs/server-stages')
-    assert proof['source_receipt_sha256']==hashlib.sha256(raw).hexdigest()
+    assert proof['profile']=='server-source-v2'
+    assert not {'source_receipt_sha256','source_receipt_raw'} & proof.keys()
+    assert 'source_validation' not in proof['checks']
     assert before==activation.digest(stage/'server-stage.json')
     assert Path(result['qualification_path']).parent!=stage
 
 
 @pytest.mark.parametrize('damage',['exit','identity','cleanup','descriptor','payload','tool','python','missing_db','stage_change','extra_stage_file'])
 def test_probe_failure_never_creates_request_or_passes_qualification(tmp_path,damage):
-    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    stage,target,verifier=seed_stage(tmp_path)
     def probe(command,**kwargs):
         result=fake_probe(command,**kwargs)
         if command[-1]=='version': return result
@@ -279,12 +257,12 @@ def test_probe_failure_never_creates_request_or_passes_qualification(tmp_path,da
         if damage=='stage_change': (stage/'backend/serve.py').write_bytes(b'changed')
         if damage=='extra_stage_file': (stage/'extra.py').write_bytes(b'changed')
         return subprocess.CompletedProcess(command,0,json_bytes(proof),b'')
-    with pytest.raises(ValueError): builder.qualify_stage(tmp_path,stage,target,raw,verifier,probe_run=probe)
+    with pytest.raises(ValueError): builder.qualify_stage(tmp_path,stage,target,verifier,probe_run=probe)
     assert not (tmp_path/'logs/server-update-request.json').exists()
 
 
 def test_supervisor_checks_qualification_before_old_process_or_journal(tmp_path,monkeypatch):
-    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    stage,target,verifier=seed_stage(tmp_path)
     manager=activation.ServerActivation(tmp_path,environ={})
     activation.atomic_json(manager.request,{'target':target})
     stopped=Mock();monkeypatch.setattr(manager,'stop_owned',stopped)
@@ -293,9 +271,60 @@ def test_supervisor_checks_qualification_before_old_process_or_journal(tmp_path,
     assert not manager.journal_path.exists()
 
 
-def test_receipt_tampering_is_rejected_on_supervisor_recheck(tmp_path):
-    stage,target,value,raw,verifier=seed_stage(tmp_path)
-    target=builder.qualify_stage(tmp_path,stage,target,raw,verifier,probe_run=fake_probe)
+def qualified(root, build):
+    stage,target,verifier=seed_stage(root,build)
+    return builder.qualify_stage(root,stage,target,verifier,probe_run=fake_probe)
+
+
+def test_supervisor_restarts_on_a_v2_stage_and_rejects_a_v1_record(tmp_path):
+    target=qualified(tmp_path,'build1')
+    pointer=tmp_path/'logs/server-current.json'
+    activation.atomic_json(pointer,target)
+    assert activation.ServerActivation(tmp_path,environ=dict(os.environ)).current['build_id']=='build1'
+    # A record written by the receipt-era coordinator (profile v1) is never accepted again.
+    record=Path(target['qualification_path'])
+    value=json.loads(record.read_bytes())
+    value.update(profile='server-source-v1',source_receipt_sha256='0'*64,source_receipt_raw='{}',
+                 checks={'source_validation':'passed',**value['checks']})
+    record.write_bytes(json_bytes(value))
+    activation.atomic_json(pointer,{**target,'qualification_sha256':activation.digest(record)})
+    with pytest.raises(ValueError,match='stage_qualification_mismatch'):
+        activation.ServerActivation(tmp_path,environ=dict(os.environ))
+
+
+def test_failed_v2_switch_returns_to_the_previous_v2_stage(tmp_path, monkeypatch):
+    first,second=qualified(tmp_path,'build1'),qualified(tmp_path,'build2')
+    activation.atomic_json(tmp_path/'logs/server-current.json',first)
+    manager=activation.ServerActivation(tmp_path,environ=dict(os.environ))
+    activation.atomic_json(manager.request,{'target':second})
+    class Process:
+        def __init__(self): self.stopped=False
+        def poll(self): return 0 if self.stopped else None
+        def terminate(self): self.stopped=True
+        def wait(self,timeout=None): return 0
+    manager.process=Process()
+    spawned=[]
+    def spawn(current,*,pending=False):
+        spawned.append(current['build_id'])
+        manager.process=Process()
+    def ready(current,**kwargs):
+        if current['build_id']=='build2': raise TimeoutError('fixture start failure')
+        return {'pid':123,'creation_time':'synthetic'}
+    row={'key':'fixture','database_id':'fixture-db','status':'compatible','schema_version':1,
+         'minimum_reader_protocol':1,'minimum_writer_protocol':1,'components':['content_core']}
+    monkeypatch.setattr(manager,'spawn',spawn)
+    monkeypatch.setattr(manager,'wait_ready',ready)
+    monkeypatch.setattr(manager,'checkpoint',lambda _:[row])
+    with pytest.raises(TimeoutError):
+        manager.apply_request()
+    assert activation.read_journal(manager.journal_path)['phase']=='rolled_back'
+    assert spawned==['build2','build1']
+    assert json.loads((tmp_path/'logs/server-current.json').read_bytes())['build_id']=='build1'
+
+
+def test_qualification_record_tampering_is_rejected_on_supervisor_recheck(tmp_path):
+    stage,target,verifier=seed_stage(tmp_path)
+    target=builder.qualify_stage(tmp_path,stage,target,verifier,probe_run=fake_probe)
     Path(target['qualification_path']).write_text('{}')
     with pytest.raises(ValueError,match='qualification_changed'):
         activation.verify_qualification(target,tmp_path/'logs/server-stages')
@@ -303,9 +332,9 @@ def test_receipt_tampering_is_rejected_on_supervisor_recheck(tmp_path):
 
 @pytest.mark.parametrize('damage', ['shim', 'powershell_shim', 'node', 'javascript', 'package', 'binary', 'probe', 'helper', 'activation', 'builder', 'venv', 'venv_config'])
 def test_supervisor_rechecks_actual_cli_and_verifier_bytes_before_stopping(tmp_path, monkeypatch, cli_fixture, damage):
-    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    stage,target,verifier=seed_stage(tmp_path)
     cli_fixture=stage/'runtime/higgsfield'
-    target=builder.qualify_stage(tmp_path,stage,target,raw,verifier,probe_run=fake_probe)
+    target=builder.qualify_stage(tmp_path,stage,target,verifier,probe_run=fake_probe)
     manager=activation.ServerActivation(tmp_path,environ=dict(os.environ))
     paths={'shim':cli_fixture/'higgsfield.cmd', 'node':cli_fixture/'node.exe',
            'powershell_shim':cli_fixture/'higgsfield.ps1',
@@ -325,8 +354,8 @@ def test_supervisor_rechecks_actual_cli_and_verifier_bytes_before_stopping(tmp_p
 
 
 def test_cli_environment_selected_by_supervisor_ignores_user_path(tmp_path, monkeypatch, cli_fixture):
-    stage,target,value,raw,verifier=seed_stage(tmp_path)
-    target=builder.qualify_stage(tmp_path,stage,target,raw,verifier,probe_run=fake_probe)
+    stage,target,verifier=seed_stage(tmp_path)
+    target=builder.qualify_stage(tmp_path,stage,target,verifier,probe_run=fake_probe)
     other=tmp_path/'other-cli'
     import shutil
     shutil.copytree(cli_fixture,other)
@@ -335,8 +364,8 @@ def test_cli_environment_selected_by_supervisor_ignores_user_path(tmp_path, monk
 
 
 def test_different_supervisor_base_python_is_rejected_before_journal(tmp_path, monkeypatch):
-    stage,target,value,raw,verifier=seed_stage(tmp_path)
-    target=builder.qualify_stage(tmp_path,stage,target,raw,verifier,probe_run=fake_probe)
+    stage,target,verifier=seed_stage(tmp_path)
+    target=builder.qualify_stage(tmp_path,stage,target,verifier,probe_run=fake_probe)
     manager=activation.ServerActivation(tmp_path,environ=dict(os.environ))
     other=tmp_path/'other-python.exe';other.write_bytes(b'other interpreter never executed')
     monkeypatch.setattr(sys,'_base_executable',str(other))
@@ -350,8 +379,8 @@ def test_different_supervisor_base_python_is_rejected_before_journal(tmp_path, m
 def test_base_python_file_mutation_is_rejected_without_executing_it(tmp_path, monkeypatch):
     base=tmp_path/'fixture-base/python.exe';base.parent.mkdir();base.write_bytes(b'base never executed')
     monkeypatch.setattr(sys,'_base_executable',str(base))
-    stage,target,value,raw,verifier=seed_stage(tmp_path)
-    target=builder.qualify_stage(tmp_path,stage,target,raw,verifier,probe_run=fake_probe)
+    stage,target,verifier=seed_stage(tmp_path)
+    target=builder.qualify_stage(tmp_path,stage,target,verifier,probe_run=fake_probe)
     manager=activation.ServerActivation(tmp_path,environ=dict(os.environ))
     base.write_bytes(b'changed base')
     activation.atomic_json(manager.request,{'target':target})
@@ -363,7 +392,7 @@ def test_base_python_file_mutation_is_rejected_without_executing_it(tmp_path, mo
 
 @pytest.mark.parametrize('damage',['home_mismatch','global_site_packages','duplicate'])
 def test_venv_base_configuration_is_not_an_unchecked_hint(tmp_path,damage):
-    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    stage,target,verifier=seed_stage(tmp_path)
     cfg=stage/'.venv/pyvenv.cfg';text=cfg.read_text()
     if damage=='home_mismatch': text=text.replace(f'home = {Path(sys._base_executable).resolve().parent}',f'home = {tmp_path}')
     elif damage=='global_site_packages': text=text.replace('false','true')
@@ -374,7 +403,7 @@ def test_venv_base_configuration_is_not_an_unchecked_hint(tmp_path,damage):
 
 @pytest.mark.parametrize('layout', ['sibling', 'hf'])
 def test_read_only_cli_resolution_matches_runtime_node_precedence(tmp_path, monkeypatch, cli_fixture, layout):
-    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    stage,target,verifier=seed_stage(tmp_path)
     cli_fixture=stage/'runtime/higgsfield'
     monkeypatch.setenv('PATH',str(cli_fixture))
     if layout=='hf':
@@ -400,7 +429,7 @@ def test_read_only_cli_resolution_matches_runtime_node_precedence(tmp_path, monk
 
 @pytest.mark.parametrize('damage', ['version', 'node_options', 'node_path', 'relative_path', 'native', 'cwd_shadow', 'missing_shim', 'missing_node', 'missing_binary'])
 def test_unsupported_or_mismatched_cli_configuration_is_rejected(tmp_path, monkeypatch, cli_fixture, damage):
-    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    stage,target,verifier=seed_stage(tmp_path)
     cli_fixture=stage/'runtime/higgsfield'
     env=dict(os.environ)
     if damage=='version': (stage/'hf_cli_version.txt').write_text('2.0.0')
@@ -419,8 +448,8 @@ def test_unsupported_or_mismatched_cli_configuration_is_rejected(tmp_path, monke
 
 @pytest.mark.parametrize('empty_path', ['', ';', ';;'])
 def test_empty_path_entries_are_removed_from_inspection_and_server_child(tmp_path, monkeypatch, empty_path):
-    stage,target,value,raw,verifier=seed_stage(tmp_path)
-    target=builder.qualify_stage(tmp_path,stage,target,raw,verifier,probe_run=fake_probe)
+    stage,target,verifier=seed_stage(tmp_path)
+    target=builder.qualify_stage(tmp_path,stage,target,verifier,probe_run=fake_probe)
     system_path=str(tmp_path/'system-tools')
     env={**os.environ,'PATH':empty_path+system_path+';'}
     proof=activation.verify_qualification(target,tmp_path/'logs/server-stages',environ=env)
@@ -435,27 +464,19 @@ def test_empty_path_entries_are_removed_from_inspection_and_server_child(tmp_pat
 
 @pytest.mark.parametrize('unsafe_path', ['.;', r'\\server\share;', 'relative;;'])
 def test_empty_path_filter_does_not_allow_relative_or_remote_search(tmp_path, unsafe_path):
-    stage,target,value,raw,verifier=seed_stage(tmp_path)
+    stage,target,verifier=seed_stage(tmp_path)
     with pytest.raises(ValueError,match='absolute_local_path_required'):
         activation.inspect_server_cli(stage,tmp_path,{**os.environ,'PATH':unsafe_path})
 
 
-def prepare_fixture(root, monkeypatch, pin='1.2.3'):
+def prepare_fixture(root, monkeypatch, pin='1.2.3', drop=()):
     """Real coordinator, fake git/build and common probe subprocess, no executable runs."""
     inputs={name:b'fixture source '+name.encode() for name in
             ('backend/app/main.py','backend/serve.py','backend/schema.sql','backend/requirements.lock.txt',
              'frontend/package.json','frontend/package-lock.json','tools/predeploy_gate.ps1',
-             'tools/validation_result.ps1','hf_cli_version.txt')}
-    inputs['hf_cli_version.txt']=(pin+'\n').encode()
+             'tools/validation_result.ps1','hf_cli_version.txt') if name not in drop}
+    if 'hf_cli_version.txt' not in drop: inputs['hf_cli_version.txt']=(pin+'\n').encode()
     inputs['release/compatibility.json']=json_bytes(compat())
-    source={'commit':'a'*40,'dirty':False,'sha256':'b'*64,'file_count':len(inputs),
-            'files':[{'path':n,'size':len(raw),'sha256':hashlib.sha256(raw).hexdigest(),'tracked':True}
-                     for n,raw in inputs.items()]}
-    receipt={'format_version':1,'scope':'source-only','status':'passed','passed':True,'release_eligible':False,
-             'source':source,'source_after':copy.deepcopy(source),'source_unchanged':True,
-             'run_id':'clean-source-fixture','finished_at':'2026-10-18T00:00:01+00:00',
-             'steps':[{'name':n,'status':'passed','exit_code':0} for n in activation.SOURCE_STEPS]}
-    receipt_path=root/'source-receipt.json';receipt_path.write_bytes(json_bytes(receipt))
     verifier=root/'trusted/python.exe';verifier.parent.mkdir();verifier.write_bytes(b'trusted never executed')
     for name in (*activation.PROBE_TOOLS,*activation.COORDINATOR_TOOLS):
         path=root/name;path.parent.mkdir(parents=True,exist_ok=True)
@@ -491,12 +512,12 @@ def prepare_fixture(root, monkeypatch, pin='1.2.3'):
         if env is not None:
             assert 'CONTENT_HUB_AUTH_SECRET' not in env
             assert Path(env['CONTENT_HUB_DB']).is_relative_to(root/'logs')
-    return receipt_path,verifier,run,calls
+    return verifier,run,calls
 
 
 @pytest.mark.parametrize('layout', ['sibling', 'path', 'missing'])
 def test_prepare_copies_npm_node_into_stage(tmp_path, monkeypatch, cli_fixture, layout):
-    receipt,verifier,run,calls=prepare_fixture(tmp_path,monkeypatch)
+    verifier,run,calls=prepare_fixture(tmp_path,monkeypatch)
     path_dir=tmp_path/'path-node';path_dir.mkdir()
     path_node=path_dir/'node.exe'
     if layout!='missing': path_node.write_bytes(b'fixture PATH node never executed')
@@ -510,12 +531,12 @@ def test_prepare_copies_npm_node_into_stage(tmp_path, monkeypatch, cli_fixture, 
         return run(command,**kwargs)
     if layout=='missing':
         with pytest.raises(ValueError,match='node_not_found'):
-            builder.prepare(tmp_path,source_receipt=receipt,verification_python=verifier,
+            builder.prepare(tmp_path,verification_python=verifier,
                             run=install,probe_run=fake_probe)
         assert not any('--prefix' in c for c in calls)
         assert not (tmp_path/'logs/server-update-request.json').exists()
         return
-    builder.prepare(tmp_path,source_receipt=receipt,verification_python=verifier,
+    builder.prepare(tmp_path,verification_python=verifier,
                     run=install,probe_run=fake_probe)
     target=json.loads((tmp_path/'logs/server-update-request.json').read_bytes())['target']
     node=Path(target['path'])/'runtime/higgsfield/node.exe'
@@ -526,7 +547,7 @@ def test_prepare_copies_npm_node_into_stage(tmp_path, monkeypatch, cli_fixture, 
 
 @pytest.mark.parametrize('old_cli', ['missing', '1.1.26'])
 def test_post_1358_next_stage_prepares_pinned_cli_for_admin_and_system(tmp_path, monkeypatch, cli_fixture, old_cli):
-    receipt,verifier,run,calls=prepare_fixture(tmp_path,monkeypatch,pin='1.2.2')
+    verifier,run,calls=prepare_fixture(tmp_path,monkeypatch,pin='1.2.2')
     if old_cli=='missing':
         (cli_fixture/'higgsfield.cmd').unlink()
     else:
@@ -535,7 +556,7 @@ def test_post_1358_next_stage_prepares_pinned_cli_for_admin_and_system(tmp_path,
     old_package=(cli_fixture/'node_modules/@higgsfield/cli/package.json').read_bytes()
     # The first git transition left no stage pointer and did not update the user's CLI.
     (tmp_path/'VERSION.txt').write_text('2026.10.16-1358')
-    builder.prepare(tmp_path,source_receipt=receipt,verification_python=verifier,run=run,probe_run=fake_probe)
+    builder.prepare(tmp_path,verification_python=verifier,run=run,probe_run=fake_probe)
     target=json.loads((tmp_path/'logs/server-update-request.json').read_bytes())['target']
     stage=Path(target['path'])
     system_env={**os.environ,'PATH':str(tmp_path/'system-only')}
@@ -555,7 +576,7 @@ def test_post_1358_next_stage_prepares_pinned_cli_for_admin_and_system(tmp_path,
 
 
 def test_failed_stage_cli_install_preserves_running_source_and_never_requests_activation(tmp_path, monkeypatch):
-    receipt,verifier,run,calls=prepare_fixture(tmp_path,monkeypatch)
+    verifier,run,calls=prepare_fixture(tmp_path,monkeypatch)
     sentinel=tmp_path/'backend/serve.py'
     sentinel.write_bytes(b'legacy running source')
     def fail_install(command,**kwargs):
@@ -563,7 +584,7 @@ def test_failed_stage_cli_install_preserves_running_source_and_never_requests_ac
             raise RuntimeError('fixture CLI install failed')
         return run(command,**kwargs)
     with pytest.raises(RuntimeError,match='fixture CLI install failed'):
-        builder.prepare(tmp_path,source_receipt=receipt,verification_python=verifier,
+        builder.prepare(tmp_path,verification_python=verifier,
                         run=fail_install,probe_run=fake_probe)
     assert sentinel.read_bytes()==b'legacy running source'
     assert not (tmp_path/'logs/server-update-request.json').exists()
@@ -573,7 +594,7 @@ def test_failed_stage_cli_install_preserves_running_source_and_never_requests_ac
 @pytest.mark.parametrize('failure', ['wrong_version', 'version_prefix', 'first_version',
                                      'banner_version_prefix', 'empty', 'exit', 'broken_node', 'timeout'])
 def test_failed_cli_execution_blocks_prepare_without_touching_running_server(tmp_path, monkeypatch, failure):
-    receipt,verifier,run,calls=prepare_fixture(tmp_path,monkeypatch)
+    verifier,run,calls=prepare_fixture(tmp_path,monkeypatch)
     sentinel=tmp_path/'backend/serve.py';sentinel.write_bytes(b'old running server')
     probes=[]
     def probe(command,**kwargs):
@@ -588,7 +609,7 @@ def test_failed_cli_execution_blocks_prepare_without_touching_running_server(tmp
                 'empty':b'', 'exit':b'higgsfield 1.2.3'}[failure]
         return subprocess.CompletedProcess(command,1 if failure=='exit' else 0,output,b'')
     with pytest.raises((ValueError,OSError,subprocess.TimeoutExpired)):
-        builder.prepare(tmp_path,source_receipt=receipt,verification_python=verifier,run=run,probe_run=probe)
+        builder.prepare(tmp_path,verification_python=verifier,run=run,probe_run=probe)
     assert len(probes)==1 and probes[0][-1]=='version'
     assert sentinel.read_bytes()==b'old running server'
     assert not (tmp_path/'logs/server-current.json').exists()
@@ -599,14 +620,14 @@ def test_failed_cli_execution_blocks_prepare_without_touching_running_server(tmp
 @pytest.mark.parametrize('suffix', ['', ' (windows-amd64)'])
 @pytest.mark.parametrize('prefix', ['', 'startup notice\r\n', 'startup notice\r\n\r\n  '])
 def test_cli_version_probe_runs_once_before_runtime_qualification(tmp_path, monkeypatch, suffix, prefix):
-    receipt,verifier,run,calls=prepare_fixture(tmp_path,monkeypatch)
+    verifier,run,calls=prepare_fixture(tmp_path,monkeypatch)
     probes=[]
     def probe(command,**kwargs):
         probes.append(command)
         result=fake_probe(command,**kwargs)
         if command[-1]=='version': result.stdout=(prefix+'higgsfield 1.2.3'+suffix+'\r\n').encode()
         return result
-    builder.prepare(tmp_path,source_receipt=receipt,verification_python=verifier,run=run,probe_run=probe)
+    builder.prepare(tmp_path,verification_python=verifier,run=run,probe_run=probe)
     assert len(probes)==2 and probes[0][-1]=='version' and 'probe' in probes[1]
     target=json.loads((tmp_path/'logs/server-update-request.json').read_bytes())['target']
     assert probes[0]==[str(Path(target['path'])/'runtime/higgsfield/node.exe'),
@@ -614,7 +635,7 @@ def test_cli_version_probe_runs_once_before_runtime_qualification(tmp_path, monk
 
 
 def test_default_cli_probe_uses_file_output_and_bounded_tree_cleanup(tmp_path, monkeypatch):
-    stage,target,receipt,raw,verifier=seed_stage(tmp_path)
+    stage,target,verifier=seed_stage(tmp_path)
     process=Mock(pid=123456)
     process.wait.side_effect=[subprocess.TimeoutExpired('fixture',60), 0]
     def launch(command, **kwargs):
@@ -627,7 +648,7 @@ def test_default_cli_probe_uses_file_output_and_bounded_tree_cleanup(tmp_path, m
     kill=Mock(side_effect=subprocess.TimeoutExpired('taskkill',5))
     monkeypatch.setattr(builder.subprocess,'run',kill)
     with pytest.raises(ValueError,match='^isolated_stage_cli_version_failed$'):
-        builder.qualify_stage(tmp_path,stage,target,raw,verifier)
+        builder.qualify_stage(tmp_path,stage,target,verifier)
     assert process.wait.call_args_list[0].kwargs=={'timeout':60}
     assert process.wait.call_args_list[1].kwargs=={'timeout':5}
     process.kill.assert_called_once()
@@ -649,7 +670,7 @@ import pytest
 import test_server_qualification as t
 root=Path(sys.argv[1])
 with pytest.MonkeyPatch.context() as mp:
-    receipt,verifier,run,calls=t.prepare_fixture(root,mp)
+    verifier,run,calls=t.prepare_fixture(root,mp)
     git=t.builder.subprocess.run
     mp.setattr(t.builder.subprocess,'run',lambda command,**kw:
                t.REAL_RUN(command,**kw) if command[0]=='taskkill' else git(command,**kw))
@@ -668,7 +689,7 @@ with pytest.MonkeyPatch.context() as mp:
         runner=getattr(t.builder,'_run_cli_version',t.REAL_RUN)
         return runner([sys.executable,'-c',cli_code],**kwargs)
     with pytest.raises(ValueError,match='^isolated_stage_cli_version_failed$'):
-        t.builder.prepare(root,source_receipt=receipt,verification_python=verifier,
+        t.builder.prepare(root,verification_python=verifier,
                           run=run,probe_run=probe)
     assert sentinel.read_bytes()==b'old running server'
     assert not (root/'logs/server-current.json').exists()
@@ -703,16 +724,16 @@ with pytest.MonkeyPatch.context() as mp:
 
 @pytest.mark.parametrize('pin', ['latest', '1.2.2 & echo unsafe'])
 def test_invalid_stage_cli_pin_is_rejected_before_npm_install(tmp_path, monkeypatch, pin):
-    receipt,verifier,run,calls=prepare_fixture(tmp_path,monkeypatch,pin=pin)
+    verifier,run,calls=prepare_fixture(tmp_path,monkeypatch,pin=pin)
     with pytest.raises(ValueError,match='server_cli_version_invalid'):
-        builder.prepare(tmp_path,source_receipt=receipt,verification_python=verifier,run=run,probe_run=fake_probe)
+        builder.prepare(tmp_path,verification_python=verifier,run=run,probe_run=fake_probe)
     assert not any('--prefix' in c for c in calls)
     assert not (tmp_path/'logs/server-update-request.json').exists()
 
 
 def test_complete_prepare_request_and_supervisor_verified_path(tmp_path, monkeypatch):
-    receipt,verifier,run,calls=prepare_fixture(tmp_path,monkeypatch)
-    run_id=builder.prepare(tmp_path,source_receipt=receipt,verification_python=verifier,
+    verifier,run,calls=prepare_fixture(tmp_path,monkeypatch)
+    run_id=builder.prepare(tmp_path,verification_python=verifier,
                            run=run,probe_run=fake_probe)
     request=json.loads((tmp_path/'logs/server-update-request.json').read_bytes())
     target=request['target'];stage=Path(target['path'])
@@ -746,25 +767,20 @@ def test_complete_prepare_request_and_supervisor_verified_path(tmp_path, monkeyp
     assert old.stopped and journal['phase']=='committed' and not manager.request.exists()
 
 
-@pytest.mark.parametrize('damage', ['receipt_commit','required_skip','probe_failure','verifier_mutation','source_mutation'])
+@pytest.mark.parametrize('damage', ['missing_required_input','probe_failure','verifier_mutation'])
 def test_prepare_failures_leave_old_tree_and_request_untouched(tmp_path, monkeypatch, damage):
-    receipt,verifier,run,calls=prepare_fixture(tmp_path,monkeypatch)
+    drop=('backend/serve.py',) if damage=='missing_required_input' else ()
+    verifier,run,calls=prepare_fixture(tmp_path,monkeypatch,drop=drop)
     sentinel=tmp_path/'backend/running.txt';sentinel.write_bytes(b'old service unchanged')
-    if damage in {'receipt_commit','required_skip'}:
-        value=json.loads(receipt.read_bytes())
-        if damage=='receipt_commit': value['source']['commit']='c'*40;value['source_after']=copy.deepcopy(value['source'])
-        else: value['steps'][0]['status']='skipped'
-        receipt.write_bytes(json_bytes(value))
     def probe(command,**kwargs):
         if damage=='probe_failure': return subprocess.CompletedProcess(command,1,b'{}',b'')
         result=fake_probe(command,**kwargs)
         if damage=='verifier_mutation': verifier.write_bytes(b'changed verifier')
-        if damage=='source_mutation': receipt.write_bytes(receipt.read_bytes()+b' ')
         return result
-    with pytest.raises(ValueError):
-        builder.prepare(tmp_path,source_receipt=receipt,verification_python=verifier,run=run,probe_run=probe)
-    if damage in {'receipt_commit','required_skip'}:
-        # A receipt for another commit (e.g. origin/main moved after it was chosen) stops before any install.
+    with pytest.raises(ValueError, match='stage_source_inputs_missing' if drop else None):
+        builder.prepare(tmp_path,verification_python=verifier,run=run,probe_run=probe)
+    if drop:
+        # A selected tree without a required server input stops before any install.
         assert not any({'venv','pip','ci','build','--prefix'} & set(c) for c in calls), calls
     assert sentinel.read_bytes()==b'old service unchanged'
     assert not (tmp_path/'logs/server-current.json').exists()
@@ -816,15 +832,6 @@ def real_prepare_fixture(tmp_path, monkeypatch):
     git(tmp_path, 'clone', str(selected), str(checkout))
     commit = git(selected, 'rev-parse', 'HEAD').decode().strip()
     git(root, 'remote', 'add', 'origin', str(selected))
-    source_files = activation.source_inventory(checkout)
-    source = {'commit': commit, 'dirty': False, 'sha256': 'b' * 64, 'file_count': len(source_files),
-              'files': [{'path': n, 'size': (checkout/n).stat().st_size, 'sha256': h, 'tracked': True}
-                        for n, h in source_files.items()]}
-    receipt = tmp_path / 'source-receipt.json'
-    receipt.write_bytes(json_bytes({'format_version': 1, 'scope': 'source-only', 'status': 'passed',
-        'passed': True, 'release_eligible': False, 'source': source, 'source_after': copy.deepcopy(source),
-        'source_unchanged': True, 'run_id': 'fixture-real-git', 'finished_at': '2026-10-21T00:00:00+00:00',
-        'steps': [{'name': n, 'status': 'passed', 'exit_code': 0} for n in activation.SOURCE_STEPS]}))
     verifier = tmp_path / 'verifier.exe'
     verifier.write_bytes(b'never executed')
     calls = []
@@ -848,13 +855,13 @@ def real_prepare_fixture(tmp_path, monkeypatch):
             write_cli(cli_dir, version=pin)
             (cli_dir/'node.exe').unlink()  # Node is copied separately by prepare.
 
-    return root, selected, checkout, declared, receipt, verifier, run, calls, git
+    return root, selected, checkout, declared, verifier, run, calls, git
 
 
 def test_prepare_reads_compatibility_from_selected_commit(tmp_path, monkeypatch):
-    root, selected, checkout, declared, receipt, verifier, run, calls, git = real_prepare_fixture(tmp_path, monkeypatch)
+    root, selected, checkout, declared, verifier, run, calls, git = real_prepare_fixture(tmp_path, monkeypatch)
     assert json.loads((root/'release/compatibility.json').read_bytes()) != declared
-    builder.prepare(root, source_receipt=receipt, verification_python=verifier, run=run, probe_run=fake_probe)
+    builder.prepare(root, verification_python=verifier, run=run, probe_run=fake_probe)
     target = json.loads((root/'logs/server-update-request.json').read_bytes())['target']
     descriptor = json.loads((Path(target['path'])/'server-stage.json').read_bytes())
     assert target['compatibility'] == descriptor['compatibility'] == declared
@@ -864,8 +871,8 @@ def test_prepare_reads_compatibility_from_selected_commit(tmp_path, monkeypatch)
 
 
 def test_windows_checkout_bytes_match_prepared_stage(tmp_path, monkeypatch):
-    root, selected, checkout, declared, receipt, verifier, run, calls, git = real_prepare_fixture(tmp_path, monkeypatch)
-    builder.prepare(root, source_receipt=receipt, verification_python=verifier, run=run, probe_run=fake_probe)
+    root, selected, checkout, declared, verifier, run, calls, git = real_prepare_fixture(tmp_path, monkeypatch)
+    builder.prepare(root, verification_python=verifier, run=run, probe_run=fake_probe)
     stage = Path(json.loads((root/'logs/server-update-request.json').read_bytes())['target']['path'])
     for name in ('tools/predeploy_gate.ps1', 'tools/validation_result.ps1', 'frontend/package.json'):
         assert b'\r\n' in (checkout/name).read_bytes()
@@ -875,17 +882,17 @@ def test_windows_checkout_bytes_match_prepared_stage(tmp_path, monkeypatch):
 
 
 def test_prepare_rejects_real_untracked_source(tmp_path, monkeypatch):
-    root, selected, checkout, declared, receipt, verifier, run, calls, git = real_prepare_fixture(tmp_path, monkeypatch)
+    root, selected, checkout, declared, verifier, run, calls, git = real_prepare_fixture(tmp_path, monkeypatch)
     (root/'untracked.txt').write_bytes(b'operator file')
     with pytest.raises(ValueError, match='server_source_is_dirty'):
-        builder.prepare(root, source_receipt=receipt, verification_python=verifier, run=run)
+        builder.prepare(root, verification_python=verifier, run=run)
     assert not calls
     assert not (root/'logs/server-update-request.json').exists()
 
 
 @pytest.mark.parametrize('damage', ['missing', 'invalid', 'undecided', 'duplicate_component', 'no_reader', 'no_components'])
 def test_missing_or_invalid_commit_declaration_creates_no_request(tmp_path, monkeypatch, damage):
-    root, selected, checkout, declared, receipt, verifier, run, calls, git = real_prepare_fixture(tmp_path, monkeypatch)
+    root, selected, checkout, declared, verifier, run, calls, git = real_prepare_fixture(tmp_path, monkeypatch)
     path = selected/'release/compatibility.json'
     if damage == 'missing':
         path.unlink()
@@ -901,43 +908,14 @@ def test_missing_or_invalid_commit_declaration_creates_no_request(tmp_path, monk
     git(selected, 'commit', '-m', 'Fixture invalid declaration')
     expected = '^selected_commit_declaration_missing$' if damage == 'missing' else None
     with pytest.raises(ValueError, match=expected):
-        builder.prepare(root, source_receipt=receipt, verification_python=verifier, run=run)
+        builder.prepare(root, verification_python=verifier, run=run)
     assert not (root/'logs/server-update-request.json').exists()
     assert not any('archive' in c for c in calls)
     assert not any('venv' in c for c in calls)
 
 
-def test_checkout_line_endings_are_not_ignored_by_receipt(tmp_path, monkeypatch):
-    root, selected, checkout, declared, receipt, verifier, run, calls, git = real_prepare_fixture(tmp_path, monkeypatch)
-    proof = json.loads(receipt.read_bytes())
-    for row in proof['source']['files']:
-        if row['path'] == 'tools/predeploy_gate.ps1':
-            lf_bytes = (checkout/row['path']).read_bytes().replace(b'\r\n', b'\n')
-            row['sha256'] = hashlib.sha256(lf_bytes).hexdigest()
-    proof['source_after'] = copy.deepcopy(proof['source'])
-    receipt.write_bytes(json_bytes(proof))
-    with pytest.raises(ValueError, match='source_gate_stage_bytes_mismatch'):
-        builder.prepare(root, source_receipt=receipt, verification_python=verifier, run=run)
-    assert not (root/'logs/server-update-request.json').exists()
-    assert not any('venv' in c for c in calls)
-
-
-def test_selected_declaration_is_bound_to_source_receipt(tmp_path, monkeypatch):
-    root, selected, checkout, declared, receipt, verifier, run, calls, git = real_prepare_fixture(tmp_path, monkeypatch)
-    proof = json.loads(receipt.read_bytes())
-    for row in proof['source']['files']:
-        if row['path'] == 'release/compatibility.json':
-            row['sha256'] = activation.digest(root/'release/compatibility.json')
-    proof['source_after'] = copy.deepcopy(proof['source'])
-    receipt.write_bytes(json_bytes(proof))
-    with pytest.raises(ValueError, match='source_gate_stage_bytes_mismatch'):
-        builder.prepare(root, source_receipt=receipt, verification_python=verifier, run=run)
-    assert not (root/'logs/server-update-request.json').exists()
-    assert not any('venv' in c for c in calls)
-
-
 def test_archive_declaration_must_match_selected_commit(tmp_path, monkeypatch):
-    receipt, verifier, run, calls = prepare_fixture(tmp_path, monkeypatch)
+    verifier, run, calls = prepare_fixture(tmp_path, monkeypatch)
 
     def altered_archive(command, **kwargs):
         run(command, **kwargs)
@@ -951,6 +929,6 @@ def test_archive_declaration_must_match_selected_commit(tmp_path, monkeypatch):
                     archive.writestr(name, raw)
 
     with pytest.raises(ValueError, match='staged_compatibility_mismatch'):
-        builder.prepare(tmp_path, source_receipt=receipt, verification_python=verifier, run=altered_archive)
+        builder.prepare(tmp_path, verification_python=verifier, run=altered_archive)
     assert not (tmp_path/'logs/server-update-request.json').exists()
     assert not any('venv' in c for c in calls)
