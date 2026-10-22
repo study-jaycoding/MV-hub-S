@@ -240,17 +240,21 @@ portable Python에서는 컴파일·GUI 개발용 `include`, `libs`, Tcl/Tk, IDL
 제외합니다. 대신 앱 의존성이 손상됐을 때 `MV_agent.bat`이 자동 복구할 수 있도록 고정 버전 `pip`는
 반드시 포함하고, 압축 검증에서도 실제 모듈 존재를 확인합니다.
 
-백엔드 패키지는 `backend/requirements.lock.txt`(Python 3.14 x64 휠의 판과 지문 SHA256, `pip` 포함)로
+백엔드 패키지는 `backend/requirements.lock.txt`(판과 지문 SHA256, `pip` 포함 — 컴파일 휠은 배포판 CPython 3.14 와
+공유 서버 staged 업데이트의 CPython 3.12, 둘 다 Windows x64 지문을 함께 둔다)로
 `pip --isolated install --require-hashes --only-binary=:all:`(이 PC 의 `pip.ini` 무시, 소스 빌드 금지)로 설치합니다.
 지문이 다르거나 휠이 없거나 잠금에서 빠진 하위 의존성이 있으면 릴리스가 멈춥니다(2026-10-16 Jay 3A — MCP 와 같은 방식).
-잠금 파일은 빌드할 때만 읽고 ZIP 에는 넣지 않습니다. `requirements.txt` 는 개발 환경과 설치본의 의존성 복구(`MV_agent.bat`, 지문 없음)용으로 그대로 둡니다.
+잠금 파일은 배포판 제작과 서버 staged 준비에서 읽으며, 배포 ZIP 에는 넣지 않습니다. `requirements.txt` 는 개발 환경과 설치본의 의존성 복구(`MV_agent.bat`, 지문 없음)용으로 그대로 둡니다.
 **백엔드 번들 의존성 갱신**(판을 올릴 때만):
 ① `requirements.txt` 의 판을 올립니다.
-② Python 3.14 x64 로 빈 폴더에 `pip --isolated download --only-binary=:all: -r backend/requirements.txt pip==25.3 -d <빈 폴더>` 를 실행합니다.
+② Python 3.14 x64 **와 Python 3.12 x64(공유 서버와 같은 판)** 로 각각 빈 폴더에
+   `pip --isolated download --only-binary=:all: -r backend/requirements.txt pip==25.3 -d <빈 폴더>` 를 실행합니다.
    요구 목록 밖의 휠이 받아지면 그 하위 의존성을 `requirements.txt` 에도 고정합니다.
-③ 받은 휠 **전부**의 판과 SHA256 으로 `requirements.lock.txt` 를 다시 씁니다(핀 아래 `--hash=sha256:…`).
-④ 또 다른 빈 대상에 릴리스와 같은 명령으로 설치해 봅니다.
-시험 `backend/tests/test_release_frontend_build.py`(`backend_lock`·`backend_install`)는 두 파일의 판이 어긋나면 실패합니다.
+③ 받은 휠 **전부**의 판과 SHA256 으로 `requirements.lock.txt` 를 다시 씁니다(핀 아래 `--hash=sha256:…`, 판 하나에
+   두 Python 의 휠이 다르면 지문 줄을 둘 다 — 마지막 지문 줄만 `\` 없이). 각 지문은 PyPI 가 공개한 sha256 과 대조합니다.
+④ 3.14 와 3.12 각각 새 venv 에 릴리스와 같은 명령으로 설치해 봅니다(서버 staged 업데이트도 같은 명령이다).
+시험 `backend/tests/test_release_frontend_build.py`(`backend_lock`·`backend_install`)는 두 파일의 판이 어긋나거나, 판에 지문이
+없거나, 줄 이음(`\`)이 빠졌거나, 컴파일 휠 6개에 지문이 둘 미만이면 실패합니다.
 
 ## 주의
 

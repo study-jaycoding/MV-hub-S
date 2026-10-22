@@ -69,6 +69,13 @@ status: active
 psutil, 인터넷 필요). 깨졌거나 판이 다르면 그 폴더를 `server-verifier.broken-<id>` 로 옮겨 두고 다시 만든다.
 stage 의 `.venv` 는 검증 Python 으로 쓰지 않는다.
 
+stage 의 `.venv` 는 준비 단계(`prepare`)를 실행한 Python 으로 만들어진다 — `update_git.bat` 경로에서는 `run_py.bat` 이 고른
+서버 Python(지금 공유 서버는 **CPython 3.12 Windows x64**)이다. 그 venv 는
+`backend/requirements.lock.txt` 의 지문으로만 설치된다. 잠금에는 배포판 3.14 와 서버 3.12 휠 지문이 함께 있어야 한다 —
+3.12 지문이 없으면 준비가 `prepare_step_exit_1`(로그 `THESE PACKAGES DO NOT MATCH THE HASHES`)로 멈춘다(2026-10-23,
+[기록](status/서버파이썬312_잠금지문_2026-10-23.md)). 서버에 다른 Python 을 따로 깔면 `update_git_worker.bat`(py -3)과
+`run_py.bat`(where python)이 서로 다른 Python 을 고를 수 있으니 먼저 확인한다.
+
 고급: 환경변수 `MVHUB_SERVER_VERIFICATION_PYTHON`(psutil 이 있는 Python)을 지정하고 실행하면 그 값이 우선한다.
 승격 창에는 이 값과 `MVHUB_NO_PAUSE=1` 만 인자로 명시 전달된다(따옴표·`%`·`!`·줄바꿈·끝 역슬래시가 든 값은 거부).
 
