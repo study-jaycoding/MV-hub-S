@@ -357,6 +357,7 @@ def test_update_scripts_keep_normal_process_cleanup_and_allow_only_explicit_brea
     assert '"run_release_update.ps1"' in builder
     assert '"update_release_worker.bat"' in builder
     assert "Assert-PythonRuntimeTree" in builder
+    assert "& $Exe -I -B -c $Probe" in builder
     assert "expected 64-bit runtime" in builder
 
 

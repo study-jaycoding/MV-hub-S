@@ -228,6 +228,20 @@ def test_release_mcp_tools_allowlist(tmp_path: Path, name: str, allowed: bool) -
 
 
 @pytest.mark.skipif(os.name != "nt", reason="PowerShell archive validator")
+@pytest.mark.parametrize("name,allowed", [
+    ("runtime/python/Lib/ast.py", True),
+    ("runtime/python/Lib/__pycache__/ast.cpython-314.pyc", False),
+    ("runtime/python/Lib/site-packages/fastapi/__pycache__/__init__.cpython-314.pyc", False),
+])
+def test_release_archive_rejects_bundled_python_bytecode(tmp_path: Path, name: str, allowed: bool) -> None:
+    # 설치 PC 의 파이썬이 다시 쓰는 캐시가 배포 목록에 실리면 1358 에서 올라온 설치본이 부팅을 거부한다.
+    result = _archive_probe(tmp_path, ["index-test.js"], extra=(name,))
+    assert (result.returncode == 0) == allowed, result.stderr
+    if not allowed:
+        assert "forbidden local/test data" in result.stderr
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell archive validator")
 @pytest.mark.parametrize("missing", [
     "tools/mcp_adapter/server.py",
     "tools/mcp_adapter/local_setup.py",

@@ -104,7 +104,9 @@ function Assert-PythonRuntimeTree {
         "import anyio,idna,click,h11,httptools,dotenv,yaml,watchfiles,colorama,pip",
         "print('%d.%d.%d|%d' % (*sys.version_info[:3], struct.calcsize('P') * 8))"
     ) -join ";"
-    $Output = @(& $Exe -I -c $Probe 2>&1)
+    # -B: 이 확인이 스테이징에 pyc 를 남기면 배포 목록에 실리고, 설치 PC 의 파이썬이 그 캐시를 다시 써
+    # 1358 에서 올라온 설치본이 지문 검사로 부팅을 거부한다(2026-10-22 1717 선설치).
+    $Output = @(& $Exe -I -B -c $Probe 2>&1)
     if ($LASTEXITCODE -ne 0 -or -not $Output) {
         throw "Bundled Python validation failed ($Label): $($Output -join ' ')"
     }
@@ -319,6 +321,7 @@ function Assert-ReleaseArchive {
                 $_ -notmatch "^tools/(install_db_probe\.py|stop_local_hub_on_port\.ps1|mcp_adapter/(server\.py|local_setup\.py|requirements\.txt|requirements\.lock\.txt))$" -and
                 $_ -notmatch "^tools/mcp_adapter/site-packages/") -or
             $_ -match "^tools/mcp_adapter/(.*/)?__pycache__(/|$)" -or
+            $_ -match "^runtime/python/.*\.pyc$" -or
             $_ -match "^(test_.*\.bat|setup_clone_git\.bat|update_git\.bat)$" -or
             $_ -match "(^|/)\.env($|\.)" -or
             $_ -match "(^|/)(publish_target|INSTALL_SOURCE)\.txt$"
