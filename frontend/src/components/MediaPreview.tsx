@@ -4,12 +4,15 @@
 import { useModalFocus } from "../lib/keyGate";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { recordGenerationView } from "../lib/generationViews";
 import { APP_EVENTS } from "../lib/appEvents";
-import { downloadGeneration, downloadOne } from "../lib/download";
+import { downloadGeneration, downloadOne, fetchBlob } from "../lib/download";
+import { flashMsg } from "../lib/flash";
+import { copyPng, imagePng, saveBlobAs, videoFramePng } from "../lib/mediaCapture";
 import { addWindowPointerDrag, keepHeadReachable, removeWindowPointerDrag } from "../lib/windowDrag";
 import type { PreviewTarget } from "../types";
-import { CloseIcon } from "./common/ViewIcons";
+import { CloseIcon, CopyIcon } from "./common/ViewIcons";
 
 interface Props {
   target: PreviewTarget;
@@ -97,9 +100,12 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
   // 항목이 바뀌면 준비 표시를 바로 지운다 — A→B→A 로 돌아오면 A 의 img·video 는 새로 마운트되는데 옛 표시가
   // 남아 있으면 자리 표시가 곧장 걷힌다(Codex 리뷰). effect 가 아니라 렌더 중에 고쳐 한 프레임도 새지 않게.
   const [seenUrl, setSeenUrl] = useState(cur.url);
+  // 우클릭 메뉴(프레임·이미지 캡쳐/저장 — Jay 2026-10-22). 다른 장으로 넘어가면 닫는다(메뉴는 연 장의 것이다).
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   if (seenUrl !== cur.url) {
     setSeenUrl(cur.url);
     setReadyUrl(null);
+    setMenu(null);
   }
   const thumb = cur.type === "audio" ? null : cur.thumb || null;
   useEffect(() => {
@@ -126,6 +132,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
 
   // Esc → 자기만 닫는다(맨 위 겹 — lib/useEscapeClose. 떠 있는 동안 뒤 화면의 단축키도 쉰다).
   useEscapeClose(onClose, true, true, true);
+  useEscapeClose(() => setMenu(null), !!menu, true, true); // 메뉴가 떠 있으면 Esc 는 메뉴만 닫는다(나중에 켜진 겹이 위)
   // 막이 있는 창 — 초점을 창(뿌리)에 둔다(lib/keyGate '모달의 초점'). 단추가 아니라 뿌리라 Space·Enter 는 전처럼 아래 리스너가 받는다
   //  (재생/정지). 뒤 격자의 초점 카드는 격자가 따로 쥐고 있어 그대로고, 닫으면 초점은 연 자리(격자)로 돌아간다.
   const boxRef = useRef<HTMLDivElement>(null);
@@ -195,6 +202,40 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
     removeWindowPointerDrag(onDragMove, onDragEnd);
   };
 
+  // ── 우클릭: 메뉴 · Ctrl = 바로 캡쳐 · Ctrl+Shift = 바로 저장 · Alt = 브라우저 원래 메뉴 ──
+  //  클립보드·저장 창은 누른 자리에서 부른다(lib/mediaCapture 머리말 — 사용자 동작이 식기 전에).
+  const isVideo = cur.type === "video";
+  const mediaPng = () => isVideo
+    ? (videoRef.current ? videoFramePng(videoRef.current) : Promise.reject(new Error("no video")))
+    : imagePng(cur.url, cur.name);
+  const captureMedia = () => {
+    setMenu(null);
+    void copyPng(mediaPng()).then((result) => flashMsg(
+      result === "ok" ? (isVideo ? "프레임을 클립보드에 담았습니다" : "이미지를 클립보드에 담았습니다")
+        : result === "media" ? "캡쳐하지 못했습니다 — 원본을 불러오지 못했습니다"
+          : "캡쳐하지 못했습니다 — 브라우저가 클립보드를 막았습니다",
+    ));
+  };
+  const saveMedia = () => {
+    setMenu(null);
+    const fileName = previewDownloadName(cur.url, cur.name, cur.type, cur.genId);
+    // 영상은 지금 장면(PNG — 이름 끝에 그 시각), 이미지는 원본 그대로(생성물이면 허브가 각인해 준다 — 다운로드와 같다)
+    const name = isVideo ? `${fileName.replace(/\.[^.]+$/, "")}_${(videoRef.current?.currentTime ?? 0).toFixed(2)}s.png` : fileName;
+    const blob = isVideo ? mediaPng() : fetchBlob(cur.url, fileName, cur.genId).then((data) => data ?? Promise.reject(new Error("fetch failed")));
+    void saveBlobAs(blob, name).then((result) => {
+      if (result === "failed") flashMsg("저장하지 못했습니다 — 원본을 불러오지 못했거나 파일을 쓰지 못했습니다");
+      else if (result !== "cancelled") flashMsg(`저장했습니다: ${name}`);
+    });
+  };
+  const onMediaContextMenu = (e: React.MouseEvent) => {
+    // 전체 화면 영상 위에는 앱 메뉴가 안 보인다(그 영상만 그려진다) — 그때의 그냥 우클릭은 브라우저 메뉴로 둔다
+    if (cur.type === "audio" || e.altKey || (document.fullscreenElement && !e.ctrlKey)) return;
+    e.preventDefault();
+    if (e.ctrlKey && e.shiftKey) saveMedia();
+    else if (e.ctrlKey) captureMedia();
+    else setMenu({ x: e.clientX, y: e.clientY });
+  };
+
   return (
     <div className="preview-backdrop" onMouseDown={onClose}>
       <div
@@ -256,7 +297,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
             <CloseIcon />
           </button>
         </header>
-        <div className="media-preview-body">
+        <div className="media-preview-body" onContextMenu={onMediaContextMenu}>
           {cur.type === "video" ? (
             <video
               ref={videoRef}
@@ -302,6 +343,37 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
             <img src={cur.url} alt={cur.name} draggable={false} />
           )}
         </div>
+        {/* 창(.media-preview)이 transform 이라 그 안의 fixed 는 창 기준이 된다 — body 로 옮겨 그린다. 바깥 누름은 메뉴만 닫는다. */}
+        {menu && createPortal(
+          <div
+            className="preview-menu-catcher"
+            onMouseDown={(e) => { e.stopPropagation(); setMenu(null); }}
+            onContextMenu={(e) => { e.preventDefault(); setMenu(null); }}
+          >
+            <div
+              className="preview-menu"
+              role="menu"
+              style={{ left: Math.max(4, Math.min(menu.x, window.innerWidth - 244)), top: Math.max(4, Math.min(menu.y, window.innerHeight - 84)) }}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <button type="button" role="menuitem" className="preview-menu-item" onClick={captureMedia}>
+                <CopyIcon />
+                <span>{isVideo ? "프레임 캡쳐" : "이미지 캡쳐"}</span>
+                <kbd>Ctrl+우클릭</kbd>
+              </button>
+              <button type="button" role="menuitem" className="preview-menu-item" onClick={saveMedia}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M12 4v11" />
+                  <path d="M7 10l5 5 5-5" />
+                  <path d="M5 20h14" />
+                </svg>
+                <span>{isVideo ? "프레임 저장" : "이미지 저장"}</span>
+                <kbd>Ctrl+Shift+우클릭</kbd>
+              </button>
+            </div>
+          </div>,
+          document.body,
+        )}
       </div>
     </div>
   );

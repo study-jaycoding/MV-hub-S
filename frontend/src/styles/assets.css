@@ -986,6 +986,22 @@
 /* 원본이 오는 동안의 자리 표시(썸네일)와 원본을 같은 칸에 겹친다 — 원본이 위라 받는 대로 덮어 그린다 */
 .media-preview-stack { display: grid; place-items: center; }
 .media-preview-stack > img { grid-area: 1 / 1; }
+/* 크게 보기 우클릭 메뉴(프레임·이미지 캡쳐/저장) — body 포털·고정 위치. 틀은 폴더 우클릭 메뉴(.folder-ctx-menu)와 같은 값,
+   줄은 편집 탭 트랙 메뉴(.ed-tmenu-item)와 같은 값(그 CSS 는 편집 탭을 열 때 실려 여기서 못 빌린다) */
+.preview-menu-catcher { position: fixed; inset: 0; z-index: 240; }
+.preview-menu {
+  position: fixed; display: flex; flex-direction: column; gap: 2px; padding: 6px;
+  background: var(--panel, #1c1c22); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.5);
+}
+.preview-menu-item {
+  height: 30px; padding: 0 10px 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text);
+  display: flex; align-items: center; gap: 9px; font-size: 12.5px; text-align: left; cursor: pointer; white-space: nowrap;
+}
+.preview-menu-item svg { flex: none; width: 14px; height: 14px; color: #aab0bd; }
+.preview-menu-item kbd { margin-left: auto; padding-left: 18px; font: inherit; font-size: 11px; color: var(--muted); }
+.preview-menu-item:hover, .preview-menu-item:focus-visible { background: rgba(255,255,255,0.08); outline: none; }
+.preview-menu-item:hover svg, .preview-menu-item:focus-visible svg { color: var(--accent, #c8ef40); }
 
 /* ── 토스트 ── */
 .toast {
