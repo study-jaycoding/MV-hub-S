@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-10-21
+updated: 2026-10-22
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -899,7 +899,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `marquee.ts` | 순수 | 러버밴드 사각형·적중 판정(생성·에셋 공용) |
 | `recipeScene.ts` | 순수 | 생성물 → "어떻게 만들었나" 씬 변환 |
 
-**11. 씬·캔버스 — 컨테이너 훅과 저장소(17)**
+**11. 씬·캔버스 — 컨테이너 훅과 저장소(18)**
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
@@ -919,7 +919,8 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `useSceneHistory.ts` | 훅 | 씬 undo/redo 조작 |
 | `useSceneInputCommit.ts` | 내부 훅 | 입력 저장400ms 지연·2초 상한·미확정 입력 종료 경고·카드 반영4모드. `useCanvasSession.ts`만 모드를 선택하며 취소/종료와 유효 대상 검사를 연결 |
 | `useSceneKeyboardShortcuts.ts` | 훅 | 캔버스 단축키 배선 · 안쪽에서 이미 쓴 Esc(`keyHandled`)는 건너뛴다 |
-| `useSceneClipboardDrop.ts` | 훅 | 붙여넣기·파일/에셋 드롭 처리 |
+| `useSceneClipboardDrop.ts` | 훅 | 붙여넣기·파일/에셋 드롭 처리 · 생성물 카드 끌기(`generation`·`generationList`)는 받아 `onDropGenerations` 로 넘긴다(보드가 생성물 카드로) |
+| `peekDragOut.ts` | 순수(알림) | 폴더 창 → 캔버스 끌어 놓기 알림 — 창 안 생성물 끌기 시작(카드 본문·⠿ 손잡이), 보드가 카드로 넣음. 창을 비키게·닫는 것은 App |
 | `useSceneColorActions.ts` | 훅 | 캔버스 카드 색 변경(범위 티켓) |
 | `useSceneCompletionWatcher.ts` | 훅 | App 레벨 '방금 생성' 완료 상시 감시 |
 | `useGenerationViewsSynced.ts` | 훅 | Last viewed 배지 구독 + 서버 동기 |
