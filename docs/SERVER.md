@@ -46,12 +46,12 @@ status: active
 전환판이 설치된 작업자 PC를 기준으로 다음 판부터 `enforced`와 `artifact-receipt-v1` 요구로 전환한다.
 1358 워커는 새 계약을 검사하지 않으므로 이 선언만으로 거부 동작을 보장하지 않는다.
 
-1. 고정 폴더 `D:\ClaudeCode\MV-hub-S-release`에서 원격을 갱신하고, 승인된 main SHA와
-   `HEAD`·`origin/main`이 같으며 작업 트리가 깨끗한지 확인한다. 불일치나 미커밋 변경이 있으면
-   배포 담당자가 먼저 해결한다. 실행 중인 서버 트리에서 소스 검증 영수증을 만들지 않는다.
-2. 이 고정 폴더의 `tools\predeploy_gate.ps1`로 선택 SHA를 검증한다. 검증 Python은
-   `backend\requirements-dev.txt`의 의존성이 준비된 신뢰할 수 있는 환경을 지정하고,
-   백업 복구 시험에는 사용자 DB 원본 대신 준비된 사본을 지정한다. 예시 경로는 실제 준비 위치로 바꾼다.
+1. **게이트를 통과한 SHA 만 main 에 올린다.** main 에 올리기 전 후보 SHA 로 `tools\predeploy_gate.ps1`
+   (문서 lint·구조 lint·백엔드 시험·프런트 시험·프런트 빌드·백업 복구 연습·부하)을 생략 옵션 없이 돌려
+   `PREDEPLOY GATE PASSED` 를 확인한다. 서버는 검사 기록(도장)을 따로 확인하지 않으므로 이 순서가 유일한 시험 관문이다
+   (2026-10-22 Jay 결정 — [기록](status/서버업데이트_도장제거_2026-10-22.md)). 검증 Python 은
+   `backend\requirements-dev.txt`의 의존성이 준비된 환경을, 백업 복구 시험에는 사용자 DB 원본 대신 준비된 사본을
+   지정한다. 예시 경로는 실제 준비 위치로 바꾼다.
 
    ```powershell
    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\predeploy_gate.ps1 `
@@ -60,40 +60,23 @@ status: active
      -ReportDirectory "D:\MVHub-operations\receipts"
    ```
 
-   종료 코드 0과 출력된 `validation-<run_id>.json`을 확인한다. 영수증은 `scope=source-only`,
-   `status=passed`, `passed=true`, `source_unchanged=true`, `source.dirty=false`여야 하며
-   `source.commit`은 선택한 SHA와 같아야 한다. 문서 lint·구조 lint·백엔드 시험·프런트 시험·
-   프런트 빌드는 모두 통과해야 한다. 이것은 소스 검증이며 ZIP 배포 자격 영수증은 아니다.
-3. 그 JSON 원본을 NAS 의 서버 검사 기록 폴더에 게시한다. 게시 도구는 서버가 쓰는 검증기로 같은 검사(통과·깨끗함·
-   필수 단계·커밋 형식)를 한 뒤 그 바이트 그대로 `<commit>.json` 으로 올리고, 같은 이름에 다른 내용은 덮지 않는다.
+2. 서버 PC에서 저장소 루트의 `update_git.bat`을 **탐색기에서 더블클릭**하고 UAC 에서 '예'를 누른다.
+   업데이터가 검증 Python(`logs\server-verifier`)을 확인·준비하고, coordinator 가 `origin/main` 을 받아 그 커밋으로
+   별도 stage 를 만들고 격리 기동으로 확인한 뒤 supervisor 가 바꿔 끼운다. 준비 단계에서 실패하면 실행 중인 서버와
+   DB 를 전환하지 않고 이유를 보여 주며 멈춘다. NAS·설정 파일·검사 기록은 필요 없다.
 
-   ```powershell
-   .\.venv\Scripts\python.exe tools\publish_server_receipt.py `
-     --receipt "D:\MVHub-operations\receipts\validation-<run_id>.json" `
-     --dest "\\<NAS>\<share>\MV_hub_S\server-receipts"
-   ```
+검증 Python 은 첫 실행 때 `logs\server-verifier` 에 자동으로 만들어진다(`tools/server_verifier.lock.txt` 의 해시 고정
+psutil, 인터넷 필요). 깨졌거나 판이 다르면 그 폴더를 `server-verifier.broken-<id>` 로 옮겨 두고 다시 만든다.
+stage 의 `.venv` 는 검증 Python 으로 쓰지 않는다.
 
-4. 서버 PC에서 저장소 루트의 `update_git.bat`을 **탐색기에서 더블클릭**하고 UAC 에서 '예'를 누른다.
-   업데이터가 먼저 검증 Python(`logs\server-verifier`)을 확인·준비하고, `origin/main` 을 받아 그 커밋의
-   `<commit>.json` 을 NAS 에서 한 번 읽어 `logs\server-receipts\` 로 복사(원본을 다시 읽어 같을 때만)한 뒤 staged 준비를
-   시작한다. 검사 기록이 없거나 다른 커밋 것이면 실행 중인 서버와 DB 를 전환하지 않고 이유를 보여 주며 멈춘다(검증
-   Python 준비와 fetch 는 그 전에 이미 일어날 수 있다). 준비 중에 `origin/main` 이 또 바뀌면
-   `[note] origin/main also moved …` 가 원래 오류와 함께 나온다 — 원인을 확인한 뒤 그 커밋의 기록을 게시하고 다시 실행한다.
+고급: 환경변수 `MVHUB_SERVER_VERIFICATION_PYTHON`(psutil 이 있는 Python)을 지정하고 실행하면 그 값이 우선한다.
+승격 창에는 이 값과 `MVHUB_NO_PAUSE=1` 만 인자로 명시 전달된다(따옴표·`%`·`!`·줄바꿈·끝 역슬래시가 든 값은 거부).
 
-**서버 PC 한 번만 설정** — 저장소 루트의 `logs\server-update.local.json`(Git 무시 폴더):
-
-```json
-{"receipt_dir": "\\\\<NAS>\\<share>\\MV_hub_S\\server-receipts"}
-```
-
-UNC 경로를 쓴다(관리자 창에서는 드라이브 매핑이 보이지 않을 수 있다). 관리자 창이 그 공유를 읽으려면 Windows
-자격 증명 관리자에 NAS 자격 증명이 저장돼 있어야 한다. 검증 Python 은 첫 실행 때 `logs\server-verifier` 에 자동으로
-만들어진다(`tools/server_verifier.lock.txt` 의 해시 고정 psutil, 인터넷 필요). 깨졌거나 판이 다르면 그 폴더를
-`server-verifier.broken-<id>` 로 옮겨 두고 다시 만든다. stage 의 `.venv` 는 검증 Python 으로 쓰지 않는다.
-
-고급: 환경변수 `MVHUB_SERVER_SOURCE_RECEIPT`(로컬 JSON)·`MVHUB_SERVER_VERIFICATION_PYTHON`(psutil 이 있는 Python)을
-지정하고 실행하면 항목마다 그 값이 우선한다. 승격 창에는 이 두 값과 `MVHUB_NO_PAUSE=1` 만 인자로 명시 전달된다
-(따옴표·`%`·`!`·줄바꿈·끝 역슬래시가 든 값은 거부).
+**도장 확인을 뺀 판(2026-10-22)을 서버에 처음 들일 때** — supervisor 의 stage 자격 형식이 `server-source-v2` 로 바뀌어
+이번 한 번은 관리자 콘솔에서 수동 반입한다: `logs\server-current.json` 이 **없는지** 먼저 확인(있으면 옛 v1 stage 를
+가리킬 수 있어 새 supervisor 가 거부한다 — 멈추고 판단) → `git fetch origin` → 승인 SHA 확인·`git log HEAD..<SHA>` →
+`git merge --ff-only <SHA>` → `npm.cmd --prefix frontend run build` → `restart_server_task.bat`(운영 단계, 검증용 실행
+금지) → ready·activation 확인. 그다음부터 위 2번 더블클릭으로 업데이트한다.
 
 **소스 트리 실행(legacy-source) 서버의 첫 staged 전환** — 최초 전환 뒤 서버는 저장소 트리에서 직접 돈다(`/api/ready`
 의 `runtime.build_id = legacy-source`). supervisor 는 시작할 때 그 트리의 `release/compatibility.json` 이 Git HEAD 판과

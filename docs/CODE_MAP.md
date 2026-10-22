@@ -49,7 +49,7 @@ updated: 2026-10-22
 | 공유·DB 복원 세대 | `backend/app/db.py`의 `capture_share_operation`/`pinned_share_operation`: account/UID+pool epoch를 함께 캡처하고 SQL 진입과 교체를 직렬화. `_proxy.py`·`share_state_reconciler.py`·선택 미디어 보존은 늦은 I/O의 추가 요청·새 DB 정산을 거절 |
 | 백업 세트 신원 | `backend/app/services/backup_manifest.py`: 실제 파일 hash/DB schema·identity/account digest/일관성 범위의 공통 v2 계약과 v1 읽기 호환. 생산·수신·다운로드·복원·ACK·복제에서 같은 메타를 검증 |
 | 산출물·설치 확정 | `backend/app/services/release_contract.py`와 `tools/release_contract.py`(descriptor/candidate/receipt), `tools/qualify_release_artifact.py`(명시 ZIP·격리 기동·정리 후 artifact receipt 생산 및 server fresh-data probe), `backend/app/services/install_journal.py`(단계·복구 판단), `backend/app/services/runtime_activation.py`(접수 gate), `tools/install_db_probe.py`(사본 호환 검사), `update_release_contract.ps1`(설치된 검증기·빈 설치 증명) |
-| 서버 전환 | `tools/server_release_update.py`(선택 commit의 source receipt·격리 stage probe 후 요청), `tools/server_activation.py`(안정 supervisor의 stage/proof·CLI·Python base 재검증과 전환, TLS pair 파싱·메모리 불변 검사). 기존 server_supervisor가 실행 중인 환경·listener 소유권을 유지 |
+| 서버 전환 | `tools/server_release_update.py`(선택 commit의 필수 입력·격리 stage probe 후 요청 — 검사 도장 없음, 게이트 통과 SHA 만 main), `tools/server_activation.py`(안정 supervisor의 stage/proof·CLI·Python base 재검증과 전환, TLS pair 파싱·메모리 불변 검사). 기존 server_supervisor가 실행 중인 환경·listener 소유권을 유지 |
 | 안전한 검증 | `backend/app/services/isolated_env.py`(표준 라이브러리 전용 환경/경로 검사), `tools/smoke_env.py`(app import 없이 공통 helper를 읽는 호환 입구), `tools/validation_result.ps1`(고유 run·소스 지문·실패/Skip), `tools/check_code_map.py`(추적·미추적 소스와 지도 대조). 사용자 DB·실사용 설치 실행은 별도 승인 범위 |
 
 통합 시험실의 MCP 계약은 [MCP_INTEGRATION](MCP_INTEGRATION.md)이다.
@@ -1159,9 +1159,8 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | 파일 | 한 줄 책임 | 호출 사슬 |
 |---|---|---|
 | `update_git.bat`(1줄) | `run_update_git.ps1` 1줄 호출 | → `tools/run_update_git.ps1` |
-| `tools/run_update_git.ps1` | 비관리자면 잠금 전에 UAC 로 한 번 자기 재실행(명시 인자). 갱신 중복을 직렬화하고 실제 서버 신원/기존 잠금으로 coordinator와 worker를 구분. 불명확한 프로세스·예약작업 조회는 갱신 거절. 서버면 검증 파이썬·선택 커밋 검사 기록을 자동 준비(인자·환경변수 우선). worker는 TEMP 격리와 1회 재시도 유지 | → `tools/update_git_worker.bat`·`tools/server_verifier.py`·`tools/server_release_update.py` |
+| `tools/run_update_git.ps1` | 비관리자면 잠금 전에 UAC 로 한 번 자기 재실행(명시 인자). 갱신 중복을 직렬화하고 실제 서버 신원/기존 잠금으로 coordinator와 worker를 구분. 불명확한 프로세스·예약작업 조회는 갱신 거절. 서버면 검증 파이썬을 자동 준비(인자·환경변수 우선)해 coordinator 를 부른다. worker는 TEMP 격리와 1회 재시도 유지 | → `tools/update_git_worker.bat`·`tools/server_verifier.py`·`tools/server_release_update.py` |
 | `tools/server_verifier.py` | staged 서버 업데이트의 검증 파이썬을 `logs/server-verifier` 에 제자리 생성·재확인(`server_verifier.lock.txt` 해시 고정 psutil, 깨진 폴더는 broken 으로 보존) | |
-| `tools/publish_server_receipt.py` | 릴리스 PC: 게이트 통과 source-only 기록을 서버 소비 검증기와 같은 검사 뒤 `<commit>.json` 으로 게시(덮어쓰기 없음) | → `tools/server_activation.py` |
 | `tools/update_git_worker.bat`(289줄) | 실제 git pull+backend deps+frontend build+등록서버면 재시작까지 | → `tools/repair_package_lock.py`, `tools/verify_requirements.py`, `restart_server_task.bat` |
 | `tools/repair_package_lock.py`(62줄) | npm 버전차이로 재정렬된 package-lock.json 을 HEAD 와 의미상 같을 때만 복원 | |
 | `setup_clone_git.bat`(31줄)/`setup_clone_git.ps1`(165줄) | 최초 설치: winget 으로 git/node/python 설치+sparse clone+빌드+CLI 설치 | |
