@@ -19,6 +19,8 @@ export type CanvasEditCommand =
   | { type: "setNodeFontSize"; cardId: string; fontSize: number }
   | { type: "setCardBatch"; cardId: string; count: number }
   | { type: "saveModelConfig"; cardId: string; config: SceneModelCfg }
+  // 모델 설정 저장 직후 화면이 잰 높이로 카드를 늘린다 — 실행 취소는 설정 저장 한 번으로 함께 돌아간다(파생)
+  | { type: "fitCardHeight"; cardId: string; h: number }
   | { type: "setCardReferences"; cardId: string; references: SceneRef[] }
   | { type: "synchronizeReferences" }
   | { type: "connectCards"; pairs: Array<[string, string]> }
@@ -99,6 +101,9 @@ export function applyCanvasEdit(
     case "saveModelConfig":
       if (!patchCard(command.cardId, card => ({ ...card, modelCfg: command.config }))) return null;
       break;
+    case "fitCardHeight":
+      if (!patchCard(command.cardId, card => ({ ...card, h: Math.round(command.h) }))) return null;
+      policy = "derived"; break;
     case "setCardReferences": {
       const card = cards.find(item => item.id === command.cardId);
       if (!card || card.kind !== "generation") return null;

@@ -1061,6 +1061,17 @@ export function SceneBoard({
   flushPendingRef.current = flushPending;
   const canvasTargetRef = useRef(canvasSession.target);
   canvasTargetRef.current = canvasSession.target;
+  // 모델 설정을 저장하면 설정 줄이 모두 보이게 카드를 늘린다(Jay 2026-10-22) — 새 설정이 그려진 뒤 넘친 만큼 잰다. 줄이지는 않는다.
+  const fitModelIdRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const id = fitModelIdRef.current;
+    if (!id) return;
+    fitModelIdRef.current = null;
+    const el = cardEls.current[id];
+    const body = el?.querySelector<HTMLElement>(".scene-modelnode-body");
+    const extra = body ? body.scrollHeight - body.clientHeight : 0;
+    if (el && extra > 0) commitDocument({ type: "fitCardHeight", cardId: id, h: el.offsetHeight + extra });
+  }, [cards]);
   // 보드를 통째로 끄는 동안 캔버스 층에만 밀어 둔 이동량의 손잡이(lib/useSceneCardMove 의 빠른 길). 좌표가 필요한 자리 —
   //  저장 확정(아래 flushPending)·단축키 직전 — 에서 settle 로 먼저 좌표에 넣고, 씬 전환으로 끌기를 버릴 때 drop 한다.
 
@@ -3683,7 +3694,7 @@ export function SceneBoard({
               initial={c.modelCfg}
               onClose={() => setModelModalId(null)}
               onSave={(cfg) => {
-                commitDocument({ type: "saveModelConfig", cardId: modelModalId, config: cfg });
+                if (commitDocument({ type: "saveModelConfig", cardId: modelModalId, config: cfg })) fitModelIdRef.current = modelModalId;
               }}
             />
           );
