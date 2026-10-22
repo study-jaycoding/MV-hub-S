@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-20
+updated: 2026-10-22
 ---
 
 # MV Hub 로컬 MCP
@@ -900,6 +900,7 @@ owner: Codex · reviewer: Claude · status: 완료 · updated: 2026-10-15
 - `/app/setup`은 기존 인증·loopback·Host·탭 헤더 검사를 적용하지만 페어링은 요구하지 않는다.
   이 안내 구현 당시 응답은 `url`, `adapter`, `adapter_exists`, `python`, `python_exists` 다섯 필드였다.
   현행은 위 번들 계약의 `python_args`를 포함한다. 브로커·사용자 DB·전역 설정을 변경하지 않는다.
+  2026-10-22부터 `adapter_version`(어댑터 파일의 `ADAPTER_VERSION` 줄을 글자로만 읽은 값, 없으면 `null`)도 돌려주며, 내 계정 창이 'CLI 버전' 아래 'MCP 버전'으로 보인다.
   URL은 요청 Host나 Vite 포트 대신 ASGI 수신 소켓에서 계산하며 포트를 알 수 없으면 503이다.
 - 어댑터가 없으면 개발 버전 안내만 표시한다. Python 실행 파일이 없으면 Python 3.11 이상 검사·기존 환경 덮어쓰기 거부·단계별 실패 검사를 넣은 설치 명령을 제공한다.
   파일 존재는 SDK 설치·LLM 등록 성공을 뜻하지 않는다. Windows 사용자 환경 경로를 알 수 없으면 추측한 명령을 만들지 않는다.
