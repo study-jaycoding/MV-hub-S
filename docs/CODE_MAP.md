@@ -1159,7 +1159,9 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | 파일 | 한 줄 책임 | 호출 사슬 |
 |---|---|---|
 | `update_git.bat`(1줄) | `run_update_git.ps1` 1줄 호출 | → `tools/run_update_git.ps1` |
-| `tools/run_update_git.ps1` | 갱신 중복을 직렬화하고 실제 서버 신원/기존 잠금으로 coordinator와 worker를 구분. 불명확한 프로세스·예약작업 조회는 갱신 거절. worker는 TEMP 격리와 1회 재시도 유지 | → `tools/update_git_worker.bat`·`tools/server_release_update.py` |
+| `tools/run_update_git.ps1` | 비관리자면 잠금 전에 UAC 로 한 번 자기 재실행(명시 인자). 갱신 중복을 직렬화하고 실제 서버 신원/기존 잠금으로 coordinator와 worker를 구분. 불명확한 프로세스·예약작업 조회는 갱신 거절. 서버면 검증 파이썬·선택 커밋 검사 기록을 자동 준비(인자·환경변수 우선). worker는 TEMP 격리와 1회 재시도 유지 | → `tools/update_git_worker.bat`·`tools/server_verifier.py`·`tools/server_release_update.py` |
+| `tools/server_verifier.py` | staged 서버 업데이트의 검증 파이썬을 `logs/server-verifier` 에 제자리 생성·재확인(`server_verifier.lock.txt` 해시 고정 psutil, 깨진 폴더는 broken 으로 보존) | |
+| `tools/publish_server_receipt.py` | 릴리스 PC: 게이트 통과 source-only 기록을 서버 소비 검증기와 같은 검사 뒤 `<commit>.json` 으로 게시(덮어쓰기 없음) | → `tools/server_activation.py` |
 | `tools/update_git_worker.bat`(289줄) | 실제 git pull+backend deps+frontend build+등록서버면 재시작까지 | → `tools/repair_package_lock.py`, `tools/verify_requirements.py`, `restart_server_task.bat` |
 | `tools/repair_package_lock.py`(62줄) | npm 버전차이로 재정렬된 package-lock.json 을 HEAD 와 의미상 같을 때만 복원 | |
 | `setup_clone_git.bat`(31줄)/`setup_clone_git.ps1`(165줄) | 최초 설치: winget 으로 git/node/python 설치+sparse clone+빌드+CLI 설치 | |

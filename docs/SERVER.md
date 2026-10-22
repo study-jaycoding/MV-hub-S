@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-21
+updated: 2026-10-22
 status: active
 ---
 
@@ -32,8 +32,9 @@ status: active
 1358 서버의 최초 전환은 [아래 별도 절](#1358--dev2-최초-전환)을 따른다.
 실제 배포는 아래 생성 fence와 [배포 Gate](RISK_REDUCTION_PLAN_2026-08-15.md)의 승인을 함께 따른다.
 
-`update_git.bat`은 서버·개발 git 클론 모두 **관리자 콘솔**에서 실행한다. 비관리자는 SYSTEM 예약 작업을
-못 봐 서버를 작업자로 오판할 수 있으므로 역할 판정 전에 거부한다.
+`update_git.bat`은 서버·개발 git 클론 모두 **관리자 권한**으로 돈다. 탐색기에서 더블클릭하면 UAC 확인 창이
+한 번 뜨고, 승인하면 관리자 창에서 진행한 뒤 끝에 한 번 멈춰 결과를 보여 준다(취소하면 아무것도 하지 않고 끝난다).
+비관리자는 SYSTEM 예약 작업을 못 봐 서버를 작업자로 오판할 수 있으므로, 잠금·역할 판정·git 전에 승격한다.
 
 판별 선언은 [release/compatibility.json](../release/compatibility.json) 하나를 코드와 함께 커밋한다.
 서버는 fetch 뒤 선택한 `origin/main` SHA의 선언을 읽고 같은 SHA에서 stage를 만든다.
@@ -63,20 +64,45 @@ status: active
    `status=passed`, `passed=true`, `source_unchanged=true`, `source.dirty=false`여야 하며
    `source.commit`은 선택한 SHA와 같아야 한다. 문서 lint·구조 lint·백엔드 시험·프런트 시험·
    프런트 빌드는 모두 통과해야 한다. 이것은 소스 검증이며 ZIP 배포 자격 영수증은 아니다.
-3. 그 JSON 원본을 서버 PC의 **저장소 밖** 로컬 폴더로 복사하고, 복사 전후 `Get-FileHash -Algorithm SHA256`이
-   같은지 확인한다. 서버의 별도 검증 Python에는 `psutil`이 준비돼 있어야 한다.
-   이번에 만드는 stage의 `.venv`를 검증 Python으로 지정하지 않는다.
-4. 서버 PC의 PowerShell에서 두 환경변수를 설정한 뒤, 서버 저장소 루트에서 실행한다.
-   Python 경로에는 실행 가능한 파일을, receipt 경로에는 3단계의 원본 JSON을 지정한다.
+3. 그 JSON 원본을 NAS 의 서버 검사 기록 폴더에 게시한다. 게시 도구는 서버가 쓰는 검증기로 같은 검사(통과·깨끗함·
+   필수 단계·커밋 형식)를 한 뒤 그 바이트 그대로 `<commit>.json` 으로 올리고, 같은 이름에 다른 내용은 덮지 않는다.
 
    ```powershell
-   $env:MVHUB_SERVER_SOURCE_RECEIPT = 'D:\MVHub-operations\receipts\validation-<run_id>.json'
-   $env:MVHUB_SERVER_VERIFICATION_PYTHON = 'D:\MVHub-operations\verifier\Scripts\python.exe'
-   & $env:MVHUB_SERVER_VERIFICATION_PYTHON -E -s -B -c "import psutil"
-   if ($LASTEXITCODE -ne 0) { throw '검증 Python 준비 실패' }
-   .\update_git.bat
-   if ($LASTEXITCODE -ne 0) { throw '서버 업데이트 실패: logs의 준비·전환 기록 확인' }
+   .\.venv\Scripts\python.exe tools\publish_server_receipt.py `
+     --receipt "D:\MVHub-operations\receipts\validation-<run_id>.json" `
+     --dest "\\<NAS>\<share>\MV_hub_S\server-receipts"
    ```
+
+4. 서버 PC에서 저장소 루트의 `update_git.bat`을 **탐색기에서 더블클릭**하고 UAC 에서 '예'를 누른다.
+   업데이터가 먼저 검증 Python(`logs\server-verifier`)을 확인·준비하고, `origin/main` 을 받아 그 커밋의
+   `<commit>.json` 을 NAS 에서 한 번 읽어 `logs\server-receipts\` 로 복사(원본을 다시 읽어 같을 때만)한 뒤 staged 준비를
+   시작한다. 검사 기록이 없거나 다른 커밋 것이면 실행 중인 서버와 DB 를 전환하지 않고 이유를 보여 주며 멈춘다(검증
+   Python 준비와 fetch 는 그 전에 이미 일어날 수 있다). 준비 중에 `origin/main` 이 또 바뀌면
+   `[note] origin/main also moved …` 가 원래 오류와 함께 나온다 — 원인을 확인한 뒤 그 커밋의 기록을 게시하고 다시 실행한다.
+
+**서버 PC 한 번만 설정** — 저장소 루트의 `logs\server-update.local.json`(Git 무시 폴더):
+
+```json
+{"receipt_dir": "\\\\<NAS>\\<share>\\MV_hub_S\\server-receipts"}
+```
+
+UNC 경로를 쓴다(관리자 창에서는 드라이브 매핑이 보이지 않을 수 있다). 관리자 창이 그 공유를 읽으려면 Windows
+자격 증명 관리자에 NAS 자격 증명이 저장돼 있어야 한다. 검증 Python 은 첫 실행 때 `logs\server-verifier` 에 자동으로
+만들어진다(`tools/server_verifier.lock.txt` 의 해시 고정 psutil, 인터넷 필요). 깨졌거나 판이 다르면 그 폴더를
+`server-verifier.broken-<id>` 로 옮겨 두고 다시 만든다. stage 의 `.venv` 는 검증 Python 으로 쓰지 않는다.
+
+고급: 환경변수 `MVHUB_SERVER_SOURCE_RECEIPT`(로컬 JSON)·`MVHUB_SERVER_VERIFICATION_PYTHON`(psutil 이 있는 Python)을
+지정하고 실행하면 항목마다 그 값이 우선한다. 승격 창에는 이 두 값과 `MVHUB_NO_PAUSE=1` 만 인자로 명시 전달된다
+(따옴표·`%`·`!`·줄바꿈·끝 역슬래시가 든 값은 거부).
+
+**소스 트리 실행(legacy-source) 서버의 첫 staged 전환** — 최초 전환 뒤 서버는 저장소 트리에서 직접 돈다(`/api/ready`
+의 `runtime.build_id = legacy-source`). supervisor 는 시작할 때 그 트리의 `release/compatibility.json` 이 Git HEAD 판과
+같고 프로토콜·구성요소를 명시하면 그것을 '이전 판 호환 근거'로 기록한다(앞뒤 소스 지문 확인, 선언 해시 기록).
+그래서 첫 staged 전환에서 새 판이 기동에 실패해도 DB 가 그 선언 범위 안이면 이전 프로그램으로 자동 복귀한다.
+이 기록은 supervisor 코드에 들어 있으므로 이 판을 받은 뒤 **통제된 재시작을 한 번** 해야 적용된다.
+그래도 `recovery_required`(선언이 없거나 HEAD 와 다르거나 DB 가 범위 밖)이면 서버는 멈춘 채로 남는다 —
+journal·`install-checkpoints`·DB 를 그대로 두고 별도 복구 판단을 받는다. 아래 '1358 → dev2 최초 전환'의 되돌리기 절은
+이 경우의 절차가 아니며, 사전 DB 사본은 보관용이지 덮어쓰기 복구에 쓰지 않는다.
 
 **준비 단계의 전제(staged CLI):** 준비는 stage 안 `runtime\higgsfield`에 `hf_cli_version.txt`의 핀 버전
 Higgsfield CLI를 `npm install --global --prefix`로 새로 설치하고 Node를 함께 복사한다. 그래서 관리자 콘솔의
