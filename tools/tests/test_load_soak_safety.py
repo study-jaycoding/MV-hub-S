@@ -2,6 +2,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import subprocess
@@ -77,7 +78,11 @@ print('blocked=3')
             self.assertEqual(result.stdout.strip(), "blocked=3")
 
     def test_powershell_interpreter_environment_is_clean_and_parent_restored(self):
-        shell = Path(r"C:\Users\FX-PC06\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\powershell\pwsh.exe")
+        # PowerShell 7 — Codex 런타임에 딸린 것(사용자 폴더 기준), 없으면 PATH 의 pwsh. 한 PC 의 사용자 경로에 고정하면
+        #  다른 PC 에서는 이 시험이 조용히 건너뛰어졌다(Codex 배포 전 검토 2026-10-22).
+        runtime = Path.home() / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "native" / "powershell" / "pwsh.exe"
+        found = shutil.which("pwsh")
+        shell = runtime if runtime.exists() else Path(found) if found else runtime
         if not shell.exists():
             self.skipTest("PowerShell 7 unavailable")
         script = r'''
