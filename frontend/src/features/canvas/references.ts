@@ -43,7 +43,9 @@ export function gatherCanvasReferences(
       if (inputs.kind === "reference") {
         for (const id of inputs.referenceCardIds) {
           const card = byId.get(id);
-          if (card?.refs) refs.push(...tagged(card.refs));
+          // 섞인 리스트의 생성물 항목은 그 결과물 — 그 카드의 refs 는 그 카드가 받은 입력이다(2026-10-22)
+          if (card?.kind === "reference") { if (card.refs) refs.push(...tagged(card.refs)); }
+          else addGeneration(card);
         }
       } else if (inputs.kind === "generation") {
         for (const id of inputs.generationCardIds) addGeneration(byId.get(id));

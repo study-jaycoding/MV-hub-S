@@ -65,8 +65,12 @@ export function TextCard({
       // 리스트로 묶은 레퍼런스/생성물을 순서대로 펼쳐 @image1/@image2… 로 매핑.
       const li = collectListInputs(s.id, cardsById, resolvedEdges);
       if (li.kind === "reference")
-        for (const cid of li.referenceCardIds)
-          (cardsById.get(cid)?.refs || []).forEach((r) => addRef(r.type, refThumbSrc(r)));
+        for (const cid of li.referenceCardIds) {
+          const item = cardsById.get(cid);
+          // 레퍼런스 + 생성물로 섞인 리스트(2026-10-22) — 생성물 항목은 그 결과물(그 카드의 refs 는 그 카드의 입력)
+          if (item?.kind === "reference") (item.refs || []).forEach((r) => addRef(r.type, refThumbSrc(r)));
+          else addGenRef(item);
+        }
       else if (li.kind === "generation")
         for (const cid of li.generationCardIds) addGenRef(cardsById.get(cid));
     }

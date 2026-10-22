@@ -77,7 +77,8 @@ function connectedOverlayComfyIds(
       continue;
     }
     // 동적 미디어 ref를 전달할 수 있는 컨테이너만 거슬러 간다. text는 프롬프트 경로라 제외한다.
-    if (source.kind === "list") {
+    //  렌더도 Comfy 를 모아 리스트로 넘긴다(Comfy → 렌더 → 리스트 — 옛 저장 결과를 이번 결과로 바꿔야 한다, 2026-10-22).
+    if (source.kind === "list" || source.kind === "render") {
       for (const edge of resolvedEdges) if (edge.to === id) stack.push(edge.from);
     }
   }

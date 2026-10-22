@@ -208,6 +208,28 @@ export function ListCard({
             <div className="scene-listthumbs" data-reorder style={listThumbsStyle}>
               {li.referenceCardIds.map((cid, i) => {
                 const rc = cardsById.get(cid);
+                if (rc && rc.kind !== "reference") {
+                  // 레퍼런스 + 생성물로 섞인 리스트의 생성물 항목(2026-10-22) — 그 결과물 한 장(장수 배지·서버 판정 없음)
+                  const gid = rc.genId || variantIds(rc)[0];
+                  const gen = gid ? ownEntry(genData, gid) : undefined;
+                  const genSrc = gen ? thumbOf(gen, 128) : null;
+                  return (
+                    <div
+                      key={cid}
+                      className={"scene-listthumb" + (reorderFrom === cid ? " reordering" : "")}
+                      data-reid={cid}
+                      title={`${i + 1}번 (생성물) — 드래그해 이 리스트의 순서 변경`}
+                      onMouseDown={(e) => startReorder(e, card.id, cid, "h")}
+                    >
+                      {genSrc ? (
+                        <img src={genSrc} alt="" draggable={false} onError={hideBrokenImg} onLoad={showLoadedImg} />
+                      ) : (
+                        <span className="scene-listthumb-ph" />
+                      )}
+                      <span className="scene-listthumb-n">{i + 1}</span>
+                    </div>
+                  );
+                }
                 const refs = rc?.refs || [];
                 const src = refs[0] ? refThumbSrc(refs[0]) : null;
                 // 서버에 없는 레퍼런스(Jay 2026-09-29) — 대표(첫 장)가 서버에 없으면 붉은 빗금 + 아이콘,

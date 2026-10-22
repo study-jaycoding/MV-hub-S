@@ -169,12 +169,15 @@ export function resolvePortEdges(
 }
 
 // list 노드로 들어온 입력을 수집·판정(순수). list 는 '동종 수집기' — 생성카드만 들어오면 generation,
-// text 만 들어오면 그 텍스트를 order/연결 순으로 합친다. 섞이거나 model/ref 가 섞이면 사용 불가로 표시.
+// text 만 들어오면 그 텍스트를 order/연결 순으로 합친다. 레퍼런스(+ 생성물)는 reference. 텍스트가 섞이거나
+// model 등이 섞이면 사용 불가로 표시.
 export interface ListInputs {
   kind: "empty" | "generation" | "text" | "reference" | "mixed" | "invalid";
   sourceIds: string[]; // 정렬된 직접 입력 소스 카드 id(행 표시·순서 변경 기준)
   generationCardIds: string[]; // generation 수집일 때 그 카드들
-  referenceCardIds: string[]; // reference 수집일 때 중첩 list까지 펼친 레퍼런스 카드들
+  // reference 수집일 때 레퍼런스를 내는 카드들(중첩 list 까지 펼침) — 레퍼런스 카드, 섞였으면 생성 카드·생성 Comfy 도.
+  //  카드의 kind 로 해석한다: reference = 그 refs, 그 밖 = 생성물 리스트와 같은 결과물(2026-10-22).
+  referenceCardIds: string[];
   text: string; // text 수집일 때 합친 텍스트
 }
 
@@ -244,6 +247,14 @@ export function refLaneOrderIndex(
     }
     return min;
   };
+  const minGenIdx = (c: SceneCard): number => {
+    let min = Infinity;
+    for (const gid of variantIds(c)) {
+      const i = idxBySrcGen.get(gid);
+      if (i != null && i < min) min = i;
+    }
+    return min;
+  };
   for (const e of edges) {
     if (e.to !== targetGenId) continue;
     const src = cardsById.get(e.from);
@@ -253,13 +264,13 @@ export function refLaneOrderIndex(
     else if (src.kind === "list") {
       const li = collectListInputs(src.id, cardsById, edges);
       if (li.kind === "reference")
-        for (const cid of li.referenceCardIds)
-          idx = Math.min(idx, minKeyIdx(cardsById.get(cid)?.refs));
+        for (const cid of li.referenceCardIds) {
+          const item = cardsById.get(cid);
+          // 섞인 리스트의 생성물 항목은 그 결과물(source_gen_id)로 찾는다 — 그 카드의 refs 는 그 카드의 입력이다
+          if (item) idx = Math.min(idx, item.kind === "reference" ? minKeyIdx(item.refs) : minGenIdx(item));
+        }
     } else if (src.kind === "generation") {
-      for (const gid of variantIds(src)) {
-        const i = idxBySrcGen.get(gid);
-        if (i != null) idx = Math.min(idx, i);
-      }
+      idx = minGenIdx(src);
     }
     if (Number.isFinite(idx)) out.set(e.id, idx);
   }
@@ -661,16 +672,21 @@ function collectListInputsIndexed(
         )
         .join("\n"),
     };
-  if (classified.every((s) => s.sourceKind === "reference")) {
+  // 레퍼런스 + 생성물(생성 카드·생성 Comfy·렌더·생성물 리스트)만 섞였어도 레퍼런스 리스트다 — 생성물 항목은 그 결과물이 레퍼런스
+  //  (Jay 2026-10-22: 가져온 생성물을 레퍼런스들과 한 리스트에 넣으면 '잘못된 입력'이었다). 생성물만이면 위의 생성물 리스트 그대로.
+  //  항목 해석은 소비처가 항목 카드의 kind 로 한다(reference = 그 refs, 그 밖 = 생성물 리스트와 같은 결과물).
+  if (classified.every((s) => s.sourceKind === "reference" || s.sourceKind === "generation")) {
     const referenceCardIds: string[] = [];
     const seenRef = new Set<string>();
     for (const s of classified) {
       const ids =
-        s.c.kind === "reference"
-          ? [s.c.id]
-          : s.c.kind === "list"
-            ? nestedListInputsOf(s.c)?.referenceCardIds ?? []
-            : [];
+        s.sourceKind === "generation"
+          ? generationIdsFrom(s.c)
+          : s.c.kind === "reference"
+            ? [s.c.id]
+            : s.c.kind === "list"
+              ? nestedListInputsOf(s.c)?.referenceCardIds ?? []
+              : [];
       for (const id of ids)
         if (!seenRef.has(id)) {
           seenRef.add(id);
@@ -693,7 +709,7 @@ function collectListInputsIndexed(
       text: "",
     };
   }
-  // 그 외: gen+text 혼합이면 mixed, reference·미판정 comfy·중첩미지원 등이 섞이면 invalid(리스트는 동종만).
+  // 그 외: gen+text 혼합이면 mixed, 텍스트와 reference·미판정 comfy·중첩미지원 등이 섞이면 invalid.
   const hasNonGenText = classified.some(
     (s) => s.sourceKind !== "generation" && s.sourceKind !== "text",
   );
@@ -1099,10 +1115,11 @@ export function collectGenRefs(
     if (s.c.kind === "comfy") {
       pushComfyMedia(s.c);
     } else {
-      // list 경유 — generation-list 안의 comfy 항목만 미디어로 편다(순수 generation 카드는 다른 경로).
+      // list 경유 — generation-list(와 레퍼런스+생성물로 섞인 레퍼런스 리스트) 안의 comfy 항목만 미디어로 편다(순수 generation
+      //  카드·레퍼런스 카드는 다른 경로).
       const li = collectListInputs(s.c.id, cardsById, edges, overlay);
-      if (li.kind !== "generation") continue;
-      for (const cid of li.generationCardIds) {
+      const items = li.kind === "generation" ? li.generationCardIds : li.kind === "reference" ? li.referenceCardIds : [];
+      for (const cid of items) {
         const c = cardsById.get(cid);
         if (c?.kind !== "comfy") continue;
         // 평상시에는 저장된 comfy를 gatherTarget의 SceneRef가 담당한다. 배치 실행 overlay가 있으면

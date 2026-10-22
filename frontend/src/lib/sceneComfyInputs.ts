@@ -208,22 +208,27 @@ export function gatherComfyMedia(
         out.push({ type: m.kind, url: m.url, name: mediaFileName(m.url, m.kind, out.length + 1) });
     else if (s.kind === "list") {
       const li = collectListInputs(s.id, cardsById, resolved, overlay);
-      if (li.kind === "reference")
-        for (const cid of li.referenceCardIds) (cardsById.get(cid)?.refs || []).forEach(pushRef);
-      else if (li.kind === "generation")
-        for (const cid of li.generationCardIds) {
-          const gc = cardsById.get(cid);
-          // list 안의 comfy 항목은 실행 출력(overlay/결과)을 직접 미디어로 — 라이브러리 저장 전에도 동작.
-          if (gc?.kind === "comfy") {
-            const media = comfyOutputMedia(gc, overlay);
-            if (media.length) {
-              for (const m of media)
-                out.push({ type: m.kind, url: m.url, name: mediaFileName(m.url, m.kind, out.length + 1) });
-              continue;
-            }
+      // list 안의 생성물 항목 — comfy 는 실행 출력(overlay/결과)을 직접 미디어로(라이브러리 저장 전에도 동작), 그 밖은 결과물.
+      const pushGenItem = (gc?: SceneCard) => {
+        if (gc?.kind === "comfy") {
+          const media = comfyOutputMedia(gc, overlay);
+          if (media.length) {
+            for (const m of media)
+              out.push({ type: m.kind, url: m.url, name: mediaFileName(m.url, m.kind, out.length + 1) });
+            return;
           }
-          pushGen(gc);
         }
+        pushGen(gc);
+      };
+      if (li.kind === "reference")
+        for (const cid of li.referenceCardIds) {
+          const item = cardsById.get(cid);
+          // 레퍼런스 + 생성물로 섞인 리스트(2026-10-22) — 생성물 항목은 생성물 리스트와 같게
+          if (item?.kind === "reference") (item.refs || []).forEach(pushRef);
+          else pushGenItem(item);
+        }
+      else if (li.kind === "generation")
+        for (const cid of li.generationCardIds) pushGenItem(cardsById.get(cid));
     }
   }
   return out;

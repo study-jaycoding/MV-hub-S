@@ -858,13 +858,15 @@ describe("리스트 레퍼런스 수집", () => {
     expect(li.sourceIds).toEqual(["R1", "R2"]);
     expect(li.referenceCardIds).toEqual(["R1", "R2"]);
   });
-  it("레퍼런스+생성 혼합은 invalid(동종만)", () => {
+  it("레퍼런스+생성 혼합은 레퍼런스 리스트(생성물 항목 = 그 결과물 — Jay 2026-10-22, 예전엔 invalid)", () => {
     const cards = [n("L", "list"), n("R", "reference", { refs: [] }), n("G", "generation")];
     const edges: SceneEdge[] = [
       { id: "e1", from: "R", to: "L" },
       { id: "e2", from: "G", to: "L" },
     ];
-    expect(collectListInputs("L", byId(cards), edges).kind).toBe("invalid");
+    const li = collectListInputs("L", byId(cards), edges);
+    expect(li.kind).toBe("reference");
+    expect(li.referenceCardIds).toEqual(["R", "G"]);
   });
   it("canConnect: 리스트는 레퍼런스도 받는다", () => {
     expect(canConnect(n("R", "reference"), n("L", "list"))).toBe(true);

@@ -73,6 +73,9 @@ export function planAutoConnections(
     const key = from.id + ">" + to.id;
     if (seen.has(key)) return;
     if (reaches(to.id, from.id)) return; // 순환 (코덱스 4차)
+    // 이 연결로 다른 리스트(대상을 품은 바깥 리스트·렌더를 받는 리스트)가 새로 레퍼런스+생성물로 섞이면 넣지 않는다 — 대상이 리스트든
+    //  렌더든, 정방향이든 뒤집은 방향이든 여기 한 곳에서 본다(Codex 독립 리뷰 2·4차, 2026-10-22).
+    if (mixesOuterList(from, to)) return;
     seen.add(key);
     pairs.push([from.id, to.id]);
   };
@@ -80,21 +83,37 @@ export function planAutoConnections(
   const ok = (from: SceneCard, to: SceneCard) => canConnect(from, to, cardsById, edges);
 
   // 리스트가 '지금 + 계획된 연결(+ 추가 후보)'으로 무엇을 모으게 되는지 — 실제 판정기로 센다(무선 input 도 해석).
-  const plannedInto = (list: SceneCard): SceneEdge[] =>
-    pairs
-      .filter(([, to]) => to === list.id)
-      .map(([from, to]) => ({ id: "plan:" + from + ">" + to, from, to }));
-  const kindWith = (list: SceneCard, extra: SceneEdge[]): ListKind => {
-    const all = [...edges, ...plannedInto(list), ...extra];
-    return collectListInputs(list.id, cardsById, resolvePortEdges(cardsById, all)).kind;
+  //  계획된 연결은 전부 넣는다 — 이 리스트로 들어오는 것만 넣으면 중첩된 안쪽 리스트로 가는 계획이 빠진다(Codex 독립 리뷰 2026-10-22).
+  const inputsWith = (list: SceneCard, extra: SceneEdge[]): ListInputs => {
+    const planned = pairs.map(([from, to]) => ({ id: "plan:" + from + ">" + to, from, to }));
+    return collectListInputs(list.id, cardsById, resolvePortEdges(cardsById, [...edges, ...planned, ...extra]));
   };
+  const kindWith = (list: SceneCard, extra: SceneEdge[]): ListKind => inputsWith(list, extra).kind;
   const currentKindOf = (list: SceneCard): ListKind =>
     collectListInputs(list.id, cardsById, resolvePortEdges(cardsById, edges)).kind;
+  // 레퍼런스와 생성물이 섞인 레퍼런스 리스트인가 — 리스트가 둘을 함께 받게 됐다(2026-10-22).
+  const mixesRefAndGen = (inputs: ListInputs): boolean =>
+    inputs.kind === "reference" && inputs.referenceCardIds.some((id) => cardsById.get(id)?.kind !== "reference");
   const breaksList = (from: SceneCard, list: SceneCard): boolean => {
     // 이 연결을 더하면 리스트가 혼합/잘못된 입력이 되는가(이미 그 상태면 더 나빠지지 않으니 허용).
-    const after = kindWith(list, [{ id: "plan:" + from.id + ">" + list.id, from: from.id, to: list.id }]);
-    if (after !== "mixed" && after !== "invalid") return false;
-    return kindWith(list, []) !== after;
+    const after = inputsWith(list, [{ id: "plan:" + from.id + ">" + list.id, from: from.id, to: list.id }]);
+    if (mixesRefAndGen(after)) {
+      // 'c' 는 어느 방향이든 레퍼런스+생성물 리스트를 새로 만들지 않는다(섞기는 손으로만 — 생성물 쪽 + 레퍼런스 리스트는 아래에서 리스트
+      //  → 생성으로 뒤집힌다). 이미 섞인 리스트에 레퍼런스(카드·레퍼런스 리스트)를 더하는 것만 된다. '연결 전'도 계획된 연결까지 센다.
+      const fromIsReference = from.kind === "reference" || (from.kind === "list" && kindWith(from, []) === "reference");
+      return !(fromIsReference && mixesRefAndGen(inputsWith(list, [])));
+    }
+    if (after.kind !== "mixed" && after.kind !== "invalid") return false;
+    return kindWith(list, []) !== after.kind;
+  };
+  // 이 연결로 대상이 아닌 리스트(이미 있는 중첩의 바깥 리스트, 렌더를 받는 리스트)가 새로 레퍼런스+생성물로 섞이는가
+  //  (빈 리스트 I → 바깥 O(레퍼런스) 에서 생성 → I 가 O 를 섞었다, Codex 독립 재리뷰 2026-10-22). 대상 리스트는 breaksList 가 본다.
+  const mixesOuterList = (from: SceneCard, to: SceneCard): boolean => {
+    const extra = [{ id: "plan:" + from.id + ">" + to.id, from: from.id, to: to.id }];
+    for (const outer of cardsById.values())
+      if (outer.kind === "list" && outer.id !== to.id && mixesRefAndGen(inputsWith(outer, extra)) && !mixesRefAndGen(inputsWith(outer, [])))
+        return true;
+    return false;
   };
 
   const texts = selectedCards.filter((card) => card.kind === "text");
@@ -125,7 +144,7 @@ export function planAutoConnections(
         if (ok(to, from) && !(from.kind === "list" && breaksList(to, from))) add(to, from);
         continue;
       }
-      add(from, to);
+      add(from, to); // 바깥 리스트가 새로 섞이는 연결은 add 가 거른다 — 위 반대 방향(리스트 → 생성)은 어느 리스트의 입력도 바꾸지 않는다
     }
   }
 

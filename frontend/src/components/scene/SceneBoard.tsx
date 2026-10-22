@@ -2647,8 +2647,15 @@ export function SceneBoard({
             const refIdx = new Map(li.referenceCardIds.map((id, i) => [id, i] as const));
             for (const srcId of li.sourceIds) {
               let first = refIdx.get(srcId);
-              if (first == null && cardsById.get(srcId)?.kind === "list")
-                for (const rid of collectListInputs(srcId, cardsById, resolvedEdges).referenceCardIds) {
+              const srcKind = cardsById.get(srcId)?.kind;
+              // 중첩 소스가 펼쳐 낸 항목들 — 레퍼런스 리스트는 그 레퍼런스들, 섞인 리스트에 들어온 생성물 리스트·렌더는 그 생성물들(2026-10-22)
+              const nestedIds = (): string[] => {
+                if (srcKind === "render") return collectRenderGenCardIds(srcId, cardsById, resolvedEdges);
+                const nested = collectListInputs(srcId, cardsById, resolvedEdges);
+                return nested.kind === "generation" ? nested.generationCardIds : nested.referenceCardIds;
+              };
+              if (first == null && (srcKind === "list" || srcKind === "render"))
+                for (const rid of nestedIds()) {
                   const i = refIdx.get(rid);
                   if (i != null && (first == null || i < first)) first = i;
                 }
@@ -3199,10 +3206,12 @@ export function SceneBoard({
                 : "scene-card-" +
                   card.kind +
                   // 리스트 — 모은 레퍼런스 카드에 서버 어디에도 없는 참조가 하나라도 있으면 빨간 테두리(Jay 2026-09-29)
+                  //  레퍼런스 항목만 본다 — 섞인 리스트의 생성물 항목의 refs 는 그 카드의 입력이다(2026-10-22)
                   (card.kind === "list" &&
-                  collectListInputs(card.id, cardsById, resolvedEdges).referenceCardIds.some((rid) =>
-                    missingHere(cardsById.get(rid)?.refs),
-                  )
+                  collectListInputs(card.id, cardsById, resolvedEdges).referenceCardIds.some((rid) => {
+                    const item = cardsById.get(rid);
+                    return item?.kind === "reference" && missingHere(item.refs);
+                  })
                     ? " off-server"
                     : ""); // text/model/list
           // 빠른 그리기가 켜져 있고(위 moveDraw) 이 카드가 끌리고 있으면 그 끌기 전 자리 — 바깥 틀은 translate 로 그리고,
