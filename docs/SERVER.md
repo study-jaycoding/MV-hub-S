@@ -107,23 +107,29 @@ stage 의 `.venv` 는 준비 단계(`prepare`)를 실행한 Python 으로 만들
    `logs\server-update-request.json` 없음 · `logs\server-current.json` 의 `path` = 루트, `build_id` = `legacy-source`,
    그 내용이 journal 의 `previous` 와 같음 · `git status` 깨끗 · 루트 `HEAD` 가 예상 기준 커밋 ·
    `git diff --name-only HEAD <SHA>` 에서 `backend/app` 아래는 이번에 고친 파일만, `frontend/` 변경 없음,
-   `backend/requirements.txt` 변경 없음(`backend/requirements.lock.txt` 는 지문만 바뀌어도 된다).
+   `backend/requirements.txt` 변경 없음(루트 서버의 의존성은 이 파일로 설치된다). `backend/requirements.lock.txt` 는
+   stage 준비에서만 쓰며, 바뀌었다면 바뀐 줄이 지문(`--hash=`)·주석 줄뿐이어야 한다(판은 requirements.txt 와 같아야
+   하고 시험이 확인한다).
    `failed` 에서 루트를 바꾸면 재시작 때 `resume → recover` 가 바뀐 루트로 막힌다.
 2. **자동 재기동을 막고 실제로 멈춘다**: `Disable-ScheduledTask` 로 `MVHub Watchdog`·`MVHub Server` 를 끄고
    `Stop-ScheduledTask` → 이 루트의 `server_supervisor.py`·`server_watchdog.py` 프로세스를 트리째 종료
-   (`restart_server_task.ps1` 의 종료 규칙과 같다) → 8010 을 듣는 프로세스가 없음을 확인. supervisor 를 켜 둔 채 바꾸면
-   그사이 서버가 죽었을 때 supervisor 가 바뀌는 중인 루트에서 다시 띄운다.
+   (`restart_server_task.ps1` 의 종료 규칙과 같다) → 그 프로세스가 하나도 남지 않았고 8010 을 듣는 프로세스가 없음을
+   확인 → 멈춘 뒤 1의 journal·요청 파일·현재 기록 조건을 다시 확인. supervisor 를 켜 둔 채 바꾸면 그사이 서버가 죽었을 때
+   supervisor 가 바뀌는 중인 루트에서 다시 띄운다. 여기까지 실패하면 끈 작업만 원래대로 켜고 서버를 다시 시작한다.
 3. `git fetch origin` → `git merge --ff-only <SHA>`. (1의 조건이면 의존성 설치·프런트 빌드는 필요 없다.)
 4. ff 가 성공했을 때만 `logs\server-current.json` 을 **지우지 않고** `server-current.before-intake-<날짜>.json` 으로 이름을
    바꿔 보존한다 — 옛 소스 지문 기록이라 그대로 두면 supervisor 가 `previous_source_changed` 로 시작을 거부한다.
    journal·`install-checkpoints` 는 그대로 둔다.
 5. `Enable-ScheduledTask` 로 두 작업을 다시 켜고(꺼진 작업은 `Start-ScheduledTask` 로 켜지지 않는다)
-   `restart_server_task.bat`(운영 단계) → `/api/ready` 의 `runtime.build_id = legacy-source`·`admission = normal` 확인.
+   `restart_server_task.bat`(운영 단계) → 제한 시간 안에 `/api/ready` 가 `runtime.build_id = legacy-source`·
+   `admission = normal` 이 되는지 확인. 재시작이 실패하거나 그 값이 아니면 두 작업을 다시 끄고 이 루트의 프로세스를
+   멈춘 채 보고한다(루트가 이미 바뀌었으므로 자동 재기동에 맡기지 않는다).
 6. 남은 이전 stage 는 재사용하지 않는다(요청 파일은 실패 때 이미 지워졌다). 이어서 `update_git.bat` 더블클릭으로
    새 stage 를 준비·전환해 staged 경로를 확인한다.
 
-실패 처리: ff 가 루트를 바꾸기 전에 실패했으면(`fetch` 실패, ff 거부로 `HEAD` 그대로) 4단계를 건너뛰고 5단계로 다시
-켠다. 루트가 바뀐 뒤 실패하면 꺼 둔 채 보고한다.
+실패 처리: ff 가 실패했을 때는 `git rev-parse HEAD` 와 `git status --porcelain --untracked-files=normal` 이 **둘 다
+성공**해 `HEAD` 가 이전과 같고 작업 트리가 깨끗함을 확인한 경우에만 4단계를 건너뛰고 5단계로 다시 켠다. 확인할 수 없거나
+루트가 바뀐 뒤 실패하면 꺼 둔 채 보고한다.
 
 > [!WARNING]
 > 서버가 stage 로 돌기 시작한 뒤에는 supervisor 가 시작할 때마다 현재 stage 의 자격을 루트의 검사 도구 지문
