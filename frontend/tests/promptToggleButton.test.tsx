@@ -27,10 +27,12 @@ it("상태줄 끝 칸이 프롬프트를 접고 연다 — 설명은 지금 상�
   const button = toggle()!;
   expect(button.parentElement!.lastElementChild).toBe(button); // 상태줄의 맨 끝(모서리 안쪽)
   expect(button.getAttribute("aria-label")).toMatch(/^프롬프트 접기 \(.*K\)$/);
+  expect(button.classList.contains("open")).toBe(true); // 열려 있으면 회색(.open), 접혔을 때만 라임
   act(() => button.click());
   expect(onTogglePrompt).toHaveBeenCalledTimes(1);
   render({ promptOpen: false, onTogglePrompt });
   expect(toggle()!.getAttribute("aria-label")).toMatch(/^프롬프트 열기 \(.*K\)$/);
+  expect(toggle()!.classList.contains("open")).toBe(false);
   expect(toggle()!.title).toBe(toggle()!.getAttribute("aria-label"));
 });
 

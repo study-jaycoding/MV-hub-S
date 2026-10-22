@@ -533,6 +533,8 @@
   background: transparent; border: 0; border-left: 1px solid var(--border); border-radius: 0 9px 9px 0;
   color: var(--accent); cursor: pointer;
 }
+/* 프롬프트가 열려 있으면 회색 — 접혔을 때만 라임으로 '여기서 다시 연다'를 보인다(Jay 2026-10-22) */
+.sl-status-toggle.open { color: var(--muted); }
 .sl-status-toggle:hover { background: #c8ef40; color: #111; border-left-color: #c8ef40; }
 
 /* Host 콘솔 — 통합 상태 컨트롤(● Host/연결됨) 안의 Host 클릭으로 연다. 정보는 중앙 플로팅 창. */

@@ -301,7 +301,7 @@ export function ServerConsolePanel({
           </>
         )}
         {onTogglePrompt && (
-          <button type="button" className="sl-status-toggle" title={promptToggleLabel} aria-label={promptToggleLabel} onClick={onTogglePrompt}>
+          <button type="button" className={"sl-status-toggle" + (promptOpen ? " open" : "")} title={promptToggleLabel} aria-label={promptToggleLabel} onClick={onTogglePrompt}>
             <PromptIcon />
           </button>
         )}

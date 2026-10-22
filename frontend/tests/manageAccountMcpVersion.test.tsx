@@ -40,6 +40,16 @@ it("CLI 버전 바로 아래에 MCP 어댑터 버전을 보인다", async () => 
   expect(mocks.jsonFetch).toHaveBeenCalledWith("/api/mcp/app/setup", expect.objectContaining({ headers: { "X-MVHub-Tab": expect.any(String) } }));
 });
 
+it("원격 HTTP(보안 문맥 아님 — randomUUID 없음)에서도 창이 열리고 MCP 조회는 하지 않는다", async () => {
+  // 서버 주소(http://<IP>:8010)로 연 브라우저에는 crypto.randomUUID 가 없다 — 조회 인자를 만들다 던져 창이 깨졌다(Codex 10-22 R1).
+  vi.stubGlobal("crypto", { getRandomValues: crypto.getRandomValues.bind(crypto) });
+  mocks.jsonFetch.mockResolvedValue({ adapter_version: "2026.10.16.5" });
+  await open();
+  expect(labels()).toContain("CLI 버전");
+  expect(labels()).not.toContain("MCP 버전");
+  expect(mocks.jsonFetch).not.toHaveBeenCalled();
+});
+
 it("버전을 모르거나 조회가 실패하면 줄을 숨긴다", async () => {
   mocks.jsonFetch.mockResolvedValue({ adapter_exists: false, adapter_version: null });
   await open();

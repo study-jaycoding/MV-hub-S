@@ -59,11 +59,15 @@ export function ManageAccount({
         if (alive && s.current_version) setAppVersion(s.current_version);
       })
       .catch(() => {});
-    jsonFetch<{ adapter_version?: string | null }>("/api/mcp/app/setup", { headers: { "X-MVHub-Tab": crypto.randomUUID() } })
-      .then((s) => {
-        if (alive && s.adapter_version) setMcpVersion(s.adapter_version);
-      })
-      .catch(() => {});
+    // 서버 주소(http://<IP>:8010)로 연 브라우저는 보안 문맥이 아니라 randomUUID 가 없다 — 조회 인자를 만들다 던져 창이 깨졌다(Codex R1).
+    //  이 조회는 이 PC 앱에서만 답하므로 그때는 하지 않는다.
+    if (typeof crypto.randomUUID === "function") {
+      jsonFetch<{ adapter_version?: string | null }>("/api/mcp/app/setup", { headers: { "X-MVHub-Tab": crypto.randomUUID() } })
+        .then((s) => {
+          if (alive && s.adapter_version) setMcpVersion(s.adapter_version);
+        })
+        .catch(() => {});
+    }
     return () => {
       alive = false;
     };
