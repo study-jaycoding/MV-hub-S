@@ -4,6 +4,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 
 class _ExitedProcess:
     def __init__(self, return_code: int = 2):
@@ -61,3 +63,31 @@ def test_restart_storm_stops_and_writes_isolated_alert(tmp_path, monkeypatch):
     assert launches[0][1]["cwd"] == supervisor.BACKEND
     assert sleeps == [3]
     assert "restart storm blocked" in alert.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("error,shown", [(ValueError("journal_changed"), "ValueError (journal_changed)"),
+                                         (OSError(r"C:\private\path"), "OSError")])
+def test_update_failure_line_names_the_reason_code_only(tmp_path, monkeypatch, capsys, error, shown):
+    supervisor = _module()
+    monkeypatch.setenv("CONTENT_HUB_SERVER_ALERT_PATH", str(tmp_path / "alert.txt"))
+    request = tmp_path / "server-update-request.json"
+    request.write_text("{}", encoding="utf-8")
+
+    class Running:
+        def poll(self):
+            return None
+
+    class Activation:
+        current = {}
+
+        def __init__(self):
+            self.request = request
+            self.process = Running()
+
+        def apply_request(self):
+            self.process = None
+            raise error
+
+    assert supervisor._supervise(Activation()) == 1
+    lines = [line for line in capsys.readouterr().out.splitlines() if "update failed" in line]
+    assert lines == [f"[supervisor] update failed: {shown}"]

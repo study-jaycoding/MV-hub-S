@@ -292,8 +292,12 @@ def main():
         deadline = time.monotonic() + 300
         journal_path = args.root / 'logs/server-install-journal.json'
         while time.monotonic() < deadline:
-            if journal_path.exists():
+            try:
                 value = json.loads(journal_path.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                # Missing, or being replaced by the supervisor right now: read again next second.
+                value = {}
+            if isinstance(value, dict):
                 if value.get('target', {}).get('build_id') == run_id:
                     if value['phase'] == 'committed':
                         print('Server stage committed and listener identity verified.')

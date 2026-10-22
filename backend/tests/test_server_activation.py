@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 from test_server_qualification import GIT, cli_fixture, prepare_fixture, fake_probe
@@ -186,6 +187,29 @@ def test_prepared_stage_uses_clean_build_environment_and_waits_for_supervisor(mo
     assert builder.prepare(tmp_path, verification_python=verifier, run=run, probe_run=fake_probe) == run_id
     assert calls[before:] == [['git', 'fetch', 'origin', 'main']]
     assert len(list((tmp_path / 'logs/server-stages').iterdir())) == 2  # stage and immutable source ZIP
+
+
+@pytest.mark.parametrize('phase,code', [('committed', 0), ('rolled_back', 1), ('recovery_required', 1), ('failed', 1)])
+def test_coordinator_waits_through_transient_journal_reads(module, tmp_path, monkeypatch, phase, code):
+    builder = importlib.import_module('server_release_update')
+    monkeypatch.setattr(builder, 'prepare', lambda root, verification_python: 'run1')
+    monkeypatch.setattr(builder.time, 'sleep', lambda _: None)
+    journal = tmp_path / 'logs/server-install-journal.json'
+    module.atomic_json(journal, {'phase': phase, 'target': {'build_id': 'run1'}})
+    real, reads = Path.read_text, []
+    def flaky(self, *args, **kwargs):
+        if self == journal:
+            reads.append(self)
+            if len(reads) == 1:
+                raise PermissionError(5, 'Access is denied')  # the supervisor is replacing it right now
+            if len(reads) == 2:
+                return '{"phase": '
+        return real(self, *args, **kwargs)
+    monkeypatch.setattr(Path, 'read_text', flaky)
+    monkeypatch.setattr(sys, 'argv', ['server_release_update.py', '--root', str(tmp_path),
+                                      '--verification-python', str(tmp_path / 'verifier.exe')])
+    assert builder.main() == code
+    assert len(reads) == 3
 
 
 @pytest.mark.parametrize('started', [False, True])

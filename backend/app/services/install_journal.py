@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -20,9 +21,22 @@ def atomic_json(path: Path, value: dict) -> None:
             stream.write(raw)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        # Windows refuses to replace a file another process is reading; the server reads control/journal per request.
+        for attempt in range(40):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if attempt == 39:
+                    raise
+                time.sleep(0.05)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _as_stored(value: dict) -> dict:
+    # The next advance() compares with disk; tuples (e.g. checkpoint components) must already be lists.
+    return json.loads(json.dumps(value, ensure_ascii=False, allow_nan=False))
 
 
 def read_journal(path: Path) -> dict:
@@ -38,10 +52,10 @@ def read_journal(path: Path) -> dict:
 def new_journal(path: Path, *, role: str, previous: dict, target: dict) -> dict:
     if path.exists() and read_journal(path)["phase"] not in TERMINAL:
         raise ValueError("unfinished_install_requires_recovery")
-    value = {"format_version": 1, "run_id": uuid.uuid4().hex, "role": role, "phase": "prepare",
-             "previous": previous, "target": target, "execution_nonce": uuid.uuid4().hex,
-             "db_mutation_possible": False, "business_writes_possible": False,
-             "components": [], "checkpoints": [], "updated_at": datetime.now(timezone.utc).isoformat()}
+    value = _as_stored({"format_version": 1, "run_id": uuid.uuid4().hex, "role": role, "phase": "prepare",
+                        "previous": previous, "target": target, "execution_nonce": uuid.uuid4().hex,
+                        "db_mutation_possible": False, "business_writes_possible": False,
+                        "components": [], "checkpoints": [], "updated_at": datetime.now(timezone.utc).isoformat()})
     atomic_json(path, value)
     return value
 
@@ -56,7 +70,7 @@ def advance(path: Path, value: dict, phase: str, **changes) -> dict:
     if phase not in {"failed", "recovery_required", "rolled_back"}:
         if old not in PHASES or phase not in PHASES or PHASES.index(phase) != PHASES.index(old) + 1:
             raise ValueError("journal_transition_invalid")
-    updated = {**value, **changes, "phase": phase, "updated_at": datetime.now(timezone.utc).isoformat()}
+    updated = _as_stored({**value, **changes, "phase": phase, "updated_at": datetime.now(timezone.utc).isoformat()})
     for flag in ("db_mutation_possible", "business_writes_possible"):
         if type(updated[flag]) is not bool or value[flag] and not updated[flag]:
             raise ValueError("journal_mutation_flags_are_monotonic")

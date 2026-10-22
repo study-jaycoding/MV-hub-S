@@ -30,6 +30,56 @@ def test_failed_journal_write_leaves_previous_phase(tmp_path, monkeypatch):
     assert path.read_bytes() == before
 
 
+def test_tuple_values_are_returned_as_stored_and_tampering_is_still_detected(tmp_path):
+    path = tmp_path / "journal.json"
+    value = journal.new_journal(path, role="server", previous={"nested": ("previous",)}, target={})
+    assert value == journal.read_journal(path)
+    for phase in journal.PHASES[1:4]:
+        value = journal.advance(path, value, phase)
+    # install_db_probe.snapshot() rows come from dataclasses.asdict(): components is a tuple there.
+    value = journal.advance(path, value, "checkpointed", checkpoints=[{"key": "k", "components": ("content_core",)}])
+    assert value == journal.read_journal(path)
+    value = journal.advance(path, value, "activation_pending")
+    with pytest.raises(ValueError, match="journal_changed"):
+        journal.advance(path, {**value, "execution_nonce": "other"}, "starting",
+                        db_mutation_possible=True, business_writes_possible=True)
+    value = journal.advance(path, value, "starting", db_mutation_possible=True, business_writes_possible=True)
+    with pytest.raises(ValueError, match="monotonic"):
+        journal.advance(path, value, "ready", db_mutation_possible=False)
+
+
+def test_replace_retries_a_file_another_process_is_reading(tmp_path, monkeypatch):
+    path = tmp_path / "control.json"
+    journal.atomic_json(path, {"state": "old"})
+    real, calls = journal.os.replace, []
+    def replace(source, target):
+        calls.append(target)
+        if len(calls) < 3:
+            raise PermissionError(5, "Access is denied")
+        real(source, target)
+    monkeypatch.setattr(journal.os, "replace", replace)
+    monkeypatch.setattr(journal.time, "sleep", lambda _: None)
+    journal.atomic_json(path, {"state": "new"})
+    assert json.loads(path.read_text(encoding="utf-8")) == {"state": "new"} and len(calls) == 3
+    assert [p.name for p in tmp_path.iterdir()] == ["control.json"]
+
+
+@pytest.mark.parametrize("error,attempts", [(PermissionError(5, "Access is denied"), 40), (OSError("fixture"), 1)])
+def test_failed_replace_keeps_previous_bytes_and_no_temporary(tmp_path, monkeypatch, error, attempts):
+    path = tmp_path / "control.json"
+    journal.atomic_json(path, {"state": "old"})
+    before, calls = path.read_bytes(), []
+    def replace(source, target):
+        calls.append(target)
+        raise error
+    monkeypatch.setattr(journal.os, "replace", replace)
+    monkeypatch.setattr(journal.time, "sleep", lambda _: None)
+    with pytest.raises(type(error)):
+        journal.atomic_json(path, {"state": "new"})
+    assert len(calls) == attempts and path.read_bytes() == before
+    assert [p.name for p in tmp_path.iterdir()] == ["control.json"]
+
+
 @pytest.mark.parametrize("phase,action", [("prepare", "abort_preparation"), ("draining", "abort_preparation"),
                                         ("quiesced", "restore_previous_program"), ("activation_pending", "restore_previous_program"),
                                         ("starting", "inspect_before_recovery"), ("committed", "done")])

@@ -755,8 +755,9 @@ def test_complete_prepare_request_and_supervisor_verified_path(tmp_path, monkeyp
         return original_advance(path,journal,phase,**changes)
     monkeypatch.setattr(activation,'advance',advance)
     monkeypatch.setattr(manager,'wait_ready',lambda *a,**kw:{'pid':123,'creation_time':'synthetic'})
+    # Same shape as install_db_probe.snapshot(): asdict() keeps components as a tuple.
     row={'key':'fixture','database_id':'fixture-db','status':'compatible','schema_version':1,
-         'minimum_reader_protocol':1,'minimum_writer_protocol':1,'components':['content_core']}
+         'minimum_reader_protocol':1,'minimum_writer_protocol':1,'components':('content_core',)}
     monkeypatch.setattr(manager,'checkpoint',lambda _:[row])
     def spawn(current,*,pending=False):
         assert activation.read_journal(manager.journal_path)['db_mutation_possible']

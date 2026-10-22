@@ -62,7 +62,9 @@ def _supervise(activation) -> int:
                     try:
                         activation.apply_request()
                     except Exception as exc:
-                        print(f'[supervisor] update failed: {type(exc).__name__}', flush=True)
+                        # ValueError messages are fixed codes (e.g. journal_changed); other messages may hold paths.
+                        reason = f' ({exc})' if isinstance(exc, ValueError) else ''
+                        print(f'[supervisor] update failed: {type(exc).__name__}{reason}', flush=True)
                         if activation.request.exists():
                             # Preserve rejected requests; do not retry malformed input forever.
                             activation.request.replace(activation.request.with_name('server-update-rejected-' + str(time.time_ns()) + '.json'))
