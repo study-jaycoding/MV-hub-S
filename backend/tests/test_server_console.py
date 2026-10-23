@@ -1594,3 +1594,243 @@ def test_ui_login_keeps_the_session_in_memory_and_hands_the_token_only_to_auth_j
         assert app.queue.get_nowait()[1].reasons == ("관리자 로그인이 필요합니다",)
     finally:
         root.destroy()
+
+
+# ---------- 2단계 ③ 생성 접수 ----------
+
+SERVER = {"port": 8010, "pid": 4321, "created": 77, "nonce": "c" * 32, "build_id": "b" * 32}
+
+
+def test_intake_plan_targets_the_server_and_both_values(tmp_path):
+    inst = make_inst(tmp_path)
+    plan = actions.plan_intake_set(inst, SERVER, False, True)
+    assert plan.kind == "intake-set" and plan.params == {"server": SERVER, "from": False, "paused": True}
+    assert "intake-set" in actions.AUTH_KINDS and "[다시 받기]" in " ".join(plan.summary)
+    assert "이미 '멈춤'" in actions.plan_intake_set(inst, SERVER, True, True).reasons[0]
+    assert "알 수 없습니다" in actions.plan_intake_set(inst, SERVER, True, "yes").reasons[0]
+    # 업데이트 흔적·미확인 작업이 있어도 접수는 바꿀 수 있다(멈춘 채 갇히지 않게)
+    assert isinstance(actions.plan_intake_set(make_inst(tmp_path, problems=("not_git_clone",)), SERVER, True, False),
+                      actions.Plan)
+
+
+def _fake_calls(monkeypatch, answers):
+    from server_console import server_api
+    sent = []
+
+    def call(server, method, path, token="", body=None, timeout=15.0):
+        sent.append((method, body, token))
+        return answers.pop(0)
+    monkeypatch.setattr(server_api, "call", call)
+    return server_api, sent
+
+
+@pytest.mark.parametrize("answers,expected", [
+    ([(200, {"paused": True}), (200, {"paused": True})], True),
+    ([(None, None), (200, {"paused": True})], True),                    # 응답만 잃음 — 다시 읽어 바뀐 것 확인
+    ([(None, None), (200, {"paused": False})], "값도 바뀌지 않았습니다"),
+    ([(200, {"paused": False}), (200, {"paused": False})], "다른 값"),
+    ([(200, {"paused": True}), (200, {"paused": False})], "다시 읽은 값"),
+    ([(401, {"detail": "만료"}), (200, {"paused": True})], "다시 로그인하세요"),
+    ([(500, {"detail": "DB 잠김"}), (200, {"paused": True})], "DB 잠김"),
+])
+def test_intake_change_is_read_back_from_the_server(monkeypatch, answers, expected):
+    server_api, sent = _fake_calls(monkeypatch, list(answers))
+    if expected is True:
+        assert server_api.set_intake(SERVER, "tok", True) is True
+        assert sent[0] == ("PUT", {"paused": True}, "tok") and sent[1][0] == "GET"
+    else:
+        with pytest.raises(server_api.ServerError, match=expected) as caught:
+            server_api.set_intake(SERVER, "tok", True)
+        assert isinstance(caught.value, server_api.AuthExpired) == ("로그인" in expected)
+
+
+def test_intake_read_needs_a_boolean_and_names_lost_answers(monkeypatch):
+    server_api, _ = _fake_calls(monkeypatch, [(200, {"paused": "1"}), (None, None), (403, None)])
+    with pytest.raises(server_api.ServerError, match="형식"):
+        server_api.read_intake(SERVER, "tok")
+    with pytest.raises(server_api.ServerError, match="응답을 받지 못했습니다"):
+        server_api.read_intake(SERVER, "tok")
+    with pytest.raises(server_api.AuthExpired):
+        server_api.read_intake(SERVER, "tok")
+
+
+def _intake_job(tmp_path, paused_now=False, want=True):
+    inst = make_inst(tmp_path)
+    plan = actions.plan_intake_set(inst, SERVER, paused_now, want)
+    return inst, plan, jobs.new_job(inst, plan, fake_runner(), login_email="admin@x")
+
+
+@pytest.mark.parametrize("server_now,value_now,set_result,status_text,check", [
+    (SERVER, False, True, "finished", lambda s: s["exit_code"] == 0 and s["intake"] == {"paused": True}),
+    (dict(SERVER, pid=9), False, True, "refused", lambda s: "다릅니다" in s["reasons"][0]),       # 서버가 바뀜
+    (SERVER, True, True, "refused", lambda s: "이미" in s["reasons"][0]),                       # 다른 곳에서 이미 바꿈
+    (SERVER, False, "expired", "finished", lambda s: s["exit_code"] == 1 and s["auth_expired"] is True),
+    ("down", False, True, "refused", lambda s: "응답" in s["reasons"][0]),
+])
+def test_intake_runner_rechecks_then_changes(tmp_path, monkeypatch, server_now, value_now, set_result, status_text,
+                                             check):
+    from server_console import job_main, server_api
+    inst, plan, job_id = _intake_job(tmp_path)
+
+    def verify(inst, runner):
+        if server_now == "down":
+            raise server_api.ServerError("8010 포트를 듣는 프로세스가 없습니다(서버가 꺼져 있을 수 있음) — 응답 없음")
+        return server_now
+
+    def set_intake(server, token, paused):
+        assert server == SERVER and token == "tok.en-1" and paused is True
+        if set_result == "expired":
+            raise server_api.AuthExpired(f"서버가 로그인을 받지 않았습니다(401) — {server_api.RELOGIN}")
+        return set_result
+    monkeypatch.setattr(server_api, "verify_server", verify)
+    monkeypatch.setattr(server_api, "read_intake", lambda server, token: value_now)
+    monkeypatch.setattr(server_api, "set_intake", set_intake)
+    request = jobs.read_json(jobs.job_dir(inst, job_id) / "request.json")
+    job_main.run_intake(inst, job_id, request, "tok.en-1")
+    state = jobs.read_job(inst, job_id)
+    assert state["status"] == status_text and check(state)
+    for path in inst.root.rglob("*"):
+        if path.is_file():
+            assert b"tok.en-1" not in path.read_bytes()
+
+
+_FAKE_SERVE = textwrap.dedent("""
+    import json, os, sys
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    port, nonce, build = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+    state = {"paused": False}
+
+    class Handler(BaseHTTPRequestHandler):
+        def send(self, code, body):
+            data = json.dumps(body).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def authed(self):
+            if self.headers.get("Authorization") != "Bearer tok.en-1":
+                self.send(401, {"detail": "로그인이 필요합니다"})
+                return False
+            return True
+
+        def body(self):
+            return json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+
+        def do_GET(self):
+            if self.path == "/api/ready":
+                self.send(200, {"status": "ready", "checks": {}, "runtime": {
+                    "process_id": os.getpid(), "role": "server", "build_id": build, "execution_nonce": nonce}})
+            elif self.authed():
+                self.send(200, {"paused": state["paused"]})
+
+        def do_PUT(self):
+            if self.authed():
+                state["paused"] = bool(self.body()["paused"])
+                self.send(200, {"paused": state["paused"]})
+
+        def do_POST(self):
+            ok = self.body() == {"email": "admin@x", "password": "pw"}
+            self.send(200 if ok else 401, {"account": {"email": "admin@x", "status": "approved",
+                                                       "global_roles": ["admin"]}, "token": "tok.en-1"}
+                      if ok else {"detail": "이메일 또는 비밀번호가 올바르지 않습니다"})
+
+        def log_message(self, *args):
+            pass
+
+    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+""")
+
+
+def test_real_listener_is_verified_and_intake_changes_end_to_end(tmp_path):
+    """실제 프로세스·PowerShell 포트 조회·명령줄·HTTP 로 서버 확인 → 로그인 → 실행기 작업(토큰 파이프 빼고 전부)."""
+    import socket
+    from server_console import job_main, server_api
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    inst, script, build, nonce = _server_inst(tmp_path, port=port)
+    script.write_text(_FAKE_SERVE, encoding="utf-8")
+    server = subprocess.Popen([sys.executable, str(script), str(port), nonce, build],
+                              creationflags=subprocess.CREATE_NO_WINDOW)
+    runner = lambda argv, timeout: install.run_command(argv, timeout)  # noqa: E731
+    try:
+        deadline = time.time() + 20
+        while status.read_ready(port, timeout=1).code != 200 and time.time() < deadline:
+            time.sleep(0.2)
+        target = server_api.verify_server(inst, runner)
+        assert target["port"] == port and target["nonce"] == nonce and target["build_id"] == build
+        with pytest.raises(server_api.ServerError, match="올바르지 않습니다"):
+            server_api.login(inst, runner, "admin@x", "wrong")
+        session = server_api.login(inst, runner, "admin@x", "pw")
+        assert server_api.read_intake(target, session.token) is False
+        plan = actions.plan_intake_set(inst, target, False, True)
+        job_id = jobs.new_job(inst, plan, fake_runner(), login_email=session.email)
+        job_main.run_intake(inst, job_id, jobs.read_json(jobs.job_dir(inst, job_id) / "request.json"), session.token)
+        state = jobs.read_job(inst, job_id)
+        assert state["status"] == "finished" and state["exit_code"] == 0 and state["intake"] == {"paused": True}
+        assert server_api.read_intake(target, session.token) is True
+        with pytest.raises(server_api.AuthExpired):
+            server_api.read_intake(target, "other-token")
+        rows = [json.loads(r) for r in (inst.logs / names.ACTION_LOG).read_text(encoding="utf-8").splitlines()]
+        assert [r["result"] for r in rows] == ["started", "success"] and rows[1]["params"]["paused"] is True
+    finally:
+        server.kill()
+        server.wait(10)
+
+
+def test_ui_intake_page_prefers_the_server_value_and_keeps_both_buttons_honest(tmp_path, monkeypatch):
+    ui, root, app, _errors = _app(tmp_path, monkeypatch)
+    from server_console import server_api
+    try:
+        app._handle(("status", _status(None)))  # DB: 받는 중, 진행 중 '?'
+        assert app.intake_value.cget("text") == "받는 중" and "DB 읽기(추정" in app.intake_sub.cget("text")
+        assert app.pause_button.winfo_manager() == "pack" and not app.resume_button.winfo_manager()
+        app._handle(("intake_value", True, time.time()))
+        assert app.intake_value.cget("text") == "멈춤" and "서버 값(" in app.intake_sub.cget("text")
+        assert "DB 읽기는 '받는 중'" in app.intake_sub.cget("text")
+        assert app.resume_button.winfo_manager() == "pack" and not app.pause_button.winfo_manager()
+
+        app.request_intake(False)  # 로그인 전이면 로그인 창부터
+        assert app.login_window is not None and app.after_login is not None
+        app._close_login()
+        app.session = server_api.Session(email="admin@x", server=SERVER, token="tok.en-1")
+        app.intake_busy = True
+        expired = actions.Refusal((f"생성 접수 읽기: 서버가 로그인을 받지 않았습니다(401) — {server_api.RELOGIN}",))
+        app._handle(("intake_plan", expired, None, 0.0))
+        assert app.session is None and app.intake_busy is False and "다시 로그인" in app.intake_note.cget("text")
+
+        app.intake_job, app.intake_busy = "e" * 32, True
+        app._handle(("intake_job", "e" * 32, {"status": "running"}))
+        assert app.intake_busy is True
+        app._handle(("intake_job", "e" * 32, {"status": "finished", "exit_code": 0, "intake": {"paused": False},
+                                              "finished_at": time.time()}))
+        assert app.intake_busy is False and app.intake_value.cget("text") == "받는 중"
+        assert "완료" in app.intake_note.cget("text")
+        app.session = server_api.Session(email="admin@x", server=SERVER, token="tok.en-1")
+        monkeypatch.setattr(app, "_refresh_intake", lambda: None)
+        app.intake_job = "f" * 32
+        app._handle(("intake_job", "f" * 32, {"status": "finished", "exit_code": 1, "auth_expired": True,
+                                              "error": f"... — {server_api.RELOGIN}"}))
+        assert app.session is None and "실패" in app.intake_note.cget("text")
+        app.intake_job = "1" * 32
+        app._handle(("intake_job", "1" * 32, {"status": "check_needed"}))
+        assert "결과 확인 필요" in app.intake_note.cget("text")
+    finally:
+        root.destroy()
+
+
+def test_last_intake_change_comes_from_the_console_record(tmp_path):
+    from server_console import ui
+    inst = make_inst(tmp_path)
+    assert "기록 없음" in ui.last_intake_text(inst)
+    rows = [{"kind": "intake-set", "result": "success", "ts": 1_700_000_000, "params": {"paused": True},
+             "login_email": "admin@x"},
+            {"kind": "intake-set", "result": "failed", "ts": 1_700_000_100, "params": {"paused": False}}]
+    (inst.logs / names.ACTION_LOG).write_text("".join(json.dumps(r) + "\n" for r in rows) + "not json\n",
+                                              encoding="utf-8")
+    text = ui.last_intake_text(inst)
+    assert "멈춤으로 바꿈" in text and "admin@x" in text
+    assert "멈춤" in ui.job_result_text({"status": "finished", "kind": "intake-set", "exit_code": 0,
+                                         "intake": {"paused": True}})[0]

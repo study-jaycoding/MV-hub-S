@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import collections
 import ctypes
+import json
 import msvcrt
 import os
 import queue
@@ -35,6 +36,8 @@ STEP_LABELS = ("코드 받기", "파이썬", "CLI", "화면 빌드", "시험 기
 SERVER_COLORS = {"ok": LIME, "switching": AMBER, "starting": AMBER, "maintenance": AMBER, "blocked": AMBER,
                  "not_ready": RED, "no_answer": RED, "stopped": MUTED, "unknown": MUTED, "no_task": MUTED}
 JOB_TERMINAL = ("finished", "refused", "check_needed", "runner_error")
+NAV = (("status", "상태·로그"), ("intake", "생성 접수"), ("backup", "DB·백업"), ("address", "주소"),
+       ("update", "업데이트"), ("release", "릴리스"), ("move", "서버 이사"), ("settings", "설정"))
 
 
 class ConsoleTk(tk.Tk):
@@ -147,6 +150,9 @@ class App:
         self.session: server_api.Session | None = None
         self.login_window: tk.Toplevel | None = None
         self.after_login = None  # 로그인 뒤 이어서 할 일(인증이 필요한 동작)
+        self.intake_api: tuple[bool, float] | None = None  # 로그인 뒤 서버 API 로 읽은 값·시각 — DB 읽기(추정)보다 우선
+        self.intake_busy = False
+        self.intake_job = ""  # 따라가는 생성 접수 작업(업데이트 작업 보기와 따로 — 업데이트 중에도 접수는 바꿀 수 있게)
         self._build()
         # 다시 열면 결과를 확인하지 않은 작업을 먼저, 없으면 마지막 작업을 다시 보여 준다.
         recent = (jobs.unresolved_jobs(inst) or [])[:1] or jobs.recent_jobs(inst, 1)
@@ -196,7 +202,13 @@ class App:
         if self.note:  # 부트스트랩 알림(관리 창 stage 확인 실패 등)은 어느 화면에서도 보이게 맨 위에
             tk.Label(main, text=self.note, bg="#3a2f12", fg=AMBER, font=BOLD, anchor="w", justify="left",
                      wraplength=1000, padx=12, pady=6).pack(fill="x")
-        for key, label in (("status", "상태·로그"), ("update", "업데이트")):
+        builders = {"status": self._build_status_page, "intake": self._build_intake_page,
+                    "update": self._build_update_page}
+        for key, label in NAV:
+            if key not in builders:  # 아직 만들지 않은 화면은 이름만
+                tk.Label(self.nav, text=f"{label}  · 다음 단계", bg=BG2, fg=MUTED2, font=("Malgun Gothic", 10),
+                         anchor="w", padx=12, pady=7).pack(fill="x", padx=8, pady=1)
+                continue
             item = tk.Label(self.nav, text=label, bg=BG2, fg=MUTED, font=("Malgun Gothic", 11, "bold"),
                             anchor="w", padx=12, pady=8, cursor="hand2", takefocus=True)
             item.pack(fill="x", padx=8, pady=1)
@@ -204,9 +216,6 @@ class App:
             item.bind("<Return>", lambda _e, k=key: self.show(k))
             self.nav_items[key] = item
             self.pages[key] = tk.Frame(main, bg=BG)
-        for label in ("릴리스", "백업", "서버 이사", "설정"):
-            tk.Label(self.nav, text=f"{label}  · 다음 단계", bg=BG2, fg=MUTED2, font=("Malgun Gothic", 10),
-                     anchor="w", padx=12, pady=7).pack(fill="x", padx=8, pady=1)
         tk.Label(self.nav, text="창을 닫아도 서버는 계속 돕니다", bg=BG2, fg=MUTED2,
                  font=("Malgun Gothic", 8)).pack(side="bottom", anchor="w", padx=12, pady=10)
         account = tk.Frame(self.nav, bg=BG2)
@@ -216,8 +225,8 @@ class App:
         self.login_label.pack(fill="x")
         self.login_button = self._button(account, "로그인…", self.toggle_login)
         self.login_button.pack(anchor="w", pady=(2, 0))
-        self._build_status_page(self.pages["status"])
-        self._build_update_page(self.pages["update"])
+        for key, build in builders.items():
+            build(self.pages[key])
         self.show("status")
 
     def show(self, key: str) -> None:
@@ -295,6 +304,160 @@ class App:
             text.tag_configure("hit", background=LIME)
             self.notebook.add(frame, text=label)
             self.texts[key] = text
+
+    def _build_intake_page(self, page: tk.Frame) -> None:
+        self._header(page, "생성 접수")
+        body = tk.Frame(page, bg=BG)
+        body.pack(fill="both", expand=True, padx=16, pady=12)
+        card = tk.Frame(body, bg=PANEL, highlightbackground="#26282d", highlightthickness=1)
+        card.pack(fill="x")
+        tk.Label(card, text="지금", bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9)).pack(anchor="w", padx=12, pady=(10, 0))
+        self.intake_value = tk.Label(card, text="—", bg=PANEL, fg=TEXT, font=("Malgun Gothic", 18, "bold"))
+        self.intake_value.pack(anchor="w", padx=12)
+        self.intake_sub = tk.Label(card, text="확인 중…", bg=PANEL, fg=MUTED, font=FONT, justify="left", wraplength=900)
+        self.intake_sub.pack(anchor="w", padx=12, pady=(0, 10))
+        self.intake_row = tk.Frame(body, bg=BG)
+        self.intake_row.pack(fill="x", pady=10)
+        self.pause_button = self._button(self.intake_row, "⏸ 생성 접수 멈추기…", lambda: self.request_intake(True))
+        self.resume_button = self._button(self.intake_row, "▶ 다시 받기…", lambda: self.request_intake(False),
+                                          primary=True)
+        self.intake_hint = tk.Label(self.intake_row, text="", bg=BG, fg=MUTED, font=FONT)
+        self.intake_note = tk.Label(body, text="", bg=BG, fg=AMBER, font=FONT, justify="left", wraplength=900)
+        self.intake_note.pack(anchor="w")
+        info = tk.Frame(body, bg=PANEL, highlightbackground="#26282d", highlightthickness=1)
+        info.pack(fill="x", pady=10)
+        tk.Label(info, text="멈춘 동안", bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9)).pack(anchor="w", padx=12, pady=(10, 0))
+        tk.Label(info, text="팀원 앱에는 '배포 준비로 새 생성 요청을 잠시 중지했습니다' 안내가 뜹니다. 이미 시작된 생성은 끝까지 갑니다.\n"
+                            "서버를 다시 켜도 저절로 풀리지 않습니다 — 배포가 끝나면 이 화면에서 [다시 받기]를 누르세요.",
+                 bg=PANEL, fg=TEXT, font=FONT, justify="left", wraplength=900).pack(anchor="w", padx=12, pady=(0, 10))
+        self.intake_last = tk.Label(body, text=last_intake_text(self.inst), bg=BG, fg=MUTED, font=FONT)
+        self.intake_last.pack(anchor="w")
+        self._show_intake()
+
+    def _show_intake(self) -> None:
+        """서버 API 값(로그인 뒤)을 기준으로, 없으면 DB 읽기(추정). DB 집계(진행 중 생성 수)는 따로 보인다."""
+        st = self.status
+        db = st.intake if st is not None else None
+        if db is not None:
+            active = _int(db.get("active_generation_total"))
+            waiting = _int(db.get("non_terminal_request_total"))
+            counts = (f"진행 중 생성 {'?' if active is None else active}건 · 처리 대기 요청 {'?' if waiting is None else waiting}건"
+                      " (DB 집계 — Resolve·Comfy 작업까지 비었다는 뜻은 아님)")
+        else:
+            counts = (st.intake_error if st is not None else "") or "DB 를 읽지 못함"
+        db_paused = db.get("paused") if db is not None and isinstance(db.get("paused"), bool) else None
+        if self.intake_api is not None:
+            paused, seen = self.intake_api
+            source = f"서버 값({time.strftime('%H:%M:%S', time.localtime(seen))} 확인)"
+            if db_paused is not None and db_paused != paused:
+                source += f" · DB 읽기는 '{'멈춤' if db_paused else '받는 중'}' — 다시 확인하려면 버튼을 누르세요"
+        elif db_paused is not None:
+            paused, source = db_paused, "DB 읽기(추정 — 로그인하면 서버 값으로 확인)"
+        else:
+            paused, source = None, "확인 불가"
+        self.intake_value.configure(text={True: "멈춤", False: "받는 중", None: "확인 불가"}[paused],
+                                    fg={True: AMBER, False: LIME, None: MUTED}[paused])
+        what = {True: "팀원의 새 생성 요청을 받지 않습니다", False: "팀원의 새 생성 요청을 받고 있습니다", None: ""}[paused]
+        self.intake_sub.configure(text=" · ".join(p for p in (what, source) if p) + "\n" + counts)
+        for widget in (self.pause_button, self.resume_button, self.intake_hint):
+            widget.pack_forget()
+        if paused is not True:
+            self.pause_button.pack(side="left", padx=(0, 8))
+        if paused is not False:
+            self.resume_button.pack(side="left", padx=(0, 8))
+        self.intake_hint.configure(text={False: "배포 직전에 누름 → 진행 중 생성이 0이 되면 업데이트",
+                                         True: "배포·팀원 업데이트가 끝나면 누름"}.get(paused, ""))
+        self.intake_hint.pack(side="left", padx=4)
+        for button in (self.pause_button, self.resume_button):
+            button.configure(state="disabled" if self.intake_busy else "normal")
+
+    def request_intake(self, want: bool) -> None:
+        if not self.intake_busy:
+            self.require_login(lambda: self._begin_intake(want))
+
+    def _begin_intake(self, want: bool) -> None:
+        if self.intake_busy or self.session is None:
+            return
+        self.intake_busy = True
+        self._show_intake()
+        self.intake_note.configure(text="서버를 확인하고 지금 값을 읽는 중…", fg=MUTED)
+        threading.Thread(target=self._intake_plan_worker, args=(self.session, want), daemon=True).start()
+
+    def _intake_plan_worker(self, session: server_api.Session, want: bool) -> None:
+        value = None
+        try:
+            server = server_api.verify_server(self.inst, self.runner)  # 토큰을 보내기 전에 늘 다시 확인
+            value = server_api.read_intake(server, session.token)
+            plan = actions.plan_intake_set(self.inst, server, value, want)
+        except server_api.ServerError as exc:
+            plan = actions.Refusal((str(exc),))
+        except Exception as exc:  # noqa: BLE001
+            plan = actions.Refusal((f"확인 중 오류: {type(exc).__name__}: {exc}"[:300],))
+        self.queue.put(("intake_plan", plan, value, time.time()))
+
+    def _on_intake_plan(self, plan, value, seen: float) -> None:
+        if value is not None:
+            self.intake_api = (value, seen)
+        if isinstance(plan, actions.Refusal):
+            self.intake_busy = False
+            self._relogin_if_needed(plan.reasons)
+            self.intake_note.configure(text="바꾸지 않았습니다:\n· " + "\n· ".join(plan.reasons), fg=AMBER)
+            self._show_intake()
+            return
+        self._show_intake()
+        if messagebox.askokcancel(f"{actions.ACTIONS[plan.kind]} 확인", "\n\n".join(plan.summary) + "\n\n실행할까요?",
+                                  icon="warning"):
+            self.intake_note.configure(text="바꾸는 중…", fg=MUTED)
+            threading.Thread(target=self._start_worker, args=(plan, False), daemon=True).start()
+        else:
+            self.intake_busy = False
+            self.intake_note.configure(text="")
+            self._show_intake()
+
+    def _on_intake_job(self, job_id: str, state: dict) -> None:
+        status_text = state.get("status")
+        if job_id != self.intake_job or status_text not in JOB_TERMINAL:
+            return
+        self.intake_job, self.intake_busy = "", False
+        if status_text == "finished" and state.get("exit_code") == 0:
+            paused = _dict(state.get("intake")).get("paused")
+            if isinstance(paused, bool):
+                self.intake_api = (paused, float(state.get("finished_at") or time.time()))
+            self.intake_note.configure(text=f"완료: 생성 접수 = {'멈춤' if paused else '받는 중'} (서버에서 다시 읽어 확인)", fg=LIME)
+        elif status_text == "finished":
+            if state.get("auth_expired"):
+                self.logout()
+            self.intake_note.configure(text=f"실패: {state.get('error') or '이유 모름'}", fg=RED)
+            self._refresh_intake()
+        elif status_text == "refused":
+            reasons = [str(r) for r in state.get("reasons") or []]
+            self._relogin_if_needed(reasons)
+            self.intake_note.configure(text="바꾸지 않았습니다:\n· " + "\n· ".join(reasons), fg=AMBER)
+        else:
+            self.intake_note.configure(text=f"결과 확인 필요: 실행기가 결과를 남기지 못했습니다({state.get('error') or '사라짐'}). "
+                                            "아래 값을 다시 읽어 확인하세요 — 업데이트 화면에서 [확인했음]을 눌러야 업데이트가 열립니다.",
+                                       fg=AMBER)
+            self._refresh_intake()
+        self.intake_last.configure(text=last_intake_text(self.inst))
+        self._show_intake()
+
+    def _refresh_intake(self) -> None:
+        """로그인돼 있으면 서버 API 값을 다시 읽는다(작업 스레드). 실패는 화면 값만 그대로."""
+        session = self.session
+        if session is None:
+            return
+
+        def read() -> None:
+            try:
+                value = server_api.read_intake(server_api.verify_server(self.inst, self.runner), session.token)
+            except Exception:  # noqa: BLE001 — 읽기만 실패, 다음 동작 때 다시 확인한다
+                return
+            self.queue.put(("intake_value", value, time.time()))
+        threading.Thread(target=read, daemon=True).start()
+
+    def _relogin_if_needed(self, reasons) -> None:
+        if any(server_api.RELOGIN in str(r) for r in reasons):
+            self.logout()
 
     def _build_update_page(self, page: tk.Frame) -> None:
         self._header(page, "업데이트 — Git 업데이트(서버 코드)")
@@ -435,6 +598,8 @@ class App:
         self._close_login(keep_pending=True)
         if then:
             then()
+        else:
+            self._refresh_intake()  # 로그인하면 생성 접수를 서버 값으로 다시 읽는다
 
     def _close_login(self, keep_pending: bool = False) -> None:
         if not keep_pending:
@@ -520,15 +685,19 @@ class App:
             self.busy = False
             self._set_start_buttons("normal")
 
-    def _start_worker(self, plan) -> None:
+    def _start_worker(self, plan, follow: bool = True) -> None:
+        """follow=False(생성 접수)는 업데이트 작업 보기를 바꾸지 않고 따로 따라간다."""
+        def refuse(text: str) -> None:
+            refusal = actions.Refusal((text,))
+            self.queue.put(("plan", refusal) if follow else ("intake_plan", refusal, None, 0.0))
         session = self.session if plan.kind in actions.AUTH_KINDS else None
         if plan.kind in actions.AUTH_KINDS and session is None:
-            self.queue.put(("plan", actions.Refusal(("관리자 로그인이 필요합니다",))))
+            refuse("관리자 로그인이 필요합니다")
             return
         try:
             job_id = jobs.new_job(self.inst, plan, self.runner, login_email=session.email if session else "")
         except Exception as exc:  # noqa: BLE001 — 작업 폴더도 못 만들었으면 남은 것이 없다
-            self.queue.put(("plan", actions.Refusal((f"작업을 시작하지 못했습니다: {exc}",))))
+            refuse(f"작업을 시작하지 못했습니다: {exc}")
             return
         try:
             jobs.launch_runner(self.inst, job_id, token=session.token if session else None)
@@ -537,7 +706,7 @@ class App:
                 jobs.mark_launch_failed(self.inst, job_id, f"실행기를 띄우지 못했습니다: {exc}")
             except Exception:  # noqa: BLE001 — 기록도 못 남기면 read_job 이 시작 대기 뒤 check_needed 로 본다
                 _log_ui_error(traceback.format_exc())
-        self.queue.put(("job_started", job_id))
+        self.queue.put(("job_started", job_id) if follow else ("intake_started", job_id))
 
     # ---------- 작업 스레드(위젯·after 금지, 큐에만) ----------
     def _put(self, item) -> bool:
@@ -574,6 +743,9 @@ class App:
                                                          final=state.get("status") in JOB_TERMINAL)
                     if self._put(("job", view, new_lines, state)):
                         offsets[view] = offset  # 못 넣었으면 다음에 같은 곳부터 다시 읽는다
+                intake = self.intake_job
+                if intake:
+                    self._put(("intake_job", intake, jobs.read_job(self.inst, intake)))
             except Exception:  # noqa: BLE001
                 _log_ui_error(traceback.format_exc())
             self.stop.wait(1.0)
@@ -632,6 +804,16 @@ class App:
             self._on_plan(item[1])
         elif kind == "login":
             self._on_login(item[1])
+        elif kind == "intake_plan":
+            self._on_intake_plan(item[1], item[2], item[3])
+        elif kind == "intake_started":
+            self.intake_job = item[1]
+            self.intake_note.configure(text=f"작업 {item[1][:8]} 시작 — 서버를 다시 확인하고 바꿉니다…", fg=MUTED)
+        elif kind == "intake_job":
+            self._on_intake_job(item[1], item[2])
+        elif kind == "intake_value":
+            self.intake_api = (item[1], item[2])
+            self._show_intake()
         elif kind == "job_started":
             self._select_job(item[1])
             note = self.plan_note.cget("text")  # 권한 알림이 있었으면 이어서 남긴다
@@ -699,6 +881,7 @@ class App:
             active = _int(st.intake.get("active_generation_total", 0))
             self._card("intake", "멈춤" if paused else "받는 중",
                        f"진행 중 생성 {'?' if active is None else active}건", AMBER if paused else LIME)
+        self._show_intake()
         if st.traces and not self.job_id:
             self.plan_note.configure(text="업데이트 흔적: " + " / ".join(t for _, t in st.traces), fg=AMBER)
 
@@ -840,6 +1023,11 @@ def job_result_text(state: dict) -> tuple[str, str]:
     """작업 상태 → (화면 문구, 색). 판정은 종료 코드, 커밋은 이 실행과 이어졌을 때만 적는다."""
     status_text = state.get("status")
     kind = state.get("kind")
+    if status_text == "finished" and kind == "intake-set":
+        if state.get("exit_code") != 0:
+            return f"실패: 생성 접수를 바꾸지 못했습니다 — {state.get('error') or '이유 모름'}", RED
+        paused = _dict(state.get("intake")).get("paused")
+        return f"완료: 생성 접수 = {'멈춤' if paused else '받는 중'}(서버에서 다시 읽어 확인)", LIME
     if status_text == "finished" and kind in ("tools-update", "console-rollback"):
         if state.get("exit_code") != 0:
             return f"실패: {actions.ACTIONS[kind]}이(가) 끝나지 않았습니다 — 관리 창은 그대로입니다. 위 내용을 확인하세요.", RED
@@ -866,6 +1054,25 @@ def job_result_text(state: dict) -> tuple[str, str]:
         return ("결과 확인 필요: 실행기가 결과를 남기지 못했습니다. 서버 상태와 로그를 확인한 뒤 "
                 "[확인했음]을 누르세요(그 전에는 새 업데이트를 막습니다)."), AMBER
     return "진행 중… (이 창을 닫아도 업데이트는 계속됩니다)", MUTED
+
+
+def last_intake_text(inst: install.Installation) -> str:
+    """관리 창 기록(console-actions.jsonl)에서 마지막으로 성공한 생성 접수 변경."""
+    try:
+        lines = status.read_tail_lines(inst.logs / names.ACTION_LOG, 256_000)
+    except OSError:
+        lines = []
+    for raw in reversed(lines):
+        try:
+            row = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("kind") == "intake-set" and row.get("result") == "success":
+            when = row.get("ts")
+            stamp = time.strftime("%m-%d %H:%M", time.localtime(when)) if isinstance(when, (int, float)) else "시각 모름"
+            paused = _dict(row.get("params")).get("paused")
+            return f"최근 변경: {stamp} {'멈춤으로' if paused else '받기로'} 바꿈 · {row.get('login_email') or '계정 모름'}"
+    return "최근 변경: 관리 창 기록 없음(웹·붙여넣기로 바꾼 것은 여기 안 나옵니다)"
 
 
 def _mark_ui(inst: install.Installation) -> Path:

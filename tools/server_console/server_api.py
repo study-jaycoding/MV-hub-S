@@ -27,6 +27,13 @@ class ServerError(RuntimeError):
     """로그인·API 호출을 하지 않은(또는 실패한) 이유 — 화면에 그대로 보인다."""
 
 
+RELOGIN = "다시 로그인하세요"
+
+
+class AuthExpired(ServerError):
+    """서버가 토큰을 거절했다(만료·권한) — 화면은 로그인을 버리고 다시 묻는다. 문구는 늘 RELOGIN 으로 끝난다."""
+
+
 @dataclass(frozen=True)
 class Session:
     email: str
@@ -184,3 +191,38 @@ def login(inst: Installation, runner: Runner, email: str, password: str) -> Sess
     if account.get("status") != "approved" or not isinstance(roles, list) or "admin" not in roles:
         raise ServerError("관리자(admin) 계정만 쓸 수 있습니다")
     return Session(email=str(account.get("email") or email), server=server, token=token)
+
+
+# ---- 생성 접수(서버 DB app_setting['generation_deployment_paused'] — 실행 중인 서버가 자기 DB 에 쓴다) ----
+
+INTAKE_PATH = "/api/gen-requests/deployment-pause"
+
+
+def _answer(code: int | None, payload: dict | None, what: str) -> dict:
+    if code in (401, 403):
+        raise AuthExpired(f"서버가 로그인을 받지 않았습니다({detail(payload) or code}) — {RELOGIN}")
+    if code is None:
+        raise ServerError(f"{what}: 서버에서 응답을 받지 못했습니다(꺼져 있거나 바쁠 수 있음)")
+    if code != 200 or payload is None:
+        raise ServerError(f"{what}: {detail(payload) or f'HTTP {code}'}")
+    return payload
+
+
+def read_intake(server: dict, token: str) -> bool:
+    """True = 멈춤. 서버 API 값(관리 창의 DB 경로 짐작에 기대지 않는다)."""
+    paused = _answer(*call(server, "GET", INTAKE_PATH, token), "생성 접수 읽기").get("paused")
+    if not isinstance(paused, bool):
+        raise ServerError("생성 접수 응답 형식을 알 수 없습니다")
+    return paused
+
+
+def set_intake(server: dict, token: str, paused: bool) -> bool:
+    """바꾸고 다시 읽어 확인한 값. 응답만 잃었으면(서버는 바꿨을 수 있다) 다시 읽어 판정한다."""
+    code, payload = call(server, "PUT", INTAKE_PATH, token, {"paused": paused})
+    if code is not None and _answer(code, payload, "생성 접수 바꾸기").get("paused") is not paused:
+        raise ServerError("서버가 요청과 다른 값을 돌려줬습니다")
+    after = read_intake(server, token)
+    if after is not paused:
+        raise ServerError("바꾼 뒤 다시 읽은 값이 요청과 다릅니다" if code is not None
+                          else "생성 접수 바꾸기: 서버에서 응답을 받지 못했고 값도 바뀌지 않았습니다")
+    return after

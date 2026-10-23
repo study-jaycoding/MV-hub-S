@@ -8,9 +8,10 @@ from dataclasses import asdict, dataclass, field, replace
 
 from .install import Installation, Runner, powershell_exe, trusted_git
 
-ACTIONS = {"git-update": "Git 업데이트", "tools-update": "관리 도구 갱신", "console-rollback": "이전 관리 창으로"}
+ACTIONS = {"git-update": "Git 업데이트", "tools-update": "관리 도구 갱신", "console-rollback": "이전 관리 창으로",
+           "intake-set": "생성 접수 바꾸기"}
 # 관리자 로그인이 필요한 작업 — 화면은 이것만 토큰을 파이프로 넘기고, 실행기는 이것만 토큰을 읽는다.
-AUTH_KINDS: frozenset[str] = frozenset()
+AUTH_KINDS: frozenset[str] = frozenset({"intake-set"})
 
 
 @dataclass(frozen=True)
@@ -145,6 +146,26 @@ def plan_console_rollback(inst: Installation, pointer: dict | None, traces: list
                "서버와 서버 폴더는 그대로입니다. 끝나면 관리 창을 다시 열면 적용됩니다.")
     return Plan("console-rollback", str(inst.root), "console", "", summary,
                 params={"from_sha": pointer["sha"], "to_sha": previous})
+
+
+def plan_intake_set(inst: Installation, server: dict, paused_now: bool, want: bool) -> Plan | Refusal:
+    """생성 접수 멈추기/다시 받기 — 확인 대상 = 확인한 서버·바꾸기 전 서버 값·원하는 값(실행 직전에 다시 비교).
+    업데이트 흔적·미확인 작업으로는 막지 않는다 — 접수는 업데이트와 따로, 언제든 다시 받을 수 있어야 한다."""
+    reasons = [_PROBLEM_REASONS[p] for p in inst.problems if p in ("stage_copy", "no_runtime_python")]
+    if not isinstance(want, bool) or not isinstance(paused_now, bool):
+        reasons.append("바꿀 값을 알 수 없습니다")
+    elif paused_now == want:
+        reasons.append(f"서버 값이 이미 '{'멈춤' if want else '받는 중'}' 입니다")
+    if reasons:
+        return Refusal(tuple(reasons))
+    if want:
+        summary = ("팀원의 새 생성 요청 접수를 멈춥니다(이미 시작된 생성은 끝까지 갑니다).",
+                   "팀원 앱에는 '배포 준비로 새 생성 요청을 잠시 중지했습니다' 안내가 뜹니다.",
+                   "서버를 다시 켜도 저절로 풀리지 않습니다 — 배포가 끝나면 이 화면에서 [다시 받기]를 누르세요.")
+    else:
+        summary = ("새 생성 요청을 다시 받습니다.", "팀원 앱에서 바로 새 생성을 보낼 수 있습니다.")
+    return Plan("intake-set", str(inst.root), "server", "", summary,
+                params={"server": dict(server), "from": paused_now, "paused": want})
 
 
 def command_for(plan: Plan, inst: Installation) -> list[str]:

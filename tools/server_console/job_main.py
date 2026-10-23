@@ -11,7 +11,7 @@ from pathlib import Path
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))  # -I 라 스크립트 폴더가 경로에 없다 — 이 판의 관리 창 코드만
 
-from server_console import actions, console_stage, install, jobs, names, status  # noqa: E402
+from server_console import actions, console_stage, install, jobs, names, server_api, status  # noqa: E402
 
 
 def recompute(inst: install.Installation, job_id: str) -> "actions.Plan | actions.Refusal":
@@ -63,6 +63,32 @@ def take_token(inst: install.Installation, job_id: str, request: dict) -> str | 
     return token
 
 
+def run_intake(inst: install.Installation, job_id: str, request: dict, token: str) -> int:
+    """생성 접수 바꾸기: 서버를 다시 확인하고 지금 값을 다시 읽어 확인 대상과 비교한 뒤 PUT → 다시 읽어 확인."""
+    params = actions.Plan.from_json(request["plan"]).params
+    want = params.get("paused")
+    runner = install.default_runner(inst)
+
+    def recompute() -> "actions.Plan | actions.Refusal":
+        try:
+            server = server_api.verify_server(inst, runner)
+            return actions.plan_intake_set(inst, server, server_api.read_intake(server, token), want)
+        except server_api.ServerError as exc:
+            return actions.Refusal((str(exc),))
+
+    def apply(_job, say) -> tuple[int, dict]:
+        say(f"생성 접수를 '{'멈춤' if want else '받는 중'}'으로 바꿉니다")
+        try:
+            after = server_api.set_intake(params["server"], token, want)
+        except server_api.ServerError as exc:
+            say(f"실패: {exc}")
+            return 1, {"error": str(exc)[:500], "auth_expired": isinstance(exc, server_api.AuthExpired)}
+        say(f"완료: 서버 값 = {'멈춤' if after else '받는 중'}(다시 읽어 확인)")
+        return 0, {"intake": {"paused": after}}
+
+    return jobs.run_job(inst, job_id, recompute, work=apply)
+
+
 def _parse(argv: list[str]) -> tuple[Path | None, str]:
     if len(argv) == 4 and argv[1] == "--install-root":
         return Path(argv[2]), argv[3]
@@ -81,6 +107,12 @@ def main(argv: list[str]) -> int:
         job = jobs.job_dir(inst, job_id)
         request = jobs.read_json(job / "request.json") or {}
         kind = request.get("kind")
+        if kind in actions.AUTH_KINDS:
+            token = take_token(inst, job_id, request)  # 받기 전에는 아무것도 하지 않는다
+            if token is None:
+                return 70
+            if kind == "intake-set":
+                return run_intake(inst, job_id, request, token)
         if kind == "git-update":
             return jobs.run_job(inst, job_id, lambda: recompute(inst, job_id), before=lambda: status.prepare_runs(inst),
                                 observe=lambda prior: status.run_outcome(inst, prior))
