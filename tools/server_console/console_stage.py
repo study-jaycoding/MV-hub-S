@@ -12,13 +12,14 @@ import os
 import re
 import secrets
 import shutil
+import tempfile
 import time
 import zipfile
 from pathlib import Path
 from typing import Callable
 
 from . import names
-from .install import Installation, Runner, child_env, trusted_git
+from .install import Installation, Runner, child_env, run_command, trusted_git
 from .main import MANIFEST, POINTER, STAGES, StageError, read_pointer, stage_dir, verify_stage_dir
 
 PATHS = ("tools/server_console", "tools/log_viewer.py", "tools/deploy_fence_check.py")
@@ -129,15 +130,32 @@ def build(inst: Installation, runner: Runner, sha: str, check: Callable[[Path], 
 
 
 def check_with_python(inst: Installation, runner: Runner) -> Callable[[Path], None]:
-    """새 stage 로 관리 창 시작 점검(Tk + 모든 모듈 가져오기, -B). 실패하면 게시하지 않는다."""
+    """새 stage 로 관리 창 시작 점검(Tk + 모든 모듈 가져오기, -B) + 새 관리 창이 부르는 **서버 루트 함수·인자**가 이 루트에
+    있는지(도우미 자식 selfcheck — 쓰기 없음, CONTENT_HUB_DATA 는 빈 임시 폴더). 하나라도 실패하면 게시하지 않는다."""
     def check(code_root: Path) -> None:
         if inst.python is None:
             raise StageError("등록된 Python 이 없습니다")
-        argv = [str(inst.python), "-I", "-B", str(code_root / "tools" / "server_console" / "console.py"),
-                "--install-root", str(inst.root), "--check"]
+        helpers = code_root / "tools" / "server_console"
+        argv = [str(inst.python), "-I", "-B", str(helpers / "console.py"), "--install-root", str(inst.root), "--check"]
         code, out = runner(argv, 120)
         if code != 0:
             raise StageError(f"새 관리 창 시작 점검 실패(종료 코드 {code}) {out.strip()[-200:]}")
+        scratch = Path(tempfile.mkdtemp(prefix=".check-", dir=inst.logs))
+        try:
+            env = dict(child_env(inst), PYTHONDONTWRITEBYTECODE="1", CONTENT_HUB_DATA=str(scratch))
+            base = [str(inst.python), "-I", "-B"]
+            for argv in (base + [str(helpers / "release_helper.py"), str(inst.root), str(scratch), "selfcheck"],
+                         base + [str(helpers / "backup_helper.py"), str(inst.root), "selfcheck"]):
+                code, out = run_command(argv, 60, env)
+                try:
+                    answer = json.loads(out.strip().splitlines()[-1]) if code == 0 else {}
+                except (ValueError, IndexError):
+                    answer = {}
+                if not answer.get("ok"):
+                    why = ", ".join(answer.get("missing") or []) or f"종료 코드 {code}"
+                    raise StageError(f"새 관리 창이 부르는 서버 루트 함수가 이 루트와 맞지 않습니다({why}) — 먼저 Git 업데이트")
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)  # 방금 만든 빈 임시 폴더만
     return check
 
 

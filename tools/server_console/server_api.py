@@ -15,6 +15,7 @@ import urllib.request
 from ctypes import wintypes
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from . import names, status
 from .install import Installation, Runner, powershell_exe
@@ -113,6 +114,29 @@ def _same_path(a: str, b: Path) -> bool:
     return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(str(b)))
 
 
+def expected_pythons(inst: Installation) -> list[Path]:
+    """서버를 띄운 Python 실행 파일 — 포인터의 python(없으면 등록된 Python)과, venv 면 supervisor 가 대신 띄우는
+    기본 Python(pyvenv.cfg 의 home — server_activation.spawn 의 venv → 기본 Python 전환)."""
+    path = status.plain_child(inst.logs, names.SERVER_CURRENT)
+    pointer = (read_json(path) if path else None) or {}
+    python = pointer.get("python") if isinstance(pointer.get("python"), str) else None
+    if python is None and inst.python is not None and not os.path.lexists(inst.logs / names.SERVER_CURRENT):
+        python = str(inst.python)  # 포인터 없는 소스 실행: supervisor = 등록된 Python(task_launch.bat)
+    if not python:
+        return []
+    found = [Path(python)]
+    cfg = found[0].parent.parent / "pyvenv.cfg"
+    if found[0].parent.name.lower() == "scripts" and cfg.is_file():
+        try:
+            home = next((line.split("=", 1)[1].strip() for line in cfg.read_text(encoding="utf-8").splitlines()
+                         if line.split("=", 1)[0].strip().lower() == "home"), "")
+        except OSError:
+            home = ""
+        if home and Path(home).is_absolute():
+            found.append(Path(home) / found[0].name)
+    return found
+
+
 def verify_server(inst: Installation, runner: Runner) -> dict:
     """확인한 서버 대상(port·pid·created·nonce·build_id). 확인 대상(Plan.params)에 그대로 넣고 실행 직전에 다시 비교한다."""
     if inst.tls:
@@ -127,9 +151,10 @@ def verify_server(inst: Installation, runner: Runner) -> dict:
     pid, exe, command_line = found[0]
     created = process_created(pid)
     argv = split_command_line(command_line)
-    if (created is None or Path(exe).name.lower() not in ("python.exe", "pythonw.exe")
-            or len(argv) < 2 or not _same_path(argv[1], script)):
+    if created is None or len(argv) < 2 or not _same_path(argv[1], script):
         raise ServerError(f"{inst.port} 포트를 듣는 프로세스(PID {pid})가 이 설치의 서버(serve.py)가 아닙니다")
+    if not exe or not any(_same_path(exe, python) for python in expected_pythons(inst)):
+        raise ServerError(f"{inst.port} 포트를 듣는 프로세스(PID {pid})의 실행 파일이 이 서버의 Python 이 아닙니다({exe or '확인 불가'})")
     ready = status.read_ready(inst.port)
     payload = ready.payload if isinstance(ready.payload, dict) else {}
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
@@ -152,9 +177,25 @@ def _json(raw: bytes) -> dict | list | None:
     return value if isinstance(value, (dict, list)) else None
 
 
+_recheck: Callable[[], dict] | None = None
+
+
+def bind(inst: Installation, runner: Runner) -> None:
+    """이 프로세스에서 토큰을 실은 요청은 보내기 **바로 전에** 서버를 다시 확인한다 — 확인한 뒤 NAS 읽기·지문 계산처럼
+    오래 걸린 사이에 서버가 꺼지고 다른 프로세스가 포트를 차지했으면 보내지 않는다(화면·실행기가 시작할 때 부른다)."""
+    global _recheck
+    _recheck = lambda: verify_server(inst, runner)  # noqa: E731
+
+
 def call(server: dict, method: str, path: str, token: str = "", body: dict | None = None,
          timeout: float = 15.0) -> tuple[int | None, dict | list | None]:
-    """(HTTP 코드 또는 응답 없음 None, JSON 객체·배열). 프록시·리다이렉트를 쓰지 않고 127.0.0.1 로만."""
+    """(HTTP 코드 또는 응답 없음 None, JSON 객체·배열). 프록시·리다이렉트를 쓰지 않고 127.0.0.1 로만.
+    token 이 있으면 먼저 bind 한 확인으로 지금 서버가 server 와 같은지 본다(다르거나 확인 수단이 없으면 보내지 않음)."""
+    if token:
+        if _recheck is None:
+            raise ServerError("서버를 다시 확인할 수 없어 로그인 정보를 보내지 않았습니다")
+        if _recheck() != server:
+            raise ServerError("확인했던 서버와 지금 포트의 서버가 다릅니다 — 로그인 정보를 보내지 않았습니다. 다시 시도하세요")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), status._NoRedirect)
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = urllib.request.Request(f"http://127.0.0.1:{int(server['port'])}{path}", data=data, method=method)

@@ -396,19 +396,28 @@ def read_job(inst: Installation, job_id: str, now: float | None = None,
 
 
 UNRESOLVED = ("starting", "checking", "running", "check_needed", "runner_error")
+UNCONFIRMED = 3  # 작업이 끝까지 돌았지만 결과(복사·NAS 표지 등)를 확인하지 못한 종료 코드
 
 
-def unresolved_jobs(inst: Installation, exclude: str = "", now: float | None = None) -> list[str] | None:
-    """진행 중이거나 결과를 잃고 아직 사람이 확인하지 않은 작업(전부 — 표시 개수와 무관). None = 목록을 못 읽음."""
+def needs_check(state: dict) -> bool:
+    """사람이 결과를 확인해야 하는 끝난 작업 — 결과를 잃었거나(실행기 사라짐·실행기 오류) '결과 미확인'(종료 코드 3)."""
+    return (state.get("status") in ("check_needed", "runner_error")
+            or (state.get("status") == "finished" and state.get("exit_code") == UNCONFIRMED))
+
+
+def unresolved_jobs(inst: Installation, exclude: str | tuple[str, ...] = "", now: float | None = None
+                    ) -> list[str] | None:
+    """진행 중이거나 결과를 확인하지 못했는데 아직 사람이 확인하지 않은 작업(전부 — 표시 개수와 무관). None = 목록을 못 읽음."""
     dirs = _job_dirs(inst)
     if dirs is None:
         return None
+    skip = (exclude,) if isinstance(exclude, str) else exclude
     found = []
     for path in dirs:
-        if path.name == exclude:
+        if path.name in skip:
             continue
         state = read_job(inst, path.name, now=now)
-        if state.get("status") in UNRESOLVED and not state.get("acknowledged"):
+        if (state.get("status") in UNRESOLVED or needs_check(state)) and not state.get("acknowledged"):
             found.append(path.name)
     return found
 
@@ -439,8 +448,7 @@ def mark_launch_failed(inst: Installation, job_id: str, error: str) -> None:
 
 def acknowledge(inst: Installation, job_id: str) -> None:
     """'결과 확인 필요' 작업을 사람이 확인했다고 남긴다. 진행 중인 작업은 확인 처리하지 않는다."""
-    state = read_job(inst, job_id)
-    if state.get("status") not in ("check_needed", "runner_error"):
+    if not needs_check(read_job(inst, job_id)):
         raise JobError("결과 확인 필요 상태가 아닙니다")
     write_json(job_dir(inst, job_id) / "ack.json", {"acknowledged_at": time.time()})
 

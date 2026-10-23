@@ -11,6 +11,8 @@ import base64
 import json
 import os
 import re
+import shutil
+import tempfile
 import time
 from pathlib import Path
 from typing import Callable
@@ -85,15 +87,25 @@ def write_state(inst: Installation, **changes) -> None:
 
 # ---- 도우미 자식 ----
 
-def helper(inst: Installation, scratch: Path, command: str, *args: str, timeout: float = READ_TIMEOUT) -> dict:
-    """루트 Python -I -B 로 release_helper.py. CONTENT_HUB_DATA = 빈 작업 폴더. 응답 없음·형식 오류는 ok=False."""
+def helper(inst: Installation, scratch: Path, source: str, command: str, *args: str,
+           timeout: float = READ_TIMEOUT) -> dict:
+    """루트 Python -I -B 로 release_helper.py. 응답 없음·형식 오류는 ok=False.
+    source = **이 작업에서 확인한** NAS 릴리스 폴더 — 부를 때마다 새 빈 폴더에 그 값만 담은 INSTALL_SOURCE.txt 를 만들어
+    함수의 root·CONTENT_HUB_DATA 로 쓴다(그사이 화면에서 폴더 설정을 바꿔도 이 작업의 쓰기 대상은 바뀌지 않는다)."""
     if inst.python is None:
         return {"ok": False, "error": "등록된 Python 이 없습니다", "status": 0}
+    if source_problem(source):
+        return {"ok": False, "error": f"NAS 릴리스 폴더: {source_problem(source)}", "status": 0}
     scratch.mkdir(parents=True, exist_ok=True)
-    env = dict(child_env(inst), PYTHONDONTWRITEBYTECODE="1", CONTENT_HUB_DATA=str(scratch),
-               CONTENT_HUB_AUTH="0", CONTENT_HUB_PORT=str(inst.port))
-    argv = [str(inst.python), "-I", "-B", str(HELPER), str(inst.root), str(release_root(inst)), command, *args]
-    code, out = run_command(argv, timeout, env)
+    root = Path(tempfile.mkdtemp(prefix="release-", dir=scratch))
+    try:
+        (root / "INSTALL_SOURCE.txt").write_text(source.strip() + "\n", encoding="utf-8")
+        env = dict(child_env(inst), PYTHONDONTWRITEBYTECODE="1", CONTENT_HUB_DATA=str(root),
+                   CONTENT_HUB_AUTH="0", CONTENT_HUB_PORT=str(inst.port))
+        argv = [str(inst.python), "-I", "-B", str(HELPER), str(inst.root), str(root), command, *args]
+        code, out = run_command(argv, timeout, env)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)  # 이 호출이 방금 만든 빈 폴더(INSTALL_SOURCE.txt·assets)만
     try:
         value = json.loads(out.strip().splitlines()[-1]) if code == 0 else None
     except (ValueError, IndexError):
@@ -189,6 +201,28 @@ def resume_source(inst: Installation, from_job: str) -> tuple[dict, dict, dict |
     return params, jobs.read_job(inst, from_job), read_intent(folder)
 
 
+_ALIVE = ("starting", "checking", "running")
+
+
+def resume_chain(inst: Installation, from_job: str, look: int = 1000) -> tuple[str, ...]:
+    """그 배포를 이어 가려다 이미 끝난(죽었거나 실패한) 재개 시도들 — 다음 재개를 막지 않게. 도는 중인 것은 넣지 않는다."""
+    chain = []
+    for job_id in jobs.recent_jobs(inst, look):
+        request = jobs.read_json(jobs.job_dir(inst, job_id) / "request.json") or {}
+        params = (request.get("plan") or {}).get("params") or {}
+        if request.get("kind") == "release-resume" and params.get("from_job") == from_job and \
+                jobs.read_job(inst, job_id).get("status") not in _ALIVE:
+            chain.append(job_id)
+    return tuple(chain)
+
+
+def settle_chain(inst: Installation, from_job: str, chain: tuple[str, ...]) -> None:
+    """이어서 하기가 서버·NAS 를 다시 읽어 끝냈다 — 멈춘 배포와 앞선 재개 시도의 '결과 확인 필요'를 푼다."""
+    for job_id in (from_job, *chain):
+        if jobs.needs_check(jobs.read_job(inst, job_id)):
+            jobs.acknowledge(inst, job_id)
+
+
 def find_resumable(inst: Installation, look: int = 30) -> dict | None:
     """가장 최근 배포(또는 이어서 하기)가 끝나지 못했고 의도 기록이 있으면 {job_id, version} — [이어서 하기] 대상."""
     for job_id in jobs.recent_jobs(inst, look):
@@ -197,8 +231,7 @@ def find_resumable(inst: Installation, look: int = 30) -> dict | None:
         if kind not in ("release-deploy", "release-resume"):
             continue
         state = jobs.read_job(inst, job_id)
-        if state.get("status") in ("starting", "checking", "running") or \
-                (state.get("status") == "finished" and state.get("exit_code") == 0):
+        if state.get("status") in _ALIVE or (state.get("status") == "finished" and state.get("exit_code") == 0):
             return None
         source = job_id if kind == "release-deploy" else \
             str(((request.get("plan") or {}).get("params") or {}).get("from_job") or "")
@@ -217,7 +250,7 @@ def read_view(inst: Installation, runner: Runner, session: "server_api.Session |
     view = {"source": source, "read": {}, "notices": None, "notice_error": "", "auth_expired": False,
             "resume": find_resumable(inst)}
     if source:
-        view["read"] = helper(inst, scratch_dir(inst), "read")
+        view["read"] = helper(inst, scratch_dir(inst), source, "read")
     if session is not None:
         try:
             view["notices"] = list_notices(server_api.verify_server(inst, runner), session.token)
@@ -226,11 +259,12 @@ def read_view(inst: Installation, runner: Runner, session: "server_api.Session |
     return view
 
 
-def _nas(inst: Installation, job: Path, mode: str, item: dict, expect_published: str, expect_candidate: str) -> dict:
+def _nas(inst: Installation, job: Path, source: str, mode: str, item: dict, expect_published: str,
+         expect_candidate: str) -> dict:
     expected = {key: item[key] for key in ("version", "file", "size", "sha256")}
     if mode == "promote":
-        return helper(inst, job / "scratch", "promote", _b64(expected), timeout=HASH_TIMEOUT)
-    return helper(inst, job / "scratch", "deploy", _b64(expected), expect_published, expect_candidate,
+        return helper(inst, job / "scratch", source, "promote", _b64(expected), timeout=HASH_TIMEOUT)
+    return helper(inst, job / "scratch", source, "deploy", _b64(expected), expect_published, expect_candidate,
                   timeout=HASH_TIMEOUT)
 
 
@@ -287,7 +321,8 @@ def deploy_work(inst: Installation, job: Path, params: dict, token: str, say: Sa
     except ReleaseError as exc:
         say(f"실패: {exc}")
         return 1, {"announced": announced, "deploy": "not_started", "error": str(exc)[:500], "resumable": announced}
-    answer = _nas(inst, job, params["mode"], item, params["expect_published"], params["expect_candidate"])
+    answer = _nas(inst, job, params["release_dir"], params["mode"], item, params["expect_published"],
+                  params["expect_candidate"])
     code, extra = _nas_outcome(answer, announced, say)
     if code == 0:
         write_intent(job, step="done", notice_id=item["id"], sha256=sha)
@@ -310,7 +345,7 @@ def resume_work(inst: Installation, job: Path, params: dict, intent: dict, token
         why = "알림이 나가지 않았습니다 — [배포]를 다시 누르세요(새로 확인합니다)"
         say("멈춤: " + why)
         return 1, {"deploy": "not_started", "error": why}
-    view = helper(inst, job / "scratch", "read")
+    view = helper(inst, job / "scratch", params["release_dir"], "read")
     if not view.get("ok") or not isinstance(view.get("overview"), dict):
         why = str(view.get("error") or view.get("overview_error") or "릴리스 폴더를 읽지 못했습니다")
         say("멈춤: " + why)
@@ -322,10 +357,10 @@ def resume_work(inst: Installation, job: Path, params: dict, intent: dict, token
         return 0, {"deploy": "already", "version": item.get("version")}
     if (published, candidate) == (old_pub, old_cand):
         say("NAS 는 그대로입니다 — 표지 바꾸기부터 이어 갑니다")
-        answer = _nas(inst, job, params["mode"], item, old_pub, old_cand)
+        answer = _nas(inst, job, params["release_dir"], params["mode"], item, old_pub, old_cand)
     elif candidate == sha and published == old_pub:
         say("후보만 바뀐 상태입니다 — 공개 표지를 마저 바꿉니다")
-        answer = _nas(inst, job, "deploy", item, old_pub, sha)
+        answer = _nas(inst, job, params["release_dir"], "deploy", item, old_pub, sha)
     else:
         why = "그 사이 다른 관리자가 릴리스 폴더를 바꿨습니다 — 화면을 다시 확인하세요"
         say("멈춤: " + why)
@@ -358,9 +393,9 @@ def remove_work(params: dict, token: str, say: Say) -> tuple[int, dict]:
 
 # ---- 주소 공지(NAS server-location.json) ----
 
-def read_location(inst: Installation, scratch: Path) -> dict:
+def read_location(inst: Installation, scratch: Path, source: str) -> dict:
     """{ok, announcement: {url, revision, name, announced_at} | None(아직 없음)} — 못 읽으면 ok=False."""
-    return helper(inst, scratch, "location", timeout=LOCATION_TIMEOUT)
+    return helper(inst, scratch, source, "location", timeout=LOCATION_TIMEOUT)
 
 
 def address_problem(url: str, name: str) -> str:
@@ -374,7 +409,7 @@ def address_problem(url: str, name: str) -> str:
 def address_work(inst: Installation, job: Path, params: dict, say: Say) -> tuple[int, dict]:
     """[팀에 공지] — 화면이 본 공지 판 그대로인지 다시 읽고 → 판+1 로 쓰고 → 다시 읽어 확인 → 판을 기억."""
     scratch = job / "scratch"
-    before = read_location(inst, scratch)
+    before = read_location(inst, scratch, params["release_dir"])
     if not before.get("ok"):
         say(f"실패: {before.get('error')}")
         return 1, {"error": str(before.get("error"))[:500]}
@@ -384,11 +419,12 @@ def address_work(inst: Installation, job: Path, params: dict, say: Say) -> tuple
         return 1, {"error": "그 사이 공지 파일이 바뀌었습니다"}
     last = max(seen, int(read_state(inst).get("last_published_revision") or 0))
     say(f"공지 파일을 씁니다(판 {last + 1})")
-    answer = helper(inst, scratch, "publish", params["url"], params["name"], str(last), timeout=LOCATION_TIMEOUT)
+    answer = helper(inst, scratch, params["release_dir"], "publish", params["url"], params["name"], str(last),
+                    timeout=LOCATION_TIMEOUT)
     if not answer.get("ok"):
         say(f"실패: {answer.get('error')}")
         return 1, {"error": str(answer.get("error"))[:500]}
-    after = read_location(inst, scratch)
+    after = read_location(inst, scratch, params["release_dir"])
     written = (after.get("announcement") or {}) if after.get("ok") else {}
     mine = answer.get("announcement") or {}
     if written.get("revision") != mine.get("revision") or written.get("url") != mine.get("url"):

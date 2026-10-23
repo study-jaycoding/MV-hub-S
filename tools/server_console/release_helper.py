@@ -5,6 +5,7 @@ python -I -B release_helper.py <설치 루트> <관리 창 릴리스 루트> <�
 - 가져오기 전에 부르는 쪽이 CONTENT_HUB_DATA 를 빈 작업 폴더로 정한다(config 의 폴더 만들기가 실제 데이터에 닿지 않게).
 - 결과는 JSON 한 줄: {"ok": true, ...} 또는 {"ok": false, "error": 문구, "status": HTTP 상태}.
 명령: read · manifest <file> · promote <기대 b64> · deploy <기대 b64> <공개 sha> <후보 sha> · location · publish <url> <이름> <기억한 판>
+· selfcheck(쓰기 없음 — 관리 창이 부르는 루트 함수·인자가 있는지)
 """
 from __future__ import annotations
 
@@ -12,6 +13,38 @@ import base64
 import json
 import sys
 from pathlib import Path
+
+
+import inspect
+
+# 관리 창이 부르는 루트 함수·인자 — 관리 도구 갱신의 시작 점검(selfcheck)이 새 관리 창과 이 서버 루트가 맞는지 미리 본다.
+NEEDS = {
+    "release_update": {"list_packages": ("root",), "release_overview": ("root",), "package_manifest": ("file", "root"),
+                       "promote_candidate": ("expected", "root"),
+                       "deploy_package": ("expected", "expect_published", "expect_candidate", "root"),
+                       "install_source": ("root",), "ReleaseUpdateError": (), "ReleasePromoteError": ()},
+    "server_relocation": {"parse_announcement": ("raw",), "read_source_bytes": ("source",),
+                          "publish_announcement": ("source", "url", "name", "last_published_revision"),
+                          "AnnouncementMissing": (), "RelocationReadError": (), "RelocationWriteError": ()},
+}
+
+
+def missing_parts(modules: dict, needs: dict) -> list[str]:
+    """없는 함수·인자 이름들(맞으면 빈 목록)."""
+    missing = []
+    absent = object()
+    for module_name, wanted in needs.items():
+        for name, params in wanted.items():
+            thing = getattr(modules[module_name], name, absent)
+            if thing is absent:
+                missing.append(f"{module_name}.{name}")
+                continue
+            try:
+                have = inspect.signature(thing).parameters if params else {}
+            except (TypeError, ValueError):
+                have = {}
+            missing += [f"{module_name}.{name}({param})" for param in params if param not in have]
+    return missing
 
 
 def _expected(text: str) -> dict:
@@ -26,6 +59,9 @@ def run(install_root: Path, release_root: Path, command: str, args: list[str]) -
     from app.services import release_update as ru  # noqa: PLC0415 — 환경을 정한 뒤에만
     from app.services import server_relocation as sr  # noqa: PLC0415
 
+    if command == "selfcheck" and not args:
+        missing = missing_parts({"release_update": ru, "server_relocation": sr}, NEEDS)
+        return {"ok": not missing, "missing": missing}
     try:
         if command == "read" and not args:
             out: dict = {"ok": True}

@@ -823,8 +823,47 @@ def _install_tree(tmp_path: Path) -> Path:
     (root / ".mvhub-runtime" / "python.txt").write_text(sys.executable + "\n", encoding="utf-8")
     (root / "logs").mkdir()
     (root / ".gitignore").write_text("/logs/\n/.mvhub-runtime/\n", encoding="utf-8")
+    _root_stubs(root)
     _git_commit(root, "init")
     return root
+
+
+_RELEASE_STUB = textwrap.dedent("""
+    class ReleaseUpdateError(RuntimeError): pass
+    class ReleasePromoteError(ReleaseUpdateError): pass
+    def list_packages(root): pass
+    def release_overview(root): pass
+    def package_manifest(file, root): pass
+    def promote_candidate(expected, root): pass
+    def deploy_package(expected, expect_published, expect_candidate, root): pass
+    def install_source(root): pass
+""")
+_RELOCATION_STUB = textwrap.dedent("""
+    class RelocationReadError(RuntimeError): pass
+    class AnnouncementMissing(RelocationReadError): pass
+    class RelocationWriteError(RuntimeError): pass
+    def parse_announcement(raw): pass
+    def read_source_bytes(source): pass
+    def publish_announcement(source, *, url, name, last_published_revision=0, timeout=8.0): pass
+""")
+_COPIER_STUB = textwrap.dedent("""
+    STATUS_FILE = None
+    def configured_target(): pass
+    def target_id(value): pass
+    def unc_format_error(value): pass
+    def probe(value): pass
+""")
+
+
+def _root_stubs(root: Path, release_stub: str = _RELEASE_STUB) -> None:
+    """가짜 설치 루트의 서버 함수(모양만) — 관리 도구 갱신의 시작 점검(selfcheck)이 이름·인자를 본다."""
+    services = root / "backend" / "app" / "services"
+    services.mkdir(parents=True, exist_ok=True)
+    for path, text in ((root / "backend" / "app" / "__init__.py", ""), (services / "__init__.py", ""),
+                       (services / "release_update.py", release_stub),
+                       (services / "server_relocation.py", _RELOCATION_STUB),
+                       (root / "tools" / "backup_replicate.py", _COPIER_STUB)):
+        path.write_text(text, encoding="utf-8")
 
 
 def _git_commit(root: Path, message: str) -> str:
@@ -871,6 +910,20 @@ def test_bootstrap_runs_the_verified_stage_and_falls_back_to_root(tmp_path):
     assert stage_found is None and "확인 실패" in note
     done = _bootstrap_check(root)
     assert done.returncode == 0 and f"code_root={root}" in done.stdout  # 검증 실패 → 루트 판으로
+
+
+def test_tools_update_refuses_a_console_the_root_functions_cannot_serve(tmp_path):
+    """새 관리 창이 부르는 루트 함수·인자가 이 서버 루트에 없으면 게시하지 않는다(설계 3판 (5) — Codex 리뷰 P2)."""
+    from server_console import console_stage
+    root = _install_tree(tmp_path)
+    _root_stubs(root, _RELEASE_STUB.replace("expect_published, expect_candidate, root", "expect_published, root"))
+    sha = _git_commit(root, "old root")
+    inst = _stage_inst(root)
+    runner = console_stage.default_runner_for(inst)
+    with pytest.raises(console_stage.StageError, match=r"deploy_package\(expect_candidate\)"):
+        console_stage.build(inst, runner, sha, console_stage.check_with_python(inst, runner), lambda _s: None)
+    assert not (root / "logs" / "console-stages" / sha).exists()
+    assert not [p for p in (root / "logs").iterdir() if p.name.startswith(".check-")]  # 점검용 임시 폴더는 지웠다
 
 
 def _good_stage(tmp_path: Path) -> tuple[Path, str]:
@@ -1317,14 +1370,15 @@ def test_job_result_text_names_the_commit_only_when_linked(state, expected):
 
 # ---------- 2단계 ② 로그인·토큰 파이프·관리 창 기록 ----------
 
-def _server_inst(tmp_path, **overrides):
+def _server_inst(tmp_path, python=r"C:\Py\python.exe", **overrides):
     """stage 로 도는 서버의 기록(server-current·stage 의 serve.py·server-activation)을 가진 가짜 설치."""
     inst = make_inst(tmp_path, **overrides)
     build, nonce = "b" * 32, "c" * 32
     script = inst.logs / "server-stages" / build / "backend" / "serve.py"
     script.parent.mkdir(parents=True)
     script.write_text("", encoding="utf-8")
-    (inst.logs / names.SERVER_CURRENT).write_text(json.dumps({"build_id": build}), encoding="utf-8")
+    (inst.logs / names.SERVER_CURRENT).write_text(json.dumps({"build_id": build, "python": str(python)}),
+                                                  encoding="utf-8")
     (inst.logs / "server-activation.json").write_text(
         json.dumps({"format_version": 1, "state": "activated", "execution_nonce": nonce}), encoding="utf-8")
     return inst, script, build, nonce
@@ -1356,7 +1410,8 @@ def test_server_is_verified_before_login(tmp_path, monkeypatch):
     ({"found": None}, "확인하지 못했습니다"),
     ({"found": []}, "없습니다"),
     ({"found": [(1, "python.exe", "x"), (2, "python.exe", "y")]}, "여럿"),
-    ({"exe": r"C:\Tools\nginx.exe"}, "serve.py"),
+    ({"exe": r"C:\Tools\nginx.exe"}, "실행 파일"),
+    ({"exe": r"D:\elsewhere\python.exe"}, "실행 파일"),        # 이름만 같은 다른 Python
     ({"script": "other"}, "serve.py"),
     ({"runtime": {"execution_nonce": "d" * 32}}, "/api/ready"),
     ({"runtime": {"process_id": 1}}, "/api/ready"),
@@ -1394,8 +1449,41 @@ def test_server_check_needs_the_activation_record_and_no_tls(tmp_path, monkeypat
 def test_legacy_server_without_pointer_is_the_root_serve_py(tmp_path, monkeypatch):
     inst, _script, _build, nonce = _server_inst(tmp_path)
     (inst.logs / names.SERVER_CURRENT).unlink()
-    server_api = _fake_server(monkeypatch, inst.root / "backend" / "serve.py", "legacy-source", nonce)
+    server_api = _fake_server(monkeypatch, inst.root / "backend" / "serve.py", "legacy-source", nonce,
+                              exe=str(inst.python))  # 포인터가 없으면 supervisor = 등록된 Python
     assert server_api.verify_server(inst, fake_runner())["build_id"] == "legacy-source"
+
+
+def test_venv_server_is_run_by_its_base_python(tmp_path, monkeypatch):
+    """server_activation.spawn 은 venv 의 Scripts\\python.exe 대신 기본 Python 을 띄운다 — 그 경로까지만 믿는다."""
+    venv, base = tmp_path / "venv", tmp_path / "base"
+    (venv / "Scripts").mkdir(parents=True)
+    base.mkdir()
+    (venv / "pyvenv.cfg").write_text(f"home = {base}\nversion = 3.14\n", encoding="utf-8")
+    inst, script, build, nonce = _server_inst(tmp_path, python=venv / "Scripts" / "python.exe")
+    server_api = _fake_server(monkeypatch, script, build, nonce, exe=str(base / "python.exe"))
+    assert server_api.verify_server(inst, fake_runner())["pid"] == 4321
+    _fake_server(monkeypatch, script, build, nonce, exe=str(tmp_path / "other" / "python.exe"))
+    with pytest.raises(server_api.ServerError, match="실행 파일"):
+        server_api.verify_server(inst, fake_runner())
+
+
+def test_token_is_sent_only_after_rechecking_the_same_server(monkeypatch):
+    """확인한 뒤 오래 걸린 사이(NAS 읽기·지문) 포트 주인이 바뀌었으면 토큰을 보내지 않는다 — 연결을 열기도 전에 멈춘다."""
+    from server_console import server_api
+    monkeypatch.setattr(server_api.urllib.request, "build_opener", lambda *a: pytest.fail("토큰을 실은 연결을 열었다"))
+    monkeypatch.setattr(server_api, "_recheck", None)
+    with pytest.raises(server_api.ServerError, match="다시 확인할 수 없어"):
+        server_api.call(SERVER, "GET", "/api/x", token="tok")
+    monkeypatch.setattr(server_api, "_recheck", lambda: dict(SERVER, pid=9, created=5))
+    with pytest.raises(server_api.ServerError, match="다릅니다"):
+        server_api.call(SERVER, "GET", "/api/x", token="tok")
+
+    def gone():
+        raise server_api.ServerError("8010 포트를 듣는 프로세스가 없습니다")
+    monkeypatch.setattr(server_api, "_recheck", gone)
+    with pytest.raises(server_api.ServerError, match="없습니다"):
+        server_api.call(SERVER, "PUT", "/api/x", token="tok", body={})
 
 
 def test_listener_lookup_and_command_line_split():
@@ -1469,6 +1557,7 @@ def test_api_call_ignores_proxies_and_redirects(monkeypatch):
     monkeypatch.setenv("HTTP_PROXY", "http://192.0.2.1:9")
     try:
         server = {"port": httpd.server_address[1]}
+        monkeypatch.setattr(server_api, "_recheck", lambda: server)  # 같은 서버로 다시 확인됨
         assert server_api.call(server, "PUT", "/api/x", token="tok", body={"paused": True}) == (200, {"ok": True})
         assert seen == {"auth": "Bearer tok", "body": b'{"paused": true}'}
         assert server_api.call(server, "GET", "/api/x")[0] == 302  # 따라가지 않는다
@@ -1758,18 +1847,20 @@ _FAKE_SERVE = textwrap.dedent("""
 """)
 
 
-def test_real_listener_is_verified_and_intake_changes_end_to_end(tmp_path):
-    """실제 프로세스·PowerShell 포트 조회·명령줄·HTTP 로 서버 확인 → 로그인 → 실행기 작업(토큰 파이프 빼고 전부)."""
+def test_real_listener_is_verified_and_intake_changes_end_to_end(tmp_path, monkeypatch):
+    """실제 프로세스·PowerShell 포트 조회·명령줄·실행 파일(venv → 기본 Python)·HTTP 로 서버 확인 → 로그인 →
+    토큰마다 다시 확인 → 실행기 작업(토큰 파이프 빼고 전부)."""
     import socket
     from server_console import job_main, server_api
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    inst, script, build, nonce = _server_inst(tmp_path, port=port)
+    inst, script, build, nonce = _server_inst(tmp_path, python=sys.executable, port=port)
     script.write_text(_FAKE_SERVE, encoding="utf-8")
     server = subprocess.Popen([sys.executable, str(script), str(port), nonce, build],
                               creationflags=subprocess.CREATE_NO_WINDOW)
     runner = lambda argv, timeout: install.run_command(argv, timeout)  # noqa: E731
+    monkeypatch.setattr(server_api, "_recheck", lambda: server_api.verify_server(inst, runner))  # = bind
     try:
         deadline = time.time() + 20
         while status.read_ready(port, timeout=1).code != 200 and time.time() < deadline:
@@ -2135,39 +2226,53 @@ def test_release_helper_reads_the_nas_with_the_root_code_and_writes_only_the_not
     """실제 도우미 자식이 루트 backend 코드로 목록·표지를 읽고, 옛 릴리스는 배포를 거절하고, 주소 공지만 쓴다."""
     nas = tmp_path / "nas"
     nas.mkdir()
-    data = b"zip-bytes"
-    for version in ("2026.10.22-2105", "2026.10.16-1358"):
-        (nas / f"MVHub-{version}.zip").write_bytes(data)
+    old_data, new_data = b"old-zip-bytes", b"new-zip-bytes"
+    (nas / "MVHub-2026.10.16-1358.zip").write_bytes(old_data)
+    (nas / "MVHub-2026.10.22-2105.zip").write_bytes(new_data)
     (nas / "notes.txt").write_text("x", encoding="utf-8")
-    latest, cand = _manifest("2026.10.16-1358", data), _manifest("2026.10.22-2105", data)
-    cand["sha256"] = SHA_B  # 후보 지문을 다르게 — 공개 대기(pending)
+    latest, cand = _manifest("2026.10.16-1358", old_data), _manifest("2026.10.22-2105", new_data)
     (nas / "latest.json").write_text(json.dumps(latest), encoding="utf-8")
     (nas / "candidate.json").write_text(json.dumps(cand), encoding="utf-8")
     inst = install.Installation(root=ROOT, data_dir=ROOT / "backend" / "data", log_dir=tmp_path, content_db=tmp_path / "x.db",
                                 port=8010, port_known=False, python=Path(sys.executable), problems=())
-    scratch = tmp_path / "scratch"
-    real_root = release.release_root
-    try:
-        release.release_root = lambda _inst: tmp_path / "console-release"  # 이 작업실의 .mvhub-runtime 을 건드리지 않게
-        release.save_source(inst, str(nas))
-        view = release.helper(inst, scratch, "read")
-        assert view["ok"] and [p["version"] for p in view["packages"]] == ["2026.10.22-2105", "2026.10.16-1358"]
-        overview = view["overview"]
-        assert overview["source"] == "candidate" and overview["pending"] is True
-        assert release.shas(overview) == (latest["sha256"], SHA_B)
-        before = {p.name: p.read_bytes() for p in nas.iterdir()}
-        expected = {k: cand[k] for k in ("version", "file", "size", "sha256")}
-        refused = release.helper(inst, scratch, "promote", release._b64(expected), timeout=60)
-        assert refused["ok"] is False and refused["status"] == 409  # 지문 불일치·검증 없는 옛 릴리스 — 아무것도 안 씀
-        assert {p.name: p.read_bytes() for p in nas.iterdir()} == before
-        assert release.read_location(inst, scratch) == {"ok": True, "announcement": None}
-        published = release.helper(inst, scratch, "publish", "http://192.0.2.10:8010", "임시 서버", "3", timeout=60)
-        assert published["ok"] and published["announcement"]["revision"] == 4
-        again = release.read_location(inst, scratch)["announcement"]
-        assert again["url"] == "http://192.0.2.10:8010" and again["name"] == "임시 서버" and again["revision"] == 4
-        assert (scratch / "assets").is_dir()  # config 의 폴더 만들기는 빈 작업 폴더에만 닿았다
-    finally:
-        release.release_root = real_root
+    scratch, source = tmp_path / "scratch", str(nas)
+    view = release.helper(inst, scratch, source, "read")
+    assert view["ok"] and [p["version"] for p in view["packages"]] == ["2026.10.22-2105", "2026.10.16-1358"]
+    overview = view["overview"]
+    assert overview["source"] == "candidate" and overview["pending"] is True
+    assert release.shas(overview) == (latest["sha256"], cand["sha256"])
+    before = {p.name: p.read_bytes() for p in nas.iterdir()}
+    expected = {k: cand[k] for k in ("version", "file", "size", "sha256")}
+    # 지문·크기는 맞지만 검증(영수증) 없는 옛 형식 릴리스 — 영수증 검사에서 거절되고 아무것도 쓰지 않는다
+    refused = release.helper(inst, scratch, source, "promote", release._b64(expected), timeout=60)
+    assert refused["ok"] is False and refused["status"] == 409 and "legacy-unverified" in refused["error"]
+    # 지문이 다른 기대값은 그 전에 거절된다(다른 검사)
+    wrong = release.helper(inst, scratch, source, "promote", release._b64(dict(expected, sha256=SHA_B)), timeout=60)
+    assert wrong["ok"] is False and "바뀌었습니다" in wrong["error"]
+    assert {p.name: p.read_bytes() for p in nas.iterdir()} == before
+    assert release.read_location(inst, scratch, source) == {"ok": True, "announcement": None}
+    published = release.helper(inst, scratch, source, "publish", "http://192.0.2.10:8010", "임시 서버", "3", timeout=60)
+    assert published["ok"] and published["announcement"]["revision"] == 4
+    again = release.read_location(inst, scratch, source)["announcement"]
+    assert again["url"] == "http://192.0.2.10:8010" and again["name"] == "임시 서버" and again["revision"] == 4
+    assert list(scratch.iterdir()) == []  # 부를 때마다 만든 빈 폴더(INSTALL_SOURCE·assets)는 지웠다
+    assert release.helper(inst, scratch, "", "read")["ok"] is False  # 확인한 폴더가 없으면 부르지 않는다
+
+
+def test_release_helper_uses_the_folder_this_job_confirmed_not_the_saved_setting(tmp_path, monkeypatch):
+    """작업 도중 화면에서 폴더 설정을 바꿔도, 도우미에 넘어가는 폴더는 이 작업이 확인한 것이다(Codex 리뷰 P1)."""
+    inst = make_inst(tmp_path)
+    (inst.root / ".mvhub-runtime").mkdir()
+    release.save_source(inst, "\\\\NAS\\B")  # 화면에서 바꾼 값
+    seen = []
+
+    def fake_run(argv, timeout, env):
+        root = Path(argv[5])
+        seen.append(((root / "INSTALL_SOURCE.txt").read_text(encoding="utf-8").strip(), env["CONTENT_HUB_DATA"] == str(root)))
+        return 0, '{"ok": true}'
+    monkeypatch.setattr(release, "run_command", fake_run)
+    assert release.helper(inst, tmp_path / "s", "\\\\NAS\\A", "read") == {"ok": True}
+    assert seen == [("\\\\NAS\\A", True)]
 
 
 def test_release_source_setting_is_validated(tmp_path):
@@ -2207,7 +2312,8 @@ def _deploy_params(**changes):
 def _fake_helper(monkeypatch, answers):
     calls, answers = [], list(answers)
 
-    def helper(inst, scratch, command, *args, timeout=60):
+    def helper(inst, scratch, source, command, *args, timeout=60):
+        assert source  # 늘 확인한 폴더를 넘긴다
         calls.append((command, args))
         return answers.pop(0) if len(answers) > 1 else answers[0]
     monkeypatch.setattr(release, "helper", helper)
@@ -2295,7 +2401,7 @@ def test_resume_rereads_the_server_and_nas(tmp_path, monkeypatch, intent, notice
     monkeypatch.setattr(release.server_api, "call", _FakeServer({("GET", "item"): [(200, notice)]}))
     nas = _fake_helper(monkeypatch, [{"ok": True, "overview": overview},
                                      {"ok": True, "result": {"already": False, "version": "v"}}])
-    params = {"server": SERVER, **FIELDS_C, "mode": "deploy"}
+    params = {"server": SERVER, "release_dir": "\\\\NAS\\r", **FIELDS_C, "mode": "deploy"}
     code, extra = release.resume_work(inst, job, params, intent, "tok", lambda line: None)
     if isinstance(expected, tuple):
         assert code == 0 and nas[-1][0] == expected[0] and nas[-1][1][1:] == expected[1]
@@ -2360,10 +2466,10 @@ def test_address_notice_checks_the_revision_then_remembers_it(tmp_path, monkeypa
     release.write_state(inst, last_published_revision=7)
     job = tmp_path / "job"
     reads = [before] + ([after] if after else [])
-    monkeypatch.setattr(release, "read_location", lambda _inst, _scratch: reads.pop(0))
+    monkeypatch.setattr(release, "read_location", lambda _inst, _scratch, source: reads.pop(0))
     published = _fake_helper(monkeypatch, [{"ok": True, "announcement": {"revision": 4, "url": "http://192.0.2.10:8010"}}])
     code, extra = release.address_work(inst, job, {"url": "http://192.0.2.10:8010", "name": "팀 서버",
-                                                   "revision_seen": 3}, lambda line: None)
+                                                   "revision_seen": 3, "release_dir": "\\\\NAS\\r"}, lambda line: None)
     if expected == 0:
         assert code == 0 and published[0] == ("publish", ("http://192.0.2.10:8010", "팀 서버", "7"))
         assert release.read_state(inst) == {"last_published_revision": 4, "server_name": "팀 서버"}
@@ -2452,10 +2558,10 @@ def test_ui_release_page_shows_buttons_only_after_login_and_offers_resume(tmp_pa
         app._handle(("release_view", view))
         buttons = lambda: [w.cget("text") for line in app.release_rows.winfo_children()  # noqa: E731
                            for w in line.winfo_children() if isinstance(w, ui.tk.Button)]
-        assert buttons() == [] and "로그인하면" in app.release_warn.cget("text") and not app.resume_button.winfo_manager()
+        assert buttons() == [] and "로그인하면" in app.release_warn.cget("text") and not app.release_resume.winfo_manager()
         notices = [{**_notice(1, SHA_A), "file": "MVHub-2026.10.22-2105.zip"}]
         app._handle(("release_view", {**view, "notices": notices}))
-        assert buttons() == ["배포…", "해제…", "재공지…"] and app.resume_button.winfo_manager() == "pack"
+        assert buttons() == ["배포…", "해제…", "재공지…"] and app.release_resume.winfo_manager() == "pack"
         texts = [w.cget("text") for line in app.release_rows.winfo_children() for w in line.winfo_children()]
         assert "새 후보 · 배포 전" in texts and "팀 배포 중" in texts and any("알림 1회" in t for t in texts)
         app._handle(("release_view", {**view, "notices": [*notices, _notice(1)]}))
@@ -2511,3 +2617,83 @@ def test_release_result_text_separates_notice_from_nas(state, expected):
     from server_console import ui
     assert expected in ui.area_result_text(state)[0]
     assert ui._built_at("2026.10.22-2105") == "10-22 21:05"
+
+
+# ---------- 2단계 독립 리뷰 1차 고침 ----------
+
+def test_unconfirmed_result_blocks_new_jobs_until_someone_checks(tmp_path):
+    """'결과 미확인'(종료 코드 3 — 복사가 계속될 수 있음·NAS 결과 모름)도 사람이 확인하기 전에는 새 작업을 막는다(Codex P1)."""
+    from server_console import ui
+    inst, plan, job_id = _job(tmp_path)
+    jobs.write_json(jobs.job_dir(inst, job_id) / "state.json", {"status": "finished", "exit_code": 3, "pid": 1})
+    assert jobs.unresolved_jobs(inst) == [job_id]
+    assert "업데이트 화면에서 확인" in actions.plan_backup_run(inst, {"task": GOOD_TASK, "setting": {"target_id": "o"}},
+                                                         jobs.unresolved_jobs(inst)).reasons[0]
+    state = jobs.read_job(inst, job_id)
+    assert jobs.needs_check(state) and "[확인했음]" in ui.job_result_text({**state, "kind": "backup-run"})[0]
+    jobs.acknowledge(inst, job_id)
+    assert jobs.unresolved_jobs(inst) == []
+    second = jobs.new_job(inst, plan, fake_runner())
+    jobs.write_json(jobs.job_dir(inst, second) / "state.json", {"status": "finished", "exit_code": 1, "pid": 1})
+    assert jobs.unresolved_jobs(inst) == []  # 실패(1)는 결과가 분명하다 — 막지 않는다
+    with pytest.raises(jobs.JobError):
+        jobs.acknowledge(inst, second)
+
+
+def test_resume_chain_skips_dead_attempts_but_not_live_ones(tmp_path):
+    """배포 D 사망 → 재개 R 사망 → 다시 재개: R 은 막지 않고, 도는 재개는 막는다. 끝내면 D·R 을 함께 확인 처리(Codex P2)."""
+    inst = make_inst(tmp_path)
+    deploy = jobs.new_job(inst, actions.Plan("release-deploy", str(inst.root), "server", "", (),
+                                             params={"release_dir": "\\\\NAS\\r", **FIELDS_C, "mode": "deploy"}),
+                          fake_runner())
+    jobs.write_json(jobs.job_dir(inst, deploy) / "state.json", {"status": "check_needed", "pid": 1})
+    release.write_intent(jobs.job_dir(inst, deploy), step="nas")
+    resume = actions.Plan("release-resume", str(inst.root), "server", "", (), params={"from_job": deploy})
+    dead = jobs.new_job(inst, resume, fake_runner())
+    jobs.write_json(jobs.job_dir(inst, dead) / "state.json", {"status": "runner_error", "error": "x"})
+    live = jobs.new_job(inst, resume, fake_runner())
+    jobs.write_json(jobs.job_dir(inst, live) / "state.json", {"status": "running", "pid": os.getpid(),
+                                                              "created": jobs.process_created(os.getpid())})
+    chain = release.resume_chain(inst, deploy)
+    assert chain == (dead,)
+    params, state, intent = release.resume_source(inst, deploy)
+    plan = actions.plan_release_resume(inst, SERVER, "\\\\NAS\\r", deploy, params, state, intent,
+                                       jobs.unresolved_jobs(inst), chain)
+    assert isinstance(plan, actions.Refusal) and plan.reasons == (
+        f"이전 작업({live[:8]})이 진행 중이거나 결과를 확인하지 않았습니다 — 업데이트 화면에서 확인하세요",)
+    jobs.write_json(jobs.job_dir(inst, live) / "state.json", {"status": "finished", "exit_code": 1, "pid": 1})
+    chain = release.resume_chain(inst, deploy)
+    assert set(chain) == {dead, live}
+    assert isinstance(actions.plan_release_resume(inst, SERVER, "\\\\NAS\\r", deploy, params, state, intent,
+                                                  jobs.unresolved_jobs(inst), chain), actions.Plan)
+    release.settle_chain(inst, deploy, chain)
+    assert jobs.unresolved_jobs(inst) == []
+
+
+def test_ui_intake_and_release_buttons_are_separate_and_old_releases_can_be_shown(tmp_path, monkeypatch):
+    """두 화면이 '이어서 하기'·'다시 받기' 단추를 서로 덮지 않는다 · 9개째부터의 옛 릴리스도 [더 보기]로 고를 수 있다(Codex P2)."""
+    ui, root, app, _errors = _app(tmp_path, monkeypatch)
+    try:
+        app._handle(("status", _status(None)))
+        app._handle(("intake_value", True, time.time()))
+        intake_resume = app.resume_button
+        assert intake_resume.cget("text") == "▶ 다시 받기…" and intake_resume.winfo_manager() == "pack"
+        rows = [{"file": f"MVHub-2026.10.{d:02d}-1200.zip", "version": f"2026.10.{d:02d}-1200", "size": 1}
+                for d in range(20, 8, -1)]  # 12개
+        overview = {"source": "latest", "published": {"version": rows[0]["version"], "sha256": SHA_A,
+                                                      "file": rows[0]["file"]}}
+        view = {"source": "\\\\NAS\\r", "read": {"ok": True, "packages": rows, "overview": overview},
+                "notices": [], "resume": {"job_id": "f" * 32, "version": "2026.10.20-1200"}}
+        app._handle(("release_view", view))
+        assert app.release_resume is not intake_resume and app.release_resume.winfo_manager() == "pack"
+        assert app.resume_button.cget("text") == "▶ 다시 받기…"  # 릴리스 화면이 생성 접수 단추를 바꾸지 않았다
+        app._handle(("intake_value", False, time.time()))
+        assert app.release_resume.winfo_manager() == "pack"  # 생성 접수 화면이 릴리스 단추를 숨기지 않았다
+        lines = lambda: [w for w in app.release_rows.winfo_children() if isinstance(w, ui.tk.Frame)]  # noqa: E731
+        more = [w for w in app.release_rows.winfo_children() if isinstance(w, ui.tk.Button)]
+        assert len(lines()) == 8 and more and "4개 더 보기" in more[0].cget("text")
+        more[0].invoke()
+        assert len(lines()) == 12 and "v2026.10.09-1200" in [w.cget("text") for line in lines()
+                                                            for w in line.winfo_children()]
+    finally:
+        root.destroy()

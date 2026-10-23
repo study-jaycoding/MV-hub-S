@@ -131,6 +131,7 @@ class App:
         self.note = note  # 부트스트랩이 넘긴 알림(관리 창 stage 확인 실패 등) — 상단에 늘 보인다
         self.reopen_requested = False
         self.runner = install.default_runner(inst)
+        server_api.bind(inst, self.runner)  # 토큰을 실은 요청은 보내기 바로 전에 서버를 다시 확인한다
         self.queue: queue.Queue = queue.Queue(maxsize=QUEUE_MAX)
         self.hub = logs.LogHub(inst)
         self.buffers = {key: collections.deque(maxlen=MAX_LINES_PER_TAB) for key, _ in logs.TABS}
@@ -703,6 +704,7 @@ class App:
         self.release_entry.pack(side="left", padx=8, ipady=3)
         self._button(folder, "저장", self.save_release_source).pack(side="left")
         self.release_shown = ""
+        self.release_all = False  # 이전 릴리스까지 다 보이기(처음엔 최근 8개 + 배포 중·후보)
         tk.Label(body, text="NAS 릴리스 폴더의 모든 릴리스. [배포] = 팀원에게 알림이 가고 그 릴리스로 업데이트(옛 릴리스면 되돌리기). "
                             "[재공지] = 알림만 다시 · [해제] = 팀원 알림만 거둠(배포는 그대로).",
                  bg=BG, fg=MUTED, font=("Malgun Gothic", 9), wraplength=950, justify="left").pack(anchor="w", pady=(8, 4))
@@ -714,7 +716,7 @@ class App:
         notes.pack(fill="x")
         self.release_note = tk.Label(notes, text="", bg=BG, fg=MUTED, font=FONT, wraplength=820, justify="left")
         self.release_note.pack(side="left")
-        self.resume_button = self._button(notes, "이어서 하기…", lambda: self.request_release("release-resume", None))
+        self.release_resume = self._button(notes, "이어서 하기…", lambda: self.request_release("release-resume", None))
         tk.Label(body, text="배포할 때 순서: ① 생성 접수 멈추기 → ② 서버 Git 업데이트 → ③ [배포] → ④ 팀원 업데이트 끝나면 생성 접수 다시 받기. "
                             "업데이트·배포가 실패하면 생성 접수는 멈춘 채로 두고 아래 결과를 보세요.",
                  bg=PANEL, fg=TEXT, font=FONT, wraplength=950, justify="left", anchor="w", padx=12, pady=8
@@ -761,7 +763,8 @@ class App:
         pub = (overview or {}).get("published") or {}
         cand_file = (overview or {}).get("file") if (overview or {}).get("source") == "candidate" else None
         blocked = overview is None or bool(overview.get("candidate_error")) or overview.get("published_state") == "error"
-        shown = [r for i, r in enumerate(rows) if i < 8 or r.get("file") in (pub.get("file"), cand_file)]
+        shown = [r for i, r in enumerate(rows)
+                 if self.release_all or i < 8 or r.get("file") in (pub.get("file"), cand_file)]
         for row in shown:
             sha = published if row.get("file") == pub.get("file") else candidate if row.get("file") == cand_file else ""
             notice = next((n for n in notices or [] if n.get("file") == row.get("file")
@@ -772,13 +775,20 @@ class App:
         if not shown:
             tk.Label(self.release_rows, text="릴리스가 없습니다" if source and read.get("ok") else "", bg=BG, fg=MUTED,
                      font=FONT).pack(anchor="w")
+        if len(rows) > len(shown):
+            self._button(self.release_rows, f"이전 릴리스 {len(rows) - len(shown)}개 더 보기 ▾", self.show_all_releases
+                         ).pack(anchor="w", pady=4)
         resume = view.get("resume")
         if resume and notices is not None:
-            self.resume_button.configure(text=f"이어서 하기 — v{resume.get('version')}…",
-                                         state="disabled" if self.release_busy else "normal")
-            self.resume_button.pack(side="left", padx=10)
+            self.release_resume.configure(text=f"이어서 하기 — v{resume.get('version')}…",
+                                          state="disabled" if self.release_busy else "normal")
+            self.release_resume.pack(side="left", padx=10)
         else:
-            self.resume_button.pack_forget()
+            self.release_resume.pack_forget()
+
+    def show_all_releases(self) -> None:
+        self.release_all = True
+        self._show_release()
 
     def _release_row(self, row: dict, notice: dict | None, live: bool, candidate: bool, logged_in: bool,
                      blocked: bool) -> None:
@@ -830,15 +840,15 @@ class App:
             if kind == "release-resume":
                 params, state, intent = release.resume_source(self.inst, row["job_id"])
                 plan = actions.plan_release_resume(self.inst, server, source, row["job_id"], params, state, intent,
-                                                   unresolved)
+                                                   unresolved, release.resume_chain(self.inst, row["job_id"]))
             elif kind == "release-deploy":
-                read = release.helper(self.inst, release.scratch_dir(self.inst), "read")
+                read = release.helper(self.inst, release.scratch_dir(self.inst), source, "read")
                 overview = read.get("overview") if isinstance(read.get("overview"), dict) else {}
                 if overview.get("source") == "candidate" and overview.get("file") == row["file"]:
                     fields = {key: overview[key] for key in release.FIELDS}
                 else:
                     self.queue.put(("area_note", "release", "릴리스 파일 지문을 확인하는 중(수백 MB — 몇 분 걸릴 수 있음)…"))
-                    answer = release.helper(self.inst, release.scratch_dir(self.inst), "manifest", row["file"],
+                    answer = release.helper(self.inst, release.scratch_dir(self.inst), source, "manifest", row["file"],
                                             timeout=release.HASH_TIMEOUT)
                     if not answer.get("ok"):
                         raise release.ReleaseError(str(answer.get("error")))
@@ -934,7 +944,7 @@ class App:
         try:
             unresolved = jobs.unresolved_jobs_or_repair(self.inst, self.runner)
             source = release.release_source(self.inst)
-            location = release.read_location(self.inst, release.scratch_dir(self.inst))
+            location = release.read_location(self.inst, release.scratch_dir(self.inst), source)
             plan = actions.plan_address_notice(self.inst, source, location, url, name, unresolved)
         except Exception as exc:  # noqa: BLE001
             plan = actions.Refusal((f"확인 중 오류: {type(exc).__name__}: {exc}"[:300],))
@@ -1235,9 +1245,10 @@ class App:
                 if self.release_due or (self.page in ("release", "address") and now - last_release > 60):
                     self.release_due, last_release = False, now
                     if self.page == "address":
-                        self._put(("address_view", {"source": release.release_source(self.inst),
-                                                    "location": release.read_location(self.inst, release.scratch_dir(self.inst)),
-                                                    "state": release.read_state(self.inst)}))
+                        source = release.release_source(self.inst)
+                        self._put(("address_view", {"source": source, "state": release.read_state(self.inst),
+                                                    "location": release.read_location(
+                                                        self.inst, release.scratch_dir(self.inst), source)}))
                     else:
                         self._put(("release_view", release.read_view(self.inst, self.runner, self.session)))
             except Exception:  # noqa: BLE001
@@ -1516,7 +1527,7 @@ class App:
         if status_text not in JOB_TERMINAL or self.job_closed == job_id:
             return
         self.job_closed = job_id  # 끝 처리는 작업마다 한 번만
-        if status_text in ("check_needed", "runner_error") and not state.get("acknowledged"):
+        if jobs.needs_check(state) and not state.get("acknowledged"):
             self.busy = False  # 머리글 단추로 다시 눌러도 사전 검사가 이 작업 때문에 거절한다
             self._set_start_buttons("disabled")
             self.ack_button.pack(side="left", padx=10)
@@ -1548,7 +1559,16 @@ def console_version_text() -> str:
 
 
 def job_result_text(state: dict) -> tuple[str, str]:
-    """작업 상태 → (화면 문구, 색). 판정은 종료 코드, 커밋은 이 실행과 이어졌을 때만 적는다."""
+    """작업 상태 → (화면 문구, 색). '결과 미확인'(종료 코드 3)은 사람이 확인할 때까지 새 작업을 막는다고 덧붙인다."""
+    text, color = _result_base(state)
+    if state.get("status") == "finished" and state.get("exit_code") == jobs.UNCONFIRMED:
+        return text + (" — 확인했음으로 표시됨" if state.get("acknowledged")
+                       else " — 확인한 뒤 [확인했음]을 누르세요(그 전에는 새 작업을 막습니다)"), color
+    return text, color
+
+
+def _result_base(state: dict) -> tuple[str, str]:
+    """판정은 종료 코드, 커밋은 이 실행과 이어졌을 때만 적는다."""
     status_text = state.get("status")
     kind = state.get("kind")
     if status_text == "finished" and kind in ("backup-save", "backup-run"):

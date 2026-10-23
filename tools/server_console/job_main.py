@@ -122,12 +122,12 @@ def run_release(inst: install.Installation, job_id: str, request: dict, token: s
             if kind == "release-resume":
                 from_params, from_state, intent = release.resume_source(inst, params["from_job"])
                 return actions.plan_release_resume(inst, server, source, params["from_job"], from_params, from_state,
-                                                   intent, unresolved)
+                                                   intent, unresolved, release.resume_chain(inst, params["from_job"]))
             notice = release.find_notice(server, token, params["sha256"])
             if kind == "release-deploy":
                 fields = {key: params[key] for key in release.FIELDS}
-                return actions.plan_release_deploy(inst, server, source, release.helper(inst, job / "scratch", "read"),
-                                                   fields, notice, unresolved)
+                read = release.helper(inst, job / "scratch", source, "read")
+                return actions.plan_release_deploy(inst, server, source, read, fields, notice, unresolved)
             return actions.plan_notice_action(inst, kind, server, notice, params["sha256"], unresolved)
         except (server_api.ServerError, release.ReleaseError) as exc:
             return actions.Refusal((str(exc),))
@@ -138,8 +138,8 @@ def run_release(inst: install.Installation, job_id: str, request: dict, token: s
         if kind == "release-resume":
             _params, _state, intent = release.resume_source(inst, params["from_job"])
             code, extra = release.resume_work(inst, job, params, intent, token, say)
-            if code == 0 and _state.get("status") in ("check_needed", "runner_error"):
-                jobs.acknowledge(inst, params["from_job"])  # 서버·NAS 를 다시 읽어 끝냈다 — 멈춘 배포가 새 작업을 막지 않게
+            if code == 0:  # 서버·NAS 를 다시 읽어 끝냈다 — 멈춘 배포와 앞선 재개 시도가 새 작업을 막지 않게
+                release.settle_chain(inst, params["from_job"], release.resume_chain(inst, params["from_job"]))
             return code, extra
         if kind == "release-announce":
             return release.announce_work(params, token, say)
@@ -154,7 +154,8 @@ def run_address(inst: install.Installation, job_id: str, request: dict) -> int:
     job = jobs.job_dir(inst, job_id)
 
     def recompute() -> "actions.Plan | actions.Refusal":
-        return actions.plan_address_notice(inst, release.release_source(inst), release.read_location(inst, job / "scratch"),
+        source = release.release_source(inst)
+        return actions.plan_address_notice(inst, source, release.read_location(inst, job / "scratch", source),
                                            str(params.get("url") or ""), str(params.get("name") or ""),
                                            jobs.unresolved_jobs(inst, exclude=job_id))
 
@@ -174,6 +175,7 @@ def main(argv: list[str]) -> int:
     if install_root is not None:
         install.configure(install_root)
     inst = install.resolve_installation()
+    server_api.bind(inst, install.default_runner(inst))  # 토큰을 실은 요청은 보내기 바로 전에 서버를 다시 확인한다
     request: dict = {}
     try:
         job = jobs.job_dir(inst, job_id)

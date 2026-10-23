@@ -172,13 +172,13 @@ def plan_intake_set(inst: Installation, server: dict, paused_now: bool, want: bo
                 params={"server": dict(server), "from": paused_now, "paused": want})
 
 
-def _job_refusals(inst: Installation, unresolved_jobs: list[str] | None, exclude: str = "") -> list[str]:
-    """2단계 작업 공통: 사본 실행·등록 Python 없음·미확인 작업(exclude 는 이어서 하는 그 작업)."""
+def _job_refusals(inst: Installation, unresolved_jobs: list[str] | None, exclude: tuple[str, ...] = ()) -> list[str]:
+    """2단계 작업 공통: 사본 실행·등록 Python 없음·미확인 작업(exclude 는 이어서 하는 그 배포와 그 재개 시도들)."""
     reasons = [_PROBLEM_REASONS[p] for p in inst.problems if p in ("stage_copy", "no_runtime_python")]
     if unresolved_jobs is None:
         reasons.append("지난 작업 기록을 확인하지 못했습니다(logs\\console-jobs)")
-    return reasons + [f"이전 작업({job_id[:8]})이 진행 중이거나 결과를 확인하지 않았습니다"
-                      for job_id in unresolved_jobs or [] if job_id != exclude]
+    return reasons + [f"이전 작업({job_id[:8]})이 진행 중이거나 결과를 확인하지 않았습니다 — 업데이트 화면에서 확인하세요"
+                      for job_id in unresolved_jobs or [] if job_id not in exclude]
 
 
 def _backup_refusals(inst: Installation, view: dict, unresolved_jobs: list[str] | None) -> list[str]:
@@ -280,11 +280,11 @@ def plan_release_deploy(inst: Installation, server: dict, source: str, view: dic
 
 
 def plan_release_resume(inst: Installation, server: dict, source: str, from_job: str, from_params: dict,
-                        from_state: dict, intent: dict | None, unresolved_jobs: list[str] | None = ()
-                        ) -> Plan | Refusal:
-    """[이어서 하기] — 멈춘 배포의 의도 기록에서 이어 간다(그 작업 자체는 미확인 목록에서 뺀다).
-    표지 상태는 실행기가 다시 읽어 판단한다(이어 갈지·멈출지는 resume_work)."""
-    reasons = _job_refusals(inst, unresolved_jobs, exclude=from_job)
+                        from_state: dict, intent: dict | None, unresolved_jobs: list[str] | None = (),
+                        chain: tuple[str, ...] = ()) -> Plan | Refusal:
+    """[이어서 하기] — 멈춘 배포의 의도 기록에서 이어 간다. 그 배포와 이미 끝난(죽었거나 실패한) 그 배포의 재개 시도(chain)는
+    미확인 목록에서 뺀다 — 아직 도는 재개는 빼지 않는다. 표지 상태는 실행기가 다시 읽어 판단한다(resume_work)."""
+    reasons = _job_refusals(inst, unresolved_jobs, exclude=(from_job, *chain))
     if not source:
         reasons.append("NAS 릴리스 폴더를 먼저 정하세요")
     if from_state.get("status") in ("starting", "checking", "running"):
