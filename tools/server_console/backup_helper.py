@@ -35,8 +35,8 @@ def status(mod) -> dict:
             "unc_error": mod.unc_format_error(target) if target else None, "result": result}
 
 
-NEEDS = {"configured_target": (), "target_id": ("value",), "unc_format_error": ("value",), "probe": ("value",),
-         "STATUS_FILE": ()}  # 관리 창이 쓰는 복사기 함수·인자 — 관리 도구 갱신의 시작 점검(selfcheck)
+NEEDS = {"configured_target": (0, ()), "target_id": (1, ()), "unc_format_error": (1, ()), "probe": (1, ()),
+         "STATUS_FILE": "value"}  # 관리 창이 부르는 복사기 모양 — 관리 도구 갱신의 시작 점검(selfcheck, release_helper.NEEDS 와 같은 꼴)
 
 
 def main(argv: list[str]) -> int:

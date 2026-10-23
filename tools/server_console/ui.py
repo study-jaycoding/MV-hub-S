@@ -710,17 +710,31 @@ class App:
                  bg=BG, fg=MUTED, font=("Malgun Gothic", 9), wraplength=950, justify="left").pack(anchor="w", pady=(8, 4))
         self.release_warn = tk.Label(body, text="", bg=BG, fg=AMBER, font=FONT, wraplength=950, justify="left")
         self.release_warn.pack(anchor="w")
-        self.release_rows = tk.Frame(body, bg=BG)
-        self.release_rows.pack(fill="x", pady=6)
+        # 아래 안내·결과 줄을 먼저 아래쪽에 붙인다 — 목록이 길어도 밀려나지 않고, 목록은 남은 자리에서 스크롤한다.
+        tk.Label(body, text="배포할 때 순서: ① 생성 접수 멈추기 → ② 서버 Git 업데이트 → ③ [배포] → ④ 팀원 업데이트 끝나면 생성 접수 다시 받기. "
+                            "업데이트·배포가 실패하면 생성 접수는 멈춘 채로 두고 위 결과를 보세요.",
+                 bg=PANEL, fg=TEXT, font=FONT, wraplength=950, justify="left", anchor="w", padx=12, pady=8
+                 ).pack(side="bottom", fill="x", pady=8)
         notes = tk.Frame(body, bg=BG)
-        notes.pack(fill="x")
+        notes.pack(side="bottom", fill="x")
         self.release_note = tk.Label(notes, text="", bg=BG, fg=MUTED, font=FONT, wraplength=820, justify="left")
         self.release_note.pack(side="left")
         self.release_resume = self._button(notes, "이어서 하기…", lambda: self.request_release("release-resume", None))
-        tk.Label(body, text="배포할 때 순서: ① 생성 접수 멈추기 → ② 서버 Git 업데이트 → ③ [배포] → ④ 팀원 업데이트 끝나면 생성 접수 다시 받기. "
-                            "업데이트·배포가 실패하면 생성 접수는 멈춘 채로 두고 아래 결과를 보세요.",
-                 bg=PANEL, fg=TEXT, font=FONT, wraplength=950, justify="left", anchor="w", padx=12, pady=8
-                 ).pack(fill="x", pady=8)
+        holder = tk.Frame(body, bg=BG)
+        holder.pack(fill="both", expand=True, pady=6)
+        self.release_canvas = tk.Canvas(holder, bg=BG, highlightthickness=0, bd=0)
+        scroll = ttk.Scrollbar(holder, orient="vertical", command=self.release_canvas.yview)
+        self.release_canvas.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        self.release_canvas.pack(side="left", fill="both", expand=True)
+        self.release_rows = tk.Frame(self.release_canvas, bg=BG)
+        window = self.release_canvas.create_window((0, 0), window=self.release_rows, anchor="nw")
+        self.release_rows.bind("<Configure>", lambda _e: self.release_canvas.configure(
+            scrollregion=self.release_canvas.bbox("all")))
+        self.release_canvas.bind("<Configure>", lambda e: self.release_canvas.itemconfigure(window, width=e.width))
+        wheel = lambda e: self.release_canvas.yview_scroll(-1 if e.delta > 0 else 1, "units")  # noqa: E731
+        holder.bind("<Enter>", lambda _e: self.release_canvas.bind_all("<MouseWheel>", wheel))
+        holder.bind("<Leave>", lambda _e: self.release_canvas.unbind_all("<MouseWheel>"))
 
     def save_release_source(self) -> None:
         try:
@@ -1524,7 +1538,14 @@ class App:
         status_text = state.get("status")
         text, color = job_result_text(state)
         self.result_label.configure(text=text, fg=color)
-        if status_text not in JOB_TERMINAL or self.job_closed == job_id:
+        if status_text not in JOB_TERMINAL:
+            return
+        if self.job_closed == job_id:
+            # 끝 처리는 한 번만 — 다만 그 뒤 다른 곳에서 확인 처리됐으면(이어서 하기가 멈춘 배포를 푼 경우) 잠금을 푼다.
+            if state.get("acknowledged") and self.ack_button.winfo_manager():
+                self.ack_button.pack_forget()
+                if not self.busy:  # 다른 요청을 확인하는 중이면 그대로 둔다
+                    self._set_start_buttons("normal")
             return
         self.job_closed = job_id  # 끝 처리는 작업마다 한 번만
         if jobs.needs_check(state) and not state.get("acknowledged"):

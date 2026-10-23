@@ -99,12 +99,15 @@ def _stages_root(inst: Installation) -> Path:
 
 
 def build(inst: Installation, runner: Runner, sha: str, check: Callable[[Path], None], say: Say) -> Path:
-    """그 커밋의 관리 창을 임시 폴더에 꺼내 검사한 뒤 stage 로 게시한다. 이미 있으면 다시 검증해 재사용."""
+    """그 커밋의 관리 창을 임시 폴더에 꺼내 검사한 뒤 stage 로 게시한다. 이미 있으면 다시 검증하고 **지금 루트와의
+    시작 점검도 다시** 한 뒤 재사용한다(파일 무결성과 지금 루트 함수·Python 과의 호환은 별개)."""
     final = stage_dir(inst.root, sha)
     stages = _stages_root(inst)
     if final.exists():
         verify_stage_dir(final, sha)
-        say(f"이미 있는 관리 창 stage 를 다시 검증해 씁니다: {sha[:12]}")
+        say(f"이미 있는 관리 창 stage 를 다시 검증·점검해 씁니다: {sha[:12]}")
+        check(final)
+        verify_stage_dir(final, sha)  # 점검이 목록 밖 파일을 남기지 않았는지
         return final
     tag = secrets.token_hex(8)
     temp, archive = stages / f".tmp-{tag}", stages / f".tmp-{tag}.zip"

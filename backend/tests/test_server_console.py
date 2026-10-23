@@ -920,10 +920,47 @@ def test_tools_update_refuses_a_console_the_root_functions_cannot_serve(tmp_path
     sha = _git_commit(root, "old root")
     inst = _stage_inst(root)
     runner = console_stage.default_runner_for(inst)
-    with pytest.raises(console_stage.StageError, match=r"deploy_package\(expect_candidate\)"):
+    with pytest.raises(console_stage.StageError, match=r"deploy_package\(인자 4개\)"):
         console_stage.build(inst, runner, sha, console_stage.check_with_python(inst, runner), lambda _s: None)
     assert not (root / "logs" / "console-stages" / sha).exists()
     assert not [p for p in (root / "logs").iterdir() if p.name.startswith(".check-")]  # 점검용 임시 폴더는 지웠다
+
+
+@pytest.mark.parametrize("old,new", [
+    ("expect_published, expect_candidate, root", "expect_published, expect_candidate, *, root"),  # 이름은 있지만 키워드 전용
+    ("expect_published, expect_candidate, root", "expect_published, expect_candidate, root, force"),  # 필수 인자가 늘었다
+    ("class ReleasePromoteError(ReleaseUpdateError): pass", "ReleasePromoteError = 1"),             # 예외가 아니다
+])
+def test_selfcheck_binds_the_real_call_shape(old, new):
+    """인자 이름만이 아니라 관리 창이 실제로 부르는 모양(위치·키워드·필수 인자)으로 부를 수 있어야 한다(Codex 재검토 P2)."""
+    import types
+    from server_console import release_helper
+
+    def stub(text: str) -> types.SimpleNamespace:
+        namespace: dict = {}
+        exec(text, namespace)  # noqa: S102 — 시험용 가짜 모듈
+        return types.SimpleNamespace(**{k: v for k, v in namespace.items() if not k.startswith("__")})
+    relocation = stub(_RELOCATION_STUB)
+    bad = {"release_update": stub(_RELEASE_STUB.replace(old, new)), "server_relocation": relocation}
+    assert release_helper.missing_parts(bad, release_helper.NEEDS)
+    good = {"release_update": stub(_RELEASE_STUB), "server_relocation": relocation}
+    assert release_helper.missing_parts(good, release_helper.NEEDS) == []
+
+
+def test_reused_stage_is_checked_again_against_the_current_root(tmp_path):
+    """같은 커밋의 stage 를 다시 쓸 때도 지금 루트와의 시작 점검을 다시 한다(Codex 재검토 P2)."""
+    from server_console import console_stage
+    root = _install_tree(tmp_path)
+    inst = _stage_inst(root)
+    runner = console_stage.default_runner_for(inst)
+    sha = subprocess.run([str(install.trusted_git()), "-C", str(root), "rev-parse", "HEAD"], capture_output=True,
+                         text=True, check=True).stdout.strip()
+    check = console_stage.check_with_python(inst, runner)
+    stage = console_stage.build(inst, runner, sha, check, lambda _s: None)
+    _root_stubs(root, _RELEASE_STUB.replace("def install_source(root)", "def install_source(root, mode)"))
+    with pytest.raises(console_stage.StageError, match="install_source"):
+        console_stage.build(inst, runner, sha, check, lambda _s: None)
+    assert stage.exists()  # 지우지 않고 쓰지 않는다(포인터 게시 전에 멈춤)
 
 
 def _good_stage(tmp_path: Path) -> tuple[Path, str]:
@@ -2695,5 +2732,39 @@ def test_ui_intake_and_release_buttons_are_separate_and_old_releases_can_be_show
         more[0].invoke()
         assert len(lines()) == 12 and "v2026.10.09-1200" in [w.cget("text") for line in lines()
                                                             for w in line.winfo_children()]
+        # 길어진 목록은 스크롤로 끝까지 닿는다 — 아래 결과·이어서 하기 줄은 목록 밖이라 밀려나지 않는다
+        app.show("release")
+        root.update()
+        region = app.release_canvas.bbox("all")
+        assert region and region[3] - region[1] >= sum(line.winfo_reqheight() for line in lines())
+        app.release_canvas.yview_moveto(1.0)
+        root.update()
+        assert app.release_canvas.yview()[1] == 1.0
+        assert app.release_note.master.master is app.release_canvas.master.master  # 결과 줄은 스크롤 영역 밖
+        assert app.release_resume.winfo_manager() == "pack"
+    finally:
+        root.destroy()
+
+
+def test_ui_unlocks_update_buttons_when_a_blocking_job_is_settled_elsewhere(tmp_path, monkeypatch):
+    """업데이트 화면에서 '결과 미확인'으로 잠긴 배포가 이어서 하기로 확인 처리되면 잠금과 [확인했음]을 거둔다(Codex 재검토 P2)."""
+    ui, root, app, _errors = _app(tmp_path, monkeypatch)
+    try:
+        job = "a" * 32
+        app._handle(("job_started", job))
+        view = app.job_view
+        unconfirmed = {"status": "finished", "kind": "release-deploy", "exit_code": 3, "announced": True,
+                       "deploy": "unconfirmed", "error": "500"}
+        app._show_job(view, [], unconfirmed)
+        assert app.ack_button.winfo_manager() == "pack" and str(app.start_button.cget("state")) == "disabled"
+        app._show_job(view, [], unconfirmed)  # 같은 알림이 또 와도 그대로
+        assert app.ack_button.winfo_manager() == "pack"
+        app._show_job(view, [], {**unconfirmed, "acknowledged": True})
+        assert not app.ack_button.winfo_manager() and str(app.start_button.cget("state")) == "normal"
+        app.busy = True  # 다른 요청을 확인하는 중이면 단추를 건드리지 않는다
+        app._set_start_buttons("disabled")
+        app.ack_button.pack(side="left")
+        app._show_job(view, [], {**unconfirmed, "acknowledged": True})
+        assert str(app.start_button.cget("state")) == "disabled"
     finally:
         root.destroy()

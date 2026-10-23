@@ -17,33 +17,37 @@ from pathlib import Path
 
 import inspect
 
-# 관리 창이 부르는 루트 함수·인자 — 관리 도구 갱신의 시작 점검(selfcheck)이 새 관리 창과 이 서버 루트가 맞는지 미리 본다.
+# 관리 창이 부르는 루트 함수 — 관리 도구 갱신의 시작 점검(selfcheck)이 새 관리 창과 이 서버 루트가 맞는지 미리 본다.
+# 값 = 실제 부르는 모양(위치 인자 수, 키워드 인자) · "error" = 예외 클래스 · "value" = 있기만 하면 되는 값.
 NEEDS = {
-    "release_update": {"list_packages": ("root",), "release_overview": ("root",), "package_manifest": ("file", "root"),
-                       "promote_candidate": ("expected", "root"),
-                       "deploy_package": ("expected", "expect_published", "expect_candidate", "root"),
-                       "install_source": ("root",), "ReleaseUpdateError": (), "ReleasePromoteError": ()},
-    "server_relocation": {"parse_announcement": ("raw",), "read_source_bytes": ("source",),
-                          "publish_announcement": ("source", "url", "name", "last_published_revision"),
-                          "AnnouncementMissing": (), "RelocationReadError": (), "RelocationWriteError": ()},
+    "release_update": {"list_packages": (1, ()), "release_overview": (1, ()), "package_manifest": (2, ()),
+                       "promote_candidate": (2, ()), "deploy_package": (4, ()), "install_source": (1, ()),
+                       "ReleaseUpdateError": "error", "ReleasePromoteError": "error"},
+    "server_relocation": {"parse_announcement": (1, ()), "read_source_bytes": (1, ()),
+                          "publish_announcement": (1, ("url", "name", "last_published_revision")),
+                          "AnnouncementMissing": "error", "RelocationReadError": "error", "RelocationWriteError": "error"},
 }
 
 
 def missing_parts(modules: dict, needs: dict) -> list[str]:
-    """없는 함수·인자 이름들(맞으면 빈 목록)."""
+    """실제로 부르는 모양으로 부를 수 없는 것들(맞으면 빈 목록) — 인자 이름만이 아니라 위치·키워드·필수 인자까지
+    inspect.signature().bind 로 본다."""
     missing = []
     absent = object()
     for module_name, wanted in needs.items():
-        for name, params in wanted.items():
+        for name, shape in wanted.items():
             thing = getattr(modules[module_name], name, absent)
             if thing is absent:
                 missing.append(f"{module_name}.{name}")
-                continue
-            try:
-                have = inspect.signature(thing).parameters if params else {}
-            except (TypeError, ValueError):
-                have = {}
-            missing += [f"{module_name}.{name}({param})" for param in params if param not in have]
+            elif shape == "error":
+                if not (isinstance(thing, type) and issubclass(thing, BaseException)):
+                    missing.append(f"{module_name}.{name}(예외 아님)")
+            elif shape != "value":
+                positional, keywords = shape
+                try:
+                    inspect.signature(thing).bind(*([None] * positional), **dict.fromkeys(keywords))
+                except (TypeError, ValueError):
+                    missing.append(f"{module_name}.{name}(인자 {positional}개{' + ' + ','.join(keywords) if keywords else ''})")
     return missing
 
 
