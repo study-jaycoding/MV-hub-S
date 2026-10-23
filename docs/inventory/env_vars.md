@@ -31,12 +31,12 @@
 | `CONTENT_HUB_AUTH` | `"0"` | `backend/app/config.py` | `MV_agent.bat` `MV_server.bat` `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |
 | `CONTENT_HUB_AUTH_SECRET` | — | `backend/app/services/auth.py` | — |
 | `CONTENT_HUB_BACKUP_CHANGE_DEBOUNCE` | `"300"` | `backend/app/services/backup.py` | — |
-| `CONTENT_HUB_BACKUP_DIR` | `""` `DATA_DIR / "backups"` | `backend/app/services/backup.py` `tools/backup_replicate.py` | — |
+| `CONTENT_HUB_BACKUP_DIR` | `""` `DATA_DIR / "backups"` | `backend/app/services/backup.py` `tools/backup_replicate.py` `tools/server_console/backup.py` | — |
 | `CONTENT_HUB_BACKUP_INTERVAL` | `str(24 * 3600)` | `backend/app/services/backup.py` | — |
 | `CONTENT_HUB_BACKUP_KEEP` | `"7"` | `backend/app/services/backup.py` | — |
 | `CONTENT_HUB_BACKUP_MIN_INTERVAL` | `"900"` | `backend/app/services/backup.py` | — |
 | `CONTENT_HUB_BACKUP_POLL_INTERVAL` | `"30"` | `backend/app/services/backup.py` | — |
-| `CONTENT_HUB_BACKUP_REPLICA_DIR` | `""` | `backend/app/services/operational_health.py` `tools/backup_replicate.py` `tools/server_move_easy.py` | — |
+| `CONTENT_HUB_BACKUP_REPLICA_DIR` | `""` | `backend/app/services/operational_health.py` `tools/backup_replicate.py` `tools/server_console/backup.py` `tools/server_move_easy.py` | — |
 | `CONTENT_HUB_COMFY_POLL_ERROR_RETRIES` | `5` | `backend/app/routers/comfy.py` | — |
 | `CONTENT_HUB_COMFY_RUN_JOB_TTL_SEC` | `60 * 60` | `backend/app/routers/comfy.py` | — |
 | `CONTENT_HUB_COMFY_TIMEOUT_SEC` | `60 * 30` | `backend/app/routers/comfy.py` | — |
@@ -46,7 +46,7 @@
 | `CONTENT_HUB_COMFY_URL` | — | `backend/app/routers/comfy.py` | — |
 | `CONTENT_HUB_CORS` | `"http://localhost:5173,http://127.0.0.1:5173"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_COST_TTL` | `7 * 86400` | `backend/app/services/cli_bridge.py` | — |
-| `CONTENT_HUB_DATA` | `""` `BACKEND_DIR / "data"` `Path(__file__).resolve().parent / "data"` `str(REPO_ROOT / "backend" / "data")` | `backend/app/config.py` `backend/app/routers/backup_replica.py` `backend/cleanup_orphan_creators.py` `tools/deploy_fence_check.py` `tools/endurance_probe.py` `tools/server_console/install.py` `tools/server_move.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` `tools/load_test_100.py` |
+| `CONTENT_HUB_DATA` | `""` `BACKEND_DIR / "data"` `Path(__file__).resolve().parent / "data"` `str(REPO_ROOT / "backend" / "data")` | `backend/app/config.py` `backend/app/routers/backup_replica.py` `backend/cleanup_orphan_creators.py` `tools/deploy_fence_check.py` `tools/endurance_probe.py` `tools/server_console/backup.py` `tools/server_console/install.py` `tools/server_move.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` `tools/load_test_100.py` |
 | `CONTENT_HUB_DB` | `""` `None` | `backend/app/db_paths.py` `backend/app/routers/db_transfer.py` `backend/cleanup_orphan_creators.py` `tools/credit_round_audit.py` `tools/deploy_fence_check.py` `tools/endurance_probe.py` `tools/preflight_task_workspace.py` `tools/server_console/install.py` `tools/server_move.py` `tools/verify_generation_submission_recovery.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` `tools/load_test_100.py` `tools/preflight_task_workspace.py` `tools/verify_generation_submission_recovery.py` |
 | `CONTENT_HUB_DB_BACKEND` | `"sqlite"` | `backend/app/db.py` | — |
 | `CONTENT_HUB_DB_POOL` | `"1"` | `backend/app/db.py` | — |
