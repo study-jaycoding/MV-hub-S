@@ -22,6 +22,10 @@ _LIFECYCLE = {"startup_begin", "startup_ready", "startup_failed", "shutdown_comp
 _ERROR_LEVELS = {"WARNING", "ERROR", "CRITICAL"}
 _RESERVED = {"ts", "level", "logger", "service", "run_id", "pid", "message", "event"}
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+# 터미널 색·커서 코드(npm·pip 출력) — '?[32m' 처럼 남지 않게 통째로 지운다.
+_ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[ -/]+[0-~]|[@-Z\\-_])")
+SOURCE_NAMES = {names.RUNTIME_LOG: "실행 기록", "server_console.log": "서버 창", "watchdog_console.log": "감시",
+                "backup_console.log": "백업 복사"}
 _TEXT_ERROR = re.compile(r"\b(ERROR|CRITICAL|Traceback|failed|FAILED)\b")
 MAX_LINE = 600
 MAX_PER_POLL = 1500
@@ -37,9 +41,14 @@ class LogLine:
 
 
 def clean(text: str) -> str:
-    """화면에 글자로만 보이게 제어 문자를 지우고 길이를 자른다."""
-    text = _CONTROL.sub("?", text.replace("\r", ""))
+    """화면에 글자로만 보이게 터미널 색 코드를 지우고, 남은 제어 문자는 '?' 로, 길이를 자른다."""
+    text = _CONTROL.sub("?", _ANSI.sub("", text.replace("\r", "")))
     return text if len(text) <= MAX_LINE else text[:MAX_LINE] + "…"
+
+
+def short_name(name: str) -> str:
+    """아래 줄의 출처 이름(파일 이름 대신) — 준비 로그는 실행마다 이름이 길다."""
+    return "업데이트 준비" if name.startswith("server-prepare-") else SOURCE_NAMES.get(name, name)
 
 
 def classify(payload: dict[str, Any]) -> frozenset[str]:
@@ -88,26 +97,29 @@ def parse_json_line(raw: str) -> LogLine | None:
                    str(payload.get("worker_name") or ""))
 
 
-def parse_text_line(raw: str, base_tabs: frozenset[str]) -> LogLine | None:
+def parse_text_line(raw: str, base_tabs: frozenset[str], only: bool = False) -> LogLine | None:
+    """only = 그 탭에만(업데이트 준비 로그는 '업데이트 기록' 탭에만 — 전체·오류 탭을 덮지 않게)."""
     text = raw.strip()
     if not text:
         return None
+    level = "ERROR" if _TEXT_ERROR.search(text) else "INFO"
+    if only:
+        return LogLine(base_tabs, clean(text), level)
     tabs = set(base_tabs) | {"all"}
-    level = "INFO"
-    if _TEXT_ERROR.search(text):
+    if level == "ERROR":
         tabs.add("errors")
-        level = "ERROR"
     if "[supervisor]" in text:
         tabs.add("updates")
     return LogLine(frozenset(tabs), clean(text), level)
 
 
 class _Source:
-    def __init__(self, path: Path, kind: str, tabs: frozenset[str], initial: int) -> None:
+    def __init__(self, path: Path, kind: str, tabs: frozenset[str], initial: int, only: bool = False) -> None:
         self.path = path
         self.kind = kind
         self.tabs = tabs
         self.initial = initial
+        self.only = only
         self.follower: log_viewer.LogFollower | None = None
         self.state = "missing"
 
@@ -167,7 +179,7 @@ class LogHub:
         out: list[LogLine] = []
         latest = self._latest_prepare_log()
         if latest and (self.prepare is None or self.prepare.path != latest):
-            self.prepare = _Source(latest, "text", frozenset({"updates"}), 200)
+            self.prepare = _Source(latest, "text", frozenset({"updates"}), 200, only=True)
         for source in self.sources + ([self.prepare] if self.prepare else []):
             raw_lines = source.poll()
             skipped = max(0, len(raw_lines) - MAX_PER_POLL)
@@ -176,7 +188,8 @@ class LogHub:
                                    f"… {source.path.name}: 한꺼번에 {skipped}줄이 쌓여 앞부분을 건너뜀", "WARNING"))
                 raw_lines = raw_lines[-MAX_PER_POLL:]
             for raw in raw_lines:
-                line = parse_json_line(raw) if source.kind == "json" else parse_text_line(raw, source.tabs)
+                line = (parse_json_line(raw) if source.kind == "json"
+                        else parse_text_line(raw, source.tabs, only=source.only))
                 if line is not None:
                     out.append(line)
         for name in names.ALERT_FILES:

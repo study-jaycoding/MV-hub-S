@@ -1290,7 +1290,8 @@ class App:
             if item[1] != self.job_id:
                 self._select_job(item[1])
         elif kind == "sources":
-            self.sources_label.configure(text=" · ".join(f"{k} {self._source_word(v)}" for k, v in item[1].items()))
+            self.sources_label.configure(text=" · ".join(f"{logs.short_name(k)} {self._source_word(v)}"
+                                                         for k, v in item[1].items()))
         elif kind == "addresses":
             self.addresses = item[1]
             self._show_address()

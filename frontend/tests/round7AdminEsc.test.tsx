@@ -98,7 +98,8 @@ it("멤버 검색칸의 Esc 는 칸을 벗어나기만 한다 — 검색어는 �
   expect(onClose).toHaveBeenCalledTimes(1);
 });
 
-it("공유 서버 이름·주소 칸의 Esc 도 같다 — 저장 안 한 글이 창과 함께 사라지지 않는다", async () => {
+// STAGE2-WEB-HIDDEN: '공유 서버' 탭을 숨겨 닿지 못한다 — 탭 코드를 지우는 커밋에서 함께 지운다.
+it.skip("공유 서버 이름·주소 칸의 Esc 도 같다 — 저장 안 한 글이 창과 함께 사라지지 않는다", async () => {
   const onClose = await mount();
   await clickTab("공유 서버");
   const name = host.querySelector<HTMLInputElement>('input[placeholder^="서버 이름"]')!;
@@ -174,7 +175,7 @@ const approval = () => host.querySelector(".admin-confirm:not(.admin-elev)");
 it.each([
   ["🔑 를 먼저 열고 승인 확인 창을", [".admin-key", ".admin-mini-btn"]],
   ["승인 확인 창을 먼저 열고 🔑 를", [".admin-mini-btn", ".admin-key"]],
-  ["(공유 서버 탭) 🔑 를 먼저 열고 공지 확인 창을", [".admin-key", '.settings-action[title^="저장된 이름"]'], "공유 서버"],
+  // STAGE2-WEB-HIDDEN: ["(공유 서버 탭) 🔑 를 먼저 열고 공지 확인 창을", [".admin-key", '.settings-action[title^="저장된 이름"]'], "공유 서버"],
 ])("%s 띄워도 Esc 는 화면에서 앞에 있는 승인 확인 창부터 닫는다 — 그다음 🔑, 그다음 창", async (_order, [first, second], tabLabel) => {
   withAccount();
   const onClose = await mount();

@@ -93,25 +93,24 @@ const pressEscape = async () => {
   await settle();
 };
 
-it("관리자에게 탭이 정해진 순서로 보인다", async () => {
+it("관리자에게 탭이 정해진 순서로 보인다 — '공유 서버' 탭은 서버 관리 창으로 옮겨 숨긴다(2단계)", async () => {
   await mount();
-  expect(tabLabels()).toEqual(["승인", "멤버 · 전역 역할", "프로젝트", "공유 서버", "에셋 리스트", "업데이트"]);
+  expect(tabLabels()).toEqual(["승인", "멤버 · 전역 역할", "프로젝트", "에셋 리스트", "업데이트"]);
 });
 
-it("업데이트 관리는 '업데이트' 탭에만 있고, 그 탭을 열 때 읽는다", async () => {
+it("'업데이트' 탭은 열 때 읽고, 팀 배포 단추 없이 [이 PC에 먼저 설치]만 둔다(팀 배포는 서버 관리 창 [릴리스])", async () => {
   await mount();
-  await clickTab("공유 서버");
-  expect(host.textContent).toContain("공유 서버 이름·주소");
-  expect(host.textContent).not.toContain("업데이트 관리");
   expect(mocks.adminList).not.toHaveBeenCalled();
   await clickTab("업데이트");
   expect(mocks.adminList).toHaveBeenCalledTimes(1);
   expect(host.textContent).toContain("업데이트 관리");
+  expect(host.textContent).toContain("서버 관리 창 [릴리스]");
   expect(mocks.packages).toHaveBeenCalledTimes(1);
   expect(host.textContent).toContain("v2026.10.03-1420");
   expect(host.textContent).toContain("새 후보 · 배포 전");
   expect(host.textContent).toContain("v2026.10.01-0906");
-  expect(host.textContent).toContain("재공지");
+  const labels = [...host.querySelectorAll(".admin-update-row button")].map((b) => b.textContent);
+  expect(labels).toEqual(["이 PC에 먼저 설치"]);
 });
 
 it("프로젝트 탭은 창을 넓히고 프로젝트 목록을 창 안에 그린다(옛 오버레이 없음)", async () => {
@@ -211,7 +210,7 @@ it("프로젝트 역할 — 저장 중에 다른 탭을 다녀와도 잠겨 있�
   await toggleMembers();
   await act(async () => { chips().find((chip) => !chip.classList.contains("on"))!.click(); }); // 역할 하나를 더 준다 — 응답이 안 온다
   expect(mocks.setProjectRoles).toHaveBeenCalledTimes(1);
-  await clickTab("공유 서버");
+  await clickTab("에셋 리스트");
   await clickTab("프로젝트"); // 패널이 새로 만들어졌다
   await toggleMembers(); // 서버는 아직 반영 전의 목록을 준다
   expect(chips().length).toBeGreaterThan(0);
@@ -654,7 +653,8 @@ it("슈퍼 관리자 해제(🔑) — 해제를 확인하지 못했으면 열쇠
   expect(alerts).toHaveBeenCalledTimes(1);
 });
 
-it("공유 서버 이름·주소 저장 — 저장 중에는 다시 보내지 않고 두 칸을 잠근다(늦은 응답이 고쳐 친 이름을 덮지 않게)", async () => {
+// STAGE2-WEB-HIDDEN: '공유 서버' 탭을 숨겨 아래 두 시험은 닿지 못한다 — 탭 코드를 지우는 커밋에서 함께 지운다.
+it.skip("공유 서버 이름·주소 저장 — 저장 중에는 다시 보내지 않고 두 칸을 잠근다(늦은 응답이 고쳐 친 이름을 덮지 않게)", async () => {
   let finish!: (value: unknown) => void;
   mocks.setSharedServerUrl.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
   await mount();
@@ -674,7 +674,7 @@ it("공유 서버 이름·주소 저장 — 저장 중에는 다시 보내지 �
   expect(mocks.setSharedServerUrl).toHaveBeenCalledTimes(2);
 });
 
-it("백업 위치 확인창이 열려 있으면 Esc·바깥 클릭이 관리자 창을 닫지 않는다(입력하던 비밀번호 보존)", async () => {
+it.skip("백업 위치 확인창이 열려 있으면 Esc·바깥 클릭이 관리자 창을 닫지 않는다(입력하던 비밀번호 보존)", async () => {
   const onClose = await mount();
   await clickTab("공유 서버");
   await act(async () => { host.querySelector<HTMLButtonElement>(".fake-backup-open")!.click(); });

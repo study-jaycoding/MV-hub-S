@@ -32,7 +32,9 @@ const builtAt = (version: string) => {
 
 type ReleaseFields = Pick<LatestReleaseMetadata, "version" | "file" | "sha256" | "size" | "created_at">;
 
-export function UpdateNoticesSection() {
+// STAGE2-WEB-HIDDEN(2026-10-23 Jay): 팀 배포·재공지·해제·고정 풀기는 서버 관리 창 [릴리스]로 옮겼다 — 여기서는
+//  [이 PC에 먼저 설치]만 보인다(teamControls=false). 코드는 확인 뒤 별도 커밋에서 지운다(덩어리 삭제는 숨김 먼저).
+export function UpdateNoticesSection({ teamControls = false }: { teamControls?: boolean } = {}) {
   const [overview, setOverview] = useState<LatestReleaseMetadata | null>(null);
   const [overviewError, setOverviewError] = useState("");
   const [packages, setPackages] = useState<ReleasePackage[]>([]);
@@ -248,11 +250,18 @@ export function UpdateNoticesSection() {
   return (
     <section className="admin-section">
       <h4>업데이트 관리</h4>
-      <div className="admin-note-sub">
-        NAS 에 올라온 <b>모든 판</b>이 보입니다. <b>[배포]</b>를 누르면 팀원에게 알림이 가고 그 판으로 업데이트됩니다(옛 판이면 되돌리기).
-        <b> [이 PC에 먼저 설치]</b>는 팀원에게 알리지 않고 이 관리자 PC 에만 먼저 깝니다. <b>[재공지]</b>는 알림만 다시,
-        <b> [해제]</b>는 팀원 알림만 거둡니다(배포된 판·줄은 그대로).
-      </div>
+      {teamControls ? (
+        <div className="admin-note-sub">
+          NAS 에 올라온 <b>모든 판</b>이 보입니다. <b>[배포]</b>를 누르면 팀원에게 알림이 가고 그 판으로 업데이트됩니다(옛 판이면 되돌리기).
+          <b> [이 PC에 먼저 설치]</b>는 팀원에게 알리지 않고 이 관리자 PC 에만 먼저 깝니다. <b>[재공지]</b>는 알림만 다시,
+          <b> [해제]</b>는 팀원 알림만 거둡니다(배포된 판·줄은 그대로).
+        </div>
+      ) : (
+        <div className="admin-note-sub">
+          팀 배포·재공지·해제는 <b>서버 관리 창 [릴리스]</b>에서 합니다. 여기서는 새 후보를 <b>이 PC 에만 먼저</b> 깔아 볼 수 있습니다
+          (팀원에게 알리지 않음).
+        </div>
+      )}
       {overviewError && <div className="admin-update-warn">릴리스 폴더를 읽지 못했습니다 — {overviewError}</div>}
       {packagesError && <div className="admin-update-warn">판 목록을 읽지 못했습니다 — {packagesError}</div>}
       {noticeError && <div className="admin-update-warn">공유 서버의 알림 목록을 읽지 못했습니다 — {noticeError}</div>}
@@ -269,7 +278,7 @@ export function UpdateNoticesSection() {
       {overview?.published_state === "error" && (
         <div className="admin-update-warn">팀 공개 표지(latest.json)를 읽을 수 없어 배포 상태를 확인할 수 없습니다.</div>
       )}
-      {pinned.map((item) => (
+      {teamControls && pinned.map((item) => (
         <div className="admin-update-pinned" key={item.id}>
           <span>고정된 알림: <b>v{item.version}</b> — 팀원 알림 맨 위에 남아 있습니다.</span>
           <button className="settings-action ghost" disabled={!!busy} onClick={() => void unpin(item)}>
@@ -322,7 +331,7 @@ export function UpdateNoticesSection() {
                     {rowBusy === "preinstall" ? "설치 시작 중…" : thisPcHas(row) ? "이 PC에 다시 설치" : "이 PC에 먼저 설치"}
                   </button>
                 )}
-                {live ? (
+                {!teamControls ? null : live ? (
                   <button
                     className="settings-action"
                     disabled={lock}
@@ -350,7 +359,7 @@ export function UpdateNoticesSection() {
                     {rowBusy === "hash" ? "지문 확인 중…" : rowBusy === "deploy" ? "배포 중…" : "배포"}
                   </button>
                 )}
-                {notice && (
+                {teamControls && notice && (
                   <button className="settings-action ghost" disabled={lock} onClick={() => removeNotice(row, notice)}>
                     {rowBusy === "remove" ? "해제 중…" : "해제"}
                   </button>

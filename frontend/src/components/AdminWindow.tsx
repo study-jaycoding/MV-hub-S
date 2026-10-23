@@ -235,11 +235,12 @@ export function AdminWindow({
     { key: "roles", label: "멤버 · 전역 역할", visible: hasGlobalCap(viewerRoles, "grant_global") },
     // 프로젝트 관리(2026-10-02 대시보드 오버레이에서 옮김) — 위 canManageProjects 기준.
     { key: "projects", label: "프로젝트", visible: canManageProjects },
-    // 공유 서버 주소 — 로그인한 공유 서버 계정이 admin 일 때만(로컬 허브 설정값).
-    { key: "server", label: "공유 서버", visible: !!shared?.is_admin },
+    // STAGE2-WEB-HIDDEN(2026-10-23 Jay): 공유 서버 이름·주소·팀에 공지·백업 복사 위치는 서버 관리 창 [주소]·[DB·백업]으로
+    //  옮겼다 — 탭을 숨긴다(코드는 확인 뒤 별도 커밋에서 지운다. 덩어리 삭제는 숨김 먼저). 백엔드 라우트는 옛 앱·되돌리기용으로 둔다.
+    { key: "server", label: "공유 서버", visible: false },
     // 에셋 리스트(옛 이름 '에셋 대장', 2026-09-30) — 공유 서버 운영(system) 권한만. 훑기는 NAS 를 오래 읽는다.
     { key: "registry", label: "에셋 리스트", visible: isPermanentAdmin },
-    // 업데이트 목록·공지(2026-10-02 공유 서버 탭에서 분리) — 공유 서버 탭과 같은 기준.
+    // 업데이트 — 관리자만. 2단계(2026-10-23)부터 [이 PC에 먼저 설치]만(팀 배포는 서버 관리 창 [릴리스]).
     { key: "update", label: "업데이트", visible: !!shared?.is_admin },
   ];
   const visibleTabs = tabDefs.filter((t) => t.visible);

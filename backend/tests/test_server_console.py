@@ -71,14 +71,28 @@ def test_unknown_info_events_are_kept_and_text_is_plain():
     line = logs.parse_json_line(json.dumps({"ts": "2026-10-23T01:02:03+00:00", "level": "INFO",
                                             "event": "brand_new_event", "note": "a\x1b[31mb\x07c"}))
     assert line is not None and "brand_new_event" in line.text and "all" in line.tabs
-    assert "\x1b" not in line.text and "\x07" not in line.text
+    assert "\x1b" not in line.text and "\x07" not in line.text and "[31m" not in line.text and "note=ab?c" in line.text
     assert len(logs.clean("x" * 5000)) <= logs.MAX_LINE + 1
+    # npm·pip 의 색·커서 코드는 통째로 지운다(1단계에서 '?[32m' 이 보였다)
+    assert logs.clean("\x1b[32m✓\x1b[39m built \x1b[1m\x1b[2K\x1b]0;title\x07done\x1b(B") == "✓ built done"
 
 
 def test_text_console_lines():
     line = logs.parse_text_line("[supervisor] update failed: ValueError (journal_changed)", frozenset({"lifecycle"}))
     assert line.tabs == frozenset({"all", "lifecycle", "updates", "errors"}) and line.level == "ERROR"
     assert logs.parse_text_line("   ", frozenset()) is None
+    only = logs.parse_text_line("npm ERR! failed", frozenset({"updates"}), only=True)
+    assert only.tabs == frozenset({"updates"}) and only.level == "ERROR"  # 준비 로그는 업데이트 기록 탭에만
+    assert logs.short_name(f"server-prepare-{'a' * 32}.log") == "업데이트 준비"
+    assert logs.short_name(names.RUNTIME_LOG) == "실행 기록" and logs.short_name("other.log") == "other.log"
+
+
+def test_prepare_log_lines_stay_in_the_update_tab(tmp_path):
+    inst = make_inst(tmp_path)
+    hub = logs.LogHub(inst, initial=10)
+    (inst.logs / f"server-prepare-{'b' * 32}.log").write_text("[1/6] 새 코드 받는 중\nERROR boom\n", encoding="utf-8")
+    lines = hub.poll()
+    assert [line.tabs for line in lines] == [frozenset({"updates"})] * 2
 
 
 def test_log_hub_follows_files_and_tells_missing_from_ok(tmp_path):

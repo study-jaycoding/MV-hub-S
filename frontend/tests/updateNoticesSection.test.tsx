@@ -62,7 +62,11 @@ beforeEach(() => {
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
 
 const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await Promise.resolve(); }); };
-const mount = async () => { await act(async () => { root.render(<UpdateNoticesSection />); }); await settle(); };
+// 팀 배포 단추는 2단계부터 숨김(STAGE2-WEB-HIDDEN) — 숨긴 코드가 지워지기 전까지 그 흐름을 그대로 시험한다.
+const mount = async (teamControls = true) => {
+  await act(async () => { root.render(<UpdateNoticesSection teamControls={teamControls} />); });
+  await settle();
+};
 const row = (version: string) => [...host.querySelectorAll(".admin-update-row")].find((r) => r.textContent?.includes(version))!;
 const button = (scope: Element, label: string) =>
   [...scope.querySelectorAll("button")].find((b) => b.textContent === label) as HTMLButtonElement | undefined;
@@ -306,4 +310,16 @@ it("판 목록을 아직 못 받았으면 '판이 없습니다'가 아니라 '�
   await settle();
   expect(host.textContent).toContain("릴리스 폴더에 판이 없습니다");
   expect(host.textContent).not.toContain("불러오는 중");
+});
+
+// 2단계(Jay 2026-10-23): 팀 배포·재공지·해제·고정 풀기는 서버 관리 창 [릴리스]로 — 웹 업데이트 탭은 [이 PC에 먼저 설치]만.
+it("기본(관리자 창)은 팀 배포 단추 없이 [이 PC에 먼저 설치]만 — 고정 알림 줄도 없다", async () => {
+  mocks.adminList.mockResolvedValue([liveNotice, notice(OLD, SHA.old, { pinned: true, announcement_revision: 1 })]);
+  await mount(false);
+  const labels = [...host.querySelectorAll("button")].map((b) => b.textContent);
+  expect(labels.filter((text) => text !== "이전 판 2개 더 보기 ▾")).toEqual(["이 PC에 먼저 설치"]);
+  expect(host.querySelector(".admin-update-pinned")).toBeNull();
+  expect(host.textContent).toContain("서버 관리 창 [릴리스]");
+  expect(row(LIVE).textContent).toContain("팀 배포 중"); // 꼬리표·알림 횟수는 그대로 보인다
+  expect(mocks.announce).not.toHaveBeenCalled();
 });
