@@ -11,7 +11,8 @@ from pathlib import Path
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))  # -I 라 스크립트 폴더가 경로에 없다 — 이 판의 관리 창 코드만
 
-from server_console import actions, backup, console_stage, install, jobs, names, server_api, status  # noqa: E402
+from server_console import (actions, backup, console_stage, install, jobs, names, release, server_api,  # noqa: E402
+                            status)
 
 
 def recompute(inst: install.Installation, job_id: str) -> "actions.Plan | actions.Refusal":
@@ -106,6 +107,60 @@ def run_backup(inst: install.Installation, job_id: str, request: dict) -> int:
     return jobs.run_job(inst, job_id, recompute, work=lambda _job, say: work(inst, runner, params, say))
 
 
+def run_release(inst: install.Installation, job_id: str, request: dict, token: str) -> int:
+    """릴리스 배포·이어서 하기·재공지·해제: 서버를 다시 확인하고 공지·표지를 다시 읽어 확인 대상과 비교한 뒤 실행."""
+    kind = request["kind"]
+    params = actions.Plan.from_json(request["plan"]).params
+    runner = install.default_runner(inst)
+    job = jobs.job_dir(inst, job_id)
+    source = release.release_source(inst)
+
+    def recompute() -> "actions.Plan | actions.Refusal":
+        try:
+            server = server_api.verify_server(inst, runner)
+            unresolved = jobs.unresolved_jobs(inst, exclude=job_id)
+            if kind == "release-resume":
+                from_params, from_state, intent = release.resume_source(inst, params["from_job"])
+                return actions.plan_release_resume(inst, server, source, params["from_job"], from_params, from_state,
+                                                   intent, unresolved)
+            notice = release.find_notice(server, token, params["sha256"])
+            if kind == "release-deploy":
+                fields = {key: params[key] for key in release.FIELDS}
+                return actions.plan_release_deploy(inst, server, source, release.helper(inst, job / "scratch", "read"),
+                                                   fields, notice, unresolved)
+            return actions.plan_notice_action(inst, kind, server, notice, params["sha256"], unresolved)
+        except (server_api.ServerError, release.ReleaseError) as exc:
+            return actions.Refusal((str(exc),))
+
+    def work(_job, say) -> tuple[int, dict]:
+        if kind == "release-deploy":
+            return release.deploy_work(inst, job, params, token, say)
+        if kind == "release-resume":
+            _params, _state, intent = release.resume_source(inst, params["from_job"])
+            code, extra = release.resume_work(inst, job, params, intent, token, say)
+            if code == 0 and _state.get("status") in ("check_needed", "runner_error"):
+                jobs.acknowledge(inst, params["from_job"])  # 서버·NAS 를 다시 읽어 끝냈다 — 멈춘 배포가 새 작업을 막지 않게
+            return code, extra
+        if kind == "release-announce":
+            return release.announce_work(params, token, say)
+        return release.remove_work(params, token, say)
+
+    return jobs.run_job(inst, job_id, recompute, work=work)
+
+
+def run_address(inst: install.Installation, job_id: str, request: dict) -> int:
+    """주소 공지: 화면이 본 공지 판·릴리스 폴더를 다시 확인한 뒤 판+1 로 쓴다(로그인 없음 — NAS 쓰기 권한이 경계)."""
+    params = actions.Plan.from_json(request["plan"]).params
+    job = jobs.job_dir(inst, job_id)
+
+    def recompute() -> "actions.Plan | actions.Refusal":
+        return actions.plan_address_notice(inst, release.release_source(inst), release.read_location(inst, job / "scratch"),
+                                           str(params.get("url") or ""), str(params.get("name") or ""),
+                                           jobs.unresolved_jobs(inst, exclude=job_id))
+
+    return jobs.run_job(inst, job_id, recompute, work=lambda _job, say: release.address_work(inst, job, params, say))
+
+
 def _parse(argv: list[str]) -> tuple[Path | None, str]:
     if len(argv) == 4 and argv[1] == "--install-root":
         return Path(argv[2]), argv[3]
@@ -130,6 +185,9 @@ def main(argv: list[str]) -> int:
                 return 70
             if kind == "intake-set":
                 return run_intake(inst, job_id, request, token)
+            return run_release(inst, job_id, request, token)
+        if kind == "address-notice":
+            return run_address(inst, job_id, request)
         if kind in ("backup-save", "backup-run"):
             return run_backup(inst, job_id, request)
         if kind == "git-update":

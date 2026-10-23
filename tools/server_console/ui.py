@@ -19,7 +19,7 @@ import traceback
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from . import actions, backup, console_stage, install, jobs, logs, names, server_api, status
+from . import actions, backup, console_stage, install, jobs, logs, names, release, server_api, status
 from . import main as main_boot
 
 BG, BG2, PANEL, PANEL2 = "#08090a", "#0c0e10", "#121316", "#181a1e"
@@ -158,6 +158,12 @@ class App:
         self.backup_busy = False
         self.backup_due = False  # 백업 화면 정보를 작업 스레드가 다시 읽을 때
         self.backup_shown = ""   # 입력 칸에 마지막으로 채운 위치 — 사람이 고치는 중이면 덮지 않는다
+        self.release_view: dict | None = None
+        self.release_busy = False
+        self.release_due = False
+        self.address_view: dict | None = None
+        self.address_busy = False
+        self.address_shown = ("", "")  # 주소·이름 칸에 마지막으로 채운 값
         self.page = "status"
         self._build()
         # 다시 열면 결과를 확인하지 않은 작업을 먼저, 없으면 마지막 작업을 다시 보여 준다.
@@ -209,7 +215,8 @@ class App:
             tk.Label(main, text=self.note, bg="#3a2f12", fg=AMBER, font=BOLD, anchor="w", justify="left",
                      wraplength=1000, padx=12, pady=6).pack(fill="x")
         builders = {"status": self._build_status_page, "intake": self._build_intake_page,
-                    "backup": self._build_backup_page, "update": self._build_update_page}
+                    "backup": self._build_backup_page, "address": self._build_address_page,
+                    "update": self._build_update_page, "release": self._build_release_page}
         for key, label in NAV:
             if key not in builders:  # 아직 만들지 않은 화면은 이름만
                 tk.Label(self.nav, text=f"{label}  · 다음 단계", bg=BG2, fg=MUTED2, font=("Malgun Gothic", 10),
@@ -244,6 +251,8 @@ class App:
         self.page = key
         if key == "backup":
             self.backup_due = True  # 열 때마다 새로 읽는다(작업 스레드)
+        if key in ("release", "address"):
+            self.release_due = True
 
     def _header(self, page: tk.Frame, title: str) -> tk.Frame:
         head = tk.Frame(page, bg=BG2)
@@ -642,6 +651,295 @@ class App:
         self.backup_entry.insert(0, self.backup_old)
         self.request_backup("backup-save")
 
+    # ---------- 릴리스·주소 공통 ----------
+    def _area_note(self, area: str) -> tk.Label:
+        return {"intake": self.intake_note, "backup": self.backup_note, "release": self.release_note,
+                "address": self.address_note}[area]
+
+    def _on_area_plan(self, area: str, plan) -> None:
+        note = self._area_note(area)
+        if isinstance(plan, actions.Refusal):
+            setattr(self, f"{area}_busy", False)
+            self._relogin_if_needed(plan.reasons)
+            note.configure(text="하지 않았습니다:\n· " + "\n· ".join(plan.reasons), fg=AMBER)
+            self._show_area(area)
+            return
+        if messagebox.askokcancel(f"{actions.ACTIONS[plan.kind]} 확인", "\n\n".join(plan.summary) + "\n\n실행할까요?",
+                                  icon="warning"):
+            note.configure(text="시작하는 중…", fg=MUTED)
+            threading.Thread(target=self._start_worker, args=(plan, area), daemon=True).start()
+        else:
+            setattr(self, f"{area}_busy", False)
+            note.configure(text="")
+            self._show_area(area)
+
+    def _on_area_job(self, area: str, state: dict, tail: str) -> None:
+        note = self._area_note(area)
+        if state.get("status") not in JOB_TERMINAL:
+            note.configure(text=tail or "진행 중…", fg=MUTED)
+            return
+        self.side_jobs.pop(area, None)
+        setattr(self, f"{area}_busy", False)
+        self.release_due = True
+        if state.get("auth_expired"):
+            self.logout()
+        text, color = area_result_text(state)
+        note.configure(text=text, fg=color)
+        self._show_area(area)
+
+    def _show_area(self, area: str) -> None:
+        (self._show_release if area == "release" else self._show_address_page)()
+
+    # ---------- 릴리스 ----------
+    def _build_release_page(self, page: tk.Frame) -> None:
+        self._header(page, "릴리스 — 팀원 앱 배포")
+        body = tk.Frame(page, bg=BG)
+        body.pack(fill="both", expand=True, padx=16, pady=12)
+        folder = tk.Frame(body, bg=BG)
+        folder.pack(fill="x")
+        tk.Label(folder, text="NAS 릴리스 폴더", bg=BG, fg=MUTED, font=FONT).pack(side="left")
+        self.release_entry = tk.Entry(folder, bg=PANEL2, fg=TEXT, insertbackground=TEXT, relief="flat", font=FONT,
+                                      width=60)
+        self.release_entry.pack(side="left", padx=8, ipady=3)
+        self._button(folder, "저장", self.save_release_source).pack(side="left")
+        self.release_shown = ""
+        tk.Label(body, text="NAS 릴리스 폴더의 모든 릴리스. [배포] = 팀원에게 알림이 가고 그 릴리스로 업데이트(옛 릴리스면 되돌리기). "
+                            "[재공지] = 알림만 다시 · [해제] = 팀원 알림만 거둠(배포는 그대로).",
+                 bg=BG, fg=MUTED, font=("Malgun Gothic", 9), wraplength=950, justify="left").pack(anchor="w", pady=(8, 4))
+        self.release_warn = tk.Label(body, text="", bg=BG, fg=AMBER, font=FONT, wraplength=950, justify="left")
+        self.release_warn.pack(anchor="w")
+        self.release_rows = tk.Frame(body, bg=BG)
+        self.release_rows.pack(fill="x", pady=6)
+        notes = tk.Frame(body, bg=BG)
+        notes.pack(fill="x")
+        self.release_note = tk.Label(notes, text="", bg=BG, fg=MUTED, font=FONT, wraplength=820, justify="left")
+        self.release_note.pack(side="left")
+        self.resume_button = self._button(notes, "이어서 하기…", lambda: self.request_release("release-resume", None))
+        tk.Label(body, text="배포할 때 순서: ① 생성 접수 멈추기 → ② 서버 Git 업데이트 → ③ [배포] → ④ 팀원 업데이트 끝나면 생성 접수 다시 받기. "
+                            "업데이트·배포가 실패하면 생성 접수는 멈춘 채로 두고 아래 결과를 보세요.",
+                 bg=PANEL, fg=TEXT, font=FONT, wraplength=950, justify="left", anchor="w", padx=12, pady=8
+                 ).pack(fill="x", pady=8)
+
+    def save_release_source(self) -> None:
+        try:
+            release.save_source(self.inst, self.release_entry.get())
+        except (release.ReleaseError, OSError) as exc:
+            self.release_note.configure(text=f"저장하지 않았습니다: {exc}", fg=AMBER)
+            return
+        self.release_shown = self.release_entry.get().strip()
+        self.release_note.configure(text="NAS 릴리스 폴더를 저장했습니다 — 목록을 다시 읽습니다", fg=LIME)
+        self.release_due = True
+
+    def _show_release(self) -> None:
+        view = self.release_view or {}
+        source = str(view.get("source") or "")
+        if self.release_entry.get().strip() == self.release_shown:  # 사람이 고치는 중이면 덮지 않는다
+            self.release_entry.delete(0, "end")
+            self.release_entry.insert(0, source)
+            self.release_shown = source
+        read = view.get("read") or {}
+        overview = read.get("overview") if isinstance(read.get("overview"), dict) else None
+        notices = view.get("notices")
+        warnings = []
+        if not source:
+            warnings.append("NAS 릴리스 폴더를 정하세요(팀원 PC 의 INSTALL_SOURCE.txt 에 적힌 것과 같은 폴더)")
+        elif read and not read.get("ok"):
+            warnings.append(str(read.get("error")))
+        warnings += [str(read[k]) for k in ("packages_error", "overview_error") if read.get(k)]
+        if overview and overview.get("candidate_error"):
+            warnings.append("NAS 의 후보 파일(candidate.json)을 읽을 수 없어 배포를 막았습니다 — 릴리스를 다시 만들어 올리세요")
+        if overview and overview.get("published_state") == "error":
+            warnings.append("팀 공개 표지(latest.json)를 읽을 수 없어 배포 상태를 확인할 수 없습니다")
+        if notices is None:
+            warnings.append("관리자로 로그인하면 팀원 알림 상태와 [배포]·[재공지]·[해제] 단추가 보입니다"
+                            + (f" — {view.get('notice_error')}" if view.get("notice_error") else ""))
+        self.release_warn.configure(text="\n".join(f"· {w}" for w in warnings))
+        for child in self.release_rows.winfo_children():
+            child.destroy()
+        rows = read.get("packages") if isinstance(read.get("packages"), list) else []
+        published, candidate = release.shas(overview)
+        pub = (overview or {}).get("published") or {}
+        cand_file = (overview or {}).get("file") if (overview or {}).get("source") == "candidate" else None
+        blocked = overview is None or bool(overview.get("candidate_error")) or overview.get("published_state") == "error"
+        shown = [r for i, r in enumerate(rows) if i < 8 or r.get("file") in (pub.get("file"), cand_file)]
+        for row in shown:
+            sha = published if row.get("file") == pub.get("file") else candidate if row.get("file") == cand_file else ""
+            notice = next((n for n in notices or [] if n.get("file") == row.get("file")
+                           and (not sha or n.get("sha256") == sha)), None)
+            self._release_row(row, notice, live=row.get("file") == pub.get("file"),
+                              candidate=row.get("file") == cand_file and (overview or {}).get("pending") is True,
+                              logged_in=notices is not None, blocked=blocked)
+        if not shown:
+            tk.Label(self.release_rows, text="릴리스가 없습니다" if source and read.get("ok") else "", bg=BG, fg=MUTED,
+                     font=FONT).pack(anchor="w")
+        resume = view.get("resume")
+        if resume and notices is not None:
+            self.resume_button.configure(text=f"이어서 하기 — v{resume.get('version')}…",
+                                         state="disabled" if self.release_busy else "normal")
+            self.resume_button.pack(side="left", padx=10)
+        else:
+            self.resume_button.pack_forget()
+
+    def _release_row(self, row: dict, notice: dict | None, live: bool, candidate: bool, logged_in: bool,
+                     blocked: bool) -> None:
+        revision = int((notice or {}).get("announcement_revision") or 0)
+        waiting = candidate and revision > 0
+        line = tk.Frame(self.release_rows, bg=PANEL, highlightbackground=LIME if live else "#26282d", highlightthickness=1)
+        line.pack(fill="x", pady=2)
+        tk.Label(line, text=f"v{row.get('version')}", bg=PANEL, fg=TEXT, font=BOLD).pack(side="left", padx=(12, 8), pady=6)
+        tag = ("팀 배포 중", LIME) if live else ("공지됨 · 아직 배포 안 됨", AMBER) if waiting else \
+            ("새 후보 · 배포 전", CYAN) if candidate else ("", MUTED)
+        if tag[0]:
+            tk.Label(line, text=tag[0], bg=PANEL2, fg=tag[1], font=("Malgun Gothic", 9, "bold"), padx=6).pack(side="left")
+        size = row.get("size") if isinstance(row.get("size"), int) else 0
+        extra = f" · 알림 {revision}회" if revision else ""
+        tk.Label(line, text=f"{size / 1024 / 1024:,.0f}MB · {_built_at(str(row.get('version') or ''))}{extra}", bg=PANEL,
+                 fg=MUTED, font=("Malgun Gothic", 9)).pack(side="left", padx=8)
+        if not logged_in:
+            return
+        target = {**row, "notice": notice}
+        buttons = [("해제…", "release-remove", False, False)] if notice else []
+        buttons.append(("재공지…", "release-announce", True, False) if live and notice
+                       else ("배포 반영…" if waiting else "배포…", "release-deploy", candidate, blocked))
+        for label, kind, primary, off in buttons:
+            button = self._button(line, label, lambda k=kind: self.request_release(k, target), primary=primary)
+            button.configure(state="disabled" if self.release_busy or off else "normal")
+            button.pack(side="right", padx=6)
+
+    def request_release(self, kind: str, row: dict | None) -> None:
+        if not self.release_busy:
+            self.require_login(lambda: self._begin_release(kind, row))
+
+    def _begin_release(self, kind: str, row: dict | None) -> None:
+        if self.release_busy or self.session is None:
+            return
+        if kind == "release-resume":
+            row = (self.release_view or {}).get("resume")
+            if not row:
+                return
+        self.release_busy = True
+        self._show_release()
+        self.release_note.configure(text="서버·릴리스 폴더를 확인하는 중…", fg=MUTED)
+        threading.Thread(target=self._release_plan_worker, args=(kind, row, self.session), daemon=True).start()
+
+    def _release_plan_worker(self, kind: str, row: dict, session: server_api.Session) -> None:
+        try:
+            server = server_api.verify_server(self.inst, self.runner)  # 토큰을 보내기 전에 늘 다시 확인
+            unresolved = jobs.unresolved_jobs_or_repair(self.inst, self.runner)
+            source = release.release_source(self.inst)
+            if kind == "release-resume":
+                params, state, intent = release.resume_source(self.inst, row["job_id"])
+                plan = actions.plan_release_resume(self.inst, server, source, row["job_id"], params, state, intent,
+                                                   unresolved)
+            elif kind == "release-deploy":
+                read = release.helper(self.inst, release.scratch_dir(self.inst), "read")
+                overview = read.get("overview") if isinstance(read.get("overview"), dict) else {}
+                if overview.get("source") == "candidate" and overview.get("file") == row["file"]:
+                    fields = {key: overview[key] for key in release.FIELDS}
+                else:
+                    self.queue.put(("area_note", "release", "릴리스 파일 지문을 확인하는 중(수백 MB — 몇 분 걸릴 수 있음)…"))
+                    answer = release.helper(self.inst, release.scratch_dir(self.inst), "manifest", row["file"],
+                                            timeout=release.HASH_TIMEOUT)
+                    if not answer.get("ok"):
+                        raise release.ReleaseError(str(answer.get("error")))
+                    fields = answer["manifest"]
+                notice = release.find_notice(server, session.token, str(fields.get("sha256") or ""))
+                plan = actions.plan_release_deploy(self.inst, server, source, read, fields, notice, unresolved)
+            else:
+                sha = str((row.get("notice") or {}).get("sha256") or "")
+                notice = release.find_notice(server, session.token, sha) if sha else None
+                plan = actions.plan_notice_action(self.inst, kind, server, notice, sha, unresolved)
+        except (server_api.ServerError, release.ReleaseError) as exc:
+            plan = actions.Refusal((str(exc),))
+        except Exception as exc:  # noqa: BLE001
+            plan = actions.Refusal((f"확인 중 오류: {type(exc).__name__}: {exc}"[:300],))
+        self.queue.put(("area_plan", "release", plan))
+
+    # ---------- 주소 ----------
+    def _build_address_page(self, page: tk.Frame) -> None:
+        self._header(page, "주소")
+        body = tk.Frame(page, bg=BG)
+        body.pack(fill="both", expand=True, padx=16, pady=12)
+
+        def card(title: str) -> tk.Frame:
+            box = tk.Frame(body, bg=PANEL, highlightbackground="#26282d", highlightthickness=1)
+            box.pack(fill="x", pady=(0, 10))
+            tk.Label(box, text=title, bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9)).pack(anchor="w", padx=12, pady=(8, 2))
+            return box
+        now = card("지금 이 서버 주소 (이 PC 의 네트워크 주소 · 포트)")
+        row = tk.Frame(now, bg=PANEL)
+        row.pack(fill="x", padx=12, pady=(0, 10))
+        self.address_now = tk.Label(row, text="확인 중…", bg=PANEL, fg=TEXT, font=("Malgun Gothic", 13, "bold"),
+                                    justify="left")
+        self.address_now.pack(side="left")
+        self._button(row, "복사", self.copy_address).pack(side="right")
+        name = card("팀원 앱에 보이는 서버 이름 ([팀에 공지] 때 함께 기록 — 비우면 주소로 보임)")
+        self.name_entry = tk.Entry(name, bg=PANEL2, fg=TEXT, insertbackground=TEXT, relief="flat", font=FONT, width=40)
+        self.name_entry.pack(anchor="w", padx=12, pady=(0, 10), ipady=3)
+        move = card("주소를 바꿀 때 (이사·IP 변경)")
+        row = tk.Frame(move, bg=PANEL)
+        row.pack(fill="x", padx=12)
+        self.url_entry = tk.Entry(row, bg=PANEL2, fg=TEXT, insertbackground=TEXT, relief="flat", font=FONT, width=40)
+        self.url_entry.pack(side="left", ipady=3)
+        self.address_button = self._button(row, "팀에 공지…", self.request_address, primary=True)
+        self.address_button.pack(side="left", padx=8)
+        tk.Label(move, text="NAS 릴리스 폴더에 이사 공지(server-location.json)를 남김 → 팀원 앱에 알림 → 누르면 새 주소로 전환(자동 전환 아님)",
+                 bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9)).pack(anchor="w", padx=12, pady=(4, 2))
+        self.location_label = tk.Label(move, text="", bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9), justify="left")
+        self.location_label.pack(anchor="w", padx=12, pady=(0, 10))
+        self.address_note = tk.Label(body, text="", bg=BG, fg=MUTED, font=FONT, wraplength=950, justify="left")
+        self.address_note.pack(anchor="w")
+        tk.Label(body, text="서버 이사(3단계)는 이 화면에서 이어집니다.", bg=BG, fg=MUTED2, font=("Malgun Gothic", 9)
+                 ).pack(anchor="w", pady=(8, 0))
+
+    def _show_address_page(self) -> None:
+        scheme = "https" if self.inst.tls else "http"
+        urls = [f"{scheme}://{ip}:{self.inst.port}  ({alias})" for alias, ip in (self.addresses or [])]
+        self.address_now.configure(text="\n".join(urls) if urls else
+                                   ("네트워크 주소 확인 불가" if self.addresses is None else "네트워크 주소 없음"))
+        view = self.address_view or {}
+        location = view.get("location") or {}
+        current = location.get("announcement") if isinstance(location.get("announcement"), dict) else None
+        state = view.get("state") or {}
+        if not view:
+            self.location_label.configure(text="")
+        elif not view.get("source"):
+            self.location_label.configure(text="NAS 릴리스 폴더를 먼저 정하세요(릴리스 화면)", fg=AMBER)
+        elif not location.get("ok"):
+            self.location_label.configure(text=f"지금 공지 파일을 읽지 못했습니다 — {location.get('error')}", fg=AMBER)
+        elif current is None:
+            self.location_label.configure(text="지금 공지: 아직 없음", fg=MUTED)
+        else:
+            self.location_label.configure(text=f"지금 공지: 판 {current.get('revision')} · {current.get('url')}"
+                                               f" · 이름 '{current.get('name') or '없음'}' · {current.get('announced_at')}",
+                                          fg=MUTED)
+        wanted = (str((current or {}).get("url") or ""), str(state.get("server_name") or (current or {}).get("name") or ""))
+        if (self.url_entry.get(), self.name_entry.get()) == self.address_shown:  # 고치는 중이면 덮지 않는다
+            for entry, value in ((self.url_entry, wanted[0]), (self.name_entry, wanted[1])):
+                entry.delete(0, "end")
+                entry.insert(0, value)
+            self.address_shown = wanted
+        self.address_button.configure(state="disabled" if self.address_busy else "normal")
+
+    def request_address(self) -> None:
+        if self.address_busy:
+            return
+        self.address_busy = True
+        self._show_address_page()
+        self.address_note.configure(text="지금 공지 파일을 확인하는 중…", fg=MUTED)
+        threading.Thread(target=self._address_plan_worker, args=(self.url_entry.get(), self.name_entry.get()),
+                         daemon=True).start()
+
+    def _address_plan_worker(self, url: str, name: str) -> None:
+        try:
+            unresolved = jobs.unresolved_jobs_or_repair(self.inst, self.runner)
+            source = release.release_source(self.inst)
+            location = release.read_location(self.inst, release.scratch_dir(self.inst))
+            plan = actions.plan_address_notice(self.inst, source, location, url, name, unresolved)
+        except Exception as exc:  # noqa: BLE001
+            plan = actions.Refusal((f"확인 중 오류: {type(exc).__name__}: {exc}"[:300],))
+        self.queue.put(("area_plan", "address", plan))
+
     def _build_update_page(self, page: tk.Frame) -> None:
         self._header(page, "업데이트 — Git 업데이트(서버 코드)")
         body = tk.Frame(page, bg=BG)
@@ -713,6 +1011,7 @@ class App:
         self.session = None
         self.login_label.configure(text="관리자 로그인 안 함", fg=MUTED)
         self.login_button.configure(text="로그인…")
+        self.release_due = True  # 로그인으로만 보이던 알림 상태·단추를 거둔다
 
     def require_login(self, then) -> None:
         """로그인돼 있으면 then() 을 바로, 아니면 로그인 창 → 성공한 뒤 then()."""
@@ -779,6 +1078,7 @@ class App:
         self.login_button.configure(text="로그아웃")
         then, self.after_login = self.after_login, None
         self._close_login(keep_pending=True)
+        self.release_due = True  # 릴리스 화면의 알림 상태·단추
         if then:
             then()
         else:
@@ -900,7 +1200,7 @@ class App:
             return False
 
     def _worker(self) -> None:
-        last_status = last_tasks = last_addr = last_backup = 0.0
+        last_status = last_tasks = last_addr = last_backup = last_release = 0.0
         offsets: dict[str, int] = {}  # 작업마다 읽은 위치 — 이 스레드만 만진다
         while not self.stop.is_set():
             now = time.time()
@@ -932,6 +1232,14 @@ class App:
                 if self.backup_due or (self.page == "backup" and now - last_backup > 30):
                     self.backup_due, last_backup = False, now
                     self._put(("backup_view", backup.read_view(self.inst, self.runner)))
+                if self.release_due or (self.page in ("release", "address") and now - last_release > 60):
+                    self.release_due, last_release = False, now
+                    if self.page == "address":
+                        self._put(("address_view", {"source": release.release_source(self.inst),
+                                                    "location": release.read_location(self.inst, release.scratch_dir(self.inst)),
+                                                    "state": release.read_state(self.inst)}))
+                    else:
+                        self._put(("release_view", release.read_view(self.inst, self.runner, self.session)))
             except Exception:  # noqa: BLE001
                 _log_ui_error(traceback.format_exc())
             self.stop.wait(1.0)
@@ -986,6 +1294,7 @@ class App:
         elif kind == "addresses":
             self.addresses = item[1]
             self._show_address()
+            self._show_address_page()
         elif kind == "plan":
             self._on_plan(item[1])
         elif kind == "login":
@@ -995,23 +1304,39 @@ class App:
         elif kind == "side_refused":
             if item[1] == "intake":
                 self._on_intake_plan(item[2], None, 0.0)
-            else:
+            elif item[1] == "backup":
                 self._on_backup_plan(item[2])
+            else:
+                self._on_area_plan(item[1], item[2])
         elif kind == "side_started":
             self.side_jobs[item[1]] = item[2]
-            note = self.intake_note if item[1] == "intake" else self.backup_note
-            note.configure(text=f"작업 {item[2][:8]} 시작 — 실행 직전에 조건을 다시 확인합니다…", fg=MUTED)
+            self._area_note(item[1]).configure(text=f"작업 {item[2][:8]} 시작 — 실행 직전에 조건을 다시 확인합니다…",
+                                               fg=MUTED)
         elif kind == "side_job":
             if self.side_jobs.get(item[1]) == item[2]:  # 끝 처리 뒤 늦게 온 같은 작업 알림은 버린다
                 if item[1] == "intake":
                     self._on_intake_job(item[3])
-                else:
+                elif item[1] == "backup":
                     self._on_backup_job(item[3], item[4])
+                else:
+                    self._on_area_job(item[1], item[3], item[4])
         elif kind == "backup_view":
             self.backup_view = item[1]
             self._show_backup()
         elif kind == "backup_plan":
             self._on_backup_plan(item[1])
+        elif kind == "release_view":
+            self.release_view = item[1]
+            if item[1].get("auth_expired"):
+                self.logout()
+            self._show_release()
+        elif kind == "address_view":
+            self.address_view = item[1]
+            self._show_address_page()
+        elif kind == "area_plan":
+            self._on_area_plan(item[1], item[2])
+        elif kind == "area_note":
+            self._area_note(item[1]).configure(text=item[2], fg=MUTED)
         elif kind == "intake_value":
             self.intake_api = (item[1], item[2])
             self._show_intake()
@@ -1227,6 +1552,9 @@ def job_result_text(state: dict) -> tuple[str, str]:
     kind = state.get("kind")
     if status_text == "finished" and kind in ("backup-save", "backup-run"):
         return backup_result_text(state)
+    if status_text == "finished" and kind in ("release-deploy", "release-resume", "release-announce",
+                                              "release-remove", "address-notice"):
+        return area_result_text(state)
     if status_text == "finished" and kind == "intake-set":
         if state.get("exit_code") != 0:
             return f"실패: 생성 접수를 바꾸지 못했습니다 — {state.get('error') or '이유 모름'}", RED
@@ -1258,6 +1586,47 @@ def job_result_text(state: dict) -> tuple[str, str]:
         return ("결과 확인 필요: 실행기가 결과를 남기지 못했습니다. 서버 상태와 로그를 확인한 뒤 "
                 "[확인했음]을 누르세요(그 전에는 새 업데이트를 막습니다)."), AMBER
     return "진행 중… (이 창을 닫아도 업데이트는 계속됩니다)", MUTED
+
+
+def _built_at(version: str) -> str:
+    """릴리스 버전(YYYY.MM.DD-HHMM = 만든 시각) → 'MM-DD HH:MM'."""
+    try:
+        return time.strftime("%m-%d %H:%M", time.strptime(version, "%Y.%m.%d-%H%M"))
+    except ValueError:
+        return ""
+
+
+def area_result_text(state: dict) -> tuple[str, str]:
+    """릴리스·주소 작업 상태 → (화면 문구, 색). '알림'과 'NAS 표지' 결과를 따로 말한다."""
+    status_text, kind = state.get("status"), state.get("kind")
+    if status_text == "refused":
+        return "하지 않았습니다: " + " / ".join(str(r) for r in state.get("reasons") or []), AMBER
+    if status_text != "finished":
+        extra = " 릴리스 화면의 [이어서 하기]로 서버·NAS 를 다시 읽어 이어 갈 수 있습니다." if kind == "release-deploy" else ""
+        return f"결과 확인 필요: 실행기가 결과를 남기지 못했습니다.{extra}", AMBER
+    error = state.get("error") or "이유 모름"
+    if state.get("exit_code") == 0:
+        if kind == "release-announce":
+            return f"완료: 팀원 알림을 다시 보냈습니다({state.get('revision')}번째) — 배포는 그대로입니다.", LIME
+        if kind == "release-remove":
+            return "완료: 팀원 알림 목록에서 거뒀습니다(배포는 그대로).", LIME
+        if kind == "address-notice":
+            note = _dict(state.get("announcement"))
+            return f"완료: 팀에 주소를 공지했습니다(판 {note.get('revision')}) — 팀원 앱에 알림이 뜹니다.", LIME
+        version = state.get("version")
+        if state.get("deploy") == "already":
+            return f"완료: v{version} 은(는) 이미 팀에 배포된 릴리스입니다(알림만).", LIME
+        if state.get("rolled_back"):
+            return f"완료: v{version} 으로 되돌렸습니다 — 팀원 PC 에 '업데이트 있음'이 뜹니다.", LIME
+        return f"완료: v{version} 을(를) 팀에 배포했습니다 — 팀원 PC 에 '업데이트 있음'이 뜹니다.", LIME
+    if kind in ("release-deploy", "release-resume") and state.get("announced") is not False:
+        if state.get("announced") is None and kind == "release-deploy":
+            return f"알림 결과를 확인할 수 없어 배포하지 않았습니다 — [이어서 하기]로 확인하세요. 이유: {error}", AMBER
+        if state.get("deploy") == "unconfirmed":
+            return f"알림은 나갔지만 팀 배포 결과를 확인할 수 없습니다 — [이어서 하기]로 다시 읽어 이어 가세요. 이유: {error}", AMBER
+        if state.get("announced"):
+            return f"알림은 나갔지만 팀 배포는 하지 못했습니다 — {error}", RED
+    return f"실패: {error}", RED
 
 
 def _stamp_text(stamp: str) -> str:

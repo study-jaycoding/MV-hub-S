@@ -144,17 +144,17 @@ def verify_server(inst: Installation, runner: Runner) -> dict:
 
 # ---- 요청 ----
 
-def _json(raw: bytes) -> dict | None:
+def _json(raw: bytes) -> dict | list | None:
     try:
         value = json.loads(raw.decode("utf-8", errors="replace"))
     except ValueError:
         return None
-    return value if isinstance(value, dict) else None
+    return value if isinstance(value, (dict, list)) else None
 
 
 def call(server: dict, method: str, path: str, token: str = "", body: dict | None = None,
-         timeout: float = 15.0) -> tuple[int | None, dict | None]:
-    """(HTTP 코드 또는 응답 없음 None, JSON). 프록시·리다이렉트를 쓰지 않고 127.0.0.1 로만."""
+         timeout: float = 15.0) -> tuple[int | None, dict | list | None]:
+    """(HTTP 코드 또는 응답 없음 None, JSON 객체·배열). 프록시·리다이렉트를 쓰지 않고 127.0.0.1 로만."""
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), status._NoRedirect)
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = urllib.request.Request(f"http://127.0.0.1:{int(server['port'])}{path}", data=data, method=method)
@@ -172,8 +172,8 @@ def call(server: dict, method: str, path: str, token: str = "", body: dict | Non
         return None, None
 
 
-def detail(payload: dict | None) -> str:
-    text = (payload or {}).get("detail")
+def detail(payload) -> str:
+    text = payload.get("detail") if isinstance(payload, dict) else None
     return text[:300] if isinstance(text, str) else ""
 
 
@@ -181,7 +181,7 @@ def login(inst: Installation, runner: Runner, email: str, password: str) -> Sess
     """서버를 확인한 뒤에만 비밀번호를 보낸다. admin 이 아니면 토큰을 버린다."""
     server = verify_server(inst, runner)
     code, payload = call(server, "POST", "/api/auth/login", body={"email": email, "password": password})
-    if code != 200 or payload is None:
+    if code != 200 or not isinstance(payload, dict):
         raise ServerError(detail(payload) or f"로그인하지 못했습니다({code or '응답 없음'})")
     account = payload.get("account") if isinstance(payload.get("account"), dict) else {}
     token = payload.get("token")
@@ -198,19 +198,20 @@ def login(inst: Installation, runner: Runner, email: str, password: str) -> Sess
 INTAKE_PATH = "/api/gen-requests/deployment-pause"
 
 
-def _answer(code: int | None, payload: dict | None, what: str) -> dict:
+def expect_ok(code: int | None, payload, what: str, shape: type = dict):
+    """200 과 기대한 모양(객체·배열)만 통과. 401·403 = AuthExpired, 응답 없음·그 밖 = ServerError(단계 이름과 함께)."""
     if code in (401, 403):
         raise AuthExpired(f"서버가 로그인을 받지 않았습니다({detail(payload) or code}) — {RELOGIN}")
     if code is None:
         raise ServerError(f"{what}: 서버에서 응답을 받지 못했습니다(꺼져 있거나 바쁠 수 있음)")
-    if code != 200 or payload is None:
+    if code != 200 or not isinstance(payload, shape):
         raise ServerError(f"{what}: {detail(payload) or f'HTTP {code}'}")
     return payload
 
 
 def read_intake(server: dict, token: str) -> bool:
     """True = 멈춤. 서버 API 값(관리 창의 DB 경로 짐작에 기대지 않는다)."""
-    paused = _answer(*call(server, "GET", INTAKE_PATH, token), "생성 접수 읽기").get("paused")
+    paused = expect_ok(*call(server, "GET", INTAKE_PATH, token), "생성 접수 읽기").get("paused")
     if not isinstance(paused, bool):
         raise ServerError("생성 접수 응답 형식을 알 수 없습니다")
     return paused
@@ -219,7 +220,7 @@ def read_intake(server: dict, token: str) -> bool:
 def set_intake(server: dict, token: str, paused: bool) -> bool:
     """바꾸고 다시 읽어 확인한 값. 응답만 잃었으면(서버는 바꿨을 수 있다) 다시 읽어 판정한다."""
     code, payload = call(server, "PUT", INTAKE_PATH, token, {"paused": paused})
-    if code is not None and _answer(code, payload, "생성 접수 바꾸기").get("paused") is not paused:
+    if code is not None and expect_ok(code, payload, "생성 접수 바꾸기").get("paused") is not paused:
         raise ServerError("서버가 요청과 다른 값을 돌려줬습니다")
     after = read_intake(server, token)
     if after is not paused:

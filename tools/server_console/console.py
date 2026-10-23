@@ -18,6 +18,7 @@ from server_console import main as boot  # noqa: E402 — 같은 판의 격리 �
 APP_MODULES = ("server_console.names", "server_console.install", "server_console.status", "server_console.logs",
                "server_console.actions", "server_console.jobs", "server_console.console_stage",
                "server_console.server_api", "server_console.backup", "server_console.backup_helper",
+               "server_console.release", "server_console.release_helper",
                "server_console.job_main", "server_console.ui", "log_viewer", "deploy_fence_check")
 
 

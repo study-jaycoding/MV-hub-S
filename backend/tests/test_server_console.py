@@ -2093,3 +2093,407 @@ def test_backup_result_text_separates_saving_from_copying(state, expected):
     from server_console import ui
     assert expected in ui.backup_result_text(state)[0]
     assert ui._stamp_text("20261023_052000_000001").startswith("2026-10-23")
+
+
+# ---------- 2단계 ⑤ 릴리스·주소 ----------
+
+from server_console import release  # noqa: E402
+
+SHA_A, SHA_B, SHA_C = "a" * 64, "b" * 64, "c" * 64
+FIELDS_C = {"version": "2026.10.23-1200", "file": "MVHub-2026.10.23-1200.zip", "sha256": SHA_C, "size": 9,
+            "created_at": "2026-10-23T12:00:00"}
+
+
+def _release_inst(tmp_path, nas: Path | None = None):
+    inst = make_inst(tmp_path)
+    if nas is not None:
+        release.save_source(inst, str(nas))
+    return inst
+
+
+def _manifest(version: str, data: bytes) -> dict:
+    import hashlib
+    return {"version": version, "file": f"MVHub-{version}.zip", "sha256": hashlib.sha256(data).hexdigest(),
+            "size": len(data), "created_at": "2026-10-22T21:05:00", "higgsfield_cli_version": "1.1.26"}
+
+
+def test_release_helper_reads_the_nas_with_the_root_code_and_writes_only_the_notice(tmp_path):
+    """실제 도우미 자식이 루트 backend 코드로 목록·표지를 읽고, 옛 릴리스는 배포를 거절하고, 주소 공지만 쓴다."""
+    nas = tmp_path / "nas"
+    nas.mkdir()
+    data = b"zip-bytes"
+    for version in ("2026.10.22-2105", "2026.10.16-1358"):
+        (nas / f"MVHub-{version}.zip").write_bytes(data)
+    (nas / "notes.txt").write_text("x", encoding="utf-8")
+    latest, cand = _manifest("2026.10.16-1358", data), _manifest("2026.10.22-2105", data)
+    cand["sha256"] = SHA_B  # 후보 지문을 다르게 — 공개 대기(pending)
+    (nas / "latest.json").write_text(json.dumps(latest), encoding="utf-8")
+    (nas / "candidate.json").write_text(json.dumps(cand), encoding="utf-8")
+    inst = install.Installation(root=ROOT, data_dir=ROOT / "backend" / "data", log_dir=tmp_path, content_db=tmp_path / "x.db",
+                                port=8010, port_known=False, python=Path(sys.executable), problems=())
+    scratch = tmp_path / "scratch"
+    real_root = release.release_root
+    try:
+        release.release_root = lambda _inst: tmp_path / "console-release"  # 이 작업실의 .mvhub-runtime 을 건드리지 않게
+        release.save_source(inst, str(nas))
+        view = release.helper(inst, scratch, "read")
+        assert view["ok"] and [p["version"] for p in view["packages"]] == ["2026.10.22-2105", "2026.10.16-1358"]
+        overview = view["overview"]
+        assert overview["source"] == "candidate" and overview["pending"] is True
+        assert release.shas(overview) == (latest["sha256"], SHA_B)
+        before = {p.name: p.read_bytes() for p in nas.iterdir()}
+        expected = {k: cand[k] for k in ("version", "file", "size", "sha256")}
+        refused = release.helper(inst, scratch, "promote", release._b64(expected), timeout=60)
+        assert refused["ok"] is False and refused["status"] == 409  # 지문 불일치·검증 없는 옛 릴리스 — 아무것도 안 씀
+        assert {p.name: p.read_bytes() for p in nas.iterdir()} == before
+        assert release.read_location(inst, scratch) == {"ok": True, "announcement": None}
+        published = release.helper(inst, scratch, "publish", "http://192.0.2.10:8010", "임시 서버", "3", timeout=60)
+        assert published["ok"] and published["announcement"]["revision"] == 4
+        again = release.read_location(inst, scratch)["announcement"]
+        assert again["url"] == "http://192.0.2.10:8010" and again["name"] == "임시 서버" and again["revision"] == 4
+        assert (scratch / "assets").is_dir()  # config 의 폴더 만들기는 빈 작업 폴더에만 닿았다
+    finally:
+        release.release_root = real_root
+
+
+def test_release_source_setting_is_validated(tmp_path):
+    inst = make_inst(tmp_path)
+    assert release.release_source(inst) == ""
+    for bad, why in (("", "적으세요"), ("http://nas/release", "HTTP"), ("relative\\path", "절대 경로")):
+        with pytest.raises(release.ReleaseError, match=why):
+            release.save_source(inst, bad)
+    release.save_source(inst, "  \\\\NAS\\release  ")
+    assert release.release_source(inst) == "\\\\NAS\\release"
+
+
+class _FakeServer:
+    """공지 API 를 흉내 — 경로별 응답 목록(차례로) 과 받은 호출."""
+
+    def __init__(self, routes):
+        self.routes, self.calls = {k: list(v) for k, v in routes.items()}, []
+
+    def __call__(self, server, method, path, token="", body=None, timeout=15.0):
+        self.calls.append((method, path.split("?")[0], body))
+        for key, answers in self.routes.items():
+            if key == (method, path.split("?")[0].rsplit("/", 1)[-1]):
+                return answers.pop(0) if len(answers) > 1 else answers[0]
+        raise AssertionError(f"unexpected call {method} {path}")
+
+
+def _notice(revision=0, sha=SHA_C):
+    return {"id": f"release-{sha}", "sha256": sha, "version": FIELDS_C["version"], "file": FIELDS_C["file"],
+            "size": 9, "announcement_revision": revision}
+
+
+def _deploy_params(**changes):
+    return {"server": SERVER, "release_dir": "\\\\NAS\\r", **FIELDS_C, "mode": "deploy", "announce": True,
+            "expect_published": SHA_A, "expect_candidate": "", **changes}
+
+
+def _fake_helper(monkeypatch, answers):
+    calls, answers = [], list(answers)
+
+    def helper(inst, scratch, command, *args, timeout=60):
+        calls.append((command, args))
+        return answers.pop(0) if len(answers) > 1 else answers[0]
+    monkeypatch.setattr(release, "helper", helper)
+    return calls
+
+
+def test_deploy_announces_rechecks_then_writes_the_nas_with_intents(tmp_path, monkeypatch):
+    inst = make_inst(tmp_path)
+    job = tmp_path / "job"
+    job.mkdir()
+    fake = _FakeServer({("GET", "item"): [(404, {"detail": "업데이트 항목이 없습니다"}), (200, _notice(1))],
+                        ("POST", "register"): [(200, {"item": _notice(0)})],
+                        ("POST", "announce"): [(200, {"item": _notice(1)})]})
+    monkeypatch.setattr(release.server_api, "call", fake)
+    nas = _fake_helper(monkeypatch, [{"ok": True, "result": {"already": False, "version": FIELDS_C["version"],
+                                                             "rolled_back": False}}])
+    lines = []
+    code, extra = release.deploy_work(inst, job, _deploy_params(), "tok", lines.append)
+    assert code == 0 and extra["deploy"] == "promoted" and extra["announced"] is True
+    assert [c[:2] for c in fake.calls] == [("GET", "/api/update-notices/admin/item"),
+                                          ("POST", "/api/update-notices/admin/register"),
+                                          ("POST", f"/api/update-notices/admin/release-{SHA_C}/announce"),
+                                          ("GET", "/api/update-notices/admin/item")]
+    command, args = nas[0]
+    assert command == "deploy" and json.loads(base64_decode(args[0]))["sha256"] == SHA_C and args[1:] == (SHA_A, "")
+    assert release.read_intent(job)["step"] == "done"
+
+
+def base64_decode(text):
+    import base64
+    return base64.b64decode(text).decode("utf-8")
+
+
+@pytest.mark.parametrize("routes,nas_answer,expected_code,check", [
+    ({("POST", "announce"): [(None, None)]}, None, 3,
+     lambda e, i: e["announced"] is None and e["resumable"] and i["step"] == "announce" and i["revision_before"] == 0),
+    ({}, {"ok": False, "error": "표지 결과를 확인할 수 없습니다", "status": 500}, 3,
+     lambda e, i: e["deploy"] == "unconfirmed" and e["announced"] and i["step"] == "nas"),
+    ({}, {"ok": False, "error": "릴리스 폴더가 그새 바뀌었습니다", "status": 409}, 1,
+     lambda e, i: e["deploy"] == "failed" and e["announced"] and e["resumable"]),
+    ({("GET", "item"): [(401, {"detail": "만료"})]}, None, 1, lambda e, i: e["auth_expired"] and i is None),
+    ({("GET", "item"): [(404, {"detail": "Not Found"})]}, None, 1, lambda e, i: "업데이트한 뒤" in e["error"]),
+])
+def test_deploy_failures_say_what_is_known(tmp_path, monkeypatch, routes, nas_answer, expected_code, check):
+    inst = make_inst(tmp_path)
+    job = tmp_path / "job"
+    job.mkdir()
+    base = {("GET", "item"): [(200, _notice(0)), (200, _notice(1))], ("POST", "announce"): [(200, {"item": _notice(1)})]}
+    monkeypatch.setattr(release.server_api, "call", _FakeServer({**base, **routes}))
+    nas = _fake_helper(monkeypatch, [nas_answer or {"ok": True, "result": {}}])
+    code, extra = release.deploy_work(inst, job, _deploy_params(), "tok", lambda line: None)
+    assert code == expected_code and check(extra, release.read_intent(job))
+    if nas_answer is None:
+        assert nas == []  # 알림을 확인하지 못했거나 로그인이 끝났으면 NAS 를 건드리지 않는다
+
+
+def test_already_announced_candidate_is_deployed_without_a_second_notice(tmp_path, monkeypatch):
+    inst = make_inst(tmp_path)
+    job = tmp_path / "job"
+    job.mkdir()
+    fake = _FakeServer({("GET", "item"): [(200, _notice(2))]})
+    monkeypatch.setattr(release.server_api, "call", fake)
+    nas = _fake_helper(monkeypatch, [{"ok": True, "result": {"already": False, "version": "v"}}])
+    code, _extra = release.deploy_work(inst, job, _deploy_params(announce=False, mode="promote",
+                                                                 expect_candidate=SHA_C), "tok", lambda line: None)
+    assert code == 0 and all(call[0] == "GET" for call in fake.calls) and nas[0][0] == "promote"
+
+
+@pytest.mark.parametrize("intent,notice,overview,expected", [
+    ({"step": "announce", "revision_before": 1, "expect_published": SHA_A, "expect_candidate": ""}, _notice(1), None,
+     "알림이 나가지 않았습니다"),                                                       # 알림 안 나감 → 자동 재공지 없음
+    ({"step": "announce", "revision_before": 1, "expect_published": SHA_A, "expect_candidate": ""}, _notice(2),
+     {"published": {"sha256": SHA_A}, "source": "latest"}, ("deploy", (SHA_A, ""))),     # 나갔고 NAS 그대로 → 표지부터
+    ({"step": "nas", "expect_published": SHA_A, "expect_candidate": SHA_B}, _notice(1),
+     {"published": {"sha256": SHA_A}, "source": "candidate", "sha256": SHA_C}, ("deploy", (SHA_A, SHA_C))),  # 후보만 바뀜
+    ({"step": "nas", "expect_published": SHA_A, "expect_candidate": ""}, _notice(1),
+     {"published": {"sha256": SHA_C}, "source": "latest"}, "already"),
+    ({"step": "nas", "expect_published": SHA_A, "expect_candidate": ""}, _notice(1),
+     {"published": {"sha256": SHA_B}, "source": "latest"}, "다른 관리자"),
+])
+def test_resume_rereads_the_server_and_nas(tmp_path, monkeypatch, intent, notice, overview, expected):
+    inst = make_inst(tmp_path)
+    job = tmp_path / "job"
+    job.mkdir()
+    monkeypatch.setattr(release.server_api, "call", _FakeServer({("GET", "item"): [(200, notice)]}))
+    nas = _fake_helper(monkeypatch, [{"ok": True, "overview": overview},
+                                     {"ok": True, "result": {"already": False, "version": "v"}}])
+    params = {"server": SERVER, **FIELDS_C, "mode": "deploy"}
+    code, extra = release.resume_work(inst, job, params, intent, "tok", lambda line: None)
+    if isinstance(expected, tuple):
+        assert code == 0 and nas[-1][0] == expected[0] and nas[-1][1][1:] == expected[1]
+    elif expected == "already":
+        assert code == 0 and extra["deploy"] == "already" and [c[0] for c in nas] == ["read"]
+    else:
+        assert code == 1 and expected in extra["error"] and all(c[0] == "read" for c in nas)
+
+
+def test_release_plans_carry_both_marks_and_choose_promote_or_deploy(tmp_path):
+    inst = make_inst(tmp_path)
+    overview = {"version": FIELDS_C["version"], "file": FIELDS_C["file"], "sha256": SHA_C, "size": 9,
+                "created_at": "x", "source": "candidate", "pending": True,
+                "published": {"version": "2026.10.22-2105", "sha256": SHA_A, "file": "MVHub-2026.10.22-2105.zip"}}
+    view = {"ok": True, "overview": overview}
+    plan = actions.plan_release_deploy(inst, SERVER, "\\\\NAS\\r", view, FIELDS_C, None)
+    assert plan.params["mode"] == "promote" and plan.params["announce"] is True
+    assert (plan.params["expect_published"], plan.params["expect_candidate"]) == (SHA_A, SHA_C)
+    waiting = actions.plan_release_deploy(inst, SERVER, "\\\\NAS\\r", view, FIELDS_C, _notice(1))
+    assert waiting.params["announce"] is False and "다시 보내지 않음" in waiting.summary[0]
+    old = {**FIELDS_C, "version": "2026.10.16-1358", "file": "MVHub-2026.10.16-1358.zip", "sha256": SHA_B}
+    rollback = actions.plan_release_deploy(inst, SERVER, "\\\\NAS\\r", view, old, None)
+    assert rollback.params["mode"] == "deploy" and "되돌립니다" in rollback.summary[0]
+    assert any("후보에서 내려옵니다" in s for s in rollback.summary)
+    live = {**FIELDS_C, "version": "2026.10.22-2105", "file": "MVHub-2026.10.22-2105.zip", "sha256": SHA_A}
+    assert "알림만" in actions.plan_release_deploy(inst, SERVER, "\\\\NAS\\r", view, live, _notice(1, SHA_A)).summary[0]
+    for broken, why in (({"ok": False, "error": "도우미"}, "도우미"),
+                        ({"ok": True, "overview": {**overview, "candidate_error": "x"}}, "candidate.json"),
+                        ({"ok": True, "overview": {**overview, "published_state": "error"}}, "latest.json")):
+        assert why in actions.plan_release_deploy(inst, SERVER, "\\\\NAS\\r", broken, FIELDS_C, None).reasons[0]
+    assert "폴더를 먼저" in actions.plan_release_deploy(inst, SERVER, "", view, FIELDS_C, None).reasons[0]
+    assert "지문" in actions.plan_release_deploy(inst, SERVER, "\\\\NAS\\r", view, {**FIELDS_C, "sha256": "x"},
+                                                 None).reasons[0]
+
+
+def test_resume_and_notice_plans_refuse_plainly(tmp_path):
+    inst = make_inst(tmp_path)
+    src = {"release_dir": "\\\\NAS\\r", **FIELDS_C, "mode": "deploy"}
+    intent = {"step": "nas"}
+    failed = {"status": "check_needed"}
+    plan = actions.plan_release_resume(inst, SERVER, "\\\\NAS\\r", "f" * 32, src, failed, intent, ["f" * 32])
+    assert isinstance(plan, actions.Plan) and plan.params["from_job"] == "f" * 32  # 이어 가는 그 작업은 막지 않는다
+    for state, intent_, source, why in (({"status": "running"}, intent, "\\\\NAS\\r", "진행 중"),
+                                        ({"status": "finished", "exit_code": 0}, intent, "\\\\NAS\\r", "이미 끝났습니다"),
+                                        (failed, None, "\\\\NAS\\r", "기록이 없습니다"),
+                                        (failed, intent, "\\\\NAS\\other", "다릅니다")):
+        assert why in " ".join(actions.plan_release_resume(inst, SERVER, source, "f" * 32, src, state, intent_).reasons)
+    assert actions.plan_notice_action(inst, "release-remove", SERVER, _notice(1), SHA_C).params == {
+        "server": SERVER, "notice_id": f"release-{SHA_C}", "sha256": SHA_C}
+    assert "공지 항목이 없습니다" in actions.plan_notice_action(inst, "release-announce", SERVER, None, SHA_C).reasons[0]
+
+
+@pytest.mark.parametrize("before,after,state,expected", [
+    ({"ok": True, "announcement": {"revision": 3, "url": "http://old:8010"}},
+     {"ok": True, "announcement": {"revision": 4, "url": "http://192.0.2.10:8010"}}, {}, 0),
+    ({"ok": True, "announcement": {"revision": 5}}, None, {}, "바뀌었습니다"),
+    ({"ok": True, "announcement": {"revision": 3}}, {"ok": True, "announcement": {"revision": 9}}, {}, 3),
+])
+def test_address_notice_checks_the_revision_then_remembers_it(tmp_path, monkeypatch, before, after, state, expected):
+    inst = make_inst(tmp_path)
+    (inst.root / ".mvhub-runtime").mkdir()
+    release.write_state(inst, last_published_revision=7)
+    job = tmp_path / "job"
+    reads = [before] + ([after] if after else [])
+    monkeypatch.setattr(release, "read_location", lambda _inst, _scratch: reads.pop(0))
+    published = _fake_helper(monkeypatch, [{"ok": True, "announcement": {"revision": 4, "url": "http://192.0.2.10:8010"}}])
+    code, extra = release.address_work(inst, job, {"url": "http://192.0.2.10:8010", "name": "팀 서버",
+                                                   "revision_seen": 3}, lambda line: None)
+    if expected == 0:
+        assert code == 0 and published[0] == ("publish", ("http://192.0.2.10:8010", "팀 서버", "7"))
+        assert release.read_state(inst) == {"last_published_revision": 4, "server_name": "팀 서버"}
+    elif expected == 3:
+        assert code == 3 and release.read_state(inst)["last_published_revision"] == 7
+    else:
+        assert code == 1 and expected in extra["error"] and published == []
+
+
+def test_address_plan_validates_url_name_and_reads_the_current_notice(tmp_path):
+    inst = make_inst(tmp_path)
+    ok = {"ok": True, "announcement": {"revision": 2}}
+    plan = actions.plan_address_notice(inst, "\\\\NAS\\r", ok, " http://192.0.2.10:8010/ ", " 팀 서버 ")
+    assert plan.params == {"release_dir": "\\\\NAS\\r", "revision_seen": 2, "url": "http://192.0.2.10:8010",
+                           "name": "팀 서버"}
+    assert actions.plan_address_notice(inst, "\\\\NAS\\r", {"ok": True, "announcement": None}, "http://h:8010",
+                                       "").params["revision_seen"] == 0
+    for source, location, url, name, why in (("", ok, "http://h:8010", "", "폴더를 먼저"),
+                                             ("\\\\NAS\\r", {"ok": False, "error": "시간"}, "http://h:8010", "", "읽지 못했습니다"),
+                                             ("\\\\NAS\\r", ok, "192.0.2.10:8010", "", "http://"),
+                                             ("\\\\NAS\\r", ok, "http://h:8010/path", "", "http://"),
+                                             ("\\\\NAS\\r", ok, "http://h:8010", "x" * 65, "64자")):
+        assert why in " ".join(actions.plan_address_notice(inst, source, location, url, name).reasons)
+
+
+def test_resumable_deploy_is_found_from_recent_jobs(tmp_path):
+    inst = make_inst(tmp_path)
+    plan = actions.Plan("release-deploy", str(inst.root), "server", "", (), params={**FIELDS_C})
+    first = jobs.new_job(inst, plan, fake_runner())
+    jobs.write_json(jobs.job_dir(inst, first) / "state.json", {"status": "finished", "exit_code": 3})
+    assert release.find_resumable(inst) is None  # 의도 기록이 없으면 이어 갈 것이 없다
+    release.write_intent(jobs.job_dir(inst, first), step="nas")
+    assert release.find_resumable(inst) == {"job_id": first, "version": FIELDS_C["version"]}
+    time.sleep(0.05)
+    resume = jobs.new_job(inst, actions.Plan("release-resume", str(inst.root), "server", "", (),
+                                             params={"from_job": first}), fake_runner())
+    jobs.write_json(jobs.job_dir(inst, resume) / "state.json", {"status": "finished", "exit_code": 0})
+    assert release.find_resumable(inst) is None  # 이어서 끝났다
+
+
+def test_runner_rechecks_the_same_release_target_then_deploys_and_resumes(tmp_path, monkeypatch):
+    """화면이 만든 확인 대상과 실행기가 다시 만든 확인 대상이 같아야 실행된다(배포 → 결과 미확인 → 이어서 하기)."""
+    from server_console import job_main
+    inst = make_inst(tmp_path)
+    (inst.root / ".mvhub-runtime").mkdir()
+    release.save_source(inst, "\\\\NAS\\r")
+    overview = {**FIELDS_C, "source": "candidate", "pending": True,
+                "published": {"version": "2026.10.22-2105", "sha256": SHA_A, "file": "old.zip"}}
+    read = {"ok": True, "packages": [], "overview": overview}
+    monkeypatch.setattr(job_main.server_api, "verify_server", lambda inst, runner: SERVER)
+    monkeypatch.setattr(release.server_api, "call", _FakeServer({
+        ("GET", "item"): [(200, _notice(0)), (200, _notice(0)), (200, _notice(1)), (200, _notice(1)), (200, _notice(1))],
+        ("POST", "announce"): [(200, {"item": _notice(1)})]}))
+    nas = _fake_helper(monkeypatch, [read, {"ok": False, "error": "결과 확인 불가", "status": 500}, read,
+                                     {"ok": True, "result": {"already": False, "version": FIELDS_C["version"]}}])
+    plan = actions.plan_release_deploy(inst, SERVER, "\\\\NAS\\r", read, FIELDS_C, _notice(0))
+    first = jobs.new_job(inst, plan, fake_runner(), login_email="admin@x")
+    request = jobs.read_json(jobs.job_dir(inst, first) / "request.json")
+    assert job_main.run_release(inst, first, request, "tok") == 3
+    state = jobs.read_job(inst, first)
+    assert state["status"] == "finished" and state["deploy"] == "unconfirmed" and state["announced"] is True
+    assert release.find_resumable(inst) == {"job_id": first, "version": FIELDS_C["version"]}
+    params, from_state, intent = release.resume_source(inst, first)
+    resume = actions.plan_release_resume(inst, SERVER, "\\\\NAS\\r", first, params, from_state, intent, [])
+    second = jobs.new_job(inst, resume, fake_runner(), login_email="admin@x")
+    assert job_main.run_release(inst, second, jobs.read_json(jobs.job_dir(inst, second) / "request.json"), "tok") == 0
+    # 배포: 다시 읽기 → 후보 promote(500) · 이어서: 다시 읽기(표지 그대로) → promote — 알림은 한 번뿐
+    assert [c[0] for c in nas] == ["read", "promote", "read", "promote"]
+    done = jobs.read_job(inst, second)
+    assert done["deploy"] == "promoted" and done["version"] == FIELDS_C["version"] and release.find_resumable(inst) is None
+    rows = [json.loads(r) for r in (inst.logs / names.ACTION_LOG).read_text(encoding="utf-8").splitlines()]
+    assert [(r["kind"], r["result"]) for r in rows] == [("release-deploy", "started"), ("release-deploy", "failed"),
+                                                        ("release-resume", "started"), ("release-resume", "success")]
+
+
+def test_ui_release_page_shows_buttons_only_after_login_and_offers_resume(tmp_path, monkeypatch):
+    ui, root, app, _errors = _app(tmp_path, monkeypatch)
+    try:
+        overview = {"version": FIELDS_C["version"], "file": FIELDS_C["file"], "sha256": SHA_C, "source": "candidate",
+                    "pending": True, "published": {"version": "2026.10.22-2105", "sha256": SHA_A,
+                                                   "file": "MVHub-2026.10.22-2105.zip"}}
+        packages = [{"file": FIELDS_C["file"], "version": FIELDS_C["version"], "size": 89_000_000},
+                    {"file": "MVHub-2026.10.22-2105.zip", "version": "2026.10.22-2105", "size": 88_000_000}]
+        view = {"source": "\\\\NAS\\r", "read": {"ok": True, "packages": packages, "overview": overview},
+                "notices": None, "resume": {"job_id": "f" * 32, "version": "2026.10.22-2105"}}
+        app._handle(("release_view", view))
+        buttons = lambda: [w.cget("text") for line in app.release_rows.winfo_children()  # noqa: E731
+                           for w in line.winfo_children() if isinstance(w, ui.tk.Button)]
+        assert buttons() == [] and "로그인하면" in app.release_warn.cget("text") and not app.resume_button.winfo_manager()
+        notices = [{**_notice(1, SHA_A), "file": "MVHub-2026.10.22-2105.zip"}]
+        app._handle(("release_view", {**view, "notices": notices}))
+        assert buttons() == ["배포…", "해제…", "재공지…"] and app.resume_button.winfo_manager() == "pack"
+        texts = [w.cget("text") for line in app.release_rows.winfo_children() for w in line.winfo_children()]
+        assert "새 후보 · 배포 전" in texts and "팀 배포 중" in texts and any("알림 1회" in t for t in texts)
+        app._handle(("release_view", {**view, "notices": [*notices, _notice(1)]}))
+        assert "배포 반영…" in buttons()  # 알림은 나갔는데 아직 배포 전인 후보
+        app.release_busy = True
+        app._handle(("side_started", "release", "d" * 32))
+        app._handle(("side_job", "release", "d" * 32, {"status": "finished", "kind": "release-deploy", "exit_code": 3,
+                                                       "announced": True, "deploy": "unconfirmed", "error": "500"}, ""))
+        assert "알림은 나갔지만" in app.release_note.cget("text") and app.release_busy is False
+        app._handle(("release_view", {**view, "notices": None, "auth_expired": True}))
+        assert app.session is None
+    finally:
+        root.destroy()
+
+
+def test_ui_address_page_prefills_the_current_notice_without_overwriting_edits(tmp_path, monkeypatch):
+    ui, root, app, _errors = _app(tmp_path, monkeypatch)
+    try:
+        app._handle(("addresses", [("이더넷", "192.0.2.10")]))
+        assert "http://192.0.2.10:8010" in app.address_now.cget("text")
+        current = {"revision": 4, "url": "http://192.0.2.10:8010", "name": "팀 서버", "announced_at": "2026-10-23"}
+        view = {"source": "\\\\NAS\\r", "location": {"ok": True, "announcement": current}, "state": {}}
+        app._handle(("address_view", view))
+        assert (app.url_entry.get(), app.name_entry.get()) == ("http://192.0.2.10:8010", "팀 서버")
+        assert "판 4" in app.location_label.cget("text")
+        app.url_entry.insert("end", "1")
+        app._handle(("address_view", view))
+        assert app.url_entry.get() == "http://192.0.2.10:80101"
+        app._handle(("address_view", {**view, "location": {"ok": False, "error": "시간 초과"}}))
+        assert "읽지 못했습니다" in app.location_label.cget("text")
+        app.address_busy = True
+        app._handle(("side_started", "address", "e" * 32))
+        app._handle(("side_job", "address", "e" * 32, {"status": "finished", "kind": "address-notice", "exit_code": 0,
+                                                       "announcement": {"revision": 5}}, ""))
+        assert "판 5" in app.address_note.cget("text") and app.address_busy is False
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize("state,expected", [
+    ({"status": "finished", "kind": "release-deploy", "exit_code": 0, "deploy": "already", "version": "v1"}, "이미 팀에"),
+    ({"status": "finished", "kind": "release-deploy", "exit_code": 0, "deploy": "promoted", "rolled_back": True,
+      "version": "v1"}, "되돌렸습니다"),
+    ({"status": "finished", "kind": "release-deploy", "exit_code": 3, "announced": None, "error": "x"}, "알림 결과를 확인할 수 없어"),
+    ({"status": "finished", "kind": "release-deploy", "exit_code": 1, "announced": True, "deploy": "failed",
+      "error": "바뀜"}, "알림은 나갔지만 팀 배포는 하지 못했습니다"),
+    ({"status": "finished", "kind": "release-deploy", "exit_code": 1, "announced": False, "error": "로그인"}, "실패: 로그인"),
+    ({"status": "finished", "kind": "release-announce", "exit_code": 0, "revision": 3}, "3번째"),
+    ({"status": "finished", "kind": "release-remove", "exit_code": 0}, "거뒀습니다"),
+    ({"status": "check_needed", "kind": "release-deploy"}, "[이어서 하기]"),
+])
+def test_release_result_text_separates_notice_from_nas(state, expected):
+    from server_console import ui
+    assert expected in ui.area_result_text(state)[0]
+    assert ui._built_at("2026.10.22-2105") == "10-22 21:05"
