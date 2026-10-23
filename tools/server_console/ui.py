@@ -18,7 +18,7 @@ import traceback
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from . import actions, console_stage, install, jobs, logs, names, status
+from . import actions, console_stage, install, jobs, logs, names, server_api, status
 from . import main as main_boot
 
 BG, BG2, PANEL, PANEL2 = "#08090a", "#0c0e10", "#121316", "#181a1e"
@@ -143,6 +143,10 @@ class App:
         self.backlog: collections.deque = collections.deque()  # 예산을 넘어 다음 차례로 미룬 메시지 조각
         self.busy = False
         self.stop = threading.Event()
+        # 관리자 로그인(창마다 한 번). 토큰은 이 메모리에만 — 파일·인자·환경·작업 기록에 쓰지 않고 창을 닫으면 사라진다.
+        self.session: server_api.Session | None = None
+        self.login_window: tk.Toplevel | None = None
+        self.after_login = None  # 로그인 뒤 이어서 할 일(인증이 필요한 동작)
         self._build()
         # 다시 열면 결과를 확인하지 않은 작업을 먼저, 없으면 마지막 작업을 다시 보여 준다.
         recent = (jobs.unresolved_jobs(inst) or [])[:1] or jobs.recent_jobs(inst, 1)
@@ -205,6 +209,13 @@ class App:
                      anchor="w", padx=12, pady=7).pack(fill="x", padx=8, pady=1)
         tk.Label(self.nav, text="창을 닫아도 서버는 계속 돕니다", bg=BG2, fg=MUTED2,
                  font=("Malgun Gothic", 8)).pack(side="bottom", anchor="w", padx=12, pady=10)
+        account = tk.Frame(self.nav, bg=BG2)
+        account.pack(side="bottom", fill="x", padx=12)
+        self.login_label = tk.Label(account, text="관리자 로그인 안 함", bg=BG2, fg=MUTED, font=("Malgun Gothic", 9),
+                                    anchor="w", justify="left", wraplength=170)
+        self.login_label.pack(fill="x")
+        self.login_button = self._button(account, "로그인…", self.toggle_login)
+        self.login_button.pack(anchor="w", pady=(2, 0))
         self._build_status_page(self.pages["status"])
         self._build_update_page(self.pages["update"])
         self.show("status")
@@ -344,6 +355,94 @@ class App:
         self.root.clipboard_clear()
         self.root.clipboard_append(self.copy_text)
 
+    # ---------- 관리자 로그인 ----------
+    def toggle_login(self) -> None:
+        if self.session is not None:
+            self.logout()
+        else:
+            self.require_login(None)
+
+    def logout(self) -> None:
+        """토큰을 버린다(서버 로그아웃 API 는 그 계정의 MCP 연결까지 끊으므로 부르지 않는다)."""
+        self.session = None
+        self.login_label.configure(text="관리자 로그인 안 함", fg=MUTED)
+        self.login_button.configure(text="로그인…")
+
+    def require_login(self, then) -> None:
+        """로그인돼 있으면 then() 을 바로, 아니면 로그인 창 → 성공한 뒤 then()."""
+        if self.session is not None:
+            if then:
+                then()
+            return
+        self.after_login = then
+        if self.login_window is not None:
+            self.login_window.lift()
+            return
+        window = tk.Toplevel(self.root, bg=PANEL)
+        window.title("관리자 로그인")
+        window.transient(self.root)
+        window.resizable(False, False)
+        window.protocol("WM_DELETE_WINDOW", self._close_login)
+        tk.Label(window, text="서버 관리자 계정으로 로그인합니다(이 PC 의 서버 127.0.0.1 로만 보냅니다).",
+                 bg=PANEL, fg=MUTED, font=FONT, wraplength=360, justify="left").pack(anchor="w", padx=16, pady=(14, 8))
+        fields = {}
+        for key, label in (("email", "이메일"), ("password", "비밀번호")):
+            tk.Label(window, text=label, bg=PANEL, fg=TEXT, font=FONT).pack(anchor="w", padx=16)
+            entry = tk.Entry(window, bg=PANEL2, fg=TEXT, insertbackground=TEXT, relief="flat", font=FONT, width=40,
+                             show="•" if key == "password" else "")
+            entry.pack(fill="x", padx=16, pady=(0, 8))
+            fields[key] = entry
+        self.login_note = tk.Label(window, text="", bg=PANEL, fg=AMBER, font=FONT, wraplength=360, justify="left")
+        self.login_note.pack(anchor="w", padx=16)
+        row = tk.Frame(window, bg=PANEL)
+        row.pack(fill="x", padx=16, pady=12)
+        self.login_send = self._button(row, "로그인", lambda: self._send_login(fields), primary=True)
+        self.login_send.pack(side="right")
+        self._button(row, "취소", self._close_login).pack(side="right", padx=8)
+        fields["password"].bind("<Return>", lambda _e: self._send_login(fields))
+        fields["email"].focus_set()
+        self.login_window = window
+
+    def _send_login(self, fields: dict) -> None:
+        email, password = fields["email"].get().strip(), fields["password"].get()
+        if not email or not password:
+            self.login_note.configure(text="이메일과 비밀번호를 넣으세요")
+            return
+        fields["password"].delete(0, "end")  # 화면에도 남기지 않는다(실패하면 다시 넣는다)
+        self.login_send.configure(state="disabled")
+        self.login_note.configure(text="서버를 확인하고 로그인하는 중…", fg=MUTED)
+        threading.Thread(target=self._login_worker, args=(email, password), daemon=True).start()
+
+    def _login_worker(self, email: str, password: str) -> None:
+        try:
+            result = server_api.login(self.inst, self.runner, email, password)
+        except server_api.ServerError as exc:
+            result = str(exc)
+        except Exception as exc:  # noqa: BLE001 — 이유만 화면에(비밀번호는 예외 문구에 들어가지 않는다)
+            result = f"로그인 중 오류: {type(exc).__name__}"
+        self.queue.put(("login", result))
+
+    def _on_login(self, result) -> None:
+        if isinstance(result, str):
+            if self.login_window is not None:
+                self.login_note.configure(text=result, fg=AMBER)
+                self.login_send.configure(state="normal")
+            return
+        self.session = result
+        self.login_label.configure(text=f"관리자: {result.email}", fg=LIME)
+        self.login_button.configure(text="로그아웃")
+        then, self.after_login = self.after_login, None
+        self._close_login(keep_pending=True)
+        if then:
+            then()
+
+    def _close_login(self, keep_pending: bool = False) -> None:
+        if not keep_pending:
+            self.after_login = None
+        if self.login_window is not None:
+            self.login_window.destroy()
+            self.login_window = None
+
     def acknowledge(self) -> None:
         if not messagebox.askokcancel("결과 확인", "서버 상태와 로그로 지난 업데이트 결과를 확인했나요?\n"
                                       "확인했다고 표시하면 새 업데이트를 시작할 수 있습니다.", icon="warning"):
@@ -422,13 +521,17 @@ class App:
             self._set_start_buttons("normal")
 
     def _start_worker(self, plan) -> None:
+        session = self.session if plan.kind in actions.AUTH_KINDS else None
+        if plan.kind in actions.AUTH_KINDS and session is None:
+            self.queue.put(("plan", actions.Refusal(("관리자 로그인이 필요합니다",))))
+            return
         try:
-            job_id = jobs.new_job(self.inst, plan, self.runner)
+            job_id = jobs.new_job(self.inst, plan, self.runner, login_email=session.email if session else "")
         except Exception as exc:  # noqa: BLE001 — 작업 폴더도 못 만들었으면 남은 것이 없다
             self.queue.put(("plan", actions.Refusal((f"작업을 시작하지 못했습니다: {exc}",))))
             return
         try:
-            jobs.launch_runner(self.inst, job_id)
+            jobs.launch_runner(self.inst, job_id, token=session.token if session else None)
         except Exception as exc:  # noqa: BLE001 — 만든 작업은 기록을 남겨 '결과 확인 필요'로 보인다
             try:
                 jobs.mark_launch_failed(self.inst, job_id, f"실행기를 띄우지 못했습니다: {exc}")
@@ -527,6 +630,8 @@ class App:
             self._show_address()
         elif kind == "plan":
             self._on_plan(item[1])
+        elif kind == "login":
+            self._on_login(item[1])
         elif kind == "job_started":
             self._select_job(item[1])
             note = self.plan_note.cget("text")  # 권한 알림이 있었으면 이어서 남긴다

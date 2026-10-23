@@ -993,8 +993,10 @@ def test_tools_update_takes_the_git_update_lock_and_rechecks(tmp_path, monkeypat
 def test_runner_starts_from_the_code_root_with_the_install_root(tmp_path, monkeypatch):
     inst = make_inst(tmp_path)
     seen = {}
-    monkeypatch.setattr(jobs, "spawn_detached", lambda argv, cwd, env: seen.update(argv=argv, cwd=cwd, env=env) or 1)
+    monkeypatch.setattr(jobs, "spawn_detached",
+                        lambda argv, cwd, env, secret=None: seen.update(argv=argv, cwd=cwd, env=env, secret=secret) or 1)
     jobs.launch_runner(inst, "a" * 32)
+    assert seen["secret"] is None  # 인증이 필요 없는 작업에는 파이프도 열지 않는다
     argv = seen["argv"]
     assert argv[1:3] == ["-I", "-B"] and Path(argv[3]) == install.CODE_ROOT / "tools" / "server_console" / "job_main.py"
     assert argv[4:] == ["--install-root", str(inst.root), "a" * 32] and seen["cwd"] == str(inst.root)
@@ -1212,7 +1214,7 @@ def test_ui_start_failure_and_blocking_job_can_be_acknowledged(tmp_path, monkeyp
     ui, root, app, _errors = _app(tmp_path, monkeypatch)
     try:
         plan = actions.plan_git_update(app.inst, "match", [], [])
-        monkeypatch.setattr(jobs, "launch_runner", lambda inst, job_id: 1 / 0)
+        monkeypatch.setattr(jobs, "launch_runner", lambda inst, job_id, token=None: 1 / 0)
         monkeypatch.setattr(jobs, "ensure_jobs_root", lambda inst, runner: jobs.jobs_root(inst).mkdir(
             exist_ok=True) or jobs.jobs_root(inst))
         app._start_worker(plan)  # 실행기를 못 띄워도
@@ -1296,3 +1298,299 @@ def test_ui_marks_a_non_mvhub_answer_as_unconfirmed(tmp_path, monkeypatch):
 def test_job_result_text_names_the_commit_only_when_linked(state, expected):
     from server_console import ui
     assert expected in ui.job_result_text(state)[0]
+
+
+# ---------- 2단계 ② 로그인·토큰 파이프·관리 창 기록 ----------
+
+def _server_inst(tmp_path, **overrides):
+    """stage 로 도는 서버의 기록(server-current·stage 의 serve.py·server-activation)을 가진 가짜 설치."""
+    inst = make_inst(tmp_path, **overrides)
+    build, nonce = "b" * 32, "c" * 32
+    script = inst.logs / "server-stages" / build / "backend" / "serve.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("", encoding="utf-8")
+    (inst.logs / names.SERVER_CURRENT).write_text(json.dumps({"build_id": build}), encoding="utf-8")
+    (inst.logs / "server-activation.json").write_text(
+        json.dumps({"format_version": 1, "state": "activated", "execution_nonce": nonce}), encoding="utf-8")
+    return inst, script, build, nonce
+
+
+def _fake_server(monkeypatch, script, build, nonce, pid=4321, exe=r"C:\Py\python.exe", runtime=None, alive=True,
+                 found=None):
+    from server_console import server_api
+    if found is None:
+        found = [(pid, exe, f'"{exe}" "{script}"')]
+    monkeypatch.setattr(server_api, "listeners", lambda port, runner: found)
+    monkeypatch.setattr(server_api, "process_created", lambda p: 77)
+    monkeypatch.setattr(server_api, "process_alive", lambda p, created: alive)
+    body = {"process_id": pid, "role": "server", "build_id": build, "execution_nonce": nonce}
+    body.update(runtime or {})
+    monkeypatch.setattr(status, "read_ready", lambda port, timeout=3.0, tls=False: status.Ready(
+        200, {"status": "ready", "checks": {}, "runtime": body}, ""))
+    return server_api
+
+
+def test_server_is_verified_before_login(tmp_path, monkeypatch):
+    inst, script, build, nonce = _server_inst(tmp_path)
+    server_api = _fake_server(monkeypatch, script, build, nonce)
+    assert server_api.verify_server(inst, fake_runner()) == {
+        "port": 8010, "pid": 4321, "created": 77, "nonce": nonce, "build_id": build}
+
+
+@pytest.mark.parametrize("change,why", [
+    ({"found": None}, "확인하지 못했습니다"),
+    ({"found": []}, "없습니다"),
+    ({"found": [(1, "python.exe", "x"), (2, "python.exe", "y")]}, "여럿"),
+    ({"exe": r"C:\Tools\nginx.exe"}, "serve.py"),
+    ({"script": "other"}, "serve.py"),
+    ({"runtime": {"execution_nonce": "d" * 32}}, "/api/ready"),
+    ({"runtime": {"process_id": 1}}, "/api/ready"),
+    ({"runtime": {"role": "verifier"}}, "/api/ready"),
+    ({"runtime": {"build_id": "e" * 32}}, "/api/ready"),
+    ({"alive": False}, "바뀌었습니다"),
+])
+def test_server_check_refuses_anything_it_cannot_prove(tmp_path, monkeypatch, change, why):
+    inst, script, build, nonce = _server_inst(tmp_path)
+    change = dict(change)
+    if change.pop("script", None):
+        script = inst.root / "backend" / "serve.py"  # 루트 판 serve.py 가 듣고 있음(포인터는 stage)
+    if "found" in change and change["found"] is None:
+        server_api = _fake_server(monkeypatch, script, build, nonce)
+        monkeypatch.setattr(server_api, "listeners", lambda port, runner: None)
+        change.pop("found")
+    else:
+        server_api = _fake_server(monkeypatch, script, build, nonce, **change)
+    with pytest.raises(server_api.ServerError, match=why):
+        server_api.verify_server(inst, fake_runner())
+
+
+def test_server_check_needs_the_activation_record_and_no_tls(tmp_path, monkeypatch):
+    inst, script, build, nonce = _server_inst(tmp_path)
+    server_api = _fake_server(monkeypatch, script, build, nonce)
+    (inst.logs / "server-activation.json").unlink()
+    with pytest.raises(server_api.ServerError, match="server-activation"):
+        server_api.verify_server(inst, fake_runner())
+    tls, script, build, nonce = _server_inst(tmp_path / "tls", tls=True)
+    _fake_server(monkeypatch, script, build, nonce)
+    with pytest.raises(server_api.ServerError, match="https"):
+        server_api.verify_server(tls, fake_runner())
+
+
+def test_legacy_server_without_pointer_is_the_root_serve_py(tmp_path, monkeypatch):
+    inst, _script, _build, nonce = _server_inst(tmp_path)
+    (inst.logs / names.SERVER_CURRENT).unlink()
+    server_api = _fake_server(monkeypatch, inst.root / "backend" / "serve.py", "legacy-source", nonce)
+    assert server_api.verify_server(inst, fake_runner())["build_id"] == "legacy-source"
+
+
+def test_listener_lookup_and_command_line_split():
+    from server_console import server_api
+    out = 'PROC\t4321\tC:\\Py\\python.exe\t"C:\\Py\\python.exe" "D:\\a b\\serve.py"\tx\nDONE\n'
+    assert server_api.listeners(8010, fake_runner(default=(0, out))) == [
+        (4321, "C:\\Py\\python.exe", '"C:\\Py\\python.exe" "D:\\a b\\serve.py"\tx')]
+    assert server_api.listeners(8010, fake_runner(default=(1, out))) is None
+    assert server_api.split_command_line('"C:\\Program Files\\Py\\python.exe" "D:\\a b\\serve.py" -x') == [
+        "C:\\Program Files\\Py\\python.exe", "D:\\a b\\serve.py", "-x"]
+    assert server_api.split_command_line("") == []
+
+
+@pytest.mark.parametrize("answer,why", [
+    ((401, {"detail": "이메일 또는 비밀번호가 올바르지 않습니다"}), "올바르지 않습니다"),
+    ((None, None), "응답 없음"),
+    ((200, {"account": {"status": "approved", "global_roles": ["member"]}, "token": "t"}), "admin"),
+    ((200, {"account": {"status": "pending", "global_roles": ["admin"]}, "token": "t"}), "admin"),
+    ((200, {"account": {"status": "approved", "global_roles": ["admin"]}, "token": "a b"}), "형식"),
+    ((200, {"account": {"status": "approved", "global_roles": ["admin"]}, "token": "x" * 5000}), "형식"),
+])
+def test_login_accepts_only_an_admin_token(tmp_path, monkeypatch, answer, why):
+    from server_console import server_api
+    monkeypatch.setattr(server_api, "verify_server", lambda inst, runner: {"port": 8010})
+    monkeypatch.setattr(server_api, "call", lambda *a, **k: answer)
+    with pytest.raises(server_api.ServerError, match=why):
+        server_api.login(make_inst(tmp_path), fake_runner(), "a@b", "pw")
+
+
+def test_login_keeps_the_token_out_of_reprs_and_never_sends_to_an_unverified_server(tmp_path, monkeypatch):
+    from server_console import server_api
+    sent = []
+    monkeypatch.setattr(server_api, "verify_server", lambda inst, runner: {"port": 8010, "pid": 1})
+    monkeypatch.setattr(server_api, "call", lambda *a, **k: sent.append(k["body"]) or (
+        200, {"account": {"email": "Admin@x", "status": "approved", "global_roles": ["admin"]}, "token": "tok.en-1"}))
+    session = server_api.login(make_inst(tmp_path), fake_runner(), "admin@x", "pw")
+    assert session.token == "tok.en-1" and session.email == "Admin@x" and session.server == {"port": 8010, "pid": 1}
+    assert "tok.en-1" not in repr(session) and sent == [{"email": "admin@x", "password": "pw"}]
+
+    def unverified(inst, runner):
+        raise server_api.ServerError("서버 아님")
+    monkeypatch.setattr(server_api, "verify_server", unverified)
+    monkeypatch.setattr(server_api, "call", lambda *a, **k: pytest.fail("확인하지 못한 서버에 비밀번호를 보냈다"))
+    with pytest.raises(server_api.ServerError):
+        server_api.login(make_inst(tmp_path), fake_runner(), "admin@x", "pw")
+
+
+def test_api_call_ignores_proxies_and_redirects(monkeypatch):
+    import http.server
+    import threading
+    from server_console import server_api
+    seen = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_PUT(self):  # noqa: N802
+            seen.update(auth=self.headers.get("Authorization"), body=self.rfile.read(int(self.headers["Content-Length"])))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok": true}')
+
+        def do_GET(self):  # noqa: N802
+            self.send_response(302)
+            self.send_header("Location", "http://192.0.2.1/x")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    monkeypatch.setenv("HTTP_PROXY", "http://192.0.2.1:9")
+    try:
+        server = {"port": httpd.server_address[1]}
+        assert server_api.call(server, "PUT", "/api/x", token="tok", body={"paused": True}) == (200, {"ok": True})
+        assert seen == {"auth": "Bearer tok", "body": b'{"paused": true}'}
+        assert server_api.call(server, "GET", "/api/x")[0] == 302  # 따라가지 않는다
+    finally:
+        httpd.shutdown()
+
+
+class _SlowStream:
+    def readline(self, limit):
+        time.sleep(5)
+        return b"late\n"
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize("stream,expected", [
+    (lambda: __import__("io").BytesIO(b"tok.en-1\n"), "tok.en-1"),
+    (lambda: __import__("io").BytesIO(b"tok.en-1\r\n"), "tok.en-1"),
+    (lambda: __import__("io").BytesIO(b""), None),                    # 빈 입력
+    (lambda: __import__("io").BytesIO(b"tok.en-1"), None),            # 줄 중간 EOF
+    (lambda: __import__("io").BytesIO(b"\n"), None),                  # 빈 값
+    (lambda: __import__("io").BytesIO(b"a b\n"), None),               # 공백
+    (lambda: __import__("io").BytesIO(b"x" * 5000 + b"\n"), None),    # 4KB 넘음
+    (lambda: _SlowStream(), None),                                    # 시간 초과
+])
+def test_runner_reads_one_bounded_token_line(stream, expected):
+    assert jobs.read_token(stream(), wait=0.5) == expected
+
+
+def _pythonw_variants():
+    found = []
+    for exe in (Path(sys.executable), Path(getattr(sys, "_base_executable", sys.executable))):
+        pythonw = exe.with_name("pythonw.exe")
+        if pythonw.is_file() and pythonw not in found:
+            found.append(pythonw)
+    return found
+
+
+@pytest.mark.parametrize("pythonw", _pythonw_variants())
+@pytest.mark.parametrize("secret,expected", [("tok.en-1", "'tok.en-1'"), (None, "None")])
+def test_token_pipe_reaches_a_detached_pythonw_runner(tmp_path, pythonw, secret, expected):
+    out = tmp_path / "out.txt"
+    script = tmp_path / "reader.py"
+    script.write_text(textwrap.dedent(f"""
+        import sys
+        sys.path.insert(0, {str(TOOLS)!r})
+        from pathlib import Path
+        from server_console import job_main, jobs
+        token = jobs.read_token(job_main._stdin(), wait=10)
+        Path(sys.argv[1]).write_text(repr(token), encoding="utf-8")
+    """), encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if k != "__PYVENV_LAUNCHER__"}
+    jobs.spawn_detached([str(pythonw), "-I", "-B", str(script), str(out)], str(tmp_path),
+                        dict(env, PYTHONDONTWRITEBYTECODE="1"), secret=secret)
+    deadline = time.time() + 30
+    while not out.exists() and time.time() < deadline:
+        time.sleep(0.1)
+    assert out.read_text(encoding="utf-8") == expected
+
+
+def test_launch_failure_keeps_what_the_runner_already_left(tmp_path, monkeypatch):
+    inst, plan, job_id = _job(tmp_path)
+    jobs.mark_launch_failed(inst, job_id, "실행기를 띄우지 못했습니다")
+    assert jobs.read_job(inst, job_id)["status"] == "runner_error"
+    second = jobs.new_job(inst, plan, fake_runner())
+    jobs.write_json(jobs.job_dir(inst, second) / "state.json",
+                    {"status": "runner_error", "error": "로그인 정보를 받지 못했습니다"})
+    jobs.mark_launch_failed(inst, second, "실행기에 로그인 정보를 넘기지 못했습니다(BrokenPipeError)")
+    assert jobs.read_job(inst, second)["error"] == "로그인 정보를 받지 못했습니다"
+    monkeypatch.setattr(jobs, "spawn_detached", lambda *a, **k: pytest.fail("형식이 틀린 토큰으로 띄웠다"))
+    for bad in ("", "a b", "x" * 5000, "토큰"):
+        with pytest.raises(jobs.JobError):
+            jobs.launch_runner(inst, second, token=bad)
+
+
+def test_every_job_leaves_an_action_record(tmp_path):
+    from dataclasses import replace
+    inst = make_inst(tmp_path)
+    plan = replace(actions.plan_git_update(inst, "match", [], []), params={"server": {"pid": 1, "nonce": "c" * 32}})
+    job_id = jobs.new_job(inst, plan, fake_runner(), login_email="admin@x")
+    assert jobs.run_job(inst, job_id, lambda: plan, work=lambda job, say: (0, {})) == 0
+    second = jobs.new_job(inst, plan, fake_runner())
+    assert jobs.run_job(inst, second, lambda: replace(plan, params={"server": {"pid": 2}})) == 2
+    rows = [json.loads(line) for line in (inst.logs / names.ACTION_LOG).read_text(encoding="utf-8").splitlines()]
+    assert [(r["job_id"], r["result"]) for r in rows] == [(job_id, "started"), (job_id, "success"), (second, "refused")]
+    assert rows[1]["login_email"] == "admin@x" and rows[1]["exit_code"] == 0 and rows[1]["kind"] == "git-update"
+    assert rows[1]["params"] == {"server": {"pid": 1, "nonce": "c" * 32}} and rows[1]["windows_user"]
+
+
+def test_runner_takes_the_token_first_and_never_writes_it(tmp_path, monkeypatch):
+    import io
+    from server_console import job_main
+    inst, plan, job_id = _job(tmp_path)
+    request = jobs.read_json(jobs.job_dir(inst, job_id) / "request.json")
+    monkeypatch.setattr(job_main, "_stdin", lambda: io.BytesIO(b"secret-tok\n"))
+    assert job_main.take_token(inst, job_id, request) == "secret-tok"
+    assert not (jobs.job_dir(inst, job_id) / "state.json").exists()  # 받기 전후로 아무것도 쓰지 않았다
+    monkeypatch.setattr(job_main, "_stdin", lambda: io.BytesIO(b""))
+    assert job_main.take_token(inst, job_id, request) is None
+    state = jobs.read_job(inst, job_id)
+    assert state["status"] == "runner_error" and "로그인 정보" in state["error"]
+    rows = (inst.logs / names.ACTION_LOG).read_text(encoding="utf-8")
+    assert '"runner_error"' in rows
+    for path in inst.root.rglob("*"):
+        if path.is_file():
+            assert b"secret-tok" not in path.read_bytes()
+
+
+def test_ui_login_keeps_the_session_in_memory_and_hands_the_token_only_to_auth_jobs(tmp_path, monkeypatch):
+    ui, root, app, _errors = _app(tmp_path, monkeypatch)
+    from server_console import server_api
+    try:
+        done = []
+        app.require_login(lambda: done.append(1))
+        assert app.login_window is not None
+        app._handle(("login", "8010 포트를 듣는 프로세스(PID 1)가 이 설치의 서버(serve.py)가 아닙니다"))
+        assert "serve.py" in app.login_note.cget("text") and app.session is None and not done
+        session = server_api.Session(email="admin@x", server={"port": 8010}, token="tok.en-1")
+        app._handle(("login", session))
+        assert app.session is session and done == [1] and app.login_window is None
+        assert "admin@x" in app.login_label.cget("text")
+
+        monkeypatch.setattr(actions, "AUTH_KINDS", frozenset({"git-update"}))
+        monkeypatch.setattr(jobs, "ensure_jobs_root", lambda inst, runner: jobs.jobs_root(inst).mkdir(
+            exist_ok=True) or jobs.jobs_root(inst))
+        launched = {}
+        monkeypatch.setattr(jobs, "launch_runner", lambda inst, job_id, token=None: launched.update(token=token) or 1)
+        plan = actions.plan_git_update(app.inst, "match", [], [])
+        app._start_worker(plan)
+        job_id = app.queue.get_nowait()[1]
+        assert launched["token"] == "tok.en-1"
+        request = (jobs.job_dir(app.inst, job_id) / "request.json").read_text(encoding="utf-8")
+        assert '"login_email": "admin@x"' in request and "tok.en-1" not in request
+        app.logout()
+        assert app.session is None
+        app._start_worker(plan)
+        assert app.queue.get_nowait()[1].reasons == ("관리자 로그인이 필요합니다",)
+    finally:
+        root.destroy()

@@ -17,7 +17,8 @@ from server_console import main as boot  # noqa: E402 — 같은 판의 격리 �
 # 관리 창이 가져오는 모듈 — 모두 code_root 판이어야 한다(경로에 묶인 루트 도구는 도우미 자식으로).
 APP_MODULES = ("server_console.names", "server_console.install", "server_console.status", "server_console.logs",
                "server_console.actions", "server_console.jobs", "server_console.console_stage",
-               "server_console.job_main", "server_console.ui", "log_viewer", "deploy_fence_check")
+               "server_console.server_api", "server_console.job_main", "server_console.ui", "log_viewer",
+               "deploy_fence_check")
 
 
 def parse(argv: list[str]) -> tuple[Path, bool, str]:

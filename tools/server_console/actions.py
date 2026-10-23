@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass, field, replace
 from .install import Installation, Runner, powershell_exe, trusted_git
 
 ACTIONS = {"git-update": "Git 업데이트", "tools-update": "관리 도구 갱신", "console-rollback": "이전 관리 창으로"}
+# 관리자 로그인이 필요한 작업 — 화면은 이것만 토큰을 파이프로 넘기고, 실행기는 이것만 토큰을 읽는다.
+AUTH_KINDS: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)

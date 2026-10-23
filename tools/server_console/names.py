@@ -15,6 +15,7 @@ JOB_DIR = "console-jobs"
 UI_LOG = "console-ui.log"
 LOCK_FILE = "server-console.lock"
 UI_MARK = "console-ui.json"  # 열린 화면이 쓰는 관리 창 코드(pid·생성 시각·code_root) — 쓰는 중인 stage 보존용
+ACTION_LOG = "console-actions.jsonl"  # 관리 창 기록: 시각·Windows 계정·로그인 계정·동작·확인 대상·결과·작업 ID
 
 # runtime_snapshot 은 60초마다 쌓인다. 이보다 오래되면 '확인 불가'로 본다.
 SNAPSHOT_STALE_SECONDS = 180

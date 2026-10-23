@@ -44,6 +44,25 @@ def _jobs_in_use(inst: install.Installation) -> list[str]:
     return roots
 
 
+def _stdin():
+    """pythonw 도 파이프를 넘겨받으면 표준 입력이 생긴다. 없으면 0번을 직접 연다(없으면 OSError)."""
+    return sys.stdin.buffer if sys.stdin is not None else open(0, "rb")  # noqa: SIM115 — read_token 이 닫는다
+
+
+def take_token(inst: install.Installation, job_id: str, request: dict) -> str | None:
+    """인증 작업의 토큰을 먼저 받는다 — 받기 전에는 업무 데이터를 건드리지 않는다. 못 받으면 runner_error 를 남기고 None."""
+    try:
+        token = jobs.read_token(_stdin())
+    except OSError:
+        token = None
+    if token is None:
+        jobs.write_json(jobs.job_dir(inst, job_id) / "state.json",
+                        {"status": "runner_error", "error": "로그인 정보를 받지 못했습니다 — 다시 로그인한 뒤 시작하세요",
+                         "finished_at": time.time()})
+        jobs.record_action(inst, job_id, request, "runner_error")
+    return token
+
+
 def _parse(argv: list[str]) -> tuple[Path | None, str]:
     if len(argv) == 4 and argv[1] == "--install-root":
         return Path(argv[2]), argv[3]
@@ -57,6 +76,7 @@ def main(argv: list[str]) -> int:
     if install_root is not None:
         install.configure(install_root)
     inst = install.resolve_installation()
+    request: dict = {}
     try:
         job = jobs.job_dir(inst, job_id)
         request = jobs.read_json(job / "request.json") or {}
@@ -84,12 +104,14 @@ def main(argv: list[str]) -> int:
                 work=rollback)
         jobs.write_json(job / "state.json", {"status": "refused", "reasons": ["알 수 없는 작업입니다"],
                                               "finished_at": time.time()})
+        jobs.record_action(inst, job_id, request, "refused")
         return 2
     except Exception as exc:  # noqa: BLE001 — 결과를 잃지 않게 이유를 남긴다
         try:
             jobs.write_json(jobs.job_dir(inst, job_id) / "state.json",
                              {"status": "runner_error", "error": f"{type(exc).__name__}: {exc}"[:500],
                               "finished_at": time.time()})
+            jobs.record_action(inst, job_id, request, "runner_error")
         except Exception:  # noqa: BLE001
             pass
         return 70

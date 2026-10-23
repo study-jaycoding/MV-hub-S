@@ -13,6 +13,7 @@ import os
 import re
 import secrets
 import subprocess
+import threading
 import time
 from ctypes import wintypes
 from pathlib import Path
@@ -29,6 +30,8 @@ DETACHED_PROCESS = 0x00000008
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_NO_WINDOW = 0x08000000
 STARTING_GRACE_SECONDS = 120
+TOKEN_MAX = 4096           # 로그인 토큰은 화면→실행기 표준 입력 한 줄로만(2단계 설계 3판 (1) 토큰 파이프)
+TOKEN_WAIT_SECONDS = 10.0
 
 
 class JobError(RuntimeError):
@@ -92,7 +95,8 @@ def read_json(path: Path) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
-def new_job(inst: Installation, plan: Plan, runner: Runner) -> str:
+def new_job(inst: Installation, plan: Plan, runner: Runner, login_email: str = "") -> str:
+    """login_email 은 관리 창 기록용(토큰은 여기에 넣지 않는다 — launch_runner 가 파이프로만 넘긴다)."""
     root = ensure_jobs_root(inst, runner)
     job_id = secrets.token_hex(16)
     job = root / job_id
@@ -102,8 +106,28 @@ def new_job(inst: Installation, plan: Plan, runner: Runner) -> str:
         raise JobError("같은 작업 ID 폴더가 이미 있습니다") from exc
     if _is_reparse(job):
         raise JobError("작업 폴더가 연결 지점입니다")
-    write_json(job / "request.json", {"kind": plan.kind, "plan": plan.to_json(), "requested_at": time.time()})
+    write_json(job / "request.json", {"kind": plan.kind, "plan": plan.to_json(), "requested_at": time.time(),
+                                      "login_email": login_email})
     return job_id
+
+
+def record_action(inst: Installation, job_id: str, request: dict, result: str, exit_code: int | None = None) -> None:
+    """관리 창 기록(logs\\console-actions.jsonl) 한 줄 — 서버 감사 기록이 없는 동작(생성 접수 API 등)도 여기서 추적한다.
+    기록을 못 남겨도 작업은 계속한다(판정은 작업 상태)."""
+    plan = request.get("plan") if isinstance(request.get("plan"), dict) else {}
+    try:
+        user = os.getlogin()
+    except OSError:
+        user = os.environ.get("USERNAME", "")
+    entry = {"ts": time.time(), "job_id": job_id, "kind": request.get("kind"), "windows_user": user,
+             "login_email": request.get("login_email") or "", "params": plan.get("params") or {}, "result": result}
+    if exit_code is not None:
+        entry["exit_code"] = exit_code
+    try:
+        with (inst.logs / names.ACTION_LOG).open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 # ---- 프로세스 확인(PID 재사용 구분: 생성 시각까지 비교) ----
@@ -179,13 +203,18 @@ def run_job(inst: Installation, job_id: str, recompute: Callable[[], "Plan | Ref
     if isinstance(current, Refusal):
         write_json(job / "state.json", {"status": "refused", **me, "reasons": list(current.reasons),
                                          "finished_at": time.time()})
+        record_action(inst, job_id, request, "refused")
         return 2
     if not same_target(confirmed, current):
         write_json(job / "state.json", {"status": "refused", **me, "finished_at": time.time(),
                                          "reasons": ["확인한 대상과 실행 직전 대상이 다릅니다 — 다시 확인하세요"]})
+        record_action(inst, job_id, request, "refused")
         return 2
+    record_action(inst, job_id, request, "started")
     if work is not None:
-        return _run_work(job, me, work)
+        code = _run_work(job, me, work)
+        record_action(inst, job_id, request, "success" if code == 0 else "failed", code)
+        return code
     argv = command or command_for(current, inst)
     try:
         prior = before() if before is not None else None
@@ -207,6 +236,7 @@ def run_job(inst: Installation, job_id: str, recompute: Callable[[], "Plan | Ref
             after = {"linked": False, "reason": "observe_failed"}
     write_json(job / "state.json", {"status": "finished", **me, "exit_code": code, "code_after": after,
                                     "result": "success" if code == 0 else "failed", "finished_at": time.time()})
+    record_action(inst, job_id, request, "success" if code == 0 else "failed", code)
     return code
 
 
@@ -226,25 +256,69 @@ def _run_work(job: Path, me: dict, work: Work) -> int:
     return code
 
 
-def spawn_detached(argv: list[str], cwd: str, env: dict[str, str]) -> int:
-    """부모(화면)가 끝나거나 죽어도 계속 도는 프로세스."""
+def valid_token(token: object) -> bool:
+    return (isinstance(token, str) and 0 < len(token) < TOKEN_MAX and token.isascii()
+            and not any(c.isspace() for c in token))
+
+
+def read_token(stream, wait: float = TOKEN_WAIT_SECONDS) -> str | None:
+    """실행기: 화면이 표준 입력 파이프로 넘긴 토큰 한 줄. 빈 값·중간 EOF·너무 김·시간 초과면 None. 읽은 뒤 닫는다."""
+    box: list[bytes] = []
+
+    def take() -> None:
+        try:
+            box.append(stream.readline(TOKEN_MAX + 1))
+        except (OSError, ValueError):
+            box.append(b"")
+    reader = threading.Thread(target=take, daemon=True)
+    reader.start()
+    reader.join(wait)
+    if reader.is_alive():
+        return None  # 읽는 중인 파이프는 닫지 않는다(닫기가 멈출 수 있다) — 실행기가 끝나면 함께 사라진다
+    try:
+        stream.close()
+    except OSError:
+        pass
+    line = box[0] if box else b""
+    if not line.endswith(b"\n"):
+        return None
+    token = line[:-1].rstrip(b"\r").decode("ascii", errors="replace")
+    return token if valid_token(token) else None
+
+
+def spawn_detached(argv: list[str], cwd: str, env: dict[str, str], secret: str | None = None) -> int:
+    """부모(화면)가 끝나거나 죽어도 계속 도는 프로세스. secret 은 표준 입력 파이프로 한 줄만 넘기고 닫는다."""
     child = subprocess.Popen(argv, cwd=cwd, env=env, close_fds=True,
-                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             stdin=subprocess.PIPE if secret is not None else subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
+    if secret is not None:
+        try:
+            child.stdin.write(secret.encode("ascii") + b"\n")
+            child.stdin.flush()
+        except OSError as exc:  # 실행기가 이미 끝남(BrokenPipe 등) — 이유에 토큰을 싣지 않는다
+            raise JobError(f"실행기에 로그인 정보를 넘기지 못했습니다({type(exc).__name__})") from None
+        finally:
+            try:
+                child.stdin.close()
+            except OSError:
+                pass
     return child.pid
 
 
-def launch_runner(inst: Installation, job_id: str) -> int:
-    """화면과 따로 도는 실행기를 띄운다(화면이 꺼져도 계속). 같은 관리자 권한."""
+def launch_runner(inst: Installation, job_id: str, token: str | None = None) -> int:
+    """화면과 따로 도는 실행기를 띄운다(화면이 꺼져도 계속). 같은 관리자 권한. token 은 인증이 필요한 작업만."""
     job_dir(inst, job_id)
     if inst.python is None:
         raise JobError("등록된 Python 이 없습니다")
+    if token is not None and not valid_token(token):
+        raise JobError("로그인 정보 형식이 아닙니다")
     pythonw = inst.python.with_name("pythonw.exe")
     exe = pythonw if pythonw.is_file() else inst.python
     # 실행기는 화면이 시작한 관리 창 코드(CODE_ROOT)에서 돈다 — 그사이 포인터가 바뀌어도 이 사본은 그대로.
     return spawn_detached([str(exe), "-I", "-B", str(CODE_ROOT / "tools" / "server_console" / "job_main.py"),
                            "--install-root", str(inst.root), job_id],
-                          str(inst.root), dict(child_env(inst), PYTHONDONTWRITEBYTECODE="1"))
+                          str(inst.root), dict(child_env(inst), PYTHONDONTWRITEBYTECODE="1"), secret=token)
 
 
 # ---- 화면 쪽 읽기 ----
@@ -353,9 +427,14 @@ def unresolved_jobs_or_repair(inst: Installation, runner: Runner) -> list[str] |
 
 
 def mark_launch_failed(inst: Installation, job_id: str, error: str) -> None:
-    """실행기를 못 띄운 작업도 기록을 남겨 '결과 확인 필요'로 보이게 한다."""
-    write_json(job_dir(inst, job_id) / "state.json", {"status": "runner_error", "error": error[:500],
-                                                       "finished_at": time.time()})
+    """실행기를 못 띄운 작업도 기록을 남겨 '결과 확인 필요'로 보이게 한다. 실행기가 이미 남긴 상태(토큰을 못 받아
+    남긴 runner_error 등)는 덮지 않는다 — 새로 만들 때만 쓰고, 실행기가 뒤에 쓰면 그것이 이긴다(os.replace)."""
+    try:
+        with (job_dir(inst, job_id) / "state.json").open("x", encoding="utf-8") as handle:
+            json.dump({"status": "runner_error", "error": error[:500], "finished_at": time.time()}, handle,
+                      ensure_ascii=False)
+    except FileExistsError:
+        pass
 
 
 def acknowledge(inst: Installation, job_id: str) -> None:
