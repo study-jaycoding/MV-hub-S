@@ -2036,11 +2036,12 @@ def test_backup_helper_runs_the_root_copier_in_a_child(monkeypatch):
     data = ROOT / "backend" / "data"  # 이 작업실(위치 파일·결과 파일 없음) — 읽기와 형식·자기 PC 판정만
     inst = install.Installation(root=ROOT, data_dir=data, log_dir=data / "logs", content_db=data / "db" / "x.db",
                                 port=8010, port_known=False, python=Path(sys.executable), problems=())
+    before = set(sys.modules)  # 전체 시험에서는 복사기 시험이 먼저 가져왔을 수 있다 — 이 시험이 새로 가져오지 않았는지만
     setting = backup.read_setting(inst)
     assert setting["source"] == "none" and setting["target"] is None and setting["result"] == {"state": "never_run"}
     assert backup.probe(inst, "C:\\not-unc") == 10
     assert backup.probe(inst, "\\\\localhost\\share\\mvhub") == 11
-    assert "backup_replicate" not in sys.modules and "mvhub_backup_replicate" not in sys.modules
+    assert not {"backup_replicate", "mvhub_backup_replicate"} & (set(sys.modules) - before)
 
 
 def test_backup_setting_read_failure_is_an_error(tmp_path, monkeypatch):
