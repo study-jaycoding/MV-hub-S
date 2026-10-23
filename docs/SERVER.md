@@ -67,6 +67,14 @@ status: active
    바꿔 끼우는 동안 서버가 멈추는 시간은 이 PC 실측 약 30초다(그중 약 24초는 옛 서버를 멈춘 뒤 stage 를 다시 검사하는
    시간). 새 판이 기동 중 죽으면 준비 확인 한도(90초) 뒤 이전 판으로 돌아가 약 2분 뒤 다시 응답한다(2026-10-23 실측).
    전환이 실패하면 supervisor 콘솔(`logs\server_console.log`)에 `update failed: ValueError (<코드>)` 처럼 원인 코드가 남는다.
+   업데이트 창은 진행 중 `[시:분:초] [n/6] 단계`(새 코드 받기 → 파이썬 패키지 → Higgsfield CLI → 화면 빌드 → 새 판 시험 기동 →
+   서버 바꿔 끼우기)를 보여 주고, 끝에 한 번 **완료** 또는 **실패(종료 코드 N)** 를 크게 띄운다. 판정은 coordinator 의 종료 코드만
+   쓴다 — 0 은 이번 실행의 새 판이 커밋됐거나 이미 최신이라는 뜻이고, 그 밖은 실패다(원인은 위에 coordinator 가 찍은 줄,
+   서버 상태는 단정하지 않는다). 진행 줄은 창이 coordinator 를 띄운 뒤 생긴 실행별 준비 기록의 번호 하나만 보여 준다(이번 실행의 준비 번호를
+   직접 받지 못해, 같은 순간 손으로 따로 돌린 coordinator 가 보일 수는 있다 — 결과 줄은 종료 코드라 영향 없음). 1초 안에 끝나면
+   진행 줄 없이 결과 줄만 나온다. 창을 눌러도 멈추지 않게 결과 줄을 찍을 때까지 빠른 편집(QuickEdit)을 끄고 그 뒤 되돌린다.
+   표시는 coordinator·supervisor 가 이미 쓰는 파일을 읽기만 하며, 업데이트 흐름과 종료 코드는 바꾸지 않는다
+   ([기록](status/설치속도_압축풀기_2026-10-23.md)).
 
 검증 Python 은 첫 실행 때 `logs\server-verifier` 에 자동으로 만들어진다(`tools/server_verifier.lock.txt` 의 해시 고정
 psutil, 인터넷 필요). 깨졌거나 판이 다르면 그 폴더를 `server-verifier.broken-<id>` 로 옮겨 두고 다시 만든다.
@@ -130,6 +138,14 @@ stage 의 `.venv` 는 준비 단계(`prepare`)를 실행한 Python 으로 만들
 실패 처리: ff 가 실패했을 때는 `git rev-parse HEAD` 와 `git status --porcelain --untracked-files=normal` 이 **둘 다
 성공**해 `HEAD` 가 이전과 같고 작업 트리가 깨끗함을 확인한 경우에만 4단계를 건너뛰고 5단계로 다시 켠다. 확인할 수 없거나
 루트가 바뀐 뒤 실패하면 꺼 둔 채 보고한다.
+
+**검사 도구 밖의 루트 코드만 바뀐 경우(서버를 멈추지 않는 반입)** — 예: 업데이트 창 `tools/run_update_git.ps1`. 서버가 stage 로
+돌 때 서버는 stage 의 코드로 돌고, supervisor 는 아래 경고의 검사 도구 지문과 자기 파일만 루트에서 쓴다. 그래서 그 파일들이
+안 바뀌면 루트를 앞감기해도 실행 중 서버·supervisor·복구에 영향이 없다. 관리자 PowerShell 에서: 루트 `HEAD` 가 예상 커밋이고
+`git status --porcelain --untracked-files=normal` 이 비었는지 확인 → `git fetch origin` → `git log --oneline HEAD..<SHA>` 가
+예상한 커밋뿐인지 확인 → `git diff --name-only HEAD <SHA>` 에 `tools/server_activation.py`·`tools/server_release_update.py`·
+`tools/server_supervisor.py`·`qualify_release_artifact.TOOLS` 의 파일·`backend/app/` 아래 파일(supervisor 가 journal·DB 사본에
+불러온다)이 없는지 확인(있으면 멈추고 위 반입 절차로) → `git merge --ff-only <SHA>` → 작업 폴더가 다시 깨끗한지 확인. 재시작은 필요 없다.
 
 > [!WARNING]
 > 서버가 stage 로 돌기 시작한 뒤에는 supervisor 가 시작할 때마다 현재 stage 의 자격을 루트의 검사 도구 지문
