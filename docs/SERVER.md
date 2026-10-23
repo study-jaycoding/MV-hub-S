@@ -569,6 +569,40 @@ py -3 tools\verify_backup_restore.py --backup-set "E:\MVHub-backups\content_hub_
 DB 준비 실패는 `WARNING`으로 남는다.
 같은 상태를 매분 반복하지 않고 상태가 바뀌거나 30분 이상 계속될 때만 다시 알려 로그 폭주를 막는다.
 
+### 서버 관리 창(`MV_console.bat`, 서버 PC 전용)
+
+서버 PC 에서 `MV_console.bat` 을 더블클릭하면 관리자 승인 한 번 뒤 tkinter 창이 열린다(1단계: 상태·로그·주소·Git 업데이트).
+승인 요청은 검증된 Python 이 직접 한다(PATH·환경변수로 찾는 PowerShell 을 거치지 않음).
+창을 닫아도 서버는 예약 작업으로 계속 돈다. 기존 bat(`update_git.bat`·`MV_logs.bat` 등)은 그대로 쓸 수 있다 — 창이 고장 나도 비상구.
+
+- **전제**: `register_autostart.bat` 이 남긴 `.mvhub-runtime\python.txt` 의 Python 만 쓴다(다른 Python 으로 바꿔 쓰지 않음). 그 Python 에
+  tkinter 가 없으면 이유를 보이고 멈춘다.
+- **권한은 알림만 한다**(Jay 결정 2026-10-23 — 기존 `update_git.bat` 처럼 단추만 누르면 진행). 업데이트 전에 관리자 권한으로 돌리는
+  코드(서버 루트의 `.bat`·`.ps1`·`.py`, `backend`·`tools`·`backend\app`·`.git\hooks`·`.git\config`·`logs\server-verifier`,
+  Python·Node·Git 실행 파일·DLL·핵심 폴더와 그 위 폴더)를 관리자 말고 다른 계정도 고칠 수 있는지 보고, 있으면 업데이트 화면에
+  '참고' 알림으로만 남긴다 — 업데이트는 막지 않는다(검사 자체가 실패해도 '확인하지 못했습니다' 알림만). 작업 기록 폴더(`logs\console-jobs`)
+  권한이 흐트러져 있거나 읽지 못하면 창이 다시 잠그고 한 번 더 읽는다 — 그래도 못 읽으면 지난 결과를 모르니 막는다.
+  감수한 위험: 서버 PC 에 이미 숨어 든 프로그램(같은 계정의 승격 안 된 프로그램 포함)이 그 파일이나 관리자 사용자 폴더의 Git·npm 설정
+  (`~\.gitconfig`·`~\.npmrc`)을 고쳐 두면 업데이트 때 관리자 권한으로 실행될 수 있다 — 기존 `update_git.bat` 과 같은 수준이다.
+- **상태 카드**는 값마다 확인 시각을 보이고, 60초 집계(`runtime_snapshot`)가 3분 넘게 없거나 형식이 다르면 '확인 불가'로 둔다(0·정상으로 채우지 않음).
+  서버 상태 = 정상 / 전환 중 / 시작 중 / 유지보수 중 / 요청 차단 중 / 응답하나 준비 실패 / 응답 없음 / 정지 확인 / 서버 작업 없음 / 확인 불가.
+  전환이 끝난 서버(admission `activated`)는 정상이다.
+- **주소**는 네트워크(NIC) 이름과 함께 보이고, 서버가 그 포트로 답했을 때만 확인된 값이다(아니면 '설정값'·'기본값 추정').
+  `CONTENT_HUB_SSL_CERTFILE` 이 있으면 https 로 묻는다.
+- **로그 탭**은 `mvhub-runtime.jsonl`(회전 포함)과 `logs\server_console.log` 등을 이벤트 종류로 나눠 보인다. 모르는 이벤트도 '전체'에 남긴다.
+  회전 직전 끝부분은 놓칠 수 있는 운영 보기다(감사 기록은 DB 의 `audit_event`).
+- **Git 업데이트**는 `update_git.bat` 과 같은 `run_update_git.ps1 -NoPause` 를 창과 따로 도는 실행기(`tools\server_console\job_main.py`)가 돌린다.
+  확인 창의 대상은 "실행 시점의 최신 origin/main" 이고(보이는 커밋은 참고), 판정은 종료 코드다. 창을 닫아도 업데이트는 끝까지 가고 결과는
+  `logs\console-jobs\<작업 ID>\` 에 남는다. 끝나면 그 작업이 설치한 커밋을 보인다 — 실행 직전에 없던 준비 기록
+  (`server-prepare-<run>.json`)이 정확히 하나 생겼을 때만 그 stage 의 `source_commit` 으로 잇고, 아니면 '미확인'이다.
+  '이미 최신'이면 새로 설치한 커밋은 없다고 적는다. 참고 커밋을 읽는 Git 은 업데이트 안전장치를 통과한 뒤에만 실행한다(권한 검사 결과는 알림만).
+  업데이트 흔적(`git-update.lock` 이 잡힘·전환 요청·끝나지 않았거나 못 읽은 journal·준비 running·못 읽었거나 모르는 상태의 준비 기록)이
+  있으면 새 업데이트를 막는다. 실행기가 결과를 남기지 못했거나(모르는 상태·종료 코드 없는 완료 포함) 실행기를 띄우지 못했으면
+  '결과 확인 필요'로 보이고, 사람이 서버 상태를 본 뒤 [확인했음]을 누르기 전에는 새 업데이트를 막는다(막고 있는 작업을 화면이 찾아 보여 준다).
+  주소는 `/api/ready` 가 MV Hub 의 응답 모양일 때만 '확인'이고, 다른 프로그램이 답하면 'MV Hub 인지 미확인'으로 보인다.
+- **반입**: 이 창은 서버 루트 코드라 `update_git` 으로 안 바뀐다 — 위 '검사 도구 밖의 루트 코드만 바뀐 경우' 앞감기로 들인다
+  (`MV_console.bat`·`tools/server_console/` 는 검사 도구 지문 밖). 2단계부터 창의 '관리 도구 갱신'으로.
+
 초기 관리자 비밀번호를 환경변수로 주지 않은 첫 설치는
 `<DATA>/bootstrap_admin_password.txt`에만 1회용 비밀번호를 기록한다. 콘솔 로그에는
 비밀번호가 나오지 않는다. 로그인 후 비밀번호를 변경하고 이 파일을 삭제한다.

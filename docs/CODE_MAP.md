@@ -1260,6 +1260,8 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 |---|---|
 | `MV_logs.bat`(9줄) | `run_py.bat` 경유 `tools/log_viewer.py` 실행 |
 | `tools/log_viewer.py`(313줄) | 구조화 운영로그(jsonl)를 사람이 읽기 쉬운 한 줄로 |
+| `MV_console.bat` | 서버 관리 창 진입 — `.mvhub-runtime\python.txt` 의 검증된 파이썬만 `-I` 로, Tk 사전 점검 뒤 그 파이썬이 직접 관리자 승인(UAC)을 받아 `pythonw` 로 창을 연다(`main.py --launch`, PowerShell 안 거침) |
+| `tools/server_console/`(`__init__`·`names`·`install`·`status`·`logs`·`actions`·`jobs`·`job_main`·`main`·`ui`) | 서버 PC 전용 tkinter 관리 창(1단계: 상태·로그·주소·Git 업데이트). 3층 — `ui.py`(그리기만 — 작업 스레드는 큐에만, 메시지 하나가 깨져도 갱신은 계속) · 관리 핵심 `install.py`(설치 루트·기계 환경변수·자식 환경 재구성·ACL(쓰기 비트·소유자·연결 지점·상위 폴더 바꿔치기)·예약 작업·NIC 주소, PowerShell 에는 경로를 base64 JSON 으로만) `status.py`(상태 판정·업데이트 흔적 — 잠금은 잡지 않고 읽기만, 못 읽은 기록·모르는 상태도 흔적 · 작업이 설치한 커밋은 실행 뒤 새로 생긴 준비 기록 하나로만 잇기 `run_outcome` · stage 경로는 연결 지점 없이 `plain_child`) `logs.py`(탭 분류·모르는 이벤트도 보존·한 번에 읽는 줄 상한) `actions.py`(**할 수 있는 일 고정 목록**) `jobs.py`(독립 실행기·결과 보존·결과 유실은 check_needed → [확인했음] 전까지 새 업데이트 거절) `job_main.py`(실행기 진입점 — 실행 직전 대상 재계산·비교) · 기존 도구(`run_update_git.ps1` 등)는 그대로 부른다. supervisor·activation·release_update·TOOLS 쪽은 이 패키지를 import 하지 않는다(시험). 설계 `docs/status/서버관리창_설계_2026-10-23.md` | → `tools/run_update_git.ps1`, `tools/log_viewer.py`, `tools/deploy_fence_check.py` |
 | `tools/graft.ps1`(72줄) | graft CLI 래퍼(`callers`/`grep`/`blast`/`skeleton`) — 항상 이 래퍼로만 호출 |
 | `tools/lint_docs.ps1`(272줄) | 문서 규칙 검사(`npm run lint:docs` 가 호출) |
 | `tools/check_code_map.py` | 이 문서와 저장소의 양방향 대조(없는 파일 이름·빠진 파일) — 수동 실행, 게이트 미연결(§6) |
