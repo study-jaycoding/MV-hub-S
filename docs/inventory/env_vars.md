@@ -191,5 +191,5 @@
 | `PROGRAMDATA` | `backend/app/services/resolve_bridge.py` `backend/app/services/resolve_script_installer.py` |
 | `PROGRAMFILES` | `backend/app/services/resolve_bridge.py` `backend/app/services/resolve_diagnostics.py` |
 | `TEMP` | `tools/server_console/install.py` |
-| `USERNAME` | `tools/server_console/install.py` |
+| `USERNAME` | `tools/server_console/install.py` `tools/server_console/jobs.py` |
 | `USERPROFILE` | `tools/server_console/install.py` |
