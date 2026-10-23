@@ -1308,3 +1308,70 @@ def test_force_is_refused_while_the_worker_holds_the_install_lock(
 
     with pytest.raises(release_update.ReleaseUpdateError, match="방금 시작"):
         release_update.start_update(activity_check=lambda: 0, root=root, force=True)
+
+
+def _worker_payload() -> str:
+    raw = (Path(__file__).resolve().parents[2] / "update_release_worker.bat").read_text(encoding="utf-8")
+    return raw.split("### MVHUB_" + "UPDATE_POWERSHELL ###")[-1]
+
+
+def test_worker_extracts_with_zipfile_and_marks_the_stopped_window():
+    """-File 로 도는 워커에선 범위 안 진행 표시 끄기가 Expand-Archive 에 안 닿는다(2105 패키지 63.5초 → ZipFile 5.1초)."""
+    payload = _worker_payload()
+    assert "[System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $ExtractDir)" in payload
+    assert "Expand-Archive -" not in payload
+    install = payload[payload.index("function Install-Package"):payload.index("function Invoke-InstallCheckpoint")]
+    for marker in ('Write-StepTime "Stopping MV Hub for the file swap"', 'Write-StepTime "MV Hub stopped"',
+                   'Write-StepTime "Database checkpoint done"', 'Write-StepTime "Installed files verified"'):
+        assert marker in install
+    # The stop is recorded before any display line, so recovery always knows the app was stopped.
+    assert install.index("$script:ProcessesStopped = $true") < install.index('Write-StepTime "MV Hub stopped"')
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows updater")
+def test_a_console_that_cannot_print_never_breaks_the_update_records(tmp_path: Path):
+    payload = _worker_payload()
+    block = payload[payload.index('$script:RecoveryState = "not_started"'):payload.index("function Move-PathWithRetry")]
+    state = tmp_path / "state.json"
+    harness = tmp_path / "harness.ps1"
+    harness.write_text(
+        "$ErrorActionPreference = 'Stop'\n"
+        f"$TargetDir = '{tmp_path}'\n$StateFile = '{state}'\n$LatestVersion = ''\n"
+        + block
+        + "\nfunction Write-Host { throw 'console broke' }\n"
+        "Write-StepTime 'MV Hub stopped'\n"
+        "Write-UpdateState -State 'installing' -Message 'Installing verified files...' -Percent 80\n"
+        "[Console]::Out.WriteLine('SURVIVED')\n",
+        encoding="utf-8-sig",
+    )
+    done = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(harness)],
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, check=False)
+    assert done.returncode == 0 and "SURVIVED" in done.stdout, done.stdout + done.stderr
+    assert json.loads(state.read_text(encoding="utf-8-sig"))["state"] == "installing"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows updater")
+@pytest.mark.parametrize("with_state", [True, False])
+def test_every_update_state_also_prints_a_clock_line(tmp_path: Path, with_state: bool):
+    """update.log 에는 화면 글만 남는다 — 상태 기록마다 시각 줄이 있어야 느린 구간을 찾는다(상태 파일이 없어도)."""
+    payload = _worker_payload()
+    block = payload[payload.index('$script:RecoveryState = "not_started"'):payload.index("function Move-PathWithRetry")]
+    state = tmp_path / "state.json"
+    harness = tmp_path / "harness.ps1"
+    harness.write_text(
+        "$ErrorActionPreference = 'Stop'\n"
+        f"$TargetDir = '{tmp_path}'\n$StateFile = '{state if with_state else ''}'\n$LatestVersion = ''\n"
+        + block
+        + "\nWrite-UpdateState -State 'checking' -Message 'Checking the release server...' -Percent 5\n"
+        "Write-UpdateState -State 'failed' -Message 'Update failed: fixture' -Recovery 'rolled_back'\n",
+        encoding="utf-8-sig",
+    )
+    done = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(harness)],
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, check=False)
+    assert done.returncode == 0, done.stderr
+    assert re.search(r"^\[\d\d:\d\d:\d\d\] Checking the release server\.\.\.$", done.stdout, re.M), done.stdout
+    assert re.search(r"^\[\d\d:\d\d:\d\d\] Update failed: fixture$", done.stdout, re.M), done.stdout
+    if with_state:
+        assert json.loads(state.read_text(encoding="utf-8-sig"))["message"] == "Update failed: fixture"
+    else:
+        assert not state.exists()

@@ -157,6 +157,12 @@ if ($StateFile -and (Test-Path -LiteralPath $StateFile)) {
     catch { }
 }
 
+function Write-StepTime([string]$Text) {
+    # update.log keeps the console text only; a clock per step shows where an update spends its time.
+    # Display only: a console that cannot print must never change the install or recovery flow.
+    try { Write-Host ("[{0:HH:mm:ss}] {1}" -f (Get-Date), $Text) } catch { }
+}
+
 function Write-UpdateState {
     param(
         [string]$State,
@@ -165,6 +171,8 @@ function Write-UpdateState {
         [int]$Percent = -1,
         [string]$Recovery = ""
     )
+    # Inline (not Write-StepTime): isolated harnesses load this function on its own. Display only.
+    try { Write-Host ("[{0:HH:mm:ss}] {1}" -f (Get-Date), $Message) } catch { }
     if (-not $StateFile) {
         return
     }
@@ -1236,7 +1244,9 @@ function Install-Package {
 
     Write-Host "[update]  65%  Extracting..."
     Write-UpdateState -State "installing" -Message "Extracting update package..." -Latest ([string]$Latest.version) -Percent 65
-    Expand-Archive -LiteralPath $ZipPath -DestinationPath $ExtractDir -Force
+    # Expand-Archive redraws progress per file, and under -File a scoped $ProgressPreference never reaches its
+    # module: 63.5 s vs 5.1 s for the 2105 package. $ExtractDir is new under this run's GUID TempRoot.
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $ExtractDir)
     $ExpectedCliVersion = [string]$Latest.higgsfield_cli_version
     Assert-AppLayout -Root $ExtractDir -Label "package"
     Assert-BundledCli -Root $ExtractDir -ExpectedVersion $ExpectedCliVersion -Label "package" | Out-Null
@@ -1282,8 +1292,10 @@ function Install-Package {
     Assert-NoActiveResolveImport -Root $TargetDir
     Set-InstallPhase -Phase 'draining'
     Wait-WorkerDrain
+    Write-StepTime "Stopping MV Hub for the file swap"
     Stop-MvHubProcesses -Root $TargetDir
     $script:ProcessesStopped = $true
+    Write-StepTime "MV Hub stopped"
     $script:RecoveryState = if ($script:HadRecoveryAssets -or $script:InheritedRecovery) { 'recovery_required' } else { 'rolled_back' }
     Set-InstallPhase -Phase 'quiesced'
     if ($script:FreshInstallProof) {
@@ -1292,6 +1304,7 @@ function Install-Package {
     }
     else {
         $Checkpoints = Invoke-InstallCheckpoint
+        Write-StepTime "Database checkpoint done"
         Set-InstallPhase -Phase 'checkpointed' -Changes @{ checkpoints = @($Checkpoints) }
         if (-not (Test-PreviousDatabaseCompatibility -PreviousCompatibility $Latest.contract.compatibility -Current $Checkpoints -Checkpoint $Checkpoints)) {
             throw 'Target release database compatibility is not proven.'
@@ -1327,6 +1340,7 @@ function Install-Package {
         # installer owns writing it.
         Commit-VersionMarker -Version ([string]$Latest.version)
         Assert-InstalledReleasePayload -Root $TargetDir -Candidate $Latest
+        Write-StepTime "Installed files verified"
         $script:RecoveryState = "new_committed"
     }
     catch {

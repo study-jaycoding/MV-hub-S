@@ -192,6 +192,39 @@ class UpdaterFixture:
             " lock.seek(0); msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)\n"
             " with open(os.environ['MVHUB_TOOL_TRACE'], 'a', encoding='utf-8') as trace: trace.write('coordinator '+ ' '.join(sys.argv[1:])+'\\n')\n"
             "staged=any(a.endswith('server_release_update.py') for a in sys.argv)\n"
+            # Optional: write the files a real prepare/supervisor writes, step by step, for the progress window.
+            "mode=os.environ.get('MVHUB_FAKE_PROGRESS','') if staged else ''\n"
+            "if mode:\n"
+            " import json,time\n"
+            " logs=root/'logs'; run='run-new'; stage=logs/'server-stages'/run\n"
+            " def put(p,v): p.parent.mkdir(parents=True,exist_ok=True); p.write_text(json.dumps(v),encoding='utf-8')\n"
+            " if mode=='foreign':\n"
+            # Another run commits inside this window (its run file too); this coordinator then fails on the
+            # lock (exit 1) or, after it, finds nothing to change (exit 0, its own later record).
+            "  put(logs/'server-prepare-foreign.json',{'run_id':'foreign','status':'prepared'})\n"
+            "  put(logs/'server-stages'/'foreign'/'server-stage.json',{'source_commit':'f'*40})\n"
+            "  put(logs/'server-prepare.json',{'run_id':'foreign','status':'prepared'})\n"
+            "  put(logs/'server-install-journal.json',{'phase':'committed','target':{'build_id':'foreign'}}); time.sleep(1.2)\n"
+            "  if os.environ.get('MVHUB_COORDINATOR_EXIT','0')=='0':\n"
+            "   put(logs/('server-prepare-'+run+'.json'),{'run_id':run,'status':'up_to_date'})\n"
+            "   put(logs/'server-prepare.json',{'run_id':run,'status':'up_to_date'})\n"
+            "  raise SystemExit(int(os.environ.get('MVHUB_COORDINATOR_EXIT','0')))\n"
+            " if mode.startswith('fast_'):\n"
+            # A coordinator that ends before the window's first one-second look.
+            "  put(logs/('server-prepare-'+run+'.json'),{'run_id':run,'status':'running'})\n"
+            "  put(stage/'server-stage.json',{'source_commit':'e94bb89f3ebe724f6c285a0feeb947b2f7384c7b'})\n"
+            "  put(logs/'server-prepare.json',{'run_id':run,'status':'up_to_date' if mode=='fast_up_to_date' else 'prepared'})\n"
+            "  if mode=='fast_committed': put(logs/'server-install-journal.json',{'phase':'committed','target':{'build_id':run}})\n"
+            "  raise SystemExit(int(os.environ.get('MVHUB_COORDINATOR_EXIT','0')))\n"
+            " put(logs/('server-prepare-'+run+'.json'),{'run_id':run,'status':'running'})\n"
+            " put(logs/'server-prepare.json',{'run_id':run,'status':'running'}); time.sleep(1.2)\n"
+            " for step in ('.venv','runtime/higgsfield','frontend/node_modules'): (stage/step).mkdir(parents=True,exist_ok=True); time.sleep(1.2)\n"
+            " put(stage/'server-stage.json',{'source_commit':'e94bb89f3ebe724f6c285a0feeb947b2f7384c7b'}); time.sleep(1.2)\n"
+            " if mode=='prepare_failed': put(logs/'server-prepare.json',{'run_id':run,'status':'failed'})\n"
+            " else:\n"
+            "  put(logs/'server-prepare.json',{'run_id':run,'status':'prepared'})\n"
+            "  put(logs/'server-install-journal.json',{'phase':'draining','target':{'build_id':run}}); time.sleep(1.2)\n"
+            "  put(logs/'server-install-journal.json',{'phase':mode,'target':{'build_id':run}})\n"
             "raise SystemExit(int(os.environ.get('MVHUB_COORDINATOR_EXIT','0')) if staged else 0)\n",
             encoding="utf-8",
         )
@@ -586,3 +619,166 @@ def test_worker_script_has_no_in_place_server_restart_fallback():
     assert 'schtasks /Query /TN "MVHub Server"' not in worker
     assert "restart_server_task.bat" not in worker
     assert "run_update_git.ps1" in worker
+
+
+def _progress_functions() -> str:
+    script = (SOURCE / "tools/run_update_git.ps1").read_text(encoding="utf-8-sig")
+    out = []
+    for name in ("Read-UpdateRecord", "Get-ServerUpdateProgress", "Write-ServerUpdateResult"):
+        start = script.index("function " + name)
+        end = script.index("\nfunction ", start + 1)
+        out.append(script[start:end])
+    return "\n".join(out)
+
+
+STAGE_NEW = {"server-stages/new/server-stage.json": {"source_commit": "a" * 40}}
+PROGRESS_CASES = [
+    # (name, files, expected step)
+    ("new run fetching", {"server-prepare.json": {"run_id": "new", "status": "running"}}, 1),
+    ("python packages", {"server-prepare.json": {"run_id": "new", "status": "running"},
+                         "server-stages/new/.venv/": None}, 2),
+    ("cli", {"server-prepare.json": {"run_id": "new", "status": "running"},
+             "server-stages/new/.venv/": None, "server-stages/new/runtime/higgsfield/": None}, 3),
+    ("frontend built, node_modules gone", {"server-prepare.json": {"run_id": "new", "status": "running"},
+                                           "server-stages/new/frontend/dist/index.html": "x"}, 4),
+    ("qualifying", {"server-prepare.json": {"run_id": "new", "status": "running"}, **STAGE_NEW}, 5),
+    ("prepared, another run's journal", {"server-prepare.json": {"run_id": "new", "status": "prepared"}, **STAGE_NEW,
+                                         "server-install-journal.json": {"phase": "committed", "target": {"build_id": "old"}}}, 6),
+    ("switching", {"server-prepare.json": {"run_id": "new", "status": "prepared"}, **STAGE_NEW,
+                   "server-install-journal.json": {"phase": "starting", "target": {"build_id": "new"}}}, 6),
+    # The request is posted before 'prepared' is recorded: this run's journal outranks a failed prepare record.
+    ("prepared record failed, switch running", {"server-prepare.json": {"run_id": "new", "status": "failed"}, **STAGE_NEW,
+                                                "server-install-journal.json": {"phase": "starting", "target": {"build_id": "new"}}}, 6),
+    ("prepare failed", {"server-prepare.json": {"run_id": "new", "status": "failed"}}, 1),
+    ("up to date", {"server-prepare.json": {"run_id": "new", "status": "up_to_date"},
+                    "server-install-journal.json": {"phase": "committed", "target": {"build_id": "cur"}}}, 1),
+    ("prepare record unreadable", {"server-prepare.json": "{broken"}, 0),
+    ("prepare record cannot be opened", {"server-prepare.json/": None}, 0),
+    ("prepare record names no run", {"server-prepare.json": {"status": "running"}}, 0),
+    ("journal unreadable", {"server-prepare.json": {"run_id": "new", "status": "running"}, **STAGE_NEW,
+                            "server-install-journal.json": "{broken"}, 5),
+    ("journal cannot be opened", {"server-prepare.json": {"run_id": "new", "status": "running"}, **STAGE_NEW,
+                                  "server-install-journal.json/": None}, 5),
+    # A journal that does not name its run is never this run's switch.
+    ("journal names no run", {"server-prepare.json": {"run_id": "new", "status": "running"}, **STAGE_NEW,
+                              "server-install-journal.json": {"phase": "starting"}}, 5),
+    ("journal run empty", {"server-prepare.json": {"run_id": "new", "status": "running"}, **STAGE_NEW,
+                           "server-install-journal.json": {"phase": "starting", "target": {"build_id": ""}}}, 5),
+]
+
+
+@pytest.mark.parametrize("name,files,step", PROGRESS_CASES, ids=[c[0] for c in PROGRESS_CASES])
+def test_server_progress_reads_each_step(tmp_path, name, files, step):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    for relative, value in files.items():
+        path = logs / relative
+        if relative.endswith("/"):
+            path.mkdir(parents=True, exist_ok=True)
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(value if isinstance(value, str) else json.dumps(value), encoding="utf-8")
+    harness = tmp_path / "harness.ps1"
+    harness.write_text("$ErrorActionPreference='Stop'\n" + _progress_functions() +
+                       f"\n'STEP=' + (Get-ServerUpdateProgress '{logs}').Step\n",
+                       encoding="utf-8-sig")
+    done = subprocess.run([POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(harness)],
+                          capture_output=True, text=True, timeout=30)
+    assert done.returncode == 0, done.stderr
+    assert f"STEP={step}\n" in done.stdout, done.stdout
+
+
+def test_a_console_that_cannot_print_never_changes_the_exit_code(updater):
+    script = updater.tools / "run_update_git.ps1"
+    wrapper = script.read_text(encoding="utf-8-sig")
+    anchor = "\nfunction Test-UpdateAdministrator"
+    wrapper = wrapper.replace(anchor, "\nfunction Write-Host { throw 'console broke' }" + anchor, 1)
+    script.write_text(wrapper, encoding="utf-8-sig")
+    updater.holder()
+    updater.env.update({"MVHUB_FAKE_PROGRESS": "committed", "MVHUB_COORDINATOR_EXIT": "7"})
+    result = updater.run()
+    assert result.returncode == 7, result.stdout + result.stderr
+
+
+DONE = "완료: 서버가 최신 판으로 동작 중입니다."
+
+
+def _failed(code: int) -> str:
+    return f"실패: 업데이트가 끝나지 않았습니다(종료 코드 {code}). 위 메시지를 확인하고 이 화면을 보내 주세요."
+
+
+@pytest.mark.parametrize("mode,code,expected", [
+    # The line ends there: nothing is added from records that cannot prove which run they belong to.
+    ("committed", "0", DONE + "\n"),
+    # The verdict is the exit code alone: a committed journal never overrides a failed coordinator.
+    ("committed", "1", _failed(1)),
+    ("prepare_failed", "1", _failed(1)),
+    ("rolled_back", "1", _failed(1)),
+])
+def test_server_update_window_shows_steps_and_one_result(updater, mode, code, expected):
+    updater.holder()
+    updater.env.update({"MVHUB_FAKE_PROGRESS": mode, "MVHUB_COORDINATOR_EXIT": code})
+    result = updater.run()
+    assert result.returncode == int(code), result.stdout + result.stderr
+    assert expected in result.stdout, result.stdout
+    assert (DONE in result.stdout) == (code == "0"), result.stdout
+    assert "[1/6]" in result.stdout and "[5/6]" in result.stdout, result.stdout
+    assert ("[6/6]" in result.stdout) == (mode != "prepare_failed"), result.stdout
+    assert result.stdout.count("=" * 60) == 2, result.stdout
+
+
+@pytest.mark.parametrize("code,expected", [("7", _failed(7)), ("0", DONE + "\n")])
+def test_a_broken_progress_display_never_changes_the_exit_code(updater, code, expected):
+    script = updater.tools / "run_update_git.ps1"
+    wrapper = script.read_text(encoding="utf-8-sig")
+    # After the real definition, or the real one would replace the broken one.
+    anchor = "\nfunction Invoke-ServerUpdateWithProgress"
+    assert anchor in wrapper
+    wrapper = wrapper.replace(anchor, "\nfunction Get-ServerUpdateProgress { throw 'display broke' }" + anchor, 1)
+    script.write_text(wrapper, encoding="utf-8-sig")
+    updater.holder()
+    updater.env.update({"MVHUB_FAKE_PROGRESS": "committed", "MVHUB_COORDINATOR_EXIT": code})
+    result = updater.run()
+    assert result.returncode == int(code), result.stdout + result.stderr
+    assert "coordinator" in updater.trace()
+    # Without the records the window still ends with the exit code's verdict.
+    assert expected in result.stdout and "[1/6]" not in result.stdout, result.stdout
+
+
+@pytest.mark.parametrize("mode", ["fast_up_to_date", "fast_committed"])
+def test_a_coordinator_that_ends_before_the_first_look_still_gets_its_result(updater, mode):
+    updater.holder()
+    updater.env.update({"MVHUB_FAKE_PROGRESS": mode, "MVHUB_COORDINATOR_EXIT": "0"})
+    result = updater.run()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert DONE + "\n" in result.stdout, result.stdout
+
+
+@pytest.mark.parametrize("code", ["1", "0"])
+def test_another_runs_records_never_become_this_windows_result(updater, code):
+    updater.holder()
+    updater.env.update({"MVHUB_FAKE_PROGRESS": "foreign", "MVHUB_COORDINATOR_EXIT": code})
+    result = updater.run()
+    assert result.returncode == int(code), result.stdout + result.stderr
+    # The other run committed f…; only this coordinator's exit code decides the line.
+    assert "ffffffff" not in result.stdout, result.stdout
+    assert (DONE + "\n" if code == "0" else _failed(1)) in result.stdout, result.stdout
+    assert (DONE in result.stdout) == (code == "0"), result.stdout
+
+
+@pytest.mark.parametrize("earlier", ["{broken", "{}"])
+def test_an_unreadable_earlier_record_never_breaks_this_runs_result(updater, earlier):
+    (updater.root / "logs").mkdir(exist_ok=True)
+    (updater.root / "logs/server-prepare.json").write_text(earlier, encoding="utf-8")
+    updater.holder()
+    updater.env.update({"MVHUB_FAKE_PROGRESS": "committed", "MVHUB_COORDINATOR_EXIT": "0"})
+    result = updater.run()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert DONE + "\n" in result.stdout and "[6/6]" in result.stdout, result.stdout
+
+
+def test_quick_edit_stays_off_until_the_result_is_printed():
+    script = (SOURCE / "tools/run_update_git.ps1").read_text(encoding="utf-8-sig")
+    body = script[script.index("function Invoke-ServerUpdateWithProgress"):script.index("function Invoke-IsolatedWorker")]
+    assert body.index("Disable-UpdateQuickEdit") < body.index("Start-UpdateBatch")
+    assert body.index("Write-ServerUpdateResult $Code") < body.index("finally { Restore-UpdateQuickEdit")

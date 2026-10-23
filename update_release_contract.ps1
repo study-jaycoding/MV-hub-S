@@ -200,6 +200,12 @@ function Assert-InstalledReleasePayload {
     }
 }
 
+function Test-InstallRecordLock($Exception) {
+    # Only a brief handle held by a reader (ACCESS_DENIED, SHARING_VIOLATION, LOCK_VIOLATION) is worth retrying.
+    while ($Exception.InnerException) { $Exception = $Exception.InnerException }
+    return ($Exception.HResult -band 0xffff) -in @(5, 32, 33)
+}
+
 function Write-InstallRecord {
     param([string]$Path, $Record)
     $Bytes = [System.Text.Encoding]::UTF8.GetBytes(($Record | ConvertTo-Json -Depth 20) + "`n")
@@ -208,8 +214,19 @@ function Write-InstallRecord {
         $Stream = [System.IO.File]::Open($Temporary, 'CreateNew', 'Write', 'None')
         try { $Stream.Write($Bytes, 0, $Bytes.Length); $Stream.Flush($true) }
         finally { $Stream.Dispose() }
-        if (Test-Path -LiteralPath $Path) { [System.IO.File]::Replace($Temporary, $Path, [NullString]::Value) }
-        else { [System.IO.File]::Move($Temporary, $Path) }
+        # The running app reads activation records per request; Windows refuses a replace during that read.
+        $Deadline = [DateTime]::UtcNow.AddSeconds(2)
+        while ($true) {
+            try {
+                if (Test-Path -LiteralPath $Path) { [System.IO.File]::Replace($Temporary, $Path, [NullString]::Value) }
+                else { [System.IO.File]::Move($Temporary, $Path) }
+                break
+            }
+            catch {
+                if (-not (Test-InstallRecordLock $_.Exception) -or [DateTime]::UtcNow -ge $Deadline) { throw }
+                Start-Sleep -Milliseconds 100
+            }
+        }
     }
     catch {
         if (-not (Test-Path -LiteralPath $Path) -or

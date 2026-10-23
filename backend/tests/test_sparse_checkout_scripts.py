@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _read(name: str) -> str:
-    return (ROOT / name).read_text(encoding="utf-8")
+    # run_update_git.ps1 carries a UTF-8 BOM (Korean progress text); never write it back twice.
+    return (ROOT / name).read_text(encoding="utf-8-sig")
 
 
 def _read_updater() -> str:

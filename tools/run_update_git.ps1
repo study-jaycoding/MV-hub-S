@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [string]$Root,
     [switch]$Elevated,
@@ -267,7 +267,7 @@ function Get-Sha256Hex {
     }
 }
 
-function Invoke-UpdateBatch([string]$BatchPath, [string[]]$Arguments) {
+function Start-UpdateBatch([string]$BatchPath, [string[]]$Arguments) {
     $quoted = @($BatchPath) + $Arguments | ForEach-Object {
         if ($_ -match '["%!\r\n]') { throw "Unsupported cmd expansion characters in updater arguments." }
         '"' + $_ + '"'
@@ -279,10 +279,168 @@ function Invoke-UpdateBatch([string]$BatchPath, [string[]]$Arguments) {
         $Process.StartInfo.Arguments = '/d /s /c "' + ($quoted -join ' ') + '"'
         $Process.StartInfo.UseShellExecute = $false
         if (-not $Process.Start()) { throw "Could not start the isolated update command." }
+        return $Process
+    }
+    catch { $Process.Dispose(); throw }
+}
+
+function Invoke-UpdateBatch([string]$BatchPath, [string[]]$Arguments) {
+    $Process = Start-UpdateBatch $BatchPath $Arguments
+    try {
         $Process.WaitForExit()
         return $Process.ExitCode
     }
     finally { $Process.Dispose() }
+}
+
+function Read-UpdateRecord([string]$Path) {
+    # Display only: share delete so the coordinator/supervisor can still replace the file while it is read.
+    # 'missing' only when the file is certainly absent; every other failure is 'unreadable', never absence.
+    try { $Stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]'ReadWrite, Delete') }
+    catch {
+        $Inner = $_.Exception
+        while ($Inner.InnerException) { $Inner = $Inner.InnerException }
+        if ($Inner -is [IO.FileNotFoundException] -or $Inner -is [IO.DirectoryNotFoundException]) { return @{ State = 'missing' } }
+        return @{ State = 'unreadable' }
+    }
+    try {
+        try { $Text = (New-Object IO.StreamReader($Stream, [Text.Encoding]::UTF8)).ReadToEnd() }
+        finally { $Stream.Dispose() }
+        $Value = $Text | ConvertFrom-Json
+        if ($null -eq $Value) { return @{ State = 'unreadable' } }
+        return @{ State = 'ok'; Value = $Value }
+    }
+    catch { return @{ State = 'unreadable' } }
+}
+
+function Get-ServerUpdateProgress([string]$Logs) {
+    # Reads only files the coordinator and supervisor already write; a folder means its step has started.
+    $Prepare = Read-UpdateRecord (Join-Path $Logs 'server-prepare.json')
+    $Run = if ($Prepare.State -eq 'ok' -and $Prepare.Value.run_id -is [string]) { $Prepare.Value.run_id } else { '' }
+    if (-not $Run) { return @{ Step = 0; Run = ''; Status = ''; Phase = ''; Stage = ''; Journal = '' } }
+    $Stage = Join-Path $Logs ('server-stages\' + $Run)
+    $Step = 1
+    if (Test-Path -LiteralPath (Join-Path $Stage '.venv')) { $Step = 2 }
+    if (Test-Path -LiteralPath (Join-Path $Stage 'runtime\higgsfield')) { $Step = 3 }
+    if ((Test-Path -LiteralPath (Join-Path $Stage 'frontend\node_modules')) -or
+        (Test-Path -LiteralPath (Join-Path $Stage 'frontend\dist\index.html'))) { $Step = 4 }
+    if (Test-Path -LiteralPath (Join-Path $Stage 'server-stage.json')) { $Step = 5 }
+    # Journal: 'this' (this run's), 'other' (another run's), 'missing', or 'unreadable' (never treated as absent).
+    $Record = Read-UpdateRecord (Join-Path $Logs 'server-install-journal.json')
+    $Journal = $Record.State
+    $Phase = ''
+    if ($Record.State -eq 'ok') {
+        $Owner = if ($Record.Value.target) { $Record.Value.target.build_id } else { $null }
+        # A journal that does not name its run proves nothing about this run.
+        if (-not ($Owner -is [string]) -or -not $Owner) { $Journal = 'unreadable' }
+        elseif ($Owner -eq $Run) { $Journal = 'this'; $Phase = [string]$Record.Value.phase }
+        else { $Journal = 'other' }
+    }
+    $Status = [string]$Prepare.Value.status
+    # The request is posted before 'prepared' is recorded, so this run's journal outranks the prepare status.
+    if ($Status -eq 'prepared' -or $Journal -eq 'this') { $Step = 6 }
+    return @{ Step = $Step; Run = $Run; Status = $Status; Phase = $Phase; Stage = $Stage; Journal = $Journal }
+}
+
+function Show-ServerUpdateProgress([string]$Logs, [hashtable]$Shown, [datetime]$PinAfter) {
+    # Display only: no failure here may stop the wait or change the exit code.
+    # Shows one run: the first whose per-run prepare record was created after this window started the
+    # coordinator (MaxValue pins nothing new). shortcut: a coordinator run by hand at the same moment could
+    # be the one shown; the result line never depends on it. Pin by run_id once the coordinator can pass it.
+    try {
+        $State = Get-ServerUpdateProgress $Logs
+        if ($State.Run -and -not $Shown.Run -and
+            (Get-Item -LiteralPath (Join-Path $Logs ('server-prepare-' + $State.Run + '.json')) -ErrorAction Stop).CreationTimeUtc -ge $PinAfter) {
+            $Shown.Run = $State.Run
+        }
+        if (-not $Shown.Run -or $State.Run -ne $Shown.Run -or $State.Step -lt $Shown.Step) { return }
+        $Labels = @{ 1 = '새 코드 받는 중'; 2 = '파이썬 패키지 설치 중'; 3 = 'Higgsfield CLI 설치 중'
+                     4 = '화면(프런트) 설치·빌드 중'; 5 = '새 판 시험 기동 중'; 6 = '서버 바꿔 끼우는 중' }
+        $Phases = @{ '' = '전환 요청을 넘겼습니다'; 'prepare' = '새 판 확인'; 'verified' = '새 판 확인'
+                     'draining' = '진행 중인 요청 마무리'; 'quiesced' = '서버 잠시 멈춤, DB 안전 사본'
+                     'checkpointed' = '서버 잠시 멈춤, DB 안전 사본'; 'activation_pending' = '새 판 켜는 중'
+                     'starting' = '새 판 켜는 중'; 'ready' = '새 판 응답 확인'; 'committed' = '바꿔 끼우기 끝'
+                     'failed' = '실패, 이전 판으로 되돌리는 중'; 'rolled_back' = '이전 판으로 되돌림'
+                     'recovery_required' = '자동 복구가 막힘' }
+        $Text = $Labels[$State.Step]
+        if ($State.Step -eq 6) {
+            $Sub = $Phases[$State.Phase]
+            if (-not $Sub) { $Sub = $State.Phase }
+            $Text = $Text + ': ' + $Sub
+        }
+        if ($State.Step -eq $Shown.Step -and $Text -eq $Shown.Text) { return }
+        Write-Host ('[{0:HH:mm:ss}] [{1}/6] {2}' -f (Get-Date), $State.Step, $Text)
+        $Shown.Step = $State.Step
+        $Shown.Text = $Text
+    }
+    catch { }
+}
+
+function Write-ServerUpdateResult([int]$Code) {
+    # The verdict is the coordinator's exit code: it returns 0 only when its own run committed or the
+    # server already ran origin/main. Records cannot prove which run they belong to, so nothing is added
+    # from them, and failures are not explained here; the coordinator's reason is above.
+    if ($Code -eq 0) {
+        $Text = '완료: 서버가 최신 판으로 동작 중입니다.'
+        $Color = 'Green'
+    }
+    else {
+        $Text = "실패: 업데이트가 끝나지 않았습니다(종료 코드 $Code). 위 메시지를 확인하고 이 화면을 보내 주세요."
+        $Color = 'Red'
+    }
+    $Line = '=' * 60
+    Write-Host ''
+    Write-Host $Line -ForegroundColor $Color
+    Write-Host (' ' + $Text) -ForegroundColor $Color
+    Write-Host $Line -ForegroundColor $Color
+}
+
+function Disable-UpdateQuickEdit {
+    # Clicking the window enters Select mode and freezes all output; returns the mode to restore.
+    try {
+        if ([Console]::IsInputRedirected) { return $null }
+        if (-not ('MvHubUpdateConsole' -as [type])) {
+            Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class MvHubUpdateConsole { [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int handle); [DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr handle, out uint mode); [DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr handle, uint mode); }'
+        }
+        $Handle = [MvHubUpdateConsole]::GetStdHandle(-10)
+        $Mode = [uint32]0
+        if (-not [MvHubUpdateConsole]::GetConsoleMode($Handle, [ref]$Mode)) { return $null }
+        # Clear ENABLE_QUICK_EDIT_MODE (0x40); ENABLE_EXTENDED_FLAGS (0x80) makes that take effect.
+        if ([MvHubUpdateConsole]::SetConsoleMode($Handle, [uint32]((([int64]$Mode) -band 0xFFFFFFBFL) -bor 0x80))) { return $Mode }
+    }
+    catch { }
+    return $null
+}
+
+function Restore-UpdateQuickEdit($Mode) {
+    if ($null -eq $Mode) { return }
+    try { [void][MvHubUpdateConsole]::SetConsoleMode([MvHubUpdateConsole]::GetStdHandle(-10), [uint32]$Mode) } catch { }
+}
+
+function Invoke-ServerUpdateWithProgress([string]$RootPath, [string[]]$Arguments) {
+    $Logs = Join-Path $RootPath 'logs'
+    $Shown = @{ Step = 0; Text = ''; Run = '' }
+    $QuickEdit = Disable-UpdateQuickEdit
+    try {
+        $PinAfter = [DateTime]::UtcNow
+        $Process = Start-UpdateBatch (Join-Path $RootPath 'run_py.bat') $Arguments
+        try {
+            while (-not $Process.WaitForExit(1000)) { Show-ServerUpdateProgress $Logs $Shown $PinAfter }
+            $Process.WaitForExit()
+            # One last look so the pinned run's final step shows.
+            Show-ServerUpdateProgress $Logs $Shown ([DateTime]::MaxValue)
+            $Code = $Process.ExitCode
+        }
+        finally { $Process.Dispose() }
+        try { Write-ServerUpdateResult $Code }
+        catch {
+            # Even the plain fallback line may fail on a broken console; the exit code must survive it.
+            try { Write-Host "확인 필요: 결과 안내를 표시하지 못했습니다(종료 코드 $Code)." } catch { }
+        }
+    }
+    # Restored only after the result is printed, so a click cannot freeze the last lines.
+    finally { Restore-UpdateQuickEdit $QuickEdit }
+    return $Code
 }
 
 function Invoke-IsolatedWorker {
@@ -340,7 +498,8 @@ try {
         $VerifierPath = Get-UpdateOverride $VerificationPython "MVHUB_SERVER_VERIFICATION_PYTHON"
         if (-not $VerifierPath) { $VerifierPath = Initialize-ServerVerifier $RootPath }
         # No source-gate receipt: only gated commits reach main (Jay 10-22). The coordinator fetches origin/main.
-        $ExitCode = Invoke-UpdateBatch (Join-Path $RootPath 'run_py.bat') @(
+        # Same coordinator command; the window only adds step lines and one clear result.
+        $ExitCode = Invoke-ServerUpdateWithProgress $RootPath @(
             (Join-Path $RootPath 'tools\server_release_update.py'), '--root', $RootPath,
             '--verification-python', $VerifierPath)
     }

@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import zipfile
 
 import pytest
@@ -341,3 +342,81 @@ ConvertTo-Json -InputObject @($script:Calls) | Set-Content -LiteralPath '{tmp_pa
     calls = json.loads((tmp_path / 'calls.json').read_text(encoding='utf-8-sig'))
     assert calls[:2] == ([] if previous_mark == 'recovery_required' else ['stop', 'inspect-current'])
     assert ('restore-program' in calls) == (expected == 'rolled_back')
+
+
+# The running app reads activation records per request; Python opens files without FILE_SHARE_DELETE,
+# which makes File.Replace fail with a sharing violation (code 32) until the reader lets go.
+HOLDER = r'''
+import pathlib, sys, time
+target, ready, seconds = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), float(sys.argv[3])
+with open(target, 'rb'):
+    ready.write_text('held')
+    time.sleep(seconds)
+'''
+
+
+def held_write(tmp_path, seconds):
+    folder = tmp_path / 'records'
+    folder.mkdir()
+    record = folder / 'control.json'
+    record.write_text('{"state": "old"}', encoding='utf-8')
+    holder = tmp_path / 'holder.py'
+    holder.write_text(HOLDER, encoding='utf-8')
+    ready = tmp_path / 'held.ready'
+    code = f"""
+$p = Start-Process -FilePath '{sys.executable}' -ArgumentList @('"{holder}"', '"{record}"', '"{ready}"', '{seconds}') -PassThru -WindowStyle Hidden
+$deadline = (Get-Date).AddSeconds(10)
+while (-not (Test-Path -LiteralPath '{ready}')) {{ if ((Get-Date) -gt $deadline) {{ throw 'holder did not start' }}; Start-Sleep -Milliseconds 20 }}
+$s = [Diagnostics.Stopwatch]::StartNew()
+try {{ Write-InstallRecord -Path '{record}' -Record @{{ state = 'new' }}; 'WROTE ' + $s.ElapsedMilliseconds }}
+catch {{ 'FAILED ' + $s.ElapsedMilliseconds }}
+$p.WaitForExit()
+"""
+    result = ps(tmp_path, code)
+    assert result.returncode == 0, result.stderr
+    outcome, elapsed = result.stdout.split()[-2:]
+    return outcome, int(elapsed), record
+
+
+def test_install_record_waits_for_a_reader_to_let_go(tmp_path):
+    outcome, elapsed, record = held_write(tmp_path, 0.8)
+    assert outcome == 'WROTE' and elapsed >= 300
+    assert json.loads(record.read_text(encoding='utf-8-sig'))['state'] == 'new'
+    assert [p.name for p in record.parent.iterdir()] == ['control.json']
+
+
+def test_install_record_gives_up_and_keeps_previous_bytes(tmp_path):
+    outcome, elapsed, record = held_write(tmp_path, 6)
+    assert outcome == 'FAILED' and 1500 <= elapsed < 4500
+    assert record.read_text(encoding='utf-8') == '{"state": "old"}'
+    assert [p.name for p in record.parent.iterdir()] == ['control.json']
+
+
+def test_only_brief_lock_errors_are_retried(tmp_path):
+    code = """
+$share = New-Object System.IO.IOException('x', [int]0x80070020)
+$missing = New-Object System.IO.IOException('x', [int]0x80070002)
+$wrapped = New-Object System.Management.Automation.MethodInvocationException('outer', $share)
+$denied = New-Object System.UnauthorizedAccessException('x')
+'{0} {1} {2} {3}' -f (Test-InstallRecordLock $share), (Test-InstallRecordLock $missing), (Test-InstallRecordLock $wrapped), (Test-InstallRecordLock $denied)
+"""
+    result = ps(tmp_path, code)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split()[-4:] == ['True', 'False', 'True', 'True']
+
+
+def test_retried_journal_write_keeps_phase_checks(tmp_path):
+    code = f"""
+$JournalPath='{tmp_path / 'journal.json'}'
+$script:InstallJournal=@{{format_version=1;run_id='r';phase='starting';updated_at='t';db_mutation_possible=$true;business_writes_possible=$true}}
+Write-InstallRecord $JournalPath $script:InstallJournal
+Set-InstallPhase ready
+$disk = Get-Content -LiteralPath $JournalPath -Raw | ConvertFrom-Json
+$disk.updated_at = 'changed elsewhere'
+Write-InstallRecord $JournalPath $disk
+try {{ Set-InstallPhase committed; 'UNEXPECTED' }} catch {{ 'REFUSED ' + $_.Exception.Message }}
+"""
+    result = ps(tmp_path, code)
+    assert result.returncode == 0, result.stderr
+    assert 'REFUSED Install journal changed.' in result.stdout
+    assert json.loads((tmp_path / 'journal.json').read_text(encoding='utf-8-sig'))['phase'] == 'ready'
