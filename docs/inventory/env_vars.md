@@ -11,7 +11,7 @@
 - **설정하는 곳** = 코드가 읽는 이름을 `.bat`/`.ps1` 이 `set X=`·`$env:X =` 로 주는 자리와 파이썬의 `os.environ["X"] = …`.
 - 스캔 범위는 `backend/app`·`backend/*.py`(서버 기동기 `serve.py` 등)·루트 `*.py`(`agent_push.py` 등)·`tools`·`release`·`deploy`·`frontend/src` 다. **시험 폴더(`backend/tests`·`frontend/tests`)는 보지 않는다** — 시험 전용 변수는 여기 없다.
 
-제품 환경변수 140개.
+제품 환경변수 148개.
 
 | 이름 | 기본값 | 직접 읽는 파일 | 설정하는 곳 |
 | --- | --- | --- | --- |
@@ -46,8 +46,8 @@
 | `CONTENT_HUB_COMFY_URL` | — | `backend/app/routers/comfy.py` | — |
 | `CONTENT_HUB_CORS` | `"http://localhost:5173,http://127.0.0.1:5173"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_COST_TTL` | `7 * 86400` | `backend/app/services/cli_bridge.py` | — |
-| `CONTENT_HUB_DATA` | `""` `BACKEND_DIR / "data"` `Path(__file__).resolve().parent / "data"` `str(REPO_ROOT / "backend" / "data")` | `backend/app/config.py` `backend/app/routers/backup_replica.py` `backend/cleanup_orphan_creators.py` `tools/deploy_fence_check.py` `tools/endurance_probe.py` `tools/server_move.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` `tools/load_test_100.py` |
-| `CONTENT_HUB_DB` | `""` `None` | `backend/app/db_paths.py` `backend/app/routers/db_transfer.py` `backend/cleanup_orphan_creators.py` `tools/credit_round_audit.py` `tools/deploy_fence_check.py` `tools/endurance_probe.py` `tools/preflight_task_workspace.py` `tools/server_move.py` `tools/verify_generation_submission_recovery.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` `tools/load_test_100.py` `tools/preflight_task_workspace.py` `tools/verify_generation_submission_recovery.py` |
+| `CONTENT_HUB_DATA` | `""` `BACKEND_DIR / "data"` `Path(__file__).resolve().parent / "data"` `str(REPO_ROOT / "backend" / "data")` | `backend/app/config.py` `backend/app/routers/backup_replica.py` `backend/cleanup_orphan_creators.py` `tools/deploy_fence_check.py` `tools/endurance_probe.py` `tools/server_console/install.py` `tools/server_move.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` `tools/load_test_100.py` |
+| `CONTENT_HUB_DB` | `""` `None` | `backend/app/db_paths.py` `backend/app/routers/db_transfer.py` `backend/cleanup_orphan_creators.py` `tools/credit_round_audit.py` `tools/deploy_fence_check.py` `tools/endurance_probe.py` `tools/preflight_task_workspace.py` `tools/server_console/install.py` `tools/server_move.py` `tools/verify_generation_submission_recovery.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` `tools/load_test_100.py` `tools/preflight_task_workspace.py` `tools/verify_generation_submission_recovery.py` |
 | `CONTENT_HUB_DB_BACKEND` | `"sqlite"` | `backend/app/db.py` | — |
 | `CONTENT_HUB_DB_POOL` | `"1"` | `backend/app/db.py` | — |
 | `CONTENT_HUB_DB_UPLOAD_FILE_MAX_BYTES` | `512 * MIB` | `backend/app/services/upload_limits.py` | — |
@@ -71,7 +71,7 @@
 | `CONTENT_HUB_LOCAL_AGENT_PAIR_SECRET` | `(표시 안 함)` | `backend/app/config.py` | `test_dev.bat` |
 | `CONTENT_HUB_LOCAL_HOSTS` | `""` | `backend/app/services/request_guards.py` | — |
 | `CONTENT_HUB_LOGIN_VERIFY_CONCURRENCY` | `""` | `backend/app/routers/auth.py` | — |
-| `CONTENT_HUB_LOG_DIR` | `DATA_DIR / "logs"` `ROOT / "backend" / "data" / "logs"` | `backend/app/services/operational_logging.py` `tools/log_viewer.py` | — |
+| `CONTENT_HUB_LOG_DIR` | `DATA_DIR / "logs"` `ROOT / "backend" / "data" / "logs"` | `backend/app/services/operational_logging.py` `tools/log_viewer.py` `tools/server_console/install.py` | — |
 | `CONTENT_HUB_LOG_KEEP` | `"5"` | `backend/app/services/operational_logging.py` | — |
 | `CONTENT_HUB_LOG_MAX_BYTES` | `str(10 * 1024 * 1024)` | `backend/app/services/operational_logging.py` | — |
 | `CONTENT_HUB_MANAGE` | `"1"` | `backend/app/config.py` | `MV_agent.bat` `MV_server.bat` `test_dev_server.bat` `test_push-db.bat` |
@@ -110,7 +110,7 @@
 | `CONTENT_HUB_SHARED_URL` | — | `backend/app/shared_server_config.py` | `MV_agent.bat` |
 | `CONTENT_HUB_SHARE_RECONCILE_INTERVAL_SECONDS` | `"30"` | `backend/app/services/share_state_reconciler.py` | — |
 | `CONTENT_HUB_SLOW_REQUEST_MS` | `"1000"` | `backend/app/main.py` | — |
-| `CONTENT_HUB_SSL_CERTFILE` | `""` | `backend/serve.py` | — |
+| `CONTENT_HUB_SSL_CERTFILE` | `""` | `backend/serve.py` `tools/server_console/install.py` | — |
 | `CONTENT_HUB_SSL_KEYFILE` | `(표시 안 함)` | `backend/serve.py` | — |
 | `CONTENT_HUB_STABLE_SECONDS` | `"120"` | `tools/server_supervisor.py` | — |
 | `CONTENT_HUB_STUCK_SYNCED_AGE` | `"300"` | `backend/app/services/syncer.py` | — |
@@ -137,6 +137,7 @@
 | `CONTENT_HUB_WORKER_ID` | `"me"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_WORKER_NAME` | `"나"` | `backend/app/config.py` | — |
 | `DEV` | — | `frontend/src/lib/sceneStore.ts` | — |
+| `HOME` | `None` | `tools/server_console/main.py` | `MV_console.bat` |
 | `MVHUB_ACTIVATION_CONTROL` | `""` `''` | `backend/app/services/release_update.py` `backend/app/services/runtime_activation.py` | `MV_agent.bat` `update_release_worker.bat` |
 | `MVHUB_ACTIVATION_ROOT` | `''` | `backend/app/services/release_update.py` `backend/app/services/runtime_activation.py` | `MV_agent.bat` `update_release_worker.bat` |
 | `MVHUB_APP_BROWSER` | `""` | `run_agent_session.py` | — |
@@ -152,9 +153,16 @@
 | `MVHUB_SESSION_GUARDED` | `None` | `run_agent_session.py` `tools/workroom.py` | `run_agent_session.py` |
 | `MVHUB_SESSION_TOKEN` | `(표시 안 함)` | `agent_push.py` | — |
 | `MVHUB_UPDATE_STATE_DIR` | `str(Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempd…` | `backend/app/services/release_update.py` | — |
+| `NUMBER_OF_PROCESSORS` | — | `tools/server_console/install.py` | — |
 | `PM_TEST_SNAPSHOT_TOKEN` | — | `tools/refresh_pm_test_data.py` | — |
+| `PORT` | — | `tools/server_console/install.py` | `MV_agent.bat` `MV_server.bat` `MV_watchdog.bat` `register_autostart.bat` `restart_server_task.bat` `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |
+| `PROCESSOR_ARCHITECTURE` | — | `tools/server_console/install.py` | — |
 | `RESOLVE_SCRIPT_API` | `""` | `backend/app/services/resolve_bridge.py` | — |
 | `RESOLVE_SCRIPT_LIB` | `""` | `backend/app/services/resolve_bridge.py` | `backend/app/services/resolve_bridge.py` |
+| `TCLLIBPATH` | `None` | `tools/server_console/main.py` | `MV_console.bat` |
+| `TCL_LIBRARY` | `None` | `tools/server_console/main.py` | `MV_console.bat` |
+| `TK_LIBRARY` | `None` | `tools/server_console/main.py` | `MV_console.bat` |
+| `USERDOMAIN` | — | `tools/server_console/install.py` | — |
 
 ## 코드가 읽지 않고 자식 프로세스에 넘기기만 하는 변수
 
@@ -174,8 +182,13 @@
 
 | 이름 | 직접 읽는 파일 |
 | --- | --- |
-| `APPDATA` | `backend/app/services/resolve_library_dialog.py` `backend/app/services/resolve_script_installer.py` |
-| `COMPUTERNAME` | `backend/app/routers/registry_helper.py` `backend/app/services/worker_backup.py` |
-| `LOCALAPPDATA` | `agent_push.py` `backend/app/routers/mcp.py` `backend/app/services/release_update.py` `run_agent_session.py` `tools/mcp_adapter/local_setup.py` |
+| `APPDATA` | `backend/app/services/resolve_library_dialog.py` `backend/app/services/resolve_script_installer.py` `tools/server_console/install.py` |
+| `COMPUTERNAME` | `backend/app/routers/registry_helper.py` `backend/app/services/worker_backup.py` `tools/server_console/install.py` |
+| `HOMEDRIVE` | `tools/server_console/install.py` |
+| `HOMEPATH` | `tools/server_console/install.py` |
+| `LOCALAPPDATA` | `agent_push.py` `backend/app/routers/mcp.py` `backend/app/services/release_update.py` `run_agent_session.py` `tools/mcp_adapter/local_setup.py` `tools/server_console/install.py` |
 | `PROGRAMDATA` | `backend/app/services/resolve_bridge.py` `backend/app/services/resolve_script_installer.py` |
 | `PROGRAMFILES` | `backend/app/services/resolve_bridge.py` `backend/app/services/resolve_diagnostics.py` |
+| `TEMP` | `tools/server_console/install.py` |
+| `USERNAME` | `tools/server_console/install.py` |
+| `USERPROFILE` | `tools/server_console/install.py` |
