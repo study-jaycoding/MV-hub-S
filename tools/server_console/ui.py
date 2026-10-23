@@ -1,0 +1,736 @@
+"""관리 창 화면(tkinter). 그리기·클릭만 — 판단은 status·actions·jobs 에 있다.
+
+작업 스레드는 위젯도 after() 도 부르지 않고 큐에 넣기만 하며, 메인 스레드가 주기적으로 큐를 읽어 화면을 바꾼다.
+"""
+from __future__ import annotations
+
+import collections
+import ctypes
+import msvcrt
+import queue
+import sys
+import threading
+import time
+import tkinter as tk
+import traceback
+from tkinter import messagebox, ttk
+
+from . import actions, install, jobs, logs, names, status
+
+BG, BG2, PANEL, PANEL2 = "#08090a", "#0c0e10", "#121316", "#181a1e"
+TEXT, MUTED, MUTED2, LIME, INK = "#f3f4f6", "#8b909c", "#5f6573", "#c4e84a", "#131806"
+RED, AMBER, BLUE, VIOLET, CYAN = "#f0626b", "#f2b84b", "#6aa8ff", "#b49cff", "#5fd0c4"
+FONT = ("Malgun Gothic", 10)
+BOLD = ("Malgun Gothic", 10, "bold")
+MONO = ("Consolas", 10)
+MAX_LINES_PER_TAB = 3000
+QUEUE_MAX = 200            # 화면이 못 따라오면 작업 스레드가 기다린다(무한히 쌓지 않는다)
+DRAIN_LINES = 3000         # 한 번에 화면에 넣는 로그 줄 상한
+JOB_READ_BYTES = 64_000    # 업데이트 출력은 한 번에 이만큼씩 따라 읽는다
+STEP_LABELS = ("코드 받기", "파이썬", "CLI", "화면 빌드", "시험 기동", "바꿔 끼우기")
+SERVER_COLORS = {"ok": LIME, "switching": AMBER, "starting": AMBER, "maintenance": AMBER, "blocked": AMBER,
+                 "not_ready": RED, "no_answer": RED, "stopped": MUTED, "unknown": MUTED, "no_task": MUTED}
+JOB_TERMINAL = ("finished", "refused", "check_needed", "runner_error")
+
+
+class ConsoleTk(tk.Tk):
+    """홈·현재 폴더의 .Tk.py·.Tk.tcl 등을 실행하는 readprofile 을 막은 Tk."""
+
+    def readprofile(self, baseName, className):  # noqa: N802,N803 — tkinter 이름 그대로
+        return None
+
+    def report_callback_exception(self, exc, val, tb):
+        _log_ui_error("".join(traceback.format_exception(exc, val, tb)))
+        try:
+            messagebox.showerror("MV Hub 서버 관리", f"화면 처리 중 오류가 났습니다.\n{val}\n자세한 내용: logs\\{names.UI_LOG}")
+        except tk.TclError:
+            pass
+
+
+def _log_ui_error(text: str) -> None:
+    try:
+        path = install.ROOT / "logs" / names.UI_LOG
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(time.strftime("[%Y-%m-%d %H:%M:%S] ") + text.rstrip() + "\n")
+    except OSError:
+        pass
+
+
+def check_tk() -> int:
+    """띄우기 전 점검(같은 격리 조건). 실패 이유를 보이고 0 이 아닌 값으로 끝낸다."""
+    try:
+        root = ConsoleTk()
+        root.withdraw()
+        root.update_idletasks()
+        root.destroy()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[error] tkinter 를 시작하지 못했습니다: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    print("tk ok")
+    return 0
+
+
+def _single_instance():
+    """logs\\server-console.lock 첫 바이트 잠금. 이미 열려 있으면 None."""
+    path = install.ROOT / "logs" / names.LOCK_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+b")
+    if handle.tell() == 0:
+        handle.write(b"0")
+        handle.flush()
+    handle.seek(0)
+    try:
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        handle.close()
+        return None
+    return handle
+
+
+def _ago(seconds: float | None) -> str:
+    if seconds is None:
+        return "시각 모름"
+    seconds = max(0, int(seconds))
+    if seconds < 90:
+        return f"{seconds}초 전"
+    if seconds < 5400:
+        return f"{seconds // 60}분 전"
+    return f"{seconds // 3600}시간 전"
+
+
+def _int(value) -> int | None:
+    """로그에서 읽은 숫자. 형식이 틀리면 None(화면에는 '확인 불가')."""
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _line_count(text: tk.Text) -> int:
+    """줄마다 '\\n' 으로 끝나게 넣으므로 마지막 빈 줄은 세지 않는다."""
+    return int(text.index("end-1c").split(".")[0]) - 1
+
+
+class App:
+    def __init__(self, root: ConsoleTk, inst: install.Installation, autostart: bool = True) -> None:
+        self.root = root
+        self.inst = inst
+        self.runner = install.default_runner(inst)
+        self.queue: queue.Queue = queue.Queue(maxsize=QUEUE_MAX)
+        self.hub = logs.LogHub(inst)
+        self.buffers = {key: collections.deque(maxlen=MAX_LINES_PER_TAB) for key, _ in logs.TABS}
+        self.workers_seen: set[str] = set()
+        self.status: status.Status | None = None
+        self.tasks: dict | None = None
+        self.task_match = "unknown"
+        self.addresses: list[tuple[str, str]] | None = None
+        self.copy_text = ""
+        self.job_view = ("", 0)  # (따라가는 작업 ID, 바꾼 횟수) — 한 번에 바꿔 작업 스레드가 섞어 읽지 않게
+        self.job_step = 0
+        self.job_closed = ""  # 끝 처리를 마친 작업 — 같은 작업의 반복 알림이 다음 요청의 busy 를 풀지 않게
+        self.backlog: collections.deque = collections.deque()  # 예산을 넘어 다음 차례로 미룬 메시지 조각
+        self.busy = False
+        self.stop = threading.Event()
+        self._build()
+        # 다시 열면 결과를 확인하지 않은 작업을 먼저, 없으면 마지막 작업을 다시 보여 준다.
+        recent = (jobs.unresolved_jobs(inst) or [])[:1] or jobs.recent_jobs(inst, 1)
+        if recent:
+            self.job_id = recent[0]
+            self.busy = True
+            self.start_button.configure(state="disabled")
+        if autostart:  # 시험은 끄고 메시지를 직접 넣는다
+            threading.Thread(target=self._worker, name="console-worker", daemon=True).start()
+            self.root.after(250, self._drain)
+
+    @property
+    def job_id(self) -> str:
+        return self.job_view[0]
+
+    @job_id.setter
+    def job_id(self, value: str) -> None:
+        self.job_view = (value, self.job_view[1] + 1)  # 같은 작업을 다시 골라도 출력은 처음부터 다시 읽는다
+
+    # ---------- 화면 만들기 ----------
+    def _build(self) -> None:
+        root = self.root
+        root.title("MV Hub 서버 관리")
+        root.configure(bg=BG)
+        root.geometry("1280x800")
+        root.minsize(1000, 640)
+        style = ttk.Style(root)
+        style.theme_use("clam")
+        style.configure("TNotebook", background=BG, borderwidth=0)
+        style.configure("TNotebook.Tab", background=BG, foreground=MUTED, padding=(12, 6), font=BOLD, borderwidth=0)
+        style.map("TNotebook.Tab", background=[("selected", PANEL)], foreground=[("selected", LIME)])
+        style.configure("TCombobox", fieldbackground=PANEL, background=PANEL2, foreground=TEXT, arrowcolor=TEXT)
+        style.map("TCombobox", fieldbackground=[("readonly", PANEL)], foreground=[("readonly", TEXT)],
+                  selectbackground=[("readonly", PANEL)], selectforeground=[("readonly", TEXT)])
+
+        scale = float(root.tk.call("tk", "scaling")) / 1.333
+        self.nav = tk.Frame(root, bg=BG2, width=int(200 * max(1.0, scale)))
+        self.nav.pack(side="left", fill="y")
+        self.nav.pack_propagate(False)
+        tk.Label(self.nav, text="MV Hub 서버", bg=BG2, fg=TEXT, font=("Malgun Gothic", 12, "bold")).pack(anchor="w", padx=14, pady=(14, 0))
+        self.nav_state = tk.Label(self.nav, text="● 확인 중…", bg=BG2, fg=MUTED, font=("Malgun Gothic", 9))
+        self.nav_state.pack(anchor="w", padx=14, pady=(2, 12))
+        self.pages: dict[str, tk.Frame] = {}
+        self.nav_items: dict[str, tk.Label] = {}
+        main = tk.Frame(root, bg=BG)
+        main.pack(side="left", fill="both", expand=True)
+        for key, label in (("status", "상태·로그"), ("update", "업데이트")):
+            item = tk.Label(self.nav, text=label, bg=BG2, fg=MUTED, font=("Malgun Gothic", 11, "bold"),
+                            anchor="w", padx=12, pady=8, cursor="hand2", takefocus=True)
+            item.pack(fill="x", padx=8, pady=1)
+            item.bind("<Button-1>", lambda _e, k=key: self.show(k))
+            item.bind("<Return>", lambda _e, k=key: self.show(k))
+            self.nav_items[key] = item
+            self.pages[key] = tk.Frame(main, bg=BG)
+        for label in ("릴리스", "백업", "서버 이사", "설정"):
+            tk.Label(self.nav, text=f"{label}  · 다음 단계", bg=BG2, fg=MUTED2, font=("Malgun Gothic", 10),
+                     anchor="w", padx=12, pady=7).pack(fill="x", padx=8, pady=1)
+        tk.Label(self.nav, text="창을 닫아도 서버는 계속 돕니다", bg=BG2, fg=MUTED2,
+                 font=("Malgun Gothic", 8)).pack(side="bottom", anchor="w", padx=12, pady=10)
+        self._build_status_page(self.pages["status"])
+        self._build_update_page(self.pages["update"])
+        self.show("status")
+
+    def show(self, key: str) -> None:
+        for name, page in self.pages.items():
+            page.pack_forget()
+            self.nav_items[name].configure(bg=BG2, fg=MUTED)
+        self.pages[key].pack(fill="both", expand=True)
+        self.nav_items[key].configure(bg="#1b2010", fg=LIME)
+
+    def _header(self, page: tk.Frame, title: str) -> tk.Frame:
+        head = tk.Frame(page, bg=BG2)
+        head.pack(fill="x")
+        tk.Label(head, text=title, bg=BG2, fg=TEXT, font=("Malgun Gothic", 13, "bold")).pack(side="left", padx=14, pady=12)
+        return head
+
+    def _button(self, parent, text, command, primary=False) -> tk.Button:
+        bg, fg = (LIME, INK) if primary else (PANEL2, TEXT)
+        return tk.Button(parent, text=text, command=command, bg=bg, fg=fg, activebackground=bg, activeforeground=fg,
+                         relief="flat", font=BOLD, padx=12, pady=5, bd=0, highlightthickness=0, cursor="hand2")
+
+    def _build_status_page(self, page: tk.Frame) -> None:
+        head = self._header(page, "상태·로그")
+        # 먼저 붙인 것이 자리를 먼저 차지한다 — 주소가 길어도 업데이트 단추가 밀려나지 않게 단추부터.
+        self._button(head, "⟳ Git 업데이트", lambda: (self.show("update"), self.request_plan()), primary=True
+                     ).pack(side="right", padx=12, pady=8)
+        self.code_label = tk.Label(head, text="돌고 있는 코드 —", bg=PANEL, fg=MUTED, font=FONT, padx=8, pady=3)
+        self.code_label.pack(side="left", padx=4)
+        self._button(head, "주소 복사", self.copy_address).pack(side="right", padx=4)
+        self.addr_label = tk.Label(head, text="주소 —", bg=PANEL, fg=MUTED, font=FONT, padx=8, pady=3,
+                                   justify="left", wraplength=560)
+        self.addr_label.pack(side="left", padx=4)
+
+        cards = tk.Frame(page, bg=BG)
+        cards.pack(fill="x", padx=12, pady=10)
+        self.cards: dict[str, tuple[tk.Label, tk.Label]] = {}
+        for key, title in (("server", "서버"), ("accounts", "접속 계정"), ("requests", "요청"),
+                           ("db", "DB"), ("backup", "백업"), ("intake", "생성 접수")):
+            box = tk.Frame(cards, bg=PANEL, highlightbackground="#26282d", highlightthickness=1)
+            box.pack(side="left", fill="x", expand=True, padx=4)
+            tk.Label(box, text=title, bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9)).pack(anchor="w", padx=10, pady=(8, 0))
+            value = tk.Label(box, text="—", bg=PANEL, fg=TEXT, font=("Malgun Gothic", 15, "bold"))
+            value.pack(anchor="w", padx=10)
+            sub = tk.Label(box, text="확인 중…", bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9), justify="left")
+            sub.pack(anchor="w", padx=10, pady=(0, 8))
+            self.cards[key] = (value, sub)
+
+        tools = tk.Frame(page, bg=BG)
+        tools.pack(fill="x", padx=12)
+        tk.Label(tools, text="작업자", bg=BG, fg=MUTED, font=FONT).pack(side="left")
+        self.worker_filter = ttk.Combobox(tools, values=["모두"], state="readonly", width=14, font=FONT)
+        self.worker_filter.set("모두")
+        self.worker_filter.pack(side="left", padx=(4, 12))
+        self.worker_filter.bind("<<ComboboxSelected>>", lambda _e: self._rerender_all())
+        tk.Label(tools, text="찾기", bg=BG, fg=MUTED, font=FONT).pack(side="left")
+        self.search = tk.Entry(tools, bg=PANEL, fg=TEXT, insertbackground=TEXT, relief="flat", font=FONT, width=28)
+        self.search.pack(side="left", padx=4)
+        self.search.bind("<Return>", lambda _e: self.find_next())
+        self._button(tools, "다음", self.find_next).pack(side="left", padx=4)
+        self.sources_label = tk.Label(tools, text="", bg=BG, fg=MUTED2, font=("Malgun Gothic", 8))
+        self.sources_label.pack(side="right")
+
+        self.notebook = ttk.Notebook(page)
+        self.notebook.pack(fill="both", expand=True, padx=12, pady=(6, 12))
+        self.texts: dict[str, tk.Text] = {}
+        for key, label in logs.TABS:
+            frame = tk.Frame(self.notebook, bg=PANEL)
+            text = tk.Text(frame, bg=PANEL, fg=MUTED, font=MONO, relief="flat", bd=0, padx=12, pady=8,
+                           wrap="none", highlightthickness=0, insertbackground=TEXT)
+            scroll = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
+            text.configure(yscrollcommand=scroll.set, state="disabled")
+            scroll.pack(side="right", fill="y")
+            text.pack(fill="both", expand=True)
+            for tag, color in (("ERROR", RED), ("WARNING", AMBER), ("CRITICAL", RED), ("INFO", MUTED), ("hit", INK)):
+                text.tag_configure(tag, foreground=color)
+            text.tag_configure("hit", background=LIME)
+            self.notebook.add(frame, text=label)
+            self.texts[key] = text
+
+    def _build_update_page(self, page: tk.Frame) -> None:
+        self._header(page, "업데이트 — Git 업데이트(서버 코드)")
+        body = tk.Frame(page, bg=BG)
+        body.pack(fill="both", expand=True, padx=16, pady=12)
+        tk.Label(body, text="GitHub main 의 코드로 이 서버를 바꿉니다. 옆에서 새 코드를 준비·시험한 뒤 마지막에 서버를 잠깐 "
+                             "멈추고 바꿔 끼웁니다(약 30초 끊김). 실패하면 이전 코드로 저절로 돌아갑니다.",
+                 bg=BG, fg=MUTED, font=FONT, wraplength=900, justify="left").pack(anchor="w")
+        row = tk.Frame(body, bg=BG)
+        row.pack(fill="x", pady=10)
+        self.start_button = self._button(row, "Git 업데이트 시작…", self.request_plan, primary=True)
+        self.start_button.pack(side="left")
+        self.plan_note = tk.Label(row, text="", bg=BG, fg=AMBER, font=FONT, justify="left", wraplength=820)
+        self.plan_note.pack(side="left", padx=12)
+        steps = tk.Frame(body, bg=BG)
+        steps.pack(fill="x", pady=(6, 2))
+        self.step_bars: list[tk.Frame] = []
+        self.step_labels: list[tk.Label] = []
+        for index, label in enumerate(STEP_LABELS, 1):
+            cell = tk.Frame(steps, bg=BG)
+            cell.pack(side="left", fill="x", expand=True, padx=3)
+            bar = tk.Frame(cell, bg="#26282d", height=6)
+            bar.pack(fill="x")
+            text = tk.Label(cell, text=f"{index} {label}", bg=BG, fg=MUTED2, font=("Malgun Gothic", 9))
+            text.pack(anchor="w")
+            self.step_bars.append(bar)
+            self.step_labels.append(text)
+        frame = tk.Frame(body, bg=PANEL)
+        frame.pack(fill="both", expand=True, pady=8)
+        self.job_text = tk.Text(frame, bg="#07080a", fg=MUTED, font=MONO, relief="flat", bd=0, padx=12, pady=8,
+                                wrap="word", highlightthickness=0, state="disabled")
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=self.job_text.yview)
+        self.job_text.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        self.job_text.pack(fill="both", expand=True)
+        bottom = tk.Frame(body, bg=BG)
+        bottom.pack(fill="x")
+        self.result_label = tk.Label(bottom, text="", bg=BG, fg=TEXT, font=("Malgun Gothic", 12, "bold"), anchor="w",
+                                     justify="left", wraplength=900)
+        self.result_label.pack(side="left", fill="x")
+        self.ack_button = self._button(bottom, "확인했음", self.acknowledge)  # 결과를 잃은 작업에만 보인다
+
+    # ---------- 동작 ----------
+    def copy_address(self) -> None:
+        if not self.copy_text:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.copy_text)
+
+    def acknowledge(self) -> None:
+        if not messagebox.askokcancel("결과 확인", "서버 상태와 로그로 지난 업데이트 결과를 확인했나요?\n"
+                                      "확인했다고 표시하면 새 업데이트를 시작할 수 있습니다.", icon="warning"):
+            return
+        try:
+            jobs.acknowledge(self.inst, self.job_id)
+        except (jobs.JobError, OSError) as exc:
+            messagebox.showerror("결과 확인", f"표시하지 못했습니다: {exc}")
+            return
+        self.ack_button.pack_forget()
+        self._job_done()
+
+    def find_next(self) -> None:
+        needle = self.search.get().strip()
+        tab = logs.TABS[self.notebook.index("current")][0]
+        text = self.texts[tab]
+        text.tag_remove("hit", "1.0", "end")
+        if not needle:
+            return
+        start = text.index("insert") if text.tag_ranges("sel") else "1.0"
+        found = text.search(needle, f"{start}+1c", stopindex="end", nocase=True) or text.search(needle, "1.0", stopindex="end", nocase=True)
+        if found:
+            text.tag_add("hit", found, f"{found}+{len(needle)}c")
+            text.mark_set("insert", found)
+            text.see(found)
+
+    def request_plan(self) -> None:
+        if self.busy:
+            return
+        self.busy = True
+        self.start_button.configure(state="disabled")
+        self.plan_note.configure(text="대상과 조건을 확인하는 중…", fg=MUTED)
+        threading.Thread(target=self._plan_worker, daemon=True).start()
+
+    def _plan_worker(self) -> None:
+        unresolved: list[str] | None = []
+        try:
+            tasks = install.task_states(self.runner)
+            unresolved = jobs.unresolved_jobs_or_repair(self.inst, self.runner)
+            plan = actions.plan_git_update(self.inst, install.server_task_matches(self.inst, tasks),
+                                           status.update_traces(self.inst), install.untrusted_writers(self.inst, self.runner),
+                                           unresolved_jobs=unresolved)
+            if isinstance(plan, actions.Plan):  # Git 은 검사를 통과한 뒤에만 실행한다
+                plan = actions.with_reference(plan, self.inst, actions.reference_main(self.inst, self.runner))
+        except Exception as exc:  # noqa: BLE001
+            plan = actions.Refusal((f"확인 중 오류: {type(exc).__name__}",))
+        if isinstance(plan, actions.Refusal) and unresolved:
+            self.queue.put(("job_select", unresolved[0]))  # 막고 있는 작업을 보여 [확인했음]을 누를 수 있게
+        self.queue.put(("plan", plan))  # 버리면 busy 가 안 풀린다 — 자리가 날 때까지 기다린다
+
+    def _on_plan(self, plan) -> None:
+        if isinstance(plan, actions.Refusal):
+            self.busy = False
+            if not self.ack_button.winfo_manager():  # 결과 확인 전에는 시작 단추를 다시 켜지 않는다
+                self.start_button.configure(state="normal")
+            self.plan_note.configure(text="지금은 시작할 수 없습니다:\n· " + "\n· ".join(plan.reasons), fg=AMBER)
+            return
+        # 권한 알림은 막지 않고 업데이트 화면에만 남긴다(Jay 결정 2026-10-23 — actions.acl_warnings).
+        self.plan_note.configure(text="\n".join(f"참고: {w}" for w in plan.warnings), fg=AMBER if plan.warnings else MUTED)
+        if messagebox.askokcancel("Git 업데이트 확인", "\n\n".join(plan.summary) + "\n\n실행할까요?", icon="warning"):
+            threading.Thread(target=self._start_worker, args=(plan,), daemon=True).start()
+        else:
+            self.busy = False
+            self.start_button.configure(state="normal")
+
+    def _start_worker(self, plan) -> None:
+        try:
+            job_id = jobs.new_job(self.inst, plan, self.runner)
+        except Exception as exc:  # noqa: BLE001 — 작업 폴더도 못 만들었으면 남은 것이 없다
+            self.queue.put(("plan", actions.Refusal((f"작업을 시작하지 못했습니다: {exc}",))))
+            return
+        try:
+            jobs.launch_runner(self.inst, job_id)
+        except Exception as exc:  # noqa: BLE001 — 만든 작업은 기록을 남겨 '결과 확인 필요'로 보인다
+            try:
+                jobs.mark_launch_failed(self.inst, job_id, f"실행기를 띄우지 못했습니다: {exc}")
+            except Exception:  # noqa: BLE001 — 기록도 못 남기면 read_job 이 시작 대기 뒤 check_needed 로 본다
+                _log_ui_error(traceback.format_exc())
+        self.queue.put(("job_started", job_id))
+
+    # ---------- 작업 스레드(위젯·after 금지, 큐에만) ----------
+    def _put(self, item) -> bool:
+        try:
+            self.queue.put(item, timeout=2)
+            return True
+        except queue.Full:
+            return False
+
+    def _worker(self) -> None:
+        last_status = last_tasks = last_addr = 0.0
+        offsets: dict[str, int] = {}  # 작업마다 읽은 위치 — 이 스레드만 만진다
+        while not self.stop.is_set():
+            now = time.time()
+            try:
+                if now - last_tasks > 20:
+                    self.tasks = install.task_states(self.runner)
+                    self.task_match = install.server_task_matches(self.inst, self.tasks)
+                    last_tasks = now
+                if now - last_addr > 60:
+                    self._put(("addresses", install.addresses(self.runner)))
+                    last_addr = now
+                if now - last_status > 4:
+                    self._put(("status", status.collect_status(self.inst, self.tasks, self.task_match)))
+                    last_status = now
+                lines = self.hub.poll()
+                if lines:
+                    self._put(("logs", lines))
+                self._put(("sources", self.hub.states()))
+                view = self.job_view
+                if view[0]:
+                    state = jobs.read_job(self.inst, view[0])  # 상태를 먼저 — 끝났으면 출력도 이미 다 쓰였다
+                    new_lines, offset = jobs.read_output(self.inst, view[0], offsets.get(view, 0), JOB_READ_BYTES,
+                                                         final=state.get("status") in JOB_TERMINAL)
+                    if self._put(("job", view, new_lines, state)):
+                        offsets[view] = offset  # 못 넣었으면 다음에 같은 곳부터 다시 읽는다
+            except Exception:  # noqa: BLE001
+                _log_ui_error(traceback.format_exc())
+            self.stop.wait(1.0)
+
+    # ---------- 메인 스레드: 큐 비우기 ----------
+    def _drain(self) -> None:
+        try:
+            budget = DRAIN_LINES
+            for _ in range(50):
+                if budget <= 0:
+                    break
+                if self.backlog:
+                    item = self.backlog.popleft()
+                else:
+                    try:
+                        item = self.queue.get_nowait()
+                    except queue.Empty:
+                        break
+                item = self._split(item, budget)
+                try:
+                    budget -= self._handle(item)
+                except Exception:  # noqa: BLE001 — 메시지 하나가 이후 갱신을 멈추면 안 된다
+                    _log_ui_error(traceback.format_exc())
+        finally:
+            self.root.after(250, self._drain)
+
+    def _split(self, item, budget: int):
+        """줄이 많은 메시지는 남은 예산만큼만 이번에 그리고, 나머지는 다음 차례 맨 앞으로 미룬다."""
+        kind = item[0]
+        if kind == "logs" and len(item[1]) > budget:
+            self.backlog.appendleft(("logs", item[1][budget:]))
+            return ("logs", item[1][:budget])
+        if kind == "job" and len(item[2]) > budget:
+            # 상태(끝 처리)는 줄을 다 그린 마지막 조각에만 싣는다.
+            self.backlog.appendleft(("job", item[1], item[2][budget:], item[3]))
+            return ("job", item[1], item[2][:budget], {"status": "running"})
+        return item
+
+    def _handle(self, item) -> int:
+        """메시지 하나를 화면에 반영하고 넣은 줄 수(최소 1)를 돌려준다."""
+        kind = item[0]
+        if kind == "status":
+            self._show_status(item[1])
+        elif kind == "logs":
+            self._add_lines(item[1])
+            return max(1, len(item[1]))
+        elif kind == "job_select":
+            if item[1] != self.job_id:
+                self._select_job(item[1])
+        elif kind == "sources":
+            self.sources_label.configure(text=" · ".join(f"{k} {self._source_word(v)}" for k, v in item[1].items()))
+        elif kind == "addresses":
+            self.addresses = item[1]
+            self._show_address()
+        elif kind == "plan":
+            self._on_plan(item[1])
+        elif kind == "job_started":
+            self._select_job(item[1])
+            note = self.plan_note.cget("text")  # 권한 알림이 있었으면 이어서 남긴다
+            self.plan_note.configure(text=f"작업 {item[1][:8]} 시작 — 진행은 아래에 나옵니다" + (f"\n{note}" if note.startswith("참고:") else ""))
+        elif kind == "job":
+            self._show_job(item[1], item[2], item[3])
+            return max(1, len(item[2]))
+        return 1
+
+    @staticmethod
+    def _source_word(state: str) -> str:
+        return {"ok": "정상", "missing": "없음", "error": "읽기 실패"}.get(state, state)
+
+    def _show_status(self, st: status.Status) -> None:
+        self.status = st
+        label = status.SERVER_LABELS.get(st.server, st.server)
+        color = SERVER_COLORS.get(st.server, MUTED)
+        observed = time.strftime("%H:%M:%S", time.localtime(st.observed_at))
+        self.nav_state.configure(text=f"● {label}", fg=color)
+        self._card("server", label, f"{observed} 확인 · /api/ready {st.ready.code or st.ready.error or '-'}", color)
+        commit = st.code.get("commit", "")
+        code_text = {"stage": f"stage {commit[:8] or st.code.get('build_id', '')[:8]}",
+                     "legacy": "소스 트리(legacy)"}.get(st.code.get("source"), "확인 불가")
+        self.code_label.configure(text=f"돌고 있는 코드 {code_text}")
+        self._show_address()
+        snap = _dict(_dict(st.snapshot).get("snapshot"))
+        fresh = st.snapshot_state == "ok"
+        age = _ago(st.snapshot_age)
+        if not fresh:
+            why = {"missing": "로그 없음", "unreadable": "로그 읽기 실패", "none": "아직 기록 없음",
+                   "stale": f"마지막 기록 {age}"}.get(st.snapshot_state, st.snapshot_state)
+            for key in ("accounts", "requests", "db", "backup"):
+                self._card(key, "확인 불가", why, MUTED)
+        else:
+            counts = [n for n in (_int(_dict(snap.get("agents")).get("connected_accounts")),
+                                  _int(_dict(snap.get("websocket")).get("authenticated_accounts"))) if n is not None]
+            self._card("accounts", str(max(counts)) if counts else "확인 불가", f"{age} 기록", TEXT if counts else MUTED)
+            requests = _dict(snap.get("requests"))
+            fivexx = _int(_dict(requests.get("status")).get("5xx", 0))
+            fivexx_text = "?" if fivexx is None else str(fivexx)
+            total = _int(requests.get("total"))
+            if st.rate:
+                delta, seconds = st.rate
+                self._card("requests", f"{delta:,}", f"최근 {int(seconds)}초 · 누적 5xx {fivexx_text}", TEXT)
+            elif total is not None:
+                self._card("requests", f"{total:,}", f"이 실행 누적 · 5xx {fivexx_text}", TEXT)
+            else:
+                self._card("requests", "확인 불가", "기록 형식이 다름", MUTED)
+            operations = _dict(snap.get("operations"))
+            ready = _dict(operations.get("databases")).get("ready", True)
+            if isinstance(ready, bool):
+                self._card("db", "정상" if ready else "오류", f"{age} 기록", LIME if ready else RED)
+            else:
+                self._card("db", "확인 불가", "기록 형식이 다름", MUTED)
+            backups = _dict(operations.get("backups"))
+            sets = _int(backups.get("set_count", 0))
+            latest = backups.get("latest_age_seconds")
+            latest = latest if isinstance(latest, (int, float)) and not isinstance(latest, bool) else None
+            self._card("backup", "확인 불가" if sets is None else f"{sets}세트",
+                       f"마지막 백업 {_ago(latest) if latest is not None else '모름'}", MUTED if sets is None else TEXT)
+        if st.intake is None:
+            self._card("intake", "확인 불가", st.intake_error or "DB 를 읽지 못함", MUTED)
+        else:
+            paused = st.intake.get("paused")
+            active = _int(st.intake.get("active_generation_total", 0))
+            self._card("intake", "멈춤" if paused else "받는 중",
+                       f"진행 중 생성 {'?' if active is None else active}건", AMBER if paused else LIME)
+        if st.traces and not self.job_id:
+            self.plan_note.configure(text="업데이트 흔적: " + " / ".join(t for _, t in st.traces), fg=AMBER)
+
+    def _show_address(self) -> None:
+        """NIC 별 주소(작업 스레드가 조회)와 포트·프로토콜. 서버가 그 포트로 답했을 때만 '확인'으로 본다."""
+        scheme = "https" if self.inst.tls else "http"
+        ready = self.status.ready if self.status is not None else None
+        if ready is not None and status.is_mvhub(ready):
+            note = ""
+        elif ready is not None and ready.code is not None:
+            note = " (이 포트가 답했지만 MV Hub 인지 미확인)"
+        else:
+            note = " (설정값·응답 없음)" if self.inst.port_known else " (기본값 추정·응답 없음)"
+        urls = [(f"{scheme}://{ip}:{self.inst.port}", alias) for alias, ip in (self.addresses or [])]
+        self.copy_text = urls[0][0] if urls else ""
+        if self.addresses is None:
+            shown = f"네트워크 주소 확인 불가 · 포트 {self.inst.port}"
+        elif not urls:
+            shown = f"네트워크 주소 없음 · 포트 {self.inst.port}"
+        else:
+            shown = " / ".join(f"{url} ({alias})" for url, alias in urls)
+        self.addr_label.configure(text=f"주소 {shown}{note}")
+
+    def _card(self, key: str, value: str, sub: str, color: str) -> None:
+        big, small = self.cards[key]
+        big.configure(text=value, fg=color)
+        small.configure(text=sub)
+
+    def _visible(self, line: logs.LogLine) -> bool:
+        worker = self.worker_filter.get()
+        return worker in ("", "모두") or line.worker == worker
+
+    def _add_lines(self, lines: list[logs.LogLine]) -> None:
+        new_workers = False
+        for line in lines:
+            if line.worker and line.worker not in self.workers_seen:
+                self.workers_seen.add(line.worker)
+                new_workers = True
+            for tab in line.tabs:
+                self.buffers[tab].append(line)
+        if new_workers:
+            self.worker_filter.configure(values=["모두", *sorted(self.workers_seen)])
+        for key, text in self.texts.items():
+            mine = [line for line in lines if key in line.tabs and self._visible(line)]
+            if mine:
+                self._append(text, mine)
+
+    def _append(self, text: tk.Text, lines: list[logs.LogLine]) -> None:
+        at_bottom = text.yview()[1] >= 0.999
+        text.configure(state="normal")
+        for line in lines:
+            text.insert("end", line.text + "\n", line.level)
+        overflow = _line_count(text) - MAX_LINES_PER_TAB
+        if overflow > 0:
+            text.delete("1.0", f"{overflow + 1}.0")
+        text.configure(state="disabled")
+        if at_bottom:  # 사람이 위로 올려 읽는 중이면 따라 내리지 않는다
+            text.see("end")
+
+    def _rerender_all(self) -> None:
+        for key, text in self.texts.items():
+            text.configure(state="normal")
+            text.delete("1.0", "end")
+            text.configure(state="disabled")
+            self._append(text, [line for line in self.buffers[key] if self._visible(line)])
+
+    def _select_job(self, job_id: str) -> None:
+        """업데이트 화면이 따라갈 작업을 바꾼다(새 작업·막고 있는 미확인 작업). 출력은 처음부터 다시 읽힌다."""
+        self.job_id, self.job_step, self.job_closed = job_id, 0, ""
+        self.backlog = collections.deque(m for m in self.backlog if m[0] != "job")
+        self.ack_button.pack_forget()
+        self._set_job_text([])
+        self.result_label.configure(text="")
+
+    def _set_job_text(self, lines: list[str]) -> None:
+        self.job_text.configure(state="normal")
+        self.job_text.delete("1.0", "end")
+        for line in lines:
+            self.job_text.insert("end", logs.clean(line) + "\n")
+        self.job_text.configure(state="disabled")
+
+    def _show_job(self, view: tuple[str, int], new_lines: list[str], state: dict) -> None:
+        if view != self.job_view:
+            return  # 바꾸기 전 작업(또는 같은 작업의 이전 보기)의 알림
+        job_id = view[0]
+        if new_lines:
+            self.job_step = max(self.job_step, jobs.step_of(new_lines))
+            at_bottom = self.job_text.yview()[1] >= 0.999
+            self.job_text.configure(state="normal")
+            for line in new_lines:
+                self.job_text.insert("end", logs.clean(line) + "\n")
+            overflow = _line_count(self.job_text) - MAX_LINES_PER_TAB
+            if overflow > 0:
+                self.job_text.delete("1.0", f"{overflow + 1}.0")
+            self.job_text.configure(state="disabled")
+            if at_bottom:
+                self.job_text.see("end")
+        for index, (bar, label) in enumerate(zip(self.step_bars, self.step_labels), 1):
+            bar.configure(bg=LIME if index <= self.job_step else "#26282d")
+            label.configure(fg=LIME if index == self.job_step else MUTED2)
+        status_text = state.get("status")
+        text, color = job_result_text(state)
+        self.result_label.configure(text=text, fg=color)
+        if status_text not in JOB_TERMINAL or self.job_closed == job_id:
+            return
+        self.job_closed = job_id  # 끝 처리는 작업마다 한 번만
+        if status_text in ("check_needed", "runner_error") and not state.get("acknowledged"):
+            self.busy = False  # 머리글 단추로 다시 눌러도 사전 검사가 이 작업 때문에 거절한다
+            self.start_button.configure(state="disabled")
+            self.ack_button.pack(side="left", padx=10)
+        else:
+            self._job_done()
+
+    def _job_done(self) -> None:
+        self.busy = False
+        self.start_button.configure(state="normal")
+
+
+def job_result_text(state: dict) -> tuple[str, str]:
+    """작업 상태 → (화면 문구, 색). 판정은 종료 코드, 커밋은 이 실행과 이어졌을 때만 적는다."""
+    status_text = state.get("status")
+    if status_text == "finished":
+        code = state.get("exit_code")
+        if code != 0:
+            return f"실패: 업데이트가 끝나지 않았습니다(종료 코드 {code}). 위 내용을 확인하세요.", RED
+        after = _dict(state.get("code_after"))
+        commit = after.get("commit") if isinstance(after.get("commit"), str) else ""
+        if after.get("linked") and after.get("prepare") == "up_to_date":
+            return f"완료: 이미 최신이었습니다(커밋 {commit[:8] or '미확인'}).", LIME
+        if after.get("linked") and after.get("installed") is True and commit:
+            return f"완료: 서버가 커밋 {commit[:8]} 로 동작 중입니다.", LIME
+        return "완료(종료 코드 0): 설치된 커밋은 이 작업과 잇지 못해 미확인 — 위 '돌고 있는 코드'를 보세요.", LIME
+    if status_text == "refused":
+        return "시작하지 않음: " + " / ".join(str(r) for r in state.get("reasons") or []), AMBER
+    if status_text in ("check_needed", "runner_error"):
+        if state.get("acknowledged"):
+            return "결과를 잃은 작업 — 확인했음으로 표시됨. 새 업데이트를 시작할 수 있습니다.", MUTED
+        return ("결과 확인 필요: 실행기가 결과를 남기지 못했습니다. 서버 상태와 로그를 확인한 뒤 "
+                "[확인했음]을 누르세요(그 전에는 새 업데이트를 막습니다)."), AMBER
+    return "진행 중… (이 창을 닫아도 업데이트는 계속됩니다)", MUTED
+
+
+def run() -> int:
+    if hasattr(ctypes, "windll"):
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except (AttributeError, OSError):
+            pass
+    lock = _single_instance()
+    if lock is None:
+        root = ConsoleTk()
+        root.withdraw()
+        messagebox.showinfo("MV Hub 서버 관리", "서버 관리 창이 이미 열려 있습니다.")
+        root.destroy()
+        return 0
+    try:
+        inst = install.resolve_installation()
+        root = ConsoleTk()
+        if "stage_copy" in inst.problems:
+            root.withdraw()
+            messagebox.showerror("MV Hub 서버 관리", "stage 사본 안에서는 열 수 없습니다. 서버 루트의 바로가기로 여세요.")
+            root.destroy()
+            return 1
+        app = App(root, inst)
+        root.protocol("WM_DELETE_WINDOW", lambda: (app.stop.set(), root.destroy()))
+        root.mainloop()
+        return 0
+    except Exception:  # noqa: BLE001
+        _log_ui_error(traceback.format_exc())
+        raise
+    finally:
+        lock.close()

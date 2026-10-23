@@ -1,0 +1,1062 @@
+"""서버 관리 창의 관리 핵심 층(install·status·logs·actions·jobs)과 Tk 시작 격리를 시험한다.
+
+실제 예약 작업·UAC·서버(8010)는 건드리지 않는다 — 명령 실행기는 가짜로 바꿔 끼운다.
+"""
+from __future__ import annotations
+
+import ast
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import textwrap
+import time
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+TOOLS = ROOT / "tools"
+if str(TOOLS) not in sys.path:
+    sys.path.insert(0, str(TOOLS))
+
+pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows server console")
+
+from server_console import actions, install, jobs, logs, names, status  # noqa: E402
+
+
+def make_inst(tmp_path: Path, **overrides) -> install.Installation:
+    root = tmp_path / "root"
+    (root / "logs").mkdir(parents=True, exist_ok=True)
+    data = root / "backend" / "data"
+    values = dict(root=root, data_dir=data, log_dir=data / "logs", content_db=data / "db" / "content_hub.db",
+                  port=8010, port_known=False, python=Path(sys.executable), problems=())
+    values.update(overrides)
+    return install.Installation(**values)
+
+
+def fake_runner(outputs: dict[str, tuple[int | None, str]] | None = None, default=(0, "DONE\n")):
+    calls = []
+
+    def run(argv, timeout):
+        calls.append(argv)
+        text = " ".join(map(str, argv))
+        for key, value in (outputs or {}).items():
+            if key in text:
+                return value
+        return default
+    run.calls = calls
+    return run
+
+
+# ---------- logs ----------
+
+@pytest.mark.parametrize("payload,tabs", [
+    ({"event": "generation_finalized", "level": "INFO"}, {"all", "generation"}),
+    ({"event": "worker_telemetry_received", "worker_name": "무지"}, {"all", "generation"}),
+    ({"event": "browser_connected"}, {"all", "connection"}),
+    ({"event": "backup_failed", "level": "WARNING"}, {"all", "backup", "errors"}),
+    ({"event": "audit_change"}, {"all", "settings"}),
+    ({"event": "startup_ready"}, {"all", "lifecycle"}),
+    ({"event": "release_promoted"}, {"all", "updates"}),
+    ({"event": "something_new"}, {"all"}),
+])
+def test_events_land_in_their_tabs(payload, tabs):
+    assert logs.classify(payload) == frozenset(tabs)
+
+
+def test_unknown_info_events_are_kept_and_text_is_plain():
+    # log_viewer.format_event 은 모르는 INFO 이벤트를 버린다 — 관리 창의 '전체'에는 남아야 한다.
+    line = logs.parse_json_line(json.dumps({"ts": "2026-10-23T01:02:03+00:00", "level": "INFO",
+                                            "event": "brand_new_event", "note": "a\x1b[31mb\x07c"}))
+    assert line is not None and "brand_new_event" in line.text and "all" in line.tabs
+    assert "\x1b" not in line.text and "\x07" not in line.text
+    assert len(logs.clean("x" * 5000)) <= logs.MAX_LINE + 1
+
+
+def test_text_console_lines():
+    line = logs.parse_text_line("[supervisor] update failed: ValueError (journal_changed)", frozenset({"lifecycle"}))
+    assert line.tabs == frozenset({"all", "lifecycle", "updates", "errors"}) and line.level == "ERROR"
+    assert logs.parse_text_line("   ", frozenset()) is None
+
+
+def test_log_hub_follows_files_and_tells_missing_from_ok(tmp_path):
+    inst = make_inst(tmp_path)
+    hub = logs.LogHub(inst, initial=10)
+    assert hub.poll() == [] and hub.states()[names.RUNTIME_LOG] == "missing"
+    inst.log_dir.mkdir(parents=True)
+    inst.runtime_log.write_text(json.dumps({"event": "startup_ready", "ts": "2026-10-23T00:00:00+00:00"}) + "\n",
+                                encoding="utf-8")
+    first = hub.poll()
+    assert any("서버 준비 완료" in line.text for line in first) and hub.states()[names.RUNTIME_LOG] == "ok"
+    with inst.runtime_log.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"event": "backup_completed"}) + "\n")
+    assert [line.text for line in hub.poll() if "백업 완료" in line.text]
+    (inst.logs / "server_ALERT.txt").write_text("server down", encoding="utf-8")
+    alerts = [line for line in hub.poll() if line.text.startswith("[ALERT]")]
+    assert len(alerts) == 1 and "errors" in alerts[0].tabs
+    assert not [line for line in hub.poll() if line.text.startswith("[ALERT]")]  # 같은 경고는 한 번만
+
+
+def test_log_hub_caps_the_total_of_one_poll(tmp_path):
+    inst = make_inst(tmp_path)
+    hub = logs.LogHub(inst, initial=1)
+    for name in names.CONSOLE_LOGS:
+        (inst.logs / name).write_text("start\n", encoding="utf-8")
+    hub.poll()
+    for name in names.CONSOLE_LOGS:
+        with (inst.logs / name).open("a", encoding="utf-8") as handle:
+            handle.write("".join(f"{name} line {i}\n" for i in range(1400)))
+    lines = hub.poll()
+    assert len(lines) == logs.MAX_TOTAL_PER_POLL + 1 and "건너뜀" in lines[0].text
+    assert lines[-1].text.endswith("line 1399")  # 최근 줄을 남긴다
+
+
+# ---------- status ----------
+
+def _snapshot(ts: str, pid: int, total: int) -> str:
+    return json.dumps({"event": "runtime_snapshot", "ts": ts, "pid": pid,
+                       "snapshot": {"requests": {"total": total, "status": {"5xx": 1}}}})
+
+
+def test_latest_snapshot_skips_broken_and_partial_lines(tmp_path):
+    path = tmp_path / "rt.jsonl"
+    path.write_text("\n".join([_snapshot("2026-10-23T00:00:00+00:00", 7, 100), "{broken",
+                               _snapshot("2026-10-23T00:01:00+00:00", 7, 160), '{"event": "runtime_snap']),
+                    encoding="utf-8")
+    state, found = status.latest_snapshots(path)
+    assert state == "ok" and [s["snapshot"]["requests"]["total"] for s in found] == [160, 100]
+    assert status.request_rate(found[0], found[1]) == (60, 60.0)
+    other = dict(found[1], pid=8)
+    assert status.request_rate(found[0], other) is None  # 다른 프로세스면 차이를 내지 않는다
+    assert status.latest_snapshots(tmp_path / "nope.jsonl") == ("missing", [])
+
+
+@pytest.mark.parametrize("ready,tasks,traces,expected", [
+    (status.Ready(200, {"status": "ready", "runtime": {"admission": "normal"}}, ""), None, [], "ok"),
+    # 전환이 끝난 서버는 activated 로 정상 운영한다(runtime_activation.py) — 전환 중이 아니다.
+    (status.Ready(200, {"status": "ready", "runtime": {"admission": "activated"}}, ""), None, [], "ok"),
+    (status.Ready(200, {"status": "ready", "runtime": {"admission": "blocked"}}, ""), None, [], "blocked"),
+    (status.Ready(200, {"status": "ready", "runtime": {"admission": "normal"}}, ""), None,
+     [("journal", "x")], "switching"),
+    (status.Ready(503, {"status": "maintenance"}, ""), None, [], "maintenance"),
+    (status.Ready(503, {"status": "not_ready"}, ""), None, [], "not_ready"),
+    (status.Ready(None, None, "refused"), {names.TASK_SERVER: {"state": "Running"}}, [], "starting"),
+    (status.Ready(None, None, "refused"), {names.TASK_SERVER: {"state": "Disabled"}}, [], "stopped"),
+    (status.Ready(None, None, "refused"), {names.TASK_SERVER: {"state": "Missing"}}, [], "no_task"),
+    (status.Ready(None, None, "refused"), None, [], "unknown"),
+    (status.Ready(None, None, "refused"), None, [("request", "x")], "switching"),
+    (status.Ready(None, None, "timeout"), None, [], "no_answer"),
+])
+def test_server_state_is_classified_without_guessing(ready, tasks, traces, expected):
+    assert status.classify_server(ready, tasks, traces) == expected
+
+
+HOLDER = textwrap.dedent("""
+    import msvcrt, sys, time
+    from pathlib import Path
+    with open(sys.argv[1], 'a+b') as f:
+        if f.tell() == 0:
+            f.write(b'0'); f.flush()
+        f.seek(0)
+        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        Path(sys.argv[2]).write_text('ready')
+        time.sleep(float(sys.argv[3]))
+""")
+
+
+def test_update_traces_never_take_the_updater_lock(tmp_path):
+    inst = make_inst(tmp_path)
+    assert status.update_traces(inst) == []
+    lock = inst.logs / names.GIT_UPDATE_LOCK
+    ready = tmp_path / "held"
+    script = tmp_path / "holder.py"
+    script.write_text(HOLDER, encoding="utf-8")
+    holder = subprocess.Popen([sys.executable, str(script), str(lock), str(ready), "5"])
+    try:
+        deadline = time.time() + 10
+        while not ready.exists() and time.time() < deadline:
+            time.sleep(0.05)
+        assert [kind for kind, _ in status.update_traces(inst)] == ["git"]
+    finally:
+        holder.kill()
+        holder.wait()
+    # Windows 는 죽은 프로세스의 바이트 잠금을 조금 늦게 푼다 — 풀린 뒤에는 흔적이 아니어야 한다.
+    deadline = time.time() + 5
+    while status.update_traces(inst) and time.time() < deadline:
+        time.sleep(0.1)
+    assert status.update_traces(inst) == []  # 잡혀 있지 않은 잠금 파일은 흔적이 아니다
+    (inst.logs / names.UPDATE_REQUEST).write_text("{}", encoding="utf-8")
+    (inst.logs / names.INSTALL_JOURNAL).write_text(json.dumps({"phase": "starting"}), encoding="utf-8")
+    (inst.logs / names.PREPARE_RECORD).write_text(json.dumps({"status": "running"}), encoding="utf-8")
+    assert sorted(kind for kind, _ in status.update_traces(inst)) == ["journal", "prepare", "request"]
+    (inst.logs / names.UPDATE_REQUEST).unlink()
+    (inst.logs / names.INSTALL_JOURNAL).write_text(json.dumps({"phase": "committed"}), encoding="utf-8")
+    (inst.logs / names.PREPARE_RECORD).write_text(json.dumps({"status": "prepared"}), encoding="utf-8")
+    assert status.update_traces(inst) == []
+    (inst.logs / names.INSTALL_JOURNAL).write_text("{broken", encoding="utf-8")
+    assert [kind for kind, _ in status.update_traces(inst)] == ["unknown"]
+
+
+@pytest.mark.parametrize("name,body", [
+    (names.PREPARE_RECORD, "[]"), (names.PREPARE_RECORD, "null"), (names.PREPARE_RECORD, "{}"),
+    (names.PREPARE_RECORD, "{broken"), (names.PREPARE_RECORD, '{"status": "unrecognized"}'),
+    (names.INSTALL_JOURNAL, "[]"), (names.INSTALL_JOURNAL, "{}"),
+    (names.UPDATE_REQUEST, "{broken"),
+])
+def test_malformed_update_records_block_instead_of_reading_as_absent(tmp_path, name, body):
+    inst = make_inst(tmp_path)
+    (inst.logs / name).write_text(body, encoding="utf-8")
+    assert status.update_traces(inst), f"{name}={body} 를 흔적 없음으로 봤다"
+
+
+def test_running_code_reads_only_its_own_stage(tmp_path):
+    inst = make_inst(tmp_path)
+    build = "ab" * 16
+    assert status.running_code(inst)["source"] == "unknown"
+    (inst.logs / names.SERVER_CURRENT).write_text(json.dumps({"build_id": "legacy-source"}), encoding="utf-8")
+    assert status.running_code(inst)["source"] == "legacy"
+    stage = inst.logs / "server-stages" / build
+    stage.mkdir(parents=True)
+    (stage / "server-stage.json").write_text(json.dumps({"source_commit": "f" * 40}), encoding="utf-8")
+    (inst.logs / names.SERVER_CURRENT).write_text(json.dumps({"build_id": build}), encoding="utf-8")
+    assert status.running_code(inst) == {"source": "stage", "build_id": build, "commit": "f" * 40}
+    # 'C:escape' 는 경로 결합에서 stage 밖(C 드라이브 현재 폴더)으로 바뀐다 — 형식 허용 목록으로 막는다.
+    for bad in ("..\\..\\x", "C:escape", "abc123", build.upper(), 7):
+        (inst.logs / names.SERVER_CURRENT).write_text(json.dumps({"build_id": bad}), encoding="utf-8")
+        assert status.running_code(inst)["source"] == "unknown", bad
+
+
+def test_run_outcome_links_only_the_one_run_that_appeared_after_the_job_started(tmp_path):
+    inst = make_inst(tmp_path)
+    old, new, other = "1" * 32, "2" * 32, "3" * 32
+    (inst.logs / f"server-prepare-{old}.json").write_text(json.dumps({"status": "up_to_date"}), encoding="utf-8")
+    before = status.prepare_runs(inst)  # 실행 직전에 이미 있던 것 — 아무리 가까운 시각이어도 잇지 않는다
+    assert before == {old} and status.run_outcome(inst, before)["linked"] is False
+    (inst.logs / f"server-prepare-{new}.json").write_text(json.dumps({"status": "prepared"}), encoding="utf-8")
+    stage = inst.logs / "server-stages" / new
+    stage.mkdir(parents=True)
+    (stage / "server-stage.json").write_text(json.dumps({"source_commit": "c" * 40}), encoding="utf-8")
+    outcome = status.run_outcome(inst, before)
+    assert outcome["linked"] and outcome["run_id"] == new and outcome["commit"] == "c" * 40
+    assert outcome["installed"] is False  # 아직 그 stage 로 돌지 않는다
+    (inst.logs / names.SERVER_CURRENT).write_text(json.dumps({"build_id": new}), encoding="utf-8")
+    assert status.run_outcome(inst, before)["installed"] is True
+    (inst.logs / f"server-prepare-{new}.json").write_text(json.dumps({"status": "up_to_date"}), encoding="utf-8")
+    latest = status.run_outcome(inst, before)
+    assert latest["prepare"] == "up_to_date" and latest["commit"] == "" and latest["installed"] is False
+    (inst.logs / f"server-prepare-{other}.json").write_text(json.dumps({"status": "prepared"}), encoding="utf-8")
+    assert status.run_outcome(inst, before)["linked"] is False  # 둘이 새로 생겼으면 어느 것인지 모른다
+    assert status.run_outcome(inst, None)["linked"] is False
+
+
+def test_stage_paths_through_a_junction_are_not_read(tmp_path):
+    inst = make_inst(tmp_path)
+    build = "cd" * 16
+    outside = tmp_path / "outside"
+    (outside / build).mkdir(parents=True)
+    (outside / build / "server-stage.json").write_text(json.dumps({"source_commit": "a" * 40}), encoding="utf-8")
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(inst.logs / "server-stages"), str(outside)],
+                   check=True, capture_output=True)
+    (inst.logs / names.SERVER_CURRENT).write_text(json.dumps({"build_id": build}), encoding="utf-8")
+    assert status.running_code(inst)["source"] == "unknown"  # 상위 server-stages 가 연결 지점
+    assert status.plain_child(inst.logs, "server-stages", build, "server-stage.json") is None
+
+
+@pytest.mark.parametrize("ready,expected", [
+    (status.Ready(200, {"status": "ready", "checks": {}, "runtime": {}}, ""), True),
+    (status.Ready(503, {"status": "maintenance"}, ""), True),
+    (status.Ready(503, {"status": "not_ready", "failed_checks": []}, ""), True),
+    (status.Ready(404, {"detail": "Not Found"}, ""), False),
+    (status.Ready(200, {"status": "ready"}, ""), False),
+    (status.Ready(200, None, ""), False),
+    (status.Ready(None, None, "refused"), False),
+])
+def test_only_an_mvhub_answer_confirms_the_address(ready, expected):
+    assert status.is_mvhub(ready) is expected
+
+
+# ---------- install ----------
+
+def test_stage_copy_and_missing_pieces_are_reported(tmp_path):
+    stage_root = tmp_path / "logs" / "server-stages" / "run1"
+    stage_root.mkdir(parents=True)
+    problems = install.resolve_installation(stage_root).problems
+    assert "stage_copy" in problems and "not_git_clone" in problems and "missing_updater" in problems
+
+
+def test_task_queries_are_parsed_and_matched(tmp_path):
+    inst = make_inst(tmp_path)
+    out = "\n".join([f"TASK\t{names.TASK_SERVER}\tRunning\tcmd.exe /c call \"{inst.root}\\task_launch.bat\" server",
+                     f"TASK\t{names.TASK_WATCHDOG}\tReady\tcmd.exe /c call \"{inst.root}\\task_launch.bat\" watchdog",
+                     f"TASK\t{names.TASK_BACKUP}\tMissing\t", "DONE"])
+    tasks = install.task_states(fake_runner(default=(0, out)))
+    assert tasks[names.TASK_SERVER]["state"] == "Running"
+    assert install.server_task_matches(inst, tasks) == "match"
+    other = {names.TASK_SERVER: {"state": "Ready", "action": 'cmd.exe /c call "E:\\Other\\task_launch.bat" server'}}
+    assert install.server_task_matches(inst, other) == "other"
+    assert install.server_task_matches(inst, {names.TASK_SERVER: {"state": "Missing", "action": ""}}) == "missing"
+    assert install.task_states(fake_runner(default=(1, ""))) is None
+    assert install.server_task_matches(inst, None) == "unknown"
+
+
+ME = "S-1-5-21-1-2-3-1001"
+
+
+def test_acl_offenders_flag_untrusted_writers_owners_and_links(tmp_path):
+    inst = make_inst(tmp_path)
+    root, bat, drive = inst.root, inst.root / "run_py.bat", inst.root.parent
+    out = "\n".join([
+        f"OWNER\to\t{root}\tS-1-5-32-544",
+        f"ACE\to\t{root}\tS-1-5-18\t2032127\t0",
+        f"ACE\to\t{root}\tS-1-5-32-544\t2032127\t0",
+        f"ACE\to\t{root}\tS-1-5-32-545\t1179817\t0",          # 읽기·실행만
+        f"ACE\to\t{root}\tS-1-5-11\t1245631\t1",              # Modify — 상속 전용이어도 아래 파일로 내려간다
+        f"ACE\to\t{root}\tS-1-5-32-545\t268435456\t0",        # GENERIC_ALL
+        f"ACE\to\t{bat}\tS-1-5-32-545\t2097154\t0",           # 이름은 읽기처럼 보여도 WriteData 비트가 있다
+        f"OWNER\to\t{bat}\t{ME}",                             # 창을 연 관리자 자신이 소유해도 거절
+        f"LINK\to\t{root / 'tools' / 'x'}",
+        f"OWNER\tp\t{drive}\tS-1-5-18",
+        f"ACE\tp\t{drive}\tS-1-5-11\t1245631\t1",             # 상위의 상속 전용 Modify 는 상위 자체엔 안 걸린다
+        f"ACE\tp\t{drive}\tS-1-5-11\t4\t0",                   # 폴더 만들기(AppendData)로는 바꿔치기 못 한다
+        f"ACE\tp\t{drive}\tS-1-5-32-545\t64\t0",              # DeleteChild 는 우리 폴더를 지우고 바꿀 수 있다
+        "DONE"])
+    offenders = install.acl_offenders([root, bat], [], fake_runner(default=(0, out)), [drive])
+    assert offenders == [(str(root), "S-1-5-11", "쓰기 권한"), (str(root), "S-1-5-32-545", "쓰기 권한"),
+                         (str(bat), "S-1-5-32-545", "쓰기 권한"), (str(bat), ME, "소유자"),
+                         (str(root / "tools" / "x"), "-", "연결 지점"),
+                         (str(drive), "S-1-5-32-545", "상위 폴더 바꿔치기 권한")]
+    assert install.acl_offenders([root], [], fake_runner(default=(0, "partial"))) is None
+    assert install.acl_offenders([root], [], fake_runner(default=(0, "DONE\nACE\to\tx\tS-1-5-11\t2\t0"))) is None  # DONE 이 끝이 아님
+    assert install.acl_offenders([root], [], fake_runner(default=(1, "DONE"))) is None
+
+
+def test_acl_script_runs_in_real_powershell(tmp_path):
+    target = tmp_path / "x.py"
+    target.write_text("x", encoding="utf-8")
+    runner = lambda argv, timeout: install.run_command(argv, timeout)  # noqa: E731
+    found = install.acl_offenders([target], [tmp_path], runner, [tmp_path.parent])
+    assert found is not None  # 스크립트가 끝(DONE)까지 돌았다 — 값은 이 PC 권한에 따라 다르다
+    assert install.acl_offenders([], [], runner, []) == []
+
+
+@pytest.mark.parametrize("value", [
+    "C:\\safe’ + (Write-Output INJECTED) + ’tail", "C:\\a'b'c", "C:\\$(Write-Output INJECTED)", "C:\\한글 폴더\\x",
+    "C:\\a`b\"c‘d‛e",
+])
+def test_paths_reach_powershell_as_data_only(value):
+    script = "[Console]::OutputEncoding = New-Object Text.UTF8Encoding $false\n" \
+             f"foreach ($v in {install.ps_items([value, 'second'])}) {{ \"ITEM`t$v\" }}"
+    done = subprocess.run([str(install.powershell_exe()), "-NoProfile", "-NonInteractive", "-Command", script],
+                          capture_output=True, timeout=60)
+    lines = done.stdout.decode("utf-8").splitlines()
+    assert done.returncode == 0 and lines == [f"ITEM\t{value}", "ITEM\tsecond"], (lines, done.stderr)
+
+
+def test_protected_targets_cover_launchers_and_runtimes(tmp_path):
+    inst = make_inst(tmp_path)
+    (inst.root / "backend").mkdir()
+    (inst.root / "tools").mkdir()
+    for name in ("run_py.bat", "task_launch.bat", "x.ps1", "readme.md"):
+        (inst.root / name).write_text("x", encoding="utf-8")
+    (inst.root / "backend" / "serve.py").write_text("x", encoding="utf-8")
+    (inst.root / ".git" / "hooks").mkdir(parents=True)
+    (inst.root / ".git" / "config").write_text("x", encoding="utf-8")
+    (inst.logs / "server-verifier").mkdir()
+    venv = tmp_path / "venv"
+    (venv / "Scripts").mkdir(parents=True)
+    (venv / "Scripts" / "python.exe").write_bytes(b"MZ")
+    base = Path(sys._base_executable).parent
+    (venv / "pyvenv.cfg").write_text(f"home = {base}\nversion = 3\n", encoding="utf-8")
+    inst = make_inst(tmp_path, python=venv / "Scripts" / "python.exe")
+    single, tree, parents = install.protected_targets(inst)
+    for path in (inst.root, inst.root / "run_py.bat", inst.root / "task_launch.bat", inst.root / "x.ps1",
+                 inst.root / "backend" / "serve.py", inst.root / ".git" / "config", venv, venv / "pyvenv.cfg",
+                 inst.python, base / "python.exe"):  # venv 면 실제로 표준 라이브러리를 읽는 Python 까지
+        assert path in single, path
+    assert inst.root / "readme.md" not in single
+    assert tree == [inst.root / "tools", inst.root / ".git" / "hooks", inst.logs / "server-verifier"]
+    assert tmp_path in parents and inst.root.anchor in [str(p) for p in parents]  # 위 폴더 끝까지
+    assert not set(parents) & set(single)
+
+
+def test_protected_targets_include_every_folder_above_each_target(tmp_path, monkeypatch):
+    git_root, node = tmp_path / "Git", tmp_path / "node"
+    for path in (git_root / "cmd" / "git.exe", git_root / "mingw64" / "bin" / "git.exe", git_root / "etc" / "gitconfig",
+                 git_root / "mingw64" / "etc" / "gitconfig", node / "node.exe", node / "node_modules" / "npm" / "x.js"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+    monkeypatch.setattr(install, "trusted_git", lambda: git_root / "cmd" / "git.exe")
+    monkeypatch.setattr(install, "node_dir", lambda inst: node)
+    single, _tree, parents = install.protected_targets(make_inst(tmp_path, python=None))
+    for path in (git_root / "mingw64" / "bin" / "git.exe", git_root / "etc" / "gitconfig", node / "node_modules" / "npm"):
+        assert path in single, path
+    # 검사하는 실행 파일·설정이 들어 있는 중간 폴더 — 여기에 DeleteChild 가 있으면 안전한 파일도 바꿔치기된다.
+    for path in (git_root / "mingw64", git_root / "mingw64" / "bin", git_root / "etc", git_root / "mingw64" / "etc",
+                 node / "node_modules"):
+        assert path in parents, path
+
+
+def test_trusted_git_ignores_inherited_environment(tmp_path, monkeypatch):
+    evil = tmp_path / "evil"
+    (evil / "Git" / "cmd").mkdir(parents=True)
+    (evil / "Git" / "cmd" / "git.exe").write_bytes(b"MZ")
+    for key in ("PATH", "ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"):
+        monkeypatch.setenv(key, str(evil))
+    monkeypatch.setattr(install, "_hklm", lambda subkey, name: None)  # 레지스트리에 Git 이 없을 때도
+    assert install.trusted_git() is None  # 환경변수가 가리키는 git 을 대신 고르지 않는다
+
+
+def test_child_environment_is_rebuilt_not_inherited(tmp_path, monkeypatch):
+    inst = make_inst(tmp_path)
+    evil = tmp_path / "evil"
+    evil.mkdir()
+    for key, value in (("PATH", str(evil)), ("PYEXE", str(evil / "python.exe")), ("ComSpec", str(evil / "cmd.exe")),
+                       ("MVHUB_SERVER_VERIFICATION_PYTHON", str(evil)), ("CONTENT_HUB_DB", str(evil)),
+                       ("SystemRoot", str(evil))):
+        monkeypatch.setenv(key, value)
+    env = install.child_env(inst)
+    assert str(evil) not in env["PATH"] and str(evil) not in env["ComSpec"] and str(evil) not in env["SystemRoot"]
+    assert env["ComSpec"].lower().endswith("system32\\cmd.exe")
+    assert env["PYEXE"] == str(inst.python)  # run_py.bat 이 사용자 PATH 대신 검증된 Python 을 쓴다
+    assert not [k for k in env if k.startswith("MVHUB_SERVER")] and "CONTENT_HUB_DB" not in env
+
+
+# ---------- actions ----------
+
+def test_git_update_plan_refuses_until_every_condition_holds(tmp_path):
+    inst = make_inst(tmp_path)
+    plan = actions.plan_git_update(inst, "match", [], [], "a" * 40)
+    assert isinstance(plan, actions.Plan)
+    assert "실행 시점의 최신 origin/main" in plan.summary[0] and "aaaaaaaa" in plan.summary[1]
+    for task_match in ("missing", "other", "unknown"):
+        assert isinstance(actions.plan_git_update(inst, task_match, [], []), actions.Refusal)
+    assert isinstance(actions.plan_git_update(inst, "match", [("git", "running")], []), actions.Refusal)
+    # 권한은 막지 않고 알리기만 한다(Jay 결정 2026-10-23 — 기존 update_git.bat 처럼 단추만 누르면 진행).
+    for offenders, word in ((None, "확인하지 못했습니다"), ([("p", "S-1-5-11", "쓰기 권한")], "S-1-5-11")):
+        warned = actions.plan_git_update(inst, "match", [], offenders)
+        assert isinstance(warned, actions.Plan) and word in warned.warnings[0]
+        assert actions.Plan.from_json(warned.to_json()) == warned
+    assert plan.warnings == ()
+    staged = make_inst(tmp_path, problems=("stage_copy",))
+    assert isinstance(actions.plan_git_update(staged, "match", [], []), actions.Refusal)
+    # 확인한 커밋은 고정 대상이 아니다 — coordinator 가 실행 때 다시 고른다.
+    later = actions.plan_git_update(inst, "match", [], [], "b" * 40)
+    assert actions.same_target(plan, later)
+    assert not actions.same_target(plan, actions.Plan("git-update", "E:\\Other", "server", "", ()))
+
+
+def test_update_command_is_fixed(tmp_path):
+    inst = make_inst(tmp_path)
+    plan = actions.plan_git_update(inst, "match", [], [])
+    argv = actions.command_for(plan, inst)
+    assert argv[-5:] == ["-File", str(inst.root / "tools" / "run_update_git.ps1"), "-Root", str(inst.root), "-NoPause"]
+    assert argv[0].lower().endswith("system32\\windowspowershell\\v1.0\\powershell.exe")
+    with pytest.raises(ValueError):
+        actions.command_for(actions.Plan("git-update", "E:\\Other", "server", "", ()), inst)
+
+
+# ---------- jobs ----------
+
+def _job(tmp_path):
+    inst = make_inst(tmp_path)
+    plan = actions.plan_git_update(inst, "match", [], [])
+    job_id = jobs.new_job(inst, plan, fake_runner())
+    return inst, plan, job_id
+
+
+def test_job_runs_to_the_end_and_keeps_output_and_exit_code(tmp_path):
+    inst, plan, job_id = _job(tmp_path)
+    script = "import sys; print('[10:00:00] [1/6] 새 코드 받는 중'); print('[10:00:05] [3/6] CLI'); sys.exit(3)"
+    code = jobs.run_job(inst, job_id, lambda: plan, command=[sys.executable, "-c", script],
+                        env=dict(os.environ, PYTHONUTF8="1"))
+    assert code == 3
+    state = jobs.read_job(inst, job_id)
+    assert state["status"] == "finished" and state["exit_code"] == 3 and state["result"] == "failed"
+    lines, offset = jobs.read_output(inst, job_id)
+    assert "[1/6] 새 코드 받는 중" in lines[0] and jobs.step_of(lines) == 3 and offset > 0
+
+
+def test_job_refuses_when_target_changed_or_conditions_fail(tmp_path):
+    inst, plan, job_id = _job(tmp_path)
+    moved = actions.Plan("git-update", "E:\\Elsewhere", "server", "", ())
+    assert jobs.run_job(inst, job_id, lambda: moved, command=[sys.executable, "-c", "print(1)"]) == 2
+    assert jobs.read_job(inst, job_id)["status"] == "refused"
+    assert not (jobs.job_dir(inst, job_id) / "output.log").exists()
+    second = jobs.new_job(inst, plan, fake_runner())
+    refusal = actions.Refusal(("업데이트 흔적",))
+    assert jobs.run_job(inst, second, lambda: refusal, command=[sys.executable, "-c", "print(1)"]) == 2
+    assert jobs.read_job(inst, second)["reasons"] == ["업데이트 흔적"]
+
+
+def test_lost_runner_result_is_check_needed_not_guessed(tmp_path):
+    inst, plan, job_id = _job(tmp_path)
+    job = jobs.job_dir(inst, job_id)
+    assert jobs.read_job(inst, job_id)["status"] == "starting"
+    assert jobs.read_job(inst, job_id, now=time.time() + 3600)["status"] == "check_needed"
+    jobs.write_json(job / "state.json", {"status": "running", "pid": 999999, "created": 1})
+    assert jobs.read_job(inst, job_id)["status"] == "check_needed"
+    me = {"status": "running", "pid": os.getpid(), "created": jobs.process_created(os.getpid())}
+    jobs.write_json(job / "state.json", me)
+    assert jobs.read_job(inst, job_id)["status"] == "running"
+    jobs.write_json(job / "state.json", dict(me, created=12345))  # PID 재사용
+    assert jobs.read_job(inst, job_id)["status"] == "check_needed"
+
+
+def test_job_ids_and_folders_are_strict(tmp_path):
+    inst = make_inst(tmp_path)
+    for bad in ("", "../x", "A" * 32, "0" * 31):
+        with pytest.raises(jobs.JobError):
+            jobs.job_dir(inst, bad)
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(inst.logs / names.JOB_DIR), str(target)],
+                   check=True, capture_output=True)
+    with pytest.raises(jobs.JobError):
+        jobs.ensure_jobs_root(inst, fake_runner())
+    assert list(target.iterdir()) == []
+
+
+def _icacls_calls(runner):
+    return [call for call in runner.calls if "icacls" in str(call[0]).lower()]
+
+
+def test_job_root_permissions_are_fixed_not_blocking(tmp_path):
+    # 권한이 흐트러진 작업 폴더는 관리자인 창이 다시 잠그고 진행한다(멈추지 않는다).
+    inst = make_inst(tmp_path)
+    folder = inst.logs / names.JOB_DIR
+    folder.mkdir()
+    for weak in (f"ACE\to\t{folder}\tS-1-5-11\t1245631\t0\nDONE", f"OWNER\to\t{folder}\t{ME}\nDONE", "partial"):
+        runner = fake_runner({"icacls": (0, "")}, default=(0, weak))
+        assert jobs.ensure_jobs_root(inst, runner) == folder
+        assert len(_icacls_calls(runner)) == 2  # 소유자 → 권한
+    runner = fake_runner()
+    assert jobs.ensure_jobs_root(inst, runner) == folder and _icacls_calls(runner) == []  # 깨끗하면 건드리지 않는다
+    weak = f"OWNER\to\t{folder}\t{ME}\nDONE"
+    failing = fake_runner({"icacls": (5, "")}, default=(0, weak))
+    assert jobs.ensure_jobs_root(inst, failing) == folder and _icacls_calls(failing)  # 잠그기를 시도했고, 실패해도 진행
+    fresh = make_inst(tmp_path / "fresh")
+    failing = fake_runner({"icacls": (5, "")})
+    assert jobs.ensure_jobs_root(fresh, failing) == jobs.jobs_root(fresh) and _icacls_calls(failing)  # 새 폴더도
+
+
+def test_unreadable_job_records_are_repaired_then_read_again(tmp_path, monkeypatch):
+    inst = make_inst(tmp_path)
+    answers = iter([None, ["a" * 32]])
+    monkeypatch.setattr(jobs, "unresolved_jobs", lambda inst: next(answers))
+    repaired = []
+    monkeypatch.setattr(jobs, "ensure_jobs_root", lambda inst, runner, force: repaired.append(force))
+    assert jobs.unresolved_jobs_or_repair(inst, fake_runner()) == ["a" * 32] and repaired == [True]
+    monkeypatch.setattr(jobs, "unresolved_jobs", lambda inst: None)  # 잠가도 못 읽으면 기록을 모르니 거절 쪽(None)
+    assert jobs.unresolved_jobs_or_repair(inst, fake_runner()) is None
+    monkeypatch.setattr(jobs, "ensure_jobs_root",
+                        lambda inst, runner, force: (_ for _ in ()).throw(jobs.JobError("x")))
+    assert jobs.unresolved_jobs_or_repair(inst, fake_runner()) is None
+
+
+def test_unreadable_job_folder_is_locked_even_without_foreign_writers(tmp_path, monkeypatch):
+    # 남의 쓰기 권한은 없고(ACL 깨끗) 관리자 읽기 권한만 빠진 폴더 — 실제 ensure_jobs_root 로 잠근 뒤 다시 읽는다.
+    inst = make_inst(tmp_path)
+    jobs.jobs_root(inst).mkdir()
+    runner = fake_runner({"icacls": (0, "")})  # 권한 검사 결과는 깨끗(DONE)
+    monkeypatch.setattr(jobs, "unresolved_jobs", lambda inst: [] if _icacls_calls(runner) else None)
+    assert jobs.unresolved_jobs_or_repair(inst, runner) == [] and len(_icacls_calls(runner)) == 2
+
+
+def test_permission_check_failures_only_warn(tmp_path, monkeypatch):
+    inst = make_inst(tmp_path)
+    monkeypatch.setattr(install, "protected_targets", lambda inst: (_ for _ in ()).throw(PermissionError(5, "denied")))
+    assert install.untrusted_writers(inst, fake_runner()) is None  # 예외도 '확인하지 못했습니다' 알림으로
+    plan = actions.plan_git_update(inst, "match", [], install.untrusted_writers(inst, fake_runner()))
+    assert isinstance(plan, actions.Plan) and plan.warnings
+
+
+def test_runner_does_not_scan_permissions_again(tmp_path, monkeypatch):
+    from server_console import job_main
+    inst = make_inst(tmp_path)
+    monkeypatch.setattr(install, "default_runner", lambda inst: fake_runner())
+    monkeypatch.setattr(install, "task_states", lambda runner: {})
+    monkeypatch.setattr(install, "server_task_matches", lambda inst, tasks: "match")
+    monkeypatch.setattr(install, "untrusted_writers", lambda inst, runner: pytest.fail("실행기가 권한을 다시 훑었다"))
+    monkeypatch.setattr(status, "update_traces", lambda inst: [])
+    assert isinstance(job_main.recompute(inst, "a" * 32), actions.Plan)
+
+
+def test_new_job_root_gets_admin_owner(tmp_path):
+    inst = make_inst(tmp_path)
+    runner = fake_runner({"icacls": (0, "")})
+    jobs.ensure_jobs_root(inst, runner)
+    icacls = _icacls_calls(runner)
+    assert icacls[0][-2:] == ["/setowner", "*S-1-5-32-544"] and "/inheritance:r" in icacls[1]
+
+
+def test_unresolved_job_blocks_the_next_update_until_acknowledged(tmp_path):
+    inst, plan, job_id = _job(tmp_path)
+    assert jobs.unresolved_jobs(inst) == [job_id]  # 막 만든(실행기 시작 전) 작업
+    assert jobs.unresolved_jobs(inst, exclude=job_id) == []  # 실행기는 제 작업을 빼고 본다
+    refusal = actions.plan_git_update(inst, "match", [], [], unresolved_jobs=jobs.unresolved_jobs(inst))
+    assert isinstance(refusal, actions.Refusal) and job_id[:8] in refusal.reasons[0]
+    with pytest.raises(jobs.JobError):
+        jobs.acknowledge(inst, job_id)  # 진행 중(시작 대기)인 작업은 확인 처리하지 않는다
+    jobs.write_json(jobs.job_dir(inst, job_id) / "state.json", {"status": "running", "pid": 999999, "created": 1})
+    assert jobs.read_job(inst, job_id)["status"] == "check_needed" and jobs.unresolved_jobs(inst) == [job_id]
+    jobs.acknowledge(inst, job_id)
+    assert jobs.read_job(inst, job_id)["acknowledged"] and jobs.unresolved_jobs(inst) == []
+    second = jobs.new_job(inst, plan, fake_runner())
+    jobs.write_json(jobs.job_dir(inst, second) / "state.json", {"status": "finished", "exit_code": 1, "pid": 1})
+    assert jobs.unresolved_jobs(inst) == []  # 끝난 작업(실패 포함)은 결과가 남아 있으니 막지 않는다
+    jobs.write_json(jobs.job_dir(inst, second) / "state.json", {"status": "runner_error", "pid": "x"})
+    assert jobs.unresolved_jobs(inst) == [second]
+
+
+@pytest.mark.parametrize("state", [{}, {"status": "finished"}, {"status": "finished", "exit_code": "0"},
+                                   {"status": "weird"}, {"status": None}])
+def test_malformed_job_state_is_check_needed(tmp_path, state):
+    inst, _plan, job_id = _job(tmp_path)
+    jobs.write_json(jobs.job_dir(inst, job_id) / "state.json", state)
+    assert jobs.read_job(inst, job_id)["status"] == "check_needed"
+    assert jobs.unresolved_jobs(inst) == [job_id]
+
+
+def test_every_job_is_checked_and_unreadable_list_refuses(tmp_path):
+    inst, plan, first = _job(tmp_path)
+    for _ in range(25):  # 표시용 개수(5)·옛 상한(20)보다 많아도 오래된 미확인 작업을 놓치지 않는다
+        newer = jobs.new_job(inst, plan, fake_runner())
+        jobs.write_json(jobs.job_dir(inst, newer) / "state.json", {"status": "finished", "exit_code": 0})
+    os.utime(jobs.job_dir(inst, first) / "request.json", (1, 1))
+    assert jobs.unresolved_jobs(inst) == [first]
+    broken = make_inst(tmp_path / "broken")
+    (broken.logs / names.JOB_DIR).write_text("not a folder", encoding="utf-8")
+    assert jobs.unresolved_jobs(broken) is None
+    refusal = actions.plan_git_update(broken, "match", [], [], unresolved_jobs=None)
+    assert isinstance(refusal, actions.Refusal) and "작업 기록" in refusal.reasons[0]
+
+
+def test_job_records_what_it_installed(tmp_path):
+    inst, plan, job_id = _job(tmp_path)
+    seen = []
+
+    def observe(prior):
+        seen.append(prior)
+        return {"linked": True, "commit": "d" * 40, "installed": True}
+    jobs.run_job(inst, job_id, lambda: plan, command=[sys.executable, "-c", "pass"], before=lambda: {"x"},
+                 observe=observe)
+    state = jobs.read_job(inst, job_id)
+    assert state["code_after"]["commit"] == "d" * 40 and seen == [{"x"}]
+    second = jobs.new_job(inst, plan, fake_runner())
+    jobs.run_job(inst, second, lambda: plan, command=[sys.executable, "-c", "pass"], before=lambda: 1 / 0,
+                 observe=lambda prior: {"prior": prior} if prior is None else 1 / 0)
+    state = jobs.read_job(inst, second)
+    assert state["exit_code"] == 0 and state["code_after"] == {"prior": None}  # 못 쟀으면 잇지 않을 뿐
+    third = jobs.new_job(inst, plan, fake_runner())
+    jobs.run_job(inst, third, lambda: plan, command=[sys.executable, "-c", "pass"], observe=lambda _p: 1 / 0)
+    assert jobs.read_job(inst, third)["exit_code"] == 0  # 관찰이 실패해도 결과는 남는다
+
+
+def test_failed_job_does_not_claim_another_runs_prepare_record(tmp_path):
+    # 내 실행이 잠금 충돌로 기록을 만들기 전에 실패하는 동안, 다른 실행이 준비 기록 하나를 만든 경우.
+    inst, plan, job_id = _job(tmp_path)
+    other = inst.logs / f"server-prepare-{'4' * 32}.json"
+    script = f"import pathlib, sys; pathlib.Path(r'{other}').write_text('{{\"status\": \"prepared\"}}'); sys.exit(1)"
+    code = jobs.run_job(inst, job_id, lambda: plan, command=[sys.executable, "-c", script],
+                        before=lambda: status.prepare_runs(inst), observe=lambda prior: status.run_outcome(inst, prior))
+    state = jobs.read_job(inst, job_id)
+    assert code == 1 and other.exists() and state["code_after"]["linked"] is False
+
+
+def test_output_reader_moves_past_a_long_line_without_newline(tmp_path):
+    inst, _plan, job_id = _job(tmp_path)
+    path = jobs.job_dir(inst, job_id) / "output.log"
+    path.write_bytes(b"x" * 70_000)
+    lines, offset = jobs.read_output(inst, job_id, 0, 64_000)
+    assert offset == 64_000 and len(lines) == 1
+    lines, offset = jobs.read_output(inst, job_id, offset, 64_000)
+    assert lines == [] and offset == 64_000  # 끝나지 않은 짧은 꼬리는 기다린다
+    with path.open("ab") as handle:
+        handle.write(b"\n[2/6] next\n")
+    lines, offset = jobs.read_output(inst, job_id, offset, 64_000)
+    assert lines[-1] == "[2/6] next" and offset == path.stat().st_size
+    with path.open("ab") as handle:
+        handle.write("끝 줄".encode("utf-8"))  # 줄바꿈 없이 끝난 마지막 출력
+    assert jobs.read_output(inst, job_id, offset, 64_000)[0] == []
+    lines, end = jobs.read_output(inst, job_id, offset, 64_000, final=True)  # 작업이 끝났으면 내보낸다
+    assert lines == ["끝 줄"] and end == path.stat().st_size
+
+
+@pytest.mark.parametrize("codec", ["utf-8", "cp949"])
+def test_long_line_is_not_cut_inside_a_korean_character(tmp_path, codec):
+    inst, _plan, job_id = _job(tmp_path)
+    path = jobs.job_dir(inst, job_id) / "output.log"
+    path.write_bytes(("가" * 40_000).encode(codec))  # 줄바꿈 없음, 64KB 를 넘는다(CP949 8만·UTF-8 12만 바이트)
+    lines, offset = jobs.read_output(inst, job_id, 0, 64_001)
+    assert set(lines[0]) == {"가"} and offset < 64_001
+    rest, _ = jobs.read_output(inst, job_id, offset, 64_001, final=True)
+    assert set("".join(rest)) == {"가"}
+
+
+SPAWNER = textwrap.dedent("""
+    import sys, time
+    sys.path.insert(0, sys.argv[1])
+    from server_console import jobs
+    child = [sys.executable, '-c', 'import time, pathlib, sys; time.sleep(3); pathlib.Path(sys.argv[1]).write_text("alive")',
+             sys.argv[2]]
+    print(jobs.spawn_detached(child, sys.argv[3], dict(__import__('os').environ)), flush=True)
+    time.sleep(60)  # 창이 계속 떠 있다가 강제로 죽는 경우
+""")
+
+
+def test_detached_runner_outlives_a_killed_window_process(tmp_path):
+    marker = tmp_path / "alive.txt"
+    script = tmp_path / "spawner.py"
+    script.write_text(SPAWNER, encoding="utf-8")
+    parent = subprocess.Popen([sys.executable, str(script), str(TOOLS), str(marker), str(tmp_path)],
+                              stdout=subprocess.PIPE, text=True)
+    try:
+        assert parent.stdout.readline().strip().isdigit()
+        parent.kill()  # TerminateProcess — 창(부모)을 작업 관리자로 끝낸 것과 같다
+        parent.wait(timeout=10)
+        assert not marker.exists()
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+    deadline = time.time() + 20
+    while not marker.exists() and time.time() < deadline:
+        time.sleep(0.1)
+    assert marker.read_text() == "alive"
+
+
+from test_git_update_admission import UpdaterFixture, fake_tool, updater  # noqa: E402,F401 — 같은 가짜 도구 틀
+
+
+@pytest.mark.parametrize("mode,code,expected", [
+    ("committed", "0", "완료: 서버가 최신 판으로 동작 중입니다."),
+    ("prepare_failed", "1", "실패: 업데이트가 끝나지 않았습니다(종료 코드 1)"),
+])
+def test_job_runner_drives_the_real_updater_script(updater, mode, code, expected):
+    # 실제 run_update_git.ps1 을 가짜 coordinator 와 돌린다. 가짜 도구가 환경변수로 끼워지므로 이 시험만
+    # child_env 대신 틀의 환경을 쓴다(환경 재구성 자체는 test_child_environment_is_rebuilt_not_inherited).
+    updater.holder()
+    updater.env.update({"MVHUB_FAKE_PROGRESS": mode, "MVHUB_COORDINATOR_EXIT": code})
+    data = updater.root / "backend" / "data"
+    inst = install.Installation(root=updater.root, data_dir=data, log_dir=data / "logs",
+                                content_db=data / "db" / "content_hub.db", port=8010, port_known=False,
+                                python=Path(sys.executable), problems=())
+    (inst.logs).mkdir(exist_ok=True)
+    plan = actions.Plan("git-update", str(updater.root), "server", "", ())
+    job_id = jobs.new_job(inst, plan, fake_runner())
+    exit_code = jobs.run_job(inst, job_id, lambda: plan, command=actions.command_for(plan, inst), env=updater.env)
+    assert exit_code == int(code)
+    lines, _ = jobs.read_output(inst, job_id)
+    text = "\n".join(lines)
+    assert "[1/6]" in text and "[5/6]" in text and expected in text, text
+    assert jobs.read_job(inst, job_id)["exit_code"] == int(code)
+    assert "coordinator" in updater.trace()
+
+
+def test_output_lines_decode_utf8_and_cp949():
+    assert jobs.decode_line("한글 [2/6]".encode("utf-8")) == "한글 [2/6]"
+    assert jobs.decode_line("새 코드 받는 중".encode("cp949")) == "새 코드 받는 중"
+
+
+# ---------- Tk 시작 격리 ----------
+
+PROFILE = "open(r'{marker}', 'w').write('ran')\n"
+
+
+def test_tk_profile_files_are_not_executed(tmp_path):
+    marker = tmp_path / "profile-ran.txt"
+    home = tmp_path / "home"
+    home.mkdir()
+    for name in (".Tk.py", ".server_console.py", ".main.py", ".ui.py"):
+        (home / name).write_text(PROFILE.format(marker=marker), encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("PYTHON")}
+    env["HOME"] = str(home)
+    # -I(-E) 를 빼고 돌린다: 최신 tkinter 는 -E 일 때 readprofile 을 건너뛰지만(tkinter/__init__.py:2489),
+    # 관리 창은 그 보장에 기대지 않고 readprofile 자체를 막는다 — 막힘을 -E 없이 확인한다.
+    plain = "import tkinter; r = tkinter.Tk(); r.withdraw(); r.destroy()"
+    subprocess.run([sys.executable, "-c", plain], env=env, cwd=home, check=True, timeout=60)
+    assert marker.exists()  # 막지 않은 Tk 는 홈 폴더 파일을 실행한다 — 이 시험이 실제로 잡는지의 증거
+    marker.unlink()
+    guarded = f"import sys; sys.path.insert(0, r'{TOOLS}'); from server_console import ui; r = ui.ConsoleTk(); r.withdraw(); r.destroy()"
+    subprocess.run([sys.executable, "-c", guarded], env=env, cwd=home, check=True, timeout=60)
+    assert not marker.exists()
+
+
+def test_main_check_runs_isolated(tmp_path):
+    env = dict(os.environ, HOME=str(tmp_path), TCLLIBPATH=str(tmp_path))
+    done = subprocess.run([sys.executable, "-I", str(TOOLS / "server_console" / "main.py"), "--check"],
+                          env=env, capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0 and "tk ok" in done.stdout, done.stderr
+
+
+# ---------- 구조 경계 ----------
+
+def _imported_tool_modules(path: Path, seen: set[Path]) -> set[Path]:
+    if path in seen or not path.is_file():
+        return seen
+    seen.add(path)
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
+        names_ = []
+        if isinstance(node, ast.Import):
+            names_ = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names_ = [node.module]
+        for name in names_:
+            assert not name.startswith("server_console"), f"{path.name} imports {name}"
+            _imported_tool_modules(TOOLS / (name.split(".")[0] + ".py"), seen)
+    return seen
+
+
+def test_server_runtime_code_never_imports_the_console():
+    tools_list = ast.literal_eval(next(
+        node.value for node in ast.walk(ast.parse((TOOLS / "qualify_release_artifact.py").read_text(encoding="utf-8")))
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "TOOLS" for t in node.targets)))
+    roots = [TOOLS / "server_supervisor.py", TOOLS / "server_activation.py", TOOLS / "server_release_update.py",
+             *[ROOT / rel for rel in tools_list]]
+    seen: set[Path] = set()
+    for path in roots:
+        assert path.is_file(), path
+        _imported_tool_modules(path, seen)
+    assert len(seen) >= len(roots)
+
+
+def test_product_code_never_imports_the_console():
+    # 위 시험은 stage 자격 도구의 import 사슬, 이것은 서버 코드·도구 전부를 훑는다(간접 import 포함).
+    files = [*(ROOT / "backend" / "app").rglob("*.py"), *(ROOT / "backend").glob("*.py"),
+             *[p for p in TOOLS.rglob("*.py") if "server_console" not in p.parts]]
+    assert len(files) > 50
+    for path in files:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
+            mods = [a.name for a in node.names] if isinstance(node, ast.Import) else \
+                [node.module or "", *[f"{node.module}.{a.name}" for a in node.names]] \
+                if isinstance(node, ast.ImportFrom) else []  # from tools import server_console 도
+            assert not any("server_console" in m for m in mods), path
+
+
+def test_import_scan_catches_aliases():
+    tree = ast.parse("from tools import server_console as sc\n")
+    node = tree.body[0]
+    assert any("server_console" in m for m in [node.module, *[f"{node.module}.{a.name}" for a in node.names]])
+
+
+def test_launcher_is_ascii_and_uses_only_the_verified_python():
+    raw = (ROOT / "MV_console.bat").read_bytes()
+    assert all(byte < 128 for byte in raw) and b"\r\n" in raw
+    text = raw.decode("ascii")
+    assert ".mvhub-runtime\\python.txt" in text and "-I " in text and "--check" in text
+    assert "run_py.bat" not in text and "where python" not in text.lower()
+    # 승격은 검증된 Python 이 직접 — 상속 환경(PATH·SystemRoot)으로 찾는 powershell 을 거치지 않는다.
+    assert "--launch" in text and "powershell" not in text.lower() and "%systemroot%" not in text.lower()
+    # -I 여도 __PYVENV_LAUNCHER__ 는 sys.executable 을 바꾼다 — 첫 Python 실행 전에 지운다.
+    assert text.index('set "__PYVENV_LAUNCHER__="') < text.index('"%PYEXE%"')
+
+
+def _console_main():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("server_console_main", TOOLS / "server_console" / "main.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # 진입점 모듈(패키지 밖에서 -I 로 실행되는 파일)
+    return module
+
+
+def test_launch_asks_for_approval_only_when_not_admin(tmp_path, monkeypatch):
+    console_main = _console_main()
+    registered = Path(sys._base_executable)
+    monkeypatch.setattr(sys, "executable", r"C:\Windows\System32\notepad.exe")  # __PYVENV_LAUNCHER__ 로 오염된 경우
+    calls = []
+
+    def shell(verb, file, params, directory):
+        calls.append((verb, file, params, directory))
+        return 42
+    assert console_main.launch(shell, lambda: False, registered) == 0
+    assert console_main.launch(shell, lambda: True, registered) == 0
+    assert [c[0] for c in calls] == ["runas", "open"]
+    verb, file, params, directory = calls[0]
+    assert Path(file).parent == registered.parent and "notepad" not in file.lower() and params.startswith("-I ")
+    assert str(TOOLS / "server_console" / "main.py") in params and directory == str(ROOT)
+    assert console_main.launch(lambda *a: 5, lambda: False, registered) == 1  # 승인 거절(ERROR_ACCESS_DENIED)
+    calls.clear()
+    with monkeypatch.context() as patch:  # 인자 없이 부를 때도 등록 기록을 쓴다
+        patch.setattr(console_main, "registered_python", lambda: registered)
+        assert console_main.launch(shell, lambda: False) == 0 and Path(calls[0][1]).parent == registered.parent
+    # 기본값은 sys.executable 이 아니라 등록 기록의 Python 이다.
+    runtime = tmp_path / ".mvhub-runtime"
+    runtime.mkdir()
+    (runtime / "python.txt").write_text(f"{registered}\n", encoding="utf-8")
+    assert console_main.registered_python(tmp_path) == registered
+    (runtime / "python.txt").write_text("relative\\python.exe\n", encoding="utf-8")
+    assert console_main.registered_python(tmp_path) is None
+
+
+# ---------- 화면(메시지 처리) ----------
+
+def _app(tmp_path, monkeypatch):
+    from server_console import ui
+    errors: list[str] = []
+    monkeypatch.setattr(ui, "_log_ui_error", errors.append)
+    root = ui.ConsoleTk()
+    root.withdraw()
+    return ui, root, ui.App(root, make_inst(tmp_path), autostart=False), errors
+
+
+def _status(snapshot):
+    return status.Status(observed_at=time.time(), ready=status.Ready(200, {"status": "ready"}, ""), server="ok",
+                         code={}, traces=[], snapshot_state="ok", snapshot=snapshot, snapshot_age=1.0, rate=None,
+                         intake={"paused": False, "active_generation_total": "?"}, intake_error="")
+
+
+def test_ui_shows_malformed_snapshot_as_unknown_and_keeps_draining(tmp_path, monkeypatch):
+    ui, root, app, errors = _app(tmp_path, monkeypatch)
+    try:
+        bad = {"snapshot": {"agents": {"connected_accounts": "x"}, "requests": [], "websocket": None,
+                            "operations": {"databases": {"ready": "?"}, "backups": {"set_count": None}}}}
+        app._handle(("status", _status(bad)))
+        assert {k: app.cards[k][0].cget("text") for k in ("accounts", "requests", "db", "backup")} == \
+            dict.fromkeys(("accounts", "requests", "db", "backup"), "확인 불가")
+        app._handle(("status", _status({"snapshot": "not a dict"})))
+        app._handle = lambda item: 1 / 0  # 메시지 처리 하나가 깨져도
+        app.queue.put(("status", _status(bad)))
+        pending = lambda: set(root.tk.splitlist(root.tk.call("after", "info")))  # noqa: E731
+        before = pending()
+        app._drain()
+        assert pending() - before and errors  # 다음 비우기는 예약되고 오류는 남는다
+    finally:
+        root.destroy()
+
+
+def test_ui_finishes_each_job_once_and_holds_lost_results(tmp_path, monkeypatch):
+    ui, root, app, _errors = _app(tmp_path, monkeypatch)
+    try:
+        old, lost = "a" * 32, "b" * 32
+        app.job_id, app.busy = old, True
+        view = app.job_view
+        app._show_job(view, [], {"status": "finished", "exit_code": 0})
+        assert app.busy is False
+        app.busy = True  # 다음 요청을 확인하는 중에
+        app._show_job(view, [], {"status": "finished", "exit_code": 0})  # 이전 작업의 같은 알림이 또 와도
+        assert app.busy is True
+        app._handle(("job_started", lost))
+        app._show_job(view, ["stale"], {"status": "check_needed"})  # 바꾸기 전 보기의 알림은 버린다
+        assert "stale" not in app.job_text.get("1.0", "end") and not app.ack_button.winfo_manager()
+        app._show_job(app.job_view, [], {"status": "check_needed"})
+        assert str(app.start_button.cget("state")) == "disabled" and app.ack_button.winfo_manager() == "pack"
+        app._on_plan(actions.Refusal(("이전 작업 확인 필요",)))
+        assert str(app.start_button.cget("state")) == "disabled"  # 결과 확인 전에는 다시 켜지 않는다
+        app._show_job(app.job_view, ["[3/6] x", "[2/6] y"], {"status": "check_needed"})
+        assert app.job_step == 3
+    finally:
+        root.destroy()
+
+
+def test_ui_draws_at_most_its_budget_per_tick(tmp_path, monkeypatch):
+    ui, root, app, _errors = _app(tmp_path, monkeypatch)
+    try:
+        many = [logs.LogLine(frozenset({"all"}), f"line {i}", "INFO") for i in range(ui.DRAIN_LINES * 3 + 5)]
+        app.queue.put(("logs", many))
+        app._drain()
+        drawn = lambda: int(app.texts["all"].index("end-1c").split(".")[0]) - 1  # noqa: E731
+        assert drawn() == ui.DRAIN_LINES and app.backlog  # 나머지는 다음 차례로
+        app._drain()
+        assert drawn() == ui.MAX_LINES_PER_TAB  # 위젯 상한에서 앞부분을 지운다
+        while app.backlog:
+            app._drain()
+        job = "c" * 32
+        app._handle(("job_started", job))
+        lines = [f"[1/6] out {i}" for i in range(ui.DRAIN_LINES + 10)]
+        app.queue.put(("job", app.job_view, lines, {"status": "finished", "exit_code": 0}))
+        app._drain()
+        assert app.job_closed != job  # 끝 처리는 줄을 다 그린 마지막 조각에서
+        app._drain()
+        assert app.job_closed == job and "out 3009" in app.job_text.get("1.0", "end")
+    finally:
+        root.destroy()
+
+
+def test_ui_start_failure_and_blocking_job_can_be_acknowledged(tmp_path, monkeypatch):
+    ui, root, app, _errors = _app(tmp_path, monkeypatch)
+    try:
+        plan = actions.plan_git_update(app.inst, "match", [], [])
+        monkeypatch.setattr(jobs, "launch_runner", lambda inst, job_id: 1 / 0)
+        monkeypatch.setattr(jobs, "ensure_jobs_root", lambda inst, runner: jobs.jobs_root(inst).mkdir(
+            exist_ok=True) or jobs.jobs_root(inst))
+        app._start_worker(plan)  # 실행기를 못 띄워도
+        item = app.queue.get_nowait()
+        assert item[0] == "job_started"  # 만든 작업을 화면이 따라가고
+        app._handle(item)
+        state = jobs.read_job(app.inst, app.job_id)
+        assert state["status"] == "runner_error"  # 기록이 남아 '결과 확인 필요'가 된다
+        app._show_job(app.job_view, [], state)
+        assert app.ack_button.winfo_manager() == "pack"
+        # 다른 작업을 보고 있어도, 막고 있는 작업으로 옮겨 [확인했음]을 누를 수 있다.
+        blocking = app.job_id
+        app._handle(("job_started", "d" * 32))
+        for name, value in (("task_states", lambda runner: {}), ("server_task_matches", lambda inst, tasks: "match"),
+                            ("untrusted_writers", lambda inst, runner: [])):
+            monkeypatch.setattr(install, name, value)
+        monkeypatch.setattr(status, "update_traces", lambda inst: [])
+        monkeypatch.setattr(actions, "reference_main", lambda inst, runner: pytest.fail("거절될 때 Git 을 실행했다"))
+        app._plan_worker()
+        selected = app.queue.get_nowait()
+        assert selected == ("job_select", blocking) and isinstance(app.queue.get_nowait()[1], actions.Refusal)
+        app._handle(selected)
+        assert app.job_id == blocking
+        monkeypatch.setattr(ui.messagebox, "askokcancel", lambda *a, **k: True)
+        app.acknowledge()
+        assert jobs.unresolved_jobs(app.inst) == [] and str(app.start_button.cget("state")) == "normal"
+    finally:
+        root.destroy()
+
+
+def test_git_is_not_run_when_refused_and_permissions_only_warn(tmp_path, monkeypatch):
+    ui, root, app, _errors = _app(tmp_path, monkeypatch)
+    try:
+        for name, value in (("task_states", lambda runner: {}), ("server_task_matches", lambda inst, tasks: "match"),
+                            ("untrusted_writers", lambda inst, runner: [("git.exe", "S-1-5-11", "쓰기 권한")])):
+            monkeypatch.setattr(install, name, value)
+        monkeypatch.setattr(status, "update_traces", lambda inst: [("git", "다른 업데이트 중")])
+        monkeypatch.setattr(actions, "reference_main", lambda inst, runner: pytest.fail("거절될 때 Git 을 실행했다"))
+        app._plan_worker()
+        assert isinstance(app.queue.get_nowait()[1], actions.Refusal)
+        monkeypatch.setattr(status, "update_traces", lambda inst: [])
+        monkeypatch.setattr(actions, "reference_main", lambda inst, runner: "e" * 40)
+        monkeypatch.setattr(ui.messagebox, "askokcancel", lambda *a, **k: False)
+        app._plan_worker()
+        plan = app.queue.get_nowait()[1]
+        assert isinstance(plan, actions.Plan) and "eeeeeeee" in plan.summary[1]  # 권한 문제가 있어도 진행
+        app._on_plan(plan)
+        assert "S-1-5-11" in app.plan_note.cget("text")  # 업데이트 화면에 알림으로만 남는다
+        app._handle(("job_started", "f" * 32))
+        assert "S-1-5-11" in app.plan_note.cget("text")  # 작업이 시작돼도 알림은 남는다
+    finally:
+        root.destroy()
+
+
+def test_ui_marks_a_non_mvhub_answer_as_unconfirmed(tmp_path, monkeypatch):
+    ui, root, app, _errors = _app(tmp_path, monkeypatch)
+    try:
+        app.addresses = [("이더넷", "192.0.2.10")]
+        app.status = _status(None)
+        app.status.ready = status.Ready(404, {"detail": "Not Found"}, "")
+        app._show_address()
+        assert "MV Hub 인지 미확인" in app.addr_label.cget("text")
+        app.status.ready = status.Ready(200, {"status": "ready", "checks": {}}, "")
+        app._show_address()
+        assert "미확인" not in app.addr_label.cget("text") and app.copy_text == "http://192.0.2.10:8010"
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize("state,expected", [
+    ({"status": "finished", "exit_code": 0, "code_after": {"linked": True, "installed": True, "commit": "e" * 40}},
+     "커밋 eeeeeeee"),
+    ({"status": "finished", "exit_code": 0, "code_after": {"linked": True, "prepare": "up_to_date", "commit": "e" * 40}},
+     "이미 최신"),
+    ({"status": "finished", "exit_code": 0, "code_after": {"linked": False}}, "미확인"),
+    ({"status": "finished", "exit_code": 0, "code_after": "junk"}, "미확인"),
+    ({"status": "finished", "exit_code": 4}, "종료 코드 4"),
+    ({"status": "check_needed"}, "[확인했음]"),
+    ({"status": "check_needed", "acknowledged": True}, "확인했음으로 표시됨"),
+])
+def test_job_result_text_names_the_commit_only_when_linked(state, expected):
+    from server_console import ui
+    assert expected in ui.job_result_text(state)[0]
