@@ -4,11 +4,11 @@
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 
 from .install import Installation, Runner, powershell_exe, trusted_git
 
-ACTIONS = {"git-update": "Git 업데이트"}
+ACTIONS = {"git-update": "Git 업데이트", "tools-update": "관리 도구 갱신", "console-rollback": "이전 관리 창으로"}
 
 
 @dataclass(frozen=True)
@@ -19,16 +19,19 @@ class Plan:
     reference_commit: str          # 확인 창에 보인 '지금 보이는 최신' — 고정 대상이 아니다
     summary: tuple[str, ...]
     warnings: tuple[str, ...] = ()  # 진행은 막지 않고 화면에 알리기만 하는 것(권한)
+    params: dict = field(default_factory=dict)  # 동작별 확인 대상 — 실행기가 실행 직전에 같은지 다시 비교한다
 
     def to_json(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_json(cls, value: dict) -> "Plan":
+        params = value.get("params") or {}
         return cls(kind=str(value["kind"]), root=str(value["root"]), role=str(value["role"]),
                    reference_commit=str(value.get("reference_commit") or ""),
                    summary=tuple(str(s) for s in value.get("summary") or ()),
-                   warnings=tuple(str(s) for s in value.get("warnings") or ()))
+                   warnings=tuple(str(s) for s in value.get("warnings") or ()),
+                   params=dict(params) if isinstance(params, dict) else {"invalid": True})
 
 
 @dataclass(frozen=True)
@@ -97,7 +100,49 @@ def with_reference(plan: Plan, inst: Installation, reference_commit: str) -> Pla
 
 def same_target(confirmed: Plan, current: Plan) -> bool:
     # 커밋은 비교하지 않는다 — coordinator 가 실행 때 직접 fetch 해 고른다(server_release_update.py:169).
-    return (confirmed.kind, confirmed.root, confirmed.role) == (current.kind, current.root, current.role)
+    # 동작별 확인 대상(params)은 그대로 같아야 한다(2단계 설계 3판 0).
+    return ((confirmed.kind, confirmed.root, confirmed.role, confirmed.params)
+            == (current.kind, current.root, current.role, current.params))
+
+
+def _common_refusals(inst: Installation, traces: list[tuple[str, str]], unresolved_jobs: list[str] | None) -> list[str]:
+    reasons = [_PROBLEM_REASONS[p] for p in inst.problems if p in _PROBLEM_REASONS and p != "missing_updater"]
+    if unresolved_jobs is None:
+        reasons.append("지난 작업 기록을 확인하지 못했습니다(logs\\console-jobs)")
+    for job_id in unresolved_jobs or []:
+        reasons.append(f"이전 작업({job_id[:8]})이 진행 중이거나 결과를 확인하지 않았습니다 — 업데이트 화면에서 결과를 확인하세요")
+    for _kind, text in traces:
+        reasons.append(f"업데이트 흔적: {text}")
+    return reasons
+
+
+def plan_tools_update(inst: Installation, traces: list[tuple[str, str]],
+                      unresolved_jobs: list[str] | None = ()) -> Plan | Refusal:
+    """관리 창 코드만 실행 시점의 최신 origin/main 판으로(관리 창 전용 stage). 서버·서버 폴더는 그대로."""
+    reasons = _common_refusals(inst, traces, unresolved_jobs)
+    if reasons:
+        return Refusal(tuple(reasons))
+    summary = (
+        "관리 창 코드를 실행 시점의 최신 origin/main 으로 바꿉니다(받은 커밋은 결과에 표시됩니다).",
+        "서버와 서버 폴더는 그대로입니다 — 서버가 멈추지 않습니다.",
+        "새 관리 창을 따로 꺼내 시작 점검을 통과해야 바꿉니다. 끝나면 관리 창을 다시 열면 적용됩니다.",
+    )
+    return Plan("tools-update", str(inst.root), "console", "", summary)
+
+
+def plan_console_rollback(inst: Installation, pointer: dict | None, traces: list[tuple[str, str]],
+                          unresolved_jobs: list[str] | None = ()) -> Plan | Refusal:
+    """직전 관리 창 stage 로 되돌리기 — 지금 포인터(from)와 되돌릴 곳(to)을 확인 대상으로."""
+    reasons = _common_refusals(inst, traces, unresolved_jobs)
+    previous = (pointer or {}).get("previous")
+    if not pointer or not previous:
+        reasons.append("되돌릴 이전 관리 창이 없습니다")
+    if reasons:
+        return Refusal(tuple(reasons))
+    summary = (f"관리 창을 이전 판 {previous[:12]} 로 되돌립니다(지금 {pointer['sha'][:12]}).",
+               "서버와 서버 폴더는 그대로입니다. 끝나면 관리 창을 다시 열면 적용됩니다.")
+    return Plan("console-rollback", str(inst.root), "console", "", summary,
+                params={"from_sha": pointer["sha"], "to_sha": previous})
 
 
 def command_for(plan: Plan, inst: Installation) -> list[str]:

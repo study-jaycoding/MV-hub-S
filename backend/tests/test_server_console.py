@@ -782,11 +782,247 @@ def test_tk_profile_files_are_not_executed(tmp_path):
     assert not marker.exists()
 
 
-def test_main_check_runs_isolated(tmp_path):
+def test_console_check_runs_isolated(tmp_path):
     env = dict(os.environ, HOME=str(tmp_path), TCLLIBPATH=str(tmp_path))
-    done = subprocess.run([sys.executable, "-I", str(TOOLS / "server_console" / "main.py"), "--check"],
-                          env=env, capture_output=True, text=True, timeout=60)
+    done = subprocess.run([sys.executable, "-I", "-B", str(TOOLS / "server_console" / "console.py"), "--check",
+                           "--install-root", str(tmp_path)], env=env, capture_output=True, text=True, timeout=60)
     assert done.returncode == 0 and "tk ok" in done.stdout, done.stderr
+    assert f"code_root={ROOT}" in done.stdout
+
+
+# ---------- 관리 창 전용 stage(2단계 ①) ----------
+
+STAGE_FILES = ("tools/log_viewer.py", "tools/deploy_fence_check.py")
+
+
+def _install_tree(tmp_path: Path) -> Path:
+    """가짜 설치 루트: 관리 창 코드 + 등록 Python + logs + git 저장소(커밋 하나)."""
+    root = tmp_path / "root"
+    for path in (TOOLS / "server_console").glob("*.py"):
+        target = root / "tools" / "server_console" / path.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(path.read_bytes())
+    for rel in STAGE_FILES:
+        (root / rel).write_bytes((ROOT / rel).read_bytes())
+    (root / ".mvhub-runtime").mkdir()
+    (root / ".mvhub-runtime" / "python.txt").write_text(sys.executable + "\n", encoding="utf-8")
+    (root / "logs").mkdir()
+    (root / ".gitignore").write_text("/logs/\n/.mvhub-runtime/\n", encoding="utf-8")
+    _git_commit(root, "init")
+    return root
+
+
+def _git_commit(root: Path, message: str) -> str:
+    git = str(install.trusted_git() or "git")
+    if not (root / ".git").exists():
+        subprocess.run([git, "-C", str(root), "init", "-q"], check=True)
+    subprocess.run([git, "-C", str(root), "add", "-A"], check=True)
+    subprocess.run([git, "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", message],
+                   check=True)
+    return subprocess.run([git, "-C", str(root), "rev-parse", "HEAD"], check=True, capture_output=True,
+                          text=True).stdout.strip()
+
+
+def _stage_inst(root: Path) -> install.Installation:
+    return install.Installation(root=root, data_dir=root / "backend" / "data", log_dir=root / "backend" / "data" / "logs",
+                                content_db=root / "backend" / "data" / "db" / "content_hub.db", port=8010,
+                                port_known=False, python=Path(sys.executable), problems=())
+
+
+def _bootstrap_check(root: Path) -> subprocess.CompletedProcess:
+    env = dict(os.environ, HOME=str(root), TCLLIBPATH=str(root))
+    return subprocess.run([sys.executable, "-I", str(root / "tools" / "server_console" / "main.py"), "--check"],
+                          env=env, capture_output=True, text=True, timeout=120)
+
+
+def test_bootstrap_runs_the_verified_stage_and_falls_back_to_root(tmp_path):
+    from server_console import console_stage, main as boot
+    root = _install_tree(tmp_path)
+    done = _bootstrap_check(root)
+    assert done.returncode == 0 and f"code_root={root}" in done.stdout, done.stdout + done.stderr  # 포인터 없음 = 루트 판
+    inst = _stage_inst(root)
+    runner = console_stage.default_runner_for(inst)
+    sha = subprocess.run([str(install.trusted_git()), "-C", str(root), "rev-parse", "HEAD"], capture_output=True,
+                         text=True, check=True).stdout.strip()
+    said = []
+    stage = console_stage.build(inst, runner, sha, console_stage.check_with_python(inst, runner), said.append)
+    assert stage == root / "logs" / "console-stages" / sha and said
+    console_stage.publish(inst, sha)
+    done = _bootstrap_check(root)
+    assert done.returncode == 0 and f"code_root={stage}" in done.stdout, done.stdout + done.stderr
+    assert not list(stage.rglob("__pycache__"))  # -B — 목록 밖 .pyc 를 남기지 않는다
+    (stage / "tools" / "server_console" / "ui.py").write_text("raise SystemExit(9)\n", encoding="utf-8")  # 위조
+    stage_found, note = boot.current_stage(root)
+    assert stage_found is None and "확인 실패" in note
+    done = _bootstrap_check(root)
+    assert done.returncode == 0 and f"code_root={root}" in done.stdout  # 검증 실패 → 루트 판으로
+
+
+def _good_stage(tmp_path: Path) -> tuple[Path, str]:
+    from server_console import console_stage
+    root = _install_tree(tmp_path)
+    inst = _stage_inst(root)
+    runner = console_stage.default_runner_for(inst)
+    sha = subprocess.run([str(install.trusted_git()), "-C", str(root), "rev-parse", "HEAD"], capture_output=True,
+                         text=True, check=True).stdout.strip()
+    stage = console_stage.build(inst, runner, sha, lambda _p: None, lambda _s: None)
+    return stage, sha
+
+
+@pytest.mark.parametrize("tamper", ["extra", "pycache", "bytes", "missing", "manifest_dotdot", "manifest_dup"])
+def test_stage_verification_rejects_tampering(tmp_path, tamper):
+    from server_console import main as boot
+    stage, sha = _good_stage(tmp_path)
+    boot.verify_stage_dir(stage, sha)
+    manifest = stage / boot.MANIFEST
+    value = json.loads(manifest.read_text(encoding="utf-8"))
+    if tamper == "extra":
+        (stage / "tools" / "evil.py").write_text("x", encoding="utf-8")
+    elif tamper == "pycache":
+        (stage / "tools" / "server_console" / "__pycache__").mkdir()
+    elif tamper == "bytes":
+        (stage / "tools" / "log_viewer.py").write_bytes(b"# changed\n")
+    elif tamper == "missing":
+        (stage / "tools" / "deploy_fence_check.py").unlink()
+    elif tamper == "manifest_dotdot":
+        value["files"][0]["path"] = "../outside.py"
+        manifest.write_text(json.dumps(value), encoding="utf-8")
+    elif tamper == "manifest_dup":
+        value["files"].append(dict(value["files"][0], path=value["files"][0]["path"].upper()))
+        manifest.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(boot.StageError):
+        boot.verify_stage_dir(stage, sha)
+
+
+def test_pointer_must_match_the_manifest_and_stage_path(tmp_path):
+    from server_console import console_stage, main as boot
+    stage, sha = _good_stage(tmp_path)
+    root = stage.parents[2]
+    inst = _stage_inst(root)
+    assert boot.current_stage(root) == (None, "")  # 포인터 없음 = 정상(루트 판)
+    pointer = console_stage.publish(inst, sha)
+    assert boot.current_stage(root) == (stage, "")
+    pointer_path = root / "logs" / boot.POINTER
+    for bad in (dict(pointer, manifest_sha256="0" * 64), dict(pointer, path=f"elsewhere/{sha}"), dict(pointer, sha="x")):
+        pointer_path.write_text(json.dumps(bad), encoding="utf-8")
+        found, note = boot.current_stage(root)
+        assert found is None and "확인 실패" in note
+    pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
+    outside = tmp_path / "outside-stages"
+    (root / "logs" / boot.STAGES).rename(outside)
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(root / "logs" / boot.STAGES), str(outside)],
+                   check=True, capture_output=True)
+    found, note = boot.current_stage(root)
+    assert found is None and "연결 지점" in note  # console-stages 가 다른 곳을 가리키면 쓰지 않는다
+
+
+def test_export_ignored_file_makes_the_stage_build_fail(tmp_path):
+    from server_console import console_stage
+    root = _install_tree(tmp_path)
+    (root / ".gitattributes").write_text("tools/log_viewer.py export-ignore\n", encoding="utf-8")
+    sha = _git_commit(root, "ignore one")
+    inst = _stage_inst(root)
+    with pytest.raises(console_stage.StageError):
+        console_stage.build(inst, console_stage.default_runner_for(inst), sha, lambda _p: None, lambda _s: None)
+    assert not [p for p in (root / "logs" / "console-stages").iterdir() if not p.name.startswith(".tmp-")]
+
+
+def test_rollback_and_prune_keep_the_stages_in_use(tmp_path):
+    from server_console import console_stage
+    stage_a, sha_a = _good_stage(tmp_path)
+    root = stage_a.parents[2]
+    inst = _stage_inst(root)
+    (root / "tools" / "server_console" / "names.py").write_text(
+        (root / "tools" / "server_console" / "names.py").read_text(encoding="utf-8") + "\n# b\n", encoding="utf-8")
+    sha_b = _git_commit(root, "b")
+    console_stage.build(inst, console_stage.default_runner_for(inst), sha_b, lambda _p: None, lambda _s: None)
+    console_stage.publish(inst, sha_a)
+    pointer = console_stage.publish(inst, sha_b)
+    assert pointer["previous"] == sha_a
+    with pytest.raises(console_stage.StageError):
+        console_stage.rollback_work(inst, "f" * 40, sha_a, lambda _s: None)  # 확인한 포인터와 다르면 거절
+    code, extra = console_stage.rollback_work(inst, sha_b, sha_a, lambda _s: None)
+    assert code == 0 and console_stage.read_pointer(root)["sha"] == sha_a and extra["previous_sha"] == sha_b
+    stages = root / "logs" / "console-stages"
+    olds = []
+    for index in range(5):  # 오래된 stage 5개 + 그중 하나는 미해결 작업이 쓰는 중
+        old = stages / (f"{index}" * 40)
+        old.mkdir()
+        os.utime(old, (1000 + index, 1000 + index))
+        olds.append(old)
+    keep = console_stage.in_use(inst, [str(olds[0])])
+    removed = console_stage.prune(inst, keep, lambda _s: None)
+    assert olds[0].exists() and (stages / sha_a).exists() and (stages / sha_b).exists()  # 쓰는 중·지금·직전
+    assert olds[4].exists()  # 최근 3개(지금·직전·그다음)는 늘 남긴다
+    assert set(removed) == {old.name for old in olds[1:4]}
+
+
+def test_tools_update_takes_the_git_update_lock_and_rechecks(tmp_path, monkeypatch):
+    from server_console import console_stage
+    stage_a, sha_a = _good_stage(tmp_path)
+    root = stage_a.parents[2]
+    inst = _stage_inst(root)
+    with pytest.raises(console_stage.StageError, match="시작하지 않음"):
+        console_stage.update_work(inst, lambda a, t: (0, ""), lambda: ["업데이트 흔적"], lambda: [], lambda _s: None)
+    ready, script = tmp_path / "held", tmp_path / "holder.py"
+    script.write_text(HOLDER, encoding="utf-8")
+    holder = subprocess.Popen([sys.executable, str(script), str(root / "logs" / names.GIT_UPDATE_LOCK), str(ready), "5"])
+    try:
+        deadline = time.time() + 10
+        while not ready.exists() and time.time() < deadline:
+            time.sleep(0.05)
+        with pytest.raises(console_stage.StageError, match="다른 업데이트"):
+            console_stage.update_work(inst, lambda a, t: (0, ""), lambda: [], lambda: [], lambda _s: None)
+    finally:
+        holder.kill()
+        holder.wait()
+    deadline = time.time() + 5
+    monkeypatch.setattr(console_stage, "latest_main", lambda inst, runner: sha_a)
+    while True:
+        try:
+            code, extra = console_stage.update_work(inst, console_stage.default_runner_for(inst), lambda: [],
+                                                    lambda: [], lambda _s: None)
+            break
+        except console_stage.StageError:
+            if time.time() > deadline:  # Windows 는 죽은 프로세스의 잠금을 조금 늦게 푼다
+                raise
+            time.sleep(0.2)
+    assert code == 0 and extra["console_sha"] == sha_a and console_stage.read_pointer(root)["sha"] == sha_a
+
+
+def test_runner_starts_from_the_code_root_with_the_install_root(tmp_path, monkeypatch):
+    inst = make_inst(tmp_path)
+    seen = {}
+    monkeypatch.setattr(jobs, "spawn_detached", lambda argv, cwd, env: seen.update(argv=argv, cwd=cwd, env=env) or 1)
+    jobs.launch_runner(inst, "a" * 32)
+    argv = seen["argv"]
+    assert argv[1:3] == ["-I", "-B"] and Path(argv[3]) == install.CODE_ROOT / "tools" / "server_console" / "job_main.py"
+    assert argv[4:] == ["--install-root", str(inst.root), "a" * 32] and seen["cwd"] == str(inst.root)
+    assert seen["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
+def test_console_plans_compare_their_targets(tmp_path):
+    inst = make_inst(tmp_path)
+    plan = actions.plan_tools_update(inst, [], [])
+    assert isinstance(plan, actions.Plan) and plan.kind == "tools-update"
+    assert isinstance(actions.plan_tools_update(inst, [], ["a" * 32]), actions.Refusal)
+    assert isinstance(actions.plan_console_rollback(inst, None, []), actions.Refusal)
+    pointer = {"sha": "b" * 40, "previous": "a" * 40}
+    rollback = actions.plan_console_rollback(inst, pointer, [])
+    assert rollback.params == {"from_sha": "b" * 40, "to_sha": "a" * 40}
+    assert actions.Plan.from_json(rollback.to_json()) == rollback
+    moved = actions.plan_console_rollback(inst, dict(pointer, sha="c" * 40), [])
+    assert not actions.same_target(rollback, moved)  # 그새 포인터가 바뀌면 실행기가 거절
+
+
+@pytest.mark.parametrize("state,expected", [
+    ({"status": "finished", "kind": "tools-update", "exit_code": 0, "console_sha": "c" * 40}, "다시 열기"),
+    ({"status": "finished", "kind": "tools-update", "exit_code": 1}, "관리 창은 그대로"),
+    ({"status": "finished", "kind": "console-rollback", "exit_code": 0, "console_sha": "d" * 40}, "다시 열기"),
+])
+def test_console_job_result_text(state, expected):
+    from server_console import ui
+    assert expected in ui.job_result_text(state)[0]
 
 
 # ---------- 구조 경계 ----------

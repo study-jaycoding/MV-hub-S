@@ -20,7 +20,7 @@ from typing import Callable
 
 from . import names
 from .actions import Plan, Refusal, command_for, same_target
-from .install import Installation, Runner, acl_offenders, child_env, windows_dir
+from .install import CODE_ROOT, Installation, Runner, acl_offenders, child_env, windows_dir
 
 JOB_ID = re.compile(r"^[0-9a-f]{32}$")
 STEP = re.compile(r"\[(\d)/6\]")
@@ -154,20 +154,25 @@ def process_alive(pid: int, created: int | None) -> bool:
 
 # ---- 실행기 쪽(job_main.py 가 부른다) ----
 
+Work = Callable[[Path, Callable[[str], None]], "tuple[int, dict]"]
+
+
 def run_job(inst: Installation, job_id: str, recompute: Callable[[], "Plan | Refusal"],
             command: list[str] | None = None, env: dict[str, str] | None = None,
             before: Callable[[], object] | None = None,
-            observe: Callable[[object], dict] | None = None) -> int:
+            observe: Callable[[object], dict] | None = None, work: Work | None = None) -> int:
     """확인한 대상과 지금 대상을 다시 비교한 뒤 실행하고 결과를 남긴다. command·env 는 시험용.
 
     before() 는 실행 직전 상태(이미 있던 준비 실행 목록)를 재고, observe(그 값)는 끝난 뒤 이 실행이 설치한
-    커밋을 찾아 code_after 에 남긴다(status.prepare_runs·run_outcome).
+    커밋을 찾아 code_after 에 남긴다(status.prepare_runs·run_outcome). work 가 있으면 외부 명령 대신
+    work(작업 폴더, 한 줄 출력)를 부르고 그 (종료 코드, 덧붙일 결과)를 남긴다(관리 도구 갱신 등).
     """
     job = job_dir(inst, job_id)
     request = read_json(job / "request.json")
     if request is None:
         raise JobError("작업 요청을 읽지 못했습니다")
-    me = {"pid": os.getpid(), "created": process_created(os.getpid())}
+    # code_root = 이 실행기가 도는 관리 창 코드(루트 또는 stage) — 쓰는 중인 stage 를 지우지 않게 남긴다.
+    me = {"pid": os.getpid(), "created": process_created(os.getpid()), "code_root": str(CODE_ROOT)}
     write_json(job / "state.json", {"status": "checking", **me, "started_at": time.time()})
     confirmed = Plan.from_json(request["plan"])
     current = recompute()
@@ -179,6 +184,8 @@ def run_job(inst: Installation, job_id: str, recompute: Callable[[], "Plan | Ref
         write_json(job / "state.json", {"status": "refused", **me, "finished_at": time.time(),
                                          "reasons": ["확인한 대상과 실행 직전 대상이 다릅니다 — 다시 확인하세요"]})
         return 2
+    if work is not None:
+        return _run_work(job, me, work)
     argv = command or command_for(current, inst)
     try:
         prior = before() if before is not None else None
@@ -203,6 +210,22 @@ def run_job(inst: Installation, job_id: str, recompute: Callable[[], "Plan | Ref
     return code
 
 
+def _run_work(job: Path, me: dict, work: Work) -> int:
+    write_json(job / "state.json", {"status": "running", **me, "started_at": time.time()})
+    with (job / "output.log").open("ab") as output:
+        def say(line: str) -> None:
+            output.write((time.strftime("[%H:%M:%S] ") + line + "\n").encode("utf-8"))
+            output.flush()
+        try:
+            code, extra = work(job, say)
+        except Exception as exc:  # noqa: BLE001 — 실패 이유를 결과에 남긴다(판정은 종료 코드)
+            say(f"실패: {exc}")
+            code, extra = 1, {"error": f"{type(exc).__name__}: {exc}"[:500]}
+    write_json(job / "state.json", {"status": "finished", **me, "exit_code": code, **extra,
+                                    "result": "success" if code == 0 else "failed", "finished_at": time.time()})
+    return code
+
+
 def spawn_detached(argv: list[str], cwd: str, env: dict[str, str]) -> int:
     """부모(화면)가 끝나거나 죽어도 계속 도는 프로세스."""
     child = subprocess.Popen(argv, cwd=cwd, env=env, close_fds=True,
@@ -218,8 +241,10 @@ def launch_runner(inst: Installation, job_id: str) -> int:
         raise JobError("등록된 Python 이 없습니다")
     pythonw = inst.python.with_name("pythonw.exe")
     exe = pythonw if pythonw.is_file() else inst.python
-    return spawn_detached([str(exe), "-I", str(inst.root / "tools" / "server_console" / "job_main.py"), job_id],
-                          str(inst.root), child_env(inst))
+    # 실행기는 화면이 시작한 관리 창 코드(CODE_ROOT)에서 돈다 — 그사이 포인터가 바뀌어도 이 사본은 그대로.
+    return spawn_detached([str(exe), "-I", "-B", str(CODE_ROOT / "tools" / "server_console" / "job_main.py"),
+                           "--install-root", str(inst.root), job_id],
+                          str(inst.root), dict(child_env(inst), PYTHONDONTWRITEBYTECODE="1"))
 
 
 # ---- 화면 쪽 읽기 ----
@@ -274,13 +299,15 @@ def read_job(inst: Installation, job_id: str, now: float | None = None,
     request = read_json(job / "request.json")
     state = read_json(job / "state.json")
     acked = (job / "ack.json").exists()
+    kind = (request or {}).get("kind")  # 화면 문구·[관리 창 다시 열기] 는 작업 종류에 따라 다르다
     if state is None:
         started = (request or {}).get("requested_at") or 0
         try:
             young = bool(request) and now - float(started) < STARTING_GRACE_SECONDS
         except (TypeError, ValueError):
             young = False
-        return {"status": "starting" if young else "check_needed", "job_id": job_id, "acknowledged": acked}
+        return {"status": "starting" if young else "check_needed", "job_id": job_id, "acknowledged": acked,
+                "kind": kind}
     try:
         pid = int(state.get("pid") or 0)
     except (TypeError, ValueError):
@@ -290,8 +317,8 @@ def read_job(inst: Installation, job_id: str, now: float | None = None,
              or (status == "finished" and type(state.get("exit_code")) is int))
     if not valid or (status in ("checking", "running") and not alive(pid, state.get("created"))):
         # 모르는 상태·종료 코드 없는 완료·사라진 실행기는 짐작하지 않는다.
-        return {**state, "status": "check_needed", "job_id": job_id, "acknowledged": acked}
-    return {**state, "job_id": job_id, "acknowledged": acked}
+        return {**state, "status": "check_needed", "job_id": job_id, "acknowledged": acked, "kind": kind}
+    return {**state, "job_id": job_id, "acknowledged": acked, "kind": kind}
 
 
 UNRESOLVED = ("starting", "checking", "running", "check_needed", "runner_error")

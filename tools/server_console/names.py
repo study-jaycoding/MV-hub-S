@@ -14,6 +14,7 @@ ALERT_FILES = ("server_ALERT.txt", "watchdog_ALERT.txt")
 JOB_DIR = "console-jobs"
 UI_LOG = "console-ui.log"
 LOCK_FILE = "server-console.lock"
+UI_MARK = "console-ui.json"  # 열린 화면이 쓰는 관리 창 코드(pid·생성 시각·code_root) — 쓰는 중인 stage 보존용
 
 # runtime_snapshot 은 60초마다 쌓인다. 이보다 오래되면 '확인 불가'로 본다.
 SNAPSHOT_STALE_SECONDS = 180

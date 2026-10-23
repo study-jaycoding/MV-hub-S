@@ -7,15 +7,19 @@ from __future__ import annotations
 import collections
 import ctypes
 import msvcrt
+import os
 import queue
+import subprocess
 import sys
 import threading
 import time
 import tkinter as tk
 import traceback
+from pathlib import Path
 from tkinter import messagebox, ttk
 
-from . import actions, install, jobs, logs, names, status
+from . import actions, console_stage, install, jobs, logs, names, status
+from . import main as main_boot
 
 BG, BG2, PANEL, PANEL2 = "#08090a", "#0c0e10", "#121316", "#181a1e"
 TEXT, MUTED, MUTED2, LIME, INK = "#f3f4f6", "#8b909c", "#5f6573", "#c4e84a", "#131806"
@@ -118,9 +122,11 @@ def _line_count(text: tk.Text) -> int:
 
 
 class App:
-    def __init__(self, root: ConsoleTk, inst: install.Installation, autostart: bool = True) -> None:
+    def __init__(self, root: ConsoleTk, inst: install.Installation, autostart: bool = True, note: str = "") -> None:
         self.root = root
         self.inst = inst
+        self.note = note  # 부트스트랩이 넘긴 알림(관리 창 stage 확인 실패 등) — 상단에 늘 보인다
+        self.reopen_requested = False
         self.runner = install.default_runner(inst)
         self.queue: queue.Queue = queue.Queue(maxsize=QUEUE_MAX)
         self.hub = logs.LogHub(inst)
@@ -143,7 +149,7 @@ class App:
         if recent:
             self.job_id = recent[0]
             self.busy = True
-            self.start_button.configure(state="disabled")
+            self._set_start_buttons("disabled")
         if autostart:  # 시험은 끄고 메시지를 직접 넣는다
             threading.Thread(target=self._worker, name="console-worker", daemon=True).start()
             self.root.after(250, self._drain)
@@ -183,6 +189,9 @@ class App:
         self.nav_items: dict[str, tk.Label] = {}
         main = tk.Frame(root, bg=BG)
         main.pack(side="left", fill="both", expand=True)
+        if self.note:  # 부트스트랩 알림(관리 창 stage 확인 실패 등)은 어느 화면에서도 보이게 맨 위에
+            tk.Label(main, text=self.note, bg="#3a2f12", fg=AMBER, font=BOLD, anchor="w", justify="left",
+                     wraplength=1000, padx=12, pady=6).pack(fill="x")
         for key, label in (("status", "상태·로그"), ("update", "업데이트")):
             item = tk.Label(self.nav, text=label, bg=BG2, fg=MUTED, font=("Malgun Gothic", 11, "bold"),
                             anchor="w", padx=12, pady=8, cursor="hand2", takefocus=True)
@@ -316,6 +325,17 @@ class App:
                                      justify="left", wraplength=900)
         self.result_label.pack(side="left", fill="x")
         self.ack_button = self._button(bottom, "확인했음", self.acknowledge)  # 결과를 잃은 작업에만 보인다
+        self.reopen_button = self._button(bottom, "관리 창 다시 열기", self.reopen, primary=True)  # 관리 창이 바뀐 뒤에만
+        tools = tk.Frame(body, bg=PANEL, highlightbackground="#26282d", highlightthickness=1)
+        tools.pack(fill="x", pady=(10, 0))
+        tk.Label(tools, text="관리 도구", bg=PANEL, fg=TEXT, font=BOLD).pack(side="left", padx=(12, 8), pady=8)
+        self.console_label = tk.Label(tools, text=console_version_text(), bg=PANEL, fg=MUTED, font=FONT)
+        self.console_label.pack(side="left")
+        self.rollback_button = self._button(tools, "이전 관리 창으로…", lambda: self.request_plan("console-rollback"))
+        self.rollback_button.pack(side="right", padx=8, pady=6)
+        self.tools_button = self._button(tools, "관리 도구 갱신…", lambda: self.request_plan("tools-update"))
+        self.tools_button.pack(side="right", pady=6)
+        self.start_buttons = (self.start_button, self.tools_button, self.rollback_button)
 
     # ---------- 동작 ----------
     def copy_address(self) -> None:
@@ -350,26 +370,37 @@ class App:
             text.mark_set("insert", found)
             text.see(found)
 
-    def request_plan(self) -> None:
+    def _set_start_buttons(self, state: str) -> None:
+        for button in self.start_buttons:
+            button.configure(state=state)
+
+    def request_plan(self, kind: str = "git-update") -> None:
         if self.busy:
             return
         self.busy = True
-        self.start_button.configure(state="disabled")
+        self._set_start_buttons("disabled")
         self.plan_note.configure(text="대상과 조건을 확인하는 중…", fg=MUTED)
-        threading.Thread(target=self._plan_worker, daemon=True).start()
+        threading.Thread(target=self._plan_worker, args=(kind,), daemon=True).start()
 
-    def _plan_worker(self) -> None:
+    def _plan_worker(self, kind: str = "git-update") -> None:
         unresolved: list[str] | None = []
         try:
-            tasks = install.task_states(self.runner)
             unresolved = jobs.unresolved_jobs_or_repair(self.inst, self.runner)
-            plan = actions.plan_git_update(self.inst, install.server_task_matches(self.inst, tasks),
-                                           status.update_traces(self.inst), install.untrusted_writers(self.inst, self.runner),
-                                           unresolved_jobs=unresolved)
-            if isinstance(plan, actions.Plan):  # Git 은 검사를 통과한 뒤에만 실행한다
-                plan = actions.with_reference(plan, self.inst, actions.reference_main(self.inst, self.runner))
+            if kind == "tools-update":
+                plan = actions.plan_tools_update(self.inst, status.update_traces(self.inst), unresolved)
+            elif kind == "console-rollback":
+                plan = actions.plan_console_rollback(self.inst, console_stage.read_pointer(self.inst.root),
+                                                     status.update_traces(self.inst), unresolved)
+            else:
+                tasks = install.task_states(self.runner)
+                plan = actions.plan_git_update(self.inst, install.server_task_matches(self.inst, tasks),
+                                               status.update_traces(self.inst),
+                                               install.untrusted_writers(self.inst, self.runner),
+                                               unresolved_jobs=unresolved)
+                if isinstance(plan, actions.Plan):  # Git 은 검사를 통과한 뒤에만 실행한다
+                    plan = actions.with_reference(plan, self.inst, actions.reference_main(self.inst, self.runner))
         except Exception as exc:  # noqa: BLE001
-            plan = actions.Refusal((f"확인 중 오류: {type(exc).__name__}",))
+            plan = actions.Refusal((f"확인 중 오류: {type(exc).__name__}: {exc}"[:300],))
         if isinstance(plan, actions.Refusal) and unresolved:
             self.queue.put(("job_select", unresolved[0]))  # 막고 있는 작업을 보여 [확인했음]을 누를 수 있게
         self.queue.put(("plan", plan))  # 버리면 busy 가 안 풀린다 — 자리가 날 때까지 기다린다
@@ -378,16 +409,17 @@ class App:
         if isinstance(plan, actions.Refusal):
             self.busy = False
             if not self.ack_button.winfo_manager():  # 결과 확인 전에는 시작 단추를 다시 켜지 않는다
-                self.start_button.configure(state="normal")
+                self._set_start_buttons("normal")
             self.plan_note.configure(text="지금은 시작할 수 없습니다:\n· " + "\n· ".join(plan.reasons), fg=AMBER)
             return
         # 권한 알림은 막지 않고 업데이트 화면에만 남긴다(Jay 결정 2026-10-23 — actions.acl_warnings).
         self.plan_note.configure(text="\n".join(f"참고: {w}" for w in plan.warnings), fg=AMBER if plan.warnings else MUTED)
-        if messagebox.askokcancel("Git 업데이트 확인", "\n\n".join(plan.summary) + "\n\n실행할까요?", icon="warning"):
+        title = f"{actions.ACTIONS.get(plan.kind, plan.kind)} 확인"
+        if messagebox.askokcancel(title, "\n\n".join(plan.summary) + "\n\n실행할까요?", icon="warning"):
             threading.Thread(target=self._start_worker, args=(plan,), daemon=True).start()
         else:
             self.busy = False
-            self.start_button.configure(state="normal")
+            self._set_start_buttons("normal")
 
     def _start_worker(self, plan) -> None:
         try:
@@ -670,19 +702,46 @@ class App:
         self.job_closed = job_id  # 끝 처리는 작업마다 한 번만
         if status_text in ("check_needed", "runner_error") and not state.get("acknowledged"):
             self.busy = False  # 머리글 단추로 다시 눌러도 사전 검사가 이 작업 때문에 거절한다
-            self.start_button.configure(state="disabled")
+            self._set_start_buttons("disabled")
             self.ack_button.pack(side="left", padx=10)
         else:
             self._job_done()
+            if (state.get("kind") in ("tools-update", "console-rollback") and state.get("exit_code") == 0
+                    and state.get("console_sha") != running_console_sha()):
+                self.reopen_button.pack(side="left", padx=10)  # 새 관리 창은 다시 열어야 적용된다
 
     def _job_done(self) -> None:
         self.busy = False
-        self.start_button.configure(state="normal")
+        self._set_start_buttons("normal")
+
+    def reopen(self) -> None:
+        """창을 닫고 부트스트랩으로 다시 연다(포인터의 새 관리 창). 단일 실행 잠금은 run() 이 놓은 뒤 띄운다."""
+        self.reopen_requested = True
+        self.stop.set()
+        self.root.destroy()
+
+
+def running_console_sha() -> str:
+    """지금 이 관리 창이 도는 stage 커밋(루트 판이면 '')."""
+    return install.CODE_ROOT.name if install.CODE_ROOT != install.ROOT else ""
+
+
+def console_version_text() -> str:
+    sha = running_console_sha()
+    return f"지금 관리 창: {sha[:12]} (관리 창 stage)" if sha else "지금 관리 창: 서버 폴더 판(아직 갱신 안 함)"
 
 
 def job_result_text(state: dict) -> tuple[str, str]:
     """작업 상태 → (화면 문구, 색). 판정은 종료 코드, 커밋은 이 실행과 이어졌을 때만 적는다."""
     status_text = state.get("status")
+    kind = state.get("kind")
+    if status_text == "finished" and kind in ("tools-update", "console-rollback"):
+        if state.get("exit_code") != 0:
+            return f"실패: {actions.ACTIONS[kind]}이(가) 끝나지 않았습니다 — 관리 창은 그대로입니다. 위 내용을 확인하세요.", RED
+        sha = str(state.get("console_sha") or "")
+        if sha and sha == running_console_sha():
+            return f"완료: 지금 관리 창이 {sha[:12]} 입니다.", LIME
+        return f"완료: 관리 창을 {sha[:12]} 로 바꿨습니다 — [관리 창 다시 열기]를 누르면 적용됩니다.", LIME
     if status_text == "finished":
         code = state.get("exit_code")
         if code != 0:
@@ -704,7 +763,25 @@ def job_result_text(state: dict) -> tuple[str, str]:
     return "진행 중… (이 창을 닫아도 업데이트는 계속됩니다)", MUTED
 
 
-def run() -> int:
+def _mark_ui(inst: install.Installation) -> Path:
+    """이 화면이 쓰는 관리 창 코드를 남긴다 — 관리 도구 갱신이 쓰는 중인 stage 를 지우지 않게(console_stage.in_use)."""
+    path = inst.logs / names.UI_MARK
+    jobs.write_json(path, {"pid": os.getpid(), "created": jobs.process_created(os.getpid()),
+                           "code_root": str(install.CODE_ROOT)})
+    return path
+
+
+def _relaunch() -> None:
+    """부트스트랩(서버 루트의 main.py)을 다시 띄운다 — 포인터의 관리 창으로 열린다. 이미 관리자 권한이다."""
+    python = main_boot.registered_python(install.ROOT)
+    if python is None:
+        return
+    pythonw = python.with_name("pythonw.exe")
+    subprocess.Popen([str(pythonw if pythonw.is_file() else python), "-I", "-B",
+                      str(install.ROOT / "tools" / "server_console" / "main.py")], close_fds=True)
+
+
+def run(note: str = "") -> int:
     if hasattr(ctypes, "windll"):
         try:
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
@@ -717,6 +794,7 @@ def run() -> int:
         messagebox.showinfo("MV Hub 서버 관리", "서버 관리 창이 이미 열려 있습니다.")
         root.destroy()
         return 0
+    reopen, mark = False, None
     try:
         inst = install.resolve_installation()
         root = ConsoleTk()
@@ -725,12 +803,21 @@ def run() -> int:
             messagebox.showerror("MV Hub 서버 관리", "stage 사본 안에서는 열 수 없습니다. 서버 루트의 바로가기로 여세요.")
             root.destroy()
             return 1
-        app = App(root, inst)
+        try:
+            mark = _mark_ui(inst)
+        except OSError:
+            _log_ui_error(traceback.format_exc())
+        app = App(root, inst, note=note)
         root.protocol("WM_DELETE_WINDOW", lambda: (app.stop.set(), root.destroy()))
         root.mainloop()
+        reopen = app.reopen_requested
         return 0
     except Exception:  # noqa: BLE001
         _log_ui_error(traceback.format_exc())
         raise
     finally:
+        if mark is not None:
+            mark.unlink(missing_ok=True)
         lock.close()
+        if reopen:  # 잠금을 놓은 뒤에 띄워야 새 창이 '이미 열려 있음'에 걸리지 않는다
+            _relaunch()

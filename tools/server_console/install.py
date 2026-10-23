@@ -12,9 +12,22 @@ from pathlib import Path
 from typing import Callable
 
 from . import names
+from .main import STAGES, first_line_path as _first_line_path
 
-ROOT = Path(__file__).resolve().parents[2]
+# 코드가 든 트리(루트 또는 관리 창 stage)와 서버 설치 루트는 다르다(2단계 설계 3판) — 기록·잠금·Python·데이터는
+# 설치 루트, 관리 창 모듈·실행기는 코드 트리. 설치 루트는 시작할 때 configure() 로 정한다(루트 실행이면 같다).
+CODE_ROOT = Path(__file__).resolve().parents[2]
+ROOT = CODE_ROOT
 CREATE_NO_WINDOW = 0x08000000
+
+
+def configure(install_root: Path) -> None:
+    """이 프로세스의 설치 루트를 정한다. stage 사본을 설치 루트로 쓰지 않는다."""
+    global ROOT
+    root = Path(install_root).resolve()
+    if any(part.lower() in (STAGES, "server-stages") for part in root.parts):
+        raise ValueError("설치 루트가 stage 사본입니다")
+    ROOT = root
 
 # (returncode or None on failure, decoded stdout). 시험은 이것을 바꿔 끼운다.
 Runner = Callable[[list[str], float], tuple["int | None", str]]
@@ -70,22 +83,11 @@ class Installation:
         return self.log_dir / names.RUNTIME_LOG
 
 
-def _first_line_path(marker: Path) -> Path | None:
-    try:
-        lines = marker.read_text(encoding="utf-8-sig").strip().splitlines()
-    except OSError:
-        return None
-    if not lines:
-        return None
-    path = Path(lines[0].strip().strip('"'))
-    return path if path.is_absolute() else None
-
-
-def resolve_installation(root: Path = ROOT) -> Installation:
-    root = root.resolve()
+def resolve_installation(root: Path | None = None) -> Installation:
+    root = (root or ROOT).resolve()
     problems = []
-    if any(part.lower() == "server-stages" for part in root.parts):
-        problems.append("stage_copy")          # stage 사본 안에서 실행 — 거절
+    if any(part.lower() in ("server-stages", STAGES) for part in root.parts):
+        problems.append("stage_copy")          # 서버·관리 창 stage 사본을 설치 루트로 — 거절
     if not (root / ".git").exists():
         problems.append("not_git_clone")
     if not (root / "tools" / "run_update_git.ps1").is_file():
@@ -226,13 +228,15 @@ def protected_targets(inst: Installation) -> tuple[list[Path], list[Path], list[
     """
     root = inst.root
     git_dir = root / ".git"
-    single = [root, root / "backend", root / ".mvhub-runtime", inst.logs, git_dir, git_dir / "config"]
+    single = [root, root / "backend", root / ".mvhub-runtime", inst.logs, git_dir, git_dir / "config",
+              inst.logs / "console-current.json"]  # 관리 창 stage 포인터(2단계) — 포인터·목록·코드를 같이 바꾸면 해시로 못 막는다
     single += [p for p in root.iterdir() if p.is_file() and p.suffix.lower() in (".bat", ".cmd", ".ps1", ".py")] \
         if root.is_dir() else []
     single += [p for p in (root / "backend").glob("*.py")] if (root / "backend").is_dir() else []
     single += [p for p in (root / ".mvhub-runtime").glob("*") if p.is_file()] if (root / ".mvhub-runtime").is_dir() else []
     # 우리가 돌리는 코드·Git 이 실행하는 훅·업데이터가 돌리는 검증용 Python 은 하위까지 전부
-    tree = [root / "tools", root / "backend" / "app", git_dir / "hooks", inst.logs / "server-verifier"]
+    tree = [root / "tools", root / "backend" / "app", git_dir / "hooks", inst.logs / "server-verifier",
+            inst.logs / STAGES]
     if inst.python:
         single += _python_parts(inst.python)
     node = node_dir(inst)
