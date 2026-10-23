@@ -11,7 +11,7 @@ from pathlib import Path
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))  # -I 라 스크립트 폴더가 경로에 없다 — 이 판의 관리 창 코드만
 
-from server_console import actions, console_stage, install, jobs, names, server_api, status  # noqa: E402
+from server_console import actions, backup, console_stage, install, jobs, names, server_api, status  # noqa: E402
 
 
 def recompute(inst: install.Installation, job_id: str) -> "actions.Plan | actions.Refusal":
@@ -89,6 +89,23 @@ def run_intake(inst: install.Installation, job_id: str, request: dict, token: st
     return jobs.run_job(inst, job_id, recompute, work=apply)
 
 
+def run_backup(inst: install.Installation, job_id: str, request: dict) -> int:
+    """백업 위치 저장(시험 복사)·지금 복사: 화면이 본 위치 지문·예약 작업 조건을 다시 확인한 뒤 실행."""
+    kind = request["kind"]
+    params = actions.Plan.from_json(request["plan"]).params
+    runner = install.default_runner(inst)
+
+    def recompute() -> "actions.Plan | actions.Refusal":
+        view = backup.read_view(inst, runner, with_sets=False)
+        unresolved = jobs.unresolved_jobs(inst, exclude=job_id)
+        if kind == "backup-save":
+            return actions.plan_backup_save(inst, view, str(params.get("target") or ""), unresolved)
+        return actions.plan_backup_run(inst, view, unresolved)
+
+    work = backup.save_work if kind == "backup-save" else backup.run_work
+    return jobs.run_job(inst, job_id, recompute, work=lambda _job, say: work(inst, runner, params, say))
+
+
 def _parse(argv: list[str]) -> tuple[Path | None, str]:
     if len(argv) == 4 and argv[1] == "--install-root":
         return Path(argv[2]), argv[3]
@@ -113,6 +130,8 @@ def main(argv: list[str]) -> int:
                 return 70
             if kind == "intake-set":
                 return run_intake(inst, job_id, request, token)
+        if kind in ("backup-save", "backup-run"):
+            return run_backup(inst, job_id, request)
         if kind == "git-update":
             return jobs.run_job(inst, job_id, lambda: recompute(inst, job_id), before=lambda: status.prepare_runs(inst),
                                 observe=lambda prior: status.run_outcome(inst, prior))

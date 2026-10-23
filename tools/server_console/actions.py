@@ -6,10 +6,11 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
 
+from .backup import task_problems
 from .install import Installation, Runner, powershell_exe, trusted_git
 
 ACTIONS = {"git-update": "Git 업데이트", "tools-update": "관리 도구 갱신", "console-rollback": "이전 관리 창으로",
-           "intake-set": "생성 접수 바꾸기"}
+           "intake-set": "생성 접수 바꾸기", "backup-save": "백업 복사 위치 저장(시험 복사)", "backup-run": "지금 복사"}
 # 관리자 로그인이 필요한 작업 — 화면은 이것만 토큰을 파이프로 넘기고, 실행기는 이것만 토큰을 읽는다.
 AUTH_KINDS: frozenset[str] = frozenset({"intake-set"})
 
@@ -166,6 +167,56 @@ def plan_intake_set(inst: Installation, server: dict, paused_now: bool, want: bo
         summary = ("새 생성 요청을 다시 받습니다.", "팀원 앱에서 바로 새 생성을 보낼 수 있습니다.")
     return Plan("intake-set", str(inst.root), "server", "", summary,
                 params={"server": dict(server), "from": paused_now, "paused": want})
+
+
+def _backup_refusals(inst: Installation, view: dict, unresolved_jobs: list[str] | None) -> list[str]:
+    """백업 작업 공통: 미확인 작업·지원 안 하는 경로·설정 읽기 실패·예약 작업 조건(backup.task_problems)."""
+    reasons = [_PROBLEM_REASONS[p] for p in inst.problems if p in ("stage_copy", "no_runtime_python")]
+    if unresolved_jobs is None:
+        reasons.append("지난 작업 기록을 확인하지 못했습니다(logs\\console-jobs)")
+    for job_id in unresolved_jobs or []:
+        reasons.append(f"이전 작업({job_id[:8]})이 진행 중이거나 결과를 확인하지 않았습니다")
+    reasons += [r for r in (view.get("unsupported"), view.get("error")) if r]
+    return reasons + task_problems(view.get("task"))
+
+
+def _norm_target(value) -> str:
+    return str(value or "").strip().rstrip("\\/").casefold()
+
+
+def plan_backup_save(inst: Installation, view: dict, target: str, unresolved_jobs: list[str] | None = ()
+                     ) -> Plan | Refusal:
+    """백업 복사 위치를 바꾸고 시험 복사 — 확인 대상 = 바꾸기 전 위치(지문)·새 위치."""
+    reasons = _backup_refusals(inst, view, unresolved_jobs)
+    setting = view.get("setting") or {}
+    target = (target or "").strip()
+    if setting.get("source") == "env":
+        reasons.append("서버 기계 설정값 CONTENT_HUB_BACKUP_REPLICA_DIR 로 정해져 있어 여기서 바꾸지 않습니다")
+    if not target:
+        reasons.append("복사 위치(\\\\NAS\\공유폴더\\…)를 적으세요")
+    elif _norm_target(target) == _norm_target(setting.get("target")):
+        reasons.append("지금 위치와 같습니다 — [지금 복사]를 쓰세요")
+    if reasons:
+        return Refusal(tuple(reasons))
+    summary = (f"백업 복사 위치를 {target} 로 바꾸고 시험 복사합니다(지금: {setting.get('target') or '없음'}).",
+               "먼저 이 관리자 계정으로 그 위치에 쓸 수 있는지 확인합니다(20초 안).",
+               "저장한 뒤 예약 작업(SYSTEM)으로 한 번 복사해 이번 결과만 확인합니다 — 첫 복사는 오래 걸릴 수 있습니다(창을 닫아도 계속).",
+               "복사가 실패해도 새 위치는 저장된 채로 두고 이유와 [이전 위치로 되돌리기]를 보여 줍니다.")
+    return Plan("backup-save", str(inst.root), "server", "", summary,
+                params={"old_target": setting.get("target"), "old_id": setting.get("target_id"), "target": target})
+
+
+def plan_backup_run(inst: Installation, view: dict, unresolved_jobs: list[str] | None = ()) -> Plan | Refusal:
+    """지금 위치로 예약 작업 한 번 — 확인 대상 = 위치 지문."""
+    reasons = _backup_refusals(inst, view, unresolved_jobs)
+    setting = view.get("setting") or {}
+    if not setting.get("target_id"):
+        reasons.append("복사 위치가 없습니다 — 먼저 위치를 저장하세요")
+    if reasons:
+        return Refusal(tuple(reasons))
+    summary = (f"지금 위치({setting.get('target')})로 백업을 한 번 복사합니다(예약 작업 SYSTEM — 창을 닫아도 계속).",
+               "이번 실행의 결과만 확인해 보여 줍니다. 대상의 오래된 백업은 최근 30개만 남기고 정리됩니다.")
+    return Plan("backup-run", str(inst.root), "server", "", summary, params={"target_id": setting["target_id"]})
 
 
 def command_for(plan: Plan, inst: Installation) -> list[str]:

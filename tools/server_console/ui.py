@@ -19,7 +19,7 @@ import traceback
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from . import actions, console_stage, install, jobs, logs, names, server_api, status
+from . import actions, backup, console_stage, install, jobs, logs, names, server_api, status
 from . import main as main_boot
 
 BG, BG2, PANEL, PANEL2 = "#08090a", "#0c0e10", "#121316", "#181a1e"
@@ -152,7 +152,13 @@ class App:
         self.after_login = None  # 로그인 뒤 이어서 할 일(인증이 필요한 동작)
         self.intake_api: tuple[bool, float] | None = None  # 로그인 뒤 서버 API 로 읽은 값·시각 — DB 읽기(추정)보다 우선
         self.intake_busy = False
-        self.intake_job = ""  # 따라가는 생성 접수 작업(업데이트 작업 보기와 따로 — 업데이트 중에도 접수는 바꿀 수 있게)
+        # 화면별로 따라가는 작업(생성 접수·백업) — 업데이트 작업 보기와 따로(업데이트 중에도 접수는 바꿀 수 있게)
+        self.side_jobs: dict[str, str] = {}
+        self.backup_view: dict | None = None
+        self.backup_busy = False
+        self.backup_due = False  # 백업 화면 정보를 작업 스레드가 다시 읽을 때
+        self.backup_shown = ""   # 입력 칸에 마지막으로 채운 위치 — 사람이 고치는 중이면 덮지 않는다
+        self.page = "status"
         self._build()
         # 다시 열면 결과를 확인하지 않은 작업을 먼저, 없으면 마지막 작업을 다시 보여 준다.
         recent = (jobs.unresolved_jobs(inst) or [])[:1] or jobs.recent_jobs(inst, 1)
@@ -203,7 +209,7 @@ class App:
             tk.Label(main, text=self.note, bg="#3a2f12", fg=AMBER, font=BOLD, anchor="w", justify="left",
                      wraplength=1000, padx=12, pady=6).pack(fill="x")
         builders = {"status": self._build_status_page, "intake": self._build_intake_page,
-                    "update": self._build_update_page}
+                    "backup": self._build_backup_page, "update": self._build_update_page}
         for key, label in NAV:
             if key not in builders:  # 아직 만들지 않은 화면은 이름만
                 tk.Label(self.nav, text=f"{label}  · 다음 단계", bg=BG2, fg=MUTED2, font=("Malgun Gothic", 10),
@@ -235,6 +241,9 @@ class App:
             self.nav_items[name].configure(bg=BG2, fg=MUTED)
         self.pages[key].pack(fill="both", expand=True)
         self.nav_items[key].configure(bg="#1b2010", fg=LIME)
+        self.page = key
+        if key == "backup":
+            self.backup_due = True  # 열 때마다 새로 읽는다(작업 스레드)
 
     def _header(self, page: tk.Frame, title: str) -> tk.Frame:
         head = tk.Frame(page, bg=BG2)
@@ -408,17 +417,18 @@ class App:
         if messagebox.askokcancel(f"{actions.ACTIONS[plan.kind]} 확인", "\n\n".join(plan.summary) + "\n\n실행할까요?",
                                   icon="warning"):
             self.intake_note.configure(text="바꾸는 중…", fg=MUTED)
-            threading.Thread(target=self._start_worker, args=(plan, False), daemon=True).start()
+            threading.Thread(target=self._start_worker, args=(plan, "intake"), daemon=True).start()
         else:
             self.intake_busy = False
             self.intake_note.configure(text="")
             self._show_intake()
 
-    def _on_intake_job(self, job_id: str, state: dict) -> None:
+    def _on_intake_job(self, state: dict) -> None:
         status_text = state.get("status")
-        if job_id != self.intake_job or status_text not in JOB_TERMINAL:
+        if status_text not in JOB_TERMINAL:
             return
-        self.intake_job, self.intake_busy = "", False
+        self.side_jobs.pop("intake", None)
+        self.intake_busy = False
         if status_text == "finished" and state.get("exit_code") == 0:
             paused = _dict(state.get("intake")).get("paused")
             if isinstance(paused, bool):
@@ -458,6 +468,179 @@ class App:
     def _relogin_if_needed(self, reasons) -> None:
         if any(server_api.RELOGIN in str(r) for r in reasons):
             self.logout()
+
+    # ---------- DB·백업 ----------
+    def _build_backup_page(self, page: tk.Frame) -> None:
+        self._header(page, "DB·백업")
+        body = tk.Frame(page, bg=BG)
+        body.pack(fill="both", expand=True, padx=16, pady=12)
+        cards = tk.Frame(body, bg=BG)
+        cards.pack(fill="x")
+        self.backup_cards: dict[str, tuple[tk.Label, tk.Label]] = {}
+        for key, title in (("db", "DB"), ("disk", "백업(서버 디스크)"), ("nas", "NAS 복사")):
+            box = tk.Frame(cards, bg=PANEL, highlightbackground="#26282d", highlightthickness=1)
+            box.pack(side="left", fill="x", expand=True, padx=(0, 8))
+            tk.Label(box, text=title, bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9)).pack(anchor="w", padx=12, pady=(8, 0))
+            value = tk.Label(box, text="—", bg=PANEL, fg=TEXT, font=("Malgun Gothic", 15, "bold"))
+            value.pack(anchor="w", padx=12)
+            sub = tk.Label(box, text="확인 중…", bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9), justify="left")
+            sub.pack(anchor="w", padx=12, pady=(0, 8))
+            self.backup_cards[key] = (value, sub)
+        where = tk.Frame(body, bg=PANEL, highlightbackground="#26282d", highlightthickness=1)
+        where.pack(fill="x", pady=10)
+        tk.Label(where, text="백업 복사 위치 (서버 밖 NAS — 서버가 고장 나도 남게)", bg=PANEL, fg=MUTED,
+                 font=("Malgun Gothic", 9)).pack(anchor="w", padx=12, pady=(10, 4))
+        row = tk.Frame(where, bg=PANEL)
+        row.pack(fill="x", padx=12)
+        self.backup_entry = tk.Entry(row, bg=PANEL2, fg=TEXT, insertbackground=TEXT, relief="flat", font=FONT, width=60,
+                                     disabledbackground=PANEL, disabledforeground=MUTED)
+        self.backup_entry.pack(side="left", ipady=4)
+        self.backup_save = self._button(row, "저장(시험 복사)…", lambda: self.request_backup("backup-save"), primary=True)
+        self.backup_save.pack(side="left", padx=8)
+        self.backup_run = self._button(row, "지금 복사…", lambda: self.request_backup("backup-run"))
+        self.backup_run.pack(side="left")
+        self.backup_task = tk.Label(where, text="", bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9), justify="left",
+                                    wraplength=900)
+        self.backup_task.pack(anchor="w", padx=12, pady=(6, 0))
+        self.backup_reasons = tk.Label(where, text="", bg=PANEL, fg=AMBER, font=FONT, justify="left", wraplength=900)
+        self.backup_reasons.pack(anchor="w", padx=12, pady=(2, 10))
+        notes = tk.Frame(body, bg=BG)
+        notes.pack(fill="x")
+        self.backup_note = tk.Label(notes, text="", bg=BG, fg=MUTED, font=FONT, justify="left", wraplength=900)
+        self.backup_note.pack(side="left")
+        self.backup_revert = self._button(notes, "이전 위치로 되돌리기…", self.revert_backup)  # 시험 복사가 실패했을 때만
+        self.backup_old = ""
+        tk.Label(body, text="서버 디스크의 최근 자동 백업", bg=BG, fg=MUTED, font=("Malgun Gothic", 9)).pack(anchor="w", pady=(12, 2))
+        self.backup_sets = tk.Label(body, text="확인 중…", bg=PANEL, fg=TEXT, font=MONO, justify="left", anchor="w",
+                                    padx=12, pady=8)
+        self.backup_sets.pack(fill="x")
+
+    def _show_backup(self) -> None:
+        snap = _dict(_dict(self.status.snapshot if self.status else None).get("snapshot"))
+        operations = _dict(snap.get("operations"))
+        fresh = self.status is not None and self.status.snapshot_state == "ok"
+        ready = _dict(operations.get("databases")).get("ready")
+        self._backup_card("db", {True: "정상", False: "오류"}.get(ready, "확인 불가") if fresh else "확인 불가",
+                          "서버 실행 기록" if fresh else "서버 기록 없음·오래됨",
+                          {True: LIME, False: RED}.get(ready, MUTED) if fresh else MUTED)
+        backups = _dict(operations.get("backups"))
+        sets = _int(backups.get("set_count")) if fresh else None
+        latest = backups.get("latest_age_seconds")
+        latest = latest if isinstance(latest, (int, float)) and not isinstance(latest, bool) else None
+        self._backup_card("disk", "확인 불가" if sets is None else f"{sets}세트",
+                          f"마지막 {_ago(latest)}" if latest is not None else "마지막 백업 모름", TEXT if sets else MUTED)
+        view = self.backup_view
+        if view is None:
+            return
+        setting = _dict(view.get("setting"))
+        result = _dict(setting.get("result"))
+        state = result.get("state")
+        if not setting:
+            nas = ("확인 불가", view.get("error") or "", MUTED)
+        elif not setting.get("target"):
+            nas = ("없음", "위치를 정하세요", AMBER)
+        elif result.get("target_id") not in (None, setting.get("target_id")) or state == "never_run":
+            nas = ("아직 안 함", "이 위치로는 아직 복사하지 않았습니다", AMBER)
+        elif state == "success":
+            when = backup.parse_time(result.get("last_success_at"))
+            nas = ("정상", f"마지막 성공 {_ago(time.time() - when.timestamp()) if when else '시각 모름'}", LIME)
+        elif state == "failed":
+            nas = ("실패", str(result.get("error_code") or ""), RED)
+        else:
+            nas = ({"disabled": "없음", "no_source": "원본 없음"}.get(state, "확인 불가"), str(state or ""), AMBER)
+        self._backup_card("nas", *nas)
+        target = str(setting.get("target") or "")
+        locked = setting.get("source") == "env"
+        if self.backup_entry.get() == self.backup_shown:  # 사람이 고치는 중이면 덮지 않는다
+            self.backup_entry.configure(state="normal")
+            self.backup_entry.delete(0, "end")
+            self.backup_entry.insert(0, target)
+            self.backup_shown = target
+        self.backup_entry.configure(state="disabled" if locked else "normal")
+        task = view.get("task")
+        if task and task.get("exists"):
+            when = backup.parse_time(task.get("next_run"))
+            self.backup_task.configure(text=f"예약 작업(MVHub BackupCopy) · {'켜짐' if task.get('enabled') else '꺼짐'}"
+                                            f" · 다음 {time.strftime('%m-%d %H:%M', time.localtime(when.timestamp())) if when else '모름'}"
+                                            " · 대상에는 최근 30개 보관")
+        else:
+            self.backup_task.configure(text="")
+        reasons = [r for r in (view.get("unsupported"), view.get("error")) if r] + backup.task_problems(task)
+        if locked:
+            reasons.append("서버 기계 설정값 CONTENT_HUB_BACKUP_REPLICA_DIR 로 정해져 있어 위치는 보기만 합니다")
+        self.backup_reasons.configure(text="\n".join(f"· {r}" for r in reasons))
+        rows = view.get("sets")
+        if rows is None:
+            self.backup_sets.configure(text="백업 폴더를 읽지 못했습니다" if "sets" in view else "확인 중…")
+        else:
+            self.backup_sets.configure(text="\n".join(
+                f"{_stamp_text(r['stamp'])}   {' · '.join(r['roles']):<26} {r['bytes'] / 1_000_000:,.0f} MB" for r in rows)
+                or "백업이 아직 없습니다")
+        for button in (self.backup_save, self.backup_run):
+            button.configure(state="disabled" if self.backup_busy else "normal")
+        if locked:
+            self.backup_save.configure(state="disabled")
+
+    def _backup_card(self, key: str, value: str, sub: str, color: str) -> None:
+        label, small = self.backup_cards[key]
+        label.configure(text=value, fg=color)
+        small.configure(text=sub)
+
+    def request_backup(self, kind: str) -> None:
+        if self.backup_busy:
+            return
+        self.backup_busy = True
+        self.backup_revert.pack_forget()
+        self._show_backup()
+        self.backup_note.configure(text="조건을 확인하는 중…", fg=MUTED)
+        threading.Thread(target=self._backup_plan_worker, args=(kind, self.backup_entry.get()), daemon=True).start()
+
+    def _backup_plan_worker(self, kind: str, target: str) -> None:
+        try:
+            view = backup.read_view(self.inst, self.runner)
+            unresolved = jobs.unresolved_jobs_or_repair(self.inst, self.runner)
+            plan = (actions.plan_backup_save(self.inst, view, target, unresolved) if kind == "backup-save"
+                    else actions.plan_backup_run(self.inst, view, unresolved))
+            self.queue.put(("backup_view", view))
+        except Exception as exc:  # noqa: BLE001
+            plan = actions.Refusal((f"확인 중 오류: {type(exc).__name__}: {exc}"[:300],))
+        self.queue.put(("backup_plan", plan))
+
+    def _on_backup_plan(self, plan) -> None:
+        if isinstance(plan, actions.Refusal):
+            self.backup_busy = False
+            self.backup_note.configure(text="하지 않았습니다:\n· " + "\n· ".join(plan.reasons), fg=AMBER)
+            self._show_backup()
+            return
+        if messagebox.askokcancel(f"{actions.ACTIONS[plan.kind]} 확인", "\n\n".join(plan.summary) + "\n\n실행할까요?",
+                                  icon="warning"):
+            self.backup_note.configure(text="시작하는 중…", fg=MUTED)
+            threading.Thread(target=self._start_worker, args=(plan, "backup"), daemon=True).start()
+        else:
+            self.backup_busy = False
+            self.backup_note.configure(text="")
+            self._show_backup()
+
+    def _on_backup_job(self, state: dict, tail: str) -> None:
+        status_text = state.get("status")
+        if status_text not in JOB_TERMINAL:
+            self.backup_note.configure(text=tail or "진행 중…", fg=MUTED)
+            return
+        self.side_jobs.pop("backup", None)
+        self.backup_busy, self.backup_due = False, True
+        text, color = backup_result_text(state)
+        self.backup_note.configure(text=text, fg=color)
+        self.backup_old = str(state.get("old_target") or "")
+        if status_text == "finished" and state.get("saved") and state.get("exit_code") != 0 and self.backup_old:
+            self.backup_revert.pack(side="left", padx=10)
+        self._show_backup()
+
+    def revert_backup(self) -> None:
+        """시험 복사가 실패한 뒤 이전 위치로 — 같은 [저장(시험 복사)] 절차로(확인·재확인·시험 복사)."""
+        self.backup_entry.configure(state="normal")
+        self.backup_entry.delete(0, "end")
+        self.backup_entry.insert(0, self.backup_old)
+        self.request_backup("backup-save")
 
     def _build_update_page(self, page: tk.Frame) -> None:
         self._header(page, "업데이트 — Git 업데이트(서버 코드)")
@@ -685,11 +868,11 @@ class App:
             self.busy = False
             self._set_start_buttons("normal")
 
-    def _start_worker(self, plan, follow: bool = True) -> None:
-        """follow=False(생성 접수)는 업데이트 작업 보기를 바꾸지 않고 따로 따라간다."""
+    def _start_worker(self, plan, area: str = "") -> None:
+        """area(생성 접수·백업)가 있으면 업데이트 작업 보기를 바꾸지 않고 그 화면이 따로 따라간다."""
         def refuse(text: str) -> None:
             refusal = actions.Refusal((text,))
-            self.queue.put(("plan", refusal) if follow else ("intake_plan", refusal, None, 0.0))
+            self.queue.put(("side_refused", area, refusal) if area else ("plan", refusal))
         session = self.session if plan.kind in actions.AUTH_KINDS else None
         if plan.kind in actions.AUTH_KINDS and session is None:
             refuse("관리자 로그인이 필요합니다")
@@ -706,7 +889,7 @@ class App:
                 jobs.mark_launch_failed(self.inst, job_id, f"실행기를 띄우지 못했습니다: {exc}")
             except Exception:  # noqa: BLE001 — 기록도 못 남기면 read_job 이 시작 대기 뒤 check_needed 로 본다
                 _log_ui_error(traceback.format_exc())
-        self.queue.put(("job_started", job_id) if follow else ("intake_started", job_id))
+        self.queue.put(("side_started", area, job_id) if area else ("job_started", job_id))
 
     # ---------- 작업 스레드(위젯·after 금지, 큐에만) ----------
     def _put(self, item) -> bool:
@@ -717,7 +900,7 @@ class App:
             return False
 
     def _worker(self) -> None:
-        last_status = last_tasks = last_addr = 0.0
+        last_status = last_tasks = last_addr = last_backup = 0.0
         offsets: dict[str, int] = {}  # 작업마다 읽은 위치 — 이 스레드만 만진다
         while not self.stop.is_set():
             now = time.time()
@@ -743,9 +926,12 @@ class App:
                                                          final=state.get("status") in JOB_TERMINAL)
                     if self._put(("job", view, new_lines, state)):
                         offsets[view] = offset  # 못 넣었으면 다음에 같은 곳부터 다시 읽는다
-                intake = self.intake_job
-                if intake:
-                    self._put(("intake_job", intake, jobs.read_job(self.inst, intake)))
+                for area, side in list(self.side_jobs.items()):
+                    tail = jobs.read_output(self.inst, side, 0, JOB_READ_BYTES, final=True)[0][-1:]
+                    self._put(("side_job", area, side, jobs.read_job(self.inst, side), tail[0] if tail else ""))
+                if self.backup_due or (self.page == "backup" and now - last_backup > 30):
+                    self.backup_due, last_backup = False, now
+                    self._put(("backup_view", backup.read_view(self.inst, self.runner)))
             except Exception:  # noqa: BLE001
                 _log_ui_error(traceback.format_exc())
             self.stop.wait(1.0)
@@ -806,11 +992,26 @@ class App:
             self._on_login(item[1])
         elif kind == "intake_plan":
             self._on_intake_plan(item[1], item[2], item[3])
-        elif kind == "intake_started":
-            self.intake_job = item[1]
-            self.intake_note.configure(text=f"작업 {item[1][:8]} 시작 — 서버를 다시 확인하고 바꿉니다…", fg=MUTED)
-        elif kind == "intake_job":
-            self._on_intake_job(item[1], item[2])
+        elif kind == "side_refused":
+            if item[1] == "intake":
+                self._on_intake_plan(item[2], None, 0.0)
+            else:
+                self._on_backup_plan(item[2])
+        elif kind == "side_started":
+            self.side_jobs[item[1]] = item[2]
+            note = self.intake_note if item[1] == "intake" else self.backup_note
+            note.configure(text=f"작업 {item[2][:8]} 시작 — 실행 직전에 조건을 다시 확인합니다…", fg=MUTED)
+        elif kind == "side_job":
+            if self.side_jobs.get(item[1]) == item[2]:  # 끝 처리 뒤 늦게 온 같은 작업 알림은 버린다
+                if item[1] == "intake":
+                    self._on_intake_job(item[3])
+                else:
+                    self._on_backup_job(item[3], item[4])
+        elif kind == "backup_view":
+            self.backup_view = item[1]
+            self._show_backup()
+        elif kind == "backup_plan":
+            self._on_backup_plan(item[1])
         elif kind == "intake_value":
             self.intake_api = (item[1], item[2])
             self._show_intake()
@@ -882,6 +1083,7 @@ class App:
             self._card("intake", "멈춤" if paused else "받는 중",
                        f"진행 중 생성 {'?' if active is None else active}건", AMBER if paused else LIME)
         self._show_intake()
+        self._show_backup()
         if st.traces and not self.job_id:
             self.plan_note.configure(text="업데이트 흔적: " + " / ".join(t for _, t in st.traces), fg=AMBER)
 
@@ -1023,6 +1225,8 @@ def job_result_text(state: dict) -> tuple[str, str]:
     """작업 상태 → (화면 문구, 색). 판정은 종료 코드, 커밋은 이 실행과 이어졌을 때만 적는다."""
     status_text = state.get("status")
     kind = state.get("kind")
+    if status_text == "finished" and kind in ("backup-save", "backup-run"):
+        return backup_result_text(state)
     if status_text == "finished" and kind == "intake-set":
         if state.get("exit_code") != 0:
             return f"실패: 생성 접수를 바꾸지 못했습니다 — {state.get('error') or '이유 모름'}", RED
@@ -1054,6 +1258,37 @@ def job_result_text(state: dict) -> tuple[str, str]:
         return ("결과 확인 필요: 실행기가 결과를 남기지 못했습니다. 서버 상태와 로그를 확인한 뒤 "
                 "[확인했음]을 누르세요(그 전에는 새 업데이트를 막습니다)."), AMBER
     return "진행 중… (이 창을 닫아도 업데이트는 계속됩니다)", MUTED
+
+
+def _stamp_text(stamp: str) -> str:
+    """백업 이름의 UTC 시각(YYYYMMDD_HHMMSS[_ffffff]) → 이 PC 시각."""
+    try:
+        when = time.mktime(time.strptime(stamp[:15], "%Y%m%d_%H%M%S")) - time.timezone
+    except ValueError:
+        return stamp
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(when))
+
+
+def backup_result_text(state: dict) -> tuple[str, str]:
+    """백업 작업 상태 → (화면 문구, 색). '설정 저장'과 '복사 결과'를 따로 말한다."""
+    status_text = state.get("status")
+    if status_text == "refused":
+        return "하지 않았습니다: " + " / ".join(str(r) for r in state.get("reasons") or []), AMBER
+    if status_text != "finished":
+        return ("결과 확인 필요: 실행기가 결과를 남기지 못했습니다 — 백업 상태를 다시 보고, "
+                "업데이트 화면에서 [확인했음]을 누르세요"), AMBER
+    saved = " (새 위치 저장됨)" if state.get("saved") else ""
+    if state.get("exit_code") == 0:
+        counts = _dict(state.get("counts"))
+        return f"완료: 복사 성공 — 새로 {counts.get('copied', '?')} · 그대로 {counts.get('skipped', '?')}{saved}", LIME
+    copy = state.get("copy")
+    why = state.get("error") or state.get("error_code") or "이유 모름"
+    part = {"failed": f"복사는 실패했습니다({state.get('error_code') or why})",
+            "unconfirmed": f"복사 결과는 미확인입니다 — {why}",
+            "not_started": f"복사는 시작하지 못했습니다 — {why}"}.get(copy)
+    if state.get("saved") and part:
+        return f"설정은 저장됐고 {part}", RED
+    return f"실패: {part or why}", RED
 
 
 def last_intake_text(inst: install.Installation) -> str:

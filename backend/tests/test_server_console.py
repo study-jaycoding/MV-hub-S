@@ -7,6 +7,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
 import sys
@@ -1801,22 +1802,28 @@ def test_ui_intake_page_prefers_the_server_value_and_keeps_both_buttons_honest(t
         app._handle(("intake_plan", expired, None, 0.0))
         assert app.session is None and app.intake_busy is False and "다시 로그인" in app.intake_note.cget("text")
 
-        app.intake_job, app.intake_busy = "e" * 32, True
-        app._handle(("intake_job", "e" * 32, {"status": "running"}))
-        assert app.intake_busy is True
-        app._handle(("intake_job", "e" * 32, {"status": "finished", "exit_code": 0, "intake": {"paused": False},
-                                              "finished_at": time.time()}))
-        assert app.intake_busy is False and app.intake_value.cget("text") == "받는 중"
+        app.intake_busy = True
+        app._handle(("side_started", "intake", "e" * 32))
+        app._handle(("side_job", "intake", "e" * 32, {"status": "running"}, ""))
+        assert app.intake_busy is True and app.side_jobs == {"intake": "e" * 32}
+        done = {"status": "finished", "exit_code": 0, "intake": {"paused": False}, "finished_at": time.time()}
+        app._handle(("side_job", "intake", "e" * 32, done, ""))
+        assert app.intake_busy is False and app.intake_value.cget("text") == "받는 중" and not app.side_jobs
         assert "완료" in app.intake_note.cget("text")
+        app.intake_note.configure(text="")
+        app._handle(("side_job", "intake", "e" * 32, done, ""))  # 끝난 뒤 늦게 온 같은 알림은 버린다
+        assert app.intake_note.cget("text") == ""
         app.session = server_api.Session(email="admin@x", server=SERVER, token="tok.en-1")
         monkeypatch.setattr(app, "_refresh_intake", lambda: None)
-        app.intake_job = "f" * 32
-        app._handle(("intake_job", "f" * 32, {"status": "finished", "exit_code": 1, "auth_expired": True,
-                                              "error": f"... — {server_api.RELOGIN}"}))
+        app.side_jobs["intake"] = "f" * 32
+        app._handle(("side_job", "intake", "f" * 32, {"status": "finished", "exit_code": 1, "auth_expired": True,
+                                                      "error": f"... — {server_api.RELOGIN}"}, ""))
         assert app.session is None and "실패" in app.intake_note.cget("text")
-        app.intake_job = "1" * 32
-        app._handle(("intake_job", "1" * 32, {"status": "check_needed"}))
+        app.side_jobs["intake"] = "1" * 32
+        app._handle(("side_job", "intake", "1" * 32, {"status": "check_needed"}, ""))
         assert "결과 확인 필요" in app.intake_note.cget("text")
+        app._handle(("side_refused", "intake", actions.Refusal(("관리자 로그인이 필요합니다",))))
+        assert "관리자 로그인이 필요합니다" in app.intake_note.cget("text")
     finally:
         root.destroy()
 
@@ -1834,3 +1841,255 @@ def test_last_intake_change_comes_from_the_console_record(tmp_path):
     assert "멈춤으로 바꿈" in text and "admin@x" in text
     assert "멈춤" in ui.job_result_text({"status": "finished", "kind": "intake-set", "exit_code": 0,
                                          "intake": {"paused": True}})[0]
+
+
+# ---------- 2단계 ④ DB·백업 ----------
+
+from server_console import backup  # noqa: E402
+
+GOOD_TASK = {"exists": True, "enabled": True, "running": False, "system": True, "ours": True, "ignore_new": True,
+             "last_run": "2026-10-23T03:30:00+00:00", "last_result": 0, "next_run": "2026-10-24T03:30:00+00:00"}
+
+
+def _machine(monkeypatch, **values):
+    monkeypatch.setattr(backup, "machine_env", lambda name: values.get(name, ""))
+
+
+@pytest.mark.parametrize("values,ok", [
+    ({}, True),
+    ({"CONTENT_HUB_DATA": "{root}\\backend\\data"}, True),
+    ({"CONTENT_HUB_DATA": "{root}\\backend\\data\\"}, True),
+    ({"CONTENT_HUB_BACKUP_DIR": "{root}\\backend\\data\\backups"}, True),
+    ({"CONTENT_HUB_DATA": "E:\\other\\data"}, False),
+    ({"CONTENT_HUB_DATA": "backend\\data"}, False),                       # 상대 경로는 판단하지 않는다
+    ({"CONTENT_HUB_BACKUP_DIR": "\\\\NAS\\backups"}, False),
+])
+def test_backup_supports_only_the_standard_data_paths(tmp_path, monkeypatch, values, ok):
+    inst = make_inst(tmp_path)
+    _machine(monkeypatch, **{k: v.format(root=inst.root) for k, v in values.items()})
+    assert (backup.unsupported_paths(inst) == "") is ok
+
+
+def test_backup_task_is_read_strictly(tmp_path):
+    inst = make_inst(tmp_path)
+    raw = {"exists": True, "state": "Ready", "user": "SYSTEM", "action_count": 1, "execute": "cmd.exe",
+           "arguments": f'/c call "{inst.root}\\task_launch.bat" backup', "multi": "IgnoreNew",
+           "last_run": "2026-10-23T03:30:00.0000000Z", "last_result": 0, "next_run": ""}
+    task = backup.task_info(inst, fake_runner(default=(0, json.dumps(raw) + "\n")))
+    assert task["ours"] and task["system"] and task["ignore_new"] and task["next_run"] is None
+    assert backup.task_problems(task) == []
+    for change in ({"arguments": f'/c call "{inst.root}\\task_launch.bat" server backup'}, {"action_count": 2},
+                   {"execute": "powershell.exe"}):
+        assert not backup.task_info(inst, fake_runner(default=(0, json.dumps({**raw, **change}))))["ours"]
+    assert backup.task_info(inst, fake_runner(default=(1, ""))) is None
+    assert backup.task_info(inst, fake_runner(default=(0, '{"exists":false}'))) == {"exists": False}
+    assert "읽지 못했습니다" in backup.task_problems(None)[0]
+    assert "없습니다" in backup.task_problems({"exists": False})[0]
+    assert len(backup.task_problems({**GOOD_TASK, "enabled": False, "system": False, "running": True})) == 3
+
+
+def test_backup_helper_runs_the_root_copier_in_a_child(monkeypatch):
+    """도우미 자식이 실제 루트 복사기 코드로 읽고 확인한다(네트워크를 건드리지 않는 경우만)."""
+    _machine(monkeypatch)
+    data = ROOT / "backend" / "data"  # 이 작업실(위치 파일·결과 파일 없음) — 읽기와 형식·자기 PC 판정만
+    inst = install.Installation(root=ROOT, data_dir=data, log_dir=data / "logs", content_db=data / "db" / "x.db",
+                                port=8010, port_known=False, python=Path(sys.executable), problems=())
+    setting = backup.read_setting(inst)
+    assert setting["source"] == "none" and setting["target"] is None and setting["result"] == {"state": "never_run"}
+    assert backup.probe(inst, "C:\\not-unc") == 10
+    assert backup.probe(inst, "\\\\localhost\\share\\mvhub") == 11
+    assert "backup_replicate" not in sys.modules and "mvhub_backup_replicate" not in sys.modules
+
+
+def test_backup_setting_read_failure_is_an_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(backup, "run_command", lambda argv, timeout, env=None: (1, ""))
+    with pytest.raises(backup.BackupError):
+        backup.read_setting(make_inst(tmp_path))
+    monkeypatch.setattr(backup, "run_command", lambda argv, timeout, env=None: (0, '{"target": null}'))
+    with pytest.raises(backup.BackupError):
+        backup.read_setting(make_inst(tmp_path))
+
+
+def test_recent_backup_sets_are_grouped_by_stamp(tmp_path, monkeypatch):
+    _machine(monkeypatch)
+    inst = make_inst(tmp_path)
+    folder = inst.data_dir / "backups"
+    (folder / "pre-dev2-baseline").mkdir(parents=True)
+    for name, size in (("content_hub_20261023_052000_000001.db", 10), ("content_trash_20261023_052000_000001.db", 5),
+                       ("manage_hub_20261023_052000_000001.db", 1), ("content_hub_20261022_183500.db", 7),
+                       ("manage_hub_20261021_000000.db", 3), ("other.db", 99),
+                       ("pre-dev2-baseline/content_hub_20261024_000000.db", 1)):
+        (folder / name).write_bytes(b"x" * size)
+    rows = backup.recent_sets(inst)
+    assert [(r["stamp"], sorted(r["roles"]), r["bytes"]) for r in rows] == [
+        ("20261023_052000_000001", ["content", "manage", "trash"], 16), ("20261022_183500", ["content"], 7)]
+
+
+def _t(text):
+    return backup.parse_time(text)
+
+
+@pytest.mark.parametrize("task,result,expected", [
+    (GOOD_TASK, {"state": "success", "started_at": "2026-10-23T05:00:01+00:00", "target_id": "n"}, None),  # 옛 실행
+    ({**GOOD_TASK, "last_run": "2026-10-23T05:00:00+00:00", "running": True},
+     {"state": "success", "started_at": "2026-10-23T05:00:01+00:00", "target_id": "n"}, None),          # 아직 도는 중
+    ({**GOOD_TASK, "last_run": "2026-10-23T05:00:00+00:00"},
+     {"state": "success", "started_at": "2026-10-23T04:59:00+00:00", "target_id": "n"}, None),          # 결과가 옛것
+    ({**GOOD_TASK, "last_run": "2026-10-23T05:00:00+00:00"},
+     {"state": "success", "started_at": "2026-10-23T05:00:01+00:00", "target_id": "old"}, None),        # 다른 위치
+    ({**GOOD_TASK, "last_run": "2026-10-23T05:00:00+00:00"},
+     {"state": "success", "started_at": "2026-10-23T05:00:01+00:00", "target_id": "n"}, "success"),
+    ({**GOOD_TASK, "last_run": "2026-10-23T05:00:00+00:00"},
+     {"state": "disabled", "started_at": "2026-10-23T05:00:01+00:00", "target_id": "n"}, "failed"),     # 0 이어도
+    ({**GOOD_TASK, "last_run": "2026-10-23T05:00:00+00:00", "last_result": 1},
+     {"state": "success", "started_at": "2026-10-23T05:00:01+00:00", "target_id": "n"}, "failed"),
+])
+def test_copy_result_is_taken_only_from_this_run(task, result, expected):
+    requested = _t("2026-10-23T05:00:00+00:00")
+    assert backup.copy_verdict(task, result, "n", requested, "2026-10-23T03:30:00+00:00") == expected
+
+
+def _copy_fakes(monkeypatch, tasks, results, schtasks_code=0):
+    tasks, results = list(tasks), list(results)
+    monkeypatch.setattr(backup, "task_info", lambda inst, runner: tasks.pop(0) if len(tasks) > 1 else tasks[0])
+    monkeypatch.setattr(backup, "read_setting",
+                        lambda inst: {"result": results.pop(0) if len(results) > 1 else results[0]})
+    calls = []
+
+    def runner(argv, timeout):
+        calls.append(argv)
+        return schtasks_code, ""
+    return runner, calls
+
+
+def _future(seconds=5):
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+
+
+def test_run_copy_waits_for_this_run_and_reports_each_outcome(tmp_path, monkeypatch):
+    inst, lines = make_inst(tmp_path), []
+    new_run = {**GOOD_TASK, "last_run": _future()}
+    ok = {"state": "success", "started_at": _future(6), "target_id": "n", "copied": 3, "skipped": 4, "failed": 0}
+    runner, calls = _copy_fakes(monkeypatch, [GOOD_TASK, {**new_run, "running": True}, new_run], [{}, ok])
+    assert backup.run_copy(inst, runner, "n", lines.append, timeout=5, poll=0, sleep=lambda s: None) == (
+        0, {"copy": "success", "counts": {"copied": 3, "skipped": 4, "failed": 0}})
+    assert calls[0][1:] == ["/Run", "/TN", "MVHub BackupCopy"] and calls[0][0].lower().endswith("schtasks.exe")
+    bad = {"state": "failed", "error_code": "target_unavailable", "started_at": _future(6), "target_id": "n"}
+    runner, _ = _copy_fakes(monkeypatch, [GOOD_TASK, new_run], [bad])
+    assert backup.run_copy(inst, runner, "n", lines.append, timeout=5, poll=0, sleep=lambda s: None) == (
+        1, {"copy": "failed", "error_code": "target_unavailable"})
+    runner, _ = _copy_fakes(monkeypatch, [{**GOOD_TASK, "running": True}], [{}])
+    assert backup.run_copy(inst, runner, "n", lines.append)[1]["copy"] == "not_started"
+    runner, _ = _copy_fakes(monkeypatch, [GOOD_TASK], [{}], schtasks_code=1)
+    assert backup.run_copy(inst, runner, "n", lines.append)[1]["copy"] == "not_started"
+    monkeypatch.setattr(backup, "STALE_RESULT_SECONDS", 0.0)
+    runner, _ = _copy_fakes(monkeypatch, [GOOD_TASK, new_run], [{"state": "success", "started_at": "2020-01-01"}])
+    assert backup.run_copy(inst, runner, "n", lines.append, timeout=5, poll=0, sleep=lambda s: None)[0] == 3
+    runner, _ = _copy_fakes(monkeypatch, [GOOD_TASK, {**new_run, "running": True}], [{}])
+    assert backup.run_copy(inst, runner, "n", lines.append, timeout=0.05, poll=0,
+                           sleep=lambda s: time.sleep(0.01)) == (
+        3, {"copy": "unconfirmed", "error": "제한 시간 안에 결과를 확인하지 못했습니다"})
+
+
+def _save_fakes(monkeypatch, probe_code, setting, task=GOOD_TASK, after=None):
+    monkeypatch.setattr(backup, "probe", lambda inst, target: probe_code)
+    monkeypatch.setattr(backup, "read_view", lambda inst, runner, with_sets=True: {
+        "unsupported": "", "error": "", "task": task, "setting": setting})
+    monkeypatch.setattr(backup, "read_setting", lambda inst: after or {})
+    copies = []
+    monkeypatch.setattr(backup, "run_copy", lambda inst, runner, expected, say: copies.append(expected) or (
+        1, {"copy": "failed", "error_code": "target_unavailable"}))
+    return copies
+
+
+@pytest.mark.parametrize("probe_code,setting,task,why", [
+    (12, {"target_id": "o", "source": "file"}, GOOD_TASK, "MV Hub 백업이 아닌 파일"),
+    (None, {"target_id": "o", "source": "file"}, GOOD_TASK, "20초"),
+    (0, {"target_id": "changed", "source": "file"}, GOOD_TASK, "그 사이"),
+    (0, {"target_id": "o", "source": "env"}, GOOD_TASK, "CONTENT_HUB_BACKUP_REPLICA_DIR"),
+    (0, {"target_id": "o", "source": "file"}, {**GOOD_TASK, "running": True}, "복사 중"),
+])
+def test_backup_save_writes_nothing_unless_every_check_passes(tmp_path, monkeypatch, probe_code, setting, task, why):
+    inst = make_inst(tmp_path)
+    (inst.root / "tools").mkdir()
+    copies = _save_fakes(monkeypatch, probe_code, setting, task)
+    code, extra = backup.save_work(inst, fake_runner(), {"old_id": "o", "target": "\\\\NAS\\mv"}, lambda line: None)
+    assert code == 1 and extra["saved"] is False and why in extra["error"] and copies == []
+    assert not (inst.root / "tools" / "backup_replica_target.txt").exists()
+
+
+def test_backup_save_keeps_the_new_target_when_the_copy_fails(tmp_path, monkeypatch):
+    inst = make_inst(tmp_path)
+    (inst.root / "tools").mkdir()
+    copies = _save_fakes(monkeypatch, 0, {"target_id": "o", "source": "file"},
+                         after={"target": "\\\\NAS\\새 폴더", "target_id": "n"})
+    lines = []
+    code, extra = backup.save_work(inst, fake_runner(), {"old_target": "\\\\NAS\\old", "old_id": "o",
+                                                         "target": "\\\\NAS\\새 폴더"}, lines.append)
+    assert (inst.root / "tools" / "backup_replica_target.txt").read_bytes() == "\\\\NAS\\새 폴더\n".encode("utf-8")
+    assert code == 1 and extra == {"saved": True, "old_target": "\\\\NAS\\old", "copy": "failed",
+                                   "error_code": "target_unavailable"}
+    assert copies == ["n"] and any("설정 저장됨" in line for line in lines)
+
+
+def test_backup_plans_carry_the_old_fingerprint_and_refuse_plainly(tmp_path):
+    inst = make_inst(tmp_path)
+    view = {"unsupported": "", "error": "", "task": GOOD_TASK,
+            "setting": {"target": "\\\\NAS\\old", "target_id": "o", "source": "file"}}
+    plan = actions.plan_backup_save(inst, view, "  \\\\NAS\\new  ")
+    assert plan.params == {"old_target": "\\\\NAS\\old", "old_id": "o", "target": "\\\\NAS\\new"}
+    assert actions.plan_backup_run(inst, view).params == {"target_id": "o"}
+    assert "같습니다" in actions.plan_backup_save(inst, view, "\\\\nas\\OLD\\").reasons[0]
+    assert "적으세요" in actions.plan_backup_save(inst, view, " ").reasons[0]
+    env = dict(view, setting={**view["setting"], "source": "env"})
+    assert any("CONTENT_HUB_BACKUP_REPLICA_DIR" in r for r in actions.plan_backup_save(inst, env, "\\\\NAS\\x").reasons)
+    assert isinstance(actions.plan_backup_run(inst, env), actions.Plan)  # 환경변수 위치도 복사는 된다
+    assert "먼저 위치" in actions.plan_backup_run(inst, dict(view, setting={"source": "none"})).reasons[0]
+    odd = dict(view, unsupported="지원하지 않는 데이터·백업 경로입니다", task={**GOOD_TASK, "running": True})
+    assert len(actions.plan_backup_run(inst, odd, ["a" * 32]).reasons) == 3
+
+
+def test_ui_backup_page_shows_target_reasons_and_offers_revert(tmp_path, monkeypatch):
+    ui, root, app, _errors = _app(tmp_path, monkeypatch)
+    try:
+        view = {"unsupported": "", "error": "", "task": GOOD_TASK, "sets": [
+                    {"stamp": "20261023_052000_000001", "roles": ["content", "trash"], "bytes": 74_000_000}],
+                "setting": {"target": "\\\\NAS\\mv", "target_id": "o", "source": "file",
+                            "result": {"state": "success", "target_id": "o", "last_success_at": _future(-60)}}}
+        app._handle(("backup_view", view))
+        assert app.backup_entry.get() == "\\\\NAS\\mv" and app.backup_cards["nas"][0].cget("text") == "정상"
+        assert "74 MB" in app.backup_sets.cget("text") and "content · trash" in app.backup_sets.cget("text")
+        app.backup_entry.insert("end", "\\new")  # 사람이 고치는 중이면 다시 읽어도 덮지 않는다
+        app._handle(("backup_view", view))
+        assert app.backup_entry.get() == "\\\\NAS\\mv\\new"
+        locked = {**view, "setting": {**view["setting"], "source": "env"}, "task": {**GOOD_TASK, "running": True}}
+        app._handle(("backup_view", locked))
+        assert "보기만" in app.backup_reasons.cget("text") and "복사 중" in app.backup_reasons.cget("text")
+        assert str(app.backup_save.cget("state")) == "disabled"
+
+        app.backup_busy = True
+        app._handle(("side_started", "backup", "b" * 32))
+        app._handle(("side_job", "backup", "b" * 32, {"status": "running"}, "[05:00:01] 설정 저장됨: …"))
+        assert "설정 저장됨" in app.backup_note.cget("text")
+        failed = {"status": "finished", "exit_code": 1, "saved": True, "old_target": "\\\\NAS\\old",
+                  "copy": "failed", "error_code": "target_unavailable"}
+        app._handle(("side_job", "backup", "b" * 32, failed, ""))
+        assert "설정은 저장됐고 복사는 실패" in app.backup_note.cget("text") and app.backup_busy is False
+        assert app.backup_revert.winfo_manager() == "pack" and app.backup_due is True
+        app._handle(("side_refused", "backup", actions.Refusal(("이전 작업(aaaaaaaa)이 진행 중",))))
+        assert "하지 않았습니다" in app.backup_note.cget("text")
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize("state,expected", [
+    ({"status": "finished", "exit_code": 0, "saved": True, "counts": {"copied": 2, "skipped": 5}}, "새로 2 · 그대로 5 (새 위치 저장됨)"),
+    ({"status": "finished", "exit_code": 3, "saved": True, "copy": "unconfirmed", "error": "제한 시간"}, "복사 결과는 미확인"),
+    ({"status": "finished", "exit_code": 1, "saved": False, "error": "그 위치에 쓸 수 없습니다"}, "실패: 그 위치에 쓸 수 없습니다"),
+    ({"status": "finished", "exit_code": 1, "copy": "failed", "error_code": "copy_failed"}, "실패: 복사는 실패했습니다(copy_failed)"),
+    ({"status": "check_needed"}, "결과 확인 필요"),
+])
+def test_backup_result_text_separates_saving_from_copying(state, expected):
+    from server_console import ui
+    assert expected in ui.backup_result_text(state)[0]
+    assert ui._stamp_text("20261023_052000_000001").startswith("2026-10-23")
