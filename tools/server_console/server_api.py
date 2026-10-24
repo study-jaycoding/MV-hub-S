@@ -1,7 +1,8 @@
 """이 PC 의 확인된 서버(127.0.0.1)에만 관리자로 로그인하고 API 를 부른다. 토큰은 메모리에만 둔다.
 
 로그인 전에 포트를 듣는 프로세스가 이 설치의 서버인지 본다(2단계 설계 3판 (1)): 포트 주인 PID 의 실행 파일·
-정확한 serve.py 경로·생성 시각, /api/ready 의 process_id·role·build_id·execution_nonce(= server-activation.json).
+정확한 serve.py 경로·생성 시각(모두 WMI — 서버 프로세스를 열지 않는다), /api/ready 의 process_id·role·build_id·
+execution_nonce(= server-activation.json), 그리고 다시 조회해 같은 프로세스인지(두 관측의 일치).
 하나라도 확인하지 못하면 로그인하지 않는다. 서버가 TLS 로 설정돼 있으면 이 기능을 끈다(인증서 검증을 풀지 않는다).
 """
 from __future__ import annotations
@@ -19,7 +20,7 @@ from typing import Callable
 
 from . import names, status
 from .install import Installation, Runner, powershell_exe
-from .jobs import process_alive, process_created, read_json, valid_token
+from .jobs import read_json, valid_token
 
 _NONCE = re.compile(r"^[0-9a-f]{32}$")
 
@@ -44,19 +45,23 @@ class Session:
 
 # ---- 서버 확인 ----
 
+# 생성 시각도 WMI 에서 읽는다 — UAC 로 띄운 관리 창은 예약 작업이 띄운 서버를 OpenProcess 로 열지 못한다
+# (10-24 서버 실측: 오류 5). 값은 FILETIME(100ns 단위, WMI 표현 정밀도는 마이크로초)이라 WMI 값끼리만 비교한다.
 _LISTENER_SCRIPT = r"""
 [Console]::OutputEncoding = New-Object Text.UTF8Encoding $false
 $ids = @(Get-NetTCPConnection -State Listen -LocalPort __PORT__ -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique)
 foreach ($i in $ids) {
   $p = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + [int]$i) -ErrorAction Stop
-  "PROC`t$([int]$i)`t$($p.ExecutablePath)`t$($p.CommandLine)"
+  $created = if ($p -and $p.CreationDate) { $p.CreationDate.ToFileTimeUtc() } else { '' }
+  "PROC`t$([int]$i)`t$created`t$($p.ExecutablePath)`t$($p.CommandLine)"
 }
 "DONE"
 """
 
 
-def listeners(port: int, runner: Runner) -> list[tuple[int, str, str]] | None:
-    """(PID, 실행 파일, 명령줄) — 포트를 듣는 프로세스 전부. None = 조회 실패."""
+def listeners(port: int, runner: Runner) -> list[tuple[int, int | None, str, str]] | None:
+    """(PID, 생성 시각 또는 None, 실행 파일, 명령줄) — 포트를 듣는 프로세스 전부. None = 조회 실패
+    (형식이 깨진 PROC 줄이 하나라도 있으면 — 그 줄을 버리고 나머지 하나만 믿지 않게)."""
     code, out = runner([str(powershell_exe()), "-NoProfile", "-NonInteractive", "-Command",
                         _LISTENER_SCRIPT.replace("__PORT__", str(int(port)))], 30)
     lines = [line.rstrip("\r") for line in out.splitlines()]
@@ -64,9 +69,12 @@ def listeners(port: int, runner: Runner) -> list[tuple[int, str, str]] | None:
         return None
     found = []
     for line in lines:
-        parts = line.split("\t", 3)
-        if parts[0] == "PROC" and len(parts) == 4 and parts[1].isdigit():
-            found.append((int(parts[1]), parts[2], parts[3]))
+        if not line.startswith("PROC\t"):
+            continue
+        parts = line.split("\t", 4)  # 명령줄 안의 탭은 그대로
+        if len(parts) != 5 or not parts[1].isdigit() or not (parts[2] == "" or parts[2].isdigit()):
+            return None
+        found.append((int(parts[1]), int(parts[2]) if parts[2] else None, parts[3], parts[4]))
     return found
 
 
@@ -148,11 +156,17 @@ def verify_server(inst: Installation, runner: Runner) -> dict:
         raise ServerError(f"{inst.port} 포트를 듣는 프로세스를 확인하지 못했습니다")
     if len(found) != 1:
         raise ServerError(f"{inst.port} 포트를 듣는 프로세스가 {'없습니다(서버가 꺼져 있을 수 있음)' if not found else '여럿입니다'}")
-    pid, exe, command_line = found[0]
-    created = process_created(pid)
+    pid, created, exe, command_line = found[0]
+    if created is None:
+        raise ServerError(f"{inst.port} 포트를 듣는 프로세스(PID {pid})의 시작 시각을 읽지 못했습니다")
+    if not command_line.strip():
+        raise ServerError(f"{inst.port} 포트를 듣는 프로세스(PID {pid})의 명령줄을 읽지 못했습니다")
     argv = split_command_line(command_line)
-    if created is None or len(argv) < 2 or not _same_path(argv[1], script):
-        raise ServerError(f"{inst.port} 포트를 듣는 프로세스(PID {pid})가 이 설치의 서버(serve.py)가 아닙니다")
+    if len(argv) < 2:
+        raise ServerError(f"{inst.port} 포트를 듣는 프로세스(PID {pid})의 명령줄에 실행 파일이 없습니다")
+    if not _same_path(argv[1], script):
+        raise ServerError(f"{inst.port} 포트를 듣는 프로세스(PID {pid})가 이 설치의 서버(serve.py)가 아닙니다"
+                          f"({_shown(argv[1])})")
     if not exe or not any(_same_path(exe, python) for python in expected_pythons(inst)):
         raise ServerError(f"{inst.port} 포트를 듣는 프로세스(PID {pid})의 실행 파일이 이 서버의 Python 이 아닙니다({exe or '확인 불가'})")
     ready = status.read_ready(inst.port)
@@ -162,9 +176,16 @@ def verify_server(inst: Installation, runner: Runner) -> dict:
             and runtime.get("role") == "server" and runtime.get("build_id") == build_id
             and runtime.get("execution_nonce") == nonce):
         raise ServerError("서버 응답(/api/ready)이 확인한 프로세스·실행 기록과 맞지 않습니다")
-    if not process_alive(pid, created):
+    # 두 관측(앞의 조회·지금 조회)에서 같은 서버인지 — 같은 PID 의 재사용·포트 주인 교체를 이 사이에서 잡는다.
+    if listeners(inst.port, runner) != [found[0]]:
         raise ServerError("확인하는 사이 서버 프로세스가 바뀌었습니다 — 다시 시도하세요")
     return {"port": inst.port, "pid": pid, "created": created, "nonce": nonce, "build_id": build_id}
+
+
+def _shown(value: str, limit: int = 160) -> str:
+    """거절 문구에 보이는 실제 경로 — 제어 문자 없이, 짧게."""
+    value = re.sub(r"[\x00-\x1f\x7f]", "?", value)
+    return value if len(value) <= limit else value[:limit] + "…"
 
 
 # ---- 요청 ----

@@ -177,9 +177,20 @@ def format_event(payload: dict[str, Any]) -> str | None:
     return f"[{stamp}] {level:<7} {label}{suffix}"
 
 
+def _decode_line(raw: bytes) -> str:
+    """한 줄을 UTF-8 로, 안 되면 CP949 로 읽는다 — bat 로그에는 cmd 가 CP949 로 쓴 자기 메시지
+    ('일괄 작업을 끝내시겠습니까 (Y/N)?')가 Python 의 UTF-8 줄과 섞인다."""
+    for encoding in ("utf-8", "cp949"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            pass
+    return raw.decode("utf-8", errors="replace")
+
+
 def _tail(path: Path, count: int) -> list[str]:
-    with path.open("r", encoding="utf-8", errors="replace") as handle:
-        return list(deque(handle, maxlen=max(1, count)))
+    with path.open("rb") as handle:
+        return [_decode_line(line) for line in deque(handle, maxlen=max(1, count))]
 
 
 def _file_identity(stat_result: os.stat_result) -> tuple[int, int, int]:
@@ -195,7 +206,7 @@ def _tail_snapshot(path: Path, count: int) -> tuple[list[str], int, tuple[int, i
         lines = deque(handle, maxlen=max(1, count))
         position = handle.tell()
         identity = _file_identity(os.fstat(handle.fileno()))
-    return [line.decode("utf-8", errors="replace") for line in lines], position, identity
+    return [_decode_line(line) for line in lines], position, identity
 
 
 class LogFollower:
@@ -242,7 +253,7 @@ class LogFollower:
         self.pending += chunk
         parts = self.pending.split(b"\n")
         self.pending = parts.pop()
-        return [part.decode("utf-8", errors="replace").rstrip("\r") for part in parts]
+        return [_decode_line(part).rstrip("\r") for part in parts]
 
 
 def recent_update_lines(path: Path = UPDATE_LOG, count: int = 5) -> list[str]:

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import ast
+import itertools
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -1421,14 +1422,14 @@ def _server_inst(tmp_path, python=r"C:\Py\python.exe", **overrides):
     return inst, script, build, nonce
 
 
-def _fake_server(monkeypatch, script, build, nonce, pid=4321, exe=r"C:\Py\python.exe", runtime=None, alive=True,
-                 found=None):
+def _fake_server(monkeypatch, script, build, nonce, pid=4321, exe=r"C:\Py\python.exe", runtime=None, found=None,
+                 again="same"):
+    """포트 조회는 verify 한 번에 두 번 — 첫 조회는 found, 끝의 다시 조회는 again('same' = found 그대로)."""
     from server_console import server_api
     if found is None:
-        found = [(pid, exe, f'"{exe}" "{script}"')]
-    monkeypatch.setattr(server_api, "listeners", lambda port, runner: found)
-    monkeypatch.setattr(server_api, "process_created", lambda p: 77)
-    monkeypatch.setattr(server_api, "process_alive", lambda p, created: alive)
+        found = [(pid, 77, exe, f'"{exe}" "{script}"')]
+    answers = itertools.cycle([found, found if again == "same" else again])
+    monkeypatch.setattr(server_api, "listeners", lambda port, runner: next(answers))
     body = {"process_id": pid, "role": "server", "build_id": build, "execution_nonce": nonce}
     body.update(runtime or {})
     monkeypatch.setattr(status, "read_ready", lambda port, timeout=3.0, tls=False: status.Ready(
@@ -1446,7 +1447,10 @@ def test_server_is_verified_before_login(tmp_path, monkeypatch):
 @pytest.mark.parametrize("change,why", [
     ({"found": None}, "확인하지 못했습니다"),
     ({"found": []}, "없습니다"),
-    ({"found": [(1, "python.exe", "x"), (2, "python.exe", "y")]}, "여럿"),
+    ({"found": [(1, 5, "python.exe", "x"), (2, 6, "python.exe", "y")]}, "여럿"),
+    ({"found": [(4321, None, r"C:\Py\python.exe", "x y")]}, "시작 시각"),
+    ({"found": [(4321, 77, r"C:\Py\python.exe", " ")]}, "명령줄을 읽지"),
+    ({"found": [(4321, 77, r"C:\Py\python.exe", r"C:\Py\python.exe")]}, "실행 파일이 없습니다"),
     ({"exe": r"C:\Tools\nginx.exe"}, "실행 파일"),
     ({"exe": r"D:\elsewhere\python.exe"}, "실행 파일"),        # 이름만 같은 다른 Python
     ({"script": "other"}, "serve.py"),
@@ -1454,7 +1458,6 @@ def test_server_is_verified_before_login(tmp_path, monkeypatch):
     ({"runtime": {"process_id": 1}}, "/api/ready"),
     ({"runtime": {"role": "verifier"}}, "/api/ready"),
     ({"runtime": {"build_id": "e" * 32}}, "/api/ready"),
-    ({"alive": False}, "바뀌었습니다"),
 ])
 def test_server_check_refuses_anything_it_cannot_prove(tmp_path, monkeypatch, change, why):
     inst, script, build, nonce = _server_inst(tmp_path)
@@ -1469,6 +1472,40 @@ def test_server_check_refuses_anything_it_cannot_prove(tmp_path, monkeypatch, ch
         server_api = _fake_server(monkeypatch, script, build, nonce, **change)
     with pytest.raises(server_api.ServerError, match=why):
         server_api.verify_server(inst, fake_runner())
+
+
+@pytest.mark.parametrize("second", [
+    "same PID, other start", "other PID", "other exe", "other command line", None, "empty", "two"])
+def test_server_check_needs_the_same_process_on_the_second_look(tmp_path, monkeypatch, second):
+    """/api/ready 뒤 다시 조회한 포트 주인이 첫 조회와 한 줄까지 같아야 한다(두 관측의 일치)."""
+    inst, script, build, nonce = _server_inst(tmp_path)
+    exe, cmd = r"C:\Py\python.exe", f'"C:\\Py\\python.exe" "{script}"'
+    again = {"same PID, other start": [(4321, 78, exe, cmd)], "other PID": [(4322, 77, exe, cmd)],
+             "other exe": [(4321, 77, r"C:\Py\pythonw.exe", cmd)], "other command line": [(4321, 77, exe, cmd + " -x")],
+             "two": [(4321, 77, exe, cmd), (9, 1, exe, cmd)], "empty": []}.get(second, second)
+    server_api = _fake_server(monkeypatch, script, build, nonce, again=again)
+    with pytest.raises(server_api.ServerError, match="바뀌었습니다"):
+        server_api.verify_server(inst, fake_runner())
+
+
+def test_server_check_never_opens_the_server_process(tmp_path, monkeypatch):
+    """UAC 로 띄운 관리 창은 예약 작업이 띄운 서버를 열지 못한다(10-24 실측, 오류 5) — 서버 확인은 열기에 기대지 않는다."""
+    inst, script, build, nonce = _server_inst(tmp_path)
+    server_api = _fake_server(monkeypatch, script, build, nonce)
+    for name in ("process_created", "process_alive"):
+        monkeypatch.setattr(jobs, name, lambda *a, _n=name: pytest.fail(f"서버 확인이 {_n} 로 프로세스를 열었다"))
+    assert server_api.verify_server(inst, fake_runner())["created"] == 77
+
+
+def test_refusal_shows_the_listening_script_short_and_clean(tmp_path, monkeypatch):
+    inst, script, build, nonce = _server_inst(tmp_path)
+    odd = "D:\\x\x07" + "y" * 300 + "\\serve.py"
+    server_api = _fake_server(monkeypatch, script, build, nonce,
+                              found=[(4321, 77, r"C:\Py\python.exe", f'"C:\\Py\\python.exe" "{odd}"')])
+    with pytest.raises(server_api.ServerError) as caught:
+        server_api.verify_server(inst, fake_runner())
+    text = str(caught.value)
+    assert "serve.py" in text and "\x07" not in text and "D:\\x?" in text and len(text) < 260
 
 
 def test_server_check_needs_the_activation_record_and_no_tls(tmp_path, monkeypatch):
@@ -1525,10 +1562,15 @@ def test_token_is_sent_only_after_rechecking_the_same_server(monkeypatch):
 
 def test_listener_lookup_and_command_line_split():
     from server_console import server_api
-    out = 'PROC\t4321\tC:\\Py\\python.exe\t"C:\\Py\\python.exe" "D:\\a b\\serve.py"\tx\nDONE\n'
+    out = ('PROC\t4321\t134371848370300566\tC:\\Py\\python.exe\t"C:\\Py\\python.exe" "D:\\a b\\serve.py"\tx\n'
+           'PROC\t9\t\t\t\nDONE\n')
     assert server_api.listeners(8010, fake_runner(default=(0, out))) == [
-        (4321, "C:\\Py\\python.exe", '"C:\\Py\\python.exe" "D:\\a b\\serve.py"\tx')]
+        (4321, 134371848370300566, "C:\\Py\\python.exe", '"C:\\Py\\python.exe" "D:\\a b\\serve.py"\tx'),
+        (9, None, "", "")]  # 생성 시각을 못 읽은 줄은 None 으로(검사는 verify 가)
     assert server_api.listeners(8010, fake_runner(default=(1, out))) is None
+    for broken in ("PROC\t4321\tC:\\Py\\python.exe\tcmd", "PROC\tx\t1\ta\tb", "PROC\t4321\t12a\ta\tb"):
+        good = "PROC\t5\t1\ta\tb\n"
+        assert server_api.listeners(8010, fake_runner(default=(0, good + broken + "\nDONE\n"))) is None  # 하나만 남기지 않음
     assert server_api.split_command_line('"C:\\Program Files\\Py\\python.exe" "D:\\a b\\serve.py" -x') == [
         "C:\\Program Files\\Py\\python.exe", "D:\\a b\\serve.py", "-x"]
     assert server_api.split_command_line("") == []

@@ -281,3 +281,19 @@ def test_follower_releases_file_and_follows_rotation(tmp_path):
     runtime_log.replace(rotated)
     runtime_log.write_text('{"event":"startup_begin"}\n', encoding="utf-8")
     assert follower.poll() == ['{"event":"startup_begin"}']
+
+
+def test_cmd_lines_in_cp949_are_readable_next_to_utf8(tmp_path):
+    """서버 감시 로그(10-24 실측): cmd 가 CP949 로 쓴 '일괄 작업을 끝내시겠습니까' 가 UTF-8 줄 사이에서 깨졌다."""
+    viewer = _module()
+    log = tmp_path / "watchdog_console.log"
+    log.write_bytes("[watchdog] 서버 확인\n".encode("utf-8")
+                    + "^C일괄 작업을 끝내시겠습니까 (Y/N)? [task_launch] ok\r\n".encode("cp949"))
+    lines, position, identity = viewer._tail_snapshot(log, 10)
+    assert [line.rstrip("\r\n") for line in lines] == [
+        "[watchdog] 서버 확인", "^C일괄 작업을 끝내시겠습니까 (Y/N)? [task_launch] ok"]
+    assert viewer._tail(log, 1) == ["^C일괄 작업을 끝내시겠습니까 (Y/N)? [task_launch] ok\r\n"]
+    follower = viewer.LogFollower(log, position, identity)
+    with log.open("ab") as handle:
+        handle.write("작업 끝\n".encode("cp949") + "다시 시작\n".encode("utf-8") + b"\xff\xfe broken\n")
+    assert follower.poll() == ["작업 끝", "다시 시작", "�� broken"]  # 둘 다 아니면 예전처럼 대체 문자
