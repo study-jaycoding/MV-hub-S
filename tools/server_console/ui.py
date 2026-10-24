@@ -19,7 +19,7 @@ import traceback
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from . import actions, backup, console_stage, install, jobs, logs, names, release, server_api, status
+from . import actions, activity, backup, console_stage, install, jobs, logs, names, release, server_api, status
 from . import main as main_boot
 
 BG, BG2, PANEL, PANEL2 = "#08090a", "#0c0e10", "#121316", "#181a1e"
@@ -38,6 +38,20 @@ SERVER_COLORS = {"ok": LIME, "switching": AMBER, "starting": AMBER, "maintenance
 JOB_TERMINAL = ("finished", "refused", "check_needed", "runner_error")
 NAV = (("status", "상태·로그"), ("intake", "생성 접수"), ("backup", "DB·백업"), ("address", "주소"),
        ("update", "업데이트"), ("release", "릴리스"), ("move", "서버 이사"), ("settings", "설정"))
+# 로그 탭 위의 표(activity.read_activity 의 키·제목·칸). 칸 = (키, 머리글, 너비)
+TABLES = {
+    "generation": ("generations", "최근 생성 — 작업자 PC 가 보낸 정보(프롬프트는 안 보임)",
+                   (("when", "시각", 90), ("who", "작업자", 100), ("model", "모델", 170), ("where", "프로젝트 › 폴더", 300),
+                    ("status", "상태", 80), ("credits", "크레딧", 90))),
+    "settings": ("changes", "누가 무엇을 바꿨나 — 서버 변경 기록",
+                 (("when", "시각", 90), ("who", "누가", 100), ("what", "무엇을", 210), ("target", "대상", 260),
+                  ("fields", "바뀐 칸", 180))),
+    "connection": ("people", "최근 활동한 사람 — 서버 DB 기준(실시간 접속 아님 · 접속 이력은 남기지 않음)",
+                   (("who", "이름", 140), ("last_gen", "마지막 생성", 130), ("agent", "에이전트 보고", 130),
+                    ("today", "오늘 생성", 90))),
+}
+TONES = {"ok": TEXT, "run": BLUE, "bad": RED, "warn": AMBER, "muted": TEXT}  # 줄 전체에 칠해지니 평소 줄은 보통 글자색
+ACTIVITY_SECONDS = 30
 
 
 class ConsoleTk(tk.Tk):
@@ -165,6 +179,7 @@ class App:
         self.address_view: dict | None = None
         self.address_busy = False
         self.address_shown = ("", "")  # 주소·이름 칸에 마지막으로 채운 값
+        self.activity: dict | None = None  # 로그 탭 위 표(activity.read_activity)
         self.page = "status"
         self._build()
         # 다시 열면 결과를 확인하지 않은 작업을 먼저, 없으면 마지막 작업을 다시 보여 준다.
@@ -197,6 +212,10 @@ class App:
         style.configure("TNotebook", background=BG, borderwidth=0)
         style.configure("TNotebook.Tab", background=BG, foreground=MUTED, padding=(12, 6), font=BOLD, borderwidth=0)
         style.map("TNotebook.Tab", background=[("selected", PANEL)], foreground=[("selected", LIME)])
+        style.configure("Console.Treeview", background=PANEL, fieldbackground=PANEL, foreground=TEXT, font=FONT,
+                        rowheight=22, borderwidth=0, bordercolor=PANEL2, lightcolor=PANEL2, darkcolor=PANEL2)
+        style.configure("Console.Treeview.Heading", background=PANEL2, foreground=MUTED, font=FONT, relief="flat")
+        style.map("Console.Treeview", background=[("selected", PANEL2)], foreground=[("selected", LIME)])
         style.configure("TCombobox", fieldbackground=PANEL, background=PANEL2, foreground=TEXT, arrowcolor=TEXT)
         style.map("TCombobox", fieldbackground=[("readonly", PANEL)], foreground=[("readonly", TEXT)],
                   selectbackground=[("readonly", PANEL)], selectforeground=[("readonly", TEXT)])
@@ -298,7 +317,7 @@ class App:
         self.worker_filter = ttk.Combobox(tools, values=["모두"], state="readonly", width=14, font=FONT)
         self.worker_filter.set("모두")
         self.worker_filter.pack(side="left", padx=(4, 12))
-        self.worker_filter.bind("<<ComboboxSelected>>", lambda _e: self._rerender_all())
+        self.worker_filter.bind("<<ComboboxSelected>>", lambda _e: (self._rerender_all(), self._render_tables()))
         tk.Label(tools, text="찾기", bg=BG, fg=MUTED, font=FONT).pack(side="left")
         self.search = tk.Entry(tools, bg=PANEL, fg=TEXT, insertbackground=TEXT, relief="flat", font=FONT, width=28)
         self.search.pack(side="left", padx=4)
@@ -306,12 +325,17 @@ class App:
         self._button(tools, "다음", self.find_next).pack(side="left", padx=4)
         self.sources_label = tk.Label(tools, text="", bg=BG, fg=MUTED2, font=("Malgun Gothic", 8))
         self.sources_label.pack(side="right")
+        self.noise_label = tk.Label(tools, text="", bg=BG, fg=MUTED2, font=("Malgun Gothic", 8))
+        self.noise_label.pack(side="right", padx=8)
 
         self.notebook = ttk.Notebook(page)
         self.notebook.pack(fill="both", expand=True, padx=12, pady=(6, 12))
         self.texts: dict[str, tk.Text] = {}
+        self.tables: dict[str, tuple[ttk.Treeview, tk.Label]] = {}
         for key, label in logs.TABS:
             frame = tk.Frame(self.notebook, bg=PANEL)
+            if key in TABLES:
+                self._build_table(frame, key)
             text = tk.Text(frame, bg=PANEL, fg=MUTED, font=MONO, relief="flat", bd=0, padx=12, pady=8,
                            wrap="none", highlightthickness=0, insertbackground=TEXT)
             scroll = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
@@ -323,6 +347,45 @@ class App:
             text.tag_configure("hit", background=LIME)
             self.notebook.add(frame, text=label)
             self.texts[key] = text
+
+    def _build_table(self, frame: tk.Frame, key: str) -> None:
+        """로그 탭 위의 표 — 이름만 보인다(activity). 아래 글자 칸은 그대로 흐름 줄."""
+        _source, title, columns = TABLES[key]
+        head = tk.Frame(frame, bg=PANEL)
+        head.pack(fill="x", padx=12, pady=(8, 2))
+        tk.Label(head, text=title, bg=PANEL, fg=MUTED, font=FONT).pack(side="left")
+        note = tk.Label(head, text="읽는 중…", bg=PANEL, fg=MUTED2, font=("Malgun Gothic", 8))
+        note.pack(side="right")
+        box = tk.Frame(frame, bg=PANEL)
+        box.pack(fill="x", padx=12)
+        tree = ttk.Treeview(box, columns=[c[0] for c in columns], show="headings", height=7, style="Console.Treeview")
+        for column, heading, width in columns:
+            tree.heading(column, text=heading, anchor="w")
+            tree.column(column, width=width, minwidth=60, anchor="w",
+                        stretch=column in ("where", "target", "what") or column == columns[-1][0])
+        for tone, color in TONES.items():
+            tree.tag_configure(tone, foreground=color)
+        scroll = ttk.Scrollbar(box, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        tree.pack(fill="x", expand=True)
+        self.tables[key] = (tree, note)
+
+    def _render_tables(self) -> None:
+        data = self.activity or {}
+        worker = self.worker_filter.get()
+        for key, (tree, note) in self.tables.items():
+            source, _title, columns = TABLES[key]
+            rows = [row for row in data.get(source) or [] if worker in ("", "모두") or row.get("who") == worker]
+            tree.delete(*tree.get_children())
+            for row in rows:
+                tree.insert("", "end", values=[row.get(c[0], "") for c in columns], tags=(row.get("tone", "muted"),))
+            error = (data.get("errors") or {}).get(source) or (data.get("errors") or {}).get(
+                "changes" if key == "connection" else "")
+            read_at = data.get("read_at")
+            stamp = time.strftime("%H:%M:%S", time.localtime(read_at)) if read_at else ""
+            note.configure(text=error or (f"{stamp} 읽음 · {len(rows)}줄" if read_at else "읽는 중…"),
+                           fg=AMBER if error else MUTED2)
 
     def _build_intake_page(self, page: tk.Frame) -> None:
         self._header(page, "생성 접수")
@@ -1224,7 +1287,8 @@ class App:
             return False
 
     def _worker(self) -> None:
-        last_status = last_tasks = last_addr = last_backup = last_release = 0.0
+        last_status = last_tasks = last_addr = last_backup = last_release = last_activity = 0.0
+        last_hidden = -1
         offsets: dict[str, int] = {}  # 작업마다 읽은 위치 — 이 스레드만 만진다
         while not self.stop.is_set():
             now = time.time()
@@ -1243,6 +1307,11 @@ class App:
                 if lines:
                     self._put(("logs", lines))
                 self._put(("sources", self.hub.states()))
+                if self.hub.hidden != last_hidden and self._put(("noise", self.hub.hidden)):
+                    last_hidden = self.hub.hidden
+                if self.page == "status" and now - last_activity > ACTIVITY_SECONDS:
+                    last_activity = now
+                    self._put(("activity", activity.read_activity(self.inst)))
                 view = self.job_view
                 if view[0]:
                     state = jobs.read_job(self.inst, view[0])  # 상태를 먼저 — 끝났으면 출력도 이미 다 쓰였다
@@ -1317,6 +1386,16 @@ class App:
         elif kind == "sources":
             self.sources_label.configure(text=" · ".join(f"{logs.short_name(k)} {self._source_word(v)}"
                                                          for k, v in item[1].items()))
+        elif kind == "noise":
+            self.noise_label.configure(text=f"연결 열림·닫힘 {item[1]}줄 숨김(원문은 서버 창 로그)" if item[1] else "")
+        elif kind == "activity":
+            self.activity = item[1]
+            names_now = {row.get("who") for source in ("generations", "changes", "people")
+                         for row in item[1].get(source) or []} - {"", "—", None}
+            if names_now - self.workers_seen:
+                self.workers_seen |= names_now
+                self.worker_filter.configure(values=["모두", *sorted(self.workers_seen)])
+            self._render_tables()
         elif kind == "addresses":
             self.addresses = item[1]
             self._show_address()

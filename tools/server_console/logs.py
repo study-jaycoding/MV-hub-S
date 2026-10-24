@@ -10,7 +10,7 @@ from typing import Any
 
 import log_viewer  # tools/ — 표준 라이브러리만 쓴다
 
-from . import names
+from . import activity, names
 from .install import Installation
 
 TABS = (
@@ -27,6 +27,8 @@ _ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[ 
 SOURCE_NAMES = {names.RUNTIME_LOG: "실행 기록", "server_console.log": "서버 창", "watchdog_console.log": "감시",
                 "backup_console.log": "백업 복사"}
 _TEXT_ERROR = re.compile(r"\b(ERROR|CRITICAL|Traceback|failed|FAILED)\b")
+# 서버 창의 uvicorn 연결 줄 — 브라우저마다 쏟아져 다른 줄을 가린다. 세기만 하고 탭에는 넣지 않는다(원문은 서버 창 로그).
+_NOISE = re.compile(r'^INFO:\s+(connection (open|closed)|\S+ - "WebSocket /ws" \[accepted\])$')
 MAX_LINE = 600
 MAX_PER_POLL = 1500
 MAX_TOTAL_PER_POLL = 3000
@@ -72,9 +74,39 @@ def classify(payload: dict[str, Any]) -> frozenset[str]:
     return frozenset(tabs)
 
 
+def _count(payload: dict[str, Any], key: str) -> int:
+    value = payload.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _human(payload: dict[str, Any]) -> str | None:
+    """사람이 바로 읽는 문장(생성·접속·설정 변경). 나머지는 log_viewer 문구 그대로."""
+    event = str(payload.get("event") or "")
+    stamp = str(payload.get("ts") or "")[:19].replace("T", " ") or "-"
+    level = str(payload.get("level") or "INFO")
+    if event == "worker_telemetry_received":
+        parts = [f"{title} {_count(payload, key)}" for key, title in (
+            ("active_items", "진행 중"), ("completed_items", "완료"), ("failed_items", "실패"),
+            ("skipped_items", "반영 안 됨")) if _count(payload, key)]
+        who = str(payload.get("worker_name") or "").strip() or "이름 미설정"
+        return f"[{stamp}] {level:<7} {who} 생성 정보 {_count(payload, 'received_items')}건" + (
+            " · " + " · ".join(parts) if parts else "")
+    if event in ("browser_connected", "browser_disconnected"):
+        sign = "+1" if event == "browser_connected" else "−1"
+        return (f"[{stamp}] {level:<7} 브라우저 연결 {sign} → 지금 창 {_count(payload, 'connections')}개 · "
+                f"{_count(payload, 'connected_accounts')}명")
+    if event == "audit_change":
+        action = str(payload.get("audit_action") or "")
+        fields = payload.get("changed_fields")
+        fields = ", ".join(activity.field_label(f) for f in fields[:6]) if isinstance(fields, list) and fields else ""
+        return (f"[{stamp}] {level:<7} 설정 변경 · {activity.AUDIT_LABELS.get(action, action or '—')}"
+                + (f" (바뀐 칸: {fields})" if fields else "") + " — 누가 했는지는 위 표")
+    return None
+
+
 def render(payload: dict[str, Any]) -> str:
     """알려진 이벤트는 log_viewer 문구 그대로, 모르는 이벤트도 버리지 않고 간단히 보인다."""
-    line = log_viewer.format_event(payload)
+    line = _human(payload) or log_viewer.format_event(payload)
     if line:
         return clean(line)
     event = str(payload.get("event") or payload.get("message") or "운영 이벤트")
@@ -93,6 +125,9 @@ def parse_json_line(raw: str) -> LogLine | None:
         return None
     if not isinstance(payload, dict):
         return None
+    moment = activity.parse_time(payload.get("ts"))
+    if moment is not None:  # 서버 기록은 UTC — 화면은 한국 시각(시간대 없는 값은 UTC 로 본다)
+        payload = dict(payload, ts=moment.astimezone(activity.KST).strftime("%Y-%m-%dT%H:%M:%S"))
     return LogLine(classify(payload), render(payload), str(payload.get("level") or "INFO").upper(),
                    str(payload.get("worker_name") or ""))
 
@@ -161,6 +196,7 @@ class LogHub:
             self.sources.append(_Source(inst.logs / name, "text", tabs, 80))
         self.prepare: _Source | None = None
         self.alerts: dict[str, str] = {}
+        self.hidden = 0  # 숨긴 연결 줄 수(_NOISE)
 
     def _latest_prepare_log(self) -> Path | None:
         try:
@@ -188,6 +224,9 @@ class LogHub:
                                    f"… {source.path.name}: 한꺼번에 {skipped}줄이 쌓여 앞부분을 건너뜀", "WARNING"))
                 raw_lines = raw_lines[-MAX_PER_POLL:]
             for raw in raw_lines:
+                if source.kind == "text" and _NOISE.match(raw.strip()):
+                    self.hidden += 1
+                    continue
                 line = (parse_json_line(raw) if source.kind == "json"
                         else parse_text_line(raw, source.tabs, only=source.only))
                 if line is not None:

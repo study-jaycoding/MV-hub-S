@@ -2814,3 +2814,139 @@ def test_ui_unlocks_update_buttons_when_a_blocking_job_is_settled_elsewhere(tmp_
         assert str(app.start_button.cget("state")) == "disabled"
     finally:
         root.destroy()
+
+
+# ---------- 기록 보기 1단계(10-24 Jay: 한눈에 — 한국 시각·사람 문장·누가 무엇을 표, 접속 이력은 남기지 않음) ----------
+
+def test_log_lines_use_korean_time_and_read_as_sentences():
+    def text(payload):
+        return logs.parse_json_line(json.dumps(payload)).text
+    seen = text({"ts": "2026-10-24T04:11:02.5+00:00", "event": "worker_telemetry_received", "worker_name": "커비",
+                 "received_items": 2, "upserted_items": 2, "skipped_items": 0, "active_items": 1,
+                 "completed_items": 1, "failed_items": 0})
+    assert seen.startswith("[2026-10-24 13:11:02]") and "커비 생성 정보 2건 · 진행 중 1 · 완료 1" in seen
+    assert "수신=" not in seen and "실패" not in seen  # 0 은 빼고 말로
+    assert text({"ts": "2026-10-23T20:00:00", "event": "startup_ready"}).startswith("[2026-10-24 05:00:00]")  # 시간대 없으면 UTC
+    assert "브라우저 연결 +1 → 지금 창 12개 · 6명" in text(
+        {"ts": "2026-10-24T04:12:00+00:00", "event": "browser_connected", "connections": 12, "connected_accounts": 6})
+    assert "브라우저 연결 −1 → 지금 창 11개 · 6명" in text(
+        {"event": "browser_disconnected", "connections": 11, "connected_accounts": 6})
+    change = text({"ts": "2026-10-24T05:02:11+00:00", "event": "audit_change", "audit_action": "project.updated",
+                   "target_type": "project", "project_id": "p_1", "changed_fields": ["name"]})
+    assert "설정 변경 · 프로젝트 고침 (바뀐 칸: 이름)" in change and "p_1" not in change
+    assert text({"ts": "not a time", "event": "startup_ready"}).startswith("[not a time]")  # 못 읽는 시각도 줄은 그대로
+    assert text({"ts": "2026-10-24T04:13:00+00:00", "event": "audit_change", "audit_action": "new.action"}).count(
+        "new.action") == 1  # 모르는 동작은 코드 그대로
+
+
+def test_server_window_connection_noise_is_counted_not_shown(tmp_path):
+    inst = make_inst(tmp_path)
+    window = inst.logs / "server_console.log"
+    window.write_text('INFO:     connection open\nINFO:     192.168.1.97:49588 - "WebSocket /ws" [accepted]\n'
+                      "INFO:     connection closed\n[task_launch] configured python: C:\\Py\\python.exe\n"
+                      'INFO:     192.168.1.97:5000 - "GET /api/x HTTP/1.1" 500\n', encoding="utf-8")
+    hub = logs.LogHub(inst)
+    shown = [line.text for line in hub.poll()]
+    assert hub.hidden == 3 and any("[task_launch]" in t for t in shown) and any("500" in t for t in shown)
+    assert not any("connection open" in t or "WebSocket /ws" in t for t in shown)
+
+
+def _activity_dbs(tmp_path):
+    """서버 DB 두 개의 필요한 칸만 — 감사 기록의 행위자는 creator uid 와 이메일 지문 두 모양."""
+    import hashlib
+    import sqlite3
+    from contextlib import closing
+    inst = make_inst(tmp_path)
+    inst.content_db.parent.mkdir(parents=True)
+    with closing(sqlite3.connect(inst.content_db)) as conn, conn:
+        conn.executescript(
+            "CREATE TABLE account(email TEXT PRIMARY KEY, name TEXT, password_hash TEXT, creator_uid TEXT);"
+            "CREATE TABLE creator(uid TEXT PRIMARY KEY, name TEXT);"
+            "CREATE TABLE project(id TEXT PRIMARY KEY, name TEXT);"
+            "CREATE TABLE audit_event(id TEXT PRIMARY KEY, action TEXT, actor_uid TEXT, target_type TEXT,"
+            " target_id TEXT, project_id TEXT, fields TEXT, details TEXT, created_at TEXT);"
+            "CREATE TABLE workspace_member(workspace_id TEXT, account_email TEXT, last_seen_at TEXT);")
+        conn.executemany("INSERT INTO account VALUES(?,?,?,?)", [
+            ("jay@x.com", "제이", "pbkdf2$secret", "uid_jay"), ("kirby@x.com", "", "pbkdf2$secret", "uid_kirby"),
+            ("quiet@x.com", "조용", "pbkdf2$secret", None)])
+        conn.execute("INSERT INTO creator VALUES('uid_kirby', '커비')")
+        conn.execute("INSERT INTO project VALUES('p_7f3a', 'MV 3화')")
+        kirby = "account:" + hashlib.sha256(b"kirby@x.com").hexdigest()[:20]
+        conn.executemany("INSERT INTO audit_event VALUES(?,?,?,?,?,?,?,?,?)", [
+            ("a1", "project.updated", "uid_jay", "project", "p_7f3a", "p_7f3a", '["name"]', "{}", "2026-10-24T05:02:11.000Z"),
+            ("a2", "account.global_roles_changed", kirby, "account", kirby, None, '["global_roles"]', "{}",
+             "2026-10-24T04:40:00.000Z"),
+            ("a3", "server.backup_replica_target_change_failed", "uid_gone", "server", None, None, "[]", "{}",
+             "2026-10-23T09:00:00.000Z")])
+        conn.executemany("INSERT INTO workspace_member VALUES(?,?,?)", [
+            ("w1", "kirby@x.com", "2026-10-24 05:24:00"), ("w1", "quiet@x.com", "2026-09-01 00:00:00")])
+    manage = inst.data_dir / "db" / "manage_hub.db"
+    with closing(sqlite3.connect(manage)) as conn, conn:
+        conn.execute("CREATE TABLE team_generation_fact(account_email TEXT, creator_name TEXT, project_name TEXT,"
+                     " folder_path TEXT, model TEXT, status TEXT, real_credits REAL, est_credits REAL, sort_ts REAL,"
+                     " created_at TEXT, is_deleted INTEGER)")
+        at = lambda text: datetime.fromisoformat(text).timestamp()  # noqa: E731
+        conn.executemany("INSERT INTO team_generation_fact VALUES(?,?,?,?,?,?,?,?,?,?,?)", [
+            ("kirby@x.com", "커비", "MV 3화", "EP03/S12/C03", "seedance_2_0", "running", None, 12.5,
+             at("2026-10-24T05:21:00+00:00"), "2026-10-24 05:21:00", 0),
+            ("kirby@x.com", "커비", "MV 3화", "EP03\\S12\\C02", "nano_banana_flash", "done", 2, 2,
+             at("2026-10-24T05:18:00+00:00"), "2026-10-24 05:18:00", 0),
+            ("jay@x.com", "제이", None, None, "nano_banana_flash", "failed", 0, None,
+             at("2026-10-23T09:40:00+00:00"), "2026-10-23 09:40:00", 0),
+            ("jay@x.com", "제이", "MV 3화", "x", "m", "done", 1, 1, at("2026-10-24T05:30:00+00:00"), "", 1)])  # 지운 것
+    return inst, manage
+
+
+def test_activity_tables_show_names_in_korean_time_and_nothing_else(tmp_path):
+    from server_console import activity
+    inst, manage = _activity_dbs(tmp_path)
+    before = {p: p.read_bytes() for p in (inst.content_db, manage)}
+    now = datetime.fromisoformat("2026-10-24T05:30:00+00:00")  # 한국 14:30
+    out = activity.read_activity(inst, now=now)
+    assert out["errors"] == {}
+    assert [(r["when"], r["who"], r["where"], r["status"], r["credits"], r["tone"]) for r in out["generations"]] == [
+        ("14:21", "커비", "MV 3화 › S12/C03", "진행 중", "12.5 (추정)", "run"),
+        ("14:18", "커비", "MV 3화 › S12/C02", "완료", "2", "ok"),
+        ("10-23 18:40", "제이", "프로젝트 없음", "실패", "0", "bad")]  # 지운 것은 빼고
+    assert [(r["when"], r["who"], r["what"], r["target"], r["fields"]) for r in out["changes"]] == [
+        ("14:02", "제이", "프로젝트 고침", "「MV 3화」", "이름"),
+        ("13:40", "커비", "계정 권한 바꿈", "커비", "권한"),             # 이메일 지문 → 이름(생성자 이름이 먼저)
+        ("10-23 18:00", "팀원", "백업 복사 위치 변경 실패", "서버", "—")]
+    assert out["changes"][2]["tone"] == "bad"
+    assert [(r["who"], r["last_gen"], r["agent"], r["today"]) for r in out["people"]] == [
+        ("커비", "14:21", "14:24", "2"), ("제이", "10-23 18:40", "—", "0")]  # 7일 넘게 조용한 사람은 빠진다
+    dumped = json.dumps(out, ensure_ascii=False)
+    assert "@" not in dumped and "uid_" not in dumped and "account:" not in dumped and "pbkdf2" not in dumped
+    assert {p: p.read_bytes() for p in before} == before  # 읽기만
+
+
+def test_activity_still_shows_changes_without_the_manage_db(tmp_path):
+    from server_console import activity
+    inst, manage = _activity_dbs(tmp_path)
+    manage.unlink()
+    out = activity.read_activity(inst, now=datetime.fromisoformat("2026-10-24T05:30:00+00:00"))
+    assert out["generations"] == [] and "관리 DB" in out["errors"]["generations"]
+    assert len(out["changes"]) == 3 and out["people"][0]["who"] == "커비"  # 에이전트 보고만으로도
+
+
+def test_ui_tables_follow_the_worker_filter_and_show_read_errors(tmp_path, monkeypatch):
+    from server_console import activity
+    inst, _manage = _activity_dbs(tmp_path)
+    data = activity.read_activity(inst, now=datetime.fromisoformat("2026-10-24T05:30:00+00:00"))
+    ui, root, app, errors = _app(tmp_path / "ui", monkeypatch)
+    try:
+        app._handle(("activity", data))
+        tree, note = app.tables["generation"]
+        assert len(tree.get_children()) == 3 and "읽음 · 3줄" in note.cget("text")
+        assert tree.item(tree.get_children()[0])["values"][1] == "커비"
+        assert {"커비", "제이"} <= set(app.worker_filter.cget("values"))
+        app.worker_filter.set("커비")
+        app._render_tables()
+        assert len(tree.get_children()) == 2 and len(app.tables["settings"][0].get_children()) == 1
+        app._handle(("activity", {**data, "generations": [], "errors": {"generations": "관리 DB 를 읽지 못했습니다(x)"}}))
+        assert "관리 DB" in note.cget("text") and str(note.cget("fg")) == ui.AMBER
+        app._handle(("noise", 238))
+        assert "238줄 숨김" in app.noise_label.cget("text")
+        assert errors == []
+    finally:
+        root.destroy()
