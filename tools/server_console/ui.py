@@ -16,6 +16,7 @@ import threading
 import time
 import tkinter as tk
 import traceback
+from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -371,21 +372,38 @@ class App:
         tree.pack(fill="x", expand=True)
         self.tables[key] = (tree, note)
 
-    def _render_tables(self) -> None:
+    def _render_tables(self, paused: str = "") -> None:
         data = self.activity or {}
+        errors = data.get("errors") or {}
         worker = self.worker_filter.get()
         for key, (tree, note) in self.tables.items():
             source, _title, columns = TABLES[key]
             rows = [row for row in data.get(source) or [] if worker in ("", "모두") or row.get("who") == worker]
-            tree.delete(*tree.get_children())
-            for row in rows:
-                tree.insert("", "end", values=[row.get(c[0], "") for c in columns], tags=(row.get("tone", "muted"),))
-            error = (data.get("errors") or {}).get(source) or (data.get("errors") or {}).get(
-                "changes" if key == "connection" else "")
+            if not paused:  # 멈춘 동안은 마지막 표를 그대로 둔다
+                tree.delete(*tree.get_children())
+                for row in rows:
+                    tree.insert("", "end", values=[row.get(c[0], "") for c in columns],
+                                tags=(row.get("tone", "muted"),))
+            # 최근 활동한 사람은 두 DB 를 합친다 — 하나만 못 읽어도 '일부만'이라고 알린다.
+            error = (" · ".join(e for e in (errors.get("changes"), errors.get("generations")) if e)
+                     if key == "connection" else errors.get(source, ""))
             read_at = data.get("read_at")
-            stamp = time.strftime("%H:%M:%S", time.localtime(read_at)) if read_at else ""
-            note.configure(text=error or (f"{stamp} 읽음 · {len(rows)}줄" if read_at else "읽는 중…"),
-                           fg=AMBER if error else MUTED2)
+            stamp = datetime.fromtimestamp(read_at, activity.KST).strftime("%H:%M:%S") if read_at else ""
+            text = (f"{paused}{f' — 마지막 {stamp} 읽음' if stamp else ''}" if paused
+                    else f"일부만 읽음: {error}" if error and rows else error
+                    or (f"{stamp} 읽음 · {len(rows)}줄" if read_at else "읽는 중…"))
+            note.configure(text=text, fg=AMBER if (error or paused) else MUTED2)
+
+    def _activity_step(self, now: float, last: float, server_ok: bool) -> float:
+        """작업 스레드: 상태·로그 화면일 때 30초마다 DB 를 읽는다. 서버가 정상이 아니면(멈춤·전환·점검 — 복원·이사로
+        DB 파일을 바꾸는 동안) 읽지 않는다(Codex 리뷰 P2 — 읽기 연결이 파일 교체·체크포인트를 막지 않게)."""
+        if self.page != "status" or now - last <= ACTIVITY_SECONDS:
+            return last
+        if not server_ok:
+            self._put(("activity_paused", "서버가 정상일 때만 DB 를 읽습니다"))
+        else:
+            self._put(("activity", activity.read_activity(self.inst)))
+        return now
 
     def _build_intake_page(self, page: tk.Frame) -> None:
         self._header(page, "생성 접수")
@@ -1289,6 +1307,7 @@ class App:
     def _worker(self) -> None:
         last_status = last_tasks = last_addr = last_backup = last_release = last_activity = 0.0
         last_hidden = -1
+        server_ok = False
         offsets: dict[str, int] = {}  # 작업마다 읽은 위치 — 이 스레드만 만진다
         while not self.stop.is_set():
             now = time.time()
@@ -1301,7 +1320,9 @@ class App:
                     self._put(("addresses", install.addresses(self.runner)))
                     last_addr = now
                 if now - last_status > 4:
-                    self._put(("status", status.collect_status(self.inst, self.tasks, self.task_match)))
+                    current = status.collect_status(self.inst, self.tasks, self.task_match)
+                    server_ok = current.server == "ok"
+                    self._put(("status", current))
                     last_status = now
                 lines = self.hub.poll()
                 if lines:
@@ -1309,9 +1330,7 @@ class App:
                 self._put(("sources", self.hub.states()))
                 if self.hub.hidden != last_hidden and self._put(("noise", self.hub.hidden)):
                     last_hidden = self.hub.hidden
-                if self.page == "status" and now - last_activity > ACTIVITY_SECONDS:
-                    last_activity = now
-                    self._put(("activity", activity.read_activity(self.inst)))
+                last_activity = self._activity_step(now, last_activity, server_ok)
                 view = self.job_view
                 if view[0]:
                     state = jobs.read_job(self.inst, view[0])  # 상태를 먼저 — 끝났으면 출력도 이미 다 쓰였다
@@ -1396,6 +1415,8 @@ class App:
                 self.workers_seen |= names_now
                 self.worker_filter.configure(values=["모두", *sorted(self.workers_seen)])
             self._render_tables()
+        elif kind == "activity_paused":
+            self._render_tables(paused=item[1])
         elif kind == "addresses":
             self.addresses = item[1]
             self._show_address()

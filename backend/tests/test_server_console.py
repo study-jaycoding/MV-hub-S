@@ -2868,7 +2868,8 @@ def _activity_dbs(tmp_path):
             "CREATE TABLE workspace_member(workspace_id TEXT, account_email TEXT, last_seen_at TEXT);")
         conn.executemany("INSERT INTO account VALUES(?,?,?,?)", [
             ("jay@x.com", "제이", "pbkdf2$secret", "uid_jay"), ("kirby@x.com", "", "pbkdf2$secret", "uid_kirby"),
-            ("quiet@x.com", "조용", "pbkdf2$secret", None)])
+            ("quiet@x.com", "조용", "pbkdf2$secret", None),
+            ("boss@corp.com", "boss@corp.com", "pbkdf2$secret", None)])  # 이름 칸에 이메일을 적은 계정
         conn.execute("INSERT INTO creator VALUES('uid_kirby', '커비')")
         conn.execute("INSERT INTO project VALUES('p_7f3a', 'MV 3화')")
         kirby = "account:" + hashlib.sha256(b"kirby@x.com").hexdigest()[:20]
@@ -2927,6 +2928,67 @@ def test_activity_still_shows_changes_without_the_manage_db(tmp_path):
     out = activity.read_activity(inst, now=datetime.fromisoformat("2026-10-24T05:30:00+00:00"))
     assert out["generations"] == [] and "관리 DB" in out["errors"]["generations"]
     assert len(out["changes"]) == 3 and out["people"][0]["who"] == "커비"  # 에이전트 보고만으로도
+    assert (out["people"][0]["today"], out["people"][0]["last_gen"]) == ("—", "—")  # 못 읽었으면 '0건'이 아니라 모름
+
+
+def test_activity_review_cases_masked_names_temp_uids_blank_times_and_bad_rows(tmp_path):
+    """Codex 리뷰(10-24): 이름 칸의 이메일 · 임시 uid 'acct:<email>' 의 지문 · sort_ts 빈 생성 · fields 'null' · 7일 경계."""
+    import hashlib
+    import sqlite3
+    from contextlib import closing
+    from server_console import activity
+    inst, manage = _activity_dbs(tmp_path)
+    now = datetime.fromisoformat("2026-10-24T05:30:00+00:00")
+    temp = "account:" + hashlib.sha256(b"acct:quiet@x.com").hexdigest()[:20]
+    boss = "account:" + hashlib.sha256(b"boss@corp.com").hexdigest()[:20]
+    with closing(sqlite3.connect(inst.content_db)) as conn, conn:
+        conn.executemany("INSERT INTO audit_event VALUES(?,?,?,?,?,?,?,?,?)", [
+            ("b1", "project.created", temp, "project", "p_new", "p_new", "null", "{}", "2026-10-24T05:10:00.000Z"),
+            ("b2", "generation.published", boss, "generation", "g_9", None, '["status"]', "{}",
+             "2026-10-24T05:05:00.000Z")])
+        conn.execute("INSERT INTO workspace_member VALUES('w2', 'boss@corp.com', ?)",
+                     ((now - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S"),))  # 정확히 7일 전 = 포함
+    with closing(sqlite3.connect(manage)) as conn, conn:
+        conn.execute("INSERT INTO team_generation_fact VALUES('quiet@x.com', '조용', 'MV 3화', 'a/b', 'm', 'done',"
+                     " 1, 1, NULL, '2026-10-24 05:25:00', 0)")  # sort_ts 없음 — created_at 으로
+    out = activity.read_activity(inst, now=now)
+    assert out["errors"] == {}
+    assert (out["generations"][0]["when"], out["generations"][0]["who"]) == ("14:25", "조용")  # 맨 위로 정렬
+    people = [(r["who"], r["last_gen"], r["agent"], r["today"]) for r in out["people"]]
+    assert people[0] == ("조용", "14:25", "09-01 09:00", "1")  # 빈 sort_ts 도 오늘·마지막 생성에 든다
+    assert ("boss", "—", "10-17 14:30", "0") in people  # 정확히 7일 전 보고는 든다
+    changes = {r["what"]: r for r in out["changes"]}
+    assert changes["프로젝트 만듦"]["who"] == "조용" and changes["프로젝트 만듦"]["fields"] == "—"  # 임시 uid · 'null'
+    assert changes["공유(발행)"]["who"] == "boss"  # 이름 칸의 이메일은 앞부분만
+    assert "@" not in json.dumps(out, ensure_ascii=False)
+
+
+def test_activity_is_not_read_while_the_server_is_not_ok(tmp_path, monkeypatch):
+    """복원·이사로 DB 파일을 바꾸는 동안 읽기 연결이 끼지 않게 — 서버가 정상일 때만 읽고, 아니면 마지막 표에 알림만."""
+    from server_console import activity
+    ui, root, app, errors = _app(tmp_path, monkeypatch)
+    try:
+        monkeypatch.setattr(activity, "read_activity", lambda inst: pytest.fail("서버가 정상이 아닌데 DB 를 읽었다"))
+        assert app._activity_step(100.0, 0.0, server_ok=False) == 100.0
+        assert app.queue.get_nowait() == ("activity_paused", "서버가 정상일 때만 DB 를 읽습니다")
+        assert app._activity_step(110.0, 100.0, server_ok=True) == 100.0  # 30초 안에는 다시 안 읽는다
+        app.page = "intake"
+        assert app._activity_step(200.0, 100.0, server_ok=True) == 100.0  # 다른 화면이면 안 읽는다
+        app.page = "status"
+        monkeypatch.setattr(activity, "read_activity", lambda inst: {"generations": [], "changes": [], "people": [],
+                                                                     "errors": {}, "read_at": 1761283800.0})
+        assert app._activity_step(200.0, 100.0, server_ok=True) == 200.0
+        app._handle(app.queue.get_nowait())
+        tree, note = app.tables["generation"]
+        assert note.cget("text") == "14:30:00 읽음 · 0줄"  # 읽은 시각도 한국 시각(서버 OS 는 UTC)
+        app._handle(("activity_paused", "서버가 정상일 때만 DB 를 읽습니다"))
+        assert note.cget("text") == "서버가 정상일 때만 DB 를 읽습니다 — 마지막 14:30:00 읽음"
+        app._handle(("activity", {"generations": [], "changes": [], "people": [{"who": "커비", "tone": "muted"}],
+                                  "errors": {"generations": "관리 DB 를 읽지 못했습니다(x)"}, "read_at": 1.0}))
+        assert app.tables["connection"][1].cget("text") == "일부만 읽음: 관리 DB 를 읽지 못했습니다(x)"
+        assert errors == []
+    finally:
+        root.destroy()
 
 
 def test_ui_tables_follow_the_worker_filter_and_show_read_errors(tmp_path, monkeypatch):

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import time
 from contextlib import closing
@@ -21,6 +22,10 @@ from .install import Installation
 KST = timezone(timedelta(hours=9))
 ROWS = 60
 RECENT_DAYS = 7
+_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+# 생성 시각 — sort_ts 가 비면 created_at(UTC 글자). 표시·정렬·7일·오늘 수를 모두 같은 값으로(Codex 리뷰 P2).
+_EFFECTIVE = "COALESCE(sort_ts, CAST(strftime('%s', created_at) AS REAL))"
 
 AUDIT_LABELS = {
     "super_admin.issued": "슈퍼 관리자 세션 발급", "super_admin.revoked": "슈퍼 관리자 세션 해제",
@@ -96,21 +101,34 @@ def _localpart(email: str | None) -> str:
     return (email or "").split("@", 1)[0].strip()
 
 
+def shown(value: Any, limit: int = 80) -> str:
+    """화면에 내보내는 글자 — 들어 있는 이메일은 앞부분만(서버 이름 폴백과 같게), 제어 문자 없이, 짧게.
+    이름 칸에 이메일을 적어 둔 계정도 이메일이 그대로 보이지 않게(Codex 리뷰 P1)."""
+    text = _CONTROL.sub(" ", _EMAIL.sub(lambda m: _localpart(m.group(0)), str(value or ""))).strip()
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _digest(text: str) -> str:
+    # event_journal.safe_identity 와 같은 지문 — 감사 기록은 이메일(이 든 값) 대신 이것을 남긴다.
+    return "account:" + hashlib.sha256(text.lower().encode("utf-8")).hexdigest()[:20]
+
+
 def name_book(conn: sqlite3.Connection) -> Callable[[Any], str]:
     """uid·'account:지문'·이메일 → 표시 이름. 이메일·uid 자체는 돌려주지 않는다."""
-    creators = {uid: (name or "").strip() for uid, name in conn.execute("SELECT uid, name FROM creator")}
+    creators = {uid: shown((name or "").strip()) for uid, name in conn.execute("SELECT uid, name FROM creator")}
     by_uid: dict[str, str] = {}
     by_email: dict[str, str] = {}
     for email, name, uid in conn.execute("SELECT email, name, creator_uid FROM account"):
         key = str(email or "").strip().lower()
         if not key:
             continue
-        shown = creators.get(str(uid or "")) or (name or "").strip() or _localpart(key)  # 서버와 같은 순서
-        by_email[key] = shown
-        # event_journal.safe_identity 와 같은 지문 — 감사 기록은 이메일 대신 이것을 남긴다.
-        by_email["account:" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:20]] = shown
+        name_text = creators.get(str(uid or "")) or shown((name or "").strip()) or _localpart(key)  # 서버와 같은 순서
+        by_email[key] = name_text
+        by_email[_digest(key)] = name_text
+        # 생성자 uid 가 없던 때의 행위자는 임시 uid 'acct:<email>'(deps.account_actor_uid) — 그 지문도
+        by_email[_digest("acct:" + key)] = name_text
         if uid:
-            by_uid[str(uid)] = shown
+            by_uid[str(uid)] = name_text
 
     def name_of(value: Any) -> str:
         key = str(value or "").strip()
@@ -129,9 +147,9 @@ def _credits(real: Any, est: Any) -> str:
 
 
 def _where(project: Any, folder: Any) -> str:
-    project = str(project or "").strip() or "프로젝트 없음"
+    project = shown(project) or "프로젝트 없음"
     folder = str(folder or "").strip().replace("\\", "/").strip("/")
-    tail = "/".join(folder.split("/")[-2:]) if folder else ""
+    tail = shown("/".join(folder.split("/")[-2:])) if folder else ""
     return f"{project} › {tail}" if tail else project
 
 
@@ -141,20 +159,20 @@ def _generations(manage_db: Path, name_of: Callable[[Any], str], now: datetime) 
     since = (now - timedelta(days=RECENT_DAYS)).timestamp()
     rows, people = [], {}
     with closing(_readonly(manage_db)) as conn:
-        for (email, creator_name, project, folder, model, status, real, est, sort_ts, created) in conn.execute(
+        for (email, creator_name, project, folder, model, status, real, est, at) in conn.execute(
                 "SELECT account_email, creator_name, project_name, folder_path, model, status, real_credits, "
-                "est_credits, sort_ts, created_at FROM team_generation_fact WHERE COALESCE(is_deleted,0)=0 "
-                "ORDER BY sort_ts DESC, created_at DESC LIMIT ?", (ROWS,)):
-            label, tone = _STATUS.get(str(status or "").strip().lower(), (str(status or "—"), "muted"))
+                f"est_credits, {_EFFECTIVE} AS at FROM team_generation_fact WHERE COALESCE(is_deleted,0)=0 "
+                "ORDER BY at DESC LIMIT ?", (ROWS,)):
+            label, tone = _STATUS.get(str(status or "").strip().lower(), (shown(status) or "—", "muted"))
             who = name_of(email)
-            rows.append({"when": kst_text(sort_ts if sort_ts is not None else created, now),
-                         "who": who if who != "팀원" else (str(creator_name or "").strip() or who),
-                         "model": str(model or "—"), "where": _where(project, folder), "status": label,
+            rows.append({"when": kst_text(at, now),
+                         "who": who if who != "팀원" else (shown(creator_name) or who),
+                         "model": shown(model) or "—", "where": _where(project, folder), "status": label,
                          "credits": _credits(real, est), "tone": tone})
         for email, last, today in conn.execute(
-                "SELECT account_email, MAX(sort_ts), SUM(CASE WHEN sort_ts >= ? THEN 1 ELSE 0 END) "
-                "FROM team_generation_fact WHERE COALESCE(is_deleted,0)=0 AND sort_ts >= ? GROUP BY account_email",
-                (midnight, since)):
+                f"SELECT account_email, MAX(at), SUM(CASE WHEN at >= ? THEN 1 ELSE 0 END) FROM (SELECT account_email, "
+                f"{_EFFECTIVE} AS at FROM team_generation_fact WHERE COALESCE(is_deleted,0)=0) WHERE at >= ? "
+                "GROUP BY account_email", (midnight, since)):
             people[str(email or "").lower()] = {"last_gen": last, "today": int(today or 0)}
     return rows, people
 
@@ -165,9 +183,9 @@ def _target(row: sqlite3.Row, projects: dict[str, str], name_of: Callable[[Any],
         return name_of(row["target_id"])
     project = projects.get(str(row["project_id"] or "")) or projects.get(str(row["target_id"] or ""))
     if project:
-        return f"「{project}」"
+        return f"「{shown(project)}」"
     return {"generation": "생성물", "project": "프로젝트", "server": "서버", "notice": "업데이트 공지",
-            "release_notice": "업데이트 공지"}.get(kind, kind or "—")
+            "release_notice": "업데이트 공지"}.get(kind, shown(kind) or "—")
 
 
 def _changes(content_db: Path, now: datetime) -> tuple[list[dict], Callable[[Any], str], dict]:
@@ -179,13 +197,14 @@ def _changes(content_db: Path, now: datetime) -> tuple[list[dict], Callable[[Any
         for row in conn.execute("SELECT action, actor_uid, target_type, target_id, project_id, fields, created_at "
                                 "FROM audit_event ORDER BY created_at DESC, id DESC LIMIT ?", (ROWS,)):
             try:
-                fields = [str(f) for f in json.loads(row["fields"] or "[]")][:6]
+                parsed = json.loads(row["fields"] or "[]")
             except ValueError:
-                fields = []
+                parsed = []
+            fields = [str(f) for f in parsed][:6] if isinstance(parsed, list) else []  # 'null' 같은 행 하나가 표 전체를 막지 않게
             action = str(row["action"] or "")
             rows.append({"when": kst_text(row["created_at"], now), "who": name_of(row["actor_uid"]),
-                         "what": AUDIT_LABELS.get(action, action or "—"), "target": _target(row, projects, name_of),
-                         "fields": ", ".join(field_label(f) for f in fields) or "—",
+                         "what": AUDIT_LABELS.get(action, shown(action) or "—"), "target": _target(row, projects, name_of),
+                         "fields": shown(", ".join(field_label(f) for f in fields)) or "—",
                          "tone": "bad" if action.endswith("_failed") else "muted"})
         agents = {str(email or "").lower(): seen for email, seen in conn.execute(
             "SELECT account_email, MAX(last_seen_at) FROM workspace_member GROUP BY account_email")}
@@ -207,13 +226,15 @@ def read_activity(inst: Installation, now: datetime | None = None) -> dict[str, 
         out["generations"], people = _generations(inst.data_dir / "db" / "manage_hub.db", name_of, now)
     except (sqlite3.Error, OSError) as exc:
         out["errors"]["generations"] = f"관리 DB 를 읽지 못했습니다({type(exc).__name__})"
+    unknown_gen = "generations" in out["errors"]  # 못 읽었으면 '0건'이 아니라 '모름'
     since = now - timedelta(days=RECENT_DAYS)
     merged = []
-    for email in set(people) | {e for e, seen in agents.items() if (parse_time(seen) or since) > since}:
+    for email in set(people) | {e for e, seen in agents.items() if (parse_time(seen) or since - timedelta(1)) >= since}:
         gen = people.get(email, {})
         last = [t for t in (parse_time(gen.get("last_gen")), parse_time(agents.get(email))) if t]
-        merged.append({"who": name_of(email), "last_gen": kst_text(gen.get("last_gen"), now),
-                       "agent": kst_text(agents.get(email), now), "today": str(gen.get("today", 0)),
+        merged.append({"who": name_of(email), "last_gen": "—" if unknown_gen else kst_text(gen.get("last_gen"), now),
+                       "agent": kst_text(agents.get(email), now),
+                       "today": "—" if unknown_gen else str(gen.get("today", 0)),
                        "_latest": max(last) if last else since, "tone": "muted"})
     merged.sort(key=lambda row: row["_latest"], reverse=True)
     out["people"] = [{k: v for k, v in row.items() if k != "_latest"} for row in merged[:ROWS]]
