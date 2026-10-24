@@ -154,8 +154,9 @@ py -3 tools\verify_backup_restore.py --backup-set "E:\MVHub-backups\content_hub_
 
 5. 팀에 "팀 공유 잠시 중단" 공지하고 생성 접수를 멈춘다([SERVER.md](SERVER.md) 의
    `deployment-pause`). 진행 중 생성이 0 인지 `tools\deploy_fence_check.py` 로 확인한다.
-6. **옛 서버를 완전히 멈춘다** — 워치독 먼저, `/DISABLE` 을 먼저 걸고 `/End`
-   ([SERVER_RECOVERY.md](SERVER_RECOVERY.md) 의 "수동 중지").
+6. **옛 서버를 완전히 멈춘다** — **서버 관리 창(`MV_console.bat`)을 먼저 닫고**(창은 DB 를 몇 초마다 읽기 전용으로
+   연다 — 열린 연결이 DB 파일 교체를 막을 수 있다), 워치독 먼저, `/DISABLE` 을 먼저 걸고 `/End`
+   ([SERVER_RECOVERY.md](SERVER_RECOVERY.md) 의 "수동 중지"). 새 PC 에서 `--install` 할 때도 관리 창은 닫아 둔다.
 7. 옛 서버에서 패키지를 만든다.
 
    ```
