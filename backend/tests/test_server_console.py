@@ -2963,6 +2963,42 @@ def test_activity_review_cases_masked_names_temp_uids_blank_times_and_bad_rows(t
     assert "@" not in json.dumps(out, ensure_ascii=False)
 
 
+@pytest.mark.parametrize("raw,expected", [
+    ("boss@corp", "boss"),                                  # 서버는 '@' 만 보고 계정을 받는다
+    ("제이 <jay@x.com>", "제이 <jay>"),
+    ("user_3FZ90bU5fTpvQec78Ttna7LvLoj", "(식별자)"),
+    ("account:" + "a" * 20, "(식별자)"),
+    ("acct:jay@x.com 님", "(식별자) 님"),
+    ("MV 3화\x07\n", "MV 3화"),
+    ("x" * 100, "x" * 80 + "…"),
+    ("@제이", "@제이"),                                      # 앞에 글자가 없으면 이메일 아님
+])
+def test_shown_masks_emails_and_identifiers(raw, expected):
+    from server_console import activity
+    assert activity.shown(raw) == expected
+
+
+def test_every_screen_value_is_masked_end_to_end(tmp_path):
+    """이름·생성자 이름·모델·프로젝트·폴더·대상에 이메일·uid·지문이 들어 있어도 표에는 안 나온다."""
+    import sqlite3
+    from contextlib import closing
+    from server_console import activity
+    inst, manage = _activity_dbs(tmp_path)
+    with closing(sqlite3.connect(inst.content_db)) as conn, conn:
+        conn.execute("UPDATE account SET name='ops@corp' WHERE email='quiet@x.com'")
+        conn.execute("UPDATE project SET name='MV user_ABCDEFGH1234 jay@x.com'")
+        conn.execute("UPDATE audit_event SET action='custom@corp.action' WHERE id='a3'")
+    with closing(sqlite3.connect(manage)) as conn, conn:
+        conn.execute("UPDATE team_generation_fact SET model='m@corp', project_name='p acct:jay@x.com',"
+                     " folder_path='EP/kirby@x.com/C1', account_email='ghost@nowhere', creator_name='user_ZZZZZZZZ9999'"
+                     " WHERE account_email='jay@x.com'")
+    out = activity.read_activity(inst, now=datetime.fromisoformat("2026-10-24T05:30:00+00:00"))
+    dumped = json.dumps(out, ensure_ascii=False)
+    for leak in ("@", "user_", "account:", "acct:"):
+        assert leak not in dumped, leak
+    assert any(r["who"] == "(식별자)" and r["model"] == "m" for r in out["generations"])
+
+
 def test_activity_is_not_read_while_the_server_is_not_ok(tmp_path, monkeypatch):
     """복원·이사로 DB 파일을 바꾸는 동안 읽기 연결이 끼지 않게 — 서버가 정상일 때만 읽고, 아니면 마지막 표에 알림만."""
     from server_console import activity
@@ -2982,6 +3018,8 @@ def test_activity_is_not_read_while_the_server_is_not_ok(tmp_path, monkeypatch):
         tree, note = app.tables["generation"]
         assert note.cget("text") == "14:30:00 읽음 · 0줄"  # 읽은 시각도 한국 시각(서버 OS 는 UTC)
         app._handle(("activity_paused", "서버가 정상일 때만 DB 를 읽습니다"))
+        assert note.cget("text") == "서버가 정상일 때만 DB 를 읽습니다 — 마지막 14:30:00 읽음"
+        app._render_tables()  # 작업자 칸을 바꿔 다시 그려도 알림은 남는다
         assert note.cget("text") == "서버가 정상일 때만 DB 를 읽습니다 — 마지막 14:30:00 읽음"
         app._handle(("activity", {"generations": [], "changes": [], "people": [{"who": "커비", "tone": "muted"}],
                                   "errors": {"generations": "관리 DB 를 읽지 못했습니다(x)"}, "read_at": 1.0}))

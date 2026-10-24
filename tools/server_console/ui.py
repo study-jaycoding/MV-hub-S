@@ -181,6 +181,7 @@ class App:
         self.address_busy = False
         self.address_shown = ("", "")  # 주소·이름 칸에 마지막으로 채운 값
         self.activity: dict | None = None  # 로그 탭 위 표(activity.read_activity)
+        self.activity_paused = ""  # 서버가 정상이 아니라 표를 다시 읽지 않는 동안의 알림
         self.page = "status"
         self._build()
         # 다시 열면 결과를 확인하지 않은 작업을 먼저, 없으면 마지막 작업을 다시 보여 준다.
@@ -372,8 +373,9 @@ class App:
         tree.pack(fill="x", expand=True)
         self.tables[key] = (tree, note)
 
-    def _render_tables(self, paused: str = "") -> None:
+    def _render_tables(self) -> None:
         data = self.activity or {}
+        paused = self.activity_paused  # 작업자 칸을 바꿔 다시 그려도 멈춤 알림은 남는다(새 표를 받을 때만 풀림)
         errors = data.get("errors") or {}
         worker = self.worker_filter.get()
         for key, (tree, note) in self.tables.items():
@@ -1408,7 +1410,7 @@ class App:
         elif kind == "noise":
             self.noise_label.configure(text=f"연결 열림·닫힘 {item[1]}줄 숨김(원문은 서버 창 로그)" if item[1] else "")
         elif kind == "activity":
-            self.activity = item[1]
+            self.activity, self.activity_paused = item[1], ""
             names_now = {row.get("who") for source in ("generations", "changes", "people")
                          for row in item[1].get(source) or []} - {"", "—", None}
             if names_now - self.workers_seen:
@@ -1416,7 +1418,8 @@ class App:
                 self.worker_filter.configure(values=["모두", *sorted(self.workers_seen)])
             self._render_tables()
         elif kind == "activity_paused":
-            self._render_tables(paused=item[1])
+            self.activity_paused = item[1]
+            self._render_tables()
         elif kind == "addresses":
             self.addresses = item[1]
             self._show_address()

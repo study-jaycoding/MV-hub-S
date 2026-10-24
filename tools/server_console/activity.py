@@ -22,7 +22,10 @@ from .install import Installation
 KST = timezone(timedelta(hours=9))
 ROWS = 60
 RECENT_DAYS = 7
-_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+# 서버 가입은 '@' 가 있는지만 본다(boss@corp 도 계정) — '@' 가 든 낱말은 모두 이메일로 본다.
+_EMAIL = re.compile(r"[^\s@<>()\[\]{},;:'\"]+@[^\s@<>()\[\]{},;'\"]*")
+# 화면에 나오면 안 되는 식별자 — Higgsfield 생성자 uid · 감사 기록 지문 · 임시 uid
+_IDENTIFIER = re.compile(r"\b(?:user_[A-Za-z0-9]{8,}|account:[0-9a-f]{20})\b|\bacct:\S+")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 # 생성 시각 — sort_ts 가 비면 created_at(UTC 글자). 표시·정렬·7일·오늘 수를 모두 같은 값으로(Codex 리뷰 P2).
 _EFFECTIVE = "COALESCE(sort_ts, CAST(strftime('%s', created_at) AS REAL))"
@@ -104,7 +107,8 @@ def _localpart(email: str | None) -> str:
 def shown(value: Any, limit: int = 80) -> str:
     """화면에 내보내는 글자 — 들어 있는 이메일은 앞부분만(서버 이름 폴백과 같게), 제어 문자 없이, 짧게.
     이름 칸에 이메일을 적어 둔 계정도 이메일이 그대로 보이지 않게(Codex 리뷰 P1)."""
-    text = _CONTROL.sub(" ", _EMAIL.sub(lambda m: _localpart(m.group(0)), str(value or ""))).strip()
+    text = _IDENTIFIER.sub("(식별자)", str(value or ""))  # 'acct:<email>' 을 이메일보다 먼저 통째로
+    text = _CONTROL.sub(" ", _EMAIL.sub(lambda m: _localpart(m.group(0)), text)).strip()
     return text if len(text) <= limit else text[:limit] + "…"
 
 
