@@ -2986,6 +2986,9 @@ def test_every_screen_value_is_masked_end_to_end(tmp_path):
     inst, manage = _activity_dbs(tmp_path)
     with closing(sqlite3.connect(inst.content_db)) as conn, conn:
         conn.execute("UPDATE account SET name='ops@corp' WHERE email='quiet@x.com'")
+        # 이름도 생성자 이름도 없는 계정 — 이메일 앞부분이 uid 모양이면 그것도 가린다(Codex 3차)
+        conn.execute("INSERT INTO account VALUES('user_abcdefgh1234@corp.example', NULL, 'h', NULL)")
+        conn.execute("INSERT INTO workspace_member VALUES('w3', 'user_abcdefgh1234@corp.example', '2026-10-24 05:00:00')")
         conn.execute("UPDATE project SET name='MV user_ABCDEFGH1234 jay@x.com'")
         conn.execute("UPDATE audit_event SET action='custom@corp.action' WHERE id='a3'")
     with closing(sqlite3.connect(manage)) as conn, conn:

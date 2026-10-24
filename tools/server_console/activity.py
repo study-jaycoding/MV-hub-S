@@ -126,7 +126,8 @@ def name_book(conn: sqlite3.Connection) -> Callable[[Any], str]:
         key = str(email or "").strip().lower()
         if not key:
             continue
-        name_text = creators.get(str(uid or "")) or shown((name or "").strip()) or _localpart(key)  # 서버와 같은 순서
+        # 서버와 같은 순서. 마지막 대체값(이메일 앞부분)도 가림을 거친다 — 앞부분이 uid 모양일 수 있다.
+        name_text = creators.get(str(uid or "")) or shown((name or "").strip()) or shown(_localpart(key))
         by_email[key] = name_text
         by_email[_digest(key)] = name_text
         # 생성자 uid 가 없던 때의 행위자는 임시 uid 'acct:<email>'(deps.account_actor_uid) — 그 지문도
