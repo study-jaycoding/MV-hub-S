@@ -69,10 +69,11 @@ def listeners(port: int, runner: Runner) -> list[tuple[int, int | None, str, str
         return None
     found = []
     for line in lines:
-        if not line.startswith("PROC\t"):
+        if not line.startswith("PROC"):
             continue
         parts = line.split("\t", 4)  # 명령줄 안의 탭은 그대로
-        if len(parts) != 5 or not parts[1].isdigit() or not (parts[2] == "" or parts[2].isdigit()):
+        if (len(parts) != 5 or parts[0] != "PROC" or not parts[1].isdigit()
+                or not (parts[2] == "" or parts[2].isdigit())):
             return None
         found.append((int(parts[1]), int(parts[2]) if parts[2] else None, parts[3], parts[4]))
     return found
@@ -163,7 +164,7 @@ def verify_server(inst: Installation, runner: Runner) -> dict:
         raise ServerError(f"{inst.port} 포트를 듣는 프로세스(PID {pid})의 명령줄을 읽지 못했습니다")
     argv = split_command_line(command_line)
     if len(argv) < 2:
-        raise ServerError(f"{inst.port} 포트를 듣는 프로세스(PID {pid})의 명령줄에 실행 파일이 없습니다")
+        raise ServerError(f"{inst.port} 포트를 듣는 프로세스(PID {pid})의 명령줄에 서버 스크립트 경로가 없습니다")
     if not _same_path(argv[1], script):
         raise ServerError(f"{inst.port} 포트를 듣는 프로세스(PID {pid})가 이 설치의 서버(serve.py)가 아닙니다"
                           f"({_shown(argv[1])})")

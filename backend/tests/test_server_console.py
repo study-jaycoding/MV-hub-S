@@ -1450,7 +1450,7 @@ def test_server_is_verified_before_login(tmp_path, monkeypatch):
     ({"found": [(1, 5, "python.exe", "x"), (2, 6, "python.exe", "y")]}, "여럿"),
     ({"found": [(4321, None, r"C:\Py\python.exe", "x y")]}, "시작 시각"),
     ({"found": [(4321, 77, r"C:\Py\python.exe", " ")]}, "명령줄을 읽지"),
-    ({"found": [(4321, 77, r"C:\Py\python.exe", r"C:\Py\python.exe")]}, "실행 파일이 없습니다"),
+    ({"found": [(4321, 77, r"C:\Py\python.exe", r"C:\Py\python.exe")]}, "스크립트 경로가 없습니다"),
     ({"exe": r"C:\Tools\nginx.exe"}, "실행 파일"),
     ({"exe": r"D:\elsewhere\python.exe"}, "실행 파일"),        # 이름만 같은 다른 Python
     ({"script": "other"}, "serve.py"),
@@ -1492,8 +1492,10 @@ def test_server_check_never_opens_the_server_process(tmp_path, monkeypatch):
     """UAC 로 띄운 관리 창은 예약 작업이 띄운 서버를 열지 못한다(10-24 실측, 오류 5) — 서버 확인은 열기에 기대지 않는다."""
     inst, script, build, nonce = _server_inst(tmp_path)
     server_api = _fake_server(monkeypatch, script, build, nonce)
-    for name in ("process_created", "process_alive"):
-        monkeypatch.setattr(jobs, name, lambda *a, _n=name: pytest.fail(f"서버 확인이 {_n} 로 프로세스를 열었다"))
+    for module in (jobs, server_api):  # server_api 가 직접 가져온 이름(from .jobs import …)까지
+        for name in ("process_created", "process_alive"):
+            monkeypatch.setattr(module, name, lambda *a, _n=name: pytest.fail(f"서버 확인이 {_n} 로 프로세스를 열었다"),
+                                raising=False)
     assert server_api.verify_server(inst, fake_runner())["created"] == 77
 
 
@@ -1568,7 +1570,8 @@ def test_listener_lookup_and_command_line_split():
         (4321, 134371848370300566, "C:\\Py\\python.exe", '"C:\\Py\\python.exe" "D:\\a b\\serve.py"\tx'),
         (9, None, "", "")]  # 생성 시각을 못 읽은 줄은 None 으로(검사는 verify 가)
     assert server_api.listeners(8010, fake_runner(default=(1, out))) is None
-    for broken in ("PROC\t4321\tC:\\Py\\python.exe\tcmd", "PROC\tx\t1\ta\tb", "PROC\t4321\t12a\ta\tb"):
+    for broken in ("PROC\t4321\tC:\\Py\\python.exe\tcmd", "PROC\tx\t1\ta\tb", "PROC\t4321\t12a\ta\tb", "PROC",
+                   "PROC 4321 1 a b", "PROCESS\t1\t1\ta\tb"):
         good = "PROC\t5\t1\ta\tb\n"
         assert server_api.listeners(8010, fake_runner(default=(0, good + broken + "\nDONE\n"))) is None  # 하나만 남기지 않음
     assert server_api.split_command_line('"C:\\Program Files\\Py\\python.exe" "D:\\a b\\serve.py" -x') == [
