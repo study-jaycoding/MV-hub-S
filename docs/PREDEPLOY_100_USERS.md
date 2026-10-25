@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-14
+updated: 2026-10-25
 status: snapshot
 ---
 
@@ -60,7 +60,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\predeploy_gate.ps1 -Sk
 1. 승인된 배포 작업에서 운영 DB 백업 세트를 만들고 `verify_backup_restore.py --backup-set <세트의_content_DB_경로>`로 복원 검증한다([SERVER.md](SERVER.md)의 백업 세트 절차).
 2. `make_release.ps1 -SkipPublish`로 로컬 패키지를 만든다. ZIP의 SHA256과 실행 여부를 확인한 뒤에만
    공유 `packages` 폴더로 ZIP을 먼저 복사하고 `candidate.json`을 마지막에 복사한다(B안 — `latest.json`은
-   손으로 올리지 않는다. 관리자 창 업데이트 탭의 해당 판 [배포]가 바꾼다, [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md)).
+   손으로 올리지 않는다. 서버 관리 창 [릴리스]의 해당 판 [배포]가 바꾼다, [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md)).
 3. 서버를 먼저 업데이트하고 `/api/ready`의 응답이 HTTP 200·`status="ready"`인지 확인한다.
 4. 내부 관리자 5명에게 배포하고 30분 관찰한다.
 5. 이상이 없으면 20명, 50명, 100명 순서로 확대하며 각 단계마다 최소 30분 관찰한다.

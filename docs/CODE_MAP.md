@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-10-23
+updated: 2026-10-25
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -80,7 +80,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | ComfyUI 실행(로컬/Cloud) | `lib/useSceneComfyExecution.ts`, `components/scene/cards/ComfyCard.tsx` | `routers/comfy.py`, `services/comfy_client.py`, `services/comfy_run_keys.py`(실행 요청표 접수 장부 — 다시 보낸 같은 요청은 처음 작업을 돌려준다, Jay 결정 2A) | |
 | DaVinci Resolve 전송 | `lib/useResolveTransferActions.ts` | `routers/resolve_integration.py`, `services/resolve_transfer.py` | 편집 탭의 타임라인 보내기도 같은 줄·같은 관문을 지난다(위 '편집 탭' 줄) |
 | Assets의 DaVinci 프로젝트 목록·열기 | `components/assets/ResolveProjectBrowser.tsx` | `routers/assets.py`, `services/resolve_project_library.py`, `services/resolve_project_open_worker.py` | `@davinci` 내부 DB 폴더는 일반 Assets 트리에 펼치지 않는다 |
-| 앱 자동 업데이트·릴리스 절차 | `lib/releaseUpdate.ts`, `components/UpdateProgressOverlay.tsx`(진행 덮개), `components/admin/UpdateNoticesSection.tsx`(관리자 창 업데이트 탭 — NAS 모든 판·`배포`) | `routers/release_update.py`, `services/release_update.py`, `update_release_worker.bat` | 릴리스는 후보(`candidate.json`)만, `배포`가 알림과 팀 표지(`latest.json`) 교체를 수행한다. `공지`/`재공지`는 알림만 — [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md). 배포 스크립트는 §4. 강제 업데이트는 **워커까지** 닿아야 재설치가 된다(`MVHUB_UPDATE_FORCE` → `-ForceReinstall`) |
+| 앱 자동 업데이트·릴리스 절차 | `lib/releaseUpdate.ts`, `components/UpdateProgressOverlay.tsx`(진행 덮개), `components/admin/UpdateNoticesSection.tsx`(관리자 창 업데이트 탭 — NAS 모든 판·이 PC에 먼저 설치), `tools/server_console/release.py`(팀 `배포`) | `routers/release_update.py`, `services/release_update.py`, `update_release_worker.bat` | 릴리스는 후보(`candidate.json`)만, 서버 관리 창 [릴리스]의 `배포`가 알림과 팀 표지(`latest.json`) 교체를 수행한다. `공지`/`재공지`는 알림만 — [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md). 배포 스크립트는 §4. 강제 업데이트는 **워커까지** 닿아야 재설치가 된다(`MVHUB_UPDATE_FORCE` → `-ForceReinstall`) |
 | DB 백업·복원 | — | `routers/db_backup.py`, `routers/db_transfer.py`, `services/backup.py` | |
 | 계정 전환·워크스페이스 전환 | `components/AccountMenu.tsx`, `lib/useHubAuth.ts` | `active_account.py`, `routers/auth.py` | |
 | 실시간 갱신(WebSocket) | `lib/progressSocket.ts` | `ws.py`, `mutation_notify.py` | |
@@ -611,12 +611,11 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `settings/ComfyUnresolvedRunsSection.tsx`(51줄) | 미해결 Comfy 실행 목록 + 결과 회수·로컬 재저장·기록 정리 | 〃 |
 | `settings/CanvasArchiveSection.tsx`(80줄) | 설정 '캔버스 자료' — 캔버스 전체 내보내기·가져오기 단추와 저장 실패 안내 | 〃 |
 | `ShortcutsWindow.tsx`(131줄) | 단축키 재지정 창 | `ShortcutsWindow` |
-| `AdminWindow.tsx`(약 560줄) | 관리자 창(탭 호스트: 승인·멤버·공유 서버·업데이트·프로젝트·에셋 리스트) + 권한 상승 확인 + 서버 이전 공지 | `AdminWindow` |
+| `AdminWindow.tsx`(약 430줄) | 관리자 창(탭 호스트: 승인·멤버·업데이트·프로젝트·에셋 리스트) + 권한 상승 확인(공유 서버 탭은 2026-10-25 삭제 — 서버 관리 창으로) | `AdminWindow` |
 | `admin/ApprovalTab.tsx`(143줄) | 계정 승인·숨김·비번 초기화 표 | 〃 |
 | `admin/MemberRolesTab.tsx`(82줄) | 전역 역할 표 | 〃 |
 | `admin/AssetRegistryTab.tsx`(약 330줄) | 에셋 리스트(옛 '에셋 대장') — 훑는 곳·자동 훑기 시간(끔·매월·매주·매일)·프로젝트별 마지막 훑기 상태 표 + [지금 훑기](한 번 더 확인). 영구 관리자(system)만 |
-| `admin/UpdateNoticesSection.tsx` | 관리자 창 업데이트 탭 — NAS 모든 판·`배포`(알림 + 팀 표지 교체)·`이 PC에 먼저 설치`·`공지`/`재공지`(알림만)·`배포 반영`(후보 줄)·`해제`·확인 불가 표시 | 〃 | 〃 |
-| `admin/BackupReplicaSection.tsx`(약 280줄) | 서버 백업 복사 위치 — 공유 서버 탭의 결과 상자·NAS 주소·[저장](비밀번호 확인 창)·[지금 복사](끝날 때까지 5초마다 다시 읽음) | 〃 |
+| `admin/UpdateNoticesSection.tsx` | 관리자 창 업데이트 탭 — NAS 모든 판·꼬리표·`이 PC에 먼저 설치`·확인 불가 표시(팀 배포는 서버 관리 창 [릴리스]) | 〃 | 〃 |
 | `admin/RolePickers.tsx`(70줄) | 전역/프로젝트 역할 선택기 + 정렬 랭크 | 〃 |
 | `admin/ProjectRenderTree.tsx`(29줄) | 프로젝트 렌더 폴더 트리 표시 | 〃 |
 | `LoginScreen.tsx`(92줄) / `ServerLoginScreen.tsx`(230줄) | 로컬 AUTH 로그인 / 팀 서버 로그인·가입 | 각 컴포넌트 |
@@ -734,7 +733,6 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `assetUrls.ts` | 순수 | 에셋 트리·파일·썸네일·코멘트 URL 생성 |
 | `assetsApi.ts` | api | 에셋 트리/메타/색·태그/마운트/DB 백업·복원 HTTP |
 | `assetRegistryApi.ts` | api | 에셋 대장 상태·수동 훑기 HTTP(관리자 창) |
-| `backupReplicaApi.ts` | api | 서버 백업 복사 위치 상태·저장·지금 복사 HTTP + UNC 형식·실행 끝 판정(순수) |
 | `authApi.ts` | api | 로그인·계정 관리 HTTP |
 | `comfyApi.ts` | api | Comfy 파싱·실행·저장·미회수 실행 HTTP |
 | `manageApi.ts` | api | PM 대시보드·크레딧 플랜·작업 HTTP(+구서버 폴백) |
