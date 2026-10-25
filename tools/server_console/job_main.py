@@ -11,8 +11,8 @@ from pathlib import Path
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))  # -I 라 스크립트 폴더가 경로에 없다 — 이 판의 관리 창 코드만
 
-from server_console import (actions, backup, console_stage, install, jobs, names, release, server_api,  # noqa: E402
-                            status)
+from server_console import (actions, backup, console_stage, install, jobs, moves, names, power,  # noqa: E402
+                            release, server_api, status, winjob)
 
 
 def recompute(inst: install.Installation, job_id: str) -> "actions.Plan | actions.Refusal":
@@ -73,7 +73,8 @@ def run_intake(inst: install.Installation, job_id: str, request: dict, token: st
     def recompute() -> "actions.Plan | actions.Refusal":
         try:
             server = server_api.verify_server(inst, runner)
-            return actions.plan_intake_set(inst, server, server_api.read_intake(server, token), want)
+            return actions.plan_intake_set(inst, server, server_api.read_intake(server, token), want,
+                                           moving=jobs.move_active(inst))
         except server_api.ServerError as exc:
             return actions.Refusal((str(exc),))
 
@@ -162,6 +163,57 @@ def run_address(inst: install.Installation, job_id: str, request: dict) -> int:
     return jobs.run_job(inst, job_id, recompute, work=lambda _job, say: release.address_work(inst, job, params, say))
 
 
+def _refuse(inst: install.Installation, job_id: str, request: dict, reason: str) -> int:
+    jobs.write_json(jobs.job_dir(inst, job_id) / "state.json",
+                    {"status": "refused", "reasons": [reason], "finished_at": time.time()})
+    jobs.record_action(inst, job_id, request, "refused")
+    return 2
+
+
+def run_server_control(inst: install.Installation, job_id: str, request: dict) -> int:
+    """끄기·켜기·다시 켜기·자동시작 재등록·백업 확인: 먼저 자기 자신을 Job 에 넣고(실패하면 시작 안 함) 그 뒤에만 자식을
+    띄운다. 서버 제어는 git-update.lock 을 쥔 채 잠금 안에서 다시 확인한다(설계 3~5판)."""
+    kind = request["kind"]
+    params = actions.Plan.from_json(request["plan"]).params
+    runner = install.default_runner(inst)
+    try:
+        job_obj = winjob.SelfJob()
+    except winjob.JobError as exc:
+        return _refuse(inst, job_id, request, f"{exc} — 시작하지 않았습니다")
+
+    def recompute(keep=lambda trace: True) -> "actions.Plan | actions.Refusal":
+        unresolved = jobs.unresolved_jobs(inst, exclude=job_id)
+        if kind == "backup-drill":
+            return actions.plan_drill(inst, dict(params), unresolved)
+        tasks = install.task_states(runner)
+        traces = [trace for trace in status.update_traces(inst) if keep(trace)]
+        if kind == "server-autostart":
+            return actions.plan_autostart(inst, tasks, traces, unresolved)
+        return actions.plan_power(inst, kind, tasks, traces, unresolved)
+
+    def work(job: Path, say) -> tuple[int, dict]:
+        if kind == "backup-drill":
+            return backup.drill_work(inst, runner, job_obj, job, params, say)
+        with console_stage.UpdateLock(inst):
+            again = recompute(keep=lambda trace: trace[0] != "git")  # 잠금 흔적(git)은 지금 이 실행기 것
+            confirmed = actions.Plan.from_json(request["plan"])
+            if isinstance(again, actions.Refusal) or not actions.same_target(confirmed, again):
+                reasons = again.reasons if isinstance(again, actions.Refusal) else ("대상이 그새 바뀌었습니다",)
+                raise power.PowerError("시작하지 않음: " + " / ".join(reasons))
+            if kind == "server-autostart":
+                return power.autostart_work(inst, runner, job_obj, job_id, say)
+            return power.power_work(inst, runner, kind, job_id, say)
+
+    return jobs.run_job(inst, job_id, recompute, work=work)
+
+
+def run_move(inst: install.Installation, job_id: str, request: dict) -> int:
+    """이사 계열: 실행기는 Job·잠금을 쓰지 않는다(감싸개가 쥔다) — 감싸개를 새 콘솔 창으로 띄우고 기다린다."""
+    runner = install.default_runner(inst)
+    return jobs.run_job(inst, job_id, lambda: moves.recompute(inst, job_id, request, runner),
+                        work=lambda _job, say: moves.launch_and_wait(inst, job_id, say))
+
+
 def _parse(argv: list[str]) -> tuple[Path | None, str]:
     if len(argv) == 4 and argv[1] == "--install-root":
         return Path(argv[2]), argv[3]
@@ -190,6 +242,10 @@ def main(argv: list[str]) -> int:
             return run_release(inst, job_id, request, token)
         if kind == "address-notice":
             return run_address(inst, job_id, request)
+        if kind in actions.POWER_KINDS or kind == "backup-drill":
+            return run_server_control(inst, job_id, request)
+        if kind in actions.MOVE_KINDS:
+            return run_move(inst, job_id, request)
         if kind in ("backup-save", "backup-run"):
             return run_backup(inst, job_id, request)
         if kind == "git-update":

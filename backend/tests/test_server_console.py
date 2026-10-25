@@ -2246,7 +2246,8 @@ def test_ui_backup_page_shows_target_reasons_and_offers_revert(tmp_path, monkeyp
                             "result": {"state": "success", "target_id": "o", "last_success_at": _future(-60)}}}
         app._handle(("backup_view", view))
         assert app.backup_entry.get() == "\\\\NAS\\mv" and app.backup_cards["nas"][0].cget("text") == "정상"
-        assert "74 MB" in app.backup_sets.cget("text") and "content · trash" in app.backup_sets.cget("text")
+        values = app.backup_sets.item(app.backup_sets.get_children()[0], "values")  # 고를 수 있는 표(드릴 — 설계 B-2)
+        assert "74 MB" in values and "content · trash" in values
         app.backup_entry.insert("end", "\\new")  # 사람이 고치는 중이면 다시 읽어도 덮지 않는다
         app._handle(("backup_view", view))
         assert app.backup_entry.get() == "\\\\NAS\\mv\\new"

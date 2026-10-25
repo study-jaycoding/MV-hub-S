@@ -131,18 +131,21 @@ def expected_pythons(inst: Installation) -> list[Path]:
     python = pointer.get("python") if isinstance(pointer.get("python"), str) else None
     if python is None and inst.python is not None and not os.path.lexists(inst.logs / names.SERVER_CURRENT):
         python = str(inst.python)  # 포인터 없는 소스 실행: supervisor = 등록된 Python(task_launch.bat)
-    if not python:
-        return []
-    found = [Path(python)]
-    cfg = found[0].parent.parent / "pyvenv.cfg"
-    if found[0].parent.name.lower() == "scripts" and cfg.is_file():
+    return python_family(Path(python)) if python else []
+
+
+def python_family(python: Path) -> list[Path]:
+    """그 Python 과, venv 면 실제로 프로세스가 되는 기본 Python(pyvenv.cfg 의 home — venv 실행기가 그것을 띄운다)."""
+    found = [python]
+    cfg = python.parent.parent / "pyvenv.cfg"
+    if python.parent.name.lower() == "scripts" and cfg.is_file():
         try:
             home = next((line.split("=", 1)[1].strip() for line in cfg.read_text(encoding="utf-8").splitlines()
                          if line.split("=", 1)[0].strip().lower() == "home"), "")
         except OSError:
             home = ""
         if home and Path(home).is_absolute():
-            found.append(Path(home) / found[0].name)
+            found.append(Path(home) / python.name)
     return found
 
 
@@ -254,6 +257,22 @@ def login(inst: Installation, runner: Runner, email: str, password: str) -> Sess
     if account.get("status") != "approved" or not isinstance(roles, list) or "admin" not in roles:
         raise ServerError("관리자(admin) 계정만 쓸 수 있습니다")
     return Session(email=str(account.get("email") or email), server=server, token=token)
+
+
+# ---- 지금 접속 중(서버 메모리 — 이력 없음, 설계 C) ----
+
+PRESENCE_PATH = "/api/admin/presence"
+
+
+def read_presence(server: dict, token: str) -> dict:
+    """{people: [{name, app, agent}], other_connections}. 옛 서버(404)는 업데이트 안내로."""
+    code, payload = call(server, "GET", PRESENCE_PATH, token)
+    if code == 404:
+        raise ServerError("서버가 옛 코드라 지금 접속 중을 못 봅니다 — 서버 Git 업데이트 뒤에 보입니다")
+    value = expect_ok(code, payload, "지금 접속 중")
+    if not isinstance(value.get("people"), list):
+        raise ServerError("지금 접속 중 응답 형식을 알 수 없습니다")
+    return value
 
 
 # ---- 생성 접수(서버 DB app_setting['generation_deployment_paused'] — 실행 중인 서버가 자기 DB 에 쓴다) ----

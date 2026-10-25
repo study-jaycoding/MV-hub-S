@@ -20,7 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from . import actions, activity, backup, console_stage, install, jobs, logs, names, release, server_api, status
+from . import (actions, activity, backup, console_stage, install, jobs, logs, moves, names, power, release,
+               server_api, status)
 from . import main as main_boot
 
 BG, BG2, PANEL, PANEL2 = "#08090a", "#0c0e10", "#121316", "#181a1e"
@@ -37,8 +38,8 @@ STEP_LABELS = ("코드 받기", "파이썬", "CLI", "화면 빌드", "시험 기
 SERVER_COLORS = {"ok": LIME, "switching": AMBER, "starting": AMBER, "maintenance": AMBER, "blocked": AMBER,
                  "not_ready": RED, "no_answer": RED, "stopped": MUTED, "unknown": MUTED, "no_task": MUTED}
 JOB_TERMINAL = ("finished", "refused", "check_needed", "runner_error")
-NAV = (("status", "상태·로그"), ("intake", "생성 접수"), ("backup", "DB·백업"), ("address", "주소"),
-       ("update", "업데이트"), ("release", "릴리스"), ("move", "서버 이사"), ("settings", "설정"))
+NAV = (("status", "상태·로그"), ("intake", "생성 접수"), ("power", "켜기·끄기"), ("backup", "DB·백업"),
+       ("address", "주소"), ("update", "업데이트"), ("release", "릴리스"), ("move", "서버 이사"))
 # 로그 탭 위의 표(activity.read_activity 의 키·제목·칸). 칸 = (키, 머리글, 너비)
 TABLES = {
     "generation": ("generations", "최근 생성 — 작업자 PC 가 보낸 정보(프롬프트는 안 보임)",
@@ -53,6 +54,12 @@ TABLES = {
 }
 TONES = {"ok": TEXT, "run": BLUE, "bad": RED, "warn": AMBER, "muted": TEXT}  # 줄 전체에 칠해지니 평소 줄은 보통 글자색
 ACTIVITY_SECONDS = 30
+POWER_TASK_WORDS = {"Running": "실행 중", "Ready": "켜짐(대기)", "Disabled": "꺼짐", "Missing": "없음",
+                    "Queued": "대기열", "Error": "확인 불가"}
+OFF_WORDS = {"stopping": "끄는 중 멈춤", "stopped": "관리 창이 끔", "starting": "켜는 중 멈춤",
+             "start_failed": "켜기 실패 — 확인 필요"}
+PRESENCE_COLUMNS = (("who", "이름", 160), ("app", "앱 연결 수 · 백그라운드 포함", 240),
+                    ("agent", "에이전트 · 최근 40초 신호", 200))
 
 
 class ConsoleTk(tk.Tk):
@@ -182,6 +189,13 @@ class App:
         self.address_shown = ("", "")  # 주소·이름 칸에 마지막으로 채운 값
         self.activity: dict | None = None  # 로그 탭 위 표(activity.read_activity)
         self.activity_paused = ""  # 서버가 정상이 아니라 표를 다시 읽지 않는 동안의 알림
+        self.power_busy = self.drill_busy = self.move_busy = False
+        self.move_view: dict | None = None  # moves.view + 최근 백업 목록
+        self.move_due = False
+        # 지금 접속 중(서버 API) — 로그인·접속 탭일 때만, 한 번에 하나. 응답은 보낸 세션과 같을 때만 받는다.
+        self.presence: dict | None = None
+        self.presence_inflight = False
+        self.log_tab = ""
         self.page = "status"
         self._build()
         # 다시 열면 결과를 확인하지 않은 작업을 먼저, 없으면 마지막 작업을 다시 보여 준다.
@@ -237,8 +251,9 @@ class App:
             tk.Label(main, text=self.note, bg="#3a2f12", fg=AMBER, font=BOLD, anchor="w", justify="left",
                      wraplength=1000, padx=12, pady=6).pack(fill="x")
         builders = {"status": self._build_status_page, "intake": self._build_intake_page,
-                    "backup": self._build_backup_page, "address": self._build_address_page,
-                    "update": self._build_update_page, "release": self._build_release_page}
+                    "power": self._build_power_page, "backup": self._build_backup_page,
+                    "address": self._build_address_page, "update": self._build_update_page,
+                    "release": self._build_release_page, "move": self._build_move_page}
         for key, label in NAV:
             if key not in builders:  # 아직 만들지 않은 화면은 이름만
                 tk.Label(self.nav, text=f"{label}  · 다음 단계", bg=BG2, fg=MUTED2, font=("Malgun Gothic", 10),
@@ -275,6 +290,10 @@ class App:
             self.backup_due = True  # 열 때마다 새로 읽는다(작업 스레드)
         if key in ("release", "address"):
             self.release_due = True
+        if key == "move":
+            self.move_due = True
+        if key == "power":
+            self._show_power()
 
     def _header(self, page: tk.Frame, title: str) -> tk.Frame:
         head = tk.Frame(page, bg=BG2)
@@ -334,8 +353,12 @@ class App:
         self.notebook.pack(fill="both", expand=True, padx=12, pady=(6, 12))
         self.texts: dict[str, tk.Text] = {}
         self.tables: dict[str, tuple[ttk.Treeview, tk.Label]] = {}
+        self.notebook.bind("<<NotebookTabChanged>>", lambda _e: setattr(
+            self, "log_tab", logs.TABS[self.notebook.index("current")][0]))
         for key, label in logs.TABS:
             frame = tk.Frame(self.notebook, bg=PANEL)
+            if key == "connection":
+                self._build_presence(frame)
             if key in TABLES:
                 self._build_table(frame, key)
             text = tk.Text(frame, bg=PANEL, fg=MUTED, font=MONO, relief="flat", bd=0, padx=12, pady=8,
@@ -373,7 +396,47 @@ class App:
         tree.pack(fill="x", expand=True)
         self.tables[key] = (tree, note)
 
+    def _build_presence(self, frame: tk.Frame) -> None:
+        """접속 탭 맨 위 '지금 접속 중'(서버 메모리 — 이력 없음, Jay 10-24). 관리자 로그인했을 때만."""
+        head = tk.Frame(frame, bg=PANEL)
+        head.pack(fill="x", padx=12, pady=(8, 2))
+        tk.Label(head, text="지금 접속 중 — 서버가 지금 붙어 있다고 아는 계정(기록하지 않음)", bg=PANEL, fg=MUTED,
+                 font=FONT).pack(side="left")
+        self.presence_note = tk.Label(head, text="관리자로 로그인하면 보입니다", bg=PANEL, fg=MUTED2,
+                                      font=("Malgun Gothic", 8))
+        self.presence_note.pack(side="right")
+        box = tk.Frame(frame, bg=PANEL)
+        box.pack(fill="x", padx=12)
+        self.presence_tree = ttk.Treeview(box, columns=[c[0] for c in PRESENCE_COLUMNS], show="headings", height=5,
+                                          style="Console.Treeview")
+        for column, heading, width in PRESENCE_COLUMNS:
+            self.presence_tree.heading(column, text=heading, anchor="w")
+            self.presence_tree.column(column, width=width, minwidth=60, anchor="w", stretch=column == "who")
+        self.presence_tree.pack(fill="x", expand=True)
+
+    def _render_presence(self) -> None:
+        tree = getattr(self, "presence_tree", None)
+        if tree is None:
+            return
+        data = self.presence if self.session is not None else None
+        tree.delete(*tree.get_children())
+        if data is None:
+            self.presence_note.configure(text="관리자로 로그인하면 보입니다" if self.session is None else "읽는 중…", fg=MUTED2)
+            return
+        stamp = datetime.fromtimestamp(data.get("read_at") or time.time(), activity.KST).strftime("%H:%M:%S")
+        if data.get("error"):
+            self.presence_note.configure(text=f"읽지 못함: {data['error']}", fg=AMBER)
+            return
+        rows = data.get("rows") or {}
+        for row in rows.get("people") or []:
+            tree.insert("", "end", values=(activity.shown(row.get("name"), 40) or "팀원", row.get("app", 0),
+                                           "있음" if row.get("agent") else "—"))
+        other = rows.get("other_connections") or 0
+        self.presence_note.configure(text=f"{stamp} 읽음 · {len(rows.get('people') or [])}명"
+                                          + (f" · 계정 없는 연결 {other}" if other else ""), fg=MUTED2)
+
     def _render_tables(self) -> None:
+        self._render_presence()
         data = self.activity or {}
         paused = self.activity_paused  # 작업자 칸을 바꿔 다시 그려도 멈춤 알림은 남는다(새 표를 받을 때만 풀림)
         errors = data.get("errors") or {}
@@ -396,6 +459,27 @@ class App:
                     or (f"{stamp} 읽음 · {len(rows)}줄" if read_at else "읽는 중…"))
             note.configure(text=text, fg=AMBER if (error or paused) else MUTED2)
 
+    def _presence_step(self, now: float, last: float) -> float:
+        """작업 스레드: 로그인했고 접속 탭을 볼 때만 30초마다 '지금 접속 중'을 한 번에 하나 묻는다(별도 스레드 — 로그·작업
+        진행 읽기를 붙잡지 않게). 서버 확인은 call() 이 보내기 직전에 한다(따로 verify 하지 않음)."""
+        session = self.session
+        if (session is None or self.presence_inflight or self.page != "status" or self.log_tab != "connection"
+                or now - last <= ACTIVITY_SECONDS):
+            return last
+        self.presence_inflight = True
+
+        def ask() -> None:
+            try:
+                value = {"rows": server_api.read_presence(session.server, session.token), "read_at": time.time()}
+            except server_api.ServerError as exc:
+                value = {"error": str(exc), "read_at": time.time(), "auth_expired": isinstance(exc, server_api.AuthExpired)}
+            except Exception as exc:  # noqa: BLE001
+                value = {"error": f"{type(exc).__name__}", "read_at": time.time()}
+            if not self._put(("presence", session, value)):
+                self.presence_inflight = False
+        threading.Thread(target=ask, daemon=True).start()
+        return now
+
     def _activity_step(self, now: float, last: float, server_ok: bool) -> float:
         """작업 스레드: 상태·로그 화면일 때 30초마다 DB 를 읽는다. 서버가 정상이 아니면(멈춤·전환·점검 — 복원·이사로
         DB 파일을 바꾸는 동안) 읽지 않는다(Codex 리뷰 P2 — 읽기 연결이 파일 교체·체크포인트를 막지 않게)."""
@@ -404,7 +488,10 @@ class App:
         if not server_ok:
             self._put(("activity_paused", "서버가 정상일 때만 DB 를 읽습니다"))
         else:
-            self._put(("activity", activity.read_activity(self.inst)))
+            try:
+                self._put(("activity", activity.read_activity(self.inst)))
+            except status.DbBusy as exc:  # 이사 도구가 DB 잠금을 쥠(설계 3판) — 연습 내보내기는 해당 없음
+                self._put(("activity_paused", str(exc)))
         return now
 
     def _build_intake_page(self, page: tk.Frame) -> None:
@@ -490,7 +577,7 @@ class App:
         try:
             server = server_api.verify_server(self.inst, self.runner)  # 토큰을 보내기 전에 늘 다시 확인
             value = server_api.read_intake(server, session.token)
-            plan = actions.plan_intake_set(self.inst, server, value, want)
+            plan = actions.plan_intake_set(self.inst, server, value, want, moving=jobs.move_active(self.inst))
         except server_api.ServerError as exc:
             plan = actions.Refusal((str(exc),))
         except Exception as exc:  # noqa: BLE001
@@ -562,6 +649,170 @@ class App:
         if any(server_api.RELOGIN in str(r) for r in reasons):
             self.logout()
 
+    # ---------- 켜기·끄기(설계 B-1·B-3) ----------
+    def _build_power_page(self, page: tk.Frame) -> None:
+        self._header(page, "켜기·끄기 — 서버 예약 작업")
+        body = tk.Frame(page, bg=BG)
+        body.pack(fill="both", expand=True, padx=16, pady=12)
+        self.power_state = tk.Label(body, text="확인 중…", bg=PANEL, fg=TEXT, font=MONO, justify="left", anchor="w",
+                                    padx=12, pady=10)
+        self.power_state.pack(fill="x")
+        row = tk.Frame(body, bg=BG)
+        row.pack(fill="x", pady=10)
+        self.power_buttons = [
+            self._button(row, "다시 켜기…", lambda: self.request_power("server-restart"), primary=True),
+            self._button(row, "끄기…", lambda: self.request_power("server-stop")),
+            self._button(row, "켜기…", lambda: self.request_power("server-start")),
+        ]
+        for button in self.power_buttons:
+            button.pack(side="left", padx=(0, 8))
+        tk.Label(body, text="[켜기] = Server·Watchdog 둘 다 켜고 시작합니다(꺼 두기 전 상태 복원이 아님). NAS 복사 예약은 건드리지 않습니다. "
+                            "모든 동작은 확인 창 → 별도 실행기(창을 닫아도 계속) → 결과를 여기에 보입니다.",
+                 bg=BG, fg=MUTED, font=FONT, wraplength=950, justify="left").pack(anchor="w")
+        self.power_note = tk.Label(body, text="", bg=BG, fg=MUTED, font=FONT, wraplength=950, justify="left")
+        self.power_note.pack(anchor="w", pady=(8, 0))
+        repair = tk.Frame(body, bg=PANEL, highlightbackground="#26282d", highlightthickness=1)
+        repair.pack(fill="x", pady=(16, 0))
+        tk.Label(repair, text="설치·복구", bg=PANEL, fg=TEXT, font=BOLD).pack(anchor="w", padx=12, pady=(8, 2))
+        tk.Label(repair, text="예약 작업이 없어졌거나 다른 설치를 가리킬 때·Python 이 바뀌었을 때만. 예약 작업 3개를 이 설치로 다시 "
+                              "만들고(꺼 둔 작업도 켜짐) 서버를 다시 켭니다.",
+                 bg=PANEL, fg=MUTED, font=FONT, wraplength=900, justify="left").pack(anchor="w", padx=12)
+        self.autostart_button = self._button(repair, "자동시작 다시 등록…", self.request_autostart)
+        self.autostart_button.pack(anchor="w", padx=12, pady=(6, 10))
+
+    def _show_power(self) -> None:
+        tasks = self.tasks or {}
+        rows = []
+        for name in names.TASKS:
+            state = (tasks.get(name) or {}).get("state")
+            rows.append(f"{name:<18} {POWER_TASK_WORDS.get(state, state or '확인 불가')}")
+        off_state, off = power.read_off(self.inst)
+        rows.append("끈 기록          " + ("읽지 못함 — 수동 확인" if off_state == "bad" else "없음" if not off else
+                                         f"{OFF_WORDS.get(off['phase'], off['phase'])} · 작업 {off['job_id'][:8]} · "
+                                         f"{time.strftime('%m-%d %H:%M', time.localtime(off.get('updated_at') or 0))}"))
+        server = status.SERVER_LABELS.get(self.status.server, self.status.server) if self.status else "확인 중"
+        rows.append(f"서버              {server}")
+        self.power_state.configure(text="\n".join(rows))
+        for button in (*self.power_buttons, self.autostart_button):
+            button.configure(state="disabled" if self.power_busy else "normal")
+
+    def request_power(self, kind: str) -> None:
+        if self.power_busy:
+            return
+        self.power_busy = True
+        self._show_power()
+        self.power_note.configure(text="조건을 확인하는 중…", fg=MUTED)
+        threading.Thread(target=self._power_plan_worker, args=(kind,), daemon=True).start()
+
+    def request_autostart(self) -> None:
+        self.request_power("server-autostart")
+
+    def _power_plan_worker(self, kind: str) -> None:
+        try:
+            tasks = install.task_states(self.runner)
+            traces = status.update_traces(self.inst)
+            unresolved = jobs.unresolved_jobs_or_repair(self.inst, self.runner)
+            if kind == "server-autostart":
+                plan = actions.plan_autostart(self.inst, tasks, traces, unresolved)
+            else:
+                ready = status.read_ready(self.inst.port, tls=self.inst.tls)
+                plan = actions.plan_power(self.inst, kind, tasks, traces, unresolved, ready.payload)
+        except Exception as exc:  # noqa: BLE001
+            plan = actions.Refusal((f"확인 중 오류: {type(exc).__name__}: {exc}"[:300],))
+        self._put(("area_plan", "power", plan))
+
+    # ---------- 서버 이사(설계 D) ----------
+    def _build_move_page(self, page: tk.Frame) -> None:
+        self._header(page, "서버 이사·복구")
+        body = tk.Frame(page, bg=BG)
+        body.pack(fill="both", expand=True, padx=16, pady=12)
+        self.move_state = tk.Label(body, text="확인 중…", bg=PANEL, fg=TEXT, font=FONT, justify="left", anchor="w",
+                                   padx=12, pady=10, wraplength=950)
+        self.move_state.pack(fill="x")
+        row = tk.Frame(body, bg=BG)
+        row.pack(fill="x", pady=10)
+        self.move_buttons = [
+            self._button(row, "연습 내보내기…", lambda: self.request_move("move-rehearsal")),
+            self._button(row, "진짜 이사 내보내기…", lambda: self.request_move("move-out"), primary=True),
+            self._button(row, "되돌리기(UNDO)…", lambda: self.request_move("move-undo")),
+        ]
+        for button in self.move_buttons:
+            button.pack(side="left", padx=(0, 8))
+        tk.Label(body, text="질문은 새로 열리는 콘솔 창에서 답합니다. 진짜 이사·복구가 도는 동안 이 창은 DB 를 읽지 않습니다. "
+                            "새 PC 들여오기는 새 PC 에서 server_move_IN.bat 을 두 번 눌러 실행하세요(새 PC 에는 아직 관리 창이 제 역할을 못 합니다). "
+                            "죽은 서버를 새 PC 에서 NAS 백업으로 되살리는 일은 docs\\SERVER_MIGRATION.md '재해복구'.",
+                 bg=BG, fg=MUTED, font=FONT, wraplength=950, justify="left").pack(anchor="w")
+        self.move_note = tk.Label(body, text="", bg=BG, fg=MUTED, font=FONT, wraplength=950, justify="left")
+        self.move_note.pack(anchor="w", pady=(8, 0))
+        restore = tk.Frame(body, bg=PANEL, highlightbackground="#26282d", highlightthickness=1)
+        restore.pack(fill="both", expand=True, pady=(16, 0))
+        tk.Label(restore, text="백업으로 복구 — 이 PC 의 DB 를 서버 디스크 자동 백업으로 되살립니다(먼저 [끄기])",
+                 bg=PANEL, fg=TEXT, font=BOLD).pack(anchor="w", padx=12, pady=(8, 4))
+        self.restore_tree = self._sets_tree(restore)
+        self.restore_button = self._button(restore, "이 백업으로 복구…", lambda: self.request_move("move-restore"))
+        self.restore_button.pack(anchor="w", padx=12, pady=(6, 10))
+
+    def _sets_tree(self, parent: tk.Frame) -> ttk.Treeview:
+        tree = ttk.Treeview(parent, columns=("when", "roles", "size", "folder"), show="headings", height=5,
+                            selectmode="browse", style="Console.Treeview")
+        for column, heading, width in (("when", "시각", 150), ("roles", "구성", 220), ("size", "크기", 90),
+                                       ("folder", "폴더", 200)):
+            tree.heading(column, text=heading, anchor="w")
+            tree.column(column, width=width, anchor="w", stretch=column == "folder")
+        tree.pack(fill="x", padx=12)
+        return tree
+
+    def _fill_sets(self, tree: ttk.Treeview, rows: list[dict] | None) -> None:
+        keep = tree.selection()
+        tree.delete(*tree.get_children())
+        for index, row in enumerate(rows or []):
+            tree.insert("", "end", iid=str(index), values=(_stamp_text(row["stamp"]), " · ".join(row["roles"]),
+                                                           f"{row['bytes'] / 1_000_000:,.0f} MB", row.get("folder") or "."))
+        if keep and tree.exists(keep[0]):
+            tree.selection_set(keep[0])
+
+    def _selected_set(self, tree: ttk.Treeview, rows: list[dict] | None) -> dict | None:
+        chosen = tree.selection()
+        if not chosen or not rows or int(chosen[0]) >= len(rows):
+            return None
+        return {**rows[int(chosen[0])], "root": str(backup.backup_root(self.inst))}
+
+    def _show_move(self) -> None:
+        view = self.move_view or {}
+        running, last, (kind, text) = view.get("running"), view.get("last"), view.get("record") or ("", "확인 중…")
+        lines = [f"이사 기록: {text}"]
+        if running:
+            lines.append(f"지금 실행 중: {actions.ACTIONS.get(running.get('kind'), running.get('kind'))} — 콘솔 창에서 진행 중"
+                         + (" (감싸개 생사 확인 불가 — 창을 확인하세요)" if running.get("wrapper") == "unknown" else ""))
+        if last:
+            lines.append(f"마지막 이사 작업: {actions.ACTIONS.get(last.get('kind'), last.get('kind'))} — "
+                         + area_result_text(last)[0])
+        self.move_state.configure(text="\n".join(lines), fg=AMBER if kind in ("bad", "out", "in") or running else TEXT)
+        self._fill_sets(self.restore_tree, view.get("sets"))
+        for button in (*self.move_buttons, self.restore_button):
+            button.configure(state="disabled" if self.move_busy or running else "normal")
+
+    def request_move(self, kind: str) -> None:
+        if self.move_busy:
+            return
+        selection = self._selected_set(self.restore_tree, (self.move_view or {}).get("sets")) \
+            if kind == "move-restore" else None
+        self.move_busy = True
+        self._show_move()
+        self.move_note.configure(text="조건을 확인하는 중…", fg=MUTED)
+        threading.Thread(target=self._move_plan_worker, args=(kind, selection), daemon=True).start()
+
+    def _move_plan_worker(self, kind: str, selection: dict | None) -> None:
+        try:
+            tasks = install.task_states(self.runner)
+            unresolved = jobs.unresolved_jobs_or_repair(self.inst, self.runner)
+            stopped = power.stopped_problems(self.inst, self.runner) if kind == "move-restore" else None
+            plan = actions.plan_move(self.inst, kind, tasks, status.update_traces(self.inst), unresolved,
+                                     selection, stopped)
+        except Exception as exc:  # noqa: BLE001
+            plan = actions.Refusal((f"확인 중 오류: {type(exc).__name__}: {exc}"[:300],))
+        self._put(("area_plan", "move", plan))
+
     # ---------- DB·백업 ----------
     def _build_backup_page(self, page: tk.Frame) -> None:
         self._header(page, "DB·백업")
@@ -603,10 +854,17 @@ class App:
         self.backup_note.pack(side="left")
         self.backup_revert = self._button(notes, "이전 위치로 되돌리기…", self.revert_backup)  # 시험 복사가 실패했을 때만
         self.backup_old = ""
-        tk.Label(body, text="서버 디스크의 최근 자동 백업", bg=BG, fg=MUTED, font=("Malgun Gothic", 9)).pack(anchor="w", pady=(12, 2))
-        self.backup_sets = tk.Label(body, text="확인 중…", bg=PANEL, fg=TEXT, font=MONO, justify="left", anchor="w",
-                                    padx=12, pady=8)
-        self.backup_sets.pack(fill="x")
+        sets = tk.Frame(body, bg=PANEL, highlightbackground="#26282d", highlightthickness=1)
+        sets.pack(fill="x", pady=(12, 0))
+        tk.Label(sets, text="서버 디스크의 최근 자동 백업 — 한 줄을 골라 복원 연습(검증만, 서버·실DB 는 그대로)", bg=PANEL, fg=MUTED,
+                 font=("Malgun Gothic", 9)).pack(anchor="w", padx=12, pady=(8, 4))
+        self.backup_sets = self._sets_tree(sets)
+        drill = tk.Frame(sets, bg=PANEL)
+        drill.pack(fill="x", padx=12, pady=(6, 10))
+        self.drill_button = self._button(drill, "이 백업 확인…", self.request_drill)
+        self.drill_button.pack(side="left")
+        self.drill_note = tk.Label(drill, text="", bg=PANEL, fg=MUTED, font=FONT, justify="left", wraplength=780)
+        self.drill_note.pack(side="left", padx=10)
 
     def _show_backup(self) -> None:
         snap = _dict(_dict(self.status.snapshot if self.status else None).get("snapshot"))
@@ -663,14 +921,14 @@ class App:
             reasons.append("서버 기계 설정값 CONTENT_HUB_BACKUP_REPLICA_DIR 로 정해져 있어 위치는 보기만 합니다")
         self.backup_reasons.configure(text="\n".join(f"· {r}" for r in reasons))
         rows = view.get("sets")
-        if rows is None:
-            self.backup_sets.configure(text="백업 폴더를 읽지 못했습니다" if "sets" in view else "확인 중…")
-        else:
-            self.backup_sets.configure(text="\n".join(
-                f"{_stamp_text(r['stamp'])}   {' · '.join(r['roles']):<26} {r['bytes'] / 1_000_000:,.0f} MB" for r in rows)
-                or "백업이 아직 없습니다")
+        self._fill_sets(self.backup_sets, rows)
+        if rows is None and not self.drill_busy:
+            self.drill_note.configure(text="백업 폴더를 읽지 못했습니다" if "sets" in view else "확인 중…", fg=MUTED)
+        elif not rows and not self.drill_busy:
+            self.drill_note.configure(text="백업이 아직 없습니다", fg=MUTED)
         for button in (self.backup_save, self.backup_run):
             button.configure(state="disabled" if self.backup_busy else "normal")
+        self.drill_button.configure(state="disabled" if self.drill_busy else "normal")
         if locked:
             self.backup_save.configure(state="disabled")
 
@@ -728,6 +986,22 @@ class App:
             self.backup_revert.pack(side="left", padx=10)
         self._show_backup()
 
+    def request_drill(self) -> None:
+        if self.drill_busy:
+            return
+        selection = self._selected_set(self.backup_sets, (self.backup_view or {}).get("sets"))
+        self.drill_busy = True
+        self.drill_note.configure(text="조건을 확인하는 중…", fg=MUTED)
+        self.drill_button.configure(state="disabled")
+
+        def plan_worker() -> None:
+            try:
+                plan = actions.plan_drill(self.inst, selection, jobs.unresolved_jobs_or_repair(self.inst, self.runner))
+            except Exception as exc:  # noqa: BLE001
+                plan = actions.Refusal((f"확인 중 오류: {type(exc).__name__}: {exc}"[:300],))
+            self._put(("area_plan", "drill", plan))
+        threading.Thread(target=plan_worker, daemon=True).start()
+
     def revert_backup(self) -> None:
         """시험 복사가 실패한 뒤 이전 위치로 — 같은 [저장(시험 복사)] 절차로(확인·재확인·시험 복사)."""
         self.backup_entry.configure(state="normal")
@@ -738,7 +1012,8 @@ class App:
     # ---------- 릴리스·주소 공통 ----------
     def _area_note(self, area: str) -> tk.Label:
         return {"intake": self.intake_note, "backup": self.backup_note, "release": self.release_note,
-                "address": self.address_note}[area]
+                "address": self.address_note, "power": self.power_note, "drill": self.drill_note,
+                "move": self.move_note}[area]
 
     def _on_area_plan(self, area: str, plan) -> None:
         note = self._area_note(area)
@@ -764,7 +1039,7 @@ class App:
             return
         self.side_jobs.pop(area, None)
         setattr(self, f"{area}_busy", False)
-        self.release_due = True
+        self.release_due = self.move_due = self.backup_due = True
         if state.get("auth_expired"):
             self.logout()
         text, color = area_result_text(state)
@@ -772,7 +1047,8 @@ class App:
         self._show_area(area)
 
     def _show_area(self, area: str) -> None:
-        (self._show_release if area == "release" else self._show_address_page)()
+        {"release": self._show_release, "address": self._show_address_page, "power": self._show_power,
+         "drill": self._show_backup, "move": self._show_move}[area]()
 
     # ---------- 릴리스 ----------
     def _build_release_page(self, page: tk.Frame) -> None:
@@ -1119,6 +1395,8 @@ class App:
         self.login_label.configure(text="관리자 로그인 안 함", fg=MUTED)
         self.login_button.configure(text="로그인…")
         self.release_due = True  # 로그인으로만 보이던 알림 상태·단추를 거둔다
+        self.presence = None
+        self._render_presence()
 
     def require_login(self, then) -> None:
         """로그인돼 있으면 then() 을 바로, 아니면 로그인 창 → 성공한 뒤 then()."""
@@ -1308,6 +1586,7 @@ class App:
 
     def _worker(self) -> None:
         last_status = last_tasks = last_addr = last_backup = last_release = last_activity = 0.0
+        last_move = last_presence = 0.0
         last_hidden = -1
         server_ok = False
         offsets: dict[str, int] = {}  # 작업마다 읽은 위치 — 이 스레드만 만진다
@@ -1346,6 +1625,10 @@ class App:
                 if self.backup_due or (self.page == "backup" and now - last_backup > 30):
                     self.backup_due, last_backup = False, now
                     self._put(("backup_view", backup.read_view(self.inst, self.runner)))
+                if self.move_due or (self.page == "move" and now - last_move > 10):
+                    self.move_due, last_move = False, now
+                    self._put(("move_view", {**moves.view(self.inst), "sets": backup.recent_sets(self.inst)}))
+                last_presence = self._presence_step(now, last_presence)
                 if self.release_due or (self.page in ("release", "address") and now - last_release > 60):
                     self.release_due, last_release = False, now
                     if self.page == "address":
@@ -1398,6 +1681,8 @@ class App:
         kind = item[0]
         if kind == "status":
             self._show_status(item[1])
+            if self.page == "power":
+                self._show_power()
         elif kind == "logs":
             self._add_lines(item[1])
             return max(1, len(item[1]))
@@ -1462,6 +1747,16 @@ class App:
         elif kind == "address_view":
             self.address_view = item[1]
             self._show_address_page()
+        elif kind == "move_view":
+            self.move_view = item[1]
+            self._show_move()
+        elif kind == "presence":
+            self.presence_inflight = False
+            if self.session is not None and self.session is item[1]:  # 로그아웃·계정이 바뀐 뒤 온 응답은 버린다
+                self.presence = item[2]
+                if item[2].get("auth_expired"):
+                    self.logout()
+                self._render_tables()
         elif kind == "area_plan":
             self._on_area_plan(item[1], item[2])
         elif kind == "area_note":
@@ -1750,6 +2045,8 @@ def area_result_text(state: dict) -> tuple[str, str]:
         extra = " 릴리스 화면의 [이어서 하기]로 서버·NAS 를 다시 읽어 이어 갈 수 있습니다." if kind == "release-deploy" else ""
         return f"결과 확인 필요: 실행기가 결과를 남기지 못했습니다.{extra}", AMBER
     error = state.get("error") or "이유 모름"
+    if kind in actions.POWER_KINDS or kind == "backup-drill" or kind in actions.MOVE_KINDS:
+        return _control_result_text(state, kind, error)
     if state.get("exit_code") == 0:
         if kind == "release-announce":
             return f"완료: 팀원 알림을 다시 보냈습니다({state.get('revision')}번째) — 배포는 그대로입니다.", LIME
@@ -1781,6 +2078,41 @@ def _stamp_text(stamp: str) -> str:
     except ValueError:
         return stamp
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(when))
+
+
+def _control_result_text(state: dict, kind: str, error: str) -> tuple[str, str]:
+    """켜기·끄기·재등록·드릴·이사 결과 → (문구, 색). 끝난 작업만(진행 중·거절은 area_result_text 가 먼저 거른다)."""
+    code = state.get("exit_code")
+    note = f" · {state['backup_note']}" if state.get("backup_note") else ""
+    if kind in actions.MOVE_KINDS:
+        if state.get("not_started"):
+            return "시작하지 않았습니다: " + " / ".join(str(r) for r in state.get("reasons") or []), AMBER
+        if code == 0 and kind == "move-restore":
+            archive = ", ".join(state.get("archive") or []) or "확인 못 함"
+            return (f"완료: DB 를 되살렸습니다(지금 DB 보관: db\\{archive}) — [켜기]로 서버를 켜고 생성 접수 상태를 확인하세요", LIME)
+        if code == 0:
+            return "완료 — 자세한 결과는 그 콘솔 창의 마지막 안내를 따르세요(이사 화면의 이사 기록도 갱신됩니다)", LIME
+        if state.get("move") == "unconfirmed":
+            return f"결과 미확인: {error} — 이사 기록·서버 상태를 확인한 뒤 업데이트 화면에서 [확인했음]", AMBER
+        return (f"멈춤(종료 코드 {code}) — 콘솔 창의 [중단] 이유를 보세요. {state.get('error') or ''}".rstrip(), RED)
+    if kind == "backup-drill":
+        cleanup = {"done": "임시 사본 지움", "left": f"임시 사본이 남음: {state.get('tmp')}",
+                   "skipped": f"자손 회수 미확인 — 임시 사본을 지우지 않음: {state.get('tmp')}"}.get(state.get("cleanup"), "")
+        head = str(state.get("root_commit") or "")[:8] or "모름"
+        if code in (0, 3) and state.get("drill") == "passed":
+            return (f"완료: 루트 코드({head}) 기준 복원 검증 통과 — {cleanup}", LIME if code == 0 else AMBER)
+        return f"실패: {error} — {cleanup}", RED
+    if code == 0:
+        if kind == "server-stop":
+            return f"완료: 서버를 껐습니다 — 다시 켤 때는 [켜기]{note}", LIME
+        build = str(state.get("build_id") or "")[:12]
+        already = " (이미 켜져 있었음 — 꺼진 작업만 켬)" if state.get("already") else ""
+        what = "자동시작을 다시 등록했고 " if kind == "server-autostart" else ""
+        return f"완료: {what}서버가 정상입니다(build {build}){already}{note}", LIME
+    if kind == "server-autostart":
+        changed = ", ".join(state.get("changed") or []) or "없음"
+        return f"실패: {error} — 바뀐 것: {changed}. 수동 복구가 필요하면 SERVER_RECOVERY.md", RED
+    return f"실패: {error} — 위의 상태·끈 기록을 확인하세요{note}", RED
 
 
 def backup_result_text(state: dict) -> tuple[str, str]:

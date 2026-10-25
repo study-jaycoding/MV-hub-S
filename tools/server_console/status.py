@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import json
+import msvcrt
 import os
 import re
 import socket
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -276,11 +278,39 @@ def update_traces(inst: Installation) -> list[Trace]:
     return traces
 
 
+class DbBusy(RuntimeError):
+    """DB 를 바꾸는 이사 도구(진짜 OUT·백업 복구)가 DB 잠금을 쥐고 있다 — 이번 차례는 읽지 않는다."""
+
+
+@contextmanager
+def db_read_lock(inst: Installation):
+    """관리 창의 직접 DB 읽기는 이 잠금(logs\\console-db.lock 0번 바이트)을 쥔 동안에만 한다(설계 3판). 이사 감싸개가
+    쥐고 있으면 DbBusy, 잠금 파일 자체를 못 열면 OSError — 둘을 다른 문구로 보인다."""
+    handle = (inst.logs / names.DB_LOCK).open("a+b")
+    handle.seek(0)
+    try:
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError as exc:
+        handle.close()
+        raise DbBusy("서버 이사·복구 중 — DB 를 읽지 않습니다") from exc
+    try:
+        yield
+    finally:
+        try:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            handle.close()
+
+
 def inspect_intake(inst: Installation) -> tuple[dict | None, str]:
     """생성 접수 멈춤·진행 중 생성(DB 읽기 전용). 접수 멈춤은 업데이트 admission 과 다른 상태다."""
     try:
         import deploy_fence_check
-        return deploy_fence_check.inspect_fence(inst.content_db), ""
+        with db_read_lock(inst):
+            return deploy_fence_check.inspect_fence(inst.content_db), ""
+    except DbBusy as exc:
+        return None, str(exc)
     except FileNotFoundError:
         return None, "DB 파일 없음"
     except Exception as exc:  # noqa: BLE001 — 화면에는 '확인 불가'와 이유만

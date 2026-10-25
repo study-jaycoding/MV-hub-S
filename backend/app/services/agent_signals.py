@@ -159,6 +159,14 @@ class AgentSignals:
             return True
         return ts is not None and (time.monotonic() - ts) < _CONNECTED_WINDOW
 
+    def connected_emails(self) -> set[str]:
+        """관리자 '지금 접속 중'(설계 C) 전용 — connected() 가 참인 계정(정규화된 이메일). 메모리에서만."""
+        now = time.monotonic()
+        with self._lock:
+            waiting = {email for email, count in self._waiters.items() if count > 0}
+            recent = {email for email, ts in self._last_seen.items() if now - ts < _CONNECTED_WINDOW}
+        return waiting | recent
+
     def stats(self) -> dict[str, int]:
         """운영 관측용 집계. 이메일 등 개인 식별자는 노출하지 않는다."""
         now = time.monotonic()

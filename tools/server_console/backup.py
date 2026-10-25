@@ -160,22 +160,118 @@ def task_problems(task: dict | None) -> list[str]:
     return reasons
 
 
+def backup_root(inst: Installation) -> Path:
+    return Path(machine_env("CONTENT_HUB_BACKUP_DIR") or inst.data_dir / "backups")
+
+
 def recent_sets(inst: Installation, limit: int = 5) -> list[dict] | None:
-    """서버 디스크의 자동 백업(시각·구성·크기) 최근 것부터. None = 못 읽음. 내용 검증은 하지 않는다."""
-    folder = Path(machine_env("CONTENT_HUB_BACKUP_DIR") or inst.data_dir / "backups")
+    """서버 디스크의 자동 백업(시각·구성·크기·백업 루트 기준 폴더) 최근 것부터. None = 못 읽음. 내용 검증은 하지 않는다."""
+    folder = backup_root(inst)
     groups: dict[tuple[Path, str], dict] = {}
     try:
         for path in folder.rglob("*.db"):
             match = _SET_DB.match(path.name)
             if not match or "pre-dev2-baseline" in path.parts:
                 continue
-            row = groups.setdefault((path.parent, match.group(2)), {"stamp": match.group(2), "roles": [], "bytes": 0})
+            row = groups.setdefault((path.parent, match.group(2)), {
+                "stamp": match.group(2), "roles": [], "bytes": 0,
+                "folder": path.parent.relative_to(folder).as_posix() if path.parent != folder else ""})
             row["roles"].append(_ROLES[match.group(1)])
             row["bytes"] += path.stat().st_size
-    except OSError:
+    except (OSError, ValueError):
         return None
     rows = [row for row in groups.values() if "content" in row["roles"]]
     return sorted(rows, key=lambda r: r["stamp"], reverse=True)[:limit]
+
+
+DRILL_TIMEOUT = 40 * 60.0
+_REPARSE = 0x400
+
+
+def _plain(path: Path) -> bool:
+    try:
+        return not (os.lstat(path).st_file_attributes & _REPARSE)
+    except OSError:
+        return False
+
+
+def find_set(inst: Installation, params: dict) -> dict[str, Path]:
+    """확인 대상(백업 루트·상대 폴더·stamp)으로 세트 세 DB 를 다시 찾는다. 루트가 그새 바뀌었거나, 루트 밖·연결 지점·
+    일반 파일이 아니면 BackupError — 화면이 고른 것과 다른 세트를 검증·복구하지 않게(설계 2판)."""
+    root = backup_root(inst)
+    if not _same(str(params.get("root") or ""), root):
+        raise BackupError("백업 폴더 설정이 화면에서 고를 때와 다릅니다 — 다시 고르세요")
+    stamp, folder = str(params.get("stamp") or ""), str(params.get("folder") or "")
+    parts = folder.split("/") if folder else []
+    if not re.fullmatch(r"\d{8}_\d{6}(?:_\d{6})?", stamp) or "\\" in folder or ":" in folder \
+            or any(part in ("", ".", "..") for part in parts):
+        raise BackupError("백업 세트 이름이 올바르지 않습니다")
+    if not _plain(root) or not root.is_dir():
+        raise BackupError("백업 폴더가 없거나 연결 지점입니다")
+    here = root
+    for part in parts:  # 루트에서 세트 폴더까지 한 칸씩 — 중간의 연결 지점도 따라가지 않는다
+        here = here / part
+        if not _plain(here) or not here.is_dir():
+            raise BackupError("백업 폴더가 없거나 연결 지점입니다")
+    found = {}
+    for prefix, role in _ROLES.items():
+        path = here / f"{prefix}_{stamp}.db"
+        if not path.is_file() or not _plain(path):
+            raise BackupError(f"세트가 불완전합니다({path.name} 없음·일반 파일 아님)")
+        found[role] = path
+    return found
+
+
+def drill_work(inst: Installation, runner: Runner, job_obj, job: Path, params: dict,
+               say: Callable[[str], None]) -> tuple[int, dict]:
+    """세트를 다시 찾아 루트 server_move.py 로 '설치 없이 검증' — 사본·격리 서버 기록은 작업 폴더 tmp 에, Job 으로 묶고
+    상한 40분. 끝나면 자손 회수 확인 뒤에만 tmp 를 지운다(검증·정리 결과를 따로)."""
+    import shutil
+    from .winjob import run_streamed
+    files = find_set(inst, params)
+    size = sum(path.stat().st_size for path in files.values())
+    if shutil.disk_usage(job).free < size * 2 + 256 * 1024 * 1024:
+        raise BackupError(f"여유 공간이 부족합니다(세트 {size / 1_000_000:,.0f} MB 의 두 배 + 256MB 필요)")
+    tmp = job / "tmp"
+    tmp.mkdir()
+    env = dict(child_env(inst), TEMP=str(tmp), TMP=str(tmp), PYTHONDONTWRITEBYTECODE="1")
+    argv = [str(inst.python), "-B", str(inst.root / "tools" / "server_move.py"), "import", "--backup-set",
+            str(files["content"])]
+    say(f"백업 {params['stamp']} 를 임시 폴더에 복원해 격리 서버로 로그인까지 확인합니다(서버·실DB 는 그대로)")
+    code, reaped = run_streamed(job_obj, argv, str(inst.root), env, say, DRILL_TIMEOUT)
+    cleanup = "skipped"
+    if reaped:
+        for attempt in range(5):
+            shutil.rmtree(tmp, ignore_errors=True)
+            if not tmp.exists():
+                cleanup = "done"
+                break
+            time.sleep(0.5 * (attempt + 1))
+        else:
+            cleanup = "left"
+    head = _root_head(inst, runner)
+    extra = {"drill": "passed" if code == 0 else "timeout" if code is None else "failed", "cleanup": cleanup,
+             "reaped": reaped, "tmp": str(tmp) if cleanup != "done" else "", "root_commit": head,
+             "python": str(inst.python), "stamp": params["stamp"]}
+    if not reaped:
+        say(f"자손 회수 미확인 — 임시 폴더를 지우지 않았습니다: {tmp}")
+    elif cleanup == "left":
+        say(f"임시 폴더를 지우지 못했습니다(DB 사본이 남음): {tmp}")
+    if code == 0:
+        say(f"완료: 루트 코드({head[:8] or '모름'})·Python {inst.python} 기준 복원 검증 통과")
+        return (0 if cleanup == "done" else 3), extra
+    say("실패: 복원 검증을 통과하지 못했습니다" if code is not None else "실패: 제한 시간을 넘겼습니다")
+    return 1, {**extra, "error": "복원 검증 실패" if code is not None else "제한 시간 초과"}
+
+
+def _root_head(inst: Installation, runner: Runner) -> str:
+    from .install import trusted_git
+    git = trusted_git()
+    if git is None:
+        return ""
+    code, out = runner([str(git), "-C", str(inst.root), "rev-parse", "HEAD"], 20)
+    head = out.strip()
+    return head if code == 0 and re.fullmatch(r"[0-9a-f]{40}", head) else ""
 
 
 def read_view(inst: Installation, runner: Runner, with_sets: bool = True) -> dict:

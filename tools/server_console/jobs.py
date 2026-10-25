@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import names
-from .actions import Plan, Refusal, command_for, same_target
+from .actions import MOVE_KINDS, Plan, Refusal, command_for, same_target
 from .install import CODE_ROOT, Installation, Runner, acl_offenders, child_env, windows_dir
 
 JOB_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -174,6 +174,31 @@ def process_alive(pid: int, created: int | None) -> bool:
     finally:
         kernel32.CloseHandle(handle)
     return created is None or process_created(pid) == created
+
+
+_ERROR_INVALID_PARAMETER = 87  # 그 PID 의 프로세스가 없다
+
+
+def process_state(pid: int, created: int | None) -> str:
+    """'alive' | 'gone' | 'unknown' — 이사 보호처럼 '모르면 살아 있다고 봐야' 하는 판정용.
+    process_alive 는 못 열면 False 라 그 용도에 쓰지 않는다(설계 4판)."""
+    if not isinstance(pid, int) or pid <= 0:
+        return "unknown"
+    handle = _kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return "gone" if ctypes.get_last_error() == _ERROR_INVALID_PARAMETER else "unknown"
+    try:
+        code = wintypes.DWORD()
+        if not _kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return "unknown"
+        if code.value != _STILL_ACTIVE:
+            return "gone"
+    finally:
+        _kernel32.CloseHandle(handle)
+    if created is None:
+        return "alive"
+    now = process_created(pid)
+    return "unknown" if now is None else ("alive" if now == created else "gone")
 
 
 # ---- 실행기 쪽(job_main.py 가 부른다) ----
@@ -365,8 +390,33 @@ def read_output(inst: Installation, job_id: str, start: int = 0, limit: int = 25
     return lines, start + cut + 1
 
 
+def move_result(job: Path, job_id: str) -> dict | None:
+    """이사 감싸개가 원자적으로 남긴 결과(이 작업 ID·정수 종료 코드일 때만)."""
+    result = read_json(job / "result.json")
+    if result and result.get("job_id") == job_id and type(result.get("exit_code")) is int:
+        return result
+    return None
+
+
+def _move_state(job: Path, job_id: str, state_of: Callable[[int, int | None], str]) -> dict | None:
+    """이사 종류: 결과 파일이 있으면 그것, 없고 감싸개(또는 실행기가 띄운 그 프로세스)가 살아 있거나 생사를 모르면 '진행 중'
+    — 실행기가 죽어도 보호가 풀리지 않는다(설계 3~4판). 둘 다 종료 확인이면 None(일반 판정으로)."""
+    result = move_result(job, job_id)
+    if result is not None:
+        return {**result, "status": "finished"}
+    wrapper = read_json(job / "wrapper.json") or {}
+    for info in (wrapper, read_json(job / "launch.json") or {}):
+        pid, created = info.get("pid"), info.get("created")
+        if type(pid) is int:
+            seen = state_of(pid, created if type(created) is int else None)
+            if seen != "gone":
+                return {"status": "running", "wrapper": seen, "phase": wrapper.get("phase")}
+    return None
+
+
 def read_job(inst: Installation, job_id: str, now: float | None = None,
-             alive: Callable[[int, int | None], bool] = process_alive) -> dict:
+             alive: Callable[[int, int | None], bool] = process_alive,
+             state_of: Callable[[int, int | None], str] = process_state) -> dict:
     """화면에 보일 상태. 실행기가 사라졌는데 결과가 없으면 'check_needed'."""
     now = time.time() if now is None else now
     job = job_dir(inst, job_id)
@@ -374,6 +424,10 @@ def read_job(inst: Installation, job_id: str, now: float | None = None,
     state = read_json(job / "state.json")
     acked = (job / "ack.json").exists()
     kind = (request or {}).get("kind")  # 화면 문구·[관리 창 다시 열기] 는 작업 종류에 따라 다르다
+    if kind in MOVE_KINDS:
+        moved = _move_state(job, job_id, state_of)
+        if moved is not None:
+            return {**(state or {}), **moved, "job_id": job_id, "acknowledged": acked, "kind": kind}
     if state is None:
         started = (request or {}).get("requested_at") or 0
         try:
@@ -420,6 +474,18 @@ def unresolved_jobs(inst: Installation, exclude: str | tuple[str, ...] = "", now
         if (state.get("status") in UNRESOLVED or needs_check(state)) and not state.get("acknowledged"):
             found.append(path.name)
     return found
+
+
+def move_active(inst: Installation) -> bool:
+    """서버 이사 작업이 진행 중인가(시작 단계 포함, 감싸개 생사 불명 포함). 목록을 못 읽으면 진행 중으로 본다."""
+    dirs = _job_dirs(inst)
+    if dirs is None:
+        return True
+    for path in dirs:
+        state = read_job(inst, path.name)
+        if state.get("kind") in MOVE_KINDS and state.get("status") in ("starting", "checking", "running"):
+            return True
+    return False
 
 
 def unresolved_jobs_or_repair(inst: Installation, runner: Runner) -> list[str] | None:

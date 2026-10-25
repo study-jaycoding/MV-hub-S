@@ -175,6 +175,16 @@ class ConnectionManager:
         async with self._lock:
             return self._stats_unlocked()
 
+    async def account_counts(self) -> tuple[dict[str, int], int]:
+        """관리자 '지금 접속 중'(설계 C) 전용 — (`acct:<email>` 스코프별 연결 수, 그 밖의 연결 수). 호출자가 응답 전에
+        이름으로 바꾸고 이메일은 내보내지 않는다. 메모리에서만 — 저장·기록하지 않는다."""
+        async with self._lock:
+            counts = {key: len(sockets) for key, sockets in self._by_account.items()
+                      if isinstance(key, str) and key.startswith("acct:")}
+            other = sum(len(sockets) for key, sockets in self._by_account.items()
+                        if not (isinstance(key, str) and key.startswith("acct:")))
+        return counts, other
+
     async def broadcast(
         self, message: dict[str, Any], account_uid: Optional[str] = None
     ) -> None:

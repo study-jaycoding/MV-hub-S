@@ -1145,6 +1145,33 @@ async def runtime_status(request: Request):
     return snapshot
 
 
+def _presence_names(emails: list[str]) -> dict[str, str]:
+    from .db import get_connection
+
+    with get_connection() as conn:
+        return repo.presence_names(conn, emails)
+
+
+@app.get("/api/admin/presence")
+async def admin_presence(request: Request):
+    """관리자 전용 '지금 접속 중'(설계 C) — 서버 메모리의 WS 연결·에이전트 신호를 계정마다 한 줄로. 응답은 가린 이름뿐
+    (이메일·uid 없음), 명단·이력은 저장·기록하지 않는다(Jay 10-24). AUTH 를 켠 공유 서버에서만 — 끈 서버는 404.
+    관리자 계정으로 로그인한 작업자 허브도 프록시로 조회할 수 있다(관리자 확인은 이 서버가 한다)."""
+    from .deps import require_admin
+
+    if not AUTH_ENABLED:
+        raise HTTPException(status_code=404, detail="Not Found")
+    require_admin(request)
+    counts, other = await manager.account_counts()
+    agents = agent_signals.connected_emails()
+    emails = sorted({key[len("acct:"):] for key in counts} | agents)
+    names = await asyncio.to_thread(_presence_names, emails)
+    people = [{"name": names.get(email, "팀원"), "app": counts.get(f"acct:{email}", 0), "agent": email in agents}
+              for email in emails]
+    people.sort(key=lambda row: (row["name"], -row["app"]))
+    return {"people": people, "other_connections": other}
+
+
 @app.get("/api/admin/generation-events")
 def generation_events(
     request: Request,

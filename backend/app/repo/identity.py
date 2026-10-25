@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from typing import Any, Literal, Optional
 
@@ -292,6 +293,37 @@ def list_creators(
                 0, {"uid": account_uid, "name": sname, "count": 0, "is_mine": account_uid == my}
             )
         return result
+
+
+_PRESENCE_ID = re.compile(r"(?i)(?:user_[0-9a-z]+|acct:\S+|account:[0-9a-f]+)")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def presence_safe_name(value: Optional[str]) -> Optional[str]:
+    """관리자 '지금 접속 중' 화면용 이름 — 응답을 만들기 전에 가린다(이름 칸에 적힌 이메일·uid 까지, 설계 C 2판).
+    이메일 꼴 낱말은 앞부분만, uid·임시 행위자 키는 '(식별자)', 제어 문자 제거, 40자."""
+    text = _CONTROL.sub("", str(value or "")).strip()
+    text = " ".join(_email_localpart(word) or "" if "@" in word else word for word in text.split())
+    return _PRESENCE_ID.sub("(식별자)", text)[:40].strip() or None
+
+
+def presence_names(conn: sqlite3.Connection, emails) -> dict[str, str]:
+    """정규화된 이메일 → 가린 표시 이름(생성자 이름 → 계정 이름 → 이메일 앞부분, 없으면 '팀원'). 계정마다 따로 —
+    이름이 같아도 합치지 않는다(합치는 것은 부르는 쪽도 하지 않는다)."""
+    wanted = sorted({e for e in emails if e})
+    if not wanted:
+        return {}
+    ph = ",".join("?" * len(wanted))
+    accounts = {r["email"]: r for r in conn.execute(
+        f"SELECT email, creator_uid, name FROM account WHERE email IN ({ph})", wanted).fetchall()}
+    creators = resolve_display_names(conn, {r["creator_uid"] for r in accounts.values() if r["creator_uid"]})
+    out = {}
+    for email in wanted:
+        row = accounts.get(email)
+        name = ((creators.get(row["creator_uid"]) if row is not None and row["creator_uid"] else None)
+                or (row["name"] if row is not None else None) or _email_localpart(email))
+        out[email] = presence_safe_name(name) or "팀원"
+    return out
 
 
 def resolve_display_names(

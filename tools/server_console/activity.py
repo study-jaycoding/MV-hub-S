@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from . import status
 from .install import Installation
 
 KST = timezone(timedelta(hours=9))
@@ -217,7 +218,18 @@ def _changes(content_db: Path, now: datetime) -> tuple[list[dict], Callable[[Any
 
 
 def read_activity(inst: Installation, now: datetime | None = None) -> dict[str, Any]:
-    """세 표와 읽은 시각. 한 DB 를 못 읽어도 나머지는 보인다(errors 에 이유)."""
+    """세 표와 읽은 시각. 한 DB 를 못 읽어도 나머지는 보인다(errors 에 이유). DB 잠금을 쥔 동안에만 읽는다 —
+    이사 도구가 쥐고 있으면 status.DbBusy 를 그대로 올린다(화면이 '멈춤'으로 보인다)."""
+    try:
+        with status.db_read_lock(inst):
+            return _read_activity(inst, now)
+    except OSError as exc:
+        reason = f"DB 잠금 파일을 열지 못했습니다({type(exc).__name__})"
+        return {"generations": [], "changes": [], "people": [], "read_at": time.time(),
+                "errors": {"changes": reason, "generations": reason}}
+
+
+def _read_activity(inst: Installation, now: datetime | None) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     out: dict[str, Any] = {"generations": [], "changes": [], "people": [], "errors": {}, "read_at": time.time()}
     name_of: Callable[[Any], str] = lambda value: "팀원" if value else "—"  # noqa: E731 — 계정 표를 못 읽었을 때

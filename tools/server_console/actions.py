@@ -6,13 +6,21 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
 
+from . import names
 from .backup import task_problems
 from .install import Installation, Runner, powershell_exe, trusted_git
 
 ACTIONS = {"git-update": "Git 업데이트", "tools-update": "관리 도구 갱신", "console-rollback": "이전 관리 창으로",
            "intake-set": "생성 접수 바꾸기", "backup-save": "백업 복사 위치 저장(시험 복사)", "backup-run": "지금 복사",
            "release-deploy": "릴리스 배포", "release-resume": "배포 이어서 하기", "release-announce": "재공지",
-           "release-remove": "알림 해제", "address-notice": "팀에 주소 공지"}
+           "release-remove": "알림 해제", "address-notice": "팀에 주소 공지",
+           "server-stop": "서버 끄기", "server-start": "서버 켜기", "server-restart": "서버 다시 켜기",
+           "server-autostart": "자동시작 다시 등록", "backup-drill": "백업 확인(복원 연습)",
+           "move-rehearsal": "연습 내보내기", "move-out": "진짜 이사 내보내기", "move-undo": "이사 되돌리기(UNDO)",
+           "move-restore": "백업으로 복구"}
+POWER_KINDS = ("server-stop", "server-start", "server-restart", "server-autostart")
+# 실행기가 새 콘솔 창의 감싸개(console_run.py)를 띄워 기다리는 이사 계열 — 판정은 감싸개의 결과 파일·생사(jobs.read_job).
+MOVE_KINDS = ("move-rehearsal", "move-out", "move-undo", "move-restore")
 # 관리자 로그인이 필요한 작업 — 화면은 이것만 토큰을 파이프로 넘기고, 실행기는 이것만 토큰을 읽는다.
 AUTH_KINDS: frozenset[str] = frozenset({"intake-set", "release-deploy", "release-resume", "release-announce",
                                         "release-remove"})
@@ -152,10 +160,14 @@ def plan_console_rollback(inst: Installation, pointer: dict | None, traces: list
                 params={"from_sha": pointer["sha"], "to_sha": previous})
 
 
-def plan_intake_set(inst: Installation, server: dict, paused_now: bool, want: bool) -> Plan | Refusal:
+def plan_intake_set(inst: Installation, server: dict, paused_now: bool, want: bool,
+                    moving: bool = False) -> Plan | Refusal:
     """생성 접수 멈추기/다시 받기 — 확인 대상 = 확인한 서버·바꾸기 전 서버 값·원하는 값(실행 직전에 다시 비교).
-    업데이트 흔적·미확인 작업으로는 막지 않는다 — 접수는 업데이트와 따로, 언제든 다시 받을 수 있어야 한다."""
+    업데이트 흔적·미확인 작업으로는 막지 않는다 — 접수는 업데이트와 따로, 언제든 다시 받을 수 있어야 한다.
+    단 서버 이사 진행 중(moving)에는 거절 — OUT 이 접수를 멈춘 사이 다시 열면 이사 중 생성이 들어온다(설계 3판)."""
     reasons = [_PROBLEM_REASONS[p] for p in inst.problems if p in ("stage_copy", "no_runtime_python")]
+    if moving:
+        reasons.append("서버 이사가 진행 중입니다 — 이사가 끝난 뒤(또는 되돌린 뒤) 바꾸세요")
     if not isinstance(want, bool) or not isinstance(paused_now, bool):
         reasons.append("바꿀 값을 알 수 없습니다")
     elif paused_now == want:
@@ -340,6 +352,143 @@ def plan_address_notice(inst: Installation, source: str, location: dict, url: st
                "공지는 이 관리 창 한 곳에서만 내세요(옛 앱의 [팀에 공지]와 겹치면 판이 엇갈립니다).")
     return Plan("address-notice", str(inst.root), "server", "", summary,
                 params={"release_dir": source, "revision_seen": seen, "url": url, "name": name.strip()})
+
+
+def _blockers(ready_payload) -> str:
+    """서버가 /api/ready 로 알리는 진행 중인 일(확인 창 경고용 — 판정에는 쓰지 않는다)."""
+    runtime = (ready_payload or {}).get("runtime") if isinstance(ready_payload, dict) else None
+    runtime = runtime if isinstance(runtime, dict) else {}
+    blockers = runtime.get("update_blockers") if isinstance(runtime.get("update_blockers"), dict) else {}
+    parts = [f"{label} {blockers.get(key)}" for key, label in (("generation", "생성"), ("resolve", "Resolve"),
+                                                               ("comfy", "Comfy")) if blockers.get(key)]
+    if runtime.get("active_http"):
+        parts.append(f"요청 {runtime.get('active_http')}")
+    return " · ".join(str(p) for p in parts)
+
+
+def _off_params(inst: Installation) -> tuple[str, dict | None, list[str]]:
+    from .power import read_off  # 늦게 — power → server_api → jobs → actions 순환을 피한다
+    state, off = read_off(inst)
+    reasons = ["관리 창의 끈 기록(logs\\console-server-off.json)을 읽지 못했습니다 — 수동 확인"] if state == "bad" else []
+    return (f"{off['phase']}:{off['job_id']}" if off else ""), off, reasons
+
+
+def plan_power(inst: Installation, kind: str, tasks: dict | None, traces: list[tuple[str, str]],
+               unresolved: list[str] | None, ready_payload=None) -> Plan | Refusal:
+    """[끄기]·[켜기]·[다시 켜기] — 확인 대상 = 두 작업의 켜짐 여부·끈 기록(설계 B-1). 실행기가 잠금 안에서 다시 본다."""
+    from .power import common_refusals
+    reasons = common_refusals(inst, kind, tasks, traces, unresolved)
+    off_key, _off, off_reasons = _off_params(inst)
+    reasons += off_reasons
+    enabled = {name: ((tasks or {}).get(name) or {}).get("state") not in ("Disabled", "Missing", None)
+               for name in (names.TASK_SERVER, names.TASK_WATCHDOG)}
+    if kind == "server-restart" and tasks is not None and not all(enabled.values()):
+        reasons.append("꺼 둔 예약 작업이 있습니다 — [켜기]를 쓰세요")
+    if reasons:
+        return Refusal(tuple(reasons))
+    busy = _blockers(ready_payload)
+    cut = (f"지금 서버에서 진행 중: {busy} — 끊깁니다. 먼저 생성 접수를 멈추고 0 이 될 때 하길 권합니다."
+           if busy else "팀원 앱의 서버 연결이 잠시 끊깁니다(생성 접수를 먼저 멈추면 안전합니다).")
+    summary = {
+        "server-stop": ("서버를 끕니다 — 예약 작업(Server·Watchdog)을 끄고 이 설치 서버 프로세스를 정리합니다.", cut,
+                        "꺼진 동안은 Git 업데이트를 할 수 없고, 재부팅해도 켜지지 않습니다. 다시 켤 때는 [켜기].",
+                        "NAS 복사 예약(BackupCopy)은 그대로 둡니다."),
+        "server-start": ("서버를 켭니다 — Server·Watchdog 를 둘 다 켜고 시작한 뒤 서버 신원·응답을 확인합니다(최대 약 3분).",
+                         "이미 정상으로 돌고 있으면 서버는 그대로 두고 꺼진 작업만 켭니다."),
+        "server-restart": ("서버를 다시 켭니다 — 끄기 → 켜기를 한 작업으로(약 1~3분).", cut),
+    }[kind]
+    return Plan(kind, str(inst.root), "server", "", summary, params={"enabled": enabled, "off": off_key})
+
+
+def plan_autostart(inst: Installation, tasks: dict | None, traces: list[tuple[str, str]],
+                   unresolved: list[str] | None) -> Plan | Refusal:
+    """[자동시작 다시 등록](설치·복구) — 예약 작업 3개를 이 설치로 다시 만들고 서버를 다시 켠다(설계 B-3)."""
+    from .power import PowerError, common_refusals, register_command
+    reasons = common_refusals(inst, "server-autostart", tasks, traces, unresolved) + _off_params(inst)[2]
+    try:
+        register_command(inst)
+    except PowerError as exc:
+        reasons.append(str(exc))
+    if reasons:
+        return Refusal(tuple(reasons))
+    summary = ("자동시작을 다시 등록합니다(설치·복구용) — 먼저 이 설치 서버를 끈 뒤 register_autostart.bat 을 실행합니다.",
+               "예약 작업 3개(Server·Watchdog·BackupCopy)를 이 설치로 다시 만듭니다 — 꺼 둔 작업도 켜집니다.",
+               f"Python 기록은 지금 값({inst.python})으로 고정해 다시 씁니다. Node 위치도 다시 찾아 씁니다.",
+               "서버를 바로 다시 켜고(팀 연결이 잠시 끊김), NAS 복사 위치가 있으면 복사를 한 번 돌립니다.",
+               "중간에 실패하면 무엇이 바뀌었는지 보여 줍니다(최대 10분).")
+    return Plan("server-autostart", str(inst.root), "server", "", summary,
+                params={"python": str(inst.python), "port": inst.port})
+
+
+def plan_drill(inst: Installation, selection: dict | None, unresolved: list[str] | None = ()) -> Plan | Refusal:
+    """[이 백업 확인] — 확인 대상 = 백업 루트·상대 폴더·stamp(실행기가 같은 세트를 다시 찾는다, 설계 B-2)."""
+    from .backup import BackupError, find_set
+    reasons = _job_refusals(inst, unresolved)
+    if not selection:
+        reasons.append("확인할 백업을 목록에서 고르세요")
+    else:
+        try:
+            find_set(inst, selection)
+        except BackupError as exc:
+            reasons.append(str(exc))
+    if reasons:
+        return Refusal(tuple(reasons))
+    mb = (selection.get("bytes") or 0) / 1_000_000
+    summary = (f"백업 {selection['stamp']}(약 {mb:,.0f} MB)을 임시 폴더에 복원해 격리 서버로 로그인까지 확인합니다.",
+               "지금 서버와 실제 DB 는 그대로입니다. 임시 폴더(작업 기록 안)에 DB 사본이 생기고 끝나면 지웁니다.",
+               "검증은 서버 루트 코드로 합니다(지금 도는 stage 코드와의 호환 확인은 아닙니다). 몇 분 걸릴 수 있습니다.")
+    return Plan("backup-drill", str(inst.root), "server", "", summary,
+                params={key: selection[key] for key in ("root", "folder", "stamp")})
+
+
+def plan_move(inst: Installation, kind: str, tasks: dict | None, traces: list[tuple[str, str]],
+              unresolved: list[str] | None, selection: dict | None = None,
+              stopped: list[str] | None = None) -> Plan | Refusal:
+    """서버 이사(설계 D) — 새 콘솔 창에서 기존 도구를 사람이 답하며 진행. 확인 대상 = 데이터 폴더·포트(+복구는 세트)."""
+    from .backup import BackupError, find_set, unsupported_paths
+    from .install import machine_env
+    from .power import common_refusals
+    reasons = common_refusals(inst, kind, tasks, traces, unresolved)
+    _key, off, off_reasons = _off_params(inst)
+    reasons += off_reasons
+    if kind == "move-out" and off:
+        reasons.append("관리 창이 서버를 끈 상태입니다 — [켜기] 뒤에 진짜 이사를 하세요")
+    params = {"data_dir": str(inst.data_dir), "port": inst.port}
+    if kind == "move-restore":
+        if not off or off.get("phase") != "stopped":
+            reasons.append("먼저 [끄기]로 서버를 끄세요(켜기·끄기 화면)")
+        reasons += stopped if stopped is not None else ["서버가 실제로 꺼졌는지 확인하지 못했습니다"]
+        if unsupported_paths(inst) or machine_env("CONTENT_HUB_DB"):
+            reasons.append("표준 배치(<루트>\\backend\\data)가 아니라 여기서 복구하지 않습니다 — 수동 절차(SERVER_RECOVERY.md)")
+        if not selection:
+            reasons.append("복구할 백업을 목록에서 고르세요")
+        else:
+            try:
+                files = find_set(inst, selection)
+                params.update({key: selection[key] for key in ("root", "folder", "stamp")})
+            except BackupError as exc:
+                reasons.append(str(exc))
+    if reasons:
+        return Refusal(tuple(reasons))
+    window = "새 콘솔 창이 열립니다 — 질문은 그 창에서 답하세요. 그 창을 X 로 닫으면 중간에 멈춥니다."
+    summary = {
+        "move-rehearsal": ("연습 내보내기 — 서버를 멈추지 않고 지금 DB 를 찍어 바탕화면 이사 폴더에 담습니다.", window,
+                           "새 PC 에서 미리 확인하는 용도입니다. 진짜 이사 뒤에 더 새 연습본을 풀면 진짜 이사본이 거절될 수 있습니다."),
+        "move-out": ("진짜 이사 내보내기 — 생성 접수 멈춤 → 진행 중 생성 0 대기(최대 15분) → 서버 정지 → 바탕화면 이사 폴더.",
+                     "팀 공유가 약 30분 멈춥니다. 이 서버는 꺼진 채로 둡니다. 되돌리기는 [되돌리기(UNDO)](새 PC 가 이 IP 를 받기 전까지).",
+                     window, "진행하는 동안 이 관리 창은 DB 를 읽지 않습니다."),
+        "move-undo": ("이사 전 상태로 되돌립니다 — 생성 접수 원래 값·원래 켜져 있던 예약 작업·서버를 되살립니다.",
+                      "★새 PC 에 이 서버의 IP 를 이미 줬다면 하지 마세요 — 두 서버의 자료가 갈라집니다.", window),
+    }.get(kind)
+    if kind == "move-restore":
+        summary = (f"백업 {selection['stamp']} 으로 이 PC 의 DB 를 되살립니다(복원 연습 통과해야 설치).",
+                   f"교체할 DB: {inst.data_dir}\\db\\content_hub.db·content_trash.db·manage_hub.db — 지금 DB 는 "
+                   "db\\_before_move_<시각>\\ 로 보존됩니다.",
+                   f"원본 세트: {files['content'].parent}\\*_{selection['stamp']}.db · 포트 {inst.port} · Python {inst.python} · "
+                   "서버 루트 코드로 검증·설치합니다.",
+                   window, "끝나면 관리 창으로 돌아와 [켜기](도구 출력의 MV_server.bat·register_autostart 안내 대신). "
+                   "켠 뒤 생성 접수 상태를 확인하세요(복원한 DB 의 값 그대로).")
+    return Plan(kind, str(inst.root), "server", "", summary, params=params)
 
 
 def command_for(plan: Plan, inst: Installation) -> list[str]:

@@ -21,6 +21,8 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/account/hf",
         "/api/admin/audit-events",
         "/api/admin/generation-events",
+        # 지금 접속 중(서버 관리 창 설계 C) — 서버 메모리가 원천. 관리자 작업자 허브도 중계로 본다(관리자 확인은 서버).
+        "/api/admin/presence",
         "/api/admin/runtime",
         # 에셋 대장(2026-09-30) — 공유 서버가 NAS 를 훑어 가진 대장이 원천. 로컬 locate 는 lookup_for_request 로 서버에 묻는다.
         # 도우미 PC 훑기 — 관리자 PC 의 로컬 허브가 서버 자리를 받아 결과를 올린다(서버만 번호를 만든다).
