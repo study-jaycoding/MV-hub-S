@@ -183,6 +183,7 @@ class FakeServer:
         self.verify_ok = True
         self.reuse = False  # 짝수 번째 읽기(끝내기 직전 다시 읽기)마다 생성 시각을 바꿔 PID 재사용을 흉내 낸다
         self.reads = 0
+        self.fail_disable: set[str] = set()
         for name, value in (("task_states", self.tasks), ("_schtasks", self.schtasks), ("_taskkill", self.taskkill),
                             ("python_processes", self.processes)):
             monkeypatch.setattr(power, name, value)
@@ -203,6 +204,8 @@ class FakeServer:
         self.calls.append(args)
         verb, name = args[0], args[2]
         if verb == "/Change":
+            if args[3] == "/DISABLE" and name in self.fail_disable:
+                return 1
             self.state[name] = "Disabled" if args[3] == "/DISABLE" else "Ready"
         elif verb == "/End" and self.state[name] == "Running":
             self.state[name] = "Ready"
@@ -329,6 +332,75 @@ def test_autostart_reports_what_changed_when_it_fails(tmp_path, monkeypatch):
     assert power.read_off(inst)[1]["phase"] == "start_failed"
 
 
+def test_autostart_failure_in_the_stop_step_still_reports_changes(tmp_path, monkeypatch):
+    inst = make_inst(tmp_path)
+    fake = FakeServer(inst, monkeypatch)
+    fake.fail_disable = {names.TASK_SERVER}  # Watchdog 은 이미 껐는데 Server 끄기가 실패
+    snaps = iter([{"task:MVHub Watchdog": "Running"}, {"task:MVHub Watchdog": "Disabled"}])
+    monkeypatch.setattr(power, "register_snapshot", lambda inst, runner: next(snaps))
+    code, extra = power.autostart_work(inst, None, None, "j" * 32, lambda line: None)
+    assert code == 1 and extra["stage"] == "끄기" and extra["changed"] == ["task:MVHub Watchdog"]
+    assert power.read_off(inst)[1]["phase"] == "stopping"  # 끄기 단계 실패는 그 단계 그대로
+    from server_console import ui
+    unknown = ui.area_result_text({"status": "finished", "kind": "server-autostart", "exit_code": 1,
+                                   "changed": None, "stage": "확인", "error": "e"})[0]
+    assert "확인하지 못함" in unknown and "확인 단계" in unknown
+
+
+def test_autostart_success_requires_system_tasks(tmp_path, monkeypatch):
+    inst = make_inst(tmp_path)
+    fake = FakeServer(inst, monkeypatch)
+    monkeypatch.setattr(power, "register_snapshot", lambda inst, runner: {"task:x": "same"})
+
+    def bat(*args, **kwargs):  # 등록 bat 이 작업을 다시 만들고 서버를 켠 것처럼
+        for name in (names.TASK_SERVER, names.TASK_WATCHDOG):
+            fake.state[name] = "Running"
+        fake.procs = [fake.supervisor, fake.watchdog, fake.serve]
+        return 0, True
+    monkeypatch.setattr(power, "run_streamed", bat)
+    users = {name: power.SYSTEM_SID for name in names.TASKS}
+    monkeypatch.setattr(power, "task_users", lambda runner: dict(users))
+    code, extra = power.autostart_work(inst, None, None, "j" * 32, lambda line: None)
+    assert code == 0 and extra["changed"] == [] and power.read_off(inst) == ("missing", None)
+    users[names.TASK_BACKUP] = "S-1-5-21-1-2-3-1001"
+    code, extra = power.autostart_work(inst, None, None, "k" * 32, lambda line: None)
+    assert code == 1 and "SYSTEM" in extra["error"] and extra["stage"] == "확인"
+    monkeypatch.setattr(power, "task_users", lambda runner: None)  # 계정을 못 읽으면 성공이 아니다
+    assert power.autostart_work(inst, None, None, "m" * 32, lambda line: None)[0] == 1
+
+
+def test_processes_without_a_start_time_are_never_killed(tmp_path, monkeypatch):
+    inst = make_inst(tmp_path)
+    fake = FakeServer(inst, monkeypatch)
+    fake.procs = [(p[0], None, *p[2:]) for p in fake.procs]
+    with pytest.raises(power.PowerError, match="시작 시각"):
+        power.clear_processes(inst, None, lambda line: None)
+    assert fake.killed == []
+
+
+def test_reaping_keeps_its_deadline_for_every_process(monkeypatch):
+    import types
+    from server_console import winjob
+    clock = [0.0]
+    monkeypatch.setattr(winjob.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(winjob.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+
+    def in_job(handle, job, ref):
+        ref._obj.value = 1
+        return 1
+
+    def wait(handle, ms):  # 끝나지 않는 프로세스 — 기다린 만큼 시계만 간다
+        clock[0] += ms / 1000
+        return 0x102
+    fake = types.SimpleNamespace(OpenProcess=lambda *a: 5, IsProcessInJob=in_job, TerminateProcess=lambda *a: 1,
+                                 WaitForSingleObject=wait, CloseHandle=lambda h: 1)
+    monkeypatch.setattr(winjob, "_k32", fake)
+    job = object.__new__(winjob.SelfJob)
+    job.handle = 1
+    monkeypatch.setattr(winjob.SelfJob, "members", lambda self: [os.getpid(), *range(1000, 1040)])
+    assert job.kill_others(timeout=29.5) is False and clock[0] <= 29.5 + 1e-6  # 2초 대기의 배수가 아닌 상한
+
+
 def test_register_command_refuses_cmd_special_paths_and_pins_python(tmp_path):
     inst = make_inst(tmp_path)
     argv, env = power.register_command(inst)
@@ -389,6 +461,13 @@ def test_find_set_rejects_moved_root_bad_names_and_incomplete_sets(tmp_path, mon
     partial = _backup_set(inst, stamp="20261025_020000", roles=("content_hub", "manage_hub"))
     with pytest.raises(backup.BackupError, match="불완전"):
         backup.find_set(inst, partial)
+    other = tmp_path / "other-backups"
+    (other / "auto" / "2026").mkdir(parents=True)
+    for prefix in ("content_hub", "content_trash", "manage_hub"):
+        (other / "auto" / "2026" / f"{prefix}_{good['stamp']}.db").write_bytes(b"y")
+    monkeypatch.setattr(backup, "machine_env", lambda name: str(other) if name == "CONTENT_HUB_BACKUP_DIR" else "")
+    with pytest.raises(backup.BackupError, match="다릅니다"):  # 목록을 읽은 뒤 백업 폴더 설정이 바뀌었다
+        backup.find_set(inst, rows[0])
 
 
 _DRILL_HELPER = textwrap.dedent(r"""
@@ -489,6 +568,37 @@ def test_move_job_stays_running_while_the_wrapper_lives_even_if_the_runner_died(
     assert jobs.read_job(inst, job_id)["status"] == "finished"
     jobs.write_json(job / "result.json", {"job_id": "x" * 32, "kind": "move-out", "exit_code": 0})
     assert jobs.read_job(inst, job_id)["status"] != "finished"  # 다른 작업의 결과는 받지 않는다
+
+
+def test_wrapper_ending_without_a_result_keeps_the_job_unresolved_while_the_runner_lives(tmp_path, monkeypatch):
+    import types
+    inst = make_inst(tmp_path)
+    job, job_id = _move_job(inst)
+    gone = subprocess.Popen([str(PY), "-c", "pass"])
+    gone.wait()
+    monkeypatch.setattr(moves.subprocess, "Popen", lambda *a, **k: types.SimpleNamespace(pid=gone.pid,
+                                                                                         wait=lambda: 1))
+    code, extra = moves.launch_and_wait(inst, job_id, lambda line: None)
+    assert code == jobs.UNCONFIRMED and extra["move"] == "unconfirmed"
+    me = os.getpid()  # 실행기는 살아서 결과를 남긴다(그 결과가 '결과 미확인' 이어야 보호가 남는다)
+    jobs.write_json(job / "state.json", {"status": "finished", "pid": me, "created": jobs.process_created(me),
+                                         "exit_code": code, **extra})
+    state = jobs.read_job(inst, job_id)
+    assert jobs.needs_check(state) and jobs.unresolved_jobs(inst) == [job_id]
+    jobs.acknowledge(inst, job_id)
+    assert jobs.unresolved_jobs(inst) == []
+
+
+def test_interrupted_drill_points_at_the_leftover_db_copy(tmp_path):
+    from server_console import ui
+    inst = make_inst(tmp_path)
+    job, job_id = _move_job(inst, kind="backup-drill", job_id="f" * 32)
+    jobs.write_json(job / "state.json", {"status": "running", "pid": 999999, "created": 1})
+    assert "leftover_tmp" not in jobs.read_job(inst, job_id)
+    (job / "tmp").mkdir()
+    state = jobs.read_job(inst, job_id)
+    assert state["status"] == "check_needed" and state["leftover_tmp"] == str(job / "tmp")
+    assert str(job / "tmp") in ui.job_result_text(state)[0] and str(job / "tmp") in ui.area_result_text(state)[0]
 
 
 # ---------- 감싸개(별도 프로세스로 실제 실행) ----------
@@ -646,7 +756,8 @@ def test_ui_power_and_move_pages_show_records_and_lock_buttons_while_moving(tmp_
         text = app.power_state.cget("text")
         assert "꺼짐" in text and "관리 창이 끔" in text and "eeeeeeee" in text
         running = {"kind": "move-out", "status": "running", "wrapper": "unknown"}
-        sets = [{"stamp": "20261025_010203", "roles": ["content", "trash", "manage"], "bytes": 3_000_000, "folder": ""}]
+        sets = [{"stamp": "20261025_010203", "roles": ["content", "trash", "manage"], "bytes": 3_000_000, "folder": "",
+                 "root": str(backup.backup_root(app.inst))}]
         app._handle(("move_view", {"running": running, "last": None, "record": ("out", "내보내기 단계"), "sets": sets}))
         assert "생사 확인 불가" in app.move_state.cget("text")
         assert all(str(b.cget("state")) == "disabled" for b in (*app.move_buttons, app.restore_button))

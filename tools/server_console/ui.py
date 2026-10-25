@@ -775,7 +775,7 @@ class App:
         chosen = tree.selection()
         if not chosen or not rows or int(chosen[0]) >= len(rows):
             return None
-        return {**rows[int(chosen[0])], "root": str(backup.backup_root(self.inst))}
+        return dict(rows[int(chosen[0])])  # 목록을 읽은 시점의 백업 루트 그대로 — 설정이 바뀌었으면 find_set 이 거절
 
     def _show_move(self) -> None:
         view = self.move_view or {}
@@ -1993,7 +1993,8 @@ def _result_base(state: dict) -> tuple[str, str]:
     if status_text == "finished" and kind in ("backup-save", "backup-run"):
         return backup_result_text(state)
     if status_text == "finished" and kind in ("release-deploy", "release-resume", "release-announce",
-                                              "release-remove", "address-notice"):
+                                              "release-remove", "address-notice", "backup-drill",
+                                              *actions.POWER_KINDS, *actions.MOVE_KINDS):
         return area_result_text(state)
     if status_text == "finished" and kind == "intake-set":
         if state.get("exit_code") != 0:
@@ -2021,10 +2022,12 @@ def _result_base(state: dict) -> tuple[str, str]:
     if status_text == "refused":
         return "시작하지 않음: " + " / ".join(str(r) for r in state.get("reasons") or []), AMBER
     if status_text in ("check_needed", "runner_error"):
+        left = (f" 백업 확인의 임시 DB 사본이 남아 있을 수 있습니다: {state['leftover_tmp']} — 확인 후 지우세요."
+                if state.get("leftover_tmp") else "")
         if state.get("acknowledged"):
-            return "결과를 잃은 작업 — 확인했음으로 표시됨. 새 업데이트를 시작할 수 있습니다.", MUTED
+            return "결과를 잃은 작업 — 확인했음으로 표시됨. 새 업데이트를 시작할 수 있습니다." + left, MUTED
         return ("결과 확인 필요: 실행기가 결과를 남기지 못했습니다. 서버 상태와 로그를 확인한 뒤 "
-                "[확인했음]을 누르세요(그 전에는 새 업데이트를 막습니다)."), AMBER
+                "[확인했음]을 누르세요(그 전에는 새 업데이트를 막습니다)." + left), AMBER
     return "진행 중… (이 창을 닫아도 업데이트는 계속됩니다)", MUTED
 
 
@@ -2043,6 +2046,8 @@ def area_result_text(state: dict) -> tuple[str, str]:
         return "하지 않았습니다: " + " / ".join(str(r) for r in state.get("reasons") or []), AMBER
     if status_text != "finished":
         extra = " 릴리스 화면의 [이어서 하기]로 서버·NAS 를 다시 읽어 이어 갈 수 있습니다." if kind == "release-deploy" else ""
+        if state.get("leftover_tmp"):
+            extra += f" 임시 DB 사본이 남아 있을 수 있습니다: {state['leftover_tmp']} — 확인 후 지우세요."
         return f"결과 확인 필요: 실행기가 결과를 남기지 못했습니다.{extra}", AMBER
     error = state.get("error") or "이유 모름"
     if kind in actions.POWER_KINDS or kind == "backup-drill" or kind in actions.MOVE_KINDS:
@@ -2110,8 +2115,10 @@ def _control_result_text(state: dict, kind: str, error: str) -> tuple[str, str]:
         what = "자동시작을 다시 등록했고 " if kind == "server-autostart" else ""
         return f"완료: {what}서버가 정상입니다(build {build}){already}{note}", LIME
     if kind == "server-autostart":
-        changed = ", ".join(state.get("changed") or []) or "없음"
-        return f"실패: {error} — 바뀐 것: {changed}. 수동 복구가 필요하면 SERVER_RECOVERY.md", RED
+        changed = ("확인하지 못함" if state.get("changed") is None
+                   else ", ".join(state.get("changed") or []) or "없음")
+        stage = f"({state['stage']} 단계)" if state.get("stage") else ""
+        return f"실패{stage}: {error} — 바뀐 것: {changed}. 수동 복구가 필요하면 SERVER_RECOVERY.md", RED
     return f"실패: {error} — 위의 상태·끈 기록을 확인하세요{note}", RED
 
 

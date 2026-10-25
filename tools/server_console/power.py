@@ -231,9 +231,12 @@ def clear_processes(inst: Installation, runner: Runner, say: Say, timeout: float
         if time.monotonic() > deadline:
             raise PowerError("이 설치 서버 프로세스가 끝나지 않습니다: "
                              + ", ".join(f"PID {proc[0]}({role})" for proc, role in ours))
+        unknown = [f"PID {proc[0]}({role})" for proc, role in ours if proc[1] is None]
+        if unknown:  # 생성 시각이 없으면 같은 PID 의 다른 프로세스와 구분할 수 없다 — 끄지 않는다(독립 리뷰 P2)
+            raise PowerError("정지 확인 불가: 시작 시각을 읽지 못한 프로세스 " + ", ".join(unknown))
         again = {proc[0]: proc for proc in python_processes(runner) or []}
         for proc, role in ours:
-            if again.get(proc[0]) == proc:
+            if again.get(proc[0]) == proc and proc[1] is not None:
                 say(f"  {role} PID {proc[0]} 를 끝냅니다")
                 _taskkill(runner, proc[0])
         time.sleep(1.0)
@@ -408,9 +411,41 @@ def start_sequence(inst: Installation, runner: Runner, job_id: str, say: Say) ->
 
 # ---- 자동시작 재등록 ----
 
-def register_snapshot(inst: Installation, runner: Runner) -> dict:
-    tasks = task_states(runner) or {}
-    snap = {f"task:{n}": f"{_state(tasks, n)} {(tasks.get(n) or {}).get('action', '')}" for n in names.TASKS}
+_USER_SCRIPT = r"""
+[Console]::OutputEncoding = New-Object Text.UTF8Encoding $false
+foreach ($n in __ITEMS__) {
+  try {
+    $t = Get-ScheduledTask -TaskName $n -ErrorAction Stop
+    $u = [string]$t.Principal.UserId
+    try { $sid = (New-Object Security.Principal.NTAccount($u)).Translate([Security.Principal.SecurityIdentifier]).Value } catch { $sid = $u }
+    "USER`t$n`t$sid"
+  } catch {
+    if ($_.CategoryInfo.Category -eq 'ObjectNotFound') { "USER`t$n`t-" } else { "USER`t$n`t?" }
+  }
+}
+"DONE"
+"""
+SYSTEM_SID = "S-1-5-18"
+
+
+def task_users(runner: Runner) -> dict[str, str] | None:
+    """예약 작업 3개의 실행 계정 SID('-' = 없음, '?' = 못 읽음). None = 조회 실패."""
+    from .install import ps_items
+    code, out = runner([str(powershell_exe()), "-NoProfile", "-NonInteractive", "-Command",
+                        _USER_SCRIPT.replace("__ITEMS__", ps_items(names.TASKS))], 30)
+    lines = [line.rstrip("\r") for line in out.splitlines()]
+    if code != 0 or "DONE" not in lines:
+        return None
+    users = {parts[1]: parts[2] for parts in (line.split("\t") for line in lines) if len(parts) == 3 and parts[0] == "USER"}
+    return users if set(users) == set(names.TASKS) else None
+
+
+def register_snapshot(inst: Installation, runner: Runner) -> dict | None:
+    """재등록 전후 비교용(작업 상태·실행 명령·실행 계정, Python·Node 기록). 작업 조회를 못 하면 None(=변경 여부 미확인)."""
+    tasks, users = task_states(runner), task_users(runner)
+    if tasks is None or users is None:
+        return None
+    snap = {f"task:{n}": f"{_state(tasks, n)} {(tasks.get(n) or {}).get('action', '')} {users.get(n)}" for n in names.TASKS}
     for name in ("python.txt", "node_dir.txt"):
         try:
             snap[name] = (inst.root / ".mvhub-runtime" / name).read_text(encoding="utf-8", errors="replace").strip()
@@ -419,7 +454,9 @@ def register_snapshot(inst: Installation, runner: Runner) -> dict:
     return snap
 
 
-def changed_items(before: dict, after: dict) -> list[str]:
+def changed_items(before: dict | None, after: dict | None) -> list[str] | None:
+    if before is None or after is None:
+        return None  # 변경 여부 미확인 — '없음'으로 보이지 않는다
     return [key for key in before if before[key] != after.get(key)]
 
 
@@ -433,32 +470,42 @@ def register_command(inst: Installation) -> tuple[list[str], dict[str, str]]:
 
 
 def autostart_work(inst: Installation, runner: Runner, job: SelfJob, job_id: str, say: Say) -> tuple[int, dict]:
+    """끄기 → bat → 확인. 어느 단계에서 실패해도 바뀐 것을 다시 조회해 남긴다(독립 리뷰 P2 — 첫 변경부터 포함)."""
     argv, env = register_command(inst)
     before = register_snapshot(inst, runner)
-    say("먼저 이 설치 서버를 멈춥니다(등록 bat 의 재시작은 stage 서버를 못 치운다)")
-    stop_sequence(inst, runner, job_id, say)
-    write_off(inst, "starting", job_id)
-    say("register_autostart.bat 실행(예약 작업 3개 다시 만들기 → 서버 시작)")
-    code, reaped = run_streamed(job, argv, str(inst.root), env, say, REGISTER_TIMEOUT)
-    after = register_snapshot(inst, runner)
-    changed = changed_items(before, after)
-    extra = {"changed": changed, "reaped": reaped, "backup_note": backup_note(runner)}
+    stage, reaped = "끄기", True
     try:
+        say("먼저 이 설치 서버를 멈춥니다(등록 bat 의 재시작은 stage 서버를 못 치운다)")
+        stop_sequence(inst, runner, job_id, say)
+        stage = "등록"
+        write_off(inst, "starting", job_id)
+        say("register_autostart.bat 실행(예약 작업 3개 다시 만들기 → 서버 시작)")
+        code, reaped = run_streamed(job, argv, str(inst.root), env, say, REGISTER_TIMEOUT)
         if code != 0:
             raise PowerError("등록 bat 이 시간 안에 끝나지 않았습니다" if code is None else f"등록 bat 이 실패했습니다(종료 코드 {code})")
-        tasks = _states(runner)
+        stage = "확인"
+        tasks, users = _states(runner), task_users(runner)
         wrong = [n for n in names.TASKS if not _same(task_root((tasks.get(n) or {}).get("action", "")) or "", inst.root)]
         if wrong:
             raise PowerError("다시 만든 예약 작업이 이 설치를 가리키지 않습니다: " + ", ".join(wrong))
+        not_system = [n for n in names.TASKS if (users or {}).get(n) != SYSTEM_SID]
+        if not_system:
+            raise PowerError("예약 작업이 SYSTEM 계정으로 등록되지 않았거나 확인하지 못했습니다: " + ", ".join(not_system))
         server = _confirm_up(inst, runner)
-    except (PowerError, server_api.ServerError) as exc:
-        write_off(inst, "start_failed", job_id)
-        say(f"실패: {exc}")
-        say("바뀐 것: " + (", ".join(changed) if changed else "없음") + " — 수동 복구가 필요하면 SERVER_RECOVERY.md")
-        return 1, {**extra, "error": str(exc)[:500]}
+    except (PowerError, server_api.ServerError, OSError) as exc:
+        if stage != "끄기":
+            write_off(inst, "start_failed", job_id)  # 끄기 단계 실패는 stop_sequence 가 남긴 단계(stopping) 그대로
+        changed = changed_items(before, register_snapshot(inst, runner))
+        say(f"실패({stage} 단계): {exc}")
+        say("바뀐 것: " + ("확인하지 못함(작업 조회 실패)" if changed is None else ", ".join(changed) or "없음")
+            + " — 수동 복구가 필요하면 SERVER_RECOVERY.md")
+        return 1, {"changed": changed, "stage": stage, "reaped": reaped, "backup_note": backup_note(runner),
+                   "error": str(exc)[:500]}
     clear_off(inst)
+    changed = changed_items(before, register_snapshot(inst, runner))
     say(f"완료: 자동시작을 다시 등록했고 서버가 정상입니다(build {server['build_id'][:12]})")
-    return 0, {**extra, "build_id": server["build_id"]}
+    return 0, {"changed": changed, "stage": "끝", "reaped": reaped, "backup_note": backup_note(runner),
+               "build_id": server["build_id"]}
 
 
 def power_work(inst: Installation, runner: Runner, kind: str, job_id: str, say: Say) -> tuple[int, dict]:

@@ -445,8 +445,21 @@ def read_job(inst: Installation, job_id: str, now: float | None = None,
              or (status == "finished" and type(state.get("exit_code")) is int))
     if not valid or (status in ("checking", "running") and not alive(pid, state.get("created"))):
         # 모르는 상태·종료 코드 없는 완료·사라진 실행기는 짐작하지 않는다.
-        return {**state, "status": "check_needed", "job_id": job_id, "acknowledged": acked, "kind": kind}
-    return {**state, "job_id": job_id, "acknowledged": acked, "kind": kind}
+        return _with_leftover(job, {**state, "status": "check_needed", "job_id": job_id, "acknowledged": acked,
+                                    "kind": kind})
+    return _with_leftover(job, {**state, "job_id": job_id, "acknowledged": acked, "kind": kind})
+
+
+def _with_leftover(job: Path, state: dict) -> dict:
+    """드릴이 결과 없이 끝났으면 작업 폴더 tmp(DB 사본)가 남았는지 알린다 — 있음·확인 불가를 나눈다(독립 리뷰 P2)."""
+    if state.get("kind") != "backup-drill" or state.get("status") not in ("check_needed", "runner_error"):
+        return state
+    tmp = job / "tmp"
+    try:
+        left = tmp.exists()
+    except OSError:
+        return {**state, "leftover_tmp": f"{tmp} (있는지 확인하지 못함)"}
+    return {**state, "leftover_tmp": str(tmp)} if left else state
 
 
 UNRESOLVED = ("starting", "checking", "running", "check_needed", "runner_error")

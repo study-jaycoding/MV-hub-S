@@ -100,6 +100,9 @@ class SelfJob:
             if not others:
                 return True
             for pid in others:
+                left = deadline - time.monotonic()
+                if left <= 0:  # 상한은 PID 하나하나에서도 지킨다(독립 리뷰 P2 — 끝나지 않는 프로세스가 많으면 넘쳤다)
+                    return False
                 handle = _k32.OpenProcess(_TERMINATE | _SYNCHRONIZE | _QUERY_LIMITED, False, pid)
                 if not handle:
                     continue  # 이미 끝났으면 다음 조회에서 빠진다 — 아니면 상한까지 남아 False
@@ -107,10 +110,11 @@ class SelfJob:
                     inside = wintypes.BOOL()
                     if _k32.IsProcessInJob(handle, self.handle, ctypes.byref(inside)) and inside.value:
                         _k32.TerminateProcess(handle, 1)
-                        _k32.WaitForSingleObject(handle, 2000)
+                        # 남은 시간만큼만(음수는 DWORD 로 바뀌면 무한 대기가 된다)
+                        _k32.WaitForSingleObject(handle, int(max(0.0, min(2.0, left)) * 1000))
                 finally:
                     _k32.CloseHandle(handle)
-            time.sleep(0.1)
+            time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
         return False
 
 

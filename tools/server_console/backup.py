@@ -165,7 +165,8 @@ def backup_root(inst: Installation) -> Path:
 
 
 def recent_sets(inst: Installation, limit: int = 5) -> list[dict] | None:
-    """서버 디스크의 자동 백업(시각·구성·크기·백업 루트 기준 폴더) 최근 것부터. None = 못 읽음. 내용 검증은 하지 않는다."""
+    """서버 디스크의 자동 백업(시각·구성·크기·백업 루트와 그 기준 폴더) 최근 것부터. None = 못 읽음. 내용 검증은 하지 않는다.
+    루트는 읽은 시점 것을 줄마다 싣는다 — 고를 때 지금 설정을 붙이면 설정이 바뀐 사이 다른 폴더를 가리킨다(독립 리뷰 P2)."""
     folder = backup_root(inst)
     groups: dict[tuple[Path, str], dict] = {}
     try:
@@ -174,7 +175,7 @@ def recent_sets(inst: Installation, limit: int = 5) -> list[dict] | None:
             if not match or "pre-dev2-baseline" in path.parts:
                 continue
             row = groups.setdefault((path.parent, match.group(2)), {
-                "stamp": match.group(2), "roles": [], "bytes": 0,
+                "stamp": match.group(2), "roles": [], "bytes": 0, "root": str(folder),
                 "folder": path.parent.relative_to(folder).as_posix() if path.parent != folder else ""})
             row["roles"].append(_ROLES[match.group(1)])
             row["bytes"] += path.stat().st_size

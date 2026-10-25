@@ -41,9 +41,9 @@ def launch_and_wait(inst: install.Installation, job_id: str, say: Callable[[str]
     say("새 콘솔 창에서 진행합니다 — 질문은 그 창에서 답하세요. 이 화면은 결과를 기다립니다")
     child.wait()
     result = jobs.move_result(job, job_id)
-    if result is None:
+    if result is None:  # '결과 미확인'(종료 코드 3) — 사람이 [확인했음] 하기 전까지 새 작업을 막는다(독립 리뷰 P1)
         say("결과 미확인: 감싸개가 결과를 남기지 않고 끝났습니다 — 이사 화면의 상태를 확인하세요")
-        return 1, {"move": "unconfirmed", "error": "감싸개가 결과를 남기지 않고 끝났습니다"}
+        return jobs.UNCONFIRMED, {"move": "unconfirmed", "error": "감싸개가 결과를 남기지 않고 끝났습니다"}
     return int(result["exit_code"]), {k: v for k, v in result.items() if k not in ("exit_code", "job_id")}
 
 
