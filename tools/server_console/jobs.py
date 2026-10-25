@@ -434,8 +434,8 @@ def read_job(inst: Installation, job_id: str, now: float | None = None,
             young = bool(request) and now - float(started) < STARTING_GRACE_SECONDS
         except (TypeError, ValueError):
             young = False
-        return {"status": "starting" if young else "check_needed", "job_id": job_id, "acknowledged": acked,
-                "kind": kind}
+        return _with_leftover(job, {"status": "starting" if young else "check_needed", "job_id": job_id,
+                                    "acknowledged": acked, "kind": kind})
     try:
         pid = int(state.get("pid") or 0)
     except (TypeError, ValueError):

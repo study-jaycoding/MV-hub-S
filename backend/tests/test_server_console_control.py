@@ -599,6 +599,25 @@ def test_interrupted_drill_points_at_the_leftover_db_copy(tmp_path):
     state = jobs.read_job(inst, job_id)
     assert state["status"] == "check_needed" and state["leftover_tmp"] == str(job / "tmp")
     assert str(job / "tmp") in ui.job_result_text(state)[0] and str(job / "tmp") in ui.area_result_text(state)[0]
+    (job / "state.json").write_text("{broken", encoding="utf-8")  # 상태 파일을 못 읽어도 사본 안내는 남는다
+    jobs.write_json(job / "request.json", {**jobs.read_json(job / "request.json"), "requested_at": 0})
+    state = jobs.read_job(inst, job_id)
+    assert state["status"] == "check_needed" and state["leftover_tmp"] == str(job / "tmp")
+
+
+def test_register_snapshot_is_unknown_when_any_single_task_read_fails(tmp_path, monkeypatch):
+    inst = make_inst(tmp_path)
+    good = tasks_of(inst)
+    users = {name: power.SYSTEM_SID for name in names.TASKS}
+    monkeypatch.setattr(power, "task_states", lambda runner: good)
+    monkeypatch.setattr(power, "task_users", lambda runner: users)
+    assert power.register_snapshot(inst, None) is not None
+    monkeypatch.setattr(power, "task_states", lambda runner: {**good, names.TASK_BACKUP: {"state": "Error", "action": ""}})
+    assert power.register_snapshot(inst, None) is None
+    monkeypatch.setattr(power, "task_states", lambda runner: good)
+    monkeypatch.setattr(power, "task_users", lambda runner: {**users, names.TASK_WATCHDOG: "?"})
+    assert power.register_snapshot(inst, None) is None
+    assert power.changed_items(None, {"a": 1}) is None and power.changed_items({"a": 1}, {"a": 1}) == []
 
 
 # ---------- 감싸개(별도 프로세스로 실제 실행) ----------

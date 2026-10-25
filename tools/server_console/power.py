@@ -445,6 +445,8 @@ def register_snapshot(inst: Installation, runner: Runner) -> dict | None:
     tasks, users = task_states(runner), task_users(runner)
     if tasks is None or users is None:
         return None
+    if any(_state(tasks, n) in ("Error", "") or users.get(n) == "?" for n in names.TASKS):
+        return None  # 작업 하나라도 못 읽었으면 '바뀐 것 없음'으로 보이지 않게(독립 리뷰 2차)
     snap = {f"task:{n}": f"{_state(tasks, n)} {(tasks.get(n) or {}).get('action', '')} {users.get(n)}" for n in names.TASKS}
     for name in ("python.txt", "node_dir.txt"):
         try:
