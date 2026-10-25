@@ -124,7 +124,14 @@ PID** 와, 명령행에 **이 저장소 경로와 `server_supervisor.py`·`serve
 (뒤쪽 둘은 절대경로 완전 일치가 아니라 문자열 포함 조건이므로, 같은 저장소 경로와 그 스크립트
 이름을 명령행에 함께 가진 다른 프로세스가 있다면 함께 종료될 수 있다.)
 
-**완전 중지**(다시 켜지 않음) 전용 명령은 지금 코드에 없다. 아래를 **관리자 권한 창에서** 한다.
+> [!NOTE]
+> 2026-10-23 부터 서버는 stage 판으로 돈다 — 실제 서버 프로세스는 `logs\server-stages\<build>\backend\serve.py` 다.
+> 위 스크립트의 포트 주인 규칙은 루트 `backend\serve.py` 만 알아서, supervisor 와 함께 끝나지 않고 stage serve.py 만 남은 경우에는
+> 실패한다. **서버 관리 창 [켜기·끄기]** 는 루트·지금 stage 의 serve.py(포트를 안 연 것 포함)까지 정확한 경로·Python·생성 시각으로
+> 찾아 정리하고, 다른 build 의 serve.py 가 남으면 손대지 않고 멈춘다. 관리 창이 끈 동안은 `logs\console-server-off.json` 이 남고,
+> 관리 창 [켜기]는 Server·Watchdog 둘 다 켠다(BackupCopy 는 건드리지 않음 — 아래 수동 절차로 껐다면 따로 켠다).
+
+**완전 중지**(다시 켜지 않음)는 서버 관리 창 [끄기] 또는 아래를 **관리자 권한 창에서** 한다.
 
 > [!IMPORTANT]
 > `schtasks /End` 는 **지금 실행 중인 인스턴스만** 멈춘다. 작업 자체는 켜져 있어서
@@ -155,7 +162,7 @@ schtasks /End /TN "MVHub BackupCopy"
 ```
 
 그래도 남는 프로세스가 있으면 **작업 관리자에서 명령줄 열을 켜고**, 이 저장소 경로의
-`tools\server_watchdog.py`·`tools\server_supervisor.py`·`backend\serve.py` 를 가진
+`tools\server_watchdog.py`·`tools\server_supervisor.py`·`backend\serve.py`·`logs\server-stages\<build>\backend\serve.py` 를 가진
 PID 만 골라서 종료한다. 프런트 빌드 도중에 멈췄다면 같은 저장소 경로의 `npm`·`node` 가
 남아 있을 수 있으니 함께 확인한다.
 
