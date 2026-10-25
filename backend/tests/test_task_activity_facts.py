@@ -108,7 +108,8 @@ class TaskActivityFactsTests(unittest.TestCase):
         with db.get_connection() as conn:
             conn.execute("UPDATE generation SET created_at='2026-09-22 15:30:00' WHERE id='server-1'")
             conn.execute("UPDATE generation SET created_at='2026-09-24T14:59:59Z' WHERE id='server-2'")
-        task = self.read("u2")[0]
+        # 고정 날짜라 30일이 지나면 자동 보관으로 넘어간다(2026-10-25 부터 실패) — 날짜 계산만 보므로 보관 작업도 읽는다.
+        task = self.read("u2", archived=True)[0]
         self.assertEqual((task["derived_start"], task["derived_due"]), ("2026-09-23", "2026-09-24"))
         self.assertEqual(manage_tasks._kst_day("2026-09-24T15:00:00Z"), "2026-09-25")
         self.assertEqual(manage_tasks._kst_day("not a date"), "not a date")
