@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// 관리자 창 탭(2026-10-02) — 탭 순서, '업데이트' 탭이 업데이트 관리를 그리고 '공유 서버' 탭에서는 빠졌는지,
+// 관리자 창 탭(2026-10-02) — 탭 순서, '업데이트' 탭이 업데이트 관리를 그리는지('공유 서버' 탭은 2026-10-23 서버 관리 창으로 옮겨 없앰),
 // '프로젝트' 탭이 창을 넓히고(wide) 프로젝트 대화상자가 열린 동안 Esc 는 대화상자만 닫는지(입력 보존).
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
   projects: vi.fn(), allProjectMembers: vi.fn(), projectFolderLinks: vi.fn(), workspaceOptions: vi.fn(),
   workspaceMembers: vi.fn(), creditPlanSettings: vi.fn(),
   adminList: vi.fn(), latestRelease: vi.fn(), packages: vi.fn(),
-  setMemberGlobalRoles: vi.fn(), setSharedServerUrl: vi.fn(), projectMembers: vi.fn(), setProjectRoles: vi.fn(),
+  setMemberGlobalRoles: vi.fn(), projectMembers: vi.fn(), setProjectRoles: vi.fn(),
   getPlanning: vi.fn(), projectFolder: vi.fn(), setAccountStatus: vi.fn(),
   reorderProjects: vi.fn(), updateProject: vi.fn(), deleteProject: vi.fn(), sharedServerDeElevate: vi.fn(),
 }));
@@ -32,15 +32,6 @@ vi.mock("../src/lib/releaseUpdate", () => ({
   getReleaseUpdateStatus: () => Promise.resolve({ install_mode: "release", current_version: "", state: "up_to_date" }),
 }));
 vi.mock("../src/lib/modelPolicy", () => ({ refreshModelPolicy: vi.fn() }));
-// 백업 위치 확인창은 '열림·닫힘' 신호만 흉내 낸다 — 관리자 창이 그 신호로 Esc·바깥 클릭을 넘기는지 본다
-vi.mock("../src/components/admin/BackupReplicaSection", () => ({
-  BackupReplicaSection: ({ onDialogOpenChange }: { onDialogOpenChange?: (open: boolean) => void }) => (
-    <span>
-      <button className="fake-backup-open" onClick={() => onDialogOpenChange?.(true)}>open</button>
-      <button className="fake-backup-close" onClick={() => onDialogOpenChange?.(false)}>close</button>
-    </span>
-  ),
-}));
 vi.mock("../src/components/admin/AssetRegistryTab", () => ({ AssetRegistryTab: () => null }));
 
 import { AdminWindow } from "../src/components/AdminWindow";
@@ -93,7 +84,7 @@ const pressEscape = async () => {
   await settle();
 };
 
-it("관리자에게 탭이 정해진 순서로 보인다 — '공유 서버' 탭은 서버 관리 창으로 옮겨 숨긴다(2단계)", async () => {
+it("관리자에게 탭이 정해진 순서로 보인다 — '공유 서버' 탭은 서버 관리 창으로 옮겨 없앴다(2단계)", async () => {
   await mount();
   expect(tabLabels()).toEqual(["승인", "멤버 · 전역 역할", "프로젝트", "에셋 리스트", "업데이트"]);
 });
@@ -651,37 +642,4 @@ it("슈퍼 관리자 해제(🔑) — 해제를 확인하지 못했으면 열쇠
   await settle();
   expect(key().classList.contains("on")).toBe(false);
   expect(alerts).toHaveBeenCalledTimes(1);
-});
-
-// STAGE2-WEB-HIDDEN: '공유 서버' 탭을 숨겨 아래 두 시험은 닿지 못한다 — 탭 코드를 지우는 커밋에서 함께 지운다.
-it.skip("공유 서버 이름·주소 저장 — 저장 중에는 다시 보내지 않고 두 칸을 잠근다(늦은 응답이 고쳐 친 이름을 덮지 않게)", async () => {
-  let finish!: (value: unknown) => void;
-  mocks.setSharedServerUrl.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
-  await mount();
-  await clickTab("공유 서버");
-  const save = () => [...host.querySelectorAll<HTMLButtonElement>("button.settings-action")].find((button) => /^저장/.test(button.textContent || ""))!;
-  const fields = () => [host.querySelector<HTMLInputElement>('input[placeholder^="서버 이름"]')!, host.querySelector<HTMLInputElement>('input[placeholder^="예: http"]')!];
-  expect(fields().map((field) => field.readOnly)).toEqual([false, false]);
-  await act(async () => { save().click(); });
-  await act(async () => { save().click(); }); // 응답 전에 한 번 더
-  expect(mocks.setSharedServerUrl).toHaveBeenCalledTimes(1);
-  expect(fields().map((field) => field.readOnly)).toEqual([true, true]);
-  expect(save().textContent).toBe("저장 중…");
-  await act(async () => { finish({ url: "http://server:8010", server_name: "MV" }); });
-  await settle();
-  expect(fields().map((field) => field.readOnly)).toEqual([false, false]);
-  await act(async () => { save().click(); }); // 끝난 뒤에는 다시 받는다
-  expect(mocks.setSharedServerUrl).toHaveBeenCalledTimes(2);
-});
-
-it.skip("백업 위치 확인창이 열려 있으면 Esc·바깥 클릭이 관리자 창을 닫지 않는다(입력하던 비밀번호 보존)", async () => {
-  const onClose = await mount();
-  await clickTab("공유 서버");
-  await act(async () => { host.querySelector<HTMLButtonElement>(".fake-backup-open")!.click(); });
-  await pressEscape();
-  await act(async () => { host.querySelector(".admin-backdrop")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
-  expect(onClose).not.toHaveBeenCalled();
-  await act(async () => { host.querySelector<HTMLButtonElement>(".fake-backup-close")!.click(); });
-  await pressEscape();
-  expect(onClose).toHaveBeenCalledTimes(1);
 });

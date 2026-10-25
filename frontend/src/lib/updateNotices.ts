@@ -30,25 +30,10 @@ export const updateNoticeApi = {
   // 후보 sha 로 하나 — 최근 5개 밖으로 밀린 항목도 찾는다(B안). 없으면 404.
   adminItem: (sha256: string) =>
     jsonFetch<UpdateNotice>(`/api/update-notices/admin/item?sha256=${encodeURIComponent(sha256)}`),
-  // [해제] — 목록·팀원 알림에서만 지운다. 없는 항목도 성공(removed=false), 404 는 옛 서버뿐.
-  remove: (id: string) =>
-    jsonFetch<{ ok: boolean; removed: boolean }>(
-      `/api/update-notices/admin/${encodeURIComponent(id)}`,
-      { method: "DELETE" },
-    ),
+  // 해제·고정·공지는 2026-10-23 서버 관리 창 [릴리스]로 옮겼다 — 웹은 선설치용 등록만 한다.
   register: (release: LatestReleaseMetadata) =>
     jsonFetch<{ ok: boolean; created: boolean; item: UpdateNotice }>(
       "/api/update-notices/admin/register",
       { method: "POST", body: jsonBody(release) },
-    ),
-  pin: (id: string, pinned: boolean) =>
-    jsonFetch<{ ok: boolean; item: UpdateNotice }>(
-      `/api/update-notices/admin/${encodeURIComponent(id)}/pin`,
-      { method: "PUT", body: jsonBody({ pinned }) },
-    ),
-  announce: (id: string) =>
-    jsonFetch<{ ok: boolean; item: UpdateNotice }>(
-      `/api/update-notices/admin/${encodeURIComponent(id)}/announce`,
-      { method: "POST", body: jsonBody({}) },
     ),
 };

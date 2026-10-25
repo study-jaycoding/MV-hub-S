@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // 조작 점검 7회차(2026-10-11) — R13 관리자 창: 멤버 칸·글 칸에서 누른 Esc 가 관리자 창을 통째로 닫았다.
-//  · 글 칸(멤버 검색·공유 서버 이름/주소)의 Esc 는 칸을 벗어나기만 한다 — 한 번 더 누르면 창이 닫힌다(적던 글이 남는다).
+//  · 글 칸(멤버 검색)의 Esc 는 칸을 벗어나기만 한다 — 한 번 더 누르면 창이 닫힌다(적던 글이 남는다).
 //  · 프로젝트 탭의 👥 멤버 칸은 겹이다 — Esc 는 그 칸만 닫는다(멤버 추가 창 → 멤버 칸 → 관리자 창 순서).
 //  · 머리의 🔑 확인 창도 따로 겹이다 — 멤버 칸이 열린 채 띄워도 Esc 는 앞의 확인 창부터 닫는다.
 // 틀은 tests/adminWindowTabs.test.tsx 와 같다(실제 AdminWindow 를 붙인다).
@@ -29,7 +29,6 @@ vi.mock("../src/lib/releaseUpdate", () => ({
   getReleaseUpdateStatus: () => Promise.resolve({ install_mode: "release", current_version: "", state: "up_to_date" }),
 }));
 vi.mock("../src/lib/modelPolicy", () => ({ refreshModelPolicy: vi.fn() }));
-vi.mock("../src/components/admin/BackupReplicaSection", () => ({ BackupReplicaSection: () => null }));
 vi.mock("../src/components/admin/AssetRegistryTab", () => ({ AssetRegistryTab: () => null }));
 
 import { AdminWindow } from "../src/components/AdminWindow";
@@ -98,23 +97,6 @@ it("멤버 검색칸의 Esc 는 칸을 벗어나기만 한다 — 검색어는 �
   expect(onClose).toHaveBeenCalledTimes(1);
 });
 
-// STAGE2-WEB-HIDDEN: '공유 서버' 탭을 숨겨 닿지 못한다 — 탭 코드를 지우는 커밋에서 함께 지운다.
-it.skip("공유 서버 이름·주소 칸의 Esc 도 같다 — 저장 안 한 글이 창과 함께 사라지지 않는다", async () => {
-  const onClose = await mount();
-  await clickTab("공유 서버");
-  const name = host.querySelector<HTMLInputElement>('input[placeholder^="서버 이름"]')!;
-  const address = host.querySelector<HTMLInputElement>('input[placeholder^="예: http"]')!;
-  type(name, "새 이름");
-  type(address, "http://new:8010");
-  await pressEscape(); // 주소 칸에서
-  expect(onClose).not.toHaveBeenCalled();
-  expect(document.activeElement).not.toBe(address);
-  expect(name.value).toBe("새 이름"); // 첫 Esc 는 칸을 벗어나기만 — 적던 글은 둘 다 남는다
-  expect(address.value).toBe("http://new:8010");
-  await pressEscape();
-  expect(onClose).toHaveBeenCalledTimes(1);
-});
-
 it("👥 멤버 칸이 열려 있으면 Esc 는 그 칸만 닫는다 — 멤버 추가 창 → 멤버 칸 → 관리자 창 순서", async () => {
   const onClose = await mount();
   await clickTab("프로젝트");
@@ -175,11 +157,9 @@ const approval = () => host.querySelector(".admin-confirm:not(.admin-elev)");
 it.each([
   ["🔑 를 먼저 열고 승인 확인 창을", [".admin-key", ".admin-mini-btn"]],
   ["승인 확인 창을 먼저 열고 🔑 를", [".admin-mini-btn", ".admin-key"]],
-  // STAGE2-WEB-HIDDEN: ["(공유 서버 탭) 🔑 를 먼저 열고 공지 확인 창을", [".admin-key", '.settings-action[title^="저장된 이름"]'], "공유 서버"],
-])("%s 띄워도 Esc 는 화면에서 앞에 있는 승인 확인 창부터 닫는다 — 그다음 🔑, 그다음 창", async (_order, [first, second], tabLabel) => {
+])("%s 띄워도 Esc 는 화면에서 앞에 있는 승인 확인 창부터 닫는다 — 그다음 🔑, 그다음 창", async (_order, [first, second]) => {
   withAccount();
   const onClose = await mount();
-  if (tabLabel) await clickTab(tabLabel as string);
   await click(first);
   await click(second);
   expect(approval()).not.toBeNull();

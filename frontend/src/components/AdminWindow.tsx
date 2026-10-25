@@ -6,7 +6,6 @@ import { api } from "../api";
 import { accountAtRequest, globalRoleSaves, rebaseRoles, sameRoles } from "../lib/saveQueue";
 import { ApprovalTab, type AdminConfirmState } from "./admin/ApprovalTab";
 import { AssetRegistryTab } from "./admin/AssetRegistryTab";
-import { BackupReplicaSection } from "./admin/BackupReplicaSection";
 import { MemberRolesTab } from "./admin/MemberRolesTab";
 import { UpdateNoticesSection } from "./admin/UpdateNoticesSection";
 import { ProjectManagerPanel } from "./manage/ProjectManagerPanel";
@@ -23,7 +22,7 @@ import { hasGlobalCap } from "../types";
 import type { Account, Member } from "../types";
 import { CloseIcon } from "./common/ViewIcons";
 
-type AdminTab = "approve" | "roles" | "server" | "update" | "projects" | "registry";
+type AdminTab = "approve" | "roles" | "update" | "projects" | "registry";
 
 export function AdminWindow({
   account,
@@ -44,7 +43,8 @@ export function AdminWindow({
   const [memberQuery, setMemberQuery] = useState(""); // 멤버 탭 검색어
   const [loading, setLoading] = useState(true);
 
-  // 공유 서버 주소 관리(admin 전용) — 로컬 허브가 어느 서버로 발행·로그인하는지.
+  // 공유 서버 상태(관리자 여부·슈퍼 관리자) — 업데이트 탭과 🔑 가 쓴다. 서버 이름·주소·팀에 공지·백업 복사 위치는
+  //  서버 관리 창 [주소]·[DB·백업](2026-10-23 2단계)으로 옮겼고, PC 마다 붙을 주소는 로그인 화면의 '서버 주소 변경'에서 바꾼다.
   const [shared, setShared] = useState<{
     url: string | null;
     server_name: string;
@@ -53,13 +53,9 @@ export function AdminWindow({
     elevated_as: string | null;
     super_admin_expires_at: number | null;
   } | null>(null);
-  const [urlDraft, setUrlDraft] = useState("");
-  // 작업자 화면에 주소 대신 보일 서버 이름 — 주소와 한 번에 저장한다.
-  const [nameDraft, setNameDraft] = useState("");
-  const [urlMsg, setUrlMsg] = useState("");
   // 공유 서버 본체(auth on)에서는 서버 연결 설정·elevation 이 '로컬 PC 전용' API
   // (R7 0-A loopback 가드)라 LAN 접속 브라우저에선 403 — 호출을 생략하고 관련 UI
-  // (공유 서버 탭·열쇠)를 숨긴다. 로컬 허브(auth off — 팀 서버 로그인 여부 무관)는
+  // (열쇠)를 숨긴다. 로컬 허브(auth off — 팀 서버 로그인 여부 무관)는
   // 기존 동작 그대로(코덱스 P1: account 기준 판별은 로컬 허브 회귀였다).
   const localOnlyServerControls = localHub;
   const refreshShared = () => {
@@ -85,8 +81,6 @@ export function AdminWindow({
           elevated_as: s.elevated_as,
           super_admin_expires_at: s.super_admin_expires_at,
         });
-        setUrlDraft(s.url || "");
-        setNameDraft(s.server_name || "");
       })
       .catch(() =>
         setShared({
@@ -157,57 +151,6 @@ export function AdminWindow({
     return () => window.clearInterval(timer);
   }, [shared?.elevated, shared?.super_admin_expires_at]);
   const remainingLabel = `${Math.floor(elevRemaining / 60)}:${String(elevRemaining % 60).padStart(2, "0")}`;
-  // 팀에 공지 — 지금 '저장된' 이름·주소를 릴리스 폴더의 공지 파일로 내보낸다. 작업자 PC 는
-  // 1분 안에 알림을 받고, 알림을 누르면 그 주소로 전환된다. 팀 전체에 영향을 주는 행위라
-  // 확인 한 번을 거친다(입력창의 미저장 초안이 아니라 저장된 값이 나간다는 점도 여기서 알린다).
-  const [publishOpen, setPublishOpen] = useState(false);
-  const [publishBusy, setPublishBusy] = useState(false);
-  const [publishMsg, setPublishMsg] = useState("");
-  const savedUrl = (shared?.url || "").trim();
-  const savedName = (shared?.server_name || "").trim();
-  const publishDirty = urlDraft.trim() !== savedUrl || nameDraft.trim() !== savedName;
-  const doPublish = async () => {
-    setPublishBusy(true);
-    setPublishMsg("");
-    try {
-      const r = await api.publishServerRelocation();
-      setPublishOpen(false);
-      setPublishMsg(
-        `팀에 공지했습니다 (${r.revision}번째). 작업자 PC 는 1분 안에 알림을 받습니다.`,
-      );
-    } catch (e) {
-      setPublishMsg("공지 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
-      setPublishOpen(false);
-    } finally {
-      setPublishBusy(false);
-    }
-  };
-  // 저장 중에는 다시 받지 않고 두 칸도 잠근다(조작 규칙 39) — 응답이 이름 칸을 덮어쓰므로, 저장 중에 고쳐 다시 저장하면
-  //  늦게 온 앞 응답이 화면을 옛 값으로 되돌렸다.
-  const [urlBusy, setUrlBusy] = useState(false);
-  const saveUrl = async () => {
-    if (urlBusy) return;
-    setUrlBusy(true);
-    setUrlMsg("");
-    setPublishMsg(""); // 주소가 바뀌었으면 직전 공지 결과 문구는 더 이상 지금 상태가 아니다
-    try {
-      const r = await api.setSharedServerUrl(urlDraft.trim(), nameDraft.trim());
-      setShared((p) => ({
-        url: r.url,
-        server_name: r.server_name || "",
-        is_admin: p?.is_admin ?? false,
-        elevated: p?.elevated ?? false,
-        elevated_as: p?.elevated_as ?? null,
-        super_admin_expires_at: p?.super_admin_expires_at ?? null,
-      }));
-      setNameDraft(r.server_name || "");
-      setUrlMsg("저장됐습니다. 다음 로그인부터 이 주소를 씁니다.");
-    } catch (e) {
-      setUrlMsg("저장 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
-    } finally {
-      setUrlBusy(false);
-    }
-  };
 
   // 현재 사용자의 전역 역할(복수) 판정.
   // ⚠️ 서버 직결(프록시) 모드에선 멤버 목록의 is_mine 은 '서버 PC 신원'이라 내가 아니다 —
@@ -220,7 +163,6 @@ export function AdminWindow({
   const canManageProjects = caps.system && (caps.createProject || caps.grantRole);
   // 프로젝트 대화상자가 열린 동안은 Esc·바깥 클릭에 관리자 창을 닫지 않는다 — 대화상자만 닫히게(입력 보존).
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
-  const [backupDialogOpen, setBackupDialogOpen] = useState(false); // 백업 위치 비밀번호 확인창(공유 서버 탭)
 
   // 시스템 부트스트랩 계정(admin@millionvolt.com) — 관리 UI 어디에도 노출하지 않는다.
   // (열쇠 임시권한 로그인엔 여전히 admin 으로 인증 가능 — 목록에서만 가린다.)
@@ -229,15 +171,13 @@ export function AdminWindow({
   const visibleMembers = visibleAdminMembers(members, systemUids);
   const visibleAccounts = visibleAdminAccounts(accounts);
   // 역량에 따라 보이는 탭이 다르다(로드맵 §1): 승인·전역역할=admin, 프로젝트=product_manager.
-  // 순서는 Jay 2026-10-03 — 승인 · 멤버 · 프로젝트 · 공유 서버 · 에셋 리스트 · 업데이트.
+  // 순서는 Jay 2026-10-03 — 승인 · 멤버 · 프로젝트 · 에셋 리스트 · 업데이트('공유 서버' 탭은 2026-10-23 서버 관리 창으로 옮겨 없앰 —
+  //  백엔드 라우트는 옛 앱·되돌리기용으로 둔다).
   const tabDefs: { key: AdminTab; label: string; visible: boolean }[] = [
     { key: "approve", label: "승인", visible: hasGlobalCap(viewerRoles, "approve_signup") },
     { key: "roles", label: "멤버 · 전역 역할", visible: hasGlobalCap(viewerRoles, "grant_global") },
     // 프로젝트 관리(2026-10-02 대시보드 오버레이에서 옮김) — 위 canManageProjects 기준.
     { key: "projects", label: "프로젝트", visible: canManageProjects },
-    // STAGE2-WEB-HIDDEN(2026-10-23 Jay): 공유 서버 이름·주소·팀에 공지·백업 복사 위치는 서버 관리 창 [주소]·[DB·백업]으로
-    //  옮겼다 — 탭을 숨긴다(코드는 확인 뒤 별도 커밋에서 지운다. 덩어리 삭제는 숨김 먼저). 백엔드 라우트는 옛 앱·되돌리기용으로 둔다.
-    { key: "server", label: "공유 서버", visible: false },
     // 에셋 리스트(옛 이름 '에셋 대장', 2026-09-30) — 공유 서버 운영(system) 권한만. 훑기는 NAS 를 오래 읽는다.
     { key: "registry", label: "에셋 리스트", visible: isPermanentAdmin },
     // 업데이트 — 관리자만. 2단계(2026-10-23)부터 [이 PC에 먼저 설치]만(팀 배포는 서버 관리 창 [릴리스]).
@@ -310,29 +250,28 @@ export function AdminWindow({
   // 안쪽 확인창이 열려 있으면 Esc 는 그것만 닫는다 — 창 전체를 닫으면 입력하던 비밀번호가 사라진다.
   const closeTopmost = useCallback(() => {
     if (confirm) setConfirm(null);
-    else if (publishOpen) setPublishOpen(false);
-    else if (projectDialogOpen || backupDialogOpen) return; // 안쪽 대화상자는 그 패널이 같은 Esc 로 닫는다
+    else if (projectDialogOpen) return; // 안쪽 대화상자는 그 패널이 같은 Esc 로 닫는다
     else {
-      // 창 안의 글 칸(멤버 검색·서버 이름/주소 등)에서 난 Esc 는 칸을 벗어나기만 한다 — 창까지 닫으면 적던 글이 사라진다.
+      // 창 안의 글 칸(멤버 검색 등)에서 난 Esc 는 칸을 벗어나기만 한다 — 창까지 닫으면 적던 글이 사라진다.
       //  한 번 더 누르면 닫힌다(폴더 창의 글 칸과 같은 순서).
       const field = document.activeElement as HTMLElement | null;
       if (field?.closest(".admin-window") && isTypingTarget(field)) field.blur();
       else onClose();
     }
-  }, [confirm, publishOpen, projectDialogOpen, backupDialogOpen, onClose]);
+  }, [confirm, projectDialogOpen, onClose]);
   // 창의 겹 — 앱의 틀(LazyModalShell) 안이면 틀이 연 순간에 쥔 겹을 쓴다(이 코드가 늦게 와도 그 틈에 연 창보다 위가 되지 않는다).
   useWindowEscape(closeTopmost);
   // 🔑 확인 창은 따로 겹이다 — 머리의 단추라 프로젝트 탭의 👥 멤버 칸(겹)이 열린 채로도 뜬다. 위 겹 안에서 닫으면 멤버 칸이 더 위라
   //  Esc 가 뒤의 멤버 칸부터 닫는다. 나중에 켜지는 겹이 위다(lib/useEscapeClose).
-  //  승인·공지 확인 창이 같이 떠 있으면 그것부터 닫는다 — 🔑 창과 같은 층(z-index)이고 문서에서 뒤라 화면에서는 🔑 창 **위에** 보인다.
+  //  승인 확인 창이 같이 떠 있으면 그것부터 닫는다 — 🔑 창과 같은 층(z-index)이고 문서에서 뒤라 화면에서는 🔑 창 **위에** 보인다.
   //  이 겹이 🔑 만 닫으면 앞의 확인 창을 두고 뒤의 창이 닫혔다(2026-10-11 Codex 리뷰).
-  useEscapeClose(() => (confirm ? setConfirm(null) : publishOpen ? setPublishOpen(false) : setElevOpen(false)), elevOpen);
+  useEscapeClose(() => (confirm ? setConfirm(null) : setElevOpen(false)), elevOpen);
   // 안쪽 확인 창들(막이 있다)도 모달 영역이다(lib/keyGate '모달의 초점') — 떠 있는 동안 Tab 이 그 안에서만 돈다. 전엔 🔑 를 연 채
   //  Tab 으로 뒤의 단추에 닿아 다른 확인 창을 겹쳐 띄울 수 있었다. 창 자체의 영역은 앱의 틀(LazyModalShell)이 올린다.
   const windowRef = useRef<HTMLDivElement>(null);
   const elevRef = useRef<HTMLDivElement>(null);
   useModalFocus(elevRef, elevOpen);
-  useModalFocus(() => [windowRef.current?.querySelector<HTMLElement>(".admin-confirm:not(.admin-elev)")], !!confirm || publishOpen);
+  useModalFocus(() => [windowRef.current?.querySelector<HTMLElement>(".admin-confirm:not(.admin-elev)")], !!confirm);
 
   // 전역 역할 저장은 역할 목록 전체를 덮어쓴다 — 칩을 연타하면 낡은 value 로 만든 목록이 뒤에 도착해 먼저 준 역할을 지웠다.
   // 그래서 한 줄로 세우고(lib/saveQueue — 줄은 모듈 값이라 이 창을 닫았다 열어도 이어진다), 차례가 왔을 때 서버의 지금 값을 읽어
@@ -363,7 +302,7 @@ export function AdminWindow({
 
   return (
     <>
-      <div className="admin-backdrop" onMouseDown={() => { if (!projectDialogOpen && !backupDialogOpen) onClose(); }} />
+      <div className="admin-backdrop" onMouseDown={() => { if (!projectDialogOpen) onClose(); }} />
       {/* 프로젝트 탭은 옛 프로젝트 관리 창 폭(760px)으로 넓힌다 — 👥 멤버 칸이 열리면 CSS 가 더 넓힌다 */}
       <div ref={windowRef} className={"admin-window" + (activeTab === "projects" ? " wide" : "")} role="dialog" aria-label="관리자">
         <header className="admin-head">
@@ -467,98 +406,6 @@ export function AdminWindow({
               {activeTab === "projects" && <ProjectManagerPanel onDialogOpenChange={setProjectDialogOpen} />}
 
               {activeTab === "registry" && <AssetRegistryTab />}
-
-              {activeTab === "server" && (
-              <>
-              <section className="admin-section">
-                <h4>공유 서버 이름·주소</h4>
-                <div className="admin-note-sub">
-                  작업자가 로그인·발행할 공유 서버입니다. 작업자 화면에는 <b>이름만</b> 보이고
-                  주소는 여기서만 바꿉니다(이 PC 로컬 허브 설정). 바꾸면 다음 로그인부터
-                  적용됩니다. 이름을 비우면 주소가 그대로 보입니다.
-                </div>
-                <input
-                  className="settings-input"
-                  placeholder="서버 이름 (예: MV 팀 서버)"
-                  value={nameDraft}
-                  onChange={(e) => setNameDraft(e.target.value)}
-                  readOnly={urlBusy}
-                  maxLength={64}
-                  style={{ maxWidth: 420 }}
-                />
-                <input
-                  className="settings-input"
-                  placeholder="예: http://192.168.0.10:8010"
-                  value={urlDraft}
-                  onChange={(e) => setUrlDraft(e.target.value)}
-                  readOnly={urlBusy}
-                  style={{ maxWidth: 420, marginTop: 8 }}
-                />
-                <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-                  <button className="settings-action" style={{ width: "auto" }} onClick={saveUrl}>
-                    {urlBusy ? "저장 중…" : "저장"}
-                  </button>
-                  <button
-                    className="settings-action"
-                    style={{ width: "auto" }}
-                    onClick={() => setPublishOpen(true)}
-                    disabled={publishBusy || !savedUrl}
-                    title="저장된 이름·주소를 팀 전체에 공지합니다"
-                  >
-                    {publishBusy ? "공지 중…" : "팀에 공지"}
-                  </button>
-                </div>
-                {urlMsg && (
-                  <p style={{ marginTop: 8, fontSize: 12, color: "var(--muted)" }}>{urlMsg}</p>
-                )}
-                {publishMsg && (
-                  <p style={{ marginTop: 8, fontSize: 12, color: "var(--muted)" }}>{publishMsg}</p>
-                )}
-                <div className="admin-note-sub" style={{ marginTop: 10 }}>
-                  ⓘ <b>팀에 공지</b>는 릴리스 폴더(작업자 설치 원본)에 이사 공지 파일을 남깁니다.
-                  작업 중인 사람에게 알림이 뜨고, 누르면 이 주소로 전환됩니다. 릴리스 폴더에
-                  쓰기 권한이 있는 관리자 PC 에서만 됩니다.
-                </div>
-              </section>
-
-              <BackupReplicaSection onDialogOpenChange={setBackupDialogOpen} />
-
-              {publishOpen && (
-                <div className="admin-confirm-backdrop" onMouseDown={() => setPublishOpen(false)}>
-                  <div className="admin-confirm" onMouseDown={(e) => e.stopPropagation()}>
-                    <p className="admin-confirm-q">
-                      팀 전체에 서버 전환 안내가 발송됩니다.
-                      <br />
-                      <span className="admin-note-sub">
-                        공지 내용: <b>{savedName || "(이름 없음)"}</b> · {savedUrl}
-                      </span>
-                      {publishDirty && (
-                        <>
-                          <br />
-                          <span className="admin-note-sub">
-                            ⚠ 입력창에 저장하지 않은 변경이 있습니다 — 공지는 <b>저장된 값</b>으로
-                            나갑니다.
-                          </span>
-                        </>
-                      )}
-                    </p>
-                    <div className="admin-confirm-actions">
-                      <button
-                        className="admin-confirm-yes"
-                        onClick={doPublish}
-                        disabled={publishBusy}
-                      >
-                        {publishBusy ? "공지 중…" : "공지 발송"}
-                      </button>
-                      <button className="admin-confirm-no" onClick={() => setPublishOpen(false)}>
-                        취소
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-              </>
-              )}
 
               {activeTab === "roles" && (
                 <MemberRolesTab

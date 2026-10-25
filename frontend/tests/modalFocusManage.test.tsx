@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // 가짜는 바깥 경계(서버 호출)에만. 이름을 준 것만 답하고 나머지는 '아직 안 옴'.
 const { mocks, boundary } = vi.hoisted(() => {
   const names = ["creditPlanSettings", "getPlanning", "members", "projects", "workspaceOptions", "allProjectMembers", "projectMembers", "projectFolderLinks",
-    "projectFolder", "workspaceMembers", "models", "consoleOverview", "saveFinalsStatus", "saveFinalsProgress", "saveFinals", "authConfig", "replicaStatus"] as const;
+    "projectFolder", "workspaceMembers", "models", "consoleOverview", "saveFinalsStatus", "saveFinalsProgress", "saveFinals", "authConfig"] as const;
   const mocks = Object.fromEntries(names.map((name) => [name, vi.fn()])) as Record<(typeof names)[number], ReturnType<typeof vi.fn>>;
   const boundary = () => new Proxy(mocks as Record<string, unknown>, { get: (target, key: string) => target[key] ?? (() => new Promise(() => {})) });
   return { mocks, boundary };
@@ -22,17 +22,12 @@ vi.mock("../src/lib/useManageCaps", () => ({
 }));
 vi.mock("../src/lib/useManageRealtime", () => ({ useManageRealtime: () => 0 }));
 vi.mock("../src/lib/modelPolicy", () => ({ refreshModelPolicy: vi.fn() }));
-vi.mock("../src/lib/backupReplicaApi", async (orig) => ({
-  ...(await orig<Record<string, unknown>>()),
-  backupReplicaApi: { status: (...args: unknown[]) => mocks.replicaStatus(...args), save: () => new Promise(() => {}), run: () => new Promise(() => {}) },
-}));
 vi.mock("../src/components/admin/ProjectRenderTree", () => ({ ProjectRenderTree: () => null }));
 vi.mock("../src/components/manage/DashboardView", () => ({ DashboardView: () => null }));
 vi.mock("../src/components/manage/WorkBoard", () => ({ WorkBoard: () => null }));
 // 콘솔의 서브 표는 이 시험과 무관하다 — 풀 카드(할당 기준값 창)는 진짜를 쓴다
 vi.mock("../src/components/manage/console/ConsoleMainParts", async (orig) => ({ ...(await orig<Record<string, unknown>>()), SubTable: () => null }));
 
-import { BackupReplicaSection } from "../src/components/admin/BackupReplicaSection";
 import { ConsoleFolderDialog } from "../src/components/manage/console/ConsoleFolderDialog";
 import { PoolCard } from "../src/components/manage/console/ConsoleMainParts";
 import { ConsolePeriodDialog } from "../src/components/manage/console/ConsolePeriodDialog";
@@ -76,10 +71,6 @@ beforeEach(() => {
     targets: [{ gen_id: "c1", kind: "final", folder_path: "ep001/c1", filename: "", saved: false, reason: null, media_type: "video" }] });
   mocks.saveFinalsProgress.mockResolvedValue({ progress: null });
   mocks.authConfig.mockResolvedValue({ manage_enabled: true });
-  mocks.replicaStatus.mockResolvedValue({
-    applicable: true, target: "\\\\NAS\\backup", target_id: "a", source: "file", editable: true, lock_reason: null, target_garbled: false,
-    target_is_unc: true, server_account_system: true, task: null, result: null,
-  });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
@@ -275,17 +266,6 @@ describe("화면에서 여는 대화상자", () => {
     expectTrapped(".export-modal");
     await press(byText(".export-modal button", "아니오"));
     expect(q(".export-modal")).toBeNull();
-    expect(active()).toBe(opener);
-  });
-
-  it("백업 위치 비밀번호 확인(관리자 창의 공유 서버 탭): 비밀번호 칸의 초점이 남고 Tab 이 창 안에서 돈다 — 닫으면 연 단추로", async () => {
-    await mount(page(<BackupReplicaSection />));
-    await type(q('input[aria-label="백업 복사 위치"]') as HTMLInputElement, "\\\\NAS2\\b");
-    const opener = await press(byText(".replica-actions button", "저장"));
-    expect(active().getAttribute("type")).toBe("password"); // 창이 스스로 준 초점
-    expectTrapped(".admin-confirm");
-    await escape();
-    expect(q(".admin-confirm")).toBeNull();
     expect(active()).toBe(opener);
   });
 });

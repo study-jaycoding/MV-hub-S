@@ -30,7 +30,6 @@ vi.mock("../src/lib/releaseUpdate", () => ({
   getReleaseUpdateStatus: () => Promise.resolve({ install_mode: "release", current_version: "", state: "up_to_date" }),
 }));
 vi.mock("../src/lib/modelPolicy", () => ({ refreshModelPolicy: vi.fn() }));
-vi.mock("../src/components/admin/BackupReplicaSection", () => ({ BackupReplicaSection: () => null }));
 vi.mock("../src/components/admin/AssetRegistryTab", () => ({ AssetRegistryTab: () => null }));
 vi.mock("../src/lib/modelCatalog", async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
