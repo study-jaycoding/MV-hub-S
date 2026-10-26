@@ -53,7 +53,7 @@ const tab = (name: string) => Array.from(host.querySelectorAll('[role="tab"]')).
 const card = (path: string) => host.querySelector(`[data-folder-path="${path}"] .ep-cover`)!;
 const search = async (value: string) => {
   await act(async () => {
-    const input = host.querySelector<HTMLInputElement>('[placeholder="Search"]')!;
+    const input = host.querySelector<HTMLInputElement>('[placeholder="Search · Tag"]')!;
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   }); await settle();
@@ -405,10 +405,10 @@ it("캔버스처럼 탭을 끌어 앞·뒤로 옮겨도 활성 탭·검색·스�
   act(() => { bg.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
   expect(tabNames()).toEqual(["BG", "assets", "CH"]);
   expect(tab("assets").getAttribute("aria-selected")).toBe("true");
-  expect(host.querySelector<HTMLInputElement>('input[placeholder="Search"]')!.value).toBe("a.png");
+  expect(host.querySelector<HTMLInputElement>('input[placeholder="Search · Tag"]')!.value).toBe("a.png");
   expect(host.querySelector<HTMLDivElement>(".assets-folder-grid")!.scrollTop).toBe(155);
   await click(bg); await click(tab("assets"));
-  expect(host.querySelector<HTMLInputElement>('input[placeholder="Search"]')!.value).toBe("a.png");
+  expect(host.querySelector<HTMLInputElement>('input[placeholder="Search · Tag"]')!.value).toBe("a.png");
   expect(host.querySelector<HTMLDivElement>(".assets-folder-grid")!.scrollTop).toBe(155);
   pointer("pointerdown", bg, { clientX: 50, clientY: 15 });
   pointer("pointermove", bg, { clientX: 330, clientY: 15, buttons: 1 });
@@ -476,7 +476,7 @@ it("Backspace는 활성 탭만 상위 폴더로 이동하며 빈 폴더와 최�
 it("입력·조합·보조키·길게 누름·모달·이미 처리한 키는 폴더 이동으로 가져오지 않는다", async () => {
   await mount(); await doubleClick(card("assets/CH"));
   await search("a.png");
-  expect((await backspace(host.querySelector('input[placeholder="Search"]')!)).defaultPrevented).toBe(false);
+  expect((await backspace(host.querySelector('input[placeholder="Search · Tag"]')!)).defaultPrevented).toBe(false);
   for (const tag of ["textarea", "select", "div"]) {
     const input = document.createElement(tag);
     if (tag === "div") Object.defineProperty(input, "isContentEditable", { value: true });
@@ -494,7 +494,7 @@ it("입력·조합·보조키·길게 누름·모달·이미 처리한 키는 �
   document.body.addEventListener("keydown", handled, { once: true });
   await backspace();
   expect(localStorage.getItem("ch.assets.dir")).toBe("assets/CH");
-  expect(host.querySelector<HTMLInputElement>('input[placeholder="Search"]')!.value).toBe("a.png");
+  expect(host.querySelector<HTMLInputElement>('input[placeholder="Search · Tag"]')!.value).toBe("a.png");
   await backspace();
   expect(localStorage.getItem("ch.assets.dir")).toBe("assets");
 });
@@ -561,15 +561,15 @@ it("미들클릭은 새 탭만 추가하며 현재 검색·보기·스크롤과 
   expect(tab("BG").getAttribute("aria-selected")).toBe("false");
   await middle(row);
   expect(host.querySelectorAll('[role="tab"]')).toHaveLength(2);
-  expect(host.querySelector<HTMLInputElement>('[placeholder="Search"]')!.value).toBe("a.png");
+  expect(host.querySelector<HTMLInputElement>('[placeholder="Search · Tag"]')!.value).toBe("a.png");
   expect(host.querySelector(".assets-folder-grid")).toBe(grid);
   expect(grid.scrollTop).toBe(155);
   await click(tab("BG"));
-  expect(host.querySelector<HTMLInputElement>('[placeholder="Search"]')!.value).toBe("");
+  expect(host.querySelector<HTMLInputElement>('[placeholder="Search · Tag"]')!.value).toBe("");
   expect(host.querySelectorAll(".asset-cell")).toHaveLength(1);
   await click(host.querySelectorAll('.lib-cut-seg button')[1]);
   await click(tab("CH"));
-  expect(host.querySelector<HTMLInputElement>('[placeholder="Search"]')!.value).toBe("a.png");
+  expect(host.querySelector<HTMLInputElement>('[placeholder="Search · Tag"]')!.value).toBe("a.png");
   expect(host.querySelector<HTMLDivElement>(".assets-folder-grid")!.scrollTop).toBe(155);
   expect(host.querySelector('.lib-cut-seg button.on')?.textContent).toBe("폴더");
   const existing = Array.from(host.querySelectorAll(".folder-tree-row")).find((el) => el.getAttribute("title")?.startsWith("assets/BG"))!;
@@ -583,7 +583,7 @@ it("미들클릭은 새 탭만 추가하며 현재 검색·보기·스크롤과 
   await click(host.querySelector('[aria-label="BG 탭 닫기"]')!);
   expect(host.querySelectorAll('[role="tab"]')).toHaveLength(1);
   await click(tab("CH"));
-  expect(host.querySelector<HTMLInputElement>('[placeholder="Search"]')!.value).toBe("a.png");
+  expect(host.querySelector<HTMLInputElement>('[placeholder="Search · Tag"]')!.value).toBe("a.png");
   expect(host.querySelector<HTMLDivElement>(".assets-folder-grid")!.scrollTop).toBe(155);
   const lastClose = host.querySelector<HTMLButtonElement>(".scene-del")!;
   expect(lastClose.disabled).toBe(true);

@@ -999,7 +999,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
           <span className="as-icon">⌕</span>
           <input
             value={query}
-            placeholder="Search"
+            placeholder="Search · Tag"
             onChange={(e) => setQuery(e.target.value)}
           />
           {query && (
