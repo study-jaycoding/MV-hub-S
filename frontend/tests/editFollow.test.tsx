@@ -400,6 +400,44 @@ it("영상이 쌍이면 정방향 재생 중 다음 클립을 그 시작 자리�
   root = createRoot(host);
 });
 
+it("멈춘 채 0.3초 가만히 있고 지금 클립이 그림을 냈으면 다음 클립도 미리 받는다 — 그 전·그림 전·훑는 동안에는 받지 않는다(Jay 2026-10-26 넘김 멈춤)", () => {
+  const doc: EditDoc = { ...emptyEditDoc(), clips: [
+    { cut: "e070/c1", gen: "a", track: 1, dur: 2, kind: "video" },
+    { cut: "e070/c2", gen: "b", track: 1, dur: 2, kind: "video" },
+  ] };
+  const layout = buildLayout(["e070/c1", "e070/c2"], doc);
+  const pair = new FakePair();
+  video = pair;
+  videoRef = { current: pair };
+  time = 1.5;
+  render({ track: 1, playing: false, layout });
+  frame();
+  expect(pair.src).toBe("/v/a");
+  for (let i = 0; i < 3; i++) frame(100); // 0.3초 가만히 — 그러나 지금 영상이 아직 그림이 없다(받는 중)
+  expect(pair.back.url).toBe("");
+  pair.readyState = 2;
+  frame();
+  expect(pair.back).toEqual({ url: "/v/b", time: 0 }); // 다음 컷의 처음 자리
+  act(() => root.unmount());
+  root = createRoot(host);
+
+  const scrub = new FakePair(); // 훑기 — 시각이 계속 바뀌는 동안은 받지 않는다
+  video = scrub;
+  videoRef = { current: scrub };
+  scrub.readyState = 2;
+  time = 0.2;
+  render({ track: 1, playing: false, layout });
+  for (let i = 0; i < 40; i++) {
+    time += 0.03;
+    frame(16);
+  }
+  expect(scrub.back.url).toBe("");
+  for (let i = 0; i < 18; i++) frame(16); // 0.29초 — 아직
+  expect(scrub.back.url).toBe("");
+  frame(16);
+  expect(scrub.back.url).toBe("/v/b");
+});
+
 it("속도 클립(2026-10-23) — 영상 시각 = 시작점 + 컷 안 시각 × 속도, 재생률 = 배속 × 속도(25% 에 바닥을 걸지 않는다)", () => {
   const doc: EditDoc = { ...emptyEditDoc(), v: 2, clips: [{ cut: "e070/c1", gen: "slow", track: 1, dur: 4, kind: "video", head: 1, speed: 0.25 }] };
   const layout = buildLayout(["e070/c1"], doc); // 쓰는 원본 3초 ÷ 0.25 = 컷 안 0~12초

@@ -4,7 +4,7 @@
 //    재생 중이어도 시각이 서 있으면(타임라인의 영상이 받는 중) 같이 선다 — 혼자 앞서 갔다 되감기를 되풀이하지 않게.
 //  · 그 밖(정지·훑기·프레임 이동·역재생)에는 그 자리에 정확히 맞춘다(한 프레임 이동도 보인다).
 //  · 탐색 중에는 새 탐색을 걸지 않는다 — 끝난 다음 프레임이 그때의 목표로 다시 본다(매 프레임 걸면 탐색이 쌓인다).
-//  · 영상이 둘을 묶은 것(editVideoPair — 클린 피드)이면 정방향 재생 중 다음에 보일 영상을 그 시작 자리에 미리 받아 세워 두고, 넘어갈 때
+//  · 영상이 둘을 묶은 것(editVideoPair — 클린 피드)이면 정방향 재생 중(과 멈춘 채 0.3초 가만히일 때) 다음에 보일 영상을 그 시작 자리에 미리 받아 세워 두고, 넘어갈 때
 //    바꿔 끼워 그 프레임에 바로 튼다(받는 동안 검은 화면·멈칫이 없게, Jay 2026-10-26 "클립 넘어갈 때 딜레이"). 타임라인 판처럼 미리 굴리지는
 //    않는다 — 받아 세워 둔 영상은 바로 돌기 시작해, 0.08초 앞서 굴리면 그만큼 앞서 갔다(격리 실측: 굴림 +40ms · 안 굴림 ±10ms).
 //  · catchUp(클린 피드 — 소리 없음)이면 재생 중 어긋남을 재생률로 메운다 — 영상의 재생 시작 시간만큼 뒤처진 채 가지 않게.
@@ -24,6 +24,7 @@ const NOTHING: EditShown = { clip: null, source: null, failed: false };
 const EXACT = 0.04; // 멈춰 있을 때의 허용 오차(한 프레임 = 1/24초보다 작게)
 const DRIFT = 0.2; // 재생 중의 허용 오차
 const STALL_MS = 150; // 이만큼 시각이 안 움직이면 타임라인이 서 있는 것으로 본다
+const SETTLED_MS = 300; // 멈춘 채 시각이 이만큼 그대로면(훑기가 끝났다) 다음 클립도 미리 받는다
 // catchUp — 반 프레임 넘게 어긋나면 재생률을 ±8%, 세 프레임 넘게면 ±25% 바꿔 붙는다(탐색은 생성 영상이 키프레임 하나라 처음부터 디코딩한다)
 const NEAR = 0.5 / 24;
 const FAR = 3 / 24;
@@ -68,6 +69,7 @@ export function useEditFollow({
       lastTime: Number.NaN,
       rewound: false,
       movedAt: 0,
+      changedAt: 0, // 시각이 마지막으로 바뀐 때(재생·훑기 모두)
       frame: 0,
     };
     const onMeta = () => {
@@ -162,9 +164,12 @@ export function useEditFollow({
           state.rewound = false; // 서 있으면 어차피 정확히 맞춘다
         }
       }
-      // 다음에 보일 영상을 뒤 요소에 그 시작 자리로 미리 받아 둔다 — 정방향 재생 중에만(useEditPlayback.prepare 와 같은 규칙 — 멈춘 채 훑을
-      //  때마다 받으면 요청이 두 배가 된다). 그 밖에는 받아 둔 것을 그대로 둔다.
-      if (video?.prepare && on && speed > 0 && slot && clip) {
+      // 다음에 보일 영상을 뒤 요소에 그 시작 자리로 미리 받아 둔다 — 정방향 재생 중, 그리고 멈춘 채 0.3초 가만히 있고 지금 클립이 그림을 냈을 때
+      //  (멈춘 자리에서 재생을 누르면 그때 받기 시작해 넘김에 늦었다 — 서버 중계, Jay 2026-10-26 "앞 그림 멈춤"). 훑는 동안에는 받지 않는다(요청이
+      //  두 배가 된다). 지금 그림을 기다리는 것은 지금 클립과 받기를 다투지 않게. 그 밖에는 받아 둔 것을 그대로 둔다.
+      if (time !== state.lastTime) state.changedAt = stamp;
+      const settled = !on && stamp - state.changedAt >= SETTLED_MS && (!playable || (video?.readyState ?? 0) >= 2);
+      if (video?.prepare && ((on && speed > 0) || settled) && slot && clip) {
         const edge = Math.min(clip.len, slot.len); // 이 클립이 안 보이게 되는 자리 — 그 뒤는 같은 컷의 아래 클립이거나 다음 컷의 처음
         const after = edge < slot.len ? slot : cuts.cuts[cuts.cuts.indexOf(slot) + 1];
         const at = edge < slot.len ? edge : 0;
