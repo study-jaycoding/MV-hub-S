@@ -593,7 +593,8 @@ CREATE TABLE IF NOT EXISTS edit_doc_head (
     PRIMARY KEY (owner, doc_key)
 );
 
--- 충돌과 명시적 복원 직전 원문은 자동 삭제하지 않는다. owner는 안정된 계정 email 또는 local.
+-- 명시적 보존(복원·채택 직전·로컬 보존) 원문은 자동 삭제하지 않는다. 충돌 사본(conflict)은 문서마다 최대 20개 — 최근 20개, 단 이번 요청의
+-- 충돌 사본은 옛 것이어도 남겨 그때는 이번 것 + 최근 19개(repo/edit_docs.CONFLICT_COPY_LIMIT, 2026-10-26). owner는 안정된 계정 email 또는 local.
 CREATE TABLE IF NOT EXISTS edit_doc_copy (
     owner TEXT NOT NULL,
     doc_key TEXT NOT NULL,

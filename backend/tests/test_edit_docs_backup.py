@@ -44,7 +44,7 @@ def database(tmp_path, monkeypatch):
         active_account.reset_override(token)
 
 
-def test_head_cas_and_conflict_copies_never_pruned(database):
+def test_head_cas_and_conflict_copies(database):
     first = repo.save_edit_backup(OWNER, KEY, raw("one"), None)
     assert first["status"] == "saved" and first["head"]["revision"] == 1
     assert repo.save_edit_backup(OWNER, KEY, raw("one"), None)["status"] == "same"
@@ -86,6 +86,124 @@ def test_concurrent_same_base_has_one_winner_and_one_preserved_copy(database):
     assert state["head"]["revision"] == 2
     assert state["head"]["data"] == raw(winner)
     assert state["copies"][0]["data_hash"] == digest(raw(loser))
+
+
+# ── 충돌 사본 상한(2026-10-26 Jay "계속 쌓이는 건 나중에 문제") — 문서마다 conflict 최대 20 · 명시적 보존은 세지도 지우지도 않는다 ──
+EXPLICIT = ["local_preserve", "pre_restore", "pre_adopt"]
+
+
+def kinds(path, owner=OWNER, key=KEY):
+    with closing(sqlite3.connect(path)) as conn:
+        return dict(conn.execute("SELECT data_hash, kind FROM edit_doc_copy WHERE owner=? AND doc_key=?", (owner, key)).fetchall())
+
+
+def conflicts(path, owner=OWNER, key=KEY):
+    return sum(1 for kind in kinds(path, owner, key).values() if kind == "conflict")
+
+
+def insert_copy(path, data, kind, created_at, owner=OWNER, key=KEY):
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("INSERT INTO edit_doc_copy(owner,doc_key,data_hash,data,kind,created_at) VALUES(?,?,?,?,?,?)",
+                     (owner, key, digest(data), data, kind, created_at))
+        conn.commit()
+
+
+def test_conflict_copies_capped_at_20_per_document_and_current_always_kept(database):
+    repo.save_edit_backup(OWNER, KEY, raw("head"), None)
+    for owner, key in (("b@example.com", KEY), (OWNER, KEY + ":other")):  # 다른 계정·다른 문서는 그대로
+        repo.save_edit_backup(owner, key, raw("head"), None)
+        for index in range(3):
+            repo.save_edit_backup(owner, key, raw(f"o{index}"), None)
+    for index in range(25):
+        result = repo.save_edit_backup(OWNER, KEY, raw(f"c{index}"), None)
+        assert result["status"] == "conflict" and result["copy_hash"] in kinds(database)  # 응답이 보존했다는 사본은 늘 있다
+    assert conflicts(database) == 20 and set(kinds(database).values()) == {"conflict"}
+    assert conflicts(database, "b@example.com") == 3 and conflicts(database, key=KEY + ":other") == 3
+    assert repo.get_edit_backup(OWNER, KEY)["total_copies"] == 20
+
+
+@pytest.mark.parametrize("kind", EXPLICIT)
+def test_explicit_preserve_upgrades_existing_conflict_copy_and_survives_cap(database, kind):
+    repo.save_edit_backup(OWNER, KEY, raw("head"), None)
+    x = raw("x")
+    assert repo.save_edit_backup(OWNER, KEY, x, None)["status"] == "conflict"
+    if kind == "local_preserve":
+        repo.restore_edit_backup(OWNER, KEY, 1, data=raw("restored"), local_raw=x)
+    else:  # head 를 X 로 만든 뒤 복원·채택 직전 head 보존
+        assert repo.save_edit_backup(OWNER, KEY, x, 1)["status"] == "saved"
+        repo.restore_edit_backup(OWNER, KEY, 2, data=raw("restored"), kind=kind)
+    assert kinds(database)[digest(x)] == kind
+    for index in range(25):
+        repo.save_edit_backup(OWNER, KEY, raw(f"c{index}"), None)
+    assert kinds(database)[digest(x)] == kind and conflicts(database) == 20
+    assert repo.save_edit_backup(OWNER, KEY, x, None)["status"] == "conflict"  # 충돌로 다시 와도 내리지 않는다
+    assert kinds(database)[digest(x)] == kind
+
+
+@pytest.mark.parametrize("kind", EXPLICIT)
+def test_conflict_put_of_explicit_copy_keeps_all_20_conflicts(database, kind):
+    repo.save_edit_backup(OWNER, KEY, raw("head"), None)
+    explicit = raw("explicit")
+    insert_copy(database, explicit, kind, "2026-01-01T00:00:00.000Z")
+    for index in range(20):
+        insert_copy(database, raw(f"c{index:02d}"), "conflict", f"2026-02-01T00:00:{index:02d}.000Z")
+    result = repo.save_edit_backup(OWNER, KEY, explicit, None)
+    assert result["status"] == "conflict" and result["copy_hash"] == digest(explicit)
+    state = kinds(database)
+    assert state[digest(explicit)] == kind and conflicts(database) == 20
+
+
+def test_legacy_conflicts_resend_oldest_keeps_it_plus_latest_19_and_trimmed_hash_returns_as_new(database):
+    repo.save_edit_backup(OWNER, KEY, raw("head"), None)
+    for index in range(25):  # 상한 전 운영으로 쌓인 25개(시각이 다르다)
+        insert_copy(database, raw(f"old{index:02d}"), "conflict", f"2026-01-01T00:00:{index:02d}.000Z")
+    result = repo.save_edit_backup(OWNER, KEY, raw("old00"), None)
+    assert result["status"] == "conflict" and result["copy_hash"] == digest(raw("old00"))
+    assert set(kinds(database)) == {digest(raw("old00"))} | {digest(raw(f"old{index:02d}")) for index in range(6, 25)}
+    assert repo.save_edit_backup(OWNER, KEY, raw("old01"), None)["status"] == "conflict"  # 지워진 원문이 다시 오면 새 사본
+    state = kinds(database)
+    assert digest(raw("old01")) in state and len(state) == 20 and digest(raw("old00")) not in state
+
+
+def test_same_time_conflicts_are_trimmed_in_list_order(database):
+    repo.save_edit_backup(OWNER, KEY, raw("head"), None)
+    hashes = []
+    for index in range(25):
+        data = raw(f"same{index}")
+        insert_copy(database, data, "conflict", "2026-01-01T00:00:00.000Z")
+        hashes.append(digest(data))
+    repo.save_edit_backup(OWNER, KEY, raw("new"), None)
+    expected = [digest(raw("new"))] + sorted(hashes, reverse=True)[:19]
+    assert [row["data_hash"] for row in repo.get_edit_backup(OWNER, KEY, limit=100)["copies"]] == expected
+
+
+def test_trim_failure_rolls_back_deletion_copy_and_head(database, monkeypatch):
+    repo.save_edit_backup(OWNER, KEY, raw("head"), None)
+    for index in range(20):
+        insert_copy(database, raw(f"c{index:02d}"), "conflict", f"2026-01-01T00:00:{index:02d}.000Z")
+    before = repo.get_edit_backup(OWNER, KEY, include_data=True, limit=100)
+    original = store._trim_conflicts
+
+    def fail_after_trim(*args):
+        original(*args)  # 가장 오래된 c00 을 실제로 지운 뒤
+        raise sqlite3.OperationalError("injected trim failure")
+
+    monkeypatch.setattr(store, "_trim_conflicts", fail_after_trim)
+    with pytest.raises(sqlite3.OperationalError):
+        repo.save_edit_backup(OWNER, KEY, raw("x"), None)
+    assert repo.get_edit_backup(OWNER, KEY, include_data=True, limit=100) == before
+
+
+def test_restore_of_trimmed_copy_writes_nothing(database):
+    repo.save_edit_backup(OWNER, KEY, raw("head"), None)
+    insert_copy(database, raw("oldest"), "conflict", "2026-01-01T00:00:00.000Z")
+    for index in range(20):
+        repo.save_edit_backup(OWNER, KEY, raw(f"c{index}"), None)
+    assert digest(raw("oldest")) not in kinds(database)
+    before = repo.get_edit_backup(OWNER, KEY, include_data=True)
+    with pytest.raises(LookupError):
+        repo.restore_edit_backup(OWNER, KEY, 1, copy_hash=digest(raw("oldest")), local_raw=raw("local"))
+    assert repo.get_edit_backup(OWNER, KEY, include_data=True) == before
 
 
 def test_restore_preserves_both_versions_and_retry_local_raw(database):

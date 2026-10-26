@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { emptyEditDoc, keepClipDurs, type EditDoc } from "./editTimeline";
 import { createEditArchive, knownDocEquals, MAX_ARCHIVE_BYTES, parseEditArchive, utf8Bytes, type ArchiveTarget } from "./editArchive";
-import { captureEditBackupGuard, editBackupActive, loadEditBackup, restoreEditBackup, subscribeEditBackup } from "./editDocBackup";
+import { captureEditBackupGuard, editBackupActive, loadEditBackup, noteEditBackupSynced, restoreEditBackup, subscribeEditBackup } from "./editDocBackup";
 import { getAccountScope } from "./accountScope";
 import {
   clearUndo,
@@ -308,6 +308,7 @@ export function useEditDoc(key: string | null, flash: (message: string) => void,
         const check = readEditRaw(key);
         if (check.kind !== "ok" || check.raw !== raw) { retryRead(); return; }
         finishRestore(candidate, raw, false);
+        noteEditBackupSynced(key, raw); // 로컬에 쓰고 다시 읽어 확인한 head — 복구 직후 편집도 이 판에 잇는다
         flashRef.current(t("DB 백업에서 편집을 복구했습니다."));
       } catch {
         if (!disposed) retry = setTimeout(() => { void recover(); }, 30_000);
@@ -338,6 +339,7 @@ export function useEditDoc(key: string | null, flash: (message: string) => void,
       const check = readEditRaw(expected.key);
       if (check.kind !== "ok" || check.raw !== restoredRaw) { retryRead(); return "uncertain"; }
       finishRestore(candidate, restoredRaw);
+      noteEditBackupSynced(expected.key, restoredRaw); // 응답이 아니라 로컬 적용을 확인한 뒤 — 복원 직후 편집도 복원한 판에 잇는다
       return "saved";
     } catch { return "uncertain"; }
   }, [finishRestore, isArchiveSnapshotCurrent, pull, retryRead]);
