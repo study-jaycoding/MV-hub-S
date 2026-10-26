@@ -594,7 +594,8 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `CutReel.tsx`(약 370줄) | 모아보기 — [개별] 큰 카드(표지·순번·★ 대표/최신 것·작업자·크레딧·생성일·검토) / [연결] `ReelPlayer`: 대표를 이어서 재생(가상 시간, 이미지·깨진 영상 3초, 길이를 다 알기 전 타임바 잠금, 반복 끄면 끝에서 멈춤, ↑↓·Space·Home/End). 클립은 보이는 값 전부의 JSON 으로 메모(카드가 다시 와도 그대로), 바뀌면 key 로 다시 올린다. 영상 길이는 **주소마다 한 번**(`DURATION_CACHE`, 모듈 수준)·**한 번에 둘씩** 읽고 끝나거나 닫히면 요소의 주소를 뗀다(10-09 실측: 28개 동시 읽기 → 첫 재생 6.2초 → 0.6초, 열고 닫기 5번 영상 요청 +334 → +7). 화면 영상의 loadedmetadata 로도 길이를 채운다. **영상 요소 둘(앞·뒤, 떼지 않음)**: 뒤의 것에 다음 영상(이미지 컷은 건너뛴 그 뒤 영상)을 미리 올려 두고 넘어갈 때 자리만 바꾼다, 끝 0.3초 전부터 뒤의 것을 소리 없이 굴린다(`ROLL_AHEAD`·`ROLL_MAX`, 편집 탭 `editVideoPair` 와 같은 원리) — 전환 간격 130~200ms → **0**(10-09 실측, Jay "끊김 없이"). 이벤트는 앞의 것·지금 컷이 영상일 때만 엔진에 간다, 세우면 굴리던 뒤의 것도 세운다, 정리 때 두 요소의 주소·기록을 비운다(StrictMode). `ViewTimeline` 과 원리는 같지만 요구가 달라 따로 둔다 | `CutReel`, `ReelPlayer` |
 | `FilterSidebar.tsx`(232줄) | 좌측 필터(프로젝트/컬러/자동태그/생성자/공유) 껍데기 | `FilterSidebar` |
 | `SearchBox.tsx`(58줄) | 디바운스 검색 입력 | `SearchBox` |
-| `TopBar.tsx`(150줄) | 상단바(로고·탭·동기화·검색·Assets·계정) | `TopBar` |
+| `TopBar.tsx`(270줄) | 상단바(로고·탭·동기화·검색·아이콘 캡슐[편집·Assets·관리·끝 칸 알림 종]·계정) | `TopBar` |
+| `TopIcon.tsx`(30줄) | 머리줄 아이콘 틀 — 평소 선(20px)·켜짐 투톤(22px) 두 그림을 그려 두고 `.lit` 로 고름 · 그라데이션 `Grad`(TopBar·NotificationCenter 가 같이 씀) | `TopIcon`, `Grad` |
 | `app/SelectionActionBar.tsx`(216줄) | 선택바 2종(`BoardSelectionActionBar`·`LibrarySelectionActionBar`) | 위 2개 |
 | `app/AppOverlays.tsx`(172줄) | App 이 띄우는 오버레이 모음(미리보기·정보·비교…) 배선. 코드를 늦게 받는 창의 **틀** `LazyModalShell`(막·겹 번호·Esc 를 여는 순간 쥐고 본문만 늦게 온다) | `AppOverlays`, `VideoCompareOverlay` |
 | `app/ResolveNotices.tsx` | Resolve 보내기 결과 가운데 확인이 필요한 것(부분 성공·실패·결과 불명) — 알림 바로 아래에 ✕ 로 닫을 때까지 남는 줄(세 줄까지). 겹이 아니다(Esc·뒤 화면의 키를 건드리지 않는다). 무엇을 남길지는 `lib/useResolveTransferActions` 가 정한다. 편집 탭 경고도 같은 줄의 위쪽에(2026-10-24 — `lib/useStateNotices`, 글자 단추·스스로 닫기) | `ResolveNotices` |
@@ -614,7 +615,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 |---|---|---|
 | `AccountMenu.tsx`(502줄) | 계정·워크스페이스 드롭다운(포털) | `AccountMenu` |
 | `ManageAccount.tsx`(229줄) | 내 계정 플로팅 창(정보·표시이름) | `ManageAccount` |
-| `NotificationCenter.tsx`(631줄) | 벨 + 알림 패널(코멘트·릴리스 공지 병합, 포털) | `NotificationCenter` |
+| `NotificationCenter.tsx`(690줄) | 벨(머리줄 캡슐의 끝 칸 — 열림 = 금색 투톤) + 알림 패널(코멘트·릴리스 공지 병합, 포털) | `NotificationCenter` |
 | `UpdateProgressOverlay.tsx`(246줄) | 업데이트 진행 덮개(포털·화면 차단·자체 폴링·강제 확인) | `UpdateProgressOverlay` |
 | `SettingsPanel.tsx`(671줄) | 설정 플로팅 창 껍데기 + 생성물 점검/백필 | `SettingsPanel` |
 | `settings/SettingsSections.tsx`(611줄) | 설정 4개 절(외형·다운로드 위치·메타 연속성·Resolve) | 4개 export |
