@@ -12,8 +12,11 @@ import { videoEnd, type EditVideo } from "./useEditPlayback";
 // 미리 굴리는 길이의 한도(실제 시간, 초). 앞의 것이 받느라 서 있으면 넘어가는 순간이 오지 않는다 — 그동안 뒤의 것이 혼자
 //  멀리 가면 그만큼 건너뛰게 되므로, 이만큼 가면 제자리로 돌려 세운다(엔진의 ROLL_SLOP 보다 짧다).
 const ROLL_MAX = 0.25;
+const HAVE_CURRENT_DATA = 2; // 지금 자리의 그림이 있다
 
-export function pairVideo(a: HTMLVideoElement, b: HTMLVideoElement): EditVideo {
+// holdFrame = 넘길 때 새 것이 그림을 낼 때까지 옛 그림을 둔다(클린 피드). 끈 짝(앱 뷰어·소스 판의 재생 엔진)은 바로 바꿔 보인다 — 기다리는 동안
+//  다음 것을 미리 받지 않게 되므로 엔진의 넘김 순서까지 바뀐다(이번엔 피드만).
+export function pairVideo(a: HTMLVideoElement, b: HTMLVideoElement, holdFrame = false): EditVideo {
   let front = a;
   let back = b;
   let frontUrl = "";
@@ -21,11 +24,20 @@ export function pairVideo(a: HTMLVideoElement, b: HTMLVideoElement): EditVideo {
   let backTime = NaN; // 뒤의 것을 세워 둔 시각. NaN = 모른다(방금까지 앞에서 재생하던 요소다 — 다시 세워야 한다)
   let rolling = false; // 뒤의 것을 미리 굴리는 중이다(volume 0)
   let backRate = 1; // 뒤의 것을 굴릴 배속 — 그 클립의 속도 × 재생 배속(앞의 것과 다를 수 있다 — 클립마다 속도가 다르다)
+  // 앞뒤를 바꿨지만 새 앞 요소가 아직 그림이 없다(받는 중) — 그 동안은 옛 요소(이제 뒤)의 마지막 그림을 그대로 보인다. 그림 없는 요소를 보이면
+  //  검은 화면이다(2026-10-26 Jay "클립 넘어갈 때 검은 화면이 생겼다가 재생" — 서버 중계로 미리 받기가 넘김까지 못 끝난 때).
+  let held = false;
   const wraps = new Map<() => void, (event: Event) => void>();
   const mark = () => {
+    held = false;
     delete front.dataset.spare;
     back.dataset.spare = ""; // CSS 가 가린다(.ed-media[data-spare]) — 자리는 차지한 채라 디코딩된 프레임이 바로 나온다
   };
+  const reveal = (event: Event) => {
+    // 새 것이 그림을 냈다 — 또는 못 받았다(오류 — 추종 판이 썸네일로 알린다. 기다림을 풀어야 다시 미리 받는다)
+    if (held && event.currentTarget === front && (event.type === "error" || front.readyState >= HAVE_CURRENT_DATA)) mark();
+  };
+  if (holdFrame) for (const el of [a, b]) for (const type of ["loadeddata", "seeked", "canplay", "error"]) el.addEventListener(type, reveal);
   mark();
   return {
     get src() { return frontUrl; },
@@ -45,7 +57,10 @@ export function pairVideo(a: HTMLVideoElement, b: HTMLVideoElement): EditVideo {
     pause: () => front.pause(),
     load: () => front.load(),
     removeAttribute(name: string) {
-      if (name === "src") frontUrl = "";
+      if (name === "src") {
+        frontUrl = "";
+        if (held) mark(); // 영상을 내린다(빈 자리·그림 클립) — 옛 그림을 남기지 않는다
+      }
       front.removeAttribute(name);
     },
     addEventListener(type: string, listener: () => void) {
@@ -63,6 +78,7 @@ export function pairVideo(a: HTMLVideoElement, b: HTMLVideoElement): EditVideo {
     // 다음에 보일 영상을 뒤의 것에 올려 그 시각에 세워 둔다(null = 비운다). 이미 그렇게 해 두었으면 아무것도 하지 않는다.
     //  rate = 그것을 미리 굴릴 배속(그 클립의 속도 × 재생 배속).
     prepare(url: string | null, time: number, rate = 1) {
+      if (held) return; // 뒤의 것이 아직 보이는 옛 그림이다 — 건드리지 않는다(새 것이 그림을 내면 다음 프레임에 다시 불린다)
       backRate = rate;
       if (rolling) back.playbackRate = rate;
       const next = url ?? "";
@@ -87,12 +103,14 @@ export function pairVideo(a: HTMLVideoElement, b: HTMLVideoElement): EditVideo {
       [frontUrl, backUrl, backTime] = [url, frontUrl, NaN];
       if (rolling) front.volume = back.volume; // 굴리느라 꺼 둔 소리를 돌려준다(방금까지 앞이던 요소의 값으로)
       rolling = false;
-      mark();
+      if (!holdFrame || front.readyState >= HAVE_CURRENT_DATA) mark();
+      else held = true; // 아직 받는 중 — 그림이 나오면(reveal) 바꿔 보인다
       return true;
     },
     // 넘어가기 직전 — 뒤의 것을 소리 없이 미리 굴린다(prepare 가 받은 그 클립의 배속). 끄면 세우고 세워 둔 자리로 돌린다.
     //  굴리는 동안 프레임마다 다시 불린다 — 너무 멀리 갔으면(ROLL_MAX) 제자리로 돌려 세운다.
     roll(on: boolean) {
+      if (held) return; // 뒤의 것은 보이는 옛 그림이다(바꿔 끼운 뒤라 굴리던 것도 없다)
       // 실제 끝에 세워 둔 것은 굴리지 않는다(적어 둔 길이보다 짧은 영상 — 세울 자리가 그 끝으로 잘렸다): 끝난 영상에 play() 를
       //  걸면 처음부터 다시 돌아, 넘어온 순간 엉뚱한 시각의 영상이 시계를 받는다(Codex 코드 리뷰).
       if (on && (!backUrl || back.currentTime >= videoEnd(back))) return;
@@ -118,12 +136,12 @@ export function pairVideo(a: HTMLVideoElement, b: HTMLVideoElement): EditVideo {
 }
 
 // 뷰어 한 판의 영상 요소 둘과, 그 둘을 묶은 것(엔진에 넘긴다). 묶음은 레이아웃 단계에서 만든다 — 엔진이 이벤트를 거는 것보다 먼저.
-export function useVideoPair() {
+export function useVideoPair(holdFrame = false) {
   const front = useRef<HTMLVideoElement>(null);
   const spare = useRef<HTMLVideoElement>(null);
   const pair = useRef<EditVideo | null>(null);
   useLayoutEffect(() => {
-    pair.current = front.current && spare.current ? pairVideo(front.current, spare.current) : null;
-  }, []);
+    pair.current = front.current && spare.current ? pairVideo(front.current, spare.current, holdFrame) : null;
+  }, [holdFrame]);
   return { pair, front, spare };
 }

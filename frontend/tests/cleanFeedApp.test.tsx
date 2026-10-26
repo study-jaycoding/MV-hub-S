@@ -54,6 +54,8 @@ let root: Root;
 let socket: FakeSocket;
 const frames = (ms = 50) => act(() => { vi.advanceTimersByTime(ms); });
 const shown = () => document.querySelector("img")?.getAttribute("src") ?? null;
+// 영상이 든 요소 — 피드의 짝은 새 영상을 뒤 요소에 받아 앞으로 내놓는다(어느 요소인지는 정해져 있지 않다)
+const playing = () => [...document.querySelectorAll("video")].find((element) => element.hasAttribute("src"))!;
 const setHidden = (hidden: boolean) => {
   Object.defineProperty(document, "visibilityState", { value: hidden ? "hidden" : "visible", configurable: true });
   act(() => { document.dispatchEvent(new Event("visibilitychange")); });
@@ -162,7 +164,7 @@ it("숨김 → (숨은 동안 멈춘 채 탐색) → visible → 재동기 전�
   socket.hub(scene(1, { [clipKey(clipA)]: video, [clipKey(clipB)]: image(2) }));
   socket.hub(clock(1, 1));
   frames();
-  const element = host.querySelector("video")!;
+  const element = playing();
   act(() => { element.dispatchEvent(new Event("loadedmetadata")); });
   const play = vi.mocked(HTMLMediaElement.prototype.play);
   setHidden(true);
@@ -185,7 +187,7 @@ it("resync 표본이 visible 보다 먼저 와도 재동기된다", () => {
   socket.hub(scene(1, { [clipKey(clipA)]: video, [clipKey(clipB)]: image(2) }));
   socket.hub(clock(1, 1));
   frames();
-  act(() => { host.querySelector("video")!.dispatchEvent(new Event("loadedmetadata")); });
+  act(() => { playing().dispatchEvent(new Event("loadedmetadata")); });
   setHidden(true);
   setHidden(false);
   const play = vi.mocked(HTMLMediaElement.prototype.play);
@@ -239,7 +241,7 @@ it("closed 에 대기 토큰이 오면 영상 받기를 멈추고 대기 화면 
   socket.hub(scene(1, { [clipKey(clipA)]: video, [clipKey(clipB)]: image(2) }));
   socket.hub(clock(1, 1, { sync: 2 }));
   frames();
-  expect(host.querySelector("video")!.getAttribute("src")).toBe(media(3));
+  expect(playing().getAttribute("src")).toBe(media(3));
   const videos = [...host.querySelectorAll("video")];
   socket.hub({ t: "closed", reason: "closed", standby: TOKEN });
   expect(videos.every((element) => !element.hasAttribute("src"))).toBe(true); // 내리기 전에 비웠다
@@ -309,4 +311,20 @@ it("StrictMode(효과 두 번)에서도 — 대기 연결은 마지막 것만 �
   expect(fresh.filter((socket) => socket.readyState !== 3)).toHaveLength(1);
   expect(document.title).toBe("MV hub Clean Feed s2");
   window.history.replaceState(null, "", "/");
+});
+it("피드의 짝은 넘길 때 새 영상이 그림을 낼 때까지 앞 그림을 둔다 — 미리 받은 것이 아직 받는 중이면 가려 두고, 그림이 나오면 바꿔 보인다(넘김의 검은 화면 없이)", () => {
+  const video = (n: number) => ({ state: "ok", type: "video", url: media(n), thumb: null });
+  socket.hub(scene(1, { [clipKey(clipA)]: video(3), [clipKey(clipB)]: video(4) }));
+  socket.hub(clock(1, 4, { playing: true, moving: true }));
+  frames();
+  const byUrl = (url: string) => [...host.querySelectorAll("video")].find((element) => element.getAttribute("src") === url)!;
+  const a = byUrl(media(3));
+  const b = byUrl(media(4)); // 재생 중 — 다음 클립을 뒤 요소에 미리 받는다
+  expect([a.dataset.spare, b.dataset.spare]).toEqual([undefined, ""]);
+  socket.hub(clock(1, 5.05, { playing: true, moving: true })); // 경계를 지났다 — b 는 아직 그림이 없다(readyState 0)
+  frames();
+  expect([a.dataset.spare, b.dataset.spare]).toEqual([undefined, ""]); // 앞 그림(a)을 그대로 둔다
+  Object.defineProperty(b, "readyState", { value: 2, configurable: true });
+  act(() => { b.dispatchEvent(new Event("loadeddata")); });
+  expect([a.dataset.spare, b.dataset.spare]).toEqual(["", undefined]);
 });

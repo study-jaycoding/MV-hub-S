@@ -75,7 +75,7 @@ function CleanFeedSession({ session, keyValue, onStandby }: { session: string; k
   const held = useRef(0); // 마지막으로 보여 준 시각 — 장면이 아직 안 온 새 rev 의 표본 동안 그대로
   const [play, setPlay] = useState({ playing: false, rate: 1 });
   const socket = useRef<WebSocket | null>(null);
-  const { pair, front, spare } = useVideoPair();
+  const { pair, front, spare } = useVideoPair(true); // 넘길 때 새 클립이 그림을 낼 때까지 앞 그림을 둔다(검은 화면 없이)
 
   const now = useCallback(() => {
     const clock = feedClock(state.current, nowMs(), sceneRev.current, held.current);

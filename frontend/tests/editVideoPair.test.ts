@@ -6,8 +6,9 @@ import { pairVideo } from "../src/lib/editVideoPair";
 
 function element() {
   const el = document.createElement("video");
-  const state = { time: 0, error: null as object | null, paused: true };
+  const state = { time: 0, error: null as object | null, paused: true, ready: 4 }; // ready = readyState(기본: 그림 있음)
   Object.defineProperty(el, "currentTime", { get: () => state.time, set: (value: number) => { state.time = value; } });
+  Object.defineProperty(el, "readyState", { get: () => state.ready });
   Object.defineProperty(el, "error", { get: () => state.error });
   const load = vi.spyOn(el, "load").mockImplementation(() => { state.time = 0; });
   Object.defineProperty(el, "paused", { get: () => state.paused });
@@ -146,4 +147,71 @@ it("넘어가기 직전에는 뒤의 것을 소리 없이 미리 굴린다 — �
   expect(a.el.volume).toBe(0);
   video.prepare!("/v/d", 0); // 굴리던 것을 다른 영상으로 바꾼다 — 소리를 돌려놓는다
   expect(a.el.volume).toBe(1);
+});
+
+it("내놓은 것이 아직 그림이 없으면(받는 중) 옛 그림을 그대로 보이고, 그림이 나오면 바꿔 보인다 — 넘김의 검은 화면 대신(Jay 2026-10-26)", () => {
+  const a = element();
+  const b = element();
+  const video = pairVideo(a.el, b.el, true); // 클린 피드의 짝
+  video.src = "/v/a";
+  video.prepare!("/v/b", 0);
+  b.state.ready = 1; // 메타데이터만 — 그 자리의 그림이 아직 없다(서버 중계가 넘김까지 못 받음)
+  expect(video.swap!("/v/b")).toBe(true);
+  expect(video.src).toBe("/v/b"); // 엔진은 새 것을 다룬다
+  expect([a.el.dataset.spare, b.el.dataset.spare]).toEqual([undefined, ""]); // 보이는 것은 아직 옛 것
+  video.prepare!("/v/c", 0); // 기다리는 동안 뒤(보이는 옛 것)는 건드리지 않는다
+  expect(a.el.getAttribute("src")).toBe("/v/a");
+  expect(a.load).not.toHaveBeenCalled();
+  video.roll!(true);
+  expect(a.play).not.toHaveBeenCalled();
+  a.el.dispatchEvent(new Event("loadeddata")); // 옛 것의 늦은 이벤트로는 안 바뀐다
+  b.el.dispatchEvent(new Event("loadeddata")); // 새 것이 아직 그림이 없다
+  expect(b.el.dataset.spare).toBe("");
+  b.state.ready = 2;
+  b.el.dispatchEvent(new Event("loadeddata"));
+  expect([a.el.dataset.spare, b.el.dataset.spare]).toEqual(["", undefined]);
+  video.prepare!("/v/c", 0); // 바꿔 보인 뒤에는 다시 미리 받는다
+  expect(a.el.getAttribute("src")).toBe("/v/c");
+});
+
+it("기다리는 중에 영상을 내리면(빈 자리·그림 클립) 옛 그림을 남기지 않는다 · 그림이 있으면 지금처럼 바로 바꿔 보인다", () => {
+  const a = element();
+  const b = element();
+  const video = pairVideo(a.el, b.el, true); // 클린 피드의 짝
+  video.src = "/v/a";
+  video.prepare!("/v/b", 0);
+  b.state.ready = 0;
+  video.swap!("/v/b");
+  expect(a.el.dataset.spare).toBe(undefined);
+  video.removeAttribute("src");
+  expect([a.el.dataset.spare, b.el.dataset.spare]).toEqual(["", undefined]);
+  const c = element();
+  const d = element();
+  const ready = pairVideo(c.el, d.el, true);
+  ready.prepare!("/v/b", 0);
+  d.state.ready = 2;
+  ready.swap!("/v/b");
+  expect([c.el.dataset.spare, d.el.dataset.spare]).toEqual(["", undefined]);
+});
+it("새 것이 오류면 기다림을 끝낸다(다시 미리 받는다) · 끈 짝(앱 뷰어·소스 판)은 그림이 없어도 지금처럼 바로 바꿔 보인다", () => {
+  const a = element();
+  const b = element();
+  const video = pairVideo(a.el, b.el, true);
+  video.src = "/v/a";
+  video.prepare!("/v/b", 0);
+  b.state.ready = 0;
+  video.swap!("/v/b");
+  b.el.dispatchEvent(new Event("error"));
+  expect([a.el.dataset.spare, b.el.dataset.spare]).toEqual(["", undefined]);
+  video.prepare!("/v/c", 0);
+  expect(a.el.getAttribute("src")).toBe("/v/c");
+  const c = element();
+  const d = element();
+  const plain = pairVideo(c.el, d.el);
+  plain.prepare!("/v/b", 0);
+  d.state.ready = 0;
+  plain.swap!("/v/b");
+  expect([c.el.dataset.spare, d.el.dataset.spare]).toEqual(["", undefined]);
+  plain.prepare!("/v/c", 0); // 기다리지 않는다 — 다음 것을 바로 미리 받는다
+  expect(c.el.getAttribute("src")).toBe("/v/c");
 });

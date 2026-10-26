@@ -731,7 +731,7 @@ export function EditCleanFeedWindow({ feed, layout, doc, sourceOf, now, playing,
       }, 0);
     };
   }, [feed]);
-  const { pair, front, spare } = useVideoPair();
+  const { pair, front, spare } = useVideoPair(true); // 넘길 때 새 클립이 그림을 낼 때까지 앞 그림을 둔다(검은 화면 없이)
   const pick = useCallback((slot: CutSlot, local: number) => visibleClip(doc, slot, local), [doc]);
   const { clip, source, failed } = useEditFollow({ videoRef: pair, layout, pick, sourceOf, now, playing, rate, catchUp: true });
   return createPortal(<CleanFeedPicture front={front} spare={spare} clip={clip} source={source} failed={failed} />, feed.win.document.body);
