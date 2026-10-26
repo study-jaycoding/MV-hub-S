@@ -60,6 +60,12 @@ export function videoEnd(video: EditVideo | null | undefined): number {
   return Number.isFinite(length) ? length : Infinity;
 }
 
+// 영상에 주는 재생률 — 크롬 한도 1/16~16 안으로. 넘기면 대입이 예외를 던져 재생 갱신·다음 프레임 예약이 멈춘다
+//  (클립 400% × 셔틀 8배 = 32 · 클린 피드 4배 × 따라붙기 1.25 = 20 — 릴리스 묶음 리뷰 B).
+export function playRate(rate: number): number {
+  return Math.min(16, Math.max(1 / 16, rate));
+}
+
 export interface EditSource {
   state: MediaState;
   url: string | null;
@@ -323,8 +329,8 @@ export function useEditPlayback({
         if (owner === "video" && state.arrived === state.token && (video.paused || over(video))) startVideo();
         if (owner === "raf" && !video.paused) video.pause();
       }
-      // 바닥(1)은 배속에만 건다 — 곱한 값에 걸면 25% 속도가 사라진다(Codex 설계 검토). 크롬 한도 0.0625~16 안이다(0.25 ~ 4 × 4x).
-      if (video && playable) video.playbackRate = Math.max(1, Math.abs(state.rate)) * speed;
+      // 바닥(1)은 배속에만 건다 — 곱한 값에 걸면 25% 속도가 사라진다(Codex 설계 검토). 셔틀 8배 × 400% 는 크롬 한도를 넘어 16 에서 멈춘다.
+      if (video && playable) video.playbackRate = playRate(Math.max(1, Math.abs(state.rate)) * speed);
       prepare();
       publish();
     };
@@ -361,7 +367,7 @@ export function useEditPlayback({
       const url = shown && shown !== state.shown ? source!.url : null;
       // 세워 둘 자리·굴릴 배속도 **그 다음 클립의** 시작점·속도로 센다(지금 올린 클립의 것이 아니다)
       const at = next?.at.local ?? 0;
-      video.prepare(url, url ? mediaAt(clip!, at) : at, url ? Math.max(1, Math.abs(state.rate)) * clipSpeed(clip!) : 1);
+      video.prepare(url, url ? mediaAt(clip!, at) : at, url ? playRate(Math.max(1, Math.abs(state.rate)) * clipSpeed(clip!)) : 1);
       video.roll?.(!!url && next!.left / state.rate <= ROLL_LEAD);
     };
 

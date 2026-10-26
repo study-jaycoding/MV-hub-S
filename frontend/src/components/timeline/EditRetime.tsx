@@ -135,6 +135,9 @@ export function EditRetime({
   const move = (event: ReactPointerEvent<HTMLElement>) => {
     const held = press.current;
     if (!held || held.id !== event.pointerId) return;
+    // 왼쪽 단추가 떼어진 채 온 움직임 — 다른 단추를 같이 누른 채 왼쪽만 떼면 pointerup 은 마지막 단추에서야 온다.
+    //  EditTimeline 끌기처럼 거기서 취소한다(조작 규칙 21 — 뗀 뒤 움직인 값이 저장되지 않게, 릴리스 묶음 리뷰 B).
+    if (!(event.buttons & 1)) return up(true)(event);
     const frames = Math.max(1, Math.round(held.frames + ((event.clientX - held.x) / zoom) * EDIT_FPS));
     if (held.kind === "speed") {
       const next = speedForFrames(clip, frames);

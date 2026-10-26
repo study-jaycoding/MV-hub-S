@@ -12,7 +12,7 @@
 // ponytail: 미리 받는 것은 지금 클립 바로 다음 하나뿐 — 사이에 빈 자리가 있으면 그다음 것은 넘어갈 때 받는다(타임라인 판과 같다).
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { clipKey, clipSpeed, localAt, mediaAt, posAt, trackClip, type CutSlot, type EditLayout, type SlotClip } from "./editTimeline";
-import { videoEnd, type EditSource, type EditVideo } from "./useEditPlayback";
+import { playRate, videoEnd, type EditSource, type EditVideo } from "./useEditPlayback";
 
 export interface EditShown {
   clip: SlotClip | null;
@@ -153,7 +153,7 @@ export function useEditFollow({
             if (off > (state.rewound ? EXACT : DRIFT)) video.currentTime = mediaAt(shownClip, target);
             state.rewound = false;
           }
-          video.playbackRate = steering ? base * steer(target - localAt(shownClip, video.currentTime)) : base;
+          video.playbackRate = playRate(steering ? base * steer(target - localAt(shownClip, video.currentTime)) : base);
           // 소스가 갈리며 끊긴 재생 요청은 실패가 아니다. 실제 끝에 선 영상은 틀지 않는다 — 브라우저가 처음부터 다시 튼다.
           if (video.paused && localAt(shownClip, video.currentTime) < end) void video.play().catch(() => {}); // 방금 보낸 자리로 본다
         } else {

@@ -410,6 +410,7 @@ class ValidatePlanTests(unittest.TestCase):
         self.bad(**with_b(src=95.9 / 24 * 1.27))  # 95프레임
         self.bad(**with_b(src=0))
         self.bad(**with_b(src=None))
+        self.bad(**with_b(src=1e308))  # × 24 가 무한대 — OverflowError(500) 가 아니라 계획 오류(400)
         self.bad(**{**v3, "clips": [clip("a", 1, 0, 120, head=0), {key: value for key, value in fast.items() if key != "src"}]})
         self.bad(**{**v3, "clips": [clip("a", 1, 0, 120, head=0), {key: value for key, value in fast.items() if key != "speed"}]})
         self.bad(**{**v3, "clips": [sped("a", 1, 0, 120, 2.0, head=0) | {"kind": "image"}, fast]})  # 그림에는 속도가 없다

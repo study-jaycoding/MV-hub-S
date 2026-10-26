@@ -11,7 +11,12 @@ import type { EditSource, EditVideo } from "../src/lib/useEditPlayback";
 class FakeVideo implements EditVideo {
   src = "";
   currentTime = 0;
-  playbackRate = 1;
+  private rate = 1;
+  get playbackRate() { return this.rate; }
+  set playbackRate(value: number) { // 크롬처럼 1/16~16 밖이면 예외(릴리스 묶음 리뷰 B)
+    if (!(value >= 1 / 16 && value <= 16)) throw new DOMException("playback rate out of range", "NotSupportedError");
+    this.rate = value;
+  }
   paused = true;
   seeking = false;
   plays = 0;
@@ -414,4 +419,21 @@ it("속도 클립(2026-10-23) — 영상 시각 = 시작점 + 컷 안 시각 × 
   time = 4.2;
   frame();
   expect(video.currentTime).toBeCloseTo(1 + 4.2 * 0.25);
+});
+
+it("재생률은 크롬 한도(16) 안 — 400% 클립을 8배로 따라가도(따라붙기 ×1.25 포함) 예외 없이 16(릴리스 묶음 리뷰 B)", () => {
+  const doc: EditDoc = { ...emptyEditDoc(), v: 2, clips: [{ cut: "e070/c1", gen: "fast", track: 1, dur: 40, kind: "video", speed: 4 }] };
+  const layout = buildLayout(["e070/c1"], doc); // 원본 40초 ÷ 4 = 컷 안 0~10초
+  time = 1;
+  render({ track: 1, layout, playing: true, rate: 8, catchUp: true });
+  frame();
+  video.emit("loadedmetadata");
+  video.currentTime = 4 - 0.5; // 컷 안 1초 = 영상 4초 — 그보다 뒤처졌다(따라붙기 ×1.25)
+  time = 1.016;
+  frame();
+  expect(video.playbackRate).toBe(16); // 8 × 4 × 1.25 = 40 → 한도
+  expect(video.paused).toBe(false);
+  time = 1.032;
+  frame();
+  expect(frames.length).toBeGreaterThan(0); // 대입 예외로 다음 프레임 예약이 멈추지 않았다
 });

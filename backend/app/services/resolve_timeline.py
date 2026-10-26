@@ -183,7 +183,8 @@ def validate_plan(plan: Any, generation_ids: set[str]) -> dict[str, Any]:
                 raise TimelinePlanError("타임라인 계획의 그림 클립에 속도가 있습니다")
             speed = _speed(row.get("speed"))
             src = _number(row.get("src"), "클립 원본 길이")
-            if src <= 0 or _speed_frames(src, speed) != end - start:
+            # 상한 먼저 — 아주 큰 값은 src × 24 가 무한대가 돼 floor 가 OverflowError(400 이 아닌 500)를 던진다(릴리스 묶음 리뷰 A)
+            if not 0 < src <= MAX_FRAMES or _speed_frames(src, speed) != end - start:
                 raise TimelinePlanError("타임라인 계획의 속도 클립 길이가 원본 길이·속도와 맞지 않습니다")
         clips.append({
             "gen_id": gen_id(row, "클립"),

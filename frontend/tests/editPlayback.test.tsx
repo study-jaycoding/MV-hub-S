@@ -10,7 +10,12 @@ import { useEditPlayback, type EditSource, type EditVideo } from "../src/lib/use
 class FakeVideo implements EditVideo {
   src = "";
   currentTime = 0;
-  playbackRate = 1;
+  private rate = 1;
+  get playbackRate() { return this.rate; }
+  set playbackRate(value: number) { // 크롬처럼 1/16~16 밖이면 예외(릴리스 묶음 리뷰 B — 넘기면 재생 갱신이 멈췄다)
+    if (!(value >= 1 / 16 && value <= 16)) throw new DOMException("playback rate out of range", "NotSupportedError");
+    this.rate = value;
+  }
   paused = true;
   seeking = false;
   loads = 0;
@@ -778,6 +783,18 @@ it("느린 속도(25%)는 재생률에 바닥을 걸지 않는다 — 배속에�
   video.currentTime = 0.25; // 영상 0.25초 = 컷 안 1초
   frame(16);
   expect(playback.now()).toBeCloseTo(1);
+});
+
+it("재생률은 크롬 한도(16) 안 — 400% 클립을 8배로 셔틀해도 예외 없이 16 이고 재생이 이어진다(릴리스 묶음 리뷰 B)", () => {
+  render({ scope: "speed-cap", ...speedDoc("top", 4) });
+  video.emit("loadedmetadata");
+  video.emit("seeked");
+  for (let i = 0; i < 4; i += 1) act(() => playback.shuttle(1)); // 1 → 2 → 4 → 8배
+  expect(playback.view.rate).toBe(8);
+  expect(video.playbackRate).toBe(16); // 8 × 400% = 32 → 한도
+  frame(16);
+  expect(playback.view.playing).toBe(true); // 대입 예외로 갱신이 멈추지 않았다
+  expect(frames.length).toBeGreaterThan(0); // 다음 프레임이 예약돼 있다
 });
 
 it("같은 영상의 속도만 바뀌면(속도 막대) 새 식으로 영상을 다시 보낸다 — 재생헤드는 그대로", () => {

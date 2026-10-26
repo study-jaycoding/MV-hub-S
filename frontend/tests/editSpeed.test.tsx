@@ -266,7 +266,7 @@ describe("속도 막대 계산", () => {
     // 5초 100% 를 끌어 느리게(25%) — 끄는 중 끝 손잡이의 값(480)이 그 속도의 범위(480) 안
     draw(slotClip());
     act(() => grip("speed").dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, clientX: 0 })));
-    act(() => grip("speed").dispatchEvent(new MouseEvent("pointermove", { bubbles: true, cancelable: true, clientX: 100000 })));
+    act(() => grip("speed").dispatchEvent(new MouseEvent("pointermove", { bubbles: true, cancelable: true, buttons: 1, clientX: 100000 })));
     expect(aria("trim")).toEqual(["1", "480", "480", null]);
     expect(aria("speed")).toEqual(["25", "25", "400", null]);
     act(() => root.unmount());
@@ -315,8 +315,9 @@ describe("Ctrl+R 속도 막대", () => {
   };
   const stored = () => JSON.parse(localStorage.getItem(docKey)!) as { v: number; clips: { gen: string; speed?: number; trim?: number }[] };
   const g1 = () => stored().clips.find((clip) => clip.gen === "g1")!;
-  const pointer = (target: Element, type: string, clientX: number) => act(() => {
-    target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX }));
+  // 끄는 동안은 왼쪽 단추가 눌려 있다(buttons 1) — 떼어진 채 온 움직임은 끌기를 취소한다(조작 규칙 21)
+  const pointer = (target: Element, type: string, clientX: number, buttons = type === "pointerup" ? 0 : 1) => act(() => {
+    target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons, clientX }));
   });
 
   beforeEach(() => {
@@ -412,5 +413,21 @@ describe("Ctrl+R 속도 막대", () => {
     expect(g1().speed).toBe(4);
     press({ key: "Escape", code: "Escape" });
     expect(document.querySelector(".ed-rt")).toBeNull();
+  });
+
+  it("끄는 중 오른쪽 단추를 같이 누르고 왼쪽부터 떼면 거기서 끌기를 취소한다 — 마지막 단추를 뗄 때 저장하지 않는다(릴리스 묶음 리뷰 B)", () => {
+    press({ key: "a", code: "KeyA", ctrlKey: true });
+    press({ key: "r", code: "KeyR", ctrlKey: true });
+    const grip = (kind: string) => document.querySelector<HTMLElement>(`.ed-rt .ed-rt-${kind}`)!;
+    for (const kind of ["speed", "trim"]) {
+      pointer(grip(kind), "pointerdown", 5000);
+      pointer(grip(kind), "pointermove", -5000); // 왼쪽으로 끄는 중
+      expect(document.querySelector(".ed-rt-foot")!.textContent).toContain(kind === "speed" ? "400%" : "");
+      pointer(grip(kind), "pointermove", -6000, 2); // 왼쪽을 떼고 오른쪽만 눌린 움직임
+      pointer(grip(kind), "pointerup", -7000); // 마지막(오른쪽) 단추를 뗌
+      expect(g1().speed).toBeUndefined();
+      expect(g1().trim).toBeUndefined();
+    }
+    expect(document.querySelector(".ed-rt-foot")!.textContent).not.toContain("400%"); // 미리보기도 내렸다
   });
 });
