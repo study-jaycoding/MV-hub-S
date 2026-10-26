@@ -640,6 +640,13 @@
 /* 알림 종 = 캡슐의 끝 칸(Jay 2026-10-26 B안). 종은 .notification-center 안의 하나뿐인 단추라 위의 :first/:last/:only-child 가 모두 걸린다 —
    여기서 끝 칸 모양으로 덮는다(같은 세기, 뒤에 있어 이긴다). 배지는 칸 오른쪽 위에서 캡슐 테두리에 걸친다(.notification-badge 그대로). */
 .top-ic-group > .notification-center > .top-ic-btn { width: 37px; border-width: 1px 1px 1px 0; border-radius: 0 17px 17px 0; }
+/* 검색칸 = 캡슐의 첫 칸(Jay 2026-10-26 B′). 첫 자식이 검색칸이라 편집 단추는 저절로 가운데 칸 모양. 길이는 .topbar-search(240px) 그대로.
+   칠 때(.assets-search:focus-within)는 캡슐 테두리를 그대로 두고 검색칸 바탕만 밝힌다 — 단추 칸까지 밝아지지 않게. */
+.top-ic-group > .topbar-search { height: 34px; border-right-width: 0; border-radius: 17px 0 0 17px; background: rgba(255, 255, 255, 0.04); }
+.top-ic-group > .topbar-search:focus-within { border-color: var(--border); background: rgba(255, 255, 255, 0.08); }
+/* 검색칸과 단추 사이 짧은 세로선 — 검색칸 바로 뒤 단추에(편집이 없으면 Assets) */
+.top-ic-group > .topbar-search + .top-ic-btn { position: relative; }
+.top-ic-group > .topbar-search + .top-ic-btn::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 1px; background: rgba(255, 255, 255, 0.13); }
 
 /* ── 본문 레이아웃 ── */
 .body { flex: 1; display: flex; min-height: 0; }

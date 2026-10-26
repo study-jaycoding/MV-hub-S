@@ -60,13 +60,10 @@ describe("머리줄 아이콘 단추", () => {
     expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([t("편집"), "Assets", t("프로젝트 관리 — 별도 창")]);
     expect(buttons.map((b) => b.textContent)).toEqual(["", "", ""]); // 글자 없음 — 이름은 title·aria-label
     expect(buttons.every((b) => b.title)).toBe(true);
-    // 셋은 한 캡슐(.top-ic-group — 시안 G3) 안에, 그 끝 칸이 알림 종(B안), 캡슐은 검색칸 바로 뒤
+    // 한 캡슐(.top-ic-group — 시안 G3) 안에: 첫 칸 검색칸(B′) · 편집·Assets·관리 · 끝 칸 알림 종(B안)
     const group = host.querySelector(".topbar .top-ic-group")!;
-    expect([...group.children]).toEqual([...buttons, host.querySelector(".topbar .notification-center")]);
+    expect([...group.children]).toEqual([host.querySelector(".topbar .topbar-search"), ...buttons, host.querySelector(".topbar .notification-center")]);
     expect(bell()).toBeTruthy();
-    const order = [...host.querySelector(".topbar")!.children];
-    const search = order.findIndex((el) => el.classList.contains("topbar-search"));
-    expect(order.indexOf(group)).toBe(search + 1);
     // 단추마다(종 포함) 평소(선)·켜짐(투톤) 그림을 둘 다 갖고 있다
     for (const b of [...buttons, bell()]) expect([b.querySelectorAll(".top-ic-line").length, b.querySelectorAll(".top-ic-lit").length]).toEqual([1, 1]);
     // 투톤 앞면 그라데이션 id 가 단추마다 다르다(같은 문서에서 겹치면 엉뚱한 색이 칠해진다)
@@ -79,11 +76,29 @@ describe("머리줄 아이콘 단추", () => {
     expect([onOpenEdit.mock.calls.length, onOpenAssets.mock.calls.length, onOpenManage.mock.calls.length]).toEqual([1, 1, 1]);
   });
 
-  it("편집·관리 연결이 없으면(관리 플래그 꺼짐 등) 그 단추는 없다 — 캡슐엔 Assets 와 끝 칸 알림 종만 남는다", () => {
+  it("편집·관리 연결이 없으면(관리 플래그 꺼짐 등) 그 단추는 없다 — 캡슐엔 검색칸·Assets·끝 칸 알림 종만 남는다", () => {
     act(() => root.render(bar()));
     expect(iconButtons().map((b) => b.getAttribute("aria-label"))).toEqual(["Assets"]);
     const group = host.querySelector(".topbar .top-ic-group")!;
-    expect([...group.children].map((el) => el.className)).toEqual(["top-ic-btn assets-btn", "notification-center"]);
+    expect([...group.children].map((el) => el.className.trim())).toEqual(["assets-search topbar-search", "top-ic-btn assets-btn", "notification-center"]);
+  });
+
+  it("캡슐 첫 칸 검색칸에 치면 검색한다(0.3초 뒤 · Enter 는 바로)", () => {
+    vi.useFakeTimers();
+    const onSearch = vi.fn();
+    act(() => root.render(bar({ onSearch })));
+    const input = host.querySelector<HTMLInputElement>(".top-ic-group > .topbar-search input")!;
+    const type = (value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    act(() => type("e001"));
+    expect(onSearch).not.toHaveBeenCalled();
+    act(() => { vi.advanceTimersByTime(300); });
+    expect(onSearch).toHaveBeenLastCalledWith("e001");
+    act(() => type("e001 c0010"));
+    act(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    expect(onSearch).toHaveBeenLastCalledWith("e001 c0010");
   });
 
   it("알림 종은 캡슐 끝 칸 — 알림 창이 열린 동안만 켜지고(투톤), 다시 누르면 꺼진다 · 다른 단추는 그대로", () => {

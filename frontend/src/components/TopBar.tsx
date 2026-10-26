@@ -117,23 +117,22 @@ export function TopBar({
 
       {/* 동기화 버튼 제거 — 자동 주기 동기화 + 계정 메뉴 '설정 → 전체 가져오기'로 대체 */}
 
-      {/* 프롬프트·태그 검색 — 우측(구 '공유' 버튼 자리)으로 이동 */}
-      {/* key = 탭 + 탭을 누른 횟수 — 탭을 누르면(같은 탭이어도) 검색칸을 다시 올린다. 예약해 둔(0.3초 뒤) 검색이 초기화된 화면에 걸리지
-          않게(언마운트가 예약을 버린다). 자동 따라가기(searchResetKey)는 key 가 아니라 신호로 내린다 — 사용자가 아무것도 안 해도 오므로
-          검색칸을 다시 올리면 치던 사람의 초점이 사라진다. 값이 바뀌는 초기화는 SearchBox 가 스스로 안다. */}
-      <SearchBox
-        key={`${filters.tab}:${tabPicks}`}
-        resetKey={searchResetKey}
-        className="topbar-search"
-        placeholder="Search · Tag"
-        value={filters.search}
-        onSearch={onSearch}
-      />
-
       {/* 편집 · Assets · 관리 — 글자 없는 아이콘 단추(Jay 2026-10-26). 켜지면(편집 탭 열림 · 그 별도 창이 떠 있음) 선 그림 대신 투톤 그림,
           켜진 채 다시 누르면 닫는다: 편집 = 밑의 탭 단추를 누른 것과 같게 떠난다 · 창 = 닫는다. Assets·관리는 분리된 브라우저 창. 관리(PM)는 플래그 on 일 때만.
-          바탕이 이어진 한 캡슐로 묶고(시안 G3), 알림 종이 그 끝 칸이다(B안 — 배지는 칸 오른쪽 위에 걸침, Jay 2026-10-26). */}
+          바탕이 이어진 한 캡슐로 묶고(시안 G3) — 첫 칸은 검색칸(B′ — 짧은 구분선, 칠 때 검색칸 바탕만 밝게), 끝 칸은 알림 종(B안 — 배지는
+          칸 오른쪽 위에 걸침). 모두 Jay 2026-10-26. */}
       <div className="top-ic-group">
+        {/* 프롬프트·태그 검색. key = 탭 + 탭을 누른 횟수 — 탭을 누르면(같은 탭이어도) 검색칸을 다시 올린다. 예약해 둔(0.3초 뒤) 검색이
+            초기화된 화면에 걸리지 않게(언마운트가 예약을 버린다). 자동 따라가기(searchResetKey)는 key 가 아니라 신호로 내린다 — 사용자가
+            아무것도 안 해도 오므로 검색칸을 다시 올리면 치던 사람의 초점이 사라진다. 값이 바뀌는 초기화는 SearchBox 가 스스로 안다. */}
+        <SearchBox
+          key={`${filters.tab}:${tabPicks}`}
+          resetKey={searchResetKey}
+          className="topbar-search"
+          placeholder="Search · Tag"
+          value={filters.search}
+          onSearch={onSearch}
+        />
         {onOpenEdit && (
           <button
             className={`top-ic-btn${editOpen ? " lit" : ""}`}
