@@ -1476,7 +1476,9 @@
 /* ── 마지막으로 확인한 결과 배지 ────────────────────────────────────────────
    ★.thumb-overlay 안에 넣지 않는다 — 그 부모는 평소 숨어 있다가 호버·선택 때 나타나므로
    요구(평소 보이고 호버 때 비켜줌)와 정반대다. 여기서 독립 요소로 띄운다.
-   상자·테두리 없이 글자+눈 아이콘만 띄운다(힉스필드 방식). */
+   반투명 칩 + 라임 글자 + 눈(Jay 10-26 C안 — 09-08 의 '상자 없이 흰 글자'는 밝은 그림 위에서 흐려졌다).
+   칩 바탕·테두리·글자 그림자는 카드 아래 폴더 이름표(.card-folder)와 같은 값(Jay — 진하면 너무 눈에 띈다).
+   모든 탭이 이 한 벌을 쓴다. 어셋 탭의 호버·작은 칸 규칙은 assets.css. */
 .last-viewed-badge {
   position: absolute;
   left: 50%;
@@ -1487,21 +1489,26 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  /* 상자 없이 글자만(힉스필드 방식, 사용자 확정). 회색 렌더 위에서도 읽히게 글자에 그림자만 준다. */
-  color: #fff;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(8, 9, 12, 0.34);
+  color: var(--accent);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
   font-size: 13px;
   font-weight: 500;
   line-height: 1;
   white-space: nowrap;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7), 0 0 8px rgba(0, 0, 0, 0.45);
   opacity: 1;
   transition: opacity 0.14s ease;
 }
 .last-viewed-badge svg {
   display: block;
   flex: none;
-  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.7));
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.9));
 }
+/* line-height 1 의 글자 상자는 아래(내림 자리)가 비어 글자가 눈보다 약 1px 낮아 보인다 — 픽셀로 재서 1px 올린다(Segoe UI 13px). */
+.last-viewed-text { position: relative; top: -1px; }
 /* 그림을 보려고 마우스를 올리면 비켜준다(사용자 확정 안). 카드/셀 어느 쪽에 붙어도 동작하게 둘 다. */
 .scene-card:hover .last-viewed-badge { opacity: 0; }
 /* 생성 탭 카드(.card > .card-thumb) — 같은 배지, 같은 규칙. */

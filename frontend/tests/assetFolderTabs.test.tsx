@@ -264,7 +264,7 @@ it("직접 파일이 있어도 폴더·전체 전환과 직접 파일 미리보�
   expect(host.querySelector('.lib-cut-seg button.on')?.textContent).toBe("폴더");
   await click(host.querySelector('[data-file-path="assets/CH/direct.png"] button')!);
   expect(preview).toHaveBeenCalledOnce();
-  expect(host.querySelector('[data-file-path="assets/CH/direct.png"] .asset-last-viewed')?.textContent).toBe("Last viewed");
+  expect(host.querySelector('[data-file-path="assets/CH/direct.png"] .last-viewed-badge')?.textContent).toBe("Last viewed");
   expect(new URL(preview.mock.calls[0][0].url, "http://test").searchParams.get("path")).toBe("assets/CH/direct.png");
   await middle(card("assets/CH/미아"));
   expect(tab("미아").getAttribute("aria-selected")).toBe("false");
