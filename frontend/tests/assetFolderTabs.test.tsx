@@ -726,3 +726,51 @@ it("카드 전체 미들클릭을 지원해도 작은 폴더·파일·더보기�
   expect(mocks.revealAsset).toHaveBeenCalledExactlyOnceWith("P", "assets/BG");
   expect(onOpenTab).not.toHaveBeenCalled();
 });
+
+// Jay 2026-10-26 — S 를 누르면 프로젝트 맨 위('뻘뻘뻘')로 갔다. 보던 폴더에 머물고, 기본 자리는 assets 폴더, 맨 위는 일부러 갔을 때만.
+const sourceButton = () => host.querySelector('button[title="소스로 등록된 것만 보기"]')!;
+const dirNow = () => localStorage.getItem("ch.assets.dir");
+
+it("S(소스만 보기)를 켜고 꺼도 보던 폴더에 머문다", async () => {
+  localStorage.setItem("ch.assets.dir", "assets/CH");
+  await mount();
+  await click(sourceButton());
+  expect(sourceButton().classList.contains("on")).toBe(true);
+  expect(dirNow()).toBe("assets/CH");
+  await click(sourceButton());
+  expect(dirNow()).toBe("assets/CH");
+});
+
+it("기억한 폴더 없이 열면 맨 위의 assets 폴더를 연다 — 프로젝트 맨 위는 트리 머리를 눌렀을 때만, 누르면 그대로 머문다", async () => {
+  localStorage.removeItem("ch.assets.dir");
+  await mount();
+  expect(dirNow()).toBe("assets");
+  expect(card("assets/CH")).toBeTruthy();
+  await click(host.querySelector(".assets-root-row")!);
+  expect(dirNow()).toBe("");
+  expect(card("assets")).toBeTruthy(); // 맨 위 = assets·assets2 카드
+  await click(sourceButton());
+  expect(dirNow()).toBe(""); // 일부러 간 맨 위도 S 에 흔들리지 않는다
+});
+
+it("프로젝트를 바꾸면 그 프로젝트의 assets 폴더를 연다(맨 위가 아니라)", async () => {
+  mocks.assetProjects.mockResolvedValue({ projects: ["P", "Q"], linked: [], default: "P" });
+  localStorage.setItem("ch.assets.dir", "assets/CH");
+  await mount();
+  const select = host.querySelector<HTMLSelectElement>("select.assets-project")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, "Q");
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await settle();
+  expect(select.value).toBe("Q");
+  expect(dirNow()).toBe("assets");
+});
+
+it("맨 위에 assets 폴더가 없는 프로젝트(assets 깊이로 등록)는 맨 위를 연다", async () => {
+  localStorage.removeItem("ch.assets.dir");
+  mocks.assetTree.mockResolvedValue({ children: [folder("CH", [file("CH/a.png")]), folder("BG", [file("BG/b.png")])] });
+  await mount();
+  expect(dirNow()).toBe("");
+  expect(card("CH")).toBeTruthy();
+});
