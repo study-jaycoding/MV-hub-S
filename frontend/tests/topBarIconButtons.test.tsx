@@ -11,6 +11,10 @@ vi.mock("../src/api", () => {
   const pending = () => new Promise(() => {});
   return { api: new Proxy({}, { get: () => pending }) };
 });
+// 알림 종을 눌러 패널을 열 때 부르는 곳들 — 실패로 돌려준다(알림 시험과 같은 가짜)
+vi.mock("../src/lib/releaseUpdate", () => ({ getReleaseUpdateStatus: vi.fn(() => Promise.reject(new Error("없음"))) }));
+vi.mock("../src/lib/sharedApi", () => ({ sharedApi: { sharedServerRelocation: vi.fn(() => Promise.reject(new Error("없음"))) } }));
+vi.mock("../src/lib/updateNoticeApi", () => ({ updateNoticeApi: { list: vi.fn(() => Promise.reject(new Error("없음"))) } }));
 
 import { TopBar } from "../src/components/TopBar";
 import { t } from "../src/lib/i18n";
@@ -41,7 +45,9 @@ function bar(props: Partial<Parameters<typeof TopBar>[0]> = {}) {
       {...props} />
   );
 }
-const iconButtons = () => [...host.querySelectorAll<HTMLButtonElement>(".topbar .top-ic-btn")];
+// 편집·Assets·관리(캡슐의 바로 아래 단추) — 알림 종은 .notification-center 안이라 따로 본다
+const iconButtons = () => [...host.querySelectorAll<HTMLButtonElement>(".topbar .top-ic-group > .top-ic-btn")];
+const bell = () => host.querySelector<HTMLButtonElement>(".topbar .top-ic-group > .notification-center > .top-ic-btn.notification-bell")!;
 const lit = () => iconButtons().map((b) => b.classList.contains("lit"));
 
 describe("머리줄 아이콘 단추", () => {
@@ -54,29 +60,40 @@ describe("머리줄 아이콘 단추", () => {
     expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([t("편집"), "Assets", t("프로젝트 관리 — 별도 창")]);
     expect(buttons.map((b) => b.textContent)).toEqual(["", "", ""]); // 글자 없음 — 이름은 title·aria-label
     expect(buttons.every((b) => b.title)).toBe(true);
-    // 셋은 한 캡슐(.top-ic-group — 시안 G3) 안에, 그 캡슐은 검색칸 뒤·알림 앞
+    // 셋은 한 캡슐(.top-ic-group — 시안 G3) 안에, 그 끝 칸이 알림 종(B안), 캡슐은 검색칸 바로 뒤
     const group = host.querySelector(".topbar .top-ic-group")!;
-    expect([...group.children]).toEqual(buttons);
+    expect([...group.children]).toEqual([...buttons, host.querySelector(".topbar .notification-center")]);
+    expect(bell()).toBeTruthy();
     const order = [...host.querySelector(".topbar")!.children];
     const search = order.findIndex((el) => el.classList.contains("topbar-search"));
     expect(order.indexOf(group)).toBe(search + 1);
-    expect(order.indexOf(group) + 1).toBe(order.findIndex((el) => el.classList.contains("notification-center")));
-    // 단추마다 평소(선)·켜짐(투톤) 그림을 둘 다 갖고 있다
-    for (const b of buttons) expect([b.querySelectorAll(".top-ic-line").length, b.querySelectorAll(".top-ic-lit").length]).toEqual([1, 1]);
+    // 단추마다(종 포함) 평소(선)·켜짐(투톤) 그림을 둘 다 갖고 있다
+    for (const b of [...buttons, bell()]) expect([b.querySelectorAll(".top-ic-line").length, b.querySelectorAll(".top-ic-lit").length]).toEqual([1, 1]);
     // 투톤 앞면 그라데이션 id 가 단추마다 다르다(같은 문서에서 겹치면 엉뚱한 색이 칠해진다)
-    const gradIds = buttons.flatMap((b) => [...b.querySelectorAll("linearGradient")].map((g) => g.id));
-    expect(gradIds).toHaveLength(3);
-    expect(new Set(gradIds).size).toBe(3);
+    const gradIds = [...buttons, bell()].flatMap((b) => [...b.querySelectorAll("linearGradient")].map((g) => g.id));
+    expect(gradIds).toHaveLength(4);
+    expect(new Set(gradIds).size).toBe(4);
     act(() => buttons[0].click());
     act(() => buttons[1].click());
     act(() => buttons[2].click());
     expect([onOpenEdit.mock.calls.length, onOpenAssets.mock.calls.length, onOpenManage.mock.calls.length]).toEqual([1, 1, 1]);
   });
 
-  it("편집·관리 연결이 없으면(관리 플래그 꺼짐 등) 그 단추는 없다 — Assets 만 남는다(캡슐 안 하나뿐 = 동그라미)", () => {
+  it("편집·관리 연결이 없으면(관리 플래그 꺼짐 등) 그 단추는 없다 — 캡슐엔 Assets 와 끝 칸 알림 종만 남는다", () => {
     act(() => root.render(bar()));
     expect(iconButtons().map((b) => b.getAttribute("aria-label"))).toEqual(["Assets"]);
-    expect(host.querySelectorAll(".top-ic-group > .top-ic-btn:only-child")).toHaveLength(1);
+    const group = host.querySelector(".topbar .top-ic-group")!;
+    expect([...group.children].map((el) => el.className)).toEqual(["top-ic-btn assets-btn", "notification-center"]);
+  });
+
+  it("알림 종은 캡슐 끝 칸 — 알림 창이 열린 동안만 켜지고(투톤), 다시 누르면 꺼진다 · 다른 단추는 그대로", () => {
+    act(() => root.render(bar({ onOpenEdit: noop, onOpenManage: noop })));
+    expect([bell().classList.contains("lit"), bell().getAttribute("aria-expanded")]).toEqual([false, "false"]);
+    act(() => bell().click());
+    expect([bell().classList.contains("lit"), bell().getAttribute("aria-expanded")]).toEqual([true, "true"]);
+    expect(lit()).toEqual([false, false, false]);
+    act(() => bell().click());
+    expect([bell().classList.contains("lit"), bell().getAttribute("aria-expanded")]).toEqual([false, "false"]);
   });
 
   it("편집 탭이 열린 동안만 편집 단추가 켜진다 — 라임 테두리(.on)는 붙지 않는다", () => {
