@@ -17,15 +17,24 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Path, Query, Request, WebSocket
 from pydantic import BaseModel, Field, ValidationError
 
-from . import _proxy
+from . import _proxy, library
 from .. import active_account, config
 from ..deps import SESSION_COOKIE, current_account, session_token
 from ..emailnorm import norm_email
-from ..services.clean_feed_session import STANDBY_PROTOCOL, Identity, hub, token_sha
+from ..services.clean_feed_session import STANDBY_PROTOCOL, Identity, MediaTools, hub, set_media_tools, token_sha
 from ..services.clean_feed_window import Screen, find_browser
 from ..services.request_guards import client_host, is_loopback_host, require_local_machine_request
 
 router = APIRouter(tags=["clean-feed"])
+
+# 세션(services)이 쓰는 미디어 도구 — 부를 때마다 그 모듈에서 찾는다(시험의 바꿔 끼우기·연결 고정이 그대로 먹게). services 는 routers 를 가져오지 않는다.
+set_media_tools(MediaTools(
+    local_target=lambda path: _proxy._local_media_target(path),
+    thumb=lambda **query: library.media_thumb(**query),
+    base_url=lambda: _proxy.base_url(),
+    token=lambda: _proxy.token(),
+    open=lambda request, timeout: _proxy._open(request, timeout=timeout),
+))
 
 _LOCAL_ONLY = "이 PC 에서만 쓸 수 있습니다"
 _ORIGIN_NAMES = ("127.0.0.1", "localhost", "[::1]")

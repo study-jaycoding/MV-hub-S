@@ -25,7 +25,8 @@ import urllib.parse
 import urllib.request
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Optional
 
 from fastapi import HTTPException, Request, WebSocket
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -35,6 +36,32 @@ from .. import active_account, config
 from .clean_feed_window import FeedWindows, OpenError, Screen
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class MediaTools:
+    """라우터 계층의 미디어 도구 — services 는 routers 를 가져오지 않는다(계층 검사). routers/clean_feed 가 가져올 때 넘긴다."""
+
+    local_target: Callable[[str], Optional[Path]]  # 안전한 /media/... 면 이 PC 의 파일 자리
+    thumb: Callable[..., Awaitable[Response]]  # 썸네일 응답(src, w)
+    base_url: Callable[[], str]  # 공유 서버 주소 — 계정 고정 안에서 부른다
+    token: Callable[[], Optional[str]]
+    open: Callable[..., Any]  # 공유 서버 연결 열기(urllib Request, timeout) — 빠른 연결 끊기 규칙 그대로
+
+
+_MEDIA_TOOLS: Optional[MediaTools] = None
+
+
+def set_media_tools(tools: MediaTools) -> None:
+    global _MEDIA_TOOLS
+    _MEDIA_TOOLS = tools
+
+
+def _media_tools() -> MediaTools:
+    if _MEDIA_TOOLS is None:  # 라우터를 안 거친 실행 — 다른 길로 가지 않고 실패로 끝낸다
+        raise HTTPException(503, "media-unavailable", headers=NO_STORE)
+    return _MEDIA_TOOLS
+
 
 MAIN_GRACE = 3.0  # main 연결이 이만큼 없으면(한 번도 안 붙은 것 포함) main-gone 으로 끝
 FEED_READY_WAIT = 3.0  # 다시 쓴 창의 새 피드가 이만큼 안에 ready 를 안 보내면 window-not-found
@@ -882,33 +909,30 @@ class Hub:
         return _SessionBound(response, sess, slot)  # 보내는 동안 끝나면 끊는다 · 끝나면(어느 길로든) 자리를 한 번 비운다
 
     async def _media_response(self, request: Request, sess: Session, url: str, slot: "_Slot") -> Response:
-        from ..routers import _proxy
-
+        tools = _media_tools()
         kind = media_kind(url)
         if kind == "media":
-            target = _proxy._local_media_target(url)
+            target = tools.local_target(url)
             if target is not None and await asyncio.to_thread(target.is_file):
                 return FileResponse(target, headers=dict(NO_STORE))
         else:
             query = urllib.parse.parse_qs(url.split("?", 1)[1])
             src = query["src"][0]
-            target = _proxy._local_media_target(src)
+            target = tools.local_target(src)
             if target is not None and await asyncio.to_thread(target.is_file):
-                from ..routers import library
-
                 width = query.get("w", ["512"])[0]
-                return await library.media_thumb(src=src, w=max(64, min(1024, int(width) if width.isdigit() else 512)))
+                return await tools.thumb(src=src, w=max(64, min(1024, int(width) if width.isdigit() else 512)))
         if not sess.proxying:
             raise HTTPException(404, "파일 없음", headers=NO_STORE)
         return await self._relay(request, sess, url, slot)
 
     async def _relay(self, request: Request, sess: Session, path: str, slot: "_Slot") -> Response:
         """이 PC 에 없는 서버 보존본 — 세션 계정(pin) 안에서 연결을 다시 읽어 원래 경로로(Range·조건부 헤더 그대로)."""
-        from ..routers import _proxy
+        tools = _media_tools()
 
         def prepare() -> urllib.request.Request:
             with active_account.pinned_account_scope(sess.identity.pin):
-                base, tok = _proxy.base_url(), _proxy.token()
+                base, tok = tools.base_url(), tools.token()
             req = urllib.request.Request(base + path, method=request.method if request.method == "HEAD" else "GET")
             if tok:
                 req.add_header("Authorization", f"Bearer {tok}")
@@ -931,7 +955,7 @@ class Hub:
 
         def connect() -> Any:
             try:
-                return _proxy._open(req, timeout=30)
+                return tools.open(req, timeout=30)
             except urllib.error.HTTPError as exc:  # 오류도 응답이다 — 취소된 뒤 늦게 와도 닫을 수 있게 값으로 돌려준다
                 return exc
 
