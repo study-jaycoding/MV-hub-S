@@ -14,6 +14,10 @@ export const STORAGE_KEYS = {
   // 편집 탭 문서 — `:<계정>:<project_id>:<폴더>` 를 붙여 시퀀스마다 하나(docs/EDIT_TAB.md). **`ch.` 로 시작하지 않는다**: 편집 탭이 없던
   //  옛 판의 계정 전환 정리가 보존 목록 밖의 `ch.*` 를 전부 지워, 새 판을 쓰다 옛 판으로 되돌린 뒤 계정을 바꾸면 편집본이 사라졌다.
   editDocs: "mvhub.editDoc",
+  editShortcuts: "ch.editShortcuts", // 편집 탭 단축키 개인 지정(lib/editShortcuts) — 라이브러리 단축키(ch.shortcuts)처럼 계정 전환 때 지운다
+  // 편집 공유의 화면 상태(방식·다른 편집 보기·V0 의 사람·색·확인된 내 판) — `:<계정·서버>:<project_id>:<폴더>` 를 붙여 시퀀스마다.
+  //  `ch.` 로 시작하지 않는다(계정 전환 정리가 지우지 않게 — 계정·서버가 열쇠에 들어 있다).
+  editShare: "mvhub.editShare",
 
   // 로컬 허브에서 로그아웃한 시각 — 같은 브라우저의 다른 탭이 storage 알림으로 듣는 신호(Jay 결정 4B). 값 자체는 쓰지 않는다.
   hubLogoutAt: "mvhub.hubLogoutAt",

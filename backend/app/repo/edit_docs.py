@@ -43,7 +43,8 @@ def _document(data: str) -> str:
         value = json.loads(data, object_pairs_hook=_object, parse_constant=_invalid_constant)
     except (ValueError, RecursionError) as exc:
         raise ValueError("편집 문서가 유효한 JSON이 아닙니다") from exc
-    if not isinstance(value, dict) or type(value.get("v")) is not int or value["v"] != 1 or not isinstance(value.get("clips"), list):
+    # v 2 = 속도(speed)를 쓴 편집 문서 · v 3 = 같은 컷을 컷 사이에 한 번 더 놓은 문서(반복 자리, 2026-10-23) — 칸 검사는 프런트 parseEditDoc 이 한다(백업은 원문 보관)
+    if not isinstance(value, dict) or type(value.get("v")) is not int or value["v"] not in (1, 2, 3) or not isinstance(value.get("clips"), list):
         raise ValueError("지원하지 않는 편집 문서 형식입니다")
     return digest
 

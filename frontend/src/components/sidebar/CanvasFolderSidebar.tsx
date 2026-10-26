@@ -32,7 +32,7 @@ export function CanvasFolderSidebar({
   onDropToUnassigned?: (genId: string) => void;
   onFolderAction?: (kind: FolderMenuKind, projectId: string, path: string, name: string) => void | Promise<void>;
 }) {
-  // 닫기는 라이브러리(내작업) 탭과 동일하게 툴바의 필터 토글(▢/▷)에 위임한다 — 사이드바 내부에 별도
+  // 닫기는 라이브러리(내작업) 탭과 동일하게 툴바의 끝선 손잡이(SidebarEdgeToggle)에 위임한다 — 사이드바 내부에 별도
   // ✕ 를 두지 않는다(두 탭 UX 일치).
   return (
     <ResizableSidebar>

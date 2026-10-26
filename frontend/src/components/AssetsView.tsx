@@ -23,6 +23,7 @@ import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../lib/wind
 import type { AssetComment, AssetNode, InfoTarget, PreviewTarget } from "../types";
 import { AssetCell } from "./assets/AssetCell";
 import { FolderIcon } from "./FolderIcon";
+import { SidebarEdgeToggle } from "./common/SidebarEdgeToggle";
 import { loadDisabledAssets, toggleDisabledAssets } from "../lib/deactivated";
 import { AssetsCrumbBar } from "./assets/AssetsCrumbBar";
 import { AssetsSidebar } from "./assets/AssetsSidebar";
@@ -105,6 +106,9 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     expandedSeeded.current = true;
     setExpanded(new Set(children.filter((node) => node.type === "dir").map((node) => node.path)));
   }, []);
+  // 왼쪽 폴더 트리 여닫기(Jay 2026-10-26 — 워크스페이스 사이드바와 같은 끝선 손잡이). 이 창만의 기억, 처음엔 열림.
+  const [treeOpen, setTreeOpen] = useState(() => LS.get("treeOpen", "1") !== "0");
+  useEffect(() => LS.set("treeOpen", treeOpen ? "1" : "0"), [treeOpen]);
   const canLeaveCommentRef = useRef<() => boolean>(() => true); // 아래 canLeaveComment — 코멘트 창보다 먼저 만드는 훅이 쓴다(Jay 결정 5A)
   const {
     error,
@@ -1015,7 +1019,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       )}
 
       <div className="assets-body">
-        <AssetsSidebar
+        {treeOpen && <AssetsSidebar
           project={project}
           typeFilter={typeFilter}
           dir={dir}
@@ -1028,7 +1032,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
           onToggleDir={toggleDir}
           onSelectDir={enterFolder}
           onOpenTab={folderTabs.open}
-        />
+        />}
 
         <main
           className="assets-grid-wrap"
@@ -1037,6 +1041,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
           onDragLeave={isResolveLibraryRoot ? undefined : onZoneDragLeave}
           onDrop={isResolveLibraryRoot ? undefined : onZoneDrop}
         >
+          <SidebarEdgeToggle open={treeOpen} onToggle={() => setTreeOpen((v) => !v)}
+            title={treeOpen ? t("폴더 사이드바 닫기") : t("폴더 사이드바 열기")} />
           {!isResolveLibraryRoot && dropActive && (
             <div className="assets-dropzone">
               <div className="assets-dropzone-card">

@@ -42,6 +42,20 @@ _uid_override: ContextVar[Optional[tuple]] = ContextVar("active_uid_override", d
 # 단일 프로세스 내 포인터 캐시 — active.json 은 이 프로세스만 쓰므로 안전. [loaded, value]
 _cache: list = [False, None]
 
+# 계정 세대값 — 로그인·로그아웃·전환이 있을 때마다 +1(이 프로세스 안에서만, 파일에 남기지 않는다). 같은 계정으로 다시 로그인해도
+#  오른다. 그 사이에 끝나야 하는 것(클린 피드 창 — services/clean_feed_session)이 open 때 값과 견준다. 점검 사이 A→로그아웃→A 도 잡는다.
+_epoch = [0]
+_epoch_lock = threading.Lock()
+
+
+def account_epoch() -> int:
+    return _epoch[0]
+
+
+def bump_account_epoch() -> None:
+    with _epoch_lock:
+        _epoch[0] += 1
+
 
 def slug(email: str) -> str:
     """이메일 → 폴더 안전 슬러그. 가독성(치환) + 충돌 방지(짧은 해시) 둘 다.
@@ -150,6 +164,7 @@ def set_active(email: str, uid: Optional[str] = None) -> None:
         # 원자적 저장 — 반쯤 쓰이다 크래시하면 허브가 빈 계정 DB 를 읽는 사고를 막는다.
         atomic_write_text(_POINTER, json.dumps(payload, ensure_ascii=False))
         _cache[0], _cache[1] = True, payload
+        bump_account_epoch()
 
 
 def clear_active() -> None:
@@ -160,6 +175,7 @@ def clear_active() -> None:
         except OSError:
             pass
         _cache[0], _cache[1] = True, None
+        bump_account_epoch()
 
 
 def set_override(key: Optional[str]):

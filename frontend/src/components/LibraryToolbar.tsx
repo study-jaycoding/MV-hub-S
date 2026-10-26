@@ -12,9 +12,9 @@ import { makeStore } from "../lib/storage";
 import { useFloatingPanel } from "../lib/useFloatingPanel";
 import { ColorFilterDots } from "./common/ColorFilterDots";
 import { LibraryWorkspaceFilter, type WorkspaceFilterProps } from "./common/LibraryWorkspaceFilter";
+import { SidebarEdgeToggle } from "./common/SidebarEdgeToggle";
 import { TagFilterPanel } from "./common/TagFilterPanel";
 import { ViewControls } from "./common/ViewControls";
-import { FilterPanelIcon } from "./common/ViewIcons";
 
 const LIB_LS = makeStore("ch.lib.");
 
@@ -78,8 +78,8 @@ interface Props {
   sceneZoom?: { onFit: () => void; onStep: (dir: 1 | -1) => void };
   // 그래프 보드(히스토리/구성) 모드 — 의미 없는 컨트롤(리스트/그리드 토글 등)을 숨긴다.
   boardMode?: boolean;
-  // 보드 모드라도 필터 사이드바 토글(▢/▷)을 보인다 — 캔버스는 폴더 사이드바가 있어 열고닫아야 함.
-  // 미지정이면 !boardMode(라이브러리만 표시)를 따른다.
+  // 보드 모드라도 필터 사이드바 손잡이를 보인다 — 캔버스는 폴더 사이드바가 있어 열고닫아야 함.
+  // 미지정이면 !boardMode(라이브러리만 표시)를 따른다. 사이드바 옆이 아닌 떠 있는 창의 도구 줄은 false.
   showFilterToggle?: boolean;
 }
 
@@ -207,15 +207,10 @@ export function LibraryToolbar({
   }, [tagPanelOpen]);
   return (
     <div className="lib-toolbar" ref={barRef} data-float-owner={floatId}>
-      {/* 필터 사이드바 토글 — 열림=▢(사각), 닫힘=▷(삼각). 캔버스는 폴더 사이드바가 있어 표시. */}
+      {/* 필터 사이드바 여닫기 — 줄 흐름 밖, 사이드바 끝선 위의 손잡이(시안 C). 캔버스는 폴더 사이드바가 있어 표시. */}
       {(showFilterToggle ?? !boardMode) && (
-        <button
-          className={"lib-filter lib-filter-ic" + (filtersOpen ? " on" : "")}
-          onClick={onToggleFilters}
-          title={filtersOpen ? t("필터 사이드바 닫기") : t("필터 사이드바 열기")}
-        >
-          <FilterPanelIcon open={filtersOpen} />
-        </button>
+        <SidebarEdgeToggle open={filtersOpen} onToggle={onToggleFilters}
+          title={filtersOpen ? t("필터 사이드바 닫기") : t("필터 사이드바 열기")} />
       )}
       {/* 미디어 타입 — 4개 점 슬라이더(전체·이미지·영상·오디오). 슬라이드/점클릭 모두 전환.
           data-type 으로 선택 타입별 색(전체=라임·이미지=파랑·영상=보라·오디오=주황)을 CSS 가 입힌다. */}

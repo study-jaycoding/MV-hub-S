@@ -27,6 +27,51 @@ export interface EditClip {
   //  trim 은 그대로 '쓰는 길이'다(시작점부터 센다). 실제로 쓰는 값(유효 시작)은 clipHead 가 프레임에 맞춰 원본 안으로 자른다 —
   //  적힌 값은 남긴다(trim 과 같은 까닭: 실측 전의 dur 은 추정값이다).
   head?: number;
+  // 재생 속도 배율(Jay 2026-10-23 — Ctrl+R 속도 조절, 다빈치 리타임). 영상만 · SPEED_MIN~SPEED_MAX · 1 이면 적지 않는다. head·trim 은 그대로
+  //  **원본 초**다 — 타임라인 길이만 원본 ÷ 속도(clipLen). 영상 시각 ↔ 컷 안 시각은 mediaAt·localAt 두 함수로만 바꾼다.
+  //  이 칸이 있는 문서는 v 2 다(옛 빌드가 모르는 칸을 버리고 저장하지 않게 — parseEditDoc 이 v 1 의 speed 를 거부한다).
+  speed?: number;
+  // 같은 컷(폴더)을 컷 사이에 한 번 더 놓은 자리(Jay 2026-10-23 ⑤) — 그 자리의 ID. cut 은 그대로 실제 폴더(생성물은 폴더로 찾는다)이고,
+  //  자리의 열쇠는 slotOf = `폴더//ID` 다(배치·위치·마크·북마크·D·cutOrder·clipKey). 첫 자리(폴더 그대로)의 클립에는 없다.
+  //  이 칸이 있는 문서는 v 3 이다. 그 자리의 클립을 다 빼면 자리도 없다(Jay 결정). 계약은 docs/status/편집탭_컷끼워넣기_설계_2026-10-23.md.
+  slot?: string;
+}
+
+// 자리 열쇠 = 폴더 경로 + "//" + 자리 ID. "//" 는 정규화된 폴더 경로에 나올 수 없다(normalizeFolderPath 가 빈 마디를 지운다) — 실제 폴더와
+//  겹치지 않는다. ID 는 소문자·숫자(호출부가 무작위로 짓는다 — 다시 쓰지 않는다: 지워진 자리의 북마크·D 가 새 자리에 붙지 않게).
+const SLOT_SEP = "//";
+const SLOT_ID = /^[a-z0-9]{1,16}$/;
+export const isSlotId = (value: unknown): value is string => typeof value === "string" && SLOT_ID.test(value);
+export const slotOf = (clip: Pick<EditClip, "cut" | "slot">) => (clip.slot ? `${clip.cut}${SLOT_SEP}${clip.slot}` : clip.cut);
+export const isRepeatSlot = (key: string) => key.includes(SLOT_SEP);
+export const folderOf = (key: string) => {
+  const at = key.indexOf(SLOT_SEP);
+  return at < 0 ? key : key.slice(0, at);
+};
+const slotIdOf = (key: string) => {
+  const at = key.indexOf(SLOT_SEP);
+  return at < 0 ? null : key.slice(at + SLOT_SEP.length);
+};
+// 자리 열쇠 → 클립에 적는 칸(cut = 폴더, slot = ID)
+export const slotFields = (key: string): Pick<EditClip, "cut" | "slot"> => {
+  const id = slotIdOf(key);
+  return id ? { cut: folderOf(key), slot: id } : { cut: key };
+};
+// 문서에 적힌 열쇠의 글자 검사 — "//" 가 없으면 정규화된 폴더 경로, 있으면 v 3 이고 정확히 한 번이며 앞(폴더)은 정규화 일치·뒤는 ID.
+//  열쇠 전체를 정규화하지 않는다(정규화가 "//" 를 지운다).
+export function validSlotKey(value: unknown, v: number): value is string {
+  if (typeof value !== "string" || !value) return false;
+  const id = slotIdOf(value);
+  if (id === null) return normalizeFolderPath(value) === value;
+  const folder = folderOf(value);
+  return v === 3 && !!folder && normalizeFolderPath(folder) === folder && isSlotId(id);
+}
+
+export const SPEED_MIN = 0.25;
+export const SPEED_MAX = 4;
+// 속도로 인정하는 값 = SPEED_MIN~SPEED_MAX 안의 유한한 수. 아니면 null.
+export function validSpeed(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= SPEED_MIN - 1e-9 && value <= SPEED_MAX + 1e-9 ? value : null;
 }
 
 // 북마크(다빈치의 마커) — 자리는 (컷, 컷 안 시각). (컷, 프레임)에 하나뿐이다(markerKey).
@@ -38,7 +83,8 @@ export interface EditMarker {
 }
 
 export interface EditDoc {
-  v: 1;
+  // 2 = 속도(speed)를 쓴 문서 · 3 = 반복 자리(EditClip.slot · 자리 열쇠)를 쓴 문서 — 한 번 오르면 저장본은 계속 그 판(writeEditDoc 이 max 로 지킨다)
+  v: 1 | 2 | 3;
   clips: EditClip[];
   tracksOff: number[];
   tracksLocked: number[];
@@ -76,8 +122,12 @@ export function naturalCompare(a: string, b: string): number {
   return collator.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0);
 }
 
-const leaf = (path: string) => path.slice(path.lastIndexOf("/") + 1);
-export const clipKey = (clip: Pick<EditClip, "cut" | "gen">) => `${clip.cut}\n${clip.gen}`;
+// 이름 = 폴더의 마지막 마디(반복 자리도 그 폴더 이름 — 번호는 slotLabels 가 붙인다)
+const leaf = (path: string) => {
+  const folder = folderOf(path);
+  return folder.slice(folder.lastIndexOf("/") + 1);
+};
+export const clipKey = (clip: Pick<EditClip, "cut" | "gen" | "slot">) => `${slotOf(clip)}\n${clip.gen}`;
 
 // 폴더 경로가 속한 컷(시퀀스의 직계 하위 폴더). 시퀀스 밖이거나 시퀀스 바로 아래면 null.
 export function cutOf(seq: string, folderPath: string | null | undefined): string | null {
@@ -87,7 +137,9 @@ export function cutOf(seq: string, folderPath: string | null | undefined): strin
   return head ? `${seq}/${head}` : null;
 }
 
-const byName = (a: string, b: string) => naturalCompare(leaf(a), leaf(b));
+// 이름순 — 폴더 이름 → 같은 폴더면 첫 자리(폴더 그대로)가 앞 → 반복 자리끼리는 열쇠 글자 순(ID 가 무작위라 만든 순서는 아니지만 늘 같다)
+const byName = (a: string, b: string) =>
+  naturalCompare(leaf(a), leaf(b)) || Number(isRepeatSlot(a)) - Number(isRepeatSlot(b)) || naturalCompare(a, b);
 
 // 사용자가 정한 순서(saved — 지금 없는 컷이 섞여 있을 수 있다)로 이름순의 지금 컷들(natural)을 다시 세운다.
 //  · 목록에 있고 지금 있는 컷 = 목록 순서.
@@ -124,8 +176,49 @@ export function cutPaths(seq: string, folderPaths: Iterable<string>, doc: EditDo
     const cut = cutOf(seq, path);
     if (cut) found.add(cut);
   }
-  for (const clip of doc.clips) if (cutOf(seq, clip.cut) === clip.cut) found.add(clip.cut);
+  const firstUsed = new Set<string>();
+  const repeated = new Set<string>();
+  for (const clip of doc.clips) {
+    if (cutOf(seq, clip.cut) !== clip.cut) continue;
+    found.add(clip.cut);
+    if (clip.slot) {
+      found.add(slotOf(clip));
+      repeated.add(clip.cut);
+    } else firstUsed.add(clip.cut);
+  }
+  // 빈 첫 자리는 보이지 않는다(Jay 2026-10-26 — "비어있는 부분을 없앨수도 없네"): 폴더의 첫 자리(폴더 그대로)에 클립이 없고 그 폴더에 살아 있는
+  //  반복 자리가 있으면 첫 자리를 뺀다 — 그 폴더의 클립은 다 반복 자리에 있다. 반복 자리가 다 없어지면 돌아온다. 순서·D·북마크 기록은 그대로다.
+  for (const folder of repeated) if (!firstUsed.has(folder)) found.delete(folder);
   return orderCuts([...found].sort(byName), doc.cutOrder);
+}
+
+// 폴더 → 그 폴더의 보이는 자리(Jay 2026-10-26) — 배치에 폴더 열쇠(첫 자리)가 있으면 그것, 없으면(빈 첫 자리가 숨었다) 순서에서 그 폴더의 첫 보이는
+//  자리, 그것도 없으면 null. 왼쪽 폴더 고르기가 쓴다.
+export function slotOfFolder(layout: EditLayout, folder: string): string | null {
+  return (layout.cuts.find((slot) => slot.path === folder) ?? layout.cuts.find((slot) => folderOf(slot.path) === folder))?.path ?? null;
+}
+
+// 자리 이름(Jay 2026-10-23 ⑤) — 같은 폴더의 자리가 둘 이상이면 전체 순서(숨긴 자리 포함)대로 'C0050 ①'·'C0050 ②'…, 하나면 폴더 이름 그대로.
+//  번호는 표시일 뿐 열쇠가 아니다. all = cutPaths.
+const CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳";
+export function slotLabels(all: readonly string[]): Map<string, string> {
+  const total = new Map<string, number>();
+  for (const key of all) total.set(folderOf(key), (total.get(folderOf(key)) ?? 0) + 1);
+  const seen = new Map<string, number>();
+  const out = new Map<string, string>();
+  for (const key of all) {
+    const folder = folderOf(key);
+    const n = (seen.get(folder) ?? 0) + 1;
+    seen.set(folder, n);
+    out.set(key, total.get(folder)! > 1 ? `${leaf(key)} ${n <= CIRCLED.length ? CIRCLED[n - 1] : `(${n})`}` : leaf(key));
+  }
+  return out;
+}
+
+// 자리의 긴 이름(툴팁·창 제목) — 폴더 경로의 마지막 마디를 자리 이름으로(무작위 ID 는 보이지 않는다)
+export function slotTitle(slot: Pick<CutSlot, "path" | "name">): string {
+  const folder = folderOf(slot.path);
+  return folder.slice(0, folder.lastIndexOf("/") + 1) + slot.name;
 }
 
 // 컷(폴더) 하나를 before 앞으로 옮긴다(before = null 이면 맨 뒤). all = 지금의 전체 순서(cutPaths — 숨긴 컷 포함).
@@ -136,9 +229,19 @@ export function moveCut(doc: EditDoc, all: readonly string[], path: string, befo
   if (!all.includes(path) || before === path || (before !== null && !all.includes(before))) return null;
   // 지금 순서에서 제자리면 바뀐 것이 없다 — 아래의 전체 목록으로만 견주면, 바로 뒤 컷 앞에 놓은 것(제자리)이 그 사이의 '지금 없는 컷'을
   //  넘어간 것으로 적혀 그 폴더의 돌아올 자리가 바뀐다(Codex 코드 리뷰 2026-10-13).
-  const after = all.filter((cut) => cut !== path);
-  after.splice(before === null ? after.length : after.indexOf(before), 0, path);
-  if (after.every((cut, index) => cut === all[index])) return null;
+  if (slotStays(all, path, before)) return null;
+  return writeOrder(doc, all, path, before);
+}
+
+// 전체 순서(all — 숨긴 자리 포함)에서 key 를 before 앞에 놓아도 제자리인가 — 컷 순서 끌기·자리째 옮기기(moveClipToSlot)와 화면의 놓기 전
+//  거르기가 같이 쓴다(보이는 배치로 보면 숨긴 컷이 사이에 있을 때 트랙에 따라 결과가 갈렸다 — Codex 설계 4차). all 에 없으면 아니다.
+export function slotStays(all: readonly string[], key: string, before: string | null): boolean {
+  const index = all.indexOf(key);
+  return index >= 0 && (before === key || before === (all[index + 1] ?? null));
+}
+
+// path 를 before 앞에 둔 순서를 적는다 — path 가 all 에 없으면(새 자리) 새로 끼운다. 바뀐 것이 없으면 null.
+function writeOrder(doc: EditDoc, all: readonly string[], path: string, before: string | null): EditDoc | null {
   // 저장된 순서(없는 컷 포함)에 아직 안 적힌 지금 컷을, 화면의 바로 앞 컷 뒤에 끼워 넣어 전체 목록을 만든다.
   const full = [...(doc.cutOrder ?? [])];
   all.forEach((cut, index) => {
@@ -147,26 +250,50 @@ export function moveCut(doc: EditDoc, all: readonly string[], path: string, befo
   });
   const moved = full.filter((cut) => cut !== path);
   moved.splice(before === null ? moved.length : moved.indexOf(before), 0, path);
-  if (moved.every((cut, index) => cut === full[index])) return null;
+  if (moved.length === full.length && moved.every((cut, index) => cut === full[index])) return null;
+  return withOrder(doc, moved);
+}
+
+// 순서를 새로 적는다 — 이름순과 같으면 칸을 지운다. 그때 **클립 없는 반복 자리의 열쇠**를 순서·D·북마크에서 뺀다(그 자리는 없고 ID 를 다시
+//  쓰지 않으므로 돌아오지 않는다 — 되돌리기 말고는. 안 빼면 쌓인다). 자리를 없애는 명령(빼기·트랙 지우기)은 순서를 건드리지 않는다 — 재생헤드는
+//  재생 쪽이 기억한 직전 순서로 그 자리의 다음을 찾는다(settlePos 의 previous). **인/아웃은 남긴다**: 한쪽만 지우면 구간이 말없이 넓어진다 —
+//  사라진 자리의 인/아웃은 안 보이고 구간은 꺼진다(markRange). 숨겨진(배치에 없는) 살아 있는 자리는 클립이 있어 남는다.
+function withOrder(doc: EditDoc, order: readonly string[]): EditDoc {
+  const live = new Set(doc.clips.map(slotOf));
+  const keep = (key: string) => !isRepeatSlot(key) || live.has(key);
+  const list = order.filter(keep);
   const next: EditDoc = { ...doc };
   delete next.cutOrder;
-  if (moved.some((cut, index) => index > 0 && byName(moved[index - 1], cut) > 0)) next.cutOrder = moved;
+  if (list.some((cut, index) => index > 0 && byName(list[index - 1], cut) > 0)) next.cutOrder = list;
+  for (const field of ["cutsOn", "cutsOff"] as const) {
+    const kept = doc[field]?.filter(keep);
+    delete next[field];
+    if (kept?.length) next[field] = kept;
+  }
+  const markers = doc.markers?.filter((marker) => keep(marker.cut));
+  delete next.markers;
+  if (markers?.length) next.markers = markers;
   return next;
 }
 
-// 이름순으로 되돌린다. 정한 순서가 없으면 null.
+// 폴더끼리의 순서(각 폴더가 처음 나오는 순서)가 이름순과 다른가 — 반복 자리를 컷 사이에 끼운 것만으로는 아니다. 막대의 순서 알약이
+//  '내 순서 ↺'(되돌리기)와 '폴더순'(표시만) 중 무엇을 보일지 정한다(Jay 2026-10-26 "폴더순으로 되는건데 내순서라고 적혀있어서 헷갈린다").
+export function foldersReordered(order: readonly string[]): boolean {
+  const folders = [...new Set(order.map(folderOf))];
+  return folders.some((folder, index) => index > 0 && byName(folders[index - 1], folder) > 0);
+}
+
+// 이름순으로 되돌린다 — 반복 자리는 자기 폴더의 첫 자리 바로 뒤로 모인다(이름순의 뜻). 정한 순서가 없으면 null.
 export function resetCutOrder(doc: EditDoc): EditDoc | null {
   if (!doc.cutOrder?.length) return null;
-  const next: EditDoc = { ...doc };
-  delete next.cutOrder;
-  return next;
+  return withOrder(doc, []);
 }
 
 const positiveInt = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
 const COLOR = /^#[0-9a-f]{6}$/i;
-const validPos = (value: unknown): value is EditPos => {
+const validPos = (value: unknown, v: number): value is EditPos => {
   const pos = value as Partial<EditPos> | null;
-  return !!pos && typeof pos === "object" && typeof pos.cut === "string" && !!pos.cut && normalizeFolderPath(pos.cut) === pos.cut &&
+  return !!pos && typeof pos === "object" && validSlotKey(pos.cut, v) &&
     typeof pos.local === "number" && Number.isFinite(pos.local) && pos.local >= 0;
 };
 
@@ -174,7 +301,8 @@ const validPos = (value: unknown): value is EditPos => {
 export function parseEditDoc(value: unknown): EditDoc | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
-  if (raw.v !== 1 || !Array.isArray(raw.clips)) return null;
+  if ((raw.v !== 1 && raw.v !== 2 && raw.v !== 3) || !Array.isArray(raw.clips)) return null;
+  const v = raw.v;
   const tracks = (list: unknown): number[] | null =>
     list === undefined ? [] : Array.isArray(list) && list.every(positiveInt) ? [...new Set(list)] : null;
   const tracksOff = tracks(raw.tracksOff);
@@ -184,8 +312,7 @@ export function parseEditDoc(value: unknown): EditDoc | null {
   if (raw.hideOff !== undefined && typeof raw.hideOff !== "boolean") return null;
   const paths = (list: unknown): string[] | null =>
     list === undefined ? []
-      : Array.isArray(list) && list.every((item) => typeof item === "string" && !!item && normalizeFolderPath(item) === item)
-        ? [...new Set(list as string[])] : null;
+      : Array.isArray(list) && list.every((item) => validSlotKey(item, v)) ? [...new Set(list as string[])] : null;
   const cutsOn = paths(raw.cutsOn);
   const cutsOff = paths(raw.cutsOff);
   if (!cutsOn || !cutsOff || cutsOn.some((cut) => cutsOff.includes(cut))) return null; // 켬·끔에 같이 있을 수 없다
@@ -200,13 +327,13 @@ export function parseEditDoc(value: unknown): EditDoc | null {
       trackColors[Number(track)] = color;
     }
   }
-  if ((raw.markIn !== undefined && !validPos(raw.markIn)) || (raw.markOut !== undefined && !validPos(raw.markOut))) return null;
+  if ((raw.markIn !== undefined && !validPos(raw.markIn, v)) || (raw.markOut !== undefined && !validPos(raw.markOut, v))) return null;
   const markers: EditMarker[] = [];
   if (raw.markers !== undefined) {
     if (!Array.isArray(raw.markers)) return null;
     const taken = new Set<string>();
     for (const item of raw.markers as unknown[]) {
-      if (!validPos(item)) return null;
+      if (!validPos(item, v)) return null;
       const { color, name } = item as { color?: unknown; name?: unknown };
       if (color !== undefined && (typeof color !== "string" || !COLOR.test(color))) return null;
       if (name !== undefined && typeof name !== "string") return null;
@@ -231,12 +358,17 @@ export function parseEditDoc(value: unknown): EditDoc | null {
     if (c.kind !== undefined && c.kind !== "video" && c.kind !== "image") return null;
     if (c.trim !== undefined && (typeof c.trim !== "number" || validSeconds(c.trim) === null)) return null;
     if (c.head !== undefined && (typeof c.head !== "number" || validSeconds(c.head) === null)) return null;
-    const slotKey = `${c.cut}\t${c.track}`;
-    const genKey = clipKey({ cut: c.cut, gen: c.gen });
-    if (seen.has(slotKey) || seen.has(genKey)) return null; // (컷, 트랙)·(컷, 생성물)은 하나뿐
-    seen.add(slotKey).add(genKey);
+    // 속도는 v 2 이상 문서의 영상 클립에만 — v 1 에 있으면 그 문서를 읽지 않는다(옛 판이 모르는 칸을 버린 문서와 섞이지 않게)
+    if (c.speed !== undefined && (v === 1 || c.kind === "image" || validSpeed(c.speed) === null)) return null;
+    if (c.slot !== undefined && (v !== 3 || !isSlotId(c.slot))) return null; // 반복 자리는 v 3 문서에만
+    const slot = slotOf({ cut: c.cut, slot: c.slot as string | undefined });
+    const trackKey = `${slot}\t${c.track}`;
+    const genKey = `${slot}\n${c.gen}`;
+    if (seen.has(trackKey) || seen.has(genKey)) return null; // (자리, 트랙)·(자리, 생성물)은 하나뿐
+    seen.add(trackKey).add(genKey);
     clips.push({
       cut: c.cut, gen: c.gen, track: c.track,
+      ...(c.slot !== undefined ? { slot: c.slot as string } : {}),
       ...(c.job ? { job: c.job as string } : {}),
       ...(c.off ? { off: true } : {}),
       ...(c.dur !== undefined ? { dur: c.dur as number } : {}),
@@ -244,10 +376,11 @@ export function parseEditDoc(value: unknown): EditDoc | null {
       ...(c.kind ? { kind: c.kind as "video" | "image" } : {}),
       ...(c.trim !== undefined ? { trim: c.trim as number } : {}),
       ...(c.head !== undefined ? { head: c.head as number } : {}),
+      ...(c.speed !== undefined && c.speed !== 1 ? { speed: c.speed as number } : {}),
     });
   }
   return {
-    v: 1, clips, tracksOff, tracksLocked, ...(raw.muted ? { muted: true } : {}),
+    v, clips, tracksOff, tracksLocked, ...(raw.muted ? { muted: true } : {}),
     ...(cutsOn.length ? { cutsOn } : {}), ...(cutsOff.length ? { cutsOff } : {}), ...(raw.hideOff ? { hideOff: true } : {}),
     ...(raw.tracks !== undefined ? { tracks: raw.tracks as number } : {}),
     ...(Object.keys(trackColors).length ? { trackColors } : {}),
@@ -286,7 +419,7 @@ export interface SlotClip extends EditClip {
   len: number; // 쓰는 길이 — 사용자가 줄였으면(trim·head) 그 길이
   full: number; // 줄이기 전의 길이(원본) — 화면이 '3.0s / 5.0s' 처럼 둘 다 보여 준다
   // 유효 시작(초) — 그 클립이 원본의 어디에서 시작하는가(clipHead). 문서에 적힌 값(EditClip.head)이 아니라 프레임에 맞추고 원본
-  //  안으로 자른 값이다. **영상 시각 = 컷 안 시각 + 이 값**(재생·다이나믹 트림 모드·길이 조절 창·Resolve 계획이 같이 쓴다).
+  //  안으로 자른 값이다. **영상 시각 = 이 값 + 컷 안 시각 × 속도**(mediaAt — 재생·다이나믹 트림 모드·길이 조절 창·Resolve 계획이 같이 쓴다).
   head: number;
 }
 export interface CutSlot {
@@ -327,13 +460,47 @@ export function clipHead(clip: EditClip, fallback?: unknown): number {
 //  영상은 **프레임 수로 내린다**(2026-10-14) — 프레임에 못 미치는 나머지가 있으면 컷 경계가 프레임 사이에 서고, Resolve 계획이 시작과
 //  끝을 따로 반올림하며 같은 클립이 98·99프레임으로 갈렸다(99 = 원본보다 길어 막힘, 98 = 1프레임 빈칸). 한 프레임도 안 되면 그대로.
 //  그림은 줄이지 않는다: Resolve 가 스틸을 준 길이와 무관하게 5초로 놓아, 줄이면 다음 컷과 겹친다. kind 가 없는 옛 클립은 영상으로 본다.
+//  속도가 있으면(2026-10-23) 타임라인 길이 = 쓰는 원본 구간(clipSource) ÷ 속도를 프레임으로 내린 것 — 원본의 마지막 한 프레임이 안 보일 수
+//  있다(Resolve 도 같은 내림 — 실측 46.99 → 46). 식은 백엔드의 계획 검사(floor(src × 24 ÷ speed + 1e-6))와 같은 순서로 센다.
+//  속도 클립은 **한 프레임보다 짧아지지 않는다** — 0프레임이 되는 속도는 고를 수 없지만(setClipSpeed), 정한 뒤에 원본 길이가 짧게 다시 재어지면
+//  생길 수 있다. 그때 문서를 '읽지 못함'으로 버리지 않고(길이 재기가 적은 값 때문에 편집이 통째로 .bad 가 된다) 한 프레임으로 둔다 — Resolve 계획도
+//  최소 한 프레임이라 앱과 보내는 길이가 같다(Codex 독립 리뷰 2026-10-23). 속도가 없는 클립은 전과 같다(한 프레임도 안 되면 그 길이 그대로).
 export function clipLen(clip: EditClip, fallback?: unknown): number {
   const full = clipFull(clip, fallback);
   if (clip.kind === "image") return full;
-  const rest = full - clipHead(clip, fallback);
+  const used = clipSource(clip, fallback);
+  const speed = clipSpeed(clip);
+  const frames = Math.floor(used * EDIT_FPS / speed + 1e-6);
+  return speed !== 1 ? Math.max(1, frames) / EDIT_FPS : frames / EDIT_FPS || used;
+}
+
+// 쓰는 원본 구간(원본 초) = min(trim, 원본 − 유효 시작). 속도와 무관하다 — 속도를 바꿔도 이 값은 그대로다(len × speed 로 되돌리지 않는다).
+export function clipSource(clip: EditClip, fallback?: unknown): number {
+  const rest = clipFull(clip, fallback) - clipHead(clip, fallback);
   const trim = validSeconds(clip.trim);
-  const len = trim === null ? rest : Math.min(trim, rest);
-  return clipFrames(len) / EDIT_FPS || len;
+  return trim === null ? rest : Math.min(trim, rest);
+}
+
+// 클립의 재생 속도 배율 — 그림·없는 값·범위 밖은 1.
+export function clipSpeed(clip: Pick<EditClip, "speed" | "kind">): number {
+  return clip.kind === "image" ? 1 : validSpeed(clip.speed) ?? 1;
+}
+
+// 컷 안 시각 ↔ 영상(원본) 시각. 재생·미리 굴리기·한 트랙 보기·Resolve 계획이 이 두 함수로만 바꾼다(SlotClip.head = 유효 시작).
+export function mediaAt(clip: Pick<SlotClip, "head" | "speed" | "kind">, local: number): number {
+  return clip.head + local * clipSpeed(clip);
+}
+export function localAt(clip: Pick<SlotClip, "head" | "speed" | "kind">, media: number): number {
+  return (media - clip.head) / clipSpeed(clip);
+}
+
+// 이 문서를 적는 데 필요한 판 — 반복 자리(slot·자리 열쇠)가 있으면 3, 속도를 쓴 클립이 있으면 2. 문서의 판보다 낮게 돌려주지 않는다.
+//  저장 층은 max(저장된 판, 이 값)으로 적는다(한 번 오르면 저장본은 계속 그 판).
+export function editDocVersion(doc: EditDoc): 1 | 2 | 3 {
+  const keys = [doc.markIn?.cut, doc.markOut?.cut, ...(doc.markers ?? []).map((marker) => marker.cut),
+    ...(doc.cutOrder ?? []), ...(doc.cutsOn ?? []), ...(doc.cutsOff ?? [])];
+  if (doc.v === 3 || doc.clips.some((clip) => clip.slot) || keys.some((key) => !!key && isRepeatSlot(key))) return 3;
+  return doc.v === 2 || doc.clips.some((clip) => clip.speed !== undefined) ? 2 : 1;
 }
 
 // 켜져 있는 클립인가 — 클립을 껐거나 그 트랙을 껐으면 아니다. 보이는 것(visibleClip)과 컷 길이(buildLayout)가 같은 기준을 쓴다.
@@ -350,15 +517,17 @@ export function trackCount(doc: EditDoc): number {
 //  없으면(빈 컷, 또는 넣은 것을 전부 껐다) 기본 길이다 — 꺼진 것은 없는 것으로 친다. 처음엔 꺼진 것까지 넣었다("끌 때 길이가
 //  출렁이지 않게") — 그러면 위 트랙이 끝난 뒤 꺼진 아래 트랙의 길이만큼 빈 화면이 나왔다.
 //  그래서 **꺼진 클립은 컷보다 길 수 있다**(clip.len > slot.len): 그리기·Resolve 계획은 컷의 끝에서 자른다.
+//  cuts = 자리 열쇠들(보이는 것만) · labels = 자리 이름(slotLabels — 숨기기 전 전체 순서로 센 번호). 없으면 폴더 이름.
 export function buildLayout(
   cuts: string[],
   doc: EditDoc,
   fallbackOf?: (clip: EditClip) => unknown,
+  labels?: ReadonlyMap<string, string>,
 ): EditLayout {
   let start = 0;
   const slots = cuts.map((path) => {
     const clips = doc.clips
-      .filter((clip) => clip.cut === path)
+      .filter((clip) => slotOf(clip) === path)
       .sort((a, b) => a.track - b.track)
       .map((clip) => {
         const fallback = fallbackOf?.(clip);
@@ -366,7 +535,7 @@ export function buildLayout(
       });
     const on = clips.filter((clip) => clipIsOn(doc, clip));
     const len = on.length ? Math.max(...on.map((clip) => clip.len)) : DEFAULT_SEC;
-    const slot: CutSlot = { path, name: leaf(path), start, len, clips };
+    const slot: CutSlot = { path, name: labels?.get(path) ?? leaf(path), start, len, clips };
     start += len;
     return slot;
   });
@@ -442,6 +611,45 @@ export function posAt(layout: EditLayout, time: number): EditPos | null {
   return slot ? { cut: slot.path, local: t - slot.start } : { cut: last.path, local: last.len };
 }
 
+// 컷 경계에 끼워 넣기(Jay 2026-10-23 ⑤) — x(줄 기준 px)에서 가장 가까운 컷 경계. 경계 = 각 컷의 시작 + 전체 끝.
+//  판정 반폭 = min(12px, 양옆 컷 폭의 25%) — 맨 앞·맨 뒤는 있는 쪽 컷만. 각 컷 몸통이 절반 이상 남아 판정 칸이 겹치지 않는다(같은 거리면 앞).
+//  null = 경계 밖 · before = 그 경계 뒤의 컷(null = 맨 끝).
+export const BOUNDARY_PX = 12;
+export function boundaryAt(layout: EditLayout, x: number, zoom: number): { before: string | null } | null {
+  let best: { before: string | null; gap: number } | null = null;
+  for (let index = 0; index <= layout.cuts.length; index++) {
+    const left = layout.cuts[index - 1];
+    const right = layout.cuts[index];
+    if (!left && !right) continue;
+    const half = Math.min(BOUNDARY_PX, ...[left, right].flatMap((slot) => (slot ? [slot.len * zoom * 0.25] : [])));
+    const gap = Math.abs(x - (right ? right.start : layout.total) * zoom);
+    if (gap <= half && (!best || gap < best.gap)) best = { before: right?.path ?? null, gap };
+  }
+  return best && { before: best.before };
+}
+
+// 풀 카드·타임라인 클립 끌기의 놓을 곳(Jay 2026-10-23 ⑤ 후속 — "중간에 끼워넣기는 … 더 원할하게", 클립도 같게 · 10-26 "본래 그 클립이 있던 곳에는 다시
+//  클립위에 쌓을수 있어야한다"). own = 카드면 끌기 시작 때 풀이 보여 주던 자리 · 클립이면 그 클립의 자리.
+//  · 경계 띠(boundaryAt) 안 → edge(끼워 넣기·옮기기)
+//  · **같은 폴더의 자리**(자기 자리 포함) 몸통 위 → slot(그 자리에 넣기·쌓기 — 클립은 자기 자리면 트랙만)
+//  · 다른 폴더의 자리 몸통·맨 뒤 밖 → 거리와 상관없이 가장 가까운 경계(같은 거리면 앞 — 다른 컷의 가운데를 넘으면 오른쪽, 맨 뒤 밖이면 맨 끝)
+//  자리가 하나도 없으면 null.
+export type DropTarget = { kind: "edge"; before: string | null } | { kind: "slot"; path: string };
+export function dropTargetAt(layout: EditLayout, x: number, zoom: number, own: string): DropTarget | null {
+  const edge = boundaryAt(layout, x, zoom);
+  if (edge) return { kind: "edge", before: edge.before };
+  const body = layout.cuts.find((slot) => x >= slot.start * zoom && x < (slot.start + slot.len) * zoom);
+  if (body && folderOf(body.path) === folderOf(own)) return { kind: "slot", path: body.path };
+  if (!layout.cuts.length) return null;
+  let best: { before: string | null; gap: number } = { before: null, gap: Infinity };
+  for (let index = 0; index <= layout.cuts.length; index++) {
+    const right = layout.cuts[index];
+    const gap = Math.abs(x - (right ? right.start : layout.total) * zoom);
+    if (gap < best.gap) best = { before: right?.path ?? null, gap };
+  }
+  return { kind: "edge", before: best.before };
+}
+
 // 배치가 바뀐 뒤 위치를 유효한 자리로 맞춘다. moved=true 면 호출부가 재생을 멈춘다.
 //  · 보던 컷이 배치에서 빠짐(숨김·폴더가 사라짐) → **컷 순서에서** 그다음 컷의 처음(없으면 전체 끝)
 //  · 보던 컷이 local 보다 짧아짐 → 컷 끝 직전
@@ -454,12 +662,21 @@ export function settlePos(
   pos: EditPos | null,
   order?: readonly string[],
   saved?: readonly string[],
+  previous?: readonly string[],
 ): { pos: EditPos | null; moved: boolean } {
   const last = layout.cuts[layout.cuts.length - 1];
   if (!last) return { pos: null, moved: pos !== null };
   if (!pos) return { pos: { cut: layout.cuts[0].path, local: 0 }, moved: false };
   const index = layout.cuts.findIndex((cut) => cut.path === pos.cut);
   if (index < 0) {
+    // 실제로 사라진 자리(지금 전체 순서에 없다 — 반복 자리의 마지막 클립을 뺐다·그 자리 만들기를 되돌렸다·다른 창이 그렇게 한 최종 문서만 받았다)는
+    //  재생 쪽이 기억한 직전 순서(previous)에서 그 뒤의 첫 '지금 배치에 있는' 자리, 없으면 전체 끝. 숨겨진 자리(지금 순서에 있다)는 아래
+    //  지금 규칙 — 직전 순서를 먼저 쓰면 다른 창이 순서를 바꾸고 숨긴 것을 옛 순서로 보낸다(Codex 설계 4차).
+    if (order && !order.includes(pos.cut) && previous?.includes(pos.cut)) {
+      const shown = new Set(layout.cuts.map((cut) => cut.path));
+      const next = previous.slice(previous.indexOf(pos.cut) + 1).find((path) => shown.has(path));
+      return { pos: next ? { cut: next, local: 0 } : { cut: last.path, local: last.len }, moved: true };
+    }
     let all = order ?? layout.cuts.map((cut) => cut.path);
     if (!all.includes(pos.cut)) all = orderCuts([...all, pos.cut].sort(byName), saved?.includes(pos.cut) ? saved : all);
     const shown = new Set(layout.cuts.map((cut) => cut.path));
@@ -489,6 +706,34 @@ export function stepPoint(points: number[], time: number, dir: 1 | -1): number {
   return 0;
 }
 
+// ── 다이나믹 재생 모드(다빈치의 Dynamic Trim Mode, 보기만 — 2026-10-26 되살림) — 편집점의 앞 | 뒤 ──
+// 보는 편집점 = 재생헤드에서 가장 가까운 것(↑·↓ 가 쓰는 목록 그대로 — 처음·끝 포함, 같은 거리면 앞).
+export function nearestPoint(points: readonly number[], time: number): number {
+  return points.reduce((best, point) => (Math.abs(point - time) < Math.abs(best - time) ? point : best), points[0] ?? 0);
+}
+
+export interface EditShot {
+  slot: CutSlot;
+  local: number; // 컷 안 시각 — 그 영상의 시각은 mediaAt(clip, local)
+  clip: SlotClip | null; // 그 순간 보이는 클립(위 트랙 우선·끔 반영 — 타임라인 뷰어와 같다). 없으면 빈 화면
+}
+
+// 편집점의 [바로 앞, 바로 뒤]에 보이는 것. 표본 시각은 편집점에서 1/4 프레임 떨어진 곳이되 이웃 편집점과의 한가운데를 넘지
+//  않는다 — 부동소수 오차로 방금 끝난 클립이 다시 잡히지 않고, 아주 짧게 비치는 클립을 건너뛰지도 않는다(Codex 설계 검토 10-08).
+//  타임라인의 처음에는 앞이, 끝에는 뒤가 없다(null).
+export function shotsAt(
+  layout: EditLayout, doc: EditDoc, points: readonly number[], point: number,
+): [EditShot | null, EditShot | null] {
+  const index = points.indexOf(point);
+  const shot = (dir: 1 | -1): EditShot | null => {
+    const near = index < 0 ? undefined : points[index + dir];
+    const pos = near === undefined ? null : posAt(layout, point + dir * Math.min(0.25 / EDIT_FPS, Math.abs(near - point) / 2));
+    const slot = pos && layout.cuts.find((cut) => cut.path === pos.cut);
+    return slot ? { slot, local: pos!.local, clip: visibleClip(doc, slot, pos!.local) } : null;
+  };
+  return [shot(-1), shot(1)];
+}
+
 export function timecode(time: number): string {
   const frames = Math.max(0, Math.round((Number.isFinite(time) ? time : 0) * EDIT_FPS));
   const p2 = (n: number) => String(n).padStart(2, "0");
@@ -502,20 +747,25 @@ export function timecode(time: number): string {
 
 const isLocked = (doc: EditDoc, track: number) => doc.tracksLocked.includes(track);
 
-// 넣을 트랙 = 그 컷의 가장 높은 클립보다 위에서 켜져 있고 안 잠긴 가장 낮은 트랙(넣자마자 보이게).
+// 클립이 하나도 없는 반복 자리의 열쇠 — 그 자리는 없다. 넣기로 되살리지 않는다(사라진 자리의 북마크·D 가 다시 붙는다). 폴더 자리(첫 자리)는
+//  비어 있어도 있다 — 첫 클립 넣기·빈 곳 채우기는 된다.
+const deadSlot = (doc: EditDoc, key: string) => isRepeatSlot(key) && !doc.clips.some((clip) => slotOf(clip) === key);
+
+// 넣을 트랙 = 그 자리의 가장 높은 클립보다 위에서 켜져 있고 안 잠긴 가장 낮은 트랙(넣자마자 보이게). cut = 자리 열쇠.
 export function insertTrack(doc: EditDoc, cut: string): number {
-  let track = Math.max(0, ...doc.clips.filter((clip) => clip.cut === cut).map((clip) => clip.track)) + 1;
+  let track = Math.max(0, ...doc.clips.filter((clip) => slotOf(clip) === cut).map((clip) => clip.track)) + 1;
   while (doc.tracksOff.includes(track) || isLocked(doc, track)) track++;
   return track;
 }
 
+// cut = 자리 열쇠(반복 자리면 cut·slot 두 칸으로 적는다)
 export function insertClip(
   doc: EditDoc,
   clip: { cut: string; gen: string; job?: string | null; kind: "video" | "image"; dur: number },
 ): EditDoc | null {
-  if (doc.clips.some((item) => item.cut === clip.cut && item.gen === clip.gen)) return null;
+  if (deadSlot(doc, clip.cut) || doc.clips.some((item) => slotOf(item) === clip.cut && item.gen === clip.gen)) return null;
   const next: EditClip = {
-    cut: clip.cut, gen: clip.gen, track: insertTrack(doc, clip.cut), kind: clip.kind,
+    ...slotFields(clip.cut), gen: clip.gen, track: insertTrack(doc, clip.cut), kind: clip.kind,
     dur: validSeconds(clip.dur) ?? DEFAULT_SEC,
     ...(clip.job ? { job: clip.job } : {}),
   };
@@ -527,7 +777,7 @@ export function insertClip(
 export function fillEmptyCuts(doc: EditDoc, picks: readonly Parameters<typeof insertClip>[1][]): EditDoc | null {
   let next = doc;
   for (const pick of picks) {
-    if (!next.clips.some((clip) => clip.cut === pick.cut)) next = insertClip(next, pick) ?? next;
+    if (!next.clips.some((clip) => slotOf(clip) === pick.cut)) next = insertClip(next, pick) ?? next;
   }
   return next === doc ? null : next;
 }
@@ -540,18 +790,102 @@ export function placeClip(
   clip: { cut: string; gen: string; job?: string | null; kind: "video" | "image"; dur: number },
   track: number,
 ): EditDoc | null {
-  if (!positiveInt(track) || isLocked(doc, track)) return null;
-  const own = doc.clips.find((item) => item.cut === clip.cut && item.gen === clip.gen);
+  if (!positiveInt(track) || isLocked(doc, track) || deadSlot(doc, clip.cut)) return null;
+  const own = doc.clips.find((item) => slotOf(item) === clip.cut && item.gen === clip.gen);
   if (own && (own.track === track || isLocked(doc, own.track))) return null;
   const next: EditClip = own ? { ...own, track } : {
-    cut: clip.cut, gen: clip.gen, track, kind: clip.kind,
+    ...slotFields(clip.cut), gen: clip.gen, track, kind: clip.kind,
     dur: validSeconds(clip.dur) ?? DEFAULT_SEC,
     ...(clip.job ? { job: clip.job } : {}),
   };
   return {
     ...doc,
-    clips: [...doc.clips.filter((item) => item !== own && !(item.cut === clip.cut && item.track === track)), next],
+    clips: [...doc.clips.filter((item) => item !== own && !(slotOf(item) === clip.cut && item.track === track)), next],
   };
+}
+
+// 미디어 풀의 카드를 컷 경계에 놓았다(Jay 2026-10-23 ⑤) — 그 카드 폴더의 새 자리를 before 앞에 만들고 그 트랙에 넣는다. 한 명령(되돌리기 한 번).
+//  all = 전체 순서(cutPaths) · card.cut = 폴더(그 시퀀스의 자리여야 한다) · id = 호출부가 지은 새 자리 ID(이 문서의 어느 열쇠에도 없어야 한다).
+//  잠긴 트랙·잘못된 before·쓰인 ID 는 null.
+export function insertSlot(
+  doc: EditDoc,
+  all: readonly string[],
+  card: Parameters<typeof placeClip>[1],
+  before: string | null,
+  track: number,
+  id: string,
+): EditDoc | null {
+  // 폴더는 그 시퀀스의 자리여야 한다 — 첫 자리가 숨어 있어도(빈 첫 자리, 2026-10-26) 그 폴더의 반복 자리가 있으면 된다
+  if (!positiveInt(track) || isLocked(doc, track) || isRepeatSlot(card.cut) || !all.some((key) => folderOf(key) === card.cut)) return null;
+  if ((before !== null && !all.includes(before)) || !slotIdFree(doc, id)) return null;
+  const clip: EditClip = {
+    cut: card.cut, slot: id, gen: card.gen, track, kind: card.kind, dur: validSeconds(card.dur) ?? DEFAULT_SEC,
+    ...(card.job ? { job: card.job } : {}),
+  };
+  return writeOrder({ ...doc, v: 3, clips: [...doc.clips, clip] }, all, slotOf(clip), before);
+}
+
+// 그 반복 자리의 유일한 클립인가 — 옮기면 자리째 옮긴다(ID·북마크·D 가 따라간다). 화면의 놓기 전 거르기와 moveClipToSlot 이 같이 쓴다.
+export function soleRepeatClip(doc: EditDoc, key: string): boolean {
+  const clip = doc.clips.find((item) => clipKey(item) === key);
+  return !!clip?.slot && !doc.clips.some((item) => item !== clip && slotOf(item) === slotOf(clip));
+}
+
+// 타임라인의 클립을 가로로 끌어 컷 경계에 놓았다(Jay 2026-10-23 ⑤ — '옮기기'). 한 명령(되돌리기 한 번), 하나라도 안 되면 아무것도 바꾸지 않는다(null).
+//  ① 그 클립·떠나는/도착 트랙의 잠금·양수 트랙·before(null 이거나 all 에 있음)를 먼저 본다.
+//  ② 반복 자리의 유일한 클립이면 그 자리를 before 앞으로(제자리면 순서 그대로) + 트랙이 다르면 트랙만 — 하나라도 바뀌면 성공, 둘 다 그대로면 null.
+//  ③ 아니면 클립을 복사해 slot 만 새 ID(head·trim·speed·off·dur·durExact·kind·job 그대로)·트랙 = 놓은 줄로 before 앞에 새 자리를 만들고 원래 클립을
+//    뺀다(원래 자리가 첫 자리면 비고 — 그 폴더에 반복 자리가 있으니 자리 목록에서 숨는다(cutPaths) — 반복 자리면 다른 클립이 남아 있다). id 는 ③ 에서만 본다.
+export function moveClipToSlot(
+  doc: EditDoc,
+  all: readonly string[],
+  key: string,
+  before: string | null,
+  track: number,
+  id: string,
+): EditDoc | null {
+  const clip = doc.clips.find((item) => clipKey(item) === key);
+  if (!clip || !positiveInt(track) || isLocked(doc, clip.track) || isLocked(doc, track)) return null;
+  if (before !== null && !all.includes(before)) return null;
+  if (soleRepeatClip(doc, key)) {
+    const moved = track === clip.track ? doc : { ...doc, clips: doc.clips.map((item) => (item === clip ? { ...item, track } : item)) };
+    const ordered = slotStays(all, slotOf(clip), before) ? null : writeOrder(moved, all, slotOf(clip), before);
+    return ordered ?? (moved === doc ? null : moved);
+  }
+  if (!slotIdFree(doc, id)) return null;
+  const copy: EditClip = { ...clip, slot: id, track };
+  return writeOrder({ ...doc, v: 3, clips: doc.clips.map((item) => (item === clip ? copy : item)) }, all, slotOf(copy), before);
+}
+
+// 타임라인의 클립을 가로로 끌어 같은 폴더의 다른 자리 몸통에 놓았다(Jay 2026-10-26 — "본래 그 클립이 있던 곳에는 다시 클립위에 쌓을수 있어야한다").
+//  그 자리의 그 트랙으로 옮긴다 — 찬 칸이면 맞바꿈(그 칸의 클립은 떠난 자리의 떠난 트랙으로). 한 명령(되돌리기 한 번), 순서는 안 건드린다(떠난 반복
+//  자리가 비면 사라지고 재생헤드는 settlePos 의 previous). 거부(null): 클립 없음 · 양의 안전 정수가 아닌 트랙 · 떠나는/도착 트랙 잠김 · 자기 자리 ·
+//  다른 폴더 · 사라진 반복 자리 · 도착 자리에 같은 생성물(그 칸의 상대가 그 생성물이어도 — 자르기·속도가 섞이지 않게) · 맞바꿀 상대의 생성물이 떠난
+//  자리에 (이 클립 말고) 있음. 다른 칸(head·trim·speed·off·dur·durExact·kind·job)은 그대로다.
+export function moveClipIntoSlot(doc: EditDoc, key: string, target: string, track: number): EditDoc | null {
+  const clip = doc.clips.find((item) => clipKey(item) === key);
+  if (!clip || !positiveInt(track) || isLocked(doc, clip.track) || isLocked(doc, track)) return null;
+  const from = slotOf(clip);
+  if (target === from || folderOf(target) !== clip.cut || deadSlot(doc, target)) return null;
+  if (doc.clips.some((item) => item !== clip && slotOf(item) === target && item.gen === clip.gen)) return null;
+  const other = doc.clips.find((item) => slotOf(item) === target && item.track === track);
+  if (other && doc.clips.some((item) => item !== clip && item !== other && slotOf(item) === from && item.gen === other.gen)) return null;
+  // 자리를 바꿔 적는다 — 첫 자리(폴더 그대로)로 가면 slot 칸을 지운다(덮어쓰기로는 안 지워진다)
+  const put = (item: EditClip, slot: string, at: number): EditClip => {
+    const next: EditClip = { ...item, ...slotFields(slot), track: at };
+    if (!isRepeatSlot(slot)) delete next.slot;
+    return next;
+  };
+  return { ...doc, clips: doc.clips.map((item) => (item === clip ? put(clip, target, track) : item === other ? put(other, from, clip.track) : item)) };
+}
+
+// 새 자리 ID 로 쓸 수 있는가 — 글자 규칙 + 이 문서의 어느 열쇠(클립·순서·D·인/아웃·북마크)에도 없음. 무작위 ID 가 다시 나올 확률은 무시한다
+//  (shortcut: 문서 안 중복만 막는다 — 자리를 기기 간에 합치게 되면 UUID 로).
+function slotIdFree(doc: EditDoc, id: string): boolean {
+  if (!isSlotId(id)) return false;
+  const keys = [doc.markIn?.cut, doc.markOut?.cut, ...(doc.markers ?? []).map((marker) => marker.cut),
+    ...(doc.cutOrder ?? []), ...(doc.cutsOn ?? []), ...(doc.cutsOff ?? [])];
+  return !doc.clips.some((clip) => clip.slot === id) && !keys.some((key) => !!key && slotIdOf(key) === id);
 }
 
 // 그 컷의 그 트랙에 이 카드를 놓으면 무슨 일이 일어나는가 — 휠 클릭 메뉴의 줄과 끌어 넣기의 강조가 같이 쓴다(둘이 어긋나지 않게).
@@ -562,7 +896,7 @@ export type PlaceState = "empty" | "taken" | "here" | "locked";
 export function placeState(doc: EditDoc, cut: string, own: Pick<EditClip, "track"> | null | undefined, track: number): PlaceState {
   if (own?.track === track) return "here";
   if (isLocked(doc, track) || (!!own && isLocked(doc, own.track))) return "locked";
-  return doc.clips.some((clip) => clip.cut === cut && clip.track === track) ? "taken" : "empty";
+  return doc.clips.some((clip) => slotOf(clip) === cut && clip.track === track) ? "taken" : "empty";
 }
 
 // 클립이 쓰는 구간을 정한다(Jay 2026-10-13 뒤를 자른다 · 10-14 앞도 자른다). head = 앞에서 잘라 내는 길이(초, 0 = 원본의 처음부터),
@@ -577,18 +911,34 @@ export function setClipRange(doc: EditDoc, key: string, range: { head: number; t
   const head = range.head > 0 ? range.head : undefined;
   const trim = range.trim === null ? undefined : validSeconds(range.trim) ?? undefined;
   if ((range.trim !== null && trim === undefined) || (trim === clip.trim && head === clip.head)) return null;
-  return {
-    ...doc,
-    clips: doc.clips.map((item) => {
-      if (item !== clip) return item;
-      const next = { ...item };
-      delete next.trim;
-      delete next.head;
-      if (trim !== undefined) next.trim = trim;
-      if (head !== undefined) next.head = head;
-      return next;
-    }),
-  };
+  const next = { ...clip };
+  delete next.trim;
+  delete next.head;
+  if (trim !== undefined) next.trim = trim;
+  if (head !== undefined) next.head = head;
+  if (next.speed !== undefined && speedFrames(next) < 1) return null; // 속도를 친 길이가 한 프레임도 안 되는 구간
+  return { ...doc, clips: doc.clips.map((item) => (item === clip ? next : item)) };
+}
+
+// 속도를 친 타임라인 프레임 수(clipLen 의 내림 전 값) — 0 이면 그 속도·구간은 고를 수 없다.
+function speedFrames(clip: EditClip, fallback?: unknown): number {
+  return Math.floor(clipSource(clip, fallback) * EDIT_FPS / clipSpeed(clip) + 1e-6);
+}
+
+// 속도를 정한다(Jay 2026-10-23 Ctrl+R). 쓰는 원본 구간(head·trim)은 그대로 — 타임라인 길이만 바뀐다. 1 이면 칸을 지운다.
+//  영상만 · SPEED_MIN~SPEED_MAX · 타임라인 길이가 한 프레임도 안 되는 속도·그림·잠긴 트랙은 거부한다. 속도를 적는 순간 문서는 v 2 다
+//  (지워도 2 로 남는다 — 강등하지 않는다). fallback = 원본 길이를 문서가 모를 때 호출부가 아는 값(clipLen 과 같다). 바뀐 것이 없으면 null.
+export function setClipSpeed(doc: EditDoc, key: string, speed: number, fallback?: unknown): EditDoc | null {
+  const clip = doc.clips.find((item) => clipKey(item) === key);
+  const value = validSpeed(speed);
+  if (!clip || clip.kind === "image" || isLocked(doc, clip.track) || value === null) return null;
+  const next: EditClip = { ...clip };
+  delete next.speed;
+  if (Math.abs(value - 1) > 1e-9) next.speed = value;
+  if (next.speed === clip.speed) return null;
+  if (next.speed !== undefined && speedFrames(next, fallback) < 1) return null; // 1 로 되돌리기는 언제나 된다
+  // 판을 내리지 않는다 — v 3 문서에 속도를 적어도 3(Codex 설계 2차)
+  return { ...doc, v: next.speed !== undefined && doc.v === 1 ? 2 : doc.v, clips: doc.clips.map((item) => (item === clip ? next : item)) };
 }
 
 // 초 → 프레임에 맞춘 초(길이 조절 창의 값). 최소 1프레임, 상한(max — 원본 길이)을 넘지 않는 가장 긴 프레임 수까지.
@@ -638,7 +988,7 @@ export function shiftClips(doc: EditDoc, keys: Iterable<string>, delta: 1 | -1):
     const from = track.get(clip)!;
     const to = from + delta;
     if (to < 1 || isLocked(doc, to)) return null;
-    const other = doc.clips.find((item) => item !== clip && item.cut === clip.cut && track.get(item) === to);
+    const other = doc.clips.find((item) => item !== clip && slotOf(item) === slotOf(clip) && track.get(item) === to);
     if (other) track.set(other, from);
     track.set(clip, to);
   }
@@ -653,7 +1003,7 @@ export function moveClipToTrack(doc: EditDoc, key: string, to: number): EditDoc 
     ...doc,
     clips: doc.clips.map((item) =>
       item === clip ? { ...item, track: to }
-        : item.cut === clip.cut && item.track === to ? { ...item, track: clip.track } : item),
+        : slotOf(item) === slotOf(clip) && item.track === to ? { ...item, track: clip.track } : item),
   };
 }
 

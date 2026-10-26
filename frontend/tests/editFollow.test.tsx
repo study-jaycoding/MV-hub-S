@@ -53,11 +53,30 @@ let time = 0; // 타임라인의 지금 시각
 let clock = 0;
 let frames: ((stamp: number) => void)[] = [];
 
-function Harness({ track = 1, playing = false, rate = 1, layout = LAYOUT }: {
-  track?: number; playing?: boolean; rate?: number; layout?: typeof LAYOUT;
+function Harness({ track = 1, playing = false, rate = 1, layout = LAYOUT, catchUp }: {
+  track?: number; playing?: boolean; rate?: number; layout?: typeof LAYOUT; catchUp?: boolean;
 }) {
-  shown = useEditFollow({ videoRef, layout, track, sourceOf, now: () => time, playing, rate });
+  shown = useEditFollow({ videoRef, layout, track, sourceOf, now: () => time, playing, rate, catchUp });
   return null;
+}
+
+// 영상 요소 둘을 묶은 것(editVideoPair)의 가짜 — 뒤에 미리 받아 세워 둔 주소·자리와 바꿔 끼움만 흉내 낸다(바꿔 끼운 것은 서 있다)
+class FakePair extends FakeVideo {
+  readyState = 0;
+  loads = 0;
+  back = { url: "", time: 0 };
+  swaps: string[] = [];
+  rolls = 0;
+  load() { super.load(); this.loads++; }
+  prepare(url: string | null, at: number) { this.back = { url: url ?? "", time: at }; }
+  swap(url: string) {
+    if (!url || url !== this.back.url) return false;
+    this.swaps.push(url);
+    [this.src, this.currentTime, this.paused, this.readyState] = [url, this.back.time, true, 1];
+    this.back = { url: "", time: 0 };
+    return true;
+  }
+  roll() { this.rolls++; }
 }
 const render = (props: Parameters<typeof Harness>[0] = {}) => act(() => root.render(<Harness {...props} />));
 const frame = (ms = 16) => act(() => {
@@ -132,7 +151,7 @@ it("멈춰 있으면 그 자리에 정확히 맞춘다 — 한 프레임 이동�
   time = 1;
   render({ track: 1 });
   frame();
-  expect(video.currentTime).toBe(0); // 메타데이터를 받기 전에는 탐색하지 않는다
+  expect(video.currentTime).toBe(1); // 받기 전에 그 자리를 '처음 자리'로 적어 둔다(탐색이 아니다 — 받는 대로 그리로 간다)
   video.emit("loadedmetadata");
   frame();
   expect(video.currentTime).toBe(1);
@@ -161,7 +180,7 @@ it("타임라인이 정방향으로 가는 동안에는 스스로 재생하고, 
   frame();
   expect(video.paused).toBe(false);
   expect(video.plays).toBe(1);
-  expect(video.currentTime).toBeCloseTo(1.016); // 처음에는 그 자리로(1초 어긋나 있었다)
+  expect(video.currentTime).toBe(1); // 받기 전에 적어 둔 처음 자리 그대로 — 0.016초는 허용 오차 안(다시 탐색하지 않는다)
   video.currentTime = 1.1; // 조금 앞서 간다 — 그냥 둔다(프레임마다 탐색하면 끊긴다)
   time = 1.05;
   frame();
@@ -304,8 +323,95 @@ it("앞을 자른 클립으로 바뀌면 새로 받은 영상을 시작점으로
   time = 0.01;
   render({ track: 1, playing: true, layout });
   frame();
-  video.emit("loadedmetadata"); // 새로 받은 영상은 0초에 서 있다 — 컷 안 0.01초와 0.2초 안으로 가깝다
+  expect(video.currentTime).toBeCloseTo(0.01 + 3 / 24); // 받기 전에 시작점(3프레임)을 건너뛴 자리를 처음 자리로 적어 둔다
+  video.currentTime = 0; // 그래도 0초에 서 있으면(처음 자리를 못 받은 영상) — 컷 안 0.01초와 0.2초 안으로 가깝지만
+  video.emit("loadedmetadata");
   time = 0.02;
   frame();
-  expect(video.currentTime).toBeCloseTo(0.02 + 3 / 24); // 시작점(3프레임)을 건너뛴 자리
+  expect(video.currentTime).toBeCloseTo(0.02 + 3 / 24); // 한 번 정확히 보낸다
+});
+
+// 클린 피드(Jay 2026-10-26 "재생하는데 딜레이") — 영상의 재생 시작 시간만큼 뒤처진 채 가지 않게 재생률로 붙는다. 소리 있는 판은 켜지 않는다.
+it("catchUp 이면 재생 중 어긋남을 재생률로 메운다(반 프레임 넘게 ±8% · 세 프레임 넘게 ±25% · 안이면 원래) — 끄면 원래 재생률 그대로", () => {
+  time = 1;
+  render({ track: 1, playing: true, catchUp: true });
+  frame();
+  video.emit("loadedmetadata");
+  const step = (lag: number) => {
+    time += 0.016;
+    video.currentTime = time - lag; // 영상이 시계보다 lag 초 뒤(음수면 앞)
+    frame();
+    return video.playbackRate;
+  };
+  step(0);
+  expect(video.paused).toBe(false);
+  expect(step(0.07)).toBeCloseTo(1.08);
+  expect(step(0.15)).toBeCloseTo(1.25); // 0.2초(맞추는 탐색) 안 — 탐색하지 않는다
+  expect(video.currentTime).toBeCloseTo(time - 0.15);
+  expect(step(-0.05)).toBeCloseTo(0.92);
+  expect(step(0.01)).toBe(1);
+  render({ track: 1, playing: true, rate: 2, catchUp: true });
+  expect(step(0.07)).toBeCloseTo(2.16); // 배속에 곱한다
+  render({ track: 1, playing: true });
+  expect(step(0.15)).toBe(1);
+});
+
+// 클린 피드(Jay 2026-10-26 "클립 넘어갈 때 딜레이") — 영상이 쌍이면 타임라인 판처럼 다음 것을 미리 받아 굴려 두었다가 바꿔 끼운다
+it("영상이 쌍이면 정방향 재생 중 다음 클립을 그 시작 자리에 미리 받아 두고, 넘어갈 때 받지 않고 바꿔 끼워 그 프레임에 바로 튼다 · 멈추면 받지 않는다", () => {
+  const doc: EditDoc = { ...emptyEditDoc(), clips: [
+    { cut: "e070/c1", gen: "a", track: 1, dur: 2, kind: "video" },
+    { cut: "e070/c2", gen: "b", track: 1, dur: 2, kind: "video" },
+  ] };
+  const layout = buildLayout(["e070/c1", "e070/c2"], doc); // c1 0~2 · c2 2~4
+  const pair = new FakePair();
+  video = pair;
+  videoRef = { current: pair };
+  time = 1;
+  render({ track: 1, playing: true, layout });
+  frame();
+  expect(pair.src).toBe("/v/a");
+  expect(pair.back).toEqual({ url: "/v/b", time: 0 }); // 다음 컷의 처음 자리
+  pair.emit("loadedmetadata");
+  time = 1.95; // 넘어가기 직전 — 미리 굴리지 않는다(받아 세워 둔 것은 바로 돈다 — 굴리면 그만큼 앞서 간다)
+  frame();
+  const loads = pair.loads;
+  const plays = pair.plays;
+  time = 2.01;
+  frame();
+  expect(pair.swaps).toEqual(["/v/b"]);
+  expect(pair.loads).toBe(loads); // 받지 않았다
+  expect(shown.clip?.gen).toBe("b");
+  expect(pair.paused).toBe(false); // 바꿔 끼운 그 프레임에 튼다(한 프레임 늦게 틀면 그만큼 뒤처진다)
+  expect(pair.plays).toBe(plays + 1);
+  expect(pair.currentTime).toBe(0); // 다시 보내지 않는다(0.01초 — 허용 오차 안)
+  expect(pair.back.url).toBe(""); // 그 뒤에는 없다
+  expect(pair.rolls).toBe(0);
+  render({ track: 1, playing: false, layout }); // 멈춤 — 미리 받지도 굴리지도 않는다
+  time = 1.9;
+  frame();
+  expect(pair.back.url).toBe("");
+  act(() => root.unmount());
+  expect(pair.back).toEqual({ url: "", time: 0 });
+  root = createRoot(host);
+});
+
+it("속도 클립(2026-10-23) — 영상 시각 = 시작점 + 컷 안 시각 × 속도, 재생률 = 배속 × 속도(25% 에 바닥을 걸지 않는다)", () => {
+  const doc: EditDoc = { ...emptyEditDoc(), v: 2, clips: [{ cut: "e070/c1", gen: "slow", track: 1, dur: 4, kind: "video", head: 1, speed: 0.25 }] };
+  const layout = buildLayout(["e070/c1"], doc); // 쓰는 원본 3초 ÷ 0.25 = 컷 안 0~12초
+  expect(layout.cuts[0].len).toBe(12);
+  time = 4;
+  render({ track: 1, layout });
+  frame();
+  video.emit("loadedmetadata");
+  frame();
+  expect(video.currentTime).toBe(2); // 1 + 4 × 0.25
+  render({ track: 1, layout, playing: true, rate: 2 });
+  time = 4.1;
+  frame();
+  expect(video.playbackRate).toBe(0.5); // 2배속 × 25%
+  expect(video.currentTime).toBe(2); // 어긋남(0.1초 — 타임라인 초)은 허용 오차 안이다
+  video.currentTime = 1.5; // 영상 1.5초 = 컷 안 2초 — 2.1초 넘게 어긋났다
+  time = 4.2;
+  frame();
+  expect(video.currentTime).toBeCloseTo(1 + 4.2 * 0.25);
 });

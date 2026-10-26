@@ -36,8 +36,13 @@ import type { CanvasGenerationLink } from "./lib/canvasGenerationRecovery";
 import type { CardHistoryCursor, CardHistoryLink } from "./lib/canvasDetached";
 import { getAccountNamespace } from "./lib/accountScope";
 import type { GenerationLocation, GenerationLocationRequest } from "./lib/resolveLibraryLocation";
+import { EXPECT_ACCOUNT_HEADER } from "./lib/hubFeatures";
 
 export { getAuthToken, jsonFetch, setAuthToken };
+
+// 편집 공유의 서버 응답 — 확인된 판(revision)·저장된 글자의 hash. 목록 행은 email 없이 열쇠(key)·이름·mine(요청한 나)
+export interface EditShareHead { revision: number; data_hash: string; updated_at: string }
+export interface EditShareRow extends EditShareHead { key: string; name: string; mine: boolean }
 export { connectProgress } from "./lib/progressSocket";
 
 // 무한 스크롤 페이지 크기. 한 페이지가 이 크기 미만이면 마지막 페이지.
@@ -321,6 +326,18 @@ export const api = {
       `/api/projects/${pathPart(projectId)}/folder-cover`,
       { method: "PUT", body: jsonBody({ folder_path: folderPath, generation_id: generationId }) },
     ),
+  // 편집 공유(Jay 2026-10-23 — 서버에 저장 · 다른 편집 보기). 로컬 허브가 화면 계정(expect = getAccountNamespace())을 대조한 뒤 공유 서버로
+  //  넘긴다 — 서버에 로그인하지 않았으면 409, 옛 공유 서버는 404 "Not Found"(isRouteMissing). routers/edit_shares.
+  //  본문에도 같은 계정을 싣는다 — 공유 서버에 바로 붙은 화면(AUTH on)은 본문 expect_account 로 대조한다(허브는 고정한 계정으로 바꿔 넘긴다).
+  saveEditShare: (body: { project_id: string; seq: string; data: string }, expect: string) =>
+    jsonFetch<EditShareHead>("/api/edit-shares/save", {
+      method: "POST", body: jsonBody({ ...body, expect_account: expect }), headers: { [EXPECT_ACCOUNT_HEADER]: expect },
+    }),
+  listEditShares: (projectId: string, seq: string, expect: string) =>
+    jsonFetch<EditShareRow[]>(`/api/edit-shares?${new URLSearchParams({ project_id: projectId, seq })}`, { headers: { [EXPECT_ACCOUNT_HEADER]: expect } }),
+  getEditShare: (projectId: string, seq: string, key: string, expect: string) =>
+    jsonFetch<EditShareHead & { data: string | null }>(`/api/edit-shares/doc?${new URLSearchParams({ project_id: projectId, seq, key })}`,
+      { headers: { [EXPECT_ACCOUNT_HEADER]: expect } }),
   // 한 페이지(커서 뒤 limit개)만 받아온다. 무한 스크롤이 호출. cursor=null 이면 첫 페이지.
   // 서버가 모든 필터를 거르므로 반환된 페이지가 곧 화면에 그릴 정확한 결과.
   // `lean_params=1` — 목록 응답에서 `params.prompt` 를 빼 달라는 **명시적 요청**(C-1).

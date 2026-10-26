@@ -1,4 +1,4 @@
-import { cutOf, parseEditDoc, type EditDoc } from "./editTimeline";
+import { clipKey, cutOf, folderOf, isRepeatSlot, isSlotId, parseEditDoc, validSlotKey, type EditDoc } from "./editTimeline";
 
 export interface ArchiveTarget { projectId: string; seq: string }
 export interface EditArchive extends ArchiveTarget {
@@ -49,7 +49,7 @@ const timeFits = (value: unknown) => typeof value === "number" && Number.isFinit
 const normalKeys = ["format", "schemaVersion", "exportedAt", "projectId", "seq", "snapshotKind", "unsaved", "projectName", "docRaw"];
 const recoveryKeys = ["format", "schemaVersion", "exportedAt", "projectId", "seq", "workingArchive", "storedRaw", "storedInvalid"];
 const docKeys = ["v", "clips", "tracksOff", "tracksLocked", "muted", "cutsOn", "cutsOff", "hideOff", "tracks", "trackColors", "markIn", "markOut", "markers", "cutOrder"];
-const clipKeys = ["cut", "gen", "job", "track", "off", "dur", "durExact", "kind", "trim", "head"];
+const clipKeys = ["cut", "gen", "job", "track", "off", "dur", "durExact", "kind", "trim", "head", "speed", "slot"];
 const posKeys = ["cut", "local"];
 
 function validTimestamp(value: unknown): boolean {
@@ -73,24 +73,35 @@ function boundedDoc(raw: unknown, seq: string): EditDoc | null {
     if (list !== undefined && (!Array.isArray(list) || list.length > MAX_ITEMS || !list.every(track))) return null;
   }
   if (raw.trackColors !== undefined && (!object(raw.trackColors) || !Object.keys(raw.trackColors).every((key) => String(Number(key)) === key && track(Number(key))))) return null;
+  // 자리 열쇠별 길이 — 폴더 자리는 비어도 기본 5초로 그려지고, 반복 자리(폴더//ID)는 클립이 있을 때만 있다: 클립이 있으면 폴더처럼 기본 5초
+  //  (길이가 안 적힌 클립도 배치는 기본 길이다 — Codex 독립 리뷰 1차), 참조만 남은 열쇠는 0초(개수 한도에는 센다). 클립을 먼저 세므로(아래 순서)
+  //  live = 클립에서 온 열쇠. 판(v 3)·글자 규칙의 마지막 검사는 parseEditDoc 이 한다 — 여기는 그 시퀀스의 직계 컷인지와 한도.
   const cuts = new Map<string, number>();
-  const cutFits = (value: unknown): value is string => {
-    if (!boundedString(value, 2048) || cutOf(seq, value) !== value) return false;
-    if (!cuts.has(value)) cuts.set(value, 5);
+  const cutFits = (value: unknown, live = false): value is string => {
+    if (!boundedString(value, 2048) || !validSlotKey(value, 3)) return false;
+    const folder = folderOf(value);
+    if (cutOf(seq, folder) !== folder) return false;
+    if (!cuts.has(value)) cuts.set(value, isRepeatSlot(value) && !live ? 0 : 5);
     return cuts.size <= MAX_ITEMS;
   };
   const posFits = (value: unknown, marker = false): boolean => object(value) &&
     keysFit(value, marker ? [...posKeys, "color", "name"] : posKeys) && cutFits(value.cut) && timeFits(value.local) &&
     (!marker || value.name === undefined || boundedString(value.name, 1024));
   for (const clip of raw.clips) {
-    if (!object(clip) || !keysFit(clip, clipKeys) || !cutFits(clip.cut) || !boundedString(clip.gen, 512) ||
+    if (!object(clip) || !keysFit(clip, clipKeys) || isRepeatSlot(String(clip.cut)) || !cutFits(clip.cut) || !boundedString(clip.gen, 512) ||
       (clip.job != null && !boundedString(clip.job, 512)) || !track(clip.track)) return null;
+    if (clip.slot !== undefined && !isSlotId(clip.slot)) return null;
+    const slot = clip.slot === undefined ? clip.cut : `${clip.cut}//${clip.slot}`;
+    if (!cutFits(slot, true)) return null;
     for (const field of ["dur", "trim", "head"]) if (clip[field] !== undefined && !timeFits(clip[field])) return null;
-    if (typeof clip.dur === "number") cuts.set(clip.cut, Math.max(cuts.get(clip.cut)!, clip.dur));
+    // 속도의 값 검사는 parseEditDoc 이 한다(v 2·영상·범위) — 여기서는 느린 속도로 늘어난 타임라인 길이만 한도에 센다(자리마다 — 같은 폴더의 두 자리는 따로)
+    //  길이가 안 적힌 클립은 기본 5초로 그려진다 — 그것에도 속도를 친다(느린 속도면 길어진다, Codex 독립 리뷰 2차)
+    const speed = typeof clip.speed === "number" && clip.speed > 0 ? clip.speed : 1;
+    cuts.set(slot, Math.max(cuts.get(slot)!, (typeof clip.dur === "number" ? clip.dur : 5) / speed));
   }
   for (const field of ["cutsOn", "cutsOff", "cutOrder"]) {
     const list = raw[field];
-    if (list !== undefined && (!Array.isArray(list) || list.length > MAX_ITEMS || !list.every(cutFits))) return null;
+    if (list !== undefined && (!Array.isArray(list) || list.length > MAX_ITEMS || !list.every((item) => cutFits(item)))) return null;
   }
   for (const field of ["markIn", "markOut"]) if (raw[field] !== undefined && !posFits(raw[field])) return null;
   if (raw.markers !== undefined && (!Array.isArray(raw.markers) || raw.markers.length > MAX_ITEMS || !raw.markers.every((marker) => posFits(marker, true)))) return null;
@@ -124,7 +135,7 @@ export function knownDocEquals(a: EditDoc, b: EditDoc): boolean {
   const canonical = (doc: EditDoc) => {
     const parsed = parseEditDoc(doc);
     if (!parsed) return null;
-    parsed.clips.sort((x, y) => x.cut.localeCompare(y.cut) || x.gen.localeCompare(y.gen));
+    parsed.clips.sort((x, y) => clipKey(x).localeCompare(clipKey(y))); // 자리 열쇠 + 생성물 — 같은 생성물의 두 자리도 순서가 정해진다
     parsed.tracksOff.sort((x, y) => x - y);
     parsed.tracksLocked.sort((x, y) => x - y);
     parsed.cutsOn?.sort();

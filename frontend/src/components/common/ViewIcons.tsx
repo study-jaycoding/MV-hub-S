@@ -39,14 +39,6 @@ export function FitIcon({ filled }: { filled: boolean }) {
     </svg>
   );
 }
-// 필터 사이드바 열림(빈 네모)·닫힘(오른쪽 세모). 글자 ▢·▷ 는 1.3px 아래였다(2026-09-22 실측). 세모는 네모 칸 가운데.
-export function FilterPanelIcon({ open }: { open: boolean }) {
-  return (
-    <svg {...TOGGLE_ICON} strokeWidth={1.5}>
-      {open ? <rect x="3.75" y="3.75" width="16.5" height="16.5" rx="1.5" /> : <path d="M6.5 4.5 17.5 12 6.5 19.5Z" />}
-    </svg>
-  );
-}
 // 정보(ⓘ) — 글자 ⓘ 는 폴백 글꼴 탓에 1px 아래였고, 손으로 넣은 padding 보정도 글꼴 따라 틀어졌다(2026-09-22 실측).
 export function InfoIcon() {
   return (

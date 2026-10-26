@@ -2,6 +2,9 @@
    클래스는 전부 `ed-` 로 시작한다(.empty·.main 같은 흔한 이름은 앱의 다른 규칙에 먹힌다).
    단추는 전역 button 규칙(배경·테두리·padding 6px 12px)을 여기서 하나씩 지운다. */
 .ed-root { background: var(--bg2); outline: none; min-height: 0; }
+/* 다빈치 배치(Jay 2026-10-23) — 미디어 풀(폭 손잡이 포함)은 왼쪽 전체 높이, 오른쪽 칸(.ed-right)에 뷰어 → 높이 손잡이 → 막대 → 타임라인 */
+.main.ed-root { flex-direction: row; }
+.ed-right { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .ed-top { flex: 1; min-height: 0; display: flex; }
 
 /* 왼쪽 폴더 목록 — 재생헤드가 있는 컷은 라임으로(다빈치 확인 표시의 빨간 테두리는 여기서 쓰지 않는다). */
@@ -14,11 +17,13 @@
 
 /* 뷰어 판 — 위 줄(시각·무엇을 볼지·전체 길이·싱글/듀얼) · 무대 · 아래 줄(타임바·버튼). 타임라인·소스·한 트랙만이 같은 판이다.
    자리는 order 로 정한다(영상 요소를 떼지 않으려고 판은 늘 붙어 있다 — 안 보이는 판은 hidden). */
-.ed-view { flex: 1; min-width: 0; display: flex; flex-direction: column; border-left: 1px solid var(--border); }
+/* 풀·뷰어 색(다빈치 느낌 — Jay 2026-10-23 "미디어 폴부분과 뷰어 부분의 색상도", 타임라인 색과 같은 회색 묶음): 위·아래 줄 #28282d ·
+   화면(무대) 검정 대신 #1c1c1f · 타임바·소리 막대 줄은 바탕보다 어둡게 · 칸 사이 선 #121214. 클린 피드 창은 검정 그대로(밖 모니터 화면이다). */
+.ed-view { flex: 1; min-width: 0; display: flex; flex-direction: column; border-left: 1px solid #121214; }
 .ed-view[hidden] { display: none; }
 .ed-vtop {
   flex: none; position: relative; height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 12px;
-  background: var(--panel); border-bottom: 1px solid var(--border); border-top: 2px solid transparent; user-select: none;
+  background: #28282d; border-bottom: 1px solid #1a1a1e; border-top: 2px solid transparent; user-select: none;
 }
 .ed-view-on .ed-vtop { border-top-color: var(--accent); } /* 재생 키가 이 판의 시계로 간다 */
 .ed-vtc { flex: none; min-width: 84px; font: 600 12.5px ui-monospace, Consolas, monospace; letter-spacing: 0.3px; font-variant-numeric: tabular-nums; }
@@ -35,7 +40,7 @@
 .ed-pop.ed-vpop { left: 50%; right: auto; top: 28px; transform: translateX(-50%); min-width: 220px; overflow-y: auto; } /* 상한은 EditViewer 가 남은 높이로 잰다 */
 .ed-vpop > * { flex: none; } /* 스크롤될 때 항목이 눌리지 않게 */
 .ed-pop-item i { margin-left: auto; padding-left: 14px; font-style: normal; font-size: 11px; color: var(--muted); }
-.ed-stage { flex: 1; min-height: 0; position: relative; background: #000; overflow: hidden; }
+.ed-stage { flex: 1; min-height: 0; position: relative; background: #1c1c1f; overflow: hidden; }
 .ed-media { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
 .ed-media[hidden] { display: none; }
 /* 영상 요소 둘 중 뒤의 것 — 다음 영상을 미리 받아 둔다(editVideoPair). 자리는 차지한 채 가리기만 한다: 넘어가는 순간
@@ -53,12 +58,12 @@
 }
 .ed-chip-l { left: 12px; }
 .ed-chip-r { right: 12px; font-weight: 500; color: #d7dae0; }
-.ed-vbot { flex: none; background: var(--panel); border-top: 1px solid var(--border); user-select: none; }
+.ed-vbot { flex: none; background: #28282d; border-top: 1px solid #1a1a1e; user-select: none; }
 /* 타임바(다빈치의 재생바) — 누르는 자리는 넉넉하게(높이 28px), 보이는 줄은 4px. 빨강 = 지금 자리, 위의 색 꼬리표 = 북마크,
    밝은 선과 아래의 회색 꼬리표 = 마크 인/아웃, 얇은 줄 = 소스 테이프의 클립 경계. */
 .ed-scrub { height: 28px; padding: 0 16px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
-.ed-scrub-track { position: relative; flex: 1; height: 4px; border-radius: 2px; background: #2c303b; }
-.ed-scrub-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 2px; background: #555b6b; }
+.ed-scrub-track { position: relative; flex: 1; height: 4px; border-radius: 2px; background: #18181b; }
+.ed-scrub-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 2px; background: #5a5a62; }
 .ed-scrub-track i { position: absolute; top: -3px; bottom: -3px; width: 1px; background: rgba(255, 255, 255, 0.4); pointer-events: none; }
 .ed-scrub-range { position: absolute; top: 0; bottom: 0; border-radius: 2px; background: #b9bdc6; pointer-events: none; } /* 마크 인/아웃 구간 */
 .ed-scrub-mk { position: absolute; top: -9px; width: 7px; height: 8px; margin-left: -3.5px; border-radius: 2px 2px 3.5px 3.5px; background: #1287ff; pointer-events: none; } /* 북마크 */
@@ -89,10 +94,22 @@
 .ed-tside svg { fill: #9aa0ae; }
 .ed-tside svg.ed-line { fill: none; stroke: #9aa0ae; }
 .ed-vol-bar { width: 72px; height: 22px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
-.ed-vol-track { position: relative; flex: 1; height: 4px; border-radius: 2px; background: #2c303b; }
+.ed-vol-track { position: relative; flex: 1; height: 4px; border-radius: 2px; background: #18181b; }
 .ed-vol-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: #9aa0ae; pointer-events: none; }
 .ed-vol-knob { position: absolute; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: #c9ccd3; pointer-events: none; }
 .ed-vol-bar:hover .ed-vol-knob { background: #fff; }
+/* 비디오 클린 피드(Jay 2026-10-23 — 다빈치 Video Clean Feed): 싱글/듀얼 단추 왼쪽의 단추와 그 메뉴 · 켜져 있으면 타임라인 판 오른쪽 아래 이름표 */
+.ed-feed { position: relative; flex: none; margin-left: 2px; }
+.ed-tbtn.ed-feedbtn { border-radius: 6px; width: 30px; height: 24px; }
+.ed-tbtn.ed-feedbtn svg { fill: none; stroke: #c9ccd3; stroke-width: 1.3; }
+.ed-tbtn.ed-feedbtn:hover svg, .ed-tbtn.ed-feedbtn.ed-on svg { stroke: var(--accent); fill: none; }
+.ed-tbtn.ed-feedbtn.ed-on { background: rgba(var(--accent-rgb), 0.1); }
+.ed-pop.ed-feedpop { right: 0; top: 28px; min-width: 300px; max-width: min(420px, 80vw); }
+.ed-feedpop .ed-pop-item { height: 30px; }
+.ed-feedpop .ed-pop-item:disabled { color: #5c616c; cursor: default; background: transparent; }
+.ed-pop-head { padding: 4px 10px 2px; font-size: 11px; font-weight: 700; color: var(--muted); }
+.ed-pop-note { padding: 4px 10px 6px; max-width: 320px; font-size: 11.5px; line-height: 1.5; color: var(--muted); white-space: normal; }
+.ed-chip.ed-feedchip { top: auto; bottom: 10px; right: 10px; font-size: 11.5px; color: var(--accent); }
 .ed-tbtn.ed-dual { margin-left: 2px; border-radius: 6px; width: 30px; height: 24px; }
 .ed-tbtn.ed-dual svg { fill: none; stroke: #c9ccd3; stroke-width: 1.3; }
 .ed-tbtn.ed-dual:hover svg, .ed-tbtn.ed-dual.ed-on svg { stroke: var(--accent); fill: none; }
@@ -101,27 +118,20 @@
    더 좁으면 막대를, 더 좁으면 스피커까지. 가운데 단추 묶음은 약 282px 이라 막대 44px 의 소리 칸(74px)은 판 폭 약 470px 까지 안 겹친다
    (2026-10-14 격리 실측 — 1584 창의 듀얼 판 495px 에서 막대가 숨어 '판마다 소리'가 끄고 켜기뿐이었다). */
 .ed-vbot { container-type: inline-size; }
-/* 다이나믹 재생 모드(W) — 아래 단추 줄은 두 판 아래에 하나(Jay 2026-10-14 모의 그림 승인). 판은 재생바까지만(bare) 그리고, .ed-top 을
-   격자로 바꿔 풀·폭 손잡이는 두 줄을 차지하고 판 둘은 위 줄, 공용 줄(.ed-linkbar)은 아래 줄에 두 판 폭만큼 걸친다(판의 요소는 그대로
-   .ed-top 바로 아래다). 가운데 = 재생 단추, 양 끝 = 왼쪽 판(L)·오른쪽 판(R)의 소리. */
-.ed-top.ed-top-linked { display: grid; grid-template-columns: auto auto minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
-.ed-top-linked > .ed-pool-side { grid-column: 1; grid-row: 1 / -1; }
-.ed-top-linked > .sidebar-resize-handle { grid-column: 2; grid-row: 1 / -1; }
-.ed-top-linked > .ed-view { grid-row: 1; min-height: 0; }
-.ed-linkbar {
-  grid-column: 3 / -1; grid-row: 2; position: relative; display: flex; justify-content: center; container-type: inline-size;
-  background: var(--panel); border-top: 1px solid var(--border); border-left: 1px solid var(--border); user-select: none;
+/* 다이나믹 재생 모드(W, Jay 2026-10-26 — 다빈치의 Dynamic Trim Mode) — 멈춘 동안 무대를 덮는 두 칸(가장 가까운 편집점의 앞 | 뒤).
+   재생하거나 타임라인을 움직이는 동안은 덮개가 걷혀 밑의 엔진 화면 하나가 재생헤드를 따라간다(Jay 3차 — 다빈치 그림 1·2).
+   덮개는 무대의 맨 뒤 요소라 무대의 영상·꼬리표·안내를 그대로 덮는다(z-index 없이 — 칸의 꼬리표·안내가 그 위). */
+.ed-dyn { position: absolute; inset: 0; display: flex; gap: 2px; background: #2c303b; }
+.ed-dyn[hidden] { display: none; } /* 재생·움직임 동안 — 떼지 않고 가린다(칸의 영상을 다시 받지 않게) */
+.ed-dyn-half { position: relative; flex: 1; min-width: 0; overflow: hidden; background: #000; }
+.ed-dyn-half .ed-chip { z-index: 2; max-width: calc(100% - 24px); font-weight: 700; color: var(--text); }
+.ed-dyn-half .ed-notice { z-index: 2; }
+.ed-dyn-close {
+  position: absolute; left: 10px; top: 10px; z-index: 3; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%;
+  background: rgba(8, 9, 12, 0.5); display: flex; align-items: center; justify-content: center;
 }
-.ed-linkvol { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; gap: 2px; }
-.ed-linkvol-l { left: 12px; }
-.ed-linkvol-r { right: 12px; }
-.ed-linkvol svg { fill: #9aa0ae; }
-.ed-linkvol svg.ed-line { fill: none; stroke: #9aa0ae; }
-.ed-vol-side { margin: 0 4px; font: 700 11px ui-monospace, Consolas, monospace; color: var(--accent); }
-.ed-linkvol-l .ed-vol-side { order: -1; } /* 'L 🔈 ━' · '🔈 ━ R' — 글자가 바깥 끝에 */
-/* 좁으면(두 판 폭이 가운데 단추 약 282px + 양 끝 소리 칸과 겹칠 때) 막대를 줄이고, 더 좁으면 막대를 숨긴다(스피커·글자는 남긴다) */
-@container (max-width: 640px) { .ed-linkvol .ed-vol-bar { width: 44px; } }
-@container (max-width: 520px) { .ed-linkvol .ed-vol-bar { display: none; } }
+.ed-dyn-close svg { display: block; fill: none; stroke: #d7dae0; stroke-width: 1.4; stroke-linecap: round; }
+.ed-dyn-close:hover svg { stroke: #fff; }
 @container (max-width: 560px) { .ed-tside .ed-vol-bar { width: 44px; } }
 @container (max-width: 470px) { .ed-tside .ed-vol-bar { display: none; } }
 @container (max-width: 440px) { .ed-tside { display: none; } }
@@ -129,15 +139,23 @@
 /* 미디어 풀 — 왼쪽 폴더 목록 바로 옆(다빈치의 Bins | 클립). 머리줄 = 컷 이름 + 보기 방식·검색·정렬. */
 /* 폭은 끌어서 바꾼다(ResizableSidebar — 프로젝트 칸과 같은 손잡이). */
 .ed-pool-side { flex: 0 0 var(--sidebar-w, 392px); width: var(--sidebar-w, 392px); min-width: 0; min-height: 0; display: flex; }
+/* 색은 다빈치 느낌(위 '풀·뷰어 색' — 바탕 #28282d · 머리 줄 #232327) */
 .ed-pool {
   flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column;
-  background: var(--panel); border-right: 1px solid var(--border); user-select: none;
+  background: #28282d; border-right: 1px solid #121214; user-select: none;
 }
-.ed-pool-head { flex: none; display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--border); }
+.ed-pool-head { position: relative; flex: none; display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 8px 0 18px; background: #232327; border-bottom: 1px solid #1a1a1e; }
 .ed-pool-head h3 { flex: 1; min-width: 0; margin: 0; font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* 왼쪽 폴더 목록 여닫기 — 공유 탭 도구 줄의 단추(.lib-filter-ic, 30px)를 그대로 쓴다. 머리줄의 왼쪽 여백(14px)과 간격(8px)을 줄여
-   단추가 가장자리에 붙고 제목이 단추 바로 옆에 오게 한다(시안 mock_edit_sidebar_toggle.png 의 A). */
-.ed-pool-head .ed-side-toggle { flex: none; margin: 0 -4px 0 -9px; }
+/* 왼쪽 폴더 목록 여닫기 — 공유 탭과 같은 끝선 손잡이(.side-edge-toggle, Jay 2026-10-26 시안 C). 이 줄의 왼쪽 끝 = 폴더 목록 끝선.
+   높이만 도구 줄 기준 대신 머리줄(40px)의 가운데로. 왼쪽 여백 18 = 닫힘 반달(16px) 옆에 제목이 오게(공유 탭 도구 줄과 같은 값). */
+.ed-pool-head .side-edge-toggle.open { top: 9px; }
+.ed-pool-head .side-edge-toggle:not(.open) { top: 7px; }
+/* 왼쪽 아래 '컬러 · 전역 태그 · 생성자'(Jay 2026-10-23 — 모양은 공유 탭 사이드바의 것 그대로). 접어 둔 채 거르는 중이면 켠 개수 */
+.ed-foot-count {
+  margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; box-sizing: border-box;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 10.5px; font-weight: 800; letter-spacing: 0;
+  color: var(--accent-ink); background: var(--accent);
+}
 /* 왼쪽 폴더 목록을 감싸는 칸 — 닫으면 없애지 않고 감춘다(펼친 폴더·스크롤 자리 유지). 열려 있을 때는 배치에 끼지 않는다 */
 .ed-side-wrap { display: contents; }
 .ed-side-wrap[hidden] { display: none; }
@@ -218,10 +236,19 @@
 .ed-pthumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .ed-pthumb i { position: absolute; left: 6px; bottom: 4px; font-style: normal; font-size: 11px; color: #fff; text-shadow: 0 1px 3px #000; }
 .ed-prow.ed-placed .ed-pthumb { box-shadow: 0 0 0 2px var(--accent); }
-.ed-pinfo { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; padding-top: 2px; line-height: 1.45; }
-.ed-pinfo b { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-weight: 700; color: var(--text); }
+.ed-pinfo { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding-top: 2px; line-height: 1.45; }
+/* 메타데이터 보기의 글(Jay 2026-10-23 ⑥) — 줄마다 한 줄로 고정하고 넘치면 …(전에는 좁은 칸에서 이름·날짜가 한 글자씩 꺾였다).
+   표(넣은 트랙·다빈치)는 이름 옆이 아니라 자기 줄 — 이름을 밀어내지 않게 */
+.ed-pinfo b { display: flex; align-items: center; gap: 6px; min-width: 0; font-weight: 700; color: var(--text); }
+.ed-pline { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-pmarks { display: flex; gap: 4px; min-width: 0; }
+.ed-pmarks .cd-mark { margin-left: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ed-pprompt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ed-pinfo .ed-pprompt { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal; }
+/* 글 칸이 150px 보다 좁으면(EditPool 의 metaStacked) 글이 썸네일 아래로 — 썸네일은 칸 폭, 프롬프트는 1줄 */
+.ed-pstack .ed-prow-meta { flex-direction: column; gap: 6px; }
+.ed-pstack .ed-pinfo { width: 100%; flex: none; }
+.ed-pstack .ed-pinfo .ed-pprompt { -webkit-line-clamp: 1; }
 .ed-pstate { flex: none; font-size: 11px; font-weight: 800; color: var(--accent); }
 .ed-pstate-held { color: #ef7d8c; }
 .ed-pstate-final { color: #e8b62c; }
@@ -234,8 +261,8 @@
 /* 마지막 칸 '트랙·소스' — 작은 카드와 같은 짧은 글. 64px: 가장 긴 영어 싱글 'V10·Source'(63px)까지 든다 — 56px 에선 말줄임이 됐다
    (38회차 격리 실측: 듀얼 'V10·L·R' 56/56 · 싱글 en 63/56). 전체 글은 title. 소스 판에 떠 있으면 안 넣었어도 라임 */
 .ed-prow-list > span.ed-psrc { color: var(--accent); font-weight: 700; }
-.ed-prow-head { position: sticky; top: 0; z-index: 1; height: 26px; font-size: 11px; color: var(--muted2); background: var(--panel); border-bottom: 1px solid var(--border); border-radius: 0; }
-.ed-prow-head:hover { background: var(--panel); }
+.ed-prow-head { position: sticky; top: 0; z-index: 1; height: 26px; font-size: 11px; color: var(--muted2); background: #28282d; border-bottom: 1px solid #1a1a1e; border-radius: 0; }
+.ed-prow-head:hover { background: #28282d; }
 /* 다빈치(미디어 풀)에서 고른 것(Jay 2026-10-14) — 공유 탭의 다빈치 확인 표시(resolve-library.css)와 같은 빨강·빛.
    썸네일 = 카드 둘레 + 아래 표 · 메타데이터 = 그림 둘레 + 이름 줄의 표 · 목록 = 줄 바탕 + 왼쪽 막대 + 표 · 타임라인은 아래 .ed-clip.ed-dv */
 /* 타임라인에서 고른 클립의 카드(.ed-tlsel — Jay 2026-10-15 A)도 같은 고리·빛. 표('다빈치' 글·빨간 표)는 다빈치 것에만 */
@@ -245,6 +272,25 @@
 .ed-prow.ed-dv .ed-pthumb, .ed-prow.ed-tlsel .ed-pthumb { box-shadow: 0 0 0 2px #ff304f, 0 0 10px 2px rgba(255, 48, 79, 0.55); }
 .ed-prow-list.ed-dv, .ed-prow-list.ed-tlsel { background: rgba(255, 48, 79, 0.14); box-shadow: inset 3px 0 0 #ff304f; }
 .ed-prow-list .ed-dv-chip { margin: 0 6px 0 0; }
+/* r/g/b 색·골드(Jay 2026-10-23 — 공유 탭처럼 구분되게). 썸네일 보기는 라이브러리 카드의 아래 색 띠(.card-colorbar)가 그린다.
+   메타데이터 = 그림 아래 변의 띠(▶ 는 그 위로) · 목록 = 줄 왼쪽 막대. 빗금(z 1)보다 위 — 꺼 둔 카드도 무슨 색인지 보인다 */
+.ed-pcolor { position: absolute; z-index: 2; pointer-events: none; }
+.ed-pcolor.ed-pgold { background: #ffcf33; }
+.ed-pthumb .ed-pcolor { left: 0; right: 0; bottom: 0; height: 6px; }
+.ed-pthumb .ed-pcolor + i { bottom: 9px; z-index: 2; }
+.ed-prow-list:not(.ed-prow-head) { position: relative; } /* 머리줄은 sticky 그대로(같은 세기라 덮었다 — Codex 묶음 검토 R2) */
+.ed-prow-list > .ed-pcolor { left: 0; top: 4px; bottom: 4px; width: 4px; border-radius: 2px; }
+/* 비활성(회색 — d 키 카드·비활성 폴더 아래) — 라이브러리와 같은 회색 + 굵은 빗금(generations.css "비활성 = 회색 + 굵은 빗금").
+   회색은 그림에만 건다(Assets·Resolve 카드와 같은 까닭 — 테두리·색 띠까지 탈색되면 넣은 라임·다빈치 빨강·색이 죽는다).
+   목록 보기는 그림이 없어 줄 바탕에 옅은 빗금 + 흐린 글 */
+.ed-card.ed-off .card-thumb, .ed-prow.ed-off .ed-pthumb img { filter: grayscale(1) brightness(0.55); }
+.ed-card.ed-off .card-thumb::after, .ed-prow.ed-off .ed-pthumb::after {
+  content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background: repeating-linear-gradient(135deg, rgba(0, 0, 0, 0.55) 0 4px, rgba(255, 255, 255, 0.1) 4px 5px, transparent 5px 14px);
+}
+.ed-prow-meta.ed-off .ed-pinfo { opacity: 0.5; }
+.ed-prow-list.ed-off { background-image: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.07) 0 4px, transparent 4px 10px); }
+.ed-prow-list.ed-off > span:not(.ed-pcolor) { opacity: 0.5; }
 
 /* 여러 장을 골랐을 때 — 풀 아래의 막대(비교) */
 .ed-pool-sel {
@@ -257,25 +303,36 @@
 .ed-psel-resolve { border-color: rgba(92, 160, 255, 0.55); }
 .ed-pool-sel .ed-link { color: var(--muted); font-size: 11.5px; }
 
-/* 타임라인 위 막대 */
+/* 타임라인 위 막대 — 다빈치 느낌의 회색(Jay 2026-10-23, 아래 '타임라인 색' 절) */
 .ed-bar {
   flex: none; height: 44px; display: flex; align-items: center; gap: 14px; padding: 0 16px; user-select: none;
-  border-top: 1px solid var(--border2); border-bottom: 1px solid var(--border); background: var(--panel2);
+  border-top: 1px solid #1b1b1f; border-bottom: 1px solid #1b1b1f; background: #28282d;
 }
-.ed-tc { flex: none; width: 150px; font: 600 19px ui-monospace, Consolas, monospace; letter-spacing: 0.5px; font-variant-numeric: tabular-nums; }
 .ed-seq { min-width: 0; font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ed-seq b { color: var(--text); font-weight: 700; }
 .ed-seq i { font-style: normal; color: var(--muted2); margin: 0 7px; }
 .ed-mine, .ed-warn { flex: none; padding: 3px 9px; border-radius: 999px; font-size: 11.5px; border: 1px solid var(--border2); color: var(--muted); }
 .ed-warn { color: #ffb37a; border-color: rgba(255, 150, 80, 0.45); }
 .ed-storage-warning { border-radius: 0; padding: 8px 16px; line-height: 1.6; }
-/* 폴더 순서를 바꿔 둔 상태의 알약 — 누르면 이름순으로 되돌린다(단추라 전역 button 의 안쪽 여백·배경을 여기서 다시 정한다) */
-.ed-orderchip {
-  height: auto; padding: 3px 9px; background: transparent; font: inherit; font-size: 11.5px; line-height: inherit; cursor: pointer;
-  color: var(--accent); border-color: rgba(var(--accent-rgb), 0.45);
+/* 편집 공유(Jay 2026-10-23 — 모의 그림 ①②⑤) — 알약 = 방식 단추 + ▾(목록). 저장 뒤 바뀌면·V0 이 새로 저장되면 라임(라임 위 검은 글자).
+   단추라 전역 button 의 안쪽 여백·배경을 여기서 다시 정한다. */
+.ed-share { flex: none; display: inline-flex; align-items: center; gap: 6px; }
+.ed-share-pill { display: inline-flex; align-items: center; padding: 0; overflow: hidden; }
+.ed-share-pill button, .ed-v0chip {
+  height: auto; padding: 3px 9px; background: transparent; border: 0; font: inherit; font-size: 11.5px; line-height: inherit; color: inherit; cursor: pointer;
 }
-.ed-orderchip:hover { background: rgba(var(--accent-rgb), 0.1); }
-.ed-orderchip:active { transform: none; }
+.ed-share-pill .ed-share-caret { padding: 3px 8px 3px 4px; color: var(--muted2); }
+.ed-share-pill button:hover:not(:disabled), .ed-v0chip:hover { color: var(--text); }
+.ed-share-pill button:active, .ed-v0chip:active { transform: none; }
+.ed-v0chip { border: 1px solid rgba(139, 108, 240, 0.55); color: #c9bcff; }
+.ed-share-pill.ed-lime, .ed-v0chip.ed-lime { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.ed-share-pill.ed-lime button, .ed-share-pill.ed-lime .ed-share-caret, .ed-v0chip.ed-lime:hover { color: var(--accent-ink); }
+.ed-tmenu-item.ed-share-item { height: auto; min-height: 28px; align-items: flex-start; gap: 6px; padding: 6px 10px; white-space: normal; text-align: left; }
+.ed-share-item > span:last-child { display: flex; flex-direction: column; gap: 2px; }
+.ed-share-item b { font-weight: 700; color: var(--text); }
+.ed-share-item small { font-size: 11px; line-height: 1.45; color: var(--muted); }
+.ed-share-check { flex: none; width: 12px; color: var(--accent); font-weight: 800; }
+.ed-tmenu-note { padding: 6px 10px; font-size: 11.5px; color: var(--muted); }
 /* 마크 인/아웃·북마크 — 재생헤드 자리에 찍는 단추. 찍혀 있으면 라임. 옆 글자는 구간 길이(누르면 지운다). */
 .ed-marks { margin-left: auto; flex: none; display: flex; align-items: center; gap: 4px; }
 .ed-marks + .ed-zoom { margin-left: 0; }
@@ -335,6 +392,30 @@
   width: 24px; height: 24px; padding: 0; border-radius: 6px; font-size: 13px; line-height: 1;
   display: flex; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.05);
 }
+/* H = 편집 탭 단축키 창(Jay 2026-10-23 — 옛 －·＋ 자리, 같은 크기) */
+.ed-hkbtn { font: 800 12px ui-monospace, Consolas, monospace; }
+.ed-hkbtn[aria-expanded="true"] { color: var(--accent); }
+
+/* 편집 탭 단축키 창 — 껍데기는 설정의 단축키 창(.manage-float.sc-float · .sc-row), 묶음이 많아 두 단 */
+.manage-float.ed-sc-float { width: min(900px, calc(100vw - 32px)); max-width: none; }
+.ed-sc-find {
+  width: 100%; box-sizing: border-box; height: 30px; padding: 0 10px; margin: 6px 0 2px; border-radius: 7px;
+  background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border2); color: var(--text); font-size: 12.5px;
+}
+.ed-sc-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 22px; }
+@media (max-width: 720px) { .ed-sc-cols { grid-template-columns: 1fr; } }
+.ed-sc-keys { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: flex-end; min-width: 168px; }
+.ed-sc-slot { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 6px; background: rgba(255, 255, 255, 0.04); }
+.ed-sc-slot.ed-sc-wheel { border-style: dashed; }
+.ed-sc-slot.ed-sc-active { border-color: var(--accent); }
+.ed-sc-pick { padding: 3px 8px; min-width: 34px; border: 0; background: none; color: var(--text); font: 600 11.5px ui-monospace, Consolas, monospace; }
+.ed-sc-slot.ed-sc-active .ed-sc-pick { color: var(--accent); }
+.ed-sc-pick:hover { color: var(--accent); }
+.ed-sc-x { padding: 0 6px 0 0; border: 0; background: none; color: var(--muted2); font-size: 12px; line-height: 1; }
+.ed-sc-x:hover { color: var(--text); }
+.ed-sc-none { font-size: 11px; color: var(--muted2); margin-right: 2px; }
+.sc-row.ed-sc-fixed .sc-key { opacity: 0.55; }
+.ed-sc-tag { width: 26px; font-size: 10.5px; color: var(--muted2); text-align: center; }
 /* 목록 단추 — 비활성 숨기기 · 빈 곳 채우기. 숨기기가 켜져 있으면 라임, 옆 숫자는 숨긴 폴더 수. */
 .ed-listbtn { margin-right: 6px; }
 .ed-listbtn svg { stroke-linecap: round; }
@@ -369,6 +450,25 @@
 .ed-swatch-none { margin-left: auto; background: rgba(255, 255, 255, 0.08); }
 .ed-swatch-none:disabled { opacity: 0.4; cursor: default; }
 .ed-mmenu .ed-swatches { display: grid; grid-template-columns: repeat(8, 16px); gap: 6px; height: auto; padding: 6px; } /* 16색 = 두 줄 */
+/* 트랙 머리 메뉴(Jay 2026-10-23 — 다빈치처럼 읽기 좋게): 줄 30px·글씨 13px, 못 하는 줄은 흐린 글씨(줄 전체를 흐리지 않는다), 색은 오른쪽 하위 메뉴 */
+.folder-ctx-menu.ed-tmenu.ed-hmenu { width: 214px; gap: 0; padding: 5px; }
+.ed-hmenu .ed-tmenu-head { height: 24px; padding: 0 10px; font-weight: 700; }
+.ed-hmenu .ed-tmenu-item { height: 30px; padding: 0 10px; font-size: 13px; gap: 12px; }
+.ed-hmenu .ed-tmenu-item:disabled { opacity: 1; color: #5c616c; }
+.ed-hmenu .ed-tmenu-item:disabled i { color: #4b505a; }
+.ed-hmenu .ed-tmenu-item.ed-open { background: rgba(255, 255, 255, 0.09); }
+.ed-hmenu .ed-tmenu-sep { margin: 4px 6px; }
+.ed-tmenu-right { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; line-height: 1; color: var(--muted); }
+.ed-colordot { width: 10px; height: 10px; border-radius: 50%; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35); }
+/* 하위 메뉴 — 메뉴 상자 안의 자식이지만 fixed 라 상자의 스크롤 칸에 잘리지 않는다(틀에 transform·filter 를 주면 이 자리가 틀어진다) */
+.ed-submenu {
+  position: fixed; z-index: 1001; width: 168px; box-sizing: border-box; padding: 8px; display: flex; flex-direction: column; gap: 8px;
+  background: var(--panel, #1c1c22); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+}
+.ed-submenu .ed-swatches { display: grid; grid-template-columns: repeat(4, 22px); gap: 8px; height: auto; padding: 2px; }
+.ed-submenu .ed-swatch { width: 22px; height: 22px; border-radius: 5px; }
+.ed-submenu .ed-tmenu-item { height: 26px; background: rgba(255, 255, 255, 0.06); }
+.ed-submenu .ed-tmenu-item:disabled { opacity: 1; color: #5c616c; }
 /* 북마크 색 메뉴(막대의 ▾) — 다빈치의 마커 색 메뉴: 이름 왼쪽, 색 꼬리표 오른쪽 */
 .folder-ctx-menu.ed-cmenu { max-height: calc(100vh - 8px); overflow-y: auto; }
 .ed-cmenu .ed-tmenu-item { flex: none; height: 24px; }
@@ -466,22 +566,62 @@
 .ed-trim-foot small { font-size: 11px; color: var(--muted); }
 
 /* 타임라인 — 왼쪽 트랙 머리 + 오른쪽 가로 스크롤. 줄 높이는 머리와 줄이 같아야 한다. */
-.ed-tl { flex: none; max-height: 52%; display: flex; overflow-y: auto; background: #0b0c0e; user-select: none; }
-.ed-heads { flex: none; width: 108px; border-right: 1px solid var(--border); }
+/* 타임라인 칸 높이 = 손잡이(.ed-split)로 정한 값, 없으면 40%. 트랙 높이(Shift+휠)를 바꿔도 칸은 그대로고 안에서 위아래로 스크롤한다(다빈치).
+   위쪽(풀·뷰어)이 160px 는 남게 막는다(막대 44px 포함). */
+/* 타임라인 색(다빈치 느낌 — Jay 2026-10-23 모의 그림 `_shots/mock_edit1023_timeline_colors.png` "그대로 입혀라"): 검정 대신 중간 회색.
+   트랙 줄(레이어 크기)과 그 밖의 빈 공간(비디오 위·A1 아래)은 톤을 나눈다 — 줄은 머리 #2b2b30 · 줄 #26262b, 밖은 머리 #232327 · 줄 #1e1e22
+   (Jay 덧붙임 "기존 레이어 크기가 있고 그밖에 공간으로 나뉜다"). 줄 사이 선은 바탕보다 어둡게(#1a1a1e). 라임·빨간 재생헤드·다빈치 빨간 테는 그대로. */
+.ed-tl {
+  flex: none; height: var(--ed-tl-h, 40%); min-height: 120px; max-height: calc(100% - 204px);
+  display: flex; overflow-y: auto; background: #1e1e22; user-select: none;
+}
+/* 뷰어와 타임라인 사이 손잡이 — 자리는 차지하지 않고(위아래 -3px) 막대의 윗변에 얹힌다. 모양은 풀 폭 손잡이(.sidebar-resize-handle)와 같다 */
+.ed-split { flex: none; position: relative; z-index: 3; height: 6px; margin: -3px 0; cursor: ns-resize; touch-action: none; user-select: none; outline: none; }
+.ed-split::after { content: ""; position: absolute; left: 0; right: 0; top: 2px; height: 2px; background: var(--accent); opacity: 0; }
+.ed-split:hover::after, .ed-split:focus-visible::after, .ed-split.resizing::after { opacity: 1; }
+/* 트랙 머리(다빈치 — Jay 2026-10-23 모의 그림 `_shots/mock_edit1023_track_heads.png`): 폭 200px · 맨 위 = 지금 시각(눈금자 28 + 컷 줄 26 옆) ·
+   비디오 트랙은 경계 위에 아래로 붙는다(그 위 빈 곳 = --ed-vgap, EditTimeline 이 재서 준다) · 트랙마다 두 줄(V 단추·잠금·켜고 끄기 / 이름) ·
+   비디오·오디오 경계 5px · A1 58px. 높이를 바꾸면 EditTimeline 의 TOP_H·AV_H·AUDIO_H 와 재생헤드 볼록 표시의 54px 도 함께.
+   머리 칸은 줄 칸처럼 내용이 길면 그만큼 커진다(바탕이 아래까지 깔리게 — 늘이기면 칸 높이에서 멈춰 아래 머리의 바탕이 끊긴다). */
+.ed-heads { flex: none; width: 200px; align-self: flex-start; min-height: 100%; border-right: 1px solid #1a1a1e; background: #232327; }
 .ed-head {
   box-sizing: border-box; display: flex; align-items: center; gap: 8px; padding-left: 12px;
-  font-size: 11.5px; color: var(--muted); border-bottom: 1px solid var(--border);
+  font-size: 11.5px; color: var(--muted); border-bottom: 1px solid #1a1a1e;
 }
+/* 트랙 단추 — 다빈치처럼 붉은 테 */
 .ed-head b {
-  min-width: 28px; height: 19px; padding: 0 4px; border-radius: 4px; font-size: 10.5px; font-weight: 800;
+  min-width: 30px; height: 19px; padding: 0 4px; border-radius: 4px; font-size: 10.5px; font-weight: 800; box-sizing: border-box;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(255, 255, 255, 0.09); color: #e6e8ec; border: 1px solid rgba(255, 255, 255, 0.16);
+  background: #3a2324; color: #e8797a; border: 1px solid #8b3b3d;
 }
-.ed-h-v { box-shadow: inset 3px 0 0 var(--trk, transparent); } /* 트랙 색 — 머리 왼쪽 띠와 그 트랙 클립의 위쪽 띠 */
-.ed-h-ruler, .ed-ruler { height: 28px; }
-.ed-h-cut, .ed-l-cut { height: 26px; }
-.ed-h-v, .ed-l-v { height: 58px; }
-.ed-h-a, .ed-l-a { height: 46px; }
+/* 트랙 줄의 머리 — 밝은 바탕 + 왼쪽 띠(비디오 파랑 · 오디오 초록, 트랙 색을 정하면 그 색 — 그 트랙 클립의 위쪽 띠도) */
+.ed-h-v, .ed-h-a { background: #2b2b30; }
+.ed-h-v { box-shadow: inset 3px 0 0 var(--trk, #3f73b8); }
+.ed-h-a { box-shadow: inset 3px 0 0 #3b9c5c; }
+.ed-ruler { height: 28px; }
+.ed-l-cut { height: 26px; }
+.ed-h-top { height: 54px; justify-content: center; padding: 0; }
+.ed-tc { font: 600 20px ui-monospace, Consolas, monospace; letter-spacing: 0.5px; font-variant-numeric: tabular-nums; color: #e2e2e6; }
+.ed-h-gap, .ed-l-gap { height: var(--ed-vgap, 0px); }
+.ed-h-v, .ed-l-v { height: var(--ed-lane-h, 58px); } /* Shift+휠로 바뀐다(EditTimeline laneH) */
+.ed-h-a, .ed-l-a { height: 58px; }
+.ed-h-v, .ed-h-a { flex-direction: column; align-items: flex-start; justify-content: center; gap: 5px; padding: 0 10px 0 12px; }
+/* V0 줄(편집 공유 — 다른 편집 보기, 모의 그림 ③④) — 보라 바탕·띠(트랙 색을 고르면 그 색). 클립은 보기만(누름을 받지 않는다) */
+.ed-h-v0 { --trk-v0: var(--trk, #8b6cf0); box-shadow: inset 3px 0 0 var(--trk-v0); background: #2d2938; }
+.ed-h-v0 .ed-v0name { min-width: 30px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: #2f2747; color: #c9bcff; border-color: #6a55c4; }
+.ed-l-v0 { background: #25222f; }
+.ed-v0clip { cursor: default; border-color: color-mix(in srgb, var(--trk, #8b6cf0) 70%, #000); background: #3a3156; box-shadow: inset 0 3px 0 var(--trk, #8b6cf0); }
+.ed-v0clip.ed-v0empty { border-style: dashed; background: transparent; box-shadow: none; }
+.ed-v0part { flex: 1 1 0; min-width: 0; display: flex; }
+.ed-v0part + .ed-v0part { border-left: 1px solid rgba(0, 0, 0, 0.45); }
+.ed-v0gap { background: rgba(0, 0, 0, 0.35); }
+.ed-v0-note { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 11.5px; color: #a79bd6; white-space: nowrap; }
+.ed-hrow { display: flex; align-items: center; gap: 6px; }
+.ed-hname { max-width: 100%; font-size: 11.5px; font-weight: 700; line-height: 1.2; color: #e0e0e4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ed-hname small { display: block; margin-top: 1px; font-size: 10.5px; font-weight: 600; color: #8e8e94; }
+/* 트랙을 낮추면(EditTimeline SHORT_LANE_H 미만) 영상 트랙 머리는 단추 줄만 — 다빈치처럼 */
+.ed-short .ed-h-v .ed-hname { display: none; }
+.ed-h-av, .ed-l-av { height: 5px; box-sizing: border-box; background: #1a1a1e; border-top: 1px solid #3b3b42; border-bottom: 1px solid #3b3b42; }
 .ed-hbtn {
   width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent;
   display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 800; color: #aeb3bd;
@@ -494,14 +634,23 @@
 .ed-hbtn.ed-mute { background: rgba(255, 255, 255, 0.07); }
 .ed-hbtn.ed-mute.ed-on { background: rgba(var(--accent-rgb), 0.16); }
 
-.ed-scroll { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; }
-.ed-lanes { position: relative; min-width: 100%; }
+/* 줄 영역은 칸(.ed-tl) 높이에 묶지 않는다 — 기본 늘이기(stretch)면 칸 높이가 되어 트랙을 높였을 때 아래 줄(V1·A1)이 잘렸다(Jay 2026-10-23). 낮은 내용에서는
+   칸을 채우고(min-height), 높으면 그만큼 커져 칸 하나가 머리와 줄을 함께 위아래로 스크롤한다. 가로 막대는 줄 내용의 맨 아래다. */
+.ed-scroll { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; align-self: flex-start; min-height: 100%; display: flex; flex-direction: column; }
+/* 줄 영역은 칸 아래까지 채운다 — 오디오 아래 빈 곳에도 재생헤드·컷 선이 이어진다(다빈치, Jay 2026-10-23) */
+.ed-lanes { position: relative; min-width: 100%; flex: 1 0 auto; }
+/* 눈금 — 다빈치처럼(Jay 2026-10-26): 큰 눈금(시각 글자)은 눈금자 높이 전체, 그 사이에 위에서 늘어뜨린 중간 눈금(9px)·작은 눈금(5px).
+   작은·중간 눈금은 그라디언트 두 겹이고 간격(--tick-minor·--tick-mid)은 EditTimeline 이 확대에 맞춰 준다(눈금 요소 0개). 0초 = 줄의 왼쪽 끝. */
 .ed-ruler {
-  position: relative; box-sizing: border-box; border-bottom: 1px solid var(--border); background: var(--panel);
+  position: relative; box-sizing: border-box; border-bottom: 1px solid #1a1a1e;
+  background:
+    repeating-linear-gradient(90deg, #7a7a80 0 1px, transparent 1px var(--tick-mid, 50px)) 0 0 / 100% 10px no-repeat,
+    repeating-linear-gradient(90deg, #616167 0 1px, transparent 1px var(--tick-minor, 10px)) 0 0 / 100% 6px no-repeat,
+    #2e2e33;
   cursor: ew-resize; touch-action: none;
 }
-.ed-tick { position: absolute; bottom: 0; width: 1px; height: 12px; background: rgba(255, 255, 255, 0.34); pointer-events: none; }
-.ed-tick span { position: absolute; left: 5px; bottom: 8px; font: 10.5px ui-monospace, Consolas, monospace; color: var(--muted); white-space: nowrap; }
+.ed-tick { position: absolute; top: 0; bottom: 0; width: 1px; background: #85858b; pointer-events: none; }
+.ed-tick span { position: absolute; left: 5px; bottom: 8px; font: 10.5px ui-monospace, Consolas, monospace; color: #9a9aa0; white-space: nowrap; }
 /* 마크 인/아웃(다빈치) — 눈금자 아래쪽의 구간 막대와 양 끝의 둥근 점, 줄 전체의 옅은 음영. 표시만 한다. */
 .ed-inout { position: absolute; bottom: 1px; height: 4px; border-radius: 2px; background: #9aa0ae; pointer-events: none; }
 .ed-mark { position: absolute; bottom: -1px; width: 8px; height: 8px; margin-left: -4px; border-radius: 50%; background: #cfd3da; pointer-events: none; }
@@ -513,12 +662,14 @@
 }
 .ed-mk:hover { filter: brightness(1.25); }
 .ed-mk:active { transform: none; }
-.ed-lane { position: relative; box-sizing: border-box; border-bottom: 1px solid var(--border); }
+.ed-lane { position: relative; box-sizing: border-box; border-bottom: 1px solid #1a1a1e; }
+.ed-l-cut { background: #2a2a2f; } /* 컷 줄은 눈금자에 붙은 줄 */
+.ed-l-v, .ed-l-a { background: #26262b; } /* 트랙 줄 — 그 밖(빈 공간)은 칸 바탕 #1e1e22 */
 .ed-lane-off { opacity: 0.45; }
-.ed-cutline { position: absolute; top: 28px; bottom: 0; width: 1px; background: rgba(255, 255, 255, 0.07); pointer-events: none; }
+.ed-cutline { position: absolute; top: 28px; bottom: 0; width: 1px; background: rgba(0, 0, 0, 0.28); pointer-events: none; }
 .ed-cutcell {
   position: absolute; top: 4px; height: 18px; padding: 0; border: 0; border-radius: 0; background: transparent;
-  font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: clip; white-space: nowrap;
+  font-size: 11px; color: #a3a3a9; overflow: hidden; text-overflow: clip; white-space: nowrap;
 }
 .ed-cutcell:hover { color: var(--text); }
 .ed-cutcell:active { transform: none; }
@@ -527,14 +678,18 @@
 /* 비활성 컷(폴더) — 이름에 줄을 긋고 흐리게. 재생헤드가 있으면 라임은 남되 줄은 그대로다. */
 .ed-cutcell.ed-cutoff { text-decoration: line-through; opacity: 0.55; }
 
-.ed-clip, .ed-slot { position: absolute; top: 3px; height: 52px; box-sizing: border-box; border-radius: 5px; overflow: hidden; display: flex; }
-.ed-clip { border: 1px solid rgba(255, 255, 255, 0.2); background: #1a1c20; cursor: pointer; touch-action: none; }
+.ed-clip, .ed-slot { position: absolute; top: 3px; height: calc(var(--ed-lane-h, 58px) - 6px); box-sizing: border-box; border-radius: 5px; overflow: hidden; display: flex; }
+/* 영상 클립 — 다빈치처럼 파란 클립: 위 = 썸네일 띠(.ed-clip-pics), 아래 = 이름 줄(컷 이름 · 길이) */
+.ed-clip { flex-direction: column; border: 1px solid #5b8fc8; background: #2f5f93; cursor: pointer; touch-action: none; }
+.ed-clip-pics { flex: 1; min-height: 0; display: flex; pointer-events: none; }
 .ed-clip i { flex: 1; min-width: 0; background: center / cover no-repeat; pointer-events: none; }
 .ed-clip i + i { border-left: 1px solid rgba(0, 0, 0, 0.45); }
-.ed-clip b {
-  position: absolute; left: 4px; bottom: 3px; padding: 1px 5px; border-radius: 4px; pointer-events: none;
-  font-size: 10px; font-weight: 600; background: rgba(8, 9, 12, 0.66); color: #e6e8ec;
+.ed-clip-bar {
+  flex: none; height: 15px; display: flex; align-items: center; gap: 5px; padding: 0 5px; overflow: hidden; pointer-events: none;
+  background: #2f5f93; color: #f2f5fa; font-size: 10px; font-weight: 700; line-height: 15px; white-space: nowrap;
 }
+.ed-clip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ed-clip-bar b { flex: none; font-weight: 600; color: #d6e2f0; }
 /* 최종(★) — 풀의 카드에 붙는 금색 표(generations.css 의 .card-sf.final)를 0.72배로 줄인 모양. 표시만 한다 */
 .ed-clip-final {
   position: absolute; top: 5px; right: 4px; width: 19px; height: 19px; border-radius: 6px; pointer-events: none;
@@ -572,24 +727,85 @@
 .ed-clip.ed-thin > * { display: none; }
 /* 줄인 클립의 '원본의 나머지'(그 컷 안에 남는 만큼) — 빗금만, 누를 수 없다 */
 .ed-clip-rest {
-  position: absolute; top: 3px; height: 52px; box-sizing: border-box; border-radius: 0 5px 5px 0; pointer-events: none;
+  position: absolute; top: 3px; height: calc(var(--ed-lane-h, 58px) - 6px); box-sizing: border-box; border-radius: 0 5px 5px 0; pointer-events: none;
   border: 1px dashed rgba(255, 255, 255, 0.16); border-left: 0;
   background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.07) 0 6px, transparent 6px 12px);
 }
+/* 속도 막대(Ctrl+R, Jay 2026-10-23 — 모의 그림 ③) — 클립 위에 겹친다. 막대는 누름을 받지 않고(아래 클립의 고르기·끌기 그대로) 잡는 곳·단추만 받는다.
+   머리(파랑) · 화살표 띠 · 아래는 클립의 그림이 비친다 · 가운데 아래 'p% ▾' · 오른쪽 끝 위 = 속도(파랑) / 아래 = 끝(라임) */
+.ed-rt {
+  position: absolute; top: 3px; height: calc(var(--ed-lane-h, 58px) - 6px); box-sizing: border-box; z-index: 3; pointer-events: none;
+  border: 2px solid var(--accent); border-radius: 5px;
+}
+.ed-rt-in { position: absolute; inset: 0; overflow: hidden; border-radius: 3px; display: flex; flex-direction: column; }
+.ed-rt-head {
+  height: 18px; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 4px; min-width: 0;
+  background: #2b4a66; font-size: 10.5px; color: #e6eef6; white-space: nowrap;
+}
+.ed-rt-head b { font-weight: 700; }
+.ed-rt-head span { margin: 0 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 600; color: #cfe0ef; }
+.ed-rt-x {
+  pointer-events: auto; flex: none; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 3px;
+  background: transparent; color: #c9d6e2; font-size: 11px; line-height: 16px; cursor: pointer;
+}
+.ed-rt-x:hover, .ed-rt-x:focus-visible { background: rgba(255, 255, 255, 0.14); color: #fff; outline: none; }
+.ed-rt-strip {
+  height: 12px; flex: none; background-color: rgba(30, 53, 80, 0.92); background-repeat: repeat-x; background-size: 9px 12px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='12'%3E%3Cpath d='M2 2.5l4 3.5-4 3.5' fill='none' stroke='%234aa3ff' stroke-width='1.6'/%3E%3C/svg%3E");
+}
+.ed-rt-foot {
+  pointer-events: auto; position: absolute; left: 50%; bottom: 3px; transform: translateX(-50%);
+  display: inline-flex; align-items: center; gap: 5px; height: 18px; padding: 0 7px; border: 0; border-radius: 4px; white-space: nowrap;
+  background: rgba(8, 9, 12, 0.8); color: #cfe0ef; font: 800 11px ui-monospace, Consolas, monospace; cursor: pointer;
+}
+.ed-rt-foot i { font-style: normal; font-size: 9px; color: #9fb3c6; }
+.ed-rt-foot small { font-weight: 600; color: #9fb3c6; }
+.ed-rt-foot:hover, .ed-rt-foot:focus-visible, .ed-rt-foot[aria-expanded="true"] { background: rgba(43, 74, 102, 0.95); color: #fff; outline: none; }
+.ed-rt-grip { pointer-events: auto; position: absolute; right: -5px; width: 9px; border-radius: 3px; cursor: ew-resize; touch-action: none; }
+.ed-rt-grip.ed-rt-speed { top: 15px; height: 40%; background: #4aa3ff; box-shadow: 0 0 0 2px rgba(74, 163, 255, 0.35); }
+.ed-rt-grip.ed-rt-trim { bottom: 3px; height: 35%; background: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.3); }
+.ed-rt-grip:focus-visible { outline: 2px solid #fff; outline-offset: 2px; } /* Tab 으로 온 손잡이 — ←/→ 가 이것을 움직인다 */
+.ed-rt.ed-rt-drag-speed { border-color: #4aa3ff; }
+.ed-rt-ghost {
+  position: absolute; top: 3px; height: calc(var(--ed-lane-h, 58px) - 6px); box-sizing: border-box; z-index: 2; pointer-events: none;
+  border: 1px dashed rgba(74, 163, 255, 0.65); border-radius: 5px;
+}
+.ed-rt-menu .ed-tmenu-item { height: 26px; font-size: 12.5px; }
+.ed-rt-input { display: flex; flex-direction: column; gap: 4px; padding: 4px; }
+.ed-rt-input label { display: flex; align-items: center; gap: 6px; }
+.ed-rt-input input {
+  width: 70px; height: 26px; box-sizing: border-box; padding: 0 6px; border: 1px solid var(--border2); border-radius: 5px;
+  background: #101114; color: #e6e8ec; font: 600 12.5px ui-monospace, Consolas, monospace;
+}
+.ed-rt-input .ed-tmenu-item { flex: 1; justify-content: center; }
+.ed-rt-input small { font-size: 11px; color: var(--muted); }
 .ed-slot {
-  border: 1px dashed rgba(255, 255, 255, 0.22); align-items: center; justify-content: center; pointer-events: none;
+  border: 1px dashed rgba(255, 255, 255, 0.16); align-items: center; justify-content: center; pointer-events: none;
   font-size: 11px; color: var(--muted2);
   background: repeating-linear-gradient(135deg, transparent 0 7px, rgba(255, 255, 255, 0.025) 7px 14px);
 }
 .ed-slot.ed-slot-off { border-style: dotted; opacity: 0.5; }
 /* 풀의 카드를 끌어 트랙 줄 위에 올렸다 — 들어갈 칸(그 카드의 컷). 클립 위에 겹쳐 그린다. 넣기·교체 = 라임, 지금 여기·잠김 = 흐리게 */
 .ed-drop {
-  position: absolute; top: 3px; height: 52px; box-sizing: border-box; border-radius: 5px; z-index: 5; pointer-events: none;
+  position: absolute; top: 3px; height: calc(var(--ed-lane-h, 58px) - 6px); box-sizing: border-box; border-radius: 5px; z-index: 5; pointer-events: none;
   display: flex; align-items: center; justify-content: center; overflow: hidden; white-space: nowrap;
   font-size: 11px; font-weight: 700; color: var(--accent-ink);
   border: 2px solid var(--accent); background: rgba(var(--accent-rgb), 0.82);
 }
 .ed-drop-here, .ed-drop-locked { color: #d7dae0; border: 2px dashed rgba(255, 255, 255, 0.45); background: rgba(8, 9, 12, 0.72); }
+/* 컷 경계에 끼워 넣기·옮기기(Jay 2026-10-23 ⑤) — 그 줄의 경계에 옅은 라임 띠와 꼬리표(라임 위 검은 글자). 띠는 경계 좌우 12px(판정 폭과 같은 눈) */
+.ed-insert {
+  position: absolute; top: 2px; height: calc(var(--ed-lane-h, 58px) - 4px); width: 24px; margin-left: -12px; z-index: 6; pointer-events: none;
+  border-radius: 4px; background: rgba(var(--accent-rgb), 0.28);
+}
+.ed-insert::before { content: ""; position: absolute; left: 11px; top: 0; bottom: 0; width: 2px; background: var(--accent); }
+.ed-insert span {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); white-space: nowrap;
+  padding: 2px 7px; border-radius: 5px; font-size: 11px; font-weight: 700; color: var(--accent-ink); background: var(--accent);
+}
+.ed-insert-locked { background: rgba(255, 255, 255, 0.12); }
+.ed-insert-locked::before { background: rgba(255, 255, 255, 0.45); }
+.ed-insert-locked span { color: #d7dae0; background: rgba(8, 9, 12, 0.85); }
 /* 끄는 카드(유령) — 포인터를 따라간다. 자리는 transform 으로 옮긴다(EditTab) */
 .ed-ghost {
   position: fixed; left: 0; top: 0; z-index: 900; pointer-events: none; display: flex; align-items: center; gap: 8px;
@@ -622,6 +838,26 @@
   padding: 0 7px; border-radius: 5px; font-size: 11.5px; font-weight: 700; line-height: 20px;
   color: var(--text); background: var(--panel); border: 1px solid var(--accent);
 }
-.ed-aud { position: absolute; top: 5px; height: 36px; box-sizing: border-box; border-radius: 5px; background: #1f5a3a; border: 1px solid #2f7d53; pointer-events: none; }
-.ed-phead { position: absolute; left: -1px; top: 0; bottom: 0; width: 2px; background: #ff4d4f; z-index: 5; pointer-events: none; will-change: transform; }
-.ed-phead::before { content: ""; position: absolute; left: -6px; top: 0; border: 7px solid transparent; border-top: 10px solid #ff4d4f; }
+/* 소리 조각 — 다빈치의 밝은 초록 + 파형 무늬(실제 파형이 아니라 무늬 — 소리가 있다는 표시) + 아래 컷 이름 */
+.ed-aud { position: absolute; top: 5px; height: 47px; box-sizing: border-box; border-radius: 5px; background: #3a8f58; border: 1px solid #58b277; pointer-events: none; overflow: hidden; }
+.ed-aud::before {
+  content: ""; position: absolute; left: 6px; right: 6px; top: 10px; height: 16px;
+  background: repeating-linear-gradient(90deg, rgba(220, 245, 228, 0.55) 0 2px, transparent 2px 5px);
+  -webkit-mask: linear-gradient(180deg, transparent, #000 35%, #000 65%, transparent); mask: linear-gradient(180deg, transparent, #000 35%, #000 65%, transparent);
+}
+.ed-aud span { position: absolute; left: 5px; right: 5px; bottom: 2px; font-size: 10px; font-weight: 700; color: #eaf7ee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 재생헤드 — 다빈치 모양(Jay 2026-10-23): 눈금자의 빨간 오각형 머리 · 가는 선 · 지금 보이는 클립의 트랙 줄에 길쭉한 볼록(.ed-phead-knob).
+   볼록의 자리 = 눈금자 28px + 컷 줄 26px + 비디오 위 빈 곳(--ed-vgap) + 줄 번호(--ph-row — 맨 위 비디오 트랙이 0) × 트랙 높이 + 트랙 높이의 반
+   — .ed-ruler·.ed-l-cut 높이를 바꾸면 54px 도 함께 */
+.ed-phead { position: absolute; left: -1px; top: 0; bottom: 0; width: 2px; background: #e8453c; z-index: 5; pointer-events: none; will-change: transform; }
+.ed-phead::before {
+  content: ""; position: absolute; left: -6px; top: 0; width: 14px; height: 17px; background: #e8453c;
+  clip-path: polygon(0 0, 100% 0, 100% 60%, 50% 100%, 0 60%);
+}
+/* 선을 잡는 자리(Jay 2026-10-26 — 다빈치는 머리 밑의 선을 잡아도 끌린다) — 눈금자(28px) 밑부터, 선 둘레 9px. 투명 */
+.ed-phead-grab { position: absolute; top: 28px; bottom: 0; left: -4px; width: 9px; pointer-events: auto; cursor: ew-resize; touch-action: none; }
+.ed-phead-knob {
+  position: absolute; left: -2px; width: 6px; height: 22px; background: #e8453c;
+  top: calc(54px + var(--ed-vgap, 0px) + var(--ph-row) * var(--ed-lane-h, 58px) + var(--ed-lane-h, 58px) / 2 - 11px);
+  clip-path: polygon(50% 0, 100% 24%, 100% 76%, 50% 100%, 0 76%, 0 24%);
+}

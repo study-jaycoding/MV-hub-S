@@ -1,8 +1,10 @@
 """타임라인 Resolve 보내기 — 계획 검증(순수)과 새 타임라인 짓기(가짜 Resolve).
 
 가짜는 2026-10-09 실측(Resolve Studio 21.1.1)에서 잰 규칙대로 군다: endFrame 끝 미포함 · recordFrame 절대 좌표 ·
-소스 fps → 타임라인 길이 환산 · 겹치면 잘라 넣고도 참 · 스틸은 5초 · 잠근 트랙엔 못 넣음 · 마커는 프레임마다 하나 ·
-CreateEmptyTimeline 이 현재 타임라인을 바꾼다 · 타임라인 fps 를 바꾸면 시작 프레임도 바뀐다.
+소스 fps → 타임라인 길이 환산(**내림** — 2026-10-23 실측 4: 30fps 46프레임 → 36, 25fps 52프레임 → 49) · 겹치면 잘라 넣고도 참 ·
+스틸은 5초 · 잠근 트랙엔 못 넣음 · 마커는 프레임마다 하나 · CreateEmptyTimeline 이 현재 타임라인을 바꾼다 · 타임라인 fps 를 바꾸면
+시작 프레임도 바뀐다. 속도(2026-10-23 실측 1~4): SetSpeed(리플 없음)는 길이를 두고 원본 끝을 바꾼다(내림) · 원본 끝에 닿으면
+끝 프레임으로 읽힌다(E − 1) · GetSpeed 는 사전.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ import contextlib
 import copy
 import io
 import json
+import math
 import subprocess
 import unittest
 from pathlib import Path
@@ -39,6 +42,9 @@ class FakeClip:
         }
         return props.get(key, "") if key else props
 
+    def GetUniqueId(self):
+        return f"clip-{self.path}"
+
 
 class FakeFolder:
     def __init__(self, name: str):
@@ -65,9 +71,16 @@ class FakeFolder:
 
 
 class FakeItem:
+    # 시험이 바꾸는 속도 API 의 이상(mock.patch.object 로) — SetSpeed 가 False · GetSpeed 가 사전이 아님 · 다른 미디어 풀 아이템
+    set_speed_ok = True
+    speed_reply = "normal"
+    pool_item_override = None
+
     def __init__(self, clip: FakeClip, start: int, duration: int, left: int):
         self.clip, self.start, self.duration, self.left, self.enabled = clip, start, duration, left, True
         self.enable_result = True
+        self.speed: dict | None = None
+        self.source_end = left + math.floor(duration * clip.fps / 24 + 1e-6)
 
     def GetStart(self, _sub=False):
         return float(self.start)
@@ -77,6 +90,33 @@ class FakeItem:
 
     def GetLeftOffset(self, _sub=False):
         return float(self.left)
+
+    def GetSourceStartFrame(self):
+        return self.left
+
+    def GetSourceEndFrame(self):
+        return self.source_end
+
+    def GetMediaPoolItem(self):
+        return self.pool_item_override or self.clip
+
+    def SetSpeed(self, options):
+        if not self.set_speed_ok:
+            return False
+        self.speed = dict(options)
+        # 길이는 그대로, 원본 끝 = 시작 + 내림(길이 × 소스 fps ÷ 24 × 배율) — 원본 끝에 닿으면 끝 프레임으로 읽힌다(실측)
+        end = self.left + math.floor(self.duration * self.clip.fps / 24 * options["Percentage"] / 100 + 1e-6)
+        self.source_end = end if end < self.clip.frames else self.clip.frames - 1
+        return True
+
+    def GetSpeed(self):
+        if self.speed_reply == "none":
+            return None
+        if self.speed_reply == "empty":
+            return {}
+        if self.speed_reply in ("nan", "inf"):
+            return {"Percentage": float(self.speed_reply)}
+        return dict(self.speed or {"Percentage": 100.0})
 
     def SetClipEnabled(self, enabled):
         if self.enable_result:
@@ -197,7 +237,7 @@ class FakeMediaPool:
                 frames = int(info.get("endFrame", clip.frames)) - first  # 끝 미포함
                 if frames <= 0:
                     continue
-                duration = round(frames / clip.fps * timeline.settings["timelineFrameRate"])
+                duration = math.floor(frames / clip.fps * timeline.settings["timelineFrameRate"] + 1e-6)  # 내림(실측 4)
             start, end = int(info["recordFrame"]), int(info["recordFrame"]) + duration
             kinds = {1: ["video"], 2: ["audio"]}.get(info.get("mediaType"), ["video", "audio"])
             ok = False
@@ -285,6 +325,15 @@ def sound(gen_id, start, end, track, offset=0):
     return {"gen_id": gen_id, "start": start, "end": end, "offset": offset, "track": track}
 
 
+def sped(gen_id, track, start, end, speed, *, head=0, enabled=True):
+    """3 판의 속도 클립 — src = 보내는 프레임 수 ÷ 24 × 속도(프런트 editResolveExport 와 같은 식)."""
+    return {**clip(gen_id, track, start, end, enabled=enabled, head=head), "speed": speed, "src": (end - start) / 24 * speed}
+
+
+def sped_sound(gen_id, start, end, track, speed, offset=0):
+    return {**sound(gen_id, start, end, track, offset), "speed": speed}
+
+
 def plan(clips, *, audio=(), markers=(), mark=None, tracks=3, off=(), locked=(), muted=False, name="뻘뻘뻘_e035", version=1):
     return {
         "format": "mvhub.edit-timeline", "version": version, "name": name, "fps": 24, "video_tracks": tracks,
@@ -342,6 +391,37 @@ class ValidatePlanTests(unittest.TestCase):
         self.bad(clips=[clip("a", 1, 0, 120, head=24), clip("b", 2, 0, 96)])
         self.bad(clips=[clip("a", 1, 0, 120, head=0), clip("b", 2, 0, 96)])
         self.bad(audio=[sound("b", 0, 96, 2)])
+
+    def test_version_three_carries_speed_and_checks_it(self):
+        # 속도(2026-10-23) — 3 판 = 2 판의 칸 + 속도 클립의 speed·src(floor(src × 24 ÷ speed + 1e-6) = 길이) + 그 소리의 speed(운반 클립과 같다)
+        fast = sped("b", 2, 0, 96, 1.27, head=24)
+        v3 = {"version": 3, "clips": [clip("a", 1, 0, 120, head=0), fast], "audio": [sped_sound("b", 0, 96, 2, 1.27, 1)]}
+        out = self.ok(**v3)
+        self.assertEqual([(row["speed"], row["src"]) for row in out["clips"]], [(1.0, None), (1.27, 96 / 24 * 1.27)])
+        self.assertEqual((out["version"], out["audio"][0]["speed"], out["audio"][0]["track"]), (3, 1.27, 2))
+        self.assertEqual(self.ok(**{**v3, "clips": [clip("a", 1, 0, 120, head=0), sped("b", 2, 0, 96, 0.25)], "audio": []})["clips"][1]["speed"], 0.25)
+
+        def with_b(**row):
+            return {**v3, "clips": [clip("a", 1, 0, 120, head=0), {**fast, **row}]}
+
+        for value in (5, 0.2, True, float("nan"), "1.5"):
+            self.bad(**with_b(speed=value))
+        self.bad(**with_b(src=97 / 24 * 1.27))  # 그 원본·속도로는 97프레임이다
+        self.bad(**with_b(src=95.9 / 24 * 1.27))  # 95프레임
+        self.bad(**with_b(src=0))
+        self.bad(**with_b(src=None))
+        self.bad(**{**v3, "clips": [clip("a", 1, 0, 120, head=0), {key: value for key, value in fast.items() if key != "src"}]})
+        self.bad(**{**v3, "clips": [clip("a", 1, 0, 120, head=0), {key: value for key, value in fast.items() if key != "speed"}]})
+        self.bad(**{**v3, "clips": [sped("a", 1, 0, 120, 2.0, head=0) | {"kind": "image"}, fast]})  # 그림에는 속도가 없다
+        self.bad(**{**v3, "audio": [sped_sound("b", 0, 96, 2, 1.5, 1)]})  # 운반 클립과 다른 속도
+        self.bad(**{**v3, "audio": [sound("b", 0, 96, 2, 1)]})  # 속도 클립의 소리에 속도가 없다
+        self.bad(**{**v3, "audio": [sped_sound("b", 0, 97, 2, 1.27, 1)]})  # 운반 클립 밖까지
+        # 다른 판에 속도 칸이 오면 조용히 버리지 않는다
+        self.bad(**{**v3, "version": 2})
+        self.bad(clips=[clip("a", 1, 0, 120), {**clip("b", 2, 0, 96), "speed": 1.27, "src": 96 / 24 * 1.27}])
+        self.bad(audio=[{"gen_id": "b", "start": 0, "end": 96, "offset": 0, "speed": 1.27}])
+        self.bad(audio=[{"gen_id": "b", "start": 0, "end": 96, "offset": 0, "src": 4.0}])  # 소리에는 어느 판에도 src 가 없다
+        self.bad(**{**v3, "audio": [sped_sound("b", 0, 96, 2, 1.27, 1) | {"src": 5.08}]})
 
     def test_rejects_wrong_shape_before_anything_is_prepared(self):
         self.bad(format="mvhub.resolve-transfer")
@@ -540,8 +620,10 @@ class BuildTimelineTests(unittest.TestCase):
     def test_frames_round_half_up_like_the_planner(self):
         # 파이썬의 round 는 반을 짝수로 보낸다(121.5 → 122, 238.5 → 238) — 프런트의 Math.round 와 달라 반 프레임 경계에서 한 프레임이 사라졌다
         self.assertEqual([_frame(121.5), _frame(238.5), _frame(0.49), _frame(120.0)], [122, 239, 0, 120])
-        # Codex 의 반례: 위 = 48fps 243프레임(5.0625초), 아래 = 24fps 239프레임. 아래 소리 [122, 239) 는 117프레임이어야 한다
-        self.add("upper", fps=48.0, frames=243)
+        # Codex 의 반례: 위 = 48fps 영상(계획 122프레임), 아래 = 24fps 239프레임. 아래 소리 [122, 239) 는 117프레임이어야 한다.
+        #  위는 244프레임이다 — 반례의 243프레임(5.0625초)은 122프레임에 반 프레임 모자라, 내림으로 환산하는 Resolve(실측 4)에서는
+        #  121프레임으로 들어간다(그것은 '원본이 짧음'으로 따로 알린다 — test_a_source_one_frame_short…)
+        self.add("upper", fps=48.0, frames=244)
         self.add("lower", "e035/C0020", frames=239)
         result = self.build(plan(
             [clip("lower", 1, 0, 239), clip("upper", 2, 0, 122)],
@@ -584,12 +666,14 @@ class BuildTimelineTests(unittest.TestCase):
         self.assertEqual((ranges[("ntsc.mp4", 1)], ranges[("ntsc.mp4", 2)]), ((60, 120), (60, 120)))
 
     def test_picture_and_sound_use_one_source_frame_rule(self):
-        # Codex 설계 검토: 시작과 끝을 따로 반올림하면 30fps 원본의 [1프레임에서 시작 · 1프레임 길이]가 영상 [1, 2) · 소리 [1, 3) 이 된다
+        # Codex 설계 검토: 시작과 끝을 따로 반올림하면 30fps 원본의 [1프레임에서 시작 · 1프레임 길이]가 영상과 소리에서 갈린다.
+        #  끝은 둘 다 시작에서 센 **올림**이다(2026-10-23 — 1.25 소스 프레임 → 2: 내림으로 환산하는 Resolve 에서 타임라인 1프레임이 된다)
         self.add("ntsc", fps=30.0, frames=300)
         self.add("next", "e035/C0020", frames=240)
-        self.build(plan([clip("ntsc", 1, 0, 1, head=1), clip("next", 1, 1, 241, head=0)], audio=[sound("ntsc", 0, 1, 1, 1 / 24)], version=2, tracks=1))
+        result = self.build(plan([clip("ntsc", 1, 0, 1, head=1), clip("next", 1, 1, 241, head=0)], audio=[sound("ntsc", 0, 1, 1, 1 / 24)], version=2, tracks=1))
         calls = [info for call in self.pool.append_calls for info in call if info["mediaPoolItem"].path.endswith("ntsc.mp4")]
-        self.assertEqual([(info["mediaType"], info["startFrame"], info["endFrame"]) for info in calls], [(1, 1, 2), (2, 1, 2)])
+        self.assertEqual([(info["mediaType"], info["startFrame"], info["endFrame"]) for info in calls], [(1, 1, 3), (2, 1, 3)])
+        self.assertEqual((result["status"], result["mismatches"]), ("complete", []))
 
     def test_refuses_when_the_start_point_leaves_too_little_source(self):
         self.add("a", frames=120)  # 5초
@@ -752,6 +836,249 @@ class BuildTimelineTests(unittest.TestCase):
         before = [child.name for child in self.managed.children]
         self.assertEqual(self.build(plan([clip("a", 1, 0, 120)], tracks=1))["status"], "complete")
         self.assertEqual([child.name for child in self.managed.children], before)
+
+    # ── 속도(2026-10-23 Ctrl+R) · 100% 끝 올림 ───────────────────────────────────────────────────────
+    def speed_items(self, kind="video", index=1):
+        return self.project.timelines[0].GetItemListInTrack(kind, index)
+
+    def test_full_speed_clips_go_in_with_a_rounded_up_end(self):
+        # 실측 4: 반올림으로 넣으면 fps 가 다른 원본이 1프레임 짧게 들어갔다(30fps head 12 · 37 → 36, 25fps 50 → 49). 올리면 정확하다
+        self.add("ntsc", fps=30.0, frames=300)
+        self.add("pal", "e035/C0020", fps=25.0, frames=250)
+        result = self.build(plan([clip("ntsc", 1, 0, 37, head=12), clip("pal", 1, 37, 87, head=0)],
+                                 audio=[sound("ntsc", 0, 37, 1, 0.5)], version=2, tracks=1))
+        self.assertEqual((result["status"], result["mismatches"]), ("complete", []))
+        self.assertEqual(self.lane(self.project.timelines[0], "video", 1), [("ntsc.mp4", 0, 37, 15), ("pal.mp4", 37, 50, 0)])
+        self.assertEqual(self.lane(self.project.timelines[0], "audio", 1), [("ntsc.mp4", 0, 37, 15)])
+        ranges = [(info["startFrame"], info["endFrame"]) for call in self.pool.append_calls for info in call]
+        self.assertEqual(ranges, [(15, 62), (0, 53), (15, 62)])  # 46.25 → 47 · 52.08 → 53
+        # 정수에 아주 가까운 값은 하나 더 올리지 않는다(25fps 24프레임 = 25.0) · 속도 뒤의 끝은 내림(실측 48 × 1.27 → +60)
+        self.assertEqual([resolve_timeline._full_end(0, 24, 25.0), resolve_timeline._full_end(0, 48, 30.0)], [25, 60])
+        self.assertEqual([resolve_timeline._speed_end(0, 48, 24.0, 1.25), resolve_timeline._speed_end(10, 48, 24.0, 1.27),
+                          resolve_timeline._speed_end(0, 48, 30.0, 1.27), resolve_timeline._speed_end(0, 10, 24.0, 0.7)], [60, 70, 76, 7])
+
+    def test_a_speed_clip_goes_in_at_its_planned_length_then_gets_its_speed(self):
+        self.add("a", frames=240)
+        self.add("ntsc", "e035/C0020", fps=30.0, frames=300)
+        result = self.build(plan(
+            [sped("a", 1, 0, 48, 1.27), sped("ntsc", 1, 48, 96, 1.27, enabled=False)],
+            audio=[sped_sound("a", 0, 48, 1, 1.27)], version=3, tracks=1,
+        ))
+        self.assertEqual((result["status"], result["mismatches"], result["speed_failed"], result["warnings"]), ("complete", [], [], []))
+        self.assertEqual(result["speed_applied"], 3)
+        # 100% 로 계획 길이만큼 넣고(a [0, 48) · 30fps [0, 60)) 속도를 건다 — 길이는 그대로, 원본 끝이 바뀐다(+60 · +76)
+        self.assertEqual([(info["startFrame"], info["endFrame"]) for call in self.pool.append_calls for info in call], [(0, 48), (0, 60), (0, 48)])
+        video = self.speed_items()
+        self.assertEqual([(item.duration, item.source_end, round(item.speed["Percentage"], 6)) for item in video], [(48, 60, 127.0), (48, 76, 127.0)])
+        self.assertFalse(video[1].enabled)  # 꺼 둔 속도 클립도 속도를 걸고 꺼 둔다
+        sound_item = self.speed_items("audio")[0]
+        self.assertEqual((sound_item.source_end, sound_item.speed["PitchCorrection"]), (60, True))  # 소리는 음 높이 유지
+        self.assertNotIn("PitchCorrection", video[0].speed)
+
+    def test_a_slow_clip_may_end_exactly_at_its_source_end(self):
+        # 원본 40프레임에 50% × 80프레임 = 원본을 끝까지 쓴다(E = 40). 100% 끝(80)은 원본을 넘어도 넣는다 — 속도를 걸면 원본 안으로 들어온다.
+        #  Resolve 는 원본 끝을 끝 프레임(39)으로 읽는다(실측) — 그것은 맞다
+        self.add("a", frames=40)
+        result = self.build(plan([sped("a", 1, 0, 80, 0.5)], audio=[sped_sound("a", 0, 80, 1, 0.5)], version=3, tracks=1))
+        self.assertEqual((result["status"], result["speed_failed"], result["speed_applied"]), ("complete", [], 2))
+        self.assertEqual([(item.duration, item.source_end) for item in self.speed_items()], [(80, 39)])
+        # 한 프레임이라도 원본을 넘으면 만들지 않는다(E = 41 > 40)
+        self.setUp()
+        self.add("a", frames=40)
+        result = self.build(plan([sped("a", 1, 0, 82, 0.5)], version=3, tracks=1))
+        self.assertEqual((result["status"], result["error_code"], result["step"]), ("failed", "source_shorter", "measure"))
+        self.assertEqual(result["short_sources"], [{"gen_id": "a", "track": 1, "start": 0, "planned": 82, "actual": 80}])
+        self.assertEqual(self.project.timelines, [])
+
+    def test_a_refused_unreadable_or_different_speed_is_reported_and_the_rest_go_on(self):
+        raw = plan([sped("a", 1, 0, 48, 2.0), sped("b", 1, 48, 96, 0.5)], version=3, tracks=1)
+        original = FakeItem.SetSpeed
+        cases = [
+            ("SetSpeed", lambda item, options: False if item.clip.path.endswith("a.mp4") else original(item, options), "set"),
+            ("speed_reply", "none", "unread"),
+            ("speed_reply", "empty", "unread"),
+            ("speed_reply", "nan", "unread"),  # NaN 은 어떤 비교도 거짓이라 '맞음'으로 새면 안 된다(Codex 독립 리뷰)
+            ("speed_reply", "inf", "unread"),
+            ("GetSourceEndFrame", lambda item: item.source_end + (1 if item.clip.path.endswith("a.mp4") else 0), "readback"),
+            ("GetSourceEndFrame", lambda item: None if item.clip.path.endswith("a.mp4") else item.source_end, "unread"),
+        ]
+        for attribute, value, reason in cases:
+            with self.subTest(reason=reason, attribute=attribute):
+                self.setUp()
+                self.add("a", frames=240)
+                self.add("b", "e035/C0020", frames=240)
+                with mock.patch.object(FakeItem, attribute, value):
+                    result = self.build(raw)
+                failed = [(row["gen_id"], row["reason"]) for row in result["speed_failed"]]
+                self.assertEqual(result["status"], "partial")  # 완료라고 하지 않는다
+                self.assertEqual(failed, [("a", reason)] if attribute != "speed_reply" else [("a", reason), ("b", reason)])
+                self.assertEqual(result["speed_applied"], 2 - len(failed))  # 나머지는 계속 걸었다
+                self.assertEqual((result["error"], result["saved"]), (None, True))
+                self.assertTrue(result["warnings"])
+
+    def test_no_speed_is_applied_when_any_speed_clip_is_not_where_planned(self):
+        # 걸기 전 확인 — 미디어 풀 아이템(또는 자리·길이·원본 시작)이 하나라도 다르면 하나도 걸지 않는다(Codex 5차)
+        self.add("a", frames=240)
+        self.add("b", "e035/C0020", frames=240)
+        stranger = FakeClip("D:/elsewhere/x.mp4")
+        original = FakeItem.GetMediaPoolItem
+        with mock.patch.object(FakeItem, "GetMediaPoolItem", lambda item: stranger if item.clip.path.endswith("b.mp4") else original(item)):
+            result = self.build(plan([sped("a", 1, 0, 48, 2.0), sped("b", 1, 48, 96, 0.5)], version=3, tracks=1))
+        self.assertEqual(result["status"], "partial")
+        # 결과 줄은 빠짐없이 — 다른 것(mismatch)과 그 때문에 걸지 않은 것(skipped)
+        self.assertEqual([(row["gen_id"], row["reason"]) for row in result["speed_failed"]], [("a", "skipped"), ("b", "mismatch")])
+        self.assertEqual((result["speed_applied"], [item.speed for item in self.speed_items()]), (0, [None, None]))
+        self.assertIn("1개가 계획한 자리·원본과 달라 속도를 하나도 걸지 않았습니다", result["warnings"][0])
+        # 원본 시작을 읽지 못해도(API 가 없다) · 미디어 풀 아이템 id 를 둘 다 못 읽어도("" — 같은 것으로 치면 안 된다) 식별이 불확실하다
+        #  · 원본 시작이 숫자가 아니다(None) — 읽지 못한 것이지 예외가 아니다
+        for attribute, owner, value in (("GetSourceStartFrame", FakeItem, None), ("GetUniqueId", FakeClip, lambda _clip: ""),
+                                        ("GetSourceStartFrame", FakeItem, lambda _item: None)):
+            with self.subTest(attribute=attribute, value=value):
+                self.setUp()
+                self.add("a", frames=240)
+                with mock.patch.object(owner, attribute, value):
+                    result = self.build(plan([sped("a", 1, 0, 48, 2.0)], version=3, tracks=1))
+                self.assertEqual(([row["reason"] for row in result["speed_failed"]], result["speed_applied"]), (["mismatch"], 0))
+        # 걸기 전 확인 도중 Resolve 호출이 예외를 던졌다 — 하나도 걸지 않고 모든 대상을 결과 줄에 적은 채 멈춘다(Codex 독립 리뷰 2차)
+        for attribute, owner in (("GetSourceStartFrame", FakeItem), ("GetUniqueId", FakeClip)):
+            with self.subTest(raising=attribute):
+                self.setUp()
+                self.add("a", frames=240)
+                self.add("b", "e035/C0020", frames=240)
+
+                def boom(*_args):
+                    raise RuntimeError("Resolve 연결이 끊겼습니다")
+
+                with mock.patch.object(owner, attribute, boom):
+                    result = self.build(plan([sped("a", 1, 0, 48, 2.0), sped("b", 1, 48, 96, 0.5)], version=3, tracks=1))
+                self.assertEqual((result["status"], result["error_code"], result["step"]), ("partial", "unexpected_error", "speed"))
+                self.assertEqual([(row["gen_id"], row["reason"]) for row in result["speed_failed"]], [("a", "stopped"), ("b", "stopped")])
+                self.assertEqual([item.speed for item in self.speed_items()], [None, None])
+
+    def test_a_speed_clip_whose_source_cannot_fill_one_frame_is_not_built(self):
+        # 원본 2프레임에 400% — 앱은 그 클립을 한 프레임으로 둔다(문서를 버리지 않는다). 프런트 계획은 정확히 아래 줄이다
+        #  (editSpeed.test.tsx '0프레임이 된 속도 클립' — dur 2/24 · speed 4 → start 0 · end 1 · head 0 · speed 4 · src 4/24).
+        #  그 한 프레임을 400% 로 채우려면 원본이 4프레임 있어야 한다(E = 4 > 2) — 100% 클립의 '실제 영상이 적힌 길이보다 짧음'과 같은 규칙으로
+        #  만들지 않는다(편집 탭은 그 틈을 건너뛰지만 Resolve 에는 다른 것이 보인다).
+        self.add("tiny", frames=2)
+        result = self.build(plan([sped("tiny", 1, 0, 1, 4.0)], version=3, tracks=1))
+        self.assertEqual((result["status"], result["error_code"], result["step"]), ("failed", "source_shorter", "measure"))
+        self.assertEqual(result["short_sources"], [{"gen_id": "tiny", "track": 1, "start": 0, "planned": 1, "actual": 0}])
+        self.assertEqual(self.project.timelines, [])
+        # 같은 원본 2프레임에 210% — 앱은 floor(2 ÷ 2.1) = 0 이라 한 프레임으로 둔다. 그 한 프레임은 원본 floor(1 × 2.1) = 2프레임으로 **채워진다**
+        #  (Resolve 의 내림 — 실측 1·4) → 만든다. 앱도 Resolve 도 한 프레임이다(Codex 독립 리뷰 3차의 반례 — 가르는 것은 '0프레임 보정'이 아니라
+        #  '그 프레임을 채울 원본이 있는가'(E ≤ 원본 프레임 수)다)
+        self.setUp()
+        self.add("tiny", frames=2)
+        result = self.build(plan([sped("tiny", 1, 0, 1, 2.1)], version=3, tracks=1))
+        self.assertEqual((result["status"], result["speed_applied"]), ("complete", 1))
+        self.assertEqual([(item.duration, item.source_end) for item in self.speed_items()], [(1, 1)])  # E = 2 = 원본 끝 → 끝 프레임(1)으로 읽힘
+
+    def test_a_speed_clip_on_a_low_fps_source_must_land_on_its_planned_length(self):
+        # 12fps 원본은 한 프레임이 타임라인 두 프레임이다 — 놓을 수 있는 길이가 짝수뿐이다. 60프레임(5초) · 210% → 계획 floor(120 ÷ 2.1) = 57 은
+        #  올림(29 → 58)으로도 못 놓는다 → 만들지 않는다(Codex 독립 리뷰 4차). 200% → 60 은 놓인다(30 → 60) → 짓는다
+        self.add("lo", fps=12.0, frames=60)
+        result = self.build(plan([sped("lo", 1, 0, 57, 2.1)], audio=[sped_sound("lo", 0, 57, 1, 2.1)], version=3, tracks=1))
+        self.assertEqual((result["status"], result["error_code"], result["step"]), ("failed", "speed_fps", "measure"))
+        self.assertEqual([(row["gen_id"], row["track"], row["planned"]) for row in result["speed_unplaceable"]], [("lo", 1, 57), ("lo", 0, 57)])
+        self.assertEqual(self.project.timelines, [])
+        self.setUp()
+        self.add("lo", fps=12.0, frames=60)
+        result = self.build(plan([sped("lo", 1, 0, 60, 2.0)], version=3, tracks=1))
+        self.assertEqual((result["status"], result["speed_applied"]), ("complete", 1))
+        self.assertEqual([(item.duration, item.source_end) for item in self.speed_items()], [(60, 59)])  # E = 60 = 원본 끝 → 끝 프레임으로 읽힘
+
+    def test_unreadable_place_after_speed_is_reported_and_the_rest_go_on(self):
+        # 걸고 나서 길이를 숫자가 아닌 값으로 돌려준다 — Resolve 호출 예외가 아니라 '되읽지 못함'이다: 그 클립만 적고 다음 클립은 건다(Codex 독립 리뷰 3차)
+        self.add("a", frames=240)
+        self.add("b", "e035/C0020", frames=240)
+        original = FakeItem.GetDuration
+
+        def blank_after_speed(item, _sub=False):
+            return None if item.speed is not None and item.clip.path.endswith("a.mp4") else original(item)
+
+        with mock.patch.object(FakeItem, "GetDuration", blank_after_speed):
+            result = self.build(plan([sped("a", 1, 0, 48, 2.0), sped("b", 1, 48, 96, 0.5)], version=3, tracks=1))
+        self.assertEqual(([(row["gen_id"], row["reason"]) for row in result["speed_failed"]], result["speed_applied"]), ([("a", "unread")], 1))
+        self.assertEqual((result["status"], result["error"]), ("partial", None))
+
+    def test_speed_stops_when_a_clip_moved_or_resolve_changed_midway(self):
+        def three():
+            self.setUp()
+            for name in ("a", "b", "c"):
+                self.add(name, f"e035/{name}", frames=240)
+            return plan([sped("a", 1, 0, 48, 2.0), sped("b", 1, 48, 96, 2.0), sped("c", 1, 96, 144, 2.0)], version=3, tracks=2)
+
+        original = FakeItem.SetSpeed
+        # 걸기 시작한 뒤 뒤 클립이 움직였다 — 그 뒤는 걸지 않는다. 같은 시작·길이로 다른 트랙에 옮겨진 것도 움직인 것이다(Codex 독립 리뷰)
+        for how in ("later", "other_track"):
+            with self.subTest(how=how):
+                raw = three()
+
+                def shove(item, options):
+                    done = original(item, options)
+                    lanes = self.project.timelines[0].video
+                    for other in [other for other in lanes[0] if other is not item]:
+                        if how == "later":
+                            other.start += 1
+                        else:
+                            lanes[0].remove(other)
+                            lanes[1].append(other)
+                    return done
+
+                with mock.patch.object(FakeItem, "SetSpeed", shove):
+                    result = self.build(raw)
+                self.assertEqual([(row["gen_id"], row["reason"]) for row in result["speed_failed"]], [("b", "moved"), ("c", "stopped")])
+                self.assertEqual((result["status"], result["speed_applied"]), ("partial", 1))
+        # 사용자가 다른 타임라인을 열었다 — guard 가 멈춘다(저장하지 않는다)
+        raw = three()
+        other = FakeTimeline("사용자 타임라인", 24.0)
+
+        def switch(item, options):
+            done = original(item, options)
+            self.project.current_timeline = other
+            return done
+
+        with mock.patch.object(FakeItem, "SetSpeed", switch):
+            result = self.build(raw)
+        self.assertEqual((result["status"], result["error_code"], result["step"], self.manager.saved), ("partial", "timeline_changed", "speed", 0))
+        # 멈춘 자리부터 남은 것을 결과 줄에 빠짐없이(a 는 걸렸다)
+        self.assertEqual(([(row["gen_id"], row["reason"]) for row in result["speed_failed"]], result["speed_applied"]),
+                         ([("b", "stopped"), ("c", "stopped")], 1))
+        # Resolve 호출이 예외를 던졌다(연결 끊김) — 멈춘다
+        raw = three()
+
+        def broken(_item, _options):
+            raise RuntimeError("Resolve 연결이 끊겼습니다")
+
+        with mock.patch.object(FakeItem, "SetSpeed", broken):
+            result = self.build(raw)
+        self.assertEqual((result["status"], result["error_code"], result["step"]), ("partial", "unexpected_error", "speed"))
+        self.assertEqual([(row["gen_id"], row["reason"]) for row in result["speed_failed"]], [("a", "stopped"), ("b", "stopped"), ("c", "stopped")])
+
+    def test_slow_sound_may_need_one_more_source_frame_than_its_picture(self):
+        # 소리의 원본 시작은 운반 클립의 S + round(앞섬 × 속도 × fps) — 그 반올림 몫만큼 영상보다 한 프레임 더 원본 끝을 넘을 수 있다.
+        #  원본 40프레임 · 50% × 81프레임(영상 끝 E = 40 — 원본 끝) · 소리는 1프레임 뒤에서 시작(원본 1 + floor(80 × 0.5) = 41) → 원본 끝(40)으로 본다
+        self.add("a", frames=40)
+        result = self.build(plan([sped("a", 1, 0, 81, 0.5)], audio=[sped_sound("a", 1, 81, 1, 0.5)], version=3, tracks=1))
+        self.assertEqual((result["status"], result["speed_failed"], result["speed_applied"]), ("complete", [], 2))
+        self.assertEqual([(item.left, item.source_end) for item in self.speed_items("audio")], [(1, 39)])
+        # 두 프레임 넘으면 만들지 않는다
+        self.setUp()
+        self.add("a", frames=39)
+        result = self.build(plan([sped("a", 1, 0, 78, 0.5)], audio=[sped_sound("a", 1, 78, 1, 0.5)], version=3, tracks=1))
+        self.assertEqual(result["status"], "complete")  # 영상 끝 39 · 소리 1 + floor(77 × 0.5) = 39 — 넘지 않는다
+        self.setUp()
+        self.add("a", frames=38)
+        result = self.build(plan([sped("a", 1, 0, 76, 0.5)], audio=[sped_sound("a", 3, 76, 1, 0.5)], version=3, tracks=1))
+        self.assertEqual((result["status"], result["error_code"]), ("complete", None))  # 소리 2 + floor(73 × 0.5) = 38 — 원본 끝
+
+    def test_a_half_frame_short_source_is_still_reported(self):
+        # 48fps 243프레임(5.0625초)에 122프레임을 쓰면 반 프레임 모자란다 — 내림으로 환산하는 Resolve 에서 121 → '원본이 짧음'(완료가 아니다)
+        self.add("upper", fps=48.0, frames=243)
+        result = self.build(plan([clip("upper", 1, 0, 122)], tracks=1))
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual([(row["gen_id"], row["expected"], row["actual"], row["short"]) for row in result["mismatches"]], [("upper", 122, 121, True)])
 
 
 class TimelineWorkerTests(unittest.TestCase):

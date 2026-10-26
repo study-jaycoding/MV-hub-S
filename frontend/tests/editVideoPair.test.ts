@@ -108,7 +108,7 @@ it("넘어가기 직전에는 뒤의 것을 소리 없이 미리 굴린다 — �
   video.playbackRate = 2;
   video.roll!(true);
   expect(b.play).not.toHaveBeenCalled(); // 받아 둔 것이 없으면 굴릴 것이 없다
-  video.prepare!("/v/b", 3);
+  video.prepare!("/v/b", 3, 2);
   video.roll!(true);
   video.roll!(true); // 프레임마다 불려도 한 번만
   expect(b.play).toHaveBeenCalledTimes(1);
@@ -116,7 +116,7 @@ it("넘어가기 직전에는 뒤의 것을 소리 없이 미리 굴린다 — �
   b.el.muted = false; // 굴리는 중에 사용자가 소리를 켠다(화면이 두 요소의 muted 를 함께 푼다) — 가려진 영상은 여전히 조용하다
   video.roll!(true);
   expect(b.el.volume).toBe(0);
-  expect(b.el.playbackRate).toBe(2); // 앞의 것과 같은 배속으로
+  expect(b.el.playbackRate).toBe(2); // prepare 가 준 그 클립의 배속으로(속도 클립이면 앞의 것과 다를 수 있다)
   expect(a.play).not.toHaveBeenCalled();
 
   b.state.time = 3.4;

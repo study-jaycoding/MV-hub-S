@@ -71,6 +71,8 @@ UPLOAD_REQUEST_LIMITS: dict[str, int] = {
     "/api/asset-registry/helper/result": 32 * MIB,
     # 결과물 스냅샷(docs/NAS_RESULTS.md) — 줄마다 번호 칸이 더 있어 같은 상한이면 충분(실측 1,948개 ≈ 0.5MB).
     "/api/asset-registry/helper/results": 32 * MIB,
+    # 편집 공유 저장 — 스냅샷 256 KiB('ASCII 로 감싼 길이') + 덧붙는 칸 8 KiB. 허브·서버 모두 본문을 읽기 전에 413(repo/edit_shares).
+    "/api/edit-shares/save": 264 * KIB,
 }
 
 _log = logging.getLogger("mvhub.upload")

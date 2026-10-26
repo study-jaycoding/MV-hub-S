@@ -92,6 +92,7 @@ import { useGenerationWorkspaceActions } from "./lib/useGenerationWorkspaceActio
 import { useGenerationTrashActions } from "./lib/useGenerationTrashActions";
 import { useGenerationUtilityActions } from "./lib/useGenerationUtilityActions";
 import { useResolveTransferActions } from "./lib/useResolveTransferActions";
+import type { NoticeLine } from "./lib/useStateNotices";
 import { useHubAuth } from "./lib/useHubAuth";
 import { startEditDocBackup } from "./lib/editDocBackup";
 import { hubHasFeature } from "./lib/hubFeatures";
@@ -1639,6 +1640,8 @@ export default function App() {
     openRecipe,
   });
   const resolveTransfer = useResolveTransferActions({ flash });
+  // 편집 탭의 경고 줄(Jay 2026-10-24) — Resolve 결과 알림과 같은 줄의 위쪽에 선다. 편집 탭이 떠날 때 비운다(lib/useStateNotices)
+  const [editNotices, setEditNotices] = useState<readonly NoticeLine[]>([]);
   const { handlePromptCreated } = usePromptCreatedActions({
     boardFocusIdRef,
     boardSelectedRef,
@@ -2412,7 +2415,8 @@ export default function App() {
             ✕
           </button>
         </header>
-        {libraryToolbar}
+        {/* 떠 있는 창이라 사이드바 끝선 손잡이는 없다 — 뒤 화면의 도구 줄 것만 */}
+        {cloneElement(libraryToolbar, { showFilterToggle: false })}
         {thumbnailGrid}
         {librarySelectionBar && <div className="folder-peek-selbar">{librarySelectionBar}</div>}
       </section>
@@ -2499,6 +2503,7 @@ export default function App() {
               reloadSignal={editReloadSignal}
               peekPath={listPeek?.edit ? listPeek.path : null}
               onPeekMarks={setEditMarks}
+              onNotices={setEditNotices}
               cardMenuRef={editCardMenuRef}
               resolvePicked={resolvePicked}
               resolveScroll={resolveScroll}
@@ -2741,7 +2746,7 @@ export default function App() {
                 libraryView={{ scale, layout, groupByDate }}
                 renderVariantToolbar={(count) =>
                   cloneElement(libraryToolbar, {
-                    count, countMore: false, loading: false, workspaceFilter: undefined, failedCount: 0,
+                    count, countMore: false, loading: false, workspaceFilter: undefined, failedCount: 0, showFilterToggle: false,
                   })
                 }
                 onVariantGradeStep={(gens, mode) => grade.requestGradeStep(gens, mode)}
@@ -3003,8 +3008,9 @@ export default function App() {
         onOpenInBoardFromPreview={onOpenInBoardFromPreview}
         onPreview={openPreview}
       />
-      {/* Resolve 보내기 결과 가운데 확인이 필요한 것 — 알림 바로 아래에 닫을 때까지 남는다(겹이 아니다 — 뒤 화면을 그대로 쓴다) */}
-      <ResolveNotices items={resolveTransfer.notices} onDismiss={resolveTransfer.dismissNotice} />
+      {/* Resolve 보내기 결과 가운데 확인이 필요한 것 — 알림 바로 아래에 닫을 때까지 남는다(겹이 아니다 — 뒤 화면을 그대로 쓴다).
+          편집 탭의 경고(상황이 이어지는 동안)도 같은 줄의 위쪽에 — Jay 2026-10-24 */}
+      <ResolveNotices items={[...editNotices, ...resolveTransfer.notices]} onDismiss={resolveTransfer.dismissNotice} />
       {apiPause && <AuthPauseBanner action={apiPause === "shared" ? "login" : "reload"} onLeave={leavePause} />}
       {/* 컷 정보(휠 클릭)·모아보기 — 크게 보기(AppOverlays)보다 아래 층. 크게 보기가 떠 있는 동안은 Esc 를 그쪽에 넘긴다. */}
       {cutInfo && cutInfoFolder && cutInfoQuery && (

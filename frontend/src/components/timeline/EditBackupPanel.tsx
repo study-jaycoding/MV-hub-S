@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import {
-  captureEditBackupGuard, getEditBackupStatus, loadEditBackup, retryEditBackups, subscribeEditBackup,
-  type BackupListing, type BackupState,
+  captureEditBackupGuard, getEditBackupStatus, loadEditBackup, subscribeEditBackup, type BackupListing, type BackupState,
 } from "../../lib/editDocBackup";
 import type { ArchiveTarget } from "../../lib/editArchive";
 import { useT } from "../../lib/i18n";
@@ -10,24 +9,17 @@ import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import type { useEditDoc } from "../../lib/useEditDoc";
 
-const labels: Record<BackupState, string> = {
-  off: "DB 백업 연결 대기", idle: "이 문서의 저장된 원문 없음", pending: "DB 백업 대기", saving: "DB 백업 중", saved: "DB 백업 완료",
+// 백업 경고(2026-10-23) — '저장·백업 안내'를 없애면서 실패·충돌이 보일 곳까지 사라졌다(Codex 묶음 검토 R2). 안내 글은 다시 넣지 않고
+//  잃을 수 있는 상태에만 경고 하나 — 화면 위 알림 줄에 '백업 보기'(DB 백업 보기·복원)와 함께(Jay 2026-10-24 — 전엔 막대의 알약). 연결 대기(off)·정상은 조용하다.
+const WARN: Partial<Record<BackupState, string>> = {
   conflict: "자동 백업 멈춤 · 다른 편집은 사본으로 보존", error: "DB 백업 실패 · 연결 후 다시 시도",
   invalid: "읽을 수 없는 원문 · DB 백업 안 됨", too_big: "1 MiB 초과 · DB 백업 안 됨",
 };
-export function EditBackupNotice({ docKey, onOpen }: { docKey: string | null; onOpen: () => void }) {
-  const t = useT();
-  const state = useSyncExternalStore(subscribeEditBackup, () => getEditBackupStatus(docKey));
-  return <>
-    <p role="status">{t(labels[state.state])}{state.updatedAt && <> · {t("백업 시각")} {state.updatedAt}</>}
-      {state.preservedAt && <> · {t("마지막 사본 시각")} {state.preservedAt}</>}
-      {!!state.skipped && <> · {t("백업하지 못한 문서 {count}개").replace("{count}", String(state.skipped))}</>}
-    </p>
-    <p>{t(state.state === "off" ? "DB 백업 연결을 확인할 수 없습니다. 편집 메뉴에서 파일로 보관하세요."
-      : "저장된 타임라인은 현재 계정의 DB에 별도로 백업됩니다. 전송 전에 창을 강제로 닫거나 브라우저 자료를 지우면 최근 편집을 잃을 수 있습니다.")}</p>
-    <button type="button" className="ed-link" disabled={!docKey || state.state === "off"} onClick={onOpen}>{t("DB 백업 보기·복원")}</button>{" "}
-    <button type="button" className="ed-link" disabled={state.state === "off"} onClick={retryEditBackups}>{t("백업 다시 시도")}</button>
-  </>;
+/** 지금 백업 상태의 경고(번역 전 글) — 조용한 상태면 null. 상태는 열쇠로도 쓴다(다른 상태는 새 줄). */
+export function useEditBackupWarn(docKey: string | null): { state: BackupState; text: string } | null {
+  const state = useSyncExternalStore(subscribeEditBackup, () => getEditBackupStatus(docKey).state);
+  const text = WARN[state];
+  return text ? { state, text } : null;
 }
 
 export function EditBackupPanel({ docKey, target, edit, onClose }: {

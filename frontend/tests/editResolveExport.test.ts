@@ -1,6 +1,6 @@
 // 편집 탭 → Resolve 타임라인 계획(순수) — 지금 화면의 배치가 프레임 단위 계획으로 그대로 옮겨지는가.
 import { describe, expect, it } from "vitest";
-import { buildLayout, clipKey, emptyEditDoc, type EditClip, type EditDoc } from "../src/lib/editTimeline";
+import { buildLayout, clipKey, cutPaths, emptyEditDoc, moveClipIntoSlot, type EditClip, type EditDoc } from "../src/lib/editTimeline";
 import {
   buildTimelineExport,
   RESOLVE_MARKER_COLORS,
@@ -189,6 +189,40 @@ describe("buildTimelineExport", () => {
     const out = build(doc, ["C0010", "C0020", "C0030"], links);
     expect(out.plan.clips.map((item) => item.gen_id)).toEqual(["real-id", "same", "same"]);
     expect(out.gens.map((item) => item.id)).toEqual(["real-id", "same"]);
+  });
+
+  it("같은 컷을 한 번 더 놓은 자리(⑤ 2026-10-23) — 계획 형식은 그대로, 같은 생성물이 자리 순서대로 두 줄(서로 다른 시작점·속도·소리 시작) · 원본 준비는 한 번", () => {
+    const first = clip("C0010", "g", 1, 6, { kind: "video" });
+    const again: EditClip = { ...clip("C0010", "g", 1, 6, { kind: "video", head: 1, trim: 2, speed: 2 }), slot: "abc123" };
+    const doc: EditDoc = { ...emptyEditDoc(), v: 3, clips: [first, clip("C0020", "b", 1, 4, { kind: "video" }), again] };
+    const out = buildTimelineExport({ layout: buildLayout([cut("C0010"), cut("C0020"), `${cut("C0010")}//abc123`], doc), doc, links: linksOf(doc), name: "n" });
+    expect(out.plan.clips.map((item) => [item.gen_id, item.start, item.end, item.head ?? 0, item.speed ?? 1])).toEqual([
+      ["g", 0, 144, 0, 1], ["b", 144, 240, 0, 1], ["g", 240, 264, 24, 2], // 앞을 1초 자르고 2초를 2배속 = 1초(24프레임)
+    ]);
+    expect(out.plan.audio.map((item) => [item.gen_id, item.start, item.end, item.offset, item.speed ?? 1])).toEqual([
+      ["g", 0, 144, 0, 1], ["b", 144, 240, 0, 1], ["g", 240, 264, 1, 2],
+    ]);
+    expect(out.gens.map((item) => item.id)).toEqual(["g", "b"]);
+    expect(out.plan.version).toBe(3); // 속도 클립이 있어 3(계획의 판 — 문서의 v 와 별개)
+  });
+
+  it("⑤ 후속(2026-10-26) — 빈 첫 자리가 숨으면 계획의 시작 프레임이 당겨지고, 원래 자리의 클립과 맞바꾸면 두 클립의 원본 구간·속도는 그대로", () => {
+    const rep = `${cut("C0010")}//abc123`;
+    const fast: EditClip = { ...clip("C0010", "g", 1, 6, { kind: "video", head: 1, trim: 2, speed: 2 }), slot: "abc123" };
+    const doc: EditDoc = { ...emptyEditDoc(), v: 3, clips: [fast, clip("C0020", "b", 1, 4, { kind: "video" })], cutOrder: [cut("C0010"), rep, cut("C0020")] };
+    const all = cutPaths("e035", [cut("C0010"), cut("C0020")], doc);
+    expect(all).toEqual([rep, cut("C0020")]); // 빈 첫 자리(C0010)는 숨는다
+    const out = buildTimelineExport({ layout: buildLayout(all, doc), doc, links: linksOf(doc), name: "n" });
+    expect(out.plan.clips.map((item) => [item.gen_id, item.start, item.end, item.head ?? 0, item.speed ?? 1])).toEqual([["g", 0, 24, 24, 2], ["b", 24, 120, 0, 1]]);
+    // 그 클립을 원래 자리(첫 자리)의 a 와 맞바꾸면 — 두 클립 모두 원본 구간·속도 그대로, 자리만 바뀐다
+    const withA: EditDoc = { ...doc, clips: [clip("C0010", "a", 1, 6, { kind: "video" }), ...doc.clips] };
+    const swapped = moveClipIntoSlot(withA, clipKey(fast), cut("C0010"), 1)!;
+    const swappedAll = cutPaths("e035", [cut("C0010"), cut("C0020")], swapped);
+    expect(swappedAll).toEqual([cut("C0010"), rep, cut("C0020")]);
+    const plan = buildTimelineExport({ layout: buildLayout(swappedAll, swapped), doc: swapped, links: linksOf(swapped), name: "n" }).plan;
+    expect(plan.clips.map((item) => [item.gen_id, item.track, item.start, item.end, item.head ?? 0, item.speed ?? 1])).toEqual([
+      ["g", 1, 0, 24, 24, 2], ["a", 1, 24, 168, 0, 1], ["b", 1, 168, 264, 0, 1], // g: 앞 1초 자르고 2초를 2배속 = 24프레임 · a: 6초 그대로
+    ]);
   });
 
   it("북마크는 프레임과 다빈치 색 이름으로, 인/아웃은 구간으로 — 같은 프레임의 두 번째 북마크는 뺀다", () => {

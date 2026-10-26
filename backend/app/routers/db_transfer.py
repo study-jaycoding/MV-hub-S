@@ -190,6 +190,7 @@ def _strict_clear_active() -> None:
                 detail=f"가져오기 후 활성 계정 해제에 실패했습니다(교차 계정 보호를 위해 중단): {exc}",
             ) from exc
         active_account._cache[0], active_account._cache[1] = True, None
+        active_account.bump_account_epoch()  # clear_active 를 거치지 않는 해제 — 세대값도 같이(클린 피드 세션)
 
 
 @dataclass(frozen=True)
@@ -444,6 +445,7 @@ def _install_db(
                         else:
                             active_account._POINTER.unlink(missing_ok=True)
                         active_account._cache[0] = False  # 다음 조회가 파일에서 재로드
+                        active_account.bump_account_epoch()
                 except Exception as rollback_error:  # noqa: BLE001
                     logging.getLogger(__name__).error(
                         "DB 가져오기 실패 후 자동 롤백도 실패 — 수동 복구 필요(백업 .bak 파일 확인)",

@@ -621,6 +621,11 @@ _LOCAL_PREFIXES = (
     "/api/trash",          # 내 휴지통(로컬)
     "/api/scenes",         # 캔버스 씬 DB 백업(개인 편집물 — 로컬 DB 미러. 서버 전송 금지)
     "/api/edit-docs",      # 개인 타임라인 백업·복구도 이 계정의 로컬 DB에서 처리
+    # 편집 공유는 공유 서버가 권위지만 일반 중계(_forward)에 맡기지 않는다 — 핸들러가 출처·화면 계정 대조·연결 고정 뒤 직접 중계하고,
+    #  서버에 로그인하지 않았으면 409(로컬 DB 에 저장하지 않는다). routers/edit_shares.
+    "/api/edit-shares",
+    "/api/clean-feed",     # 편집 탭 클린 피드 전용 창 — 이 PC 의 창·프로세스(서버 위임 금지). routers/clean_feed
+    "/api/app-windows/",   # 별도 창(Assets·관리)을 앱 창 위로 — 이 PC 의 창(서버 위임 금지). routers/app_windows
     "/api/generation-views",  # 내가 마지막으로 본 생성물(개인 표시 — 로컬 DB. 팀 항목은 기록 안 함)
     "/api/db/",            # 내 로컬 DB 내보내기/가져오기(교차 PC 연속성, 서버 무관)
     "/api/ingest",         # 에이전트→내 로컬 DB 동기화(generate list·mcp·known-jobs). 팀크레딧만 서버로 전달

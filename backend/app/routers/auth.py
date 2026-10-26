@@ -18,7 +18,7 @@ from typing import Any, Optional, TypeVar
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from .. import repo
+from .. import active_account, repo
 from ..config import AUTH_ENABLED, MANAGE_ENABLED
 from ..emailnorm import norm_email
 from ..deps import (
@@ -164,6 +164,7 @@ def _activate_local_agent(request: Request, email: str) -> None:
             repo.set_setting("mcp_active_account", norm_email(email))
     previous = local_agent_pair.activate(request, email)
     if previous and previous != norm_email(email):
+        active_account.bump_account_epoch()  # 짝 계정이 실제로 바뀌었다 — /me 반복·같은 계정은 올리지 않는다
         agent_signals.signal(previous, "pair-change")
 
 
@@ -223,6 +224,7 @@ async def register(body: RegisterIn, response: Response):
     token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at")) if acc["status"] == "approved" else None
     if token:
         _set_session_cookie(response, token)
+        active_account.bump_account_epoch()  # 토큰을 발급한 로그인 — 클린 피드 세션 등은 끝난다
     return {"account": acc, "token": token}
 
 
@@ -244,6 +246,7 @@ async def login(body: LoginIn, response: Response, request: Request):
         _rl_release(key)
     token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at"))
     _set_session_cookie(response, token)  # /media·/ws 용 쿠키 동반 발급
+    active_account.bump_account_epoch()  # 같은 계정의 재로그인도 새 토큰이다
     _activate_local_agent(request, acc["email"])
     return {"account": acc, "token": token}
 
@@ -268,6 +271,7 @@ async def access(body: RegisterIn, response: Response, request: Request):
                 return {"account": acc, "token": None, "pending": acc["status"] == "pending"}
             token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at"))
             _set_session_cookie(response, token)
+            active_account.bump_account_epoch()
             _activate_local_agent(request, acc["email"])
             return {"account": acc, "token": token, "pending": False}
         # 처음 보는 이메일 → 자동 등록(첫 계정=관리자+승인, 그 외=member/pending)
@@ -281,6 +285,7 @@ async def access(body: RegisterIn, response: Response, request: Request):
     token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at")) if acc["status"] == "approved" else None
     if token:
         _set_session_cookie(response, token)
+        active_account.bump_account_epoch()
         _activate_local_agent(request, acc["email"])
     return {"account": acc, "token": token, "pending": acc["status"] == "pending"}
 
@@ -311,6 +316,7 @@ def logout(response: Response, request: Request):
     previous = local_agent_pair.clear(request, (acc or {}).get("email"))
     if previous:
         agent_signals.signal(previous, "pair-change")
+    active_account.bump_account_epoch()  # 토큰은 폐기되지 않는다 — 그 토큰으로 연 것들(클린 피드 세션)은 여기서 끝난다
     response.delete_cookie(SESSION_COOKIE, path="/")
     return {"ok": True}
 

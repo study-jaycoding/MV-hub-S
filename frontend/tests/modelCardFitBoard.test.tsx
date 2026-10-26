@@ -47,8 +47,8 @@ beforeEach(async () => {
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-// App 처럼 저장받은 배열을 그대로 씬에 넣어 다시 내려준다(writeBoardSnapshot → patchSceneById). 콜백을 비워 두면
-//  '돌려받은 씬이 방금 늘린 높이를 덮는' 실제 앱의 결함이 안 보인다(Jay 2026-10-22 화면에서만 났다).
+// App 처럼 저장받은 값을 복제해(scenes.ts updateScene 의 structuredClone) 씬으로 다시 내려준다(writeBoardSnapshot →
+//  patchSceneById). 콜백을 비워 두면 '돌려받은 씬이 방금 늘린 높이를 덮는' 실제 앱의 결함이 안 보인다(Jay 2026-10-22 화면에서만 났다).
 function Host({ initial }: { initial: Scene }) {
   const [scene, setScene] = useState(initial);
   return (
@@ -56,7 +56,8 @@ function Host({ initial }: { initial: Scene }) {
       scene={scene}
       onChange={(patch) => {
         if (patch.cards) saved = patch.cards;
-        setScene((current) => ({ ...current, ...patch }));
+        const stored = structuredClone(patch);
+        setScene((current) => ({ ...current, ...stored }));
       }}
     />
   );

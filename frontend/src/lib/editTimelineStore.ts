@@ -1,6 +1,6 @@
 // 편집 문서의 저장(localStorage)과 Undo 스택. 계약은 docs/EDIT_TAB.md.
 import { getAccountNamespace } from "./accountScope";
-import { emptyEditDoc, isHexColor, MARKER_COLORS, parseEditDoc, type EditDoc } from "./editTimeline";
+import { editDocVersion, emptyEditDoc, isHexColor, MARKER_COLORS, parseEditDoc, type EditDoc } from "./editTimeline";
 import { STORAGE_KEYS } from "./storageKeys";
 import { holdUnload } from "./unloadGuard";
 
@@ -56,8 +56,22 @@ export function readEditDoc(key: string, read: EditRawRead = readEditRaw(key)): 
 
 // 저장에 성공하면 쓴 원문, 실패하면 null. keepBad 는 읽지 못한 옛 원문 — `<키>.bad` 로 옮겨 적힌 것을
 // 확인한 뒤에만 원래 키를 덮는다. 새 자리에만 쓴다 — 옛 자리의 것은 건드리지 않는다(위).
+// 판(v)은 max(저장돼 있던 판, 이 문서의 판, 이 문서에 필요한 판) — 한 번 2 가 된 문서는 되돌리기·옛 보관 파일 복원으로 속도가 없어져도 2 다
+//  (옛 빌드가 v 1 로 읽고 속도를 버린 채 덮지 않게 — 2026-10-23 속도 조절). 계정 DB 백업 복원만 받은 원문을 그대로 쓴다(writeEditRaw — useEditDoc).
 export function writeEditDoc(key: string, doc: EditDoc, keepBad: string | null = null): string | null {
-  return writeEditRaw(key, JSON.stringify(doc), keepBad);
+  const v = Math.max(storedVersion(key), editDocVersion(doc)) as 1 | 2 | 3;
+  return writeEditRaw(key, JSON.stringify(v === doc.v ? doc : { ...doc, v }), keepBad);
+}
+
+// 저장돼 있는 판(v 3 = 반복 자리 — 2026-10-23 ⑤). 모르는 값은 1.
+function storedVersion(key: string): 1 | 2 | 3 {
+  try {
+    const raw = localStorage.getItem(key);
+    const v = raw === null ? null : (JSON.parse(raw) as { v?: unknown } | null)?.v;
+    return v === 2 || v === 3 ? v : 1;
+  } catch {
+    return 1; // 못 읽는 원문(깨진 JSON)·저장소 오류 — 판을 올릴 근거가 없다
+  }
 }
 
 const rawSubscribers = new Set<(key: string, raw: string | null, source: "write" | "read") => void>();
@@ -188,8 +202,20 @@ export type PoolSort = "new" | "old" | "placed";
 // 뷰어 한 판이 보는 것 — 타임라인(위 트랙 우선) · 소스 클립(풀에서 고른 것) · 소스 테이프(이 컷의 풀 목록을 이어서) ·
 //  한 트랙만(트랙 번호). 소스 엔진은 판마다 하나라(2026-10-14 Jay — "두개 화면 모두 소스클립이나 내가 정한 화면이 자유롭게")
 //  두 판이 같이 소스여도 된다. 타임라인·같은 트랙은 시계가 하나라 두 판에 같이 뜨지 않는다.
-export type ViewMode = "timeline" | "source" | "tape" | number;
+//  "other" = 다른 편집 보기의 V0(편집 공유 — Jay 2026-10-23). 그 판은 V0 을 못 쓰면 안내 화면을 그린다(저장값은 그대로).
+export type ViewMode = "timeline" | "source" | "tape" | "other" | number;
 export const isSourceView = (mode: ViewMode | undefined): boolean => mode === "source" || mode === "tape";
+// 미디어 풀 거르기(Jay 2026-10-23 — 공유 탭 사이드바의 컬러·전역 태그·생성자를 편집 탭 왼쪽에도). 빈 값 = 거르지 않는다.
+//  colors = 카드 색(#rrggbb, 여럿이면 그중 하나) · final = 최종만 · hideGray = 비활성(회색) 카드 숨기기 · autoTags = 그 전역 태그가 붙은 것(여럿이면
+//  그중 하나) · creator = 그 사람 것(poolCreatorKey)
+export interface PoolFilter {
+  colors: string[];
+  final: boolean;
+  hideGray: boolean;
+  autoTags: string[];
+  creator: string | null;
+}
+export const NO_POOL_FILTER: PoolFilter = { colors: [], final: false, hideGray: false, autoTags: [], creator: null };
 export interface EditUi {
   view: PoolView;
   size: number; // 썸네일 폭(px)
@@ -204,17 +230,32 @@ export interface EditUi {
   // 판 자리(왼쪽·오른쪽)마다의 소리 크기 0~1(Jay 2026-10-14 — 뷰어 아래 오른쪽 · 오후: "따로따로 조절이 되어야한다"). 싱글이면 오른쪽 것.
   //  A1 의 M(문서의 소리 끄기)과는 따로다. 옛 칸 volume(하나)은 두 자리에 같이 읽는다.
   volumes: [number, number];
+  filterOpen: boolean; // 왼쪽 아래 '컬러 · 전역 태그 · 생성자' 묶음을 펼쳐 두었다(처음엔 접힘 — 공유 탭의 접힘과는 따로 기억한다)
+  poolFilter: PoolFilter;
 }
 export const POOL_SIZE = { min: 56, max: 240 }; // 최소 = 다빈치 미디어 풀의 작은 썸네일쯤
 export const EDIT_SPEEDS = [1, 1.5, 2, 4]; // 배속 단추가 도는 순서
 const DEFAULT_UI: EditUi = {
   view: "thumb", size: 160, sort: "new", dual: false, views: ["source", "timeline"], loop: false, loopSrc: false, speed: 1,
-  markerColor: MARKER_COLORS[0].color, sideHidden: false, volumes: [1, 1],
+  markerColor: MARKER_COLORS[0].color, sideHidden: false, volumes: [1, 1], filterOpen: false, poolFilter: NO_POOL_FILTER,
 };
+const strings = (value: unknown): string[] =>
+  Array.isArray(value) ? [...new Set(value.filter((item): item is string => typeof item === "string" && !!item))] : [];
+function poolFilterOf(value: unknown): PoolFilter {
+  if (!value || typeof value !== "object") return NO_POOL_FILTER;
+  const raw = value as Partial<Record<keyof PoolFilter, unknown>>;
+  return {
+    colors: strings(raw.colors).filter(isHexColor),
+    final: raw.final === true,
+    hideGray: raw.hideGray === true,
+    autoTags: strings(raw.autoTags),
+    creator: typeof raw.creator === "string" && raw.creator ? raw.creator : null,
+  };
+}
 const unitOr = (value: unknown, fallback: number) =>
   (typeof value === "number" && Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : fallback);
 const viewMode = (value: unknown): ViewMode | null =>
-  value === "timeline" || value === "source" || value === "tape" ? value
+  value === "timeline" || value === "source" || value === "tape" || value === "other" ? value
     : Number.isSafeInteger(value) && (value as number) > 0 ? (value as number) : null;
 const uiKey = `${STORAGE_KEYS.editTimeline}.ui`;
 
@@ -240,6 +281,8 @@ export function loadEditUi(): EditUi {
       markerColor: isHexColor(raw.markerColor) ? raw.markerColor : DEFAULT_UI.markerColor,
       sideHidden: raw.sideHidden === true,
       volumes: [unitOr(both[0], one), unitOr(both[1], one)],
+      filterOpen: raw.filterOpen === true,
+      poolFilter: poolFilterOf(raw.poolFilter),
     };
   } catch {
     return DEFAULT_UI;

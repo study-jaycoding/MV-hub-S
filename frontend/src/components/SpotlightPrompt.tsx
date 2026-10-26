@@ -1320,6 +1320,9 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       histIdxRef.current = -1;
       bumpPromptTick();
     },
+    // 제출이 성공해 프롬프트를 비울 때 보낸 레퍼런스도 — 묶이지 않은 트레이만(캔버스 카드의 트레이는 그 카드의 입력이다). 기다리는 사이 넣은 것은 남는다.
+    clearSubmittedRefs: sceneMode ? undefined : (uids) =>
+      setLocalTrayRefs((prev) => (prev.some((ref) => uids.has(ref.uid)) ? prev.filter((ref) => ref.from_card || !uids.has(ref.uid)) : prev)),
   });
   // 캔버스 렌더 폴백용 — submit 이 body 를 만들 때 쓰는 것과 같은 model·optionValues 를 같은 게이트로 돌려준다.
   const currentModel = useCallback((): SceneModelCfg | null => {

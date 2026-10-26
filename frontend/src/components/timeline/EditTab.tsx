@@ -3,7 +3,7 @@
 //  소스·한 트랙만 중에서 고른다) · 아래 = 트랙 타임라인(트랙 추가·삭제·옮기기, 마크 인/아웃, 북마크). 컷 자리는 폴더 순서고
 //  (이름순 — 컷 머리를 끌어 내 순서로 바꿀 수 있다), 고른 생성물만 들어간다(휠 클릭 메뉴, 또는 풀의 카드를 끌어 놓기).
 //  편집은 이 브라우저(계정)에만 저장한다.
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
 import "../../styles/edit-tab.css";
 import type { CardMark, Generation, PreviewTarget, WorkspaceContext } from "../../types";
 import { APP_EVENTS, isCurrentGenerationEvent, isLibraryPollTick, readGenerationTagsSettled } from "../../lib/appEvents";
@@ -13,21 +13,36 @@ import { isKeyHandled, markKeyHandled } from "../../lib/keyHandled";
 import { isFolderDisabled } from "../../lib/deactivated";
 import {
   buildLayout,
+  dropTargetAt,
   clipIsOn,
   clipKey,
+  clipSource,
+  clipSpeed,
   cutIsOff,
   cutPaths,
   DEFAULT_SEC,
   deleteEmptyTracks,
   EDIT_FPS,
+  editPoints,
+  folderOf,
+  foldersReordered,
   genSeconds,
   groupByCut,
+  isRepeatSlot,
   linkClip,
   markerAt,
   marksOf,
+  nearestPoint,
   placeState,
   posAt,
   shownMarkers,
+  slotFields,
+  slotLabels,
+  slotOf,
+  slotOfFolder,
+  slotTitle,
+  soleRepeatClip,
+  stepPoint,
   timecode,
   visibleClip,
   type SlotClip,
@@ -37,8 +52,12 @@ import {
   type EditTarget, type EditUi, type ViewMode,
 } from "../../lib/editTimelineStore";
 import { buildTimelineExport, timelineExportName } from "../../lib/editResolveExport";
+import { TAIL_KEY, withTail } from "../../lib/editShare";
+import {
+  actionDef, fillKeys, findKeyAction, hintOf, keySlot, pairHint, reservedOf, useEditShortcutsVersion, type EditActionId,
+} from "../../lib/editShortcuts";
 import type { FolderMenuKind } from "../../lib/folderContextMenu";
-import { generationListMeta } from "../../lib/generationDisplay";
+import { expandDisabledGenerationIds, generationListMeta } from "../../lib/generationDisplay";
 import { previewTargetFromGenerations } from "../../lib/generationGrid";
 import { reviewTargets, type ReviewAction } from "../../lib/generationReview";
 import { TEAM_SCOPE } from "../../lib/generationViews";
@@ -46,10 +65,12 @@ import { useT } from "../../lib/i18n";
 import { thumbOf } from "../../lib/media";
 import { useCustomEvent } from "../../lib/useCustomEvent";
 import { useDisabledFolders } from "../../lib/useDisabledFolders";
+import { useDisabledGenerations } from "../../lib/useDisabledGenerations";
 import type { ArchiveSnapshot } from "../../lib/useEditDoc";
 import { useTimelineSession, type TimelineCommand, type TimelineCommandOptions } from "../../features/timeline/api";
 import { useEditPlayback, type EditSource } from "../../lib/useEditPlayback";
 import { useEscapeClose } from "../../lib/useEscapeClose";
+import { useStateNotices, type NoticeLine } from "../../lib/useStateNotices";
 import { useVideoPair } from "../../lib/editVideoPair";
 import { workspaceViewKey } from "../../lib/libraryWorkspaceScope";
 import type { ResolveProjectTarget, ResolveTimelineResult } from "../../lib/resolveTransfer";
@@ -64,17 +85,27 @@ import { dropQueuedVideoMeasures, knownVideoSeconds, measureVideoSeconds, measur
 import { editMarkLabel, sourceMarkLabel, type PoolCardActions } from "./EditCard";
 import { EditExportConfirm } from "./EditExportConfirm";
 import { EditArchiveExportConfirm, EditImportConfirm } from "./EditImportConfirm";
-import { EditBackupNotice, EditBackupPanel } from "./EditBackupPanel";
+import { EditBackupPanel, useEditBackupWarn } from "./EditBackupPanel";
 import { EditMarkerColorMenu, EditMarkerMenu } from "./EditMarkerMenu";
-import { arrangePool, EditPool, type PoolItem } from "./EditPool";
+import { EditCleanFeedButton, EditCleanFeedWindow, useCleanFeed } from "./EditCleanFeed";
+import { arrangePool, EditPool, poolFacets, poolFilterPass, type PoolItem } from "./EditPool";
+import { EditShortcutsWindow } from "./EditShortcutsWindow";
+import { EditShareMenu, ERROR_TEXT as SHARE_ERROR_TEXT, shareTime, useEditShare } from "./EditShareMenu";
+import { EditShareViewer } from "./EditShareViewer";
 import { EditSidebar } from "./EditSidebar";
 import { EditSoloViewer } from "./EditSoloViewer";
-import { dropLabel, EditTimeline, ZOOM_MAX, ZOOM_MIN, type ClipLink, type DropHint } from "./EditTimeline";
-import { EditClipMenu, EditListMenu, EditTrackHeadMenu, EditTrackMenu, type TrackAct, type TrackRow } from "./EditTrackMenu";
+import { dropLabel, EditTimeline, ZOOM_MAX, ZOOM_MIN, type ClipLink, type DropHint, type V0Lane } from "./EditTimeline";
+import { EditClipMenu, EditListMenu, EditTrackHeadMenu, EditTrackMenu, EditV0Menu, type TrackAct, type TrackRow } from "./EditTrackMenu";
 import { EditTrimPop, type TrimAnchor } from "./EditTrimPop";
-import { EditViewer, TransportButtons, VolumeControl, writeText, type ViewerControls, type ViewOption } from "./EditViewer";
+import { EditTrimView } from "./EditTrimView";
+import { speedText, type RetimeChange } from "./EditRetime";
+import { EditViewer, writeText, type ViewerControls, type ViewOption } from "./EditViewer";
 import { SRC_CUT, useSourcePane } from "./useSourcePane";
 import { ResizableSidebar } from "../common/ResizableSidebar";
+import { loadJSON, removeStorage, saveJSON } from "../../lib/storage";
+import { EditSplit, TL_MIN } from "./EditSplit";
+
+const TL_HEIGHT_KEY = "ch.editTimeline.tlHeight"; // 뷰어와 타임라인 사이 손잡이로 정한 타임라인 칸 높이(px) — 없으면 CSS 기본 비율
 
 interface Props {
   authKey: string; // 계정·서버 — 바뀌면 받던 조회를 버린다
@@ -89,6 +120,8 @@ interface Props {
   //  표는 창에서 넣고 바꾸는 대로 다시 알린다(onPeekMarks).
   peekPath: string | null;
   onPeekMarks: (marks: Record<string, CardMark>) => void;
+  // 경고(공유 오류·백업·목록 …) — 앱이 화면 위 알림 줄(Resolve 결과와 같은 줄)에 그린다(Jay 2026-10-24 — 전엔 막대의 알약). 안 주면 안 보인다.
+  onNotices?: (lines: readonly NoticeLine[]) => void;
   cardMenuRef: MutableRefObject<EditCardMenu | null>;
   // 다빈치(미디어 풀)에서 고른 생성물(Jay 2026-10-14) — 풀의 카드·타임라인의 클립에 빨간 '다빈치' 표. 표시만 한다(재생헤드·풀은 그대로).
   //  새로 고르면 타임라인이 그 클립까지 가로로 넘어간다(화면 밖일 때만). 안 주면 없다.
@@ -142,6 +175,8 @@ let allWorkspacesIn = "";
 
 const NO_CUTS: ReadonlySet<string> = new Set();
 const NO_MARKS: readonly number[] = [];
+// 새 반복 자리의 ID(Jay 2026-10-23 ⑤) — 소문자·숫자 10자 무작위. 다시 나올 확률은 무시한다(순수 함수가 문서 안 중복만 거부한다).
+const newSlotId = () => Array.from(crypto.getRandomValues(new Uint8Array(10)), (byte) => "abcdefghijklmnopqrstuvwxyz0123456789"[byte % 36]).join("");
 export { MEASURE_SAVE_MS } from "../../features/timeline/api"; // 잰 값의 저장 주기는 문서 세션이 소유한다
 const parentOf = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf("/")));
 const isTyping = (target: EventTarget | null) => {
@@ -151,7 +186,7 @@ const isTyping = (target: EventTarget | null) => {
 };
 
 function EditTabInner({
-  authKey, workspace, keysActive, flash, onOpenCutFolder, reloadSignal, peekPath, onPeekMarks, cardMenuRef, onPreview, onCompare,
+  authKey, workspace, keysActive, flash, onOpenCutFolder, reloadSignal, peekPath, onPeekMarks, onNotices, cardMenuRef, onPreview, onCompare,
   resolve, onFolderAction, review, resolvePicked = NO_CUTS, resolveScroll = 0, cardActions,
 }: Props) {
   const t = useT();
@@ -177,11 +212,20 @@ function EditTabInner({
   // 구간 반복 재생(뷰어 오른쪽 아래의 단추) — 켜져 있으면 타임라인이 마크 인/아웃 구간을 되풀이한다. 저장하지 않는다.
   const [rangeLoop, setRangeLoop] = useState(false);
   const rootRef = useRef<HTMLElement>(null);
+  const [tlHeight, setTlHeight] = useState<number | null>(() => {
+    const saved = loadJSON<unknown>(TL_HEIGHT_KEY);
+    return typeof saved === "number" && Number.isFinite(saved) && saved >= TL_MIN ? Math.round(saved) : null;
+  });
+  const onTlHeight = useCallback((height: number | null) => {
+    setTlHeight(height);
+    if (height === null) removeStorage(TL_HEIGHT_KEY);
+    else saveJSON(TL_HEIGHT_KEY, height);
+  }, []);
   // 타임라인 판의 영상 요소 둘(앞 · 다음 것을 미리 받는 뒤)과 그 묶음 — 컷이 넘어갈 때 받느라 서지 않게(editVideoPair)
   const tlVideo = useVideoPair();
   const scrollRef = useRef<HTMLDivElement>(null);
   const headRef = useRef<HTMLDivElement>(null);
-  const barTimeRef = useRef<HTMLSpanElement>(null);
+  const tcRef = useRef<HTMLSpanElement>(null); // 트랙 머리 맨 위의 지금 시각(EditTimeline — 다빈치, Jay 2026-10-23)
   // 뷰어 판들의 '지금 시각'·타임바 — 판이 그리기 함수를 걸어 두면 시계가 프레임마다 부른다(React 를 거치지 않는다).
   const painters = useRef(new Set<(time: number) => void>());
 
@@ -227,25 +271,38 @@ function EditTabInner({
   //  폴더. '비었다'는 공유 목록을 한 번이라도 끝까지 받은 뒤에만 믿는다(list.known — 받는 중에 전부 비활성으로 보이지 않게).
   //  여기서 켜고 끈 것은 이 편집 문서에만 적는다 — 다른 탭의 폴더 비활성(회색·생략)은 읽기만 하고 바꾸지 않는다.
   const disabledFolders = useDisabledFolders();
+  //  path = 자리 열쇠 — 다른 탭의 비활성·공유물은 그 **폴더**로, '넣은 것'은 그 **자리**로 본다(반복 자리는 자리마다 D).
   const autoOff = useCallback((path: string) =>
-    (!!target && isFolderDisabled(disabledFolders, target.projectId, path)) ||
-    (list.known && !byCut.get(path)?.length && !doc.clips.some((clip) => clip.cut === path)),
+    (!!target && isFolderDisabled(disabledFolders, target.projectId, folderOf(path))) ||
+    (list.known && !byCut.get(folderOf(path))?.length && !doc.clips.some((clip) => slotOf(clip) === path)),
   [target, disabledFolders, list.known, byCut, doc]);
   const offCuts = useMemo(
     () => new Set(cuts.filter((path) => cutIsOff(doc, path, autoOff(path)))),
     [cuts, doc, autoOff],
   );
+  // 왼쪽 아래 '컬러 · 전역 태그 · 생성자'(Jay 2026-10-23) — 미디어 풀의 카드만 거른다(타임라인·소스 테이프는 그대로). 회색 = 공유 탭과 같은
+  //  비활성(d 키 카드 · 비활성 폴더 아래), 생성자·전역 태그 목록은 이 시퀀스의 공유물에서 센다.
+  //  회색 카드는 거르지 않을 때도 풀에 회색 + 빗금으로 보인다(Jay 2026-10-23 — 공유 탭처럼 구분되게)
+  const disabledGen = useDisabledGenerations();
+  const grayIds = useMemo(
+    () => expandDisabledGenerationIds(list.gens, disabledGen, disabledFolders),
+    [list.gens, disabledGen, disabledFolders],
+  );
+  const poolPass = useMemo(() => poolFilterPass(ui.poolFilter, grayIds), [ui.poolFilter, grayIds]);
+  const facets = useMemo(() => poolFacets(list.gens), [list.gens]);
   // 숨기기를 켜면 비활성 컷은 배치에 아예 없다 — 타임라인에도 재생에도 없다. 문서의 클립은 그대로 남는다.
   const shownCuts = useMemo(
     () => (doc.hideOff ? cuts.filter((path) => !offCuts.has(path)) : cuts),
     [cuts, doc.hideOff, offCuts],
   );
+  // 자리 이름(C0050 ①·②) — 숨기기 전 전체 순서로 센다(숨겨도 번호가 바뀌지 않게)
+  const labels = useMemo(() => slotLabels(cuts), [cuts]);
   const layout = useMemo(
     () => buildLayout(shownCuts, doc, (clip) => {
       const gen = links.get(clipKey(clip))?.gen; // 길이가 안 적힌 옛 클립만 여기로 온다
       return gen?.assets[0]?.type === "video" ? gen.params?.duration : undefined;
-    }),
-    [shownCuts, doc, links],
+    }, labels),
+    [shownCuts, doc, links, labels],
   );
   // 마크 인/아웃·북마크(Jay 2026-10-08) — 문서에는 (컷, 컷 안 시각)으로 적혀 있고, 여기서 지금 배치의 시각으로 바꾼다.
   //  숨긴 컷에 있거나 컷이 그 자리보다 짧아진 것은 빠진다(문서에는 남는다).
@@ -265,30 +322,83 @@ function EditTabInner({
     };
   }, [links]);
 
+  // 편집 공유(Jay 2026-10-23 — 서버에 저장 · 다른 편집 보기 · V0). 상태·요청은 EditShareMenu.useEditShare, 규칙은
+  //  docs/status/편집탭_편집공유_설계_2026-10-23.md. V0 은 보기만 — 그 사람 타임라인 그대로(내 컷과 어긋나도 된다, Jay ③).
+  const shareTarget = useMemo(() => (target ? { projectId: target.projectId, seq: target.seq } : null), [target?.projectId, target?.seq]);
+  const share = useEditShare({ scope: shareTarget ? `${authKey}:${shareTarget.projectId}:${shareTarget.seq}` : null, target: shareTarget, layout, doc, flash });
+  const v0Share = share.v0?.share ?? null;
+  // V0 전용 링크 — 조각마다 그 폴더의 내 팀 목록에서 찾는다(gen 먼저·job 보조 — 내 클립과 같은 규칙). 권한 밖으로 따로 찾지 않는다.
+  const v0Links = useMemo(() => {
+    const map = new Map<string, ClipLink>();
+    for (const [key, part] of v0Share?.parts ?? []) {
+      map.set(key, linkClip({ cut: part.folder, gen: part.gen, ...(part.job ? { job: part.job } : {}), track: 1 }, byCut.get(part.folder), list.complete));
+    }
+    return map;
+  }, [v0Share, byCut, list.complete]);
+  const v0SourceOf = useCallback((clip: SlotClip): EditSource => {
+    const link = v0Links.get(clip.cut);
+    const asset = link?.gen?.assets[0];
+    return {
+      state: link?.state ?? "unknown", url: asset?.file_path ?? null, type: asset?.type ?? clip.kind ?? null,
+      thumb: link?.gen ? thumbOf(link.gen, 512) : null,
+    };
+  }, [v0Links]);
+  // 재생용 배치 — 다른 편집 보기 중 V0 이 더 길면 내 배치 뒤에 빈 꼬리 자리(lib/editShare.withTail). 재생 엔진과 타임라인 폭·눈금·End·전체
+  //  보기에만 쓴다 — 고르기·마크·북마크·Resolve 보내기·A1·클린 피드·한 트랙 보기는 layout(내 것)만.
+  //  끝 = share.tail — 작업자를 바꾸는 동안은 앞 사람의 끝을 쥐고 있어, 새 사람의 것이 온 뒤 한 번에 맞춘다(중간에 내 끝으로 줄지 않는다).
+  const playLayout = useMemo(() => (share.tail ? withTail(layout, share.tail) : layout), [layout, share.tail]);
+
   const zoomRef = useRef(zoom);
   zoomRef.current = zoom;
+  const painted = useRef(0); // 마지막으로 그린 재생헤드 시각 — 꼬리가 줄 때 '줄기 전'에 어디 있었는지 본다
+  const laneRef = useRef<((dir: 1 | -1) => void) | null>(null); // 트랙 높이 한 칸(EditTimeline 이 채운다) — 키로 지정한 트랙 높이 키우기·줄이기
+  useEditShortcutsVersion(); // 단축키 지정이 바뀌면 툴팁의 키 글자를 다시 그린다(키 처리는 이벤트 때 지도를 읽어 바로 따른다)
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const playingRef = useRef(false);
   const isPlaying = useCallback(() => playingRef.current, []);
   const paint = useCallback((time: number) => {
+    painted.current = time;
     const x = time * zoomRef.current;
     if (headRef.current) headRef.current.style.transform = `translateX(${x}px)`;
     const code = timecode(time);
-    writeText(barTimeRef.current, code);
+    writeText(tcRef.current, code);
     painters.current.forEach((draw) => draw(time));
     const scroll = scrollRef.current; // 재생 중에는 재생헤드가 화면 밖으로 나가면 따라간다
     if (scroll && playingRef.current && (x < scroll.scrollLeft || x > scroll.scrollLeft + scroll.clientWidth - 40)) {
       scroll.scrollLeft = Math.max(0, x - 80);
     }
   }, []);
+  // 꼬리가 줄어드는 순간(V0 끄기·사람 바꾸기·최신이 더 짧음) — 엔진이 위치를 맞추기 **전에** 그 전 시각을 보고(layout effect 가 엔진의
+  //  effect 보다 먼저 돈다), 새 끝 뒤였으면 엔진이 새 배치를 받은 **뒤에** 정확히 새 끝으로 보낸다(settlePos 의 '−1프레임' 보정에 맡기지 않는다).
+  //  같은 시퀀스 안에서만 — 시퀀스가 바뀌면 엔진이 그 시퀀스의 적힌 위치로 가야 한다(앞 시퀀스의 꼬리 시각으로 새 끝을 덮지 않는다).
+  const playScope = target ? `${target.projectId}\n${target.seq}` : "";
+  const shrinkTo = useRef<number | null>(null);
+  const playTotal = useRef({ scope: playScope, total: playLayout.total });
+  useLayoutEffect(() => {
+    const before = playTotal.current;
+    shrinkTo.current = before.scope === playScope && playLayout.total < before.total - 1e-9 && painted.current > playLayout.total - 1e-9
+      ? playLayout.total : null;
+    playTotal.current = { scope: playScope, total: playLayout.total };
+  }, [playScope, playLayout.total]);
   const playback = useEditPlayback({
-    scope: target ? `${target.projectId}\n${target.seq}` : "", layout, doc, sourceOf, videoRef: tlVideo.pair, paint, loop: ui.loop,
+    scope: playScope, layout: playLayout, doc, sourceOf, videoRef: tlVideo.pair, paint, loop: ui.loop,
     range: rangeLoop ? marks.band : null, // 구간 반복 재생 — 반복(전체)과 따로 켠다
     speed: ui.speed,
     order: cuts, // 보던 컷이 빠졌을 때 '그다음 컷'을 내가 정한 순서에서 찾는다(숨긴 컷 포함)
+    ephemeral: TAIL_KEY, // 꼬리 자리는 적어 두는 재생 위치에 남기지 않는다(내 끝으로)
   });
   const { view, now, seek, seekPos, stop, playRange } = playback;
   playingRef.current = view.playing;
-  useEffect(() => paint(now()), [zoom, paint, now]);
+  useEffect(() => {
+    if (shrinkTo.current === null) return;
+    const end = shrinkTo.current;
+    shrinkTo.current = null;
+    seek(end);
+  }, [playScope, playLayout.total, seek]);
+  const inTail = useCallback(() => now() > layout.total + 1e-9, [now, layout.total]); // 내 끝 뒤(V0 의 꼬리) — 위치 편집을 하지 않는다
+  // 확대가 바뀌면 그리기 전에(layout) 재생헤드를 옮긴다 — useEffect 면 새 확대의 클립·눈금이 먼저 그려지고 재생헤드는 한 프레임 옛 자리에
+  //  남아 Alt+휠 때마다 튀어 보였다(Jay 2026-10-23). 가로 스크롤 맞춤(EditTimeline 의 layout effect)도 같은 프레임이다.
+  useLayoutEffect(() => paint(now()), [zoom, paint, now]);
   const registerPaint = useCallback((draw: (time: number) => void) => {
     painters.current.add(draw);
     draw(now());
@@ -318,13 +428,18 @@ function EditTabInner({
     setSelected(new Set());
     setTarget(next);
     saveEditTarget(next);
-    if (asCut && target?.projectId === next.projectId && target.seq === next.seq) seekPos({ cut: path, local: 0 });
-  }, [openProject, tree, target, stop, seekPos]);
+    // 그 폴더의 보이는 자리로 — 빈 첫 자리가 숨었으면 그 폴더의 첫 반복 자리(2026-10-26). 아직 없으면 배치에 생길 때(아래)
+    const at = asCut && target?.projectId === next.projectId && target.seq === next.seq ? slotOfFolder(layout, path) : null;
+    if (at) {
+      pendingCut.current = null;
+      seekPos({ cut: at, local: 0 });
+    }
+  }, [openProject, tree, target, stop, seekPos, layout]);
   useEffect(() => {
-    const cut = pendingCut.current;
-    if (!cut || !layout.cuts.some((slot) => slot.path === cut)) return;
+    const at = pendingCut.current && slotOfFolder(layout, pendingCut.current);
+    if (!at) return;
     pendingCut.current = null;
-    seekPos({ cut, local: 0 });
+    seekPos({ cut: at, local: 0 });
   }, [layout, seekPos]);
 
   // 길이 — 목록을 끝까지 받았으면 길이가 안 적힌 클립을 채우고, 영상은 실측값이 오면 고쳐 적는다(Undo 단계 아님).
@@ -389,20 +504,23 @@ function EditTabInner({
 
   const revNow = useRef(rev);
   revNow.current = rev;
+  // 결과를 돌려준다(done 일 때만 고른 것을 새 열쇠로 바꾸는 곳이 있다). 낡은 rev 로 버린 것은 null.
   const act = useCallback((command: TimelineCommand, options?: TimelineCommandOptions) => {
     // 끌기·메뉴를 시작한 뒤 문서가 갈렸다(rev 가 낡았다) — 그 조작은 말없이 버린다. '잠긴 트랙…' 안내는 틀린 말이다(Codex 3회째 P3).
-    if (options?.rev !== undefined && options.rev !== revNow.current) return;
+    if (options?.rev !== undefined && options.rev !== revNow.current) return null;
     // 'stopped'(다른 창의 저장 때문에 버림)에는 그 알림이 이미 떴다 — 덮지 않는다
-    if (commit(command, options) === "none") flash(t("바꾸지 못했습니다 — 잠긴 트랙이 있거나 옮길 자리가 없습니다."));
+    const result = commit(command, options);
+    if (result === "none") flash(t("바꾸지 못했습니다 — 잠긴 트랙이 있거나 옮길 자리가 없습니다."));
+    return result;
   }, [commit, flash, t]);
 
-  const cut = view.cut;
+  const cut = view.cut === TAIL_KEY ? null : view.cut; // V0 의 꼬리(재생용 빈 자리)는 내 컷이 아니다
   // 이 컷의 공유 생성물과 넣은 트랙. '지금 보이는 것' 표는 따로 붙인다 — 그 표는 재생헤드가 클립을 넘을 때마다 바뀌는데,
-  //  소스 테이프(아래)가 그때마다 다시 지어지면 안 된다(Codex 설계 검토).
+  //  소스 테이프(아래)가 그때마다 다시 지어지면 안 된다(Codex 설계 검토). cut = 자리 열쇠 — 카드는 그 폴더의 것, 표는 그 자리의 것.
   const cutItems = useMemo<PoolItem[]>(() => {
     if (!cut) return [];
-    const placed = doc.clips.filter((clip) => clip.cut === cut);
-    return (byCut.get(cut) ?? []).map((gen) => ({
+    const placed = doc.clips.filter((clip) => slotOf(clip) === cut);
+    return (byCut.get(folderOf(cut)) ?? []).map((gen) => ({
       gen, track: placed.find((item) => links.get(clipKey(item))?.gen?.id === gen.id)?.track ?? null, showing: false,
     }));
   }, [cut, byCut, doc, links]);
@@ -414,10 +532,14 @@ function EditTabInner({
   //  (Jay: "두개 화면 모두 소스클립이나 내가 정한 화면이 자유롭게 나와야한다"). 타임라인·같은 트랙은 시계가 하나라 두 판에 같이
   //  고르면 자리를 바꾼다. 한 트랙만 보는 판은 타임라인의 시계를 따라가는 보기다(EditSoloViewer) — 재생헤드·편집점·풀의 '지금 보이는
   //  것' 표는 판이 무엇을 보든 달라지지 않는다(Codex 설계 검토 — 엔진에 트랙만 거른 배치를 주면 다른 판과 아래 타임라인의 편집점이 바뀐다).
-  const places: (0 | 1)[] = ui.dual ? [0, 1] : [1];
-  const slots: ViewMode[] = places.map((place) => ui.views[place]); // 보이는 판들(왼쪽부터)
+  // 다이나믹 재생 모드(Jay 2026-10-26 — 다빈치의 Dynamic Trim Mode, 아래 toggleDynamic) — 켜져 있는 동안 뷰어 자리는 타임라인 판 하나다:
+  //  나뉘어 있던 판들이 한 창이 된다. 화면 설정(views·dual)은 건드리지 않으므로 끄면 보던 대로 돌아온다. 저장하지 않는다.
+  const [dynamic, setDynamic] = useState(false);
+  const places: (0 | 1)[] = ui.dual && !dynamic ? [0, 1] : [1];
+  const viewAt = (place: 0 | 1): ViewMode => (dynamic ? "timeline" : ui.views[place]); // 그 판이 지금 보이는 것
+  const slots: ViewMode[] = places.map(viewAt); // 보이는 판들(왼쪽부터)
   const orderOf = (place: 0 | 1) => places.indexOf(place); // 보이는 자리(-1 = 안 보인다)
-  const srcModeOf = (place: 0 | 1) => (orderOf(place) >= 0 && isSourceView(ui.views[place]) ? (ui.views[place] as "source" | "tape") : null);
+  const srcModeOf = (place: 0 | 1) => (orderOf(place) >= 0 && isSourceView(viewAt(place)) ? (viewAt(place) as "source" | "tape") : null);
   // 판마다 고른 소스 클립 — null = 풀의 선택(마지막으로 고른 것)을 따라간다 · "" = 아무것도 안 띄운 채 굳었다 · id = 그 카드로 굳었다.
   //  저장하지 않는다. 풀의 선택을 따라가는 판은 한 번에 하나다(followPool) — 풀에서 고르기(누름·상자·해제)는 그 판에만 뜨고, 다른 소스
   //  클립 판은 지금 보이는 것으로 굳는다(Codex 코드 리뷰 — 안 그러면 같이 바뀌고, 상자 고르기·해제가 판에 안 따라왔다).
@@ -459,14 +581,16 @@ function EditTabInner({
     const showing = item.track !== null && item.track === showingTrack;
     const resolved = resolvePicked.has(item.gen.id); // 다빈치에서 고른 것(빨간 표)
     const onTimeline = timelinePicked.has(item.gen.id);
-    return showing || source || resolved || onTimeline
-      ? { ...item, showing, ...(source && { source }), ...(resolved && { resolve: true }), ...(onTimeline && { timeline: true }) } : item;
-  }), [cutItems, showingTrack, sourceOfGen, resolvePicked, timelinePicked]);
+    const off = grayIds.has(item.gen.id); // 비활성(회색)
+    return showing || source || resolved || onTimeline || off
+      ? { ...item, showing, ...(source && { source }), ...(resolved && { resolve: true }), ...(onTimeline && { timeline: true }), ...(off && { off }) }
+      : item;
+  }), [cutItems, showingTrack, sourceOfGen, resolvePicked, timelinePicked, grayIds]);
   const tlOrder = slots.indexOf("timeline");
   const tlShown = tlOrder >= 0;
   // 재생 키(Space·J·K·L·←→·↑↓·Home·End)는 마지막에 누른 판의 시계로 간다(다빈치). 편집 키는 언제나 타임라인 것이다. 싱글이면 보이는 판.
   const [activePlace, setActivePlace] = useState<0 | 1>(1);
-  const keyPlace: 0 | 1 = ui.dual ? activePlace : 1;
+  const keyPlace: 0 | 1 = ui.dual && !dynamic ? activePlace : 1;
   const setModeAt = (place: 0 | 1, next: ViewMode) => {
     const views: [ViewMode, ViewMode] = [ui.views[0], ui.views[1]];
     if (views[1 - place] === next && !isSourceView(next)) views[1 - place] = views[place]; // 같은 시계의 같은 보기 — 자리를 바꾼다
@@ -474,47 +598,31 @@ function EditTabInner({
     views[place] = next;
     patchUi({ views });
     setActivePlace(place); // 방금 고른 판이 재생 키를 받는다
+    setDynamic(false); // 다른 것을 보겠다고 골랐다(V0 단추·풀 카드 더블클릭) — 그 판이 보이게 모드를 끈다
   };
   type Engine = typeof playback;
-  const engineOf = (place: 0 | 1): Engine => (isSourceView(ui.views[place]) ? srcPanes[place].play : playback);
-  const totalOf = (place: 0 | 1) => (isSourceView(ui.views[place]) ? srcPanes[place].src.layout.total : layout.total);
+  const engineOf = (place: 0 | 1): Engine => (isSourceView(viewAt(place)) ? srcPanes[place].play : playback);
+  const totalOf = (place: 0 | 1) => (isSourceView(viewAt(place)) ? srcPanes[place].src.layout.total : playLayout.total);
   // 보이는 판의 시계들(같은 시계를 쓰는 두 판 — 타임라인 + 한 트랙만 — 은 하나로)
   const shownEngines = places.reduce<{ engine: Engine; total: number }[]>((all, place) => (
     all.some((item) => item.engine === engineOf(place)) ? all : [...all, { engine: engineOf(place), total: totalOf(place) }]), []);
   const multi = shownEngines.length > 1;
-  // 다이나믹 재생 모드(Jay 2026-10-14 오후 — 옛 '다이나믹 트림 모드'를 바꿨다: "그걸 하면 왼쪽 화면 오른쪽 화면의 재생을 한번에 컨트롤할수
-  //  있다. 예를들어서 소스클립을 좌우 다른걸 넣고 … 한번에 컨트롤 하면서 확인") — 막대의 단추·W. 켜면 재생 조작(재생/멈춤·J/K/L·
-  //  ←/→·↑/↓·처음/끝)이 보이는 판의 시계 모두에 같이 간다. 재생바 누르기·끌기는 그 판만이다(두 화면의 시작점을 맞추는 길). 싱글에서 켜면
-  //  듀얼로 바꾼다. 저장하지 않는다. 켜져 있는 동안은 '한쪽을 틀면 다른 쪽을 멈춘다'(아래)를 쉰다 — 소리는 판마다 따로 줄인다.
-  const [linked, setLinked] = useState(false);
-  const linkedOn = linked && multi;
-  // 공용 줄(아래)은 모드가 켜져 있고 판이 둘이면 늘 — 같은 시계의 두 판(타임라인 + 한 트랙만)이어도 한 줄이다(그 둘뿐이면 같이 갈 시계는
-  //  하나지만, 켜짐 표시인데 판마다 한 줄씩 남았다 — Codex 리뷰)
-  const oneBar = linked && ui.dual;
+  // 다이나믹 재생 모드(Jay 2026-10-26 — "다빈치처럼 앞뒤 컷 보여주고 재생은 한 화면에서만") — 막대의 단추·W·무대의 ⊗. 켜면 뷰어 자리가
+  //  타임라인 판 하나가 되고(위 places), 멈춘 동안 그 무대에 재생헤드에서 가장 가까운 편집점의 앞 컷 | 뒤 컷이 나란히 뜬다(EditTrimView).
+  //  재생하면 두 칸을 걷고 한 화면으로 재생한다. ↑·↓ 는 재생헤드가 아니라 **보는 편집점**에서 앞·뒤로 간다(재생헤드가 편집점 사이에 있으면
+  //  둘이 다르다 — 안 그러면 ↓ 를 눌러도 화면이 그대로다, Codex 설계 검토 10-08). 10-14 의 '두 판 재생을 한 번에'는 뺐다(Jay 2026-10-26).
   const volumeMemory = [useRef(1), useRef(1)] as const; // 판 자리마다 '끄기 전 소리 크기'(VolumeControl)
-  const toggleLinked = () => {
-    if (!linked && !ui.dual) patchUi({ dual: true });
-    // 끄면 키를 받는 판의 시계만 남긴다 — 같이 돌던 다른 판이 그대로 돌면 연동 표시는 꺼졌는데 소리가 남고 K 가 한쪽만 멈췄다(Codex 코드 리뷰)
-    if (linked) shownEngines.forEach(({ engine }) => engine !== engineOf(keyPlace) && engine.stop());
-    setLinked(!linked);
-  };
-  const together = {
-    toggle: () => {
-      const on = shownEngines.some(({ engine }) => engine.view.playing);
-      shownEngines.forEach(({ engine }) => (on ? engine.stop() : engine.toggle()));
-    },
-    stop: () => shownEngines.forEach(({ engine }) => engine.stop()),
-    shuttle: (dir: 1 | -1) => shownEngines.forEach(({ engine }) => engine.shuttle(dir)),
-    stepFrames: (frames: number) => shownEngines.forEach(({ engine }) => engine.stepFrames(frames)),
-    stepEdit: (dir: 1 | -1) => shownEngines.forEach(({ engine }) => engine.stepEdit(dir)),
-    edge: (end: boolean) => shownEngines.forEach(({ engine, total }) => engine.seek(end ? total : 0)),
-  };
+  const toggleDynamic = () => setDynamic(!dynamic);
   const keyEngine = engineOf(keyPlace);
-  const keys = linkedOn ? together : {
+  const keys = {
     toggle: keyEngine.toggle, stop: keyEngine.stop, shuttle: keyEngine.shuttle, stepFrames: keyEngine.stepFrames,
-    stepEdit: keyEngine.stepEdit, edge: (end: boolean) => keyEngine.seek(end ? totalOf(keyPlace) : 0),
+    stepEdit: dynamic ? (dir: 1 | -1) => {
+      const points = editPoints(layout);
+      seek(stepPoint(points, nearestPoint(points, now()), dir));
+    } : keyEngine.stepEdit,
+    edge: (end: boolean) => keyEngine.seek(end ? totalOf(keyPlace) : 0),
   };
-  // 시계끼리는 같이 틀지 않는다 — 한쪽을 틀면 다른 쪽은 멈춘다(소리가 겹치지 않고, K 가 멈출 것이 하나다). 다이나믹 재생 모드는 예외.
+  // 시계끼리는 같이 틀지 않는다 — 한쪽을 틀면 다른 쪽은 멈춘다(소리가 겹치지 않고, K 가 멈출 것이 하나다).
   //  타임라인 판이 없으면 타임라인의 영상은 소리를 끈다(아래 muted). 소스 판을 내리면 그 소스는 멈춘다(useSourcePane).
   const playingNow: [boolean, boolean, boolean] = [view.playing, src0.play.view.playing, src1.play.view.playing];
   const stopSrc0 = src0.play.stop;
@@ -524,28 +632,27 @@ function EditTabInner({
     const before = wasPlaying.current;
     const nowOn = [view.playing, src0.play.view.playing, src1.play.view.playing];
     wasPlaying.current = nowOn as [boolean, boolean, boolean];
-    if (linked) return;
     const started = nowOn.findIndex((on, i) => on && !before[i]);
     if (started < 0) return;
     [stop, stopSrc0, stopSrc1].forEach((halt, i) => i !== started && halt());
-  }, [view.playing, src0.play.view.playing, src1.play.view.playing, linked, stop, stopSrc0, stopSrc1]);
+  }, [view.playing, src0.play.view.playing, src1.play.view.playing, stop, stopSrc0, stopSrc1]);
   // 타임라인의 시계를 쓰는 판이 모두 사라지는 순간 그 시계도 멈춘다 — 가려진 채 돌면 K(같이 멈춤 포함)가 닿지 않았다(Codex 36회차).
   //  소스 판을 내리면 그 소스가 멈추는 것(useSourcePane)과 같은 규칙이다. 사라진 동안 Alt+/ 로 튼 것은 건드리지 않는다(바뀔 때만 돈다).
-  const tlClockShown = places.some((place) => !isSourceView(ui.views[place]));
+  const tlClockShown = places.some((place) => !isSourceView(viewAt(place)));
   useEffect(() => {
     if (!tlClockShown) stop();
   }, [tlClockShown, stop]);
-  // 판의 단추 — 다이나믹 재생 모드면 재생·멈춤·셔틀·처음/끝은 같이, 재생바(훑기)는 그 판만
-  const controlsOf = (engine: Engine, total: number): ViewerControls => (linkedOn
-    ? { toggle: together.toggle, stop: together.stop, shuttle: together.shuttle, seek: engine.seek, edge: together.edge }
-    : { toggle: engine.toggle, stop: engine.stop, shuttle: engine.shuttle, seek: engine.seek, edge: (end) => engine.seek(end ? total : 0) });
+  const controlsOf = (engine: Engine, total: number): ViewerControls =>
+    ({ toggle: engine.toggle, stop: engine.stop, shuttle: engine.shuttle, seek: engine.seek, edge: (end) => engine.seek(end ? total : 0) });
   const viewOptions = useMemo<ViewOption[]>(() => [
     { value: "timeline", label: t("타임라인"), hint: t("위 트랙이 보인다") },
     { value: "source", label: t("소스 클립"), hint: t("풀에서 고른 것") },
     { value: "tape", label: t("소스 테이프"), hint: t("이 컷의 생성물을 이어서") },
     ...Array.from({ length: layout.tracks }, (_, i) => layout.tracks - i)
       .map((track) => ({ value: track, label: t("V{track} 만 보기").replace("{track}", String(track)) })),
-  ], [layout.tracks, t]);
+    // 다른 편집 보기의 V0(편집 공유) — 켜져 있을 때만 고를 수 있다. 이미 고른 판은 꺼져도 안내 화면으로 남는다(저장값 그대로)
+    ...(share.ui.others ? [{ value: "other" as const, label: share.ownerName ? `V0 · ${share.ownerName}` : t("V0 — 작업자 선택"), hint: t("다른 편집") }] : []),
+  ], [layout.tracks, t, share.ui.others, share.ownerName]);
   // 풀에서 고르기(누름·상자·해제) — 풀의 선택을 따라갈 판: 재생 키를 받는 판이 소스면 그 판, 아니면 보이는 소스 판(왼쪽부터). 그 판이
   //  소스 클립이면 선택을 따라가고(마지막으로 고른 것 — 해제하면 빈다, 전과 같다), 소스 테이프면 테이프가 그 카드의 처음으로 간다(다빈치).
   //  다른 소스 클립 판은 지금 보이는 것으로 굳는다. 소스 판이 없으면 고르기만 한다(판을 소스로 올리면 그때 뜬다).
@@ -600,13 +707,13 @@ function EditTabInner({
   //  전에는 어느 카드인지 모른다 — 그때 넣으면 같은 생성물이 두 트랙에 들어가거나, 교체하면서 그 클립의 꺼짐이 사라진다.
   //  그 카드만 막는다: 컷 전체를 막으면 목록이 2,000건에서 잘린 시퀀스에서는 영영 풀리지 않는다(Codex 코드 리뷰).
   const maybePlaced = useCallback((path: string, gen: Generation) =>
-    doc.clips.some((clip) => clip.cut === path && !!clip.job && clip.job === gen.job_id &&
+    doc.clips.some((clip) => slotOf(clip) === path && !!clip.job && clip.job === gen.job_id &&
       links.get(clipKey(clip))?.state === "unknown"), [doc, links]);
   // rev = 연 순간의 문서 판 — 아래 트랙 머리 메뉴와 같게, 떠 있는 사이 다른 창이 이 편집을 바꾸면 닫고 고른 것도 그 판에서만 넣는다(58회차).
   const [menu, setMenu] = useState<{ gen: Generation; cut: string; x: number; y: number; rev: number } | null>(null);
   const menuBackRef = useRef<HTMLElement | null>(null); // 메뉴가 닫히면 초점을 돌려줄 곳(메뉴가 초점을 가져간다)
   const openMenu = useCallback((card: Pick<Generation, "id">, menuCut: string | null, x: number, y: number) => {
-    const gen = menuCut ? byCut.get(menuCut)?.find((item) => item.id === card.id) : undefined;
+    const gen = menuCut ? byCut.get(folderOf(menuCut))?.find((item) => item.id === card.id) : undefined;
     if (!gen || !menuCut) return flash(t("이 카드는 넣을 수 없습니다 — 편집 탭의 이 컷 공유 목록에 없습니다."));
     if (maybePlaced(menuCut, gen)) return flash(t("이 카드는 이미 넣은 클립일 수 있습니다 — 공유 목록을 다 받은 뒤에 다시 해 주세요."));
     menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -614,7 +721,8 @@ function EditTabInner({
   }, [byCut, maybePlaced, flash, t, rev]);
   // 트랙 머리 우클릭 메뉴·북마크 편집 창 — 여는 순간의 rev 를 잡아 둔다. 떠 있는 사이 다른 창이 이 편집을 바꾸면(rev 가
   //  갈린다) 닫고, 그 뒤에 고른 것은 저장하지 않는다(옛 화면을 보고 고른 것이 새 문서를 덮지 않게 — Codex 설계 검토).
-  const [trackMenu, setTrackMenu] = useState<{ track: number; x: number; y: number; rev: number } | null>(null);
+  //  blank = 트랙 밖 빈 곳의 우클릭(Jay 2026-10-23) — '트랙 추가(맨 위에) · 빈 트랙 모두 삭제'만, track = 맨 위 트랙
+  const [trackMenu, setTrackMenu] = useState<{ track: number; x: number; y: number; rev: number; blank?: boolean } | null>(null);
   const [markerMenu, setMarkerMenu] = useState<{ key: string; x: number; y: number; rev: number } | null>(null);
   const [colorMenu, setColorMenu] = useState<{ x: number; top: number; bottom: number; rev: number } | null>(null); // 막대의 북마크 단추 옆 ▾
   const [listMenu, setListMenu] = useState<{ x: number; top: number; bottom: number } | null>(null); // 막대의 목록 단추
@@ -654,13 +762,19 @@ function EditTabInner({
     const anchor = box && right > left ? { x: left, y: box.top, width: right - left, height: box.height } : null;
     setTrimPop({ key, group: `trim:${key}:${++trimSerial.current}`, rev, anchor });
   }, [doc, links, flash, t, stopBoth, rev]);
+  // 속도 막대(Jay 2026-10-23 Ctrl+R, 다빈치 리타임 컨트롤) — 고른 영상 클립 하나에 켠다. 화면 상태(저장 안 함). 길이 조절 창처럼 여는 순간의
+  //  rev 를 잡아 두고, 문서가 갈리거나·저장 충돌·그 클립이 빠지거나 트랙이 잠기면 끈다(아래).
+  const [retime, setRetime] = useState<{ key: string; rev: number } | null>(null);
   const editConflict = edit.conflict;
   useEffect(() => {
-    if (editConflict) setTrimPop(null);
+    if (editConflict) {
+      setTrimPop(null);
+      setRetime(null);
+    }
   }, [editConflict]);
-  const openTrackMenu = useCallback((track: number, x: number, y: number) => {
+  const openTrackMenu = useCallback((track: number, x: number, y: number, blank = false) => {
     menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setTrackMenu({ track, x, y, rev });
+    setTrackMenu({ track, x, y, rev, blank });
   }, [rev]);
   const openMarkerMenu = useCallback((key: string, x: number, y: number) => {
     menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -674,6 +788,7 @@ function EditTabInner({
     setListMenu(null);
     setClipMenu(null);
     setTrimPop(null);
+    setRetime(null);
   }, [rev]);
   const closeMenu = useCallback(() => {
     setMenu(null);
@@ -697,13 +812,22 @@ function EditTabInner({
   const closeOnAuxPress = (event: { button: number }) => {
     if (event.button !== 0) closeMenu();
   };
-  useEffect(() => setMenu(null), [peekPath, cut, target?.projectId, target?.seq]); // 보던 컷·창이 바뀌면 닫는다
+  // 반복 자리에서 연 폴더 창(Jay 2026-10-23 ⑤) — 창(App)에는 폴더 경로가 가고, 어느 자리에서 열었는지는 여기서 기억한다. 쓰는 조건 = 같은 문서 ·
+  //  창이 그 폴더 · 그 자리가 전체 순서에 있음(숨겨도 된다). 어긋나면 첫 자리(peekPath)로 넣는다. 창을 연 순간의 null → 폴더 변화로는 지우지 않고,
+  //  창이 닫히면(peekPath = null) 지운다(Codex 설계 3차).
+  const [peekSlot, setPeekSlot] = useState<{ docKey: string | null; key: string } | null>(null);
+  useEffect(() => { if (!peekPath) setPeekSlot(null); }, [peekPath]);
+  //  연 반복 자리가 없으면 폴더(첫 자리) — 첫 자리가 숨어 있으면(빈 첫 자리, 2026-10-26) 그 폴더의 첫 살아 있는 반복 자리(숨은 첫 자리에 넣어 되살리지 않게)
+  const peekKey = peekPath && peekSlot && peekSlot.docKey === docKey && folderOf(peekSlot.key) === peekPath && cuts.includes(peekSlot.key)
+    ? peekSlot.key
+    : peekPath && !cuts.includes(peekPath) ? cuts.find((key) => folderOf(key) === peekPath) ?? peekPath : peekPath;
+  useEffect(() => setMenu(null), [peekKey, cut, target?.projectId, target?.seq]); // 보던 컷·창이 바뀌면 닫는다
   useEffect(() => {
-    cardMenuRef.current = (card, x, y) => openMenu(card, peekPath, x, y);
+    cardMenuRef.current = (card, x, y) => openMenu(card, peekKey, x, y);
     return () => {
       cardMenuRef.current = null;
     };
-  }, [cardMenuRef, openMenu, peekPath]);
+  }, [cardMenuRef, openMenu, peekKey]);
   // 보낼 것 — 공유 목록에서 찾은 생성물만(같은 생성물이 두 컷에 있으면 한 번)
   const clipMenuGens = useMemo(() => {
     const found = new Map<string, Generation>();
@@ -723,6 +847,20 @@ function EditTabInner({
   useEffect(() => {
     if (trimGone) setTrimPop(null);
   }, [trimGone]);
+  // 속도 막대도 같다 — 그 클립이 빠졌거나 트랙이 잠기면 끈다
+  const retimeClip = retime ? layout.cuts.flatMap((slot) => slot.clips).find((clip) => clipKey(clip) === retime.key) : undefined;
+  const retimeGone = !!retime && (!retimeClip || doc.tracksLocked.includes(retimeClip.track));
+  useEffect(() => {
+    if (retimeGone) setRetime(null);
+  }, [retimeGone]);
+  const closeRetime = useCallback(() => setRetime(null), []);
+  // 놓을 때 한 번 — 속도는 setClipSpeed(원본 길이를 문서가 모를 때를 위해 배치가 쓴 원본 길이를 같이 준다), 끝은 길이 조절 창과 같은 setClipRange
+  const onRetime = useCallback((key: string, change: RetimeChange) => {
+    if (!retime || retime.key !== key) return;
+    const full = layout.cuts.flatMap((slot) => slot.clips).find((clip) => clipKey(clip) === key)?.full;
+    act("speed" in change ? { type: "setClipSpeed", args: [key, change.speed, full] } : { type: "setClipRange", args: [key, change.range] },
+      { rev: retime.rev });
+  }, [retime, layout, act]);
   // 창이 스스로 닫힐 때(다른 창의 저장 · 저장 충돌 · 클립이 빠짐·트랙 잠김)도 초점을 편집 화면으로 돌린다 — 창은 body 에 그려져 있어,
   //  초점을 쥔 채 사라지면 초점이 body 로 떨어진다(✕·Esc 의 closeTrim 은 스스로 돌린다). 초점을 다른 곳(풀·폴더 창)에 둔 채였다면
   //  건드리지 않는다(2026-10-14 두 창 실측).
@@ -732,7 +870,7 @@ function EditTabInner({
     if (trimWasOpen.current && !trimOpen && document.activeElement === document.body) rootRef.current?.focus({ preventScroll: true });
     trimWasOpen.current = trimOpen;
   }, [trimOpen]);
-  const menuOwn = menu && doc.clips.find((clip) => clip.cut === menu.cut && links.get(clipKey(clip))?.gen?.id === menu.gen.id);
+  const menuOwn = menu && doc.clips.find((clip) => slotOf(clip) === menu.cut && links.get(clipKey(clip))?.gen?.id === menu.gen.id);
   const menuRows: TrackRow[] = !menu ? [] : Array.from({ length: layout.tracks }, (_, i) => layout.tracks - i).map((track) => ({
     track,
     state: placeState(doc, menu.cut, menuOwn, track),
@@ -740,19 +878,30 @@ function EditTabInner({
   // 카드를 그 컷의 그 트랙에 넣는다 — 휠 클릭 메뉴와 끌어 놓기가 같이 쓰는 한 길이다(같은 문지기).
   //  카드는 **지금의 공유 목록**에서 다시 찾는다 — 메뉴가 떠 있거나 끄는 사이 그 카드가 목록에서 빠졌으면(다른 창의 공유 해제 →
   //  다시 받기) 연 순간의 사본으로 넣지 않는다: 잘 있던 클립이 '미디어 없음' 클립으로 갈린다.
+  //  cutPath = 자리 열쇠 — 카드는 그 폴더의 공유 목록에서, 이미 넣은 클립은 그 자리에서 찾는다.
   const ownClip = (cutPath: string, genId: string) =>
-    doc.clips.find((clip) => clip.cut === cutPath && links.get(clipKey(clip))?.gen?.id === genId);
+    doc.clips.find((clip) => slotOf(clip) === cutPath && links.get(clipKey(clip))?.gen?.id === genId);
+  const cardOf = (cutPath: string, genId: string) => byCut.get(folderOf(cutPath))?.find((item) => item.id === genId);
   const placeCard = (genId: string, cutPath: string, track: number, options?: { rev?: number }) => {
-    const gen = byCut.get(cutPath)?.find((item) => item.id === genId);
+    const gen = cardOf(cutPath, genId);
     if (!gen) return flash(t("이 카드는 넣을 수 없습니다 — 편집 탭의 이 컷 공유 목록에 없습니다."));
     const asset = gen.assets[0];
     if (maybePlaced(cutPath, gen)) return flash(t("이 카드는 이미 넣은 클립일 수 있습니다 — 공유 목록을 다 받은 뒤에 다시 해 주세요.")); // 그사이 다시 받기가 시작됐다
     const own = ownClip(cutPath, genId);
-    act({ type: "placeClip", args: [{
+    const clip = {
       // job 으로 다시 이은 클립이면 그 클립을 옮긴다(문서에 적힌 옛 id 로 찾는다)
       cut: cutPath, gen: own?.gen ?? gen.id, job: gen.job_id, kind: asset.type,
       dur: genSeconds(gen, knownVideoSeconds(asset.file_path)),
-    }, track] }, options);
+    };
+    act({ type: "placeClip", args: [clip, track] }, options);
+  };
+  // 카드를 컷 경계에 놓았다(Jay 2026-10-23 ⑤) — 그 카드 폴더의 새 자리를 before 앞에 만들고 그 트랙에 넣는다. 같은 생성물이 다른 자리에 있어도 된다.
+  const insertCard = (genId: string, cutPath: string, before: string | null, track: number, options: { rev: number }) => {
+    const gen = cardOf(cutPath, genId);
+    if (!gen) return flash(t("이 카드는 넣을 수 없습니다 — 편집 탭의 이 컷 공유 목록에 없습니다."));
+    const asset = gen.assets[0];
+    const card = { cut: folderOf(cutPath), gen: gen.id, job: gen.job_id, kind: asset.type, dur: genSeconds(gen, knownVideoSeconds(asset.file_path)) };
+    act({ type: "insertSlot", args: [cuts, card, before, track, newSlotId()] }, options);
   };
   const placeTo = (track: number) => {
     if (!menu) return;
@@ -783,15 +932,22 @@ function EditTabInner({
     const [x, y] = ghostAt.current;
     if (ghostRef.current) ghostRef.current.style.transform = `translate(${x + 14}px, ${y + 14}px)`;
   };
+  //  컷 경계 위(트랙 줄)면 끼워 넣기다(Jay 2026-10-23 ⑤ — before 가 있는 힌트). 그 밖은 지금처럼 끌기 시작 때의 자리. 트랙 위의 빈 곳은
+  //  놓을 곳이 아니다(data-track 이 없다 — 맨 위 빈 트랙 줄·새 트랙 만들기는 Jay 가 없앴다, 2026-10-23).
   const hintAt = (drag: { id: string; cut: string }, x: number, y: number): Omit<DropHint, "cut"> | null => {
     const lane = document.elementFromPoint(x, y)?.closest<HTMLElement>(".ed-lanes [data-track]");
     const track = Number(lane?.dataset.track);
-    return track > 0 ? { track, state: placeState(doc, drag.cut, ownClip(drag.cut, drag.id), track) } : null;
+    if (!lane || !(track > 0)) return null;
+    // 경계 띠면 끼워 넣기 · 같은 폴더의 자리 몸통이면 **그 자리**(into — 2026-10-26) · 다른 폴더 몸통이면 가장 가까운 경계(Jay 2026-10-23)
+    const target = dropTargetAt(layout, x - lane.getBoundingClientRect().left, zoomRef.current, drag.cut);
+    if (target?.kind === "edge") return { track, state: doc.tracksLocked.includes(track) ? "locked" : "empty", before: target.before };
+    const into = target?.kind === "slot" ? target.path : drag.cut;
+    return { track, state: placeState(doc, into, ownClip(into, drag.id), track), into };
   };
   const onCardDrag = (phase: "start" | "move" | "drop" | "cancel", id: string, x: number, y: number) => {
     ghostAt.current = [x, y];
     if (phase === "start") {
-      if (!cut || !byCut.get(cut)?.some((item) => item.id === id)) return;
+      if (!cut || !cardOf(cut, id)) return;
       stopBoth();
       setCardDrag({ id, cut, rev, hint: null });
       return;
@@ -803,17 +959,23 @@ function EditTabInner({
     const pane = hint ? null : viewerAt(x, y);
     if (phase === "move") {
       moveGhost();
-      if (hint?.track !== drag.hint?.track || hint?.state !== drag.hint?.state || !!pane !== !!drag.view) setCardDrag({ ...drag, hint, view: !!pane });
+      if (hint?.track !== drag.hint?.track || hint?.state !== drag.hint?.state || hint?.before !== drag.hint?.before ||
+        hint?.into !== drag.hint?.into || !!pane !== !!drag.view) {
+        setCardDrag({ ...drag, hint, view: !!pane });
+      }
       return;
     }
     setCardDrag(null);
-    if (hint && hint.state !== "here" && hint.state !== "locked") placeCard(drag.id, drag.cut, hint.track, { rev: drag.rev });
-    const gen = pane && byCut.get(drag.cut)?.find((item) => item.id === drag.id);
+    if (hint && hint.state !== "here" && hint.state !== "locked") {
+      if (hint.before !== undefined) insertCard(drag.id, drag.cut, hint.before, hint.track, { rev: drag.rev });
+      else placeCard(drag.id, hint.into ?? drag.cut, hint.track, { rev: drag.rev });
+    }
+    const gen = pane && cardOf(drag.cut, drag.id);
     if (!pane || !gen) return;
     // 놓은 판(EditViewer 의 data-place)이 그 카드를 소스 클립으로 띄운다 — 타임라인·한 트랙만·소스 테이프 판이어도 바꾼다(Jay 2026-10-14
     //  오후: 오른쪽 타임라인 판에 놓았는데 왼쪽 소스 판만 바뀌었다). 다른 판은 그대로다.
     const place: 0 | 1 = pane.dataset.place === "0" ? 0 : 1;
-    if (ui.views[place] !== "source") setModeAt(place, "source");
+    if (viewAt(place) !== "source") setModeAt(place, "source");
     else setActivePlace(place);
     setPaneGenAt(place, gen.id);
     pickGen(gen, false);
@@ -822,13 +984,13 @@ function EditTabInner({
   const cardDragging = !!cardDrag;
   useEscapeClose(() => setCardDrag(null), cardDragging, true, true);
   useDragKeyHold(cardDragging); // 초점이 남은 뒤의 단추(재생·트랙 눈)를 Space·Enter 가 누르지 않게
-  const cardDragGone = !!cardDrag && (cardDrag.rev !== rev || cardDrag.cut !== cut || !byCut.get(cardDrag.cut)?.some((item) => item.id === cardDrag.id));
+  const cardDragGone = !!cardDrag && (cardDrag.rev !== rev || cardDrag.cut !== cut || !cardOf(cardDrag.cut, cardDrag.id));
   useEffect(() => {
     if (cardDragGone) setCardDrag(null);
   }, [cardDragGone]);
-  const cardDragGen = cardDrag ? byCut.get(cardDrag.cut)?.find((item) => item.id === cardDrag.id) ?? null : null;
+  const cardDragGen = cardDrag ? cardOf(cardDrag.cut, cardDrag.id) ?? null : null;
   const dropHint = useMemo<DropHint | null>(
-    () => (cardDrag?.hint ? { cut: cardDrag.cut, track: cardDrag.hint.track, state: cardDrag.hint.state } : null),
+    () => (cardDrag?.hint ? { ...cardDrag.hint, cut: cardDrag.hint.into ?? cardDrag.cut } : null), // 강조 칸 = 도착 자리
     [cardDrag],
   );
 
@@ -866,6 +1028,8 @@ function EditTabInner({
   // 그 컷의 폴더 창에 붙일 표 — 넣은 트랙("V1 - 선택 카드") · 소스 클립 판("소스 L") · 우클릭해서 창을 연 카드("방금 누른 카드"),
   //  한 카드에 여럿이면 이어서 적는다(Jay 2026-10-14). 지금 뷰어에 보이는 것(타임라인의 그 클립·소스 판)과 누른 카드만 라임이고,
   //  창이 열릴 때 타임라인의 그 카드로 내려간다.
+  //  path = 자리 열쇠. 넣은 트랙 표는 문서의 그 자리 클립으로 만든다 — 창을 연 채 그 자리가 숨겨져도(배치에 없다) 표가 남는다(Codex 설계 4차).
+  //  '지금 보이는 것' 강조만 배치를 따른다.
   const cutMarks = useCallback((path: string, clicked: string | null) => {
     const slot = layout.cuts.find((item) => item.path === path);
     const lead = !slot ? null : view.cut === path ? view.clip : visibleClip(doc, slot, 0);
@@ -875,7 +1039,7 @@ function EditTabInner({
       parts.set(id, { labels: [...part.labels, label], lead: part.lead || isLead });
     };
     let focusId: string | null = null;
-    for (const clip of slot?.clips ?? []) {
+    for (const clip of doc.clips.filter((item) => slotOf(item) === path).sort((a, b) => a.track - b.track)) {
       const id = links.get(clipKey(clip))?.gen?.id ?? clip.gen; // job 으로 다시 이은 클립은 지금의 카드 id
       const isLead = !!lead && lead.gen === clip.gen;
       add(id, editMarkLabel(clip.track, t), isLead);
@@ -897,14 +1061,15 @@ function EditTabInner({
     stopBoth();
     if (view.cut !== path) seekPos({ cut: path, local: 0 });
     setPeekClicked(focusId ?? null);
+    setPeekSlot(isRepeatSlot(path) ? { docKey, key: path } : null);
     onOpenCutFolder({
       projectId: target.projectId, projectName: projects.find((item) => item.id === target.projectId)?.name ?? "",
-      path, ...cutMarks(path, focusId ?? null), ...(focusId ? { focusId } : null),
+      path: folderOf(path), ...cutMarks(path, focusId ?? null), ...(focusId ? { focusId } : null),
     });
-  }, [layout, target, stopBoth, view.cut, seekPos, cutMarks, onOpenCutFolder, projects]);
+  }, [layout, target, stopBoth, view.cut, seekPos, cutMarks, onOpenCutFolder, projects, docKey]);
   // 창이 떠 있는 동안 표를 살려 둔다 — 창에서 트랙 메뉴(휠 클릭)로 넣고 바꾸면 그 자리에서 표가 바뀐다. 글로 비교해, 내용이 바뀔
   //  때만 알린다(알릴 때마다 App 이 다시 그려지므로 객체로 비교하면 끝없이 돈다).
-  const peekMarks = peekPath ? JSON.stringify(cutMarks(peekPath, peekClicked).marks) : null;
+  const peekMarks = peekKey ? JSON.stringify(cutMarks(peekKey, peekClicked).marks) : null;
   useEffect(() => {
     if (peekMarks !== null) onPeekMarks(JSON.parse(peekMarks) as Record<string, CardMark>);
   }, [peekMarks, onPeekMarks]);
@@ -969,9 +1134,10 @@ function EditTabInner({
   //  앞 시퀀스의 컷이 남아 있는데 문서는 이미 새것이라, 거기 없는 컷이 새 문서에 '끈 컷'으로 적혔고, 다른 프로젝트에 같은 이름의 컷이
   //  있으면 재생헤드가 없는 그 컷이 꺼졌다(조작 규칙 46, Codex 코드 리뷰).
   const toggleCut = useCallback(() => {
+    if (inTail()) return; // V0 의 꼬리 — 지금 컷이 없다(posAt 은 내 마지막 컷으로 자른다)
     const here = posAt(layout, now())?.cut;
     if (here) commit({ type: "toggleCutOff", args: [here, autoOff(here)] });
-  }, [layout, now, commit, autoOff]);
+  }, [layout, now, commit, autoOff, inTail]);
   const toggleHideOff = useCallback(() => {
     commit({ type: "toggleHideOff", args: [] });
   }, [commit]);
@@ -983,8 +1149,8 @@ function EditTabInner({
   //  새로 최종이 된 것을 놓친다(Codex 코드 리뷰). 2,000건에서 잘린 목록은 받은 것 안에서 고른다.
   const listFresh = list.state === "ok" || list.state === "capped";
   const fillPicks = useMemo(() => (!listFresh ? [] : cuts.flatMap((path) => {
-    if (offCuts.has(path) || doc.clips.some((clip) => clip.cut === path)) return [];
-    const gens = byCut.get(path) ?? [];
+    if (offCuts.has(path) || doc.clips.some((clip) => slotOf(clip) === path)) return []; // 반복 자리는 늘 클립이 있다 — 첫 자리만 채운다
+    const gens = byCut.get(folderOf(path)) ?? [];
     const gen = gens.find((item) => item.is_final) ?? gens[0];
     return gen ? [{ cut: path, gen }] : [];
   })), [listFresh, cuts, offCuts, doc, byCut]);
@@ -1039,7 +1205,7 @@ function EditTabInner({
   const finalAll = (() => {
     if (!listMenu || !review) return null;
     const shown = layout.cuts.flatMap((slot) => slot.clips);
-    const live = shown.filter((clip) => !offCuts.has(clip.cut)); // 꺼 둔 컷의 클립은 뺀다
+    const live = shown.filter((clip) => !offCuts.has(slotOf(clip))); // 꺼 둔 컷(자리)의 클립은 뺀다
     const on = live.filter((clip) => clipIsOn(doc, clip));
     const found = new Map<string, Generation>();
     for (const clip of on) {
@@ -1072,7 +1238,7 @@ function EditTabInner({
       t("· 켜진 컷의 켜진 클립 {clips}개 기준 — 이미 최종인 {finals}개는 그대로 둡니다")
         .replace("{clips}", String(plan.clips)).replace("{finals}", String(plan.finals)),
       ...(skipped.length ? [`${t("· 빼는 것:")} ${skipped.join(" · ")}`] : []),
-      t("· 되돌리기(Ctrl+Z)로는 돌아가지 않습니다 — 풀려면 클립 우클릭의 '최종 선택'으로 하나씩 해제합니다"),
+      fillKeys(t("· 되돌리기({key})로는 돌아가지 않습니다 — 풀려면 클립 우클릭의 '최종 선택'으로 하나씩 해제합니다"), { key: hintOf("undo") }),
     ].join("\n");
     if (!window.confirm(asked)) return;
     setFinalBusy(true);
@@ -1081,12 +1247,21 @@ function EditTabInner({
 
   const fit = useCallback(() => {
     const width = scrollRef.current?.clientWidth ?? 0;
-    if (layout.total > 0 && width > 160) setZoom(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, (width - 140) / layout.total)));
-  }, [layout.total]);
+    const total = playLayout.total; // 다른 편집 보기 중이면 V0 끝까지
+    if (total > 0 && width > 160) setZoom(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, (width - 140) / total)));
+  }, [playLayout.total]);
   const zoomBy = (factor: number) => setZoom((value) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value * factor)));
 
   // 마크 인/아웃 — 재생헤드 자리에 찍는다. 편집 키라 언제나 타임라인 것이다(소스 판이 재생 키를 받고 있어도).
+  // V0 의 꼬리(내 끝 뒤)에서는 위치 편집(마크·북마크·D 의 지금 컷)을 하지 않는다 — posAt 이 내 마지막 컷으로 잘라 엉뚱한 곳에 찍는다.
+  //  막대 단추에서도 이 함수들을 부른다(단축키는 owns 거짓으로 넘긴다).
+  const tailRefused = () => {
+    if (!inTail()) return false;
+    flash(t("V0 끝 구간에서는 찍을 수 없습니다."));
+    return true;
+  };
   const markHere = (which: "markIn" | "markOut") => {
+    if (tailRefused()) return;
     const pos = posAt(layout, now());
     if (pos) commit({ type: "setMark", args: [layout, which, pos] });
   };
@@ -1095,6 +1270,7 @@ function EditTabInner({
   };
   // 북마크 — 재생헤드 자리에 이미 있으면 그 편집 창을 열고(다빈치: M 을 한 번 더), 없으면 넣는다.
   const bookmarkHere = () => {
+    if (tailRefused()) return;
     const found = markerAt(layout, bookmarks, now());
     if (found) {
       const box = headRef.current?.getBoundingClientRect();
@@ -1105,6 +1281,7 @@ function EditTabInner({
     if (!pos || commit({ type: "addMarker", args: [pos, ui.markerColor] }) === "none") flash(t("이 자리에 북마크를 넣지 못했습니다."));
   };
   const removeBookmarkHere = () => {
+    if (tailRefused()) return;
     const found = markerAt(layout, bookmarks, now());
     if (found) commit({ type: "removeMarker", args: [found.key] });
   };
@@ -1124,83 +1301,117 @@ function EditTabInner({
     if (next) seek(next.time);
   };
 
-  // 편집 키 — 글자 키는 물리 키(code)로 본다(한/영 상태와 무관). 실제로 쓴 키만 기본 동작을 막는다.
+  // Ctrl+R — 고른 클립 중 첫 영상 클립에 속도 막대를 켠다(켜져 있으면 끈다). 그림·잠긴 트랙은 까닭을 알린다(길이 조절 창과 같다).
+  const toggleRetime = (picked: string[]) => {
+    if (retime) return setRetime(null);
+    const shown = layout.cuts.flatMap((slot) => slot.clips);
+    const video = picked.map((key) => shown.find((clip) => clipKey(clip) === key))
+      .find((clip) => clip && (links.get(clipKey(clip))?.gen?.assets[0]?.type ?? clip.kind) !== "image");
+    if (!video) return flash(fillKeys(t("속도를 바꿀 영상 클립을 고른 뒤 {key} 을 누르세요."), { key: hintOf("retime") || t("속도 막대 단축키") }));
+    if (doc.tracksLocked.includes(video.track)) return flash(t("잠긴 트랙의 클립은 속도를 바꿀 수 없습니다."));
+    setRetime({ key: clipKey(video), rev });
+  };
+
+  // 편집 키 — 지정 지도(lib/editShortcuts: 기본값 + 개인 지정)로 동작을 찾고 아래 표가 처리한다. 순서·규칙의 정본은
+  //  docs/status/편집탭_단축키설정_설계_2026-10-23.md(설계 3). 글자 키는 물리 키(code)로 본다(한/영 상태와 무관). 실제로 쓴 키만 기본 동작을 막는다.
+  //  처리 함수는 이벤트의 수식키를 다시 읽지 않는다 — 이동량·방향은 동작이 정한다(1프레임/1초, 편집점/북마크는 따로인 동작).
+  //  owns = 그 동작이 지금 이 키를 쓰는가 — 아니면 키를 먹지 않고 끝낸다(다른 동작을 다시 찾지 않는다 — 고른 것 없는 Alt+↑ 는 일반 ↑ 로 가지 않는다).
+  //  길게 눌러 반복된 keydown — once 동작(토글·찍기·셔틀)은 첫 누름에만 한다(키는 먹는다). 반복마다 다시 하면 재생/정지·비활성·트림 모드가
+  //  뒤집히고, 재생 중의 I·O·M 은 지나가는 프레임마다 찍히며, L·J 는 배속이 순식간에 끝까지 오른다(조작 규칙 38).
+  const keyActions: Partial<Record<EditActionId, { owns?: () => boolean; run: () => void }>> = {
+    play: { run: () => keys.toggle() },
+    shuttleFwd: { run: () => keys.shuttle(1) },
+    stop: { run: () => keys.stop() },
+    shuttleBack: { run: () => keys.shuttle(-1) },
+    frameNext: { run: () => keys.stepFrames(1) },
+    framePrev: { run: () => keys.stepFrames(-1) },
+    secNext: { run: () => keys.stepFrames(EDIT_FPS) },
+    secPrev: { run: () => keys.stepFrames(-EDIT_FPS) },
+    editNext: { run: () => keys.stepEdit(1) },
+    editPrev: { run: () => keys.stepEdit(-1) },
+    home: { run: () => keys.edge(false) },
+    end: { run: () => keys.edge(true) },
+    rangeLoop: { run: toggleRangeLoop },
+    linked: { run: toggleDynamic }, // 동작 열쇠 'linked' 는 개인 지정 키가 그 이름으로 적혀 있어 그대로 둔다
+    undo: { run: () => edit.undo() },
+    redo: { run: () => edit.redo() },
+    // 보이는 것만 — 숨긴 컷의 클립은 고르지 않는다
+    selectAll: { run: () => setSelected(new Set(doc.clips.filter((clip) => !doc.tracksLocked.includes(clip.track)).map(clipKey)
+      .filter((key) => shownKeys.has(key)))) },
+    remove: { owns: () => selected.size > 0, run: () => act({ type: "removeClips", args: [[...selected]] }) },
+    // D = 비활성(앱 공통) — 고른 클립이 있으면 그 클립, 없으면 재생헤드가 있는 컷(폴더)
+    toggleOff: { owns: () => selected.size > 0 || (!!cut && !inTail()),
+      run: () => (selected.size ? act({ type: "toggleClipsOff", args: [[...selected]] }) : toggleCut()) },
+    clipsUp: { owns: () => selected.size > 0, run: () => act({ type: "shiftClips", args: [[...selected], 1] }) },
+    clipsDown: { owns: () => selected.size > 0, run: () => act({ type: "shiftClips", args: [[...selected], -1] }) },
+    retime: { run: () => toggleRetime([...selected]) }, // 대상이 없어도 까닭을 알리고 키를 먹는다(브라우저 새로고침을 막는다)
+    // 마크 인/아웃·북마크(다빈치의 키) — I·O = 찍기, Alt = 지우기, Shift = 그 자리로
+    // V0 의 꼬리에서는 위치 편집 키를 넘긴다(owns 거짓 — 키를 먹지 않는다)
+    markIn: { owns: () => !inTail(), run: () => markHere("markIn") },
+    markOut: { owns: () => !inTail(), run: () => markHere("markOut") },
+    clearIn: { run: () => clearMarks("markIn") },
+    clearOut: { run: () => clearMarks("markOut") },
+    clearBoth: { run: () => clearMarks("markIn", "markOut") },
+    goIn: { run: () => { if (marks.in !== null) seek(marks.in); } },
+    goOut: { run: () => { if (marks.out !== null) seek(marks.out); } },
+    bookmark: { owns: () => !inTail(), run: bookmarkHere },
+    bookmarkRemove: { owns: () => !inTail(), run: removeBookmarkHere }, // 재생 중에 길게 누르면 지나가는 북마크가 줄줄이 지워졌다(once)
+    markerPrev: { run: () => stepMarker(-1) },
+    markerNext: { run: () => stepMarker(1) },
+    zoomIn: { run: () => zoomBy(1.25) },
+    zoomOut: { run: () => zoomBy(0.8) },
+    fit: { run: fit },
+    laneUp: { run: () => laneRef.current?.(1) },
+    laneDown: { run: () => laneRef.current?.(-1) },
+  };
   const onKey = (event: KeyboardEvent) => {
-    // 위에 창·메뉴가 떠 있으면 키는 그쪽 것이다(lib/keyGate) — 풀의 보기·정렬 메뉴, 뷰어의 '무엇을 볼지' 메뉴가 뜬 채 Delete·Space 가
+    // 위에 창·메뉴가 떠 있으면 키는 그쪽 것이다(lib/keyGate) — 풀의 보기·정렬 메뉴, 뷰어의 '무엇을 볼지' 메뉴, 단축키 창이 뜬 채 Delete·Space 가
     //  뒤의 클립·재생에 먹었다(2026-10-10 점검).
     if (!keysActive || backgroundKeysBlocked() || isTyping(event.target)) return;
+    const input = keySlot(event);
     // 다른 처리가 이미 쓴 키는 건드리지 않는다. Ctrl+A 만 예외 — 앱이 '입력칸 밖 Ctrl+A 는 화면 글자를 긁지 않게' 늘 막아 두므로
-    //  (lib/keyGate.usePageSelectAllGuard) 그것은 '쓴 키'가 아니다.
-    const selectAll = (event.ctrlKey || event.metaKey) && !event.altKey && event.code === "KeyA";
+    //  (lib/keyGate.usePageSelectAllGuard) 그것은 '쓴 키'가 아니다. 예외는 물리 입력에 붙인다 — 그 입력이 지금 어떤 편집 동작에 지정돼 있을 때.
+    const selectAll = (event.ctrlKey || event.metaKey) && !event.altKey && event.code === "KeyA"
+      && !!input && !reservedOf(input) && !!findKeyAction(input);
     if (event.defaultPrevented && !selectAll) return;
     const from = event.target as HTMLElement | null;
     // 상단바 단추에 남은 초점은 '다른 창'이 아니다 — 관리자 창·알림·계정 메뉴를 Esc 로 닫으면 초점이 그 단추에 남아 ←·→·L 이 안 먹었다
     //  (2026-10-10 재실측 3/3). 라이브러리 격자의 '초점 잃은 키'(lib/keyGate.useLooseKeys)와 같은 규칙이다.
     const onTopbar = !!from?.matches?.("button, a") && !!from.closest(".topbar");
     if (from && from !== document.body && !rootRef.current?.contains(from) && !onTopbar) return; // 다른 창 안에서 난 키
-    const { code, key } = event;
     const mod = event.ctrlKey || event.metaKey;
-    const picked = [...selected];
-    // 길게 눌러 반복된 keydown — 토글·찍기·셔틀은 첫 누름에만 한다(기본 동작은 막는다). 반복마다 다시 하면 재생/정지·비활성·트림 모드가
-    //  뒤집히고, 재생 중의 I·O·M 은 지나가는 프레임마다 찍히며, L·J 는 배속이 순식간에 끝까지 오른다(조작 규칙 38).
-    //  반복이 뜻인 것(프레임·편집점 이동, 되돌리기, 확대·축소, 트랙 옮기기)은 그대로 둔다.
-    const once = !event.repeat;
-    let used = true;
-    if (mod && event.altKey) used = false;
-    else if (mod && code === "KeyZ") (event.shiftKey ? edit.redo : edit.undo)();
-    else if (mod && code === "KeyA") {
-      // 보이는 것만 — 숨긴 컷의 클립은 고르지 않는다
-      setSelected(new Set(doc.clips.filter((clip) => !doc.tracksLocked.includes(clip.track)).map(clipKey)
-        .filter((key) => shownKeys.has(key))));
-    } else if (mod && (key === "=" || key === "+")) zoomBy(1.25);
-    else if (mod && key === "-") zoomBy(0.8);
-    else if (mod) used = false;
-    else if (event.altKey && key === "ArrowUp" && picked.length) act({ type: "shiftClips", args: [picked, 1] });
-    else if (event.altKey && key === "ArrowDown" && picked.length) act({ type: "shiftClips", args: [picked, -1] });
-    // 마크 인/아웃·북마크(다빈치의 키) — I·O = 찍기, Alt = 지우기, Shift = 그 자리로
-    else if (event.altKey && code === "KeyI") clearMarks("markIn");
-    else if (event.altKey && code === "KeyO") clearMarks("markOut");
-    else if (event.altKey && code === "KeyX") clearMarks("markIn", "markOut");
-    else if (event.altKey && code === "KeyM") { if (once) removeBookmarkHere(); } // 재생 중에 길게 누르면 지나가는 북마크가 줄줄이 지워졌다
-    else if (event.altKey && code === "Slash") { if (once) toggleRangeLoop(); }
-    else if (event.altKey) used = false;
-    else if (event.shiftKey && code === "KeyZ") fit();
-    else if (event.shiftKey && code === "KeyI") { if (marks.in !== null) seek(marks.in); }
-    else if (event.shiftKey && code === "KeyO") { if (marks.out !== null) seek(marks.out); }
-    else if (event.shiftKey && key === "ArrowUp") stepMarker(-1);
-    else if (event.shiftKey && key === "ArrowDown") stepMarker(1);
-    else if (code === "Space") {
-      // 초점이 있는 단추의 Space 는 그 단추 것 — Tab 으로 옮겨 간 초점일 때만(조작 규칙 8, lib/keyGate.focusCameByTab). 마우스로 누른
-      //  뒤에 남은 초점은 화면 것이다: 상단바 단추에 남은 초점의 Space 가 방금 Esc 로 닫은 창을 다시 열었고, Tab 으로 간 공용 줄의 단추를
-      //  두고 마우스로 ▶ 를 누른 뒤의 Space 가 멈춤 대신 그 단추(처음으로)를 눌렀다(Codex 39회차 — 편집 탭의 누름은 초점을 옮기지 않는다).
-      if (from?.closest("button, a, [role=button]") && focusCameByTab()) used = false;
-      else if (once) keys.toggle();
-    } else if (code === "KeyL") { if (once) keys.shuttle(1); }
-    else if (code === "KeyJ") { if (once) keys.shuttle(-1); }
-    else if (code === "KeyK") keys.stop();
-    else if (key === "ArrowLeft") keys.stepFrames(event.shiftKey ? -EDIT_FPS : -1);
-    else if (key === "ArrowRight") keys.stepFrames(event.shiftKey ? EDIT_FPS : 1);
-    else if (key === "ArrowUp") keys.stepEdit(-1);
-    else if (key === "ArrowDown") keys.stepEdit(1);
-    else if (key === "Home") keys.edge(false);
-    else if (key === "End") keys.edge(true);
-    else if ((key === "Delete" || key === "Backspace") && picked.length) act({ type: "removeClips", args: [picked] });
-    // D = 비활성(앱 공통) — 고른 클립이 있으면 그 클립, 없으면 재생헤드가 있는 컷(폴더)
-    else if (code === "KeyD" && picked.length) { if (once) act({ type: "toggleClipsOff", args: [picked] }); }
-    else if (code === "KeyD" && cut) { if (once) toggleCut(); }
-    else if (code === "KeyI") { if (once) markHere("markIn"); }
-    else if (code === "KeyO") { if (once) markHere("markOut"); }
-    else if (code === "KeyM") { if (once) bookmarkHere(); }
-    else if (code === "KeyW") { if (once) toggleLinked(); }
-    else if (key === "Escape" && picked.length && !isKeyHandled(event)) {
+    if (mod && event.altKey) return;
+    // Esc(고정 — 지정 표 밖): 속도 막대부터 끄고(고른 것은 그대로 — 다음 Esc 가 푼다), 아니면 고르기를 푼다. Shift+Esc 도 닿는다.
+    if (event.key === "Escape") {
+      if (mod || event.altKey || isKeyHandled(event)) return;
+      if (!retime && !selected.size) return;
       markKeyHandled(event); // 이 Esc 는 여기서 썼다 — 같은 키로 다른 것까지 닫히지 않게(lib/keyHandled)
-      setSelected(new Set());
+      event.preventDefault();
+      if (retime) setRetime(null);
+      else setSelected(new Set());
+      return;
     }
-    else used = false;
-    if (used) event.preventDefault();
+    if (!input || reservedOf(input)) return; // 예약 입력은 찾지 않는다(Ctrl+Shift+R 이 Shift 같음 대체로 동작에 닿지 않게)
+    const id = findKeyAction(input);
+    const action = id && keyActions[id];
+    if (!id || !action) return;
+    // 초점이 있는 단추의 Space 는 그 단추 것 — Tab 으로 옮겨 간 초점일 때만(조작 규칙 8, lib/keyGate.focusCameByTab). 마우스로 누른
+    //  뒤에 남은 초점은 화면 것이다: 상단바 단추에 남은 초점의 Space 가 방금 Esc 로 닫은 창을 다시 열었고, Tab 으로 간 공용 줄의 단추를
+    //  두고 마우스로 ▶ 를 누른 뒤의 Space 가 멈춤 대신 그 단추(처음으로)를 눌렀다(Codex 39회차 — 편집 탭의 누름은 초점을 옮기지 않는다).
+    //  입력 키의 성질이다 — Space 가 어느 동작에 지정돼 있든 양보한다.
+    if (event.code === "Space" && from?.closest("button, a, [role=button]") && focusCameByTab()) return;
+    if (action.owns && !action.owns()) return;
+    event.preventDefault();
+    if (actionDef(id).once && event.repeat) return;
+    action.run();
   };
   const onKeyRef = useRef(onKey);
   onKeyRef.current = onKey;
+  // 지금 지정된 키로 만드는 단추 글 — 기본값이면 전과 같은 글이다
+  const dynamicText = fillKeys(t("다이나믹 재생 모드 ({key}) — 뷰어를 한 창으로: 멈추면 가장 가까운 편집점의 앞 컷 | 뒤 컷 · 재생은 한 화면 · {nav} 편집점"),
+    { key: hintOf("linked"), nav: pairHint("editPrev", "editNext") });
+  const bookmarkText = fillKeys(t("북마크 ({key}) · 앞/뒤 북마크로 {nav} · 지우기 {remove}"),
+    { key: hintOf("bookmark"), nav: pairHint("markerPrev", "markerNext"), remove: hintOf("bookmarkRemove") });
   useEffect(() => {
     const listener = (event: KeyboardEvent) => onKeyRef.current(event);
     window.addEventListener("keydown", listener);
@@ -1222,6 +1433,28 @@ function EditTabInner({
   const moveClip = useCallback((key: string, track: number, startedRev: number) => {
     act({ type: "moveClipToTrack", args: [key, track] }, { rev: startedRev });
   }, [act]);
+  // 클립을 가로로 끌어 컷 경계에 놓았다(Jay 2026-10-23 ⑤ — 옮기기). 자리째 옮기면 열쇠가 그대로고, 새 자리로 옮기면 열쇠가 바뀐다 —
+  //  고른 것은 바뀐 뒤에만(done) 새 열쇠로 바꾼다.
+  const moveClipToSlot = useCallback((key: string, before: string | null, track: number, startedRev: number) => {
+    const clip = doc.clips.find((item) => clipKey(item) === key);
+    if (!clip) return;
+    const id = newSlotId();
+    const moved = soleRepeatClip(doc, key) ? key : clipKey({ cut: clip.cut, slot: id, gen: clip.gen });
+    if (act({ type: "moveClipToSlot", args: [cuts, key, before, track, id] }, { rev: startedRev }) !== "done" || moved === key) return;
+    setSelected((prev) => (prev.has(key) ? new Set([...prev].map((item) => (item === key ? moved : item))) : prev));
+  }, [act, cuts, doc]);
+  // 클립을 가로로 끌어 같은 폴더의 다른 자리 몸통에 놓았다(Jay 2026-10-26 — 원래 자리에 다시 쌓기). 찬 칸이면 맞바꿈 — 두 클립 모두 자리 열쇠가
+  //  바뀌므로 고른 것은 바뀐 뒤에만(done) 둘 다 새 열쇠로.
+  const moveClipIntoSlot = useCallback((key: string, target: string, track: number, startedRev: number) => {
+    const clip = doc.clips.find((item) => clipKey(item) === key);
+    if (!clip) return;
+    const other = doc.clips.find((item) => slotOf(item) === target && item.track === track);
+    const renamed = new Map([[key, clipKey({ ...slotFields(target), gen: clip.gen })]]);
+    if (other) renamed.set(clipKey(other), clipKey({ ...slotFields(slotOf(clip)), gen: other.gen }));
+    if (act({ type: "moveClipIntoSlot", args: [key, target, track] }, { rev: startedRev }) !== "done") return;
+    setSelected((prev) => ([...prev].some((item) => renamed.has(item)) ? new Set([...prev].map((item) => renamed.get(item) ?? item)) : prev));
+  }, [act, doc]);
+  const nameOf = (clip: { cut: string; slot?: string }) => labels.get(slotOf(clip)) ?? clip.cut.slice(clip.cut.lastIndexOf("/") + 1);
   const toggleTrackList = useCallback((which: "tracksOff" | "tracksLocked", track: number) => {
     commit({ type: "toggleTrack", args: [which, track] });
   }, [commit]);
@@ -1265,36 +1498,62 @@ function EditTabInner({
   const needWorkspace = !!target && !allWorkspaces && !editWorkspaceReady(workspace);
   const poolNotice = !target ? t("폴더를 고르면 그 컷에 공유된 생성물이 여기에 보입니다.")
     : needWorkspace ? t("워크스페이스를 확인한 뒤 공유물을 표시합니다.") : !cut ? t("컷이 없습니다.") : null;
+  // 막대에 붙던 긴 경고 → 화면 위 알림 줄(Jay 2026-10-24 — Resolve 결과 알림과 같은 자리·모양, ✕ 로 닫기, 단추는 알림 안 글자 단추).
+  //  '저장 안 됨' 알약과 뷰어 위의 '편집을 멈췄습니다' 경고는 그대로다(앞은 편집마다 켜졌다 꺼지고, 뒤는 해결 단추가 달린 막힘이다).
+  const backupWarn = useEditBackupWarn(docKey);
+  useStateNotices([
+    ...(share.error ? [{ key: `share:${share.error}`, text: t(SHARE_ERROR_TEXT[share.error]) }] : []),
+    ...(edit.bad ? [{ key: "bad", text: `${t("저장된 편집을 읽지 못했습니다")} — ${t("편집을 시작하면 옛 내용은 따로 보관한 뒤 새로 저장합니다.")}` }] : []),
+    ...(backupWarn ? [{
+      key: `backup:${backupWarn.state}`, text: t(backupWarn.text), action: { label: t("백업 보기"), run: () => setBackupView(archiveContext) },
+    }] : []),
+    ...(needWorkspace ? [{
+      key: "workspace", text: t("워크스페이스를 확인한 뒤 공유물을 표시합니다."),
+      action: { label: t("모든 워크스페이스 보기"), run: () => setAllIn((allWorkspacesIn = workspaceKey)) },
+    }] : []),
+    ...(!needWorkspace && list.state === "error" ? [{
+      key: "list", text: t("공유 목록을 받지 못했습니다."), title: list.error ?? undefined, action: { label: t("다시 시도"), run: list.reload },
+    }] : []),
+    ...(!needWorkspace && list.state === "capped" ? [{ key: "capped", text: t("최대 2,000건까지만 표시합니다.") }] : []),
+  ], onNotices);
   const filled = layout.cuts.filter((item) => item.clips.length).length;
   const genDetail = (gen: Generation | null | undefined) => (gen ? [gen.creator_name || gen.worker_name, gen.model,
     gen.assets[0]?.type === "video" ? generationListMeta(gen.params ?? {}).duration : null].filter(Boolean).join(" · ") : "");
   const detailOf = (clip: SlotClip | null) => genDetail(clip ? links.get(clipKey(clip))?.gen : null);
-  const cutLabel = slot ? slot.path.replace(/\//g, " / ") : "";
+  const cutLabel = slot ? slotTitle(slot).replace(/\//g, " / ") : "";
   const firstSolo = slots.find((mode) => typeof mode === "number");
-  // 판 하나의 머리·자리 — place = 판 자리(안 보이는 판은 null: 요소는 남고 숨는다). 키를 받는 판은 시계가 둘 이상 보일 때만 표시한다
-  //  (다이나믹 재생 모드면 모든 판이 받는다).
+  // 다른 편집 보기의 V0(편집 공유) — 줄·판·메뉴. 못 쓰면 안내 글(판은 타임라인으로 바꾸지 않는다 — 설계 §6)
+  const [v0Menu, setV0Menu] = useState<{ x: number; y: number } | null>(null);
+  const v0Notice = !share.ui.others ? t("다른 편집 보기가 꺼져 있습니다") : !share.ui.owner ? t("V0 — 작업자 선택")
+    : share.readError ? t(SHARE_ERROR_TEXT[share.readError]) : share.v0 ? (share.v0.share ? null : t("V0 을 읽지 못했습니다")) : t("V0 을 받는 중…");
+  const v0Lane: V0Lane | null = share.ui.others ? {
+    name: share.ownerName ?? "", color: share.ui.color, share: v0Share, links: v0Links, capped: list.state === "capped", notice: v0Notice,
+    viewing: slots.includes("other"), onMenu: (x, y) => setV0Menu({ x, y }),
+    onView: () => setModeAt(1, ui.views[1] === "other" ? "timeline" : "other"), // 오른쪽(싱글이면 그 판)을 V0 ↔ 타임라인
+  } : null;
+  // 판 하나의 머리·자리 — place = 판 자리(안 보이는 판은 null: 요소는 남고 숨는다). 키를 받는 판은 시계가 둘 이상 보일 때만 표시한다.
+  // 비디오 클린 피드(Jay 2026-10-23, 다빈치) — 고른 모니터에 창을 **누른 그 순간** 연다(팝업 차단·전체 화면은 사용자 누름이 있어야 한다).
+  //  다른 모니터를 고르면 새 창을 열고 앞 창은 그 화면 부품이 사라지며 닫는다. 기억하지 않는다 — 편집 탭을 다시 열면 '사용 안 함'.
+  //  켜 둔 동안 이 앱에 있을 때만 창이 뜨고 전체 화면으로 — useCleanFeed(다빈치처럼, Jay 2026-10-23).
+  //  로컬 허브 방식(전용 키오스크 창 — 처음부터 전체 화면·숨김/보임, Jay 'd')이 되는 PC 면 그쪽으로, 아니면 위 팝업 방식(useCleanFeed 가 고른다).
+  const cleanFeed = useCleanFeed(() => flash(t("클린 피드 창을 열지 못했습니다 — 이 사이트의 팝업을 허용해 주세요.")), {
+    layout, doc, sourceOf, now, playing: view.playing, rate: view.rate, authKey, flash: (message) => flash(t(message)),
+    limit: rangeLoop && marks.band ? marks.band.to : playLayout.total,
+  });
+  const feed = cleanFeed.feed;
   const pane = (place: 0 | 1 | null, mode: ViewMode) => {
     const order = place === null ? -1 : orderOf(place);
     return {
-      order, mode, options: viewOptions, ...(place !== null && { place }),
+      // 다이나믹 재생 모드 — 이 판이 뷰어 자리 전체다. 판을 고르거나 나눌 것이 없다(끄기는 무대의 ⊗·W·막대의 단추)
+      order, mode, options: dynamic ? [{ value: "timeline" as const, label: t("다이나믹 재생 모드") }] : viewOptions, ...(place !== null && { place }),
       onMode: (next: ViewMode) => place !== null && setModeAt(place, next),
-      // 싱글로 가면 다이나믹 재생 모드도 끈다 — 남겨 두면 단추는 켜짐인데 키는 한 판만 받고, 다음 W 는 그것을 끄기만 했다(Codex 37회차)
-      dualButton: order >= 0 && order === slots.length - 1 ? { dual: ui.dual, onToggle: () => {
-        if (ui.dual) setLinked(false);
-        patchUi({ dual: !ui.dual });
-      } } : null,
-      active: place !== null && multi && (linkedOn || keyPlace === place),
+      dualButton: !dynamic && order >= 0 && order === slots.length - 1 ? { dual: ui.dual, onToggle: () => patchUi({ dual: !ui.dual }) } : null,
+      // 비디오 클린 피드(Jay 2026-10-23) — 싱글/듀얼 단추 왼쪽
+      feed: order >= 0 && order === slots.length - 1 ? <EditCleanFeedButton screen={cleanFeed.screen} onPick={cleanFeed.pick} onOpen={cleanFeed.probe} /> : null,
+      active: place !== null && multi && keyPlace === place,
       onActivate: () => place !== null && setActivePlace(place),
-      bare: oneBar, // 다이나믹 재생 모드 — 단추 줄은 두 판 아래의 공용 줄(.ed-linkbar)로
     };
   };
-  // 다이나믹 재생 모드의 공용 줄(Jay 2026-10-14 — "플레이 되는게 예전 트림처럼 하나로 나온다 … 소리는 2개 조절할수 있게", 모의 그림
-  //  mock_linked_bar 승인): 판마다의 단추 줄 대신 두 판 아래에 하나 — 가운데 = 재생 단추(보이는 시계 모두 — together), 양 끝 = 왼쪽 판(L)·
-  //  오른쪽 판(R)의 소리. 재생바는 판마다 남는다(시작점을 따로 맞추는 길). 반복(⟲)은 보이는 시계들의 반복을 같이 켜고 끈다(타임라인 =
-  //  loop · 소스 = loopSrc — 다 켜져 있어야 켜짐). 재생 단추 그림은 하나라도 돌면 '멈춤'(together.toggle 이 그때 모두 멈춘다).
-  const loopKeys = [...new Set(places.map((place) => (isSourceView(ui.views[place]) ? "loopSrc" : "loop")))];
-  const linkLoop = loopKeys.every((key) => ui[key]);
-  const linkPlaying = shownEngines.some(({ engine }) => engine.view.playing);
   // 배속 단추(Jay 2026-10-08) — 누를 때마다 다음 값(모든 판이 같이 쓴다). 소리 크기(Jay 2026-10-14)는 판 자리마다 따로다(오후 — "따로따로
   //  조절이 되어야한다"). 둘 다 이 브라우저에 남는다.
   const speedPane = (place: 0 | 1) => ({
@@ -1302,18 +1561,18 @@ function EditTabInner({
     onSpeed: () => patchUi({ speed: EDIT_SPEEDS[(EDIT_SPEEDS.indexOf(ui.speed) + 1) % EDIT_SPEEDS.length] }),
     volume: ui.volumes[place],
     onVolume: (volume: number) => patchUi({ volumes: place === 0 ? [volume, ui.volumes[1]] : [ui.volumes[0], volume] }),
-    volumeMemory: volumeMemory[place], // '끄기 전 크기' — 판의 줄과 공용 줄이 같이 쓴다(모드를 오가도 남게)
+    volumeMemory: volumeMemory[place], // '끄기 전 크기' — 판 자리마다(보는 것을 바꿔 판 부품이 새로 생겨도 남게)
   });
   const clockPane = (place: 0 | 1) => ({ // 타임라인의 시계를 쓰는 판(타임라인·한 트랙만)이 같이 받는 것
     ...speedPane(place),
-    playing: view.playing, rate: view.rate, total: layout.total, marks: NO_MARKS, io: marks, flags, registerPaint,
-    controls: controlsOf(playback, layout.total),
+    playing: view.playing, rate: view.rate, total: playLayout.total, marks: NO_MARKS, io: marks, flags, registerPaint,
+    controls: controlsOf(playback, playLayout.total),
     loop: ui.loop, onLoop: () => patchUi({ loop: !ui.loop }), empty,
   });
   const tlPlace = tlShown ? places[tlOrder] : null;
   // 아래 타임라인·막대를 누르면 재생 키는 타임라인의 시계를 쓰는 판의 것이다(그런 판이 있으면)
   const activateClock = () => {
-    const place = places.find((item) => !isSourceView(ui.views[item]));
+    const place = places.find((item) => !isSourceView(viewAt(item)));
     if (place !== undefined) setActivePlace(place);
   };
 
@@ -1339,8 +1598,14 @@ function EditTabInner({
         onReload={reloadTree}
         onGrabFocus={grabFocus}
         onFolderAction={onFolderAction}
+        filter={{
+          open: ui.filterOpen, onToggle: () => patchUi({ filterOpen: !ui.filterOpen }),
+          value: ui.poolFilter, onChange: (poolFilter) => patchUi({ poolFilter }),
+          creators: facets.creators, autoTags: facets.autoTags,
+        }}
       /></div>
-      <main className="main ed-root" ref={rootRef} tabIndex={-1} onMouseDownCapture={(event) => {
+      <main className="main ed-root" ref={rootRef} tabIndex={-1}
+        style={tlHeight === null ? undefined : ({ "--ed-tl-h": `${tlHeight}px` } as CSSProperties)} onMouseDownCapture={(event) => {
         grabFocus();
         // 입력칸(풀의 검색·크기)에 초점이 남은 채 타임라인·뷰어를 누르면 키를 편집 화면으로 돌려받는다 — 화면 안의 단추들은 초점을
         //  가져가지 않아(mousedown 을 막는다), 안 돌려받으면 Space·J·K·L 이 계속 그 입력칸으로 갔다(2026-10-10 점검).
@@ -1357,303 +1622,294 @@ function EditTabInner({
         // 키보드로 실행한 click 도 같다(Tab 으로 닿은 컷 이름·막대 단추의 Enter) — mousedown 에만 걸려 있어 컷은 옮겨 가는데 이어 누른
         //  L·→ 는 앞서 고른 소스를 움직였다(조작 규칙 51). 뷰어 판은 이미 click 에서도 받는다.
         if ((event.target as HTMLElement).closest(".ed-tl, .ed-bar")) activateClock();
+      }} onPointerUp={(event) => {
+        // 풀의 폭 손잡이는 끌 때 초점을 받는다(방향키로도 폭을 바꾸게) — 놓으면 편집 화면으로 돌려준다. 안 돌려주면
+        //  ←·→ 가 프레임 이동이 아니라 풀 폭을 바꾼다(2026-10-08 격리 실측). Tab 으로 손잡이에 간 키보드 조절은 그대로다.
+        if ((event.target as HTMLElement).classList.contains("sidebar-resize-handle")) rootRef.current?.focus({ preventScroll: true });
       }}>
-        {/* 풀의 폭 손잡이는 끌 때 초점을 받는다(방향키로도 폭을 바꾸게) — 놓으면 편집 화면으로 돌려준다. 안 돌려주면
-            ←·→ 가 프레임 이동이 아니라 풀 폭을 바꾼다(2026-10-08 격리 실측). Tab 으로 손잡이에 간 키보드 조절은 그대로다. */}
-        <div className={"ed-top" + (oneBar ? " ed-top-linked" : "")} onPointerUp={(event) => {
-          if ((event.target as HTMLElement).classList.contains("sidebar-resize-handle")) rootRef.current?.focus({ preventScroll: true });
-        }}>
-          {/* 폭은 프로젝트 칸처럼 끌어서 바꾼다(같은 손잡이 — 저장 키와 범위만 다르다) */}
-          <ResizableSidebar className="ed-pool-side" widthKey="ch.editTimeline.poolWidth" min={240} max={720} base={392}>
-            <EditPool
-              title={slot ? slot.path.replace(/\//g, " / ") : ""}
-              items={poolItems}
-              picked={pickedIds}
-              ui={ui}
-              onUi={patchUi}
-              authKey={authKey}
-              listState={list.state}
-              listStartedAt={list.startedAt}
-              listSettledSeq={list.settledSeq}
-              notice={poolNotice}
-              onPick={pickInPool}
-              onPickMany={pickManyInPool}
-              onOpen={openGen}
-              onCompare={openCompare}
-              resolve={resolve}
-              onClearPicked={clearPool}
-              onMenu={(gen, x, y) => openMenu(gen, cut, x, y)}
-              sideOpen={sideOpen}
-              onToggleSide={() => patchUi({ sideHidden: sideOpen })}
-              onFolder={(gen) => cut && openCut(cut, gen.id)}
-              onCardDrag={onCardDrag}
-              cardActions={cardActions}
-            />
-          </ResizableSidebar>
-          {/* 타임라인 판 — 안 보일 때도 붙어 있다(엔진의 영상 요소를 떼면 안 된다). 안 보이면 소리를 끈다. */}
-          <EditViewer
-            {...pane(tlPlace, "timeline")}
-            {...clockPane(tlPlace ?? 1)}
-            shown={view}
-            videoRef={tlVideo.front}
-            spareRef={tlVideo.spare}
-            muted={!!doc.muted || !tlShown}
-            label={cutLabel && view.clip ? `${cutLabel} · V${view.clip.track}` : cutLabel}
-            detail={detailOf(view.clip)}
+        {/* 미디어 풀 — 왼쪽에 위에서 아래까지 한 칸(Jay 2026-10-23, 다빈치). 폭은 프로젝트 칸처럼 끌어서 바꾼다(같은 손잡이 — 저장 키와 범위만 다르다) */}
+        <ResizableSidebar className="ed-pool-side" widthKey="ch.editTimeline.poolWidth" min={240} max={720} base={392}>
+          <EditPool
+            title={slot ? slotTitle(slot).replace(/\//g, " / ") : ""}
+            items={poolItems}
+            picked={pickedIds}
+            ui={ui}
+            onUi={patchUi}
+            authKey={authKey}
+            listState={list.state}
+            listStartedAt={list.startedAt}
+            listSettledSeq={list.settledSeq}
+            notice={poolNotice}
+            onPick={pickInPool}
+            onPickMany={pickManyInPool}
+            onOpen={openGen}
+            onCompare={openCompare}
+            resolve={resolve}
+            onClearPicked={clearPool}
+            onMenu={(gen, x, y) => openMenu(gen, cut, x, y)}
+            sideOpen={sideOpen}
+            onToggleSide={() => patchUi({ sideHidden: sideOpen })}
+            onFolder={(gen) => cut && openCut(cut, gen.id)}
+            onCardDrag={onCardDrag}
+            cardActions={cardActions}
+            pass={poolPass}
           />
-          {/* 소스 판 — 판 자리마다 하나(useSourcePane): 그 판이 고른 것(소스 클립) 또는 이 컷의 풀 목록을 이은 것(소스 테이프). 마찬가지로 붙어 있다. */}
-          {([0, 1] as const).map((place) => {
-            const pick = srcPanes[place];
-            const mode = srcModeOf(place);
-            return (
-              <EditViewer
-                key={`src${place}`}
-                {...pane(mode ? place : null, mode ?? "source")}
-                {...speedPane(place)}
-                shown={pick.play.view}
-                videoRef={pick.video.front}
-                spareRef={pick.video.spare}
-                muted={false}
-                playing={pick.play.view.playing}
-                rate={pick.play.view.rate}
-                total={pick.src.layout.total}
-                marks={pick.starts}
-                registerPaint={pick.registerPaint}
-                controls={controlsOf(pick.play, pick.src.layout.total)}
-                loop={ui.loopSrc}
-                onLoop={() => patchUi({ loopSrc: !ui.loopSrc })}
-                label={mode === "tape" && pick.shown ? `${cutLabel} · ${pick.gens.indexOf(pick.shown) + 1}/${pick.gens.length}` : ""}
-                detail={genDetail(pick.shown)}
-                empty={pick.gens.length ? null
-                  : mode === "tape" ? t("이 컷 폴더에 공유된 생성물이 없습니다.") : t("미디어 풀에서 생성물을 고르면 여기에서 봅니다.")}
-              />
-            );
-          })}
-          {/* 한 트랙만 보는 판 — 타임라인의 시계를 따라간다. 타임라인 판이 없으면 첫 번째 것이 소리를 낸다. */}
-          {slots.map((mode, order) => typeof mode === "number" && (
-            <EditSoloViewer
-              key={mode}
-              {...pane(places[order], mode)}
-              {...clockPane(places[order])}
-              track={mode}
-              layout={layout}
-              sourceOf={sourceOf}
-              now={now}
-              muted={!!doc.muted || tlShown || mode !== firstSolo}
-              labelOf={() => (cutLabel ? `${cutLabel} · V${mode}` : "")}
-              detailOf={detailOf}
+        </ResizableSidebar>
+        {/* 오른쪽 칸 — 뷰어 → 높이 손잡이 → 막대 → 타임라인. 타임라인은 풀 밑으로 들어가지 않는다(다빈치) */}
+        <div className="ed-right">
+          <div className="ed-top">
+            {/* 타임라인 판 — 안 보일 때도 붙어 있다(엔진의 영상 요소를 떼면 안 된다). 안 보이면 소리를 끈다. */}
+            <EditViewer
+              {...pane(tlPlace, "timeline")}
+              {...clockPane(tlPlace ?? 1)}
+              // 다이나믹 재생 모드 — 멈춘 동안만 앞 컷 | 뒤 컷 두 칸이 무대를 덮는다. 재생·움직임 동안은 가려 한 화면(Jay 2026-10-26).
+              //  모드 동안 떼지 않는다 — 떼고 붙일 때마다 칸의 영상을 새로 받았다(4차 '딜레이')
+              over={dynamic && (
+                <EditTrimView layout={layout} doc={doc} sourceOf={sourceOf} now={now} playing={view.playing} registerPaint={registerPaint}
+                  onClose={toggleDynamic} failedKey={view.failed && view.clip ? clipKey(view.clip) : ""} />
+              )}
+              shown={view}
+              videoRef={tlVideo.front}
+              spareRef={tlVideo.spare}
+              muted={!!doc.muted || !tlShown}
+              label={cutLabel && view.clip ? `${cutLabel} · V${view.clip.track}` : cutLabel}
+              detail={detailOf(view.clip)}
+              feedChip={cleanFeed.screen ? t("클린 피드 · 모니터 {n}").replace("{n}", String(cleanFeed.screen.index)) : null}
             />
-          ))}
-          {oneBar && (
-            <div className="ed-linkbar" onMouseDown={(event) => event.preventDefault()}>
-              <span className="ed-linkvol ed-linkvol-l">
-                <VolumeControl label="L" volume={speedPane(0).volume} onVolume={speedPane(0).onVolume} memory={volumeMemory[0]} />
+            {/* 소스 판 — 판 자리마다 하나(useSourcePane): 그 판이 고른 것(소스 클립) 또는 이 컷의 풀 목록을 이은 것(소스 테이프). 마찬가지로 붙어 있다. */}
+            {([0, 1] as const).map((place) => {
+              const pick = srcPanes[place];
+              const mode = srcModeOf(place);
+              return (
+                <EditViewer
+                  key={`src${place}`}
+                  {...pane(mode ? place : null, mode ?? "source")}
+                  {...speedPane(place)}
+                  shown={pick.play.view}
+                  videoRef={pick.video.front}
+                  spareRef={pick.video.spare}
+                  muted={false}
+                  playing={pick.play.view.playing}
+                  rate={pick.play.view.rate}
+                  total={pick.src.layout.total}
+                  marks={pick.starts}
+                  registerPaint={pick.registerPaint}
+                  controls={controlsOf(pick.play, pick.src.layout.total)}
+                  loop={ui.loopSrc}
+                  onLoop={() => patchUi({ loopSrc: !ui.loopSrc })}
+                  label={mode === "tape" && pick.shown ? `${cutLabel} · ${pick.gens.indexOf(pick.shown) + 1}/${pick.gens.length}` : ""}
+                  detail={genDetail(pick.shown)}
+                  empty={pick.gens.length ? null
+                    : mode === "tape" ? t("이 컷 폴더에 공유된 생성물이 없습니다.") : t("미디어 풀에서 생성물을 고르면 여기에서 봅니다.")}
+                />
+              );
+            })}
+            {/* 한 트랙만 보는 판 — 타임라인의 시계를 따라간다. 타임라인 판이 없으면 첫 번째 것이 소리를 낸다. */}
+            {slots.map((mode, order) => typeof mode === "number" && (
+              <EditSoloViewer
+                key={mode}
+                {...pane(places[order], mode)}
+                {...clockPane(places[order])}
+                track={mode}
+                layout={layout}
+                sourceOf={sourceOf}
+                now={now}
+                muted={!!doc.muted || tlShown || mode !== firstSolo}
+                labelOf={() => (cutLabel ? `${cutLabel} · V${mode}` : "")}
+                detailOf={detailOf}
+              />
+            ))}
+            {/* V0 판(편집 공유 — 다른 편집 보기) — 타임라인의 시계를 따라 그 사람의 '보이는 것 한 줄'을 본다. 소리 없음 */}
+            {slots.map((mode, order) => mode === "other" && (
+              <EditShareViewer
+                key="other"
+                {...pane(places[order], mode)}
+                {...clockPane(places[order])}
+                share={v0Share}
+                sourceOf={v0SourceOf}
+                now={now}
+                name={share.ownerName ?? ""}
+                notice={v0Notice}
+              />
+            ))}
+          </div>
+          {edit.readError && !edit.restorePending && <div className="ed-warn ed-storage-warning" role="status">
+            {t("저장소를 읽지 못해 편집을 멈췄습니다. 유효한 작업본은 파일로 보관할 수 있습니다.")}{" "}
+            <button type="button" className="ed-link" onClick={edit.retryRead}>{t("다시 읽기")}</button>
+          </div>}
+          {edit.restorePending && <div className="ed-warn ed-storage-warning" role="status">
+            {t("복원 저장 결과를 확인하지 못해 편집을 멈췄습니다. 확인한 직전 파일을 보관하세요.")}{" "}
+            <button type="button" className="ed-link" onClick={() => {
+              const result = edit.retryRestore();
+              if (result === "saved") flash(t("파일에서 편집을 복원했습니다."));
+              else if (result === "failed") flash(t("복원 저장은 반영되지 않았습니다. 기존 작업본을 유지합니다."));
+            }}>{t("저장 결과 재확인")}</button>
+            {edit.restoreExternal && <>
+              {" "}{t("다른 창의 저장값이 있습니다. 수용하면 이 창의 작업본을 그 값으로 바꿉니다. 이전 작업본은 직전 파일에 있습니다.")}{" "}
+              <button type="button" className="ed-link" onClick={() => edit.retryRestore(true)}>{t("외부 저장값 수용")}</button>
+            </>}
+          </div>}
+          {/* 뷰어와 타임라인 사이 손잡이 — 끌어 타임라인 칸 높이를 정한다(트랙 높이는 그 안에서 바뀐다, Jay 2026-10-23) */}
+          <EditSplit rootRef={rootRef} height={tlHeight} onHeight={onTlHeight} />
+          <div className="ed-bar" onMouseDown={(event) => event.preventDefault()}>
+            <span className="ed-seq">
+              {target ? (
+                <>
+                  <b>{project?.name ? `${project.name} / ` : ""}{seq}</b>
+                  <i>·</i>{t("컷 {count}").replace("{count}", String(layout.cuts.length))}
+                  <i>·</i>{t("넣은 컷 {count}").replace("{count}", String(filled))}
+                  <i>·</i>{t("빈 컷 {count}").replace("{count}", String(layout.cuts.length - filled))}
+                </>
+              ) : null}
+            </span>
+            {/* 편집 공유(Jay 2026-10-23) — 나만 보는 편집 · 서버에 저장 · 다른 편집 보기. 시퀀스를 고르기 전에는 옛 알약 그대로 */}
+            {shareTarget ? <EditShareMenu share={share} onOpenWorkers={(x, y) => setV0Menu({ x, y })} /> : (
+              <span className="ed-mine" title={t("이 편집은 이 브라우저(계정)에만 저장됩니다. 팀에 공유되지 않습니다.")}>
+                {t("나만 보는 편집")}
               </span>
-              <div className="ed-trans">
-                <TransportButtons controls={together} playing={linkPlaying} loop={linkLoop}
-                  onLoop={() => patchUi({ ...(loopKeys.includes("loop") && { loop: !linkLoop }), ...(loopKeys.includes("loopSrc") && { loopSrc: !linkLoop }) })}
-                  speed={ui.speed} onSpeed={speedPane(0).onSpeed} />
-              </div>
-              <span className="ed-linkvol ed-linkvol-r">
-                <VolumeControl label="R" volume={speedPane(1).volume} onVolume={speedPane(1).onVolume} memory={volumeMemory[1]} />
-              </span>
-            </div>
-          )}
-        </div>
-        {edit.readError && !edit.restorePending && <div className="ed-warn ed-storage-warning" role="status">
-          {t("저장소를 읽지 못해 편집을 멈췄습니다. 유효한 작업본은 파일로 보관할 수 있습니다.")}{" "}
-          <button type="button" className="ed-link" onClick={edit.retryRead}>{t("다시 읽기")}</button>
-        </div>}
-        {edit.restorePending && <div className="ed-warn ed-storage-warning" role="status">
-          {t("복원 저장 결과를 확인하지 못해 편집을 멈췄습니다. 확인한 직전 파일을 보관하세요.")}{" "}
-          <button type="button" className="ed-link" onClick={() => {
-            const result = edit.retryRestore();
-            if (result === "saved") flash(t("파일에서 편집을 복원했습니다."));
-            else if (result === "failed") flash(t("복원 저장은 반영되지 않았습니다. 기존 작업본을 유지합니다."));
-          }}>{t("저장 결과 재확인")}</button>
-          {edit.restoreExternal && <>
-            {" "}{t("다른 창의 저장값이 있습니다. 수용하면 이 창의 작업본을 그 값으로 바꿉니다. 이전 작업본은 직전 파일에 있습니다.")}{" "}
-            <button type="button" className="ed-link" onClick={() => edit.retryRestore(true)}>{t("외부 저장값 수용")}</button>
-          </>}
-        </div>}
-        <div className="ed-bar" onMouseDown={(event) => event.preventDefault()}>
-          <span className="ed-tc" ref={barTimeRef}>00:00:00:00</span>
-          <span className="ed-seq">
-            {target ? (
-              <>
-                <b>{project?.name ? `${project.name} / ` : ""}{seq}</b>
-                <i>·</i>{t("컷 {count}").replace("{count}", String(layout.cuts.length))}
-                <i>·</i>{t("넣은 컷 {count}").replace("{count}", String(filled))}
-                <i>·</i>{t("빈 컷 {count}").replace("{count}", String(layout.cuts.length - filled))}
-              </>
-            ) : null}
-          </span>
-          <span className="ed-mine" title={t("이 편집은 이 브라우저(계정)에만 저장됩니다. 팀에 공유되지 않습니다.")}>
-            {t("나만 보는 편집")}
-          </span>
-          <details className="storage-scope">
-            <summary>{t("저장·백업 안내")}</summary>
-            <div>
-              <EditBackupNotice docKey={docKey} onOpen={() => setBackupView(archiveContext)} />
-              <p>{t("편집 메뉴의 파일 보관으로 별도 사본도 만들 수 있습니다.")}</p>
-              <p>{t("편집 문서와 DB 백업에는 영상·이미지 원본이 포함되지 않습니다. 필요한 원본 파일도 따로 보관하세요.")}</p>
-            </div>
-          </details>
-          {edit.bad && (
-            <span className="ed-warn" role="status" title={t("편집을 시작하면 옛 내용은 따로 보관한 뒤 새로 저장합니다.")}>
-              {t("저장된 편집을 읽지 못했습니다")}
-            </span>
-          )}
-          {edit.dirty && <span className="ed-warn" role="status">{t("저장 안 됨")}</span>}
-          {/* 컷 머리를 끌어 폴더 순서를 바꿔 둔 상태 — 누르면 이름순으로 되돌린다(되돌리기 한 단계) */}
-          {!!doc.cutOrder?.length && (
-            <button type="button" className="ed-mine ed-orderchip" title={t("이름순으로 되돌립니다")}
-              onClick={() => act({ type: "resetCutOrder", args: [] })}>
-              {t("폴더 순서: 내 순서")} ↺
-            </button>
-          )}
-          {/* 공유 목록의 상태 — 받지 못하면 넣은 카드가 '확인 못 함'·'미디어 없음'으로 보이고, 폴더 창에서 넣을 수도 없다 */}
-          {needWorkspace && (
-            <span className="ed-warn" role="status">
-              {t("워크스페이스를 확인한 뒤 공유물을 표시합니다.")}{" "}
-              <button type="button" className="ed-link ed-ws-all" onClick={() => setAllIn((allWorkspacesIn = workspaceKey))}>
-                {t("모든 워크스페이스 보기")}
-              </button>
-            </span>
-          )}
-          {!needWorkspace && list.state === "error" && (
-            <span className="ed-warn" role="status" title={list.error ?? undefined}>
-              {t("공유 목록을 받지 못했습니다.")}{" "}
-              <button type="button" className="ed-link" onClick={list.reload}>{t("다시 시도")}</button>
-            </span>
-          )}
-          {!needWorkspace && list.state === "capped" && (
-            <span className="ed-warn" role="status">{t("최대 2,000건까지만 표시합니다.")}</span>
-          )}
-          {/* 인/아웃 구간의 길이(누르면 지운다)와 북마크 — 구간 반복·마크 인·마크 아웃은 다이나믹 트림 단추의 왼쪽(Jay 2026-10-14 — 전엔 뷰어 오른쪽 아래) */}
-          {target && (
-            <span className="ed-marks">
-              {/* 타임라인 Resolve 보내기 — 오른쪽 도구들의 맨 앞(다빈치의 Quick Export 자리). 누르면 확인 창이 뜬다 */}
-              <button type="button" className={"ed-mbtn ed-export-btn" + (exportDone ? " ed-export-done" : "")}
-                disabled={resolve.timelineBusy} aria-busy={resolve.timelineBusy || undefined}
-                title={t("지금 타임라인을 DaVinci Resolve 의 새 타임라인으로 보냅니다 — 누르면 확인 창이 뜹니다")}
-                onClick={() => {
-                  closeMenu();
-                  setExportOpen(true);
-                }}>
-                {!resolve.timelineBusy && !exportDone && (
-                  <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true"><path d="M6.5 8.5v-7M3.8 3.8 6.5 1.2l2.7 2.6M1.5 8.5v3h10v-3" /></svg>
+            )}
+            {edit.dirty && <span className="ed-warn" role="status">{t("저장 안 됨")}</span>}
+            {/* 인/아웃 구간의 길이(누르면 지운다)와 북마크 — 구간 반복·마크 인·마크 아웃은 다이나믹 트림 단추의 왼쪽(Jay 2026-10-14 — 전엔 뷰어 오른쪽 아래) */}
+            {target && (
+              <span className="ed-marks">
+                {/* 타임라인 Resolve 보내기 — 오른쪽 도구들의 맨 앞(다빈치의 Quick Export 자리). 누르면 확인 창이 뜬다 */}
+                <button type="button" className={"ed-mbtn ed-export-btn" + (exportDone ? " ed-export-done" : "")}
+                  disabled={resolve.timelineBusy} aria-busy={resolve.timelineBusy || undefined}
+                  title={t("지금 타임라인을 DaVinci Resolve 의 새 타임라인으로 보냅니다 — 누르면 확인 창이 뜹니다")}
+                  onClick={() => {
+                    closeMenu();
+                    setExportOpen(true);
+                  }}>
+                  {!resolve.timelineBusy && !exportDone && (
+                    <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true"><path d="M6.5 8.5v-7M3.8 3.8 6.5 1.2l2.7 2.6M1.5 8.5v3h10v-3" /></svg>
+                  )}
+                  {resolve.timelineBusy ? t("보내는 중…") : exportDone ? t("✓ Resolve 에 보냄") : t("타임라인 Resolve 보내기")}
+                </button>
+                <i className="ed-msep" aria-hidden="true" />
+                <button type="button" className={"ed-mbtn ed-mbtn-range" + (rangeOn ? " ed-on" : "")} aria-pressed={rangeOn}
+                  disabled={!hasBand} onClick={toggleRangeLoop}
+                  title={fillKeys(t("구간 반복 재생 ({key}) — 마크 인/아웃 사이를 되풀이합니다"), { key: hintOf("rangeLoop") })}
+                  aria-label={fillKeys(t("구간 반복 재생 ({key}) — 마크 인/아웃 사이를 되풀이합니다"), { key: hintOf("rangeLoop") })}>
+                  <svg width="20" height="14" viewBox="0 0 20 14" aria-hidden="true">
+                    <rect x="1" y="1" width="18" height="12" rx="2.5" /><path d="M10 4v6M7.5 4.8 5 7l2.5 2.2M12.5 4.8 15 7l-2.5 2.2" />
+                  </svg>
+                </button>
+                <button type="button" className="ed-mbtn ed-mbtn-io ed-mbtn-in" onClick={() => markHere("markIn")}
+                  title={fillKeys(t("마크 인 ({key})"), { key: hintOf("markIn") })} aria-label={fillKeys(t("마크 인 ({key})"), { key: hintOf("markIn") })}>
+                  <svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><path d="M1 1v10l8-5z" /><rect x="11" y="1" width="2" height="10" /></svg>
+                </button>
+                <button type="button" className="ed-mbtn ed-mbtn-io ed-mbtn-out" onClick={() => markHere("markOut")}
+                  title={fillKeys(t("마크 아웃 ({key})"), { key: hintOf("markOut") })} aria-label={fillKeys(t("마크 아웃 ({key})"), { key: hintOf("markOut") })}>
+                  <svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><rect x="1" y="1" width="2" height="10" /><path d="M13 1v10L5 6z" /></svg>
+                </button>
+                {/* 다이나믹 재생 모드 단추(다빈치의 Dynamic Trim Mode 그림) — [ ‹ | › ] */}
+                <button type="button" className={"ed-mbtn ed-mbtn-trim" + (dynamic ? " ed-on" : "")} aria-pressed={dynamic} onClick={toggleDynamic}
+                  title={dynamicText} aria-label={dynamicText}>
+                  <svg width="24" height="14" viewBox="0 0 24 14" aria-hidden="true">
+                    <path d="M4.5 1.5h-3v11h3M19.5 1.5h3v11h-3M9 4.2 6.2 7 9 9.8M15 4.2 17.8 7 15 9.8M12 5v8" />
+                    <circle cx="12" cy="2.8" r="1.4" />
+                  </svg>
+                </button>
+                {(doc.markIn || doc.markOut) && (
+                  <button type="button" className="ed-mclear" onClick={() => clearMarks("markIn", "markOut")}
+                    title={fillKeys(t("인/아웃 지우기 ({key})"), { key: hintOf("clearBoth") })} aria-label={fillKeys(t("인/아웃 지우기 ({key})"), { key: hintOf("clearBoth") })}>
+                    {marks.band ? timecode(marks.band.to - marks.band.from) : t("인/아웃")}<i>×</i>
+                  </button>
                 )}
-                {resolve.timelineBusy ? t("보내는 중…") : exportDone ? t("✓ Resolve 에 보냄") : t("타임라인 Resolve 보내기")}
-              </button>
-              <i className="ed-msep" aria-hidden="true" />
-              <button type="button" className={"ed-mbtn ed-mbtn-range" + (rangeOn ? " ed-on" : "")} aria-pressed={rangeOn}
-                disabled={!hasBand} onClick={toggleRangeLoop}
-                title={t("구간 반복 재생 (Alt+/) — 마크 인/아웃 사이를 되풀이합니다")}
-                aria-label={t("구간 반복 재생 (Alt+/) — 마크 인/아웃 사이를 되풀이합니다")}>
-                <svg width="20" height="14" viewBox="0 0 20 14" aria-hidden="true">
-                  <rect x="1" y="1" width="18" height="12" rx="2.5" /><path d="M10 4v6M7.5 4.8 5 7l2.5 2.2M12.5 4.8 15 7l-2.5 2.2" />
-                </svg>
-              </button>
-              <button type="button" className="ed-mbtn ed-mbtn-io ed-mbtn-in" onClick={() => markHere("markIn")}
-                title={t("마크 인 (I)")} aria-label={t("마크 인 (I)")}>
-                <svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><path d="M1 1v10l8-5z" /><rect x="11" y="1" width="2" height="10" /></svg>
-              </button>
-              <button type="button" className="ed-mbtn ed-mbtn-io ed-mbtn-out" onClick={() => markHere("markOut")}
-                title={t("마크 아웃 (O)")} aria-label={t("마크 아웃 (O)")}>
-                <svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><rect x="1" y="1" width="2" height="10" /><path d="M13 1v10L5 6z" /></svg>
-              </button>
-              {/* 다이나믹 재생 모드 단추(2026-10-14 오후 — 옛 다이나믹 트림 모드 자리·모양 그대로) — [ ‹ | › ] */}
-              <button type="button" className={"ed-mbtn ed-mbtn-trim" + (linked ? " ed-on" : "")} aria-pressed={linked} onClick={toggleLinked}
-                title={t("다이나믹 재생 모드 (W) — 두 화면의 재생을 한 번에: 재생·멈춤·J/K/L·프레임·처음/끝 · 재생바는 화면마다 따로")}
-                aria-label={t("다이나믹 재생 모드 (W) — 두 화면의 재생을 한 번에: 재생·멈춤·J/K/L·프레임·처음/끝 · 재생바는 화면마다 따로")}>
-                <svg width="24" height="14" viewBox="0 0 24 14" aria-hidden="true">
-                  <path d="M4.5 1.5h-3v11h3M19.5 1.5h3v11h-3M9 4.2 6.2 7 9 9.8M15 4.2 17.8 7 15 9.8M12 5v8" />
-                  <circle cx="12" cy="2.8" r="1.4" />
-                </svg>
-              </button>
-              {(doc.markIn || doc.markOut) && (
-                <button type="button" className="ed-mclear" onClick={() => clearMarks("markIn", "markOut")}
-                  title={t("인/아웃 지우기 (Alt+X)")} aria-label={t("인/아웃 지우기 (Alt+X)")}>
-                  {marks.band ? timecode(marks.band.to - marks.band.from) : t("인/아웃")}<i>×</i>
+                <button type="button" className="ed-mbtn ed-mbtn-mk" style={{ "--mk": ui.markerColor } as CSSProperties} onClick={bookmarkHere}
+                  title={bookmarkText} aria-label={bookmarkText}>
+                  <svg width="11" height="14" viewBox="0 0 11 14" aria-hidden="true"><path d="M1.5 1.5h8v11l-4-3.2-4 3.2z" /></svg>
+                  {bookmarks.length > 0 && <i>{bookmarks.length}</i>}
+                </button>
+                {/* 새 북마크의 색 · 모두 지우기(다빈치의 마커 색 메뉴) */}
+                <button type="button" ref={colorBtnRef} className={"ed-mbtn ed-mbtn-color" + (colorMenu ? " ed-on" : "")} aria-haspopup="menu" aria-expanded={!!colorMenu}
+                  title={t("새 북마크의 색 · 모두 지우기")} aria-label={t("새 북마크의 색 · 모두 지우기")}
+                  onPointerDown={closeOnAuxPress}
+                  onClick={(event) => {
+                    if (colorMenu) return closeMenu();
+                    const box = event.currentTarget.getBoundingClientRect();
+                    menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+                    setColorMenu({ x: box.left, top: box.top, bottom: box.bottom, rev });
+                  }}>
+                  <svg className="ed-caret" width="8" height="5" viewBox="0 0 8 5" aria-hidden="true"><path d="M0 0h8L4 5z" /></svg>
+                </button>
+              </span>
+            )}
+            <span className="ed-zoom">
+              {/* 목록 단추 — 비활성 숨기기 · 빈 곳 채우기. 숨기기가 켜져 있으면 라임이고 옆에 숨긴 폴더 수가 보인다 */}
+              {target && (
+                <button type="button" ref={listBtnRef} className={"ed-mbtn ed-listbtn" + (doc.hideOff || listMenu ? " ed-on" : "")}
+                  aria-haspopup="menu" aria-expanded={!!listMenu}
+                  title={t("타임라인 정리 — 비활성 숨기기 · 빈 곳 채우기")} aria-label={t("타임라인 정리 — 비활성 숨기기 · 빈 곳 채우기")}
+                  onPointerDown={closeOnAuxPress}
+                  onClick={(event) => {
+                    if (listMenu) return closeMenu();
+                    const box = event.currentTarget.getBoundingClientRect();
+                    menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+                    setListMenu({ x: box.left, top: box.top, bottom: box.bottom });
+                  }}>
+                  <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><path d="M5.5 3h9M5.5 7h9M5.5 11h9M1.8 3h.4M1.8 7h.4M1.8 11h.4" /></svg>
+                  {doc.hideOff && offCuts.size > 0 && <i>{offCuts.size}</i>}
                 </button>
               )}
-              <button type="button" className="ed-mbtn ed-mbtn-mk" style={{ "--mk": ui.markerColor } as CSSProperties} onClick={bookmarkHere}
-                title={t("북마크 (M) · 앞/뒤 북마크로 Shift+↑↓ · 지우기 Alt+M")} aria-label={t("북마크 (M) · 앞/뒤 북마크로 Shift+↑↓ · 지우기 Alt+M")}>
-                <svg width="11" height="14" viewBox="0 0 11 14" aria-hidden="true"><path d="M1.5 1.5h8v11l-4-3.2-4 3.2z" /></svg>
-                {bookmarks.length > 0 && <i>{bookmarks.length}</i>}
-              </button>
-              {/* 새 북마크의 색 · 모두 지우기(다빈치의 마커 색 메뉴) */}
-              <button type="button" ref={colorBtnRef} className={"ed-mbtn ed-mbtn-color" + (colorMenu ? " ed-on" : "")} aria-haspopup="menu" aria-expanded={!!colorMenu}
-                title={t("새 북마크의 색 · 모두 지우기")} aria-label={t("새 북마크의 색 · 모두 지우기")}
-                onPointerDown={closeOnAuxPress}
-                onClick={(event) => {
-                  if (colorMenu) return closeMenu();
-                  const box = event.currentTarget.getBoundingClientRect();
-                  menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-                  setColorMenu({ x: box.left, top: box.top, bottom: box.bottom, rev });
-                }}>
-                <svg className="ed-caret" width="8" height="5" viewBox="0 0 8 5" aria-hidden="true"><path d="M0 0h8L4 5z" /></svg>
-              </button>
+              <button type="button" className="ed-link" onClick={fit} title={fillKeys(t("Fit ({key})"), { key: hintOf("fit") })}>{t("Fit")}</button>
+              {/* H = 편집 탭 단축키 창(Jay 2026-10-23 — 옛 －·＋ 자리. 확대·축소는 키·Alt+휠로) */}
+              <button type="button" className="ed-zbtn ed-hkbtn" aria-haspopup="dialog" aria-expanded={shortcutsOpen}
+                onClick={() => setShortcutsOpen((open) => !open)} title={t("편집 탭 단축키")} aria-label={t("편집 탭 단축키")}>H</button>
             </span>
-          )}
-          <span className="ed-zoom">
-            {/* 목록 단추 — 비활성 숨기기 · 빈 곳 채우기. 숨기기가 켜져 있으면 라임이고 옆에 숨긴 폴더 수가 보인다 */}
-            {target && (
-              <button type="button" ref={listBtnRef} className={"ed-mbtn ed-listbtn" + (doc.hideOff || listMenu ? " ed-on" : "")}
-                aria-haspopup="menu" aria-expanded={!!listMenu}
-                title={t("타임라인 정리 — 비활성 숨기기 · 빈 곳 채우기")} aria-label={t("타임라인 정리 — 비활성 숨기기 · 빈 곳 채우기")}
-                onPointerDown={closeOnAuxPress}
-                onClick={(event) => {
-                  if (listMenu) return closeMenu();
-                  const box = event.currentTarget.getBoundingClientRect();
-                  menuBackRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-                  setListMenu({ x: box.left, top: box.top, bottom: box.bottom });
-                }}>
-                <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><path d="M5.5 3h9M5.5 7h9M5.5 11h9M1.8 3h.4M1.8 7h.4M1.8 11h.4" /></svg>
-                {doc.hideOff && offCuts.size > 0 && <i>{offCuts.size}</i>}
-              </button>
-            )}
-            <button type="button" className="ed-link" onClick={fit} title={t("전체 보기 (Shift+Z)")}>{t("전체 보기")}</button>
-            <button type="button" className="ed-zbtn" onClick={() => zoomBy(0.8)} title={t("축소 (Ctrl+-)")} aria-label={t("축소 (Ctrl+-)")}>－</button>
-            <button type="button" className="ed-zbtn" onClick={() => zoomBy(1.25)} title={t("확대 (Ctrl+=)")} aria-label={t("확대 (Ctrl+=)")}>＋</button>
-          </span>
+          </div>
+          <EditTimeline
+            layout={layout}
+            doc={doc}
+            links={links}
+            zoom={zoom}
+            rev={rev}
+            selected={selected}
+            currentCut={cut}
+            offCuts={offCuts}
+            marks={marks}
+            markers={bookmarks}
+            scrollRef={scrollRef}
+            headRef={headRef}
+            getNow={now}
+            onSeek={seek}
+            onZoom={setZoom}
+            onSelect={select}
+            onClearSelection={clearSelection}
+            onPickMany={pickMany}
+            onMoveClip={moveClip}
+            order={cuts}
+            onMoveClipToSlot={moveClipToSlot}
+            onMoveClipIntoSlot={moveClipIntoSlot}
+            onPickCut={pickCut}
+            onOpenCut={openCut}
+            onToggleTrack={toggleTrackList}
+            onToggleMute={toggleMute}
+            onTrackMenu={openTrackMenu}
+            timeRef={tcRef}
+            laneRef={laneRef}
+            extent={playLayout.total}
+            v0={v0Lane}
+            onMarkerMenu={openMarkerMenu}
+            onClipMenu={openClipMenu}
+            onClipTrim={openTrim}
+            dropHint={dropHint}
+            resolvePicked={resolvePicked}
+            resolveScroll={resolveScroll}
+            isPlaying={isPlaying}
+            viewTrack={view.clip?.track ?? null}
+            onMoveCut={moveCutTo}
+            retimeKey={retime?.key ?? null}
+            onRetime={onRetime}
+            onRetimeClose={closeRetime}
+          />
         </div>
-        <EditTimeline
-          layout={layout}
-          doc={doc}
-          links={links}
-          zoom={zoom}
-          rev={rev}
-          selected={selected}
-          currentCut={cut}
-          offCuts={offCuts}
-          marks={marks}
-          markers={bookmarks}
-          scrollRef={scrollRef}
-          headRef={headRef}
-          getNow={now}
-          onSeek={seek}
-          onZoom={setZoom}
-          onSelect={select}
-          onClearSelection={clearSelection}
-          onPickMany={pickMany}
-          onMoveClip={moveClip}
-          onPickCut={pickCut}
-          onOpenCut={openCut}
-          onToggleTrack={toggleTrackList}
-          onToggleMute={toggleMute}
-          onTrackMenu={openTrackMenu}
-          onMarkerMenu={openMarkerMenu}
-          onClipMenu={openClipMenu}
-          onClipTrim={openTrim}
-          dropHint={dropHint}
-          resolvePicked={resolvePicked}
-          resolveScroll={resolveScroll}
-          isPlaying={isPlaying}
-          onMoveCut={moveCutTo}
-        />
       </main>
+      {/* 비디오 클린 피드 — 고른 모니터의 창에 타임라인에 보이는 클립만(소리 없음). 다른 모니터를 고르면 새 부품(앞 창은 닫힌다) */}
+      {feed && (
+        <EditCleanFeedWindow key={feed.id} feed={feed} layout={layout} doc={doc} sourceOf={sourceOf} now={now}
+          playing={view.playing} rate={view.rate} onClosed={cleanFeed.off} />
+      )}
       {/* 풀에서 끄는 카드 — 포인터를 따라간다(자리는 ref 로 직접 옮긴다 — 움직일 때마다 다시 그리지 않는다). 무엇이 될지를 적는다 */}
       {cardDrag && (
         <div className={"ed-ghost" + (cardDrag.hint ? ` ed-ghost-${cardDrag.hint.state}` : cardDrag.view ? " ed-ghost-view" : "")} aria-hidden="true"
@@ -1662,11 +1918,21 @@ function EditTabInner({
             moveGhost();
           }}>
           {cardDragGen && thumbOf(cardDragGen, 256) && <img src={thumbOf(cardDragGen, 256)!} alt="" draggable={false} />}
-          <span>{cardDrag.hint ? dropLabel(cardDrag.hint, t) : cardDrag.view ? t("놓으면 소스 클립으로 봅니다") : t("트랙 줄 위에 놓으세요")}</span>
+          <span>{cardDrag.hint ? dropLabel({ cut: cardDrag.cut, ...cardDrag.hint }, t) : cardDrag.view ? t("놓으면 소스 클립으로 봅니다") : t("트랙 줄 위에 놓으세요")}</span>
         </div>
       )}
       {exported && target && <EditExportConfirm exported={exported} onSend={sendTimeline} onClose={() => setExportOpen(false)} />}
       {backupView === archiveContext && target && docKey && <EditBackupPanel docKey={docKey} target={target} edit={edit} onClose={() => setBackupView(null)} />}
+      {shortcutsOpen && <EditShortcutsWindow onClose={() => setShortcutsOpen(false)} />}
+      {v0Menu && share.ui.others && (
+        <EditV0Menu x={v0Menu.x} y={v0Menu.y} picked={share.ui.owner} color={share.ui.color}
+          workers={share.rows.map((row) => ({ key: row.key, name: row.name, at: shareTime(row.updated_at) }))}
+          onPick={(key) => {
+            share.pickOwner(key);
+            setV0Menu(null);
+          }}
+          onColor={(color) => share.patch({ color })} onClose={() => setV0Menu(null)} />
+      )}
       {archiveView?.context === archiveContext && target && (archiveView.snapshot
         ? <EditArchiveExportConfirm snapshot={archiveView.snapshot} target={target} projectName={project?.name} onClose={closeArchive} />
         : <EditImportConfirm edit={edit} target={target} contextKey={archiveContext} projectName={project?.name} onClose={closeArchive} flash={flash} />)}
@@ -1675,10 +1941,12 @@ function EditTabInner({
         <EditTrimPop
           openId={trimPop.group}
           anchor={trimPop.anchor}
-          title={`${trimClip.cut.slice(trimClip.cut.lastIndexOf("/") + 1)} · V${trimClip.track}`}
+          // 창은 원본 단위다(속도 없이 원본 프레임을 본다) — 속도가 있으면 제목 옆에 적고, 길이는 쓰는 원본 구간을 넘긴다(clip.len 아님)
+          title={`${nameOf(trimClip)} · V${trimClip.track}` +
+            (clipSpeed(trimClip) !== 1 ? ` · ${speedText(clipSpeed(trimClip))}` : "")}
           full={trimClip.full}
           head={trimClip.head}
-          value={trimClip.len}
+          value={clipSource(trimClip, trimClip.full)}
           cutEnd={trimClip.trim !== undefined}
           src={trimSrc}
           // 바꿀 것이 없었던 걸음(none)은 조용히 넘긴다. 버린 걸음(stopped — 다른 창의 저장·떠나는 중)에는 창을 닫는다: 그 알림이 이미
@@ -1696,7 +1964,7 @@ function EditTabInner({
         <EditClipMenu
           x={clipMenu.x}
           y={clipMenu.y}
-          title={clipMenuOne ? `${clipMenuOne.cut.slice(clipMenuOne.cut.lastIndexOf("/") + 1)} · V${clipMenuOne.track}`
+          title={clipMenuOne ? `${nameOf(clipMenuOne)} · V${clipMenuOne.track}`
             : t("클립 {count}개").replace("{count}", String(clipMenu.keys.length))}
           count={clipMenuGens.length}
           final={clipFinal}
@@ -1729,6 +1997,7 @@ function EditTabInner({
           color={doc.trackColors?.[trackMenu.track] ?? null}
           onAct={trackAct}
           onClose={closeMenu}
+          blank={trackMenu.blank}
         />
       )}
       {markerMenu && editing && (
@@ -1753,6 +2022,8 @@ function EditTabInner({
           offCount={offCuts.size}
           fillCount={fillPicks.length}
           finalAll={finalAll ? { count: listFresh ? finalAll.targets.length : 0, busy: finalBusy, onRun: finalizeAll } : undefined}
+          // 배치 순서(Jay 2026-10-26 — 막대의 '폴더 순서' 알약을 여기로) — 내 순서면 누르면 이름순(되돌리기 한 단계)
+          order={{ mine: foldersReordered(cuts), onReset: () => { closeMenu(); act({ type: "resetCutOrder", args: [] }); } }}
           archive={target ? {
             canImport: !edit.readError && !edit.restorePending && !edit.conflict,
             onExport: () => {

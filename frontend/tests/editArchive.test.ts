@@ -110,7 +110,7 @@ describe("edit archive contract", () => {
     }
   });
   it("reuses existing invariant validation rather than repairing invalid data", () => {
-    for (const patch of [{ v: 2 }, { muted: 1 }, { hideOff: "yes" }, { tracksOff: {} }, { markers: {} }, { cutsOn: ["seq/b"] }]) {
+    for (const patch of [{ v: 4 }, { muted: 1 }, { hideOff: "yes" }, { tracksOff: {} }, { markers: {} }, { cutsOn: ["seq/b"] }]) { // v 3 = 반복 자리 — 모르는 판은 4
       expect(readDoc({ ...fullDoc(), ...patch }).ok).toBe(false);
     }
     const doc = fullDoc(); doc.clips.push({ ...doc.clips[0] });

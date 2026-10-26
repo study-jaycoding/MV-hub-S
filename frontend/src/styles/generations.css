@@ -524,7 +524,20 @@
   border-bottom: 1px solid var(--border);
   /* 카드 마퀴 드래그가 이 줄을 지날 때 라벨이 파랗게 긁히지 않게 — 조작용 줄이라 글자 선택이 필요 없다. */
   user-select: none; -webkit-user-select: none;
+  position: relative; /* 사이드바 손잡이(.side-edge-toggle)의 기준 */
 }
+/* 사이드바 열고 닫기 손잡이(Jay 2026-10-26 시안 C, SidebarEdgeToggle) — 부모 칸의 왼쪽 끝 = 사이드바 끝선.
+   열림 = 선 위 가운데의 22px 동그라미, 닫힘 = 창 왼쪽 끝 반달. 높이는 도구 줄 단추 줄(위 여백 10 + 단추 30)의 가운데.
+   z-index 3 = 사이드바 폭 손잡이(.sidebar-resize-handle, 2) 위 — 겹친 22px 만 이 손잡이가 받는다. */
+.side-edge-toggle {
+  position: absolute; z-index: 3; top: 14px; left: -11px; width: 22px; height: 22px; padding: 0;
+  display: flex; align-items: center; justify-content: center; box-sizing: border-box;
+  background: var(--panel); border: 1px solid rgba(255,255,255,0.16); border-radius: 50%;
+  color: var(--muted); box-shadow: 0 2px 6px rgba(0,0,0,0.45); cursor: pointer;
+}
+.side-edge-toggle:not(.open) { top: 12px; left: 0; width: 16px; height: 26px; border-left: 0; border-radius: 0 13px 13px 0; }
+.side-edge-toggle:hover { color: var(--text); border-color: rgba(255,255,255,0.3); background: var(--panel); }
+.side-edge-toggle svg { display: block; }
 /* 건수 라벨 — 줄바꿈 금지. 오른쪽에 칩이 들어오면 '전체 · 128건' 이 세 줄로 접혀 툴바가
    두꺼워진다(2026-09-14 실측). 줄이는 쪽은 칩이다(assets.css). */
 .lib-count { font-size: 12.5px; color: var(--muted); font-weight: 500; white-space: nowrap; flex: none; }
@@ -585,7 +598,7 @@
   flex-wrap: wrap; row-gap: 8px; justify-content: flex-end;
 }
 
-.lib-filter, .lib-expand {
+.lib-expand {
   /* padding:0 — 전역 button 의 좌우 12px 가 30px 단추의 속을 6px 로 좁혀 SVG 를 찌그러뜨린다
      (.fit-toggle 과 같은 원인, 2026-09-28 실측). */
   width: 30px; height: 30px; border-radius: 8px; padding: 0;
@@ -593,14 +606,9 @@
   color: var(--muted2); font-size: 16px;
   display: inline-flex; align-items: center; justify-content: center;
 }
-/* 사이드바 토글 — 우측 fit-toggle(▢)과 동일한 글리프·크기 */
-.lib-filter-ic { width: 30px; height: 30px; color: var(--muted); font-size: 15px; }
-.lib-filter-ic:hover { color: var(--text); }
-.lib-filter:hover, .lib-expand:hover { color: var(--text); background: rgba(255,255,255,0.06); }
-.lib-filter.on, .lib-expand.on { color: #fff; }
-/* 사이드바 토글만은 열림도 닫힘과 같은 색 — 상태는 글리프(▢·▷)가 말한다(Jay 2026-09-28). */
-.lib-filter-ic.on { color: var(--muted); }
-.lib-expand svg, .lib-filter svg { display: block; }
+.lib-expand:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+.lib-expand.on { color: #fff; }
+.lib-expand svg { display: block; }
 
 /* 캔버스 줌 클러스터 — [맞춤] [− % +] (씬 캔버스에서 무동작 슬라이더를 대체) */
 .zoom-cluster { display: flex; align-items: center; gap: 6px; }

@@ -7,7 +7,7 @@
 //  휠 클릭 = 넣을 트랙 고르기(EditTrackMenu). (Jay 2026-10-13 — 그 전에는 우클릭이 트랙 메뉴였다)
 import { useEffect, useMemo, useReducer, useRef, useState, type HTMLAttributes, type MouseEvent as ReactMouseEvent } from "react";
 import type { Generation } from "../../types";
-import { POOL_SIZE, type EditUi, type PoolSort, type PoolView } from "../../lib/editTimelineStore";
+import { POOL_SIZE, type EditUi, type PoolFilter, type PoolSort, type PoolView } from "../../lib/editTimelineStore";
 import { formatGenerationDateTime, generationListMeta } from "../../lib/generationDisplay";
 import { reviewState } from "../../lib/generationReview";
 import { useT } from "../../lib/i18n";
@@ -18,7 +18,7 @@ import { editTick, type EditListState } from "../../lib/useEditSequence";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../../lib/windowDrag";
-import { FilterPanelIcon } from "../common/ViewIcons";
+import { SidebarEdgeToggle } from "../common/SidebarEdgeToggle";
 import { EditCard, NO_CARD_ACTIONS, poolMark, type PoolCardActions, type PoolItem } from "./EditCard";
 
 export type { PoolItem };
@@ -50,6 +50,11 @@ const SORTS: { id: PoolSort; label: string }[] = [
 // 줄에 넣는 프롬프트 글자 수(아래 promptShown). 가장 넓은 풀(720px)·가장 작은 썸네일(56px)의 메타 두 줄은 약 1,230px 라, 'i·l' 같은 좁은
 //  글자(12px 에 약 3px)면 400자 넘게 든다 — 그때 잘린 끝이 말줄임 없이 보였다(Codex 40회차 리뷰). 1,000자면 글자 폭 1.3px 까지 넘친다.
 const PROMPT_SHOWN = 1000;
+// 메타데이터 보기 — 글 칸(풀 안쪽 폭 − 썸네일 − 여백)이 이만큼보다 좁으면 글을 썸네일 아래로 내린다(Jay 2026-10-23 ⑥ "그림 그대로").
+//  여백 = 풀 몸통 좌우 12+12 · 줄 좌우 6+6 · 썸네일과 글 사이 12(edit-tab.css 의 .ed-pbody·.ed-prow-meta).
+const META_TEXT_MIN = 150;
+const META_CHROME = 48;
+export const metaStacked = (bodyWidth: number, thumb: number) => bodyWidth - META_CHROME - thumb < META_TEXT_MIN;
 
 // 검색 = 프롬프트·모델·만든 사람에 그 글이 들어 있는 것. 정렬 = 받은 순서(최신 먼저)를 바탕으로.
 export function arrangePool(items: PoolItem[], query: string, sort: PoolSort): PoolItem[] {
@@ -59,6 +64,37 @@ export function arrangePool(items: PoolItem[], query: string, sort: PoolSort): P
   if (sort === "old") return [...found].reverse();
   if (sort === "placed") return [...found].sort((a, b) => (b.track ?? 0) - (a.track ?? 0)); // 위 트랙부터, 나머지는 그대로
   return found;
+}
+
+// 미디어 풀 거르기(Jay 2026-10-23 — 왼쪽 아래 '컬러 · 전역 태그 · 생성자'). 생성자 열쇠 = 서버의 생성자 id, 없으면 이름.
+export const poolCreatorKey = (gen: Generation) => gen.creator_uid || `name:${gen.creator_name || gen.worker_name || ""}`;
+// 거를 것이 없으면 null(풀은 받은 그대로). gray = 비활성(회색) 카드 id — hideGray 일 때만 본다.
+export function poolFilterPass(filter: PoolFilter, gray: ReadonlySet<string>): ((gen: Generation) => boolean) | null {
+  const { colors, final, hideGray, autoTags, creator } = filter;
+  if (!colors.length && !final && !hideGray && !autoTags.length && !creator) return null;
+  const hexes = colors.map((color) => color.toLowerCase());
+  return (gen) => (!hexes.length || hexes.includes((gen.color ?? "").toLowerCase()))
+    && (!final || !!gen.is_final)
+    && (!hideGray || !gray.has(gen.id))
+    && (!autoTags.length || autoTags.some((tag) => gen.auto_tags?.includes(tag)))
+    && (!creator || poolCreatorKey(gen) === creator);
+}
+export interface PoolCreator { key: string; name: string; count: number; mine: boolean }
+// 왼쪽 아래의 생성자·전역 태그 목록 — 이 시퀀스의 공유물에서 센다(생성자는 많은 순, 같으면 이름순)
+export function poolFacets(gens: readonly Generation[]): { creators: PoolCreator[]; autoTags: string[] } {
+  const creators = new Map<string, PoolCreator>();
+  const tags = new Set<string>();
+  for (const gen of gens) {
+    const key = poolCreatorKey(gen);
+    const row = creators.get(key) ?? { key, name: gen.creator_name || gen.worker_name || "", count: 0, mine: gen.is_mine };
+    row.count += 1;
+    creators.set(key, row);
+    for (const tag of gen.auto_tags ?? []) tags.add(tag);
+  }
+  return {
+    creators: [...creators.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)),
+    autoTags: [...tags].sort((a, b) => a.localeCompare(b)),
+  };
 }
 
 export function EditPool({
@@ -84,7 +120,10 @@ export function EditPool({
   onFolder,
   onCardDrag,
   cardActions = NO_CARD_ACTIONS,
+  pass = null,
 }: {
+  // 왼쪽 아래 '컬러 · 전역 태그 · 생성자'로 거르기(poolFilterPass) — 검색과 같이 보여 주는 카드만 거른다. null = 거르지 않음
+  pass?: ((gen: Generation) => boolean) | null;
   // 왼쪽 폴더 목록 여닫기(Jay 2026-10-13 — 공유 탭 도구 줄의 '필터 사이드바 닫기'와 같은 단추·같은 자리 관계: 사이드바 바로 옆 줄의 첫 단추).
   //  닫아도 단추는 여기 남아 다시 연다. 닫힘은 편집 탭의 화면 설정(EditUi.sideHidden)에만 적는다 — 공유 탭의 것과 따로다.
   sideOpen: boolean;
@@ -128,7 +167,8 @@ export function EditPool({
   //  없었다: Tab 한 번에 초점만 옆 단추로 가고 메뉴는 열린 채 남아 편집 키를 막았다(2026-10-14 격리 실측).
   useOutsideMouseDown(toolsRef, () => setOpen(null), open !== null, undefined, true);
   useEscapeClose(() => setOpen(null), open !== null, true, true);
-  const shown = useMemo(() => arrangePool(items, searching ? query : "", ui.sort), [items, searching, query, ui.sort]);
+  const shown = useMemo(() => arrangePool(pass ? items.filter((item) => pass(item.gen)) : items, searching ? query : "", ui.sort),
+    [items, pass, searching, query, ui.sort]);
   const placed = items.filter((item) => item.track !== null).length;
   // 썸네일 카드의 T(태그 고치기) — 한 번에 한 장. 고친 태그는 그 카드의 저장이 다 끝난 **뒤에 출발한** 조회의 목록이 들어올 때까지
   //  여기서 덧입힌다: 앱의 낙관적 갱신은 라이브러리 목록에만 닿아, 안 그러면 잇달아 넣는 태그가 옛 태그에서 계산돼 앞에 넣은 것을 지운다.
@@ -184,6 +224,19 @@ export function EditPool({
   //  · 빈 곳에서 끌거나, **Ctrl·Shift 를 누른 채** 끌면(카드 위에서도) 끌어서 고르기(Jay 2026-10-08) — 라이브러리 격자처럼
   //    상자에 걸친 카드를 고른다. 격자는 카드로 꽉 차 빈 곳이 거의 없어, 누른 채 끄는 길을 남긴다(누르면 고른 것에 더한다).
   const bodyRef = useRef<HTMLDivElement>(null);
+  // 메타데이터 보기에서 글을 썸네일 아래로 내릴지 — 풀 몸통의 폭을 재서 풀 하나에 한 번 정한다(줄마다 flex-wrap 에 맡기면 아래로 간 줄의
+  //  썸네일을 칸 폭으로 키울 수 없다). 폭을 재지 못하는 곳(시험의 jsdom)은 옆에 둔다.
+  const [stacked, setStacked] = useState(false);
+  const metaBody = !notice && ui.view === "meta";
+  useEffect(() => {
+    const body = bodyRef.current;
+    if (!metaBody || !body || typeof ResizeObserver === "undefined") return;
+    const check = () => setStacked(metaStacked(body.clientWidth, ui.size));
+    check();
+    const watch = new ResizeObserver(check);
+    watch.observe(body);
+    return () => watch.disconnect();
+  }, [metaBody, ui.size]);
   const [marquee, setMarquee] = useState<MarqueeRect | null>(null);
   const dragRef = useRef<{
     x: number; y: number; base: readonly string[]; moved: boolean; card: string | null; at: [number, number];
@@ -318,9 +371,14 @@ export function EditPool({
   };
   // 다빈치(미디어 풀)에서 고른 것 — 빨간 표(Jay 2026-10-14). 썸네일 카드는 아래 표 글에 잇는다(EditCard)
   const dvMark = (item: PoolItem) => item.resolve && <span className="cd-mark ed-dv-chip">{t("다빈치")}</span>;
+  // r/g/b 색·골드(최종이 색보다 앞) — 썸네일 카드의 아래 색 띠(.card-colorbar)와 같은 뜻(Jay 2026-10-23). 메타데이터 = 그림 아래 변 · 목록 = 줄 왼쪽 막대
+  const colorMark = ({ gen }: PoolItem) => (gen.is_final || gen.color) && (
+    <span className={"ed-pcolor" + (gen.is_final ? " ed-pgold" : "")} style={gen.is_final ? undefined : { background: gen.color! }}
+      title={gen.is_final ? t("최종(골드)") : t("카드 컬러 마커")} />
+  );
   const rowClass = (item: PoolItem, kind: string) =>
     `ed-prow ed-prow-${kind}` + (picked.includes(item.gen.id) ? " ed-picked" : "") + (item.track !== null ? " ed-placed" : "") +
-    (item.resolve ? " ed-dv" : "") + (item.timeline ? " ed-tlsel" : "");
+    (item.resolve ? " ed-dv" : "") + (item.timeline ? " ed-tlsel" : "") + (item.off ? " ed-off" : "");
   // 막대의 대상은 **지금 보이는 것** 가운데 고른 것이다(조작 규칙 42). 전엔 검색 전의 목록(items)에서 구해, 검색으로 가려진 카드가
   //  '2개 선택'에 남아 Resolve 로 같이 나갔다. 고른 것 자체(picked — 마지막 것이 뷰어의 소스)는 건드리지 않는다: 검색을 지우면 다시 보인다.
   const pickedGens = picked.map((id) => shown.find((item) => item.gen.id === id)?.gen).filter((gen): gen is Generation => !!gen);
@@ -328,12 +386,9 @@ export function EditPool({
   return (
     <section className="ed-pool" onMouseDown={keepFocus}>
       <div className="ed-pool-head">
-        {/* 모양·글은 공유 탭의 단추 그대로 — 열림 = ▢, 닫힘 = ▷(상태는 글리프가 말한다) */}
-        <button type="button" className={"lib-filter lib-filter-ic ed-side-toggle" + (sideOpen ? " on" : "")} aria-pressed={sideOpen}
-          title={sideOpen ? t("필터 사이드바 닫기") : t("필터 사이드바 열기")} aria-label={sideOpen ? t("필터 사이드바 닫기") : t("필터 사이드바 열기")}
-          onClick={onToggleSide}>
-          <FilterPanelIcon open={sideOpen} />
-        </button>
+        {/* 공유 탭과 같은 끝선 손잡이(Jay 2026-10-26 시안 C) — 이 줄의 왼쪽 끝이 폴더 목록 끝선이다 */}
+        <SidebarEdgeToggle open={sideOpen} onToggle={onToggleSide}
+          title={sideOpen ? t("필터 사이드바 닫기") : t("필터 사이드바 열기")} />
         <h3 title={title}>{title || t("이 컷의 생성물")}</h3>
         <div className="ed-pool-tools" ref={toolsRef} onBlur={(event) => {
           // Tab 으로 메뉴 밖으로 나가면 닫는다(뷰어의 메뉴와 같다 — 조작 규칙 51). 안에서 옮기는 것(항목·크기 슬라이더)은 그대로다.
@@ -420,7 +475,9 @@ export function EditPool({
       {!notice && listState !== "loading" && listState !== "error" && !items.length && (
         <div className="ed-pool-note">{t("이 컷 폴더에 공유된 생성물이 없습니다.")}</div>
       )}
-      {!notice && items.length > 0 && !shown.length && <div className="ed-pool-note">{t("검색에 맞는 생성물이 없습니다.")}</div>}
+      {!notice && items.length > 0 && !shown.length && (
+        <div className="ed-pool-note">{pass ? t("필터·검색에 맞는 생성물이 없습니다.") : t("검색에 맞는 생성물이 없습니다.")}</div>
+      )}
       {!notice && ui.view === "thumb" && (
         <div className="ed-pbody ed-pgrid" ref={bodyRef} onMouseDown={startDrag}
           style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${ui.size}px, 1fr))` }}>
@@ -432,21 +489,28 @@ export function EditPool({
           ))}
         </div>
       )}
-      {!notice && ui.view === "meta" && (
-        <div className="ed-pbody" ref={bodyRef} onMouseDown={startDrag}>
+      {/* 메타데이터 보기(Jay 2026-10-23 ⑥) — 글은 줄마다 한 줄(넘치면 …, 마우스를 올리면 전체 글): ① 상태·만든 사람·모델 ② 날짜·길이
+          ③ 넣은 트랙·다빈치 표(있을 때만 — 이름을 밀어내지 않게 자기 줄) ④ 프롬프트(옆이면 2줄). 글 칸이 좁으면 글이 아래로(stacked) */}
+      {metaBody && (
+        <div className={"ed-pbody" + (stacked ? " ed-pstack" : "")} ref={bodyRef} onMouseDown={startDrag}>
           {marqueeBox}
           {shown.map((item) => {
             const info = infoOf(item);
             const thumb = thumbOf(item.gen, 512);
+            const name = [info.who, info.model].filter(Boolean).join(" · ");
+            const when = [formatGenerationDateTime(item.gen.created_at), info.duration].filter(Boolean).join(" · ");
+            const marked = !!poolMark(item, t) || !!item.resolve; // 넣은 트랙·소스 판 표 또는 다빈치 표
             return (
               <button key={item.gen.id} type="button" className={rowClass(item, "meta")} {...handlersOf(item)}>
-                <span className="ed-pthumb" style={{ width: ui.size }}>
+                <span className="ed-pthumb" style={{ width: stacked ? "100%" : ui.size }}>
                   {thumb && <img src={thumb} alt="" loading="lazy" draggable={false} />}
+                  {colorMark(item)}
                   {item.gen.assets[0].type === "video" && <i>▶</i>}
                 </span>
                 <span className="ed-pinfo">
-                  <b>{stateMark(info.state)}{[info.who, info.model].filter(Boolean).join(" · ")}{trackMark(item)}{dvMark(item)}</b>
-                  <span>{[formatGenerationDateTime(item.gen.created_at), info.duration].filter(Boolean).join(" · ")}</span>
+                  <b>{stateMark(info.state)}<span className="ed-pline" title={name}>{name}</span></b>
+                  <span className="ed-pline" title={when}>{when}</span>
+                  {marked && <span className="ed-pmarks">{trackMark(item)}{dvMark(item)}</span>}
                   <span className="ed-pprompt">{promptShown(item.gen.prompt)}</span>
                 </span>
               </button>
@@ -465,6 +529,7 @@ export function EditPool({
             const info = infoOf(item);
             return (
               <button key={item.gen.id} type="button" className={rowClass(item, "list")} {...handlersOf(item)}>
+                {colorMark(item)}
                 {stateMark(info.state)}
                 {/* 다빈치 표는 프롬프트 칸 앞에 — 마지막 칸(트랙·소스, 56px)은 그 둘의 짧은 글로 이미 찬다 */}
                 <span className="ed-pprompt">{dvMark(item)}{promptShown(item.gen.prompt)}</span><span>{info.who}</span><span>{info.model}</span>

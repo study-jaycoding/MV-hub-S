@@ -1033,6 +1033,12 @@ body[data-modal-open] .resolve-notices { z-index: 140; }
 }
 .resolve-notice > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .resolve-notice b { color: #ffb37a; font-weight: 600; }
+/* 알림 안 글자 단추(편집 탭 경고의 백업 보기·다시 시도 … — Jay 2026-10-24) — 편집 탭 막대의 .ed-link 와 같은 모양 */
+.resolve-notice-act {
+  background: none; border: 0; padding: 0; border-radius: 0; font: inherit;
+  color: var(--accent); text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.resolve-notice-act:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .resolve-notice-x {
   flex: none; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: rgba(255, 255, 255, 0.07);
   display: flex; align-items: center; justify-content: center; color: #c9cdd5; font-size: 13px; line-height: 1; cursor: pointer;

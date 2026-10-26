@@ -5,6 +5,7 @@
 //  껍데기(자리·바깥 누르기·키 차단)는 EditMenu 의 것이고, 저장·버리기는 이 창의 일이다.
 import { useState, type RefObject } from "react";
 import { MARKER_COLORS, timecode, type EditMarker } from "../../lib/editTimeline";
+import { hintOf } from "../../lib/editShortcuts";
 import { useT } from "../../lib/i18n";
 import { EditMenu, EditSwatches } from "./EditTrackMenu";
 
@@ -52,7 +53,7 @@ export function EditMarkerMenu({
         onClose();
       }}>
         {t("북마크 지우기")}
-        <i>Alt+M</i>
+        <i>{hintOf("bookmarkRemove")}</i>
       </button>
     </EditMenu>
   );

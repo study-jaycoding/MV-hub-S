@@ -123,11 +123,26 @@ def test_restore_failure_rolls_back_preservation_and_head(database, monkeypatch)
     assert repo.get_edit_backup(OWNER, KEY, include_data=True) == before
 
 
-@pytest.mark.parametrize("data", ['{}', '[]', '{"v":true,"clips":[]}', '{"v":2,"clips":[]}', '{"v":1,"clips":{}}', '{"v":1,"v":1,"clips":[]}', '{"v":1,"clips":[],"x":NaN}', '{"v":1,"clips":[{"x":1,"x":2}]}', '{"v":1,"clips":[],' ])
+@pytest.mark.parametrize("data", ['{}', '[]', '{"v":true,"clips":[]}', '{"v":4,"clips":[]}', '{"v":2.0,"clips":[]}', '{"v":1,"clips":{}}', '{"v":1,"v":1,"clips":[]}', '{"v":1,"clips":[],"x":NaN}', '{"v":1,"clips":[{"x":1,"x":2}]}', '{"v":1,"clips":[],' ])
 def test_invalid_document_rejected_without_writes(database, data):
     with pytest.raises(ValueError):
         repo.save_edit_backup(OWNER, KEY, data, None)
     assert repo.get_edit_backup(OWNER, KEY)["head"] is None
+
+
+def test_speed_document_v2_is_kept_verbatim(database):
+    # 속도를 쓴 편집 문서(v 2, 2026-10-23)도 백업한다 — 원문 그대로
+    data = '{"v":2,"clips":[{"cut":"s/c1","gen":"g","track":1,"speed":1.5}],"tracksOff":[],"tracksLocked":[]}'
+    assert repo.save_edit_backup(OWNER, KEY, data, None)["status"] == "saved"
+    assert repo.get_edit_backup(OWNER, KEY, include_data=True)["head"]["data"] == data
+
+
+def test_repeat_slot_document_v3_is_kept_verbatim(database):
+    # 같은 컷을 컷 사이에 한 번 더 놓은 편집 문서(v 3·slot·자리 열쇠 '폴더//ID', 2026-10-23)도 백업한다 — 원문 그대로
+    data = ('{"v":3,"clips":[{"cut":"s/c1","gen":"g","track":1},{"cut":"s/c1","slot":"abc123","gen":"g","track":1,"speed":2}],'
+            '"tracksOff":[],"tracksLocked":[],"cutOrder":["s/c1","s/c2","s/c1//abc123"]}')
+    assert repo.save_edit_backup(OWNER, KEY, data, None)["status"] == "saved"
+    assert repo.get_edit_backup(OWNER, KEY, include_data=True)["head"]["data"] == data
 
 
 def test_byte_boundary_is_utf8_not_characters(database):

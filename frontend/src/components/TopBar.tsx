@@ -1,13 +1,13 @@
-// 상단 바 (DESIGN.md §4): 로고 + 탭(내 작업/팀 공유) + 동기화 + 검색(우측) + Assets + 계정.
+// 상단 바 (DESIGN.md §4): 로고 + 탭(워크스페이스/공유 & 리뷰/캔버스) + 검색(우측) + 편집·Assets·관리 아이콘 단추 + 알림 + 계정.
 // 서버 모드: 단일 DB 를 모두가 공유하므로 번들 주고받기(JSON 내보내기/가져오기·공유 받기·
 // 로컬 보관)는 불필요 → 제거. '구성(compose)' 탭도 숨김(기능은 유지, 진입만 비활성).
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { api } from "../api";
 import type { Filters, WorkspaceContext } from "../types";
 import type { ProviderIdentity } from "../lib/accountIdentity";
 import { useT } from "../lib/i18n";
+import { closeEmbedWindow, EMBED_MODES, useEmbedWindowOpen } from "../lib/popupWindows";
 import { AccountMenu } from "./AccountMenu";
-import { FolderIcon } from "./FolderIcon";
 import { NotificationCenter } from "./NotificationCenter";
 import { SearchBox } from "./SearchBox";
 
@@ -75,6 +75,8 @@ export function TopBar({
     setTabPicks((n) => n + 1);
     onTab(tab);
   };
+  const assetsOpen = useEmbedWindowOpen(EMBED_MODES.assets);
+  const manageOpen = useEmbedWindowOpen(EMBED_MODES.manage);
 
   return (
     // React 18 타입에 inert 가 없어 spread 로 넘긴다. 알림·계정 메뉴의 패널은 body 에 그려져 이 잠금에 들지 않는다.
@@ -107,15 +109,6 @@ export function TopBar({
         >
           {t("캔버스")}
         </button>
-        {onOpenEdit && (
-          <button
-            className={editOpen ? "on" : ""}
-            onClick={onOpenEdit}
-            title={t("편집 — 공유된 생성물을 컷 순서대로 이어 보기")}
-          >
-            {t("편집")}
-          </button>
-        )}
       </nav>
 
       {/* 좌(로고·탭) ↔ 우(검색·Assets·계정) 분리 */}
@@ -136,26 +129,42 @@ export function TopBar({
         onSearch={onSearch}
       />
 
-      {/* Assets(구성) 버튼 — 분리된 브라우저 창으로 연다 */}
-      <button className="assets-btn" onClick={onOpenAssets} title={t("Assets (구성) — 별도 창")}>
-        <FolderIcon />
-        <span className="assets-label">Assets</span>
-      </button>
-
-      {/* PM 대시보드(분리형) — 플래그 on(onOpenManage 전달) 일 때만 노출. 보드 아이콘 버튼 */}
-      {onOpenManage && (
+      {/* 편집 · Assets · 관리 — 글자 없는 아이콘 단추(Jay 2026-10-26). 켜지면(편집 탭 열림 · 그 별도 창이 떠 있음) 선 그림 대신 투톤 그림,
+          켜진 채 다시 누르면 닫는다: 편집 = 밑의 탭 단추를 누른 것과 같게 떠난다 · 창 = 닫는다. Assets·관리는 분리된 브라우저 창. 관리(PM)는 플래그 on 일 때만.
+          셋은 바탕이 이어진 한 캡슐로 묶는다(시안 G3, Jay 2026-10-26). */}
+      <div className="top-ic-group">
+        {onOpenEdit && (
+          <button
+            className={`top-ic-btn${editOpen ? " lit" : ""}`}
+            onClick={editOpen ? () => pickTab(filters.tab) : onOpenEdit}
+            title={t("편집 — 공유된 생성물을 컷 순서대로 이어 보기")}
+            aria-label={t("편집")}
+            aria-pressed={!!editOpen}
+          >
+            <EditIcon />
+          </button>
+        )}
         <button
-          className="assets-btn manage-btn-icon"
-          onClick={onOpenManage}
-          title={t("프로젝트 관리 — 별도 창")}
-          aria-label={t("프로젝트 관리 — 별도 창")}
+          className={`top-ic-btn assets-btn${assetsOpen ? " lit" : ""}`}
+          onClick={assetsOpen ? () => closeEmbedWindow(EMBED_MODES.assets) : onOpenAssets}
+          title={t("Assets (구성) — 별도 창")}
+          aria-label="Assets"
+          aria-pressed={assetsOpen}
         >
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <rect x="2" y="2.5" width="4.6" height="11" rx="1.3" fill="currentColor" />
-            <rect x="9.4" y="2.5" width="4.6" height="7" rx="1.3" fill="currentColor" />
-          </svg>
+          <AssetsIcon />
         </button>
-      )}
+        {onOpenManage && (
+          <button
+            className={`top-ic-btn manage-btn${manageOpen ? " lit" : ""}`}
+            onClick={manageOpen ? () => closeEmbedWindow(EMBED_MODES.manage) : onOpenManage}
+            title={t("프로젝트 관리 — 별도 창")}
+            aria-label={t("프로젝트 관리 — 별도 창")}
+            aria-pressed={manageOpen}
+          >
+            <ManageIcon />
+          </button>
+        )}
+      </div>
 
       <NotificationCenter
         commentUnreadCount={notificationUnreadCount}
@@ -180,5 +189,109 @@ export function TopBar({
         onOpenManage={onOpenManage}
       />
     </header>
+  );
+}
+
+// 머리줄 아이콘 — 24 격자 한가운데(시안을 격리 화면에서 getBBox 로 맞추고 6배 캡처로 잰 값: 치우침 ≤ 0.08px).
+// 평소 = 선(20px), 켜짐 = 투톤 채움(22px — 어두운 뒤판 + 밝은 앞면, 옛 초록 폴더 결). 둘 다 그려 두고 CSS(.lit)로 하나만 보인다 — 단추 크기가 흔들리지 않게.
+function TopIcon({ line, lit }: { line: ReactNode; lit: ReactNode }) {
+  return (
+    <>
+      <svg className="top-ic-line" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        {line}
+      </svg>
+      <svg className="top-ic-lit" width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        {lit}
+      </svg>
+    </>
+  );
+}
+
+// 앞면 그라데이션 — 같은 문서에 여러 번 그려져도 id 가 겹치지 않게 인스턴스마다(FolderIcon 과 같은 방식).
+function Grad({ id, top, bottom, y1, y2 }: { id: string; top: string; bottom: string; y1: number; y2: number }) {
+  return (
+    <defs>
+      <linearGradient id={id} x1="12" y1={y1} x2="12" y2={y2} gradientUnits="userSpaceOnUse">
+        <stop stopColor={top} />
+        <stop offset="1" stopColor={bottom} />
+      </linearGradient>
+    </defs>
+  );
+}
+
+function EditIcon() {
+  const g = useId();
+  return (
+    <TopIcon
+      line={
+        <g transform="translate(0.47 0.07)">
+          <path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+          <g transform="rotate(-12 3 11)">
+            <rect x="3" y="6.5" width="18" height="4.5" rx="1" />
+            <path d="M8.5 6.5l2.5 4.5M14.5 6.5l2.5 4.5" />
+          </g>
+        </g>
+      }
+      lit={
+        <>
+          <Grad id={g} top="#ffd98f" bottom="#efa43c" y1={3} y2={20.5} />
+          <g transform="translate(0.41 0.67)">
+            <rect x="1.5" y="11" width="21" height="9.5" rx="2" fill={`url(#${g})`} />
+            <g transform="rotate(-11 1.5 10.25)">
+              <rect x="1.5" y="6" width="20.5" height="4.25" rx="1.1" fill="#8f5a1c" />
+              <path d="M6.5 6h2.6l2.4 4.25H8.9zM13 6h2.6l2.4 4.25h-2.6z" fill={`url(#${g})`} />
+            </g>
+          </g>
+        </>
+      }
+    />
+  );
+}
+
+function AssetsIcon() {
+  const g = useId();
+  return (
+    <TopIcon
+      line={<path d="M3 6.5a2 2 0 0 1 2-2h4.2l2 2H19a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />}
+      lit={
+        <>
+          <Grad id={g} top="#7fd48c" bottom="#53a667" y1={10.1} y2={19.8} />
+          <g transform="translate(0 2.5)">
+            <path
+              d="M1.5 3.9C1.5 2.7 2.5 1.7 3.7 1.7h5c.6 0 1.2.25 1.6.7l1.3 1.4h8.7c1.2 0 2.2 1 2.2 2.2v9.1c0 1.2-1 2.2-2.2 2.2H3.7c-1.2 0-2.2-1-2.2-2.2V3.9Z"
+              fill="#4c9260"
+            />
+            <path d="M1.5 7.6h21v7.5c0 1.2-1 2.2-2.2 2.2H3.7c-1.2 0-2.2-1-2.2-2.2V7.6Z" fill={`url(#${g})`} />
+          </g>
+        </>
+      }
+    />
+  );
+}
+
+// 관리 = 아래 기준선에서 위로 솟는 막대(Jay 2026-10-26 — 처음 시안은 위에서 매달린 칸반이었다)
+function ManageIcon() {
+  const g = useId();
+  return (
+    <TopIcon
+      line={
+        <>
+          <rect x="3" y="4" width="18" height="16" rx="2.5" />
+          <path d="M8 9v7M12 12v4M16 7v9" />
+        </>
+      }
+      lit={
+        <>
+          <Grad id={g} top="#d6c9ff" bottom="#9d86ec" y1={6.5} y2={17.5} />
+          <rect x="1.5" y="3.5" width="21" height="17" rx="2.5" fill="#56449e" />
+          <g fill={`url(#${g})`}>
+            <rect x="4.5" y="9" width="4.4" height="8.5" rx="1.2" />
+            <rect x="9.8" y="12.5" width="4.4" height="5" rx="1.2" />
+            <rect x="15.1" y="6.5" width="4.4" height="11" rx="1.2" />
+          </g>
+        </>
+      }
+    />
   );
 }

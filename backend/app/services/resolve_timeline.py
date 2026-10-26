@@ -1,7 +1,10 @@
 """편집 탭의 타임라인을 현재 Resolve 프로젝트에 **새 타임라인**으로 짓는다(타임라인 Resolve 보내기).
 
-들어오는 계획(plan)은 프런트의 ``lib/editResolveExport.ts`` 가 만든 프레임 단위 배치다(format ``mvhub.edit-timeline`` v1 · v2).
+들어오는 계획(plan)은 프런트의 ``lib/editResolveExport.ts`` 가 만든 프레임 단위 배치다(format ``mvhub.edit-timeline`` v1 · v2 · v3).
 v2(2026-10-14 앞 자르기)는 클립에 ``head``(소스의 시작, 24fps 프레임), 소리에 ``track``(그 소리를 내는 영상 클립의 트랙)이 더 있다.
+v3(2026-10-23 속도)는 v2 의 칸에 더해 속도 클립에 ``speed``(배율)·``src``(쓰는 원본 초), 그 소리에 ``speed`` 가 있다 — 계획 길이로 넣은 뒤
+``SetSpeed``(리플 없음)로 건다(``docs/status/편집탭_속도조절_설계_2026-10-23.md`` 의 실측).
+100% 끝은 모든 클립을 **올림**으로 넣는다(``_full_end`` — fps 가 다른 원본의 1프레임 짧음, 2026-10-23 Jay 결정).
 전송 manifest(``mvhub.resolve-transfer`` v2 — 원본 파일 준비·Media Pool 가져오기)와는 **다른 문서**이고 manifest 에 넣지
 않는다: 메뉴 스크립트 Importer·pending 목록은 이 전송을 보통의 원본 전송으로만 본다(Codex 설계 검토 10-09).
 
@@ -47,7 +50,11 @@ from .resolve_bridge import (
 )
 
 PLAN_FORMAT = "mvhub.edit-timeline"
-PLAN_VERSIONS = (1, 2)  # 2 = 앞을 자른 클립이 있는 계획(클립의 head · 소리의 track). 그런 클립이 없으면 프런트는 1 을 보낸다
+# 2 = 앞을 자른 클립이 있는 계획(클립의 head · 소리의 track). 그런 클립이 없으면 프런트는 1 을 보낸다.
+# 3 = 속도를 바꾼 클립이 있는 계획(2026-10-23 Ctrl+R) — 2 의 칸에 더해 속도 클립의 speed(배율)·src(쓰는 원본 초), 그 소리의 speed.
+PLAN_VERSIONS = (1, 2, 3)
+SPEED_MIN = 0.25
+SPEED_MAX = 4.0
 TIMELINE_FPS = 24
 MAX_VIDEO_TRACKS = 32
 MAX_CLIPS = 2000
@@ -95,6 +102,24 @@ def _text(value: Any, label: str, limit: int) -> str:
     return _UNSAFE_NAME.sub(" ", value).strip()[:limit]
 
 
+def _number(value: Any, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise TimelinePlanError(f"타임라인 계획의 {label} 값이 올바르지 않습니다")
+    return float(value)
+
+
+def _speed(value: Any) -> float:
+    speed = _number(value, "속도")
+    if not SPEED_MIN - 1e-9 <= speed <= SPEED_MAX + 1e-9:
+        raise TimelinePlanError("타임라인 계획의 속도가 25%~400% 밖입니다")
+    return speed
+
+
+def _speed_frames(src: float, speed: float) -> int:
+    """속도 클립의 타임라인 프레임 수 — 프런트 clipLen 과 같은 식·같은 계산 순서(floor(src × 24 ÷ speed + 1e-6))."""
+    return math.floor(src * TIMELINE_FPS / speed + 1e-6)
+
+
 def _no_overlap(rows: list[dict[str, Any]], label: str) -> None:
     last_end = -1
     for row in sorted(rows, key=lambda item: (item["start"], item["end"])):
@@ -109,7 +134,8 @@ def validate_plan(plan: Any, generation_ids: set[str]) -> dict[str, Any]:
     version = plan.get("version") if isinstance(plan, dict) else None
     if not isinstance(plan, dict) or plan.get("format") != PLAN_FORMAT or isinstance(version, bool) or version not in PLAN_VERSIONS:
         raise unknown
-    headed = version == 2
+    headed = version in (2, 3)
+    sped = version == 3
     if plan.get("fps") != TIMELINE_FPS or isinstance(plan.get("fps"), bool):
         raise TimelinePlanError(f"타임라인 계획의 fps 는 {TIMELINE_FPS} 이어야 합니다")
     name = _text(plan.get("name"), "이름", MAX_NAME)
@@ -147,6 +173,18 @@ def validate_plan(plan: Any, generation_ids: set[str]) -> dict[str, Any]:
             raise unknown
         else:
             head = 0
+        # 속도(3 판) — 속도 클립에만 speed·src 가 같이 온다. 다른 판에 오면 조용히 버리지 않는다(속도 없이 놓고 '계획대로'라 답하지 않게).
+        #  src 는 그 클립이 쓰는 원본 초 — 받은 값으로 센 타임라인 프레임 수가 계획의 길이와 같아야 한다(프런트와 같은 식).
+        speed, src = 1.0, None
+        if "speed" in row or "src" in row:
+            if not sped:
+                raise unknown
+            if row["kind"] != "video":
+                raise TimelinePlanError("타임라인 계획의 그림 클립에 속도가 있습니다")
+            speed = _speed(row.get("speed"))
+            src = _number(row.get("src"), "클립 원본 길이")
+            if src <= 0 or _speed_frames(src, speed) != end - start:
+                raise TimelinePlanError("타임라인 계획의 속도 클립 길이가 원본 길이·속도와 맞지 않습니다")
         clips.append({
             "gen_id": gen_id(row, "클립"),
             "track": _int(row.get("track"), "클립 트랙", low=1, high=tracks),
@@ -154,6 +192,8 @@ def validate_plan(plan: Any, generation_ids: set[str]) -> dict[str, Any]:
             "enabled": _bool(row.get("enabled"), "클립 켬"),
             "kind": row["kind"],
             "head": head,
+            "speed": speed,
+            "src": src,
         })
     if not clips:
         raise TimelinePlanError("타임라인에 올린 클립이 없습니다")
@@ -169,16 +209,29 @@ def validate_plan(plan: Any, generation_ids: set[str]) -> dict[str, Any]:
         sound_id = gen_id(row, "소리")
         # 2 판: 그 소리를 내는 영상 클립을 트랙으로 가리킨다 — 같은 생성물이 두 트랙에 있어도 제 클립의 시작점을 쓰게.
         #  그 트랙의 그 자리에 그 영상 클립이 없으면 다른 클립으로 대신하지 않는다(계획이 틀린 것이다 — Codex 설계 검토).
+        carrier = None
         if headed:
             carrier_track = _int(row.get("track"), "소리의 영상 트랙", low=1, high=tracks)
-            if not any(item["gen_id"] == sound_id and item["track"] == carrier_track and item["kind"] == "video"
-                       and item["start"] <= start < item["end"] for item in clips):
+            carrier = next((item for item in clips if item["gen_id"] == sound_id and item["track"] == carrier_track
+                            and item["kind"] == "video" and item["start"] <= start < item["end"]), None)
+            if carrier is None:
                 raise TimelinePlanError("타임라인 계획의 소리가 가리키는 영상 클립이 없습니다")
         elif "track" in row:
             raise unknown
         else:
             carrier_track = None
-        audio.append({"gen_id": sound_id, "start": start, "end": end, "offset": float(offset), "track": carrier_track})
+        # 3 판: 소리의 속도는 운반 영상 클립과 같아야 하고(빠짐 = 1), 소리는 그 클립의 구간 안에 있어야 한다
+        if ("speed" in row and not sped) or "src" in row:  # 소리에는 어느 판에도 src 가 없다
+            raise unknown
+        sound_speed = _speed(row["speed"]) if "speed" in row else 1.0
+        if sped and carrier is not None:
+            if abs(sound_speed - carrier["speed"]) > 1e-9:
+                raise TimelinePlanError("타임라인 계획의 소리 속도가 영상 클립과 다릅니다")
+            if end > carrier["end"]:
+                raise TimelinePlanError("타임라인 계획의 소리가 그 영상 클립 밖으로 나갑니다")
+        audio.append({
+            "gen_id": sound_id, "start": start, "end": end, "offset": float(offset), "track": carrier_track, "speed": sound_speed,
+        })
     _no_overlap(audio, "소리")
 
     markers: list[dict[str, Any]] = []
@@ -230,6 +283,9 @@ def new_result(*, status: str = "pending", error: str | None = None, error_code:
         "saved": False,
         "mismatches": [],  # 되읽어 보니 계획과 다른 자리(short = 자리는 맞고 원본이 짧아 끝만 비었다)
         "short_sources": [],  # 적힌 길이보다 실제 영상이 짧은 클립(만들기 전에 막는다)
+        "speed_unplaceable": [],  # 원본 fps 가 24 보다 낮아 속도 클립을 계획 길이 그대로 놓을 수 없는 것(만들기 전에 막는다)
+        "speed_applied": 0,  # 속도를 걸고 되읽어 맞은 것(영상·소리 아이템 수)
+        "speed_failed": [],  # 속도를 못 걸었거나 되읽은 값이 다른 것 — reason: mismatch(걸기 전 확인) · moved · set · unread · readback · stopped
         "warnings": [],
         "error": error,
         "error_code": error_code,
@@ -262,6 +318,25 @@ def _clip_facts(clip: Any) -> dict[str, Any]:
 
 def _same_fps(left: float, right: float) -> bool:
     return abs(left - right) < 0.001
+
+
+def _full_end(first: int, frames: int, fps: float) -> int:
+    """소스 [first, 끝) 을 넣어 타임라인에 frames 프레임이 되는 100% 끝 — **올림**(2026-10-23 실측 4 · Jay 결정).
+
+    반올림하면 fps 가 다른 원본(25·29.97·30)에서 15가지 중 6가지가 1프레임 짧게 들어갔다(30fps head 12 · 37프레임 → 36).
+    올리면 15가지 모두 길이가 정확했다. 24fps 원본은 반올림과 같다(정수).
+    """
+    return first + math.ceil(frames / TIMELINE_FPS * fps - 1e-6)
+
+
+def _placed_frames(first: int, end: int, fps: float) -> int:
+    """소스 [first, end) 를 넣었을 때의 타임라인 길이 — Resolve 는 내림으로 환산한다(실측 4: 30fps 46 → 36, 25fps 52 → 49)."""
+    return math.floor((end - first) / fps * TIMELINE_FPS + 1e-6)
+
+
+def _speed_end(first: int, frames: int, fps: float, speed: float) -> int:
+    """속도를 건 뒤 Resolve 가 쓰는 원본의 끝(끝 미포함) — 실측(48 × 1.27 → +60, 30fps 48 × 1.27 → +76)과 같은 내림."""
+    return first + math.floor(frames / TIMELINE_FPS * fps * speed + 1e-6)
 
 
 def _frame(value: float) -> int:
@@ -388,15 +463,41 @@ def _build_locked(manifest: dict[str, Any], plan: dict[str, Any], resolve: Any, 
             "recordFrame": clip_plan["start"],  # 아래에서 타임라인 시작 프레임을 더한다
         }
         short = False
+        if clip_plan["speed"] != 1.0 and fact["still"]:
+            raise ResolveBridgeError("속도를 바꾼 클립의 원본이 Resolve 에서 영상이 아닙니다", code="clip_unreadable")
         if not fact["still"]:
             if fact["fps"] <= 0 or fact["frames"] <= 0:
                 raise ResolveBridgeError("Resolve 가 영상의 길이를 알려 주지 않았습니다", code="clip_unreadable")
             # 소스의 구간 [first, wanted) — 시작점(head)을 소스 프레임으로 한 번 바꾸고, 끝은 **거기서부터** 센다. 소리도 같은 식을
             #  쓴다(아래) — 시작과 끝을 따로 반올림하면 fps 가 다른 원본에서 영상과 소리의 끝이 한 프레임 갈린다(Codex 설계 검토).
+            #  끝은 올린다(_full_end) — 타임라인 길이가 계획의 길이 그대로 들어간다.
             first = _frame(clip_plan["head"] / TIMELINE_FPS * fact["fps"])
-            wanted = first + _frame(length / TIMELINE_FPS * fact["fps"])
+            wanted = _full_end(first, length, fact["fps"])
+            if clip_plan["speed"] != 1.0:
+                # 속도 클립 — 100% 로 계획 길이만큼 넣은 뒤 속도를 건다(길이는 그대로, 원본 구간이 바뀐다 — 실측). 100% 끝은 원본 끝을
+                #  넘어도 된다(실측: 거부·잘림 없이 들어가고, 느린 속도를 걸면 원본 안으로 들어온다). 모자람은 **속도를 친 끝**으로 본다.
+                speed_end = _speed_end(first, length, fact["fps"], clip_plan["speed"])
+                # 계획 길이 그대로 놓이는가 — 원본 fps 가 24 이상이면 올림으로 늘 정확하다(원본 한 프레임 ≤ 타임라인 한 프레임). 24 보다 낮으면
+                #  원본 한 프레임이 타임라인 여러 프레임이라 놓을 수 있는 길이가 띄엄띄엄이다(12fps = 짝수만) — 그 길이가 아니면 속도를 걸 수
+                #  없으니(속도 단계는 길이 N 을 확인한다) 만들기 전에 막는다(Codex 독립 리뷰 4차: 12fps 60프레임 · 210% → 57 대신 58).
+                if _placed_frames(first, wanted, fact["fps"]) != length:
+                    result["speed_unplaceable"].append({
+                        "gen_id": clip_plan["gen_id"], "track": clip_plan["track"], "start": clip_plan["start"], "planned": length,
+                        "fps": fact["fps"],
+                    })
+                if speed_end > fact["frames"] or first >= fact["frames"]:
+                    result["short_sources"].append({
+                        "gen_id": clip_plan["gen_id"], "track": clip_plan["track"], "start": clip_plan["start"],
+                        "planned": length,
+                        "actual": max(0, int((fact["frames"] - first) / fact["fps"] / clip_plan["speed"] * TIMELINE_FPS)),
+                    })
+                info["startFrame"] = first
+                info["endFrame"] = max(first + 1, wanted)
+                video_infos.setdefault(clip_plan["track"], []).append((info, {**clip_plan, "short": False, "speed_end": speed_end}))
+                continue
             if wanted > fact["frames"]:
-                missing = (wanted - fact["frames"]) / fact["fps"] * TIMELINE_FPS
+                # 모자란 길이(타임라인 프레임)는 올림 전의 정확한 값으로 센다 — 올림이 더한 한 소스 프레임 몫까지 모자람으로 치지 않게
+                missing = length - (fact["frames"] - first) / fact["fps"] * TIMELINE_FPS
                 # 시작점이 원본의 끝이거나 그 뒤면 넣을 것이 한 프레임도 없다 — '한 프레임 모자람'으로 넘기지 않는다
                 if missing > 1.0 or first >= fact["frames"]:
                     result["short_sources"].append({
@@ -410,12 +511,6 @@ def _build_locked(manifest: dict[str, Any], plan: dict[str, Any], resolve: Any, 
             info["startFrame"] = first
             info["endFrame"] = max(first + 1, wanted)
         video_infos.setdefault(clip_plan["track"], []).append((info, {**clip_plan, "short": short}))
-    if result["short_sources"]:
-        raise ResolveBridgeError(
-            f"적힌 길이보다 실제 영상이 짧은 클립이 {len(result['short_sources'])}개 있어 타임라인을 만들지 않았습니다. "
-            "편집 탭에서 그 컷의 영상을 한 번 재생해 길이를 맞춘 뒤 다시 보내세요",
-            code="source_shorter",
-        )
     audio_infos: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for audio_plan in plan["audio"]:
         fact = facts[audio_plan["gen_id"]]
@@ -432,10 +527,33 @@ def _build_locked(manifest: dict[str, Any], plan: dict[str, Any], resolve: Any, 
         lead = (audio_plan["start"] - carrier["start"]) / TIMELINE_FPS if carrier else audio_plan["offset"]
         # 그 영상 클립이 소스의 중간에서 시작하면(head) 소리도 같은 소스 프레임에서 센다 — 영상과 같은 식(위)
         origin = _frame(carrier["head"] / TIMELINE_FPS * fact["fps"]) if carrier else 0
-        first = origin + _frame(lead * fact["fps"])
-        # 끝도 소스 좌표다(30fps 영상의 5~10초 = [150, 300)). **끝 시각을 한 번** 반올림한다 — 시작 + 반올림한 길이는 한 프레임
-        #  어긋날 수 있다(계획을 짓는 쪽과 같은 규칙). 원본이 모자라 줄인 것은 영상과 같이 되읽을 때 알린다(short).
-        wanted = origin + _frame((lead + (audio_plan["end"] - audio_plan["start"]) / TIMELINE_FPS) * fact["fps"])
+        # 속도 클립의 소리 — 그 영상 클립이 놓인 자리에서 센 차이(lead)만큼 원본은 속도배로 지나 있다
+        speed = audio_plan["speed"]
+        first = origin + _frame(lead * speed * fact["fps"])
+        length = audio_plan["end"] - audio_plan["start"]
+        # 끝도 소스 좌표다(30fps 영상의 5~10초 = [150, 300)). 영상과 같이 **올림**으로 넣어 타임라인 길이가 계획 그대로 들어가게 한다
+        #  (_full_end — 반올림하면 fps 가 다른 원본에서 한 프레임 짧았다). 원본이 모자라 줄인 것은 영상과 같이 되읽을 때 알린다(short).
+        wanted = _full_end(first, length, fact["fps"])
+        if speed != 1.0:
+            # 속도 소리는 100% 끝이 원본 끝을 넘어도 그대로 넣는다(영상과 같다) — 모자람은 속도를 친 끝으로 본다(넘으면 만들지 않는다)
+            speed_end = _speed_end(first, length, fact["fps"], speed)
+            if _placed_frames(first, wanted, fact["fps"]) != length:  # 영상과 같은 까닭(낮은 fps)
+                result["speed_unplaceable"].append({
+                    "gen_id": audio_plan["gen_id"], "track": 0, "start": audio_plan["start"], "planned": length, "fps": fact["fps"],
+                })
+            if speed_end > fact["frames"] + 1 or first >= fact["frames"]:
+                result["short_sources"].append({
+                    "gen_id": audio_plan["gen_id"], "track": 0, "start": audio_plan["start"], "planned": length,
+                    "actual": max(0, int((fact["frames"] - first) / fact["fps"] / speed * TIMELINE_FPS)),
+                })
+                continue
+            # 소리의 시작을 반올림한 몫만큼 영상보다 한 프레임 더 원본 끝을 넘을 수 있다 — 원본 끝으로 본다(되읽기는 원본 끝 규칙)
+            speed_end = min(speed_end, fact["frames"])
+            audio_infos.append(({
+                "mediaPoolItem": pool[audio_plan["gen_id"]], "mediaType": 2, "trackIndex": 1,
+                "startFrame": first, "endFrame": max(first + 1, wanted), "recordFrame": audio_plan["start"],
+            }, {**audio_plan, "left": first, "fps": fact["fps"], "short": False, "speed_end": speed_end}))
+            continue
         last = min(wanted, fact["frames"])
         if last <= first:  # 넣을 소리가 한 프레임도 없다 — 조용히 빼지 않는다
             result["mismatches"].append({
@@ -447,6 +565,19 @@ def _build_locked(manifest: dict[str, Any], plan: dict[str, Any], resolve: Any, 
             "mediaPoolItem": pool[audio_plan["gen_id"]], "mediaType": 2, "trackIndex": 1,
             "startFrame": first, "endFrame": last, "recordFrame": audio_plan["start"],
         }, {**audio_plan, "left": first, "fps": fact["fps"], "short": wanted > last}))
+    # 모자란 것은 소리까지 다 센 뒤에 한 번에 알린다(속도 클립의 소리도 원본이 모자라면 막는다)
+    if result["short_sources"]:
+        raise ResolveBridgeError(
+            f"적힌 길이보다 실제 영상이 짧은 클립이 {len(result['short_sources'])}개 있어 타임라인을 만들지 않았습니다. "
+            "편집 탭에서 그 컷의 영상을 한 번 재생해 길이를 맞춘 뒤 다시 보내세요",
+            code="source_shorter",
+        )
+    if result["speed_unplaceable"]:
+        raise ResolveBridgeError(
+            f"원본 fps 가 24 보다 낮아 속도를 바꾼 길이 그대로 놓을 수 없는 클립이 {len(result['speed_unplaceable'])}개 있어 타임라인을 만들지 않았습니다. "
+            "그 클립의 속도를 조금 바꾸거나(길이가 한 프레임 달라진다) 100% 로 두고 다시 보내세요",
+            code="speed_fps",
+        )
 
     # 3) 타임라인 만들기 — 여기서부터 Resolve 가 바뀐다.
     result["step"] = "create"
@@ -496,7 +627,9 @@ def _build_locked(manifest: dict[str, Any], plan: dict[str, Any], resolve: Any, 
                 fact = facts[row_plan["gen_id"]]
                 # 타임라인과 fps 가 다른 소스는 끝 한 프레임이 달라질 수 있다(실측 — 분수 fps). 같은 fps 는 정확해야 하고,
                 #  원본이 모자라 줄여 넣은 것(short)은 fps 가 달라도 봐주지 않는다 — 그 한 프레임이 바로 빈 끝이다.
-                slack = 0 if fact["still"] or row_plan["short"] or _same_fps(fact["fps"], TIMELINE_FPS) else 1
+                #  속도 클립은 정확해야 한다 — 길이 N 으로 넣어야 속도 뒤의 원본 끝이 계획과 같다(올림으로 넣으면 fps 와 무관하게 정확했다 — 실측 4).
+                speed_row = row_plan.get("speed", 1.0) != 1.0
+                slack = 0 if fact["still"] or row_plan["short"] or speed_row or _same_fps(fact["fps"], TIMELINE_FPS) else 1
                 found = actual.pop(row_plan["start"], None)
                 if found is not None and kind == "video":
                     # 그 자리에 놓인 클립이다 — 길이가 달라도(short) 끄기는 해야 한다. 길이가 맞을 때만 쥐면 짧게 들어간 꺼 둔
@@ -532,6 +665,111 @@ def _build_locked(manifest: dict[str, Any], plan: dict[str, Any], resolve: Any, 
             rows = place("audio", 1, audio_infos)
             check("audio", 1, rows, audio_infos)
             result["audio"] = len(rows)
+
+        # 3-2) 속도(3 판, 2026-10-23) — 계획 길이로 놓인 속도 클립·그 소리에만 SetSpeed(리플 없음 — 실측: 길이는 그대로, 원본 구간이 바뀐다).
+        #  · 아이템은 **계획한 트랙을 그때 다시 읽어** 찾는다(locate — 그 트랙의 그 시작에 길이 N · 같은 미디어 풀 아이템). 앞서 쥔 객체의 시작·길이만
+        #    보면 같은 자리로 다른 트랙에 옮겨진 것을 못 알아본다(Codex 독립 리뷰). 미디어 풀 아이템 id 를 못 읽으면 같은 원본으로 치지 않는다.
+        #  · 걸기 전에 전부 확인한다(자리·길이·원본 시작·미디어 풀 아이템) — 하나라도 다르거나 못 읽으면 **하나도 걸지 않는다**(모든 대상을 결과 줄에).
+        #    원본 시작은 걸기 전에만 본다(걸고 나면 30fps 원본이 한 프레임 앞으로 읽혔다 — 실측 4).
+        #  · 걸기 직전마다 다시 찾는다 — 없으면 그 뒤는 걸지 않는다. guard 실패·Resolve 예외는 멈춘다(partial) — 그 클립과 남은 것을 결과 줄에 적고.
+        #  · SetSpeed False·GetSpeed 이상(Percentage 없음·숫자 아님·NaN·무한)·되읽은 값이 다른 것은 그 클립만 적고 계속한다(자리·길이는 이미 맞게
+        #    놓여 뒤 클립을 해치지 않는다).
+        targets: list[tuple[str, str, int, dict[str, Any], dict[str, Any], bool]] = [
+            *((f"V{track}", "video", track, info, row_plan, False)
+              for track in sorted(video_infos) for info, row_plan in sorted(video_infos[track], key=lambda entry: entry[1]["start"])
+              if row_plan["speed"] != 1.0),
+            *(("A1", "audio", 1, info, row_plan, True) for info, row_plan in audio_infos if row_plan["speed"] != 1.0),
+        ]
+
+        def speed_fail(label: str, row_plan: dict[str, Any], reason: str) -> None:
+            result["speed_failed"].append({"track": label, "gen_id": row_plan["gen_id"], "start": row_plan["start"], "reason": reason})
+
+        def pool_id(item: Any) -> str:
+            return str(item.GetUniqueId() or "") if item is not None else ""
+
+        def frame_value(value: Any) -> int | None:
+            """Resolve 가 돌려준 프레임 — 숫자(유한)가 아니면 None(읽지 못함 — 예외로 치지 않는다)."""
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                return None
+            return int(round(value))
+
+        def in_place(item: Any, row_plan: dict[str, Any]) -> bool:
+            """그 아이템이 계획한 시작·길이 N 그대로인가 — 숫자가 아닌 값을 돌려주면 아니다."""
+            start = frame_value(item.GetStart())
+            return start is not None and start - base == row_plan["start"] and frame_value(item.GetDuration()) == row_plan["end"] - row_plan["start"]
+
+        def locate(kind: str, index: int, row_plan: dict[str, Any]) -> Any:
+            """계획한 트랙의 그 시작에 놓인 아이템 — 길이 N 이고 그 생성물의 미디어 풀 아이템일 때만(아니면 None)."""
+            wanted = pool_id(pool[row_plan["gen_id"]])
+            for item in timeline.GetItemListInTrack(kind, index) or []:
+                start = frame_value(item.GetStart())
+                if start is None or start - base != row_plan["start"]:
+                    continue
+                same = bool(wanted) and pool_id(item.GetMediaPoolItem()) == wanted
+                return item if same and in_place(item, row_plan) else None
+            return None
+
+        if targets:
+            result["step"] = "speed"
+            wrong = []
+            try:
+                for label, kind, index, info, row_plan, _sound in targets:
+                    item = locate(kind, index, row_plan)
+                    source_start = getattr(item, "GetSourceStartFrame", None) if item is not None else None
+                    if not callable(source_start) or frame_value(source_start()) != info["startFrame"]:
+                        wrong.append((label, row_plan))
+            except Exception:
+                # 걸기 전 확인 도중 멈췄다(Resolve 호출 예외) — 하나도 걸지 않았다. 모든 대상을 결과 줄에 적고 그대로 올린다(partial)
+                for label, _kind, _index, _info, row_plan, _sound in targets:
+                    speed_fail(label, row_plan, "stopped")
+                raise
+            if wrong:
+                for label, _kind, _index, _info, row_plan, _sound in targets:
+                    speed_fail(label, row_plan, "mismatch" if any(row_plan is bad for _label, bad in wrong) else "skipped")
+                result["warnings"].append(
+                    f"속도 클립 {len(wrong)}개가 계획한 자리·원본과 달라 속도를 하나도 걸지 않았습니다(타임라인은 100% 로 놓였습니다)")
+            else:
+                for at, (label, kind, index, _info, row_plan, sound) in enumerate(targets):
+                    try:
+                        guard()
+                        item = locate(kind, index, row_plan)
+                        if item is None:
+                            speed_fail(label, row_plan, "moved")
+                            for rest_label, _k, _i, _f, rest_plan, _s in targets[at + 1:]:
+                                speed_fail(rest_label, rest_plan, "stopped")
+                            break
+                        options: dict[str, Any] = {"Percentage": row_plan["speed"] * 100}
+                        if sound:
+                            options["PitchCorrection"] = True  # 소리 높이 유지(실측: 따로 놓은 A1 도 받는다 — 귀로는 Jay 확인 대기)
+                        if not item.SetSpeed(options):
+                            speed_fail(label, row_plan, "set")
+                            continue
+                        read = item.GetSpeed()
+                        percent = read.get("Percentage") if isinstance(read, dict) else None
+                        source_end = getattr(item, "GetSourceEndFrame", None)
+                        end = frame_value(source_end()) if callable(source_end) else None
+                        start = frame_value(item.GetStart())
+                        length = frame_value(item.GetDuration())
+                        if (isinstance(percent, bool) or not isinstance(percent, (int, float)) or not math.isfinite(percent)
+                                or end is None or start is None or length is None):
+                            speed_fail(label, row_plan, "unread")
+                            continue
+                        # 원본 끝은 정확히 E — 원본 끝에 닿은 것만 끝 프레임으로 읽혀 E − 1 이어도 맞다(실측: 원본 240 의 끝이 239)
+                        expected = row_plan["speed_end"]
+                        end_ok = end == expected or (expected == facts[row_plan["gen_id"]]["frames"] and end == expected - 1)
+                        same_place = start - base == row_plan["start"] and length == row_plan["end"] - row_plan["start"]
+                        if abs(float(percent) - row_plan["speed"] * 100) > 0.01 or not same_place or not end_ok:
+                            speed_fail(label, row_plan, "readback")
+                            continue
+                        result["speed_applied"] += 1
+                    except Exception:
+                        # 멈춘다 — 이 클립과 남은 것을 결과 줄에 빠짐없이 적고(못 걸었거나 걸렸는지 모른다) 그대로 올린다(partial)
+                        for rest_label, _k, _i, _f, rest_plan, _s in targets[at:]:
+                            speed_fail(rest_label, rest_plan, "stopped")
+                        raise
+                if result["speed_failed"]:
+                    result["warnings"].append(
+                        f"속도를 걸지 못했거나 되읽은 값이 다른 클립 {len(result['speed_failed'])}개 — Resolve 타임라인에서 확인하세요")
 
         # 4) 상태 — 반환값을 본다. 꺼 둔 것이 살아 있으면 편집 탭에서 보던 것과 다르다(Codex 설계 검토 10-13).
         result["step"] = "state"
@@ -575,7 +813,8 @@ def _build_locked(manifest: dict[str, Any], plan: dict[str, Any], resolve: Any, 
             result["warnings"].append("Resolve 프로젝트 저장을 확인하지 못했습니다(Resolve 에서 직접 저장하세요)")
         result["step"] = "done"
         # complete = 계획대로. 빠진 북마크도 '다르다'에 든다 — 경고만 남기면 화면은 완료라고 말한다(Codex 코드 리뷰).
-        different = result["mismatches"] or failed or result["markers_skipped"] or not result["saved"] or unread
+        different = (result["mismatches"] or failed or result["markers_skipped"] or not result["saved"] or unread
+                     or result["speed_failed"])
         result["status"] = "partial" if different else "complete"
     finally:
         if previous_folder:

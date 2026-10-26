@@ -671,6 +671,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "set_by TEXT, set_at TEXT NOT NULL DEFAULT (datetime('now')), "
         "PRIMARY KEY (project_id, folder_path))"
     )
+    # 편집 공유(사람 × 시퀀스마다 한 벌 — 공유 서버 DB 가 권위). 신규 DB 는 schema.sql, 기존 DB 는 여기서.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS edit_share ("
+        "project_id TEXT NOT NULL, seq TEXT NOT NULL, owner TEXT NOT NULL, owner_key TEXT NOT NULL, owner_name TEXT, "
+        "revision INTEGER NOT NULL CHECK(revision > 0), data TEXT NOT NULL, data_hash TEXT NOT NULL, "
+        "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), "
+        "PRIMARY KEY (project_id, seq, owner))"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_edit_share_key ON edit_share(project_id, seq, owner_key)")
     scene_cols = {
         row[1] for row in conn.execute("PRAGMA table_info(scene_card_generation)")
     }

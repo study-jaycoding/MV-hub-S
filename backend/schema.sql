@@ -605,6 +605,22 @@ CREATE TABLE IF NOT EXISTS edit_doc_copy (
 );
 CREATE INDEX IF NOT EXISTS idx_edit_doc_copy_order ON edit_doc_copy(owner,doc_key,created_at DESC,data_hash DESC);
 
+-- 편집 공유 — 사람 × 시퀀스마다 '보이는 것 한 줄'(스냅샷 v1) 한 벌, 덮어쓰기(공유 서버 DB 가 권위 — repo/edit_shares).
+-- owner = 정규화 email(응답에 안 나간다) · owner_key = 처음 저장 때 만든 무작위 열쇠(응답용, 덮어써도 유지).
+CREATE TABLE IF NOT EXISTS edit_share (
+    project_id TEXT NOT NULL,
+    seq TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    owner_key TEXT NOT NULL,
+    owner_name TEXT,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    data TEXT NOT NULL,
+    data_hash TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (project_id, seq, owner)
+);
+CREATE INDEX IF NOT EXISTS idx_edit_share_key ON edit_share(project_id, seq, owner_key);
+
 -- 캔버스 씬 백업 — 브라우저 IndexedDB(원본)의 단방향 미러(로컬→DB). 캐시 소실 시 복구용.
 -- 복구는 프론트가 '로컬 버킷 키 자체가 없을 때'만 수행(로컬이 항상 정답 — 코덱스 합의).
 -- owner_uid = deps.actor_id(개인 편집물, asset_meta 패턴) — identity._REMAP_PLAN 리맵 대상.

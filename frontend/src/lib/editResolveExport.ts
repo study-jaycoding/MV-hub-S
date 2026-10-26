@@ -13,7 +13,9 @@ import {
   EDIT_FPS,
   MARKER_COLORS,
   clipKey,
+  clipSpeed,
   markRange,
+  mediaAt,
   shownMarkers,
   visibleSegments,
   type EditDoc,
@@ -28,6 +30,10 @@ export const TIMELINE_EXPORT_VERSION = 1;
 //  그런 클립이 하나도 없으면 1 그대로다(전과 한 글자도 다르지 않다). 2 를 모르는 옛 허브는 계획을 거부한다 — 모르는 칸을 버리고
 //  0초부터 놓은 타임라인을 '완료'라고 답하지 않게.
 export const TIMELINE_EXPORT_VERSION_HEAD = 2;
+// 속도를 바꾼 클립이 있는 계획(2026-10-23 Ctrl+R) — 2 의 칸(head·소리 track)은 모두 싣고, 속도 클립에 speed(배율)·src(쓰는 원본 길이 초 =
+//  보내는 프레임 수 ÷ 24 × speed — 받는 쪽이 floor(src × 24 ÷ speed + 1e-6) = end − start 를 확인한다), 그 소리에 운반 클립과 같은 speed.
+//  3 을 모르는 옛 허브는 계획을 거부한다 — 속도 없이 놓고 '완료'라 답하지 않게.
+export const TIMELINE_EXPORT_VERSION_SPEED = 3;
 
 // Resolve 의 마커 색 이름 — MARKER_COLORS 와 같은 순서(편집 탭의 16색이 다빈치의 것이다).
 export const RESOLVE_MARKER_COLORS = [
@@ -42,7 +48,9 @@ export interface TimelineExportClip {
   end: number; // 끝 미포함
   enabled: boolean;
   kind: "video" | "image";
-  head?: number; // 소스의 시작(24fps 프레임) — version 2 에서만, 모든 클립에 싣는다(안 자른 클립·그림은 0)
+  head?: number; // 소스의 시작(24fps 프레임) — version 2·3 에서만, 모든 클립에 싣는다(안 자른 클립·그림은 0)
+  speed?: number; // 속도 배율 — version 3 의 속도를 바꾼 영상 클립에만(1 이면 없다)
+  src?: number; // 그 클립이 쓰는 원본 길이(초) = (end − start) ÷ 24 × speed — speed 와 같이만
 }
 
 export interface TimelineExportAudio {
@@ -52,9 +60,10 @@ export interface TimelineExportAudio {
   // 그 영상 안에서의 시작(초 — 앞을 자른 클립이면 그 시작점을 더한 값). 받는 쪽은 **그 영상 클립이 놓인 프레임에서 센 차이**를
   //  먼저 쓰고(그림과 프레임 단위로 맞게), 이 값은 그 클립을 계획에서 못 찾았을 때의 예비다(services/resolve_timeline.py)
   offset: number;
-  // 그 소리를 내는 영상 클립의 트랙 — version 2 에서만. 같은 생성물이 두 트랙에 있어도(옛 id 와 새 id 가 같은 것으로 이어진 문서)
+  // 그 소리를 내는 영상 클립의 트랙 — version 2·3 에서만. 같은 생성물이 두 트랙에 있어도(옛 id 와 새 id 가 같은 것으로 이어진 문서)
   //  받는 쪽이 제 영상 클립의 시작점을 쓰게 한다(Codex 설계 검토)
   track?: number;
+  speed?: number; // 운반 영상 클립의 속도 — version 3 에서 그 클립에 속도가 있을 때만(받는 쪽이 같은지 본다)
 }
 
 export interface TimelineExportMarker {
@@ -65,7 +74,7 @@ export interface TimelineExportMarker {
 
 export interface TimelineExportPlan {
   format: typeof TIMELINE_EXPORT_FORMAT;
-  version: typeof TIMELINE_EXPORT_VERSION | typeof TIMELINE_EXPORT_VERSION_HEAD;
+  version: typeof TIMELINE_EXPORT_VERSION | typeof TIMELINE_EXPORT_VERSION_HEAD | typeof TIMELINE_EXPORT_VERSION_SPEED;
   name: string;
   fps: number;
   video_tracks: number;
@@ -127,10 +136,15 @@ export function buildTimelineExport(args: {
   // 소스의 시작(프레임) — 그림에는 없다. 생성물의 실제 종류로 본다(kind 가 안 적힌 옛 클립은 문서만으로는 영상으로 보인다).
   //  **실제로 보내는 클립** 가운데 앞을 자른 것이 있을 때만 2 판이다(문서에 head 가 적혀 있어도 못 이은 클립·그림은 세지 않는다).
   const headOf = (clip: SlotClip, gen: Generation) => (gen.assets?.[0]?.type === "image" ? 0 : frame(clip.head));
-  const headed = layout.cuts.some((slot) => slot.clips.some((clip) => {
+  // 보내는 클립의 속도 — 그림은 1(문서의 kind 가 안 적힌 옛 클립도 생성물로 본다)
+  const speedOf = (clip: SlotClip, gen: Generation) => (gen.assets?.[0]?.type === "image" ? 1 : clipSpeed(clip));
+  const sent = (test: (clip: SlotClip, gen: Generation) => boolean) => layout.cuts.some((slot) => slot.clips.some((clip) => {
     const gen = links.get(clipKey(clip))?.gen ?? null;
-    return !!gen && headOf(clip, gen) > 0;
+    return !!gen && test(clip, gen);
   }));
+  // 속도 클립이 하나라도 있으면 3 판(2 의 칸도 모두 싣는다), 앞을 자른 것만 있으면 2 판
+  const sped = sent((clip, gen) => speedOf(clip, gen) !== 1);
+  const headed = sped || sent((clip, gen) => headOf(clip, gen) > 0);
 
   for (const slot of layout.cuts) {
     const start = frame(slot.start);
@@ -147,6 +161,8 @@ export function buildTimelineExport(args: {
       // 꺼진 클립은 컷보다 길 수 있다(컷 길이는 켜진 클립만 센다 — buildLayout) → 컷의 끝에서 자른다. 안 자르면 다음 컷의 같은
       //  트랙 클립과 겹쳐 받는 쪽이 계획을 거부한다. 줄인 길이(trim)는 clip.len 에 이미 들어 있다.
       const end = Math.max(start + 1, Math.min(stop, frame(slot.start + Math.min(clip.len, slot.len))));
+      // 속도 클립이 쓰는 원본 = 보내는 프레임 수 × 속도 — 컷의 끝에서 잘린 꺼 둔 클립은 그 끝까지만이다
+      const speed = speedOf(clip, gen);
       gens.set(gen.id, gen);
       clips.push({
         gen_id: gen.id,
@@ -156,6 +172,7 @@ export function buildTimelineExport(args: {
         enabled: !clip.off,
         kind: gen.assets?.[0]?.type === "image" ? "image" : "video",
         ...(headed ? { head: headOf(clip, gen) } : {}),
+        ...(speed !== 1 ? { speed, src: ((end - start) / EDIT_FPS) * speed } : {}),
       });
       if (clip.track >= 1 && clip.track <= perTrack.length) perTrack[clip.track - 1] += 1;
       if (clip.off) disabled += 1;
@@ -167,9 +184,12 @@ export function buildTimelineExport(args: {
       const from = frame(slot.start + segment.from);
       const to = frame(slot.start + segment.to);
       if (to > from) {
+        // 그 영상 안의 시각 = 시작점 + 컷 안 시각 × 속도(mediaAt — 속도가 있으면 소리도 그 빠르기로 원본을 지난다)
+        const speed = clipSpeed(segment.clip!);
         audio.push({
-          gen_id: gen.id, start: from, end: to, offset: segment.from + segment.clip!.head,
+          gen_id: gen.id, start: from, end: to, offset: mediaAt(segment.clip!, segment.from),
           ...(headed ? { track: segment.clip!.track } : {}),
+          ...(speed !== 1 ? { speed } : {}),
         });
       }
     }
@@ -197,7 +217,7 @@ export function buildTimelineExport(args: {
   return {
     plan: {
       format: TIMELINE_EXPORT_FORMAT,
-      version: headed ? TIMELINE_EXPORT_VERSION_HEAD : TIMELINE_EXPORT_VERSION,
+      version: sped ? TIMELINE_EXPORT_VERSION_SPEED : headed ? TIMELINE_EXPORT_VERSION_HEAD : TIMELINE_EXPORT_VERSION,
       name,
       fps: EDIT_FPS,
       video_tracks: layout.tracks,
