@@ -157,6 +157,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
       <MediaThumbnail
         thumb={thumb}
         isVideo={asset?.type === "video"}
+        isAudio={asset?.type === "audio"}
         src={asset?.file_path}
         keep // 씬을 다시 열 때 그림이 늦게 차지 않게(lib/keptThumbs)
         fallback={

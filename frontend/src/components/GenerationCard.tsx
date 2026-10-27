@@ -434,6 +434,7 @@ function GenerationCardImpl({
       <MediaThumbnail
         thumb={thumb}
         isVideo={isVideo}
+        isAudio={asset?.type === "audio"}
         src={asset?.file_path}
         alt=""
         videoRef={videoRef}

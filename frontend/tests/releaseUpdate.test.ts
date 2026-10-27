@@ -125,6 +125,12 @@ describe("작업자 릴리스 업데이트 API", () => {
 });
 
 describe("업데이트 차단 사유 문구", () => {
+  it("새 서버는 제출·결과 저장·로컬 실행을 구분한다", () => {
+    expect(updateBlockersText({ active_total: 10, generation_active: 1,
+      result_write_active: 2, comfy_active: 3, resolve_active: 4 })).toBe(
+      "생성 제출 1건 · 결과 저장 2건 · ComfyUI 실행 3건 · Resolve 전송 4건",
+    );
+  });
   it("유료 생성과 Resolve 전송을 나눠 말하고, 없으면 빈 문자열이다", () => {
     expect(updateBlockersText({ active_total: 2, resolve_active: 0 })).toBe("생성 2건");
     expect(updateBlockersText({ active_total: 1, resolve_active: 1 })).toBe("Resolve 전송 1건");

@@ -218,9 +218,10 @@ def test_start_route_force_skips_activity_check(monkeypatch: pytest.MonkeyPatch)
     )
     captured: dict[str, object] = {}
 
-    def fake_start_update(*, activity_check, ready_url=None, force=False):
+    def fake_start_update(*, activity_check, ready_url=None, force=False, checkpoint_write=None):
         captured["blocked"] = activity_check() > 0
         captured["force"] = force
+        assert checkpoint_write is release_update_router.prepare_remote_checkpoint
         return {"state": "starting", "can_update": False}
 
     monkeypatch.setattr(release_update_router, "start_update", fake_start_update)
@@ -276,7 +277,7 @@ def test_update_activity_counts_inflight_direct_resolve_transfers(monkeypatch: p
     monkeypatch.setattr(
         release_update_router,
         "generation_queue_snapshot",
-        lambda: {"active_total": 0, "update_blocking_total": 0},
+        lambda **_kw: {"active_total": 0, "update_blocking_total": 0},
     )
     monkeypatch.setattr(release_update_router.comfy, "active_run_job_count", lambda: 0)
     monkeypatch.setattr(release_update_router, "active_transfer_count", lambda: 1)
@@ -288,6 +289,7 @@ def test_update_activity_counts_inflight_direct_resolve_transfers(monkeypatch: p
         "generation_active": 0,
         "comfy_active": 0,
         "resolve_active": 1,
+        "result_write_active": 0,
         "active_total": 1,
     }
     assert guarded["can_update"] is False
@@ -300,7 +302,7 @@ def test_update_activity_ignores_restart_safe_generation_queue_phases(
     monkeypatch.setattr(
         release_update_router,
         "generation_queue_snapshot",
-        lambda: {"active_total": 4, "update_blocking_total": 0},
+        lambda **_kw: {"active_total": 4, "update_blocking_total": 0},
     )
     monkeypatch.setattr(release_update_router.comfy, "active_run_job_count", lambda: 0)
     monkeypatch.setattr(release_update_router, "active_transfer_count", lambda: 0)
@@ -309,6 +311,7 @@ def test_update_activity_ignores_restart_safe_generation_queue_phases(
         "generation_active": 0,
         "comfy_active": 0,
         "resolve_active": 0,
+        "result_write_active": 0,
         "active_total": 0,
     }
     assert release_update_router._with_activity({"can_update": True})["can_update"] is True

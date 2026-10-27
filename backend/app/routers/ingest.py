@@ -19,7 +19,7 @@ from collections import Counter
 from typing import Any
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
@@ -38,6 +38,7 @@ from ..deps import (
     current_account,
     require_agent_account,
     resolve_agent_account,
+    realtime_scope,
 )
 from ..models import AccountReportIn, AccountReportOut, IngestIn, IngestMcpIn, IngestOut
 from ..services import cli_bridge, history_autofill, syncer
@@ -48,6 +49,7 @@ from ._telemetry import schedule_telemetry_drain
 from ..services.agent_signals import agent_signals
 from ..services.mcp_ingest import mcp_item_to_cli
 from ..services.request_guards import is_loopback_request
+from ..ws import manager
 
 # agent_push.py — 저장소 최상단(content-hub-server/). 팀원이 허브에서 받아 자기 PC에서 실행.
 _AGENT_PATH = BACKEND_DIR.parent / "agent_push.py"
@@ -283,7 +285,7 @@ def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None) -> Inge
 
 
 @router.post("/ingest", response_model=IngestOut)
-def ingest(body: IngestIn, request: Request):
+def ingest(body: IngestIn, request: Request, background_tasks: BackgroundTasks = None):
     """로컬 `generate list` 원본 묶음(최신분)을 내 로컬 DB 에 적재 — push_agent 가 호출.
     로컬 우선: 생성물은 로컬에만 남고(공유는 선택 발행으로만), 팀 크레딧 집계를 위해
     account_status(잔액/플랜)·account_transactions(실제 차감액)를 서버로 전달한다
@@ -318,6 +320,8 @@ def ingest(body: IngestIn, request: Request):
             transactions = body.account_transactions or []
             recorded = _m.record_transactions(out.linked_uid, acc.get("email"), transactions)
             transactions_stored = recorded["stored"] + recorded["rejected"] == len(transactions)
+            if background_tasks is not None and (recorded.get("inserted", 0) > 0 or recorded.get("matched", 0) > 0):
+                background_tasks.add_task(manager.broadcast, {"type": "credits_changed"}, account_uid=realtime_scope(acc))
         except Exception:  # noqa: BLE001 — 메트릭 수집 실패가 적재를 막지 않게
             pass
     report_queued = False
@@ -372,7 +376,7 @@ def ingest(body: IngestIn, request: Request):
 
 
 @router.post("/ingest/account-report", response_model=AccountReportOut)
-def ingest_account_report(body: AccountReportIn, request: Request):
+def ingest_account_report(body: AccountReportIn, request: Request, background_tasks: BackgroundTasks = None):
     """로컬 outbox 보고의 공유 서버 전용 수신점.
 
     상태와 유효 거래를 모두 DB에 반영하고 무효 거래를 명시 반려한 뒤 ``accepted=true``를
@@ -401,6 +405,8 @@ def ingest_account_report(body: AccountReportIn, request: Request):
     )
     if result["stored"] + result["rejected"] != len(body.account_transactions):
         raise HTTPException(status_code=503, detail="크레딧 거래 일부의 DB 저장을 확인하지 못했습니다")
+    if background_tasks is not None and (result.get("inserted", 0) > 0 or result.get("matched", 0) > 0):
+        background_tasks.add_task(manager.broadcast, {"type": "credits_changed"}, account_uid=realtime_scope(acc))
     return AccountReportOut(
         accepted=True,
         transactions_inserted=int(result.get("inserted") or 0),

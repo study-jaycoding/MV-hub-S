@@ -25,6 +25,8 @@ Windows 함정(검증 완료):
 from __future__ import annotations
 
 import asyncio
+import hashlib
+from urllib.parse import urlsplit
 import json
 import logging
 import math
@@ -428,6 +430,19 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
     """
     params = job.get("params") or {}
     result_url = job.get("result_url")
+    # 결과 배열만 읽는다. params의 입력 미디어는 결과로 승격하지 않는다.
+    if not result_url:
+        outputs = job.get("outputs") or job.get("results")
+        if isinstance(outputs, list):
+            for output in outputs:
+                if not isinstance(output, dict):
+                    continue
+                url = output.get("url") or output.get("rawUrl") or output.get("result_url")
+                if isinstance(url, str) and url:
+                    result_url = url
+                    if output.get("type") in ("image", "video", "audio"):
+                        job = {**job, "result_media_type": output["type"]}
+                    break
 
     # CLI 1.1.23 목록에는 현재 workspace 필드가 없지만, MCP/향후 CLI 응답 또는 오프라인
     # 백필에는 개별 잡 컨텍스트가 포함될 수 있다. 변환 중 버리지 않고 내부 평면 규격으로 보존한다.
@@ -466,18 +481,21 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
     if result_url:
         # MCP 이력 항목(mcp_item_to_cli)은 result_media_type 으로 타입을 명시한다 — 확장자 없는 영상 URL 이
         # image 로 오분류돼 입력 축소본이 썸네일로 저장되지 않게 명시값(image|video)을 확장자 판정보다 우선.
-        explicit_type = job.get("result_media_type")
+        explicit_type = job.get("result_media_type") or job.get("type")
+        model = job.get("job_set_type") or job.get("job_type") or job.get("model")
+        if explicit_type not in ("image", "video", "audio") and model == "text2speech_v2" and "." not in urlsplit(result_url).path.rsplit("/", 1)[-1]:
+            explicit_type = "audio"
         asset = {
             "type": explicit_type
-            if explicit_type in ("image", "video")
+            if explicit_type in ("image", "video", "audio")
             else media_type_from_url(result_url),
             "file_path": result_url,
             # CLI 1.x: 영상 잡은 thumbnail_url(정적 포스터 이미지)을 준다. 영상 asset 의 thumbnail_path
             # 로 써서 그리드/팝업에 가벼운 포스터를 붙인다(우리 썸네일러는 영상 미지원).
-            "thumbnail_url": job.get("thumbnail_url"),
+            "thumbnail_url": None if explicit_type == "audio" else job.get("thumbnail_url"),
             # 이미지 잡은 min_result_url(경량 축소본)을 준다. 원격 이미지 썸네일로 이걸 쓰면 팀 browse
             # 시 원본 full 을 통째로 받지 않아 디스크를 아낀다(원본 보존은 완료 저장이 선별로 담당).
-            "min_result_url": job.get("min_result_url"),
+            "min_result_url": None if explicit_type == "audio" else job.get("min_result_url"),
         }
 
     return {
@@ -556,8 +574,12 @@ def _model_refresh_state() -> _ModelRefreshState:
 def start_model_refreshes() -> None:
     """새 lifespan에서만 다시 예약을 허용한다. 목록 prewarm은 하지 않는다."""
     state = _model_refresh_state()
-    if state.task is not None and not state.task.done():
-        raise RuntimeError("Model catalog refresh is still running")
+    with _inflight_guard:
+        calls = _inflight_calls.get(asyncio.get_running_loop(), {})
+        active = any(not task.done() for key, task in calls.items()
+                     if key == "models" or key.startswith(("params:", "cost:", "voices:", "voice:")))
+    if active or (state.task is not None and not state.task.done()):
+        raise RuntimeError("Model metadata refresh is still running")
     state.stopping = False
 
 
@@ -566,12 +588,19 @@ async def shutdown_model_refreshes() -> None:
     state = _model_refresh_state()
     already_stopping = state.stopping
     state.stopping = True
-    task = state.task
-    if task is not None:
-        if not already_stopping and not task.done():
-            task.cancel()
+    with _inflight_guard:
+        calls = _inflight_calls.get(asyncio.get_running_loop(), {})
+        tasks = {task for key, task in calls.items()
+                 if key == "models" or key.startswith(("params:", "cost:", "voices:", "voice:"))}
+    if state.task is not None:
+        tasks.add(state.task)
+    if tasks:
+        if not already_stopping:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
         # shutdown 자체의 취소도 CLI 회수를 중간에 다시 취소하지 않도록 한다.
-        drain = asyncio.gather(task, return_exceptions=True)
+        drain = asyncio.gather(*tasks, return_exceptions=True)
         try:
             await asyncio.shield(drain)
         except asyncio.CancelledError:
@@ -665,65 +694,99 @@ async def _list_models_uncached(timeout: float) -> list[dict[str, Any]]:
     return out
 
 
-async def get_model_params(job_set_type: str, timeout: float = 60.0) -> dict[str, Any]:
-    """모델의 CLI 조절 가능 파라미터 스키마 — model get <job_set_type> --json. 1시간 TTL 캐시(불변).
-    동시 miss 는 single-flight 로 CLI 1회에 합류(R5 2-C1)."""
+_PARAMS_TTL = 3600.0
+
+
+async def get_model_params(
+    job_set_type: str, timeout: float = 60.0, *, allow_stale: bool = False,
+) -> dict[str, Any]:
+    """1시간 스키마 캐시. 화면은 기존 값을 먼저 받고 같은 갱신에 다시 합류한다."""
     _require_model_id(job_set_type)
+    if _model_refresh_state().stopping:
+        raise CLIError("Model metadata is shutting down")
     ckey = f"params:{job_set_type}"
-    cached = _cache_get(ckey, 3600.0)
+    cached = _cache_get(ckey, _PARAMS_TTL)
     if cached is not None:
         return cached
-    return await _single_flight(
+    task = _single_flight_task(
         ckey, lambda: _get_model_params_uncached(ckey, job_set_type, timeout)
     )
+    old = _CALL_CACHE.get(ckey)
+    if allow_stale and old is not None:
+        return {**old[1], "stale": True}
+    return await asyncio.shield(task)
 
 
 async def _get_model_params_uncached(
     ckey: str, job_set_type: str, timeout: float
 ) -> dict[str, Any]:
-    data = await _run_json("model", "get", job_set_type, timeout=timeout)
-    if not isinstance(data, dict):
-        return {"job_set_type": job_set_type, "type": "image", "params": []}
+    old = _CALL_CACHE.get(ckey)
+    try:
+        command = "workflow" if job_set_type == "draw_to_video" else "model"
+        data = await _run_json(command, "get", job_set_type, timeout=timeout)
+    except CLIError:
+        if old is not None:
+            return {**old[1], "stale": True}
+        raise
+    params = data.get("params") if isinstance(data, dict) else None
+    if not isinstance(params, list) or not params or any(
+        not isinstance(p, dict) or not isinstance(p.get("name"), str) or not p["name"].strip()
+        for p in params
+    ):
+        if old is not None:
+            return {**old[1], "stale": True}
+        return {"job_set_type": job_set_type, "type": "image", "params": [],
+                "saved_at": None, "stale": True}
     result = {
         "display_name": data.get("display_name"),
         # CLI 1.1.20 model get 도 job_set_type 대신 job_type 을 반환한다. 내부 응답 계약은
         # 계속 job_set_type 으로 유지하되 신·구 CLI 필드를 모두 받는다.
         "job_set_type": data.get("job_set_type") or data.get("job_type") or job_set_type,
         "type": data.get("type") or "image",
-        "params": data.get("params") or [],
+        "params": params,
+        "saved_at": time.time(),
+        "stale": False,
     }
-    if result["params"]:  # 파라미터를 실제로 받았을 때만 캐시(폴백 빈 스키마는 캐시 안 함)
-        _cache_put(ckey, result)
+    _cache_put(ckey, result)
+    _PARAM_NAMES_CACHE[job_set_type] = {p["name"] for p in params}
+    _PARAM_NAMES_SAVED_AT[job_set_type] = _CALL_CACHE[ckey][0]
+    _PARAM_NAMES_RETRY_AT.pop(job_set_type, None)
     return result
 
 
-# 모델별 허용 파라미터 이름 캐시(프로세스 수명). 동기화/재사용 시 힉스필드가 채운
+# 모델별 허용 파라미터 이름 캐시(스키마와 같은 TTL). 동기화/재사용 시 힉스필드가 채운
 # 잔여 필드(width/height/batch_size/input_images …)가 --param 으로 새어 나가 CLI 가
 # "Unknown params" 로 거부하는 것을 막는다.
 # 조회 실패는 캐시하지 않는다(RL-24) — CLI 일시 장애 한 번이 프로세스 수명 내내
 # "필터 없음"으로 굳지 않게, 짧은 TTL 뒤 다음 호출에서 다시 조회한다.
 _PARAM_NAMES_CACHE: dict[str, set[str]] = {}
+_PARAM_NAMES_SAVED_AT: dict[str, float] = {}
 _PARAM_NAMES_RETRY_AT: dict[str, float] = {}
 _PARAM_NAMES_FAIL_TTL = 120.0
 
 
-async def _allowed_param_names(model: str) -> set[str]:
+async def _allowed_param_names(model: str, *, allow_stale: bool = False) -> set[str]:
     """모델이 받는 파라미터 이름 집합. 조회 실패 시 빈 집합(→ 필터하지 않음=전부 전송)."""
     cached = _PARAM_NAMES_CACHE.get(model)
-    if cached is not None:
+    now = time.monotonic()
+    if cached is not None and (allow_stale or now - _PARAM_NAMES_SAVED_AT.get(model, now) < _PARAMS_TTL):
         return cached
     retry_at = _PARAM_NAMES_RETRY_AT.get(model)
     if retry_at is not None and time.monotonic() < retry_at:
-        return set()  # 백오프 중 — CLI 를 매 호출 재기동하지 않는다
+        return cached if cached is not None else set()
     try:
         data = await get_model_params(model)
     except CLIError:
         _PARAM_NAMES_RETRY_AT[model] = time.monotonic() + _PARAM_NAMES_FAIL_TTL
-        return set()
+        return cached if cached is not None else set()
+    if data.get("stale"):
+        _PARAM_NAMES_RETRY_AT[model] = time.monotonic() + _PARAM_NAMES_FAIL_TTL
+        return cached if cached is not None else set()
     _PARAM_NAMES_RETRY_AT.pop(model, None)
-    names = {p.get("name") for p in data.get("params", []) if p.get("name")}
+    names = {p.get("name") for p in data.get("params", []) if isinstance(p, dict) and p.get("name")}
     if names:
         _PARAM_NAMES_CACHE[model] = names
+        _PARAM_NAMES_SAVED_AT[model] = _CALL_CACHE.get(f"params:{model}", (time.monotonic(), None))[0]
     else:
         # 빈 폴백 스키마를 프로세스 수명 캐시로 박제하지 않는다(R5 2-C1, 코덱스 적발) —
         # get_model_params 가 비-dict 응답에 빈 params 를 돌려준 경우 종전엔 set() 이
@@ -732,11 +795,14 @@ async def _allowed_param_names(model: str) -> set[str]:
     return names
 
 
-async def _param_args(model: str, params: Optional[dict[str, Any]]) -> list[str]:
+async def _param_args(
+    model: str, params: Optional[dict[str, Any]], *, allow_stale: bool = False,
+) -> list[str]:
     """params → CLI --플래그. 모델 스키마 밖 키·복합 타입(list/dict)·prompt 는 제외.
     스키마를 못 받았으면(빈 집합) 이름 필터를 적용하지 않는다 — 전부 비워 기본값으로
     엉뚱하게 생성(크레딧 소모)되는 것보다 기존 동작 유지가 안전(advisor)."""
-    allowed = await _allowed_param_names(model)
+    allowed = (await _allowed_param_names(model, allow_stale=True) if allow_stale
+               else await _allowed_param_names(model))
     if model == "seedance_2_5" and allowed:
         # A cached pre-Draft schema must not change the quoted or submitted mode.
         allowed = allowed | {"draft", "draft_job_id"}
@@ -771,7 +837,7 @@ async def _param_args(model: str, params: Optional[dict[str, Any]]) -> list[str]
 _COST_CACHE_FILE = DATA_DIR / "cost_cache_v2.json"
 _COST_CACHE: dict[str, tuple[float, float]] = {}  # key → (credits, saved_epoch)
 _COST_CACHE_MAX = 4096
-_COST_TTL = float(os.environ.get("CONTENT_HUB_COST_TTL", 7 * 86400))  # 기본 7일(가격 변동 자동 반영)
+_COST_TTL = float(os.environ.get("CONTENT_HUB_COST_TTL", 12 * 3600))
 _cost_loaded = False
 
 
@@ -831,14 +897,17 @@ def _cost_write_lock() -> asyncio.Lock:
         return lock
 
 
-def _cost_key(model: str, param_args: list[str]) -> str:
+def _cost_key(model: str, param_args: list[str], prompt: str = "") -> str:
     # 키는 '실제 CLI 로 나가는 인자'(_param_args 결과)만으로 만든다 — 스키마 밖 잔여값
     # (medias/prompt/width/height …)은 CLI 호출에서 걸러지므로 키에도 없어야 비용이 같은 조합의
     # 캐시가 쪼개지지 않는다(키↔호출 일치). 순서 무관하게 (플래그,값) 쌍을 정렬.
     pairs = sorted(
         (param_args[i], param_args[i + 1]) for i in range(0, len(param_args) - 1, 2)
     )
-    return model + "|" + ";".join(f"{k}={v}" for k, v in pairs)
+    key = model + "|" + ";".join(f"{k}={v}" for k, v in pairs)
+    if model == "text2speech_v2":
+        key += "|prompt_sha256=" + hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    return key
 
 
 _cost_load_lock = threading.Lock()
@@ -981,7 +1050,8 @@ async def estimate_cost(
     params: Optional[dict[str, Any]] = None,
     prompt: str = "",
     timeout: float = 120.0,
-) -> dict[str, float]:
+    *, allow_stale: bool = False, include_metadata: bool = False,
+) -> dict[str, Any]:
     """잡 생성 없이 크레딧만 추정 — generate cost <model> [--param value] --json.
     레퍼런스(미디어)는 비용 추정에 불필요+업로드 비용 → 제외(PV 와 동일).
     동일 (모델·옵션) 결과는 캐시(CLI 재호출 없이 즉시) — 비용은 결정적이라 안전."""
@@ -990,25 +1060,45 @@ async def estimate_cost(
     # 느린 CLI 견적이 즉시 응답을 막았다. 스키마 miss 가능 경로는 게이트 안에서만 CLI 를
     # 부른다(게이트 밖 무제한 model get 방지).
     _require_model_id(model)
+    if model == "draw_to_video":
+        params = {key: value for key, value in (params or {}).items() if key in {"duration", "resolution"}}
+    if _model_refresh_state().stopping:
+        raise CLIError("Model metadata is shutting down")
     if model == "seedance_2_5" and not (params or {}).get("draft_job_id"):
         from .seedance_draft import fresh_params
         params = fresh_params(model, params)
     _load_cost_cache()
-    if model in _PARAM_NAMES_CACHE:
-        # 스키마 확정 — _param_args 는 subprocess 없는 순수 계산
-        param_args = await _param_args(model, params)
+    now = time.monotonic()
+    cached_names = model in _PARAM_NAMES_CACHE and (
+        allow_stale or now - _PARAM_NAMES_SAVED_AT.get(model, now) < _PARAMS_TTL
+    )
+    if cached_names:
+        # 화면의 기존 견적은 캐시한 이름으로 즉답; 스키마 갱신은 params 조회가 담당한다.
+        param_args = (await _param_args(model, params, allow_stale=True) if allow_stale
+                      else await _param_args(model, params))
     else:
         async with _estimate_gate():
             param_args = await _param_args(model, params)
-    key = _cost_key(model, param_args)
+    key = _cost_key(model, param_args, prompt) if model == "text2speech_v2" else _cost_key(model, param_args)
     entry = _COST_CACHE.get(key)
     if entry is not None and (time.time() - entry[1]) < _COST_TTL:
-        return {"credits": entry[0]}  # fresh 캐시는 게이트 전 즉시(CLI 호출 없음)
+        return _cost_result(entry) if include_metadata or allow_stale else {"credits": entry[0]}
+    if _model_refresh_state().stopping:
+        raise CLIError("Model metadata is shutting down")
     # 같은 (모델·옵션) 동시 miss 는 leader 1명의 CLI 실행에 합류(비용은 프롬프트 무관 계약)
-    return await _single_flight(
+    task = _single_flight_task(
         f"cost:{key}",
         lambda: _estimate_cost_miss(key, model, param_args, prompt, timeout),
     )
+    if allow_stale and entry is not None:
+        return _cost_result(entry)
+    result = await asyncio.shield(task)
+    return result if include_metadata or allow_stale else {"credits": result["credits"]}
+
+
+def _cost_result(entry: tuple[float, float]) -> dict[str, Any]:
+    return {"credits": entry[0], "saved_at": entry[1],
+            "stale": time.time() - entry[1] >= _COST_TTL}
 
 
 # 참조 필수 모드의 견적용 더미 참조(2026-08-31 실측) — 씨댄스 2.5 는 mode 별 "참조 미디어 ≥1"
@@ -1039,21 +1129,21 @@ async def _estimate_cost_miss(
     param_args: list[str],
     prompt: str,
     timeout: float,
-) -> dict[str, float]:
+) -> dict[str, Any]:
     async with _estimate_gate():  # leader 만 세마포어 취득
         entry = _COST_CACHE.get(key)
         if entry is not None and (time.time() - entry[1]) < _COST_TTL:
-            return {"credits": entry[0]}  # 게이트 대기 동안 채워졌으면 재사용(double-check)
+            return _cost_result(entry)
         args: list[str] = [
-            "generate",
-            "cost",
-            model,
+            "generate", "cost",
+            *(["workflow"] if model == "draw_to_video" else []), model,
             "--prompt",
             _shield_json_prompt(prompt or "preview"),
         ]
         args += param_args
         # 캐시 키(param_args 기준)는 더미와 무관하게 유지 — CLI 호출에만 끼운다.
-        args += _cost_dummy_ref_args(param_args)
+        if model != "draw_to_video":
+            args += _cost_dummy_ref_args(param_args)
         try:
             data = await _run_json(*args, timeout=timeout)
         except CLIError:
@@ -1062,14 +1152,14 @@ async def _estimate_cost_miss(
             # 서버 로그도 불필요하게 오염된다. 만료된 값이라도 있으면 이번 한 번은
             # 안전한 폴백으로 쓰고, 다음 조회에서 다시 최신 가격 갱신을 시도한다.
             if entry is not None:
-                return {"credits": entry[0]}
+                return _cost_result(entry)
             raise
         # ★응답이 이상하면 **0 을 지어내지 않는다**(2026-09-11). 종전엔 캐시가 없을 때 0 을
         #  돌려줘 화면·장부에 '무료'로 적혔다. 0 은 정상 가격이기도 해서 실패와 구분되지 않는다.
         #  옛 값이 있으면 그걸 쓰고, 없으면 실패를 그대로 알린다(호출부가 '견적 없음'으로 표시).
         if not isinstance(data, dict):
             if entry is not None:
-                return {"credits": entry[0]}
+                return _cost_result(entry)
             raise CLIError(f"견적 응답이 JSON 객체가 아닙니다: {model}")
         credits = data.get("credits_exact")
         if credits is None:
@@ -1077,16 +1167,85 @@ async def _estimate_cost_miss(
         credits_value = _valid_cost(credits)
         if credits_value is None:
             if entry is not None:
-                return {"credits": entry[0]}
+                return _cost_result(entry)
             raise CLIError(f"견적 금액을 읽을 수 없습니다: {model} ({credits!r})")
-        if len(_COST_CACHE) >= _COST_CACHE_MAX:
-            _COST_CACHE.clear()  # 소프트 캡(드묾)
+        if key not in _COST_CACHE and len(_COST_CACHE) >= _COST_CACHE_MAX:
+            oldest = min(_COST_CACHE, key=lambda cached_key: _COST_CACHE[cached_key][1])
+            _COST_CACHE.pop(oldest)
         _COST_CACHE[key] = (credits_value, time.time())  # TTL 만료분 재확인 시 최신값·시각으로 갱신
         _mark_cost_cache_dirty()
         # 저장은 루프당 단일 writer 태스크가 백그라운드로(R5 2-D) — 응답·게이트를
         # debounce 만큼 잡지 않고, 태스크 누적·flush 역전도 없다(코덱스 P1 반영).
         _ensure_cost_writer()
-        return {"credits": credits_value}
+        return _cost_result(_COST_CACHE[key])
+
+
+async def list_voices(timeout: float = 30.0, *, cursor: str | None = None) -> dict[str, Any]:
+    if _model_refresh_state().stopping:
+        raise CLIError("Model metadata is shutting down")
+    key = "voices:" + (cursor or "")
+    cached = _cache_get(key, _PARAMS_TTL)
+    if cached is not None:
+        return cached
+
+    async def load():
+        try:
+            data = await _run_json("voices", "list", "--size", "100", *(["--cursor", cursor] if cursor else []), timeout=timeout)
+        except CLIError as exc:
+            _log_cli_query_failure("voices", exc)
+            raise CLIError("목소리 목록을 확인할 수 없습니다") from None
+        items = data if isinstance(data, list) else data.get("items", data.get("voices")) if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            _log_cli_query_failure("voices", "invalid response")
+            raise CLIError("목소리 목록을 확인할 수 없습니다")
+        result = {"items": [voice for voice in items if isinstance(voice, dict) and voice.get("id") and voice.get("voice_type") == "preset"],
+                  "cursor": data.get("cursor") if isinstance(data, dict) else None}
+        _cache_put(key, result)
+        return result
+
+    return await _single_flight(key, load)
+
+
+async def get_voice(voice_id: str, timeout: float = 30.0) -> dict[str, Any]:
+    if _model_refresh_state().stopping:
+        raise CLIError("Model metadata is shutting down")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", voice_id):
+        raise CLIError("목소리 ID가 올바르지 않습니다")
+    key = "voice:" + voice_id
+    cached = _cache_get(key, _PARAMS_TTL)
+    if cached is not None:
+        return cached
+
+    async def load():
+        try:
+            data = await _run_json("voices", "get", voice_id, timeout=timeout)
+        except CLIError as exc:
+            _log_cli_query_failure("voice", exc)
+            raise CLIError("목소리를 확인할 수 없습니다") from None
+        if not isinstance(data, dict) or data.get("id") != voice_id or data.get("voice_type") != "preset":
+            _log_cli_query_failure("voice", "invalid response")
+            raise CLIError("공식 프리셋 목소리를 확인할 수 없습니다")
+        _cache_put(key, data)
+        return data
+
+    return await _single_flight(key, load)
+
+
+async def validate_media_submission(model: str, prompt: str, params: dict, references: list) -> None:
+    from ..models import MEDIA_V2_MODELS, validate_media_request
+    validate_media_request(model, prompt, params, references)
+    if model not in MEDIA_V2_MODELS:
+        return
+    schema = await get_model_params(model)
+    if schema.get("stale"):
+        raise CLIError("생성 옵션을 새로 확인할 수 없습니다. 잠시 후 다시 시도하세요")
+    definitions = {p["name"]: p for p in schema.get("params", [])}
+    for key, value in params.items():
+        definition = definitions.get(key)
+        if not definition or definition.get("enum") and value not in definition["enum"]:
+            raise ValueError("현재 모델이 지원하지 않는 옵션입니다")
+    if model == "text2speech_v2":
+        await get_voice(params["voice_id"])
 
 
 async def get_account_status(timeout: float = 30.0) -> dict[str, Any]:
@@ -1104,10 +1263,12 @@ async def get_account_status(timeout: float = 30.0) -> dict[str, Any]:
 async def _get_account_status_uncached(timeout: float) -> dict[str, Any]:
     try:
         data = await _run_json("account", "status", timeout=timeout)
-    except CLIError:
-        return {"connected": False, "credits": None, "email": "", "plan": ""}
-    if not isinstance(data, dict) or data.get("error"):
-        return {"connected": False, "credits": None, "email": "", "plan": ""}
+    except CLIError as exc:
+        kind = _log_cli_query_failure("account_status", exc)
+        return {"connected": False, "credits": None, "email": "", "plan": "", "error_kind": kind}
+    if not isinstance(data, dict) or data.get("error") or not isinstance(data.get("email"), str) or not data["email"].strip():
+        kind = _log_cli_query_failure("account_status", data)
+        return {"connected": False, "credits": None, "email": "", "plan": "", "error_kind": kind}
     credits = data.get("credits_exact")
     if credits is None:
         credits = data.get("credits")
@@ -1149,6 +1310,43 @@ async def get_auth_token(timeout: float = 30.0) -> str:
 
 
 # ── 워크스페이스(팀 공유 UUID 공간) ───────────────────────────────────────
+_CLI_QUERY_FAILURES = {
+    "auth": ("Higgsfield 로그인 정보를 확인할 수 없습니다.", "Higgsfield CLI에 다시 로그인하세요."),
+    "permission": ("Higgsfield 조회 권한이 없습니다.", "선택한 계정과 과금 공간의 권한을 확인하세요."),
+    "network": ("Higgsfield 통신이 일시적으로 실패했습니다.", "연결을 확인한 뒤 다시 시도하세요."),
+    "invalid": ("Higgsfield 응답 형식을 확인할 수 없습니다.", "CLI 버전과 Host 콘솔을 확인하세요."),
+}
+
+
+def _log_cli_query_failure(operation: str, error: Any) -> str:
+    """원문은 분류에만 쓰고 콘솔에는 고정된 사유·조치만 남긴다."""
+    text = str(error).lower()
+    if re.search(
+        r"not authenticated|unauthorized|authentication (?:required|failed)|auth login|"
+        r"(?:session|access token|authentication token) (?:has )?expired|"
+        r"invalid (?:access|authentication|auth) token|"
+        r"(?:http(?: status(?: code)?)?|status(?:_code)?)[\s:=\"']*401\b", text,
+    ):
+        kind = "auth"
+    elif re.search(
+        r"forbidden|permission denied|access denied|you (?:do not|don't) have (?:access|permission)|"
+        r"(?:http(?: status(?: code)?)?|status(?:_code)?)[\s:=\"']*403\b", text,
+    ):
+        kind = "permission"
+    elif re.search(
+        r"timeout|timed out|타임아웃|etimedout|econn|connection|network|dns|tls|certificate|"
+        r"service unavailable|bad gateway|rate limit|too many requests|"
+        r"(?:http(?: status(?: code)?)?|status(?:_code)?)[\s:=\"']*(?:429|5\d\d)\b", text,
+    ):
+        kind = "network"
+    else:
+        kind = "invalid"
+    reason, action = _CLI_QUERY_FAILURES[kind]
+    log_event(logging.getLogger(__name__), "cli_query_failed", level=logging.WARNING,
+              operation=operation, error_kind=kind, reason=reason, action=action)
+    return kind
+
+
 async def list_workspaces(timeout: float = 30.0) -> list[dict[str, Any]]:
     """워크스페이스 목록 [{id, name, plan_type, credits, is_selected, user_role}].
     선택 안 됨(개인 컨텍스트)이면 모두 is_selected=false.
@@ -1156,11 +1354,19 @@ async def list_workspaces(timeout: float = 30.0) -> list[dict[str, Any]]:
     ⚠️`is_selected` 는 **'마지막으로 생성한 공간'** 이지 '사용자가 고른 공간' 이 아니다(2026-09-11).
      허브는 더 이상 CLI 전역을 바꾸지 않고, 에이전트가 제출 직전에 요청의 공간으로 맞춘다.
      앱의 선택은 앱이 소유한다 — 이 값을 앱 선택으로 채택하면 방금 고른 공간이 되돌아간다."""
+    return await _single_flight("workspaces", lambda: _list_workspaces_uncached(timeout))
+
+
+async def _list_workspaces_uncached(timeout: float) -> list[dict[str, Any]]:
     try:
         data = await _run_json("workspace", "list", timeout=timeout)
-    except CLIError:
-        return []
-    return data if isinstance(data, list) else []
+    except CLIError as exc:
+        kind = _log_cli_query_failure("workspace_list", exc)
+        raise CLIError(_CLI_QUERY_FAILURES[kind][0]) from None
+    if not isinstance(data, list) or any(not isinstance(row, dict) for row in data):
+        kind = _log_cli_query_failure("workspace_list", data)
+        raise CLIError(_CLI_QUERY_FAILURES[kind][0])
+    return data
 
 
 # (create_job/get_job 제거 — 푸시 모델에선 서버가 CLI 로 직접 생성하지 않는다. 생성은 각 PC 의

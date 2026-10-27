@@ -250,8 +250,7 @@ def _augment(
     edges: dict[int, list[int]],
     by_generation: dict[int, int],
     by_transaction: dict[int, int],
-    spend_amounts: list[Optional[float]],
-    forbidden_amount: Optional[float] = None,
+    forbidden_edge: Optional[tuple[int, int]] = None,
 ) -> bool:
     """반복형 BFS 증가경로. 성공한 경로만 배정을 옮긴다."""
     queue = deque([start])
@@ -261,11 +260,7 @@ def _augment(
         for transaction_index in edges[generation_index]:
             if transaction_index in parents:
                 continue
-            if (
-                generation_index == start
-                and forbidden_amount is not None
-                and spend_amounts[transaction_index] == forbidden_amount
-            ):
+            if forbidden_edge == (generation_index, transaction_index):
                 continue
             parents[transaction_index] = generation_index
             assigned = by_transaction.get(transaction_index)
@@ -290,7 +285,7 @@ def _component_matching(
     edges: dict[int, list[int]],
     spend_amounts: list[Optional[float]],
 ) -> tuple[Optional[str], dict[int, int]]:
-    """모든 최대 매칭에서 생성물별 금액이 같을 때만 기준 매칭을 반환한다."""
+    """모든 완전 매칭에서 거래 ID까지 같을 때만 연결한다."""
     if (
         len(generation_indices) + len(transaction_indices) > _MAX_COMPONENT_VERTICES
         or sum(len(edges[g]) for g in generation_indices) > _MAX_COMPONENT_EDGES
@@ -299,11 +294,9 @@ def _component_matching(
     by_generation: dict[int, int] = {}
     by_transaction: dict[int, int] = {}
     for generation_index in generation_indices:
-        _augment(generation_index, edges, by_generation, by_transaction, spend_amounts)
+        _augment(generation_index, edges, by_generation, by_transaction)
     if len(by_generation) < len(generation_indices):
         return "incomplete", {}
-    if len({spend_amounts[t] for t in transaction_indices}) == 1:
-        return None, by_generation
     for generation_index in generation_indices:
         # 각 검사는 같은 기준 매칭에서 독립적으로 수행한다.
         alternate_generations = by_generation.copy()
@@ -312,7 +305,7 @@ def _component_matching(
         del alternate_transactions[transaction_index]
         if _augment(
             generation_index, edges, alternate_generations, alternate_transactions,
-            spend_amounts, forbidden_amount=spend_amounts[transaction_index],
+            forbidden_edge=(generation_index, transaction_index),
         ):
             return "ambiguous", {}
     return None, by_generation
@@ -334,9 +327,19 @@ def _set_credit_source(conn, generation, source: str) -> bool:
 
 
 def _model_accepts(transaction, generation_model: Optional[str]) -> bool:
-    """거래 모델 태그가 이 생성물 모델과 이어질 수 있나. 둘 중 하나라도 비면 지금처럼 제한 없음.
-    옛 오태깅(shots + 'Nano Banana Pro')만 같은 표시명 묶음까지 넓힌다 — 태그 없는 거래·다른 태그는 그대로."""
+    """검증된 표시명·별칭으로 모델 미상 거래의 후보가 다른 계열로 새지 않게 한다."""
     transaction_model = transaction["model"]
+    # 모델을 모르는 생성물은 경쟁 후보로 남긴다. 빼면 알려진 다른 생성물의
+    # 거래가 거짓으로 유일해져 금액이 잘못 확정될 수 있다.
+    if not generation_model:
+        return True
+    display_name = str(transaction["display_name"] or "").strip().casefold()
+    if not transaction_model and display_name == "nano banana pro":
+        return generation_model in _NANO_BANANA_PRO_FAMILY
+    if not transaction_model and display_name == "seedream 5.0 pro":
+        return generation_model == "seedream_v5_pro"
+    if transaction_model in _NANO_BANANA_PRO_FAMILY and generation_model in _NANO_BANANA_PRO_FAMILY:
+        return True
     if not transaction_model or not generation_model or transaction_model == generation_model:
         return True
     return (
@@ -345,7 +348,9 @@ def _model_accepts(transaction, generation_model: Optional[str]) -> bool:
     )
 
 
-def _match_transactions(conn, owner_uid: Optional[str]) -> list[str]:
+def _match_transactions(
+    conn, owner_uid: Optional[str], *, generation_ids: Optional[set[str]] = None,
+) -> list[str]:
     """BEGIN IMMEDIATE 안에서 요소 전체를 확정하거나 보류하고 dirty도 함께 저장한다."""
     # 빈 계정 사이클이 전체 사용자 재평가로 확대되면 안 된다. 신원 없는 기존 호출도
     # 거래 적재는 보존하되, 생성물 배정은 소유자를 확인한 호출에서만 수행한다.
@@ -420,6 +425,12 @@ def _match_transactions(conn, owner_uid: Optional[str]) -> list[str]:
                     if neighbor not in visited:
                         visited.add(neighbor)
                         queue.append(neighbor)
+        # 대상 제한도 전체 후보 그래프를 읽은 뒤 적용한다. 먼저 잘라내면 다른 생성물과
+        # 공유하던 거래가 유일한 것처럼 보여 실제 장부를 잘못 확정할 수 있다.
+        if generation_ids is not None and any(
+            generations[index]["id"] not in generation_ids for index in component_generations
+        ):
+            continue
         reason, matching = _component_matching(
             component_generations, component_transactions, edges, spend_amounts,
         )
@@ -450,6 +461,8 @@ def _match_transactions(conn, owner_uid: Optional[str]) -> list[str]:
             matched_ids.append(generation["id"])
             dirty_ids.append(generation["id"])
     for generation_index, generation in enumerate(generations):
+        if generation_ids is not None and generation["id"] not in generation_ids:
+            continue
         if generation_index not in edges and generation["credit_source"] in _PENDING_SOURCES:
             source = "estimate" if generation["est_credits"] is not None else "unknown"
             if _set_credit_source(conn, generation, source):

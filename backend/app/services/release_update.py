@@ -29,6 +29,7 @@ from ..config import AUTH_ENABLED, BACKEND_DIR, PORT
 from .atomic_io import atomic_write_text
 from .read_utf8_sig_first_line import read_first_line
 from . import release_contract, runtime_activation
+from . import update_activity
 
 APP_ROOT = BACKEND_DIR.parent
 UPDATE_STATE_BASE = Path(
@@ -1282,6 +1283,7 @@ def start_update(
     force: bool = False,
     manifest: str = "latest.json",
     expected_release: dict[str, Any] | None = None,
+    checkpoint_write: Callable[[], int] | None = None,
 ) -> dict[str, Any]:
     """업데이트를 단일 실행으로 시작하고 즉시 상태를 반환한다.
 
@@ -1374,6 +1376,18 @@ def start_update(
                         raise ReleaseUpdateError(_STATE_WRITE_FAILED_MESSAGE) from exc
             if activity_check() > 0:
                 raise ReleaseUpdateBusyError("확인 중 생성 작업이 시작됐습니다. 완료된 뒤 다시 시도하세요")
+            if not force and update_activity.active_write_count() > 0:
+                raise ReleaseUpdateBusyError("생성 결과를 저장 중입니다. 저장이 끝난 뒤 다시 시도하세요")
+
+            try:
+                if checkpoint_write is not None:
+                    checkpoint_write()
+                elif update_activity.remote_checkpoint_required():
+                    raise ReleaseUpdateError("진행 중인 원격 생성의 복구 기록을 준비하지 못했습니다")
+            except ReleaseUpdateError:
+                raise
+            except Exception as exc:
+                raise ReleaseUpdateError("원격 생성 복구 기록을 저장하지 못했습니다. 업데이트를 시작하지 않았습니다") from exc
 
             _check_update_contract(target, root, candidate_mode=candidate_mode)
             launcher = root / "update_release.bat"

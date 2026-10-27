@@ -57,6 +57,7 @@ interface Props {
   className?: string;
   thumb: string | null | undefined; // 썸네일(포스터) URL
   isVideo: boolean; // 결과물이 영상인가
+  isAudio?: boolean;
   src?: string | null; // 영상 파일 경로(영상일 때만 필요)
   alt?: string; // 이미지 대체 텍스트
   videoRef?: Ref<HTMLVideoElement>; // 호버 재생용 ref(필요 없으면 생략)
@@ -73,6 +74,7 @@ export function MediaThumbnail({
   className,
   thumb,
   isVideo,
+  isAudio = false,
   src,
   alt = "",
   videoRef,
@@ -91,6 +93,8 @@ export function MediaThumbnail({
     setLoadState({ ...loadState, mediaBroken: true });
   };
   const renderMode = mediaThumbnailRenderMode(loadState, !!thumb, isVideo, !!src);
+  if (isAudio && src) return <audio className={className} src={src} controls preload="metadata"
+    aria-label={alt || "생성 오디오"} onClick={(e) => e.stopPropagation()} onError={terminalError} />;
   if (renderMode === "fallback") return <>{fallback}</>;
   // 영상 + 썸네일: 포스터로 깔고 호버 시 재생(preload 없음).
   // poster 자체의 HTTP 실패는 <video onError>로 일관되게 전달되지 않으므로 같은 URL의 숨은

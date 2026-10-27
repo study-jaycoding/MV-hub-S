@@ -3,6 +3,7 @@ import { generationChangeScope, invalidateGenerationReadModels } from "../featur
 
 export const APP_EVENTS = {
   accountUpdated: "ch:account-updated",
+  creditsChanged: "ch:credits-changed",
   addReference: "ch:add-reference",
   assetSyncReady: "ch:asset-sync-ready",
   authRequired: "ch:auth-required",

@@ -16,7 +16,9 @@ created_at epoch→ISO, transactions list→{items}, seedance medias 제거) 우
 """
 from __future__ import annotations
 
+import argparse
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -78,14 +80,51 @@ def _first(data):
     return None
 
 
-def main() -> int:
-    cli = cli_path()
+def check_media_contracts(cli: str) -> None:
+    """신규 미디어의 조회·견적만 확인한다. 유료 create/workflow 실행은 하지 않는다."""
+    workflow, error = run_json(cli, "workflow", "get", "draw_to_video")
+    definitions = workflow.get("params") if isinstance(workflow, dict) else None
+    names = {row.get("name") for row in definitions if isinstance(row, dict)} if isinstance(definitions, list) else set()
+    cost_params = workflow.get("cost_params") if isinstance(workflow, dict) else None
+    cost_names = {row.get("name") for row in cost_params if isinstance(row, dict)} if isinstance(cost_params, list) else set()
+    valid = not error and isinstance(workflow, dict) and workflow.get("type") == "video" and {"video", "image_references", "prompt"} <= names
+    record(PASS if valid else FAIL, "draw_to_video workflow 입력 스키마")
+    record(PASS if {"duration", "resolution"} <= cost_names else FAIL, "draw_to_video 비용 스키마")
+    cost, error = run_json(cli, "generate", "cost", "workflow", "draw_to_video", "--duration", "5", "--resolution", "720p")
+    value = cost.get("credits_exact", cost.get("credits")) if isinstance(cost, dict) else None
+    valid = not error and isinstance(value, (float, int)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+    record(PASS if valid else FAIL, "draw_to_video 5초 720p 무료 견적 형식")
+    speech, error = run_json(cli, "model", "get", "text2speech_v2")
+    definitions = speech.get("params") if isinstance(speech, dict) else None
+    definitions = {row.get("name"): row for row in definitions if isinstance(row, dict)} if isinstance(definitions, list) else {}
+    valid = not error and isinstance(speech, dict) and speech.get("type") == "audio" and {"prompt", "variant", "voice_id", "voice_type"} <= set(definitions)
+    record(PASS if valid else FAIL, "text2speech_v2 audio 필수 옵션 스키마")
+    valid = (isinstance(definitions.get("variant", {}).get("enum"), list)
+             and bool(definitions["variant"]["enum"])
+             and "preset" in definitions.get("voice_type", {}).get("enum", []))
+    record(PASS if valid else FAIL, "text2speech_v2 variant·preset 옵션")
+    voices, error = run_json(cli, "voices", "list", "--size", "100")
+    rows = voices.get("items") if isinstance(voices, dict) else None
+    preset = next((row for row in rows if isinstance(row, dict) and row.get("voice_type") == "preset" and isinstance(row.get("id"), str)), None) if isinstance(rows, list) else None
+    record(PASS if not error and preset else FAIL, "voices list 공식 preset 형식")
+    if preset:
+        voice, error = run_json(cli, "voices", "get", preset["id"])
+        valid = not error and isinstance(voice, dict) and voice.get("id") == preset["id"] and voice.get("voice_type") == "preset" and isinstance(voice.get("name"), str)
+        record(PASS if valid else FAIL, "voices get 공식 preset 형식")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--cli", help="검증할 실행 파일 경로(생략하면 PATH)")
+    parser.add_argument("--expected-version", help="후보 검증 버전(생략하면 저장소 pin)")
+    options = parser.parse_args(argv)
+    cli = options.cli or cli_path()
     if not cli:
         print("[중단] higgsfield CLI 를 PATH 에서 못 찾음. 설치/PATH 확인 후 다시.")
         return 2
 
     pin_text = PIN_FILE.read_text("utf-8-sig").strip() if PIN_FILE.exists() else ""
-    pin = pin_text.splitlines()[0].strip() if pin_text else ""
+    pin = options.expected_version or (pin_text.splitlines()[0].strip() if pin_text else "")
 
     # 1) 설치본 버전 == pin. ★부분 문자열 비교 금지 — pin 1.1.2 가 설치본 1.1.23 을
     #    통과시키면 안 된다(빈 pin 파일에서 splitlines()[0] 이 터지던 문제도 함께 해소).
@@ -234,6 +273,8 @@ def main() -> int:
         record(FAIL, "boolean 소문자 true 수용", f"소문자도 거부됨 — bool 직렬화 재검토: {lo[:80]}")
     else:
         record(WARN, "boolean 대문자 True 거부 안 됨", "CLI 가 관대해짐 — 소문자 직렬화는 여전히 안전")
+
+    check_media_contracts(cli)
 
     # ── 리포트 ──
     order = {FAIL: 0, WARN: 1, PASS: 2}

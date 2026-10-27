@@ -82,7 +82,7 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
                 await cli_bridge._allowed_param_names("m1"), {"prompt", "seed"}
             )
             self.assertEqual(cli_bridge._PARAM_NAMES_CACHE["m1"], {"prompt", "seed"})
-            # 4) 성공 캐시는 프로세스 수명 유지(추가 CLI 호출 없음)
+            # 4) 같은 TTL 안에서는 추가 CLI 호출 없음
             await cli_bridge._allowed_param_names("m1")
             self.assertEqual(calls.await_count, 2)
         cli_bridge._PARAM_NAMES_CACHE.clear()

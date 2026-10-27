@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import time
 
 from fastapi import APIRouter, HTTPException, Request
 
-from .. import rbac, repo
+from .. import active_account, rbac, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
 from ..deps import (
     account_actor_uid,
@@ -47,9 +48,12 @@ from ..models import (
     WorkspaceContext,
 )
 from ..services.agent_signals import agent_signals
+from ..services import cli_bridge
+from ..models import MEDIA_V2_MODELS
 from ..services.seedance_draft import DraftFinishConflict, finish_params, fresh_params
 from ..services.operational_logging import log_event
 from ..services.release_update import update_in_progress
+from ..services.update_activity import UpdateActivityBusy, list_checkpoint
 from ..usecases.gen_requests import (
     CanvasGenerationConflict,
     GenRequestCommand,
@@ -274,6 +278,12 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             raise HTTPException(status_code=400, detail="create 본문이 필요합니다")
         data = body.create.model_dump()
         data["params"] = fresh_params(data["model"], data.get("params"))
+        try:
+            await cli_bridge.validate_media_submission(data["model"], data["prompt"], data["params"], data["references"])
+        except ValueError as exc:
+            raise HTTPException(422, str(exc), headers=dict(NOT_STARTED)) from None
+        except cli_bridge.CLIError:
+            raise HTTPException(502, "생성 옵션 또는 목소리를 확인할 수 없습니다", headers=dict(NOT_STARTED)) from None
         # project_id 검증(AUTH on) — 남의 프로젝트 id 를 넣어 그 팀 영역에 작업을 주입하거나
         # 존재하지 않는 project_id 로 귀속시키는 것을 막는다. read_only=True 라 그 프로젝트 멤버이거나
         # 전역 read_all(admin·PM·PD)이면 통과. 로컬 허브(AUTH off)는 가드가 즉시 통과(개인 모드 보존).
@@ -353,6 +363,16 @@ async def create_gen_request(body: GenRequestIn, request: Request):
                 read_only=True,
             )
         reg = body.regenerate or RegenerateIn()
+        recipe = await asyncio.to_thread(repo.gen_recipe, body.source_gen_id)
+        media_model = reg.model or (recipe or {}).get("model")
+        if media_model in MEDIA_V2_MODELS:
+            try:
+                await cli_bridge.validate_media_submission(media_model, reg.prompt or (recipe or {}).get("prompt", ""),
+                                                           (recipe or {}).get("params") or {}, (recipe or {}).get("references") or [])
+            except ValueError as exc:
+                raise HTTPException(422, str(exc), headers=dict(NOT_STARTED)) from None
+            except cli_bridge.CLIError:
+                raise HTTPException(502, "생성 옵션 또는 목소리를 확인할 수 없습니다", headers=dict(NOT_STARTED)) from None
         if reg.finish_draft:
             if not creator_uid or parent.get("creator_uid") != creator_uid:
                 raise HTTPException(status_code=403, detail="내 계정의 Draft만 고화질로 생성할 수 있습니다")
@@ -567,6 +587,7 @@ async def pending_gen_requests_exist(
             acc["email"],
             workspace_capable="workspace" in caps,
             asset_content_capable="asset-content" in caps,
+            media_v2_capable="media-v2" in caps,
         )
     }
 
@@ -605,6 +626,7 @@ async def pending_gen_requests(
         lease_owner=lease_owner,
         submission_stage_capable=True,
         asset_content_capable="asset-content" in caps,
+        media_v2_capable="media-v2" in caps,
     )
     if claimed:
         schedule_telemetry_drain()
@@ -632,10 +654,16 @@ async def begin_gen_request_submission(
     request: Request,
     agent_id: str,
     body: SubmissionFingerprintIn | None = None,
+    capability: str = "",
 ):
     """신 에이전트의 실제 `generate create` 직전 CAS. 성공 전에는 유료 CLI를 호출하면 안 된다."""
     acc = _require_account(request)
     agent_signals.touch(acc["email"])
+    row = await asyncio.to_thread(repo.get_gen_request, rid)
+    if row and (row.get("account_email") or "").lower() == acc["email"].lower():
+        payload = json.loads(row.get("payload") or "{}")
+        if (payload.get("media_protocol") == "media-v2" or payload.get("model") in MEDIA_V2_MODELS) and "media-v2" not in {item.strip() for item in capability.split(",")}:
+            raise HTTPException(409, "이 생성 요청에는 최신 미디어 작업자가 필요합니다")
     applied = await begin_submission(
         acc["email"],
         realtime_scope(acc),
@@ -797,7 +825,10 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
             raise HTTPException(status_code=500, detail="결과 조회 실패")
         return gen
 
-    gen = await fulfill_request(req, rid, body.job, realtime_scope(acc))
+    try:
+        gen = await fulfill_request(req, rid, body.job, realtime_scope(acc))
+    except UpdateActivityBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not gen:
         raise HTTPException(status_code=500, detail="결과 조회 실패")
     schedule_telemetry_drain()
@@ -836,6 +867,22 @@ async def anchor_gen_request(rid: str, request: Request, job_id: str, verifying:
     )
 
 
+@router.get("/gen-requests/update-recovery")
+def update_recovery_candidates(request: Request):
+    """이번 업데이트 전에 영속 저장한 동일 계정·허브의 작업만 조회한다."""
+    acc = _require_account(request)
+    email = (acc.get("email") or "").strip().lower()
+    agent_signals.touch(email)
+    try:
+        with active_account.pinned_account_scope((email, None)):
+            candidates = list_checkpoint(email)
+    except Exception as exc:
+        log_event(_generation_log, "generation_update_recovery_pending",
+                  level=logging.WARNING, reason="checkpoint_unavailable")
+        raise HTTPException(status_code=503, detail="업데이트 전 생성 복구 기록을 확인하지 못했습니다. 다시 확인합니다.") from exc
+    return {"candidates": candidates}
+
+
 @router.get("/gen-requests/reconcile-candidates")
 def reconcile_candidates(request: Request):
     """에이전트가 주기적으로 호출 — 이 계정의 '실제 상태 미확정' 로컬 카드 목록을 받아, 각 job_id 를
@@ -862,7 +909,10 @@ async def reconcile_gen_request(
         raise HTTPException(status_code=404, detail="없는 요청")
     if req["account_email"] != (acc.get("email") or "").lower():
         raise HTTPException(status_code=403, detail="내 요청이 아닙니다")
-    result = await reconcile_request(req, body.job, force_fail_reason, realtime_scope(acc))
+    try:
+        result = await reconcile_request(req, body.job, force_fail_reason, realtime_scope(acc))
+    except UpdateActivityBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if result.get("applied"):
         schedule_telemetry_drain()
     return result

@@ -528,7 +528,7 @@ export function ReleaseUpdateSettingsSection({
   const running = busy || isReleaseUpdateRunning(status?.state);
   const releaseInstall = status?.install_mode === "release";
   const active = status?.active_total || 0;
-  // 유료 생성·Comfy 와 Resolve 전송을 나눠 말한다 — 둘 다 업데이트(프로세스 교체)를 막는다.
+  // 원격 접수 뒤 추적은 복구하고, 제출·파일 저장·로컬 실행만 완료를 기다린다.
   const busyText = updateBlockersText(status);
   // 실행기(bat)가 기록하는 전체 진행률 — 버튼·문구에 함께 보여 멈춘 건지 진행 중인지 구분되게.
   const pct = typeof status?.percent === "number" ? Math.min(100, status.percent) : null;
@@ -616,9 +616,9 @@ export function ReleaseUpdateSettingsSection({
         {releaseInstall && (
           <>
             <p>
-              오류로 남은 생성 카드가 "진행 중"으로 잘못 집계돼 위 버튼이 계속 막힐 때는
-              아래 강제 업데이트를 쓰세요 — 폴더의 update_release.bat 을 직접 실행하는
-              것과 같습니다. 실제로 생성이 돌고 있다면 그 작업은 중단될 수 있습니다.
+              원격에 접수된 생성은 업데이트 뒤 이어서 확인합니다. 업로드·생성 제출·결과 저장과
+              ComfyUI·Resolve 작업은 안전한 시점까지 기다립니다. 아래 강제 업데이트는 이 검사를
+              건너뛰므로 작업이 중단될 수 있습니다.
             </p>
             <button
               className="settings-action ghost"

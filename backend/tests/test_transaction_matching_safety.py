@@ -1,4 +1,4 @@
-"""실제 거래 적재 진입점에서 최대 매칭의 금액 불변성과 원자성을 검증한다."""
+"""실제 거래 적재 진입점에서 거래 ID의 유일성과 원자성을 검증한다."""
 
 import json
 import os
@@ -136,20 +136,20 @@ class TransactionMatchingSafetyTests(unittest.TestCase):
         self.assertEqual(self.record([self.transaction()])["matched"], 0)
         self.assert_pending(["g1", "g2"], "incomplete")
 
-    def test_identical_amount_with_exact_transaction_count_confirms(self):
+    def test_identical_amount_with_exact_count_keeps_ambiguous_ids_pending(self):
         self.generation("g1")
         self.generation("g2", 1)
-        self.assertEqual(self.record([self.transaction(), self.transaction(1)])["matched"], 2)
-        self.assert_confirmed({"g1": 32.5, "g2": 32.5})
+        self.assertEqual(self.record([self.transaction(), self.transaction(1)])["matched"], 0)
+        self.assert_pending(["g1", "g2"], "ambiguous")
 
-    def test_identical_amount_with_surplus_transactions_confirms(self):
+    def test_identical_amount_with_surplus_transactions_keeps_all_unlinked(self):
         self.generation("g1")
         self.generation("g2", 1)
-        self.assertEqual(self.record([self.transaction(i) for i in range(3)])["matched"], 2)
-        self.assert_confirmed({"g1": 32.5, "g2": 32.5})
+        self.assertEqual(self.record([self.transaction(i) for i in range(3)])["matched"], 0)
+        self.assert_pending(["g1", "g2"], "ambiguous")
         with db.get_connection() as conn:
             self.assertEqual(conn.execute(
-                "SELECT COUNT(*) FROM credit_txn WHERE matched_gen_id IS NULL").fetchone()[0], 1)
+                "SELECT COUNT(*) FROM credit_txn WHERE matched_gen_id IS NULL").fetchone()[0], 3)
 
     def test_augmenting_path_recovers_greedy_omission(self):
         self.generation("g1", 0)
@@ -164,14 +164,14 @@ class TransactionMatchingSafetyTests(unittest.TestCase):
         self.assertEqual(result["matched"], 2)
         self.assert_confirmed({"g1": 32.5, "g2": 52})
 
-    def test_mixed_component_with_multiple_matchings_but_fixed_amounts_confirms(self):
+    def test_fixed_amounts_do_not_prove_transaction_ids(self):
         self.generation("g1", 0)
         self.generation("g2", 0)
         self.generation("g3", 61)
         result = self.record([self.transaction(-2, 32.5), self.transaction(-1, 32.5),
                               self.transaction(1, 52)])
-        self.assertEqual(result["matched"], 3)
-        self.assert_confirmed({"g1": 32.5, "g2": 32.5, "g3": 52})
+        self.assertEqual(result["matched"], 0)
+        self.assert_pending(["g1", "g2", "g3"], "ambiguous")
 
     def test_alternative_amount_reachable_through_long_augmenting_path_is_ambiguous(self):
         for index, seconds in enumerate([0, 61, 122]):
@@ -283,14 +283,14 @@ class TransactionMatchingSafetyTests(unittest.TestCase):
 
     def test_conditional_write_failure_rolls_back_entire_component(self):
         self.generation("g1")
-        self.generation("g2", 1)
+        self.generation("g2", 61)
         with db.get_connection() as conn:
             conn.execute("CREATE TRIGGER reject_second_credit BEFORE UPDATE ON generation_metrics "
                          "WHEN NEW.gen_id='g2' AND NEW.real_credits IS NOT NULL "
                          "BEGIN SELECT RAISE(IGNORE); END")
         caught = None
         try:
-            self.record([self.transaction(), self.transaction(1)])
+            self.record([self.transaction(-2), self.transaction(1)])
         except RuntimeError as error:
             caught = error
         self.assertTrue(all(row["real_credits"] is None for row in self.metrics().values()),
@@ -342,8 +342,11 @@ class TransactionMatchingSafetyTests(unittest.TestCase):
         self.generation("g2", 1)
         self.assertEqual(self.record([self.transaction(0, 0)])["matched"], 0)
         self.assert_pending(["g1", "g2"], "incomplete")
-        self.assertEqual(self.record([self.transaction(1, 0)])["matched"], 2)
-        self.assert_confirmed({"g1": 0, "g2": 0})
+        self.assertEqual(self.record([self.transaction(1, 0)])["matched"], 0)
+        self.assert_pending(["g1", "g2"], "ambiguous")
+        self.generation("unique", 300)
+        self.assertEqual(self.record([self.transaction(300, 0)])["matched_ids"], ["unique"])
+        self.assert_confirmed({"unique": 0})
 
     def test_invalid_spend_types_never_become_valid_through_sqlite_coercion(self):
         invalid_amounts = [True, False, "32.5", "not-a-number", float("nan"),
@@ -367,13 +370,13 @@ class TransactionMatchingSafetyTests(unittest.TestCase):
         with db.get_connection() as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM credit_txn").fetchone()[0], 0)
 
-    def test_dense_graph_at_vertex_and_edge_boundaries_confirms_all(self):
+    def test_dense_graph_at_boundaries_preserves_ambiguous_ids(self):
         # 256 + 256 = 512 vertices; 256 * 256 = 65536 edges.
         for index in range(256):
             self.generation(f"g{index}")
         result = self.record([self.transaction(index / 1000, 2) for index in range(256)])
-        self.assertEqual(result["matched"], 256)
-        self.assert_confirmed({f"g{index}": 2 for index in range(256)})
+        self.assertEqual(result["matched"], 0)
+        self.assert_pending([f"g{index}" for index in range(256)], "ambiguous")
 
     def test_dense_graph_over_limits_holds_whole_component(self):
         for index in range(256):
@@ -382,11 +385,11 @@ class TransactionMatchingSafetyTests(unittest.TestCase):
         self.assertEqual(result["matched"], 0)
         self.assert_pending([f"g{index}" for index in range(256)], "limit")
 
-    def test_sparse_graph_at_512_vertices_confirms(self):
+    def test_surplus_graph_at_512_vertices_does_not_pick_one_transaction(self):
         self.generation("g1")
         result = self.record([self.transaction(index / 1000, 2) for index in range(511)])
-        self.assertEqual(result["matched"], 1)
-        self.assert_confirmed({"g1": 2})
+        self.assertEqual(result["matched"], 0)
+        self.assert_pending(["g1"], "ambiguous")
 
     def test_sparse_graph_at_513_vertices_holds_without_truncation(self):
         self.generation("g1")
@@ -396,14 +399,48 @@ class TransactionMatchingSafetyTests(unittest.TestCase):
         self.record([])
         self.assertEqual(self.revisions(), {"g1": 1})
 
-    def test_measured_nano_banana_pro_distribution_confirms_140(self):
+    def test_measured_nano_distribution_keeps_ids_unconfirmed(self):
         for index in range(70):
             self.generation(f"g{index}", index / 10, model="nano-banana-pro")
         result = self.record([self.transaction(index / 10, 2, model="nano-banana-pro",
                                               label="Nano Banana Pro") for index in range(70)])
-        self.assertEqual(result["matched"], 70)
-        self.assert_confirmed({f"g{index}": 2 for index in range(70)})
-        self.assertEqual(sum(row["real_credits"] for row in self.metrics().values()), 140)
+        self.assertEqual(result["matched"], 0)
+        self.assert_pending([f"g{index}" for index in range(70)], "ambiguous")
+
+    def test_display_name_separates_pending_nano_and_seedream_without_refunds(self):
+        self.generation("seed", model="seedream_v5_pro")
+        for index in range(9):
+            self.generation(f"nano{index}", index, model="nano_banana_2")
+        transactions = [self.transaction(index, 2, model=None, label="Nano Banana Pro")
+                        for index in range(10)]
+        transactions.append(self.transaction(0, 3, model="seedream_v5_pro", label="Seedream 5.0 Pro"))
+        refund = self.transaction(10, -2, model=None, label="Nano Banana Pro")
+        refund["action"] = "refund"
+        transactions.append(refund)
+        self.assertEqual(self.record(transactions)["matched_ids"], ["seed"])
+        self.assert_confirmed({"seed": 3})
+        self.assert_pending([f"nano{index}" for index in range(9)], "ambiguous")
+        self.assertEqual(self.record(transactions)["matched"], 0)
+        with db.get_connection() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM credit_txn WHERE matched_gen_id IS NULL").fetchone()[0], 11)
+
+    def test_verified_nano_alias_is_a_candidate_but_not_identity_evidence(self):
+        self.generation("nano", model="nano_banana_2")
+        self.assertEqual(self.record([self.transaction(model="nano_banana_pro", label="Nano Banana Pro")])["matched_ids"], ["nano"])
+
+    def test_targeted_match_does_not_remove_competing_generations_from_graph(self):
+        from app.repo.manage_transactions import _match_transactions
+        self.generation("selected")
+        self.generation("outside", 1)
+        self.record([self.transaction(), self.transaction(1)])
+        revisions = self.revisions()
+        with db.get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            matched = _match_transactions(conn, "u_me", generation_ids={"selected"})
+            conn.execute("COMMIT")
+        self.assertEqual(matched, [])
+        self.assertEqual(self.revisions(), revisions)
+        self.assert_pending(["selected", "outside"], "ambiguous")
 
     def test_measured_seedance_mixed_distribution_is_ambiguous(self):
         amounts = [52] * 11 + [78] + [32.5] * 5

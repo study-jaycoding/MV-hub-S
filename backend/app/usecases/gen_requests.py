@@ -21,8 +21,9 @@ from dataclasses import dataclass
 from .. import active_account, repo
 from ..config import MANAGE_ENABLED
 from ..generation_result import ACTIVE_STATUSES, normalize_job_result
-from ..models import RegenerateIn
+from ..models import MEDIA_V2_MODELS, RegenerateIn
 from ..services import cli_bridge
+from ..services.update_activity import local_write, acknowledge_checkpoint
 from ..services.agent_signals import agent_signals
 from ..services.async_tools import to_thread_non_abandon
 from ..services.event_journal import journal_generation_event
@@ -437,6 +438,7 @@ async def claim_gen_requests(
     lease_owner: str | None = None,
     submission_stage_capable: bool = False,
     asset_content_capable: bool = True,
+    media_v2_capable: bool = False,
 ) -> list[dict]:
     """에이전트의 빈 슬롯만큼 대기 요청을 claim하고 카드 상태·알림을 함께 갱신한다."""
     agent_signals.touch(email)
@@ -477,6 +479,7 @@ async def claim_gen_requests(
         lease_owner=lease_owner,
         submission_stage_capable=submission_stage_capable,
         asset_content_capable=asset_content_capable,
+        **({"media_v2_capable": True} if media_v2_capable else {}),
         sweep_expired=False,
     )
     claimed_needs_refresh = False
@@ -699,8 +702,43 @@ async def confirm_generation_not_submitted_and_requeue(
     )
 
 
+async def _record_result_evidence(request_row: dict, job: dict) -> None:
+    if cli_bridge.provider_status_kind(str(job.get("status") or job.get("job_status") or "")) not in ("success", "failure"):
+        return
+    from ..repo.gen_requests import record_reference_observation
+
+    rid = request_row.get("id")
+    email = request_row.get("account_email")
+    try:
+        observation = await _sync_io(record_reference_observation, rid, job, account_email=email)
+        if observation.get("changed") and observation.get("status") != "matched":
+            log_event(_generation_log, "generation_reference_observation",
+                      level=logging.WARNING, request_id=rid,
+                      reason=observation.get("status", "unverifiable"))
+    except Exception:
+        # 관측 기록 실패로 정상 결과를 실패시키거나 다시 제출하지 않는다.
+        log_event(_generation_log, "generation_reference_observation_failed",
+                  level=logging.WARNING, request_id=rid, reason="record_unavailable")
+    if isinstance(job.get("id"), str):
+        try:
+            await _sync_io(acknowledge_checkpoint, rid, job["id"], email)
+        except Exception:
+            # checkpoint는 남겨 다음 재시작/재점검에서 다시 확인한다.
+            log_event(_generation_log, "generation_update_recovery_pending",
+                      level=logging.WARNING, request_id=rid, reason="checkpoint_retained")
+
+
 @_account_scoped("request_row", from_request_row=True)
 async def fulfill_request(
+    request_row: dict, request_id: str, job: dict, account_uid: str | None,
+) -> dict | None:
+    with local_write():
+        result = await _fulfill_request(request_row, request_id, job, account_uid)
+        await _record_result_evidence({**request_row, "id": request_id}, job)
+        return result
+
+
+async def _fulfill_request(
     request_row: dict,
     request_id: str,
     job: dict,
@@ -844,6 +882,15 @@ async def anchor_request(
 
 @_account_scoped("request_row", from_request_row=True)
 async def reconcile_request(
+    request_row: dict, job: dict, force_fail_reason: str | None, account_uid: str | None,
+) -> dict:
+    with local_write():
+        result = await _reconcile_request(request_row, job, force_fail_reason, account_uid)
+        await _record_result_evidence(request_row, job)
+        return result
+
+
+async def _reconcile_request(
     request_row: dict,
     job: dict,
     force_fail_reason: str | None,
@@ -1479,6 +1526,8 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
         payload["source_gen_id"] = cmd.source_gen_id
         # 구 에이전트는 무시하고, 지원 에이전트는 과금 전 실제 입력판 보존을 확인한다.
         payload["asset_content_protocol"] = 1
+        if payload.get("model") in MEDIA_V2_MODELS:
+            payload["media_protocol"] = "media-v2"
         if cmd.kind == "create":
             payload["project_id"] = (cmd.data or {}).get("project_id")
             # 화면의 기대 지문은 검증된 DB 지문과 분리해 과금 직전 실제 바이트와 대조한다.

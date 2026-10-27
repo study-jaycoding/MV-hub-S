@@ -317,7 +317,7 @@ function EditTabInner({
     const link = links.get(clipKey(clip));
     const asset = link?.gen?.assets[0];
     return {
-      state: link?.state ?? "unknown", url: asset?.file_path ?? null, type: asset?.type ?? clip.kind ?? null,
+      state: link?.state ?? "unknown", url: asset?.file_path ?? null, type: asset?.type === "audio" ? null : asset?.type ?? clip.kind ?? null,
       thumb: link?.gen ? thumbOf(link.gen, 512) : null,
     };
   }, [links]);
@@ -339,7 +339,7 @@ function EditTabInner({
     const link = v0Links.get(clip.cut);
     const asset = link?.gen?.assets[0];
     return {
-      state: link?.state ?? "unknown", url: asset?.file_path ?? null, type: asset?.type ?? clip.kind ?? null,
+      state: link?.state ?? "unknown", url: asset?.file_path ?? null, type: asset?.type === "audio" ? null : asset?.type ?? clip.kind ?? null,
       thumb: link?.gen ? thumbOf(link.gen, 512) : null,
     };
   }, [v0Links]);
@@ -886,6 +886,7 @@ function EditTabInner({
     const gen = cardOf(cutPath, genId);
     if (!gen) return flash(t("이 카드는 넣을 수 없습니다 — 편집 탭의 이 컷 공유 목록에 없습니다."));
     const asset = gen.assets[0];
+    if (asset.type === "audio") return flash(t("오디오는 영상 타임라인에 넣을 수 없습니다."));
     if (maybePlaced(cutPath, gen)) return flash(t("이 카드는 이미 넣은 클립일 수 있습니다 — 공유 목록을 다 받은 뒤에 다시 해 주세요.")); // 그사이 다시 받기가 시작됐다
     const own = ownClip(cutPath, genId);
     const clip = {
@@ -900,6 +901,7 @@ function EditTabInner({
     const gen = cardOf(cutPath, genId);
     if (!gen) return flash(t("이 카드는 넣을 수 없습니다 — 편집 탭의 이 컷 공유 목록에 없습니다."));
     const asset = gen.assets[0];
+    if (asset.type === "audio") return flash(t("오디오는 영상 타임라인에 넣을 수 없습니다."));
     const card = { cut: folderOf(cutPath), gen: gen.id, job: gen.job_id, kind: asset.type, dur: genSeconds(gen, knownVideoSeconds(asset.file_path)) };
     act({ type: "insertSlot", args: [cuts, card, before, track, newSlotId()] }, options);
   };
@@ -1150,14 +1152,14 @@ function EditTabInner({
   const listFresh = list.state === "ok" || list.state === "capped";
   const fillPicks = useMemo(() => (!listFresh ? [] : cuts.flatMap((path) => {
     if (offCuts.has(path) || doc.clips.some((clip) => slotOf(clip) === path)) return []; // 반복 자리는 늘 클립이 있다 — 첫 자리만 채운다
-    const gens = byCut.get(folderOf(path)) ?? [];
+    const gens = (byCut.get(folderOf(path)) ?? []).filter((item) => item.assets[0]?.type === "image" || item.assets[0]?.type === "video");
     const gen = gens.find((item) => item.is_final) ?? gens[0];
     return gen ? [{ cut: path, gen }] : [];
   })), [listFresh, cuts, offCuts, doc, byCut]);
   const fillEmpty = () => {
     closeMenu();
     const picks = fillPicks.map(({ cut: path, gen }) => ({
-      cut: path, gen: gen.id, job: gen.job_id, kind: gen.assets[0].type,
+      cut: path, gen: gen.id, job: gen.job_id, kind: gen.assets[0].type === "video" ? "video" as const : "image" as const,
       dur: genSeconds(gen, knownVideoSeconds(gen.assets[0].file_path)),
     }));
     // 고른 것은 이 렌더의 문서·비활성 판정으로 만든 것이다 — 그 사이 다른 창이 문서를 바꿨으면(rev) 넣지 않는다: 방금 꺼진

@@ -5,7 +5,7 @@ from typing import Optional
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".webm", ".mkv", ".avi")
 AUDIO_EXTENSIONS = (".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac")
-CACHE_MEDIA_EXTENSIONS = IMAGE_EXTENSIONS + VIDEO_EXTENSIONS
+CACHE_MEDIA_EXTENSIONS = IMAGE_EXTENSIONS + VIDEO_EXTENSIONS + AUDIO_EXTENSIONS
 
 # 브라우저에 파일을 돌려줄 때 ``mimetypes``나 Windows 레지스트리 추정값을 사용하지 않는다.
 # 허용한 미디어 확장자만 고정 MIME으로 응답해야 이름만 바꾼 HTML도 같은 오리진 문서로
@@ -54,8 +54,8 @@ def asset_content_type(name: str) -> Optional[str]:
 def media_type_from_url(url: Optional[str]) -> str:
     if not url:
         return "image"
-    low = url.lower().split("?", 1)[0]
-    return "video" if low.endswith(VIDEO_EXTENSIONS) else "image"
+    low = url.lower().split("?", 1)[0].split("#", 1)[0]
+    return asset_media_type(low, include_audio=True) or "image"
 
 
 def same_media_url(a: Optional[str], b: Optional[str]) -> bool:

@@ -107,6 +107,38 @@ class GenerationSyncTests(unittest.TestCase):
             "registry_asset_id": "server-registry", "version_verified": 1,
         })
 
+    def test_equal_reference_count_does_not_assign_remote_urls_by_position(self) -> None:
+        parsed = self.parsed("job-local-refs")
+        parsed["references"] = [
+            {"id": "local-a", "type": "image", "file_path": "asset:project|a.png", "role": "@Image1"},
+            {"id": "local-b", "type": "image", "file_path": "asset:project|b.png", "role": "@Image2"},
+        ]
+        repo.upsert_synced_generation(parsed, "me")
+        parsed["references"] = [
+            {"id": "remote-b", "type": "image", "file_path": "https://cdn.example/b.png", "role": "image"},
+            {"id": "remote-a", "type": "image", "file_path": "https://cdn.example/a.png", "role": "image"},
+        ]
+        repo.upsert_synced_generation(parsed, "me")
+        repo.upsert_synced_generation(parsed, "me")
+        with db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT id,file_path,share_url FROM reference ORDER BY id"
+            ).fetchall()
+        self.assertEqual([tuple(r) for r in rows], [
+            ("local-a", "asset:project|a.png", None),
+            ("local-b", "asset:project|b.png", None),
+        ])
+
+    def test_share_url_can_be_backfilled_from_existing_exact_file_identity(self) -> None:
+        parsed = self.parsed("job-exact-ref")
+        parsed["references"] = [{
+            "id": "exact", "type": "image", "file_path": "https://cdn.example/a.png", "role": "image",
+        }]
+        repo.upsert_synced_generation(parsed, "me")
+        with db.get_connection() as conn:
+            row = conn.execute("SELECT share_url FROM reference WHERE id='exact'").fetchone()
+        self.assertEqual(row[0], "https://cdn.example/a.png")
+
     def test_sync_update_prefers_new_error(self) -> None:
         for status in ("failed", "nsfw"):
             with self.subTest(status=status):

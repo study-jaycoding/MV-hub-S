@@ -43,7 +43,7 @@ def mcp_item_to_cli(item: dict[str, Any]) -> dict[str, Any]:
 
     # MCP 항목은 type 을 명시한다(image|video). 확장자 없는 결과 URL 이 image 로 오분류되지 않게
     # parse_job 까지 전달한다(result_media_type). 그 외 값은 명시로 치지 않는다.
-    explicit_type = item.get("type") if item.get("type") in ("image", "video") else None
+    explicit_type = item.get("type") if item.get("type") in ("image", "video", "audio") else None
     raw_url = _url("rawUrl") or _url("url")
     # 입력 미디어 URL — 아래 썸네일/축소본이 '결과'가 아니라 '입력'인지 가리는 기준.
     input_urls: list[str] = []
@@ -66,7 +66,7 @@ def mcp_item_to_cli(item: dict[str, Any]) -> dict[str, Any]:
         min_url = None
     # 축소본을 결과 URL 로 폴백하는 것은 객체형 results 의 이미지 항목에서만(종전 동작). 영상의 minUrl 은
     # 입력 이미지일 수 있어 결과로 승격하지 않는다 → rawUrl/url 이 없으면 asset 을 만들지 않는다.
-    if not raw_url and isinstance(results, dict) and not is_video and min_url:
+    if not raw_url and isinstance(results, dict) and not is_video and explicit_type != "audio" and min_url:
         raw_url = min_url
 
     # 레퍼런스 — medias 가 있으면 그대로, 없고 input_images 만 있으면 medias 형태로 합성.

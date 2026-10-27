@@ -187,7 +187,10 @@ def _outcome_from_error(
 
 async def cache_generation_media(generation: dict) -> dict[str, Any]:
     """한 생성물의 원격 asset/reference를 내려받고 성공한 경로만 DB에 반영한다."""
-    outcome = await _cache_generation_media_outcome(generation)
+    from ..services.update_activity import local_write
+
+    with local_write():
+        outcome = await _cache_generation_media_outcome(generation)
     if outcome.unexpected_error is not None:
         # 보존 서비스는 원예외를 그대로 받으면서도 성공분을 정확히 정산할 수 있다.
         # 예외를 감싸지 않아 직접 호출자의 타입·인스턴스·취소 계약을 바꾸지 않는다.

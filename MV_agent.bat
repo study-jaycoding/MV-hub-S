@@ -174,6 +174,7 @@ set "HF_CLI_PIN_FILE="
 REM trim stray leading/trailing spaces a re-saved pin file might add.
 for /f "tokens=* delims= " %%x in ("%HF_CLI_VERSION%") do set "HF_CLI_VERSION=%%x"
 set "BUNDLED=%ROOT%runtime\higgsfield\higgsfield.cmd"
+set "LOCAL_HF=%ROOT%.mvhub-runtime\higgsfield\higgsfield.exe"
 if not defined HF_CLI_VERSION (
   echo [warn] hf_cli_version.txt missing/empty - generation off for safety; browsing still works.
   goto :cli_selected
@@ -184,6 +185,7 @@ REM @latest is intentionally avoided: Higgsfield ships breaking changes often.
 REM Install only when no CLI was found, or a version was READ and is wrong. If any CLI's version
 REM could not be confirmed (_CLI_UNCONFIRMED), skip the unbounded npm install and go on.
 if exist "%BUNDLED%" call :try_cli "%BUNDLED%"
+if not defined HF if exist "%LOCAL_HF%" call :try_cli "%LOCAL_HF%"
 where higgsfield >nul 2>nul && call :try_cli "higgsfield"
 if not defined HF if not defined _CLI_UNCONFIRMED if defined HAVE_NPM (
   echo     Installing pinned Higgsfield CLI @%HF_CLI_VERSION% ^(one time^)...
@@ -196,6 +198,7 @@ if defined HF (
   REM Global installs are already on PATH; a bundled match must be prepended here so
   REM BOTH the hub (started next) and agent_push resolve the same pinned CLI.
   if /i "%HF%"=="%BUNDLED%" set "PATH=%ROOT%runtime\higgsfield;%PATH%"
+  if /i "%HF%"=="%LOCAL_HF%" set "PATH=%ROOT%.mvhub-runtime\higgsfield;%PATH%"
 ) else if defined _CLI_UNCONFIRMED (
   echo [warn] Could not confirm the Higgsfield CLI version - no answer in time, an error, or
   echo        unreadable output. Generation off for this run; browsing/Assets still work.

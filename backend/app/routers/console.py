@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -20,10 +22,43 @@ from ..services import cli_bridge
 from ..services.read_utf8_sig_first_line import read_first_line
 from ..services.release_update import APP_ROOT, install_mode
 from ..services.request_guards import require_local_machine_request
+from . import _proxy
 
 router = APIRouter(prefix="/api/console", tags=["console"])
 
 _TAIL_MAX_BYTES = 64 * 1024  # 파일 끝 64KB 만 읽는다 — 큰 로그도 응답이 무겁지 않게
+_cli_version_lock = threading.Lock()
+_cli_version_cache: tuple[tuple, float, str | None] | None = None
+
+
+def _actual_cli_version() -> str | None:
+    global _cli_version_cache
+    try:
+        argv = cli_bridge.cli_argv()
+    except cli_bridge.CLIError:
+        return None
+    stamps = []
+    for path in argv:
+        try:
+            stat = Path(path).stat()
+            stamps.append((path, stat.st_mtime_ns, stat.st_size))
+        except OSError:
+            stamps.append((path, None, None))
+    key = tuple(stamps)
+    with _cli_version_lock:
+        if _cli_version_cache and _cli_version_cache[0] == key and time.monotonic() < _cli_version_cache[1]:
+            return _cli_version_cache[2]
+        version = None
+        try:
+            # sync 라우트의 worker 스레드에서 기존 숨김 실행·자식 회수 경로를 재사용한다.
+            output = asyncio.run(cli_bridge._run("version", timeout=5))
+            match = re.search(r"^higgsfield\s+(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)(?=\s|$)", output, re.MULTILINE)
+            if match:
+                version = match[1]
+        except (OSError, cli_bridge.CLIError):
+            pass
+        _cli_version_cache = (key, time.monotonic() + (30 if version else 5), version)
+        return version
 
 # 로그 꼬리를 화면으로 내보내기 전 비밀값 마스킹 — 과거에 기록된 로그(구버전 포맷 포함)도
 # UI 노출은 막는다. Bearer 토큰과 서명 URL 쿼리 키(CloudFront Policy/Signature 등)가 대상.
@@ -84,11 +119,14 @@ def console_summary(request: Request, tail: int = 80):
         pinned = read_first_line(APP_ROOT / "hf_cli_version.txt")
     except OSError:
         pinned = ""
+    local_worker = not _proxy.is_shared_team_server()
     return {
         "app_version": version,  # 릴리스 설치본만 존재 — 개발/서버 실행은 빈 값
         "install_mode": install_mode(APP_ROOT),  # release | server | development
         "port": PORT,
-        "cli": {"available": bool(cli_path), "pinned": pinned, "path": cli_path},
+        "local_worker": local_worker,
+        "cli": {"available": bool(cli_path), "pinned": pinned, "path": cli_path,
+                "version": _actual_cli_version() if local_worker else None},
         "agent_log": _tail_lines(BACKEND_DIR / "agent.log", tail),
         "hub_log": _tail_lines(BACKEND_DIR / "hub.log", tail),
     }

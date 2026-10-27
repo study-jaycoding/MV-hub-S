@@ -34,11 +34,25 @@ import { pathPart } from "./lib/url";
 import { normalizeGenerationPromptCompatibility } from "./lib/generationPrompt";
 import type { CanvasGenerationLink } from "./lib/canvasGenerationRecovery";
 import type { CardHistoryCursor, CardHistoryLink } from "./lib/canvasDetached";
-import { getAccountNamespace } from "./lib/accountScope";
+import { getAccountNamespace, getConnectionKey } from "./lib/accountScope";
 import type { GenerationLocation, GenerationLocationRequest } from "./lib/resolveLibraryLocation";
 import { EXPECT_ACCOUNT_HEADER } from "./lib/hubFeatures";
 
 export { getAuthToken, jsonFetch, setAuthToken };
+
+let workspaceRequest: { key: string; promise: ReturnType<typeof projectApi.workspaces> } | null = null;
+function sharedWorkspaces(): ReturnType<typeof projectApi.workspaces> {
+  const key = `${getAccountNamespace()}\0${getConnectionKey()}\0${getAuthToken() ?? ""}`;
+  if (workspaceRequest?.key === key) return workspaceRequest.promise;
+  const promise = projectApi.workspaces().then((items) => {
+    if (!Array.isArray(items)) throw new Error("워크스페이스 목록을 확인할 수 없습니다.");
+    return items;
+  }).finally(() => {
+    if (workspaceRequest?.promise === promise) workspaceRequest = null;
+  });
+  workspaceRequest = { key, promise };
+  return promise;
+}
 
 // 편집 공유의 서버 응답 — 확인된 판(revision)·저장된 글자의 hash. 목록 행은 email 없이 열쇠(key)·이름·mine(요청한 나)
 export interface EditShareHead { revision: number; data_hash: string; updated_at: string }
@@ -448,23 +462,25 @@ export const api = {
     jsonFetch<Facets>(`/api/facets?tab=${tab}`, { signal }),
 
   models: () => jsonFetch<ModelInfo[]>("/api/models"),
+  voices: (cursor?: string) => jsonFetch<{ items: import("./types").VoiceInfo[]; cursor?: string | null }>(`/api/voices${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+  voice: (id: string) => jsonFetch<import("./types").VoiceInfo>(`/api/voices/${pathPart(id)}`),
 
   // 모델별 CLI 조절 가능 파라미터(동적 옵션)
   // CLI 는 비워 둘 수 있는 옵션의 타입을 "boolean|null"·"integer|null" 로 준다(Nano Banana 2.1 이 처음).
   // 화면은 타입을 그대로 비교해 그리므로 뒤의 "|null" 을 떼어 ON/OFF·숫자 칸으로 그려지게 한다.
-  modelParams: (jobSetType: string) =>
+  modelParams: (jobSetType: string, fresh = false) =>
     jsonFetch<import("./types").ModelParamsOut>(
-      `/api/models/${pathPart(jobSetType)}/params`,
+      `/api/models/${pathPart(jobSetType)}/params${fresh ? "?fresh=true" : ""}`,
     ).then((r) => ({
       ...r,
       params: (r.params ?? []).map((p) => ({ ...p, type: String(p.type ?? "").replace(/\|null$/, "") })),
     })),
 
   // 예상 크레딧 추정(잡 생성 안 함) — Generate 버튼 표시용
-  estimateCost: (model: string, params: Record<string, unknown>, prompt = "") =>
-    jsonFetch<{ credits: number }>("/api/cost", {
+  estimateCost: (model: string, params: Record<string, unknown>, prompt = "", fresh = false) =>
+    jsonFetch<import("./types").CostEstimate>("/api/cost", {
       method: "POST",
-      body: jsonBody({ model, params, prompt }),
+      body: jsonBody({ model, params, prompt, ...(fresh ? { fresh: true } : {}) }),
     }),
 
   // View 타임라인 '합쳐진 영상' 다운로드 — 서버가 클립들을 ffmpeg 로 하나의 mp4 로 병합해 반환.
@@ -495,6 +511,7 @@ export const api = {
     ),
 
   ...projectApi,
+  workspaces: sharedWorkspaces,
 
   // 팀 크레딧 집계(에이전트가 push 때 보고한 마지막 잔액 기준)
   credits: () => jsonFetch<import("./types").CreditSummary>("/api/credits"),
@@ -507,6 +524,7 @@ export const api = {
   // 서버 콘솔 패널 — cmd 창에 보이던 정보(버전·CLI·에이전트/허브 로그 꼬리). 로컬 전용.
   consoleSummary: () =>
     jsonFetch<import("./types").ConsoleSummary>("/api/console/summary"),
+  cliCheck: () => jsonFetch<{ required?: string | null }>("/api/cli-check"),
   // 앱 내 '종료' 확인 후 — 앱 창을 OS 측에서 닫아 정상 종료 절차로 이어지게 한다. 로컬 전용.
   closeApp: () =>
     jsonFetch<{ ok: boolean }>("/api/console/close-app", { method: "POST" }),

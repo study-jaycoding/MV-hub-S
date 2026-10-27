@@ -12,9 +12,49 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # ── 공통 타입 ────────────────────────────────────────────────────────────
-MediaType = Literal["image", "video"]
-# 레퍼런스(입력)는 오디오도 받는다 — 생성물 출력(AssetOut)은 image/video 유지, 레퍼런스만 확장.
+MediaType = Literal["image", "video", "audio"]
 ReferenceMediaType = Literal["image", "video", "audio"]
+
+MEDIA_V2_MODELS = frozenset({"draw_to_video", "text2speech_v2"})
+SPEECH_PROMPT_LIMITS = {"elevenlabs": 5000, "minimax": 10000, "seed_speech": 15000,
+                        "vibe_voice": 5000, "cozy_voice": 5000}
+
+
+def validate_media_request(model: str, prompt: str, params: dict, references: list) -> None:
+    """새 미디어 계약만 검사한다. 기존 모델의 옵션/입력 정책은 바꾸지 않는다."""
+    if model in MEDIA_V2_MODELS and not prompt.strip():
+        raise ValueError("수정 설명 또는 내레이션 내용을 입력하세요")
+    if model == "draw_to_video":
+        expected = {("video", "video"), ("image", "image_references")}
+        if len(references) != 2 or {(r.get("type"), r.get("role")) for r in references} != expected:
+            raise ValueError("영상 수정에는 원본 영상 1개와 수정 그림 1장이 필요합니다")
+        if any(not r.get("file_path") for r in references):
+            raise ValueError("영상 수정 입력 파일이 필요합니다")
+        if set(params) - {"duration", "resolution", "aspect_ratio", "enhancer", "generate_audio"}:
+            raise ValueError("영상 수정에서 지원하지 않는 옵션입니다")
+        duration = params.get("duration")
+        if duration is not None and (isinstance(duration, bool) or not isinstance(duration, (int, float)) or not 0 < duration < float("inf")):
+            raise ValueError("영상 길이가 올바르지 않습니다")
+        for key in ("enhancer", "generate_audio"):
+            if key in params and not isinstance(params[key], bool):
+                raise ValueError("영상 수정 옵션의 형식이 올바르지 않습니다")
+        resolution = params.get("resolution", "720p")
+        if not isinstance(resolution, str) or resolution not in {"480p", "720p", "1080p"}:
+            raise ValueError("영상 해상도가 올바르지 않습니다")
+        aspect_ratio = params.get("aspect_ratio", "auto")
+        if not isinstance(aspect_ratio, str) or aspect_ratio not in {"auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"}:
+            raise ValueError("영상 비율이 올바르지 않습니다")
+    elif model == "text2speech_v2":
+        variant = params.get("variant")
+        limit = SPEECH_PROMPT_LIMITS.get(variant) if isinstance(variant, str) else None
+        if set(params) - {"variant", "voice_id", "voice_type"} or references:
+            raise ValueError("내레이션 생성 옵션이 올바르지 않습니다")
+        if limit is None or not prompt.strip() or len(prompt) > limit:
+            raise ValueError("내레이션 모델 또는 입력 글자 수를 확인하세요")
+        if params.get("voice_type") != "preset" or not isinstance(params.get("voice_id"), str) or not params["voice_id"].strip():
+            raise ValueError("공식 프리셋 목소리를 선택하세요")
+
+
 AccountType = Literal["personal", "team"]
 WorkspaceScope = Literal["team", "personal", "unknown"]
 
@@ -223,6 +263,11 @@ class GenerationCreate(BaseModel):
     project_id: Optional[str] = None  # 생성 시 보던 프로젝트로 자동 귀속(없으면 미분류)
     folder_path: Optional[str] = None  # 생성 시 무장된 폴더(렌더 루트 기준 상대 경로). 없으면 미지정
 
+    @model_validator(mode="after")
+    def validate_media(self):
+        validate_media_request(self.model, self.prompt, self.params, [r.model_dump() for r in self.references])
+        return self
+
 
 class RegenerateIn(BaseModel):
     """기존 generation 을 재활용해 새 잡 생성(프롬프트·레퍼런스 복제)."""
@@ -309,6 +354,7 @@ class PendingRequestOut(BaseModel):
     workspace: WorkspaceContext = Field(default_factory=WorkspaceContext)
     claim_phase: Optional[str] = None  # 신 서버 claimed, 구 서버 응답에는 없음(혼합 배포 호환)
     asset_content_protocol: Optional[int] = None
+    media_protocol: Optional[str] = None
     project_id: Optional[str] = None
 
 
@@ -321,6 +367,8 @@ class SubmissionFingerprintIn(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     reference_roles: list[str] = Field(default_factory=list, max_length=32)
     ref_digests: dict[str, dict[str, Any]] = Field(default_factory=dict, max_length=32)
+    submitted_refs: list[dict[str, Any]] = Field(default_factory=list, max_length=32)
+    arg_order: list[int] = Field(default_factory=list, max_length=32)
 
 
 class RecoveryProbeResultIn(BaseModel):

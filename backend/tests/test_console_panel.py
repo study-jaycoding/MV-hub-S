@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
@@ -10,6 +11,15 @@ from starlette.requests import Request
 
 from app.routers import console
 from app.services import request_guards
+
+
+@pytest.fixture(autouse=True)
+def no_live_cli(monkeypatch):
+    def unavailable():
+        raise console.cli_bridge.CLIError("isolated test")
+
+    monkeypatch.setattr(console.cli_bridge, "cli_argv", unavailable)
+    monkeypatch.setattr(console, "_cli_version_cache", None)
 
 
 def _request(host: str = "127.0.0.1") -> Request:
@@ -155,3 +165,51 @@ def test_close_app_single_flight_rejects_concurrent_requests(monkeypatch: pytest
         console.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0)
     )
     assert console.console_close_app(_request()) == {"ok": True}
+
+
+def test_actual_cli_version_uses_argv_and_cache_tracks_file_changes(tmp_path, monkeypatch):
+    native = tmp_path / "higgsfield.exe"
+    native.write_bytes(b"not executed")
+    monkeypatch.setattr(console.cli_bridge, "cli_argv", lambda: [str(native)])
+    version = AsyncMock(return_value="higgsfield 1.2.3 (build) built today\n")
+    monkeypatch.setattr(console.cli_bridge, "_run", version)
+    assert console._actual_cli_version() == "1.2.3"
+    assert console._actual_cli_version() == "1.2.3"
+    version.assert_awaited_once_with("version", timeout=5)
+    native.write_bytes(b"replacement with different size")
+    assert console._actual_cli_version() == "1.2.3"
+    assert version.await_count == 2
+
+
+def test_actual_cli_version_failure_is_unknown_and_cached_briefly(tmp_path, monkeypatch):
+    native = tmp_path / "higgsfield.exe"
+    native.write_bytes(b"not executed")
+    monkeypatch.setattr(console.cli_bridge, "cli_argv", lambda: [str(native)])
+    now = [100.0]
+    monkeypatch.setattr(console.time, "monotonic", lambda: now[0])
+    failing = AsyncMock(side_effect=console.cli_bridge.CLIError("CLI timeout"))
+    monkeypatch.setattr(console.cli_bridge, "_run", failing)
+    assert console._actual_cli_version() is None
+    assert console._actual_cli_version() is None
+    assert failing.await_count == 1
+    now[0] += 6
+    assert console._actual_cli_version() is None
+    assert failing.await_count == 2
+
+
+@pytest.mark.parametrize("stdout", ["1.2.3", "higgsfield 1.2.30preview", "higgsfield 1.2.3.4"])
+def test_actual_cli_version_does_not_guess_from_unrecognized_output(tmp_path, monkeypatch, stdout):
+    native = tmp_path / "higgsfield.exe"
+    native.write_bytes(b"not executed")
+    monkeypatch.setattr(console.cli_bridge, "cli_argv", lambda: [str(native)])
+    monkeypatch.setattr(console.cli_bridge, "_run", AsyncMock(return_value=stdout))
+    assert console._actual_cli_version() is None
+
+
+def test_shared_server_console_does_not_claim_local_worker_version(tmp_path, monkeypatch):
+    monkeypatch.setattr(console, "BACKEND_DIR", tmp_path)
+    monkeypatch.setattr(console._proxy, "is_shared_team_server", lambda: True)
+    monkeypatch.setattr(console, "_actual_cli_version", lambda: pytest.fail("shared server must not probe a worker"))
+    body = console.console_summary(_request())
+    assert body["local_worker"] is False
+    assert body["cli"]["version"] is None

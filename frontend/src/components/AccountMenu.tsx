@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api";
+import { APP_EVENTS } from "../lib/appEvents";
+import { getAccountNamespace, getConnectionKey } from "../lib/accountScope";
+import { getAuthToken } from "../lib/http";
 import {
   accountDisplayName,
   accountRoleText,
@@ -85,7 +88,7 @@ export function AccountMenu({
     setOpen(false);
     onOpenManage?.();
   };
-  const [healthCliVersion, setHealthCliVersion] = useState<string | null>(null);
+  const [cliVersions, setCliVersions] = useState<{ key: string; required: string | null; app: string | null }>({ key: "", required: null, app: null });
   const ref = useRef<HTMLDivElement>(null);
   const avatarRef = useRef<HTMLButtonElement>(null);
   // 계정 상태 요청이 진행되는 동안 사용자가 공간을 바꿔도 오래된 응답이 선택을 되돌리지 않게
@@ -95,6 +98,34 @@ export function AccountMenu({
   // 목록 조회 순번 — 겹친 조회(최초 로드 + 메뉴 열기)에서 **늦게 도착한 옛 응답**이 최신 잔액·이름을
   // 덮지 않게 한다. 전환과는 무관한 보호다(전환은 이제 네트워크를 안 탄다).
   const listSeqRef = useRef(0);
+  const cliSeqRef = useRef(0);
+  const mountedRef = useRef(true);
+  const connectionScope = `${getAccountNamespace()}\0${getConnectionKey()}\0${getAuthToken() ?? ""}`;
+  const identityKey = `${connectionScope}\0${account?.email ?? provider?.email ?? ""}\0${!!localHub}`;
+  const requestKey = `${identityKey}\0${workspaceContext.scope}:${workspaceContext.id ?? ""}`;
+  const requestKeyRef = useRef(requestKey);
+  requestKeyRef.current = requestKey;
+  const identityKeyRef = useRef(identityKey);
+  identityKeyRef.current = identityKey;
+  const listRunRef = useRef<{ key: string; promise: Promise<void> } | null>(null);
+  const listRefreshAgain = useRef<string | null>(null);
+  const listRefreshRef = useRef<() => void>(() => {});
+  const cliRunRef = useRef<{ key: string; promise: Promise<void> } | null>(null);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; listSeqRef.current++; cliSeqRef.current++; };
+  }, []);
+  useLayoutEffect(() => {
+    listSeqRef.current++;
+    listRunRef.current = null;
+    listRefreshAgain.current = null;
+  }, [requestKey]);
+  useLayoutEffect(() => {
+    cliSeqRef.current++;
+    cliRunRef.current = null;
+    setList([]);
+    setReported(null);
+  }, [identityKey]);
   const t = useT();
   const popRef = useRef<HTMLDivElement>(null);
   const [popPos, setPopPos] = useState<{ top: number; right: number } | null>(null);
@@ -144,42 +175,62 @@ export function AccountMenu({
       onWorkspaceContextChange(next);
     }
   }, [onWorkspaceContextChange]);
-  useEffect(() => {
-    if (liveMode) {
-      const startedSeq = ++listSeqRef.current;
-      api
-        .workspaces()
-        .then((items) => acceptLiveWorkspaces(items, startedSeq))
-        .catch(() => {});
-    } else {
-      const startedSeq = ++listSeqRef.current;
-      api
-        .accountHf()
-        .then((status) => {
-          if (startedSeq === listSeqRef.current) acceptReportedStatus(status);
-        })
-        .catch(() => {
-          // ★실패도 순번을 본다 — 늦게 실패한 옛 조회가 그 사이 도착한 정상 결과를 지우면 안 된다.
-          if (startedSeq === listSeqRef.current) setReported(null);
-        });
-    }
-  }, [acceptLiveWorkspaces, acceptReportedStatus, liveMode]);
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch("/api/health", { signal: controller.signal })
-      .then((response) => response.json())
-      .then((health: { cli_version?: unknown }) => {
-        const version =
-          typeof health.cli_version === "string" ? health.cli_version.trim() : "";
-        setHealthCliVersion(version || null);
-      })
-      .catch((error: unknown) => {
-        if (!(error instanceof DOMException && error.name === "AbortError")) {
-          setHealthCliVersion(null);
+  const refreshWorkspaces = useCallback(() => {
+    if (connectionScope !== `${getAccountNamespace()}\0${getConnectionKey()}\0${getAuthToken() ?? ""}`) return Promise.resolve();
+    if (listRunRef.current?.key === requestKey) return listRunRef.current.promise;
+    const ticket = ++listSeqRef.current;
+    const token = getAuthToken();
+    const valid = () => mountedRef.current && requestKeyRef.current === requestKey &&
+      listSeqRef.current === ticket && token === getAuthToken();
+    const run = (liveMode
+      ? api.workspaces().then((items) => { if (valid()) acceptLiveWorkspaces(items, ticket); })
+      : api.accountHf().then((status) => {
+        if (!Array.isArray(status.workspaces)) throw new Error("워크스페이스 보고를 확인할 수 없습니다.");
+        if (valid()) acceptReportedStatus(status);
+      }))
+      .catch(() => {}) // Host 콘솔이 실패 원인을 기록한다. 이미 받은 잔액은 보존한다.
+      .finally(() => {
+        if (listRunRef.current?.promise === run) listRunRef.current = null;
+        if (valid() && listRefreshAgain.current === requestKey) {
+          listRefreshAgain.current = null;
+          listRefreshRef.current();
         }
       });
-    return () => controller.abort();
-  }, []);
+    listRunRef.current = { key: requestKey, promise: run };
+    return run;
+  }, [acceptLiveWorkspaces, acceptReportedStatus, connectionScope, liveMode, requestKey]);
+  const refreshCli = useCallback(() => {
+    if (connectionScope !== `${getAccountNamespace()}\0${getConnectionKey()}\0${getAuthToken() ?? ""}`) return Promise.resolve();
+    if (cliRunRef.current?.key === identityKey) return cliRunRef.current.promise;
+    const ticket = ++cliSeqRef.current;
+    const token = getAuthToken();
+    const run = Promise.allSettled([
+      Promise.resolve().then(() => api.cliCheck()),
+      Promise.resolve().then(() => api.consoleSummary()),
+    ]).then(([check, summary]) => {
+      if (!mountedRef.current || identityKeyRef.current !== identityKey ||
+        cliSeqRef.current !== ticket || token !== getAuthToken()) return;
+      const required = check.status === "fulfilled" ? check.value.required : null;
+      const app = summary.status === "fulfilled" && summary.value.local_worker === true
+        ? summary.value.cli?.version : null;
+      setCliVersions({ key: identityKey,
+        required: typeof required === "string" ? required.trim() || null : null,
+        app: typeof app === "string" ? app.trim() || null : null });
+    }).finally(() => { if (cliRunRef.current?.promise === run) cliRunRef.current = null; });
+    cliRunRef.current = { key: identityKey, promise: run };
+    return run;
+  }, [connectionScope, identityKey]);
+  useEffect(() => { void refreshWorkspaces(); }, [refreshWorkspaces]);
+  useEffect(() => { void refreshCli(); }, [refreshCli]);
+  useEffect(() => {
+    listRefreshRef.current = () => { void refreshWorkspaces(); };
+    const refresh = () => {
+      if (listRunRef.current?.key === requestKey) listRefreshAgain.current = requestKey;
+      else void refreshWorkspaces();
+    };
+    window.addEventListener(APP_EVENTS.creditsChanged, refresh);
+    return () => window.removeEventListener(APP_EVENTS.creditsChanged, refresh);
+  }, [refreshWorkspaces, requestKey]);
   // 팝업은 body 로 옮겨 그린다(아래 createPortal) — 상단바 안에 있으면 모달 막에 덮인다.
   //  그래서 바깥클릭 판정에 팝업 자신도 함께 넘긴다. 안 그러면 메뉴 안을 눌러도 닫힌다.
   useOutsideMouseDown(ref, closeMenu, open, popRef, true);
@@ -205,22 +256,11 @@ export function AccountMenu({
   // 끝나도 즉시 반영된다(예전엔 마운트 때 한 번만 받아 '미연결'이 옛 상태로 박혀 있었다).
   useEffect(() => {
     if (!open) return;
-    if (liveMode) {
-      const startedSeq = ++listSeqRef.current;
-      api
-        .workspaces()
-        .then((items) => acceptLiveWorkspaces(items, startedSeq))
-        .catch(() => {});
-    } else {
-      const startedSeq = ++listSeqRef.current;
-      api
-        .accountHf()
-        .then((status) => {
-          if (startedSeq === listSeqRef.current) acceptReportedStatus(status);
-        })
-        .catch(() => {});
-    }
-  }, [acceptLiveWorkspaces, acceptReportedStatus, open, liveMode]);
+    void refreshWorkspaces();
+    void refreshCli();
+  }, [open, refreshWorkspaces, refreshCli]);
+  useEffect(() => { if (manageOpen) void refreshCli(); }, [manageOpen, refreshCli]);
+  const cliVersion = `${cliVersions.key === identityKey ? cliVersions.required ?? "확인 안 됨" : "확인 안 됨"} (기준) / ${cliVersions.key === identityKey ? cliVersions.app ?? "확인 안 됨" : "확인 안 됨"} (앱)`;
 
   // 표시할 워크스페이스 목록 — 하우스=라이브, 그 외=에이전트 보고값.
   const wsList = liveMode ? list : reported?.workspaces || [];
@@ -583,7 +623,7 @@ export function AccountMenu({
           onProviderUpdated={onProviderUpdated}
           plan={activeWs?.plan_type ?? null}
           credits={activeCredits}
-          cliVersion={reported?.cli_version ?? healthCliVersion}
+          cliVersion={cliVersion}
         />,
         document.body,
       )}

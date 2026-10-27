@@ -41,11 +41,12 @@ function memberLabel(member: CreditPlanMember): string {
   return member.name || member.email.split("@")[0];
 }
 
-// 그룹 창의 '사용 모델' 후보 — 앱이 생성 창에 실제로 보여 주는 모델만(이미지·영상, Jay 2026-09-11: 부분 수정 모델은 제외).
+// 그룹 창의 '사용 모델' 후보 — 생성창 모델과 영상 수정 workflow. 기존 이미지 수정 전용 모델은 제외한다.
 // 저장값은 job_type 문자열이라 여기 없는 옛·미래 id 도 알약으로는 보여 주고 그대로 보존한다.
 const SELECTABLE_MODEL_GROUPS: { title: string; ids: readonly string[] }[] = [
   { title: "이미지", ids: ALLOWED.image },
-  { title: "영상", ids: ALLOWED.video },
+  { title: "영상", ids: [...ALLOWED.video, "draw_to_video"] },
+  { title: "오디오", ids: ALLOWED.audio },
 ];
 
 // ── 그룹 창(힉스필드 "Add new group" 과 같은 두 칸 구성) ──────────────────────
@@ -71,7 +72,8 @@ export function GroupEditor({
   // 사용 모델(**허용 목록** — 체크한 것만 쓴다, 아무것도 없으면 제한 없음). 저장해야 서버에 간다.
   const [allowed, setAllowed] = useState<string[]>(group.allowedModels);
   const [pickingModels, setPickingModels] = useState(false);
-  const modelLabel = useModelDisplayName();
+  const catalogModelLabel = useModelDisplayName();
+  const modelLabel = (id: string) => id === "draw_to_video" ? "영상 수정" : catalogModelLabel(id);
   const toggleAllowed = (id: string) =>
     setAllowed((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   const [emails, setEmails] = useState<string[]>(

@@ -22,6 +22,7 @@ def writer_case(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "AUTH_ENABLED", False)
     monkeypatch.setattr(service, "UPDATE_STATE_BASE", tmp_path / "state")
     monkeypatch.setattr(service, "_START_LOCK", threading.Lock())
+    monkeypatch.setattr(service.update_activity, "remote_checkpoint_required", lambda: False)
     fetch = Mock(return_value={"version": "2.0.0", "higgsfield_cli_version": "test"})
     launch = Mock(return_value=12345)
     monkeypatch.setattr(service, "fetch_latest", fetch)

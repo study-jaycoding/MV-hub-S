@@ -1250,7 +1250,8 @@ def cli_check():
         except Exception:  # noqa: BLE001
             server = None
     stale = bool(server and pin and server != pin)
-    return {"pin": pin, "server": server, "status": "code_stale" if stale else "ok"}
+    required = pin if _proxy.is_shared_team_server() else server if _proxy.is_worker_hub() else None
+    return {"pin": pin, "server": server, "status": "code_stale" if stale else "ok", "required": required}
 
 
 @app.get("/api/backups")

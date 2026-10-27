@@ -23,6 +23,7 @@ export interface ReleaseUpdateStatus {
   generation_active: number;
   comfy_active: number;
   resolve_active: number; // 진행 중 Resolve 직접 전송(요청 안에서 준비·반입·저장)
+  result_write_active?: number;
   active_total: number;
   updated_at: string;
   accepted?: boolean;
@@ -200,13 +201,18 @@ export function updateStageIndex(state: ReleaseUpdateState): number {
 
 /** 업데이트를 막는 진행 중 작업을 사람이 읽는 문구로 — 유료 생성·Comfy 와 Resolve 전송을 나눠 말한다. */
 export function updateBlockersText(
-  status: Pick<ReleaseUpdateStatus, "active_total" | "resolve_active"> | null | undefined,
+  status: Pick<ReleaseUpdateStatus, "active_total" | "resolve_active"> & Partial<Pick<ReleaseUpdateStatus, "result_write_active" | "comfy_active">> | null | undefined,
 ): string {
   const active = status?.active_total || 0;
   const resolveActive = status?.resolve_active || 0;
-  const generationActive = Math.max(0, active - resolveActive);
+  const detailed = typeof status?.result_write_active === "number";
+  const writes = status?.result_write_active || 0;
+  const comfy = detailed ? status?.comfy_active || 0 : 0;
+  const generationActive = Math.max(0, active - resolveActive - writes - comfy);
   return [
-    generationActive > 0 ? `생성 ${generationActive}건` : "",
+    generationActive > 0 ? `${detailed ? "생성 제출" : "생성"} ${generationActive}건` : "",
+    writes > 0 ? `결과 저장 ${writes}건` : "",
+    comfy > 0 ? `ComfyUI 실행 ${comfy}건` : "",
     resolveActive > 0 ? `Resolve 전송 ${resolveActive}건` : "",
   ]
     .filter(Boolean)

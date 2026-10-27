@@ -111,6 +111,21 @@ export function buildSpotlightCreateBody({
   // Set 카드의 태그는 검사 없이 여기로 온다 — 주소 한 칸에 못 들어가는 이름(/ · . ..)은 생성 전에 막는다(조작 규칙 53 — lib/nameGuard). 조용히 빼지 않는다.
   const tagProblem = tagsProblem(tags ?? []);
   if (tagProblem) return { body: null, error: `${tagProblem} — Set 카드의 태그를 고친 뒤 생성하세요.` };
+  if (model === "text2speech_v2") {
+    if (!text.trim()) return { body: null, error: "내레이션 텍스트를 입력하세요." };
+    if (trayRefs.length || inlineRefs.length) return { body: null, error: "내레이션 생성은 텍스트와 목소리만 사용합니다. 레퍼런스를 비운 뒤 생성하세요." };
+    if (!optionValues.voice_id || optionValues.voice_type !== "preset") return { body: null, error: "목소리 목록에서 내레이션 목소리를 선택하세요." };
+    const limits: Record<string, number> = { elevenlabs: 5000, minimax: 10000, seed_speech: 15000, vibe_voice: 5000, cozy_voice: 5000 };
+    const variant = String(optionValues.variant ?? "");
+    if (!limits[variant]) return { body: null, error: "지원하는 음성 모델 옵션을 선택하세요." };
+    if (text.length > limits[variant]) return { body: null, error: `선택한 음성 옵션은 최대 ${limits[variant]}자까지 지원합니다.` };
+    return { error: null, body: {
+      prompt: text, display_prompt: displayPrompt || undefined, model,
+      params: { variant, voice_id: optionValues.voice_id, voice_type: "preset" }, references: [],
+      tags: tags?.length ? tags : undefined, auto_tags: armedAutoTags,
+      project_id: activeProjectId, folder_path: folderPath || undefined,
+    } };
+  }
   const seedanceMode = usesSeedanceMediaRefs(model);
   const tokenRoles = seedanceMode ? seedanceTokenRoles(text) : emptySeedanceTokenRoles();
 

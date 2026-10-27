@@ -29,7 +29,7 @@ export function useSourcePane({ place, mode, gen, tape, tapeScope, loop, speed }
 }) {
   const video = useVideoPair(); // 소스 테이프도 클립에서 클립으로 넘어간다
   const painters = useRef(new Set<(time: number) => void>());
-  const gens = useMemo(() => (!mode ? NO_GENS : mode === "tape" ? tape : gen ? [gen] : NO_GENS), [mode, tape, gen]);
+  const gens = useMemo(() => (!mode ? NO_GENS : mode === "tape" ? tape.filter((item) => item.assets[0]?.type === "image" || item.assets[0]?.type === "video") : gen && (gen.assets[0]?.type === "image" || gen.assets[0]?.type === "video") ? [gen] : NO_GENS), [mode, tape, gen]);
   // 길이 — 실측값이 오면 고친다(타임라인에 안 넣은 영상은 적어 둔 길이가 없다 — 안 고치면 기본 5초에서 끝난다).
   //  하나씩 차례로 잰다: 길이 재기의 큐는 앱 전체가 같이 쓰고 동시에 4개라, 테이프의 영상을 한꺼번에 줄 세우면 타임라인
   //  클립이나 방금 고른 소스의 길이 재기가 그 뒤로 밀린다. 목록·방식이 바뀌거나 떠나면 더 신청하지 않는다(Codex 설계 검토).
@@ -60,7 +60,7 @@ export function useSourcePane({ place, mode, gen, tape, tapeScope, loop, speed }
       ...emptyEditDoc(),
       clips: gens.map((item, at) => {
         const asset = item.assets[0];
-        return { cut: `${SRC_CUT}/${item.id}`, gen: item.id, track: 1, kind: asset.type, dur: genSeconds(item, measured[at] || null) };
+        return { cut: `${SRC_CUT}/${item.id}`, gen: item.id, track: 1, kind: asset.type === "video" ? "video" as const : "image" as const, dur: genSeconds(item, measured[at] || null) };
       }),
     };
     return { doc: made, layout: buildLayout(made.clips.map((clip) => clip.cut), made), byId: new Map(gens.map((item) => [item.id, item])) };
@@ -68,7 +68,7 @@ export function useSourcePane({ place, mode, gen, tape, tapeScope, loop, speed }
   const sourceOf = useCallback((clip: SlotClip): EditSource => {
     const item = src.byId.get(clip.gen);
     const asset = item?.assets[0];
-    return { state: "ok", url: asset?.file_path ?? null, type: asset?.type ?? null, thumb: item ? thumbOf(item, 512) : null };
+    return { state: "ok", url: asset?.file_path ?? null, type: asset?.type === "video" || asset?.type === "image" ? asset.type : null, thumb: item ? thumbOf(item, 512) : null };
   }, [src]);
   const paint = useCallback((time: number) => painters.current.forEach((draw) => draw(time)), []);
   const play = useEditPlayback({

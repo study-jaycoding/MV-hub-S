@@ -138,7 +138,7 @@ def backup_replica_snapshot() -> dict[str, Any]:
     }
 
 
-def generation_queue_snapshot() -> dict[str, Any]:
+def generation_queue_snapshot(*, allow_remote_recovery: bool = False) -> dict[str, Any]:
     """생성 큐가 어느 단계에 있고 어디서 오래 머무는지 개인식별 없이 집계한다."""
     if _shared_server_runtime():
         return {
@@ -152,7 +152,10 @@ def generation_queue_snapshot() -> dict[str, Any]:
             "recovery_required_total": 0,
             "applicable": False,
         }
+    remote_count = 0
     with get_connection() as conn:
+        # 후보 수를 뺄 때 서로 다른 시점의 집계를 섞지 않는다.
+        conn.execute("BEGIN")
         # 상태별 GROUP BY 한 번에 count·최고령·overdue·check_failures 를 조건 집계한다
         # (R5 ops-2). 종전엔 active_total/overdue/failures/recovery 를 각각 다시 조회해
         # status 단독 인덱스가 없는 gen_request 를 6번 전수 스캔했다. active 필터는
@@ -173,6 +176,10 @@ def generation_queue_snapshot() -> dict[str, Any]:
             "AND (g.job_id IS NULL OR g.job_id='') "
             "AND r.updated_at < datetime('now','-10 minutes')"
         ).fetchone()[0]
+        if allow_remote_recovery:
+            from .update_activity import remote_recovery_candidates
+
+            remote_count = len(remote_recovery_candidates(conn))
 
     phase_counts = {row["status"]: int(row["count"]) for row in rows}
     # 레퍼런스를 올리는 중(claimed)인 요청도 업데이트를 막는다 — 업데이터가 에이전트를 끄면 claim 을 되돌리지 못해 30분 멈추고,
@@ -191,7 +198,8 @@ def generation_queue_snapshot() -> dict[str, Any]:
             for row in rows
             if row["status"] in _UPDATE_BLOCKING_PHASES
         )
-        + live_claimed,
+        + live_claimed - remote_count,
+        "remote_recoverable_total": remote_count,
         "oldest_active_age_seconds": oldest,
         "overdue_checks": sum(int(row["overdue_count"] or 0) for row in active_rows),
         "check_failures_total": sum(

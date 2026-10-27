@@ -275,7 +275,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
                   onClose();
                 }}
               >
-                🖌 부분 수정
+                🖌 이미지 수정
               </button>
             )}
             {onOpenInBoard && cur.genId && (
@@ -322,7 +322,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
               loop
             />
           ) : cur.type === "audio" ? (
-            <audio src={cur.url} controls autoPlay />
+            <audio src={cur.url} controls preload="metadata" />
           ) : thumb ? (
             <div className="media-preview-stack">
               {waiting && (

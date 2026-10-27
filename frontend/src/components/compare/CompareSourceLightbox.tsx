@@ -26,7 +26,7 @@ export function CompareSourceLightbox({
         {preview.type === "video" ? (
           <video src={preview.url} controls autoPlay muted loop playsInline />
         ) : preview.type === "audio" ? (
-          <audio src={preview.url} controls autoPlay />
+          <audio src={preview.url} controls preload="metadata" />
         ) : (
           <img src={preview.url} alt={preview.name} />
         )}

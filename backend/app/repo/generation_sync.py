@@ -327,23 +327,24 @@ def _upsert_synced(
         # ★공유 전용 share_url 백필 — 로컬 토큰 레퍼런스(asset:캡쳐 등)에도 힉스필드 공개 URL 을 보관해
         # 두면, 팀에 공유했을 때 받는 쪽이 내 PC 파일 없이도 그 소스를 쓸 수 있다. 로컬 동작(file_path/
         # source_url)은 절대 안 건드린다(번들 export 만 share_url 을 씀).
-        # 동기화 medias 의 공개 URL 과 로컬 레퍼런스를 '개수 일치 시 순서'로만 매칭(오매칭 방지).
-        synced_urls = [
+        # 이미 동일 URL로 식별되는 파일만 보강한다. 개수·위치가 같다는 이유로 로컬
+        # asset: 파일을 원격 URL과 연결하면 반환 순서가 다른 경우 과거 참조를 오염시킨다.
+        synced_urls = {
             r["file_path"]
             for r in parsed.get("references", [])
             if r.get("file_path") and str(r["file_path"]).startswith("http")
-        ]
+        }
         if synced_urls:
-            # 제출(parsed) 순서와 맞추려면 gr.rowid(삽입=제출 순서) 로 정렬해야 한다. gr.role 알파벳순은
-            # @Image10<@Image2·@Video 위치가 어긋나 엉뚱한 URL 이 엉뚱한 ref 에 박히고 COALESCE 로
-            # 영구 고정됐다(_link_reference 가 parsed 순서대로 INSERT 하므로 rowid 가 곧 제출 순서).
             local_refs = conn.execute(
-                "SELECT gr.reference_id FROM gen_reference gr WHERE gr.generation_id=? "
+                "SELECT gr.reference_id,r.file_path,r.source_url FROM gen_reference gr "
+                "JOIN reference r ON r.id=gr.reference_id WHERE gr.generation_id=? "
                 "ORDER BY gr.rowid",
                 (target_id,),
             ).fetchall()
-            if len(local_refs) == len(synced_urls):
-                for lr, url in zip(local_refs, synced_urls):
+            for lr in local_refs:
+                identified = synced_urls.intersection({lr["file_path"], lr["source_url"]})
+                if len(identified) == 1:
+                    url = identified.pop()
                     conn.execute(
                         "UPDATE reference SET share_url=COALESCE(share_url, ?) WHERE id=?",
                         (url, lr["reference_id"]),

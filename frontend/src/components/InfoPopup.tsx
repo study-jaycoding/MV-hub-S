@@ -22,7 +22,6 @@ import { addWindowPointerDrag, keepHeadReachable, removeWindowPointerDrag } from
 import type { Generation, InfoTarget, PreviewTarget, Project, Reference } from "../types";
 import { InlinePromptRefs } from "./common/InlinePromptRefs";
 import { MediaThumbnail } from "./MediaThumbnail";
-import { GenerationBundleButton } from "./GenerationBundleButton";
 
 import { fmtElapsed } from "../lib/format";
 import { formatCredits } from "../lib/formatCredits";
@@ -40,7 +39,7 @@ interface Props {
 
 const POP_W = 380;
 const TRANSACTION_PENDING_REASONS: Record<string, string> = {
-  transaction_pending_ambiguous: "연결 가능한 거래에 서로 다른 금액이 있습니다.",
+  transaction_pending_ambiguous: "특정 거래를 유일하게 연결할 수 없습니다.",
   transaction_pending_incomplete: "모든 생성물에 연결할 거래가 아직 부족합니다.",
   transaction_pending_limit: "연결 후보가 너무 많아 자동 확정을 보류했습니다.",
 };
@@ -203,6 +202,7 @@ export function InfoPopup({
   let previewUrl: string | null = null;
   let posterUrl: string | null = null; // 영상 포스터(CLI 정적 썸네일) — <video poster> 용
   let isVideo = false;
+  let isAudio = false;
   let rows: React.ReactNode = null;
   let sources: React.ReactNode = null;
 
@@ -210,6 +210,7 @@ export function InfoPopup({
     const g = target.gen;
     const asset = g.assets[0];
     isVideo = asset?.type === "video";
+    isAudio = asset?.type === "audio";
     // 영상: 실제 영상이 <video> src, thumbnail_path(CLI 정적 포스터)는 poster 로 분리(포스터를 src 로
     // 쓰면 영상이 안 나온다). 이미지: 상세 뷰는 원본(file_path) 우선 — thumbnail_path 가 경량 min-url
     // 이면 확대 시 흐려지므로. 브라우저가 CDN 에서 직접 로드(서버 캐시 안 함), 없을 때만 썸네일 폴백.
@@ -444,6 +445,7 @@ export function InfoPopup({
     const { project, node, meta } = target;
     previewUrl = api.assetFileUrl(project, node.path);
     isVideo = node.type === "video";
+    isAudio = node.type === "audio";
     title = node.name;
     const typeLabel = node.type === "video" ? "영상" : node.type === "audio" ? "오디오" : "이미지";
     rows = (
@@ -496,23 +498,6 @@ export function InfoPopup({
           </span>
           {target.kind === "generation" && (
             <div className="info-head-actions">
-              {target.gen.status === "done" && target.gen.assets?.[0]?.type === "image" && (
-                <button
-                  className="info-board-btn"
-                  title="이미지 위에 펜·도형으로 표시해 수정 지시 (Seedream)"
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={() => {
-                    window.dispatchEvent(
-                      new CustomEvent(APP_EVENTS.partialEdit, {
-                        detail: { genId: target.gen.id },
-                      }),
-                    );
-                    onClose();
-                  }}
-                >
-                  🖌 부분 수정
-                </button>
-              )}
               {onOpenInBoard && (
                 <button
                   className="info-board-btn"
@@ -540,13 +525,19 @@ export function InfoPopup({
           </button>
         </header>
         <div className="info-body">
-          {target.kind === "generation" && target.gen.status === "done" &&
-            <GenerationBundleButton key={target.gen.id} generationId={target.gen.id} />}
+          {target.kind === "generation" && <div className="info-head-actions" style={{ marginLeft: 0 }}>
+            {(["image", "video"] as const).map((mode) => <button key={mode} className="info-board-btn"
+              disabled={target.gen.status !== "done" || target.gen.assets?.[0]?.type !== mode || !target.gen.assets[0]?.file_path}
+              onClick={() => {
+                window.dispatchEvent(new CustomEvent(APP_EVENTS.partialEdit, { detail: { genId: target.gen.id, mode } }));
+                onClose();
+              }}>{mode === "image" ? "이미지 수정" : "영상 수정"}</button>)}
+          </div>}
           {previewUrl && (
             <div className="info-preview">
               {isVideo ? (
                 <video src={previewUrl} poster={posterUrl || undefined} muted controls preload="metadata" />
-              ) : (
+              ) : isAudio ? <audio src={previewUrl} controls preload="metadata" /> : (
                 <img
                   src={previewUrl}
                   alt={title}

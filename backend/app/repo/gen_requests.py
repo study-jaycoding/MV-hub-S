@@ -8,6 +8,7 @@ placeholder 카드를 즉시 만든다. 요청자의 PC 에이전트가 대기 �
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import unicodedata
 import uuid
@@ -34,6 +35,161 @@ _ASSET_CONTENT_REFERENCE_GATE = (
 # 문자열로 이 뒤의 상세만 떼어 원인을 분류한다 — 바꾸면 그쪽도 함께 바꾼다. 원문 전체는 정보 팝업의
 # '오류 원문' 접힘 칸에 그대로 보인다.
 SUBMIT_DIAGNOSTIC_PREFIX = "제출 진단: "
+
+
+def _reference_delivery_check(submitted_refs: list, raw_job: dict) -> dict[str, Any]:
+    """ID/파일 지문으로만 대조한다. 반환 순서는 관측값이며 모델 적용 순서의 증명이 아니다."""
+    def identifier(value):
+        return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,200}", value) else None
+
+    def digest(value):
+        return value.lower() if isinstance(value, str) and re.fullmatch(r"[a-fA-F0-9]{64}", value) else None
+
+    params = raw_job.get("params") if isinstance(raw_job, dict) else None
+    raw = params.get("medias") if isinstance(params, dict) else None
+    if not isinstance(raw, list) and isinstance(params, dict):
+        entries = []
+        found = False
+        roles = {"input_images": "image", "image_references": "image_references",
+                 "video_references": "video", "audio_references": "audio", "video": "video",
+                 "start_image": "start_image", "end_image": "end_image", "ref_image": "image"}
+        for key, value in params.items():
+            if key not in roles or value is None:
+                continue
+            found = True
+            for item in value if isinstance(value, list) else [value]:
+                data = item.get("data", item) if isinstance(item, dict) else {"id": item}
+                role = item.get("role", roles[key]) if isinstance(item, dict) else roles[key]
+                entries.append({"data": data, "role": role})
+        if found:
+            raw = entries
+    observed = []
+    if not isinstance(raw, list):
+        return {"status": "unverifiable", "observed_refs": observed}
+    for position, media in enumerate(raw):
+        if not isinstance(media, dict) or not isinstance(media.get("data"), dict):
+            return {"status": "unverifiable", "observed_refs": observed}
+        data = media["data"]
+        role = identifier(media.get("role"))
+        typ = data.get("type") or media.get("type")
+        if typ not in {"image", "video", "audio"}:
+            typ = role if role in {"image", "video", "audio"} else None
+        item = {"position": position, "type": typ, "role": role,
+                "upload_id": identifier(data.get("id"))}
+        sha = digest(data.get("sha256") or data.get("content_sha"))
+        if sha:
+            item["sha256"] = sha
+        observed.append(item)
+    result = {"status": "unverifiable", "observed_refs": observed}
+    if not isinstance(submitted_refs, list):
+        return result
+    submitted = []
+    for item in submitted_refs:
+        if not isinstance(item, dict):
+            return result
+        submitted.append({"upload_id": identifier(item.get("upload_id")),
+                          "sha256": digest(item.get("sha256")), "role": item.get("role"),
+                          "type": item.get("type")})
+    if any(not (item["upload_id"] or item["sha256"]) for item in submitted):
+        return result
+    if not submitted:
+        result["status"] = "matched" if not observed else "different_file"
+        return result
+    if not observed:
+        result["status"] = "missing"
+        return result
+    matches = []
+    used = set()
+    for item in observed:
+        if any(item.get("upload_id") and item["upload_id"] == expected["upload_id"] and
+               item.get("sha256") and expected["sha256"] and item["sha256"] != expected["sha256"]
+               for expected in submitted):
+            result["status"] = "different_file"
+            return result
+        choices = [index for index, expected in enumerate(submitted)
+                   if ((item.get("upload_id") and item["upload_id"] == expected["upload_id"])
+                       or (item.get("sha256") and item["sha256"] == expected["sha256"]))]
+        if not choices:
+            comparable = any((item.get("upload_id") and expected["upload_id"]) or
+                             (item.get("sha256") and expected["sha256"]) for expected in submitted)
+            result["status"] = "different_file" if comparable else "unverifiable"
+            return result
+        available = [index for index in choices if index not in used]
+        if not available:
+            result["status"] = "duplicate"
+            return result
+        index = next((i for i in available if submitted[i]["role"] == item["role"]), available[0])
+        used.add(index)
+        matches.append(index)
+    if len(used) < len(submitted):
+        result["status"] = "missing"
+    elif any(item["role"] is None or submitted[index]["role"] is None for item, index in zip(observed, matches)):
+        result["status"] = "unverifiable"
+    elif any(item["role"] != submitted[index]["role"] or
+             (item["type"] and submitted[index]["type"] and item["type"] != submitted[index]["type"])
+             for item, index in zip(observed, matches)):
+        result["status"] = "role_difference"
+    else:
+        result["status"] = "matched" if matches == list(range(len(submitted))) else "returned_order_difference"
+    return result
+
+
+def _safe_submitted_refs(values: Any) -> list[dict]:
+    """새 제출 정보는 식별자/지문만 저장하고 URL·파일 경로 등 임의 키는 버린다."""
+    clean = []
+    for item in values[:32] if isinstance(values, list) else []:
+        if not isinstance(item, dict):
+            continue
+        row = {}
+        for key in ("position", "bytes"):
+            value = item.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                row[key] = value
+        for key in ("type", "input_role", "role", "reference_id", "upload_id"):
+            value = item.get(key)
+            if isinstance(value, str) and re.fullmatch(r"[@\w.:-]{1,200}", value):
+                row[key] = value
+        sha = item.get("sha256")
+        if isinstance(sha, str) and re.fullmatch(r"[a-f0-9]{64}", sha):
+            row["sha256"] = sha
+        clean.append(row)
+    return clean
+
+
+def record_reference_observation(rid: str, job: dict, *, account_email: str | None = None) -> dict:
+    """검증된 요청/원격 잡에 관측만 추가한다. 제출 자료와 다른 잡의 기록은 보존한다."""
+    from .. import active_account
+    email = norm_email(account_email or active_account.account_key() or "")
+    unchanged = {"changed": False, "status": "unverifiable"}
+    job_id = job.get("id") if isinstance(job, dict) else None
+    if not email or not isinstance(job_id, str) or not job_id:
+        return unchanged
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT r.submission_fingerprint, g.job_id FROM gen_request r "
+                           "JOIN generation g ON g.id=r.gen_id WHERE r.id=? AND r.account_email=?",
+                           (rid, email)).fetchone()
+        if not row or row["job_id"] != job_id:
+            return unchanged
+        try:
+            fingerprint = json.loads(row["submission_fingerprint"] or "{}")
+        except (ValueError, TypeError):
+            return unchanged
+        if not isinstance(fingerprint, dict) or "submitted_refs" not in fingerprint:
+            return unchanged
+        previous = fingerprint.get("delivery_check")
+        if isinstance(previous, dict) and previous.get("job_id") != job_id:
+            return unchanged
+        submitted = fingerprint["submitted_refs"]
+        if submitted == [] and fingerprint.get("reference_roles"):
+            return unchanged  # 구 에이전트의 기본 []는 무참조 제출의 증거가 아니다.
+        check = {"job_id": job_id, **_reference_delivery_check(submitted, job)}
+        if previous == check:
+            return {"changed": False, "status": check["status"]}
+        fingerprint["delivery_check"] = check
+        conn.execute("UPDATE gen_request SET submission_fingerprint=? WHERE id=? AND account_email=?",
+                     (json.dumps(fingerprint, ensure_ascii=False, sort_keys=True), rid, email))
+    return {"changed": True, "status": check["status"]}
 
 
 def _submission_ref_digests(fingerprint: Optional[dict[str, Any]]) -> list[tuple[str, str, int, Optional[str]]]:
@@ -224,6 +380,11 @@ def begin_request_submission(
                 conn.execute("ROLLBACK")
                 return None
         transitioned = row["status"] == "claimed"
+        if isinstance(submission_fingerprint, dict) and "submitted_refs" in submission_fingerprint:
+            submission_fingerprint = {**submission_fingerprint,
+                                      "submitted_refs": _safe_submitted_refs(submission_fingerprint["submitted_refs"])}
+            order = submission_fingerprint.get("arg_order")
+            submission_fingerprint["arg_order"] = [value for value in order[:32] if isinstance(value, int) and not isinstance(value, bool) and value >= 0] if isinstance(order, list) else []
         encoded_fingerprint = (
             json.dumps(submission_fingerprint, ensure_ascii=False, sort_keys=True)
             if submission_fingerprint
@@ -1441,6 +1602,7 @@ def has_pending_requests(
     *,
     workspace_capable: bool = False,
     asset_content_capable: bool = True,
+    media_v2_capable: bool = False,
 ) -> bool:
     """쓰기 상태를 바꾸지 않고 이 계정에서 실행 가능한 대기 요청 존재만 확인한다."""
     ws_gate = (
@@ -1449,14 +1611,22 @@ def has_pending_requests(
         "lower(coalesce(json_extract(payload, '$.workspace.scope'), '')) IN ('team','personal'))"
     )
     asset_gate = "" if asset_content_capable else _ASSET_CONTENT_REFERENCE_GATE
+    media_gate = "" if media_v2_capable else _MEDIA_V2_GATE
     with get_connection() as conn:
         row = conn.execute(
             "SELECT 1 FROM gen_request "
-            f"WHERE account_email=? AND status='pending'{ws_gate}{asset_gate} "
+            f"WHERE account_email=? AND status='pending'{ws_gate}{asset_gate}{media_gate} "
             "AND EXISTS (SELECT 1 FROM generation g WHERE g.id=gen_request.gen_id) LIMIT 1",
             (norm_email(account_email),),
         ).fetchone()
     return row is not None
+
+
+_MEDIA_V2_GATE = (
+    " AND NOT (json_valid(payload) AND ("
+    "coalesce(json_extract(payload, '$.media_protocol'), '')='media-v2' OR "
+    "coalesce(json_extract(payload, '$.model'), '') IN ('draw_to_video','text2speech_v2')))"
+)
 
 
 def claim_pending_requests(
@@ -1467,6 +1637,7 @@ def claim_pending_requests(
     lease_owner: Optional[str] = None,
     submission_stage_capable: bool = False,
     asset_content_capable: bool = True,
+    media_v2_capable: bool = False,
     sweep_expired: bool = True,
 ) -> list[dict[str, Any]]:
     """이 계정의 대기 요청을 원자적으로 claim한다.
@@ -1499,13 +1670,14 @@ def claim_pending_requests(
         "lower(coalesce(json_extract(payload, '$.workspace.scope'), '')) IN ('team','personal'))"
     )
     asset_gate = "" if asset_content_capable else _ASSET_CONTENT_REFERENCE_GATE
+    media_gate = "" if media_v2_capable else _MEDIA_V2_GATE
     with get_connection() as conn:
         # 빈 폴은 가장 흔한 경로다. 먼저 읽기로 claim 가능한 pending 존재만 확인해, 0건이면
         # BEGIN IMMEDIATE(전역 쓰기락)를 잡지 않고 끝낸다. 이 읽기와 실제 claim 사이의 레이스는
         # 무해하다 — 새 요청을 못 본 경우에도 다음 폴에서 claim한다.
         has_pending = conn.execute(
             "SELECT 1 FROM gen_request "
-            f"WHERE account_email=? AND status='pending'{ws_gate}{asset_gate} "
+            f"WHERE account_email=? AND status='pending'{ws_gate}{asset_gate}{media_gate} "
             "AND EXISTS (SELECT 1 FROM generation g WHERE g.id=gen_request.gen_id) LIMIT 1",
             (email,),
         ).fetchone()
@@ -1518,7 +1690,7 @@ def claim_pending_requests(
         conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
             "SELECT id, gen_id, kind, payload FROM gen_request "
-            f"WHERE account_email=? AND status='pending'{ws_gate}{asset_gate} "
+            f"WHERE account_email=? AND status='pending'{ws_gate}{asset_gate}{media_gate} "
             "AND EXISTS (SELECT 1 FROM generation g WHERE g.id=gen_request.gen_id) "
             "ORDER BY created_at, rowid LIMIT ?",
             (email, limit),
@@ -1548,6 +1720,7 @@ def claim_pending_requests(
                 "workspace": normalize_workspace_context(p.get("workspace")),
                 "claim_phase": claim_phase,
                 "asset_content_protocol": p.get("asset_content_protocol"),
+                "media_protocol": p.get("media_protocol"),
                 "project_id": p.get("project_id"),
             }
         )

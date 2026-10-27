@@ -14,6 +14,7 @@ from ..config import PORT
 from ..services.operational_health import generation_queue_snapshot
 from ..services.operational_logging import log_event
 from ..services.resolve_transfer import active_transfer_count
+from ..services.update_activity import active_write_count, prepare_remote_checkpoint
 from ..services.release_update import (
     APP_ROOT,
     ReleasePromoteError,
@@ -48,16 +49,18 @@ def _require_local(request: Request) -> None:
 
 
 def _activity() -> dict[str, int]:
-    generation = int(generation_queue_snapshot().get("update_blocking_total") or 0)
+    generation = int(generation_queue_snapshot(allow_remote_recovery=True).get("update_blocking_total") or 0)
     comfy_count = comfy.active_run_job_count()
     # 진행 중 직접 전송(요청 안에서 준비·반입·저장). 전송 쪽은 카운터를 올린 뒤 update_in_progress
     # 게이트를 보고, 이쪽은 checking 기록 뒤 재확인한다(services/release_update.start_update).
     resolve_count = active_transfer_count()
+    writes = active_write_count()
     return {
         "generation_active": generation,
         "comfy_active": comfy_count,
         "resolve_active": resolve_count,
-        "active_total": generation + comfy_count + resolve_count,
+        "result_write_active": writes,
+        "active_total": generation + comfy_count + resolve_count + writes,
     }
 
 
@@ -278,6 +281,7 @@ def release_update_start_candidate(
             ready_url=f"http://127.0.0.1:{PORT}/api/ready",
             manifest="candidate.json",
             expected_release=expected,
+            checkpoint_write=prepare_remote_checkpoint,
         )
     except ReleaseUpdateBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -316,6 +320,7 @@ async def release_update_start(
             activity_check=(lambda: 0) if body.force else active_total,
             ready_url=ready_url,
             force=body.force,
+            checkpoint_write=prepare_remote_checkpoint,
         )
     except ReleaseUpdateBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

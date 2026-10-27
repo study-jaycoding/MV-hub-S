@@ -38,6 +38,20 @@ def _load_agent():
     return module
 
 
+def test_agent_parameter_names_refresh_after_ttl_and_preserve_on_empty_schema():
+    agent = _load_agent()
+    with patch.object(agent.time, "monotonic", return_value=10000), patch.object(
+        agent, "_cli_json", side_effect=[{"params": [{"name": "old"}]}, {"params": []}, {"params": [{"name": "new"}]}]
+    ) as lookup:
+        assert agent._allowed_params("hf", "model") == {"old"}
+        agent._MODEL_PARAMS_SAVED_AT["model"] = 1
+        assert agent._allowed_params("hf", "model") == {"old"}
+        assert agent._MODEL_PARAMS_SAVED_AT["model"] == 1
+        agent._MODEL_PARAMS_FAIL_AT.clear()
+        assert agent._allowed_params("hf", "model") == {"new"}
+        assert lookup.call_count == 3
+
+
 def _load_refresh_tool():
     spec = importlib.util.spec_from_file_location(
         "mvhub_refresh_tool_contract_target", REFRESH_TOOL_PATH
@@ -944,7 +958,7 @@ def test_gen_request_adapter_builds_claim_url_in_one_place():
     # submission-stage: 신 서버에서는 CLI 호출 전/후 상태를 분리한다.
     assert parse_qs(parsed.query) == {
         "limit": ["16"],
-        "capability": ["workspace,submission-stage,asset-content"],
+        "capability": ["workspace,submission-stage,asset-content,media-v2"],
         "agent_id": ["agent-1"],
     }
     assert call.kwargs == {"token": "token-1"}
@@ -962,7 +976,7 @@ def test_agent_pending_exists_uses_read_only_workspace_capable_route():
     assert call.args[0] == "GET"
     assert parsed.path == "/api/gen-requests/pending-exists"
     assert parse_qs(parsed.query) == {
-        "capability": ["workspace,submission-stage,asset-content"],
+        "capability": ["workspace,submission-stage,asset-content,media-v2"],
         "agent_id": ["agent-1"],
     }
     assert call.kwargs == {"token": "token-1"}
@@ -1513,7 +1527,9 @@ def test_agent_startup_refreshes_only_server_selected_jobs() -> None:
     agent = _load_agent()
     with patch.object(agent, "execute_pending") as execute, patch.object(
         agent, "tracking_pass"
-    ) as tracking, patch.object(agent, "push_once") as push:
+    ) as tracking, patch.object(agent, "push_once") as push, patch.object(
+        agent, "_cycle_account_email", return_value="artist@example.com"
+    ), patch.object(agent, "_restore_update_checkpoint"):
         agent._initial_cycle("http://hub", "token-1", "higgsfield", 100, False)
 
     execute.assert_called_once_with("http://hub", "token-1", "higgsfield")
@@ -1525,7 +1541,9 @@ def test_agent_startup_keeps_no_push_mode_local() -> None:
     agent = _load_agent()
     with patch.object(agent, "execute_pending") as execute, patch.object(
         agent, "tracking_pass"
-    ) as tracking, patch.object(agent, "push_once") as push:
+    ) as tracking, patch.object(agent, "push_once") as push, patch.object(
+        agent, "_cycle_account_email", return_value="artist@example.com"
+    ), patch.object(agent, "_restore_update_checkpoint"):
         agent._initial_cycle("http://hub", "token-1", "higgsfield", 100, True)
 
     execute.assert_called_once()
@@ -1801,6 +1819,39 @@ def test_submit_sends_reference_digest_with_begin_submission(tmp_path):
     assert begin.call_args.args[4]["ref_digests"] == {
         ref_value: {"sha256": hashlib.sha256(payload).hexdigest(), "bytes": len(payload)}
     }
+    assert begin.call_args.args[4]["submitted_refs"] == [{
+        "position": 0, "type": "image", "input_role": "@Image1", "role": "image",
+        "sha256": hashlib.sha256(payload).hexdigest(), "bytes": len(payload)}]
+    assert begin.call_args.args[4]["arg_order"] == [0]
+
+
+def test_submission_preserves_input_order_and_records_cli_grouping_separately(tmp_path):
+    agent = _load_agent()
+    image = tmp_path / "ref.png"
+    start = tmp_path / "start.png"
+    image.write_bytes(b"reference")
+    start.write_bytes(b"start")
+    request = _submission_request()
+    request.update(model="seedance_2_5", references=[
+        {"file_path": "ref", "type": "image", "role": "@Image1", "reference_id": "ref-1"},
+        {"file_path": "start", "type": "image", "role": "@Start1", "reference_id": "ref-2"}])
+    with patch.object(agent, "_allowed_params", return_value=set()), patch.object(
+        agent, "_ensure_request_workspace", return_value=("ws", None)
+    ), patch.object(agent, "_begin_submission", return_value=True) as begin, patch.object(
+        agent, "_run_cli_json", return_value=(["12345678-1234-1234-1234-123456789abc"], None)
+    ) as run, patch.object(agent, "_upload_for_media", return_value=({"id": "upload-1"}, True)), patch.object(
+        agent, "_anchor_tracked_safe"
+    ):
+        assert agent._submit_one("http://hub", "token", "hf", "artist@example.com", request,
+                                 {"ref": str(image), "start": str(start)}, {}, agent.Lock(), agent.Lock(), "agent")
+    fingerprint = begin.call_args.args[4]
+    assert fingerprint["arg_order"] == [1, 0]
+    assert [ref["reference_id"] for ref in fingerprint["submitted_refs"]] == ["ref-1", "ref-2"]
+    assert fingerprint["submitted_refs"][0]["upload_id"] == "upload-1"
+    assert fingerprint["submitted_refs"][1]["role"] == "start_image"
+    args = run.call_args.args
+    assert args.index("--start-image") < args.index("--image-references")
+    assert "file_path" not in str(fingerprint["submitted_refs"])
 
 
 def test_staged_agent_gets_server_ack_before_paid_cli_create():
@@ -2105,7 +2156,7 @@ def test_agent_submission_stage_adapters_match_server_contract():
     begin_call, release_call, recovery_call = http.call_args_list
     begin_url = urlsplit(begin_call.args[1])
     assert begin_url.path == "/api/gen-requests/request-1/begin-submission"
-    assert parse_qs(begin_url.query) == {"agent_id": ["agent-1"]}
+    assert parse_qs(begin_url.query) == {"agent_id": ["agent-1"], "capability": ["media-v2"]}
     release_url = urlsplit(release_call.args[1])
     assert release_url.path == "/api/gen-requests/request-1/release-claim"
     assert parse_qs(release_url.query) == {"agent_id": ["agent-1"]}

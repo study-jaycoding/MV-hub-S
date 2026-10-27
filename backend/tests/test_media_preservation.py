@@ -72,6 +72,33 @@ def test_concurrent_requests_collapse_to_one_row_and_keep_strongest_reason(isola
         ).fetchone()[0] == 1
 
 
+def test_update_defers_without_losing_counts_or_spending_attempts(isolated_content_db, monkeypatch):
+    from app.services import release_update
+
+    gen_id = isolated_content_db
+    repo.request_media_preservation(gen_id, "final")
+    repo.claim_media_preservation(gen_id)
+    repo.finish_media_preservation(gen_id, status="partial", cached_count=2,
+                                  failed_count=1, skipped_count=3, bytes_cached=123,
+                                  error_code="network_error", retry_after_seconds=0)
+    before = repo.get_media_preservation(gen_id)
+    monkeypatch.setattr(release_update, "update_in_progress", lambda: True)
+    result = asyncio.run(media_preservation.preserve_generation_now(gen_id))
+    assert result == {"status": "partial", "error_code": "update_in_progress"}
+    after = repo.get_media_preservation(gen_id)
+    assert after["next_retry_at"] is not None
+    assert after["attempts"] == before["attempts"]
+    for key in ("cached_count", "failed_count", "skipped_count", "bytes_cached"):
+        assert after[key] == before[key]
+    monkeypatch.setattr(release_update, "update_in_progress", lambda: False)
+    with db.get_connection() as conn:
+        conn.execute("UPDATE media_preservation SET next_retry_at=datetime('now','-1 minute') WHERE generation_id=?", (gen_id,))
+    async def complete(_generation):
+        return {"cached": 0, "already": 2, "failed": 0, "skipped": 0, "bytes_cached": 0}
+    monkeypatch.setattr(media_preservation.generation_media_cache, "cache_generation_media", complete)
+    assert asyncio.run(media_preservation.preserve_generation_now(gen_id))["status"] == "complete"
+
+
 def test_generation_response_exposes_preservation_state(isolated_content_db):
     gen_id = isolated_content_db
     repo.request_media_preservation(gen_id, "shared")

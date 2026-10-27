@@ -72,12 +72,12 @@ async def list_models():
 
 
 @router.get("/models/{job_set_type}/params")
-async def model_params(job_set_type: str):
+async def model_params(job_set_type: str, fresh: bool = False):
     """모델의 CLI 조절 가능 파라미터 스키마(동적 옵션 렌더용)."""
     if not cli_bridge.valid_model_id(job_set_type):
         raise HTTPException(status_code=422, detail="모델 id 형식이 올바르지 않습니다")
     try:
-        return await cli_bridge.get_model_params(job_set_type)
+        return await cli_bridge.get_model_params(job_set_type, allow_stale=not fresh)
     except cli_bridge.CLIError as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -86,6 +86,23 @@ class CostIn(BaseModel):
     model: str
     prompt: str = ""
     params: dict[str, Any] = {}
+    fresh: bool = False
+
+
+@router.get("/voices")
+async def list_voices(cursor: str | None = Query(default=None, max_length=2000)):
+    try:
+        return await cli_bridge.list_voices(cursor=cursor)
+    except cli_bridge.CLIError:
+        raise HTTPException(502, "목소리 목록을 확인할 수 없습니다. Host 콘솔에서 연결 상태를 확인하세요") from None
+
+
+@router.get("/voices/{voice_id}")
+async def get_voice(voice_id: str):
+    try:
+        return await cli_bridge.get_voice(voice_id)
+    except cli_bridge.CLIError:
+        raise HTTPException(502, "공식 프리셋 목소리를 확인할 수 없습니다") from None
 
 
 @router.get("/account")
@@ -167,7 +184,10 @@ def list_creators(
 async def list_workspaces():
     """워크스페이스 목록(개인/팀). is_selected 로 현재 컨텍스트 표시.
     ⚠️ 서버 CLI(하우스 계정) 기준 — 모든 로그인 사용자에게 같은 목록이 보인다."""
-    return await cli_bridge.list_workspaces()
+    try:
+        return await cli_bridge.list_workspaces()
+    except cli_bridge.CLIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
 
 
 def _workspace_account_email(request: Request) -> str | None:
@@ -307,7 +327,9 @@ async def estimate_cost(body: CostIn):
     if not cli_bridge.valid_model_id(body.model):
         raise HTTPException(status_code=422, detail="모델 id 형식이 올바르지 않습니다")
     try:
-        return await cli_bridge.estimate_cost(body.model, body.params, body.prompt)
+        return await cli_bridge.estimate_cost(
+            body.model, body.params, body.prompt, allow_stale=not body.fresh, include_metadata=True,
+        )
     except cli_bridge.CLIError as e:
         raise HTTPException(status_code=502, detail=str(e))
 

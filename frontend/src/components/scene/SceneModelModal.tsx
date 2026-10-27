@@ -25,7 +25,7 @@ export function SceneModelModal({
   //  자동 선택이 복원한 모델을 덮었다(실측: 캐시 적중이면 3/3 재현, 캐시 만료면 3/3 정상).
   // ★타입은 **모델 키를 먼저** 믿는다 — 저장된 `type` 이 없거나(레시피가 안 넣는다) 틀릴 수 있다.
   const savedType =
-    initial?.type === "image" || initial?.type === "video" ? initial.type : undefined;
+    initial?.type === "image" || initial?.type === "video" || initial?.type === "audio" ? initial.type : undefined;
   const m = useModels(() => {}, {
     allowed: policy.allowed,
     ready: policy.status !== "loading",

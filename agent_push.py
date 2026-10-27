@@ -804,7 +804,7 @@ def _claim_pending(server: str, token: str, limit: int, agent_id: str | None = N
     # submission-stage: claim과 실제 유료 CLI 호출 사이를 서버 상태로 분리한다. 신 서버는 claimed로
     # 내려주고 begin-submission ACK 뒤에만 submitting으로 올린다. 구 서버는 capability를 무시하고
     # 기존 submitting 응답(새 필드 없음)을 주므로 혼합 업데이트 중에도 하위호환된다.
-    query = {"limit": limit, "capability": "workspace,submission-stage,asset-content"}
+    query = {"limit": limit, "capability": "workspace,submission-stage,asset-content,media-v2"}
     if agent_id:
         query["agent_id"] = agent_id
     return _http(
@@ -823,7 +823,7 @@ def _pending_exists(server: str, token: str) -> bool:
             server,
             action="pending-exists",
             query={
-                "capability": "workspace,submission-stage,asset-content",
+                "capability": "workspace,submission-stage,asset-content,media-v2",
                 "agent_id": _agent_instance_id(),
             },
         ),
@@ -858,7 +858,7 @@ def _begin_submission(
         server,
         rid,
         "begin-submission",
-        {"agent_id": agent_id},
+        {"agent_id": agent_id, "capability": "media-v2"},
     )
     for attempt in range(3):
         kwargs = {"token": token, "timeout": 15}
@@ -1260,6 +1260,8 @@ _ROLE_TO_FLAG = {
 
 def _role_flag(role: str) -> str:
     key = (role or "").lower()
+    if key in {"video", "image_references"}:
+        return "--" + key.replace("_", "-")
     for prefix, flag in _ROLE_TO_FLAG.items():
         if key.startswith(prefix):
             return flag
@@ -1320,6 +1322,12 @@ def _media_role(ref: dict) -> str:
 
 
 def _refs_for_cli(model: str, refs: list) -> tuple[list, str | None]:
+    if model == "draw_to_video":
+        if (len(refs) != 2 or any(not isinstance(ref, dict) or not ref.get("file_path") for ref in refs)
+                or {(ref.get("type"), ref.get("role")) for ref in refs} != {("video", "video"), ("image", "image_references")}):
+            return [], "영상 수정에는 원본 영상 1개와 수정 그림 1장이 필요합니다"
+    if model == "text2speech_v2" and refs:
+        return [], "내레이션 생성에는 참조 파일을 사용할 수 없습니다"
     if not _uses_single_start_image(model):
         return refs, None
     image_refs = [ref for ref in refs if isinstance(ref, dict) and _is_image_ref(ref)]
@@ -1635,6 +1643,7 @@ def _upload_for_media(
 
 
 _MODEL_PARAMS_CACHE: dict = {}  # model → `model get` 의 params 목록(성공만 영구 캐시)
+_MODEL_PARAMS_SAVED_AT: dict = {}
 _MODEL_PARAMS_FAIL_AT: dict = {}  # model → 마지막 조회 실패 시각(monotonic) — 짧게 기억해 재조회 폭주 방지
 _MODEL_PARAMS_FAIL_TTL = 60.0  # 초. 실패 뒤 이 동안은 재조회 없이 '스키마 없음'(필터·mode 보정 없음)으로 진행
 _MODEL_PARAMS_LOCKS: dict = {}  # model → Lock. 같은 모델 동시 조회는 하나로, 다른 모델끼리는 병렬(코덱스 2차: 전역 락이면
@@ -1657,21 +1666,26 @@ def _model_params(cli: str, model: str) -> list:
     기억한다 — 계속 실패하는 동안 배치마다·워커마다 60초 타임아웃 조회를 반복해 제출·진행 조회가 늦어지는 것 방지
     (코덱스 리뷰 P2). 조회는 모델별 락으로 묶어 같은 모델 동시 요청은 첫 조회 결과를 나눠 쓴다."""
     cached = _MODEL_PARAMS_CACHE.get(model)
-    if cached is not None:
+    if cached is not None and time.monotonic() - _MODEL_PARAMS_SAVED_AT.get(model, time.monotonic()) < 3600:
         return cached
     with _model_params_lock(model):
         cached = _MODEL_PARAMS_CACHE.get(model)
-        if cached is not None:
+        if cached is not None and time.monotonic() - _MODEL_PARAMS_SAVED_AT.get(model, time.monotonic()) < 3600:
             return cached
         failed_at = _MODEL_PARAMS_FAIL_AT.get(model)
         if failed_at is not None and time.monotonic() - failed_at < _MODEL_PARAMS_FAIL_TTL:
             return []
-        data = _cli_json(cli, "model", "get", model, timeout=60)
+        data = _cli_json(cli, "workflow" if model == "draw_to_video" else "model", "get", model, timeout=60)
         if not isinstance(data, dict):
             _MODEL_PARAMS_FAIL_AT[model] = time.monotonic()
             return []
         items = [p for p in (data.get("params") or []) if isinstance(p, dict)]
+        if not items:
+            _MODEL_PARAMS_FAIL_AT[model] = time.monotonic()
+            return cached or []
         _MODEL_PARAMS_CACHE[model] = items
+        _MODEL_PARAMS_SAVED_AT[model] = time.monotonic()
+        _PARAM_NAMES_CACHE[model] = {p.get("name") for p in items if p.get("name")}
         _MODEL_PARAMS_FAIL_AT.pop(model, None)
         return items
 
@@ -1679,12 +1693,10 @@ def _model_params(cli: str, model: str) -> list:
 def _allowed_params(cli: str, model: str) -> set:
     """모델이 받는 param 이름 집합 — `model get <model> --json` 의 params[].name.
     cli_bridge._allowed_param_names 와 동일 규칙(조회 실패 시 빈 집합 = 전부 통과, advisor)."""
-    if model not in _PARAM_NAMES_CACHE:
-        items = _model_params(cli, model)
-        if not items:
-            return set()
+    items = _model_params(cli, model)
+    if items:
         _PARAM_NAMES_CACHE[model] = {p.get("name") for p in items if p.get("name")}
-    return _PARAM_NAMES_CACHE[model]
+    return _PARAM_NAMES_CACHE.get(model, set())
 
 
 def _param_enum(model: str, name: str) -> set:
@@ -2511,16 +2523,18 @@ def _submit_one(
     # ★CLI 프롬프트는 반드시 한 줄 — 개행이 있으면 Higgsfield 가 레퍼런스(입력 이미지)를 못 붙여 '엉뚱한
     #  결과물'이 나온다(실측). 프론트 신규·재사용·재생성·직접 API·옛 DB 데이터 어느 경로로 왔든 최종 관문인
     #  여기서 한 번에 접는다(display_prompt 는 서버가 별도 보관하므로 표시·재사용 줄바꿈은 영향 없음).
-    prompt = re.sub(r"\s+", " ", prompt).strip()
+    if model != "text2speech_v2":
+        prompt = re.sub(r"\s+", " ", prompt).strip()
     # 레퍼런스 토큰 @imageN 은 알약이 serialize 한 형태다. CLI 는 <<<imageN>>> 를 받아야 하므로 여기서도 되돌린다
     #  (재생성·옛 데이터 등 프론트 정규화를 우회한 경로 방어). simage/eimage→image, vedio→video.
-    prompt = _canon_media_ref_tokens(prompt)
+    if model != "text2speech_v2":
+        prompt = _canon_media_ref_tokens(prompt)
     # 통째 JSON 프롬프트(작업자가 지시서를 붙여넣는 경우)는 CLI 가 '객체'로 파싱해 거부한다 →
     # zero-width space 를 앞에 붙여 문자열로 받게 한다(힉스 웹과 동일 동작, 내용은 그대로).
     prompt = _shield_json_prompt(prompt)
     # ★create-first: --wait 없이 제출해 job_id 를 즉시 확보한다. 긴 대기(15~30분)를 시작하기 전에
     #  job_id 를 서버에 앵커해두어, 대기 중 프로그램이 꺼져도 재조정이 반드시 이어받아 완료시킨다.
-    args = ["generate", "create", model, "--prompt", prompt]
+    args = ["generate", "workflow" if model == "draw_to_video" else "create", model, "--prompt", prompt]
     # ★batch_size 는 1 로 강제 — create-first 는 잡 1개(=카드 1개)를 앵커·대기하므로, N>1 이면 나머지
     #  잡이 앵커·검증 없이 나중에 synced 독립 카드로 새어 나온다(프론트 배치는 요청 N개 복제 방식이라 무영향).
     params = dict(r.get("params") or {})
@@ -2528,6 +2542,21 @@ def _submit_one(
         print(f"  ⚠ batch_size={params.get('batch_size')} → 1 강제(카드 1개=잡 1개 원칙)")
         params["batch_size"] = 1
     allowed_params = _allowed_params(cli, model)
+    if model in {"draw_to_video", "text2speech_v2"}:
+        if r.get("media_protocol") != "media-v2" or not allowed_params:
+            _fail(server, token, rid, "미디어 생성 계약 또는 모델 옵션을 확인할 수 없습니다")
+            return None
+        expected_params = ({"duration", "resolution", "aspect_ratio", "enhancer", "generate_audio"}
+                           if model == "draw_to_video" else {"variant", "voice_id", "voice_type"})
+        if set(params) - expected_params or set(params) - allowed_params:
+            _fail(server, token, rid, "지원하지 않는 미디어 생성 옵션입니다")
+            return None
+        if model == "text2speech_v2":
+            limits = {"elevenlabs": 5000, "minimax": 10000, "seed_speech": 15000, "vibe_voice": 5000, "cozy_voice": 5000}
+            limit = limits.get(params.get("variant"), 0)
+            if not limit or len(r.get("prompt") or "") > limit or params.get("voice_type") != "preset" or not params.get("voice_id"):
+                _fail(server, token, rid, "내레이션 모델 또는 목소리 설정을 확인하세요")
+                return None
     if model == "seedance_2_5" and allowed_params:
         allowed_params = allowed_params | {"draft", "draft_job_id"}
     if params.get("draft_job_id") and params.get("draft") is True:
@@ -2552,8 +2581,15 @@ def _submit_one(
     seedance_media_ids: list = []  # [(role, upload_id)] — 1.x references 플래그용
     seedance_cached_paths: list[str] = []
     ref_digests: dict[str, dict] = {}
+    submitted_refs: list[dict] = []
+    direct_order: list[int] = []
+    media_order: list[int] = []
     expected_image_inputs = 0  # 우리가 실제로 CLI 에 넣은 입력 이미지 개수(사후 부착 검증용)
-    for ref in refs:
+    for position, ref in enumerate(refs):
+        submitted = {"position": position, "type": ref.get("type"), "input_role": ref.get("role")}
+        if ref.get("reference_id"):
+            submitted["reference_id"] = ref["reference_id"]
+        submitted_refs.append(submitted)
         val = ref.get("file_path")
         if not val:
             continue
@@ -2574,12 +2610,18 @@ def _submit_one(
                 seedance_cached_paths.append(resolved)
             media_role = _media_role(ref)
             seedance_media_ids.append((media_role, data["id"]))
+            submitted.update(role=media_role, upload_id=data["id"])
+            media_order.append(position)
             if media_role == "image":
                 expected_image_inputs += 1
             continue
         flag = _role_flag(ref.get("role"))
         args += [flag, resolved]
-        if flag in ("--image", "--start-image", "--end-image"):
+        submitted["role"] = flag.removeprefix("--").replace("-", "_")
+        if _UUID_RE.fullmatch(resolved):
+            submitted["upload_id"] = resolved
+        direct_order.append(position)
+        if flag in ("--image", "--start-image", "--end-image", "--image-references"):
             expected_image_inputs += 1
     if unresolved:
         # 레퍼런스를 못 가져오면 그대로 생성 시 입력 이미지 없이 엉뚱하게 나오고 크레딧만
@@ -2612,12 +2654,15 @@ def _submit_one(
     submission_fingerprint = _submission_fingerprint(
         model, prompt, params, allowed_params, refs
     )
-    for ref in refs:
+    submission_fingerprint["submitted_refs"] = submitted_refs
+    submission_fingerprint["arg_order"] = direct_order + media_order
+    for position, ref in enumerate(refs):
         val = ref.get("file_path")
         resolved = ref_cache.get(val)
         if val and resolved:
             digest = _reference_digest(resolved)
             if digest:
+                submitted_refs[position].update(digest)
                 expected = ref.get("expected_asset_content_id") or ref.get("asset_content_id")
                 if expected and expected != "sha256:" + digest["sha256"]:
                     _fail(server, token, rid, "레퍼런스 내용이 변경되어 생성을 중단했습니다")
@@ -2684,7 +2729,9 @@ def _submit_one(
     tracked = {
         "rid": rid,
         "job_id": job_id,
-        "expected_image_inputs": expected_image_inputs,
+        # workflow 완료 응답의 참조 모양은 유료 실측 전이다. 실제 제출 자료는 지문에 보존하되
+        # 기존 이미지 모델의 '0장' 강제 실패 규칙을 이 workflow에 적용하지 않는다.
+        "expected_image_inputs": 0 if model == "draw_to_video" else expected_image_inputs,
         "deadline": time.monotonic() + _ACTIVE_TRACKING_TIMEOUT_SECONDS,
         "next_direct_check": 0.0,
         "provider_status": None,
@@ -2915,7 +2962,8 @@ def _finalize_tracked_job(
         return False
 
     observed_image_inputs = _job_image_input_count(job)
-    if expected_image_inputs > 0 and observed_image_inputs is not None and observed_image_inputs <= 0:
+    workflow_result = (job.get("job_type") or job.get("job_set_type") or job.get("model")) == "draw_to_video"
+    if not workflow_result and expected_image_inputs > 0 and observed_image_inputs is not None and observed_image_inputs <= 0:
         # 상세 응답까지 확인했는데도 입력 이미지가 없으면 잘못 생성된 결과를 카드로 만들지 않는다.
         if not detailed:
             return False
@@ -2941,6 +2989,15 @@ def _finalize_tracked_job(
 
     # 성공은 실제 결과 URL과 서버 저장 ACK가 모두 있어야 완료다. 공급자 CDN 지연이면 확인중 유지한다.
     result_url = job.get("result_url")
+    if not result_url:
+        outputs = job.get("outputs") or job.get("results")
+        if isinstance(outputs, list):
+            for output in outputs:
+                if isinstance(output, dict):
+                    candidate = output.get("url") or output.get("rawUrl") or output.get("result_url")
+                    if isinstance(candidate, str) and candidate.startswith(("https://", "http://")):
+                        result_url = candidate
+                        break
     usable_result = bool(
         isinstance(result_url, str) and result_url.startswith(("https://", "http://"))
     )
@@ -3792,14 +3849,49 @@ def _report_account_status(server: str, token: str, cli: str) -> bool:
     return True
 
 
+def _restore_update_checkpoint(server: str, token: str, account_email: str | None) -> int:
+    """현재 계정의 업데이트 직전 작업만 기존 추적기에 합류시킨다. 생성 호출은 없다."""
+    if not account_email:
+        return 0
+    try:
+        status, response = _http("GET", server.rstrip("/") + "/api/gen-requests/update-recovery",
+                                 token=token, timeout=15)
+    except Exception:
+        print("  ⚠ 업데이트 복구 목록 조회 실패 — 기존 추적 기록을 유지합니다")
+        return 0
+    if status != 200 or not isinstance(response, dict) or not isinstance(response.get("candidates"), list):
+        return 0
+    active = _runtime_active(server, account_email)
+    restored = 0
+    for candidate in response["candidates"]:
+        if not isinstance(candidate, dict) or str(candidate.get("account_email") or "").strip().lower() != account_email.strip().lower():
+            continue
+        rid, job_id = candidate.get("rid"), candidate.get("job_id")
+        if not all(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,200}", value) for value in (rid, job_id)):
+            continue
+        if job_id in active:
+            continue
+        expected = candidate.get("expected_image_inputs", 0)
+        tracked = {"rid": rid, "job_id": job_id,
+                   "expected_image_inputs": expected if isinstance(expected, int) and not isinstance(expected, bool) and 0 <= expected <= 32 else 0,
+                   "deadline": time.monotonic() + _ACTIVE_TRACKING_TIMEOUT_SECONDS,
+                   "next_direct_check": 0.0, "provider_status": None, "check_failures": 0}
+        active[job_id] = tracked
+        _tracked_save_safe(server, account_email, tracked)
+        restored += 1
+    return restored
+
+
 def _initial_cycle(server: str, token: str, cli: str, size: int, no_push: bool) -> None:
     """에이전트 시작 시 요청 복구와 최신 상태 재대조를 한 번 수행한다."""
     _begin_account_cycle()  # 이 연속 사이클 안에서만 계정 snapshot 공유(3-A)
+    _restore_update_checkpoint(server, token, _cycle_account_email(cli))
+    # 저장된 이전 작업의 상태 조회가 신규 유료 제출보다 먼저다.
+    tracking_pass(server, token, cli)
     # ① 허브에서 요청한 생성/재생성을 내 로컬 CLI로 실행 → 결과 보고(연속 풀로 자체 소진)
     execute_pending(server, token, cli)
     # ② '실제 상태 미확정'(확인중/유실된 running) 카드를 generate get 으로 보정 — 조회만(과금 없음).
     #    no_push 모드(생성 전용)여도 실행한다: 내가 실행한 요청의 진실을 맞추는 것이라 push 정책과 무관.
-    tracking_pass(server, token, cli)
     # ③ 서버에 없거나 아직 대기/생성중인 최신 항목만 동기화한다. 이미 알려진 synced 카드가 test DB
     #    복사·에이전트 재시작 사이에 완료돼도 서버의 refresh 차집합으로 다시 받아 상태를 바로잡는다.
     #    완료된 과거 항목은 제외하므로 현재 워크스페이스 정보가 옛 카드에 잘못 붙지 않는다.

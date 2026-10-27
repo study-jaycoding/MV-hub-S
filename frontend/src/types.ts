@@ -1,7 +1,15 @@
 // 백엔드 API 응답 타입 (backend/app/models.py 와 1:1)
 import type { AssetReferenceIdentity } from "./shared/contracts/assets";
 
-export type MediaType = "image" | "video";
+export type MediaType = "image" | "video" | "audio";
+
+export interface VoiceInfo {
+  id: string;
+  name: string;
+  voice_type: string;
+  category?: string;
+  status?: string;
+}
 export type GenStatus = "pending" | "running" | "done" | "failed" | "nsfw";
 export type WorkspaceScope = "team" | "personal" | "unknown";
 
@@ -282,7 +290,8 @@ export interface ConsoleSummary {
   app_version: string; // 릴리스 설치본만 값 있음
   install_mode: "release" | "server" | "development";
   port: number;
-  cli: { available: boolean; pinned: string; path: string };
+  local_worker?: boolean;
+  cli: { available: boolean; pinned: string; path: string; version?: string | null };
   agent_log: ConsoleLogTail;
   hub_log: ConsoleLogTail;
 }
@@ -387,6 +396,14 @@ export interface ModelParamsOut {
   job_set_type: string;
   type: string;
   params: ModelParam[];
+  saved_at?: number;
+  stale?: boolean;
+}
+
+export interface CostEstimate {
+  credits: number;
+  saved_at?: number;
+  stale?: boolean;
 }
 
 export interface Workspace {
@@ -574,6 +591,7 @@ export interface ProgressMessage {
     | "synced"
     | "assets_changed"
     | "manage_changed"
+    | "credits_changed"
     | "flash"
     | "resolve_selection";
   generation_id?: string;

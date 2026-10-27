@@ -108,6 +108,73 @@ def harness(tmp_path, monkeypatch):
                            creates=creates, execute=execute, active=active, poll=poll, path=state_path)
 
 
+def checkpoint(job_id=JOB_IDS[0], account=ACCOUNT):
+    return {"rid": "rid-checkpoint", "gen_id": "gen", "job_id": job_id, "account_email": account,
+            "workspace": {"scope": "personal"}, "hub_id": "hub", "server_key": SERVER,
+            "saved_at": "2026-10-28T00:00:00Z", "expected_image_inputs": 1}
+
+
+def test_checkpoint_restores_only_current_account_and_keeps_existing_tracker(harness):
+    h = harness
+    h.replies["update-recovery"] = (200, {"candidates": [checkpoint(), checkpoint(account="other@example.invalid")]})
+    assert h.agent._restore_update_checkpoint(SERVER, TOKEN, ACCOUNT) == 1
+    tracked = h.active()[JOB_IDS[0]]
+    assert tracked["expected_image_inputs"] == 1
+    tracked["check_failures"] = 7
+    assert h.agent._restore_update_checkpoint(SERVER, TOKEN, ACCOUNT) == 0
+    assert h.active()[JOB_IDS[0]]["check_failures"] == 7
+    h.agent._ACTIVE_BY_SCOPE.clear()
+    assert JOB_IDS[0] in h.active()  # 재시작을 모의해도 SQLite의 같은 작업을 복원한다.
+    assert h.creates == []
+
+
+def test_checkpoint_failure_keeps_existing_tracker_and_never_submits(harness):
+    h = harness
+    h.replies["update-recovery"] = (200, {"candidates": [checkpoint()]})
+    h.agent._restore_update_checkpoint(SERVER, TOKEN, ACCOUNT)
+    h.replies["update-recovery"] = (503, {})
+    assert h.agent._restore_update_checkpoint(SERVER, TOKEN, ACCOUNT) == 0
+    assert set(h.active()) == {JOB_IDS[0]}
+    assert h.creates == []
+
+
+def test_checkpoint_disk_failure_retains_memory_and_server_checkpoint(harness, monkeypatch):
+    h = harness
+    h.replies["update-recovery"] = (200, {"candidates": [checkpoint()]})
+    monkeypatch.setattr(h.agent, "_tracked_save", Mock(side_effect=OSError("synthetic disk failure")))
+    assert h.agent._restore_update_checkpoint(SERVER, TOKEN, ACCOUNT) == 1
+    assert h.active()[JOB_IDS[0]]["persist_pending"] is True
+    assert "update-recovery" in h.calls and "reconcile" not in h.calls
+    assert h.creates == []
+
+
+def test_startup_checks_saved_work_before_new_claims(harness, monkeypatch):
+    h = harness
+    order = []
+    h.replies["update-recovery"] = (200, {"candidates": [checkpoint()]})
+    monkeypatch.setattr(h.agent, "tracking_pass", lambda *_: order.append(("tracking", set(h.active()))))
+    monkeypatch.setattr(h.agent, "execute_pending", lambda *_: order.append(("claim", set(h.active()))))
+    monkeypatch.setattr(h.agent, "push_once", Mock())
+    h.agent._initial_cycle(SERVER, TOKEN, "fake-cli", 100, True)
+    assert order == [("tracking", {JOB_IDS[0]}), ("claim", {JOB_IDS[0]})]
+    assert h.creates == []
+
+
+def test_recovered_checkpoint_polls_only_saved_job(harness, monkeypatch):
+    h = harness
+    h.replies["update-recovery"] = (200, {"candidates": [checkpoint()]})
+    h.agent._restore_update_checkpoint(SERVER, TOKEN, ACCOUNT)
+    reads = []
+    def read(cli, *args, **kwargs):
+        reads.append(args)
+        assert args == ("generate", "get", JOB_IDS[0])
+        return {"id": JOB_IDS[0], "status": "running"}, None
+    monkeypatch.setattr(h.agent, "_run_cli_json", read)
+    assert h.poll() == 0
+    assert reads == [("generate", "get", JOB_IDS[0])]
+    assert h.creates == []
+
+
 @pytest.mark.parametrize("fault", ["normal", "outbox_add_sqlite", "outbox_add_os", "outbox_remove_sqlite",
                                   "outbox_remove_os", "anchor_json", "anchor_utf8", "disk_and_ack"])
 def test_known_job_survives_post_submit_fault_and_reanchors_same_id(harness, monkeypatch, fault):

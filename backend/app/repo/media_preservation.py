@@ -176,6 +176,7 @@ def finish_media_preservation(
     bytes_cached: int,
     error_code: Optional[str] = None,
     retry_after_seconds: Optional[int] = None,
+    defer_attempt: bool = False,
 ) -> None:
     if status not in {"complete", "partial", "failed", "capacity"}:
         raise ValueError(f"unsupported media preservation status: {status}")
@@ -184,7 +185,7 @@ def finish_media_preservation(
         conn.execute(
             "UPDATE media_preservation SET status=?, cached_count=?, failed_count=?, "
             "skipped_count=?, bytes_cached=bytes_cached+?, error_code=?, next_retry_at=?, "
-            "updated_at=datetime('now') WHERE generation_id=?",
+            "attempts=MAX(0,attempts-?), updated_at=datetime('now') WHERE generation_id=?",
             (
                 status,
                 max(0, cached_count),
@@ -193,6 +194,7 @@ def finish_media_preservation(
                 max(0, bytes_cached),
                 error_code,
                 retry_at,
+                int(defer_attempt),
                 gen_id,
             ),
         )

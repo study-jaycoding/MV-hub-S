@@ -1,4 +1,5 @@
 import { useCallback, useRef } from "react";
+import { api } from "../../api";
 import type { RefObject, MutableRefObject } from "react";
 import { resolveAutoAspectRatio } from "../../lib/aspectAuto";
 import { isGenerationWorkspaceReady } from "../../lib/workspaceContext";
@@ -203,6 +204,15 @@ export function useSpotlightSubmit({
         setError(error || "생성 요청을 만들 수 없습니다.");
         setBusy(false);
         return;
+      }
+      if (model === "text2speech_v2") {
+        const selectedVoice = await api.voice(String(body.params?.voice_id ?? ""));
+        if (!operationCurrent()) { setBusy(false); return; }
+        if (selectedVoice.id !== body.params?.voice_id || selectedVoice.voice_type !== "preset") {
+          setError("선택한 목소리를 확인할 수 없습니다. 목소리 목록에서 다시 선택하세요.");
+          setBusy(false);
+          return;
+        }
       }
       // 검증을 통과한 요청만 이미지 비율을 비동기로 잰다. 무시되는 옵션도 기존 auto 변환은 유지한다.
       body.params = await resolveAutoAspectRatio(body.params || {}, tunable, [...trayRefs, ...inlineRefs]);

@@ -53,6 +53,10 @@ export function connectProgress(
     ws.onmessage = (ev) => {
       try {
         const message = JSON.parse(ev.data) as import("../types").ProgressMessage;
+        if (connectedToken === getAuthToken() &&
+          (message.type === "credits_changed" || message.status === "done")) {
+          dispatchAppEvent(APP_EVENTS.creditsChanged);
+        }
         // 서버가 계정 범위로 보낸 운영 안내도 기존 전역 토스트 채널을 재사용한다.
         // 데이터 갱신 소비자에도 그대로 넘겨 기존 progress/synced 계약은 바꾸지 않는다.
         if (

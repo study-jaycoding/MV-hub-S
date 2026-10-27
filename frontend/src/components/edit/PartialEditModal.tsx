@@ -23,7 +23,9 @@ import { HttpError } from "../../lib/http";
 import { generationIssueFor } from "../../lib/generationDisplay";
 import { isGenerationWorkspaceReady } from "../../lib/workspaceContext";
 import { holdUnload } from "../../lib/unloadGuard";
-import { useModels } from "../../lib/useModels";
+import { sharedCostEstimate, useModels } from "../../lib/useModels";
+import { useModelPolicy } from "../../lib/modelPolicy";
+import { submitBlockMessage } from "../../lib/modelPolicyCore";
 import type { Generation, WorkspaceContext } from "../../types";
 import { assetIdentity, type AssetReferenceIdentity } from "../../shared/contracts/assets";
 import { captureOperationContext, isOperationContextCurrent } from "../../app/operationContext";
@@ -142,16 +144,20 @@ function nearestAspect(enumValues: string[] | undefined, w: number, h: number): 
 
 export function PartialEditModal({
   gen,
+  mode = "image",
   workspace,
   onQueued,
   onClose,
 }: {
   gen: Generation;
+  mode?: "image" | "video";
   workspace: WorkspaceContext;
   onQueued: (g: Generation) => void;
   onClose: () => void;
 }) {
   const asset = gen.assets?.[0];
+  const isVideo = mode === "video";
+  const editLabel = isVideo ? "영상 수정" : "이미지 수정";
   const [stage, setStage] = useState<Stage>("load");
   const [error, setError] = useState("");
   const [note, setNote] = useState(""); // 축소 작업 등 비차단 안내
@@ -159,20 +165,80 @@ export function PartialEditModal({
   // ── 원본 로드(작업 해상도 결정) ──
   const [src, setSrc] = useState<{ bmp: ImageBitmap; w: number; h: number } | null>(null);
   const srcUrlRef = useRef<string>("");
+  const sourceVideoRef = useRef<HTMLVideoElement | null>(null);
+  const sourceVideoUrlRef = useRef("");
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [frameTime, setFrameTime] = useState(0);
+  const [frameLoading, setFrameLoading] = useState(false);
+  const frameTicket = useRef(0);
+  const captureFrame = async (video: HTMLVideoElement, time: number) => {
+    const ticket = ++frameTicket.current;
+    setFrameLoading(true);
+    try {
+      if (Math.abs(video.currentTime - time) > 0.001) {
+        await new Promise<void>((resolve, reject) => {
+          const timer = window.setTimeout(() => reject(new Error("영상 프레임 조회 시간이 초과되었습니다.")), 30_000);
+          video.onseeked = () => { clearTimeout(timer); resolve(); };
+          video.onerror = () => { clearTimeout(timer); reject(new Error("영상 프레임을 불러오지 못했습니다.")); };
+          video.currentTime = time;
+        });
+      }
+      const bmp = await createImageBitmap(video);
+      if (ticket !== frameTicket.current || !mountedRef.current) { bmp.close(); return; }
+      const scale = Math.min(1, Math.sqrt(MAX_WORK_PIXELS / (bmp.width * bmp.height)));
+      const w = Math.max(1, Math.round(bmp.width * scale));
+      const h = Math.max(1, Math.round(bmp.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { bmp.close(); throw new Error("프레임 캔버스를 만들 수 없습니다."); }
+      ctx.drawImage(bmp, 0, 0, w, h);
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+      if (!blob) { bmp.close(); throw new Error("영상 프레임을 저장할 수 없습니다."); }
+      if (ticket !== frameTicket.current || !mountedRef.current) { bmp.close(); return; }
+      if (srcUrlRef.current) URL.revokeObjectURL(srcUrlRef.current);
+      srcUrlRef.current = URL.createObjectURL(blob);
+      setSrc({ bmp, w, h });
+      setStage("draw");
+    } catch (e) {
+      if (ticket === frameTicket.current && mountedRef.current) setError(String(e));
+    } finally {
+      if (ticket === frameTicket.current && mountedRef.current) setFrameLoading(false);
+    }
+  };
   useEffect(() => {
     let alive = true;
     (async () => {
       if (!asset?.file_path) {
-        setError("원본 이미지가 없습니다.");
+        setError(`원본 ${isVideo ? "영상" : "이미지"}가 없습니다.`);
         return;
       }
-      const blob = await fetchBlob(asset.file_path, "partial-src.png", gen.id);
+      if (asset.type !== mode) { setError("수정할 원본 미디어 종류가 다릅니다."); return; }
+      const blob = await fetchBlob(asset.file_path, isVideo ? "edit-source.mp4" : "partial-src.png", gen.id);
       if (!alive) return;
       if (!blob) {
-        setError("원본 이미지를 불러오지 못했습니다.");
+        setError(`원본 ${isVideo ? "영상" : "이미지"}를 불러오지 못했습니다.`);
         return;
       }
       try {
+        if (isVideo) {
+          const video = document.createElement("video");
+          video.preload = "auto";
+          video.muted = true;
+          sourceVideoRef.current = video;
+          sourceVideoUrlRef.current = URL.createObjectURL(blob);
+          await new Promise<void>((resolve, reject) => {
+            const timer = window.setTimeout(() => reject(new Error("원본 영상 조회 시간이 초과되었습니다.")), 30_000);
+            video.onloadeddata = () => { clearTimeout(timer); resolve(); };
+            video.onerror = () => { clearTimeout(timer); reject(new Error("원본 영상을 해석하지 못했습니다.")); };
+            video.src = sourceVideoUrlRef.current;
+          });
+          if (!alive) return;
+          if (!Number.isFinite(video.duration) || video.duration <= 0) throw new Error("원본 영상 길이를 확인할 수 없습니다.");
+          setVideoDuration(video.duration);
+          await captureFrame(video, 0);
+          return;
+        }
         const full = await createImageBitmap(blob);
         if (!alive) {
           full.close();
@@ -190,7 +256,7 @@ export function PartialEditModal({
         setSrc({ bmp: full, w, h });
         setStage("draw");
       } catch {
-        if (alive) setError("원본 이미지를 해석하지 못했습니다.");
+        if (alive) setError(`원본 ${isVideo ? "영상" : "이미지"}를 해석하지 못했습니다.`);
       }
     })();
     return () => {
@@ -215,6 +281,11 @@ export function PartialEditModal({
       runTokenRef.current++; // unmount = 진행 중 폴링·지연 응답 전부 무효화
       abortRef.current?.abort(); // 걸린 감시 요청도 끊는다(브라우저 pending 정리)
       if (srcUrlRef.current) URL.revokeObjectURL(srcUrlRef.current);
+      frameTicket.current++;
+      sourceVideoRef.current?.pause();
+      sourceVideoRef.current?.removeAttribute("src");
+      sourceVideoRef.current?.load();
+      if (sourceVideoUrlRef.current) URL.revokeObjectURL(sourceVideoUrlRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -368,36 +439,53 @@ export function PartialEditModal({
   };
 
   // ── 모델(Seedream 고정)·비율·견적 ──
-  const m = useModels(() => {});
-  useEffect(() => {
-    m.setType("image");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  // 훅의 ALLOWED 기본선택이 같은 플러시에서 먼저 실행되고 이 effect 가 덮는다 — 카탈로그 로드 후 1회만.
-  const defaultApplied = useRef(false);
-  useEffect(() => {
-    if (defaultApplied.current || !m.models.length) return;
-    defaultApplied.current = true;
-    m.setModel(EDIT_MODEL);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [m.models]);
+  const modelPolicy = useModelPolicy();
+  const openingContext = useRef(captureOperationContext(workspace));
+  const openingWorkspace = useRef(JSON.stringify([workspace.scope, workspace.id]));
+  const m = useModels(setError, { allowed: modelPolicy.allowed, ready: false,
+    initialType: mode, initialModel: isVideo ? "draw_to_video" : EDIT_MODEL, costEnabled: false });
+  const blockedMessage = submitBlockMessage(modelPolicy, m.model, editLabel);
   const aspect = useMemo(() => {
     if (!src || m.paramsModel !== m.model) return null;
     return nearestAspect(m.params.find((p) => p.name === "aspect_ratio")?.enum, src.w, src.h);
   }, [src, m.params, m.paramsModel, m.model]);
-  const [cost, setCost] = useState<number | null>(null);
+  const resolutionOptions = m.params.find((p) => p.name === "resolution")?.enum ?? [];
+  const [resolution, setResolution] = useState("");
   useEffect(() => {
-    if (!m.model || m.paramsModel !== m.model) return;
+    if (!resolution && resolutionOptions.length) {
+      const defaultResolution = m.params.find((p) => p.name === "resolution")?.default;
+      setResolution(resolutionOptions.includes(String(defaultResolution)) ? String(defaultResolution) : resolutionOptions[0]);
+    }
+  }, [resolution, resolutionOptions, m.params]);
+  const editParams = useMemo(() => isVideo
+    ? { ...(aspect ? { aspect_ratio: aspect } : {}), duration: videoDuration, resolution }
+    : aspect ? { aspect_ratio: aspect } : {}, [isVideo, aspect, videoDuration, resolution]);
+  const [cost, setCost] = useState<number | null>(null);
+  const [successfulCostKey, setSuccessfulCostKey] = useState("");
+  const [costLoading, setCostLoading] = useState(false);
+  const editCostKey = JSON.stringify([m.model, editParams]);
+  const costSelection = useRef("");
+  useEffect(() => {
+    const key = editCostKey;
+    if (costSelection.current !== key) { costSelection.current = key; setCost(null); }
+    if (!m.model || m.paramsModel !== m.model || isVideo && (!videoDuration || !resolution)) {
+      setCostLoading(false);
+      return;
+    }
     let alive = true;
-    setCost(null);
-    api
-      .estimateCost(m.model, aspect ? { aspect_ratio: aspect } : {}, "partial edit")
-      .then((r) => alive && setCost(r.credits))
-      .catch(() => alive && setCost(null));
+    setCostLoading(true);
+    sharedCostEstimate(m.model, editParams)
+      .then(async (r) => {
+        if (alive) { setCost(r.credits); setSuccessfulCostKey(key); }
+        if (r.stale) {
+          const fresh = await sharedCostEstimate(m.model, editParams, "", true);
+          if (alive) { setCost(fresh.credits); setSuccessfulCostKey(key); }
+        }
+      }).catch(() => {}).finally(() => { if (alive) setCostLoading(false); });
     return () => {
       alive = false;
     };
-  }, [m.model, m.paramsModel, aspect]);
+  }, [m.model, m.paramsModel, editParams, isVideo, videoDuration, resolution, editCostKey]);
 
   // ── 제출 + 폴링 ──
   const [prompt, setPrompt] = useState("");
@@ -426,13 +514,18 @@ export function PartialEditModal({
   const canSubmit =
     stage === "draw" &&
     !submitting &&
+    !frameLoading &&
     !!src &&
     !!prompt.trim() &&
     !!m.model &&
     !m.paramsLoading &&
     m.paramsModel === m.model &&
     !!aspect &&
-    workspaceReady;
+    (!isVideo || videoDuration > 0 && resolutionOptions.includes(resolution)) &&
+    (!isVideo || successfulCostKey === editCostKey && cost !== null && Number.isFinite(cost)) &&
+    !blockedMessage &&
+    workspaceReady && openingWorkspace.current === JSON.stringify([workspace.scope, workspace.id]) &&
+    isOperationContextCurrent(openingContext.current);
 
   // 감시용 요청의 타임아웃 — 응답이 실패도 성공도 아닌 채 영영 pending 이면 다음 틱이
   // 안 돈다(무응답 행). AbortController 로 요청 자체를 끊어 pending 누적도 막는다(코덱스).
@@ -472,19 +565,21 @@ export function PartialEditModal({
           return;
         }
         const done = g.status === "done" ? g.assets?.[0] : null;
-        if (done?.file_path && done.type === "image") {
+        if (done?.file_path && done.type === mode) {
           // 완료됐는데 결과를 못 가져오는 건 '재생성할 일'이 아니다 — draw 로 돌리면
           // 이미 완료된 잡을 중복 생성하게 유도한다(코덱스 WARN). 몇 번 재시도 후
           // 감시 화면에 안내만 남긴다(카드는 라이브러리에 있다).
           resultAttempts++;
           try {
             const blob = await timedFetch(60_000, (signal) =>
-              fetchBlob(done.file_path, "partial-result.png", g.id, { signal }),
+              fetchBlob(done.file_path, isVideo ? "edit-result.mp4" : "partial-result.png", g.id, { signal }),
             );
             if (token !== runTokenRef.current) return;
             if (blob) {
-              const bmp = await createImageBitmap(blob); // 디코드 검증 — 깨진 파일이면 throw
-              bmp.close();
+              if (!isVideo) {
+                const bmp = await createImageBitmap(blob);
+                bmp.close();
+              }
               if (token !== runTokenRef.current) return;
               setResultUrl(URL.createObjectURL(blob));
               setStage("result");
@@ -539,7 +634,7 @@ export function PartialEditModal({
     discardToken?: string; // 신규 캡처에만 — 생성 요청 확정 거절(400/422) 시 고아 정리용
   }> => {
     renderAll(items); // 잉크 검사·평면화 전에 최신 스트로크 보장(undo 직후 stale 캔버스 방지)
-    if (!items.length || !annotHasInk()) {
+    if (!isVideo && (!items.length || !annotHasInk())) {
       return { file_path: asset!.file_path, thumbnail: asset!.thumbnail_path || undefined };
     }
     const annot = annotRef.current;
@@ -581,17 +676,21 @@ export function PartialEditModal({
       return;
     }
     if (!mountedRef.current) return;
-    if (!isOperationContextCurrent(operation)) { setSubmitting(false); return; }
+    if (!isOperationContextCurrent(operation) || !isOperationContextCurrent(openingContext.current) ||
+      openingWorkspace.current !== JSON.stringify([workspace.scope, workspace.id])) { setSubmitting(false); return; }
     const body: GenerationCreateBody = {
-      prompt: prompt.trim(),
+      prompt: isVideo ? `${prompt.trim()}\n수정 그림의 원본 영상 시점: ${frameTime.toFixed(3)}초` : prompt.trim(),
       model: m.model,
-      params: aspect ? { aspect_ratio: aspect } : {},
+      params: editParams,
+      project_id: gen.project_id || undefined,
+      folder_path: gen.folder_path || undefined,
       references: [
+        ...(isVideo ? [{ file_path: asset!.file_path, type: "video", role: "video", source_gen_id: gen.id }] : []),
         {
           ...assetIdentity(refBits),
           file_path: refBits.file_path,
           type: "image",
-          role: "@Image1",
+          role: isVideo ? "image_references" : "@Image1",
           source_gen_id: gen.id,
           thumbnail: refBits.thumbnail,
           name: gen.source_name || undefined,
@@ -710,9 +809,9 @@ export function PartialEditModal({
     : undefined;
   return (
     <div className="partial-edit-backdrop">
-      <div ref={modalRef} className="partial-edit-modal" role="dialog" aria-modal="true" aria-label="부분 수정">
+      <div ref={modalRef} className="partial-edit-modal" role="dialog" aria-modal="true" aria-label={editLabel}>
         <header className="partial-edit-head">
-          <span className="partial-edit-title">🖌 부분 수정</span>
+          <span className="partial-edit-title">🖌 {editLabel}</span>
           <span className="partial-edit-sub">
             펜·도형으로 표시하고 지시 — 그린 표시는 모델에게 그대로 보입니다
           </span>
@@ -727,6 +826,21 @@ export function PartialEditModal({
         {note && <div className="partial-edit-note">{note}</div>}
 
         {stage === "load" && <div className="partial-edit-loading">원본 불러오는 중…</div>}
+        {isVideo && stage === "draw" && <div className="partial-edit-frame-controls">
+          <label>수정할 프레임 {frameTime.toFixed(2)}초 / {videoDuration.toFixed(2)}초
+            <input type="range" aria-label="수정할 영상 시점" min={0} max={Math.max(0, videoDuration - 0.001)} step={0.01}
+              value={frameTime} disabled={frameLoading || submitting || items.length > 0}
+              onChange={(e) => {
+                const time = Number(e.target.value);
+                setFrameTime(time);
+                if (sourceVideoRef.current) void captureFrame(sourceVideoRef.current, time);
+              }} />
+          </label>
+          <label>해상도 <select aria-label="영상 수정 해상도" value={resolution} onChange={(e) => setResolution(e.target.value)}>
+            {resolution && !resolutionOptions.includes(resolution) && <option value={resolution}>{resolution} (확인 필요)</option>}
+            {resolutionOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+          </select></label>
+        </div>}
 
         {(stage === "draw" || stage === "wait") && src && (
           <>
@@ -860,7 +974,7 @@ export function PartialEditModal({
                 <div className="partial-edit-pill">
                   <textarea
                     rows={1}
-                    placeholder="이미지를 어떻게 수정할까요? — 클릭해서 입력"
+                    placeholder={`${isVideo ? "영상을" : "이미지를"} 어떻게 수정할까요? — 클릭해서 입력`}
                     value={prompt}
                     onChange={(e) => setPrompt(e.target.value)}
                     onKeyDown={(e) => {
@@ -874,13 +988,13 @@ export function PartialEditModal({
                     }}
                   />
                   <span className="partial-edit-cost">
-                    {cost != null ? `${cost} cr` : "…"}
+                    {cost != null && (!isVideo || successfulCostKey === editCostKey) ? `${cost} cr` : costLoading ? "견적 조회 중…" : "견적 확인 안 됨"}
                   </span>
                   <button
                     className="partial-edit-gen"
                     disabled={!canSubmit}
                     onClick={submit}
-                    title={cost != null ? `Seedream 으로 생성 — 예상 ${cost} 크레딧` : "Seedream 으로 생성"}
+                    title={cost != null && (!isVideo || successfulCostKey === editCostKey) ? `${editLabel} — 예상 ${cost} 크레딧` : `${editLabel} — 견적 확인 안 됨`}
                   >
                     {submitting ? "…" : "✦"}
                   </button>
@@ -888,6 +1002,7 @@ export function PartialEditModal({
                 {!workspaceReady && (
                   <div className="partial-edit-hint">워크스페이스 확인 후 생성할 수 있습니다.</div>
                 )}
+                {blockedMessage && <div className="partial-edit-hint">{blockedMessage}</div>}
                 {m.paramsModel === m.model && !m.paramsLoading && !aspect && (
                   <div className="partial-edit-hint">
                     모델 파라미터를 불러오지 못해 생성할 수 없습니다 — 다시 열어보세요.
@@ -898,7 +1013,15 @@ export function PartialEditModal({
           </>
         )}
 
-        {stage === "result" && src && resultUrl && (
+        {stage === "result" && src && resultUrl && isVideo && (
+          <>
+            <video className="partial-edit-video-result" src={showOriginal ? sourceVideoUrlRef.current : resultUrl} controls preload="metadata" />
+            <div className="partial-edit-tools">
+              <button onClick={() => setShowOriginal((value) => !value)}>{showOriginal ? "수정 결과 보기" : "원본 영상 비교"}</button>
+            </div>
+          </>
+        )}
+        {stage === "result" && src && resultUrl && !isVideo && (
           <>
             <div
               className={"partial-edit-stagebox" + (abCompare ? " ab-active" : "")}

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { autoRatioForCost } from "./aspectAuto";
 import { EMPTY_MODEL_SET, modelAllowed } from "./modelPolicyCore";
-import type { ModelInfo, ModelParam, ModelParamsOut } from "../types";
+import type { CostEstimate, ModelInfo, ModelParam, ModelParamsOut } from "../types";
 import { fetchModelCatalog } from "./modelCatalogCache";
 import { normalizeSeedanceDraftParams } from "./seedanceDraft";
 
@@ -17,9 +17,10 @@ import { normalizeSeedanceDraftParams } from "./seedanceDraft";
 // 각 모델의 옵션은 CLI 스키마(get_model_params)로 동적 렌더 — 모델마다 다른 파라미터 자동 반영.
 // ※ CLI 업데이트로 Nano Banana Pro 코드가 nano_banana_2 → nano_banana_pro 로 개명됨(옛 코드는 CLI 목록에서 사라져 매칭 실패→드롭다운 누락이었음).
 //   ai_stylist/skin_enhancer/shots 변형도 표시명은 "Nano Banana Pro"지만 프리셋 전용(프롬프트 없음)이라 일반 드롭다운엔 제외.
-export const ALLOWED: Record<"image" | "video", string[]> = {
+export const ALLOWED: Record<"image" | "video" | "audio", string[]> = {
   image: ["nano_banana_flash", "nano_banana_2_1", "nano_banana_2_lite", "nano_banana_pro", "gpt_image_2_5", "gpt_image_2"],
   video: ["seedance_2_5", "seedance_2_0", "seedance_2_0_mini"],
+  audio: ["text2speech_v2"],
 };
 
 /** 모델 키로 이미지/영상을 판정한다 — **한쪽 목록에만** 속할 때만 확정한다.
@@ -31,7 +32,8 @@ export const ALLOWED: Record<"image" | "video", string[]> = {
  * ★양쪽에 없거나(옛 키·개명) 양쪽에 다 있으면 **확정하지 않는다** — 억지로 image 로 떨어뜨리면
  *  같은 사고가 난다. 호출측이 저장값·사용자 선택으로 메운다.
  */
-export function inferModelType(model: string | null | undefined): "image" | "video" | undefined {
+export function inferModelType(model: string | null | undefined): "image" | "video" | "audio" | undefined {
+  if (model && ALLOWED.audio.includes(model)) return "audio";
   if (!model) return undefined;
   const isImage = ALLOWED.image.includes(model);
   const isVideo = ALLOWED.video.includes(model);
@@ -70,6 +72,7 @@ export const MODEL_DISPLAY_NAMES: Record<string, string> = {
 export const HIDDEN_PARAMS = new Set([
   "prompt", "medias", "input_images", "folder_id", "batch_size",
   "image_references", "video_references", "audio_references", "start_image", "end_image",
+  "video", "ref_image",
   "is_inpaint", "mask", "draft", "draft_job_id",
 ]);
 
@@ -273,7 +276,7 @@ export function correctedOptions(
 // cost 캐시 키 — model + 정렬된 옵션값. prompt 는 비용에 무관(현재 호출도 prompt 미전달)하므로 제외.
 export function costKey(
   model: string,
-  opts: Record<string, string | number | boolean>,
+  opts: Record<string, unknown>,
 ): string {
   const norm = Object.keys(opts)
     .sort()
@@ -288,7 +291,22 @@ export function costKey(
 // 하므로(계정 email 변경·프록시 연결·범위 변경 모두) 이 캐시가 다른 계정으로 새지 않는다.
 const paramsCache = new Map<string, ModelParamsOut>(); // 완료된 결과 — 동기 적중(토글 딜레이 0)
 const paramsInflight = new Map<string, Promise<ModelParamsOut>>(); // 진행 중 요청 — 중복 요청 흡수
-const costCache = new Map<string, number>(); // cost(예상 크레딧) 결과 — 키=model+옵션값
+const costCache = new Map<string, CostEstimate>();
+const costInflight = new Map<string, Promise<CostEstimate>>();
+const PARAMS_TTL_SECONDS = 3600;
+const COST_TTL_SECONDS = 12 * 3600;
+// 구 서버의 메타데이터 없는 응답은 수신 시각으로 재조회만 예약하고, 서버 저장시각을 만들지 않는다.
+const legacyReceivedAt = new WeakMap<object, number>();
+function cacheFresh(value: { saved_at?: number; stale?: boolean }, ttl: number): boolean {
+  const timestamp = value.saved_at ?? legacyReceivedAt.get(value);
+  return value.stale !== true && timestamp !== undefined &&
+    Number.isFinite(timestamp) && Date.now() / 1000 - timestamp < ttl;
+}
+
+function olderThan(value: { saved_at?: number }, previous?: { saved_at?: number }): boolean {
+  return previous?.saved_at !== undefined &&
+    (value.saved_at === undefined || value.saved_at < previous.saved_at);
+}
 // 모델별 잇단 실패 수·마지막 실패 시각 — **자동 예열만** 이만큼 기다린다(1초에서 두 배씩, 최대 1분 — modelCatalog 와 같다).
 //  CLI 가 깨진 PC 에서 서버는 실패를 캐시하지 않아, 창을 열 때마다 허용 모델 수만큼 CLI 를 다시 띄웠다(81회차 S-1). 실제 선택의 조회는 막지 않는다.
 const paramsFailures = new Map<string, { count: number; at: number }>();
@@ -300,36 +318,80 @@ function warmDue(model: string): boolean {
 }
 
 // 같은 모델 요청이 겹치면 하나로 합친다(모달과 프리페치가 동시에 부르는 경우).
-function loadModelParams(model: string): Promise<ModelParamsOut> {
+function loadModelParams(model: string, fresh = false): Promise<ModelParamsOut> {
   const done = paramsCache.get(model);
-  if (done) return Promise.resolve(done);
-  const flying = paramsInflight.get(model);
+  if (done && cacheFresh(done, PARAMS_TTL_SECONDS)) return Promise.resolve(done);
+  const key = `${model}:${fresh}`;
+  const flying = paramsInflight.get(`${model}:true`) ?? paramsInflight.get(key);
   if (flying) return flying;
-  const p = api
-    .modelParams(model)
+  const p = (fresh ? api.modelParams(model, true) : api.modelParams(model))
     .then((r) => {
       // 빈 스키마는 서버의 폴백(CLI 출력 이상 — 서버도 캐시 안 함)이다 — 성공으로 저장하지 않는다
       if (r.params.length > 0) {
-        paramsCache.set(model, r);
+        if (r.saved_at === undefined) legacyReceivedAt.set(r, Date.now() / 1000);
+        if (!olderThan(r, paramsCache.get(model))) paramsCache.set(model, r);
         paramsFailures.delete(model);
       } else noteParamsFailure(model);
-      paramsInflight.delete(model);
-      return r;
+      paramsInflight.delete(key);
+      return r.params.length ? paramsCache.get(model)! : r;
     })
     .catch((e) => {
-      paramsInflight.delete(model); // 실패는 캐시하지 않는다 — 다음 시도에 재요청
+      paramsInflight.delete(key); // 실패는 캐시하지 않는다 — 다음 시도에 재요청
       noteParamsFailure(model);
       throw e;
     });
-  paramsInflight.set(model, p);
+  paramsInflight.set(key, p);
   return p;
 }
 
 // 캐시 삽입 공통 관문 — 크기 상한(장기 세션 무한 누적 방지). 넘으면 통째 리셋(재조회 싼 캐시라 LRU 불필요).
 //  ★모든 삽입은 이 함수로 — 경로별로 직접 대입하면 상한이 절반만 작동한다(코덱스 리뷰).
-function putCost(key: string, credits: number): void {
+function putCost(key: string, value: CostEstimate): CostEstimate {
+  const previous = costCache.get(key);
+  if (olderThan(value, previous)) return previous!;
   if (costCache.size >= 500) costCache.clear();
-  costCache.set(key, credits);
+  if (value.saved_at === undefined) legacyReceivedAt.set(value, Date.now() / 1000);
+  costCache.set(key, value);
+  return value;
+}
+
+function loadCost(
+  key: string, model: string, opts: Record<string, unknown>, fresh = false, prompt = "",
+): Promise<CostEstimate> {
+  const cached = costCache.get(key);
+  if (cached && cacheFresh(cached, COST_TTL_SECONDS)) return Promise.resolve(cached);
+  const requestKey = `${key}:${fresh}`;
+  const flying = costInflight.get(`${key}:true`) ?? costInflight.get(requestKey);
+  if (flying) return flying;
+  const request = (fresh ? api.estimateCost(model, opts, prompt, true) : prompt ? api.estimateCost(model, opts, prompt) : api.estimateCost(model, opts))
+    .then((value) => {
+      if (!Number.isFinite(value.credits) || value.credits < 0) throw new Error("견적 금액을 확인할 수 없습니다.");
+      return putCost(key, value);
+    }).finally(() => costInflight.delete(requestKey));
+  costInflight.set(requestKey, request);
+  return request;
+}
+
+// 편집 창도 생성창과 같은 12시간 캐시와 단일 조회를 사용한다.
+export function sharedCostEstimate(model: string, opts: Record<string, unknown>, prompt = "", fresh = false) {
+  return loadCost(`${costKey(model, opts)}:${prompt}`, model, opts, fresh, prompt);
+}
+
+function invalidSelection(params: ModelParam[], values: Record<string, string | number | boolean>): boolean {
+  return Object.entries(values).some(([key, value]) => {
+    if (HIDDEN_PARAMS.has(key)) return false;
+    const param = params.find((p) => p.name === key);
+    if (!param || !!param.enum?.length && !param.enum.includes(String(value))) return true;
+    if (value === "") return false;
+    const type = param.type.replace(/\|null$/, "");
+    if (type === "boolean") return typeof value !== "boolean" && value !== "true" && value !== "false";
+    if (type === "integer" || type === "number") {
+      const number = Number(value);
+      return !Number.isFinite(number) || type === "integer" && !Number.isInteger(number);
+    }
+    return false;
+  }) || params.some((p) => !HIDDEN_PARAMS.has(p.name) && p.required &&
+    (values[p.name] === undefined || values[p.name] === ""));
 }
 
 export function useModels(
@@ -343,16 +405,20 @@ export function useModels(
     //  `setModel` 이 `explicitRef` 를 동기로 바꾸는 동안 `model` 상태는 아직 낡아 있어서,
     //  그 틈에 도는 자동 선택이 낡은 값으로 판단해 **복원한 모델을 덮었다**(실측 로그로 확인).
     //  마운트 때 이미 올바른 값이면 그 틈이 아예 없다. 안 넘기면 종전과 똑같다.
-    initialType?: "image" | "video";
+    initialType?: "image" | "video" | "audio";
     initialModel?: string;
     initialOpts?: Record<string, string | number | boolean>;
+    costPrompt?: string;
+    costEnabled?: boolean;
   },
 ) {
   const [models, setModels] = useState<ModelInfo[]>([]);
-  const [type, setType] = useState<"image" | "video">(policy?.initialType ?? "image");
+  const [type, setType] = useState<"image" | "video" | "audio">(policy?.initialType ?? "image");
   const [model, setModelState] = useState(policy?.initialModel ?? "");
   const allowed = policy?.allowed ?? EMPTY_MODEL_SET;
   const policyReady = policy ? policy.ready : true;
+  const costPrompt = model === "text2speech_v2" ? policy?.costPrompt ?? "" : "";
+  const costEnabled = policy?.costEnabled !== false;
   // 이 모델이 지금 그룹에서 막혔는가 — 판정은 **공통 함수 하나**로만 한다.
   // ★조건식을 여기 복제하면 안 된다(2026-09-13, 코덱스 실측): 종전엔
   //  `allowed.size > 0 && !allowed.has(jt)` 를 따로 갖고 있어 **면제 모델**
@@ -404,7 +470,7 @@ export function useModels(
    *  ★여기도 같은 공통 함수를 쓴다. 지금 카탈로그(`ALLOWED`)에는 면제 모델이 없어 결과는
    *   같지만, 판정을 두 벌로 두면 다음 정책 변경 때 또 어긋난다(코덱스). */
   const firstAllowed = useCallback(
-    (t: "image" | "video") =>
+    (t: "image" | "video" | "audio") =>
       ALLOWED[t].find((jt) => modelAllowed({ allowed: allowedRef.current }, jt)) ?? "",
     [],
   );
@@ -429,6 +495,14 @@ export function useModels(
   //  옵션이 `{}` 로 덮였다. 이제 실패면 정합을 깨고(저장 차단) 이 깃발로 안내한다.
   const [paramsError, setParamsError] = useState(false);
   const [paramsLoading, setParamsLoading] = useState(false);
+  const optionValuesRef = useRef(optionValues);
+  const onErrorRef = useRef(onError);
+  const validateRefreshedModel = useRef<string | null>(null);
+  const invalidNotified = useRef(false);
+  useEffect(() => {
+    optionValuesRef.current = optionValues;
+    onErrorRef.current = onError;
+  }, [optionValues, onError]);
   // 카드 드롭 복원 시: 모델 변경 effect 가 기본값으로 옵션을 덮어쓰기 전, 복원할 옵션을 임시 보관.
   // 드롭/재사용이 '이 모델로 바꾼 뒤 이 옵션을 덮어라'를 예약. model 스탬프로 — 빠른 연속 재사용 시
   // 다른 생성물의 옵션이 엉뚱한 모델에 적용되던 경쟁을 막는다(model 일치할 때만 소비).
@@ -466,7 +540,7 @@ export function useModels(
 
   useEffect(() => {
     // 명시적으로 고른 **지원 목록 밖** 모델은 특수 목적(부분 수정의 고정 모델 등)이라 건드리지 않는다.
-    if (model && explicitRef.current && !ALLOWED.image.includes(model) && !ALLOWED.video.includes(model)) return;
+    if (model && explicitRef.current && !Object.values(ALLOWED).some((list) => list.includes(model))) return;
     // 유지: 이 타입의 모델이고 (막히지 않았거나 명시적으로 고른 것). 그 밖엔 첫 사용 가능 모델로 자동 선택.
     const inType = ALLOWED[type].includes(model);
     if (inType && (!blocked(model) || explicitRef.current)) return;
@@ -493,6 +567,8 @@ export function useModels(
 
   // 모델 바뀌면 CLI 파라미터 로드 + 기본값으로 옵션 초기화.
   useEffect(() => {
+    validateRefreshedModel.current = null;
+    invalidNotified.current = false;
     if (!model) {
       loadedParamsRef.current = { model: "", params: [] };
       setParams([]);
@@ -503,10 +579,21 @@ export function useModels(
       return;
     }
     // 파라미터 → params + 기본값 옵션 적용. 드롭 복원이 대기 중이면 기본값 위에 덮음.
+    let applied = false;
     const apply = (r: ModelParamsOut) => {
+      if (applied && !r.params.length) return;
       loadedParamsRef.current = { model, params: r.params };
-      setParams(r.params);
-      const init = defaultOptions(r.params, model); // 실효 기본값(오버라이드·게이트 반영)
+      setParams((previous) => JSON.stringify(previous) === JSON.stringify(r.params) ? previous : r.params);
+      if (applied) {
+        validateRefreshedModel.current = model;
+        const invalid = invalidSelection(r.params, optionValuesRef.current);
+        setParamsModel(invalid ? "" : model);
+        setParamsError(invalid);
+        setParamsLoading(false);
+        return;
+      }
+      applied = true;
+      const init = defaultOptions(r.params, model);
       // 이 모델용 예약 옵션일 때만 덮는다(다른 모델용이면 그 모델 로드 때 적용되도록 보존).
       const pend = pendingOptsRef.current;
       if (pend && pend.model === model) {
@@ -526,16 +613,25 @@ export function useModels(
     const cached = paramsCache.get(model);
     if (cached) {
       apply(cached);
-      return;
+      if (cacheFresh(cached, PARAMS_TTL_SECONDS)) return;
     }
-    setParamsLoading(true); // 네트워크 로드 시작 — 완료 전까지 옵션/스키마는 이전 모델 것(stale)
+    if (!cached) setParamsLoading(true);
     let alive = true;
     loadModelParams(model)
-      .then((r) => {
-        if (alive) apply(r);
+      .then(async (r) => {
+        if (!alive) return;
+        apply(r);
+        if (r.params.length && !cacheFresh(r, PARAMS_TTL_SECONDS)) {
+          const fresh = await loadModelParams(model, true);
+          if (alive) apply(fresh);
+        }
       })
       .catch(() => {
         if (alive) {
+          if (applied) {
+            onErrorRef.current("모델 옵션을 새로 확인하지 못했습니다. 기존 옵션을 유지합니다.");
+            return;
+          }
           loadedParamsRef.current = { model: "", params: [] };
           setParams([]);
           setOptionValues({});
@@ -553,6 +649,17 @@ export function useModels(
     };
   }, [model]);
 
+  useEffect(() => {
+    if (validateRefreshedModel.current !== model) return;
+    const invalid = invalidSelection(params, optionValues);
+    setParamsError(invalid);
+    setParamsModel(invalid ? "" : model);
+    if (invalid && !invalidNotified.current) {
+      onErrorRef.current("모델 옵션이 변경되었습니다. 현재 선택값을 확인한 뒤 다시 생성하세요.");
+    }
+    invalidNotified.current = invalid;
+  }, [model, params, optionValues, paramsModel]);
+
   // 두 모델(이미지/비디오) 파라미터를 미리 받아 캐시 → 첫 토글부터 즉시 전환.
   // 추가로 각 모델 '정착 기본옵션'의 비용도 미리 추정해 cost 캐시에 넣어 둠(B) → 첫 토글의 비용 멈칫도 제거.
   // 그룹 정책의 첫 조회가 끝난 뒤(ready) 쓸 수 있는 모델만 예열한다 — 못 쓰는 모델의 params·cost 조회를 헛되이 시작하지 않게.
@@ -567,11 +674,11 @@ export function useModels(
         opts = c;
       }
       const key = costKey(m, opts);
-      if (costCache.has(key)) return;
-      api
-        .estimateCost(m, normalizeSeedanceDraftParams(m, opts))
+      const cached = costCache.get(key);
+      if (cached && cacheFresh(cached, COST_TTL_SECONDS)) return;
+      loadCost(key, m, normalizeSeedanceDraftParams(m, opts))
         .then((r) => {
-          putCost(key, r.credits);
+          if (!cacheFresh(r, COST_TTL_SECONDS)) return loadCost(key, m, normalizeSeedanceDraftParams(m, opts), true);
         })
         .catch(() => {});
     };
@@ -579,12 +686,13 @@ export function useModels(
       const cached = paramsCache.get(m);
       if (cached) {
         warmCost(m, cached.params);
-        continue;
+        if (cacheFresh(cached, PARAMS_TTL_SECONDS)) continue;
       }
       if (!warmDue(m)) continue; // 잇달아 실패한 모델 — 기다리는 중(실제 선택은 위 모델 effect 가 바로 묻는다)
       loadModelParams(m)
-        .then((r) => {
+        .then(async (r) => {
           warmCost(m, r.params);
+          if (r.params.length && !cacheFresh(r, PARAMS_TTL_SECONDS)) warmCost(m, (await loadModelParams(m, true)).params);
         })
         .catch(() => {});
     }
@@ -593,7 +701,7 @@ export function useModels(
 
   // 모델/옵션 바뀌면 예상 크레딧 재추정. 같은 조합은 캐시 적중 → 즉시(디바운스·CLI 생략), 새 조합만 debounce 250ms + CLI.
   useEffect(() => {
-    if (!model) {
+    if (!model || !costEnabled) {
       setCost(null);
       setCostLoading(false); // 이 타입을 전부 못 써서 모델이 비는 경우에도 '계산 중…'이 남지 않게(코덱스 P2)
       return;
@@ -611,33 +719,46 @@ export function useModels(
       setCostLoading(true);
       return;
     }
-    const key = costKey(model, optionValues);
-    const hit = costCache.get(key);
-    if (hit !== undefined) {
-      // 캐시 적중(토글 왕복·이전 본 옵션 재선택) → 멈칫 없이 즉시 표시.
-      setCost(hit);
+    if (model === "text2speech_v2" && !costPrompt.trim()) {
+      setCost(null);
       setCostLoading(false);
       return;
     }
+    const key = `${costKey(model, optionValues)}${costPrompt ? `:${costPrompt}` : ""}`;
+    const hit = costCache.get(key);
+    if (hit !== undefined) {
+      // 캐시 적중(토글 왕복·이전 본 옵션 재선택) → 멈칫 없이 즉시 표시.
+      setCost(hit.credits);
+      setCostLoading(false);
+      if (cacheFresh(hit, COST_TTL_SECONDS)) return;
+    }
     let alive = true;
-    setCostLoading(true);
+    if (!hit) setCostLoading(true);
     const t = window.setTimeout(() => {
-      api
-        .estimateCost(model, normalizeSeedanceDraftParams(model, autoRatioForCost(optionValues, params)))
-        .then(
-          (r) =>
-            alive &&
-            (putCost(key, r.credits),
-            setCost(r.credits),
-            setCostLoading(false)),
-        )
-        .catch(() => alive && (setCost(null), setCostLoading(false)));
-    }, 250);
+      const opts = normalizeSeedanceDraftParams(model, autoRatioForCost(optionValues, params));
+      const applyCost = (r: CostEstimate) => {
+        if (alive) {
+          setCost(r.credits);
+          setCostLoading(false);
+        }
+      };
+      loadCost(key, model, opts, false, costPrompt)
+        .then(async (r) => {
+          applyCost(r);
+          if (!cacheFresh(r, COST_TTL_SECONDS)) applyCost(await loadCost(key, model, opts, true, costPrompt));
+        })
+        .catch(() => {
+          if (alive) {
+            setCost(costCache.get(key)?.credits ?? null);
+            setCostLoading(false);
+          }
+        });
+    }, hit ? 0 : 250);
     return () => {
       alive = false;
       clearTimeout(t);
     };
-  }, [model, optionValues, paramsModel, paramsLoading, paramsError]);
+  }, [model, optionValues, paramsModel, paramsLoading, paramsError, costPrompt, costEnabled]);
 
   // 현재 옵션에서 활성화된 조합 제약(예: fast → resolution 480p/720p 만).
   const constraints = activeConstraints(model, optionValues);
@@ -646,6 +767,7 @@ export function useModels(
   //  예) resolution=1080p 인데 mode 를 fast 로 바꾸면 → 720p 로 자동 하향(헛 생성·오해 방지).
   //  멱등(보정 후엔 유효 → 재실행해도 변화 없음)이라 루프 없음.
   useEffect(() => {
+    if (validateRefreshedModel.current === model && invalidSelection(params, optionValues)) return;
     const next = correctedOptions(model, params, optionValues);
     if (next !== optionValues) setOptionValues(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps

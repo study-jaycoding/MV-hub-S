@@ -219,14 +219,15 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   // 모델/파라미터/비용 로직은 useModels 훅으로 추출(동작 100% 보존). 로드 실패는 setError 로 보고.
   // 그룹 사용 모델 정책(앱 수준 모듈 저장소) — 못 쓰는 모델은 목록에서 빼고, 이미 고른 것이면 제출만 막는다.
   const modelPolicy = useModelPolicy();
+  const [costPrompt, setCostPrompt] = useState("");
   const { type, setType, model, setModel, markModelSelection, modelPickedByUser, firstAllowed,
           currentModel: readSelectedModel, loadedParams, tunable, constraints, typeModels, modelName,
           optionValues, setOptionValues, setOpt, cost, costLoading, paramsModel, paramsLoading,
           pendingOptsRef, setOpenRef, params: schemaParams, selectedBlocked, typeFullyBlocked } =
-    useModels((msg) => setError(msg), { allowed: modelPolicy.allowed, ready: modelPolicy.status !== "loading" });
+    useModels((msg) => setError(msg), { allowed: modelPolicy.allowed, ready: modelPolicy.status !== "loading", costPrompt });
   // 이 타입을 통째로 못 써서 고를 모델이 없으면 "모델을 선택하세요" 대신 이유를 말한다(코덱스 P2).
   const modelBlockedMessage = typeFullyBlocked
-    ? `이 그룹에서 쓸 수 있는 ${type === "video" ? "영상" : "이미지"} 모델이 없습니다. 매니저에게 문의하세요.`
+    ? `이 그룹에서 쓸 수 있는 ${type === "video" ? "영상" : type === "audio" ? "오디오" : "이미지"} 모델이 없습니다. 매니저에게 문의하세요.`
     : submitBlockMessage(modelPolicy, model, modelName);
   const [countState, setCountState] = useState(1); // 한 번에 N장 생성(배치) — 내부 폴백
   const count = countProp ?? countState; // App 이 배치수를 보유하면 컨트롤드(카드 툴바와 공유)
@@ -303,6 +304,9 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
 
   // 트레이 역할 배지 갱신 신호 — 안정된 콜백으로 만들어 토큰 훅 blur effect 가 원본처럼 model/trayRefs 변화 때만 재구독되게 한다.
   const bumpPromptTick = useCallback(() => setPromptTick((n) => n + 1), []);
+  useEffect(() => {
+    setCostPrompt(model === "text2speech_v2" && editorRef.current ? serialize(editorRef.current).text : "");
+  }, [model, promptTick]);
   // 전역 어셋 버전 표 구독 — 원본이 바뀌면 트레이/멘션/인라인 칩/입력창 토큰 썸네일을 다시 그린다.
   const assetVersionTick = useSyncExternalStore(
     subscribeAssetVersions,
@@ -625,7 +629,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   const bindingModel = trayBinding?.model ?? null;
   const bindingModelKey = trayBinding?.modelKey ?? null;
   const savedLibModelRef = useRef<{
-    type: "image" | "video";
+    type: "image" | "video" | "audio";
     model: string;
     opts: Record<string, string | number | boolean>;
     explicit: boolean; // 라이브러리에서 그 모델을 사용자가 골랐는지(자동 선택이면 복원도 자동으로)
@@ -636,7 +640,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   //  explicit=false 로 부르면 '자동으로 고른 모델을 그대로 되돌린 것'이라 나중에 정책이 바뀌면 다시 고를 수 있다
   //  (씬을 보기만 하고 돌아온 라이브러리 복원 — 코덱스 P2).
   const applyModelCfg = (
-    t: "image" | "video",
+    t: "image" | "video" | "audio",
     m: string,
     rawOpts: Record<string, string | number | boolean>,
     explicit = true,
@@ -671,7 +675,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     // 연결된 모델 적용 — model id 로 타입 추론(cfg.type 보다 우선). ALLOWED 밖이면 적용 안 함(폴백 금지).
     if (bindingModel?.model) {
       const m = bindingModel.model;
-      const t = ALLOWED.video.includes(m) ? "video" : ALLOWED.image.includes(m) ? "image" : null;
+      const t = ALLOWED.audio.includes(m) ? "audio" : ALLOWED.video.includes(m) ? "video" : ALLOWED.image.includes(m) ? "image" : null;
       if (t) applyModelCfg(t, m, bindingModel.params ?? {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1035,12 +1039,16 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       // 모드 판정 — 출력 자산 타입이 우선(성공작). 단 실패 생성은 자산이 없어 무조건 image 로
       //  떨어졌다 → 모델이 속한 모드로 폴백(seedance(video) 재사용이 Nano Banana(image)로 깨지던 문제).
       const assetType = g.assets[0]?.type;
-      const t: "image" | "video" =
-        assetType === "video"
+      const t: "image" | "video" | "audio" =
+        assetType === "audio"
+          ? "audio"
+          : assetType === "video"
           ? "video"
           : assetType === "image"
             ? "image"
-            : ALLOWED.video.includes(g.model || "")
+            : ALLOWED.audio.includes(g.model || "")
+              ? "audio"
+              : ALLOWED.video.includes(g.model || "")
               ? "video"
               : "image";
       // 원래 모델이 화이트리스트에 있으면 유지(명시 복원), 아니면 '지금 고를 수 있는' 첫 모델로 클램프(자동 대체).

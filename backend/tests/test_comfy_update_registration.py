@@ -37,6 +37,7 @@ def admission(monkeypatch, tmp_path):
     monkeypatch.setattr(comfy, "threading", SimpleNamespace(Thread=NoExecutionThread))
     monkeypatch.setattr(release_update, "UPDATE_STATE_BASE", tmp_path / "update-state")
     monkeypatch.setattr(release_update, "_START_LOCK", threading.Lock())
+    monkeypatch.setattr(release_update.update_activity, "remote_checkpoint_required", lambda: False)
     assert release_update.state_path(tmp_path).is_relative_to(tmp_path)
     state.forget = Mock()
     monkeypatch.setattr(comfy, "_forget_inflight_run", state.forget)

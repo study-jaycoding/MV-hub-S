@@ -16,6 +16,7 @@ from .. import active_account, db, repo
 from ..usecases import generation_media_cache
 from .async_tools import to_thread_non_abandon
 from .operational_logging import log_event
+from .update_activity import UpdateActivityBusy
 
 
 _log = logging.getLogger("mvhub.media_preservation")
@@ -65,6 +66,15 @@ async def _process_claim(claim: dict[str, Any]) -> dict[str, Any]:
         raise
     except db.DatabaseEpochChanged:
         raise
+    except UpdateActivityBusy:
+        await asyncio.to_thread(
+            repo.finish_media_preservation, gen_id, status="partial",
+            cached_count=int(claim.get("cached_count") or 0),
+            failed_count=int(claim.get("failed_count") or 0),
+            skipped_count=int(claim.get("skipped_count") or 0), bytes_cached=0,
+            error_code="update_in_progress", retry_after_seconds=60, defer_attempt=True,
+        )
+        return {"status": "partial", "error_code": "update_in_progress"}
     except Exception as exc:  # noqa: BLE001
         outcome = generation_media_cache._outcome_from_error(exc)
         if outcome is None:

@@ -1,4 +1,8 @@
-import { useRef, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { api } from "../../api";
+import { getAccountNamespace, getConnectionKey } from "../../lib/accountScope";
+import { getAuthToken } from "../../lib/http";
+import type { VoiceInfo } from "../../types";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import type { MediaType, ModelInfo, ModelParam } from "../../types";
 import { effectiveDefault, numericRange, paramGateAllows } from "../../lib/useModels";
@@ -20,6 +24,7 @@ import { normalizeSeedanceDraftParams } from "../../lib/seedanceDraft";
 type OptionValue = string | number | boolean;
 type OptionValues = Record<string, OptionValue>;
 type ConstraintMap = Record<string, { allow: Set<string>; note: string }>;
+const voiceScopeKey = () => `${getAccountNamespace()}\0${getConnectionKey()}\0${getAuthToken() ?? ""}`;
 
 // 정수 칸이 받을 수 없는 수인가 — 정확히 담을 수 없는 큰 정수(2^53 이상: `Number()` 가 9007199254740993 → …992 로 바꾼다)와
 //  소수(시드 1.5 — CLI 의 정수 옵션에 그대로 실린다, Codex P2 2026-10-14). 받지 않는다: 받으면 친 것과 다른 값이 제출된다(조작 규칙 49).
@@ -90,6 +95,30 @@ export function SpotlightOptionsBar({
   open,
   setOpen,
 }: Props) {
+  const [voices, setVoices] = useState<VoiceInfo[]>([]);
+  const [voicesError, setVoicesError] = useState(false);
+  const voiceScope = voiceScopeKey();
+  useEffect(() => {
+    if (model !== "text2speech_v2") return;
+    let alive = true;
+    setVoices([]);
+    setVoicesError(false);
+    void (async () => {
+      const found = new Map<string, VoiceInfo>();
+      const seen = new Set<string>();
+      let cursor: string | undefined;
+      do {
+        const result = await api.voices(cursor);
+        if (!alive || voiceScope !== voiceScopeKey()) return;
+        for (const voice of result.items) if (voice.voice_type === "preset") found.set(voice.id, voice);
+        setVoices([...found.values()]);
+        cursor = result.cursor || undefined;
+        if (cursor && seen.has(cursor)) throw new Error("목소리 목록 페이지가 반복됩니다.");
+        if (cursor) seen.add(cursor);
+      } while (cursor);
+    })().catch(() => { if (alive && voiceScope === voiceScopeKey()) setVoicesError(true); });
+    return () => { alive = false; };
+  }, [model, voiceScope]);
   const modelButtonRef = useRef<HTMLButtonElement>(null);
   // 두 호출 화면에서 같은 Esc 겹을 사용하고, 바깥 클릭에는 초점을 돌리지 않는다.
   useEscapeClose(() => {
@@ -98,7 +127,8 @@ export function SpotlightOptionsBar({
   }, open === "model", true, true);
   // 조건부 게이트 — 현재 옵션 조합에서 허용 안 되는 파라미터는 표시하지 않는다
   // (예: extension_mode 는 mode=video_extension 일 때만 — 다른 모드에 실으면 CLI 거부).
-  const visibleTunable = tunable.filter((p) => paramGateAllows(model, p.name, optionValues));
+  const visibleTunable = tunable.filter((p) => paramGateAllows(model, p.name, optionValues) &&
+    !(model === "text2speech_v2" && ["voice_id", "voice_type"].includes(p.name)));
   const ignored = spotlightIgnoredOptions(model, optionValues.mode);
   const isDraftResolution = (name: string, value: unknown) => name === "resolution"
     && normalizeSeedanceDraftParams(model, { resolution: value }).draft === true;
@@ -131,6 +161,9 @@ export function SpotlightOptionsBar({
         >
           Video
         </button>
+        <button className={"sl-type-btn" + (type === "audio" ? " active" : "")} onClick={() => setType("audio")}>
+          Audio
+        </button>
       </div>
 
       <div className="sl-chip-wrap">
@@ -147,12 +180,12 @@ export function SpotlightOptionsBar({
         </button>
         {open === "model" && (
           <div className="sl-dropdown">
-            <div className="sl-dd-title">{type === "video" ? "영상" : "이미지"} 모델</div>
+            <div className="sl-dd-title">{type === "video" ? "영상" : type === "audio" ? "오디오" : "이미지"} 모델</div>
             {modelBlocked ? (
               <div className="sl-dd-note">{blockedNote || "지금 고른 모델은 이 그룹에서 쓸 수 없습니다. 다른 모델을 고르세요."}</div>
             ) : null}
             {typeFullyBlocked ? (
-              <div className="sl-dd-empty">이 그룹에서 쓸 수 있는 {type === "video" ? "영상" : "이미지"} 모델이 없습니다.</div>
+              <div className="sl-dd-empty">이 그룹에서 쓸 수 있는 {type === "video" ? "영상" : type === "audio" ? "오디오" : "이미지"} 모델이 없습니다.</div>
             ) : null}
             {policyNote ? <div className="sl-dd-empty">{policyNote}</div> : null}
             <div className="sl-dd-scroll">
@@ -185,6 +218,16 @@ export function SpotlightOptionsBar({
         )}
       </div>
 
+      {model === "text2speech_v2" && <label className="sl-opt" title={voicesError ? "목소리 목록을 불러오지 못했습니다. Host 콘솔을 확인하세요." : "내레이션 목소리"}>
+        목소리
+        <select aria-label="내레이션 목소리" value={String(optionValues.voice_id ?? "")}
+          onChange={(e) => setOptionValues((previous) => ({ ...previous, voice_id: e.target.value, voice_type: "preset" }))}>
+          <option value="">{voicesError ? "목소리 조회 실패" : "목소리 선택"}</option>
+          {optionValues.voice_id && !voices.some((voice) => voice.id === optionValues.voice_id) &&
+            <option value={String(optionValues.voice_id)}>{String(optionValues.voice_id)} (확인 필요)</option>}
+          {voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}
+        </select>
+      </label>}
       {visibleTunable.filter((p) => SPOTLIGHT_PRIMARY_PARAMS.has(p.name)).map((p) => {
         // 이 모드에서 CLI 가 무시하는 값 — 흐리게 두는 데서 그치지 않고 **조작도 막는다**
         // (2026-09-15 Jay: 만질 수 있으면 효과가 있는 줄 알게 되어 헷갈린다).

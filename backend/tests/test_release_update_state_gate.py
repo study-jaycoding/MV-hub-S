@@ -35,6 +35,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "AUTH_ENABLED", False)
     monkeypatch.setattr(service, "UPDATE_STATE_BASE", tmp_path / "state")
     monkeypatch.setattr(service, "_START_LOCK", threading.Lock())
+    monkeypatch.setattr(service.update_activity, "remote_checkpoint_required", lambda: False)
     latest = {"version": "2.0.0", "higgsfield_cli_version": "synthetic-cli"}
     fetch = Mock(side_effect=lambda root: dict(latest))
     health = Mock(return_value=(True, ""))
@@ -493,6 +494,7 @@ def test_unreadable_state_blocks_each_admission_gate_with_clear_message(isolated
         return True
 
     monkeypatch.setattr(gen_requests, "begin_submission", begin)
+    monkeypatch.setattr(gen_requests.repo, "get_gen_request", lambda _rid: None)
     monkeypatch.setattr(comfy, "_RUN_JOBS", {})
     monkeypatch.setattr(comfy, "_raw_settings", lambda: {"comfy_concurrency": 1})
     if point.startswith("comfy"):
