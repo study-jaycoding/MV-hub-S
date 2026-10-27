@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { policyNote, submitBlockMessage } from "../../lib/modelPolicyCore";
 import { useModelPolicy } from "../../lib/modelPolicy";
 import { inferModelType, stripHiddenParams, useModels } from "../../lib/useModels";
+import { variantChoiceMissing, variantDisplayName } from "../../lib/spotlightPromptConfig";
 import { SpotlightOptionsBar } from "../spotlight/SpotlightOptionsBar";
 import type { SceneModelCfg } from "../../lib/scenes";
 
@@ -51,8 +52,10 @@ export function SceneModelModal({
 
   // 저장해도 되는 상태인가 — 버튼의 `disabled` 와 `save()` **둘 다** 이걸 본다(코덱스 조건).
   //  종전엔 버튼에만 있어, 다른 경로로 눌리면 그대로 저장됐다.
+  //  엔진이 빠진 채 복원된 오디오 모델도 고를 때까지 막는다 — 기본값으로 조용히 채워 저장하지 않게(Codex B1).
+  const engineMissing = variantChoiceMissing(m.model, m.optionValues);
   const canSave =
-    !!m.model && !m.selectedBlocked && !m.paramsLoading && !m.paramsError && m.paramsModel === m.model;
+    !!m.model && !m.selectedBlocked && !m.paramsLoading && !m.paramsError && m.paramsModel === m.model && !engineMissing;
 
   const save = () => {
     // ★이중 방어다 — 지금은 이 버튼 말고 `save` 를 부르는 곳이 없어 **관측되지 않는다**.
@@ -71,7 +74,7 @@ export function SceneModelModal({
     onSave({
       ...(resolvedType ? { type: resolvedType } : {}),
       model: m.model,
-      modelName: m.modelName,
+      modelName: variantDisplayName(m.model, m.optionValues) ?? m.modelName,
       params: m.optionValues,
     });
     onClose();
@@ -93,6 +96,9 @@ export function SceneModelModal({
               모델 설정을 불러오지 못했습니다. 저장하면 기존 옵션이 지워지므로 저장을 막았습니다 —
               취소하고 다시 열거나 다른 모델을 골라 주세요.
             </div>
+          ) : null}
+          {engineMissing && !m.paramsLoading ? (
+            <div className="scene-modelmodal-note">저장된 설정에 음성 엔진이 없습니다 — 모델 목록에서 엔진을 고른 뒤 저장하세요.</div>
           ) : null}
           {!blockedNote && policyNote(policy) ? (
             <div className="scene-modelmodal-note muted">{policyNote(policy)}</div>

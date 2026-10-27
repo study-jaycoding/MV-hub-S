@@ -89,13 +89,14 @@ describe("narration generation", () => {
       ? { items: [{ id: "second", name: "Second", voice_type: "preset" }], cursor: null }
       : { items: [{ id: "first", name: "First", voice_type: "preset" }, { id: "clone", name: "Clone", voice_type: "element" }], cursor: "next" });
     const setOptionValues = vi.fn();
+    // 목소리는 검색 목록 창(2026-10-28 오디오 1단계) — 칩을 열어 둔 상태로 그려 목록까지 본다.
     await act(async () => root.render(<SpotlightOptionsBar type="audio" setType={vi.fn()} model="text2speech_v2"
       setModel={vi.fn()} onPickModel={vi.fn()} modelName="Speech" typeModels={[]} tunable={[]} constraints={{}}
-      optionValues={{ voice_id: "saved" }} setOptionValues={setOptionValues} setOpt={vi.fn()} open={null} setOpen={vi.fn()} />));
+      optionValues={{ voice_id: "saved" }} setOptionValues={setOptionValues} setOpt={vi.fn()} open="voice" setOpen={vi.fn()} />));
     expect(mocks.voices.mock.calls).toEqual([[undefined], ["next"]]);
-    const picker = container.querySelector<HTMLSelectElement>('select[aria-label="내레이션 목소리"]')!;
-    expect(picker.value).toBe("saved");
-    expect([...picker.options].map((option) => option.value)).toEqual(["", "saved", "first", "second"]);
+    const chip = container.querySelector<HTMLButtonElement>('button[aria-label="내레이션 목소리"]')!;
+    expect(chip.textContent).toContain("saved (확인 필요)");
+    expect([...container.querySelectorAll(".sl-voice-pop .sl-dd-item")].map((item) => item.textContent)).toEqual(["First", "Second"]);
     expect(setOptionValues).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Audio");
   });

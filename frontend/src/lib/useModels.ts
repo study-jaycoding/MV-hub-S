@@ -8,6 +8,7 @@ import { EMPTY_MODEL_SET, modelAllowed } from "./modelPolicyCore";
 import type { CostEstimate, ModelInfo, ModelParam, ModelParamsOut } from "../types";
 import { fetchModelCatalog } from "./modelCatalogCache";
 import { normalizeSeedanceDraftParams } from "./seedanceDraft";
+import { requiredVariantParam, variantChoiceMissing } from "./spotlightPromptConfig";
 
 // 노출 모델 화이트리스트(타입별, 표시 순서대로).
 //  이미지: Nano Banana 2(nano_banana_flash) · Nano Banana 2.1(nano_banana_2_1, 2026-10-14 추가 — 첫 자리는 그대로 두어 기본 모델이 안 바뀐다) · Nano Banana 2 Lite(nano_banana_2_lite) · Nano Banana Pro(nano_banana_pro) · GPT Image 2.5(gpt_image_2_5) · GPT Image 2(gpt_image_2)
@@ -99,6 +100,8 @@ export function stripHiddenParams<T>(opts: Record<string, T>): Record<string, T>
 export const DEFAULT_OVERRIDE: Record<string, string> = { bitrate_mode: "high", duration: "4" };
 export const MODEL_DEFAULT_OVERRIDE: Record<string, Record<string, string>> = {
   seedance_2_5: { mode: "omni_reference" },
+  // 새로 고를 때의 엔진 — 모델 줄의 첫 줄과 같은 값을 옵션값에도 명시한다(CLI enum 순서에 기대지 않게 — Codex A5).
+  text2speech_v2: { variant: "elevenlabs" },
 };
 
 // 파라미터의 '실효 기본값' — 오버라이드(enum 에 존재할 때) > 스키마 default > enum 첫값.
@@ -224,7 +227,11 @@ export function withEffectiveDefaults(
   model: string,
   saved: Record<string, string | number | boolean>,
 ): Record<string, string | number | boolean> {
-  return { ...defaultOptions(params, model), ...saved };
+  const merged = { ...defaultOptions(params, model), ...saved };
+  // 꼭 골라야 하는 엔진이 복원값에 없으면 기본값으로 메우지 않는다 — 고를 때까지 제출·씬 저장이 막힌다(Codex B1).
+  const required = requiredVariantParam(model);
+  if (required && (saved[required] == null || saved[required] === "")) merged[required] = "";
+  return merged;
 }
 
 // 옵션값에 모델 제약을 1회 적용해 보정된 새 객체를 반환(변경 없으면 입력 ref 그대로).
@@ -597,7 +604,7 @@ export function useModels(
       // 이 모델용 예약 옵션일 때만 덮는다(다른 모델용이면 그 모델 로드 때 적용되도록 보존).
       const pend = pendingOptsRef.current;
       if (pend && pend.model === model) {
-        setOptionValues({ ...init, ...pend.opts });
+        setOptionValues(withEffectiveDefaults(r.params, model, pend.opts));
         // ★여기서 **비우지 않는다**(코덱스 반례). StrictMode 는 effect 를 실행→정리→재실행하는데,
         //  파라미터가 캐시 적중이면 두 번째 실행이 곧바로 다시 돈다. 그때 비어 있으면
         //  **기본값만** 들어가 복원한 옵션이 사라진다. 같은 모델의 재적용은 결과가 같다(멱등).
@@ -719,7 +726,8 @@ export function useModels(
       setCostLoading(true);
       return;
     }
-    if (model === "text2speech_v2" && !costPrompt.trim()) {
+    // 엔진을 아직 안 골랐으면(복원값에 빠짐) 견적도 묻지 않는다 — 빈 variant 로는 CLI 가 거부한다.
+    if ((model === "text2speech_v2" && !costPrompt.trim()) || variantChoiceMissing(model, optionValues)) {
       setCost(null);
       setCostLoading(false);
       return;

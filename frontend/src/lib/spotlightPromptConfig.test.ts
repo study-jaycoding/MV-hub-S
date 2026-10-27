@@ -8,9 +8,12 @@ import { describe, expect, it } from "vitest";
 import {
   currentVariantValue,
   isVariantParam,
+  modelChipLabel,
   modelRows,
-  modelVariantSuffix,
+  requiredVariantParam,
   spotlightIgnoredOptions,
+  variantChoiceMissing,
+  variantDisplayName,
 } from "./spotlightPromptConfig";
 
 describe("spotlightIgnoredOptions — 유효하지만 무시되는 값", () => {
@@ -90,15 +93,15 @@ describe("currentVariantValue", () => {
   });
 });
 
-describe("modelVariantSuffix", () => {
+describe("modelChipLabel", () => {
   it("표준은 꼬리말이 없고 fast 만 붙는다", () => {
-    expect(modelVariantSuffix("seedance_2_0", { mode: "std" })).toBe("");
-    expect(modelVariantSuffix("seedance_2_0", { mode: "fast" })).toBe(" Fast");
+    expect(modelChipLabel("Seedance 2.0", "seedance_2_0", { mode: "std" })).toBe("Seedance 2.0");
+    expect(modelChipLabel("Seedance 2.0", "seedance_2_0", { mode: "fast" })).toBe("Seedance 2.0 Fast");
   });
 
   it("변형이 없거나 모르는 값이면 꼬리말이 없다", () => {
-    expect(modelVariantSuffix("seedance_2_5", { mode: "video_edit" })).toBe("");
-    expect(modelVariantSuffix("seedance_2_0", { mode: "무엇" })).toBe("");
+    expect(modelChipLabel("Seedance 2.5", "seedance_2_5", { mode: "video_edit" })).toBe("Seedance 2.5");
+    expect(modelChipLabel("Seedance 2.0", "seedance_2_0", { mode: "무엇" })).toBe("Seedance 2.0");
   });
 });
 
@@ -108,5 +111,51 @@ describe("isVariantParam", () => {
     expect(isVariantParam("seedance_2_0", "resolution")).toBe(false);
     // ★seedance_2_5 의 mode 는 생성 방식이라 가르지 않는다 — 고급에 그대로 남아야 한다.
     expect(isVariantParam("seedance_2_5", "mode")).toBe(false);
+    // 오디오 엔진도 모델 줄이 맡는다 — 고급에 날 값 'variant' 가 남지 않게.
+    expect(isVariantParam("text2speech_v2", "variant")).toBe(true);
+  });
+});
+
+// 2026-10-28 오디오 1단계: text2speech_v2 의 variant(엔진)를 모델 줄로 — 제출 키는 그대로 text2speech_v2.
+describe("오디오 엔진 줄(text2speech_v2.variant)", () => {
+  const TTS = [{ job_set_type: "text2speech_v2", display_name: "Text to Speech V2" }];
+
+  it("새 선택지는 세 엔진뿐이고 이름은 CLI 값 기반", () => {
+    const rows = modelRows(TTS);
+    expect(rows.map((r) => [r.display_name, r.value])).toEqual([
+      ["ElevenLabs", "elevenlabs"],
+      ["MiniMax", "minimax"],
+      ["Seed Speech", "seed_speech"],
+    ]);
+    expect(rows.every((r) => r.model === "text2speech_v2" && r.param === "variant")).toBe(true);
+  });
+
+  it("저장된 옛 엔진은 '기존 설정' 줄로만 끼운다", () => {
+    const rows = modelRows(TTS, { model: "text2speech_v2", optionValues: { variant: "vibe_voice" } });
+    expect(rows.map((r) => r.display_name)).toEqual(["ElevenLabs", "MiniMax", "Seed Speech", "Vibe Voice (기존 설정)"]);
+    // 다른 모델을 보고 있으면 끼우지 않는다
+    expect(modelRows(TTS, { model: "seedance_2_0", optionValues: { variant: "vibe_voice" } })).toHaveLength(3);
+    expect(modelChipLabel("Text to Speech V2", "text2speech_v2", { variant: "cozy_voice" })).toBe("Cozy Voice (기존 설정)");
+  });
+
+  it("엔진이 비면 첫 항목으로 보지 않고 고르라고 한다", () => {
+    expect(currentVariantValue("text2speech_v2", {})).toBe("");
+    expect(variantChoiceMissing("text2speech_v2", {})).toBe(true);
+    expect(variantChoiceMissing("text2speech_v2", { variant: "" })).toBe(true);
+    expect(variantChoiceMissing("text2speech_v2", { variant: "minimax" })).toBe(false);
+    expect(modelChipLabel("Text to Speech V2", "text2speech_v2", {})).toBe("엔진 선택");
+    // Seedance 는 종전대로 비면 표준 — 막지 않는다
+    expect(variantChoiceMissing("seedance_2_0", {})).toBe(false);
+    expect(requiredVariantParam("text2speech_v2")).toBe("variant");
+    expect(requiredVariantParam("seedance_2_0")).toBeNull();
+  });
+
+  it("칩·생성물 이름은 엔진 이름", () => {
+    expect(modelChipLabel("Text to Speech V2", "text2speech_v2", { variant: "seed_speech" })).toBe("Seed Speech");
+    expect(variantDisplayName("text2speech_v2", { variant: "minimax" })).toBe("MiniMax");
+    expect(variantDisplayName("text2speech_v2", { variant: "vibe_voice" })).toBe("Vibe Voice");
+    expect(variantDisplayName("text2speech_v2", {})).toBeNull();
+    expect(variantDisplayName("seedance_2_0", { mode: "fast" })).toBeNull(); // 이름 없는 변형은 모델 이름을 쓴다
+    expect(variantDisplayName(null, null)).toBeNull();
   });
 });

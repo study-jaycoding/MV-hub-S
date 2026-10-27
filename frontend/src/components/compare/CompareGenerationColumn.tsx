@@ -68,7 +68,7 @@ export function CompareGenerationColumn({
   generations: Generation[];
   index: number;
   keys: string[];
-  modelName: (model: string | null) => string;
+  modelName: (model: string | null, params?: Record<string, unknown> | null) => string;
   onlyDiff: boolean;
   onSourcePreview: (preview: CompareSourcePreview) => void;
   prompt: string;
@@ -122,7 +122,7 @@ export function CompareGenerationColumn({
             )}
             {generation.is_final && <span className="cmp-final-badge">★ 최종</span>}
           </div>
-          <div className="cmp-model">{modelName(generation.model)}</div>
+          <div className="cmp-model">{modelName(generation.model, generation.params)}</div>
         </>
       )}
 

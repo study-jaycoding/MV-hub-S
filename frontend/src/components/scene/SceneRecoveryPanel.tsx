@@ -21,7 +21,7 @@ export function SceneRecoveryPanel({ canvasRecovery, setCanvasRecovery, loadMore
     ? []
     : recoveryQuery
       ? canvasRecovery.items.filter((generation) =>
-          [generation.prompt, generation.display_prompt, recoveryModelName(generation.model), generation.model]
+          [generation.prompt, generation.display_prompt, recoveryModelName(generation.model, generation.params), generation.model]
             .some((text) => (text || "").toLowerCase().includes(recoveryQuery)),
         )
       : canvasRecovery.items;
@@ -61,7 +61,7 @@ export function SceneRecoveryPanel({ canvasRecovery, setCanvasRecovery, loadMore
         )}
         <span className="scene-recovery-detail">
           <span className="scene-recovery-model">
-            <ModelIcon /> {recoveryModelName(generation.model) || generation.model || "모델 미상"}
+            <ModelIcon /> {recoveryModelName(generation.model, generation.params) || generation.model || "모델 미상"}
           </span>
           <InlinePromptRefs
             displayPrompt={generation.display_prompt}

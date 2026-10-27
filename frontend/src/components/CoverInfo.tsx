@@ -33,7 +33,7 @@ export function CoverInfo({ folder, className, ...rest }: Props) {
   const credits = useCoverCredits(g.id, onScreen);
   const duration = generationListMeta((g.params || {}) as Record<string, unknown>).duration;
   const review = reviewCounts(folder);
-  const model = modelName(g.model);
+  const model = modelName(g.model, g.params);
   // 날짜와 시각을 조각으로 나눈다 — 컷 카드(그리드)의 정보판은 늘 두 줄(날짜 / 시각)로 그려 줄 높이가 카드마다 같다(CSS .ep-grid .ep-meta .when).
   //  한 줄에 두면 월·일·시의 자릿수에 따라 어떤 카드는 줄이 바뀌고 어떤 카드는 안 바뀌어 아래 줄이 어긋났다(Jay 2026-10-13 밤).
   const [day, clock] = formatGenerationDateAndTime(g.created_at);

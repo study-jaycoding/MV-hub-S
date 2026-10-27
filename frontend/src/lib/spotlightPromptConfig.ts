@@ -48,8 +48,13 @@ export function spotlightIgnoredOptions(model: string, mode: unknown): {
 //    fast 는 1080p·4k 를 CLI 가 명시 거부 → 해상도는 MODEL_CONSTRAINTS(useModels) 가 함께 좁힌다.
 //  ★seedance_2_5.mode 는 가르지 않는다 — 속도가 아니라 생성 방식(t2v/omni_reference/video_edit/
 //    video_extension)이 갈려 모델 이름으로 표현할 성질이 아니고, 기본값이 틀어지면 레퍼런스가 거부된다.
-type ModelVariantEntry = { value: string; suffix: string };
-const MODEL_VARIANTS: Record<string, { param: string; entries: ModelVariantEntry[] }> = {
+//  · text2speech_v2.variant(2026-10-28 Jay·Codex 합의): 엔진을 '고급'에 날 값으로 두던 것을 모델 줄로 꺼낸다.
+//    표시명은 CLI 값 기반 — 웹 제품명(ElevenLabs v3·MiniMax Speech 2.8 HD)과의 대응은 추정이라 쓰지 않는다.
+//    vibe_voice·cozy_voice 는 웹에 없는 엔진이라 새 선택지에서 빼되(legacy), 저장된 값은 '기존 설정' 줄로 보존한다.
+//    requireChoice: 값이 비면 첫 항목으로 간주하지 않는다 — 복원값에 엔진이 빠졌으면 고를 때까지 막는다(Codex B1).
+type ModelVariantEntry = { value: string; suffix: string; name?: string; legacy?: boolean };
+type ModelVariantConfig = { param: string; entries: ModelVariantEntry[]; requireChoice?: boolean };
+const MODEL_VARIANTS: Record<string, ModelVariantConfig> = {
   seedance_2_0: {
     param: "mode",
     entries: [
@@ -57,7 +62,24 @@ const MODEL_VARIANTS: Record<string, { param: string; entries: ModelVariantEntry
       { value: "fast", suffix: " Fast" },
     ],
   },
+  text2speech_v2: {
+    param: "variant",
+    requireChoice: true,
+    entries: [
+      { value: "elevenlabs", suffix: "", name: "ElevenLabs" },
+      { value: "minimax", suffix: "", name: "MiniMax" },
+      { value: "seed_speech", suffix: "", name: "Seed Speech" },
+      { value: "vibe_voice", suffix: "", name: "Vibe Voice", legacy: true },
+      { value: "cozy_voice", suffix: "", name: "Cozy Voice", legacy: true },
+    ],
+  },
 };
+
+const LEGACY_LABEL = " (기존 설정)";
+
+function entryLabel(baseName: string, e: ModelVariantEntry): string {
+  return (e.name ?? baseName + e.suffix) + (e.legacy ? LEGACY_LABEL : "");
+}
 
 /** 드롭다운 한 줄. 평범한 모델이면 1줄, 변형이 있으면 값마다 1줄(param/value 가 붙는다). */
 export type ModelRow = {
@@ -68,7 +90,11 @@ export type ModelRow = {
   value?: string;
 };
 
-export function modelRows(models: { job_set_type: string; display_name: string }[]): ModelRow[] {
+/** legacy 변형은 지금 고른 값일 때만 '기존 설정' 줄로 끼운다(새 선택지로는 내놓지 않는다). */
+export function modelRows(
+  models: { job_set_type: string; display_name: string }[],
+  current?: { model: string; optionValues: Record<string, string | number | boolean> },
+): ModelRow[] {
   const out: ModelRow[] = [];
   for (const m of models) {
     const v = MODEL_VARIANTS[m.job_set_type];
@@ -76,42 +102,70 @@ export function modelRows(models: { job_set_type: string; display_name: string }
       out.push({ key: m.job_set_type, model: m.job_set_type, display_name: m.display_name });
       continue;
     }
-    for (const e of v.entries)
+    const cur = current?.model === m.job_set_type ? String(current.optionValues[v.param] ?? "") : "";
+    for (const e of v.entries) {
+      if (e.legacy && e.value !== cur) continue;
       out.push({
         key: `${m.job_set_type}:${e.value}`,
         model: m.job_set_type,
-        display_name: m.display_name + e.suffix,
+        display_name: entryLabel(m.display_name, e),
         param: v.param,
         value: e.value,
       });
+    }
   }
   return out;
 }
 
-/** 지금 옵션값이 가리키는 변형 값. 아직 안 실렸으면 첫 항목(=기본)으로 본다. */
+/** 지금 옵션값이 가리키는 변형 값. 아직 안 실렸으면 첫 항목(=기본)으로 본다 — requireChoice 면 빈 값 그대로(""). */
 export function currentVariantValue(
   model: string,
   optionValues: Record<string, string | number | boolean>,
 ): string | null {
   const v = MODEL_VARIANTS[model];
   if (!v) return null;
-  return String(optionValues[v.param] ?? "") || v.entries[0].value;
+  const cur = String(optionValues[v.param] ?? "");
+  return v.requireChoice ? cur : cur || v.entries[0].value;
+}
+
+/** 꼭 골라야 하는 변형이 비었는가 — 제출·씬 저장을 막는 근거(복원값에 엔진이 빠진 경우). */
+export function variantChoiceMissing(
+  model: string,
+  optionValues: Record<string, string | number | boolean>,
+): boolean {
+  return !!MODEL_VARIANTS[model]?.requireChoice && currentVariantValue(model, optionValues) === "";
+}
+
+/** 꼭 골라야 하는 변형 파라미터 이름 — 복원 때 기본값으로 메우지 않을 키. */
+export function requiredVariantParam(model: string): string | null {
+  const v = MODEL_VARIANTS[model];
+  return v?.requireChoice ? v.param : null;
+}
+
+/** 생성물 하나의 엔진 표시명(카드·정보 창 등). 변형 이름이 없는 모델이면 null — 호출측이 모델 이름을 쓴다. */
+export function variantDisplayName(model: string | null | undefined, params: Record<string, unknown> | null | undefined): string | null {
+  const v = model ? MODEL_VARIANTS[model] : undefined;
+  const e = v?.entries.find((x) => x.value === params?.[v.param]);
+  return e?.name ?? null;
+}
+
+/** 모델 칩 글자 — 이름 있는 변형은 그 이름, 꼭 골라야 하는데 비었으면 '엔진 선택'. */
+export function modelChipLabel(
+  modelName: string,
+  model: string,
+  optionValues: Record<string, string | number | boolean>,
+): string {
+  const v = MODEL_VARIANTS[model];
+  if (!v) return modelName;
+  if (variantChoiceMissing(model, optionValues)) return "엔진 선택"; // 칩 글자 칸(150px)에 들어가게 짧게
+  const cur = currentVariantValue(model, optionValues);
+  const e = v.entries.find((x) => x.value === cur);
+  return e ? entryLabel(modelName, e) : modelName;
 }
 
 /** 이 파라미터를 모델 드롭다운이 대신 맡고 있는가 — 맞으면 '고급'에서 감춘다(같은 설정 두 곳 방지). */
 export function isVariantParam(model: string, name: string): boolean {
   return MODEL_VARIANTS[model]?.param === name;
-}
-
-/** 모델 칩에 붙일 꼬리말(" Fast" 등). 변형이 없으면 빈 문자열. */
-export function modelVariantSuffix(
-  model: string,
-  optionValues: Record<string, string | number | boolean>,
-): string {
-  const v = MODEL_VARIANTS[model];
-  if (!v) return "";
-  const cur = currentVariantValue(model, optionValues);
-  return v.entries.find((e) => e.value === cur)?.suffix ?? "";
 }
 
 const ADVANCED_PARAM_ORDER = ["mode", "genre", "bitrate_mode", "thinking_level", "enable_web_search", "enable_image_search", "seed"];

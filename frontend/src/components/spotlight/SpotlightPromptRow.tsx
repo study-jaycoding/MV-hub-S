@@ -27,6 +27,8 @@ interface Props {
   onDragLeave: DragEventHandler<HTMLDivElement>;
   onCopyPrompt: MouseEventHandler<HTMLButtonElement>;
   onClearPrompt: MouseEventHandler<HTMLButtonElement>; // 프롬프트만 비우기(레퍼런스는 그대로 — Jay 2026-10-22)
+  /** 내레이션 대본처럼 글을 그대로 읽는 모델 — 안내 문구와 글자 수/한도를 바꿔 보인다. */
+  script?: { count: number; max?: number } | null; // max 없음 = 엔진을 아직 안 골라 한도를 모름
 }
 
 export function SpotlightPromptRow({
@@ -47,9 +49,10 @@ export function SpotlightPromptRow({
   onDragLeave,
   onCopyPrompt,
   onClearPrompt,
+  script = null,
 }: Props) {
   return (
-    <div className={"sl-prompt-row" + (tagFilter ? " tag-active" : "")}>
+    <div className={"sl-prompt-row" + (tagFilter ? " tag-active" : "") + (script ? " script" : "")}>
       <button
         className={"sl-expand-btn" + (expanded ? " on" : "")}
         title={expanded ? "레퍼런스 트레이 접기" : "레퍼런스 트레이 펼치기 (에셋 드래그)"}
@@ -83,9 +86,11 @@ export function SpotlightPromptRow({
         contentEditable
         suppressContentEditableWarning
         data-placeholder={
-          expanded
-            ? "Describe the scene you imagine"
-            : "Describe the scene you imagine --- @Source, #Tag"
+          script
+            ? "읽을 내용을 그대로 적으세요"
+            : expanded
+              ? "Describe the scene you imagine"
+              : "Describe the scene you imagine --- @Source, #Tag"
         }
         onInput={onInput}
         onBlur={onBlur}
@@ -99,6 +104,11 @@ export function SpotlightPromptRow({
         onDrop={onDrop}
         onDragLeave={onDragLeave}
       />
+      {script && (
+        <span className={"sl-char-count" + (script.max && script.count > script.max ? " over" : "")}>
+          {script.count.toLocaleString()}{script.max ? ` / ${script.max.toLocaleString()}` : ""}자
+        </span>
+      )}
       <button
         type="button"
         className="sl-prompt-clear"

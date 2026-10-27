@@ -11,8 +11,8 @@ import {
   currentVariantValue,
   durationRange,
   isVariantParam,
+  modelChipLabel,
   modelRows,
-  modelVariantSuffix,
   spotlightAdvancedParamRank,
   spotlightIgnoredOptions,
   spotlightParamLabel,
@@ -72,6 +72,97 @@ function AdvancedIcon() {
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
     </svg>
+  );
+}
+
+function VoiceIcon() {
+  return (
+    <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+    </svg>
+  );
+}
+
+/** 목소리 칩 + 이름 검색 목록 — 기본 목록 상자를 대신한다(2026-10-28 오디오 1단계).
+ *  저장된 선택은 조회 실패·목록 밖이어도 지우거나 바꾸지 않는다('확인 필요'로만 보인다 — Codex A6). */
+function VoicePicker({
+  voices,
+  voicesError,
+  value,
+  onPick,
+  open,
+  setOpen,
+}: {
+  voices: VoiceInfo[];
+  voicesError: boolean;
+  value: string;
+  onPick: (id: string) => void;
+  open: string | null;
+  setOpen: Dispatch<SetStateAction<string | null>>;
+}) {
+  const [query, setQuery] = useState("");
+  const chipRef = useRef<HTMLButtonElement>(null);
+  const isOpen = open === "voice";
+  useEscapeClose(() => {
+    setOpen(null);
+    chipRef.current?.focus({ preventScroll: true });
+  }, isOpen, true, true);
+  useEffect(() => {
+    if (!isOpen) setQuery("");
+  }, [isOpen]);
+  const picked = voices.find((voice) => voice.id === value);
+  const label = picked?.name
+    ?? (value ? (voices.length || voicesError ? `${value} (확인 필요)` : "목소리 확인 중…") : voicesError ? "목소리 조회 실패" : "목소리 선택");
+  const q = query.trim().toLowerCase();
+  const shown = q ? voices.filter((voice) => voice.name.toLowerCase().includes(q)) : voices;
+  return (
+    <div className="sl-chip-wrap">
+      <button
+        ref={chipRef}
+        aria-expanded={isOpen}
+        aria-label="내레이션 목소리"
+        className={"sl-chip" + (isOpen ? " active" : "")}
+        title={voicesError ? "목소리 목록을 불러오지 못했습니다. Host 콘솔을 확인하세요." : "내레이션 목소리"}
+        onClick={() => setOpen(isOpen ? null : "voice")}
+      >
+        <span className="sl-opt-ic"><VoiceIcon /></span>
+        <span className="sl-chip-label">{label}</span>
+        <span className="sl-caret">›</span>
+      </button>
+      {isOpen && (
+        <div className="sl-dropdown sl-voice-pop">
+          <div className="sl-dd-title">목소리{voices.length ? ` ${voices.length}개` : ""}</div>
+          <input
+            className="sl-voice-search"
+            autoFocus
+            aria-label="목소리 이름으로 찾기"
+            placeholder="이름으로 찾기"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <div className="sl-dd-scroll">
+            {shown.map((voice) => (
+              <button
+                key={voice.id}
+                className={"sl-dd-item" + (voice.id === value ? " sel" : "")}
+                onClick={() => {
+                  onPick(voice.id);
+                  setOpen(null);
+                }}
+              >
+                {voice.name}
+              </button>
+            ))}
+            {!shown.length && (
+              <div className="sl-dd-empty">
+                {voicesError ? "목소리 목록을 불러오지 못했습니다." : voices.length ? "맞는 목소리가 없습니다." : "불러오는 중…"}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -175,7 +266,7 @@ export function SpotlightOptionsBar({
           onClick={() => setOpen(open === "model" ? null : "model")}
         >
           <span className="sl-dot" />
-          <span className="sl-chip-label">{modelName + modelVariantSuffix(model, optionValues)}</span>
+          <span className="sl-chip-label">{modelChipLabel(modelName, model, optionValues)}</span>
           <span className="sl-caret">›</span>
         </button>
         {open === "model" && (
@@ -189,7 +280,7 @@ export function SpotlightOptionsBar({
             ) : null}
             {policyNote ? <div className="sl-dd-empty">{policyNote}</div> : null}
             <div className="sl-dd-scroll">
-              {modelRows(typeModels).map((row) => (
+              {modelRows(typeModels, { model, optionValues }).map((row) => (
                 <button
                   key={row.key}
                   className={
@@ -218,16 +309,16 @@ export function SpotlightOptionsBar({
         )}
       </div>
 
-      {model === "text2speech_v2" && <label className="sl-opt" title={voicesError ? "목소리 목록을 불러오지 못했습니다. Host 콘솔을 확인하세요." : "내레이션 목소리"}>
-        목소리
-        <select aria-label="내레이션 목소리" value={String(optionValues.voice_id ?? "")}
-          onChange={(e) => setOptionValues((previous) => ({ ...previous, voice_id: e.target.value, voice_type: "preset" }))}>
-          <option value="">{voicesError ? "목소리 조회 실패" : "목소리 선택"}</option>
-          {optionValues.voice_id && !voices.some((voice) => voice.id === optionValues.voice_id) &&
-            <option value={String(optionValues.voice_id)}>{String(optionValues.voice_id)} (확인 필요)</option>}
-          {voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}
-        </select>
-      </label>}
+      {model === "text2speech_v2" && (
+        <VoicePicker
+          voices={voices}
+          voicesError={voicesError}
+          value={String(optionValues.voice_id ?? "")}
+          onPick={(id) => setOptionValues((previous) => ({ ...previous, voice_id: id, voice_type: "preset" }))}
+          open={open}
+          setOpen={setOpen}
+        />
+      )}
       {visibleTunable.filter((p) => SPOTLIGHT_PRIMARY_PARAMS.has(p.name)).map((p) => {
         // 이 모드에서 CLI 가 무시하는 값 — 흐리게 두는 데서 그치지 않고 **조작도 막는다**
         // (2026-09-15 Jay: 만질 수 있으면 효과가 있는 줄 알게 되어 헷갈린다).

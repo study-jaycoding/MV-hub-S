@@ -73,6 +73,7 @@ import { useSpotlightTray } from "../lib/useSpotlightTray";
 import { useSpotlightTokenWrap } from "../lib/useSpotlightTokenWrap";
 import { useSeedanceRoleMenu } from "../lib/useSeedanceRoleMenu";
 import { useModels, ALLOWED, HIDDEN_PARAMS, stripHiddenParams, withEffectiveDefaults } from "../lib/useModels";
+import { SPEECH_TEXT_LIMITS } from "../lib/spotlightSubmit";
 import { policyNote, submitBlockMessage } from "../lib/modelPolicyCore";
 import { useModelPolicy } from "../lib/modelPolicy";
 import {
@@ -1633,6 +1634,9 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
             onDragLeave={onPromptChipDragLeave}
             onCopyPrompt={copyPrompt}
             onClearPrompt={clearPrompt}
+            script={model === "text2speech_v2"
+              ? { count: costPrompt.length, max: SPEECH_TEXT_LIMITS[String(optionValues.variant ?? "")] }
+              : null}
           />
 
           {/* 컨트롤 행 */}

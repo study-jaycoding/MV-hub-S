@@ -290,7 +290,7 @@ export function InfoPopup({
           value={
             g.model === "comfy" && typeof params.model === "string" && params.model
               ? (params.model as string)
-              : modelName(g.model)
+              : modelName(g.model, params)
           }
         />
         {!recoveryRequired && g.execution_phase !== "canceled" &&

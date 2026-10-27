@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { fetchModelCatalog } from "./modelCatalogCache";
 import { MODEL_DISPLAY_NAMES } from "./useModels";
+import { variantDisplayName } from "./spotlightPromptConfig";
 
 let nameMap: Record<string, string> = {};
 let loaded = false;
@@ -66,14 +67,16 @@ function humanize(m: string): string {
 }
 
 // 모델 코드(job_set_type) → 표시명. 우선순위: CLI 카탈로그 > 하드코딩 교정맵 > 휴머나이즈.
-export function modelDisplayName(code?: string | null): string {
+//  생성물 하나를 그릴 때는 params 도 넘긴다 — 엔진 이름이 있는 변형(text2speech_v2 의 variant)이면 그 이름.
+//  집계(관리·사용량)는 params 없이 불러 모델 키 이름 그대로 둔다(엔진별 집계가 아니므로 — Codex B2).
+export function modelDisplayName(code?: string | null, params?: Record<string, unknown> | null): string {
   if (!code) return "—";
-  return nameMap[code] || MODEL_DISPLAY_NAMES[code] || humanize(code);
+  return variantDisplayName(code, params) || nameMap[code] || MODEL_DISPLAY_NAMES[code] || humanize(code);
 }
 
 // 카탈로그가 로드되면 리렌더해 정확한 이름으로 갱신되게 하는 훅. 컴포넌트에서:
 //   const modelName = useModelDisplayName();  ...  {modelName(gen.model)}
-export function useModelDisplayName(): (code?: string | null) => string {
+export function useModelDisplayName(): (code?: string | null, params?: Record<string, unknown> | null) => string {
   const [, force] = useState(0);
   useEffect(() => {
     ensureModelCatalog();

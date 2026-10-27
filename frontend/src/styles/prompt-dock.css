@@ -97,6 +97,10 @@
 .sl-copy-btn { position: absolute; top: 8px; right: 24px; z-index: 3; }
 .sl-prompt-clear { position: absolute; top: 8px; right: 56px; z-index: 3; }
 .sl-copy-btn:hover { color: #c8ef40; border-color: rgba(200,239,64,0.55); background: rgba(44,54,12,0.5); }
+/* 내레이션 대본 글자 수 / 엔진 한도 — 단추(복사·비우기) 아래 줄에 두려고 행 아래를 조금 늘린다(오디오일 때만). */
+.sl-prompt-row.script { padding-bottom: 24px; }
+.sl-char-count { position: absolute; right: 24px; bottom: 6px; font-size: 11px; color: var(--muted2); pointer-events: none; font-variant-numeric: tabular-nums; }
+.sl-char-count.over { color: #f06a5a; font-weight: 700; }
 .sl-prompt-clear:hover, .sl-reftray-clear:hover { color: #ff9a9a; border-color: rgba(255,91,91,0.55); background: rgba(54,12,17,0.45); }
 /* contentEditable placeholder — data-empty 속성을 JS 가 토글. 글줄 밖에 겹쳐 그린다 — 글줄 안에 두면 빈 칸을 눌렀을 때 커서가
    안내 문구 **뒤**에 섰다(Jay 2026-10-22). 자리는 .sl-prompt 의 padding(위 4·왼 6·오른 84 — 단추 자리)과 같다. */
@@ -417,6 +421,15 @@
   content: "✓"; position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
   color: var(--accent); font-size: 13px; font-weight: 700;
 }
+
+/* 목소리 창(오디오) — 이름 검색칸 + 목록. 목록 모양은 .sl-dd-item 그대로. */
+.sl-voice-pop { min-width: 240px; }
+.sl-voice-search {
+  display: block; width: calc(100% - 8px); height: 30px; margin: 2px 4px 6px; padding: 0 10px;
+  background: rgba(255, 255, 255, 0.06); border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text); font: inherit; font-size: 12.5px; outline: none;
+}
+.sl-voice-search:focus { border-color: var(--accent); }
 
 /* ⚙ 고급 옵션 칩 — 커스터마이즈(기본값과 다름) 시 강조 + 점 */
 .sl-chip.dirty { border-color: var(--accent); color: #fff; }

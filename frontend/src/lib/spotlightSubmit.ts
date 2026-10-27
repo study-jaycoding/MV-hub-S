@@ -42,6 +42,12 @@ export interface SpotlightCreateBody {
   folder_path?: string;
 }
 
+// 내레이션(text2speech_v2) 엔진별 대본 글자 한도 — 제출 검증과 대본 칸의 글자 수 표시가 같은 값을 쓴다.
+//  백엔드(models.py SPEECH_PROMPT_LIMITS)·에이전트도 같은 값을 따로 검사한다.
+export const SPEECH_TEXT_LIMITS: Record<string, number> = {
+  elevenlabs: 5000, minimax: 10000, seed_speech: 15000, vibe_voice: 5000, cozy_voice: 5000,
+};
+
 interface Params {
   text: string;
   inlineRefs: ChipRef[];
@@ -115,10 +121,11 @@ export function buildSpotlightCreateBody({
     if (!text.trim()) return { body: null, error: "내레이션 텍스트를 입력하세요." };
     if (trayRefs.length || inlineRefs.length) return { body: null, error: "내레이션 생성은 텍스트와 목소리만 사용합니다. 레퍼런스를 비운 뒤 생성하세요." };
     if (!optionValues.voice_id || optionValues.voice_type !== "preset") return { body: null, error: "목소리 목록에서 내레이션 목소리를 선택하세요." };
-    const limits: Record<string, number> = { elevenlabs: 5000, minimax: 10000, seed_speech: 15000, vibe_voice: 5000, cozy_voice: 5000 };
     const variant = String(optionValues.variant ?? "");
-    if (!limits[variant]) return { body: null, error: "지원하는 음성 모델 옵션을 선택하세요." };
-    if (text.length > limits[variant]) return { body: null, error: `선택한 음성 옵션은 최대 ${limits[variant]}자까지 지원합니다.` };
+    if (!variant) return { body: null, error: "모델 목록에서 음성 엔진을 고르세요." };
+    const limit = SPEECH_TEXT_LIMITS[variant];
+    if (!limit) return { body: null, error: "지원하는 음성 모델 옵션을 선택하세요." };
+    if (text.length > limit) return { body: null, error: `선택한 음성 옵션은 최대 ${limit}자까지 지원합니다.` };
     return { error: null, body: {
       prompt: text, display_prompt: displayPrompt || undefined, model,
       params: { variant, voice_id: optionValues.voice_id, voice_type: "preset" }, references: [],

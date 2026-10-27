@@ -704,7 +704,7 @@ function GenerationCardImpl({
         <div className="card-detail">
           <div className="cd-model">
             <ModelIcon />
-            {modelName(gen.model)}
+            {modelName(gen.model, gen.params)}
             {/* 목록 보기에는 카드 아래 변의 표가 없다 — 편집 탭의 표(mark)는 모델 이름 옆에 글로 적는다 */}
             {mark && <span className={"cd-mark" + (mark.lead ? " lead" : "")}>{mark.label}</span>}
           </div>
