@@ -104,7 +104,7 @@ def helper(inst: Installation, scratch: Path, source: str, command: str, *args: 
     root = Path(tempfile.mkdtemp(prefix="release-", dir=scratch))
     try:
         (root / "INSTALL_SOURCE.txt").write_text(source.strip() + "\n", encoding="utf-8")
-        if command in ("read", "manifest", "promote", "deploy") and nas_access.is_unc(source):
+        if command in ("read", "manifest", "promote", "deploy", "delete-info", "delete") and nas_access.is_unc(source):
             nas_access.allow_source_read(root)
         env = dict(child_env(inst), PYTHONDONTWRITEBYTECODE="1", CONTENT_HUB_DATA=str(root),
                    CONTENT_HUB_AUTH="0", CONTENT_HUB_PORT=str(inst.port))
@@ -120,7 +120,8 @@ def helper(inst: Installation, scratch: Path, source: str, command: str, *args: 
         value = None
     if not isinstance(value, dict):
         why = "시간 안에 끝나지 않았습니다" if code is None else "도우미가 실패했습니다"
-        return {"ok": False, "error": f"릴리스 폴더 작업: {why}", "status": 0 if code is None else 500}
+        return {"ok": False, "error": f"릴리스 폴더 작업: {why}", "status": 0 if code is None else 500,
+                "outcome_unknown": command == "delete"}
     return value
 
 
@@ -179,6 +180,20 @@ def list_notices(server: dict, token: str) -> list[dict]:
     """서버의 모든 공지 항목(관리자) — 줄마다 알림 횟수·[해제] 대상."""
     rows = server_api.expect_ok(*server_api.call(server, "GET", f"{NOTICE_PATH}/list", token), "공지 목록", list)
     return [row for row in rows if isinstance(row, dict) and isinstance(row.get("sha256"), str)]
+
+
+def find_delete_notice(server: dict, token: str, fields: dict) -> dict | None:
+    """같은 이름의 파일을 가리키는 오래된 공지도 삭제 전에 해제해야 한다."""
+    notice = find_notice(server, token, fields["sha256"])
+    if notice is not None:
+        return notice
+    rows = list_notices(server, token)
+    notice = next((row for row in rows
+                   if str(row.get("file") or "").casefold() == str(fields.get("file") or "").casefold()), None)
+    # 서버 API는 최근 5개만 준다. 목록 밖의 같은 파일명 공지가 없다고 추정하지 않는다.
+    if notice is None and len(rows) >= 5:
+        raise ReleaseError("서버 공지 목록이 일부만 보여 삭제 안전성을 확인할 수 없습니다 — 불필요한 공지를 [해제]한 뒤 다시 하세요")
+    return notice
 
 
 # ---- 의도 기록 ----
@@ -256,7 +271,7 @@ def read_view(inst: Installation, runner: Runner, session: "server_api.Session |
     """릴리스 화면: NAS 판 목록·두 표지(도우미 자식) + 로그인돼 있으면 서버의 공지 항목 + 이어 갈 배포."""
     source = release_source(inst)
     view = {"source": source, "read": {}, "notices": None, "notice_error": "", "auth_expired": False,
-            "resume": find_resumable(inst)}
+            "resume": find_resumable(inst), "removed_files": removed_files(inst, source)}
     if source:
         view["read"] = helper(inst, scratch_dir(inst), source, "read")
     if session is not None:
@@ -265,6 +280,27 @@ def read_view(inst: Installation, runner: Runner, session: "server_api.Session |
         except (server_api.ServerError, ReleaseError) as exc:
             view["notice_error"], view["auth_expired"] = str(exc), isinstance(exc, server_api.AuthExpired)
     return view
+
+
+def removed_files(inst: Installation, source: str) -> list[str]:
+    """공지 부재를 성공으로 추정하지 않고 이 관리 도구에서 완료한 해제만 표시한다."""
+    seen, removed = set(), []
+    for job_id in jobs.recent_jobs(inst, 100):
+        request = jobs.read_json(jobs.job_dir(inst, job_id) / "request.json") or {}
+        kind = request.get("kind")
+        if kind not in ("release-remove", "release-deploy", "release-announce", "release-resume", "release-delete"):
+            continue
+        params = (request.get("plan") or {}).get("params") or {}
+        file = str(params.get("file") or "")
+        if not file or params.get("release_dir") != source or file in seen:
+            continue
+        state = jobs.read_job(inst, job_id)
+        if state.get("status") != "finished" or state.get("exit_code") != 0:
+            continue
+        seen.add(file)
+        if kind == "release-remove":
+            removed.append(file)
+    return removed
 
 
 def _nas(inst: Installation, job: Path, source: str, mode: str, item: dict, expect_published: str,
@@ -397,6 +433,32 @@ def remove_work(params: dict, token: str, say: Say) -> tuple[int, dict]:
         return 1, {"error": str(exc)[:500], "auth_expired": isinstance(exc, server_api.AuthExpired)}
     say("완료: 알림을 거뒀습니다" if payload.get("removed") else "완료: 이미 없는 알림이었습니다")
     return 0, {"removed": bool(payload.get("removed"))}
+
+
+def delete_work(inst: Installation, job: Path, params: dict, token: str, say: Say) -> tuple[int, dict]:
+    try:
+        if find_delete_notice(params["server"], token, params) is not None:
+            raise ReleaseError("팀원 알림이 남아 있습니다 — 먼저 [해제]하세요")
+    except (server_api.ServerError, ReleaseError) as exc:
+        return 1, {"error": str(exc)[:500], "auth_expired": isinstance(exc, server_api.AuthExpired)}
+    expected = {key: params[key] for key in (*FIELDS, "sidecars")}
+    write_intent(job, step="delete", file=params["file"], sha256=params["sha256"])
+    say(f"릴리스 파일을 삭제합니다: {params['file']}")
+    answer = helper(inst, job / "scratch", params["release_dir"], "delete", _b64(expected), timeout=HASH_TIMEOUT)
+    if not answer.get("ok"):
+        say(str(answer.get("error") or "삭제 결과를 확인하지 못했습니다"))
+        unknown = answer.get("outcome_unknown") or not answer.get("status") or int(answer["status"]) >= 500
+        return (3 if unknown else 1), answer
+    if answer.get("deleted") is not True or answer.get("file") != params["file"]:
+        return 3, {"error": "삭제 완료 응답이 대상과 일치하지 않습니다", "outcome_unknown": True}
+    try:
+        if find_delete_notice(params["server"], token, params) is not None:
+            return 3, {**answer, "error": "파일은 삭제됐으나 새 팀원 알림이 확인됐습니다 — 해당 알림을 해제하세요"}
+    except (server_api.ServerError, ReleaseError) as exc:
+        return 3, {**answer, "error": "파일 삭제 후 팀원 알림을 확인하지 못했습니다",
+                   "auth_expired": isinstance(exc, server_api.AuthExpired)}
+    say(f"완료: v{params['version']} 릴리스 파일을 삭제했습니다")
+    return 0, answer
 
 
 # ---- 주소 공지(NAS server-location.json) ----

@@ -34,12 +34,12 @@ MAX_LINES_PER_TAB = 3000
 QUEUE_MAX = 200            # 화면이 못 따라오면 작업 스레드가 기다린다(무한히 쌓지 않는다)
 DRAIN_LINES = 3000         # 한 번에 화면에 넣는 로그 줄 상한
 JOB_READ_BYTES = 64_000    # 업데이트 출력은 한 번에 이만큼씩 따라 읽는다
-STEP_LABELS = ("코드 받기", "파이썬", "CLI", "화면 빌드", "시험 기동", "바꿔 끼우기")
+STEP_LABELS = ("코드 받기", "파이썬", "CLI", "화면 빌드", "시험 기동", "서비스 전환")
 SERVER_COLORS = {"ok": LIME, "switching": AMBER, "starting": AMBER, "maintenance": AMBER, "blocked": AMBER,
                  "not_ready": RED, "no_answer": RED, "stopped": MUTED, "unknown": MUTED, "no_task": MUTED}
 JOB_TERMINAL = ("finished", "refused", "check_needed", "runner_error")
 NAV = (("status", "상태·로그"), ("intake", "생성 접수"), ("power", "켜기·끄기"), ("backup", "DB·백업"),
-       ("address", "주소"), ("update", "업데이트"), ("release", "릴리스"), ("move", "서버 이사"))
+       ("update", "업데이트"), ("release", "릴리스"), ("move", "서버 이사"), ("address", "서버 주소"))
 # 로그 탭 위의 표(activity.read_activity 의 키·제목·칸). 칸 = (키, 머리글, 너비)
 TABLES = {
     "generation": ("generations", "최근 생성 — 작업자 PC 가 보낸 정보(프롬프트는 안 보임)",
@@ -60,6 +60,8 @@ OFF_WORDS = {"stopping": "끄는 중 멈춤", "stopped": "관리 창이 끔", "s
              "start_failed": "켜기 실패 — 확인 필요"}
 PRESENCE_COLUMNS = (("who", "이름", 160), ("app", "앱 연결 수 · 백그라운드 포함", 240),
                     ("agent", "에이전트 · 최근 40초 신호", 200))
+RELEASE_COLUMNS = (("버전", 180), ("상태", 180), ("용량", 80), ("제작 시각", 120),
+                   ("배포", 84), ("해제", 84), ("삭제", 84))
 
 
 class ConsoleTk(tk.Tk):
@@ -232,6 +234,13 @@ class App:
                         rowheight=22, borderwidth=0, bordercolor=PANEL2, lightcolor=PANEL2, darkcolor=PANEL2)
         style.configure("Console.Treeview.Heading", background=PANEL2, foreground=MUTED, font=FONT, relief="flat")
         style.map("Console.Treeview", background=[("selected", PANEL2)], foreground=[("selected", LIME)])
+        for orientation in ("Vertical", "Horizontal"):
+            name = f"{orientation}.TScrollbar"
+            style.configure(name, background=MUTED2, troughcolor=BG2, bordercolor=BG2,
+                            lightcolor=MUTED2, darkcolor=MUTED2, arrowcolor=TEXT, relief="flat")
+            style.map(name, background=[("pressed", LIME), ("active", LIME)],
+                      lightcolor=[("pressed", LIME), ("active", LIME)],
+                      darkcolor=[("pressed", LIME), ("active", LIME)])
         style.configure("TCombobox", fieldbackground=PANEL, background=PANEL2, foreground=TEXT, arrowcolor=TEXT)
         style.map("TCombobox", fieldbackground=[("readonly", PANEL)], foreground=[("readonly", TEXT)],
                   selectbackground=[("readonly", PANEL)], selectforeground=[("readonly", TEXT)])
@@ -241,7 +250,7 @@ class App:
         self.nav.pack(side="left", fill="y")
         self.nav.pack_propagate(False)
         tk.Label(self.nav, text="MV Hub 서버", bg=BG2, fg=TEXT, font=("Malgun Gothic", 12, "bold")).pack(anchor="w", padx=14, pady=(14, 0))
-        self.nav_state = tk.Label(self.nav, text="● 확인 중…", bg=BG2, fg=MUTED, font=("Malgun Gothic", 9))
+        self.nav_state = tk.Label(self.nav, text="● 확인 중", bg=BG2, fg=MUTED, font=("Malgun Gothic", 9))
         self.nav_state.pack(anchor="w", padx=14, pady=(2, 12))
         self.pages: dict[str, tk.Frame] = {}
         self.nav_items: dict[str, tk.Label] = {}
@@ -273,7 +282,7 @@ class App:
         self.login_label = tk.Label(account, text="관리자 로그인 안 함", bg=BG2, fg=MUTED, font=("Malgun Gothic", 9),
                                     anchor="w", justify="left", wraplength=170)
         self.login_label.pack(fill="x")
-        self.login_button = self._button(account, "로그인…", self.toggle_login)
+        self.login_button = self._button(account, "로그인", self.toggle_login)
         self.login_button.pack(anchor="w", pady=(2, 0))
         for key, build in builders.items():
             build(self.pages[key])
@@ -308,9 +317,6 @@ class App:
 
     def _build_status_page(self, page: tk.Frame) -> None:
         head = self._header(page, "상태·로그")
-        # 먼저 붙인 것이 자리를 먼저 차지한다 — 주소가 길어도 업데이트 단추가 밀려나지 않게 단추부터.
-        self._button(head, "⟳ Git 업데이트", lambda: (self.show("update"), self.request_plan()), primary=True
-                     ).pack(side="right", padx=12, pady=8)
         self.code_label = tk.Label(head, text="돌고 있는 코드 —", bg=PANEL, fg=MUTED, font=FONT, padx=8, pady=3)
         self.code_label.pack(side="left", padx=4)
         self._button(head, "주소 복사", self.copy_address).pack(side="right", padx=4)
@@ -328,7 +334,7 @@ class App:
             tk.Label(box, text=title, bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9)).pack(anchor="w", padx=10, pady=(8, 0))
             value = tk.Label(box, text="—", bg=PANEL, fg=TEXT, font=("Malgun Gothic", 15, "bold"))
             value.pack(anchor="w", padx=10)
-            sub = tk.Label(box, text="확인 중…", bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9), justify="left")
+            sub = tk.Label(box, text="확인 중", bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9), justify="left")
             sub.pack(anchor="w", padx=10, pady=(0, 8))
             self.cards[key] = (value, sub)
 
@@ -357,62 +363,72 @@ class App:
             self, "log_tab", logs.TABS[self.notebook.index("current")][0]))
         for key, label in logs.TABS:
             frame = tk.Frame(self.notebook, bg=PANEL)
+            panes = tk.PanedWindow(frame, orient="vertical", bg=PANEL, bd=0, sashwidth=5,
+                                   sashrelief="flat", showhandle=False)
+            panes.pack(fill="both", expand=True, padx=12, pady=8)
             if key == "connection":
-                self._build_presence(frame)
+                self._build_presence(panes)
             if key in TABLES:
-                self._build_table(frame, key)
-            text = tk.Text(frame, bg=PANEL, fg=MUTED, font=MONO, relief="flat", bd=0, padx=12, pady=8,
+                self._build_table(panes, key)
+            body, _note = self._log_panel(panes, "상세 로그")
+            text = tk.Text(body, bg=PANEL, fg=MUTED, font=MONO, relief="flat", bd=0, padx=8, pady=8,
                            wrap="none", highlightthickness=0, insertbackground=TEXT)
-            scroll = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
-            text.configure(yscrollcommand=scroll.set, state="disabled")
-            scroll.pack(side="right", fill="y")
-            text.pack(fill="both", expand=True)
+            self._scroll_content(body, text)
+            text.configure(state="disabled")
             for tag, color in (("ERROR", RED), ("WARNING", AMBER), ("CRITICAL", RED), ("INFO", MUTED), ("hit", INK)):
                 text.tag_configure(tag, foreground=color)
             text.tag_configure("hit", background=LIME)
             self.notebook.add(frame, text=label)
             self.texts[key] = text
 
+    def _log_panel(self, panes: tk.PanedWindow, title: str) -> tuple[tk.Frame, tk.Label]:
+        panel = tk.Frame(panes, bg=PANEL, highlightbackground=PANEL2, highlightthickness=1)
+        panes.add(panel, minsize=70, stretch="always")
+        head = tk.Frame(panel, bg=PANEL2)
+        head.pack(fill="x")
+        tk.Label(head, text=title, bg=PANEL2, fg=MUTED, font=FONT).pack(side="left", padx=8, pady=5)
+        note = tk.Label(head, text="", bg=PANEL2, fg=MUTED2, font=("Malgun Gothic", 8))
+        note.pack(side="right", padx=8)
+        body = tk.Frame(panel, bg=PANEL)
+        body.pack(fill="both", expand=True)
+        return body, note
+
+    @staticmethod
+    def _scroll_content(body: tk.Frame, content) -> None:
+        body.rowconfigure(0, weight=1)
+        body.columnconfigure(0, weight=1)
+        vertical = ttk.Scrollbar(body, orient="vertical", command=content.yview)
+        horizontal = ttk.Scrollbar(body, orient="horizontal", command=content.xview)
+        content.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        content.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+
     def _build_table(self, frame: tk.Frame, key: str) -> None:
         """로그 탭 위의 표 — 이름만 보인다(activity). 아래 글자 칸은 그대로 흐름 줄."""
         _source, title, columns = TABLES[key]
-        head = tk.Frame(frame, bg=PANEL)
-        head.pack(fill="x", padx=12, pady=(8, 2))
-        tk.Label(head, text=title, bg=PANEL, fg=MUTED, font=FONT).pack(side="left")
-        note = tk.Label(head, text="읽는 중…", bg=PANEL, fg=MUTED2, font=("Malgun Gothic", 8))
-        note.pack(side="right")
-        box = tk.Frame(frame, bg=PANEL)
-        box.pack(fill="x", padx=12)
-        tree = ttk.Treeview(box, columns=[c[0] for c in columns], show="headings", height=7, style="Console.Treeview")
+        box, note = self._log_panel(frame, title)
+        note.configure(text="읽는 중")
+        tree = ttk.Treeview(box, columns=[c[0] for c in columns], show="headings", height=4, style="Console.Treeview")
         for column, heading, width in columns:
             tree.heading(column, text=heading, anchor="w")
             tree.column(column, width=width, minwidth=60, anchor="w",
                         stretch=column in ("where", "target", "what") or column == columns[-1][0])
         for tone, color in TONES.items():
             tree.tag_configure(tone, foreground=color)
-        scroll = ttk.Scrollbar(box, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
-        tree.pack(fill="x", expand=True)
+        self._scroll_content(box, tree)
         self.tables[key] = (tree, note)
 
     def _build_presence(self, frame: tk.Frame) -> None:
         """접속 탭 맨 위 '지금 접속 중'(서버 메모리 — 이력 없음, Jay 10-24). 관리자 로그인했을 때만."""
-        head = tk.Frame(frame, bg=PANEL)
-        head.pack(fill="x", padx=12, pady=(8, 2))
-        tk.Label(head, text="지금 접속 중 — 서버가 지금 붙어 있다고 아는 계정(기록하지 않음)", bg=PANEL, fg=MUTED,
-                 font=FONT).pack(side="left")
-        self.presence_note = tk.Label(head, text="관리자로 로그인하면 보입니다", bg=PANEL, fg=MUTED2,
-                                      font=("Malgun Gothic", 8))
-        self.presence_note.pack(side="right")
-        box = tk.Frame(frame, bg=PANEL)
-        box.pack(fill="x", padx=12)
-        self.presence_tree = ttk.Treeview(box, columns=[c[0] for c in PRESENCE_COLUMNS], show="headings", height=5,
+        box, self.presence_note = self._log_panel(frame, "지금 접속 중 — 서버가 지금 붙어 있다고 아는 계정(기록하지 않음)")
+        self.presence_note.configure(text="관리자로 로그인하면 보입니다")
+        self.presence_tree = ttk.Treeview(box, columns=[c[0] for c in PRESENCE_COLUMNS], show="headings", height=3,
                                           style="Console.Treeview")
         for column, heading, width in PRESENCE_COLUMNS:
             self.presence_tree.heading(column, text=heading, anchor="w")
             self.presence_tree.column(column, width=width, minwidth=60, anchor="w", stretch=column == "who")
-        self.presence_tree.pack(fill="x", expand=True)
+        self._scroll_content(box, self.presence_tree)
 
     def _render_presence(self) -> None:
         tree = getattr(self, "presence_tree", None)
@@ -421,7 +437,7 @@ class App:
         data = self.presence if self.session is not None else None
         tree.delete(*tree.get_children())
         if data is None:
-            self.presence_note.configure(text="관리자로 로그인하면 보입니다" if self.session is None else "읽는 중…", fg=MUTED2)
+            self.presence_note.configure(text="관리자로 로그인하면 보입니다" if self.session is None else "읽는 중", fg=MUTED2)
             return
         stamp = datetime.fromtimestamp(data.get("read_at") or time.time(), activity.KST).strftime("%H:%M:%S")
         if data.get("error"):
@@ -456,7 +472,7 @@ class App:
             stamp = datetime.fromtimestamp(read_at, activity.KST).strftime("%H:%M:%S") if read_at else ""
             text = (f"{paused}{f' — 마지막 {stamp} 읽음' if stamp else ''}" if paused
                     else f"일부만 읽음: {error}" if error and rows else error
-                    or (f"{stamp} 읽음 · {len(rows)}줄" if read_at else "읽는 중…"))
+                    or (f"{stamp} 읽음 · {len(rows)}줄" if read_at else "읽는 중"))
             note.configure(text=text, fg=AMBER if (error or paused) else MUTED2)
 
     def _presence_step(self, now: float, last: float) -> float:
@@ -503,12 +519,12 @@ class App:
         tk.Label(card, text="지금", bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9)).pack(anchor="w", padx=12, pady=(10, 0))
         self.intake_value = tk.Label(card, text="—", bg=PANEL, fg=TEXT, font=("Malgun Gothic", 18, "bold"))
         self.intake_value.pack(anchor="w", padx=12)
-        self.intake_sub = tk.Label(card, text="확인 중…", bg=PANEL, fg=MUTED, font=FONT, justify="left", wraplength=900)
+        self.intake_sub = tk.Label(card, text="확인 중", bg=PANEL, fg=MUTED, font=FONT, justify="left", wraplength=900)
         self.intake_sub.pack(anchor="w", padx=12, pady=(0, 10))
         self.intake_row = tk.Frame(body, bg=BG)
         self.intake_row.pack(fill="x", pady=10)
-        self.pause_button = self._button(self.intake_row, "⏸ 생성 접수 멈추기…", lambda: self.request_intake(True))
-        self.resume_button = self._button(self.intake_row, "▶ 다시 받기…", lambda: self.request_intake(False),
+        self.pause_button = self._button(self.intake_row, "⏸ 생성 접수 멈추기", lambda: self.request_intake(True))
+        self.resume_button = self._button(self.intake_row, "▶ 다시 받기", lambda: self.request_intake(False),
                                           primary=True)
         self.intake_hint = tk.Label(self.intake_row, text="", bg=BG, fg=MUTED, font=FONT)
         self.intake_note = tk.Label(body, text="", bg=BG, fg=AMBER, font=FONT, justify="left", wraplength=900)
@@ -516,7 +532,7 @@ class App:
         info = tk.Frame(body, bg=PANEL, highlightbackground="#26282d", highlightthickness=1)
         info.pack(fill="x", pady=10)
         tk.Label(info, text="멈춘 동안", bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9)).pack(anchor="w", padx=12, pady=(10, 0))
-        tk.Label(info, text="팀원 앱에는 '배포 준비로 새 생성 요청을 잠시 중지했습니다' 안내가 뜹니다. 이미 시작된 생성은 끝까지 갑니다.\n"
+        tk.Label(info, text='팀원 앱에는 "생성 요청을 잠시 중지했습니다" 안내가 뜹니다. 이미 시작된 생성은 끝까지 갑니다.\n'
                             "서버를 다시 켜도 저절로 풀리지 않습니다 — 배포가 끝나면 이 화면에서 [다시 받기]를 누르세요.",
                  bg=PANEL, fg=TEXT, font=FONT, justify="left", wraplength=900).pack(anchor="w", padx=12, pady=(0, 10))
         self.intake_last = tk.Label(body, text=last_intake_text(self.inst), bg=BG, fg=MUTED, font=FONT)
@@ -539,12 +555,12 @@ class App:
             paused, seen = self.intake_api
             source = f"서버 값({time.strftime('%H:%M:%S', time.localtime(seen))} 확인)"
             if db_paused is not None and db_paused != paused:
-                source += f" · DB 읽기는 '{'멈춤' if db_paused else '받는 중'}' — 다시 확인하려면 버튼을 누르세요"
+                source += f" · DB 읽기는 '{'중지' if db_paused else '가능'}' — 다시 확인하려면 버튼을 누르세요"
         elif db_paused is not None:
             paused, source = db_paused, "DB 읽기(추정 — 로그인하면 서버 값으로 확인)"
         else:
             paused, source = None, "확인 불가"
-        self.intake_value.configure(text={True: "멈춤", False: "받는 중", None: "확인 불가"}[paused],
+        self.intake_value.configure(text={True: "중지", False: "가능", None: "확인 불가"}[paused],
                                     fg={True: AMBER, False: LIME, None: MUTED}[paused])
         what = {True: "팀원의 새 생성 요청을 받지 않습니다", False: "팀원의 새 생성 요청을 받고 있습니다", None: ""}[paused]
         self.intake_sub.configure(text=" · ".join(p for p in (what, source) if p) + "\n" + counts)
@@ -569,7 +585,7 @@ class App:
             return
         self.intake_busy = True
         self._show_intake()
-        self.intake_note.configure(text="서버를 확인하고 지금 값을 읽는 중…", fg=MUTED)
+        self.intake_note.configure(text="서버를 확인하고 지금 값을 읽는 중", fg=MUTED)
         threading.Thread(target=self._intake_plan_worker, args=(self.session, want), daemon=True).start()
 
     def _intake_plan_worker(self, session: server_api.Session, want: bool) -> None:
@@ -596,7 +612,7 @@ class App:
         self._show_intake()
         if messagebox.askokcancel(f"{actions.ACTIONS[plan.kind]} 확인", "\n\n".join(plan.summary) + "\n\n실행할까요?",
                                   icon="warning"):
-            self.intake_note.configure(text="바꾸는 중…", fg=MUTED)
+            self.intake_note.configure(text="바꾸는 중", fg=MUTED)
             threading.Thread(target=self._start_worker, args=(plan, "intake"), daemon=True).start()
         else:
             self.intake_busy = False
@@ -613,7 +629,7 @@ class App:
             paused = _dict(state.get("intake")).get("paused")
             if isinstance(paused, bool):
                 self.intake_api = (paused, float(state.get("finished_at") or time.time()))
-            self.intake_note.configure(text=f"완료: 생성 접수 = {'멈춤' if paused else '받는 중'} (서버에서 다시 읽어 확인)", fg=LIME)
+            self.intake_note.configure(text=f"완료: 생성 접수 = {'중지' if paused else '가능'} (서버에서 다시 읽어 확인)", fg=LIME)
         elif status_text == "finished":
             if state.get("auth_expired"):
                 self.logout()
@@ -654,15 +670,15 @@ class App:
         self._header(page, "켜기·끄기 — 서버 예약 작업")
         body = tk.Frame(page, bg=BG)
         body.pack(fill="both", expand=True, padx=16, pady=12)
-        self.power_state = tk.Label(body, text="확인 중…", bg=PANEL, fg=TEXT, font=MONO, justify="left", anchor="w",
+        self.power_state = tk.Label(body, text="확인 중", bg=PANEL, fg=TEXT, font=MONO, justify="left", anchor="w",
                                     padx=12, pady=10)
         self.power_state.pack(fill="x")
         row = tk.Frame(body, bg=BG)
         row.pack(fill="x", pady=10)
         self.power_buttons = [
-            self._button(row, "다시 켜기…", lambda: self.request_power("server-restart"), primary=True),
-            self._button(row, "끄기…", lambda: self.request_power("server-stop")),
-            self._button(row, "켜기…", lambda: self.request_power("server-start")),
+            self._button(row, "다시 켜기", lambda: self.request_power("server-restart"), primary=True),
+            self._button(row, "끄기", lambda: self.request_power("server-stop")),
+            self._button(row, "켜기", lambda: self.request_power("server-start")),
         ]
         for button in self.power_buttons:
             button.pack(side="left", padx=(0, 8))
@@ -677,7 +693,7 @@ class App:
         tk.Label(repair, text="예약 작업이 없어졌거나 다른 설치를 가리킬 때·Python 이 바뀌었을 때만. 예약 작업 3개를 이 설치로 다시 "
                               "만들고(꺼 둔 작업도 켜짐) 서버를 다시 켭니다.",
                  bg=PANEL, fg=MUTED, font=FONT, wraplength=900, justify="left").pack(anchor="w", padx=12)
-        self.autostart_button = self._button(repair, "자동시작 다시 등록…", self.request_autostart)
+        self.autostart_button = self._button(repair, "자동시작 다시 등록", self.request_autostart)
         self.autostart_button.pack(anchor="w", padx=12, pady=(6, 10))
 
     def _show_power(self) -> None:
@@ -701,7 +717,7 @@ class App:
             return
         self.power_busy = True
         self._show_power()
-        self.power_note.configure(text="조건을 확인하는 중…", fg=MUTED)
+        self.power_note.configure(text="조건을 확인하는 중", fg=MUTED)
         threading.Thread(target=self._power_plan_worker, args=(kind,), daemon=True).start()
 
     def request_autostart(self) -> None:
@@ -726,15 +742,15 @@ class App:
         self._header(page, "서버 이사·복구")
         body = tk.Frame(page, bg=BG)
         body.pack(fill="both", expand=True, padx=16, pady=12)
-        self.move_state = tk.Label(body, text="확인 중…", bg=PANEL, fg=TEXT, font=FONT, justify="left", anchor="w",
+        self.move_state = tk.Label(body, text="확인 중", bg=PANEL, fg=TEXT, font=FONT, justify="left", anchor="w",
                                    padx=12, pady=10, wraplength=950)
         self.move_state.pack(fill="x")
         row = tk.Frame(body, bg=BG)
         row.pack(fill="x", pady=10)
         self.move_buttons = [
-            self._button(row, "연습 내보내기…", lambda: self.request_move("move-rehearsal")),
-            self._button(row, "진짜 이사 내보내기…", lambda: self.request_move("move-out"), primary=True),
-            self._button(row, "되돌리기(UNDO)…", lambda: self.request_move("move-undo")),
+            self._button(row, "연습 내보내기", lambda: self.request_move("move-rehearsal")),
+            self._button(row, "진짜 이사 내보내기", lambda: self.request_move("move-out"), primary=True),
+            self._button(row, "되돌리기(UNDO)", lambda: self.request_move("move-undo")),
         ]
         for button in self.move_buttons:
             button.pack(side="left", padx=(0, 8))
@@ -749,7 +765,7 @@ class App:
         tk.Label(restore, text="백업으로 복구 — 이 PC 의 DB 를 서버 디스크 자동 백업으로 되살립니다(먼저 [끄기])",
                  bg=PANEL, fg=TEXT, font=BOLD).pack(anchor="w", padx=12, pady=(8, 4))
         self.restore_tree = self._sets_tree(restore)
-        self.restore_button = self._button(restore, "이 백업으로 복구…", lambda: self.request_move("move-restore"))
+        self.restore_button = self._button(restore, "이 백업으로 복구", lambda: self.request_move("move-restore"))
         self.restore_button.pack(anchor="w", padx=12, pady=(6, 10))
 
     def _sets_tree(self, parent: tk.Frame) -> ttk.Treeview:
@@ -779,7 +795,7 @@ class App:
 
     def _show_move(self) -> None:
         view = self.move_view or {}
-        running, last, (kind, text) = view.get("running"), view.get("last"), view.get("record") or ("", "확인 중…")
+        running, last, (kind, text) = view.get("running"), view.get("last"), view.get("record") or ("", "확인 중")
         lines = [f"이사 기록: {text}"]
         if running:
             lines.append(f"지금 실행 중: {actions.ACTIONS.get(running.get('kind'), running.get('kind'))} — 콘솔 창에서 진행 중"
@@ -795,11 +811,11 @@ class App:
     def request_move(self, kind: str) -> None:
         if self.move_busy:
             return
-        selection = self._selected_set(self.restore_tree, (self.move_view or {}).get("sets")) \
+        selection = self._selected_set(self.restore_tree, (self.move_view or {}).get("sets"))\
             if kind == "move-restore" else None
         self.move_busy = True
         self._show_move()
-        self.move_note.configure(text="조건을 확인하는 중…", fg=MUTED)
+        self.move_note.configure(text="조건을 확인하는 중", fg=MUTED)
         threading.Thread(target=self._move_plan_worker, args=(kind, selection), daemon=True).start()
 
     def _move_plan_worker(self, kind: str, selection: dict | None) -> None:
@@ -827,7 +843,7 @@ class App:
             tk.Label(box, text=title, bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9)).pack(anchor="w", padx=12, pady=(8, 0))
             value = tk.Label(box, text="—", bg=PANEL, fg=TEXT, font=("Malgun Gothic", 15, "bold"))
             value.pack(anchor="w", padx=12)
-            sub = tk.Label(box, text="확인 중…", bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9), justify="left")
+            sub = tk.Label(box, text="확인 중", bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9), justify="left")
             sub.pack(anchor="w", padx=12, pady=(0, 8))
             self.backup_cards[key] = (value, sub)
         where = tk.Frame(body, bg=PANEL, highlightbackground="#26282d", highlightthickness=1)
@@ -839,9 +855,9 @@ class App:
         self.backup_entry = tk.Entry(row, bg=PANEL2, fg=TEXT, insertbackground=TEXT, relief="flat", font=FONT, width=60,
                                      disabledbackground=PANEL, disabledforeground=MUTED)
         self.backup_entry.pack(side="left", ipady=4)
-        self.backup_save = self._button(row, "저장(시험 복사)…", lambda: self.request_backup("backup-save"), primary=True)
+        self.backup_save = self._button(row, "저장(시험 복사)", lambda: self.request_backup("backup-save"), primary=True)
         self.backup_save.pack(side="left", padx=8)
-        self.backup_run = self._button(row, "지금 복사…", lambda: self.request_backup("backup-run"))
+        self.backup_run = self._button(row, "지금 복사", lambda: self.request_backup("backup-run"))
         self.backup_run.pack(side="left")
         self.backup_task = tk.Label(where, text="", bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9), justify="left",
                                     wraplength=900)
@@ -852,7 +868,7 @@ class App:
         notes.pack(fill="x")
         self.backup_note = tk.Label(notes, text="", bg=BG, fg=MUTED, font=FONT, justify="left", wraplength=900)
         self.backup_note.pack(side="left")
-        self.backup_revert = self._button(notes, "이전 위치로 되돌리기…", self.revert_backup)  # 시험 복사가 실패했을 때만
+        self.backup_revert = self._button(notes, "이전 위치로 되돌리기", self.revert_backup)  # 시험 복사가 실패했을 때만
         self.backup_old = ""
         sets = tk.Frame(body, bg=PANEL, highlightbackground="#26282d", highlightthickness=1)
         sets.pack(fill="x", pady=(12, 0))
@@ -861,7 +877,7 @@ class App:
         self.backup_sets = self._sets_tree(sets)
         drill = tk.Frame(sets, bg=PANEL)
         drill.pack(fill="x", padx=12, pady=(6, 10))
-        self.drill_button = self._button(drill, "이 백업 확인…", self.request_drill)
+        self.drill_button = self._button(drill, "이 백업 확인", self.request_drill)
         self.drill_button.pack(side="left")
         self.drill_note = tk.Label(drill, text="", bg=PANEL, fg=MUTED, font=FONT, justify="left", wraplength=780)
         self.drill_note.pack(side="left", padx=10)
@@ -923,7 +939,7 @@ class App:
         rows = view.get("sets")
         self._fill_sets(self.backup_sets, rows)
         if rows is None and not self.drill_busy:
-            self.drill_note.configure(text="백업 폴더를 읽지 못했습니다" if "sets" in view else "확인 중…", fg=MUTED)
+            self.drill_note.configure(text="백업 폴더를 읽지 못했습니다" if "sets" in view else "확인 중", fg=MUTED)
         elif not rows and not self.drill_busy:
             self.drill_note.configure(text="백업이 아직 없습니다", fg=MUTED)
         for button in (self.backup_save, self.backup_run):
@@ -943,7 +959,7 @@ class App:
         self.backup_busy = True
         self.backup_revert.pack_forget()
         self._show_backup()
-        self.backup_note.configure(text="조건을 확인하는 중…", fg=MUTED)
+        self.backup_note.configure(text="조건을 확인하는 중", fg=MUTED)
         threading.Thread(target=self._backup_plan_worker, args=(kind, self.backup_entry.get()), daemon=True).start()
 
     def _backup_plan_worker(self, kind: str, target: str) -> None:
@@ -969,7 +985,7 @@ class App:
             self.backup_entry.insert(0, target)
         if messagebox.askokcancel(f"{actions.ACTIONS[plan.kind]} 확인", "\n\n".join(plan.summary) + "\n\n실행할까요?",
                                   icon="warning"):
-            self.backup_note.configure(text="시작하는 중…", fg=MUTED)
+            self.backup_note.configure(text="시작하는 중", fg=MUTED)
             threading.Thread(target=self._start_worker, args=(plan, "backup"), daemon=True).start()
         else:
             self.backup_busy = False
@@ -979,7 +995,7 @@ class App:
     def _on_backup_job(self, state: dict, tail: str) -> None:
         status_text = state.get("status")
         if status_text not in JOB_TERMINAL:
-            self.backup_note.configure(text=tail or "진행 중…", fg=MUTED)
+            self.backup_note.configure(text=tail or "진행 중", fg=MUTED)
             return
         self.side_jobs.pop("backup", None)
         self.backup_busy, self.backup_due = False, True
@@ -995,7 +1011,7 @@ class App:
             return
         selection = self._selected_set(self.backup_sets, (self.backup_view or {}).get("sets"))
         self.drill_busy = True
-        self.drill_note.configure(text="조건을 확인하는 중…", fg=MUTED)
+        self.drill_note.configure(text="조건을 확인하는 중", fg=MUTED)
         self.drill_button.configure(state="disabled")
 
         def plan_worker() -> None:
@@ -1027,19 +1043,53 @@ class App:
             note.configure(text="하지 않았습니다:\n· " + "\n· ".join(plan.reasons), fg=AMBER)
             self._show_area(area)
             return
-        if messagebox.askokcancel(f"{actions.ACTIONS[plan.kind]} 확인", "\n\n".join(plan.summary) + "\n\n실행할까요?",
-                                  icon="warning"):
-            note.configure(text="시작하는 중…", fg=MUTED)
+        confirmed = (self._confirm_release_delete(plan) if plan.kind == "release-delete" else
+                     messagebox.askokcancel(f"{actions.ACTIONS[plan.kind]} 확인",
+                                            "\n\n".join(plan.summary) + "\n\n실행할까요?", icon="warning"))
+        if confirmed:
+            note.configure(text="시작하는 중", fg=MUTED)
             threading.Thread(target=self._start_worker, args=(plan, area), daemon=True).start()
         else:
             setattr(self, f"{area}_busy", False)
             note.configure(text="")
             self._show_area(area)
 
+    def _confirm_release_delete(self, plan: actions.Plan) -> bool:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("릴리스 삭제")
+        dialog.configure(bg=PANEL)
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        confirmed = False
+
+        def finish(value=False):
+            nonlocal confirmed
+            confirmed = value
+            dialog.destroy()
+
+        tk.Label(dialog, text="\n\n".join(plan.summary), bg=PANEL, fg=TEXT, font=FONT,
+                 wraplength=520, justify="left", anchor="w", padx=20, pady=20).pack(fill="x")
+        buttons = tk.Frame(dialog, bg=PANEL)
+        buttons.pack(fill="x", padx=20, pady=(0, 20))
+        delete = self._button(buttons, "삭제", lambda: finish(True), primary=True)
+        delete.pack(side="right")
+        cancel = self._button(buttons, "취소", finish)
+        cancel.pack(side="right", padx=8)
+        cancel.configure(default="active")
+        cancel.bind("<Return>", lambda _e: finish())
+        delete.bind("<Return>", lambda _e: finish(True))
+        dialog.bind("<Escape>", lambda _e: finish())
+        dialog.protocol("WM_DELETE_WINDOW", finish)
+        dialog.wait_visibility()
+        dialog.grab_set()
+        cancel.focus_set()
+        self.root.wait_window(dialog)
+        return confirmed
+
     def _on_area_job(self, area: str, state: dict, tail: str) -> None:
         note = self._area_note(area)
         if state.get("status") not in JOB_TERMINAL:
-            note.configure(text=tail or "진행 중…", fg=MUTED)
+            note.configure(text=tail or "진행 중", fg=MUTED)
             return
         self.side_jobs.pop(area, None)
         setattr(self, f"{area}_busy", False)
@@ -1069,7 +1119,7 @@ class App:
         self.release_shown = ""
         self.release_all = False  # 이전 릴리스까지 다 보이기(처음엔 최근 8개 + 배포 중·후보)
         tk.Label(body, text="NAS 릴리스 폴더의 모든 릴리스. [배포] = 팀원에게 알림이 가고 그 릴리스로 업데이트(옛 릴리스면 되돌리기). "
-                            "[재공지] = 알림만 다시 · [해제] = 팀원 알림만 거둠(배포는 그대로).",
+                            "[해제] = 팀원 알림만 거둠(배포는 그대로) · [삭제] = 확인 후 릴리스 파일 삭제.",
                  bg=BG, fg=MUTED, font=("Malgun Gothic", 9), wraplength=950, justify="left").pack(anchor="w", pady=(8, 4))
         self.release_warn = tk.Label(body, text="", bg=BG, fg=AMBER, font=FONT, wraplength=950, justify="left")
         self.release_warn.pack(anchor="w")
@@ -1082,19 +1132,40 @@ class App:
         notes.pack(side="bottom", fill="x")
         self.release_note = tk.Label(notes, text="", bg=BG, fg=MUTED, font=FONT, wraplength=820, justify="left")
         self.release_note.pack(side="left")
-        self.release_resume = self._button(notes, "이어서 하기…", lambda: self.request_release("release-resume", None))
+        self.release_resume = self._button(notes, "이어서 하기", lambda: self.request_release("release-resume", None))
         holder = tk.Frame(body, bg=BG)
         holder.pack(fill="both", expand=True, pady=6)
+        holder.columnconfigure(0, weight=1)
+        holder.rowconfigure(1, weight=1)
+        header_canvas = tk.Canvas(holder, bg=PANEL2, height=34, highlightthickness=0, bd=0)
+        header_canvas.grid(row=0, column=0, sticky="ew")
+        self.release_header = tk.Frame(header_canvas, bg=PANEL2, highlightbackground=PANEL2, highlightthickness=1)
+        header_window = header_canvas.create_window((0, 0), window=self.release_header, anchor="nw")
+        for column, (label, width) in enumerate(RELEASE_COLUMNS):
+            self.release_header.columnconfigure(column, minsize=width, weight=column == 0)
+            tk.Label(self.release_header, text=label, bg=PANEL2, fg=MUTED, font=BOLD,
+                     anchor="w", width=1, padx=10, pady=7).grid(row=0, column=column, sticky="ew")
         self.release_canvas = tk.Canvas(holder, bg=BG, highlightthickness=0, bd=0)
         scroll = ttk.Scrollbar(holder, orient="vertical", command=self.release_canvas.yview)
         self.release_canvas.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
-        self.release_canvas.pack(side="left", fill="both", expand=True)
+        scroll.grid(row=1, column=1, sticky="ns")
+        self.release_canvas.grid(row=1, column=0, sticky="nsew")
+        def scroll_x(*args):
+            self.release_canvas.xview(*args)
+            header_canvas.xview(*args)
+        horizontal = ttk.Scrollbar(holder, orient="horizontal", command=scroll_x)
+        horizontal.grid(row=2, column=0, sticky="ew")
+        self.release_canvas.configure(xscrollcommand=horizontal.set)
         self.release_rows = tk.Frame(self.release_canvas, bg=BG)
         window = self.release_canvas.create_window((0, 0), window=self.release_rows, anchor="nw")
         self.release_rows.bind("<Configure>", lambda _e: self.release_canvas.configure(
             scrollregion=self.release_canvas.bbox("all")))
-        self.release_canvas.bind("<Configure>", lambda e: self.release_canvas.itemconfigure(window, width=e.width))
+        def resize(e):
+            width = max(e.width, sum(size for _label, size in RELEASE_COLUMNS) + 2)
+            self.release_canvas.itemconfigure(window, width=width)
+            header_canvas.itemconfigure(header_window, width=width)
+            header_canvas.configure(scrollregion=(0, 0, width, 34))
+        self.release_canvas.bind("<Configure>", resize)
         wheel = lambda e: self.release_canvas.yview_scroll(-1 if e.delta > 0 else 1, "units")  # noqa: E731
         holder.bind("<Enter>", lambda _e: self.release_canvas.bind_all("<MouseWheel>", wheel))
         holder.bind("<Leave>", lambda _e: self.release_canvas.unbind_all("<MouseWheel>"))
@@ -1143,7 +1214,7 @@ class App:
         if overview and overview.get("published_state") == "error":
             warnings.append("팀 공개 표지(latest.json)를 읽을 수 없어 배포 상태를 확인할 수 없습니다")
         if notices is None:
-            warnings.append("관리자로 로그인하면 팀원 알림 상태와 [배포]·[재공지]·[해제] 단추가 보입니다"
+            warnings.append("관리자로 로그인하면 팀원 알림 상태와 [배포]·[해제]·[삭제] 단추를 사용할 수 있습니다"
                             + (f" — {view.get('notice_error')}" if view.get("notice_error") else ""))
         self.release_warn.configure(text="\n".join(f"· {w}" for w in warnings))
         for child in self.release_rows.winfo_children():
@@ -1152,8 +1223,9 @@ class App:
         published, candidate = release.shas(overview)
         pub = (overview or {}).get("published") or {}
         cand_file = (overview or {}).get("file") if (overview or {}).get("source") == "candidate" else None
-        blocked = (not read.get("ok") or bool(read.get("packages_error")) or overview is None
+        blocked = (not read.get("ok") or bool(read.get("packages_error")) or bool(read.get("overview_error")) or overview is None
                    or bool(overview.get("candidate_error")) or overview.get("published_state") == "error")
+        delete_blocked = not read.get("ok") or bool(read.get("packages_error"))
         shown = [r for i, r in enumerate(rows)
                  if self.release_all or i < 8 or r.get("file") in (pub.get("file"), cand_file)]
         for row in shown:
@@ -1161,8 +1233,9 @@ class App:
             notice = next((n for n in notices or [] if n.get("file") == row.get("file")
                            and (not sha or n.get("sha256") == sha)), None)
             self._release_row(row, notice, live=row.get("file") == pub.get("file"),
-                              candidate=row.get("file") == cand_file and (overview or {}).get("pending") is True,
-                              logged_in=notices is not None, blocked=blocked)
+                              candidate=row.get("file") == cand_file,
+                              logged_in=notices is not None, blocked=blocked,
+                              removed=row.get("file") in (view.get("removed_files") or []), delete_blocked=delete_blocked)
         if not shown:
             empty = "릴리스가 없습니다" if read.get("ok") and not read.get("packages_error") else "릴리스 목록을 읽지 못했습니다"
             tk.Label(self.release_rows, text=empty if source and read else "", bg=BG, fg=MUTED,
@@ -1172,7 +1245,7 @@ class App:
                          ).pack(anchor="w", pady=4)
         resume = view.get("resume")
         if resume and notices is not None:
-            self.release_resume.configure(text=f"이어서 하기 — v{resume.get('version')}…",
+            self.release_resume.configure(text=f"이어서 하기 — v{resume.get('version')}",
                                           state="disabled" if self.release_busy else "normal")
             self.release_resume.pack(side="left", padx=10)
         else:
@@ -1183,30 +1256,35 @@ class App:
         self._show_release()
 
     def _release_row(self, row: dict, notice: dict | None, live: bool, candidate: bool, logged_in: bool,
-                     blocked: bool) -> None:
+                     blocked: bool, removed: bool = False, delete_blocked: bool = False) -> None:
         revision = int((notice or {}).get("announcement_revision") or 0)
         waiting = candidate and revision > 0
         line = tk.Frame(self.release_rows, bg=PANEL, highlightbackground=LIME if live else "#26282d", highlightthickness=1)
-        line.pack(fill="x", pady=2)
-        tk.Label(line, text=f"v{row.get('version')}", bg=PANEL, fg=TEXT, font=BOLD).pack(side="left", padx=(12, 8), pady=6)
-        tag = ("팀 배포 중", LIME) if live else ("공지됨 · 아직 배포 안 됨", AMBER) if waiting else \
+        line.pack(fill="x", pady=(0, 2))
+        line.rowconfigure(0, minsize=54)
+        for column, (_label, width) in enumerate(RELEASE_COLUMNS):
+            line.columnconfigure(column, minsize=width, weight=column == 0)
+        tag = ("팀 배포 중", LIME) if live else ("공지됨 · 아직 배포 안 됨", AMBER) if waiting else\
             ("새 후보 · 배포 전", CYAN) if candidate else ("", MUTED)
-        if tag[0]:
-            tk.Label(line, text=tag[0], bg=PANEL2, fg=tag[1], font=("Malgun Gothic", 9, "bold"), padx=6).pack(side="left")
         size = row.get("size") if isinstance(row.get("size"), int) else 0
-        extra = f" · 알림 {revision}회" if revision else ""
-        tk.Label(line, text=f"{size / 1024 / 1024:,.0f}MB · {_built_at(str(row.get('version') or ''))}{extra}", bg=PANEL,
-                 fg=MUTED, font=("Malgun Gothic", 9)).pack(side="left", padx=8)
-        if not logged_in:
-            return
+        values = (f"v{row.get('version')}", tag[0] + (f" · 알림 {revision}회" if revision else ""),
+                  f"{size / 1024 / 1024:,.0f}MB", _built_at(str(row.get('version') or '')))
+        for column, text in enumerate(values):
+            tk.Label(line, text=text, bg=PANEL, fg=tag[1] if column == 1 else TEXT if column == 0 else MUTED,
+                     font=BOLD if column == 0 else FONT, anchor="w", width=1,
+                     wraplength=RELEASE_COLUMNS[column][1] - 20, padx=10, pady=9
+                     ).grid(row=0, column=column, sticky="ew")
         target = {**row, "notice": notice}
-        buttons = [("해제…", "release-remove", False, False)] if notice else []
-        buttons.append(("재공지…", "release-announce", True, False) if live and notice
-                       else ("배포 반영…" if waiting else "배포…", "release-deploy", candidate, blocked))
-        for label, kind, primary, off in buttons:
-            button = self._button(line, label, lambda k=kind: self.request_release(k, target), primary=primary)
-            button.configure(state="disabled" if self.release_busy or off else "normal")
-            button.pack(side="right", padx=6)
+        buttons = [("✓ 배포" if live and not blocked else "배포", "release-deploy", live and not blocked, blocked),
+                   ("✓ 해제" if removed and not notice else "해제", "release-remove", removed and not notice,
+                    removed and not notice),
+                   ("삭제", "release-delete", False, delete_blocked or live or candidate or bool(notice))]
+        for column, (label, kind, complete, off) in enumerate(buttons, 4):
+            button = self._button(line, label, lambda k=kind: self.request_release(k, target))
+            button.configure(fg=LIME if complete else TEXT,
+                             state="disabled" if self.release_busy or not logged_in or off else "normal",
+                             disabledforeground=LIME if complete else MUTED2)
+            button.grid(row=0, column=column, sticky="ew", padx=5, pady=5)
 
     def request_release(self, kind: str, row: dict | None) -> None:
         if not self.release_busy:
@@ -1215,13 +1293,21 @@ class App:
     def _begin_release(self, kind: str, row: dict | None) -> None:
         if self.release_busy or self.session is None:
             return
+        if kind == "release-delete":
+            read = (self.release_view or {}).get("read") or {}
+            overview = read.get("overview") or {}
+            if (not row or (self.release_view or {}).get("notices") is None
+                    or not read.get("ok") or read.get("packages_error") or row.get("notice")
+                    or row.get("file") in ((overview.get("published") or {}).get("file"), overview.get("file"))):
+                self.release_note.configure(text="배포 중이거나 후보인 릴리스, 상태를 확인하지 못한 릴리스는 삭제할 수 없습니다", fg=AMBER)
+                return
         if kind == "release-resume":
             row = (self.release_view or {}).get("resume")
             if not row:
                 return
         self.release_busy = True
         self._show_release()
-        self.release_note.configure(text="서버·릴리스 폴더를 확인하는 중…", fg=MUTED)
+        self.release_note.configure(text="서버·릴리스 폴더를 확인하는 중", fg=MUTED)
         threading.Thread(target=self._release_plan_worker, args=(kind, row, self.session), daemon=True).start()
 
     def _release_plan_worker(self, kind: str, row: dict, session: server_api.Session) -> None:
@@ -1233,22 +1319,37 @@ class App:
                 params, state, intent = release.resume_source(self.inst, row["job_id"])
                 plan = actions.plan_release_resume(self.inst, server, source, row["job_id"], params, state, intent,
                                                    unresolved, release.resume_chain(self.inst, row["job_id"]))
-            elif kind == "release-deploy":
+            elif kind in ("release-deploy", "release-delete"):
                 read = release.helper(self.inst, release.scratch_dir(self.inst), source, "read")
                 overview = read.get("overview") if isinstance(read.get("overview"), dict) else {}
-                if overview.get("source") == "candidate" and overview.get("file") == row["file"]:
+                if kind == "release-deploy" and overview.get("source") == "candidate" and overview.get("file") == row["file"]:
                     fields = {key: overview[key] for key in release.FIELDS}
                 else:
-                    self.queue.put(("area_note", "release", "릴리스 파일 지문을 확인하는 중(수백 MB — 몇 분 걸릴 수 있음)…"))
-                    answer = release.helper(self.inst, release.scratch_dir(self.inst), source, "manifest", row["file"],
+                    self.queue.put(("area_note", "release", "릴리스 파일 지문을 확인하는 중(수백 MB — 몇 분 걸릴 수 있음)"))
+                    answer = release.helper(self.inst, release.scratch_dir(self.inst), source,
+                                            "delete-info" if kind == "release-delete" else "manifest", row["file"],
                                             timeout=release.HASH_TIMEOUT)
                     if not answer.get("ok"):
                         raise release.ReleaseError(str(answer.get("error")))
                     fields = answer["manifest"]
-                notice = release.find_notice(server, session.token, str(fields.get("sha256") or ""))
-                plan = actions.plan_release_deploy(self.inst, server, source, read, fields, notice, unresolved)
+                notice = (release.find_delete_notice(server, session.token, fields) if kind == "release-delete"
+                          else release.find_notice(server, session.token, str(fields.get("sha256") or "")))
+                planner = actions.plan_release_delete if kind == "release-delete" else actions.plan_release_deploy
+                plan = planner(self.inst, server, source, read, fields, notice, unresolved)
             else:
                 sha = str((row.get("notice") or {}).get("sha256") or "")
+                if not sha and kind == "release-remove":
+                    read = release.helper(self.inst, release.scratch_dir(self.inst), source, "read")
+                    overview = read.get("overview") or {}
+                    fields = next((item for item in (overview, overview.get("published") or {})
+                                   if item.get("file") == row.get("file") and item.get("sha256")), None)
+                    if fields is None:
+                        answer = release.helper(self.inst, release.scratch_dir(self.inst), source,
+                                                "delete-info", row["file"], timeout=release.HASH_TIMEOUT)
+                        if not answer.get("ok"):
+                            raise release.ReleaseError(str(answer.get("error")))
+                        fields = answer["manifest"]
+                    sha = str(fields.get("sha256") or "")
                 notice = release.find_notice(server, session.token, sha) if sha else None
                 plan = actions.plan_notice_action(self.inst, kind, server, notice, sha, unresolved)
         except (server_api.ServerError, release.ReleaseError) as exc:
@@ -1259,7 +1360,7 @@ class App:
 
     # ---------- 주소 ----------
     def _build_address_page(self, page: tk.Frame) -> None:
-        self._header(page, "주소")
+        self._header(page, "서버 주소")
         body = tk.Frame(page, bg=BG)
         body.pack(fill="both", expand=True, padx=16, pady=12)
 
@@ -1268,10 +1369,10 @@ class App:
             box.pack(fill="x", pady=(0, 10))
             tk.Label(box, text=title, bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9)).pack(anchor="w", padx=12, pady=(8, 2))
             return box
-        now = card("지금 이 서버 주소 (이 PC 의 네트워크 주소 · 포트)")
+        now = card("현재 서버 주소 (이 PC의 네트워크 주소 · 포트)")
         row = tk.Frame(now, bg=PANEL)
         row.pack(fill="x", padx=12, pady=(0, 10))
-        self.address_now = tk.Label(row, text="확인 중…", bg=PANEL, fg=TEXT, font=("Malgun Gothic", 13, "bold"),
+        self.address_now = tk.Label(row, text="확인 중", bg=PANEL, fg=TEXT, font=("Malgun Gothic", 13, "bold"),
                                     justify="left")
         self.address_now.pack(side="left")
         self._button(row, "복사", self.copy_address).pack(side="right")
@@ -1283,7 +1384,7 @@ class App:
         row.pack(fill="x", padx=12)
         self.url_entry = tk.Entry(row, bg=PANEL2, fg=TEXT, insertbackground=TEXT, relief="flat", font=FONT, width=40)
         self.url_entry.pack(side="left", ipady=3)
-        self.address_button = self._button(row, "팀에 공지…", self.request_address, primary=True)
+        self.address_button = self._button(row, "팀에 공지", self.request_address, primary=True)
         self.address_button.pack(side="left", padx=8)
         tk.Label(move, text="NAS 릴리스 폴더에 이사 공지(server-location.json)를 남김 → 팀원 앱에 알림 → 누르면 새 주소로 전환(자동 전환 아님)",
                  bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9)).pack(anchor="w", padx=12, pady=(4, 2))
@@ -1328,7 +1429,7 @@ class App:
             return
         self.address_busy = True
         self._show_address_page()
-        self.address_note.configure(text="지금 공지 파일을 확인하는 중…", fg=MUTED)
+        self.address_note.configure(text="지금 공지 파일을 확인하는 중", fg=MUTED)
         threading.Thread(target=self._address_plan_worker, args=(self.url_entry.get(), self.name_entry.get()),
                          daemon=True).start()
 
@@ -1343,15 +1444,15 @@ class App:
         self.queue.put(("area_plan", "address", plan))
 
     def _build_update_page(self, page: tk.Frame) -> None:
-        self._header(page, "업데이트 — Git 업데이트(서버 코드)")
+        self._header(page, "업데이트(서버 Git)")
         body = tk.Frame(page, bg=BG)
         body.pack(fill="both", expand=True, padx=16, pady=12)
         tk.Label(body, text="GitHub main 의 코드로 이 서버를 바꿉니다. 옆에서 새 코드를 준비·시험한 뒤 마지막에 서버를 잠깐 "
-                             "멈추고 바꿔 끼웁니다(약 30초 끊김). 실패하면 이전 코드로 저절로 돌아갑니다.",
+                             "멈추고 새 버전으로 전환합니다(약 30초 끊김). 실패하면 이전 코드로 저절로 돌아갑니다.",
                  bg=BG, fg=MUTED, font=FONT, wraplength=900, justify="left").pack(anchor="w")
         row = tk.Frame(body, bg=BG)
         row.pack(fill="x", pady=10)
-        self.start_button = self._button(row, "Git 업데이트 시작…", self.request_plan, primary=True)
+        self.start_button = self._button(row, "Git 업데이트", self.request_plan, primary=True)
         self.start_button.pack(side="left")
         self.plan_note = tk.Label(row, text="", bg=BG, fg=AMBER, font=FONT, justify="left", wraplength=820)
         self.plan_note.pack(side="left", padx=12)
@@ -1386,11 +1487,12 @@ class App:
         tools = tk.Frame(body, bg=PANEL, highlightbackground="#26282d", highlightthickness=1)
         tools.pack(fill="x", pady=(10, 0))
         tk.Label(tools, text="관리 도구", bg=PANEL, fg=TEXT, font=BOLD).pack(side="left", padx=(12, 8), pady=8)
-        self.console_label = tk.Label(tools, text=console_version_text(), bg=PANEL, fg=MUTED, font=FONT)
-        self.console_label.pack(side="left")
-        self.rollback_button = self._button(tools, "이전 관리 창으로…", lambda: self.request_plan("console-rollback"))
+        console_sha = running_console_sha()
+        tk.Label(tools, text=f"{console_sha[:12]} (관리 창 stage)" if console_sha else "서버 폴더 판(아직 갱신 안 함)",
+                 bg=PANEL, fg=MUTED, font=FONT).pack(side="left")
+        self.rollback_button = self._button(tools, "이전 관리 창", lambda: self.request_plan("console-rollback"))
         self.rollback_button.pack(side="right", padx=8, pady=6)
-        self.tools_button = self._button(tools, "관리 도구 갱신…", lambda: self.request_plan("tools-update"))
+        self.tools_button = self._button(tools, "관리 도구 갱신", lambda: self.request_plan("tools-update"))
         self.tools_button.pack(side="right", pady=6)
         self.start_buttons = (self.start_button, self.tools_button, self.rollback_button)
 
@@ -1412,7 +1514,7 @@ class App:
         """토큰을 버린다(서버 로그아웃 API 는 그 계정의 MCP 연결까지 끊으므로 부르지 않는다)."""
         self.session = None
         self.login_label.configure(text="관리자 로그인 안 함", fg=MUTED)
-        self.login_button.configure(text="로그인…")
+        self.login_button.configure(text="로그인")
         self.release_due = True  # 로그인으로만 보이던 알림 상태·단추를 거둔다
         self.presence = None
         self._render_presence()
@@ -1459,7 +1561,7 @@ class App:
             return
         fields["password"].delete(0, "end")  # 화면에도 남기지 않는다(실패하면 다시 넣는다)
         self.login_send.configure(state="disabled")
-        self.login_note.configure(text="서버를 확인하고 로그인하는 중…", fg=MUTED)
+        self.login_note.configure(text="서버를 확인하고 로그인하는 중", fg=MUTED)
         threading.Thread(target=self._login_worker, args=(email, password), daemon=True).start()
 
     def _login_worker(self, email: str, password: str) -> None:
@@ -1530,7 +1632,7 @@ class App:
             return
         self.busy = True
         self._set_start_buttons("disabled")
-        self.plan_note.configure(text="대상과 조건을 확인하는 중…", fg=MUTED)
+        self.plan_note.configure(text="대상과 조건을 확인하는 중", fg=MUTED)
         threading.Thread(target=self._plan_worker, args=(kind,), daemon=True).start()
 
     def _plan_worker(self, kind: str = "git-update") -> None:
@@ -1743,7 +1845,7 @@ class App:
                 self._on_area_plan(item[1], item[2])
         elif kind == "side_started":
             self.side_jobs[item[1]] = item[2]
-            self._area_note(item[1]).configure(text=f"작업 {item[2][:8]} 시작 — 실행 직전에 조건을 다시 확인합니다…",
+            self._area_note(item[1]).configure(text=f"작업 {item[2][:8]} 시작 — 실행 직전에 조건을 다시 확인합니다",
                                                fg=MUTED)
         elif kind == "side_job":
             if self.side_jobs.get(item[1]) == item[2]:  # 끝 처리 뒤 늦게 온 같은 작업 알림은 버린다
@@ -1848,7 +1950,7 @@ class App:
         else:
             paused = st.intake.get("paused")
             active = _int(st.intake.get("active_generation_total", 0))
-            self._card("intake", "멈춤" if paused else "받는 중",
+            self._card("intake", "중지" if paused else "가능",
                        f"진행 중 생성 {'?' if active is None else active}건", AMBER if paused else LIME)
         self._show_intake()
         self._show_backup()
@@ -1991,11 +2093,6 @@ def running_console_sha() -> str:
     return install.CODE_ROOT.name if install.CODE_ROOT != install.ROOT else ""
 
 
-def console_version_text() -> str:
-    sha = running_console_sha()
-    return f"지금 관리 창: {sha[:12]} (관리 창 stage)" if sha else "지금 관리 창: 서버 폴더 판(아직 갱신 안 함)"
-
-
 def job_result_text(state: dict) -> tuple[str, str]:
     """작업 상태 → (화면 문구, 색). '결과 미확인'(종료 코드 3)은 사람이 확인할 때까지 새 작업을 막는다고 덧붙인다."""
     text, color = _result_base(state)
@@ -2012,14 +2109,14 @@ def _result_base(state: dict) -> tuple[str, str]:
     if status_text == "finished" and kind in ("backup-save", "backup-run"):
         return backup_result_text(state)
     if status_text == "finished" and kind in ("release-deploy", "release-resume", "release-announce",
-                                              "release-remove", "address-notice", "backup-drill",
+                                              "release-remove", "release-delete", "address-notice", "backup-drill",
                                               *actions.POWER_KINDS, *actions.MOVE_KINDS):
         return area_result_text(state)
     if status_text == "finished" and kind == "intake-set":
         if state.get("exit_code") != 0:
             return f"실패: 생성 접수를 바꾸지 못했습니다 — {state.get('error') or '이유 모름'}", RED
         paused = _dict(state.get("intake")).get("paused")
-        return f"완료: 생성 접수 = {'멈춤' if paused else '받는 중'}(서버에서 다시 읽어 확인)", LIME
+        return f"완료: 생성 접수 = {'중지' if paused else '가능'}(서버에서 다시 읽어 확인)", LIME
     if status_text == "finished" and kind in ("tools-update", "console-rollback"):
         if state.get("exit_code") != 0:
             return f"실패: {actions.ACTIONS[kind]}이(가) 끝나지 않았습니다 — 관리 창은 그대로입니다. 위 내용을 확인하세요.", RED
@@ -2047,7 +2144,7 @@ def _result_base(state: dict) -> tuple[str, str]:
             return "결과를 잃은 작업 — 확인했음으로 표시됨. 새 업데이트를 시작할 수 있습니다." + left, MUTED
         return ("결과 확인 필요: 실행기가 결과를 남기지 못했습니다. 서버 상태와 로그를 확인한 뒤 "
                 "[확인했음]을 누르세요(그 전에는 새 업데이트를 막습니다)." + left), AMBER
-    return "진행 중… (이 창을 닫아도 업데이트는 계속됩니다)", MUTED
+    return "진행 중 (이 창을 닫아도 업데이트는 계속됩니다)", MUTED
 
 
 def _built_at(version: str) -> str:
@@ -2069,6 +2166,8 @@ def area_result_text(state: dict) -> tuple[str, str]:
             extra += f" 임시 DB 사본이 남아 있을 수 있습니다: {state['leftover_tmp']} — 확인 후 지우세요."
         return f"결과 확인 필요: 실행기가 결과를 남기지 못했습니다.{extra}", AMBER
     error = state.get("error") or "이유 모름"
+    if kind == "release-delete" and state.get("exit_code") == jobs.UNCONFIRMED:
+        return f"결과 미확인: {error} — 릴리스 폴더와 로그를 확인한 뒤 업데이트 화면에서 [확인했음]을 누르세요.", AMBER
     if kind in actions.POWER_KINDS or kind == "backup-drill" or kind in actions.MOVE_KINDS:
         return _control_result_text(state, kind, error)
     if state.get("exit_code") == 0:
@@ -2076,6 +2175,8 @@ def area_result_text(state: dict) -> tuple[str, str]:
             return f"완료: 팀원 알림을 다시 보냈습니다({state.get('revision')}번째) — 배포는 그대로입니다.", LIME
         if kind == "release-remove":
             return "완료: 팀원 알림 목록에서 거뒀습니다(배포는 그대로).", LIME
+        if kind == "release-delete":
+            return "완료: 릴리스 파일을 삭제했습니다.", LIME
         if kind == "address-notice":
             note = _dict(state.get("announcement"))
             return f"완료: 팀에 주소를 공지했습니다(판 {note.get('revision')}) — 팀원 앱에 알림이 뜹니다.", LIME
@@ -2185,7 +2286,7 @@ def last_intake_text(inst: install.Installation) -> str:
             when = row.get("ts")
             stamp = time.strftime("%m-%d %H:%M", time.localtime(when)) if isinstance(when, (int, float)) else "시각 모름"
             paused = _dict(row.get("params")).get("paused")
-            return f"최근 변경: {stamp} {'멈춤으로' if paused else '받기로'} 바꿈 · {row.get('login_email') or '계정 모름'}"
+            return f"최근 변경: {stamp} {'중지로' if paused else '가능으로'} 바꿈 · {row.get('login_email') or '계정 모름'}"
     return "최근 변경: 관리 창 기록 없음(웹·붙여넣기로 바꾼 것은 여기 안 나옵니다)"
 
 

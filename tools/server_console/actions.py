@@ -10,10 +10,10 @@ from . import names
 from .backup import task_problems
 from .install import Installation, Runner, network_path, powershell_exe, trusted_git
 
-ACTIONS = {"git-update": "Git 업데이트", "tools-update": "관리 도구 갱신", "console-rollback": "이전 관리 창으로",
+ACTIONS = {"git-update": "Git 업데이트", "tools-update": "관리 도구 갱신", "console-rollback": "이전 관리 창",
            "intake-set": "생성 접수 바꾸기", "backup-save": "백업 복사 위치 저장(시험 복사)", "backup-run": "지금 복사",
            "release-deploy": "릴리스 배포", "release-resume": "배포 이어서 하기", "release-announce": "재공지",
-           "release-remove": "알림 해제", "address-notice": "팀에 주소 공지",
+           "release-remove": "알림 해제", "release-delete": "릴리스 파일 삭제", "address-notice": "팀에 주소 공지",
            "server-stop": "서버 끄기", "server-start": "서버 켜기", "server-restart": "서버 다시 켜기",
            "server-autostart": "자동시작 다시 등록", "backup-drill": "백업 확인(복원 연습)",
            "move-rehearsal": "연습 내보내기", "move-out": "진짜 이사 내보내기", "move-undo": "이사 되돌리기(UNDO)",
@@ -23,7 +23,7 @@ POWER_KINDS = ("server-stop", "server-start", "server-restart", "server-autostar
 MOVE_KINDS = ("move-rehearsal", "move-out", "move-undo", "move-restore")
 # 관리자 로그인이 필요한 작업 — 화면은 이것만 토큰을 파이프로 넘기고, 실행기는 이것만 토큰을 읽는다.
 AUTH_KINDS: frozenset[str] = frozenset({"intake-set", "release-deploy", "release-resume", "release-announce",
-                                        "release-remove"})
+                                        "release-remove", "release-delete"})
 
 
 @dataclass(frozen=True)
@@ -171,12 +171,12 @@ def plan_intake_set(inst: Installation, server: dict, paused_now: bool, want: bo
     if not isinstance(want, bool) or not isinstance(paused_now, bool):
         reasons.append("바꿀 값을 알 수 없습니다")
     elif paused_now == want:
-        reasons.append(f"서버 값이 이미 '{'멈춤' if want else '받는 중'}' 입니다")
+        reasons.append(f"서버 값이 이미 '{'중지' if want else '가능'}' 입니다")
     if reasons:
         return Refusal(tuple(reasons))
     if want:
         summary = ("팀원의 새 생성 요청 접수를 멈춥니다(이미 시작된 생성은 끝까지 갑니다).",
-                   "팀원 앱에는 '배포 준비로 새 생성 요청을 잠시 중지했습니다' 안내가 뜹니다.",
+                   '팀원 앱에는 "생성 요청을 잠시 중지했습니다" 안내가 뜹니다.',
                    "서버를 다시 켜도 저절로 풀리지 않습니다 — 배포가 끝나면 이 화면에서 [다시 받기]를 누르세요.")
     else:
         summary = ("새 생성 요청을 다시 받습니다.", "팀원 앱에서 바로 새 생성을 보낼 수 있습니다.")
@@ -320,9 +320,42 @@ def plan_release_resume(inst: Installation, server: dict, source: str, from_job:
     return Plan("release-resume", str(inst.root), "server", "", summary, params=params)
 
 
+def plan_release_delete(inst: Installation, server: dict, source: str, view: dict, fields: dict,
+                        notice: dict | None, unresolved_jobs: list[str] | None = ()) -> Plan | Refusal:
+    """삭제 확인 대상은 정확한 ZIP과 동봉 표지의 지문이다. 현재 배포·후보·공지 파일은 보호한다."""
+    from .release import source_problem
+    reasons = _job_refusals(inst, unresolved_jobs)
+    problem = source_problem(source)
+    if problem:
+        reasons.append(problem)
+    overview = view.get("overview") or {}
+    file = str(fields.get("file") or "")
+    published = overview.get("published") or {}
+    if file.casefold() == str(published.get("file") or "").casefold():
+        reasons.append("현재 팀에 배포 중인 릴리스는 삭제할 수 없습니다")
+    if overview.get("source") == "candidate" and file.casefold() == str(overview.get("file") or "").casefold():
+        reasons.append("현재 후보 릴리스는 삭제할 수 없습니다 — 다른 후보를 올린 뒤 삭제하세요")
+    if notice is not None:
+        reasons.append("이 릴리스의 팀원 알림을 먼저 [해제]한 뒤 삭제하세요")
+    sha = str(fields.get("sha256") or "")
+    if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
+        reasons.append("삭제할 릴리스 파일의 지문을 확인하지 못했습니다")
+    if reasons:
+        return Refusal(tuple(reasons))
+    sidecars = dict(fields.get("sidecars") or {})
+    summary = ("릴리스 파일을 삭제하시겠습니까?", f"버전: {fields.get('version')} · 파일: {file}",
+               f"위치: {source}", "삭제 대상: " + ", ".join([file, *sidecars]),
+               "휴지통으로 보내지 않고 삭제합니다. 이미 설치된 팀원 앱과 서버 코드는 그대로입니다.")
+    return Plan("release-delete", str(inst.root), "server", "", summary,
+                params={"server": dict(server), "release_dir": source,
+                        **{k: fields[k] for k in ("version", "file", "sha256", "size", "created_at")},
+                        "sidecars": sidecars})
+
+
 def plan_notice_action(inst: Installation, kind: str, server: dict, notice: dict | None, sha: str,
                        unresolved_jobs: list[str] | None = ()) -> Plan | Refusal:
     """[재공지](알림만) · [해제](알림 목록에서만) — 확인 대상 = 서버·공지 ID·sha."""
+    from .release import release_source
     reasons = _job_refusals(inst, unresolved_jobs)
     if not notice or notice.get("sha256") != sha:
         reasons.append("이 릴리스의 공지 항목이 없습니다 — [배포]로 알림을 보내세요")
@@ -332,7 +365,8 @@ def plan_notice_action(inst: Installation, kind: str, server: dict, notice: dict
     summary = ((f"v{version} 알림을 팀원에게 다시 보냅니다 — 배포(NAS 표지)는 그대로입니다.",) if kind == "release-announce"
                else (f"v{version} 알림을 팀원 알림 목록에서 거둡니다 — 배포된 릴리스와 목록 줄은 그대로입니다.",))
     return Plan(kind, str(inst.root), "server", "", summary,
-                params={"server": dict(server), "notice_id": notice["id"], "sha256": sha})
+                params={"server": dict(server), "notice_id": notice["id"], "sha256": sha,
+                        "file": str(notice.get("file") or ""), "release_dir": release_source(inst)})
 
 
 def plan_address_notice(inst: Installation, source: str, location: dict, url: str, name: str,

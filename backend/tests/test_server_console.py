@@ -838,6 +838,9 @@ _RELEASE_STUB = textwrap.dedent("""
     def promote_candidate(expected, root): pass
     def deploy_package(expected, expect_published, expect_candidate, root): pass
     def install_source(root): pass
+    def _release_lock(root): pass
+    def _manifest_state(path): pass
+    def _package_version(path): pass
 """)
 _RELOCATION_STUB = textwrap.dedent("""
     class RelocationReadError(RuntimeError): pass
@@ -1792,7 +1795,7 @@ def test_intake_plan_targets_the_server_and_both_values(tmp_path):
     plan = actions.plan_intake_set(inst, SERVER, False, True)
     assert plan.kind == "intake-set" and plan.params == {"server": SERVER, "from": False, "paused": True}
     assert "intake-set" in actions.AUTH_KINDS and "[다시 받기]" in " ".join(plan.summary)
-    assert "이미 '멈춤'" in actions.plan_intake_set(inst, SERVER, True, True).reasons[0]
+    assert "이미 '중지'" in actions.plan_intake_set(inst, SERVER, True, True).reasons[0]
     assert "알 수 없습니다" in actions.plan_intake_set(inst, SERVER, True, "yes").reasons[0]
     # 업데이트 흔적·미확인 작업이 있어도 접수는 바꿀 수 있다(멈춘 채 갇히지 않게)
     assert isinstance(actions.plan_intake_set(make_inst(tmp_path, problems=("not_git_clone",)), SERVER, True, False),
@@ -1972,12 +1975,12 @@ def test_ui_intake_page_prefers_the_server_value_and_keeps_both_buttons_honest(t
     ui, root, app, _errors = _app(tmp_path, monkeypatch)
     from server_console import server_api
     try:
-        app._handle(("status", _status(None)))  # DB: 받는 중, 진행 중 '?'
-        assert app.intake_value.cget("text") == "받는 중" and "DB 읽기(추정" in app.intake_sub.cget("text")
+        app._handle(("status", _status(None)))  # DB: 가능, 진행 중 '?'
+        assert app.intake_value.cget("text") == "가능" and "DB 읽기(추정" in app.intake_sub.cget("text")
         assert app.pause_button.winfo_manager() == "pack" and not app.resume_button.winfo_manager()
         app._handle(("intake_value", True, time.time()))
-        assert app.intake_value.cget("text") == "멈춤" and "서버 값(" in app.intake_sub.cget("text")
-        assert "DB 읽기는 '받는 중'" in app.intake_sub.cget("text")
+        assert app.intake_value.cget("text") == "중지" and "서버 값(" in app.intake_sub.cget("text")
+        assert "DB 읽기는 '가능'" in app.intake_sub.cget("text")
         assert app.resume_button.winfo_manager() == "pack" and not app.pause_button.winfo_manager()
 
         app.request_intake(False)  # 로그인 전이면 로그인 창부터
@@ -1995,7 +1998,7 @@ def test_ui_intake_page_prefers_the_server_value_and_keeps_both_buttons_honest(t
         assert app.intake_busy is True and app.side_jobs == {"intake": "e" * 32}
         done = {"status": "finished", "exit_code": 0, "intake": {"paused": False}, "finished_at": time.time()}
         app._handle(("side_job", "intake", "e" * 32, done, ""))
-        assert app.intake_busy is False and app.intake_value.cget("text") == "받는 중" and not app.side_jobs
+        assert app.intake_busy is False and app.intake_value.cget("text") == "가능" and not app.side_jobs
         assert "완료" in app.intake_note.cget("text")
         app.intake_note.configure(text="")
         app._handle(("side_job", "intake", "e" * 32, done, ""))  # 끝난 뒤 늦게 온 같은 알림은 버린다
@@ -2025,8 +2028,8 @@ def test_last_intake_change_comes_from_the_console_record(tmp_path):
     (inst.logs / names.ACTION_LOG).write_text("".join(json.dumps(r) + "\n" for r in rows) + "not json\n",
                                               encoding="utf-8")
     text = ui.last_intake_text(inst)
-    assert "멈춤으로 바꿈" in text and "admin@x" in text
-    assert "멈춤" in ui.job_result_text({"status": "finished", "kind": "intake-set", "exit_code": 0,
+    assert "중지로 바꿈" in text and "admin@x" in text
+    assert "중지" in ui.job_result_text({"status": "finished", "kind": "intake-set", "exit_code": 0,
                                          "intake": {"paused": True}})[0]
 
 
@@ -2602,7 +2605,8 @@ def test_resume_and_notice_plans_refuse_plainly(tmp_path):
                                         (failed, intent, "\\\\NAS\\other", "다릅니다")):
         assert why in " ".join(actions.plan_release_resume(inst, SERVER, source, "f" * 32, src, state, intent_).reasons)
     assert actions.plan_notice_action(inst, "release-remove", SERVER, _notice(1), SHA_C).params == {
-        "server": SERVER, "notice_id": f"release-{SHA_C}", "sha256": SHA_C}
+        "server": SERVER, "notice_id": f"release-{SHA_C}", "sha256": SHA_C,
+        "file": FIELDS_C["file"], "release_dir": ""}
     assert "공지 항목이 없습니다" in actions.plan_notice_action(inst, "release-announce", SERVER, None, SHA_C).reasons[0]
 
 
@@ -2697,7 +2701,7 @@ def test_runner_rechecks_the_same_release_target_then_deploys_and_resumes(tmp_pa
                                                         ("release-resume", "started"), ("release-resume", "success")]
 
 
-def test_ui_release_page_shows_buttons_only_after_login_and_offers_resume(tmp_path, monkeypatch):
+def test_ui_release_page_enables_buttons_after_login_and_offers_resume(tmp_path, monkeypatch):
     ui, root, app, _errors = _app(tmp_path, monkeypatch)
     try:
         overview = {"version": FIELDS_C["version"], "file": FIELDS_C["file"], "sha256": SHA_C, "source": "candidate",
@@ -2710,14 +2714,19 @@ def test_ui_release_page_shows_buttons_only_after_login_and_offers_resume(tmp_pa
         app._handle(("release_view", view))
         buttons = lambda: [w.cget("text") for line in app.release_rows.winfo_children()  # noqa: E731
                            for w in line.winfo_children() if isinstance(w, ui.tk.Button)]
-        assert buttons() == [] and "로그인하면" in app.release_warn.cget("text") and not app.release_resume.winfo_manager()
+        controls = lambda: [w for line in app.release_rows.winfo_children() for w in line.winfo_children()
+                            if isinstance(w, ui.tk.Button)]
+        assert all(str(w.cget("state")) == "disabled" for w in controls())
+        assert "로그인하면" in app.release_warn.cget("text") and not app.release_resume.winfo_manager()
         notices = [{**_notice(1, SHA_A), "file": "MVHub-2026.10.22-2105.zip"}]
         app._handle(("release_view", {**view, "notices": notices}))
-        assert buttons() == ["배포…", "해제…", "재공지…"] and app.release_resume.winfo_manager() == "pack"
+        assert buttons() == ["배포", "해제", "삭제", "✓ 배포", "해제", "삭제"]
+        assert app.release_resume.winfo_manager() == "pack"
         texts = [w.cget("text") for line in app.release_rows.winfo_children() for w in line.winfo_children()]
-        assert "새 후보 · 배포 전" in texts and "팀 배포 중" in texts and any("알림 1회" in t for t in texts)
+        assert "새 후보 · 배포 전" in texts and any("팀 배포 중" in t for t in texts) and any("알림 1회" in t for t in texts)
         app._handle(("release_view", {**view, "notices": [*notices, _notice(1)]}))
-        assert "배포 반영…" in buttons()  # 알림은 나갔는데 아직 배포 전인 후보
+        assert buttons()[0] == "배포"  # 알림만 나간 후보는 배포 완료 표시를 하지 않는다
+        assert all(str(w.cget("state")) == "disabled" for w in controls() if w.cget("text") == "삭제")
         app.release_busy = True
         app._handle(("side_started", "release", "d" * 32))
         app._handle(("side_job", "release", "d" * 32, {"status": "finished", "kind": "release-deploy", "exit_code": 3,
@@ -2845,7 +2854,7 @@ def test_ui_intake_and_release_buttons_are_separate_and_old_releases_can_be_show
         app._handle(("status", _status(None)))
         app._handle(("intake_value", True, time.time()))
         intake_resume = app.resume_button
-        assert intake_resume.cget("text") == "▶ 다시 받기…" and intake_resume.winfo_manager() == "pack"
+        assert intake_resume.cget("text") == "▶ 다시 받기" and intake_resume.winfo_manager() == "pack"
         rows = [{"file": f"MVHub-2026.10.{d:02d}-1200.zip", "version": f"2026.10.{d:02d}-1200", "size": 1}
                 for d in range(20, 8, -1)]  # 12개
         overview = {"source": "latest", "published": {"version": rows[0]["version"], "sha256": SHA_A,
@@ -2854,7 +2863,7 @@ def test_ui_intake_and_release_buttons_are_separate_and_old_releases_can_be_show
                 "notices": [], "resume": {"job_id": "f" * 32, "version": "2026.10.20-1200"}}
         app._handle(("release_view", view))
         assert app.release_resume is not intake_resume and app.release_resume.winfo_manager() == "pack"
-        assert app.resume_button.cget("text") == "▶ 다시 받기…"  # 릴리스 화면이 생성 접수 단추를 바꾸지 않았다
+        assert app.resume_button.cget("text") == "▶ 다시 받기"  # 릴리스 화면이 생성 접수 단추를 바꾸지 않았다
         app._handle(("intake_value", False, time.time()))
         assert app.release_resume.winfo_manager() == "pack"  # 생성 접수 화면이 릴리스 단추를 숨기지 않았다
         lines = lambda: [w for w in app.release_rows.winfo_children() if isinstance(w, ui.tk.Frame)]  # noqa: E731
@@ -3135,6 +3144,170 @@ def test_ui_tables_follow_the_worker_filter_and_show_read_errors(tmp_path, monke
         assert "관리 DB" in note.cget("text") and str(note.cget("fg")) == ui.AMBER
         app._handle(("noise", 238))
         assert "238줄 숨김" in app.noise_label.cget("text")
+        assert errors == []
+    finally:
+        root.destroy()
+
+
+def test_ui_log_panels_keep_independent_scrollbars_and_logs_at_minimum_size(tmp_path, monkeypatch):
+    ui, root, app, errors = _app(tmp_path, monkeypatch)
+    try:
+        root.deiconify()
+        root.geometry("1000x640")
+        for key in ("generation", "settings", "connection", "server"):
+            if key not in app.texts:
+                continue
+            app.notebook.select(list(app.texts).index(key))
+            root.update()
+            text = app.texts[key]
+            assert text.winfo_height() >= 30
+            widgets = [text]
+            if key in app.tables:
+                widgets.append(app.tables[key][0])
+            if key == "connection":
+                widgets.append(app.presence_tree)
+            assert len({w.master for w in widgets}) == len(widgets)
+            for widget in widgets:
+                scrollbars = [w for w in widget.master.winfo_children() if isinstance(w, ui.ttk.Scrollbar)]
+                assert {str(w.cget("orient")) for w in scrollbars} == {"vertical", "horizontal"}
+                assert widget.cget("yscrollcommand") and widget.cget("xscrollcommand")
+        style = ui.ttk.Style(root)
+        for orientation in ("Vertical", "Horizontal"):
+            name = f"{orientation}.TScrollbar"
+            assert style.lookup(name, "troughcolor") == ui.BG2
+            assert style.lookup(name, "background", ("active",)) == ui.LIME
+            assert style.lookup(name, "background", ("pressed",)) == ui.LIME
+        assert errors == []
+    finally:
+        root.destroy()
+
+
+def test_ui_release_grid_checks_only_confirmed_actions_and_protects_current_files(tmp_path, monkeypatch):
+    ui, root, app, errors = _app(tmp_path, monkeypatch)
+    try:
+        row = {"file": FIELDS_C["file"], "version": FIELDS_C["version"], "size": 100}
+        view = {"source": "\\\\NAS\\r", "read": {"ok": True, "packages": [row]}, "notices": []}
+        app._handle(("release_view", view))
+        line = app.release_rows.winfo_children()[0]
+        buttons = [w for w in line.winfo_children() if isinstance(w, ui.tk.Button)]
+        assert [w.cget("text") for w in buttons] == ["배포", "해제", "삭제"]
+        assert str(buttons[2].cget("state")) == "normal"
+        assert [int(w.grid_info()["column"]) for w in buttons] == [4, 5, 6]
+        app._handle(("release_view", {**view, "removed_files": [row["file"]]}))
+        line = app.release_rows.winfo_children()[0]
+        assert any(w.cget("text") == "✓ 해제" for w in line.winfo_children())
+        app._handle(("release_view", {**view, "removed_files": [row["file"]], "notices": [_notice(1)]}))
+        line = app.release_rows.winfo_children()[0]
+        assert not any(w.cget("text") == "✓ 해제" for w in line.winfo_children())
+        app.session = ui.server_api.Session(SERVER, "token", "admin@x")
+        app.release_view = {**view, "read": {**view["read"], "overview": {"source": "candidate", **FIELDS_C}}}
+        app._begin_release("release-delete", row)
+        assert app.release_busy is False and "삭제할 수 없습니다" in app.release_note.cget("text")
+        assert errors == []
+    finally:
+        root.destroy()
+
+
+def test_ui_delete_plan_rechecks_file_and_all_matching_notices(tmp_path, monkeypatch):
+    ui, root, app, _errors = _app(tmp_path, monkeypatch)
+    calls = []
+    read = {"ok": True, "packages": [{"file": FIELDS_C["file"]}]}
+    fields = {**FIELDS_C, "sidecars": {}}
+    notice = _notice(1)
+    try:
+        monkeypatch.setattr(ui.server_api, "verify_server", lambda *_args: SERVER)
+        monkeypatch.setattr(jobs, "unresolved_jobs_or_repair", lambda *_args: [])
+        monkeypatch.setattr(release, "release_source", lambda _inst: "\\\\NAS\\r")
+        def helper(_inst, _scratch, _source, command, *args, **_kwargs):
+            calls.append((command, args))
+            return read if command == "read" else {"ok": True, "manifest": fields}
+        monkeypatch.setattr(release, "helper", helper)
+        monkeypatch.setattr(release, "find_delete_notice", lambda _server, _token, actual: notice if actual == fields else None)
+        monkeypatch.setattr(actions, "plan_release_delete", lambda *_args: _args)
+        app._release_plan_worker("release-delete", {"file": FIELDS_C["file"]},
+                                 ui.server_api.Session(SERVER, "token", "admin@x"))
+        assert calls == [("read", ()), ("delete-info", (FIELDS_C["file"],))]
+        app.queue.get_nowait()  # 오래 걸릴 수 있는 파일 지문 읽기 안내
+        event = app.queue.get_nowait()
+        assert event[:2] == ("area_plan", "release")
+        assert event[2][3:] == (read, fields, notice, [])
+        assert ui.area_result_text({"status": "finished", "kind": "release-delete", "exit_code": 0}) == \
+            ("완료: 릴리스 파일을 삭제했습니다.", ui.LIME)
+        text, color = ui.area_result_text({"status": "finished", "kind": "release-delete", "exit_code": 3})
+        assert "결과 미확인" in text and color == ui.AMBER
+    finally:
+        root.destroy()
+
+
+def test_ui_remove_finds_a_notice_missing_from_the_recent_list(tmp_path, monkeypatch):
+    ui, root, app, _errors = _app(tmp_path, monkeypatch)
+    try:
+        monkeypatch.setattr(ui.server_api, "verify_server", lambda *_args: SERVER)
+        monkeypatch.setattr(jobs, "unresolved_jobs_or_repair", lambda *_args: [])
+        monkeypatch.setattr(release, "release_source", lambda _inst: "\\\\NAS\\r")
+        calls = []
+        def helper(_inst, _scratch, _source, command, *args, **_kwargs):
+            calls.append(command)
+            return {"ok": True} if command == "read" else {"ok": True, "manifest": FIELDS_C}
+        monkeypatch.setattr(release, "helper", helper)
+        monkeypatch.setattr(release, "find_notice", lambda _server, _token, sha: _notice(1) if sha == SHA_C else None)
+        monkeypatch.setattr(actions, "plan_notice_action", lambda *_args: _args)
+        app._release_plan_worker("release-remove", {"file": FIELDS_C["file"], "notice": None},
+                                 ui.server_api.Session(SERVER, "token", "admin@x"))
+        event = app.queue.get_nowait()
+        assert calls == ["read", "delete-info"]
+        assert event[:2] == ("area_plan", "release")
+        assert event[2][1] == "release-remove" and event[2][3] == _notice(1) and event[2][4] == SHA_C
+    finally:
+        root.destroy()
+
+
+def test_ui_release_columns_align_with_long_status_at_both_window_sizes(tmp_path, monkeypatch):
+    ui, root, app, errors = _app(tmp_path, monkeypatch)
+    try:
+        old = {**FIELDS_C, "file": "MVHub-2026.10.22-2105.zip", "version": "2026.10.22-2105"}
+        overview = {**FIELDS_C, "source": "candidate", "pending": True, "published": old}
+        app._handle(("release_view", {"source": "\\\\NAS\\r", "read": {
+            "ok": True, "packages": [FIELDS_C, old], "overview": overview},
+            "notices": [_notice(1), {**_notice(1, SHA_A), "file": old["file"]}]}))
+        app.show("release")
+        root.deiconify()
+        for width in (1000, 1280):
+            root.geometry(f"{width}x800")
+            root.update()
+            expected = [(app.release_header.grid_bbox(column, 0)[0],
+                         app.release_header.grid_bbox(column, 0)[2]) for column in range(7)]
+            lines = [w for w in app.release_rows.winfo_children() if isinstance(w, ui.tk.Frame)]
+            assert len(lines) == 2
+            for line in lines:
+                assert [(line.grid_bbox(column, 0)[0], line.grid_bbox(column, 0)[2])
+                        for column in range(7)] == expected
+        assert errors == []
+    finally:
+        root.destroy()
+
+
+def test_ui_release_delete_confirmation_defaults_to_cancel_and_can_be_replaced(tmp_path, monkeypatch):
+    ui, root, app, errors = _app(tmp_path, monkeypatch)
+    plan = actions.Plan("release-delete", str(app.inst.root), "server", "", ("삭제 대상: old.zip",))
+    try:
+        root.deiconify()
+        inspected = []
+        def cancel_dialog():
+            dialog = next(w for w in root.winfo_children() if isinstance(w, ui.tk.Toplevel))
+            controls = [w for frame in dialog.winfo_children() for w in frame.winfo_children()
+                        if isinstance(w, ui.tk.Button)]
+            inspected.extend(w.cget("text") for w in controls)
+            cancel = next(w for w in controls if w.cget("text") == "취소")
+            assert str(cancel.cget("default")) == "active"
+            cancel.invoke()
+        root.after(30, cancel_dialog)
+        assert app._confirm_release_delete(plan) is False
+        assert set(inspected) == {"취소", "삭제"}
+        monkeypatch.setattr(app, "_confirm_release_delete", lambda actual: actual is not plan)
+        app.release_busy = True
+        app._on_area_plan("release", plan)
+        assert app.release_busy is False
         assert errors == []
     finally:
         root.destroy()

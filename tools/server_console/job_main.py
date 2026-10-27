@@ -79,13 +79,13 @@ def run_intake(inst: install.Installation, job_id: str, request: dict, token: st
             return actions.Refusal((str(exc),))
 
     def apply(_job, say) -> tuple[int, dict]:
-        say(f"생성 접수를 '{'멈춤' if want else '받는 중'}'으로 바꿉니다")
+        say(f"생성 접수를 '{'중지' if want else '가능'}'으로 바꿉니다")
         try:
             after = server_api.set_intake(params["server"], token, want)
         except server_api.ServerError as exc:
             say(f"실패: {exc}")
             return 1, {"error": str(exc)[:500], "auth_expired": isinstance(exc, server_api.AuthExpired)}
-        say(f"완료: 서버 값 = {'멈춤' if after else '받는 중'}(다시 읽어 확인)")
+        say(f"완료: 서버 값 = {'중지' if after else '가능'}(다시 읽어 확인)")
         return 0, {"intake": {"paused": after}}
 
     return jobs.run_job(inst, job_id, recompute, work=apply)
@@ -124,7 +124,15 @@ def run_release(inst: install.Installation, job_id: str, request: dict, token: s
                 from_params, from_state, intent = release.resume_source(inst, params["from_job"])
                 return actions.plan_release_resume(inst, server, source, params["from_job"], from_params, from_state,
                                                    intent, unresolved, release.resume_chain(inst, params["from_job"]))
-            notice = release.find_notice(server, token, params["sha256"])
+            notice = (release.find_delete_notice(server, token, params) if kind == "release-delete"
+                      else release.find_notice(server, token, params["sha256"]))
+            if kind == "release-delete":
+                read = release.helper(inst, job / "scratch", source, "read")
+                answer = release.helper(inst, job / "scratch", source, "delete-info", params["file"],
+                                        timeout=release.HASH_TIMEOUT)
+                if not answer.get("ok"):
+                    return actions.Refusal((str(answer.get("error") or "삭제 대상을 읽지 못했습니다"),))
+                return actions.plan_release_delete(inst, server, source, read, answer["manifest"], notice, unresolved)
             if kind == "release-deploy":
                 fields = {key: params[key] for key in release.FIELDS}
                 read = release.helper(inst, job / "scratch", source, "read")
@@ -144,6 +152,8 @@ def run_release(inst: install.Installation, job_id: str, request: dict, token: s
             return code, extra
         if kind == "release-announce":
             return release.announce_work(params, token, say)
+        if kind == "release-delete":
+            return release.delete_work(inst, job, params, token, say)
         return release.remove_work(params, token, say)
 
     return jobs.run_job(inst, job_id, recompute, work=work)
