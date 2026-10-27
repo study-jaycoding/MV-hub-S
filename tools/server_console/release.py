@@ -64,14 +64,15 @@ def _atomic_text(path: Path, text: str) -> None:
     os.replace(temp, path)
 
 
-def save_source(inst: Installation, value: str) -> str:
-    """저장한 값을 돌려준다 — Z:\\… 는 실제 주소로 바꿔 저장한다(관리자 창에는 연결 드라이브가 안 보인다)."""
+def save_source(inst: Installation, value: str) -> None:
+    """Z:\\… 같은 연결 드라이브는 받지 않는다(관리자 창에는 안 보인다) — 화면이 실제 주소로 바꿔 보여 주고 다시 받는다."""
     text, why = network_path(value)
+    if not why and text != value.strip():
+        why = f"관리자 권한인 이 창에는 {value.strip()[:2]} 가 보이지 않습니다 — 실제 주소 {text} 로 적으세요"
     problem = why or source_problem(text)
     if problem:
         raise ReleaseError(problem)
     _atomic_text(release_root(inst) / "INSTALL_SOURCE.txt", text + "\n")
-    return text
 
 
 def read_state(inst: Installation) -> dict:

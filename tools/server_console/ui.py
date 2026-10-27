@@ -1101,16 +1101,20 @@ class App:
 
     def save_release_source(self) -> None:
         typed = self.release_entry.get().strip()
+        fixed, why = install.network_path(typed)
+        if not why and fixed != typed:  # 바꾼 주소를 사람이 보고 다시 누를 때만 저장한다
+            self.release_entry.delete(0, "end")
+            self.release_entry.insert(0, fixed)
+            self.release_note.configure(text=f"{typed[:2]} 는 관리자 권한인 이 창에서 보이지 않아 실제 주소로 바꿔 넣었습니다 "
+                                             "— 맞으면 [저장]을 다시 누르세요", fg=AMBER)
+            return
         try:
-            saved = release.save_source(self.inst, typed)
+            release.save_source(self.inst, typed)
         except (release.ReleaseError, OSError) as exc:
             self.release_note.configure(text=f"저장하지 않았습니다: {exc}", fg=AMBER)
             return
-        self.release_entry.delete(0, "end")
-        self.release_entry.insert(0, saved)
-        self.release_shown = saved
-        moved = f" ({typed[:2]} 는 이 창에서 안 보여 실제 주소로 바꿨습니다)" if saved != typed else ""
-        self.release_note.configure(text=f"NAS 릴리스 폴더를 저장했습니다{moved} — 목록을 다시 읽습니다", fg=LIME)
+        self.release_shown = typed
+        self.release_note.configure(text="NAS 릴리스 폴더를 저장했습니다 — 목록을 다시 읽습니다", fg=LIME)
         self.release_due = True
 
     def _show_release(self) -> None:
@@ -1130,7 +1134,7 @@ class App:
             fixed, why = install.network_path(source)
             if why or fixed != source:  # 전에 Z:\… 로 저장해 둔 값
                 warnings.append(why or f"{source[:2]} 같은 연결 드라이브는 관리자 권한인 이 창에서 보이지 않습니다 — "
-                                       "[저장]을 다시 누르면 실제 주소로 바꿔 저장합니다")
+                                       "[저장]을 누르면 실제 주소로 바꿔 보여 줍니다")
         if source and read and not read.get("ok"):
             warnings.append(str(read.get("error")))
         warnings += [str(read[k]) for k in ("packages_error", "overview_error") if read.get(k)]

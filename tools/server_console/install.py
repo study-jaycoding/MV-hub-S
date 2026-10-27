@@ -63,6 +63,23 @@ def machine_env(name: str) -> str:
 
 
 _DRIVE_PATH = re.compile(r"^([A-Za-z]):(?:[\\/]|$)")
+_DRIVE_NO_ROOT_DIR, _DRIVE_REMOTE = 1, 4  # GetDriveTypeW
+
+
+def _drive_type(letter: str) -> int:
+    """이 프로세스에서 본 드라이브 종류 — 네트워크에 닿지 않는다(응답 없는 NAS 로 화면이 멈추지 않게)."""
+    return int(ctypes.WinDLL("kernel32").GetDriveTypeW(f"{letter}:\\"))
+
+
+def _connected_remote(letter: str) -> str:
+    """이 프로세스에 지금 연결된 네트워크 드라이브의 주소(WNetGetConnectionW, 없으면 '')."""
+    buffer = ctypes.create_unicode_buffer(1024)
+    size = ctypes.c_ulong(len(buffer))
+    try:
+        code = ctypes.WinDLL("mpr").WNetGetConnectionW(f"{letter}:", buffer, ctypes.byref(size))
+    except OSError:
+        return ""
+    return buffer.value.strip() if code == 0 else ""
 
 
 def _mapped_remote(letter: str) -> str:
@@ -80,19 +97,25 @@ def network_path(value: str) -> tuple[str, str]:
     """Z:\\… 처럼 연결 드라이브로 적은 NAS 경로를 실제 주소(\\\\서버\\공유\\…)로 바꾼다 → (경로, 못 바꾼 이유).
 
     연결 드라이브는 로그인한 보통 창에만 보인다 — 관리자 권한인 이 창과 SYSTEM 예약 작업에는 Z: 가 없다
-    (10-27 서버: 릴리스 폴더 Z:\\… 가 오류 3). 드라이브 문자가 아니거나 이 창에서도 보이는 드라이브면 그대로 둔다.
+    (10-27 서버: 릴리스 폴더 Z:\\… 가 오류 3). 이 창에 연결된 드라이브는 지금 연결을, 이 창에 없는 글자만
+    이 계정이 기억해 둔 연결을 쓴다(지금 로컬 디스크인 글자에 남은 옛 기록을 쓰지 않게 — Codex 리뷰 P1).
+    로컬 디스크 등은 그대로. 바꾼 주소는 사람이 보고 확인한 뒤에만 저장한다(호출하는 쪽).
     """
     text = value.strip()
     match = _DRIVE_PATH.match(text)
     if not match:
         return text, ""
     letter = match.group(1).upper()
-    remote = _mapped_remote(letter)
+    kind = _drive_type(letter)
+    if kind == _DRIVE_REMOTE:
+        remote = _connected_remote(letter)
+    elif kind == _DRIVE_NO_ROOT_DIR:
+        remote = _mapped_remote(letter)
+    else:
+        return text, ""
     if remote.startswith("\\\\"):
         rest = text[2:].strip("\\/").replace("/", "\\")
         return remote.rstrip("\\") + ("\\" + rest if rest else ""), ""
-    if os.path.isdir(f"{letter}:\\"):
-        return text, ""
     return text, (f"{letter}: 드라이브는 관리자 권한인 이 창에서 보이지 않습니다 — 탐색기에서 {letter}: 의 실제 주소를 "
                   "확인해 \\\\서버\\공유\\… 로 적으세요")
 

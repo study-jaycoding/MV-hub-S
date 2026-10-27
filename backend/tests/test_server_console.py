@@ -2374,50 +2374,58 @@ def test_release_source_setting_is_validated(tmp_path):
 NAS_Z = "\\\\192.168.1.203\\millionvolt"
 
 
-def _no_drive() -> str:
-    return next(c for c in "QRSTUVW" if not os.path.isdir(f"{c}:\\"))
+def _fake_drives(monkeypatch, types: dict, connected: dict | None = None, remembered: dict | None = None) -> None:
+    """드라이브 종류(1 이 창에 없음 · 3 로컬 · 4 네트워크, 적지 않은 글자 = 1)·지금 연결·기억된 연결."""
+    monkeypatch.setattr(install, "_drive_type", lambda letter: types.get(letter, 1))
+    monkeypatch.setattr(install, "_connected_remote", lambda letter: (connected or {}).get(letter, ""))
+    monkeypatch.setattr(install, "_mapped_remote", lambda letter: (remembered or {}).get(letter, ""))
 
 
-def test_network_drive_paths_become_the_real_address(tmp_path, monkeypatch):
-    """관리자 창·SYSTEM 작업에는 Z: 가 안 보인다(10-27 서버 오류 3) — 기억된 연결 드라이브는 실제 주소로, 못 찾으면 이유."""
-    monkeypatch.setattr(install, "_mapped_remote", lambda letter: {"Z": NAS_Z, "Y": "\\\\nas\\share\\"}.get(letter, ""))
+def test_network_drive_paths_become_the_real_address(monkeypatch):
+    """관리자 창·SYSTEM 작업에는 Z: 가 안 보인다(10-27 서버 오류 3) — 이 창에 없는 글자는 기억된 연결, 연결된 글자는 지금 연결."""
+    _fake_drives(monkeypatch, {"D": 3, "R": 4}, connected={"R": "\\\\now\\share"},
+                 remembered={"Z": NAS_Z, "Y": "\\\\nas\\share\\", "D": "\\\\old\\d", "R": "\\\\old\\r"})
     net = install.network_path
     assert net(" z:\\mvutil\\MV_hub_S\\packages ") == (NAS_Z + "\\mvutil\\MV_hub_S\\packages", "")
     assert net("Z:") == (NAS_Z, "") and net("Z:\\") == (NAS_Z, "")
     assert net("Y:/a/b/") == ("\\\\nas\\share\\a\\b", "")
     assert net("\\\\NAS\\r") == ("\\\\NAS\\r", "") and net("relative\\p") == ("relative\\p", "")
-    assert net(str(tmp_path)) == (str(tmp_path), "")  # 이 창에서도 보이는 로컬 디스크는 그대로
-    missing = _no_drive()
-    fixed, why = net(f"{missing}:\\x")
-    assert fixed == f"{missing}:\\x" and f"{missing}: 드라이브는" in why and "\\\\서버\\공유" in why
+    assert net("D:\\data") == ("D:\\data", "")  # 지금 로컬 디스크면 옛 연결 기록을 쓰지 않는다(Codex 리뷰 P1)
+    assert net("R:\\x") == ("\\\\now\\share\\x", "")  # 이 창에 연결된 글자는 지금 연결
+    fixed, why = net("Q:\\x")
+    assert fixed == "Q:\\x" and "Q: 드라이브는" in why and "\\\\서버\\공유" in why
 
 
-def test_release_and_backup_save_a_network_drive_as_its_real_address(tmp_path, monkeypatch):
-    monkeypatch.setattr(install, "_mapped_remote", lambda letter: {"Z": NAS_Z}.get(letter, ""))
+def test_release_and_backup_take_the_real_address_only_after_showing_it(tmp_path, monkeypatch):
+    _fake_drives(monkeypatch, {}, remembered={"Z": NAS_Z})
     inst = make_inst(tmp_path)
-    assert release.save_source(inst, "Z:\\mvutil\\packages") == NAS_Z + "\\mvutil\\packages"
-    assert release.release_source(inst) == NAS_Z + "\\mvutil\\packages"
-    with pytest.raises(release.ReleaseError, match="보이지 않습니다"):
-        release.save_source(inst, f"{_no_drive()}:\\r")
-    assert release.release_source(inst) == NAS_Z + "\\mvutil\\packages"  # 못 바꾸면 저장하지 않는다
+    release.save_source(inst, NAS_Z + "\\mvutil\\packages")
+    for value, why in (("Z:\\other", NAS_Z + "\\other 로 적으세요"), ("Q:\\r", "보이지 않습니다")):
+        with pytest.raises(release.ReleaseError) as caught:
+            release.save_source(inst, value)
+        assert why in str(caught.value)
+    assert release.release_source(inst) == NAS_Z + "\\mvutil\\packages"  # 바꾼 주소를 보이기 전에는 저장하지 않는다
     view = {"unsupported": "", "error": "", "task": GOOD_TASK,
             "setting": {"target": "\\\\NAS\\old", "target_id": "o", "source": "file"}}
     plan = actions.plan_backup_save(inst, view, " Z:\\mvhub_backup ")
-    assert plan.params["target"] == NAS_Z + "\\mvhub_backup" and any("실제 주소" in s for s in plan.summary)
+    assert plan.params["target"] == NAS_Z + "\\mvhub_backup" and any("실제 주소" in s for s in plan.summary)  # 확인 창에 보인다
     assert actions.plan_backup_save(inst, view, plan.params["target"]).params == plan.params  # 실행 직전 다시 세운 계획과 같다
-    assert "보이지 않습니다" in actions.plan_backup_save(inst, view, f"{_no_drive()}:\\b").reasons[0]
+    assert "보이지 않습니다" in actions.plan_backup_save(inst, view, "Q:\\b").reasons[0]
 
 
-def test_ui_shows_the_real_address_for_a_network_drive(tmp_path, monkeypatch):
+def test_ui_shows_the_real_address_before_saving_it(tmp_path, monkeypatch):
     ui, root, app, _errors = _app(tmp_path, monkeypatch)
-    monkeypatch.setattr(install, "_mapped_remote", lambda letter: {"Z": NAS_Z}.get(letter, ""))
+    _fake_drives(monkeypatch, {}, remembered={"Z": NAS_Z})
     try:
         app.release_entry.insert(0, "Z:\\mvutil\\packages")
+        app.save_release_source()  # 첫 [저장] = 바꾼 주소를 칸에 보이기만
+        assert app.release_entry.get() == NAS_Z + "\\mvutil\\packages" and "다시 누르세요" in app.release_note.cget("text")
+        assert release.release_source(app.inst) == ""
         app.save_release_source()
-        assert app.release_entry.get() == NAS_Z + "\\mvutil\\packages" and "실제 주소로 바꿨습니다" in app.release_note.cget("text")
-        app.release_shown = app.release_entry.get()
+        assert release.release_source(app.inst) == NAS_Z + "\\mvutil\\packages"
+        assert "저장했습니다" in app.release_note.cget("text")
         app._handle(("release_view", {"source": "Z:\\old", "read": {"ok": True, "packages": []}, "notices": None}))
-        assert "[저장]을 다시 누르면" in app.release_warn.cget("text")  # 전에 Z: 로 저장해 둔 값
+        assert "[저장]을 누르면" in app.release_warn.cget("text")  # 전에 Z: 로 저장해 둔 값
         monkeypatch.setattr(ui.messagebox, "askokcancel", lambda *a, **k: False)
         plan = actions.Plan("backup-save", "r", "server", "", ("x",), params={"target": NAS_Z + "\\b"})
         app.backup_busy = True
