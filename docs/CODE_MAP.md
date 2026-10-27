@@ -1196,7 +1196,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 |---|---|---|
 | `update_release.bat`(1줄) ⚠배포전용 | `run_release_update.ps1` 1줄 호출 | → `run_release_update.ps1` |
 | `run_release_update.ps1`(82줄) ⚠배포전용 | worker.bat 를 TEMP 로 복사해 격리 실행, 종료코드 보존 | → `update_release_worker.bat` |
-| `update_release_worker.bat`(1274줄) ⚠배포전용 | 자기 안 마커 뒤 PS1 페이로드를 분리 추출해 실행 — Prepare→Commit 2단계 업데이트 트랜잭션, 잠금(exit17)·Resolve전송중(exit18) 특수코드, 실패시 롤백 | 격리 실행(자기 자신을 덮어써도 생존) |
+| `update_release_worker.bat`(1274줄) ⚠배포전용 | 자기 안 마커 뒤 PS1 페이로드를 분리 추출해 실행 — Prepare→Commit 2단계 업데이트 트랜잭션, 잠금(exit17)·Resolve전송중(exit18) 특수코드, 실패시 롤백 · MCP 연결기(Claude·Codex 가 설치본 런타임으로 띄우고 되살림)는 앱으로 안 센다(`Test-McpConnector` — 끄기 판정·드레인·실패 뒤 재기동은 앱만, 남은 폴더를 물면 연결기만 끄고 다시 지움) | 격리 실행(자기 자신을 덮어써도 생존) |
 | `update_cli.bat`(112줄) | Higgsfield CLI 를 `hf_cli_version.txt` 핀에 정확히 맞춤(설치/검증) | 수동 — 어느 체인도 호출하지 않음 |
 
 **릴리스 제작·설치(관리자 PC 전용) — 배포 담당, 배포 시**
