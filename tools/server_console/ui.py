@@ -58,8 +58,7 @@ POWER_TASK_WORDS = {"Running": "실행 중", "Ready": "켜짐(대기)", "Disable
                     "Queued": "대기열", "Error": "확인 불가"}
 OFF_WORDS = {"stopping": "끄는 중 멈춤", "stopped": "관리 창이 끔", "starting": "켜는 중 멈춤",
              "start_failed": "켜기 실패 — 확인 필요"}
-PRESENCE_COLUMNS = (("who", "이름", 160), ("app", "앱 연결 수 · 백그라운드 포함", 240),
-                    ("agent", "에이전트 · 최근 40초 신호", 200))
+PRESENCE_COLUMNS = (("who", "이름", 100), ("app", "앱 연결 수", 100), ("agent", "에이전트", 90))
 RELEASE_COLUMNS = (("버전", 180), ("상태", 180), ("용량", 80), ("제작 시각", 120),
                    ("배포", 84), ("해제", 84), ("삭제", 84))
 
@@ -367,8 +366,16 @@ class App:
                                    sashrelief="flat", showhandle=False)
             panes.pack(fill="both", expand=True, padx=12, pady=8)
             if key == "connection":
-                self._build_presence(panes)
-            if key in TABLES:
+                top = tk.Frame(panes, bg=PANEL)
+                top.columnconfigure(0, weight=45, uniform="connection")
+                top.columnconfigure(1, weight=55, uniform="connection")
+                top.rowconfigure(0, weight=1)
+                panes.add(top, minsize=230, stretch="always")
+                self.connection_heads = []
+                self._build_presence(top)
+                self._build_table(top, key)
+                top.bind("<Configure>", lambda _e: self.root.after_idle(self._fit_connection_headers))
+            elif key in TABLES:
                 self._build_table(panes, key)
             body, _note = self._log_panel(panes, "상세 로그")
             text = tk.Text(body, bg=PANEL, fg=MUTED, font=MONO, relief="flat", bd=0, padx=8, pady=8,
@@ -381,17 +388,41 @@ class App:
             self.notebook.add(frame, text=label)
             self.texts[key] = text
 
-    def _log_panel(self, panes: tk.PanedWindow, title: str) -> tuple[tk.Frame, tk.Label]:
+    def _log_panel(self, panes, title: str, description: str = "") -> tuple[tk.Frame, tk.Label]:
         panel = tk.Frame(panes, bg=PANEL, highlightbackground=PANEL2, highlightthickness=1)
-        panes.add(panel, minsize=70, stretch="always")
+        if description:
+            panel.grid(row=0, column=len(self.connection_heads), sticky="nsew", padx=(0, 2))
+        else:
+            panes.add(panel, minsize=70, stretch="always")
         head = tk.Frame(panel, bg=PANEL2)
         head.pack(fill="x")
-        tk.Label(head, text=title, bg=PANEL2, fg=MUTED, font=FONT).pack(side="left", padx=8, pady=5)
+        title_label = tk.Label(head, text=title, bg=PANEL2, fg=MUTED, font=FONT, anchor="w", justify="left")
+        title_label.pack(side="top" if description else "left", fill="x" if description else "none", padx=8, pady=5)
+        if description:
+            detail = tk.Label(head, text=description, bg=PANEL2, fg=MUTED2, font=("Malgun Gothic", 8),
+                              anchor="w", justify="left", width=1)
+            detail.pack(fill="x", padx=8)
         note = tk.Label(head, text="", bg=PANEL2, fg=MUTED2, font=("Malgun Gothic", 8))
-        note.pack(side="right", padx=8)
+        note.pack(side="top" if description else "right", fill="x" if description else "none", padx=8)
+        if description:
+            note.configure(anchor="w", justify="left", width=1)
+            self.connection_heads.append(head)
+            head.pack_propagate(False)
         body = tk.Frame(panel, bg=PANEL)
         body.pack(fill="both", expand=True)
         return body, note
+
+    def _fit_connection_headers(self) -> None:
+        heads = getattr(self, "connection_heads", [])
+        if any(head.master.winfo_width() <= 20 for head in heads):
+            return
+        for head in heads:
+            for label in head.winfo_children():
+                label.configure(wraplength=max(1, head.master.winfo_width() - 20))
+        height = max((sum(label.winfo_reqheight() for label in head.winfo_children()) + 14
+                      for head in heads), default=0)
+        for head in heads:
+            head.configure(height=height)
 
     @staticmethod
     def _scroll_content(body: tk.Frame, content) -> None:
@@ -407,10 +438,13 @@ class App:
     def _build_table(self, frame: tk.Frame, key: str) -> None:
         """로그 탭 위의 표 — 이름만 보인다(activity). 아래 글자 칸은 그대로 흐름 줄."""
         _source, title, columns = TABLES[key]
-        box, note = self._log_panel(frame, title)
+        box, note = self._log_panel(frame, "최근 활동한 사람" if key == "connection" else title,
+                                    "서버 DB 기준 · 실시간 접속 아님\n접속 이력 저장 안 함" if key == "connection" else "")
         note.configure(text="읽는 중")
         tree = ttk.Treeview(box, columns=[c[0] for c in columns], show="headings", height=4, style="Console.Treeview")
         for column, heading, width in columns:
+            if key == "connection":
+                width = {"who": 90, "last_gen": 100, "agent": 100, "today": 80}[column]
             tree.heading(column, text=heading, anchor="w")
             tree.column(column, width=width, minwidth=60, anchor="w",
                         stretch=column in ("where", "target", "what") or column == columns[-1][0])
@@ -421,7 +455,8 @@ class App:
 
     def _build_presence(self, frame: tk.Frame) -> None:
         """접속 탭 맨 위 '지금 접속 중'(서버 메모리 — 이력 없음, Jay 10-24). 관리자 로그인했을 때만."""
-        box, self.presence_note = self._log_panel(frame, "지금 접속 중 — 서버가 지금 붙어 있다고 아는 계정(기록하지 않음)")
+        box, self.presence_note = self._log_panel(frame, "지금 접속 중",
+            "서버가 현재 연결됐다고 아는 계정 · 기록하지 않음\n앱은 백그라운드 포함 · 에이전트는 최근 40초 신호")
         self.presence_note.configure(text="관리자로 로그인하면 보입니다")
         self.presence_tree = ttk.Treeview(box, columns=[c[0] for c in PRESENCE_COLUMNS], show="headings", height=3,
                                           style="Console.Treeview")
@@ -438,10 +473,12 @@ class App:
         tree.delete(*tree.get_children())
         if data is None:
             self.presence_note.configure(text="관리자로 로그인하면 보입니다" if self.session is None else "읽는 중", fg=MUTED2)
+            self._fit_connection_headers()
             return
         stamp = datetime.fromtimestamp(data.get("read_at") or time.time(), activity.KST).strftime("%H:%M:%S")
         if data.get("error"):
             self.presence_note.configure(text=f"읽지 못함: {data['error']}", fg=AMBER)
+            self._fit_connection_headers()
             return
         rows = data.get("rows") or {}
         for row in rows.get("people") or []:
@@ -450,6 +487,7 @@ class App:
         other = rows.get("other_connections") or 0
         self.presence_note.configure(text=f"{stamp} 읽음 · {len(rows.get('people') or [])}명"
                                           + (f" · 계정 없는 연결 {other}" if other else ""), fg=MUTED2)
+        self._fit_connection_headers()
 
     def _render_tables(self) -> None:
         self._render_presence()
@@ -474,6 +512,7 @@ class App:
                     else f"일부만 읽음: {error}" if error and rows else error
                     or (f"{stamp} 읽음 · {len(rows)}줄" if read_at else "읽는 중"))
             note.configure(text=text, fg=AMBER if (error or paused) else MUTED2)
+        self._fit_connection_headers()
 
     def _presence_step(self, now: float, last: float) -> float:
         """작업 스레드: 로그인했고 접속 탭을 볼 때만 30초마다 '지금 접속 중'을 한 번에 하나 묻는다(별도 스레드 — 로그·작업
@@ -1364,18 +1403,25 @@ class App:
         body = tk.Frame(page, bg=BG)
         body.pack(fill="both", expand=True, padx=16, pady=12)
 
+        self.address_wrapped_labels = []
+        def wrapped_label(parent, **kwargs):
+            label = tk.Label(parent, anchor="w", justify="left", width=1, **kwargs)
+            label.bind("<Configure>", lambda event: label.configure(wraplength=max(1, event.width)))
+            self.address_wrapped_labels.append(label)
+            return label
+
         def card(title: str) -> tk.Frame:
             box = tk.Frame(body, bg=PANEL, highlightbackground="#26282d", highlightthickness=1)
             box.pack(fill="x", pady=(0, 10))
-            tk.Label(box, text=title, bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9)).pack(anchor="w", padx=12, pady=(8, 2))
+            wrapped_label(box, text=title, bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9)
+                          ).pack(fill="x", padx=12, pady=(8, 2))
             return box
         now = card("현재 서버 주소 (이 PC의 네트워크 주소 · 포트)")
         row = tk.Frame(now, bg=PANEL)
         row.pack(fill="x", padx=12, pady=(0, 10))
-        self.address_now = tk.Label(row, text="확인 중", bg=PANEL, fg=TEXT, font=("Malgun Gothic", 13, "bold"),
-                                    justify="left")
-        self.address_now.pack(side="left")
         self._button(row, "복사", self.copy_address).pack(side="right")
+        self.address_now = wrapped_label(row, text="확인 중", bg=PANEL, fg=TEXT, font=("Malgun Gothic", 13, "bold"))
+        self.address_now.pack(side="left", fill="x", expand=True)
         name = card("팀원 앱에 보이는 서버 이름 ([팀에 공지] 때 함께 기록 — 비우면 주소로 보임)")
         self.name_entry = tk.Entry(name, bg=PANEL2, fg=TEXT, insertbackground=TEXT, relief="flat", font=FONT, width=40)
         self.name_entry.pack(anchor="w", padx=12, pady=(0, 10), ipady=3)
@@ -1386,14 +1432,15 @@ class App:
         self.url_entry.pack(side="left", ipady=3)
         self.address_button = self._button(row, "팀에 공지", self.request_address, primary=True)
         self.address_button.pack(side="left", padx=8)
-        tk.Label(move, text="NAS 릴리스 폴더에 이사 공지(server-location.json)를 남김 → 팀원 앱에 알림 → 누르면 새 주소로 전환(자동 전환 아님)",
-                 bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9)).pack(anchor="w", padx=12, pady=(4, 2))
-        self.location_label = tk.Label(move, text="", bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9), justify="left")
-        self.location_label.pack(anchor="w", padx=12, pady=(0, 10))
-        self.address_note = tk.Label(body, text="", bg=BG, fg=MUTED, font=FONT, wraplength=950, justify="left")
-        self.address_note.pack(anchor="w")
-        tk.Label(body, text="서버 이사(3단계)는 이 화면에서 이어집니다.", bg=BG, fg=MUTED2, font=("Malgun Gothic", 9)
-                 ).pack(anchor="w", pady=(8, 0))
+        wrapped_label(move, text="NAS 릴리스 폴더에 이사 공지(server-location.json)를 남깁니다.\n"
+                                "팀원 앱에 알림이 표시되며, 누르면 새 주소로 전환합니다. (자동 전환 아님)",
+                      bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9)).pack(fill="x", padx=12, pady=(4, 2))
+        self.location_label = wrapped_label(move, text="", bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9))
+        self.location_label.pack(fill="x", padx=12, pady=(0, 10))
+        self.address_note = wrapped_label(body, text="", bg=BG, fg=MUTED, font=FONT)
+        self.address_note.pack(fill="x")
+        wrapped_label(body, text="서버 이사(3단계)는 이 화면에서 이어집니다.", bg=BG, fg=MUTED2, font=("Malgun Gothic", 9)
+                      ).pack(fill="x", pady=(8, 0))
 
     def _show_address_page(self) -> None:
         scheme = "https" if self.inst.tls else "http"
@@ -1409,12 +1456,12 @@ class App:
         elif not view.get("source"):
             self.location_label.configure(text="NAS 릴리스 폴더를 먼저 정하세요(릴리스 화면)", fg=AMBER)
         elif not location.get("ok"):
-            self.location_label.configure(text=f"지금 공지 파일을 읽지 못했습니다 — {location.get('error')}", fg=AMBER)
+            self.location_label.configure(text=f"지금 공지 파일을 읽지 못했습니다.\n{location.get('error')}", fg=AMBER)
         elif current is None:
             self.location_label.configure(text="지금 공지: 아직 없음", fg=MUTED)
         else:
-            self.location_label.configure(text=f"지금 공지: 판 {current.get('revision')} · {current.get('url')}"
-                                               f" · 이름 '{current.get('name') or '없음'}' · {current.get('announced_at')}",
+            self.location_label.configure(text=f"지금 공지: 판 {current.get('revision')} · {current.get('url')}\n"
+                                               f"이름 '{current.get('name') or '없음'}' · {current.get('announced_at')}",
                                           fg=MUTED)
         wanted = (str((current or {}).get("url") or ""), str(state.get("server_name") or (current or {}).get("name") or ""))
         if (self.url_entry.get(), self.name_entry.get()) == self.address_shown:  # 고치는 중이면 덮지 않는다

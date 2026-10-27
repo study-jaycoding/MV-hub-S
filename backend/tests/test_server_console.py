@@ -3182,6 +3182,93 @@ def test_ui_log_panels_keep_independent_scrollbars_and_logs_at_minimum_size(tmp_
         root.destroy()
 
 
+def test_ui_connection_columns_share_height_and_keep_status_and_log_visible(tmp_path, monkeypatch):
+    ui, root, app, errors = _app(tmp_path, monkeypatch)
+    try:
+        app.session = ui.server_api.Session(SERVER, "token", "admin@x")
+        people = [{"who": f"작업자 {index}", "last_gen": "10-27 14:20", "agent": "14:21", "today": index}
+                  for index in range(30)]
+        app._handle(("activity", {"people": people, "read_at": time.time(), "errors": {}}))
+        app.presence = {"rows": {"people": [{"name": f"작업자 {i}", "app": 2, "agent": True} for i in range(30)]},
+                        "read_at": time.time()}
+        app._render_presence()
+        app.notebook.select(list(app.texts).index("connection"))
+        root.deiconify()
+        for width, height in ((1000, 640), (1280, 800)):
+            root.geometry(f"{width}x{height}")
+            root.update()
+            left, right, detail = app.presence_tree, app.tables["connection"][0], app.texts["connection"]
+            assert left.winfo_rootx() < right.winfo_rootx()
+            assert left.winfo_rooty() == right.winfo_rooty()
+            assert left.winfo_height() == right.winfo_height() and left.winfo_height() > 30
+            assert detail.winfo_rooty() >= left.winfo_rooty() + left.winfo_height()
+            assert detail.winfo_height() >= 30
+            panels = [head.master for head in app.connection_heads]
+            ratio = panels[0].winfo_width() / sum(panel.winfo_width() for panel in panels)
+            assert 0.43 <= ratio <= 0.47
+            left.yview_moveto(1.0)
+            assert left.yview()[0] > 0 and right.yview()[0] == 0
+            left.yview_moveto(0)
+            for head in app.connection_heads:
+                assert all(label.winfo_height() >= label.winfo_reqheight() for label in head.winfo_children())
+        detail.configure(state="normal")
+        detail.insert("end", "접속 상세 로그 보존\n")
+        detail.configure(state="disabled")
+        panes = detail.master.master.master
+        before = detail.winfo_height()
+        panes.sash_place(0, 0, 240)
+        root.update()
+        assert detail.winfo_height() != before and "접속 상세 로그 보존" in detail.get("1.0", "end")
+        app.worker_filter.set("작업자 2")
+        app._render_tables()
+        assert len(right.get_children()) == 1 and len(left.get_children()) == 30
+        app._handle(("activity_paused", "서버가 정상일 때만 DB를 읽습니다 — 연결 상태를 확인하는 동안 마지막 결과를 유지합니다"))
+        app.presence = {"error": "서버 응답을 읽지 못했습니다 — 관리자 로그인 상태와 네트워크 연결을 확인하세요"}
+        app._render_presence()
+        for width, height in ((1000, 640), (1280, 800)):
+            root.geometry(f"{width}x{height}")
+            root.update()
+            assert "마지막" in app.tables["connection"][1].cget("text")
+            assert "관리자 로그인" in app.presence_note.cget("text")
+            assert left.winfo_rooty() == right.winfo_rooty() and left.winfo_height() == right.winfo_height()
+            for head in app.connection_heads:
+                assert all(label.winfo_height() >= label.winfo_reqheight() for label in head.winfo_children())
+        app.logout()
+        root.update()
+        assert app.presence_note.cget("text") == "관리자로 로그인하면 보입니다"
+        assert errors == []
+    finally:
+        root.destroy()
+
+
+def test_ui_address_wrap_uses_actual_width_and_keeps_diagnostics_and_notice(tmp_path, monkeypatch):
+    ui, root, app, errors = _app(tmp_path, monkeypatch)
+    try:
+        path = "\\\\192.0.2.3\\공유 폴더\\" + "긴 릴리스 폴더\\" * 5 + "server-location.json"
+        diagnostic = f"[Errno 22] Invalid argument: '{path}'"
+        current = {"revision": 4, "url": "http://192.0.2.10:8010", "name": "검증용 서버 이름 " * 5,
+                   "announced_at": "2026-10-27T14:30:00+09:00"}
+        app.show("address")
+        root.deiconify()
+        for width, height in ((1000, 640), (1280, 800)):
+            root.geometry(f"{width}x{height}")
+            for location in ({"ok": False, "error": diagnostic}, {"ok": True, "announcement": current}):
+                app._handle(("address_view", {"source": "\\\\NAS\\r", "location": location, "state": {}}))
+                root.update()
+                for label in app.address_wrapped_labels:
+                    assert label.cget("anchor") == "w"
+                    assert int(label.cget("wraplength")) == label.winfo_width()
+                    assert label.winfo_height() >= label.winfo_reqheight()
+                    assert label.winfo_rootx() >= label.master.winfo_rootx()
+                    assert label.winfo_rootx() + label.winfo_width() <= label.master.winfo_rootx() + label.master.winfo_width()
+                    assert label.winfo_rooty() + label.winfo_height() <= root.winfo_rooty() + root.winfo_height()
+                text = app.location_label.cget("text")
+                assert "\n" in text and (diagnostic in text if not location["ok"] else current["name"] in text)
+        assert errors == []
+    finally:
+        root.destroy()
+
+
 def test_ui_release_grid_checks_only_confirmed_actions_and_protects_current_files(tmp_path, monkeypatch):
     ui, root, app, errors = _app(tmp_path, monkeypatch)
     try:
