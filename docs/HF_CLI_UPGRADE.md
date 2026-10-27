@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-20
+updated: 2026-10-28
 status: active
 ---
 
@@ -26,6 +26,30 @@ status: active
 - 이 값을 런처(`MV_agent.bat`)·업데이트(`update_cli.bat`)·릴리스(`release/make_release.ps1`)·
   서버 생성 bat(`backend/app/routers/ingest.py`)·초기설치(`setup_clone_git.bat`)가 모두 읽어
   **정확히 이 버전**을 설치/검증한다. `MV_agent.bat` 은 매 실행 때 설치본이 pin 과 다르면 교정한다.
+
+## dev 전용 공식 실행 파일 검증 (2026-10-28)
+
+사용자 승인으로 npm 패키지 대신 공식 GitHub Windows 실행 파일을 검증할 수 있다.
+`v1.2.3`의 npm 패키지는 조회 시점에 없었지만 GitHub Windows 배포 자산은 존재했다.
+공식 아카이브의 SHA-256을 릴리스 digest와 `checksums.txt` 양쪽에 대조한 뒤 일반 파일
+`hf.exe`만 추출한다. dev에서는 `.mvhub-runtime/higgsfield/higgsfield.exe`로 보관한다.
+이 폴더는 기존 Git 제외 대상이며 원래 exe의 바이트는 이름을 바꿔도 보존한다.
+
+저장소 pin과 실행 중 앱을 먼저 바꾸지 않고 후보를 검증한다.
+
+```powershell
+.\.venv\Scripts\python.exe tools\hf_cli_contract_smoke.py --cli .\.mvhub-runtime\higgsfield\higgsfield.exe --expected-version 1.2.3
+```
+
+런처는 pin과 버전이 일치하는 기존 `runtime/higgsfield` 번들, dev 전용 exe, 전역 CLI
+순서로 선택한다. dev exe를 선택하면 그 디렉터리를 자식 프로세스 PATH 앞에 넣어
+백엔드와 작업자가 같은 exe를 사용한다. 현재 실행 중인 프로세스는 바뀌지 않는다.
+pin 변경·재시작은 독립 리뷰 및 진행 작업 확인 뒤 수행한다.
+
+이 dev 로컬 pin 변경은 커밋·main·배포 후보·작업자 배포에 포함하지 않는다. 실제 배포에는
+native exe를 지원하는 설치·업데이트·릴리스 계약의 별도 확인이 필요하다. npm manifest를
+1.2.3으로 위조하거나 전역 설치를 교체하지 않는다. 상세 결과는
+[예약 개선 작업 기록](status/hf_improvements_2026-10-27.md)에 남긴다.
 
 ## 선제 준비 (새 버전이 오기 전에)
 

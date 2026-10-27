@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-10-27
+updated: 2026-10-28
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -467,6 +467,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
 | `operational_health.py` | 운영 진단 집계 + `OperationalAlertTracker`(반복 억제) | `main`·`release_update` |
+| `update_activity.py` | 원격 생성 업데이트 체크포인트와 로컬 결과 쓰기 보호 | `release_update`·`gen_requests`·`generation_media_cache` |
 | `runtime_metrics.py` | 요청 지연·RSS(ctypes PSAPI)·디스크 TTL 스냅샷 | `main`·`db` |
 | `release_update.py`(약 900줄) | 작업자 릴리스 설치본 자기 업데이트 상태·게이트·실행기 + B안 후보 배포(`release_overview`·`promote_candidate` — `release.lock` 공유 모드 잠금·교체 실패 셋 분류) | `comfy`·`console`·`gen_requests`·`resolve_integration` |
 | `upload_limits.py` | 업로드 파일 수/크기/본문 상한 + ASGI 미들웨어 | `main`·`comfy`·`db_backup`·`db_transfer` |
