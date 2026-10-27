@@ -26,7 +26,7 @@ import { MediaThumbnail } from "./MediaThumbnail";
 import { fmtElapsed } from "../lib/format";
 import { formatCredits } from "../lib/formatCredits";
 import { copyText } from "../lib/flash";
-import { CloseIcon } from "./common/ViewIcons";
+import { CanvasIcon, CloseIcon, HistoryIcon, ImageEditIcon, VideoEditIcon } from "./common/ViewIcons";
 interface Props {
   target: InfoTarget;
   onClose: () => void;
@@ -488,16 +488,34 @@ export function InfoPopup({
     );
   }
 
+  // 수정 단추는 결과 종류에 맞는 것 하나만(오디오는 없음) — 머리줄 히스토리 왼쪽(Jay 2026-10-28)
+  const firstType = target.kind === "generation" ? target.gen.assets?.[0]?.type : undefined;
+  const editMode = firstType === "image" || firstType === "video" ? firstType : null;
+
   return (
     <>
       <div className="info-catcher" onMouseDown={onClose} />
       <div className="info-popup" ref={popRef} style={{ left: pos.x, top: pos.y, width: POP_W }}>
-        <header className="info-head" onPointerDown={onDragStart}>
+        <header className="info-head info-head-gen" onPointerDown={onDragStart}>
           <span className="info-title" title={title}>
             {target.kind === "generation" ? "ℹ 생성 정보" : "ℹ 파일 정보"}
           </span>
           {target.kind === "generation" && (
             <div className="info-head-actions">
+              {editMode && (
+                <button
+                  className="info-board-btn"
+                  title={editMode === "image" ? "이미지 위에 펜·도형으로 표시해 수정 지시" : "영상 프레임 위에 펜·도형으로 표시해 수정 지시"}
+                  disabled={target.gen.status !== "done" || !target.gen.assets[0]?.file_path}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={() => {
+                    window.dispatchEvent(new CustomEvent(APP_EVENTS.partialEdit, { detail: { genId: target.gen.id, mode: editMode } }));
+                    onClose();
+                  }}
+                >
+                  {editMode === "image" ? <><ImageEditIcon />이미지 수정</> : <><VideoEditIcon />영상 수정</>}
+                </button>
+              )}
               {onOpenInBoard && (
                 <button
                   className="info-board-btn"
@@ -505,7 +523,7 @@ export function InfoPopup({
                   onPointerDown={(e) => e.stopPropagation()}
                   onClick={() => onOpenInBoard(target.gen)}
                 >
-                  ⧉ 히스토리
+                  <HistoryIcon />히스토리
                 </button>
               )}
               {onOpenCanvas && (
@@ -515,7 +533,7 @@ export function InfoPopup({
                   onPointerDown={(e) => e.stopPropagation()}
                   onClick={() => onOpenCanvas(target.gen)}
                 >
-                  ⧉ 캔버스
+                  <CanvasIcon />캔버스
                 </button>
               )}
             </div>
@@ -525,14 +543,6 @@ export function InfoPopup({
           </button>
         </header>
         <div className="info-body">
-          {target.kind === "generation" && <div className="info-head-actions" style={{ marginLeft: 0 }}>
-            {(["image", "video"] as const).map((mode) => <button key={mode} className="info-board-btn"
-              disabled={target.gen.status !== "done" || target.gen.assets?.[0]?.type !== mode || !target.gen.assets[0]?.file_path}
-              onClick={() => {
-                window.dispatchEvent(new CustomEvent(APP_EVENTS.partialEdit, { detail: { genId: target.gen.id, mode } }));
-                onClose();
-              }}>{mode === "image" ? "이미지 수정" : "영상 수정"}</button>)}
-          </div>}
           {previewUrl && (
             <div className="info-preview">
               {isVideo ? (

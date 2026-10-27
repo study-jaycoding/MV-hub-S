@@ -866,8 +866,16 @@
   font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 8px;
   border: 1px solid var(--accent); background: var(--grad-soft, rgba(var(--accent-rgb),0.12));
   color: var(--accent); cursor: pointer; white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 3px; /* 앞 아이콘과 글자 사이 */
 }
 .info-board-btn:hover { background: var(--grad); color: var(--accent-ink); }
+/* 생성 정보 창 머리줄 — [수정][히스토리][캔버스] 셋이 380px 에 들어가게(2026-10-28 빌드 CSS 실측: 그대로면 14px 모자라
+   제목이 두 줄로 꺾였다 → 칸 사이 6px·단추 여백 7px 로 여유 약 5px). 그래도 모자라면(글꼴이 다른 PC) 제목이 말줄임으로 줄어든다. */
+.info-head-gen { gap: 6px; }
+.info-head-gen .info-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.info-head-gen .info-head-actions { gap: 5px; flex-shrink: 0; }
+.info-head-gen .info-board-btn { padding: 3px 7px; }
+.info-head-gen .assets-x { flex-shrink: 0; }
 .info-body { overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
 /* flex-shrink 0 — 본문(.info-body)은 세로 flex + 스크롤이라, overflow hidden 인 이 칸(최소 높이 0)이 긴 프롬프트에 밀려 먼저 찌그러졌다
    (2026-10-11 실측: 프롬프트 2400자 넘는 영상 8/8 에서 칸 높이 2px — 미리보기가 안 보임). 칸은 제 높이를 지키고 본문이 스크롤한다. */

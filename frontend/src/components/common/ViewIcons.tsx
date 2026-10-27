@@ -196,6 +196,47 @@ export function CopyIcon() {
   );
 }
 
+// 생성 정보 창 머리줄 단추 앞 — 13px 선 그림(Jay 2026-10-28 모의 그림 확정). 수정 둘은 같은 틀+연필에 속만 다르다.
+export function ImageEditIcon() {
+  return (
+    <svg {...TOGGLE_ICON} width={13} height={13} aria-hidden="true">
+      <path d="M11 20H7a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v4" />
+      <path d="M15 8h.01" />
+      <path d="M4 15l4-4c.93-.89 2.07-.89 3 0l3 3" />
+      <path d="M18.42 15.61a2.1 2.1 0 0 1 2.97 2.97L18 22h-3v-3z" />
+    </svg>
+  );
+}
+export function VideoEditIcon() {
+  return (
+    <svg {...TOGGLE_ICON} width={13} height={13} aria-hidden="true">
+      <path d="M11 20H7a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v4" />
+      <path d="M10 8.5v5l4-2.5z" />
+      <path d="M18.42 15.61a2.1 2.1 0 0 1 2.97 2.97L18 22h-3v-3z" />
+    </svg>
+  );
+}
+// 히스토리 — 되감는 시계
+export function HistoryIcon() {
+  return (
+    <svg {...TOGGLE_ICON} width={13} height={13} aria-hidden="true">
+      <path d="M12 8v4l2 2" />
+      <path d="M3.05 11a9 9 0 1 1 .5 4m-.5 5v-5h5" />
+    </svg>
+  );
+}
+// 캔버스 — 선으로 이은 노드 셋
+export function CanvasIcon() {
+  return (
+    <svg {...TOGGLE_ICON} width={13} height={13} aria-hidden="true">
+      <rect x="2.5" y="9.5" width="6" height="5" rx="1.2" />
+      <rect x="15.5" y="3.5" width="6" height="5" rx="1.2" />
+      <rect x="15.5" y="15.5" width="6" height="5" rx="1.2" />
+      <path d="M8.5 12H12M12 6v12M12 6h3.5M12 18h3.5" />
+    </svg>
+  );
+}
+
 // 확인 중 — 열린 원(돌지 않는다: 가만히 둔 탭의 CPU 를 쓰지 않게)
 export function PendingIcon() {
   return (

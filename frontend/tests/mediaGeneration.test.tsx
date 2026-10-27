@@ -51,32 +51,36 @@ describe("narration generation", () => {
     expect(player.autoplay).toBe(false);
     expect(container.querySelector("img")).toBeNull();
   });
-  it("places both edit buttons above the preview and enables only the matching media", async () => {
+  it("shows only the matching edit button in the header, left of history", async () => {
     const { InfoPopup } = await import("../src/components/InfoPopup");
     const { APP_EVENTS } = await import("../src/lib/appEvents");
     mocks.estimateCost.mockResolvedValue({ credits: 2 });
     const listener = vi.fn();
     window.addEventListener(APP_EVENTS.partialEdit, listener);
+    const label = { image: "이미지 수정", video: "영상 수정", audio: null };
     try {
       for (const type of ["image", "video", "audio"] as const) {
         const gen = { id: type, status: "done", prompt: "result", model: "test", tags: [], references: [],
           assets: [{ type, file_path: `result.${type}` }] } as import("../src/types").Generation;
         await act(async () => root.render(<InfoPopup target={{ kind: "generation", gen, x: 0, y: 0 }}
           onClose={vi.fn()} onPreview={vi.fn()} onOpenInBoard={vi.fn()} onOpenCanvas={vi.fn()} />));
-        const buttons = [...container.querySelectorAll<HTMLButtonElement>(".info-body button")];
-        const imageEdit = buttons.find((button) => button.textContent === "이미지 수정")!;
-        const videoEdit = buttons.find((button) => button.textContent === "영상 수정")!;
-        expect(imageEdit.disabled).toBe(type !== "image");
-        expect(videoEdit.disabled).toBe(type !== "video");
-        expect(container.querySelector(".info-head")?.textContent).not.toContain("이미지 수정");
+        const head = [...container.querySelectorAll<HTMLButtonElement>(".info-head button")];
+        // 아이콘은 글자가 없어 textContent 는 글자만 — 마지막 "" 는 닫기
+        expect(head.map((button) => button.textContent)).toEqual([...(label[type] ? [label[type]] : []), "히스토리", "캔버스", ""]);
+        if (label[type]) expect(head[0].disabled).toBe(false);
+        expect(container.querySelector(".info-body")?.textContent).not.toMatch(/이미지 수정|영상 수정/);
         expect(container.textContent).not.toContain("결과·레퍼런스 ZIP");
-        expect(container.textContent).toContain("히스토리"); expect(container.textContent).toContain("캔버스");
         if (type === "video") {
-          await act(async () => videoEdit.click());
+          await act(async () => head[0].click());
           expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual({ genId: "video", mode: "video" });
         }
         if (type === "audio") expect(container.querySelector("audio")?.autoplay).toBe(false);
       }
+      const running = { id: "running", status: "running", prompt: "result", model: "test", tags: [], references: [],
+        assets: [{ type: "video", file_path: "result.video" }] } as import("../src/types").Generation;
+      await act(async () => root.render(<InfoPopup target={{ kind: "generation", gen: running, x: 0, y: 0 }}
+        onClose={vi.fn()} onPreview={vi.fn()} onOpenInBoard={vi.fn()} onOpenCanvas={vi.fn()} />));
+      expect(container.querySelector<HTMLButtonElement>(".info-head button")!.disabled).toBe(true);
     } finally { window.removeEventListener(APP_EVENTS.partialEdit, listener); }
   });
   it("loads all official preset pages and does not substitute a saved voice", async () => {
