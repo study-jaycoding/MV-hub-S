@@ -434,8 +434,9 @@ def read_job(inst: Installation, job_id: str, now: float | None = None,
             young = bool(request) and now - float(started) < STARTING_GRACE_SECONDS
         except (TypeError, ValueError):
             young = False
-        return _with_leftover(job, {"status": "starting" if young else "check_needed", "job_id": job_id,
-                                    "acknowledged": acked, "kind": kind})
+        return _with_batch_progress(job, request, _with_leftover(job, {
+            "status": "starting" if young else "check_needed", "job_id": job_id,
+            "acknowledged": acked, "kind": kind}))
     try:
         pid = int(state.get("pid") or 0)
     except (TypeError, ValueError):
@@ -445,9 +446,52 @@ def read_job(inst: Installation, job_id: str, now: float | None = None,
              or (status == "finished" and type(state.get("exit_code")) is int))
     if not valid or (status in ("checking", "running") and not alive(pid, state.get("created"))):
         # 모르는 상태·종료 코드 없는 완료·사라진 실행기는 짐작하지 않는다.
-        return _with_leftover(job, {**state, "status": "check_needed", "job_id": job_id, "acknowledged": acked,
-                                    "kind": kind})
-    return _with_leftover(job, {**state, "job_id": job_id, "acknowledged": acked, "kind": kind})
+        return _with_batch_progress(job, request, _with_leftover(job, {
+            **state, "status": "check_needed", "job_id": job_id, "acknowledged": acked, "kind": kind}))
+    return _with_batch_progress(job, request, _with_leftover(job, {
+        **state, "job_id": job_id, "acknowledged": acked, "kind": kind}))
+
+
+def _with_batch_progress(job: Path, request: dict | None, state: dict) -> dict:
+    """실행기를 잃었을 때만 항목별 기록을 복구한다. 전체 작업을 완료로 추정하지 않는다."""
+    if (state.get("kind") not in ("release-remove", "release-delete")
+            or state.get("status") not in ("check_needed", "runner_error")):
+        return state
+    try:
+        items = request["plan"]["params"]["items"]
+        if not isinstance(items, list) or not items:
+            return state
+        with (job / "batch.json").open("rb") as handle:
+            raw = handle.read(1_000_001)
+        if len(raw) > 1_000_000:
+            return state
+        saved = json.loads(raw)
+        rows, index = saved["batch_results"], saved["current_index"]
+        pending, complete = saved["pending"], saved["complete"]
+        if (type(saved["batch_total"]) is not int or saved["batch_total"] != len(items)
+                or not isinstance(rows, list) or len(rows) != len(items)
+                or type(index) is not int or not 0 <= index < len(items)
+                or type(pending) is not bool or type(complete) is not bool or (pending and complete)):
+            return state
+        for position, (row, item) in enumerate(zip(rows, items)):
+            if not isinstance(row, dict) or not isinstance(item, dict) or row.get("file") != item["file"]:
+                return state
+            result, code = row.get("status"), row.get("exit_code")
+            if (result not in ("succeeded", "failed", "unconfirmed", "not_started")
+                    or (result == "succeeded" and (type(code) is not int or code != 0))
+                    or (result == "failed" and (type(code) is not int or code in (0, 3)))
+                    or (result == "unconfirmed" and (type(code) is not int or code != 3))
+                    or (result == "not_started" and code is not None)
+                    or (position < index and result != "succeeded")
+                    or (position > index and result != "not_started")
+                    or (position == index and pending and result != "not_started")):
+                return state
+        if pending:
+            rows[index] = {**rows[index], "status": "unconfirmed", "exit_code": 3,
+                           "error": "실행기가 종료되어 이 항목의 결과를 확인하지 못했습니다"}
+        return {**state, "batch_results": rows, "batch_total": len(items)}
+    except (OSError, ValueError, TypeError, KeyError):
+        return state
 
 
 def _with_leftover(job: Path, state: dict) -> dict:

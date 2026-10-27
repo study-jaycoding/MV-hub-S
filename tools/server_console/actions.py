@@ -352,6 +352,39 @@ def plan_release_delete(inst: Installation, server: dict, source: str, view: dic
                         "sidecars": sidecars})
 
 
+def plan_release_batch(inst: Installation, kind: str, plans: list[Plan]) -> Plan | Refusal:
+    """한 확인·한 작업으로 실행할 같은 위치의 릴리스들. 잘못된 선택을 조용히 빼지 않는다."""
+    if kind not in ("release-remove", "release-delete") or not plans:
+        return Refusal(("해제하거나 삭제할 릴리스를 선택하세요",))
+    first = plans[0]
+    if not isinstance(first, Plan):
+        return Refusal(("선택한 릴리스 중 확인하지 못한 대상이 있습니다",))
+    server, source = first.params.get("server"), first.params.get("release_dir")
+    files, notice_ids = set(), set()
+    for plan in plans:
+        if (not isinstance(plan, Plan) or plan.kind != kind or plan.root != str(inst.root)
+                or plan.role != "server" or "items" in plan.params
+                or not isinstance(server, dict) or not isinstance(source, str) or not source
+                or plan.params.get("server") != server or plan.params.get("release_dir") != source):
+            return Refusal(("같은 서버·릴리스 폴더에서 확인한 대상만 함께 처리할 수 있습니다",))
+        file = plan.params.get("file")
+        notice_id = plan.params.get("notice_id")
+        if not isinstance(file, str) or not file or file.casefold() in files:
+            return Refusal(("파일 이름이 없거나 같은 릴리스가 중복 선택되었습니다",))
+        files.add(file.casefold())
+        if kind == "release-remove":
+            if not isinstance(notice_id, str) or not notice_id or notice_id.casefold() in notice_ids:
+                return Refusal(("공지 항목이 없거나 같은 공지가 중복 선택되었습니다",))
+            notice_ids.add(notice_id.casefold())
+    summary = (f"선택한 릴리스 {len(plans)}개를 {'삭제' if kind == 'release-delete' else '해제'}합니다.",)
+    summary += tuple(line for plan in plans for line in plan.summary)
+    summary += ("차례대로 처리하며 실패하거나 결과를 확인하지 못하면 남은 항목은 시작하지 않습니다. "
+                "앞서 완료한 항목은 되돌리지 않습니다.",)
+    return Plan(kind, str(inst.root), "server", "", summary,
+                params={"server": dict(server), "release_dir": source,
+                        "items": [dict(plan.params) for plan in plans]})
+
+
 def plan_notice_action(inst: Installation, kind: str, server: dict, notice: dict | None, sha: str,
                        unresolved_jobs: list[str] | None = ()) -> Plan | Refusal:
     """[재공지](알림만) · [해제](알림 목록에서만) — 확인 대상 = 서버·공지 ID·sha."""

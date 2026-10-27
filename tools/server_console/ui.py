@@ -59,7 +59,7 @@ POWER_TASK_WORDS = {"Running": "실행 중", "Ready": "켜짐(대기)", "Disable
 OFF_WORDS = {"stopping": "끄는 중 멈춤", "stopped": "관리 창이 끔", "starting": "켜는 중 멈춤",
              "start_failed": "켜기 실패 — 확인 필요"}
 PRESENCE_COLUMNS = (("who", "이름", 100), ("app", "앱 연결 수", 100), ("agent", "에이전트", 90))
-RELEASE_COLUMNS = (("버전", 180), ("상태", 180), ("용량", 80), ("제작 시각", 120),
+RELEASE_COLUMNS = (("선택", 40), ("버전", 180), ("상태", 180), ("용량", 80), ("제작 시각", 120),
                    ("배포", 84), ("해제", 84), ("삭제", 84))
 
 
@@ -207,6 +207,7 @@ class App:
             self._set_start_buttons("disabled")
         if autostart:  # 시험은 끄고 메시지를 직접 넣는다
             threading.Thread(target=self._worker, name="console-worker", daemon=True).start()
+            threading.Thread(target=self._side_job_worker, name="console-jobs", daemon=True).start()
             self.root.after(250, self._drain)
 
     @property
@@ -1082,7 +1083,12 @@ class App:
             note.configure(text="하지 않았습니다:\n· " + "\n· ".join(plan.reasons), fg=AMBER)
             self._show_area(area)
             return
-        confirmed = (self._confirm_release_delete(plan) if plan.kind == "release-delete" else
+        if area == "release" and self.session is not getattr(self, "release_session", self.session):
+            self.release_busy = False
+            note.configure(text="관리자 계정이 바뀌었습니다. 다시 선택해 실행하세요", fg=AMBER)
+            self._show_release()
+            return
+        confirmed = (self._confirm_release_delete(plan) if plan.kind == "release-delete" or plan.params.get("items") else
                      messagebox.askokcancel(f"{actions.ACTIONS[plan.kind]} 확인",
                                             "\n\n".join(plan.summary) + "\n\n실행할까요?", icon="warning"))
         if confirmed:
@@ -1095,7 +1101,7 @@ class App:
 
     def _confirm_release_delete(self, plan: actions.Plan) -> bool:
         dialog = tk.Toplevel(self.root)
-        dialog.title("릴리스 삭제")
+        dialog.title("릴리스 삭제" if plan.kind == "release-delete" else "릴리스 해제")
         dialog.configure(bg=PANEL)
         dialog.transient(self.root)
         dialog.resizable(False, False)
@@ -1106,11 +1112,22 @@ class App:
             confirmed = value
             dialog.destroy()
 
-        tk.Label(dialog, text="\n\n".join(plan.summary), bg=PANEL, fg=TEXT, font=FONT,
-                 wraplength=520, justify="left", anchor="w", padx=20, pady=20).pack(fill="x")
+        if plan.params.get("items"):
+            content = tk.Frame(dialog, bg=PANEL)
+            content.pack(fill="both", expand=True, padx=20, pady=20)
+            text = tk.Text(content, bg=PANEL, fg=TEXT, font=FONT, width=68, height=18, wrap="word", relief="flat")
+            scrollbar = ttk.Scrollbar(content, command=text.yview)
+            text.configure(yscrollcommand=scrollbar.set)
+            scrollbar.pack(side="right", fill="y")
+            text.pack(side="left", fill="both", expand=True)
+            text.insert("1.0", "\n\n".join(plan.summary))
+            text.configure(state="disabled")
+        else:
+            tk.Label(dialog, text="\n\n".join(plan.summary), bg=PANEL, fg=TEXT, font=FONT,
+                     wraplength=520, justify="left", anchor="w", padx=20, pady=20).pack(fill="x")
         buttons = tk.Frame(dialog, bg=PANEL)
         buttons.pack(fill="x", padx=20, pady=(0, 20))
-        delete = self._button(buttons, "삭제", lambda: finish(True), primary=True)
+        delete = self._button(buttons, "삭제" if plan.kind == "release-delete" else "해제", lambda: finish(True), primary=True)
         delete.pack(side="right")
         cancel = self._button(buttons, "취소", finish)
         cancel.pack(side="right", padx=8)
@@ -1137,6 +1154,19 @@ class App:
             self.logout()
         text, color = area_result_text(state)
         note.configure(text=text, fg=color)
+        if area == "release":
+            results = state.get("batch_results") or []
+            if results:
+                labels = {"succeeded": "완료", "failed": "실패", "unconfirmed": "결과 미확인", "not_started": "시작 안 함"}
+                self.release_results.configure(state="normal")
+                self.release_results.delete("1.0", "end")
+                self.release_results.insert("1.0", "\n".join(
+                    f"{item.get('file')}: {labels.get(item.get('status'), '결과 미확인')}"
+                    + (f" — {item['error']}" if item.get("error") else "") for item in results))
+                self.release_results.configure(state="disabled")
+                self.release_result_frame.pack(side="bottom", fill="x", pady=4)
+            else:
+                self.release_result_frame.pack_forget()
         self._show_area(area)
 
     def _show_area(self, area: str) -> None:
@@ -1154,8 +1184,14 @@ class App:
         self.release_entry = tk.Entry(folder, bg=PANEL2, fg=TEXT, insertbackground=TEXT, relief="flat", font=FONT,
                                       width=60)
         self.release_entry.pack(side="left", padx=8, ipady=3)
-        self._button(folder, "저장", self.save_release_source).pack(side="left")
+        self.release_save = self._button(folder, "저장", self.save_release_source)
+        self.release_save.pack(side="left")
         self.release_shown = ""
+        self.release_selected: set[str] = set()
+        self.release_selection_source = ""
+        self.release_checks: dict[str, tk.BooleanVar] = {}
+        self.release_lines: dict[str, tk.Frame] = {}
+        self.release_select_all = tk.IntVar(value=0)
         self.release_all = False  # 이전 릴리스까지 다 보이기(처음엔 최근 8개 + 배포 중·후보)
         tk.Label(body, text="NAS 릴리스 폴더의 모든 릴리스. [배포] = 팀원에게 알림이 가고 그 릴리스로 업데이트(옛 릴리스면 되돌리기). "
                             "[해제] = 팀원 알림만 거둠(배포는 그대로) · [삭제] = 확인 후 릴리스 파일 삭제.",
@@ -1167,11 +1203,28 @@ class App:
                             "업데이트·배포가 실패하면 생성 접수는 멈춘 채로 두고 위 결과를 보세요.",
                  bg=PANEL, fg=TEXT, font=FONT, wraplength=950, justify="left", anchor="w", padx=12, pady=8
                  ).pack(side="bottom", fill="x", pady=8)
+        self.release_result_frame = tk.Frame(body, bg=BG)
+        self.release_results = tk.Text(self.release_result_frame, height=4, width=1, wrap="word",
+                                       bg=PANEL, fg=TEXT, font=FONT, relief="flat", state="disabled")
+        result_scroll = ttk.Scrollbar(self.release_result_frame, command=self.release_results.yview)
+        self.release_results.configure(yscrollcommand=result_scroll.set)
+        result_scroll.pack(side="right", fill="y")
+        self.release_results.pack(side="left", fill="both", expand=True)
         notes = tk.Frame(body, bg=BG)
         notes.pack(side="bottom", fill="x")
         self.release_note = tk.Label(notes, text="", bg=BG, fg=MUTED, font=FONT, wraplength=820, justify="left")
         self.release_note.pack(side="left")
         self.release_resume = self._button(notes, "이어서 하기", lambda: self.request_release("release-resume", None))
+        toolbar = tk.Frame(body, bg=BG)
+        toolbar.pack(fill="x", pady=(6, 0))
+        self.release_selection_count = tk.Label(toolbar, text="선택 0개", bg=BG, fg=MUTED, font=FONT)
+        self.release_selection_count.pack(side="left")
+        self.release_clear = self._button(toolbar, "선택 취소", self.clear_release_selection)
+        self.release_clear.pack(side="left", padx=8)
+        self.release_bulk_remove = self._button(toolbar, "선택 항목 해제", lambda: self.request_release_batch("release-remove"))
+        self.release_bulk_delete = self._button(toolbar, "선택 항목 삭제", lambda: self.request_release_batch("release-delete"))
+        self.release_bulk_delete.pack(side="right")
+        self.release_bulk_remove.pack(side="right", padx=(0, 8))
         holder = tk.Frame(body, bg=BG)
         holder.pack(fill="both", expand=True, pady=6)
         holder.columnconfigure(0, weight=1)
@@ -1181,9 +1234,16 @@ class App:
         self.release_header = tk.Frame(header_canvas, bg=PANEL2, highlightbackground=PANEL2, highlightthickness=1)
         header_window = header_canvas.create_window((0, 0), window=self.release_header, anchor="nw")
         for column, (label, width) in enumerate(RELEASE_COLUMNS):
-            self.release_header.columnconfigure(column, minsize=width, weight=column == 0)
-            tk.Label(self.release_header, text=label, bg=PANEL2, fg=MUTED, font=BOLD,
-                     anchor="w", width=1, padx=10, pady=7).grid(row=0, column=column, sticky="ew")
+            self.release_header.columnconfigure(column, minsize=width, weight=column == 1)
+            if column == 0:
+                self.release_select_all_button = tk.Checkbutton(
+                    self.release_header, variable=self.release_select_all, command=self.select_all_releases, tristatevalue=-1,
+                    bg=PANEL2, activebackground=PANEL2, selectcolor=PANEL2, fg=TEXT, relief="flat",
+                    highlightthickness=0, bd=0)
+                self.release_select_all_button.grid(row=0, column=column)
+            else:
+                tk.Label(self.release_header, text=label, bg=PANEL2, fg=MUTED, font=BOLD,
+                         anchor="w", width=1, padx=10, pady=7).grid(row=0, column=column, sticky="ew")
         self.release_canvas = tk.Canvas(holder, bg=BG, highlightthickness=0, bd=0)
         scroll = ttk.Scrollbar(holder, orient="vertical", command=self.release_canvas.yview)
         self.release_canvas.configure(yscrollcommand=scroll.set)
@@ -1210,6 +1270,8 @@ class App:
         holder.bind("<Leave>", lambda _e: self.release_canvas.unbind_all("<MouseWheel>"))
 
     def save_release_source(self) -> None:
+        if self.release_busy:
+            return
         typed = self.release_entry.get().strip()
         fixed, why = install.network_path(typed)
         if not why and fixed != typed:  # 바꾼 주소를 사람이 보고 다시 누를 때만 저장한다
@@ -1267,6 +1329,12 @@ class App:
         delete_blocked = not read.get("ok") or bool(read.get("packages_error"))
         shown = [r for i, r in enumerate(rows)
                  if self.release_all or i < 8 or r.get("file") in (pub.get("file"), cand_file)]
+        if source != self.release_selection_source:
+            self.release_selected.clear()
+            self.release_selection_source = source
+        self.release_selected.intersection_update(str(row.get("file") or "") for row in shown)
+        self.release_checks = {}
+        self.release_lines = {}
         for row in shown:
             sha = published if row.get("file") == pub.get("file") else candidate if row.get("file") == cand_file else ""
             notice = next((n for n in notices or [] if n.get("file") == row.get("file")
@@ -1282,6 +1350,7 @@ class App:
         if len(rows) > len(shown):
             self._button(self.release_rows, f"이전 릴리스 {len(rows) - len(shown)}개 더 보기 ▾", self.show_all_releases
                          ).pack(anchor="w", pady=4)
+        self._update_release_selection()
         resume = view.get("resume")
         if resume and notices is not None:
             self.release_resume.configure(text=f"이어서 하기 — v{resume.get('version')}",
@@ -1302,100 +1371,169 @@ class App:
         line.pack(fill="x", pady=(0, 2))
         line.rowconfigure(0, minsize=54)
         for column, (_label, width) in enumerate(RELEASE_COLUMNS):
-            line.columnconfigure(column, minsize=width, weight=column == 0)
+            line.columnconfigure(column, minsize=width, weight=column == 1)
         tag = ("팀 배포 중", LIME) if live else ("공지됨 · 아직 배포 안 됨", AMBER) if waiting else\
             ("새 후보 · 배포 전", CYAN) if candidate else ("", MUTED)
         size = row.get("size") if isinstance(row.get("size"), int) else 0
         values = (f"v{row.get('version')}", tag[0] + (f" · 알림 {revision}회" if revision else ""),
                   f"{size / 1024 / 1024:,.0f}MB", _built_at(str(row.get('version') or '')))
-        for column, text in enumerate(values):
-            tk.Label(line, text=text, bg=PANEL, fg=tag[1] if column == 1 else TEXT if column == 0 else MUTED,
-                     font=BOLD if column == 0 else FONT, anchor="w", width=1,
+        filename = str(row.get("file") or "")
+        checked = tk.BooleanVar(value=filename in self.release_selected)
+        self.release_checks[filename] = checked
+        self.release_lines[filename] = line
+        tk.Checkbutton(line, variable=checked, command=self._update_release_selection,
+                       bg=PANEL, activebackground=PANEL, selectcolor=PANEL2, fg=TEXT, relief="flat",
+                       highlightthickness=0, bd=0, state="disabled" if self.release_busy else "normal"
+                       ).grid(row=0, column=0)
+        for column, text in enumerate(values, 1):
+            tk.Label(line, text=text or "—", bg=PANEL, fg=tag[1] if column == 2 else TEXT if column == 1 else MUTED,
+                     font=BOLD if column == 1 else FONT, anchor="w", justify="left", width=1,
                      wraplength=RELEASE_COLUMNS[column][1] - 20, padx=10, pady=9
                      ).grid(row=0, column=column, sticky="ew")
         target = {**row, "notice": notice}
-        buttons = [("✓ 배포" if live and not blocked else "배포", "release-deploy", live and not blocked, blocked),
-                   ("✓ 해제" if removed and not notice else "해제", "release-remove", removed and not notice,
-                    removed and not notice),
+        buttons = [("배포", "release-deploy", live and not blocked, blocked),
+                   ("해제", "release-remove", False, removed and not notice),
                    ("삭제", "release-delete", False, delete_blocked or live or candidate or bool(notice))]
-        for column, (label, kind, complete, off) in enumerate(buttons, 4):
-            button = self._button(line, label, lambda k=kind: self.request_release(k, target))
-            button.configure(fg=LIME if complete else TEXT,
-                             state="disabled" if self.release_busy or not logged_in or off else "normal",
-                             disabledforeground=LIME if complete else MUTED2)
+        for column, (label, kind, complete, off) in enumerate(buttons, 5):
+            button = self._button(line, label, lambda k=kind: self.request_release(k, target), primary=complete)
+            button.configure(state="disabled" if self.release_busy or not logged_in or off else "normal",
+                             disabledforeground=INK if complete else MUTED2)
             button.grid(row=0, column=column, sticky="ew", padx=5, pady=5)
+
+    def _update_release_selection(self) -> None:
+        self.release_selected = {filename for filename, checked in self.release_checks.items() if checked.get()}
+        count = len(self.release_selected)
+        for filename, line in self.release_lines.items():
+            bg = "#293216" if filename in self.release_selected else PANEL
+            line.configure(bg=bg)
+            for child in line.winfo_children():
+                if isinstance(child, (tk.Label, tk.Checkbutton)):
+                    child.configure(bg=bg)
+        self.release_selection_count.configure(text=f"선택 {count}개")
+        self.release_select_all.set(1 if self.release_checks and count == len(self.release_checks) else -1 if count else 0)
+        self.release_select_all_button.configure(state="disabled" if self.release_busy or not self.release_checks else "normal")
+        self.release_clear.configure(state="normal" if count and not self.release_busy else "disabled")
+        ready = bool(count) and not self.release_busy and (self.release_view or {}).get("notices") is not None
+        self.release_bulk_remove.configure(state="normal" if ready else "disabled")
+        self.release_bulk_delete.configure(state="normal" if ready else "disabled")
+        self.release_save.configure(state="disabled" if self.release_busy else "normal")
+        self.release_entry.configure(state="disabled" if self.release_busy else "normal")
+
+    def clear_release_selection(self) -> None:
+        for checked in self.release_checks.values():
+            checked.set(False)
+        self._update_release_selection()
+
+    def select_all_releases(self) -> None:
+        for checked in self.release_checks.values():
+            checked.set(self.release_select_all.get())
+        self._update_release_selection()
+
+    def request_release_batch(self, kind: str) -> None:
+        if self.release_busy or not self.release_selected:
+            return
+        rows = (self.release_view or {}).get("read", {}).get("packages", [])
+        selected = [dict(row) for row in rows if str(row.get("file") or "") in self.release_selected]
+        self.require_login(lambda: self._begin_release(kind, selected))
 
     def request_release(self, kind: str, row: dict | None) -> None:
         if not self.release_busy:
             self.require_login(lambda: self._begin_release(kind, row))
 
-    def _begin_release(self, kind: str, row: dict | None) -> None:
+    def _begin_release(self, kind: str, row: dict | list[dict] | None) -> None:
         if self.release_busy or self.session is None:
             return
         if kind == "release-delete":
             read = (self.release_view or {}).get("read") or {}
             overview = read.get("overview") or {}
-            if (not row or (self.release_view or {}).get("notices") is None
-                    or not read.get("ok") or read.get("packages_error") or row.get("notice")
-                    or row.get("file") in ((overview.get("published") or {}).get("file"), overview.get("file"))):
+            selected = row if isinstance(row, list) else [row]
+            if (not selected or (self.release_view or {}).get("notices") is None
+                    or not read.get("ok") or read.get("packages_error")
+                    or any(not item or item.get("notice") or item.get("file") in (
+                        (overview.get("published") or {}).get("file"), overview.get("file")) for item in selected)):
                 self.release_note.configure(text="배포 중이거나 후보인 릴리스, 상태를 확인하지 못한 릴리스는 삭제할 수 없습니다", fg=AMBER)
                 return
         if kind == "release-resume":
             row = (self.release_view or {}).get("resume")
             if not row:
                 return
+        self.release_session = self.session
         self.release_busy = True
         self._show_release()
         self.release_note.configure(text="서버·릴리스 폴더를 확인하는 중", fg=MUTED)
-        threading.Thread(target=self._release_plan_worker, args=(kind, row, self.session), daemon=True).start()
+        threading.Thread(target=self._release_plan_worker, args=(kind, row, self.session, str((self.release_view or {}).get("source") or "")), daemon=True).start()
 
-    def _release_plan_worker(self, kind: str, row: dict, session: server_api.Session) -> None:
+    def _release_plan_worker(self, kind: str, row: dict | list[dict], session: server_api.Session,
+                             source: str | None = None) -> None:
         try:
-            server = server_api.verify_server(self.inst, self.runner)  # 토큰을 보내기 전에 늘 다시 확인
+            server = server_api.verify_server(self.inst, self.runner)
             unresolved = jobs.unresolved_jobs_or_repair(self.inst, self.runner)
-            source = release.release_source(self.inst)
-            if kind == "release-resume":
-                params, state, intent = release.resume_source(self.inst, row["job_id"])
-                plan = actions.plan_release_resume(self.inst, server, source, row["job_id"], params, state, intent,
-                                                   unresolved, release.resume_chain(self.inst, row["job_id"]))
-            elif kind in ("release-deploy", "release-delete"):
+            source = release.release_source(self.inst) if source is None else source
+            if isinstance(row, list):
                 read = release.helper(self.inst, release.scratch_dir(self.inst), source, "read")
-                overview = read.get("overview") if isinstance(read.get("overview"), dict) else {}
-                if kind == "release-deploy" and overview.get("source") == "candidate" and overview.get("file") == row["file"]:
-                    fields = {key: overview[key] for key in release.FIELDS}
+                notices = release.list_notices(server, session.token)
+                plans = []
+                for selected in row:
+                    plan = self._release_item_plan(kind, selected, session, server, unresolved, source, read, notices)
+                    if isinstance(plan, actions.Refusal):
+                        break
+                    plans.append(plan)
                 else:
-                    self.queue.put(("area_note", "release", "릴리스 파일 지문을 확인하는 중(수백 MB — 몇 분 걸릴 수 있음)"))
-                    answer = release.helper(self.inst, release.scratch_dir(self.inst), source,
-                                            "delete-info" if kind == "release-delete" else "manifest", row["file"],
-                                            timeout=release.HASH_TIMEOUT)
-                    if not answer.get("ok"):
-                        raise release.ReleaseError(str(answer.get("error")))
-                    fields = answer["manifest"]
-                notice = (release.find_delete_notice(server, session.token, fields) if kind == "release-delete"
-                          else release.find_notice(server, session.token, str(fields.get("sha256") or "")))
-                planner = actions.plan_release_delete if kind == "release-delete" else actions.plan_release_deploy
-                plan = planner(self.inst, server, source, read, fields, notice, unresolved)
+                    plan = actions.plan_release_batch(self.inst, kind, plans)
+                if not row:
+                    plan = actions.Refusal(("릴리스를 선택하세요",))
             else:
-                sha = str((row.get("notice") or {}).get("sha256") or "")
-                if not sha and kind == "release-remove":
-                    read = release.helper(self.inst, release.scratch_dir(self.inst), source, "read")
-                    overview = read.get("overview") or {}
-                    fields = next((item for item in (overview, overview.get("published") or {})
-                                   if item.get("file") == row.get("file") and item.get("sha256")), None)
-                    if fields is None:
-                        answer = release.helper(self.inst, release.scratch_dir(self.inst), source,
-                                                "delete-info", row["file"], timeout=release.HASH_TIMEOUT)
-                        if not answer.get("ok"):
-                            raise release.ReleaseError(str(answer.get("error")))
-                        fields = answer["manifest"]
-                    sha = str(fields.get("sha256") or "")
-                notice = release.find_notice(server, session.token, sha) if sha else None
-                plan = actions.plan_notice_action(self.inst, kind, server, notice, sha, unresolved)
+                plan = self._release_item_plan(kind, row, session, server, unresolved, source)
         except (server_api.ServerError, release.ReleaseError) as exc:
             plan = actions.Refusal((str(exc),))
         except Exception as exc:  # noqa: BLE001
             plan = actions.Refusal((f"확인 중 오류: {type(exc).__name__}: {exc}"[:300],))
         self.queue.put(("area_plan", "release", plan))
+
+    def _release_item_plan(self, kind, row, session, server, unresolved, source, read=None, notices=None):
+        if kind == "release-resume":
+            params, state, intent = release.resume_source(self.inst, row["job_id"])
+            plan = actions.plan_release_resume(self.inst, server, source, row["job_id"], params, state, intent,
+                                               unresolved, release.resume_chain(self.inst, row["job_id"]))
+        elif kind in ("release-deploy", "release-delete"):
+            read = read if read is not None else release.helper(self.inst, release.scratch_dir(self.inst), source, "read")
+            overview = read.get("overview") if isinstance(read.get("overview"), dict) else {}
+            if kind == "release-deploy" and overview.get("source") == "candidate" and overview.get("file") == row["file"]:
+                fields = {key: overview[key] for key in release.FIELDS}
+            else:
+                self.queue.put(("area_note", "release", "릴리스 파일 지문을 확인하는 중(수백 MB — 몇 분 걸릴 수 있음)"))
+                answer = release.helper(self.inst, release.scratch_dir(self.inst), source,
+                                        "delete-info" if kind == "release-delete" else "manifest", row["file"],
+                                        timeout=release.HASH_TIMEOUT)
+                if not answer.get("ok"):
+                    raise release.ReleaseError(str(answer.get("error")))
+                fields = answer["manifest"]
+            notice = (release.find_delete_notice(server, session.token, fields) if kind == "release-delete"
+                      else release.find_notice(server, session.token, str(fields.get("sha256") or "")))
+            planner = actions.plan_release_delete if kind == "release-delete" else actions.plan_release_deploy
+            plan = planner(self.inst, server, source, read, fields, notice, unresolved)
+        else:
+            notice, complete = release.find_notice_for_file(server, session.token, str(row.get("file") or ""), notices)
+            if notice is None and complete:
+                return actions.Refusal((f"{row.get('file')}: 해당 릴리스의 공지 항목이 없습니다",))
+            sha = str((notice or {}).get("sha256") or "")
+            if not sha and kind == "release-remove":
+                read = read if read is not None else release.helper(self.inst, release.scratch_dir(self.inst), source, "read")
+                overview = read.get("overview") or {}
+                fields = next((item for item in (overview, overview.get("published") or {})
+                               if item.get("file") == row.get("file") and item.get("sha256")), None)
+                if fields is None:
+                    answer = release.helper(self.inst, release.scratch_dir(self.inst), source,
+                                            "delete-info", row["file"], timeout=release.HASH_TIMEOUT)
+                    if not answer.get("ok"):
+                        raise release.ReleaseError(str(answer.get("error")))
+                    fields = answer["manifest"]
+                sha = str(fields.get("sha256") or "")
+            notice = notice or (release.find_notice(server, session.token, sha) if sha else None)
+            plan = actions.plan_notice_action(self.inst, kind, server, notice, sha, unresolved)
+            if isinstance(plan, actions.Plan):
+                plan.params["release_dir"] = source
+        return plan
 
     # ---------- 주소 ----------
     def _build_address_page(self, page: tk.Frame) -> None:
@@ -1727,6 +1865,9 @@ class App:
             refusal = actions.Refusal((text,))
             self.queue.put(("side_refused", area, refusal) if area else ("plan", refusal))
         session = self.session if plan.kind in actions.AUTH_KINDS else None
+        if area == "release" and session is not getattr(self, "release_session", session):
+            refuse("관리자 계정이 바뀌었습니다. 다시 선택해 실행하세요")
+            return
         if plan.kind in actions.AUTH_KINDS and session is None:
             refuse("관리자 로그인이 필요합니다")
             return
@@ -1751,6 +1892,17 @@ class App:
             return True
         except queue.Full:
             return False
+
+    def _side_job_worker(self) -> None:
+        while not self.stop.is_set():
+            try:
+                for area, side in list(self.side_jobs.items()):
+                    state = jobs.read_job(self.inst, side)
+                    tail = jobs.read_output(self.inst, side, 0, JOB_READ_BYTES, final=True)[0][-1:]
+                    self._put(("side_job", area, side, state, tail[0] if tail else ""))
+            except Exception:  # noqa: BLE001
+                _log_ui_error(traceback.format_exc())
+            self.stop.wait(0.5)
 
     def _worker(self) -> None:
         last_status = last_tasks = last_addr = last_backup = last_release = last_activity = 0.0
@@ -1787,9 +1939,6 @@ class App:
                                                          final=state.get("status") in JOB_TERMINAL)
                     if self._put(("job", view, new_lines, state)):
                         offsets[view] = offset  # 못 넣었으면 다음에 같은 곳부터 다시 읽는다
-                for area, side in list(self.side_jobs.items()):
-                    tail = jobs.read_output(self.inst, side, 0, JOB_READ_BYTES, final=True)[0][-1:]
-                    self._put(("side_job", area, side, jobs.read_job(self.inst, side), tail[0] if tail else ""))
                 if self.backup_due or (self.page == "backup" and now - last_backup > 30):
                     self.backup_due, last_backup = False, now
                     self._put(("backup_view", backup.read_view(self.inst, self.runner)))
@@ -1908,6 +2057,10 @@ class App:
         elif kind == "backup_plan":
             self._on_backup_plan(item[1])
         elif kind == "release_view":
+            if self.release_busy:
+                if item[1].get("auth_expired"):
+                    self.logout()
+                return 1
             self.release_view = item[1]
             if item[1].get("auth_expired"):
                 self.logout()
@@ -2153,6 +2306,8 @@ def _result_base(state: dict) -> tuple[str, str]:
     """판정은 종료 코드, 커밋은 이 실행과 이어졌을 때만 적는다."""
     status_text = state.get("status")
     kind = state.get("kind")
+    if state.get("batch_results") and kind in ("release-remove", "release-delete"):
+        return area_result_text(state)
     if status_text == "finished" and kind in ("backup-save", "backup-run"):
         return backup_result_text(state)
     if status_text == "finished" and kind in ("release-deploy", "release-resume", "release-announce",
@@ -2205,6 +2360,20 @@ def _built_at(version: str) -> str:
 def area_result_text(state: dict) -> tuple[str, str]:
     """릴리스·주소 작업 상태 → (화면 문구, 색). '알림'과 'NAS 표지' 결과를 따로 말한다."""
     status_text, kind = state.get("status"), state.get("kind")
+    if state.get("batch_results"):
+        labels = {"succeeded": "완료", "failed": "실패", "unconfirmed": "결과 미확인", "not_started": "시작 안 함"}
+        results = state["batch_results"]
+        counts = collections.Counter(item.get("status") for item in results)
+        text = " · ".join(f"{label} {counts[key]}개" for key, label in labels.items() if counts[key])
+        confirmed = (state.get("status") == "finished" and state.get("exit_code") == 0
+                     and not state.get("outcome_unknown"))
+        if not confirmed:
+            text = "전체 작업 결과 확인 필요 — " + text
+            if state.get("error"):
+                text += f"\n{state['error']}"
+            if state.get("exit_code") == jobs.UNCONFIRMED or state.get("status") in ("check_needed", "runner_error"):
+                text += "\n서버 상태와 로그를 확인한 뒤 업데이트 화면에서 [확인했음]을 누르세요."
+        return text, LIME if confirmed and all(item.get("status") == "succeeded" for item in results) else AMBER
     if status_text == "refused":
         return "하지 않았습니다: " + " / ".join(str(r) for r in state.get("reasons") or []), AMBER
     if status_text != "finished":

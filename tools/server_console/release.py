@@ -179,7 +179,28 @@ def announce_notice(server: dict, token: str, notice_id: str) -> int:
 def list_notices(server: dict, token: str) -> list[dict]:
     """서버의 모든 공지 항목(관리자) — 줄마다 알림 횟수·[해제] 대상."""
     rows = server_api.expect_ok(*server_api.call(server, "GET", f"{NOTICE_PATH}/list", token), "공지 목록", list)
-    return [row for row in rows if isinstance(row, dict) and isinstance(row.get("sha256"), str)]
+    _validate_notices(rows)
+    return rows
+
+
+def _validate_notices(rows: list[dict]) -> None:
+    if not isinstance(rows, list) or any(
+            not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"]
+            or not isinstance(row.get("file"), str) or not row["file"]
+            or not isinstance(row.get("sha256"), str) or not _SHA.fullmatch(row["sha256"])
+            for row in rows):
+        raise ReleaseError("서버 공지 목록 형식을 확인하지 못했습니다")
+
+
+def find_notice_for_file(server: dict, token: str, file: str,
+                         notices: list[dict] | None = None) -> tuple[dict | None, bool]:
+    """새로 읽은 목록에서 파일로 찾는다. complete=False면 목록 밖 공지가 있을 수 있다."""
+    rows = list_notices(server, token) if notices is None else notices
+    _validate_notices(rows)
+    found = [row for row in rows if row["file"].casefold() == file.casefold()]
+    if len(found) > 1:
+        raise ReleaseError("같은 파일을 가리키는 공지가 여럿입니다 — 공지 항목을 먼저 확인하세요")
+    return (found[0] if found else None), len(rows) < 5
 
 
 def find_delete_notice(server: dict, token: str, fields: dict) -> dict | None:
@@ -426,13 +447,55 @@ def announce_work(params: dict, token: str, say: Say) -> tuple[int, dict]:
 def remove_work(params: dict, token: str, say: Say) -> tuple[int, dict]:
     """[해제] — 팀원 알림 목록에서만 거둔다(DELETE 만, 배포된 릴리스는 그대로)."""
     try:
-        payload = server_api.expect_ok(*server_api.call(params["server"], "DELETE",
-                                                        f"{NOTICE_PATH}/{params['notice_id']}", token), "알림 해제")
+        code, payload = server_api.call(params["server"], "DELETE", f"{NOTICE_PATH}/{params['notice_id']}", token)
+    except server_api.ServerError as exc:
+        say(f"실패: {exc}")
+        return 1, {"error": str(exc)[:500], "auth_expired": isinstance(exc, server_api.AuthExpired)}
+    if (code is None or code >= 500 or
+            (200 <= code < 300 and (code != 200 or not isinstance(payload, dict)
+                                   or type(payload.get("removed")) is not bool))):
+        say("결과 미확인: 알림 해제 응답을 확인하지 못했습니다 — 목록을 다시 확인하세요")
+        return 3, {"error": "알림 해제 결과를 확인하지 못했습니다", "outcome_unknown": True}
+    try:
+        payload = server_api.expect_ok(code, payload, "알림 해제")
     except server_api.ServerError as exc:
         say(f"실패: {exc}")
         return 1, {"error": str(exc)[:500], "auth_expired": isinstance(exc, server_api.AuthExpired)}
     say("완료: 알림을 거뒀습니다" if payload.get("removed") else "완료: 이미 없는 알림이었습니다")
     return 0, {"removed": bool(payload.get("removed"))}
+
+
+def batch_work(job: Path, items: list[dict], work: Callable[[dict], tuple[int, dict]],
+               say: Say) -> tuple[int, dict]:
+    """항목별 실행 전후를 남긴다. 기록 실패나 첫 실패 뒤에는 다른 항목을 실행하지 않는다."""
+    results = [{"file": item["file"], "version": item.get("version"), "status": "not_started"} for item in items]
+
+    def save(index: int, complete: bool = False, pending: bool = False) -> None:
+        _atomic_text(job / "batch.json", json.dumps({"batch_total": len(items), "current_index": index,
+                     "batch_results": results, "complete": complete, "pending": pending}, ensure_ascii=False))
+
+    for index, item in enumerate(items):
+        try:
+            save(index, pending=True)
+        except OSError:
+            return 1, {"error": "일괄 작업 기록을 저장하지 못해 남은 항목을 시작하지 않았습니다",
+                       "batch_results": results, "batch_total": len(items)}
+        try:
+            say(f"{index + 1}/{len(items)}: {item['file']}")
+            code, extra = work(item)
+        except Exception as exc:  # 결과를 잃었을 가능성이 있으므로 다음 항목으로 넘어가지 않는다.
+            code, extra = 3, {"error": f"{type(exc).__name__}: 작업 결과를 확인하지 못했습니다",
+                              "outcome_unknown": True}
+        results[index] = {**results[index], **extra, "exit_code": code,
+                          "status": "succeeded" if code == 0 else "unconfirmed" if code == 3 else "failed"}
+        try:
+            save(index, complete=code != 0 or index == len(items) - 1)
+        except OSError:
+            return 3, {"error": "실행 결과를 일괄 작업 기록에 저장하지 못했습니다 — 결과를 확인하세요",
+                       "outcome_unknown": True, "batch_results": results, "batch_total": len(items)}
+        if code != 0:
+            return code, {**extra, "batch_results": results, "batch_total": len(items)}
+    return 0, {"batch_results": results, "batch_total": len(items)}
 
 
 def delete_work(inst: Installation, job: Path, params: dict, token: str, say: Say) -> tuple[int, dict]:

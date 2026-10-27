@@ -2720,7 +2720,7 @@ def test_ui_release_page_enables_buttons_after_login_and_offers_resume(tmp_path,
         assert "로그인하면" in app.release_warn.cget("text") and not app.release_resume.winfo_manager()
         notices = [{**_notice(1, SHA_A), "file": "MVHub-2026.10.22-2105.zip"}]
         app._handle(("release_view", {**view, "notices": notices}))
-        assert buttons() == ["배포", "해제", "삭제", "✓ 배포", "해제", "삭제"]
+        assert buttons() == ["배포", "해제", "삭제", "배포", "해제", "삭제"]
         assert app.release_resume.winfo_manager() == "pack"
         texts = [w.cget("text") for line in app.release_rows.winfo_children() for w in line.winfo_children()]
         assert "새 후보 · 배포 전" in texts and any("팀 배포 중" in t for t in texts) and any("알림 1회" in t for t in texts)
@@ -3279,10 +3279,12 @@ def test_ui_release_grid_checks_only_confirmed_actions_and_protects_current_file
         buttons = [w for w in line.winfo_children() if isinstance(w, ui.tk.Button)]
         assert [w.cget("text") for w in buttons] == ["배포", "해제", "삭제"]
         assert str(buttons[2].cget("state")) == "normal"
-        assert [int(w.grid_info()["column"]) for w in buttons] == [4, 5, 6]
+        assert [int(w.grid_info()["column"]) for w in buttons] == [5, 6, 7]
         app._handle(("release_view", {**view, "removed_files": [row["file"]]}))
         line = app.release_rows.winfo_children()[0]
-        assert any(w.cget("text") == "✓ 해제" for w in line.winfo_children())
+        assert all("✓" not in w.cget("text") for w in line.winfo_children())
+        remove = next(w for w in line.winfo_children() if isinstance(w, ui.tk.Button) and w.cget("text") == "해제")
+        assert remove.cget("background") == ui.PANEL2 and str(remove.cget("state")) == "disabled"
         app._handle(("release_view", {**view, "removed_files": [row["file"]], "notices": [_notice(1)]}))
         line = app.release_rows.winfo_children()[0]
         assert not any(w.cget("text") == "✓ 해제" for w in line.winfo_children())
@@ -3337,6 +3339,7 @@ def test_ui_remove_finds_a_notice_missing_from_the_recent_list(tmp_path, monkeyp
             calls.append(command)
             return {"ok": True} if command == "read" else {"ok": True, "manifest": FIELDS_C}
         monkeypatch.setattr(release, "helper", helper)
+        monkeypatch.setattr(release, "find_notice_for_file", lambda *_args: (None, False))
         monkeypatch.setattr(release, "find_notice", lambda _server, _token, sha: _notice(1) if sha == SHA_C else None)
         monkeypatch.setattr(actions, "plan_notice_action", lambda *_args: _args)
         app._release_plan_worker("release-remove", {"file": FIELDS_C["file"], "notice": None},
@@ -3359,16 +3362,16 @@ def test_ui_release_columns_align_with_long_status_at_both_window_sizes(tmp_path
             "notices": [_notice(1), {**_notice(1, SHA_A), "file": old["file"]}]}))
         app.show("release")
         root.deiconify()
-        for width in (1000, 1280):
-            root.geometry(f"{width}x800")
+        for width, height in ((1000, 640), (1280, 800)):
+            root.geometry(f"{width}x{height}")
             root.update()
             expected = [(app.release_header.grid_bbox(column, 0)[0],
-                         app.release_header.grid_bbox(column, 0)[2]) for column in range(7)]
+                         app.release_header.grid_bbox(column, 0)[2]) for column in range(len(ui.RELEASE_COLUMNS))]
             lines = [w for w in app.release_rows.winfo_children() if isinstance(w, ui.tk.Frame)]
             assert len(lines) == 2
             for line in lines:
                 assert [(line.grid_bbox(column, 0)[0], line.grid_bbox(column, 0)[2])
-                        for column in range(7)] == expected
+                        for column in range(len(ui.RELEASE_COLUMNS))] == expected
         assert errors == []
     finally:
         root.destroy()
@@ -3398,3 +3401,211 @@ def test_ui_release_delete_confirmation_defaults_to_cancel_and_can_be_replaced(t
         assert errors == []
     finally:
         root.destroy()
+
+
+def test_ui_release_selection_is_scoped_to_displayed_rows_and_survives_refresh(tmp_path, monkeypatch):
+    ui, root, app, errors = _app(tmp_path, monkeypatch)
+    try:
+        rows = [{"file": f"old-{i}.zip", "version": f"old-{i}", "size": 100} for i in range(10)]
+        view = {"source": "\\\\NAS\\r", "read": {"ok": True, "packages": rows}, "notices": []}
+        app._handle(("release_view", view))
+        app.release_select_all_button.invoke()
+        assert app.release_selected == {row["file"] for row in rows[:8]}
+        assert app.release_selection_count.cget("text") == "선택 8개"
+        app.show_all_releases()
+        assert len(app.release_selected) == 8 and app.release_select_all.get() == -1
+        app._handle(("release_view", view))
+        assert len(app.release_selected) == 8
+        app.release_select_all_button.invoke()
+        assert len(app.release_selected) == 10
+        app.release_clear.invoke()
+        assert not app.release_selected and not app.release_select_all.get()
+        app.release_checks[rows[0]["file"]].set(True)
+        app._update_release_selection()
+        app._handle(("release_view", {**view, "read": {"ok": True, "packages": rows[1:]}}))
+        assert not app.release_selected
+        app.release_select_all_button.invoke()
+        app._handle(("release_view", {**view, "source": "\\\\NAS\\other"}))
+        assert not app.release_selected
+        assert errors == []
+    finally:
+        root.destroy()
+
+
+def test_ui_release_live_button_is_solid_and_empty_status_is_dash(tmp_path, monkeypatch):
+    ui, root, app, errors = _app(tmp_path, monkeypatch)
+    try:
+        old = {"file": "old.zip", "version": "old", "size": 100}
+        overview = {"published": FIELDS_C}
+        app._handle(("release_view", {"source": "\\\\NAS\\r", "read": {
+            "ok": True, "packages": [FIELDS_C, old], "overview": overview}, "notices": []}))
+        live, archived = app.release_rows.winfo_children()
+        deploy = next(w for w in live.winfo_children() if isinstance(w, ui.tk.Button) and w.cget("text") == "배포")
+        assert deploy.cget("background") == ui.LIME and deploy.cget("foreground") == ui.INK
+        status = next(w for w in archived.winfo_children() if int(w.grid_info()["column"]) == 2)
+        assert status.cget("text") == "—"
+        assert errors == []
+    finally:
+        root.destroy()
+
+
+def test_ui_release_batch_reuses_fresh_notice_list_and_rejects_whole_invalid_selection(tmp_path, monkeypatch):
+    ui, root, app, errors = _app(tmp_path, monkeypatch)
+    try:
+        session = ui.server_api.Session(SERVER, "token", "admin@x")
+        notices = [_notice(1), {**_notice(1, SHA_A), "file": "old.zip", "id": "old"}]
+        rows = [{"file": n["file"]} for n in notices]
+        calls = []
+        monkeypatch.setattr(ui.server_api, "verify_server", lambda *_args: SERVER)
+        monkeypatch.setattr(jobs, "unresolved_jobs_or_repair", lambda *_args: [])
+        monkeypatch.setattr(release, "list_notices", lambda *_args: calls.append("notices") or notices)
+        def helper(_inst, _scratch, source, command, *_args, **_kwargs):
+            calls.append((source, command))
+            assert command == "read"  # 파일명으로 공지를 찾으면 ZIP 지문 읽기를 하지 않는다.
+            return {"ok": True, "packages": rows}
+        monkeypatch.setattr(release, "helper", helper)
+        app._release_plan_worker("release-remove", rows, session, "\\\\NAS\\snapshot")
+        event = app.queue.get_nowait()
+        assert event[:2] == ("area_plan", "release") and isinstance(event[2], actions.Plan)
+        assert [item["file"] for item in event[2].params["items"]] == [row["file"] for row in rows]
+        assert event[2].params["release_dir"] == "\\\\NAS\\snapshot"
+        assert calls == [("\\\\NAS\\snapshot", "read"), "notices"]
+        app._release_plan_worker("release-remove", rows + [{"file": "missing.zip"}], session, "\\\\NAS\\snapshot")
+        assert isinstance(app.queue.get_nowait()[2], actions.Refusal)
+        assert errors == []
+    finally:
+        root.destroy()
+
+
+def test_ui_release_batch_confirmation_lists_all_files_and_defaults_to_cancel(tmp_path, monkeypatch):
+    ui, root, app, errors = _app(tmp_path, monkeypatch)
+    plan = actions.Plan("release-remove", str(app.inst.root), "server", "",
+                        tuple(f"release-{i}.zip" for i in range(40)), params={"items": [{"file": "one"}]})
+    try:
+        root.deiconify()
+        def cancel():
+            dialog = next(w for w in root.winfo_children() if isinstance(w, ui.tk.Toplevel))
+            text = next(w for frame in dialog.winfo_children() for w in frame.winfo_children() if isinstance(w, ui.tk.Text))
+            assert "release-39.zip" in text.get("1.0", "end")
+            controls = [w for frame in dialog.winfo_children() for w in frame.winfo_children() if isinstance(w, ui.tk.Button)]
+            button = next(w for w in controls if w.cget("text") == "취소")
+            assert str(button.cget("default")) == "active"
+            button.invoke()
+        root.after(30, cancel)
+        assert app._confirm_release_delete(plan) is False
+        assert errors == []
+    finally:
+        root.destroy()
+
+
+def test_ui_side_job_completion_does_not_wait_for_blocked_status_read(tmp_path, monkeypatch):
+    import threading
+    ui, root, app, errors = _app(tmp_path, monkeypatch)
+    blocked, release_read, observed = threading.Event(), threading.Event(), threading.Event()
+    state = {"status": "finished", "kind": "release-remove", "exit_code": 0}
+    app.side_jobs["release"] = "a" * 32
+    def slow_status(*_args):
+        blocked.set()
+        assert release_read.wait(3)
+        return _status({})
+    def put(event):
+        if event[0] == "side_job":
+            assert event[3] is state
+            observed.set()
+        return True
+    monkeypatch.setattr(install, "task_states", lambda *_args: {})
+    monkeypatch.setattr(install, "addresses", lambda *_args: [])
+    monkeypatch.setattr(status, "collect_status", slow_status)
+    monkeypatch.setattr(jobs, "read_job", lambda *_args: state)
+    monkeypatch.setattr(jobs, "read_output", lambda *_args, **_kwargs: (["done"], 1))
+    monkeypatch.setattr(app, "_put", put)
+    monkeypatch.setattr(app, "_activity_step", lambda *_args: 0)
+    monkeypatch.setattr(app, "_presence_step", lambda *_args: 0)
+    network = threading.Thread(target=app._worker)
+    observer = threading.Thread(target=app._side_job_worker)
+    try:
+        network.start()
+        assert blocked.wait(1)
+        observer.start()
+        assert observed.wait(1) and not release_read.is_set()
+    finally:
+        app.stop.set()
+        release_read.set()
+        network.join(3)
+        if observer.ident is not None:
+            observer.join(3)
+        root.destroy()
+    assert not network.is_alive() and not observer.is_alive() and errors == []
+
+
+def test_ui_release_batch_results_show_partial_failure_and_all_files(tmp_path, monkeypatch):
+    ui, root, app, errors = _app(tmp_path, monkeypatch)
+    try:
+        results = [{"file": "one.zip", "status": "succeeded"}, {"file": "two.zip", "status": "unconfirmed", "error": "timeout"},
+                   {"file": "three.zip", "status": "not_started"}]
+        app._on_area_job("release", {"status": "finished", "kind": "release-delete", "exit_code": 3,
+                                     "batch_total": 3, "batch_results": results}, "")
+        assert "완료 1개 · 결과 미확인 1개 · 시작 안 함 1개" in app.release_note.cget("text")
+        text = app.release_results.get("1.0", "end")
+        assert all(item["file"] in text for item in results) and "timeout" in text
+        assert app.release_result_frame.winfo_manager() == "pack" and errors == []
+    finally:
+        root.destroy()
+
+
+def test_ui_release_batch_freezes_source_selection_and_rejects_changed_login(tmp_path, monkeypatch):
+    ui, root, app, errors = _app(tmp_path, monkeypatch)
+    try:
+        row = {"file": "old.zip", "version": "old"}
+        view = {"source": "\\\\NAS\\r", "read": {"ok": True, "packages": [row]}, "notices": []}
+        app._handle(("release_view", view))
+        app.session = ui.server_api.Session(SERVER, "one", "first@x")
+        app.release_select_all_button.invoke()
+        started = []
+        class PendingThread:
+            def __init__(self, *, target, args, daemon):
+                self.args = args
+            def start(self):
+                started.append(self.args)
+        monkeypatch.setattr(ui.threading, "Thread", PendingThread)
+        app.request_release_batch("release-remove")
+        app.request_release_batch("release-remove")
+        assert len(started) == 1 and started[0][3] == view["source"]
+        assert app.release_busy and str(app.release_entry.cget("state")) == "disabled"
+        assert str(app.release_clear.cget("state")) == "disabled"
+        app._handle(("release_view", {**view, "source": "elsewhere"}))
+        assert app.release_view is view
+        app.session = ui.server_api.Session(SERVER, "two", "second@x")
+        plan = actions.Plan("release-remove", str(app.inst.root), "server", "", ("old.zip",), params={"items": [{}]})
+        monkeypatch.setattr(app, "_confirm_release_delete", lambda _plan: pytest.fail("changed login must not confirm"))
+        app._on_area_plan("release", plan)
+        assert not app.release_busy and "계정이 바뀌었습니다" in app.release_note.cget("text")
+        assert errors == []
+    finally:
+        root.destroy()
+
+
+def test_ui_batch_journal_failure_is_unconfirmed_even_after_all_items_succeeded(tmp_path, monkeypatch):
+    ui, root, app, errors = _app(tmp_path, monkeypatch)
+    try:
+        state = {"status": "finished", "kind": "release-delete", "exit_code": 3, "outcome_unknown": True,
+                 "error": "실행 결과 기록 실패", "batch_total": 1,
+                 "batch_results": [{"file": "done.zip", "status": "succeeded"}]}
+        app._on_area_job("release", state, "")
+        text = app.release_note.cget("text")
+        assert "전체 작업 결과 확인 필요" in text and "실행 결과 기록 실패" in text
+        assert "완료 1개" in text and "[확인했음]" in text
+        assert app.release_note.cget("foreground") == ui.AMBER
+        assert "done.zip: 완료" in app.release_results.get("1.0", "end") and errors == []
+    finally:
+        root.destroy()
+
+
+def test_ui_recovered_batch_keeps_known_results_and_unknown_job_state():
+    from server_console import ui
+    text, color = ui.job_result_text({"status": "check_needed", "kind": "release-delete",
+                                     "batch_results": [{"file": "done.zip", "status": "succeeded"},
+                                                       {"file": "maybe.zip", "status": "unconfirmed"},
+                                                       {"file": "later.zip", "status": "not_started"}]})
+    assert "완료 1개" in text and "결과 미확인 1개" in text and "시작 안 함 1개" in text
+    assert "전체 작업 결과 확인 필요" in text and "[확인했음]" in text and color == ui.AMBER

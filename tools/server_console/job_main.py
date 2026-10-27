@@ -114,34 +114,73 @@ def run_release(inst: install.Installation, job_id: str, request: dict, token: s
     params = actions.Plan.from_json(request["plan"]).params
     runner = install.default_runner(inst)
     job = jobs.job_dir(inst, job_id)
-    source = release.release_source(inst)
+
+    def plan_item(item: dict, server: dict, source: str, unresolved, read: dict | None = None):
+        notice = (release.find_delete_notice(server, token, item) if kind == "release-delete"
+                  else release.find_notice(server, token, item["sha256"]))
+        if kind == "release-delete":
+            # 정확한 파일 지문은 실제 삭제의 발행 잠금 안에서 다시 비교한다.
+            fields = {key: item[key] for key in (*release.FIELDS, "sidecars")}
+            return actions.plan_release_delete(inst, server, source, read or {}, fields, notice, unresolved)
+        if kind == "release-deploy":
+            fields = {key: item[key] for key in release.FIELDS}
+            return actions.plan_release_deploy(inst, server, source, read or {}, fields, notice, unresolved)
+        return actions.plan_notice_action(inst, kind, server, notice, item["sha256"], unresolved)
+
+    def fresh_plan(item: dict | None = None) -> "actions.Plan | actions.Refusal":
+        server = server_api.verify_server(inst, runner)
+        source = release.release_source(inst)
+        unresolved = jobs.unresolved_jobs(inst, exclude=job_id)
+        read = None
+        if kind in ("release-delete", "release-deploy"):
+            read = release.helper(inst, job / "scratch", source, "read")
+            if not read.get("ok") or read.get("packages_error") or read.get("overview_error"):
+                return actions.Refusal((str(read.get("error") or read.get("packages_error")
+                                            or read.get("overview_error") or "릴리스 폴더를 읽지 못했습니다"),))
+        if item is not None:
+            return plan_item(item, server, source, unresolved, read)
+        if "items" in params:
+            if not isinstance(params["items"], list) or not params["items"]:
+                return actions.Refusal(("일괄 처리 대상이 올바르지 않습니다",))
+            plans = []
+            for selected in params["items"]:
+                current = plan_item(selected, server, source, unresolved, read)
+                if isinstance(current, actions.Refusal):
+                    return current
+                plans.append(current)
+            return actions.plan_release_batch(inst, kind, plans)
+        return plan_item(params, server, source, unresolved, read)
 
     def recompute() -> "actions.Plan | actions.Refusal":
         try:
-            server = server_api.verify_server(inst, runner)
-            unresolved = jobs.unresolved_jobs(inst, exclude=job_id)
             if kind == "release-resume":
+                server = server_api.verify_server(inst, runner)
+                source = release.release_source(inst)
+                unresolved = jobs.unresolved_jobs(inst, exclude=job_id)
                 from_params, from_state, intent = release.resume_source(inst, params["from_job"])
                 return actions.plan_release_resume(inst, server, source, params["from_job"], from_params, from_state,
                                                    intent, unresolved, release.resume_chain(inst, params["from_job"]))
-            notice = (release.find_delete_notice(server, token, params) if kind == "release-delete"
-                      else release.find_notice(server, token, params["sha256"]))
-            if kind == "release-delete":
-                read = release.helper(inst, job / "scratch", source, "read")
-                answer = release.helper(inst, job / "scratch", source, "delete-info", params["file"],
-                                        timeout=release.HASH_TIMEOUT)
-                if not answer.get("ok"):
-                    return actions.Refusal((str(answer.get("error") or "삭제 대상을 읽지 못했습니다"),))
-                return actions.plan_release_delete(inst, server, source, read, answer["manifest"], notice, unresolved)
-            if kind == "release-deploy":
-                fields = {key: params[key] for key in release.FIELDS}
-                read = release.helper(inst, job / "scratch", source, "read")
-                return actions.plan_release_deploy(inst, server, source, read, fields, notice, unresolved)
-            return actions.plan_notice_action(inst, kind, server, notice, params["sha256"], unresolved)
+            return fresh_plan()
         except (server_api.ServerError, release.ReleaseError) as exc:
             return actions.Refusal((str(exc),))
+        except (KeyError, TypeError, ValueError):
+            return actions.Refusal(("릴리스 작업의 확인 대상 형식이 올바르지 않습니다",))
 
     def work(_job, say) -> tuple[int, dict]:
+        if "items" in params:
+            def one(item: dict) -> tuple[int, dict]:
+                try:
+                    current = fresh_plan(item)
+                except (server_api.ServerError, release.ReleaseError) as exc:
+                    return 1, {"error": str(exc)[:500], "auth_expired": isinstance(exc, server_api.AuthExpired)}
+                expected = actions.Plan(kind, str(inst.root), "server", "", (), params=item)
+                if isinstance(current, actions.Refusal):
+                    return 1, {"error": " / ".join(current.reasons)}
+                if not actions.same_target(expected, current):
+                    return 1, {"error": "확인한 대상이 바뀌었습니다 — 남은 항목을 시작하지 않습니다"}
+                return (release.delete_work(inst, job, item, token, say) if kind == "release-delete"
+                        else release.remove_work(item, token, say))
+            return release.batch_work(job, params["items"], one, say)
         if kind == "release-deploy":
             return release.deploy_work(inst, job, params, token, say)
         if kind == "release-resume":
