@@ -101,7 +101,7 @@ it("표의 단일 선택·폴더 진입·중간클릭·키보드와 미리보기
   await fire(preview, new MouseEvent("auxclick", { bubbles: true, button: 1 }));
   expect(props.onPreview).toHaveBeenCalledTimes(1);
   expect(props.onPreview).toHaveBeenLastCalledWith(expect.objectContaining({ path: "assets/CH/person/a.png" }));
-  expect(row.querySelector(".asset-last-viewed")?.textContent).toBe("Last viewed");
+  expect(row.querySelector(".last-viewed-badge")?.textContent).toBe("Last viewed");
   expect(props.onEnter).not.toHaveBeenCalled();
   expect(props.onOpenTab).not.toHaveBeenCalled();
   await fire(row, new MouseEvent("dblclick", { bubbles: true }));

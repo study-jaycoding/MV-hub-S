@@ -10,7 +10,12 @@ import { useEditPlayback, type EditSource, type EditVideo } from "../src/lib/use
 class FakeVideo implements EditVideo {
   src = "";
   currentTime = 0;
-  playbackRate = 1;
+  private rate = 1;
+  get playbackRate() { return this.rate; }
+  set playbackRate(value: number) { // 크롬처럼 1/16~16 밖이면 예외(릴리스 묶음 리뷰 B — 넘기면 재생 갱신이 멈췄다)
+    if (!(value >= 1 / 16 && value <= 16)) throw new DOMException("playback rate out of range", "NotSupportedError");
+    this.rate = value;
+  }
   paused = true;
   seeking = false;
   loads = 0;
@@ -50,11 +55,11 @@ let clock = 0;
 let frames: ((stamp: number) => void)[] = [];
 const paint = vi.fn();
 
-function Harness({ scope = "s1", doc = DOC, layout = LAYOUT, loop, range, speed }: {
+function Harness({ scope = "s1", doc = DOC, layout = LAYOUT, loop, range, speed, order }: {
   scope?: string; doc?: EditDoc; layout?: typeof LAYOUT; loop?: boolean; range?: { from: number; to: number } | null;
-  speed?: number;
+  speed?: number; order?: readonly string[];
 }) {
-  playback = useEditPlayback({ scope, layout, doc, sourceOf, videoRef, paint, loop, range, speed });
+  playback = useEditPlayback({ scope, layout, doc, sourceOf, videoRef, paint, loop, range, speed, order });
   return null;
 }
 const render = (props: Parameters<typeof Harness>[0] = {}) => act(() => root.render(<Harness {...props} />));
@@ -214,6 +219,28 @@ it("보던 컷이 짧아지면 재생을 멈추고, 시퀀스가 바뀌면 처�
   render({ scope: "s1" });
   render({ scope: "s2" });
   expect(playback.now()).toBeCloseTo(14);
+});
+
+// 편집 탭 ⑤(Jay 2026-10-23) — 서 있던 반복 자리가 사라지면 직전 순서에서 그 다음으로. 다른 창은 순서 정리까지 된 최종 문서만 받는다
+//  (문서의 순서엔 그 자리가 없다 — 이름순 보정이면 c1 바로 뒤라 c2 로 갔다). 시퀀스를 바꾸면 기억한 순서를 비운다.
+it("사라진 반복 자리 — 다른 창의 최종 문서만 받아도 직전 순서의 다음 자리로 · 시퀀스를 오가면 기억한 순서가 섞이지 않는다", () => {
+  const rep = "e070/c1//abc123";
+  const withRep: EditDoc = { ...DOC, v: 3, clips: [...DOC.clips, { cut: "e070/c1", slot: "abc123", gen: "rep", track: 1, dur: 5, kind: "video" }],
+    cutOrder: ["e070/c1", "e070/c2", rep, "e070/c3"] };
+  const order0 = ["e070/c1", "e070/c2", rep, "e070/c3"];
+  render({ scope: "slot", doc: withRep, layout: buildLayout(order0, withRep), order: order0 }); // c1 0~8 · c2 8~13 · c1② 13~18 · c3 18~23
+  act(() => playback.seek(14));
+  expect(playback.view.cut).toBe(rep);
+  const gone: EditDoc = { ...DOC, v: 3 }; // 다른 창: 그 자리의 클립을 빼고 순서를 이름순으로 되돌렸다(죽은 열쇠까지 정리됨)
+  const order1 = ["e070/c1", "e070/c2", "e070/c3"];
+  render({ scope: "slot", doc: gone, layout: buildLayout(order1, gone), order: order1 });
+  expect([playback.view.cut, playback.now()]).toEqual(["e070/c3", 13]);
+  // 다른 시퀀스에 다녀오면 위치는 그 시퀀스의 것 — 앞 시퀀스의 순서로 보정하지 않는다
+  render({ scope: "slot2", doc: withRep, layout: buildLayout(order0, withRep), order: order0 });
+  expect(playback.now()).toBe(0);
+  act(() => playback.seek(14));
+  render({ scope: "slot", doc: gone, layout: buildLayout(order1, gone), order: order1 });
+  expect(playback.view.cut).toBe("e070/c3");
 });
 
 // Jay 2026-10-13: "v1 이 5초 v2 가 3초면 3초 보여주다가 남은 v1 이 더 보인다. 하지만 v1 트랙이 꺼져 있다면 그 해당 폴더는 3초만 재생된다."
@@ -452,6 +479,7 @@ it("멈추면 멈춘 자리를 그린다 — 마지막 프레임 뒤에 영상�
 class FakePair extends FakeVideo {
   readyState = 0;
   prepared: [string | null, number][] = []; // 같은 것을 거듭 청한 것은 한 번만 적는다
+  backRate = 1; // 마지막으로 청한 '미리 굴릴 배속'(그 클립의 속도 × 배속)
   backSeeking = false; // 뒤의 것이 아직 그 자리로 가는 중이다
   rolls: boolean[] = []; // 미리 굴리기를 켜고 끈 기록(바뀔 때만)
   rolling = false;
@@ -460,7 +488,8 @@ class FakePair extends FakeVideo {
     this.rolling = on;
     this.rolls.push(on);
   }
-  prepare(url: string | null, time: number) {
+  prepare(url: string | null, time: number, rate = 1) {
+    this.backRate = rate;
     const last = this.prepared[this.prepared.length - 1];
     if (!last || last[0] !== url || last[1] !== time) this.prepared.push([url, time]);
   }
@@ -707,4 +736,92 @@ it("미리 받아 세워 두는 자리도 영상 시각이다 — 다음 클립�
   video.currentTime = 5.3; // low 의 영상 5.3초 = 컷 안 3.3초
   frame(16);
   expect(playback.now()).toBeCloseTo(3.3);
+});
+
+// ── 속도(Jay 2026-10-23 Ctrl+R) — 영상 시각 = head + 컷 안 시각 × speed · playbackRate = 배속 × speed · rAF 시계는 그대로 ──
+const speedDoc = (gen: string, speed: number, head?: number): { doc: EditDoc; layout: typeof LAYOUT } => {
+  const doc: EditDoc = {
+    ...DOC, v: 2, clips: DOC.clips.map((clip) => (clip.gen === gen ? { ...clip, speed, ...(head !== undefined ? { head } : {}) } : clip)),
+  };
+  return { doc, layout: buildLayout(CUTS3, doc) };
+};
+
+it("속도 클립은 영상 시각 = 시작점 + 컷 안 시각 × 속도 — 재생헤드는 컷 안 시각, 재생률은 배속 × 속도", () => {
+  const { doc, layout } = speedDoc("top", 2, 1); // top: 원본 3초 · 앞 1초 자름 → 쓰는 원본 2초 ÷ 2배 = 컷 안 0~1초
+  expect(layout.cuts[0].clips.find((clip) => clip.gen === "top")!.len).toBe(1);
+  render({ scope: "speed-play", doc, layout });
+  video.emit("loadedmetadata");
+  expect(video.currentTime).toBe(1); // 컷 안 0초 = 영상 1초
+  video.emit("seeked");
+  act(() => playback.seek(0.5)); // 멈춘 채 훑는다
+  expect(video.currentTime).toBe(2); // 1 + 0.5 × 2
+  video.emit("seeked");
+  act(() => playback.toggle());
+  expect(video.playbackRate).toBe(2);
+  video.currentTime = 2.4;
+  frame(16);
+  expect(playback.now()).toBeCloseTo(0.7); // 영상이 시계 — (2.4 − 1) ÷ 2
+  video.currentTime = 2.6;
+  act(() => playback.toggle()); // 멈추면 영상의 그 프레임이 위치다
+  expect(playback.now()).toBeCloseTo(0.8);
+  act(() => playback.toggle());
+  video.currentTime = 3.05; // 컷 안 1.025초 — 쓰는 길이(1초)가 끝났다
+  frame(16);
+  expect([playback.view.clip?.gen, video.src]).toEqual(["low", "/v/low"]);
+  expect(video.playbackRate).toBe(1); // 아래 클립은 속도가 없다 — 위 클립의 속도를 물려받지 않는다
+});
+
+it("느린 속도(25%)는 재생률에 바닥을 걸지 않는다 — 배속에만 건다(2배속 × 25% = 0.5)", () => {
+  const { doc, layout } = speedDoc("top", 0.25);
+  render({ scope: "speed-slow", doc, layout, speed: 2 });
+  video.emit("loadedmetadata");
+  video.emit("seeked");
+  act(() => playback.toggle());
+  expect(video.playbackRate).toBe(0.5);
+  frame(16);
+  expect(playback.now()).toBe(0); // 영상이 시계다(도착 전에는 선다) — rAF 시계에 속도를 곱하지 않는다
+  video.currentTime = 0.25; // 영상 0.25초 = 컷 안 1초
+  frame(16);
+  expect(playback.now()).toBeCloseTo(1);
+});
+
+it("재생률은 크롬 한도(16) 안 — 400% 클립을 8배로 셔틀해도 예외 없이 16 이고 재생이 이어진다(릴리스 묶음 리뷰 B)", () => {
+  render({ scope: "speed-cap", ...speedDoc("top", 4) });
+  video.emit("loadedmetadata");
+  video.emit("seeked");
+  for (let i = 0; i < 4; i += 1) act(() => playback.shuttle(1)); // 1 → 2 → 4 → 8배
+  expect(playback.view.rate).toBe(8);
+  expect(video.playbackRate).toBe(16); // 8 × 400% = 32 → 한도
+  frame(16);
+  expect(playback.view.playing).toBe(true); // 대입 예외로 갱신이 멈추지 않았다
+  expect(frames.length).toBeGreaterThan(0); // 다음 프레임이 예약돼 있다
+});
+
+it("같은 영상의 속도만 바뀌면(속도 막대) 새 식으로 영상을 다시 보낸다 — 재생헤드는 그대로", () => {
+  render({ scope: "speed-change", ...speedDoc("top", 1.5) });
+  video.emit("loadedmetadata");
+  video.emit("seeked");
+  act(() => playback.seek(1));
+  video.emit("seeked");
+  expect(video.currentTime).toBe(1.5);
+  render({ scope: "speed-change", ...speedDoc("top", 0.5) });
+  expect(playback.now()).toBeCloseTo(1); // 재생헤드는 그대로
+  expect(video.currentTime).toBe(0.5); // 영상만 새 자리로(1 × 0.5)
+  expect(video.loads).toBe(1); // 같은 영상이다 — 다시 받지 않는다
+});
+
+it("미리 받기·미리 굴리기는 다음 클립의 시작점·속도로 — 세워 둘 영상 시각과 굴릴 배속", () => {
+  const pair = usePair();
+  render({ scope: "pair-speed", ...speedDoc("low", 0.5, 2) }); // low: 앞 2초 자름 · 50%
+  video.emit("loadedmetadata");
+  act(() => playback.toggle());
+  expect(pair.prepared).toEqual([["/v/low", 3.5]]); // 위 클립이 끝나는 컷 안 3초 = low 의 영상 2 + 3 × 0.5
+  expect(pair.backRate).toBe(0.5); // 지금 도는 top(100%)의 배속이 아니다
+  video.currentTime = 3.02;
+  frame(16);
+  expect([playback.view.clip?.gen, video.playbackRate]).toEqual(["low", 0.5]);
+  expect(playback.now()).toBeCloseTo(3.02);
+  video.currentTime = 3.6; // low 의 영상 3.6초 = 컷 안 (3.6 − 2) ÷ 0.5 = 3.2초
+  frame(16);
+  expect(playback.now()).toBeCloseTo(3.2);
 });

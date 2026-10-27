@@ -224,6 +224,29 @@ describe("실제 프롬프트 제출: 캔버스 연속 생성과 응답 후 편�
     expect(notifyPromptChanged).toHaveBeenCalledTimes(1);
   });
 
+  it("라이브러리는 성공하면 보낸 레퍼런스(uid)도 비우라고 알린다 — 접수 불명이면 알리지 않는다(Jay 10-23)", async () => {
+    const cleared = vi.fn();
+    await mount({ inCompose: false, canvasTarget: null, preservePromptAfterSubmit: false, promptContextKey: null, clearSubmittedRefs: cleared });
+    await run();
+    expect(cleared).toHaveBeenCalledTimes(1);
+    expect([...cleared.mock.calls[0][0]]).toEqual(tenReferences().map((ref) => ref.uid));
+    prepareCreate.mockImplementationOnce(() => async () => { throw new TypeError("Failed to fetch"); });
+    restoreParts(editor, [{ t: "text", v: sourceText }]);
+    await run();
+    expect(cleared).toHaveBeenCalledTimes(1); // 접수 불명 — 프롬프트도 레퍼런스도 그대로
+  });
+
+  it("응답을 기다리며 프롬프트를 고쳤으면 레퍼런스도 비우라고 하지 않는다", async () => {
+    const cleared = vi.fn();
+    const response = deferred<Generation>();
+    prepareCreate.mockImplementation(() => () => response.promise);
+    await mount({ inCompose: false, canvasTarget: null, preservePromptAfterSubmit: false, promptContextKey: null, clearSubmittedRefs: cleared });
+    const { pending } = await beginPending();
+    restoreParts(editor, [{ t: "text", v: "다음 작업의 새 프롬프트" }]);
+    await act(async () => { response.resolve(generation()); await pending; });
+    expect(cleared).not.toHaveBeenCalled();
+  });
+
   it("연결 Text가 없는 일반 캔버스 카드는 기존대로 입력창을 비운다", async () => {
     await mount({ preservePromptAfterSubmit: false, promptContextKey: "scene-fixture:card-fixture:own-draft" });
     await run();

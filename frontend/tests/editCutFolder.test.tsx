@@ -12,6 +12,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { EditCardMenu, EditCutFolder } from "../src/components/timeline/EditTab";
 import type { EditTree } from "../src/lib/useEditSequence";
+import type { NoticeLine } from "../src/lib/useStateNotices";
 import { backgroundKeysBlocked, closeLayer, nextLayerSeq, openLayer } from "../src/lib/keyGate";
 import type { CardMark, Generation, PreviewTarget } from "../src/types";
 
@@ -82,6 +83,9 @@ const sendTimeline = (plan: unknown, gens: Generation[], target: unknown) => {
 };
 const folderActs: string[][] = []; // 폴더 메뉴가 앱에 청한 것 — [무엇, 프로젝트, 폴더 경로, 폴더 이름]
 const onFolderAction = (...args: string[]) => { folderActs.push(args); };
+// 편집 탭이 앱에 올린 경고 줄(화면 위 알림 줄 — Jay 2026-10-24, 전엔 막대의 알약)
+let notices: readonly NoticeLine[] = [];
+const onNotices = (lines: readonly NoticeLine[]) => { notices = lines; };
 // peekPath = 폴더 창이 떠 있는 컷(없으면 null). 창은 App 의 것이라 여기서는 떠 있다는 사실만 넘긴다.
 let resolvePicked: ReadonlySet<string> | undefined; // 다빈치(미디어 풀)에서 고른 것 — 앱이 넘긴다
 let resolveScroll = 0; // 그 클립까지 넘기라는 신호 — 앱이 '따라가는 탭'에서만 올린다
@@ -89,7 +93,7 @@ const mount = (reloadSignal = 0, peekPath: string | null = null, ws: typeof work
   act(() => root.render(
     <EditTab authKey="auth" authReady workspace={ws} keysActive flash={flash}
       onOpenCutFolder={onOpenCutFolder} reloadSignal={reloadSignal} resolvePicked={resolvePicked} resolveScroll={resolveScroll}
-      peekPath={peekPath} onPeekMarks={onPeekMarks} cardMenuRef={cardMenuRef} onPreview={onPreview} onCompare={onCompare}
+      peekPath={peekPath} onPeekMarks={onPeekMarks} onNotices={onNotices} cardMenuRef={cardMenuRef} onPreview={onPreview} onCompare={onCompare}
       resolve={{ send: sendToResolve, sendTimeline, ...resolveState }} onFolderAction={onFolderAction} />,
   ));
 const DOC_KEY = "mvhub.editDoc:local:p1:e070";
@@ -233,12 +237,15 @@ it("넣을 트랙 메뉴는 떠 있는 동안 뒤를 덮고, 그사이 다른 �
 it("미디어 풀은 뷰어 왼쪽에 있다 — 누르면 고르고, 더블클릭하면 크게 보고, 휠 클릭하면 넣을 트랙을 고르고, 우클릭하면 폴더 창이 열린다", () => {
   mount();
   act(() => cutCell("c1").click());
-  expect([...document.querySelector(".ed-top")!.children].slice(0, 2).map((item) => item.classList[0]))
-    .toEqual(["ed-pool-side", "sidebar-resize-handle"]); // 풀 · 폭 조절 손잡이가 뷰어보다 앞(왼쪽)
+  // 풀 · 폭 조절 손잡이가 왼쪽 전체 높이, 그 오른쪽 칸에 뷰어 → 높이 손잡이 → 막대 → 타임라인(Jay 2026-10-23, 다빈치)
+  expect([...document.querySelector(".ed-root")!.children].map((item) => item.classList[0]))
+    .toEqual(["ed-pool-side", "sidebar-resize-handle", "ed-right"]);
+  expect([...document.querySelector(".ed-right")!.children].map((item) => item.classList[0]))
+    .toEqual(["ed-top", "ed-split", "ed-bar", "ed-tl"]);
   expect(paneModes()).toEqual(["timeline"]);
   expect(document.querySelector(".ed-pool-side > .ed-pool h3")!.textContent).toBe("e070 / c1");
   expect(document.querySelector<HTMLElement>(".ed-pool-side")!.style.getPropertyValue("--sidebar-w")).toBe("392px");
-  const handle = document.querySelector<HTMLElement>(".ed-top > .sidebar-resize-handle")!;
+  const handle = document.querySelector<HTMLElement>(".ed-root > .sidebar-resize-handle")!;
   act(() => handle.focus()); // 끄는 동안 손잡이가 초점을 받는다 — 놓으면 편집 화면으로 돌아온다(←·→ 가 풀 폭이 아니라 프레임을 옮기게)
   mouse(handle, "pointerup");
   expect(document.activeElement).toBe(document.querySelector(".ed-root"));
@@ -1084,13 +1091,16 @@ it("폴더 창이 닫히면, 그리고 생성물이 바뀌었다는 알림이 �
   expect(reloadCounts).toHaveBeenCalledTimes(2);
 });
 
-// 오른쪽 칸이 하던 안내는 타임라인 위 막대로 옮겼다 — 워크스페이스를 못 정한 계정의 출구, 공유 목록을 받지 못했을 때.
-it("공유 목록의 상태는 타임라인 위 막대에 보인다 — 워크스페이스 미확인의 출구·받지 못함·잘림", () => {
+// 오른쪽 칸이 하던 안내는 타임라인 위 막대로 옮겼다가(워크스페이스를 못 정한 계정의 출구, 공유 목록을 받지 못했을 때) 2026-10-24 부터는
+//  화면 위 알림 줄(앱이 그린다 — 여기서는 올린 줄을 본다). 막대에는 남지 않는다.
+it("공유 목록의 상태는 화면 위 알림 줄로 올린다 — 워크스페이스 미확인의 출구·받지 못함·잘림 · 막대에는 없다", () => {
   const bar = () => document.querySelector(".ed-bar")!.textContent!;
+  const line = (text: string) => notices.find((item) => item.text === text) as Extract<NoticeLine, { id: string }> | undefined;
   mount(0, null, { scope: "unknown", id: null, name: null });
-  expect(bar()).toContain("워크스페이스를 확인한 뒤 공유물을 표시합니다.");
-  act(() => document.querySelector<HTMLButtonElement>(".ed-ws-all")!.click());
-  expect(document.querySelector(".ed-ws-all")).toBeNull(); // 모든 워크스페이스로 본다 — 안내가 사라진다
+  const ws = line("워크스페이스를 확인한 뒤 공유물을 표시합니다.")!;
+  expect([ws.action?.label, bar().includes("워크스페이스")]).toEqual(["모든 워크스페이스 보기", false]);
+  act(() => ws.action!.run());
+  expect(line("워크스페이스를 확인한 뒤 공유물을 표시합니다.")).toBeUndefined(); // 모든 워크스페이스로 본다 — 안내가 사라진다
   expect(document.querySelector(".ed-pool-sub")!.textContent).not.toContain("워크스페이스");
 
   const reload = vi.fn();
@@ -1098,13 +1108,15 @@ it("공유 목록의 상태는 타임라인 위 막대에 보인다 — 워크�
   world.state = "error";
   world.error = "HTTP 502";
   mount();
-  expect(bar()).toContain("공유 목록을 받지 못했습니다.");
-  act(() => [...document.querySelectorAll<HTMLButtonElement>(".ed-bar .ed-link")].find((item) => item.textContent === "다시 시도")!.click());
+  const failed = line("공유 목록을 받지 못했습니다.")!;
+  expect([failed.title, failed.action?.label, bar().includes("공유 목록")]).toEqual(["HTTP 502", "다시 시도", false]);
+  act(() => failed.action!.run());
   expect(reload).toHaveBeenCalledTimes(1);
 
   world.state = "capped";
   mount();
-  expect(bar()).toContain("최대 2,000건까지만 표시합니다.");
+  expect(notices.map((item) => item.text)).toEqual(["최대 2,000건까지만 표시합니다."]);
+  expect(bar()).not.toContain("2,000");
 });
 
 // ── 트랙 머리 우클릭 메뉴 · 마크 인/아웃 · 북마크(Jay 2026-10-08, 다빈치의 타임라인) ──
@@ -1121,8 +1133,8 @@ it("트랙 머리 우클릭: 트랙을 더하고 옮기고 지운다 — 클립�
   expect(heads().map((head) => head.querySelector("b")!.textContent)).toEqual(["V3", "V2", "V1"]);
   expect(rightClick(headOf(1)).defaultPrevented).toBe(true);
   // 빈 줄은 잠긴 V3 뿐이다 — 잠긴 트랙은 비어 있어도 지우지 않으므로 '빈 트랙 모두 삭제'는 흐리다(2026-10-13)
-  expect(menuText()).toEqual(["이 위에 트랙 추가", "트랙 위로 옮기기", "트랙 아래로 옮기기 ×", "트랙 삭제클립 1개", "빈 트랙 모두 삭제 ×"]);
-  act(() => menuItem("이 위에 트랙 추가").click());
+  expect(menuText()).toEqual(["트랙 추가위에", "트랙 위로 이동", "트랙 아래로 이동 ×", "트랙 삭제클립 1개", "빈 트랙 모두 삭제 ×", "트랙 색›"]);
+  act(() => menuItem("트랙 추가").click());
   expect(trackMenu()).toBeNull();
   expect(heads()).toHaveLength(4);
   expect(storedTracks()).toEqual([["a", 1], ["b", 3]]);
@@ -1130,8 +1142,8 @@ it("트랙 머리 우클릭: 트랙을 더하고 옮기고 지운다 — 클립�
   expect(document.activeElement).toBe(document.querySelector(".ed-root")); // 메뉴가 닫히면 편집 키가 돌아온다
 
   rightClick(headOf(3));
-  expect(menuItem("트랙 위로 옮기기").disabled).toBe(true); // 위(V4)가 잠겨 있다
-  act(() => menuItem("트랙 아래로 옮기기").click()); // V3(b) ↔ V2(빈 줄)
+  expect(menuItem("트랙 위로 이동").disabled).toBe(true); // 위(V4)가 잠겨 있다
+  act(() => menuItem("트랙 아래로 이동").click()); // V3(b) ↔ V2(빈 줄)
   expect(storedTracks()).toEqual([["a", 1], ["b", 2]]);
 
   rightClick(headOf(4));
@@ -1157,8 +1169,10 @@ it("트랙 머리 우클릭: 트랙을 더하고 옮기고 지운다 — 클립�
   expect(storedTracks()).toEqual([["a", 1], ["b", 2]]);
   expect(heads()).toHaveLength(2);
 
-  rightClick(headOf(2)); // 트랙 색 — 머리와 그 줄에 색 띠
-  act(() => document.querySelector<HTMLButtonElement>(".ed-hmenu .ed-swatch")!.click());
+  rightClick(headOf(2)); // 트랙 색 — '트랙 색 ›' 하위 메뉴에서 고른다. 머리와 그 줄에 색 띠
+  expect(document.querySelector(".ed-hmenu .ed-swatch")).toBeNull(); // 하위 메뉴는 열기 전엔 없다
+  act(() => menuItem("트랙 색").click());
+  act(() => document.querySelector<HTMLButtonElement>(".ed-hmenu .ed-submenu .ed-swatch")!.click());
   expect(stored().trackColors).toEqual({ 2: "#e5484d" });
   expect(headOf(2).style.getPropertyValue("--trk")).toBe("#e5484d");
   expect(document.querySelector<HTMLElement>('.ed-lane[data-track="2"]')!.style.getPropertyValue("--trk")).toBe("#e5484d");
@@ -1418,30 +1432,6 @@ it("뷰어 아래 오른쪽의 소리 크기 — 판마다 따로 · 막대를 �
   expect(valueOf(right)).toBe("75");
   expect([...right.querySelectorAll<HTMLVideoElement>("video")].map((video) => video === spare ? video.volume : video.volume === 0.75))
     .toEqual([...right.querySelectorAll("video")].map((video) => (video === spare ? 0 : true)));
-
-  // '끄기 전 크기'는 다이나믹 재생 모드를 오가도 남는다 — 판의 줄과 공용 줄의 소리 조절이 서로 다른 부품이라 새로 생기며 100% 로
-  //  돌아갔다(Codex 리뷰)
-  press({ key: "ArrowRight", code: "ArrowRight" }, left.querySelector(".ed-vol-bar")!); // 0 → 0.05
-  press({ key: "End", code: "End" }, left.querySelector(".ed-vol-bar")!);
-  press({ key: "ArrowLeft", code: "ArrowLeft" }, left.querySelector(".ed-vol-bar")!); // 0.95
-  act(() => left.querySelector<HTMLButtonElement>(".ed-t-vol")!.click()); // 끈다
-  press({ key: "w", code: "KeyW" }); // 공용 줄로
-  const barSpeakerL = document.querySelector<HTMLButtonElement>(".ed-linkvol-l .ed-t-vol")!;
-  act(() => barSpeakerL.click()); // 켠다 — 끄기 전 크기로
-  expect(JSON.parse(localStorage.getItem(UI_KEY)!).volumes[0]).toBe(0.95);
-});
-
-// Codex 리뷰 — 같은 시계를 쓰는 두 판(타임라인 + 한 트랙만)에서 W 를 켜면 켜짐 표시인데 판마다 한 줄씩 남았다
-it("다이나믹 재생 모드: 같은 시계의 두 판(타임라인 + V1 만 보기)이어도 아래 단추 줄은 하나다", () => {
-  seed([{ cut: "c1", gen: "a", track: 1 }]);
-  localStorage.setItem(UI_KEY, JSON.stringify({ dual: true, views: ["timeline", 1] }));
-  mount();
-  act(() => cutCell("c1").click());
-  expect(paneModes()).toEqual(["timeline", "1"]);
-  press({ key: "w", code: "KeyW" });
-  expect([!!document.querySelector(".ed-linkbar"), panes().map((view) => !!view.querySelector(".ed-trans"))]).toEqual([true, [false, false]]);
-  press({ key: "w", code: "KeyW" });
-  expect([!!document.querySelector(".ed-linkbar"), panes().map((view) => !!view.querySelector(".ed-trans"))]).toEqual([false, [true, true]]);
 });
 
 it("소스 테이프: 이 컷의 풀 목록을 이어서 본다 — 풀에서 고르면 그 카드로 가고, 소스 클립과는 같은 판의 두 방식이다", () => {
@@ -1493,105 +1483,138 @@ it("저장된 화면: 두 판이 다 소스여도 받는다(판마다 엔진 —
   expect(paneModes()).toEqual(["source", "timeline"]); // 기본 화면으로
 });
 
-// 다이나믹 재생 모드(Jay 2026-10-14 오후 — 옛 '다이나믹 트림 모드'를 바꿨다: "그걸 하면 왼쪽 화면 오른쪽 화면의 재생을 한번에 컨트롤할수
-//  있다"). 재생 조작은 두 판에 같이, 재생바(훑기)는 그 판만. 싱글에서 켜면 듀얼로. 끄면 다시 '누른 판의 시계'다.
-it("다이나믹 재생 모드: W 로 켜면 두 판의 재생 조작이 같이 간다 — 재생·멈춤·처음/끝·프레임은 두 판, 재생바는 그 판만", () => {
+// 다이나믹 재생 모드(Jay 2026-10-26 — "다빈치처럼 앞뒤 컷 보여주고 재생은 한 화면에서만") — 나뉘어 있던 뷰어가 한 창이 되고, 멈춘 동안
+//  재생헤드에서 가장 가까운 편집점의 앞 | 뒤가 나란히 뜬다. 재생하면 두 칸이 걷혀 한 화면이다. 10-14 의 '두 판 재생을 한 번에'는 뺐다.
+it("다이나믹 재생 모드: W 로 켜면 나뉜 뷰어가 한 창이 되고, 멈춘 동안 편집점의 앞 | 뒤가 나란히 뜬다 — 재생하면 한 화면", () => {
+  world.gens = [...world.gens, videoGen()];
+  seed([{ cut: "c1", gen: "v", track: 1, kind: "video" }, { cut: "c2", gen: "x", track: 1 }]); // c1 0~5(영상) · c2 5~10(그림) · c3 10~15(빈 폴더)
+  localStorage.setItem(UI_KEY, JSON.stringify({ dual: true, views: ["source", "timeline"] }));
+  mount();
+  act(() => cutCell("c1").click()); // 0초에서 시작한다(재생헤드 자리는 시퀀스마다 기억된다)
+  const docBefore = localStorage.getItem(DOC_KEY);
+  const uiBefore = localStorage.getItem(UI_KEY);
+  const btn = () => document.querySelector<HTMLButtonElement>(".ed-mbtn-trim")!;
+  const split = () => document.querySelector<HTMLElement>(".ed-dyn:not([hidden])"); // 보이는 두 칸(재생·움직임 동안은 떼지 않고 가린다)
+  const half = (index: number) => document.querySelectorAll<HTMLElement>(".ed-dyn .ed-dyn-half")[index];
+  const chip = (index: number) => half(index).querySelector(".ed-chip")?.textContent ?? null;
+  expect([paneModes(), split(), btn().getAttribute("aria-pressed")]).toEqual([["source", "timeline"], null, "false"]);
+  expect(btn().title).toBe("다이나믹 재생 모드 (W) — 뷰어를 한 창으로: 멈추면 가장 가까운 편집점의 앞 컷 | 뒤 컷 · 재생은 한 화면 · ↑↓ 편집점");
+
+  press({ key: "w", code: "KeyW" });
+  expect(paneModes()).toEqual(["timeline"]); // 소스 판이 내려가고 한 창만 남는다
+  expect(btn().getAttribute("aria-pressed")).toBe("true");
+  expect(pane("timeline").querySelector(".ed-vpick-btn")!.textContent).toBe("다이나믹 재생 모드");
+  expect(pane("timeline").querySelector(".ed-dual")).toBeNull(); // 나눌 것이 없다
+  expect(localStorage.getItem(UI_KEY)).toBe(uiBefore); // 화면 설정은 그대로다 — 끄면 보던 대로 돌아온다
+  expect(half(0).textContent).toBe("타임라인의 처음입니다."); // 0초 — 앞이 없다
+  expect(half(1).querySelector("video")!.getAttribute("src")).toBe("/media/v.mp4");
+  expect(chip(1)).toBe("c1 · V1");
+  // 움직이면(프레임 이동·↑↓·재생바 훑기) 두 칸이 걷혀 한 화면(엔진의 화면)이 재생헤드를 따라가고, 0.4초 안 움직이면 두 칸으로 돌아온다
+  //  (Jay 3차 — 다빈치 그림 1 = 멈춤 두 칸 · 그림 2 = 움직임 한 화면)
+  const stageImg = () => pane("timeline").querySelector(".ed-stage > img.ed-media")?.getAttribute("src") ?? null;
+  const settle = () => act(() => { vi.advanceTimersByTime(400); });
+
+  press({ key: "ArrowDown", code: "ArrowDown" }); // 다음 편집점(5초 — c1 | c2)
+  expect([timecode(), split(), stageImg()]).toEqual(["00:00:05:00", null, "/media/x.png"]); // 움직이는 동안 = 한 화면(재생헤드의 c2)
+  act(() => { vi.advanceTimersByTime(390); });
+  expect(split()).toBeNull(); // 멈춘 지 아직 0.4초가 안 됐다
+  act(() => { vi.advanceTimersByTime(10); });
+  expect(split()).not.toBeNull(); // 멈췄다 — 두 칸
+  const before = half(0).querySelector("video")!;
+  const sent = vi.spyOn(before, "currentTime", "set");
+  act(() => { before.dispatchEvent(new Event("loadedmetadata")); });
+  expect(sent.mock.calls[0][0]).toBeCloseTo(5 - 0.25 / 24); // 앞 칸은 앞 컷의 마지막 프레임으로 서 있다(재생하지 않는다)
+  expect(chip(0)).toBe("c1 · V1");
+  expect(half(1).querySelector("img")!.getAttribute("src")).toBe("/media/x.png");
+  expect(chip(1)).toBe("c2 · V1");
+  expect(before.getAttribute("preload")).toBe("metadata"); // 칸은 그 프레임만 받는다(4차 — 다 받으면 엔진의 탐색·재생과 다툰다)
+  expect(before.getAttribute("poster")).toBeTruthy(); // 받는 동안·못 받아도 그 클립의 썸네일 — 검은 칸으로 서 있지 않는다(5차)
+
+  press({ key: "ArrowLeft", code: "ArrowLeft", shiftKey: true }); // 4초 — 움직였다(한 화면)
+  expect([timecode(), split()]).toEqual(["00:00:04:00", null]);
+  expect(half(0).querySelector("video")).toBe(before); // 가렸을 뿐 — 칸의 영상 요소를 떼지 않는다(4차 '딜레이')
+  settle(); // 가장 가까운 편집점은 그대로 5초 — 같은 요소 그대로(다시 받지 않는다)
+  expect([chip(0), chip(1), half(0).querySelector("video") === before]).toEqual(["c1 · V1", "c2 · V1", true]);
+  mouse(pane("timeline").querySelector(".ed-scrub")!, "pointerdown"); // 재생바를 눌러 훑기(jsdom 의 줄 폭은 0 이라 맨 앞 = 0초)
+  expect([timecode(), split(), before.hasAttribute("src")]).toEqual(["00:00:00:00", null, true]); // 움직이는 동안은 칸을 안 바꾼다
+  settle();
+  expect(half(0).textContent).toBe("타임라인의 처음입니다.");
+  expect(before.hasAttribute("src")).toBe(false); // 칸에서 사라진 영상은 받던 것을 놓는다 — 떼기만 하면 브라우저가 계속 받았다
+  press({ key: "ArrowDown", code: "ArrowDown" }); // 5초
+  press({ key: "ArrowLeft", code: "ArrowLeft", shiftKey: true }); // 4초
+  press({ key: "ArrowDown", code: "ArrowDown" }); // 보는 편집점(5초)의 다음(10초 — c2 | 빈 c3)으로 간다. 재생헤드 기준이면 5초에 머문다
+  expect(timecode()).toBe("00:00:10:00");
+  settle();
+  expect(chip(0)).toBe("c2 · V1");
+  expect(half(1).querySelector(".ed-notice")!.textContent).toBe("비어 있음");
+  expect(chip(1)).toBe("c3");
+  press({ key: "ArrowUp", code: "ArrowUp" }); // 5초
+  settle();
+
+  const kept = half(0).querySelector("video")!; // 5초의 앞 칸(c1)
+  Object.defineProperty(kept, "readyState", { value: 1, configurable: true }); // 받아 둔 영상(jsdom 은 늘 0)
+  const resent = vi.spyOn(kept, "currentTime", "set");
+  press({ key: " ", code: "Space" }); // 재생 — 두 칸이 가려지고 한 화면(보통 재생 — 재생헤드에서)
+  expect([playingIn("timeline"), split(), timecode(), half(0).querySelector("video") === kept]).toEqual([true, null, "00:00:05:00", true]);
+  resent.mockClear();
+  press({ key: "k", code: "KeyK" }); // 멈추면 기다리지 않고 그 자리의 가장 가까운 편집점으로 다시 두 칸 — 같은 요소 그대로
+  expect([playingIn("timeline"), !!split(), chip(0), chip(1), half(0).querySelector("video") === kept]).toEqual([false, true, "c1 · V1", "c2 · V1", true]);
+  expect(resent.mock.calls[0]?.[0]).toBeCloseTo(5 - 0.25 / 24); // 다시 보일 때 그 프레임으로 한 번 더 보낸다(5차 — 가려 둔 동안 재생기를 내려놓았어도)
+  act(() => pane("timeline").querySelector<HTMLButtonElement>(".ed-play")!.click()); // 재생 단추도 같은 길이다
+  expect(split()).toBeNull();
+  act(() => pane("timeline").querySelector<HTMLButtonElement>(".ed-t-stop")!.click());
+  expect(split()).not.toBeNull();
+
+  act(() => document.querySelector<HTMLButtonElement>(".ed-dyn-close")!.click()); // 무대의 ⊗ 로 끈다
+  expect([paneModes(), split(), pane("timeline").querySelector(".ed-vpick-btn")!.textContent]).toEqual([["source", "timeline"], null, "타임라인"]);
+  act(() => btn().click()); // 막대의 단추
+  expect(paneModes()).toEqual(["timeline"]);
+  act(() => btn().click());
+  expect(paneModes()).toEqual(["source", "timeline"]);
+  expect(localStorage.getItem(DOC_KEY)).toBe(docBefore); // 보기일 뿐이다 — 편집 문서는 그대로다
+  // 10-14 의 두 판 함께 조작은 없다 — 공용 단추 줄 없이 판마다 한 줄
+  expect([document.querySelector(".ed-linkbar"), panes().map((view) => !!view.querySelector(".ed-trans"))]).toEqual([null, [true, true]]);
+});
+
+it("다이나믹 재생 모드: 타임라인 판이 안 보이던 화면·싱글에서도 한 창으로 뜨고, 끄면 그 화면으로 · 돌던 소스는 멈춘다 · 판 메뉴는 하나뿐", () => {
   world.gens = [...world.gens, videoGen()];
   seed([{ cut: "c1", gen: "v", track: 1, kind: "video" }]);
+  localStorage.setItem(UI_KEY, JSON.stringify({ dual: true, views: ["source", 1] }));
   mount();
   act(() => cutCell("c1").click());
-  expect(paneModes()).toEqual(["timeline"]); // 싱글
-  press({ key: "w", code: "KeyW" });
-  expect(paneModes()).toEqual(["source", "timeline"]); // 듀얼로 바뀐다
-  const btn = document.querySelector<HTMLButtonElement>(".ed-mbtn-trim")!;
-  expect([btn.getAttribute("aria-pressed"), btn.title]).toEqual(["true",
-    "다이나믹 재생 모드 (W) — 두 화면의 재생을 한 번에: 재생·멈춤·J/K/L·프레임·처음/끝 · 재생바는 화면마다 따로"]);
   act(() => poolCards()[2].click()); // 왼쪽 소스 판에 영상 v
-  // 풀의 표 — v 는 V1 에 넣었고(타임라인 뷰어에 보인다) 왼쪽 소스 판에도 떴다
-  expect(poolCards()[2].querySelector(".card-bottom > .card-here")!.textContent).toBe("V1 - 선택 카드 · 소스 L");
-  const [left, right] = panes();
-  expect([left, right].map((item) => item.classList.contains("ed-view-on"))).toEqual([true, true]); // 두 판이 다 키를 받는다
-  const tcOf = (view: HTMLElement) => view.querySelector(".ed-vtop > .ed-vtc")!.textContent;
-  const playing = (view: HTMLElement) => view.hasAttribute("data-playing");
-  // 아래 단추 줄은 두 판 아래에 하나(Jay 2026-10-14 모의 그림) — 판에는 재생바까지만, 공용 줄의 양 끝은 왼쪽(L)·오른쪽(R) 판의 소리
-  const bar = () => document.querySelector<HTMLElement>(".ed-linkbar");
-  expect([left, right].map((view) => [!!view.querySelector(".ed-trans"), !!view.querySelector(".ed-scrub")])).toEqual([[false, true], [false, true]]);
-  expect([...bar()!.querySelectorAll(".ed-vol-side")].map((item) => item.textContent)).toEqual(["L", "R"]);
-  expect(bar()!.querySelectorAll(".ed-play")).toHaveLength(1);
-
-  press({ key: " ", code: "Space" });
-  expect([playing(left), playing(right)]).toEqual([true, true]); // 같이 튼다(한쪽을 틀면 다른 쪽을 멈추는 규칙을 쉰다)
-  expect(!!bar()!.querySelector(".ed-play rect")).toBe(true); // 공용 줄의 단추는 '멈춤' 그림
-  press({ key: "k", code: "KeyK" });
-  expect([playing(left), playing(right)]).toEqual([false, false]);
-  act(() => bar()!.querySelector<HTMLButtonElement>(".ed-play")!.click()); // 공용 줄의 단추도 두 판에
-  expect([playing(left), playing(right)]).toEqual([true, true]);
-  act(() => bar()!.querySelector<HTMLButtonElement>(".ed-t-stop")!.click());
-  expect([playing(left), playing(right)]).toEqual([false, false]);
-  // 소리는 판마다 — 왼쪽 끝은 왼쪽 판, 오른쪽 끝은 오른쪽 판
-  const [volL, volR] = [...bar()!.querySelectorAll<HTMLElement>(".ed-vol-bar")];
-  press({ key: "Tab", code: "Tab" }, volL); // 키보드로는 Tab 으로 온 초점일 때만
-  press({ key: "ArrowLeft", code: "ArrowLeft" }, volL);
-  press({ key: "ArrowLeft", code: "ArrowLeft" }, volR);
-  press({ key: "ArrowLeft", code: "ArrowLeft" }, volR);
-  expect(JSON.parse(localStorage.getItem(UI_KEY)!).volumes).toEqual([0.95, 0.9]);
-  expect([volL.getAttribute("aria-label"), volR.getAttribute("aria-label")]).toEqual(["소리 크기 (L)", "소리 크기 (R)"]);
-  // Tab 으로 공용 줄의 단추에 간 초점은 Space 를 그 단추에 준다 — 그러나 그 뒤 마우스로 딴 것을 누르면(편집 탭의 누름은 초점을 옮기지
-  //  않는다) Space 는 다시 재생·멈춤이다. 전엔 마우스로 ▶ 를 누른 뒤의 Space 가 남은 초점의 단추(처음으로)를 눌렀다(Codex 39회차, 규칙 8).
-  const first = bar()!.querySelector<HTMLButtonElement>(".ed-t-first")!;
-  press({ key: "Tab", code: "Tab" }, first);
-  expect(press({ key: " ", code: "Space" }, first).defaultPrevented).toBe(false); // 그 단추의 것
-  mouse(bar()!.querySelector(".ed-play")!, "pointerdown");
-  act(() => bar()!.querySelector<HTMLButtonElement>(".ed-play")!.click());
-  expect([playing(left), playing(right)]).toEqual([true, true]);
-  expect(press({ key: " ", code: "Space" }, first).defaultPrevented).toBe(true);
-  expect([playing(left), playing(right)]).toEqual([false, false]); // 멈춤
-  // 반복(⟲)은 보이는 시계들(타임라인 · 소스)의 반복을 같이 켜고 끈다
-  act(() => bar()!.querySelector<HTMLButtonElement>(".ed-t-loop")!.click());
-  expect([bar()!.querySelector(".ed-t-loop")!.getAttribute("aria-pressed"), JSON.parse(localStorage.getItem(UI_KEY)!).loop,
-    JSON.parse(localStorage.getItem(UI_KEY)!).loopSrc]).toEqual(["true", true, true]);
-  act(() => bar()!.querySelector<HTMLButtonElement>(".ed-t-loop")!.click());
-
-  act(() => bar()!.querySelector<HTMLButtonElement>(".ed-t-last")!.click()); // 끝으로 — 두 판이 저마다의 끝으로
-  expect([tcOf(left), tcOf(right)]).toEqual(["00:00:05:00", "00:00:15:00"]);
-  mouse(left.querySelector(".ed-scrub")!, "pointerdown"); // 재생바는 그 판만(jsdom 의 줄 폭은 0 이라 맨 앞)
-  expect([tcOf(left), tcOf(right)]).toEqual(["00:00:00:00", "00:00:15:00"]);
-  press({ key: "ArrowLeft", code: "ArrowLeft" }); // 프레임 — 두 판(왼쪽은 이미 처음)
-  expect([tcOf(left), tcOf(right)]).toEqual(["00:00:00:00", "00:00:14:23"]);
-  press({ key: "Home", code: "Home" });
-  expect([tcOf(left), tcOf(right)]).toEqual(["00:00:00:00", "00:00:00:00"]);
-  expect(localStorage.getItem(DOC_KEY)).toContain('"gen":"v"'); // 편집 문서는 그대로
-
-  press({ key: " ", code: "Space" }); // 둘 다 튼 채로 끄면(Codex 코드 리뷰 — 둘 다 계속 돌고 K 가 한쪽만 멈췄다)
-  expect([playing(left), playing(right)]).toEqual([true, true]);
-  press({ key: "w", code: "KeyW" }); // 키를 받는 판(오른쪽)만 남는다 · 듀얼은 그대로 · 재생 키는 누른 판의 시계
-  expect([btn.getAttribute("aria-pressed"), paneModes()]).toEqual(["false", ["source", "timeline"]]);
-  expect([bar(), [left, right].map((view) => !!view.querySelector(".ed-trans"))]).toEqual([null, [true, true]]); // 판마다 한 줄씩으로 돌아간다
-  expect([left, right].map((item) => item.classList.contains("ed-view-on"))).toEqual([false, true]);
-  expect([playing(left), playing(right)]).toEqual([false, true]);
-  press({ key: "k", code: "KeyK" });
-  expect([playing(left), playing(right)]).toEqual([false, false]);
-  act(() => left.querySelector<HTMLButtonElement>(".ed-play")!.click()); // 왼쪽을 틀면 왼쪽만
-  expect([playing(left), playing(right)]).toEqual([true, false]);
-  act(() => right.querySelector<HTMLButtonElement>(".ed-play")!.click()); // 오른쪽을 틀면 왼쪽은 멈춘다
-  expect([playing(left), playing(right)]).toEqual([false, true]);
-  act(() => right.querySelector<HTMLButtonElement>(".ed-t-stop")!.click());
-
-  // 같이 도는 채 오른쪽(타임라인)을 소스 클립으로 바꾸면 가려지는 타임라인의 시계도 멈춘다 — 가려진 채 돌아 K 가 닿지 않았다(Codex 36회차)
+  act(() => pane("source").querySelector<HTMLButtonElement>(".ed-play")!.click());
+  expect(playingIn("source")).toBe(true);
   press({ key: "w", code: "KeyW" });
+  expect(paneModes()).toEqual(["timeline"]);
+  const sourcePane = document.querySelector<HTMLElement>('.ed-top > .ed-view[data-view="source"]')!;
+  expect([sourcePane.hidden, sourcePane.hasAttribute("data-playing")]).toEqual([true, false]); // 내려간 소스는 멈춘다
+  press({ key: "w", code: "KeyW" });
+  expect(paneModes()).toEqual(["source", "1"]);
+
+  act(() => panes()[1].querySelector<HTMLButtonElement>(".ed-dual")!.click()); // 싱글(오른쪽 = V1 만 보기)
+  expect(paneModes()).toEqual(["1"]);
+  press({ key: "w", code: "KeyW" });
+  expect(paneModes()).toEqual(["timeline"]);
+  act(() => pane("timeline").querySelector<HTMLButtonElement>(".ed-vpick-btn")!.click()); // 판 메뉴 — 고를 것은 이 모드 하나다
+  expect([popItem("다이나믹 재생 모드"), popItem("소스 클립")].map(Boolean)).toEqual([true, false]);
+  press({ key: "Escape", code: "Escape" });
+  press({ key: "w", code: "KeyW" });
+  expect(paneModes()).toEqual(["1"]); // 싱글 그대로
+});
+
+// Codex 36회차 — 타임라인을 튼 채 그 판을 소스 클립으로 바꾸면 가려지는 타임라인의 시계도 멈춘다(가려진 채 돌아 K 가 닿지 않았다)
+it("타임라인을 튼 채 그 판을 소스로 바꾸면 가려지는 타임라인의 시계도 멈춘다", () => {
+  world.gens = [...world.gens, videoGen()];
+  seed([{ cut: "c1", gen: "v", track: 1, kind: "video" }]);
+  localStorage.setItem(UI_KEY, JSON.stringify({ dual: true, views: ["source", "timeline"] }));
+  mount();
+  act(() => cutCell("c1").click());
   press({ key: " ", code: "Space" });
-  expect([playing(left), playing(right)]).toEqual([true, true]);
+  expect(playingIn("timeline")).toBe(true);
   pickMode("timeline", "소스 클립");
   expect(paneModes()).toEqual(["source", "source"]);
-  expect(playing(right)).toBe(false); // right = 이제 가려진 타임라인 판(그 시계의 단추)
-  press({ key: "k", code: "KeyK" });
-  expect(panes().map(playing)).toEqual([false, false]);
-
-  // 싱글로 가면 모드도 꺼진다 — 남겨 두면 단추는 켜짐인데 키는 한 판만 받고, 다음 W 는 끄기만 했다(Codex 37회차)
-  act(() => panes()[1].querySelector<HTMLButtonElement>(".ed-dual")!.click());
-  expect([paneModes().length, btn.getAttribute("aria-pressed")]).toEqual([1, "false"]);
-  press({ key: "w", code: "KeyW" }); // W 한 번으로 다시 듀얼 · 켜짐
-  expect([paneModes().length, btn.getAttribute("aria-pressed")]).toEqual([2, "true"]);
+  expect(document.querySelector<HTMLElement>('.ed-top > .ed-view[data-view="timeline"]')!.hasAttribute("data-playing")).toBe(false);
 });
 
 // Codex 37회차 — 멈춤은 미리 받아 둔 다음 영상을 남겨 둔다(다시 틀 때 바로 넘어가게). 판을 내려도 그대로라 안 보이는 판이 끝까지 받았다.
@@ -2151,24 +2174,24 @@ it("타임라인 Resolve 보내기: 공유 목록에서 찾지 못한 클립이 
   expect(modal()!.querySelector<HTMLButtonElement>(".gradestep-btn.confirm")!.disabled).toBe(true);
 });
 
-// 왼쪽 폴더 목록 여닫기(Jay 2026-10-13 — "편집 탭에도 필터 사이드바 닫기를 넣자", 시안 A): 풀 머리줄의 첫 단추. 모양·글은 공유 탭 도구 줄의
-//  단추 그대로(열림 ▢ · 닫힘 ▷). 닫힘은 편집 탭의 화면 설정에만 적는다(공유 탭의 닫힘과 따로).
-it("풀 머리줄의 첫 단추로 왼쪽 폴더 목록을 여닫는다 — 닫아도 단추는 남고, 닫힘은 이 브라우저에 남으며, 고른 시퀀스가 없으면 연다", () => {
+// 왼쪽 폴더 목록 여닫기(Jay 2026-10-13 — "편집 탭에도 필터 사이드바 닫기를 넣자", 시안 A): 풀 머리줄의 첫 요소. 2026-10-26 부터 공유 탭과 같은
+//  끝선 손잡이(SidebarEdgeToggle — 열림 = 끝선 위 동그라미 ‹ · 닫힘 = 창 왼쪽 끝 반달 ›). 닫힘은 편집 탭의 화면 설정에만 적는다(공유 탭의 닫힘과 따로).
+it("풀 머리줄의 끝선 손잡이로 왼쪽 폴더 목록을 여닫는다 — 닫아도 손잡이는 남고, 닫힘은 이 브라우저에 남으며, 고른 시퀀스가 없으면 연다", () => {
   seed([{ cut: "c1", gen: "a", track: 1 }]);
   mount();
   act(() => cutCell("c1").click()); // 재생헤드 자리는 시험 사이에 남는다 — 이 시험의 컷으로
-  const toggle = () => document.querySelector<HTMLButtonElement>(".ed-pool-head > .ed-side-toggle")!;
+  const toggle = () => document.querySelector<HTMLButtonElement>(".ed-pool-head > .side-edge-toggle")!;
   // 닫으면 없애지 않고 감춘다(감싸는 칸의 hidden) — 보이는 것만 센다
   const shown = (selector: string) => [...document.querySelectorAll(selector)].filter((el) => !el.closest("[hidden]")).length;
   const handles = () => shown(".sidebar-resize-handle"); // 폴더 목록의 폭 손잡이 + 풀의 폭 손잡이
-  const look = () => [shown(".ed-side") === 1, handles(), toggle().title, toggle().getAttribute("aria-pressed"), toggle().querySelector("rect") ? "▢" : "▷"];
-  expect(document.querySelector(".ed-pool-head")!.firstElementChild).toBe(toggle()); // 사이드바 바로 옆 줄의 첫 단추(공유 탭과 같은 자리 관계)
-  expect(toggle().className).toContain("lib-filter-ic"); // 공유 탭의 그 단추와 같은 모양
-  expect(look()).toEqual([true, 2, "필터 사이드바 닫기", "true", "▢"]);
+  const look = () => [shown(".ed-side") === 1, handles(), toggle().title, toggle().getAttribute("aria-expanded"),
+    toggle().querySelector("path")!.getAttribute("d")!.startsWith("M14.5") ? "‹" : "›"];
+  expect(document.querySelector(".ed-pool-head")!.firstElementChild).toBe(toggle()); // 사이드바 바로 옆 줄의 첫 요소(공유 탭과 같은 자리 관계)
+  expect(look()).toEqual([true, 2, "필터 사이드바 닫기", "true", "‹"]);
   const before = [cuts(), clips().length, localStorage.getItem(DOC_KEY)];
 
   act(() => toggle().click());
-  expect(look()).toEqual([false, 1, "필터 사이드바 열기", "false", "▷"]); // 목록과 그 손잡이가 감춰지고, 단추는 제자리에서 다시 연다
+  expect(look()).toEqual([false, 1, "필터 사이드바 열기", "false", "›"]); // 목록과 그 폭 손잡이가 감춰지고, 끝선 손잡이는 남아 다시 연다
   expect(JSON.parse(localStorage.getItem(UI_KEY)!).sideHidden).toBe(true);
   expect([cuts(), clips().length, localStorage.getItem(DOC_KEY)]).toEqual(before); // 타임라인·편집 문서는 그대로
   expect(document.querySelector(".ed-pool-side > .ed-pool h3")!.textContent).toBe("e070 / c1"); // 지금 컷은 풀 머리줄에 계속 보인다
@@ -2189,9 +2212,9 @@ it("풀 머리줄의 첫 단추로 왼쪽 폴더 목록을 여닫는다 — 닫�
   act(() => root.unmount()); // 편집 탭을 떠났다 다시 — 닫힌 채
   root = createRoot(host);
   mount();
-  expect(look()).toEqual([false, 1, "필터 사이드바 열기", "false", "▷"]);
+  expect(look()).toEqual([false, 1, "필터 사이드바 열기", "false", "›"]);
   act(() => toggle().click());
-  expect(look()).toEqual([true, 2, "필터 사이드바 닫기", "true", "▢"]);
+  expect(look()).toEqual([true, 2, "필터 사이드바 닫기", "true", "‹"]);
   expect(JSON.parse(localStorage.getItem(UI_KEY)!).sideHidden).toBe(false);
 
   // 고른 시퀀스가 없으면 닫아 두었어도 연다 — 닫힌 채로는 폴더를 고를 길이 없다(빈 화면의 안내가 '왼쪽에서 … 고르세요')
@@ -2201,7 +2224,7 @@ it("풀 머리줄의 첫 단추로 왼쪽 폴더 목록을 여닫는다 — 닫�
   root = createRoot(host);
   mount();
   expect(JSON.parse(localStorage.getItem(UI_KEY)!).sideHidden).toBe(true);
-  expect(look()).toEqual([true, 2, "필터 사이드바 닫기", "true", "▢"]);
+  expect(look()).toEqual([true, 2, "필터 사이드바 닫기", "true", "‹"]);
 });
 
 // 58회차(Codex 검토): 메뉴가 떠 있는 채 다른 폴더·풀 카드를 누르면 메뉴만 닫혀야 한다(조작 규칙 4) — 전엔 닫히면서 그 폴더로 옮겨 가고 그 카드를 골랐다.
@@ -2326,7 +2349,7 @@ it("뷰어의 '무엇을 볼지' 메뉴·풀의 보기 메뉴: Tab 으로 메뉴
   expect(tools.querySelector(".ed-pop")).not.toBeNull();
   land(popItem("오래된순")); // 메뉴 안으로 들어간 초점은 닫지 않는다
   expect(tools.querySelector(".ed-pop")).not.toBeNull();
-  land(document.querySelector(".ed-side-toggle")!); // Tab — 옆의 [필터 사이드바 닫기]
+  land(document.querySelector(".ed-pool-head > .side-edge-toggle")!); // Tab — 옆의 [필터 사이드바 닫기]
   expect(tools.querySelector(".ed-pop")).toBeNull();
   expect(backgroundKeysBlocked()).toBe(false);
   act(() => pick.querySelector<HTMLButtonElement>(".ed-vpick-btn")!.click()); // 뷰어의 메뉴도 같다

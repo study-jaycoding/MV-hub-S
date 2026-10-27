@@ -4,6 +4,7 @@ import { useT } from "../../lib/i18n";
 import type { AssetNode } from "../../types";
 import { FolderIcon } from "../FolderIcon";
 import { MediaThumbnail } from "../MediaThumbnail";
+import { LastViewedBadge } from "../scene/LastViewedBadge";
 import type { AssetFolderGridProps, AssetFolderSelection } from "./AssetFolderGrid";
 import { AssetSourcePath } from "./AssetSourcePath";
 
@@ -19,7 +20,7 @@ export function AssetFolderTable({ project, groups, directFiles, scale, fit, las
     <MediaThumbnail thumb={file.type === "audio" ? null : api.assetThumbUrl(project, file.path, 256, file.version)}
       isVideo={false} alt={file.name}
       fallback={<span className="assets-folder-placeholder">{file.type === "audio" ? t("오디오") : <FolderIcon />}</span>} />
-    {lastViewedPath === file.path && <span className="asset-last-viewed">Last viewed</span>}
+    {lastViewedPath === file.path && <LastViewedBadge />}
   </button> : <span className="assets-folder-placeholder"><FolderIcon /></span>;
   const isAction = (target: EventTarget) => target instanceof Element && !!target.closest("[data-folder-action]");
   return <div ref={scrollRef} onScroll={onScroll} className="assets-folder-grid table assets-folder-table"

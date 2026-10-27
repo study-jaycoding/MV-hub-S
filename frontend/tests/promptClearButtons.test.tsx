@@ -3,7 +3,8 @@
 //  레퍼런스는 캔버스 연결(from_card)을 남기는 같은 범위이고, 위에 메뉴가 떠 있으면 Shift+Backspace 는 쉰다(Codex 10-22 판단).
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { click, installPromptBoundaryMocks, installPromptStyles, mountPrompt, required, settle, type PromptProps } from "./seedanceRenderHarness";
+import type { Generation } from "../src/types";
+import { click, deferred, installPromptBoundaryMocks, installPromptStyles, mountPrompt, required, settle, type PromptProps } from "./seedanceRenderHarness";
 
 let boundary: ReturnType<typeof installPromptBoundaryMocks>;
 let view: Awaited<ReturnType<typeof mountPrompt>> | undefined;
@@ -106,6 +107,39 @@ describe("프롬프트·레퍼런스 비우기", () => {
     expect([...document.styleSheets].flatMap((sheet) => [...sheet.cssRules]).map((rule) => rule.cssText)
       .some((text) => text.includes(".sl-prompt[data-empty]::before") && text.includes("position: absolute"))).toBe(true);
     expect(before).toBeDefined();
+  });
+
+  // Jay 10-23: "생성을 누르면 기본적으로 둘다 모두 없어져야 내가 생성을 제출했다는 느낌" — 워크스페이스 탭(묶이지 않은 트레이)
+  const created = (body: { prompt: string; model: string; params?: Record<string, unknown> }) =>
+    ({ id: "g", prompt: body.prompt, model: body.model, params: body.params, status: "pending", assets: [], tags: [], auto_tags: [] }) as unknown as Generation;
+  it("워크스페이스 탭에서 생성을 제출하면 프롬프트와 보낸 레퍼런스가 같이 빈다 — 기다리는 사이 넣은 레퍼런스는 남는다", async () => {
+    const { libraryDraftKey } = await import("../src/lib/libraryPromptDraft");
+    localStorage.setItem(libraryDraftKey(), JSON.stringify({ v: 1, parts: [{ t: "text", v: "해 질 녘 방파제" }],
+      trayRefs: [{ file_path: "https://fixture.invalid/a.png", type: "image", name: "a" }] }));
+    const response = deferred<Generation>();
+    boundary.api.prepareCreate.mockImplementation(() => () => response.promise);
+    view = await mountPrompt({ inCompose: false });
+    await settle();
+    expect(items()).toHaveLength(1);
+    click(required(view.container, "button.sl-gen")); await settle();
+    expect(boundary.api.prepareCreate).toHaveBeenCalledTimes(1);
+    expect(boundary.api.prepareCreate.mock.calls[0][0].references).toHaveLength(1);
+    act(() => { window.dispatchEvent(new CustomEvent("ch:add-reference", { detail: "g2" })); }); // 응답을 기다리는 사이 하나 더 넣었다
+    await settle();
+    expect(items()).toHaveLength(2);
+    await act(async () => { response.resolve(created(boundary.api.prepareCreate.mock.calls[0][0])); });
+    await settle();
+    expect(editor().textContent).toBe("");
+    expect(items()).toHaveLength(1); // 보낸 것만 빠졌다
+  });
+
+  it("캔버스 카드에 묶인 트레이는 그 카드의 입력이라 그대로 — 프롬프트만 빈다", async () => {
+    boundary.api.prepareCreate.mockImplementation((body) => async () => created(body));
+    view = await mountPrompt({ trayBinding: binding() });
+    click(required(view.container, "button.sl-gen")); await settle();
+    expect(boundary.api.prepareCreate).toHaveBeenCalledTimes(1);
+    expect(editor().textContent).toBe("");
+    expect(items()).toHaveLength(2);
   });
 
   it("위에 메뉴가 떠 있으면 프롬프트의 Shift+Backspace 도 쉰다", async () => {

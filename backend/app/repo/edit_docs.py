@@ -10,6 +10,9 @@ from ..db import get_connection
 
 __all__ = ["get_edit_backup", "save_edit_backup", "restore_edit_backup"]
 MAX_EDIT_BYTES = 1024 * 1024
+# 충돌 사본은 문서마다 최대 20개(Jay 2026-10-26 — 자동으로 생겨 끝이 없었다): 최근 20개, 단 이번 요청의 충돌 사본은 옛 것이어도 남겨
+#  그때는 이번 것 + 최근 19개. 명시적 보존(복원·채택 직전·로컬 보존)은 세지도 지우지도 않는다.
+CONFLICT_COPY_LIMIT = 20
 
 
 def _key(doc_key: str) -> None:
@@ -43,7 +46,8 @@ def _document(data: str) -> str:
         value = json.loads(data, object_pairs_hook=_object, parse_constant=_invalid_constant)
     except (ValueError, RecursionError) as exc:
         raise ValueError("편집 문서가 유효한 JSON이 아닙니다") from exc
-    if not isinstance(value, dict) or type(value.get("v")) is not int or value["v"] != 1 or not isinstance(value.get("clips"), list):
+    # v 2 = 속도(speed)를 쓴 편집 문서 · v 3 = 같은 컷을 컷 사이에 한 번 더 놓은 문서(반복 자리, 2026-10-23) — 칸 검사는 프런트 parseEditDoc 이 한다(백업은 원문 보관)
+    if not isinstance(value, dict) or type(value.get("v")) is not int or value["v"] not in (1, 2, 3) or not isinstance(value.get("clips"), list):
         raise ValueError("지원하지 않는 편집 문서 형식입니다")
     return digest
 
@@ -68,9 +72,25 @@ def _meta(row, include_data=False) -> dict[str, Any] | None:
 
 
 def _copy(conn, owner: str, doc_key: str, data: str, digest: str, kind: str) -> None:
-    # 같은 원문의 재시도는 기존 복구 사본을 덮거나 보존 시각을 새로 쓰지 않는다.
-    conn.execute("INSERT OR IGNORE INTO edit_doc_copy(owner,doc_key,data_hash,data,kind) VALUES(?,?,?,?,?)",
+    # 같은 원문의 재시도는 기존 복구 사본을 덮거나 보존 시각을 새로 쓰지 않는다. 다만 충돌로 먼저 남은 원문을 명시적으로 보존하면 종류만 올려
+    #  충돌 사본 정리에서 빠지게 한다 — 명시적 보존을 충돌로 내리지는 않는다(2026-10-26 Codex 설계 검토 P1).
+    conn.execute("INSERT INTO edit_doc_copy(owner,doc_key,data_hash,data,kind) VALUES(?,?,?,?,?) "
+                 "ON CONFLICT(owner,doc_key,data_hash) DO UPDATE SET kind=excluded.kind "
+                 "WHERE edit_doc_copy.kind='conflict' AND excluded.kind<>'conflict'",
                  (owner, doc_key, digest, data, kind))
+
+
+def _trim_conflicts(conn, owner: str, doc_key: str, digest: str) -> None:
+    # 목록과 같은 정렬로 최근 것만 남긴다. 이번 원문이 충돌 사본이면 늘 남긴다 — 응답이 보존했다고 하는 사본이다(옛 시각이어도).
+    #  이번 원문이 이미 명시적 보존이면 충돌 사본에 세지 않는다(Codex 설계 검토 2차 P2).
+    row = conn.execute("SELECT kind FROM edit_doc_copy WHERE owner=? AND doc_key=? AND data_hash=?", (owner, doc_key, digest)).fetchone()
+    keep = CONFLICT_COPY_LIMIT - 1 if row is not None and row["kind"] == "conflict" else CONFLICT_COPY_LIMIT
+    conn.execute(
+        "DELETE FROM edit_doc_copy WHERE owner=? AND doc_key=? AND kind='conflict' AND data_hash<>? AND data_hash NOT IN ("
+        "SELECT data_hash FROM edit_doc_copy WHERE owner=? AND doc_key=? AND kind='conflict' AND data_hash<>? "
+        "ORDER BY created_at DESC,data_hash DESC LIMIT ?)",
+        (owner, doc_key, digest, owner, doc_key, digest, keep),
+    )
 
 
 def get_edit_backup(owner: str, doc_key: str, *, include_data: bool = False,
@@ -118,6 +138,7 @@ def save_edit_backup(owner: str, doc_key: str, data: str, base_revision: int | N
                 status = "saved"
             else:
                 _copy(conn, owner, doc_key, data, digest, "conflict")
+                _trim_conflicts(conn, owner, doc_key, digest)
                 status = "conflict"
             result = {"status": status, "head": _meta(_head(conn, owner, doc_key))}
             if status == "conflict":

@@ -47,6 +47,7 @@ _NOTIFY_NO_LIBRARY_CHANGE_PATHS = frozenset(
         "/api/scenes/backup",
         "/api/edit-docs/backup",
         "/api/edit-docs/backup/restore",
+        "/api/edit-shares/save",  # 편집 공유 저장은 라이브러리를 바꾸지 않는다(다른 사람은 목록 주기 조회로 안다)
         "/api/comfy/parse",
         "/api/comfy/run",
         # 내가 마지막으로 본 표시 — 생성물 자체는 안 바뀐다. 라이브러리 변경으로 치면
@@ -59,6 +60,8 @@ _NOTIFY_NO_LIBRARY_CHANGE_PREFIXES = (
     "/api/manage/",  # PM 집계·작업 DB는 manage_changed로 분리
     "/api/asset-registry/",  # 에셋 대장 조회·훑기 요청 — 생성물 목록을 바꾸지 않는다(찾기마다 팀 전체가 다시 읽지 않게)
     "/api/registry-helper/",  # 에셋 대장 도우미 훑기 시작(이 PC) — 같은 이유
+    "/api/clean-feed/",  # 편집 탭 클린 피드 창 열기·닫기(이 PC 의 창) — 열고 닫을 때마다 모든 창이 목록을 다시 읽지 않게
+    "/api/app-windows/",  # 별도 창 올리기(이 PC 의 창 앞뒤) — 앱 창으로 돌아올 때마다 모든 창이 목록을 다시 읽지 않게
 )
 _ASSET_NO_CHANGE_PATHS = frozenset(
     {

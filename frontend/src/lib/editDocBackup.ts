@@ -1,4 +1,6 @@
-// localStorage가 원본이다. 서버 판 번호는 이 탭이 같은 원문으로 확인한 것만 승계한다.
+// localStorage가 원본이다. 서버 판 번호는 head 가 지금 원문, 또는 지금 로컬이 그 위에 이어진 원문(syncedRaw)과 정확히 같을 때만 승계한다.
+//  syncedRaw = 읽어 들인 원문(시작 훑기·다른 창 원문) · 서버가 받아 준 원문 · 로컬 적용을 확인한 복원 원문(noteEditBackupSynced).
+//  전에는 지금 원문만 견줘, 첫 확인 전에 바뀐 편집이 영구 충돌에 갇혔다(2026-10-26 — head 가 멈추고 사본만 쌓임).
 import { getAccountNamespace } from "./accountScope";
 import { parseEditDoc } from "./editTimeline";
 import { readEditRaw, subscribeEditRaw } from "./editTimelineStore";
@@ -14,7 +16,7 @@ export interface BackupListing { head: BackupMeta | null; copies: BackupCopy[]; 
 export type BackupState = "off" | "idle" | "pending" | "saving" | "saved" | "conflict" | "error" | "invalid" | "too_big";
 export interface EditBackupStatus { state: BackupState; updatedAt?: string; preservedAt?: string; skipped: number }
 interface Entry {
-  raw: string; revision: number | null; checked: boolean; acceptedRaw?: string; uncertainRaw?: string; epoch: number;
+  raw: string; revision: number | null; checked: boolean; acceptedRaw?: string; uncertainRaw?: string; syncedRaw?: string; epoch: number;
   conflict: boolean; inFlight: boolean; timer?: ReturnType<typeof setTimeout>; status: EditBackupStatus;
 }
 interface BackupSession { namespace: string; token: string | null; generation: number }
@@ -74,12 +76,16 @@ function remember(key: string, raw: string | null, source: "write" | "read") {
   let entry = entries.get(id);
   if (entry?.raw === raw) return;
   if (!entry) {
+    // 처음이 write(이 탭이 새로 만든 문서)면 이어받을 원문이 없다
     entry = { raw, revision: null, checked: false, epoch: 0, conflict: false, inFlight: false,
-      status: { state: "pending", skipped } };
+      syncedRaw: source === "read" ? raw : undefined, status: { state: "pending", skipped } };
     entries.set(id, entry);
   } else {
     entry.raw = raw;
-    if (source === "read") { entry.epoch += 1; entry.checked = false; entry.revision = null; entry.acceptedRaw = undefined; entry.uncertainRaw = undefined; }
+    if (source === "read") {
+      entry.epoch += 1; entry.checked = false; entry.revision = null; entry.acceptedRaw = undefined; entry.uncertainRaw = undefined;
+      entry.syncedRaw = raw;
+    }
   }
   if (!validRaw(raw)) { status(entry, "invalid"); recountSkipped(); return; }
   if (utf8Bytes(raw) > MAX_BYTES) { status(entry, "too_big"); recountSkipped(); return; }
@@ -123,9 +129,13 @@ async function send(id: string, entry: Entry) {
         if (listing.head?.data === uncertainRaw) {
           entry.revision = listing.head.revision; entry.acceptedRaw = uncertainRaw; entry.conflict = false;
         }
-      } else entry.revision = listing.head?.data === raw ? listing.head.revision : null;
+      } else {
+        const head = listing.head;
+        entry.revision = head && (head.data === raw || (entry.syncedRaw !== undefined && head.data === entry.syncedRaw)) ? head.revision : null;
+      }
       if (listing.head?.data === raw) {
         entry.revision = listing.head.revision; entry.acceptedRaw = raw; entry.uncertainRaw = undefined; entry.conflict = false;
+        entry.syncedRaw = raw;
         status(entry, "saved", { updatedAt: listing.head.updated_at });
         return;
       }
@@ -140,6 +150,7 @@ async function send(id: string, entry: Entry) {
     entry.acceptedRaw = raw;
     entry.conflict = response.status === "conflict";
     if (entry.conflict) entry.checked = false;
+    else entry.syncedRaw = raw; // 이 요청이 보낸 원문(지금 entry.raw 가 아니다) — 충돌이면 기준을 바꾸지 않는다
     entry.revision = entry.conflict ? null : response.head.revision;
     const latestState = !validRaw(entry.raw) ? "invalid" : utf8Bytes(entry.raw) > MAX_BYTES ? "too_big"
       : entry.conflict ? "conflict" : entry.raw === raw ? "saved" : "pending";
@@ -161,6 +172,14 @@ async function send(id: string, entry: Entry) {
 export function retryEditBackups() {
   for (const [id, entry] of entries) { if (entry.timer) clearTimeout(entry.timer); void send(id, entry); }
 }
+// 복원·자동 복구가 로컬 쓰기와 다시 읽기까지 확인한 원문(서버 head 와 같다) — useEditDoc 이 finishRestore 직후 부른다.
+//  복원 응답만으로는 적지 않는다: 응답을 기다리는 사이 편집해 로컬 적용이 멈추면 그 편집이 복원본을 덮게 된다(Codex 설계 검토 P1).
+export function noteEditBackupSynced(key: string, raw: string) {
+  const id = editBackupDocKey(key);
+  const entry = id === null ? undefined : entries.get(id);
+  if (!editBackupActive() || !entry || entry.raw !== raw) return;
+  entry.syncedRaw = raw;
+}
 
 // 성공 응답을 확인한 뒤에만 호출부가 로컬에 쓴다. 응답 불명은 읽어서 확인하고도 로컬은 유지한다.
 export async function restoreEditBackup(key: string, baseRevision: number | null, source: { data: string } | { copy_hash: string },
@@ -174,13 +193,29 @@ export async function restoreEditBackup(key: string, baseRevision: number | null
   restoring.set(id, captured);
   if (entry?.timer) { clearTimeout(entry.timer); entry.timer = undefined; }
   if (entry) entry.inFlight = true;
+  // 복원을 보낸 뒤로는 옛 근거(syncedRaw·불명 원문·판 번호)로 잇지 않는다 — 서버가 그 원문으로 복원됐는데 로컬 적용이 멈추거나(응답을 기다리는 사이
+  //  편집) 응답을 잃으면, 그 근거로 판 번호를 이어 복원본을 덮는다(독립 리뷰 R1·R2 P1). 로컬 적용을 확인하면 noteEditBackupSynced 가 다시 적는다.
+  //  서버가 안 바뀐 충돌 응답만 옛 근거를 되돌린다(기다리는 사이 다른 창 원문을 읽었으면 그것).
+  //  복원이 정말 끝나는 순간(응답·재조회까지 기다린 뒤, 잠금을 풀기 직전)에 한 번 더 지운다 — 기다리는 사이 다른 창 원문을 읽어 근거가 다시 생겨도
+  //  같다(R3·R4 P1). 같은 세션일 때만 — 이전 세션의 늦은 끝은 지금 세션 항목을 건드리지 않는다(R4 P2).
+  const previous = entry && { synced: entry.syncedRaw, uncertain: entry.uncertainRaw };
+  const forget = (target: Entry) => {
+    target.syncedRaw = undefined; target.uncertainRaw = undefined; target.checked = false; target.revision = null; target.acceptedRaw = undefined;
+  };
+  if (entry) forget(entry);
+  let serverUnchanged = false;
   try {
     const result = await request<{ status: "saved" | "same" | "conflict"; head: BackupMeta | null; data?: string }>(`${API}/restore`, {
       method: "POST", body: JSON.stringify({ doc_key: id, base_revision: baseRevision, source, local_raw: localRaw, kind }),
     });
     if (!current(captured)) throw new Error("계정이 바뀌어 복원 응답을 적용하지 않았습니다.");
-    if (entry && current(captured)) {
-      entry.checked = false; entry.revision = null; entry.acceptedRaw = undefined; entry.uncertainRaw = undefined; entry.epoch += 1;
+    serverUnchanged = result.status === "conflict";
+    const latest = entries.get(id);
+    if (latest) {
+      latest.epoch += 1; latest.checked = false; latest.revision = null; latest.acceptedRaw = undefined;
+      if (serverUnchanged && previous && latest === entry && latest.syncedRaw === undefined) {
+        latest.syncedRaw = previous.synced; latest.uncertainRaw = previous.uncertain;
+      }
     }
     return result;
   } catch (error) {
@@ -190,7 +225,10 @@ export async function restoreEditBackup(key: string, baseRevision: number | null
     if (restoring.get(id) === captured) restoring.delete(id);
     if (entry) entry.inFlight = false;
     const latest = entries.get(id);
-    if (latest && current(captured)) schedule(id, latest);
+    if (latest && current(captured)) {
+      if (!serverUnchanged) forget(latest);
+      schedule(id, latest);
+    }
   }
 }
 

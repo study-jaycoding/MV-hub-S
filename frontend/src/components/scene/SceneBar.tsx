@@ -26,7 +26,6 @@ import { cachedWorkspaceOptions } from "../../lib/workspaceOptionsCache";
 import { WorkspaceMark } from "../common/WorkspaceMark";
 import { SceneWorkspaceMenu, type SceneMenuTarget } from "./SceneWorkspaceMenu";
 import type { WorkspaceContext } from "../../types";
-import { useT } from "../../lib/i18n";
 
 const DRAG_THRESHOLD = 5; // px — 이보다 덜 움직이면 클릭
 
@@ -137,7 +136,6 @@ export function SceneBar({
   onExportAll,
   backupSkippedIds,
 }: Props) {
-  const t = useT();
   const [drag, setDrag] = useState<DragState | null>(null);
   const [menu, setMenu] = useState<SceneMenuTarget | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null); // 삭제 확인창의 씬
@@ -369,14 +367,6 @@ ${sceneTabTitle(scene, workspaceContext, label, missing)}`}
           ⤓ 백업에서 씬 {backupOnly}개 가져오기
         </button>
       ) : null}
-      <details className="storage-scope">
-        <summary>{t("저장·백업 안내")}</summary>
-        <div>
-          <p>{t("캔버스 원본은 이 브라우저에 저장됩니다. 저장 실패 알림이 있으면 최신 편집은 아직 저장되지 않은 상태입니다.")}</p>
-          <p>{t("저장된 캔버스는 이 PC의 DB에 별도로 백업됩니다. 브라우저 저장 성공이 DB 백업이나 외부 백업의 성공을 뜻하지는 않습니다.")}</p>
-          <p>{t("편집 문서와 DB 백업에는 영상·이미지 원본이 포함되지 않습니다. 필요한 원본 파일도 따로 보관하세요.")}</p>
-        </div>
-      </details>
       {menu ? (
         <SceneWorkspaceMenu
           // 다른 탭의 메뉴로 바뀌면 새로 만든다 — 메뉴는 바깥을 '눌러야' 닫히므로, 키보드(Shift+F10)로 다른 탭의 메뉴를 열면 떠 있는 채

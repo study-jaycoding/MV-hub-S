@@ -12,7 +12,8 @@ const changes = {
   removeMarker: timeline.removeMarker, shiftClips: timeline.shiftClips, removeClips: timeline.removeClips,
   toggleClipsOff: timeline.toggleClipsOff, moveClipToTrack: timeline.moveClipToTrack,
   toggleTrack: timeline.toggleTrack, resetCutOrder: timeline.resetCutOrder,
-  setClipRange: timeline.setClipRange, patchMarker: timeline.patchMarker, clearMarkers: timeline.clearMarkers,
+  insertSlot: timeline.insertSlot, moveClipToSlot: timeline.moveClipToSlot, moveClipIntoSlot: timeline.moveClipIntoSlot,
+  setClipRange: timeline.setClipRange, setClipSpeed: timeline.setClipSpeed, patchMarker: timeline.patchMarker, clearMarkers: timeline.clearMarkers,
   recordDurations: timeline.setClipDurs,
   toggleHideOff: (doc: timeline.EditDoc) => {
     const next = { ...doc };

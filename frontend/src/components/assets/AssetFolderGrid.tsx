@@ -8,6 +8,7 @@ import type { AssetNode } from "../../types";
 import { FolderIcon } from "../FolderIcon";
 import { FolderCardCoverContent, FolderCardPreview } from "../FolderCardVisuals";
 import { MediaThumbnail } from "../MediaThumbnail";
+import { LastViewedBadge } from "../scene/LastViewedBadge";
 import type { AssetFolderGroup } from "./assetFolderGroups";
 import type { AssetFolderLayout } from "./useAssetFolderTabs";
 import { AssetFolderTable } from "./AssetFolderTable";
@@ -140,7 +141,7 @@ export function AssetFolderGrid(props: AssetFolderGridProps) {
           {child.cover ? thumb(child.cover, 256) : <span className="assets-folder-placeholder"><FolderIcon /></span>}
         </FolderCardPreview>) : files.slice(0, STRIP_SHOWN.grid).map((file) => <FolderCardPreview key={file.path} title={file.name}
           aria-label={`${file.name} ${t("미리보기")}`} onClick={() => onPreview(file)}>{thumb(file, 256)}
-          {lastViewedPath === file.path && <span className="asset-last-viewed">Last viewed</span>}
+          {lastViewedPath === file.path && <LastViewedBadge />}
         </FolderCardPreview>)}
         {more > 0 && <FolderCardPreview className="more" title={t("폴더 열기")}
           onClick={() => onEnter(folder.path)}>+{more}</FolderCardPreview>}
@@ -151,7 +152,7 @@ export function AssetFolderGrid(props: AssetFolderGridProps) {
       <button type="button" className={"ep-cover" + (fit === "contain" ? " contain" : "")}
         aria-label={`${file.name} ${t("미리보기")}`} title={file.name} onClick={() => { setSelected(file.path); onPreview(file); }}>
         {thumb(file, 512)}
-        {lastViewedPath === file.path && <span className="asset-last-viewed">Last viewed</span>}
+        {lastViewedPath === file.path && <LastViewedBadge />}
         <span className="ep-cap"><b>{file.name}</b></span>
       </button>
       {layout === "list" && <span className="assets-folder-info"><strong>{file.name}</strong><AssetSourcePath project={project} path={file.path} /></span>}

@@ -4,14 +4,19 @@
 //  · 시계 주인은 항상 하나: 보이는 클립이 영상이고 정방향 재생이면 영상(받는 중·버퍼링이면 시간도 선다), 그 밖에는 rAF.
 //  · '보이는 소스가 바뀜'은 컷이 바뀌는 것과 별개 사건 — 같은 컷에서 위 클립이 끝나 아래가 드러날 때도 일어난다.
 //  · 다음에 보일 영상은 미리 받아 둔다(정방향 재생 중) — 영상 요소가 둘이면(editVideoPair) 넘어갈 때 받지 않고 자리만 바꾼다.
-//  · 클립은 원본의 중간에서 시작할 수 있다(앞 자르기 — SlotClip.head): **영상 시각 = 컷 안 시각 + 올려 둔 클립의 head**.
-//    엔진은 컷 안 시각만 안다 — 영상의 시각을 읽고 쓰는 것은 build() 안의 clipTime·send·endOf 셋으로만 한다.
+//  · 클립은 원본의 중간에서 시작할 수 있고(앞 자르기 — SlotClip.head) 속도가 있을 수 있다(2026-10-23 — SlotClip.speed):
+//    **영상 시각 = 올려 둔 클립의 head + 컷 안 시각 × 그 속도**(mediaAt·localAt). 엔진은 컷 안 시각만 안다 — 영상의 시각을 읽고
+//    쓰는 것은 build() 안의 clipTime·send·endOf 셋으로만 한다. 시계(rAF)는 컷 안 시각으로 흐르므로 속도를 곱하지 않는다 —
+//    영상 쪽은 playbackRate = 배속 × 클립 속도로 같은 빠르기가 된다.
 // ponytail: 미리 받는 것은 '바로 다음 하나'뿐이다 — 역방향·훑기와, 다 받기 전에 경계에 닿은 때는 받는 시간만큼 선다.
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import {
   clipKey,
+  clipSpeed,
   EDIT_FPS,
   editPoints,
+  localAt,
+  mediaAt,
   posAt,
   settlePos,
   stepPoint,
@@ -42,7 +47,7 @@ export interface EditVideo {
   removeEventListener(type: string, listener: () => void): void;
   // 아래 셋은 영상 요소 둘을 묶은 것(editVideoPair)만 가진다 — 없으면 주소를 갈아 끼우는 옛 길 그대로다.
   readonly readyState?: number;
-  prepare?(url: string | null, time: number): void; // 다음에 보일 영상을 미리 받아 그 시각에 세워 둔다(null = 비운다)
+  prepare?(url: string | null, time: number, rate?: number): void; // 다음에 보일 영상을 미리 받아 그 시각에 세워 둔다(null = 비운다). rate = 미리 굴릴 배속
   swap?(url: string): boolean; // 미리 받아 둔 그 영상을 앞으로 내놓는다(받지 않는다). 없으면 false
   roll?(on: boolean): void; // 미리 받아 둔 영상을 소리 없이 미리 굴린다 / 세워 제자리로 돌린다
 }
@@ -53,6 +58,12 @@ export interface EditVideo {
 export function videoEnd(video: EditVideo | null | undefined): number {
   const length = video?.duration ?? NaN;
   return Number.isFinite(length) ? length : Infinity;
+}
+
+// 영상에 주는 재생률 — 크롬 한도 1/16~16 안으로. 넘기면 대입이 예외를 던져 재생 갱신·다음 프레임 예약이 멈춘다
+//  (클립 400% × 셔틀 8배 = 32 · 클린 피드 4배 × 따라붙기 1.25 = 20 — 릴리스 묶음 리뷰 B).
+export function playRate(rate: number): number {
+  return Math.min(16, Math.max(1 / 16, rate));
 }
 
 export interface EditSource {
@@ -73,6 +84,14 @@ export interface EditView {
 
 // 시퀀스별 마지막 재생헤드 자리 — 다른 탭에 다녀와도 보던 자리로 돌아온다(새로고침하면 사라진다).
 const lastPos = new Map<string, EditPos>();
+// 자리를 적는다 — 재생용으로만 붙인 자리(tail)에 서 있었으면 그 배치(from)의 실제 끝으로, 실제 자리가 없으면 적지 않는다(지운다).
+function rememberPos(key: string, at: EditPos | null, from: EditLayout, tail: string | undefined) {
+  if (!at) return;
+  if (!tail || at.cut !== tail) return void lastPos.set(key, at);
+  const real = [...from.cuts].reverse().find((slot) => slot.path !== tail);
+  if (real) lastPos.set(key, { cut: real.path, local: real.len });
+  else lastPos.delete(key);
+}
 
 const STOPPED: EditView = { cut: null, clip: null, source: null, playing: false, rate: 1, failed: false };
 const SEEK_SLOP = 0.04;
@@ -98,7 +117,11 @@ export function useEditPlayback({
   range = null,
   speed = 1,
   order,
+  ephemeral,
 }: {
+  // 재생용으로만 붙인 자리의 열쇠(편집 공유의 빈 꼬리 — lib/editShare.withTail). 적어 두는 재생 위치(lastPos)에는 그 자리 대신 그 배치의
+  //  실제 끝(마지막 실제 자리·그 길이)을 적고, 실제 자리가 없으면 적지 않는다 — 다시 열었을 때 없는 자리로 가지 않게.
+  ephemeral?: string;
   // 타임라인의 전체 컷 순서(숨긴 컷 포함 — cutPaths). 보던 컷이 배치에서 빠졌을 때 '그다음 컷'을 여기서 찾는다(settlePos).
   //  안 주면 배치의 순서다(소스 판). 배치·문서가 바뀔 때만 읽는다 — 이것만 바뀌는 일은 없다(순서는 문서에서 나온다).
   order?: readonly string[];
@@ -116,6 +139,9 @@ export function useEditPlayback({
   const live = useRef({ layout, doc, sourceOf, paint, loop, range, speed });
   live.current = { layout, doc, sourceOf, paint, loop, range, speed };
   const pos = useRef<EditPos | null>(null);
+  // 직전에 위치를 맞춘 때의 전체 순서 — 서 있던 반복 자리가 실제로 사라지면(이 창의 빼기·되돌리기·다른 창의 최종 문서) 그 자리의 다음을 여기서
+  //  찾는다(settlePos 의 previous — 문서의 순서에는 이미 그 자리가 없을 수 있다, Codex 설계 3차). 시퀀스가 바뀔 때만 비운다.
+  const previousOrder = useRef<readonly string[] | undefined>(undefined);
   const run = useRef({
     playing: false,
     rate: 1,
@@ -125,6 +151,7 @@ export function useEditPlayback({
     loaded: false, // 지금 소스의 메타데이터를 받았다(그 전에는 탐색하지 않는다 — loadedmetadata 가 최신 목표로 보낸다)
     shown: "", // 지금 올려 둔 소스의 열쇠(클립 열쇠 + 주소). 빈 문자열 = 영상 없음
     head: 0, // 지금 올려 둔 클립의 유효 시작(초) — 그 영상의 시각은 컷 안 시각보다 이만큼 앞서 있다(sync 가 맞춘다)
+    speed: 1, // 지금 올려 둔 클립의 속도 배율 — head 와 같이 sync 가 맞춘다
     failed: new Set<string>(), // 재생하지 못한 클립 열쇠
     armed: false, // 구간 반복 — 마지막으로 위치를 옮긴 뒤 구간 끝(아웃) 앞에 있었다. 아웃 뒤에서 시작했으면 꺼진 채다
     // 반복의 '빈 바퀴' 판정(되돌아갈 때 — loopBack) — 이 둘뿐이다. 일어난 일마다 깃발을 켜고 끄지 않는다: 바퀴의 범위를
@@ -140,6 +167,9 @@ export function useEditPlayback({
 
   const published = useRef<EditView>(STOPPED);
   const scoped = useRef(scope);
+  const placed = useRef(layout); // 마지막으로 위치를 맞춘 배치 — 시퀀스가 바뀔 때 '떠나는 쪽'의 끝을 여기서 찾는다
+  const ephemeralRef = useRef(ephemeral);
+  ephemeralRef.current = ephemeral;
   // 돌아갈 자리 — 그 컷이 배치에 나타나면 한 번 옮긴다. 그 전에 사용자가 위치를 옮기면 버린다.
   const wanted = useRef<EditPos | null>(lastPos.get(scope) ?? null);
 
@@ -174,13 +204,14 @@ export function useEditPlayback({
     };
 
     // 영상 시각 ↔ 컷 안 시각(앞 자르기, Jay 2026-10-14) — 올려 둔 클립은 원본의 head 초에서 시작한다. 영상의 시각을 읽고 쓰는 것과
-    //  '실제 끝'은 이 셋으로만 한다. head 는 **지금 영상 요소에 올려 둔 클립**의 것이다(state.head): 위치가 방금 다른 클립으로
-    //  넘어갔어도, sync 가 소스를 갈기 전까지 영상 요소에는 앞 클립이 올라가 있다(tick·stop 이 그 값으로 읽는다).
-    const clipTime = (video: EditVideo) => video.currentTime - state.head;
+    //  '실제 끝'은 이 셋으로만 한다. head·speed 는 **지금 영상 요소에 올려 둔 클립**의 것이다(state.head·state.speed): 위치가 방금
+    //  다른 클립으로 넘어갔어도, sync 가 소스를 갈기 전까지 영상 요소에는 앞 클립이 올라가 있다(tick·stop 이 그 값으로 읽는다).
+    const shownClip = () => ({ head: state.head, speed: state.speed });
+    const clipTime = (video: EditVideo) => localAt(shownClip(), video.currentTime);
     const send = (video: EditVideo, local: number) => {
-      video.currentTime = local + state.head;
+      video.currentTime = mediaAt(shownClip(), local);
     };
-    const endOf = (video: EditVideo | null | undefined) => videoEnd(video) - state.head;
+    const endOf = (video: EditVideo | null | undefined) => localAt(shownClip(), videoEnd(video));
 
     const publish = () => {
       const { slot, clip, source } = visible();
@@ -253,9 +284,12 @@ export function useEditPlayback({
       // 올려 둘 클립의 시작점 — 소스를 갈거나(바로 아래의 swap 은 onMeta 를 그 자리에서 부른다) 탐색하기 **전에** 맞춘다.
       //  같은 소스인데 시작점만 바뀌었으면(길이 조절 창에서 앞 손잡이를 옮김) 위치를 옮긴 것과 같게 다룬다: 영상이 새 자리에
       //  닿기 전에는 시계를 넘기지 않는다 — 그냥 두면 도는 영상의 시각이 그대로 컷 안 시각으로 읽혀 재생헤드가 그 차이만큼 튄다.
+      //  속도만 바뀌어도(속도 막대) 같다 — 영상의 시각을 컷 안 시각으로 바꾸는 식이 바뀌었다.
       const head = playable ? clip!.head : 0;
-      const jump = moved || (shown === state.shown && head !== state.head);
+      const speed = playable ? clipSpeed(clip!) : 1;
+      const jump = moved || (shown === state.shown && (head !== state.head || speed !== state.speed));
       state.head = head;
+      state.speed = speed;
       const owner = playable && state.playing && state.rate > 0 ? "video" : "raf";
       if (owner !== state.owner) {
         state.owner = owner;
@@ -295,7 +329,8 @@ export function useEditPlayback({
         if (owner === "video" && state.arrived === state.token && (video.paused || over(video))) startVideo();
         if (owner === "raf" && !video.paused) video.pause();
       }
-      if (video && playable) video.playbackRate = Math.max(1, Math.abs(state.rate));
+      // 바닥(1)은 배속에만 건다 — 곱한 값에 걸면 25% 속도가 사라진다(Codex 설계 검토). 셔틀 8배 × 400% 는 크롬 한도를 넘어 16 에서 멈춘다.
+      if (video && playable) video.playbackRate = playRate(Math.max(1, Math.abs(state.rate)) * speed);
       prepare();
       publish();
     };
@@ -330,7 +365,9 @@ export function useEditPlayback({
       const source = clip ? live.current.sourceOf(clip) : null;
       const shown = shownOf(clip, source);
       const url = shown && shown !== state.shown ? source!.url : null;
-      video.prepare(url, (next?.at.local ?? 0) + (url ? clip!.head : 0)); // 세워 둘 자리도 영상 시각이다(그 클립의 시작점을 더한다)
+      // 세워 둘 자리·굴릴 배속도 **그 다음 클립의** 시작점·속도로 센다(지금 올린 클립의 것이 아니다)
+      const at = next?.at.local ?? 0;
+      video.prepare(url, url ? mediaAt(clip!, at) : at, url ? playRate(Math.max(1, Math.abs(state.rate)) * clipSpeed(clip!)) : 1);
       video.roll?.(!!url && next!.left / state.rate <= ROLL_LEAD);
     };
 
@@ -547,9 +584,10 @@ export function useEditPlayback({
   useEffect(() => {
     const fresh = scoped.current !== scope;
     if (fresh) {
-      if (pos.current) lastPos.set(scoped.current, pos.current);
+      rememberPos(scoped.current, pos.current, placed.current, ephemeralRef.current);
       scoped.current = scope;
       pos.current = null;
+      previousOrder.current = undefined;
       wanted.current = lastPos.get(scope) ?? null;
       run.current.failed.clear();
     }
@@ -558,8 +596,10 @@ export function useEditPlayback({
       pos.current = back;
       wanted.current = null;
     }
-    const settled = settlePos(layout, pos.current, order, doc.cutOrder);
+    const settled = settlePos(layout, pos.current, order, doc.cutOrder, previousOrder.current);
     pos.current = settled.pos;
+    placed.current = layout;
+    if (order) previousOrder.current = order;
     if ((settled.moved || fresh) && run.current.playing) stop(false);
     else sync(settled.moved || fresh);
     paint(timeOf(layout, pos.current));
@@ -577,7 +617,7 @@ export function useEditPlayback({
     const video = videoRef.current;
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
-      if (pos.current) lastPos.set(scoped.current, pos.current);
+      rememberPos(scoped.current, pos.current, live.current.layout, ephemeralRef.current);
       state.playing = false;
       state.token++;
       state.shown = "";

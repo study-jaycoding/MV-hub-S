@@ -323,7 +323,7 @@ it("카드 위에서도 Ctrl·Shift 를 누른 채 끌면 지금처럼 상자 �
   expect(stored()).toBeNull();
 });
 
-it("컷 머리 칸을 끌면 폴더 순서가 바뀐다 — 끼울 자리에 줄이 서고, 놓으면 한 단계로 적히며, 알약을 누르면 이름순으로 돌아간다", () => {
+it("컷 머리 칸을 끌면 폴더 순서가 바뀐다 — 끼울 자리에 줄이 서고, 놓으면 한 단계로 적히며, 목록 메뉴의 '배치 순서'를 누르면 이름순으로 돌아간다", () => {
   mount();
   expect(cuts()).toEqual(["c1", "c2", "c3"]);
   act(() => cutCell("c2").click()); // 재생헤드를 c2 로 — 끈 뒤에 딸려 오는 click 이 먹었는지 이것으로 본다
@@ -342,16 +342,31 @@ it("컷 머리 칸을 끌면 폴더 순서가 바뀐다 — 끼울 자리에 줄
   act(() => cutCell("c1").click()); // 그다음 누르기는 누르기다
   expect(timecode()).toBe("00:00:10:00");
 
-  const chip = () => document.querySelector<HTMLButtonElement>(".ed-orderchip");
-  expect(chip()!.textContent).toBe("폴더 순서: 내 순서 ↺");
+  // 배치 순서(Jay 2026-10-26 — 막대의 알약을 목록 메뉴의 '빈 곳 채우기' 밑으로): 폴더를 끌어 바꾸면 '내 순서 ↺'(누르면 이름순), 아니면 '폴더순'(못 누름)
+  const listBtn = () => document.querySelector<HTMLButtonElement>(".ed-listbtn")!;
+  const items = () => [...document.querySelectorAll<HTMLButtonElement>(".ed-tmenu-item")];
+  const orderItem = () => items().find((item) => item.textContent!.startsWith("배치 순서"));
+  const openOrder = () => {
+    if (!orderItem()) act(() => listBtn().click());
+    return orderItem()!;
+  };
+  const closeList = () => {
+    if (orderItem()) act(() => listBtn().click());
+  };
+  expect(document.querySelector(".ed-orderchip")).toBeNull(); // 막대에는 없다
+  openOrder();
+  expect(items().map((item) => item.textContent).slice(1, 3)).toEqual([expect.stringMatching(/^빈 곳 채우기/), "배치 순서내 순서 ↺"]);
+  expect(orderItem()!.disabled).toBe(false);
+  closeList();
   press({ key: "z", code: "KeyZ", ctrlKey: true }); // 되돌리기 한 단계
   expect(cuts()).toEqual(["c1", "c2", "c3"]);
-  expect(chip()).toBeNull();
+  expect([openOrder().textContent, orderItem()!.disabled]).toEqual(["배치 순서폴더순", true]);
+  closeList();
   press({ key: "z", code: "KeyZ", ctrlKey: true, shiftKey: true });
   expect(cuts()).toEqual(["c2", "c3", "c1"]);
-  act(() => chip()!.click()); // 이름순으로
-  expect(cuts()).toEqual(["c1", "c2", "c3"]);
-  expect(stored().cutOrder).toBeUndefined();
+  const reset = openOrder();
+  act(() => reset.click()); // 이름순으로 — 메뉴는 닫힌다
+  expect([cuts(), stored().cutOrder, orderItem()]).toEqual([["c1", "c2", "c3"], undefined, undefined]);
   expect(flashed).toEqual([]);
 });
 

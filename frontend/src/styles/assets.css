@@ -1033,6 +1033,12 @@ body[data-modal-open] .resolve-notices { z-index: 140; }
 }
 .resolve-notice > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .resolve-notice b { color: #ffb37a; font-weight: 600; }
+/* 알림 안 글자 단추(편집 탭 경고의 백업 보기·다시 시도 … — Jay 2026-10-24) — 편집 탭 막대의 .ed-link 와 같은 모양 */
+.resolve-notice-act {
+  background: none; border: 0; padding: 0; border-radius: 0; font: inherit;
+  color: var(--accent); text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.resolve-notice-act:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .resolve-notice-x {
   flex: none; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: rgba(255, 255, 255, 0.07);
   display: flex; align-items: center; justify-content: center; color: #c9cdd5; font-size: 13px; line-height: 1; cursor: pointer;
@@ -1110,10 +1116,13 @@ body:has(.auth-pause-banner) .resolve-notices { top: 172px; }
 .assets-folder-table-preview img, .assets-folder-table-preview video { width: 100%; height: 100%; object-fit: cover; }
 .assets-folder-table-preview.contain img, .assets-folder-table-preview.contain video { object-fit: contain; }
 .assets-folder-table-preview:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.assets-folder-table-preview .asset-last-viewed { top: 2px; right: 2px; max-width: calc(100% - 4px); padding: 1px 3px; overflow: hidden; text-overflow: ellipsis; font-size: 8px; }
-.asset-last-viewed { position: absolute; top: 7px; right: 7px; z-index: 2; padding: 2px 8px; border-radius: 999px; background: rgba(0,0,0,.7); color: var(--accent); font-size: 11px; pointer-events: none; }
-.asset-cell:hover .asset-last-viewed, .asset-cell:focus-within .asset-last-viewed { display: none; }
-.ep-cut:hover .asset-last-viewed, .ep-cover:hover .asset-last-viewed { display: none; }
+/* Last viewed — 모양은 scene.css 의 .last-viewed-badge 한 벌(모든 탭 같음). 여기는 어셋 칸의 호버·▶·작은 칸만.
+   작은 칸(컷 띠 44~54px·표 미리보기 76×39px)은 글자 칩(약 100px)이 넘치므로 같은 칩에 눈만 남긴다. */
+.asset-cell:hover .last-viewed-badge, .asset-cell:focus-within .last-viewed-badge,
+.ep-cut:hover .last-viewed-badge, .ep-cover:hover .last-viewed-badge { opacity: 0; }
+.asset-media:has(.last-viewed-badge) .play-badge { display: none; }
+.ep-cut .last-viewed-badge, .assets-folder-table-preview .last-viewed-badge { padding: 3px; }
+.ep-cut .last-viewed-text, .assets-folder-table-preview .last-viewed-text { display: none; }
 .assets-folder-outside { min-height: 96px; }
 .assets-folder-outside > span { display: block; color: var(--muted); margin-top: 6px; }
 .asset-local-imports { flex: none; padding: 10px 14px; border-bottom: 1px solid var(--border); max-height: 250px; overflow: auto; }

@@ -30,7 +30,9 @@ import {
   markTime,
   moveClipToTrack,
   moveCut,
+  foldersReordered,
   moveTrack,
+  nearestPoint,
   orderCuts,
   parseEditDoc,
   patchMarker,
@@ -49,6 +51,7 @@ import {
   settlePos,
   setTrackColor,
   shiftClips,
+  shotsAt,
   shownMarkers,
   snapTrim,
   stepPoint,
@@ -568,7 +571,7 @@ describe("저장된 문서 읽기", () => {
   it("버전·모양·불변식이 어긋나면 null(빈 문서로 바꾸지 않는다)", () => {
     const c = good.clips[0];
     const bad: unknown[] = [
-      null, "x", { v: 2, clips: [] }, { v: 1 }, { v: 1, clips: [null] },
+      null, "x", { v: 4, clips: [] }, { v: 1 }, { v: 1, clips: [null] }, // v 3 = 반복 자리(2026-10-23) — 모르는 판은 4
       { v: 1, clips: [{ ...c, track: 0 }] }, { v: 1, clips: [{ ...c, track: 1.5 }] },
       { v: 1, clips: [{ ...c, cut: "" }] }, { v: 1, clips: [{ ...c, cut: "e070\\c1" }] },
       { v: 1, clips: [{ ...c, dur: 0 }] }, { v: 1, clips: [{ ...c, dur: "8" }] },
@@ -809,6 +812,57 @@ describe("마크 인/아웃·북마크", () => {
 });
 
 // 빈 곳 채우기(Jay 2026-10-08) — 클립이 하나도 없는 컷에만, 컷마다 하나씩.
+// 다이나믹 재생 모드(Jay 2026-10-26 — 다빈치의 Dynamic Trim Mode, 보기만 · 10-08 의 계산을 되살림)
+describe("다이나믹 재생 모드 — 편집점의 앞 | 뒤", () => {
+  // c1 0~8(위 top 3초 · 아래 low 8초) · c2(빈 컷) 8~13 · c3 13~19
+  const d = doc([clip("c1", "low", 1, { dur: 8 }), clip("c1", "top", 2, { dur: 3 }), clip("c3", "solo", 1, { dur: 6 })]);
+  const layout = buildLayout(["e070/c1", "e070/c2", "e070/c3"], d);
+  const points = editPoints(layout);
+  const seen = (point: number, from = d) =>
+    shotsAt(layout, from, points, point).map((shot) => shot && (shot.clip?.gen ?? "빈 화면"));
+
+  it("보는 편집점 = 재생헤드에서 가장 가까운 것(처음·끝 포함)", () => {
+    expect(points).toEqual([0, 3, 8, 13, 19]);
+    expect([0, 1.4, 1.6, 5.4, 5.6, 12, 18.9, 99].map((time) => nearestPoint(points, time))).toEqual([0, 0, 3, 3, 8, 13, 19, 19]);
+    expect(nearestPoint([], 4)).toBe(0);
+  });
+
+  it("편집점의 바로 앞과 바로 뒤에 보이는 것 — 처음에는 앞이, 끝에는 뒤가 없다", () => {
+    expect(seen(0)).toEqual([null, "top"]);
+    expect(seen(3)).toEqual(["top", "low"]); // 컷 안 — 위 클립이 끝나 아래가 드러난다
+    expect(seen(8)).toEqual(["low", "빈 화면"]);
+    expect(seen(13)).toEqual(["빈 화면", "solo"]);
+    expect(seen(19)).toEqual(["solo", null]);
+    expect(seen(0, { ...d, tracksOff: [2] })).toEqual([null, "low"]); // 끈 트랙은 타임라인 뷰어처럼 건너뛴다
+    expect(seen(5)).toEqual([null, null]); // 편집점이 아닌 시각
+    const [before, after] = shotsAt(layout, d, points, 3);
+    expect(before!.local).toBeCloseTo(3 - 0.25 / 24); // 끝나는 클립의 마지막 프레임 안쪽
+    expect(after!.local).toBeCloseTo(3 + 0.25 / 24); // 아래 클립은 0초가 아니라 보던 시각
+    expect(shotsAt(layout, d, points, 13)[1]!.local).toBeLessThan(1 / 24); // 컷 경계 — 뒤 컷의 첫 프레임
+  });
+
+  it("아주 짧게 비치는 클립을 건너뛰지 않는다 — 표본 시각은 이웃 편집점과의 한가운데를 넘지 않는다", () => {
+    // 0.005초 조각은 그림 클립으로 만든다 — 영상의 쓰는 길이는 프레임으로 내려 이런 조각이 생기지 않는다(2026-10-14)
+    const thin = doc([clip("c1", "v1", 1, { dur: 8 }), clip("c1", "v2", 2, { dur: 5.005, kind: "image" }), clip("c1", "v3", 3, { dur: 5 })]);
+    const thinLayout = buildLayout(["e070/c1"], thin);
+    const thinPoints = editPoints(thinLayout); // 0 · 5 · 5.005 · 8
+    const gens = (point: number) => shotsAt(thinLayout, thin, thinPoints, point).map((shot) => shot!.clip!.gen);
+    expect(gens(5)).toEqual(["v3", "v2"]); // 1/4 프레임 뒤면 v1 이지만, 그 사이 0.005초는 v2 다
+    expect(gens(5.005)).toEqual(["v2", "v1"]);
+  });
+});
+
+// 막대의 순서 알약(Jay 2026-10-26 — "폴더순으로 되는건데 내순서라고 적혀있어서 헷갈린다") — '내 순서 ↺' 는 폴더끼리의 순서를 바꿨을 때만
+describe("폴더끼리의 순서", () => {
+  it("반복 자리를 컷 사이에 끼운 것만으로는 바꾼 것이 아니다 — 각 폴더가 처음 나오는 순서로 본다", () => {
+    expect(foldersReordered(["e070/c1", "e070/c2", "e070/c1//abc123", "e070/c3"])).toBe(false);
+    expect(foldersReordered(["e070/c1//abc123", "e070/c2", "e070/c1", "e070/c3"])).toBe(false); // 첫 자리가 숨어 반복 자리가 먼저여도
+    expect(foldersReordered(["e070/c2", "e070/c1//abc123", "e070/c1", "e070/c3"])).toBe(true);
+    expect(foldersReordered(["e070/c9", "e070/c10"])).toBe(false); // 이름순은 숫자를 숫자로 본다
+    expect(foldersReordered([])).toBe(false);
+  });
+});
+
 describe("빈 곳 채우기", () => {
   const pick = (cut: string, gen: string) => ({ cut: `${SEQ}/${cut}`, gen, job: `job-${gen}`, kind: "image" as const, dur: 5 });
 

@@ -1,23 +1,34 @@
 // 편집 탭 아래쪽 — 눈금자(북마크·마크 인/아웃)·컷 줄·영상 트랙(위가 우선)·소리 줄과 재생헤드.
-// 재생헤드는 부모가 ref 로 직접 옮긴다(프레임마다 React 렌더 없음). 클립은 좌우로 못 옮기고(자리는 그 컷이다) 위아래로 끌어
-// 트랙만 바꾼다. 컷(폴더)의 순서는 컷 머리 칸을 좌우로 끌어 바꾼다(Jay 2026-10-13).
+// 재생헤드는 부모가 ref 로 직접 옮긴다(프레임마다 React 렌더 없음). 클립을 위아래로 끌면 트랙만 바꾸고, 가로로 끌어 컷 경계에 놓으면
+// 그리로 옮긴다(같은 컷을 컷 사이에 한 번 더 — Jay 2026-10-23 ⑤). 컷(폴더)의 순서는 컷 머리 칸을 좌우로 끌어 바꾼다(Jay 2026-10-13).
 import {
   Fragment,
   memo,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
+  type MutableRefObject,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from "react";
 import type { Generation } from "../../types";
 import {
+  dropTargetAt,
+  moveClipIntoSlot,
   clipKey,
+  clipSpeed,
   cutDropTime,
+  EDIT_FPS,
+  folderOf,
   grabLabel,
+  slotOf,
+  slotStays,
+  slotTitle,
+  soleRepeatClip,
   timecode,
   visibleSegments,
   type EditDoc,
@@ -28,15 +39,27 @@ import {
   type ShownMarker,
   type SlotClip,
 } from "../../lib/editTimeline";
+import type { ShareLayout } from "../../lib/editShare";
+import { findWheelAction } from "../../lib/editShortcuts";
 import { useT } from "../../lib/i18n";
 import { pressStartedCovered, useDragKeyHold } from "../../lib/keyGate";
 import { computeMarquee, marqueeHits, type MarqueeRect } from "../../lib/marquee";
 import { thumbOf } from "../../lib/media";
 import { useEscapeClose } from "../../lib/useEscapeClose";
+import { EditRetime, speedText, type RetimeChange } from "./EditRetime";
 
 export const ZOOM_MIN = 2; // px/초
 export const ZOOM_MAX = 400;
-const LANE_H = 58;
+const LANE_H = 58; // 영상 트랙 높이의 처음 값 — Shift+휠(기본 지정)로 LANE_MIN~LANE_MAX 사이에서 바꾼다(화면 상태, 저장 안 함)
+const LANE_MIN = 30;
+const LANE_MAX = 160;
+// 트랙 높이 한 칸(휠·키 모두 — lib/editShortcuts 의 트랙 높이 키우기·줄이기)
+const laneStep = (height: number, dir: 1 | -1) => Math.min(LANE_MAX, Math.max(LANE_MIN, Math.round(height * (dir > 0 ? 1.12 : 1 / 1.12))));
+// 다빈치식 줄의 고정 높이(edit-tab.css 와 같은 값) — 비디오 위 빈 곳(--ed-vgap)을 잴 때 쓴다
+const TOP_H = 54; // 눈금자 28 + 컷 줄 26 — 트랙 머리에서는 지금 시각 칸
+const AV_H = 5; // 비디오·오디오 경계
+const AUDIO_H = 58;
+const SHORT_LANE_H = 46; // 이보다 낮은 영상 트랙은 머리의 이름 줄(Video n)을 감춘다 — 두 줄이 안 들어간다
 const DRAG_START = 6;
 const RULER_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
 const EDGE_PX = 48; // 컷을 끄는 중 — 타임라인의 이만큼 안쪽 가장자리에 오면 그쪽으로 저절로 넘긴다
@@ -53,19 +76,38 @@ export interface ClipLink {
 }
 
 // 풀의 카드를 끌어 트랙 줄 위에 올렸을 때 그 칸에 적는 글 — 휠 클릭 메뉴의 줄과 같은 판정(placeState)이다. 끄는 유령도 같은 글을 쓴다.
+//  before 가 있으면(Jay 2026-10-23 ⑤) 컷 경계 위다 — 놓으면 그 카드 폴더의 새 자리를 before 앞(null = 맨 끝)에 만들어 그 트랙에 넣는다.
 export interface DropHint {
   cut: string;
   track: number;
   state: PlaceState;
+  before?: string | null;
+  // 같은 폴더의 다른 자리 몸통 위(Jay 2026-10-26) — 놓으면 그 자리에 넣는다(끌기 시작 때 자리 대신). 강조 칸·대상 클립·잠김 판정이 이것을 쓴다
+  into?: string;
 }
-export function dropLabel(hint: Pick<DropHint, "track" | "state">, t: (text: string) => string): string {
+const leafOf = (key: string) => folderOf(key).slice(folderOf(key).lastIndexOf("/") + 1);
+export function dropLabel(hint: Pick<DropHint, "cut" | "track" | "state" | "before">, t: (text: string) => string): string {
   const { track, state } = hint;
+  if (hint.before !== undefined && state !== "locked") return t("여기에 {name} 끼워 넣기").replace("{name}", leafOf(hint.cut));
   return state === "empty" ? t("V{track} 에 넣기").replace("{track}", String(track))
     : state === "taken" ? t("V{track} 교체").replace("{track}", String(track))
       : state === "here" ? t("지금 여기") : t("잠김 — 놓을 수 없음");
 }
 
 const trackTint = (color: string | undefined) => (color ? ({ "--trk": color } as CSSProperties) : undefined);
+
+// 다른 편집 보기의 V0 줄(편집 공유 — Jay 2026-10-23, 모의 그림 ③④) — V1 아래. 그 사람의 컷마다 상자 하나, 보기만(고르기·끌기·놓기 대상 아님).
+export interface V0Lane {
+  name: string; // 고른 사람의 이름(없으면 V0)
+  color: string | null;
+  share: ShareLayout | null; // 받은 것을 편 배치(없으면 notice)
+  links: ReadonlyMap<string, ClipLink>; // 조각 열쇠 → 그 생성물(V0 전용 링크)
+  capped: boolean; // 팀 목록이 상한에서 멈췄다 — 못 찾은 것은 '목록이 많아 일부 확인 못 함'
+  notice: string | null;
+  viewing: boolean; // 뷰어 판이 V0 을 보고 있다(필름 단추)
+  onMenu: (x: number, y: number) => void;
+  onView: () => void;
+}
 
 export const EditTimeline = memo(function EditTimeline({
   layout,
@@ -87,11 +129,18 @@ export const EditTimeline = memo(function EditTimeline({
   onClearSelection,
   onPickMany,
   onMoveClip,
+  order,
+  onMoveClipToSlot,
+  onMoveClipIntoSlot,
   onPickCut,
   onOpenCut,
   onToggleTrack,
   onToggleMute,
   onTrackMenu,
+  timeRef,
+  laneRef,
+  extent,
+  v0 = null,
   onMarkerMenu,
   onClipMenu,
   onClipTrim,
@@ -100,6 +149,10 @@ export const EditTimeline = memo(function EditTimeline({
   resolvePicked = NO_PICKS,
   resolveScroll = 0,
   isPlaying = notPlaying,
+  viewTrack = null,
+  retimeKey = null,
+  onRetime,
+  onRetimeClose,
 }: {
   layout: EditLayout;
   doc: EditDoc;
@@ -120,11 +173,22 @@ export const EditTimeline = memo(function EditTimeline({
   onClearSelection: () => void;
   onPickMany: (keys: string[]) => void; // 끌어서 고르기의 결과 — 이 클립들을 고른다(더하기면 앞선 것도 들어 있다)
   onMoveClip: (key: string, track: number, rev: number) => void;
-  onPickCut: (cut: string) => void; // 클립(그림)을 눌렀다 — 재생헤드가 다른 컷에 있으면 그 컷으로 옮긴다
+  // 전체 자리 순서(숨긴 자리 포함 — cutPaths)와 클립을 가로로 끌어 컷 경계에 놓았을 때(Jay 2026-10-23 ⑤ — 옮기기). before = 그 경계 뒤의 자리(null = 맨 끝)
+  order: readonly string[];
+  onMoveClipToSlot: (key: string, before: string | null, track: number, rev: number) => void;
+  // 클립을 가로로 끌어 같은 폴더의 다른 자리 몸통에 놓았다(Jay 2026-10-26 — 원래 자리에 다시 쌓기). target = 그 자리 열쇠
+  onMoveClipIntoSlot: (key: string, target: string, track: number, rev: number) => void;
+  onPickCut: (cut: string) => void; // 클립(그림)을 눌렀다 — 재생헤드가 다른 컷(자리)에 있으면 그 자리로 옮긴다
   onOpenCut: (cut: string) => void; // 컷 자리(클립·빈 자리·컷 이름)를 더블클릭 — 그 컷의 생성물 창
   onToggleTrack: (list: "tracksOff" | "tracksLocked", track: number) => void;
   onToggleMute: () => void;
-  onTrackMenu: (track: number, x: number, y: number) => void; // 트랙 머리를 우클릭 — 트랙 추가·삭제·옮기기·색
+  // 트랙 머리·트랙 줄의 빈 곳을 우클릭 — 트랙 추가·삭제·옮기기·색. blank = 트랙 밖 빈 곳(트랙 추가만 — track 은 맨 위 트랙)
+  onTrackMenu: (track: number, x: number, y: number, blank?: boolean) => void;
+  timeRef: RefObject<HTMLSpanElement>; // 트랙 머리 맨 위의 지금 시각(다빈치 — Jay 2026-10-23). 글은 부모가 프레임마다 직접 쓴다
+  laneRef?: MutableRefObject<((dir: 1 | -1) => void) | null>; // 트랙 높이 한 칸 — 여기서 채우고 부모의 키(트랙 높이 키우기·줄이기)가 부른다
+  // 재생 범위의 끝(편집 공유 — 다른 편집 보기 중 V0 이 내 편집보다 길면 그 끝, lib/editShare.withTail). 폭·눈금에만 — 컷·클립은 내 배치 그대로
+  extent?: number;
+  v0?: V0Lane | null;
   onMarkerMenu: (key: string, x: number, y: number) => void; // 북마크를 더블클릭·우클릭 — 이름·색·지우기
   onClipMenu: (key: string, x: number, y: number) => void; // 클립을 우클릭 — Resolve 보내기
   onClipTrim: (key: string, x: number, y: number) => void; // 클립을 휠 클릭 — 길이 조절 창
@@ -135,43 +199,80 @@ export const EditTimeline = memo(function EditTimeline({
   resolvePicked?: ReadonlySet<string>;
   resolveScroll?: number; // 올라가면 그 클립까지 넘긴다(앱이 '따라가는 탭'에서만 올린다)
   isPlaying?: () => boolean; // 타임라인이 도는 중인가 — 그동안은 다빈치 선택으로 넘기지 않는다(재생헤드 따라가기가 앞선다)
+  viewTrack?: number | null; // 지금 뷰어에 보이는 클립의 트랙 — 재생헤드 선의 그 줄에 볼록 표시(다빈치, Jay 2026-10-23). null = 보이는 클립 없음
+  // 속도 막대(Ctrl+R, Jay 2026-10-23)를 켠 클립과 그 조작 — 놓을 때 한 번 onRetime
+  retimeKey?: string | null;
+  onRetime?: (key: string, change: RetimeChange) => void;
+  onRetimeClose?: () => void;
 }) {
   const t = useT();
   const lanesRef = useRef<HTMLDivElement>(null);
   const live = useRef({ zoom, onZoom, getNow });
   live.current = { zoom, onZoom, getNow };
-  // 확대/축소 뒤에도 기준(커서 아래 시각, 없으면 재생헤드)이 화면의 같은 자리에 오게 한다.
-  const anchor = useRef<{ time: number; offset: number } | null>(null);
+  // 확대/축소 뒤에도 재생헤드가 화면의 같은 자리에 오게 한다(Alt+휠·Ctrl+=/−·단추 모두 — 다빈치 기본).
+  //  그 자리(화면 왼쪽에서 재생헤드까지)는 기억한다(Jay 2026-10-26 — 다빈치는 기억한다): 줄이다 스크롤이 끝에 걸려 재생헤드가 밀려나도, 다시
+  //  키우면 처음 자리로 돌아온다. 재생헤드가 움직였거나 스크롤이 우리가 맞춘 값과 다르면(사용자가 넘겼다) 그때의 자리로 새로 잰다.
   const zoomed = useRef(zoom);
+  const anchor = useRef<{ time: number; offset: number; scroll: number } | null>(null);
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
     if (!scroll || zoomed.current === zoom) return;
-    const time = anchor.current?.time ?? getNow();
-    const offset = anchor.current?.offset ?? time * zoomed.current - scroll.scrollLeft;
+    const time = getNow();
+    const kept = anchor.current;
+    const offset = kept && Math.abs(kept.time - time) < 1e-6 && Math.abs(kept.scroll - scroll.scrollLeft) < 1
+      ? kept.offset : time * zoomed.current - scroll.scrollLeft;
     scroll.scrollLeft = Math.max(0, time * zoom - offset);
+    anchor.current = { time, offset, scroll: scroll.scrollLeft }; // 브라우저가 끝에 맞춰 자른 값 그대로 적는다
     zoomed.current = zoom;
-    anchor.current = null;
   });
 
-  // 휠은 타임라인 안에서만 가로챈다 — Alt = 확대(커서 기준), Ctrl·Shift = 좌우. (React 의 onWheel 은 취소가 안 된다.)
+  // 휠은 타임라인 안에서만 가로챈다 — 기본 지정: Alt = 확대(재생헤드 기준 — 다빈치 기본 'Zoom around mouse pointer' 꺼짐, Jay 2026-10-23),
+  //  Shift = 영상 트랙 높이(다빈치), Ctrl = 좌우. 지정은 lib/editShortcuts(H 창)에서 바꾼다 — 수식키 하나, 우선순위 Alt → Shift → Ctrl.
+  //  (React 의 onWheel 은 취소가 안 된다.) 크롬은 Shift+휠을 deltaX 로 준다.
+  const [laneH, setLaneH] = useState(LANE_H);
+  useEffect(() => {
+    if (!laneRef) return;
+    laneRef.current = (dir) => setLaneH((height) => laneStep(height, dir));
+    return () => { laneRef.current = null; };
+  }, [laneRef]);
+  // 다빈치처럼 비디오 트랙은 비디오·오디오 경계 위에 아래로 붙는다(Jay 2026-10-23) — 칸이 남을 때 그 위의 빈 곳 높이. 남는 높이의 4/7
+  //  (나머지는 오디오 아래 — 다빈치는 경계가 가운데쯤). 트랙 머리와 줄은 따로 된 두 세로 칸이라 CSS 로 늘리면 줄 쪽의 가로 스크롤 막대만큼
+  //  어긋나고, 재생헤드의 볼록 표시도 줄 자리를 계산하므로 재서 같은 값을 준다. 트랙이 칸보다 많으면 0(지금처럼 위아래로 스크롤).
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [vgap, setVgap] = useState(0);
+  const hasV0 = !!v0;
+  const v0Share = v0?.share ?? null;
+  const v0Lens = useMemo(() => new Map(v0Share?.layout.cuts.map((slot) => [slot.path, slot.len]) ?? []), [v0Share]); // V0 조각 열쇠 → 길이
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    const scroll = scrollRef.current;
+    if (!box || !scroll || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const bar = scroll.offsetHeight - scroll.clientHeight; // 가로 스크롤 막대
+      const free = box.clientHeight - bar - (TOP_H + (layout.tracks + (hasV0 ? 1 : 0)) * laneH + AV_H + AUDIO_H);
+      setVgap(Math.max(0, Math.floor((free * 4) / 7)));
+    };
+    measure();
+    const watch = new ResizeObserver(measure);
+    watch.observe(box);
+    watch.observe(scroll);
+    return () => watch.disconnect();
+  }, [scrollRef, layout.tracks, laneH, hasV0]);
   useEffect(() => {
     const scroll = scrollRef.current;
     if (!scroll) return;
     const onWheel = (event: WheelEvent) => {
       const delta = event.deltaY || event.deltaX;
       if (!delta) return;
-      if (event.altKey) {
-        event.preventDefault();
+      const id = findWheelAction(event);
+      // 타임라인 안의 Ctrl+휠은 지정이 없어도 막는다 — 브라우저 확대가 되살아나지 않게. 찾은 것은 한계에서 바뀌지 않아도 먹는다(지금과 같다).
+      if (id || event.ctrlKey) event.preventDefault();
+      if (id === "zoomIn" || id === "zoomOut") {
         const { zoom: current, onZoom: setZoom } = live.current;
-        const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, current * (delta < 0 ? 1.15 : 1 / 1.15)));
-        if (next === current) return;
-        const offset = event.clientX - scroll.getBoundingClientRect().left;
-        anchor.current = { time: (scroll.scrollLeft + offset) / current, offset };
-        setZoom(next);
-      } else if (event.ctrlKey || event.shiftKey) {
-        event.preventDefault();
-        scroll.scrollLeft += delta;
-      }
+        const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, current * (id === "zoomIn" ? 1.15 : 1 / 1.15)));
+        if (next !== current) setZoom(next);
+      } else if (id === "laneUp" || id === "laneDown") setLaneH((height) => laneStep(height, id === "laneUp" ? 1 : -1));
+      else if (id === "scrollX") scroll.scrollLeft += delta;
     };
     scroll.addEventListener("wheel", onWheel, { passive: false });
     return () => scroll.removeEventListener("wheel", onWheel);
@@ -207,7 +308,7 @@ export const EditTimeline = memo(function EditTimeline({
   };
   // 더블클릭한 자리의 컷 — 클립·빈 자리·컷 이름·소리 줄 어디든 그 세로 칸의 컷이다. 눈금자는 재생헤드 몫이라 뺀다.
   const openCutAt = (event: ReactMouseEvent<HTMLElement>) => {
-    if ((event.target as HTMLElement).closest(".ed-ruler")) return;
+    if ((event.target as HTMLElement).closest(".ed-ruler, .ed-phead-grab")) return;
     // 끌어서 고른 직후의 더블클릭(끌기 + 한 번 누르기를 두 번 누름으로 센 것)도 — 줄 어디서든(Codex 설계 검토)
     if (performance.now() - marqueeEnded.current < DBLCLICK_MS) return;
     // 컷 머리를 끈 직후의 더블클릭(끌기 + 한 번 누르기를 브라우저가 두 번 누름으로 센 것)은 폴더 창을 열지 않는다
@@ -235,6 +336,27 @@ export const EditTimeline = memo(function EditTimeline({
       return;
     }
     onSeek(timeAt(event.clientX));
+  };
+  // 재생헤드의 선을 잡아 끌기(Jay 2026-10-26 — 다빈치는 머리뿐 아니라 그 밑의 선을 잡아도 끌린다). 누르기만으로는 안 움직이고, 누른 자리와
+  //  선의 틈을 쥔 채 따라간다(선 옆을 잡아도 튀지 않는다). 끝내기·넘김 쉬기는 눈금자 훑기와 같다.
+  const grabDx = useRef(0);
+  const grabHead = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.type === "pointerdown") {
+      if (event.button !== 0) return;
+      event.stopPropagation(); // 밑의 줄(상자 고르기·고르기 풀기)로 가지 않는다
+      const box = headRef.current?.getBoundingClientRect();
+      grabDx.current = box ? event.clientX - (box.left + box.width / 2) : 0;
+      scrubbing.current = true;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
+    }
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    if (!(event.buttons & 1)) {
+      endScrub();
+      event.currentTarget.releasePointerCapture(event.pointerId);
+      return;
+    }
+    onSeek(timeAt(event.clientX - grabDx.current));
   };
 
   // 끌어서 고르기(Jay 2026-10-14) — 영상 트랙 줄·A1 줄의 빈 곳에서 6px 넘게 끌면 상자다. 상자에 걸친 클립을 고른다(잠긴 트랙은
@@ -347,8 +469,14 @@ export const EditTimeline = memo(function EditTimeline({
   // 클립 끌기 — 6px 넘게 움직이면 끌기로 보고, 놓은 자리의 트랙으로 옮긴다(찬 자리면 맞바꿈).
   //  끄는 중(6px 를 넘긴 뒤)이라는 것은 상태로도 든다(clipDragging) — Esc 겹과 키 막기를 켜는 데 쓴다. 전에는 ref 뿐이라 Esc 가 고른 것만
   //  풀고 놓으면 그대로 옮겨졌고, 끄는 동안 Space·Delete 가 뒤에서 먹었다(Codex 코드 리뷰 3회째 — 카드·컷 끌기와 같은 규칙으로 맞춘다).
-  const drag = useRef<{ key: string; cut: string; track: number; y: number; rev: number; moved: boolean; el: HTMLElement; id: number } | null>(null);
+  //  가로로도 끈다(Jay 2026-10-23 ⑤) — 가로 이동이 문턱을 넘은 적이 있으면(slid) 컷 경계에 놓아 옮기기가 된다. 세로로만 끌면 지금처럼 트랙만
+  //  바꾼다(경계 근처에서 시작해도 — Codex 설계 2차). slotDrop = 지금 포인터 밑의 경계(그리기용 — 놓을 때는 그 순간의 배치로 다시 잰다).
+  const drag = useRef<{
+    key: string; cut: string; track: number; x: number; y: number; slid: boolean; rev: number; moved: boolean; el: HTMLElement; id: number;
+  } | null>(null);
   const [clipDragging, setClipDragging] = useState(false);
+  //  into = 같은 폴더의 다른 자리 몸통(Jay 2026-10-26 — 원래 자리에 다시 쌓기) — 그 자리 칸에 상자, 아니면 경계에 띠. locked = 놓을 수 없음(흐린 표시)
+  const [slotDrop, setSlotDrop] = useState<{ track: number; before: string | null; into?: string; label: string; locked: boolean } | null>(null);
   // 클립 끌기를 걷는다 — 누르기만 한 것(문턱 전)도. ref·요소의 스타일·포인터 쥐기·상태를 한 곳에서 정리한다(놓기·Esc·창이 초점을
   //  잃음·문서가 갈림·그 클립이 사라짐·다른 단추로 창을 엶 — Codex 코드 리뷰 4회째: 끌던 요소가 사라지면 놓는 이벤트가 오지 않아 끄는 중
   //  상태(키·메뉴 막기)가 남았고, 문턱 전에 휠 클릭으로 창을 열면 뒤에서 끌기가 살아났다).
@@ -356,6 +484,7 @@ export const EditTimeline = memo(function EditTimeline({
     const current = drag.current;
     drag.current = null;
     setClipDragging(false);
+    setSlotDrop(null);
     if (!current) return;
     setGrab(null);
     current.el.style.transform = "";
@@ -370,8 +499,32 @@ export const EditTimeline = memo(function EditTimeline({
     onPickCut(cut); // 그림을 누르면 그 컷으로 간다(보는 것은 편집이 아니라 잠긴 트랙도 된다)
     if (locked) return; // 잠긴 트랙의 클립은 고르지도 못한다
     onSelect(key, event.ctrlKey || event.metaKey || event.shiftKey);
-    drag.current = { key, cut, track: from, y: event.clientY, rev, moved: false, el: event.currentTarget, id: event.pointerId };
+    drag.current = {
+      key, cut, track: from, x: event.clientX, y: event.clientY, slid: false, rev, moved: false, el: event.currentTarget, id: event.pointerId,
+    };
     event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  // 포인터 밑의 영상 트랙 줄과, 가로로 끈 끌기면 그 줄의 놓을 곳 — **지금의** 스크롤·배율·배치로 잰다. 트랙 위의 빈 곳은 줄이 아니다(data-track 없음).
+  //  판정은 풀 카드와 같다(dropTargetAt — 경계 띠 · 같은 폴더의 자리 몸통 · 다른 폴더 몸통이면 가장 가까운 경계). 세로로만 끈 끌기는 판정하지 않는다(트랙만).
+  //  edge = 경계(옮기기) · into = 같은 폴더의 **다른** 자리(그리로 옮기기·쌓기) · 둘 다 없으면 자기 자리 안의 트랙 옮기기.
+  const clipDropAt = (current: { slid: boolean; cut: string }, clientX: number, clientY: number) => {
+    const lane = document.elementsFromPoint(clientX, clientY)
+      .find((element): element is HTMLElement => element instanceof HTMLElement && !!element.dataset.track);
+    const track = Number(lane?.dataset.track);
+    const lanes = lanesRef.current?.getBoundingClientRect();
+    const target = current.slid && lanes && track > 0 ? dropTargetAt(layout, clientX - lanes.left, zoom, current.cut) : null;
+    const edge = target?.kind === "edge" ? { before: target.before } : null;
+    const into = target?.kind === "slot" && target.path !== current.cut ? target.path : null;
+    return { track, edge, into };
+  };
+  // 다른 자리로 옮길 때 그 칸의 글 — 되는지는 명령(moveClipIntoSlot) 그대로 물어본다(화면이 못 하는 일을 안내하지 않게 — Codex 독립 리뷰 1차:
+  //  맞바꿀 상대의 생성물이 떠나는 자리에 이미 있으면 명령은 거부한다). 안 되면 잠김 또는 같은 생성물 · 되면 찬 칸이면 맞바꿈
+  const intoLabel = (key: string, into: string, track: number): { label: string; locked: boolean } => {
+    const clip = doc.clips.find((item) => clipKey(item) === key);
+    const other = doc.clips.find((item) => slotOf(item) === into && item.track === track);
+    if (!clip || doc.tracksLocked.includes(track) || doc.tracksLocked.includes(clip.track)) return { label: t("잠김 — 놓을 수 없음"), locked: true };
+    if (!moveClipIntoSlot(doc, key, into, track)) return { label: t("같은 생성물이 있어 놓을 수 없음"), locked: true };
+    return { label: (other ? t("V{track} 와 맞바꾸기") : t("V{track} 로 옮기기")).replace("{track}", String(track)), locked: false };
   };
   const clipMove = (event: ReactPointerEvent<HTMLElement>) => {
     const current = drag.current;
@@ -379,24 +532,39 @@ export const EditTimeline = memo(function EditTimeline({
     // 왼쪽 단추가 떼어진 채 온 움직임 — 그 놓기는 오지 않았다. 다른 단추(휠)를 같이 누른 채 왼쪽만 떼면 pointerup 은 마지막 단추가
     //  떼일 때에야 온다: 그때까지 끌기가 이어지고, 나중에 휠을 떼는 것이 놓기가 됐다(같은 종류 — 컷 순서 끌기·카드 끌기, Codex 코드 리뷰 2회째).
     if (!(event.buttons & 1)) return clipUp(event, true);
+    const dx = event.clientX - current.x;
     const dy = event.clientY - current.y;
-    if (!current.moved && Math.abs(dy) < DRAG_START) return;
+    if (!current.moved && Math.abs(dx) < DRAG_START && Math.abs(dy) < DRAG_START) return;
     if (!current.moved) {
       setClipDragging(true);
       grabStart(current.cut, current.key);
     }
     current.moved = true;
+    if (Math.abs(dx) >= DRAG_START) current.slid = true;
     moveTip(event);
-    event.currentTarget.style.transform = `translateY(${dy}px)`;
+    // 가로로 문턱을 넘기 전에는 지금처럼 세로로만 따라온다(손떨림으로 옆으로 밀려 보이지 않게)
+    event.currentTarget.style.transform = current.slid ? `translate(${dx}px, ${dy}px)` : `translateY(${dy}px)`;
     event.currentTarget.style.zIndex = "4";
+    const { track, edge, into } = clipDropAt(current, event.clientX, event.clientY);
+    const shown: typeof slotDrop = into ? { track, before: null, into, ...intoLabel(current.key, into, track) }
+      : edge ? { track, before: edge.before, label: doc.tracksLocked.includes(track) ? t("잠김 — 놓을 수 없음") : t("여기로 옮기기"), locked: doc.tracksLocked.includes(track) }
+        : null;
+    setSlotDrop((old) => (!shown ? null : old && old.track === shown.track && old.before === shown.before && old.into === shown.into && old.label === shown.label
+      ? old : shown));
   };
   const clipUp = (event: ReactPointerEvent<HTMLElement>, cancel = false) => {
     const current = drag.current;
     cancelClipDrag();
     if (!current?.moved || cancel) return;
-    const lane = document.elementsFromPoint(event.clientX, event.clientY)
-      .find((element) => element instanceof HTMLElement && element.dataset.track);
-    const track = Number((lane as HTMLElement | undefined)?.dataset.track);
+    const { track, edge, into } = clipDropAt(current, event.clientX, event.clientY);
+    if (edge) {
+      // 반복 자리의 유일한 클립을 제자리(전체 순서로 — 숨긴 자리 포함)에 같은 트랙으로 놓았다 — 바뀌는 것이 없다(실패 안내를 띄우지 않게 부르지 않는다)
+      if (soleRepeatClip(doc, current.key) && slotStays(order, current.cut, edge.before) && track === current.track) return;
+      onMoveClipToSlot(current.key, edge.before, track, current.rev);
+      return;
+    }
+    // 같은 폴더의 다른 자리 — 트랙 번호가 같아도 그리로 옮긴다(Jay 2026-10-26)
+    if (into) return onMoveClipIntoSlot(current.key, into, track, current.rev);
     if (track > 0 && track !== current.track) onMoveClip(current.key, track, current.rev);
   };
 
@@ -518,21 +686,31 @@ export const EditTimeline = memo(function EditTimeline({
   }, [rev, layout]);
   useEffect(() => () => cancelAnimationFrame(edgeFrame.current), []);
 
-  const width = Math.max(layout.total * zoom + 120, 0);
+  const span = Math.max(layout.total, extent ?? 0); // 폭·눈금의 끝 — 다른 편집 보기 중 V0 이 더 길면 그 끝까지
+  const width = Math.max(span * zoom + 120, 0);
   const step = RULER_STEPS.find((seconds) => seconds * zoom >= 90) ?? RULER_STEPS[RULER_STEPS.length - 1];
   const ticks: number[] = [];
-  for (let time = 0; time <= layout.total + step; time += step) ticks.push(time);
+  for (let time = 0; time <= span + step; time += step) ticks.push(time);
+  // 작은 눈금(다빈치, Jay 2026-10-26) — 큰 눈금 사이를 나눈 짧은 선과 그 반의 중간 선. 1초 눈금이면 프레임에 맞게 나눈다. 8px 이상인 가장 촘촘한
+  //  나눔. 그림은 CSS 그라디언트(.ed-ruler) — 눈금 요소를 늘리지 않는다. 나눔이 홀수면 중간 선은 큰 눈금 자리(겹쳐 안 보인다).
+  const major = step * zoom;
+  const parts = (step === 1 ? [EDIT_FPS, 12, 6, 4, 2] : [10, 5, 2]).find((count) => major / count >= 8) ?? 1;
+  const tickVars = { "--tick-minor": `${major / parts}px`, "--tick-mid": `${parts % 2 ? major : major / 2}px` } as CSSProperties;
   const tracks = Array.from({ length: layout.tracks }, (_, i) => layout.tracks - i); // 위에서부터
+  // 소리 줄에 그리는 영상 조각 — 트랙 머리의 'n Clips' 도 이것을 센다(다빈치의 오디오 클립 수)
+  const audio = layout.cuts.flatMap((slot) => visibleSegments(doc, slot)
+    .filter((segment) => segment.clip && links.get(clipKey(segment.clip))?.gen?.assets[0]?.type === "video")
+    .map((segment) => ({ slot, segment })));
   const keepFocus = (event: ReactMouseEvent) => event.preventDefault();
   const hintSlot = dropHint ? layout.cuts.find((slot) => slot.path === dropHint.cut) : undefined;
 
   // span = 그 컷의 길이. 꺼진 클립은 컷보다 길 수 있어(컷 길이는 켜진 클립만 센다) 컷의 끝에서 잘라 그린다 — 다음 컷을 덮지 않게.
-  const renderClip = (clip: SlotClip, start: number, span: number) => {
+  const renderClip = (clip: SlotClip, start: number, span: number, name: string) => {
     const key = clipKey(clip);
     const link = links.get(key);
     const state = link?.state ?? "unknown";
     const locked = doc.tracksLocked.includes(clip.track);
-    const off = !!clip.off || doc.tracksOff.includes(clip.track) || offCuts.has(clip.cut);
+    const off = !!clip.off || doc.tracksOff.includes(clip.track) || offCuts.has(slotOf(clip));
     // 잡기 쉬운 최소 폭(6px)보다 컷의 경계가 먼저다 — 한 프레임짜리 컷에서 6px 로 늘리면 다음 컷 자리를 덮고 거기서 눌린다
     //  (Codex 코드 리뷰 2026-10-13). 아주 좁은 컷에서는 옆 여백(1px)도, 폭의 하한도 없다(1px 로 올려도 컷이 0.8px 이면 넘친다).
     //  테두리가 폭보다 넓어지는 좁은 클립은 테두리 없이 그린다(.ed-thin — 테두리 2px·고른 것 4px 는 폭을 줄여도 남는다).
@@ -541,10 +719,11 @@ export const EditTimeline = memo(function EditTimeline({
     const clipWidth = Math.max(0, Math.min(Math.max(6, clip.len * zoom - 2), room - pad * 2));
     const thin = clipWidth < 6;
     const thumb = link?.gen ? thumbOf(link.gen, 256) : null;
-    const frames = Math.min(16, Math.max(1, Math.round(clipWidth / ((LANE_H - 6) * (16 / 9)))));
+    const frames = Math.min(16, Math.max(1, Math.round(clipWidth / ((laneH - 6) * (16 / 9)))));
     // 줄인 클립의 '원본의 나머지'(뒤) — 그 컷 안에 남는 만큼만 빗금으로 보인다(아래 트랙이 드러나는 구간이다). 누를 수 없다.
-    //  앞을 자른 만큼(clip.head)은 나머지가 아니다 — 원본에서 시작점 뒤로 남은 길이(full − head)로 센다.
-    const rest = (Math.min(clip.full - clip.head, span) - clip.len) * zoom;
+    //  앞을 자른 만큼(clip.head)은 나머지가 아니다 — 원본에서 시작점 뒤로 남은 길이(full − head)를 속도로 나눈 타임라인 길이로 센다.
+    const speed = clipSpeed(clip);
+    const rest = (Math.min((clip.full - clip.head) / speed, span) - clip.len) * zoom;
     const resolved = !!link?.gen && resolvePicked.has(link.gen.id); // 다빈치에서 고른 것
     return (
       <Fragment key={key}>
@@ -563,7 +742,7 @@ export const EditTimeline = memo(function EditTimeline({
           cancelClipDrag(); // 누르기만 한(문턱 전) 끌기는 걷는다 — 창이 뜬 뒤 왼쪽을 누른 채 움직이면 뒤에서 끌기가 살아났다
           onClipTrim(key, event.clientX, event.clientY);
         }}
-        onPointerDown={(event) => clipDown(event, key, clip.track, locked, clip.cut)}
+        onPointerDown={(event) => clipDown(event, key, clip.track, locked, slotOf(clip))}
         onPointerMove={clipMove}
         onPointerUp={(event) => clipUp(event, event.button !== 0)} // 끌기를 시작한 왼쪽 단추의 놓기만 확정이다
         onPointerCancel={(event) => clipUp(event, true)}
@@ -577,15 +756,20 @@ export const EditTimeline = memo(function EditTimeline({
           onClipMenu(key, event.clientX, event.clientY);
         }}
       >
-        {state === "ok" && thumb
-          ? Array.from({ length: frames }, (_, i) => <i key={i} style={{ backgroundImage: `url("${thumb}")` }} />)
-          : <span className="ed-clip-msg">{state === "missing" ? t("미디어 없음") : state === "unknown" ? t("확인 못 함") : ""}</span>}
+        <span className="ed-clip-pics">
+          {state === "ok" && thumb
+            ? Array.from({ length: frames }, (_, i) => <i key={i} style={{ backgroundImage: `url("${thumb}")` }} />)
+            : <span className="ed-clip-msg">{state === "missing" ? t("미디어 없음") : state === "unknown" ? t("확인 못 함") : ""}</span>}
+        </span>
         {/* 최종 ★ 표(오른쪽 위)와 겹치지 않을 폭이어야 한다(Codex 리뷰) — 모자라면 빨간 테두리만 */}
         {resolved && clipWidth >= DV_MARK_MIN + (link?.gen?.is_final ? FINAL_MARK_MIN : 0) && <span className="ed-clip-dv">{t("다빈치")}</span>}
         {/* 앞을 자른 클립(Jay 2026-10-14) — 왼쪽 가장자리의 빗금: 원본의 처음에서 시작하지 않는다. 표시만 한다 */}
         {clip.head > 0 && <span className="ed-clip-head" aria-hidden="true" />}
-        {/* 길이를 줄였으면(휠 클릭) 쓰는 길이 / 원본 길이 */}
-        <b>{clip.len.toFixed(1)}s{clip.len < clip.full ? ` / ${clip.full.toFixed(1)}s` : ""}</b>
+        {/* 아래 이름 줄(다빈치 — Jay 2026-10-23): 컷 이름 · 길이. 길이를 줄였으면(휠 클릭) 쓰는 길이 / 원본 길이 · 속도를 바꿨으면(Ctrl+R) 쓰는 길이 · 속도 */}
+        <span className="ed-clip-bar">
+          <span className="ed-clip-name">{name}</span>
+          <b>{clip.len.toFixed(1)}s{speed !== 1 ? ` · ${speedText(speed)}` : clip.len < clip.full ? ` / ${clip.full.toFixed(1)}s` : ""}</b>
+        </span>
         {/* 최종(★) — 풀의 카드와 같은 금색 표(Jay 2026-10-14). 표시만 한다(누름은 클립이 받는다). 표보다 좁은 클립에는 그리지 않는다 */}
         {link?.gen?.is_final && clipWidth >= FINAL_MARK_MIN && (
           <span className="ed-clip-final" role="img" aria-label={t("최종")}>
@@ -595,15 +779,32 @@ export const EditTimeline = memo(function EditTimeline({
           </span>
         )}
       </div>
+      {retimeKey === key && onRetime && onRetimeClose && (
+        <EditRetime clip={clip} start={start} zoom={zoom} name={`${name} · V${clip.track}`}
+          onChange={(change) => onRetime(key, change)} onClose={onRetimeClose} />
+      )}
       </Fragment>
     );
   };
 
   return (
-    <div className="ed-tl">
+    // 트랙을 낮추면(Shift+휠) 머리는 단추 줄만 — 이름 줄은 감춘다(다빈치, Jay 2026-10-23)
+    <div className={"ed-tl" + (laneH < SHORT_LANE_H ? " ed-short" : "")} ref={boxRef}
+      style={{ "--ed-lane-h": `${laneH}px`, "--ed-vgap": `${vgap}px` } as CSSProperties}
+      // 자기 메뉴가 없는 곳의 우클릭(Jay 2026-10-23) — 브라우저 메뉴 대신 트랙 메뉴. 트랙 줄의 빈 곳 = 그 트랙의 메뉴, 그 밖(트랙 위·A1 아래·
+      //  눈금자·컷 줄·머리 칸의 빈 곳) = '트랙 추가'. 클립·북마크·트랙 머리는 제 처리에서 이미 막았다(그 메뉴가 뜬다).
+      onContextMenu={(event) => {
+        if (event.nativeEvent.defaultPrevented) return;
+        event.preventDefault();
+        const track = Number((event.target as HTMLElement).closest<HTMLElement>("[data-track]")?.dataset.track);
+        if (track > 0) onTrackMenu(track, event.clientX, event.clientY);
+        else onTrackMenu(layout.tracks, event.clientX, event.clientY, true);
+      }}>
+      {/* 트랙 머리(다빈치 — Jay 2026-10-23): 맨 위 = 지금 시각(눈금자·컷 줄 옆) · 비디오 트랙은 경계 위에 아래로 붙고 · 트랙마다 두 줄
+          (V 단추·잠금·켜고 끄기 / 이름) · 비디오·오디오 경계 · A1. 맨 위 빈 트랙 줄(놓으면 새 트랙)은 없앴다 — 트랙 추가는 우클릭 메뉴 */}
       <div className="ed-heads" onMouseDown={keepFocus}>
-        <div className="ed-head ed-h-ruler" />
-        <div className="ed-head ed-h-cut"><b>{t("컷")}</b>{t("폴더")}</div>
+        <div className="ed-head ed-h-top"><span className="ed-tc" ref={timeRef}>00:00:00:00</span></div>
+        <div className="ed-h-gap" />
         {tracks.map((track) => {
           const locked = doc.tracksLocked.includes(track);
           const off = doc.tracksOff.includes(track);
@@ -614,30 +815,57 @@ export const EditTimeline = memo(function EditTimeline({
                 event.preventDefault();
                 onTrackMenu(track, event.clientX, event.clientY);
               }}>
-              <b>V{track}</b>
-              <button type="button" className={"ed-hbtn" + (locked ? " ed-on" : "")} aria-pressed={locked}
-                title={locked ? t("잠금 풀기") : t("트랙 잠그기")} aria-label={locked ? t("잠금 풀기") : t("트랙 잠그기")}
-                onClick={() => onToggleTrack("tracksLocked", track)}>
-                <svg width="11" height="12" viewBox="0 0 11 12" aria-hidden="true">
-                  <rect x="1.5" y="5" width="8" height="6" rx="1.2" />
-                  <path d={locked ? "M3.2 5V3.6a2.3 2.3 0 0 1 4.6 0V5" : "M3.2 5V3.6a2.3 2.3 0 0 1 4.4-.9"} fill="none" strokeWidth="1.3" />
-                </svg>
-              </button>
-              <button type="button" className={"ed-hbtn" + (off ? " ed-dim" : "")} aria-pressed={!off}
-                title={off ? t("트랙 켜기") : t("트랙 끄기")} aria-label={off ? t("트랙 켜기") : t("트랙 끄기")}
-                onClick={() => onToggleTrack("tracksOff", track)}>
-                <svg width="14" height="11" viewBox="0 0 14 11" aria-hidden="true">
-                  <rect x="1" y="1" width="12" height="9" rx="1.6" fill="none" strokeWidth="1.3" />
-                  {!off && <rect x="3.4" y="3.3" width="7.2" height="4.4" rx="0.6" />}
-                </svg>
-              </button>
+              <div className="ed-hrow">
+                <b>V{track}</b>
+                <button type="button" className={"ed-hbtn" + (locked ? " ed-on" : "")} aria-pressed={locked}
+                  title={locked ? t("잠금 풀기") : t("트랙 잠그기")} aria-label={locked ? t("잠금 풀기") : t("트랙 잠그기")}
+                  onClick={() => onToggleTrack("tracksLocked", track)}>
+                  <svg width="11" height="12" viewBox="0 0 11 12" aria-hidden="true">
+                    <rect x="1.5" y="5" width="8" height="6" rx="1.2" />
+                    <path d={locked ? "M3.2 5V3.6a2.3 2.3 0 0 1 4.6 0V5" : "M3.2 5V3.6a2.3 2.3 0 0 1 4.4-.9"} fill="none" strokeWidth="1.3" />
+                  </svg>
+                </button>
+                <button type="button" className={"ed-hbtn" + (off ? " ed-dim" : "")} aria-pressed={!off}
+                  title={off ? t("트랙 켜기") : t("트랙 끄기")} aria-label={off ? t("트랙 켜기") : t("트랙 끄기")}
+                  onClick={() => onToggleTrack("tracksOff", track)}>
+                  <svg width="14" height="11" viewBox="0 0 14 11" aria-hidden="true">
+                    <rect x="1" y="1" width="12" height="9" rx="1.6" fill="none" strokeWidth="1.3" />
+                    {!off && <rect x="3.4" y="3.3" width="7.2" height="4.4" rx="0.6" />}
+                  </svg>
+                </button>
+              </div>
+              <span className="ed-hname">Video {track}</span>
             </div>
           );
         })}
+        {v0 && (
+          // V0 머리 — 이름(고른 사람)·필름 단추(뷰어에 V0)·잠금 없음. 우클릭 = 작업자 선택·트랙 색만(EditV0Menu)
+          <div className="ed-head ed-h-v ed-h-v0" style={trackTint(v0.color ?? undefined)} title={t("우클릭 — 작업자 선택·트랙 색")}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              v0.onMenu(event.clientX, event.clientY);
+            }}>
+            <div className="ed-hrow">
+              <b className="ed-v0name">{v0.name || "V0"}</b>
+              <button type="button" className={"ed-hbtn" + (v0.viewing ? " ed-on" : "")} aria-pressed={v0.viewing}
+                title={t("뷰어에 V0 보기")} aria-label={t("뷰어에 V0 보기")} onClick={v0.onView}>
+                <svg width="14" height="11" viewBox="0 0 14 11" aria-hidden="true">
+                  <rect x="1" y="1" width="12" height="9" rx="1.6" fill="none" strokeWidth="1.3" />
+                  <rect x="3.4" y="3.3" width="7.2" height="4.4" rx="0.6" />
+                </svg>
+              </button>
+            </div>
+            <span className="ed-hname">V0</span>
+          </div>
+        )}
+        <div className="ed-h-av" />
         <div className="ed-head ed-h-a">
-          <b>A1</b>
-          <button type="button" className={"ed-hbtn ed-mute" + (doc.muted ? " ed-on" : "")} aria-pressed={!!doc.muted}
-            title={t("소리 끄기")} aria-label={t("소리 끄기")} onClick={onToggleMute}>M</button>
+          <div className="ed-hrow">
+            <b>A1</b>
+            <button type="button" className={"ed-hbtn ed-mute" + (doc.muted ? " ed-on" : "")} aria-pressed={!!doc.muted}
+              title={t("소리 끄기")} aria-label={t("소리 끄기")} onClick={onToggleMute}>M</button>
+          </div>
+          <span className="ed-hname">Audio 1<small>{audio.length === 1 ? "1 Clip" : `${audio.length} Clips`}</small></span>
         </div>
       </div>
       <div className="ed-scroll" ref={scrollRef}>
@@ -645,7 +873,7 @@ export const EditTimeline = memo(function EditTimeline({
           onPointerUp={lanesUp} onPointerCancel={endMarquee} onLostPointerCapture={() => boxPress.current?.moved && endMarquee()}
           onMouseDown={keepFocus} onDoubleClick={openCutAt}>
           {marquee && <div className="assets-marquee" style={{ left: marquee.l, top: marquee.t, width: marquee.w, height: marquee.h }} />}
-          <div className="ed-ruler" onPointerDown={scrub} onPointerMove={scrub}
+          <div className="ed-ruler" style={tickVars} onPointerDown={scrub} onPointerMove={scrub}
             onPointerUp={endScrub} onPointerCancel={endScrub} onLostPointerCapture={endScrub}>
             {ticks.map((time) => (
               <div className="ed-tick" key={time} style={{ left: time * zoom }}><span>{timecode(time)}</span></div>
@@ -676,7 +904,7 @@ export const EditTimeline = memo(function EditTimeline({
               <button type="button" key={slot.path} style={{ left: slot.start * zoom, width: slot.len * zoom }} data-cut={slot.path}
                 className={"ed-cutcell" + (slot.path === currentCut ? " ed-cur" : "") + (slot.clips.length ? "" : " ed-nopick") +
                   (offCuts.has(slot.path) ? " ed-cutoff" : "") + (cutDrag?.path === slot.path ? " ed-cutdrag" : "")}
-                title={`${offCuts.has(slot.path) ? `${slot.path} — ${t("비활성 폴더")}` : slot.path} · ${t("끌어서 순서 바꾸기")}`}
+                title={`${offCuts.has(slot.path) ? `${slotTitle(slot)} — ${t("비활성 폴더")}` : slotTitle(slot)} · ${t("끌어서 순서 바꾸기")}`}
                 onPointerDown={(event) => cutDown(event, slot.path)}
                 onPointerMove={cutMove}
                 onPointerUp={(event) => endCutDrag(event.button === 0)}
@@ -694,12 +922,14 @@ export const EditTimeline = memo(function EditTimeline({
               </button>
             ))}
           </div>
+          {/* 비디오 트랙 위의 빈 곳 — 놓을 곳이 아니다(data-track 이 없다) */}
+          <div className="ed-l-gap" />
           {tracks.map((track) => (
             <div className={"ed-lane ed-l-v" + (doc.tracksOff.includes(track) ? " ed-lane-off" : "")} key={track} data-track={track}
               style={trackTint(doc.trackColors?.[track])}>
               {layout.cuts.map((slot) => {
                 const clip = slot.clips.find((item) => item.track === track);
-                if (clip) return renderClip(clip, slot.start, slot.len);
+                if (clip) return renderClip(clip, slot.start, slot.len, slot.name);
                 // 고르지 않은 컷은 V1 에 빈 자리로만 보인다.
                 return track === 1 && !slot.clips.length ? (
                   <div className={"ed-slot" + (offCuts.has(slot.path) ? " ed-slot-off" : "")} key={slot.path}
@@ -710,12 +940,29 @@ export const EditTimeline = memo(function EditTimeline({
                 ) : null;
               })}
               {/* 풀의 카드를 끌어 이 줄 위에 올렸다 — 들어갈 칸(그 카드의 컷)과 무슨 일이 생기는지. 가로 위치는 보지 않는다 */}
-              {dropHint?.track === track && hintSlot && (
+              {dropHint?.track === track && dropHint.before === undefined && hintSlot && (
                 <div className={`ed-drop ed-drop-${dropHint.state}`}
                   style={{ left: hintSlot.start * zoom + 1, width: Math.max(6, hintSlot.len * zoom - 2) }}>
                   {dropLabel(dropHint, t)}
                 </div>
               )}
+              {/* 컷 경계 위(Jay 2026-10-23 ⑤) — 놓으면 새 자리(카드) · 그리로 옮기기(클립). 라임 띠 + 꼬리표 */}
+              {dropHint?.track === track && dropHint.before !== undefined && (
+                <div className={"ed-insert" + (dropHint.state === "locked" ? " ed-insert-locked" : "")}
+                  style={{ left: cutDropTime(layout, dropHint.before) * zoom }}><span>{dropLabel(dropHint, t)}</span></div>
+              )}
+              {slotDrop?.track === track && !slotDrop.into && (
+                <div className={"ed-insert" + (slotDrop.locked ? " ed-insert-locked" : "")}
+                  style={{ left: cutDropTime(layout, slotDrop.before) * zoom }}><span>{slotDrop.label}</span></div>
+              )}
+              {/* 같은 폴더의 다른 자리로 옮기기(Jay 2026-10-26) — 그 자리 칸에 상자(풀 카드 강조와 같은 모양) */}
+              {slotDrop?.track === track && slotDrop.into && (() => {
+                const slot = layout.cuts.find((item) => item.path === slotDrop.into);
+                return slot ? (
+                  <div className={`ed-drop ${slotDrop.locked ? "ed-drop-locked" : "ed-drop-empty"}`}
+                    style={{ left: slot.start * zoom + 1, width: Math.max(6, slot.len * zoom - 2) }}>{slotDrop.label}</div>
+                ) : null;
+              })()}
               {/* 컷을 끄는 중 끼울 자리가 화면 밖 — 그쪽 가장자리에(V1 줄 안에서 sticky 로 보이는 칸의 끝에 붙는다 — 프레임마다 옮기지 않는다) */}
               {track === 1 && cutDrag?.side && (
                 <div className={`ed-edgemark ed-edgemark-${cutDrag.side}`} aria-hidden="true">
@@ -724,14 +971,52 @@ export const EditTimeline = memo(function EditTimeline({
               )}
             </div>
           ))}
+          {v0 && (
+            // V0 줄 — data-track 이 없어 끌어 놓기 대상이 아니고, 누름은 줄 바탕(상자 고르기·재생헤드)으로 보내지 않는다. 보기만.
+            <div className="ed-lane ed-l-v ed-l-v0" style={trackTint(v0.color ?? undefined)} onPointerDown={(event) => event.stopPropagation()}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                v0.onMenu(event.clientX, event.clientY);
+              }}>
+              {v0.share ? v0.share.boxes.map((box) => {
+                const share = v0.share!;
+                const media = box.keys.filter((key) => share.parts.has(key));
+                const room = box.len * zoom;
+                // 그림 줄은 조각 길이대로 나눈다 — 빈 조각은 비우고, 조각마다 그 생성물(못 찾으면 그 조각에 확인 중·확인 못 함)
+                const pieces = box.keys.map((key) => {
+                  const len = v0Lens.get(key) ?? 0;
+                  if (!share.parts.has(key)) return <span key={key} className="ed-v0part ed-v0gap" style={{ flexGrow: len }} />;
+                  const link = v0.links.get(key);
+                  const thumb = link?.gen ? thumbOf(link.gen, 256) : null;
+                  const frames = Math.min(16, Math.max(1, Math.round((len * zoom - 2) / ((laneH - 6) * (16 / 9)))));
+                  const note = (link?.state ?? "unknown") === "unknown" ? (v0.capped ? t("목록이 많아 일부 확인 못 함") : t("확인 중")) : t("확인 못 함");
+                  return (
+                    <span key={key} className="ed-v0part" style={{ flexGrow: len }}>
+                      {thumb ? Array.from({ length: frames }, (_, i) => <i key={i} style={{ backgroundImage: `url("${thumb}")` }} />)
+                        : <span className="ed-clip-msg">{note}</span>}
+                    </span>
+                  );
+                });
+                return (
+                  <div key={box.index} className={"ed-clip ed-v0clip" + (media.length ? "" : " ed-v0empty")}
+                    style={{ left: box.start * zoom + 1, width: Math.max(4, room - 2) }} title={box.name}>
+                    <span className="ed-clip-pics">
+                      {media.length ? pieces : <span className="ed-clip-msg">{t("비어 있음")}</span>}
+                    </span>
+                    <span className="ed-clip-bar"><span className="ed-clip-name">{box.name}</span><b>{box.len.toFixed(1)}s</b></span>
+                  </div>
+                );
+              }) : <div className="ed-v0-note">{v0.notice ?? t("V0 — 우클릭 → 작업자 선택")}</div>}
+            </div>
+          )}
+          <div className="ed-l-av" />
           <div className={"ed-lane ed-l-a" + (doc.muted ? " ed-lane-off" : "")}>
-            {layout.cuts.flatMap((slot) =>
-              visibleSegments(doc, slot)
-                .filter((segment) => segment.clip && links.get(clipKey(segment.clip))?.gen?.assets[0]?.type === "video")
-                .map((segment) => (
-                  <div className="ed-aud" key={`${slot.path}:${segment.from}`}
-                    style={{ left: (slot.start + segment.from) * zoom + 1, width: Math.max(4, (segment.to - segment.from) * zoom - 2) }} />
-                )))}
+            {audio.map(({ slot, segment }) => (
+              <div className="ed-aud" key={`${slot.path}:${segment.from}`}
+                style={{ left: (slot.start + segment.from) * zoom + 1, width: Math.max(4, (segment.to - segment.from) * zoom - 2) }}>
+                <span>{slot.name}</span>
+              </div>
+            ))}
           </div>
           {layout.cuts.map((slot) => <div className="ed-cutline" key={slot.path} style={{ left: slot.start * zoom }} />)}
           <div className="ed-cutline" style={{ left: layout.total * zoom }} />
@@ -740,7 +1025,16 @@ export const EditTimeline = memo(function EditTimeline({
             <div className="ed-cutdrop" style={{ left: cutDropTime(layout, cutDrag.before) * zoom }} />
           )}
           {marks.band && <div className="ed-inout-shade" style={{ left: marks.band.from * zoom, width: (marks.band.to - marks.band.from) * zoom }} />}
-          <div className="ed-phead" ref={headRef} />
+          {/* 재생헤드 — 위치는 부모가 프레임마다 transform 으로 옮긴다. 볼록 표시는 보이는 클립의 트랙 줄(맨 위 비디오 트랙이 0 째)에 —
+              CSS 가 줄 높이와 비디오 위 빈 곳(--ed-vgap)으로 자리를 잰다 */}
+          <div className="ed-phead" ref={headRef}>
+            {viewTrack !== null && tracks.includes(viewTrack) && (
+              <span className="ed-phead-knob" style={{ "--ph-row": tracks.indexOf(viewTrack) } as CSSProperties} />
+            )}
+            {/* 선을 잡는 자리(눈금자 밑부터 끝까지 — 머리는 눈금자가 받는다) */}
+            <span className="ed-phead-grab" onPointerDown={grabHead} onPointerMove={grabHead}
+              onPointerUp={endScrub} onPointerCancel={endScrub} onLostPointerCapture={endScrub} />
+          </div>
         </div>
       </div>
       {grabText && (

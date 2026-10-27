@@ -53,7 +53,7 @@ const tab = (name: string) => Array.from(host.querySelectorAll('[role="tab"]')).
 const card = (path: string) => host.querySelector(`[data-folder-path="${path}"] .ep-cover`)!;
 const search = async (value: string) => {
   await act(async () => {
-    const input = host.querySelector<HTMLInputElement>('[placeholder="Search"]')!;
+    const input = host.querySelector<HTMLInputElement>('[placeholder="Search · Tag"]')!;
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   }); await settle();
@@ -264,7 +264,7 @@ it("직접 파일이 있어도 폴더·전체 전환과 직접 파일 미리보�
   expect(host.querySelector('.lib-cut-seg button.on')?.textContent).toBe("폴더");
   await click(host.querySelector('[data-file-path="assets/CH/direct.png"] button')!);
   expect(preview).toHaveBeenCalledOnce();
-  expect(host.querySelector('[data-file-path="assets/CH/direct.png"] .asset-last-viewed')?.textContent).toBe("Last viewed");
+  expect(host.querySelector('[data-file-path="assets/CH/direct.png"] .last-viewed-badge')?.textContent).toBe("Last viewed");
   expect(new URL(preview.mock.calls[0][0].url, "http://test").searchParams.get("path")).toBe("assets/CH/direct.png");
   await middle(card("assets/CH/미아"));
   expect(tab("미아").getAttribute("aria-selected")).toBe("false");
@@ -405,10 +405,10 @@ it("캔버스처럼 탭을 끌어 앞·뒤로 옮겨도 활성 탭·검색·스�
   act(() => { bg.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
   expect(tabNames()).toEqual(["BG", "assets", "CH"]);
   expect(tab("assets").getAttribute("aria-selected")).toBe("true");
-  expect(host.querySelector<HTMLInputElement>('input[placeholder="Search"]')!.value).toBe("a.png");
+  expect(host.querySelector<HTMLInputElement>('input[placeholder="Search · Tag"]')!.value).toBe("a.png");
   expect(host.querySelector<HTMLDivElement>(".assets-folder-grid")!.scrollTop).toBe(155);
   await click(bg); await click(tab("assets"));
-  expect(host.querySelector<HTMLInputElement>('input[placeholder="Search"]')!.value).toBe("a.png");
+  expect(host.querySelector<HTMLInputElement>('input[placeholder="Search · Tag"]')!.value).toBe("a.png");
   expect(host.querySelector<HTMLDivElement>(".assets-folder-grid")!.scrollTop).toBe(155);
   pointer("pointerdown", bg, { clientX: 50, clientY: 15 });
   pointer("pointermove", bg, { clientX: 330, clientY: 15, buttons: 1 });
@@ -476,7 +476,7 @@ it("Backspace는 활성 탭만 상위 폴더로 이동하며 빈 폴더와 최�
 it("입력·조합·보조키·길게 누름·모달·이미 처리한 키는 폴더 이동으로 가져오지 않는다", async () => {
   await mount(); await doubleClick(card("assets/CH"));
   await search("a.png");
-  expect((await backspace(host.querySelector('input[placeholder="Search"]')!)).defaultPrevented).toBe(false);
+  expect((await backspace(host.querySelector('input[placeholder="Search · Tag"]')!)).defaultPrevented).toBe(false);
   for (const tag of ["textarea", "select", "div"]) {
     const input = document.createElement(tag);
     if (tag === "div") Object.defineProperty(input, "isContentEditable", { value: true });
@@ -494,7 +494,7 @@ it("입력·조합·보조키·길게 누름·모달·이미 처리한 키는 �
   document.body.addEventListener("keydown", handled, { once: true });
   await backspace();
   expect(localStorage.getItem("ch.assets.dir")).toBe("assets/CH");
-  expect(host.querySelector<HTMLInputElement>('input[placeholder="Search"]')!.value).toBe("a.png");
+  expect(host.querySelector<HTMLInputElement>('input[placeholder="Search · Tag"]')!.value).toBe("a.png");
   await backspace();
   expect(localStorage.getItem("ch.assets.dir")).toBe("assets");
 });
@@ -561,15 +561,15 @@ it("미들클릭은 새 탭만 추가하며 현재 검색·보기·스크롤과 
   expect(tab("BG").getAttribute("aria-selected")).toBe("false");
   await middle(row);
   expect(host.querySelectorAll('[role="tab"]')).toHaveLength(2);
-  expect(host.querySelector<HTMLInputElement>('[placeholder="Search"]')!.value).toBe("a.png");
+  expect(host.querySelector<HTMLInputElement>('[placeholder="Search · Tag"]')!.value).toBe("a.png");
   expect(host.querySelector(".assets-folder-grid")).toBe(grid);
   expect(grid.scrollTop).toBe(155);
   await click(tab("BG"));
-  expect(host.querySelector<HTMLInputElement>('[placeholder="Search"]')!.value).toBe("");
+  expect(host.querySelector<HTMLInputElement>('[placeholder="Search · Tag"]')!.value).toBe("");
   expect(host.querySelectorAll(".asset-cell")).toHaveLength(1);
   await click(host.querySelectorAll('.lib-cut-seg button')[1]);
   await click(tab("CH"));
-  expect(host.querySelector<HTMLInputElement>('[placeholder="Search"]')!.value).toBe("a.png");
+  expect(host.querySelector<HTMLInputElement>('[placeholder="Search · Tag"]')!.value).toBe("a.png");
   expect(host.querySelector<HTMLDivElement>(".assets-folder-grid")!.scrollTop).toBe(155);
   expect(host.querySelector('.lib-cut-seg button.on')?.textContent).toBe("폴더");
   const existing = Array.from(host.querySelectorAll(".folder-tree-row")).find((el) => el.getAttribute("title")?.startsWith("assets/BG"))!;
@@ -583,7 +583,7 @@ it("미들클릭은 새 탭만 추가하며 현재 검색·보기·스크롤과 
   await click(host.querySelector('[aria-label="BG 탭 닫기"]')!);
   expect(host.querySelectorAll('[role="tab"]')).toHaveLength(1);
   await click(tab("CH"));
-  expect(host.querySelector<HTMLInputElement>('[placeholder="Search"]')!.value).toBe("a.png");
+  expect(host.querySelector<HTMLInputElement>('[placeholder="Search · Tag"]')!.value).toBe("a.png");
   expect(host.querySelector<HTMLDivElement>(".assets-folder-grid")!.scrollTop).toBe(155);
   const lastClose = host.querySelector<HTMLButtonElement>(".scene-del")!;
   expect(lastClose.disabled).toBe(true);
@@ -725,4 +725,52 @@ it("카드 전체 미들클릭을 지원해도 작은 폴더·파일·더보기�
   expect(onPreview.mock.calls.map(([value]) => value.path)).toEqual(["assets/BG/a.png", "assets/direct.png"]);
   expect(mocks.revealAsset).toHaveBeenCalledExactlyOnceWith("P", "assets/BG");
   expect(onOpenTab).not.toHaveBeenCalled();
+});
+
+// Jay 2026-10-26 — S 를 누르면 프로젝트 맨 위('뻘뻘뻘')로 갔다. 보던 폴더에 머물고, 기본 자리는 assets 폴더, 맨 위는 일부러 갔을 때만.
+const sourceButton = () => host.querySelector('button[title="소스로 등록된 것만 보기"]')!;
+const dirNow = () => localStorage.getItem("ch.assets.dir");
+
+it("S(소스만 보기)를 켜고 꺼도 보던 폴더에 머문다", async () => {
+  localStorage.setItem("ch.assets.dir", "assets/CH");
+  await mount();
+  await click(sourceButton());
+  expect(sourceButton().classList.contains("on")).toBe(true);
+  expect(dirNow()).toBe("assets/CH");
+  await click(sourceButton());
+  expect(dirNow()).toBe("assets/CH");
+});
+
+it("기억한 폴더 없이 열면 맨 위의 assets 폴더를 연다 — 프로젝트 맨 위는 트리 머리를 눌렀을 때만, 누르면 그대로 머문다", async () => {
+  localStorage.removeItem("ch.assets.dir");
+  await mount();
+  expect(dirNow()).toBe("assets");
+  expect(card("assets/CH")).toBeTruthy();
+  await click(host.querySelector(".assets-root-row")!);
+  expect(dirNow()).toBe("");
+  expect(card("assets")).toBeTruthy(); // 맨 위 = assets·assets2 카드
+  await click(sourceButton());
+  expect(dirNow()).toBe(""); // 일부러 간 맨 위도 S 에 흔들리지 않는다
+});
+
+it("프로젝트를 바꾸면 그 프로젝트의 assets 폴더를 연다(맨 위가 아니라)", async () => {
+  mocks.assetProjects.mockResolvedValue({ projects: ["P", "Q"], linked: [], default: "P" });
+  localStorage.setItem("ch.assets.dir", "assets/CH");
+  await mount();
+  const select = host.querySelector<HTMLSelectElement>("select.assets-project")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, "Q");
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await settle();
+  expect(select.value).toBe("Q");
+  expect(dirNow()).toBe("assets");
+});
+
+it("맨 위에 assets 폴더가 없는 프로젝트(assets 깊이로 등록)는 맨 위를 연다", async () => {
+  localStorage.removeItem("ch.assets.dir");
+  mocks.assetTree.mockResolvedValue({ children: [folder("CH", [file("CH/a.png")]), folder("BG", [file("BG/b.png")])] });
+  await mount();
+  expect(dirNow()).toBe("");
+  expect(card("CH")).toBeTruthy();
 });

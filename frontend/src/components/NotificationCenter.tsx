@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api";
 import { fmtWhen, timestampMs } from "../lib/format";
@@ -37,6 +37,7 @@ import { useEscapeClose } from "../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../lib/useOutsideMouseDown";
 import { reloadNow } from "../lib/unloadGuard"; // 앱이 스스로 하는 새로고침 — 서버 주소를 바꾼 뒤라 묻지 않고 진행한다
 import type { NotificationComment } from "../types";
+import { Grad, TopIcon } from "./TopIcon";
 
 type CenterItem =
   | ({ source: "comment" } & NotificationComment)
@@ -485,16 +486,13 @@ export function NotificationCenter({
     <div className="notification-center" ref={ref}>
       <button
         type="button"
-        className={"notification-bell" + (open ? " on" : "")}
+        className={"top-ic-btn notification-bell" + (open ? " lit" : "")}
         onClick={openPanel}
         aria-label={unreadTotal ? `${t("알림 센터")} ${unreadTotal}` : t("알림 센터")}
         aria-expanded={open}
         title={t("알림 센터")}
       >
-        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Z" />
-          <path d="M10 21h4" />
-        </svg>
+        <BellIcon />
         {unreadTotal > 0 && (
           <span className="notification-badge">{notificationBadgeText(unreadTotal)}</span>
         )}
@@ -660,5 +658,34 @@ export function NotificationCenter({
         document.body,
       )}
     </div>
+  );
+}
+
+// 종 — 머리줄 캡슐의 끝 칸(Jay 2026-10-26 B안). 평소 선, 알림 창이 열린 동안 금색 투톤(꼭지·추 = 뒤판 색).
+// 옮김값은 getBBox 로 잰 그림 가운데를 24 격자 한가운데(12, 12)로 맞춘 것(선 11.5 → 12 · 투톤 11.8 → 12).
+function BellIcon() {
+  const g = useId();
+  return (
+    <TopIcon
+      line={
+        <g transform="translate(0 0.5)">
+          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Z" />
+          <path d="M10 21h4" />
+        </g>
+      }
+      lit={
+        <>
+          <Grad id={g} top="#ffe59a" bottom="#f0b23a" y1={2.9} y2={18.6} />
+          <g transform="translate(0 0.2)">
+            <path d="M9.2 19.4h5.6a2.8 2.8 0 0 1-5.6 0Z" fill="#a8701a" />
+            <rect x="10.6" y="1.4" width="2.8" height="2.6" rx="1.2" fill="#a8701a" />
+            <path
+              d="M12 2.9c-3.7 0-6.3 2.9-6.3 6.5v3.4c0 1.7-.7 3.1-2 4.1l-.3.3c-.6.5-.2 1.5.6 1.5h16c.8 0 1.2-1 .6-1.5l-.3-.3c-1.3-1-2-2.4-2-4.1V9.4c0-3.6-2.6-6.5-6.3-6.5Z"
+              fill={`url(#${g})`}
+            />
+          </g>
+        </>
+      }
+    />
   );
 }

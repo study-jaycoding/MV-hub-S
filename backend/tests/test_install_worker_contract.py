@@ -313,8 +313,8 @@ def test_extracted_payload_is_rechecked_before_and_after_component_swap(tmp_path
     assert ps(tmp_path, code).returncode != 0
 
 
-@pytest.mark.parametrize('writer,previous_mark,expected', [(1, 'new_committed', 'rolled_back'), (3, 'new_committed', 'recovery_required'), (1, 'recovery_required', 'recovery_required')])
-def test_actual_worker_failure_function_uses_current_database_not_old_backup(tmp_path, writer, previous_mark, expected):
+@pytest.mark.parametrize('writer,previous_mark,expected,assets', [(1, 'new_committed', 'rolled_back', False), (3, 'new_committed', 'recovery_required', False), (1, 'recovery_required', 'recovery_required', False), (1, 'new_committed', 'recovery_required', True)])
+def test_actual_worker_failure_function_uses_current_database_not_old_backup(tmp_path, writer, previous_mark, expected, assets):
     code = f"""
 $Body=([IO.File]::ReadAllText('{ROOT / 'update_release_worker.bat'}')).Split(@('### MVHUB_UPDATE_POWERSHELL ###'),[StringSplitOptions]::None)[-1]
 $Tokens=$null;$Errors=$null
@@ -326,12 +326,13 @@ $JournalPath='{tmp_path / 'journal.json'}';$TargetDir='{tmp_path}'
 $Compat=@{{db_schema=@{{read_min=1;read_max=1;write_min=1;write_max=1}};reader_protocol=1;writer_protocol=2;supported_components=@('content_core')}}
 $Row=[pscustomobject]@{{key='k';database_id='d';status='compatible';schema_version=1;minimum_reader_protocol=1;minimum_writer_protocol={writer};components=@('content_core')}}
 $script:InstallJournal=@{{format_version=1;run_id='r';phase='starting';updated_at='t';db_mutation_possible=$true;business_writes_possible=$true;previous=@{{compatibility=$Compat}};previous_version='old';checkpoints=@($Row)}}
-$script:RecoveryState='{previous_mark}';$script:HadRecoveryAssets=$false;$script:InheritedRecovery=$false;$script:ProcessesStopped=$true
+$script:RecoveryState='{previous_mark}';$script:HadRecoveryAssets=${assets};$script:InheritedRecovery=$false;$script:ProcessesStopped=$true
 $script:Calls=@()
 function Stop-MvHubProcesses {{ $script:Calls+='stop' }}
 function Invoke-InstallCheckpoint {{ $script:Calls+='inspect-current'; return @($Row) }}
 function Undo-ComponentSwaps {{ $script:Calls+='restore-program'; return ,@() }}
 function Commit-VersionMarker {{ $script:Calls+='version' }}
+function Remove-SwapLeftovers {{ $script:Calls+='cleanup' }}
 Write-InstallRecord $JournalPath $script:InstallJournal
 Finalize-FailedInstall
 ConvertTo-Json -InputObject @($script:Calls) | Set-Content -LiteralPath '{tmp_path / 'calls.json'}'
@@ -341,7 +342,10 @@ ConvertTo-Json -InputObject @($script:Calls) | Set-Content -LiteralPath '{tmp_pa
     assert json.loads((tmp_path / 'journal.json').read_text())['phase'] == expected
     calls = json.loads((tmp_path / 'calls.json').read_text(encoding='utf-8-sig'))
     assert calls[:2] == ([] if previous_mark == 'recovery_required' else ['stop', 'inspect-current'])
-    assert ('restore-program' in calls) == (expected == 'rolled_back')
+    assert ('restore-program' in calls) == (expected == 'rolled_back' or assets)
+    # A completed rollback cleans its .rollback trees like the swap-phase rollback; recovery keeps everything.
+    assert calls[2:] == (['restore-program', 'version', 'cleanup'] if expected == 'rolled_back'
+                         else ['restore-program', 'version'] if assets else [])
 
 
 # The running app reads activation records per request; Python opens files without FILE_SHARE_DELETE,

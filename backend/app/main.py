@@ -13,6 +13,7 @@ import asyncio
 import time
 import logging
 import os
+import re
 import sqlite3
 import sys
 import warnings
@@ -69,11 +70,13 @@ from .static_files import ImmutableStaticFiles
 from .services.test_snapshot import SNAPSHOT_EXPORT_ENV, SNAPSHOT_EXPORT_PATH
 from .routers import (
     _proxy,
+    app_windows,
     asset_registry,
     asset_sync,
     backup_replica,
     assets,
     auth,
+    clean_feed,
     comfy,
     console,
     db_backup,
@@ -95,6 +98,7 @@ from .routers import (
     resolve_integration,
     scenes,
     edit_docs,
+    edit_shares,
     share,
     sync,
     update_notices,
@@ -721,6 +725,19 @@ async def _application_lifespan(app: FastAPI):
             raise cleanup_error
 
 
+async def _stop_clean_feed() -> None:
+    """클린 피드 창이 떠 있으면 닫는다(허브가 그냥 끝나도 크롬은 허브의 Job 이 끝낸다). 한 번도 안 썼으면 아무것도 만들지 않는다."""
+    from .services import clean_feed_session
+
+    current = clean_feed_session._HUB
+    if current is None:
+        return
+    try:
+        await current.shutdown()
+    except Exception:  # noqa: BLE001 — 종료를 막지 않는다
+        logging.getLogger(__name__).warning("클린 피드 종료 정리 실패", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """시작·종료 어느 단계에서 실패해도 원인을 구조화 로그에 남긴다."""
@@ -732,6 +749,7 @@ async def lifespan(app: FastAPI):
                 yield
             finally:
                 phase = "shutdown"
+                await _stop_clean_feed()
     except BaseException:  # noqa: BLE001 — CancelledError/종료 신호도 단계 구분 후 그대로 전달
         if phase != "running":
             log_event(
@@ -779,6 +797,9 @@ app.include_router(db_backup.router)
 app.include_router(comfy.router)
 app.include_router(scenes.router)
 app.include_router(edit_docs.router)
+app.include_router(edit_shares.router)
+app.include_router(clean_feed.router)  # 편집 탭 클린 피드 전용 창(로컬 허브 — 이 PC 만)
+app.include_router(app_windows.router)  # 별도 창(Assets·관리)을 앱 창 위로(로컬 허브 — 이 PC 만)
 app.include_router(mcp.router)
 app.include_router(mcp_v2.router)
 app.include_router(asset_registry.router)
@@ -826,6 +847,8 @@ _AUTH_PUBLIC_PATHS = frozenset(
     }
 )
 _SNAPSHOT_SERVER_PATHS = frozenset({SNAPSHOT_EXPORT_PATH, "/api/health", "/api/ready"})
+# 클린 피드 창(전용 프로필 — 로그인 쿠키가 없다)의 미디어 — 정확히 이 꼴의 GET/HEAD 만. 라우터가 key·이 PC·세션 계정을 검사한다.
+_CLEAN_FEED_MEDIA = re.compile(r"/api/clean-feed/media/[0-9a-f]{32}/[0-9]{1,10}")
 
 
 @app.middleware("http")
@@ -884,7 +907,11 @@ async def auth_enforcement(request: Request, call_next):
     # 보호: /api/*(로그인·가입·헬스 제외) + /media/*. 정적 SPA·/ws 는 여기서 제외.
     # 테스트 DB 다운로드는 일반 계정 로그인 대신 별도의 일회용 코드로 라우터에서 검증한다.
     # 정확히 이 경로만 예외로 두어 /api/db/export 같은 일반 DB API는 계속 세션 인증을 요구한다.
-    api_public = path.startswith(_AUTH_PUBLIC_PREFIXES) or path in _AUTH_PUBLIC_PATHS
+    api_public = (
+        path.startswith(_AUTH_PUBLIC_PREFIXES)
+        or path in _AUTH_PUBLIC_PATHS
+        or (request.method in ("GET", "HEAD") and _CLEAN_FEED_MEDIA.fullmatch(path) is not None)
+    )
     api_protected = path.startswith("/api/") and not api_public
     media_protected = path.startswith("/media")
     if (api_protected or media_protected) and request.state.account is None:

@@ -8,6 +8,7 @@ import { useT } from "../../lib/i18n";
 import { reportSourceLocationError } from "../../lib/sourceLocationFeedback";
 import { TagEditor } from "../TagEditor";
 import { InfoIcon } from "../common/ViewIcons";
+import { LastViewedBadge } from "../scene/LastViewedBadge";
 import type { AssetMeta, AssetNode, InfoTarget } from "../../types";
 
 export const AssetCell = memo(function AssetCell({
@@ -409,7 +410,7 @@ export const AssetCell = memo(function AssetCell({
         )}
         {isVideo && <span className="play-badge">▶</span>}
         {isAudio && <span className="play-badge">♪</span>}
-        {lastViewed && <span className="asset-last-viewed">Last viewed</span>}
+        {lastViewed && <LastViewedBadge />}
         {topLeft}
         {folderLabel && <div className="card-bottom">
           <span className="card-folder static"><span>{folderLabel}</span></span>

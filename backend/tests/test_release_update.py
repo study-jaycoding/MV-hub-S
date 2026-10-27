@@ -561,6 +561,371 @@ def test_release_update_cleanup_closes_the_old_visible_launcher(tmp_path: Path):
             process.wait(timeout=3)
 
 
+# 2026-10-27: Claude/Codex restart the MV Hub MCP connector from the install runtime as soon as the
+# updater kills it, which failed the stop check and pinned the swapped-out runtime folder.
+_CONNECTOR_FUNCTIONS = ("Get-MvHubProcessIds", "Test-McpConnector", "Stop-MvHubProcesses", "Stop-McpConnectors",
+                        "Wait-WorkerDrain", "Remove-SwapLeftovers", "Get-TransientLockCode", "Move-PathWithRetry",
+                        "Get-BytecodeOnlyFiles", "Move-IntoPlace")
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _updater_functions(*names: str) -> str:
+    payload = _worker_payload()
+    blocks = []
+    for name in names:
+        start = payload.index("\nfunction " + name + " {")
+        blocks.append(payload[start : payload.index("\n}\n", start) + 3])
+    return "".join(blocks)
+
+
+def _connector_harness(tmp_path: Path, root: Path, body: str) -> subprocess.CompletedProcess[str]:
+    harness = tmp_path / "connector_harness.ps1"
+    harness.write_text(
+        "param([string]$Root)\n$ErrorActionPreference = 'Stop'\n$TargetDir = $Root\n"
+        "$script:RetryableMoveCodes = @(5, 32, 33)\n"
+        + _updater_functions(*_CONNECTOR_FUNCTIONS)
+        + "\n"
+        + body
+        + "\n",
+        encoding="utf-8-sig",
+    )
+    return _run_ps(harness, "-Root", str(root))
+
+
+def _fake_install_with_connector(tmp_path: Path) -> tuple[Path, list[str]]:
+    """<root>\\runtime\\python\\python.exe is a copy of this interpreter (stdlib via ._pth), like the bundle."""
+    import shutil
+    import sys
+
+    root = tmp_path / "MV Hub installed"
+    runtime = root / "runtime" / "python"
+    runtime.mkdir(parents=True)
+    base = Path(sys._base_executable).parent
+    for item in [base / "python.exe", *base.glob("*.dll")]:
+        shutil.copy2(item, runtime / item.name)
+    dll = next(p for p in base.glob("python3*.dll") if p.stem != "python3")
+    (runtime / f"{dll.stem}._pth").write_text(f"{base / 'Lib'}\n{base / 'DLLs'}\n", encoding="utf-8")
+    script = root / "tools" / "mcp_adapter" / "server.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("import time\ntime.sleep(60)\n", encoding="ascii")
+    (root / "MV_agent.bat").write_text("@echo off\r\n:wait\r\ngoto wait\r\n", encoding="ascii")
+    return root, [str(runtime / "python.exe"), "-I", "-S", str(script), "--url", "http://127.0.0.1:9"]
+
+
+def _start(argv: list[str], cwd: Path | None = None) -> subprocess.Popen:
+    return subprocess.Popen(  # noqa: S603 - isolated test-owned process
+        argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=_NO_WINDOW,
+    )
+
+
+def _launcher_argv(root: Path) -> list[str]:
+    return [os.environ.get("ComSpec", "cmd.exe"), "/d", "/c", "call", str(root / "MV_agent.bat")]
+
+
+class _Respawner:
+    """Plays Claude/Codex: a parent outside the install restarts the process right after it dies."""
+
+    def __init__(self, argv: list[str]):
+        import threading
+
+        self.argv, self.stopped, self.process = argv, False, None
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+
+    def _loop(self) -> None:
+        import time
+
+        while not self.stopped:
+            if self.process is None or self.process.poll() is not None:
+                self.process = _start(self.argv)
+            time.sleep(0.05)
+
+    def __enter__(self) -> "_Respawner":
+        import time
+
+        self.thread.start()
+        time.sleep(1.0)
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.stopped = True
+        self.thread.join(5)
+        if self.process and self.process.poll() is None:
+            self.process.kill()
+            self.process.wait(timeout=5)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows updater")
+def test_mcp_connector_is_only_the_registered_command(tmp_path: Path):
+    spaced, plain = "C:\\MV Hub\\", "C:\\Hub\\"
+    py, script = spaced + "runtime\\python\\python.exe", spaced + "tools\\mcp_adapter\\server.py"
+    cases = {
+        "registered": (spaced, py, f'"{py}" -I -S "{script}" --url http://127.0.0.1:8010 --profile p', True),
+        "no flags": (spaced, py, f'"{py}" "{script}"', True),
+        "other case": (spaced, py.upper(), f'"{py.upper()}" -I -S "{script.lower()}"', True),
+        "unquoted": (plain, plain + "runtime\\python\\python.exe",
+                     f"{plain}runtime\\python\\python.exe -I -S {plain}tools\\mcp_adapter\\server.py --url u", True),
+        "spaced path unquoted": (spaced, py, f'"{py}" -I -S {script}', False),  # Python would run "C:\MV"
+        "backup copy": (spaced, py, f'"{py}" -I -S "{script}.bak"', False),
+        "longer name": (spaced, py, f'"{py}" -I -S "{script}2"', False),
+        "longer path": (spaced, py, f'"{py}" -I -S "{script}\\extra.py"', False),
+        "argument of other script": (spaced, py, f'"{py}" other.py "{script}"', False),
+        "option value": (spaced, py, f'"{py}" -X "{script}" -c pass', False),
+        "other flag": (spaced, py, f'"{py}" -i "{script}"', False),
+        "other executable": (spaced, spaced + "runtime\\node\\node.exe", f'"{spaced}runtime\\node\\node.exe" "{script}"', False),
+        "unreadable command line": (spaced, py, None, False),
+    }
+    (tmp_path / "cases.json").write_text(
+        json.dumps([{"name": k, "root": r, "exe": e, "cmd": c} for k, (r, e, c, _) in cases.items()]), encoding="utf-8"
+    )
+    body = (
+        f"$Out = @{{}}\nforeach ($C in (Get-Content -LiteralPath '{tmp_path / 'cases.json'}' -Raw | ConvertFrom-Json)) {{\n"
+        "    $Out[$C.name] = [bool](Test-McpConnector -Process ([pscustomobject]@{ ExecutablePath = $C.exe; CommandLine = $C.cmd }) -ResolvedRoot $C.root)\n"
+        "}\nWrite-Output ('RESULT ' + ($Out | ConvertTo-Json -Compress))\n"
+    )
+    completed = _connector_harness(tmp_path, tmp_path, body)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    result = json.loads(completed.stdout.split("RESULT ", 1)[1])
+    assert result == {name: expected for name, (*_, expected) in cases.items()}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows process cleanup regression")
+def test_release_update_stop_does_not_wait_for_a_respawning_mcp_connector(tmp_path: Path):
+    root, connector = _fake_install_with_connector(tmp_path)
+    app = _start(_launcher_argv(root), cwd=root)
+    try:
+        with _Respawner(connector):
+            completed = _connector_harness(tmp_path, root, "Stop-MvHubProcesses -Root $Root")
+        output = completed.stdout + completed.stderr
+        assert completed.returncode == 0, output
+        assert "still running" not in output
+        assert app.wait(timeout=3) != 0
+    finally:
+        if app.poll() is None:
+            app.kill()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows process cleanup regression")
+def test_release_update_stop_still_fails_when_the_app_keeps_coming_back(tmp_path: Path):
+    root, _ = _fake_install_with_connector(tmp_path)
+    with _Respawner(_launcher_argv(root)):
+        completed = _connector_harness(tmp_path, root, "Stop-MvHubProcesses -Root $Root")
+    output = completed.stdout + completed.stderr
+    assert completed.returncode != 0
+    assert "Some MV Hub processes are still running" in output
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows process cleanup regression")
+def test_release_update_drain_ignores_a_lone_mcp_connector(tmp_path: Path):
+    root, connector = _fake_install_with_connector(tmp_path)
+    process = _start(connector)
+    try:
+        # Nothing listens on port 9: reaching the readiness call would throw.
+        body = "$ReadyUrl = 'http://127.0.0.1:9/api/ready'\nWait-WorkerDrain\nWrite-Output 'drain-skipped'"
+        completed = _connector_harness(tmp_path, root, body)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        assert "drain-skipped" in completed.stdout
+    finally:
+        process.kill()
+        process.wait(timeout=5)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows leftover cleanup regression")
+def test_swap_leftover_pinned_by_a_restarted_mcp_connector_is_removed(tmp_path: Path):
+    import time
+
+    root, connector = _fake_install_with_connector(tmp_path)
+    process = _start(connector)
+    app = _start(_launcher_argv(root), cwd=root)
+    quarantine = root / "update-quarantine.cafe0000"
+    quarantine.mkdir()
+    (quarantine / "keep.txt").write_text("backup", encoding="ascii")
+    try:
+        time.sleep(1.0)
+        previous = root / "runtime" / "python.previous.abcd1234"
+        os.rename(root / "runtime" / "python", previous)  # a renamed folder keeps the running image
+        (root / "runtime" / "python").mkdir()
+        body = (
+            "$SwapToken = 'abcd1234'\n$T = Join-Path $Root 'runtime\\python'\n"
+            "Remove-SwapLeftovers -Components @(@{ Target = $T; Previous = ($T + '.previous.abcd1234'); Staged = ($T + '.next.abcd1234') })"
+        )
+        completed = _connector_harness(tmp_path, root, body)
+        output = completed.stdout + completed.stderr
+        assert completed.returncode == 0, output
+        assert not previous.exists(), output
+        assert process.wait(timeout=5) is not None
+        assert app.poll() is None
+        assert (quarantine / "keep.txt").exists()
+    finally:
+        for running in (process, app):
+            if running.poll() is None:
+                running.kill()
+                running.wait(timeout=5)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows updater")
+@pytest.mark.parametrize("tamper", ["none", "start time", "command line"])
+def test_stop_mcp_connectors_rechecks_identity_before_killing(tmp_path: Path, tamper: str):
+    root, connector = _fake_install_with_connector(tmp_path)
+    process = _start(connector)
+    # The identity read right before the kill is a stand-in that differs from the listing.
+    change = {
+        "none": "",
+        "start time": "$Copy.CreationDate = $_.CreationDate.AddSeconds(-5)",
+        "command line": "$Copy.CommandLine = 'python.exe other.py'",
+    }[tamper]
+    body = (
+        "function Get-CimInstance {\n"
+        "    [CmdletBinding()] param([Parameter(Position = 0)][string]$ClassName, [string]$Filter)\n"
+        "    if (-not $Filter) { return CimCmdlets\\Get-CimInstance -ClassName $ClassName }\n"
+        "    CimCmdlets\\Get-CimInstance -ClassName $ClassName -Filter $Filter | ForEach-Object {\n"
+        f"        $Copy = $_ | Select-Object *\n        {change}\n        $Copy\n"
+        "    }\n}\nStop-McpConnectors -Root $Root\n"
+    )
+    try:
+        completed = _connector_harness(tmp_path, root, body)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        if tamper == "none":
+            assert process.wait(timeout=5) is not None
+        else:
+            assert process.poll() is None
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
+# An importing process whose folder was renamed away writes .pyc to the old path and recreates it.
+_RECREATED = {
+    "runtime\\python": ["Lib\\asyncio\\__pycache__\\base_events.cpython-314.pyc",
+                        "Lib\\__pycache__\\selectors.cpython-314.pyc.2380512",
+                        "Lib\\email\\__pycache__\\"],
+    "tools": ["mcp_adapter\\site-packages\\pydantic\\__pycache__\\main.cpython-314.pyc"],
+}
+# Stand-in for the connector stop: records whether the bytecode still existed when it was called.
+_STOP_STUB = (
+    "$script:StopSawBytecode = @()\n"
+    "function Stop-McpConnectors { param([string]$Root) $script:StopSawBytecode += [bool](Get-ChildItem -LiteralPath $Target "
+    "-Recurse -Force -File -Filter '*.pyc*'); return $script:StopResult }\n$script:StopResult = $true\n"
+)
+
+
+def _recreated_target(root: Path, component: str) -> tuple[Path, Path]:
+    target, staged = root / component, root / (component + ".next.abcd1234")
+    for name in _RECREATED[component]:
+        path = target / name
+        if name.endswith("\\"):
+            path.mkdir(parents=True)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"pyc")
+    staged.mkdir(parents=True)
+    (staged / "new.txt").write_text("staged", encoding="ascii")
+    return target, staged
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows updater")
+@pytest.mark.parametrize("component", ["runtime\\python", "tools"])
+def test_move_into_place_clears_bytecode_a_connector_recreated(tmp_path: Path, component: str):
+    target, staged = _recreated_target(tmp_path, component)
+    body = (
+        f"$Target = '{target}'\n" + _STOP_STUB
+        + f"Move-IntoPlace -Path '{staged}' -Destination $Target -Label 'test'\n"
+        "Write-Output ('STOP ' + ($script:StopSawBytecode -join ','))\n"
+    )
+    completed = _connector_harness(tmp_path, tmp_path, body)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "STOP True" in completed.stdout  # the writer is stopped before anything is deleted
+    assert (target / "new.txt").read_text(encoding="ascii") == "staged"
+    assert not staged.exists()
+    assert not list(target.rglob("*.pyc*"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows updater")
+@pytest.mark.parametrize("extra", ["plain file", "hidden file", "pyc outside __pycache__", "junction", "connector not stopped"])
+def test_move_into_place_leaves_anything_but_bytecode_alone(tmp_path: Path, extra: str):
+    target, staged = _recreated_target(tmp_path, "runtime\\python")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.cpython-314.pyc").write_bytes(b"not ours")
+    if extra == "plain file":
+        (target / "Lib" / "user.txt").write_text("data", encoding="ascii")
+    elif extra == "hidden file":
+        hidden = target / "desktop.ini"
+        hidden.write_text("data", encoding="ascii")
+        subprocess.run(["attrib", "+h", str(hidden)], check=True, creationflags=_NO_WINDOW)
+    elif extra == "pyc outside __pycache__":
+        (target / "Lib" / "stray.pyc").write_bytes(b"pyc")
+    elif extra == "junction":
+        (target / "Lib" / "json").mkdir()
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(target / "Lib" / "json" / "__pycache__"), str(outside)],
+                       check=True, capture_output=True, creationflags=_NO_WINDOW)
+    before = sorted(str(p) for p in target.rglob("*"))
+    body = (
+        f"$Target = '{target}'\n" + _STOP_STUB
+        + ("$script:StopResult = $false\n" if extra == "connector not stopped" else "")
+        + f"Move-IntoPlace -Path '{staged}' -Destination $Target -Label 'test'\n"
+    )
+    completed = _connector_harness(tmp_path, tmp_path, body)
+    output = completed.stdout + completed.stderr
+    assert completed.returncode != 0
+    assert ("did not stop" if extra == "connector not stopped" else "destination already exists") in output, output
+    assert sorted(str(p) for p in target.rglob("*")) == before
+    assert (outside / "keep.cpython-314.pyc").exists()
+    assert (staged / "new.txt").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows updater")
+def test_move_into_place_retries_when_bytecode_reappears_before_the_move(tmp_path: Path):
+    target = tmp_path / "runtime" / "python"
+    staged = tmp_path / "runtime" / "python.next.abcd1234"
+    staged.mkdir(parents=True)
+    (staged / "new.txt").write_text("staged", encoding="ascii")
+    body = (
+        f"$Target = '{target}'\n" + _STOP_STUB
+        + "$Real = ${function:Move-PathWithRetry}\n$script:Moves = 0\n"
+        "function Move-PathWithRetry { param([string]$Path, [string]$Destination, [string]$Label)\n"
+        "    $script:Moves++\n"
+        "    if ($script:Moves -eq 1) { $Cache = Join-Path $Destination 'Lib\\__pycache__'; New-Item -ItemType Directory -Force -Path $Cache | Out-Null; "
+        "Set-Content -LiteralPath (Join-Path $Cache 'late.cpython-314.pyc') -Value 'x' }\n"
+        "    & $Real -Path $Path -Destination $Destination -Label $Label\n}\n"
+        f"Move-IntoPlace -Path '{staged}' -Destination $Target -Label 'test'\n"
+        "Write-Output ('MOVES ' + $script:Moves)\n"
+    )
+    completed = _connector_harness(tmp_path, tmp_path, body)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "MOVES 2" in completed.stdout
+    assert (target / "new.txt").read_text(encoding="ascii") == "staged"
+    assert not list(target.rglob("*.pyc"))
+
+
+def test_only_moves_into_the_live_path_clear_recreated_bytecode():
+    payload = _worker_payload()
+    swap = payload[payload.index("function Invoke-ComponentSwap") : payload.index("function Undo-ComponentSwaps")]
+    undo = payload[payload.index("function Undo-ComponentSwaps") : payload.index("function Remove-SwapLeftovers")]
+    assert "Move-IntoPlace -Path $Component.Staged -Destination $Component.Target" in swap
+    assert "Move-PathWithRetry -Path $Component.Target -Destination $Component.Previous" in swap
+    assert "Move-IntoPlace -Path $Component.Previous -Destination $Component.Target" in undo
+    assert 'Move-PathWithRetry -Path $Component.Target -Destination ($Component.Target + ".rollback." + $SwapToken)' in undo
+    assert payload.count("Move-IntoPlace -Path") == 2
+
+
+def test_updater_counts_only_the_app_for_drain_and_relaunch_and_cleans_after_finalize():
+    payload = _worker_payload()
+    relaunch = payload[payload.index("function Start-MvHubAfterFailure") : payload.index("$SourceFile = Join-Path")]
+    assert "Get-MvHubProcessIds -ResolvedRoot $ResolvedRoot -Kind App" in relaunch
+    drain = payload[payload.index("function Wait-WorkerDrain") : payload.index("function Finalize-FailedInstall")]
+    assert "-Kind App" in drain
+    finalize = payload[payload.index("function Finalize-FailedInstall") : payload.index("function Install-Package")]
+    cleanup = finalize.index("Remove-SwapLeftovers")
+    assert finalize.index("Commit-VersionMarker -Version $script:InstallJournal.previous_version") < cleanup
+    assert finalize.index("return", finalize.index("$script:HadRecoveryAssets -or")) < cleanup
+    # The stop flag still flips only after a successful stop, so a failed stop restores the control record.
+    assert "if ($script:PreviousControl -and -not $script:ProcessesStopped)" in finalize
+    install = payload[payload.index("function Install-Package") :]
+    assert "Stop-MvHubProcesses -Root $TargetDir\n    $script:ProcessesStopped = $true" in install
+
+
 def test_first_installer_delegates_to_the_verified_package_updater():
     project_root = Path(__file__).resolve().parents[2]
     installer = (project_root / "release" / "MVHub_Install.bat").read_text(encoding="utf-8")

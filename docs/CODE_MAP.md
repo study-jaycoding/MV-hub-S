@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-10-25
+updated: 2026-10-26
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -214,6 +214,16 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 **DB 이전·백업**
 
 개인 편집 백업은 `routers/edit_docs.py`의 `GET·PUT /api/edit-docs/backup`·`POST /api/edit-docs/backup/restore`(3개)에서 처리한다. 기대 계정 헤더 필수·요청 동안 계정 DB 고정·로컬 전용 경로다.
+
+편집 공유(서버에 저장·다른 편집 보기)는 `routers/edit_shares.py`의 `POST /api/edit-shares/save`·`GET /api/edit-shares`·`GET /api/edit-shares/doc`(3개) — 공유 서버 DB(`repo/edit_shares.py`, 표 `edit_share`)가 권위다.
+로컬 허브에서는 `_LOCAL_PREFIXES` 에 두고 핸들러가 출처 검사 → 화면 계정 대조 → 연결 고정 뒤 직접 중계한다(서버 미로그인이면 409 — 로컬에 저장하지 않는다).
+
+편집 탭 클린 피드 전용 창(로컬 허브가 띄우는 키오스크 크롬)은 `routers/clean_feed.py`(약 180줄)의 `GET /api/clean-feed/status`·`POST /open`·`POST /close`·`GET·HEAD /media/{세션}/{번호}`·`WS /ws/clean-feed`(5개) — 이 PC 요청만,
+켜는 곳 = 윈도우·팀 서버 아님·허브가 loopback·크롬(엣지) 있음. open 은 믿는 앱 출처(받은 소켓 포트 + `MVHUB_DEV_FRONTEND_PORT`)만, WS 는 accept 전에 접속자·출처·key·역할을 본다(대기 창의 `role=standby` 는 key 없이 하위 프로토콜 `mvhub-standby.<토큰>` 하나로 — [허브 켜기 단축](status/편집탭_클린피드_허브켜기단축_2026-10-26.md)).
+미디어 경로는 인증 미들웨어의 공개 예외(`main._CLEAN_FEED_MEDIA` — 그 꼴의 GET/HEAD 만)다. 세션·중계는 `services/clean_feed_session.py`, 창은 `services/clean_feed_window.py`. 계약 [구현 기록](status/편집탭_클린피드_전용창_구현_2026-10-23.md).
+
+별도 창(Assets·관리)을 앱 창 위로 올리기는 `routers/app_windows.py`(약 30줄)의 `POST /api/app-windows/raise`(1개) — 이 PC 요청만, 윈도우·팀 서버 아님일 때만 올린다(아니면 0).
+`_LOCAL_PREFIXES` 와 라이브러리 변경 알림 제외에 둔다. 창 찾기·올리기는 `services/app_windows.py`, 부르는 쪽은 `lib/popupWindows.ts`(앱을 떠났다 앱 창으로 돌아올 때만). 기록 [별도창 앞으로](status/별도창_앞으로_2026-10-26.md).
 
 | 파일 | URL·라우트 수 | 한 줄 책임 | 프록시 위임 |
 |---|---|---|---|
@@ -465,6 +475,9 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
+| `clean_feed_session.py`(약 1000줄) | 클린 피드 세션(허브당 하나) — 앱(main)·피드 창(feed) WS 중계(역할별 글 종류·최신만 대기·key 순서·보내기 1초 시한·보임 때 재동기 번호) · 계정 세대값·식별값이 open 때와 다르면 영구 종료(사유 32개 기억) · 장면의 같은 출처 미디어 주소에 번호 → 로컬 파일 직접 또는 서버 보존본만 세션 계정(pin)으로 중계 · 크롬을 띄우자마자 등록·응답(창 찾기는 `arm` 뒤 창 스레드 — 늦은 실패 `window-not-found`·`wrong-monitor` 는 세션 종료 사유) · 끝난 세션의 창을 대기 창으로 두는 대기 기록(`Standby` reserved→ready→assigned→delivered · 일회용 토큰은 피드 연결로만 · 대기 WS 에 `assign` 한 번 · 다시 쓴 창은 새 피드 ready 전엔 안 보임·3초) | `routers/clean_feed` |
+| `clean_feed_window.py`(약 690줄) | 클린 피드 창(윈도우 전용 ctypes) — 전용 프로필 키오스크 크롬을 멈춘 채 만들어 허브 Job 에 넣고 재개 · 두 단계(띄우기 → 허브의 `arm` 뒤 제목 창 찾기·맞춤·고른 모니터 = 나온 모니터·초점 되돌림, 창 탐색 중엔 0.02초 폴링) · 앱 active 또는 맨 앞이 피드일 때만 TOPMOST 보임, 아니면 숨김(0.15초 거둠) · 사람이 닫음 감지 · 대기 창(`release` 로 숨김 → `open(reuse=)` 로 숨긴 채 새 세션 · `ready` 뒤 보임 · 10분). Win32 호출과 폴링은 **전용 스레드 하나**에서만 | `clean_feed_session` |
+| `app_windows.py`(약 90줄) | 별도 창을 앱 창 위로(윈도우 전용 ctypes) — 맨 앞 창(제목 = 앱 창 제목)과 같은 프로세스의, 제목이 별도 창 제목(뒤 ` - Chrome` 허용)인 보이는·최소화 안 된 창을 아래 것부터 TOPMOST → NOTOPMOST(NOACTIVATE·ASYNC — 초점은 앱 창 그대로). 다른 프로세스의 HWND_TOP 은 맨 앞 창 밑에 놓여 못 쓴다(실측) | `routers/app_windows` |
 | `final_export.py` | 완료 탭 저장 '대상 판정' 순수 정책 단일 출처 — 종류 `final`(최종) · `shared`(공유 중·최종 아님, 보류 포함). 두 집합은 겹치지 않는다 | `manage` |
 | `export_names.py` | 파일 이름 규칙과 렌더 폴더의 이름 장부. **v2(2026-10-13, `docs/EXPORT_SYNC_DESIGN.md` §7)** = `<프로젝트>_<폴더 마디>_<work\|share\|fin\|davinci>_<작업자>_<번호>` · 장부 `_mvhub_sync/names2`(`NameBook2` — n·g·d·r 항목): 번호는 '컷 폴더 × 작업자' 한 줄에서 이름을 처음 받은 순서, 종류와 무관하게 생성물마다 하나. 열쇠는 `job_id`·`id` 둘(`Ident` — 적을 때 `id` 먼저, 찾을 때 `job_id` 먼저), 같은 생성물이 두 번호를 받으면 `r` 로 잇는다. `allocate` 는 쓰기 직전에 장부가 바뀌었는지 보고(`refresh`) 다시 읽는다. 이름 읽기는 `parse_v2`·`saved_shape`(비교·미러의 '저장본 꼴'). **v1(§6)** = `<폴더 마디>_<share\|fin\|davinci>_<번호>` · 장부 `names`(`NameBook`) — 이미 있는 옛 파일을 알아보는 데 계속 쓴다. 번호의 권위는 서버가 아니라 이 장부다. 확정은 덮어쓰지 않는 이름 바꾸기(`commit_new`) | `manage`(저장·비교)·`resolve_transfer`·`library`(다운로드 이름) |
 
@@ -520,7 +533,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `scene/SceneBar.tsx`(286줄) | 씬 탭 바 — 전환·추가·이름변경·삭제·드래그 순서변경·우클릭 메뉴 | `SceneBar` |
 | `scene/SceneMinimap.tsx`(184줄) | 우상단 네비게이터 — 카드 축소도·뷰포트 박스, 클릭/드래그 이동 | `SceneMinimap` |
 | `scene/sceneColors.ts`(10줄) | `CARD_W/CARD_H`·`GROUP_COLORS` 상수(순환 import 회피용 분리) | 상수 3개 |
-| `scene/LastViewedBadge.tsx`(25줄) | "Last viewed" 유리 칩 1개 | `LastViewedBadge()` |
+| `scene/LastViewedBadge.tsx`(26줄) | "Last viewed" 어두운 칩(라임 글자+눈) 1개 — 생성·공유·캔버스·결과 모아보기·어셋 탭이 모두 이것(모양은 `scene.css`, 어셋 칸 호버·작은 칸 눈만은 `assets.css`) | `LastViewedBadge()` |
 
 #### 카드 본문(`scene/cards/`, 12파일 — 셸은 SceneBoard 소유)
 
@@ -572,7 +585,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `ThumbnailGrid.tsx`(716줄) | 생성물 카드 가상 그리드 · 마퀴/키보드 선택 · 날짜 그룹 · 빈 목록 안내(받는 중이면 '불러오는 중…' — `loading`) · 바깥 끌기 선택 끄기(`selectLocked`) · 폴더 창을 연 카드 표시(`openedFromId`) · 캔버스 '생성 결과' 창용 선택 기능(안 주면 종전 그대로): 카드 위 칸(`cellHeader`)·'마지막으로 본' 지정(`lastViewedId`)·흐림(`dimIds`)·폴더 표 표시만(`showFolder`)·이동과 함께 기준 카드 지정(`resolveScrollRequest.focus`) · 선택을 푼 Esc 는 `keyHandled` 로 표시 | `ThumbnailGrid` |
 | `GenerationCard.tsx`(779줄) | 카드 1장(그리드/리스트 두 모드) · 호버 영상 · 드래그 · 폴더 이름표(`onOpenFolder` 를 받았을 때만 — 카드 아래 변 가운데에 붙인 표·이름만·반투명, 소스·상태 배지는 그 위에 한 묶음 `.card-bottom`. `showFolder` 만 받으면 누를 수 없는 표시 `.card-folder.static`) · 고른 폴더 밖 흐림(`dimmed` → `.folder-dim`) · 폴더 창 안의 '방금 누른 카드' 표시(`openedHere` — 같은 자리·같은 모양에 글자·테두리만 라임, 카드 테두리는 안 건드림) | `GenerationCard`(memo) — 캔버스의 `scene/cards/GenerationCard.tsx` 와 이름만 같은 별개 파일(§5-b) |
 | `MediaThumbnail.tsx`(157줄) | 영상 포스터/이미지/포스터 없는 영상 3분기 통합 표현 | `MediaThumbnail`(10곳 재사용) |
-| `LibraryToolbar.tsx`(약 335줄) | 타입 필터·검토 필터·크기 슬라이더·리스트/그리드 토글·태그 패널 · 폴더 묶음 보기 전환(`folderCards` — [컷별 \| 전체]·'컷 N · M건', 받았을 때만) | `LibraryToolbar` |
+| `LibraryToolbar.tsx`(약 335줄) | 타입 필터·검토 필터·크기 슬라이더·리스트/그리드 토글·태그 패널 · 폴더 묶음 보기 전환(`folderCards` — [컷별 \| 전체]·'컷 N · M건', 받았을 때만) · 사이드바 끝선 손잡이(`SidebarEdgeToggle` — 폴더 창·생성 결과 창 안의 도구 줄은 `showFilterToggle:false`) | `LibraryToolbar` |
 | `FolderCardGrid.tsx`(약 195줄) | 공유 & 리뷰 탭의 폴더 묶음 보기 — 폴더마다 카드 한 장(표지·이름·건수·'대표 미정', 종이를 겹친 모양) + 맨 끝 '컷 밖(맨 위에선 에피소드 밖) N건' 칸. 한 번 클릭 = 고르기(Ctrl·Shift·끌기 = 마퀴 — **카드 위에서 시작해도**(꽉 찬 격자엔 빈 곳이 없다, 10-09 실측 100장에서 0장), `ThumbnailGrid` 와 같은 5px 판정·rAF 코얼레스·blur 면 버림), 두 번 클릭·Enter = 컷(하위 폴더 없음)이면 `onReel`(모아보기 — 고른 카드 위면 고른 컷 전부), 에피소드면 `onEnter`(그 폴더로 들어가기) — 10-13 낮(아침엔 컷도 들어가기, 그 전엔 폴더 창), 휠 클릭 = 컷 정보, 우클릭·메뉴 키 = `onOpen`(그 폴더의 창). 카드 크기는 `ThumbnailGrid` 와 같은 식(180×배율). `.cut-grid` 는 폴더 창을 닫은 뒤 초점을 돌려받는 자리 | `FolderCardGrid` |
 | `CoverInfo.tsx` | 폴더 카드의 정보 줄(모델 · 작업자 · 크레딧 · 생성일 · 검토) — 모아보기 [개별] 카드(`CutReel`)·컷 카드(그리드, `FolderCardGrid` 의 `.cut-meta`)·컷 줄(리스트, `EpisodeCardBody` 의 `.ep-meta`)이 같이 쓴다. 앞의 넷은 그 카드에 보이는 그림 한 장(대표, 없으면 가장 최근 것)의 것, 검토는 그 폴더 안의 개수(모르면 그 그림의 상태). 크레딧은 `lib/coverCredits` — 화면에 들어온 카드만 묻는다(`IntersectionObserver`). 컷 카드(그리드)에서는 줄 높이가 고정이다 — 값은 한 줄(말줄임), 생성일만 늘 두 줄(날짜 / 시각). 규칙은 `styles/generations.css` 의 `.reel-info.cut-meta` |
 | `EpisodeCardBody.tsx` | 에피소드 화면 카드의 안쪽 그림 — `FolderCardGrid` 가 하위 폴더를 가진 카드가 놓인 단계(`isEpisodeLevel`)에서 카드(`.cut-card.ep-card`, 안에 단추가 있어 div) 안에 그린다. 리스트 보기 = 가로 한 줄(번호 · 표지 · 이름과 숫자 · 컷 띠 4×2 · [열기]), 그리드 보기 = 큰 표지 + 컷 띠 한 줄 + 대표 진행 막대(Jay 2026-10-13). 카드 안 단추(`data-ep-action` — 컷 띠의 컷 = 그 컷으로, '+N'·[열기] = 그 에피소드로)의 누름은 격자가 카드 고르기·두 번 클릭으로 읽지 않는다. 서버가 새 집계를 안 주면(옛 공유 서버) 그 표시만 빠진다. **컷 화면의 리스트**(2026-10-13 오후)도 여기서 그린다: 줄 = 같은 모양에 띠만 그 컷의 생성물(`takes` — 그림 = 크게 보기, [폴더로] = 그 컷 폴더로)·검토 개수·표지 위 대표 표시 / 표(`layout="table"`, 리스트 단추 한 번 더) = 번호·작은 그림·숫자 열 |
@@ -581,10 +594,11 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `CutReel.tsx`(약 370줄) | 모아보기 — [개별] 큰 카드(표지·순번·★ 대표/최신 것·작업자·크레딧·생성일·검토) / [연결] `ReelPlayer`: 대표를 이어서 재생(가상 시간, 이미지·깨진 영상 3초, 길이를 다 알기 전 타임바 잠금, 반복 끄면 끝에서 멈춤, ↑↓·Space·Home/End). 클립은 보이는 값 전부의 JSON 으로 메모(카드가 다시 와도 그대로), 바뀌면 key 로 다시 올린다. 영상 길이는 **주소마다 한 번**(`DURATION_CACHE`, 모듈 수준)·**한 번에 둘씩** 읽고 끝나거나 닫히면 요소의 주소를 뗀다(10-09 실측: 28개 동시 읽기 → 첫 재생 6.2초 → 0.6초, 열고 닫기 5번 영상 요청 +334 → +7). 화면 영상의 loadedmetadata 로도 길이를 채운다. **영상 요소 둘(앞·뒤, 떼지 않음)**: 뒤의 것에 다음 영상(이미지 컷은 건너뛴 그 뒤 영상)을 미리 올려 두고 넘어갈 때 자리만 바꾼다, 끝 0.3초 전부터 뒤의 것을 소리 없이 굴린다(`ROLL_AHEAD`·`ROLL_MAX`, 편집 탭 `editVideoPair` 와 같은 원리) — 전환 간격 130~200ms → **0**(10-09 실측, Jay "끊김 없이"). 이벤트는 앞의 것·지금 컷이 영상일 때만 엔진에 간다, 세우면 굴리던 뒤의 것도 세운다, 정리 때 두 요소의 주소·기록을 비운다(StrictMode). `ViewTimeline` 과 원리는 같지만 요구가 달라 따로 둔다 | `CutReel`, `ReelPlayer` |
 | `FilterSidebar.tsx`(232줄) | 좌측 필터(프로젝트/컬러/자동태그/생성자/공유) 껍데기 | `FilterSidebar` |
 | `SearchBox.tsx`(58줄) | 디바운스 검색 입력 | `SearchBox` |
-| `TopBar.tsx`(150줄) | 상단바(로고·탭·동기화·검색·Assets·계정) | `TopBar` |
+| `TopBar.tsx`(270줄) | 상단바(로고·탭·동기화·아이콘 캡슐[첫 칸 검색칸·편집·Assets·관리·끝 칸 알림 종]·계정) | `TopBar` |
+| `TopIcon.tsx`(30줄) | 머리줄 아이콘 틀 — 평소 선(20px)·켜짐 투톤(22px) 두 그림을 그려 두고 `.lit` 로 고름 · 그라데이션 `Grad`(TopBar·NotificationCenter 가 같이 씀) | `TopIcon`, `Grad` |
 | `app/SelectionActionBar.tsx`(216줄) | 선택바 2종(`BoardSelectionActionBar`·`LibrarySelectionActionBar`) | 위 2개 |
 | `app/AppOverlays.tsx`(172줄) | App 이 띄우는 오버레이 모음(미리보기·정보·비교…) 배선. 코드를 늦게 받는 창의 **틀** `LazyModalShell`(막·겹 번호·Esc 를 여는 순간 쥐고 본문만 늦게 온다) | `AppOverlays`, `VideoCompareOverlay` |
-| `app/ResolveNotices.tsx` | Resolve 보내기 결과 가운데 확인이 필요한 것(부분 성공·실패·결과 불명) — 알림 바로 아래에 ✕ 로 닫을 때까지 남는 줄(세 줄까지). 겹이 아니다(Esc·뒤 화면의 키를 건드리지 않는다). 무엇을 남길지는 `lib/useResolveTransferActions` 가 정한다 | `ResolveNotices` |
+| `app/ResolveNotices.tsx` | Resolve 보내기 결과 가운데 확인이 필요한 것(부분 성공·실패·결과 불명) — 알림 바로 아래에 ✕ 로 닫을 때까지 남는 줄(세 줄까지). 겹이 아니다(Esc·뒤 화면의 키를 건드리지 않는다). 무엇을 남길지는 `lib/useResolveTransferActions` 가 정한다. 편집 탭 경고도 같은 줄의 위쪽에(2026-10-24 — `lib/useStateNotices`, 글자 단추·스스로 닫기) | `ResolveNotices` |
 | `generation/GenerationCardStatusBar.tsx`(154줄) | 카드 하단 S/T/C 상태줄 + 태그 에디터 호스팅 | 〃 |
 | `generation/GenerationCardIcons.tsx`(57줄) | 카드용 SVG 4종 | `ModelIcon` 외 |
 | `generation/GenerationThumbOverlay.tsx`(122줄) | 썸네일 호버 오버레이(정보·미리보기·다운로드) | 〃 |
@@ -601,7 +615,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 |---|---|---|
 | `AccountMenu.tsx`(502줄) | 계정·워크스페이스 드롭다운(포털) | `AccountMenu` |
 | `ManageAccount.tsx`(229줄) | 내 계정 플로팅 창(정보·표시이름) | `ManageAccount` |
-| `NotificationCenter.tsx`(631줄) | 벨 + 알림 패널(코멘트·릴리스 공지 병합, 포털) | `NotificationCenter` |
+| `NotificationCenter.tsx`(690줄) | 벨(머리줄 캡슐의 끝 칸 — 열림 = 금색 투톤) + 알림 패널(코멘트·릴리스 공지 병합, 포털) | `NotificationCenter` |
 | `UpdateProgressOverlay.tsx`(246줄) | 업데이트 진행 덮개(포털·화면 차단·자체 폴링·강제 확인) | `UpdateProgressOverlay` |
 | `SettingsPanel.tsx`(671줄) | 설정 플로팅 창 껍데기 + 생성물 점검/백필 | `SettingsPanel` |
 | `settings/SettingsSections.tsx`(611줄) | 설정 4개 절(외형·다운로드 위치·메타 연속성·Resolve) | 4개 export |
@@ -611,6 +625,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `settings/ComfyUnresolvedRunsSection.tsx`(51줄) | 미해결 Comfy 실행 목록 + 결과 회수·로컬 재저장·기록 정리 | 〃 |
 | `settings/CanvasArchiveSection.tsx`(80줄) | 설정 '캔버스 자료' — 캔버스 전체 내보내기·가져오기 단추와 저장 실패 안내 | 〃 |
 | `ShortcutsWindow.tsx`(131줄) | 단축키 재지정 창 | `ShortcutsWindow` |
+| `timeline/EditShortcutsWindow.tsx` | 편집 탭 단축키 창(막대의 H) — 동작마다 칸 둘·휠 칸 받기·× 비우기·↺. 규칙은 `lib/editShortcuts.ts` | `EditShortcutsWindow` |
 | `AdminWindow.tsx`(약 430줄) | 관리자 창(탭 호스트: 승인·멤버·업데이트·프로젝트·에셋 리스트) + 권한 상승 확인(공유 서버 탭은 2026-10-25 삭제 — 서버 관리 창으로) | `AdminWindow` |
 | `admin/ApprovalTab.tsx`(143줄) | 계정 승인·숨김·비번 초기화 표 | 〃 |
 | `admin/MemberRolesTab.tsx`(82줄) | 전역 역할 표 | 〃 |
@@ -634,8 +649,9 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `WorkspaceMark.tsx`(49줄) | 워크스페이스 색 표식(id 해시 색상) | 4 |
 | `InlinePromptRefs.tsx`(70줄) | 프롬프트의 `@소스`를 썸네일 칩으로 | 3 |
 | `ResizableSidebar.tsx`(105줄) | 폭 조절 사이드바 껍데기 | 2 |
+| `SidebarEdgeToggle.tsx`(13줄) | 사이드바 열고 닫기 손잡이(Jay 2026-10-26 시안 C — 열림 = 끝선 위 동그라미 ‹ · 닫힘 = 창 왼쪽 끝 반달 ›). 자리는 CSS `.side-edge-toggle` 가 부모 칸(도구 줄·에셋 목록·편집 탭 풀 머리줄) 기준으로 잡는다 — 그 칸의 왼쪽 끝 = 사이드바 끝선 | 3 |
 | `FolderReviewCount.tsx`(18줄) | 폴더 검토 카운트 배지 | 1(`FolderTreeView` 전용 — 공용 폴더에 있지만 실제 공용 아님, §5-b) |
-| `ViewIcons.tsx`(99줄) | 리스트/그리드 SVG(기본 16px — 15px 는 선이 반 픽셀에 걸려 0.5px 아래였다) · 작업 탭 "보관 기록" 아이콘(`ArchiveHistoryIcon` — 상자+시곗바늘) · 꽉 채우기/필터 사이드바/정보(`FitIcon`·`FilterPanelIcon`·`InfoIcon` — 글자 ▣▢▷ⓘ 가 기준선 탓에 1~1.6px 아래라 SVG 로, 2026-09-22 실측) · 빼기·더하기(`StepIcon` — 캔버스 카드 배치 12px·줌 8px, 글자 −/+ 는 1.5~2.4px 아래) · 닫기(`CloseIcon` — `.assets-x` 12곳·씬 팝업, 글자 ✕·× 는 1.3~1.5px 아래) · 비교 창 크게/원래(`MaximizeIcon`, 글자 □ 3.4px 아래) | 23(`ViewControls`·`LibraryToolbar`·`CompareModal`·`VideoCompareModal`·`assets/AssetCell`·`assets/ResolveProjectBrowser`·`generation/GenerationThumbOverlay`·`scene/SceneVariantPopup`·`history/HistoryBoardNode`·`manage/WorkBoard`·`scene/cards/{Generation,Comfy,Render}Card`·닫기 단추 창 10곳 — `AdminWindow`·`InfoPopup`·`ManageAccount`·`MediaPreview`·`SettingsPanel`·`ShortcutsWindow`·`assets/MountManager`·`edit/PartialEditModal`·`settings/SettingsGroup`·`spotlight/ServerConsolePanel`) |
+| `ViewIcons.tsx`(99줄) | 리스트/그리드 SVG(기본 16px — 15px 는 선이 반 픽셀에 걸려 0.5px 아래였다) · 작업 탭 "보관 기록" 아이콘(`ArchiveHistoryIcon` — 상자+시곗바늘) · 꽉 채우기/정보(`FitIcon`·`InfoIcon` — 글자 ▣ⓘ 가 기준선 탓에 1~1.6px 아래라 SVG 로, 2026-09-22 실측) · 빼기·더하기(`StepIcon` — 캔버스 카드 배치 12px·줌 8px, 글자 −/+ 는 1.5~2.4px 아래) · 닫기(`CloseIcon` — `.assets-x` 12곳·씬 팝업, 글자 ✕·× 는 1.3~1.5px 아래) · 비교 창 크게/원래(`MaximizeIcon`, 글자 □ 3.4px 아래) | 23(`ViewControls`·`LibraryToolbar`·`CompareModal`·`VideoCompareModal`·`assets/AssetCell`·`assets/ResolveProjectBrowser`·`generation/GenerationThumbOverlay`·`scene/SceneVariantPopup`·`history/HistoryBoardNode`·`manage/WorkBoard`·`scene/cards/{Generation,Comfy,Render}Card`·닫기 단추 창 10곳 — `AdminWindow`·`InfoPopup`·`ManageAccount`·`MediaPreview`·`SettingsPanel`·`ShortcutsWindow`·`assets/MountManager`·`edit/PartialEditModal`·`settings/SettingsGroup`·`spotlight/ServerConsolePanel`) |
 
 #### 미디어 보기·비교·부분수정(최상위 + `compare/` + `edit/`, 9파일)
 
@@ -651,14 +667,21 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `edit/PartialEditHost.tsx`(47줄) | `partialEdit` 이벤트 → 최신 Generation 조회 → 모달 개방 | `PartialEditHost`(§3.5 숨은 진입점) |
 | `timeline/EditTab.tsx`(약 1,100줄) | 편집 탭 조립 — 시퀀스 고르기·문서·재생·편집 키·컷(폴더) 비활성/숨기기·빈 곳 채우기(최종 확인된 것 먼저, 없으면 최신)·컷 더블클릭(공유 & 리뷰의 폴더 창을 App 에 열어 달라고 알린다)([EDIT_TAB.md](EDIT_TAB.md)). `edit/`(부분 수정)와 다른 기능이다 | `EditTab`(App 이 지연 로드) |
 | `timeline/EditTimeline.tsx`(약 345줄) | 눈금자(마크 인/아웃의 띠·북마크 꼬리표)·컷 줄·영상 트랙(트랙 색)·소리 줄·재생헤드. 클립은 위아래로만 끈다(컷 자리는 폴더 순서로 고정). 트랙 머리 우클릭·북마크 더블클릭은 무엇을 열지만 알린다 | `EditTimeline`, `EditMarks` |
-| `timeline/EditViewer.tsx`(약 230줄) | 뷰어 한 판 — 위 줄(지금 시각·무엇을 볼지·전체 길이·싱글/듀얼)·무대(`<video>` — 자기 시계로 이어 트는 판은 둘: 앞 · 다음 것을 미리 받는 뒤 `spareRef`)·아래 줄(타임바: 북마크·마크 인/아웃 · 버튼·반복·배속 · 오른쪽의 구간 반복·마크 인·마크 아웃). 타임라인·소스(클립·테이프)·한 트랙만이 같은 판을 쓰고, 시계는 편집 탭이 가진 엔진의 것이다. 다이나믹 재생 모드의 두 판은 아래 단추 줄 없이(`bare`) 두 판 밑의 공용 줄(`TransportButtons`·`VolumeControl`)을 쓴다 | `EditViewer`, `ViewerProps`, `ViewerMarking` |
-| `timeline/EditPool.tsx`(약 310줄) | 미디어 풀 — 재생헤드가 있는 컷의 공유 생성물을 폴더 목록 옆에 보인다. 보기 방식(썸네일·메타데이터·목록)·크기·검색·정렬. 누르기·Ctrl/Shift·끌어서 상자 = 고르기(마지막 것이 듀얼 뷰어의 소스, 2장 이상이면 비교) · 더블클릭 = 크게 보기 · 휠 클릭 = 넣을 트랙 고르기 · 우클릭 = 이 컷의 폴더 창. 폭은 `ResizableSidebar` 로 끌어서 바꾼다 | `EditPool`, `arrangePool` |
+| `timeline/EditViewer.tsx`(약 230줄) | 뷰어 한 판 — 위 줄(지금 시각·무엇을 볼지·전체 길이·싱글/듀얼)·무대(`<video>` — 자기 시계로 이어 트는 판은 둘: 앞 · 다음 것을 미리 받는 뒤 `spareRef`)·아래 줄(타임바: 북마크·마크 인/아웃 · 버튼·반복·배속 · 오른쪽의 구간 반복·마크 인·마크 아웃). 타임라인·소스(클립·테이프)·한 트랙만이 같은 판을 쓰고, 시계는 편집 탭이 가진 엔진의 것이다. 무대를 덮는 것(`over` — 다이나믹 재생 모드의 두 칸)을 받는다 | `EditViewer`, `ViewerProps`, `ViewerMarking` |
+| `timeline/EditTrimView.tsx`(약 90줄) | 다이나믹 재생 모드(W, 다빈치의 Dynamic Trim Mode — 보기만)의 덮개: 멈춘 동안 재생헤드에서 가장 가까운 편집점의 앞 컷 \| 뒤 컷을 나란히(`shotsAt`·`nearestPoint`·`mediaAt`) — 재생헤드가 움직이는 동안은 스스로 걷혀(0.4초 멈추면 다시) 밑의 한 화면이 따라간다 · ⊗ 로 끈다. 재생 중에는 편집 탭이 내린다(한 화면) | `EditTrimView` |
+| `timeline/EditPool.tsx`(약 310줄) | 미디어 풀 — 재생헤드가 있는 컷의 공유 생성물을 폴더 목록 옆에 보인다. 보기 방식(썸네일·메타데이터·목록)·크기·검색·정렬. 누르기·Ctrl/Shift·끌어서 상자 = 고르기(마지막 것이 듀얼 뷰어의 소스, 2장 이상이면 비교) · 더블클릭 = 크게 보기 · 휠 클릭 = 넣을 트랙 고르기 · 우클릭 = 이 컷의 폴더 창. 폭은 `ResizableSidebar` 로 끌어서 바꾼다 · 머리줄 첫 요소 = 왼쪽 폴더 목록 여닫기 끝선 손잡이(`SidebarEdgeToggle`) | `EditPool`, `arrangePool` |
 | `timeline/EditSoloViewer.tsx`(약 25줄) | 한 트랙만 보는 판 — `useEditFollow` 로 타임라인의 시계를 따라간다 | `EditSoloViewer` |
+| `timeline/EditShareViewer.tsx` | 편집 공유의 V0 판(다른 편집 보기) — 받은 스냅샷을 편 배치(`shareLayout`)를 `useEditFollow` 로 따라간다, 소리 없음 · 못 쓰면 안내 | `EditShareViewer` |
+| `timeline/EditShareMenu.tsx` | 편집 공유 알약(나만 보는 편집·서버에 저장·다른 편집 보기)·'V0 · 이름' 알약 + 상태·요청 훅 `useEditShare`(라임·15초 조회·늦은 응답 버림) | `EditShareMenu`, `useEditShare` |
+| `timeline/EditCleanFeed.tsx`(약 690줄) | 비디오 클린 피드(다빈치 Video Clean Feed) — 싱글/듀얼 단추 왼쪽의 단추·모니터 메뉴(크롬 창 관리 `getScreenDetails`, 앱 창 모니터는 흐림). 메뉴를 열 때 허브에 묻고(`/api/clean-feed/status`) **허브 방식**(`HubFeed` — 로컬 허브가 띄우는 전용 창에 WS 로 장면·표본·active, 작업 번호·open 직렬화·끊김 뒤 status 판정 · 내용이 같은 장면은 번호를 안 올린다)이나 **팝업 방식**(고른 모니터에 연 창에 포털로 '보이는 클립'만 — `useEditFollow` + `visibleClip`, 누른 순간 연다 `openCleanFeed`). 피드의 그림(`CleanFeedPicture`)은 영상 요소 둘(`editVideoPair` — 다음 클립 미리 받기)·재생률 따라붙기(`catchUp`) | `useCleanFeed`, `HubFeed`, `EditCleanFeedButton`, `EditCleanFeedWindow`, `CleanFeedPicture`, `openCleanFeed` |
+| `timeline/CleanFeedApp.tsx`(약 185줄) | 클린 피드 전용 창의 화면(`?cleanfeed=<세션>&key=` — `main.tsx` 가 씬 저장소 부팅 전에 가른다) — 허브 WS(role=feed)로 받은 장면·표본으로 `useEditFollow` + `visibleClip`, 키는 앱으로 넘긴다. 제목 `MV hub Clean Feed <세션>` 은 허브가 창을 찾는 열쇠 · 처음 붙기 전의 거절은 0.05초 간격으로 다시 붙는다 · 끝날 때 대기 토큰을 받으면 영상 둘을 비우고 대기 화면(`CleanFeedStandby` — 하위 프로토콜 대기 WS)으로, `assign` 이면 세션을 열쇠로 세션 화면(`CleanFeedSession`)을 새로 마운트하고 주소를 바꾼다 | `CleanFeedApp` |
+| `timeline/EditSplit.tsx`(약 90줄) | 뷰어와 타임라인 사이 손잡이 — 위아래로 끌어 타임라인 칸 높이를 정한다(편집 화면 뿌리의 `--ed-tl-h`, 끄는 동안은 값만 고치고 놓을 때 `EditTab` 이 `ch.editTimeline.tlHeight` 에 기억 · 더블클릭 = 기본 40% · Tab 으로 온 ↑↓ = 16px). 트랙 높이(Shift+휠)는 그 칸 안에서 바뀐다 | `EditSplit`, `TL_MIN` |
 | `timeline/EditImportConfirm.tsx` | 타임라인 작업본·저장 원문 보관 창과 파일 복원 확인 창 — 직전 파일 재선택 검증·문맥 변경 차단 | `EditImportConfirm`, `EditArchiveExportConfirm` |
-| `timeline/EditBackupPanel.tsx` | 타임라인 DB 백업 상태·사본 선택·직전 편집 보존 후 복원 | `EditBackupNotice`, `EditBackupPanel` |
+| `timeline/EditBackupPanel.tsx` | 타임라인 DB 백업 상태·사본 선택·직전 편집 보존 후 복원 · 실패·충돌 경고(`useEditBackupWarn` — 화면 위 알림 줄로) | `EditBackupPanel`, `useEditBackupWarn` |
 | `timeline/EditTrackMenu.tsx`(약 320줄) | 편집 탭의 메뉴들 — 껍데기 `EditMenu`(body 포털·자리·바깥 누르기·Esc/Tab·↑↓·뒤 화면 키 차단) 위에 카드 휠 클릭 메뉴(지금 있는 트랙을 보여 주고 고르면 그 트랙에 넣는다 — 미디어 풀과 편집 탭이 연 폴더 창 공용)와 트랙 머리 메뉴(트랙 추가·위/아래로·삭제·빈 트랙 삭제·색), 막대의 목록 메뉴(비활성 숨기기·빈 곳 채우기·모두 최종으로 확정), 클립 우클릭 메뉴(Resolve 보내기·길이 조절·최종 선택), 왼쪽 폴더 트리의 폴더 메뉴(공유 저장·최종 저장·원본 위치 열기 — 공유 & 리뷰 탭의 폴더 메뉴와 같은 규칙·모양) | `EditMenu`, `EditTrackMenu`, `EditTrackHeadMenu`, `EditListMenu`, `EditClipMenu`, `EditFolderMenu`, `EditSwatches`, `TrackRow`, `TrackAct` |
 | `timeline/EditExportConfirm.tsx`(약 105줄) | 편집 탭 막대의 [타임라인 Resolve 보내기] 확인 창 — 이름·트랙별 클립 수·길이·받는 곳을 보여 주고, Resolve 연결을 열릴 때 묻는다([다시 확인]). 못 이은 클립·빈 타임라인·원본 전송 조건에 걸리면 [보내기]가 안 눌린다. 틀은 `GradeStepModal` 의 것(`gradestep-*`) | `EditExportConfirm` |
 | `timeline/EditMarkerMenu.tsx`(약 100줄) | 북마크의 메뉴 둘 — 편집 창(이름: Enter·바깥 = 저장, Esc = 버림 · 색 16개 · 지우기)과 막대의 색 메뉴(새 북마크의 색·모두 지우기 — 다빈치의 마커 색 메뉴). 껍데기는 `EditMenu` | `EditMarkerMenu`, `EditMarkerColorMenu` |
+| `timeline/EditRetime.tsx`(약 210줄) | (2026-10-23) 속도 막대(Ctrl+R, 다빈치 리타임) — 고른 영상 클립 위에 겹쳐 그림(막대는 누름을 안 받고 잡는 곳·단추만) · 오른쪽 끝 위쪽 끌기 = 속도(정수 %, 원본 구간 그대로) · 아래쪽 끌기 = 끝(속도 그대로 `trim`) · `p% ▾` 메뉴·직접 입력 · 놓을 때 한 번 `onChange`(부르는 쪽 `EditTab` 이 `setClipSpeed`·`setClipRange`). 시각 변환은 `lib/editTimeline` 의 `mediaAt`·`localAt` 만 | `EditRetime`, `speedForFrames`, `trimForFrames`, `speedCap`, `speedText` |
 | `timeline/EditTrimPop.tsx`(약 250줄) | 클립 길이 조절 창 — 타임라인의 클립을 휠 클릭하면 뜬다. **떠 있는 창**(`lib/useFloatingPanel` — 머리 끌기·자리 기억, body 포털. 밖을 눌러도 안 닫히고 떠 있는 동안 타임라인을 쓴다 · 키는 초점을 따른다). 큰 화면(그 길이의 마지막 프레임 — 타임라인 재생헤드와 무관)·창 안 재생·띠·`±1f`/`±10f`·숫자 칸(초·프레임)·원본 길이로. 값은 24fps 프레임, 걸음마다 부르는 쪽(`EditTab`)이 `setClipTrim` 으로 적고 이어진 걸음이 되돌리기 한 단계 | `EditTrimPop` |
 | `timeline/EditCard.tsx`(약 90줄) | 편집 탭 미디어 풀(썸네일 보기)의 생성물 카드 — 라이브러리 카드(`GenerationCard`)를 그대로 쓴다(호버 단추 S·T·C·ⓘ·⤓ 까지, Jay 2026-10-15). 껍데기는 role=button(단추 안에 단추를 못 둔다). 동작은 앱이 `EditTab.cardActions` 로 준다(`PoolCardActions`). 아래 변의 표 = "V1 - 선택 카드"(폴더 창의 표와 같은 글) | `EditCard`, `PoolItem`, `PoolCardActions`, `editMarkLabel` |
 | `timeline/EditSidebar.tsx`(약 150줄) | 프로젝트·폴더에서 시퀀스 고르기(`FolderTreeView` 만 쓴다 — `ProjectSection` 아님). 폴더 우클릭 = 폴더 메뉴(`EditFolderMenu` — 실행은 App 의 `onFolderAction`) | `EditSidebar` |
@@ -677,7 +700,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `assets/AssetFolderTabs.tsx` | 기존 씬 탭 디자인·끌기 계산을 재사용하는 폴더 탭·정렬·닫기·키보드 이동 |
 | `AssetsWindow.tsx`(27줄) | `?embed=assets` 분리 창 껍데기(§3.5) |
 | `assets/AssetCell.tsx`(454줄) | 셀 1개(썸네일·호버 오버레이·상태줄) memo |
-| `assets/AssetsCrumbBar.tsx`(216줄) · `AssetsSidebar.tsx`(62줄) · `FolderTree.tsx`(69줄) | 경로 빵부스러기 / 좌측 패널 / 폴더 트리(`common/FolderTreeView.tsx` 와 다른 에셋 전용 트리, §5-b) |
+| `assets/AssetsCrumbBar.tsx`(216줄) · `AssetsSidebar.tsx`(62줄) · `FolderTree.tsx`(69줄) | 경로 빵부스러기 / 좌측 패널(여닫기 = `AssetsView` 의 `treeOpen` — `ch.assets.treeOpen`, 이 창만의 기억) / 폴더 트리(`common/FolderTreeView.tsx` 와 다른 에셋 전용 트리, §5-b) |
 | `assets/ResolveProjectBrowser.tsx`(571줄) | `@davinci` 루트의 Resolve 프로젝트 카드 목록·라이브러리 연결·프로젝트 열기 |
 | `assets/AssetSortMenu.tsx`(120줄) · `MountManager.tsx`(206줄) | 정렬 드롭다운 / 외부 폴더 등록 창 |
 | `assets/assetsViewModel.ts`(247줄) · `treeUtils.ts`(114줄) · `exportDrag.ts`(27줄) · `assetRefreshPolicy.ts`(26줄) | 순수 계산(필터·정렬·트리·OS 드래그·복귀 갱신 정책) |
@@ -769,6 +792,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `deactivated.ts` | 저장 | 생성물·에셋·폴더 비활성(회색) 로컬 표시 |
 | `theme.ts` | 저장 | 강조색 CSS 변수 파생·적용 + 언어·모션 설정 |
 | `shortcuts.ts` | 저장 | 사용자 지정 단축키 레지스트리 — 충돌은 같이 켜지는 화면끼리만(`scope`), 고정 키는 지정 불가(`isReservedBinding`), Shift 는 Ctrl·Alt 와 함께일 때만 센다, 저장 직전 다시 읽기 + storage 이벤트(다른 탭) |
+| `editShortcuts.ts` | 저장 | **편집 탭** 단축키(공용 `shortcuts.ts` 와 따로) — 기본 동작 표·물리 키 정규화(`keySlot`)·휠(`wheelSlots`)·찾기(`findKeyAction`·`findWheelAction`)·예약(`reservedOf`)·읽을 때 고치기·칸 하나 쓰기(`setSlot`)·툴팁 글자(`hintOf`·`fillKeys`). `ch.editShortcuts`. 규칙 정본 = `docs/status/편집탭_단축키설정_설계_2026-10-23.md` |
 | `downloadDir.ts` | 저장 | File System Access 다운로드 폴더 핸들 |
 
 **4. 계정·인증·워크스페이스(14)**
@@ -950,12 +974,14 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `editResolveExport.ts` | 순수 | 편집 탭의 타임라인 Resolve 보내기 — 지금 배치를 프레임 단위 계획(`mvhub.edit-timeline` v1: 클립·소리·북마크·인/아웃, 절대 시각을 한 번씩 반올림)으로 옮긴다 · 타임라인 이름. 받는 쪽은 `services/resolve_timeline.py` 의 `validate_plan` — 계획의 칸을 바꾸면 두 곳을 같이 |
 | `editArchive.ts` | 순수 | 타임라인 보관·복구 JSON 봉투·외부 파일 검사(알 수 없는 필드/대상/크기·트랙·시간 상한)·작업본/직전 파일 만들기·문서 의미 비교 |
 | `editDocBackup.ts` | 상태·IO | 성공 저장·수용한 원문 구독, 탭별 버전 기준·자동 백업·충돌 사본·재시도·계정 전환 응답 차단 |
+| `editShare.ts` | 순수 | 편집 공유의 스냅샷(보이는 것 한 줄)·서버와 같은 검사·'ASCII 로 감싼 길이'·받은 것을 조각마다 자리 하나로(`shareLayout`)·재생용 빈 꼬리(`withTail`) |
+| `cleanFeedProtocol.ts` | 순수 | 클린 피드 전용 창의 앱 ↔ 허브 ↔ 피드 글과 규칙 — 표본(`time` 칸 — 글의 `t` 는 종류)·피드 시계(`feedClock`: 재생 = playing·moving·재동기됨이고 표본 0.5초(`HOLD_MS`) 안 — 그 사이 외삽, 넘으면 그 자리에 선다·limit 안)·표본 비교(`newerSample`)·키 길(`feedKeyRoute`)·탭 id·open 순번 · 대기 WS 주소·하위 프로토콜(`standbySocketUrl`·`STANDBY_PROTOCOL`·`isStandbyToken`) |
 | `editTimelineStore.ts` | 저장 | 편집 문서 localStorage 읽기/쓰기(접근 오류 구분·손상 원문은 `.bad`로 보존)·불확실 복원의 키별 보존·되돌리기 스택·마지막 시퀀스·화면 설정(`EditUi`) |
 | `useEditDoc.ts` | 훅 | 편집 문서 상태 — 바꾸기·저장·되돌리기·다른 창의 변경 받아들이기((키, 문서) 한 쌍·`rev`) |
 | `useEditSequence.ts` | 훅+api | 편집 탭 조회 — 프로젝트·폴더 트리(온전성 표시)와 시퀀스 공유물 전체(쪽 넘김·문맥 가드·상한 2,000). 태그 변경은 기존 항목만 두 태그 필드 갱신·항목별 조회 출발 순번 기록, 전 프로젝트 새 항목 수 전용 갱신 제공 |
 | `useEditPlayback.ts` | 훅 | 편집 탭 재생 — 시계 주인(영상/rAF)·보이는 소스 전환·훑기·배속·반복·구간 반복(`range` — 전체 반복과 따로, 켜는 순간은 `playRange`)·다음 영상 미리 받기와 미리 굴리기(`upcoming`·`prepare` — 영상 요소가 둘일 때)·고른 배속(`speed`). 멈추면 멈춘 자리를 그린다. 프레임마다 React 를 건드리지 않는다. 타임라인용·소스용(클립·테이프) 두 인스턴스 |
 | `editVideoPair.ts` | 순수 + 훅 | 편집 탭의 영상 요소 둘을 하나처럼(`pairVideo`) — 앞의 것이 보이고 뒤의 것은 다음 영상을 미리 받아 세워 둔다. 넘어갈 때 받지 않고 앞뒤만 바꾸고(`swap`), 직전에는 소리 없이 미리 굴린다(`roll`). `useVideoPair` = 판 하나의 요소 둘과 묶음 |
-| `useEditFollow.ts` | 훅 | 편집 탭 '한 트랙만 보기' — 타임라인의 시각을 프레임마다 읽어 그 트랙의 클립을 맞춰 보인다(시계에 영향 없음) |
+| `useEditFollow.ts` | 훅 | 편집 탭 '한 트랙만 보기'·클린 피드·V0 판 — 타임라인의 시각을 프레임마다 읽어 그 클립을 맞춰 보인다(시계에 영향 없음). 영상이 쌍(`editVideoPair`)이면 다음 클립을 미리 받아 바꿔 끼우고, `catchUp` 이면 재생 중 어긋남을 재생률로 메운다(소리 없는 판만) |
 | `videoDuration.ts` | 브라우저 | 영상 길이 재기(메타데이터만·주소별 한 번·동시에 4개) |
 | `folderLabel.ts` | 순수 | 카드 폴더 이름표 글자(끝 두 칸)·전체 경로 표기 |
 | `coverCredits.ts` | 훅 | 폴더 카드의 크레딧(그 그림 한 장의 실제 크레딧 — `api.generationMetrics`) — 한 번 받은 것은 모듈에 기억하고(다시 묻지 않는다) 한꺼번에 넷만 묻는다. 기다리는 화면이 있는 것만 — `wanted` 가 거짓이면 안 묻고, 기다리는 화면이 없어진 요청은 출발 전이면 줄에서 뺀다. 멎은 요청은 20초 뒤 끊고 '모름'(`useCoverCredits` · 시험용 `forgetCoverCredits`). 한 건을 묻는 `askMetrics`(시간 제한 + 밖에서 끊기)는 컷 정보 창(`CutInfoPopup`)도 쓴다 |
@@ -1029,12 +1055,12 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `compareDiff.ts` | 순수 | 비교 모달의 프롬프트·파라미터 차이 계산 |
 | `compareWindow.ts` | 순수 | 비교 창 이동·크기·뷰포트 맞춤 |
 | `synchronizedVideos.ts` | 브라우저 | 비교 영상 재생·탐색 동기화 바인더 |
-| `popupWindows.ts` | 브라우저 | 임베드 창(에셋·관리) `window.open()`·재활성화 |
+| `popupWindows.ts` | 브라우저 | 임베드 창(에셋·관리) `window.open()`·재활성화 · 앱(앱 창·별도 창)을 떠났다 앱 창으로 돌아오면 허브에 별도 창 올리기(`/api/app-windows/raise`) |
 | `historyGraphLayout.ts` | 순수 | 계보 보드 노드 배치·간선·하이라이트 추적 |
 | `useHistoryBoardState.ts` | 훅 | 계보 보드 상태(App.tsx 추출) |
 | `appWindow.ts` | 브라우저+저장 | 앱 전용 창(`?appwin=1`) 감지 |
 
-**18. 코멘트·알림·토스트(8)**
+**18. 코멘트·알림·토스트(9)**
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
@@ -1045,6 +1071,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `notificationCenter.ts` | 순수+저장 | 알림 탭·릴리스 공지 병합·읽음·배지 수 |
 | `flash.ts` | 순수 | 전역 토스트 디스패치(lib 하위용) |
 | `useAppToast.ts` | 훅 | 토스트 상태·타이머 |
+| `useStateNotices.ts` | 훅 | 상황이 이어지는 동안 남는 안내 줄(편집 탭 경고 — 2026-10-24) — 열쇠 = 상황, ✕ 로 닫으면 그 상황 동안 안 뜨고 풀리면 잊는다 · 앱이 Resolve 결과 줄(`ResolveNotices`)에 같이 그린다(`NoticeLine`) |
 | `useAppNavigation.ts` | 훅 | 탭·창 네비게이션 상태(브라우저 history) — 이미 떠 있는 관리자 창은 또 열지 않는다(기록이 두 겹이면 Esc 한 번에 안 닫힌다) |
 
 **19. UI 공용 훅·소품(12)**
@@ -1169,7 +1196,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 |---|---|---|
 | `update_release.bat`(1줄) ⚠배포전용 | `run_release_update.ps1` 1줄 호출 | → `run_release_update.ps1` |
 | `run_release_update.ps1`(82줄) ⚠배포전용 | worker.bat 를 TEMP 로 복사해 격리 실행, 종료코드 보존 | → `update_release_worker.bat` |
-| `update_release_worker.bat`(1274줄) ⚠배포전용 | 자기 안 마커 뒤 PS1 페이로드를 분리 추출해 실행 — Prepare→Commit 2단계 업데이트 트랜잭션, 잠금(exit17)·Resolve전송중(exit18) 특수코드, 실패시 롤백 | 격리 실행(자기 자신을 덮어써도 생존) |
+| `update_release_worker.bat`(1274줄) ⚠배포전용 | 자기 안 마커 뒤 PS1 페이로드를 분리 추출해 실행 — Prepare→Commit 2단계 업데이트 트랜잭션, 잠금(exit17)·Resolve전송중(exit18) 특수코드, 실패시 롤백 · MCP 연결기(Claude·Codex 가 설치본 런타임으로 띄우고 되살림)는 앱으로 안 센다(`Test-McpConnector` — 끄기 판정·드레인·실패 뒤 재기동은 앱만, 남은 폴더를 물면 연결기만 끄고 다시 지움) | 격리 실행(자기 자신을 덮어써도 생존) |
 | `update_cli.bat`(112줄) | Higgsfield CLI 를 `hf_cli_version.txt` 핀에 정확히 맞춤(설치/검증) | 수동 — 어느 체인도 호출하지 않음 |
 
 **릴리스 제작·설치(관리자 PC 전용) — 배포 담당, 배포 시**
@@ -1304,6 +1331,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | 씬(`scene/`)·스포트라이트(`spotlight/`) 사이의 근사 중복(삽입 위치 계산·드래그 세션·바깥클릭+Esc·가시성 폴러) | 알고리즘은 같지만 feature 경계(ARCHITECTURE §2 "feature 끼리 직접 import 금지") 때문에 각자 복제됐다 — **합칠 자리는 `shared`/`lib` 이지 서로를 참조하는 게 아니다** |
 | `common/ViewIcons.tsx` `InfoIcon`(선 1.5) ↔ `assets/ResolveProjectBrowser.tsx` 안의 `InfoIcon`(선 2) | 모양은 같고 굵기가 다르다 — 카드 오버레이 ⓘ 는 원래 글자 ⓘ 의 가는 선에, Resolve 머리글 ⓘ 는 Jay 가 시안으로 본 굵기(도구 줄 사슬 아이콘과 한 벌)에 맞췄다. 합치면 한쪽 모양이 바뀐다 |
 | 글자 아이콘 단추의 `@supports (text-box …)` 규칙 4곳(`styles/generations.css` `.card-sf`·`.card-cm`·`.ov-icon` · 같은 파일 캔버스 줌 `.zc-fit` · `styles/history.css` `.linb-ov-btn`·`.linb-sf` · `styles/assets.css` `.af-btn`) | 같은 처방(글자 칸을 대문자 높이로 다듬어 정중앙)이지만 한 규칙으로 못 합친다 — text-box 는 flex·grid 안 글자에 안 먹어 단추마다 block 으로 바꿔야 하고, SVG 를 담는 상태(최종 ★·ⓘ·가계 보기)·span 그립은 클래스별로 빼야 한다. 미지원 브라우저는 `@supports` 밖의 옛 flex 정렬 그대로 |
+| `services/clean_feed_window.find_browser` ↔ `run_agent_session._find_app_browser` | 같은 규칙(App Paths HKCU→HKLM → Program Files → 엣지)의 크롬 찾기. 런처는 저장소 루트라 staged 업데이트로 바뀌지 않고, 허브 쪽은 stage 코드다 — 합치면 허브가 루트 파일을 import 해 stage 로 도는 서버의 갱신 경계가 깨진다 |
 | S2 — `restart_server_task.ps1`(`Test-MvHubServerCommandLine`) ↔ `tools/stop_local_hub_on_port.ps1`(`BundledPythonPath` 레거시 폴백 추가) | 포트 소유권 판정 로직이 거의 같지만, `stop_local_hub_on_port.ps1` 에만 있는 레거시 폴백의 존재 이유가 확인되지 않았다 — **합치기 전에 그 폴백이 지키는 것부터 확인**(안전장치로 확정된 것은 아니고, 확인이 필요하다는 뜻) |
 
 ### (b) 이름이 같은데 동작이 다른 것 / 이름이 헷갈리는 쌍

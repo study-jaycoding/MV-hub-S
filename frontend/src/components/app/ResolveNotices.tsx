@@ -7,9 +7,10 @@
 //    누르면 뒤의 고른 카드에 색·비활성이 걸렸다(Codex 코드 리뷰 — 길이 조절 창 EditTrimPop 과 같은 길).
 //  · ✕ 를 마우스로 눌러도 초점을 가져가지 않는다 — 가져가면 줄이 사라지면서 초점이 BODY 로 떨어진다.
 //  · 초점이 있던 줄이 사라지면 남은 줄의 ✕ 로 옮긴다(아래 focusAt).
+//  · 편집 탭의 경고도 같은 줄에 선다(Jay 2026-10-24 — lib/useStateNotices). 그 줄은 닫기·글자 단추를 스스로 가져온다.
 import { useLayoutEffect, useRef } from "react";
 import { useT } from "../../lib/i18n";
-import type { ResolveNotice } from "../../lib/useResolveTransferActions";
+import type { NoticeLine } from "../../lib/useStateNotices";
 
 // 첫 마디(— 나 · 앞)를 굵게 — 무슨 일인지가 먼저 읽히게
 function parts(text: string): [string, string] {
@@ -19,7 +20,7 @@ function parts(text: string): [string, string] {
 
 const closersOf = (box: HTMLElement | null) => [...(box?.querySelectorAll<HTMLButtonElement>(".resolve-notice-x") ?? [])];
 
-export function ResolveNotices({ items, onDismiss }: { items: readonly ResolveNotice[]; onDismiss: (id: number) => void }) {
+export function ResolveNotices({ items, onDismiss }: { items: readonly NoticeLine[]; onDismiss: (id: number) => void }) {
   const t = useT();
   const boxRef = useRef<HTMLDivElement>(null);
   // 초점이 있던 줄이 사라지면 남은 줄의 ✕ 로 옮긴다 — 같은 자리의 줄(없으면 마지막 줄)로. 줄이 사라지는 길은 둘이다: 키보드로 그 줄을
@@ -35,15 +36,23 @@ export function ResolveNotices({ items, onDismiss }: { items: readonly ResolveNo
   }, [items, focusAt]);
   if (!items.length) return null;
   return (
-    <div className="resolve-notices" ref={boxRef} role="status" aria-live="polite" aria-label={t("Resolve 보내기 결과")}
+    <div className="resolve-notices" ref={boxRef} role="status" aria-live="polite" aria-label={t("안내")}
       onKeyDown={(event) => event.stopPropagation()}>
       {items.map((item) => {
         const [head, rest] = parts(item.text);
+        const own = "onDismiss" in item ? item : null; // 편집 탭 경고 — 닫기·단추를 스스로 가져온다
         return (
           <div className="resolve-notice" key={item.id}>
-            <span><b>{head}</b>{rest}</span>
+            <span title={own?.title}>
+              <b>{head}</b>{rest}
+              {own?.action && <>{" "}
+                <button type="button" className="resolve-notice-act" onMouseDown={(event) => event.preventDefault()} onClick={own.action.run}>
+                  {own.action.label}
+                </button>
+              </>}
+            </span>
             <button type="button" className="resolve-notice-x" aria-label={t("안내 닫기")} title={t("안내 닫기")}
-              onMouseDown={(event) => event.preventDefault()} onClick={() => onDismiss(item.id)}>
+              onMouseDown={(event) => event.preventDefault()} onClick={() => ("onDismiss" in item ? item.onDismiss() : onDismiss(item.id))}>
               <span aria-hidden="true">✕</span>
             </button>
           </div>

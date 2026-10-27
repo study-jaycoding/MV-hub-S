@@ -1,14 +1,31 @@
 // 편집 탭 왼쪽 — 프로젝트와 폴더 트리에서 시퀀스(컷 폴더들을 담은 폴더)를 고른다.
 // 라이브러리 사이드바(ProjectSection)를 쓰지 않는다: 그쪽은 폴더 클릭이 '생성 목적지'를 서버에 저장한다.
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { KEY_COLORS } from "../../lib/appConstants";
+import type { PoolFilter } from "../../lib/editTimelineStore";
 import { pressStartedCovered } from "../../lib/keyGate";
 import type { Project } from "../../types";
 import { folderConfirmText, type FolderMenuKind } from "../../lib/folderContextMenu";
 import { useT } from "../../lib/i18n";
 import type { EditTree } from "../../lib/useEditSequence";
+import { ColorFilterDots } from "../common/ColorFilterDots";
 import { FolderTreeView } from "../common/FolderTreeView";
 import { ResizableSidebar } from "../common/ResizableSidebar";
+import type { PoolCreator } from "./EditPool";
 import { EditFolderMenu } from "./EditTrackMenu";
+
+const COLOR_DOTS = [{ k: "r", hex: KEY_COLORS.r }, { k: "g", hex: KEY_COLORS.g }, { k: "b", hex: KEY_COLORS.b }]; // 공유 탭 사이드바와 같은 세 색
+
+// 왼쪽 아래 '📌 컬러 · 전역 태그 · 생성자'(Jay 2026-10-23) — 공유 탭 사이드바 아래 묶음과 같은 모양(같은 클래스)으로 미디어 풀의 카드를 거른다.
+//  open = 펼침(처음엔 접힘) · creators·autoTags = 이 시퀀스의 공유물에서 센 것(EditPool.poolFacets)
+export interface EditSideFilter {
+  open: boolean;
+  onToggle: () => void;
+  value: PoolFilter;
+  onChange: (next: PoolFilter) => void;
+  creators: PoolCreator[];
+  autoTags: string[];
+}
 
 // 고른 폴더까지 가는 길은 펼쳐 둔다.
 function ancestors(path: string): string[] {
@@ -30,7 +47,9 @@ export function EditSidebar({
   onReload,
   onGrabFocus,
   onFolderAction,
+  filter,
 }: {
+  filter: EditSideFilter;
   projects: Project[];
   projectsState: "loading" | "ok" | "error";
   openProject: string | null;
@@ -84,6 +103,9 @@ export function EditSidebar({
     coveredPressRef.current = false;
     event.stopPropagation();
   };
+  const value = filter.value;
+  const change = (patch: Partial<PoolFilter>) => filter.onChange({ ...value, ...patch });
+  const activeCount = value.colors.length + value.autoTags.length + Number(value.final) + Number(value.hideGray) + Number(!!value.creator);
 
   return (
     <ResizableSidebar>
@@ -158,6 +180,63 @@ export function EditSidebar({
             </div>
           </div>
         </section>
+      </div>
+      <button type="button" className={"sidebar-foot-toggle" + (filter.open ? " on" : "")} aria-expanded={filter.open}
+        title={filter.open ? t("접기 — 폴더를 더 넓게 본다") : t("펼치기")} onMouseDown={keepFocus} onClick={filter.onToggle}>
+        <span className="sidebar-foot-pin">📌</span>
+        {t("컬러")} · {t("전역 태그")} · {t("생성자")}
+        {/* 접어 둔 채 거르는 중이면 켠 개수 — 풀이 왜 줄었는지 보이게 */}
+        {!filter.open && activeCount > 0 && (
+          <span className="ed-foot-count" title={t("미디어 풀을 거르는 중")}>{activeCount}</span>
+        )}
+      </button>
+      <div className="sidebar-foot" hidden={!filter.open} onMouseDown={keepFocus}>
+        <section>
+          <h4>{t("컬러")}</h4>
+          <div className="color-dots">
+            <ColorFilterDots
+              colorDots={COLOR_DOTS}
+              activeColors={new Set(value.colors)}
+              onToggleColor={(hex) => change({ colors: value.colors.includes(hex) ? value.colors.filter((item) => item !== hex) : [...value.colors, hex] })}
+              grayOn={value.hideGray}
+              onToggleGray={() => change({ hideGray: !value.hideGray })}
+              finalOnly={value.final}
+              onToggleFinal={() => change({ final: !value.final })}
+            />
+          </div>
+        </section>
+        <section>
+          <h4>{t("전역 태그")}</h4>
+          <div className="chips">
+            {!filter.autoTags.length && <span className="muted">{t("없음")}</span>}
+            {filter.autoTags.map((tag) => {
+              const on = value.autoTags.includes(tag);
+              return (
+                <span key={tag} className={"auto-tag-chip" + (on ? " on" : "")}>
+                  <button type="button" className="auto-tag-name" title={on ? t("필터 해제") : t("이 전역 태그가 붙은 것만 보기")}
+                    onClick={() => change({ autoTags: on ? value.autoTags.filter((item) => item !== tag) : [...value.autoTags, tag] })}>
+                    {tag}
+                  </button>
+                </span>
+              );
+            })}
+          </div>
+        </section>
+        {filter.creators.length > 0 && (
+          <section>
+            <h4>{t("생성자")}</h4>
+            {filter.creators.map((creator) => (
+              <div key={creator.key} className={"creator-row" + (value.creator === creator.key ? " on" : "")}>
+                <button type="button" className="creator-pick"
+                  onClick={() => change({ creator: value.creator === creator.key ? null : creator.key })}>
+                  <span className="creator-dot" style={{ background: creator.mine ? "var(--accent)" : "#4ade80" }} />
+                  <span className="creator-name">{creator.name || (creator.mine ? t("나") : t("팀원"))}</span>
+                  <span className="creator-count">{creator.count}</span>
+                </button>
+              </div>
+            ))}
+          </section>
+        )}
       </div>
       {folderMenu && (
         <EditFolderMenu x={folderMenu.x} y={folderMenu.y} name={folderMenu.name} path={folderMenu.path} depth={folderMenu.depth}

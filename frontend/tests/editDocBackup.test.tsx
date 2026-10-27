@@ -46,11 +46,13 @@ beforeEach(() => {
     if (getApiPause()) throw new Error("paused");
     if (!init?.method) return listing(canonical, revision) as never;
     const body = JSON.parse(String(init.body));
-    if (String(url).endsWith("/restore")) {
-      if (body.base_revision !== (canonical === null ? null : revision)) return { status: "conflict", head: canonical && meta(canonical, revision) } as never;
-      if (body.local_raw !== null && body.local_raw !== canonical) copies.push(body.local_raw);
+    if (String(url).endsWith("/restore")) { // 백엔드 restore_edit_backup 과 같게 — 같은 원문이면 same(판 그대로)
       const data = body.source.data ?? copies[0];
-      if (canonical !== null && canonical !== data) copies.push(canonical);
+      const same = canonical === data;
+      if (!same && body.base_revision !== (canonical === null ? null : revision)) return { status: "conflict", head: canonical && meta(canonical, revision) } as never;
+      if (body.local_raw !== null && body.local_raw !== data && body.local_raw !== canonical) copies.push(body.local_raw);
+      if (same) return { status: "same", head: meta(canonical!, revision), data } as never;
+      if (canonical !== null) copies.push(canonical);
       canonical = data; revision += 1;
       return { status: "saved", head: meta(canonical!, revision), data } as never;
     }
@@ -510,6 +512,205 @@ it("복원 문맥을 벗어난 clip은 서버 쓰기 전에 거절한다", async
 it("사본 본문은 선택한 hash 하나로 요청하며 페이지 매개변수를 보존한다", async () => {
   startEditDocBackup(); await loadEditBackup(key, 20, "copy/hash");
   expect(String(request.mock.calls[0][0])).toContain("offset=20&limit=20&copy_hash=copy%2Fhash");
+});
+// ── 열자마자 바뀐 편집이 영구 충돌에 갇히던 것(2026-10-26 — 실측: head 가 10-23 에 멈추고 사본 7개가 전부 conflict) ──
+//  잇는 기준 = 지금 원문 또는 syncedRaw(지금 로컬이 그 위에 이어진 원문 — 읽어 들인 원문·서버가 받아 준 원문·로컬 적용을 확인한 복원 원문).
+it("열 때 읽은 원문이 head 와 같으면 첫 확인 전에 바뀐 편집도 head 판 번호로 저장한다(사본 없음)", async () => {
+  canonical = makeRaw("loaded"); revision = 4; localStorage.setItem(key, canonical);
+  startEditDocBackup(); writeEditRaw(key, makeRaw("edited-before-check")); await tick();
+  expect(bodyOf(puts().at(-1)!).base_revision).toBe(4);
+  expect(canonical).toBe(makeRaw("edited-before-check")); expect(copies).toEqual([]);
+  expect(getEditBackupStatus(key).state).toBe("saved");
+});
+it("같은 프로필 다른 창의 저장 알림 뒤 그 창 PUT 보다 먼저 충돌해도, 그 창이 저장하면 다음 편집은 이어서 저장한다", async () => {
+  canonical = makeRaw("first"); revision = 1; localStorage.setItem(key, canonical);
+  startEditDocBackup(); await tick();
+  const other = makeRaw("other-r1");
+  act(() => { localStorage.setItem(key, other); window.dispatchEvent(new StorageEvent("storage", { key })); });
+  await tick(); // 다른 창의 PUT 이 아직 — 이 창은 충돌 사본
+  expect(copies).toEqual([other]); expect(getEditBackupStatus(key).state).toBe("conflict");
+  canonical = other; revision = 2; // 다른 창의 PUT 이 닿았다
+  writeEditRaw(key, makeRaw("mine-after")); await tick(5100);
+  expect(bodyOf(puts().at(-1)!).base_revision).toBe(2);
+  expect(canonical).toBe(makeRaw("mine-after")); expect(getEditBackupStatus(key).state).toBe("saved");
+});
+it("로컬 없음 → 자동 복구 → 2초 안 편집도 복구한 head 판 번호로 저장한다", async () => {
+  canonical = makeRaw("recover"); revision = 3;
+  startEditDocBackup(); await act(async () => { render(true); });
+  expect(edit.doc.clips[0].gen).toBe("recover");
+  editOnce("after-recover"); await tick();
+  expect(bodyOf(puts().at(-1)!).base_revision).toBe(3); expect(copies).toEqual([]);
+  expect(getEditBackupStatus(key).state).toBe("saved");
+});
+it.each([
+  ["같은 원문(same — 판 그대로)", "backup", 3, [makeRaw("mine")]],
+  ["다른 원문(saved — 판 +1)", "server-head", 4, [makeRaw("mine"), makeRaw("server-head")]],
+])("수동 복원 직후(첫 확인 전) 편집도 복원한 head 판 번호로 저장한다 — %s", async (_label, head, after, preserved) => {
+  localStorage.setItem(key, makeRaw("mine")); canonical = makeRaw(head as string); revision = 3;
+  startEditDocBackup(); render(); const snapshot = edit.captureArchiveSnapshot(true)!;
+  let result: unknown;
+  await act(async () => { result = await edit.replaceFromBackup(makeRaw("backup"), snapshot, 3, target); });
+  expect([result, canonical, revision]).toEqual(["saved", makeRaw("backup"), after]);
+  editOnce("after-restore"); await tick();
+  expect(bodyOf(puts().at(-1)!).base_revision).toBe(after);
+  expect(copies).toEqual(preserved); // 복원 직전 보존뿐 — 편집은 사본이 아니라 head 로
+  expect(getEditBackupStatus(key).state).toBe("saved");
+});
+it("옛 기준과 같은 원문으로 복원하는 중 로컬 적용이 멈추면, 자동 백업은 복원된 head 를 옛 기준으로 잇지 않는다", async () => {
+  canonical = makeRaw("S"); revision = 1; localStorage.setItem(key, canonical);
+  startEditDocBackup(); render(); await tick(); // 기준 S
+  canonical = makeRaw("H"); revision = 2; // 다른 프로필이 먼저 저장
+  editOnce("L"); await tick();
+  expect(getEditBackupStatus(key).state).toBe("conflict");
+  const normal = request.getMockImplementation()!;
+  let release!: () => void;
+  request.mockImplementation(async (url, init) => {
+    if (init?.method === "POST") await new Promise<void>((done) => { release = done; });
+    return normal(url, init);
+  });
+  const snapshot = edit.captureArchiveSnapshot(true)!;
+  const pending = edit.replaceFromBackup(makeRaw("S"), snapshot, 2, target); // 서버는 S 로 돌아간다
+  editOnce("L2");
+  let result: unknown;
+  await act(async () => { release(); result = await pending; });
+  expect([result, canonical]).toEqual(["stopped", makeRaw("S")]);
+  await tick(5100);
+  expect(canonical).toBe(makeRaw("S")); expect(copies).toContain(localStorage.getItem(key));
+});
+it("자동 저장 응답과 복원 응답을 모두 잃어도, 자동 백업은 복원본을 옛 불명 원문으로 이어 덮지 않는다", async () => {
+  startEditDocBackup(); render(); editOnce("base"); await tick();
+  const normal = request.getMockImplementation()!;
+  let losePut = true;
+  request.mockImplementation(async (url, init) => {
+    const result = await normal(url, init);
+    if (init?.method === "PUT" && losePut) { losePut = false; throw new TypeError("X response lost"); }
+    if (init?.method === "POST") throw new TypeError("restore response lost"); // 서버는 복원했다
+    return result;
+  });
+  editOnce("X"); await tick(); // X 는 서버에 닿았지만 응답을 잃음 — 불명 원문 X
+  const xRaw = canonical!;
+  expect(getEditBackupStatus(key).state).toBe("error");
+  canonical = makeRaw("H"); revision = 3; // 다른 프로필이 먼저 저장
+  editOnce("L");
+  const snapshot = edit.captureArchiveSnapshot(true)!;
+  let result: unknown;
+  await act(async () => { result = await edit.replaceFromBackup(xRaw, snapshot, 3, target); });
+  expect([result, canonical]).toEqual(["uncertain", xRaw]);
+  await tick(5100);
+  expect(canonical).toBe(xRaw); expect(copies).toContain(localStorage.getItem(key));
+});
+it.each(["성공 응답", "응답 유실"])("복원을 기다리는 사이 다른 창 원문을 받아들이고 편집해도(%s), 자동 백업은 복원본을 덮지 않는다", async (mode) => {
+  localStorage.setItem(key, makeRaw("L")); canonical = makeRaw("H"); revision = 2;
+  startEditDocBackup(); render();
+  const normal = request.getMockImplementation()!;
+  let release!: () => void;
+  request.mockImplementation(async (url, init) => {
+    if (init?.method !== "POST") return normal(url, init);
+    await new Promise<void>((done) => { release = done; });
+    const result = await normal(url, init);
+    if (mode === "응답 유실") throw new TypeError("restore response lost");
+    return result;
+  });
+  const snapshot = edit.captureArchiveSnapshot(true)!;
+  const pending = edit.replaceFromBackup(makeRaw("S"), snapshot, 2, target);
+  act(() => { localStorage.setItem(key, makeRaw("S")); window.dispatchEvent(new StorageEvent("storage", { key })); }); // 다른 창이 S 를 저장
+  editOnce("L2");
+  let result: unknown;
+  await act(async () => { release(); result = await pending; });
+  expect([result === "saved", canonical]).toEqual([false, makeRaw("S")]);
+  await tick(5100);
+  expect(canonical).toBe(makeRaw("S"));
+});
+it("복원 응답을 잃은 뒤 재조회를 기다리는 사이 다른 창 원문을 받아들이고 편집해도, 자동 백업은 복원본을 덮지 않는다", async () => {
+  localStorage.setItem(key, makeRaw("L")); canonical = makeRaw("H"); revision = 2;
+  startEditDocBackup(); render();
+  const normal = request.getMockImplementation()!;
+  let releaseGet: (() => void) | null = null;
+  let holdGet = false;
+  request.mockImplementation(async (url, init) => {
+    if (init?.method === "POST") { await normal(url, init); holdGet = true; throw new TypeError("restore response lost"); } // 서버는 복원했다
+    if (!init?.method && holdGet) { holdGet = false; await new Promise<void>((done) => { releaseGet = done; }); }
+    return normal(url, init);
+  });
+  const snapshot = edit.captureArchiveSnapshot(true)!;
+  const pending = edit.replaceFromBackup(makeRaw("S"), snapshot, 2, target);
+  await tick(0);
+  expect(releaseGet).not.toBeNull(); // 결과 확인 GET 을 기다리는 중
+  act(() => { localStorage.setItem(key, makeRaw("S")); window.dispatchEvent(new StorageEvent("storage", { key })); });
+  editOnce("L2");
+  let result: unknown;
+  await act(async () => { releaseGet!(); result = await pending; });
+  expect([result, canonical]).toEqual(["uncertain", makeRaw("S")]);
+  await tick(5100);
+  expect(canonical).toBe(makeRaw("S")); expect(copies).toContain(localStorage.getItem(key));
+});
+it("이전 세션의 늦은 복원 오류는 새 세션의 이어받을 기준을 지우지 않는다", async () => {
+  localStorage.setItem(key, makeRaw("mine")); canonical = makeRaw("S"); revision = 3;
+  startEditDocBackup(); render();
+  const normal = request.getMockImplementation()!;
+  let fail!: () => void;
+  request.mockImplementation(async (url, init) => {
+    if (init?.method === "POST") { await new Promise<void>((done) => { fail = done; }); throw new TypeError("late old restore failure"); }
+    return normal(url, init);
+  });
+  const snapshot = edit.captureArchiveSnapshot(true)!;
+  const pending = edit.replaceFromBackup(makeRaw("other"), snapshot, 3, target);
+  stopEditDocBackup(); localStorage.setItem(key, makeRaw("S")); startEditDocBackup(); // 새 세션이 S 를 읽음
+  writeEditRaw(key, makeRaw("L"));
+  await act(async () => { fail(); await pending; });
+  await tick();
+  expect(bodyOf(puts().at(-1)!).base_revision).toBe(3);
+  expect(canonical).toBe(makeRaw("L")); expect(getEditBackupStatus(key).state).toBe("saved");
+});
+it("복원 성공 응답을 기다리는 사이 편집해 로컬 적용이 멈추면, 자동 백업은 복원된 head 를 덮지 않는다", async () => {
+  localStorage.setItem(key, makeRaw("mine")); canonical = makeRaw("server-head"); revision = 3;
+  startEditDocBackup(); render();
+  const normal = request.getMockImplementation()!;
+  let release!: () => void;
+  request.mockImplementation(async (url, init) => {
+    if (init?.method === "POST") await new Promise<void>((done) => { release = done; });
+    return normal(url, init);
+  });
+  const snapshot = edit.captureArchiveSnapshot(true)!;
+  const pending = edit.replaceFromBackup(makeRaw("backup"), snapshot, 3, target);
+  editOnce("during-restore");
+  let result: unknown;
+  await act(async () => { release(); result = await pending; });
+  expect(result).toBe("stopped");
+  await tick(5100);
+  expect(canonical).toBe(makeRaw("backup")); expect(copies).toContain(localStorage.getItem(key));
+});
+it("복원 응답 뒤 로컬 쓰기가 실패해도 자동 백업은 복원된 head 를 덮지 않는다", async () => {
+  localStorage.setItem(key, makeRaw("mine")); canonical = makeRaw("server-head"); revision = 3;
+  startEditDocBackup(); render();
+  const normal = request.getMockImplementation()!;
+  const setItem = Storage.prototype.setItem;
+  request.mockImplementation(async (url, init) => {
+    const result = await normal(url, init);
+    if (init?.method === "POST") {
+      vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, name: string, value: string) {
+        if (this === localStorage && name === key) throw new Error("quota");
+        return setItem.call(this, name, value);
+      });
+    }
+    return result;
+  });
+  const snapshot = edit.captureArchiveSnapshot(true)!;
+  let result: unknown;
+  await act(async () => { result = await edit.replaceFromBackup(makeRaw("backup"), snapshot, 3, target); });
+  expect(result).toBe("failed"); expect(localStorage.getItem(key)).toBe(makeRaw("mine"));
+  await tick(5100);
+  expect(canonical).toBe(makeRaw("backup"));
+});
+it("따로인 다른 프로필이 먼저 저장하면 이 창의 뒤 편집은 계속 충돌한다 — 일반 저장(쓰기 → 같은 원문 읽기)은 기준을 바꾸지 않는다", async () => {
+  canonical = makeRaw("start"); revision = 1; localStorage.setItem(key, canonical);
+  startEditDocBackup(); render(); await tick();
+  canonical = makeRaw("other-profile"); revision = 2; // 저장 알림이 오지 않는 다른 프로필
+  editOnce("mine-1"); await tick();
+  editOnce("mine-2"); await tick(5100);
+  expect(canonical).toBe(makeRaw("other-profile"));
+  expect(copies).toHaveLength(2); expect(puts().map((call) => bodyOf(call).base_revision)).toEqual([1, null]);
+  expect(getEditBackupStatus(key).state).toBe("conflict");
 });
 it("패널에서 사본 선택 뒤 현재 head를 다시 선택하면 본문을 새로 GET한다", async () => {
   canonical = makeRaw("head"); revision = 2; localStorage.setItem(key, canonical);

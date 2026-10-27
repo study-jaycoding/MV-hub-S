@@ -46,7 +46,9 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 지금 완료된 것과 다음 작업 | [CURRENT_STATUS.md](CURRENT_STATUS.md) |
 | 2026-09-17 종합 점검·중복 구현 조사·당시 설계 합의와 실측 기록 | [PROGRAM_AUDIT_2026-09-17.md](PROGRAM_AUDIT_2026-09-17.md) |
 | 날짜별 상세 기록(회귀·실측·구현 근거) | [CURRENT_STATUS](CURRENT_STATUS.md)가 연결하는 해당 [status/](status/) 노트 |
-| Claude·Codex 역할 호출·설계 합의·독립 리뷰·검증 완료 기준 | [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md) |
+| 공통 운영 연동·디자인/설명 역할·동적 모델·설계 합의·묶음 리뷰·검증 기준 | [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md) |
+| 기능 묶음 PR·수정 영향 재검토·승인 기록 | [PR_GATE.md](PR_GATE.md) |
+| 이 작업실 PR 지침 적용·보존 검증 기록 | [PR 운영 적용 기록](status/PR_운영_적용_2026-10-21.md) |
 | 기능 작업실·통합 시험실·동시 개발과 실행 분리 | [WORKROOMS.md](WORKROOMS.md) |
 | 기능 묶음 PR·수정 영향 재검토·승인 기록 | [PR_GATE.md](PR_GATE.md) |
 | 프로그램 사용 | [사용설명서.md](사용설명서.md), [기능설명서.md](기능설명서.md) |

@@ -23,6 +23,7 @@ import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../lib/wind
 import type { AssetComment, AssetNode, InfoTarget, PreviewTarget } from "../types";
 import { AssetCell } from "./assets/AssetCell";
 import { FolderIcon } from "./FolderIcon";
+import { SidebarEdgeToggle } from "./common/SidebarEdgeToggle";
 import { loadDisabledAssets, toggleDisabledAssets } from "../lib/deactivated";
 import { AssetsCrumbBar } from "./assets/AssetsCrumbBar";
 import { AssetsSidebar } from "./assets/AssetsSidebar";
@@ -105,6 +106,9 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     expandedSeeded.current = true;
     setExpanded(new Set(children.filter((node) => node.type === "dir").map((node) => node.path)));
   }, []);
+  // 왼쪽 폴더 트리 여닫기(Jay 2026-10-26 — 워크스페이스 사이드바와 같은 끝선 손잡이). 이 창만의 기억, 처음엔 열림.
+  const [treeOpen, setTreeOpen] = useState(() => LS.get("treeOpen", "1") !== "0");
+  useEffect(() => LS.set("treeOpen", treeOpen ? "1" : "0"), [treeOpen]);
   const canLeaveCommentRef = useRef<() => boolean>(() => true); // 아래 canLeaveComment — 코멘트 창보다 먼저 만드는 훅이 쓴다(Jay 결정 5A)
   const {
     error,
@@ -123,9 +127,20 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     tree,
   } = useAssetProjectData({ onTreeLoaded: seedInitialExpandedDirs, workspaceId, canLeaveProject: () => canLeaveCommentRef.current() });
   const displayTree = useMemo(() => visibleAssetTree(project, tree), [project, tree]);
+  // 기본 자리 = 맨 위의 'assets' 폴더(Jay 2026-10-26 — 그 위 폴더들은 프로젝트 이름을 일부러 눌렀을 때만). 기억한 폴더가 없을 때
+  //  (처음 열기 · 프로젝트를 바꿈 · 숨긴 폴더였음)만 켠다 — 사용자가 맨 위로 간 것(트리 머리·Backspace·탭)은 그대로 둔다.
+  const wantDefaultDir = useRef(LS.get("dir", "") === "");
+  useEffect(() => {
+    if (!wantDefaultDir.current || !displayTree.length) return;
+    wantDefaultDir.current = false;
+    const assets = dir ? null : displayTree.find((node) => node.type === "dir" && node.name.trim().toLowerCase() === "assets");
+    if (assets) setDir(assets.path);
+  }, [dir, displayTree]);
   useEffect(() => {
     if (isAssetFolderHidden(project, dir)) {
-      setDir(dir.replace(/\\/g, "/").toLowerCase().startsWith("@davinci/") ? "@davinci" : "");
+      const davinci = dir.replace(/\\/g, "/").toLowerCase().startsWith("@davinci/");
+      if (!davinci) wantDefaultDir.current = true;
+      setDir(davinci ? "@davinci" : "");
     }
   }, [dir, project]);
   const toggleDir = useCallback((path: string) => {
@@ -944,7 +959,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             onChange={(e) => {
               if (!canLeaveComment()) return; // 머무르면 선택 상자는 지금 프로젝트로 돌아간다(제어되는 값)
               setProject(e.target.value);
-              setDir(""); // 사용자가 프로젝트를 바꾸면 루트로
+              wantDefaultDir.current = true; // 사용자가 프로젝트를 바꾸면 그 프로젝트의 assets 폴더로(없으면 맨 위)
+              setDir("");
             }}
           >
             {projects.map((p) => (
@@ -995,7 +1011,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
           <span className="as-icon">⌕</span>
           <input
             value={query}
-            placeholder="Search"
+            placeholder="Search · Tag"
             onChange={(e) => setQuery(e.target.value)}
           />
           {query && (
@@ -1015,7 +1031,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       )}
 
       <div className="assets-body">
-        <AssetsSidebar
+        {treeOpen && <AssetsSidebar
           project={project}
           typeFilter={typeFilter}
           dir={dir}
@@ -1028,7 +1044,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
           onToggleDir={toggleDir}
           onSelectDir={enterFolder}
           onOpenTab={folderTabs.open}
-        />
+        />}
 
         <main
           className="assets-grid-wrap"
@@ -1037,6 +1053,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
           onDragLeave={isResolveLibraryRoot ? undefined : onZoneDragLeave}
           onDrop={isResolveLibraryRoot ? undefined : onZoneDrop}
         >
+          <SidebarEdgeToggle open={treeOpen} onToggle={() => setTreeOpen((v) => !v)}
+            title={treeOpen ? t("폴더 사이드바 닫기") : t("폴더 사이드바 열기")} />
           {!isResolveLibraryRoot && dropActive && (
             <div className="assets-dropzone">
               <div className="assets-dropzone-card">
@@ -1069,11 +1087,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             onToggleColor={toggleColor}
             grayOn={grayOn}
             onToggleGray={() => setGrayOn((v) => !v)}
-            onToggleSourceOnly={() => {
-              const next = !sourceOnly;
-              setSourceOnly(next);
-              if (next) setDir(""); // 소스 필터 켜면 루트로 → 프로젝트 전체 소스 표시(생성탭 @피커와 동일 범위)
-            }}
+            onToggleSourceOnly={() => setSourceOnly((v) => !v)} // 보던 폴더 안의 소스만(Jay 2026-10-26 — 예전엔 맨 위로 보냈다)
             tagFilterActive={tagPanelOpen || activeTags.size > 0}
             onToggleTagPanel={toggleTagPanel}
             commentOnly={commentOnly}

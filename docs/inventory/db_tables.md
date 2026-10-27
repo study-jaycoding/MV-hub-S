@@ -10,7 +10,7 @@
 - **쓰는 모듈** = 리터럴 안의 `INSERT INTO`·`REPLACE INTO`·`UPDATE`·`DELETE FROM <테이블>`, **읽는 모듈** = `FROM`·`JOIN <테이블>`. 테이블 이름 자체를 `{}` 로 끼워 조립한 SQL 과 `FROM a, b` 의 둘째 이름은 못 잡는다 — **빈칸이 '아무도 안 쓴다'는 뜻은 아니다.** 경로는 `backend/app/` 을 뗀 것이다.
 - 컬럼은 싣지 않는다. 정의 파일의 `CREATE TABLE` 과 그 뒤 `ALTER TABLE … ADD COLUMN` 마이그레이션을 본다.
 
-테이블 96개.
+테이블 97개.
 
 | 테이블 | DB | 정의 파일 | 쓰는 모듈 | 읽는 모듈 |
 | --- | --- | --- | --- | --- |
@@ -41,6 +41,7 @@
 | `credit_txn_alias_merged` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` | `repo/manage_schema.py` |
 | `edit_doc_copy` | content DB | `backend/schema.sql` | `repo/edit_docs.py` | `repo/edit_docs.py` |
 | `edit_doc_head` | content DB | `backend/schema.sql` | `repo/edit_docs.py` | `repo/edit_docs.py` |
+| `edit_share` | content DB | `backend/schema.sql` `db_migrations.py` | `repo/edit_shares.py` | `repo/edit_shares.py` |
 | `final_export` | content DB | `repo/manage_schema.py` | `repo/manage.py` | `repo/manage.py` |
 | `final_export_old` | content DB | `repo/manage_schema.py` | `repo/manage.py` | `repo/manage.py` |
 | `folder_cover` | content DB | `backend/schema.sql` `db_migrations.py` | `repo/folder_cover.py` | `repo/folder_cover.py` |
@@ -72,9 +73,9 @@
 | `move_operation` | content / trash DB (B1 transfer) | `services/trash_transfer.py` | `services/trash_transfer.py` | `services/trash_transfer.py` |
 | `nas_result_file` | content DB | `backend/schema.sql` | `repo/nas_results.py` | `repo/nas_results.py` |
 | `nas_result_scan` | content DB | `backend/schema.sql` | `repo/nas_results.py` | `repo/nas_results.py` |
-| `project` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/projects.py` | `db_migrations.py` `repo/asset_locations.py` `repo/console_guard.py` `repo/facets.py` `repo/final_moves.py` `repo/folder_cover.py` `repo/generation_rows.py` `repo/generations_query.py` `repo/identity.py` `repo/manage.py` `repo/manage_analytics.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_tasks.py` `repo/manage_telemetry.py` `repo/nas_results.py` `repo/project_membership.py` `repo/projects.py` `repo/trash.py` `repo/workspace_assignments.py` `repo/workspace_console.py` `services/asset_destination.py` `services/asset_registry.py` `services/asset_sync.py` |
+| `project` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/projects.py` | `db_migrations.py` `repo/asset_locations.py` `repo/console_guard.py` `repo/edit_shares.py` `repo/facets.py` `repo/final_moves.py` `repo/folder_cover.py` `repo/generation_rows.py` `repo/generations_query.py` `repo/identity.py` `repo/manage.py` `repo/manage_analytics.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_tasks.py` `repo/manage_telemetry.py` `repo/nas_results.py` `repo/project_membership.py` `repo/projects.py` `repo/trash.py` `repo/workspace_assignments.py` `repo/workspace_console.py` `services/asset_destination.py` `services/asset_registry.py` `services/asset_sync.py` |
 | `project_folder_link` | content DB | `repo/manage_schema.py` | `repo/manage.py` | `repo/manage.py` `repo/nas_results.py` `routers/assets.py` `services/asset_destination.py` |
-| `project_member` | content DB | `backend/schema.sql` | `repo/identity.py` `repo/project_membership.py` `repo/projects.py` | `db_migrations.py` `deps.py` `repo/final_moves.py` `repo/identity.py` `repo/manage_member_table.py` `repo/projects.py` `routers/_share_authority.py` `services/asset_destination.py` |
+| `project_member` | content DB | `backend/schema.sql` | `repo/identity.py` `repo/project_membership.py` `repo/projects.py` | `db_migrations.py` `deps.py` `repo/edit_shares.py` `repo/final_moves.py` `repo/identity.py` `repo/manage_member_table.py` `repo/projects.py` `routers/_share_authority.py` `services/asset_destination.py` |
 | `project_member_removed` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/project_membership.py` | `repo/identity.py` `repo/project_membership.py` |
 | `project_planning` | content DB | `repo/manage_schema.py` | `repo/manage.py` | `repo/manage.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_tasks.py` `repo/workspace_console.py` |
 | `project_task` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` `repo/manage_tasks.py` | `repo/manage.py` `repo/manage_schema.py` `repo/manage_task_activity.py` `repo/manage_tasks.py` |

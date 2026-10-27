@@ -1036,11 +1036,14 @@ it("한 트랙만 보기: 실제 길이가 0초인 영상은 틀지도 보내지
   const { video, render } = mountFollow(0, () => time);
   render(true);
   frame(16);
+  // 받기 전에 그 자리를 처음 자리로 적는 한 번(2026-10-26 — 탐색이 아니다: 받는 대로 그리로 간다. 이 가짜는 그것도 센다)
+  const atLoad = video.state.seeks;
+  expect(atLoad).toBeLessThanOrEqual(1);
   video.emit("loadedmetadata");
   for (let i = 0; i < 10; i++) {
     time += 0.016;
     frame(16);
   }
   expect(video.state.plays).toBe(0);
-  expect(video.state.seeks).toBe(0);
+  expect(video.state.seeks).toBe(atLoad);
 });

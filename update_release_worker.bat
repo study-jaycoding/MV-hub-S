@@ -328,6 +328,73 @@ function Move-PathWithRetry {
     }
 }
 
+function Get-BytecodeOnlyFiles {
+    # The files under $Path when it is a folder holding nothing but Python bytecode caches
+    # (__pycache__\*.pyc and their atomic-write temps *.pyc.<n>), else $null. Hidden items
+    # count, and any link or junction refuses the whole folder.
+    param([string]$Path)
+    $Folder = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (-not $Folder.PSIsContainer -or ($Folder.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        return $null
+    }
+    $Files = @()
+    foreach ($Item in @(Get-ChildItem -LiteralPath $Path -Recurse -Force -ErrorAction Stop)) {
+        if ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            return $null
+        }
+        if ($Item.PSIsContainer) {
+            continue
+        }
+        if ($Item.Directory.Name -ne '__pycache__' -or $Item.Name -notmatch '\.pyc(\.\d+)?$') {
+            return $null
+        }
+        $Files += $Item.FullName
+    }
+    return ,$Files
+}
+
+function Move-IntoPlace {
+    # Moves a staged or backup tree into a component's live path. A Python process that was
+    # importing when the old tree was renamed away writes its .pyc to the old path afterwards
+    # and recreates it with nothing but __pycache__ (2026-10-27: an MCP connector mid-start).
+    # That holds no data: once its writer is confirmed stopped, remove exactly those files and
+    # the empty folders, then move. Nothing new can start there - python.exe or server.py is
+    # what is missing from that path.
+    param([string]$Path, [string]$Destination, [string]$Label)
+    for ($Attempt = 1; ; $Attempt++) {
+        if ((Test-Path -LiteralPath $Destination) -and $null -ne (Get-BytecodeOnlyFiles -Path $Destination)) {
+            Write-Host "[update] removing Python bytecode an MCP connector recreated at $Destination"
+            if (-not (Stop-McpConnectors -Root $TargetDir)) {
+                throw "Move failed for ${Label}: the MCP connector writing to $Destination did not stop."
+            }
+            $Files = Get-BytecodeOnlyFiles -Path $Destination
+            if ($null -ne $Files) {
+                foreach ($File in $Files) {
+                    Remove-Item -LiteralPath $File -Force -ErrorAction Stop
+                }
+                # Deepest first and never recursive: anything that appeared since makes this fail.
+                foreach ($Folder in @(Get-ChildItem -LiteralPath $Destination -Recurse -Force -Directory -ErrorAction Stop |
+                        Sort-Object { $_.FullName.Length } -Descending)) {
+                    [System.IO.Directory]::Delete($Folder.FullName)
+                }
+                [System.IO.Directory]::Delete($Destination)
+            }
+        }
+        try {
+            Move-PathWithRetry -Path $Path -Destination $Destination -Label $Label
+            return
+        }
+        catch {
+            # Recreated between the check and the move: start over, a bounded number of times.
+            if ($Attempt -lt 5 -and (Test-Path -LiteralPath $Path) -and (Test-Path -LiteralPath $Destination) -and
+                $null -ne (Get-BytecodeOnlyFiles -Path $Destination)) {
+                continue
+            }
+            throw
+        }
+    }
+}
+
 function Invoke-CheckedProcess {
     # Runs a validation executable with a hard timeout. A hung child must turn into
     # a normal failure (so rollback and restart-on-failure still run) instead of
@@ -460,7 +527,7 @@ function Start-MvHubAfterFailure {
         # new_committed can reach here with the freshly launched hub already alive
         # (readiness timed out, not the launch). Never stack a second launcher.
         $ResolvedRoot = (Resolve-Path -LiteralPath $TargetDir).Path.TrimEnd("\") + "\"
-        $Existing = @(Get-MvHubProcessIds -ResolvedRoot $ResolvedRoot)
+        $Existing = @(Get-MvHubProcessIds -ResolvedRoot $ResolvedRoot -Kind App)
         if ($Existing.Count) {
             Write-Host "[update] MV Hub processes already running (pids: $($Existing -join ', ')) - not launching another."
             return
@@ -918,7 +985,7 @@ function Invoke-ComponentSwap {
         }
         $Component.OldMoved = $true
         Write-UpdateJournal $Components
-        Move-PathWithRetry -Path $Component.Staged -Destination $Component.Target -Label $Component.Relative
+        Move-IntoPlace -Path $Component.Staged -Destination $Component.Target -Label $Component.Relative
         $Component.Swapped = $true
         Write-UpdateJournal $Components
     }
@@ -938,7 +1005,7 @@ function Undo-ComponentSwaps {
                 Move-PathWithRetry -Path $Component.Target -Destination ($Component.Target + ".rollback." + $SwapToken) -Label ($Component.Relative + " (quarantine)")
             }
             if ($Component.HadPrevious) {
-                Move-PathWithRetry -Path $Component.Previous -Destination $Component.Target -Label ($Component.Relative + " (restore)")
+                Move-IntoPlace -Path $Component.Previous -Destination $Component.Target -Label ($Component.Relative + " (restore)")
             }
         }
         catch {
@@ -958,20 +1025,30 @@ function Remove-SwapLeftovers {
         [object[]]$Components,
         [switch]$IncludeQuarantine
     )
-    foreach ($Component in $Components) {
-        foreach ($Leftover in @($Component.Previous, $Component.Staged, ($Component.Target + ".rollback." + $SwapToken))) {
-            if ($Leftover -and (Test-Path -LiteralPath $Leftover)) {
-                Remove-Item -LiteralPath $Leftover -Recurse -Force -ErrorAction SilentlyContinue
-                if (Test-Path -LiteralPath $Leftover) {
-                    Write-Host "[update] warn: could not remove leftover $Leftover (will be cleaned on the next update)"
-                }
-            }
-        }
-    }
+    $Leftovers = @(foreach ($Component in $Components) {
+        $Component.Previous; $Component.Staged; ($Component.Target + ".rollback." + $SwapToken)
+    })
     if ($IncludeQuarantine) {
-        Get-ChildItem -Path (Join-Path $TargetDir "update-quarantine.*") -Force -ErrorAction SilentlyContinue |
-            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
         # The durable committed record remains available to the next coordinator run.
+        $Leftovers += @(Get-ChildItem -Path (Join-Path $TargetDir "update-quarantine.*") -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+    }
+    $Pinned = @(foreach ($Leftover in $Leftovers) {
+        if ($Leftover -and (Test-Path -LiteralPath $Leftover)) {
+            Remove-Item -LiteralPath $Leftover -Recurse -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $Leftover) { $Leftover }
+        }
+    })
+    if (-not $Pinned.Count) {
+        return
+    }
+    # Left behind, a pinned leftover makes the next update recovery_required (2026-10-27:
+    # a connector Claude/Codex restarted mid-swap kept runtime\python.previous alive).
+    [void](Stop-McpConnectors -Root $TargetDir)
+    foreach ($Leftover in $Pinned) {
+        Remove-Item -LiteralPath $Leftover -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $Leftover) {
+            Write-Host "[update] warn: could not remove leftover $Leftover (will be cleaned on the next update)"
+        }
     }
 }
 
@@ -1009,7 +1086,8 @@ function Commit-VersionMarker {
 }
 
 function Get-MvHubProcessIds {
-    param([string]$ResolvedRoot)
+    # Kind App leaves out the MCP connector, Connector keeps only it (Test-McpConnector).
+    param([string]$ResolvedRoot, [ValidateSet('All', 'App', 'Connector')][string]$Kind = 'All')
 
     $Launcher = Join-Path $ResolvedRoot "MV_agent.bat"
     $Ids = @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
@@ -1018,26 +1096,41 @@ function Get-MvHubProcessIds {
         }
 
         $ExecutablePath = [string]$_.ExecutablePath
-        if (
-            $ExecutablePath -and
-            $ExecutablePath.StartsWith($ResolvedRoot, [StringComparison]::OrdinalIgnoreCase)
-        ) {
-            [int]$_.ProcessId
-            return
-        }
-
         # The visible launcher is a system cmd.exe, so its executable lives outside
         # the install folder. Match only shells running this exact MV_agent.bat.
-        $CommandLine = [string]$_.CommandLine
-        if (
-            $_.Name -ieq "cmd.exe" -and
-            $CommandLine.IndexOf($Launcher, [StringComparison]::OrdinalIgnoreCase) -ge 0
-        ) {
-            [int]$_.ProcessId
+        $Owned = ($ExecutablePath -and $ExecutablePath.StartsWith($ResolvedRoot, [StringComparison]::OrdinalIgnoreCase)) -or
+            ($_.Name -ieq "cmd.exe" -and ([string]$_.CommandLine).IndexOf($Launcher, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+        if (-not $Owned) {
+            return
         }
+        if ($Kind -ne 'All' -and (Test-McpConnector -Process $_ -ResolvedRoot $ResolvedRoot) -ne ($Kind -eq 'Connector')) {
+            return
+        }
+        [int]$_.ProcessId
     })
 
     return @($Ids | Sort-Object -Unique)
+}
+
+function Test-McpConnector {
+    # The MV Hub MCP connector is a client-owned process: Claude/Codex start it from this
+    # runtime exactly as /app/setup registered it (routers/mcp.py) and restart it whenever
+    # it dies. Match only that command - python.exe, optional -I/-S, then server.py as the
+    # script - and treat anything else or unreadable as the app.
+    param([object]$Process, [string]$ResolvedRoot)
+    $Python = Join-Path $ResolvedRoot 'runtime\python\python.exe'
+    if (-not ([string]$Process.ExecutablePath).Equals($Python, [StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+    $ScriptPath = Join-Path $ResolvedRoot 'tools\mcp_adapter\server.py'
+    $Script = '"' + [regex]::Escape($ScriptPath) + '"'
+    # Unquoted only when it is one argument: Python splits an unquoted path at its spaces.
+    if ($ScriptPath -notmatch '\s') {
+        $Script = '(?:' + $Script + '|' + [regex]::Escape($ScriptPath) + ')'
+    }
+    # -match ignores case for the path, like the OrdinalIgnoreCase checks above; the
+    # Python flags stay case-sensitive ((?-i:...)) since -i/-s mean something else.
+    return ([string]$Process.CommandLine) -match ('^\s*(?:"[^"]*"|\S+)(?:\s+(?-i:-[IS]))*\s+' + $Script + '(?:\s|$)')
 }
 
 function Stop-MvHubProcesses {
@@ -1084,9 +1177,15 @@ function Stop-MvHubProcesses {
         }
     }
 
+    # Wait for the app only: Claude/Codex start the MCP connector again right away. It
+    # cannot block the rename-only swap, and Remove-SwapLeftovers handles what it pins.
     for ($i = 0; $i -lt 20; $i++) {
-        $StillRunningIds = @(Get-MvHubProcessIds -ResolvedRoot $ResolvedRoot)
+        $StillRunningIds = @(Get-MvHubProcessIds -ResolvedRoot $ResolvedRoot -Kind App)
         if (-not $StillRunningIds.Count) {
+            $Connectors = @(Get-MvHubProcessIds -ResolvedRoot $ResolvedRoot -Kind Connector)
+            if ($Connectors.Count) {
+                Write-Host "[update] MCP connector restarted by Claude/Codex (pids: $($Connectors -join ', ')) - continuing."
+            }
             return
         }
         Start-Sleep -Milliseconds 500
@@ -1097,6 +1196,48 @@ function Stop-MvHubProcesses {
         if ($Proc) { "$($Proc.ProcessName)(pid=$_)" } else { "pid=$_" }
     }) -join ", "
     throw "Some MV Hub processes are still running: $Names. Close MV_agent windows and try again."
+}
+
+function Stop-McpConnectors {
+    # Never throws. A connector restarted during the swap keeps running from a renamed
+    # folder (pinning its DLLs, or writing .pyc to the old path); its client starts it
+    # again from the current files. Returns $true only when every connector found has
+    # exited (one whose identity changed is skipped) - Move-IntoPlace relies on that.
+    param([string]$Root)
+    $Stopped = $true
+    try {
+        $ResolvedRoot = (Resolve-Path -LiteralPath $Root).Path.TrimEnd("\") + "\"
+        foreach ($ProcessId in @(Get-MvHubProcessIds -ResolvedRoot $ResolvedRoot -Kind Connector)) {
+            $Proc = $null
+            try {
+                $Proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+                if (-not $Proc) { continue }
+                [void]$Proc.Handle
+                # Same identity proof as Stop-MvHubProcesses, plus the connector match again.
+                $Identity = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $ProcessId) -ErrorAction Stop
+                if (-not $Identity -or [Math]::Abs(($Proc.StartTime.ToUniversalTime() - $Identity.CreationDate.ToUniversalTime()).TotalMilliseconds) -gt 1 -or
+                    -not (Test-McpConnector -Process $Identity -ResolvedRoot $ResolvedRoot)) { continue }
+                Write-Host "      stop MCP connector pid=$ProcessId"
+                $Proc.Kill()
+                if (-not $Proc.WaitForExit(5000)) {
+                    $Stopped = $false
+                    Write-Host "      warn: MCP connector pid=$ProcessId did not exit"
+                }
+            }
+            catch {
+                # Exiting on its own between the lookup and the kill is a stop too.
+                if (-not ($Proc -and $Proc.HasExited)) {
+                    $Stopped = $false
+                    Write-Host "      warn: could not stop MCP connector pid=$ProcessId`: $($_.Exception.Message)"
+                }
+            }
+        }
+    }
+    catch {
+        $Stopped = $false
+        Write-Host "[update] warn: could not list MCP connectors: $($_.Exception.Message)"
+    }
+    return $Stopped
 }
 
 function Assert-NoActiveResolveImport {
@@ -1127,7 +1268,7 @@ function Assert-NoActiveResolveImport {
 
 function Wait-WorkerDrain {
     $RootPrefix = (Resolve-Path -LiteralPath $TargetDir).Path.TrimEnd('\') + '\'
-    if (@(Get-MvHubProcessIds -ResolvedRoot $RootPrefix).Count -eq 0) { return }
+    if (@(Get-MvHubProcessIds -ResolvedRoot $RootPrefix -Kind App).Count -eq 0) { return }
     if (-not $ReadyUrl) { $ReadyUrl = 'http://127.0.0.1:8010/api/ready' }
     $Uri = [Uri]$ReadyUrl
     if ($Uri.Scheme -ne 'http' -or $Uri.Host -notin @('127.0.0.1', 'localhost', '[::1]')) { throw 'Drain requires a loopback readiness endpoint.' }
@@ -1172,10 +1313,12 @@ function Finalize-FailedInstall {
             return
         }
     }
+    $Undone = $false
     if ($script:RecoveryState -eq 'new_committed') {
         $Failures = Undo-ComponentSwaps -Components $script:InstalledComponents
         if ($Failures.Count) { throw 'Program rollback incomplete; all recovery assets are retained.' }
         Commit-VersionMarker -Version $script:InstallJournal.previous_version
+        $Undone = $true
     }
     if ($script:HadRecoveryAssets -or $script:InheritedRecovery) {
         $script:RecoveryState = 'recovery_required'
@@ -1184,6 +1327,10 @@ function Finalize-FailedInstall {
     }
     $script:RecoveryState = 'rolled_back'
     Set-InstallPhase -Phase 'rolled_back'
+    # Same cleanup as the swap-phase rollback; a leftover .rollback tree would make the next update recovery_required.
+    if ($Undone) {
+        Remove-SwapLeftovers -Components $script:InstalledComponents
+    }
     if ($script:PreviousControl -and -not $script:ProcessesStopped) {
         Write-InstallRecord -Path (Join-Path $TargetDir '.install-activation.json') -Record $script:PreviousControl
     }

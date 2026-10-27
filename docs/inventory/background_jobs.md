@@ -67,6 +67,12 @@
 | `backend/app/services/asset_watcher.py` | `_Watcher._start_timer_locked` | Timer | `self._flush` |
 | `backend/app/services/async_tools.py` | `to_thread_non_abandon` | create_task | `asyncio.to_thread(func, *args, **kwargs)` |
 | `backend/app/services/backup.py` | `PeriodicBackup.start` | create_task | `self._run() (name=periodic-backup)` |
+| `backend/app/services/clean_feed_session.py` | `Hub._close_conn` | ensure_future | `self._safe_close(conn.ws, code)` |
+| `backend/app/services/clean_feed_session.py` | `Hub._ensure_watcher` | create_task | `self._watcher()` |
+| `backend/app/services/clean_feed_session.py` | `Hub._send_assign` | ensure_future | `send()` |
+| `backend/app/services/clean_feed_session.py` | `Hub.serve_ws` | create_task | `self._sender(sess, conn)` |
+| `backend/app/services/clean_feed_session.py` | `_SessionBound.__call__` | create_task | `watch()` |
+| `backend/app/services/clean_feed_window.py` | `FeedWindows.start` | Thread | `self._run (name=clean-feed-window)` |
 | `backend/app/services/cli_bridge.py` | `_ensure_cost_writer` | create_task | `_cost_writer()` |
 | `backend/app/services/cli_bridge.py` | `_single_flight_task` | create_task | `factory()` |
 | `backend/app/services/history_autofill.py` | `_start_history_task` | create_task | `_run_history_import(key, dict(acc), account_scope=captured_scope)` |

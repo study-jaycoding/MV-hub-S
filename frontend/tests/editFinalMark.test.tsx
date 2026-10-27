@@ -124,7 +124,7 @@ it("최종을 줄 권한이 없으면 두 줄 모두 없다 — 다른 줄은 �
   expect(row("최종 선택")).toBeUndefined();
   closeMenus();
   openListMenu();
-  expect(menuRows().map((item) => item.textContent!.replace(/[\d✓ ]+$/, ""))).toEqual(["비활성 숨기기", "빈 곳 채우기", "편집 파일 보관", "파일에서 편집 복원", "DB 백업 보기·복원"]);
+  expect(menuRows().map((item) => item.textContent!.replace(/[\d✓ ]+$/, ""))).toEqual(["비활성 숨기기", "빈 곳 채우기", "배치 순서폴더순", "편집 파일 보관", "파일에서 편집 복원", "DB 백업 보기·복원"]);
   closeMenus();
 
   mount(undefined); // 앱이 그 길을 주지 않았다

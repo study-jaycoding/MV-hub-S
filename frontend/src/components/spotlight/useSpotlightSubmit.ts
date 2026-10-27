@@ -73,6 +73,8 @@ interface UseSpotlightSubmitOptions {
   updatePlaceholder: () => void;
   notifyPromptChanged: () => void;
   onHistorySaved?: () => void;
+  /** 프롬프트를 비울 때 보낸 레퍼런스(트레이 uid)도 뺀다 — 묶이지 않은 트레이만 준다(캔버스 카드의 트레이는 그 카드의 입력이라 두지 않는다). */
+  clearSubmittedRefs?: (uids: ReadonlySet<string>) => void;
 }
 
 export function useSpotlightSubmit({
@@ -112,6 +114,7 @@ export function useSpotlightSubmit({
   updatePlaceholder,
   notifyPromptChanged,
   onHistorySaved,
+  clearSubmittedRefs,
 }: UseSpotlightSubmitOptions) {
   const contextKey = JSON.stringify([
     inCompose, canvasTarget?.sceneId, canvasTarget?.cardId,
@@ -270,6 +273,8 @@ export function useSpotlightSubmit({
         updatePlaceholder();
         notifyPromptChanged();
         clearMention();
+        // 보낸 레퍼런스도 같이 비운다(Jay 2026-10-23 — 둘 다 비어야 제출한 느낌) — 기다리는 사이 넣은 것은 남는다
+        clearSubmittedRefs?.(new Set(trayRefs.map((ref) => ref.uid)));
         // 다음 입력을 바로 칠 수 있게 프롬프트에 초점을 — 단 응답을 기다리는 사이 **다른 곳으로 옮긴 초점은 빼앗지 않는다**(검색칸에 치던
         //  글자가 프롬프트로 들어갔다 — Codex 검토). 줄 때: 갈 곳을 잃었거나(BODY) · 아직 프롬프트 입력칸이거나 · 마우스로 누른 생성 단추에
         //  남아 있을 때뿐. 패널 안이라도 옵션의 입력칸(길이·시드 등)으로 옮긴 초점은 두어야 한다.
@@ -300,6 +305,7 @@ export function useSpotlightSubmit({
     canvasTarget,
     busy,
     clearMention,
+    clearSubmittedRefs,
     count,
     discardCanvasGeneration,
     dragParentRef,
