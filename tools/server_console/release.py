@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from . import jobs, server_api
+from . import jobs, nas_access, server_api
 from .install import CODE_ROOT, Installation, Runner, child_env, network_path, run_command
 
 HELPER = CODE_ROOT / "tools" / "server_console" / "release_helper.py"
@@ -104,10 +104,14 @@ def helper(inst: Installation, scratch: Path, source: str, command: str, *args: 
     root = Path(tempfile.mkdtemp(prefix="release-", dir=scratch))
     try:
         (root / "INSTALL_SOURCE.txt").write_text(source.strip() + "\n", encoding="utf-8")
+        if command in ("read", "manifest", "promote", "deploy") and nas_access.is_unc(source):
+            nas_access.allow_source_read(root)
         env = dict(child_env(inst), PYTHONDONTWRITEBYTECODE="1", CONTENT_HUB_DATA=str(root),
                    CONTENT_HUB_AUTH="0", CONTENT_HUB_PORT=str(inst.port))
         argv = [str(inst.python), "-I", "-B", str(HELPER), str(inst.root), str(root), command, *args]
         code, out = run_command(argv, timeout, env)
+    except (OSError, nas_access.NasAccessError):
+        return {"ok": False, "error": "NAS 작업용 임시 설정의 읽기 권한을 준비하지 못했습니다", "status": 500}
     finally:
         shutil.rmtree(root, ignore_errors=True)  # 이 호출이 방금 만든 빈 폴더(INSTALL_SOURCE.txt·assets)만
     try:

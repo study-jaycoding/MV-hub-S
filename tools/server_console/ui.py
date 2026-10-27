@@ -1152,7 +1152,8 @@ class App:
         published, candidate = release.shas(overview)
         pub = (overview or {}).get("published") or {}
         cand_file = (overview or {}).get("file") if (overview or {}).get("source") == "candidate" else None
-        blocked = overview is None or bool(overview.get("candidate_error")) or overview.get("published_state") == "error"
+        blocked = (not read.get("ok") or bool(read.get("packages_error")) or overview is None
+                   or bool(overview.get("candidate_error")) or overview.get("published_state") == "error")
         shown = [r for i, r in enumerate(rows)
                  if self.release_all or i < 8 or r.get("file") in (pub.get("file"), cand_file)]
         for row in shown:
@@ -1163,7 +1164,8 @@ class App:
                               candidate=row.get("file") == cand_file and (overview or {}).get("pending") is True,
                               logged_in=notices is not None, blocked=blocked)
         if not shown:
-            tk.Label(self.release_rows, text="릴리스가 없습니다" if source and read.get("ok") else "", bg=BG, fg=MUTED,
+            empty = "릴리스가 없습니다" if read.get("ok") and not read.get("packages_error") else "릴리스 목록을 읽지 못했습니다"
+            tk.Label(self.release_rows, text=empty if source and read else "", bg=BG, fg=MUTED,
                      font=FONT).pack(anchor="w")
         if len(rows) > len(shown):
             self._button(self.release_rows, f"이전 릴리스 {len(rows) - len(shown)}개 더 보기 ▾", self.show_all_releases

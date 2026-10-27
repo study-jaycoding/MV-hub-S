@@ -10,8 +10,11 @@ python -I -B release_helper.py <설치 루트> <관리 창 릴리스 루트> <�
 from __future__ import annotations
 
 import base64
+import _strptime  # noqa: F401 — NAS 신원으로 넘어간 뒤 표준 라이브러리를 추가로 열지 않게 한다
+import encodings.cp437  # noqa: F401 — ZIP 파일명의 기본 인코딩
 import json
 import sys
+import zipfile  # noqa: F401 — 신원을 전환하기 전에 ZIP 검사 모듈을 읽어 둔다
 from pathlib import Path
 
 
@@ -59,6 +62,10 @@ def _expected(text: str) -> dict:
 
 
 def run(install_root: Path, release_root: Path, command: str, args: list[str]) -> dict:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from server_console import nas_access
+    if sys.platform == "win32":
+        import _winapi  # noqa: F401 — NAS 잠금 모듈도 신원 전환 전에 읽는다
     sys.path.insert(0, str(install_root / "backend"))
     from app.services import release_update as ru  # noqa: PLC0415 — 환경을 정한 뒤에만
     from app.services import server_relocation as sr  # noqa: PLC0415
@@ -67,23 +74,28 @@ def run(install_root: Path, release_root: Path, command: str, args: list[str]) -
         missing = missing_parts({"release_update": ru, "server_relocation": sr}, NEEDS)
         return {"ok": not missing, "missing": missing}
     try:
-        if command == "read" and not args:
-            out: dict = {"ok": True}
-            try:
-                out["packages"] = ru.list_packages(release_root)
-            except ru.ReleaseUpdateError as exc:
-                out["packages_error"] = str(exc)
-            try:
-                out["overview"] = ru.release_overview(release_root)
-            except ru.ReleaseUpdateError as exc:
-                out["overview_error"] = str(exc)
-            return out
-        if command == "manifest" and len(args) == 1:
-            return {"ok": True, "manifest": ru.package_manifest(args[0], release_root)}
-        if command == "promote" and len(args) == 1:
-            return {"ok": True, "result": ru.promote_candidate(_expected(args[0]), release_root)}
-        if command == "deploy" and len(args) == 3:
-            return {"ok": True, "result": ru.deploy_package(_expected(args[0]), args[1], args[2], release_root)}
+        if command in ("read", "manifest", "promote", "deploy"):
+            # 생성자가 이 설정에만 같은 사용자의 읽기 권한을 주었다. 작업 중에도 같은 경로만 읽는다.
+            source = ru.install_source(release_root)
+            with nas_access.connected(source):
+                if command == "read" and not args:
+                    out: dict = {"ok": True}
+                    try:
+                        out["packages"] = ru.list_packages(release_root)
+                    except ru.ReleaseUpdateError as exc:
+                        out["packages_error"] = str(exc)
+                    try:
+                        out["overview"] = ru.release_overview(release_root)
+                    except ru.ReleaseUpdateError as exc:
+                        out["overview_error"] = str(exc)
+                    return out
+                if command == "manifest" and len(args) == 1:
+                    return {"ok": True, "manifest": ru.package_manifest(args[0], release_root)}
+                if command == "promote" and len(args) == 1:
+                    return {"ok": True, "result": ru.promote_candidate(_expected(args[0]), release_root)}
+                if command == "deploy" and len(args) == 3:
+                    return {"ok": True, "result": ru.deploy_package(
+                        _expected(args[0]), args[1], args[2], release_root)}
         if command == "location" and not args:
             source = ru.install_source(release_root)
             try:
@@ -96,7 +108,7 @@ def run(install_root: Path, release_root: Path, command: str, args: list[str]) -
                 source, url=args[0], name=args[1], last_published_revision=int(args[2]))}
     except ru.ReleasePromoteError as exc:
         return {"ok": False, "error": str(exc), "status": exc.status}
-    except (ru.ReleaseUpdateError, sr.RelocationReadError, sr.RelocationWriteError) as exc:
+    except (ru.ReleaseUpdateError, sr.RelocationReadError, sr.RelocationWriteError, nas_access.NasAccessError) as exc:
         return {"ok": False, "error": str(exc), "status": 400}
     return {"ok": False, "error": "알 수 없는 명령입니다", "status": 400}
 

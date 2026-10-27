@@ -2348,6 +2348,7 @@ def test_release_helper_reads_the_nas_with_the_root_code_and_writes_only_the_not
 def test_release_helper_uses_the_folder_this_job_confirmed_not_the_saved_setting(tmp_path, monkeypatch):
     """작업 도중 화면에서 폴더 설정을 바꿔도, 도우미에 넘어가는 폴더는 이 작업이 확인한 것이다(Codex 리뷰 P1)."""
     inst = make_inst(tmp_path)
+    monkeypatch.setattr(release.nas_access, "allow_source_read", lambda _root: None)
     (inst.root / ".mvhub-runtime").mkdir()
     release.save_source(inst, "\\\\NAS\\B")  # 화면에서 바꾼 값
     seen = []
@@ -2724,6 +2725,22 @@ def test_ui_release_page_shows_buttons_only_after_login_and_offers_resume(tmp_pa
         assert "알림은 나갔지만" in app.release_note.cget("text") and app.release_busy is False
         app._handle(("release_view", {**view, "notices": None, "auth_expired": True}))
         assert app.session is None
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize("read", [
+    {"ok": False, "error": "NAS 연결 오류 1326"},
+    {"ok": True, "packages_error": "NAS 연결 오류 1326"},
+    {"ok": True, "packages": []},
+])
+def test_ui_distinguishes_unreadable_release_folder_from_empty(tmp_path, monkeypatch, read):
+    ui, root, app, errors = _app(tmp_path, monkeypatch)
+    try:
+        app._handle(("release_view", {"source": "\\\\NAS\\releases", "read": read, "notices": None}))
+        labels = [w.cget("text") for w in app.release_rows.winfo_children() if isinstance(w, ui.tk.Label)]
+        expected = "릴리스가 없습니다" if read.get("packages") == [] else "릴리스 목록을 읽지 못했습니다"
+        assert labels == [expected] and not errors
     finally:
         root.destroy()
 
