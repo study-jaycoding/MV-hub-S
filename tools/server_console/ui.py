@@ -39,7 +39,7 @@ SERVER_COLORS = {"ok": LIME, "switching": AMBER, "starting": AMBER, "maintenance
                  "not_ready": RED, "no_answer": RED, "stopped": MUTED, "unknown": MUTED, "no_task": MUTED}
 JOB_TERMINAL = ("finished", "refused", "check_needed", "runner_error")
 NAV = (("status", "상태·로그"), ("intake", "생성 접수"), ("power", "켜기·끄기"), ("backup", "DB·백업"),
-       ("update", "업데이트"), ("release", "릴리스"), ("move", "서버 이사"), ("address", "서버 주소"))
+       ("update", "업데이트"), ("release", "릴리스"), ("address", "서버 주소"), ("move", "서버 이사"))
 # 로그 탭 위의 표(activity.read_activity 의 키·제목·칸). 칸 = (키, 머리글, 너비)
 TABLES = {
     "generation": ("generations", "최근 생성 — 작업자 PC 가 보낸 정보(프롬프트는 안 보임)",
