@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-25
+updated: 2026-10-27
 status: active
 ---
 
@@ -517,6 +517,12 @@ SQLite 파일 손상·실수 삭제 대비. **SQLite 온라인 백업 API**로 �
 `register_autostart.bat`의 `MVHub BackupCopy`를 사용해 서버 자체 백업과 작업자 세트를 NAS·다른
 디스크로 한 번 더 복제해야 한다. 자세한 완료 조건은
 [WORKER_OFFDISK_BACKUP_CONTRACT.md](WORKER_OFFDISK_BACKUP_CONTRACT.md)를 따른다.
+
+> [!IMPORTANT]
+> 관리 창(관리자 권한)과 예약 작업(SYSTEM)에는 `Z:` 같은 연결 드라이브가 보이지 않는다. 백업 복사 위치·NAS
+> 릴리스 폴더는 `\\서버\공유\…` 로 적는다. 관리 창은 이 계정이 기억해 둔 연결 드라이브(`Z:\…`)를 실제 주소로
+> 바꿔 저장한다. 복사는 SYSTEM(이 서버 PC 계정)이 하므로 NAS 가 이 PC 의 쓰기를 허용해야 한다
+> (안 되면 결과가 `target_unavailable`).
 
 ### 백업 복원 훈련
 
