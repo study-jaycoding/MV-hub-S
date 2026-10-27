@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, field, replace
 
 from . import names
 from .backup import task_problems
-from .install import Installation, Runner, powershell_exe, trusted_git
+from .install import Installation, Runner, network_path, powershell_exe, trusted_git
 
 ACTIONS = {"git-update": "Git 업데이트", "tools-update": "관리 도구 갱신", "console-rollback": "이전 관리 창으로",
            "intake-set": "생성 접수 바꾸기", "backup-save": "백업 복사 위치 저장(시험 복사)", "backup-run": "지금 복사",
@@ -209,16 +209,20 @@ def plan_backup_save(inst: Installation, view: dict, target: str, unresolved_job
     """백업 복사 위치를 바꾸고 시험 복사 — 확인 대상 = 바꾸기 전 위치(지문)·새 위치."""
     reasons = _backup_refusals(inst, view, unresolved_jobs)
     setting = view.get("setting") or {}
-    target = (target or "").strip()
+    typed = (target or "").strip()
+    target, why = network_path(typed)  # 예약 작업(SYSTEM)에는 Z: 가 안 보인다 — 실제 주소로
     if setting.get("source") == "env":
         reasons.append("서버 기계 설정값 CONTENT_HUB_BACKUP_REPLICA_DIR 로 정해져 있어 여기서 바꾸지 않습니다")
-    if not target:
+    if why:
+        reasons.append(why)
+    elif not target:
         reasons.append("복사 위치(\\\\NAS\\공유폴더\\…)를 적으세요")
     elif _norm_target(target) == _norm_target(setting.get("target")):
         reasons.append("지금 위치와 같습니다 — [지금 복사]를 쓰세요")
     if reasons:
         return Refusal(tuple(reasons))
     summary = (f"백업 복사 위치를 {target} 로 바꾸고 시험 복사합니다(지금: {setting.get('target') or '없음'}).",
+               *((f"{typed[:2]} 는 예약 작업(SYSTEM)에 보이지 않아 실제 주소로 바꿔 저장합니다.",) if target != typed else ()),
                "먼저 이 관리자 계정으로 그 위치에 쓸 수 있는지 확인합니다(20초 안).",
                "저장한 뒤 예약 작업(SYSTEM)으로 한 번 복사해 이번 결과만 확인합니다 — 첫 복사는 오래 걸릴 수 있습니다(창을 닫아도 계속).",
                "복사가 실패해도 새 위치는 저장된 채로 두고 이유와 [이전 위치로 되돌리기]를 보여 줍니다.")

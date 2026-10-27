@@ -2276,6 +2276,8 @@ def test_ui_backup_page_shows_target_reasons_and_offers_revert(tmp_path, monkeyp
     ({"status": "finished", "exit_code": 3, "saved": True, "copy": "unconfirmed", "error": "제한 시간"}, "복사 결과는 미확인"),
     ({"status": "finished", "exit_code": 1, "saved": False, "error": "그 위치에 쓸 수 없습니다"}, "실패: 그 위치에 쓸 수 없습니다"),
     ({"status": "finished", "exit_code": 1, "copy": "failed", "error_code": "copy_failed"}, "실패: 복사는 실패했습니다(copy_failed)"),
+    ({"status": "finished", "exit_code": 1, "saved": True, "copy": "failed", "error_code": "target_unavailable"},
+     "예약 작업(SYSTEM)이 NAS 폴더를 열지 못했습니다"),
     ({"status": "check_needed"}, "결과 확인 필요"),
 ])
 def test_backup_result_text_separates_saving_from_copying(state, expected):
@@ -2367,6 +2369,63 @@ def test_release_source_setting_is_validated(tmp_path):
             release.save_source(inst, bad)
     release.save_source(inst, "  \\\\NAS\\release  ")
     assert release.release_source(inst) == "\\\\NAS\\release"
+
+
+NAS_Z = "\\\\192.168.1.203\\millionvolt"
+
+
+def _no_drive() -> str:
+    return next(c for c in "QRSTUVW" if not os.path.isdir(f"{c}:\\"))
+
+
+def test_network_drive_paths_become_the_real_address(tmp_path, monkeypatch):
+    """관리자 창·SYSTEM 작업에는 Z: 가 안 보인다(10-27 서버 오류 3) — 기억된 연결 드라이브는 실제 주소로, 못 찾으면 이유."""
+    monkeypatch.setattr(install, "_mapped_remote", lambda letter: {"Z": NAS_Z, "Y": "\\\\nas\\share\\"}.get(letter, ""))
+    net = install.network_path
+    assert net(" z:\\mvutil\\MV_hub_S\\packages ") == (NAS_Z + "\\mvutil\\MV_hub_S\\packages", "")
+    assert net("Z:") == (NAS_Z, "") and net("Z:\\") == (NAS_Z, "")
+    assert net("Y:/a/b/") == ("\\\\nas\\share\\a\\b", "")
+    assert net("\\\\NAS\\r") == ("\\\\NAS\\r", "") and net("relative\\p") == ("relative\\p", "")
+    assert net(str(tmp_path)) == (str(tmp_path), "")  # 이 창에서도 보이는 로컬 디스크는 그대로
+    missing = _no_drive()
+    fixed, why = net(f"{missing}:\\x")
+    assert fixed == f"{missing}:\\x" and f"{missing}: 드라이브는" in why and "\\\\서버\\공유" in why
+
+
+def test_release_and_backup_save_a_network_drive_as_its_real_address(tmp_path, monkeypatch):
+    monkeypatch.setattr(install, "_mapped_remote", lambda letter: {"Z": NAS_Z}.get(letter, ""))
+    inst = make_inst(tmp_path)
+    assert release.save_source(inst, "Z:\\mvutil\\packages") == NAS_Z + "\\mvutil\\packages"
+    assert release.release_source(inst) == NAS_Z + "\\mvutil\\packages"
+    with pytest.raises(release.ReleaseError, match="보이지 않습니다"):
+        release.save_source(inst, f"{_no_drive()}:\\r")
+    assert release.release_source(inst) == NAS_Z + "\\mvutil\\packages"  # 못 바꾸면 저장하지 않는다
+    view = {"unsupported": "", "error": "", "task": GOOD_TASK,
+            "setting": {"target": "\\\\NAS\\old", "target_id": "o", "source": "file"}}
+    plan = actions.plan_backup_save(inst, view, " Z:\\mvhub_backup ")
+    assert plan.params["target"] == NAS_Z + "\\mvhub_backup" and any("실제 주소" in s for s in plan.summary)
+    assert actions.plan_backup_save(inst, view, plan.params["target"]).params == plan.params  # 실행 직전 다시 세운 계획과 같다
+    assert "보이지 않습니다" in actions.plan_backup_save(inst, view, f"{_no_drive()}:\\b").reasons[0]
+
+
+def test_ui_shows_the_real_address_for_a_network_drive(tmp_path, monkeypatch):
+    ui, root, app, _errors = _app(tmp_path, monkeypatch)
+    monkeypatch.setattr(install, "_mapped_remote", lambda letter: {"Z": NAS_Z}.get(letter, ""))
+    try:
+        app.release_entry.insert(0, "Z:\\mvutil\\packages")
+        app.save_release_source()
+        assert app.release_entry.get() == NAS_Z + "\\mvutil\\packages" and "실제 주소로 바꿨습니다" in app.release_note.cget("text")
+        app.release_shown = app.release_entry.get()
+        app._handle(("release_view", {"source": "Z:\\old", "read": {"ok": True, "packages": []}, "notices": None}))
+        assert "[저장]을 다시 누르면" in app.release_warn.cget("text")  # 전에 Z: 로 저장해 둔 값
+        monkeypatch.setattr(ui.messagebox, "askokcancel", lambda *a, **k: False)
+        plan = actions.Plan("backup-save", "r", "server", "", ("x",), params={"target": NAS_Z + "\\b"})
+        app.backup_busy = True
+        app.backup_entry.insert(0, "Z:\\b")
+        app._on_backup_plan(plan)
+        assert app.backup_entry.get() == NAS_Z + "\\b"
+    finally:
+        root.destroy()
 
 
 class _FakeServer:

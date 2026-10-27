@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import jobs, server_api
-from .install import CODE_ROOT, Installation, Runner, child_env, run_command
+from .install import CODE_ROOT, Installation, Runner, child_env, network_path, run_command
 
 HELPER = CODE_ROOT / "tools" / "server_console" / "release_helper.py"
 READ_TIMEOUT = 60.0
@@ -64,11 +64,14 @@ def _atomic_text(path: Path, text: str) -> None:
     os.replace(temp, path)
 
 
-def save_source(inst: Installation, value: str) -> None:
-    problem = source_problem(value)
+def save_source(inst: Installation, value: str) -> str:
+    """저장한 값을 돌려준다 — Z:\\… 는 실제 주소로 바꿔 저장한다(관리자 창에는 연결 드라이브가 안 보인다)."""
+    text, why = network_path(value)
+    problem = why or source_problem(text)
     if problem:
         raise ReleaseError(problem)
-    _atomic_text(release_root(inst) / "INSTALL_SOURCE.txt", value.strip() + "\n")
+    _atomic_text(release_root(inst) / "INSTALL_SOURCE.txt", text + "\n")
+    return text
 
 
 def read_state(inst: Installation) -> dict:

@@ -963,6 +963,10 @@ class App:
             self.backup_note.configure(text="하지 않았습니다:\n· " + "\n· ".join(plan.reasons), fg=AMBER)
             self._show_backup()
             return
+        target = plan.params.get("target")
+        if target and self.backup_entry.get().strip() != target:  # Z:\… 를 실제 주소로 바꾼 것을 칸에도
+            self.backup_entry.delete(0, "end")
+            self.backup_entry.insert(0, target)
         if messagebox.askokcancel(f"{actions.ACTIONS[plan.kind]} 확인", "\n\n".join(plan.summary) + "\n\n실행할까요?",
                                   icon="warning"):
             self.backup_note.configure(text="시작하는 중…", fg=MUTED)
@@ -1096,13 +1100,17 @@ class App:
         holder.bind("<Leave>", lambda _e: self.release_canvas.unbind_all("<MouseWheel>"))
 
     def save_release_source(self) -> None:
+        typed = self.release_entry.get().strip()
         try:
-            release.save_source(self.inst, self.release_entry.get())
+            saved = release.save_source(self.inst, typed)
         except (release.ReleaseError, OSError) as exc:
             self.release_note.configure(text=f"저장하지 않았습니다: {exc}", fg=AMBER)
             return
-        self.release_shown = self.release_entry.get().strip()
-        self.release_note.configure(text="NAS 릴리스 폴더를 저장했습니다 — 목록을 다시 읽습니다", fg=LIME)
+        self.release_entry.delete(0, "end")
+        self.release_entry.insert(0, saved)
+        self.release_shown = saved
+        moved = f" ({typed[:2]} 는 이 창에서 안 보여 실제 주소로 바꿨습니다)" if saved != typed else ""
+        self.release_note.configure(text=f"NAS 릴리스 폴더를 저장했습니다{moved} — 목록을 다시 읽습니다", fg=LIME)
         self.release_due = True
 
     def _show_release(self) -> None:
@@ -1118,7 +1126,12 @@ class App:
         warnings = []
         if not source:
             warnings.append("NAS 릴리스 폴더를 정하세요(팀원 PC 의 INSTALL_SOURCE.txt 에 적힌 것과 같은 폴더)")
-        elif read and not read.get("ok"):
+        else:
+            fixed, why = install.network_path(source)
+            if why or fixed != source:  # 전에 Z:\… 로 저장해 둔 값
+                warnings.append(why or f"{source[:2]} 같은 연결 드라이브는 관리자 권한인 이 창에서 보이지 않습니다 — "
+                                       "[저장]을 다시 누르면 실제 주소로 바꿔 저장합니다")
+        if source and read and not read.get("ok"):
             warnings.append(str(read.get("error")))
         warnings += [str(read[k]) for k in ("packages_error", "overview_error") if read.get(k)]
         if overview and overview.get("candidate_error"):
@@ -2122,6 +2135,12 @@ def _control_result_text(state: dict, kind: str, error: str) -> tuple[str, str]:
     return f"실패: {error} — 위의 상태·끈 기록을 확인하세요{note}", RED
 
 
+BACKUP_CODES = {  # 복사기(tools/backup_replicate.py) 결과 코드 → 사람 말. 관리 창 확인(probe)은 이 계정, 복사는 SYSTEM 이다
+    "target_unavailable": "예약 작업(SYSTEM)이 NAS 폴더를 열지 못했습니다 — NAS 가 켜져 있는지, "
+                          "NAS 에서 이 서버 PC 의 접근·쓰기를 허용했는지 확인하세요",
+}
+
+
 def backup_result_text(state: dict) -> tuple[str, str]:
     """백업 작업 상태 → (화면 문구, 색). '설정 저장'과 '복사 결과'를 따로 말한다."""
     status_text = state.get("status")
@@ -2136,7 +2155,8 @@ def backup_result_text(state: dict) -> tuple[str, str]:
         return f"완료: 복사 성공 — 새로 {counts.get('copied', '?')} · 그대로 {counts.get('skipped', '?')}{saved}", LIME
     copy = state.get("copy")
     why = state.get("error") or state.get("error_code") or "이유 모름"
-    part = {"failed": f"복사는 실패했습니다({state.get('error_code') or why})",
+    code = state.get("error_code") or why
+    part = {"failed": f"복사는 실패했습니다({BACKUP_CODES.get(code, code)})",
             "unconfirmed": f"복사 결과는 미확인입니다 — {why}",
             "not_started": f"복사는 시작하지 못했습니다 — {why}"}.get(copy)
     if state.get("saved") and part:

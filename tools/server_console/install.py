@@ -62,6 +62,41 @@ def machine_env(name: str) -> str:
     return _hklm(r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", name)
 
 
+_DRIVE_PATH = re.compile(r"^([A-Za-z]):(?:[\\/]|$)")
+
+
+def _mapped_remote(letter: str) -> str:
+    """이 사용자가 기억해 둔 네트워크 드라이브의 실제 주소(HKCU\\Network\\<글자>\\RemotePath, 없으면 '')."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, rf"Network\{letter}") as key:
+            value, _kind = winreg.QueryValueEx(key, "RemotePath")
+    except OSError:
+        return ""
+    return str(value).strip()
+
+
+def network_path(value: str) -> tuple[str, str]:
+    """Z:\\… 처럼 연결 드라이브로 적은 NAS 경로를 실제 주소(\\\\서버\\공유\\…)로 바꾼다 → (경로, 못 바꾼 이유).
+
+    연결 드라이브는 로그인한 보통 창에만 보인다 — 관리자 권한인 이 창과 SYSTEM 예약 작업에는 Z: 가 없다
+    (10-27 서버: 릴리스 폴더 Z:\\… 가 오류 3). 드라이브 문자가 아니거나 이 창에서도 보이는 드라이브면 그대로 둔다.
+    """
+    text = value.strip()
+    match = _DRIVE_PATH.match(text)
+    if not match:
+        return text, ""
+    letter = match.group(1).upper()
+    remote = _mapped_remote(letter)
+    if remote.startswith("\\\\"):
+        rest = text[2:].strip("\\/").replace("/", "\\")
+        return remote.rstrip("\\") + ("\\" + rest if rest else ""), ""
+    if os.path.isdir(f"{letter}:\\"):
+        return text, ""
+    return text, (f"{letter}: 드라이브는 관리자 권한인 이 창에서 보이지 않습니다 — 탐색기에서 {letter}: 의 실제 주소를 "
+                  "확인해 \\\\서버\\공유\\… 로 적으세요")
+
+
 @dataclass(frozen=True)
 class Installation:
     root: Path
