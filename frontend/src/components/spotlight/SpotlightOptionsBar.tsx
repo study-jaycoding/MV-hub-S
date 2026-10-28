@@ -282,7 +282,7 @@ function LanguagePicker({ value, onPick, open, setOpen }: {
       </button>
       {isOpen && (
         <div className="sl-dropdown">
-          <div className="sl-dd-title">번역 언어</div>
+          <div className="sl-dd-title">Target Language</div>
           <div className="sl-dd-scroll">
             {DUBBING_LANGUAGES.map(([code, name]) => (
               <button key={code} className={"sl-dd-item" + (code === value ? " sel" : "")}
