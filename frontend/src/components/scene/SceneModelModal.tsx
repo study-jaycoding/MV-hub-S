@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { policyNote, submitBlockMessage } from "../../lib/modelPolicyCore";
 import { useModelPolicy } from "../../lib/modelPolicy";
 import { inferModelType, stripHiddenParams, useModels } from "../../lib/useModels";
-import { variantChoiceMissing, variantDisplayName } from "../../lib/spotlightPromptConfig";
+import { AUDIO_TASK_MODELS, audioTaskOf, isTtsModel, variantChoiceMissing, variantDisplayName } from "../../lib/spotlightPromptConfig";
 import { SpotlightOptionsBar } from "../spotlight/SpotlightOptionsBar";
 import type { SceneModelCfg } from "../../lib/scenes";
 
@@ -36,6 +36,9 @@ export function SceneModelModal({
   }); // 로드 실패는 조용히(모달이라 별도 토스트 불필요)
   const blockedNote = m.selectedBlocked ? submitBlockMessage(policy, m.model, m.modelName) : null;
   const [open, setOpen] = useState<string | null>(null);
+  // Audio 의 일(TTS·Voice Change·Translate) 단추 — 생성창과 같은 규칙(SpotlightPrompt). TTS 로 돌아오면 마지막 대본 모델로.
+  const lastTtsModelRef = useRef(isTtsModel(initial?.model ?? "") ? initial!.model : "");
+  useEffect(() => { if (isTtsModel(m.model)) lastTtsModelRef.current = m.model; }, [m.model]);
   // Esc: 펼친 목록 먼저, 아니면 창 — 떠 있는 동안 뒤 보드의 단축키도 쉰다(2026-10-10 실측: Delete 가 그 모델 카드를 지웠다).
   useEscapeClose(() => (open ? setOpen(null) : onClose()));
   // 막이 있는 창 — 초점을 창 안에 둔다(lib/keyGate '모달의 초점'). 보드의 Tab(노드 피커)은 창이 뜬 동안 쉬므로 Tab 은 창 안에서 돈다.
@@ -126,6 +129,11 @@ export function SceneModelModal({
             <SpotlightOptionsBar
               type={m.type}
               setType={m.setType}
+              audioTask={audioTaskOf(m.model)}
+              onAudioTaskChange={(task) => {
+                const next = AUDIO_TASK_MODELS[task] ?? (lastTtsModelRef.current || m.firstAllowed("audio"));
+                if (next && next !== m.model) m.setModel(next);
+              }}
               model={m.model}
               setModel={m.setModel}
               onPickModel={(picked, opts) => {

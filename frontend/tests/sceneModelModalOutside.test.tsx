@@ -7,7 +7,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("../src/api", () => ({
   api: {
-    models: () => Promise.resolve([{ display_name: "Seedance 2.5", job_set_type: "seedance_2_5", type: "video" }]),
+    models: () => Promise.resolve([{ display_name: "Seedance 2.5", job_set_type: "seedance_2_5", type: "video" },
+      { display_name: "Seed Audio 1.0", job_set_type: "seed_audio", type: "audio" }]),
     modelParams: () => Promise.resolve({ job_set_type: "seedance_2_5", type: "video", saved_at: Date.now() / 1000, params: [
       { name: "mode", type: "string", default: "t2v", enum: ["t2v", "omni_reference", "video_edit", "video_extension"] },
       { name: "bitrate_mode", type: "string", default: "standard", enum: ["standard", "high"] },
@@ -48,4 +49,19 @@ it("목록이 떠 있으면 창 안 다른 곳·뒤 막을 눌러도 목록만 �
   expect(onClose).not.toHaveBeenCalled();
   press(host.querySelector(".scene-modelmodal-backdrop")!); // 목록이 없으면 전처럼 창을 닫는다
   expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+it("Audio 면 생성창처럼 TTS·Voice Change·Translate 단추 — 다른 일로 갔다 TTS 로 오면 마지막 대본 모델", async () => {
+  act(() => root.render(<SceneModelModal initial={{ type: "audio", model: "seed_audio", params: {} } as never} onSave={vi.fn()} onClose={vi.fn()} />));
+  await settle();
+  const task = (label: string) => [...host.querySelectorAll<HTMLButtonElement>(".sl-audio-tasks button")].find((b) => b.textContent === label)!;
+  expect([...host.querySelectorAll(".sl-audio-tasks button")].map((b) => b.textContent)).toEqual(["Text to Speech", "Voice Change", "Translate"]);
+  expect(task("Text to Speech").getAttribute("aria-pressed")).toBe("true");
+  act(() => task("Voice Change").click());
+  await settle();
+  expect(task("Voice Change").getAttribute("aria-pressed")).toBe("true");
+  act(() => task("Text to Speech").click());
+  await settle();
+  expect(task("Text to Speech").getAttribute("aria-pressed")).toBe("true");
+  expect(host.querySelector(".sl-chip-label")?.textContent).toContain("Seed Audio");
 });
