@@ -120,11 +120,11 @@ describe("isVariantParam", () => {
 describe("오디오 엔진 줄(text2speech_v2.variant)", () => {
   const TTS = [{ job_set_type: "text2speech_v2", display_name: "Text to Speech V2" }];
 
-  it("새 선택지는 세 엔진뿐이고 이름은 CLI 값 기반", () => {
+  it("새 선택지는 세 엔진뿐이고 이름은 웹 제품명(값은 CLI 그대로)", () => {
     const rows = modelRows(TTS);
     expect(rows.map((r) => [r.display_name, r.value])).toEqual([
-      ["ElevenLabs", "elevenlabs"],
-      ["MiniMax", "minimax"],
+      ["ElevenLabs v3", "elevenlabs"],
+      ["MiniMax Speech 2.8 HD", "minimax"],
       ["Seed Speech", "seed_speech"],
     ]);
     expect(rows.every((r) => r.model === "text2speech_v2" && r.param === "variant")).toBe(true);
@@ -132,7 +132,7 @@ describe("오디오 엔진 줄(text2speech_v2.variant)", () => {
 
   it("저장된 옛 엔진은 '기존 설정' 줄로만 끼운다", () => {
     const rows = modelRows(TTS, { model: "text2speech_v2", optionValues: { variant: "vibe_voice" } });
-    expect(rows.map((r) => r.display_name)).toEqual(["ElevenLabs", "MiniMax", "Seed Speech", "Vibe Voice (기존 설정)"]);
+    expect(rows.map((r) => r.display_name)).toEqual(["ElevenLabs v3", "MiniMax Speech 2.8 HD", "Seed Speech", "Vibe Voice (기존 설정)"]);
     // 다른 모델을 보고 있으면 끼우지 않는다
     expect(modelRows(TTS, { model: "seedance_2_0", optionValues: { variant: "vibe_voice" } })).toHaveLength(3);
     expect(modelChipLabel("Text to Speech V2", "text2speech_v2", { variant: "cozy_voice" })).toBe("Cozy Voice (기존 설정)");
@@ -152,7 +152,7 @@ describe("오디오 엔진 줄(text2speech_v2.variant)", () => {
 
   it("칩·생성물 이름은 엔진 이름", () => {
     expect(modelChipLabel("Text to Speech V2", "text2speech_v2", { variant: "seed_speech" })).toBe("Seed Speech");
-    expect(variantDisplayName("text2speech_v2", { variant: "minimax" })).toBe("MiniMax");
+    expect(variantDisplayName("text2speech_v2", { variant: "minimax" })).toBe("MiniMax Speech 2.8 HD");
     expect(variantDisplayName("text2speech_v2", { variant: "vibe_voice" })).toBe("Vibe Voice");
     expect(variantDisplayName("text2speech_v2", {})).toBeNull();
     expect(variantDisplayName("seedance_2_0", { mode: "fast" })).toBeNull(); // 이름 없는 변형은 모델 이름을 쓴다

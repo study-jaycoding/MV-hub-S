@@ -78,17 +78,17 @@ const button = (label: string) => {
 };
 const openModelList = () => act(() => (container.querySelector(".sl-chip") as HTMLButtonElement).click());
 const rowNames = () => [...container.querySelectorAll(".sl-dropdown .sl-dd-item")].map((b) => (b.getAttribute("aria-label") || b.textContent || "").trim());
-const audioNames = ["Seed Audio 1.0", "ElevenLabs v4", "ElevenLabs v4 Turbo", "ElevenLabs", "Qwen Audio 3.0 TTS", "MiniMax", "Seed Speech"];
+const audioNames = ["Seed Audio 1.0", "ElevenLabs v4", "ElevenLabs v4 Turbo", "ElevenLabs v3", "Qwen Audio 3.0 TTS", "MiniMax Speech 2.8 HD", "Seed Speech"];
 
 describe("오디오 엔진 줄 — 씬 모델 창", () => {
   it("새로 고르면 첫 엔진(elevenlabs)이 옵션값에도 실리고, 고급에 variant 가 없다", async () => {
     await mountModal({ type: "audio" });
-    expect(chipText()).toBe("ElevenLabs");
+    expect(chipText()).toBe("ElevenLabs v3");
     expect(container.querySelector('button[title^="고급 옵션"]')).toBeNull(); // 고급(Set) 칩 없음
     openModelList();
     expect(rowNames()).toEqual(audioNames);
     act(() => button("저장").click());
-    expect(saved[0]).toMatchObject({ model: "text2speech_v2", modelName: "ElevenLabs", params: { variant: "elevenlabs" } });
+    expect(saved[0]).toMatchObject({ model: "text2speech_v2", modelName: "ElevenLabs v3", params: { variant: "elevenlabs" } });
   });
 
   it("엔진이 빠진 복원은 기본값으로 메우지 않고, 고를 때까지 저장을 막는다", async () => {
@@ -98,12 +98,12 @@ describe("오디오 엔진 줄 — 씬 모델 창", () => {
     expect(container.textContent).toContain("음성 엔진이 없습니다");
     openModelList();
     expect(container.querySelector(".sl-dropdown .sl-dd-item.sel")).toBeNull(); // 어느 줄도 고른 것처럼 보이지 않는다
-    act(() => button("MiniMax").click());
+    act(() => button("MiniMax Speech 2.8 HD").click());
     await settle();
-    expect(chipText()).toBe("MiniMax");
+    expect(chipText()).toBe("MiniMax Speech 2.8 HD");
     expect(button("저장").disabled).toBe(false);
     act(() => button("저장").click());
-    expect(saved[0]).toMatchObject({ modelName: "MiniMax", params: { variant: "minimax", voice_id: "v1", voice_type: "preset" } });
+    expect(saved[0]).toMatchObject({ modelName: "MiniMax Speech 2.8 HD", params: { variant: "minimax", voice_id: "v1", voice_type: "preset" } });
   });
 
   it("저장된 옛 엔진은 '기존 설정' 줄로 보이고 값이 바뀌지 않는다", async () => {
@@ -197,7 +197,7 @@ describe("복원 규칙·제출·표시명", () => {
   it("생성물 표시명은 엔진, 집계(params 없이)는 모델 이름", async () => {
     const { modelDisplayName } = await import("../src/lib/modelCatalog");
     expect(modelDisplayName("text2speech_v2", { variant: "seed_speech" })).toBe("Seed Speech");
-    expect(modelDisplayName("text2speech_v2")).not.toBe("ElevenLabs");
+    expect(modelDisplayName("text2speech_v2")).not.toBe("ElevenLabs v3");
     expect(modelDisplayName("seedance_2_0", { mode: "fast" })).toBe("Seedance 2.0");
   });
 });

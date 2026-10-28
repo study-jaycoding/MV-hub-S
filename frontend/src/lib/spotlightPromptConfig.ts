@@ -156,7 +156,7 @@ export function spotlightIgnoredOptions(model: string, mode: unknown): {
 //  ★seedance_2_5.mode 는 가르지 않는다 — 속도가 아니라 생성 방식(t2v/omni_reference/video_edit/
 //    video_extension)이 갈려 모델 이름으로 표현할 성질이 아니고, 기본값이 틀어지면 레퍼런스가 거부된다.
 //  · text2speech_v2.variant(2026-10-28 Jay·Codex 합의): 엔진을 '고급'에 날 값으로 두던 것을 모델 줄로 꺼낸다.
-//    표시명은 CLI 값 기반 — 웹 제품명(ElevenLabs v3·MiniMax Speech 2.8 HD)과의 대응은 추정이라 쓰지 않는다.
+//    표시명은 웹 제품명 — 웹 번들의 엔진 표가 elevenlabs=ElevenLabs v3 · minimax=MiniMax Speech 2.8 HD 로 쓴다(10-28 확인, Jay "이름 바꾸기").
 //    vibe_voice·cozy_voice 는 웹에 없는 엔진이라 새 선택지에서 빼되(legacy), 저장된 값은 '기존 설정' 줄로 보존한다.
 //    requireChoice: 값이 비면 첫 항목으로 간주하지 않는다 — 복원값에 엔진이 빠졌으면 고를 때까지 막는다(Codex B1).
 type ModelVariantEntry = { value: string; suffix: string; name?: string; legacy?: boolean };
@@ -173,8 +173,8 @@ const MODEL_VARIANTS: Record<string, ModelVariantConfig> = {
     param: "variant",
     requireChoice: true,
     entries: [
-      { value: "elevenlabs", suffix: "", name: "ElevenLabs" },
-      { value: "minimax", suffix: "", name: "MiniMax" },
+      { value: "elevenlabs", suffix: "", name: "ElevenLabs v3" },
+      { value: "minimax", suffix: "", name: "MiniMax Speech 2.8 HD" },
       { value: "seed_speech", suffix: "", name: "Seed Speech" },
       { value: "vibe_voice", suffix: "", name: "Vibe Voice", legacy: true },
       { value: "cozy_voice", suffix: "", name: "Cozy Voice", legacy: true },
