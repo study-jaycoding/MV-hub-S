@@ -302,6 +302,7 @@ export interface ReportedHfStatus {
   credits: number | null;
   plan?: string | null;
   cli_version?: string | null; // 해당 계정 에이전트가 실제 사용 중이라고 보고한 CLI 버전
+  ffmpeg_h264?: boolean | null; // 마지막 보고에 Kling 영상 H.264 변환용 ffmpeg 가 있었나(null = 보고 없음·옛 서버) — 안내 전용
   connected?: boolean;
   workspaces: Workspace[];
 }

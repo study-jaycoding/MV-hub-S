@@ -763,6 +763,7 @@ def my_hf_status(request: Request):
             "credits": None,
             "plan": None,
             "cli_version": None,
+            "ffmpeg_h264": None,
             "workspaces": [],
         }
     return {
@@ -770,6 +771,8 @@ def my_hf_status(request: Request):
         "credits": st.get("credits"),
         "plan": st.get("plan"),
         "cli_version": st.get("cli_version"),
+        # 에이전트가 보고한 'Kling 영상 H.264 변환 가능' — 실제 bool 만, 옛 에이전트(보고 없음)는 null(false 와 구분). 안내·통계 전용.
+        "ffmpeg_h264": st["ffmpeg_h264"] if isinstance(st.get("ffmpeg_h264"), bool) else None,
         "connected": st.get("connected"),
         "workspaces": st.get("workspaces") or [],
     }

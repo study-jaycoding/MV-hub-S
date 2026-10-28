@@ -31,6 +31,7 @@ import random
 import re
 import shutil
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
@@ -42,7 +43,7 @@ import uuid
 from collections import Counter, OrderedDict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as futures_wait
 from datetime import datetime, timedelta, timezone
-from threading import Event, Lock, RLock
+from threading import BoundedSemaphore, Event, Lock, RLock
 from urllib.parse import quote, urlencode, urlparse
 
 
@@ -2628,6 +2629,215 @@ def _cleanup(paths: list) -> None:
 _WIN_CMDLINE_MAX = 32766
 
 
+# ── Kling 영상 수정에 보낼 영상 ──
+# 10-28 유료 실측: 앱의 Seedance 2.5 결과(HEVC 10비트 854×480)를 Kling 3.0 Omni Edit·Kling 4.0 이 받지 못하고 실패(환불),
+#  H.264 yuv420p 1280×720 으로 바꾸면 성공. 입력 조건(제3자 문서) 720p~2160p. 아래 판별은 앱의 로컬 정책(휴리스틱)이지
+#  Kling 이 받는다는 보장이 아니다 — profile 로 8비트 4:2:0 을 미루어 볼 뿐 SPS 는 읽지 않는다.
+#  같은 값이 화면 frontend/src/lib/videoFormat.ts 에도 있다(미리 알림용). 설계·합의: docs/status/Kling_영상수정_코덱변환_2026-10-28.md
+KLING_VIDEO_EDIT_MODELS = frozenset({"kling_video_edit", "kling4_0"})
+_KLING_MEDIA_PARAMS = frozenset({"video", "video_references", "image_references", "image", "start_image",
+                                 "end_image", "input_video", "medias"})
+_KLING_H264_PROFILES = frozenset({66, 77, 88, 100})  # Baseline·Main·Extended·High
+_KLING_SHORT_SIDE = (720, 2160)
+_KLING_SCALE = ("scale='if(lt(iw,ih),trunc(max(720,min(2160,iw))/2)*2,-2)'"
+                ":'if(lt(iw,ih),-2,trunc(max(720,min(2160,ih))/2)*2)'")
+_KLING_MAX_BYTES = 200 * 1024 * 1024
+_KLING_TRANSCODE_SECONDS = 300
+_KLING_TRANSCODE_SLOTS = BoundedSemaphore(2)  # 제출 워커 8개가 동시에 변환하지 않게(차례 대기 상한 없음 — Jay 10-29 A안)
+_MP4_MAX_BOXES = 512  # 한 단계에서 훑는 상자 수 상한 — 깨진 파일에서 끝없이 돌지 않게
+
+
+def _mp4_boxes(f, start: int, end: int) -> list | None:
+    """[start, end) 안의 상자 머리들 [(종류, 내용 시작, 상자 끝)] — 내용(mdat 등)은 읽지 않는다.
+    크기가 부모 범위를 벗어나거나 잘렸거나 상자가 너무 많으면 None(판별 불가)."""
+    out = []
+    pos = start
+    while pos < end:
+        if len(out) >= _MP4_MAX_BOXES or pos + 8 > end:
+            return None
+        f.seek(pos)
+        head = f.read(8)  # 머리 8바이트만 — 확장 크기일 때만 8바이트 더(내용은 한 바이트도 읽지 않는다)
+        if len(head) < 8:
+            return None
+        size, kind = struct.unpack(">I4s", head)
+        body = pos + 8
+        if size == 1:
+            ext = f.read(8) if pos + 16 <= end else b""
+            if len(ext) < 8:
+                return None
+            size = struct.unpack(">Q", ext)[0]
+            body = pos + 16
+        elif size == 0:
+            size = end - pos
+        if size < body - pos or pos + size > end:
+            return None
+        out.append((kind.decode("latin-1"), body, pos + size))
+        pos += size
+    return out
+
+
+def _mp4_only(f, box, kind: str):
+    """box 안에서 kind 상자 하나 — 없거나 둘 이상이면 None."""
+    found = [c for c in (_mp4_boxes(f, box[1], box[2]) or [] if box else []) if c[0] == kind]
+    return found[0] if len(found) == 1 else None
+
+
+def _probe_video_format(path: str) -> dict | None:
+    """MP4/MOV 머리(moov → 영상 trak → stsd 항목)에서 코덱·크기·profile·bit depth 를 읽는다(ffmpeg 없이).
+    영상 trak·stsd 항목이 정확히 하나일 때만(ffmpeg 의 0:v:0 와 같은 것) — 아니면·못 읽으면 None(판별 불가).
+    어느 trak 이든 mdia·hdlr 을 못 읽으면(소리 trak 이라도) 판별 불가 — 깨진 trak 이 영상인지 모르므로."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            moovs = [b for b in _mp4_boxes(f, 0, f.tell()) or [] if b[0] == "moov"]
+            if len(moovs) != 1:
+                return None
+            videos = []
+            for trak in [b for b in _mp4_boxes(f, moovs[0][1], moovs[0][2]) or [] if b[0] == "trak"]:
+                mdia = _mp4_only(f, trak, "mdia")
+                hdlr = _mp4_only(f, mdia, "hdlr")
+                if not hdlr or hdlr[2] - hdlr[1] < 12:
+                    return None
+                f.seek(hdlr[1] + 8)
+                if f.read(4) == b"vide":
+                    videos.append(mdia)
+            if len(videos) != 1:
+                return None
+            stsd = _mp4_only(f, _mp4_only(f, _mp4_only(f, videos[0], "minf"), "stbl"), "stsd")
+            if not stsd or stsd[2] - stsd[1] < 8 + 86:
+                return None
+            f.seek(stsd[1] + 4)
+            if struct.unpack(">I", f.read(4))[0] != 1:
+                return None
+            entry = stsd[1] + 8
+            f.seek(entry)
+            head = f.read(86)
+            size, codec = struct.unpack(">I4s", head[:8])
+            if size < 86 or entry + size > stsd[2]:
+                return None
+            width, height = struct.unpack(">HH", head[32:36])
+            info = {"codec": codec.decode("latin-1"), "width": width, "height": height, "profile": None, "bit_depth": None}
+            avc = info["codec"] in ("avc1", "avc3")
+            children = _mp4_boxes(f, entry + 86, entry + size)
+            if children is None:  # 표본 항목 안 상자가 깨졌으면 판별 불가(설정 상자가 없는 것과 다르다)
+                return None
+            config = [b for b in children if b[0] == ("avcC" if avc else "hvcC")]
+            if len(config) == 1:
+                f.seek(config[0][1])
+                raw = f.read(min(config[0][2] - config[0][1], 32))
+                if avc and len(raw) >= 2:
+                    info["profile"] = raw[1]
+                elif not avc and len(raw) >= 19:
+                    info["profile"] = raw[1] & 0x1F
+                    info["bit_depth"] = (raw[17] & 0x07) + 8
+            return info
+    except (OSError, struct.error, ValueError):
+        return None
+
+
+def _kling_video_verdict(info: dict | None) -> str:
+    """로컬 정책: 'skip'(변환 생략 후보) · 'out_of_range'(변환 대상 — 해상도가 범위 밖) · 'convert'(변환 대상) · 'unknown'(판별 불가)."""
+    if not info or not info.get("width") or not info.get("height"):
+        return "unknown"
+    if not (_KLING_SHORT_SIDE[0] <= min(info["width"], info["height"]) <= _KLING_SHORT_SIDE[1]):
+        return "out_of_range"
+    if info.get("codec") in ("avc1", "avc3") and info.get("profile") in _KLING_H264_PROFILES:
+        return "skip"
+    return "convert"
+
+
+_FFMPEG_H264: dict = {}
+_FFMPEG_H264_TTL_SECONDS = 600.0
+
+
+def _ffmpeg_h264() -> str | None:
+    """H.264(libx264)로 쓸 수 있는 ffmpeg 경로 — CONTENT_HUB_FFMPEG → PATH(백엔드 video_convert.find_ffmpeg 와 같은 순서).
+    결과를 10분 기억한다(설치하면 다음 확인부터 반영)."""
+    now = time.monotonic()
+    if _FFMPEG_H264.get("until", 0.0) > now:
+        return _FFMPEG_H264.get("path")
+    env = os.environ.get("CONTENT_HUB_FFMPEG")
+    ff = env if env and os.path.isfile(env) else shutil.which("ffmpeg")
+    ok = False
+    if ff:
+        try:
+            out = subprocess.run([ff, "-hide_banner", "-encoders"], capture_output=True, timeout=20,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            ok = out.returncode == 0 and b" libx264 " in out.stdout
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+    _FFMPEG_H264.update(path=ff if ok else None, until=now + _FFMPEG_H264_TTL_SECONDS)
+    return _FFMPEG_H264["path"]
+
+
+def _transcode_for_kling(ff: str, source: str) -> tuple[str | None, str | None]:
+    """원본은 그대로 두고 요청마다 새 H.264 yuv420p 사본(짧은 변 720~2160 짝수·비율 유지·첫 오디오만 AAC·길이·fps 옵션 없음)을 만든다.
+    (사본 경로, None) 또는 (None, 사유) — 이 단계의 오류는 밖으로 내지 않는다(제출 허가 전이라 과금 없음)."""
+    dst = None
+    keep = False
+    reason = "알 수 없는 오류"
+    _KLING_TRANSCODE_SLOTS.acquire()
+    try:
+        fd, dst = tempfile.mkstemp(prefix="mvhub-kling-", suffix=".mp4")
+        os.close(fd)  # 윈도우 — 핸들을 닫은 뒤 ffmpeg 가 덮어쓴다(-y)
+        cmd = [ff, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", source,
+               "-map", "0:v:0", "-map", "0:a:0?", "-vf", _KLING_SCALE,
+               "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-profile:v", "high",
+               "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", dst]
+        out = subprocess.run(cmd, capture_output=True, timeout=_KLING_TRANSCODE_SECONDS,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        size = os.path.getsize(dst)
+        if out.returncode == 0 and 0 < size <= _KLING_MAX_BYTES:
+            keep = True
+            return dst, None
+        if out.returncode == 0:
+            reason = "변환본이 비었습니다" if size <= 0 else f"변환본이 200MB 를 넘습니다({size // (1024 * 1024)}MB)"
+        else:
+            detail = (out.stderr or b"").decode("utf-8", "replace").strip()  # 작업자 PC 코드 페이지와 무관하게
+            reason = _sanitize_diagnostic(detail)[-300:] or f"ffmpeg 종료 코드 {out.returncode}"
+    except subprocess.TimeoutExpired:  # subprocess.run 이 ffmpeg 를 끝내고 회수한 뒤 올린다
+        reason = f"ffmpeg 가 {_KLING_TRANSCODE_SECONDS}초 안에 끝나지 않았습니다"
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        reason = _sanitize_diagnostic(str(exc))[:300]
+    finally:
+        _KLING_TRANSCODE_SLOTS.release()
+        # 돌려줄 사본만 남긴다 — 예상 밖 예외(위에서 안 잡힌 것)로 빠져나갈 때도 사본을 지운다(지우기 실패는 삼킨다)
+        if dst and not keep:
+            try:
+                os.remove(dst)
+            except OSError:
+                pass
+    return None, reason
+
+
+def _kling_video_arg(path: str, copies: list) -> tuple[str, str | None]:
+    """Kling 영상 수정에 --video 로 넘길 값과 실패 사유(None = 계속). 변환 사본은 copies 에 더한다(요청이 끝날 때 지움).
+    제출 허가 전 단계라 여기서 난 오류는 모두 사유로 바꾼다 — 밖으로 새면 실행 루프가 '제출 확인 필요'로 묶는다."""
+    failed = "Kling 용 영상 변환에 실패해 생성하지 않았습니다({}) — Seedance 2.5 편집을 쓰세요(과금 없음)"
+    try:
+        info = _probe_video_format(path)
+        verdict = _kling_video_verdict(info)
+        if verdict == "skip":
+            return path, None
+        ff = _ffmpeg_h264()
+        if not ff:
+            if verdict == "out_of_range":
+                return path, ("앱의 변환 정책상 Kling 영상 수정에는 짧은 변 720~2160px 영상을 보냅니다"
+                              f"(이 영상 {info['width']}×{info['height']} · {info['codec']}). 이 PC 에 H.264 변환용 ffmpeg 가 없어 "
+                              "바꿔 올리지 못해 생성하지 않았습니다 — Seedance 2.5 편집을 쓰거나 ffmpeg 를 설치하세요(과금 없음)")
+            print(f"  ⚠ Kling: 영상 형식({verdict}) — H.264 변환용 ffmpeg 가 없어 원본 그대로 보냅니다")
+            return path, None
+        converted, error = _transcode_for_kling(ff, path)
+        if not converted:
+            return path, failed.format(error)
+        copies.append(converted)
+        shape = f"{info['width']}×{info['height']} · {info['codec']}" if info else "형식 모름"
+        print(f"  ↻ Kling: 영상을 H.264 로 바꿔 올립니다(원본 {shape} · 원본 파일은 그대로)")
+        return converted, None
+    except Exception as exc:  # noqa: BLE001 — 변환 단계(제출 허가 전) 오류만 — create 전 실패로 끝낸다
+        return path, failed.format(_sanitize_diagnostic(str(exc))[:200])
+
+
 def _submit_one(
     server: str,
     token: str,
@@ -2642,7 +2852,29 @@ def _submit_one(
 ) -> dict | None:
     """대기 요청 1건을 내 로컬 CLI 로 제출하고 추적 정보를 반환한다.
     제출 워커에서 호출되므로 정상적인 입력·CLI 실패는 여기서 보고하고 None 을 반환한다.
-    레퍼런스는 배치 시작 때 한 번씩만 받아둔 `ref_cache`(값→해석값) 를 조회만 한다(중복 다운로드 방지)."""
+    레퍼런스는 배치 시작 때 한 번씩만 받아둔 `ref_cache`(값→해석값) 를 조회만 한다(중복 다운로드 방지).
+    Kling 영상 수정용 변환 사본은 이 요청이 끝날 때(성공·실패 어느 쪽이든) 지운다."""
+    kling_copies: list[str] = []
+    try:
+        return _submit_one_attempt(server, token, cli, account_email, r, ref_cache, upload_cache, upload_lock,
+                                   workspace_lock, agent_id, kling_copies)
+    finally:
+        _cleanup(kling_copies)  # 지우기 실패는 삼킨다 — 결과·원래 사유를 덮지 않는다
+
+
+def _submit_one_attempt(
+    server: str,
+    token: str,
+    cli: str,
+    account_email: str | None,
+    r: dict,
+    ref_cache: dict,
+    upload_cache: dict,
+    upload_lock: Lock,
+    workspace_lock: Lock,
+    agent_id: str,
+    kling_copies: list,
+) -> dict | None:
     rid, model, prompt = r.get("id"), r.get("model"), r.get("prompt") or ""
     if not model:
         _fail(server, token, rid, "모델 없음")
@@ -2724,6 +2956,10 @@ def _submit_one(
     if params.get("draft_job_id") and params.get("draft") is True:
         _fail(server, token, rid, "Draft 생성과 기존 Draft 완성은 동시에 요청할 수 없습니다")
         return None
+    if model in KLING_VIDEO_EDIT_MODELS and set(params) & _KLING_MEDIA_PARAMS:
+        # 옵션에 넣은 미디어는 아래 레퍼런스 고리(형식 판별·변환)를 건너뛰어 --video 로 나간다 — 레퍼런스로만 받는다
+        _fail(server, token, rid, "Kling 영상 수정의 영상·이미지는 레퍼런스로만 받습니다(옵션에 넣은 미디어는 보내지 않았습니다)")
+        return None
     refs, ref_error = _refs_for_cli(model, r.get("references") or [])
     if ref_error:
         _fail(server, token, rid, ref_error)
@@ -2783,7 +3019,18 @@ def _submit_one(
                 expected_image_inputs += 1
             continue
         flag = ("--audio-references" if ref.get("type") == "audio" else "--image-references") if model == "seed_audio" else _role_flag(ref.get("role"))
-        args += [flag, resolved]
+        arg = resolved
+        if model in KLING_VIDEO_EDIT_MODELS and flag == "--video" and not _UUID_RE.fullmatch(resolved):
+            # Kling 이 받지 못할 수 있는 영상은 H.264 사본으로(원본·지문·로컬 보관은 원본 그대로) — 제출 허가 전이라 실패해도 과금 없음.
+            # 업로드 ID(UUID)는 로컬 파일이 아니라 바꿀 수 없다 — 지금처럼 그대로 보낸다(ffmpeg 유무와 무관, Codex 독립 리뷰 2차 P2)
+            arg, kling_error = _kling_video_arg(resolved, kling_copies)
+            if kling_error:
+                _fail(server, token, rid, kling_error)
+                print(f"  ✗ {model}: {kling_error}")
+                return None
+            if arg != resolved:
+                submitted["transcoded"] = "h264"
+        args += [flag, arg]
         submitted["role"] = flag.removeprefix("--").replace("-", "_")
         if _UUID_RE.fullmatch(resolved):
             submitted["upload_id"] = resolved
@@ -3981,6 +4228,7 @@ def _collect_account_status(cli: str):
             acct["workspaces"] = ws
         workspace = _workspace_context_from_list(ws)
         acct["cli_version"] = _cached_cli_version(cli)  # 팀 CLI 버전 현황(버전 skew 진단)
+        acct["ffmpeg_h264"] = bool(_ffmpeg_h264())  # Kling 영상 변환을 할 수 있는가 — 팀 중 몇 계정에 있는지(안내·통계 전용)
     return acct, workspace
 
 

@@ -43,6 +43,7 @@ import { CloseIcon, CopyIcon, EraserIcon, ImageEditIcon, VideoEditIcon } from ".
 import { SpotlightOptionIcon } from "../spotlight/SpotlightOptionIcon";
 import { SpotlightDurationChip } from "../spotlight/SpotlightDurationChip";
 import { EditRefPrompt, type EditPromptRef } from "./EditRefPrompt";
+import { KLING_VIDEO_EDIT_MODELS, klingVideoVerdict, probeVideoFormat, type VideoFormat } from "../../lib/videoFormat";
 
 const MAX_WORK_PIXELS = 12_000_000; // 12MP — 주석/평면화 캔버스 동시 보유 상한
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i; // 힉스필드 작업 id(서버 video_ref 검사와 같은 꼴)
@@ -270,6 +271,7 @@ export function PartialEditModal({
   const [videoDuration, setVideoDuration] = useState(0);
   const [frameTime, setFrameTime] = useState(0);
   const [frameLoading, setFrameLoading] = useState(false);
+  const [sourceFormat, setSourceFormat] = useState<VideoFormat | null>(null); // 원본 영상 머리(Kling 미리 알림용)
   const [playing, setPlaying] = useState(false);
   const frameTicket = useRef(0);
   const captureFrame = async (video: HTMLVideoElement, time: number) => {
@@ -324,6 +326,8 @@ export function PartialEditModal({
       }
       try {
         if (isVideo) {
+          // Kling 이 받지 못할 수 있는 형식인지 미리 알리려고 머리만 읽는다(실패해도 창은 그대로 — 판단은 에이전트가 한다)
+          void probeVideoFormat(blob).then((format) => { if (alive) setSourceFormat(format); });
           // 이 요소를 그대로 무대에 붙여 보인다(pe-vhost) — 끄는 동안 브라우저가 바로 그 장면을 그린다.
           const video = document.createElement("video");
           video.preload = "auto";
@@ -768,6 +772,19 @@ export function PartialEditModal({
     }
   };
   const tooManyRefs = isVideo && extraRefs.length + 1 > maxImages;
+  // Kling 영상 수정 미리 알림 — 원본이 앱의 변환 정책상 '변환 대상'이면 한 줄 안내(생성 단추는 막지 않는다: 실제 판단·변환은 에이전트).
+  //  계정 보고(ffmpeg_h264)는 이메일별 마지막 값이라 실행 PC·버전을 모른다 — 생성 전 중지를 단정하지 않는다.
+  const klingVerdict = isVideo && KLING_VIDEO_EDIT_MODELS.has(m.model) ? klingVideoVerdict(sourceFormat) : null;
+  const klingConvert = klingVerdict === "convert" || klingVerdict === "out_of_range";
+  const [ffmpegReport, setFfmpegReport] = useState<boolean | null | undefined>(undefined); // undefined = 아직 안 물어봄
+  useEffect(() => {
+    if (!klingConvert || ffmpegReport !== undefined) return;
+    let alive = true;
+    Promise.resolve().then(() => api.accountHf())
+      .then((status) => { if (alive) setFfmpegReport(typeof status?.ffmpeg_h264 === "boolean" ? status.ffmpeg_h264 : null); })
+      .catch(() => { if (alive) setFfmpegReport(null); });
+    return () => { alive = false; };
+  }, [klingConvert, ffmpegReport]);
 
   // 그린 획·친 프롬프트는 이 창의 상태에만 있다 — 그동안 창을 닫거나 새로고침하면 브라우저가 묻는다(56회차). 보낸 뒤는 서버에 있다.
   const drafting = stage === "draw" && (items.length > 0 || !!prompt.trim());
@@ -1605,6 +1622,15 @@ export function PartialEditModal({
                 {tooManyRefs && (
                   <div className="partial-edit-hint">
                     {modelLabel(m.model)} 는 그린 프레임 포함 이미지 {maxImages}장까지입니다 — 레퍼런스를 {extraRefs.length + 1 - maxImages}개 빼세요.
+                  </div>
+                )}
+                {klingConvert && sourceFormat && (
+                  <div className="partial-edit-hint pe-kling-convert">
+                    이 영상({sourceFormat.width}×{sourceFormat.height} · {sourceFormat.codec})은 {modelLabel(m.model)} 가 받지 못할 수 있어,
+                    최신 작업자 프로그램이 보낼 때 H.264 로 바꿔 올립니다(ffmpeg 필요 · 원본은 그대로).
+                    {ffmpegReport === false
+                      ? " 이 계정의 마지막 보고에는 H.264 변환용 ffmpeg 가 없습니다 — 실제로 실행하는 PC·프로그램 버전에 따라 자동 변환·사전 중지 여부가 다릅니다. 확실하게 하려면 Seedance 2.5 편집을 쓰세요."
+                      : ffmpegReport === null ? " 자동 변환 지원 여부를 확인할 수 없습니다." : ""}
                   </div>
                 )}
                 {m.paramsModel === m.model && !m.paramsLoading && (!m.params.length || !isVideo && !aspect) && (

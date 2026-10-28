@@ -4,9 +4,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { Generation, WorkspaceContext } from "../src/types";
 const mocks = vi.hoisted(() => ({ prepareCreate: vi.fn(), uploadCapture: vi.fn(), getGeneration: vi.fn(), fetchBlob: vi.fn(),
-  cost: vi.fn(), queued: vi.fn(), setModel: vi.fn(), uploadRefs: vi.fn(), current: true, blocked: null as string | null, model: null as string | null }));
+  cost: vi.fn(), queued: vi.fn(), setModel: vi.fn(), uploadRefs: vi.fn(), accountHf: vi.fn(), probe: vi.fn(),
+  current: true, blocked: null as string | null, model: null as string | null }));
 vi.mock("../src/api", () => ({ api: { prepareCreate: mocks.prepareCreate, uploadCapture: mocks.uploadCapture,
-  getGeneration: mocks.getGeneration, assetThumbUrl: () => "thumb", discardCapture: vi.fn(), uploadReferenceFiles: mocks.uploadRefs } }));
+  getGeneration: mocks.getGeneration, assetThumbUrl: () => "thumb", discardCapture: vi.fn(), uploadReferenceFiles: mocks.uploadRefs,
+  accountHf: mocks.accountHf } }));
+// 원본 머리 읽기만 가짜로 — 판별 규칙(klingVideoVerdict)·대상 모델은 실제 것(videoFormat.test.ts 가 머리 읽기를 본다)
+vi.mock("../src/lib/videoFormat", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/videoFormat")>()), probeVideoFormat: mocks.probe }));
 vi.mock("../src/lib/download", () => ({ fetchBlob: mocks.fetchBlob }));
 vi.mock("../src/lib/useModels", () => ({ sharedCostEstimate: mocks.cost,
   useModels: (_error: unknown, policy: { initialModel: string }) => ({ model: mocks.model ?? policy.initialModel, setModel: mocks.setModel,
@@ -56,7 +61,10 @@ const button = (label: string) => container.querySelector<HTMLButtonElement>(`bu
 beforeEach(() => {
   vi.useFakeTimers();
   mocks.current = true; mocks.blocked = null; mocks.model = null; nextUrl = 0;
-  for (const fn of [mocks.prepareCreate, mocks.uploadCapture, mocks.getGeneration, mocks.fetchBlob, mocks.cost, mocks.queued, mocks.setModel, mocks.uploadRefs]) fn.mockReset();
+  for (const fn of [mocks.prepareCreate, mocks.uploadCapture, mocks.getGeneration, mocks.fetchBlob, mocks.cost, mocks.queued, mocks.setModel,
+    mocks.uploadRefs, mocks.accountHf, mocks.probe]) fn.mockReset();
+  mocks.probe.mockResolvedValue(null);
+  mocks.accountHf.mockResolvedValue({ reported: true, credits: 1, workspaces: [] });
   mocks.fetchBlob.mockResolvedValue(new Blob(["media"]));
   mocks.cost.mockResolvedValue({ credits: 26, saved_at: Date.now() / 1000 });
   mocks.uploadCapture.mockResolvedValue({ project: "project", path: "frame.png", reused: true });
@@ -357,6 +365,35 @@ describe("video edit reuses annotation UI", () => {
     for (let i = 0; i < 4; i += 1) await act(async () => {});
     expect(scrub().getAttribute("aria-valuenow")).toBe("4");
     expect(gen().disabled).toBe(false);
+  });
+  it("tells ahead that Kling may not take this video and it will be converted — never says it will stop, never locks Generate", async () => {
+    mocks.probe.mockResolvedValue({ codec: "hvc1", width: 854, height: 480, profile: 2, bitDepth: 10 }); // 앱의 Seedance 2.5 결과
+    const notice = () => container.querySelector(".pe-kling-convert")?.textContent ?? "";
+    for (const [report, extra] of [[false, "마지막 보고에는 H.264 변환용 ffmpeg 가 없습니다"], [undefined, "확인할 수 없습니다"], [true, ""]] as const) {
+      mocks.accountHf.mockResolvedValue({ reported: true, credits: 1, workspaces: [], ...(report === undefined ? {} : { ffmpeg_h264: report }) });
+      await render(); await prompt();
+      await scrubTo(30);
+      expect(notice()).toContain("854×480 · hvc1");
+      expect(notice()).toContain("H.264 로 바꿔 올립니다");
+      if (extra) expect(notice()).toContain(extra);
+      else expect(notice()).not.toMatch(/ffmpeg 가 없습니다|확인할 수 없습니다/);
+      expect(notice()).not.toContain("멈춥니다"); // 계정 보고로 생성 전 중지를 단정하지 않는다
+      expect((container.querySelector(".partial-edit-gen") as HTMLButtonElement).disabled).toBe(false); // 단추를 막지 않는다
+      await act(async () => root.render(<></>));
+    }
+  });
+  it("shows no Kling notice for an acceptable H.264 720p source or for Seedance 2.5", async () => {
+    mocks.probe.mockResolvedValue({ codec: "avc1", width: 1280, height: 720, profile: 100, bitDepth: null });
+    await render();
+    await act(async () => {});
+    expect(container.querySelector(".pe-kling-convert")).toBeNull();
+    expect(mocks.accountHf).not.toHaveBeenCalled(); // 바꿀 것이 없으면 묻지도 않는다
+    await act(async () => root.render(<></>));
+    mocks.probe.mockResolvedValue({ codec: "hvc1", width: 854, height: 480, profile: 2, bitDepth: 10 });
+    mocks.model = "seedance_2_5";
+    await render();
+    await act(async () => {});
+    expect(container.querySelector(".pe-kling-convert")).toBeNull();
   });
   it("Space on a focused button presses the button instead of playing the video (Codex D-③)", async () => {
     const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
