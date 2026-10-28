@@ -1,3 +1,4 @@
+import { Fragment, useEffect, useRef, useState } from "react";
 import type {
   ClipboardEventHandler,
   CompositionEventHandler,
@@ -7,6 +8,8 @@ import type {
   MouseEventHandler,
   RefObject,
 } from "react";
+import { AUDIO_TAG_GROUPS } from "../../lib/spotlightPromptConfig";
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import { CopyIcon, EraserIcon } from "../common/ViewIcons";
 
 interface Props {
@@ -33,6 +36,8 @@ interface Props {
   charCount?: number | null;
   /** 글을 받지 않는 일(보이스 체인지·번역) — 입력을 막고 이 안내만 보인다. 써 둔 글은 지우지 않고 보내지도 않는다. */
   notice?: string | null;
+  /** 태그를 읽는 모델(ElevenLabs v4) — [+ Tag] 단추와 태그 창을 보이고, 고른 태그를 커서 자리에 넣는다. 없으면 단추 없음. */
+  onAudioTag?: ((tag: string) => void) | null;
 }
 
 export function SpotlightPromptRow({
@@ -56,10 +61,25 @@ export function SpotlightPromptRow({
   script = null,
   charCount = null,
   notice = null,
+  onAudioTag = null,
 }: Props) {
   const chars = notice ? null : script ?? (charCount == null ? null : { count: charCount, max: undefined });
+  const rowRef = useRef<HTMLDivElement>(null);
+  const [tagsOpen, setTagsOpen] = useState(false);
+  const showTags = !!onAudioTag;
+  useEffect(() => { if (!showTags) setTagsOpen(false); }, [showTags]);
+  useEscapeClose(() => setTagsOpen(false), showTags && tagsOpen);
+  // 이 줄 밖을 누르면 닫는다 — 글 칸을 누르는 건 커서 옮기기라 열어 둔다(여러 자리에 연달아 넣기).
+  useEffect(() => {
+    if (!tagsOpen) return;
+    const down = (event: PointerEvent) => {
+      if (!rowRef.current?.contains(event.target as Node)) setTagsOpen(false);
+    };
+    document.addEventListener("pointerdown", down, true);
+    return () => document.removeEventListener("pointerdown", down, true);
+  }, [tagsOpen]);
   return (
-    <div className={"sl-prompt-row counted" + (tagFilter ? " tag-active" : "") + (notice ? " notice" : "")}>
+    <div ref={rowRef} className={"sl-prompt-row counted" + (tagFilter ? " tag-active" : "") + (notice ? " notice" : "") + (showTags ? " atags" : "")}>
       <button
         className={"sl-expand-btn" + (expanded ? " on" : "")}
         title={expanded ? "레퍼런스 트레이 접기" : "레퍼런스 트레이 펼치기 (에셋 드래그)"}
@@ -140,6 +160,85 @@ export function SpotlightPromptRow({
       >
         <CopyIcon />
       </button>
+      {showTags && (
+        <button
+          type="button"
+          className={"sl-atag-btn" + (tagsOpen ? " on" : "")}
+          title="오디오 태그 넣기 — 대본에 [sighing] 처럼 들어갑니다"
+          aria-expanded={tagsOpen}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => setTagsOpen((v) => !v)}
+        >
+          + Tag
+        </button>
+      )}
+      {showTags && tagsOpen && (
+        // 누르는 동안 글 칸의 초점·커서를 지킨다 — 태그는 그 커서 자리에 들어가고 창은 열린 채(연달아 넣기).
+        <div className="sl-atag-pop" role="dialog" aria-label="Audio tags" onMouseDown={(e) => e.preventDefault()}>
+          <div className="sl-atag-head">
+            <span>Audio tags</span>
+            <span className="sl-atag-hint">누르면 커서 자리에 들어갑니다</span>
+          </div>
+          <div className="sl-atag-body">
+            {AUDIO_TAG_GROUPS.map(([group, tags]) => (
+              <div key={group}>
+                <div className="sl-dd-title">{group}</div>
+                <div className="sl-atag-pills">
+                  {tags.map((tag) => (
+                    <button key={tag} type="button" className="sl-atag-pill" onClick={() => onAudioTag?.(tag)}>
+                      [{tag}]
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** `[` 를 치면 뜨는 오디오 태그 목록(v4) — @·# 고르기와 같은 창. 누르는 동안 입력칸 초점을 지킨다. */
+export function AudioTagList({
+  items,
+  activeIndex,
+  onHoverIndex,
+  onSelect,
+}: {
+  items: { group: string; tag: string }[];
+  activeIndex: number;
+  onHoverIndex: (index: number) => void;
+  onSelect: (tag: string) => void;
+}) {
+  const listRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    listRef.current?.querySelector(".sl-mention-item.on")?.scrollIntoView?.({ block: "nearest" });
+  }, [activeIndex]);
+  return (
+    <div className="sl-mention sl-atag-list" onMouseDown={(e) => e.preventDefault()}>
+      <div className="sl-mention-head">
+        Audio tags ([)
+        <span className="sl-mention-hint">↑↓ 이동 · Enter 선택 · Esc 닫기</span>
+      </div>
+      <div className="sl-mention-list" ref={listRef}>
+        {items.map((item, index) => (
+          <Fragment key={item.group + ":" + item.tag}>
+            {item.group !== items[index - 1]?.group && <div className="sl-mention-sub">{item.group}</div>}
+            <button
+              type="button"
+              className={"sl-mention-item" + (index === activeIndex ? " on" : "")}
+              onMouseEnter={() => onHoverIndex(index)}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                onSelect(item.tag);
+              }}
+            >
+              <span className="sl-mention-name">[{item.tag}]</span>
+            </button>
+          </Fragment>
+        ))}
+      </div>
     </div>
   );
 }

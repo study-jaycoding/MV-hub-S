@@ -11,6 +11,23 @@ export const AUDIO_PARAMS: Record<string, readonly string[]> = {
 };
 export const isTtsModel = (model: string): boolean => Object.prototype.hasOwnProperty.call(AUDIO_PARAMS, model);
 
+// ElevenLabs v4 오디오 태그 — 힉스필드 웹 v4 대사 칸의 `+ 태그` 목록 그대로(2026-10-28 웹 번들). 대본 글자([sighing])로 들어간다.
+//  웹은 v4 에서만 태그 단추를 보인다(Turbo·v3 는 없음 — 10-28 확인).
+export const AUDIO_TAG_GROUPS: [string, string[]][] = [
+  ["Emotion", ["weak", "angry", "bored", "menacing", "playful", "tired", "excited"]],
+  ["Vocalizations", ["clears throat", "coughing", "chuckling", "sighing", "sniffling", "yawning", "laughing", "sharp exhale", "scoffing", "humming", "panting", "gasping"]],
+  ["Delivery", ["whispering", "singing", "slowly", "softly", "pause", "voice breaking"]],
+  ["Character", ["sleepy drowsy voice", "witch voice", "drunken voice"]],
+  ["Sound effects", ["keyboard typing", "echoing", "knocking on door", "bell ringing", "phone ringing", "dog barking", "crowd cheering", "applause", "rain falling", "drum roll", "heartbeat", "engine starting"]],
+];
+export const audioTagModel = (model: string): boolean => model === "elevenlabs_v4";
+/** `[` 목록 — 검색어를 담은 태그(묶음 순서), 똑같은 태그가 없으면 검색어 그대로를 끝에(Custom — 웹과 같다). */
+export function audioTagMatches(query: string): { group: string; tag: string }[] {
+  const q = query.trim().toLowerCase();
+  const hits = AUDIO_TAG_GROUPS.flatMap(([group, tags]) => tags.filter((tag) => tag.includes(q)).map((tag) => ({ group, tag })));
+  return q && !hits.some((h) => h.tag === q) ? [...hits, { group: "Custom", tag: query.trim() }] : hits;
+}
+
 // 보이스 체인지·번역(2-B) — 영상 1개를 받는 프롬프트 없는 워크플로. backend/app/models.py VIDEO_VOICE_* 와 같아야 한다
 //  (언어 표는 백엔드 정의 일치 시험이 직접 읽는다 — 형식 ["코드", "이름"] 을 유지할 것).
 export const VIDEO_VOICE_MODELS = ["voice_change", "dubbing"] as const;

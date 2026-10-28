@@ -89,6 +89,74 @@ export function insertTextAtCaret(editor: HTMLElement, text: string) {
   sel?.addRange(nr);
 }
 
+// `[` 오디오 태그 검색어 — 힉스필드 웹(v4 대사 칸) 규칙: 커서 앞 마지막 `[` 부터 커서까지. 그 사이에 `]`·줄바꿈이 있거나
+//  커서 뒤가 `…]` 로 닫혀 있으면(이미 태그 안) 아니다. 줄바꿈은 <br> 이라 한 글 조각 안만 본다.
+export function audioTagTrigger(editor: HTMLElement): { node: Text; idx: number; query: string } | null {
+  const range = getCaretRange(editor);
+  if (!range || !range.collapsed) return null;
+  let node: Node | undefined = range.startContainer;
+  let offset = range.startOffset;
+  if (node.nodeType !== Node.TEXT_NODE) {
+    // 커서가 글 조각 사이(칸 끝 등)에 있으면 바로 앞 글 조각의 끝으로 본다
+    node = node.childNodes[offset - 1];
+    if (node?.nodeType !== Node.TEXT_NODE) return null;
+    offset = (node.textContent || "").length;
+  }
+  const text = node.textContent || "";
+  const idx = text.substring(0, offset).lastIndexOf("[");
+  if (idx < 0) return null;
+  const query = text.substring(idx + 1, offset);
+  if (/[\]\r\n]/.test(query) || /^[^[\]\r\n]*\]/.test(text.substring(offset))) return null;
+  return { node: node as Text, idx, query };
+}
+
+// range 바로 앞(-1)·뒤(1) 글자 — 줄 처음·끝은 "", <br> 은 "\n". 빈 글 조각은 건너뛴다.
+function charBeside(range: Range, dir: -1 | 1): string {
+  const c = range.startContainer;
+  const o = range.startOffset;
+  let n: Node | null;
+  if (c.nodeType === Node.TEXT_NODE) {
+    const ch = (c.textContent || "").charAt(dir < 0 ? o - 1 : o);
+    if (ch) return ch;
+    n = dir < 0 ? c.previousSibling : c.nextSibling;
+  } else n = c.childNodes[dir < 0 ? o - 1 : o] ?? null;
+  while (n && n.nodeType === Node.TEXT_NODE && !n.textContent) n = dir < 0 ? n.previousSibling : n.nextSibling;
+  if (!n) return "";
+  if (n.nodeName === "BR") return "\n";
+  const s = n.textContent || "";
+  return dir < 0 ? s.slice(-1) : s.charAt(0);
+}
+
+// 오디오 태그를 `[검색어` 자리(replaceQuery 이고 있을 때 — 없으면 커서 자리, 커서가 없으면 끝)에 `[태그]` 로 넣는다 — 웹과 같이 앞 글자가
+//  공백이 아니면 앞에 공백, 뒤는 공백 하나(이미 공백이면 그것을 쓰고, 줄바꿈 앞이면 없음). 커서는 그 공백 뒤. DOM 을 직접 바꾸니 부른 쪽이 input 처리를 한다.
+export function insertAudioTag(editor: HTMLElement, tag: string, replaceQuery = true) {
+  const had = getCaretRange(editor);
+  editor.focus();
+  if (!had) placeCaretAtEnd(editor);
+  let range = getCaretRange(editor);
+  if (!range) return;
+  const t = replaceQuery ? audioTagTrigger(editor) : null;
+  if (t) {
+    range = document.createRange();
+    range.setStart(t.node, t.idx);
+    range.setEnd(t.node, t.idx + 1 + t.query.length);
+  }
+  range.deleteContents();
+  const prev = charBeside(range, -1);
+  const next = charBeside(range, 1);
+  const tn = document.createTextNode((prev && !/\s/.test(prev) ? " " : "") + `[${tag}]` + (next === "\n" || /\s/.test(next) ? "" : " "));
+  range.insertNode(tn);
+  let after = tn.nextSibling;
+  while (after && after.nodeType === Node.TEXT_NODE && !after.textContent) after = after.nextSibling;
+  const nr = document.createRange();
+  if (next !== "\n" && /\s/.test(next) && after?.nodeType === Node.TEXT_NODE) nr.setStart(after, 1); // 이미 있던 공백 뒤로
+  else nr.setStart(tn, tn.length);
+  nr.collapse(true);
+  const sel = window.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(nr);
+}
+
 // 에디터 내에서 재배치(드래그) 중인 칩 — 모듈 스코프로 추적(드롭 시 moveChipToPoint 가 사용).
 let _draggingChip: HTMLElement | null = null;
 export function buildChipEl(ref: ChipRef): HTMLElement {

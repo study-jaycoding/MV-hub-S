@@ -32,6 +32,8 @@ import { DRAG_TYPES } from "../lib/dragTypes";
 import { buildPromptParts, refsToChips } from "../lib/promptParts";
 import { getAccountNamespace, getConnectionKey } from "../lib/accountScope";
 import {
+  audioTagTrigger,
+  insertAudioTag,
   unwrapTokenPill,
   countImageChips,
   detectMention,
@@ -76,7 +78,7 @@ import { useSeedanceRoleMenu } from "../lib/useSeedanceRoleMenu";
 import { useModels, ALLOWED, HIDDEN_PARAMS, optionsMatchModel, stripHiddenParams, withEffectiveDefaults } from "../lib/useModels";
 import { SPEECH_TEXT_LIMITS } from "../lib/spotlightSubmit";
 import { videoCostContext } from "../lib/useSceneGenerationSubmission";
-import { AUDIO_TASK_MODELS, audioModelBlocked, audioTaskOf, isTtsModel, isVideoVoiceModel, videoVoiceInputRef,
+import { AUDIO_TASK_MODELS, audioModelBlocked, audioTagMatches, audioTagModel, audioTaskOf, isTtsModel, isVideoVoiceModel, videoVoiceInputRef,
   videoVoiceReferenceError, type VideoCostContext } from "../lib/spotlightPromptConfig";
 import { policyNote, submitBlockMessage } from "../lib/modelPolicyCore";
 import { useModelPolicy } from "../lib/modelPolicy";
@@ -93,7 +95,7 @@ import { SpotlightOptionsBar } from "./spotlight/SpotlightOptionsBar";
 import { ServerConsolePanel } from "./spotlight/ServerConsolePanel";
 import { SpotlightGenerateControls } from "./spotlight/SpotlightGenerateControls";
 import { SpotlightMentionPicker } from "./spotlight/SpotlightMentionPicker";
-import { SpotlightPromptRow } from "./spotlight/SpotlightPromptRow";
+import { AudioTagList, SpotlightPromptRow } from "./spotlight/SpotlightPromptRow";
 import { SpotlightRefTray } from "./spotlight/SpotlightRefTray";
 import { SpotlightRefRoleMenu } from "./spotlight/SpotlightRefRoleMenu";
 import {
@@ -324,6 +326,30 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     setPromptLength(text.length);
     setCostPrompt(isTtsModel(model) ? text : "");
   }, [model, promptTick]);
+  // `[` 오디오 태그 목록(ElevenLabs v4) — 검색어(null = 닫힘). 글이 바뀔 때(promptTick)·커서가 움직일 때(onCaretMove) 다시 잰다.
+  //  Esc 로 닫은 그 `[` 에서는 다시 열지 않는다 — 친 글은 남긴다(대본의 `[` 가 글자일 수도 있다).
+  const [atagQuery, setAtagQuery] = useState<string | null>(null);
+  const [atagIdx, setAtagIdx] = useState(0);
+  const atagDismissRef = useRef<{ node: Text; idx: number } | null>(null);
+  const syncAudioTag = () => {
+    const ed = editorRef.current;
+    const t = ed && audioTagModel(model) && !composingRef.current && document.activeElement === ed
+      && !detectMention(ed, editingTokenNodeRef.current) ? audioTagTrigger(ed) : null;
+    const d = atagDismissRef.current;
+    const dismissed = !!t && !!d && d.node === t.node && d.idx === t.idx;
+    if (!dismissed) atagDismissRef.current = null;
+    setAtagQuery(t && !dismissed ? t.query : null);
+  };
+  useEffect(() => syncAudioTag(), [model, promptTick]);
+  useEffect(() => setAtagIdx(0), [atagQuery]);
+  const atagItems = useMemo(() => (atagQuery === null ? [] : audioTagMatches(atagQuery)), [atagQuery]);
+  // replaceQuery = `[검색어` 자리를 바꾼다 — [+ Tag] 창에서는 `[` 목록이 열려 있을 때만(Esc 로 닫은 `[` 는 글자로 둔다).
+  const putAudioTag = (tag: string, replaceQuery = true) => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    insertAudioTag(ed, tag, replaceQuery);
+    onEditorInput(); // DOM 을 직접 넣어 input 이 오지 않는다(붙여넣기와 같다)
+  };
   // 보이스 체인지·번역 — 넣은 영상 1개의 실제 길이를 읽어 견적 문맥으로 둔다. 영상·계정·연결이 바뀌면 앞 측정을 버리고,
   //  못 읽으면 문맥 없이 둔다(견적·제출 모두 막힘 — 기본 길이를 만들지 않는다).
   const videoInput = isVideoVoiceModel(model) && !videoVoiceReferenceError(trayRefs) ? trayRefs[0] : null;
@@ -990,6 +1016,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       if (prev && next && prev.kind === next.kind && prev.query === next.query) return prev;
       return prev === next ? prev : next;
     });
+    syncAudioTag();
   };
 
   const selectTag = (tag: string) => {
@@ -1437,7 +1464,13 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       const ed = editorRef.current;
       // 여기서 쓴 Esc 는 '쓴 것'으로 표시한다 — 안 하면 같은 키가 window 까지 가 뒤 화면의 Esc(선택 해제·폴더 창 닫기)도 같이 했다
       //  (폴더 창이 뜬 채 프롬프트를 쓸 수 있게 되면서 피커를 닫는 Esc 가 창까지 닫는 길이 생긴다 — Codex 설계 검토).
-      if (mention) {
+      if (atagQuery !== null) {
+        e.preventDefault();
+        markKeyHandled(e.nativeEvent);
+        const t = ed ? audioTagTrigger(ed) : null;
+        atagDismissRef.current = t && { node: t.node, idx: t.idx };
+        setAtagQuery(null);
+      } else if (mention) {
         e.preventDefault();
         markKeyHandled(e.nativeEvent);
         if (ed) {
@@ -1455,6 +1488,20 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     }
 
     const composing = composingRef.current || e.nativeEvent.isComposing;
+
+    // `[` 오디오 태그 목록 — ↑↓ 이동 · Enter·Tab 으로 `[검색어` 를 `[태그]` 로(목록은 늘 한 줄 이상 — 없는 말은 Custom).
+    if (atagQuery !== null && atagItems.length && !composing) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setAtagIdx((i) => (e.key === "ArrowDown" ? Math.min(i + 1, atagItems.length - 1) : Math.max(i - 1, 0)));
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        putAudioTag(atagItems[Math.min(atagIdx, atagItems.length - 1)].tag);
+        return;
+      }
+    }
 
     // Shift+Home = 커서에서 프롬프트 '맨 앞'까지 선택(앞쪽 레퍼런스 알약 포함). 브라우저 기본 Shift+Home 은
     //  contenteditable=false 알약을 원자로 건너뛰어 앞 레퍼런스가 안 잡히던 문제 → 앵커 유지·포커스만 맨앞으로.
@@ -1572,6 +1619,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   //  피커 안을 누르는 건 초점을 안 뺏으므로(mousedown preventDefault) 여기 오지 않는다.
   const onPromptBlur = () => {
     setMention(null);
+    setAtagQuery(null);
     onTrayBindingPromptBlur?.();
   };
   const onPromptCompositionStart = () => {
@@ -1634,6 +1682,9 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
               onSelectTrayRef={selectTrayRef}
             />
           )}
+          {atagQuery !== null && atagItems.length > 0 && (
+            <AudioTagList items={atagItems} activeIndex={atagIdx} onHoverIndex={setAtagIdx} onSelect={(tag) => putAudioTag(tag)} />
+          )}
 
           {/* 확장(+) 레퍼런스 트레이 — 에셋 폴더 드래그 전용. 번호 = 생성 --image 순서 */}
           {trayMode && (!isTtsModel(model) || model === "seed_audio") && (
@@ -1686,6 +1737,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
               : null}
             notice={model === "voice_change" ? "글은 넣지 않습니다 — 위 칸에 영상 1개를 넣고 Voice 를 고르세요"
               : model === "dubbing" ? "글은 넣지 않습니다 — 위 칸에 영상 1개를 넣고 번역 언어를 고르세요" : null}
+            onAudioTag={audioTagModel(model) ? (tag) => putAudioTag(tag, atagQuery !== null) : null}
           />
 
           {/* 컨트롤 행 */}
