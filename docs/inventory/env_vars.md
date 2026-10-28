@@ -188,7 +188,7 @@
 | `COMPUTERNAME` | `backend/app/routers/registry_helper.py` `backend/app/services/worker_backup.py` `tools/server_console/install.py` |
 | `HOMEDRIVE` | `tools/server_console/install.py` |
 | `HOMEPATH` | `tools/server_console/install.py` |
-| `LOCALAPPDATA` | `agent_push.py` `backend/app/routers/mcp.py` `backend/app/services/clean_feed_window.py` `backend/app/services/release_update.py` `run_agent_session.py` `tools/mcp_adapter/local_setup.py` `tools/server_console/install.py` |
+| `LOCALAPPDATA` | `agent_push.py` `backend/app/routers/mcp.py` `backend/app/services/clean_feed_window.py` `backend/app/services/release_update.py` `run_agent_session.py` `tools/mcp_adapter/local_setup.py` `tools/mcp_adapter/update.py` `tools/server_console/install.py` |
 | `PROGRAMDATA` | `backend/app/services/resolve_bridge.py` `backend/app/services/resolve_script_installer.py` |
 | `PROGRAMFILES` | `backend/app/services/resolve_bridge.py` `backend/app/services/resolve_diagnostics.py` |
 | `TEMP` | `tools/server_console/install.py` |

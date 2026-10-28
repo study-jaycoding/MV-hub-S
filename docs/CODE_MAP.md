@@ -59,6 +59,10 @@ updated: 2026-10-28
 검증 모델·브로커는 `mcp_models.py`, `mcp_broker.py`다.
 stdio 실행·설정 보존은 `tools/mcp_adapter/server.py`, `local_setup.py`,
 시험은 `test_server.py`, `test_local_setup.py`, `test_persistent.py`를 따른다.
+ZIP 없는 MCP 독립 업데이트의 파일 검증·불변 버전·설치 선택은 `tools/mcp_adapter/update.py`,
+서버 후보/게시와 UI는 `tools/server_console/mcp_stage.py`·`ui.py`, 로컬 API는 `services/mcp_update.py`·`routers/mcp.py`,
+사용자 UI는 `McpUpdate.tsx`가 맡는다. 원본 생성 ID 표시 준비는 `routers/mcp_v2.py`의 권한 검사 뒤에서 제공한다.
+파일 전환과 서버 후보의 격리 시험은 `tools/mcp_adapter/test_update.py`·`tools/server_console/test_mcp_stage.py`다.
 
 편집 탭의 소스 클립·테이프 재생은 [useSourcePane.ts](../frontend/src/components/timeline/useSourcePane.ts),
 MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_picture.py)다.

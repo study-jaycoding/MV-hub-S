@@ -1,9 +1,13 @@
 ---
 status: active
-updated: 2026-10-22
+updated: 2026-10-27
 ---
 
 # MV Hub 로컬 MCP
+
+2026-10-27 독립 업데이트 및 원본 결과 표시 준비는 [단일 작업 기록](status/mcp_independent_update_2026-10-27.md)을 따른다.
+최초 본체 도입 이후 어댑터 코드만 ZIP 없이 후보·게시·설치하며, 아래 과거 검증을 이번 변경의 검증으로 재사용하지 않는다.
+외부 위젯·모바일 단일 표시의 최종 UX는 미해결이다. 기존 데스크톱 표시를 단순 본문 이미지로 대체하지 않았다.
 
 owner: Codex · reviewer: Claude · status: 검증 중 · updated: 2026-10-15
 
