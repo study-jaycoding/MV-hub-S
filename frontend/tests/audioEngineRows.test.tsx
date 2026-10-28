@@ -57,13 +57,13 @@ async function settle() {
   });
 }
 
-async function mountModal(initial: Record<string, unknown> | undefined) {
+async function mountModal(initial: Record<string, unknown> | undefined, onClose = () => {}) {
   vi.resetModules();
   const { SceneModelModal } = await import("../src/components/scene/SceneModelModal");
   act(() => {
     root.render(
       <StrictMode>
-        <SceneModelModal initial={initial as never} onSave={(cfg) => saved.push(cfg as Record<string, unknown>)} onClose={() => {}} />
+        <SceneModelModal initial={initial as never} onSave={(cfg) => saved.push(cfg as Record<string, unknown>)} onClose={onClose} />
       </StrictMode>,
     );
   });
@@ -226,6 +226,30 @@ describe("Codex H — 옵션 준비 전 선택·키보드 초점·빈 목록", (
     expect(voiceLabel()).toBe("Emily");
   });
 
+  it.each(["Esc", "배경 누름"])("Voice 목록을 연 채 키보드로 Voice Change 를 고르면 %s 한 번에 씬 창이 닫힌다(H 3차 — 숨은 목록이 가로채지 않게)", async (how) => {
+    modelParams.mockImplementation(async (m: string) => {
+      if (m === "text2speech_v2") return ttsSchema();
+      return new Promise(() => {}); // voice_change 스키마는 오지 않는다 — 잠긴 채로 본다
+    });
+    const onClose = vi.fn();
+    await mountModal({ model: "text2speech_v2", params: { variant: "elevenlabs" } }, onClose);
+    act(() => button("Voice").click());
+    expect(container.querySelector(".sl-voice-pop")).not.toBeNull();
+    act(() => button("Voice Change").click()); // 키보드 Enter 는 pointerdown 없는 click — 바깥 누름 닫기가 돌지 않는다
+    await settle();
+    expect(container.querySelector(".sl-voice-pop")).toBeNull();
+    if (how === "Esc") act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    else {
+      const backdrop = container.querySelector(".scene-modelmodal-backdrop")!;
+      act(() => {
+        backdrop.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+        backdrop.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      });
+    }
+    // 반례: 숨은 목록(open=voice)이 남아 첫 Esc·배경 누름은 그 목록만 닫고 창은 그대로였다
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("옵션 받는 중이면 열려 있던 번역 언어 목록도 숨는다", async () => {
     vi.resetModules();
     const { SpotlightOptionsBar } = await import("../src/components/spotlight/SpotlightOptionsBar");
@@ -320,5 +344,38 @@ describe("복원 규칙·제출·표시명", () => {
     expect(modelDisplayName("text2speech_v2", { variant: "seed_speech" })).toBe("Seed Speech");
     expect(modelDisplayName("text2speech_v2")).not.toBe("ElevenLabs v3");
     expect(modelDisplayName("seedance_2_0", { mode: "fast" })).toBe("Seedance 2.0");
+  });
+});
+
+// 이 파일 맨 끝에 둔다 — 프롬프트 도크 전체를 띄우는 장치가 api·정책 모의를 바꾼다(끝나면 걷는다).
+describe("Codex H 3차 — 스포트라이트", () => {
+  it("Voice 목록을 연 채 키보드로 Voice Change 를 고르면 숨은 목록이 Esc 겹으로 남지 않는다", async () => {
+    vi.resetModules();
+    const harness = await import("./seedanceRenderHarness");
+    const { api } = harness.installPromptBoundaryMocks();
+    api.models.mockResolvedValue([{ job_set_type: "text2speech_v2", display_name: "Text to Speech V2", type: "audio" }]);
+    api.modelParams.mockImplementation((m: string) => (m === "text2speech_v2" ? Promise.resolve(ttsSchema()) : new Promise(() => {})));
+    Object.assign(api, { voices: vi.fn().mockResolvedValue({ items: [{ id: "e", name: "Emily", voice_type: "preset" }], cursor: null }) });
+    const view = await harness.mountPrompt();
+    try {
+      const { backgroundKeysBlocked } = await import("../src/lib/keyGate");
+      harness.click(harness.button(view.container, "Audio"));
+      await harness.settle();
+      expect(backgroundKeysBlocked()).toBe(false);
+      harness.click(harness.required(view.container, 'button[aria-label="Voice"]'));
+      expect(view.container.querySelector(".sl-voice-pop")).not.toBeNull();
+      harness.click(harness.button(view.container, "Voice Change")); // 키보드 Enter 와 같은 click(pointerdown 없음)
+      await harness.settle();
+      expect(view.container.querySelector(".sl-voice-pop")).toBeNull();
+      // 반례: 숨은 목록의 Esc 겹이 남아 뒤 화면 단축키를 막고 첫 Esc 를 삼켰다
+      expect(backgroundKeysBlocked()).toBe(false);
+      const esc = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+      act(() => { window.dispatchEvent(esc); });
+      expect(esc.defaultPrevented).toBe(false);
+    } finally {
+      view.dispose();
+      for (const path of ["../src/api", "../src/features/generation/api", "../src/lib/modelPolicy", "../src/components/spotlight/ServerConsolePanel"]) vi.doUnmock(path);
+      vi.unstubAllGlobals();
+    }
   });
 });

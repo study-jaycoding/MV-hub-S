@@ -239,7 +239,7 @@ function VoicePicker({
   const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const chipRef = useRef<HTMLButtonElement>(null);
-  // 잠긴 동안엔 이미 열린 목록도 닫힌 것으로 — 작업 단추는 모델만 바꿔 open=voice 가 남는다(재검수 H-1)
+  // 잠긴 동안엔 열린 목록도 닫힌 것으로 — 모델이 바뀐 그림에서는 아래 바의 effect 가 open 을 비우기 전이다(재검수 H-1·H 3차)
   const isOpen = open === "voice" && !disabled;
   useEscapeClose(() => {
     setOpen(null);
@@ -463,6 +463,14 @@ export function SpotlightOptionsBar({
     })().catch(() => { if (alive && voiceScope === voiceScopeKey()) setVoicesError(true); });
     return () => { alive = false; };
   }, [model, voiceScope]);
+  // 모델이 바뀌면 펼친 목록을 닫는다 — 작업·종류 단추를 키보드로 누르면 바깥 누름이 아니라 open 이 남는데, 그 목록은 옵션을 받는 동안
+  //  잠겨 숨거나 칩째 사라져, 보이지 않는 목록이 Esc·바깥 누름을 창 대신 먼저 받았다(Codex H 3차). 첫 그림에서는 닫지 않는다.
+  const listModelRef = useRef(model);
+  useEffect(() => {
+    if (listModelRef.current === model) return;
+    listModelRef.current = model;
+    setOpen(null);
+  }, [model, setOpen]);
   const modelButtonRef = useRef<HTMLButtonElement>(null);
   // 두 호출 화면에서 같은 Esc 겹을 사용하고, 바깥 클릭에는 초점을 돌리지 않는다.
   useEscapeClose(() => {
