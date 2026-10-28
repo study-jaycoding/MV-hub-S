@@ -66,10 +66,19 @@ def seedance_media_kind(ref: dict) -> str:
     return "image"
 
 
+def reference_submit_path(ref: dict):
+    """레시피(repo.gen_requests.gen_recipe)가 에이전트에게 넘기는 경로 — 서버 보관 위치·asset-sync 는 file_path,
+    아니면 source_url 이 None 이 아닌 한(빈 글자라도) 그것, 없으면 file_path. 레시피와 검사가 이 함수 하나를 쓴다."""
+    file_path = ref.get("file_path")
+    if ref.get("server_location") or str(file_path).startswith("asset-sync:"):
+        return file_path
+    return ref["source_url"] if ref.get("source_url") is not None else file_path
+
+
 def seedance_submitted_refs(references: list) -> list:
-    """에이전트가 CLI 에 실제로 넘기는 참조만 — agent_push 가 조용히 건너뛰는 것(사전이 아닌 것 · file_path 가 비었거나 없는 것)을 뺀다.
-    못 받거나 못 올린 참조는 건너뛰지 않고 요청 전체를 실패시키므로 여기서는 센다(Codex G 2차 재검수)."""
-    return [r for r in references if isinstance(r, dict) and r.get("file_path")]
+    """에이전트가 CLI 에 실제로 넘기는 참조만 — agent_push 가 조용히 건너뛰는 것(사전이 아닌 것 · 레시피가 고른 경로가 비었거나 없는 것)을 뺀다.
+    못 받거나 못 올린 참조는 건너뛰지 않고 요청 전체를 실패시키므로 여기서는 센다(Codex G 2·3차 재검수)."""
+    return [r for r in references if isinstance(r, dict) and reference_submit_path(r)]
 
 
 def seedance_audio_reference_error(model: str, references: list) -> str | None:

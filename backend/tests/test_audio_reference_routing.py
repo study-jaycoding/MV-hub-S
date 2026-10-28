@@ -115,6 +115,8 @@ def test_server_counts_media_the_way_the_agent_submits():
 
 # 에이전트가 조용히 건너뛰는 참조(빈·없는 file_path, 사전이 아닌 것) — 서버는 실제로 CLI 에 실리는 것만 센다(Codex G 2차 재검수).
 AUDIO_WITH_EMPTY_IMAGE = refs("audio") + [{"file_path": "", "type": "image", "role": "@Image1"}]
+# 레시피는 source_url 이 None 이 아니면(빈 글자라도) 그것을 제출 경로로 고른다 — 직접 API 입력(Codex G 3차 재검수).
+AUDIO_WITH_EMPTY_SOURCE_URL = refs("audio") + [{"file_path": "/media/image.png", "type": "image", "role": "@Image1", "source_url": ""}]
 FLAG_KIND = {"--audio-references": "audio", "--video-references": "video", "--image-references": "image",
              "--image": "image", "--video": "video", "--audio": "audio", "--start-image": "image", "--end-image": "image"}
 
@@ -155,6 +157,8 @@ def test_server_counts_exactly_what_the_agent_puts_on_the_cli(references, monkey
 @pytest.mark.parametrize("references,error", [
     (MISMATCHED_AUDIO, AUDIO_ONLY),
     (AUDIO_WITH_EMPTY_IMAGE, AUDIO_ONLY),
+    (AUDIO_WITH_EMPTY_SOURCE_URL, AUDIO_ONLY),
+    (refs("audio") + [{"file_path": "", "type": "image", "role": "@Image1", "source_url": "https://cdn.example/i.png"}], None),
     (MISMATCHED_AUDIO + [{"file_path": "s.png", "type": "audio", "role": "@Start"}], None),  # 첫 프레임은 그림으로 센다
     ([{"file_path": f"{i}.png", "type": "image", "role": f"@Audio{i + 1}"} for i in range(4)]
      + [{"file_path": "v.mp4", "type": "video", "role": "@Video1"}], "오디오 레퍼런스는 3개까지 넣을 수 있습니다 — 지금 4개입니다."),
@@ -167,7 +171,7 @@ def test_shared_validation_counts_mismatched_type_and_role_by_submission(referen
         validate_media_request("seedance_2_0_mini", "p", {}, references)
 
 
-@pytest.mark.parametrize("references", [refs("audio"), MISMATCHED_AUDIO, AUDIO_WITH_EMPTY_IMAGE])
+@pytest.mark.parametrize("references", [refs("audio"), MISMATCHED_AUDIO, AUDIO_WITH_EMPTY_IMAGE, AUDIO_WITH_EMPTY_SOURCE_URL])
 def test_create_body_rejects_audio_only_seedance_mini(references):
     with pytest.raises(ValidationError, match="오디오만으로"):
         GenRequestIn(kind="create", workspace={"scope": "personal"},
@@ -199,6 +203,43 @@ def test_regenerate_route_rejects_before_creating_anything(references, rejected)
         else:
             with pytest.raises(RuntimeError, match="reached submit"):
                 asyncio.run(routes.create_gen_request(body, SimpleNamespace()))
+
+
+@pytest.fixture
+def content(tmp_path, monkeypatch):
+    from app import db, repo
+    db.flush_pool()
+    path = tmp_path / "content.db"
+    monkeypatch.setenv("CONTENT_HUB_DB", str(path))
+    db.init_db(path)
+    repo.ensure_default_worker()
+    yield path
+    db.flush_pool()
+
+
+def test_stored_empty_source_url_is_the_recipe_path_and_regenerate_rejects_it(content):
+    """저장된 생성물에서 레시피를 실제로 만들어(가짜 레시피 아님) 그 경로로 재생성을 막는지 — 레시피와 검사가 같은 경로 함수를 쓴다."""
+    from app import repo
+    from app.models import reference_submit_path
+    gid = repo.create_local_generation({"model": "seedance_2_0_mini", "prompt": "p", "references": AUDIO_WITH_EMPTY_SOURCE_URL},
+                                      "me", creator_uid="artist")
+    recipe = repo.gen_recipe(gid)
+    assert [r["file_path"] for r in recipe["references"]] == ["ref0.mp3", ""]
+    assert [reference_submit_path(r) for r in AUDIO_WITH_EMPTY_SOURCE_URL] == ["ref0.mp3", ""]
+    body = GenRequestIn(kind="regenerate", source_gen_id=gid, regenerate=RegenerateIn(), workspace={"scope": "personal"})
+    submit = AsyncMock(side_effect=RuntimeError("reached submit"))
+    with patch.object(routes, "update_in_progress", return_value=False), \
+         patch.object(routes, "_require_account", return_value={"email": "artist@example.invalid", "creator_uid": "artist"}), \
+         patch.object(routes, "expected_account_differs", return_value=False), \
+         patch.object(routes, "AUTH_ENABLED", False), \
+         patch.object(routes, "_require_generation_deployment_open", AsyncMock()), \
+         patch.object(routes, "require_view_generation"), \
+         patch.object(routes.repo, "get_recovery_request_id_for_generation", return_value=None), \
+         patch.object(routes, "submit_gen_request", submit):
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(routes.create_gen_request(body, SimpleNamespace()))
+    assert error.value.status_code == 422 and error.value.detail == AUDIO_ONLY
+    submit.assert_not_awaited()
 
 
 @pytest.mark.parametrize("kinds,rejected", [(["audio"], True), (["video", "audio"], False)])

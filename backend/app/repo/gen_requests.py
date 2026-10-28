@@ -17,6 +17,7 @@ from typing import Any, Optional
 from ._common import new_id
 from ..db import get_connection
 from ..emailnorm import norm_email
+from ..models import reference_submit_path
 from ..workspace_context import normalize_workspace_context
 from . import tags
 from .generations import RECOVERY_REQUIRED_NOTE
@@ -734,8 +735,7 @@ def gen_recipe(gen_id: str) -> dict[str, Any]:
         "prompt": g["prompt"],
         "params": params,
         "references": [
-            {"reference_id": r["reference_id"], "file_path": (r["file_path"] if r.get("server_location") or str(r["file_path"]).startswith("asset-sync:")
-                           else r["source_url"] if r["source_url"] is not None else r["file_path"]), "type": r["type"], "role": r["role"],
+            {"reference_id": r["reference_id"], "file_path": reference_submit_path(r), "type": r["type"], "role": r["role"],
              **({"asset_content_id": r["asset_content_id"]} if r["asset_content_id"] else {}),
              **({"server_location": r["server_location"], "target_project_id": r["target_project_id"]}
                 if r.get("server_location") else {})} for r in refs
