@@ -77,6 +77,9 @@ const VIDEO_EDIT_PARAMS: Record<string, {
 // 수정 창 레퍼런스 칸에 넣은 이미지(2번부터 — 1번은 늘 그린 프레임)
 type ExtraRef = AssetReferenceIdentity & { uid: string; file_path: string; name: string; thumb: string };
 const modelLabel = (id: string) => MODEL_LABELS[id] ?? id;
+// Kling 3.0 Omni Edit 의 품질(mode)은 해상도다 — 힉스필드 웹처럼 해상도로 보인다. 보내는 값은 std·pro·4k 그대로(Jay 2026-10-28).
+//  pro=1920×1080·4k=3840×2160 은 생성 실측, std=720p 는 웹 코드 표기.
+const QUALITY_LABELS: Record<string, string> = { std: "720p", pro: "1080p", "4k": "4K" };
 const bitrateLabel = (value = "") => value.charAt(0).toUpperCase() + value.slice(1); // high → High(힉스필드 웹 표기)
 
 // 도구 캡슐의 선 아이콘(18px) — 이 창에서만 쓴다.
@@ -616,6 +619,7 @@ export function PartialEditModal({
   const optionDefault = String(optionParam?.default ?? "");
   const optionValues = useMemo(() => (optionKey ? optionKey.split("|") : []), [optionKey]);
   const [option, setOption] = useState("");
+  const optionLabel = (value: string) => (optionName === "mode" ? QUALITY_LABELS[value] ?? value : value);
   useEffect(() => {
     if (!optionValues.length || optionValues.includes(option)) return;
     setOption(optionValues.includes(optionDefault) ? optionDefault : optionValues[0]);
@@ -1493,7 +1497,7 @@ export function PartialEditModal({
                             onClick={() => setMenu(menu === "option" ? null : "option")}>
                             <span className="sl-opt-ic"><SpotlightOptionIcon name="resolution" /></span>
                             {/* 값 칸 = 가장 긴 값만큼 — 값을 바꿔도 칩 폭이 그대로(생성창과 같은 규칙, Jay 2026-10-28) */}
-                            <span className="sl-opt-text" style={{ minWidth: `${Math.max(...optionValues.map((v) => v.length)) + 0.5}ch` }}>{option}</span>
+                            <span className="sl-opt-text" style={{ minWidth: `${Math.max(...optionValues.map((v) => optionLabel(v).length)) + 0.5}ch` }}>{optionLabel(option)}</span>
                             <span className="sl-caret">›</span>
                           </button>
                           {menu === "option" && (
@@ -1504,7 +1508,7 @@ export function PartialEditModal({
                                   <button key={value} type="button" role="option" aria-selected={value === option}
                                     className={"sl-dd-item" + (value === option ? " sel" : "")}
                                     onClick={() => { setOption(value); setMenu(null); }}>
-                                    {value}
+                                    {optionLabel(value)}
                                   </button>
                                 ))}
                               </div>
@@ -1514,11 +1518,12 @@ export function PartialEditModal({
                       )}
                       {bitrateValues.length > 0 && (
                         <div className="sl-chip-wrap">
+                          {/* 칩엔 아이콘+값만 — '비트레이트' 글자는 빼고 마우스를 올리면 뜬다(Jay 2026-10-28, 다른 칩과 같게) */}
                           <button type="button" className={"sl-chip sl-opt-chip" + (menu === "bitrate" ? " active" : "")}
                             title="비트레이트" aria-label="비트레이트" aria-haspopup="listbox" aria-expanded={menu === "bitrate"}
                             disabled={submitting} onClick={() => setMenu(menu === "bitrate" ? null : "bitrate")}>
                             <span className="sl-opt-ic"><SpotlightOptionIcon name="bitrate_mode" /></span>
-                            <span>비트레이트 <span className="sl-opt-text" style={{ minWidth: `${Math.max(...bitrateValues.map((v) => v.length)) + 0.5}ch`, textAlign: "left" }}>{bitrateLabel(bitrateSend)}</span></span>
+                            <span className="sl-opt-text" style={{ minWidth: `${Math.max(...bitrateValues.map((v) => v.length)) + 0.5}ch` }}>{bitrateLabel(bitrateSend)}</span>
                             <span className="sl-caret">›</span>
                           </button>
                           {menu === "bitrate" && (

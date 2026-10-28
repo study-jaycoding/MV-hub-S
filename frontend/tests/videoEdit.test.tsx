@@ -225,8 +225,11 @@ describe("video edit reuses annotation UI", () => {
     const generate = container.querySelector<HTMLButtonElement>(".partial-edit-gen")!;
     expect(generate.disabled).toBe(false);
     expect(container.querySelector(".partial-edit-cost")?.textContent).toBe("8");
+    expect(button("영상 수정 품질").textContent).toBe("1080p›"); // 보내는 값 pro 를 힉스필드 웹처럼 해상도로(Jay 2026-10-28)
     await act(async () => button("영상 수정 품질").click());
-    const fourK = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((option) => option.textContent === "4k")!;
+    const options = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')];
+    expect(options.map((option) => option.textContent)).toEqual(["720p", "1080p", "4K"]);
+    const fourK = options.find((option) => option.textContent === "4K")!; // 견적(위 mock)은 mode "4k" 로 불려야 풀린다
     await act(async () => fourK.click());
     expect(generate.disabled).toBe(true);
     expect(container.querySelector(".partial-edit-cost")?.textContent).toBe("…");
@@ -253,7 +256,7 @@ describe("video edit reuses annotation UI", () => {
   it("sends Seedance 2.5 bitrate, sound, auto aspect and the source length", async () => {
     mocks.model = "seedance_2_5";
     await render(); await prompt();
-    expect(button("비트레이트").textContent).toContain("High");
+    expect(button("비트레이트").textContent).toBe("High›"); // '비트레이트' 글자 없이 값만(이름은 마우스를 올리면, Jay 2026-10-28)
     expect(container.querySelector('button[aria-label="영상 길이"]')).toBeNull(); // 길이는 Kling 4.0 만 고른다
     expect(container.querySelector(".sl-ignored-note")?.textContent).toContain("길이·비율은 원본 영상을 따릅니다(5초)");
     await act(async () => button("소리 끄기").click());
