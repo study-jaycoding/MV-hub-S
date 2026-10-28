@@ -21,7 +21,6 @@ import {
   spotlightAdvancedParamRank,
   spotlightIgnoredOptions,
   spotlightParamLabel,
-  spotlightValueLabel,
 } from "../../lib/spotlightPromptConfig";
 import { SpotlightOptionIcon } from "./SpotlightOptionIcon";
 import { SpotlightDurationChip } from "./SpotlightDurationChip";
@@ -48,6 +47,19 @@ const inexactInteger = (value: OptionValue): boolean =>
   typeof value === "number" && !Number.isSafeInteger(value);
 // 옵션 칩 목록 머리 글(Jay 2026-10-28 — 힉스필드 웹 표기). 길이 창의 "Duration" 은 SpotlightDurationChip 이 단다.
 const OPTION_TITLES: Record<string, string> = { aspect_ratio: "Aspect Ratio", resolution: "Quality" };
+// 고급(Set) 창은 한글 없이 영어로만(Jay 2026-10-28) — 이름은 파라미터 이름을 사람 말로(bitrate_mode → Bitrate),
+//  값은 CLI 값 그대로, TTS 언어 코드만 영어 이름(ko → Korean, 빈 값 → Auto). 화면 읽기용 이름(aria-label)은 한글 그대로다.
+const ADVANCED_LABELS: Record<string, string> = { bitrate_mode: "Bitrate", enable_web_search: "Web search", enable_image_search: "Image search" };
+const advancedLabel = (name: string) => {
+  const text = ADVANCED_LABELS[name] ?? name.replace(/_/g, " ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+};
+const LANGUAGE_NAMES = new Intl.DisplayNames(["en"], { type: "language" });
+const advancedValue = (value: string, name: string) => {
+  if (name !== "language") return value;
+  if (!value) return "Auto";
+  try { return LANGUAGE_NAMES.of(value) ?? value; } catch { return value; } // 모르는 코드면 코드 그대로
+};
 
 interface Props {
   type: MediaType;
@@ -624,20 +636,20 @@ export function SpotlightOptionsBar({
             title="고급 옵션 (모드·비트레이트·장르 등)"
           >
             <span className="sl-opt-ic"><AdvancedIcon /></span>
-            <span>고급</span>
+            <span>Set</span>
             {advancedDirty && <span className="sl-adv-dot" aria-hidden />}
             <span className="sl-caret">›</span>
           </button>
           {open === "advanced" && (
             <div className="sl-dropdown sl-adv-pop">
-              <div className="sl-dd-title">고급 옵션</div>
+              <div className="sl-dd-title">Advanced Options</div>
               {advancedParams.map((p) => {
                 const cur = optionValues[p.name] ?? effectiveDefault(p, model) ?? "";
                 return (
                   <div className="sl-adv-row" key={p.name}>
                     <div className="sl-adv-label">
                       <span className="sl-opt-ic"><SpotlightOptionIcon name={p.name} /></span>
-                      {spotlightParamLabel(p.name)}
+                      {advancedLabel(p.name)}
                       {["stability", "similarity_boost"].includes(p.name) && " (%)"}
                     </div>
                     {p.enum?.length ? (
@@ -645,7 +657,7 @@ export function SpotlightOptionsBar({
                         {isTtsModel(model) && p.name !== "language" && p.default == null && <button
                           className={"sl-adv-opt" + (cur === "" ? " sel" : "")}
                           onClick={() => setOptionValues((prev) => { const next = { ...prev }; delete next[p.name]; return next; })}
-                        >공급자 기본값</button>}
+                        >Default</button>}
                         {(isTtsModel(model) && p.name === "language" ? ["", ...p.enum] : p.enum).map((v) => {
                           const con = constraints[p.name];
                           const blocked = !!con && !con.allow.has(v);
@@ -659,9 +671,9 @@ export function SpotlightOptionsBar({
                               }
                               disabled={blocked}
                               onClick={() => !blocked && (v === "" ? setOptionValues((prev) => { const next = { ...prev }; delete next[p.name]; return next; }) : setOpt(p.name, isTtsModel(model) && ["integer", "number"].includes(p.type.split("|")[0]) ? Number(v) : v))}
-                              title={blocked ? con!.note : spotlightValueLabel(v, p.name)}
+                              title={blocked ? con!.note : undefined}
                             >
-                              {spotlightValueLabel(v, p.name)}
+                              {advancedValue(v, p.name)}
                             </button>
                           );
                         })}
@@ -674,14 +686,12 @@ export function SpotlightOptionsBar({
                             <button
                               className={"sl-adv-opt" + (on ? " sel" : "")}
                               onClick={() => setOptionValues((prev) => ({ ...prev, [p.name]: true }))}
-                              title="켜기"
                             >
                               ON
                             </button>
                             <button
                               className={"sl-adv-opt" + (!on ? " sel" : "")}
                               onClick={() => setOptionValues((prev) => ({ ...prev, [p.name]: false }))}
-                              title="끄기"
                             >
                               OFF
                             </button>
@@ -699,11 +709,11 @@ export function SpotlightOptionsBar({
                             className="sl-adv-num"
                             type="number"
                             aria-label={spotlightParamLabel(p.name) + (percent ? " (%)" : "")}
-                            placeholder="공급자 기본값"
+                            placeholder="Default"
                             step={percent || integer ? 1 : "any"}
                             min={percent ? 0 : rg?.min}
                             max={percent ? 100 : rg?.max}
-                            title={rg ? `허용 범위 ${rg.min}~${rg.max}` : undefined}
+                            title={rg ? `Range ${rg.min}–${rg.max}` : undefined}
                             value={value == null || value === "" ? "" : String(percent ? Number(value) * 100 : value)}
                             onChange={(e) => {
                               const raw = e.target.value;
@@ -719,7 +729,7 @@ export function SpotlightOptionsBar({
                       <input
                         className="sl-adv-num"
                         type="text"
-                        placeholder={isTtsModel(model) ? "공급자 기본값" : undefined}
+                        placeholder={isTtsModel(model) ? "Default" : undefined}
                         value={String(optionValues[p.name] ?? p.default ?? "")}
                         onChange={(e) =>
                           setOptionValues((prev) => ({

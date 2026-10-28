@@ -175,7 +175,7 @@ describe("생성 바 — 모델 칩·고급·준비 중 없이 Voice / 번역 �
     mocks.voices.mockResolvedValue({ items: [{ id: "voice-1", name: "Grady", voice_type: "preset" }], cursor: null });
     await renderBar("voice_change");
     expect(container.querySelector(".sl-dot")).toBeNull(); // 모델 칩 없음
-    expect(buttonTexts().some((t) => t?.includes("고급"))).toBe(false);
+    expect(container.querySelector('button[title^="고급 옵션"]')).toBeNull(); // 고급(Set) 칩 없음
     expect(container.querySelector('[role="status"]')).toBeNull();
     expect(container.querySelector('button[aria-label="Voice"]')).not.toBeNull();
     expect(mocks.voices).toHaveBeenCalled();

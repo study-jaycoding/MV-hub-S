@@ -69,10 +69,10 @@ describe("audio models v1", () => {
     ];
     expect(defaultOptions(params, "elevenlabs_v4")).toEqual({});
     await act(async () => root.render(<Panel model="elevenlabs_v4" params={params} initial={{ voice_id: "voice", voice_type: "preset" }} />));
-    act(() => [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("고급"))!.click());
+    act(() => host.querySelector<HTMLButtonElement>('button[title^="고급 옵션"]')!.click()); // 칩 글자는 Set(2026-10-28)
     const field = host.querySelector<HTMLInputElement>('input[aria-label="안정성 (%)"]')!;
     expect(field.value).toBe("");
-    expect(field.placeholder).toBe("공급자 기본값");
+    expect(field.placeholder).toBe("Default");
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "50");
       field.dispatchEvent(new Event("input", { bubbles: true }));
@@ -90,8 +90,9 @@ describe("audio models v1", () => {
     const params: ModelParam[] = [{ name: "language", type: "string", default: null, enum: ["ko", "en"], required: false },
       { name: "sample_rate", type: "integer", default: 24000, enum: ["24000", "48000"], required: false }];
     await act(async () => root.render(<Panel model="qwen_audio_tts" params={params} initial={{ language: "ko" }} />));
-    act(() => [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("고급"))!.click());
-    act(() => [...host.querySelectorAll("button")].find((b) => b.textContent === "자동")!.click());
+    act(() => host.querySelector<HTMLButtonElement>('button[title^="고급 옵션"]')!.click());
+    expect([...host.querySelectorAll(".sl-adv-pop .sl-adv-opt")].map((b) => b.textContent)).toEqual(["Auto", "Korean", "English", "24000", "48000"]);
+    act(() => [...host.querySelectorAll("button")].find((b) => b.textContent === "Auto")!.click());
     expect(options.language).toBeUndefined();
     act(() => [...host.querySelectorAll("button")].find((b) => b.textContent === "48000")!.click());
     expect(options.sample_rate).toBe(48000);

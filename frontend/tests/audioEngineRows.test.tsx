@@ -84,7 +84,7 @@ describe("오디오 엔진 줄 — 씬 모델 창", () => {
   it("새로 고르면 첫 엔진(elevenlabs)이 옵션값에도 실리고, 고급에 variant 가 없다", async () => {
     await mountModal({ type: "audio" });
     expect(chipText()).toBe("ElevenLabs");
-    expect(container.textContent).not.toContain("고급");
+    expect(container.querySelector('button[title^="고급 옵션"]')).toBeNull(); // 고급(Set) 칩 없음
     openModelList();
     expect(rowNames()).toEqual(audioNames);
     act(() => button("저장").click());
