@@ -4,17 +4,18 @@ import { createRoot, type Root } from "react-dom/client";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { Generation, WorkspaceContext } from "../src/types";
 const mocks = vi.hoisted(() => ({ prepareCreate: vi.fn(), uploadCapture: vi.fn(), getGeneration: vi.fn(), fetchBlob: vi.fn(),
-  cost: vi.fn(), queued: vi.fn(), current: true, blocked: null as string | null }));
+  cost: vi.fn(), queued: vi.fn(), setModel: vi.fn(), current: true, blocked: null as string | null }));
 vi.mock("../src/api", () => ({ api: { prepareCreate: mocks.prepareCreate, uploadCapture: mocks.uploadCapture,
   getGeneration: mocks.getGeneration, assetThumbUrl: () => "thumb", discardCapture: vi.fn() } }));
 vi.mock("../src/lib/download", () => ({ fetchBlob: mocks.fetchBlob }));
 vi.mock("../src/lib/useModels", () => ({ sharedCostEstimate: mocks.cost,
-  useModels: (_error: unknown, policy: { initialModel: string }) => ({ model: policy.initialModel,
+  useModels: (_error: unknown, policy: { initialModel: string }) => ({ model: policy.initialModel, setModel: mocks.setModel,
     paramsModel: policy.initialModel, paramsLoading: false, params: [
       { name: "aspect_ratio", enum: ["16:9", "1:1"] }, { name: "resolution", enum: ["720p", "1080p"], default: "720p" },
+      { name: "mode", enum: ["std", "pro", "4k"], default: "pro" },
     ] }) }));
 vi.mock("../src/lib/modelPolicy", () => ({ useModelPolicy: () => ({ allowed: new Set(), status: "ready" }) }));
-vi.mock("../src/lib/modelPolicyCore", () => ({ submitBlockMessage: () => mocks.blocked }));
+vi.mock("../src/lib/modelPolicyCore", () => ({ submitBlockMessage: () => mocks.blocked, modelAllowed: () => true }));
 vi.mock("../src/app/operationContext", () => ({ captureOperationContext: (workspace: WorkspaceContext) => ({ workspaceId: workspace.id }),
   isOperationContextCurrent: () => mocks.current }));
 vi.mock("../src/lib/unloadGuard", () => ({ holdUnload: vi.fn() }));
@@ -39,10 +40,20 @@ async function prompt() {
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
+const scrub = () => container.querySelector<HTMLElement>('[role="slider"][aria-label="수정할 영상 시점"]')!;
+const pointer = (target: Element, type: string, x: number) => target.dispatchEvent(Object.assign(
+  new MouseEvent(type, { bubbles: true, clientX: x, clientY: 10 }), { pointerId: 1 }));
+/** 타임바를 x(0~100)에서 눌렀다 놓고, 멈춘 뒤 그 장면을 뜨는 것까지 기다린다. */
+async function scrubTo(x: number) {
+  await act(async () => { pointer(scrub(), "pointerdown", x); pointer(scrub(), "pointerup", x); });
+  await act(async () => { vi.advanceTimersByTime(200); });
+  for (let i = 0; i < 4; i += 1) await act(async () => {});
+}
+const button = (label: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
 beforeEach(() => {
   vi.useFakeTimers();
   mocks.current = true; mocks.blocked = null; nextUrl = 0;
-  for (const fn of [mocks.prepareCreate, mocks.uploadCapture, mocks.getGeneration, mocks.fetchBlob, mocks.cost, mocks.queued]) fn.mockReset();
+  for (const fn of [mocks.prepareCreate, mocks.uploadCapture, mocks.getGeneration, mocks.fetchBlob, mocks.cost, mocks.queued, mocks.setModel]) fn.mockReset();
   mocks.fetchBlob.mockResolvedValue(new Blob(["media"]));
   mocks.cost.mockResolvedValue({ credits: 26, saved_at: Date.now() / 1000 });
   mocks.uploadCapture.mockResolvedValue({ project: "project", path: "frame.png", reused: true });
@@ -63,6 +74,8 @@ beforeEach(() => {
     clearRect: vi.fn(), drawImage: vi.fn(), beginPath: vi.fn(), arc: vi.fn(), fill: vi.fn(),
     moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(), getImageData: () => ({ data: [] }) } as unknown as CanvasRenderingContext2D);
   vi.spyOn(HTMLCanvasElement.prototype, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, width: 1280, height: 720 } as DOMRect);
+  // 타임바 줄 — 폭 100 이라 clientX 30 = 길이 5초의 1.5초
+  vi.spyOn(HTMLDivElement.prototype, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, width: 100, height: 4 } as DOMRect);
   Element.prototype.setPointerCapture = vi.fn();
   vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation((callback) => callback(new Blob(["frame"], { type: "image/png" })));
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
@@ -71,18 +84,14 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("video edit reuses annotation UI", () => {
-  it("sends the original video and exactly one flattened frame with time in the prompt", async () => {
+  it("sends the original video and exactly one flattened frame with time in the prompt (Kling 3.0 Omni Edit default)", async () => {
     await render(); await prompt();
-    const slider = container.querySelector<HTMLInputElement>('input[aria-label="수정할 영상 시점"]')!;
-    expect(slider).not.toBeNull();
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(slider, "1.5");
-      slider.dispatchEvent(new Event("input", { bubbles: true }));
-    });
+    await scrubTo(30);
+    expect(scrub().getAttribute("aria-valuenow")).toBe("1.5");
     await act(async () => (container.querySelector(".partial-edit-gen") as HTMLButtonElement).click());
     const [body, selected] = mocks.prepareCreate.mock.calls[0];
-    expect(body).toMatchObject({ model: "draw_to_video", project_id: "project", folder_path: "cut",
-      params: { duration: 5, resolution: "720p", aspect_ratio: "16:9" } });
+    expect(body).toMatchObject({ model: "kling_video_edit", project_id: "project", folder_path: "cut", params: { mode: "pro" } });
+    expect(body.params).not.toHaveProperty("aspect_ratio"); // 영상 편집은 원본 화면 그대로
     expect(body.prompt).toContain("1.500초");
     expect(body.params).not.toHaveProperty("timestamp");
     expect(body.references).toHaveLength(2);
@@ -91,11 +100,32 @@ describe("video edit reuses annotation UI", () => {
     expect(mocks.uploadCapture).toHaveBeenCalledTimes(1);
     expect(selected).toEqual(workspace);
   });
-  it("keeps the fixed image model and original-image path when there are no marks", async () => {
+  it("steps one frame with the arrow key and the frame buttons", async () => {
+    await render();
+    await act(async () => { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })); });
+    expect(Number(scrub().getAttribute("aria-valuenow"))).toBeCloseTo(1 / 24, 3);
+    await act(async () => button("한 프레임 뒤로").click());
+    expect(scrub().getAttribute("aria-valuenow")).toBe("0");
+  });
+  it("keeps the default image model and original-image path when there are no marks", async () => {
     await render(generation("image")); await prompt();
     await act(async () => (container.querySelector(".partial-edit-gen") as HTMLButtonElement).click());
-    expect(mocks.prepareCreate.mock.calls[0][0]).toMatchObject({ model: "seedream_v5_pro", references: [{ type: "image", file_path: "source.png" }] });
+    expect(mocks.prepareCreate.mock.calls[0][0]).toMatchObject({ model: "seedream_v5_pro", params: { aspect_ratio: "16:9" },
+      references: [{ type: "image", file_path: "source.png" }] });
     expect(mocks.uploadCapture).not.toHaveBeenCalled();
+  });
+  it("lists only the chosen edit models and switches through the model chip", async () => {
+    await render(generation("image"));
+    await act(async () => button("수정 모델").click());
+    const names = [...container.querySelectorAll('[role="option"]')].map((option) => option.textContent);
+    expect(names).toEqual(["Seedream 5.0 Pro기본", "Nano Banana Pro", "Nano Banana 2", "Nano Banana 2.1", "GPT Image 2", "GPT Image 2.5"]);
+    await act(async () => (container.querySelectorAll<HTMLButtonElement>('[role="option"]')[1]).click());
+    expect(mocks.setModel).toHaveBeenCalledWith("nano_banana_pro");
+    await act(async () => root.render(<></>));
+    await render();
+    await act(async () => button("수정 모델").click());
+    expect([...container.querySelectorAll('[role="option"]')].map((option) => option.textContent))
+      .toEqual(["Kling 3.0 Omni Edit기본", "Kling 4.0 · 영상 편집", "Seedance 2.5 · 영상 편집"]);
   });
   it("blocks a changed workspace and policy restriction without submitting", async () => {
     await render(); await prompt();
@@ -113,40 +143,44 @@ describe("video edit reuses annotation UI", () => {
     expect(mocks.prepareCreate).not.toHaveBeenCalled();
     expect(mocks.fetchBlob).not.toHaveBeenCalled();
   });
-  it("locks the frame after drawing and unlocks only after clearing the annotations", async () => {
+  it("locks the frame after drawing, redoes an undone stroke and unlocks only after clearing", async () => {
     await render();
-    const slider = container.querySelector<HTMLInputElement>('input[aria-label="수정할 영상 시점"]')!;
-    expect(slider.disabled).toBe(false);
+    expect(scrub().getAttribute("aria-disabled")).toBe("false");
     const canvas = container.querySelector("canvas")!;
-    await act(async () => {
-      for (const type of ["pointerdown", "pointerup"]) canvas.dispatchEvent(Object.assign(
-        new MouseEvent(type, { bubbles: true, clientX: 10, clientY: 10 }), { pointerId: 1 }));
-    });
-    expect(slider.disabled).toBe(true);
-    const clear = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "전체 지우기")!;
-    await act(async () => clear.click());
-    expect(slider.disabled).toBe(false);
+    await act(async () => { for (const type of ["pointerdown", "pointerup"]) pointer(canvas, type, 10); });
+    expect(scrub().getAttribute("aria-disabled")).toBe("true");
+    expect(container.querySelector(".pe-lock")).not.toBeNull();
+    await act(async () => button("되돌리기").click());
+    expect(scrub().getAttribute("aria-disabled")).toBe("false");
+    await act(async () => button("다시").click());
+    expect(scrub().getAttribute("aria-disabled")).toBe("true");
+    await act(async () => button("전체 지우기").click());
+    expect(scrub().getAttribute("aria-disabled")).toBe("false");
+    expect(button("다시").disabled).toBe(true); // 전체 지우기는 다시로 되살리지 않는다
   });
-  it("requires a successful price for the currently selected video options", async () => {
+  it("requires a successful price for the currently selected video option", async () => {
     let resolve!: (value: object) => void;
-    mocks.cost.mockImplementation((_model, params) => params.resolution === "1080p"
-      ? new Promise((yes) => { resolve = yes; }) : Promise.resolve({ credits: 26 }));
+    mocks.cost.mockImplementation((_model, params) => params.mode === "4k"
+      ? new Promise((yes) => { resolve = yes; }) : Promise.resolve({ credits: 8 }));
     await render(); await prompt();
-    const button = container.querySelector<HTMLButtonElement>(".partial-edit-gen")!;
-    expect(button.disabled).toBe(false);
-    const select = container.querySelector<HTMLSelectElement>('select[aria-label="영상 수정 해상도"]')!;
-    await act(async () => { select.value = "1080p"; select.dispatchEvent(new Event("change", { bubbles: true })); });
-    expect(button.disabled).toBe(true);
-    expect(container.querySelector(".partial-edit-cost")?.textContent).toBe("견적 조회 중…");
-    await act(async () => resolve({ credits: 64 }));
-    expect(button.disabled).toBe(false);
-    expect(container.querySelector(".partial-edit-cost")?.textContent).toBe("64 cr");
+    const generate = container.querySelector<HTMLButtonElement>(".partial-edit-gen")!;
+    expect(generate.disabled).toBe(false);
+    expect(container.querySelector(".partial-edit-cost")?.textContent).toBe("8");
+    await act(async () => button("영상 수정 품질").click());
+    const fourK = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((option) => option.textContent === "4k")!;
+    await act(async () => fourK.click());
+    expect(generate.disabled).toBe(true);
+    expect(container.querySelector(".partial-edit-cost")?.textContent).toBe("…");
+    await act(async () => resolve({ credits: 24 }));
+    expect(generate.disabled).toBe(false);
+    expect(container.querySelector(".partial-edit-cost")?.textContent).toBe("24");
   });
   it("blocks an unpriced video but keeps the existing image submission policy", async () => {
     mocks.cost.mockRejectedValue(new Error("offline"));
     await render(); await prompt();
     expect(container.querySelector<HTMLButtonElement>(".partial-edit-gen")!.disabled).toBe(true);
-    expect(container.querySelector(".partial-edit-cost")?.textContent).toBe("견적 확인 안 됨");
+    expect(container.querySelector(".partial-edit-cost")).toBeNull();
+    expect(container.textContent).toContain("견적 확인 안 됨 — 영상은 견적이 나와야 생성할 수 있습니다.");
     await act(async () => root.render(<></>));
     await render(generation("image")); await prompt();
     expect(container.querySelector<HTMLButtonElement>(".partial-edit-gen")!.disabled).toBe(false);
@@ -155,7 +189,7 @@ describe("video edit reuses annotation UI", () => {
     mocks.cost.mockResolvedValueOnce({ credits: 26, stale: true }).mockRejectedValueOnce(new Error("offline"));
     await render(); await prompt();
     expect(container.querySelector<HTMLButtonElement>(".partial-edit-gen")!.disabled).toBe(false);
-    expect(container.querySelector(".partial-edit-cost")?.textContent).toBe("26 cr");
+    expect(container.querySelector(".partial-edit-cost")?.textContent).toBe("26");
   });
   it("renders a completed video with controls and no autoplay", async () => {
     mocks.getGeneration.mockResolvedValue({ id: "result", status: "done", assets: [{ type: "video", file_path: "result.mp4" }] });

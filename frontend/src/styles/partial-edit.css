@@ -30,6 +30,9 @@
 }
 .partial-edit-title {
   font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .partial-edit-sub {
   color: var(--muted, #8b93a3);
@@ -198,134 +201,101 @@
   opacity: 0.45;
   cursor: default;
 }
-.partial-edit-tools label,
-.partial-edit-subtools label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--muted, #8b93a3);
-}
-/* 크기 슬라이더 — 얇은 트랙 + 라임 원형 썸(하단 독 슬라이더 감성) */
-.partial-edit-tools input[type="range"],
-.partial-edit-subtools input[type="range"] {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 150px;
-  height: 4px;
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.14);
-  outline: none;
-  cursor: pointer;
-}
-.partial-edit-tools input[type="range"]::-webkit-slider-thumb,
-.partial-edit-subtools input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  background: var(--accent, #bef264);
-  box-shadow: 0 0 6px rgba(var(--accent-rgb), 0.5);
-}
-
-/* 알약형 프롬프트 바 — 웹 편집기의 'Describe how to edit image...' 한 줄 입력.
-   우측에 크레딧 표시 + 라임 원형 실행 버튼(✦). */
-.partial-edit-pill {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  background: var(--panel-2, #101216);
-  border: 1px solid var(--border, #2a2e37);
-  border-radius: 999px;
-  padding: 7px 8px 7px 18px;
-}
-.partial-edit-pill textarea {
-  flex: 1;
-  height: 22px;
-  line-height: 22px;
-  resize: none;
-  overflow-y: auto;
-  background: transparent;
-  border: none;
-  outline: none;
-  color: inherit;
-  padding: 0;
-  font-size: 13.5px;
-}
-.partial-edit-cost {
-  color: var(--muted, #8b93a3);
-  font-size: 12px;
-  white-space: nowrap;
-}
-.partial-edit-gen {
-  width: 38px;
-  height: 38px;
-  border-radius: 50%;
-  border: none;
-  flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--accent, #bef264);
-  color: #111;
-  font-size: 17px;
-  cursor: pointer;
-  padding: 0; /* 전역 button padding 함정 — 원형 유지 */
-}
-.partial-edit-gen:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-/* 도구별 옵션 열 — 펜/도형 색 스와치, 도형 종류(웹 편집기의 팝오버 열과 같은 구성) */
-.partial-edit-subtools {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.partial-edit-subtools button {
-  padding: 4px 9px;
-  border: 1px solid var(--border, #2a2e37);
-  border-radius: 7px;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  font-size: 12.5px;
-}
-.partial-edit-subtools button.on {
-  background: var(--accent, #bef264);
-  color: #111;
-  border-color: transparent;
-  font-weight: 600;
-}
-.partial-edit-subdiv {
-  width: 1px;
-  align-self: stretch;
-  background: var(--border, #2a2e37);
-  margin: 2px 2px;
-}
-/* .partial-edit-subtools button 보다 특이도를 높여(클래스 2개) padding/border 를 이긴다 */
-.partial-edit-subtools .partial-edit-swatch {
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  padding: 0; /* 전역 button padding 함정 — 원형 유지 */
-  cursor: pointer;
-}
-.partial-edit-subtools .partial-edit-swatch.sel {
-  box-shadow:
-    0 0 0 2px var(--panel, #16181d),
-    0 0 0 4px var(--accent, #bef264);
-}
-.partial-edit-toolspacer {
-  flex: 1;
-}
 .partial-edit-hint {
   color: var(--muted, #8b93a3);
   font-size: 12px;
 }
-.partial-edit-frame-controls { display: flex; gap: 16px; align-items: center; padding: 8px 12px; }
-.partial-edit-frame-controls label:first-child { flex: 1; }
-.partial-edit-frame-controls input[type="range"] { display: block; width: 100%; }
 .partial-edit-video-result { display: block; max-width: 100%; max-height: 65vh; margin: auto; }
+
+/* ── 영상 프레임 띠 — 편집 탭 뷰어(.ed-vtop·.ed-scrub·.ed-trans)와 같은 값. edit-tab.css 는 편집 탭(지연 로드)에서만
+   읽혀서 여기 옮겨 적는다(2026-10-28 수정 창 개편). 이미지는 띠 없이 무대만(.pe-plain). */
+.pe-plain { display: contents; }
+.pe-viewer {
+  align-self: center; display: flex; flex-direction: column; flex: none;
+  border: 1px solid #1a1a1e; border-radius: 8px; overflow: hidden; background: #1c1c1f;
+}
+.pe-viewer .partial-edit-stagebox { border-radius: 0; }
+.pe-vtop {
+  height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 12px;
+  background: #28282d; border-bottom: 1px solid #1a1a1e; user-select: none;
+}
+.pe-vtc { flex: none; min-width: 84px; font: 600 12.5px ui-monospace, Consolas, monospace; letter-spacing: 0.3px; font-variant-numeric: tabular-nums; }
+.pe-vtotal { text-align: right; color: var(--muted); font-weight: 500; }
+.pe-vlabel { flex: 1; min-width: 0; text-align: center; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.pe-vlabel b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.pe-lock {
+  flex: none; display: inline-flex; align-items: center; height: 22px; padding: 0 9px; border-radius: 6px;
+  font-size: 11px; color: #ffcf7a; background: rgba(255, 190, 80, 0.1); white-space: nowrap;
+}
+.pe-vhost, .pe-video { position: absolute; inset: 0; width: 100%; height: 100%; }
+.pe-video { object-fit: contain; display: block; }
+.pe-vbot { background: #28282d; border-top: 1px solid #1a1a1e; user-select: none; }
+/* 타임바 — 누르는 자리는 넉넉하게(28px), 보이는 줄은 4px. 빨강 = 지금 자리. 그린 표시가 있으면 흐리게 잠근다. */
+.pe-scrub { height: 28px; padding: 0 16px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
+.pe-scrub[aria-disabled="true"] { cursor: default; opacity: 0.45; }
+.pe-scrub-track { position: relative; flex: 1; height: 4px; border-radius: 2px; background: #18181b; }
+.pe-scrub-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 2px; background: #5a5a62; }
+.pe-scrub-head { position: absolute; left: 0; top: -9px; width: 10px; height: 10px; margin-left: -5px; border-radius: 2px 2px 5px 5px; background: #ff4d4f; pointer-events: none; }
+.pe-scrub-head::after { content: ""; position: absolute; left: 4px; top: 9px; width: 2px; height: 8px; background: #ff4d4f; }
+.pe-trans { position: relative; height: 44px; display: flex; align-items: center; justify-content: center; gap: 12px; }
+.pe-keys { position: absolute; left: 14px; font-size: 11px; color: #7d828e; }
+.pe-tbtn {
+  flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: transparent;
+  display: flex; align-items: center; justify-content: center;
+}
+.pe-tbtn svg { display: block; fill: #c9ccd3; }
+.pe-tbtn:hover:not(:disabled) svg { fill: #fff; }
+.pe-tbtn:disabled { opacity: 0.35; }
+.pe-tbtn.pe-step { width: 40px; border-radius: 7px; font: 600 11.5px ui-monospace, Consolas, monospace; color: #c9ccd3; }
+.pe-tbtn.pe-play { width: 30px; height: 30px; background: var(--accent); }
+.pe-tbtn.pe-play svg { fill: var(--accent-ink); }
+
+/* ── 도구 캡슐 — 그림·영상 바로 밑 가운데 한 줄(힉스필드 편집기처럼). 켜진 도구 = 라임 칸 ── */
+.pe-toolrow { display: flex; justify-content: center; margin-top: -2px; }
+.pe-dock {
+  position: relative; display: flex; align-items: center; gap: 2px; height: 44px; padding: 0 6px;
+  background: #1d1e22; border: 1px solid var(--border2); border-radius: 14px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+.pe-dock > button {
+  width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: #c9ccd3;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.pe-dock > button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); color: #fff; }
+.pe-dock > button.on, .pe-dock > button.on:hover { background: var(--accent); color: var(--accent-ink); }
+.pe-dock > button.on-soft { background: rgba(255, 255, 255, 0.07); }
+.pe-dock > button:disabled { opacity: 0.35; cursor: default; }
+.pe-div { width: 1px; height: 20px; background: var(--border2); margin: 0 4px; }
+.pe-dot { width: 15px; height: 15px; border-radius: 50%; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.28); }
+/* 색·굵기 작은 창 — 캡슐 위로 뜬다(그림 위에 겹쳐도 된다) */
+.pe-pop {
+  position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); z-index: 5;
+  display: flex; flex-direction: column; gap: 10px; padding: 10px 12px;
+  background: var(--panel); border: 1px solid var(--border2); border-radius: 12px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
+}
+.pe-pop-row { display: flex; align-items: center; gap: 8px; }
+.pe-pop .pe-swatch {
+  width: 20px; height: 20px; padding: 0; border-radius: 50%; border: 1px solid rgba(255, 255, 255, 0.28); cursor: pointer;
+}
+.pe-pop .pe-swatch.sel { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent); }
+.pe-pop-size { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.pe-pop-size span { min-width: 24px; font: 600 11.5px ui-monospace, Consolas, monospace; color: var(--text); }
+/* 굵기 슬라이더 — 얇은 트랙 + 라임 원형 썸 */
+.pe-pop-size input[type="range"] {
+  -webkit-appearance: none; appearance: none; width: 150px; height: 4px; border-radius: 2px;
+  background: rgba(255, 255, 255, 0.14); outline: none; cursor: pointer;
+}
+.pe-pop-size input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 6px rgba(var(--accent-rgb), 0.5);
+}
+
+/* ── 프롬프트·모델·Generate — 생성창 프롬프트 판 부품(.sl-*)을 쓰고, 창 안이라 그림자만 줄인다 ── */
+.pe-prompt.sl-panel { box-shadow: 0 12px 34px rgba(0, 0, 0, 0.45); flex: none; }
+.pe-prompt textarea.sl-prompt { font-size: 14px; line-height: 1.6; min-height: 52px; resize: none; }
+.pe-menu { width: 300px; max-width: none; }
+.pe-menu-small { min-width: 150px; }
+.pe-dd-item { display: flex; align-items: center; gap: 8px; width: 100%; }
+.pe-dd-item .pe-tag {
+  margin-left: auto; font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 999px;
+  color: var(--accent-ink); background: var(--accent);
+}

@@ -2,7 +2,7 @@
 // 펜·도형으로 그린 표시는 '이미지에 구워져' 모델에게 그대로 전송된다(웹 편집기의 실제 전송
 // 입력 이미지에 라임 동그라미가 박혀 있음을 확인). Seedream 이 낙서를 지시로 해석해 반영하고
 // 낙서 없는 전체 이미지를 돌려준다 — 마스크 파라미터도, 클라이언트 합성도 없다.
-// 결과가 원본에 충실한 건 Seedream 의 재현 성질 덕분(실측 ≈93% 픽셀 일치) → 모델 고정.
+// 결과가 원본에 충실한 건 Seedream 의 재현 성질 덕분(실측 ≈93% 픽셀 일치) → 기본 모델(2026-10-28 부터 다른 모델도 고른다).
 //
 // 구조:
 //  · 원본 fetchBlob→ImageBitmap (CDN 원본의 캔버스 오염 차단), 작업 해상도 상한 12MP
@@ -15,7 +15,7 @@
 //  · 결과 = 전체 이미지 표시(원본 비교 꾹) — 카드는 라이브러리에 그대로 남는다
 import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { api, type GenerationCreateBody } from "../../api";
 import { fetchBlob } from "../../lib/download";
 import { flashMsg } from "../../lib/flash";
@@ -25,16 +25,66 @@ import { isGenerationWorkspaceReady } from "../../lib/workspaceContext";
 import { holdUnload } from "../../lib/unloadGuard";
 import { sharedCostEstimate, useModels } from "../../lib/useModels";
 import { useModelPolicy } from "../../lib/modelPolicy";
-import { submitBlockMessage } from "../../lib/modelPolicyCore";
+import { modelAllowed, submitBlockMessage } from "../../lib/modelPolicyCore";
+import { formatCredits } from "../../lib/formatCredits";
+import { copyText } from "../../lib/flash";
+import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
+import { EDIT_FPS, timecode } from "../../lib/editTimeline";
 import type { Generation, WorkspaceContext } from "../../types";
 import { assetIdentity, type AssetReferenceIdentity } from "../../shared/contracts/assets";
 import { captureOperationContext, isOperationContextCurrent } from "../../app/operationContext";
-import { CloseIcon } from "../common/ViewIcons";
+import { CloseIcon, CopyIcon, EraserIcon, ImageEditIcon, VideoEditIcon } from "../common/ViewIcons";
+import { SpotlightOptionIcon } from "../spotlight/SpotlightOptionIcon";
 
 const MAX_WORK_PIXELS = 12_000_000; // 12MP — 주석/평면화 캔버스 동시 보유 상한
-// 편집 전용 고정 모델 — 웹 편집기와 동일(원본 재현 충실, 실측). 그룹 사용 모델 정책의 면제 목록과 같은 값이어야
+// 이미지 수정 기본 모델 — 웹 편집기와 동일(원본 재현 충실, 실측). 그룹 사용 모델 정책의 면제 목록과 같은 값이어야
 // 부분 수정 결과물의 재생성·복구가 막히지 않는다(modelPolicyCore.POLICY_EXEMPT_MODELS).
 const EDIT_MODEL = "seedream_v5_pro";
+// 수정 창에서 고를 수 있는 모델 — Jay 2026-10-28 유료 시험 뒤 결정(기억 project_mvhubs_edit_model_paid_test).
+// 묶음의 첫 모델이 기본. Draw to Edit(draw_to_video)는 CLI 1.2.3 로 접수가 안 돼 빠졌다 — CLI 가 되면 그때 넣는다.
+const EDIT_MODEL_GROUPS: Record<"image" | "video", { title: string; ids: string[] }[]> = {
+  image: [
+    { title: "Seedream", ids: [EDIT_MODEL] },
+    { title: "Nano Banana", ids: ["nano_banana_pro", "nano_banana_flash", "nano_banana_2_1"] },
+    { title: "GPT Image", ids: ["gpt_image_2", "gpt_image_2_5"] },
+  ],
+  video: [{ title: "그린 프레임 + 글로 지시", ids: ["kling_video_edit", "kling4_0", "seedance_2_5"] }],
+};
+const MODEL_LABELS: Record<string, string> = {
+  seedream_v5_pro: "Seedream 5.0 Pro", nano_banana_pro: "Nano Banana Pro", nano_banana_flash: "Nano Banana 2",
+  nano_banana_2_1: "Nano Banana 2.1", gpt_image_2: "GPT Image 2", gpt_image_2_5: "GPT Image 2.5",
+  kling_video_edit: "Kling 3.0 Omni Edit", kling4_0: "Kling 4.0 · 영상 편집", seedance_2_5: "Seedance 2.5 · 영상 편집",
+};
+// 영상 모델마다 늘 보내는 값과 칩으로 고르는 옵션 하나(10-28 유료 시험으로 확인한 계약). Kling 4.0 은 길이를 안 주면
+// 10초로 과금돼서 원본 길이를 함께 보낸다(아래 editParams).
+const VIDEO_EDIT_PARAMS: Record<string, { fixed: Record<string, string>; option: string }> = {
+  kling_video_edit: { fixed: {}, option: "mode" },
+  kling4_0: { fixed: { mode: "video-edit" }, option: "resolution" },
+  seedance_2_5: { fixed: { mode: "video_edit" }, option: "resolution" },
+};
+const modelLabel = (id: string) => MODEL_LABELS[id] ?? id;
+
+// 도구 캡슐의 선 아이콘(18px) — 이 창에서만 쓴다.
+const TOOL_ICON = {
+  viewBox: "0 0 24 24", width: 18, height: 18, fill: "none", stroke: "currentColor", strokeWidth: 2,
+  strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true,
+};
+const TOOL_ICONS = {
+  pen: <svg {...TOOL_ICON}><path d="M4 20h4L18.5 9.5a2.83 2.83 0 1 0-4-4L4 16v4" /><path d="M13.5 6.5l4 4" /></svg>,
+  erase: <svg {...TOOL_ICON}><path d="M19 20h-10.5l-4.21-4.3a1 1 0 0 1 0-1.41l10-10a1 1 0 0 1 1.41 0l5 5a1 1 0 0 1 0 1.41l-9.2 9.3" /><path d="M18 13.3l-6.3-6.3" /></svg>,
+  line: <svg {...TOOL_ICON}><path d="M5 19 19 5" /></svg>,
+  arrow: <svg {...TOOL_ICON}><path d="M5 19 19 5" /><path d="M9 5h10v10" /></svg>,
+  rect: <svg {...TOOL_ICON}><rect x="4" y="5" width="16" height="14" rx="2" /></svg>,
+  ellipse: <svg {...TOOL_ICON}><ellipse cx="12" cy="12" rx="8.5" ry="7" /></svg>,
+  undo: <svg {...TOOL_ICON}><path d="M9 14 4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" /></svg>,
+  redo: <svg {...TOOL_ICON}><path d="m15 14 5-5-5-5" /><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" /></svg>,
+  clear: <svg {...TOOL_ICON}><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4h6v3" /></svg>,
+};
+// [도구, 이름, 단축키] — 펜·지우개 다음에 도형 넷(옛 Shapes 하위 단추를 캡슐로 꺼냄). R 은 마지막 도형으로 돌아간다.
+const DRAW_TOOLS: ["pen" | "erase" | ShapeKind, string, string][] = [
+  ["pen", "펜", "D"], ["erase", "지우개", "E"],
+  ["line", "선", ""], ["arrow", "화살표", ""], ["rect", "사각형", ""], ["ellipse", "원", ""],
+];
 const POLL_MS = 2_000;
 const SLOW_AFTER_MS = 180_000; // 이후에도 계속 감시 — 실패 처리 아님(이중 과금 방지)
 
@@ -170,17 +220,19 @@ export function PartialEditModal({
   const [videoDuration, setVideoDuration] = useState(0);
   const [frameTime, setFrameTime] = useState(0);
   const [frameLoading, setFrameLoading] = useState(false);
+  const [playing, setPlaying] = useState(false);
   const frameTicket = useRef(0);
   const captureFrame = async (video: HTMLVideoElement, time: number) => {
     const ticket = ++frameTicket.current;
     setFrameLoading(true);
     try {
-      if (Math.abs(video.currentTime - time) > 0.001) {
+      // 끌어 훑는 중엔 seekTo 가 이미 그 시점으로 옮겨 두었다 — 옮기는 중(seeking)이면 끝나기만 기다린다.
+      if (Math.abs(video.currentTime - time) > 0.001 || video.seeking) {
         await new Promise<void>((resolve, reject) => {
           const timer = window.setTimeout(() => reject(new Error("영상 프레임 조회 시간이 초과되었습니다.")), 30_000);
           video.onseeked = () => { clearTimeout(timer); resolve(); };
           video.onerror = () => { clearTimeout(timer); reject(new Error("영상 프레임을 불러오지 못했습니다.")); };
-          video.currentTime = time;
+          if (Math.abs(video.currentTime - time) > 0.001) video.currentTime = time;
         });
       }
       const bmp = await createImageBitmap(video);
@@ -222,9 +274,17 @@ export function PartialEditModal({
       }
       try {
         if (isVideo) {
+          // 이 요소를 그대로 무대에 붙여 보인다(pe-vhost) — 끄는 동안 브라우저가 바로 그 장면을 그린다.
           const video = document.createElement("video");
           video.preload = "auto";
           video.muted = true;
+          video.playsInline = true;
+          video.className = "pe-video";
+          video.onended = () => {
+            setPlaying(false);
+            setFrameTime(video.currentTime);
+            void captureFrame(video, video.currentTime);
+          };
           sourceVideoRef.current = video;
           sourceVideoUrlRef.current = URL.createObjectURL(blob);
           await new Promise<void>((resolve, reject) => {
@@ -292,6 +352,22 @@ export function PartialEditModal({
 
   // ── 주석(펜·도형 → annot 캔버스, 표시 = 전송본) ──
   const [items, setItems] = useState<DrawItem[]>([]);
+  // 되돌린 획 — 다시(Ctrl+Shift+Z·Ctrl+Y)가 꺼낸다. 새 획을 그리거나 전체 지우면 비운다.
+  const [redo, setRedo] = useState<DrawItem[]>([]);
+  const undoStroke = () => {
+    if (!items.length) return;
+    setRedo([...redo, items[items.length - 1]]);
+    setItems(items.slice(0, -1));
+  };
+  const redoStroke = () => {
+    if (!redo.length) return;
+    setItems([...items, redo[redo.length - 1]]);
+    setRedo(redo.slice(0, -1));
+  };
+  const clearStrokes = () => {
+    setItems([]);
+    setRedo([]);
+  };
   // 도구·색은 마지막 사용값을 기억 — 프라이빗 모드 등 스토리지 차단 환경에서도 크래시 없이 기본값.
   const [tool, setTool] = useState<"pen" | "erase" | "shape">(() => {
     try {
@@ -389,6 +465,7 @@ export function PartialEditModal({
     if (stage !== "draw" || activePointerRef.current != null) return;
     const p = toWork(e);
     if (!p) return;
+    if (playing) seekTo(sourceVideoRef.current?.currentTime ?? frameTimeRef.current); // 재생 중이면 그 자리에 멈추고 그린다
     // 캔버스에 그리기 시작 = 그리기 모드 복귀 — 프롬프트 포커스를 풀어 단축키([ ]·D·E·R·
     // Ctrl+Z)가 돌아오게 한다(입력은 프롬프트를 다시 클릭해야 재개).
     const active = document.activeElement;
@@ -427,6 +504,7 @@ export function PartialEditModal({
       return;
     }
     setItems((prev) => [...prev, live]);
+    setRedo([]);
   };
   // 취소 경로(pointercancel·capture 강탈)는 그리다 만 것을 커밋하지 않고 버린다 —
   // 특히 중단된 도형이 엉뚱한 크기로 남는 것 방지(코덱스 WARN). 정상 pointerup 뒤에
@@ -438,28 +516,43 @@ export function PartialEditModal({
     renderAll(items);
   };
 
-  // ── 모델(Seedream 고정)·비율·견적 ──
+  // ── 모델·비율·옵션·견적 ──
   const modelPolicy = useModelPolicy();
   const openingContext = useRef(captureOperationContext(workspace));
   const openingWorkspace = useRef(JSON.stringify([workspace.scope, workspace.id]));
+  const modelGroups = EDIT_MODEL_GROUPS[mode];
   const m = useModels(setError, { allowed: modelPolicy.allowed, ready: false,
-    initialType: mode, initialModel: isVideo ? "draw_to_video" : EDIT_MODEL, costEnabled: false });
+    initialType: mode, initialModel: modelGroups[0].ids[0], costEnabled: false });
   const blockedMessage = submitBlockMessage(modelPolicy, m.model, editLabel);
+  const paramsReady = !m.paramsLoading && m.paramsModel === m.model && m.params.length > 0;
+  // 비율은 이미지 모델만 — 영상 편집은 원본 영상의 화면을 그대로 고친다(편집 모델에 비율을 주면 화면을 다시 짠다).
+  const aspectEnum = isVideo ? undefined : m.params.find((p) => p.name === "aspect_ratio")?.enum;
   const aspect = useMemo(() => {
-    if (!src || m.paramsModel !== m.model) return null;
-    return nearestAspect(m.params.find((p) => p.name === "aspect_ratio")?.enum, src.w, src.h);
-  }, [src, m.params, m.paramsModel, m.model]);
-  const resolutionOptions = m.params.find((p) => p.name === "resolution")?.enum ?? [];
-  const [resolution, setResolution] = useState("");
+    if (!src || !paramsReady) return null;
+    return nearestAspect(aspectEnum, src.w, src.h);
+  }, [src, paramsReady, aspectEnum]);
+  // 영상 모델의 옵션 칩 하나(Kling 3.0 Omni Edit = 품질, 그 밖 = 해상도). 모델이 바뀌면 그 모델의 기본값으로.
+  const optionName = isVideo ? VIDEO_EDIT_PARAMS[m.model]?.option ?? null : null;
+  const optionParam = optionName && paramsReady ? m.params.find((p) => p.name === optionName) : undefined;
+  // 목록은 내용으로 고정한다 — 배열이 렌더마다 새로 오면 견적 효과가 끝없이 다시 돈다
+  const optionKey = (optionParam?.enum ?? []).join("|");
+  const optionDefault = String(optionParam?.default ?? "");
+  const optionValues = useMemo(() => (optionKey ? optionKey.split("|") : []), [optionKey]);
+  const [option, setOption] = useState("");
   useEffect(() => {
-    if (!resolution && resolutionOptions.length) {
-      const defaultResolution = m.params.find((p) => p.name === "resolution")?.default;
-      setResolution(resolutionOptions.includes(String(defaultResolution)) ? String(defaultResolution) : resolutionOptions[0]);
-    }
-  }, [resolution, resolutionOptions, m.params]);
-  const editParams = useMemo(() => isVideo
-    ? { ...(aspect ? { aspect_ratio: aspect } : {}), duration: videoDuration, resolution }
-    : aspect ? { aspect_ratio: aspect } : {}, [isVideo, aspect, videoDuration, resolution]);
+    if (!optionValues.length || optionValues.includes(option)) return;
+    setOption(optionValues.includes(optionDefault) ? optionDefault : optionValues[0]);
+  }, [option, optionValues, optionDefault]);
+  // 이미지 모델은 2k 가 있으면 2k — 시험(10-28)과 같은 조건. 없는 모델은 모델 기본값.
+  const imageResolution = !isVideo && m.params.find((p) => p.name === "resolution")?.enum?.includes("2k") ? "2k" : null;
+  const editParams = useMemo(() => {
+    if (!isVideo) return { ...(aspect ? { aspect_ratio: aspect } : {}), ...(imageResolution ? { resolution: imageResolution } : {}) };
+    return {
+      ...VIDEO_EDIT_PARAMS[m.model]?.fixed,
+      ...(optionName && option ? { [optionName]: option } : {}),
+      ...(m.model === "kling4_0" ? { duration: Math.max(1, Math.round(videoDuration)) } : {}),
+    };
+  }, [isVideo, aspect, imageResolution, m.model, optionName, option, videoDuration]);
   const [cost, setCost] = useState<number | null>(null);
   const [successfulCostKey, setSuccessfulCostKey] = useState("");
   const [costLoading, setCostLoading] = useState(false);
@@ -468,7 +561,7 @@ export function PartialEditModal({
   useEffect(() => {
     const key = editCostKey;
     if (costSelection.current !== key) { costSelection.current = key; setCost(null); }
-    if (!m.model || m.paramsModel !== m.model || isVideo && (!videoDuration || !resolution)) {
+    if (!m.model || !paramsReady || isVideo && (!videoDuration || !!optionName && !optionValues.includes(option))) {
       setCostLoading(false);
       return;
     }
@@ -485,7 +578,15 @@ export function PartialEditModal({
     return () => {
       alive = false;
     };
-  }, [m.model, m.paramsModel, editParams, isVideo, videoDuration, resolution, editCostKey]);
+  }, [m.model, paramsReady, editParams, isVideo, videoDuration, optionName, optionValues, option, editCostKey]);
+  const costKnown = cost != null && (!isVideo || successfulCostKey === editCostKey);
+  // 모델·옵션 칩의 목록, 색·굵기 창 — 바깥을 누르면 닫는다(생성창 칩과 같다)
+  const [menu, setMenu] = useState<null | "model" | "option">(null);
+  const chipsRef = useRef<HTMLDivElement>(null);
+  useOutsideMouseDown(chipsRef, () => setMenu(null), menu !== null);
+  const [colorOpen, setColorOpen] = useState(false);
+  const dockRef = useRef<HTMLDivElement>(null);
+  useOutsideMouseDown(dockRef, () => setColorOpen(false), colorOpen);
 
   // ── 제출 + 폴링 ──
   const [prompt, setPrompt] = useState("");
@@ -509,19 +610,19 @@ export function PartialEditModal({
   }, [drafting]);
 
   const workspaceReady = isGenerationWorkspaceReady(workspace);
-  // aspect 필수 — 파라미터 로드 실패로 빈 스키마가 되면 기본 1:1 로 심하게 크롭된
-  // 유료 결과가 나온다(코덱스 WARN). 주석은 선택사항(프롬프트만으로도 편집 가능 — 웹과 동일).
+  // 스키마 필수 — 파라미터 로드 실패로 빈 스키마가 되면 기본 1:1 로 심하게 크롭된
+  // 유료 결과가 나온다(코덱스 WARN). 이미지는 비율도 필수. 주석은 선택사항(프롬프트만으로도 편집 가능 — 웹과 동일).
   const canSubmit =
     stage === "draw" &&
     !submitting &&
     !frameLoading &&
+    !playing &&
     !!src &&
     !!prompt.trim() &&
     !!m.model &&
-    !m.paramsLoading &&
-    m.paramsModel === m.model &&
-    !!aspect &&
-    (!isVideo || videoDuration > 0 && resolutionOptions.includes(resolution)) &&
+    paramsReady &&
+    (isVideo || !!aspect) &&
+    (!isVideo || videoDuration > 0 && (!optionName || optionValues.includes(option))) &&
     (!isVideo || successfulCostKey === editCostKey && cost !== null && Number.isFinite(cost)) &&
     !blockedMessage &&
     workspaceReady && openingWorkspace.current === JSON.stringify([workspace.scope, workspace.id]) &&
@@ -679,7 +780,10 @@ export function PartialEditModal({
     if (!isOperationContextCurrent(operation) || !isOperationContextCurrent(openingContext.current) ||
       openingWorkspace.current !== JSON.stringify([workspace.scope, workspace.id])) { setSubmitting(false); return; }
     const body: GenerationCreateBody = {
-      prompt: isVideo ? `${prompt.trim()}\n수정 그림의 원본 영상 시점: ${frameTime.toFixed(3)}초` : prompt.trim(),
+      // 영상 편집 모델은 그림이 몇 초 장면인지 받는 칸이 없다 — 글로 알려 주고, 표시가 결과에 그려지지 않게 한다(10-28 시험과 같은 안내).
+      prompt: isVideo
+        ? `${prompt.trim()}\n참고 이미지는 원본 영상 ${frameTime.toFixed(3)}초 장면에 고칠 곳을 표시한 그림입니다. 표시(선·도형)는 결과 영상에 넣지 마세요.`
+        : prompt.trim(),
       model: m.model,
       params: editParams,
       project_id: gen.project_id || undefined,
@@ -743,9 +847,81 @@ export function PartialEditModal({
     return () => window.removeEventListener("blur", reset);
   }, []);
 
+  // ── 프레임 띠 — 편집 탭 뷰어와 같은 조작(빨간 재생헤드를 끌어 훑기·−1f/+1f·재생, ←→ Space Home End) ──
+  const totalFrames = Math.max(1, Math.round(videoDuration * EDIT_FPS));
+  const frameLocked = items.length > 0; // 그린 표시는 그 장면에 붙는다 — 다 지워야 다시 움직인다
+  const frameTimeRef = useRef(0);
+  const tcRef = useRef<HTMLSpanElement>(null);
+  const frameNoRef = useRef<HTMLElement>(null);
+  const headRef = useRef<HTMLDivElement>(null);
+  const fillRef = useRef<HTMLDivElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+  const scrubbingRef = useRef(false);
+  const captureTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(captureTimer.current), []);
+  // 띠의 글자·재생헤드는 상태 없이 바로 그린다 — 끄는 동안·재생 중 매 프레임 창 전체를 다시 그리지 않게
+  const paintTime = (t: number) => {
+    frameTimeRef.current = t;
+    if (tcRef.current) tcRef.current.textContent = timecode(t);
+    if (frameNoRef.current) frameNoRef.current.textContent = String(Math.min(totalFrames, Math.round(t * EDIT_FPS) + 1));
+    const at = `${videoDuration > 0 ? Math.min(100, Math.max(0, (t / videoDuration) * 100)) : 0}%`;
+    if (headRef.current) headRef.current.style.left = at;
+    if (fillRef.current) fillRef.current.style.width = at;
+  };
+  useEffect(() => paintTime(frameTime), [frameTime, videoDuration]); // eslint-disable-line react-hooks/exhaustive-deps
+  // commit=false 는 끄는 중 — 화면만 옮기고, 놓을 때(commit) 그 장면을 그림으로 뜬다(평면화·비율용).
+  const seekTo = (time: number, commit = true) => {
+    const video = sourceVideoRef.current;
+    if (!video || frameLocked || stage !== "draw") return;
+    if (!video.paused) video.pause();
+    setPlaying(false);
+    const t = Math.min(Math.max(0, time), Math.max(0, videoDuration - 1 / EDIT_FPS));
+    video.currentTime = t;
+    paintTime(t);
+    if (!commit) return;
+    setFrameTime(t);
+    ++frameTicket.current; // 앞서 뜨던 장면은 버린다
+    setFrameLoading(true);
+    window.clearTimeout(captureTimer.current);
+    captureTimer.current = window.setTimeout(() => void captureFrame(video, t), 120);
+  };
+  const togglePlay = () => {
+    const video = sourceVideoRef.current;
+    if (!video || frameLocked || stage !== "draw") return;
+    if (!video.paused) {
+      seekTo(video.currentTime); // 멈춘 자리를 확정하고 그 장면을 뜬다
+      return;
+    }
+    if (video.currentTime >= videoDuration - 1 / EDIT_FPS) video.currentTime = 0;
+    setPlaying(true);
+    void video.play().catch(() => setPlaying(false));
+  };
+  useEffect(() => {
+    const video = sourceVideoRef.current;
+    if (!playing || !video) return;
+    let raf = 0;
+    const paint = () => paintTime(video.currentTime);
+    const loop = () => {
+      paint();
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    // 창이 뒤에 있으면 rAF 가 멈춘다 — 영상 자체의 시간 알림으로도 띠를 따라가게(초당 몇 번)
+    video.addEventListener("timeupdate", paint);
+    return () => {
+      cancelAnimationFrame(raf);
+      video.removeEventListener("timeupdate", paint);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing]);
+  const scrubTime = (e: React.PointerEvent) => {
+    const box = trackRef.current?.getBoundingClientRect();
+    return box && box.width ? videoDuration * Math.min(1, Math.max(0, (e.clientX - box.left) / box.width)) : null;
+  };
+
   // 키보드 — Esc 닫기(제출 요청 중·감시 중 금지: 제출 중 닫고 다시 열면 새 idempotency
-  // key 로 유료 요청이 이중 생성, 코덱스 BLOCK) + 그리기 단축키(Ctrl+Z 실행취소,
-  // [ ] 크기, D 펜 / E 지우개 / R 도형 — 웹 편집기와 동일 키).
+  // key 로 유료 요청이 이중 생성, 코덱스 BLOCK) + 그리기 단축키(Ctrl+Z 실행취소·Ctrl+Shift+Z/Ctrl+Y 다시,
+  // [ ] 크기, D 펜 / E 지우개 / R 도형 — 웹 편집기와 동일 키) + 영상 프레임(←→ 한 프레임·Space 재생·Home End).
   // 입력창에 포커스가 있으면 그리기 단축키는 양보한다(텍스트 undo·괄호 입력 보존).
   const closable = stage !== "wait" && !submitting;
   useEffect(() => {
@@ -759,11 +935,24 @@ export function PartialEditModal({
       // 주석 한 획을 지웠는데 캔버스의 직전 편집까지 같이 취소됐다(코덱스 레인B P1).
       // capture 단계 리스너라 stopPropagation 이 같은 window 의 버블 리스너를 막는다.
       // 입력창 포커스는 위에서 먼저 양보하므로 텍스트 undo·괄호 입력은 그대로다.
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+      const k = e.key.toLowerCase();
+      if ((e.ctrlKey || e.metaKey) && (k === "z" || k === "y")) {
         e.preventDefault();
         e.stopPropagation();
-        // 다시 하기(Ctrl+Shift+Z)는 이 창에 없다 — 받지 않는다. Shift 를 가리지 않아, 다시 하려던 키가 획을 하나 더 지웠다(조작 규칙 44).
-        if (!e.shiftKey && !e.altKey) setItems((p) => p.slice(0, -1));
+        // Shift 를 가려 받는다 — 전엔 다시 하려던 Ctrl+Shift+Z 가 획을 하나 더 지웠다(조작 규칙 44).
+        if (!e.altKey) (k === "y" || e.shiftKey ? redoStroke : undoStroke)();
+      } else if (isVideo && plain && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        e.preventDefault();
+        e.stopPropagation();
+        seekTo(frameTimeRef.current + (e.key === "ArrowRight" ? 1 : -1) / EDIT_FPS);
+      } else if (isVideo && plain && e.key === " ") {
+        e.preventDefault();
+        e.stopPropagation();
+        togglePlay();
+      } else if (isVideo && plain && (e.key === "Home" || e.key === "End")) {
+        e.preventDefault();
+        e.stopPropagation();
+        seekTo(e.key === "Home" ? 0 : videoDuration);
       } else if (e.key === "[") {
         e.stopPropagation();
         setBrushSize((s) => Math.max(4, s - 8));
@@ -783,7 +972,9 @@ export function PartialEditModal({
     };
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
-  }, [stage]);
+    // 획·다시 목록·재생 상태가 바뀌면 새 값으로 다시 건다(되돌리기·다시·프레임 이동이 지금 값을 쓰게)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage, items, redo, playing, videoDuration]);
   // 닫을 수 없는 동안(제출 요청 중·감시 중)에도 Esc 는 이 창이 갖는다 — 뒤 화면으로 새지 않는다.
   useEscapeClose(
     () => {
@@ -798,22 +989,22 @@ export function PartialEditModal({
   useModalFocus(modalRef);
 
   const slow = elapsed > SLOW_AFTER_MS;
-  // 비율 보존 무대 크기 — 높이 상한(62vh)을 비율로 폭 상한에 옮겨, 어느 축이 클램프돼도
-  // 상자 비율 = 이미지 비율(주석 좌표 매핑의 전제)이 유지된다.
+  // 비율 보존 무대 크기 — 높이 상한(62vh, 영상은 위아래 띠 자리만큼 50vh)을 비율로 폭 상한에 옮겨, 어느 축이
+  // 클램프돼도 상자 비율 = 이미지 비율(주석 좌표 매핑의 전제)이 유지된다. 50vh = 1500×980 창에서 Generate 까지 한 화면(10-28 실측).
   const stageStyle = src
     ? {
         aspectRatio: `${src.w} / ${src.h}`,
         width: "min(86vw, 1380px)",
-        maxWidth: `calc(62vh * ${(src.w / src.h).toFixed(6)})`,
+        maxWidth: `calc(${isVideo ? 50 : 62}vh * ${(src.w / src.h).toFixed(6)})`,
       }
     : undefined;
   return (
     <div className="partial-edit-backdrop">
       <div ref={modalRef} className="partial-edit-modal" role="dialog" aria-modal="true" aria-label={editLabel}>
         <header className="partial-edit-head">
-          <span className="partial-edit-title">🖌 {editLabel}</span>
+          <span className="partial-edit-title">{isVideo ? <VideoEditIcon /> : <ImageEditIcon />}{editLabel}</span>
           <span className="partial-edit-sub">
-            펜·도형으로 표시하고 지시 — 그린 표시는 모델에게 그대로 보입니다
+            {isVideo ? "고칠 프레임을 고르고 펜·도형으로 표시한 뒤 지시" : "펜·도형으로 표시하고 지시"} — 그린 표시는 모델에게 그대로 보입니다
           </span>
           {closable && (
             <button className="assets-x" onClick={onClose} title="닫기">
@@ -826,26 +1017,25 @@ export function PartialEditModal({
         {note && <div className="partial-edit-note">{note}</div>}
 
         {stage === "load" && <div className="partial-edit-loading">원본 불러오는 중…</div>}
-        {isVideo && stage === "draw" && <div className="partial-edit-frame-controls">
-          <label>수정할 프레임 {frameTime.toFixed(2)}초 / {videoDuration.toFixed(2)}초
-            <input type="range" aria-label="수정할 영상 시점" min={0} max={Math.max(0, videoDuration - 0.001)} step={0.01}
-              value={frameTime} disabled={frameLoading || submitting || items.length > 0}
-              onChange={(e) => {
-                const time = Number(e.target.value);
-                setFrameTime(time);
-                if (sourceVideoRef.current) void captureFrame(sourceVideoRef.current, time);
-              }} />
-          </label>
-          <label>해상도 <select aria-label="영상 수정 해상도" value={resolution} onChange={(e) => setResolution(e.target.value)}>
-            {resolution && !resolutionOptions.includes(resolution) && <option value={resolution}>{resolution} (확인 필요)</option>}
-            {resolutionOptions.map((value) => <option key={value} value={value}>{value}</option>)}
-          </select></label>
-        </div>}
-
         {(stage === "draw" || stage === "wait") && src && (
           <>
+            <div className={isVideo ? "pe-viewer" : "pe-plain"}>
+            {isVideo && (
+              <div className="pe-vtop">
+                <span className="pe-vtc" ref={tcRef}>{timecode(frameTime)}</span>
+                <span className="pe-vlabel">수정할 프레임 <b ref={frameNoRef}>{Math.min(totalFrames, Math.round(frameTime * EDIT_FPS) + 1)}</b> / {totalFrames}</span>
+                {frameLocked && <span className="pe-lock">🔒 그린 표시가 있어 프레임 고정 — 전체 지우기로 풀림</span>}
+                <span className="pe-vtc pe-vtotal">{timecode(videoDuration)}</span>
+              </div>
+            )}
             <div className="partial-edit-stagebox" style={stageStyle}>
-              <img src={srcUrlRef.current} alt="" draggable={false} />
+              {isVideo ? (
+                // 원본 영상 요소를 그대로 붙인다 — 끄는 동안 브라우저가 바로 그 장면을 그린다(그림 뜨기는 멈춘 뒤에만)
+                <div className="pe-vhost" ref={(el) => {
+                  const video = sourceVideoRef.current;
+                  if (el && video && video.parentElement !== el) el.appendChild(video);
+                }} />
+              ) : <img src={srcUrlRef.current} alt="" draggable={false} />}
               <canvas
                 ref={(el) => {
                   annotRef.current = el;
@@ -893,117 +1083,227 @@ export function PartialEditModal({
                 </div>
               )}
             </div>
+            {isVideo && (
+              <div className="pe-vbot">
+                {/* 타임바 — 누르거나 끌어서 훑는다(편집 탭 뷰어와 같은 모양). 끄는 동안은 영상만 옮기고, 놓으면 그 장면을 뜬다. */}
+                <div className="pe-scrub" role="slider" aria-label="수정할 영상 시점" aria-valuemin={0}
+                  aria-valuemax={Number(videoDuration.toFixed(3))} aria-valuenow={Number(frameTime.toFixed(3))}
+                  aria-disabled={frameLocked || stage !== "draw"}
+                  onPointerDown={(e) => {
+                    if (e.button !== 0 || frameLocked || stage !== "draw") return;
+                    scrubbingRef.current = true;
+                    e.currentTarget.setPointerCapture?.(e.pointerId);
+                    const time = scrubTime(e);
+                    if (time != null) seekTo(time, false);
+                  }}
+                  onPointerMove={(e) => {
+                    if (!scrubbingRef.current) return;
+                    const time = scrubTime(e);
+                    if (time != null) seekTo(time, false);
+                  }}
+                  onPointerUp={() => {
+                    if (!scrubbingRef.current) return;
+                    scrubbingRef.current = false;
+                    seekTo(frameTimeRef.current);
+                  }}
+                  onPointerCancel={() => {
+                    if (!scrubbingRef.current) return;
+                    scrubbingRef.current = false;
+                    seekTo(frameTimeRef.current);
+                  }}>
+                  <div className="pe-scrub-track" ref={trackRef}>
+                    <div className="pe-scrub-fill" ref={fillRef} />
+                    <div className="pe-scrub-head" ref={headRef} />
+                  </div>
+                </div>
+                <div className="pe-trans">
+                  <span className="pe-keys">← → 한 프레임 · Space 재생</span>
+                  <button type="button" className="pe-tbtn" title="처음으로 (Home)" aria-label="처음으로" disabled={frameLocked || stage !== "draw"}
+                    onClick={() => seekTo(0)}>
+                    <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><rect x="1" y="1" width="2" height="12" /><path d="M15 1v12L5 7z" /></svg>
+                  </button>
+                  <button type="button" className="pe-tbtn pe-step" title="한 프레임 뒤로 (←)" aria-label="한 프레임 뒤로" disabled={frameLocked || stage !== "draw"}
+                    onClick={() => seekTo(frameTimeRef.current - 1 / EDIT_FPS)}>−1f</button>
+                  <button type="button" className="pe-tbtn pe-play" title="재생/정지 (Space)" aria-label="재생/정지" disabled={frameLocked || stage !== "draw"}
+                    onClick={togglePlay}>
+                    {playing
+                      ? <svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"><rect x="1.5" y="1" width="3.2" height="12" /><rect x="7.3" y="1" width="3.2" height="12" /></svg>
+                      : <svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"><path d="M2 1v12l9-6z" /></svg>}
+                  </button>
+                  <button type="button" className="pe-tbtn pe-step" title="한 프레임 앞으로 (→)" aria-label="한 프레임 앞으로" disabled={frameLocked || stage !== "draw"}
+                    onClick={() => seekTo(frameTimeRef.current + 1 / EDIT_FPS)}>+1f</button>
+                  <button type="button" className="pe-tbtn" title="끝으로 (End)" aria-label="끝으로" disabled={frameLocked || stage !== "draw"}
+                    onClick={() => seekTo(videoDuration)}>
+                    <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><rect x="13" y="1" width="2" height="12" /><path d="M1 1v12l10-6z" /></svg>
+                  </button>
+                </div>
+              </div>
+            )}
+            </div>
             {stage === "draw" && (
               <>
-                {/* 옵션 열(도구 버튼들 바로 위, 우측 정렬) — [도형 종류] [컬러] [Size].
-                    지우개일 땐 색이 안 쓰이므로 Size 만 남는다. */}
-                <div className="partial-edit-subtools">
-                  <span className="partial-edit-toolspacer" />
-                  {tool === "shape" && (
-                    <>
-                      {(
-                        [
-                          ["line", "─", "선"],
-                          ["arrow", "→", "화살표"],
-                          ["rect", "▢", "사각형"],
-                          ["ellipse", "◯", "원"],
-                        ] as [ShapeKind, string, string][]
-                      ).map(([kind, icon, label]) => (
-                        <button
-                          key={kind}
-                          className={shapeKind === kind ? "on" : ""}
-                          title={label}
-                          onClick={() => setShapeKind(kind)}
-                        >
-                          {icon}
-                        </button>
-                      ))}
-                      <span className="partial-edit-subdiv" />
-                    </>
-                  )}
-                  {tool !== "erase" &&
-                    COLORS.map((c) => (
-                      <button
-                        key={c}
-                        className={"partial-edit-swatch" + (color === c ? " sel" : "")}
-                        style={{ background: c }}
-                        title={c}
-                        onClick={() => setColor(c)}
-                      />
-                    ))}
-                  <label title="단축키 [ ] 로도 조절">
-                    Size
-                    <input
-                      type="range"
-                      min={4}
-                      max={120}
-                      value={brushSize}
-                      onChange={(e) => setBrushSize(Number(e.target.value))}
-                    />
-                  </label>
+                {/* 도구 — 그림·영상 바로 밑 가운데 한 줄 캡슐(힉스필드 편집기처럼, Jay 2026-10-28 시안 4차).
+                    색·굵기는 색 단추를 눌러 여는 작은 창에. */}
+                <div className="pe-toolrow">
+                  <div className="pe-dock" ref={dockRef}>
+                    {DRAW_TOOLS.map(([key, label, keyHint]) => {
+                      const on = key === "pen" || key === "erase" ? tool === key : tool === "shape" && shapeKind === key;
+                      return (
+                        <Fragment key={key}>
+                          {key === "line" && <span className="pe-div" />}
+                          <button type="button" className={on ? "on" : ""} title={`${label}${keyHint ? ` (${keyHint})` : ""}`} aria-label={label}
+                            aria-pressed={on}
+                            onClick={() => {
+                              if (key === "pen" || key === "erase") setTool(key);
+                              else { setTool("shape"); setShapeKind(key); }
+                            }}>
+                            {TOOL_ICONS[key]}
+                          </button>
+                        </Fragment>
+                      );
+                    })}
+                    <span className="pe-div" />
+                    <button type="button" className={colorOpen ? "on-soft" : ""} title="색·굵기 (굵기는 [ ] 로도)" aria-label="색·굵기"
+                      aria-expanded={colorOpen} onClick={() => setColorOpen(!colorOpen)}>
+                      <span className="pe-dot" style={{ background: color }} />
+                    </button>
+                    <span className="pe-div" />
+                    <button type="button" title="되돌리기 (Ctrl+Z)" aria-label="되돌리기" disabled={!items.length} onClick={undoStroke}>{TOOL_ICONS.undo}</button>
+                    <button type="button" title="다시 (Ctrl+Shift+Z)" aria-label="다시" disabled={!redo.length} onClick={redoStroke}>{TOOL_ICONS.redo}</button>
+                    <button type="button" title="전체 지우기" aria-label="전체 지우기" disabled={!items.length} onClick={clearStrokes}>{TOOL_ICONS.clear}</button>
+                    {colorOpen && (
+                      <div className="pe-pop">
+                        <div className="pe-pop-row">
+                          {COLORS.map((c) => (
+                            <button key={c} type="button" className={"pe-swatch" + (color === c ? " sel" : "")} style={{ background: c }}
+                              title={c} aria-label={`색 ${c}`} aria-pressed={color === c} onClick={() => setColor(c)} />
+                          ))}
+                        </div>
+                        <label className="pe-pop-size">
+                          굵기
+                          <input type="range" min={4} max={120} value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))} />
+                          <span>{brushSize}</span>
+                        </label>
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div className="partial-edit-tools">
-                  <button disabled={!items.length} onClick={() => setItems([])}>
-                    전체 지우기
-                  </button>
-                  <span className="partial-edit-toolspacer" />
-                  <button
-                    className={tool === "pen" ? "on" : ""}
-                    title="Pen (D) · 크기 [ ] · 실행취소 Ctrl+Z"
-                    onClick={() => setTool("pen")}
-                  >
-                    Pen
-                  </button>
-                  <button
-                    className={tool === "erase" ? "on" : ""}
-                    title="Eraser (E)"
-                    onClick={() => setTool("erase")}
-                  >
-                    Eraser
-                  </button>
-                  <button
-                    className={tool === "shape" ? "on" : ""}
-                    title="Shapes (R)"
-                    onClick={() => setTool("shape")}
-                  >
-                    Shapes
-                  </button>
-                </div>
-                {/* 알약형 프롬프트 바 — 웹 편집기와 같은 한 줄 입력 + 우측 크레딧·라임 실행 버튼.
+                {/* 프롬프트·모델·Generate — 생성창 프롬프트 판과 같은 부품(.sl-*, prompt-dock.css 는 전역).
                     autoFocus 없음: 기본은 그리기 모드(단축키 유지), 입력은 클릭해야 시작 */}
-                <div className="partial-edit-pill">
-                  <textarea
-                    rows={1}
-                    placeholder={`${isVideo ? "영상을" : "이미지를"} 어떻게 수정할까요? — 클릭해서 입력`}
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
-                    onKeyDown={(e) => {
-                      // IME 조합 중 Enter(한글 마지막 글자 확정)는 제출이 아니다 — 미완성
-                      // 프롬프트로 유료 생성이 시작된다(코덱스 BLOCK). keyCode 229 = Chromium IME.
-                      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        void submit();
-                      }
-                    }}
-                  />
-                  <span className="partial-edit-cost">
-                    {cost != null && (!isVideo || successfulCostKey === editCostKey) ? `${cost} cr` : costLoading ? "견적 조회 중…" : "견적 확인 안 됨"}
-                  </span>
-                  <button
-                    className="partial-edit-gen"
-                    disabled={!canSubmit}
-                    onClick={submit}
-                    title={cost != null && (!isVideo || successfulCostKey === editCostKey) ? `${editLabel} — 예상 ${cost} 크레딧` : `${editLabel} — 견적 확인 안 됨`}
-                  >
-                    {submitting ? "…" : "✦"}
-                  </button>
+                <div className="sl-panel pe-prompt">
+                  <div className="sl-prompt-row">
+                    <textarea
+                      className="sl-prompt"
+                      rows={2}
+                      aria-label="수정 지시"
+                      placeholder={`${isVideo ? "영상을" : "이미지를"} 어떻게 수정할까요? — 클릭해서 입력`}
+                      value={prompt}
+                      onChange={(e) => setPrompt(e.target.value)}
+                      onKeyDown={(e) => {
+                        // IME 조합 중 Enter(한글 마지막 글자 확정)는 제출이 아니다 — 미완성
+                        // 프롬프트로 유료 생성이 시작된다(코덱스 BLOCK). keyCode 229 = Chromium IME.
+                        if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          void submit();
+                        }
+                      }}
+                    />
+                    <button type="button" className="sl-prompt-clear" title="프롬프트 비우기" aria-label="프롬프트 비우기"
+                      onMouseDown={(e) => e.preventDefault()} onClick={() => setPrompt("")}>
+                      <EraserIcon />
+                    </button>
+                    <button type="button" className="sl-copy-btn" title="프롬프트 전체 복사" aria-label="프롬프트 전체 복사"
+                      onMouseDown={(e) => e.preventDefault()} onClick={() => void copyText(prompt)}>
+                      <CopyIcon />
+                    </button>
+                  </div>
+                  <div className="sl-controls" ref={chipsRef}>
+                    <div className="sl-left">
+                      <div className="sl-chip-wrap">
+                        <button type="button" className={"sl-chip" + (menu === "model" ? " active" : "")} title="수정 모델" aria-label="수정 모델"
+                          aria-haspopup="listbox" aria-expanded={menu === "model"} disabled={submitting}
+                          onClick={() => setMenu(menu === "model" ? null : "model")}>
+                          <span className="sl-dot" />
+                          <span className="sl-chip-label">{modelLabel(m.model)}</span>
+                          <span className="sl-caret">›</span>
+                        </button>
+                        {menu === "model" && (
+                          <div className="sl-dropdown pe-menu" role="listbox" aria-label="수정 모델">
+                            <div className="sl-dd-scroll">
+                              {modelGroups.map((group) => (
+                                <Fragment key={group.title}>
+                                  <div className="sl-dd-title">{group.title}</div>
+                                  {group.ids.map((id) => {
+                                    const allowed = modelAllowed(modelPolicy, id);
+                                    return (
+                                      <button key={id} type="button" role="option" aria-selected={id === m.model} disabled={!allowed}
+                                        className={"sl-dd-item pe-dd-item" + (id === m.model ? " sel" : "") + (allowed ? "" : " blocked")}
+                                        onClick={() => { m.setModel(id); setMenu(null); }}>
+                                        {modelLabel(id)}
+                                        {id === modelGroups[0].ids[0] && <span className="pe-tag">기본</span>}
+                                        {!allowed && <span className="sl-dd-lock"> 🔒</span>}
+                                      </button>
+                                    );
+                                  })}
+                                </Fragment>
+                              ))}
+                            </div>
+                            {modelGroups.some((group) => group.ids.some((id) => !modelAllowed(modelPolicy, id))) && (
+                              <div className="sl-dd-note">🔒 = 이 그룹의 '사용 모델'에 없음</div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      {optionName && optionValues.length > 0 && (
+                        <div className="sl-chip-wrap">
+                          <button type="button" className={"sl-chip sl-opt-chip" + (menu === "option" ? " active" : "")}
+                            title={optionName === "mode" ? "영상 수정 품질" : "영상 수정 해상도"} aria-label={optionName === "mode" ? "영상 수정 품질" : "영상 수정 해상도"}
+                            aria-haspopup="listbox" aria-expanded={menu === "option"} disabled={submitting}
+                            onClick={() => setMenu(menu === "option" ? null : "option")}>
+                            <span className="sl-opt-ic"><SpotlightOptionIcon name="resolution" /></span>
+                            <span>{option}</span>
+                            <span className="sl-caret">›</span>
+                          </button>
+                          {menu === "option" && (
+                            <div className="sl-dropdown pe-menu-small" role="listbox" aria-label={optionName === "mode" ? "영상 수정 품질" : "영상 수정 해상도"}>
+                              <div className="sl-dd-scroll">
+                                {optionValues.map((value) => (
+                                  <button key={value} type="button" role="option" aria-selected={value === option}
+                                    className={"sl-dd-item" + (value === option ? " sel" : "")}
+                                    onClick={() => { setOption(value); setMenu(null); }}>
+                                    {value}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="sl-gen partial-edit-gen"
+                      disabled={!canSubmit}
+                      onClick={submit}
+                      title={costKnown ? `${editLabel} — 예상 ${formatCredits(cost!)} 크레딧` : `${editLabel} — 견적 확인 안 됨`}
+                    >
+                      {submitting ? "보내는 중…" : "Generate"} <span className="sl-sparkle">✦</span>
+                      {costKnown ? <span className="sl-cost partial-edit-cost">{formatCredits(cost!)}</span>
+                        : costLoading ? <span className="sl-cost loading partial-edit-cost">…</span> : null}
+                    </button>
+                  </div>
                 </div>
+                {!costKnown && !costLoading && paramsReady && (
+                  <div className="partial-edit-hint">
+                    견적 확인 안 됨{isVideo ? " — 영상은 견적이 나와야 생성할 수 있습니다." : ""}
+                  </div>
+                )}
                 {!workspaceReady && (
                   <div className="partial-edit-hint">워크스페이스 확인 후 생성할 수 있습니다.</div>
                 )}
                 {blockedMessage && <div className="partial-edit-hint">{blockedMessage}</div>}
-                {m.paramsModel === m.model && !m.paramsLoading && !aspect && (
+                {m.paramsModel === m.model && !m.paramsLoading && (!m.params.length || !isVideo && !aspect) && (
                   <div className="partial-edit-hint">
                     모델 파라미터를 불러오지 못해 생성할 수 없습니다 — 다시 열어보세요.
                   </div>
