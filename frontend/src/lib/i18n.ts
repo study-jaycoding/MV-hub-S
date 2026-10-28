@@ -996,6 +996,11 @@ const EN: Record<string, string> = {
   "요청한 작업에 대한 접근이 거부되었습니다.": "Access to the requested operation was denied.",
   "선택한 Higgsfield 계정의 워크스페이스 접근 권한과 역할을 관리자에게 확인하세요.":
     "Ask your admin to check the selected Higgsfield account's workspace access and role.",
+  "Seedance 오디오 레퍼런스 규칙": "Seedance audio reference rule",
+  "Seedance 2.0·Mini 는 오디오만 넣거나 오디오를 4개 이상 넣으면 받지 않습니다. 힉스필드가 작업을 만들기 전에 거부한 것으로 보입니다.":
+    "Seedance 2.0 and Mini reject audio-only references or more than 3 audio references. Higgsfield appears to have rejected it before creating a job.",
+  "이미지·영상 레퍼런스를 함께 넣거나 오디오를 3개 이하로 줄여 새로 생성하세요.":
+    "Add an image or video reference, or reduce audio to 3 or fewer, and create a new generation.",
   "입력값 확인": "Check inputs",
   "입력값 또는 레퍼런스를 처리하지 못했습니다.": "An input or reference could not be processed.",
   "오류 원문을 참고해 생성 설정과 레퍼런스 파일을 확인하세요.":

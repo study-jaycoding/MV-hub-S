@@ -49,7 +49,9 @@ from ..models import (
 )
 from ..services.agent_signals import agent_signals
 from ..services import cli_bridge
-from ..models import AUDIO_MODELS_V1, MEDIA_V2_MODELS, SEEDANCE_AUDIO_LIMITED_MODELS, VIDEO_VOICE_MODELS
+from ..models import (
+    AUDIO_MODELS_V1, MEDIA_V2_MODELS, SEEDANCE_AUDIO_LIMITED_MODELS, VIDEO_VOICE_MODELS, seedance_audio_reference_error,
+)
 from ..services.seedance_draft import DraftFinishConflict, finish_params, fresh_params
 from ..services.operational_logging import log_event
 from ..services.release_update import update_in_progress
@@ -366,6 +368,11 @@ async def create_gen_request(body: GenRequestIn, request: Request):
         recipe = await asyncio.to_thread(repo.gen_recipe, body.source_gen_id)
         media_model = reg.model or (recipe or {}).get("model")
         if media_model in MEDIA_V2_MODELS | AUDIO_MODELS_V1 | VIDEO_VOICE_MODELS | SEEDANCE_AUDIO_LIMITED_MODELS:
+            # 원본 카드의 레시피로 검사한다 — 요청자 기준 최종 레시피와 다를 수 있는 한계는 기록(Jay 10-28, G 4차 P3).
+            seedance_error = seedance_audio_reference_error(media_model, (recipe or {}).get("references") or [])
+            if seedance_error:
+                raise HTTPException(422, f"원본 카드의 레퍼런스로는 다시 생성할 수 없습니다. {seedance_error} "
+                                         "레퍼런스를 다시 넣어 새로 생성하세요.", headers=dict(NOT_STARTED))
             try:
                 await cli_bridge.validate_media_submission(media_model, reg.prompt or (recipe or {}).get("prompt", ""),
                                                            (recipe or {}).get("params") or {}, (recipe or {}).get("references") or [])

@@ -103,7 +103,40 @@ describe("영어로 바꾸면 상태 문구도 영어로 나온다", () => {
 
 describe("오류 원인 안내는 상태를 바꾸지 않고 필요한 카드에만 표시한다", () => {
   const creditError = "CLI 실패: Error: You've reached your monthly workspace group credit limit. Ask your workspace admin to increase the group limit or wait until it resets. — cmd: generate create seedance_2_5 --mode omni_reference";
+  // 서버가 '제출 확인 필요'로 저장하는 모양 그대로 — 진단 안의 줄바꿈은 서버가 지워 "end_imageHint" 로 붙는다(repo/gen_requests.py).
+  //  CLI 원문은 2026-10-28 견적 실측(Mini 오디오만 → exit 4)과 `model get seedance_2_0_mini` rules.
+  const seedanceAudioError =
+    "HF 확인 필요 — 외부 제출 여부가 불명확하여 자동 재생성을 차단했습니다\n제출 진단: CLI 실패: Error: audio_references require at least one image, video, start_image, or end_imageHint: Run: higgsfield model get seedance_2_0_mini — cmd: generate create seedance_2_0_mini --audio-references 11111111-1111-1111-1111-111111111111";
+  const seedanceAudioLimitError = seedanceAudioError.replace(
+    "audio_references require at least one image, video, start_image, or end_image",
+    "at most 3 audio_references are allowed",
+  );
   afterEach(() => setLang("ko"));
+
+  it("Seedance 오디오 규칙 거부(CLI 원문)는 원인과 새로 만드는 방법을 한국어로 안내한다", () => {
+    for (const error of [seedanceAudioError, seedanceAudioLimitError]) {
+      const issue = generationIssueFor("running", error, "recovery_required");
+      expect(issue?.title, error).toBe("Seedance 오디오 레퍼런스 규칙");
+      expect(issue?.detail).toContain("오디오만");
+      expect(issue?.action).toContain("3개 이하");
+      expect(generationIssueFor("failed", error)?.title).toBe("Seedance 오디오 레퍼런스 규칙");
+      expect(generationStatusLabelFor("running", error, "recovery_required")).toBe("Seedance 오디오 레퍼런스 규칙");
+      const title = generationStatusTitle("running", error, "recovery_required");
+      expect(title).toContain("Seedance 오디오 레퍼런스 규칙:");
+      expect(title).toContain("자동 재실행 안 함 · 제출 확인 필요");
+      expect(title).toContain(error);
+    }
+  });
+
+  it("다른 오류 글·명령 인자 속 같은 글·진행 중 카드는 Seedance 규칙으로 안내하지 않는다", () => {
+    // grok_video_v15 의 비슷한 규칙(다른 문구)
+    expect(generationIssueFor("failed", "CLI 실패: Error: audio_references require at least one image reference")).toBeNull();
+    const inArgs = "CLI 실패: Error: Invalid media UUID — cmd: generate create seedance_2_0_mini --prompt at most 3 audio_references are allowed";
+    expect(generationIssueFor("failed", inArgs)?.title).toBe("입력값 확인");
+    expect(generationIssueFor("failed", creditError)?.title).toBe("크레딧 한도 초과");
+    expect(generationIssueFor("running", seedanceAudioError, "tracking")).toBeNull();
+    expect(generationIssueFor("done", seedanceAudioError, "recovery_required")).toBeNull();
+  });
 
   it("그룹 사용 한도를 잔액 부족과 구분하고 관리자 조치를 안내한다", () => {
     const issue = generationIssueFor("running", creditError, "recovery_required");
@@ -167,6 +200,7 @@ describe("오류 원인 안내는 상태를 바꾸지 않고 필요한 카드에
       ["CLI 실패: Error: Too many requests", "Rate limit reached"],
       ["CLI 실패: Error: Internal server error", "Service error"],
       ["CLI 실패: Error: connect ETIMEDOUT", "Check connection"],
+      [seedanceAudioError, "Seedance audio reference rule"],
     ];
     setLang("en");
     for (const [error, expectedTitle] of cases) {

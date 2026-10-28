@@ -18,6 +18,8 @@ from app.routers import gen_requests as routes
 from app.routers import mcp_v2
 
 AUDIO_ONLY = "오디오 레퍼런스는 이미지나 영상 레퍼런스와 함께 넣어야 합니다 — Seedance 2.0·Mini 는 오디오만으로 만들 수 없습니다."
+# 카드 재생성은 원본 카드의 레퍼런스 기준임을 밝힌다(G 4차 P3 는 한계로 기록 — Jay 10-28).
+REGEN_AUDIO_ONLY = f"원본 카드의 레퍼런스로는 다시 생성할 수 없습니다. {AUDIO_ONLY} 레퍼런스를 다시 넣어 새로 생성하세요."
 
 
 def refs(*kinds):
@@ -197,7 +199,7 @@ def test_regenerate_route_rejects_before_creating_anything(references, rejected)
         if rejected:
             with pytest.raises(HTTPException) as error:
                 asyncio.run(routes.create_gen_request(body, SimpleNamespace()))
-            assert error.value.status_code == 422 and error.value.detail == AUDIO_ONLY
+            assert error.value.status_code == 422 and error.value.detail == REGEN_AUDIO_ONLY
             assert error.value.headers == routes.NOT_STARTED
             submit.assert_not_awaited()
         else:
@@ -238,7 +240,7 @@ def test_stored_empty_source_url_is_the_recipe_path_and_regenerate_rejects_it(co
          patch.object(routes, "submit_gen_request", submit):
         with pytest.raises(HTTPException) as error:
             asyncio.run(routes.create_gen_request(body, SimpleNamespace()))
-    assert error.value.status_code == 422 and error.value.detail == AUDIO_ONLY
+    assert error.value.status_code == 422 and error.value.detail == REGEN_AUDIO_ONLY
     submit.assert_not_awaited()
 
 

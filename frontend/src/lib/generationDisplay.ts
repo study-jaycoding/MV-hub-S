@@ -112,6 +112,17 @@ const GENERATION_ISSUE_TEXT: Record<GenerationIssueCode, { title: string; detail
   },
 };
 
+// Seedance 2.0·Mini 오디오 규칙 거부 — CLI 1.2.3 `model get` rules 문구 그대로(111개 모델 중 이 둘에만 있다, 2026-10-28 조회).
+//  작업 id 없이 거부돼 카드가 '제출 확인 필요'로 남는다. 공용 분류(에이전트 Python 과 짝)는 그대로 두고 안내만 붙인다.
+//  기록: docs/status/오디오_레퍼런스_검수_2026-10-28.md
+const SEEDANCE_AUDIO_RULE =
+  /audio_references require at least one image, video, start_image, or end_image|at most 3 audio_references are allowed/i;
+const SEEDANCE_AUDIO_ISSUE_TEXT = {
+  title: "Seedance 오디오 레퍼런스 규칙",
+  detail: "Seedance 2.0·Mini 는 오디오만 넣거나 오디오를 4개 이상 넣으면 받지 않습니다. 힉스필드가 작업을 만들기 전에 거부한 것으로 보입니다.",
+  action: "이미지·영상 레퍼런스를 함께 넣거나 오디오를 3개 이하로 줄여 새로 생성하세요.",
+};
+
 const ACTIVE_EXECUTION_PHASES = new Set([
   "preparing", "pending", "claimed", "submitting", "tracking", "verifying", "running",
 ]);
@@ -134,6 +145,11 @@ export function generationIssueFor(
   if (executionPhase === "done" || executionPhase === "canceled") return null;
   if (executionPhase && ACTIVE_EXECUTION_PHASES.has(executionPhase)) return null;
   if (status !== "failed" && !["failed", "blocked", "recovery_required"].includes(executionPhase || "")) return null;
+  // 명령 인자(— cmd: 뒤)의 같은 글은 원인으로 보지 않는다(classifyGenerationError 와 같은 기준).
+  if (error && SEEDANCE_AUDIO_RULE.test(error.split(/\s*[—–]\s*cmd:/, 1)[0])) {
+    const text = SEEDANCE_AUDIO_ISSUE_TEXT;
+    return { code: "invalid_input", title: t(text.title), detail: t(text.detail), action: t(text.action) };
+  }
   const code = classifyGenerationError(error);
   if (!code) return null;
   const text = GENERATION_ISSUE_TEXT[code];
