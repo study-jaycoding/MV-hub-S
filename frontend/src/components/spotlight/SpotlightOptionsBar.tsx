@@ -530,7 +530,7 @@ export function SpotlightOptionsBar({
             return (
               <SpotlightDurationChip key={p.name} value={Number(cur)} min={stops[0]} max={stops[stops.length - 1]} stops={stops}
                 open={open === p.name} onToggle={() => setOpen(open === p.name ? null : p.name)}
-                onChange={(v) => setOpt(p.name, vals[stops.indexOf(v)])} ignored={isIgnored} title={p.name} />
+                onChange={(v) => setOptionValues((prev) => ({ ...prev, [p.name]: vals[stops.indexOf(v)] }))} ignored={isIgnored} title={p.name} />
             );
           }
           const def = Number(p.default) || 5;
@@ -699,7 +699,9 @@ export function SpotlightOptionsBar({
                                 (blocked ? " blocked" : "")
                               }
                               disabled={blocked}
-                              onClick={() => !blocked && (v === "" ? setOptionValues((prev) => { const next = { ...prev }; delete next[p.name]; return next; }) : setOpt(p.name, isTtsModel(model) && ["integer", "number"].includes(p.type.split("|")[0]) ? Number(v) : v))}
+                              // setOpt 는 고른 뒤 창을 닫는다 — Set 창은 Esc·바깥 누름으로만 닫히게 값만 바꾼다(Jay 2026-10-28)
+                              onClick={() => !blocked && (v === "" ? setOptionValues((prev) => { const next = { ...prev }; delete next[p.name]; return next; })
+                                : setOptionValues((prev) => ({ ...prev, [p.name]: isTtsModel(model) && ["integer", "number"].includes(p.type.split("|")[0]) ? Number(v) : v })))}
                               title={blocked ? con!.note : undefined}
                             >
                               {advancedValue(v, p.name)}

@@ -14,10 +14,12 @@ beforeEach(() => {
 afterEach(() => { act(() => root.unmount()); host.remove(); });
 
 it("shows English names and raw CLI values in the advanced panel, Korean only as hover text", () => {
-  const setOpt = vi.fn();
+  const setOpt = vi.fn(); // 고른 뒤 창을 닫는 길 — Set 창 값은 이걸 쓰지 않는다
+  let values: Record<string, unknown> = { bitrate_mode: "high" };
+  const setOptionValues = vi.fn((next: unknown) => { values = typeof next === "function" ? next(values) : next as Record<string, unknown>; });
   act(() => root.render(
     <SpotlightOptionsBar type="video" setType={() => {}} model="seedance_2_5" setModel={() => {}} onPickModel={() => {}}
-      modelName="Seedance 2.5" typeModels={[]} constraints={{}} optionValues={{ bitrate_mode: "high" }} setOptionValues={() => {}}
+      modelName="Seedance 2.5" typeModels={[]} constraints={{}} optionValues={{ bitrate_mode: "high" }} setOptionValues={setOptionValues as never}
       setOpt={setOpt} open="advanced" setOpen={() => {}}
       tunable={[
         { name: "mode", type: "string", default: "t2v", enum: ["t2v", "omni_reference", "video_edit", "video_extension"] },
@@ -31,13 +33,14 @@ it("shows English names and raw CLI values in the advanced panel, Korean only as
   expect(labels[0].title.split("\n")).toEqual(["모드 — 어떤 방식으로 만들지 고릅니다.", "t2v: 글만으로 만들기",
     "omni_reference: 넣은 이미지·영상·오디오를 참고해 만들기", "video_edit: 넣은 영상 1개를 고치기", "video_extension: 넣은 영상 앞·뒤로 이어 붙이기"]);
   expect(labels[1].title).toContain("high: 더 선명하게(파일이 큼)");
-  const values = [...pop.querySelectorAll<HTMLButtonElement>(".sl-adv-opt")];
-  expect(values.map((b) => b.textContent)).toEqual(["t2v", "omni_reference", "video_edit", "video_extension", "standard", "high"]);
-  const high = values.find((b) => b.textContent === "high")!;
+  const buttons = [...pop.querySelectorAll<HTMLButtonElement>(".sl-adv-opt")];
+  expect(buttons.map((b) => b.textContent)).toEqual(["t2v", "omni_reference", "video_edit", "video_extension", "standard", "high"]);
+  const high = buttons.find((b) => b.textContent === "high")!;
   expect(high.classList.contains("sel")).toBe(true);
   expect(high.title).toBe(""); // 한글 설명도 띄우지 않는다
   expect(/[가-힣]/.test(pop.textContent ?? "")).toBe(false); // 창 안은 영어로만
   expect([...host.querySelectorAll("button")].find((b) => b.title.startsWith("고급 옵션"))!.textContent).toBe("Set›");
-  act(() => values.find((b) => b.textContent === "video_edit")!.click());
-  expect(setOpt).toHaveBeenCalledWith("mode", "video_edit");
+  act(() => buttons.find((b) => b.textContent === "video_edit")!.click());
+  expect(values).toEqual({ bitrate_mode: "high", mode: "video_edit" });
+  expect(setOpt).not.toHaveBeenCalled(); // 값을 눌러도 Set 창은 열린 채(Esc·바깥 누름으로만 닫힘)
 });
