@@ -49,7 +49,7 @@ from ..models import (
 )
 from ..services.agent_signals import agent_signals
 from ..services import cli_bridge
-from ..models import AUDIO_MODELS_V1, MEDIA_V2_MODELS, VIDEO_VOICE_MODELS
+from ..models import AUDIO_MODELS_V1, MEDIA_V2_MODELS, SEEDANCE_AUDIO_LIMITED_MODELS, VIDEO_VOICE_MODELS
 from ..services.seedance_draft import DraftFinishConflict, finish_params, fresh_params
 from ..services.operational_logging import log_event
 from ..services.release_update import update_in_progress
@@ -365,7 +365,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
         reg = body.regenerate or RegenerateIn()
         recipe = await asyncio.to_thread(repo.gen_recipe, body.source_gen_id)
         media_model = reg.model or (recipe or {}).get("model")
-        if media_model in MEDIA_V2_MODELS | AUDIO_MODELS_V1 | VIDEO_VOICE_MODELS:
+        if media_model in MEDIA_V2_MODELS | AUDIO_MODELS_V1 | VIDEO_VOICE_MODELS | SEEDANCE_AUDIO_LIMITED_MODELS:
             try:
                 await cli_bridge.validate_media_submission(media_model, reg.prompt or (recipe or {}).get("prompt", ""),
                                                            (recipe or {}).get("params") or {}, (recipe or {}).get("references") or [])

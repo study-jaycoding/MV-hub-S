@@ -48,6 +48,22 @@ def audio_reference_error(model: str, params: dict, references: list) -> str | N
     return None
 
 
+# Seedance 2.0·Mini 의 CLI 오디오 규칙(model get rules) — 프런트 validateSeedanceMode 와 같은 문구.
+#  CLI 가 작업 id 없이 거부하면 에이전트는 카드를 '제출 확인 필요'로 격리하므로 제출 전에 막는다.
+SEEDANCE_AUDIO_LIMITED_MODELS = frozenset({"seedance_2_0", "seedance_2_0_mini"})
+
+
+def seedance_audio_reference_error(model: str, references: list) -> str | None:
+    if model not in SEEDANCE_AUDIO_LIMITED_MODELS:
+        return None
+    audios = sum(r.get("type") == "audio" for r in references)
+    if audios > 3:
+        return f"오디오 레퍼런스는 3개까지 넣을 수 있습니다 — 지금 {audios}개입니다."
+    if audios and not any(r.get("type") in ("image", "video") for r in references):
+        return "오디오 레퍼런스는 이미지나 영상 레퍼런스와 함께 넣어야 합니다 — Seedance 2.0·Mini 는 오디오만으로 만들 수 없습니다."
+    return None
+
+
 def audio_cli_params(model: str, prompt: str, params: dict) -> dict:
     """저장 대본/목소리를 공급자 단일 대사로 변환한다."""
     out = dict(params)
@@ -113,6 +129,9 @@ def video_voice_reference_error(references: list) -> str | None:
 
 def validate_media_request(model: str, prompt: str, params: dict, references: list) -> None:
     """새 미디어 계약만 검사한다. 기존 모델의 옵션/입력 정책은 바꾸지 않는다."""
+    seedance_error = seedance_audio_reference_error(model, references)
+    if seedance_error:
+        raise ValueError(seedance_error)
     if model in MEDIA_V2_MODELS | AUDIO_MODELS_V1 and not prompt.strip():
         raise ValueError("수정 설명 또는 내레이션 내용을 입력하세요")
     if model in VIDEO_VOICE_MODELS:

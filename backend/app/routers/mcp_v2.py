@@ -29,7 +29,7 @@ from ..db_paths import get_db_path
 from ..deps import account_actor_uid, actor_id, current_account, resolve_agent_account
 from ..emailnorm import norm_email
 from ..mcp_models import StrictModel
-from ..models import GenRequestIn, WorkspaceContext
+from ..models import GenRequestIn, WorkspaceContext, seedance_audio_reference_error
 from ..repo import mcp_v2 as store
 from ..services import auth, cli_bridge, thumbs
 from ..services.auth import hub_id  # main·시험은 mcp_v2.hub_id 로 부른다
@@ -645,6 +645,10 @@ async def _validate_items(ctx, items, ws):
             if not item.get("project_id") or not _folder_exists(await asyncio.to_thread(_folder_tree, ctx, item["project_id"]), item["folder_path"]):
                 raise HTTPException(422, "프로젝트의 컷 폴더를 다시 조회하세요.")
         item["references"] = await asyncio.to_thread(_references, ctx, ws, item["reference_ids"], trees)
+        # 실행 때 GenRequestIn 검증으로 처음 거절되면 항목이 '불명확'으로 남는다 — 준비 때 거절한다.
+        seedance_error = seedance_audio_reference_error(item["model"], item["references"])
+        if seedance_error:
+            raise HTTPException(422, seedance_error, headers={"X-MVHub-MCP-Error": "invalid_input"})
     await asyncio.to_thread(_still_current, ctx)
     return ws
 
