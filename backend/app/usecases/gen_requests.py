@@ -393,7 +393,8 @@ async def _resolve_placeholder_collision(
 
 def _set_media_protocol(payload: dict) -> None:
     """최종 모델이 요구하는 작업자 기능 표식 — 새 요청·재생성과 끊긴 요청 복구(재큐잉)가 같은 규칙을 쓴다.
-    복구에서 빠지면 그 기능을 가진 최신 작업자도 받아 놓고 '계약을 확인할 수 없습니다'로 실패시킨다(Codex B-3)."""
+    복구에서 빠지면 그 기능을 가진 최신 작업자도 받아 놓고 '계약을 확인할 수 없습니다'로 실패시킨다(Codex B-3).
+    대상 모델이 아니면 지운다 — 복구 중 모델이 바뀌어 남은 표식이 그 기능 없는 작업자를 쓸데없이 막지 않게(B-3 재검수)."""
     model = payload.get("model")
     if model in AUDIO_MODELS_V1:
         payload["media_protocol"] = "audio-models-v1"
@@ -401,6 +402,8 @@ def _set_media_protocol(payload: dict) -> None:
         payload["media_protocol"] = "video-voice-v1"
     elif model in MEDIA_V2_MODELS:
         payload["media_protocol"] = "media-v2"
+    else:
+        payload.pop("media_protocol", None)
 
 
 @_account_scoped("email")
@@ -430,10 +433,10 @@ def repair_canvas_generation_links(
             continue
         payload["source_gen_id"] = None
         payload["asset_content_protocol"] = 1
-        _set_media_protocol(payload)
         generation = repo.get_generation(link["generation_id"])
         payload["project_id"] = (generation or {}).get("project_id")
-        if repo.repair_orphaned_canvas_generation(email, creator_uid, link, payload):
+        # 기능 표식은 복구 트랜잭션 안에서 예약된 모델 변경까지 적용한 최종 payload 로 정한다(Codex B-3 재검수)
+        if repo.repair_orphaned_canvas_generation(email, creator_uid, link, payload, finalize_payload=_set_media_protocol):
             repaired = True
     if repaired:
         agent_signals.signal(email, "gen-request")

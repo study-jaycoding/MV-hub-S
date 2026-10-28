@@ -12,7 +12,7 @@ import re
 import sqlite3
 import unicodedata
 import uuid
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from ._common import new_id
 from ..db import get_connection
@@ -1454,11 +1454,14 @@ def repair_orphaned_canvas_generation(
     creator_uid: Optional[str],
     canvas_link: dict[str, str],
     payload: dict[str, Any],
+    finalize_payload: Optional[Callable[[dict[str, Any]], None]] = None,
 ) -> bool:
     """placeholder 저장 뒤 요청행 저장 전에 프로세스가 끝난 극소 구간을 복구한다.
 
     generation 소유자·상태·origin을 한 쓰기 트랜잭션 안에서 재확인하고, 요청행이 전혀 없는
     진짜 orphan만 큐에 넣는다. 다른 계정의 id를 안다고 가져갈 수 없다.
+    finalize_payload: 예약된 모델 변경까지 적용한 최종 payload 에 저장 직전 한 번 부른다 — 작업자 기능 표식처럼
+    최종 모델로 정해야 하는 값(usecase 가 규칙을 가진다, Codex B-3 재검수).
     """
     rid = new_id()
     email = norm_email(account_email)
@@ -1564,6 +1567,8 @@ def repair_orphaned_canvas_generation(
                             canvas_link["generation_id"],
                             regenerate["auto_tags"],
                         )
+                if finalize_payload:
+                    finalize_payload(final_payload)
                 conn.execute(
                     "UPDATE gen_request SET payload=?, status='pending', "
                     "updated_at=datetime('now') WHERE id=? AND status='preparing'",
@@ -1574,6 +1579,8 @@ def repair_orphaned_canvas_generation(
                 )
                 conn.execute("COMMIT")
                 return True
+            if finalize_payload:
+                finalize_payload(payload)
             conn.execute(
                 "INSERT INTO gen_request("
                 "id, account_email, creator_uid, gen_id, kind, payload, status, "

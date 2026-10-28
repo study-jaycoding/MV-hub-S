@@ -345,6 +345,36 @@ class TestGenRequestCapabilityGate:
         assert len(claimed) == 1 and claimed[0]["gen_id"] == link["generation_id"]
         assert claimed[0]["media_protocol"] == protocol
 
+    @pytest.mark.parametrize("old,new,protocol", [
+        ("nano_banana_flash", "seed_audio", "audio-models-v1"),
+        ("nano_banana_flash", "dubbing", "video-voice-v1"),
+        ("seed_audio", "nano_banana_flash", None),
+    ])
+    def test_orphan_repair_marker_follows_reserved_model_change(self, old, new, protocol):
+        # 재생성 중 모델을 바꾸는 복구 — 예약된 모델 변경은 복구 트랜잭션 안에서 적용되므로 표식도 그 최종 모델로 다시 정한다.
+        #  대상 모델이 아니면 표식을 지운다(남으면 그 기능이 없는 작업자가 쓸데없이 못 받는다, Codex B-3 재검수).
+        from app.models import RegenerateIn
+        from app.usecases.gen_requests import repair_canvas_generation_links
+
+        email = self.account["email"]
+        source_id = repo.create_local_generation({"prompt": "source", "model": old, "params": {}}, "me", creator_uid="creator-1")
+        link = {"attempt_id": f"attempt_swap_{new}", "generation_id": f"generation_swap_{new}",
+                "scene_id": "scene-swap", "card_id": "card-swap"}
+        contract = {"kind": "regenerate", "worker_id": "me", "source_gen_id": source_id,
+                    "workspace": {"scope": "personal", "id": None, "name": None}, "create": None,
+                    "regenerate": RegenerateIn(model=new).model_dump()}
+        repo.reserve_canvas_gen_request(email, "creator-1", link["generation_id"], "regenerate", link, contract)
+        # 자식 생성까지만 저장하고 모델 덮어쓰기·요청 활성화 전에 끝난 상태
+        repo.import_generation(source_id, "me", creator_uid="creator-1", generation_id=link["generation_id"],
+                               workspace={"scope": "personal", "id": None, "name": None})
+        repair_canvas_generation_links(email, "creator-1", [link])
+        # 옛 작업자(오디오·보이스 표시 없음)는 표식·모델이 대상이 아닐 때만 받는다
+        assert repo.has_pending_requests(email, workspace_capable=True, media_v2_capable=True) is (protocol is None)
+        claimed = repo.claim_pending_requests(email, workspace_capable=True, lease_owner="new-agent", submission_stage_capable=True,
+            media_v2_capable=True, audio_models_v1_capable=True, video_voice_v1_capable=True)
+        assert len(claimed) == 1 and claimed[0]["model"] == new
+        assert claimed[0].get("media_protocol") == protocol
+
     def test_asset_content_filter_preserves_previous_malformed_payload_behavior(self):
         request_id, _ = self._request()
         with db.get_connection() as conn:

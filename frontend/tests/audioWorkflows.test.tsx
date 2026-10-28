@@ -225,6 +225,43 @@ describe("capability-gate · 씬", () => {
     expect(oneVideoVoiceJobPerCard([...runs, ...others]).map((j) => `${j.cardId}:${j.text}`))
       .toEqual(["a:comfy 1", "b:", "c:1", "c:2", "d:"]);
   });
+
+  it("실제 제출 경로: generateCardRuns(Comfy 짝)·generateCards(렌더 반복) 모두 번역은 카드당 1건만 캔버스 위치를 잡는다(Codex B-1 재검수)", async () => {
+    // 훅을 React 밖에서 부른다(sceneSubmissionLanguage 시험과 같은 방식) — 이 시험 안에서만 가짜로 두고 끝에 되돌린다.
+    const mocked = ["react", "../src/app/operationContext", "../src/lib/modelPolicy", "../src/lib/modelPolicyCore",
+      "../src/lib/workspaceContext", "../src/lib/sceneGenerationInputs"];
+    vi.resetModules();
+    vi.doMock("react", async (original) => ({ ...await original<typeof import("react")>(), useRef: (current: unknown) => ({ current }) }));
+    vi.doMock("../src/app/operationContext", () => ({ captureSubmissionScope: () => ({ isCurrent: () => true }) }));
+    vi.doMock("../src/lib/modelPolicy", () => ({ currentModelPolicy: () => ({ status: "ready" }) }));
+    vi.doMock("../src/lib/modelPolicyCore", () => ({ modelAllowed: () => true }));
+    vi.doMock("../src/lib/workspaceContext", () => ({ isGenerationWorkspaceReady: () => true }));
+    vi.doMock("../src/lib/sceneGenerationInputs", () => ({
+      buildSceneGenerationJobInput: (cardId: string) => ({ cardId, model: cardId === "img" ? "nano_banana_flash" : "dubbing",
+        modelSource: "node", text: "", params: {}, refs: [] }),
+    }));
+    try {
+      const { useSceneGenerationSubmission } = await import("../src/lib/useSceneGenerationSubmission");
+      // 위치 저장을 빈 목록으로 돌려 실제 제출 전에 멈춘다 — 공통 제출 단계까지 온 카드 목록만 본다
+      const prepare = vi.fn(async (_sceneId: string, _cardIds: string[]) => []);
+      const scene = { id: "scene", edges: [], cards: ["dub", "img"].map((id) => ({ id, kind: "generation", x: 0, y: 0 })) };
+      const actions = useSceneGenerationSubmission({
+        activeScene: scene as never, workspaceContext: { scope: "personal", id: null, name: null },
+        sceneWorkspaceBlock: null, batchCount: 1, armedFolder: null, armedAutoTags: new Set(), flushScenePending: vi.fn(),
+        prepareCanvasGenerationBatch: prepare as never, confirmCanvasGeneration: vi.fn(), settleCanvasGeneration: vi.fn(),
+        discardCanvasGeneration: vi.fn(), onRegenerate: vi.fn(), flash: vi.fn(), reportPromptError: vi.fn(), mergeFacetTags: vi.fn(),
+        reload: vi.fn(), bumpBoard: vi.fn(),
+      } as never);
+      const run = (cardId: string) => ({ cardId, comfyOutputsById: {} });
+      await actions.generateCardRuns([run("dub"), run("dub"), run("dub"), run("dub"), run("img"), run("img")] as never);
+      expect(prepare.mock.calls[0][1]).toEqual(["dub", "img", "img"]);
+      await actions.generateCards(["dub", "img"], 3);
+      expect(prepare.mock.calls[1][1]).toEqual(["dub", "img", "img", "img"]);
+    } finally {
+      for (const path of mocked) vi.doUnmock(path);
+      vi.resetModules();
+    }
+  });
 });
 
 // Codex B-2: 결과 재사용·씬 카드 복원이 ALLOWED 만 보면 두 워크플로(목록 밖)를 잃는다 — 실제 SpotlightPrompt·useModels 를 지난다.
