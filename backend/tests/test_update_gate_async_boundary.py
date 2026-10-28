@@ -32,14 +32,21 @@ def test_begin_abort_handler_is_limited_to_the_new_read_gate():
 
 
 @pytest.fixture
-def begin_case(monkeypatch):
+def begin_case(tmp_path, monkeypatch):
+    from app import db
+
+    # 라우트가 요청 행을 먼저 읽는다 — 앞선 시험이 기본 DB 를 만들어 두었는지에 기대지 않게 빈 임시 DB 를 쓴다.
+    monkeypatch.setenv("CONTENT_HUB_DB", str(tmp_path / "content_hub.db"))
+    db.flush_pool()
+    db.init_db()
     monkeypatch.setattr(routes, "_require_account", lambda request: {"email": "synthetic@example.invalid"})
     monkeypatch.setattr(routes, "realtime_scope", lambda acc: "synthetic-uid")
     monkeypatch.setattr(routes.agent_signals, "touch", Mock())
     monkeypatch.setattr(routes, "begin_submission", AsyncMock(return_value=True))
     release = AsyncMock(return_value=True)
     monkeypatch.setattr(routes, "release_claim", release)
-    return release
+    yield release
+    db.flush_pool()
 
 
 def test_begin_read_gate_runs_off_loop_and_normal_ack_is_unchanged(begin_case, monkeypatch):

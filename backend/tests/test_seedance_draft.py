@@ -219,7 +219,8 @@ def test_two_preparing_intents_are_atomic_and_winner_marker_survives_deletion(co
         _submit_without_external(replace(command, idempotency_key="third-tab"))
 
 
-def test_duplicate_finish_route_reports_not_started():
+def test_duplicate_finish_route_reports_not_started(content):
+    # 라우트가 재생성 검사에서 레시피를 DB 로 읽는다 — 앞선 시험이 기본 DB 를 만들어 두었는지에 기대지 않는다.
     body = GenRequestIn(kind="regenerate", source_gen_id="local-123",
                         regenerate=RegenerateIn(finish_draft=True), workspace={"scope": "personal"})
     with patch.object(routes, "update_in_progress", return_value=False), \
@@ -281,7 +282,7 @@ def test_draft_flags_must_survive_agent_filter_before_paid_submission(content, p
     (draft(), RegenerateIn(finish_draft=True, prompt="changed"), 400),
     (draft(job_id=None), RegenerateIn(finish_draft=True), 409),
 ])
-def test_finish_route_rejects_before_submission(parent, reg, code):
+def test_finish_route_rejects_before_submission(content, parent, reg, code):
     body = GenRequestIn(kind="regenerate", source_gen_id="local-123", regenerate=reg, workspace={"scope": "personal"})
     request = SimpleNamespace()
     with patch.object(routes, "update_in_progress", return_value=False), \
