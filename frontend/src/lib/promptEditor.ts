@@ -72,6 +72,8 @@ export function placeCaretAtEnd(editor: HTMLElement) {
 }
 
 export function insertTextAtCaret(editor: HTMLElement, text: string) {
+  // 넣을 글이 없으면(캡처 이미지 붙여넣기 등) 아무것도 안 한다 — 아래 '고른 글 바꾸기'가 고른 글만 지웠다(Codex 재검수 새 회귀 P2)
+  if (!text) return;
   editor.focus();
   let range = getCaretRange(editor);
   if (!range) {

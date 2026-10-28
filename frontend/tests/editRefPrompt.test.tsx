@@ -93,6 +93,13 @@ it("글을 골라 둔 채 붙여넣기·Shift+Enter 하면 고른 글을 바꾼�
   key("Enter", { shiftKey: true });
   expect(box().textContent).toBe("가\n다");
   expect(onSubmit).not.toHaveBeenCalled();
+  // 글 없는 붙여넣기(캡처 이미지 등)는 고른 글을 지우지 않는다(Codex 재검수 새 회귀 P2)
+  type("옷 색을 바꿔 주세요");
+  select(0, 2);
+  onChange.mockClear();
+  act(() => { box().dispatchEvent(Object.assign(new Event("paste", { bubbles: true, cancelable: true }), { clipboardData: { getData: () => "" } })); });
+  expect(box().textContent).toBe("옷 색을 바꿔 주세요");
+  expect(onChange).not.toHaveBeenCalledWith("색을 바꿔 주세요"); // 고른 '옷 ' 이 빠진 글
 });
 
 it("레퍼런스 칸이 없으면(이미지 수정) 알약·목록 없이 글만", () => {
