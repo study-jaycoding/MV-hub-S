@@ -19,6 +19,7 @@ vi.mock("../src/api", () => ({
   api: {
     estimateCost: vi.fn().mockResolvedValue({ credits: 1 }),
     generationMetrics: vi.fn().mockResolvedValue(null),
+    comfySubscription: vi.fn().mockResolvedValue(null), // Comfy 생성물 정보 창은 견적 대신 구독을 묻는다
     thumbOrRaw: (path: string) => path,
     prepareRegenerate: vi.fn(),
     confirmGenerationNotSubmitted: vi.fn(),
@@ -271,6 +272,25 @@ it.each(["ko", "en"] as const)("%s 미분류 실패도 원인을 지어내지 �
   expect(required(".info-error-label").textContent).toContain(lang === "ko" ? "실패 사유" : "Failure reason");
   expect(required<HTMLDetailsElement>(".info-error-details").open).toBe(false);
   expect(required(".info-error-details").textContent).toContain(g.error);
+});
+
+// 2026-10-28 Jay: CLI 는 접수 뒤 실패의 사유를 주지 않는다(힉스필드 웹에만 있음) — 빈 사유면 웹 [에셋]으로 안내한다.
+it.each(["ko", "en"] as const)("%s 사유를 받지 못한 힉스필드 실패는 웹 [에셋] 링크로 안내한다", async (lang) => {
+  setLang(lang);
+  const popup = (patch: Partial<Generation>) => (
+    <InfoPopup target={{ kind: "generation", gen: generation({ status: "failed", execution_phase: "failed", error: null, ...patch }), x: 0, y: 0 }}
+      onClose={noop} onPreview={noop} />
+  );
+  await render(popup({}));
+  const link = required<HTMLAnchorElement>(".info-error .info-error-link");
+  expect(link.href).toBe("https://higgsfield.ai/asset");
+  expect(link.target).toBe("_blank");
+  expect(link.rel).toContain("noopener");
+  expect(link.textContent).toContain(lang === "ko" ? "힉스필드 웹 [에셋]" : "Higgsfield web [Assets]");
+  for (const patch of [{ model: "comfy" }, { error: "Unexpected external condition" }, { status: "nsfw" as const }]) {
+    await render(popup(patch));
+    expect(container.querySelector(".info-error-link"), JSON.stringify(patch)).toBeNull();
+  }
 });
 
 it("정상 완료·취소·재시도 중 카드는 예전 크레딧 오류로 덮어쓰지 않는다", async () => {

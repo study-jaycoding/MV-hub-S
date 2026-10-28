@@ -1031,6 +1031,9 @@ const EN: Record<string, string> = {
   "내 PC의 에이전트가 로컬 CLI로 생성 중입니다. 에이전트(push_agent --watch)가 떠 있어야 완료됩니다.":
     "Your PC's agent is generating through the local CLI. It has to stay running to finish.",
   "상세 사유를 받지 못했습니다.": "No details were provided.",
+  "힉스필드 웹 [에셋]에서 실패 사유 확인하기": "Check the failure reason in Higgsfield web [Assets]",
+  "힉스필드 웹의 내 생성물 목록이 열립니다. 이 생성물을 찾아 실패 사유를 확인하세요.":
+    "Opens your generations on the Higgsfield website. Find this one there to see why it failed.",
   "{s} 상태입니다. 상세 사유 정보가 없습니다.": "Status: {s}. No details available.",
   "실패 사유 정보가 없습니다.": "No failure details available.",
   // 생성 정보 — HF 확인 안내

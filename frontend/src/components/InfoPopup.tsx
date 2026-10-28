@@ -39,6 +39,7 @@ interface Props {
 }
 
 const POP_W = 380;
+const HIGGSFIELD_ASSETS_URL = "https://higgsfield.ai/asset";
 const TRANSACTION_PENDING_REASONS: Record<string, string> = {
   transaction_pending_ambiguous: "특정 거래를 유일하게 연결할 수 없습니다.",
   transaction_pending_incomplete: "모든 생성물에 연결할 거래가 아직 부족합니다.",
@@ -310,7 +311,21 @@ export function InfoPopup({
                 {originalError}
               </>
             ) : (
-              <span className="info-error-text">{g.error || generationErrorFallback(g.status)}</span>
+              <>
+                <span className="info-error-text">{g.error || generationErrorFallback(g.status)}</span>
+                {g.status === "failed" && g.model !== "comfy" && (
+                  // CLI·MCP 는 실패 사유를 주지 않는다(힉스필드 웹에만 있음). 생성 하나를 여는 웹 주소도 없어 내 생성물 목록을 연다.
+                  <a
+                    className="info-error-link"
+                    href={HIGGSFIELD_ASSETS_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={t("힉스필드 웹의 내 생성물 목록이 열립니다. 이 생성물을 찾아 실패 사유를 확인하세요.")}
+                  >
+                    {t("힉스필드 웹 [에셋]에서 실패 사유 확인하기")} ↗
+                  </a>
+                )}
+              </>
             )}
           </div>
         )}
