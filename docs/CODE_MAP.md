@@ -670,6 +670,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `compare/CompareGenerationColumn.tsx`(209줄) | 비교 모달의 한 열(미디어·파라미터) | 〃 |
 | `compare/CompareSourceLightbox.tsx`(29줄) | 비교 모달 위 원본 라이트박스 | 〃 |
 | `edit/PartialEditModal.tsx`(966줄) | 부분 수정 캔버스(펜·도형·마스크·A/B) | `PartialEditModal` |
+| `edit/EditRefPrompt.tsx`(136줄) | 수정 창 지시문 칸 — `@imageN` 을 레퍼런스 칸 썸네일 알약으로·`@` 목록·없는 번호 경고(알약은 `lib/promptEditor` 재사용, 내보내는 글은 `@imageN` 그대로) | `EditRefPrompt` |
 | `edit/PartialEditHost.tsx`(47줄) | `partialEdit` 이벤트 → 최신 Generation 조회 → 모달 개방 | `PartialEditHost`(§3.5 숨은 진입점) |
 | `timeline/EditTab.tsx`(약 1,100줄) | 편집 탭 조립 — 시퀀스 고르기·문서·재생·편집 키·컷(폴더) 비활성/숨기기·빈 곳 채우기(최종 확인된 것 먼저, 없으면 최신)·컷 더블클릭(공유 & 리뷰의 폴더 창을 App 에 열어 달라고 알린다)([EDIT_TAB.md](EDIT_TAB.md)). `edit/`(부분 수정)와 다른 기능이다 | `EditTab`(App 이 지연 로드) |
 | `timeline/EditTimeline.tsx`(약 345줄) | 눈금자(마크 인/아웃의 띠·북마크 꼬리표)·컷 줄·영상 트랙(트랙 색)·소리 줄·재생헤드. 클립은 위아래로만 끈다(컷 자리는 폴더 순서로 고정). 트랙 머리 우클릭·북마크 더블클릭은 무엇을 열지만 알린다 | `EditTimeline`, `EditMarks` |
