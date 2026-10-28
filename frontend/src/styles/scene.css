@@ -785,8 +785,9 @@
   position: fixed; inset: 0; z-index: 200; background: rgba(0, 0, 0, 0.55);
   display: flex; align-items: center; justify-content: center;
 }
+/* 폭 = 칩 줄 길이(한 줄로 — Jay 2026-10-28 '2줄로 표시가 되지 않게'), 좁은 화면에서만 화면 폭에 맞춰 접힌다 */
 .scene-modelmodal {
-  width: min(600px, 94vw); background: #14161b; border: 1px solid #3a3f48;
+  width: max-content; min-width: min(600px, 94vw); max-width: 94vw; background: #14161b; border: 1px solid #3a3f48;
   border-radius: 12px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
   display: flex; flex-direction: column;
 }
@@ -1524,7 +1525,8 @@
 
 /* model node: the saved model is not usable in this group (modelPolicy) */
 .scene-modelnode-blocked { margin-top: 2px; font-size: 10px; font-weight: 700; color: #f06a5a; letter-spacing: 0.04em; }
-.scene-modelmodal-note { margin: 0 0 8px; padding: 6px 10px; border-radius: 8px; background: rgba(240,106,90,.12); color: #f06a5a; font-size: 12px; line-height: 1.4; }
+/* 안내 글은 창 폭을 늘리지 않는다(창 폭 = 칩 줄) — 긴 문장은 칩 줄 폭 안에서 접힌다 */
+.scene-modelmodal-note { contain: inline-size; margin: 0 0 8px; padding: 6px 10px; border-radius: 8px; background: rgba(240,106,90,.12); color: #f06a5a; font-size: 12px; line-height: 1.4; }
 .scene-modelmodal-note.muted { background: rgba(255,255,255,.05); color: var(--muted); }
 
 /* scene tab: drag to reorder + per-canvas workspace (Jay 2026-09-11) */
