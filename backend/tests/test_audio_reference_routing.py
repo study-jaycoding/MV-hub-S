@@ -113,8 +113,48 @@ def test_server_counts_media_the_way_the_agent_submits():
         assert seedance_media_kind(ref) == expected, ref
 
 
+# 에이전트가 조용히 건너뛰는 참조(빈·없는 file_path, 사전이 아닌 것) — 서버는 실제로 CLI 에 실리는 것만 센다(Codex G 2차 재검수).
+AUDIO_WITH_EMPTY_IMAGE = refs("audio") + [{"file_path": "", "type": "image", "role": "@Image1"}]
+FLAG_KIND = {"--audio-references": "audio", "--video-references": "video", "--image-references": "image",
+             "--image": "image", "--video": "video", "--audio": "audio", "--start-image": "image", "--end-image": "image"}
+
+
+@pytest.mark.parametrize("references", [
+    AUDIO_WITH_EMPTY_IMAGE,
+    refs("audio") + [{"file_path": None, "type": "image", "role": "@Image1"}],
+    refs("audio") + [{"type": "image", "role": "@Image1"}],
+    refs("audio") + ["not-a-reference"],
+    [{"file_path": "", "type": "image", "role": "@Image1"}] + refs("video", "audio") + [{"file_path": "", "type": "audio", "role": "@Audio2"}],
+    MIXED,
+])
+def test_server_counts_exactly_what_the_agent_puts_on_the_cli(references, monkeypatch, tmp_path):
+    from app.models import seedance_media_kind, seedance_submitted_refs
+    agent = load_agent()
+    cache = {}
+    for ref in references:
+        if isinstance(ref, dict) and ref.get("file_path"):
+            (tmp_path / ref["file_path"]).write_bytes(b"fake")
+            cache[ref["file_path"]] = str(tmp_path / ref["file_path"])
+    uploads = iter(f"up-{i}" for i in range(20))
+    monkeypatch.setattr(agent, "_upload_for_media", lambda *_: ({"id": next(uploads), "type": "media_input"}, False))
+    monkeypatch.setattr(agent, "_allowed_params", lambda *_: {"duration"})
+    monkeypatch.setattr(agent, "_ensure_request_workspace", lambda *_: ("workspace-1", None))
+    monkeypatch.setattr(agent, "_begin_submission", MagicMock(return_value=True))
+    monkeypatch.setattr(agent, "_anchor_tracked_safe", MagicMock())
+    monkeypatch.setattr(agent, "_fail", MagicMock())
+    run = MagicMock(return_value=(["12345678-1234-1234-1234-123456789abc"], None))
+    monkeypatch.setattr(agent, "_run_cli_json", run)
+    request = {"id": "request-1", "model": "seedance_2_0_mini", "prompt": "p", "params": {"duration": 4}, "references": references,
+               "workspace": {"scope": "personal", "id": None, "name": None}, "claim_phase": "claimed"}
+    agent._submit_one("http://hub", "token", "fake-cli", "artist@example.com", request, cache, {}, agent.Lock(), agent.Lock(), "agent-1")
+    agent._fail.assert_not_called()
+    sent = sorted(FLAG_KIND[a] for a in run.call_args.args if a in FLAG_KIND)
+    assert sent == sorted(seedance_media_kind(r) for r in seedance_submitted_refs(references))
+
+
 @pytest.mark.parametrize("references,error", [
     (MISMATCHED_AUDIO, AUDIO_ONLY),
+    (AUDIO_WITH_EMPTY_IMAGE, AUDIO_ONLY),
     (MISMATCHED_AUDIO + [{"file_path": "s.png", "type": "audio", "role": "@Start"}], None),  # 첫 프레임은 그림으로 센다
     ([{"file_path": f"{i}.png", "type": "image", "role": f"@Audio{i + 1}"} for i in range(4)]
      + [{"file_path": "v.mp4", "type": "video", "role": "@Video1"}], "오디오 레퍼런스는 3개까지 넣을 수 있습니다 — 지금 4개입니다."),
@@ -127,14 +167,15 @@ def test_shared_validation_counts_mismatched_type_and_role_by_submission(referen
         validate_media_request("seedance_2_0_mini", "p", {}, references)
 
 
-@pytest.mark.parametrize("references", [refs("audio"), MISMATCHED_AUDIO])
+@pytest.mark.parametrize("references", [refs("audio"), MISMATCHED_AUDIO, AUDIO_WITH_EMPTY_IMAGE])
 def test_create_body_rejects_audio_only_seedance_mini(references):
     with pytest.raises(ValidationError, match="오디오만으로"):
         GenRequestIn(kind="create", workspace={"scope": "personal"},
                      create={"prompt": "p", "model": "seedance_2_0_mini", "references": references})
 
 
-@pytest.mark.parametrize("references,rejected", [(refs("audio"), True), (MISMATCHED_AUDIO, True), (refs("image", "audio"), False)])
+@pytest.mark.parametrize("references,rejected", [
+    (refs("audio"), True), (MISMATCHED_AUDIO, True), (AUDIO_WITH_EMPTY_IMAGE, True), (refs("image", "audio"), False)])
 def test_regenerate_route_rejects_before_creating_anything(references, rejected):
     body = GenRequestIn(kind="regenerate", source_gen_id="local-123", regenerate=RegenerateIn(), workspace={"scope": "personal"})
     submit = AsyncMock(side_effect=RuntimeError("reached submit"))

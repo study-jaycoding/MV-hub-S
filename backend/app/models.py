@@ -66,10 +66,16 @@ def seedance_media_kind(ref: dict) -> str:
     return "image"
 
 
+def seedance_submitted_refs(references: list) -> list:
+    """에이전트가 CLI 에 실제로 넘기는 참조만 — agent_push 가 조용히 건너뛰는 것(사전이 아닌 것 · file_path 가 비었거나 없는 것)을 뺀다.
+    못 받거나 못 올린 참조는 건너뛰지 않고 요청 전체를 실패시키므로 여기서는 센다(Codex G 2차 재검수)."""
+    return [r for r in references if isinstance(r, dict) and r.get("file_path")]
+
+
 def seedance_audio_reference_error(model: str, references: list) -> str | None:
     if model not in SEEDANCE_AUDIO_LIMITED_MODELS:
         return None
-    kinds = [seedance_media_kind(r) for r in references]
+    kinds = [seedance_media_kind(r) for r in seedance_submitted_refs(references)]
     audios = kinds.count("audio")
     if audios > 3:
         return f"오디오 레퍼런스는 3개까지 넣을 수 있습니다 — 지금 {audios}개입니다."
