@@ -846,6 +846,7 @@ _AUTH_PUBLIC_PATHS = frozenset(
         "/api/mcp/client/result",
         "/api/mcp/v2/client/connect",
         "/api/mcp/v2/client/action",
+        "/api/mcp/v2/client/references/import",
     }
 )
 _SNAPSHOT_SERVER_PATHS = frozenset({SNAPSHOT_EXPORT_PATH, "/api/health", "/api/ready"})
@@ -1107,7 +1108,7 @@ def health():
     from .services import cli_bridge
 
     bridge = {"protocol": 1, "transport": "stdio-local", "persistent_protocol": 2,
-              "features": ["generation_result", "batch_results", "history_cursor", "plan_estimate"]}
+              "features": ["generation_result", "batch_results", "history_cursor", "plan_estimate", "reference_import", "reference_search"]}
     try:
         bridge["hub_id"] = mcp_v2.hub_id()
     except (auth_svc.AuthSecretUnavailable, sqlite3.Error):

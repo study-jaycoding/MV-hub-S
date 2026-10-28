@@ -20,7 +20,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlencode, urlsplit
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from pydantic import Field, StrictBool, ValidationError, model_validator
 from starlette.responses import FileResponse
 
@@ -31,7 +31,7 @@ from ..emailnorm import norm_email
 from ..mcp_models import StrictModel
 from ..models import GenRequestIn, WorkspaceContext, seedance_audio_reference_error
 from ..repo import mcp_v2 as store
-from ..services import auth, cli_bridge, thumbs
+from ..services import auth, cli_bridge, thumbs, reference_match, upload_limits, asset_tree
 from ..services.auth import hub_id  # main·시험은 mcp_v2.hub_id 로 부른다
 from ..services.seedance_draft import fresh_params
 from ..services.async_tools import to_thread_non_abandon
@@ -167,11 +167,22 @@ async def _app_context(request: Request, _headers=Depends(mcp.app_headers)):
         yield ctx
 
 
-async def _client_context(request: Request, secret=Depends(mcp.client_guard)):
+@contextlib.asynccontextmanager
+async def _client_scope(request: Request, secret: str):
     ctx = await asyncio.to_thread(_capture, request, secret)
     with active_account.pinned_account_scope(ctx.pin), _proxy.pinned_connection(ctx.upstream):
         await asyncio.to_thread(_still_current, ctx)
         await asyncio.to_thread(store.touch_client, ctx.client["id"])
+        yield ctx
+
+
+async def _client_context(request: Request, secret=Depends(mcp.client_guard)):
+    async with _client_scope(request, secret) as ctx:
+        yield ctx
+
+
+async def _upload_client_context(request: Request, secret=Depends(mcp.client_upload_guard)):
+    async with _client_scope(request, secret) as ctx:
         yield ctx
 
 
@@ -313,6 +324,7 @@ class ReadIn(StrictModel):
     limit: int = Field(default=30, ge=1, le=100)
     model: str | None = Field(default=None, max_length=200)
     asset_project: str | None = Field(default=None, max_length=200)
+    offset: int | None = Field(default=None, ge=0, le=100_000, strict=True)
     folder_path: str | None = Field(default=None, max_length=500)
     media_type: Literal["image", "video", "audio"] | None = None
     cursor_ts: float | None = Field(default=None, allow_inf_nan=False, strict=True)
@@ -320,6 +332,8 @@ class ReadIn(StrictModel):
 
     @model_validator(mode="after")
     def check_cursor(self):
+        if self.offset is not None and (self.kind != "references" or not self.asset_project):
+            raise ValueError("offset은 에셋 참고 자료 검색에만 사용할 수 있습니다")
         if (self.cursor_ts is None) != (self.cursor_id is None):
             raise ValueError("다음 페이지의 시각과 ID를 함께 지정하세요")
         return self
@@ -431,7 +445,7 @@ def _generations(ctx, ws, args):
         cursor_ts=args.cursor_ts, cursor_id=args.cursor_id)
 
 
-def _asset_tree(ctx, ws, project):
+def _authorize_asset_project(ctx, ws, project):
     request = _internal(ctx, "/api/assets/projects", {"workspace_id": ws["id"]} if ws["id"] else {})
     available = assets.list_projects(request, BackgroundTasks(), ws["id"])
     allowed = available.projects if hasattr(available, "projects") else available["projects"]
@@ -441,7 +455,24 @@ def _asset_tree(ctx, ws, project):
     manual = {item["name"] for item in assets._owner_mounts(ctx.owner)} | {assets._COMBINED_INTERNAL}
     if project not in manual and project not in {item["name"] for item in _projects(ctx, ws)}:
         raise HTTPException(404, "프로젝트 에셋 권한이 없습니다.")
+
+
+def _asset_tree(ctx, ws, project):
+    _authorize_asset_project(ctx, ws, project)
     return assets.project_tree(_internal(ctx, "/api/assets/tree", {"project": project}), BackgroundTasks(), project, True)["children"]
+
+
+def _asset_tree_snapshot(ctx, ws, project):
+    _still_current(ctx)
+    _authorize_asset_project(ctx, ws, project)
+    return assets.project_tree_snapshot(_internal(ctx, "/api/assets/tree"), project)
+
+
+def _issue_asset_reference(ctx, ws, project, node):
+    ref = {"file_path": f"asset:{project}|{node['path']}", "type": node["type"], "name": node.get("name")}
+    rid = store.save_reference(ctx.client, {"kind": "asset", "project": project,
+        "path": node["path"], "workspace": _workspace_identity(ws)}, node["version"], ref)
+    return {"id": rid, "name": node.get("name"), "type": node["type"], "path": node["path"], "project": project}
 
 
 def _flatten(nodes):
@@ -469,16 +500,21 @@ def _generation_reference(row, asset):
 def _issue_references(ctx, ws, args):
     result = []
     if args.asset_project:
+        offset, matched, more = args.offset or 0, 0, False
+        terms = (args.search or "").casefold().split()
         for node in _flatten(_asset_tree(ctx, ws, args.asset_project)):
             if not node.get("version") or node.get("type") not in ("image", "video", "audio"):
                 continue
-            if args.search and args.search.casefold() not in str(node.get("name", "")).casefold():
+            if not all(term in str(node.get("path", "")).casefold() for term in terms):
                 continue
-            ref = {"file_path": f"asset:{args.asset_project}|{node['path']}", "type": node["type"], "name": node.get("name")}
-            rid = store.save_reference(ctx.client, {"kind": "asset", "project": args.asset_project, "path": node["path"], "workspace": _workspace_identity(ws)}, node["version"], ref)
-            result.append({"id": rid, "name": node.get("name"), "type": node["type"]})
+            matched += 1
+            if matched <= offset:
+                continue
             if len(result) >= args.limit:
+                more = True
                 break
+            result.append(_issue_asset_reference(ctx, ws, args.asset_project, node))
+        return {"references": result, "next_offset": offset + len(result) if more else None}
     else:
         for row in _generations(ctx, ws, args):
             for asset in row.get("assets", []):
@@ -488,8 +524,8 @@ def _issue_references(ctx, ws, args):
                 rid = store.save_reference(ctx.client, {"kind": "generation", "id": row["id"], "asset_id": asset["id"], "workspace": _workspace_identity(ws)}, version, ref)
                 result.append({"id": rid, "name": ref["name"], "type": ref["type"], "source_gen_id": row["id"]})
                 if len(result) >= args.limit:
-                    return result
-    return result
+                    return {"references": result}
+    return {"references": result}
 
 
 def _references(ctx, ws, ids, trees):
@@ -508,7 +544,13 @@ def _references(ctx, ws, ids, trees):
         if source["kind"] == "asset":
             nodes = trees.get(source["project"])
             if nodes is None:
-                nodes = trees[source["project"]] = {n.get("path"): n for n in _flatten(_asset_tree(ctx, ws, source["project"]))}
+                try:
+                    nodes = {n.get("path"): n for n in _flatten(_asset_tree(ctx, ws, source["project"]))}
+                except HTTPException as exc:
+                    if exc.status_code != 404 or source["project"] != assets._COMBINED_INTERNAL:
+                        raise
+                    nodes = {}  # Deleting the last import also removes imp/cap from the project list.
+                trees[source["project"]] = nodes
             version = (nodes.get(source["path"]) or {}).get("version")
         else:
             row = library.get_generation(source["id"], _internal(ctx, "/api/generations/" + source["id"]))
@@ -565,7 +607,7 @@ async def _read(ctx, args):
             return {"project_id": args.project_id, "tree": await asyncio.to_thread(_folder_tree, ctx, args.project_id)}
         return {"projects": [{key: row.get(key) for key in ("id", "name", "workspace_scope", "workspace_id")} for row in rows][:args.limit]}
     if args.kind == "references":
-        return {"references": await asyncio.to_thread(_issue_references, ctx, ws, args)}
+        return await asyncio.to_thread(_issue_references, ctx, ws, args)
     rows = await asyncio.to_thread(_generations, ctx, ws, args)
     await asyncio.to_thread(_still_current, ctx)
     last = rows[-1] if rows else None
@@ -583,6 +625,84 @@ async def _read(ctx, args):
             result.update(pagination_unavailable=True,
                           note="마지막 항목의 정렬 시각이 없어 다음 페이지를 조회할 수 없습니다. 전체 검색이 끝난 것은 아닙니다. 앱에서 결과를 확인하세요.")
     return result
+
+
+def _import_permissions(ctx, scope, workspace_id, project_id, asset_project):
+    _still_current(ctx)
+    ws = _request_workspace(ctx, scope, workspace_id)
+    if project_id and project_id not in {project["id"] for project in _projects(ctx, ws)}:
+        raise HTTPException(404, "선택한 공간의 프로젝트를 찾을 수 없습니다.")
+    if asset_project:
+        _authorize_asset_project(ctx, ws, asset_project)
+    return ws
+
+
+@router.post("/client/references/import")
+async def import_reference(
+    request: Request,
+    filename: str = Query(min_length=1, max_length=200),
+    workspace_scope: Literal["personal", "team"] | None = None,
+    workspace_id: str | None = Query(default=None, max_length=200),
+    asset_project: str | None = Query(default=None, max_length=200),
+    project_id: str | None = Query(default=None, max_length=100),
+    label: str | None = Query(default=None, min_length=1, max_length=200),
+    ctx=Depends(_upload_client_context),
+):
+    maximum = upload_limits.REFERENCE_UPLOAD_MAX_BYTES
+    lengths = request.headers.getlist("content-length")
+    if len(lengths) != 1 or len(lengths[0]) > 20 or not re.fullmatch(r"[0-9]+", lengths[0]):
+        raise HTTPException(400, "정확한 Content-Length가 필요합니다.")
+    size = int(lengths[0])
+    if size > maximum:
+        raise HTTPException(413, "참고 그림이 64MiB를 초과합니다.")
+    suffix = Path(filename).suffix.lower()
+    name = label or filename
+    if label and not Path(label).suffix:
+        name += suffix
+    if (suffix not in {".png", ".jpg", ".jpeg", ".webp"} or Path(name).suffix.lower() != suffix
+            or any(ord(c) < 32 or c in '<>:"/\\|?*' for c in name)
+            or name.endswith((".", " ")) or asset_tree.is_hidden_name(name)
+            or re.fullmatch(r"(?i)(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])", name.split(".", 1)[0].rstrip())):
+        raise HTTPException(422, "PNG·JPEG·WEBP 파일 이름을 사용하세요.")
+    ws = await asyncio.to_thread(_import_permissions, ctx, workspace_scope, workspace_id, project_id, asset_project)
+    internal = _internal(ctx, "/api/assets/reference-import", submit=True)
+    from ..db import pinned_share_operation
+    from ..services.asset_sync import capture_local_operation
+    operation = await to_thread_non_abandon(capture_local_operation, internal)
+    with pinned_share_operation(operation):
+        dest = assets.ASSETS_ROOT / assets._PROMPT_IMPORT_PROJECT
+        tmp, size, digest, head = await assets._stream_reference_tmp(request, dest, size, maximum)
+        try:
+            if suffix not in reference_match.image_suffix(head):
+                raise HTTPException(422, "확장자와 그림 파일 형식이 다릅니다.")
+            match = {"attempted": False, "complete": False, "linked": False, "candidates": []}
+            if asset_project:
+                match = await reference_match.match_reference(tmp, lambda: _asset_tree_snapshot(ctx, ws, asset_project))
+            # Long reads cannot authorize a later write or handle issuance.
+            ws = await asyncio.to_thread(_import_permissions, ctx, workspace_scope, workspace_id, project_id, asset_project)
+            candidates = [dict(_issue_asset_reference(ctx, ws, asset_project, node), cell_diff=node["cell_diff"])
+                          for node in match["candidates"]]
+            if match["linked"]:
+                reference, reused, sync_state = {k: v for k, v in candidates[0].items() if k != "cell_diff"}, True, "not_required"
+            else:
+                try:
+                    target, reused, sync = await to_thread_non_abandon(
+                        assets._commit_import_and_sync, tmp, dest, name, digest, "image", size, internal, project_id)
+                finally:
+                    asset_tree.invalidate_project_tree(dest)
+                    asset_tree.invalidate_combined_tree(assets.ASSETS_ROOT, assets._INTERNAL_FOLDERS)
+                ws = await asyncio.to_thread(_import_permissions, ctx, workspace_scope, workspace_id, project_id, asset_project)
+                nodes = await asyncio.to_thread(_asset_tree, ctx, ws, assets._COMBINED_INTERNAL)
+                ws = await asyncio.to_thread(_import_permissions, ctx, workspace_scope, workspace_id, project_id, asset_project)
+                node = next((node for node in _flatten(nodes) if node.get("path") == "imports/" + target.name), None)
+                if not node or not node.get("version"):
+                    raise HTTPException(409, "저장된 참고 그림을 다시 조회하세요.")
+                reference = _issue_asset_reference(ctx, ws, assets._COMBINED_INTERNAL, node)
+                sync_state = sync["sync_state"]
+            return {"reference": reference, "stored": "original" if match["linked"] else "copy", "reused": reused,
+                    "match": {**match, "candidates": candidates}, "sync_state": sync_state}
+        finally:
+            await to_thread_non_abandon(tmp.unlink, missing_ok=True)
 
 
 class PlanItem(StrictModel):

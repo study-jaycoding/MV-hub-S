@@ -1807,6 +1807,39 @@ def test_generation_search_forwards_keyset_and_filters(local, monkeypatch):
     assert action(local, "read_context", args).status_code == 422
 
 
+def test_reference_path_search_and_offset_follow_tree_order(local, tmp_path, monkeypatch):
+    configure(local)
+    root = tmp_path / "references"
+    (root / "Matthew").mkdir(parents=True)
+    for name in ("A_pose.png", "B_pose.png", "C_pose.png", "other.png"):
+        (root / "Matthew" / name).write_bytes(b"fixture")
+    monkeypatch.setattr(api.assets, "_owner_mounts", lambda owner: [{"name": "reference"}])
+    monkeypatch.setattr(api.assets, "_mount_dir", lambda name, owner: root)
+    monkeypatch.setattr(api.assets, "_auto_project_mounts", lambda *args: [])
+    monkeypatch.setattr(api.assets.asset_watcher, "watch", lambda *args, **kwargs: None)
+    args = {"kind": "references", "asset_project": "reference", "search": "mAtThEw POSE", "limit": 2}
+    first = action(local, "read_context", args).json()
+    assert [r["path"] for r in first["references"]] == ["Matthew/A_pose.png", "Matthew/B_pose.png"]
+    assert first["next_offset"] == 2
+    second = action(local, "read_context", {**args, "offset": first["next_offset"]}).json()
+    assert [r["path"] for r in second["references"]] == ["Matthew/C_pose.png"]
+    assert second["next_offset"] is None
+    assert action(local, "read_context", {**args, "offset": 100000}).json()["references"] == []
+    assert action(local, "read_context", {**args, "search": "A_pose"}).json()["references"][0]["name"] == "A_pose.png"
+
+
+@pytest.mark.parametrize("args", [
+    {"kind": "references", "offset": 0},
+    {"kind": "generations", "asset_project": "x", "offset": 0},
+    {"kind": "references", "asset_project": "x", "offset": -1},
+    {"kind": "references", "asset_project": "x", "offset": 100001},
+    {"kind": "references", "asset_project": "x", "offset": 0.5},
+])
+def test_reference_offset_rejects_invalid_input(local, args):
+    configure(local)
+    assert action(local, "read_context", args).status_code == 422
+
+
 @pytest.mark.parametrize("timestamp", [None, "8.5", True, float("nan"), float("inf"), 10**400])
 def test_generation_search_reports_unavailable_cursor(local, monkeypatch, timestamp):
     configure(local)

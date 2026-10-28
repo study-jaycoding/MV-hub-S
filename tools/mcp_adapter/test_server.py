@@ -126,6 +126,13 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual(send.call_count, 1)
                 self.assertEqual(send.call_args.args[0].get_method(), "POST")
 
+    def test_legacy_connection_cannot_import_reference(self):
+        broker = Broker(self.http.url)
+        with self.assertRaises(ToolError) as caught:
+            broker.import_reference("C:\\not-read.png")
+        self.assertIn("hub_outdated", str(caught.exception))
+        self.assertEqual(self.http.calls, [])
+
     def test_execution_grant_and_sanitized_denial(self):
         broker = Broker(self.http.url)
         self.assertFalse(broker.connect()["can_execute"])

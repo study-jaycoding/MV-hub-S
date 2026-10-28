@@ -21,6 +21,7 @@ from .operational_logging import log_event
 
 MIB = 1024 * 1024
 KIB = 1024
+REFERENCE_UPLOAD_MAX_BYTES = 64 * MIB
 _MULTIPART_OVERHEAD_BYTES = 2 * MIB
 # comfy /run 은 파일 외에 워크플로우 JSON(content)·param_values·media_meta 폼 필드가 함께
 # 실린다 — 대형 워크플로우 + 상한 근접 배치 조합에서 파일은 규정 이내인데 경계 413 이 나지
@@ -55,6 +56,7 @@ DB_UPLOAD_FILE_MAX_BYTES = _positive_env(
 # 브라우저 multipart 경계·파일명·작은 폼 필드가 실제 파일 바이트와 함께 들어온다. 원시 HTTP
 # 본문은 2MiB 여유를 주고, 아래 validate_upload_batch가 파일 합계를 정확히 다시 강제한다.
 UPLOAD_REQUEST_LIMITS: dict[str, int] = {
+    "/api/mcp/v2/client/references/import": REFERENCE_UPLOAD_MAX_BYTES,
     "/api/assets/upload": ASSET_UPLOAD_TOTAL_MAX_BYTES + _MULTIPART_OVERHEAD_BYTES,
     "/api/assets/capture": ASSET_UPLOAD_TOTAL_MAX_BYTES + _MULTIPART_OVERHEAD_BYTES,
     "/api/assets/reference-import": ASSET_UPLOAD_TOTAL_MAX_BYTES + _MULTIPART_OVERHEAD_BYTES,

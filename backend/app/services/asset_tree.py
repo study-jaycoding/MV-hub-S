@@ -28,7 +28,7 @@ _TREE_TTL = max(
 
 _CacheKey = tuple[str, str, tuple[str, ...]]
 _EpochKey = tuple[str, str, tuple[str, ...]]
-_TREE_CACHE: dict[_CacheKey, tuple[float, list[dict[str, Any]]]] = {}
+_TREE_CACHE: dict[_CacheKey, tuple[float, "AssetTreeSnapshot"]] = {}
 _TREE_SCAN_LOCKS: dict[_CacheKey, threading.Lock] = {}
 _TREE_INVALIDATION_EPOCHS: dict[_EpochKey, int] = {}
 _TREE_CACHE_LOCK = threading.Lock()
@@ -38,6 +38,18 @@ _TREE_CACHE_LOCK = threading.Lock()
 class AssetTreeRead:
     children: list[dict[str, Any]]
     scanned: bool
+
+
+@dataclass(frozen=True)
+class AssetTreeSnapshot:
+    children: list[dict[str, Any]]
+    scanned: bool
+    truncated: bool = False
+    failures: int = 0
+
+    @property
+    def complete(self) -> bool:
+        return not self.truncated and self.failures == 0
 
 
 def is_hidden_name(name: str) -> bool:
@@ -75,11 +87,12 @@ def _scan_epoch(key: _CacheKey) -> int:
         return _TREE_INVALIDATION_EPOCHS.get(_epoch_key(key), 0)
 
 
-def _cached_tree(key: _CacheKey) -> list[dict[str, Any]] | None:
+def _cached_tree(key: _CacheKey) -> AssetTreeSnapshot | None:
     with _TREE_CACHE_LOCK:
         cached = _TREE_CACHE.get(key)
         if cached and (time.monotonic() - cached[0]) < _TREE_TTL:
-            return cached[1]
+            snapshot = cached[1]
+            return AssetTreeSnapshot(snapshot.children, False, snapshot.truncated, snapshot.failures)
         if cached:
             _TREE_CACHE.pop(key, None)
     return None
@@ -87,12 +100,12 @@ def _cached_tree(key: _CacheKey) -> list[dict[str, Any]] | None:
 
 def _remember_tree(
     key: _CacheKey,
-    children: list[dict[str, Any]],
+    snapshot: AssetTreeSnapshot,
     scan_epoch: int,
 ) -> None:
     with _TREE_CACHE_LOCK:
         if _TREE_INVALIDATION_EPOCHS.get(_epoch_key(key), 0) == scan_epoch:
-            _TREE_CACHE[key] = (time.monotonic(), children)
+            _TREE_CACHE[key] = (time.monotonic(), snapshot)
 
 
 def invalidate_project_tree(directory: Path) -> None:
@@ -126,6 +139,7 @@ def build_tree(
     hidden_names: Optional[set[str]] = None,
     _depth: int = 0,
     _budget: Optional[list[int]] = None,
+    _status: Optional[list[int]] = None,
 ) -> list[dict[str, Any]]:
     """폴더 우선으로 재귀 순회하고 미디어 파일만 트리에 포함한다.
 
@@ -134,7 +148,10 @@ def build_tree(
     """
     if _budget is None:
         _budget = [_TREE_MAX_NODES]
+    if _status is None:
+        _status = [0, 0]  # truncation, failed reads; owned by this scan, never process-global.
     if _depth > _TREE_MAX_DEPTH or _budget[0] <= 0:
+        _status[0] = 1
         return []
 
     try:
@@ -149,16 +166,19 @@ def build_tree(
                     is_symlink = entry.is_symlink()
                     is_dir = entry.is_dir(follow_symlinks=False)
                 except OSError:
+                    _status[1] += 1
                     continue
                 entries.append((entry, is_dir, is_symlink))
         entries.sort(key=lambda item: (not item[1], item[0].name.lower()))
     except (PermissionError, OSError):
+        _status[1] += 1
         return []
 
     out: list[dict[str, Any]] = []
     reparse_point_attr = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT
     for entry, is_dir, is_symlink in entries:
         if _budget[0] <= 0:
+            _status[0] = 1
             break
         if is_symlink:
             continue
@@ -170,6 +190,7 @@ def build_tree(
                 if getattr(entry_stat, "st_file_attributes", 0) & reparse_point_attr:
                     continue
             except OSError:
+                _status[1] += 1
                 continue
             _budget[0] -= 1
             opaque = rel.replace("\\", "/").casefold() in _OPAQUE_FOLDER_NAMES
@@ -182,6 +203,7 @@ def build_tree(
                     hidden_names=hidden_names,
                     _depth=_depth + 1,
                     _budget=_budget,
+                    _status=_status,
                 )
             )
             out.append(
@@ -202,6 +224,7 @@ def build_tree(
             if getattr(entry_stat, "st_file_attributes", 0) & reparse_point_attr:
                 continue
         except OSError:
+            _status[1] += 1
             continue
         _budget[0] -= 1
         out.append(
@@ -216,12 +239,34 @@ def build_tree(
     return out
 
 
+def scan_project_tree_snapshot(
+    directory: Path, *, hidden_names: Optional[set[str]] = None,
+) -> AssetTreeSnapshot:
+    """Fresh comparison scan without changing any shared cache or invalidation epoch."""
+    status = [0, 0]
+    children = build_tree(directory, "", hidden_names=set(_hidden_key(hidden_names)) or None, _status=status)
+    return AssetTreeSnapshot(children, True, bool(status[0]), status[1])
+
+
+def scan_combined_tree_snapshot(assets_root: Path, folders: Iterable[str]) -> AssetTreeSnapshot:
+    status = [0, 0]
+    children = _scan_combined_internal_children(assets_root, tuple(folders), _status=status)
+    return AssetTreeSnapshot(children, True, bool(status[0]), status[1])
+
+
 def read_project_tree(
     directory: Path,
     *,
     fresh: bool = False,
     hidden_names: Optional[set[str]] = None,
 ) -> AssetTreeRead:
+    snapshot = read_project_tree_snapshot(directory, fresh=fresh, hidden_names=hidden_names)
+    return AssetTreeRead(snapshot.children, snapshot.scanned)
+
+
+def read_project_tree_snapshot(
+    directory: Path, *, fresh: bool = False, hidden_names: Optional[set[str]] = None,
+) -> AssetTreeSnapshot:
     """프로젝트 트리를 읽는다. 같은 키의 동시 캐시 미스는 한 번만 스캔한다."""
     normalized_hidden = set(_hidden_key(hidden_names)) or None
     key = _project_key(directory, normalized_hidden)
@@ -229,30 +274,40 @@ def read_project_tree(
         invalidate_project_tree(directory)
 
     if not fresh:
-        children = _cached_tree(key)
-        if children is not None:
-            return AssetTreeRead(children=children, scanned=False)
+        snapshot = _cached_tree(key)
+        if snapshot is not None:
+            return snapshot
 
     with _tree_scan_lock(key):
         if not fresh:
-            children = _cached_tree(key)
-            if children is not None:
-                return AssetTreeRead(children=children, scanned=False)
+            snapshot = _cached_tree(key)
+            if snapshot is not None:
+                return snapshot
         scan_epoch = _scan_epoch(key)
-        children = build_tree(directory, "", hidden_names=normalized_hidden)
-        _remember_tree(key, children, scan_epoch)
-        return AssetTreeRead(children=children, scanned=True)
+        status = [0, 0]
+        children = build_tree(directory, "", hidden_names=normalized_hidden, _status=status)
+        snapshot = AssetTreeSnapshot(children, True, bool(status[0]), status[1])
+        _remember_tree(key, snapshot, scan_epoch)
+        return snapshot
 
 
 def _scan_combined_internal_children(
-    assets_root: Path, folders: tuple[str, ...]
+    assets_root: Path, folders: tuple[str, ...], *, _status: Optional[list[int]] = None,
 ) -> list[dict[str, Any]]:
+    if _status is None:
+        _status = [0, 0]
     children: list[dict[str, Any]] = []
     for folder in folders:
-        directory = (assets_root / folder).resolve()
-        if not directory.is_dir():
+        directory = assets_root / folder
+        try:
+            directory.stat()
+        except FileNotFoundError:
+            # A not-yet-created local imports/captures directory is intentionally empty.
             continue
-        subtree = build_tree(directory, f"{folder}/")
+        except OSError:
+            _status[1] += 1
+            continue
+        subtree = build_tree(directory, f"{folder}/", _status=_status)
         if subtree:
             children.append(
                 {
@@ -271,6 +326,12 @@ def read_combined_tree(
     *,
     fresh: bool = False,
 ) -> list[dict[str, Any]]:
+    return read_combined_tree_snapshot(assets_root, folders, fresh=fresh).children
+
+
+def read_combined_tree_snapshot(
+    assets_root: Path, folders: Iterable[str], *, fresh: bool = False,
+) -> AssetTreeSnapshot:
     """여러 내장 폴더를 하나의 루트 아래에 묶어 캐시된 트리로 반환한다."""
     folder_tuple = tuple(folders)
     key = _combined_key(assets_root, folder_tuple)
@@ -278,19 +339,21 @@ def read_combined_tree(
         invalidate_combined_tree(assets_root, folder_tuple)
 
     if not fresh:
-        children = _cached_tree(key)
-        if children is not None:
-            return children
+        snapshot = _cached_tree(key)
+        if snapshot is not None:
+            return snapshot
 
     with _tree_scan_lock(key):
         if not fresh:
-            children = _cached_tree(key)
-            if children is not None:
-                return children
+            snapshot = _cached_tree(key)
+            if snapshot is not None:
+                return snapshot
         scan_epoch = _scan_epoch(key)
-        children = _scan_combined_internal_children(assets_root, folder_tuple)
-        _remember_tree(key, children, scan_epoch)
-    return children
+        status = [0, 0]
+        children = _scan_combined_internal_children(assets_root, folder_tuple, _status=status)
+        snapshot = AssetTreeSnapshot(children, True, bool(status[0]), status[1])
+        _remember_tree(key, snapshot, scan_epoch)
+    return snapshot
 
 
 def collect_media(

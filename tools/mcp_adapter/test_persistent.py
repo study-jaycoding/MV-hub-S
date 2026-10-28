@@ -1,6 +1,7 @@
 """Real stdio SDK, DPAPI and two clients against a non-generating local HTTP fixture."""
 import json
 import base64
+import contextlib
 import os
 import re
 import shutil
@@ -10,6 +11,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 from uuid import uuid4
@@ -20,7 +22,8 @@ from mcp.client import advertise
 from mcp.server.mcpserver.exceptions import ToolError
 
 from local_setup import configure_client
-from server import Broker, HUB_FEATURES, ADAPTER_VERSION, MAX_RESPONSE, MAX_RESULT_RESPONSE, MAX_GALLERY_RESPONSE, RESULT_UI_URI, result_ui, write_result_display, validate_display_directory, present_result
+from server import Broker, HUB_FEATURES, ADAPTER_VERSION, MAX_RESPONSE, MAX_RESULT_RESPONSE, MAX_GALLERY_RESPONSE, MAX_REFERENCE, RESULT_UI_URI, result_ui, write_result_display, validate_display_directory, present_result, attachment_file, _attachment_chunks
+import server as adapter
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -43,6 +46,19 @@ class Handler(BaseHTTPRequestHandler):
                     "features": getattr(self.server, "features", sorted(HUB_FEATURES))}})
 
     def do_POST(self):
+        if self.path.startswith("/api/mcp/v2/client/references/import?"):
+            left = int(self.headers["Content-Length"])
+            chunks = []
+            while left:
+                data = self.rfile.read(min(left, 65536))
+                if not data:
+                    break
+                chunks.append(data)
+                left -= len(data)
+            self.server.calls.append((self.path, b"".join(chunks)))
+            if self.headers.get("X-MVHub-MCP-Secret") not in self.server.clients:
+                return self.reply(403, {})
+            return self.reply(200, {"reference": {"id": "reference-fixture"}, "stored": "copy"})
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         self.server.calls.append((self.path, body))
         client = self.server.clients.get(self.headers.get("X-MVHub-MCP-Secret"))
@@ -97,6 +113,225 @@ class PersistentTests(unittest.TestCase):
         if display_mode != "native":
             config["args"] += ["--display-mode", display_mode]
         return config, credential
+
+    def attachment(self):
+        session = str(uuid4())
+        folder = self.root / "claude" / "project" / session / "images"
+        folder.mkdir(parents=True)
+        path = folder / "attached.png"
+        path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 128)
+        return path, {"TEMP": str(self.root), "CLAUDE_CODE_SESSION_ID": session}
+
+    def test_reference_stream_and_feature_gating(self):
+        credential = {"secret": uuid4().hex + uuid4().hex, "url": self.url,
+                      "hub_id": self.http.hub_id, "client_id": str(uuid4())}
+        self.http.clients[credential["secret"]] = credential["client_id"]
+        with patch("server.profile_settings", return_value=credential):
+            broker = Broker(self.url, "isolated-profile")
+        path, env = self.attachment()
+        with patch.dict(os.environ, env):
+            result = broker.import_reference(str(path), workspace_scope="personal", label="test")
+            self.assertEqual(result["reference"]["id"], "reference-fixture")
+            route, payload = self.http.calls[-1]
+            self.assertIn("workspace_scope=personal", route)
+            self.assertEqual(payload, path.read_bytes())
+            self.http.features = []
+            before = len(self.http.calls)
+            for invoke in (lambda: broker.import_reference(str(path)),
+                           lambda: broker.action("read_context", {"kind": "references", "asset_project": "x", "offset": 0})):
+                with self.assertRaises(ToolError) as error:
+                    invoke()
+                self.assertIn("hub_outdated", str(error.exception))
+            self.assertEqual(len(self.http.calls), before)
+            broker.action("read_context", {"kind": "references", "asset_project": "x"})
+            self.assertNotIn("offset", self.http.calls[-1][1]["args"])
+
+    def test_registered_reference_tools_without_profile_installation(self):
+        path, env = self.attachment()
+        credential = {"secret": uuid4().hex + uuid4().hex, "url": self.url,
+                      "hub_id": self.http.hub_id, "client_id": str(uuid4())}
+        self.http.clients[credential["secret"]] = credential["client_id"]
+        async def exercise():
+            with patch.dict(os.environ, env), patch("server.profile_settings", return_value=credential):
+                for mode, count in (("native", 15), ("conversation", 14)):
+                    server = adapter.create_server(self.url, "isolated-profile", mode)
+                    listing = await server.list_tools()
+                    self.assertEqual(len(listing), count)
+                    self.assertIn("import_reference", [tool.name for tool in listing])
+                    imported = await server.call_tool("import_reference", {
+                        "file_path": str(path), "workspace_scope": "personal"})
+                    self.assertFalse(imported.is_error, imported.content)
+                    self.assertEqual(imported.structured_content["reference"]["id"], "reference-fixture")
+                    await server.call_tool("read_context", {"kind": "references", "asset_project": "x"})
+                    self.assertNotIn("offset", self.http.calls[-1][1]["args"])
+                    await server.call_tool("read_context", {"kind": "references", "asset_project": "x", "offset": 0})
+                    self.assertEqual(self.http.calls[-1][1]["args"]["offset"], 0)
+                legacy = adapter.create_server(self.url)
+                self.assertEqual(len(await legacy.list_tools()), 7)
+        anyio.run(exercise)
+
+    def test_attachment_boundary_and_bad_hosts(self):
+        path, env = self.attachment()
+        with patch.dict(os.environ, env):
+            with attachment_file(str(path)) as (stream, size):
+                self.assertEqual(b"".join(_attachment_chunks(stream, size)), path.read_bytes())
+            outside = self.root / "outside.png"
+            outside.write_bytes(path.read_bytes())
+            other = path.parent.parent.parent / str(uuid4()) / "images"
+            other.mkdir(parents=True)
+            other_file = other / "other.png"
+            other_file.write_bytes(path.read_bytes())
+            for value in (str(outside), str(other_file), str(path) + ":stream",
+                          "\\\\server\\share\\a.png", "\\\\?\\" + str(path), "\\\\.\\C:\\a.png"):
+                with self.subTest(path=value), self.assertRaises(ToolError):
+                    with attachment_file(value):
+                        self.fail("unsafe file opened")
+            for value in ("", "not-a-uuid", str(uuid4())):
+                with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": value}), self.assertRaises(ToolError):
+                    with attachment_file(str(path)):
+                        self.fail("wrong session opened")
+            duplicate = self.root / "claude" / "second-project" / env["CLAUDE_CODE_SESSION_ID"] / "images"
+            duplicate.mkdir(parents=True)
+            with self.assertRaises(ToolError):
+                with attachment_file(str(path)):
+                    self.fail("ambiguous session opened")
+
+    def test_attachment_reparse_and_replacement_are_rejected(self):
+        path, env = self.attachment()
+        real_stat = Path.lstat
+        def reparse(candidate, *args, **kwargs):
+            if candidate == path.parent.parent:
+                return SimpleNamespace(st_mode=0, st_file_attributes=0x400)
+            return real_stat(candidate, *args, **kwargs)
+        with patch.dict(os.environ, env), patch.object(Path, "lstat", reparse), self.assertRaises(ToolError):
+            with attachment_file(str(path)):
+                self.fail("reparse parent opened")
+        original = adapter._open_attachment
+        def replace(candidate):
+            replacement = path.with_name("replacement.png")
+            replacement.write_bytes(path.read_bytes() + b"replaced")
+            replacement.replace(path)
+            return original(candidate)
+        with patch.dict(os.environ, env), patch.object(adapter, "_open_attachment", replace), self.assertRaises(ToolError):
+            with attachment_file(str(path)):
+                self.fail("replaced file opened")
+
+    def test_attachment_folder_cannot_move_between_normalization_and_open(self):
+        path, env = self.attachment()
+        credential = {"secret": uuid4().hex + uuid4().hex, "url": self.url,
+                      "hub_id": self.http.hub_id, "client_id": str(uuid4())}
+        self.http.clients[credential["secret"]] = credential["client_id"]
+        with patch("server.profile_settings", return_value=credential):
+            broker = Broker(self.url, "isolated-profile")
+        original = adapter._canonical_attachment_folder
+        for target in (path.parent, path.parent.parent):
+            with self.subTest(folder=target.name):
+                moved = target.with_name(target.name + "-moved")
+                blocked = []
+                @contextlib.contextmanager
+                def rename_after_normalization(kernel, folder):
+                    with original(kernel, folder) as canonical:
+                        (folder / "new-attachment.png").write_bytes(path.read_bytes())
+                        try:
+                            os.rename(target, moved)
+                        except OSError as error:
+                            blocked.append(error)
+                            raise
+                        os.rename(moved, target)
+                        yield canonical
+                with patch.dict(os.environ, env), patch.object(
+                        adapter, "_canonical_attachment_folder", rename_after_normalization):
+                    with self.assertRaises(ToolError):
+                        broker.import_reference(str(path))
+                self.assertEqual(len(blocked), 1)
+                self.assertEqual(self.http.calls, [])
+                # The failure path must release the folder handle as well.
+                os.rename(target, moved)
+                os.rename(moved, target)
+
+    def test_attachment_rejects_canonical_folder_mismatch_before_upload(self):
+        path, env = self.attachment()
+        credential = {"secret": uuid4().hex + uuid4().hex, "url": self.url,
+                      "hub_id": self.http.hub_id, "client_id": str(uuid4())}
+        self.http.clients[credential["secret"]] = credential["client_id"]
+        with patch("server.profile_settings", return_value=credential):
+            broker = Broker(self.url, "isolated-profile")
+        other = self.root / "junction-target"
+        with patch.dict(os.environ, env), patch.object(
+                adapter, "_final_attachment_path", side_effect=[other, other / path.name]) as final_path:
+            with self.assertRaises(ToolError):
+                broker.import_reference(str(path))
+        self.assertEqual(final_path.call_count, 1)
+        self.assertEqual(self.http.calls, [])
+        moved = path.parent.with_name("images-moved")
+        os.rename(path.parent, moved)
+        os.rename(moved, path.parent)
+
+    def test_attachment_accepts_short_temp_folder(self):
+        import ctypes
+        from ctypes import wintypes
+        path, env = self.attachment()
+        short = ctypes.WinDLL("kernel32", use_last_error=True).GetShortPathNameW
+        short.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        short.restype = wintypes.DWORD
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = short(str(self.root), buffer, len(buffer))
+        self.assertTrue(0 < length < len(buffer))
+        short_root = Path(buffer.value)
+        if short_root == self.root:
+            self.skipTest("This volume has no distinct 8.3 name for the temporary folder")
+        env["TEMP"] = str(short_root)
+        short_path = short_root / path.relative_to(self.root)
+        with patch.dict(os.environ, env), attachment_file(str(short_path)) as (stream, size):
+            self.assertEqual(b"".join(_attachment_chunks(stream, size)), path.read_bytes())
+
+    def test_attachment_type_size_and_bounded_reads(self):
+        path, env = self.attachment()
+        with patch.dict(os.environ, env):
+            path.write_bytes(b"GIF89a")
+            with self.assertRaises(ToolError):
+                with attachment_file(str(path)):
+                    self.fail("spoofed image opened")
+            with path.open("wb") as output:
+                output.write(b"\x89PNG\r\n\x1a\n")
+                output.seek(MAX_REFERENCE - 1)
+                output.write(b"x")
+            with attachment_file(str(path)) as (stream, size):
+                class LimitedRead:
+                    def read(self, count):
+                        self_assert = 0 < count <= 1024 * 1024
+                        if not self_assert:
+                            raise AssertionError("unbounded read")
+                        return stream.read(count)
+                self.assertEqual(sum(map(len, _attachment_chunks(LimitedRead(), size))), MAX_REFERENCE)
+            with path.open("ab") as output:
+                output.write(b"x")
+            with self.assertRaises(ToolError):
+                with attachment_file(str(path)):
+                    self.fail("oversized image opened")
+
+    def test_sdk_reference_tool_lists_counts_and_uses_same_handle(self):
+        path, env = self.attachment()
+        async def exercise():
+            for mode, count in (("native", 15), ("conversation", 14)):
+                config, _ = self.profile(mode)
+                config["env"] = {**os.environ, **env}
+                async with Client(StdioServerParameters(**config)) as client:
+                    listing = (await client.list_tools()).tools
+                    self.assertEqual(len(listing), count)
+                    self.assertIn("import_reference", [tool.name for tool in listing])
+                    result = await client.call_tool("import_reference", {"file_path": str(path), "workspace_scope": "personal"})
+                    self.assertFalse(result.is_error, result.content)
+                    ref = result.structured_content["reference"]["id"]
+                    plan = await client.call_tool("prepare_generation_plan", {"title": "reference", "workspace_scope": "personal",
+                        "items": [{"label": "one", "prompt": "hello", "model": "mock", "params": {}, "reference_ids": [ref]}]})
+                    self.assertFalse(plan.is_error)
+                    self.assertEqual(self.http.calls[-1][1]["args"]["items"][0]["reference_ids"], [ref])
+                    await client.call_tool("read_context", {"kind": "references", "asset_project": "x"})
+                    self.assertNotIn("offset", self.http.calls[-1][1]["args"])
+                    await client.call_tool("read_context", {"kind": "references", "asset_project": "x", "offset": 0})
+                    self.assertEqual(self.http.calls[-1][1]["args"]["offset"], 0)
+        anyio.run(exercise)
 
     def test_profile_survives_new_adapter_and_revocation_is_immediate(self):
         config, credential = self.profile()
@@ -546,7 +781,7 @@ class PersistentTests(unittest.TestCase):
                     self.assertFalse(response.is_error)
                     info = response.structured_content
                     self.assertEqual(info["apps_negotiated"], supported)
-                    self.assertEqual(info["adapter"], {"version": ADAPTER_VERSION, "tools": 14})
+                    self.assertEqual(info["adapter"], {"version": ADAPTER_VERSION, "tools": 15})
                     self.assertIsNone(info["reload_required"])
                     listing = {t.name: t for t in (await client.list_tools()).tools}
                     self.assertTrue(all(not (t.meta or {}).get("ui", {}).get("resourceUri") for t in listing.values()))
@@ -583,7 +818,7 @@ class PersistentTests(unittest.TestCase):
         async def exercise():
             async with Client(StdioServerParameters(**config)) as client:
                 tools = await client.list_tools()
-                self.assertEqual(len(tools.tools), 14)
+                self.assertEqual(len(tools.tools), 15)
                 self.assertTrue(all(not (t.meta or {}).get("ui", {}).get("resourceUri") for t in tools.tools))
                 image = await client.call_tool("get_result", {"plan_id": "p"})
                 self.assertFalse(image.is_error)
@@ -703,13 +938,13 @@ class PersistentTests(unittest.TestCase):
             async with Client(StdioServerParameters(**config), extensions=[advertise(
                     "io.modelcontextprotocol/ui", {"mimeTypes": ["text/html;profile=mcp-app"]})]) as client:
                 listing = (await client.list_tools()).tools
-                self.assertEqual(len(listing), 13)
+                self.assertEqual(len(listing), 14)
                 self.assertNotIn("read_display_results", [t.name for t in listing])
                 self.assertTrue(all("ui" not in (t.meta or {}) for t in listing))
                 self.assertEqual((await client.list_resources()).resources, [])
                 info = (await client.call_tool("check_connection", {})).structured_content
                 self.assertEqual(info["display_mode"], "conversation")
-                self.assertEqual(info["adapter"]["tools"], 13)
+                self.assertEqual(info["adapter"]["tools"], 14)
                 self.assertFalse(info["apps_available"])
                 executed = await client.call_tool("execute_generation_plan", {"plan_id": plan})
                 self.assertNotIn("live_plan_id", executed.structured_content)

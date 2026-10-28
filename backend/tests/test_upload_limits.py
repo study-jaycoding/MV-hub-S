@@ -241,6 +241,7 @@ def test_byte_limit_display_never_rounds_small_values_to_zero(value: int, displa
 
 def test_every_upload_route_has_a_positive_request_limit() -> None:
     assert set(upload_limits.UPLOAD_REQUEST_LIMITS) == {
+        "/api/mcp/v2/client/references/import",
         "/api/assets/upload",
         "/api/assets/capture",
         "/api/assets/reference-import",

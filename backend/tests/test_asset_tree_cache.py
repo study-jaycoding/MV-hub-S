@@ -30,7 +30,7 @@ class AssetTreeCacheTests(unittest.TestCase):
     def test_combined_tree_concurrent_reads_scan_once(self):
         expected = [{"name": "captures", "type": "dir", "path": "captures", "children": []}]
 
-        def slow_scan(_assets_root, _folders):
+        def slow_scan(_assets_root, _folders, **_kwargs):
             time.sleep(0.03)
             return expected
 
@@ -70,7 +70,7 @@ class AssetTreeCacheTests(unittest.TestCase):
         current = [{"name": "current"}]
         calls = 0
 
-        def controlled_scan(*_args):
+        def controlled_scan(*_args, **_kwargs):
             nonlocal calls
             calls += 1
             if calls == 1:
@@ -136,7 +136,7 @@ class AssetTreeCacheTests(unittest.TestCase):
                         with asset_tree._TREE_CACHE_LOCK:
                             asset_tree._TREE_CACHE[key] = (
                                 time.monotonic(),
-                                [{"name": "appeared"}],
+                                asset_tree.AssetTreeSnapshot([{"name": "appeared"}], True),
                             )
                     scan_lock.release()
                     scan_lock = None
@@ -168,6 +168,45 @@ class AssetTreeCacheTests(unittest.TestCase):
         self.assertEqual(scan.call_count, 1)
         self.assertTrue(all(read.children is expected for read in reads))
         self.assertEqual(sum(read.scanned for read in reads), 1)
+
+    def test_matching_scan_preserves_other_policy_cache_and_epoch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "one.png").write_bytes(b"image")
+            hidden = asset_tree.read_project_tree(root, hidden_names={"render"})
+            visible = asset_tree.read_project_tree(root)
+            cached = dict(asset_tree._TREE_CACHE)
+            epochs = dict(asset_tree._TREE_INVALIDATION_EPOCHS)
+            (root / "two.png").write_bytes(b"image")
+            with patch.object(assets, "_project_dir_info", return_value=(root, True, "test:matching")):
+                _directory, snapshot = assets.project_tree_snapshot(SimpleNamespace(), "demo")
+            self.assertEqual([node["name"] for node in snapshot.children], ["one.png", "two.png"])
+            self.assertTrue(snapshot.complete)
+            self.assertEqual(asset_tree._TREE_INVALIDATION_EPOCHS, epochs)
+            self.assertEqual(asset_tree._TREE_CACHE.keys(), cached.keys())
+            self.assertTrue(all(asset_tree._TREE_CACHE[key] is value for key, value in cached.items()))
+            self.assertIs(asset_tree.read_project_tree(root, hidden_names={"render"}).children, hidden.children)
+            self.assertIs(asset_tree.read_project_tree(root).children, visible.children)
+            asset_tree.invalidate_project_tree(root)
+
+    def test_matching_combined_scan_preserves_cache_and_epoch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "imports").mkdir()
+            (root / "imports" / "one.png").write_bytes(b"image")
+            children = asset_tree.read_combined_tree(root, assets._INTERNAL_FOLDERS)
+            cached = dict(asset_tree._TREE_CACHE)
+            epochs = dict(asset_tree._TREE_INVALIDATION_EPOCHS)
+            (root / "imports" / "two.png").write_bytes(b"image")
+            with patch.object(assets, "ASSETS_ROOT", root):
+                _directory, snapshot = assets.project_tree_snapshot(SimpleNamespace(), assets._COMBINED_INTERNAL)
+            self.assertEqual(len(snapshot.children[0]["children"]), 2)
+            self.assertTrue(snapshot.complete)
+            self.assertEqual(asset_tree._TREE_INVALIDATION_EPOCHS, epochs)
+            self.assertEqual(asset_tree._TREE_CACHE.keys(), cached.keys())
+            self.assertTrue(all(asset_tree._TREE_CACHE[key] is value for key, value in cached.items()))
+            self.assertIs(asset_tree.read_combined_tree(root, assets._INTERNAL_FOLDERS), children)
+            asset_tree.invalidate_combined_tree(root, assets._INTERNAL_FOLDERS)
 
     def test_project_invalidation_during_scan_does_not_restore_stale_cache(self):
         scan_started = threading.Event()
@@ -284,7 +323,7 @@ class AssetTreeCacheTests(unittest.TestCase):
                         with asset_tree._TREE_CACHE_LOCK:
                             asset_tree._TREE_CACHE[key] = (
                                 time.monotonic(),
-                                [{"name": "appeared"}],
+                                asset_tree.AssetTreeSnapshot([{"name": "appeared"}], True),
                             )
                     scan_lock.release()
                     scan_lock = None

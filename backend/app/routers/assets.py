@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -134,6 +135,31 @@ _UploadTooLarge = asset_io.UploadTooLarge
 
 async def _stream_upload_tmp(up: UploadFile, dest_dir: Path) -> tuple[Path, int, str]:
     return await asset_io.stream_upload_tmp(up, dest_dir)
+
+
+async def _stream_reference_tmp(request: Request, dest_dir: Path, expected: int, maximum: int):
+    """Raw MCP upload; the browser multipart path keeps its existing policy."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=".mcp-reference-", suffix=".part", dir=dest_dir)
+    target = Path(name)
+    digest, size, head = hashlib.sha256(), 0, bytearray()
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > maximum:
+                    raise HTTPException(413, "참고 그림이 64MiB를 초과합니다.")
+                if size > expected:
+                    raise HTTPException(400, "Content-Length와 받은 크기가 다릅니다.")
+                head.extend(chunk[:max(0, 12 - len(head))])
+                digest.update(chunk)
+                await to_thread_non_abandon(output.write, chunk)
+        if size != expected or not size:
+            raise HTTPException(400, "Content-Length와 받은 크기가 다릅니다.")
+        return target, size, digest.hexdigest(), bytes(head)
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
 
 
 def _commit_unique_tmp(tmp: Path, dest_dir: Path, raw_name: str) -> Path:
@@ -838,6 +864,18 @@ def project_tree(
         if media and not thumbs.prewarm_recently(str(proj_dir)):
             background.add_task(thumbs.prewarm_asset_thumbs, media)  # 두 버킷(256/512) 파일 단위 워밍
     return {"project": project, "name": proj_dir.name, "children": children}
+
+
+def project_tree_snapshot(request: Request, project: str):
+    """Internal matching read: completeness travels with the tree, without prewarm jobs."""
+    if project == _COMBINED_INTERNAL:
+        return ASSETS_ROOT, asset_tree.scan_combined_tree_snapshot(ASSETS_ROOT, _INTERNAL_FOLDERS)
+    info = _project_dir_info(project, request)
+    if not info:
+        raise HTTPException(404, "프로젝트 없음")
+    directory, auto_project, _registration = info
+    return directory, asset_tree.scan_project_tree_snapshot(
+        directory, hidden_names=_tree_hidden_names(project, auto_project=auto_project))
 
 
 # ── 파일별 메타데이터(소스/태그/코멘트/컬러) ─────────────────────────────

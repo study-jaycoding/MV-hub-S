@@ -1,6 +1,7 @@
 """Local stdio MCP: protected persistent profiles, with legacy pairing compatibility."""
 
 import argparse
+import contextlib
 import base64
 import binascii
 import ipaddress
@@ -9,13 +10,14 @@ import json
 import os
 import secrets
 import site
+import stat
 import sys
 import time
 from functools import wraps
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 from uuid import UUID
 
@@ -69,9 +71,10 @@ MAX_PREVIEW = 512 * 1024
 REQUEST_TIMEOUT = 30
 RESULT_TIMEOUT = 90
 RESULT_UI_URI = "ui://mvhub/result.html"
-ADAPTER_VERSION = "2026.10.27.1"
+ADAPTER_VERSION = "2026.10.28.1"
 MCP_UPDATE_API = 1
-HUB_FEATURES = {"generation_result", "batch_results", "history_cursor", "plan_estimate"}
+HUB_FEATURES = {"generation_result", "batch_results", "history_cursor", "plan_estimate", "reference_import", "reference_search"}
+MAX_REFERENCE = 64 * 1024 * 1024
 ERRORS = {
     "invalid_input": ("입력 형식을 확인하세요.", False, "check_arguments"),
     "invalid_option": ("현재 모델의 지원 옵션을 다시 조회하세요.", False, "read_context"),
@@ -336,6 +339,183 @@ def profile_settings(path: str) -> dict:
     return module.read_profile(path)
 
 
+def _plain_local_path(path: Path) -> None:
+    for part in reversed((path, *path.parents)):
+        info = part.lstat()
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+            raise ValueError("reparse point")
+
+
+def _attachment_folder() -> Path:
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if os.name != "nt" or not session or str(UUID(session)) != session.casefold():
+        raise ValueError("unsupported attachment host")
+    temp = os.environ.get("TEMP", "")
+    root = Path(temp) / "claude"
+    if not temp or not root.is_absolute() or str(root).startswith(("\\\\", "//")):
+        raise ValueError("invalid temp directory")
+    import ctypes
+    if ctypes.windll.kernel32.GetDriveTypeW(ctypes.c_wchar_p(root.anchor)) == 4:
+        raise ValueError("remote attachment directory")
+    _plain_local_path(root)
+    candidates = []
+    for project in root.iterdir():
+        _plain_local_path(project)
+        if not project.is_dir():
+            continue
+        candidate = project / session / "images"
+        try:
+            _plain_local_path(candidate)
+        except FileNotFoundError:
+            continue
+        if candidate.is_dir():
+            candidates.append(candidate)
+    if len(candidates) != 1:
+        raise ValueError("ambiguous attachment directory")
+    return candidates[0]
+
+
+def _final_attachment_path(kernel, handle) -> Path:
+    import ctypes
+    from ctypes import wintypes
+
+    final = kernel.GetFinalPathNameByHandleW
+    final.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD]
+    final.restype = wintypes.DWORD
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = final(handle, buffer, len(buffer), 0)
+    if not 0 < length < len(buffer):
+        raise ValueError("attachment path unavailable")
+    path = Path(buffer.value.removeprefix("\\\\?\\"))
+    if not path.is_absolute() or str(path).startswith(("\\\\", "//")):
+        raise ValueError("remote attachment path")
+    return path
+
+
+@contextlib.contextmanager
+def _canonical_attachment_folder(kernel, folder: Path):
+    import ctypes
+    from ctypes import wintypes
+
+    _plain_local_path(folder)
+    create = kernel.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                       wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    # Keep renames blocked until the file's final path and links have been checked.
+    handle = create(str(folder), 1, 3, None, 3, 0x02200000, None)  # FILE_LIST_DIRECTORY; no FILE_SHARE_DELETE
+    if handle == ctypes.c_void_p(-1).value:
+        raise OSError(ctypes.get_last_error(), "attachment folder unavailable")
+    try:
+        canonical = _final_attachment_path(kernel, handle)
+        long_name = kernel.GetLongPathNameW
+        long_name.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        long_name.restype = wintypes.DWORD
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = long_name(str(folder), buffer, len(buffer))
+        if not 0 < length < len(buffer):
+            raise ValueError("attachment folder path unavailable")
+        # shortcut: subst-drive TEMP is rejected (final path differs), revisit if a teammate uses one.
+        if canonical != Path(buffer.value.removeprefix("\\\\?\\")):
+            raise ValueError("attachment folder changed")
+        _plain_local_path(folder)
+        yield canonical
+    finally:
+        close = kernel.CloseHandle
+        close.argtypes = [wintypes.HANDLE]
+        close(handle)
+
+
+def _open_attachment(path: Path):
+    """Deny writes/deletes while streaming, then check the opened Windows file identity."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    # Normalize only the already-authorized folder; the opened file must still match its expected name.
+    with _canonical_attachment_folder(kernel, path.parent) as folder:
+        expected = folder / path.name
+        create = kernel.CreateFileW
+        create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                           wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        create.restype = wintypes.HANDLE
+        handle = create(str(path), 0x80000000, 1, None, 3, 0x00200000, None)
+        if handle == ctypes.c_void_p(-1).value:
+            raise OSError(ctypes.get_last_error(), "attachment open failed")
+        try:
+            descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+        except BaseException:
+            close = kernel.CloseHandle
+            close.argtypes = [wintypes.HANDLE]
+            close(handle)
+            raise
+        stream = os.fdopen(descriptor, "rb")
+        try:
+            if _final_attachment_path(kernel, handle) != expected:
+                raise ValueError("attachment path changed")
+            _plain_local_path(path)
+            return stream
+        except BaseException:
+            stream.close()
+            raise
+
+
+@contextlib.contextmanager
+def attachment_file(value: str):
+    message = "현재 Claude 대화의 첨부 폴더 바로 안 PNG·JPEG·WEBP만 가져올 수 있습니다. 지원하지 않으면 앱 에셋 탭으로 imp/cap에 넣으세요."
+    try:
+        path = Path(value)
+        if (not path.is_absolute() or value.startswith(("\\\\", "//"))
+                or ":" in value[2:] or ".." in path.parts
+                or any(ord(c) < 32 for c in value)):
+            raise ValueError("invalid path")
+        folder = _attachment_folder()
+        if path.parent != folder:
+            raise ValueError("outside attachment directory")
+        _plain_local_path(path)
+        before = path.stat()
+        if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= MAX_REFERENCE:
+            raise ValueError("invalid file size")
+        stream = _open_attachment(path)
+        try:
+            opened = os.fstat(stream.fileno())
+            _plain_local_path(path)
+            if (opened.st_dev, opened.st_ino, opened.st_size) != (before.st_dev, before.st_ino, before.st_size):
+                raise ValueError("attachment changed")
+            head = stream.read(12)
+            suffix = path.suffix.lower()
+            valid = (suffix == ".png" and head.startswith(b"\x89PNG\r\n\x1a\n")
+                     or suffix in {".jpg", ".jpeg"} and head.startswith(b"\xff\xd8\xff")
+                     or suffix == ".webp" and head[:4] == b"RIFF" and head[8:12] == b"WEBP")
+            if not valid:
+                raise ValueError("invalid image type")
+            stream.seek(0)
+        except BaseException:
+            stream.close()
+            raise
+    except (OSError, ValueError, RuntimeError):
+        raise ToolError(message) from None
+    try:
+        yield stream, before.st_size
+    finally:
+        stream.close()
+
+
+def _attachment_chunks(stream, size):
+    total = 0
+    while total < size:
+        chunk = stream.read(min(1024 * 1024, size - total))
+        if not chunk:
+            raise OSError("attachment length changed")
+        total += len(chunk)
+        if total > MAX_REFERENCE:
+            raise OSError("attachment too large")
+        yield chunk
+    if stream.read(1):
+        raise OSError("attachment length changed")
+
+
 def validate_display_directory(value: str) -> Path:
     """The caller chooses a task-owned directory; never create one or follow a remote drive."""
     message = "표시 폴더는 이미 존재하는 로컬 작업 폴더의 절대경로여야 합니다."
@@ -493,6 +673,9 @@ class Broker:
                 "X-MVHub-MCP-Secret": self.secret,
             } if credential else {})},
         )
+        return self._send(req, timeout, maximum)
+
+    def _send(self, req, timeout, maximum):
         try:
             with self.opener.open(req, timeout=timeout) as response:
                 raw = response.read(maximum + 1)
@@ -520,6 +703,19 @@ class Broker:
             return result
         except (UnicodeError, ValueError, RecursionError):
             raise ToolError("MV Hub 응답 형식이 올바르지 않습니다.") from None
+
+    def import_reference(self, file_path, **metadata):
+        status = self.require_hub()
+        if not self.profile or "reference_import" not in status["hub_features"]:
+            raise BrokerError("hub_outdated")
+        with attachment_file(file_path) as (stream, size):
+            query = urlencode({"filename": Path(file_path).name,
+                               **{key: value for key, value in metadata.items() if value is not None}})
+            req = Request(self.url + "/api/mcp/v2/client/references/import?" + query,
+                          data=_attachment_chunks(stream, size), method="POST",
+                          headers={"Content-Type": "application/octet-stream", "Content-Length": str(size),
+                                   "X-MVHub-MCP": "1", "X-MVHub-MCP-Secret": self.secret})
+            return self._send(req, RESULT_TIMEOUT, MAX_RESPONSE)
 
     def check_connection(self) -> dict[str, Any]:
         # 공개 health는 프록시하지 않는다. 기능 확인 전 연결 비밀을 보내지 않는다.
@@ -583,6 +779,8 @@ class Broker:
                        "show_results": "batch_results", "estimate_plan": "plan_estimate"}.get(method)
             if method == "read_context" and any(args.get(key) is not None for key in ("cursor_ts", "cursor_id", "folder_path", "media_type")):
                 feature = "history_cursor"
+            if method == "read_context" and args.get("offset") is not None:
+                feature = "reference_search"
             if feature and feature not in status["hub_features"]:
                 raise BrokerError("hub_outdated")
             timeout = RESULT_TIMEOUT + (args.get("wait_seconds", 0) if method in {"get_result", "wait_results"} else 0)
@@ -621,7 +819,7 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
     broker = Broker(url, profile)
     model_names = {}
     native = display_mode == "native"
-    tool_count = (14 if native else 13) if profile else 7
+    tool_count = (15 if native else 14) if profile else 7
     display_instructions = (
         "이 연결은 conversation 표시 모드입니다. 결과 조회에는 display_directory로 이미 존재하는 이 작업 소유 로컬 폴더의 절대경로를 지정하세요. "
         "설치본·backend/data·NAS 폴더를 쓰지 마세요. display.status=ready인 display.reference만 최종 답변에 한 번씩 그대로 넣으세요. "
@@ -746,14 +944,17 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
         cursor_id: Annotated[str | None, Field(max_length=200)] = None,
         folder_path: Annotated[str | None, Field(max_length=500)] = None,
         media_type: Literal["image", "video", "audio"] | None = None,
+        offset: Annotated[int | None, Field(ge=0, le=100000)] = None,
     ) -> dict[str, Any]:
         """현재 연결된 허브의 workspaces로 공간을 조회한 뒤, 선택한 공간의 프로젝트·컷·모델·자료·기존 결과(generations)를 읽습니다. 반환된 ID는 같은 연결에서만 사용하세요. 계정 연결은 조회마다 workspace_scope/team의 workspace_id가 필요합니다."""
         args = {"kind": kind or ("workspaces" if profile else "scene"), "project_id": project_id, "search": search, "limit": limit}
+        if offset is not None and (kind != "references" or not asset_project):
+            raise BrokerError("invalid_input")
         if profile:
             args.update(model=model, asset_project=asset_project, workspace_scope=workspace_scope, workspace_id=workspace_id)
             args.update({key: value for key, value in dict(cursor_ts=cursor_ts, cursor_id=cursor_id,
-                        folder_path=folder_path, media_type=media_type).items() if value is not None})
-        elif any(value is not None for value in (cursor_ts, cursor_id, folder_path, media_type)):
+                        folder_path=folder_path, media_type=media_type, offset=offset).items() if value is not None})
+        elif any(value is not None for value in (cursor_ts, cursor_id, folder_path, media_type, offset)):
             raise BrokerError("hub_outdated")
         elif workspace_scope is not None or workspace_id is not None or kind == "workspaces":
             raise ToolError("구형 연결은 앱에서 선택한 공간을 사용합니다. 계정 연결을 등록하세요.")
@@ -763,6 +964,20 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             if isinstance(model_info, dict) and isinstance(model_info.get("job_set_type"), str) and isinstance(model_info.get("display_name"), str):
                 names[model_info["job_set_type"]] = model_info["display_name"]
         return result
+
+    if profile:
+        @tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=True))
+        def import_reference(
+            file_path: str,
+            workspace_scope: Literal["personal", "team"] | None = None,
+            workspace_id: Annotated[str | None, Field(max_length=200)] = None,
+            asset_project: Annotated[str | None, Field(max_length=200)] = None,
+            project_id: Annotated[str | None, Field(max_length=100)] = None,
+            label: Annotated[str | None, Field(min_length=1, max_length=200)] = None,
+        ) -> dict[str, Any]:
+            """현재 Claude 대화 첨부 폴더의 PNG/JPEG/WEBP(64MiB 이하)를 가져옵니다. reference.id를 같은 연결의 prepare_generation_plan.reference_ids에 넣으세요. asset_project를 주면 가장 닮은 원본을 보수적으로 대조하며 동일 원본의 증명은 아닙니다. 첫 대조는 썸네일이 없어 15초 안에 끝나지 않을 수 있고 그때는 사본을 씁니다. 폴더에는 다른 도구가 놓은 파일도 있을 수 있으며 MCP는 임의 경로를 읽지 않습니다. project_id는 공유 동기화를 예약합니다. Codex 첨부는 미지원이므로 앱 imp/cap 가져오기와 검색을 사용하세요."""
+            return broker.import_reference(file_path, workspace_scope=workspace_scope, workspace_id=workspace_id,
+                                           asset_project=asset_project, project_id=project_id, label=label)
 
     @tool(annotations=write)
     def prepare_generation_plan(

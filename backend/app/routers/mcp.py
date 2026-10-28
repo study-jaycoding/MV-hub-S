@@ -57,13 +57,22 @@ async def _size(request: Request, maximum: int):
 
 
 async def client_guard(request: Request) -> str:
+    _client_headers(request)
+    await _size(request, 64 * 1024)
+    return _secret(request, "x-mvhub-mcp-secret")
+
+
+def client_upload_guard(request: Request) -> str:
+    _client_headers(request)
+    return _secret(request, "x-mvhub-mcp-secret")
+
+
+def _client_headers(request: Request) -> None:
     require_loopback_browser_request(request, "MCP는 이 PC의 비브라우저 연결만 허용합니다.")
     if any(name in request.headers for name in ("origin", "referer", "sec-fetch-site")):
         raise HTTPException(403, "브라우저는 MCP 클라이언트 경로를 사용할 수 없습니다.")
     if request.headers.getlist("x-mvhub-mcp") != ["1"]:
         raise HTTPException(403, "MCP 연결 헤더가 필요합니다.")
-    await _size(request, 64 * 1024)
-    return _secret(request, "x-mvhub-mcp-secret")
 
 
 def _identity(request: Request) -> tuple[str, str, Path]:
