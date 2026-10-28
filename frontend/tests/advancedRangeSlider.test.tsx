@@ -60,6 +60,7 @@ it("ElevenLabs 안정성(%)은 값이 없으면 'Default'·흐린 손잡이, 끌
   const box = host.querySelector(".sl-adv-range")!;
   expect(box.querySelector(".sl-adv-range-val")!.textContent).toBe("Default");
   expect(box.querySelector(".sl-dur-track")!.classList.contains("unset")).toBe(true);
+  expect(values).toEqual({}); // 막대를 그리기만 해서는 값이 실리지 않는다(손대기 전엔 키 생략 = 공급자 기본값)
   slide(ranges()[0], "70");
   expect(values.stability).toBe(0.7);
 });
