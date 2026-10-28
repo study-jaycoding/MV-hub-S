@@ -41,6 +41,21 @@ export function SceneModelModal({
   // 막이 있는 창 — 초점을 창 안에 둔다(lib/keyGate '모달의 초점'). 보드의 Tab(노드 피커)은 창이 뜬 동안 쉬므로 Tab 은 창 안에서 돈다.
   const modalRef = useRef<HTMLDivElement>(null);
   useModalFocus(modalRef);
+  // 칩 목록(모델·비율·Set …)이 떠 있는 동안 칩 묶음(.sl-chip-wrap) 밖을 누르면 목록만 닫는다 — 생성창과 같은 규칙(SpotlightPrompt).
+  //  뒤 막(캔버스 쪽)을 누른 것이어도 그 누름은 목록만 닫고 창은 남긴다(Esc 와 같은 차례, Jay 2026-10-28). 잡는 단계라 창 안의
+  //  stopPropagation 보다 먼저 돈다.
+  const swallowBackdrop = useRef(false);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest(".sl-chip-wrap")) return;
+      if (t && !modalRef.current?.contains(t)) swallowBackdrop.current = true;
+      setOpen(null);
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    return () => document.removeEventListener("pointerdown", onDown, true);
+  }, [open]);
 
   // 드롭다운 닫기 브리지 — setOpt 선택 후 useModels 가 setOpen(null) 을 호출하게 등록.
   useEffect(() => {
@@ -81,7 +96,10 @@ export function SceneModelModal({
   };
 
   return (
-    <div className="scene-modelmodal-backdrop" onMouseDown={onClose}>
+    <div className="scene-modelmodal-backdrop" onMouseDown={() => {
+      if (swallowBackdrop.current) { swallowBackdrop.current = false; return; } // 이 누름은 목록만 닫았다
+      onClose();
+    }}>
       <div ref={modalRef} className="scene-modelmodal" onMouseDown={(e) => e.stopPropagation()}>
         <div className="scene-modelmodal-hd">
           <span>모델 설정</span>
