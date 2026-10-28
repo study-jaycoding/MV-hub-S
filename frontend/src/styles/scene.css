@@ -785,9 +785,8 @@
   position: fixed; inset: 0; z-index: 200; background: rgba(0, 0, 0, 0.55);
   display: flex; align-items: center; justify-content: center;
 }
-/* 폭 = 칩 줄 길이(한 줄로 — Jay 2026-10-28 '2줄로 표시가 되지 않게'), 좁은 화면에서만 화면 폭에 맞춰 접힌다 */
 .scene-modelmodal {
-  width: max-content; min-width: min(600px, 94vw); max-width: 94vw; background: #14161b; border: 1px solid #3a3f48;
+  width: min(600px, 94vw); background: #14161b; border: 1px solid #3a3f48;
   border-radius: 12px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
   display: flex; flex-direction: column;
 }
@@ -808,6 +807,36 @@
 }
 .scene-modelmodal-ft button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .scene-modelmodal-ft button:disabled { opacity: 0.5; cursor: default; }
+/* 모델 설정 창 줄 배치(Jay 2026-10-28 시안 b2) — 머리줄 '모델 설정' 옆에 종류 단추, 본문은 옵션마다 '아이콘+이름 | 값' 한 줄.
+   줄 모양은 Set 창 줄(.sl-adv-pop .sl-adv-row)과 같고 이름 칸만 넓다. 값 = 한 캡슐 안 칸(.sl-row-cap)·넓은 모델 칩·길이 막대·칩. */
+.scene-modelmodal-rows { width: min(520px, 94vw); }
+.scene-modelmodal-title { display: inline-flex; align-items: center; gap: 14px; }
+.scene-modelmodal-title .sl-type { height: 30px; }
+.sl-rows > .sl-adv-row { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px; align-items: center; padding: 9px 8px; }
+.sl-rows .sl-adv-name { display: inline-flex; align-items: center; gap: 6px; }
+.sl-row-val { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.sl-row-val > :is(.sl-row-cap, .sl-dur-inline, .sl-row-note), .sl-row-model .sl-chip-wrap { flex: 1 1 100%; }
+.sl-rows .sl-chip-label { max-width: 240px; }
+.sl-row-model .sl-chip { width: 100%; }
+.sl-row-model .sl-chip-label { flex: 1; max-width: none; text-align: left; }
+.sl-row-cap { display: grid; gap: 2px; padding: 3px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border); border-radius: 18px; }
+.sl-row-cap .sl-adv-opt {
+  min-width: 0; height: 28px; padding: 0 6px; border: none; border-radius: 15px; background: transparent;
+  color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis;
+}
+.sl-row-cap .sl-adv-opt:hover:not(:disabled) { color: var(--text); }
+.sl-row-cap .sl-adv-opt.sel { background: var(--grad); color: var(--accent-ink); font-weight: 800; box-shadow: 0 3px 12px rgba(var(--accent-rgb), 0.35); }
+.sl-row-cap .sl-draft-pill { margin-left: 4px; }
+.sl-row-note { font-size: 11px; color: var(--muted2); line-height: 1.4; }
+.sl-dur-inline { --dur-in: 8px; --dur-thumb: 6px; display: grid; grid-template-columns: 1fr 40px; column-gap: 8px; align-items: center; }
+.sl-dur-inline .sl-dur-marks { grid-column: 1; height: 13px; margin-top: 3px; font-size: 10.5px; }
+.sl-dur-inline-val { font-size: 13px; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
+/* 위쪽 줄의 목록(모델·목소리·언어)은 아래로 편다 — 위로 펴면 창 위로 넘쳐 화면 밖에 걸린다. Set 창은 맨 아래 줄이라 위로 그대로. */
+.sl-rows .sl-dropdown:not(.sl-adv-pop) { top: calc(100% + 6px); bottom: auto; }
+.sl-row-model .sl-dropdown { right: 0; max-width: none; }
+/* 목소리 창은 검색·거르기 머리(약 140px)가 커서 아래로 펴면 화면 밖까지 갔다(900px 화면 실측 963) — 목록 높이를 화면 높이에 맞춘다.
+   창은 화면 가운데라 목소리 줄 ≈ 화면 절반 + 50px, 그 아래 머리 140px 를 뺀 만큼(최소 140px · 최대 생성창과 같은 320px) */
+.sl-rows .sl-voice-pop .sl-dd-scroll { max-height: clamp(140px, calc(50vh - 210px), 320px); }
 
 /* ── Comfy 노드 ── */
 .scene-card-hd.comfy { color: #4dd6c4; background: rgba(60, 210, 190, 0.12); }
@@ -1525,8 +1554,7 @@
 
 /* model node: the saved model is not usable in this group (modelPolicy) */
 .scene-modelnode-blocked { margin-top: 2px; font-size: 10px; font-weight: 700; color: #f06a5a; letter-spacing: 0.04em; }
-/* 안내 글은 창 폭을 늘리지 않는다(창 폭 = 칩 줄) — 긴 문장은 칩 줄 폭 안에서 접힌다 */
-.scene-modelmodal-note { contain: inline-size; margin: 0 0 8px; padding: 6px 10px; border-radius: 8px; background: rgba(240,106,90,.12); color: #f06a5a; font-size: 12px; line-height: 1.4; }
+.scene-modelmodal-note { margin: 0 0 8px; padding: 6px 10px; border-radius: 8px; background: rgba(240,106,90,.12); color: #f06a5a; font-size: 12px; line-height: 1.4; }
 .scene-modelmodal-note.muted { background: rgba(255,255,255,.05); color: var(--muted); }
 
 /* scene tab: drag to reorder + per-canvas workspace (Jay 2026-09-11) */

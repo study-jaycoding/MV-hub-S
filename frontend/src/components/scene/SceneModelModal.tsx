@@ -1,4 +1,4 @@
-// 모델 노드 더블클릭 시 뜨는 모달 — 하단 프롬프트의 모델 선택 UI(SpotlightOptionsBar)를 그대로
+// 모델 노드 더블클릭 시 뜨는 모달 — 하단 프롬프트의 모델 선택 UI(SpotlightOptionsBar)를 줄 배치(layout="rows")로
 // 재사용해, 그 노드에 쓸 모델/옵션을 고른다. useModels 를 이 모달 안에서 독립 인스턴스로 돌려
 // SpotlightPrompt 상태와 섞이지 않게 한다(코덱스 설계 A안). 저장하면 modelCfg 스냅샷을 콜백.
 import { useModalFocus } from "../../lib/keyGate";
@@ -8,7 +8,7 @@ import { policyNote, submitBlockMessage } from "../../lib/modelPolicyCore";
 import { useModelPolicy } from "../../lib/modelPolicy";
 import { inferModelType, stripHiddenParams, useModels } from "../../lib/useModels";
 import { AUDIO_TASK_MODELS, audioTaskOf, isTtsModel, variantChoiceMissing, variantDisplayName } from "../../lib/spotlightPromptConfig";
-import { SpotlightOptionsBar } from "../spotlight/SpotlightOptionsBar";
+import { SpotlightOptionsBar, SpotlightTypeToggle } from "../spotlight/SpotlightOptionsBar";
 import type { SceneModelCfg } from "../../lib/scenes";
 
 export function SceneModelModal({
@@ -103,9 +103,10 @@ export function SceneModelModal({
       if (swallowBackdrop.current) { swallowBackdrop.current = false; return; } // 이 누름은 목록만 닫았다
       onClose();
     }}>
-      <div ref={modalRef} className="scene-modelmodal" onMouseDown={(e) => e.stopPropagation()}>
+      <div ref={modalRef} className="scene-modelmodal scene-modelmodal-rows" onMouseDown={(e) => e.stopPropagation()}>
         <div className="scene-modelmodal-hd">
-          <span>모델 설정</span>
+          {/* 종류 단추는 제목 옆, 옵션은 아래에 한 줄씩(Jay 2026-10-28 시안 b2) */}
+          <span className="scene-modelmodal-title">모델 설정<SpotlightTypeToggle type={m.type} setType={m.setType} /></span>
           <button className="scene-modelmodal-x" onClick={onClose} title="닫기">
             ✕
           </button>
@@ -124,9 +125,9 @@ export function SceneModelModal({
           {!blockedNote && policyNote(policy) ? (
             <div className="scene-modelmodal-note muted">{policyNote(policy)}</div>
           ) : null}
-          {/* 하단 프롬프트와 동일 레이아웃(.sl-left flex/gap/wrap)으로 감싸 칩이 가로로 흐르게 한다. */}
-          <div className="sl-left">
+          <div className="sl-rows">
             <SpotlightOptionsBar
+              layout="rows"
               type={m.type}
               setType={m.setType}
               audioTask={audioTaskOf(m.model)}

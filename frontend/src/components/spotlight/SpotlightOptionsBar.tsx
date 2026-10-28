@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
+import { Fragment, useEffect, useRef, useState, type CSSProperties, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { api } from "../../api";
 import { getAccountNamespace, getConnectionKey } from "../../lib/accountScope";
 import { getAuthToken } from "../../lib/http";
@@ -151,6 +151,22 @@ interface Props {
   setOpt: (name: string, value: string | number) => void;
   open: string | null;
   setOpen: Dispatch<SetStateAction<string | null>>;
+  /** bar = 생성창 아래 칩 한 줄(기본). rows = 옵션마다 '이름 | 값' 한 줄 — 캔버스 모델 설정 창(Jay 2026-10-28 시안 b2).
+   *  rows 에서는 종류 단추를 그리지 않는다(창 머리줄이 SpotlightTypeToggle 로 그린다). */
+  layout?: "bar" | "rows";
+}
+
+/** Image·Video·Audio 단추 — 생성창 칩 줄 맨 앞과 캔버스 모델 설정 창 머리줄이 같이 쓴다. */
+export function SpotlightTypeToggle({ type, setType }: { type: MediaType; setType: (value: MediaType) => void }) {
+  return (
+    <div className="sl-type">
+      {(["image", "video", "audio"] as const).map((t) => (
+        <button key={t} className={"sl-type-btn" + (type === t ? " active" : "")} onClick={() => setType(t)}>
+          {t.charAt(0).toUpperCase() + t.slice(1)}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 function AdvancedIcon() {
@@ -393,8 +409,19 @@ export function SpotlightOptionsBar({
   setOpt,
   open,
   setOpen,
+  layout = "bar",
 }: Props) {
   if (audioModelBlocked(model)) { modelBlocked = true; blockedNote = audioModelBlocked(model); }
+  const rows = layout === "rows";
+  // 줄 배치면 '아이콘+이름 | 값' 한 줄로 감싼다(Set 창 줄과 같은 모양), 칩 줄이면 값(칩)만.
+  const row = (key: string, label: string, icon: ReactNode, content: ReactNode) => !rows ? content : (
+    <div className={"sl-adv-row sl-row-" + key} key={key}>
+      <div className="sl-adv-label"><span className="sl-adv-name"><span className="sl-opt-ic">{icon}</span>{label}</span></div>
+      <div className="sl-row-val">{content}</div>
+    </div>
+  );
+  // 줄 배치의 값 캡슐 — 한 캡슐 안 칸들, 한 줄 6칸까지(넘치면 다음 줄)
+  const capCols = (count: number) => ({ gridTemplateColumns: `repeat(${Math.min(count, 6)}, 1fr)` });
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
   const [voicesError, setVoicesError] = useState(false);
   const voiceScope = voiceScopeKey();
@@ -449,31 +476,16 @@ export function SpotlightOptionsBar({
 
   return (
     <>
-      <div className="sl-type">
-        <button
-          className={"sl-type-btn" + (type === "image" ? " active" : "")}
-          onClick={() => setType("image")}
-        >
-          Image
-        </button>
-        <button
-          className={"sl-type-btn" + (type === "video" ? " active" : "")}
-          onClick={() => setType("video")}
-        >
-          Video
-        </button>
-        <button className={"sl-type-btn" + (type === "audio" ? " active" : "")} onClick={() => setType("audio")}>
-          Audio
-        </button>
-      </div>
+      {!rows && <SpotlightTypeToggle type={type} setType={setType} />}
 
-      {type === "audio" && onAudioTaskChange && <div className="sl-type sl-audio-tasks" aria-label="오디오 작업">
-        {[["tts", "Text to Speech"], ["voice-change", "Voice Change"], ["translate", "Translate"]].map(([id, label]) =>
-          <button key={id} className={"sl-type-btn" + (audioTask === id ? " active" : "")} aria-pressed={audioTask === id}
-            onClick={() => onAudioTaskChange(id)}>{label}</button>)}
-      </div>}
+      {type === "audio" && onAudioTaskChange && row("task", "Task", <SpotlightOptionIcon name="audio" />,
+        <div className={rows ? "sl-row-cap sl-audio-tasks" : "sl-type sl-audio-tasks"} style={rows ? capCols(3) : undefined} aria-label="오디오 작업">
+          {[["tts", "Text to Speech"], ["voice-change", "Voice Change"], ["translate", "Translate"]].map(([id, label]) =>
+            <button key={id} className={(rows ? "sl-adv-opt" : "sl-type-btn") + (audioTask === id ? (rows ? " sel" : " active") : "")} aria-pressed={audioTask === id}
+              onClick={() => onAudioTaskChange(id)}>{label}</button>)}
+        </div>)}
       {/* 보이스 체인지·번역은 실행 키가 하나라 모델 칩이 없다 */}
-      {!isVideoVoiceModel(model) && <div className="sl-chip-wrap">
+      {!isVideoVoiceModel(model) && row("model", "Model", <SpotlightOptionIcon name="model" />, <div className="sl-chip-wrap">
         <button
           ref={modelButtonRef}
           aria-expanded={open === "model"}
@@ -527,9 +539,9 @@ export function SpotlightOptionsBar({
             </div>
           </div>
         )}
-      </div>}
+      </div>)}
 
-      {(isTtsModel(model) || model === "voice_change") && (
+      {(isTtsModel(model) || model === "voice_change") && row("voice", "Voice", <VoiceIcon />, <>
         <VoicePicker
           voices={voices}
           voicesError={voicesError}
@@ -539,46 +551,67 @@ export function SpotlightOptionsBar({
           setOpen={setOpen}
           recommended={recommendedVoiceIds(model)}
         />
-      )}
-      {model === "dubbing" && (
+        {/* seed_audio 는 목소리 없이 참고 자료로도 만든다 — 고른 목소리를 풀 수 있게 */}
+        {model === "seed_audio" && optionValues.voice_id && <button className="sl-chip" onClick={() => setOptionValues((previous) => {
+          const next = { ...previous }; delete next.voice_id; delete next.voice_type; return next;
+        })}>Voice 해제</button>}
+      </>)}
+      {model === "dubbing" && row("language", "Language", <SpotlightOptionIcon name="language" />,
         <LanguagePicker
           value={String(optionValues.target_language ?? "")}
           onPick={(code) => setOptionValues((previous) => ({ ...previous, target_language: code }))}
           open={open}
           setOpen={setOpen}
-        />
-      )}
-      {model === "seed_audio" && optionValues.voice_id && <button className="sl-chip" onClick={() => setOptionValues((previous) => {
-        const next = { ...previous }; delete next.voice_id; delete next.voice_type; return next;
-      })}>Voice 해제</button>}
+        />)}
       {visibleTunable.filter((p) => SPOTLIGHT_PRIMARY_PARAMS.has(p.name)).map((p) => {
         // 이 모드에서 CLI 가 무시하는 값 — 흐리게 두는 데서 그치지 않고 **조작도 막는다**
         // (2026-09-15 Jay: 만질 수 있으면 효과가 있는 줄 알게 되어 헷갈린다).
         // 값 자체와 전송은 종전대로 — 모드를 되돌리면 고르던 값이 그대로 살아 있다.
         const isIgnored = ignored.params.includes(p.name);
         const ignoredClass = isIgnored ? " sl-opt-ignored" : "";
+        const rowLabel = OPTION_TITLES[p.name] ?? advancedLabel(p.name);
         if (/duration|length/i.test(p.name)) {
-          // 칩에는 값만, 누르면 위에 슬라이더 창(Jay 2026-10-28) — 정해진 길이 목록이면 그 값들만
+          // 칩에는 값만, 누르면 위에 슬라이더 창(Jay 2026-10-28) — 정해진 길이 목록이면 그 값들만. 줄 배치면 막대를 줄에 바로 둔다.
           if (p.enum?.length) {
             const vals = p.enum;
             const stops = vals.map(Number);
             const cur = String(optionValues[p.name] ?? p.default ?? vals[0]);
-            return (
-              <SpotlightDurationChip key={p.name} value={Number(cur)} min={stops[0]} max={stops[stops.length - 1]} stops={stops}
+            return row(p.name, "Duration", <SpotlightOptionIcon name="duration" />,
+              <SpotlightDurationChip key={p.name} value={Number(cur)} min={stops[0]} max={stops[stops.length - 1]} stops={stops} inline={rows}
                 open={open === p.name} onToggle={() => setOpen(open === p.name ? null : p.name)}
-                onChange={(v) => setOptionValues((prev) => ({ ...prev, [p.name]: vals[stops.indexOf(v)] }))} ignored={isIgnored} title={p.name} />
-            );
+                onChange={(v) => setOptionValues((prev) => ({ ...prev, [p.name]: vals[stops.indexOf(v)] }))} ignored={isIgnored} title={p.name} />);
           }
           const def = Number(p.default) || 5;
           const { min: dmin, max: dmax } = durationRange(model, def);
           const raw = Number(optionValues[p.name] ?? def) || def;
           const cur = Math.min(dmax, Math.max(dmin, raw));
-          return (
-            <SpotlightDurationChip key={p.name} value={cur} min={dmin} max={dmax}
+          return row(p.name, "Duration", <SpotlightOptionIcon name="duration" />,
+            <SpotlightDurationChip key={p.name} value={cur} min={dmin} max={dmax} inline={rows}
               open={open === p.name} onToggle={() => setOpen(open === p.name ? null : p.name)}
               onChange={(v) => setOptionValues((prev) => ({ ...prev, [p.name]: v }))}
-              ignored={isIgnored} title={`${p.name} (${dmin}~${dmax}s)`} />
-          );
+              ignored={isIgnored} title={`${p.name} (${dmin}~${dmax}s)`} />);
+        }
+        if (rows && p.enum?.length) {
+          // 줄 배치 — 목록 대신 값을 한 캡슐에 다 펼친다. 합성 'auto'·막힌 값·Draft 표시·무시되는 값 규칙은 목록과 같다.
+          const values = p.name === "aspect_ratio" && !p.enum.includes("auto") ? ["auto", ...p.enum] : p.enum;
+          const con = constraints[p.name];
+          const cur = String(optionValues[p.name] ?? p.default ?? "");
+          return row(p.name, rowLabel, <SpotlightOptionIcon name={p.name} />, <>
+            <div className={"sl-row-cap" + ignoredClass} style={capCols(values.length)} role="group" aria-label={rowLabel}>
+              {values.map((v) => {
+                const blocked = !!con && !con.allow.has(v);
+                return (
+                  <button key={v} type="button" className={"sl-adv-opt" + (cur === v ? " sel" : "") + (blocked ? " blocked" : "")}
+                    aria-pressed={cur === v} disabled={isIgnored || blocked} title={blocked ? con!.note : undefined}
+                    onClick={() => setOpt(p.name, v)}>
+                    {v}
+                    {isDraftResolution(p.name, v) && <span className="sl-draft-pill">Draft</span>}
+                  </button>
+                );
+              })}
+            </div>
+            {con && <div className="sl-row-note">{con.note}</div>}
+          </>);
         }
         return p.enum?.length ? (
           <div className="sl-chip-wrap" key={p.name}>
@@ -635,7 +668,7 @@ export function SpotlightOptionsBar({
               </div>
             )}
           </div>
-        ) : p.type === "integer" ? (
+        ) : p.type === "integer" ? row(p.name, rowLabel, <SpotlightOptionIcon name={p.name} />,
           <label className={"sl-chip sl-opt-num" + ignoredClass} key={p.name} title={p.name}>
             <span className="sl-opt-ic"><SpotlightOptionIcon name={p.name} /></span>
             <input
@@ -651,45 +684,25 @@ export function SpotlightOptionsBar({
         ) : null;
       })}
 
-      {audioParam && (
-        <div className="sl-chip sl-opt-audio" title="오디오 생성 (켜기/끄기)">
-          <span className="sl-opt-ic"><SpotlightOptionIcon name="generate_audio" /></span>
-          <div className="sl-adv-opts">
-            <button
-              className={
-                "sl-adv-opt" +
-                (
-                  optionValues.generate_audio === true ||
-                  String(optionValues.generate_audio).toLowerCase() === "true"
-                    ? " sel"
-                    : ""
-                )
-              }
-              onClick={() => setOptionValues((prev) => ({ ...prev, generate_audio: true }))}
-              title="오디오 켜기"
-            >
-              ON
-            </button>
-            <button
-              className={
-                "sl-adv-opt" +
-                (
-                  optionValues.generate_audio === true ||
-                  String(optionValues.generate_audio).toLowerCase() === "true"
-                    ? ""
-                    : " sel"
-                )
-              }
-              onClick={() => setOptionValues((prev) => ({ ...prev, generate_audio: false }))}
-              title="오디오 끄기"
-            >
-              OFF
-            </button>
+      {audioParam && (() => {
+        const on = optionValues.generate_audio === true || String(optionValues.generate_audio).toLowerCase() === "true";
+        const opts = (
+          <div className={rows ? "sl-row-cap" : "sl-adv-opts"} style={rows ? capCols(2) : undefined}>
+            <button className={"sl-adv-opt" + (on ? " sel" : "")} title="오디오 켜기"
+              onClick={() => setOptionValues((prev) => ({ ...prev, generate_audio: true }))}>ON</button>
+            <button className={"sl-adv-opt" + (on ? "" : " sel")} title="오디오 끄기"
+              onClick={() => setOptionValues((prev) => ({ ...prev, generate_audio: false }))}>OFF</button>
           </div>
-        </div>
-      )}
+        );
+        return rows ? row("generate_audio", "Sound", <SpotlightOptionIcon name="generate_audio" />, opts) : (
+          <div className="sl-chip sl-opt-audio" title="오디오 생성 (켜기/끄기)">
+            <span className="sl-opt-ic"><SpotlightOptionIcon name="generate_audio" /></span>
+            {opts}
+          </div>
+        );
+      })()}
 
-      {advancedParams.length > 0 && (
+      {advancedParams.length > 0 && row("advanced", "Advanced", <AdvancedIcon />,
         <div className="sl-chip-wrap">
           <button
             className={
@@ -701,7 +714,8 @@ export function SpotlightOptionsBar({
             title="고급 옵션 (모드·비트레이트·장르 등)"
           >
             <span className="sl-opt-ic"><AdvancedIcon /></span>
-            <span>Set</span>
+            {/* 줄 배치면 'Set' 대신 안에 든 옵션 이름(Mode · Bitrate …) */}
+            {rows ? <span className="sl-chip-label">{advancedParams.map((p) => advancedLabel(p.name)).join(" · ")}</span> : <span>Set</span>}
             {advancedDirty && <span className="sl-adv-dot" aria-hidden />}
             <span className="sl-caret">›</span>
           </button>
@@ -831,8 +845,7 @@ export function SpotlightOptionsBar({
               })}
             </div>
           )}
-        </div>
-      )}
+        </div>)}
       {ignored.note && (
         <div className="sl-ignored-note">
           {ignored.note}{ignored.billingNote && <> <strong>{ignored.billingNote}</strong></>}

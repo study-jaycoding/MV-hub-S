@@ -19,6 +19,7 @@ export function SpotlightDurationChip({
   ignored = false,
   label = "길이",
   title,
+  inline = false,
 }: {
   value: number;
   min: number;
@@ -32,6 +33,8 @@ export function SpotlightDurationChip({
   ignored?: boolean;
   label?: string;
   title?: string;
+  /** 칩·창 없이 막대 + 오른쪽 값만 — 캔버스 모델 설정 창의 줄 배치(Jay 2026-10-28 시안 b2). open·onToggle 은 쓰지 않는다. */
+  inline?: boolean;
 }) {
   const locked = disabled || ignored;
   const marks = stops ?? [...new Set([min, ...[10, 15, 20].filter((v) => v > min && v < max), max])];
@@ -59,6 +62,39 @@ export function SpotlightDurationChip({
   const at = (i: number) => ({ "--at": (i / last).toFixed(4) }) as CSSProperties;
   const top = stops ? Math.max(1, stops.length - 1) : last * SEG;
   const filled = { "--pos": (Math.min(top, Math.max(0, toPos(value))) / top).toFixed(4) } as CSSProperties; // 손잡이까지 라임 채움
+  const track = (
+    <div className="sl-dur-track" style={filled}>
+      <span className="sl-dur-fill" aria-hidden="true" />
+      {marks.map((v, i) => <span key={v} className="sl-dur-dot" style={at(i)} aria-hidden="true" />)}
+      <input
+        type="range"
+        aria-label={label}
+        aria-valuetext={`${value}s`}
+        min={0}
+        max={stops ? stops.length - 1 : last * SEG}
+        step={1}
+        value={toPos(value)}
+        disabled={locked}
+        onKeyDown={step}
+        onChange={(e) => {
+          const next = fromPos(Number(e.target.value));
+          if (next !== value) onChange(next);
+        }}
+      />
+    </div>
+  );
+  const ticks = (
+    <div className="sl-dur-marks" aria-hidden="true">
+      {marks.map((v, i) => <span key={v} style={at(i)}>{v}</span>)}
+    </div>
+  );
+  if (inline) return (
+    <div className={"sl-dur-inline" + (ignored ? " sl-opt-ignored" : "")} title={title ?? label}>
+      {track}
+      <b className="sl-dur-inline-val">{value}s</b>
+      {ticks}
+    </div>
+  );
   return (
     <div className="sl-chip-wrap">
       <button
@@ -78,27 +114,8 @@ export function SpotlightDurationChip({
         <div className="sl-dropdown sl-dur-pop" role="dialog" aria-label={label}>
           <div className="sl-dur-title">Total duration</div>
           <div className="sl-dur-head">{value}s</div>
-          <div className="sl-dur-track" style={filled}>
-            <span className="sl-dur-fill" aria-hidden="true" />
-            {marks.map((v, i) => <span key={v} className="sl-dur-dot" style={at(i)} aria-hidden="true" />)}
-            <input
-              type="range"
-              aria-label={label}
-              aria-valuetext={`${value}s`}
-              min={0}
-              max={stops ? stops.length - 1 : last * SEG}
-              step={1}
-              value={toPos(value)}
-              onKeyDown={step}
-              onChange={(e) => {
-                const next = fromPos(Number(e.target.value));
-                if (next !== value) onChange(next);
-              }}
-            />
-          </div>
-          <div className="sl-dur-marks" aria-hidden="true">
-            {marks.map((v, i) => <span key={v} style={at(i)}>{v}</span>)}
-          </div>
+          {track}
+          {ticks}
         </div>
       )}
     </div>

@@ -11,17 +11,18 @@ export function SpotlightOptionIcon({ name }: { name: string }) {
     strokeLinecap: "round" as const,
     strokeLinejoin: "round" as const,
   };
-  if (lower.includes("aspect") || lower.includes("ratio") || lower.includes("frame"))
-    return (
-      <svg {...props}>
-        <rect x="3" y="5" width="18" height="14" rx="2" />
-      </svg>
-    );
+  // 길이를 먼저 — 'duration' 안에 'ratio' 글자가 있어 비율 네모로 잡혔다(2026-10-28)
   if (lower.includes("duration") || lower.includes("time") || lower.includes("length") || lower.includes("second"))
     return (
       <svg {...props}>
         <circle cx="12" cy="12" r="9" />
         <path d="M12 7v5l3 2" />
+      </svg>
+    );
+  if (lower.includes("aspect") || lower.includes("ratio") || lower.includes("frame"))
+    return (
+      <svg {...props}>
+        <rect x="3" y="5" width="18" height="14" rx="2" />
       </svg>
     );
   if (lower.includes("resolution") || lower.includes("quality") || lower.includes("size"))
