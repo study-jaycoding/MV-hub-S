@@ -92,17 +92,53 @@ def test_shared_validation_has_seedance_audio_rules(model, kinds, error):
         validate_media_request(model, "p", {}, refs(*kinds))
 
 
-def test_create_body_rejects_audio_only_seedance_mini():
+# type·role 이 엇갈린 저장값 — 에이전트는 role 을 따라 싣는다(Codex G 재검수). 서버도 제출되는 대로 센다.
+MISMATCHED_AUDIO = [{"file_path": "a.png", "type": "image", "role": "@Audio1"}]
+MIXED = [
+    {"file_path": "a.png", "type": "image", "role": "@Audio1"},   # → audio
+    {"file_path": "b.mp3", "type": "audio", "role": "@Start"},    # → 첫 프레임(이미지)
+    {"file_path": "c.mp4", "type": "audio", "role": "@Video1"},   # → video
+    {"file_path": "d.png", "type": "video", "role": "@Audio2"},   # → video(영상이 먼저)
+    {"file_path": "e.mp3", "type": "audio", "role": "@Image1"},   # → audio
+    {"file_path": "f.png", "type": "image", "role": "@End"},      # → 끝 프레임(이미지)
+    {"file_path": "g.png", "type": "image", "role": "audio"},     # → image(@ 없는 역할은 type)
+]
+
+
+def test_server_counts_media_the_way_the_agent_submits():
+    from app.models import seedance_media_kind
+    agent = load_agent()
+    for ref in MIXED:
+        expected = "image" if agent._is_start_ref(ref) or agent._is_end_ref(ref) else agent._media_role(ref)
+        assert seedance_media_kind(ref) == expected, ref
+
+
+@pytest.mark.parametrize("references,error", [
+    (MISMATCHED_AUDIO, AUDIO_ONLY),
+    (MISMATCHED_AUDIO + [{"file_path": "s.png", "type": "audio", "role": "@Start"}], None),  # 첫 프레임은 그림으로 센다
+    ([{"file_path": f"{i}.png", "type": "image", "role": f"@Audio{i + 1}"} for i in range(4)]
+     + [{"file_path": "v.mp4", "type": "video", "role": "@Video1"}], "오디오 레퍼런스는 3개까지 넣을 수 있습니다 — 지금 4개입니다."),
+])
+def test_shared_validation_counts_mismatched_type_and_role_by_submission(references, error):
+    if error:
+        with pytest.raises(ValueError, match=error):
+            validate_media_request("seedance_2_0_mini", "p", {}, references)
+    else:
+        validate_media_request("seedance_2_0_mini", "p", {}, references)
+
+
+@pytest.mark.parametrize("references", [refs("audio"), MISMATCHED_AUDIO])
+def test_create_body_rejects_audio_only_seedance_mini(references):
     with pytest.raises(ValidationError, match="오디오만으로"):
         GenRequestIn(kind="create", workspace={"scope": "personal"},
-                     create={"prompt": "p", "model": "seedance_2_0_mini", "references": refs("audio")})
+                     create={"prompt": "p", "model": "seedance_2_0_mini", "references": references})
 
 
-@pytest.mark.parametrize("kinds,rejected", [(["audio"], True), (["image", "audio"], False)])
-def test_regenerate_route_rejects_before_creating_anything(kinds, rejected):
+@pytest.mark.parametrize("references,rejected", [(refs("audio"), True), (MISMATCHED_AUDIO, True), (refs("image", "audio"), False)])
+def test_regenerate_route_rejects_before_creating_anything(references, rejected):
     body = GenRequestIn(kind="regenerate", source_gen_id="local-123", regenerate=RegenerateIn(), workspace={"scope": "personal"})
     submit = AsyncMock(side_effect=RuntimeError("reached submit"))
-    recipe = {"model": "seedance_2_0_mini", "prompt": "p", "params": {}, "references": refs(*kinds)}
+    recipe = {"model": "seedance_2_0_mini", "prompt": "p", "params": {}, "references": references}
     with patch.object(routes, "update_in_progress", return_value=False), \
          patch.object(routes, "_require_account", return_value={"email": "artist@example.invalid", "creator_uid": "artist"}), \
          patch.object(routes, "expected_account_differs", return_value=False), \

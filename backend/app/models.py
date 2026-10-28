@@ -53,13 +53,27 @@ def audio_reference_error(model: str, params: dict, references: list) -> str | N
 SEEDANCE_AUDIO_LIMITED_MODELS = frozenset({"seedance_2_0", "seedance_2_0_mini"})
 
 
+def seedance_media_kind(ref: dict) -> str:
+    """에이전트가 실제로 싣는 플래그 기준 — agent_push 의 첫/끝 프레임 판정·_media_role 과 같아야 한다.
+    type·role 이 엇갈린 저장값(type image · role @Audio1)도 제출되는 대로 센다(Codex G 재검수)."""
+    role = str(ref.get("role") or "").lower()
+    if role.startswith(("@start", "@end")):
+        return "image"
+    if role.startswith("@video") or ref.get("type") == "video":
+        return "video"
+    if role.startswith("@audio") or ref.get("type") == "audio":
+        return "audio"
+    return "image"
+
+
 def seedance_audio_reference_error(model: str, references: list) -> str | None:
     if model not in SEEDANCE_AUDIO_LIMITED_MODELS:
         return None
-    audios = sum(r.get("type") == "audio" for r in references)
+    kinds = [seedance_media_kind(r) for r in references]
+    audios = kinds.count("audio")
     if audios > 3:
         return f"오디오 레퍼런스는 3개까지 넣을 수 있습니다 — 지금 {audios}개입니다."
-    if audios and not any(r.get("type") in ("image", "video") for r in references):
+    if audios and audios == len(kinds):
         return "오디오 레퍼런스는 이미지나 영상 레퍼런스와 함께 넣어야 합니다 — Seedance 2.0·Mini 는 오디오만으로 만들 수 없습니다."
     return None
 
