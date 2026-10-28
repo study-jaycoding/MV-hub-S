@@ -22,6 +22,7 @@ import {
   spotlightValueLabel,
 } from "../../lib/spotlightPromptConfig";
 import { SpotlightOptionIcon } from "./SpotlightOptionIcon";
+import { SpotlightDurationChip } from "./SpotlightDurationChip";
 import { normalizeSeedanceDraftParams } from "../../lib/seedanceDraft";
 import voiceCatalog from "../../lib/voiceCatalog.json";
 
@@ -43,6 +44,8 @@ const VOICE_FILTERS = [
 //  칸은 그대로 남는다(그 글자가 들어가지 않는다 — 규칙 43 의 '받을 수 없으면 받지 않는다').
 const inexactInteger = (value: OptionValue): boolean =>
   typeof value === "number" && !Number.isSafeInteger(value);
+// 옵션 칩 목록 머리 글(Jay 2026-10-28 — 힉스필드 웹 표기). 길이 창의 "Duration" 은 SpotlightDurationChip 이 단다.
+const OPTION_TITLES: Record<string, string> = { aspect_ratio: "Aspect Ratio", resolution: "Quality" };
 
 interface Props {
   type: MediaType;
@@ -366,7 +369,7 @@ export function SpotlightOptionsBar({
         </button>
         {open === "model" && (
           <div className="sl-dropdown">
-            <div className="sl-dd-title">{type === "video" ? "영상" : type === "audio" ? "오디오" : "이미지"} 모델</div>
+            <div className="sl-dd-title">{type === "video" ? "Video" : type === "audio" ? "Audio" : "Image"} Model</div>
             {modelBlocked ? (
               <div className="sl-dd-note">{blockedNote || "지금 고른 모델은 이 그룹에서 쓸 수 없습니다. 다른 모델을 고르세요."}</div>
             ) : null}
@@ -429,24 +432,15 @@ export function SpotlightOptionsBar({
         const isIgnored = ignored.params.includes(p.name);
         const ignoredClass = isIgnored ? " sl-opt-ignored" : "";
         if (/duration|length/i.test(p.name)) {
+          // 칩에는 값만, 누르면 위에 슬라이더 창(Jay 2026-10-28) — 정해진 길이 목록이면 그 값들만
           if (p.enum?.length) {
             const vals = p.enum;
+            const stops = vals.map(Number);
             const cur = String(optionValues[p.name] ?? p.default ?? vals[0]);
-            const idx = Math.max(0, vals.indexOf(cur));
             return (
-              <div className={"sl-chip sl-opt-slider" + ignoredClass} key={p.name} title={p.name}>
-                <span className="sl-opt-ic"><SpotlightOptionIcon name={p.name} /></span>
-                <input
-                  type="range"
-                  min={0}
-                  max={vals.length - 1}
-                  step={1}
-                  value={idx}
-                  disabled={isIgnored}
-                  onChange={(e) => setOpt(p.name, vals[Number(e.target.value)])}
-                />
-                <span className="sl-opt-val">{cur}s</span>
-              </div>
+              <SpotlightDurationChip key={p.name} value={Number(cur)} min={stops[0]} max={stops[stops.length - 1]} stops={stops}
+                open={open === p.name} onToggle={() => setOpen(open === p.name ? null : p.name)}
+                onChange={(v) => setOpt(p.name, vals[stops.indexOf(v)])} ignored={isIgnored} title={p.name} />
             );
           }
           const def = Number(p.default) || 5;
@@ -454,21 +448,10 @@ export function SpotlightOptionsBar({
           const raw = Number(optionValues[p.name] ?? def) || def;
           const cur = Math.min(dmax, Math.max(dmin, raw));
           return (
-            <div className={"sl-chip sl-opt-slider" + ignoredClass} key={p.name} title={`${p.name} (${dmin}~${dmax}s)`}>
-              <span className="sl-opt-ic"><SpotlightOptionIcon name={p.name} /></span>
-              <input
-                type="range"
-                min={dmin}
-                max={dmax}
-                step={1}
-                value={cur}
-                disabled={isIgnored}
-                onChange={(e) =>
-                  setOptionValues((prev) => ({ ...prev, [p.name]: Number(e.target.value) }))
-                }
-              />
-              <span className="sl-opt-val">{cur}s</span>
-            </div>
+            <SpotlightDurationChip key={p.name} value={cur} min={dmin} max={dmax}
+              open={open === p.name} onToggle={() => setOpen(open === p.name ? null : p.name)}
+              onChange={(v) => setOptionValues((prev) => ({ ...prev, [p.name]: v }))}
+              ignored={isIgnored} title={`${p.name} (${dmin}~${dmax}s)`} />
           );
         }
         return p.enum?.length ? (
@@ -488,6 +471,7 @@ export function SpotlightOptionsBar({
                 채로 모드를 바꿔 넣을 수 있고, 그때 열린 목록으로 고르면 잠금이 뚫린다. */}
             {open === p.name && !isIgnored && (
               <div className="sl-dropdown">
+                {OPTION_TITLES[p.name] && <div className="sl-dd-title">{OPTION_TITLES[p.name]}</div>}
                 <div className="sl-dd-scroll">
                   {/* aspect_ratio 는 CLI 에 auto 가 없어도 맨 앞에 'auto' 를 합성한다(제출 시 레퍼런스 비율로 치환).
                       CLI 가 이미 auto 를 주는 모델은 중복 추가하지 않는다. */}

@@ -41,20 +41,18 @@ import { assetIdentity, assetIdentityForProject, type AssetReferenceIdentity } f
 import { captureOperationContext, isOperationContextCurrent } from "../../app/operationContext";
 import { CloseIcon, CopyIcon, EraserIcon, ImageEditIcon, VideoEditIcon } from "../common/ViewIcons";
 import { SpotlightOptionIcon } from "../spotlight/SpotlightOptionIcon";
+import { SpotlightDurationChip } from "../spotlight/SpotlightDurationChip";
 
 const MAX_WORK_PIXELS = 12_000_000; // 12MP — 주석/평면화 캔버스 동시 보유 상한
 // 이미지 수정 기본 모델 — 웹 편집기와 동일(원본 재현 충실, 실측). 그룹 사용 모델 정책의 면제 목록과 같은 값이어야
 // 부분 수정 결과물의 재생성·복구가 막히지 않는다(modelPolicyCore.POLICY_EXEMPT_MODELS).
 const EDIT_MODEL = "seedream_v5_pro";
 // 수정 창에서 고를 수 있는 모델 — Jay 2026-10-28 유료 시험 뒤 결정(기억 project_mvhubs_edit_model_paid_test).
-// 묶음의 첫 모델이 기본. Draw to Edit(draw_to_video)는 CLI 1.2.3 로 접수가 안 돼 빠졌다 — CLI 가 되면 그때 넣는다.
-const EDIT_MODEL_GROUPS: Record<"image" | "video", { title: string; ids: string[] }[]> = {
-  image: [
-    { title: "Seedream", ids: [EDIT_MODEL] },
-    { title: "Nano Banana", ids: ["nano_banana_pro", "nano_banana_flash", "nano_banana_2_1"] },
-    { title: "GPT Image", ids: ["gpt_image_2", "gpt_image_2_5"] },
-  ],
-  video: [{ title: "그린 프레임 + 글로 지시", ids: ["kling_video_edit", "kling4_0", "seedance_2_5"] }],
+// 첫 모델이 기본. 목록 머리 글은 생성창과 같은 "Image Model"·"Video Model" 하나(Jay 2026-10-28) — 회사 순서로 늘어놓는다.
+// Draw to Edit(draw_to_video)는 CLI 1.2.3 로 접수가 안 돼 빠졌다 — CLI 가 되면 그때 넣는다.
+const EDIT_MODELS: Record<"image" | "video", string[]> = {
+  image: [EDIT_MODEL, "nano_banana_pro", "nano_banana_flash", "nano_banana_2_1", "gpt_image_2", "gpt_image_2_5"],
+  video: ["kling_video_edit", "kling4_0", "seedance_2_5"],
 };
 const MODEL_LABELS: Record<string, string> = {
   seedream_v5_pro: "Seedream 5.0 Pro", nano_banana_pro: "Nano Banana Pro", nano_banana_flash: "Nano Banana 2",
@@ -599,9 +597,9 @@ export function PartialEditModal({
   const modelPolicy = useModelPolicy();
   const openingContext = useRef(captureOperationContext(workspace));
   const openingWorkspace = useRef(JSON.stringify([workspace.scope, workspace.id]));
-  const modelGroups = EDIT_MODEL_GROUPS[mode];
+  const editModels = EDIT_MODELS[mode];
   const m = useModels(setError, { allowed: modelPolicy.allowed, ready: false,
-    initialType: mode, initialModel: modelGroups[0].ids[0], costEnabled: false });
+    initialType: mode, initialModel: editModels[0], costEnabled: false });
   const blockedMessage = submitBlockMessage(modelPolicy, m.model, editLabel);
   const paramsReady = !m.paramsLoading && m.paramsModel === m.model && m.params.length > 0;
   // 비율은 이미지 모델만 — 영상 편집은 원본 영상의 화면을 그대로 고친다(편집 모델에 비율을 주면 화면을 다시 짠다).
@@ -674,7 +672,7 @@ export function PartialEditModal({
   }, [m.model, paramsReady, editParams, isVideo, videoDuration, optionName, optionValues, option, editCostKey]);
   const costKnown = cost != null && (!isVideo || successfulCostKey === editCostKey);
   // 모델·옵션 칩의 목록, 색·굵기 창 — 바깥을 누르면 닫는다(생성창 칩과 같다)
-  const [menu, setMenu] = useState<null | "model" | "option" | "bitrate">(null);
+  const [menu, setMenu] = useState<null | "model" | "option" | "bitrate" | "duration">(null);
   const chipsRef = useRef<HTMLDivElement>(null);
   useOutsideMouseDown(chipsRef, () => setMenu(null), menu !== null);
   const [colorOpen, setColorOpen] = useState(false);
@@ -1466,26 +1464,22 @@ export function PartialEditModal({
                         </button>
                         {menu === "model" && (
                           <div className="sl-dropdown pe-menu" role="listbox" aria-label="수정 모델">
+                            <div className="sl-dd-title">{isVideo ? "Video" : "Image"} Model</div>
                             <div className="sl-dd-scroll">
-                              {modelGroups.map((group) => (
-                                <Fragment key={group.title}>
-                                  <div className="sl-dd-title">{group.title}</div>
-                                  {group.ids.map((id) => {
-                                    const allowed = modelAllowed(modelPolicy, id);
-                                    return (
-                                      <button key={id} type="button" role="option" aria-selected={id === m.model} disabled={!allowed}
-                                        className={"sl-dd-item pe-dd-item" + (id === m.model ? " sel" : "") + (allowed ? "" : " blocked")}
-                                        onClick={() => { m.setModel(id); setMenu(null); }}>
-                                        {modelLabel(id)}
-                                        {id === modelGroups[0].ids[0] && <span className="pe-tag">기본</span>}
-                                        {!allowed && <span className="sl-dd-lock"> 🔒</span>}
-                                      </button>
-                                    );
-                                  })}
-                                </Fragment>
-                              ))}
+                              {editModels.map((id) => {
+                                const allowed = modelAllowed(modelPolicy, id);
+                                return (
+                                  <button key={id} type="button" role="option" aria-selected={id === m.model} disabled={!allowed}
+                                    className={"sl-dd-item pe-dd-item" + (id === m.model ? " sel" : "") + (allowed ? "" : " blocked")}
+                                    onClick={() => { m.setModel(id); setMenu(null); }}>
+                                    {modelLabel(id)}
+                                    {id === editModels[0] && <span className="pe-tag">기본</span>}
+                                    {!allowed && <span className="sl-dd-lock"> 🔒</span>}
+                                  </button>
+                                );
+                              })}
                             </div>
-                            {modelGroups.some((group) => group.ids.some((id) => !modelAllowed(modelPolicy, id))) && (
+                            {editModels.some((id) => !modelAllowed(modelPolicy, id)) && (
                               <div className="sl-dd-note">🔒 = 이 그룹의 '사용 모델'에 없음</div>
                             )}
                           </div>
@@ -1503,6 +1497,7 @@ export function PartialEditModal({
                           </button>
                           {menu === "option" && (
                             <div className="sl-dropdown pe-menu-small" role="listbox" aria-label={optionName === "mode" ? "영상 수정 품질" : "영상 수정 해상도"}>
+                              <div className="sl-dd-title">Quality</div>
                               <div className="sl-dd-scroll">
                                 {optionValues.map((value) => (
                                   <button key={value} type="button" role="option" aria-selected={value === option}
@@ -1527,6 +1522,7 @@ export function PartialEditModal({
                           </button>
                           {menu === "bitrate" && (
                             <div className="sl-dropdown pe-menu-small" role="listbox" aria-label="비트레이트">
+                              <div className="sl-dd-title">Bitrate</div>
                               <div className="sl-dd-scroll">
                                 {bitrateValues.map((value) => (
                                   <button key={value} type="button" role="option" aria-selected={value === bitrateSend}
@@ -1552,12 +1548,10 @@ export function PartialEditModal({
                         </div>
                       )}
                       {videoSpec?.seconds?.extend && baseSeconds > 0 && (
-                        <div className="sl-chip sl-opt-slider" title={`길이 ${baseSeconds}~${videoSpec.seconds.max}초 — 원본보다 길면 뒤로 이어 늘립니다`}>
-                          <span className="sl-opt-ic"><SpotlightOptionIcon name="duration" /></span>
-                          <input type="range" aria-label="영상 길이" min={baseSeconds} max={videoSpec.seconds.max} step={1}
-                            value={sendSeconds} disabled={submitting} onChange={(e) => setSeconds(Number(e.target.value))} />
-                          <span className="sl-opt-val">{sendSeconds}s</span>
-                        </div>
+                        <SpotlightDurationChip value={sendSeconds} min={baseSeconds} max={videoSpec.seconds.max} label="영상 길이"
+                          title={`길이 ${baseSeconds}~${videoSpec.seconds.max}초 — 원본보다 길면 뒤로 이어 늘립니다`}
+                          open={menu === "duration"} onToggle={() => setMenu(menu === "duration" ? null : "duration")}
+                          onChange={setSeconds} disabled={submitting} />
                       )}
                       {isVideo && videoDuration > 0 && (
                         <div className="sl-ignored-note">

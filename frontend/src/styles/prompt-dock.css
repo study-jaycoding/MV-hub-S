@@ -329,19 +329,32 @@
 }
 .sl-dd-item:has(.sl-draft-pill) { display: flex; align-items: center; gap: 6px; padding-right: 30px; }
 .sl-dd-item .sl-draft-pill { margin-left: auto; }
-/* 듀레이션 슬라이더 칩 — 아이콘 + 레인지 + 값(s) */
-.sl-opt-slider { gap: 8px; }
-/* CLI가 무시하는 값도 조작 가능하다. 안내는 별도 요소라 흐려지지 않는다. */
+/* CLI가 무시하는 값 — 흐리게 + 못 누름(칩이 disabled). 안내는 별도 요소라 흐려지지 않는다. */
 .sl-opt-ignored { opacity: 0.45; }
 .sl-ignored-note { flex-basis: 100%; order: 1; color: var(--text); font-size: 12px; }
-.sl-opt-slider input[type="range"] {
-  width: 70px; height: 4px; margin: 0; padding: 0;
+.sl-opt-val { font-size: 12.5px; font-weight: 700; color: var(--text); min-width: 22px; }
+/* 길이 칩(SpotlightDurationChip) — 칩엔 "4s" 만, 누르면 바로 위에 큰 값 + 눈금 슬라이더 창(Jay 2026-10-28) */
+.sl-dur-pop { min-width: 0; width: 280px; padding: 12px 14px 8px; }
+.sl-dur-head { font-size: 16px; font-weight: 700; color: var(--text); margin-bottom: 10px; }
+.sl-dur-pop input[type="range"] {
+  display: block; width: 100%; margin: 0; padding: 0;
   accent-color: var(--accent); background: transparent; cursor: pointer;
 }
-.sl-opt-val { font-size: 12.5px; font-weight: 700; color: var(--text); min-width: 22px; }
-/* 오디오 토글 칩(하단 바) — 아이콘 + ON/OFF 세그먼트. 고급 패널의 sl-adv-opt 재사용하되 칩 안에서 한 줄 유지 */
-.sl-opt-audio { gap: 8px; }
-.sl-opt-audio .sl-adv-opts { flex-wrap: nowrap; gap: 4px; }
+/* 눈금 글자 — 슬라이더 손잡이 반쪽(약 8px)만큼 양끝을 들여 값 자리와 맞춘다 */
+.sl-dur-marks { position: relative; height: 16px; margin: 6px 8px 0; font-size: 11px; color: var(--muted); }
+.sl-dur-marks span { position: absolute; top: 0; transform: translateX(-50%); font-variant-numeric: tabular-nums; }
+/* 오디오 토글 칩(하단 바) — 아이콘 + ON/OFF 를 Image/Video 토글(.sl-type)처럼 한 캡슐 안의 두 칸으로(Jay 2026-10-28) */
+.sl-opt-audio { gap: 6px; padding: 3px 3px 3px 12px; }
+.sl-opt-audio .sl-adv-opts { flex-wrap: nowrap; gap: 0; height: 100%; }
+.sl-opt-audio .sl-adv-opt {
+  height: 100%; padding: 0 12px; border: none; border-radius: 18px;
+  background: transparent; color: var(--muted); font-size: 12px; font-weight: 600;
+}
+.sl-opt-audio .sl-adv-opt:hover { color: var(--text); }
+.sl-opt-audio .sl-adv-opt.sel {
+  background: var(--grad); color: var(--accent-ink); font-weight: 700;
+  box-shadow: 0 3px 12px rgba(var(--accent-rgb), 0.35);
+}
 .sl-opt-num { gap: 6px; }
 .sl-opt-num input {
   width: 46px; height: 22px; border: none; outline: none;
@@ -395,9 +408,10 @@
   background: var(--panel); border: 1px solid var(--border2); border-radius: 12px;
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
 }
-.sl-dd-title { padding: 6px 10px 4px; font-size: 11px; color: var(--muted2); text-transform: uppercase; letter-spacing: 0.6px; }
+/* 목록 머리 글 — "Video Model"·"Aspect Ratio"·"Quality"·"Duration" 을 적은 그대로(대문자로 바꾸지 않음 — Jay 2026-10-28 표기) */
+.sl-dd-title { padding: 6px 10px 4px; font-size: 11px; color: var(--muted2); letter-spacing: 0.3px; }
 .sl-dd-scroll { max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
-/* PV 스타일 옵션 행 — 좌측 체크박스 + 선택 시 accent 채움 + 우측 ✓ */
+/* PV 스타일 옵션 행 — 좌측 체크박스 + 선택 시 accent 채움(우측 ✓ 는 같은 표시가 둘이라 뺐다 — Jay 2026-10-28) */
 .sl-dd-item {
   position: relative;
   text-align: left; padding: 9px 28px 9px 34px; border: none; border-radius: 8px;
@@ -417,10 +431,6 @@
   background: rgba(var(--accent-rgb), 0.12); box-shadow: inset 0 0 0 1px var(--accent);
 }
 .sl-dd-item.sel::before { border-color: var(--accent); background: var(--accent); }
-.sl-dd-item.sel::after {
-  content: "✓"; position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
-  color: var(--accent); font-size: 13px; font-weight: 700;
-}
 
 /* 목소리 창(오디오) — 이름 검색칸 + 목록. 목록 모양은 .sl-dd-item 그대로. */
 .sl-voice-pop { min-width: 240px; }

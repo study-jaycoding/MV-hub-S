@@ -219,15 +219,16 @@ describe("씬/카드 복원과 모델 스키마 응답 순서", () => {
 describe("무시되는 옵션은 조작할 수 없고, 고른 값은 보존된다", () => {
   it("edit의 길이·비율은 만질 수 없고, 되돌리면 고르던 값이 살아 있다", async () => {
     view = await mountPrompt({ trayBinding: binding("video_edit") });
-    const slider = required<HTMLInputElement>(view.container, '.sl-opt-slider input[type="range"]');
-    const sliderChip = required(view.container, ".sl-opt-slider");
+    // 길이 칩은 값만 보이고, 누르면 위에 슬라이더 창이 뜬다(2026-10-28 Jay)
+    const durationChip = required<HTMLButtonElement>(view.container, ".sl-opt-dur");
     const ratio = required<HTMLButtonElement>(view.container, 'button[title="aspect_ratio"]');
-    expect(sliderChip.classList.contains("sl-opt-ignored")).toBe(true);
+    expect(durationChip.classList.contains("sl-opt-ignored")).toBe(true);
     expect(ratio.classList.contains("sl-opt-ignored")).toBe(true);
     // ★2026-09-15 Jay: 흐리게만 두면 "만질 수 있으니 효과가 있나 보다" 로 헷갈린다 — 아예 잠근다.
-    expect(slider.disabled).toBe(true);
+    expect(durationChip.disabled).toBe(true);
     expect(ratio.disabled).toBe(true);
-    expect(getComputedStyle(sliderChip).opacity).toBe("0.45");
+    expect(getComputedStyle(durationChip).opacity).toBe("0.45");
+    click(durationChip);
     click(ratio);
     await settle();
     expect(view.container.querySelector(".sl-dropdown")).toBeNull();
@@ -245,8 +246,10 @@ describe("무시되는 옵션은 조작할 수 없고, 고른 값은 보존된�
     await settle();
     expect(view.container.querySelector(".sl-opt-ignored")).toBeNull();
     expect(view.container.querySelector(".sl-ignored-note")).toBeNull();
-    const freeSlider = required<HTMLInputElement>(view.container, '.sl-opt-slider input[type="range"]');
-    expect(freeSlider.disabled).toBe(false);
+    expect(required<HTMLButtonElement>(view.container, ".sl-opt-dur").disabled).toBe(false);
+    click(required<HTMLButtonElement>(view.container, ".sl-opt-dur"));
+    await settle();
+    const freeSlider = required<HTMLInputElement>(view.container, '.sl-dur-pop input[type="range"]');
     act(() => {
       // React의 value tracker를 갱신하지 않고 브라우저 입력처럼 실제 DOM 값을 바꾼다.
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(freeSlider, "12");
@@ -255,7 +258,7 @@ describe("무시되는 옵션은 조작할 수 없고, 고른 값은 보존된�
     });
     await settle();
     expect(view.ref.current?.currentModel()?.params?.duration).toBe(12);
-    expect(required(view.container, ".sl-opt-val").textContent).toBe("12s");
+    expect(required(view.container, ".sl-opt-dur .sl-opt-val").textContent).toBe("12s");
     click(required<HTMLButtonElement>(view.container, 'button[title="aspect_ratio"]'));
     click(button(required(view.container, ".sl-dropdown"), "9:16"));
     await settle();
@@ -265,13 +268,13 @@ describe("무시되는 옵션은 조작할 수 없고, 고른 값은 보존된�
     expectShownMode(view.container, "t2v");
     click(button(required(view.container, ".sl-adv-pop"), "video_extension"));
     await settle();
-    expect(required<HTMLInputElement>(view.container, '.sl-opt-slider input[type="range"]').disabled).toBe(false);
+    expect(required<HTMLButtonElement>(view.container, ".sl-opt-dur").disabled).toBe(false);
     expect(required<HTMLButtonElement>(view.container, 'button[title="aspect_ratio"]').disabled).toBe(true);
     expect(required(view.container, ".sl-ignored-note").textContent).toBe("비율은 넣은 영상을 따릅니다.");
     expectShownMode(view.container, "video_extension");
     click(button(required(view.container, ".sl-adv-pop"), "video_edit"));
     await settle();
-    expect(required<HTMLInputElement>(view.container, '.sl-opt-slider input[type="range"]').disabled).toBe(true);
+    expect(required<HTMLButtonElement>(view.container, ".sl-opt-dur").disabled).toBe(true);
     expect(view.ref.current?.currentModel()?.params).toMatchObject({ duration: 12, aspect_ratio: "9:16" });
   });
 });

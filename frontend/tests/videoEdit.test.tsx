@@ -254,7 +254,7 @@ describe("video edit reuses annotation UI", () => {
     mocks.model = "seedance_2_5";
     await render(); await prompt();
     expect(button("비트레이트").textContent).toContain("High");
-    expect(container.querySelector('input[aria-label="영상 길이"]')).toBeNull(); // 길이는 Kling 4.0 만 고른다
+    expect(container.querySelector('button[aria-label="영상 길이"]')).toBeNull(); // 길이는 Kling 4.0 만 고른다
     expect(container.querySelector(".sl-ignored-note")?.textContent).toContain("길이·비율은 원본 영상을 따릅니다(5초)");
     await act(async () => button("소리 끄기").click());
     await act(async () => button("비트레이트").click());
@@ -266,14 +266,18 @@ describe("video edit reuses annotation UI", () => {
   it("lets Kling 4.0 run longer than the source (extends the video) with an auto aspect", async () => {
     mocks.model = "kling4_0";
     await render(); await prompt();
-    const slider = container.querySelector<HTMLInputElement>('input[aria-label="영상 길이"]')!;
+    expect(button("영상 길이").textContent).toBe("5s"); // 칩엔 값만 — 누르면 위에 슬라이더 창
+    expect(container.querySelector(".sl-dur-pop")).toBeNull();
+    await act(async () => button("영상 길이").click());
+    const slider = container.querySelector<HTMLInputElement>('.sl-dur-pop input[aria-label="영상 길이"]')!;
     expect([slider.min, slider.max, slider.value]).toEqual(["5", "30", "5"]); // 처음 = 원본 길이
     expect(container.querySelector(".sl-ignored-note")?.textContent).toContain("더 길게 = 뒤로 이어 늘리기");
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(slider, "8");
       slider.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    expect(container.querySelector(".sl-opt-val")?.textContent).toBe("8s");
+    expect(button("영상 길이").textContent).toBe("8s");
+    expect(container.querySelector(".sl-dur-head")?.textContent).toBe("8s");
     await act(async () => (container.querySelector(".partial-edit-gen") as HTMLButtonElement).click());
     expect(mocks.prepareCreate.mock.calls[0][0].params).toEqual({ mode: "video-edit", aspect_ratio: "auto", resolution: "720p", duration: 8 });
   });
