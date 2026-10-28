@@ -190,7 +190,7 @@ describe("복원 규칙·제출·표시명", () => {
       script={{ count: 5001, max: 5000 }} />));
     expect(container.querySelector(".sl-prompt")?.getAttribute("data-placeholder")).toBe("Write the exact words to be spoken");
     const count = container.querySelector(".sl-char-count")!;
-    expect(count.textContent).toBe(`${(5001).toLocaleString()} / ${(5000).toLocaleString()}자`);
+    expect(count.textContent).toBe(`${(5001).toLocaleString()} / ${(5000).toLocaleString()}`); // 숫자만(2026-10-28)
     expect(count.classList.contains("over")).toBe(true);
   });
 

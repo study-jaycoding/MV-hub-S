@@ -137,7 +137,7 @@ export function SpotlightPromptRow({
       />
       {chars && (
         <span className={"sl-char-count" + (chars.max && chars.count > chars.max ? " over" : "")}>
-          {chars.count.toLocaleString()}{chars.max ? ` / ${chars.max.toLocaleString()}` : ""}자
+          {chars.count.toLocaleString()}{chars.max ? ` / ${chars.max.toLocaleString()}` : ""}
         </span>
       )}
       <button

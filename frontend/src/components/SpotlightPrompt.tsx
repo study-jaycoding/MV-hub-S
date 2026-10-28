@@ -322,9 +322,9 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   const bumpPromptTick = useCallback(() => setPromptTick((n) => n + 1), []);
   const [promptLength, setPromptLength] = useState(0); // 글자 수 표시용 — 견적(costPrompt)은 대본 모델만 글을 넘긴다
   useEffect(() => {
-    const text = editorRef.current ? serialize(editorRef.current).text : "";
-    setPromptLength(text.length);
-    setCostPrompt(isTtsModel(model) ? text : "");
+    const raw = editorRef.current ? serialize(editorRef.current, false).text : ""; // 공백도 치는 즉시 센다
+    setPromptLength(raw.length);
+    setCostPrompt(isTtsModel(model) ? raw.trim() : "");
   }, [model, promptTick]);
   // `[` 오디오 태그 목록(ElevenLabs v4) — 검색어(null = 닫힘). 글이 바뀔 때(promptTick)·커서가 움직일 때(onCaretMove) 다시 잰다.
   //  Esc 로 닫은 그 `[` 에서는 다시 열지 않는다 — 친 글은 남긴다(대본의 `[` 가 글자일 수도 있다).

@@ -551,8 +551,8 @@ export function refreshInlineRefThumbs(editor: HTMLElement): void {
   });
 }
 
-// 본문 텍스트(칩 제외) + 칩 references 직렬화.
-export function serialize(editor: HTMLElement): { text: string; refs: ChipRef[] } {
+// 본문 텍스트(칩 제외) + 칩 references 직렬화. trim=false 는 글자 수 표시용 — 끝 공백도 친 만큼 센다(Jay 2026-10-28).
+export function serialize(editor: HTMLElement, trim = true): { text: string; refs: ChipRef[] } {
   let text = "";
   const walk = (node: Node) => {
     if (node.nodeType === Node.TEXT_NODE) text += node.textContent;
@@ -569,7 +569,8 @@ export function serialize(editor: HTMLElement): { text: string; refs: ChipRef[] 
     const ref = chipRefOf(el);
     if (ref) refs.push(ref);
   });
-  return { text: text.replace(/ /g, " ").replace(/​/g, "").trim(), refs };
+  const clean = text.replace(/ /g, " ").replace(/​/g, "");
+  return { text: trim ? clean.trim() : clean, refs };
 }
 
 export function hasContent(editor: HTMLElement): boolean {
