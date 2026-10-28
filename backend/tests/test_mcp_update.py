@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app import config, db, deps, repo
-from app.routers import mcp, mcp_v2
+from app.routers import mcp, mcp_adapter, mcp_v2
 from app.services import mcp_update as service
 
 
@@ -118,6 +118,7 @@ def client(tmp_path, monkeypatch, core):
         request.state.account = repo.get_account(account["email"]) if request.headers.get("X-Test-Login") == "yes" else None
         return await call_next(request)
     app.include_router(mcp.router)
+    app.include_router(mcp_adapter.router)
     with TestClient(app, base_url="http://127.0.0.1:8012", client=("127.0.0.1", 50201)) as connection:
         yield connection
     db.flush_pool()

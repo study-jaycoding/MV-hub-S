@@ -16,9 +16,12 @@ _proxy(프록시 호출)·publish(로그인/발행)·worker_backup(백업 업로
 from __future__ import annotations
 
 import json
+import os
+from contextvars import ContextVar
 from typing import Any, Optional
 
 from .. import repo
+from ..config import AUTH_ENABLED
 from ..shared_server_config import DEFAULT_SHARED_URL, K_URL
 
 # app_setting 키 — 로컬 허브가 기억하는 공유 서버 연결 정보(이 PC 로컬 DB 에만 저장).
@@ -59,6 +62,27 @@ def token() -> Optional[str]:
 
 def elevation_token() -> Optional[str]:
     return repo.get_setting(K_ELEV_TOKEN)
+
+
+# 요청 하나가 붙잡은 (주소, 토큰) — routers/_proxy.pinned_connection 이 세운다. 서비스도 같은 고정을 보게 여기 둔다.
+PINNED_CONNECTION: ContextVar[Optional[tuple[str, str]]] = ContextVar("pinned_proxy_connection", default=None)
+
+
+def pinned_base_url() -> str:
+    """고정 연결이 있으면 그 주소, 없으면 저장된 주소(routers/_proxy.base_url 과 같은 규칙)."""
+    pin = PINNED_CONNECTION.get()
+    return pin[0] if pin else base_url()
+
+
+def is_shared_team_server() -> bool:
+    """이 프로세스가 '공유 팀 서버 본체'인가 — AUTH 켜짐 + 격리(NO_PROXY) 아님.
+
+    비공개 데이터(비공개 코멘트 등)는 작성자의 로컬 DB 에만 존재해야 하므로, 여기가 True 면
+    비공개 저장 요청을 거절한다. test_dev(AUTH+NO_PROXY 격리 단독 실행)는 로컬 허브를 겸하므로
+    False — 격리 DB 에 비공개를 저장해도 팀에 새지 않는다(operational_health 의 런타임 판별과 동일)."""
+    if os.environ.get("CONTENT_HUB_NO_PROXY", "").lower() in ("1", "true", "yes", "on"):
+        return False
+    return AUTH_ENABLED
 
 
 def server_name() -> str:

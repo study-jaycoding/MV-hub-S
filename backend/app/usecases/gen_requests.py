@@ -23,7 +23,8 @@ from ..config import MANAGE_ENABLED
 from ..generation_result import ACTIVE_STATUSES, normalize_job_result
 from ..models import AUDIO_MODELS_V1, MEDIA_V2_MODELS, RegenerateIn
 from ..services import cli_bridge
-from ..services.update_activity import local_write, acknowledge_checkpoint
+from ..services.release_update import local_write
+from ..services.update_activity import acknowledge_checkpoint
 from ..services.agent_signals import agent_signals
 from ..services.async_tools import to_thread_non_abandon
 from ..services.event_journal import journal_generation_event

@@ -89,6 +89,7 @@ from .routers import (
     library,
     members,
     mcp,
+    mcp_adapter,
     mcp_v2,
     notifications,
     projects,
@@ -801,6 +802,7 @@ app.include_router(edit_shares.router)
 app.include_router(clean_feed.router)  # 편집 탭 클린 피드 전용 창(로컬 허브 — 이 PC 만)
 app.include_router(app_windows.router)  # 별도 창(Assets·관리)을 앱 창 위로(로컬 허브 — 이 PC 만)
 app.include_router(mcp.router)
+app.include_router(mcp_adapter.router)
 app.include_router(mcp_v2.router)
 app.include_router(asset_registry.router)
 app.include_router(asset_sync.router)

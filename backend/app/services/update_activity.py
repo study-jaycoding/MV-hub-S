@@ -12,6 +12,8 @@ from .. import active_account
 from ..db import get_connection, get_db_path
 from ..emailnorm import norm_email
 from ..workspace_context import normalize_workspace_context
+from . import shared_connection
+from .auth import hub_id
 
 _KEY = "update_remote_checkpoint"
 _write_lock = threading.Lock()
@@ -28,16 +30,12 @@ def active_write_count() -> int:
 
 
 @contextmanager
-def local_write():
-    """카운트를 먼저 올리고 checking을 확인해 양쪽 진입 순서의 틈을 막는다."""
-    from .release_update import update_in_progress
-
+def counted_write():
+    """결과 쓰기 하나를 센다. 업데이트 중 거절은 release_update.local_write 가 센 뒤에 확인한다."""
     global _writers
     with _write_lock:
         _writers += 1
     try:
-        if update_in_progress():
-            raise UpdateActivityBusy("프로그램 업데이트 중입니다. 결과 저장은 다시 확인합니다.")
         yield
     finally:
         with _write_lock:
@@ -45,15 +43,13 @@ def local_write():
 
 
 def current_scope() -> dict[str, str]:
-    # 기존 MCP와 동일한 허브 신원을 재사용한다. 라우터의 초기화 순환을 피하려고 늦게 읽는다.
-    from ..routers import _proxy, mcp_v2
-
-    parts = urlsplit(_proxy.base_url())
+    # 기존 MCP와 동일한 허브 신원을 재사용한다.
+    parts = urlsplit(shared_connection.pinned_base_url())
     host = parts.hostname or ""
     if parts.port:
         host += f":{parts.port}"
     normalized = urlunsplit((parts.scheme.lower(), host.lower(), parts.path.rstrip("/"), "", ""))
-    return {"hub_id": mcp_v2.hub_id(),
+    return {"hub_id": hub_id(),
             "server_key": hashlib.sha256(normalized.encode("utf-8")).hexdigest()}
 
 
@@ -113,9 +109,7 @@ def _save(conn, items: list[dict]) -> None:
 
 def prepare_remote_checkpoint() -> int:
     """현재 계정 DB에서 앵커와 복구 목록을 같은 쓰기 트랜잭션으로 확인한다."""
-    from ..routers import _proxy
-
-    if _proxy.is_shared_team_server():
+    if shared_connection.is_shared_team_server():
         return 0
     with active_account.pinned_account_scope():
         scope = current_scope()

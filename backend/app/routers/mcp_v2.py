@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import hashlib
 import hmac
 import importlib.util
 import io
@@ -33,6 +32,7 @@ from ..mcp_models import StrictModel
 from ..models import GenRequestIn, WorkspaceContext
 from ..repo import mcp_v2 as store
 from ..services import auth, cli_bridge, thumbs
+from ..services.auth import hub_id  # main·시험은 mcp_v2.hub_id 로 부른다
 from ..services.seedance_draft import fresh_params
 from ..services.async_tools import to_thread_non_abandon
 from ..services.path_safety import safe_join
@@ -43,11 +43,6 @@ _registration_lock = threading.Lock()
 _result_wait_slots = threading.BoundedSemaphore(8)
 _RESULT_POLL_SECONDS = 2.0
 _ESTIMATE_BUDGET_SECONDS = 20.0
-
-
-def hub_id():
-    path = str(get_db_path().resolve()).casefold()
-    return hmac.new(auth.get_secret().encode(), ("mcp-hub-id\0" + path).encode(), hashlib.sha256).hexdigest()
 
 
 def _required_hub_id():

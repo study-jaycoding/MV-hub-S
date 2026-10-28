@@ -107,7 +107,9 @@ def test_update_gate_is_checked_after_the_counter_is_raised_and_rejects_with_409
 def test_transfer_in_flight_blocks_the_update_activity_check(monkeypatch):
     """반대 순서: 전송이 먼저 올라가 있으면 업데이트의 활동 확인(워커 스레드)이 busy 를 본다."""
     monkeypatch.setattr(
-        release_update_router, "generation_queue_snapshot", lambda: {"active_total": 0}
+        release_update_router,
+        "generation_queue_snapshot",
+        lambda **_kw: {"active_total": 0, "update_blocking_total": 0},
     )
     monkeypatch.setattr(release_update_router.comfy, "active_run_job_count", lambda: 0)
 

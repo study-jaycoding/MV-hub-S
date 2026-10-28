@@ -48,16 +48,17 @@ from ..mutation_notify import (
 
 # 연결 정보(키·기본 주소·조회)는 services/shared_connection 단일 출처 — 여기 별칭은
 # 기존 내부 사용명 유지용이고, base_url/token 은 테스트가 이 모듈 속성으로 패치한다.
+# 고정 연결·is_shared_team_server 도 같은 객체를 다시 내보낸다(서비스가 라우터를 import 하지 않게).
 from ..services.shared_connection import (  # noqa: E402
     K_TOKEN as _K_TOKEN,
+    PINNED_CONNECTION as _PINNED_CONNECTION,
     base_url as _stored_base_url,
     elevation_token,
+    is_shared_team_server,
     token as _stored_token,
 )
 from ..services.path_safety import safe_join
 from ..services.request_guards import require_local_browser_context
-
-_PINNED_CONNECTION: ContextVar[Optional[tuple[str, str]]] = ContextVar("pinned_proxy_connection", default=None)
 
 
 @contextmanager
@@ -182,17 +183,6 @@ def is_worker_hub() -> bool:
     if os.environ.get("CONTENT_HUB_NO_PROXY", "").lower() in ("1", "true", "yes", "on"):
         return False
     return not AUTH_ENABLED
-
-
-def is_shared_team_server() -> bool:
-    """이 프로세스가 '공유 팀 서버 본체'인가 — AUTH 켜짐 + 격리(NO_PROXY) 아님.
-
-    비공개 데이터(비공개 코멘트 등)는 작성자의 로컬 DB 에만 존재해야 하므로, 여기가 True 면
-    비공개 저장 요청을 거절한다. test_dev(AUTH+NO_PROXY 격리 단독 실행)는 로컬 허브를 겸하므로
-    False — 격리 DB 에 비공개를 저장해도 팀에 새지 않는다(operational_health 의 런타임 판별과 동일)."""
-    if os.environ.get("CONTENT_HUB_NO_PROXY", "").lower() in ("1", "true", "yes", "on"):
-        return False
-    return AUTH_ENABLED
 
 
 def proxying() -> bool:
@@ -598,6 +588,7 @@ _LOCAL_PREFIXES = (
     "/api/mcp/",          # 로컬 MCP 연결·계획은 공유 서버에 위임하지 않는다
     "/api/agent/",         # 에이전트 롱폴·상태·다운로드(이 허브에 붙음)
     "/api/models",         # CLI 모델 목록·params
+    "/api/voices",         # CLI 목소리 목록·상세(모델 목록과 같은 이 PC 의 CLI)
     "/api/comfy",          # ComfyUI 연결·파싱·실행(이 PC 의 로컬/Cloud 자원 — 서버 위임 금지)
     "/api/resolve/",       # Render 원본·@davinci 기록 저장 및 Resolve 제어(이 PC 디스크/앱 대상)
     "/api/release-update/",  # 작업자 설치본·프로세스를 교체하는 이 PC 전용 업데이트

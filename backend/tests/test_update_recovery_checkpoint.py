@@ -150,11 +150,11 @@ def test_transient_failure_cannot_clear_remote_checkpoint(isolated):
 
 def test_local_write_gate_counts_work_and_denies_new_work_during_update(isolated, monkeypatch):
     assert activity.active_write_count() == 0
-    with activity.local_write():
+    with release_update.local_write():
         assert activity.active_write_count() == 1
     monkeypatch.setattr(release_update, "update_in_progress", lambda: True)
     with pytest.raises(activity.UpdateActivityBusy):
-        with activity.local_write():
+        with release_update.local_write():
             pytest.fail("updater and writer overlapped")
     assert activity.active_write_count() == 0
 
@@ -188,7 +188,7 @@ def test_start_persists_before_bootstrap_and_rejects_failed_persistence(isolated
         assert activity.list_checkpoint("a@example.test")
         launched.append(True)
     monkeypatch.setattr(release_update, "_launch_bootstrap", launch)
-    with activity.local_write(), pytest.raises(release_update.ReleaseUpdateBusyError, match="저장"):
+    with release_update.local_write(), pytest.raises(release_update.ReleaseUpdateBusyError, match="저장"):
         release_update.start_update(activity_check=lambda: 0, root=tmp_path,
                                     checkpoint_write=activity.prepare_remote_checkpoint)
     assert launched == []
@@ -208,7 +208,7 @@ def test_update_activity_preserves_comfy_resolve_and_local_writers(isolated, mon
     request()
     monkeypatch.setattr(router.comfy, "active_run_job_count", lambda: 2)
     monkeypatch.setattr(router, "active_transfer_count", lambda: 3)
-    with activity.local_write():
+    with release_update.local_write():
         value = router._activity()
     assert value == {"generation_active": 0, "comfy_active": 2, "resolve_active": 3,
                      "result_write_active": 1, "active_total": 6}

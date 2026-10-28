@@ -388,6 +388,15 @@ def update_in_progress(root: Path = APP_ROOT) -> bool:
     return kind in {"unreadable", "invalid"} or _active_and_fresh(value)
 
 
+@contextmanager
+def local_write():
+    """카운트를 먼저 올리고 checking을 확인해 양쪽 진입 순서의 틈을 막는다."""
+    with update_activity.counted_write():
+        if update_in_progress():
+            raise update_activity.UpdateActivityBusy("프로그램 업데이트 중입니다. 결과 저장은 다시 확인합니다.")
+        yield
+
+
 def install_source(root: Path) -> str:
     """신뢰된 릴리스 위치(INSTALL_SOURCE.txt) — 업데이트와 서버 이사 공지가 함께 쓴다."""
     try:

@@ -105,6 +105,12 @@ def get_secret() -> str:
         return secret
 
 
+def hub_id() -> str:
+    """이 허브(DB 경로)의 MCP 식별자 — routers/mcp_v2 등록과 업데이트 복구 기록이 같은 값을 쓴다."""
+    path = str(db.get_db_path().resolve()).casefold()
+    return hmac.new(get_secret().encode(), ("mcp-hub-id\0" + path).encode(), hashlib.sha256).hexdigest()
+
+
 # ── 비밀번호 해시 ────────────────────────────────────────────────────────────
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)

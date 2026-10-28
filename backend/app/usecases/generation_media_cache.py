@@ -187,7 +187,7 @@ def _outcome_from_error(
 
 async def cache_generation_media(generation: dict) -> dict[str, Any]:
     """한 생성물의 원격 asset/reference를 내려받고 성공한 경로만 DB에 반영한다."""
-    from ..services.update_activity import local_write
+    from ..services.release_update import local_write
 
     with local_write():
         outcome = await _cache_generation_media_outcome(generation)
