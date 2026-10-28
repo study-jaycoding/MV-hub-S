@@ -201,6 +201,44 @@ describe("Codex H — 옵션 준비 전 선택·키보드 초점·빈 목록", (
     expect(saved[0]).toMatchObject({ params: { variant: "seed_speech", voice_id: "e", voice_type: "preset" } });
   });
 
+  it("Voice 목록을 연 채 Voice Change 로 바꾸면, 옵션이 오기 전에는 열린 목록에서도 고르지 못한다(재검수 H-1)", async () => {
+    let release = () => {};
+    modelParams.mockImplementation(async (m: string) => {
+      if (m === "text2speech_v2") return ttsSchema();
+      if (m === "voice_change") await new Promise<void>((resolve) => { release = resolve; });
+      return voiceSchema(m);
+    });
+    voices.mockResolvedValue({ items: [{ id: "e", name: "Emily", voice_type: "preset" }], cursor: null });
+    await mountModal({ model: "text2speech_v2", params: { variant: "elevenlabs" } });
+    act(() => button("Voice").click());
+    expect(container.querySelector(".sl-voice-pop")).not.toBeNull();
+    act(() => button("Voice Change").click()); // 작업 단추는 모델만 바꾼다 — 열린 목록 상태(open=voice)는 남는다
+    await settle(); // 목소리 목록은 왔고 voice_change 스키마는 아직
+    // 반례: 잠긴 칩 아래 목록이 그대로 보여 Emily 를 고를 수 있었고, 스키마가 오자 초기화로 사라졌다
+    expect(container.querySelector(".sl-voice-pop .sl-dd-item")).toBeNull();
+    expect(button("Voice").getAttribute("aria-expanded")).toBe("false");
+    await act(async () => release());
+    await settle();
+    expect(button("Voice").disabled).toBe(false);
+    if (!container.querySelector(".sl-voice-pop")) act(() => button("Voice").click());
+    act(() => button("Emily").click());
+    await settle();
+    expect(voiceLabel()).toBe("Emily");
+  });
+
+  it("옵션 받는 중이면 열려 있던 번역 언어 목록도 숨는다", async () => {
+    vi.resetModules();
+    const { SpotlightOptionsBar } = await import("../src/components/spotlight/SpotlightOptionsBar");
+    const render = (optionsLoading: boolean) => act(() => root.render(<SpotlightOptionsBar type="audio" setType={vi.fn()} model="dubbing"
+      setModel={vi.fn()} onPickModel={vi.fn()} modelName="" typeModels={[]} tunable={[]} constraints={{}} optionValues={{}}
+      setOptionValues={vi.fn()} setOpt={vi.fn()} open="target_language" setOpen={vi.fn()} optionsLoading={optionsLoading} />));
+    render(true);
+    expect(button("번역 언어").disabled).toBe(true);
+    expect(container.querySelector(".sl-dropdown .sl-dd-item")).toBeNull();
+    render(false);
+    expect(container.querySelector(".sl-dropdown .sl-dd-item")).not.toBeNull();
+  });
+
   it("키보드로 목소리·번역 언어를 고르면 초점이 칩으로 돌아간다", async () => {
     vi.resetModules();
     voices.mockResolvedValue({ items: [{ id: "e", name: "Emily", voice_type: "preset" }], cursor: null });

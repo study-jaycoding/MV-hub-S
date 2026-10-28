@@ -239,7 +239,8 @@ function VoicePicker({
   const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const chipRef = useRef<HTMLButtonElement>(null);
-  const isOpen = open === "voice";
+  // 잠긴 동안엔 이미 열린 목록도 닫힌 것으로 — 작업 단추는 모델만 바꿔 open=voice 가 남는다(재검수 H-1)
+  const isOpen = open === "voice" && !disabled;
   useEscapeClose(() => {
     setOpen(null);
     chipRef.current?.focus({ preventScroll: true });
@@ -370,7 +371,7 @@ function LanguagePicker({ value, onPick, open, setOpen, disabled = false }: {
   disabled?: boolean;
 }) {
   const chipRef = useRef<HTMLButtonElement>(null);
-  const isOpen = open === "target_language";
+  const isOpen = open === "target_language" && !disabled;
   useEscapeClose(() => {
     setOpen(null);
     chipRef.current?.focus({ preventScroll: true });
