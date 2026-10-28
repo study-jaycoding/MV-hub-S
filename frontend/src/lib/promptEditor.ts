@@ -79,6 +79,11 @@ export function insertTextAtCaret(editor: HTMLElement, text: string) {
     range = getCaretRange(editor);
     if (!range) return;
   }
+  // 글을 골라 둔 채 붙여넣기·줄바꿈하면 고른 글을 바꾼다(앞에 끼워 넣던 것 — Codex D-④). 고른 범위가 칸 밖까지면 칸 밖은 지우지 않는다.
+  if (!range.collapsed) {
+    if (editor.contains(range.endContainer)) range.deleteContents();
+    else range.collapse(true);
+  }
   const tn = document.createTextNode(text);
   range.insertNode(tn);
   const nr = document.createRange();

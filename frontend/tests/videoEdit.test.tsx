@@ -4,9 +4,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { Generation, WorkspaceContext } from "../src/types";
 const mocks = vi.hoisted(() => ({ prepareCreate: vi.fn(), uploadCapture: vi.fn(), getGeneration: vi.fn(), fetchBlob: vi.fn(),
-  cost: vi.fn(), queued: vi.fn(), setModel: vi.fn(), current: true, blocked: null as string | null, model: null as string | null }));
+  cost: vi.fn(), queued: vi.fn(), setModel: vi.fn(), uploadRefs: vi.fn(), current: true, blocked: null as string | null, model: null as string | null }));
 vi.mock("../src/api", () => ({ api: { prepareCreate: mocks.prepareCreate, uploadCapture: mocks.uploadCapture,
-  getGeneration: mocks.getGeneration, assetThumbUrl: () => "thumb", discardCapture: vi.fn() } }));
+  getGeneration: mocks.getGeneration, assetThumbUrl: () => "thumb", discardCapture: vi.fn(), uploadReferenceFiles: mocks.uploadRefs } }));
 vi.mock("../src/lib/download", () => ({ fetchBlob: mocks.fetchBlob }));
 vi.mock("../src/lib/useModels", () => ({ sharedCostEstimate: mocks.cost,
   useModels: (_error: unknown, policy: { initialModel: string }) => ({ model: mocks.model ?? policy.initialModel, setModel: mocks.setModel,
@@ -56,7 +56,7 @@ const button = (label: string) => container.querySelector<HTMLButtonElement>(`bu
 beforeEach(() => {
   vi.useFakeTimers();
   mocks.current = true; mocks.blocked = null; mocks.model = null; nextUrl = 0;
-  for (const fn of [mocks.prepareCreate, mocks.uploadCapture, mocks.getGeneration, mocks.fetchBlob, mocks.cost, mocks.queued, mocks.setModel]) fn.mockReset();
+  for (const fn of [mocks.prepareCreate, mocks.uploadCapture, mocks.getGeneration, mocks.fetchBlob, mocks.cost, mocks.queued, mocks.setModel, mocks.uploadRefs]) fn.mockReset();
   mocks.fetchBlob.mockResolvedValue(new Blob(["media"]));
   mocks.cost.mockResolvedValue({ credits: 26, saved_at: Date.now() / 1000 });
   mocks.uploadCapture.mockResolvedValue({ project: "project", path: "frame.png", reused: true });
@@ -318,6 +318,60 @@ describe("video edit reuses annotation UI", () => {
       ["asset:project|b.png", "image_references"], ["asset:project|c.png", "image_references"],
     ]);
     expect(body.prompt).toContain("첫 번째 참고 이미지는 원본 영상");
+  });
+  it("a late upload counts room by the model at that time and never cuts refs already in the tray (Codex D-①)", async () => {
+    await render(); await prompt(); // Kling 3.0 Omni Edit — 4장
+    let finishUpload!: (value: unknown) => void;
+    mocks.uploadRefs.mockReturnValue(new Promise((resolve) => { finishUpload = resolve; }));
+    const drop = (dataTransfer: object) => container.querySelector(".sl-reftray")!.dispatchEvent(
+      Object.assign(new Event("drop", { bubbles: true, cancelable: true }), { dataTransfer }));
+    await act(async () => { drop({ types: ["Files"], getData: () => "", files: [new File(["x"], "up.png", { type: "image/png" })], items: [] }); });
+    mocks.model = "seedance_2_5"; // 올리는 동안 Seedance 2.5(30장)로 바꾼다
+    await render();
+    const items = ["a", "b", "c", "d", "e"].map((name) => ({ project: "project", path: `${name}.png`, name: `${name}.png`, type: "image" }));
+    await act(async () => { drop({ types: [DRAG_TYPES.asset], getData: (type: string) => type === DRAG_TYPES.asset ? JSON.stringify(items) : "", files: [], items: [] }); });
+    await act(async () => { finishUpload({ saved: [{ project: "project", path: "up.png", name: "up.png", type: "image" }] }); });
+    const names = [...container.querySelectorAll(".sl-reftray-item .sl-reftray-name")].map((node) => node.textContent);
+    expect(names).toEqual(["그린 프레임", "a.png", "b.png", "c.png", "d.png", "e.png", "up.png"]); // 옛 한도(3)로 잘리지 않는다
+  });
+  it("a new drag right after letting go cancels the pending frame grab — the video is not rewound and submit waits (Codex D-②)", async () => {
+    let now = 0; // 영상이 실제로 있는 시점 — 가짜 setter 가 값을 버리면 되감기를 못 본다
+    vi.spyOn(HTMLMediaElement.prototype, "currentTime", "get").mockImplementation(() => now);
+    vi.spyOn(HTMLMediaElement.prototype, "currentTime", "set").mockImplementation(function (this: HTMLMediaElement, value: number) {
+      now = value;
+      queueMicrotask(() => this.dispatchEvent(new Event("seeked")));
+    });
+    await render(); await prompt();
+    await scrubTo(30);
+    const gen = () => container.querySelector<HTMLButtonElement>(".partial-edit-gen")!;
+    expect(gen().disabled).toBe(false);
+    await act(async () => { pointer(scrub(), "pointerdown", 20); pointer(scrub(), "pointerup", 20); }); // 1.0초에 놓고
+    await act(async () => { vi.advanceTimersByTime(50); });
+    await act(async () => { pointer(scrub(), "pointerdown", 80); pointer(scrub(), "pointermove", 80); }); // 120ms 안에 다시 끈다
+    await act(async () => { vi.advanceTimersByTime(200); });
+    for (let i = 0; i < 4; i += 1) await act(async () => {});
+    expect(now).toBe(4); // 앞선 예약(1.0초 장면 뜨기)이 영상을 되감지 않는다
+    expect(gen().disabled).toBe(true); // 끄는 동안은 그 장면이 아직 없다 — 제출 잠금
+    await act(async () => { pointer(scrub(), "pointerup", 80); });
+    await act(async () => { vi.advanceTimersByTime(200); });
+    for (let i = 0; i < 4; i += 1) await act(async () => {});
+    expect(scrub().getAttribute("aria-valuenow")).toBe("4");
+    expect(gen().disabled).toBe(false);
+  });
+  it("Space on a focused button presses the button instead of playing the video (Codex D-③)", async () => {
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    await render();
+    const space = (target: Element) => {
+      const event = new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true });
+      target.dispatchEvent(event);
+      return event;
+    };
+    let event!: KeyboardEvent;
+    await act(async () => { event = space(button("한 프레임 뒤로")); });
+    expect(play).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false); // 단추의 기본 동작(누름)을 막지 않는다
+    await act(async () => { space(document.body); });
+    expect(play).toHaveBeenCalledTimes(1); // 단추 밖이면 전처럼 재생
   });
   it("closes once the request is queued and hands the new card to the list; a failed request keeps it open", async () => {
     const onClose = vi.fn();

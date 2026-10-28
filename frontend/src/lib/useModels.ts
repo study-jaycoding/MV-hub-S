@@ -799,12 +799,15 @@ export function useModels(
   // 제약 자동 보정 — 제약으로 금지된 값이 현재 선택돼 있으면 허용값으로 스냅(enum 순서상 가장 높은 것).
   //  예) resolution=1080p 인데 mode 를 fast 로 바꾸면 → 720p 로 자동 하향(헛 생성·오해 방지).
   //  멱등(보정 후엔 유효 → 재실행해도 변화 없음)이라 루프 없음.
+  //  옵션이 지금 모델 것일 때만 — 스키마 캐시 적중으로 모델이 바뀐 그 그림에선 옵션·스키마가 아직 옛 모델 것이라
+  //  옛 값을 새 모델 범위로 보정해 새 기본값을 덮었다(Seed Audio→Qwen 속도 0→0.5·loudness_rate 잔류, Codex E-1).
   useEffect(() => {
+    if (paramsModel !== model || paramsLoading) return;
     if (validateRefreshedModel.current === model && invalidSelection(params, optionValues)) return;
     const next = correctedOptions(model, params, optionValues);
     if (next !== optionValues) setOptionValues(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [model, optionValues, params]);
+  }, [model, optionValues, params, paramsModel, paramsLoading]);
 
   const setOpt = (name: string, value: string | number) => {
     setOptionValues((prev) => ({ ...prev, [name]: value }));

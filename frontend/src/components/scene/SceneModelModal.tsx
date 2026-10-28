@@ -48,6 +48,13 @@ export function SceneModelModal({
   //  뒤 막(캔버스 쪽)을 누른 것이어도 그 누름은 목록만 닫고 창은 남긴다(Esc 와 같은 차례, Jay 2026-10-28). 잡는 단계라 창 안의
   //  stopPropagation 보다 먼저 돈다.
   const swallowBackdrop = useRef(false);
+  // 새 누름마다 지난 누름의 깃발부터 지운다 — 취소된 터치처럼 mousedown 없이 끝난 누름의 깃발이 다음 바깥 클릭을 삼켰다(Codex E-3).
+  //  아래 목록 닫기 리스너보다 먼저 달려 같은 누름에서 먼저 돈다(목록이 열릴 때 그 리스너가 뒤에 달린다).
+  useEffect(() => {
+    const reset = () => { swallowBackdrop.current = false; };
+    document.addEventListener("pointerdown", reset, true);
+    return () => document.removeEventListener("pointerdown", reset, true);
+  }, []);
   useEffect(() => {
     if (!open) return;
     const onDown = (e: PointerEvent) => {

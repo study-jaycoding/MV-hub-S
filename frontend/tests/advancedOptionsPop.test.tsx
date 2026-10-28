@@ -50,4 +50,21 @@ it("shows English names and raw CLI values in the advanced panel, Korean only as
   act(() => buttons.find((b) => b.textContent === "video_edit")!.click());
   expect(values).toEqual({ bitrate_mode: "high", mode: "video_edit" });
   expect(setOpt).not.toHaveBeenCalled(); // 값을 눌러도 Set 창은 열린 채(Esc·바깥 누름으로만 닫힘)
+  // 이름에 키보드 초점이 가고, 이름이 자기 설명 상자를 가리킨다(Codex E-4 — 마우스만이던 것)
+  expect(labels.every((l) => l.tabIndex === 0)).toBe(true);
+  expect(document.getElementById(labels[0].getAttribute("aria-describedby")!)).toBe(help);
+});
+
+it("길이 선택지에 숫자가 아닌 값(auto)이 있으면 막대 대신 값 목록 — 고른 값을 원문 그대로(Codex E-2)", () => {
+  const setOpt = vi.fn();
+  act(() => root.render(
+    <SpotlightOptionsBar type="video" setType={() => {}} model="seedance_2_5" setModel={() => {}} onPickModel={() => {}}
+      modelName="Seedance 2.5" typeModels={[]} constraints={{}} optionValues={{ duration: "5" }} setOptionValues={vi.fn() as never}
+      setOpt={setOpt} open="duration" setOpen={() => {}}
+      tunable={[{ name: "duration", type: "string", default: "5", enum: ["auto", "5", "10"] }] as never} />));
+  expect(host.querySelector(".sl-dur-track")).toBeNull();
+  const items = [...host.querySelectorAll<HTMLButtonElement>(".sl-dropdown .sl-dd-item")];
+  expect(items.map((b) => b.textContent)).toEqual(["auto", "5", "10"]);
+  act(() => items[0].click());
+  expect(setOpt).toHaveBeenCalledWith("duration", "auto");
 });

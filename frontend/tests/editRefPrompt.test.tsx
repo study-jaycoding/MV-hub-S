@@ -74,6 +74,27 @@ it("목록이 없을 때 Enter = 제출, 한글 조합 중 Enter 는 아니다 �
   expect(box().hasAttribute("data-empty")).toBe(true);
 });
 
+it("글을 골라 둔 채 붙여넣기·Shift+Enter 하면 고른 글을 바꾼다 — 앞에 끼워 넣지 않는다(Codex D-④)", () => {
+  show();
+  type("옷 색을 바꿔 주세요");
+  const select = (from: number, to: number) => act(() => {
+    const range = document.createRange();
+    range.setStart(box().firstChild!, from);
+    range.setEnd(box().firstChild!, to);
+    getSelection()!.removeAllRanges();
+    getSelection()!.addRange(range);
+  });
+  select(0, "옷 색을 바꿔 주세요".length); // 전체 선택
+  act(() => { box().dispatchEvent(Object.assign(new Event("paste", { bubbles: true, cancelable: true }), { clipboardData: { getData: () => "머리를 짧게" } })); });
+  expect(box().textContent).toBe("머리를 짧게");
+  expect(onChange).toHaveBeenLastCalledWith("머리를 짧게");
+  type("가나다");
+  select(1, 2); // '나'
+  key("Enter", { shiftKey: true });
+  expect(box().textContent).toBe("가\n다");
+  expect(onSubmit).not.toHaveBeenCalled();
+});
+
 it("레퍼런스 칸이 없으면(이미지 수정) 알약·목록 없이 글만", () => {
   show("", []);
   type("@image2 를 참고해");

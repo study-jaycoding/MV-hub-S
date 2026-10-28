@@ -714,19 +714,24 @@ export function PartialEditModal({
     ...extraRefs.map((ref, index) => ({ token: `@image${index + 2}`, kind: "image" as const, name: ref.name, thumb: ref.thumb })),
   ] : []), [isVideo, frameThumb, extraRefs]);
   const refsEditable = isVideo && stage === "draw" && !submitting;
+  // 탐색기 파일은 올린 뒤에 칸에 넣는다 — 그사이 모델이 바뀌면 그 함수가 쥔 한도·목록은 옛 것이라 지금 값을 여기서 읽는다(Codex D-①)
+  const refRoomRef = useRef({ max: maxImages, count: extraRefs.length, model: m.model });
+  useEffect(() => { refRoomRef.current = { max: maxImages, count: extraRefs.length, model: m.model }; });
   const addImageRefs = (items: SpotlightAssetDragItem[], dropped = items.length) => {
+    const { max, count, model } = refRoomRef.current;
     const images = items.filter((item) => item.type === "image");
-    const room = Math.max(0, maxImages - 1 - extraRefs.length);
+    const room = Math.max(0, max - 1 - count);
     const added = images.slice(0, room).map((item): ExtraRef => {
       const base = spotlightAssetRefBase(item);
       return { ...assetIdentityForProject(base, gen.project_id || undefined), uid: `ref-${++refUid.current}`,
         file_path: base.file_path, name: base.name, thumb: base.thumb };
     });
-    if (added.length) setExtraRefs((prev) => [...prev, ...added].slice(0, Math.max(0, maxImages - 1)));
+    // 넣을 수만 센다 — 이미 있는 레퍼런스는 자르지 않는다(한도를 넘으면 tooManyRefs 가 제출만 막는다)
+    if (added.length) setExtraRefs((prev) => [...prev, ...added.slice(0, Math.max(0, max - 1 - prev.length))]);
     const left = dropped - added.length;
     if (left > 0) {
       flashMsg(images.length > added.length
-        ? `${modelLabel(m.model)} 는 그린 프레임 포함 이미지 ${maxImages}장까지입니다 — ${left}개는 넣지 않았습니다.`
+        ? `${modelLabel(model)} 는 그린 프레임 포함 이미지 ${max}장까지입니다 — ${left}개는 넣지 않았습니다.`
         : `레퍼런스 칸에는 이미지만 넣을 수 있습니다 — ${left}개는 넣지 않았습니다.`);
     }
   };
@@ -1047,13 +1052,15 @@ export function PartialEditModal({
     if (!video.paused) video.pause();
     setPlaying(false);
     const t = Math.min(Math.max(0, time), Math.max(0, videoDuration - 1 / EDIT_FPS));
+    // 앞서 뜨던·뜨려고 예약한 장면은 버린다 — 끄는 중에도. 놓은 직후 120ms 안에 다시 끌면 그 예약이 영상을 옛 자리로
+    //  되감았다(Codex D-②). 놓을 때(commit) 새로 뜰 때까지 제출도 잠근다(frameLoading).
+    window.clearTimeout(captureTimer.current);
+    ++frameTicket.current;
+    setFrameLoading(true);
     video.currentTime = t;
     paintTime(t);
     if (!commit) return;
     setFrameTime(t);
-    ++frameTicket.current; // 앞서 뜨던 장면은 버린다
-    setFrameLoading(true);
-    window.clearTimeout(captureTimer.current);
     captureTimer.current = window.setTimeout(() => void captureFrame(video, t), 120);
   };
   const togglePlay = () => {
@@ -1116,7 +1123,7 @@ export function PartialEditModal({
         e.preventDefault();
         e.stopPropagation();
         seekTo(frameTimeRef.current + (e.key === "ArrowRight" ? 1 : -1) / EDIT_FPS);
-      } else if (isVideo && plain && e.key === " ") {
+      } else if (isVideo && plain && e.key === " " && !t?.closest("button")) { // 단추에 초점이면 Space 는 그 단추를 누른다(Codex D-③)
         e.preventDefault();
         e.stopPropagation();
         togglePlay();

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type CSSProperties, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { Fragment, useEffect, useId, useRef, useState, type CSSProperties, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { api } from "../../api";
 import { getAccountNamespace, getConnectionKey } from "../../lib/accountScope";
 import { getAuthToken } from "../../lib/http";
@@ -79,11 +79,11 @@ const ADVANCED_VALUE_HELP: Record<string, Record<string, string>> = {
     video_extension: "넣은 영상 앞·뒤로 이어 붙이기" },
   bitrate_mode: { standard: "기본 화질", high: "더 선명하게(파일이 큼)" },
 };
-// 브라우저 기본 말풍선은 작고 흐려서 앱 모양 상자로 띄운다(Jay 2026-10-28) — 이름에 마우스를 올리면 CSS 로 보인다.
-function AdvancedHelp({ name, values = [] }: { name: string; values?: string[] }) {
+// 브라우저 기본 말풍선은 작고 흐려서 앱 모양 상자로 띄운다(Jay 2026-10-28) — 이름에 마우스를 올리거나 키보드 초점이 가면 CSS 로 보인다.
+function AdvancedHelp({ id, name, values = [] }: { id: string; name: string; values?: string[] }) {
   const rows = values.filter((v) => ADVANCED_VALUE_HELP[name]?.[v]);
   return (
-    <div className="sl-adv-help" role="tooltip">
+    <div className="sl-adv-help" role="tooltip" id={id}>
       <b>{spotlightParamLabel(name)}</b>
       {ADVANCED_HELP[name] && <p>{ADVANCED_HELP[name]}</p>}
       {rows.length > 0 && (
@@ -412,6 +412,7 @@ export function SpotlightOptionsBar({
   layout = "bar",
 }: Props) {
   if (audioModelBlocked(model)) { modelBlocked = true; blockedNote = audioModelBlocked(model); }
+  const helpId = useId(); // Set 창 이름 → 설명 상자(aria-describedby)
   const rows = layout === "rows";
   // 줄 배치면 '아이콘+이름 | 값' 한 줄로 감싼다(Set 창 줄과 같은 모양), 칩 줄이면 값(칩)만.
   const row = (key: string, label: string, icon: ReactNode, content: ReactNode) => !rows ? content : (
@@ -570,7 +571,9 @@ export function SpotlightOptionsBar({
         const isIgnored = ignored.params.includes(p.name);
         const ignoredClass = isIgnored ? " sl-opt-ignored" : "";
         const rowLabel = OPTION_TITLES[p.name] ?? advancedLabel(p.name);
-        if (/duration|length/i.test(p.name)) {
+        // 길이 선택지에 숫자가 아닌 값(auto 등)이 있으면 막대로 못 그린다 — 아래 값 목록으로(원래 값 그대로 저장, Codex E-2)
+        const numericChoices = !p.enum?.length || p.enum.every((v) => Number.isFinite(Number(v)));
+        if (/duration|length/i.test(p.name) && numericChoices) {
           // 칩에는 값만, 누르면 위에 슬라이더 창(Jay 2026-10-28) — 정해진 길이 목록이면 그 값들만. 줄 배치면 막대를 줄에 바로 둔다.
           if (p.enum?.length) {
             const vals = p.enum;
@@ -726,13 +729,14 @@ export function SpotlightOptionsBar({
                 const cur = optionValues[p.name] ?? effectiveDefault(p, model) ?? "";
                 return (
                   <div className="sl-adv-row" key={p.name}>
-                    <div className="sl-adv-label">
+                    {/* 이름에 키보드 초점이 가면 설명이 뜬다(마우스만이던 것 — Codex E-4) */}
+                    <div className="sl-adv-label" tabIndex={0} aria-describedby={`${helpId}-${p.name}`}>
                       <span className="sl-adv-name">
                         <span className="sl-opt-ic"><SpotlightOptionIcon name={p.name} /></span>
                         {advancedLabel(p.name)}
                         {["stability", "similarity_boost"].includes(p.name) && " (%)"}
                       </span>
-                      <AdvancedHelp name={p.name} values={p.enum} />
+                      <AdvancedHelp id={`${helpId}-${p.name}`} name={p.name} values={p.enum} />
                     </div>
                     {p.enum?.length ? (
                       <div className="sl-adv-opts">

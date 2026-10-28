@@ -564,7 +564,7 @@
   font-size: 13px; font-weight: 400; line-height: 1.55; white-space: normal;
   opacity: 0; visibility: hidden; transition: opacity 0.12s, visibility 0.12s;
 }
-.sl-adv-label:hover .sl-adv-help { opacity: 1; visibility: visible; }
+.sl-adv-label:is(:hover, :focus-visible) .sl-adv-help { opacity: 1; visibility: visible; } /* 키보드 초점에서도(Codex E-4) */
 .sl-adv-help b { display: block; font-size: 14px; font-weight: 700; color: var(--accent); }
 .sl-adv-help p { margin: 4px 0 0; color: #e4e6ea; }
 .sl-adv-help dl { display: grid; grid-template-columns: max-content 1fr; gap: 5px 12px; margin: 10px 0 0; padding-top: 10px; border-top: 1px solid var(--border); }

@@ -54,6 +54,22 @@ it("목록이 떠 있으면 창 안 다른 곳·뒤 막을 눌러도 목록만 �
   expect(onClose).toHaveBeenCalledTimes(1);
 });
 
+it("취소된 누름(mousedown 없이 끝난 터치)의 깃발이 다음 바깥 클릭을 삼키지 않는다(Codex E-3)", async () => {
+  const onClose = vi.fn();
+  act(() => root.render(<SceneModelModal initial={{ type: "video", model: "seedance_2_5", params: {} } as never} onSave={vi.fn()} onClose={onClose} />));
+  await settle();
+  openSet();
+  const backdrop = host.querySelector(".scene-modelmodal-backdrop")!;
+  act(() => {
+    backdrop.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })); // 목록만 닫고 깃발을 세운다
+    backdrop.dispatchEvent(new MouseEvent("pointercancel", { bubbles: true })); // mousedown 은 오지 않는다
+  });
+  expect(pop()).toBeNull();
+  expect(onClose).not.toHaveBeenCalled();
+  press(backdrop); // 다음 바깥 클릭은 창을 닫는다
+  expect(onClose).toHaveBeenCalledTimes(1);
+});
+
 it("Audio 면 생성창처럼 TTS·Voice Change·Translate 단추 — 다른 일로 갔다 TTS 로 오면 마지막 대본 모델", async () => {
   act(() => root.render(<SceneModelModal initial={{ type: "audio", model: "seed_audio", params: {} } as never} onSave={vi.fn()} onClose={vi.fn()} />));
   await settle();
