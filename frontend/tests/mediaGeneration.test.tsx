@@ -120,7 +120,7 @@ describe("narration generation", () => {
   });
   it("uses narration text in the price key and ignores older text responses", async () => {
     const { useModels, ALLOWED } = await import("../src/lib/useModels");
-    expect(ALLOWED.audio).toEqual(["text2speech_v2"]);
+    expect(ALLOWED.audio).toEqual(["seed_audio", "elevenlabs_v4", "elevenlabs_v4_turbo", "text2speech_v2", "qwen_audio_tts"]);
     mocks.modelParams.mockResolvedValue({ job_set_type: "text2speech_v2", type: "audio", saved_at: Date.now() / 1000,
       params: [{ name: "variant", type: "string", default: "elevenlabs", enum: ["elevenlabs"] },
         { name: "voice_id", type: "string", default: "first" }, { name: "voice_type", type: "string", default: "preset" }] });
@@ -140,6 +140,6 @@ describe("narration generation", () => {
     await act(async () => resolveOld({ credits: 1, saved_at: Date.now() / 1000 }));
     expect(result!.cost).toBe(7);
     expect(mocks.estimateCost.mock.calls.map((call) => call[2])).toEqual(["first text", "second text"]);
-    expect(result!.typeModels.map((model) => model.job_set_type)).toEqual(["text2speech_v2"]);
+    expect(result!.typeModels.map((model) => model.job_set_type)).toEqual(ALLOWED.audio);
   });
 });

@@ -74,6 +74,7 @@ import { useSpotlightTokenWrap } from "../lib/useSpotlightTokenWrap";
 import { useSeedanceRoleMenu } from "../lib/useSeedanceRoleMenu";
 import { useModels, ALLOWED, HIDDEN_PARAMS, stripHiddenParams, withEffectiveDefaults } from "../lib/useModels";
 import { SPEECH_TEXT_LIMITS } from "../lib/spotlightSubmit";
+import { audioModelBlocked, isTtsModel } from "../lib/spotlightPromptConfig";
 import { policyNote, submitBlockMessage } from "../lib/modelPolicyCore";
 import { useModelPolicy } from "../lib/modelPolicy";
 import {
@@ -221,15 +222,17 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   // 그룹 사용 모델 정책(앱 수준 모듈 저장소) — 못 쓰는 모델은 목록에서 빼고, 이미 고른 것이면 제출만 막는다.
   const modelPolicy = useModelPolicy();
   const [costPrompt, setCostPrompt] = useState("");
+  const [audioTask, setAudioTask] = useState("tts");
   const { type, setType, model, setModel, markModelSelection, modelPickedByUser, firstAllowed,
           currentModel: readSelectedModel, loadedParams, tunable, constraints, typeModels, modelName,
           optionValues, setOptionValues, setOpt, cost, costLoading, paramsModel, paramsLoading,
           pendingOptsRef, setOpenRef, params: schemaParams, selectedBlocked, typeFullyBlocked } =
     useModels((msg) => setError(msg), { allowed: modelPolicy.allowed, ready: modelPolicy.status !== "loading", costPrompt });
   // 이 타입을 통째로 못 써서 고를 모델이 없으면 "모델을 선택하세요" 대신 이유를 말한다(코덱스 P2).
-  const modelBlockedMessage = typeFullyBlocked
+  const modelBlockedMessage = (type === "audio" && audioTask !== "tts" ? "준비 중인 오디오 기능입니다." : null) || audioModelBlocked(model) || (typeFullyBlocked
     ? `이 그룹에서 쓸 수 있는 ${type === "video" ? "영상" : type === "audio" ? "오디오" : "이미지"} 모델이 없습니다. 매니저에게 문의하세요.`
-    : submitBlockMessage(modelPolicy, model, modelName);
+    : submitBlockMessage(modelPolicy, model, modelName));
+  useEffect(() => { setAudioTask("tts"); }, [model]);
   const [countState, setCountState] = useState(1); // 한 번에 N장 생성(배치) — 내부 폴백
   const count = countProp ?? countState; // App 이 배치수를 보유하면 컨트롤드(카드 툴바와 공유)
   // SpotlightGenerateControls 는 Dispatch<SetStateAction<number>> 를 기대하므로 함수형 업데이트도 받는다.
@@ -306,7 +309,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   // 트레이 역할 배지 갱신 신호 — 안정된 콜백으로 만들어 토큰 훅 blur effect 가 원본처럼 model/trayRefs 변화 때만 재구독되게 한다.
   const bumpPromptTick = useCallback(() => setPromptTick((n) => n + 1), []);
   useEffect(() => {
-    setCostPrompt(model === "text2speech_v2" && editorRef.current ? serialize(editorRef.current).text : "");
+    setCostPrompt(isTtsModel(model) && editorRef.current ? serialize(editorRef.current).text : "");
   }, [model, promptTick]);
   // 전역 어셋 버전 표 구독 — 원본이 바뀌면 트레이/멘션/인라인 칩/입력창 토큰 썸네일을 다시 그린다.
   const assetVersionTick = useSyncExternalStore(
@@ -1595,10 +1598,11 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
           )}
 
           {/* 확장(+) 레퍼런스 트레이 — 에셋 폴더 드래그 전용. 번호 = 생성 --image 순서 */}
-          {expanded && (
+          {expanded && (!isTtsModel(model) || model === "seed_audio") && (
             <SpotlightRefTray
               trayRefs={trayRefs}
               model={model}
+              voiceSelected={!!optionValues.voice_id}
               liveSeedanceRoles={liveSeedanceRoles}
               onDragOver={onTrayDragOver}
               onDrop={onTrayDrop}
@@ -1634,8 +1638,8 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
             onDragLeave={onPromptChipDragLeave}
             onCopyPrompt={copyPrompt}
             onClearPrompt={clearPrompt}
-            script={model === "text2speech_v2"
-              ? { count: costPrompt.length, max: SPEECH_TEXT_LIMITS[String(optionValues.variant ?? "")] }
+            script={isTtsModel(model)
+              ? { count: costPrompt.length, max: model === "text2speech_v2" ? SPEECH_TEXT_LIMITS[String(optionValues.variant ?? "")] : undefined }
               : null}
           />
 
@@ -1652,6 +1656,8 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
               <SpotlightOptionsBar
                 type={type}
                 setType={setType}
+                audioTask={audioTask}
+                onAudioTaskChange={setAudioTask}
                 model={model}
                 setModel={setModel}
                 onPickModel={(picked, opts) => applyModelCfg(type, picked, opts)}

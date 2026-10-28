@@ -6,6 +6,7 @@ DB row(sqlite3.Row) → 응답 모델 변환은 라우터의 직렬화 헬퍼에
 
 from __future__ import annotations
 
+import math
 from typing import Any, Literal, Optional
 from uuid import UUID
 
@@ -16,14 +17,89 @@ MediaType = Literal["image", "video", "audio"]
 ReferenceMediaType = Literal["image", "video", "audio"]
 
 MEDIA_V2_MODELS = frozenset({"draw_to_video", "text2speech_v2"})
+AUDIO_MODELS_V1 = frozenset({"seed_audio", "elevenlabs_v4", "elevenlabs_v4_turbo", "qwen_audio_tts"})
+TTS_MODELS = AUDIO_MODELS_V1 | {"text2speech_v2"}
+AUDIO_PARAMS = {
+    "text2speech_v2": {"variant", "voice_id", "voice_type"},
+    "seed_audio": {"voice_id", "voice_type", "format", "sample_rate", "speech_rate", "pitch_rate", "loudness_rate"},
+    "elevenlabs_v4": {"voice_id", "voice_type", "stability", "similarity_boost"},
+    "elevenlabs_v4_turbo": {"voice_id", "voice_type", "stability", "similarity_boost"},
+    "qwen_audio_tts": {"voice_id", "voice_type", "instruction", "language", "speech_rate", "pitch_rate", "volume", "format", "sample_rate", "seed"},
+}
+
+
+def audio_reference_error(model: str, params: dict, references: list) -> str | None:
+    if model not in TTS_MODELS:
+        return None
+    if model != "seed_audio":
+        return "이 음성 모델에는 레퍼런스를 사용할 수 없습니다" if references else None
+    images = sum(r.get("type") == "image" for r in references)
+    audios = sum(r.get("type") == "audio" for r in references)
+    if images + audios != len(references) or any(not r.get("file_path") for r in references):
+        return "Seed Audio에는 이미지 또는 오디오 파일만 사용할 수 있습니다"
+    if images and audios:
+        return "Seed Audio의 이미지와 오디오 레퍼런스는 함께 사용할 수 없습니다"
+    if images > 1:
+        return "Seed Audio의 이미지 레퍼런스는 1개까지 사용할 수 있습니다"
+    if images and params.get("voice_id"):
+        return "Seed Audio의 목소리와 이미지 레퍼런스는 함께 사용할 수 없습니다"
+    if audios > (2 if params.get("voice_id") else 3):
+        return "Seed Audio의 오디오 레퍼런스는 목소리 선택 시 2개, 미선택 시 3개까지 사용할 수 있습니다"
+    return None
+
+
+def audio_cli_params(model: str, prompt: str, params: dict) -> dict:
+    """저장 대본/목소리를 공급자 단일 대사로 변환한다."""
+    out = dict(params)
+    if model in {"elevenlabs_v4", "elevenlabs_v4_turbo"}:
+        out["dialogue"] = [{"text": prompt, "voice_id": out.pop("voice_id"), "voice_type": out.pop("voice_type")}]
+    return out
+
+
+def audio_stored_params(model: str, params: dict) -> dict:
+    """단일 대사만 역변환한다. 여러 화자는 원문을 보존하고 자동 복구하지 않는다."""
+    out = dict(params)
+    if model in {"elevenlabs_v4", "elevenlabs_v4_turbo"} and "dialogue" in out:
+        dialogue = out["dialogue"]
+        if (isinstance(dialogue, list) and len(dialogue) == 1 and isinstance(dialogue[0], dict)
+                and set(dialogue[0]) == {"text", "voice_id", "voice_type"}
+                and all(isinstance(v, str) for v in dialogue[0].values())):
+            line = out.pop("dialogue")[0]
+            out.update(prompt=line["text"], voice_id=line["voice_id"], voice_type=line["voice_type"])
+        else:
+            out.pop("prompt", None)
+    return out
 SPEECH_PROMPT_LIMITS = {"elevenlabs": 5000, "minimax": 10000, "seed_speech": 15000,
                         "vibe_voice": 5000, "cozy_voice": 5000}
 
 
 def validate_media_request(model: str, prompt: str, params: dict, references: list) -> None:
     """새 미디어 계약만 검사한다. 기존 모델의 옵션/입력 정책은 바꾸지 않는다."""
-    if model in MEDIA_V2_MODELS and not prompt.strip():
+    if model in MEDIA_V2_MODELS | AUDIO_MODELS_V1 and not prompt.strip():
         raise ValueError("수정 설명 또는 내레이션 내용을 입력하세요")
+    if model in AUDIO_MODELS_V1:
+        if set(params) - AUDIO_PARAMS[model]:
+            raise ValueError("지원하지 않는 음성 생성 옵션입니다")
+        voice = params.get("voice_id")
+        voice_type = params.get("voice_type")
+        if model != "seed_audio" or voice is not None or voice_type is not None:
+            if not isinstance(voice, str) or not voice.strip() or voice_type != "preset":
+                raise ValueError("공식 프리셋 목소리를 선택하세요")
+        error = audio_reference_error(model, params, references)
+        if error:
+            raise ValueError(error)
+        for key, value in params.items():
+            if key in {"stability", "similarity_boost", "speech_rate", "pitch_rate", "loudness_rate", "volume", "seed", "sample_rate"}:
+                integer = key in {"volume", "seed", "loudness_rate", "sample_rate"} or model == "seed_audio"
+                if (isinstance(value, bool) or not isinstance(value, (int, float)) or isinstance(value, float) and not math.isfinite(value)
+                        or integer and not isinstance(value, int)):
+                    raise ValueError("음성 생성 숫자 옵션을 확인하세요")
+                if key in {"stability", "similarity_boost"} and not 0 <= value <= 1:
+                    raise ValueError("안정성과 유사도는 0~100% 범위에서 선택하세요")
+            elif not isinstance(value, str):
+                raise ValueError("음성 생성 옵션의 형식이 올바르지 않습니다")
+        if "language" in params and params["language"] not in {"zh", "en", "fr", "de", "ja", "ko", "ru", "pt", "th", "id", "vi", "it", "ms"}:
+            raise ValueError("지원하지 않는 음성 언어입니다")
     if model == "draw_to_video":
         expected = {("video", "video"), ("image", "image_references")}
         if len(references) != 2 or {(r.get("type"), r.get("role")) for r in references} != expected:

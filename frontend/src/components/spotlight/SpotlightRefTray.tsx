@@ -24,6 +24,7 @@ export type SpotlightTrayRef = ChipRef & { uid: string; from_card?: boolean };
 interface Props {
   trayRefs: SpotlightTrayRef[];
   model: string;
+  voiceSelected?: boolean;
   liveSeedanceRoles: SeedanceTokenRoles;
   onDragOver: (event: DragEvent<HTMLElement>) => void;
   onDrop: (event: DragEvent<HTMLElement>) => void;
@@ -38,6 +39,7 @@ interface Props {
 export function SpotlightRefTray({
   trayRefs,
   model,
+  voiceSelected = false,
   liveSeedanceRoles,
   onDragOver,
   onDrop,
@@ -138,7 +140,9 @@ export function SpotlightRefTray({
       <div ref={containerRef} className="sl-reftray-scroll">
       {trayRefs.length === 0 ? (
         <div className="sl-reftray-empty">
-          에셋 창 또는 탐색기에서 파일을 여기로 드래그하세요 - 번호 순서대로 레퍼런스가 됩니다
+          {model === "seed_audio"
+            ? `오디오 ${voiceSelected ? 2 : 3}개까지${voiceSelected ? "" : " 또는 이미지 1개"} · 에셋 창 또는 탐색기에서 드래그하세요`
+            : "에셋 창 또는 탐색기에서 파일을 여기로 드래그하세요 - 번호 순서대로 레퍼런스가 됩니다"}
         </div>
       ) : (
         trayRefs.map((ref, index) => {

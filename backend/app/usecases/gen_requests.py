@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from .. import active_account, repo
 from ..config import MANAGE_ENABLED
 from ..generation_result import ACTIVE_STATUSES, normalize_job_result
-from ..models import MEDIA_V2_MODELS, RegenerateIn
+from ..models import AUDIO_MODELS_V1, MEDIA_V2_MODELS, RegenerateIn
 from ..services import cli_bridge
 from ..services.update_activity import local_write, acknowledge_checkpoint
 from ..services.agent_signals import agent_signals
@@ -439,6 +439,7 @@ async def claim_gen_requests(
     submission_stage_capable: bool = False,
     asset_content_capable: bool = True,
     media_v2_capable: bool = False,
+    audio_models_v1_capable: bool = False,
 ) -> list[dict]:
     """에이전트의 빈 슬롯만큼 대기 요청을 claim하고 카드 상태·알림을 함께 갱신한다."""
     agent_signals.touch(email)
@@ -480,6 +481,7 @@ async def claim_gen_requests(
         submission_stage_capable=submission_stage_capable,
         asset_content_capable=asset_content_capable,
         **({"media_v2_capable": True} if media_v2_capable else {}),
+        **({"audio_models_v1_capable": True} if audio_models_v1_capable else {}),
         sweep_expired=False,
     )
     claimed_needs_refresh = False
@@ -1526,7 +1528,9 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
         payload["source_gen_id"] = cmd.source_gen_id
         # 구 에이전트는 무시하고, 지원 에이전트는 과금 전 실제 입력판 보존을 확인한다.
         payload["asset_content_protocol"] = 1
-        if payload.get("model") in MEDIA_V2_MODELS:
+        if payload.get("model") in AUDIO_MODELS_V1:
+            payload["media_protocol"] = "audio-models-v1"
+        elif payload.get("model") in MEDIA_V2_MODELS:
             payload["media_protocol"] = "media-v2"
         if cmd.kind == "create":
             payload["project_id"] = (cmd.data or {}).get("project_id")

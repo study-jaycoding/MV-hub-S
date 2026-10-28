@@ -21,6 +21,32 @@ _MISSING_REFERENCES = object()
 
 
 class TestGenRequestCapabilityGate:
+    @pytest.mark.parametrize("model", ["seed_audio", "elevenlabs_v4", "elevenlabs_v4_turbo", "qwen_audio_tts"])
+    @pytest.mark.parametrize("marked", [False, True])
+    def test_audio_models_gate_list_claim_and_begin(self, model, marked):
+        payload = {"model": model, "prompt": "test", "params": {}}
+        if marked:
+            payload["media_protocol"] = "audio-models-v1"
+        gen_id = repo.create_local_generation(payload, "me", creator_uid="creator-1")
+        rid = repo.create_gen_request("worker@example.com", "creator-1", gen_id, "create", payload)
+        old_caps = "workspace,submission-stage,asset-content,media-v2"
+        with patch.object(gen_requests_router, "_require_account", return_value=self.account), patch.object(
+            gen_requests_router, "realtime_scope", return_value="acct:worker@example.com"
+        ), patch.object(gen_requests_router, "schedule_telemetry_drain"), patch.object(
+            gen_requests_router.manager, "broadcast", new_callable=AsyncMock
+        ):
+            assert asyncio.run(gen_requests_router.pending_gen_requests_exist(object(), capability=old_caps, agent_id="old")) == {"pending": False}
+            assert asyncio.run(gen_requests_router.pending_gen_requests(object(), capability=old_caps, agent_id="old")) == []
+            with pytest.raises(HTTPException) as error:
+                asyncio.run(gen_requests_router.begin_gen_request_submission(rid, object(), agent_id="old", capability=old_caps))
+            assert error.value.status_code == 409
+            assert repo.get_gen_request(rid)["status"] == "pending"
+            new_caps = old_caps + ",audio-models-v1"
+            assert asyncio.run(gen_requests_router.pending_gen_requests_exist(object(), capability=new_caps, agent_id="new")) == {"pending": True}
+            claimed = asyncio.run(gen_requests_router.pending_gen_requests(object(), capability=new_caps, agent_id="new"))
+            assert [item["id"] for item in claimed] == [rid]
+            assert asyncio.run(gen_requests_router.begin_gen_request_submission(rid, object(), agent_id="new", capability=new_caps))["applied"] is True
+
     def setup_method(self):
         self.temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.old_db = os.environ.get("CONTENT_HUB_DB")

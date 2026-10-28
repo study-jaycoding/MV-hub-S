@@ -4,6 +4,7 @@ import type { RefObject, MutableRefObject } from "react";
 import { resolveAutoAspectRatio } from "../../lib/aspectAuto";
 import { isGenerationWorkspaceReady } from "../../lib/workspaceContext";
 import { prepareCreateSubmission } from "../../features/generation/api";
+import { isTtsModel } from "../../lib/spotlightPromptConfig";
 import { runSubmission } from "../../features/generation/api";
 import { assertOperationContextCurrent, captureSubmissionScope } from "../../app/operationContext";
 import { t } from "../../lib/i18n";
@@ -205,7 +206,7 @@ export function useSpotlightSubmit({
         setBusy(false);
         return;
       }
-      if (model === "text2speech_v2") {
+      if (isTtsModel(model) && body.params?.voice_id) {
         const selectedVoice = await api.voice(String(body.params?.voice_id ?? ""));
         if (!operationCurrent()) { setBusy(false); return; }
         if (selectedVoice.id !== body.params?.voice_id || selectedVoice.voice_type !== "preset") {

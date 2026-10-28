@@ -428,7 +428,9 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
           references: [{id, type, file_path, role}],
         }
     """
-    params = job.get("params") or {}
+    from ..models import AUDIO_MODELS_V1, AUDIO_PARAMS, TTS_MODELS, audio_stored_params
+    model = job.get("job_set_type") or job.get("job_type") or job.get("model")
+    params = audio_stored_params(model, job.get("params") or {})
     result_url = job.get("result_url")
     # 결과 배열만 읽는다. params의 입력 미디어는 결과로 승격하지 않는다.
     if not result_url:
@@ -483,7 +485,7 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
         # image 로 오분류돼 입력 축소본이 썸네일로 저장되지 않게 명시값(image|video)을 확장자 판정보다 우선.
         explicit_type = job.get("result_media_type") or job.get("type")
         model = job.get("job_set_type") or job.get("job_type") or job.get("model")
-        if explicit_type not in ("image", "video", "audio") and model == "text2speech_v2" and "." not in urlsplit(result_url).path.rsplit("/", 1)[-1]:
+        if explicit_type not in ("image", "video", "audio") and model in TTS_MODELS and "." not in urlsplit(result_url).path.rsplit("/", 1)[-1]:
             explicit_type = "audio"
         asset = {
             "type": explicit_type
@@ -506,7 +508,8 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
             # (구버전 job_set_type / 신버전 job_type). 내부 표준 필드명은 계속 model=job_set_type.
             "model": job.get("job_set_type") or job.get("job_type"),
             "display_name": job.get("display_name"),
-            "params": params,
+            "params": ({key: value for key, value in params.items() if key in AUDIO_PARAMS[model]}
+                       if model in AUDIO_MODELS_V1 and "dialogue" not in params else params),
             # 일부 응답은 status 대신 job_status 를 쓴다(millionvolt 실측) → 폴백으로 둘 다 수용.
             "status": normalize_status(job.get("status") or job.get("job_status")),
             "created_at": epoch_to_iso(job.get("created_at")),
@@ -747,6 +750,11 @@ async def _get_model_params_uncached(
         "saved_at": time.time(),
         "stale": False,
     }
+    if job_set_type in {"elevenlabs_v4", "elevenlabs_v4_turbo"}:
+        # 화면·MCP는 저장용 목소리 필드를 받고, CLI 전송 때만 dialogue로 변환한다.
+        result["params"] = [*params,
+                            {"name": "voice_id", "type": "string", "default": None, "required": True},
+                            {"name": "voice_type", "type": "string", "default": None, "required": True, "enum": ["preset"]}]
     _cache_put(ckey, result)
     _PARAM_NAMES_CACHE[job_set_type] = {p["name"] for p in params}
     _PARAM_NAMES_SAVED_AT[job_set_type] = _CALL_CACHE[ckey][0]
@@ -806,11 +814,16 @@ async def _param_args(
     if model == "seedance_2_5" and allowed:
         # A cached pre-Draft schema must not change the quoted or submitted mode.
         allowed = allowed | {"draft", "draft_job_id"}
+    from ..models import audio_cli_params
+    params = audio_cli_params(model, str((params or {}).get("prompt", "")), params or {})
     out: list[str] = []
     for k, v in (params or {}).items():
         if v is None or v == "":
             continue
         if k == "prompt":  # 프롬프트는 --prompt 로 따로 전달
+            continue
+        if k == "dialogue" and model in {"elevenlabs_v4", "elevenlabs_v4_turbo"}:
+            out += ["--dialogue", json.dumps(v, ensure_ascii=False)]
             continue
         if isinstance(v, (list, dict)):  # 미디어/복합 타입은 media 플래그로 처리 → --param 금지
             continue
@@ -904,8 +917,9 @@ def _cost_key(model: str, param_args: list[str], prompt: str = "") -> str:
     pairs = sorted(
         (param_args[i], param_args[i + 1]) for i in range(0, len(param_args) - 1, 2)
     )
-    key = model + "|" + ";".join(f"{k}={v}" for k, v in pairs)
-    if model == "text2speech_v2":
+    key = model + "|" + ";".join(f"{k}={hashlib.sha256(v.encode('utf-8')).hexdigest() if k == '--dialogue' else v}" for k, v in pairs)
+    from ..models import TTS_MODELS
+    if model in TTS_MODELS:
         key += "|prompt_sha256=" + hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     return key
 
@@ -1060,6 +1074,13 @@ async def estimate_cost(
     # 느린 CLI 견적이 즉시 응답을 막았다. 스키마 miss 가능 경로는 게이트 안에서만 CLI 를
     # 부른다(게이트 밖 무제한 model get 방지).
     _require_model_id(model)
+    from ..models import TTS_MODELS, validate_media_request
+    if model in TTS_MODELS:
+        try:
+            validate_media_request(model, prompt, params or {}, [])
+        except ValueError as exc:
+            raise CLIError(str(exc)) from None
+        params = {**(params or {}), "prompt": prompt}
     if model == "draw_to_video":
         params = {key: value for key, value in (params or {}).items() if key in {"duration", "resolution"}}
     if _model_refresh_state().stopping:
@@ -1079,7 +1100,7 @@ async def estimate_cost(
     else:
         async with _estimate_gate():
             param_args = await _param_args(model, params)
-    key = _cost_key(model, param_args, prompt) if model == "text2speech_v2" else _cost_key(model, param_args)
+    key = _cost_key(model, param_args, prompt)
     entry = _COST_CACHE.get(key)
     if entry is not None and (time.time() - entry[1]) < _COST_TTL:
         return _cost_result(entry) if include_metadata or allow_stale else {"credits": entry[0]}
@@ -1137,8 +1158,7 @@ async def _estimate_cost_miss(
         args: list[str] = [
             "generate", "cost",
             *(["workflow"] if model == "draw_to_video" else []), model,
-            "--prompt",
-            _shield_json_prompt(prompt or "preview"),
+            *([] if model in {"elevenlabs_v4", "elevenlabs_v4_turbo"} else ["--prompt", _shield_json_prompt(prompt or "preview")]),
         ]
         args += param_args
         # 캐시 키(param_args 기준)는 더미와 무관하게 유지 — CLI 호출에만 끼운다.
@@ -1232,19 +1252,19 @@ async def get_voice(voice_id: str, timeout: float = 30.0) -> dict[str, Any]:
 
 
 async def validate_media_submission(model: str, prompt: str, params: dict, references: list) -> None:
-    from ..models import MEDIA_V2_MODELS, validate_media_request
+    from ..models import MEDIA_V2_MODELS, AUDIO_MODELS_V1, TTS_MODELS, audio_cli_params, validate_media_request
     validate_media_request(model, prompt, params, references)
-    if model not in MEDIA_V2_MODELS:
+    if model not in MEDIA_V2_MODELS | AUDIO_MODELS_V1:
         return
     schema = await get_model_params(model)
     if schema.get("stale"):
         raise CLIError("생성 옵션을 새로 확인할 수 없습니다. 잠시 후 다시 시도하세요")
     definitions = {p["name"]: p for p in schema.get("params", [])}
-    for key, value in params.items():
+    for key, value in audio_cli_params(model, prompt, params).items():
         definition = definitions.get(key)
-        if not definition or definition.get("enum") and value not in definition["enum"]:
+        if not definition or definition.get("enum") and str(value) not in {str(item) for item in definition["enum"]}:
             raise ValueError("현재 모델이 지원하지 않는 옵션입니다")
-    if model == "text2speech_v2":
+    if model in TTS_MODELS and params.get("voice_id"):
         await get_voice(params["voice_id"])
 
 

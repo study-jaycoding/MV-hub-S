@@ -1,5 +1,6 @@
 import { tagsProblem } from "./nameGuard";
 import { normalizeSeedanceDraftParams } from "./seedanceDraft";
+import { audioModelBlocked, audioParamsError, audioReferenceError, isTtsModel } from "./spotlightPromptConfig";
 import type { ChipRef, PromptPart } from "./promptEditor";
 import {
   SEEDANCE_TOKEN_SRC,
@@ -100,7 +101,7 @@ function validateMediaRefTokenPresence(text: string, refs: { type: string }[]): 
   return null;
 }
 
-// 라이브러리 직접 재생성(useGenerationCardActions.prepareRegenerate)은 이 빌더를 거치지 않으며 이번 검증 범위 밖이다.
+// 직접 재생성은 useGenerationCardActions에서 같은 capability 게이트를 적용한다.
 export function buildSpotlightCreateBody({
   text,
   inlineRefs,
@@ -117,6 +118,21 @@ export function buildSpotlightCreateBody({
   // Set 카드의 태그는 검사 없이 여기로 온다 — 주소 한 칸에 못 들어가는 이름(/ · . ..)은 생성 전에 막는다(조작 규칙 53 — lib/nameGuard). 조용히 빼지 않는다.
   const tagProblem = tagsProblem(tags ?? []);
   if (tagProblem) return { body: null, error: `${tagProblem} — Set 카드의 태그를 고친 뒤 생성하세요.` };
+  const featureError = audioModelBlocked(model);
+  if (featureError) return { body: null, error: featureError };
+  if (isTtsModel(model) && model !== "text2speech_v2") {
+    if (!text.trim()) return { body: null, error: "내레이션 텍스트를 입력하세요." };
+    const params = Object.fromEntries(Object.entries(optionValues).filter(([, value]) => value !== "" && value != null));
+    const references = [...trayRefs, ...inlineRefs].map((ref) => ({
+      ...assetIdentity(ref), file_path: ref.file_path, type: ref.type,
+      role: ref.type === "audio" ? "audio_references" : "image_references",
+      name: ref.name, thumbnail: ref.thumb, source_gen_id: ref.source_gen_id,
+    }));
+    const error = audioParamsError(model, params) || audioReferenceError(model, params, references);
+    if (error) return { body: null, error };
+    return { error: null, body: { prompt: text, display_prompt: displayPrompt || undefined, model, params, references,
+      tags: tags?.length ? tags : undefined, auto_tags: armedAutoTags, project_id: activeProjectId, folder_path: folderPath || undefined } };
+  }
   if (model === "text2speech_v2") {
     if (!text.trim()) return { body: null, error: "내레이션 텍스트를 입력하세요." };
     if (trayRefs.length || inlineRefs.length) return { body: null, error: "내레이션 생성은 텍스트와 목소리만 사용합니다. 레퍼런스를 비운 뒤 생성하세요." };

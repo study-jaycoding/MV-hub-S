@@ -8,6 +8,9 @@ import type { MediaType, ModelInfo, ModelParam } from "../../types";
 import { effectiveDefault, numericRange, paramGateAllows } from "../../lib/useModels";
 import {
   SPOTLIGHT_PRIMARY_PARAMS,
+  audioModelBlocked,
+  isTtsModel,
+  recommendedVoiceIds,
   currentVariantValue,
   durationRange,
   isVariantParam,
@@ -35,6 +38,8 @@ const inexactInteger = (value: OptionValue): boolean =>
 interface Props {
   type: MediaType;
   setType: (value: MediaType) => void;
+  audioTask?: string;
+  onAudioTaskChange?: (task: string) => void;
   model: string;
   setModel: (value: string) => void;
   /** 다른 모델로 옮기면서 옵션도 함께 지정한다(변형 선택). 같은 모델이면 setOpt 로 값만 바꾼다. */
@@ -93,6 +98,7 @@ function VoicePicker({
   onPick,
   open,
   setOpen,
+  recommended = null,
 }: {
   voices: VoiceInfo[];
   voicesError: boolean;
@@ -100,6 +106,8 @@ function VoicePicker({
   onPick: (id: string) => void;
   open: string | null;
   setOpen: Dispatch<SetStateAction<string | null>>;
+  /** 이 모델에 웹이 내놓는 목소리 — 위로 올리고 '추천'만 붙인다(나머지도 고를 수 있다). */
+  recommended?: ReadonlySet<string> | null;
 }) {
   const [query, setQuery] = useState("");
   const chipRef = useRef<HTMLButtonElement>(null);
@@ -115,7 +123,11 @@ function VoicePicker({
   const label = picked?.name
     ?? (value ? (voices.length || voicesError ? `${value} (확인 필요)` : "목소리 확인 중…") : voicesError ? "목소리 조회 실패" : "목소리 선택");
   const q = query.trim().toLowerCase();
-  const shown = q ? voices.filter((voice) => voice.name.toLowerCase().includes(q)) : voices;
+  const matched = q ? voices.filter((voice) => voice.name.toLowerCase().includes(q)) : voices;
+  const shown = recommended
+    ? [...matched.filter((voice) => recommended.has(voice.id)), ...matched.filter((voice) => !recommended.has(voice.id))]
+    : matched;
+  const recommendedCount = recommended ? voices.filter((voice) => recommended.has(voice.id)).length : 0;
   return (
     <div className="sl-chip-wrap">
       <button
@@ -132,7 +144,7 @@ function VoicePicker({
       </button>
       {isOpen && (
         <div className="sl-dropdown sl-voice-pop">
-          <div className="sl-dd-title">목소리{voices.length ? ` ${voices.length}개` : ""}</div>
+          <div className="sl-dd-title">목소리{voices.length ? ` ${voices.length}개` : ""}{recommendedCount ? ` · 추천 ${recommendedCount}` : ""}</div>
           <input
             className="sl-voice-search"
             autoFocus
@@ -152,6 +164,7 @@ function VoicePicker({
                 }}
               >
                 {voice.name}
+                {recommended?.has(voice.id) && <span className="sl-voice-rec">추천</span>}
               </button>
             ))}
             {!shown.length && (
@@ -169,6 +182,8 @@ function VoicePicker({
 export function SpotlightOptionsBar({
   type,
   setType,
+  audioTask = "tts",
+  onAudioTaskChange,
   model,
   setModel,
   onPickModel,
@@ -186,11 +201,12 @@ export function SpotlightOptionsBar({
   open,
   setOpen,
 }: Props) {
+  if (audioModelBlocked(model)) { modelBlocked = true; blockedNote = audioModelBlocked(model); }
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
   const [voicesError, setVoicesError] = useState(false);
   const voiceScope = voiceScopeKey();
   useEffect(() => {
-    if (model !== "text2speech_v2") return;
+    if (!isTtsModel(model)) return;
     let alive = true;
     setVoices([]);
     setVoicesError(false);
@@ -219,7 +235,7 @@ export function SpotlightOptionsBar({
   // 조건부 게이트 — 현재 옵션 조합에서 허용 안 되는 파라미터는 표시하지 않는다
   // (예: extension_mode 는 mode=video_extension 일 때만 — 다른 모드에 실으면 CLI 거부).
   const visibleTunable = tunable.filter((p) => paramGateAllows(model, p.name, optionValues) &&
-    !(model === "text2speech_v2" && ["voice_id", "voice_type"].includes(p.name)));
+    !(isTtsModel(model) && ["voice_id", "voice_type", "dialogue"].includes(p.name)));
   const ignored = spotlightIgnoredOptions(model, optionValues.mode);
   const isDraftResolution = (name: string, value: unknown) => name === "resolution"
     && normalizeSeedanceDraftParams(model, { resolution: value }).draft === true;
@@ -257,6 +273,11 @@ export function SpotlightOptionsBar({
         </button>
       </div>
 
+      {type === "audio" && onAudioTaskChange && <div className="sl-type sl-audio-tasks" aria-label="오디오 작업">
+        {[["tts", "Text to Speech"], ["voice-change", "Voice Change"], ["translate", "Translate"]].map(([id, label]) =>
+          <button key={id} className={"sl-type-btn" + (audioTask === id ? " active" : "")} onClick={() => onAudioTaskChange(id)}>{label}</button>)}
+        {audioTask !== "tts" && <span role="status">준비 중</span>}
+      </div>}
       <div className="sl-chip-wrap">
         <button
           ref={modelButtonRef}
@@ -283,6 +304,9 @@ export function SpotlightOptionsBar({
               {modelRows(typeModels, { model, optionValues }).map((row) => (
                 <button
                   key={row.key}
+                  aria-label={row.display_name}
+                  disabled={!!audioModelBlocked(row.model)}
+                  title={audioModelBlocked(row.model) ?? undefined}
                   className={
                     "sl-dd-item" +
                     (row.model === model &&
@@ -301,7 +325,8 @@ export function SpotlightOptionsBar({
                     setOpen(null);
                   }}
                 >
-                  {row.display_name}
+                  <span>{row.display_name}</span>
+                  {row.description && <small className="sl-model-description">{audioModelBlocked(row.model) || row.description}</small>}
                 </button>
               ))}
             </div>
@@ -309,7 +334,7 @@ export function SpotlightOptionsBar({
         )}
       </div>
 
-      {model === "text2speech_v2" && (
+      {isTtsModel(model) && (
         <VoicePicker
           voices={voices}
           voicesError={voicesError}
@@ -317,8 +342,12 @@ export function SpotlightOptionsBar({
           onPick={(id) => setOptionValues((previous) => ({ ...previous, voice_id: id, voice_type: "preset" }))}
           open={open}
           setOpen={setOpen}
+          recommended={recommendedVoiceIds(model)}
         />
       )}
+      {model === "seed_audio" && optionValues.voice_id && <button className="sl-chip" onClick={() => setOptionValues((previous) => {
+        const next = { ...previous }; delete next.voice_id; delete next.voice_type; return next;
+      })}>목소리 선택 해제</button>}
       {visibleTunable.filter((p) => SPOTLIGHT_PRIMARY_PARAMS.has(p.name)).map((p) => {
         // 이 모드에서 CLI 가 무시하는 값 — 흐리게 두는 데서 그치지 않고 **조작도 막는다**
         // (2026-09-15 Jay: 만질 수 있으면 효과가 있는 줄 알게 되어 헷갈린다).
@@ -499,10 +528,15 @@ export function SpotlightOptionsBar({
                     <div className="sl-adv-label">
                       <span className="sl-opt-ic"><SpotlightOptionIcon name={p.name} /></span>
                       {spotlightParamLabel(p.name)}
+                      {["stability", "similarity_boost"].includes(p.name) && " (%)"}
                     </div>
                     {p.enum?.length ? (
                       <div className="sl-adv-opts">
-                        {p.enum.map((v) => {
+                        {isTtsModel(model) && p.name !== "language" && p.default == null && <button
+                          className={"sl-adv-opt" + (cur === "" ? " sel" : "")}
+                          onClick={() => setOptionValues((prev) => { const next = { ...prev }; delete next[p.name]; return next; })}
+                        >공급자 기본값</button>}
+                        {(isTtsModel(model) && p.name === "language" ? ["", ...p.enum] : p.enum).map((v) => {
                           const con = constraints[p.name];
                           const blocked = !!con && !con.allow.has(v);
                           return (
@@ -514,7 +548,7 @@ export function SpotlightOptionsBar({
                                 (blocked ? " blocked" : "")
                               }
                               disabled={blocked}
-                              onClick={() => !blocked && setOpt(p.name, v)}
+                              onClick={() => !blocked && (v === "" ? setOptionValues((prev) => { const next = { ...prev }; delete next[p.name]; return next; }) : setOpt(p.name, isTtsModel(model) && ["integer", "number"].includes(p.type.split("|")[0]) ? Number(v) : v))}
                               title={blocked ? con!.note : spotlightValueLabel(v, p.name)}
                             >
                               {spotlightValueLabel(v, p.name)}
@@ -544,21 +578,28 @@ export function SpotlightOptionsBar({
                           </div>
                         );
                       })()
-                    ) : p.type === "integer" ? (
+                    ) : ["integer", "number"].includes(p.type.replace(/\|null$/, "")) ? (
                       (() => {
                         const rg = numericRange(model, p.name);
+                        const percent = ["stability", "similarity_boost"].includes(p.name);
+                        const integer = p.type.split("|")[0] === "integer";
+                        const value = optionValues[p.name] ?? p.default;
                         return (
                           <input
                             className="sl-adv-num"
                             type="number"
-                            min={rg?.min}
-                            max={rg?.max}
+                            aria-label={spotlightParamLabel(p.name) + (percent ? " (%)" : "")}
+                            placeholder="공급자 기본값"
+                            step={percent || integer ? 1 : "any"}
+                            min={percent ? 0 : rg?.min}
+                            max={percent ? 100 : rg?.max}
                             title={rg ? `허용 범위 ${rg.min}~${rg.max}` : undefined}
-                            value={String(optionValues[p.name] ?? p.default ?? "")}
+                            value={value == null || value === "" ? "" : String(percent ? Number(value) * 100 : value)}
                             onChange={(e) => {
                               const raw = e.target.value;
-                              const next = raw === "" ? "" : rg ? Math.min(rg.max, Math.max(rg.min, Number(raw))) : Number(raw);
-                              if (inexactInteger(next)) return; // seed 같은 큰 정수 — 다른 수로 바뀐 값을 제출하지 않는다(아래 inexactInteger)
+                              if (raw === "" && isTtsModel(model)) { setOptionValues((prev) => { const next = { ...prev }; delete next[p.name]; return next; }); return; }
+                              const next = raw === "" ? "" : percent ? Math.min(100, Math.max(0, Number(raw))) / 100 : rg ? Math.min(rg.max, Math.max(rg.min, Number(raw))) : Number(raw);
+                              if (integer ? inexactInteger(next) : typeof next === "number" && !Number.isFinite(next)) return;
                               setOptionValues((prev) => ({ ...prev, [p.name]: next }));
                             }}
                           />
@@ -568,6 +609,7 @@ export function SpotlightOptionsBar({
                       <input
                         className="sl-adv-num"
                         type="text"
+                        placeholder={isTtsModel(model) ? "공급자 기본값" : undefined}
                         value={String(optionValues[p.name] ?? p.default ?? "")}
                         onChange={(e) =>
                           setOptionValues((prev) => ({

@@ -25,6 +25,7 @@ import contextlib
 import getpass
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -311,6 +312,89 @@ def _should_invalidate_reference_cache(error: str | None) -> bool:
     return any(marker in message.lower() for marker in ("media", "reference", "upload", "uuid", "input"))
 
 
+# 아래 오디오 정의는 backend/app/models.py 와 같아야 한다(에이전트는 단일 파일이라 공유하지 못한다 — 정의 일치 시험이 지킨다).
+MEDIA_V2_MODELS = frozenset({"draw_to_video", "text2speech_v2"})
+AUDIO_MODELS_V1 = frozenset({"seed_audio", "elevenlabs_v4", "elevenlabs_v4_turbo", "qwen_audio_tts"})
+TTS_MODELS = AUDIO_MODELS_V1 | {"text2speech_v2"}
+AUDIO_PARAMS = {
+    "text2speech_v2": {"variant", "voice_id", "voice_type"},
+    "seed_audio": {"voice_id", "voice_type", "format", "sample_rate", "speech_rate", "pitch_rate", "loudness_rate"},
+    "elevenlabs_v4": {"voice_id", "voice_type", "stability", "similarity_boost"},
+    "elevenlabs_v4_turbo": {"voice_id", "voice_type", "stability", "similarity_boost"},
+    "qwen_audio_tts": {"voice_id", "voice_type", "instruction", "language", "speech_rate", "pitch_rate", "volume", "format", "sample_rate", "seed"},
+}
+
+
+def audio_reference_error(model: str, params: dict, references: list) -> str | None:
+    if model not in TTS_MODELS:
+        return None
+    if model != "seed_audio":
+        return "이 음성 모델에는 레퍼런스를 사용할 수 없습니다" if references else None
+    images = sum(r.get("type") == "image" for r in references)
+    audios = sum(r.get("type") == "audio" for r in references)
+    if images + audios != len(references) or any(not r.get("file_path") for r in references):
+        return "Seed Audio에는 이미지 또는 오디오 파일만 사용할 수 있습니다"
+    if images and audios:
+        return "Seed Audio의 이미지와 오디오 레퍼런스는 함께 사용할 수 없습니다"
+    if images > 1:
+        return "Seed Audio의 이미지 레퍼런스는 1개까지 사용할 수 있습니다"
+    if images and params.get("voice_id"):
+        return "Seed Audio의 목소리와 이미지 레퍼런스는 함께 사용할 수 없습니다"
+    if audios > (2 if params.get("voice_id") else 3):
+        return "Seed Audio의 오디오 레퍼런스는 목소리 선택 시 2개, 미선택 시 3개까지 사용할 수 있습니다"
+    return None
+
+
+def audio_cli_params(model: str, prompt: str, params: dict) -> dict:
+    """저장 대본/목소리를 공급자 단일 대사로 변환한다."""
+    out = dict(params)
+    if model in {"elevenlabs_v4", "elevenlabs_v4_turbo"}:
+        out["dialogue"] = [{"text": prompt, "voice_id": out.pop("voice_id"), "voice_type": out.pop("voice_type")}]
+    return out
+
+
+def audio_stored_params(model: str, params: dict) -> dict:
+    """단일 대사만 역변환한다. 여러 화자는 원문을 보존하고 자동 복구하지 않는다."""
+    out = dict(params)
+    if model in {"elevenlabs_v4", "elevenlabs_v4_turbo"} and "dialogue" in out:
+        dialogue = out["dialogue"]
+        if (isinstance(dialogue, list) and len(dialogue) == 1 and isinstance(dialogue[0], dict)
+                and set(dialogue[0]) == {"text", "voice_id", "voice_type"}
+                and all(isinstance(v, str) for v in dialogue[0].values())):
+            line = out.pop("dialogue")[0]
+            out.update(prompt=line["text"], voice_id=line["voice_id"], voice_type=line["voice_type"])
+        else:
+            out.pop("prompt", None)
+    return out
+def _validate_audio_request(model: str, prompt: str, params: dict, references: list) -> None:
+    """새 미디어 계약만 검사한다. 기존 모델의 옵션/입력 정책은 바꾸지 않는다."""
+    if model in MEDIA_V2_MODELS | AUDIO_MODELS_V1 and not prompt.strip():
+        raise ValueError("수정 설명 또는 내레이션 내용을 입력하세요")
+    if model in AUDIO_MODELS_V1:
+        if set(params) - AUDIO_PARAMS[model]:
+            raise ValueError("지원하지 않는 음성 생성 옵션입니다")
+        voice = params.get("voice_id")
+        voice_type = params.get("voice_type")
+        if model != "seed_audio" or voice is not None or voice_type is not None:
+            if not isinstance(voice, str) or not voice.strip() or voice_type != "preset":
+                raise ValueError("공식 프리셋 목소리를 선택하세요")
+        error = audio_reference_error(model, params, references)
+        if error:
+            raise ValueError(error)
+        for key, value in params.items():
+            if key in {"stability", "similarity_boost", "speech_rate", "pitch_rate", "loudness_rate", "volume", "seed", "sample_rate"}:
+                integer = key in {"volume", "seed", "loudness_rate", "sample_rate"} or model == "seed_audio"
+                if (isinstance(value, bool) or not isinstance(value, (int, float)) or isinstance(value, float) and not math.isfinite(value)
+                        or integer and not isinstance(value, int)):
+                    raise ValueError("음성 생성 숫자 옵션을 확인하세요")
+                if key in {"stability", "similarity_boost"} and not 0 <= value <= 1:
+                    raise ValueError("안정성과 유사도는 0~100% 범위에서 선택하세요")
+            elif not isinstance(value, str):
+                raise ValueError("음성 생성 옵션의 형식이 올바르지 않습니다")
+        if "language" in params and params["language"] not in {"zh", "en", "fr", "de", "ja", "ko", "ru", "pt", "th", "id", "vi", "it", "ms"}:
+            raise ValueError("지원하지 않는 음성 언어입니다")
+
+
 def _args_for_log(args) -> str:
     """오류 로그용 명령 인자 표기 — --prompt 원문은 agent.log 에 영속되지 않게 길이로 대체."""
     out: list[str] = []
@@ -321,7 +405,7 @@ def _args_for_log(args) -> str:
             mask_next = False
             continue
         out.append(a)
-        if a == "--prompt":
+        if a in {"--prompt", "--dialogue"}:
             mask_next = True
     return " ".join(out)
 
@@ -331,11 +415,15 @@ def _args_for_log(args) -> str:
 # `"prompt": "..."` 원문이 실려 agent.log 에 영속됐다. 절단으로 닫는 따옴표가 잘린 JSON 도
 # 문자열 끝까지 마스킹한다(EOF-safe) — 반드시 [:600]/[:800] 절단보다 먼저 적용할 것.
 _PROMPT_ECHO_RE = re.compile(
-    r'("(?:negative_prompt|display_prompt|prompt)"\s*:\s*")((?:[^"\\]|\\.)*)("?)'
+    r'("(?:negative_prompt|display_prompt|prompt|text)"\s*:\s*")((?:[^"\\]|\\.)*)("?)'
 )
 
 
 def _mask_prompt_echo(text: str) -> str:
+    # 문자열 안에 다시 인코딩된 JSON은 절단 지점을 알 수 없어 해당 필드 뒤를 숨긴다.
+    escaped = re.search(r'\\+"(?:dialogue|negative_prompt|display_prompt|prompt|text)\\+"\s*:', text)
+    if escaped:
+        text = text[:escaped.start()] + "<대본 포함 JSON 숨김>"
     return _PROMPT_ECHO_RE.sub(
         lambda m: m.group(0) if re.fullmatch(r"<프롬프트 [0-9]+자>", m.group(2))
         else f"{m.group(1)}<프롬프트 {len(m.group(2))}자>{m.group(3)}", text
@@ -804,7 +892,7 @@ def _claim_pending(server: str, token: str, limit: int, agent_id: str | None = N
     # submission-stage: claim과 실제 유료 CLI 호출 사이를 서버 상태로 분리한다. 신 서버는 claimed로
     # 내려주고 begin-submission ACK 뒤에만 submitting으로 올린다. 구 서버는 capability를 무시하고
     # 기존 submitting 응답(새 필드 없음)을 주므로 혼합 업데이트 중에도 하위호환된다.
-    query = {"limit": limit, "capability": "workspace,submission-stage,asset-content,media-v2"}
+    query = {"limit": limit, "capability": "workspace,submission-stage,asset-content,media-v2,audio-models-v1"}
     if agent_id:
         query["agent_id"] = agent_id
     return _http(
@@ -823,7 +911,7 @@ def _pending_exists(server: str, token: str) -> bool:
             server,
             action="pending-exists",
             query={
-                "capability": "workspace,submission-stage,asset-content,media-v2",
+                "capability": "workspace,submission-stage,asset-content,media-v2,audio-models-v1",
                 "agent_id": _agent_instance_id(),
             },
         ),
@@ -858,7 +946,7 @@ def _begin_submission(
         server,
         rid,
         "begin-submission",
-        {"agent_id": agent_id, "capability": "media-v2"},
+        {"agent_id": agent_id, "capability": "media-v2,audio-models-v1"},
     )
     for attempt in range(3):
         kwargs = {"token": token, "timeout": 15}
@@ -999,6 +1087,8 @@ def _matches_submission_fingerprint(request: dict, job: dict) -> bool:
     if str(model or "") != str(fingerprint.get("model") or ""):
         return False
     params = job.get("params")
+    if isinstance(params, dict):
+        params = audio_stored_params(model, params)
     if not isinstance(params, dict) or not isinstance(params.get("prompt"), str):
         return False
     candidate_prompt = re.sub(r"\s+", " ", params["prompt"].lstrip(_ZWSP)).strip()
@@ -1322,6 +1412,10 @@ def _media_role(ref: dict) -> str:
 
 
 def _refs_for_cli(model: str, refs: list) -> tuple[list, str | None]:
+    if model in AUDIO_MODELS_V1:
+        error = audio_reference_error(model, {}, refs)
+        if error:
+            return [], error
     if model == "draw_to_video":
         if (len(refs) != 2 or any(not isinstance(ref, dict) or not ref.get("file_path") for ref in refs)
                 or {(ref.get("type"), ref.get("role")) for ref in refs} != {("video", "video"), ("image", "image_references")}):
@@ -2523,18 +2617,20 @@ def _submit_one(
     # ★CLI 프롬프트는 반드시 한 줄 — 개행이 있으면 Higgsfield 가 레퍼런스(입력 이미지)를 못 붙여 '엉뚱한
     #  결과물'이 나온다(실측). 프론트 신규·재사용·재생성·직접 API·옛 DB 데이터 어느 경로로 왔든 최종 관문인
     #  여기서 한 번에 접는다(display_prompt 는 서버가 별도 보관하므로 표시·재사용 줄바꿈은 영향 없음).
-    if model != "text2speech_v2":
+    if model not in TTS_MODELS:
         prompt = re.sub(r"\s+", " ", prompt).strip()
     # 레퍼런스 토큰 @imageN 은 알약이 serialize 한 형태다. CLI 는 <<<imageN>>> 를 받아야 하므로 여기서도 되돌린다
     #  (재생성·옛 데이터 등 프론트 정규화를 우회한 경로 방어). simage/eimage→image, vedio→video.
-    if model != "text2speech_v2":
+    if model not in TTS_MODELS:
         prompt = _canon_media_ref_tokens(prompt)
     # 통째 JSON 프롬프트(작업자가 지시서를 붙여넣는 경우)는 CLI 가 '객체'로 파싱해 거부한다 →
     # zero-width space 를 앞에 붙여 문자열로 받게 한다(힉스 웹과 동일 동작, 내용은 그대로).
     prompt = _shield_json_prompt(prompt)
     # ★create-first: --wait 없이 제출해 job_id 를 즉시 확보한다. 긴 대기(15~30분)를 시작하기 전에
     #  job_id 를 서버에 앵커해두어, 대기 중 프로그램이 꺼져도 재조정이 반드시 이어받아 완료시킨다.
-    args = ["generate", "workflow" if model == "draw_to_video" else "create", model, "--prompt", prompt]
+    args = ["generate", "workflow" if model == "draw_to_video" else "create", model]
+    if model not in {"elevenlabs_v4", "elevenlabs_v4_turbo"}:
+        args += ["--prompt", prompt]
     # ★batch_size 는 1 로 강제 — create-first 는 잡 1개(=카드 1개)를 앵커·대기하므로, N>1 이면 나머지
     #  잡이 앵커·검증 없이 나중에 synced 독립 카드로 새어 나온다(프론트 배치는 요청 N개 복제 방식이라 무영향).
     params = dict(r.get("params") or {})
@@ -2542,6 +2638,22 @@ def _submit_one(
         print(f"  ⚠ batch_size={params.get('batch_size')} → 1 강제(카드 1개=잡 1개 원칙)")
         params["batch_size"] = 1
     allowed_params = _allowed_params(cli, model)
+    if model in AUDIO_MODELS_V1:
+        try:
+            _validate_audio_request(model, r.get("prompt") or "", params, r.get("references") or [])
+        except ValueError as exc:
+            _fail(server, token, rid, str(exc))
+            return None
+        if r.get("media_protocol") != "audio-models-v1" or not allowed_params:
+            _fail(server, token, rid, "오디오 생성 계약 또는 모델 옵션을 확인할 수 없습니다")
+            return None
+        wire_params = audio_cli_params(model, r.get("prompt") or "", params)
+        if set(wire_params) - allowed_params or any(
+            _param_enum(model, k) and str(v) not in _param_enum(model, k)
+            for k, v in wire_params.items()
+        ):
+            _fail(server, token, rid, "현재 모델이 지원하지 않는 음성 생성 옵션입니다")
+            return None
     if model in {"draw_to_video", "text2speech_v2"}:
         if r.get("media_protocol") != "media-v2" or not allowed_params:
             _fail(server, token, rid, "미디어 생성 계약 또는 모델 옵션을 확인할 수 없습니다")
@@ -2574,7 +2686,12 @@ def _submit_one(
     )
     if mode_note:
         print(f"  ⚠ {model}: {mode_note}")
-    args += _param_flags(params, allowed_params)
+    if model in {"elevenlabs_v4", "elevenlabs_v4_turbo"}:
+        wire_params = audio_cli_params(model, r.get("prompt") or "", params)
+        args += ["--dialogue", json.dumps(wire_params.pop("dialogue"), ensure_ascii=False)]
+        args += _param_flags(wire_params, allowed_params)
+    else:
+        args += _param_flags(params, allowed_params)
     # 레퍼런스 — 다운로드 없이 배치 공유 캐시 조회만(해석값=공개 URL 또는 로컬 임시파일경로).
     unresolved: list = []
     upload_failed: list = []
@@ -2615,7 +2732,7 @@ def _submit_one(
             if media_role == "image":
                 expected_image_inputs += 1
             continue
-        flag = _role_flag(ref.get("role"))
+        flag = ("--audio-references" if ref.get("type") == "audio" else "--image-references") if model == "seed_audio" else _role_flag(ref.get("role"))
         args += [flag, resolved]
         submitted["role"] = flag.removeprefix("--").replace("-", "_")
         if _UUID_RE.fullmatch(resolved):
@@ -2652,7 +2769,7 @@ def _submit_one(
         print(f"  ✗ {model}: {reason}")
         return None
     submission_fingerprint = _submission_fingerprint(
-        model, prompt, params, allowed_params, refs
+        model, prompt, params, (allowed_params | {"voice_id", "voice_type"}) if model in AUDIO_MODELS_V1 else allowed_params, refs
     )
     submission_fingerprint["submitted_refs"] = submitted_refs
     submission_fingerprint["arg_order"] = direct_order + media_order

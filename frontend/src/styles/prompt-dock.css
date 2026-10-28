@@ -430,6 +430,7 @@
   color: var(--text); font: inherit; font-size: 12.5px; outline: none;
 }
 .sl-voice-search:focus { border-color: var(--accent); }
+.sl-voice-rec { margin-left: 6px; padding: 0 6px; border-radius: 8px; font-size: 10px; font-weight: 700; background: rgba(var(--accent-rgb), 0.18); color: var(--accent); }
 
 /* ⚙ 고급 옵션 칩 — 커스터마이즈(기본값과 다름) 시 강조 + 점 */
 .sl-chip.dirty { border-color: var(--accent); color: #fff; }
@@ -594,3 +595,5 @@
 .sl-chip.blocked .sl-dot { background: #f06a5a; }
 .sl-dd-note { padding: 6px 10px; font-size: 11px; line-height: 1.4; color: #f06a5a; }
 .sl-dd-empty { padding: 8px 10px 10px; font-size: 11.5px; color: var(--muted2); }
+.sl-model-description { display: block; font-size: 11px; opacity: .7; margin-top: 3px; }
+.sl-audio-tasks { flex-wrap: wrap; }

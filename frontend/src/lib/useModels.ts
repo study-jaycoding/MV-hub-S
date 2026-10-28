@@ -8,7 +8,7 @@ import { EMPTY_MODEL_SET, modelAllowed } from "./modelPolicyCore";
 import type { CostEstimate, ModelInfo, ModelParam, ModelParamsOut } from "../types";
 import { fetchModelCatalog } from "./modelCatalogCache";
 import { normalizeSeedanceDraftParams } from "./seedanceDraft";
-import { requiredVariantParam, variantChoiceMissing } from "./spotlightPromptConfig";
+import { audioModelBlocked, audioParamsError, isTtsModel, requiredVariantParam, variantChoiceMissing } from "./spotlightPromptConfig";
 
 // 노출 모델 화이트리스트(타입별, 표시 순서대로).
 //  이미지: Nano Banana 2(nano_banana_flash) · Nano Banana 2.1(nano_banana_2_1, 2026-10-14 추가 — 첫 자리는 그대로 두어 기본 모델이 안 바뀐다) · Nano Banana 2 Lite(nano_banana_2_lite) · Nano Banana Pro(nano_banana_pro) · GPT Image 2.5(gpt_image_2_5) · GPT Image 2(gpt_image_2)
@@ -21,7 +21,7 @@ import { requiredVariantParam, variantChoiceMissing } from "./spotlightPromptCon
 export const ALLOWED: Record<"image" | "video" | "audio", string[]> = {
   image: ["nano_banana_flash", "nano_banana_2_1", "nano_banana_2_lite", "nano_banana_pro", "gpt_image_2_5", "gpt_image_2"],
   video: ["seedance_2_5", "seedance_2_0", "seedance_2_0_mini"],
-  audio: ["text2speech_v2"],
+  audio: ["seed_audio", "elevenlabs_v4", "elevenlabs_v4_turbo", "text2speech_v2", "qwen_audio_tts"],
 };
 
 /** 모델 키로 이미지/영상을 판정한다 — **한쪽 목록에만** 속할 때만 확정한다.
@@ -48,6 +48,10 @@ export function inferModelType(model: string | null | undefined): "image" | "vid
 // 어긋나 카드와 선택 드롭다운이 달라 보인다. 이 맵은 lib/modelCatalog 의 폴백으로 쓰인다
 // (우선순위: CLI 카탈로그 display_name > 이 교정맵 > 휴머나이즈). 모든 화면이 modelCatalog 로 일원화.
 export const MODEL_DISPLAY_NAMES: Record<string, string> = {
+  seed_audio: "Seed Audio 1.0",
+  elevenlabs_v4: "ElevenLabs v4",
+  elevenlabs_v4_turbo: "ElevenLabs v4 Turbo",
+  qwen_audio_tts: "Qwen Audio 3.0 TTS",
   nano_banana_flash: "Nano Banana 2",
   nano_banana_2_1: "Nano Banana 2.1",
   nano_banana_2_lite: "Nano Banana 2 Lite",
@@ -71,7 +75,7 @@ export const MODEL_DISPLAY_NAMES: Record<string, string> = {
 // is_inpaint/mask: 힉스필드 미문서·미사용 파라미터(2026-09-01 실측 — 웹 편집기도 안 쓴다).
 // 노출하면 효과 없는 옵션이 떠서 혼란만 준다.
 export const HIDDEN_PARAMS = new Set([
-  "prompt", "medias", "input_images", "folder_id", "batch_size",
+  "prompt", "dialogue", "medias", "input_images", "folder_id", "batch_size",
   "image_references", "video_references", "audio_references", "start_image", "end_image",
   "video", "ref_image",
   "is_inpaint", "mask", "draft", "draft_job_id",
@@ -113,6 +117,7 @@ export function effectiveDefault(p: {
   const ov = MODEL_DEFAULT_OVERRIDE[model]?.[p.name] ?? DEFAULT_OVERRIDE[p.name];
   if (ov != null && (!p.enum?.length || p.enum.includes(ov))) return ov;
   if (p.default != null) return p.default as string | number;
+  if (isTtsModel(model)) return undefined;
   if (p.enum?.length) return p.enum[0];
   return undefined;
 }
@@ -424,7 +429,7 @@ export function useModels(
   const [model, setModelState] = useState(policy?.initialModel ?? "");
   const allowed = policy?.allowed ?? EMPTY_MODEL_SET;
   const policyReady = policy ? policy.ready : true;
-  const costPrompt = model === "text2speech_v2" ? policy?.costPrompt ?? "" : "";
+  const costPrompt = isTtsModel(model) ? policy?.costPrompt ?? "" : "";
   const costEnabled = policy?.costEnabled !== false;
   // 이 모델이 지금 그룹에서 막혔는가 — 판정은 **공통 함수 하나**로만 한다.
   // ★조건식을 여기 복제하면 안 된다(2026-09-13, 코덱스 실측): 종전엔
@@ -478,7 +483,7 @@ export function useModels(
    *   같지만, 판정을 두 벌로 두면 다음 정책 변경 때 또 어긋난다(코덱스). */
   const firstAllowed = useCallback(
     (t: "image" | "video" | "audio") =>
-      ALLOWED[t].find((jt) => modelAllowed({ allowed: allowedRef.current }, jt)) ?? "",
+      ALLOWED[t].find((jt) => !audioModelBlocked(jt) && modelAllowed({ allowed: allowedRef.current }, jt)) ?? "",
     [],
   );
   /** 지금 고른 모델 — 비동기 작업이 끝난 뒤 '현재' 모델과 비교할 때 쓴다(시작 시점 값이 아니라). */
@@ -529,10 +534,10 @@ export function useModels(
   // 화이트리스트 모델만 노출(타입별 다중, 화이트리스트 순서 유지) — 그룹이 쓸 수 없는 모델은 목록에서 뺀다.
   const typeModels = ALLOWED[type]
     .filter((jt) => !blocked(jt))
-    .map((jt) => models.find((m) => m.job_set_type === jt))
+    .map((jt) => models.find((m) => m.job_set_type === jt) ?? (type === "audio" ? { job_set_type: jt, display_name: MODEL_DISPLAY_NAMES[jt] ?? "Text to Speech V2", type: "audio" } : undefined))
     .filter((m): m is ModelInfo => !!m);
   // 지금 고른 모델이 막혔는가 — 목록에는 없지만 값은 남아 있는 상태(안내·제출 차단의 근거).
-  const selectedBlocked = !!model && blocked(model);
+  const selectedBlocked = !!model && (blocked(model) || !!audioModelBlocked(model));
   // 이 타입이 통째로 막혔는가 — 카탈로그가 아직 안 와서 목록이 빈 것과 구별해야 안내 문구가 정직하다(코덱스).
   const typeFullyBlocked = ALLOWED[type].every((jt) => blocked(jt));
   const modelName =
@@ -551,7 +556,7 @@ export function useModels(
     // 유지: 이 타입의 모델이고 (막히지 않았거나 명시적으로 고른 것). 그 밖엔 첫 사용 가능 모델로 자동 선택.
     const inType = ALLOWED[type].includes(model);
     if (inType && (!blocked(model) || explicitRef.current)) return;
-    const first = typeModels[0]?.job_set_type ?? "";
+    const first = typeModels.find((m) => !audioModelBlocked(m.job_set_type))?.job_set_type ?? "";
     if (!first) {
       // 목록이 아직 없거나 이 타입을 전부 못 씀 — 다른 타입의 모델이 남아 있으면 비워 엉뚱한 타입으로 제출되지 않게 한다.
       if (!inType && model) {
@@ -727,7 +732,7 @@ export function useModels(
       return;
     }
     // 엔진을 아직 안 골랐으면(복원값에 빠짐) 견적도 묻지 않는다 — 빈 variant 로는 CLI 가 거부한다.
-    if ((model === "text2speech_v2" && !costPrompt.trim()) || variantChoiceMissing(model, optionValues)) {
+    if ((isTtsModel(model) && (!costPrompt.trim() || audioParamsError(model, optionValues) || audioModelBlocked(model))) || variantChoiceMissing(model, optionValues)) {
       setCost(null);
       setCostLoading(false);
       return;

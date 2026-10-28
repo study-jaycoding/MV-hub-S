@@ -72,12 +72,13 @@ async function mountModal(initial: Record<string, unknown> | undefined) {
 
 const chipText = () => (container.querySelector(".sl-chip-label")?.textContent || "").trim();
 const button = (label: string) => {
-  const found = [...container.querySelectorAll("button")].find((b) => (b.textContent || "").trim() === label);
+  const found = [...container.querySelectorAll("button")].find((b) => (b.getAttribute("aria-label") || b.textContent || "").trim() === label);
   if (!found) throw new Error(`'${label}' 버튼 없음: ${[...container.querySelectorAll("button")].map((b) => b.textContent).join(" | ")}`);
   return found as HTMLButtonElement;
 };
 const openModelList = () => act(() => (container.querySelector(".sl-chip") as HTMLButtonElement).click());
-const rowNames = () => [...container.querySelectorAll(".sl-dropdown .sl-dd-item")].map((b) => (b.textContent || "").trim());
+const rowNames = () => [...container.querySelectorAll(".sl-dropdown .sl-dd-item")].map((b) => (b.getAttribute("aria-label") || b.textContent || "").trim());
+const audioNames = ["Seed Audio 1.0", "ElevenLabs v4", "ElevenLabs v4 Turbo", "ElevenLabs", "Qwen Audio 3.0 TTS", "MiniMax", "Seed Speech"];
 
 describe("오디오 엔진 줄 — 씬 모델 창", () => {
   it("새로 고르면 첫 엔진(elevenlabs)이 옵션값에도 실리고, 고급에 variant 가 없다", async () => {
@@ -85,7 +86,7 @@ describe("오디오 엔진 줄 — 씬 모델 창", () => {
     expect(chipText()).toBe("ElevenLabs");
     expect(container.textContent).not.toContain("고급");
     openModelList();
-    expect(rowNames()).toEqual(["ElevenLabs", "MiniMax", "Seed Speech"]);
+    expect(rowNames()).toEqual(audioNames);
     act(() => button("저장").click());
     expect(saved[0]).toMatchObject({ model: "text2speech_v2", modelName: "ElevenLabs", params: { variant: "elevenlabs" } });
   });
@@ -109,8 +110,8 @@ describe("오디오 엔진 줄 — 씬 모델 창", () => {
     await mountModal({ model: "text2speech_v2", params: { variant: "cozy_voice", voice_id: "v1", voice_type: "preset" } });
     expect(chipText()).toBe("Cozy Voice (기존 설정)");
     openModelList();
-    expect(rowNames()).toEqual(["ElevenLabs", "MiniMax", "Seed Speech", "Cozy Voice (기존 설정)"]);
-    expect(container.querySelector(".sl-dropdown .sl-dd-item.sel")?.textContent).toBe("Cozy Voice (기존 설정)");
+    expect(rowNames()).toEqual([...audioNames, "Cozy Voice (기존 설정)"]);
+    expect(container.querySelector(".sl-dropdown .sl-dd-item.sel")?.getAttribute("aria-label")).toBe("Cozy Voice (기존 설정)");
     act(() => button("저장").click());
     expect(saved[0]).toMatchObject({ params: { variant: "cozy_voice" } });
   });

@@ -958,7 +958,7 @@ def test_gen_request_adapter_builds_claim_url_in_one_place():
     # submission-stage: 신 서버에서는 CLI 호출 전/후 상태를 분리한다.
     assert parse_qs(parsed.query) == {
         "limit": ["16"],
-        "capability": ["workspace,submission-stage,asset-content,media-v2"],
+        "capability": ["workspace,submission-stage,asset-content,media-v2,audio-models-v1"],
         "agent_id": ["agent-1"],
     }
     assert call.kwargs == {"token": "token-1"}
@@ -976,7 +976,7 @@ def test_agent_pending_exists_uses_read_only_workspace_capable_route():
     assert call.args[0] == "GET"
     assert parsed.path == "/api/gen-requests/pending-exists"
     assert parse_qs(parsed.query) == {
-        "capability": ["workspace,submission-stage,asset-content,media-v2"],
+        "capability": ["workspace,submission-stage,asset-content,media-v2,audio-models-v1"],
         "agent_id": ["agent-1"],
     }
     assert call.kwargs == {"token": "token-1"}
@@ -2156,7 +2156,7 @@ def test_agent_submission_stage_adapters_match_server_contract():
     begin_call, release_call, recovery_call = http.call_args_list
     begin_url = urlsplit(begin_call.args[1])
     assert begin_url.path == "/api/gen-requests/request-1/begin-submission"
-    assert parse_qs(begin_url.query) == {"agent_id": ["agent-1"], "capability": ["media-v2"]}
+    assert parse_qs(begin_url.query) == {"agent_id": ["agent-1"], "capability": ["media-v2,audio-models-v1"]}
     release_url = urlsplit(release_call.args[1])
     assert release_url.path == "/api/gen-requests/request-1/release-claim"
     assert parse_qs(release_url.query) == {"agent_id": ["agent-1"]}

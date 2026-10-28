@@ -1,4 +1,72 @@
 // SpotlightPrompt 옵션 표시/검증 보조값.
+import { hubHasFeature } from "./hubFeatures";
+
+export const AUDIO_MODELS_V1 = ["seed_audio", "elevenlabs_v4", "elevenlabs_v4_turbo", "qwen_audio_tts"] as const;
+export const AUDIO_PARAMS: Record<string, readonly string[]> = {
+  text2speech_v2: ["variant", "voice_id", "voice_type"],
+  seed_audio: ["voice_id", "voice_type", "format", "sample_rate", "speech_rate", "pitch_rate", "loudness_rate"],
+  elevenlabs_v4: ["voice_id", "voice_type", "stability", "similarity_boost"],
+  elevenlabs_v4_turbo: ["voice_id", "voice_type", "stability", "similarity_boost"],
+  qwen_audio_tts: ["voice_id", "voice_type", "instruction", "language", "speech_rate", "pitch_rate", "volume", "format", "sample_rate", "seed"],
+};
+export const isTtsModel = (model: string): boolean => Object.prototype.hasOwnProperty.call(AUDIO_PARAMS, model);
+export const audioModelBlocked = (model: string): string | null =>
+  (AUDIO_MODELS_V1 as readonly string[]).includes(model) && !hubHasFeature("audio-models-v1") ? "서버 업데이트 필요" : null;
+
+// 모델별 '추천' 목소리 — CLI voices list 에는 모델 구분이 없어, 힉스필드 웹 목록을 이름→CLI id 로 고정한다(2026-10-28 비로그인 화면,
+//  끝까지 스크롤해 센 값: Qwen 만 47개, 나머지 엔진은 114 전부라 표가 없다). 추천만 표시하고 나머지를 막지 않는다(Jay 결정 ①·Codex A6).
+//  shortcut: 힉스필드가 목록을 바꾸면 낡는다 — CLI 가 모델별 목소리를 줄 때 이 표를 없앤다.
+const QWEN_WEB_VOICE_IDS: ReadonlySet<string> = new Set([
+  "30fc8796-ceb6-4a66-b3a7-4a145ef7f346", "d8ba9f14-8a24-44db-932b-99e16c45bd32", "6b3e3642-f7b7-4cb8-9688-51e233c4b92f",
+  "6b528d43-c056-4a2f-9d82-1591a7ba13b0", "caeba733-3c17-43db-863e-69c7025512cd", "858499d9-fef5-40e1-bc29-b4dc661dc283",
+  "8911390e-4b59-459b-ba84-19010917e1df", "549ff70a-3ee7-4f04-a4d9-89a24fab7709", "0178ef57-ada4-43d9-992b-8d9221045bb4",
+  "b9c5c5db-4eb7-468a-a0b7-d06423af0335", "6f98d3dd-324f-4845-8c28-c1d1647a06cd", "9eb5a147-c322-4f8a-8bc5-a30679dfaf5c",
+  "023ebf5e-1970-40d8-825c-a5ef6a1dd4ff", "75e72cd5-011b-4130-a474-e8b1ab341f04", "f6448975-768e-4327-b932-1b7c973d58e9",
+  "c2acff45-84b2-4974-892d-89fa2d4e5598", "f32c8f51-449e-4ddf-bdf7-1527e11df917", "c25f78a0-714e-42af-8da3-a399cef94968",
+  "1ad38ba4-9cc4-4f2f-9fde-b0fefdf67ae5", "1fb253b8-928b-4d29-a349-f242a71eaddf", "fa64fba4-ad02-405e-99d0-1f085d87c706",
+  "dc382508-c8bd-443c-8cb2-46e57b8d2e6f", "b0f766b7-8703-4bd1-b973-f857c36837b6", "80914268-dfae-4f76-8306-36f2d55f58f8",
+  "573e5163-59b3-4926-aab1-951ef2985f81", "3811e986-0891-47cf-a1f5-78a1d62a547a", "d0374db1-44b9-4f05-939e-0a9ae9dbbe6a",
+  "d9d5c263-f84e-4752-97b5-3750fcc6fd2f", "f1373f24-3b96-433f-9a68-e595810ef608", "530df032-c311-483b-a750-cb3c9e1bcdfd",
+  "b57b22a0-f287-405b-bc82-6f08f5e6bb1f", "ef70cc83-3015-4bad-9359-0ea968c43ec0", "375a3398-e3b4-4f91-845d-42181e352899",
+  "95429266-c0ac-4137-a209-63b8812b0f23", "27c04473-84a9-4b60-a41f-c8e8458bd4f1", "c3204739-4084-41a3-9dc5-c805b307ec18",
+  "ed69c516-92d2-4b30-a967-617737a342e5", "f1e8226e-2248-4d5f-b43c-0a79e9949dbf", "e9cfbbf0-4476-46be-b396-596eb774b165",
+  "43173c95-3ec8-446a-a162-6504332c578b", "e5666b9c-99a2-4fac-8b4e-abee078b186d", "ca83ca7f-c186-493d-bd69-0d765fa861b2",
+  "d081b915-6623-4a44-bacf-80d0f1c90a03", "41023a48-71ab-478a-bea7-c7b5a78f6b36", "7c2133e5-68ab-511f-9aed-9a67664382b1",
+  "80924413-1ea8-4e64-9719-e00b86796f05", "73a45c18-0c56-4642-a61e-f6b303f8ded1",
+]);
+export function recommendedVoiceIds(model: string): ReadonlySet<string> | null {
+  return model === "qwen_audio_tts" ? QWEN_WEB_VOICE_IDS : null;
+}
+
+export function audioReferenceError(model: string, params: Record<string, unknown>, refs: { type: string; file_path?: string }[]): string | null {
+  if (!isTtsModel(model)) return null;
+  if (model !== "seed_audio") return refs.length ? "이 음성 모델에는 레퍼런스를 사용할 수 없습니다" : null;
+  const images = refs.filter((r) => r.type === "image").length;
+  const audios = refs.filter((r) => r.type === "audio").length;
+  if (images + audios !== refs.length || refs.some((r) => !r.file_path)) return "Seed Audio에는 이미지 또는 오디오 파일만 사용할 수 있습니다";
+  if (images && audios) return "Seed Audio의 이미지와 오디오 레퍼런스는 함께 사용할 수 없습니다";
+  if (images > 1) return "Seed Audio의 이미지 레퍼런스는 1개까지 사용할 수 있습니다";
+  if (images && params.voice_id) return "Seed Audio의 목소리와 이미지 레퍼런스는 함께 사용할 수 없습니다";
+  if (audios > (params.voice_id ? 2 : 3)) return "Seed Audio의 오디오 레퍼런스는 목소리 선택 시 2개, 미선택 시 3개까지 사용할 수 있습니다";
+  return null;
+}
+
+export function audioParamsError(model: string, params: Record<string, unknown>): string | null {
+  if (!isTtsModel(model)) return null;
+  if (Object.keys(params).some((key) => !AUDIO_PARAMS[model].includes(key))) return "지원하지 않는 음성 생성 옵션입니다";
+  if (model !== "seed_audio" || params.voice_id != null || params.voice_type != null) {
+    if (typeof params.voice_id !== "string" || !params.voice_id.trim() || params.voice_type !== "preset") return "공식 프리셋 목소리를 선택하세요";
+  }
+  for (const [key, value] of Object.entries(params)) {
+    if (["stability", "similarity_boost", "speech_rate", "pitch_rate", "loudness_rate", "volume", "sample_rate", "seed"].includes(key)) {
+      const integer = ["volume", "sample_rate", "seed", "loudness_rate"].includes(key) || model === "seed_audio";
+      if (typeof value !== "number" || !Number.isFinite(value) || integer && !Number.isSafeInteger(value)) return "음성 생성 숫자 옵션을 확인하세요";
+      if (["stability", "similarity_boost"].includes(key) && (value < 0 || value > 1)) return "안정성과 유사도는 0~100% 범위에서 선택하세요";
+    } else if (typeof value !== "string") return "음성 생성 옵션의 형식이 올바르지 않습니다";
+  }
+  if (params.language != null && !["zh", "en", "fr", "de", "ja", "ko", "ru", "pt", "th", "id", "vi", "it", "ms"].includes(String(params.language))) return "지원하지 않는 음성 언어입니다";
+  return null;
+}
 
 // duration 초 범위 — CLI 스키마(model get)에 min/max 가 없어 모델 스펙(models_explore)으로 보강.
 const DURATION_RANGE: Record<string, { min: number; max: number }> = {
@@ -88,6 +156,7 @@ export type ModelRow = {
   display_name: string;
   param?: string;
   value?: string;
+  description?: string;
 };
 
 /** legacy 변형은 지금 고른 값일 때만 '기존 설정' 줄로 끼운다(새 선택지로는 내놓지 않는다). */
@@ -114,8 +183,23 @@ export function modelRows(
       });
     }
   }
+  const audioOrder = ["seed_audio", "elevenlabs_v4", "elevenlabs_v4_turbo", "text2speech_v2:elevenlabs", "qwen_audio_tts", "text2speech_v2:minimax", "text2speech_v2:seed_speech"];
+  if (models.every((m) => isTtsModel(m.job_set_type))) {
+    out.sort((a, b) => (audioOrder.indexOf(a.key) < 0 ? 7 : audioOrder.indexOf(a.key)) - (audioOrder.indexOf(b.key) < 0 ? 7 : audioOrder.indexOf(b.key)));
+    for (const row of out) row.description = AUDIO_DESCRIPTIONS[row.key] ?? "저장된 음성 엔진 설정";
+  }
   return out;
 }
+
+const AUDIO_DESCRIPTIONS: Record<string, string> = {
+  seed_audio: "목소리 또는 오디오·이미지 참고로 음성 생성",
+  elevenlabs_v4: "안정성과 목소리 유사도를 조절하는 음성 생성",
+  elevenlabs_v4_turbo: "빠른 v4 음성 생성",
+  "text2speech_v2:elevenlabs": "ElevenLabs 엔진으로 대본 읽기",
+  qwen_audio_tts: "언어와 말하는 방식을 조절하는 음성 생성",
+  "text2speech_v2:minimax": "MiniMax 엔진으로 대본 읽기",
+  "text2speech_v2:seed_speech": "Seed Speech 엔진으로 대본 읽기",
+};
 
 /** 지금 옵션값이 가리키는 변형 값. 아직 안 실렸으면 첫 항목(=기본)으로 본다 — requireChoice 면 빈 값 그대로(""). */
 export function currentVariantValue(
@@ -187,6 +271,16 @@ const PARAM_LABEL: Record<string, string> = {
   enable_web_search: "웹 검색",
   enable_image_search: "이미지 검색",
   seed: "시드",
+  stability: "안정성",
+  similarity_boost: "목소리 유사도",
+  instruction: "말하는 방식",
+  language: "언어",
+  speech_rate: "말하기 속도",
+  pitch_rate: "음높이",
+  loudness_rate: "음량 조절",
+  volume: "음량",
+  format: "출력 형식",
+  sample_rate: "샘플레이트",
 };
 
 export function spotlightParamLabel(name: string): string {
@@ -204,6 +298,8 @@ const VALUE_LABEL: Record<string, string> = {
 // 같은 값이 옵션마다 뜻이 다르다 — thinking_level 의 high 는 '고화질'이 아니다.
 const PARAM_VALUE_LABEL: Record<string, Record<string, string>> = {
   thinking_level: { minimal: "최소(minimal)", medium: "보통(medium)", high: "깊게(high)" },
+  format: { ogg_opus: "OGG", wav: "WAV", mp3: "MP3", pcm: "PCM" },
+  language: { "": "자동", zh: "중국어", en: "영어", fr: "프랑스어", de: "독일어", ja: "일본어", ko: "한국어", ru: "러시아어", pt: "포르투갈어", th: "태국어", id: "인도네시아어", vi: "베트남어", it: "이탈리아어", ms: "말레이어" },
 };
 
 export function spotlightValueLabel(value: string, param = ""): string {

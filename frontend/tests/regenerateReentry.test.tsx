@@ -17,6 +17,7 @@ vi.mock("../src/lib/libraryBroadcast", () => ({ postLibraryChanged: vi.fn() }));
 
 import { useGenerationCardActions } from "../src/lib/useGenerationCardActions";
 import type { Generation } from "../src/types";
+import { setHubFeatures } from "../src/lib/hubFeatures";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -24,12 +25,29 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   mocks.prepareRegenerate.mockReset();
   mocks.regenSource.mockReset();
+  setHubFeatures([]);
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
 
 const generation = (id: string) => ({ id, model: "m", prompt: "p", status: "done", params: {}, assets: [] }) as unknown as Generation;
 const settle = async () => { for (let i = 0; i < 5; i += 1) await Promise.resolve(); };
+
+it.each(["seed_audio", "elevenlabs_v4", "elevenlabs_v4_turbo", "qwen_audio_tts"])("옛 서버에서는 %s 직접 재생성을 보내지 않고 대기 연결을 해제한다", async (model) => {
+  const flash = vi.fn();
+  const reject = vi.fn();
+  let actions!: ReturnType<typeof useGenerationCardActions>;
+  function Host() {
+    actions = useGenerationCardActions({ armedAutoTags: new Set(), bumpBoard: vi.fn(), canFinalize: () => true, flash,
+      navTab: vi.fn(), reload: async () => {}, workspace: { scope: "personal", id: null, name: null } });
+    return null;
+  }
+  act(() => root.render(<Host />));
+  expect(await actions.onRegenerate({ ...generation("g1"), model }, undefined, reject)).toBeNull();
+  expect(mocks.prepareRegenerate).not.toHaveBeenCalled();
+  expect(reject).toHaveBeenCalledOnce();
+  expect(flash).toHaveBeenCalledWith("서버 업데이트 필요");
+});
 
 it("재생성 — 응답 전의 다시 누름은 요청을 더 만들지 않는다(더블클릭 = 유료 생성 둘). 응답이 오면 목록 갱신을 기다리지 않고 다시 받는다", async () => {
   const waiting: Array<{ resolve: (value: Generation) => void; reject: (reason: unknown) => void }> = [];

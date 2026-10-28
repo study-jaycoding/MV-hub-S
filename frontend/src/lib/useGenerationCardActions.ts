@@ -9,6 +9,7 @@ import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
 import { errorDetail, HttpError, surelyNotRun } from "./http";
 import { postLibraryChanged } from "./libraryBroadcast";
 import { modelBlockMessage } from "./modelPolicy";
+import { audioModelBlocked } from "./spotlightPromptConfig";
 import { isGenerationWorkspaceReady } from "./workspaceContext";
 import type { Filters, Generation, WorkspaceContext } from "../types";
 import type { CanvasGenerationLink } from "./canvasGenerationRecovery";
@@ -68,8 +69,9 @@ export function useGenerationCardActions({
       return null;
     }
     // 그룹 사용 모델 — 재생성은 원본 모델(g.model)로 나가므로 제출 전에 막는다(서버 미전송, pending 없음).
-    const blocked = modelBlockMessage(g.model);
+    const blocked = audioModelBlocked(g.model ?? "") || modelBlockMessage(g.model);
     if (blocked) {
+      onDefinitiveReject?.();
       flash(blocked);
       return null;
     }
