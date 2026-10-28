@@ -70,15 +70,15 @@ describe("audio models v1", () => {
     expect(defaultOptions(params, "elevenlabs_v4")).toEqual({});
     await act(async () => root.render(<Panel model="elevenlabs_v4" params={params} initial={{ voice_id: "voice", voice_type: "preset" }} />));
     act(() => host.querySelector<HTMLButtonElement>('button[title^="고급 옵션"]')!.click()); // 칩 글자는 Set(2026-10-28)
-    const field = host.querySelector<HTMLInputElement>('input[aria-label="안정성 (%)"]')!;
-    expect(field.value).toBe("");
-    expect(field.placeholder).toBe("Default");
+    const field = host.querySelector<HTMLInputElement>('input[aria-label="안정성 (%)"]')!; // 0~100 끌기 막대(2026-10-28)
+    expect(field.type).toBe("range");
+    expect(field.closest(".sl-adv-range")!.querySelector(".sl-adv-range-val")!.textContent).toBe("Default");
     act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "50");
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "40"); // 값이 없으면 손잡이는 가운데(50)라 다른 값으로
       field.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    expect(options.stability).toBe(0.5);
-    expect(body("elevenlabs_v4", options).body?.params?.stability).toBe(0.5);
+    expect(options.stability).toBe(0.4);
+    expect(body("elevenlabs_v4", options).body?.params?.stability).toBe(0.4);
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "75");
       field.dispatchEvent(new Event("input", { bubbles: true }));

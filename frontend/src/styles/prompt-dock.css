@@ -552,6 +552,26 @@
   background: var(--grad); color: var(--accent-ink); font-weight: 800; box-shadow: 0 3px 12px rgba(var(--accent-rgb), 0.35);
 }
 .sl-adv-pop .sl-adv-num { width: 100%; }
+/* 범위를 아는 숫자 = 끌기 막대(Jay 2026-10-28 '듀레이션처럼'). 길이 창 막대(.sl-dur-track·.sl-dur-marks)를 그대로 쓰고
+   기본값 자리 세로 금(.sl-range-zero)과 기본값↔손잡이 채움(.sl-range-fill), 오른쪽 숫자(누르면 기본값)만 더한다. */
+.sl-adv-range { --dur-in: 8px; --dur-thumb: 6px; display: grid; grid-template-columns: 1fr 50px; align-items: center; column-gap: 6px; }
+.sl-adv-range .sl-dur-marks { grid-column: 1; height: 13px; margin-top: 3px; font-size: 10.5px; }
+.sl-range-fill, .sl-range-zero { position: absolute; pointer-events: none; }
+.sl-range-fill {
+  top: 0; bottom: 0; background: rgba(var(--accent-rgb), 0.38);
+  left: calc(var(--dur-in) + var(--dur-thumb) / 2 + (100% - 2 * var(--dur-in) - var(--dur-thumb)) * var(--lo));
+  width: calc((100% - 2 * var(--dur-in) - var(--dur-thumb)) * (var(--hi) - var(--lo)));
+}
+.sl-range-zero {
+  top: 6px; bottom: 6px; width: 1px; background: rgba(255, 255, 255, 0.35);
+  left: calc(var(--dur-in) + var(--dur-thumb) / 2 + (100% - 2 * var(--dur-in) - var(--dur-thumb)) * var(--zero));
+}
+.sl-dur-track.unset input[type="range"]::-webkit-slider-thumb { opacity: 0.35; } /* 값 없음(공급자 기본값) — 손잡이를 흐리게 */
+.sl-adv-range-val {
+  height: 28px; padding: 0; border: none; background: transparent; color: var(--text); cursor: pointer;
+  font-size: 12.5px; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums;
+}
+.sl-adv-range-val:hover { color: var(--accent); }
 .sl-adv-row {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   padding: 7px 8px; border-radius: 8px;

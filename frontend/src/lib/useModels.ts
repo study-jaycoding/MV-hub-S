@@ -178,13 +178,23 @@ export function paramGateAllows(
 
 // 정수 파라미터의 허용 범위 — CLI 가 강제하지만 스키마(model get)엔 min/max 가 없는 것.
 //  (duration 은 슬라이더 전용 DURATION_RANGE 가 따로 처리 — 여기엔 두지 않는다.)
-//  현재 항목 없음(이전의 gpt_image_2.batch_size 는 UI 에서 숨김 처리되어 불필요). 범용 메커니즘은 유지.
-export const NUMERIC_RANGE: Record<string, Record<string, { min: number; max: number }>> = {};
+//  Set 창은 범위를 아는 숫자 옵션을 끌기 막대로 보인다(Jay 2026-10-28). CLI 스키마·견적(generate cost)은 범위를 안 알려 줘
+//  공급자 문서 값을 쓴다 — Seed Audio 1.0(AIML API 문서), Qwen TTS 속도·음높이(Alibaba Model Studio)·볼륨(기본 50, 0~100).
+export const NUMERIC_RANGE: Record<string, Record<string, { min: number; max: number }>> = {
+  seed_audio: { speech_rate: { min: -50, max: 100 }, pitch_rate: { min: -12, max: 12 }, loudness_rate: { min: -50, max: 100 } },
+  qwen_audio_tts: { speech_rate: { min: 0.5, max: 2 }, pitch_rate: { min: 0.5, max: 2 }, volume: { min: 0, max: 100 } },
+};
 export function numericRange(
   model: string,
   name: string,
 ): { min: number; max: number } | null {
   return NUMERIC_RANGE[model]?.[name] || null;
+}
+
+/** 받아 둔 옵션을 지금 칩으로 그려도 되는가 — 탭을 바꾼 첫 그림(모델이 아직 옛 탭 것)과 새 모델의 옵션을 받는 동안은 아니다.
+ *  그때 옛 칩이 새 탭 단추와 함께 그려져 아래 줄이 두 줄로 접혔다 펴지며 창이 튀었다(Jay 2026-10-28). */
+export function optionsMatchModel(type: "image" | "video" | "audio", model: string, paramsModel: string): boolean {
+  return paramsModel === model && !(Object.keys(ALLOWED) as (keyof typeof ALLOWED)[]).some((t) => t !== type && ALLOWED[t].includes(model));
 }
 
 // 현재 옵션값에서 활성화된 제약 → { param: { allow:Set<string>, note } }. 동일 param 은 교집합.

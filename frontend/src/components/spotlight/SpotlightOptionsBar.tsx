@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { Fragment, useEffect, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 import { api } from "../../api";
 import { getAccountNamespace, getConnectionKey } from "../../lib/accountScope";
 import { getAuthToken } from "../../lib/http";
@@ -89,6 +89,33 @@ function AdvancedHelp({ name, values = [] }: { name: string; values?: string[] }
       {rows.length > 0 && (
         <dl>{rows.map((v) => <Fragment key={v}><dt>{v}</dt><dd>{ADVANCED_VALUE_HELP[name][v]}</dd></Fragment>)}</dl>
       )}
+    </div>
+  );
+}
+/** Set 창의 범위를 아는 숫자 옵션 — 길이 창과 같은 끌기 막대(Jay 2026-10-28, 힉스필드 Pitch 막대). 기본값 자리에 세로 금을 긋고
+ *  기본값↔손잡이 사이를 라임으로 채운다. 화살표 키는 한 걸음씩. 오른쪽 숫자를 누르면 기본값으로(값이 없으면 'Default'). */
+function AdvancedRange({ label, value, base, min, max, step, onChange, onReset }: {
+  label: string; value: number | null; base: number | null; min: number; max: number; step: number;
+  onChange: (value: number) => void; onReset: () => void;
+}) {
+  const at = (v: number) => ((Math.min(max, Math.max(min, v)) - min) / (max - min)).toFixed(4);
+  const shown = value ?? base;
+  const text = (v: number) => String(Math.round(v * 100) / 100);
+  const marks = [...new Set([min, ...(base != null && base > min && base < max ? [base] : []), max])];
+  const pos = Number(at(shown ?? min)), zero = Number(at(base ?? min));
+  const style = { "--lo": Math.min(pos, zero), "--hi": shown == null ? zero : Math.max(pos, zero), "--zero": zero } as CSSProperties;
+  return (
+    <div className="sl-adv-range">
+      <div className={"sl-dur-track" + (shown == null ? " unset" : "")} style={style}>
+        <span className="sl-range-fill" aria-hidden="true" />
+        {base != null && <span className="sl-range-zero" aria-hidden="true" />}
+        <input type="range" aria-label={label} min={min} max={max} step={step} value={shown ?? (min + max) / 2}
+          onChange={(e) => onChange(Number(e.target.value))} />
+      </div>
+      <button type="button" className="sl-adv-range-val" title="Reset" onClick={onReset}>{shown == null ? "Default" : text(shown)}</button>
+      <div className="sl-dur-marks" aria-hidden="true">
+        {marks.map((v) => <span key={v} style={{ "--at": at(v) } as CSSProperties}>{text(v)}</span>)}
+      </div>
     </div>
   );
 }
@@ -743,25 +770,42 @@ export function SpotlightOptionsBar({
                       })()
                     ) : ["integer", "number"].includes(p.type.replace(/\|null$/, "")) ? (
                       (() => {
-                        const rg = numericRange(model, p.name);
-                        const percent = ["stability", "similarity_boost"].includes(p.name);
+                        const percent = ["stability", "similarity_boost"].includes(p.name); // 값은 0~1, 막대는 0~100
+                        const rg = percent ? { min: 0, max: 100 } : numericRange(model, p.name);
                         const integer = p.type.split("|")[0] === "integer";
                         const value = optionValues[p.name] ?? p.default;
+                        const reset = () => setOptionValues((prev) => {
+                          const next = { ...prev };
+                          if (isTtsModel(model)) delete next[p.name];
+                          else next[p.name] = (effectiveDefault(p, model) ?? "") as OptionValue;
+                          return next;
+                        });
+                        const scaled = (v: unknown) => (v == null || v === "" ? null : Number(v) * (percent ? 100 : 1));
+                        if (rg) return (
+                          <AdvancedRange
+                            label={spotlightParamLabel(p.name) + (percent ? " (%)" : "")}
+                            value={scaled(optionValues[p.name])}
+                            base={scaled(p.default)}
+                            min={rg.min}
+                            max={rg.max}
+                            step={percent || integer ? 1 : 0.05}
+                            onChange={(v) => setOptionValues((prev) => ({ ...prev, [p.name]: percent ? v / 100 : v }))}
+                            onReset={reset}
+                          />
+                        );
+                        // 범위를 모르는 숫자(Qwen seed 등)는 입력 칸 그대로
                         return (
                           <input
                             className="sl-adv-num"
                             type="number"
-                            aria-label={spotlightParamLabel(p.name) + (percent ? " (%)" : "")}
+                            aria-label={spotlightParamLabel(p.name)}
                             placeholder="Default"
-                            step={percent || integer ? 1 : "any"}
-                            min={percent ? 0 : rg?.min}
-                            max={percent ? 100 : rg?.max}
-                            title={rg ? `Range ${rg.min}–${rg.max}` : undefined}
-                            value={value == null || value === "" ? "" : String(percent ? Number(value) * 100 : value)}
+                            step={integer ? 1 : "any"}
+                            value={value == null || value === "" ? "" : String(value)}
                             onChange={(e) => {
                               const raw = e.target.value;
-                              if (raw === "" && isTtsModel(model)) { setOptionValues((prev) => { const next = { ...prev }; delete next[p.name]; return next; }); return; }
-                              const next = raw === "" ? "" : percent ? Math.min(100, Math.max(0, Number(raw))) / 100 : rg ? Math.min(rg.max, Math.max(rg.min, Number(raw))) : Number(raw);
+                              if (raw === "" && isTtsModel(model)) { reset(); return; }
+                              const next = raw === "" ? "" : Number(raw);
                               if (integer ? inexactInteger(next) : typeof next === "number" && !Number.isFinite(next)) return;
                               setOptionValues((prev) => ({ ...prev, [p.name]: next }));
                             }}

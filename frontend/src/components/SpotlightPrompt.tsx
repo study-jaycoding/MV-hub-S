@@ -73,7 +73,7 @@ import {
 import { useSpotlightTray } from "../lib/useSpotlightTray";
 import { useSpotlightTokenWrap } from "../lib/useSpotlightTokenWrap";
 import { useSeedanceRoleMenu } from "../lib/useSeedanceRoleMenu";
-import { useModels, ALLOWED, HIDDEN_PARAMS, stripHiddenParams, withEffectiveDefaults } from "../lib/useModels";
+import { useModels, ALLOWED, HIDDEN_PARAMS, optionsMatchModel, stripHiddenParams, withEffectiveDefaults } from "../lib/useModels";
 import { SPEECH_TEXT_LIMITS } from "../lib/spotlightSubmit";
 import { videoCostContext } from "../lib/useSceneGenerationSubmission";
 import { AUDIO_TASK_MODELS, audioModelBlocked, audioTaskOf, isTtsModel, isVideoVoiceModel, videoVoiceInputRef,
@@ -1715,7 +1715,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
                 blockedNote={selectedBlocked ? modelBlockedMessage : null}
                 typeFullyBlocked={typeFullyBlocked}
                 policyNote={policyNote(modelPolicy)}
-                tunable={tunable}
+                tunable={optionsMatchModel(type, model, paramsModel) ? tunable : []}
                 constraints={constraints}
                 optionValues={optionValues}
                 setOptionValues={setOptionValues}
