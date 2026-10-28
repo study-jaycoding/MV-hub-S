@@ -10,7 +10,7 @@
 - `로컬 예외 · 핸들러가 _proxy 호출` 은 핸들러 **본문이 `_proxy` 를 직접 참조**할 때만 붙는다(팀 탭 등에서 핸들러가 골라서 위임). 헬퍼·usecase 를 거쳐 위임하면 안 보이므로, 이 표시가 없다고 위임이 없다는 뜻은 아니다.
 - `Depends` 칸은 라우터·데코레이터·핸들러 인자에 직접 적힌 것만이다. 인증 미들웨어와 핸들러 본문의 권한 검사는 안 나온다.
 
-전체 404개.
+전체 405개.
 
 ## `backend/app/main.py` — 11개
 
@@ -443,7 +443,7 @@
 | `POST` | `/api/mcp/app/adapter/update` | `adapter_update` | 로컬 예외 | `adapter_context` |
 | `GET` | `/api/mcp/app/adapter` | `adapter_status` | 로컬 예외 | `adapter_context` |
 
-## `backend/app/routers/mcp_v2.py` — 8개
+## `backend/app/routers/mcp_v2.py` — 9개
 
 | 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
 | --- | --- | --- | --- | --- |
@@ -455,6 +455,7 @@
 | `POST` | `/api/mcp/v2/app/configure` | `configure` | 로컬 예외 | `_app_context` |
 | `POST` | `/api/mcp/v2/client/action` | `action` | 로컬 예외 | `_client_context` |
 | `POST` | `/api/mcp/v2/client/connect` | `connect` | 로컬 예외 | `_client_context` |
+| `POST` | `/api/mcp/v2/client/references/import` | `import_reference` | 로컬 예외 | `_upload_client_context` |
 
 ## `backend/app/routers/members.py` — 2개
 

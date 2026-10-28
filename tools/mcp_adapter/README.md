@@ -1,5 +1,22 @@
 # MV Hub MCP 어댑터
 
+## 참고 그림 가져오기·검색 (2026-10-28)
+
+어댑터 `2026.10.28.1`의 영속 연결은 `import_reference(file_path, workspace_scope, workspace_id?, asset_project?, project_id?, label?)`를 제공한다.
+현재 프로세스의 `CLAUDE_CODE_SESSION_ID`에 해당하는 `%TEMP%/claude/<프로젝트>/<세션>/images/` 한 폴더의 바로 안 PNG·JPEG·WEBP만, 최대 64MiB까지 스트리밍한다.
+세션 정보가 없는 Codex 첨부는 지원하지 않는다. 앱 에셋 탭에서 imp/cap에 가져온 뒤 검색한다.
+이 경계는 MCP의 임의 경로 읽기를 막는 것이며, 같은 폴더에 다른 도구가 넣은 파일까지 사용자의 직접 첨부임을 보증하지 않는다.
+
+응답 `reference.id`를 같은 연결·공간의 `prepare_generation_plan.items[].reference_ids`에 넣는다.
+`asset_project`가 있으면 모든 단일 프레임 그림을 대조해 보수적인 조건에서만 가장 닮은 원본을 연결한다(동일 원본의 증명은 아님).
+썸네일 캐시가 없는 첫 대조는 15초 안에 끝나지 않을 수 있다. 불완전·모호·시간 초과·busy이면 imports 사본과 후보 최대 5개를 반환한다.
+애니메이션 WEBP는 사본으로만 저장한다. `project_id`는 앱 가져오기와 같은 공유 동기화를 예약하며 `sync_state`는 로컬 저장 성공과 별도로 확인한다.
+
+`read_context(kind="references", asset_project=..., search="폴더 낱말", offset=0)`은 전체 경로의 공백 구분 낱말을 모두 찾는다.
+응답 `references[].path`와 `next_offset`을 사용하고, `next_offset=null`이면 마지막 페이지다. 페이지 사이 트리가 바뀌면 중복·누락될 수 있다.
+`offset`은 생략하면 전송하지 않는다. 가져오기는 `reference_import`, 명시적 offset 검색은 `reference_search` 기능이 있는 허브가 필요하며 구형 허브에서는 해당 새 호출만 `hub_outdated`다.
+백엔드 변경도 포함하므로 이 기능은 본체 업데이트가 필요하다. 어댑터 파일만 교체해서 활성화되지 않는다.
+
 ## MCP 파일 독립 업데이트 (개발판, 2026-10-27)
 
 전체 구현·검증 상태는 [작업 기록](../../docs/status/mcp_independent_update_2026-10-27.md)이 정본이다. 운영 배포는 아직 하지 않았다.
@@ -51,11 +68,11 @@ v2 등록 설정에는 `--url`과 `--profile`이 들어간다. 프로필은 Wind
 한 번에 1~8개 항목을 선택하며 대기는 이미지 카드를 만들지 않는다. `all_terminal`이면 대기를 멈추고,
 `all_done`이 false이면 실패·취소·확인 필요 항목을 함께 안내한다. 25초는 대기 예산이며 조회·권한 확인 시간이 더해질 수 있다.
 `get_result`는 기존 단건 호출 호환용으로 유지한다.
-어댑터 `2026.10.16.5`는 같은 서버의 `--display-mode`로 표시 경로를 하나 선택한다.
+어댑터 `2026.10.28.1`은 같은 서버의 `--display-mode`로 표시 경로를 하나 선택한다.
 Codex 자동 등록은 `conversation`을 지정하며 다른 클라이언트와 플래그 없는 기존 설정은 `native`다.
-`conversation`은 MCP Apps 자원·UI 메타·앱 전용 도구를 등록하지 않는다(모델용 13개).
+`conversation`은 MCP Apps 자원·UI 메타·앱 전용 도구를 등록하지 않는다(모델용 14개, 가져오기 포함).
 `get_result`·`get_generation`·`show_results`는 표시 파일만 준비하고 ImageContent·별도 설명 블록을 보내지 않는다.
-`native`는 파일 없이 ImageContent로만 새 결과를 표시한다(총 14개).
+`native`는 파일 없이 ImageContent로만 새 결과를 표시한다(총 15개, 가져오기 포함). 구형 연결은 7개다.
 단건·묶음 조회 모두 이미지 뒤에 일반 `card_text` 텍스트 블록을 한 번 반환한다.
 `get_result`·`get_generation`·`show_results`에 UI `resourceUri`를 붙이지 않아 Apps 화면을 자동으로 함께 열지 않는다.
 Apps 광고 여부로 분기하지 않으므로 미지원 클라이언트에도 기존 ImageContent를 유지한다.

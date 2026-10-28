@@ -401,7 +401,8 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `asset_io.py` | 청크 업로드 저장·지문·중복 탐색·충돌 없는 확정 | `routers/assets` |
 | `windows_drag.py` | Windows 원본 파일 COPY 드래그 · 같은 스레드·COM 범위에서 취소·Esc·버튼 해제 판정과 정리 | `routers/assets` |
 | `asset_mounts.py` | 계정별 마운트 JSON 저장소(파일 잠금 + 원자 저장) | `routers/assets` |
-| `asset_tree.py`(309줄) | 폴더 트리 재귀 탐색 + TTL 캐시 + 무효화 | `routers/assets` |
+| `asset_tree.py` | 폴더 트리 재귀 탐색 + 완전성을 같은 세대에 묶는 TTL 캐시 + 무효화 | `routers/assets` |
+| `reference_match.py` | MCP 참고 그림의 전체 RGB 대조·보수적 원본 연결·시간 및 작업 상한 | `routers/mcp_v2` · `test_reference_match.py` · `test_mcp_reference_import.py` |
 | `asset_watcher.py`(881줄) | watchdog 감시 → 캐시 무효화 + `assets_changed` WS 브로드캐스트 | `main`·`projects` |
 | `asset_registry.py`(약 330줄) | 에셋 대장 관리자(서버, 기본 꺼짐) — 훑기 자식 하나·시간 상한+30초 `taskkill /T /F`·완주 결과만 `BEGIN IMMEDIATE` 한 번에 반영·큰 파일 전용 실행·정한 시간 자동 훑기(서버 시계 2분 창·`consume_slot` 회차 표식·`request_scan(wait=False)`)·서버 종료 때 먼저 정리(끊긴 훑기는 기록을 안 덮음). health·ready 와 무관 | `main`(lifespan)·`routers/asset_registry` |
 | `asset_registry_helper.py`(약 230줄) | 에셋 대장 **도우미 PC 훑기**(로컬 허브) — 관리자 상속, 서버 자리(lease)로 프로젝트 전체를 감싸고 결과를 서버로 올림. 시작 때 토큰·주소 고정(정한 시간 훑기는 claim 문맥 `ctx` 그대로)·공유 주소(UNC) 대조 | `routers/registry_helper`·`main`(종료) |
