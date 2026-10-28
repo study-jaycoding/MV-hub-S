@@ -318,8 +318,11 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
 
   // 트레이 역할 배지 갱신 신호 — 안정된 콜백으로 만들어 토큰 훅 blur effect 가 원본처럼 model/trayRefs 변화 때만 재구독되게 한다.
   const bumpPromptTick = useCallback(() => setPromptTick((n) => n + 1), []);
+  const [promptLength, setPromptLength] = useState(0); // 글자 수 표시용 — 견적(costPrompt)은 대본 모델만 글을 넘긴다
   useEffect(() => {
-    setCostPrompt(isTtsModel(model) && editorRef.current ? serialize(editorRef.current).text : "");
+    const text = editorRef.current ? serialize(editorRef.current).text : "";
+    setPromptLength(text.length);
+    setCostPrompt(isTtsModel(model) ? text : "");
   }, [model, promptTick]);
   // 보이스 체인지·번역 — 넣은 영상 1개의 실제 길이를 읽어 견적 문맥으로 둔다. 영상·계정·연결이 바뀌면 앞 측정을 버리고,
   //  못 읽으면 문맥 없이 둔다(견적·제출 모두 막힘 — 기본 길이를 만들지 않는다).
@@ -1677,8 +1680,9 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
             onDragLeave={onPromptChipDragLeave}
             onCopyPrompt={copyPrompt}
             onClearPrompt={clearPrompt}
+            charCount={promptLength}
             script={isTtsModel(model)
-              ? { count: costPrompt.length, max: model === "text2speech_v2" ? SPEECH_TEXT_LIMITS[String(optionValues.variant ?? "")] : undefined }
+              ? { count: promptLength, max: model === "text2speech_v2" ? SPEECH_TEXT_LIMITS[String(optionValues.variant ?? "")] : undefined }
               : null}
             notice={model === "voice_change" ? "글은 넣지 않습니다 — 위 칸에 영상 1개를 넣고 Voice 를 고르세요"
               : model === "dubbing" ? "글은 넣지 않습니다 — 위 칸에 영상 1개를 넣고 번역 언어를 고르세요" : null}

@@ -97,8 +97,9 @@
 .sl-copy-btn { position: absolute; top: 8px; right: 24px; z-index: 3; }
 .sl-prompt-clear { position: absolute; top: 8px; right: 56px; z-index: 3; }
 .sl-copy-btn:hover { color: #c8ef40; border-color: rgba(200,239,64,0.55); background: rgba(44,54,12,0.5); }
-/* 내레이션 대본 글자 수 / 엔진 한도 — 단추(복사·비우기) 아래 줄에 두려고 행 아래를 조금 늘린다(오디오일 때만). */
-.sl-prompt-row.script { padding-bottom: 24px; }
+/* 글자 수(대본 모델은 / 엔진 한도) — 단추(복사·비우기) 아래 줄에 두려고 행 아래를 조금 늘린다. 모든 모델에 같은 자리를 둬
+   오디오로 바꿀 때 칸 높이가 튀지 않게 한다(Jay 2026-10-28). 수정 창의 .sl-prompt-row 는 이 class 가 없어 그대로다. */
+.sl-prompt-row.counted { padding-bottom: 24px; }
 .sl-char-count { position: absolute; right: 24px; bottom: 6px; font-size: 11px; color: var(--muted2); pointer-events: none; font-variant-numeric: tabular-nums; }
 .sl-char-count.over { color: #f06a5a; font-weight: 700; }
 .sl-prompt-clear:hover, .sl-reftray-clear:hover { color: #ff9a9a; border-color: rgba(255,91,91,0.55); background: rgba(54,12,17,0.45); }
@@ -412,7 +413,8 @@
 }
 /* 보이스 체인지·번역(2-B) — 대상당 1개 고정이라 개수 단추를 숨기고, 글 칸은 안내만(입력 막힘), 레퍼런스 칸 아래에 읽은 길이 */
 .sl-video-voice .sl-count { display: none; }
-.sl-prompt-row.notice .sl-prompt { opacity: 0.55; cursor: default; }
+/* 막힌 빈 칸은 글줄 높이를 안 잡아 3px 낮았다 — 한 줄(1.7em + 위아래 4px) 높이를 줘 오디오 안에서 바꿀 때도 안 튀게 */
+.sl-prompt-row.notice .sl-prompt { opacity: 0.55; cursor: default; min-height: calc(1.7em + 8px); }
 .sl-reftray-note { align-self: flex-end; flex: none; padding: 0 10px 6px; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .sl-count-btn {
   width: 24px; height: 24px; border: none; border-radius: 50%;

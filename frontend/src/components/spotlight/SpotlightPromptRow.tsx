@@ -29,6 +29,8 @@ interface Props {
   onClearPrompt: MouseEventHandler<HTMLButtonElement>; // 프롬프트만 비우기(레퍼런스는 그대로 — Jay 2026-10-22)
   /** 내레이션 대본처럼 글을 그대로 읽는 모델 — 안내 문구와 글자 수/한도를 바꿔 보인다. */
   script?: { count: number; max?: number } | null; // max 없음 = 엔진을 아직 안 골라 한도를 모름
+  /** 모든 모델의 글자 수(오디오처럼 보인다). 자리는 늘 비워 둬 모델을 바꿔도 칸 높이가 튀지 않는다. */
+  charCount?: number | null;
   /** 글을 받지 않는 일(보이스 체인지·번역) — 입력을 막고 이 안내만 보인다. 써 둔 글은 지우지 않고 보내지도 않는다. */
   notice?: string | null;
 }
@@ -52,10 +54,12 @@ export function SpotlightPromptRow({
   onCopyPrompt,
   onClearPrompt,
   script = null,
+  charCount = null,
   notice = null,
 }: Props) {
+  const chars = notice ? null : script ?? (charCount == null ? null : { count: charCount, max: undefined });
   return (
-    <div className={"sl-prompt-row" + (tagFilter ? " tag-active" : "") + (script ? " script" : "") + (notice ? " notice" : "")}>
+    <div className={"sl-prompt-row counted" + (tagFilter ? " tag-active" : "") + (notice ? " notice" : "")}>
       <button
         className={"sl-expand-btn" + (expanded ? " on" : "")}
         title={expanded ? "레퍼런스 트레이 접기" : "레퍼런스 트레이 펼치기 (에셋 드래그)"}
@@ -94,7 +98,7 @@ export function SpotlightPromptRow({
           notice
             ? notice
             : script
-            ? "읽을 내용을 그대로 적으세요"
+            ? "Write the exact words to be spoken"
             : expanded
               ? "Describe the scene you imagine"
               : "Describe the scene you imagine --- @Source, #Tag"
@@ -111,9 +115,9 @@ export function SpotlightPromptRow({
         onDrop={onDrop}
         onDragLeave={onDragLeave}
       />
-      {script && (
-        <span className={"sl-char-count" + (script.max && script.count > script.max ? " over" : "")}>
-          {script.count.toLocaleString()}{script.max ? ` / ${script.max.toLocaleString()}` : ""}자
+      {chars && (
+        <span className={"sl-char-count" + (chars.max && chars.count > chars.max ? " over" : "")}>
+          {chars.count.toLocaleString()}{chars.max ? ` / ${chars.max.toLocaleString()}` : ""}자
         </span>
       )}
       <button

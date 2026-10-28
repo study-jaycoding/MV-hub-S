@@ -188,7 +188,7 @@ describe("복원 규칙·제출·표시명", () => {
       onClearTagFilter={noop} onInput={noop} onCaretMove={noop} onKeyDown={noop} onPaste={noop} onCompositionStart={noop}
       onCompositionEnd={noop} onDragOver={noop} onDrop={noop} onDragLeave={noop} onCopyPrompt={noop} onClearPrompt={noop}
       script={{ count: 5001, max: 5000 }} />));
-    expect(container.querySelector(".sl-prompt")?.getAttribute("data-placeholder")).toBe("읽을 내용을 그대로 적으세요");
+    expect(container.querySelector(".sl-prompt")?.getAttribute("data-placeholder")).toBe("Write the exact words to be spoken");
     const count = container.querySelector(".sl-char-count")!;
     expect(count.textContent).toBe(`${(5001).toLocaleString()} / ${(5000).toLocaleString()}자`);
     expect(count.classList.contains("over")).toBe(true);
