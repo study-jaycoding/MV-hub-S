@@ -580,6 +580,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `spotlight/SpotlightMentionPicker.tsx`(152줄) | @/# 피커 목록(트레이 항목 + 소스 + 태그) | `SpotlightMentionPicker` |
 | `spotlight/SpotlightPromptRow.tsx`(92줄) | 프롬프트 입력 행(순수 프레젠테이션) | `SpotlightPromptRow` |
 | `spotlight/SpotlightOptionIcon.tsx`(85줄) | 옵션 이름 → SVG 아이콘 매핑 | `SpotlightOptionIcon` |
+| `spotlight/SpotlightDurationChip.tsx`(74줄) | 길이 칩("4s") + 누르면 위에 뜨는 눈금 슬라이더 창 — 생성창·수정 창 공용 | `SpotlightDurationChip` |
 | `spotlight/SpotlightGenerateControls.tsx`(77줄) | 배치 수·비용·생성 버튼 줄 | `SpotlightGenerateControls` |
 | `spotlight/SpotlightRefRoleMenu.tsx`(45줄) | 트레이 우클릭 역할 메뉴(포털) | `SpotlightRefRoleMenu` |
 
