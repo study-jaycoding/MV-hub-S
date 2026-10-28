@@ -29,10 +29,14 @@ type OptionValue = string | number | boolean;
 type OptionValues = Record<string, OptionValue>;
 type ConstraintMap = Record<string, { allow: Set<string>; note: string }>;
 const voiceScopeKey = () => `${getAccountNamespace()}\0${getConnectionKey()}\0${getAuthToken() ?? ""}`;
-// 목소리 id → [성별, 미리듣기 주소]. CLI voices list 에 없어 힉스필드 MCP list_voices 로 받은 고정 표(2026-10-28 — 114개, CLI 와 같은 id).
+// 목소리 id → [성별, 미리듣기 주소, 나이]. CLI voices list 에 없어 성별·주소는 힉스필드 MCP list_voices, 나이는 웹 목소리 창의
+//  나이 필터 결과로 만든 고정 표(2026-10-28 — 114개, CLI 와 같은 id).
 // shortcut: 힉스필드가 목소리를 더하거나 주소를 바꾸면 낡는다(표에 없는 목소리는 '전체'에만·미리듣기 없음으로 보인다). 어긋나면 다시 받는다.
 const VOICE_CATALOG: Record<string, string[] | undefined> = voiceCatalog;
-const GENDER_FILTERS = [["all", "전체"], ["male", "남성"], ["female", "여성"]] as const;
+const VOICE_FILTERS = [
+  { label: "성별", slot: 0, options: [["all", "전체"], ["male", "남성"], ["female", "여성"]] },
+  { label: "나이", slot: 2, options: [["all", "전체"], ["young", "청년"], ["middle_aged", "중년"], ["old", "노년"]] },
+] as const;
 
 // 정수 칸이 받을 수 없는 수인가 — 정확히 담을 수 없는 큰 정수(2^53 이상: `Number()` 가 9007199254740993 → …992 로 바꾼다)와
 //  소수(시드 1.5 — CLI 의 정수 옵션에 그대로 실린다, Codex P2 2026-10-14). 받지 않는다: 받으면 친 것과 다른 값이 제출된다(조작 규칙 49).
@@ -104,7 +108,7 @@ function PreviewIcon({ playing }: { playing: boolean }) {
 
 /** 목소리 칩 + 이름 검색 목록 — 기본 목록 상자를 대신한다(2026-10-28 오디오 1단계).
  *  저장된 선택은 조회 실패·목록 밖이어도 지우거나 바꾸지 않는다('확인 필요'로만 보인다 — Codex A6).
- *  성별 거르기·▶ 미리듣기는 고정 표(VOICE_CATALOG)를 쓴다 — 거르기·미리듣기는 선택을 바꾸지 않는다. */
+ *  성별·나이 거르기·▶ 미리듣기는 고정 표(VOICE_CATALOG)를 쓴다 — 거르기·미리듣기는 선택을 바꾸지 않는다. */
 function VoicePicker({
   voices,
   voicesError,
@@ -124,7 +128,7 @@ function VoicePicker({
   recommended?: ReadonlySet<string> | null;
 }) {
   const [query, setQuery] = useState("");
-  const [gender, setGender] = useState<string>("all");
+  const [filters, setFilters] = useState<string[]>(() => VOICE_FILTERS.map(() => "all"));
   const [playing, setPlaying] = useState<string | null>(null);
   const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -170,7 +174,8 @@ function VoicePicker({
     ?? (value ? (voices.length || voicesError ? `${value} (확인 필요)` : "목소리 확인 중…") : voicesError ? "목소리 조회 실패" : "Voice");
   const q = query.trim().toLowerCase();
   const matched = voices.filter((voice) =>
-    (gender === "all" || VOICE_CATALOG[voice.id]?.[0] === gender) && (!q || voice.name.toLowerCase().includes(q)));
+    VOICE_FILTERS.every((filter, i) => filters[i] === "all" || VOICE_CATALOG[voice.id]?.[filter.slot] === filters[i])
+    && (!q || voice.name.toLowerCase().includes(q)));
   const shown = recommended
     ? [...matched.filter((voice) => recommended.has(voice.id)), ...matched.filter((voice) => !recommended.has(voice.id))]
     : matched;
@@ -200,12 +205,14 @@ function VoicePicker({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
-          <div className="sl-type sl-voice-gender" role="group" aria-label="성별">
-            {GENDER_FILTERS.map(([key, text]) => (
-              <button key={key} type="button" className={"sl-type-btn" + (gender === key ? " active" : "")}
-                aria-pressed={gender === key} onClick={() => setGender(key)}>{text}</button>
-            ))}
-          </div>
+          {VOICE_FILTERS.map((filter, i) => (
+            <div key={filter.label} className="sl-type sl-voice-filter" role="group" aria-label={filter.label}>
+              {filter.options.map(([key, text]) => (
+                <button key={key} type="button" className={"sl-type-btn" + (filters[i] === key ? " active" : "")} aria-pressed={filters[i] === key}
+                  onClick={() => setFilters((previous) => previous.map((value, k) => (k === i ? key : value)))}>{text}</button>
+              ))}
+            </div>
+          ))}
           <div className="sl-dd-scroll">
             {shown.map((voice) => {
               const preview = failed.has(voice.id) ? undefined : VOICE_CATALOG[voice.id]?.[1];

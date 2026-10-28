@@ -48,6 +48,9 @@ function Panel({ model, initial = { voice_id: "kept", voice_type: "preset" } }: 
 }
 const rows = () => [...host.querySelectorAll(".sl-voice-pop .sl-dd-item")].map((b) => b.textContent);
 const click = (label: string) => act(() => [...host.querySelectorAll("button")].find((b) => b.textContent === label)!.click());
+const pick = (group: string, label: string) =>
+  act(() => [...host.querySelectorAll(`[aria-label="${group}"] button`)].find((b) => b.textContent === label)!.click());
+const pressed = (group: string) => host.querySelector(`[aria-label="${group}"] button[aria-pressed="true"]`)?.textContent;
 const playButton = (name: string) => host.querySelector<HTMLButtonElement>(`button[aria-label^="${name} 미리듣기"]`);
 
 describe("Voice 창", () => {
@@ -68,10 +71,11 @@ describe("Voice 창", () => {
   it("gender-filter: 표의 성별로 거르고, 검색·Qwen 추천과 함께 동작하며 선택은 그대로", async () => {
     await act(async () => root.render(<Panel model="qwen_audio_tts" />));
     expect(rows()).toEqual(["Emily추천", "Grady", "Newbie"]);
-    click("남성");
+    pick("성별", "남성");
     expect(rows()).toEqual(["Grady"]);
-    expect(host.querySelector('button[aria-pressed="true"]')?.textContent).toBe("남성");
-    click("여성");
+    expect(pressed("성별")).toBe("남성");
+    expect(pressed("나이")).toBe("전체");
+    pick("성별", "여성");
     expect(rows()).toEqual(["Emily추천"]);
     const input = host.querySelector<HTMLInputElement>(".sl-voice-search")!;
     act(() => {
@@ -80,9 +84,26 @@ describe("Voice 창", () => {
     });
     expect(rows()).toEqual([]);
     expect(host.querySelector(".sl-dd-empty")?.textContent).toBe("맞는 목소리가 없습니다.");
-    click("전체");
+    pick("성별", "전체");
     expect(rows()).toEqual(["Grady"]);
     expect(options.voice_id).toBe("kept"); // 거르기는 저장된 선택을 건드리지 않는다
+  });
+
+  it("age-filter: 표의 나이로 거르고, 성별과 함께 동작하며 표에 없는 목소리는 '전체'에서만", async () => {
+    await act(async () => root.render(<Panel model="elevenlabs_v4" />));
+    pick("나이", "청년");
+    expect(rows()).toEqual(["Emily"]); // 표: young
+    expect(pressed("나이")).toBe("청년");
+    pick("나이", "중년");
+    expect(rows()).toEqual(["Grady"]); // 표: middle_aged
+    pick("성별", "여성");
+    expect(rows()).toEqual([]); // 중년 + 여성 = 이 목록엔 없음
+    pick("나이", "노년");
+    pick("성별", "전체");
+    expect(rows()).toEqual([]);
+    pick("나이", "전체");
+    expect(rows()).toEqual(["Grady", "Emily", "Newbie"]);
+    expect(options.voice_id).toBe("kept");
   });
 
   it("preview: ▶ 는 한 번에 하나만 재생하고, 다시 누르기·다른 ▶·창 닫기에서 멈추며 선택을 바꾸지 않는다", async () => {
@@ -123,14 +144,17 @@ describe("Voice 창", () => {
     expect(options).toEqual({ voice_id: EMILY, voice_type: "preset" });
   });
 
-  it("catalog: 114개 · 성별은 male/female · 주소는 힉스필드 CDN · Qwen 추천 목소리도 표 안에", () => {
+  it("catalog: 114개 · 성별 male/female · 나이 청년 46·중년 60·노년 8 · 주소는 힉스필드 CDN · Qwen 추천 목소리도 표 안에", () => {
     const entries = Object.entries(catalog);
     expect(entries).toHaveLength(114);
-    for (const [id, [gender, url]] of entries) {
+    for (const [id, [gender, url, age]] of entries) {
       expect(id).toMatch(/^[0-9a-f-]{36}$/);
       expect(["male", "female"]).toContain(gender);
+      expect(["young", "middle_aged", "old"]).toContain(age);
       expect(url).toMatch(/^https:\/\/(d1xarpci4ikg0w\.cloudfront\.net|cdn\.higgsfield\.ai)\/\S+\.(mp3|wav)$/);
     }
+    const count = (age: string) => entries.filter(([, value]) => value[2] === age).length;
+    expect([count("young"), count("middle_aged"), count("old")]).toEqual([46, 60, 8]);
     const qwen = [...recommendedVoiceIds("qwen_audio_tts")!];
     expect(qwen).toHaveLength(47);
     expect(qwen.filter((id) => !catalog[id])).toEqual([]);
