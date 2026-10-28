@@ -1,6 +1,6 @@
 import { isFolderDisabled, type DisabledFolders } from "./deactivated";
 import { t } from "./i18n";
-import { classifyGenerationError, type GenerationIssueCode } from "./generationIssue";
+import { classifyGenerationError, generationErrorLines, type GenerationIssueCode } from "./generationIssue";
 import type { Generation } from "../types";
 
 // ★문구는 여기서 t() 로 번역해 내보낸다 — 부르는 화면마다 감싸면 한 곳만 빠뜨려도
@@ -116,7 +116,7 @@ const GENERATION_ISSUE_TEXT: Record<GenerationIssueCode, { title: string; detail
 //  작업 id 없이 거부돼 카드가 '제출 확인 필요'로 남는다. 공용 분류(에이전트 Python 과 짝)는 그대로 두고 안내만 붙인다.
 //  기록: docs/status/오디오_레퍼런스_검수_2026-10-28.md
 const SEEDANCE_AUDIO_RULE =
-  /audio_references require at least one image, video, start_image, or end_image|at most 3 audio_references are allowed/i;
+  /^(?:audio_references require at least one image, video, start_image, or end_image|at most 3 audio_references are allowed)/i;
 const SEEDANCE_AUDIO_ISSUE_TEXT = {
   title: "Seedance 오디오 레퍼런스 규칙",
   detail: "Seedance 2.0·Mini 는 오디오만 넣거나 오디오를 4개 이상 넣으면 받지 않습니다. 힉스필드가 작업을 만들기 전에 거부한 것으로 보입니다.",
@@ -145,8 +145,8 @@ export function generationIssueFor(
   if (executionPhase === "done" || executionPhase === "canceled") return null;
   if (executionPhase && ACTIVE_EXECUTION_PHASES.has(executionPhase)) return null;
   if (status !== "failed" && !["failed", "blocked", "recovery_required"].includes(executionPhase || "")) return null;
-  // 명령 인자(— cmd: 뒤)의 같은 글은 원인으로 보지 않는다(classifyGenerationError 와 같은 기준).
-  if (error && SEEDANCE_AUDIO_RULE.test(error.split(/\s*[—–]\s*cmd:/, 1)[0])) {
+  // 공용 분류가 뽑은 오류 줄의 맨 앞에서만 찾는다 — 명령 인자·부분 응답·JSON 의 사용자 글·프롬프트 줄은 원인으로 보지 않는다.
+  if (generationErrorLines(error).some((line) => SEEDANCE_AUDIO_RULE.test(line))) {
     const text = SEEDANCE_AUDIO_ISSUE_TEXT;
     return { code: "invalid_input", title: t(text.title), detail: t(text.detail), action: t(text.action) };
   }

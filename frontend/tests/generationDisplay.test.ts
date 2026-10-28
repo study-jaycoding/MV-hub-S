@@ -138,6 +138,20 @@ describe("오류 원인 안내는 상태를 바꾸지 않고 필요한 카드에
     expect(generationIssueFor("done", seedanceAudioError, "recovery_required")).toBeNull();
   });
 
+  it("부분 응답·JSON 의 사용자 글은 Seedance 거부로 보지 않고, JSON 오류 필드의 규칙 문구는 알아본다", () => {
+    // 제출 여부가 불명확한 타임아웃 카드에 '작업 전 거부·새로 생성'을 안내하면 안 된다(Codex G5 반례).
+    const partial = 'CLI 타임아웃(부분출력): {"prompt":"at most 3 audio_references are allowed"}';
+    expect(generationIssueFor("running", partial, "recovery_required")?.title).toBe("통신 확인 필요");
+    expect(generationIssueFor("running", seedanceAudioError.replace(/CLI 실패: .*$/, partial), "recovery_required")?.title)
+      .toBe("통신 확인 필요");
+    expect(generationIssueFor("failed", "CLI JSON 파싱 실패(비-JSON 출력): at most 3 audio_references are allowed")).toBeNull();
+    expect(generationIssueFor("failed", 'CLI 실패: {"prompt":"at most 3 audio_references are allowed"}')).toBeNull();
+    expect(generationIssueFor("failed", "CLI 실패: Error: Invalid input\nprompt: at most 3 audio_references are allowed")?.title)
+      .toBe("입력값 확인");
+    expect(generationIssueFor("failed", 'CLI 실패: {"error":{"message":"at most 3 audio_references are allowed"}}')?.title)
+      .toBe("Seedance 오디오 레퍼런스 규칙");
+  });
+
   it("그룹 사용 한도를 잔액 부족과 구분하고 관리자 조치를 안내한다", () => {
     const issue = generationIssueFor("running", creditError, "recovery_required");
     expect(issue?.code).toBe("group_credit_limit");
