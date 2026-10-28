@@ -37,15 +37,19 @@ function errorValue(body: string): string {
 
 // 명령 인자, JSON prompt/input, 스택/URL에 등장하는 오류 단어를 원인으로 오인하지 않는다.
 function errorMessage(body: string): string {
-  const value = errorValue(body);
+  return messageLines(errorValue(body)).join("\n");
+}
+
+// 프롬프트·본문·스택 줄에서 멈추고(그 뒤는 사용자 글이나 경로다) JSON 줄은 건너뛴다. keep 이 참인 줄만 멈춤 판별에서 뺀다.
+function messageLines(value: string, keep?: (line: string) => boolean): string[] {
   const lines: string[] = [];
   for (const line of value.split(/\r\n|[\n\r\u2028\u2029]/)) {
     const clean = stripPrefix(line.trim());
-    if (/^(?:Traceback\b|at\s|File\s["']|(?:prompt|negative_prompt|display_prompt|request|body|args|command)\s*[:=])/i.test(clean)) break;
+    if (/^(?:Traceback\b|at\s|File\s["']|(?:prompt|negative_prompt|display_prompt|request|body|args|command)\s*[:=])/i.test(clean) && !keep?.(clean)) break;
     if (/^[{[]/.test(clean)) continue;
     lines.push(clean.replace(/https?:\/\/\S+/gi, ""));
   }
-  return lines.join("\n");
+  return lines;
 }
 
 const ISSUE_PATTERNS: [Exclude<GenerationIssueCode, "credit_issue">, RegExp][] = [
@@ -59,14 +63,34 @@ const ISSUE_PATTERNS: [Exclude<GenerationIssueCode, "credit_issue">, RegExp][] =
   ["network_timeout", /^(?:(?:connection|request|connect|read) (?:has )?timed out\b|connect ETIMEDOUT\b|network (?:error|unreachable)\b|connection (?:refused|reset|closed)\b|fetch failed\b)/i],
 ];
 
-// 분류 밖에서 특정 CLI 오류 문장을 알아볼 때 쓰는 줄 목록 — 명령 인자는 빼고, 부분 응답은 내용을 보지 않으며(빈 목록),
-//  JSON 은 오류 필드만 본다. 스택·프롬프트 줄에서 멈추는 규칙(에이전트 Python 과 짝)은 분류에만 둔다.
-//  'Error: at most 3 …' 같은 CLI 규칙 문장이 'at ' 스택 줄로 잘리기 때문이다. 호출하는 쪽은 줄 맨 앞부터 맞춰야 한다.
-export function generationErrorLines(error?: string | null): string[] {
-  if (!error) return [];
+// 안내용 JSON 오류 글 — 명시적 오류 필드(error·message·msg·detail)와 그 안의 객체·배열 항목까지 모은다.
+//  다른 키(prompt·input 등 사용자 입력)는 보지 않는다. 분류(errorValue)는 에이전트 Python 과 짝이라 그대로 둔다.
+function errorFieldTexts(value: unknown, depth = 0): string[] {
+  if (typeof value === "string") return [value];
+  if (!value || typeof value !== "object" || depth > 3) return [];
+  const items = Array.isArray(value)
+    ? value
+    : ["error", "message", "msg", "detail"].map((key) => (value as Record<string, unknown>)[key]);
+  return items.flatMap((item) => errorFieldTexts(item, depth + 1));
+}
+
+// 분류 밖에서 특정 CLI 오류 문장(pattern — 줄 맨 앞부터 맞출 것)을 알아본다. 명령 인자는 빼고, 부분 응답은 내용을 보지 않으며,
+//  JSON 은 오류 필드만, 프롬프트·본문 경계 뒤는 보지 않는다(분류와 같은 기준). pattern 에 맞는 줄만 'at ' 스택 판별에서 뺀다 —
+//  CLI 원문 'Error: at most 3 …' 가 스택 줄로 잘리지 않게.
+export function generationErrorMatches(error: string | null | undefined, pattern: RegExp): boolean {
+  if (!error) return false;
   const body = diagnosticBody(error.slice(0, 8192));
-  if (body.startsWith("CLI 타임아웃") || body.startsWith("CLI JSON 파싱 실패")) return [];
-  return errorValue(body).split(/\r\n|[\n\r\u2028\u2029]/).map((line) => stripPrefix(line.trim()));
+  if (body.startsWith("CLI 타임아웃") || body.startsWith("CLI JSON 파싱 실패")) return false;
+  const value = stripPrefix(body);
+  let texts = [value];
+  if (/^[{[]/.test(value)) {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      texts = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? errorFieldTexts(parsed) : [];
+    } catch { return false; }
+  }
+  const keep = (line: string) => pattern.test(line);
+  return texts.some((text) => messageLines(text, keep).some(keep));
 }
 
 export function classifyGenerationError(error?: string | null): GenerationIssueCode | null {

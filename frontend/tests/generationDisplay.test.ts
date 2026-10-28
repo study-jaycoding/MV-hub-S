@@ -152,6 +152,25 @@ describe("오류 원인 안내는 상태를 바꾸지 않고 필요한 카드에
       .toBe("Seedance 오디오 레퍼런스 규칙");
   });
 
+  it("여러 줄 프롬프트·본문 경계 뒤의 글은 Seedance 거부로 보지 않는다", () => {
+    // Codex G6 반례 — 경계 뒤의 줄은 사용자 글이다. 공용 분류처럼 'prompt:' 에서 멈춰야 한다.
+    expect(generationIssueFor("failed", 'CLI 실패: {"error":"Invalid input\\nprompt:\\nat most 3 audio_references are allowed"}')?.title)
+      .toBe("입력값 확인");
+    expect(generationIssueFor("failed", "CLI 실패: Error: Invalid input\nbody:\nat most 3 audio_references are allowed")?.title)
+      .toBe("입력값 확인");
+  });
+
+  it("오류 필드 안의 객체·배열 메시지는 알아보고, 오류 필드가 아닌 키는 보지 않는다", () => {
+    for (const error of [
+      'CLI 실패: {"detail":{"message":"at most 3 audio_references are allowed"}}',
+      'CLI 실패: {"detail":[{"loc":["body","prompt"],"msg":"at most 3 audio_references are allowed"}]}',
+    ]) {
+      expect(generationIssueFor("failed", error)?.title, error).toBe("Seedance 오디오 레퍼런스 규칙");
+    }
+    // 오류 필드가 아닌 키(사용자 입력)는 객체·배열 안이어도 보지 않는다.
+    expect(generationIssueFor("failed", 'CLI 실패: {"detail":[{"msg":"bad","input":"at most 3 audio_references are allowed"}]}')).toBeNull();
+  });
+
   it("그룹 사용 한도를 잔액 부족과 구분하고 관리자 조치를 안내한다", () => {
     const issue = generationIssueFor("running", creditError, "recovery_required");
     expect(issue?.code).toBe("group_credit_limit");
