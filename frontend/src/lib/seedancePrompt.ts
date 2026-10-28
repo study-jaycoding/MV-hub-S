@@ -160,6 +160,7 @@ function countRefsByType(trayRefs: SeedanceRefLike[], type: SeedanceRefType): nu
 }
 
 // 토큰 정합 검사와 별개인 Seedance 2.5 모드 계약. refs는 전송할 트레이+인라인 전체다.
+// Seedance 2.0·Mini 는 오디오 규칙만 본다 — CLI(model get rules)가 과금 전에 거부해 카드가 영어 오류로 실패했다(2026-10-28 견적 실측).
 export function validateSeedanceMode(
   model: string,
   mode: unknown,
@@ -167,6 +168,14 @@ export function validateSeedanceMode(
   roles: SeedanceTokenRoles,
   extensionMode: unknown,
 ): string | null {
+  if (model === "seedance_2_0" || model === "seedance_2_0_mini") {
+    const audioCount = countRefsByType(refs, "audio");
+    if (audioCount > 3) return `오디오 레퍼런스는 3개까지 넣을 수 있습니다 — 지금 ${audioCount}개입니다.`;
+    if (audioCount && !countRefsByType(refs, "image") && !countRefsByType(refs, "video")) {
+      return "오디오 레퍼런스는 이미지나 영상 레퍼런스와 함께 넣어야 합니다 — Seedance 2.0·Mini 는 오디오만으로 만들 수 없습니다.";
+    }
+    return null;
+  }
   if (model !== "seedance_2_5") return null;
   if (mode === "video_edit" || mode === "video_extension") {
     const hasFrame = [...roles.image.values()].some((kinds) => kinds.has("start") || kinds.has("end"));
