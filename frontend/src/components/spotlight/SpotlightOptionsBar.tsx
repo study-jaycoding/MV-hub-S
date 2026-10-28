@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { Fragment, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { api } from "../../api";
 import { getAccountNamespace, getConnectionKey } from "../../lib/accountScope";
 import { getAuthToken } from "../../lib/http";
@@ -79,10 +79,19 @@ const ADVANCED_VALUE_HELP: Record<string, Record<string, string>> = {
     video_extension: "넣은 영상 앞·뒤로 이어 붙이기" },
   bitrate_mode: { standard: "기본 화질", high: "더 선명하게(파일이 큼)" },
 };
-const advancedHelp = (name: string, values: string[] = []) => [
-  spotlightParamLabel(name) + (ADVANCED_HELP[name] ? ` — ${ADVANCED_HELP[name]}` : ""),
-  ...values.filter((v) => ADVANCED_VALUE_HELP[name]?.[v]).map((v) => `${v}: ${ADVANCED_VALUE_HELP[name][v]}`),
-].join("\n");
+// 브라우저 기본 말풍선은 작고 흐려서 앱 모양 상자로 띄운다(Jay 2026-10-28) — 이름에 마우스를 올리면 CSS 로 보인다.
+function AdvancedHelp({ name, values = [] }: { name: string; values?: string[] }) {
+  const rows = values.filter((v) => ADVANCED_VALUE_HELP[name]?.[v]);
+  return (
+    <div className="sl-adv-help" role="tooltip">
+      <b>{spotlightParamLabel(name)}</b>
+      {ADVANCED_HELP[name] && <p>{ADVANCED_HELP[name]}</p>}
+      {rows.length > 0 && (
+        <dl>{rows.map((v) => <Fragment key={v}><dt>{v}</dt><dd>{ADVANCED_VALUE_HELP[name][v]}</dd></Fragment>)}</dl>
+      )}
+    </div>
+  );
+}
 const LANGUAGE_NAMES = new Intl.DisplayNames(["en"], { type: "language" });
 const advancedValue = (value: string, name: string) => {
   if (name !== "language") return value;
@@ -676,10 +685,13 @@ export function SpotlightOptionsBar({
                 const cur = optionValues[p.name] ?? effectiveDefault(p, model) ?? "";
                 return (
                   <div className="sl-adv-row" key={p.name}>
-                    <div className="sl-adv-label" title={advancedHelp(p.name, p.enum)}>
-                      <span className="sl-opt-ic"><SpotlightOptionIcon name={p.name} /></span>
-                      {advancedLabel(p.name)}
-                      {["stability", "similarity_boost"].includes(p.name) && " (%)"}
+                    <div className="sl-adv-label">
+                      <span className="sl-adv-name">
+                        <span className="sl-opt-ic"><SpotlightOptionIcon name={p.name} /></span>
+                        {advancedLabel(p.name)}
+                        {["stability", "similarity_boost"].includes(p.name) && " (%)"}
+                      </span>
+                      <AdvancedHelp name={p.name} values={p.enum} />
                     </div>
                     {p.enum?.length ? (
                       <div className="sl-adv-opts">
