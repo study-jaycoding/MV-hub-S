@@ -36,10 +36,10 @@ async function render(gen = generation(), selectedWorkspace = workspace) {
     workspace={selectedWorkspace} onQueued={mocks.queued} onClose={vi.fn()} />));
 }
 async function prompt() {
-  const textarea = container.querySelector("textarea")!;
+  const box = container.querySelector<HTMLElement>('[aria-label="수정 지시"]')!; // 알약 편집칸(contentEditable, 2026-10-28)
   await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "옷 색을 바꿔 주세요");
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    box.textContent = "옷 색을 바꿔 주세요";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
 const scrub = () => container.querySelector<HTMLElement>('[role="slider"][aria-label="수정할 영상 시점"]')!;

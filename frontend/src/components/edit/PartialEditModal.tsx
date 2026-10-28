@@ -42,6 +42,7 @@ import { captureOperationContext, isOperationContextCurrent } from "../../app/op
 import { CloseIcon, CopyIcon, EraserIcon, ImageEditIcon, VideoEditIcon } from "../common/ViewIcons";
 import { SpotlightOptionIcon } from "../spotlight/SpotlightOptionIcon";
 import { SpotlightDurationChip } from "../spotlight/SpotlightDurationChip";
+import { EditRefPrompt, type EditPromptRef } from "./EditRefPrompt";
 
 const MAX_WORK_PIXELS = 12_000_000; // 12MP — 주석/평면화 캔버스 동시 보유 상한
 // 이미지 수정 기본 모델 — 웹 편집기와 동일(원본 재현 충실, 실측). 그룹 사용 모델 정책의 면제 목록과 같은 값이어야
@@ -549,7 +550,7 @@ export function PartialEditModal({
     // 캔버스에 그리기 시작 = 그리기 모드 복귀 — 프롬프트 포커스를 풀어 단축키([ ]·D·E·R·
     // Ctrl+Z)가 돌아오게 한다(입력은 프롬프트를 다시 클릭해야 재개).
     const active = document.activeElement;
-    if (active instanceof HTMLElement && active.tagName === "TEXTAREA") active.blur();
+    if (active instanceof HTMLElement && (active.tagName === "TEXTAREA" || active.isContentEditable)) active.blur();
     activePointerRef.current = e.pointerId;
     (e.target as Element).setPointerCapture(e.pointerId);
     liveRef.current =
@@ -702,6 +703,12 @@ export function PartialEditModal({
   const [importingRefs, setImportingRefs] = useState(0); // 탐색기 파일을 올리는 동안은 제출하지 않는다
   const refUid = useRef(0);
   const maxImages = videoSpec?.maxImages ?? 0;
+  // 지시문 알약이 가리키는 레퍼런스 칸 — @image1 = 그린 프레임, @image2 부터 칸 순서(보낼 때 image_references 순서와 같다)
+  const frameThumb = srcUrlRef.current;
+  const promptRefs = useMemo<EditPromptRef[]>(() => (isVideo ? [
+    { token: "@image1", kind: "image", name: "그린 프레임", thumb: frameThumb },
+    ...extraRefs.map((ref, index) => ({ token: `@image${index + 2}`, kind: "image" as const, name: ref.name, thumb: ref.thumb })),
+  ] : []), [isVideo, frameThumb, extraRefs]);
   const refsEditable = isVideo && stage === "draw" && !submitting;
   const addImageRefs = (items: SpotlightAssetDragItem[], dropped = items.length) => {
     const images = items.filter((item) => item.type === "image");
@@ -1430,22 +1437,13 @@ export function PartialEditModal({
                     </div>
                   )}
                   <div className="sl-prompt-row">
-                    <textarea
-                      className="sl-prompt"
-                      rows={2}
-                      aria-label="수정 지시"
+                    <EditRefPrompt
+                      ariaLabel="수정 지시"
                       placeholder={`${isVideo ? "영상을" : "이미지를"} 어떻게 수정할까요? — 클릭해서 입력`}
                       value={prompt}
-                      onChange={(e) => setPrompt(e.target.value)}
-                      onKeyDown={(e) => {
-                        // IME 조합 중 Enter(한글 마지막 글자 확정)는 제출이 아니다 — 미완성
-                        // 프롬프트로 유료 생성이 시작된다(코덱스 BLOCK). keyCode 229 = Chromium IME.
-                        if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-                        if (e.key === "Enter" && !e.shiftKey) {
-                          e.preventDefault();
-                          void submit();
-                        }
-                      }}
+                      onChange={setPrompt}
+                      onSubmit={() => void submit()}
+                      refs={promptRefs}
                     />
                     <button type="button" className="sl-prompt-clear" title="프롬프트 비우기" aria-label="프롬프트 비우기"
                       onMouseDown={(e) => e.preventDefault()} onClick={() => setPrompt("")}>
