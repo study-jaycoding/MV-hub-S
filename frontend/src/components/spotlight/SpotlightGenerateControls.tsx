@@ -54,23 +54,27 @@ export function SpotlightGenerateControls({
         disabled={busy}
         onClick={onSubmit}
       >
-        {busy ? "생성 중…" : count > 1 ? `Generate ${count}` : "Generate"}{" "}
+        {busy ? "생성 중…" : "Generate"}{" "}
         <span className="sl-sparkle">✦</span>
-        {costLoading ? (
-          <span className="sl-cost loading">…</span>
-        ) : (
-          cost != null &&
-          cost > 0 && (
-            // 크레딧은 소수다(Nano Banana 2 = 1.5, Soul V2 = 0.12). 곱한 뒤 둘째 자리에서
-            // 정리하지 않으면 `0.12 * 3` 이 0.36000000000000004 로 찍힌다.
-            <span
-              className="sl-cost"
-              title={`예상 크레딧 ${formatCredits(roundCredits(cost * count))}${count > 1 ? ` (${count}장)` : ""} — 해상도·길이·모드에 따라 변동`}
-            >
-              {formatCredits(roundCredits(cost * count))}
-            </span>
-          )
-        )}
+        {/* 장수는 글자에 붙이지 않고 크레딧 배지 오른쪽 위 빨간 숫자로(Jay 2026-10-28 시안 B) — 견적이 없어도 숫자는 남는다 */}
+        <span className="sl-cost-wrap">
+          {costLoading ? (
+            <span className="sl-cost loading">…</span>
+          ) : (
+            cost != null &&
+            cost > 0 && (
+              // 크레딧은 소수다(Nano Banana 2 = 1.5, Soul V2 = 0.12). 곱한 뒤 둘째 자리에서
+              // 정리하지 않으면 `0.12 * 3` 이 0.36000000000000004 로 찍힌다.
+              <span
+                className="sl-cost"
+                title={`예상 크레딧 ${formatCredits(roundCredits(cost * count))}${count > 1 ? ` (${count}장)` : ""} — 해상도·길이·모드에 따라 변동`}
+              >
+                {formatCredits(roundCredits(cost * count))}
+              </span>
+            )
+          )}
+          {count > 1 && <span className="sl-count-dot" aria-label={`${count}장`} title={`한 번에 ${count}장`}>{count}</span>}
+        </span>
       </button>
     </div>
   );

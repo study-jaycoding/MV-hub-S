@@ -329,20 +329,60 @@
 }
 .sl-dd-item:has(.sl-draft-pill) { display: flex; align-items: center; gap: 6px; padding-right: 30px; }
 .sl-dd-item .sl-draft-pill { margin-left: auto; }
+/* 아래 칩 줄 — 고른 값·견적 글자가 바뀌어도 칩·단추 폭과 배치가 흔들리지 않게(Jay 2026-10-28), 그러나 빈 공간은 크지 않게(같은 날 두 번째 지적).
+   값 칸(.sl-opt-text)은 그 칩의 가장 긴 값 길이만큼(부르는 쪽이 ch 로 준다) · 견적 배지는 다섯 글자(337.5)까지 같은 폭 ·
+   고급 칩의 변경 점과 Draft 표시는 칩 모서리에 띄워 폭에 넣지 않는다 · 칩 글자는 한 줄. 모델 이름 칩은 이름만큼이다. */
+.sl-chip { white-space: nowrap; }
+.sl-controls .sl-opt-chip { justify-content: center; }
+.sl-opt-text { display: inline-block; text-align: center; font-variant-numeric: tabular-nums; }
+.sl-controls .sl-gen { min-width: 180px; justify-content: center; } /* "생성 중…"(배지 없음)일 때도 같은 폭 */
+.sl-controls .sl-cost { min-width: 42px; justify-content: center; }
+.sl-opt-chip { position: relative; }
+.sl-opt-chip .sl-draft-pill { position: absolute; top: -7px; right: -2px; }
+.sl-opt-chip .sl-adv-dot { position: absolute; top: 5px; right: 7px; margin: 0; }
 /* CLI가 무시하는 값 — 흐리게 + 못 누름(칩이 disabled). 안내는 별도 요소라 흐려지지 않는다. */
 .sl-opt-ignored { opacity: 0.45; }
 .sl-ignored-note { flex-basis: 100%; order: 1; color: var(--text); font-size: 12px; }
 .sl-opt-val { font-size: 12.5px; font-weight: 700; color: var(--text); min-width: 22px; }
-/* 길이 칩(SpotlightDurationChip) — 칩엔 "4s" 만, 누르면 바로 위에 큰 값 + 눈금 슬라이더 창(Jay 2026-10-28) */
-.sl-dur-pop { min-width: 0; width: 280px; padding: 12px 14px 8px; }
-.sl-dur-head { font-size: 16px; font-weight: 700; color: var(--text); margin-bottom: 10px; }
-.sl-dur-pop input[type="range"] {
-  display: block; width: 100%; margin: 0; padding: 0;
-  accent-color: var(--accent); background: transparent; cursor: pointer;
+/* 길이 칩(SpotlightDurationChip) — 칩엔 "4s" 만, 누르면 바로 위에 "Total duration" 창(Jay 2026-10-28, 힉스필드 길이 창 모양).
+   제목·큰 값·막대 왼쪽을 맞추고, 막대는 어두운 둥근 막대 + 라임 세로 손잡이 + 눈금 점, 눈금 글자는 점 바로 아래.
+   점·글자 자리 = 손잡이 중심이 다니는 자리: 막대 안쪽 여백(--dur-in)과 손잡이 폭 반을 뺀 폭에 비율(--at)을 곱한다. */
+/* .sl-dropdown 이 뒤에서 left: 0 을 다시 주므로 두 클래스로 이긴다 — 안 그러면 가운데 맞춤이 왼쪽으로만 밀린다 */
+.sl-dropdown.sl-dur-pop {
+  --dur-in: 8px; --dur-thumb: 6px; min-width: 0; width: 280px; padding: 12px 14px 10px;
+  left: 50%; transform: translateX(-50%); /* 칩 바로 위 가운데 — 가운데 눈금(15)이 칩 위에 온다(Jay 2026-10-28) */
 }
-/* 눈금 글자 — 슬라이더 손잡이 반쪽(약 8px)만큼 양끝을 들여 값 자리와 맞춘다 */
-.sl-dur-marks { position: relative; height: 16px; margin: 6px 8px 0; font-size: 11px; color: var(--muted); }
-.sl-dur-marks span { position: absolute; top: 0; transform: translateX(-50%); font-variant-numeric: tabular-nums; }
+.sl-dur-title { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.sl-dur-head { font-size: 17px; font-weight: 700; color: var(--text); margin-bottom: 10px; }
+.sl-dur-track { position: relative; height: 28px; border-radius: 8px; background: rgba(255, 255, 255, 0.06); }
+/* 손잡이 왼쪽 = 고른 만큼 라임으로 채움(Jay 2026-10-28) — 손잡이가 묻히지 않게 채움은 옅은 라임, 손잡이는 진한 라임 + 어두운 테두리 */
+.sl-dur-fill {
+  position: absolute; top: 0; bottom: 0; left: 0; border-radius: 8px 0 0 8px; pointer-events: none;
+  width: calc(var(--dur-in) + var(--dur-thumb) / 2 + (100% - 2 * var(--dur-in) - var(--dur-thumb)) * var(--pos, 0));
+  background: rgba(var(--accent-rgb), 0.38);
+}
+.sl-dur-dot, .sl-dur-marks span {
+  position: absolute;
+  left: calc(var(--dur-in) + var(--dur-thumb) / 2 + (100% - 2 * var(--dur-in) - var(--dur-thumb)) * var(--at));
+}
+.sl-dur-dot { top: 50%; width: 3px; height: 3px; border-radius: 50%; background: var(--muted); transform: translate(-50%, -50%); }
+.sl-dur-track input[type="range"] {
+  position: absolute; top: 0; left: var(--dur-in); width: calc(100% - 2 * var(--dur-in)); height: 100%;
+  margin: 0; padding: 0; background: transparent; cursor: pointer; -webkit-appearance: none; appearance: none;
+}
+.sl-dur-track input[type="range"]::-webkit-slider-runnable-track { height: 100%; background: transparent; }
+.sl-dur-track input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: var(--dur-thumb); height: 14px; margin-top: 7px; border-radius: 3px;
+  background: var(--accent); box-shadow: 0 0 0 3px rgba(11, 12, 14, 0.6);
+}
+.sl-dur-track input[type="range"]::-moz-range-thumb {
+  width: var(--dur-thumb); height: 14px; border: none; border-radius: 3px;
+  background: var(--accent); box-shadow: 0 0 0 3px rgba(11, 12, 14, 0.6);
+}
+.sl-dur-track input[type="range"]:focus-visible { outline: none; }
+.sl-dur-track:has(input:focus-visible) { box-shadow: 0 0 0 1px var(--accent); }
+.sl-dur-marks { position: relative; height: 16px; margin-top: 6px; font-size: 11px; color: var(--muted); }
+.sl-dur-marks span { top: 0; transform: translateX(-50%); font-variant-numeric: tabular-nums; }
 /* 오디오 토글 칩(하단 바) — 아이콘 + ON/OFF 를 Image/Video 토글(.sl-type)처럼 한 캡슐 안의 두 칸으로(Jay 2026-10-28) */
 .sl-opt-audio { gap: 6px; padding: 3px 3px 3px 12px; }
 .sl-opt-audio .sl-adv-opts { flex-wrap: nowrap; gap: 0; height: 100%; }
@@ -399,6 +439,14 @@
 .sl-dot {
   width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
   background: linear-gradient(135deg, #57d97e, #4ade80);
+}
+/* 한 번에 여러 장(2/4) — 크레딧 배지 오른쪽 위 모서리 빨간 숫자(Jay 2026-10-28 시안 B·빨강) */
+.sl-cost-wrap { position: relative; display: inline-flex; align-items: center; }
+.sl-count-dot {
+  position: absolute; top: -9px; right: -9px; min-width: 17px; height: 17px; padding: 0 4px; box-sizing: border-box;
+  border-radius: 9px; background: #ef4444; color: #fff; border: 1.5px solid #0b0c0e;
+  font-size: 10px; font-weight: 800; line-height: 1; display: flex; align-items: center; justify-content: center;
+  pointer-events: none;
 }
 
 /* 칩 위로 펼쳐지는 드롭다운 */

@@ -270,10 +270,11 @@ describe("video edit reuses annotation UI", () => {
     expect(container.querySelector(".sl-dur-pop")).toBeNull();
     await act(async () => button("영상 길이").click());
     const slider = container.querySelector<HTMLInputElement>('.sl-dur-pop input[aria-label="영상 길이"]')!;
-    expect([slider.min, slider.max, slider.value]).toEqual(["5", "30", "5"]); // 처음 = 원본 길이
+    expect([slider.min, slider.max, slider.value]).toEqual(["0", "400", "0"]); // 처음 = 원본 길이(눈금 5·10·15·20·30)
+    expect(slider.getAttribute("aria-valuetext")).toBe("5s");
     expect(container.querySelector(".sl-ignored-note")?.textContent).toContain("더 길게 = 뒤로 이어 늘리기");
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(slider, "8");
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(slider, "60"); // 5 와 10 사이 60% = 8초
       slider.dispatchEvent(new Event("input", { bubbles: true }));
     });
     expect(button("영상 길이").textContent).toBe("8s");

@@ -463,7 +463,10 @@ export function SpotlightOptionsBar({
               title={p.name}
             >
               <span className="sl-opt-ic"><SpotlightOptionIcon name={p.name} /></span>
-              <span>{String(optionValues[p.name] ?? p.default ?? "")}</span>
+              {/* 값 칸 = 이 칩의 가장 긴 값만큼(합성 'auto' 포함) — 값을 바꿔도 칩 폭이 그대로(Jay 2026-10-28) */}
+              <span className="sl-opt-text" style={{ minWidth: `${Math.max(p.name === "aspect_ratio" ? 4 : 0, ...p.enum.map((v) => String(v).length)) + 0.5}ch` }}>
+                {String(optionValues[p.name] ?? p.default ?? "")}
+              </span>
               {isDraftResolution(p.name, optionValues[p.name] ?? p.default) && <span className="sl-draft-pill">Draft</span>}
               <span className="sl-caret">›</span>
             </button>

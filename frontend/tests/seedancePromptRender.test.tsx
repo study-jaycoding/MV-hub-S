@@ -252,7 +252,8 @@ describe("무시되는 옵션은 조작할 수 없고, 고른 값은 보존된�
     const freeSlider = required<HTMLInputElement>(view.container, '.sl-dur-pop input[type="range"]');
     act(() => {
       // React의 value tracker를 갱신하지 않고 브라우저 입력처럼 실제 DOM 값을 바꾼다.
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(freeSlider, "12");
+      // 길이 창은 눈금(4·10·15·20·30) 사이를 고르게 나눈 막대 — 140 = 10 과 15 사이 40% = 12초
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(freeSlider, "140");
       freeSlider.dispatchEvent(new Event("input", { bubbles: true }));
       freeSlider.dispatchEvent(new Event("change", { bubbles: true }));
     });

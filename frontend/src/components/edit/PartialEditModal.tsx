@@ -1492,7 +1492,8 @@ export function PartialEditModal({
                             aria-haspopup="listbox" aria-expanded={menu === "option"} disabled={submitting}
                             onClick={() => setMenu(menu === "option" ? null : "option")}>
                             <span className="sl-opt-ic"><SpotlightOptionIcon name="resolution" /></span>
-                            <span>{option}</span>
+                            {/* 값 칸 = 가장 긴 값만큼 — 값을 바꿔도 칩 폭이 그대로(생성창과 같은 규칙, Jay 2026-10-28) */}
+                            <span className="sl-opt-text" style={{ minWidth: `${Math.max(...optionValues.map((v) => v.length)) + 0.5}ch` }}>{option}</span>
                             <span className="sl-caret">›</span>
                           </button>
                           {menu === "option" && (
@@ -1517,7 +1518,7 @@ export function PartialEditModal({
                             title="비트레이트" aria-label="비트레이트" aria-haspopup="listbox" aria-expanded={menu === "bitrate"}
                             disabled={submitting} onClick={() => setMenu(menu === "bitrate" ? null : "bitrate")}>
                             <span className="sl-opt-ic"><SpotlightOptionIcon name="bitrate_mode" /></span>
-                            <span>비트레이트 {bitrateLabel(bitrateSend)}</span>
+                            <span>비트레이트 <span className="sl-opt-text" style={{ minWidth: `${Math.max(...bitrateValues.map((v) => v.length)) + 0.5}ch`, textAlign: "left" }}>{bitrateLabel(bitrateSend)}</span></span>
                             <span className="sl-caret">›</span>
                           </button>
                           {menu === "bitrate" && (

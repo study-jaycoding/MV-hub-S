@@ -18,10 +18,10 @@ const slide = (input: HTMLInputElement, value: string) => act(() => {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
   input.dispatchEvent(new Event("input", { bubbles: true }));
 });
-const marks = () => [...host.querySelectorAll<HTMLSpanElement>(".sl-dur-marks span")].map((s) => [s.textContent, s.style.left]);
+const marks = () => [...host.querySelectorAll<HTMLSpanElement>(".sl-dur-marks span")].map((s) => [s.textContent, s.style.getPropertyValue("--at")]);
 
 describe("길이 칩 — 칩엔 값만, 누르면 위에 눈금 슬라이더 창", () => {
-  it("shows only the value until opened, then a 1-second slider with marks at their real positions", () => {
+  it("shows only the value until opened, then evenly spaced marks with 1-second values between them", () => {
     const onToggle = vi.fn();
     const onChange = vi.fn();
     show({ onToggle, onChange });
@@ -30,18 +30,30 @@ describe("길이 칩 — 칩엔 값만, 누르면 위에 눈금 슬라이더 창
     act(() => host.querySelector("button")!.click());
     expect(onToggle).toHaveBeenCalledTimes(1);
     show({ onToggle, onChange, open: true });
+    expect(host.querySelector(".sl-dur-title")!.textContent).toBe("Total duration");
     const input = host.querySelector<HTMLInputElement>(".sl-dur-pop input")!;
-    expect([input.min, input.max, input.value]).toEqual(["4", "30", "4"]);
-    expect(marks()).toEqual([["4", "0%"], ["10", "23.08%"], ["15", "42.31%"], ["20", "61.54%"], ["30", "100%"]]);
-    slide(input, "12");
-    expect(onChange).toHaveBeenCalledWith(12);
+    expect([input.min, input.max, input.value]).toEqual(["0", "400", "0"]); // 눈금 한 칸 = 100
+    expect(marks()).toEqual([["4", "0.0000"], ["10", "0.2500"], ["15", "0.5000"], ["20", "0.7500"], ["30", "1.0000"]]);
+    expect(host.querySelectorAll(".sl-dur-dot")).toHaveLength(5);
+    slide(input, "140"); // 10 과 15 사이의 40%
+    expect(onChange).toHaveBeenLastCalledWith(12);
+    slide(input, "400");
+    expect(onChange).toHaveBeenLastCalledWith(30);
+    act(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })));
+    expect(onChange).toHaveBeenLastCalledWith(5); // 화살표 = 1초씩(지금 값 4)
+  });
+  it("puts a value between marks at its place on the even scale", () => {
+    show({ value: 12, open: true });
+    expect(host.querySelector<HTMLInputElement>(".sl-dur-pop input")!.value).toBe("140");
+    expect(host.querySelector<HTMLElement>(".sl-dur-track")!.style.getPropertyValue("--pos")).toBe("0.3500"); // 라임 채움 = 손잡이까지
+    expect(host.querySelector(".sl-dur-head")!.textContent).toBe("12s");
   });
   it("moves only between a model's fixed lengths", () => {
     const onChange = vi.fn();
     show({ value: 10, min: 5, max: 15, stops: [5, 10, 15], open: true, onChange });
     const input = host.querySelector<HTMLInputElement>(".sl-dur-pop input")!;
     expect([input.min, input.max, input.value]).toEqual(["0", "2", "1"]);
-    expect(marks()).toEqual([["5", "0%"], ["10", "50%"], ["15", "100%"]]);
+    expect(marks()).toEqual([["5", "0.0000"], ["10", "0.5000"], ["15", "1.0000"]]);
     slide(input, "2");
     expect(onChange).toHaveBeenCalledWith(15);
   });
