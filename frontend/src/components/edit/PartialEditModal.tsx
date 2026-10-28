@@ -53,7 +53,7 @@ const EDIT_MODEL_GROUPS: Record<"image" | "video", { title: string; ids: string[
 const MODEL_LABELS: Record<string, string> = {
   seedream_v5_pro: "Seedream 5.0 Pro", nano_banana_pro: "Nano Banana Pro", nano_banana_flash: "Nano Banana 2",
   nano_banana_2_1: "Nano Banana 2.1", gpt_image_2: "GPT Image 2", gpt_image_2_5: "GPT Image 2.5",
-  kling_video_edit: "Kling 3.0 Omni Edit", kling4_0: "Kling 4.0 · 영상 편집", seedance_2_5: "Seedance 2.5 · 영상 편집",
+  kling_video_edit: "Kling 3.0 Omni Edit", kling4_0: "Kling 4.0 · Edit video", seedance_2_5: "Seedance 2.5 · Edit video",
 };
 // 영상 모델마다 늘 보내는 값과 칩으로 고르는 옵션 하나(10-28 유료 시험으로 확인한 계약). Kling 4.0 은 길이를 안 주면
 // 10초로 과금돼서 원본 길이를 함께 보낸다(아래 editParams).
@@ -217,6 +217,10 @@ function nearestAspect(enumValues: string[] | undefined, w: number, h: number): 
   }
   return best;
 }
+
+// Jay 10-28: 생성이 접수되면 창을 닫고 결과는 카드에서 본다. 창 안 기다림·결과 화면은 꺼 둔 채 남김
+// (덩어리 삭제는 확인 뒤 따로 — Jay 09-18 규칙). false 면 옛 동작.
+const CLOSE_ON_QUEUE = true;
 
 export function PartialEditModal({
   gen,
@@ -880,6 +884,11 @@ export function PartialEditModal({
     // 계보는 references 의 source_gen_id 가 이미 만든다(서버가 reference 엣지 기록). 별도 호출 없음.
     onQueued(created); // 카드가 생겼으면 unmount 여부와 무관하게 목록에 알린다
     if (!mountedRef.current) return;
+    if (CLOSE_ON_QUEUE) {
+      flashMsg(`${editLabel} 요청을 보냈습니다 — 완료되면 라이브러리 카드에 나타납니다.`);
+      onClose();
+      return;
+    }
     setSubmitting(false);
     setElapsed(0);
     setWaitStopped(false);

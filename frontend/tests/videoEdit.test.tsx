@@ -126,7 +126,7 @@ describe("video edit reuses annotation UI", () => {
     await render();
     await act(async () => button("수정 모델").click());
     expect([...container.querySelectorAll('[role="option"]')].map((option) => option.textContent))
-      .toEqual(["Kling 3.0 Omni Edit기본", "Kling 4.0 · 영상 편집", "Seedance 2.5 · 영상 편집"]);
+      .toEqual(["Kling 3.0 Omni Edit기본", "Kling 4.0 · Edit video", "Seedance 2.5 · Edit video"]);
   });
   it("blocks a changed workspace and policy restriction without submitting", async () => {
     await render(); await prompt();
@@ -248,11 +248,22 @@ describe("video edit reuses annotation UI", () => {
     expect(container.querySelector<HTMLButtonElement>(".partial-edit-gen")!.disabled).toBe(false);
     expect(container.querySelector(".partial-edit-cost")?.textContent).toBe("26");
   });
-  it("renders a completed video with controls and no autoplay", async () => {
-    mocks.getGeneration.mockResolvedValue({ id: "result", status: "done", assets: [{ type: "video", file_path: "result.mp4" }] });
-    await render(); await prompt();
+  it("closes once the request is queued and hands the new card to the list; a failed request keeps it open", async () => {
+    const onClose = vi.fn();
+    const show = (gen: Generation) => act(async () => root.render(<PartialEditModal gen={gen} mode="image" workspace={workspace}
+      onQueued={mocks.queued} onClose={onClose} />));
+    await show(generation("image")); await prompt();
     await act(async () => (container.querySelector(".partial-edit-gen") as HTMLButtonElement).click());
-    const player = container.querySelector(".partial-edit-video-result") as HTMLVideoElement;
-    expect(player).not.toBeNull(); expect(player.controls).toBe(true); expect(player.autoplay).toBe(false);
+    expect(mocks.queued).toHaveBeenCalledWith(expect.objectContaining({ id: "result" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(mocks.getGeneration).not.toHaveBeenCalled(); // 창 안에서 결과를 기다리지 않는다
+    await act(async () => root.render(<></>));
+    onClose.mockReset(); mocks.queued.mockReset();
+    mocks.prepareCreate.mockReturnValue(async () => { throw new Error("offline"); });
+    await show(generation("image")); await prompt();
+    await act(async () => (container.querySelector(".partial-edit-gen") as HTMLButtonElement).click());
+    expect(onClose).not.toHaveBeenCalled();
+    expect(mocks.queued).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("생성 요청 실패");
   });
 });
