@@ -45,6 +45,7 @@ import { SpotlightDurationChip } from "../spotlight/SpotlightDurationChip";
 import { EditRefPrompt, type EditPromptRef } from "./EditRefPrompt";
 
 const MAX_WORK_PIXELS = 12_000_000; // 12MP — 주석/평면화 캔버스 동시 보유 상한
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i; // 힉스필드 작업 id(서버 video_ref 검사와 같은 꼴)
 // 이미지 수정 기본 모델 — 웹 편집기와 동일(원본 재현 충실, 실측). 그룹 사용 모델 정책의 면제 목록과 같은 값이어야
 // 부분 수정 결과물의 재생성·복구가 막히지 않는다(modelPolicyCore.POLICY_EXEMPT_MODELS).
 const EDIT_MODEL = "seedream_v5_pro";
@@ -652,29 +653,32 @@ export function PartialEditModal({
   const [cost, setCost] = useState<number | null>(null);
   const [successfulCostKey, setSuccessfulCostKey] = useState("");
   const [costLoading, setCostLoading] = useState(false);
-  const editCostKey = JSON.stringify([m.model, editParams]);
+  // 영상 수정 견적은 고칠 영상이 있어야 나온다 — 이 카드의 힉스필드 작업 id 로 알려 준다(10-28 실측: 길이대로 값이 나온다).
+  //  작업 id 가 없는 영상(직접 올린 파일 등)은 견적이 없어 생성도 잠긴 채다.
+  const costVideoRef = isVideo && UUID_RE.test(gen.job_id ?? "") ? gen.job_id! : "";
+  const editCostKey = JSON.stringify([m.model, editParams, costVideoRef]);
   const costSelection = useRef("");
   useEffect(() => {
     const key = editCostKey;
     if (costSelection.current !== key) { costSelection.current = key; setCost(null); }
-    if (!m.model || !paramsReady || isVideo && (!videoDuration || !!optionName && !optionValues.includes(option))) {
+    if (!m.model || !paramsReady || isVideo && (!costVideoRef || !videoDuration || !!optionName && !optionValues.includes(option))) {
       setCostLoading(false);
       return;
     }
     let alive = true;
     setCostLoading(true);
-    sharedCostEstimate(m.model, editParams)
+    sharedCostEstimate(m.model, editParams, "", false, costVideoRef)
       .then(async (r) => {
         if (alive) { setCost(r.credits); setSuccessfulCostKey(key); }
         if (r.stale) {
-          const fresh = await sharedCostEstimate(m.model, editParams, "", true);
+          const fresh = await sharedCostEstimate(m.model, editParams, "", true, costVideoRef);
           if (alive) { setCost(fresh.credits); setSuccessfulCostKey(key); }
         }
       }).catch(() => {}).finally(() => { if (alive) setCostLoading(false); });
     return () => {
       alive = false;
     };
-  }, [m.model, paramsReady, editParams, isVideo, videoDuration, optionName, optionValues, option, editCostKey]);
+  }, [m.model, paramsReady, editParams, isVideo, videoDuration, optionName, optionValues, option, editCostKey, costVideoRef]);
   const costKnown = cost != null && (!isVideo || successfulCostKey === editCostKey);
   // 모델·옵션 칩의 목록, 색·굵기 창 — 바깥을 누르면 닫는다(생성창 칩과 같다)
   const [menu, setMenu] = useState<null | "model" | "option" | "bitrate" | "duration">(null);
@@ -1583,7 +1587,8 @@ export function PartialEditModal({
                 </div>
                 {!costKnown && !costLoading && paramsReady && (
                   <div className="partial-edit-hint">
-                    견적 확인 안 됨{isVideo ? " — 영상은 견적이 나와야 생성할 수 있습니다." : ""}
+                    견적 확인 안 됨{!isVideo ? "" : costVideoRef ? " — 영상은 견적이 나와야 생성할 수 있습니다."
+                      : " — 이 영상은 힉스필드 작업 정보가 없어 견적을 낼 수 없습니다(힉스필드에서 만든 영상만 수정할 수 있습니다)."}
                   </div>
                 )}
                 {!workspaceReady && (

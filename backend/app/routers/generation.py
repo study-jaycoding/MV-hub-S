@@ -87,6 +87,8 @@ class CostIn(BaseModel):
     prompt: str = ""
     params: dict[str, Any] = {}
     fresh: bool = False
+    # 영상 수정 창 — 고칠 영상의 힉스필드 작업 id(없으면 영상 수정 견적은 CLI 가 거절한다). CLI 인자로 가므로 UUID 만.
+    video_ref: Optional[str] = Field(default=None, pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
 @router.get("/voices")
@@ -329,6 +331,7 @@ async def estimate_cost(body: CostIn):
     try:
         return await cli_bridge.estimate_cost(
             body.model, body.params, body.prompt, allow_stale=not body.fresh, include_metadata=True,
+            video_ref=body.video_ref,
         )
     except cli_bridge.CLIError as e:
         raise HTTPException(status_code=502, detail=str(e))

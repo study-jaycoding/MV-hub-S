@@ -381,14 +381,15 @@ function putCost(key: string, value: CostEstimate): CostEstimate {
 }
 
 function loadCost(
-  key: string, model: string, opts: Record<string, unknown>, fresh = false, prompt = "",
+  key: string, model: string, opts: Record<string, unknown>, fresh = false, prompt = "", videoRef = "",
 ): Promise<CostEstimate> {
   const cached = costCache.get(key);
   if (cached && cacheFresh(cached, COST_TTL_SECONDS)) return Promise.resolve(cached);
   const requestKey = `${key}:${fresh}`;
   const flying = costInflight.get(`${key}:true`) ?? costInflight.get(requestKey);
   if (flying) return flying;
-  const request = (fresh ? api.estimateCost(model, opts, prompt, true) : prompt ? api.estimateCost(model, opts, prompt) : api.estimateCost(model, opts))
+  const request = (videoRef ? api.estimateCost(model, opts, prompt, fresh, videoRef)
+    : fresh ? api.estimateCost(model, opts, prompt, true) : prompt ? api.estimateCost(model, opts, prompt) : api.estimateCost(model, opts))
     .then((value) => {
       if (!Number.isFinite(value.credits) || value.credits < 0) throw new Error("견적 금액을 확인할 수 없습니다.");
       return putCost(key, value);
@@ -397,9 +398,9 @@ function loadCost(
   return request;
 }
 
-// 편집 창도 생성창과 같은 12시간 캐시와 단일 조회를 사용한다.
-export function sharedCostEstimate(model: string, opts: Record<string, unknown>, prompt = "", fresh = false) {
-  return loadCost(`${costKey(model, opts)}:${prompt}`, model, opts, fresh, prompt);
+// 편집 창도 생성창과 같은 12시간 캐시와 단일 조회를 사용한다. videoRef(영상 수정의 고칠 영상)마다 값이 달라 키에 넣는다.
+export function sharedCostEstimate(model: string, opts: Record<string, unknown>, prompt = "", fresh = false, videoRef = "") {
+  return loadCost(`${costKey(model, opts)}:${prompt}${videoRef ? `:${videoRef}` : ""}`, model, opts, fresh, prompt, videoRef);
 }
 
 function invalidSelection(params: ModelParam[], values: Record<string, string | number | boolean>): boolean {

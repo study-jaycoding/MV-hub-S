@@ -1068,7 +1068,7 @@ async def estimate_cost(
     params: Optional[dict[str, Any]] = None,
     prompt: str = "",
     timeout: float = 120.0,
-    *, allow_stale: bool = False, include_metadata: bool = False,
+    *, allow_stale: bool = False, include_metadata: bool = False, video_ref: Optional[str] = None,
 ) -> dict[str, Any]:
     """잡 생성 없이 크레딧만 추정 — generate cost <model> [--param value] --json.
     레퍼런스(미디어)는 비용 추정에 불필요+업로드 비용 → 제외(PV 와 동일).
@@ -1113,6 +1113,10 @@ async def estimate_cost(
     else:
         async with _estimate_gate():
             param_args = await _param_args(model, params)
+    # 영상 수정 견적은 고칠 영상이 있어야 한다(없으면 CLI 가 거절) — 화면이 그 영상의 힉스필드 작업 id 를 준다.
+    #  값은 영상 길이를 따르므로 캐시 키에도 들어간다(10-28 실측: Kling 3.0 Omni Edit pro 4초 8·8초 16).
+    if video_ref and model in _VIDEO_EDIT_COST_MODELS:
+        param_args = [*param_args, "--video-references", video_ref]
     key = _cost_key(model, param_args, prompt)
     entry = _COST_CACHE.get(key)
     if entry is not None and (time.time() - entry[1]) < _COST_TTL:
@@ -1145,6 +1149,8 @@ _COST_REF_REQUIRED_MODES = {
     "omni_reference": "--image-references",
     "video_extension": "--video-references",
 }
+# 수정 창이 고칠 영상(작업 id·업로드 id)을 견적에 붙이는 모델 — 위 더미와 달리 진짜 영상이라 길이대로 값이 나온다.
+_VIDEO_EDIT_COST_MODELS = frozenset({"kling_video_edit", "kling4_0", "seedance_2_5"})
 
 
 def _cost_dummy_ref_args(param_args: list[str]) -> list[str]:

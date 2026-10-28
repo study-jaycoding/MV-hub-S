@@ -477,10 +477,11 @@ export const api = {
     })),
 
   // 예상 크레딧 추정(잡 생성 안 함) — Generate 버튼 표시용
-  estimateCost: (model: string, params: Record<string, unknown>, prompt = "", fresh = false) =>
+  // videoRef = 영상 수정 창이 고칠 영상의 힉스필드 작업 id — 영상 수정 견적은 영상이 있어야 나온다
+  estimateCost: (model: string, params: Record<string, unknown>, prompt = "", fresh = false, videoRef = "") =>
     jsonFetch<import("./types").CostEstimate>("/api/cost", {
       method: "POST",
-      body: jsonBody({ model, params, prompt, ...(fresh ? { fresh: true } : {}) }),
+      body: jsonBody({ model, params, prompt, ...(fresh ? { fresh: true } : {}), ...(videoRef ? { video_ref: videoRef } : {}) }),
     }),
 
   // View 타임라인 '합쳐진 영상' 다운로드 — 서버가 클립들을 ffmpeg 로 하나의 mp4 로 병합해 반환.

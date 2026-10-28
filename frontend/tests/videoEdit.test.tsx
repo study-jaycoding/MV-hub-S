@@ -27,8 +27,9 @@ let root: Root;
 let container: HTMLDivElement;
 let nextUrl = 0;
 const workspace: WorkspaceContext = { scope: "team", id: "space-a", name: "A" };
-function generation(type: "image" | "video" = "video"): Generation {
-  return { id: "source", status: "done", project_id: "project", folder_path: "cut", prompt: "source",
+const JOB = "9abf27e3-e932-4f39-87b0-3c278c6b21c8"; // 힉스필드 작업 id — 영상 수정 견적은 이 영상으로 낸다(2026-10-28)
+function generation(type: "image" | "video" = "video", jobId: string | null = JOB): Generation {
+  return { id: "source", status: "done", project_id: "project", folder_path: "cut", prompt: "source", job_id: jobId,
     assets: [{ type, file_path: `source.${type === "video" ? "mp4" : "png"}` }] } as Generation;
 }
 async function render(gen = generation(), selectedWorkspace = workspace) {
@@ -246,6 +247,17 @@ describe("video edit reuses annotation UI", () => {
     await act(async () => root.render(<></>));
     await render(generation("image")); await prompt();
     expect(container.querySelector<HTMLButtonElement>(".partial-edit-gen")!.disabled).toBe(false);
+  });
+  it("prices the video by its Higgsfield job id; a video without one stays locked with a reason", async () => {
+    await render(); await prompt();
+    expect(mocks.cost.mock.calls[0][4]).toBe(JOB); // 견적에 고칠 영상(작업 id)을 함께 보낸다
+    expect(container.querySelector(".partial-edit-cost")?.textContent).toBe("26");
+    await act(async () => root.render(<></>));
+    mocks.cost.mockClear();
+    await render(generation("video", null)); await prompt();
+    expect(mocks.cost).not.toHaveBeenCalled();
+    expect(container.querySelector<HTMLButtonElement>(".partial-edit-gen")!.disabled).toBe(true);
+    expect(container.textContent).toContain("힉스필드 작업 정보가 없어 견적을 낼 수 없습니다");
   });
   it("keeps a successful stale price when its background refresh fails", async () => {
     mocks.cost.mockResolvedValueOnce({ credits: 26, stale: true }).mockRejectedValueOnce(new Error("offline"));
