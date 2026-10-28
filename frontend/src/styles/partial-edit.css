@@ -311,6 +311,11 @@
 /* ── 프롬프트·모델·Generate — 생성창 프롬프트 판 부품(.sl-*)을 쓰고, 창 안이라 그림자만 줄인다 ── */
 .pe-prompt.sl-panel { box-shadow: 0 12px 34px rgba(0, 0, 0, 0.45); flex: none; }
 .pe-prompt textarea.sl-prompt { font-size: 14px; line-height: 1.6; min-height: 52px; resize: none; }
+/* 영상 수정 레퍼런스 칸 — 생성창 트레이(.sl-reftray) 그대로, 안내 글만 항목 옆에 왼쪽 정렬로 늘 보인다(넣을 수 있는 수) */
+.pe-prompt .pe-refhint { width: auto; flex: 1 1 auto; min-width: 220px; justify-content: flex-start; text-align: left; line-height: 1.5; }
+.pe-prompt .pe-refhint b { color: var(--accent); font-weight: 700; }
+/* 칩 아래 안내 줄 — 긴 글이 창 폭을 늘리지 않고 그 안에서 줄을 바꾼다(Kling 4.0 이어 늘리기 안내에서 창이 화면 끝까지 넓어졌다) */
+.pe-prompt .sl-ignored-note { contain: inline-size; }
 .pe-menu { width: 300px; max-width: none; }
 .pe-menu-small { min-width: 150px; }
 .pe-dd-item { display: flex; align-items: center; gap: 8px; width: 100%; }

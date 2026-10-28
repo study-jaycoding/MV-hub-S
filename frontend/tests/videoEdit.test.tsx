@@ -4,15 +4,16 @@ import { createRoot, type Root } from "react-dom/client";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { Generation, WorkspaceContext } from "../src/types";
 const mocks = vi.hoisted(() => ({ prepareCreate: vi.fn(), uploadCapture: vi.fn(), getGeneration: vi.fn(), fetchBlob: vi.fn(),
-  cost: vi.fn(), queued: vi.fn(), setModel: vi.fn(), current: true, blocked: null as string | null }));
+  cost: vi.fn(), queued: vi.fn(), setModel: vi.fn(), current: true, blocked: null as string | null, model: null as string | null }));
 vi.mock("../src/api", () => ({ api: { prepareCreate: mocks.prepareCreate, uploadCapture: mocks.uploadCapture,
   getGeneration: mocks.getGeneration, assetThumbUrl: () => "thumb", discardCapture: vi.fn() } }));
 vi.mock("../src/lib/download", () => ({ fetchBlob: mocks.fetchBlob }));
 vi.mock("../src/lib/useModels", () => ({ sharedCostEstimate: mocks.cost,
-  useModels: (_error: unknown, policy: { initialModel: string }) => ({ model: policy.initialModel, setModel: mocks.setModel,
-    paramsModel: policy.initialModel, paramsLoading: false, params: [
+  useModels: (_error: unknown, policy: { initialModel: string }) => ({ model: mocks.model ?? policy.initialModel, setModel: mocks.setModel,
+    paramsModel: mocks.model ?? policy.initialModel, paramsLoading: false, params: [
       { name: "aspect_ratio", enum: ["16:9", "1:1"] }, { name: "resolution", enum: ["720p", "1080p"], default: "720p" },
       { name: "mode", enum: ["std", "pro", "4k"], default: "pro" },
+      { name: "bitrate_mode", enum: ["standard", "high"], default: "standard" }, { name: "generate_audio", type: "boolean", default: true },
     ] }) }));
 vi.mock("../src/lib/modelPolicy", () => ({ useModelPolicy: () => ({ allowed: new Set(), status: "ready" }) }));
 vi.mock("../src/lib/modelPolicyCore", () => ({ submitBlockMessage: () => mocks.blocked, modelAllowed: () => true }));
@@ -20,6 +21,7 @@ vi.mock("../src/app/operationContext", () => ({ captureOperationContext: (worksp
   isOperationContextCurrent: () => mocks.current }));
 vi.mock("../src/lib/unloadGuard", () => ({ holdUnload: vi.fn() }));
 import { PartialEditModal } from "../src/components/edit/PartialEditModal";
+import { DRAG_TYPES } from "../src/lib/dragTypes";
 
 let root: Root;
 let container: HTMLDivElement;
@@ -52,7 +54,7 @@ async function scrubTo(x: number) {
 const button = (label: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
 beforeEach(() => {
   vi.useFakeTimers();
-  mocks.current = true; mocks.blocked = null; nextUrl = 0;
+  mocks.current = true; mocks.blocked = null; mocks.model = null; nextUrl = 0;
   for (const fn of [mocks.prepareCreate, mocks.uploadCapture, mocks.getGeneration, mocks.fetchBlob, mocks.cost, mocks.queued, mocks.setModel]) fn.mockReset();
   mocks.fetchBlob.mockResolvedValue(new Blob(["media"]));
   mocks.cost.mockResolvedValue({ credits: 26, saved_at: Date.now() / 1000 });
@@ -247,6 +249,55 @@ describe("video edit reuses annotation UI", () => {
     await render(); await prompt();
     expect(container.querySelector<HTMLButtonElement>(".partial-edit-gen")!.disabled).toBe(false);
     expect(container.querySelector(".partial-edit-cost")?.textContent).toBe("26");
+  });
+  it("sends Seedance 2.5 bitrate, sound, auto aspect and the source length", async () => {
+    mocks.model = "seedance_2_5";
+    await render(); await prompt();
+    expect(button("비트레이트").textContent).toContain("High");
+    expect(container.querySelector('input[aria-label="영상 길이"]')).toBeNull(); // 길이는 Kling 4.0 만 고른다
+    expect(container.querySelector(".sl-ignored-note")?.textContent).toContain("길이·비율은 원본 영상을 따릅니다(5초)");
+    await act(async () => button("소리 끄기").click());
+    await act(async () => button("비트레이트").click());
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((o) => o.textContent === "Standard")!.click());
+    await act(async () => (container.querySelector(".partial-edit-gen") as HTMLButtonElement).click());
+    expect(mocks.prepareCreate.mock.calls[0][0].params).toEqual({ mode: "video_edit", aspect_ratio: "auto", resolution: "720p",
+      duration: 5, bitrate_mode: "standard", generate_audio: false });
+  });
+  it("lets Kling 4.0 run longer than the source (extends the video) with an auto aspect", async () => {
+    mocks.model = "kling4_0";
+    await render(); await prompt();
+    const slider = container.querySelector<HTMLInputElement>('input[aria-label="영상 길이"]')!;
+    expect([slider.min, slider.max, slider.value]).toEqual(["5", "30", "5"]); // 처음 = 원본 길이
+    expect(container.querySelector(".sl-ignored-note")?.textContent).toContain("더 길게 = 뒤로 이어 늘리기");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(slider, "8");
+      slider.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.querySelector(".sl-opt-val")?.textContent).toBe("8s");
+    await act(async () => (container.querySelector(".partial-edit-gen") as HTMLButtonElement).click());
+    expect(mocks.prepareCreate.mock.calls[0][0].params).toEqual({ mode: "video-edit", aspect_ratio: "auto", resolution: "720p", duration: 8 });
+  });
+  it("adds dropped images after the drawn frame up to the model's limit and sends them in order", async () => {
+    await render(); await prompt(); // Kling 3.0 Omni Edit — 그린 프레임 포함 4장
+    const items = ["a", "b", "c", "d"].map((name) => ({ project: "project", path: `${name}.png`, name: `${name}.png`, type: "image" }));
+    const payload = JSON.stringify([...items, { project: "project", path: "v.mp4", name: "v.mp4", type: "video" }]);
+    await act(async () => {
+      container.querySelector(".sl-reftray")!.dispatchEvent(Object.assign(new Event("drop", { bubbles: true, cancelable: true }), {
+        dataTransfer: { types: [DRAG_TYPES.asset], getData: (type: string) => type === DRAG_TYPES.asset ? payload : "", files: [], items: [] },
+      }));
+    });
+    const names = () => [...container.querySelectorAll(".sl-reftray-item .sl-reftray-name")].map((node) => node.textContent);
+    expect(names()).toEqual(["그린 프레임", "a.png", "b.png", "c.png"]); // 넘친 d·영상은 넣지 않는다
+    expect(container.querySelector(".pe-refhint")?.textContent).toContain("이미지 4 / 최대 4장");
+    await act(async () => button("2번 레퍼런스 빼기").click());
+    expect(names()).toEqual(["그린 프레임", "b.png", "c.png"]);
+    await act(async () => (container.querySelector(".partial-edit-gen") as HTMLButtonElement).click());
+    const body = mocks.prepareCreate.mock.calls[0][0];
+    expect(body.references.map((ref: { file_path: string; role: string }) => [ref.file_path, ref.role])).toEqual([
+      ["source.mp4", "video"], ["asset:project|frame.png", "image_references"],
+      ["asset:project|b.png", "image_references"], ["asset:project|c.png", "image_references"],
+    ]);
+    expect(body.prompt).toContain("첫 번째 참고 이미지는 원본 영상");
   });
   it("closes once the request is queued and hands the new card to the list; a failed request keeps it open", async () => {
     const onClose = vi.fn();

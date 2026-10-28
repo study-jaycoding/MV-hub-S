@@ -30,8 +30,14 @@ import { formatCredits } from "../../lib/formatCredits";
 import { copyText } from "../../lib/flash";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { EDIT_FPS, timecode } from "../../lib/editTimeline";
+import { DRAG_TYPES } from "../../lib/dragTypes";
+import { dataTransferHasFiles, filesFromDataTransfer } from "../../lib/media";
+import {
+  notifySpotlightAssetsChanged, parseSpotlightAssetItems, readSpotlightAssetPayload, referenceDropTypeFromFile,
+  spotlightAssetRefBase, type SpotlightAssetDragItem,
+} from "../../lib/spotlightAssetRefs";
 import type { Generation, WorkspaceContext } from "../../types";
-import { assetIdentity, type AssetReferenceIdentity } from "../../shared/contracts/assets";
+import { assetIdentity, assetIdentityForProject, type AssetReferenceIdentity } from "../../shared/contracts/assets";
 import { captureOperationContext, isOperationContextCurrent } from "../../app/operationContext";
 import { CloseIcon, CopyIcon, EraserIcon, ImageEditIcon, VideoEditIcon } from "../common/ViewIcons";
 import { SpotlightOptionIcon } from "../spotlight/SpotlightOptionIcon";
@@ -55,14 +61,25 @@ const MODEL_LABELS: Record<string, string> = {
   nano_banana_2_1: "Nano Banana 2.1", gpt_image_2: "GPT Image 2", gpt_image_2_5: "GPT Image 2.5",
   kling_video_edit: "Kling 3.0 Omni Edit", kling4_0: "Kling 4.0 · Edit video", seedance_2_5: "Seedance 2.5 · Edit video",
 };
-// 영상 모델마다 늘 보내는 값과 칩으로 고르는 옵션 하나(10-28 유료 시험으로 확인한 계약). Kling 4.0 은 길이를 안 주면
-// 10초로 과금돼서 원본 길이를 함께 보낸다(아래 editParams).
-const VIDEO_EDIT_PARAMS: Record<string, { fixed: Record<string, string>; option: string }> = {
-  kling_video_edit: { fixed: {}, option: "mode" },
-  kling4_0: { fixed: { mode: "video-edit" }, option: "resolution" },
-  seedance_2_5: { fixed: { mode: "video_edit" }, option: "resolution" },
+// 영상 모델마다 늘 보내는 값과 칩으로 고르는 옵션 하나(10-28 유료 시험·견적으로 확인한 계약). 비율 auto = 원본 화면 그대로
+// (안 보내면 CLI 기본 16:9). seconds = 보내는 길이의 범위(CLI 가 거절하는 경계) — 처음엔 원본 길이(안 주면 Kling 4.0 은
+// 10초로 과금, Seedance 는 5초). Kling 4.0 만 더 길게 고를 수 있다: 원본보다 길면 뒤로 이어 늘린다(10-28 유료 시험 — 원본 구간은 거의 그대로).
+// maxImages = 그린 프레임을 포함한 이미지 레퍼런스 수 — Kling 4.0·Seedance 2.5 는 CLI 1.2.3 규칙, Kling 3.0 Omni Edit 는
+// 힉스필드 웹 안내(CLI 엔 제한이 안 적힘).
+const VIDEO_EDIT_PARAMS: Record<string, {
+  fixed: Record<string, string>; option: string; maxImages: number;
+  seconds?: { min: number; max: number; extend?: boolean }; bitrate?: boolean; audio?: boolean;
+}> = {
+  kling_video_edit: { fixed: {}, option: "mode", maxImages: 4 },
+  kling4_0: { fixed: { mode: "video-edit", aspect_ratio: "auto" }, option: "resolution", maxImages: 10,
+    seconds: { min: 3, max: 30, extend: true } },
+  seedance_2_5: { fixed: { mode: "video_edit", aspect_ratio: "auto" }, option: "resolution", maxImages: 30,
+    seconds: { min: 4, max: 30 }, bitrate: true, audio: true },
 };
+// 수정 창 레퍼런스 칸에 넣은 이미지(2번부터 — 1번은 늘 그린 프레임)
+type ExtraRef = AssetReferenceIdentity & { uid: string; file_path: string; name: string; thumb: string };
 const modelLabel = (id: string) => MODEL_LABELS[id] ?? id;
+const bitrateLabel = (value = "") => value.charAt(0).toUpperCase() + value.slice(1); // high → High(힉스필드 웹 표기)
 
 // 도구 캡슐의 선 아이콘(18px) — 이 창에서만 쓴다.
 const TOOL_ICON = {
@@ -607,14 +624,28 @@ export function PartialEditModal({
   }, [option, optionValues, optionDefault]);
   // 이미지 모델은 2k 가 있으면 2k — 시험(10-28)과 같은 조건. 없는 모델은 모델 기본값.
   const imageResolution = !isVideo && m.params.find((p) => p.name === "resolution")?.enum?.includes("2k") ? "2k" : null;
+  const videoSpec = isVideo ? VIDEO_EDIT_PARAMS[m.model] : undefined;
+  const baseSeconds = videoSpec?.seconds && videoDuration > 0
+    ? Math.min(videoSpec.seconds.max, Math.max(videoSpec.seconds.min, Math.round(videoDuration))) : 0;
+  const [seconds, setSeconds] = useState<number | null>(null); // Kling 4.0 길이 — null = 원본 길이
+  const sendSeconds = videoSpec?.seconds?.extend && seconds != null
+    ? Math.min(videoSpec.seconds.max, Math.max(baseSeconds, seconds)) : baseSeconds;
+  const bitrateKey = videoSpec?.bitrate ? (m.params.find((p) => p.name === "bitrate_mode")?.enum ?? []).join("|") : "";
+  const [bitrate, setBitrate] = useState("high"); // 힉스필드 웹·생성창과 같은 처음 값
+  const bitrateValues = useMemo(() => (bitrateKey ? bitrateKey.split("|") : []), [bitrateKey]);
+  const bitrateSend = bitrateValues.includes(bitrate) ? bitrate : bitrateValues[0];
+  const audioParam = !!videoSpec?.audio && m.params.some((p) => p.name === "generate_audio");
+  const [audio, setAudio] = useState(true);
   const editParams = useMemo(() => {
     if (!isVideo) return { ...(aspect ? { aspect_ratio: aspect } : {}), ...(imageResolution ? { resolution: imageResolution } : {}) };
     return {
-      ...VIDEO_EDIT_PARAMS[m.model]?.fixed,
+      ...videoSpec?.fixed,
       ...(optionName && option ? { [optionName]: option } : {}),
-      ...(m.model === "kling4_0" ? { duration: Math.max(1, Math.round(videoDuration)) } : {}),
+      ...(videoSpec?.seconds && sendSeconds ? { duration: sendSeconds } : {}),
+      ...(bitrateSend ? { bitrate_mode: bitrateSend } : {}),
+      ...(audioParam ? { generate_audio: audio } : {}),
     };
-  }, [isVideo, aspect, imageResolution, m.model, optionName, option, videoDuration]);
+  }, [isVideo, aspect, imageResolution, videoSpec, optionName, option, sendSeconds, bitrateSend, audioParam, audio]);
   const [cost, setCost] = useState<number | null>(null);
   const [successfulCostKey, setSuccessfulCostKey] = useState("");
   const [costLoading, setCostLoading] = useState(false);
@@ -643,7 +674,7 @@ export function PartialEditModal({
   }, [m.model, paramsReady, editParams, isVideo, videoDuration, optionName, optionValues, option, editCostKey]);
   const costKnown = cost != null && (!isVideo || successfulCostKey === editCostKey);
   // 모델·옵션 칩의 목록, 색·굵기 창 — 바깥을 누르면 닫는다(생성창 칩과 같다)
-  const [menu, setMenu] = useState<null | "model" | "option">(null);
+  const [menu, setMenu] = useState<null | "model" | "option" | "bitrate">(null);
   const chipsRef = useRef<HTMLDivElement>(null);
   useOutsideMouseDown(chipsRef, () => setMenu(null), menu !== null);
   const [colorOpen, setColorOpen] = useState(false);
@@ -663,6 +694,62 @@ export function PartialEditModal({
       if (current) URL.revokeObjectURL(current);
     };
   }, [resultUrl]);
+
+  // ── 영상 수정 레퍼런스 칸 — 에셋 창·탐색기에서 놓은 이미지(생성창 트레이와 같은 부품·같은 가져오기 경로) ──
+  const [extraRefs, setExtraRefs] = useState<ExtraRef[]>([]);
+  const [importingRefs, setImportingRefs] = useState(0); // 탐색기 파일을 올리는 동안은 제출하지 않는다
+  const refUid = useRef(0);
+  const maxImages = videoSpec?.maxImages ?? 0;
+  const refsEditable = isVideo && stage === "draw" && !submitting;
+  const addImageRefs = (items: SpotlightAssetDragItem[], dropped = items.length) => {
+    const images = items.filter((item) => item.type === "image");
+    const room = Math.max(0, maxImages - 1 - extraRefs.length);
+    const added = images.slice(0, room).map((item): ExtraRef => {
+      const base = spotlightAssetRefBase(item);
+      return { ...assetIdentityForProject(base, gen.project_id || undefined), uid: `ref-${++refUid.current}`,
+        file_path: base.file_path, name: base.name, thumb: base.thumb };
+    });
+    if (added.length) setExtraRefs((prev) => [...prev, ...added].slice(0, Math.max(0, maxImages - 1)));
+    const left = dropped - added.length;
+    if (left > 0) {
+      flashMsg(images.length > added.length
+        ? `${modelLabel(m.model)} 는 그린 프레임 포함 이미지 ${maxImages}장까지입니다 — ${left}개는 넣지 않았습니다.`
+        : `레퍼런스 칸에는 이미지만 넣을 수 있습니다 — ${left}개는 넣지 않았습니다.`);
+    }
+  };
+  const importRefFiles = async (files: File[]) => {
+    const images = files.filter((file) => referenceDropTypeFromFile(file) === "image");
+    if (!images.length) { flashMsg("레퍼런스 칸에는 이미지만 넣을 수 있습니다."); return; }
+    setImportingRefs((n) => n + 1);
+    try {
+      // 생성창과 같이 이 PC 설치 폴더(imports)에 저장한다 — 놓은 파일은 Assets 에도 남는다.
+      const res = await api.uploadReferenceFiles(images, { target_project_id: gen.project_id || undefined,
+        target_workspace_id: workspace.id || undefined });
+      const saved: SpotlightAssetDragItem[] = res.saved || [];
+      notifySpotlightAssetsChanged(saved);
+      if (mountedRef.current) addImageRefs(saved, files.length);
+    } catch (e) {
+      if (mountedRef.current) setError(`레퍼런스 이미지 가져오기 실패: ${String(e)}`);
+    } finally {
+      if (mountedRef.current) setImportingRefs((n) => n - 1);
+    }
+  };
+  const onRefDragOver = (e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes(DRAG_TYPES.asset) || dataTransferHasFiles(e.dataTransfer)) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = refsEditable ? "copy" : "none";
+    }
+  };
+  const onRefDrop = (e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes(DRAG_TYPES.asset)) {
+      e.preventDefault();
+      if (refsEditable) addImageRefs(parseSpotlightAssetItems(readSpotlightAssetPayload(e.dataTransfer)));
+    } else if (dataTransferHasFiles(e.dataTransfer)) {
+      e.preventDefault(); // 막지 않으면 브라우저가 파일을 새 탭으로 연다
+      if (refsEditable) void importRefFiles(filesFromDataTransfer(e.dataTransfer));
+    }
+  };
+  const tooManyRefs = isVideo && extraRefs.length + 1 > maxImages;
 
   // 그린 획·친 프롬프트는 이 창의 상태에만 있다 — 그동안 창을 닫거나 새로고침하면 브라우저가 묻는다(56회차). 보낸 뒤는 서버에 있다.
   const drafting = stage === "draw" && (items.length > 0 || !!prompt.trim());
@@ -686,6 +773,7 @@ export function PartialEditModal({
     (isVideo || !!aspect) &&
     (!isVideo || videoDuration > 0 && (!optionName || optionValues.includes(option))) &&
     (!isVideo || successfulCostKey === editCostKey && cost !== null && Number.isFinite(cost)) &&
+    importingRefs === 0 && !tooManyRefs &&
     !blockedMessage &&
     workspaceReady && openingWorkspace.current === JSON.stringify([workspace.scope, workspace.id]) &&
     isOperationContextCurrent(openingContext.current);
@@ -844,7 +932,7 @@ export function PartialEditModal({
     const body: GenerationCreateBody = {
       // 영상 편집 모델은 그림이 몇 초 장면인지 받는 칸이 없다 — 글로 알려 주고, 표시가 결과에 그려지지 않게 한다(10-28 시험과 같은 안내).
       prompt: isVideo
-        ? `${prompt.trim()}\n참고 이미지는 원본 영상 ${frameTime.toFixed(3)}초 장면에 고칠 곳을 표시한 그림입니다. 표시(선·도형)는 결과 영상에 넣지 마세요.`
+        ? `${prompt.trim()}\n${extraRefs.length ? "첫 번째 참고 이미지" : "참고 이미지"}는 원본 영상 ${frameTime.toFixed(3)}초 장면에 고칠 곳을 표시한 그림입니다. 표시(선·도형)는 결과 영상에 넣지 마세요.`
         : prompt.trim(),
       model: m.model,
       params: editParams,
@@ -861,6 +949,9 @@ export function PartialEditModal({
           thumbnail: refBits.thumbnail,
           name: gen.source_name || undefined,
         },
+        // 레퍼런스 칸 2번부터 — 그린 프레임 뒤에 칸 순서대로(같은 image_references 로 이어진다)
+        ...extraRefs.map((ref) => ({ ...assetIdentity(ref), file_path: ref.file_path, type: "image", role: "image_references",
+          thumbnail: ref.thumb, name: ref.name })),
       ],
     };
     // prepareCreate 클로저 = 제출 1회의 idempotency key. 답이 없을 때의 재전송은 전송 층(jsonFetch)이 같은 key·같은 헤더로
@@ -1076,7 +1167,8 @@ export function PartialEditModal({
     ? {
         aspectRatio: `${src.w} / ${src.h}`,
         width: "min(86vw, 1380px)",
-        maxWidth: `calc(${isVideo ? 50 : 62}vh * ${(src.w / src.h).toFixed(6)})`,
+        // 영상은 아래 레퍼런스 칸(약 106px)·두 줄 안내만큼 더 줄인다 — 1500×980 창에서 스크롤 없이 Generate 까지(10-28 실측)
+        maxWidth: `calc(${isVideo ? "(50vh - 124px)" : "62vh"} * ${(src.w / src.h).toFixed(6)})`,
       }
     : undefined;
   return (
@@ -1305,7 +1397,36 @@ export function PartialEditModal({
                 </div>
                 {/* 프롬프트·모델·Generate — 생성창 프롬프트 판과 같은 부품(.sl-*, prompt-dock.css 는 전역).
                     autoFocus 없음: 기본은 그리기 모드(단축키 유지), 입력은 클릭해야 시작 */}
-                <div className="sl-panel pe-prompt">
+                <div className="sl-panel pe-prompt" onDragOver={isVideo ? onRefDragOver : undefined} onDrop={isVideo ? onRefDrop : undefined}>
+                  {isVideo && (
+                    <div className="sl-reftray" aria-label="레퍼런스">
+                      <div className="sl-reftray-scroll">
+                        <div className="sl-reftray-item" title="1. 그린 프레임 — 자동으로 들어갑니다(뺄 수 없음)">
+                          <span className="sl-reftray-num">1</span>
+                          {srcUrlRef.current ? <img src={srcUrlRef.current} alt="" draggable={false} /> : <span className="sl-reftray-ph" />}
+                          <span className="sl-reftray-name">그린 프레임</span>
+                          <span className="sl-reftray-linked">🔒</span>
+                        </div>
+                        {extraRefs.map((ref, index) => (
+                          <div key={ref.uid} className="sl-reftray-item" title={`${index + 2}. ${ref.name}`}>
+                            <span className="sl-reftray-num">{index + 2}</span>
+                            <img src={ref.thumb} alt="" draggable={false} />
+                            <span className="sl-reftray-name">{ref.name}</span>
+                            <button type="button" className="sl-reftray-x" title="빼기" aria-label={`${index + 2}번 레퍼런스 빼기`}
+                              disabled={!refsEditable} onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => setExtraRefs((prev) => prev.filter((item) => item.uid !== ref.uid))}>×</button>
+                          </div>
+                        ))}
+                        <div className="sl-reftray-empty pe-refhint">
+                          <span>
+                            에셋 창 또는 탐색기에서 이미지를 여기로 드래그하세요 - 번호 순서대로 레퍼런스가 됩니다<br />
+                            <b>이미지 {extraRefs.length + 1} / 최대 {maxImages}장</b> (그린 프레임 포함)
+                            {importingRefs > 0 && " · 가져오는 중…"}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   <div className="sl-prompt-row">
                     <textarea
                       className="sl-prompt"
@@ -1395,6 +1516,59 @@ export function PartialEditModal({
                           )}
                         </div>
                       )}
+                      {bitrateValues.length > 0 && (
+                        <div className="sl-chip-wrap">
+                          <button type="button" className={"sl-chip sl-opt-chip" + (menu === "bitrate" ? " active" : "")}
+                            title="비트레이트" aria-label="비트레이트" aria-haspopup="listbox" aria-expanded={menu === "bitrate"}
+                            disabled={submitting} onClick={() => setMenu(menu === "bitrate" ? null : "bitrate")}>
+                            <span className="sl-opt-ic"><SpotlightOptionIcon name="bitrate_mode" /></span>
+                            <span>비트레이트 {bitrateLabel(bitrateSend)}</span>
+                            <span className="sl-caret">›</span>
+                          </button>
+                          {menu === "bitrate" && (
+                            <div className="sl-dropdown pe-menu-small" role="listbox" aria-label="비트레이트">
+                              <div className="sl-dd-scroll">
+                                {bitrateValues.map((value) => (
+                                  <button key={value} type="button" role="option" aria-selected={value === bitrateSend}
+                                    className={"sl-dd-item" + (value === bitrateSend ? " sel" : "")}
+                                    onClick={() => { setBitrate(value); setMenu(null); }}>
+                                    {bitrateLabel(value)}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {audioParam && (
+                        <div className="sl-chip sl-opt-audio" title="소리 만들기 (켜기/끄기)">
+                          <span className="sl-opt-ic"><SpotlightOptionIcon name="generate_audio" /></span>
+                          <div className="sl-adv-opts">
+                            <button type="button" className={"sl-adv-opt" + (audio ? " sel" : "")} aria-pressed={audio}
+                              aria-label="소리 켜기" disabled={submitting} onClick={() => setAudio(true)}>ON</button>
+                            <button type="button" className={"sl-adv-opt" + (audio ? "" : " sel")} aria-pressed={!audio}
+                              aria-label="소리 끄기" disabled={submitting} onClick={() => setAudio(false)}>OFF</button>
+                          </div>
+                        </div>
+                      )}
+                      {videoSpec?.seconds?.extend && baseSeconds > 0 && (
+                        <div className="sl-chip sl-opt-slider" title={`길이 ${baseSeconds}~${videoSpec.seconds.max}초 — 원본보다 길면 뒤로 이어 늘립니다`}>
+                          <span className="sl-opt-ic"><SpotlightOptionIcon name="duration" /></span>
+                          <input type="range" aria-label="영상 길이" min={baseSeconds} max={videoSpec.seconds.max} step={1}
+                            value={sendSeconds} disabled={submitting} onChange={(e) => setSeconds(Number(e.target.value))} />
+                          <span className="sl-opt-val">{sendSeconds}s</span>
+                        </div>
+                      )}
+                      {isVideo && videoDuration > 0 && (
+                        <div className="sl-ignored-note">
+                          {videoSpec?.seconds?.extend ? (
+                            <>길이 <b>{baseSeconds}초 = 원본(수정)</b> · <strong>더 길게 = 뒤로 이어 늘리기</strong>
+                              {" "}— 늘어난 부분에 지시가 들어갑니다. 비율은 원본, 요금은 고른 길이로.</>
+                          ) : (
+                            <>길이·비율은 원본 영상을 따릅니다({Math.round(videoDuration)}초).</>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <button
                       type="button"
@@ -1418,6 +1592,11 @@ export function PartialEditModal({
                   <div className="partial-edit-hint">워크스페이스 확인 후 생성할 수 있습니다.</div>
                 )}
                 {blockedMessage && <div className="partial-edit-hint">{blockedMessage}</div>}
+                {tooManyRefs && (
+                  <div className="partial-edit-hint">
+                    {modelLabel(m.model)} 는 그린 프레임 포함 이미지 {maxImages}장까지입니다 — 레퍼런스를 {extraRefs.length + 1 - maxImages}개 빼세요.
+                  </div>
+                )}
                 {m.paramsModel === m.model && !m.paramsLoading && (!m.params.length || !isVideo && !aspect) && (
                   <div className="partial-edit-hint">
                     모델 파라미터를 불러오지 못해 생성할 수 없습니다 — 다시 열어보세요.
