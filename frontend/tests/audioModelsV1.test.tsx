@@ -98,6 +98,16 @@ describe("audio models v1", () => {
     expect(options.sample_rate).toBe(48000);
   });
 
+  it("advanced-options: Qwen 말하는 방식 글 칸에도 이름(aria-label) — 화면 읽기 프로그램이 목적을 읽는다(Codex A-3)", async () => {
+    const { spotlightParamLabel } = await import("../src/lib/spotlightPromptConfig");
+    const params: ModelParam[] = [{ name: "instruction", type: "string", default: null, required: false }];
+    await act(async () => root.render(<Panel model="qwen_audio_tts" params={params} />));
+    act(() => host.querySelector<HTMLButtonElement>('button[title^="고급 옵션"]')!.click());
+    const field = host.querySelector<HTMLInputElement>('.sl-adv-pop input[type="text"]')!;
+    expect(field.getAttribute("aria-label")).toBe(spotlightParamLabel("instruction"));
+    expect(field.getAttribute("aria-label")).toBeTruthy();
+  });
+
   it("qwen-voices: web Qwen voices are marked and listed first; others stay selectable; saved choice untouched", async () => {
     const qwenEmily = "6b3e3642-f7b7-4cb8-9688-51e233c4b92f"; // 웹 Qwen 목록에 있는 Emily
     voices.mockResolvedValue({ items: [

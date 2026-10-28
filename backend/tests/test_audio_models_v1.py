@@ -37,6 +37,20 @@ def test_definition_parity():
         assert line and set(re.findall(r'"([a-z_]+)"', line[1])) == fields
 
 
+@pytest.mark.parametrize("model", sorted(AUDIO_MODELS_V1 | {"text2speech_v2"}))
+@pytest.mark.parametrize("path", ["object.pcm", "object.raw", "object.mp3"])
+def test_audio_results_follow_model_whatever_the_extension(model, path):
+    # format=pcm 결과처럼 모르는 확장자라도 명시 타입이 없으면 음성 모델의 결과는 오디오다(Codex A-2) — 이미지로 저장되지 않게.
+    result = cli.parse_job({"id": "job", "job_type": model, "params": {}, "result_url": f"https://example.test/{path}",
+                            "thumbnail_url": "https://example.test/poster.png"})
+    assert result["asset"]["type"] == "audio"
+    assert result["asset"]["thumbnail_url"] is None
+    # 명시 타입은 그대로 우선한다
+    explicit = cli.parse_job({"id": "job", "job_type": model, "params": {}, "result_url": f"https://example.test/{path}",
+                              "result_media_type": "video"})
+    assert explicit["asset"]["type"] == "video"
+
+
 @pytest.mark.parametrize("model", sorted(AUDIO_MODELS_V1))
 def test_audio_inputs_and_extensionless_results(model):
     validate_media_request(model, "대본\n원문", voice(), [])

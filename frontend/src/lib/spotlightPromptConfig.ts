@@ -79,6 +79,9 @@ export function recommendedVoiceIds(model: string): ReadonlySet<string> | null {
   return model === "qwen_audio_tts" ? QWEN_WEB_VOICE_IDS : null;
 }
 
+/** 레퍼런스 칸을 보일까 — 레퍼런스를 안 받는 음성 모델이라도 남은 것이 있으면 보인다. 숨기면 지울 길 없이 제출만 막힌다(Codex A-1). */
+export const refTrayShown = (model: string, refCount: number): boolean => !isTtsModel(model) || model === "seed_audio" || refCount > 0;
+
 export function audioReferenceError(model: string, params: Record<string, unknown>, refs: { type: string; file_path?: string }[]): string | null {
   if (!isTtsModel(model)) return null;
   if (model !== "seed_audio") return refs.length ? "이 음성 모델에는 레퍼런스를 사용할 수 없습니다" : null;

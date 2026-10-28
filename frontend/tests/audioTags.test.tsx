@@ -65,6 +65,10 @@ describe("bracket-list — `[` 검색어 규칙(웹과 같다)", () => {
     ["[ 없음", ["Hello"], "end", null],
     ["줄 시작(앞 조각에 [ 가 있어도 다른 줄)", ["a [", "<br>", "b"], "end", null],
     ["커서가 [ 앞", ["[wh"], [0, 0], null],
+    // 붙여넣기는 글을 새 조각으로 넣는다 — `[` 와 검색어가 다른 조각이어도 같은 줄이면 하나로 읽는다(Codex C-1)
+    ["[ 와 검색어가 다른 조각", ["Hi [", "wh"], "end", "wh"],
+    ["세 조각에 걸침", ["Hi [", "cl", "ears th"], "end", "clears th"],
+    ["다른 조각 뒤가 닫혀 있음", ["Hi [", "wh", "] ok"], [1, 2], null],
   ])("%s", (_name, parts, at, query) => {
     expect(audioTagTrigger(editorWith(parts, at))?.query ?? null).toBe(query);
   });
@@ -80,6 +84,8 @@ describe("spacing — 넣을 때 띄어쓰기·커서", () => {
     ["줄 처음", ["Hello", "<br>", "next"], [2, 0], "Hello\n[sighing] next", 16],
     ["`[검색어` 자리를 바꾼다", ["Hi [wh"], "end", "Hi [sighing] ", 13],
     ["단어 사이", ["abc"], [0, 1], "a [sighing] bc", 12],
+    ["`[` 와 검색어가 다른 조각 — 둘 다 바꾼다", ["Hi [", "wh"], "end", "Hi [sighing] ", 13],
+    ["세 조각 — 뒤 글은 남긴다", ["Hi [", "wh", " ok"], [1, 2], "Hi [sighing] ok", 13],
   ])("%s", (_name, parts, at, text, caret) => {
     const ed = editorWith(parts, at);
     insertAudioTag(ed, "sighing");
@@ -284,5 +290,32 @@ describe("bracket-list — 프롬프트에서(ElevenLabs v4)", () => {
     await pick("ElevenLabs v3", "MiniMax Speech 2.8 HD");
     expect(view.container.querySelector(".sl-atag-btn")).toBeNull();
     expect(view.container.querySelector(".sl-atag-list")).toBeNull();
+  });
+
+  it("`[` 를 치고 검색어를 붙여넣어도 목록이 걸러지고 Enter 로 바꾼다(Codex C-1)", async () => {
+    const { setHubFeatures } = await import("../src/lib/hubFeatures");
+    setHubFeatures(["audio-models-v1"]);
+    view = await mountPrompt({ expanded: false });
+    act(() => button(view!.container, "Audio").click());
+    await settle();
+    act(() => [...view!.container.querySelectorAll("button")].find((b) => b.textContent?.includes("모델 선택"))!.click());
+    await settle();
+    act(() => [...view!.container.querySelectorAll<HTMLElement>(".sl-dd-item")].find((b) => b.textContent?.includes("Eleven v4"))!.click());
+    await settle();
+    const editor = required(view.container, '[contenteditable="true"]');
+    type(editor, () => { editor.textContent = "Hi ["; });
+    await settle();
+    expect(view.container.querySelector(".sl-atag-list")).not.toBeNull();
+    // 실제 붙여넣기 경로(onEditorPaste → insertTextAtCaret 가 새 글 조각을 만든다)
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { items: [], getData: (kind: string) => (kind === "text/plain" ? "wh" : "") } });
+    act(() => { editor.dispatchEvent(paste); });
+    await settle();
+    expect(editor.childNodes.length).toBeGreaterThan(1); // `[` 와 검색어가 다른 조각
+    expect([...required(view.container, ".sl-atag-list").querySelectorAll(".sl-mention-item")].map((el) => el.textContent))
+      .toEqual(["[whispering]", "[wh]"]);
+    key(editor, "Enter");
+    await settle();
+    expect(editor.textContent).toBe("Hi [whispering] ");
   });
 });

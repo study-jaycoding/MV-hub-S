@@ -90,8 +90,11 @@ export function insertTextAtCaret(editor: HTMLElement, text: string) {
 }
 
 // `[` 오디오 태그 검색어 — 힉스필드 웹(v4 대사 칸) 규칙: 커서 앞 마지막 `[` 부터 커서까지. 그 사이에 `]`·줄바꿈이 있거나
-//  커서 뒤가 `…]` 로 닫혀 있으면(이미 태그 안) 아니다. 줄바꿈은 <br> 이라 한 글 조각 안만 본다.
-export function audioTagTrigger(editor: HTMLElement): { node: Text; idx: number; query: string } | null {
+//  커서 뒤가 `…]` 로 닫혀 있으면(이미 태그 안) 아니다. 줄바꿈은 <br> 이라 붙은 글 조각들(한 줄)만 본다 — 붙여넣기는 글을 새 조각으로
+//  넣어 `[` 와 검색어가 다른 조각에 있을 수 있다(Codex C-1). node·idx = `[` 자리, end = 커서 자리(바꿀 범위의 끝).
+export function audioTagTrigger(
+  editor: HTMLElement,
+): { node: Text; idx: number; query: string; end: { node: Text; offset: number } } | null {
   const range = getCaretRange(editor);
   if (!range || !range.collapsed) return null;
   let node: Node | undefined = range.startContainer;
@@ -102,12 +105,26 @@ export function audioTagTrigger(editor: HTMLElement): { node: Text; idx: number;
     if (node?.nodeType !== Node.TEXT_NODE) return null;
     offset = (node.textContent || "").length;
   }
-  const text = node.textContent || "";
-  const idx = text.substring(0, offset).lastIndexOf("[");
-  if (idx < 0) return null;
-  const query = text.substring(idx + 1, offset);
-  if (/[\]\r\n]/.test(query) || /^[^[\]\r\n]*\]/.test(text.substring(offset))) return null;
-  return { node: node as Text, idx, query };
+  const caretNode = node as Text;
+  const run: Text[] = [caretNode];
+  for (let p = caretNode.previousSibling; p?.nodeType === Node.TEXT_NODE; p = p.previousSibling) run.unshift(p as Text);
+  for (let n = caretNode.nextSibling; n?.nodeType === Node.TEXT_NODE; n = n.nextSibling) run.push(n as Text);
+  let text = "";
+  let caret = 0;
+  for (const t of run) {
+    if (t === caretNode) caret = text.length + offset;
+    text += t.data;
+  }
+  const at = text.substring(0, caret).lastIndexOf("[");
+  if (at < 0) return null;
+  const query = text.substring(at + 1, caret);
+  if (/[\]\r\n]/.test(query) || /^[^[\]\r\n]*\]/.test(text.substring(caret))) return null;
+  let base = 0;
+  for (const t of run) {
+    if (at < base + t.length) return { node: t, idx: at - base, query, end: { node: caretNode, offset } };
+    base += t.length;
+  }
+  return null;
 }
 
 // range 바로 앞(-1)·뒤(1) 글자 — 줄 처음·끝은 "", <br> 은 "\n". 빈 글 조각은 건너뛴다.
@@ -139,7 +156,7 @@ export function insertAudioTag(editor: HTMLElement, tag: string, replaceQuery = 
   if (t) {
     range = document.createRange();
     range.setStart(t.node, t.idx);
-    range.setEnd(t.node, t.idx + 1 + t.query.length);
+    range.setEnd(t.end.node, t.end.offset);
   }
   range.deleteContents();
   const prev = charBeside(range, -1);

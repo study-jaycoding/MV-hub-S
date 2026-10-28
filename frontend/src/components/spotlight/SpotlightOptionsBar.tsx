@@ -830,6 +830,7 @@ export function SpotlightOptionsBar({
                       <input
                         className="sl-adv-num"
                         type="text"
+                        aria-label={spotlightParamLabel(p.name)}
                         placeholder={isTtsModel(model) ? "Default" : undefined}
                         value={String(optionValues[p.name] ?? p.default ?? "")}
                         onChange={(e) =>

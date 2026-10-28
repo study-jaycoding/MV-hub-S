@@ -324,6 +324,27 @@ class TestGenRequestCapabilityGate:
         assert json.loads(saved["payload"])["asset_content_protocol"] == 1
         assert saved["status"] == "claimed" and repo.get_generation(gen_id)["status"] == "pending"
 
+    @pytest.mark.parametrize("model,protocol,capable", [
+        ("dubbing", "video-voice-v1", "video_voice_v1_capable"),
+        ("seed_audio", "audio-models-v1", "audio_models_v1_capable"),
+        ("text2speech_v2", "media-v2", "media_v2_capable"),
+    ])
+    def test_orphan_repair_requeues_with_model_capability_marker(self, model, protocol, capable):
+        # placeholder 저장 뒤 큐 활성화 전에 죽은 요청을 되살릴 때도 모델의 작업자 기능 표식을 싣는다 — 빠지면 그 기능을 가진
+        #  최신 작업자가 가져가서도 '계약을 확인할 수 없습니다'로 실패시킨다(agent_push, Codex B-3). 옛 작업자는 종전대로 못 받는다.
+        from app.usecases.gen_requests import repair_canvas_generation_links
+
+        link = {"attempt_id": f"attempt_{model}", "generation_id": f"generation_{model}",
+                "scene_id": "scene-protocol", "card_id": "card-protocol"}
+        repo.create_local_generation({"model": model, "prompt": "gate test"}, "me",
+            creator_uid="creator-1", workspace={"scope": "personal"}, generation_id=link["generation_id"])
+        repair_canvas_generation_links(self.account["email"], "creator-1", [link])
+        assert not repo.has_pending_requests(self.account["email"], workspace_capable=True)
+        claimed = repo.claim_pending_requests(self.account["email"], workspace_capable=True, lease_owner="new-agent",
+            submission_stage_capable=True, **{capable: True})
+        assert len(claimed) == 1 and claimed[0]["gen_id"] == link["generation_id"]
+        assert claimed[0]["media_protocol"] == protocol
+
     def test_asset_content_filter_preserves_previous_malformed_payload_behavior(self):
         request_id, _ = self._request()
         with db.get_connection() as conn:

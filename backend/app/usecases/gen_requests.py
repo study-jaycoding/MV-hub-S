@@ -391,6 +391,18 @@ async def _resolve_placeholder_collision(
     )
 
 
+def _set_media_protocol(payload: dict) -> None:
+    """최종 모델이 요구하는 작업자 기능 표식 — 새 요청·재생성과 끊긴 요청 복구(재큐잉)가 같은 규칙을 쓴다.
+    복구에서 빠지면 그 기능을 가진 최신 작업자도 받아 놓고 '계약을 확인할 수 없습니다'로 실패시킨다(Codex B-3)."""
+    model = payload.get("model")
+    if model in AUDIO_MODELS_V1:
+        payload["media_protocol"] = "audio-models-v1"
+    elif model in VIDEO_VOICE_MODELS:
+        payload["media_protocol"] = "video-voice-v1"
+    elif model in MEDIA_V2_MODELS:
+        payload["media_protocol"] = "media-v2"
+
+
 @_account_scoped("email")
 def repair_canvas_generation_links(
     email: str,
@@ -418,6 +430,7 @@ def repair_canvas_generation_links(
             continue
         payload["source_gen_id"] = None
         payload["asset_content_protocol"] = 1
+        _set_media_protocol(payload)
         generation = repo.get_generation(link["generation_id"])
         payload["project_id"] = (generation or {}).get("project_id")
         if repo.repair_orphaned_canvas_generation(email, creator_uid, link, payload):
@@ -1531,12 +1544,7 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
         payload["source_gen_id"] = cmd.source_gen_id
         # 구 에이전트는 무시하고, 지원 에이전트는 과금 전 실제 입력판 보존을 확인한다.
         payload["asset_content_protocol"] = 1
-        if payload.get("model") in AUDIO_MODELS_V1:
-            payload["media_protocol"] = "audio-models-v1"
-        elif payload.get("model") in VIDEO_VOICE_MODELS:
-            payload["media_protocol"] = "video-voice-v1"
-        elif payload.get("model") in MEDIA_V2_MODELS:
-            payload["media_protocol"] = "media-v2"
+        _set_media_protocol(payload)
         if cmd.kind == "create":
             payload["project_id"] = (cmd.data or {}).get("project_id")
             # 화면의 기대 지문은 검증된 DB 지문과 분리해 과금 직전 실제 바이트와 대조한다.

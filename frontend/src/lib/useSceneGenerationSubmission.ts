@@ -17,6 +17,17 @@ import { resolveAutoAspectRatio } from "./aspectAuto";
 
 /** 렌더 노드의 반복 수 — 보이스 체인지·번역은 카드당 1개(같은 영상을 여러 번 과금하지 않게. 서로 다른 카드는 각각 1개). */
 export const sceneRepeatCount = (model: string, batch: number): number => (isVideoVoiceModel(model) ? 1 : batch);
+/** 제출 직전 공통 거르기 — 보이스 체인지·번역 잡은 카드마다 1건만 남긴다. 렌더 반복(generateCards)뿐 아니라 Comfy 짝 생성
+ *  (generateCardRuns)도 반복 결과를 다 넘기는데, 이 둘은 글을 안 쓰니 같은 영상이 그만큼 과금된다(Codex B-1). 다른 모델은 그대로. */
+export function oneVideoVoiceJobPerCard<T extends { cardId: string; model: string }>(jobs: T[]): T[] {
+  const seen = new Set<string>();
+  return jobs.filter((job) => {
+    if (!isVideoVoiceModel(job.model)) return true;
+    if (seen.has(job.cardId)) return false;
+    seen.add(job.cardId);
+    return true;
+  });
+}
 
 /** 넣은 영상의 실제 길이(초) — 메타데이터만 받는다. 못 읽으면 null(기본 길이·이전 영상 길이를 만들지 않는다). */
 export function readVideoDuration(src: string, timeoutMs = 15000): Promise<number | null> {
@@ -129,12 +140,13 @@ export function useSceneGenerationSubmission({
   // job 목록 제출(공통) — 모델 파라미터 선로드→body 조립→각 job 1회씩 병렬 create→카드에 결과 id 누적.
   //  ★배치 반복은 호출자가 jobs 를 늘려서(같은 카드 N개) 결정한다 — 여기선 job 1개=1장.
   const submitGenJobs = async (
-    requestedJobs: SceneGenerationJobInput[],
+    inputJobs: SceneGenerationJobInput[],
     skipped: number, // 모델을 정할 수 없어 건너뛴 생성카드 수(카드 단위)
     scene: Scene,
     projectId: string | undefined,
     folderPath: string | undefined,
   ) => {
+    const requestedJobs = oneVideoVoiceJobPerCard(inputJobs); // 캔버스 위치·업로드보다 먼저 — 버린 잡이 유령 카드를 남기지 않게
     if (!isGenerationWorkspaceReady(workspaceContext)) {
       flash("워크스페이스 정보를 확인하는 중입니다. 잠시 후 다시 실행하세요.");
       return;

@@ -9,6 +9,7 @@ import { setHubFeatures } from "../src/lib/hubFeatures";
 import {
   AUDIO_TASK_MODELS, DUBBING_LANGUAGES, VIDEO_VOICE_INPUT_ERROR, audioModelBlocked, audioTaskOf, spotlightValueLabel,
 } from "../src/lib/spotlightPromptConfig";
+import { installPromptBoundaryMocks, mountPrompt, settle } from "./seedanceRenderHarness";
 
 const mocks = vi.hoisted(() => ({ voices: vi.fn(), modelParams: vi.fn(), estimateCost: vi.fn() }));
 vi.mock("../src/api", () => ({ api: mocks }));
@@ -213,5 +214,61 @@ describe("capability-gate · 씬", () => {
     expect(await measured).toEqual({ duration: 12.346, input_ref: SHA });
     expect(await videoCostContext("dubbing", [])).toBeNull();
     expect(await videoCostContext("seedance_2_5", [{ type: "video", file_path: "x.mp4" }])).toBeNull();
+  });
+
+  it("제출 공통 거르기: Comfy 짝 생성(run 마다 잡)이 넘겨도 두 워크플로는 카드당 1건 · 다른 카드·다른 모델은 그대로(Codex B-1)", async () => {
+    const { oneVideoVoiceJobPerCard } = await import("../src/lib/useSceneGenerationSubmission");
+    // generateCardRuns 처럼 run 4개가 같은 카드의 번역 잡 4개를 만든 경우(글만 다르고 입력 영상은 같다)
+    const runs = [1, 2, 3, 4].map((n) => ({ cardId: "a", model: "dubbing", text: `comfy ${n}` }));
+    const others = [{ cardId: "b", model: "dubbing", text: "" }, { cardId: "c", model: "seedance_2_5", text: "1" }, { cardId: "c", model: "seedance_2_5", text: "2" },
+      { cardId: "d", model: "voice_change", text: "" }, { cardId: "d", model: "voice_change", text: "" }];
+    expect(oneVideoVoiceJobPerCard([...runs, ...others]).map((j) => `${j.cardId}:${j.text}`))
+      .toEqual(["a:comfy 1", "b:", "c:1", "c:2", "d:"]);
+  });
+});
+
+// Codex B-2: 결과 재사용·씬 카드 복원이 ALLOWED 만 보면 두 워크플로(목록 밖)를 잃는다 — 실제 SpotlightPrompt·useModels 를 지난다.
+describe("result-lineage — 재사용·씬 복원이 Voice Change·Translate 를 지킨다", () => {
+  let view: Awaited<ReturnType<typeof mountPrompt>> | undefined;
+  let boundary: ReturnType<typeof installPromptBoundaryMocks>;
+  beforeEach(async () => {
+    vi.resetModules();
+    localStorage.clear();
+    boundary = installPromptBoundaryMocks();
+    vi.doMock("../src/lib/modelCatalogCache", () => ({ fetchModelCatalog: async () => [
+      { job_set_type: "nano_banana_flash", display_name: "Nano Banana 2", type: "image" },
+      { job_set_type: "seedance_2_5", display_name: "Seedance 2.5", type: "video" },
+    ] }));
+    boundary.api.modelParams.mockImplementation((model: string) => Promise.resolve({ constraints: {}, params:
+      model === "voice_change" ? [{ name: "voice_id", type: "string", required: true }, { name: "voice_type", type: "string", default: "preset", enum: ["preset", "element"] }]
+        : model === "dubbing" ? [{ name: "target_language", type: "string", default: null, required: true, enum: DUBBING_LANGUAGES.map(([code]) => code) }]
+          : [] }));
+    (boundary.api as Record<string, unknown>).voices = vi.fn().mockResolvedValue({ items: [], cursor: null });
+    (await import("../src/lib/hubFeatures")).setHubFeatures(["audio-models-v1", "video-voice-v1"]);
+  });
+  afterEach(() => {
+    view?.dispose();
+    view = undefined;
+    vi.doUnmock("../src/lib/modelCatalogCache");
+    vi.unstubAllGlobals();
+  });
+
+  it("보이스 체인지 결과를 재사용하면 Voice Change 로 돌아온다 — 결과가 영상이라고 영상 모델로 바뀌지 않는다", async () => {
+    view = await mountPrompt({ expanded: false });
+    boundary.api.getGeneration.mockResolvedValueOnce({ id: "vc1", prompt: "", display_prompt: null, model: "voice_change",
+      params: { voice_id: "voice-1", voice_type: "preset" }, references: [{ type: "video", file_path: "C:/clips/a.mp4", role: "input_video" }],
+      assets: [{ type: "video", file_path: "C:/out/vc.mp4" }], tags: [] });
+    act(() => { window.dispatchEvent(new CustomEvent("ch:reuse-prompt", { detail: "vc1" })); });
+    await settle();
+    await settle();
+    expect(view.ref.current?.currentModel()).toMatchObject({ model: "voice_change", params: { voice_id: "voice-1", voice_type: "preset" } });
+  });
+
+  it("씬 카드에 저장된 번역 모델은 그대로 적용된다", async () => {
+    view = await mountPrompt({ trayBinding: { key: "scene:vv", prompt: "", modelKey: "scene:vv:dubbing",
+      model: { model: "dubbing", type: "audio", params: { target_language: "kor" } },
+      refs: [{ type: "video", file_path: "C:/clips/a.mp4", name: "a", thumb: "" }] } });
+    await settle();
+    expect(view.ref.current?.currentModel()).toMatchObject({ model: "dubbing", params: { target_language: "kor" } });
   });
 });

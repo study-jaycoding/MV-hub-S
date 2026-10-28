@@ -75,10 +75,10 @@ import {
 import { useSpotlightTray } from "../lib/useSpotlightTray";
 import { useSpotlightTokenWrap } from "../lib/useSpotlightTokenWrap";
 import { useSeedanceRoleMenu } from "../lib/useSeedanceRoleMenu";
-import { useModels, ALLOWED, HIDDEN_PARAMS, optionsMatchModel, stripHiddenParams, withEffectiveDefaults } from "../lib/useModels";
+import { useModels, ALLOWED, HIDDEN_PARAMS, inferModelType, optionsMatchModel, stripHiddenParams, withEffectiveDefaults } from "../lib/useModels";
 import { SPEECH_TEXT_LIMITS } from "../lib/spotlightSubmit";
 import { videoCostContext } from "../lib/useSceneGenerationSubmission";
-import { AUDIO_TASK_MODELS, audioModelBlocked, audioTagMatches, audioTagModel, audioTaskOf, isTtsModel, isVideoVoiceModel, videoVoiceInputRef,
+import { AUDIO_TASK_MODELS, audioModelBlocked, audioTagMatches, audioTagModel, audioTaskOf, isTtsModel, isVideoVoiceModel, refTrayShown, videoVoiceInputRef,
   videoVoiceReferenceError, type VideoCostContext } from "../lib/spotlightPromptConfig";
 import { policyNote, submitBlockMessage } from "../lib/modelPolicyCore";
 import { useModelPolicy } from "../lib/modelPolicy";
@@ -738,9 +738,10 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       return;
     }
     // 연결된 모델 적용 — model id 로 타입 추론(cfg.type 보다 우선). ALLOWED 밖이면 적용 안 함(폴백 금지).
+    //  보이스 체인지·번역은 목록 밖이지만 Audio 의 일이다 — inferModelType 이 같이 안다(Codex B-2).
     if (bindingModel?.model) {
       const m = bindingModel.model;
-      const t = ALLOWED.audio.includes(m) ? "audio" : ALLOWED.video.includes(m) ? "video" : ALLOWED.image.includes(m) ? "image" : null;
+      const t = inferModelType(m) ?? null;
       if (t) applyModelCfg(t, m, bindingModel.params ?? {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1105,8 +1106,10 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       // 모드 판정 — 출력 자산 타입이 우선(성공작). 단 실패 생성은 자산이 없어 무조건 image 로
       //  떨어졌다 → 모델이 속한 모드로 폴백(seedance(video) 재사용이 Nano Banana(image)로 깨지던 문제).
       const assetType = g.assets[0]?.type;
+      // 보이스 체인지·번역은 결과가 영상이어도 Audio 의 일이다 — 목록(ALLOWED) 밖이라 아래 판정으로는 영상 모델로 바뀐다(Codex B-2).
+      const voiceWorkflow = isVideoVoiceModel(g.model || "");
       const t: "image" | "video" | "audio" =
-        assetType === "audio"
+        voiceWorkflow || assetType === "audio"
           ? "audio"
           : assetType === "video"
           ? "video"
@@ -1120,7 +1123,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       // 원래 모델이 화이트리스트에 있으면 유지(명시 복원), 아니면 '지금 고를 수 있는' 첫 모델로 클램프(자동 대체).
       // 폴백이 그룹에서 못 쓰는 모델을 집지 않게 firstAllowed 를 쓴다. 자동 대체는 explicit 로 굳히지 않아
       // 나중에 정책이 바뀌면 다시 고를 수 있다(코덱스 P1).
-      const keepsOriginal = ALLOWED[t].includes(g.model || "");
+      const keepsOriginal = voiceWorkflow || ALLOWED[t].includes(g.model || "");
       const useModel = keepsOriginal ? (g.model as string) : firstAllowed(t) || ALLOWED[t][0];
       // 표시 옵션만 추려 임시 보관(프롬프트·미디어 등 내부 파라미터 제외).
       const opts: Record<string, string | number | boolean> = {};
@@ -1688,7 +1691,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
           )}
 
           {/* 확장(+) 레퍼런스 트레이 — 에셋 폴더 드래그 전용. 번호 = 생성 --image 순서 */}
-          {trayMode && (!isTtsModel(model) || model === "seed_audio") && (
+          {trayMode && refTrayShown(model, trayRefs.length) && (
             <SpotlightRefTray
               trayRefs={trayRefs}
               model={model}

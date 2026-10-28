@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from urllib.parse import urlsplit
 import json
 import logging
 import math
@@ -488,7 +487,9 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
         # image 로 오분류돼 입력 축소본이 썸네일로 저장되지 않게 명시값(image|video)을 확장자 판정보다 우선.
         explicit_type = job.get("result_media_type") or job.get("type")
         model = job.get("job_set_type") or job.get("job_type") or job.get("model")
-        if explicit_type not in ("image", "video", "audio") and "." not in urlsplit(result_url).path.rsplit("/", 1)[-1]:
+        # 명시 타입이 없으면 음성·보이스 체인지 모델의 결과 종류는 모델이 정한다 — 확장자와 관계없이. format=pcm 의 `.pcm` 처럼
+        #  모르는 확장자가 image 로 저장되지 않게(Codex A-2). 다른 모델은 종전대로 확장자로 판정한다.
+        if explicit_type not in ("image", "video", "audio"):
             explicit_type = "audio" if model in TTS_MODELS else "video" if model in VIDEO_VOICE_MODELS else explicit_type
         asset = {
             "type": explicit_type

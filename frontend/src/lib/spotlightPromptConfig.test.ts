@@ -10,11 +10,22 @@ import {
   isVariantParam,
   modelChipLabel,
   modelRows,
+  refTrayShown,
   requiredVariantParam,
   spotlightIgnoredOptions,
   variantChoiceMissing,
   variantDisplayName,
 } from "./spotlightPromptConfig";
+
+describe("refTrayShown — 레퍼런스 칸(Codex A-1)", () => {
+  it("레퍼런스를 안 받는 음성 모델은 칸을 숨기되, 남은 레퍼런스가 있으면 지울 수 있게 보인다", () => {
+    expect(refTrayShown("elevenlabs_v4", 0)).toBe(false);
+    expect(refTrayShown("elevenlabs_v4", 2)).toBe(true); // 숨기면 숨은 레퍼런스로 제출만 계속 막힌다
+    expect(refTrayShown("text2speech_v2", 1)).toBe(true);
+    expect(refTrayShown("seed_audio", 0)).toBe(true);
+    expect(refTrayShown("seedance_2_5", 0)).toBe(true);
+  });
+});
 
 describe("spotlightIgnoredOptions — 유효하지만 무시되는 값", () => {
   it("edit는 길이·비율과 원본 길이 기준 요금 안내", () => {
