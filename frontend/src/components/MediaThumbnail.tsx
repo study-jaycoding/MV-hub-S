@@ -93,8 +93,14 @@ export function MediaThumbnail({
     setLoadState({ ...loadState, mediaBroken: true });
   };
   const renderMode = mediaThumbnailRenderMode(loadState, !!thumb, isVideo, !!src);
-  if (isAudio && src) return <audio className={className} src={src} controls preload="metadata"
-    aria-label={alt || "생성 오디오"} onClick={(e) => e.stopPropagation()} onError={terminalError} />;
+  // 오디오 — 어셋 탭과 같은 음표 타일(Jay 2026-10-28). 카드 안에 재생기를 두지 않는다 — 클릭=선택, 더블클릭=크게 보기에서 재생.
+  //  숨은 <audio> 는 죽은 원본을 알아채는 데만 쓴다(onError → '원본 없음'). 마우스 올림 재생 없음.
+  if (isAudio && src) return (
+    <div className={"audio-tile" + (className ? " " + className : "")} style={{ height: "100%" }} role="img" aria-label={alt || "생성 오디오"}>
+      <span className="audio-glyph" aria-hidden="true">🎵</span>
+      <audio src={src} preload="metadata" onError={terminalError} />
+    </div>
+  );
   if (renderMode === "fallback") return <>{fallback}</>;
   // 영상 + 썸네일: 포스터로 깔고 호버 시 재생(preload 없음).
   // poster 자체의 HTTP 실패는 <video onError>로 일관되게 전달되지 않으므로 같은 URL의 숨은

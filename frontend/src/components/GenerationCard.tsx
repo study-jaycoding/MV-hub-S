@@ -591,7 +591,7 @@ function GenerationCardImpl({
         ⠿
       </span>
       {/* 가계(히스토리)는 좌상단 뱃지 대신 호버 오버레이의 '가계 보기' 버튼(공유 자리)으로 연다. */}
-      {isVideo && <span className="play-badge">▶</span>}
+      {(isVideo || asset?.type === "audio") && <span className="play-badge">▶</span>}
       {/* 마지막으로 크게 열어본 결과 — .card-thumb(position:relative) 기준 가운데. 오버레이 밖 독립 요소. */}
       {lastViewed && <LastViewedBadge />}
       {/* 아래 — 이름표('방금 누른 카드' 표시도 같은 자리)가 있으면 다른 배지(소스·상태)와 한 묶음으로 쌓는다: 이름표가 맨 아래

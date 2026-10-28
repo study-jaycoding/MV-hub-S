@@ -46,6 +46,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
   const [pos, setPos] = useState({ x: 0, y: 0 }); // 화면 중앙 기준 오프셋
   const drag = useRef<{ ox: number; oy: number; sx: number; sy: number } | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null); // 스페이스바 재생/일시정지용
+  const audioRef = useRef<HTMLAudioElement>(null); // 오디오도 같은 Space 재생/정지
   // 같은 목록(items)이 넘어오면 ←/→ 로 그 안에서 이전·다음 미디어로 이동(생성·에셋 공통).
   const items = target.items;
   const [idx, setIdx] = useState(target.index ?? 0);
@@ -163,7 +164,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
         if (t?.closest("input, textarea, select, [contenteditable]")) return; // 글자 입력(코멘트 패널 등)은 그대로
         e.preventDefault();
         e.stopPropagation();
-        const v = videoRef.current;
+        const v = videoRef.current ?? audioRef.current;
         if (!v || e.key === "Enter" || e.repeat) return; // 길게 눌린 Space 는 막기만 — 재생/정지가 반복마다 뒤집힌다(조작 규칙 38)
         if (v.paused) void v.play().catch(() => {});
         else v.pause();
@@ -322,7 +323,8 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
               loop
             />
           ) : cur.type === "audio" ? (
-            <audio src={cur.url} controls preload="metadata" />
+            // 열자마자 재생(영상과 같다 — Jay 2026-10-28 "더블클릭하면 재생"). key = ←/→ 로 넘기면 새 것을 처음부터
+            <audio ref={audioRef} key={cur.url} src={cur.url} controls autoPlay preload="metadata" />
           ) : thumb ? (
             <div className="media-preview-stack">
               {waiting && (

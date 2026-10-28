@@ -44,12 +44,41 @@ describe("narration generation", () => {
     expect(buildSpotlightCreateBody(bodyInput({ trayRefs: [{ type: "image", file_path: "original.png" }] })).body).toBeNull();
     expect(buildSpotlightCreateBody(bodyInput({ text: "x".repeat(5001) })).body).toBeNull();
   });
-  it("renders audio controls without autoplay", async () => {
-    await act(async () => root.render(<MediaThumbnail isVideo={false} isAudio src="result.mp3" thumb={null} fallback="missing" />));
-    const player = container.querySelector("audio")!;
-    expect(player.controls).toBe(true);
-    expect(player.autoplay).toBe(false);
+  it("카드 오디오는 어셋 탭과 같은 음표 타일 — 재생기 없음·자동 재생 없음, 죽은 원본은 그대로 알린다", async () => {
+    const onError = vi.fn();
+    await act(async () => root.render(<MediaThumbnail isVideo={false} isAudio src="result.mp3" thumb={null} fallback="missing" onError={onError} />));
+    const tile = container.querySelector(".audio-tile")!;
+    expect(tile.getAttribute("aria-label")).toBe("생성 오디오");
+    expect(tile.querySelector(".audio-glyph")?.textContent).toBe("🎵");
+    const hidden = tile.querySelector("audio")!;
+    expect(hidden.controls).toBe(false);
+    expect(hidden.autoplay).toBe(false);
     expect(container.querySelector("img")).toBeNull();
+    // 타일을 눌러도 막지 않는다 — 카드의 클릭(선택)·더블클릭(크게 보기)이 받는다
+    const click = new MouseEvent("click", { bubbles: true });
+    const heard = vi.fn();
+    container.addEventListener("click", heard);
+    tile.dispatchEvent(click);
+    expect(heard).toHaveBeenCalledTimes(1);
+    await act(async () => { hidden.dispatchEvent(new Event("error")); });
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+  it("크게 보기의 오디오는 열자마자 재생 · Space 로 재생/정지", async () => {
+    const { MediaPreview } = await import("../src/components/MediaPreview");
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(() => Promise.resolve());
+    const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    try {
+      await act(async () => root.render(<MediaPreview target={{ type: "audio", url: "result.mp3", name: "대본", genId: "g1" }} onClose={vi.fn()} />));
+      const player = container.querySelector<HTMLAudioElement>(".media-preview-body audio")!;
+      expect(player.controls).toBe(true);
+      expect(player.autoplay).toBe(true);
+      const space = () => act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", code: "Space", bubbles: true, cancelable: true })); });
+      await space(); // jsdom 의 paused 는 처음에 true → 재생
+      expect(play).toHaveBeenCalledTimes(1);
+      Object.defineProperty(player, "paused", { configurable: true, value: false });
+      await space();
+      expect(pause).toHaveBeenCalledTimes(1);
+    } finally { play.mockRestore(); pause.mockRestore(); }
   });
   it("shows only the matching edit button in the header, left of history", async () => {
     const { InfoPopup } = await import("../src/components/InfoPopup");

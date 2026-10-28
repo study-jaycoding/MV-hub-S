@@ -169,7 +169,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
           </span>
         }
       />
-      {asset?.type === "video" && <span className="linb-vid">▶</span>}
+      {(asset?.type === "video" || asset?.type === "audio") && <span className="linb-vid">▶</span>}
       {isDraftGeneration(generation) && <span className="linb-draft">Draft</span>}
       {isRoot && <span className="linb-tag root-tag">원본</span>}
       {(generation.shared || generation.is_final) && (
