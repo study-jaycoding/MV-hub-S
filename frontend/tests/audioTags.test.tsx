@@ -36,11 +36,14 @@ const caretAt = (ed: HTMLElement) => {
 afterEach(() => { document.body.innerHTML = ""; });
 
 describe("태그 표·모델", () => {
-  it("웹 v4 와 같은 5묶음 40개 · v4 에서만", () => {
+  it("웹 v4 와 같은 5묶음 40개 · v4 와 v3(text2speech_v2·elevenlabs)에서만", () => {
     expect(AUDIO_TAG_GROUPS.map(([g, t]) => [g, t.length])).toEqual([
       ["Emotion", 7], ["Vocalizations", 12], ["Delivery", 6], ["Character", 3], ["Sound effects", 12]]);
-    expect(["elevenlabs_v4", "elevenlabs_v4_turbo", "text2speech_v2", "seed_audio", "nano_banana_flash"].map(audioTagModel))
-      .toEqual([true, false, false, false, false]);
+    expect([
+      audioTagModel("elevenlabs_v4"), audioTagModel("text2speech_v2", "elevenlabs"),
+      audioTagModel("elevenlabs_v4_turbo"), audioTagModel("text2speech_v2", "minimax"), audioTagModel("text2speech_v2", "seed_speech"),
+      audioTagModel("text2speech_v2"), audioTagModel("seed_audio"), audioTagModel("nano_banana_flash"),
+    ]).toEqual([true, true, false, false, false, false, false, false]);
   });
 
   it("`[` 목록: 빈 검색어 = 전부 · 걸러짐 · 똑같은 게 없으면 검색어 그대로 Custom 을 끝에", () => {
@@ -179,7 +182,11 @@ describe("bracket-list — 프롬프트에서(ElevenLabs v4)", () => {
     localStorage.clear();
     const { api } = installPromptBoundaryMocks();
     api.models.mockResolvedValue([{ job_set_type: "elevenlabs_v4", display_name: "Eleven v4", type: "audio" }]);
-    api.modelParams.mockResolvedValue({ params: [{ name: "voice_id", type: "string", default: null }, { name: "voice_type", type: "string", default: null, enum: ["preset"] }], constraints: {} });
+    const voice = [{ name: "voice_id", type: "string", default: null }, { name: "voice_type", type: "string", default: null, enum: ["preset"] }];
+    api.modelParams.mockImplementation((model: string) => Promise.resolve({
+      params: model === "text2speech_v2" ? [{ name: "variant", type: "string", default: null, enum: ["elevenlabs", "minimax", "seed_speech"] }, ...voice] : voice,
+      constraints: {},
+    }));
     (api as Record<string, unknown>).voices = vi.fn().mockResolvedValue([]);
   });
   afterEach(() => { view?.dispose(); view = undefined; vi.unstubAllGlobals(); });
@@ -252,5 +259,30 @@ describe("bracket-list — 프롬프트에서(ElevenLabs v4)", () => {
     await settle();
     expect(editor.textContent).toBe("Hi [whispering] x [a [sighing] ");
     expect(view.container.querySelector(".sl-atag-pop")).not.toBeNull();
+  });
+
+  it("ElevenLabs v3 에서도 단추·`[` 목록 · 같은 모델의 MiniMax 로 바꾸면 사라지고 열린 목록도 닫힌다", async () => {
+    const { setHubFeatures } = await import("../src/lib/hubFeatures");
+    setHubFeatures(["audio-models-v1"]);
+    view = await mountPrompt({ expanded: false });
+    act(() => button(view!.container, "Audio").click());
+    await settle();
+    const pick = async (from: string, to: string) => {
+      act(() => [...view!.container.querySelectorAll("button")].find((b) => b.textContent?.includes(from))!.click());
+      await settle();
+      act(() => [...view!.container.querySelectorAll<HTMLElement>(".sl-dd-item")].find((b) => b.textContent?.includes(to))!.click());
+      await settle();
+    };
+    await pick("모델 선택", "ElevenLabs v3");
+    expect(view.container.querySelector(".sl-atag-btn")).not.toBeNull();
+    const editor = required(view.container, '[contenteditable="true"]');
+    type(editor, () => { editor.textContent = "Hi [la"; });
+    await settle();
+    expect([...required(view.container, ".sl-atag-list").querySelectorAll(".sl-mention-item")].map((el) => el.textContent))
+      .toEqual(["[playful]", "[laughing]", "[applause]", "[la]"]); // 'la' 를 담은 태그(묶음 순서) + 검색어 그대로
+
+    await pick("ElevenLabs v3", "MiniMax Speech 2.8 HD");
+    expect(view.container.querySelector(".sl-atag-btn")).toBeNull();
+    expect(view.container.querySelector(".sl-atag-list")).toBeNull();
   });
 });

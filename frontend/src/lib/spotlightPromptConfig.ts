@@ -11,8 +11,9 @@ export const AUDIO_PARAMS: Record<string, readonly string[]> = {
 };
 export const isTtsModel = (model: string): boolean => Object.prototype.hasOwnProperty.call(AUDIO_PARAMS, model);
 
-// ElevenLabs v4 오디오 태그 — 힉스필드 웹 v4 대사 칸의 `+ 태그` 목록 그대로(2026-10-28 웹 번들). 대본 글자([sighing])로 들어간다.
-//  웹은 v4 에서만 태그 단추를 보인다(Turbo·v3 는 없음 — 10-28 확인).
+// ElevenLabs 오디오 태그 — 힉스필드 웹 v4 대사 칸의 `+ 태그` 목록 그대로(2026-10-28 웹 번들). 대본 글자([sighing])로 들어간다.
+//  웹은 v4 에서만 태그 단추를 보이지만, 유료 시험에서 v3(text2speech_v2·elevenlabs)도 태그대로 연기했다(10-28 Jay 판정).
+//  같은 모델의 MiniMax·Seed Speech, v4 Turbo 는 확인 안 함 — 켜지 않는다.
 export const AUDIO_TAG_GROUPS: [string, string[]][] = [
   ["Emotion", ["weak", "angry", "bored", "menacing", "playful", "tired", "excited"]],
   ["Vocalizations", ["clears throat", "coughing", "chuckling", "sighing", "sniffling", "yawning", "laughing", "sharp exhale", "scoffing", "humming", "panting", "gasping"]],
@@ -20,7 +21,8 @@ export const AUDIO_TAG_GROUPS: [string, string[]][] = [
   ["Character", ["sleepy drowsy voice", "witch voice", "drunken voice"]],
   ["Sound effects", ["keyboard typing", "echoing", "knocking on door", "bell ringing", "phone ringing", "dog barking", "crowd cheering", "applause", "rain falling", "drum roll", "heartbeat", "engine starting"]],
 ];
-export const audioTagModel = (model: string): boolean => model === "elevenlabs_v4";
+export const audioTagModel = (model: string, variant?: unknown): boolean =>
+  model === "elevenlabs_v4" || (model === "text2speech_v2" && variant === "elevenlabs");
 /** `[` 목록 — 검색어를 담은 태그(묶음 순서), 똑같은 태그가 없으면 검색어 그대로를 끝에(Custom — 웹과 같다). */
 export function audioTagMatches(query: string): { group: string; tag: string }[] {
   const q = query.trim().toLowerCase();

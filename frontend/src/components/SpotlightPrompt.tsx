@@ -326,21 +326,22 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     setPromptLength(raw.length);
     setCostPrompt(isTtsModel(model) ? raw.trim() : "");
   }, [model, promptTick]);
-  // `[` 오디오 태그 목록(ElevenLabs v4) — 검색어(null = 닫힘). 글이 바뀔 때(promptTick)·커서가 움직일 때(onCaretMove) 다시 잰다.
+  // `[` 오디오 태그 목록(ElevenLabs v4·v3) — 검색어(null = 닫힘). 글이 바뀔 때(promptTick)·커서가 움직일 때(onCaretMove)·엔진을 바꿀 때 다시 잰다.
   //  Esc 로 닫은 그 `[` 에서는 다시 열지 않는다 — 친 글은 남긴다(대본의 `[` 가 글자일 수도 있다).
+  const tagsOn = audioTagModel(model, optionValues.variant);
   const [atagQuery, setAtagQuery] = useState<string | null>(null);
   const [atagIdx, setAtagIdx] = useState(0);
   const atagDismissRef = useRef<{ node: Text; idx: number } | null>(null);
   const syncAudioTag = () => {
     const ed = editorRef.current;
-    const t = ed && audioTagModel(model) && !composingRef.current && document.activeElement === ed
+    const t = ed && tagsOn && !composingRef.current && document.activeElement === ed
       && !detectMention(ed, editingTokenNodeRef.current) ? audioTagTrigger(ed) : null;
     const d = atagDismissRef.current;
     const dismissed = !!t && !!d && d.node === t.node && d.idx === t.idx;
     if (!dismissed) atagDismissRef.current = null;
     setAtagQuery(t && !dismissed ? t.query : null);
   };
-  useEffect(() => syncAudioTag(), [model, promptTick]);
+  useEffect(() => syncAudioTag(), [tagsOn, promptTick]);
   useEffect(() => setAtagIdx(0), [atagQuery]);
   const atagItems = useMemo(() => (atagQuery === null ? [] : audioTagMatches(atagQuery)), [atagQuery]);
   // replaceQuery = `[검색어` 자리를 바꾼다 — [+ Tag] 창에서는 `[` 목록이 열려 있을 때만(Esc 로 닫은 `[` 는 글자로 둔다).
@@ -1737,7 +1738,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
               : null}
             notice={model === "voice_change" ? "글은 넣지 않습니다 — 위 칸에 영상 1개를 넣고 Voice 를 고르세요"
               : model === "dubbing" ? "글은 넣지 않습니다 — 위 칸에 영상 1개를 넣고 번역 언어를 고르세요" : null}
-            onAudioTag={audioTagModel(model) ? (tag) => putAudioTag(tag, atagQuery !== null) : null}
+            onAudioTag={tagsOn ? (tag) => putAudioTag(tag, atagQuery !== null) : null}
           />
 
           {/* 컨트롤 행 */}
