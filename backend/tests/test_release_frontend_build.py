@@ -178,7 +178,7 @@ def _archive_probe(
         "agent_push.py", "run_agent_session.py", "hf_cli_version.txt", "mvhub.ico",
         "backend/serve.py", "backend/app/main.py", "backend/app/routers/release_update.py",
         "backend/app/services/release_update.py", "backend/requirements.txt", "frontend/dist/index.html",
-        "tools/mcp_adapter/server.py", "tools/mcp_adapter/local_setup.py", "tools/mcp_adapter/requirements.txt",
+        "tools/mcp_adapter/server.py", "tools/mcp_adapter/update.py", "tools/mcp_adapter/local_setup.py", "tools/mcp_adapter/requirements.txt",
         "tools/mcp_adapter/requirements.lock.txt",
     ]
     if python:
@@ -267,6 +267,7 @@ def test_release_archive_rejects_bundled_python_bytecode(tmp_path: Path, name: s
 @pytest.mark.skipif(os.name != "nt", reason="PowerShell archive validator")
 @pytest.mark.parametrize("missing", [
     "tools/mcp_adapter/server.py",
+    "tools/mcp_adapter/update.py",
     "tools/mcp_adapter/local_setup.py",
     "tools/mcp_adapter/requirements.txt",
     "tools/mcp_adapter/requirements.lock.txt",

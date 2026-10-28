@@ -4,6 +4,7 @@ import { getAuthToken, HttpError, jsonBody, jsonFetch } from "../../lib/http";
 import { useT } from "../../lib/i18n";
 import type { McpCanvasTask } from "../../lib/mcpCanvasTasks";
 import { SettingsDescription } from "../settings/SettingsDescription";
+import { McpUpdate } from "./McpUpdate";
 
 // 상태 줄은 첫 문장만 굵게 — 결과, 그 뒤는 덧붙인 설명(Jay 2026-10-16 모의 그림)
 function leadBold(text: string) {
@@ -138,6 +139,7 @@ export function McpRegistration({ authReady, authKey, workspace }: { authReady: 
       </div>
       {!client.revoked_at && <button className="mcp-revoke" disabled={disabled} onClick={() => void request("revoke", client.id)}>{t("권한 해제")}</button>}
     </li>)}</ul>
+    <McpUpdate authReady={authReady} authKey={authKey} />
     <details className="mcp-legacy">
       <summary>{t("캔버스 대기 작업")}</summary>
       <p>{t("대기 중인 추가 요청만 취소합니다. 이미 추가됐거나 처리 중인 카드는 삭제하지 않습니다.")}</p>

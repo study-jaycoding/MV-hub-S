@@ -345,7 +345,22 @@ def _updater_lock_held(root: Path) -> bool:
         # PermissionError 에는 ACL 접근 거부(5)·읽기 전용도 섞인다. 그것까지 '워커가 쥐고 있다'로
         # 보면 그런 설치에서는 강제가 영영 거절된다 — 워커와 같은 기준(공유/잠금 위반)만 본다
         # (Codex 2026-09-28, update_release_worker.bat 의 32/33 판정과 같은 계약).
-        return getattr(exc, "winerror", None) in _SHARING_VIOLATION
+        code = getattr(exc, "winerror", None)
+        if code is None and os.name == "nt":
+            # CPython's CRT open can discard the Windows sharing error (errno 13).
+            import ctypes
+            from ctypes import wintypes
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                         ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+            kernel.CreateFileW.restype = wintypes.HANDLE
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            handle = kernel.CreateFileW(str(path), 0x80000000, 7, None, 3, 0x80, None)
+            if handle == ctypes.c_void_p(-1).value:
+                code = ctypes.get_last_error()
+            else:
+                kernel.CloseHandle(handle)
+        return code in _SHARING_VIOLATION
     except OSError:
         # 없음·경로 문제 등 — 잠금 근거가 아니므로 막지 않는다(상태 나이가 뒤에서 걸러 준다).
         return False

@@ -19,8 +19,30 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 from uuid import UUID
 
+_MCP_BUNDLE = Path(globals().get("_MCP_BUNDLE", Path(__file__).resolve().parent))
+if __name__ == "__main__" and not globals().get("_MCP_SELECTED"):
+    sys.dont_write_bytecode = True
+    # Keep existing client registrations pointing here; only the selected payload moves.
+    _update_file = _MCP_BUNDLE / "update.py"
+    if _update_file.is_file():
+        try:
+            _spec = importlib.util.spec_from_file_location("mvhub_mcp_update", _update_file)
+            _updater = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(_updater)
+            _selected = _updater.selection(_MCP_BUNDLE.parents[1])
+        except Exception:
+            # Preflight failure must not break the installed adapter; never catch payload execution below.
+            _selected = {"source": "bundle", "reason": "MCP 업데이트 판을 확인하지 못해 설치본 판을 사용합니다."}
+        if _selected["reason"]:
+            print(_selected["reason"], file=sys.stderr)
+        if _selected["source"] == "downloaded":
+            import runpy
+            runpy.run_path(_selected["path"], run_name="__main__",
+                           init_globals={"_MCP_BUNDLE": _MCP_BUNDLE, "_MCP_SELECTED": True})
+            raise SystemExit(0)
+
 # Only the bundled SDK processes .pth files; backend and user packages stay excluded.
-_sdk = Path(__file__).resolve().parent / "site-packages"
+_sdk = _MCP_BUNDLE / "site-packages"
 if _sdk.is_dir():
     if not (sys.flags.isolated and sys.flags.no_site):
         raise SystemExit("Bundled MCP requires Python -I -S. Copy the settings from MV Hub again.")
@@ -47,7 +69,8 @@ MAX_PREVIEW = 512 * 1024
 REQUEST_TIMEOUT = 30
 RESULT_TIMEOUT = 90
 RESULT_UI_URI = "ui://mvhub/result.html"
-ADAPTER_VERSION = "2026.10.16.5"
+ADAPTER_VERSION = "2026.10.27.1"
+MCP_UPDATE_API = 1
 HUB_FEATURES = {"generation_result", "batch_results", "history_cursor", "plan_estimate"}
 ERRORS = {
     "invalid_input": ("입력 형식을 확인하세요.", False, "check_arguments"),
@@ -305,7 +328,7 @@ def local_url(value: str) -> str:
 
 
 def profile_settings(path: str) -> dict:
-    spec = importlib.util.spec_from_file_location("mvhub_local_setup", Path(__file__).with_name("local_setup.py"))
+    spec = importlib.util.spec_from_file_location("mvhub_local_setup", _MCP_BUNDLE / "local_setup.py")
     if spec is None or spec.loader is None:
         raise ValueError("MCP 연결 구성요소를 찾지 못했습니다.")
     module = importlib.util.module_from_spec(spec)
@@ -658,7 +681,7 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             "presentation.scope=item은 선택 항목만의 상태이며 계획 전체 완료가 아닙니다. 여러 항목은 모두 확인하세요. "
             "실행 뒤 wait_results(plan_id,item_indexes,wait_seconds=25)로 최대 8개씩 기다리세요. 별도 sleep과 get_plan 반복은 불필요합니다. "
             "계획 status=submitted는 완료 여부가 아닙니다. 항목의 generation_status=done이 완료입니다. "
-            "all_terminal이면 대기를 멈추고 show_results로 결과를 한 번 표시하세요. "
+            "all_terminal이면 대기를 멈추고 기본으로 show_results로 결과를 한 번 표시하세요. 사용자가 힉스필드 표시를 명시적으로 고른 경우에만 그 대신 외부 표시 지침을 따르세요. "
             "all_done=false이면 실패·취소·불명확한 접수를 누락하지 마세요. "
             "구형 허브는 get_result(wait_seconds=25)를 사용합니다. 기존 결과·다른 LLM의 본인 생성물은 같은 연결의 read_context(kind='generations')로 찾고 get_generation으로 표시하세요. "
             "not_found이면 현재 허브에서 공간·프로젝트·폴더·검색어로 다시 조회하세요. 찾지 못한 결과를 자동으로 재생성하지 마세요. "
@@ -669,6 +692,11 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             "사용자가 파일·다운로드를 요청하지 않으면 URL·PC 경로·HTML 링크를 나열하지 마세요. 로컬 HTML을 Markdown 이미지로 삽입하지 마세요. "
             "네이티브 이미지 표시를 지원하지 않으면 표시 제한을 알리고 MV Hub에서 결과를 확인하도록 안내하세요. MCP Apps 화면으로 자동 우회하지 마세요. "
             "이미지 수신은 실제 화면 표시 확인이 아닙니다. 확인하지 않은 표시 성공을 주장하지 마세요. "
+            "display_context는 원본 생성 식별자와 외부 표시 준비 정보일 뿐 표시 완료가 아닙니다. "
+            "사용자가 힉스필드 표시를 선택한 경우 wait_results의 원본 origin_job_id를 사용하고 외부 연결 계정·워크스페이스·공유 폴더 권한을 먼저 확인하세요. "
+            "MV generation_id나 MV 폴더를 힉스필드 ID로 대체하지 마세요. 외부 도구가 없거나 권한·클라이언트 지원이 미확인이면 그 한계를 안내하세요. "
+            "한 결과에 show_results와 힉스필드 위젯과 본문 이미지를 함께 출력하지 마세요. 상태 재조회·재연결·기록 다시 열기만으로 job_display를 재호출하지 마세요. "
+            "같은 대화에서 이미 표시한 preview_key를 확인하되 다른 대화의 표시를 막지 마세요. 이 지침만으로 외부 위젯 중복이나 모바일 표시를 보장할 수 없습니다. "
             "미리보기 실패는 생성 실패가 아닙니다. 불명확한 실패는 자동 재제출하지 마세요. "
             "사용자 안내에는 card_text의 실제 모델명과 저장 위치를 사용하고 모델 코드·프로젝트 ID를 나열하지 마세요. "
             "크게 보기는 미리보기 확대이며 원본 다운로드가 아닙니다. 원본은 MV Hub에서 확인합니다. "
@@ -756,7 +784,7 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
 
     @tool(annotations=read_only)
     def get_plan(plan_id: Annotated[str, Field(min_length=1, max_length=200)]) -> dict[str, Any]:
-        """계획·항목 상태를 조회합니다. presentation.stage 변경 시 message를 안내하고 추측한 진행률을 말하지 마세요. 계획 status=submitted는 완료 후에도 유지됩니다. 영속 연결은 wait_results로 기다리고 종료 뒤 show_results로 표시하세요."""
+        """계획·항목 상태를 조회합니다. presentation.stage 변경 시 message를 안내하고 추측한 진행률을 말하지 마세요. 계획 status=submitted는 완료 후에도 유지됩니다. 영속 연결은 wait_results로 기다리고 종료 뒤 기본으로 show_results로 표시하세요. 사용자가 힉스필드 표시를 명시적으로 고른 경우에만 대신 외부 표시 지침을 따르세요."""
         return present(broker.action("get_plan", {"plan_id": plan_id}))
 
     @tool(annotations=write)
@@ -810,7 +838,7 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             item_indexes: Annotated[list[Annotated[int, Field(ge=0, lt=20, strict=True)]], Field(min_length=1, max_length=8)],
             wait_seconds: Annotated[int, Field(ge=0, le=25, strict=True)] = 25,
         ) -> dict[str, Any]:
-            """한 계획의 1~8개 항목을 한 대기 예산으로 확인합니다. 이미지·화면을 만들지 않습니다. all_terminal이면 대기를 멈추고 show_results로 표시하세요. all_done과 구분하며 실패를 재생성하지 마세요. 단계가 바뀔 때만 진행을 안내하세요."""
+            """한 계획의 1~8개 항목을 한 대기 예산으로 확인합니다. 이미지·화면을 만들지 않습니다. all_terminal이면 대기를 멈추고 기본으로 show_results로 표시하세요. 사용자가 힉스필드 표시를 명시적으로 고른 경우에만 대신 외부 표시 지침을 따르세요. all_done과 구분하며 실패를 재생성하지 마세요. 단계가 바뀔 때만 진행을 안내하세요."""
             result = broker.action("wait_results", {"plan_id": str(plan_id), "item_indexes": item_indexes, "wait_seconds": wait_seconds})
             for item in result.get("items", []):
                 present(item)

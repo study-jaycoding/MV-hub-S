@@ -806,6 +806,32 @@ def _generation_row(ctx, generation_id):
     return row
 
 
+def _display_context(row, workspace, creator, asset_index):
+    """Metadata only: the external connector must independently authorize its lookup."""
+    value = {"provider": "higgsfield", "origin_job_id": None, "status": "origin_missing",
+             "rendered": False, "client_support": "unverified", "automatic_display": False}
+    if not creator or row.get("creator_uid") != creator or not _matches(row, workspace):
+        return {**value, "status": "unavailable"}
+    if row.get("status") != "done":
+        return {**value, "status": "not_ready"}
+    try:
+        job_id = str(UUID(str(row.get("job_id"))))
+    except (ValueError, TypeError, AttributeError):
+        return value  # An MV generation/server ID is never a substitute for an upstream job ID.
+    assets = row.get("assets") or []
+    value.update(origin_job_id=job_id, workspace=_workspace_identity(workspace),
+                 access="confirm_external_account_workspace_and_folder")
+    if asset_index >= len(assets):
+        return {**value, "status": "asset_missing"}
+    asset = assets[asset_index]
+    value.update(asset_id=asset.get("id"), asset_index=asset_index,
+                 preview_key=f"higgsfield:{job_id}:{asset.get('id') or 'index-' + str(asset_index)}")
+    if len(assets) != 1 or asset.get("type") != "image":
+        return {**value, "status": "media_not_verified"}
+    return {**value, "status": "external_access_unverified", "tool": "job_display", "arguments": {"id": job_id},
+            "note": "외부 계정·공간·공유 폴더 권한과 클라이언트 지원을 확인하세요. 이미 표시한 결과는 자동 재표시하지 마세요."}
+
+
 async def _result_once(ctx, args, *, preview=True, plan=None):
     """plan 을 받으면(묶음 대기 — _selected_results 가 한 회에 한 번 읽고 앞뒤로 권한을 검사한 계획) 그 계획을 쓰고 항목마다의
     공간·세션 재확인을 건너뛴다 — 항목·2초마다 공간 확인(팀이면 공유 서버)을 다시 물어 8개면 초당 ~8회였다(Codex 리뷰 P2 ③).
@@ -850,6 +876,8 @@ async def _result_once(ctx, args, *, preview=True, plan=None):
                 (row.get("creator_uid") and row["creator_uid"] != creator)):
             raise HTTPException(404, "생성 결과를 찾을 수 없습니다.")
         result["generation_status"] = row.get("status")
+        result["display_context"] = _display_context(row, plan["workspace"], creator, args.asset_index)
+        result["display_context"]["mv_preview_requested"] = preview
         assets_list = row.get("assets", [])
         result["asset_count"] = len(assets_list)
         if row.get("status") == "done":

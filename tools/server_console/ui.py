@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from . import (actions, activity, backup, console_stage, install, jobs, logs, moves, names, power, release,
+from . import (actions, activity, backup, console_stage, install, jobs, logs, mcp_stage, moves, names, power, release,
                server_api, status)
 from . import main as main_boot
 
@@ -39,7 +39,7 @@ SERVER_COLORS = {"ok": LIME, "switching": AMBER, "starting": AMBER, "maintenance
                  "not_ready": RED, "no_answer": RED, "stopped": MUTED, "unknown": MUTED, "no_task": MUTED}
 JOB_TERMINAL = ("finished", "refused", "check_needed", "runner_error")
 NAV = (("status", "상태·로그"), ("intake", "생성 접수"), ("power", "켜기·끄기"), ("backup", "DB·백업"),
-       ("update", "업데이트"), ("release", "릴리스"), ("address", "서버 주소"), ("move", "서버 이사"))
+       ("update", "업데이트"), ("release", "릴리스"), ("mcp", "MCP 관리"), ("address", "서버 주소"), ("move", "서버 이사"))
 # 로그 탭 위의 표(activity.read_activity 의 키·제목·칸). 칸 = (키, 머리글, 너비)
 TABLES = {
     "generation": ("generations", "최근 생성 — 작업자 PC 가 보낸 정보(프롬프트는 안 보임)",
@@ -185,6 +185,8 @@ class App:
         self.release_view: dict | None = None
         self.release_busy = False
         self.release_due = False
+        self.mcp_busy = False
+        self.mcp_view: dict = {"rows": []}
         self.address_view: dict | None = None
         self.address_busy = False
         self.address_shown = ("", "")  # 주소·이름 칸에 마지막으로 채운 값
@@ -262,7 +264,7 @@ class App:
         builders = {"status": self._build_status_page, "intake": self._build_intake_page,
                     "power": self._build_power_page, "backup": self._build_backup_page,
                     "address": self._build_address_page, "update": self._build_update_page,
-                    "release": self._build_release_page, "move": self._build_move_page}
+                    "release": self._build_release_page, "mcp": self._build_mcp_page, "move": self._build_move_page}
         for key, label in NAV:
             if key not in builders:  # 아직 만들지 않은 화면은 이름만
                 tk.Label(self.nav, text=f"{label}  · 다음 단계", bg=BG2, fg=MUTED2, font=("Malgun Gothic", 10),
@@ -303,6 +305,8 @@ class App:
             self.move_due = True
         if key == "power":
             self._show_power()
+        if key == "mcp":
+            self._mcp_request("view")
 
     def _header(self, page: tk.Frame, title: str) -> tk.Frame:
         head = tk.Frame(page, bg=BG2)
@@ -1628,6 +1632,164 @@ class App:
             plan = actions.Refusal((f"확인 중 오류: {type(exc).__name__}: {exc}"[:300],))
         self.queue.put(("area_plan", "address", plan))
 
+    # ---------- MCP 파일 배포 ----------
+    def _build_mcp_page(self, page: tk.Frame) -> None:
+        self._header(page, "MCP 관리 — 버전 목록")
+        body = tk.Frame(page, bg=BG)
+        body.pack(fill="both", expand=True, padx=16, pady=12)
+        tk.Label(body, text="검증한 main 커밋의 MCP 파일만 가져와 게시합니다. 처음 한 번 본체 도입 업데이트가 필요합니다.",
+                 bg=BG, fg=MUTED, font=FONT, justify="left", wraplength=920).pack(anchor="w")
+        actions_row = tk.Frame(body, bg=BG)
+        actions_row.pack(fill="x", pady=10)
+        self.mcp_buttons = []
+        for label, action in (("새 버전 확인", "latest"), ("MCP Git 업데이트 · 후보 가져오기", "bring"), ("목록 새로고침", "view")):
+            button = self._button(actions_row, label, lambda a=action: self._mcp_request(a), primary=action == "bring")
+            button.pack(side="left", padx=(0, 8))
+            self.mcp_buttons.append(button)
+        commit_row = tk.Frame(body, bg=BG)
+        commit_row.pack(fill="x", pady=(0, 8))
+        tk.Label(commit_row, text="main 고정 커밋", bg=BG, fg=MUTED, font=FONT).pack(side="left", padx=(0, 8))
+        self.mcp_commit = tk.StringVar()
+        self.mcp_entry = tk.Entry(commit_row, textvariable=self.mcp_commit, bg=PANEL2, fg=TEXT,
+                                  insertbackground=TEXT, font=MONO, width=44, relief="flat")
+        self.mcp_entry.pack(side="left")
+        columns = ("version", "commit", "state", "verified", "compatible", "action")
+        table = tk.Frame(body, bg=BG)
+        table.pack(fill="both", expand=True)
+        self.mcp_tree = ttk.Treeview(table, columns=columns, show="headings", style="Console.Treeview", selectmode="browse", height=9)
+        for name, label, width in zip(columns, ("버전", "커밋", "상태", "파일 검증", "MV 호환성", "작업"), (150, 120, 105, 100, 135, 110)):
+            self.mcp_tree.heading(name, text=label)
+            self.mcp_tree.column(name, width=width, minwidth=70, stretch=True)
+        scrollbar = ttk.Scrollbar(table, orient="vertical", command=self.mcp_tree.yview)
+        self.mcp_tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self.mcp_tree.pack(side="left", fill="both", expand=True)
+        self.mcp_tree.bind("<<TreeviewSelect>>", lambda _event: self._mcp_selection())
+        self.mcp_reason = tk.Label(body, text="", bg=BG, fg=AMBER, font=FONT, anchor="w", wraplength=920)
+        self.mcp_reason.pack(fill="x")
+        self.mcp_source = tk.Label(body, text="게시 위치: 미확인", bg=BG, fg=MUTED, font=FONT, anchor="w", wraplength=920)
+        self.mcp_source.pack(fill="x", pady=8)
+        row = tk.Frame(body, bg=BG)
+        row.pack(fill="x")
+        for label, action in (("선택 버전 MCP 배포", "deploy"), ("직전 배포로 되돌리기", "rollback"), ("변경 사항", "changes")):
+            button = self._button(row, label, lambda a=action: self._mcp_request(a), primary=action == "deploy")
+            button.pack(side="left", padx=(0, 8))
+            self.mcp_buttons.append(button)
+        self.mcp_note = tk.Label(body, text="", bg=BG, fg=MUTED, font=FONT, justify="left", anchor="w", wraplength=920)
+        self.mcp_note.pack(fill="x", pady=8)
+        self.mcp_details = tk.Text(body, bg=PANEL, fg=MUTED, font=MONO, height=5, relief="flat", state="disabled", wrap="word")
+        self.mcp_details.pack(fill="x")
+        tk.Label(body, text="파일 검증은 크기·해시·호환 계약 검사입니다. 실행 시험·리뷰는 개발 단계에서 완료한 커밋을 선택하세요.\n"
+                             "후보 가져오기 → 선택 버전 배포 → 팀원 설정의 MCP 업데이트 → Codex·Claude의 MCP 다시 불러오기",
+                 bg=BG, fg=MUTED, font=FONT, justify="left", wraplength=920).pack(anchor="w", pady=(8, 0))
+        self._mcp_selection()
+
+    def _mcp_selection(self) -> dict | None:
+        selected = self.mcp_tree.selection()
+        row = next((item for item in self.mcp_view.get("rows", []) if selected and item["commit"] == selected[0]), None)
+        self.mcp_reason.configure(text=row.get("reason", "") if row else "")
+        if not self.mcp_busy:
+            self.mcp_buttons[3].configure(state="normal" if row and row["verified"] and row["compatible"] and not self.mcp_view.get("error") else "disabled")
+            self.mcp_buttons[4].configure(state="normal" if self.mcp_view.get("previous") and not self.mcp_view.get("error") else "disabled")
+            self.mcp_buttons[5].configure(state="normal" if row else "disabled")
+        return row
+
+    def _mcp_request(self, action: str) -> None:
+        if self.mcp_busy:
+            return
+        if action not in ("view", "changes") and self.session is None:
+            self.require_login(lambda: self._mcp_request(action))
+            return
+        row = self._mcp_selection() if action in ("deploy", "changes") else None
+        if action in ("deploy", "changes") and row is None:
+            self.mcp_note.configure(text="목록에서 버전을 먼저 선택하세요", fg=AMBER)
+            return
+        snapshot = dict(self.mcp_view)
+        if action == "deploy":
+            if not row["verified"] or not row["compatible"] or snapshot.get("error"):
+                self.mcp_note.configure(text=row.get("reason") or snapshot.get("error") or "파일 검증·호환성 확인이 필요합니다", fg=AMBER)
+                return
+            if not messagebox.askokcancel("MCP 배포 확인", f"버전 {row['version']} · {row['commit'][:12]}\n{snapshot.get('source', '')}\n\n"
+                                         "ZIP 없이 MCP 파일만 새 버전 폴더에 게시합니다. 팀원은 설정에서 직접 업데이트합니다.", parent=self.root):
+                return
+        if action == "rollback":
+            if not snapshot.get("previous") or snapshot.get("error"):
+                self.mcp_note.configure(text=snapshot.get("error") or "되돌릴 직전 배포가 없습니다", fg=AMBER)
+                return
+            if not messagebox.askokcancel("MCP 배포 되돌리기", "직전 MCP 배포로 게시 목록을 되돌립니다. 이미 업데이트한 PC는 다시 업데이트해야 합니다.", parent=self.root):
+                return
+        self.mcp_busy = True
+        for button in self.mcp_buttons:
+            button.configure(state="disabled")
+        self.mcp_entry.configure(state="disabled")
+        self.mcp_note.configure(text="확인 중…" if action in ("view", "latest", "changes") else "파일 처리 중… 완료까지 창을 열어 두세요.", fg=BLUE)
+        threading.Thread(target=self._mcp_worker,
+                         args=(action, self.mcp_commit.get().strip(), row, snapshot, self.session), daemon=True).start()
+
+    def _mcp_worker(self, action: str, commit: str, row: dict | None, snapshot: dict, session) -> None:
+        result = {"action": action, "error": "", "note": "", "view": None}
+        try:
+            if action not in ("view", "changes"):
+                if session is None or self.session is not session:
+                    raise mcp_stage.McpStageError("관리자 계정이 바뀌었습니다. 다시 실행하세요")
+                # 기존 관리자 전용 읽기 경로로 실행 직전 세션·대상 서버를 재확인한다.
+                server_api.read_intake(session.server, session.token)
+            if action == "latest":
+                result["commit"] = mcp_stage.latest(self.inst)
+                result["note"] = "main 커밋 확인 완료. 후보 가져오기를 누르면 MCP 파일만 준비합니다."
+            elif action == "bring":
+                manifest = mcp_stage.bring_candidate(self.inst, commit)
+                result["note"] = f"{manifest['version']} 후보 준비 완료 — 아직 팀에 배포하지 않았습니다."
+            elif action == "deploy":
+                mcp_stage.deploy(self.inst, row["commit"], row["manifest_sha256"], snapshot.get("token"), snapshot["source"])
+                result["note"] = f"{row['version']} MCP 배포 완료. 팀원 PC에서 MCP 업데이트로 받습니다."
+            elif action == "rollback":
+                mcp_stage.rollback(self.inst, snapshot.get("token"), snapshot["source"])
+                result["note"] = "직전 MCP 배포로 되돌렸습니다. 이미 적용한 PC에는 자동 설치하지 않습니다."
+            elif action == "changes":
+                current = snapshot.get("current") or {}
+                result["details"] = mcp_stage.changes(self.inst, row["commit"], current.get("commit")) or "MCP 파일 변경 없음"
+                result["note"] = "선택 커밋과 현재 배포의 MCP 파일 변경량입니다." if current else "첫 후보 커밋의 MCP 파일 변경량입니다."
+            result["view"] = mcp_stage.view(self.inst)
+            if not result["note"]:
+                result["note"] = "후보가 없습니다. 새 버전을 확인한 뒤 후보를 가져오세요." if not result["view"]["rows"] else "버전 목록을 확인했습니다."
+        except server_api.AuthExpired as exc:
+            result.update(error=str(exc), auth_expired=True)
+        except (OSError, ValueError, server_api.ServerError) as exc:
+            result["error"] = str(exc)
+        except Exception as exc:  # 큐로 종료를 알려 버튼이 영구 비활성 상태에 남지 않게 한다.
+            result["error"] = f"MCP 작업 결과를 확인하지 못했습니다 ({type(exc).__name__}). 목록을 다시 확인하세요."
+        self._put(("mcp_result", session, result))
+
+    def _on_mcp_result(self, session, result: dict) -> None:
+        self.mcp_busy = False
+        for button in self.mcp_buttons:
+            button.configure(state="normal")
+        self.mcp_entry.configure(state="normal")
+        if result.get("auth_expired") and self.session is session:
+            self.logout()
+        if "commit" in result:
+            self.mcp_commit.set(result["commit"])
+        if result.get("view") is not None:
+            self.mcp_view = result["view"]
+            selected = self.mcp_tree.selection()
+            self.mcp_tree.delete(*self.mcp_tree.get_children())
+            for row in self.mcp_view["rows"]:
+                self.mcp_tree.insert("", "end", iid=row["commit"], values=(row["version"], row["commit"][:12], row["state"],
+                    f"일치 {row.get('file_count', 0)}개" if row["verified"] else "검증 실패",
+                    "서버 기준 호환" if row["compatible"] else "본체 확인 필요", "선택 후 배포" if row["compatible"] else "배포 불가"))
+            if selected and self.mcp_tree.exists(selected[0]):
+                self.mcp_tree.selection_set(selected)
+            self.mcp_source.configure(text="게시 위치: " + (self.mcp_view.get("source") or "릴리스 화면에서 폴더를 설정하세요"))
+        if "details" in result:
+            self.mcp_details.configure(state="normal")
+            self.mcp_details.delete("1.0", "end")
+            self.mcp_details.insert("1.0", result["details"])
+            self.mcp_details.configure(state="disabled")
+        error = result.get("error") or (self.mcp_view.get("error") if result.get("view") is not None else "")
+        self.mcp_note.configure(text=error or result["note"], fg=AMBER if error else LIME)
+        self._mcp_selection()
+
     def _build_update_page(self, page: tk.Frame) -> None:
         self._header(page, "업데이트(서버 Git)")
         body = tk.Frame(page, bg=BG)
@@ -2030,6 +2192,8 @@ class App:
             self._on_plan(item[1])
         elif kind == "login":
             self._on_login(item[1])
+        elif kind == "mcp_result":
+            self._on_mcp_result(item[1], item[2])
         elif kind == "intake_plan":
             self._on_intake_plan(item[1], item[2], item[3])
         elif kind == "side_refused":

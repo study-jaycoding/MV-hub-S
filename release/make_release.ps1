@@ -226,6 +226,7 @@ function Assert-ReleaseArchive {
             "backend/requirements.txt",
             "frontend/dist/index.html",
             "tools/mcp_adapter/server.py",
+            "tools/mcp_adapter/update.py",
             "tools/mcp_adapter/local_setup.py",
             "tools/mcp_adapter/requirements.txt",
             "tools/mcp_adapter/requirements.lock.txt",
@@ -318,7 +319,7 @@ function Assert-ReleaseArchive {
             $_ -match "^frontend/.*\.(map|tsbuildinfo)$" -or
             $_ -match "^(docs|deploy|release|predeploy-reports)(/|$)" -or
             ($_ -match "^tools(/|$)" -and
-                $_ -notmatch "^tools/(install_db_probe\.py|stop_local_hub_on_port\.ps1|mcp_adapter/(server\.py|local_setup\.py|requirements\.txt|requirements\.lock\.txt))$" -and
+                $_ -notmatch "^tools/(install_db_probe\.py|stop_local_hub_on_port\.ps1|mcp_adapter/(server\.py|update\.py|local_setup\.py|requirements\.txt|requirements\.lock\.txt))$" -and
                 $_ -notmatch "^tools/mcp_adapter/site-packages/") -or
             $_ -match "^tools/mcp_adapter/(.*/)?__pycache__(/|$)" -or
             $_ -match "^runtime/python/.*\.pyc$" -or
@@ -643,7 +644,7 @@ if (Test-Path -LiteralPath $PortHelper) {
 $McpAdapterDir = Join-Path $Stage "tools\mcp_adapter"
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'tools\install_db_probe.py') -Destination (Join-Path $Stage 'tools\install_db_probe.py')
 New-Item -ItemType Directory -Force -Path $McpAdapterDir | Out-Null
-foreach ($Name in @("server.py", "local_setup.py", "requirements.txt", "requirements.lock.txt")) {
+foreach ($Name in @("server.py", "update.py", "local_setup.py", "requirements.txt", "requirements.lock.txt")) {
     Copy-Item -LiteralPath (Join-Path $ProjectRoot "tools\mcp_adapter\$Name") -Destination (Join-Path $McpAdapterDir $Name)
 }
 
