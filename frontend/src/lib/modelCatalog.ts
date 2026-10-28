@@ -7,6 +7,7 @@ import { MODEL_DISPLAY_NAMES } from "./useModels";
 import { variantDisplayName } from "./spotlightPromptConfig";
 
 let nameMap: Record<string, string> = {};
+let typeMap: Record<string, string> = {};
 let loaded = false;
 let loading: Promise<void> | null = null;
 let lastAttemptAt: number | null = null;
@@ -28,13 +29,16 @@ export function ensureModelCatalog(): Promise<void> {
   loading = fetchModelCatalog()
     .then((ms) => {
       const m: Record<string, string> = {};
+      const types: Record<string, string> = {};
       for (const x of ms) {
         if (typeof x.job_set_type === "string" && x.job_set_type.trim()
           && typeof x.display_name === "string" && x.display_name.trim()) {
           m[x.job_set_type] = x.display_name;
+          if (typeof x.type === "string") types[x.job_set_type] = x.type;
         }
       }
       nameMap = m;
+      typeMap = types;
       loaded = Object.keys(m).length > 0;
       failures = loaded ? 0 : failures + 1;
       if (loaded) listeners.forEach((l) => l());
@@ -72,6 +76,12 @@ function humanize(m: string): string {
 export function modelDisplayName(code?: string | null, params?: Record<string, unknown> | null): string {
   if (!code) return "—";
   return variantDisplayName(code, params) || nameMap[code] || MODEL_DISPLAY_NAMES[code] || humanize(code);
+}
+
+// 모델 코드 → CLI 카탈로그의 결과 종류(image·video·audio 등). 생성창 목록(ALLOWED)에 없는 수정 모델까지 덮는다.
+//  카탈로그가 아직 없거나 목록 밖이면 undefined — 화면은 useModelDisplayName 의 다시 그리기로 갱신된다.
+export function modelMediaType(code?: string | null): string | undefined {
+  return code ? typeMap[code] : undefined;
 }
 
 // 카탈로그가 로드되면 리렌더해 정확한 이름으로 갱신되게 하는 훅. 컴포넌트에서:

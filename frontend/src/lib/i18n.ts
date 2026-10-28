@@ -1032,6 +1032,10 @@ const EN: Record<string, string> = {
     "Your PC's agent is generating through the local CLI. It has to stay running to finish.",
   "상세 사유를 받지 못했습니다.": "No details were provided.",
   "힉스필드 웹 [에셋]에서 실패 사유 확인하기": "Check the failure reason in Higgsfield web [Assets]",
+  "힉스필드 웹 {s} 히스토리에서 실패 사유 확인하기": "Check the failure reason in Higgsfield web {s} history",
+  "힉스필드 웹의 {s} 화면이 열립니다. 히스토리에서 이 생성물을 찾아 실패 사유를 확인하세요.":
+    "Opens the Higgsfield {s} page. Find this generation in its history to see why it failed.",
+  "비디오": "Video",
   "힉스필드 웹의 내 생성물 목록이 열립니다. 이 생성물을 찾아 실패 사유를 확인하세요.":
     "Opens your generations on the Higgsfield website. Find this one there to see why it failed.",
   "{s} 상태입니다. 상세 사유 정보가 없습니다.": "Status: {s}. No details available.",

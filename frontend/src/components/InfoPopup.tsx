@@ -12,7 +12,7 @@ import {
   generationListMeta,
   generationStatusLabelFor,
 } from "../lib/generationDisplay";
-import { useModelDisplayName } from "../lib/modelCatalog";
+import { modelMediaType, useModelDisplayName } from "../lib/modelCatalog";
 import { reportSourceLocationError } from "../lib/sourceLocationFeedback";
 import { displayThumb, hideBrokenImg, showLoadedImg } from "../lib/media";
 import { refSrc } from "../lib/promptParts";
@@ -39,6 +39,12 @@ interface Props {
 }
 
 const POP_W = 380;
+// 힉스필드 웹의 실패 카드는 종류별 화면의 히스토리에 뜬다(Jay 확인). 종류를 모르면 내 생성물 전체([에셋]).
+const HIGGSFIELD_HISTORY: Record<string, { url: string; label: string }> = {
+  image: { url: "https://higgsfield.ai/ai/image", label: "이미지" },
+  video: { url: "https://higgsfield.ai/ai/video", label: "비디오" },
+  audio: { url: "https://higgsfield.ai/audio", label: "오디오" },
+};
 const HIGGSFIELD_ASSETS_URL = "https://higgsfield.ai/asset";
 const TRANSACTION_PENDING_REASONS: Record<string, string> = {
   transaction_pending_ambiguous: "특정 거래를 유일하게 연결할 수 없습니다.",
@@ -313,18 +319,25 @@ export function InfoPopup({
             ) : (
               <>
                 <span className="info-error-text">{g.error || generationErrorFallback(g.status)}</span>
-                {g.status === "failed" && g.model !== "comfy" && (
-                  // CLI·MCP 는 실패 사유를 주지 않는다(힉스필드 웹에만 있음). 생성 하나를 여는 웹 주소도 없어 내 생성물 목록을 연다.
-                  <a
-                    className="info-error-link"
-                    href={HIGGSFIELD_ASSETS_URL}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title={t("힉스필드 웹의 내 생성물 목록이 열립니다. 이 생성물을 찾아 실패 사유를 확인하세요.")}
-                  >
-                    {t("힉스필드 웹 [에셋]에서 실패 사유 확인하기")} ↗
-                  </a>
-                )}
+                {g.status === "failed" && g.model !== "comfy" && (() => {
+                  // CLI·MCP 는 실패 사유를 주지 않는다(힉스필드 웹에만 있음). 생성 하나를 여는 웹 주소도 없어 그 종류의 화면을 연다.
+                  const page = HIGGSFIELD_HISTORY[modelMediaType(g.model) ?? ""];
+                  return (
+                    <a
+                      className="info-error-link"
+                      href={page?.url ?? HIGGSFIELD_ASSETS_URL}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={page
+                        ? t("힉스필드 웹의 {s} 화면이 열립니다. 히스토리에서 이 생성물을 찾아 실패 사유를 확인하세요.").replace("{s}", t(page.label))
+                        : t("힉스필드 웹의 내 생성물 목록이 열립니다. 이 생성물을 찾아 실패 사유를 확인하세요.")}
+                    >
+                      {page
+                        ? t("힉스필드 웹 {s} 히스토리에서 실패 사유 확인하기").replace("{s}", t(page.label))
+                        : t("힉스필드 웹 [에셋]에서 실패 사유 확인하기")} ↗
+                    </a>
+                  );
+                })()}
               </>
             )}
           </div>

@@ -27,6 +27,9 @@ vi.mock("../src/api", () => ({
 }));
 vi.mock("../src/lib/modelCatalog", () => ({
   useModelDisplayName: () => (model: string | null) => model || "—",
+  // CLI 카탈로그의 종류(type) 대역 — 목록 밖 모델은 undefined
+  modelMediaType: (model: string | null) =>
+    ({ nano_banana_pro: "image", kling_video_edit: "video", elevenlabs_v4: "audio" } as Record<string, string>)[model ?? ""],
 }));
 vi.mock("../src/lib/modelPolicy", () => ({ modelBlockMessage: () => null }));
 // 캔버스 '생성 결과' 창은 라이브러리 격자를 쓴다 — 가상 스크롤은 전부 그리는 대역으로, 격자의 바깥 IO(마지막으로 본·바깥 끌기)는 끈다.
@@ -274,19 +277,26 @@ it.each(["ko", "en"] as const)("%s 미분류 실패도 원인을 지어내지 �
   expect(required(".info-error-details").textContent).toContain(g.error);
 });
 
-// 2026-10-28 Jay: CLI 는 접수 뒤 실패의 사유를 주지 않는다(힉스필드 웹에만 있음) — 빈 사유면 웹 [에셋]으로 안내한다.
-it.each(["ko", "en"] as const)("%s 사유를 받지 못한 힉스필드 실패는 웹 [에셋] 링크로 안내한다", async (lang) => {
+// 2026-10-28 Jay: CLI 는 접수 뒤 실패의 사유를 주지 않는다(힉스필드 웹에만 있음) — 빈 사유면 웹에서 그 종류의 히스토리로 안내한다.
+it.each(["ko", "en"] as const)("%s 사유를 받지 못한 힉스필드 실패는 종류별 웹 히스토리 링크로 안내한다", async (lang) => {
   setLang(lang);
   const popup = (patch: Partial<Generation>) => (
     <InfoPopup target={{ kind: "generation", gen: generation({ status: "failed", execution_phase: "failed", error: null, ...patch }), x: 0, y: 0 }}
       onClose={noop} onPreview={noop} />
   );
-  await render(popup({}));
-  const link = required<HTMLAnchorElement>(".info-error .info-error-link");
-  expect(link.href).toBe("https://higgsfield.ai/asset");
-  expect(link.target).toBe("_blank");
-  expect(link.rel).toContain("noopener");
-  expect(link.textContent).toContain(lang === "ko" ? "힉스필드 웹 [에셋]" : "Higgsfield web [Assets]");
+  for (const [model, url, label] of [
+    ["nano_banana_pro", "https://higgsfield.ai/ai/image", lang === "ko" ? "이미지 히스토리" : "Image history"],
+    ["kling_video_edit", "https://higgsfield.ai/ai/video", lang === "ko" ? "비디오 히스토리" : "Video history"],
+    ["elevenlabs_v4", "https://higgsfield.ai/audio", lang === "ko" ? "오디오 히스토리" : "Audio history"],
+    ["seedance_2_5", "https://higgsfield.ai/asset", lang === "ko" ? "힉스필드 웹 [에셋]" : "Higgsfield web [Assets]"], // 카탈로그 밖
+  ]) {
+    await render(popup({ model }));
+    const link = required<HTMLAnchorElement>(".info-error .info-error-link");
+    expect(link.href, model).toBe(url);
+    expect(link.target).toBe("_blank");
+    expect(link.rel).toContain("noopener");
+    expect(link.textContent, model).toContain(label);
+  }
   for (const patch of [{ model: "comfy" }, { error: "Unexpected external condition" }, { status: "nsfw" as const }]) {
     await render(popup(patch));
     expect(container.querySelector(".info-error-link"), JSON.stringify(patch)).toBeNull();
