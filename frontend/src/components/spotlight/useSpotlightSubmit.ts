@@ -4,7 +4,7 @@ import type { RefObject, MutableRefObject } from "react";
 import { resolveAutoAspectRatio } from "../../lib/aspectAuto";
 import { isGenerationWorkspaceReady } from "../../lib/workspaceContext";
 import { prepareCreateSubmission } from "../../features/generation/api";
-import { isTtsModel } from "../../lib/spotlightPromptConfig";
+import { isTtsModel, isVideoVoiceModel, type VideoCostContext } from "../../lib/spotlightPromptConfig";
 import { runSubmission } from "../../features/generation/api";
 import { assertOperationContextCurrent, captureSubmissionScope } from "../../app/operationContext";
 import { t } from "../../lib/i18n";
@@ -60,6 +60,8 @@ interface UseSpotlightSubmitOptions {
   discardCanvasGeneration?: (link: CanvasGenerationLink) => void;
   onCanvasBatchCreated?: (created: Generation[]) => void;
   optionValues: Record<string, unknown>;
+  /** 보이스 체인지·번역 — 넣은 영상에서 읽은 길이(견적 문맥). */
+  costContext?: VideoCostContext | null;
   paramsLoading: boolean;
   paramsModel: string;
   trayRefs: SpotlightTrayRef[];
@@ -103,6 +105,7 @@ export function useSpotlightSubmit({
   discardCanvasGeneration,
   onCanvasBatchCreated,
   optionValues,
+  costContext = null,
   paramsLoading,
   paramsModel,
   trayRefs,
@@ -151,7 +154,8 @@ export function useSpotlightSubmit({
     if (!editor) return;
 
     const { text, refs: inlineRefs } = serialize(editor);
-    if (!text && trayRefs.length + inlineRefs.length === 0) {
+    // 보이스 체인지·번역은 글이 없다 — 빈 입력도 아래 본문 만들기가 '영상 1개를 넣으세요'로 막는다(같은 문구).
+    if (!isVideoVoiceModel(model) && !text && trayRefs.length + inlineRefs.length === 0) {
       setError("프롬프트를 입력하세요.");
       editor.focus();
       return;
@@ -200,13 +204,14 @@ export function useSpotlightSubmit({
         armedAutoTags,
         activeProjectId: targetProjectId,
         folderPath: targetFolderPath,
+        costContext,
       });
       if (error || !body) {
         setError(error || "생성 요청을 만들 수 없습니다.");
         setBusy(false);
         return;
       }
-      if (isTtsModel(model) && body.params?.voice_id) {
+      if ((isTtsModel(model) || model === "voice_change") && body.params?.voice_id) {
         const selectedVoice = await api.voice(String(body.params?.voice_id ?? ""));
         if (!operationCurrent()) { setBusy(false); return; }
         if (selectedVoice.id !== body.params?.voice_id || selectedVoice.voice_type !== "preset") {
@@ -218,7 +223,8 @@ export function useSpotlightSubmit({
       // 검증을 통과한 요청만 이미지 비율을 비동기로 잰다. 무시되는 옵션도 기존 auto 변환은 유지한다.
       body.params = await resolveAutoAspectRatio(body.params || {}, tunable, [...trayRefs, ...inlineRefs]);
 
-      const batch = normalizeSpotlightBatch(
+      // 보이스 체인지·번역은 대상당 1개로 고정 — 1/4·외부 개수(batchOverride)가 실려 같은 영상을 여러 번 과금하지 않게(번역은 초당 약 3 크레딧).
+      const batch = isVideoVoiceModel(model) ? 1 : normalizeSpotlightBatch(
         batchOverride,
         count,
         SPOTLIGHT_MAX_COUNT,
@@ -334,6 +340,7 @@ export function useSpotlightSubmit({
     confirmCanvasGeneration,
   settleCanvasGeneration,
     optionValues,
+    costContext,
     paramsLoading,
     paramsModel,
     setBusy,

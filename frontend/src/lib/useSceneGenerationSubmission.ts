@@ -11,7 +11,40 @@ import { resolvePortEdges, type SceneGenerationRun } from "./sceneEdges";
 import { buildSceneGenerationJobInput, type SceneGenerationJobInput } from "./sceneGenerationInputs";
 import { acquireSceneGeneration, executeSceneGenerationBatch } from "./sceneGenerationSubmission";
 import { buildSpotlightCreateBody } from "./spotlightSubmit";
+import { isVideoVoiceModel, videoVoiceInputRef, videoVoiceReferenceError, type VideoCostContext } from "./spotlightPromptConfig";
+import { refSrc } from "./promptParts";
 import { resolveAutoAspectRatio } from "./aspectAuto";
+
+/** 렌더 노드의 반복 수 — 보이스 체인지·번역은 카드당 1개(같은 영상을 여러 번 과금하지 않게. 서로 다른 카드는 각각 1개). */
+export const sceneRepeatCount = (model: string, batch: number): number => (isVideoVoiceModel(model) ? 1 : batch);
+
+/** 넣은 영상의 실제 길이(초) — 메타데이터만 받는다. 못 읽으면 null(기본 길이·이전 영상 길이를 만들지 않는다). */
+export function readVideoDuration(src: string, timeoutMs = 15000): Promise<number | null> {
+  return new Promise((resolve) => {
+    const video = document.createElement("video");
+    let settled = false;
+    const done = (value: number | null) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      video.removeAttribute("src");
+      resolve(value);
+    };
+    const timer = window.setTimeout(() => done(null), timeoutMs);
+    video.preload = "metadata";
+    video.muted = true;
+    video.onloadedmetadata = () => done(Number.isFinite(video.duration) && video.duration > 0 ? video.duration : null);
+    video.onerror = () => done(null);
+    video.src = src;
+  });
+}
+
+// 보이스 체인지·번역 — 넣은 영상의 길이를 실제로 읽어 견적 문맥으로(생성 바·씬 카드 공용 — 씬은 카드마다 자기 영상을 읽는다).
+export async function videoCostContext(model: string, refs: { type: string; file_path: string; asset_content_id?: string }[]): Promise<VideoCostContext | null> {
+  if (!isVideoVoiceModel(model) || videoVoiceReferenceError(refs)) return null;
+  const duration = await readVideoDuration(refSrc(refs[0].file_path) || refs[0].file_path);
+  return duration == null ? null : { duration: Math.round(duration * 1000) / 1000, input_ref: videoVoiceInputRef(refs[0]) };
+}
 import { isGenerationWorkspaceReady } from "./workspaceContext";
 import { currentModelPolicy, modelBlockMessage } from "./modelPolicy";
 import { modelAllowed } from "./modelPolicyCore";
@@ -185,6 +218,7 @@ export function useSceneGenerationSubmission({
           const assignmentProjectId = j.assignment?.projectId ?? projectId;
           const assignmentFolderPath = j.assignment?.folderPath ?? folderPath;
           const assignmentTags = j.assignment?.tags || [];
+          const costContext = await videoCostContext(j.model, j.refs);
           const { body, error } = buildSpotlightCreateBody({
             text: j.text,
             inlineRefs: [],
@@ -197,6 +231,7 @@ export function useSceneGenerationSubmission({
             armedAutoTags: [...armedAutoTags],
             activeProjectId: assignmentProjectId,
             folderPath: assignmentFolderPath,
+            costContext,
           });
           if (error || !body) {
             if (j.canvasLink && operationScope.isCurrent!()) discardCanvasGeneration(j.canvasLink);
@@ -292,7 +327,7 @@ export function useSceneGenerationSubmission({
           if (cardsById.get(cid)?.kind === "generation") unresolved.add(cid);
           continue;
         }
-        for (let i = 0; i < batch; i++) jobs.push({ ...job }); // 각 잡 × 배치수
+        for (let i = 0; i < sceneRepeatCount(job.model, batch); i++) jobs.push({ ...job }); // 각 잡 × 배치수
       }
       await submitGenJobs(jobs, unresolved.size, scene, projectId, folderPath);
     } finally {

@@ -72,11 +72,63 @@ def audio_stored_params(model: str, params: dict) -> dict:
 SPEECH_PROMPT_LIMITS = {"elevenlabs": 5000, "minimax": 10000, "seed_speech": 15000,
                         "vibe_voice": 5000, "cozy_voice": 5000}
 
+# 영상 1개를 받는 프롬프트 없는 워크플로(2026-10-28 오디오 2-B). 아래 정의는 agent_push.py 와 같아야 한다.
+VIDEO_VOICE_MODELS = frozenset({"voice_change", "dubbing"})
+VIDEO_VOICE_PARAMS = {"voice_change": {"voice_id", "voice_type", "cost_context"},
+                      "dubbing": {"target_language", "cost_context"}}
+DUBBING_LANGUAGES = frozenset({"eng", "cmn", "fra", "hin", "ita", "jpn", "kor", "por", "rus",
+                               "tur", "spa", "deu", "ara", "pol", "ind", "fil", "swe", "fin"})
+
+
+def _positive_number(value) -> bool:
+    return (not isinstance(value, bool) and isinstance(value, (int, float))
+            and math.isfinite(value) and value > 0)
+
+
+def video_voice_cost_context(model: str, params: dict) -> dict | None:
+    """견적 문맥 {duration, fps(번역만), input_ref} — 형식이 틀리거나 없으면 None(견적 미상)."""
+    ctx = params.get("cost_context") if isinstance(params, dict) else None
+    if not isinstance(ctx, dict) or set(ctx) - {"duration", "fps", "input_ref"}:
+        return None
+    if not _positive_number(ctx.get("duration")):
+        return None
+    if "fps" in ctx and (model != "dubbing" or not _positive_number(ctx["fps"])):
+        return None
+    if not isinstance(ctx.get("input_ref"), str) or not ctx["input_ref"]:
+        return None
+    return ctx
+
+
+def video_voice_cli_params(params: dict) -> dict:
+    """견적 문맥은 CLI 생성 인자가 아니다."""
+    return {key: value for key, value in params.items() if key != "cost_context"}
+
+
+def video_voice_reference_error(references: list) -> str | None:
+    if (len(references) != 1 or references[0].get("type") != "video"
+            or references[0].get("role") != "input_video" or not references[0].get("file_path")):
+        return "영상 1개를 넣으세요"
+    return None
+
 
 def validate_media_request(model: str, prompt: str, params: dict, references: list) -> None:
     """새 미디어 계약만 검사한다. 기존 모델의 옵션/입력 정책은 바꾸지 않는다."""
     if model in MEDIA_V2_MODELS | AUDIO_MODELS_V1 and not prompt.strip():
         raise ValueError("수정 설명 또는 내레이션 내용을 입력하세요")
+    if model in VIDEO_VOICE_MODELS:
+        # prompt 는 CLI 로 보내지 않는다 — 동기화 행의 '(제목 없음)' 같은 값이 있어도 재생성을 막지 않는다.
+        if set(params) - VIDEO_VOICE_PARAMS[model]:
+            raise ValueError("지원하지 않는 보이스 체인지·번역 옵션입니다")
+        error = video_voice_reference_error(references)
+        if error:
+            raise ValueError(error)
+        if model == "voice_change":
+            if params.get("voice_type") != "preset" or not isinstance(params.get("voice_id"), str) or not params["voice_id"].strip():
+                raise ValueError("공식 프리셋 목소리를 선택하세요")
+        elif params.get("target_language") not in DUBBING_LANGUAGES:
+            raise ValueError("번역할 언어를 선택하세요")
+        if video_voice_cost_context(model, params) is None:
+            raise ValueError("영상 길이를 확인할 수 없습니다")
     if model in AUDIO_MODELS_V1:
         if set(params) - AUDIO_PARAMS[model]:
             raise ValueError("지원하지 않는 음성 생성 옵션입니다")
@@ -129,6 +181,14 @@ def validate_media_request(model: str, prompt: str, params: dict, references: li
             raise ValueError("내레이션 모델 또는 입력 글자 수를 확인하세요")
         if params.get("voice_type") != "preset" or not isinstance(params.get("voice_id"), str) or not params["voice_id"].strip():
             raise ValueError("공식 프리셋 목소리를 선택하세요")
+
+
+def video_voice_input_mismatch(model: str, params: dict, references: list) -> bool:
+    """새 요청의 견적 문맥이 지금 넣은 영상의 것인지. 재생성은 저장된 같은 참조 행을 쓰므로 묻지 않는다
+    (저장 뒤 file_path 가 출처 URL 로 바뀌거나 지문이 나중에 채워져도 같은 영상이다)."""
+    ctx = video_voice_cost_context(model, params)
+    ref = references[0] if len(references) == 1 else {}
+    return ctx is not None and ctx["input_ref"] not in {ref.get("asset_content_id"), ref.get("file_path")}
 
 
 AccountType = Literal["personal", "team"]
@@ -327,7 +387,7 @@ class ReferenceIn(BaseModel):
 
 
 class GenerationCreate(BaseModel):
-    prompt: str = Field(min_length=1)
+    prompt: str  # 1자 이상 — 프롬프트 없는 워크플로(VIDEO_VOICE_MODELS)만 빈 값(validate_media)
     display_prompt: Optional[str] = None  # UI 표시용(칩 자리에 @소스명)
     model: str  # job_set_type, 예: 'nano_banana_2'
     params: dict[str, Any] = Field(default_factory=dict)
@@ -341,7 +401,12 @@ class GenerationCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_media(self):
-        validate_media_request(self.model, self.prompt, self.params, [r.model_dump() for r in self.references])
+        if not self.prompt and self.model not in VIDEO_VOICE_MODELS:
+            raise ValueError("프롬프트를 입력하세요")
+        references = [r.model_dump() for r in self.references]
+        validate_media_request(self.model, self.prompt, self.params, references)
+        if self.model in VIDEO_VOICE_MODELS and video_voice_input_mismatch(self.model, self.params, references):
+            raise ValueError("영상 길이 정보가 지금 넣은 영상과 다릅니다")
         return self
 
 

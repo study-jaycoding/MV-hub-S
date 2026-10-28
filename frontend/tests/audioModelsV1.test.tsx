@@ -47,8 +47,10 @@ describe("audio models v1", () => {
     expect(rows.every((row) => row.description)).toBe(true);
     await act(async () => root.render(<Panel model="seed_audio" />));
     expect(host.querySelectorAll(".sl-model-description")).toHaveLength(7);
+    // 2-B: Voice Change 는 더 이상 '준비 중'이 아니다 — 일을 바꾸면 그 일로 표시된다(실행 키 전환은 생성 바가 한다).
     act(() => [...host.querySelectorAll("button")].find((b) => b.textContent === "Voice Change")!.click());
-    expect(host.querySelector('[role="status"]')?.textContent).toBe("준비 중");
+    expect(host.querySelector('[role="status"]')).toBeNull();
+    expect([...host.querySelectorAll('[aria-label="오디오 작업"] button[aria-pressed="true"]')].map((b) => b.textContent)).toEqual(["Voice Change"]);
   });
 
   it.each(AUDIO_MODELS_V1)("capability-gate: %s rejects old-server restore/scene/MCP body", async (model) => {

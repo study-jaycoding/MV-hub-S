@@ -25,6 +25,8 @@ interface Props {
   trayRefs: SpotlightTrayRef[];
   model: string;
   voiceSelected?: boolean;
+  /** 보이스 체인지·번역 — 영상 1개 입력칸 안내(비었을 때)·읽은 길이·읽기 실패. 그 밖의 모델은 null. */
+  videoNote?: string | null;
   liveSeedanceRoles: SeedanceTokenRoles;
   onDragOver: (event: DragEvent<HTMLElement>) => void;
   onDrop: (event: DragEvent<HTMLElement>) => void;
@@ -40,6 +42,7 @@ export function SpotlightRefTray({
   trayRefs,
   model,
   voiceSelected = false,
+  videoNote = null,
   liveSeedanceRoles,
   onDragOver,
   onDrop,
@@ -140,7 +143,7 @@ export function SpotlightRefTray({
       <div ref={containerRef} className="sl-reftray-scroll">
       {trayRefs.length === 0 ? (
         <div className="sl-reftray-empty">
-          {model === "seed_audio"
+          {videoNote ? videoNote : model === "seed_audio"
             ? `오디오 ${voiceSelected ? 2 : 3}개까지${voiceSelected ? "" : " 또는 이미지 1개"} · 에셋 창 또는 탐색기에서 드래그하세요`
             : "에셋 창 또는 탐색기에서 파일을 여기로 드래그하세요 - 번호 순서대로 레퍼런스가 됩니다"}
         </div>
@@ -221,6 +224,7 @@ export function SpotlightRefTray({
         <div className="sl-reftray-line" style={{ left: line.x, top: line.y, height: line.h }} />
       )}
       </div>
+      {videoNote && trayRefs.length > 0 && <div className="sl-reftray-note" role="status">{videoNote}</div>}
       {/* 레퍼런스 비우기 — 생성 후에도 트레이는 남으므로(연속 변형용) 한 번에 초기화. 칸 오른쪽 위, 프롬프트의 복사 단추와 같은 세로줄(Jay 2026-10-22) */}
       {trayRefs.length > 0 && (
         <button

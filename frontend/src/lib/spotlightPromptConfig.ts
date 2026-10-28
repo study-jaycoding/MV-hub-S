@@ -10,8 +10,30 @@ export const AUDIO_PARAMS: Record<string, readonly string[]> = {
   qwen_audio_tts: ["voice_id", "voice_type", "instruction", "language", "speech_rate", "pitch_rate", "volume", "format", "sample_rate", "seed"],
 };
 export const isTtsModel = (model: string): boolean => Object.prototype.hasOwnProperty.call(AUDIO_PARAMS, model);
+
+// 보이스 체인지·번역(2-B) — 영상 1개를 받는 프롬프트 없는 워크플로. backend/app/models.py VIDEO_VOICE_* 와 같아야 한다
+//  (언어 표는 백엔드 정의 일치 시험이 직접 읽는다 — 형식 ["코드", "이름"] 을 유지할 것).
+export const VIDEO_VOICE_MODELS = ["voice_change", "dubbing"] as const;
+export const isVideoVoiceModel = (model: string): boolean => (VIDEO_VOICE_MODELS as readonly string[]).includes(model);
+/** Audio 의 세 가지 일 ↔ 실행 키. 일은 모델에서 나온다 — 재사용·복원이 모델만 돌려줘도 같은 일로 돌아온다. */
+export const AUDIO_TASK_MODELS: Record<string, string> = { "voice-change": "voice_change", translate: "dubbing" };
+export const audioTaskOf = (model: string): string => model === "voice_change" ? "voice-change" : model === "dubbing" ? "translate" : "tts";
+export const DUBBING_LANGUAGES: [string, string][] = [
+  ["kor", "한국어"], ["eng", "영어"], ["jpn", "일본어"], ["cmn", "중국어(표준)"], ["spa", "스페인어"], ["fra", "프랑스어"],
+  ["deu", "독일어"], ["ita", "이탈리아어"], ["por", "포르투갈어"], ["rus", "러시아어"], ["hin", "힌디어"], ["ara", "아랍어"],
+  ["tur", "튀르키예어"], ["pol", "폴란드어"], ["ind", "인도네시아어"], ["fil", "필리핀어"], ["swe", "스웨덴어"], ["fin", "핀란드어"],
+];
+export const VIDEO_VOICE_INPUT_ERROR = "영상 1개를 넣으세요";
+export function videoVoiceReferenceError(refs: { type: string; file_path?: string }[]): string | null {
+  return refs.length !== 1 || refs[0].type !== "video" || !refs[0].file_path ? VIDEO_VOICE_INPUT_ERROR : null;
+}
+/** 견적 문맥 — 실제 입력 파일에서 읽은 길이(초)와 그 입력의 식별자. 번역 fps 는 모르면 넣지 않는다(CLI 기본 25). */
+export interface VideoCostContext { duration: number; fps?: number; input_ref: string }
+export const videoVoiceInputRef = (ref: { asset_content_id?: string | null; file_path: string }): string => ref.asset_content_id || ref.file_path;
+
 export const audioModelBlocked = (model: string): string | null =>
-  (AUDIO_MODELS_V1 as readonly string[]).includes(model) && !hubHasFeature("audio-models-v1") ? "서버 업데이트 필요" : null;
+  ((AUDIO_MODELS_V1 as readonly string[]).includes(model) && !hubHasFeature("audio-models-v1"))
+  || (isVideoVoiceModel(model) && !hubHasFeature("video-voice-v1")) ? "서버 업데이트 필요" : null;
 
 // 모델별 '추천' 목소리 — CLI voices list 에는 모델 구분이 없어, 힉스필드 웹 목록을 이름→CLI id 로 고정한다(2026-10-28 비로그인 화면,
 //  끝까지 스크롤해 센 값: Qwen 만 47개, 나머지 엔진은 114 전부라 표가 없다). 추천만 표시하고 나머지를 막지 않는다(Jay 결정 ①·Codex A6).
@@ -275,6 +297,7 @@ const PARAM_LABEL: Record<string, string> = {
   similarity_boost: "목소리 유사도",
   instruction: "말하는 방식",
   language: "언어",
+  target_language: "번역 언어",
   speech_rate: "말하기 속도",
   pitch_rate: "음높이",
   loudness_rate: "음량 조절",
@@ -300,6 +323,7 @@ const PARAM_VALUE_LABEL: Record<string, Record<string, string>> = {
   thinking_level: { minimal: "최소(minimal)", medium: "보통(medium)", high: "깊게(high)" },
   format: { ogg_opus: "OGG", wav: "WAV", mp3: "MP3", pcm: "PCM" },
   language: { "": "자동", zh: "중국어", en: "영어", fr: "프랑스어", de: "독일어", ja: "일본어", ko: "한국어", ru: "러시아어", pt: "포르투갈어", th: "태국어", id: "인도네시아어", vi: "베트남어", it: "이탈리아어", ms: "말레이어" },
+  target_language: Object.fromEntries(DUBBING_LANGUAGES),
 };
 
 export function spotlightValueLabel(value: string, param = ""): string {

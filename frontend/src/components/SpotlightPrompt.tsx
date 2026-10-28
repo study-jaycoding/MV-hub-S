@@ -30,6 +30,7 @@ import {
 } from "../lib/assetVersionRefresh";
 import { DRAG_TYPES } from "../lib/dragTypes";
 import { buildPromptParts, refsToChips } from "../lib/promptParts";
+import { getAccountNamespace, getConnectionKey } from "../lib/accountScope";
 import {
   unwrapTokenPill,
   countImageChips,
@@ -74,7 +75,9 @@ import { useSpotlightTokenWrap } from "../lib/useSpotlightTokenWrap";
 import { useSeedanceRoleMenu } from "../lib/useSeedanceRoleMenu";
 import { useModels, ALLOWED, HIDDEN_PARAMS, stripHiddenParams, withEffectiveDefaults } from "../lib/useModels";
 import { SPEECH_TEXT_LIMITS } from "../lib/spotlightSubmit";
-import { audioModelBlocked, isTtsModel } from "../lib/spotlightPromptConfig";
+import { videoCostContext } from "../lib/useSceneGenerationSubmission";
+import { AUDIO_TASK_MODELS, audioModelBlocked, audioTaskOf, isTtsModel, isVideoVoiceModel, videoVoiceInputRef,
+  videoVoiceReferenceError, type VideoCostContext } from "../lib/spotlightPromptConfig";
 import { policyNote, submitBlockMessage } from "../lib/modelPolicyCore";
 import { useModelPolicy } from "../lib/modelPolicy";
 import {
@@ -222,17 +225,24 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   // 그룹 사용 모델 정책(앱 수준 모듈 저장소) — 못 쓰는 모델은 목록에서 빼고, 이미 고른 것이면 제출만 막는다.
   const modelPolicy = useModelPolicy();
   const [costPrompt, setCostPrompt] = useState("");
-  const [audioTask, setAudioTask] = useState("tts");
+  // 보이스 체인지·번역의 견적 문맥 — 넣은 영상에서 실제로 읽은 길이(아래 트레이 effect 가 채운다).
+  const [costContext, setCostContext] = useState<VideoCostContext | null>(null);
+  const [videoLengthFailed, setVideoLengthFailed] = useState(false);
   const { type, setType, model, setModel, markModelSelection, modelPickedByUser, firstAllowed,
           currentModel: readSelectedModel, loadedParams, tunable, constraints, typeModels, modelName,
           optionValues, setOptionValues, setOpt, cost, costLoading, paramsModel, paramsLoading,
           pendingOptsRef, setOpenRef, params: schemaParams, selectedBlocked, typeFullyBlocked } =
-    useModels((msg) => setError(msg), { allowed: modelPolicy.allowed, ready: modelPolicy.status !== "loading", costPrompt });
+    useModels((msg) => setError(msg), { allowed: modelPolicy.allowed, ready: modelPolicy.status !== "loading", costPrompt, costContext });
+  // Audio 의 일(TTS·Voice Change·Translate)은 모델에서 나온다 — 재사용·복원이 모델만 돌려줘도 같은 일로 돌아온다.
+  const audioTask = audioTaskOf(model);
+  // 보이스 체인지·번역은 영상 1개가 입력이라 레퍼런스 칸을 늘 쓴다(접혀 있어도 칸으로 — 인라인 칩으로 가지 않게).
+  const trayMode = expanded || isVideoVoiceModel(model);
+  const lastTtsModelRef = useRef("");
+  useEffect(() => { if (isTtsModel(model)) lastTtsModelRef.current = model; }, [model]);
   // 이 타입을 통째로 못 써서 고를 모델이 없으면 "모델을 선택하세요" 대신 이유를 말한다(코덱스 P2).
-  const modelBlockedMessage = (type === "audio" && audioTask !== "tts" ? "준비 중인 오디오 기능입니다." : null) || audioModelBlocked(model) || (typeFullyBlocked
+  const modelBlockedMessage = audioModelBlocked(model) || (typeFullyBlocked && !isVideoVoiceModel(model)
     ? `이 그룹에서 쓸 수 있는 ${type === "video" ? "영상" : type === "audio" ? "오디오" : "이미지"} 모델이 없습니다. 매니저에게 문의하세요.`
     : submitBlockMessage(modelPolicy, model, modelName));
-  useEffect(() => { setAudioTask("tts"); }, [model]);
   const [countState, setCountState] = useState(1); // 한 번에 N장 생성(배치) — 내부 폴백
   const count = countProp ?? countState; // App 이 배치수를 보유하면 컨트롤드(카드 툴바와 공유)
   // SpotlightGenerateControls 는 Dispatch<SetStateAction<number>> 를 기대하므로 함수형 업데이트도 받는다.
@@ -311,6 +321,27 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   useEffect(() => {
     setCostPrompt(isTtsModel(model) && editorRef.current ? serialize(editorRef.current).text : "");
   }, [model, promptTick]);
+  // 보이스 체인지·번역 — 넣은 영상 1개의 실제 길이를 읽어 견적 문맥으로 둔다. 영상·계정·연결이 바뀌면 앞 측정을 버리고,
+  //  못 읽으면 문맥 없이 둔다(견적·제출 모두 막힘 — 기본 길이를 만들지 않는다).
+  const videoInput = isVideoVoiceModel(model) && !videoVoiceReferenceError(trayRefs) ? trayRefs[0] : null;
+  const videoInputRef = videoInput ? videoVoiceInputRef(videoInput) : "";
+  const videoInputPath = videoInput?.file_path ?? "";
+  const measureScope = `${getAccountNamespace()}\0${getConnectionKey()}`;
+  useEffect(() => {
+    setCostContext(null);
+    setVideoLengthFailed(false);
+    if (!videoInputRef) return;
+    let alive = true;
+    void videoCostContext(model, [{ type: "video", file_path: videoInputPath, asset_content_id: videoInputRef === videoInputPath ? undefined : videoInputRef }])
+      .then((measured) => {
+        if (!alive) return;
+        if (!measured) setVideoLengthFailed(true);
+        else setCostContext(measured);
+      });
+    return () => { alive = false; };
+    // model 은 두 워크플로 사이를 오가도 같은 영상이면 다시 재지 않는다(입력 식별자·경로·계정이 기준).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoInputRef, videoInputPath, measureScope]);
   // 전역 어셋 버전 표 구독 — 원본이 바뀌면 트레이/멘션/인라인 칩/입력창 토큰 썸네일을 다시 그린다.
   const assetVersionTick = useSyncExternalStore(
     subscribeAssetVersions,
@@ -1182,7 +1213,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
         thumb: a.thumbnail_path || a.file_path,
         source_gen_id: g.id, // 출처 generation → 히스토리 reference 엣지
       };
-      if (expanded) {
+      if (trayMode) {
         // 확장(+) 상태 = 위 트레이에 레퍼런스로 추가(번호순). 중복 허용 — 같은 생성물도 여러 번.
         // role 은 트레이용(@Video/@Image)으로 먼저 조정한 뒤 uid 부여(role 조정은 호출부 책임).
         const [trayRef] = withFreshTrayUids([{ ...ref, role: isVid ? "@Video" : "@Image" }]);
@@ -1254,7 +1285,8 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     const gen = e.dataTransfer.getData(DRAG_TYPES.generation);
     if (gen) {
       e.preventDefault();
-      void reusePromptFromGen(gen); // 카드 끌어내림 = 프롬프트 재사용(불러오기)
+      // 카드 끌어내림 = 프롬프트 재사용(불러오기). 보이스 체인지·번역에서는 그 카드의 영상을 입력으로 넣는다.
+      void (isVideoVoiceModel(model) ? addRefFromGen(gen) : reusePromptFromGen(gen));
       return;
     }
     if (e.dataTransfer.types.includes(DRAG_TYPES.asset)) {
@@ -1272,7 +1304,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   const addAssetRefs = (raw: string) => {
     raw = JSON.stringify(parseSpotlightAssetItems(raw).map(item => ({ ...item,
       ...assetIdentityForProject(item, importTarget.target_project_id) })));
-    if (expanded) {
+    if (trayMode) {
       addAssetToTray(raw); // 트레이(배열 그대로 — 중복 허용)
       return;
     }
@@ -1316,6 +1348,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     discardCanvasGeneration,
     onCanvasBatchCreated,
     optionValues,
+    costContext,
     paramsLoading,
     paramsModel,
     trayRefs,
@@ -1553,6 +1586,8 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     showChipDropBar(e.clientX, e.clientY);
   };
   const onPromptChipDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    // 보이스 체인지·번역 — 글 칸에 놓아도 레퍼런스 칸으로(패널 놓기 처리로 넘긴다).
+    if (isVideoVoiceModel(model)) return;
     if (!e.dataTransfer.types.includes(DRAG_TYPES.chip)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -1574,7 +1609,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       <div className="sl-dock">
         {topSlot}
         <div
-          className={"sl-panel" + (expanded ? " expanded" : "")}
+          className={"sl-panel" + (trayMode ? " expanded" : "") + (isVideoVoiceModel(model) ? " sl-video-voice" : "")}
           onDragOver={onPanelDragOver}
           onDrop={onPanelDrop}
         >
@@ -1598,11 +1633,15 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
           )}
 
           {/* 확장(+) 레퍼런스 트레이 — 에셋 폴더 드래그 전용. 번호 = 생성 --image 순서 */}
-          {expanded && (!isTtsModel(model) || model === "seed_audio") && (
+          {trayMode && (!isTtsModel(model) || model === "seed_audio") && (
             <SpotlightRefTray
               trayRefs={trayRefs}
               model={model}
               voiceSelected={!!optionValues.voice_id}
+              videoNote={!isVideoVoiceModel(model) ? null
+                : videoVoiceReferenceError(trayRefs) ? "영상 1개를 넣으세요 — 에셋 창·탐색기·카드에서 끌어 놓기"
+                : costContext ? `영상 ${costContext.duration.toFixed(1)}초`
+                : videoLengthFailed ? "영상 길이를 읽지 못했습니다 — 다른 영상을 넣으세요" : "영상 길이를 읽는 중…"}
               liveSeedanceRoles={liveSeedanceRoles}
               onDragOver={onTrayDragOver}
               onDrop={onTrayDrop}
@@ -1641,12 +1680,14 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
             script={isTtsModel(model)
               ? { count: costPrompt.length, max: model === "text2speech_v2" ? SPEECH_TEXT_LIMITS[String(optionValues.variant ?? "")] : undefined }
               : null}
+            notice={model === "voice_change" ? "글은 넣지 않습니다 — 위 칸에 영상 1개를 넣고 Voice 를 고르세요"
+              : model === "dubbing" ? "글은 넣지 않습니다 — 위 칸에 영상 1개를 넣고 번역 언어를 고르세요" : null}
           />
 
           {/* 컨트롤 행 */}
           <SpotlightGenerateControls
-            count={count}
-            maxCount={SPOTLIGHT_MAX_COUNT}
+            count={isVideoVoiceModel(model) ? 1 : count}
+            maxCount={isVideoVoiceModel(model) ? 1 : SPOTLIGHT_MAX_COUNT}
             setCount={setCount}
             busy={busy}
             cost={cost}
@@ -1657,7 +1698,10 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
                 type={type}
                 setType={setType}
                 audioTask={audioTask}
-                onAudioTaskChange={setAudioTask}
+                onAudioTaskChange={(task) => {
+                  const next = AUDIO_TASK_MODELS[task] ?? (lastTtsModelRef.current || firstAllowed("audio"));
+                  if (next && next !== model) setModel(next);
+                }}
                 model={model}
                 setModel={setModel}
                 onPickModel={(picked, opts) => applyModelCfg(type, picked, opts)}

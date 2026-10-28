@@ -46,7 +46,7 @@ function memberLabel(member: CreditPlanMember): string {
 const SELECTABLE_MODEL_GROUPS: { title: string; ids: readonly string[] }[] = [
   { title: "이미지", ids: ALLOWED.image },
   { title: "영상", ids: [...ALLOWED.video, "draw_to_video"] },
-  { title: "오디오", ids: ALLOWED.audio },
+  { title: "오디오", ids: [...ALLOWED.audio, "voice_change", "dubbing"] },
 ];
 
 // ── 그룹 창(힉스필드 "Add new group" 과 같은 두 칸 구성) ──────────────────────
@@ -73,7 +73,8 @@ export function GroupEditor({
   const [allowed, setAllowed] = useState<string[]>(group.allowedModels);
   const [pickingModels, setPickingModels] = useState(false);
   const catalogModelLabel = useModelDisplayName();
-  const modelLabel = (id: string) => id === "draw_to_video" ? "영상 수정" : catalogModelLabel(id);
+  const modelLabel = (id: string) => id === "draw_to_video" ? "영상 수정"
+    : id === "voice_change" ? "보이스 체인지" : id === "dubbing" ? "번역(더빙)" : catalogModelLabel(id);
   const toggleAllowed = (id: string) =>
     setAllowed((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   const [emails, setEmails] = useState<string[]>(

@@ -33,7 +33,7 @@ afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(
 const generation = (id: string) => ({ id, model: "m", prompt: "p", status: "done", params: {}, assets: [] }) as unknown as Generation;
 const settle = async () => { for (let i = 0; i < 5; i += 1) await Promise.resolve(); };
 
-it.each(["seed_audio", "elevenlabs_v4", "elevenlabs_v4_turbo", "qwen_audio_tts"])("옛 서버에서는 %s 직접 재생성을 보내지 않고 대기 연결을 해제한다", async (model) => {
+it.each(["seed_audio", "elevenlabs_v4", "elevenlabs_v4_turbo", "qwen_audio_tts", "voice_change", "dubbing"])("옛 서버에서는 %s 직접 재생성을 보내지 않고 대기 연결을 해제한다", async (model) => {
   const flash = vi.fn();
   const reject = vi.fn();
   let actions!: ReturnType<typeof useGenerationCardActions>;

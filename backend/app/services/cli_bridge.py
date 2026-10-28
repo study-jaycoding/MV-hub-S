@@ -428,9 +428,12 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
           references: [{id, type, file_path, role}],
         }
     """
-    from ..models import AUDIO_MODELS_V1, AUDIO_PARAMS, TTS_MODELS, audio_stored_params
+    from ..models import AUDIO_MODELS_V1, AUDIO_PARAMS, TTS_MODELS, VIDEO_VOICE_MODELS, VIDEO_VOICE_PARAMS, audio_stored_params
     model = job.get("job_set_type") or job.get("job_type") or job.get("model")
     params = audio_stored_params(model, job.get("params") or {})
+    if model in VIDEO_VOICE_MODELS:
+        # 입력 영상 객체(input_video)·folder_id 는 params 로 저장하지 않는다 — 재생성이 그대로 복사해 거부된다.
+        params = {key: value for key, value in params.items() if key in VIDEO_VOICE_PARAMS[model]}
     result_url = job.get("result_url")
     # 결과 배열만 읽는다. params의 입력 미디어는 결과로 승격하지 않는다.
     if not result_url:
@@ -485,8 +488,8 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
         # image 로 오분류돼 입력 축소본이 썸네일로 저장되지 않게 명시값(image|video)을 확장자 판정보다 우선.
         explicit_type = job.get("result_media_type") or job.get("type")
         model = job.get("job_set_type") or job.get("job_type") or job.get("model")
-        if explicit_type not in ("image", "video", "audio") and model in TTS_MODELS and "." not in urlsplit(result_url).path.rsplit("/", 1)[-1]:
-            explicit_type = "audio"
+        if explicit_type not in ("image", "video", "audio") and "." not in urlsplit(result_url).path.rsplit("/", 1)[-1]:
+            explicit_type = "audio" if model in TTS_MODELS else "video" if model in VIDEO_VOICE_MODELS else explicit_type
         asset = {
             "type": explicit_type
             if explicit_type in ("image", "video", "audio")
@@ -725,7 +728,8 @@ async def _get_model_params_uncached(
 ) -> dict[str, Any]:
     old = _CALL_CACHE.get(ckey)
     try:
-        command = "workflow" if job_set_type == "draw_to_video" else "model"
+        from ..models import VIDEO_VOICE_MODELS
+        command = "workflow" if job_set_type == "draw_to_video" or job_set_type in VIDEO_VOICE_MODELS else "model"
         data = await _run_json(command, "get", job_set_type, timeout=timeout)
     except CLIError:
         if old is not None:
@@ -1074,7 +1078,13 @@ async def estimate_cost(
     # 느린 CLI 견적이 즉시 응답을 막았다. 스키마 miss 가능 경로는 게이트 안에서만 CLI 를
     # 부른다(게이트 밖 무제한 model get 방지).
     _require_model_id(model)
-    from ..models import TTS_MODELS, validate_media_request
+    from ..models import TTS_MODELS, VIDEO_VOICE_MODELS, validate_media_request, video_voice_cost_context
+    if model in VIDEO_VOICE_MODELS:
+        # 견적은 cost_params(길이·번역 fps)만 받는다 — 생성 옵션·파일·prompt 를 넣으면 CLI 가 거부한다(10-28 실측).
+        ctx = video_voice_cost_context(model, params or {})
+        if ctx is None:
+            raise CLIError("영상 길이를 확인할 수 없어 견적을 낼 수 없습니다")
+        params = {"duration": ctx["duration"], **({"fps": ctx["fps"]} if "fps" in ctx else {})}
     if model in TTS_MODELS:
         try:
             validate_media_request(model, prompt, params or {}, [])
@@ -1093,7 +1103,10 @@ async def estimate_cost(
     cached_names = model in _PARAM_NAMES_CACHE and (
         allow_stale or now - _PARAM_NAMES_SAVED_AT.get(model, now) < _PARAMS_TTL
     )
-    if cached_names:
+    if model in VIDEO_VOICE_MODELS:
+        # 생성 스키마(params)에 없는 cost_params 라 이름 필터(_param_args)를 거치지 않는다.
+        param_args = [arg for key, value in params.items() for arg in (f"--{key}", format(value, "g"))]
+    elif cached_names:
         # 화면의 기존 견적은 캐시한 이름으로 즉답; 스키마 갱신은 params 조회가 담당한다.
         param_args = (await _param_args(model, params, allow_stale=True) if allow_stale
                       else await _param_args(model, params))
@@ -1155,14 +1168,17 @@ async def _estimate_cost_miss(
         entry = _COST_CACHE.get(key)
         if entry is not None and (time.time() - entry[1]) < _COST_TTL:
             return _cost_result(entry)
+        from ..models import VIDEO_VOICE_MODELS
+        workflow = model == "draw_to_video" or model in VIDEO_VOICE_MODELS
+        no_prompt = model in {"elevenlabs_v4", "elevenlabs_v4_turbo"} or model in VIDEO_VOICE_MODELS
         args: list[str] = [
             "generate", "cost",
-            *(["workflow"] if model == "draw_to_video" else []), model,
-            *([] if model in {"elevenlabs_v4", "elevenlabs_v4_turbo"} else ["--prompt", _shield_json_prompt(prompt or "preview")]),
+            *(["workflow"] if workflow else []), model,
+            *([] if no_prompt else ["--prompt", _shield_json_prompt(prompt or "preview")]),
         ]
         args += param_args
         # 캐시 키(param_args 기준)는 더미와 무관하게 유지 — CLI 호출에만 끼운다.
-        if model != "draw_to_video":
+        if not workflow:
             args += _cost_dummy_ref_args(param_args)
         try:
             data = await _run_json(*args, timeout=timeout)
@@ -1252,19 +1268,21 @@ async def get_voice(voice_id: str, timeout: float = 30.0) -> dict[str, Any]:
 
 
 async def validate_media_submission(model: str, prompt: str, params: dict, references: list) -> None:
-    from ..models import MEDIA_V2_MODELS, AUDIO_MODELS_V1, TTS_MODELS, audio_cli_params, validate_media_request
+    from ..models import (MEDIA_V2_MODELS, AUDIO_MODELS_V1, TTS_MODELS, VIDEO_VOICE_MODELS, audio_cli_params,
+                          validate_media_request, video_voice_cli_params)
     validate_media_request(model, prompt, params, references)
-    if model not in MEDIA_V2_MODELS | AUDIO_MODELS_V1:
+    if model not in MEDIA_V2_MODELS | AUDIO_MODELS_V1 | VIDEO_VOICE_MODELS:
         return
     schema = await get_model_params(model)
     if schema.get("stale"):
         raise CLIError("생성 옵션을 새로 확인할 수 없습니다. 잠시 후 다시 시도하세요")
     definitions = {p["name"]: p for p in schema.get("params", [])}
-    for key, value in audio_cli_params(model, prompt, params).items():
+    wire = video_voice_cli_params(params) if model in VIDEO_VOICE_MODELS else audio_cli_params(model, prompt, params)
+    for key, value in wire.items():
         definition = definitions.get(key)
         if not definition or definition.get("enum") and str(value) not in {str(item) for item in definition["enum"]}:
             raise ValueError("현재 모델이 지원하지 않는 옵션입니다")
-    if model in TTS_MODELS and params.get("voice_id"):
+    if (model in TTS_MODELS or model == "voice_change") and params.get("voice_id"):
         await get_voice(params["voice_id"])
 
 

@@ -52,6 +52,7 @@ def _reference_delivery_check(submitted_refs: list, raw_job: dict) -> dict[str, 
         found = False
         roles = {"input_images": "image", "image_references": "image_references",
                  "video_references": "video", "audio_references": "audio", "video": "video",
+                 "input_video": "input_video",
                  "start_image": "start_image", "end_image": "end_image", "ref_image": "image"}
         for key, value in params.items():
             if key not in roles or value is None:
@@ -1604,6 +1605,7 @@ def has_pending_requests(
     asset_content_capable: bool = True,
     media_v2_capable: bool = False,
     audio_models_v1_capable: bool = False,
+    video_voice_v1_capable: bool = False,
 ) -> bool:
     """쓰기 상태를 바꾸지 않고 이 계정에서 실행 가능한 대기 요청 존재만 확인한다."""
     ws_gate = (
@@ -1614,6 +1616,7 @@ def has_pending_requests(
     asset_gate = "" if asset_content_capable else _ASSET_CONTENT_REFERENCE_GATE
     media_gate = "" if media_v2_capable else _MEDIA_V2_GATE
     media_gate += "" if audio_models_v1_capable else _AUDIO_MODELS_V1_GATE
+    media_gate += "" if video_voice_v1_capable else _VIDEO_VOICE_V1_GATE
     with get_connection() as conn:
         row = conn.execute(
             "SELECT 1 FROM gen_request "
@@ -1636,6 +1639,13 @@ _AUDIO_MODELS_V1_GATE = (
     "coalesce(json_extract(payload, '$.model'), '') IN ('seed_audio','elevenlabs_v4','elevenlabs_v4_turbo','qwen_audio_tts')))"
 )
 
+# 보이스 체인지·번역(2-B) — 이 표시를 알리지 않는 에이전트는 목록·claim 어디서도 받지 못한다.
+_VIDEO_VOICE_V1_GATE = (
+    " AND NOT (json_valid(payload) AND ("
+    "coalesce(json_extract(payload, '$.media_protocol'), '')='video-voice-v1' OR "
+    "coalesce(json_extract(payload, '$.model'), '') IN ('voice_change','dubbing')))"
+)
+
 
 def claim_pending_requests(
     account_email: str,
@@ -1647,6 +1657,7 @@ def claim_pending_requests(
     asset_content_capable: bool = True,
     media_v2_capable: bool = False,
     audio_models_v1_capable: bool = False,
+    video_voice_v1_capable: bool = False,
     sweep_expired: bool = True,
 ) -> list[dict[str, Any]]:
     """이 계정의 대기 요청을 원자적으로 claim한다.
@@ -1681,6 +1692,7 @@ def claim_pending_requests(
     asset_gate = "" if asset_content_capable else _ASSET_CONTENT_REFERENCE_GATE
     media_gate = "" if media_v2_capable else _MEDIA_V2_GATE
     media_gate += "" if audio_models_v1_capable else _AUDIO_MODELS_V1_GATE
+    media_gate += "" if video_voice_v1_capable else _VIDEO_VOICE_V1_GATE
     with get_connection() as conn:
         # 빈 폴은 가장 흔한 경로다. 먼저 읽기로 claim 가능한 pending 존재만 확인해, 0건이면
         # BEGIN IMMEDIATE(전역 쓰기락)를 잡지 않고 끝낸다. 이 읽기와 실제 claim 사이의 레이스는

@@ -47,6 +47,33 @@ class TestGenRequestCapabilityGate:
             assert [item["id"] for item in claimed] == [rid]
             assert asyncio.run(gen_requests_router.begin_gen_request_submission(rid, object(), agent_id="new", capability=new_caps))["applied"] is True
 
+    @pytest.mark.parametrize("model", ["voice_change", "dubbing"])
+    @pytest.mark.parametrize("marked", [False, True])
+    def test_video_voice_gate_list_claim_and_begin(self, model, marked):
+        # 2-A 오디오 표시는 있어도 2-B 표시가 없는 에이전트는 못 받는다 — 기존 선언은 유지하고 새 표시를 더한다.
+        payload = {"model": model, "prompt": "", "params": {}}
+        if marked:
+            payload["media_protocol"] = "video-voice-v1"
+        gen_id = repo.create_local_generation(payload, "me", creator_uid="creator-1")
+        rid = repo.create_gen_request("worker@example.com", "creator-1", gen_id, "create", payload)
+        old_caps = "workspace,submission-stage,asset-content,media-v2,audio-models-v1"
+        with patch.object(gen_requests_router, "_require_account", return_value=self.account), patch.object(
+            gen_requests_router, "realtime_scope", return_value="acct:worker@example.com"
+        ), patch.object(gen_requests_router, "schedule_telemetry_drain"), patch.object(
+            gen_requests_router.manager, "broadcast", new_callable=AsyncMock
+        ):
+            assert asyncio.run(gen_requests_router.pending_gen_requests_exist(object(), capability=old_caps, agent_id="old")) == {"pending": False}
+            assert asyncio.run(gen_requests_router.pending_gen_requests(object(), capability=old_caps, agent_id="old")) == []
+            with pytest.raises(HTTPException) as error:
+                asyncio.run(gen_requests_router.begin_gen_request_submission(rid, object(), agent_id="old", capability=old_caps))
+            assert error.value.status_code == 409
+            assert repo.get_gen_request(rid)["status"] == "pending"
+            new_caps = old_caps + ",video-voice-v1"
+            assert asyncio.run(gen_requests_router.pending_gen_requests_exist(object(), capability=new_caps, agent_id="new")) == {"pending": True}
+            claimed = asyncio.run(gen_requests_router.pending_gen_requests(object(), capability=new_caps, agent_id="new"))
+            assert [item["id"] for item in claimed] == [rid]
+            assert asyncio.run(gen_requests_router.begin_gen_request_submission(rid, object(), agent_id="new", capability=new_caps))["applied"] is True
+
     def setup_method(self):
         self.temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.old_db = os.environ.get("CONTENT_HUB_DB")

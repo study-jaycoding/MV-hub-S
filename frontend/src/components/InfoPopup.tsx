@@ -16,6 +16,7 @@ import { useModelDisplayName } from "../lib/modelCatalog";
 import { reportSourceLocationError } from "../lib/sourceLocationFeedback";
 import { displayThumb, hideBrokenImg, showLoadedImg } from "../lib/media";
 import { refSrc } from "../lib/promptParts";
+import { isVideoVoiceModel } from "../lib/spotlightPromptConfig";
 import { useModalFocus } from "../lib/keyGate";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { addWindowPointerDrag, keepHeadReachable, removeWindowPointerDrag } from "../lib/windowDrag";
@@ -156,12 +157,18 @@ export function InfoPopup({
     setMetrics(null);
     setComfySub(null);
     const g = target.gen;
+    const costContext = (g.params as { cost_context?: { input_ref?: string } } | null)?.cost_context;
+    const videoRef = g.references?.length === 1 ? g.references[0] : null;
     if (g.model === "comfy") {
       // Comfy: 견적 API 는 단가가 없어 영영 안 끝난다 → 호출하지 않고 구독 정보를 조회한다.
       api
         .comfySubscription()
         .then((r) => isLatest() && setComfySub(r))
         .catch(() => isLatest() && setComfySub(null));
+    } else if (isVideoVoiceModel(g.model || "") && !(costContext?.input_ref && videoRef
+      && [videoRef.asset_content_id, videoRef.file_path, videoRef.source_url].includes(costContext.input_ref))) {
+      // 보이스 체인지·번역 — 견적 문맥(영상 길이)이 없거나 지금 참조의 것이 아니면 '정보 없음'. 다른 영상 길이로 견적하지 않는다.
+      setEstimateStatus("ready");
     } else {
       api
         .estimateCost(g.model || "", (g.params || {}) as Record<string, unknown>, g.prompt)

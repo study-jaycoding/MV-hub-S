@@ -8,8 +8,10 @@ import type { MediaType, ModelInfo, ModelParam } from "../../types";
 import { effectiveDefault, numericRange, paramGateAllows } from "../../lib/useModels";
 import {
   SPOTLIGHT_PRIMARY_PARAMS,
+  DUBBING_LANGUAGES,
   audioModelBlocked,
   isTtsModel,
+  isVideoVoiceModel,
   recommendedVoiceIds,
   currentVariantValue,
   durationRange,
@@ -256,6 +258,43 @@ function VoicePicker({
   );
 }
 
+/** 번역(dubbing) 대상 언어 칩 — CLI target_language 18개를 한국어 이름으로. 고르기 전에는 '번역 언어'. */
+function LanguagePicker({ value, onPick, open, setOpen }: {
+  value: string;
+  onPick: (code: string) => void;
+  open: string | null;
+  setOpen: Dispatch<SetStateAction<string | null>>;
+}) {
+  const chipRef = useRef<HTMLButtonElement>(null);
+  const isOpen = open === "target_language";
+  useEscapeClose(() => {
+    setOpen(null);
+    chipRef.current?.focus({ preventScroll: true });
+  }, isOpen, true, true);
+  const label = DUBBING_LANGUAGES.find(([code]) => code === value)?.[1];
+  return (
+    <div className="sl-chip-wrap">
+      <button ref={chipRef} aria-expanded={isOpen} aria-label="번역 언어" title="번역 언어"
+        className={"sl-chip" + (isOpen ? " active" : "")} onClick={() => setOpen(isOpen ? null : "target_language")}>
+        <span className="sl-opt-ic"><VoiceIcon /></span>
+        <span className="sl-chip-label">{label ?? "번역 언어"}</span>
+        <span className="sl-caret">›</span>
+      </button>
+      {isOpen && (
+        <div className="sl-dropdown">
+          <div className="sl-dd-title">번역 언어</div>
+          <div className="sl-dd-scroll">
+            {DUBBING_LANGUAGES.map(([code, name]) => (
+              <button key={code} className={"sl-dd-item" + (code === value ? " sel" : "")}
+                onClick={() => { onPick(code); setOpen(null); }}>{name}</button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function SpotlightOptionsBar({
   type,
   setType,
@@ -283,7 +322,7 @@ export function SpotlightOptionsBar({
   const [voicesError, setVoicesError] = useState(false);
   const voiceScope = voiceScopeKey();
   useEffect(() => {
-    if (!isTtsModel(model)) return;
+    if (!isTtsModel(model) && model !== "voice_change") return;
     let alive = true;
     setVoices([]);
     setVoicesError(false);
@@ -311,7 +350,8 @@ export function SpotlightOptionsBar({
   }, open === "model", true, true);
   // 조건부 게이트 — 현재 옵션 조합에서 허용 안 되는 파라미터는 표시하지 않는다
   // (예: extension_mode 는 mode=video_extension 일 때만 — 다른 모드에 실으면 CLI 거부).
-  const visibleTunable = tunable.filter((p) => paramGateAllows(model, p.name, optionValues) &&
+  // 보이스 체인지·번역은 Voice·언어 칩만 — 스키마의 나머지(voice_type 등)는 고급에 띄우지 않는다.
+  const visibleTunable = isVideoVoiceModel(model) ? [] : tunable.filter((p) => paramGateAllows(model, p.name, optionValues) &&
     !(isTtsModel(model) && ["voice_id", "voice_type", "dialogue"].includes(p.name)));
   const ignored = spotlightIgnoredOptions(model, optionValues.mode);
   const isDraftResolution = (name: string, value: unknown) => name === "resolution"
@@ -352,10 +392,11 @@ export function SpotlightOptionsBar({
 
       {type === "audio" && onAudioTaskChange && <div className="sl-type sl-audio-tasks" aria-label="오디오 작업">
         {[["tts", "Text to Speech"], ["voice-change", "Voice Change"], ["translate", "Translate"]].map(([id, label]) =>
-          <button key={id} className={"sl-type-btn" + (audioTask === id ? " active" : "")} onClick={() => onAudioTaskChange(id)}>{label}</button>)}
-        {audioTask !== "tts" && <span role="status">준비 중</span>}
+          <button key={id} className={"sl-type-btn" + (audioTask === id ? " active" : "")} aria-pressed={audioTask === id}
+            onClick={() => onAudioTaskChange(id)}>{label}</button>)}
       </div>}
-      <div className="sl-chip-wrap">
+      {/* 보이스 체인지·번역은 실행 키가 하나라 모델 칩이 없다 */}
+      {!isVideoVoiceModel(model) && <div className="sl-chip-wrap">
         <button
           ref={modelButtonRef}
           aria-expanded={open === "model"}
@@ -409,9 +450,9 @@ export function SpotlightOptionsBar({
             </div>
           </div>
         )}
-      </div>
+      </div>}
 
-      {isTtsModel(model) && (
+      {(isTtsModel(model) || model === "voice_change") && (
         <VoicePicker
           voices={voices}
           voicesError={voicesError}
@@ -420,6 +461,14 @@ export function SpotlightOptionsBar({
           open={open}
           setOpen={setOpen}
           recommended={recommendedVoiceIds(model)}
+        />
+      )}
+      {model === "dubbing" && (
+        <LanguagePicker
+          value={String(optionValues.target_language ?? "")}
+          onPick={(code) => setOptionValues((previous) => ({ ...previous, target_language: code }))}
+          open={open}
+          setOpen={setOpen}
         />
       )}
       {model === "seed_audio" && optionValues.voice_id && <button className="sl-chip" onClick={() => setOptionValues((previous) => {

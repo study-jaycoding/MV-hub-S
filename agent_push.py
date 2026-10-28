@@ -395,6 +395,35 @@ def _validate_audio_request(model: str, prompt: str, params: dict, references: l
             raise ValueError("지원하지 않는 음성 언어입니다")
 
 
+# 보이스 체인지·번역(2-B) — backend/app/models.py 의 같은 이름 정의와 같아야 한다.
+VIDEO_VOICE_MODELS = frozenset({"voice_change", "dubbing"})
+VIDEO_VOICE_PARAMS = {"voice_change": {"voice_id", "voice_type", "cost_context"},
+                      "dubbing": {"target_language", "cost_context"}}
+DUBBING_LANGUAGES = frozenset({"eng", "cmn", "fra", "hin", "ita", "jpn", "kor", "por", "rus",
+                               "tur", "spa", "deu", "ara", "pol", "ind", "fil", "swe", "fin"})
+
+
+def video_voice_reference_error(references: list) -> str | None:
+    if (len(references) != 1 or not isinstance(references[0], dict) or references[0].get("type") != "video"
+            or references[0].get("role") != "input_video" or not references[0].get("file_path")):
+        return "영상 1개를 넣으세요"
+    return None
+
+
+def _validate_video_voice_request(model: str, params: dict, references: list) -> None:
+    """서버 validate_media_request 의 두 워크플로 부분과 같은 규칙(견적 문맥의 입력 대조는 서버가 생성 때 한다)."""
+    if set(params) - VIDEO_VOICE_PARAMS[model]:
+        raise ValueError("지원하지 않는 보이스 체인지·번역 옵션입니다")
+    error = video_voice_reference_error(references)
+    if error:
+        raise ValueError(error)
+    if model == "voice_change":
+        if params.get("voice_type") != "preset" or not isinstance(params.get("voice_id"), str) or not params["voice_id"].strip():
+            raise ValueError("공식 프리셋 목소리를 선택하세요")
+    elif params.get("target_language") not in DUBBING_LANGUAGES:
+        raise ValueError("번역할 언어를 선택하세요")
+
+
 def _args_for_log(args) -> str:
     """오류 로그용 명령 인자 표기 — --prompt 원문은 agent.log 에 영속되지 않게 길이로 대체."""
     out: list[str] = []
@@ -892,7 +921,7 @@ def _claim_pending(server: str, token: str, limit: int, agent_id: str | None = N
     # submission-stage: claim과 실제 유료 CLI 호출 사이를 서버 상태로 분리한다. 신 서버는 claimed로
     # 내려주고 begin-submission ACK 뒤에만 submitting으로 올린다. 구 서버는 capability를 무시하고
     # 기존 submitting 응답(새 필드 없음)을 주므로 혼합 업데이트 중에도 하위호환된다.
-    query = {"limit": limit, "capability": "workspace,submission-stage,asset-content,media-v2,audio-models-v1"}
+    query = {"limit": limit, "capability": "workspace,submission-stage,asset-content,media-v2,audio-models-v1,video-voice-v1"}
     if agent_id:
         query["agent_id"] = agent_id
     return _http(
@@ -911,7 +940,7 @@ def _pending_exists(server: str, token: str) -> bool:
             server,
             action="pending-exists",
             query={
-                "capability": "workspace,submission-stage,asset-content,media-v2,audio-models-v1",
+                "capability": "workspace,submission-stage,asset-content,media-v2,audio-models-v1,video-voice-v1",
                 "agent_id": _agent_instance_id(),
             },
         ),
@@ -946,7 +975,7 @@ def _begin_submission(
         server,
         rid,
         "begin-submission",
-        {"agent_id": agent_id, "capability": "media-v2,audio-models-v1"},
+        {"agent_id": agent_id, "capability": "media-v2,audio-models-v1,video-voice-v1"},
     )
     for attempt in range(3):
         kwargs = {"token": token, "timeout": 15}
@@ -1350,7 +1379,7 @@ _ROLE_TO_FLAG = {
 
 def _role_flag(role: str) -> str:
     key = (role or "").lower()
-    if key in {"video", "image_references"}:
+    if key in {"video", "image_references", "input_video"}:
         return "--" + key.replace("_", "-")
     for prefix, flag in _ROLE_TO_FLAG.items():
         if key.startswith(prefix):
@@ -1422,6 +1451,10 @@ def _refs_for_cli(model: str, refs: list) -> tuple[list, str | None]:
             return [], "영상 수정에는 원본 영상 1개와 수정 그림 1장이 필요합니다"
     if model == "text2speech_v2" and refs:
         return [], "내레이션 생성에는 참조 파일을 사용할 수 없습니다"
+    if model in VIDEO_VOICE_MODELS:
+        error = video_voice_reference_error(refs)
+        if error:
+            return [], error
     if not _uses_single_start_image(model):
         return refs, None
     image_refs = [ref for ref in refs if isinstance(ref, dict) and _is_image_ref(ref)]
@@ -1769,7 +1802,7 @@ def _model_params(cli: str, model: str) -> list:
         failed_at = _MODEL_PARAMS_FAIL_AT.get(model)
         if failed_at is not None and time.monotonic() - failed_at < _MODEL_PARAMS_FAIL_TTL:
             return []
-        data = _cli_json(cli, "workflow" if model == "draw_to_video" else "model", "get", model, timeout=60)
+        data = _cli_json(cli, "workflow" if model == "draw_to_video" or model in VIDEO_VOICE_MODELS else "model", "get", model, timeout=60)
         if not isinstance(data, dict):
             _MODEL_PARAMS_FAIL_AT[model] = time.monotonic()
             return []
@@ -2628,8 +2661,8 @@ def _submit_one(
     prompt = _shield_json_prompt(prompt)
     # ★create-first: --wait 없이 제출해 job_id 를 즉시 확보한다. 긴 대기(15~30분)를 시작하기 전에
     #  job_id 를 서버에 앵커해두어, 대기 중 프로그램이 꺼져도 재조정이 반드시 이어받아 완료시킨다.
-    args = ["generate", "workflow" if model == "draw_to_video" else "create", model]
-    if model not in {"elevenlabs_v4", "elevenlabs_v4_turbo"}:
+    args = ["generate", "workflow" if model == "draw_to_video" or model in VIDEO_VOICE_MODELS else "create", model]
+    if model not in {"elevenlabs_v4", "elevenlabs_v4_turbo"} and model not in VIDEO_VOICE_MODELS:
         args += ["--prompt", prompt]
     # ★batch_size 는 1 로 강제 — create-first 는 잡 1개(=카드 1개)를 앵커·대기하므로, N>1 이면 나머지
     #  잡이 앵커·검증 없이 나중에 synced 독립 카드로 새어 나온다(프론트 배치는 요청 N개 복제 방식이라 무영향).
@@ -2653,6 +2686,23 @@ def _submit_one(
             for k, v in wire_params.items()
         ):
             _fail(server, token, rid, "현재 모델이 지원하지 않는 음성 생성 옵션입니다")
+            return None
+    if model in VIDEO_VOICE_MODELS:
+        try:
+            _validate_video_voice_request(model, params, r.get("references") or [])
+        except ValueError as exc:
+            _fail(server, token, rid, str(exc))
+            return None
+        if r.get("media_protocol") != "video-voice-v1" or not allowed_params:
+            _fail(server, token, rid, "보이스 체인지·번역 계약 또는 옵션을 확인할 수 없습니다")
+            return None
+        # 견적 문맥(cost_context)은 CLI 생성 인자가 아니다 — dict 라 _param_flags 도 보내지 않는다.
+        wire_params = {k: v for k, v in params.items() if k != "cost_context"}
+        if set(wire_params) - allowed_params or any(
+            _param_enum(model, k) and str(v) not in _param_enum(model, k)
+            for k, v in wire_params.items()
+        ):
+            _fail(server, token, rid, "현재 모델이 지원하지 않는 보이스 체인지·번역 옵션입니다")
             return None
     if model in {"draw_to_video", "text2speech_v2"}:
         if r.get("media_protocol") != "media-v2" or not allowed_params:
@@ -2848,7 +2898,7 @@ def _submit_one(
         "job_id": job_id,
         # workflow 완료 응답의 참조 모양은 유료 실측 전이다. 실제 제출 자료는 지문에 보존하되
         # 기존 이미지 모델의 '0장' 강제 실패 규칙을 이 workflow에 적용하지 않는다.
-        "expected_image_inputs": 0 if model == "draw_to_video" else expected_image_inputs,
+        "expected_image_inputs": 0 if model == "draw_to_video" or model in VIDEO_VOICE_MODELS else expected_image_inputs,
         "deadline": time.monotonic() + _ACTIVE_TRACKING_TIMEOUT_SECONDS,
         "next_direct_check": 0.0,
         "provider_status": None,
@@ -3079,7 +3129,7 @@ def _finalize_tracked_job(
         return False
 
     observed_image_inputs = _job_image_input_count(job)
-    workflow_result = (job.get("job_type") or job.get("job_set_type") or job.get("model")) == "draw_to_video"
+    workflow_result = (job.get("job_type") or job.get("job_set_type") or job.get("model")) in {"draw_to_video", *VIDEO_VOICE_MODELS}
     if not workflow_result and expected_image_inputs > 0 and observed_image_inputs is not None and observed_image_inputs <= 0:
         # 상세 응답까지 확인했는데도 입력 이미지가 없으면 잘못 생성된 결과를 카드로 만들지 않는다.
         if not detailed:

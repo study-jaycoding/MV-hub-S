@@ -1,6 +1,7 @@
 import { tagsProblem } from "./nameGuard";
 import { normalizeSeedanceDraftParams } from "./seedanceDraft";
-import { audioModelBlocked, audioParamsError, audioReferenceError, isTtsModel } from "./spotlightPromptConfig";
+import { audioModelBlocked, audioParamsError, audioReferenceError, DUBBING_LANGUAGES, isTtsModel, isVideoVoiceModel,
+  videoVoiceInputRef, videoVoiceReferenceError, type VideoCostContext } from "./spotlightPromptConfig";
 import type { ChipRef, PromptPart } from "./promptEditor";
 import {
   SEEDANCE_TOKEN_SRC,
@@ -61,6 +62,8 @@ interface Params {
   armedAutoTags: string[];
   activeProjectId?: string;
   folderPath?: string; // 무장 폴더(렌더 루트 상대 경로) — 생성물 folder_path 로 저장
+  /** 보이스 체인지·번역 — 지금 넣은 영상에서 읽은 길이. 없거나 다른 영상의 것이면 제출을 막는다. */
+  costContext?: VideoCostContext | null;
 }
 
 export function normalizeSpotlightBatch(
@@ -114,12 +117,38 @@ export function buildSpotlightCreateBody({
   armedAutoTags,
   activeProjectId,
   folderPath,
+  costContext,
 }: Params): { body: SpotlightCreateBody | null; error: string | null } {
   // Set 카드의 태그는 검사 없이 여기로 온다 — 주소 한 칸에 못 들어가는 이름(/ · . ..)은 생성 전에 막는다(조작 규칙 53 — lib/nameGuard). 조용히 빼지 않는다.
   const tagProblem = tagsProblem(tags ?? []);
   if (tagProblem) return { body: null, error: `${tagProblem} — Set 카드의 태그를 고친 뒤 생성하세요.` };
   const featureError = audioModelBlocked(model);
   if (featureError) return { body: null, error: featureError };
+  if (isVideoVoiceModel(model)) {
+    // 글은 보내지 않는다(CLI 에 --prompt 없음). 영상은 레퍼런스 한 개(역할 input_video)로만 — params 에 복제하지 않는다.
+    const refs = [...trayRefs, ...inlineRefs];
+    const inputError = videoVoiceReferenceError(refs);
+    if (inputError) return { body: null, error: inputError };
+    const params: Record<string, unknown> = model === "voice_change"
+      ? { voice_id: optionValues.voice_id, voice_type: optionValues.voice_type }
+      : { target_language: optionValues.target_language };
+    if (model === "voice_change" && (typeof params.voice_id !== "string" || !params.voice_id || params.voice_type !== "preset")) {
+      return { body: null, error: "Voice 에서 목소리를 고르세요." };
+    }
+    if (model === "dubbing" && !DUBBING_LANGUAGES.some(([code]) => code === params.target_language)) {
+      return { body: null, error: "번역할 언어를 고르세요." };
+    }
+    const ref = refs[0];
+    if (!costContext || costContext.input_ref !== videoVoiceInputRef(ref)) {
+      return { body: null, error: "영상 길이를 아직 읽지 못했습니다. 잠시 뒤 다시 누르거나 다른 영상을 넣으세요." };
+    }
+    return { error: null, body: {
+      prompt: "", model, params: { ...params, cost_context: costContext },
+      references: [{ ...assetIdentity(ref), file_path: ref.file_path, type: "video", role: "input_video",
+        name: ref.name, thumbnail: ref.thumb, source_gen_id: ref.source_gen_id }],
+      tags: tags?.length ? tags : undefined, auto_tags: armedAutoTags, project_id: activeProjectId, folder_path: folderPath || undefined,
+    } };
+  }
   if (isTtsModel(model) && model !== "text2speech_v2") {
     if (!text.trim()) return { body: null, error: "내레이션 텍스트를 입력하세요." };
     const params = Object.fromEntries(Object.entries(optionValues).filter(([, value]) => value !== "" && value != null));

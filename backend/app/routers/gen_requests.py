@@ -49,7 +49,7 @@ from ..models import (
 )
 from ..services.agent_signals import agent_signals
 from ..services import cli_bridge
-from ..models import AUDIO_MODELS_V1, MEDIA_V2_MODELS
+from ..models import AUDIO_MODELS_V1, MEDIA_V2_MODELS, VIDEO_VOICE_MODELS
 from ..services.seedance_draft import DraftFinishConflict, finish_params, fresh_params
 from ..services.operational_logging import log_event
 from ..services.release_update import update_in_progress
@@ -365,7 +365,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
         reg = body.regenerate or RegenerateIn()
         recipe = await asyncio.to_thread(repo.gen_recipe, body.source_gen_id)
         media_model = reg.model or (recipe or {}).get("model")
-        if media_model in MEDIA_V2_MODELS | AUDIO_MODELS_V1:
+        if media_model in MEDIA_V2_MODELS | AUDIO_MODELS_V1 | VIDEO_VOICE_MODELS:
             try:
                 await cli_bridge.validate_media_submission(media_model, reg.prompt or (recipe or {}).get("prompt", ""),
                                                            (recipe or {}).get("params") or {}, (recipe or {}).get("references") or [])
@@ -589,6 +589,7 @@ async def pending_gen_requests_exist(
             asset_content_capable="asset-content" in caps,
             media_v2_capable="media-v2" in caps,
             audio_models_v1_capable="audio-models-v1" in caps,
+            video_voice_v1_capable="video-voice-v1" in caps,
         )
     }
 
@@ -629,6 +630,7 @@ async def pending_gen_requests(
         asset_content_capable="asset-content" in caps,
         media_v2_capable="media-v2" in caps,
         audio_models_v1_capable="audio-models-v1" in caps,
+        video_voice_v1_capable="video-voice-v1" in caps,
     )
     if claimed:
         schedule_telemetry_drain()
@@ -666,6 +668,8 @@ async def begin_gen_request_submission(
         payload = json.loads(row.get("payload") or "{}")
         if (payload.get("media_protocol") == "audio-models-v1" or payload.get("model") in AUDIO_MODELS_V1) and "audio-models-v1" not in {item.strip() for item in capability.split(",")}:
             raise HTTPException(409, "이 생성 요청에는 최신 오디오 작업자가 필요합니다")
+        if (payload.get("media_protocol") == "video-voice-v1" or payload.get("model") in VIDEO_VOICE_MODELS) and "video-voice-v1" not in {item.strip() for item in capability.split(",")}:
+            raise HTTPException(409, "이 생성 요청에는 최신 보이스 체인지·번역 작업자가 필요합니다")
         if (payload.get("media_protocol") == "media-v2" or payload.get("model") in MEDIA_V2_MODELS) and "media-v2" not in {item.strip() for item in capability.split(",")}:
             raise HTTPException(409, "이 생성 요청에는 최신 미디어 작업자가 필요합니다")
     applied = await begin_submission(

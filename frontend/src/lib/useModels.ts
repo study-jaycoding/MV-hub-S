@@ -8,7 +8,8 @@ import { EMPTY_MODEL_SET, modelAllowed } from "./modelPolicyCore";
 import type { CostEstimate, ModelInfo, ModelParam, ModelParamsOut } from "../types";
 import { fetchModelCatalog } from "./modelCatalogCache";
 import { normalizeSeedanceDraftParams } from "./seedanceDraft";
-import { audioModelBlocked, audioParamsError, isTtsModel, requiredVariantParam, variantChoiceMissing } from "./spotlightPromptConfig";
+import { audioModelBlocked, audioParamsError, isTtsModel, isVideoVoiceModel, requiredVariantParam, variantChoiceMissing,
+  type VideoCostContext } from "./spotlightPromptConfig";
 
 // 노출 모델 화이트리스트(타입별, 표시 순서대로).
 //  이미지: Nano Banana 2(nano_banana_flash) · Nano Banana 2.1(nano_banana_2_1, 2026-10-14 추가 — 첫 자리는 그대로 두어 기본 모델이 안 바뀐다) · Nano Banana 2 Lite(nano_banana_2_lite) · Nano Banana Pro(nano_banana_pro) · GPT Image 2.5(gpt_image_2_5) · GPT Image 2(gpt_image_2)
@@ -34,7 +35,7 @@ export const ALLOWED: Record<"image" | "video" | "audio", string[]> = {
  *  같은 사고가 난다. 호출측이 저장값·사용자 선택으로 메운다.
  */
 export function inferModelType(model: string | null | undefined): "image" | "video" | "audio" | undefined {
-  if (model && ALLOWED.audio.includes(model)) return "audio";
+  if (model && (ALLOWED.audio.includes(model) || isVideoVoiceModel(model))) return "audio";
   if (!model) return undefined;
   const isImage = ALLOWED.image.includes(model);
   const isVideo = ALLOWED.video.includes(model);
@@ -52,6 +53,8 @@ export const MODEL_DISPLAY_NAMES: Record<string, string> = {
   elevenlabs_v4: "ElevenLabs v4",
   elevenlabs_v4_turbo: "ElevenLabs v4 Turbo",
   qwen_audio_tts: "Qwen Audio 3.0 TTS",
+  voice_change: "Voice Change",
+  dubbing: "Translate",
   nano_banana_flash: "Nano Banana 2",
   nano_banana_2_1: "Nano Banana 2.1",
   nano_banana_2_lite: "Nano Banana 2 Lite",
@@ -77,7 +80,7 @@ export const MODEL_DISPLAY_NAMES: Record<string, string> = {
 export const HIDDEN_PARAMS = new Set([
   "prompt", "dialogue", "medias", "input_images", "folder_id", "batch_size",
   "image_references", "video_references", "audio_references", "start_image", "end_image",
-  "video", "ref_image",
+  "video", "ref_image", "input_video",
   "is_inpaint", "mask", "draft", "draft_job_id",
 ]);
 
@@ -421,6 +424,8 @@ export function useModels(
     initialModel?: string;
     initialOpts?: Record<string, string | number | boolean>;
     costPrompt?: string;
+    /** 보이스 체인지·번역의 견적 문맥(실제 입력 영상의 길이). 없으면 견적을 묻지 않는다(기본 길이를 만들지 않는다). */
+    costContext?: VideoCostContext | null;
     costEnabled?: boolean;
   },
 ) {
@@ -430,6 +435,7 @@ export function useModels(
   const allowed = policy?.allowed ?? EMPTY_MODEL_SET;
   const policyReady = policy ? policy.ready : true;
   const costPrompt = isTtsModel(model) ? policy?.costPrompt ?? "" : "";
+  const costContextKey = isVideoVoiceModel(model) && policy?.costContext ? JSON.stringify(policy.costContext) : "";
   const costEnabled = policy?.costEnabled !== false;
   // 이 모델이 지금 그룹에서 막혔는가 — 판정은 **공통 함수 하나**로만 한다.
   // ★조건식을 여기 복제하면 안 된다(2026-09-13, 코덱스 실측): 종전엔
@@ -552,9 +558,10 @@ export function useModels(
 
   useEffect(() => {
     // 명시적으로 고른 **지원 목록 밖** 모델은 특수 목적(부분 수정의 고정 모델 등)이라 건드리지 않는다.
-    if (model && explicitRef.current && !Object.values(ALLOWED).some((list) => list.includes(model))) return;
+    //  보이스 체인지·번역은 Audio 의 일이라 예외 — Image/Video 탭으로 옮기면 그 타입의 모델로 바꾼다.
+    if (model && explicitRef.current && !isVideoVoiceModel(model) && !Object.values(ALLOWED).some((list) => list.includes(model))) return;
     // 유지: 이 타입의 모델이고 (막히지 않았거나 명시적으로 고른 것). 그 밖엔 첫 사용 가능 모델로 자동 선택.
-    const inType = ALLOWED[type].includes(model);
+    const inType = ALLOWED[type].includes(model) || (type === "audio" && isVideoVoiceModel(model) && explicitRef.current);
     if (inType && (!blocked(model) || explicitRef.current)) return;
     const first = typeModels.find((m) => !audioModelBlocked(m.job_set_type))?.job_set_type ?? "";
     if (!first) {
@@ -732,12 +739,13 @@ export function useModels(
       return;
     }
     // 엔진을 아직 안 골랐으면(복원값에 빠짐) 견적도 묻지 않는다 — 빈 variant 로는 CLI 가 거부한다.
-    if ((isTtsModel(model) && (!costPrompt.trim() || audioParamsError(model, optionValues) || audioModelBlocked(model))) || variantChoiceMissing(model, optionValues)) {
+    if ((isTtsModel(model) && (!costPrompt.trim() || audioParamsError(model, optionValues) || audioModelBlocked(model)))
+        || (isVideoVoiceModel(model) && (!costContextKey || audioModelBlocked(model))) || variantChoiceMissing(model, optionValues)) {
       setCost(null);
       setCostLoading(false);
       return;
     }
-    const key = `${costKey(model, optionValues)}${costPrompt ? `:${costPrompt}` : ""}`;
+    const key = `${costKey(model, optionValues)}${costPrompt ? `:${costPrompt}` : ""}${costContextKey ? `:${costContextKey}` : ""}`;
     const hit = costCache.get(key);
     if (hit !== undefined) {
       // 캐시 적중(토글 왕복·이전 본 옵션 재선택) → 멈칫 없이 즉시 표시.
@@ -748,7 +756,8 @@ export function useModels(
     let alive = true;
     if (!hit) setCostLoading(true);
     const t = window.setTimeout(() => {
-      const opts = normalizeSeedanceDraftParams(model, autoRatioForCost(optionValues, params));
+      const base = normalizeSeedanceDraftParams(model, autoRatioForCost(optionValues, params));
+      const opts = costContextKey ? { ...base, cost_context: JSON.parse(costContextKey) } : base;
       const applyCost = (r: CostEstimate) => {
         if (alive) {
           setCost(r.credits);
@@ -771,7 +780,7 @@ export function useModels(
       alive = false;
       clearTimeout(t);
     };
-  }, [model, optionValues, paramsModel, paramsLoading, paramsError, costPrompt, costEnabled]);
+  }, [model, optionValues, paramsModel, paramsLoading, paramsError, costPrompt, costContextKey, costEnabled]);
 
   // 현재 옵션에서 활성화된 조합 제약(예: fast → resolution 480p/720p 만).
   const constraints = activeConstraints(model, optionValues);
