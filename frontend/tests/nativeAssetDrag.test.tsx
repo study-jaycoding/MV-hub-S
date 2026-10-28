@@ -97,6 +97,32 @@ it("expired preparation asks to drag again instead of silently losing the gestur
   vi.mocked(api.nativeAssetDrag).mockResolvedValue({ dropped: false, reason: "expired" });
   startNativeAssetDrag({ preventDefault: noop } as unknown as React.DragEvent, "P", items);
   await vi.waitFor(() => expect(flashMsg).toHaveBeenCalledWith(expect.stringContaining("다시 끌어주세요")));
+  expect(flashMsg).toHaveBeenCalledWith(expect.stringContaining("나눠서"));
+  await vi.waitFor(() => expect(loadString(STORAGE_KEYS.assetsDrag)).toBe(""));
+});
+
+const many = (count: number) => Array.from({ length: count }, (_, index) => (
+  { project: "P", path: `${index}.png`, name: `${index}.png`, type: "image" }));
+
+it("thirty cards go out in one native drag, not split (Jay 10-28: 422 over 20)", async () => {
+  vi.mocked(api.nativeAssetDrag).mockResolvedValue({ dropped: true });
+  const calls = vi.mocked(api.nativeAssetDrag).mock.calls.length;
+  startNativeAssetDrag({ preventDefault: noop } as unknown as React.DragEvent, "P", many(30));
+  expect(vi.mocked(api.nativeAssetDrag).mock.calls.length).toBe(calls + 1);
+  expect(vi.mocked(api.nativeAssetDrag).mock.lastCall![1]).toEqual(many(30).map((item) => item.path));
+  await vi.waitFor(() => expect(loadString(STORAGE_KEYS.assetsDrag)).toBe(""));
+});
+
+it("over the server limit explains instead of sending, and the next drag still starts", async () => {
+  vi.mocked(api.nativeAssetDrag).mockResolvedValue({ dropped: true });
+  const calls = vi.mocked(api.nativeAssetDrag).mock.calls.length;
+  const event = { preventDefault: vi.fn() } as unknown as React.DragEvent;
+  expect(startNativeAssetDrag(event, "P", many(101))).toBeNull();
+  expect(event.preventDefault).toHaveBeenCalledOnce();
+  expect(flashMsg).toHaveBeenCalledWith(expect.stringContaining("100장까지"));
+  expect(vi.mocked(api.nativeAssetDrag).mock.calls.length).toBe(calls);
+  expect(startNativeAssetDrag({ preventDefault: noop } as unknown as React.DragEvent, "P", many(100))).not.toBeNull();
+  expect(vi.mocked(api.nativeAssetDrag).mock.calls.length).toBe(calls + 1);
   await vi.waitFor(() => expect(loadString(STORAGE_KEYS.assetsDrag)).toBe(""));
 });
 

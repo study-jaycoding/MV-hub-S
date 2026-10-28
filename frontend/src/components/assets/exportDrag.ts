@@ -9,6 +9,8 @@ import { STORAGE_KEYS } from "../../lib/storageKeys";
 import type { SpotlightAssetDragItem } from "../../lib/spotlightAssetRefs";
 
 let nativeDragPending = false;
+// 서버 NativeDragIn.paths 상한과 같게 — 끌기 한 번이라 나눠 보낼 수 없다(넘으면 서버가 422 원문을 돌려줬다).
+const NATIVE_DRAG_MAX_FILES = 100;
 
 export function nativeDragBrowserSupported(): boolean {
   return ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname) &&
@@ -18,6 +20,10 @@ export function nativeDragBrowserSupported(): boolean {
 export function startNativeAssetDrag(event: React.DragEvent, project: string, items: SpotlightAssetDragItem[]): (() => void) | null {
   event.preventDefault(); // Stop browser DownloadURL/img drag before starting the Windows drag.
   if (pausedExport() || nativeDragPending) return null;
+  if (items.length > NATIVE_DRAG_MAX_FILES) {
+    flashMsg(`한 번에 ${NATIVE_DRAG_MAX_FILES}장까지 끌어낼 수 있습니다(지금 ${items.length}장). 나눠서 끌어주세요.`);
+    return null;
+  }
   nativeDragPending = true;
   const payload = JSON.stringify(items);
   try { saveString(STORAGE_KEYS.assetsDrag, payload); } catch { /* native custom MIME remains available */ }
@@ -27,7 +33,7 @@ export function startNativeAssetDrag(event: React.DragEvent, project: string, it
   void api.nativeAssetDrag(project, items.map((item) => item.path), Date.now(), controller.signal)
     .then((result) => {
       if (result.reason === "expired" && !controller.signal.aborted) {
-        flashMsg("원본 준비에 시간이 걸려 드래그를 시작하지 않았습니다. 다시 끌어주세요.");
+        flashMsg("원본 준비에 시간이 걸려 드래그를 시작하지 않았습니다. 다시 끌어주세요(여러 장이면 나눠서).");
       }
     })
     .catch((error) => { if (!controller.signal.aborted) flashMsg(String(error)); })

@@ -125,8 +125,20 @@ def test_account_switch_and_aba_keep_header_and_files_on_the_same_pin(env, monke
 
 
 def test_over_limit_is_rejected_not_truncated():
+    body([f"{index}.png" for index in range(100)])
     with pytest.raises(ValidationError):
-        body([f"{index}.png" for index in range(21)])
+        body([f"{index}.png" for index in range(101)])
+
+
+def test_thirty_files_go_in_one_drag(env):
+    # Jay 10-28: 30장을 끌면 422(옛 상한 20) — 끌기 한 번이라 나눠 보낼 수 없다.
+    folder, drag = env
+    names = [f"{index:02d}.png" for index in range(30)]
+    for name in names:
+        (folder / name).write_bytes(name.encode())
+    assert asyncio.run(assets.native_drag(body(names), request())) == {"dropped": True}
+    drag.assert_called_once()
+    assert [Path(path).name for path in drag.call_args.args[0]] == names
 
 
 def test_duplicate_path_is_not_duplicated(env):

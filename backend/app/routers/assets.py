@@ -2200,7 +2200,9 @@ class ClipboardCopyIn(BaseModel):
 
 class NativeDragIn(BaseModel):
     project: str = Field(min_length=1, max_length=200)
-    paths: list[Annotated[str, Field(min_length=1, max_length=4096)]] = Field(min_length=1, max_length=20)
+    # 끌기 한 번에 전부 준비해야 시작된다(windows_drag.START_WINDOW_MS 1.5초) — 로컬 실측 100개 ≈ 0.45초.
+    #  프런트 exportDrag.ts NATIVE_DRAG_MAX_FILES 와 같게 둔다.
+    paths: list[Annotated[str, Field(min_length=1, max_length=4096)]] = Field(min_length=1, max_length=100)
     started_at_ms: int = Field(ge=0)
 
 
