@@ -23,11 +23,16 @@ import {
 } from "../../lib/spotlightPromptConfig";
 import { SpotlightOptionIcon } from "./SpotlightOptionIcon";
 import { normalizeSeedanceDraftParams } from "../../lib/seedanceDraft";
+import voiceCatalog from "../../lib/voiceCatalog.json";
 
 type OptionValue = string | number | boolean;
 type OptionValues = Record<string, OptionValue>;
 type ConstraintMap = Record<string, { allow: Set<string>; note: string }>;
 const voiceScopeKey = () => `${getAccountNamespace()}\0${getConnectionKey()}\0${getAuthToken() ?? ""}`;
+// 목소리 id → [성별, 미리듣기 주소]. CLI voices list 에 없어 힉스필드 MCP list_voices 로 받은 고정 표(2026-10-28 — 114개, CLI 와 같은 id).
+// shortcut: 힉스필드가 목소리를 더하거나 주소를 바꾸면 낡는다(표에 없는 목소리는 '전체'에만·미리듣기 없음으로 보인다). 어긋나면 다시 받는다.
+const VOICE_CATALOG: Record<string, string[] | undefined> = voiceCatalog;
+const GENDER_FILTERS = [["all", "전체"], ["male", "남성"], ["female", "여성"]] as const;
 
 // 정수 칸이 받을 수 없는 수인가 — 정확히 담을 수 없는 큰 정수(2^53 이상: `Number()` 가 9007199254740993 → …992 로 바꾼다)와
 //  소수(시드 1.5 — CLI 의 정수 옵션에 그대로 실린다, Codex P2 2026-10-14). 받지 않는다: 받으면 친 것과 다른 값이 제출된다(조작 규칙 49).
@@ -89,8 +94,17 @@ function VoiceIcon() {
   );
 }
 
+function PreviewIcon({ playing }: { playing: boolean }) {
+  return (
+    <svg width={10} height={10} viewBox="0 0 10 10" fill="currentColor" aria-hidden="true">
+      {playing ? <rect x="1.5" y="1.5" width="7" height="7" rx="1" /> : <path d="M2.6 1.2v7.6L8.8 5z" />}
+    </svg>
+  );
+}
+
 /** 목소리 칩 + 이름 검색 목록 — 기본 목록 상자를 대신한다(2026-10-28 오디오 1단계).
- *  저장된 선택은 조회 실패·목록 밖이어도 지우거나 바꾸지 않는다('확인 필요'로만 보인다 — Codex A6). */
+ *  저장된 선택은 조회 실패·목록 밖이어도 지우거나 바꾸지 않는다('확인 필요'로만 보인다 — Codex A6).
+ *  성별 거르기·▶ 미리듣기는 고정 표(VOICE_CATALOG)를 쓴다 — 거르기·미리듣기는 선택을 바꾸지 않는다. */
 function VoicePicker({
   voices,
   voicesError,
@@ -110,20 +124,53 @@ function VoicePicker({
   recommended?: ReadonlySet<string> | null;
 }) {
   const [query, setQuery] = useState("");
+  const [gender, setGender] = useState<string>("all");
+  const [playing, setPlaying] = useState<string | null>(null);
+  const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const chipRef = useRef<HTMLButtonElement>(null);
   const isOpen = open === "voice";
   useEscapeClose(() => {
     setOpen(null);
     chipRef.current?.focus({ preventScroll: true });
   }, isOpen, true, true);
+  const stopPreview = () => {
+    audioRef.current?.pause();
+    audioRef.current = null;
+    setPlaying(null);
+  };
   useEffect(() => {
-    if (!isOpen) setQuery("");
+    if (!isOpen) {
+      setQuery("");
+      stopPreview();
+    }
   }, [isOpen]);
+  useEffect(() => () => audioRef.current?.pause(), []);
+  const togglePreview = (id: string, url: string) => {
+    const again = playing === id;
+    stopPreview();
+    if (again) return;
+    const audio = new Audio(url);
+    // 이미 멈춘 소리의 늦은 실패(멈춤이 끊은 play 등)는 무시한다 — 지금 재생 중인 것만 '미리듣기 없음'으로 바꾼다.
+    const fail = () => {
+      if (audioRef.current !== audio) return;
+      stopPreview();
+      setFailed((previous) => new Set(previous).add(id));
+    };
+    audio.onended = () => {
+      if (audioRef.current === audio) stopPreview();
+    };
+    audio.onerror = fail;
+    audioRef.current = audio;
+    setPlaying(id);
+    audio.play().catch(fail);
+  };
   const picked = voices.find((voice) => voice.id === value);
   const label = picked?.name
-    ?? (value ? (voices.length || voicesError ? `${value} (확인 필요)` : "목소리 확인 중…") : voicesError ? "목소리 조회 실패" : "목소리 선택");
+    ?? (value ? (voices.length || voicesError ? `${value} (확인 필요)` : "목소리 확인 중…") : voicesError ? "목소리 조회 실패" : "Voice");
   const q = query.trim().toLowerCase();
-  const matched = q ? voices.filter((voice) => voice.name.toLowerCase().includes(q)) : voices;
+  const matched = voices.filter((voice) =>
+    (gender === "all" || VOICE_CATALOG[voice.id]?.[0] === gender) && (!q || voice.name.toLowerCase().includes(q)));
   const shown = recommended
     ? [...matched.filter((voice) => recommended.has(voice.id)), ...matched.filter((voice) => !recommended.has(voice.id))]
     : matched;
@@ -133,9 +180,9 @@ function VoicePicker({
       <button
         ref={chipRef}
         aria-expanded={isOpen}
-        aria-label="내레이션 목소리"
+        aria-label="Voice"
         className={"sl-chip" + (isOpen ? " active" : "")}
-        title={voicesError ? "목소리 목록을 불러오지 못했습니다. Host 콘솔을 확인하세요." : "내레이션 목소리"}
+        title={voicesError ? "목소리 목록을 불러오지 못했습니다. Host 콘솔을 확인하세요." : "Voice"}
         onClick={() => setOpen(isOpen ? null : "voice")}
       >
         <span className="sl-opt-ic"><VoiceIcon /></span>
@@ -144,7 +191,7 @@ function VoicePicker({
       </button>
       {isOpen && (
         <div className="sl-dropdown sl-voice-pop">
-          <div className="sl-dd-title">목소리{voices.length ? ` ${voices.length}개` : ""}{recommendedCount ? ` · 추천 ${recommendedCount}` : ""}</div>
+          <div className="sl-dd-title">Voice{voices.length ? ` ${voices.length}개` : ""}{recommendedCount ? ` · 추천 ${recommendedCount}` : ""}</div>
           <input
             className="sl-voice-search"
             autoFocus
@@ -153,20 +200,40 @@ function VoicePicker({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
-          <div className="sl-dd-scroll">
-            {shown.map((voice) => (
-              <button
-                key={voice.id}
-                className={"sl-dd-item" + (voice.id === value ? " sel" : "")}
-                onClick={() => {
-                  onPick(voice.id);
-                  setOpen(null);
-                }}
-              >
-                {voice.name}
-                {recommended?.has(voice.id) && <span className="sl-voice-rec">추천</span>}
-              </button>
+          <div className="sl-type sl-voice-gender" role="group" aria-label="성별">
+            {GENDER_FILTERS.map(([key, text]) => (
+              <button key={key} type="button" className={"sl-type-btn" + (gender === key ? " active" : "")}
+                aria-pressed={gender === key} onClick={() => setGender(key)}>{text}</button>
             ))}
+          </div>
+          <div className="sl-dd-scroll">
+            {shown.map((voice) => {
+              const preview = failed.has(voice.id) ? undefined : VOICE_CATALOG[voice.id]?.[1];
+              const on = playing === voice.id;
+              return (
+                <div key={voice.id} className="sl-voice-row">
+                  <button
+                    className={"sl-dd-item" + (voice.id === value ? " sel" : "")}
+                    onClick={() => {
+                      onPick(voice.id);
+                      setOpen(null);
+                    }}
+                  >
+                    {voice.name}
+                    {recommended?.has(voice.id) && <span className="sl-voice-rec">추천</span>}
+                  </button>
+                  {preview ? (
+                    <button type="button" className={"sl-voice-play" + (on ? " on" : "")}
+                      aria-label={`${voice.name} ${on ? "미리듣기 멈춤" : "미리듣기"}`} title={on ? "멈춤" : "미리듣기"}
+                      onClick={() => togglePreview(voice.id, preview)}>
+                      <PreviewIcon playing={on} />
+                    </button>
+                  ) : (
+                    <span className="sl-voice-play off" role="img" aria-label={`${voice.name} 미리듣기 없음`} title="미리듣기 없음">–</span>
+                  )}
+                </div>
+              );
+            })}
             {!shown.length && (
               <div className="sl-dd-empty">
                 {voicesError ? "목소리 목록을 불러오지 못했습니다." : voices.length ? "맞는 목소리가 없습니다." : "불러오는 중…"}
@@ -347,7 +414,7 @@ export function SpotlightOptionsBar({
       )}
       {model === "seed_audio" && optionValues.voice_id && <button className="sl-chip" onClick={() => setOptionValues((previous) => {
         const next = { ...previous }; delete next.voice_id; delete next.voice_type; return next;
-      })}>목소리 선택 해제</button>}
+      })}>Voice 해제</button>}
       {visibleTunable.filter((p) => SPOTLIGHT_PRIMARY_PARAMS.has(p.name)).map((p) => {
         // 이 모드에서 CLI 가 무시하는 값 — 흐리게 두는 데서 그치지 않고 **조작도 막는다**
         // (2026-09-15 Jay: 만질 수 있으면 효과가 있는 줄 알게 되어 헷갈린다).

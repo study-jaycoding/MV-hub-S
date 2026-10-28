@@ -94,7 +94,7 @@ describe("narration generation", () => {
       setModel={vi.fn()} onPickModel={vi.fn()} modelName="Speech" typeModels={[]} tunable={[]} constraints={{}}
       optionValues={{ voice_id: "saved" }} setOptionValues={setOptionValues} setOpt={vi.fn()} open="voice" setOpen={vi.fn()} />));
     expect(mocks.voices.mock.calls).toEqual([[undefined], ["next"]]);
-    const chip = container.querySelector<HTMLButtonElement>('button[aria-label="내레이션 목소리"]')!;
+    const chip = container.querySelector<HTMLButtonElement>('button[aria-label="Voice"]')!;
     expect(chip.textContent).toContain("saved (확인 필요)");
     expect([...container.querySelectorAll(".sl-voice-pop .sl-dd-item")].map((item) => item.textContent)).toEqual(["First", "Second"]);
     expect(setOptionValues).not.toHaveBeenCalled();

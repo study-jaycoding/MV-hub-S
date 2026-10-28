@@ -155,7 +155,7 @@ describe("목소리 검색 창", () => {
       onPickModel={vi.fn()} modelName="Text to Speech V2" typeModels={[]} tunable={[]} constraints={{}}
       optionValues={{ variant: "minimax", voice_id: "kept" }} setOptionValues={setOptionValues} setOpt={vi.fn()} open={null} setOpen={vi.fn()} />));
     await settle();
-    expect(container.querySelector('button[aria-label="내레이션 목소리"]')?.textContent).toContain("kept (확인 필요)");
+    expect(container.querySelector('button[aria-label="Voice"]')?.textContent).toContain("kept (확인 필요)");
     expect(setOptionValues).not.toHaveBeenCalled();
   });
 });
