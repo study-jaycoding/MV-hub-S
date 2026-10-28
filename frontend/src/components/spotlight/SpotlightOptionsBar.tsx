@@ -54,6 +54,35 @@ const advancedLabel = (name: string) => {
   const text = ADVANCED_LABELS[name] ?? name.replace(/_/g, " ");
   return text.charAt(0).toUpperCase() + text.slice(1);
 };
+// 이름에 마우스를 올리면 한국어 설명(Jay 2026-10-28) — 무슨 옵션인지 한 줄 + 뜻을 아는 값은 값마다 한 줄. 표에 없는 옵션은 한글 이름만.
+const ADVANCED_HELP: Record<string, string> = {
+  mode: "어떤 방식으로 만들지 고릅니다.",
+  genre: "영상의 장르·분위기를 정합니다.",
+  bitrate_mode: "영상 데이터 양 — 높을수록 더 선명하고 파일이 큽니다.",
+  thinking_level: "그리기 전에 지시를 얼마나 깊게 따져 볼지 정합니다.",
+  enable_web_search: "만들기 전에 웹에서 찾아 참고할지 정합니다.",
+  enable_image_search: "만들기 전에 이미지를 찾아 참고할지 정합니다.",
+  seed: "같은 숫자면 비슷한 결과가 나옵니다. 비우면 매번 새로 뽑습니다.",
+  stability: "높으면 목소리가 고르고, 낮으면 감정 표현이 커집니다.",
+  similarity_boost: "높을수록 원래 목소리에 가깝게 냅니다.",
+  instruction: "어떻게 말할지 글로 지시합니다.",
+  language: "말할 언어입니다. Auto 면 공급자가 정합니다.",
+  speech_rate: "말하는 빠르기입니다.",
+  pitch_rate: "목소리 높낮이입니다.",
+  loudness_rate: "소리 크기 조절입니다.",
+  volume: "소리 크기입니다.",
+  format: "오디오 파일 형식입니다.",
+  sample_rate: "오디오 품질(Hz) — 높을수록 고음질입니다.",
+};
+const ADVANCED_VALUE_HELP: Record<string, Record<string, string>> = {
+  mode: { t2v: "글만으로 만들기", omni_reference: "넣은 이미지·영상·오디오를 참고해 만들기", video_edit: "넣은 영상 1개를 고치기",
+    video_extension: "넣은 영상 앞·뒤로 이어 붙이기" },
+  bitrate_mode: { standard: "기본 화질", high: "더 선명하게(파일이 큼)" },
+};
+const advancedHelp = (name: string, values: string[] = []) => [
+  spotlightParamLabel(name) + (ADVANCED_HELP[name] ? ` — ${ADVANCED_HELP[name]}` : ""),
+  ...values.filter((v) => ADVANCED_VALUE_HELP[name]?.[v]).map((v) => `${v}: ${ADVANCED_VALUE_HELP[name][v]}`),
+].join("\n");
 const LANGUAGE_NAMES = new Intl.DisplayNames(["en"], { type: "language" });
 const advancedValue = (value: string, name: string) => {
   if (name !== "language") return value;
@@ -647,7 +676,7 @@ export function SpotlightOptionsBar({
                 const cur = optionValues[p.name] ?? effectiveDefault(p, model) ?? "";
                 return (
                   <div className="sl-adv-row" key={p.name}>
-                    <div className="sl-adv-label">
+                    <div className="sl-adv-label" title={advancedHelp(p.name, p.enum)}>
                       <span className="sl-opt-ic"><SpotlightOptionIcon name={p.name} /></span>
                       {advancedLabel(p.name)}
                       {["stability", "similarity_boost"].includes(p.name) && " (%)"}
