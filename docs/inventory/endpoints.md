@@ -301,8 +301,8 @@
 | `GET` | `/api/models` | `list_models` | 로컬 예외 | — |
 | `GET` | `/api/sources` | `list_sources` | 로컬 예외 | — |
 | `DELETE` | `/api/tags/{tag:path}` | `delete_tag` | 로컬 예외 | — |
-| `GET` | `/api/voices/{voice_id}` | `get_voice` | 기본 중계 | — |
-| `GET` | `/api/voices` | `list_voices` | 기본 중계 | — |
+| `GET` | `/api/voices/{voice_id}` | `get_voice` | 로컬 예외 | — |
+| `GET` | `/api/voices` | `list_voices` | 로컬 예외 | — |
 | `GET` | `/api/workspaces/available` | `available_workspaces` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `GET` | `/api/workspaces/resolve` | `resolve_workspace_by_name` | 로컬 예외 | — |
 | `POST` | `/api/workspaces/select` | `select_workspace` | 로컬 예외 | — |
@@ -417,13 +417,10 @@
 | --- | --- | --- | --- | --- |
 | `GET` | `/api/manage/credit-plan/my-quota` | `my_credit_quota` | 기본 중계 | — |
 
-## `backend/app/routers/mcp.py` — 16개
+## `backend/app/routers/mcp.py` — 13개
 
 | 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
 | --- | --- | --- | --- | --- |
-| `POST` | `/api/mcp/app/adapter/rollback` | `adapter_rollback` | 로컬 예외 | `adapter_context` |
-| `POST` | `/api/mcp/app/adapter/update` | `adapter_update` | 로컬 예외 | `adapter_context` |
-| `GET` | `/api/mcp/app/adapter` | `adapter_status` | 로컬 예외 | `adapter_context` |
 | `GET` | `/api/mcp/app/check` | `check` | 로컬 예외 | `app_guard` |
 | `POST` | `/api/mcp/app/close` | `close` | 로컬 예외 | `app_guard` |
 | `GET` | `/api/mcp/app/next` | `next_action` | 로컬 예외 | `app_guard` |
@@ -437,6 +434,14 @@
 | `POST` | `/api/mcp/plans/{pid}/item` | `item` | 로컬 예외 | `app_guard` |
 | `GET` | `/api/mcp/plans/{pid}` | `plan` | 로컬 예외 | `app_guard` |
 | `POST` | `/api/mcp/plans` | `create_plan` | 로컬 예외 | `app_guard` |
+
+## `backend/app/routers/mcp_adapter.py` — 3개
+
+| 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
+| --- | --- | --- | --- | --- |
+| `POST` | `/api/mcp/app/adapter/rollback` | `adapter_rollback` | 로컬 예외 | `adapter_context` |
+| `POST` | `/api/mcp/app/adapter/update` | `adapter_update` | 로컬 예외 | `adapter_context` |
+| `GET` | `/api/mcp/app/adapter` | `adapter_status` | 로컬 예외 | `adapter_context` |
 
 ## `backend/app/routers/mcp_v2.py` — 8개
 

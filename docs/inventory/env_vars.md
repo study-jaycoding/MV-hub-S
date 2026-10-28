@@ -85,7 +85,7 @@
 | `CONTENT_HUB_MEDIA_PRESERVATION_STARTUP_DELAY_SECONDS` | `"10"` | `backend/app/services/media_preservation.py` | — |
 | `CONTENT_HUB_METRICS_LOG_INTERVAL` | `"60"` | `backend/app/main.py` | — |
 | `CONTENT_HUB_METRICS_SAMPLE_MAX` | `"5000"` | `backend/app/services/runtime_metrics.py` | — |
-| `CONTENT_HUB_NO_PROXY` | `""` `'0'` | `backend/app/routers/_proxy.py` `backend/app/routers/auth.py` `backend/app/routers/backup_replica.py` `backend/app/services/asset_sync.py` `backend/app/services/operational_health.py` `backend/app/services/telemetry_drain.py` `tools/endurance_probe.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |
+| `CONTENT_HUB_NO_PROXY` | `""` `'0'` | `backend/app/routers/_proxy.py` `backend/app/routers/auth.py` `backend/app/routers/backup_replica.py` `backend/app/services/asset_sync.py` `backend/app/services/operational_health.py` `backend/app/services/shared_connection.py` `backend/app/services/telemetry_drain.py` `tools/endurance_probe.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |
 | `CONTENT_HUB_PORT` | `"0"` `"8000"` `"8010"` | `backend/app/config.py` `run_agent_session.py` `tools/endurance_probe.py` `tools/server_watchdog.py` | `MV_agent.bat` `MV_server.bat` |
 | `CONTENT_HUB_PRESERVED_MEDIA_MAX_BYTES` | `str(50 * 1024 * 1024 * 1024)` | `backend/app/services/media_cache.py` | — |
 | `CONTENT_HUB_READ_ONLY` | `"0"` | `backend/app/config.py` | — |
