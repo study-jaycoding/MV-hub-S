@@ -62,7 +62,7 @@
 | `CONTENT_HUB_ENDURANCE_WS_RECV_TIMEOUT` | — | `tools/endurance_probe.py` | — |
 | `CONTENT_HUB_ESTIMATE_CONCURRENCY` | `2` | `backend/app/services/cli_bridge.py` | — |
 | `CONTENT_HUB_EXTERNAL_RECOVERY` | `"1"` | `backend/app/config.py` | — |
-| `CONTENT_HUB_FFMPEG` | — | `backend/app/services/video_convert.py` | — |
+| `CONTENT_HUB_FFMPEG` | — | `agent_push.py` `backend/app/services/video_convert.py` | — |
 | `CONTENT_HUB_FFMPEG_CONCURRENCY` | `"3"` | `backend/app/services/thumbs.py` | — |
 | `CONTENT_HUB_FOLDER_TREE_CACHE_TTL` | `"30"` | `backend/app/services/project_folders.py` | — |
 | `CONTENT_HUB_FRONTEND_DIST` | `BACKEND_DIR.parent / "frontend" / "dist"` | `backend/app/config.py` | — |

@@ -1052,11 +1052,12 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `useResolveLibraryFollow.ts` | 훅 | Resolve 선택에 라이브러리 페이지 따라가기 |
 | `sourceLocationFeedback.ts` | api | 원본 위치 열기 실패 보고 |
 
-**17. 미디어·다운로드·비교·히스토리(11)**
+**17. 미디어·다운로드·비교·히스토리(12)**
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `media.ts` | 순수+브라우저(+훅 1) | 썸네일 URL·미디어 종류·DataTransfer 파일 판정 |
+| `videoFormat.ts` | 순수(Blob) | MP4/MOV 머리(moov→영상 trak→stsd)로 코덱·크기·profile·bit depth 읽기(ffmpeg 없이·mdat 안 읽음) + Kling 영상 수정 변환 정책 판정(`klingVideoVerdict`) — 수정 창 미리 알림 전용. **같은 정책이 `agent_push.py` `_probe_video_format`·`_kling_video_verdict` 에도 있다(실제 판단·변환은 에이전트) — 값을 바꾸면 둘 다**. 시험 `tests/videoFormat.test.ts` ↔ `backend/tests/test_agent_kling_video_convert.py` |
 | `keptThumbs.ts` | 브라우저 | 그려진 캔버스 카드 썸네일을 씬을 떠난 뒤에도 최근 300장 쥐기(`keepThumb` — `MediaThumbnail` 의 `keep`, 긴 변 640px 넘는 것·원본 재시도분은 안 쥔다). 다시 연 씬의 빈 썸네일 95→0ms(71회차). 시험 `tests/keptThumbs.test.tsx` |
 | `download.ts` | api | 다운로드 공용(허브 각인 → 직접 → 프록시 → 새 탭 폴백). 생성물의 파일 이름은 허브가 정한다(`POST /api/download/names` — `downloadGeneration`·`nameGenerationItems`, 받을 때만 묻는다. 규칙은 `docs/EXPORT_SYNC_DESIGN.md` §7) |
 | `mediaCapture.ts` | 브라우저 | 크게 보기 우클릭의 캡쳐·저장 — 영상의 지금 장면(CDN 영상은 CORS 사본을 같은 시각으로)·이미지 원본을 PNG 로, 클립보드 담기·다른 이름으로 저장(저장 창 없으면 내려받기). 클립보드·저장 창은 누른 자리에서 부른다(사용자 동작이 식기 전) |
