@@ -163,6 +163,7 @@ export function SceneModelModal({
               setOpt={m.setOpt}
               open={open}
               setOpen={setOpen}
+              optionsLoading={m.paramsLoading}
             />
           </div>
         </div>

@@ -1778,6 +1778,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
                 setOpt={setOpt}
                 open={open}
                 setOpen={setOpen}
+                optionsLoading={paramsLoading}
               />
           </SpotlightGenerateControls>
         </div>

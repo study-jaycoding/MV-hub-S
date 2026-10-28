@@ -3,7 +3,7 @@
 //  · 제출 키는 그대로(model=text2speech_v2, params.variant) — 화면에서만 가른다(Seedance Fast 와 같은 방식).
 //  · 저장된 옛 엔진(vibe/cozy)은 '기존 설정' 줄로 보존하고, 엔진이 빠진 복원은 고를 때까지 제출·씬 저장을 막는다(Codex B1).
 //  · 시험마다 `vi.resetModules()` — 파라미터·카탈로그 캐시가 모듈 전역이다(sceneModelModalRestore 와 같은 이유).
-import { act, StrictMode } from "react";
+import { act, StrictMode, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -157,6 +157,89 @@ describe("목소리 검색 창", () => {
     await settle();
     expect(container.querySelector('button[aria-label="Voice"]')?.textContent).toContain("kept (확인 필요)");
     expect(setOptionValues).not.toHaveBeenCalled();
+  });
+});
+
+describe("Codex H — 옵션 준비 전 선택·키보드 초점·빈 목록", () => {
+  const voiceLabel = () => (container.querySelector('button[aria-label="Voice"] .sl-chip-label')?.textContent || "").trim();
+  const voiceSchema = (m: string) => ({ job_set_type: m, type: "audio", saved_at: Date.now() / 1000, params: [
+    { name: "prompt", type: "string", required: true },
+    { name: "voice_id", type: "string", required: true },
+    { name: "voice_type", type: "string", required: true, enum: ["preset", "element"] },
+  ] });
+
+  it("다른 모델에서 엔진을 고른 뒤 옵션이 오기 전에는 같은 모델의 엔진·목소리를 더 못 고른다(늦은 응답이 덮지 않게)", async () => {
+    let release = () => {};
+    modelParams.mockImplementation(async (m: string) => {
+      if (m !== "text2speech_v2") return voiceSchema(m);
+      await new Promise<void>((resolve) => { release = resolve; });
+      return ttsSchema();
+    });
+    voices.mockResolvedValue({ items: [{ id: "e", name: "Emily", voice_type: "preset" }], cursor: null });
+    await mountModal({ model: "elevenlabs_v4", params: {} });
+    expect(modelParams.mock.calls.map(([m]) => m)).toContain("elevenlabs_v4");
+    openModelList();
+    act(() => button("MiniMax Speech 2.8 HD").click()); // 다른 모델 → 예약값(minimax)
+    await settle(); // text2speech_v2 스키마는 아직 안 왔다
+    openModelList();
+    act(() => button("Seed Speech").click()); // 반례: 받아들여 보였다가 응답 때 minimax 로 되돌아갔다
+    expect(chipText()).not.toBe("Seed Speech");
+    expect(button("Voice").disabled).toBe(true); // 반례: 여기서 고른 목소리(Emily)도 응답 때 초기화로 사라졌다
+    await act(async () => release());
+    await settle();
+    expect(chipText()).toBe("MiniMax Speech 2.8 HD");
+    // 준비된 뒤에는 다시 고를 수 있고, 고른 것이 남는다
+    expect(button("Voice").disabled).toBe(false);
+    act(() => button("Voice").click());
+    act(() => button("Emily").click());
+    expect(voiceLabel()).toBe("Emily");
+    if (!container.querySelector(".sl-dropdown .sl-dd-item")) openModelList();
+    act(() => button("Seed Speech").click());
+    await settle();
+    expect(chipText()).toBe("Seed Speech");
+    act(() => button("저장").click());
+    expect(saved[0]).toMatchObject({ params: { variant: "seed_speech", voice_id: "e", voice_type: "preset" } });
+  });
+
+  it("키보드로 목소리·번역 언어를 고르면 초점이 칩으로 돌아간다", async () => {
+    vi.resetModules();
+    voices.mockResolvedValue({ items: [{ id: "e", name: "Emily", voice_type: "preset" }], cursor: null });
+    const { SpotlightOptionsBar } = await import("../src/components/spotlight/SpotlightOptionsBar");
+    function Bar({ model }: { model: string }) {
+      const [open, setOpen] = useState<string | null>(null);
+      const [values, setValues] = useState<Record<string, string | number | boolean>>({});
+      return <SpotlightOptionsBar type="audio" setType={vi.fn()} model={model} setModel={vi.fn()} onPickModel={vi.fn()}
+        modelName="" typeModels={[]} tunable={[]} constraints={{}} optionValues={values} setOptionValues={setValues}
+        setOpt={vi.fn()} open={open} setOpen={setOpen} />;
+    }
+    act(() => root.render(<Bar model="text2speech_v2" />));
+    await settle();
+    act(() => button("Voice").click());
+    const voice = button("Emily");
+    act(() => voice.focus());
+    act(() => voice.click()); // Enter 는 초점 가진 단추의 click 이다
+    expect(container.querySelector(".sl-voice-pop")).toBeNull();
+    expect(document.activeElement).toBe(button("Voice"));
+
+    act(() => root.render(<Bar model="dubbing" />));
+    await settle();
+    act(() => button("번역 언어").click());
+    const language = button("한국어");
+    act(() => language.focus());
+    act(() => language.click());
+    expect(document.activeElement).toBe(button("번역 언어"));
+  });
+
+  it("빈 목록으로 조회가 끝나면 '불러오는 중'이 아니라 없음·확인 필요로 보인다", async () => {
+    vi.resetModules();
+    voices.mockResolvedValue({ items: [], cursor: null });
+    const { SpotlightOptionsBar } = await import("../src/components/spotlight/SpotlightOptionsBar");
+    act(() => root.render(<SpotlightOptionsBar type="audio" setType={vi.fn()} model="text2speech_v2" setModel={vi.fn()}
+      onPickModel={vi.fn()} modelName="" typeModels={[]} tunable={[]} constraints={{}}
+      optionValues={{ variant: "minimax", voice_id: "kept" }} setOptionValues={vi.fn()} setOpt={vi.fn()} open="voice" setOpen={vi.fn()} />));
+    await settle();
+    expect(voiceLabel()).toBe("kept (확인 필요)");
+    expect(container.querySelector(".sl-voice-pop .sl-dd-empty")?.textContent).toBe("불러온 목소리가 없습니다.");
   });
 });
 

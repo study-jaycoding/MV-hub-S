@@ -151,6 +151,9 @@ interface Props {
   setOpt: (name: string, value: string | number) => void;
   open: string | null;
   setOpen: Dispatch<SetStateAction<string | null>>;
+  /** 지금 모델의 옵션(스키마)을 받는 중 — 받으면 옵션이 기본값·예약값으로 다시 채워지므로, 그 전에 고른
+   *  같은 모델의 엔진·목소리·언어는 덮여 사라진다. 그동안 그 선택만 잠근다(Codex H-1). */
+  optionsLoading?: boolean;
   /** bar = 생성창 아래 칩 한 줄(기본). rows = 옵션마다 '이름 | 값' 한 줄 — 캔버스 모델 설정 창(Jay 2026-10-28 시안 b2).
    *  rows 에서는 종류 단추를 그리지 않는다(창 머리줄이 SpotlightTypeToggle 로 그린다). */
   layout?: "bar" | "rows";
@@ -210,20 +213,25 @@ function PreviewIcon({ playing }: { playing: boolean }) {
 function VoicePicker({
   voices,
   voicesError,
+  voicesDone,
   value,
   onPick,
   open,
   setOpen,
   recommended = null,
+  disabled = false,
 }: {
   voices: VoiceInfo[];
   voicesError: boolean;
+  /** 마지막 페이지까지 받았다 — 빈 목록 성공과 '받는 중'을 가른다(Codex H-3). */
+  voicesDone: boolean;
   value: string;
   onPick: (id: string) => void;
   open: string | null;
   setOpen: Dispatch<SetStateAction<string | null>>;
   /** 이 모델에 웹이 내놓는 목소리 — 위로 올리고 '추천'만 붙인다(나머지도 고를 수 있다). */
   recommended?: ReadonlySet<string> | null;
+  disabled?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<string[]>(() => VOICE_FILTERS.map(() => "all"));
@@ -269,7 +277,7 @@ function VoicePicker({
   };
   const picked = voices.find((voice) => voice.id === value);
   const label = picked?.name
-    ?? (value ? (voices.length || voicesError ? `${value} (확인 필요)` : "목소리 확인 중…") : voicesError ? "목소리 조회 실패" : "Voice");
+    ?? (value ? (voicesDone || voicesError ? `${value} (확인 필요)` : "목소리 확인 중…") : voicesError ? "목소리 조회 실패" : "Voice");
   const q = query.trim().toLowerCase();
   const matched = voices.filter((voice) =>
     VOICE_FILTERS.every((filter, i) => filters[i] === "all" || VOICE_CATALOG[voice.id]?.[filter.slot] === filters[i])
@@ -285,7 +293,8 @@ function VoicePicker({
         aria-expanded={isOpen}
         aria-label="Voice"
         className={"sl-chip" + (isOpen ? " active" : "")}
-        title={voicesError ? "목소리 목록을 불러오지 못했습니다. Host 콘솔을 확인하세요." : "Voice"}
+        disabled={disabled}
+        title={disabled ? "모델 옵션을 불러오는 중입니다" : voicesError ? "목소리 목록을 불러오지 못했습니다. Host 콘솔을 확인하세요." : "Voice"}
         onClick={() => setOpen(isOpen ? null : "voice")}
       >
         <span className="sl-opt-ic"><VoiceIcon /></span>
@@ -322,6 +331,7 @@ function VoicePicker({
                     onClick={() => {
                       onPick(voice.id);
                       setOpen(null);
+                      chipRef.current?.focus({ preventScroll: true }); // 키보드로 고르면 누른 단추가 사라진다 — 칩으로 돌려준다(Codex H-2)
                     }}
                   >
                     {voice.name}
@@ -341,7 +351,7 @@ function VoicePicker({
             })}
             {!shown.length && (
               <div className="sl-dd-empty">
-                {voicesError ? "목소리 목록을 불러오지 못했습니다." : voices.length ? "맞는 목소리가 없습니다." : "불러오는 중…"}
+                {voicesError ? "목소리 목록을 불러오지 못했습니다." : voices.length ? "맞는 목소리가 없습니다." : voicesDone ? "불러온 목소리가 없습니다." : "불러오는 중…"}
               </div>
             )}
           </div>
@@ -352,11 +362,12 @@ function VoicePicker({
 }
 
 /** 번역(dubbing) 대상 언어 칩 — CLI target_language 18개를 한국어 이름으로. 고르기 전에는 '번역 언어'. */
-function LanguagePicker({ value, onPick, open, setOpen }: {
+function LanguagePicker({ value, onPick, open, setOpen, disabled = false }: {
   value: string;
   onPick: (code: string) => void;
   open: string | null;
   setOpen: Dispatch<SetStateAction<string | null>>;
+  disabled?: boolean;
 }) {
   const chipRef = useRef<HTMLButtonElement>(null);
   const isOpen = open === "target_language";
@@ -367,8 +378,8 @@ function LanguagePicker({ value, onPick, open, setOpen }: {
   const label = DUBBING_LANGUAGES.find(([code]) => code === value)?.[1];
   return (
     <div className="sl-chip-wrap">
-      <button ref={chipRef} aria-expanded={isOpen} aria-label="번역 언어" title="번역 언어"
-        className={"sl-chip" + (isOpen ? " active" : "")} onClick={() => setOpen(isOpen ? null : "target_language")}>
+      <button ref={chipRef} aria-expanded={isOpen} aria-label="번역 언어" title={disabled ? "모델 옵션을 불러오는 중입니다" : "번역 언어"}
+        disabled={disabled} className={"sl-chip" + (isOpen ? " active" : "")} onClick={() => setOpen(isOpen ? null : "target_language")}>
         <span className="sl-opt-ic"><VoiceIcon /></span>
         <span className="sl-chip-label">{label ?? "번역 언어"}</span>
         <span className="sl-caret">›</span>
@@ -379,7 +390,7 @@ function LanguagePicker({ value, onPick, open, setOpen }: {
           <div className="sl-dd-scroll">
             {DUBBING_LANGUAGES.map(([code, name]) => (
               <button key={code} className={"sl-dd-item" + (code === value ? " sel" : "")}
-                onClick={() => { onPick(code); setOpen(null); }}>{name}</button>
+                onClick={() => { onPick(code); setOpen(null); chipRef.current?.focus({ preventScroll: true }); }}>{name}</button>
             ))}
           </div>
         </div>
@@ -409,6 +420,7 @@ export function SpotlightOptionsBar({
   setOpt,
   open,
   setOpen,
+  optionsLoading = false,
   layout = "bar",
 }: Props) {
   if (audioModelBlocked(model)) { modelBlocked = true; blockedNote = audioModelBlocked(model); }
@@ -425,12 +437,14 @@ export function SpotlightOptionsBar({
   const capCols = (count: number) => ({ gridTemplateColumns: `repeat(${Math.min(count, 6)}, 1fr)` });
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
   const [voicesError, setVoicesError] = useState(false);
+  const [voicesDone, setVoicesDone] = useState(false);
   const voiceScope = voiceScopeKey();
   useEffect(() => {
     if (!isTtsModel(model) && model !== "voice_change") return;
     let alive = true;
     setVoices([]);
     setVoicesError(false);
+    setVoicesDone(false);
     void (async () => {
       const found = new Map<string, VoiceInfo>();
       const seen = new Set<string>();
@@ -444,6 +458,7 @@ export function SpotlightOptionsBar({
         if (cursor && seen.has(cursor)) throw new Error("목소리 목록 페이지가 반복됩니다.");
         if (cursor) seen.add(cursor);
       } while (cursor);
+      setVoicesDone(true);
     })().catch(() => { if (alive && voiceScope === voiceScopeKey()) setVoicesError(true); });
     return () => { alive = false; };
   }, [model, voiceScope]);
@@ -513,8 +528,9 @@ export function SpotlightOptionsBar({
                 <button
                   key={row.key}
                   aria-label={row.display_name}
-                  disabled={!!audioModelBlocked(row.model)}
-                  title={audioModelBlocked(row.model) ?? undefined}
+                  // 같은 모델의 변형(엔진)은 옵션을 받은 뒤에만 — 그 전에 고르면 받은 예약값이 덮는다(Codex H-1)
+                  disabled={!!audioModelBlocked(row.model) || (optionsLoading && row.model === model)}
+                  title={audioModelBlocked(row.model) ?? (optionsLoading && row.model === model ? "모델 옵션을 불러오는 중입니다" : undefined)}
                   className={
                     "sl-dd-item" +
                     (row.model === model &&
@@ -546,11 +562,13 @@ export function SpotlightOptionsBar({
         <VoicePicker
           voices={voices}
           voicesError={voicesError}
+          voicesDone={voicesDone}
           value={String(optionValues.voice_id ?? "")}
           onPick={(id) => setOptionValues((previous) => ({ ...previous, voice_id: id, voice_type: "preset" }))}
           open={open}
           setOpen={setOpen}
           recommended={recommendedVoiceIds(model)}
+          disabled={optionsLoading}
         />
         {/* seed_audio 는 목소리 없이 참고 자료로도 만든다 — 고른 목소리를 풀 수 있게 */}
         {model === "seed_audio" && optionValues.voice_id && <button className="sl-chip" onClick={() => setOptionValues((previous) => {
@@ -563,6 +581,7 @@ export function SpotlightOptionsBar({
           onPick={(code) => setOptionValues((previous) => ({ ...previous, target_language: code }))}
           open={open}
           setOpen={setOpen}
+          disabled={optionsLoading}
         />)}
       {visibleTunable.filter((p) => SPOTLIGHT_PRIMARY_PARAMS.has(p.name)).map((p) => {
         // 이 모드에서 CLI 가 무시하는 값 — 흐리게 두는 데서 그치지 않고 **조작도 막는다**
