@@ -423,6 +423,14 @@ export function PartialEditModal({
     }
   }, [tool, color]);
   const [brushSize, setBrushSize] = useState(18); // 작업 해상도 px
+  // 굵기 숫자칸에 치는 중인 글자 — null 이면 brushSize 를 보인다. Enter·바깥 누름에 4~120 으로 맞춰 적용.
+  const [sizeText, setSizeText] = useState<string | null>(null);
+  const applySizeText = () => {
+    if (sizeText === null) return;
+    const n = Math.round(Number(sizeText));
+    if (sizeText.trim() && Number.isFinite(n)) setBrushSize(Math.min(120, Math.max(4, n)));
+    setSizeText(null);
+  };
   const annotRef = useRef<HTMLCanvasElement | null>(null);
   const liveRef = useRef<PenStroke | ShapeItem | null>(null);
   // 쓰는 중인 글자 — at = 누른 자리(작업 px), left·top = 무대 상자 기준 화면 px, scale = 화면 px / 작업 px.
@@ -1029,15 +1037,20 @@ export function PartialEditModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stage, items, redo, playing, videoDuration]);
   // 닫을 수 없는 동안(제출 요청 중·감시 중)에도 Esc 는 이 창이 갖는다 — 뒤 화면으로 새지 않는다.
+  // Esc 로는 창을 닫지 않는다(Jay 2026-10-28) — 그린 것·쓴 지시가 한 번에 날아가지 않게. 닫기는 X 나 생성으로만.
+  //  Esc 는 이 창이 갖고(뒤 화면으로 새지 않게), 쓰던 글자 → 굵기 숫자 입력 → 열린 목록 → 색 창 순서로 하나씩만 닫는다.
   useEscapeClose(
     () => {
-      // 글자를 쓰는 중이면 그 글자만 버린다 — 창은 닫지 않는다
       if (textDraftRef.current) {
         textDraftRef.current = null;
         setTextDraft(null);
-        return;
+      } else if (sizeText !== null) {
+        setSizeText(null);
+      } else if (menu) {
+        setMenu(null);
+      } else if (colorOpen) {
+        setColorOpen(false);
       }
-      if (closable) onClose();
     },
     true,
     true,
@@ -1250,11 +1263,21 @@ export function PartialEditModal({
                       <span className="pe-dot" style={{ background: color }} />
                     </button>
                     {/* 굵기 — 캡슐에 바로(Jay 10-28: 색 창 안에 있어 못 찾음). 펜·지우개·도형 굵기와 글자 크기를 함께 정한다 */}
-                    <label className="pe-size" title="굵기·글자 크기 ([ ] 로도)">
-                      <span className="pe-size-dot" style={{ width: Math.min(16, Math.max(3, brushSize / 7)), height: Math.min(16, Math.max(3, brushSize / 7)), background: color }} />
+                    <div className="pe-size" title="굵기·글자 크기 ([ ] 로도)">
+                      <span className="pe-size-dotbox">
+                        <span className="pe-size-dot" style={{ width: Math.min(16, Math.max(3, brushSize / 7)), height: Math.min(16, Math.max(3, brushSize / 7)), background: color }} />
+                      </span>
                       <input type="range" aria-label="굵기" min={4} max={120} value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))} />
-                      <span className="pe-size-val">{brushSize}</span>
-                    </label>
+                      {/* 숫자는 고정 폭 칸 — 1~3자리여도 캡슐 크기가 그대로이고, 직접 칠 수 있다(Jay 10-28) */}
+                      <input className="pe-size-val" type="text" inputMode="numeric" aria-label="굵기 숫자" maxLength={3}
+                        value={sizeText ?? String(brushSize)}
+                        onFocus={(e) => e.currentTarget.select()}
+                        onChange={(e) => setSizeText(e.target.value.replace(/\D/g, ""))}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") { e.preventDefault(); applySizeText(); e.currentTarget.blur(); }
+                        }}
+                        onBlur={applySizeText} />
+                    </div>
                     <span className="pe-div" />
                     <button type="button" title="되돌리기 (Ctrl+Z)" aria-label="되돌리기" disabled={!items.length} onClick={undoStroke}>{TOOL_ICONS.undo}</button>
                     <button type="button" title="다시 (Ctrl+Shift+Z)" aria-label="다시" disabled={!redo.length} onClick={redoStroke}>{TOOL_ICONS.redo}</button>

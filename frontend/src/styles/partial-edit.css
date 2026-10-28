@@ -280,8 +280,17 @@
 .pe-pop .pe-swatch.sel { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent); }
 /* 굵기 — 캡슐 안 슬라이더(Jay 10-28). 앞의 점이 굵기만큼 커진다. 얇은 트랙 + 라임 원형 썸 */
 .pe-size { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 6px 0 8px; cursor: pointer; }
+/* 점은 고정 16px 칸 안에서만 커진다 — 굵기가 바뀌어도 캡슐 폭이 그대로(10-28 실측: 120 에서 13px 넓어졌다) */
+.pe-size-dotbox { flex: none; width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; }
 .pe-size-dot { flex: none; border-radius: 50%; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.28); }
-.pe-size-val { min-width: 22px; font: 600 11.5px ui-monospace, Consolas, monospace; color: var(--text); text-align: right; }
+/* 굵기 숫자칸 — 고정 폭(3자리)이라 숫자가 바뀌어도 캡슐 크기가 그대로. 눌러서 직접 친다 */
+.pe-size-val {
+  flex: none; width: 36px; height: 22px; margin: 0; padding: 0; box-sizing: border-box;
+  border: 1px solid var(--border); border-radius: 6px; background: rgba(255, 255, 255, 0.05); outline: none;
+  font: 600 11.5px ui-monospace, Consolas, monospace; font-variant-numeric: tabular-nums; color: var(--text); text-align: center;
+}
+.pe-size-val:hover { border-color: var(--border2); }
+.pe-size-val:focus { border-color: var(--accent); background: rgba(var(--accent-rgb), 0.08); }
 .pe-size input[type="range"] {
   -webkit-appearance: none; appearance: none; width: 90px; height: 4px; margin: 0; padding: 0; border-radius: 2px;
   background: rgba(255, 255, 255, 0.14); outline: none; cursor: pointer;

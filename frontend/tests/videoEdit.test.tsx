@@ -181,15 +181,39 @@ describe("video edit reuses annotation UI", () => {
     await act(async () => button("되돌리기").click());
     expect(button("전체 지우기").disabled).toBe(true);
   });
-  it("shows the thickness slider in the tool capsule", async () => {
+  it("shows the thickness slider in the tool capsule and lets the number be typed (clamped to 4–120)", async () => {
     await render(generation("image"));
     const slider = container.querySelector<HTMLInputElement>('.pe-dock input[aria-label="굵기"]')!;
+    const number = () => container.querySelector<HTMLInputElement>('.pe-dock input[aria-label="굵기 숫자"]')!;
     expect(slider).not.toBeNull();
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(slider, "40");
-      slider.dispatchEvent(new Event("input", { bubbles: true }));
+    const type = async (input: HTMLInputElement, value: string) => act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    expect(container.querySelector(".pe-size-val")?.textContent).toBe("40");
+    await type(slider, "40");
+    expect(number().value).toBe("40");
+    await type(number(), "75");
+    await act(async () => { number().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+    expect(slider.value).toBe("75");
+    await type(number(), "999"); // 칸은 세 자리 — 넘는 값은 120 으로
+    await act(async () => { number().dispatchEvent(new FocusEvent("focusout", { bubbles: true })); }); // React onBlur = focusout
+    expect(slider.value).toBe("120");
+    expect(number().value).toBe("120");
+  });
+  it("does not close on Esc — only the open menu closes; X still closes", async () => {
+    const onClose = vi.fn();
+    await act(async () => root.render(<PartialEditModal gen={generation("image")} mode="image" workspace={workspace}
+      onQueued={mocks.queued} onClose={onClose} />));
+    const esc = () => act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    await esc();
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => button("수정 모델").click());
+    expect(container.querySelector('[role="listbox"]')).not.toBeNull();
+    await esc();
+    expect(container.querySelector('[role="listbox"]')).toBeNull(); // 목록만 닫혔다
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => (container.querySelector(".assets-x") as HTMLButtonElement).click());
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
   it("requires a successful price for the currently selected video option", async () => {
     let resolve!: (value: object) => void;
