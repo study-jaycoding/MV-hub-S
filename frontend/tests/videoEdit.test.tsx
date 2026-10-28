@@ -72,7 +72,8 @@ beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ save: vi.fn(), restore: vi.fn(),
     clearRect: vi.fn(), drawImage: vi.fn(), beginPath: vi.fn(), arc: vi.fn(), fill: vi.fn(),
-    moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(), getImageData: () => ({ data: [] }) } as unknown as CanvasRenderingContext2D);
+    moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(), fillText: vi.fn(), strokeText: vi.fn(),
+    getImageData: () => ({ data: [] }) } as unknown as CanvasRenderingContext2D);
   vi.spyOn(HTMLCanvasElement.prototype, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, width: 1280, height: 720 } as DOMRect);
   // 타임바 줄 — 폭 100 이라 clientX 30 = 길이 5초의 1.5초
   vi.spyOn(HTMLDivElement.prototype, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, width: 100, height: 4 } as DOMRect);
@@ -157,6 +158,38 @@ describe("video edit reuses annotation UI", () => {
     await act(async () => button("전체 지우기").click());
     expect(scrub().getAttribute("aria-disabled")).toBe("false");
     expect(button("다시").disabled).toBe(true); // 전체 지우기는 다시로 되살리지 않는다
+  });
+  it("writes text where the image is clicked — Enter keeps it, Esc drops only the typing, undo removes it", async () => {
+    await render(generation("image"));
+    const canvas = container.querySelector("canvas")!;
+    await act(async () => button("글자").click());
+    await act(async () => { pointer(canvas, "pointerdown", 40); });
+    const typing = () => container.querySelector<HTMLInputElement>('input[aria-label="글자 입력"]');
+    expect(typing()).not.toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(typing()!, "수염 갈색");
+      typing()!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { typing()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+    expect(typing()).toBeNull();
+    expect(button("전체 지우기").disabled).toBe(false); // 글자가 한 획처럼 들어갔다
+    await act(async () => { pointer(canvas, "pointerdown", 60); });
+    expect(typing()).not.toBeNull();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(typing()).toBeNull(); // 쓰던 글자만 버렸다 — 창은 그대로
+    expect(container.querySelector(".partial-edit-modal")).not.toBeNull();
+    await act(async () => button("되돌리기").click());
+    expect(button("전체 지우기").disabled).toBe(true);
+  });
+  it("shows the thickness slider in the tool capsule", async () => {
+    await render(generation("image"));
+    const slider = container.querySelector<HTMLInputElement>('.pe-dock input[aria-label="굵기"]')!;
+    expect(slider).not.toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(slider, "40");
+      slider.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.querySelector(".pe-size-val")?.textContent).toBe("40");
   });
   it("requires a successful price for the currently selected video option", async () => {
     let resolve!: (value: object) => void;

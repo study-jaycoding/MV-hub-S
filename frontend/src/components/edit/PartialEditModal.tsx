@@ -79,11 +79,12 @@ const TOOL_ICONS = {
   undo: <svg {...TOOL_ICON}><path d="M9 14 4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" /></svg>,
   redo: <svg {...TOOL_ICON}><path d="m15 14 5-5-5-5" /><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" /></svg>,
   clear: <svg {...TOOL_ICON}><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4h6v3" /></svg>,
+  text: <svg {...TOOL_ICON}><path d="M5 7V5h14v2" /><path d="M12 5v14" /><path d="M9 19h6" /></svg>,
 };
-// [도구, 이름, 단축키] — 펜·지우개 다음에 도형 넷(옛 Shapes 하위 단추를 캡슐로 꺼냄). R 은 마지막 도형으로 돌아간다.
-const DRAW_TOOLS: ["pen" | "erase" | ShapeKind, string, string][] = [
+// [도구, 이름, 단축키] — 펜·지우개 다음에 도형 넷(옛 Shapes 하위 단추를 캡슐로 꺼냄)과 글자. R 은 마지막 도형으로 돌아간다.
+const DRAW_TOOLS: ["pen" | "erase" | "text" | ShapeKind, string, string][] = [
   ["pen", "펜", "D"], ["erase", "지우개", "E"],
-  ["line", "선", ""], ["arrow", "화살표", ""], ["rect", "사각형", ""], ["ellipse", "원", ""],
+  ["line", "선", ""], ["arrow", "화살표", ""], ["rect", "사각형", ""], ["ellipse", "원", ""], ["text", "글자", "T"],
 ];
 const POLL_MS = 2_000;
 const SLOW_AFTER_MS = 180_000; // 이후에도 계속 감시 — 실패 처리 아님(이중 과금 방지)
@@ -111,7 +112,18 @@ interface ShapeItem {
   from: { x: number; y: number };
   to: { x: number; y: number };
 }
-type DrawItem = PenStroke | ShapeItem;
+// 글자 — 누른 자리(at, 작업 해상도)가 글자 상자의 왼쪽 위. size 는 글자 높이(작업 px).
+interface TextItem {
+  kind: "text";
+  text: string;
+  color: string;
+  size: number;
+  at: { x: number; y: number };
+}
+type DrawItem = PenStroke | ShapeItem | TextItem;
+const TEXT_FONT = '700 {px}px "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif';
+// 굵기(brushSize) → 글자 높이. 같은 슬라이더로 펜 굵기와 글자 크기를 함께 정한다(2배는 작은 그림에서 너무 컸다 — 10-28 실측).
+const textPx = (brush: number) => Math.round(brush * 1.5);
 
 type Stage = "load" | "draw" | "wait" | "result";
 
@@ -169,8 +181,22 @@ function drawShape(ctx: CanvasRenderingContext2D, s: ShapeItem) {
   }
 }
 
+// 글자는 굵게 + 얇은 어두운 테두리 — 밝은 바탕·어두운 바탕 어디서나 모델이 읽게.
+function drawText(ctx: CanvasRenderingContext2D, t: TextItem) {
+  ctx.globalCompositeOperation = "source-over";
+  ctx.font = TEXT_FONT.replace("{px}", String(t.size));
+  ctx.textBaseline = "top";
+  ctx.lineJoin = "round";
+  ctx.lineWidth = Math.max(2, t.size / 8);
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.6)";
+  ctx.fillStyle = t.color;
+  ctx.strokeText(t.text, t.at.x, t.at.y);
+  ctx.fillText(t.text, t.at.x, t.at.y);
+}
+
 function drawItem(ctx: CanvasRenderingContext2D, it: DrawItem) {
   if (it.kind === "pen") drawPen(ctx, it);
+  else if (it.kind === "text") drawText(ctx, it);
   else drawShape(ctx, it);
 }
 
@@ -369,10 +395,10 @@ export function PartialEditModal({
     setRedo([]);
   };
   // 도구·색은 마지막 사용값을 기억 — 프라이빗 모드 등 스토리지 차단 환경에서도 크래시 없이 기본값.
-  const [tool, setTool] = useState<"pen" | "erase" | "shape">(() => {
+  const [tool, setTool] = useState<"pen" | "erase" | "shape" | "text">(() => {
     try {
       const saved = localStorage.getItem(LS_TOOL);
-      if (saved === "pen" || saved === "erase" || saved === "shape") return saved;
+      if (saved === "pen" || saved === "erase" || saved === "shape" || saved === "text") return saved;
     } catch {
       /* 스토리지 차단 — 기본값 사용 */
     }
@@ -398,7 +424,22 @@ export function PartialEditModal({
   }, [tool, color]);
   const [brushSize, setBrushSize] = useState(18); // 작업 해상도 px
   const annotRef = useRef<HTMLCanvasElement | null>(null);
-  const liveRef = useRef<DrawItem | null>(null);
+  const liveRef = useRef<PenStroke | ShapeItem | null>(null);
+  // 쓰는 중인 글자 — at = 누른 자리(작업 px), left·top = 무대 상자 기준 화면 px, scale = 화면 px / 작업 px.
+  // 확정·취소는 ref 로 먼저 비운다 — 같은 누름에서 pointerdown 과 blur 가 함께 확정해 글자가 두 번 들어가지 않게.
+  const [textDraft, setTextDraft] = useState<null | { at: { x: number; y: number }; left: number; top: number; scale: number; text: string }>(null);
+  const textDraftRef = useRef(textDraft);
+  textDraftRef.current = textDraft;
+  const commitText = () => {
+    const draft = textDraftRef.current;
+    if (!draft) return;
+    textDraftRef.current = null;
+    setTextDraft(null);
+    const text = draft.text.trim();
+    if (!text) return;
+    setItems((prev) => [...prev, { kind: "text", text, color, size: textPx(brushSize), at: draft.at }]);
+    setRedo([]);
+  };
 
   const renderAll = (list: DrawItem[], live?: DrawItem | null) => {
     const cv = annotRef.current;
@@ -425,7 +466,7 @@ export function PartialEditModal({
     if (!el) return;
     const annot = annotRef.current;
     const pos = cursorPosRef.current;
-    if (!pos || !annot || !src || stage !== "draw" || tool === "shape") {
+    if (!pos || !annot || !src || stage !== "draw" || tool === "shape" || tool === "text") {
       el.style.display = "none";
       return;
     }
@@ -466,6 +507,15 @@ export function PartialEditModal({
     const p = toWork(e);
     if (!p) return;
     if (playing) seekTo(sourceVideoRef.current?.currentTime ?? frameTimeRef.current); // 재생 중이면 그 자리에 멈추고 그린다
+    if (tool === "text") {
+      // 쓰던 글자가 있으면 먼저 확정(이 누름은 확정만), 없으면 누른 자리에 입력칸을 연다.
+      // preventDefault — 뒤따르는 mousedown 이 방금 연 입력칸의 초점을 빼앗지 않게.
+      e.preventDefault();
+      if (textDraftRef.current) { commitText(); return; }
+      const rect = annotRef.current!.getBoundingClientRect();
+      setTextDraft({ at: p, left: e.clientX - rect.left, top: e.clientY - rect.top, scale: rect.width / (src?.w || 1), text: "" });
+      return;
+    }
     // 캔버스에 그리기 시작 = 그리기 모드 복귀 — 프롬프트 포커스를 풀어 단축키([ ]·D·E·R·
     // Ctrl+Z)가 돌아오게 한다(입력은 프롬프트를 다시 클릭해야 재개).
     const active = document.activeElement;
@@ -968,6 +1018,9 @@ export function PartialEditModal({
       } else if (plain && e.key.toLowerCase() === "r") {
         e.stopPropagation();
         setTool("shape");
+      } else if (plain && e.key.toLowerCase() === "t") {
+        e.stopPropagation();
+        setTool("text");
       }
     };
     window.addEventListener("keydown", onKey, { capture: true });
@@ -978,6 +1031,12 @@ export function PartialEditModal({
   // 닫을 수 없는 동안(제출 요청 중·감시 중)에도 Esc 는 이 창이 갖는다 — 뒤 화면으로 새지 않는다.
   useEscapeClose(
     () => {
+      // 글자를 쓰는 중이면 그 글자만 버린다 — 창은 닫지 않는다
+      if (textDraftRef.current) {
+        textDraftRef.current = null;
+        setTextDraft(null);
+        return;
+      }
       if (closable) onClose();
     },
     true,
@@ -1045,7 +1104,7 @@ export function PartialEditModal({
                     renderAll(items);
                   }
                 }}
-                className={stage === "draw" ? "is-drawing" : ""}
+                className={stage === "draw" ? "is-drawing" + (tool === "text" ? " is-text" : "") : ""}
                 onPointerDown={onPointerDown}
                 onPointerMove={onPointerMove}
                 onPointerEnter={trackCursor}
@@ -1056,6 +1115,28 @@ export function PartialEditModal({
               />
               {/* 펜 크기 미리보기 원(선택 색) — 지우개는 흰 점선, 도형은 crosshair 만 */}
               <div ref={cursorRef} className="partial-edit-cursor" />
+              {/* 글자 입력칸 — 누른 자리에 뜬다. Enter·바깥 누름 = 확정, Esc = 이 글자만 취소 */}
+              {textDraft && stage === "draw" && (
+                <input
+                  className="pe-text-input"
+                  aria-label="글자 입력"
+                  // 초점은 화면을 움직이지 않고 — autoFocus 는 무대 상자를 옆으로 굴려 그림이 밀렸다(10-28 실측)
+                  ref={(el) => { if (el && document.activeElement !== el) el.focus({ preventScroll: true }); }}
+                  value={textDraft.text}
+                  // 폭 = 글자 수 × 1em(한글 한 자 폭) — size 속성은 영문 평균 폭이라 한글 앞글자가 칸 안에서 밀려 가려졌다(10-28 실측)
+                  style={{ left: textDraft.left, top: textDraft.top, color, fontSize: `${textPx(brushSize) * textDraft.scale}px`,
+                    width: `${Math.max(3, textDraft.text.length + 1)}em` }}
+                  onChange={(e) => setTextDraft({ ...textDraft, text: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.nativeEvent.isComposing || e.keyCode === 229) return; // 한글 조합 중 Enter 는 확정이 아니다
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      commitText();
+                    }
+                  }}
+                  onBlur={commitText}
+                />
+              )}
               {stage === "wait" && (
                 <div className="partial-edit-waitveil">
                   {waitStopped ? (
@@ -1147,14 +1228,15 @@ export function PartialEditModal({
                 <div className="pe-toolrow">
                   <div className="pe-dock" ref={dockRef}>
                     {DRAW_TOOLS.map(([key, label, keyHint]) => {
-                      const on = key === "pen" || key === "erase" ? tool === key : tool === "shape" && shapeKind === key;
+                      const single = key === "pen" || key === "erase" || key === "text";
+                      const on = single ? tool === key : tool === "shape" && shapeKind === key;
                       return (
                         <Fragment key={key}>
                           {key === "line" && <span className="pe-div" />}
                           <button type="button" className={on ? "on" : ""} title={`${label}${keyHint ? ` (${keyHint})` : ""}`} aria-label={label}
                             aria-pressed={on}
                             onClick={() => {
-                              if (key === "pen" || key === "erase") setTool(key);
+                              if (key === "pen" || key === "erase" || key === "text") setTool(key);
                               else { setTool("shape"); setShapeKind(key); }
                             }}>
                             {TOOL_ICONS[key]}
@@ -1163,10 +1245,16 @@ export function PartialEditModal({
                       );
                     })}
                     <span className="pe-div" />
-                    <button type="button" className={colorOpen ? "on-soft" : ""} title="색·굵기 (굵기는 [ ] 로도)" aria-label="색·굵기"
+                    <button type="button" className={colorOpen ? "on-soft" : ""} title="색" aria-label="색"
                       aria-expanded={colorOpen} onClick={() => setColorOpen(!colorOpen)}>
                       <span className="pe-dot" style={{ background: color }} />
                     </button>
+                    {/* 굵기 — 캡슐에 바로(Jay 10-28: 색 창 안에 있어 못 찾음). 펜·지우개·도형 굵기와 글자 크기를 함께 정한다 */}
+                    <label className="pe-size" title="굵기·글자 크기 ([ ] 로도)">
+                      <span className="pe-size-dot" style={{ width: Math.min(16, Math.max(3, brushSize / 7)), height: Math.min(16, Math.max(3, brushSize / 7)), background: color }} />
+                      <input type="range" aria-label="굵기" min={4} max={120} value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))} />
+                      <span className="pe-size-val">{brushSize}</span>
+                    </label>
                     <span className="pe-div" />
                     <button type="button" title="되돌리기 (Ctrl+Z)" aria-label="되돌리기" disabled={!items.length} onClick={undoStroke}>{TOOL_ICONS.undo}</button>
                     <button type="button" title="다시 (Ctrl+Shift+Z)" aria-label="다시" disabled={!redo.length} onClick={redoStroke}>{TOOL_ICONS.redo}</button>
@@ -1179,11 +1267,6 @@ export function PartialEditModal({
                               title={c} aria-label={`색 ${c}`} aria-pressed={color === c} onClick={() => setColor(c)} />
                           ))}
                         </div>
-                        <label className="pe-pop-size">
-                          굵기
-                          <input type="range" min={4} max={120} value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))} />
-                          <span>{brushSize}</span>
-                        </label>
                       </div>
                     )}
                   </div>
