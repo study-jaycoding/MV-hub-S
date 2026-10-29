@@ -349,7 +349,10 @@
   background: linear-gradient(135deg, transparent 45%, var(--gc, var(--accent)) 45%);
 }
 /* 씬 카드 — 레퍼런스/생성 공용 뼈대 */
+/* --bw = 카드 테두리 두께. 카드 테두리는 늘 이 값으로 정한다 — 연결점 고리(.scene-port)가 같은 값으로 자리를 잡아
+   점과 어긋나지 않는다(Jay 2026-10-29 '원 안의 점은 항상 정렬'). 시험 scenePortRingAlign 이 지킨다. */
 .scene-card {
+  --bw: 0px;
   position: absolute; border-radius: 12px; display: flex; flex-direction: column;
   background: #0c0d11; box-shadow: 0 3px 12px rgba(0, 0, 0, 0.4); cursor: grab;
 }
@@ -396,7 +399,7 @@
 }
 .scene-board[data-lod-low]:not(.wiring):not(.cutting) .scene-dot.idle { display: none; }
 .scene-card:active { cursor: grabbing; }
-.scene-card-ref { border: 2px solid var(--border2); } /* 기본: 실선 */
+.scene-card-ref { --bw: 2px; border: var(--bw) solid var(--border2); } /* 기본: 실선 */
 .scene-card-ref:hover { border-color: #8ea0ff; } /* 임포트/캡쳐 = 파랑 */
 .scene-card-ref.from-asset:hover { border-color: var(--accent); } /* 우리 에셋에서 가져옴 = 형광 */
 /* 서버에 없는 레퍼런스(Jay 2026-09-29) — 빨간 테두리(앱 오류색). 선택해도 빨강은 남고 라임 링은 바깥(box-shadow).
@@ -496,7 +499,7 @@
 /* 비디오 배지만 호버(자동재생) 시 숨김 — 오디오(♪)는 재생이 없으니 계속 표시 */
 .scene-card-body.single .scene-refthumb:hover .scene-refthumb-vid.vid { opacity: 0; }
 /* 생성(빈) 카드 */
-.scene-card-gen { border: 2px solid #2b3a55; }
+.scene-card-gen { --bw: 2px; border: var(--bw) solid #2b3a55; }
 .scene-card-gen:hover { border-color: var(--blue, #7fa9ff); }
 /* 생성 카드 크기조절 핸들 — 우하단 모서리의 투명 드래그 영역(아이콘 없음). 모서리에 올리면
    nwse-resize 커서로 바뀌어 끌어서 크기 조절(22px 격자 스냅). */
@@ -506,7 +509,7 @@
 }
 
 /* ── 텍스트 노드 — 검정 배경/흰 글씨 textarea + 우측하단 전체복사 버튼 ── */
-.scene-card-text { border: 2px solid #3a3f48; background: #000; }
+.scene-card-text { --bw: 2px; border: var(--bw) solid #3a3f48; background: #000; }
 .scene-card-text:hover { border-color: #b57aff; }
 .scene-card-hd.text { color: #b57aff; background: rgba(181, 122, 255, 0.10); cursor: grab; }
 .scene-textnode {
@@ -574,7 +577,7 @@
 .scene-copy-btn:hover { background: rgba(0, 0, 0, 0.8); }
 
 /* ── Set 노드 — 생성 카드에 폴더·자동 태그를 전달 ── */
-.scene-card-set { border: 2px solid #526126; background: #080a07; --pc: #e8c341; } /* 포트=세트 레인 금색 */
+.scene-card-set { --bw: 2px; border: var(--bw) solid #526126; background: #080a07; --pc: #e8c341; } /* 포트=세트 레인 금색 */
 .scene-card-set:hover { border-color: var(--accent); }
 .scene-card-hd.set { color: var(--accent); background: rgba(var(--accent-rgb), 0.12); }
 .scene-setnode { background: #090b08; }
@@ -615,7 +618,7 @@
 .scene-setnode-tags textarea::placeholder { color: #5f6455; }
 
 /* ── 모델 노드 — 주황 계열, 설정 정보 표시 ── */
-.scene-card-model { border: 2px solid #6b4a1f; }
+.scene-card-model { --bw: 2px; border: var(--bw) solid #6b4a1f; }
 .scene-card-model:hover { border-color: #ffb84d; }
 .scene-card-hd.model { color: #ffb84d; background: rgba(255, 150, 50, 0.10); }
 .scene-modelnode-body {
@@ -644,7 +647,7 @@
 /* ── 리스트 노드 — 연결된 생성 카드 모음(재생) ── */
 /* 리스트 색 = 모은 것(Jay 2026-10-29) — --lc 이름표·호버·연결점, --lb 평소 테두리. 생성물은 라임 그대로,
    레퍼런스 파랑·텍스트 보라·빈 리스트 회색·섞였거나 잘못된 입력 빨강. 고른 카드의 라임 테두리·빛은 공통이라 그대로. */
-.scene-card-list { --lc: var(--accent); --lb: #3a4a2b; border: 2px solid var(--lb); }
+.scene-card-list { --lc: var(--accent); --lb: #3a4a2b; --bw: 2px; border: var(--bw) solid var(--lb); }
 .scene-card-list.lk-reference { --lc: #7fa9ff; --lb: #2b3a55; }
 .scene-card-list.lk-text { --lc: #b57aff; --lb: #3d2f55; }
 .scene-card-list.lk-empty { --lc: #8a909a; --lb: #3a3f48; }
@@ -767,7 +770,7 @@
 }
 
 /* ── View 노드 — 재생 끝점(연결된 생성물 순차 재생) ── */
-.scene-card-view { border: 2px solid #2b4a55; }
+.scene-card-view { --bw: 2px; border: var(--bw) solid #2b4a55; }
 .scene-card-view:hover { border-color: #61eaff; }
 .scene-card-hd.view { color: #61eaff; background: rgba(97, 234, 255, 0.10); }
 .scene-viewnode-body {
@@ -797,7 +800,7 @@
 .scene-view-play:disabled { opacity: 0.4; cursor: default; }
 
 /* ── 렌더(배치) 노드 — 연결된 생성 카드들을 한 번에 생성 ── */
-.scene-card-render { border: 2px solid #5a4327; }
+.scene-card-render { --bw: 2px; border: var(--bw) solid #5a4327; }
 .scene-card-render:hover { border-color: #ffb454; }
 .scene-card-hd.render { color: #ffb454; background: rgba(255, 180, 84, 0.10); }
 
@@ -1079,7 +1082,7 @@
 /* 결과가 든 생성 카드 = 히스토리 노드(.linb-node)가 뼈대를 대체 → 카드 자체 테두리/배경 제거.
    선택 강조(라임 링)는 노드 자체(.linb-node.sel)가 그린다(계보와 동일) — 중복 링 안 주게 */
 .scene-card.has-node,
-.scene-card.has-node.sel { border: 0; background: transparent; box-shadow: none; }
+.scene-card.has-node.sel { --bw: 0px; border: var(--bw) solid transparent; background: transparent; box-shadow: none; }
 /* ★캔버스에선 결과 노드 선택 시 확대(scale 1.14)를 끈다 — 끝점·Generate 바는 카드 rect 기준 위치라,
    노드가 rect 밖으로 커지면 그것들과 겹친다. 선택 강조는 라임 링(box-shadow)만으로 충분(계보 뷰만 확대 유지). */
 .scene-card .linb-node.sel { transform: none; }
@@ -1136,9 +1139,11 @@
 .scene-cut-stroke { fill: none; stroke: #f2777c; stroke-width: 2; stroke-dasharray: 4 4; opacity: 0.85; }
 /* 카드 포트(원) — 연결 시작/받는 클릭 손잡이. 평소 숨김, 카드 선택/호버 때만 드러난다.
    ★위치(Jay 2026-10-29): 연결선 끝점(.scene-dot, 카드밖 PORT_GAP 24px)과 같은 자리 — 점과 고리가 따로 놀지 않게. 고리(16px)는
-   점(반지름 5 + 테두리)보다 커서 점 둘레에 보인다. 자리 = 24px + 반지름 8px + 카드 테두리 2px. 전엔 포트를 카드 가까이(≈9.5px) 따로 뒀다. */
+   점(반지름 5 + 테두리)보다 커서 점 둘레에 보인다. 자리 = 점 간격(--port-gap) + 고리 반지름 + 카드 테두리(--bw) — absolute 의 기준이
+   카드 테두리 안쪽이라 테두리만큼 더 민다. 전엔 테두리를 2px 로 못박아 테두리 없는 카드(결과 든 생성·Comfy)에서 2px 어긋났다. */
 .scene-port {
-  position: absolute; width: 16px; height: 16px; border-radius: 50%;
+  --ring: 16px; --port-gap: 24px; /* --port-gap = SceneBoard 의 PORT_GAP(점 자리) — 시험이 둘이 같은지 본다 */
+  position: absolute; width: var(--ring); height: var(--ring); border-radius: 50%;
   top: 50%; transform: translateY(-50%); background: transparent; border: 2px solid transparent;
   z-index: 8; opacity: 0; pointer-events: none; transition: opacity 0.08s;
 }
@@ -1148,13 +1153,8 @@
 .scene-port::before { content: ""; position: absolute; inset: -8.5px -12px; border-radius: 50%; }
 .scene-port.out::before { left: -20px; }
 .scene-port.in::before { right: -20px; }
-.scene-port.out { right: -34px; cursor: crosshair; }
-.scene-port.in { left: -34px; }
-/* 테두리가 없는 카드(결과가 든 생성 카드·Comfy)는 위치 기준(테두리 안쪽)이 2px 바깥이라 고리가 점보다 2px 밖에 섰다(Jay 2026-10-29). */
-.scene-card.has-node > .scene-port.out,
-.scene-card-comfy > .scene-port.out { right: -32px; }
-.scene-card.has-node > .scene-port.in,
-.scene-card-comfy > .scene-port.in { left: -32px; }
+.scene-port.out { right: calc(0px - var(--port-gap) - var(--ring) / 2 - var(--bw, 0px)); cursor: crosshair; }
+.scene-port.in { left: calc(0px - var(--port-gap) - var(--ring) / 2 - var(--bw, 0px)); }
 /* 노드 종류별 포트 색(--pc) — 선택 시 포트가 그 노드 고유색으로 채워진다. 테두리(선택 링)는 라임 유지. */
 .scene-card-gen { --pc: var(--accent); }
 .scene-card-model { --pc: #ffb84d; }
@@ -1293,7 +1293,7 @@
 /* ── Input/Output(무선 연결) 노드 — ComfyUI Set/Get 방식. 시인성 위해 소스색을 헤더에 solid 로 채워 확실히 구분 ── */
 .scene-card-output,
 .scene-card-input {
-  border: 2px solid var(--oc, #7f8a9c); border-radius: 14px;
+  --bw: 2px; border: var(--bw) solid var(--oc, #7f8a9c); border-radius: 14px;
   box-shadow: 0 3px 14px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(0, 0, 0, 0.25);
 }
 .scene-card-output:hover,
@@ -1404,11 +1404,11 @@
 /* ── Head(제목) 노드 — 포트 없는 큰 글씨 주석. 배경/테두리 없음, 크기 조절 시 글자도 커짐. ── */
 /* head = 박스가 글씨에 맞춰 자동 크기(폭·높이). 고정 dims 없음 → 글씨 크기만 바꾸면 박스가 따라온다. */
 .scene-card-head {
-  background: transparent; border: 0; box-shadow: none; overflow: visible;
+  background: transparent; --bw: 0px; border: var(--bw) solid transparent; box-shadow: none; overflow: visible;
   width: max-content; height: max-content; align-items: flex-start;
 }
 .scene-card-head.sel {
-  background: transparent; border: 0; box-shadow: none;
+  background: transparent; --bw: 0px; border: var(--bw) solid transparent; box-shadow: none;
   outline: 1.5px dashed rgba(255, 255, 255, 0.35); outline-offset: 3px;
 }
 /* 편집 중엔 카드 외곽선 숨김 — textarea 자체 점선 박스와 겹쳐 이중으로 보이던 문제 방지. */
