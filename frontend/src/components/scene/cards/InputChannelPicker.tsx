@@ -115,7 +115,7 @@ export function InputChannelPicker({
         aria-expanded={open}
         onClick={() => (open ? setOpen(false) : openList())}
       >
-        <span className="scene-portpick-cur">{current ? current.name : "출력 선택…"}</span>
+        <span className="scene-portpick-cur">{current ? current.name : "출력 선택"}</span>
         <svg className="scene-portpick-chev" viewBox="0 0 24 24" fill="none" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M6 9l6 6 6-6" />
         </svg>
@@ -130,7 +130,7 @@ export function InputChannelPicker({
             <input
               autoFocus
               value={query}
-              placeholder="출력 이름 검색…"
+              placeholder="출력 이름 검색"
               aria-label="출력 이름 검색"
               spellCheck={false}
               onChange={(e) => {
