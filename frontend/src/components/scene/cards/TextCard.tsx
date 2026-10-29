@@ -259,7 +259,10 @@ export function TextCard({
       <div className="scene-card-hd text scene-card-hd-float">텍스트</div>
       <div className="scene-card-inner">
         {editing ? (
+          // ★key 로 보기 칸과 다른 요소로 둔다 — 같은 div 를 다시 쓰면, 편집칸에 손으로 넣은 글·알약(React 밖)이 남은 채
+          //  보기 내용이 덧붙어 글이 두 번 보였다(Jay 2026-10-29 화면).
           <div
+            key="edit"
             ref={editRef}
             className="scene-textnode scene-textedit"
             contentEditable
@@ -339,6 +342,7 @@ export function TextCard({
           />
         ) : (
           <div
+            key="view"
             className="scene-textview-inline"
             onDoubleClick={(e) => {
               e.stopPropagation();

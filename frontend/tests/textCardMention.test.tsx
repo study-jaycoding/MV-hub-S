@@ -123,6 +123,29 @@ it("Enter 는 줄바꿈 글자 · 알약을 누르면 글자로 풀린다", () =
   expect(view.text()).toBe("첫 줄\n");
 });
 
+it("편집을 끝내고 보기로 돌아가면 글이 한 번만 — 편집칸에 넣은 알약이 보기 칸에 남지 않는다(Jay 10-29 겹침)", () => {
+  const refsCard: SceneCard = { id: "r", kind: "reference", x: 0, y: 0, refs: [ref("a.png", "image")] };
+  function Toggle() {
+    const [editing, setEditing] = useState(true);
+    const [text, setText] = useState("@image1 과 시합");
+    const card: SceneCard = { id: "t", kind: "text", x: 0, y: 0, text };
+    return (
+      <div className="scene-card">
+        <TextCard card={card} cardsById={new Map([["t", card], ["r", refsCard]])} resolvedEdges={[{ id: "e", from: "r", to: "t" }]} genData={{}}
+          editing={editing} caretPosRef={{ current: new Map() }} setEditTextId={(id) => setEditing(id === "t")} setSelected={noop}
+          setNodeText={(_, t) => setText(t)} flushPending={noop} onOutPortDown={noop} onResizeDown={noop} />
+      </div>
+    );
+  }
+  act(() => root.render(<Toggle />));
+  expect(pills()).toEqual(["@image1"]);
+  key("Escape"); // 편집 끝
+  const view = host.querySelector(".scene-textview-inline")!;
+  expect(view.textContent).toBe("@image1 과 시합");
+  expect(view.querySelectorAll(".scene-inlinetok")).toHaveLength(1);
+  expect(host.querySelector(".scene-textedit")).toBeNull();
+});
+
 it("메일 주소 같은 @ 는 목록 없음 · 이어진 레퍼런스가 없으면 안내 한 줄 · 편집 중이 아니면 편집칸·목록 없음", () => {
   mount();
   typeTo("me@image");
