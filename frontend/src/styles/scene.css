@@ -1340,11 +1340,11 @@
 .scene-portpick-group.g-model { --pc: #ffb84d; }
 .scene-portpick-group.g-ref { --pc: #7fa9ff; }
 .scene-portpick-group.g-text { --pc: #b57aff; }
-/* 무리 알약은 모두 같은 길이·옆 선 없음(Jay 2026-10-29 — 가장 긴 '레퍼런스'·'입력 없음'이 들어가는 폭) */
+/* 무리 알약은 모두 같은 길이·옆 선 없음(Jay 2026-10-29 시안 B — 가장 긴 '레퍼런스'·'입력 없음'에 거의 딱 맞는 폭) */
 .scene-portpick-og { display: flex; align-items: center; padding: 9px 6px 4px; }
 .scene-portpick-pill {
-  display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 104px;
-  padding: 3px 13px; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 74px;
+  padding: 3px 8px; border-radius: 999px;
   font-size: 13.5px; font-weight: 900; letter-spacing: 0.02em;
   border: 1px solid var(--pc); color: var(--pc); background: color-mix(in srgb, var(--pc) 18%, transparent);
 }
