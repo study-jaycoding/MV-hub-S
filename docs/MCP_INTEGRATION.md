@@ -9,7 +9,9 @@ updated: 2026-10-29
 
 설계·합의·완료 조건의 정본은 [작업 계약](status/MCP_한번에연결_2026-10-29.md)이다. 독립 리뷰·실사용 확인은 별도다.
 [Codex·Claude 연결 허용] 한 번이 `codex`·`claude`·`claude_desktop` 세 연결을 만든다. 데스크톱은
-`%APPDATA%\Claude\claude_desktop_config.json` 의 `mcpServers` 한 키만 바꾸고 다른 설정을 보존하며, 앱 폴더가 없으면 프로필 없이 건너뛴다.
+`%APPDATA%\Claude\claude_desktop_config.json` 의 `mcpServers` 한 키만 바꾸고 다른 설정을 보존하며, 앱 폴더가 없거나
+**Claude 앱이 켜져 있으면**(`lockfile` 잠김 — 켜진 앱이 옛 내용으로 파일 전체를 다시 써 항목을 지운 실측 때문) 프로필 없이 건너뛴다.
+확인과 쓰기 사이의 아주 짧은 틈에 앱이 켜지는 경우는 막지 못한다.
 설정 이름은 `GET /api/mcp/app/setup` 의 `release`(설치본) 여부로 `mvhub`/`mvhub-test` 다. 회수는 이름이 아니라 연결 종류 단위다.
 로컬 Code 탭은 같은 이름의 데스크톱 정의(`claude_desktop` 연결)를 쓰므로 그 연결을 해제하면 데스크톱 채팅과 함께 영향을 받는다.
 데스크톱 채팅 표시는 기존 native(ImageContent) 그대로이며 결과 카드·첨부 가져오기·웹/휴대폰 채팅은 범위 밖이다.
