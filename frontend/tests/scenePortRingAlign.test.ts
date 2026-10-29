@@ -45,8 +45,16 @@ it("노드 틀 통일(Jay 2026-10-29, 10-30 2px) — 모든 노드 2px · 평소
   const own = "var(--pc, var(--accent))";
   expect(one(".scene-card")).toEqual(expect.arrayContaining([
     ["--bw", "2px"],
-    ["border", `var(--bw) solid color-mix(in srgb, ${own} 35%, transparent)`],
+    ["border", "var(--bw) solid transparent"], // 안 B(Jay 2026-10-30): 평소 테두리는 안 보인다 — 올림 65% · 고름 불투명
   ]));
+  expect(one(".scene-card:hover")).toContainEqual(["border-color", `color-mix(in srgb, ${own} 65%, transparent)`]);
+  // 빈 원(선택 안 한 카드의 연결 없는 칸)은 입력이 하나라도 이어진 쪽에서만 — 출력 쪽·연결 없는 입력 쪽은 숨긴다
+  const idle = rules.find((r) => r.decls.some(([p, v]) => p === "--ring" && v === "10px"))!;
+  expect(idle.selectors.length).toBeGreaterThan(0);
+  for (const s of idle.selectors) {
+    expect(s, s).toContain('[data-linked~="in"]');
+    expect(subjectOf(s), s).toMatch(/^\.scene-port\.in\.lane-/);
+  }
   expect(one(".scene-card.sel")).toContainEqual(["border-color", own]);
   expect(one(".scene-card.sel").some(([p]) => p === "box-shadow")).toBe(false); // 바깥 링을 되살리지 않는다
   expect(one(".scene-card.glow")).toContainEqual(["border-color", own]);
