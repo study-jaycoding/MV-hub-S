@@ -555,9 +555,9 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `cards/SetCard.tsx`(100줄) | Set 노드 — 폴더 드롭 + 태그 텍스트 | `SetCard` |
 | `cards/ViewCard.tsx`(82줄) | View 노드 — 합쳐진 영상 미리보기·텍스트 모달 진입 | `ViewCard` |
 | `cards/ModelCard.tsx`(73줄) | 모델 노드 — 저장된 모델·파라미터 표시, 그룹 차단 표시 | `ModelCard` |
-| `cards/InputCard.tsx`(68줄) | Input(무선 수신) — output 채널 선택 | `InputCard` |
-| `cards/InputChannelPicker.tsx`(178줄) | Input 의 출력 고르기 목록 — 검색칸·종류별 무리(모델·레퍼런스·텍스트·받는 것 없음)·이어진 칸에 맞는 것만 | `InputChannelPicker` |
-| `cards/OutputCard.tsx`(52줄) | Output(무선 발신) — 채널 이름 발행 | `OutputCard` |
+| `cards/InputCard.tsx`(67줄) | Input(무선 수신) — output 채널 선택 · 색 = 고른 OUTPUT 의 무리 | `InputCard` |
+| `cards/InputChannelPicker.tsx`(185줄) | Input 의 출력 고르기 목록 — 검색칸·종류별 무리(모델·레퍼런스·텍스트·입력 없음)·이어진 칸에 맞는 것만 | `InputChannelPicker` |
+| `cards/OutputCard.tsx`(53줄) | Output(무선 발신) — 채널 이름 발행 · 색 = 내보내는 것의 무리(outputPickGroup) | `OutputCard` |
 
 #### 캔버스 팝업·모달(`scene/`, 6파일)
 
