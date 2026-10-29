@@ -226,7 +226,10 @@ export const GenerationCard = memo(function GenerationCard({
               </div>
             )
           ) : (
-            <div className="scene-card-genbody">New</div>
+            // 아직 생성물이 없는 카드 — 'New' 글자 대신 흐린 회색 로고(Jay 2026-10-30, 생성 중의 밝은 맥동 로고와 구분)
+            <div className="scene-card-genbody">
+              <img src={higgsfieldLogo} alt="" className="scene-genempty-logo" draggable={false} />
+            </div>
           )}
         </div>
       )}

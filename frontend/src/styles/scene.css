@@ -964,6 +964,8 @@
   width: 60%; max-width: 170px; height: auto;
   animation: comfy-loading-pulse 1.4s steps(4) infinite;
 }
+/* 아직 생성물이 없는 생성 카드 — 같은 로고를 작게·멈춘 채·회색 16%(Jay 2026-10-30 안 B, 전엔 'New' 글자) */
+.scene-genempty-logo { width: 42%; height: auto; opacity: 0.16; filter: grayscale(1) brightness(1.7); pointer-events: none; user-select: none; }
 @media (prefers-reduced-motion: reduce) { .scene-genloading-logo { animation: none; opacity: 0.85; } }
 .reduce-motion .scene-genloading-logo { animation: none; opacity: 0.85; }
 .scene-comfynode-genwrap {

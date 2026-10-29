@@ -378,6 +378,15 @@ it("연결점 — 켜진 선끼리 색이 섞인 점은 흰 점, 한 색이면 �
   expect(dotAt(d("e2"), false)).toBe("scene-dot text");
 });
 
+it("아직 생성물이 없는 생성 카드는 'New' 글자 대신 흐린 로고 그림(Jay 2026-10-30)", async () => {
+  setGens({});
+  const scene = { id: "S", name: "S", created_at: 0, groups: [], edges: [], cards: [{ id: "g1", kind: "generation", x: 0, y: 0 }] };
+  await act(async () => { root.render(<SceneBoard scene={scene as never} onChange={noop} />); });
+  const body = boardCard("g1").querySelector(".scene-card-genbody")!;
+  expect(body.querySelector("img.scene-genempty-logo")).not.toBeNull();
+  expect(body.textContent).toBe("");
+});
+
 it("선이 닿은 포트를 카드 틀에 적는다 — 선 없는 포트만 작은 빈 원으로 보이게(CSS 가 data-linked 를 읽는다, Jay 2026-10-29 A안)", async () => {
   setGens({});
   const scene = {
