@@ -560,7 +560,7 @@ export function ComfyCard({
               void actions.runComfy(card.id);
             }}
           >
-            {isRunning ? "실행 중…" : "실행 ▶"}
+            {isRunning ? "실행 중" : "실행 ▶"}
           </button>
         </div>
       )}

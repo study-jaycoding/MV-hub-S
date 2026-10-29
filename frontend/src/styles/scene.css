@@ -419,8 +419,8 @@
 }
 .scene-card-ref.sel .scene-card-hd { opacity: 1; }
 .scene-card-hd {
-  flex: none; font-size: 10px; font-weight: 800; letter-spacing: 0.03em; color: var(--accent);
-  padding: 3px 7px; background: rgba(var(--accent-rgb), 0.10); border-bottom: 1px solid var(--border2);
+  flex: none; font-size: 10px; font-weight: 800; letter-spacing: 0.03em; color: var(--pc, var(--accent)); /* 이름표 = 노드 자기 색(Jay 2026-10-30) */
+  padding: 3px 7px; background: color-mix(in srgb, var(--pc, var(--accent)) 10%, transparent); border-bottom: 1px solid var(--border2);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 /* 썸네일 3열 그리드 — 여러 장(레거시)일 때만. 개수만큼 행이 늘어 카드가 자연스럽게 길어진다. */
@@ -575,7 +575,7 @@
 
 /* ── Set 노드 — 생성 카드에 폴더·자동 태그를 전달 ── */
 .scene-card-set { background: #080a07; --pc: #e8c341; } /* 포트·틀 = 세트 레인 금색 */
-.scene-card-hd.set { color: var(--accent); background: rgba(var(--accent-rgb), 0.12); }
+.scene-card-hd.set { background: color-mix(in srgb, var(--pc) 12%, transparent); } /* 글자 = 기본 이름표의 자기 색(금색) */
 .scene-setnode { background: #090b08; }
 .scene-setnode-label {
   display: block; color: #9ca486; font-size: 9px; font-weight: 800; letter-spacing: 0.06em;
@@ -586,7 +586,7 @@
   border-bottom: 1px solid var(--border2); transition: background 0.12s, box-shadow 0.12s;
 }
 .scene-setnode-folder.drag-over {
-  background: rgba(var(--accent-rgb), 0.13); box-shadow: inset 0 0 0 1px var(--accent);
+  background: color-mix(in srgb, var(--pc) 13%, transparent); box-shadow: inset 0 0 0 1px var(--pc); /* 세트 자기 색(금색) */
 }
 .scene-setnode-folder-empty {
   height: calc(100% - 18px); min-height: 34px; display: grid; place-items: center;
@@ -671,10 +671,10 @@
 /* 비활성(회색) 결과 — 캔버스 카드처럼 리스트/렌더에서도 흐리게+무채색으로 표시(그 결과는 View 에서도 제외됨). */
 .scene-listrow.off { opacity: 0.5; filter: grayscale(1); }
 .scene-listthumb.off { opacity: 0.5; filter: grayscale(1); }
-/* 선택된 행 — 라임 강조(클릭=선택, Ctrl+클릭=복수). 선택 후 그립 드래그하면 함께 이동/일괄 체크. */
+/* 선택된 행 — 노드 자기 색 강조(리스트 = 모은 것 색 · 렌더 = 주황, Jay 2026-10-30. 클릭=선택, Ctrl+클릭=복수). 선택 후 그립 드래그하면 함께 이동/일괄 체크. */
 .scene-listrow.selrow {
-  border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent);
-  background: rgba(var(--accent-rgb), 0.12);
+  border-color: var(--pc); box-shadow: 0 0 0 1px var(--pc);
+  background: color-mix(in srgb, var(--pc) 12%, transparent);
 }
 /* 삽입 위치 흰 선 — 화면좌표(fixed), 항목 사이에 뜬다. 살짝 빛나게 해 시인성 확보. */
 .scene-reorder-line {
@@ -698,11 +698,11 @@
 /* 생성 개수 배지(카드 다중결과 배지와 같은 라임 알약) — 검은 글씨(라임 배경) */
 .scene-listrow-badge {
   display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px;
-  background: var(--accent); color: var(--accent-ink); font-weight: 800; font-size: 10.5px; line-height: 1.6;
+  background: var(--pc); color: var(--accent-ink); font-weight: 800; font-size: 10.5px; line-height: 1.6;
 }
 .scene-listrow-empty { font-size: 10.5px; color: var(--muted); }
 /* 렌더 행 체크박스(그립 옆, 왼쪽) — 체크된 카드만 Render 대상 */
-.scene-listrow-check { flex: none; width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+.scene-listrow-check { flex: none; width: 15px; height: 15px; accent-color: var(--pc); cursor: pointer; }
 /* 대표 썸네일(가운데) — 클릭하면 그 카드 결과를 크게 보기(라이트박스).
    썸네일·배지 둘 다 margin-left:auto 라 남는 공간이 반씩 나뉘어 썸네일=가운데, 배지=맨 우측이 된다. */
 .scene-listrow-view { margin-left: auto; flex: none; display: flex; align-items: center; cursor: pointer; }
@@ -913,7 +913,7 @@
   background: #1b1e24; border: 1px solid var(--border2); color: var(--text);
   border-radius: 5px; padding: 1px 6px; font-size: 10px; font-weight: 700; cursor: pointer; line-height: 1.5;
 }
-.scene-comfynode-act:hover { border-color: var(--accent); color: var(--accent); }
+.scene-comfynode-act:hover { border-color: var(--pc); color: var(--pc); } /* Comfy 자기 색(청록) */
 .scene-comfynode-params { display: flex; flex-direction: column; gap: 4px; }
 .scene-comfynode-param { display: flex; align-items: center; gap: 6px; font-size: 11px; }
 .scene-comfynode-param label {
