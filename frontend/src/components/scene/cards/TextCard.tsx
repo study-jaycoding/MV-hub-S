@@ -1,6 +1,6 @@
 // 텍스트 노드 카드 본문 — SceneBoard 렌더 분할(R2). 셸은 부모 소유, Fragment 만 반환(규칙은 OutputCard 참고).
-//  ★포커스·캐럿 주의: 이 컴포넌트는 모듈 최상단 선언(타입 안정) — 편집 중 리렌더에도 textarea 가
-//   리마운트되지 않아 포커스가 유지된다. 캐럿 위치는 부모 소유 caretPosRef(노드별)로 복원.
+//  ★포커스·캐럿 주의: 이 컴포넌트는 모듈 최상단 선언(타입 안정) — 편집 중 리렌더에도 편집칸이
+//   리마운트되지 않아 포커스가 유지된다. 캐럿 위치는 부모 소유 caretPosRef(노드별, 글자 위치)로 복원.
 import { ownEntry } from "../../../lib/ownEntry";
 import type React from "react";
 import { useEffect, useLayoutEffect, useRef, useState, type MutableRefObject } from "react";
@@ -11,31 +11,17 @@ import { collectListInputs, effectiveTextOf } from "../../../lib/sceneEdges";
 import { refThumbSrc } from "../../../lib/sceneMedia";
 import { hideBrokenImg, showLoadedImg, thumbOf } from "../../../lib/media";
 import { copyText } from "../../../lib/flash";
-
-// textarea 안 index 글자의 자리(textarea 왼쪽 위 기준, 스크롤 반영) — 같은 글꼴·폭의 숨긴 복제 칸에 그 앞까지의 글을 넣어 잰다.
-//  레이아웃 px 라 캔버스 확대·축소와 무관하다(목록도 같은 카드 안에 그려 함께 커지고 작아진다).
-const MIRROR_PROPS = [
-  "paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "fontFamily", "fontSize", "fontWeight",
-  "fontStyle", "letterSpacing", "lineHeight", "wordSpacing", "tabSize", "wordBreak", "overflowWrap",
-] as const;
-function caretPoint(ta: HTMLTextAreaElement, index: number) {
-  const cs = getComputedStyle(ta);
-  const div = document.createElement("div");
-  for (const p of MIRROR_PROPS) div.style[p] = cs[p];
-  Object.assign(div.style, {
-    position: "absolute", visibility: "hidden", left: "0", top: "0", whiteSpace: "pre-wrap", boxSizing: "content-box",
-    // 폭은 글이 실제로 줄바꿈되는 폭(스크롤 막대 제외) — clientWidth 는 안쪽 여백을 포함한다
-    width: `${ta.clientWidth - parseFloat(cs.paddingLeft || "0") - parseFloat(cs.paddingRight || "0")}px`,
-  });
-  div.textContent = ta.value.slice(0, index);
-  const mark = document.createElement("span");
-  mark.textContent = "@";
-  div.appendChild(mark);
-  ta.parentElement?.appendChild(div);
-  const at = { left: mark.offsetLeft, top: mark.offsetTop - ta.scrollTop, height: mark.offsetHeight };
-  div.remove();
-  return at;
-}
+import { insertTextAtCaret } from "../../../lib/promptEditor";
+import {
+  TEXT_TOKEN_SRC,
+  buildTextTokenPill,
+  caretMention,
+  caretTextOffset,
+  editorText,
+  placeCaretAtTextOffset,
+  textTokenInfo,
+  wrapTextTokens,
+} from "../../../lib/textNodeTokens";
 
 export function TextCard({
   card,
@@ -107,21 +93,17 @@ export function TextCard({
         for (const cid of li.generationCardIds) addGenRef(cardsById.get(cid));
     }
   }
-  // 텍스트를 토큰 기준으로 쪼개, 토큰은 인라인 알약(썸네일)으로, 나머지는 그대로.
-  //  @image1 형식 + comfy 프롬프트의 <<<image1>>> 형식 둘 다 인식 → 같은 레퍼런스로 매핑.
+  // 텍스트를 토큰 기준으로 쪼개, 토큰은 인라인 알약(썸네일)으로, 나머지는 그대로(토큰 판정은 편집칸과 같은 lib/textNodeTokens).
   //  시작·끝 이미지(@simage2·@eimage2)는 이미지 2번의 썸네일로 — 역할 해석은 생성 때 seedanceTokenRoles 가 이 글 그대로 읽는다.
   const renderInline = (text: string) => {
-    const re = /@(simage|eimage|image|video|audio)(\d+)|<<<(simage|eimage|image|video|audio)(\d+)>>>/gi;
+    const re = new RegExp(TEXT_TOKEN_SRC, "gi");
     const out: React.ReactNode[] = [];
     let last = 0;
     let m: RegExpExecArray | null;
     let k = 0;
     while ((m = re.exec(text))) {
       if (m.index > last) out.push(text.slice(last, m.index));
-      const label = m[0];
-      const word = (m[1] || m[3] || "").toLowerCase();
-      const kind = word === "simage" ? "start" : word === "eimage" ? "end" : word;
-      const key = `@${kind === "start" || kind === "end" ? "image" : word}${m[2] || m[4] || ""}`;
+      const { label, kind, key } = textTokenInfo(m);
       if (thumbByLabel.has(key)) {
         // 연결된 레퍼런스가 있는 토큰만 알약(썸네일). 없으면 그냥 텍스트로 둔다.
         const thumb = thumbByLabel.get(key);
@@ -153,27 +135,53 @@ export function TextCard({
   // 표시/사용 텍스트 = 내가 편집한 자기 텍스트 우선, 없으면 들어온 텍스트를 그대로(내가 적은 것처럼).
   const shownText = (card.text || "").trim() ? card.text || "" : incomingText;
 
-  // @ 고르기(Jay 2026-10-29) — 편집 중 @ 를 치면 이 노드에 이어진 레퍼런스를 친 자리 바로 위에(위 자리가 모자라면 그 줄 아래).
-  //  고르면 '@image2 ' 를 그 자리에 넣는다. 시작·끝(@simage·@eimage)은 목록에 없다.
-  const taRef = useRef<HTMLTextAreaElement>(null);
+  // ── 편집칸(Jay 2026-10-29) — 쓰는 중에도 이어진 번호는 알약(lib/textNodeTokens: 원래 글자를 알약 안에 그대로 둬 저장 글은 친 그대로).
+  //  치는 중인 토큰(캐럿이 걸친 것)은 글자로 두고 캐럿이 떠나면 알약 · 알약을 누르면 글자로 풀려 번호를 고친다.
+  const editRef = useRef<HTMLDivElement>(null);
+  const composingRef = useRef(false);
+  const markEmpty = (el: HTMLElement) => el.toggleAttribute("data-empty", !editorText(el));
+  // 밖에서 글이 바뀌면(처음 열 때·되돌리기·들어온 글 채택) 칸을 맞춘다 — 직접 친 글은 꺼낸 글과 같아 건드리지 않는다.
+  useLayoutEffect(() => {
+    const el = editRef.current;
+    if (!el) return;
+    const value = card.text || "";
+    if (editorText(el) !== value) {
+      el.textContent = value;
+      wrapTextTokens(el, thumbByLabel, false);
+    }
+    markEmpty(el);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing, card.text]);
+  // 편집 진입 — 초점과 캐럿(이전 편집 위치가 있으면 그곳, 없으면 맨 끝)
+  useLayoutEffect(() => {
+    const el = editRef.current;
+    if (!editing || !el) return;
+    el.focus();
+    const len = editorText(el).length;
+    const saved = caretPosRef.current.get(card.id);
+    placeCaretAtTextOffset(el, saved != null ? Math.min(saved, len) : len);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing]);
+
+  // @ 고르기 — 편집 중 @ 를 치면 이 노드에 이어진 레퍼런스를 친 자리 바로 위에(위 자리가 모자라면 그 줄 아래).
+  //  고르면 그 번호 알약 + 띄어쓰기를 그 자리에 넣는다. 시작·끝(@simage·@eimage)은 목록에 없다.
   const pickRef = useRef<HTMLDivElement>(null);
-  const caretAfterRef = useRef<number | null>(null); // 고른 뒤 캐럿 자리 — 새 글이 그려진 다음 놓는다
+  const mentionNodeRef = useRef<Text | null>(null); // @ 가 든 글 조각(편집칸 DOM)
   const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
   const [pickAt, setPickAt] = useState(0);
   const [pickPos, setPickPos] = useState<{ left: number; top: number; line: number; below: boolean } | null>(null);
-  const dismissedRef = useRef<number | null>(null); // Esc 로 닫은 @ 자리 — 그 @ 를 지우거나 캐럿이 그 앞으로 가기 전엔 다시 열지 않는다
-  // 글·캐럿이 바뀔 때마다 부른다. 키를 누를 때도(React 의 select 이벤트) 불리므로, @ 자리·친 글자가 같으면 아무것도 바꾸지 않는다
-  //  (그래야 ↑↓ 로 고른 줄이 맨 위로 되돌아가지 않는다).
-  const detectMention = (el: HTMLTextAreaElement) => {
-    const pos = el.selectionStart ?? 0;
-    const dismissed = dismissedRef.current;
-    if (dismissed != null && (el.value.charAt(dismissed) !== "@" || pos <= dismissed)) dismissedRef.current = null;
-    // @ 앞은 글 처음이거나 단어 글자가 아님(foo@image 같은 메일 주소는 아님) · @ 뒤는 영문·숫자만
-    const m = el.selectionEnd === pos ? /(?:^|[^\w@])@(\w*)$/.exec(el.value.slice(0, pos)) : null;
-    const found = m ? { start: pos - m[1].length - 1, query: m[1].toLowerCase() } : null;
-    const next = found && found.start !== dismissedRef.current ? found : null;
-    if (next?.start === mention?.start && next?.query === mention?.query) return;
-    setMention(next);
+  // Esc 로 닫은 @ — 그 @ 를 지우거나 캐럿이 그 앞으로 가기 전엔 다시 열지 않는다
+  const dismissedRef = useRef<{ node: Text; start: number } | null>(null);
+  // 글·캐럿이 바뀔 때마다 부른다. @ 자리·친 글자가 같으면 아무것도 바꾸지 않는다(↑↓ 로 고른 줄이 맨 위로 되돌아가지 않게).
+  const detectMention = (el: HTMLElement) => {
+    const found = caretMention(el);
+    const d = dismissedRef.current;
+    if (d && (!found || found.node !== d.node || d.node.data.charAt(d.start) !== "@" || found.start !== d.start)) dismissedRef.current = null;
+    const next = found && !(dismissedRef.current && found.start === dismissedRef.current.start) ? found : null;
+    const same = next && mention && next.node === mentionNodeRef.current && next.start === mention.start && next.query === mention.query;
+    if (same || (!next && !mention)) return;
+    mentionNodeRef.current = next?.node ?? null;
+    setMention(next ? { start: next.start, query: next.query } : null);
     setPickAt(0);
   };
   const picks = mention
@@ -182,11 +190,20 @@ export function TextCard({
   const showPick = editing && !!mention && (picks.length > 0 || mentionRefs.length === 0);
   const at = Math.min(pickAt, Math.max(0, picks.length - 1));
   const mentionStart = mention?.start ?? -1;
+  // @ 글자의 자리 — 화면에 그려진 자리를 재서 카드 기준(레이아웃 px)으로. 캔버스 배율로 나눠 목록도 카드와 함께 커지고 작아진다.
   useLayoutEffect(() => {
-    const ta = taRef.current;
-    if (!showPick || !ta || mentionStart < 0) { setPickPos(null); return; }
-    const p = caretPoint(ta, mentionStart);
-    setPickPos({ left: ta.offsetLeft + p.left, top: ta.offsetTop + p.top, line: p.height, below: false });
+    const el = editRef.current;
+    const node = mentionNodeRef.current;
+    const cardEl = el?.closest<HTMLElement>(".scene-card");
+    if (!showPick || !el || !node || !cardEl || mentionStart < 0) { setPickPos(null); return; }
+    const r = document.createRange();
+    r.setStart(node, Math.min(mentionStart, node.length));
+    r.setEnd(node, Math.min(mentionStart + 1, node.length));
+    const rect = typeof r.getBoundingClientRect === "function" ? r.getBoundingClientRect() : null;
+    const box = cardEl.getBoundingClientRect();
+    const scale = cardEl.offsetWidth ? box.width / cardEl.offsetWidth : 1;
+    if (!rect || !scale) { setPickPos({ left: 8, top: 8, line: 16, below: false }); return; }
+    setPickPos({ left: (rect.left - box.left) / scale, top: (rect.top - box.top) / scale, line: rect.height / scale, below: false });
   }, [showPick, mentionStart, card.text]);
   // 위 자리가 모자라면(보드 위 끝을 넘으면) 그 줄 아래로 뒤집는다
   useLayoutEffect(() => {
@@ -195,61 +212,98 @@ export function TextCard({
     const limit = (el.closest(".scene-board") ?? document.documentElement).getBoundingClientRect().top;
     if (el.getBoundingClientRect().top < limit) setPickPos({ ...pickPos, below: true });
   }, [pickPos]);
-  useLayoutEffect(() => {
-    const c = caretAfterRef.current;
-    if (c == null || !taRef.current) return;
-    caretAfterRef.current = null;
-    taRef.current.setSelectionRange(c, c);
-  }, [card.text]);
   // 목록이 떠 있는 동안 카드를 연결 끝 점 층 위로(InputChannelPicker 와 같은 표시 — scene.css)
   useEffect(() => {
-    const cardEl = taRef.current?.closest(".scene-card");
+    const cardEl = editRef.current?.closest(".scene-card");
     if (!showPick || !cardEl) return;
     cardEl.setAttribute("data-pop-open", "");
     return () => cardEl.removeAttribute("data-pop-open");
   }, [showPick]);
+
+  // 칸이 바뀐 뒤 — 알약 감싸기(조합 중이 아니면, 치는 중인 토큰은 글자로) · 글 저장 · 캐럿 기억 · @ 감지
+  const syncEditor = () => {
+    const el = editRef.current;
+    if (!el) return;
+    if (!composingRef.current) wrapTextTokens(el, thumbByLabel, true);
+    markEmpty(el);
+    const value = editorText(el);
+    if (value !== (card.text || "")) setNodeText(card.id, value);
+    const off = caretTextOffset(el);
+    if (off != null) caretPosRef.current.set(card.id, off);
+    detectMention(el);
+  };
   const choosePick = (label: string) => {
-    const ta = taRef.current;
-    if (!ta || !mention) return;
-    const end = ta.selectionStart ?? mention.start + 1 + mention.query.length;
-    const next = ta.value.slice(0, mention.start) + label + " " + ta.value.slice(end);
-    caretAfterRef.current = mention.start + label.length + 1;
-    caretPosRef.current.set(card.id, caretAfterRef.current);
+    const el = editRef.current;
+    const node = mentionNodeRef.current;
+    if (!el || !node || !mention || !el.contains(node)) return;
+    const end = Math.min(node.length, mention.start + 1 + mention.query.length);
+    const tail = node.splitText(mention.start); // "@query…" 부터 떼어 낸다
+    tail.deleteData(0, end - mention.start);
+    const info = textTokenInfo(new RegExp(TEXT_TOKEN_SRC, "i").exec(label)!);
+    const space = document.createTextNode(" ");
+    node.after(buildTextTokenPill(info, thumbByLabel.get(info.key)), space);
+    const sel = window.getSelection();
+    const r = document.createRange();
+    r.setStart(space, 1);
+    r.collapse(true);
+    sel?.removeAllRanges();
+    sel?.addRange(r);
+    mentionNodeRef.current = null;
     setMention(null);
-    setNodeText(card.id, next);
+    syncEditor();
   };
   return (
     <>
-      {/* 본문(보기=토큰 인라인 알약, 더블클릭 시 편집 textarea). 연결로 들어온 텍스트도 여기 그대로
+      {/* 본문(보기=토큰 인라인 알약, 더블클릭 시 편집칸 — 쓰는 중에도 알약). 연결로 들어온 텍스트도 여기 그대로
           나타나며, 더블클릭하면 그 텍스트가 편집 본문으로 채택돼 바로 수정·사용된다. */}
       <div className="scene-card-hd text scene-card-hd-float">텍스트</div>
       <div className="scene-card-inner">
         {editing ? (
-          <textarea
-            ref={taRef}
-            className="scene-textnode"
-            value={card.text || ""}
-            placeholder="텍스트 입력..."
+          <div
+            ref={editRef}
+            className="scene-textnode scene-textedit"
+            contentEditable
+            suppressContentEditableWarning
+            tabIndex={0}
+            role="textbox"
+            aria-multiline="true"
+            aria-label="텍스트"
+            data-placeholder="텍스트 입력..."
             spellCheck={false}
-            autoFocus
             onMouseDown={(e) => e.stopPropagation()}
-            onFocus={(e) => {
-              // 편집 진입 캐럿: 이전 편집 위치가 있으면 그곳, 없으면 맨 끝(autoFocus 기본값 offset 0 방지).
-              const len = e.currentTarget.value.length;
-              const saved = caretPosRef.current.get(card.id);
-              const pos = saved != null ? Math.min(saved, len) : len;
-              e.currentTarget.setSelectionRange(pos, pos);
+            onInput={syncEditor}
+            onKeyUp={(e) => { if (!(showPick && ["ArrowUp", "ArrowDown", "Enter", "Tab"].includes(e.key))) syncEditor(); }}
+            onClick={(e) => {
+              // 알약을 누르면 글자로 풀어 번호를 고친다(캐럿이 떠나면 다시 알약 — 생성창 프롬프트와 같다)
+              const pill = (e.target as HTMLElement).closest?.("[data-tok]");
+              if (pill && editRef.current?.contains(pill)) {
+                const text = document.createTextNode(editorText(pill));
+                pill.replaceWith(text);
+                const r = document.createRange();
+                r.setStart(text, text.length);
+                r.collapse(true);
+                const sel = window.getSelection();
+                sel?.removeAllRanges();
+                sel?.addRange(r);
+              }
+              syncEditor();
             }}
-            onSelect={(e) => {
-              caretPosRef.current.set(card.id, e.currentTarget.selectionStart ?? 0); // 편집 중 캐럿 위치 기억
-              detectMention(e.currentTarget);
+            onBlur={() => {
+              const el = editRef.current;
+              if (el) wrapTextTokens(el, thumbByLabel, false); // 치다 남긴 토큰도 칸을 떠나면 알약
+              setMention(null);
+              setEditTextId(null);
+              flushPending(); // 편집 끝나면 밀린 저장 확정
             }}
-            onBlur={() => { setMention(null); setEditTextId(null); flushPending(); }} // 편집 끝나면 밀린 저장 확정
-            onChange={(e) => {
-              setNodeText(card.id, e.target.value);
-              detectMention(e.currentTarget);
+            onCompositionStart={() => { composingRef.current = true; }}
+            onCompositionEnd={() => { composingRef.current = false; syncEditor(); }}
+            onPaste={(e) => {
+              e.preventDefault(); // 서식 없는 글만 — 붙여 넣은 HTML 이 칸 안에 남지 않게
+              insertTextAtCaret(e.currentTarget, e.clipboardData.getData("text/plain"));
+              syncEditor();
             }}
             onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing || e.keyCode === 229) return; // 한글 조합 중 Enter 는 글자 확정
               if (showPick && picks.length) {
                 if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                   e.preventDefault();
@@ -264,12 +318,19 @@ export function TextCard({
                   return;
                 }
               }
+              if (e.key === "Enter") {
+                e.preventDefault(); // 줄바꿈은 글자로(칸 안에 <div> 가 생기지 않게)
+                insertTextAtCaret(e.currentTarget, "\n");
+                syncEditor();
+                return;
+              }
               // Esc = 편집 끝(제목 카드와 같다 — 전엔 다른 곳을 눌러야만 끝났다). 같은 Esc 가 보드의 선택까지 풀지 않게 여기서 멈춘다.
               //  @ 목록이 떠 있으면 목록만 닫는다.
               if (e.key !== "Escape") return;
               e.stopPropagation();
               if (showPick) {
-                dismissedRef.current = mention?.start ?? null;
+                const node = mentionNodeRef.current;
+                dismissedRef.current = node && mention ? { node, start: mention.start } : null;
                 setMention(null);
                 return;
               }

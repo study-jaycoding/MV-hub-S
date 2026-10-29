@@ -51,20 +51,24 @@ afterEach(() => {
 const scene = { id: "A", name: "A", created_at: 0, edges: [], cards: [{ id: "t1", kind: "text", x: 0, y: 0, text: "처음" }] } as unknown as Scene;
 const savedTexts = () => saved.map((patch) => patch.cards?.[0]?.text);
 
-async function openEditor(): Promise<HTMLTextAreaElement> {
+async function openEditor(): Promise<HTMLElement> {
   await act(async () => {
     root.render(<SceneBoard scene={scene} onChange={(patch) => saved.push(patch)} />);
   });
   await act(async () => {
     host.querySelector<HTMLElement>(".scene-textview-inline")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
   });
-  return host.querySelector<HTMLTextAreaElement>("textarea.scene-textnode")!;
+  return host.querySelector<HTMLElement>(".scene-textedit")!;
 }
-// React 가 다루는 입력칸은 값을 직접 넣으면 변화를 못 본다 — 원래 setter 로 넣고 input 을 쏜다.
-const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
-const type = (area: HTMLTextAreaElement, text: string) =>
+// 텍스트 노드 편집칸은 알약이 들어가는 칸(contentEditable, 2026-10-29) — 글을 바꾸고 캐럿을 끝에 둔 뒤 input 을 쏜다.
+const type = (area: HTMLElement, text: string) =>
   act(async () => {
-    setValue.call(area, text);
+    area.textContent = text;
+    const r = document.createRange();
+    r.selectNodeContents(area);
+    r.collapse(false);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(r);
     area.dispatchEvent(new Event("input", { bubbles: true }));
   });
 const wait = (ms: number) => act(async () => { vi.advanceTimersByTime(ms); });

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// 캔버스 텍스트 노드 @ 고르기(Jay 2026-10-29) — 편집 중 @ 를 치면 이 노드에 이어진 레퍼런스(알약과 같은 번호)를 @ 자리 바로 위에.
-//  고르면 '@image2 ' 를 그 자리에 넣고 캐럿은 그 뒤 · Esc 는 목록만 닫음 · 시작·끝(@simage)은 목록에 없음.
+// 캔버스 텍스트 노드 편집칸(Jay 2026-10-29) — 쓰는 중에도 이어진 번호는 알약 · @ 를 치면 이어진 레퍼런스(알약과 같은 번호)를 @ 자리 바로 위에.
+//  고르면 그 번호 알약 + 띄어쓰기를 그 자리에 넣고 캐럿은 그 뒤 · Esc 는 목록만 닫음 · 시작·끝(@simage)은 목록에 없음 · 저장 글은 친 그대로.
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -13,7 +13,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
-afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
+afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); window.getSelection()?.removeAllRanges(); });
 
 const ref = (name: string, type: string): SceneRef => ({ type, name, file_path: `/fixtures/${name}`, thumb: type === "audio" ? null : `/fixtures/${name}` });
 const noop = () => {};
@@ -38,16 +38,38 @@ function mount(initial = "", connected = true, editing = true) {
   act(() => root.render(<Harness />));
   return { setEditTextId, text: () => current };
 }
-const ta = () => host.querySelector<HTMLTextAreaElement>("textarea")!;
-// 사용자가 친 것처럼 — 글을 바꾸고 캐럿을 pos 에(기본 끝) 두고 input 을 보낸다
+const ed = () => host.querySelector<HTMLElement>(".scene-textedit")!;
+// 사용자가 친 것처럼 — 칸의 글을 바꾸고 캐럿을 글자 pos 에(기본 끝) 두고 input 을 보낸다
 const typeTo = (value: string, pos = value.length) => act(() => {
-  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(ta(), value);
-  ta().setSelectionRange(pos, pos);
-  ta().dispatchEvent(new Event("input", { bubbles: true }));
+  ed().textContent = value;
+  const r = document.createRange();
+  r.setStart(ed().firstChild ?? ed(), ed().firstChild ? pos : 0);
+  r.collapse(true);
+  window.getSelection()!.removeAllRanges();
+  window.getSelection()!.addRange(r);
+  ed().dispatchEvent(new Event("input", { bubbles: true }));
 });
-const key = (k: string) => act(() => { ta().dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true })); });
+const key = (k: string) => act(() => { ed().dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true })); });
 const pop = () => host.querySelector(".scene-textmention");
 const tokens = () => [...host.querySelectorAll(".scene-textmention .sl-mention-name")].map((t) => [t.textContent, t.className]);
+const pills = () => [...ed().querySelectorAll("[data-tok]")].map((p) => p.textContent);
+
+it("편집칸을 열면 저장된 글의 이어진 번호가 알약 · 이어지지 않은 번호는 글자 · 글은 그대로", () => {
+  const view = mount("@image1 과 <<<image2>>> 가 @image9 와");
+  expect(pills()).toEqual(["@image1", "<<<image2>>>"]);
+  expect(ed().textContent).toContain("@image9");
+  expect(view.text()).toBe("@image1 과 <<<image2>>> 가 @image9 와");
+  expect(document.activeElement).toBe(ed());
+});
+
+it("치는 중인 토큰은 글자, 띄어쓰기를 치면 알약 — 저장 글은 친 그대로", () => {
+  const view = mount();
+  typeTo("두 팀 @image1");
+  expect(pills()).toEqual([]);
+  typeTo("두 팀 @image1 이 달린다");
+  expect(pills()).toEqual(["@image1"]);
+  expect(view.text()).toBe("두 팀 @image1 이 달린다");
+});
 
 it("@ 를 치면 이어진 레퍼런스가 알약 종류 클래스로 · 카드는 끝 점 층 위로", () => {
   mount("두 팀이 ");
@@ -62,12 +84,13 @@ it("@ 를 치면 이어진 레퍼런스가 알약 종류 클래스로 · 카드�
   expect(host.querySelector(".scene-textmention .sl-mention-tags")!.textContent).toBe("a.png");
 });
 
-it("@ 뒤 글자로 거르고, ↓·Enter 로 고르면 '@image2 ' 가 들어가고 목록이 닫힌다", () => {
+it("@ 뒤 글자로 거르고, ↓·Enter 로 고르면 그 번호 알약 + 띄어쓰기가 들어가고 목록이 닫힌다", () => {
   const view = mount();
   typeTo("@im");
   expect(tokens().map(([t]) => t)).toEqual(["@image1", "@image2"]);
   key("ArrowDown"); key("Enter");
   expect(view.text()).toBe("@image2 ");
+  expect(pills()).toEqual(["@image2"]);
   expect(pop()).toBeNull();
   expect(host.querySelector(".scene-card")!.hasAttribute("data-pop-open")).toBe(false);
 });
@@ -87,10 +110,20 @@ it("Esc 는 목록만 닫고 편집은 그대로 — 한 번 더 Esc 면 편집 
   expect(pop()).toBeNull();
   expect(view.setEditTextId).not.toHaveBeenCalled();
   key("Escape");
-  expect(document.activeElement).not.toBe(ta());
+  expect(view.setEditTextId).toHaveBeenCalledWith(null);
 });
 
-it("메일 주소 같은 @ 는 목록 없음 · 이어진 레퍼런스가 없으면 안내 한 줄 · 편집 중이 아니면 없음", () => {
+it("Enter 는 줄바꿈 글자 · 알약을 누르면 글자로 풀린다", () => {
+  const view = mount("@image1 뒤");
+  act(() => { (ed().querySelector("[data-tok]") as HTMLElement).dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+  expect(pills()).toEqual([]); // 캐럿이 그 토큰 끝에 있어 글자로 남는다
+  expect(view.text()).toBe("@image1 뒤");
+  typeTo("첫 줄");
+  key("Enter");
+  expect(view.text()).toBe("첫 줄\n");
+});
+
+it("메일 주소 같은 @ 는 목록 없음 · 이어진 레퍼런스가 없으면 안내 한 줄 · 편집 중이 아니면 편집칸·목록 없음", () => {
   mount();
   typeTo("me@image");
   expect(pop()).toBeNull();
@@ -100,6 +133,6 @@ it("메일 주소 같은 @ 는 목록 없음 · 이어진 레퍼런스가 없으
   expect(host.querySelector(".scene-textmention .sl-mention-empty")!.textContent).toBe("이 텍스트 노드에 이어진 레퍼런스가 없습니다");
   act(() => root.unmount()); root = createRoot(host);
   mount("@", true, false);
-  expect(host.querySelector("textarea")).toBeNull();
+  expect(host.querySelector(".scene-textedit")).toBeNull();
   expect(pop()).toBeNull();
 });

@@ -70,8 +70,17 @@ const undo = () => key({ key: "z", code: "KeyZ", ctrlKey: true });
 const redo = () => key({ key: "Z", code: "KeyZ", ctrlKey: true, shiftKey: true });
 const dbl = (el: Element) => act(async () => { el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); });
 const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
-const type = (area: HTMLTextAreaElement, text: string) => act(async () => {
-  setValue.call(area, text);
+// 제목 노드는 textarea, 텍스트 노드는 알약이 들어가는 편집칸(contentEditable, 2026-10-29) — 둘 다 친 것처럼 글을 바꾸고 input 을 보낸다
+const type = (area: HTMLElement, text: string) => act(async () => {
+  if (area instanceof HTMLTextAreaElement) setValue.call(area, text);
+  else {
+    area.textContent = text;
+    const r = document.createRange();
+    r.selectNodeContents(area);
+    r.collapse(false);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(r);
+  }
   area.dispatchEvent(new Event("input", { bubbles: true }));
 });
 // 보드의 카드 고르기 = 누르고(mousedown) 떼기(window mouseup)
@@ -126,7 +135,7 @@ it("치는 중에 파생 저장(Comfy 다시 읽기의 응답)이 끼어도 그 
   await settle();
   expect(parses).toHaveLength(1); // 다시 읽기가 도는 중
   await dbl(host.querySelector(".scene-textview-inline")!);
-  const area = host.querySelector<HTMLTextAreaElement>("textarea.scene-textnode")!;
+  const area = host.querySelector<HTMLElement>(".scene-textedit")!;
   await type(area, "치던 글"); // 아직 저장 전(400ms 디바운스)
   parses[0]({ node_count: 7, candidates: [] }); // 응답 — 노드 수를 파생 저장으로 적는다
   await settle();
@@ -158,7 +167,7 @@ const resultArrives = () => act(async () => {
 });
 const editText = async (text: string, finish = true) => {
   await dbl(host.querySelector(".scene-textview-inline")!);
-  const area = host.querySelector<HTMLTextAreaElement>("textarea.scene-textnode")!;
+  const area = host.querySelector<HTMLElement>(".scene-textedit")!;
   await type(area, text);
   if (finish) await act(async () => { area.blur(); });
   return area;
@@ -217,7 +226,7 @@ it("치는 중에 Comfy 결과가 내 작업에 저장돼 카드에 반영돼도
   await settle();
   expect(mocks.save).toHaveBeenCalledTimes(1); // 결과를 내 작업에 저장하는 중
   await dbl(host.querySelector(".scene-textview-inline")!);
-  const area = host.querySelector<HTMLTextAreaElement>("textarea.scene-textnode")!;
+  const area = host.querySelector<HTMLElement>(".scene-textedit")!;
   await type(area, "치던 글");
   finishSave({ saved: [{ url: "/out.png", generation_id: "gen1" }] });
   await settle();
@@ -301,7 +310,7 @@ it("카드 크기 조절이 끝나면 잠금도 묶음도 닫힌다 — mouseup 
   const first = cardWidth()!;
   expect(first).toBeGreaterThan(0);
   await dbl(host.querySelector(".scene-textview-inline")!);
-  const area = host.querySelector<HTMLTextAreaElement>("textarea.scene-textnode")!;
+  const area = host.querySelector<HTMLElement>(".scene-textedit")!;
   await type(area, "뒤의 편집");
   await act(async () => { area.blur(); });
   expect(savedCard("t")).toMatchObject({ text: "뒤의 편집", w: first });

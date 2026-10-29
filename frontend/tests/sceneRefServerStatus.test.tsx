@@ -163,10 +163,10 @@ it("자동 복구 답은 열린 캔버스의 메모리 카드에 입혀진다 �
   await act(async () => {
     cardEl("t1").querySelector(".scene-textview-inline")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
   });
-  const textarea = cardEl("t1").querySelector("textarea")!;
+  const textarea = cardEl("t1").querySelector<HTMLElement>(".scene-textedit")!; // 알약이 들어가는 편집칸(2026-10-29)
   onChange.mockClear();
   await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "복구 중에 친 글");
+    textarea.textContent = "복구 중에 친 글";
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
   });
   expect(onChange).not.toHaveBeenCalled();
@@ -184,7 +184,7 @@ it("자동 복구 답은 열린 캔버스의 메모리 카드에 입혀진다 �
   const saved = onChange.mock.calls[1][0] as Partial<Scene>;
   expect(saved.cards!.find((c) => c.id === "t1")!.text).toBe("복구 중에 친 글");
   expect(saved.cards!.find((c) => c.id === "r1")!.refs![0].file_path).toBe("asset:P|CH/a.png");
-  expect((cardEl("t1").querySelector("textarea") as HTMLTextAreaElement).value).toBe("복구 중에 친 글");
+  expect(cardEl("t1").querySelector(".scene-textedit")!.textContent).toBe("복구 중에 친 글");
 });
 
 it("자동 복구 뒤 Ctrl+Z·Ctrl+Shift+Z 는 사용자 편집만 오간다 — 참조는 계속 원본 경로(2026-09-29)", async () => {
@@ -212,9 +212,9 @@ it("자동 복구 뒤 Ctrl+Z·Ctrl+Shift+Z 는 사용자 편집만 오간다 —
   await act(async () => {
     cardEl("t1").querySelector(".scene-textview-inline")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
   });
-  const textarea = cardEl("t1").querySelector("textarea")!;
+  const textarea = cardEl("t1").querySelector<HTMLElement>(".scene-textedit")!; // 알약이 들어가는 편집칸(2026-10-29)
   await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "고친 글");
+    textarea.textContent = "고친 글";
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await act(async () => textarea.blur());
