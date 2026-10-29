@@ -2,6 +2,7 @@
 import asyncio
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from PIL import Image, ImageDraw
@@ -49,7 +50,8 @@ def test_exact_score_thresholds(images, monkeypatch, best, second, linked):
     first = save("first.png", "red")
     save("second.png", "blue")
     def candidate(_root, node, _attachment, _expired):
-        return {**node, "cell_diff": best if node["name"] == "first.png" else second, "ratio_matches": True}
+        return ({**node, "cell_diff": best if node["name"] == "first.png" else second,
+                 "ratio_matches": True}, 192 / 108)
     monkeypatch.setattr(match, "_candidate", candidate)
     assert compare(root, first)["linked"] is linked
 
@@ -210,13 +212,18 @@ def test_warm_comparison_does_not_decode_original_pixels(images, monkeypatch):
     assert compare(root, first)["linked"]
 
 
-def test_metadata_deadline_does_not_start_thumbnail(images, monkeypatch):
+def test_finalist_deadline_does_not_start_next_original(images, monkeypatch):
     root, save = images
     first = save("first.png", "red")
+    second = save("second.png", "blue")
+    for path in (first, second):
+        thumbs.ensure_thumb(path, 256)
     entered, release = threading.Event(), threading.Event()
     original = Image.open
+    opened = []
     def open_image(path, *args, **kwargs):
-        if path == first:
+        if path in (first, second):
+            opened.append(path)
             entered.set()
             assert release.wait(3)
         return original(path, *args, **kwargs)
@@ -239,6 +246,136 @@ def test_metadata_deadline_does_not_start_thumbnail(images, monkeypatch):
         pytest.fail("worker did not finish")
     asyncio.run(exercise())
     assert calls == []
+    assert opened == [first]
+
+
+@pytest.mark.parametrize("name", ["one.png", "한글 name.png", "nested/three.png"])
+def test_snapshot_cache_key_matches_thumbs_cache_path(images, name):
+    root, save = images
+    (root / name).parent.mkdir(parents=True, exist_ok=True)
+    source = save(name, "red")
+    version = source.stat()
+    node = {"path": name, "version": f"{version.st_mtime_ns}-{version.st_size}"}
+    assert match._snapshot_cache_path(root.resolve(), node) == thumbs.cache_path(source.resolve(), 256)
+
+
+def test_warm_scoring_stats_each_original_once_and_only_opens_five_finalists(images, monkeypatch):
+    root, save = images
+    originals = {save(f"source{index}.png", (255 - index * 25, 0, 0)) for index in range(8)}
+    for source in originals:
+        thumbs.ensure_thumb(source, 256)
+    tree = asset_tree.read_project_tree_snapshot(root, fresh=True)
+    first = root / "source0.png"
+    real_candidate, real_open, real_stat, real_join = match._candidate, Image.open, Path.stat, match.safe_join
+    scoring, opened, violations = [], [], []
+    scoring_stats = dict.fromkeys(originals, 0)
+    def candidate(*args):
+        scoring.append(True)
+        try:
+            return real_candidate(*args)
+        finally:
+            scoring.pop()
+    def stat(path, *args, **kwargs):
+        if path in originals and scoring:
+            scoring_stats[path] += 1
+        return real_stat(path, *args, **kwargs)
+    def open_image(path, *args, **kwargs):
+        if isinstance(path, (str, Path)) and Path(path) in originals:
+            opened.append(Path(path))
+            if scoring:
+                violations.append(("open", path))
+                raise AssertionError("scoring opened original")
+        return real_open(path, *args, **kwargs)
+    def join(*args):
+        if scoring:
+            violations.append(("safe_join", args))
+            raise AssertionError("warm scoring resolved original")
+        return real_join(*args)
+    monkeypatch.setattr(match, "_candidate", candidate)
+    monkeypatch.setattr(match, "safe_join", join)
+    monkeypatch.setattr(Path, "stat", stat)
+    monkeypatch.setattr(Image, "open", open_image)
+    monkeypatch.setattr(thumbs, "ensure_thumb", lambda *args: pytest.fail("warm scoring generated thumbnail"))
+    result = asyncio.run(match.match_reference(first, lambda: (root, tree)))
+    assert result["complete"] and result["linked"]
+    assert violations == []
+    assert scoring_stats == dict.fromkeys(originals, 1)
+    assert len(opened) == 5 and len(set(opened)) == 5
+
+
+@pytest.mark.parametrize("extra_count", [0, 6])
+def test_animated_leader_is_replaced_by_next_static_candidate(images, tmp_path, monkeypatch, extra_count):
+    root, save = images
+    animation = root / "a-animated.webp"
+    Image.new("RGB", (192, 108), "red").save(animation, lossless=True, save_all=True,
+        append_images=[Image.new("RGB", (192, 108), "blue")], duration=100, loop=0)
+    still = save("b-still.png", "red")
+    for index in range(extra_count):
+        save(f"other{index}.png", "blue")
+    originals = set(root.iterdir())
+    for source in originals:
+        thumbs.ensure_thumb(source, 256)
+    attachment = tmp_path / "attachment.png"
+    attachment.write_bytes(still.read_bytes())
+    real_open, opened = Image.open, []
+    def open_image(path, *args, **kwargs):
+        if isinstance(path, (str, Path)) and Path(path) in originals:
+            opened.append(Path(path))
+        return real_open(path, *args, **kwargs)
+    monkeypatch.setattr(Image, "open", open_image)
+    result = compare(root, attachment)
+    assert result["complete"] and result["linked"]
+    assert result["candidates"][0]["name"] == still.name
+    assert all(candidate["name"] != animation.name for candidate in result["candidates"])
+    assert opened[0] == animation and len(opened) == min(5, extra_count + 1) + 1
+    assert len(result["candidates"]) == min(5, extra_count + 1)
+
+
+def test_warm_snapshot_version_change_prevents_link(images, tmp_path):
+    root, save = images
+    first = save("first.png", "red")
+    attachment = tmp_path / "attachment.png"
+    attachment.write_bytes(first.read_bytes())
+    thumbs.ensure_thumb(first, 256)
+    tree = asset_tree.read_project_tree_snapshot(root, fresh=True)
+    save("first.png", "blue", size=(100, 80))
+    result = asyncio.run(match.match_reference(attachment, lambda: (root, tree)))
+    assert not result["complete"] and not result["linked"]
+    assert result["reason"] == "incomplete" and result["candidates"] == []
+
+
+def test_warm_nonfinalist_version_change_prevents_link(images):
+    root, save = images
+    originals = [save(f"source{index}.png", (255 - index * 25, 0, 0)) for index in range(8)]
+    for source in originals:
+        thumbs.ensure_thumb(source, 256)
+    tree = asset_tree.read_project_tree_snapshot(root, fresh=True)
+    save("source7.png", "blue", size=(100, 80))
+    result = asyncio.run(match.match_reference(originals[0], lambda: (root, tree)))
+    assert result["candidates"][0]["name"] == originals[0].name
+    assert originals[7].name not in [candidate["name"] for candidate in result["candidates"]]
+    assert not result["complete"] and not result["linked"]
+    assert result["reason"] == "incomplete"
+
+
+@pytest.mark.parametrize("outcome", ["correct", "different_path", "missing", "unsafe"])
+def test_cold_thumbnail_requires_matching_snapshot_key(images, monkeypatch, outcome):
+    root, save = images
+    first = save("first.png", "red")
+    real_ensure, calls = thumbs.ensure_thumb, []
+    def ensure(path, width):
+        calls.append((path, width))
+        if outcome == "missing":
+            return None
+        cached = real_ensure(path, width)
+        return cached.with_name("changed-version.jpg") if outcome == "different_path" else cached
+    monkeypatch.setattr(thumbs, "ensure_thumb", ensure)
+    if outcome == "unsafe":
+        monkeypatch.setattr(match, "safe_join", lambda *args: None)
+    result = compare(root, first)
+    assert result["complete"] is (outcome == "correct")
+    assert result["linked"] is (outcome == "correct")
+    assert calls == ([] if outcome == "unsafe" else [(first.resolve(), 256)])
 
 
 @pytest.mark.parametrize("kind", ["nodes", "depth", "read"])

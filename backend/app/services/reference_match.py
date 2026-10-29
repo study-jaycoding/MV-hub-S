@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import hashlib
 import io
 import shutil
 import tempfile
@@ -15,7 +16,7 @@ from PIL import Image, ImageChops, ImageOps
 
 from . import thumbs
 from .async_tools import to_thread_non_abandon
-from .path_safety import safe_join
+from .path_safety import path_comparison_key, safe_join
 
 MATCH_SECONDS = 15.0
 _workers = ThreadPoolExecutor(max_workers=2, thread_name_prefix="reference-match")
@@ -69,37 +70,70 @@ def _nodes(children):
             yield node
 
 
+def _snapshot_cache_path(root, node):
+    target = root / node["path"]
+    # shortcut: duplicates thumbs.cache_path to avoid source stat; update together if its key format changes.
+    key = hashlib.sha1(f"{path_comparison_key(target)}|{node['version']}|256".encode("utf-8")).hexdigest()
+    return thumbs.THUMB_DIR / f"{key}.jpg"
+
+
 def _candidate(root, node, attachment, expired):
     if expired():
         raise TimeoutError("matching deadline")
-    target = safe_join(root, node["path"])
+    cached = _snapshot_cache_path(root, node)
+    if not thumbs._is_complete_file(cached):
+        if expired():
+            raise TimeoutError("matching deadline")
+        target = safe_join(root, node["path"])
+        if target is None:
+            raise OSError("unsafe asset")
+        if expired():
+            raise TimeoutError("matching deadline")
+        generated = thumbs.ensure_thumb(target, 256)
+        if expired():
+            raise TimeoutError("matching deadline")
+        if generated is None or generated != cached:
+            raise OSError("thumbnail unavailable or asset changed")
+    if expired():
+        raise TimeoutError("matching deadline")
+    with Image.open(cached) as source:
+        thumb_ratio = source.width / source.height
+        picture = source.convert("RGB").resize((192, 108), Image.Resampling.LANCZOS)
+    difference = cell_difference(attachment[0], picture)
+    if expired():
+        raise TimeoutError("matching deadline")
+    current = (root / node["path"]).stat()
+    if f"{current.st_mtime_ns}-{current.st_size}" != node["version"]:
+        raise OSError("asset changed")
+    return ({**node, "cell_diff": difference,
+             "ratio_matches": 0.98 <= thumb_ratio / attachment[1] <= 1.02}, thumb_ratio)
+
+
+def _confirm_candidate(root, candidate, thumb_ratio, attachment, expired):
+    if expired():
+        raise TimeoutError("matching deadline")
+    target = safe_join(root, candidate["path"])
     if target is None:
         raise OSError("unsafe asset")
     before = target.stat()
-    if f"{before.st_mtime_ns}-{before.st_size}" != node.get("version"):
+    if f"{before.st_mtime_ns}-{before.st_size}" != candidate["version"]:
         raise OSError("asset changed")
+    if expired():
+        raise TimeoutError("matching deadline")
     with Image.open(target) as source:
         if getattr(source, "n_frames", 1) != 1:
             return None
         width, height = source.size
     if expired():
         raise TimeoutError("matching deadline")
-    cached = thumbs.ensure_thumb(target, 256)
-    if cached is None:
-        raise OSError("thumbnail unavailable")
-    if expired():
-        raise TimeoutError("matching deadline")
-    with Image.open(cached) as source:
-        # The thumbnail has EXIF orientation applied; avoid decoding a warm PNG for getexif().
-        thumb_ratio, ratio = source.width / source.height, width / height
-        if abs(1 / ratio - thumb_ratio) < abs(ratio - thumb_ratio):
-            ratio = 1 / ratio
-        picture = source.convert("RGB").resize((192, 108), Image.Resampling.LANCZOS)
+    # The thumbnail has EXIF orientation applied; avoid decoding the original for getexif().
+    ratio = width / height
+    if abs(1 / ratio - thumb_ratio) < abs(ratio - thumb_ratio):
+        ratio = 1 / ratio
     after = target.stat()
     if (after.st_mtime_ns, after.st_size) != (before.st_mtime_ns, before.st_size):
         raise OSError("asset changed")
-    return {**node, "cell_diff": cell_difference(attachment[0], picture),
-            "ratio_matches": 0.98 <= ratio / attachment[1] <= 1.02}
+    return {**candidate, "ratio_matches": 0.98 <= ratio / attachment[1] <= 1.02}
 
 
 def _attachment_snapshot(path):
@@ -158,28 +192,47 @@ async def match_reference(attachment_path, load_tree):
                     progress["reason"] = "timeout"
                 return
             root, tree = load_tree()
-            candidates, failures, compared = [], 0, 0
+            if expired():
+                with lock:
+                    progress["reason"] = "timeout"
+                return
+            root = root.resolve()
+            ranked, leaders, failures, compared = [], [], 0, 0
             for node in _nodes(tree.children):
                 if expired():
                     break
                 try:
-                    candidate = _candidate(root, node, attachment, expired)
-                    if candidate is None:
-                        continue
+                    candidate, thumb_ratio = _candidate(root, node, attachment, expired)
                     compared += 1
-                    candidates.append(candidate)
-                    candidates.sort(key=lambda item: (item["cell_diff"], item["path"]))
-                    del candidates[5:]
+                    ranked.append((candidate, thumb_ratio))
+                    leaders.append(candidate)
+                    leaders.sort(key=lambda item: (item["cell_diff"], item["path"]))
+                    del leaders[5:]
                     with lock:
-                        progress["candidates"] = list(candidates)
+                        progress["candidates"] = list(leaders)
+                except Exception:
+                    failures += 1
+            ranked.sort(key=lambda item: (item[0]["cell_diff"], item[0]["path"]))
+            candidates = []
+            for candidate, thumb_ratio in ranked:
+                if expired() or len(candidates) == 5:
+                    break
+                try:
+                    confirmed = _confirm_candidate(root, candidate, thumb_ratio, attachment, expired)
+                    if confirmed is None:
+                        compared -= 1
+                    else:
+                        candidates.append(confirmed)
                 except Exception:
                     failures += 1
             complete = tree.complete and failures == 0 and not expired()
-            linked = bool(complete and compared and candidates[0]["cell_diff"] <= 2.5
+            linked = bool(complete and candidates and candidates[0]["cell_diff"] <= 2.5
                           and candidates[0]["ratio_matches"]
                           and (compared == 1 or candidates[1]["cell_diff"] >= 4.0))
             with lock:
                 progress.update(complete=complete, linked=linked)
+                if not expired():
+                    progress["candidates"] = candidates
                 if not complete:
                     progress["reason"] = "timeout" if expired() else "incomplete"
         except Exception:
