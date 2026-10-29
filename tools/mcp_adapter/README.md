@@ -39,9 +39,13 @@ NAS는 기존 설치 원본과 공유 권한을 신뢰한다. 해시는 손상 �
 
 ## 현재 작업: 영속 연결 v2
 
-같은 PC의 Codex·Claude Code는 MV Hub의 **설정 → MV·MCP 연결 열기 → Codex·Claude Code 연결 허용**에서 등록한다.
+같은 PC의 Codex·Claude Code·Claude 데스크톱 채팅은 MV Hub의 **설정 → MV·MCP 연결 열기 → Codex·Claude 연결 허용** 한 번으로 등록한다(2026-10-29).
+Claude 데스크톱은 별도 연결(`claude_desktop`)로 `%APPDATA%\Claude\claude_desktop_config.json` 에 들어가며 데스크톱 앱이 없으면 건너뛴다.
+데스크톱 앱은 트레이에서 완전히 종료한 뒤 다시 켜야 채팅에 나타난다. 데스크톱 앱의 로컬 Code 탭도 같은 이름이면 이 데스크톱 정의를 쓴다(공식 문서).
+설정 이름은 설치본 `mvhub`, 소스 실행(dev) `mvhub-test` 다 — 한 PC 에 둘이 있어도 서로의 등록을 덮지 않는다.
 다른 로컬 stdio MCP 앱은 그 화면에서 제공하는 설정을 한 번 복사한다. 클라이언트 자체 신뢰 승인과
 최초 MCP 새로고침/재시작이 필요할 수 있다. 웹·휴대폰 원격 커넥터는 이번 범위가 아니다.
+정본: [작업 계약](../../docs/status/MCP_한번에연결_2026-10-29.md).
 MV Hub와 LLM은 같은 Windows 로그인 사용자로 실행한다. 서비스 계정이나 다른 사용자 실행은 자동 등록을 차단한다.
 기존 설정 사본은 설정 파일 옆에 두 개로 보존되며 외부로 공유하지 않는다 — `.mvhub-original`(처음 등록 전 원래 설정, 한 번만 남기고 다시 쓰지 않음)과
 `.mvhub-backup`(바로 앞 내용, 등록할 때마다 교체). 바로 앞 사본의 mvhub 항목은 회수된 옛 연결이라, 되살렸으면 MCP 를 다시 등록해야 한다.
@@ -259,7 +263,7 @@ Codex와 Claude Code 사용자 설정의 `mvhub`는 다음을 사용한다. 임�
   사용자 승인 후 실제 계정·워크스페이스 연결과 Claude의 이미지 1건 생성·기록을 확인했다.
   검증 범위와 남은 조건은 [현행 상태](../../docs/MCP_INTEGRATION.md#실사용-연결-준비-2026-10-15)를 따른다.
 - Codex `tool_timeout_sec=150`. 새 클라이언트 세션에서 도구 로드를 확인한다. 기존 대화에 자동 반영됐다고 가정하지 않는다.
-- Claude Desktop·일반 ChatGPT 웹 커넥터 등록은 별도다. 이번 등록은 이 PC의 Codex·Claude Code다.
+- 일반 ChatGPT 웹 커넥터 등록은 별도다. 이번 등록은 이 PC의 Codex·Claude Code다(Claude 데스크톱 채팅은 2026-10-29부터 같은 단추로 함께 — 위 「영속 연결 v2」).
 - 기존 Codex 대화에는 옛 6개 도구·schema가 남아 있었으나 새 CLI 세션에서는 7개 도구와 연결·완료 결과 조회를 확인했다.
   기존 데스크톱 대화까지 자동 갱신됐다고 가정하지 않는다. SDK 패키지 모형과 실제 CLI 검증 근거는 구분한다.
 

@@ -185,7 +185,7 @@
 
 | 이름 | 직접 읽는 파일 |
 | --- | --- |
-| `APPDATA` | `backend/app/services/resolve_library_dialog.py` `backend/app/services/resolve_script_installer.py` `tools/server_console/install.py` |
+| `APPDATA` | `backend/app/services/resolve_library_dialog.py` `backend/app/services/resolve_script_installer.py` `tools/mcp_adapter/local_setup.py` `tools/server_console/install.py` |
 | `COMPUTERNAME` | `backend/app/routers/registry_helper.py` `backend/app/services/worker_backup.py` `tools/server_console/install.py` |
 | `HOMEDRIVE` | `tools/server_console/install.py` |
 | `HOMEPATH` | `tools/server_console/install.py` |
