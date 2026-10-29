@@ -55,8 +55,9 @@ it("영어 화면: 등록 결과·연결 목록·상태 줄까지 한글이 남�
     // 허브 설정 도구가 실제로 보내는 글(tools/mcp_adapter/local_setup.py) — 'ok' 로는 번역 누락이 가려진다(Codex 10-16)
     io.http.mockResolvedValueOnce({ clients: [
       { client: "codex", status: "configured", message: "등록했습니다. 실행 중인 LLM에서 MCP를 새로고침하거나 프로그램을 다시 시작하세요." },
-      { client: "claude_desktop", status: "configured", message: "등록했습니다. Claude 앱을 트레이에서 완전히 종료한 뒤 다시 켜야 채팅에 나타납니다." },
+      { client: "claude_desktop", status: "configured", message: "등록했습니다. Claude 앱을 켜면 채팅에 나타납니다." },
       { client: "claude_desktop", status: "skipped", message: "Claude 데스크톱 앱이 없어 건너뛰었습니다." },
+      { client: "claude_desktop", status: "skipped", message: "Claude 앱이 켜져 있어 데스크톱 채팅 등록을 건너뛰었습니다. 앱을 트레이에서 완전히 종료한 뒤 다시 누르세요." },
       { client: "other", status: "manual", message: "사용할 MCP 앱에 이 설정을 한 번 등록하세요.", config: { mcpServers: {} } },
     ] }).mockResolvedValueOnce({ clients: [{ ...client, scope: "account" }] });
     await render();

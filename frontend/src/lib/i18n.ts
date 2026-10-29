@@ -749,7 +749,9 @@ const EN: Record<string, string> = {
   "거절됨": "Rejected",
   // 등록 결과 문구(허브의 MCP 설정 도구가 보낸 고정 글 — tools/mcp_adapter/local_setup.py · routers/mcp_v2.py)
   "등록했습니다. 실행 중인 LLM에서 MCP를 새로고침하거나 프로그램을 다시 시작하세요.": "Registered. Reload MCP in the running LLM app or restart it.",
-  "등록했습니다. Claude 앱을 트레이에서 완전히 종료한 뒤 다시 켜야 채팅에 나타납니다.": "Registered. Fully quit Claude from the tray and open it again to see it in chat.",
+  "등록했습니다. Claude 앱을 켜면 채팅에 나타납니다.": "Registered. It shows up in chat when you open the Claude app.",
+  "Claude 앱이 켜져 있어 데스크톱 채팅 등록을 건너뛰었습니다. 앱을 트레이에서 완전히 종료한 뒤 다시 누르세요.":
+    "Skipped Claude desktop chat because the Claude app is running. Fully quit it from the tray, then press again.",
   "Claude 데스크톱 앱이 없어 건너뛰었습니다.": "Skipped because the Claude desktop app wasn't found.",
   "사용할 MCP 앱에 이 설정을 한 번 등록하세요.": "Register this configuration once in the MCP app you use.",
   "Claude가 별도 설정 폴더를 사용합니다. 해당 프로그램에 이 설정을 등록하세요.": "Claude uses a separate config folder. Register this configuration in that app.",

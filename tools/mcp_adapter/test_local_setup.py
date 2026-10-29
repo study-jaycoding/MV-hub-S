@@ -169,7 +169,7 @@ class SetupTests(unittest.TestCase):
         first = desktop.read_bytes()
         result = configure_client("claude_desktop", self.setup, self.credential, home=home, local_appdata=local, appdata=roaming)
         self.assertEqual(result["status"], "configured")
-        self.assertIn("다시 켜야", result["message"])
+        self.assertIn("켜면 채팅에", result["message"])
         saved = json.loads(desktop.read_text(encoding="utf-8"))
         self.assertEqual(saved["preferences"], original["preferences"])
         self.assertEqual(saved["mcpServers"]["comfyui"], original["mcpServers"]["comfyui"])
@@ -191,6 +191,7 @@ class SetupTests(unittest.TestCase):
                 self.assertEqual(result["status"], "configured")
                 self.assertEqual(list(json.loads(path.read_text(encoding="utf-8"))["mcpServers"]), ["mvhub"])
                 self.assertEqual(len(list((fresh / "Claude").glob("*.mvhub-*"))), 0 if content is None else 2)
+                self.assertFalse((fresh / "Claude" / "lockfile").exists())  # 앱 켜짐 확인이 lockfile 을 만들지 않는다
 
     @unittest.skipUnless(os.name == "nt", "Windows DPAPI")
     def test_desktop_unreadable_or_foreign_settings_are_left_untouched(self):
@@ -221,6 +222,37 @@ class SetupTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Windows 사용자 저장 폴더"):
                 configure_client("claude_desktop", self.setup, self.credential, home=home, local_appdata=local)
         self.assertFalse(local.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows DPAPI")
+    def test_desktop_running_app_is_skipped_and_closed_app_is_registered(self):
+        import ctypes
+        from ctypes import wintypes
+        home, local, roaming = self.root / "home", self.root / "local", self.root / "roaming"
+        path = roaming / "Claude" / "claude_desktop_config.json"
+        path.parent.mkdir(parents=True)
+        path.write_text('{"preferences": {"v": 1}}', encoding="utf-8")
+        before = path.read_bytes()
+        lock = path.parent / "lockfile"
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateFileW.restype = wintypes.HANDLE
+        kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                       wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        # 켜진 앱처럼 공유 없이 붙잡는다(GENERIC_READ|WRITE, share 0, CREATE_ALWAYS)
+        handle = kernel.CreateFileW(str(lock), 0xC0000000, 0, None, 2, 0x80, None)
+        self.assertNotIn(handle, (None, ctypes.c_void_p(-1).value))
+        try:
+            result = configure_client("claude_desktop", self.setup, self.credential, home=home, local_appdata=local, appdata=roaming)
+        finally:
+            kernel.CloseHandle(handle)
+        self.assertEqual(result["status"], "skipped")
+        self.assertIn("켜져 있어", result["message"])
+        self.assertFalse(local.exists())  # 프로필을 만들지 않는다
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(len(list(path.parent.glob("*.mvhub-*"))), 0)
+        # 앱을 끄면 lockfile 은 남아도 잠기지 않는다 — 그때는 등록한다
+        result = configure_client("claude_desktop", self.setup, self.credential, home=home, local_appdata=local, appdata=roaming)
+        self.assertEqual(result["status"], "configured")
+        self.assertIn("mvhub", json.loads(path.read_text(encoding="utf-8"))["mcpServers"])
 
     @unittest.skipUnless(os.name == "nt", "Windows DPAPI")
     def test_desktop_change_seen_before_replace_is_kept(self):

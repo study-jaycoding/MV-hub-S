@@ -117,6 +117,18 @@ def _atomic(path: Path, data: bytes, previous: bytes | None = None, *, compare: 
             os.unlink(temporary)
 
 
+def _desktop_app_running(folder: Path) -> bool:
+    """켜진 Claude 앱은 자기 사용자 폴더의 lockfile 을 잠가 둔다(Chromium) — 만들지 않고 열어 보고 바로 닫는다."""
+    try:
+        fd = os.open(folder / "lockfile", os.O_RDWR)
+    except FileNotFoundError:
+        return False
+    except OSError:  # 잠김(PermissionError) 또는 알 수 없음 — 켜진 것으로 본다
+        return True
+    os.close(fd)
+    return False
+
+
 def server_name(setup: dict) -> str:
     """설치본은 mvhub, 소스 실행(dev)은 mvhub-test — 한 PC 에 둘이 있어도 서로의 등록을 덮지 않는다."""
     return "mvhub" if setup.get("release") is True else "mvhub-test"
@@ -248,6 +260,9 @@ def configure_client(client: str, setup: dict, credential: dict, *, home: Path |
         desktop = Path(appdata if appdata is not None else os.environ["APPDATA"]) / "Claude" / "claude_desktop_config.json"
         if not desktop.parent.is_dir():  # 데스크톱 앱이 없으면 프로필도 만들지 않는다
             return {"client": client, "status": "skipped", "message": "Claude 데스크톱 앱이 없어 건너뛰었습니다."}
+        if _desktop_app_running(desktop.parent):  # 켜진 앱은 옛 내용으로 설정 파일 전체를 다시 써 넣은 항목을 지운다(10-29 실측)
+            return {"client": client, "status": "skipped",
+                    "message": "Claude 앱이 켜져 있어 데스크톱 채팅 등록을 건너뛰었습니다. 앱을 트레이에서 완전히 종료한 뒤 다시 누르세요."}
     name = server_name(setup)
     profile = local / "MVHub-MCP" / "connections" / credential["hub_id"] / (credential["client_id"] + ".bin")
     entry = _entry(setup, profile, client)
@@ -285,5 +300,5 @@ def configure_client(client: str, setup: dict, credential: dict, *, home: Path |
             _atomic(path.with_name(path.name + ".mvhub-backup"), previous)
         _atomic(path, updated.encode("utf-8"), previous, compare=True)
     if desktop is not None:
-        return {"client": client, "status": "configured", "message": "등록했습니다. Claude 앱을 트레이에서 완전히 종료한 뒤 다시 켜야 채팅에 나타납니다."}
+        return {"client": client, "status": "configured", "message": "등록했습니다. Claude 앱을 켜면 채팅에 나타납니다."}
     return {"client": client, "status": "configured", "message": "등록했습니다. 실행 중인 LLM에서 MCP를 새로고침하거나 프로그램을 다시 시작하세요."}
