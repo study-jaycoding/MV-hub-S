@@ -71,7 +71,7 @@ MAX_PREVIEW = 512 * 1024
 REQUEST_TIMEOUT = 30
 RESULT_TIMEOUT = 90
 RESULT_UI_URI = "ui://mvhub/result.html"
-ADAPTER_VERSION = "2026.10.28.1"
+ADAPTER_VERSION = "2026.10.30.1"
 MCP_UPDATE_API = 1
 HUB_FEATURES = {"generation_result", "batch_results", "history_cursor", "plan_estimate", "reference_import", "reference_search"}
 MAX_REFERENCE = 64 * 1024 * 1024
@@ -594,6 +594,69 @@ def present_result(result: dict, model_names: dict | None = None) -> dict:
     return result
 
 
+WIDGET_NOTE = "힉스필드 위젯(show_generation_by_ids)으로 표시하세요."
+WIDGET_HINT = "그림이 안 보이면 'MV 미리보기로 보여줘'라고 말씀해 주세요."
+_NO_WIDGET = {"asset_missing", "unavailable", "not_ready", "origin_missing"}
+
+
+def _strip_display_hints(item: dict) -> None:
+    """허브 display_context 의 옛 지시(job_display·사전 권한 확인)는 native 표시 계획과 부딪혀 지운다."""
+    context = item.get("display_context")
+    if isinstance(context, dict):
+        for key in ("tool", "arguments", "note", "access"):
+            context.pop(key, None)
+
+
+def _widget_job(item: dict) -> str | None:
+    """힉스필드 위젯으로 보일 원본 작업 번호 — 끝났고 허브가 쓸 수 있는 원본 번호를 줬을 때만."""
+    context = item.get("display_context")
+    if item.get("generation_status") != "done" or not isinstance(context, dict) or context.get("status") in _NO_WIDGET:
+        return None
+    try:
+        return str(UUID(str(context.get("origin_job_id"))))
+    except ValueError:
+        return None
+
+
+def _mark_widget(item: dict) -> None:
+    item["note"] = WIDGET_NOTE
+    item["card_text"] = ((item.get("card_text") or "") + "\n" + WIDGET_HINT).strip()
+
+
+def higgsfield_plan(items: list) -> dict:
+    """native 표시 계획: 힉스필드 위젯 · MV 미리보기로 대신 · 글만 — 지금 MV 그림으로 보이는 완료 결과는 그림이 사라지지 않게 대신 보이기로."""
+    jobs, fallback, card_only = [], [], []
+    for position, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        _strip_display_hints(item)
+        index = item["item_index"] if type(item.get("item_index")) is int else position
+        job = _widget_job(item)
+        context = item.get("display_context") if isinstance(item.get("display_context"), dict) else {}
+        if job:
+            jobs.append({"index": index, "job_id": job})
+            _mark_widget(item)
+        elif item.get("generation_status") == "done" and context.get("status") != "asset_missing":
+            fallback.append(index)
+        else:
+            card_only.append(index)
+    return {"tool": "show_generation_by_ids", "jobs": jobs,
+            "fallback": {"tool": "show_results", "item_indexes": fallback}, "card_only_item_indexes": card_only}
+
+
+def single_display(result: dict, tool_name: str, arguments: dict, mv_preview: bool) -> dict:
+    """native get_result·get_generation: 위젯 대상이면 MV 그림 대신 위젯 계획, mv_preview 면 바뀌기 전 그대로."""
+    _strip_display_hints(result)
+    job = None if mv_preview else _widget_job(result)
+    if job:
+        result.pop("media", None)
+        _mark_widget(result)
+        index = arguments["item_index"] if tool_name == "get_result" else 0
+        result["higgsfield_display"] = {"tool": "show_generation_by_ids", "jobs": [{"index": index, "job_id": job}],
+                                        "fallback": {"tool": tool_name, "arguments": {**arguments, "mv_preview": True}}}
+    return result
+
+
 def write_result_display(data: str, directory: Path) -> dict[str, str]:
     """Validated JPEG only; captions are delivered separately as conversation text."""
     path = validate_display_directory(str(directory)) / ("mvhub-preview-" + secrets.token_hex(16) + ".html")
@@ -828,8 +891,32 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
         "표시 파일이 없는 실패·취소·미확인 항목도 해당 card_text를 한 번 안내하세요. "
         "표시 파일 저장 실패는 기존 결과를 다른 유효 폴더로 다시 조회하세요. 새 생성은 금지합니다. "
         if not native else
-        "이 연결은 native 표시 모드입니다. display_directory를 지정하지 말고 도구의 ImageContent로만 이미지를 표시하세요. MCP Apps 화면을 추가로 열지 마세요. "
+        "이 연결은 native 표시 모드입니다. 결과 표시는 기본으로 힉스필드 위젯입니다. wait_results·get_result·get_generation 응답의 higgsfield_display를 따르세요. "
+        "계획은 모든 항목이 끝날 때까지 wait_results로 기다린 뒤 그 계획의 higgsfield_display.jobs를 모두 모아 힉스필드 커넥터의 show_generation_by_ids(jobs)를 한 번 부르고, "
+        "그 항목에는 show_results를 부르지 마세요. 힉스필드 도구가 도구 목록에 없으면 도구 검색으로 불러온 뒤 판단하세요. "
+        "show_generation_by_ids 응답 jobs 중 status가 lookup_failed인 항목만 MV 미리보기로 대신 보이세요(계획은 show_results(그 item_indexes), "
+        "get_result·get_generation은 higgsfield_display.fallback 호출). 힉스필드 도구가 끝내 없거나 호출 전체가 오류면 위젯 대상 전부를 대신 보이고 그 사실을 안내하세요. "
+        "higgsfield_display.fallback.item_indexes는 처음부터 show_results로, card_only_item_indexes는 card_text만 안내하세요. "
+        "show_results는 한 번에 8개까지이니 넘으면 8개씩 나눠 부르세요. 사용자가 MV 미리보기를 원하면 show_results 또는 mv_preview=true로 보이세요. "
+        "display_directory를 지정하지 말고 MV의 MCP Apps 화면은 열지 마세요. "
         "결과 이미지와 카드 문구를 최종 답변에 다시 삽입하지 마세요. Codex PC·모바일용 연결은 MV Hub 앱에서 Codex로 다시 등록하세요. "
+    )
+    finish_text = (
+        "all_terminal이면 대기를 멈추고 아래 native 표시 지침대로 결과를 한 번 표시하세요. "
+        if native else
+        "all_terminal이면 대기를 멈추고 기본으로 show_results로 결과를 한 번 표시하세요. 사용자가 힉스필드 표시를 명시적으로 고른 경우에만 그 대신 외부 표시 지침을 따르세요. "
+    )
+    external_text = (
+        "display_context는 원본 생성 식별자일 뿐 표시 완료가 아닙니다. MV generation_id나 MV 폴더를 힉스필드 ID로 대체하지 마세요. "
+        "한 결과에 힉스필드 위젯과 MV 그림(show_results·ImageContent)을 함께 출력하지 마세요. "
+        "같은 대화에서 이미 위젯으로 표시한 job은 상태 재조회·재연결·기록 다시 열기만으로 다시 부르지 말고, 사용자가 다시 보여 달라고 할 때만 다시 부르세요. "
+        "다른 대화의 표시는 막지 마세요. 이 지침만으로 외부 위젯 중복이나 모바일 표시를 보장할 수 없습니다. "
+        if native else
+        "display_context는 원본 생성 식별자와 외부 표시 준비 정보일 뿐 표시 완료가 아닙니다. "
+        "사용자가 힉스필드 표시를 선택한 경우 wait_results의 원본 origin_job_id를 사용하고 외부 연결 계정·워크스페이스·공유 폴더 권한을 먼저 확인하세요. "
+        "MV generation_id나 MV 폴더를 힉스필드 ID로 대체하지 마세요. 외부 도구가 없거나 권한·클라이언트 지원이 미확인이면 그 한계를 안내하세요. "
+        "한 결과에 show_results와 힉스필드 위젯과 본문 이미지를 함께 출력하지 마세요. 상태 재조회·재연결·기록 다시 열기만으로 job_display를 재호출하지 마세요. "
+        "같은 대화에서 이미 표시한 preview_key를 확인하되 다른 대화의 표시를 막지 마세요. 이 지침만으로 외부 위젯 중복이나 모바일 표시를 보장할 수 없습니다. "
     )
 
     def display_directory_for(value):
@@ -879,7 +966,7 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             "presentation.scope=item은 선택 항목만의 상태이며 계획 전체 완료가 아닙니다. 여러 항목은 모두 확인하세요. "
             "실행 뒤 wait_results(plan_id,item_indexes,wait_seconds=25)로 최대 8개씩 기다리세요. 별도 sleep과 get_plan 반복은 불필요합니다. "
             "계획 status=submitted는 완료 여부가 아닙니다. 항목의 generation_status=done이 완료입니다. "
-            "all_terminal이면 대기를 멈추고 기본으로 show_results로 결과를 한 번 표시하세요. 사용자가 힉스필드 표시를 명시적으로 고른 경우에만 그 대신 외부 표시 지침을 따르세요. "
+            + finish_text +
             "all_done=false이면 실패·취소·불명확한 접수를 누락하지 마세요. "
             "구형 허브는 get_result(wait_seconds=25)를 사용합니다. 기존 결과·다른 LLM의 본인 생성물은 같은 연결의 read_context(kind='generations')로 찾고 get_generation으로 표시하세요. "
             "not_found이면 현재 허브에서 공간·프로젝트·폴더·검색어로 다시 조회하세요. 찾지 못한 결과를 자동으로 재생성하지 마세요. "
@@ -890,11 +977,7 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             "사용자가 파일·다운로드를 요청하지 않으면 URL·PC 경로·HTML 링크를 나열하지 마세요. 로컬 HTML을 Markdown 이미지로 삽입하지 마세요. "
             "네이티브 이미지 표시를 지원하지 않으면 표시 제한을 알리고 MV Hub에서 결과를 확인하도록 안내하세요. MCP Apps 화면으로 자동 우회하지 마세요. "
             "이미지 수신은 실제 화면 표시 확인이 아닙니다. 확인하지 않은 표시 성공을 주장하지 마세요. "
-            "display_context는 원본 생성 식별자와 외부 표시 준비 정보일 뿐 표시 완료가 아닙니다. "
-            "사용자가 힉스필드 표시를 선택한 경우 wait_results의 원본 origin_job_id를 사용하고 외부 연결 계정·워크스페이스·공유 폴더 권한을 먼저 확인하세요. "
-            "MV generation_id나 MV 폴더를 힉스필드 ID로 대체하지 마세요. 외부 도구가 없거나 권한·클라이언트 지원이 미확인이면 그 한계를 안내하세요. "
-            "한 결과에 show_results와 힉스필드 위젯과 본문 이미지를 함께 출력하지 마세요. 상태 재조회·재연결·기록 다시 열기만으로 job_display를 재호출하지 마세요. "
-            "같은 대화에서 이미 표시한 preview_key를 확인하되 다른 대화의 표시를 막지 마세요. 이 지침만으로 외부 위젯 중복이나 모바일 표시를 보장할 수 없습니다. "
+            + external_text +
             "미리보기 실패는 생성 실패가 아닙니다. 불명확한 실패는 자동 재제출하지 마세요. "
             "사용자 안내에는 card_text의 실제 모델명과 저장 위치를 사용하고 모델 코드·프로젝트 ID를 나열하지 마세요. "
             "크게 보기는 미리보기 확대이며 원본 다운로드가 아닙니다. 원본은 MV Hub에서 확인합니다. "
@@ -997,7 +1080,21 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             raise ToolError("구형 연결은 앱에서 선택한 공간을 사용합니다. 계정 연결을 등록하세요.")
         return present(broker.action("prepare_generation_plan", args))
 
-    @tool(annotations=read_only)
+    # native 만 설명을 바꾼다 — conversation(Codex)의 설명은 아래 docstring 그대로(지문 시험이 지킨다)
+    native_descriptions = {
+        "get_plan": "계획·항목 상태를 조회합니다. presentation.stage 변경 시 message를 안내하고 추측한 진행률을 말하지 마세요. 계획 status=submitted는 완료 후에도 유지됩니다. 영속 연결은 wait_results로 기다리고 종료 뒤 연결 지침대로 표시하세요(native 기본은 힉스필드 위젯 show_generation_by_ids).",
+        "get_result": "생성·과금 없이 선택 항목을 조회합니다(구형 허브용). 위젯 대상이면 MV 그림 없이 higgsfield_display를 돌려주니 힉스필드 show_generation_by_ids로 표시하고, 힉스필드가 lookup_failed면 higgsfield_display.fallback(mv_preview=true)으로 MV 미리보기를 보이세요. 위젯 대상이 아니면 MV 미리보기를 바로 돌려줍니다. scope=item은 계획 전체 완료가 아닙니다. wait_seconds=25로 대기하며 재생성하지 않습니다. 영상은 기존 포스터만 반환합니다.",
+        "get_generation": "같은 연결의 read_context(kind='generations')에서 찾은 ID·공간으로 기존 결과를 표시합니다. 다른 LLM에서 만든 본인 생성물도 가능하지만 다른 허브의 ID는 사용하지 마세요. 새 생성·과금은 없습니다. 위젯 대상이면 MV 그림 없이 higgsfield_display를 돌려주니 힉스필드 show_generation_by_ids로 표시하고, 힉스필드가 lookup_failed면 higgsfield_display.fallback(mv_preview=true)으로 MV 미리보기를 보이세요. 위젯 대상이 아니면 MV 미리보기를 바로 돌려줍니다.",
+        "wait_results": "한 계획의 1~8개 항목을 한 대기 예산으로 확인합니다. 이미지·화면을 만들지 않습니다. 응답의 higgsfield_display에 표시 계획(jobs·fallback·card_only_item_indexes)이 있습니다. 계획의 모든 항목이 끝나면 그 계획의 jobs를 모두 모아 힉스필드 show_generation_by_ids를 한 번 부르고, lookup_failed 항목과 fallback.item_indexes만 show_results(8개씩)로 대신 보이세요. all_done과 구분하며 실패를 재생성하지 마세요. 단계가 바뀔 때만 진행을 안내하세요.",
+        "show_results": "종료한 항목 1~8개를 MV 미리보기(ImageContent)로 표시합니다. native 기본 표시는 힉스필드 위젯(show_generation_by_ids)이므로 힉스필드가 못 찾은(lookup_failed) 항목·higgsfield_display.fallback 항목, 또는 사용자가 MV 미리보기를 원할 때만 쓰세요. 한 결과에 힉스필드 위젯과 함께 쓰지 마세요. 새 생성·대기는 없습니다. 표시 실패로 재생성하지 마세요.",
+    }
+
+    def native_description(name):
+        return {"description": native_descriptions[name]} if native else {}
+
+    mv_preview_help = "true면 힉스필드 위젯 대신 MV 미리보기 그림을 돌려줍니다(힉스필드가 못 찾았거나 사용자가 원할 때)."
+
+    @tool(annotations=read_only, **native_description("get_plan"))
     def get_plan(plan_id: Annotated[str, Field(min_length=1, max_length=200)]) -> dict[str, Any]:
         """계획·항목 상태를 조회합니다. presentation.stage 변경 시 message를 안내하고 추측한 진행률을 말하지 마세요. 계획 status=submitted는 완료 후에도 유지됩니다. 영속 연결은 wait_results로 기다리고 종료 뒤 기본으로 show_results로 표시하세요. 사용자가 힉스필드 표시를 명시적으로 고른 경우에만 대신 외부 표시 지침을 따르세요."""
         return present(broker.action("get_plan", {"plan_id": plan_id}))
@@ -1017,37 +1114,73 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             server.resource(RESULT_UI_URI, name="mvhub_result", title="MV Hub 생성 결과",
                             mime_type="text/html;profile=mcp-app", meta={"ui": {"prefersBorder": False}})(result_ui)
 
-        @tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
-        def get_result(
-            plan_id: Annotated[str, Field(min_length=1, max_length=200)],
-            item_index: Annotated[int, Field(ge=0, lt=20)] = 0,
-            asset_index: Annotated[int, Field(ge=0, lt=100)] = 0,
-            wait_seconds: Annotated[int, Field(ge=0, le=25, strict=True)] = 0,
-            display_directory: Annotated[str | None, Field(min_length=1, max_length=1024, description="Codex PC·모바일 대화 표시용. 이미 존재하는 이 작업 소유 로컬 폴더 절대경로. 다른 앱은 생략.")] = None,
-        ) -> CallToolResult:
-            """생성·과금 없이 선택 항목을 조회합니다. conversation 모드는 display_directory 필수, ready인 display.reference를 한 번 넣고 바로 아래 card_text를 일반 대화 텍스트로 한 번 안내하세요. 표시 파일 없는 항목도 card_text를 안내하세요. native 모드는 폴더 없이 ImageContent만 사용하고 MCP Apps 화면을 열지 마세요. scope=item은 계획 전체 완료가 아닙니다. wait_seconds=25로 대기하며 재생성하지 않습니다. 영상은 기존 포스터만 반환합니다."""
+        def result_tool(plan_id, item_index, asset_index, wait_seconds, display_directory, mv_preview):
             directory = display_directory_for(display_directory)
             args = {"plan_id": plan_id, "item_index": item_index, "asset_index": asset_index}
             if wait_seconds:
                 args["wait_seconds"] = wait_seconds
             result = present(broker.action("get_result", args))
+            if native:  # 대신 보이기 호출에는 wait_seconds 를 넣지 않는다 — 끝난 결과를 보이기만 한다
+                single_display(result, "get_result", {"plan_id": plan_id, "item_index": item_index, "asset_index": asset_index}, mv_preview)
             return render_result(result, directory)
 
-        @tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
-        def get_generation(
-            generation_id: UUID,
-            workspace_scope: Literal["personal", "team"],
-            workspace_id: Annotated[str | None, Field(min_length=1, max_length=200)] = None,
-            asset_index: Annotated[int, Field(ge=0, lt=100)] = 0,
-            display_directory: Annotated[str | None, Field(min_length=1, max_length=1024, description="Codex PC·모바일 대화 표시용. 이미 존재하는 이 작업 소유 로컬 폴더 절대경로. 다른 앱은 생략.")] = None,
-        ) -> CallToolResult:
-            """같은 연결의 read_context(kind='generations')에서 찾은 ID·공간으로 기존 결과를 표시합니다. 다른 LLM에서 만든 본인 생성물도 가능하지만 다른 허브의 ID는 사용하지 마세요. 새 생성·과금은 없습니다. conversation 모드는 display_directory 필수, ready인 display.reference를 한 번 넣고 바로 아래 card_text를 일반 대화 텍스트로 한 번 안내하세요. 표시 파일 없는 항목도 card_text를 안내하세요. native 모드는 폴더 없이 ImageContent만 사용하고 MCP Apps 화면을 열지 마세요. 파일 준비는 화면 표시 확인이 아닙니다."""
+        def generation_tool(generation_id, workspace_scope, workspace_id, asset_index, display_directory, mv_preview):
             directory = display_directory_for(display_directory)
-            return render_result(present(broker.action("get_generation", {
-                "generation_id": str(generation_id), "workspace_scope": workspace_scope,
-                "workspace_id": workspace_id, "asset_index": asset_index})), directory)
+            args = {"generation_id": str(generation_id), "workspace_scope": workspace_scope,
+                    "workspace_id": workspace_id, "asset_index": asset_index}
+            result = present(broker.action("get_generation", args))
+            if native:
+                single_display(result, "get_generation", args, mv_preview)
+            return render_result(result, directory)
 
-        @tool(annotations=read_only)
+        if native:
+            @tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False),
+                  **native_description("get_result"))
+            def get_result(
+                plan_id: Annotated[str, Field(min_length=1, max_length=200)],
+                item_index: Annotated[int, Field(ge=0, lt=20)] = 0,
+                asset_index: Annotated[int, Field(ge=0, lt=100)] = 0,
+                wait_seconds: Annotated[int, Field(ge=0, le=25, strict=True)] = 0,
+                display_directory: Annotated[str | None, Field(min_length=1, max_length=1024, description="Codex PC·모바일 대화 표시용. 이미 존재하는 이 작업 소유 로컬 폴더 절대경로. 다른 앱은 생략.")] = None,
+                mv_preview: Annotated[bool, Field(description=mv_preview_help)] = False,
+            ) -> CallToolResult:
+                return result_tool(plan_id, item_index, asset_index, wait_seconds, display_directory, mv_preview)
+
+            @tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False),
+                  **native_description("get_generation"))
+            def get_generation(
+                generation_id: UUID,
+                workspace_scope: Literal["personal", "team"],
+                workspace_id: Annotated[str | None, Field(min_length=1, max_length=200)] = None,
+                asset_index: Annotated[int, Field(ge=0, lt=100)] = 0,
+                display_directory: Annotated[str | None, Field(min_length=1, max_length=1024, description="Codex PC·모바일 대화 표시용. 이미 존재하는 이 작업 소유 로컬 폴더 절대경로. 다른 앱은 생략.")] = None,
+                mv_preview: Annotated[bool, Field(description=mv_preview_help)] = False,
+            ) -> CallToolResult:
+                return generation_tool(generation_id, workspace_scope, workspace_id, asset_index, display_directory, mv_preview)
+        else:
+            @tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
+            def get_result(
+                plan_id: Annotated[str, Field(min_length=1, max_length=200)],
+                item_index: Annotated[int, Field(ge=0, lt=20)] = 0,
+                asset_index: Annotated[int, Field(ge=0, lt=100)] = 0,
+                wait_seconds: Annotated[int, Field(ge=0, le=25, strict=True)] = 0,
+                display_directory: Annotated[str | None, Field(min_length=1, max_length=1024, description="Codex PC·모바일 대화 표시용. 이미 존재하는 이 작업 소유 로컬 폴더 절대경로. 다른 앱은 생략.")] = None,
+            ) -> CallToolResult:
+                """생성·과금 없이 선택 항목을 조회합니다. conversation 모드는 display_directory 필수, ready인 display.reference를 한 번 넣고 바로 아래 card_text를 일반 대화 텍스트로 한 번 안내하세요. 표시 파일 없는 항목도 card_text를 안내하세요. native 모드는 폴더 없이 ImageContent만 사용하고 MCP Apps 화면을 열지 마세요. scope=item은 계획 전체 완료가 아닙니다. wait_seconds=25로 대기하며 재생성하지 않습니다. 영상은 기존 포스터만 반환합니다."""
+                return result_tool(plan_id, item_index, asset_index, wait_seconds, display_directory, False)
+
+            @tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
+            def get_generation(
+                generation_id: UUID,
+                workspace_scope: Literal["personal", "team"],
+                workspace_id: Annotated[str | None, Field(min_length=1, max_length=200)] = None,
+                asset_index: Annotated[int, Field(ge=0, lt=100)] = 0,
+                display_directory: Annotated[str | None, Field(min_length=1, max_length=1024, description="Codex PC·모바일 대화 표시용. 이미 존재하는 이 작업 소유 로컬 폴더 절대경로. 다른 앱은 생략.")] = None,
+            ) -> CallToolResult:
+                """같은 연결의 read_context(kind='generations')에서 찾은 ID·공간으로 기존 결과를 표시합니다. 다른 LLM에서 만든 본인 생성물도 가능하지만 다른 허브의 ID는 사용하지 마세요. 새 생성·과금은 없습니다. conversation 모드는 display_directory 필수, ready인 display.reference를 한 번 넣고 바로 아래 card_text를 일반 대화 텍스트로 한 번 안내하세요. 표시 파일 없는 항목도 card_text를 안내하세요. native 모드는 폴더 없이 ImageContent만 사용하고 MCP Apps 화면을 열지 마세요. 파일 준비는 화면 표시 확인이 아닙니다."""
+                return generation_tool(generation_id, workspace_scope, workspace_id, asset_index, display_directory, False)
+
+        @tool(annotations=read_only, **native_description("wait_results"))
         def wait_results(
             plan_id: UUID,
             item_indexes: Annotated[list[Annotated[int, Field(ge=0, lt=20, strict=True)]], Field(min_length=1, max_length=8)],
@@ -1057,6 +1190,8 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             result = broker.action("wait_results", {"plan_id": str(plan_id), "item_indexes": item_indexes, "wait_seconds": wait_seconds})
             for item in result.get("items", []):
                 present(item)
+            if native:
+                result["higgsfield_display"] = higgsfield_plan(result.get("items", []))
             return result
 
         if native:
@@ -1068,7 +1203,8 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
                 """진행 카드가 기존 결과를 읽습니다. 파일 저장·새 생성 없이 권한을 재검사합니다."""
                 return show_results(plan_id, item_indexes)
 
-        @tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
+        @tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False),
+              **native_description("show_results"))
         def show_results(
             plan_id: UUID,
             item_indexes: Annotated[list[Annotated[int, Field(ge=0, lt=20, strict=True)]], Field(min_length=1, max_length=8)],
@@ -1083,6 +1219,8 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             if not isinstance(items, list) or len(items) > 8:
                 raise ToolError("결과 목록 형식이 올바르지 않습니다.")
             for item in items:
+                if native:
+                    _strip_display_hints(item)
                 try:
                     rendered = render_result(present(item), directory)
                 except ToolError:

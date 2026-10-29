@@ -2,6 +2,7 @@
 import json
 import base64
 import contextlib
+import hashlib
 import os
 import re
 import shutil
@@ -24,6 +25,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 from local_setup import configure_client
 from server import Broker, HUB_FEATURES, ADAPTER_VERSION, MAX_RESPONSE, MAX_RESULT_RESPONSE, MAX_GALLERY_RESPONSE, MAX_REFERENCE, RESULT_UI_URI, result_ui, write_result_display, validate_display_directory, present_result, attachment_file, _attachment_chunks
 import server as adapter
+
+CONVERSATION_SURFACE_SHA256 = "978d500daa8dcb2b9ff80b76a3ee2c1b9a2d41068b58a2b60f772e30e76fbcc5"  # 2026-10-30 바뀌기 전(2026.10.28.1) conversation 연결의 지침·도구 목록 지문
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1130,6 +1133,118 @@ assert.ok(!html.includes('innerHTML') && !html.includes('fetch('));
         checked = subprocess.run([node, "-e", script], input=json.dumps(result_ui()), text=True,
                                  capture_output=True, timeout=20)
         self.assertEqual(checked.returncode, 0, checked.stderr)
+
+    def higgsfield_item(self, index, status="done", context="external_access_unverified", origin=True, media=False):
+        item = {"item_index": index, "generation_id": str(uuid4()), "generation_status": status, "label": f"항목{index}",
+                "model": "nano_banana_flash", "workspace": {"scope": "personal"}, "note": "생성이 완료되었습니다. show_results로 결과를 확인하세요.",
+                "presentation": {"version": 1, "scope": "item", "stage": "completed" if status == "done" else "failed", "item_index": index}}
+        if context is not None:
+            item["display_context"] = {"provider": "higgsfield", "status": context, "origin_job_id": str(uuid4()) if origin else None,
+                                       "tool": "job_display", "arguments": {"id": "x"}, "note": "외부 계정 권한을 확인하세요.",
+                                       "access": "confirm_external_account_workspace_and_folder"}
+        if media:
+            item["media"] = {"mime": "image/jpeg", "data_base64": "/9j/eP/Z"}
+        return item
+
+    def test_native_wait_results_returns_higgsfield_display_plan(self):
+        # 2026-10-30 계약 display_plan: 위젯 · MV 대신 보이기 · 글만 — 지금 MV 그림으로 보이던 완료 결과는 그림이 사라지지 않는다
+        config, _ = self.profile()
+        # 배열 순서와 다른 item_index — 표시 계획은 배열 순번이 아니라 원래 번호를 돌려줘야 한다(Codex 독립 리뷰 P2)
+        items = [self.higgsfield_item(7), self.higgsfield_item(2, context="media_not_verified"),
+                 self.higgsfield_item(15, context="origin_missing", origin=False), self.higgsfield_item(0, context="unavailable", origin=False),
+                 self.higgsfield_item(11, context=None), self.higgsfield_item(4, status="failed", context="not_ready"),
+                 self.higgsfield_item(9, context="asset_missing")]
+        self.http.result_value = {"items": items, "all_terminal": True, "all_done": False}
+        async def exercise():
+            async with Client(StdioServerParameters(**config)) as client:
+                waited = await client.call_tool("wait_results", {"plan_id": str(uuid4()), "item_indexes": [7, 2, 15, 0, 11, 4, 9], "wait_seconds": 0})
+                self.assertFalse(waited.is_error, waited.content)
+                return waited.structured_content
+        result = anyio.run(exercise)
+        plan = result["higgsfield_display"]
+        self.assertEqual(plan["tool"], "show_generation_by_ids")
+        self.assertEqual(plan["jobs"], [{"index": items[i]["item_index"], "job_id": items[i]["display_context"]["origin_job_id"]} for i in (0, 1)])
+        self.assertEqual([job["index"] for job in plan["jobs"]], [7, 2])
+        self.assertEqual(plan["fallback"], {"tool": "show_results", "item_indexes": [15, 0, 11]})
+        self.assertEqual(plan["card_only_item_indexes"], [4, 9])
+        shown = result["items"]
+        for item in shown:
+            for key in ("tool", "arguments", "note", "access"):
+                self.assertNotIn(key, item.get("display_context") or {})
+        for i in (0, 1):
+            self.assertEqual(shown[i]["note"], adapter.WIDGET_NOTE)
+            self.assertTrue(shown[i]["card_text"].endswith(adapter.WIDGET_HINT))
+        for i in (2, 3, 4, 5, 6):  # 대신 보이기·글만 항목의 안내는 그대로
+            self.assertEqual(shown[i]["note"], "생성이 완료되었습니다. show_results로 결과를 확인하세요.")
+            self.assertNotIn(adapter.WIDGET_HINT, shown[i]["card_text"])
+
+    def test_native_single_results_use_widget_unless_mv_preview(self):
+        # 2026-10-30 계약 native_get_paths: 위젯 대상이면 MV 그림 대신 위젯 계획, mv_preview 면 바뀌기 전 그대로
+        config, _ = self.profile()
+        widget = self.higgsfield_item(7, media=True)
+        job = widget["display_context"]["origin_job_id"]
+        generation = str(uuid4())
+        async def exercise():
+            async with Client(StdioServerParameters(**config)) as client:
+                tools = {t.name: t for t in (await client.list_tools()).tools}
+                for name in ("get_result", "get_generation"):
+                    self.assertIn("mv_preview", tools[name].input_schema["properties"])
+                outcomes = {}
+                for name, args in (("get_result", {"plan_id": "plan-1", "item_index": 7, "asset_index": 0, "wait_seconds": 5}),
+                                   ("get_generation", {"generation_id": generation, "workspace_scope": "personal"})):
+                    for preview in (False, True):
+                        self.http.result_value = json.loads(json.dumps(widget))
+                        outcomes[name, preview] = await client.call_tool(name, {**args, "mv_preview": preview})
+                self.http.result_value = self.higgsfield_item(0, context="origin_missing", origin=False, media=True)
+                outcomes["origin_missing"] = await client.call_tool("get_generation", {"generation_id": generation, "workspace_scope": "personal"})
+                return outcomes
+        outcomes = anyio.run(exercise)
+        expected_fallback = {"get_result": {"plan_id": "plan-1", "item_index": 7, "asset_index": 0, "mv_preview": True},
+                             "get_generation": {"generation_id": generation, "workspace_scope": "personal", "workspace_id": None,
+                                                "asset_index": 0, "mv_preview": True}}
+        for name, index in (("get_result", 7), ("get_generation", 0)):
+            plain = outcomes[name, False]
+            self.assertFalse(plain.is_error, plain.content)
+            self.assertEqual(sum(block.type == "image" for block in plain.content), 0)
+            self.assertEqual(plain.structured_content["higgsfield_display"],
+                             {"tool": "show_generation_by_ids", "jobs": [{"index": index, "job_id": job}],
+                              "fallback": {"tool": name, "arguments": expected_fallback[name]}})
+            self.assertEqual(plain.structured_content["note"], adapter.WIDGET_NOTE)
+            self.assertTrue(plain.structured_content["card_text"].endswith(adapter.WIDGET_HINT))
+            preview = outcomes[name, True]
+            self.assertEqual(sum(block.type == "image" for block in preview.content), 1)
+            self.assertNotIn("higgsfield_display", preview.structured_content)
+            self.assertEqual(preview.structured_content["note"], widget["note"])
+            self.assertNotIn(adapter.WIDGET_HINT, preview.structured_content["card_text"])
+            self.assertNotIn("tool", preview.structured_content["display_context"])
+        missing = outcomes["origin_missing"]
+        self.assertEqual(sum(block.type == "image" for block in missing.content), 1)
+        self.assertNotIn("higgsfield_display", missing.structured_content)
+
+    def test_native_instructions_make_higgsfield_widget_the_default(self):
+        config, _ = self.profile()
+        async def exercise():
+            async with Client(StdioServerParameters(**config)) as client:
+                return client.instructions, {t.name: t.description for t in (await client.list_tools()).tools}
+        instructions, descriptions = anyio.run(exercise)
+        for phrase in ("기본으로 힉스필드 위젯", "show_generation_by_ids(jobs)를 한 번", "lookup_failed인 항목만", "show_results(그 item_indexes)",
+                       "higgsfield_display.fallback 호출", "8개씩 나눠", "도구 검색으로 불러온 뒤", "다시 보여 달라고 할 때만", "함께 출력하지 마세요"):
+            self.assertIn(phrase, instructions)
+        self.assertNotIn("명시적으로 고른 경우에만", instructions)
+        for name in ("get_plan", "wait_results", "show_results", "get_result", "get_generation"):
+            self.assertIn("show_generation_by_ids", descriptions[name])
+            self.assertNotIn("명시적으로 고른 경우에만", descriptions[name])
+
+    def test_conversation_surface_is_unchanged(self):
+        # 힉스필드 위젯 기본 표시(2026-10-30)는 native 만 — Codex 연결의 지침·도구 목록은 바뀌기 전 코드로 잰 지문 그대로
+        config, _ = self.profile("conversation")
+        async def exercise():
+            async with Client(StdioServerParameters(**config)) as client:
+                tools = sorted((tool.model_dump(mode="json", exclude_none=True) for tool in (await client.list_tools()).tools),
+                               key=lambda tool: tool["name"])
+                surface = json.dumps({"instructions": client.instructions, "tools": tools}, ensure_ascii=False, sort_keys=True)
+                return hashlib.sha256(surface.encode("utf-8")).hexdigest()
+        self.assertEqual(anyio.run(exercise), CONVERSATION_SURFACE_SHA256)
 
 
 if __name__ == "__main__":
