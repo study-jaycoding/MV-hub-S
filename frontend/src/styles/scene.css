@@ -1195,6 +1195,17 @@
 .scene-card.sel .scene-port.out.lane-set,
 .scene-card:hover .scene-port.out.lane-set { border-color: #e8c341; }
 .scene-card:hover .scene-port:hover { transform: translateY(-50%) scale(1.35); }
+/* 고르지도 올리지도 않은 카드 — 선이 없는 포트만 점 크기(지름 10px = 점 반지름 5)의 회색 빈 원(Jay 2026-10-29 A안).
+   선이 닿은 포트는 점 층의 회색 점이 그 자리다. 닿았는지는 보드가 카드 틀의 data-linked 에 적는다(out · in · in-<칸>).
+   끄는 중(wiring)엔 아래 규칙이 입력 포트를 따로 드러내고, 멀리 볼 때(LOD)는 회색 점처럼 숨긴다. 자리는 --ring 으로 계산돼 그대로 가운데. */
+.scene-board:not(.wiring):not([data-lod-low]) .scene-card:not(.sel):not(:hover):not([data-linked~="out"]) > .scene-port.out,
+.scene-board:not(.wiring):not([data-lod-low]) .scene-card:not(.sel):not(:hover):not([data-linked~="in"]) > .scene-port.in:not([class*="lane-"]),
+.scene-board:not(.wiring):not([data-lod-low]) .scene-card:not(.sel):not(:hover):not([data-linked~="in-model"]) > .scene-port.in.lane-model,
+.scene-board:not(.wiring):not([data-lod-low]) .scene-card:not(.sel):not(:hover):not([data-linked~="in-ref"]) > .scene-port.in.lane-ref,
+.scene-board:not(.wiring):not([data-lod-low]) .scene-card:not(.sel):not(:hover):not([data-linked~="in-text"]) > .scene-port.in.lane-text,
+.scene-board:not(.wiring):not([data-lod-low]) .scene-card:not(.sel):not(:hover):not([data-linked~="in-set"]) > .scene-port.in.lane-set {
+  --ring: 10px; opacity: 1; border-width: 1.5px; border-color: #5d636e;
+}
 /* ★연결선을 드래그하는 중에는 모든 카드의 '입력' 포트를 색까지 넣어 드러낸다(어디에 놓을지 보이게). 비선택 대상도 드롭 가능. */
 .scene-board.wiring .scene-card .scene-port.in {
   opacity: 1; pointer-events: auto; z-index: 15;

@@ -51,8 +51,9 @@ it("고리 자리 = 점 간격(PORT_GAP) + 고리 반지름 + 카드 테두리 �
   const at = "calc(0px - var(--port-gap) - var(--ring) / 2 - var(--bw, 0px))";
   expect(rules.find((r) => r.selectors[0] === ".scene-port.out")?.decls).toContainEqual(["right", at]);
   expect(rules.find((r) => r.selectors[0] === ".scene-port.in")?.decls).toContainEqual(["left", at]);
-  // 그 밖의 고리 규칙은 가로 자리·크기를 건드리지 않는다(세로는 칸별 top, 커지는 건 가운데 기준 scale 만).
-  const MOVES = /^(left|right|inset|margin.*|translate|width|height|position|--ring|--port-gap|--bw)$/;
+  // 그 밖의 고리 규칙은 가로 자리·크기를 직접 건드리지 않는다(세로는 칸별 top, 커지는 건 가운데 기준 scale 만).
+  //  크기는 --ring 으로만 바꾼다 — 자리 계산이 같은 값을 읽어 가운데가 그대로다(선택 안 한 카드의 작은 빈 원).
+  const MOVES = /^(left|right|inset|margin.*|translate|width|height|position|--port-gap|--bw)$/;
   const bad = rules.flatMap((r) =>
     r.selectors.some(isPort) && r !== base && !(r.selectors[0] === ".scene-port.out" || r.selectors[0] === ".scene-port.in")
       ? r.decls

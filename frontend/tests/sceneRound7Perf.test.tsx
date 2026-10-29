@@ -378,6 +378,21 @@ it("연결점 — 켜진 선끼리 색이 섞인 점은 흰 점, 한 색이면 �
   expect(dotAt(d("e2"), false)).toBe("scene-dot text");
 });
 
+it("선이 닿은 포트를 카드 틀에 적는다 — 선 없는 포트만 작은 빈 원으로 보이게(CSS 가 data-linked 를 읽는다, Jay 2026-10-29 A안)", async () => {
+  setGens({});
+  const scene = {
+    id: "S", name: "S", created_at: 0, groups: [],
+    cards: [ref("r1", 0, 0), { id: "t1", kind: "text", x: 0, y: 220, text: "글" }, { id: "g1", kind: "generation", x: 330, y: 110 }, { id: "l1", kind: "list", x: 660, y: 110 }],
+    edges: [{ id: "e1", from: "r1", to: "g1" }, { id: "e2", from: "t1", to: "g1" }],
+  };
+  await act(async () => { root.render(<SceneBoard scene={scene as never} onChange={noop} />); });
+  const linked = (id: string) => (boardCard(id).getAttribute("data-linked") ?? "").split(" ").filter(Boolean).sort();
+  expect(linked("r1")).toEqual(["out"]);
+  expect(linked("t1")).toEqual(["out"]);
+  expect(linked("g1")).toEqual(["in", "in-ref", "in-text"]); // 모델·세트 칸과 출력은 선이 없다 → 빈 원
+  expect(boardCard("l1").hasAttribute("data-linked")).toBe(false);
+});
+
 // 저장한 조각을 씬에 합쳐 다시 내려 주는 부모(App 의 patchActiveScene 과 같다 — 카드 배열은 보드가 준 그 객체다).
 //  받는 값을 바꾸거나(setBoardProps) 씬은 그대로 두고 다시 그릴(rerenderBoard) 수 있다.
 type BoardProps = ComponentProps<typeof SceneBoard>;

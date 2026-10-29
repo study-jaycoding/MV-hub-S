@@ -2838,6 +2838,22 @@ export function SceneBoard({
         : [],
     [collapsedMemberOf, edges, grayHidden, edgeRoles, refCardEdgeIds, genRefEdgeIds, collapsedBarById, cards, heightTick],
   );
+  // 선이 닿은 포트 — 카드 틀의 data-linked(out · in · in-<칸>). 고르지도 올리지도 않은 카드에서 선이 없는 포트만 작은 빈 원으로
+  //  보이게 CSS 가 읽는다(Jay 2026-10-29 A안). 점 층과 같은 선(visibleEdges) + 숨긴 카드 우회선의 보이는 쪽 끝.
+  const linkedPorts = useMemo(() => {
+    const m = new Map<string, Set<string>>();
+    const add = (id: string, token: string) => {
+      const s = m.get(id) ?? new Set<string>();
+      m.set(id, s.add(token));
+    };
+    for (const e of [...visibleEdges, ...groupBridges]) {
+      add(e.from, "out");
+      add(e.to, "in");
+      add(e.to, "in-" + laneOf(edgeRoles.get(e.id) || "ref"));
+    }
+    return new Map([...m].map(([id, s]) => [id, [...s].join(" ")]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleEdges, groupBridges, edgeRoles]);
 
   return (
     <div
@@ -3290,6 +3306,7 @@ export function SceneBoard({
                 (showNode ? " has-node" : "") // 완료 결과가 있으면 히스토리 노드가 카드 뼈대를 대체
               }
               data-id={card.id}
+              data-linked={linkedPorts.get(card.id)} // 선이 닿은 포트(scene.css 의 작은 빈 원)
               data-layer-move={origin ? "" : undefined} // 끄는 동안만 — 값 0 애니메이션을 거는 표식(styles/scene.css)
               style={{
                 // 끄는 중: left/top 은 끌기 전 자리에 두고 translate 로 지금 좌표까지 옮긴다. 이동량은 캔버스 좌표 그대로다
