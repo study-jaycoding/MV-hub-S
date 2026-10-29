@@ -523,14 +523,22 @@
   padding: 8px 8px 24px; font-size: 12px; line-height: 1.7; white-space: pre-wrap; word-break: break-word;
 }
 .scene-textnode-ph2 { color: #666; }
-/* 인라인 @레퍼런스 알약 — 문장 속에서 썸네일 + @imageN. */
+/* 인라인 @레퍼런스 알약 — 문장 속에서 썸네일 + @imageN. 종류 색 = 프롬프트 알약과 같은 규칙(Jay 2026-10-29):
+   이미지(기본)·시작·끝 파랑(시작·끝은 금색 글자) · 영상 라임 · 오디오 보라 + 음표. */
 .scene-inlinetok {
   display: inline-flex; align-items: center; gap: 3px; vertical-align: middle;
-  background: rgba(127, 169, 255, 0.16); border: 1px solid #4a5a80; border-radius: 5px;
-  padding: 0 5px 0 2px; margin: 0 1px; font-size: 11px; color: #cdd8f0; white-space: nowrap;
+  background: rgba(96, 165, 250, 0.16); border: 1px solid rgba(96, 165, 250, 0.55); border-radius: 5px;
+  padding: 0 5px 0 2px; margin: 0 1px; font-size: 11px; color: #9ec5ff; white-space: nowrap;
 }
+.scene-inlinetok.k-start, .scene-inlinetok.k-end { color: #fcd34d; }
+.scene-inlinetok.k-video { background: rgba(var(--accent-rgb), 0.16); border-color: rgba(var(--accent-rgb), 0.5); color: var(--accent); }
+.scene-inlinetok.k-audio { background: rgba(192, 132, 252, 0.16); border-color: rgba(192, 132, 252, 0.55); color: #d8b4fe; }
 .scene-inlinetok img, .scene-inlinetok-ph {
   width: 15px; height: 15px; border-radius: 3px; object-fit: cover; flex: none; background: #05060a;
+}
+.scene-inlinetok .tok-audio {
+  display: inline-flex; align-items: center; justify-content: center; font-size: 10px;
+  background: linear-gradient(135deg, #1b1d27, #0b0c11);
 }
 /* 전체복사 버튼 — 우측하단 모서리. 카드를 선택했을 때만 보인다(평소엔 숨겨 다른 카드 위로 삐져나오지 않게). */
 .scene-copy-btn {
@@ -675,27 +683,41 @@
 /* 개수 배지 영역(맨 우측) — 클릭하면 그 카드의 생성 결과 팝업(변형 전체) */
 .scene-listrow-count { margin-left: auto; flex: none; display: flex; align-items: center; cursor: pointer; }
 
-/* 생성물 리스트 — 썸네일 그리드(드래그로 순서 변경) */
+/* 생성물 리스트 — 썸네일 그리드(드래그로 순서 변경).
+   번호 알약이 칸 왼쪽 위 모서리에 걸쳐(레퍼런스 줄과 같은 자리) 칸 밖으로 나오므로, 그만큼 위·왼쪽 여백과 칸 사이를 둔다
+   (알약이 옆 칸에 3px 못 미친다). 모두 --lt-badge-fs 에 비례 — 리스트를 키워도 같은 모양(Jay 2026-10-29 시안 P1). */
 .scene-listthumbs {
   align-self: stretch; width: 100%; flex: 1 1 0; min-height: 0;
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(42px, 1fr)); gap: 4px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(42px, 1fr));
+  gap: calc(var(--lt-badge-fs, 8px) * 0.55 + 3px);
+  padding: calc(var(--lt-badge-fs, 8px) * 0.55) 0 0 calc(var(--lt-badge-fs, 8px) * 0.55);
   align-content: start; /* 넘칠 때 위에서부터 채워 스크롤(가운데 정렬로 잘리지 않게) */
 }
+/* overflow 를 열어 번호 알약이 칸 밖으로 나온다 — 안의 그림·자리 표시가 칸의 둥근 모서리를 직접 갖는다 */
 .scene-listthumb {
-  position: relative; aspect-ratio: 1; border-radius: 4px; overflow: hidden;
+  position: relative; aspect-ratio: 1; border-radius: 4px;
   background: #05060a; cursor: grab;
 }
 .scene-listthumb:active { cursor: grabbing; }
-.scene-listthumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.scene-listthumb img { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: 4px; }
 .scene-listthumb-ph {
-  display: block; width: 100%; height: 100%;
+  display: block; width: 100%; height: 100%; border-radius: 4px;
   background: repeating-linear-gradient(45deg, #15171d, #15171d 4px, #0f1116 4px, #0f1116 8px);
 }
-/* 번호·장수 배지 글씨는 리스트 카드 크기에 비례(--lt-badge-fs, 컨테이너에서 상속). 기본 8px. */
+.scene-listthumb .audio-tile { width: 100%; height: 100%; aspect-ratio: auto; border-radius: 4px; }
+.scene-listthumb .audio-glyph { font-size: calc(var(--lt-badge-fs, 8px) * 2.4); opacity: 0.85; }
+/* 번호·장수 배지 글씨는 리스트 카드 크기에 비례(--lt-badge-fs, 컨테이너에서 상속). 기본 8px.
+   번호 = 종류 색 둥근 알약(이미지 파랑 · 영상 라임 · 오디오 보라 — 레퍼런스 줄과 같은 규칙), S·E 는 없다. */
 .scene-listthumb-n {
-  position: absolute; left: 2px; top: 1px; font-size: var(--lt-badge-fs, 8px); font-weight: 800;
-  background: rgba(0, 0, 0, 0.6); color: #fff; padding: 0 3px; border-radius: 3px; line-height: 1.4;
+  position: absolute; z-index: 2; box-sizing: border-box;
+  left: calc(var(--lt-badge-fs, 8px) * -0.55); top: calc(var(--lt-badge-fs, 8px) * -0.55);
+  min-width: calc(var(--lt-badge-fs, 8px) * 1.7); height: calc(var(--lt-badge-fs, 8px) * 1.7);
+  padding: 0 calc(var(--lt-badge-fs, 8px) * 0.5); border-radius: 999px;
+  font-size: var(--lt-badge-fs, 8px); font-weight: 900; line-height: calc(var(--lt-badge-fs, 8px) * 1.7); text-align: center;
+  background: #3d5afe; color: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
 }
+.scene-listthumb-n.k-video { background: var(--accent); color: var(--accent-ink); }
+.scene-listthumb-n.k-audio { background: #725ac0; }
 /* 레퍼런스 카드 타일의 '장수' 배지 — 우하단(카드당 여러 장일 때) */
 .scene-listthumb-cnt {
   position: absolute; right: 2px; bottom: 1px; font-size: var(--lt-badge-fs, 8px); font-weight: 800;

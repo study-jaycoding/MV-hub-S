@@ -14,6 +14,11 @@ import { copyText } from "../../../lib/flash";
 import { CloudOffIcon, LinkOffIcon } from "../../common/ViewIcons";
 import { CARD_W } from "../sceneColors";
 
+// 격자 칸 번호 알약 색 = 종류(이미지 파랑·영상 라임·오디오 보라 — 레퍼런스 줄과 같은 규칙, Jay 2026-10-29)
+const kindOf = (type?: string) => (type === "video" ? "video" : type === "audio" ? "audio" : "image");
+// 오디오는 썸네일이 없다 — 에셋 창 오디오 카드와 같은 음표 타일
+const audioTile = <div className="audio-tile"><span className="audio-glyph">🎵</span></div>;
+
 export function ListCard({
   card,
   cardsById,
@@ -213,6 +218,7 @@ export function ListCard({
                   const gid = rc.genId || variantIds(rc)[0];
                   const gen = gid ? ownEntry(genData, gid) : undefined;
                   const genSrc = gen ? thumbOf(gen, 128) : null;
+                  const genKind = kindOf(gen?.assets?.[0]?.type);
                   return (
                     <div
                       key={cid}
@@ -221,17 +227,20 @@ export function ListCard({
                       title={`${i + 1}번 (생성물) — 드래그해 이 리스트의 순서 변경`}
                       onMouseDown={(e) => startReorder(e, card.id, cid, "h")}
                     >
-                      {genSrc ? (
+                      {genKind === "audio" ? (
+                        audioTile
+                      ) : genSrc ? (
                         <img src={genSrc} alt="" draggable={false} onError={hideBrokenImg} onLoad={showLoadedImg} />
                       ) : (
                         <span className="scene-listthumb-ph" />
                       )}
-                      <span className="scene-listthumb-n">{i + 1}</span>
+                      <span className={`scene-listthumb-n k-${genKind}`}>{i + 1}</span>
                     </div>
                   );
                 }
                 const refs = rc?.refs || [];
                 const src = refs[0] ? refThumbSrc(refs[0]) : null;
+                const refKind = kindOf(refs[0]?.type); // 대표(첫 장)의 종류
                 // 서버에 없는 레퍼런스(Jay 2026-09-29) — 대표(첫 장)가 서버에 없으면 붉은 빗금 + 아이콘,
                 //  그 밖에 서버에 없는 장이 있으면(이 PC 에만 등) 오른쪽 위 마크. 판정은 ReferenceCard 와 같은 가게.
                 const first = refs[0] ? refServerStatus(workspaceId, refs[0]) : undefined;
@@ -256,12 +265,14 @@ export function ListCard({
                         <span className="scene-listthumb-ph off-server" />
                         <span className="scene-ref-offmini">{first === "held" ? <LinkOffIcon /> : <CloudOffIcon />}</span>
                       </>
+                    ) : refKind === "audio" ? (
+                      audioTile
                     ) : src ? (
                       <img src={src} alt="" draggable={false} onError={hideBrokenImg} onLoad={showLoadedImg} />
                     ) : (
                       <span className="scene-listthumb-ph" />
                     )}
-                    <span className="scene-listthumb-n">{i + 1}</span>
+                    <span className={`scene-listthumb-n k-${refKind}`}>{i + 1}</span>
                     {refs.length > 1 && (
                       <span className="scene-listthumb-cnt">{refs.length}</span>
                     )}

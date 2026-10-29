@@ -175,8 +175,8 @@
   overflow-x: auto; overflow-y: hidden;
   /* 위아래 여백은 눈에 보이는 선을 기준으로 맞춘다 — 위는 패널 테두리(패널 padding 6px 이
      더 붙는다), 아래는 이 트레이의 border-bottom. 위 8 + 아래 14 로 그 6px 을 상쇄해 둘 다
-     15px 이 된다. 위를 6 까지 줄이면 항목 번호 배지(top:-5px)가 패널 테두리에 1px 까지
-     붙으므로 8 이 하한이다. */
+     15px 이 된다. 위를 6 까지 줄이면 항목 번호 배지(top:-6px)가 패널 테두리에 붙으므로
+     8 이 하한이다. */
   padding: 8px 10px 14px;
 }
 /* 레퍼런스 영역 포커스(클릭) — 여기서 Shift+Backspace 면 레퍼런스만 전체 삭제됨을 시각화 */
@@ -204,24 +204,28 @@
   width: 66px; height: 66px; border-radius: 10px; object-fit: cover;
   background: #050608; border: 1px solid var(--border2); display: block;
 }
+/* 오디오 칸 — 썸네일이 없어 에셋 창 오디오 카드와 같은 음표 타일 */
+.sl-reftray-ph.audio {
+  display: flex; align-items: center; justify-content: center; font-size: 28px;
+  background: linear-gradient(135deg, #1b1d27, #0b0c11);
+}
+/* 번호 알약 = 종류 색(이미지 파랑 · 영상 라임 · 오디오 보라 — 프롬프트 알약·캔버스 리스트와 같은 규칙, Jay 2026-10-29).
+   시작·끝 이미지(seedance)만 번호 앞에 금색 S·E 칸(.se). 기본이 이미지라 수정 창의 이미지 칸도 같은 색이 된다. */
 .sl-reftray-num {
-  position: absolute; top: -5px; left: -5px; z-index: 2;
-  min-width: 18px; height: 18px; padding: 0 4px;
-  border-radius: 9px; background: var(--accent); color: var(--accent-ink);
-  font-size: 11px; font-weight: 800; line-height: 18px; text-align: center;
+  position: absolute; top: -6px; left: -6px; z-index: 2;
+  display: inline-flex; justify-content: center; gap: 3px; box-sizing: border-box;
+  min-width: 19px; height: 19px; padding: 0 6px;
+  border-radius: 10px; background: #3d5afe; color: #fff;
+  font-size: 11px; font-weight: 900; line-height: 19px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
-.sl-reftray-role {
-  position: absolute; right: -4px; bottom: 17px; z-index: 2;
-  min-width: 17px; height: 17px; padding: 0 4px;
-  border-radius: 9px; border: 1px solid rgba(255, 255, 255, 0.36);
-  background: #1f232b; color: #fff;
-  font-size: 10px; font-weight: 900; line-height: 16px; text-align: center;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+.sl-reftray-num.video { background: var(--accent); color: var(--accent-ink); }
+.sl-reftray-num.audio { background: #725ac0; }
+.sl-reftray-num.se { padding-left: 2px; }
+.sl-reftray-num-role {
+  margin: 2px 0; padding: 0 4px; border-radius: 8px;
+  background: #fcd34d; color: #3a2a02; font-size: 9.5px; line-height: 15px;
 }
-.sl-reftray-role.omni { background: #3d5afe; }
-.sl-reftray-role.start { background: #00a7b5; }
-.sl-reftray-role.end { background: #d86c2f; }
-.sl-reftray-role.video { background: #7c4dff; }
 .sl-reftray-x {
   position: absolute; top: -6px; right: -6px; z-index: 2;
   width: 18px; height: 18px; border-radius: 50%;
@@ -270,13 +274,16 @@
 /* 썸네일 있으면 이모지 아이콘 숨김(img 로 대체). 아래 타입별 ::before 보다 우선순위를 높여야
    순서와 무관하게 확실히 숨겨진다(2-클래스 스코프). */
 .sl-tok.sl-tok-has-thumb::before { content: none; }
-.sl-tok-image { background: rgba(var(--accent-rgb), 0.16); border-color: rgba(var(--accent-rgb), 0.5); color: var(--accent); }
-.sl-tok-image::before { content: "🖼"; }
+/* 종류 색 = 트레이 번호 알약과 같은 규칙(이미지 파랑 · 영상 라임 · 오디오 보라). 시작·끝은 이미지 바탕에 금색 글자(Jay 2026-10-29). */
+.sl-tok-image,
 .sl-tok-start,
-.sl-tok-end { background: rgba(var(--accent-rgb), 0.16); border-color: rgba(var(--accent-rgb), 0.5); color: var(--accent); }
+.sl-tok-end { background: rgba(96, 165, 250, 0.16); border-color: rgba(96, 165, 250, 0.55); color: #9ec5ff; }
+.sl-tok-start,
+.sl-tok-end { color: #fcd34d; }
+.sl-tok-image::before { content: "🖼"; }
 .sl-tok-start::before { content: "⏮"; }
 .sl-tok-end::before { content: "⏭"; }
-.sl-tok-video { background: rgba(96, 165, 250, 0.16); border-color: rgba(96, 165, 250, 0.55); color: #9ec5ff; }
+.sl-tok-video { background: rgba(var(--accent-rgb), 0.16); border-color: rgba(var(--accent-rgb), 0.5); color: var(--accent); }
 .sl-tok-video::before { content: "🎬"; }
 .sl-tok-audio { background: rgba(192, 132, 252, 0.16); border-color: rgba(192, 132, 252, 0.55); color: #d8b4fe; }
 .sl-tok-audio::before { content: "🎵"; }

@@ -53,7 +53,8 @@ function caret(node: Node, offset: number) {
   expect(document.activeElement).toBe(editor());
 }
 async function promptText() { return (await import("../src/lib/promptEditor")).serialize(editor()).text; }
-function badge(index: number) { return required(items()[index], ".sl-reftray-role"); }
+// 역할은 번호 알약의 클래스(omni·start·end) — 따로 뜨던 역할 배지는 없앴다(Jay 2026-10-29, 시작·끝만 번호 앞 S·E 칸)
+function badge(index: number) { return required(items()[index], ".sl-reftray-num"); }
 
 describe("Seedance 2.5 트레이 우클릭 역할 편집", () => {
   it("이미지에만 3줄 메뉴를 표시하고 omni에서 활성화한다", async () => {

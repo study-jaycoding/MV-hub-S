@@ -77,8 +77,9 @@ export function TextCard({
   }
   // 텍스트를 토큰 기준으로 쪼개, 토큰은 인라인 알약(썸네일)으로, 나머지는 그대로.
   //  @image1 형식 + comfy 프롬프트의 <<<image1>>> 형식 둘 다 인식 → 같은 레퍼런스로 매핑.
+  //  시작·끝 이미지(@simage2·@eimage2)는 이미지 2번의 썸네일로 — 역할 해석은 생성 때 seedanceTokenRoles 가 이 글 그대로 읽는다.
   const renderInline = (text: string) => {
-    const re = /@(image|video|audio)(\d+)|<<<(image|video|audio)(\d+)>>>/gi;
+    const re = /@(simage|eimage|image|video|audio)(\d+)|<<<(simage|eimage|image|video|audio)(\d+)>>>/gi;
     const out: React.ReactNode[] = [];
     let last = 0;
     let m: RegExpExecArray | null;
@@ -86,13 +87,17 @@ export function TextCard({
     while ((m = re.exec(text))) {
       if (m.index > last) out.push(text.slice(last, m.index));
       const label = m[0];
-      const key = `@${(m[1] || m[3] || "").toLowerCase()}${m[2] || m[4] || ""}`;
+      const word = (m[1] || m[3] || "").toLowerCase();
+      const kind = word === "simage" ? "start" : word === "eimage" ? "end" : word;
+      const key = `@${kind === "start" || kind === "end" ? "image" : word}${m[2] || m[4] || ""}`;
       if (thumbByLabel.has(key)) {
         // 연결된 레퍼런스가 있는 토큰만 알약(썸네일). 없으면 그냥 텍스트로 둔다.
         const thumb = thumbByLabel.get(key);
         out.push(
-          <span className="scene-inlinetok" key={`t${k++}`} title={label}>
-            {thumb ? (
+          <span className={`scene-inlinetok k-${kind}`} key={`t${k++}`} title={label}>
+            {kind === "audio" ? (
+              <span className="scene-inlinetok-ph tok-audio">🎵</span>
+            ) : thumb ? (
               <img src={thumb} alt="" draggable={false} onError={hideBrokenImg} onLoad={showLoadedImg} />
             ) : (
               <span className="scene-inlinetok-ph" />

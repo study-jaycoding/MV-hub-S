@@ -153,8 +153,11 @@ export function SpotlightRefTray({
           const tokenVisible = usesMediaRefTokens(model) || seedanceHasTokenRoles(liveSeedanceRoles);
           const badgeRole = seedanceTrayRole(trayRefs, index, liveSeedanceRoles);
           const badgeTitle = seedanceTrayBadgeTitle(badgeRole);
-          // 역할 배지(시작/끝/옴니 = S/E/O)는 seedance 전용 개념 → seedance 모델에서만(이미지 모델엔 안 뜸).
-          const showRoleBadge = usesSeedanceMediaRefs(model);
+          // 역할(시작/끝/옴니)은 seedance 전용 개념 → seedance 모델에서만 번호 알약에 역할 클래스를 붙이고,
+          //  시작·끝만 번호 앞에 금색 S·E 칸을 그린다(옴니·영상·오디오는 번호 색이 곧 종류, Jay 2026-10-29).
+          const showRole = usesSeedanceMediaRefs(model);
+          const startOrEnd = showRole && (badgeRole === "start" || badgeRole === "end");
+          const kind = ref.type === "video" ? "video" : (ref.type as string) === "audio" ? "audio" : "image";
           // 보이는 번호 = 프롬프트에 쓰는 번호(@image2, @video1 …).
           const displayIndex = tokenVisible ? seedanceTrayTypeIndex(trayRefs, index) : index + 1;
           return (
@@ -173,7 +176,10 @@ export function SpotlightRefTray({
               }
               title={`${displayIndex}. ${ref.name} · ${badgeTitle} · 드래그=순서변경 · 더블클릭=크게 보기`}
             >
-              <span className="sl-reftray-num">{displayIndex}</span>
+              <span className={`sl-reftray-num ${kind}${showRole ? ` ${badgeRole}` : ""}${startOrEnd ? " se" : ""}`}>
+                {startOrEnd && <span className="sl-reftray-num-role">{seedanceTrayBadge(badgeRole)}</span>}
+                {displayIndex}
+              </span>
               {ref.type === "video" ? (
                 <MediaThumbnail
                   thumb={displayRefThumb(ref, 256)}
@@ -182,7 +188,7 @@ export function SpotlightRefTray({
                   fallback={<span className="sl-reftray-ph" />}
                 />
               ) : (ref.type as string) === "audio" ? (
-                <span className="sl-reftray-ph">A</span>
+                <span className="sl-reftray-ph audio">🎵</span>
               ) : displayRefThumb(ref) ? (
                 <img
                   src={displayRefThumb(ref)}
@@ -193,11 +199,6 @@ export function SpotlightRefTray({
                 />
               ) : (
                 <span className="sl-reftray-ph" />
-              )}
-              {showRoleBadge && (
-                <span className={`sl-reftray-role ${badgeRole}`} title={badgeTitle}>
-                  {seedanceTrayBadge(badgeRole)}
-                </span>
               )}
               <span className="sl-reftray-name">{ref.name}</span>
               {/* 연결된(from_card) 레퍼런스는 여기서 못 뺀다 — 캔버스에서 엣지를 끊어야 함(연결=레퍼런스). */}
