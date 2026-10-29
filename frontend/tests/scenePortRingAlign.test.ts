@@ -48,6 +48,11 @@ it("노드 틀 통일(Jay 2026-10-29, 10-30 2px) — 모든 노드 2px · 평소
     ["border", "var(--bw) solid transparent"], // 안 B(Jay 2026-10-30): 평소 테두리는 안 보인다 — 올림 65% · 고름 불투명
   ]));
   expect(one(".scene-card:hover")).toContainEqual(["border-color", `color-mix(in srgb, ${own} 65%, transparent)`]);
+  // 서버에 없는 레퍼런스·리스트(빨강)도 같은 규칙 — 평소 빨강을 칠하는 규칙이 없고, 올림 65% · 고름 불투명만(Jay 2026-10-30)
+  const offPlain = rules.filter((r) => r.selectors.some((s) => /off-server$/.test(s) && !s.includes(".sel")) && r.decls.some(([p]) => p === "border-color"));
+  expect(offPlain.map((r) => r.selectors.join(", "))).toEqual([]);
+  expect(rules.find((r) => r.selectors.includes(".scene-card-ref.off-server:hover"))?.decls).toContainEqual(["border-color", "color-mix(in srgb, #ff6b6b 65%, transparent)"]);
+  expect(one(".scene-card.sel.off-server")).toContainEqual(["border-color", "#ff6b6b"]);
   // 빈 원(선택 안 한 카드의 연결 없는 칸)은 입력이 하나라도 이어진 쪽에서만 — 출력 쪽·연결 없는 입력 쪽은 숨긴다
   const idle = rules.find((r) => r.decls.some(([p, v]) => p === "--ring" && v === "10px"))!;
   expect(idle.selectors.length).toBeGreaterThan(0);
