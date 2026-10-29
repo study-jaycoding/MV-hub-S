@@ -107,7 +107,7 @@ class PersistentTests(unittest.TestCase):
 
     def profile(self, display_mode="native"):
         credential = {"secret": uuid4().hex + uuid4().hex, "hub_id": self.http.hub_id, "url": self.url, "client_id": str(uuid4())}
-        result = configure_client("other", {"python": sys.executable, "adapter": str(Path(__file__).with_name("server.py")), "url": self.url}, credential, home=self.root, local_appdata=self.root)
+        result = configure_client("other", {"python": sys.executable, "adapter": str(Path(__file__).with_name("server.py")), "url": self.url, "release": True}, credential, home=self.root, local_appdata=self.root)
         self.http.clients[credential["secret"]] = credential["client_id"]
         config = json.loads(result["config"])["mcpServers"]["mvhub"]
         if display_mode != "native":
@@ -430,7 +430,7 @@ class PersistentTests(unittest.TestCase):
                 credential = {"secret": uuid4().hex + uuid4().hex, "hub_id": hub.hub_id,
                               "url": url, "client_id": str(uuid4())}
                 setup = configure_client("other", {"python": sys.executable,
-                    "adapter": str(Path(__file__).with_name("server.py")), "url": url},
+                    "adapter": str(Path(__file__).with_name("server.py")), "url": url, "release": True},
                     credential, home=self.root, local_appdata=self.root)
                 hub.clients[credential["secret"]] = credential["client_id"]
                 config = json.loads(setup["config"])["mcpServers"]["mvhub"]

@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from local_setup import configure_client, read_profile, remove_profiles, update_codex, update_claude, _atomic
+from local_setup import configure_client, read_profile, remove_profiles, server_name, update_codex, update_claude, _atomic
 
 
 class SetupTests(unittest.TestCase):
@@ -20,7 +20,7 @@ class SetupTests(unittest.TestCase):
         for path in (self.python, self.adapter):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("fixture")
-        self.setup = {"python": str(self.python), "adapter": str(self.adapter), "url": "http://127.0.0.1:8016", "python_args": ["-I", "-S"]}
+        self.setup = {"python": str(self.python), "adapter": str(self.adapter), "url": "http://127.0.0.1:8016", "python_args": ["-I", "-S"], "release": True}
         self.credential = {"secret": "s" * 43, "hub_id": "a" * 64, "client_id": str(uuid4()), "url": self.setup["url"]}
         self.entry = {"command": str(self.python), "args": ["-I", "-S", str(self.adapter), "--url", self.setup["url"]]}
 
@@ -122,6 +122,121 @@ class SetupTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _atomic(path, b"our edit", b"old content", compare=True)
         self.assertEqual(path.read_bytes(), b"another editor")
+
+    def test_name_follows_release_and_only_the_chosen_key_changes(self):
+        self.assertEqual(server_name({"release": True}), "mvhub")
+        for setup in ({"release": False}, {}, {"release": "yes"}):
+            self.assertEqual(server_name(setup), "mvhub-test")
+        installed = {"command": "C:/installed/python.exe", "args": ["-I", "-S", "C:/installed/server.py", "--url", "http://127.0.0.1:8010"]}
+        dev = {**self.setup, "release": False}
+        text = ("[mcp_servers.mvhub]\ncommand = " + json.dumps(installed["command"]) + "\nargs = " + json.dumps(installed["args"])
+                + "\n[mcp_servers.mvhub.env]\nKEEP = \"1\"\n[mcp_servers.mvhub-test]\ncommand = " + json.dumps(str(self.python))
+                + "\nargs = " + json.dumps(self.entry["args"]) + "\n[mcp_servers.mvhub-test.env]\nOLD = \"removed\"\n")
+        parsed = tomllib.loads(update_codex(text, self.entry, dev, "mvhub-test"))
+        self.assertEqual(parsed["mcp_servers"]["mvhub"], {**installed, "env": {"KEEP": "1"}})
+        self.assertEqual(parsed["mcp_servers"]["mvhub-test"], {**self.entry, "tool_timeout_sec": 150})
+        claude = {"mcpServers": {"mvhub": {"type": "stdio", **installed}}}
+        updated = json.loads(update_claude(json.dumps(claude), self.entry, dev, "mvhub-test"))
+        self.assertEqual(updated["mcpServers"]["mvhub"], claude["mcpServers"]["mvhub"])
+        self.assertEqual(updated["mcpServers"]["mvhub-test"], {"type": "stdio", **self.entry})
+        with self.assertRaises(ValueError):  # 다른 실행 파일이 그 이름을 쓰면 바꾸지 않는다
+            update_claude(json.dumps({"mcpServers": {"mvhub-test": installed}}), self.entry, dev, "mvhub-test")
+
+    @unittest.skipUnless(os.name == "nt", "Windows DPAPI")
+    def test_dev_app_registers_under_mvhub_test_without_touching_installed_entry(self):
+        home, local = self.root / "home", self.root / "local"
+        claude = home / ".claude.json"
+        claude.parent.mkdir(parents=True)
+        installed = {"type": "stdio", "command": "C:/installed/python.exe", "args": ["C:/installed/server.py"]}
+        claude.write_text(json.dumps({"mcpServers": {"mvhub": installed}}), encoding="utf-8")
+        dev = {**self.setup, "release": False}
+        result = configure_client("claude", dev, self.credential, home=home, local_appdata=local)
+        self.assertEqual(result["status"], "configured")
+        servers = json.loads(claude.read_text(encoding="utf-8"))["mcpServers"]
+        self.assertEqual(servers["mvhub"], installed)
+        self.assertEqual(servers["mvhub-test"]["command"], str(self.python))
+        other = configure_client("other", dev, {**self.credential, "client_id": str(uuid4())}, home=home, local_appdata=local)
+        self.assertEqual(list(json.loads(other["config"])["mcpServers"]), ["mvhub-test"])
+
+    @unittest.skipUnless(os.name == "nt", "Windows DPAPI")
+    def test_desktop_registration_keeps_other_settings_and_backs_up_only_existing_file(self):
+        home, local, roaming = self.root / "home", self.root / "local", self.root / "roaming"
+        desktop = roaming / "Claude" / "claude_desktop_config.json"
+        desktop.parent.mkdir(parents=True)
+        original = {"mcpServers": {"comfyui": {"command": "npx", "args": ["-y", "comfyui-mcp"]}},
+                    "preferences": {"sidebarMode": "epitaxy", "nested": {"keep": [1, 2]}}}
+        desktop.write_text(json.dumps(original), encoding="utf-8")
+        first = desktop.read_bytes()
+        result = configure_client("claude_desktop", self.setup, self.credential, home=home, local_appdata=local, appdata=roaming)
+        self.assertEqual(result["status"], "configured")
+        self.assertIn("다시 켜야", result["message"])
+        saved = json.loads(desktop.read_text(encoding="utf-8"))
+        self.assertEqual(saved["preferences"], original["preferences"])
+        self.assertEqual(saved["mcpServers"]["comfyui"], original["mcpServers"]["comfyui"])
+        profile = local / "MVHub-MCP" / "connections" / self.credential["hub_id"] / (self.credential["client_id"] + ".bin")
+        self.assertEqual(saved["mcpServers"]["mvhub"], {**self.entry, "args": [*self.entry["args"], "--profile", str(profile)]})
+        self.assertEqual(desktop.with_name(desktop.name + ".mvhub-original").read_bytes(), first)
+        self.assertEqual(desktop.with_name(desktop.name + ".mvhub-backup").read_bytes(), first)
+        self.assertNotIn(self.credential["secret"], desktop.read_text(encoding="utf-8") + json.dumps(result))
+        # 폴더만 있으면 새 파일을 만들고, 원본이 없으니 사본도 없다 · 빈 파일과 BOM 도 받는다
+        for content in (None, b"", "\ufeff{}".encode("utf-8")):
+            with self.subTest(content=content):
+                fresh = self.root / f"roaming-{uuid4()}"
+                (fresh / "Claude").mkdir(parents=True)
+                path = fresh / "Claude" / "claude_desktop_config.json"
+                if content is not None:
+                    path.write_bytes(content)
+                result = configure_client("claude_desktop", self.setup, {**self.credential, "client_id": str(uuid4())},
+                                          home=home, local_appdata=local, appdata=fresh)
+                self.assertEqual(result["status"], "configured")
+                self.assertEqual(list(json.loads(path.read_text(encoding="utf-8"))["mcpServers"]), ["mvhub"])
+                self.assertEqual(len(list((fresh / "Claude").glob("*.mvhub-*"))), 0 if content is None else 2)
+
+    @unittest.skipUnless(os.name == "nt", "Windows DPAPI")
+    def test_desktop_unreadable_or_foreign_settings_are_left_untouched(self):
+        home, local = self.root / "home", self.root / "local"
+        foreign = json.dumps({"mcpServers": {"mvhub": {"command": "C:/other/python.exe", "args": ["C:/other/server.py"]}}})
+        for content in (b"{not json", b"[]", b'{"mcpServers": []}', foreign.encode("utf-8")):
+            with self.subTest(content=content):
+                roaming = self.root / f"roaming-{uuid4()}"
+                path = roaming / "Claude" / "claude_desktop_config.json"
+                path.parent.mkdir(parents=True)
+                path.write_bytes(content)
+                result = configure_client("claude_desktop", self.setup, {**self.credential, "client_id": str(uuid4())},
+                                          home=home, local_appdata=local, appdata=roaming)
+                self.assertEqual(result["status"], "manual")
+                self.assertIn("mcpServers", result["config"])
+                self.assertEqual(path.read_bytes(), content)
+                self.assertEqual(len(list(path.parent.glob("*.mvhub-*"))), 0)
+
+    @unittest.skipUnless(os.name == "nt", "Windows DPAPI")
+    def test_desktop_missing_app_or_appdata_creates_nothing(self):
+        home, local, roaming = self.root / "home", self.root / "local", self.root / "roaming"
+        roaming.mkdir()
+        result = configure_client("claude_desktop", self.setup, self.credential, home=home, local_appdata=local, appdata=roaming)
+        self.assertEqual(result["status"], "skipped")
+        self.assertFalse((roaming / "Claude").exists())
+        self.assertFalse(local.exists())  # 프로필 파일도 만들지 않는다
+        with patch.dict(os.environ, {"APPDATA": ""}):
+            with self.assertRaisesRegex(ValueError, "Windows 사용자 저장 폴더"):
+                configure_client("claude_desktop", self.setup, self.credential, home=home, local_appdata=local)
+        self.assertFalse(local.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows DPAPI")
+    def test_desktop_change_seen_before_replace_is_kept(self):
+        home, local, roaming = self.root / "home", self.root / "local", self.root / "roaming"
+        path = roaming / "Claude" / "claude_desktop_config.json"
+        path.parent.mkdir(parents=True)
+        path.write_text('{"preferences": {"v": 1}}', encoding="utf-8")
+        import local_setup
+        real = local_setup.update_claude_desktop
+        def app_writes_meanwhile(*args):
+            path.write_text('{"preferences": {"v": 2}}', encoding="utf-8")  # 데스크톱 앱이 그 사이 자기 설정을 저장
+            return real(*args)
+        with patch("local_setup.update_claude_desktop", side_effect=app_writes_meanwhile):
+            with self.assertRaisesRegex(ValueError, "다른 프로그램에서 바뀌었습니다"):
+                configure_client("claude_desktop", self.setup, self.credential, home=home, local_appdata=local, appdata=roaming)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"preferences": {"v": 2}})
 
     def test_non_desktop_user_cannot_write_configuration_or_profile(self):
         local = self.root / "not-created"

@@ -592,10 +592,10 @@ const EN: Record<string, string> = {
   // MV·MCP 연결 창(Jay 2026-10-16 "번역 버전 있게") — 화면 글만. LLM 에 돌려주는 응답 글은 번역하지 않는다
   "계속 사용하는 MCP 연결": "Persistent MCP connection",
   "LLM 프로그램 연결": "Connect an LLM app",
-  "한 번 연결하면 Codex·Claude Code에서 MV Hub의 자료를 조회하고 생성할 수 있습니다.": "Connect once and Codex or Claude Code can browse MV Hub and generate.",
+  "한 번 연결하면 Codex·Claude Code·Claude 데스크톱 채팅에서 MV Hub의 자료를 조회하고 생성할 수 있습니다.": "Connect once and Codex, Claude Code or Claude desktop chat can browse MV Hub and generate.",
   "현재 계정이 접근 가능한 모든 공간의 자료 조회와 사용자 요청에 따른 크레딧 사용을 허용합니다. 이후 생성마다 앱 승인을 누르지 않습니다.":
     "Allows browsing every space this account can access and spending credits on your requests. You won't need to approve each generation in the app.",
-  "Codex·Claude Code 연결 허용": "Allow Codex · Claude Code",
+  "Codex·Claude 연결 허용": "Allow Codex · Claude",
   "다른 MCP 프로그램 설정": "Set up another MCP app",
   "저장된 연결 확인": "Check saved connections",
   "MCP 업데이트": "MCP update",
@@ -644,8 +644,8 @@ const EN: Record<string, string> = {
     "Tell the LLM which workspace, folder and scene to use. It generates where you ask, regardless of the space selected in the app.",
   "생성물과 기록은 MV Hub에 저장하고, 결과 미리보기는 지원하는 LLM 대화창에서도 봅니다. 캔버스에는 요청한 경우에만 추가합니다.":
     "Results and history are saved in MV Hub, and previews also show in supported LLM chats. Cards are added to the canvas only when you ask.",
-  "처음 등록한 뒤에는 LLM 프로그램의 MCP 다시 불러오기·재시작이 필요할 수 있습니다. Claude Desktop 등 다른 로컬 앱은 ‘다른 MCP 프로그램 설정’을 쓰세요.":
-    "After the first registration you may need to reload MCP or restart the LLM app. For other local apps such as Claude Desktop, use 'Set up another MCP app'.",
+  "처음 등록한 뒤에는 LLM 프로그램의 MCP 다시 불러오기·재시작이 필요할 수 있습니다. Claude 데스크톱 채팅은 위 단추로 함께 연결되며 그 밖의 로컬 앱은 ‘다른 MCP 프로그램 설정’을 쓰세요.":
+    "After the first registration you may need to reload MCP or restart the LLM app. Claude desktop chat is connected by the button above; for other local apps, use 'Set up another MCP app'.",
   "이전의 공간 고정 연결은 위 버튼으로 다시 등록하면 계정 기준 연결로 바뀝니다.": "Older space-locked connections become account-wide when you register again with the button above.",
   "자료 조회와 생성 실행 권한을 해제했습니다.": "Browsing and generation access revoked.",
   "저장된 연결을 확인했습니다. 등록 완료와 실제 LLM 응답은 다릅니다.": "Saved connections checked. Being registered is not the same as the LLM responding.",
@@ -656,6 +656,9 @@ const EN: Record<string, string> = {
   "등록 완료": "Registered",
   "수동 등록 필요": "Manual registration needed",
   "등록 실패": "Registration failed",
+  "건너뜀": "Skipped",
+  "Claude 데스크톱 채팅": "Claude desktop chat",
+  "다른 MCP 프로그램": "Other MCP app",
   "MCP 설정 복사": "Copy MCP settings",
   "계정 기준 연결": "Account-wide connection",
   "공간 고정:": "Locked to space:",
@@ -746,6 +749,8 @@ const EN: Record<string, string> = {
   "거절됨": "Rejected",
   // 등록 결과 문구(허브의 MCP 설정 도구가 보낸 고정 글 — tools/mcp_adapter/local_setup.py · routers/mcp_v2.py)
   "등록했습니다. 실행 중인 LLM에서 MCP를 새로고침하거나 프로그램을 다시 시작하세요.": "Registered. Reload MCP in the running LLM app or restart it.",
+  "등록했습니다. Claude 앱을 트레이에서 완전히 종료한 뒤 다시 켜야 채팅에 나타납니다.": "Registered. Fully quit Claude from the tray and open it again to see it in chat.",
+  "Claude 데스크톱 앱이 없어 건너뛰었습니다.": "Skipped because the Claude desktop app wasn't found.",
   "사용할 MCP 앱에 이 설정을 한 번 등록하세요.": "Register this configuration once in the MCP app you use.",
   "Claude가 별도 설정 폴더를 사용합니다. 해당 프로그램에 이 설정을 등록하세요.": "Claude uses a separate config folder. Register this configuration in that app.",
   "프로그램 설치를 확인하지 못했습니다. 설치 후 설정을 등록하세요.": "Couldn't confirm the app is installed. Install it, then register the configuration.",

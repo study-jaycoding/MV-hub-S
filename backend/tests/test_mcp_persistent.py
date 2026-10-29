@@ -147,18 +147,19 @@ def test_reference_reissue_reuses_handle(local):
         assert conn.execute("SELECT COUNT(*) FROM mcp_reference").fetchone()[0] == 2
 
 
-@pytest.mark.parametrize("name", ["codex", "claude"])
+@pytest.mark.parametrize("name", ["codex", "claude", "claude_desktop"])
 def test_automatic_reregistration_revokes_only_replaced_client(local, name):
-    configure(local, ["codex", "claude"])
+    configure(local, ["codex", "claude", "claude_desktop"])
     previous = headers(local, name)
     configure(local, [name])
     response = local[0].post("/api/mcp/v2/client/connect", headers=previous, json={})
     assert response.status_code == 403
     assert action(local, "read_context", name=name).status_code == 200
-    assert action(local, "read_context", name="claude" if name == "codex" else "codex").status_code == 200
+    for other in {"codex", "claude", "claude_desktop"} - {name}:  # 다시 등록한 종류 말고는 하나도 거두지 않는다
+        assert action(local, "read_context", name=other).status_code == 200
 
 
-@pytest.mark.parametrize("name,status", [("codex", "manual"), ("claude", "manual"), ("other", "configured")])
+@pytest.mark.parametrize("name,status", [("codex", "manual"), ("claude", "manual"), ("claude_desktop", "manual"), ("other", "configured")])
 def test_manual_or_other_registration_preserves_existing_grant(local, monkeypatch, name, status):
     configure(local, [name])
     previous = headers(local, name)
@@ -260,6 +261,43 @@ def test_registration_diagnostics_are_safe_and_failed_grant_revoked(local, monke
     assert "private credential text" not in response.text
     assert local[0].post("/api/mcp/v2/client/connect", headers=headers(local), json={}).status_code == 403
     assert local[0].post("/api/mcp/v2/client/connect", headers=old_headers, json={}).status_code == 200
+
+
+def test_one_click_skips_missing_desktop_and_keeps_other_grants(local, monkeypatch):
+    # 데스크톱 앱이 없으면 그 새 연결만 거두고 건너뜀으로 보인다 — 앞의 데스크톱 연결과 같은 요청의 Codex·Claude Code 는 그대로
+    configure(local, ["claude_desktop"])
+    old_desktop = headers(local, "claude_desktop")
+    original = api._configure_local
+    def without_desktop(name, setup, credential):
+        result = original(name, setup, credential)
+        return {**result, "status": "skipped", "message": "Claude 데스크톱 앱이 없어 건너뛰었습니다."} if name == "claude_desktop" else result
+    monkeypatch.setattr(api, "_configure_local", without_desktop)
+    response = local[0].post("/api/mcp/v2/app/configure", headers=APP_HEADERS,
+        json={"clients": ["codex", "claude", "claude_desktop"], "scope": "account", "allow_execution": True})
+    assert response.status_code == 200, response.text
+    assert {item["client"]: item["status"] for item in response.json()["clients"]} == {
+        "codex": "configured", "claude": "configured", "claude_desktop": "skipped"}
+    assert local[0].post("/api/mcp/v2/client/connect", headers=headers(local, "claude_desktop"), json={}).status_code == 403
+    for previous in (old_desktop, headers(local, "codex"), headers(local, "claude")):
+        assert local[0].post("/api/mcp/v2/client/connect", headers=previous, json={}).status_code == 200
+
+
+def test_desktop_failure_does_not_undo_other_registrations(local, monkeypatch):
+    original = api._configure_local
+    def desktop_fails(name, setup, credential):
+        if name == "claude_desktop":
+            local[1][name] = credential
+            raise ValueError("설정이 다른 프로그램에서 바뀌었습니다. 다시 연결하세요.")
+        return original(name, setup, credential)
+    monkeypatch.setattr(api, "_configure_local", desktop_fails)
+    response = local[0].post("/api/mcp/v2/app/configure", headers=APP_HEADERS,
+        json={"clients": ["codex", "claude", "claude_desktop"], "scope": "account", "allow_execution": True})
+    results = {item["client"]: item for item in response.json()["clients"]}
+    assert results["claude_desktop"]["status"] == "error" and "다시 연결하세요" in results["claude_desktop"]["message"]
+    assert results["codex"]["status"] == results["claude"]["status"] == "configured"
+    assert local[0].post("/api/mcp/v2/client/connect", headers=headers(local, "claude_desktop"), json={}).status_code == 403
+    for name in ("codex", "claude"):
+        assert local[0].post("/api/mcp/v2/client/connect", headers=headers(local, name), json={}).status_code == 200
 
 
 def test_registration_account_change_after_config_write_is_explained(local, monkeypatch):

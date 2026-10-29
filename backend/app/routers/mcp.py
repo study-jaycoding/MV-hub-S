@@ -153,7 +153,8 @@ async def setup(request: Request, identity=Depends(app_headers)):
     adapter = _ROOT / "tools" / "mcp_adapter" / "server.py"
     runtime = _ROOT / "runtime" / "python"
     python_args = []
-    if (_ROOT / "VERSION.txt").is_file() or runtime.exists():
+    release = (_ROOT / "VERSION.txt").is_file() or runtime.exists()
+    if release:
         python = runtime / "python.exe"
         sdk = adapter.parent / "site-packages" / "mcp" / "__init__.py"
         if not all(path.is_file() for path in (python, adapter, sdk)):
@@ -171,7 +172,7 @@ async def setup(request: Request, identity=Depends(app_headers)):
             "adapter_version": selected.get("selected_version") or _adapter_version(adapter),
             **({"adapter_selection": selected} if selected else {}),
             "python": str(python) if python else None, "python_exists": bool(python and python.is_file()),
-            "python_args": python_args}
+            "python_args": python_args, "release": release}
 
 
 @router.get("/app/next")

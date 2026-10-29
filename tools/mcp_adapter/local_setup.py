@@ -117,6 +117,11 @@ def _atomic(path: Path, data: bytes, previous: bytes | None = None, *, compare: 
             os.unlink(temporary)
 
 
+def server_name(setup: dict) -> str:
+    """설치본은 mvhub, 소스 실행(dev)은 mvhub-test — 한 PC 에 둘이 있어도 서로의 등록을 덮지 않는다."""
+    return "mvhub" if setup.get("release") is True else "mvhub-test"
+
+
 def _entry(setup: dict, profile: Path, client: str) -> dict:
     return {"command": setup["python"], "args": [*setup.get("python_args", []), setup["adapter"],
             "--url", setup["url"], *(["--display-mode", "conversation"] if client == "codex" else []),
@@ -134,25 +139,25 @@ def _known_entry(old: object, setup: dict) -> bool:
             and "url" not in old)
 
 
-def _toml_entry(entry: dict) -> str:
-    return ("[mcp_servers.mvhub]\ncommand = " + json.dumps(entry["command"], ensure_ascii=False)
+def _toml_entry(entry: dict, name: str = "mvhub") -> str:
+    return (f"[mcp_servers.{name}]\ncommand = " + json.dumps(entry["command"], ensure_ascii=False)
             + "\nargs = " + json.dumps(entry["args"], ensure_ascii=False) + "\ntool_timeout_sec = 150\n")
 
 
-def _without_server(value: dict, key: str) -> dict:
+def _without_server(value: dict, key: str, name: str = "mvhub") -> dict:
     result = copy.deepcopy(value)
     servers = result.get(key, {})
     if not isinstance(servers, dict):
         raise ValueError("기존 MCP 설정 형식을 확인하세요.")
-    servers.pop("mvhub", None)
+    servers.pop(name, None)
     if not servers:
         result.pop(key, None)
     return result
 
 
-def update_codex(text: str, entry: dict, setup: dict) -> str:
+def update_codex(text: str, entry: dict, setup: dict, name: str = "mvhub") -> str:
     before = tomllib.loads(text)
-    if not _known_entry(before.get("mcp_servers", {}).get("mvhub"), setup):
+    if not _known_entry(before.get("mcp_servers", {}).get(name), setup):
         raise ValueError("다른 mvhub 등록이 있습니다. 기존 등록을 확인한 뒤 수동으로 연결하세요.")
     lines = text.splitlines(keepends=True)
     remove = set()
@@ -161,30 +166,39 @@ def update_codex(text: str, entry: dict, setup: dict) -> str:
         if re.match(r"^\s*\[", line):
             try:
                 header = tomllib.loads(line.strip())
-                in_target = isinstance(header.get("mcp_servers"), dict) and "mvhub" in header["mcp_servers"]
+                in_target = isinstance(header.get("mcp_servers"), dict) and name in header["mcp_servers"]
             except tomllib.TOMLDecodeError:
                 # Do not guess exotic/multiline table syntax; semantic comparison below fails closed.
                 pass
         if in_target:
             remove.add(index)
-    result = "".join(line for index, line in enumerate(lines) if index not in remove).rstrip() + "\n\n" + _toml_entry(entry)
+    result = "".join(line for index, line in enumerate(lines) if index not in remove).rstrip() + "\n\n" + _toml_entry(entry, name)
     after = tomllib.loads(result)
-    if _without_server(before, "mcp_servers") != _without_server(after, "mcp_servers"):
+    if _without_server(before, "mcp_servers", name) != _without_server(after, "mcp_servers", name):
         raise ValueError("기존 설정을 보존할 수 없어 자동 등록을 중단했습니다.")
-    if after.get("mcp_servers", {}).get("mvhub") != {**entry, "tool_timeout_sec": 150}:
+    if after.get("mcp_servers", {}).get(name) != {**entry, "tool_timeout_sec": 150}:
         raise ValueError("MCP 등록 설정 검증에 실패했습니다.")
     return result
 
 
-def update_claude(text: str, entry: dict, setup: dict) -> str:
+def _update_mcp_json(text: str, value: dict, setup: dict, name: str) -> str:
+    """Claude Code(~/.claude.json)와 Claude 데스크톱 설정은 같은 mcpServers 꼴 — 그 키 하나만 바꾸고 나머지는 그대로."""
     before = json.loads(text) if text.strip() else {}
     if not isinstance(before, dict) or not isinstance(before.get("mcpServers", {}), dict):
         raise ValueError("기존 Claude 설정 형식을 확인하세요.")
-    if not _known_entry(before.get("mcpServers", {}).get("mvhub"), setup):
+    if not _known_entry(before.get("mcpServers", {}).get(name), setup):
         raise ValueError("다른 mvhub 등록이 있습니다. 기존 등록을 확인한 뒤 수동으로 연결하세요.")
     after = copy.deepcopy(before)
-    after.setdefault("mcpServers", {})["mvhub"] = {"type": "stdio", **entry}
+    after.setdefault("mcpServers", {})[name] = value
     return json.dumps(after, ensure_ascii=False, indent=2) + "\n"
+
+
+def update_claude(text: str, entry: dict, setup: dict, name: str = "mvhub") -> str:
+    return _update_mcp_json(text, {"type": "stdio", **entry}, setup, name)
+
+
+def update_claude_desktop(text: str, entry: dict, setup: dict, name: str = "mvhub") -> str:
+    return _update_mcp_json(text, entry, setup, name)  # 데스크톱 형식은 command·args 만(type 없음)
 
 
 def remove_profiles(hub_id: str, client_ids: list[str], *, local_appdata: Path | None = None) -> int:
@@ -212,9 +226,9 @@ def remove_profiles(hub_id: str, client_ids: list[str], *, local_appdata: Path |
 
 
 def configure_client(client: str, setup: dict, credential: dict, *, home: Path | None = None,
-                     local_appdata: Path | None = None) -> dict:
+                     local_appdata: Path | None = None, appdata: Path | None = None) -> dict:
     """Called only after app-side account/scope consent. Never returns credential contents."""
-    if client not in {"codex", "claude", "other"}:
+    if client not in {"codex", "claude", "claude_desktop", "other"}:
         raise ValueError("지원하지 않는 클라이언트입니다.")
     credential = _profile(credential)
     if credential["url"] != setup.get("url"):
@@ -226,26 +240,39 @@ def configure_client(client: str, setup: dict, credential: dict, *, home: Path |
     local = Path(local_appdata) if local_appdata is not None else Path(os.environ.get("LOCALAPPDATA", ""))
     if local_appdata is None and not os.environ.get("LOCALAPPDATA"):
         raise ValueError("Windows 사용자 저장 폴더를 확인할 수 없습니다.")
+    desktop = None
+    if client == "claude_desktop":
+        if appdata is None and not os.environ.get("APPDATA"):
+            raise ValueError("Windows 사용자 저장 폴더를 확인할 수 없습니다.")
+        # shortcut: MSIX 가상화 경로(%LOCALAPPDATA%\Packages\Claude_…\LocalCache\Roaming\Claude)는 보지 않는다 — 그 판을 쓰는 PC 가 나오면 더한다
+        desktop = Path(appdata if appdata is not None else os.environ["APPDATA"]) / "Claude" / "claude_desktop_config.json"
+        if not desktop.parent.is_dir():  # 데스크톱 앱이 없으면 프로필도 만들지 않는다
+            return {"client": client, "status": "skipped", "message": "Claude 데스크톱 앱이 없어 건너뛰었습니다."}
+    name = server_name(setup)
     profile = local / "MVHub-MCP" / "connections" / credential["hub_id"] / (credential["client_id"] + ".bin")
     entry = _entry(setup, profile, client)
-    config = _toml_entry(entry) if client == "codex" else json.dumps({"mcpServers": {"mvhub": entry}}, ensure_ascii=False, indent=2)
+    config = _toml_entry(entry, name) if client == "codex" else json.dumps({"mcpServers": {name: entry}}, ensure_ascii=False, indent=2)
     with _LOCK:
         _atomic(profile, _crypt(json.dumps(credential).encode("utf-8")))
         if client == "other":
             return {"client": client, "status": "manual", "message": "사용할 MCP 앱에 이 설정을 한 번 등록하세요.", "config": config}
         if client == "claude" and home is None and os.environ.get("CLAUDE_CONFIG_DIR"):
             return {"client": client, "status": "manual", "message": "Claude가 별도 설정 폴더를 사용합니다. 해당 프로그램에 이 설정을 등록하세요.", "config": config}
-        codex_home = Path(os.environ["CODEX_HOME"]) if home is None and os.environ.get("CODEX_HOME") else user_home / ".codex"
-        path = (codex_home / "config.toml") if client == "codex" else (user_home / ".claude.json")
-        installed = path.exists() or bool(shutil.which("codex" if client == "codex" else "claude"))
-        if not installed:
-            return {"client": client, "status": "manual", "message": "프로그램 설치를 확인하지 못했습니다. 설치 후 설정을 등록하세요.", "config": config}
+        if desktop is not None:
+            path = desktop
+        else:
+            codex_home = Path(os.environ["CODEX_HOME"]) if home is None and os.environ.get("CODEX_HOME") else user_home / ".codex"
+            path = (codex_home / "config.toml") if client == "codex" else (user_home / ".claude.json")
+            installed = path.exists() or bool(shutil.which("codex" if client == "codex" else "claude"))
+            if not installed:
+                return {"client": client, "status": "manual", "message": "프로그램 설치를 확인하지 못했습니다. 설치 후 설정을 등록하세요.", "config": config}
         previous = path.read_bytes() if path.exists() else None
         if previous is not None and len(previous) > 4 * 1024 * 1024:
             raise ValueError("클라이언트 설정이 너무 커 자동 등록할 수 없습니다.")
         try:
             text = previous.decode("utf-8-sig") if previous else ""
-            updated = update_codex(text, entry, setup) if client == "codex" else update_claude(text, entry, setup)
+            update = {"codex": update_codex, "claude": update_claude, "claude_desktop": update_claude_desktop}[client]
+            updated = update(text, entry, setup, name)
         except (ValueError, UnicodeError, AttributeError):
             return {"client": client, "status": "manual", "message": "기존 mvhub 설정과 충돌하거나 형식을 확인하지 못했습니다. 설정을 확인한 뒤 아래 내용을 수동 등록하세요.", "config": config}
         if previous is not None:
@@ -257,4 +284,6 @@ def configure_client(client: str, setup: dict, credential: dict, *, home: Path |
                 _atomic(original, previous)
             _atomic(path.with_name(path.name + ".mvhub-backup"), previous)
         _atomic(path, updated.encode("utf-8"), previous, compare=True)
+    if desktop is not None:
+        return {"client": client, "status": "configured", "message": "등록했습니다. Claude 앱을 트레이에서 완전히 종료한 뒤 다시 켜야 채팅에 나타납니다."}
     return {"client": client, "status": "configured", "message": "등록했습니다. 실행 중인 LLM에서 MCP를 새로고침하거나 프로그램을 다시 시작하세요."}

@@ -20,20 +20,25 @@ beforeEach(async () => {
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
 
-it("명시적인 최초 버튼만 두 클라이언트를 허용하고 등록과 연결 확인을 구분한다", async () => {
-  io.http.mockResolvedValueOnce({ clients: [{ client: "codex", status: "configured", message: "등록됨" }, { client: "claude", status: "error", message: "설정 파일을 확인하세요" }] }).mockResolvedValueOnce({ clients: [client] });
+it("명시적인 최초 버튼만 세 클라이언트를 허용하고 등록과 연결 확인을 구분한다", async () => {
+  io.http.mockResolvedValueOnce({ clients: [
+    { client: "codex", status: "configured", message: "등록됨" }, { client: "claude", status: "error", message: "설정 파일을 확인하세요" },
+    { client: "claude_desktop", status: "skipped", message: "Claude 데스크톱 앱이 없어 건너뛰었습니다." },
+  ] }).mockResolvedValueOnce({ clients: [client] });
   await render(); expect(io.http).not.toHaveBeenCalled();
   expect(host.textContent).toContain("크레딧 사용을 허용");
   // 켜 둘 것의 조건은 말줄임 되는 요약 말고 펼친 안내에도 있다
   expect(host.querySelector(".mcp-reg-notes")?.textContent).toContain("서버와 작업자는 켜져 있어야");
-  await click("Codex·Claude Code 연결 허용");
+  await click("Codex·Claude 연결 허용");
   expect(io.http.mock.calls[0][0]).toBe("/api/mcp/v2/app/configure");
-  expect(JSON.parse(io.http.mock.calls[0][1].body)).toEqual({ clients: ["codex", "claude"], scope: "account", allow_execution: true });
+  expect(JSON.parse(io.http.mock.calls[0][1].body)).toEqual({ clients: ["codex", "claude", "claude_desktop"], scope: "account", allow_execution: true });
   expect(host.textContent).not.toContain("현재 공간");
   expect(host.textContent).toContain("공간 고정: 작업 공간");
   expect(io.http.mock.calls[0][1].headers["X-MVHub-Tab"]).toBeTruthy();
   expect(host.textContent).toContain("LLM 응답 미확인");
-  expect(host.textContent).toContain("claude · 등록 실패");
+  expect(host.textContent).toContain("Codex · 등록 완료");
+  expect(host.textContent).toContain("Claude Code · 등록 실패");
+  expect(host.textContent).toContain("Claude 데스크톱 채팅 · 건너뜀");
   expect(host.querySelector(".mcp-reg-status strong")?.textContent).toBe("저장된 연결을 확인했습니다."); // 첫 문장만 굵게(모의 그림)
   io.http.mockResolvedValueOnce({}).mockResolvedValueOnce({ clients: [{ ...client, revoked_at: "2026-10-15" }] });
   await click("권한 해제");
@@ -50,10 +55,13 @@ it("영어 화면: 등록 결과·연결 목록·상태 줄까지 한글이 남�
     // 허브 설정 도구가 실제로 보내는 글(tools/mcp_adapter/local_setup.py) — 'ok' 로는 번역 누락이 가려진다(Codex 10-16)
     io.http.mockResolvedValueOnce({ clients: [
       { client: "codex", status: "configured", message: "등록했습니다. 실행 중인 LLM에서 MCP를 새로고침하거나 프로그램을 다시 시작하세요." },
+      { client: "claude_desktop", status: "configured", message: "등록했습니다. Claude 앱을 트레이에서 완전히 종료한 뒤 다시 켜야 채팅에 나타납니다." },
+      { client: "claude_desktop", status: "skipped", message: "Claude 데스크톱 앱이 없어 건너뛰었습니다." },
       { client: "other", status: "manual", message: "사용할 MCP 앱에 이 설정을 한 번 등록하세요.", config: { mcpServers: {} } },
     ] }).mockResolvedValueOnce({ clients: [{ ...client, scope: "account" }] });
     await render();
-    await click("Allow Codex · Claude Code");
+    await click("Allow Codex · Claude");
+    expect(host.textContent).toContain("Claude desktop chat · Skipped");
     expect((host.textContent!.match(/[가-힣][^.!?]*/g) ?? []).join(" | ")).toBe("");
     expect(host.querySelector(".mcp-reg-status strong")?.textContent).toBe("Saved connections checked.");
   } finally {
@@ -64,7 +72,7 @@ it("영어 화면: 등록 결과·연결 목록·상태 줄까지 한글이 남�
 it("계정 전환 뒤 늦게 도착한 등록 결과를 표시하거나 권한을 자동 해제하지 않는다", async () => {
   let finish!: (value: unknown) => void;
   io.http.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
-  await render(); await click("Codex·Claude Code 연결 허용");
+  await render(); await click("Codex·Claude 연결 허용");
   io.token = "b"; await render("b");
   await act(async () => finish({ clients: [{ client: "codex", status: "configured", message: "이전 계정 결과" }] }));
   expect(host.textContent).not.toContain("이전 계정 결과");
@@ -75,7 +83,7 @@ it("공간 선택 없이 계정 기준 연결을 등록하고 저장된 범위�
   io.http.mockResolvedValueOnce({ clients: [{ client: "codex", status: "configured", message: "등록됨" }] })
     .mockResolvedValueOnce({ clients: [{ ...client, scope: "account", workspace: null }] });
   await render();
-  await click("Codex·Claude Code 연결 허용");
+  await click("Codex·Claude 연결 허용");
   expect(host.textContent).toContain("계정 기준 연결");
   expect(host.textContent).not.toContain("공간 선택 필요");
   expect(host.textContent).not.toContain("공간 고정:");
@@ -133,7 +141,7 @@ it("이미 완료된 요청의 취소 404는 목록을 새로 받아 정리한�
 
 it("오류 원문을 숨기며 수동 설정은 복사 실패 후에도 남긴다", async () => {
   io.http.mockRejectedValueOnce(new Error("secret-account-token"));
-  await render(); await click("Codex·Claude Code 연결 허용");
+  await render(); await click("Codex·Claude 연결 허용");
   expect(host.textContent).toContain("일부만 반영"); expect(host.textContent).not.toContain("secret-account-token");
   io.http.mockResolvedValueOnce({ clients: [{ client: "other", status: "manual", message: "직접 등록", config: { command: "python", args: ["-I", "-S"] } }] }).mockResolvedValueOnce({ clients: [] });
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error("unavailable")) } });

@@ -17,8 +17,10 @@ interface Client {
   last_seen_at: string | null; revoked_at: string | null;
 }
 interface Registration {
-  client: string; status: "configured" | "manual" | "error"; message: string; config?: unknown;
+  client: string; status: "configured" | "manual" | "skipped" | "error"; message: string; config?: unknown;
 }
+const CLIENT_LABELS: Record<string, string> = { codex: "Codex", claude: "Claude Code", claude_desktop: "Claude 데스크톱 채팅", other: "다른 MCP 프로그램" };
+const STATUS_LABELS: Record<Registration["status"], string> = { configured: "등록 완료", manual: "수동 등록 필요", skipped: "건너뜀", error: "등록 실패" };
 
 export function McpRegistration({ authReady, authKey, workspace }: { authReady: boolean; authKey: string; workspace: WorkspaceContext }) {
   const t = useT(); // 상태 글은 한국어 원문으로 두고 보일 때 번역한다
@@ -102,10 +104,10 @@ export function McpRegistration({ authReady, authKey, workspace }: { authReady: 
   // 긴 안내는 한 줄 요약 + 더보기(SettingsDescription 그대로). 단추 글자·순서·동작은 그대로(시험이 글자로 누른다).
   return <section className="mcp-reg" aria-label={t("계속 사용하는 MCP 연결")}>
     <h3 className="mcp-reg-title">{t("LLM 프로그램 연결")}</h3>
-    <p className="mcp-reg-lead">{t("한 번 연결하면 Codex·Claude Code에서 MV Hub의 자료를 조회하고 생성할 수 있습니다.")}</p>
+    <p className="mcp-reg-lead">{t("한 번 연결하면 Codex·Claude Code·Claude 데스크톱 채팅에서 MV Hub의 자료를 조회하고 생성할 수 있습니다.")}</p>
     <div className="mcp-reg-consent">
       <p>{t("현재 계정이 접근 가능한 모든 공간의 자료 조회와 사용자 요청에 따른 크레딧 사용을 허용합니다. 이후 생성마다 앱 승인을 누르지 않습니다.")}</p>
-      <button className="mcp-primary" disabled={disabled} onClick={() => void request("configure", ["codex", "claude"])}>{t("Codex·Claude Code 연결 허용")}</button>
+      <button className="mcp-primary" disabled={disabled} onClick={() => void request("configure", ["codex", "claude", "claude_desktop"])}>{t("Codex·Claude 연결 허용")}</button>
     </div>
     <div className="mcp-actions mcp-reg-secondary">
       <button disabled={disabled} onClick={() => void request("configure", ["other"])}>{t("다른 MCP 프로그램 설정")}</button>
@@ -117,7 +119,7 @@ export function McpRegistration({ authReady, authKey, workspace }: { authReady: 
         <li>{t("브라우저 창은 닫아도 되지만, 이 PC의 MV Hub 서버와 작업자는 켜져 있어야 생성됩니다.")}</li>
         <li>{t("사용할 워크스페이스·폴더·장면은 LLM에 말해 주세요. 앱에서 고른 공간과 관계없이 요청한 곳에 생성합니다.")}</li>
         <li>{t("생성물과 기록은 MV Hub에 저장하고, 결과 미리보기는 지원하는 LLM 대화창에서도 봅니다. 캔버스에는 요청한 경우에만 추가합니다.")}</li>
-        <li>{t("처음 등록한 뒤에는 LLM 프로그램의 MCP 다시 불러오기·재시작이 필요할 수 있습니다. Claude Desktop 등 다른 로컬 앱은 ‘다른 MCP 프로그램 설정’을 쓰세요.")}</li>
+        <li>{t("처음 등록한 뒤에는 LLM 프로그램의 MCP 다시 불러오기·재시작이 필요할 수 있습니다. Claude 데스크톱 채팅은 위 단추로 함께 연결되며 그 밖의 로컬 앱은 ‘다른 MCP 프로그램 설정’을 쓰세요.")}</li>
         <li>{t("이전의 공간 고정 연결은 위 버튼으로 다시 등록하면 계정 기준 연결로 바뀝니다.")}</li>
       </ul>
     </SettingsDescription>
@@ -125,7 +127,7 @@ export function McpRegistration({ authReady, authKey, workspace }: { authReady: 
     {results.map((result, index) => {
       const config = result.config ? (typeof result.config === "string" ? result.config : JSON.stringify(result.config, null, 2)) : "";
       return <div className="mcp-result" data-status={result.status} key={`${result.client}:${index}`}>
-        <strong>{result.client} · {t(result.status === "configured" ? "등록 완료" : result.status === "manual" ? "수동 등록 필요" : "등록 실패")}</strong>
+        <strong>{t(CLIENT_LABELS[result.client] ?? result.client)} · {t(STATUS_LABELS[result.status] ?? "등록 실패")}</strong>
         <p>{t(result.message)}</p>
         {config && <><button onClick={() => void copy(config)}>{t("MCP 설정 복사")}</button><pre>{config}</pre></>}
       </div>;

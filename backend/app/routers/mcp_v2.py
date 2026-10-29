@@ -206,7 +206,7 @@ def _workspace(ctx, workspace):
 
 
 class ConfigureIn(StrictModel):
-    clients: list[Literal["codex", "claude", "other"]] = Field(min_length=1, max_length=3)
+    clients: list[Literal["codex", "claude", "claude_desktop", "other"]] = Field(min_length=1, max_length=4)
     scope: Literal["workspace", "account"] = "workspace"
     workspace: WorkspaceContext | None = None
     allow_execution: StrictBool = False
@@ -271,10 +271,13 @@ def _register_client(ctx, name, setup, workspace, allow_execution):
                                   ctx.account.get("password_changed_at"), workspace, name, allow_execution)
         try:
             result = _configure_local(name, setup, {"secret": secret, "hub_id": ctx.hub, "client_id": cid, "url": setup["url"]})
+            if result.get("status") == "skipped":  # 그 프로그램이 없다 — 방금 만든 연결만 거둔다(프로필 파일은 만들지 않았다)
+                store.revoke(cid, ctx.owner, email)
+                return {**result, "id": cid}
             if result.get("status") not in ("configured", "manual"):
                 raise ValueError("configuration failed")
             _still_current(ctx)
-            if result["status"] == "configured" and name in ("codex", "claude"):
+            if result["status"] == "configured" and name in ("codex", "claude", "claude_desktop"):
                 _remove_profiles(ctx.hub, store.revoke_replaced_clients(cid, ctx.owner, email, name))
         except Exception as exc:
             store.revoke(cid, ctx.owner, email)

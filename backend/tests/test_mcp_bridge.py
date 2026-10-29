@@ -379,6 +379,7 @@ def test_setup_before_pair_only_returns_paths_and_existing_files(local, monkeypa
     assert response.json() == {
         "url": "http://127.0.0.1:8012", "adapter": str(expected_adapter), "adapter_exists": True,
         "adapter_version": None, "python": str(expected_python), "python_exists": False, "python_args": [],
+        "release": False,
     }
     assert mcp.broker.client is None and mcp.broker.requests == {}
     # An inert file is enough: setup must inspect existence, never execute Python.
@@ -388,7 +389,7 @@ def test_setup_before_pair_only_returns_paths_and_existing_files(local, monkeypa
     before = copy.deepcopy(mcp.broker.client)
     response = client.get("/api/mcp/app/setup", headers=APP_HEADERS)
     assert response.status_code == 200 and response.json()["python_exists"] is True
-    assert set(response.json()) == {"url", "adapter", "adapter_exists", "adapter_version", "python", "python_exists", "python_args"}
+    assert set(response.json()) == {"url", "adapter", "adapter_exists", "adapter_version", "python", "python_exists", "python_args", "release"}
     assert response.json()["python"] == str(expected_python) and response.json()["python_args"] == []
     assert SECRET not in response.text and TAB not in response.text
     assert connected["pair_code"] not in response.text
@@ -420,6 +421,7 @@ def test_setup_complete_bundle_works_without_localappdata(local, monkeypatch, tm
     assert response.json() == {
         "url": "http://127.0.0.1:8012", "adapter": str(adapter), "adapter_exists": True,
         "adapter_version": None, "python": str(python), "python_exists": True, "python_args": ["-I", "-S"],
+        "release": True,
     }
     assert mcp.broker.client is None
 
