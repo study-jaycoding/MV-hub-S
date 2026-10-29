@@ -530,7 +530,7 @@
 .scene-textfloat {
   position: absolute; z-index: 20; left: -30%; top: calc(0px - var(--bw)); width: 160%; min-height: calc(100% + 20px);
   display: flex; flex-direction: column; border-radius: 12px; background: #000; cursor: default;
-  box-shadow: 0 0 0 3px var(--accent), 0 16px 40px rgba(0, 0, 0, 0.7);
+  box-shadow: 0 0 0 3px var(--pc, var(--accent)), 0 16px 40px rgba(0, 0, 0, 0.7); /* 테두리 = 텍스트 노드 자기 색(보라 — 고른 노드처럼, Jay 2026-10-30) */
 }
 .scene-textfloat .scene-textedit {
   flex: 1; max-height: 60vh; border-radius: 12px; padding: 12px 12px 30px; font-size: 13px;

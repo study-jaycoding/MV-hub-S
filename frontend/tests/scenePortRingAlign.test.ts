@@ -50,6 +50,7 @@ it("노드 틀 통일(Jay 2026-10-29) — 모든 노드 3px · 평소 자기 색
   expect(one(".scene-card.sel")).toContainEqual(["border-color", own]);
   expect(one(".scene-card.sel").some(([p]) => p === "box-shadow")).toBe(false); // 바깥 링을 되살리지 않는다
   expect(one(".scene-card.glow")).toContainEqual(["border-color", own]);
+  expect(one(".scene-textfloat").find(([p]) => p === "box-shadow")?.[1]).toMatch(/^0 0 0 3px var\(--pc, var\(--accent\)\)/); // 텍스트 큰 편집 창도 자기 색
   // 종류별 규칙은 고유색(--pc)만 정하고 틀 색을 따로 칠하지 않는다(빨강 = 서버에 없음·텍스트 편집 중 숨김만 예외)
   const KINDS = /\.scene-card-(ref|gen|text|set|model|list|view|render|comfy|input|output)(?![\w-])/;
   const painted = rules.flatMap((r) =>
