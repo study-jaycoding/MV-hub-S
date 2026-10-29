@@ -1,4 +1,4 @@
-// INPUT 카드의 출력 고르기(Jay 2026-10-29) — 기본 목록칸 대신: 맨 위 검색칸 + OUTPUT 들을 받는 것의 종류별 무리(알약·구분선).
+// INPUT 카드의 출력 고르기(Jay 2026-10-29) — 기본 목록칸 대신: 맨 위 검색칸 + OUTPUT 들을 받는 것의 종류별 무리(같은 길이 알약).
 //  이 INPUT 이 생성 카드의 어느 칸에 이어져 있으면(lanes) 그 무리만 보인다. 맞지 않는 출력은 숨기고 숨긴 수를 알린다.
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { InputPickGroup } from "../../../lib/sceneEdges";
@@ -13,7 +13,7 @@ const GROUPS: { key: InputPickGroup; label: string }[] = [
   { key: "model", label: "모델" },
   { key: "ref", label: "레퍼런스" },
   { key: "text", label: "텍스트" },
-  { key: "none", label: "받는 것 없음" },
+  { key: "none", label: "입력 없음" }, // 받는 소스가 아직 없는 OUTPUT(Jay 10-29 이름 정함)
 ];
 
 // 이름 속 맞는 글자를 밝게(대소문자 무시)
@@ -44,6 +44,13 @@ export function InputChannelPicker({
   const [query, setQuery] = useState("");
   const [activeId, setActiveId] = useState<string | null>(null); // 밝힌 줄 — 번호가 아니라 id(무리 순서로 다시 줄 세워도 그대로)
   const boxRef = useRef<HTMLDivElement>(null);
+  // 펼친 동안 카드를 연결 끝 점 층(z 9) 위로 — 카드 셸은 보드 것이라 React 가 다시 그리지 않는 data 속성으로 올린다(scene.css)
+  useEffect(() => {
+    const cardEl = boxRef.current?.closest(".scene-card");
+    if (!open || !cardEl) return;
+    cardEl.setAttribute("data-pop-open", "");
+    return () => cardEl.removeAttribute("data-pop-open");
+  }, [open]);
   // 바깥을 누르면 닫는다(잡는 단계 — 보드가 그 누름을 먼저 써도 닫힘)
   useEffect(() => {
     if (!open) return;

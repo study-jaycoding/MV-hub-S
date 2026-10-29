@@ -130,7 +130,10 @@ export function SpotlightMentionPicker({
                 ) : (
                   <span className="sl-mention-ph">{item.type === "audio" ? "🎵" : "🖼"}</span>
                 )}
-                <span className="sl-mention-name">{item.token}</span>
+                {/* 토큰 = 프롬프트에 들어갈 알약 모양(종류 색, Jay 2026-10-29) */}
+                <span className={"sl-mention-name sl-tok sl-mention-tok sl-tok-" + (item.type === "video" || item.type === "audio" ? item.type : "image")}>
+                  {item.token}
+                </span>
                 <span className="sl-mention-tags">{item.name}</span>
               </button>
             ))}

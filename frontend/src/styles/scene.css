@@ -533,6 +533,9 @@
 .scene-inlinetok.k-start, .scene-inlinetok.k-end { color: #fcd34d; }
 .scene-inlinetok.k-video { background: rgba(var(--accent-rgb), 0.16); border-color: rgba(var(--accent-rgb), 0.5); color: var(--accent); }
 .scene-inlinetok.k-audio { background: rgba(192, 132, 252, 0.16); border-color: rgba(192, 132, 252, 0.55); color: #d8b4fe; }
+/* 텍스트 노드 @ 고르기(Jay 2026-10-29) — 생성창 @ 목록(.sl-mention) 모양 그대로, @ 를 친 자리 바로 위(카드 기준이라 캔버스 확대·축소를 따름) */
+.sl-mention.scene-textmention { bottom: auto; width: 300px; max-width: none; z-index: 30; cursor: default; }
+.scene-textmention .sl-mention-list { max-height: 260px; }
 .scene-inlinetok img, .scene-inlinetok-ph {
   width: 15px; height: 15px; border-radius: 3px; object-fit: cover; flex: none; background: #05060a;
 }
@@ -1270,12 +1273,11 @@
   background: color-mix(in srgb, var(--oc) 15%, #0c0d11); /* ★body 도 소스색으로 은은히 물들여 시인성↑ */
 }
 /* 붙은/해석된 소스 종류별 강조색 — 헤더·테두리·점이 모두 이 색을 쓴다 */
-.scene-portnode.oc-model      { --oc: #ffb84d; }
-.scene-portnode.oc-text       { --oc: #b57aff; }
-.scene-portnode.oc-reference  { --oc: #7fa9ff; }
-.scene-portnode.oc-generation { --oc: #7fa9ff; }
-.scene-portnode.oc-list       { --oc: var(--accent); }
-.scene-portnode.oc-none       { --oc: #7f8a9c; }
+/*  무리 = 내보내는 것이 생성 카드의 어느 칸으로 가나(outputPickGroup, Jay 2026-10-29) — 레퍼런스 리스트도 레퍼런스와 같은 파랑 */
+.scene-portnode.oc-model { --oc: #ffb84d; }
+.scene-portnode.oc-text  { --oc: #b57aff; }
+.scene-portnode.oc-ref   { --oc: #7fa9ff; }
+.scene-portnode.oc-none  { --oc: #7f8a9c; }
 .scene-portnode-body {
   flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 6px 8px; min-width: 0;
 }
@@ -1308,7 +1310,10 @@
 .scene-portedit-name:focus,
 .scene-portedit-sel:focus { border-color: var(--accent); }
 .scene-portedit-name::placeholder { color: var(--muted); font-weight: 500; }
-/* INPUT 출력 고르기(Jay 2026-10-29) — 닫힌 칸은 위 select 모양 그대로, 펼치면 검색칸 + 종류별 무리(큰 알약·같은 색 구분선) */
+/* 카드 안에서 목록을 펼친 동안(INPUT 출력 목록·텍스트 노드 @ 목록) — 연결 끝 점 층(.scene-edge-dots z 9)보다 위로.
+   고른 카드(z 5)는 그 아래라 끝 점이 목록 위로 비쳤다(Jay 2026-10-29). 속성은 목록 부품이 켜고 끈다. */
+.scene-card[data-pop-open] { z-index: 10; }
+/* INPUT 출력 고르기(Jay 2026-10-29) — 닫힌 칸은 위 select 모양 그대로, 펼치면 검색칸 + 종류별 무리(같은 길이 큰 알약) */
 .scene-portpick { position: relative; flex: 1; min-width: 0; display: flex; }
 .scene-portpick-btn { display: flex; align-items: center; gap: 6px; text-align: left; font-family: inherit; }
 .scene-portpick-cur { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1335,10 +1340,11 @@
 .scene-portpick-group.g-model { --pc: #ffb84d; }
 .scene-portpick-group.g-ref { --pc: #7fa9ff; }
 .scene-portpick-group.g-text { --pc: #b57aff; }
-.scene-portpick-og { display: flex; align-items: center; gap: 8px; padding: 9px 6px 4px; }
-.scene-portpick-og::after { content: ""; flex: 1; height: 1px; background: color-mix(in srgb, var(--pc) 45%, transparent); }
+/* 무리 알약은 모두 같은 길이·옆 선 없음(Jay 2026-10-29 — 가장 긴 '레퍼런스'·'입력 없음'이 들어가는 폭) */
+.scene-portpick-og { display: flex; align-items: center; padding: 9px 6px 4px; }
 .scene-portpick-pill {
-  display: inline-flex; align-items: center; padding: 3px 13px; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 104px;
+  padding: 3px 13px; border-radius: 999px;
   font-size: 13.5px; font-weight: 900; letter-spacing: 0.02em;
   border: 1px solid var(--pc); color: var(--pc); background: color-mix(in srgb, var(--pc) 18%, transparent);
 }

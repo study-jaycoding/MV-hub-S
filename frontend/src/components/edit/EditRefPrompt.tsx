@@ -126,7 +126,7 @@ export function EditRefPrompt({ value, onChange, onSubmit, placeholder, ariaLabe
               <button key={r.token} type="button" className={"sl-mention-item" + (i === pick.index ? " on" : "")}
                 onMouseEnter={() => setPick({ ...pick, index: i })} onClick={() => choose(r)}>
                 {r.thumb ? <img className="pe-ref-pick-thumb" src={r.thumb} alt="" draggable={false} /> : <span className="pe-ref-pick-thumb" />}
-                <span className="sl-mention-name">{r.token}</span>
+                <span className={"sl-mention-name sl-tok sl-mention-tok sl-tok-" + (/^@(video|audio)/.exec(r.token)?.[1] ?? "image")}>{r.token}</span>
                 <span className="sl-mention-tags">{r.name}</span>
               </button>
             ))}

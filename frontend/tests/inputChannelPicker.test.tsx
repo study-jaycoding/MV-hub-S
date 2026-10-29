@@ -3,7 +3,9 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { InputCard } from "../src/components/scene/cards/InputCard";
 import { InputChannelPicker, type InputPickItem } from "../src/components/scene/cards/InputChannelPicker";
+import { OutputCard } from "../src/components/scene/cards/OutputCard";
 import { applyCanvasEdit } from "../src/features/canvas/edits";
 import { canConnect, inputPickLanes, outputPickGroup, resolvePortEdges } from "../src/lib/sceneEdges";
 import type { SceneCard, SceneEdge } from "../src/lib/scenes";
@@ -94,10 +96,10 @@ describe("InputChannelPicker", () => {
   const pills = () => [...host.querySelectorAll(".scene-portpick-pill")].map((p) => p.textContent);
   const rows = () => [...host.querySelectorAll(".scene-portpick-op")].map((r) => r.textContent);
 
-  it("열면 검색칸에 초점, 무리는 모델·레퍼런스·텍스트·받는 것 없음 순서", () => {
+  it("열면 검색칸에 초점, 무리는 모델·레퍼런스·텍스트·입력 없음 순서", () => {
     mount(); open();
     expect(document.activeElement).toBe(input());
-    expect(pills()).toEqual(["모델", "레퍼런스", "텍스트", "받는 것 없음"]);
+    expect(pills()).toEqual(["모델", "레퍼런스", "텍스트", "입력 없음"]);
     expect(rows()).toEqual(["m_img", "(이름 없음)", "ref_img", "(이름 없음)", "(이름 없음)", "aaaa"]);
   });
   it("치면 이름(대소문자 무시)이 맞는 것만 · 빈 무리는 숨김 · 맞는 글자 표시 · 개수", () => {
@@ -122,6 +124,37 @@ describe("InputChannelPicker", () => {
     expect(input().value).toBe("");
     key("Escape");
     expect(host.querySelector(".scene-portpick-pop")).toBeNull();
+  });
+  it("OUTPUT·INPUT 색 = 내보내는 것의 무리 — 레퍼런스 리스트도 레퍼런스와 같은 파랑, 텍스트 리스트는 보라(Jay 10-29)", () => {
+    const cards = [
+      n("R", "reference", { refs: [] }), n("L", "list"), n("T", "text", { text: "a" }), n("TL", "list"),
+      n("Or", "output", { text: "ref_card" }), n("Ol", "output", { text: "ref_img" }), n("Ot", "output", { text: "prompts" }), n("Oe", "output"),
+      n("Il", "input", { channel: "Ol" }), n("It", "input", { channel: "Ot" }), n("Ie", "input", { channel: "Oe" }),
+    ];
+    const edges: SceneEdge[] = [
+      { id: "1", from: "R", to: "Or" }, { id: "2", from: "R", to: "L" }, { id: "3", from: "L", to: "Ol" },
+      { id: "4", from: "T", to: "TL" }, { id: "5", from: "TL", to: "Ot" },
+    ];
+    const map = byId(cards);
+    const tone = (el: Element | null) => [...el!.querySelector(".scene-portnode")!.classList].find((c) => c.startsWith("oc-"));
+    const draw = (card: SceneCard) => {
+      act(() => root.render(<div className="scene-card">{card.kind === "output"
+        ? <OutputCard card={card} sel={false} edges={edges} cardsById={map} setNodeText={() => {}} flushPending={() => {}} />
+        : <InputCard card={card} sel={false} cards={cards} cardsById={map} edges={edges} setNodeChannel={() => {}} onOutPortDown={() => {}} />}</div>));
+      return tone(host.querySelector(".scene-card"));
+    };
+    expect(["Or", "Ol", "Ot", "Oe", "Il", "It", "Ie"].map((id) => draw(map.get(id)!))).toEqual(
+      ["oc-ref", "oc-ref", "oc-text", "oc-none", "oc-ref", "oc-text", "oc-none"]);
+  });
+  it("펼친 동안만 감싼 카드에 data-pop-open — 연결 끝 점 층 위로 올리는 표시(Jay 10-29: 끝 점이 목록 위로 비침)", () => {
+    const onPick = vi.fn();
+    act(() => root.render(<div className="scene-card"><InputChannelPicker items={items} value="" lanes={new Set()} onPick={onPick} /></div>));
+    const cardEl = host.querySelector(".scene-card")!;
+    expect(cardEl.hasAttribute("data-pop-open")).toBe(false);
+    open();
+    expect(cardEl.hasAttribute("data-pop-open")).toBe(true);
+    key("Escape");
+    expect(cardEl.hasAttribute("data-pop-open")).toBe(false);
   });
   it("이어진 칸이 모델이면 모델 무리만, 숨긴 수 안내 · 채널이 있으면 '선택 해제'", () => {
     const onPick = mount({ lanes: new Set(["model"] as const), value: "m" }); open();

@@ -23,14 +23,13 @@ export function InputCard({
 }) {
   // Input(무선 수신) — output 채널 하나를 골라 그 소스에 직접 연결한 것처럼 사용.
   const outputs = cards.filter((c) => c.kind === "output");
-  const realId = resolveInputSourceId(card.id, cardsById, edges);
-  const real = realId ? cardsById.get(realId) : undefined;
-  const k = real?.kind;
   const chOk = !!card.channel && outputs.some((o) => o.id === card.channel);
   const channelName = chOk ? (cardsById.get(card.channel!)?.text || "").trim() : "";
+  // 색 = 고른 OUTPUT 과 같은 무리 색(Jay 2026-10-29) — 못 풀면 회색
+  const tone = chOk && resolveInputSourceId(card.id, cardsById, edges) ? outputPickGroup(card.channel!, cardsById, edges) : "none";
   return (
     <>
-      <div className={"scene-card-inner scene-portnode in oc-" + (k || "none")}>
+      <div className={"scene-card-inner scene-portnode in oc-" + tone}>
         <div className="scene-card-hd portin">INPUT</div>
         <div className="scene-portnode-body">
           {/* 본문 = 고른 채널 이름(입력값)만. 출력 선택 드롭다운은 선택 시 카드 아래 툴바에서. */}
