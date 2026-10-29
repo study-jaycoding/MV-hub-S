@@ -92,7 +92,7 @@ it("@ 뒤 글자로 거르고, ↓·Enter 로 고르면 그 번호 알약 + 띄�
   expect(view.text()).toBe("@image2 ");
   expect(pills()).toEqual(["@image2"]);
   expect(pop()).toBeNull();
-  expect(host.querySelector(".scene-card")!.hasAttribute("data-pop-open")).toBe(false);
+  expect(host.querySelector(".scene-card")!.hasAttribute("data-pop-open")).toBe(true); // 쓰는 동안은 큰 창 때문에 계속 위
 });
 
 it("글 중간의 @ 도 그 자리만 바꾼다 · 뒤 글은 그대로", () => {
@@ -139,11 +139,17 @@ it("편집을 끝내고 보기로 돌아가면 글이 한 번만 — 편집칸�
   }
   act(() => root.render(<Toggle />));
   expect(pills()).toEqual(["@image1"]);
+  // 쓰는 동안 = 노드 위 큰 편집 창(시안 B) · 그 아래 보기는 흐리게 · 카드는 위로
+  expect(host.querySelector(".scene-textfloat .scene-textedit")).not.toBeNull();
+  expect(host.querySelector(".scene-textview-inline")!.classList.contains("is-editing")).toBe(true);
+  expect(host.querySelector(".scene-card")!.hasAttribute("data-pop-open")).toBe(true);
   key("Escape"); // 편집 끝
   const view = host.querySelector(".scene-textview-inline")!;
   expect(view.textContent).toBe("@image1 과 시합");
   expect(view.querySelectorAll(".scene-inlinetok")).toHaveLength(1);
-  expect(host.querySelector(".scene-textedit")).toBeNull();
+  expect(view.classList.contains("is-editing")).toBe(false);
+  expect(host.querySelector(".scene-textfloat")).toBeNull();
+  expect(host.querySelector(".scene-card")!.hasAttribute("data-pop-open")).toBe(false);
 });
 
 it("메일 주소 같은 @ 는 목록 없음 · 이어진 레퍼런스가 없으면 안내 한 줄 · 편집 중이 아니면 편집칸·목록 없음", () => {

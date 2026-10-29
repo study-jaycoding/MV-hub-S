@@ -212,13 +212,13 @@ export function TextCard({
     const limit = (el.closest(".scene-board") ?? document.documentElement).getBoundingClientRect().top;
     if (el.getBoundingClientRect().top < limit) setPickPos({ ...pickPos, below: true });
   }, [pickPos]);
-  // 목록이 떠 있는 동안 카드를 연결 끝 점 층 위로(InputChannelPicker 와 같은 표시 — scene.css)
+  // 쓰는 동안(큰 편집 창·@ 목록이 카드 밖으로 뜬다) 카드를 다른 카드·연결 끝 점 층 위로(InputChannelPicker 와 같은 표시 — scene.css)
   useEffect(() => {
     const cardEl = editRef.current?.closest(".scene-card");
-    if (!showPick || !cardEl) return;
+    if (!editing || !cardEl) return;
     cardEl.setAttribute("data-pop-open", "");
     return () => cardEl.removeAttribute("data-pop-open");
-  }, [showPick]);
+  }, [editing]);
 
   // 칸이 바뀐 뒤 — 알약 감싸기(조합 중이 아니면, 치는 중인 토큰은 글자로) · 글 저장 · 캐럿 기억 · @ 감지
   const syncEditor = () => {
@@ -254,15 +254,34 @@ export function TextCard({
   };
   return (
     <>
-      {/* 본문(보기=토큰 인라인 알약, 더블클릭 시 편집칸 — 쓰는 중에도 알약). 연결로 들어온 텍스트도 여기 그대로
+      {/* 본문(보기=토큰 인라인 알약, 더블클릭 시 그 위에 큰 편집 창 — 쓰는 중에도 알약). 연결로 들어온 텍스트도 여기 그대로
           나타나며, 더블클릭하면 그 텍스트가 편집 본문으로 채택돼 바로 수정·사용된다. */}
       <div className="scene-card-hd text scene-card-hd-float">텍스트</div>
       <div className="scene-card-inner">
-        {editing ? (
-          // ★key 로 보기 칸과 다른 요소로 둔다 — 같은 div 를 다시 쓰면, 편집칸에 손으로 넣은 글·알약(React 밖)이 남은 채
-          //  보기 내용이 덧붙어 글이 두 번 보였다(Jay 2026-10-29 화면).
+        <div
+          className={"scene-textview-inline" + (editing ? " is-editing" : "")}
+          onDoubleClick={(e) => {
+            e.stopPropagation();
+            setSelected(new Set([card.id]));
+            // 자기 텍스트가 비어있고 들어온 텍스트가 있으면, 그걸 편집 본문으로 채택(한 번).
+            if (!(card.text || "").trim() && incomingText.trim())
+              setNodeText(card.id, incomingText);
+            setEditTextId(card.id); // 더블클릭 = 편집 전환(단일 클릭/드래그는 카드 이동)
+          }}
+        >
+          {shownText ? (
+            renderInline(shownText)
+          ) : (
+            <span className="scene-textnode-ph2">텍스트 입력...</span>
+          )}
+        </div>
+      </div>
+      {editing && (
+        // 큰 편집 창(Jay 2026-10-29 시안 B) — 쓰는 동안 노드 위에 노드 폭의 1.6배로 떠서 쓴다(그 아래 보기는 흐리게). 노드 크기·연결선은 그대로.
+        //  ★보기 칸과 다른 요소다 — 같은 div 를 다시 쓰면 편집칸에 손으로 넣은 글·알약(React 밖)이 남은 채 보기 내용이 덧붙어
+        //   글이 두 번 보였다(Jay 2026-10-29 화면).
+        <div className="scene-textfloat" onMouseDown={(e) => e.stopPropagation()}>
           <div
-            key="edit"
             ref={editRef}
             className="scene-textnode scene-textedit"
             contentEditable
@@ -340,27 +359,8 @@ export function TextCard({
               e.currentTarget.blur();
             }}
           />
-        ) : (
-          <div
-            key="view"
-            className="scene-textview-inline"
-            onDoubleClick={(e) => {
-              e.stopPropagation();
-              setSelected(new Set([card.id]));
-              // 자기 텍스트가 비어있고 들어온 텍스트가 있으면, 그걸 편집 본문으로 채택(한 번).
-              if (!(card.text || "").trim() && incomingText.trim())
-                setNodeText(card.id, incomingText);
-              setEditTextId(card.id); // 더블클릭 = 편집 전환(단일 클릭/드래그는 카드 이동)
-            }}
-          >
-            {shownText ? (
-              renderInline(shownText)
-            ) : (
-              <span className="scene-textnode-ph2">텍스트 입력...</span>
-            )}
-          </div>
-        )}
-      </div>
+        </div>
+      )}
       {showPick && (
         // 생성창 @ 목록과 같은 모양(.sl-mention) — 누르는 동안 편집칸 초점을 지키고, 카드 끌기로 번지지 않게
         <div
