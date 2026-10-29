@@ -355,6 +355,29 @@ it("연결점 — 한 점에 선이 여럿이어도 점은 하나, 선은 그 �
   expect(["l1", "l2", "l3"].map((id) => [...boardCard(id).classList].find((c) => c.startsWith("lk-")))).toEqual(["lk-reference", "lk-text", "lk-empty"]);
 });
 
+it("연결점 — 켜진 선끼리 색이 섞인 점은 흰 점, 한 색이면 그 색(Jay 2026-10-29)", async () => {
+  setGens({});
+  const scene = {
+    id: "S", name: "S", created_at: 0, groups: [],
+    cards: [ref("r1", 0, 0), { id: "t1", kind: "text", x: 0, y: 220, text: "글" }, { id: "l1", kind: "list", x: 330, y: 110 }],
+    edges: [{ id: "e1", from: "r1", to: "l1" }, { id: "e2", from: "t1", to: "l1" }],
+  };
+  await act(async () => { root.render(<SceneBoard scene={scene as never} onChange={noop} />); });
+  await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
+  const d = (id: string) => host.querySelector(`path[data-edge="${id}"]`)!.getAttribute("d")!;
+  const dotAt = (path: string, last: boolean) => {
+    const n = path.trim().split(/[ ,]+/).filter((s) => /^-?[\d.]+$/.test(s));
+    const [x, y] = last ? n.slice(-2) : n.slice(0, 2);
+    return host.querySelector(`.scene-edge-dots circle[cx="${x}"][cy="${y}"]`)!.getAttribute("class");
+  };
+  expect(dotAt(d("e1"), true)).toBe("scene-dot idle"); // 고르기 전: 다 꺼진 회색 — 섞임으로 안 센다
+  await grab("l1", 400, 150);
+  await act(async () => { window.dispatchEvent(new MouseEvent("mouseup", { button: 0, clientX: 400, clientY: 150 })); });
+  expect(dotAt(d("e1"), true)).toBe("scene-dot mix"); // l1 입력: 레퍼런스(파랑) + 텍스트(보라)
+  expect(dotAt(d("e1"), false)).toBe("scene-dot ref");
+  expect(dotAt(d("e2"), false)).toBe("scene-dot text");
+});
+
 // 저장한 조각을 씬에 합쳐 다시 내려 주는 부모(App 의 patchActiveScene 과 같다 — 카드 배열은 보드가 준 그 객체다).
 //  받는 값을 바꾸거나(setBoardProps) 씬은 그대로 두고 다시 그릴(rerenderBoard) 수 있다.
 type BoardProps = ComponentProps<typeof SceneBoard>;

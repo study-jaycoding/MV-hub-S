@@ -1213,6 +1213,7 @@
 .scene-dot.model { fill: #ffb84d; }                                   /* 모델 연결(주황) */
 .scene-dot.text { fill: #b57aff; }                                    /* 텍스트 연결(보라) */
 .scene-dot.set { fill: #e8c341; }                                     /* 세트 연결(금색) */
+.scene-dot.mix { fill: #ffffff; }                                     /* 켜진 선 색이 섞인 점(흰색) */
 .scene-edge.temp.temp-gen { stroke: var(--accent); } /* 생성 카드에서 끌 때 임시선도 초록 */
 /* 태그 편집 팝업 — 카드 바로 아래 붙어 뜬다(라이브러리 TagEditor 재사용). 카드와 함께 팬/줌. */
 .scene-tagpop {

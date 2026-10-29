@@ -3555,7 +3555,7 @@ export function SceneBoard({
         })}
 
         {/* 연결선 끝점 색 점 — 포트마다 점 하나(Jay 2026-10-29: 전엔 선마다 13px 벌려 찍었다). 같은 자리에서 끝나는 선은
-            점 하나를 같이 쓰고, 색은 켜진(고른 카드에 닿은) 선 중 먼저 그린 선을 따른다(파랑=레퍼런스, 초록=계보). */}
+            점 하나를 같이 쓰고, 색은 켜진(고른 카드에 닿은) 선을 따른다(파랑=레퍼런스, 초록=계보). 켜진 선끼리 색이 다르면 흰 점. */}
         <svg
           className="scene-edge-dots"
           style={{ position: "absolute", top: 0, left: 0, overflow: "visible", pointerEvents: "none", zIndex: 9 }}
@@ -3566,6 +3566,7 @@ export function SceneBoard({
               const key = x + "," + y;
               const had = dots.get(key);
               if (!had || (on && !had.on)) dots.set(key, { x, y, cls, on });
+              else if (on && had.cls !== cls) had.cls = "scene-dot mix"; // 켜진 선끼리 색이 섞이면 흰 점(Jay 2026-10-29)
             };
             for (const e of visibleEdges) {
               const a = cardById(e.from);
@@ -3582,8 +3583,8 @@ export function SceneBoard({
                       ? " text"
                       : dotRole === "set"
                         ? " set"
-                      : refCardEdgeIds.has(e.id) || dotRole === "ref"
-                        ? " ref"
+                      : refCardEdgeIds.has(e.id) || genRefEdgeIds.has(e.id) || dotRole === "ref"
+                        ? " ref" // 생성물을 레퍼런스로 쓴 선(refg)도 선처럼 파랑
                         : ""
                   : " idle");
               const { x1, y1, x2, y2 } = edgeEnds(e, a, b);
