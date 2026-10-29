@@ -1,9 +1,19 @@
 ---
 status: active
-updated: 2026-10-29
+updated: 2026-10-30
 ---
 
 # MV Hub 로컬 MCP
+
+## 결과 표시 기본 = 힉스필드 위젯 — Claude 연결 (2026-10-30 구현)
+
+설계·합의·완료 조건의 정본은 [작업 계약](status/MCP_힉스필드표시기본_2026-10-30.md)이다. 독립 리뷰·실사용 확인은 별도다.
+Jay 요구("생성만 MV 에서, 보여지는 결과는 힉스필드 결과 화면과 똑같이")에 따라 native(Claude) 연결은 MV 결과를 힉스필드 커넥터의
+`show_generation_by_ids` 위젯으로 보인다. 어댑터(`2026.10.30.1`)가 `wait_results`·`get_result`·`get_generation` 응답에 `higgsfield_display`
+(위젯 jobs · MV 대신 보이기 · 글만)를 계산해 붙이고, 허브 `display_context` 의 옛 `job_display`·사전 권한 확인 지시는 지운다.
+힉스필드가 못 찾은(`lookup_failed`) 항목, 원본 번호가 없거나 `unavailable` 인 완료 항목만 `show_results`(8개씩)·`mv_preview=true` 로 MV 미리보기를 보인다.
+이 절은 아래 「Claude native 결과의 자동 UI 연결 제거」(10-16 A안)와 10-27 "기본 MV 미리보기" 결정을 native 에 한해 대체한다.
+conversation(Codex) 연결의 지침·도구 목록은 바뀌기 전 지문 그대로다(아이폰 Codex 카드 실패 보고 — Jay 결정 전까지 유지).
 
 ## 한 번에 연결 — Codex·Claude Code·Claude 데스크톱 채팅 (2026-10-29 구현)
 

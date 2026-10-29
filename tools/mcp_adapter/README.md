@@ -73,6 +73,10 @@ v2 등록 설정에는 `--url`과 `--profile`이 들어간다. 프로필은 Wind
 한 번에 1~8개 항목을 선택하며 대기는 이미지 카드를 만들지 않는다. `all_terminal`이면 대기를 멈추고,
 `all_done`이 false이면 실패·취소·확인 필요 항목을 함께 안내한다. 25초는 대기 예산이며 조회·권한 확인 시간이 더해질 수 있다.
 `get_result`는 기존 단건 호출 호환용으로 유지한다.
+**어댑터 `2026.10.30.1`부터 native(Claude) 연결의 기본 결과 표시는 힉스필드 위젯이다**(Jay 2026-10-30, 정본 [작업 계약](../../docs/status/MCP_힉스필드표시기본_2026-10-30.md)).
+`wait_results`·`get_result`·`get_generation` 응답의 `higgsfield_display`(어댑터가 계산한 jobs·fallback·card_only)대로 LLM 이 힉스필드 커넥터의
+`show_generation_by_ids` 를 계획당 한 번 부르고, 힉스필드가 못 찾은(`lookup_failed`) 항목·원본 번호 없는 완료 항목만 `show_results`(8개씩) 또는
+`mv_preview=true` 로 MV 미리보기를 보인다. 아래 native 의 ImageContent 설명은 이 대신 보이기 경로에 해당한다. conversation(Codex) 연결은 그대로다(지문 시험).
 어댑터 `2026.10.28.1`은 같은 서버의 `--display-mode`로 표시 경로를 하나 선택한다.
 Codex 자동 등록은 `conversation`을 지정하며 다른 클라이언트와 플래그 없는 기존 설정은 `native`다.
 `conversation`은 MCP Apps 자원·UI 메타·앱 전용 도구를 등록하지 않는다(모델용 14개, 가져오기 포함).
