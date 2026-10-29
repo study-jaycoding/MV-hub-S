@@ -549,7 +549,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `cards/ComfyCard.tsx`(557줄) | Comfy 노드 본문 — 워크플로 로드·파라미터 인라인 컨트롤·실행바·출력 썸네일 | `ComfyCard` |
 | `cards/ListCard.tsx`(272줄) | 리스트(동종 수집기) — 생성물 행 / 텍스트 행 / 레퍼런스 썸네일 3분기 | `ListCard` |
 | `cards/RenderCard.tsx`(196줄) | 렌더(배치 생성) — 체크박스 달린 생성물 행 + Render 실행바 | `RenderCard` |
-| `cards/TextCard.tsx`(186줄) | 텍스트 노드 — textarea 편집(캐럿 복원) + @토큰 인라인 미리보기 | `TextCard` |
+| `cards/TextCard.tsx`(432줄) | 텍스트 노드 — 편집칸(contentEditable — 쓰는 중에도 알약, 캐럿 복원) + @ 고르기 목록(친 자리 바로 위) + @토큰 인라인 미리보기 | `TextCard` |
 | `cards/ReferenceCard.tsx`(126줄) | 레퍼런스 카드 — 썸네일 격자·정보/미리보기 | `ReferenceCard` |
 | `cards/HeadCard.tsx`(121줄) | 제목(Head) 노드 — 글씨 크기·색 팝오버 | `HeadCard` |
 | `cards/SetCard.tsx`(100줄) | Set 노드 — 폴더 드롭 + 태그 텍스트 | `SetCard` |
@@ -911,7 +911,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `canvasGenerationRecovery.ts` | 순수 | create-first 링크(attempt_id) 생성·정착·재조정 |
 | `canvasDetached.ts` | 순수 | 카드에서 떨어진 생성물 판정 |
 
-**10. 씬·캔버스 — 순수 계산(14)**
+**10. 씬·캔버스 — 순수 계산(15)**
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
@@ -924,6 +924,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `sceneKeyboard.ts` | 순수 | 캔버스 키 의도(전체 선택 포함)·Escape 우선순위 |
 | `sceneNodeCatalog.ts` | 순수 | 새로 만들 수 있는 노드 단일 카탈로그 |
 | `sceneMedia.ts` | 순수 | 씬 레퍼런스 썸네일·미디어 종류 |
+| `textNodeTokens.ts` | 순수+DOM | 텍스트 노드 @토큰 판정(보기·편집 공용) · 편집칸 알약 감싸기(이어진 번호만, 원래 글자 유지 — 생성창 promptEditor 와 달리 정규화 없음) · 캐럿 글자 위치 · @ 감지 |
 | `sceneSet.ts` | 순수 | Set 노드 태그 파싱·폴더 드래그 페이로드 |
 | `sceneGroupSelection.ts` | 순수 | 그룹 클릭/드래그 대상 계산 |
 | `sceneDragSession.ts` | 순수 | 전역 드래그 리스너 + rAF 합치기(환경 주입). 이동 이벤트의 `buttons` 가 0 이면 놓친 mouseup 으로 보고 취소의 길로 끝낸다 — 끌기를 흉내 내는 시험은 `buttons: 1`. `settle()` = 남은 끌기를 지금 끝낸다(보드 위의 새 누름이 첫머리에서 부른다). `rebase()` = 도는 끌기의 `onRebase` 를 부른다 — 끄는 중에 밖에서 씬이 갱신돼 값이 갈렸을 때 끌기가 쥔 좌표·크기를 받은 값 위에 다시 얹는다(값을 끄는 중에 바꾸는 끌기만 건다) |
