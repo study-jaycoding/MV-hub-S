@@ -349,10 +349,10 @@
 /* 씬 카드 — 레퍼런스/생성 공용 뼈대 */
 /* --bw = 카드 테두리 두께. 카드 테두리는 늘 이 값으로 정한다 — 연결점 고리(.scene-port)가 같은 값으로 자리를 잡아
    점과 어긋나지 않는다(Jay 2026-10-29 '원 안의 점은 항상 정렬'). 시험 scenePortRingAlign 이 지킨다.
-   노드 틀(Jay 2026-10-29 통일): 모든 노드 3px · 평소 = 자기 색(--pc) 35% · 올리면 65% · 고르면 같은 3px 불투명(아래 .sel —
+   노드 틀(Jay 2026-10-29 통일, 10-30 3→2px): 모든 노드 2px · 평소 = 자기 색(--pc) 35% · 올리면 65% · 고르면 같은 2px 불투명(아래 .sel —
    바깥 링 없음) · 방금 생성 = 불투명 + 자기 색 빛(.glow). 종류별로는 --pc 만 정한다(포트 색 절). */
 .scene-card {
-  --bw: 3px;
+  --bw: 2px;
   position: absolute; border-radius: 12px; display: flex; flex-direction: column;
   border: var(--bw) solid color-mix(in srgb, var(--pc, var(--accent)) 35%, transparent);
   background: #0c0d11; box-shadow: 0 3px 12px rgba(0, 0, 0, 0.4); cursor: grab;
@@ -528,7 +528,7 @@
 .scene-textfloat {
   position: absolute; z-index: 20; left: -30%; top: calc(0px - var(--bw)); width: 160%; min-height: calc(100% + 20px);
   display: flex; flex-direction: column; border-radius: 12px; background: #000; cursor: default;
-  box-shadow: 0 0 0 3px var(--pc, var(--accent)), 0 16px 40px rgba(0, 0, 0, 0.7); /* 테두리 = 텍스트 노드 자기 색(보라 — 고른 노드처럼, Jay 2026-10-30) */
+  box-shadow: 0 0 0 2px var(--pc, var(--accent)), 0 16px 40px rgba(0, 0, 0, 0.7); /* 테두리 = 텍스트 노드 자기 색·노드 틀 두께(보라 2px — 고른 노드처럼, Jay 2026-10-30) */
 }
 .scene-textfloat .scene-textedit {
   flex: 1; max-height: 60vh; border-radius: 12px; padding: 12px 12px 30px; font-size: 13px;
@@ -1040,7 +1040,7 @@
 .scene-card-genbody.scene-genfail::before {
   content: "⚠"; font-size: 46px; line-height: 1; color: #ff5b5b; margin-bottom: 2px;
 }
-/* 선택 카드 — 같은 3px 테두리를 자기 색 불투명으로(Jay 2026-10-29 통일 — 전엔 라임 테두리 + 바깥 링 3px) */
+/* 선택 카드 — 같은 노드 틀(2px)을 자기 색 불투명으로(Jay 2026-10-29 통일 — 전엔 라임 테두리 + 바깥 링 3px) */
 .scene-card.sel { border-color: var(--pc, var(--accent)); z-index: 5; }
 /* 방금 생성됨 — 라임 glow(맥동)로 '방금 만들어졌다'를 직관 표시. 카드 클릭 시 JS 가 해제.
    ★맥동은 카드의 box-shadow 가 아니라 덧댄 층의 opacity 로 낸다. box-shadow 는 합성만으로
@@ -1061,12 +1061,12 @@
   pointer-events: none;
   box-shadow: 0 0 26px 7px color-mix(in srgb, var(--pc, var(--accent)) 78%, transparent);
 }
-/* 결과가 든 생성 카드 = 히스토리 노드(.linb-node)가 뼈대를 대체 → 카드 자체 테두리/배경 제거하고, 노드 틀 규칙(3px · 35% ·
+/* 결과가 든 생성 카드 = 히스토리 노드(.linb-node)가 뼈대를 대체 → 카드 자체 테두리/배경 제거하고, 노드 틀 규칙(2px · 35% ·
    올림 65% · 고름/방금 생성 불투명)을 그 노드에 준다. 계보 뷰의 선택 링·올림 라임은 캔버스에서 쓰지 않는다. 최종(골드)은 상태색이라 그대로. */
 .scene-card.has-node,
 .scene-card.has-node.sel { --bw: 0px; border: var(--bw) solid transparent; background: transparent; box-shadow: none; }
 .scene-card.has-node .linb-node:not(.final) {
-  border: 3px solid color-mix(in srgb, var(--pc, var(--accent)) 35%, transparent); box-shadow: 0 3px 12px rgba(0, 0, 0, 0.4);
+  border: 2px solid color-mix(in srgb, var(--pc, var(--accent)) 35%, transparent); box-shadow: 0 3px 12px rgba(0, 0, 0, 0.4);
 }
 .scene-card.has-node:hover .linb-node:not(.final) { border-color: color-mix(in srgb, var(--pc, var(--accent)) 65%, transparent); }
 .scene-card.has-node.sel .linb-node:not(.final),

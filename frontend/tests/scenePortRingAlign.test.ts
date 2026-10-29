@@ -40,17 +40,18 @@ it("카드 테두리 두께는 늘 --bw 로 정한다 — 숫자로 바로 쓰�
   expect(bad).toEqual([]);
 });
 
-it("노드 틀 통일(Jay 2026-10-29) — 모든 노드 3px · 평소 자기 색 35% · 고르면 같은 3px 불투명(바깥 링 없음) · 방금 생성도 불투명", () => {
+it("노드 틀 통일(Jay 2026-10-29, 10-30 2px) — 모든 노드 2px · 평소 자기 색 35% · 고르면 같은 2px 불투명(바깥 링 없음) · 방금 생성도 불투명", () => {
   const one = (selector: string) => rules.find((r) => r.selectors.length === 1 && r.selectors[0] === selector)?.decls ?? [];
   const own = "var(--pc, var(--accent))";
   expect(one(".scene-card")).toEqual(expect.arrayContaining([
-    ["--bw", "3px"],
+    ["--bw", "2px"],
     ["border", `var(--bw) solid color-mix(in srgb, ${own} 35%, transparent)`],
   ]));
   expect(one(".scene-card.sel")).toContainEqual(["border-color", own]);
   expect(one(".scene-card.sel").some(([p]) => p === "box-shadow")).toBe(false); // 바깥 링을 되살리지 않는다
   expect(one(".scene-card.glow")).toContainEqual(["border-color", own]);
-  expect(one(".scene-textfloat").find(([p]) => p === "box-shadow")?.[1]).toMatch(/^0 0 0 3px var\(--pc, var\(--accent\)\)/); // 텍스트 큰 편집 창도 자기 색
+  expect(one(".scene-textfloat").find(([p]) => p === "box-shadow")?.[1]).toMatch(/^0 0 0 2px var\(--pc, var\(--accent\)\)/); // 텍스트 큰 편집 창도 자기 색·노드 틀 두께
+  expect(one(".scene-card.has-node .linb-node:not(.final)").find(([p]) => p === "border")?.[1]).toMatch(/^2px solid /); // 결과 노드 틀도 같은 두께
   // 그룹 틀(Jay 2026-10-30): 평소 선·빛 없음(2px 자리만 투명) · 고르면 밝힌 선 2px + 빛(바깥 링 0 0 0 Npx 없음) · 머리줄 아래 줄 없음 · 개수 배지 그룹 색
   expect(one(".scene-group")).toContainEqual(["border", "2px solid transparent"]);
   expect(one(".scene-group").some(([p]) => p === "box-shadow")).toBe(false);
