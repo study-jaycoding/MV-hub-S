@@ -51,6 +51,11 @@ it("노드 틀 통일(Jay 2026-10-29) — 모든 노드 3px · 평소 자기 색
   expect(one(".scene-card.sel").some(([p]) => p === "box-shadow")).toBe(false); // 바깥 링을 되살리지 않는다
   expect(one(".scene-card.glow")).toContainEqual(["border-color", own]);
   expect(one(".scene-textfloat").find(([p]) => p === "box-shadow")?.[1]).toMatch(/^0 0 0 3px var\(--pc, var\(--accent\)\)/); // 텍스트 큰 편집 창도 자기 색
+  // 그룹 틀도 같은 규칙(Jay 2026-10-30): 평소 3px 실선 그룹 색 35% · 고르면 밝힌 선 + 빛(바깥 링 0 0 0 Npx 없음) · 개수 배지 그룹 색
+  expect(one(".scene-group")).toContainEqual(["border", "3px solid color-mix(in srgb, var(--gc, var(--accent)) 35%, transparent)"]);
+  expect(one(".scene-group").some(([p]) => p === "box-shadow")).toBe(false);
+  expect(one(".scene-group.selected").find(([p]) => p === "box-shadow")?.[1]).not.toMatch(/0 0 0 \d/);
+  expect(one(".scene-group-count")).toContainEqual(["background", "var(--gc, var(--accent))"]);
   // 노드 안 강조(이름표·끌어 놓기·고른 줄·배지·체크·Comfy 단추 올림)도 자기 색 — 라임(--accent)으로 박지 않는다(Jay 2026-10-30)
   for (const sel of [".scene-card-hd", ".scene-card-hd.set", ".scene-setnode-folder.drag-over", ".scene-listrow.selrow", ".scene-listrow-badge", ".scene-listrow-check", ".scene-comfynode-act:hover"]) {
     expect(one(sel).some(([, v]) => v.includes("var(--pc")), sel).toBe(true);

@@ -215,12 +215,11 @@
 }
 
 /* ── 카드 그룹(Ctrl+G) — 멤버 바운딩박스 테두리 + 헤더(이름·접기). 컨테이너는 클릭 통과, 헤더만 잡힘 ── */
+/* 평소 틀 = 3px 실선 그룹 색 35%(Jay 2026-10-30 — 노드 틀과 같은 규칙. 전엔 2px 점선 + 색 있는 그룹만 은은한 빛). 색 없는 그룹은 면과 같은 강조색. */
 .scene-group {
   position: absolute; z-index: 0; pointer-events: none;
-  border: 2px dashed var(--gc, var(--border2)); border-radius: 12px;
+  border: 3px solid color-mix(in srgb, var(--gc, var(--accent)) 35%, transparent); border-radius: 12px;
   background: color-mix(in srgb, var(--gc, var(--accent)) 13%, transparent);
-  /* 컬러 지정 그룹은 은은한 글로우로 확 띄게 — 무색 그룹은 --gc 없음 → transparent = 글로우 없음. */
-  box-shadow: 0 0 11px color-mix(in srgb, var(--gc, transparent) 24%, transparent);
 }
 /* 선택 강조 = 그룹 자기 색이 '한 단계 밝아진다'. 강조색으로 덮으면 빨강·파랑·초록 그룹을
    나란히 골랐을 때 어느 것인지 색으로 구분할 수 없었다. 색을 안 정한 그룹만 강조색을 쓴다.
@@ -229,12 +228,11 @@
   --g-base: var(--gc, var(--accent));
   /* 폴백 — 상대색을 못 쓰는 환경에서만 쓰인다(흰색을 섞어 밝히는 방식) */
   --g-lit: color-mix(in srgb, var(--g-base) 70%, #fff);
-  border-style: solid; border-color: var(--g-lit);
+  border-color: var(--g-lit);
   /* 면도 같이 살짝 밝아져야 '켜졌다'는 느낌이 난다(안 고름 13% → 고름 20%) */
   background: color-mix(in srgb, var(--g-base) 20%, transparent);
-  box-shadow:
-    0 0 0 2px color-mix(in srgb, var(--g-lit) 58%, transparent),
-    0 0 22px color-mix(in srgb, var(--g-lit) 48%, transparent);
+  /* 바깥 링 2px 는 뺐다(Jay 2026-10-30) — 밝힌 3px 선 + 빛만 */
+  box-shadow: 0 0 22px color-mix(in srgb, var(--g-lit) 48%, transparent);
 }
 /* 형광 — 흰색을 섞으면 파스텔로 바래서 '켜진' 느낌이 안 난다.
    색상(h)은 그대로 두고 밝기(l)를 조금, 채도(c)를 크게 올려 네온처럼 만든다. */
@@ -248,7 +246,7 @@
   background: color-mix(in srgb, var(--g-lit) 26%, rgba(20, 22, 26, 0.84));
 }
 .scene-group.collapsed {
-  pointer-events: auto; border-style: solid; border-color: var(--gc, var(--accent));
+  pointer-events: auto; /* 틀은 펼친 그룹과 같은 3px 그룹 색 35% */
   background: rgba(20, 22, 26, 0.92); border-radius: 10px; overflow: hidden;
 }
 .scene-group.collapsed.selected { border-color: var(--g-lit); }
@@ -258,7 +256,7 @@
   font-size: 12px; font-weight: 700; color: var(--text);
   background: color-mix(in srgb, var(--gc, transparent) 36%, rgba(20, 22, 26, 0.72));
   border-bottom: 1px solid var(--gc, var(--border2));
-  border-radius: 11px 11px 0 0;
+  border-radius: 9px 9px 0 0; /* 그룹 모서리 12px − 틀 3px — 안쪽 곡선에 맞춘다 */
 }
 .scene-group.collapsed .scene-group-hd { border-bottom: 0; background: transparent; }
 .scene-group.collapsed.selected .scene-group-hd {
@@ -289,7 +287,7 @@
   background: var(--bg2, #14161a); border: 1px solid var(--accent); border-radius: 5px; padding: 1px 5px;
 }
 .scene-group-count {
-  flex: none; font-size: 11px; font-weight: 800; color: var(--accent-ink); background: var(--accent);
+  flex: none; font-size: 11px; font-weight: 800; color: var(--accent-ink); background: var(--gc, var(--accent)); /* 그룹 색 */
   border-radius: 999px; padding: 0 7px; line-height: 16px;
 }
 /* 그룹 색 — 스와치 버튼을 누르면 프리셋 팔레트 팝오버(고정색 + 커스텀 + 없음) */
