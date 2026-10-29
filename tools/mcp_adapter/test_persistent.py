@@ -158,6 +158,9 @@ class PersistentTests(unittest.TestCase):
                     listing = await server.list_tools()
                     self.assertEqual(len(listing), count)
                     self.assertIn("import_reference", [tool.name for tool in listing])
+                    description = next(tool.description for tool in listing if tool.name == "import_reference")
+                    self.assertIn("stored가 original(linked)이면 붙인 그림 대신 그 원본 파일을 씁니다.", description)
+                    self.assertIn("사용자가 일부러 고친 그림이면 asset_project 없이 부르세요.", description)
                     imported = await server.call_tool("import_reference", {
                         "file_path": str(path), "workspace_scope": "personal"})
                     self.assertFalse(imported.is_error, imported.content)

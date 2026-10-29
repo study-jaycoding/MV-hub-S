@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw, ImageOps
 
 from app.services import asset_tree, reference_match as match, thumbs
 
@@ -44,16 +44,318 @@ def test_cell_mean_keeps_fraction_at_threshold():
     assert match.cell_difference(first, second) == 2.5
 
 
-@pytest.mark.parametrize("best,second,linked", [(2.5, 4.0, True), (2.5001, 4.0, False), (2.5, 3.999, False)])
+@pytest.mark.parametrize("best,second,linked", [(3.5, 5.0, True), (3.5001, 5.0, False), (3.5, 4.999, False)])
 def test_exact_score_thresholds(images, monkeypatch, best, second, linked):
     root, save = images
     first = save("first.png", "red")
     save("second.png", "blue")
     def candidate(_root, node, _attachment, _expired):
-        return ({**node, "cell_diff": best if node["name"] == "first.png" else second,
+        return ({**node, "cell_diff": 4.8 if node["name"] == "first.png" else 6.0,
                  "ratio_matches": True}, 192 / 108)
     monkeypatch.setattr(match, "_candidate", candidate)
+    monkeypatch.setattr(match, "_original_difference", lambda _root, node, *_args:
+                        best if node["name"] == "first.png" else second)
     assert compare(root, first)["linked"] is linked
+
+
+@pytest.fixture
+def detailed_pair(images):
+    root, _save = images
+    original = Image.new("RGB", (2400, 1350), (128, 128, 128))
+    draw = ImageDraw.Draw(original)
+    for x in range(0, 2400, 17):
+        draw.line((x, 0, x, 1349), fill=(230, 230, 230))
+    for y in range(0, 1350, 19):
+        draw.line((0, y, 2399, y), fill=(40, 40, 40))
+        draw.text((y % 170, y), "REFERENCE 0123456789 thin lines", fill="white")
+    changed = original.copy()
+    box = (900, 400, 1250, 700)
+    with original.crop(box) as region, Image.new("RGB", region.size, (8, 0, 0)) as tint:
+        with ImageChops.add(region, tint) as edited:
+            changed.paste(edited, box)
+    yield root, original, changed
+    changed.close()
+    original.close()
+
+
+@pytest.mark.parametrize("scenario", ["copy", "jpeg2000", "changed_only", "both_original", "both_changed"])
+def test_large_detailed_original_and_local_edit(detailed_pair, tmp_path, scenario):
+    root, original, changed = detailed_pair
+    if scenario != "changed_only":
+        original.save(root / "original.png")
+    if scenario in {"changed_only", "both_original", "both_changed"}:
+        changed.save(root / "changed.png")
+    source = changed if scenario == "both_changed" else original
+    attachment = tmp_path / ("attachment.png" if scenario == "copy" else "attachment.jpg")
+    if scenario == "copy":
+        source.save(attachment)
+    else:
+        with source.resize((2000, 1125), Image.Resampling.LANCZOS) as resized:
+            resized.save(attachment, quality=90)
+    result = compare(root, attachment)
+    assert result["complete"], result
+    if scenario == "changed_only":
+        assert not result["linked"] and result["candidates"][0]["original_diff"] > 3.5
+    else:
+        assert result["linked"], result
+        expected = "changed.png" if scenario == "both_changed" else "original.png"
+        assert result["candidates"][0]["name"] == expected
+        assert result["candidates"][0]["original_diff"] <= 3.5
+        if len(result["candidates"]) > 1:
+            assert result["candidates"][1]["original_diff"] >= 5.0
+
+
+def test_identical_files_in_two_folders_are_ambiguous(images):
+    root, save = images
+    (root / "a").mkdir()
+    (root / "b").mkdir()
+    first = save("a/source.png", "red")
+    (root / "b/source.png").write_bytes(first.read_bytes())
+    result = compare(root, first)
+    assert result["complete"] and not result["linked"]
+    assert [candidate["original_diff"] for candidate in result["candidates"]] == [0, 0]
+
+
+@pytest.mark.parametrize("count", [0, 4])
+def test_shortlist_requires_one_to_three_candidates(images, monkeypatch, count):
+    root, save = images
+    attachment = save("first.png", "red")
+    if count == 0:
+        other = root.parent / "attachment.png"
+        Image.new("RGB", (192, 108), "blue").save(other)
+        attachment = other
+    for index in range(1, count):
+        save(f"copy{index}.png", "red")
+    monkeypatch.setattr(match, "_original_difference", lambda *_: pytest.fail("invalid shortlist decoded originals"))
+    result = compare(root, attachment)
+    assert result["complete"] and not result["linked"]
+    assert all("original_diff" not in candidate for candidate in result["candidates"])
+
+
+def test_matching_second_candidate_does_not_replace_thumbnail_leader(images, monkeypatch):
+    root, save = images
+    first = save("first.png", "red")
+    save("second.png", (250, 0, 0))
+    monkeypatch.setattr(match, "_original_difference", lambda _root, candidate, *_:
+                        7.0 if candidate["name"] == "first.png" else 0.0)
+    result = compare(root, first)
+    assert result["complete"] and not result["linked"]
+    assert result["candidates"][0]["name"] == "first.png"
+    assert result["candidates"][1]["original_diff"] == 0
+
+
+def test_exif_rotated_original_matches_upright_attachment(images, tmp_path):
+    root, _save = images
+    source = root / "oriented.jpg"
+    with Image.new("RGB", (320, 160), "red") as raw:
+        ImageDraw.Draw(raw).rectangle((0, 0, 80, 160), fill="blue")
+        exif = Image.Exif()
+        exif[274] = 6
+        raw.save(source, quality=95, exif=exif)
+    attachment = tmp_path / "upright.png"
+    with Image.open(source) as raw, ImageOps.exif_transpose(raw) as upright:
+        upright.save(attachment)
+    result = compare(root, attachment)
+    assert result["complete"] and result["linked"], result
+    assert result["candidates"][0]["original_diff"] <= 3.5
+
+
+@pytest.mark.parametrize("size,orientation,allowed", [
+    ((8192, 8191), 1, True), ((8192, 8192), 1, True), ((8192, 8193), 1, False),
+    ((512, 2048), 1, True), ((512, 2049), 1, False),
+    ((2049, 512), 6, False), ((1, 16384), 1, False),
+])
+def test_original_size_limits_before_decode(monkeypatch, size, orientation, allowed):
+    # Synthetic headers exercise 64M boundaries without allocating hundreds of MB.
+    header = Image.new("RGB", (1, 1))
+    header._size = size
+    header.getexif()[274] = orientation
+    calls = []
+    monkeypatch.setattr(Image.Image, "load", lambda *_: calls.append("load"))
+    monkeypatch.setattr(Image.Image, "convert", lambda *_a, **_k: calls.append("convert"))
+    if allowed:
+        width, height = match._original_size(header)
+        assert width == 512 and height <= 2048
+    else:
+        with pytest.raises(OSError):
+            match._decode_original(header, lambda: False)
+    assert calls == []
+    header.close()
+
+
+def test_original_pixel_limit_boundary_enters_decoder(monkeypatch):
+    header = Image.new("RGB", (1, 1))
+    header._size = (8192, 8191)
+    calls = []
+    def transpose(source):
+        calls.append("transpose")
+        return source
+    def convert(source, mode):
+        calls.append(mode)
+        return Image.new("RGB", (1, 1))
+    monkeypatch.setattr(ImageOps, "exif_transpose", transpose)
+    monkeypatch.setattr(Image.Image, "convert", convert)
+    picture, size = match._decode_original(header, lambda: False)
+    picture.close()
+    assert size == (512, 512) and calls == ["transpose", "RGB"]
+
+
+@pytest.mark.parametrize("kind", ["attachment", "candidate"])
+@pytest.mark.parametrize("size", [(1, 16384), (8192, 8193)])
+def test_oversized_second_stage_is_incomplete_without_decode(images, monkeypatch, kind, size):
+    root, save = images
+    first = save("first.png", "red")
+    thumbs.ensure_thumb(first, 256)
+    real_decode, real_load, real_convert = match._decode_original, Image.Image.load, Image.Image.convert
+    guarded, calls = [], []
+    def decode(source, expired):
+        is_candidate = getattr(source, "filename", None) == str(first)
+        if is_candidate == (kind == "candidate"):
+            source._size = size
+            guarded.append(source)
+        return real_decode(source, expired)
+    def load(source, *args, **kwargs):
+        if any(source is item for item in guarded):
+            calls.append("load")
+            raise AssertionError("oversized original decoded")
+        return real_load(source, *args, **kwargs)
+    def convert(source, *args, **kwargs):
+        if any(source is item for item in guarded):
+            calls.append("convert")
+            raise AssertionError("oversized original converted")
+        return real_convert(source, *args, **kwargs)
+    monkeypatch.setattr(match, "_decode_original", decode)
+    monkeypatch.setattr(Image.Image, "load", load)
+    monkeypatch.setattr(Image.Image, "convert", convert)
+    result = compare(root, first)
+    assert guarded and calls == []
+    assert not result["complete"] and not result["linked"]
+    assert result["reason"] == "size_limit"
+
+
+def test_tall_attachment_keeps_first_stage_candidates_without_second_stage_decode(images, tmp_path, monkeypatch):
+    root, save = images
+    candidate = save("tall.png", "red", size=(1, 16384))
+    thumbs.ensure_thumb(candidate, 256)
+    attachment = tmp_path / "attachment.png"
+    attachment.write_bytes(candidate.read_bytes())
+    real_decode, real_load, real_convert = match._decode_original, Image.Image.load, Image.Image.convert
+    guarded, calls = [], []
+    def decode(source, expired):
+        guarded.append(source)
+        return real_decode(source, expired)
+    def load(source, *args, **kwargs):
+        if any(source is item for item in guarded):
+            calls.append("load")
+            raise AssertionError("oversized second stage decoded")
+        return real_load(source, *args, **kwargs)
+    def convert(source, *args, **kwargs):
+        if any(source is item for item in guarded):
+            calls.append("convert")
+            raise AssertionError("oversized second stage converted")
+        return real_convert(source, *args, **kwargs)
+    monkeypatch.setattr(match, "_decode_original", decode)
+    monkeypatch.setattr(Image.Image, "load", load)
+    monkeypatch.setattr(Image.Image, "convert", convert)
+    result = compare(root, attachment)
+    assert result["attempted"] and result["candidates"][0]["name"] == "tall.png"
+    assert not result["complete"] and not result["linked"]
+    assert result["reason"] == "size_limit" and guarded and calls == []
+
+
+def test_attachment_pixel_limit_stops_before_first_stage_decode(images, monkeypatch):
+    root, save = images
+    first = save("first.png", "red")
+    real_open = Image.open
+    headers, calls = [], []
+    def open_image(path, *args, **kwargs):
+        source = real_open(path, *args, **kwargs)
+        source._size = (8192, 8193)
+        headers.append(source)
+        return source
+    def blocked(*args, **kwargs):
+        calls.append("decode")
+        raise AssertionError("oversized attachment decoded")
+    monkeypatch.setattr(Image, "open", open_image)
+    monkeypatch.setattr(Image.Image, "load", blocked)
+    monkeypatch.setattr(Image.Image, "convert", blocked)
+    result = asyncio.run(match.match_reference(first, lambda: pytest.fail("oversized attachment scanned tree")))
+    assert not result["attempted"] and not result["complete"] and not result["linked"]
+    assert result["reason"] == "size_limit" and headers and calls == []
+
+
+def test_second_stage_version_change_is_incomplete(images, monkeypatch):
+    root, save = images
+    first = save("first.png", "red")
+    thumbs.ensure_thumb(first, 256)
+    real = match._original_difference
+    def replace(base, candidate, attachment, expired):
+        save("first.png", "blue", size=(200, 100))
+        return real(base, candidate, attachment, expired)
+    monkeypatch.setattr(match, "_original_difference", replace)
+    result = compare(root, first)
+    assert not result["complete"] and not result["linked"]
+
+
+def test_second_stage_decompression_bomb_is_incomplete(images, monkeypatch):
+    root, save = images
+    first = save("first.png", "red")
+    thumbs.ensure_thumb(first, 256)
+    real_open = Image.open
+    original_opens = []
+    def open_image(path, *args, **kwargs):
+        if path == first:
+            original_opens.append(path)
+            if len(original_opens) == 2:
+                raise Image.DecompressionBombError("isolated oversized header")
+        return real_open(path, *args, **kwargs)
+    monkeypatch.setattr(Image, "open", open_image)
+    result = compare(root, first)
+    assert len(original_opens) == 2
+    assert not result["complete"] and not result["linked"]
+
+
+def test_original_decode_timeout_retains_slot_and_does_not_open_next_candidate(images, monkeypatch):
+    root, save = images
+    first = save("first.png", "red")
+    second = save("second.png", (250, 0, 0))
+    for path in (first, second):
+        thumbs.ensure_thumb(path, 256)
+    entered, release = threading.Event(), threading.Event()
+    real_decode, real_transpose = match._decode_original, ImageOps.exif_transpose
+    decoded = []
+    def decode(source, expired):
+        if getattr(source, "filename", None) in (str(first), str(second)):
+            decoded.append(source.filename)
+            source._size = (8192, 8191)
+        return real_decode(source, expired)
+    def transpose(source):
+        if getattr(source, "filename", None) == str(first):
+            entered.set()
+            assert release.wait(3)
+            return Image.new("RGB", (1, 1))
+        return real_transpose(source)
+    monkeypatch.setattr(match, "_decode_original", decode)
+    monkeypatch.setattr(ImageOps, "exif_transpose", transpose)
+    monkeypatch.setattr(match, "MATCH_SECONDS", 0.1)
+    async def exercise():
+        try:
+            result = await match.match_reference(first,
+                lambda: (root, asset_tree.read_project_tree_snapshot(root, fresh=True)))
+            assert entered.is_set() and result["reason"] == "timeout"
+            assert not result["complete"] and not result["linked"]
+            assert (await match.match_reference(first, lambda: None))["reason"] == "busy"
+        finally:
+            release.set()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if match._slot.acquire(blocking=False):
+                match._slot.release()
+                return
+            await asyncio.sleep(0.01)
+        pytest.fail("original decoder did not release slot")
+    asyncio.run(exercise())
+    assert decoded == [str(first)]
 
 
 def test_ties_and_low_contrast_alternative_block_link(images):
@@ -199,17 +501,20 @@ def test_cancellation_during_copy_closes_snapshot_and_keeps_slot_until_copy_fini
     asyncio.run(exercise())
 
 
-def test_warm_comparison_does_not_decode_original_pixels(images, monkeypatch):
+def test_warm_first_stage_does_not_decode_original_pixels(images, monkeypatch):
     root, save = images
     first = save("first.png", "red")
     thumbs.ensure_thumb(first, 256)
+    attachment, _ = match.prepare_attachment(first)
+    node = asset_tree.read_project_tree_snapshot(root, fresh=True).children[0]
     original = Image.Image.load
     def load(picture, *args, **kwargs):
         if getattr(picture, "filename", None) == str(first):
             raise AssertionError("warm comparison decoded original")
         return original(picture, *args, **kwargs)
     monkeypatch.setattr(Image.Image, "load", load)
-    assert compare(root, first)["linked"]
+    candidate, ratio = match._candidate(root.resolve(), node, attachment, lambda: False)
+    assert match._confirm_candidate(root, candidate, ratio, attachment, lambda: False)["cell_diff"] == 0
 
 
 def test_finalist_deadline_does_not_start_next_original(images, monkeypatch):
@@ -296,6 +601,7 @@ def test_warm_scoring_stats_each_original_once_and_only_opens_five_finalists(ima
     monkeypatch.setattr(Path, "stat", stat)
     monkeypatch.setattr(Image, "open", open_image)
     monkeypatch.setattr(thumbs, "ensure_thumb", lambda *args: pytest.fail("warm scoring generated thumbnail"))
+    monkeypatch.setattr(match, "_original_difference", lambda *_args: 0.0)
     result = asyncio.run(match.match_reference(first, lambda: (root, tree)))
     assert result["complete"] and result["linked"]
     assert violations == []
@@ -323,6 +629,7 @@ def test_animated_leader_is_replaced_by_next_static_candidate(images, tmp_path, 
             opened.append(Path(path))
         return real_open(path, *args, **kwargs)
     monkeypatch.setattr(Image, "open", open_image)
+    monkeypatch.setattr(match, "_original_difference", lambda *_args: 0.0)
     result = compare(root, attachment)
     assert result["complete"] and result["linked"]
     assert result["candidates"][0]["name"] == still.name

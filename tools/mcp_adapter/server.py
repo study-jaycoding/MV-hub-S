@@ -975,7 +975,7 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
             project_id: Annotated[str | None, Field(max_length=100)] = None,
             label: Annotated[str | None, Field(min_length=1, max_length=200)] = None,
         ) -> dict[str, Any]:
-            """현재 Claude 대화 첨부 폴더의 PNG/JPEG/WEBP(64MiB 이하)를 가져옵니다. reference.id를 같은 연결의 prepare_generation_plan.reference_ids에 넣으세요. asset_project를 주면 가장 닮은 원본을 보수적으로 대조하며 동일 원본의 증명은 아닙니다. 첫 대조는 썸네일이 없어 15초 안에 끝나지 않을 수 있고 그때는 사본을 씁니다. 폴더에는 다른 도구가 놓은 파일도 있을 수 있으며 MCP는 임의 경로를 읽지 않습니다. project_id는 공유 동기화를 예약합니다. Codex 첨부는 미지원이므로 앱 imp/cap 가져오기와 검색을 사용하세요."""
+            """현재 Claude 대화 첨부 폴더의 PNG/JPEG/WEBP(64MiB 이하)를 가져옵니다. reference.id를 같은 연결의 prepare_generation_plan.reference_ids에 넣으세요. asset_project를 주면 가장 닮은 원본을 보수적으로 대조하며 동일 원본의 증명은 아닙니다. stored가 original(linked)이면 붙인 그림 대신 그 원본 파일을 씁니다. 사용자가 일부러 고친 그림이면 asset_project 없이 부르세요. 첫 대조는 썸네일이 없어 15초 안에 끝나지 않을 수 있고 그때는 사본을 씁니다. 폴더에는 다른 도구가 놓은 파일도 있을 수 있으며 MCP는 임의 경로를 읽지 않습니다. project_id는 공유 동기화를 예약합니다. Codex 첨부는 미지원이므로 앱 imp/cap 가져오기와 검색을 사용하세요."""
             return broker.import_reference(file_path, workspace_scope=workspace_scope, workspace_id=workspace_id,
                                            asset_project=asset_project, project_id=project_id, label=label)
 

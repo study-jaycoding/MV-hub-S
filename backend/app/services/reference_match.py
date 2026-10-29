@@ -19,8 +19,20 @@ from .async_tools import to_thread_non_abandon
 from .path_safety import path_comparison_key, safe_join
 
 MATCH_SECONDS = 15.0
+SHORTLIST_CELL_DIFF = 10.0
+MAX_ORIGINAL_CANDIDATES = 3
+ORIGINAL_WIDTH = 512
+ORIGINAL_CELL_SIZE = 32
+ORIGINAL_MATCH_DIFF = 3.5
+ORIGINAL_OTHER_DIFF = 5.0
+MAX_ORIGINAL_HEIGHT = 2048
+MAX_ORIGINAL_PIXELS = 67_108_864
 _workers = ThreadPoolExecutor(max_workers=2, thread_name_prefix="reference-match")
 _slot = threading.BoundedSemaphore(1)
+
+
+class _SizeLimit(OSError):
+    pass
 
 
 def image_suffix(head: bytes) -> set[str]:
@@ -39,6 +51,8 @@ def prepare_attachment(path: Path):
         with Image.open(path) as source:
             if getattr(source, "n_frames", 1) != 1:
                 return None, "animated"
+            if source.width * source.height > MAX_ORIGINAL_PIXELS:
+                raise _SizeLimit("attachment pixel limit")
             try:
                 oriented = ImageOps.exif_transpose(source)
             except Exception:
@@ -51,15 +65,99 @@ def prepare_attachment(path: Path):
         encoded.seek(0)
         with Image.open(encoded) as decoded:
             return (decoded.convert("RGB").resize((192, 108), Image.Resampling.LANCZOS), ratio), None
+    except _SizeLimit:
+        return None, "size_limit"
     except Exception:
         return None, "unreadable"
 
 
 def cell_difference(first: Image.Image, second: Image.Image) -> float:
     difference = ImageChops.difference(first, second)
-    # Float channels preserve the fractional cell means at the 2.5 threshold.
+    # Float channels preserve fractional cell means.
     return max(channel.convert("F").resize((16, 9), Image.Resampling.BOX).getextrema()[1]
                for channel in difference.split())
+
+
+def _check_deadline(expired):
+    if expired():
+        raise TimeoutError("matching deadline")
+
+
+def _original_size(source):
+    width, height = source.size
+    if width * height > MAX_ORIGINAL_PIXELS:
+        raise _SizeLimit("original pixel limit")
+    # PNG's overridden getexif() can decode pixels; inspect header metadata only here.
+    previous_exif = source._exif
+    try:
+        orientation = Image.Image.getexif(source).get(274, 1)
+    finally:
+        source._exif = previous_exif
+    if orientation in (5, 6, 7, 8):
+        width, height = height, width
+    target_height = max(16, round(ORIGINAL_WIDTH * height / width))
+    if target_height > MAX_ORIGINAL_HEIGHT:
+        raise _SizeLimit("original height limit")
+    return ORIGINAL_WIDTH, target_height
+
+
+def _decode_original(source, expired):
+    _check_deadline(expired)
+    if getattr(source, "n_frames", 1) != 1:
+        raise OSError("animated original")
+    _check_deadline(expired)
+    size = _original_size(source)
+    _check_deadline(expired)
+    with ImageOps.exif_transpose(source) as oriented:
+        _check_deadline(expired)
+        if _original_size(oriented) != size:
+            raise OSError("original orientation changed")
+        picture = oriented.convert("RGB")
+    try:
+        _check_deadline(expired)
+        return picture, size
+    except BaseException:
+        picture.close()
+        raise
+
+
+def _original_difference(root, candidate, attachment, expired):
+    _check_deadline(expired)
+    target = safe_join(root, candidate["path"])
+    if target is None:
+        raise OSError("unsafe asset")
+    _check_deadline(expired)
+    before = target.stat()
+    if f"{before.st_mtime_ns}-{before.st_size}" != candidate["version"]:
+        raise OSError("asset changed")
+    _check_deadline(expired)
+    with Image.open(target) as source:
+        picture, size = _decode_original(source, expired)
+    try:
+        _check_deadline(expired)
+        with picture.resize(size, Image.Resampling.LANCZOS) as resized:
+            _check_deadline(expired)
+            with attachment.resize(size, Image.Resampling.LANCZOS) as attached:
+                _check_deadline(expired)
+                with ImageChops.difference(attached, resized) as difference:
+                    cells = (ORIGINAL_WIDTH // ORIGINAL_CELL_SIZE, max(1, size[1] // ORIGINAL_CELL_SIZE))
+                    score = 0.0
+                    for channel in difference.split():
+                        with channel:
+                            _check_deadline(expired)
+                            with channel.convert("F") as floating:
+                                _check_deadline(expired)
+                                with floating.resize(cells, Image.Resampling.BOX) as reduced:
+                                    _check_deadline(expired)
+                                    score = max(score, reduced.getextrema()[1])
+        _check_deadline(expired)
+        after = target.stat()
+        if (after.st_mtime_ns, after.st_size) != (before.st_mtime_ns, before.st_size):
+            raise OSError("asset changed")
+        _check_deadline(expired)
+        return score
+    finally:
+        picture.close()
 
 
 def _nodes(children):
@@ -197,13 +295,12 @@ async def match_reference(attachment_path, load_tree):
                     progress["reason"] = "timeout"
                 return
             root = root.resolve()
-            ranked, leaders, failures, compared = [], [], 0, 0
+            ranked, leaders, failures = [], [], 0
             for node in _nodes(tree.children):
                 if expired():
                     break
                 try:
                     candidate, thumb_ratio = _candidate(root, node, attachment, expired)
-                    compared += 1
                     ranked.append((candidate, thumb_ratio))
                     leaders.append(candidate)
                     leaders.sort(key=lambda item: (item["cell_diff"], item["path"]))
@@ -219,22 +316,49 @@ async def match_reference(attachment_path, load_tree):
                     break
                 try:
                     confirmed = _confirm_candidate(root, candidate, thumb_ratio, attachment, expired)
-                    if confirmed is None:
-                        compared -= 1
-                    else:
+                    if confirmed is not None:
                         candidates.append(confirmed)
                 except Exception:
                     failures += 1
+            shortlist = [candidate for candidate in candidates if candidate["cell_diff"] <= SHORTLIST_CELL_DIFF]
+            size_limited = False
+            if 1 <= len(shortlist) <= MAX_ORIGINAL_CANDIDATES and not expired():
+                attached = None
+                try:
+                    snapshot.seek(0)
+                    _check_deadline(expired)
+                    with Image.open(snapshot) as source:
+                        attached, _size = _decode_original(source, expired)
+                    for candidate in shortlist:
+                        if expired():
+                            break
+                        try:
+                            candidate["original_diff"] = _original_difference(root, candidate, attached, expired)
+                        except _SizeLimit:
+                            failures += 1
+                            size_limited = True
+                        except Exception:
+                            failures += 1
+                except _SizeLimit:
+                    failures += 1
+                    size_limited = True
+                except Exception:
+                    failures += 1
+                finally:
+                    if attached is not None:
+                        attached.close()
             complete = tree.complete and failures == 0 and not expired()
-            linked = bool(complete and candidates and candidates[0]["cell_diff"] <= 2.5
+            linked = bool(complete and 1 <= len(shortlist) <= MAX_ORIGINAL_CANDIDATES
+                          and shortlist[0] is candidates[0]
                           and candidates[0]["ratio_matches"]
-                          and (compared == 1 or candidates[1]["cell_diff"] >= 4.0))
+                          and shortlist[0]["original_diff"] <= ORIGINAL_MATCH_DIFF
+                          and all(candidate["original_diff"] >= ORIGINAL_OTHER_DIFF for candidate in shortlist[1:]))
             with lock:
                 progress.update(complete=complete, linked=linked)
                 if not expired():
                     progress["candidates"] = candidates
                 if not complete:
-                    progress["reason"] = "timeout" if expired() else "incomplete"
+                    progress["reason"] = "timeout" if expired() else "size_limit" if size_limited else "incomplete"
         except Exception:
             with lock:
                 progress["reason"] = "unavailable"
