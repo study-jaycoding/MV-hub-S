@@ -642,12 +642,19 @@
 }
 
 /* ── 리스트 노드 — 연결된 생성 카드 모음(재생) ── */
-.scene-card-list { border: 2px solid #3a4a2b; }
-.scene-card-list:hover { border-color: var(--accent); }
+/* 리스트 색 = 모은 것(Jay 2026-10-29) — --lc 이름표·호버·연결점, --lb 평소 테두리. 생성물은 라임 그대로,
+   레퍼런스 파랑·텍스트 보라·빈 리스트 회색·섞였거나 잘못된 입력 빨강. 고른 카드의 라임 테두리·빛은 공통이라 그대로. */
+.scene-card-list { --lc: var(--accent); --lb: #3a4a2b; border: 2px solid var(--lb); }
+.scene-card-list.lk-reference { --lc: #7fa9ff; --lb: #2b3a55; }
+.scene-card-list.lk-text { --lc: #b57aff; --lb: #3d2f55; }
+.scene-card-list.lk-empty { --lc: #8a909a; --lb: #3a3f48; }
+.scene-card-list.lk-mixed,
+.scene-card-list.lk-invalid { --lc: #ff6b6b; --lb: #5a2a30; }
+.scene-card-list:hover { border-color: var(--lc); }
 /* 서버 어디에도 없는 레퍼런스가 든 리스트(Jay 2026-09-29) — 레퍼런스 카드와 같은 빨간 테두리('이 PC 에만'은 칸의 마크만) */
 .scene-card-list.off-server,
 .scene-card-list.off-server:hover { border-color: #ff6b6b; }
-.scene-card-hd.list { color: var(--accent); background: rgba(var(--accent-rgb), 0.10); }
+.scene-card-hd.list { color: var(--lc); background: color-mix(in srgb, var(--lc) 10%, transparent); }
 .scene-listnode-body {
   flex: 1; min-height: 0; display: flex; flex-direction: column;
   align-items: center; justify-content: center;
@@ -1076,15 +1083,16 @@
 /* ★캔버스에선 결과 노드 선택 시 확대(scale 1.14)를 끈다 — 끝점·Generate 바는 카드 rect 기준 위치라,
    노드가 rect 밖으로 커지면 그것들과 겹친다. 선택 강조는 라임 링(box-shadow)만으로 충분(계보 뷰만 확대 유지). */
 .scene-card .linb-node.sel { transform: none; }
-/* 연결선 — 기본은 라임 실선. 레퍼런스카드=파란 점선, 생성물을 레퍼런스로 쓴 연결=초록 점선 */
+/* 연결선 — 이어진 선은 모두 실선(Jay 2026-10-29: 점선은 끄는 중의 임시선·미리 이은 선·우회선·짝 화살표만).
+   계보 = 라임 · 레퍼런스 카드에서 = 파랑 · 생성물을 레퍼런스로 쓴 연결도 레퍼런스 색(파랑, 전엔 초록 점선). */
 .scene-edge { fill: none; stroke: var(--accent); stroke-width: 2.4; opacity: 0.85; }
-.scene-edge.ref { stroke: #7fa9ff; stroke-width: 2.2; stroke-dasharray: 6 5; opacity: 0.9; } /* 레퍼런스 카드 → 생성 */
-.scene-edge.refg { stroke-dasharray: 6 5; } /* 생성물을 레퍼런스로 사용 — 색=계보(초록), 점선만 다름 */
-.scene-edge.model { stroke: #ffb84d; stroke-width: 2.2; stroke-dasharray: 6 5; opacity: 0.9; } /* 모델 연결=주황 */
-.scene-edge.text { stroke: #b57aff; stroke-width: 2.2; stroke-dasharray: 6 5; opacity: 0.9; } /* 텍스트 연결=보라 */
-.scene-edge.set { stroke: #e8c341; stroke-width: 2.2; stroke-dasharray: 6 5; opacity: 0.9; } /* 세트(폴더·태그) 연결=금색 */
-/* 기본(비선택) 연결선 — 회색 실선. 카드를 선택하면 그 카드에 닿은 선만 종류색으로 활성화된다. */
-.scene-edge.idle { stroke: #464b55; stroke-width: 1.8; opacity: 0.5; stroke-dasharray: none; }
+.scene-edge.ref { stroke: #7fa9ff; stroke-width: 2.2; opacity: 0.9; } /* 레퍼런스 카드 → 생성 */
+.scene-edge.refg { stroke: #7fa9ff; } /* 생성물을 레퍼런스로 사용 */
+.scene-edge.model { stroke: #ffb84d; stroke-width: 2.2; opacity: 0.9; } /* 모델 연결=주황 */
+.scene-edge.text { stroke: #b57aff; stroke-width: 2.2; opacity: 0.9; } /* 텍스트 연결=보라 */
+.scene-edge.set { stroke: #e8c341; stroke-width: 2.2; opacity: 0.9; } /* 세트(폴더·태그) 연결=금색 */
+/* 기본(비선택) 연결선 — 회색 실선. 카드를 선택하면 그 카드에 닿은 선만 종류색으로 활성화된다. 굵기는 1.8→1.2(Jay 10-29). */
+.scene-edge.idle { stroke: #464b55; stroke-width: 1.2; opacity: 0.5; stroke-dasharray: none; }
 .scene-dot.idle { fill: #464b55; }
 /* 선택 카드에 닿은 연결선 강조(계보처럼) — 굵고 또렷하게.
    ★opacity 를 **정확히 1 로 두지 않는다**(0.999). 1 이면 고른 카드가 많을 때 끌기가 느려진다: 412장을 전부 고르고 끌 때 프레임 하나의
@@ -1094,7 +1102,7 @@
    이 차이는 같은 빌드에서도 세션마다 흔들리던 것이다(레이어마다 그려 두는 배율 차이로 보인다 — 추정).
    까닭은 브라우저 안쪽이라 확인하지 못했다 — 1 미만이면 선마다 따로 합성되고(.idle 의 0.5 가 원래 그렇다) 1 이면 357개가 카드들
    사이에 한 덩어리로 끼어 겹침 검사가 커지는 것으로 보인다(추정). 경위 docs/status/조작점검_2026-10-10.md. */
-.scene-edge.onsel { stroke-width: 4; opacity: 0.999; }
+.scene-edge.onsel { stroke-width: 1.6; opacity: 0.999; } /* 4→1.6(Jay 2026-10-29 선을 얇게) */
 .scene-edge.temp { stroke: #7fa9ff; stroke-width: 2.2; stroke-dasharray: 4 4; opacity: 0.9; }
 /* 출력을 아직 안 고른 INPUT 의 '미리 이은 선' — 고르기 전엔 아무것도 전하지 않는다(Jay 2026-10-29). 칸 색 대신 회색 점선. */
 .scene-edge.pending { stroke: #8a8f98; stroke-dasharray: 6 5; opacity: 0.85; }
@@ -1104,7 +1112,7 @@
 /* 가위가 지나간 선 — 끊기 직전 빨간 예고 */
 .scene-edge.cut { stroke: #f2777c; opacity: 1; stroke-dasharray: none; stroke-width: 3; }
 /* 숨긴(회색) 중간 카드 우회선 — 연결은 유지, 중간에 숨겨진 게 있다는 회색 점선 표시 */
-.scene-edge.bridge { stroke: #8a8f98; stroke-width: 1.8; stroke-dasharray: 2 6; opacity: 0.6; }
+.scene-edge.bridge { stroke: #8a8f98; stroke-width: 1.2; stroke-dasharray: 2 6; opacity: 0.6; }
 /* 무선 짝 화살표(INPUT·OUTPUT 하나를 골랐을 때, Jay 2026-10-29) — '끊기 예고' 빨강(#f2777c, 실선·빛 없음)과 화살촉·점선·빛으로 구분 */
 .scene-edge.trace {
   stroke: #ff4d5e; stroke-width: 3; stroke-dasharray: 8 6; opacity: 0.999;
@@ -1127,24 +1135,27 @@
 /* 가위 드래그 궤적 */
 .scene-cut-stroke { fill: none; stroke: #f2777c; stroke-width: 2; stroke-dasharray: 4 4; opacity: 0.85; }
 /* 카드 포트(원) — 연결 시작/받는 클릭 손잡이. 평소 숨김, 카드 선택/호버 때만 드러난다.
-   ★위치: 연결선 끝점(.scene-dot·선 끝, 카드밖 PORT_GAP 24px)은 바깥에, 클릭 포트는 카드 가까운 안쪽(≈12px)에 둔다 —
-   끝점=연결 상태 표시(바깥), 포트=클릭 손잡이(안쪽)로 서로 겹치지 않게 분리. */
+   ★위치(Jay 2026-10-29): 연결선 끝점(.scene-dot, 카드밖 PORT_GAP 24px)과 같은 자리 — 점과 고리가 따로 놀지 않게. 고리(16px)는
+   점(반지름 5 + 테두리)보다 커서 점 둘레에 보인다. 자리 = 24px + 반지름 8px + 카드 테두리 2px. 전엔 포트를 카드 가까이(≈9.5px) 따로 뒀다. */
 .scene-port {
-  position: absolute; width: 9px; height: 9px; border-radius: 50%;
+  position: absolute; width: 16px; height: 16px; border-radius: 50%;
   top: 50%; transform: translateY(-50%); background: transparent; border: 2px solid transparent;
   z-index: 8; opacity: 0; pointer-events: none; transition: opacity 0.08s;
 }
 /* 보이지 않는 넓은 잡기 영역 — 작은 점이라도 넉넉히 잡히게(마우스다운·elementFromPoint 모두 이 원소로 판정).
-   포트가 카드 가까이 있어 대칭 여백으로도 카드와 겹쳐, 카드→포트로 마우스를 옮겨도 호버가 끊기지 않는다. */
-.scene-port::before { content: ""; position: absolute; inset: -12px; border-radius: 50%; }
-.scene-port.out { right: -16px; cursor: crosshair; }
-.scene-port.in { left: -16px; }
+   카드 쪽으로는 카드 안까지 늘려(out 은 왼쪽, in 은 오른쪽) 카드→포트로 마우스를 옮겨도 호버가 끊기지 않는다. */
+/*  세로 잡기 폭은 전과 같은 33px(9+12×2) — 생성 카드의 칸 포트끼리 더 겹치지 않게. */
+.scene-port::before { content: ""; position: absolute; inset: -8.5px -12px; border-radius: 50%; }
+.scene-port.out::before { left: -20px; }
+.scene-port.in::before { right: -20px; }
+.scene-port.out { right: -34px; cursor: crosshair; }
+.scene-port.in { left: -34px; }
 /* 노드 종류별 포트 색(--pc) — 선택 시 포트가 그 노드 고유색으로 채워진다. 테두리(선택 링)는 라임 유지. */
 .scene-card-gen { --pc: var(--accent); }
 .scene-card-model { --pc: #ffb84d; }
 .scene-card-text { --pc: #b57aff; }
 .scene-card-ref { --pc: #7fa9ff; }
-.scene-card-list { --pc: var(--accent); }
+.scene-card-list { --pc: var(--lc); } /* 리스트 색을 따른다(위 리스트 노드 절) */
 .scene-card-view { --pc: #61eaff; }
 .scene-card-output,
 .scene-card-input { --pc: #8aa0bf; }

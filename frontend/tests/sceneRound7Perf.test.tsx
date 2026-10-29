@@ -323,6 +323,38 @@ it("보드에서 한 장을 한 걸음 끌면 움직인 카드와, 다른 카드
   });
 });
 
+it("연결점 — 한 점에 선이 여럿이어도 점은 하나, 선은 그 점에서 끝나고 여럿이 모이는 쪽만 점 앞 곧은 줄 · 리스트는 모은 것의 색(Jay 2026-10-29)", async () => {
+  setGens({});
+  const scene = {
+    id: "S", name: "S", created_at: 0, groups: [],
+    cards: [
+      ref("r1", 0, 0), ref("r2", 0, 220), ref("r3", 0, 440),
+      { id: "l1", kind: "list", x: 330, y: 220 }, { id: "g1", kind: "generation", x: 660, y: 220 },
+      { id: "t1", kind: "text", x: 0, y: 700, text: "글" }, { id: "l2", kind: "list", x: 330, y: 700 }, { id: "l3", kind: "list", x: 660, y: 700 },
+    ],
+    edges: [
+      { id: "e1", from: "r1", to: "l1" }, { id: "e2", from: "r2", to: "l1" }, { id: "e3", from: "r3", to: "l1" },
+      { id: "e4", from: "l1", to: "g1" }, { id: "e5", from: "t1", to: "l2" },
+    ],
+  };
+  await act(async () => { root.render(<SceneBoard scene={scene as never} onChange={noop} />); });
+  await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
+  const d = (id: string) => host.querySelector(`path[data-edge="${id}"]`)!.getAttribute("d")!;
+  const end = (path: string) => path.trim().split(/[ ,]+/).slice(-2).join(","); // 선 끝 좌표
+  const dots = [...host.querySelectorAll(".scene-edge-dots circle")].map((c) => `${c.getAttribute("cx")},${c.getAttribute("cy")}`);
+  // 포트마다 하나 — r1·r2·r3 출력, l1 입력(선 셋), l1 출력, g1 입력, t1 출력, l2 입력 = 8. 전엔 선마다 둘씩 10개(13px 씩 벌려)
+  expect(dots).toHaveLength(8);
+  expect(new Set(dots).size).toBe(8);
+  // 선 셋이 같은 점(l1 입력)에서 끝나고 그 점에 점이 하나 있다 — 셋 다 점 앞 곧은 줄(L)로 들어간다
+  expect(new Set(["e1", "e2", "e3"].map((id) => end(d(id)))).size).toBe(1);
+  expect(dots).toContain(end(d("e1")));
+  for (const id of ["e1", "e2", "e3"]) expect(d(id)).toMatch(/C [^L]* L [-\d.]+ [-\d.]+$/);
+  // 혼자인 쪽은 곧은 줄이 없다(레퍼런스 출력 · l1→g1 양쪽)
+  expect(d("e1")).toMatch(/^M [-\d.]+ [-\d.]+ C /);
+  expect(d("e4")).not.toContain(" L ");
+  expect(["l1", "l2", "l3"].map((id) => [...boardCard(id).classList].find((c) => c.startsWith("lk-")))).toEqual(["lk-reference", "lk-text", "lk-empty"]);
+});
+
 // 저장한 조각을 씬에 합쳐 다시 내려 주는 부모(App 의 patchActiveScene 과 같다 — 카드 배열은 보드가 준 그 객체다).
 //  받는 값을 바꾸거나(setBoardProps) 씬은 그대로 두고 다시 그릴(rerenderBoard) 수 있다.
 type BoardProps = ComponentProps<typeof SceneBoard>;

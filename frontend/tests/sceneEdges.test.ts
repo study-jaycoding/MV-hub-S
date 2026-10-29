@@ -1,6 +1,8 @@
 // sceneEdges 순수 그래프/기하 특성화 — SceneBoard 엣지 렌더의 안전망(이번 리팩토링으로 추출).
 import { describe, it, expect, vi } from "vitest";
 import {
+  EDGE_MERGE,
+  edgePathMerged,
   edgePathXY,
   fanOffset,
   computeBridgeEdges,
@@ -40,6 +42,19 @@ const gen = (id: string, over: Partial<SceneCard> = {}): SceneCard => ({
 describe("edgePathXY", () => {
   it("베지어 path(d) 문자열 — 제어점은 x 중앙", () => {
     expect(edgePathXY(0, 0, 10, 20)).toBe("M 0 0 C 5 0, 5 20, 10 20");
+  });
+});
+
+describe("edgePathMerged — 한 점에 선이 여럿 모이는 쪽만 점 앞 EDGE_MERGE 를 곧은 줄로(Jay 2026-10-29)", () => {
+  it("양쪽 다 혼자면 edgePathXY 와 같다", () => {
+    expect(edgePathMerged(0, 0, 100, 20, false, false)).toBe(edgePathXY(0, 0, 100, 20));
+  });
+  it("모이는 쪽은 끝점에서 바깥으로 곧은 줄 — 출발은 +x, 도착은 −x · 끝점은 그대로", () => {
+    const m = EDGE_MERGE;
+    expect(edgePathMerged(0, 0, 100, 20, true, false)).toBe(`M 0 0 L ${m} 0 C ${(m + 100) / 2} 0, ${(m + 100) / 2} 20, 100 20`);
+    expect(edgePathMerged(0, 0, 100, 20, false, true)).toBe(`M 0 0 C ${(100 - m) / 2} 0, ${(100 - m) / 2} 20, ${100 - m} 20 L 100 20`);
+    // 뒤로 가는 선(도착이 왼쪽)도 곧은 줄은 출력 +x · 입력 −x — 카드 바깥쪽
+    expect(edgePathMerged(100, 0, 0, 20, true, true)).toMatch(new RegExp(`^M 100 0 L ${100 + m} 0 C .* ${-m} 20 L 0 20$`));
   });
 });
 

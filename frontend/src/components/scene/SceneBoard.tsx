@@ -65,13 +65,13 @@ import {
   buildGenerationExecutionPlan,
   type SceneGenerationRun,
   comfyTextDriveKeys,
+  edgePathMerged,
   edgePathXY,
   rectOutsideView,
   resolveInputSourceId,
   viewDirectionArrow,
   wireTracePairs,
   wireTracePath,
-  fanOffset,
   freezeLegacyCollectorOrder,
   refLaneOrderIndex,
   resolveEdgeRoles,
@@ -2711,8 +2711,9 @@ export function SceneBoard({
     }
     return { outEdges: out, inEdges: inn };
   }, [visibleEdges, cardsById, resolvedEdges]);
-  const FAN = 13;
-  const PORT_GAP = 24; // 연결 끝점(선 끝·점)을 카드 밖으로 이만큼 띄운다 — 끝점(바깥)과 클릭 포트(안쪽,≈12px) 간격을 카드↔포트 간격과 고르게.
+  // 연결 끝점(선 끝·점)을 카드 밖으로 이만큼 띄운다. 포트마다 점 하나 — 선이 여럿이어도 같은 점에서 끝나고,
+  //  카드를 고르거나 올리면 보이는 연결점 고리도 이 자리다(styles/scene.css .scene-port, Jay 2026-10-29).
+  const PORT_GAP = 24;
   // 엣지 역할(model/ref/text/lineage/list) — 색·생성카드 입력 레인 결정. edge.role 우선, 없으면 추론.
   const edgeRoles = useMemo(
     () => resolveEdgeRoles(edges, cardsById, refParents),
@@ -2799,18 +2800,19 @@ export function SceneBoard({
   }, [visibleEdges, cardsById, edgeRoles]);
   const edgeEnds = (e: SceneEdge, a: SceneCard, b: SceneCard) => {
     const lane = laneOf(edgeRoles.get(e.id) || "ref");
-    // 타깃이 생성카드면 물리 레인 y + 그 레인 내 fan, 아니면 중앙 + 타깃 전체 fan.
-    // 다입력 카드(gen·comfy)는 세로중앙 + 레인 오프셋으로, 그 외는 중앙(0.5).
+    // 끝점 = 포트 점 하나(선마다 벌리지 않는다, Jay 2026-10-29). 다입력 카드(gen·comfy)는 세로중앙 + 칸 오프셋, 그 외는 중앙(0.5).
     const gen = b.kind === "generation";
     const laned = gen || b.kind === "comfy";
     const y2base = b.y + heightOf(b) * 0.5 + (laned ? laneDelta(lane, b) : 0);
-    // 레인 포트를 가진 카드(생성·comfy)는 레인별 fan 으로 그 레인 포트에 맞춘다. 그 외는 중앙 전체 fan.
+    // 같은 점에 선이 여럿이면 그 쪽은 점 앞에서 한 줄로 모인다(m1 출발·m2 도착 — edgePathMerged).
     const fanList = laned ? inEdgesLaned.get(b.id + ":" + lane) : inEdges.get(b.id);
     return {
       x1: a.x + widthOf(a) + PORT_GAP, // 출력 포트(카드 오른쪽 밖)
-      y1: a.y + heightOf(a) / 2 + fanOffset(outEdges.get(a.id), e.id, FAN),
+      y1: a.y + heightOf(a) / 2,
       x2: b.x - PORT_GAP, // 입력 포트(카드 왼쪽 밖)
-      y2: y2base + fanOffset(fanList, e.id, FAN),
+      y2: y2base,
+      m1: (outEdges.get(a.id)?.length ?? 0) > 1,
+      m2: (fanList?.length ?? 0) > 1,
     };
   };
 
@@ -3131,7 +3133,7 @@ export function SceneBoard({
                 : " idle") +
               (pendingInputs.has(e.from) ? " pending" : "") +
               (edgesToCut.has(e.id) ? " cut" : ""); // 가위가 지나간 선 = 빨강 예고
-            const { x1, y1, x2, y2 } = edgeEnds(e, a, b);
+            const { x1, y1, x2, y2, m1, m2 } = edgeEnds(e, a, b);
             // 연결선 컬링 — 양 끝점 bbox 가 확장뷰포트 밖이면 곡선 전체가 밖(제어점이 bbox 내라 보장) → 안 그림.
             if (
               edgeCullRect &&
@@ -3141,7 +3143,7 @@ export function SceneBoard({
                 Math.min(y1, y2) > edgeCullRect.b)
             )
               return null;
-            const d = edgePathXY(x1, y1, x2, y2);
+            const d = edgePathMerged(x1, y1, x2, y2, m1, m2);
             return (
               <g key={e.id}>
                 <path
@@ -3249,6 +3251,8 @@ export function SceneBoard({
               const status = refServerStatus(refWorkspaceId, r);
               return status === "missing" || status === "held";
             });
+          // 리스트가 모은 것 — 색(lk-*, Jay 2026-10-29)과 서버에 없는 레퍼런스 판정에 같이 쓴다
+          const listIn = card.kind === "list" ? collectListInputs(card.id, cardsById, resolvedEdges) : null;
           const kindCls =
             card.kind === "reference"
               ? "scene-card-ref" +
@@ -3258,10 +3262,10 @@ export function SceneBoard({
                 ? "scene-card-gen"
                 : "scene-card-" +
                   card.kind +
+                  (listIn ? " lk-" + listIn.kind : "") +
                   // 리스트 — 모은 레퍼런스 카드에 서버 어디에도 없는 참조가 하나라도 있으면 빨간 테두리(Jay 2026-09-29)
                   //  레퍼런스 항목만 본다 — 섞인 리스트의 생성물 항목의 refs 는 그 카드의 입력이다(2026-10-22)
-                  (card.kind === "list" &&
-                  collectListInputs(card.id, cardsById, resolvedEdges).referenceCardIds.some((rid) => {
+                  (listIn?.referenceCardIds.some((rid) => {
                     const item = cardsById.get(rid);
                     return item?.kind === "reference" && missingHere(item.refs);
                   })
@@ -3550,48 +3554,53 @@ export function SceneBoard({
           );
         })}
 
-        {/* 연결선 끝점 색 점 — 포트 중앙에 얹혀 각 선과 같은 색(파랑=레퍼런스, 초록=계보).
-            선마다 자기 끝점에 찍혀, 한 카드에 두 종류 연결이 섞여도 색이 정확히 일치한다. */}
+        {/* 연결선 끝점 색 점 — 포트마다 점 하나(Jay 2026-10-29: 전엔 선마다 13px 벌려 찍었다). 같은 자리에서 끝나는 선은
+            점 하나를 같이 쓰고, 색은 켜진(고른 카드에 닿은) 선 중 먼저 그린 선을 따른다(파랑=레퍼런스, 초록=계보). */}
         <svg
           className="scene-edge-dots"
           style={{ position: "absolute", top: 0, left: 0, overflow: "visible", pointerEvents: "none", zIndex: 9 }}
         >
-          {visibleEdges.map((e) => {
-            const a = cardById(e.from);
-            const b = cardById(e.to);
-            if (!a || !b) return null;
-            const dotRole = edgeRoles.get(e.id);
-            const active = selected.has(e.from) || selected.has(e.to);
-            const cls =
-              "scene-dot" +
-              (active
-                ? dotRole === "model"
-                  ? " model"
-                  : dotRole === "text"
-                    ? " text"
-                    : dotRole === "set"
-                      ? " set"
-                    : refCardEdgeIds.has(e.id) || dotRole === "ref"
-                      ? " ref"
-                      : ""
-                : " idle");
-            const { x1, y1, x2, y2 } = edgeEnds(e, a, b);
-            // 끝점 점도 같은 기준으로 컬링 — bbox 가 확장뷰포트 밖이면 두 점 다 화면에서 멀어 안 그림.
-            if (
-              edgeCullRect &&
-              (Math.max(x1, x2) < edgeCullRect.l ||
-                Math.min(x1, x2) > edgeCullRect.r ||
-                Math.max(y1, y2) < edgeCullRect.t ||
-                Math.min(y1, y2) > edgeCullRect.b)
-            )
-              return null;
-            return (
-              <g key={e.id}>
-                <circle className={cls} cx={x1} cy={y1} r={5.5} />
-                <circle className={cls} cx={x2} cy={y2} r={5.5} />
-              </g>
-            );
-          })}
+          {(() => {
+            const dots = new Map<string, { x: number; y: number; cls: string; on: boolean }>();
+            const put = (x: number, y: number, cls: string, on: boolean) => {
+              const key = x + "," + y;
+              const had = dots.get(key);
+              if (!had || (on && !had.on)) dots.set(key, { x, y, cls, on });
+            };
+            for (const e of visibleEdges) {
+              const a = cardById(e.from);
+              const b = cardById(e.to);
+              if (!a || !b) continue;
+              const dotRole = edgeRoles.get(e.id);
+              const active = selected.has(e.from) || selected.has(e.to);
+              const cls =
+                "scene-dot" +
+                (active
+                  ? dotRole === "model"
+                    ? " model"
+                    : dotRole === "text"
+                      ? " text"
+                      : dotRole === "set"
+                        ? " set"
+                      : refCardEdgeIds.has(e.id) || dotRole === "ref"
+                        ? " ref"
+                        : ""
+                  : " idle");
+              const { x1, y1, x2, y2 } = edgeEnds(e, a, b);
+              // 끝점 점도 같은 기준으로 컬링 — bbox 가 확장뷰포트 밖이면 두 점 다 화면에서 멀어 안 그림.
+              if (
+                edgeCullRect &&
+                (Math.max(x1, x2) < edgeCullRect.l ||
+                  Math.min(x1, x2) > edgeCullRect.r ||
+                  Math.max(y1, y2) < edgeCullRect.t ||
+                  Math.min(y1, y2) > edgeCullRect.b)
+              )
+                continue;
+              put(x1, y1, cls, active);
+              put(x2, y2, cls, active);
+            }
+            return [...dots].map(([key, p]) => <circle key={key} className={p.cls} cx={p.x} cy={p.y} r={5} />);
+          })()}
         </svg>
       </div>
 

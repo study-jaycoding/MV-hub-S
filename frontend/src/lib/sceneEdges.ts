@@ -1322,6 +1322,17 @@ export function edgePathXY(x1: number, y1: number, x2: number, y2: number): stri
   return `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`;
 }
 
+// 한 점에 선이 여럿 모이는 쪽 — 점 바로 앞 이만큼은 곧은 한 줄로 합쳐 들어간다(Jay 2026-10-29, 목업 28px 의 1/3).
+export const EDGE_MERGE = 28 / 3;
+// edgePathXY 와 같은 곡선이되, 모이는 쪽(출발 mergeStart·도착 mergeEnd)은 끝점 앞 EDGE_MERGE 를 곧은 줄로 둔다.
+//  출력 점은 카드 오른쪽, 입력 점은 왼쪽이라 곧은 줄은 늘 바깥(출력 +x · 입력 −x)으로 뻗는다.
+export function edgePathMerged(x1: number, y1: number, x2: number, y2: number, mergeStart: boolean, mergeEnd: boolean): string {
+  const sx = mergeStart ? x1 + EDGE_MERGE : x1;
+  const ex = mergeEnd ? x2 - EDGE_MERGE : x2;
+  const mx = (sx + ex) / 2;
+  return `M ${x1} ${y1}` + (mergeStart ? ` L ${sx} ${y1}` : "") + ` C ${mx} ${y1}, ${mx} ${y2}, ${ex} ${y2}` + (mergeEnd ? ` L ${x2} ${y2}` : "");
+}
+
 // 무선 짝 표시(Jay 2026-10-29) — INPUT 하나를 고르면 그 INPUT 이 고른 OUTPUT, OUTPUT 하나를 고르면 그 OUTPUT 을 고른 INPUT 들.
 //  [고른 카드 id, 짝 카드 id] 목록(화살촉은 짝 쪽). 채널을 안 골랐거나 고른 OUTPUT 이 사라졌으면 없음.
 export function wireTracePairs(
