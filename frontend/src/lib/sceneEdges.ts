@@ -1320,6 +1320,52 @@ export function edgePathXY(x1: number, y1: number, x2: number, y2: number): stri
   return `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`;
 }
 
+// 무선 짝 표시(Jay 2026-10-29) — INPUT 하나를 고르면 그 INPUT 이 고른 OUTPUT, OUTPUT 하나를 고르면 그 OUTPUT 을 고른 INPUT 들.
+//  [고른 카드 id, 짝 카드 id] 목록(화살촉은 짝 쪽). 채널을 안 골랐거나 고른 OUTPUT 이 사라졌으면 없음.
+export function wireTracePairs(
+  selectedId: string,
+  cards: readonly SceneCard[],
+  cardsById: Map<string, SceneCard>,
+): [string, string][] {
+  const card = cardsById.get(selectedId);
+  if (card?.kind === "input")
+    return card.channel && cardsById.get(card.channel)?.kind === "output" ? [[card.id, card.channel]] : [];
+  if (card?.kind === "output")
+    return cards.filter((c) => c.kind === "input" && c.channel === card.id).map((c) => [card.id, c.id]);
+  return [];
+}
+
+type TraceRect = { x: number; y: number; w: number; h: number };
+type TraceView = { l: number; t: number; r: number; b: number };
+
+// 짝 화살표 path — 두 카드 가운데를 잇는 선을 각 카드 테두리에서 gap 만큼 밖에서 시작·끝낸다(카드가 선 위에 그려져 화살촉이
+//  가려지지 않게). 선 길이의 15% 만큼 휘어 실제 연결선(가로 베지어)과 구분된다. 두 카드가 겹쳐 그릴 자리가 없으면 "".
+export function wireTracePath(a: TraceRect, b: TraceRect, gap = 6): string {
+  const ax = a.x + a.w / 2, ay = a.y + a.h / 2, bx = b.x + b.w / 2, by = b.y + b.h / 2;
+  const len = Math.hypot(bx - ax, by - ay);
+  if (!len) return "";
+  const ux = (bx - ax) / len, uy = (by - ay) / len;
+  const toBorder = (r: TraceRect) => Math.min(ux ? r.w / 2 / Math.abs(ux) : Infinity, uy ? r.h / 2 / Math.abs(uy) : Infinity);
+  const from = toBorder(a) + gap, to = toBorder(b) + gap;
+  if (from + to >= len) return "";
+  const sx = ax + ux * from, sy = ay + uy * from, ex = bx - ux * to, ey = by - uy * to;
+  const bend = (len - from - to) * 0.15;
+  const cx = (sx + ex) / 2 - uy * bend, cy = (sy + ey) / 2 + ux * bend;
+  const n = (v: number) => Math.round(v * 10) / 10;
+  return `M ${n(sx)} ${n(sy)} Q ${n(cx)} ${n(cy)} ${n(ex)} ${n(ey)}`;
+}
+
+// 카드가 지금 보이는 캔버스 영역 밖인가 — 조금이라도 걸치면 안이다.
+export function rectOutsideView(r: TraceRect, v: TraceView): boolean {
+  return r.x + r.w < v.l || r.x > v.r || r.y + r.h < v.t || r.y > v.b;
+}
+
+// 화면 가운데에서 본 카드 쪽 방향 글자(8방향) — 화면 밖 꼬리표에 쓴다.
+export function viewDirectionArrow(r: TraceRect, v: TraceView): string {
+  const angle = Math.atan2(r.y + r.h / 2 - (v.t + v.b) / 2, r.x + r.w / 2 - (v.l + v.r) / 2); // 화면 좌표라 아래가 +y
+  return ["←", "↖", "↑", "↗", "→", "↘", "↓", "↙", "←"][Math.round(angle / (Math.PI / 4)) + 4];
+}
+
 // 한 포트에 연결이 여러 개면 세로로 펼쳐(fan-out) 끝점이 겹치지 않게 — 선마다 오프셋. 연결 1개면 0(정중앙).
 export function fanOffset(list: SceneEdge[] | undefined, id: string, fan: number): number {
   if (!list || list.length < 2) return 0;

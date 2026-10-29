@@ -66,6 +66,10 @@ import {
   type SceneGenerationRun,
   comfyTextDriveKeys,
   edgePathXY,
+  rectOutsideView,
+  viewDirectionArrow,
+  wireTracePairs,
+  wireTracePath,
   fanOffset,
   freezeLegacyCollectorOrder,
   refLaneOrderIndex,
@@ -2367,6 +2371,8 @@ export function SceneBoard({
   // cards 가 바뀔 때만(드래그 등) 1회 재구성. 드래그 중 렌더 비용을 크게 줄인다.
   const cardsById = useMemo(() => new Map(cards.map((c) => [c.id, c] as const)), [cards]);
   const cardById = (id: string) => cardsById.get(id);
+  // INPUT·OUTPUT 하나만 골랐을 때 그 무선 짝 — 빨간 화살표·화면 밖 꼬리표(Jay 2026-10-29). 고른 동안만, 그리기만 한다.
+  const wireTrace = selected.size === 1 ? wireTracePairs([...selected][0], cards, cardsById) : [];
 
   // 상류 comfy 가 'running' 인 생성카드 집합 — 어느 버튼(생성카드 Generate / comfy 노드 실행)으로 돌리든
   //  컨피가 도는 동안 그 다운스트림 생성카드가 '생성중(회색)'으로 보이게 comfy 상태에서 파생한다.
@@ -3130,6 +3136,20 @@ export function SceneBoard({
               </g>
             );
           })}
+          {/* 무선 짝 화살표 — 고른 INPUT → 그 OUTPUT, 고른 OUTPUT → 그것을 고른 INPUT 들(화살촉 = 짝 쪽) */}
+          {wireTrace.length > 0 && (
+            <defs>
+              <marker id="scene-trace-head" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto" markerUnits="userSpaceOnUse">
+                <path className="scene-trace-head" d="M0,0 L9,4.5 L0,9 z" />
+              </marker>
+            </defs>
+          )}
+          {wireTrace.map(([fromId, toId]) => {
+            const a = cardById(fromId);
+            const b = cardById(toId);
+            const d = a && b ? wireTracePath(cardRect(a), cardRect(b)) : "";
+            return d ? <path key={"trace:" + toId} className="scene-edge trace" d={d} markerEnd="url(#scene-trace-head)" /> : null;
+          })}
           {/* 숨긴 중간 카드 우회선 — 회색 점선. 연결은 유지되지만 중간에 숨겨진 게 있다는 표시 */}
           {bridgeEdges.map((be) => {
             const a = cardById(be.from);
@@ -3591,6 +3611,36 @@ export function SceneBoard({
       {cutHeld && (
         <div className="scene-cut-hint">✂ 연결 자르기 — 드래그로 선을 지나가고 손을 떼면 끊깁니다</div>
       )}
+
+      {/* 무선 짝이 화면 밖이면 위쪽 가운데 꼬리표 — 누르면 그 카드로 화면 이동(선택은 그대로). 오른쪽 위는 미니맵 자리. */}
+      {viewRect && (() => {
+        const off = wireTrace
+          .map(([, toId]) => cardById(toId))
+          .filter((c): c is SceneCard => !!c && rectOutsideView(cardRect(c), viewRect));
+        if (!off.length) return null;
+        const MAX_CHIPS = 6; // shortcut: 짝이 아주 많으면 6개 + '+N' 만, 목록 창이 필요하면 그때
+        return (
+          <div className="scene-trace-chips" onMouseDown={(e) => e.stopPropagation()}>
+            {off.slice(0, MAX_CHIPS).map((c) => {
+              const r = cardRect(c);
+              const name = ((c.kind === "input" ? cardById(c.channel || "")?.text : c.text) || "").trim() || "(이름 없음)";
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  className="scene-trace-chip"
+                  title="눌러서 그 카드로 이동"
+                  onClick={() => navigateTo(r.x + r.w / 2, r.y + r.h / 2, true)}
+                >
+                  <b>{viewDirectionArrow(r, viewRect)}</b>
+                  {c.kind === "input" ? "INPUT" : "OUTPUT"} {name} · 화면 밖
+                </button>
+              );
+            })}
+            {off.length > MAX_CHIPS && <span className="scene-trace-chip more">+{off.length - MAX_CHIPS}</span>}
+          </div>
+        );
+      })()}
 
       {/* 좌상단 씬 패널 — 씬 이름 + 저장(파일로)/불러오기(새 탭)/레퍼런스 찾기. 미디어 없이 참조만 저장(ComfyUI식 가벼운 텍스트). */}
       {(onSaveScene || onLoadSceneFile || onFindRefs) && (

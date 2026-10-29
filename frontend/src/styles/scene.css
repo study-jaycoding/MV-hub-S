@@ -1080,6 +1080,25 @@
 .scene-edge.cut { stroke: #f2777c; opacity: 1; stroke-dasharray: none; stroke-width: 3; }
 /* 숨긴(회색) 중간 카드 우회선 — 연결은 유지, 중간에 숨겨진 게 있다는 회색 점선 표시 */
 .scene-edge.bridge { stroke: #8a8f98; stroke-width: 1.8; stroke-dasharray: 2 6; opacity: 0.6; }
+/* 무선 짝 화살표(INPUT·OUTPUT 하나를 골랐을 때, Jay 2026-10-29) — '끊기 예고' 빨강(#f2777c, 실선·빛 없음)과 화살촉·점선·빛으로 구분 */
+.scene-edge.trace {
+  stroke: #ff4d5e; stroke-width: 3; stroke-dasharray: 8 6; opacity: 0.999;
+  filter: drop-shadow(0 0 4px rgba(255, 77, 94, 0.75));
+}
+.scene-trace-head { fill: #ff4d5e; }
+/* 짝이 화면 밖일 때의 꼬리표 — 보드 위쪽 가운데(오른쪽 위는 미니맵). 누르면 그 카드로 화면 이동. */
+.scene-trace-chips {
+  position: absolute; z-index: 12; top: 10px; left: 50%; transform: translateX(-50%);
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; max-width: 70%;
+}
+.scene-trace-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 8px; border-radius: 999px;
+  background: #2a0d12; color: #ffd0d4; border: 1px solid #ff4d5e; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.55);
+  font: inherit; font-size: 12px; font-weight: 800; white-space: nowrap; cursor: pointer;
+}
+.scene-trace-chip b { color: #ff4d5e; font-size: 14px; }
+.scene-trace-chip:hover { background: #3a1219; }
+.scene-trace-chip.more { cursor: default; }
 /* 가위 드래그 궤적 */
 .scene-cut-stroke { fill: none; stroke: #f2777c; stroke-width: 2; stroke-dasharray: 4 4; opacity: 0.85; }
 /* 카드 포트(원) — 연결 시작/받는 클릭 손잡이. 평소 숨김, 카드 선택/호버 때만 드러난다.
