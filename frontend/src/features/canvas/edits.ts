@@ -1,9 +1,9 @@
 import {
   sceneRefFingerprint, uid, variantIds,
-  type SceneCard, type SceneCardKind, type SceneEdge, type SceneGroup,
+  type SceneCard, type SceneCardKind, type SceneEdge, type SceneEdgeRole, type SceneGroup,
   type SceneModelCfg, type SceneRef, type SceneSetFolder,
 } from "../../lib/scenes";
-import { canConnect, collectListInputs, resolvePortEdges, withCollectorOrder } from "../../lib/sceneEdges";
+import { canConnect, collectListInputs, resolveInputSourceId, resolvePortEdges, withCollectorOrder } from "../../lib/sceneEdges";
 import { pruneGroups, reconcileRefs } from "../../lib/sceneDerive";
 import { buildSelectedConnections } from "../../lib/sceneInteractions";
 import type { Generation } from "../../types";
@@ -23,7 +23,8 @@ export type CanvasEditCommand =
   | { type: "fitCardHeight"; cardId: string; h: number }
   | { type: "setCardReferences"; cardId: string; references: SceneRef[] }
   | { type: "synchronizeReferences" }
-  | { type: "connectCards"; pairs: Array<[string, string]> }
+  // role: 출력을 못 푸는 INPUT 을 생성 카드에 미리 이을 때 놓은 칸(그 선에만 붙인다 — 풀린 INPUT 은 소스 종류로 칸이 정해진다)
+  | { type: "connectCards"; pairs: Array<[string, string]>; role?: SceneEdgeRole }
   | { type: "disconnectEdges"; edgeIds: string[] }
   | { type: "connectSelectedCards"; cardIds: string[] }
   | { type: "createNode"; id: string; kind: SceneCardKind; position: { x: number; y: number } }
@@ -126,7 +127,8 @@ export function applyCanvasEdit(
         const key = `${from}>${to}`;
         const source = byId.get(from), target = byId.get(to);
         if (seen.has(key) || !source || !target || !canConnect(source, target, byId, [...edges, ...additions])) continue;
-        seen.add(key); additions.push({ id: uid(), from, to });
+        const role = command.role && source.kind === "input" && !resolveInputSourceId(from, byId, edges) ? command.role : undefined;
+        seen.add(key); additions.push(role ? { id: uid(), from, to, role } : { id: uid(), from, to });
       }
       if (!additions.length) return null;
       edges = [...edges, ...withCollectorOrder(edges, additions, byId)];

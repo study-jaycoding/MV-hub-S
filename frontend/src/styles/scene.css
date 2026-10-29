@@ -1073,6 +1073,8 @@
    사이에 한 덩어리로 끼어 겹침 검사가 커지는 것으로 보인다(추정). 경위 docs/status/조작점검_2026-10-10.md. */
 .scene-edge.onsel { stroke-width: 4; opacity: 0.999; }
 .scene-edge.temp { stroke: #7fa9ff; stroke-width: 2.2; stroke-dasharray: 4 4; opacity: 0.9; }
+/* 출력을 아직 안 고른 INPUT 의 '미리 이은 선' — 고르기 전엔 아무것도 전하지 않는다(Jay 2026-10-29). 칸 색 대신 회색 점선. */
+.scene-edge.pending { stroke: #8a8f98; stroke-dasharray: 6 5; opacity: 0.85; }
 /* 연결선 클릭 판정(넓은 투명선) — 클릭=해제, 호버 시 다음 실선을 빨갛게(삭제 예고) */
 .scene-edge-hit { fill: none; stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: pointer; }
 .scene-edge-hit:hover + path { stroke: #f2777c; opacity: 1; stroke-dasharray: none; }
@@ -1306,6 +1308,55 @@
 .scene-portedit-name:focus,
 .scene-portedit-sel:focus { border-color: var(--accent); }
 .scene-portedit-name::placeholder { color: var(--muted); font-weight: 500; }
+/* INPUT 출력 고르기(Jay 2026-10-29) — 닫힌 칸은 위 select 모양 그대로, 펼치면 검색칸 + 종류별 무리(큰 알약·같은 색 구분선) */
+.scene-portpick { position: relative; flex: 1; min-width: 0; display: flex; }
+.scene-portpick-btn { display: flex; align-items: center; gap: 6px; text-align: left; font-family: inherit; }
+.scene-portpick-cur { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scene-portpick-chev { flex: none; width: 13px; height: 13px; stroke: var(--muted); }
+.scene-portpick-pop {
+  position: absolute; top: calc(100% + 8px); left: -4px; z-index: 30; width: 214px; box-sizing: border-box;
+  max-height: 440px; overflow-y: auto; padding: 4px; cursor: default;
+  background: #14171c; border: 1px solid #2f333b; border-radius: 10px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  font-size: 13.5px; color: var(--text);
+}
+.scene-portpick-search {
+  display: flex; align-items: center; gap: 6px; margin: 2px 2px 4px; padding: 5px 8px; border-radius: 7px;
+  background: #0b0d11; border: 1px solid var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.18);
+}
+.scene-portpick-search svg { flex: none; width: 14px; height: 14px; stroke: var(--muted); }
+.scene-portpick-search input {
+  flex: 1; min-width: 0; border: 0; outline: none; background: transparent; padding: 0;
+  color: #fff; font: inherit; font-size: 13px; font-weight: 700;
+}
+.scene-portpick-search input::placeholder { color: #6c7280; font-weight: 500; }
+.scene-portpick-clear { flex: none; border: 0; background: transparent; color: #7d838e; font-size: 12px; cursor: pointer; padding: 0 2px; }
+.scene-portpick-clear:hover { color: #fff; }
+.scene-portpick-group { --pc: #9aa3b2; }
+.scene-portpick-group.g-model { --pc: #ffb84d; }
+.scene-portpick-group.g-ref { --pc: #7fa9ff; }
+.scene-portpick-group.g-text { --pc: #b57aff; }
+.scene-portpick-og { display: flex; align-items: center; gap: 8px; padding: 9px 6px 4px; }
+.scene-portpick-og::after { content: ""; flex: 1; height: 1px; background: color-mix(in srgb, var(--pc) 45%, transparent); }
+.scene-portpick-pill {
+  display: inline-flex; align-items: center; padding: 3px 13px; border-radius: 999px;
+  font-size: 13.5px; font-weight: 900; letter-spacing: 0.02em;
+  border: 1px solid var(--pc); color: var(--pc); background: color-mix(in srgb, var(--pc) 18%, transparent);
+}
+.scene-portpick-pill.hit { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 2px; }
+.scene-portpick-op {
+  padding: 5px 8px 5px 18px; border-radius: 6px; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.scene-portpick-op.on { background: rgba(var(--accent-rgb), 0.16); color: var(--accent); font-weight: 700; }
+.scene-portpick-op mark { background: rgba(var(--accent-rgb), 0.28); color: #fff; border-radius: 3px; padding: 0 1px; }
+.scene-portpick-op.on mark { color: var(--accent); }
+.scene-portpick-empty { padding: 12px 8px 10px; color: var(--muted); font-size: 12.5px; text-align: center; }
+.scene-portpick-foot { padding: 5px 8px 3px; color: #7d838e; font-size: 11.5px; line-height: 1.5; border-top: 1px solid #2f333b; margin-top: 4px; }
+.scene-portpick-unset {
+  display: block; width: 100%; margin-top: 4px; padding: 5px 8px; border: 0; border-top: 1px solid #2f333b; border-radius: 0 0 6px 6px;
+  background: transparent; color: var(--muted); font: inherit; font-size: 12px; text-align: left; cursor: pointer;
+}
+.scene-portpick-unset:hover { color: #fff; }
 
 /* ── Head(제목) 노드 — 포트 없는 큰 글씨 주석. 배경/테두리 없음, 크기 조절 시 글자도 커짐. ── */
 /* head = 박스가 글씨에 맞춰 자동 크기(폭·높이). 고정 dims 없음 → 글씨 크기만 바꾸면 박스가 따라온다. */

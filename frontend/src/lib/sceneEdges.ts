@@ -59,7 +59,9 @@ export function canConnect(
     if (!cardsById || !edges) return false;
     const realId = resolveInputSourceId(from.id, cardsById, edges);
     const real = realId ? cardsById.get(realId) : undefined;
-    if (!real) return false;
+    // 출력을 아직 못 푸는 INPUT 은 생성 카드에만 미리 이어 둘 수 있다(놓은 칸을 선에 기억 — Jay 2026-10-29).
+    //  출력을 고르기 전엔 resolvePortEdges 가 이 선을 빼므로 아무것도 전하지 않는다.
+    if (!real) return to.kind === "generation";
     return canConnect(real, to); // real 은 input 이 아니므로 컨텍스트 불필요
   }
   // 여기 오면 from 은 output/input 이 아니다(위에서 처리) — output 은 출력 포트 있는 소스만(view 제외).
@@ -1333,6 +1335,45 @@ export function wireTracePairs(
   if (card?.kind === "output")
     return cards.filter((c) => c.kind === "input" && c.channel === card.id).map((c) => [card.id, c.id]);
   return [];
+}
+
+// INPUT 출력 목록의 무리(Jay 2026-10-29) — 그 OUTPUT 이 받는 것이 생성 카드로 들어갈 때의 칸. 선 색·생성 카드 칸과 같은
+//  판정(resolveEdgeRole)을 가상의 생성 카드로 물어 본다. 받는 것이 없거나 못 푸는 INPUT 이면 none.
+export type InputPickGroup = "model" | "ref" | "text" | "none";
+const pickGroupOfRole = (role: SceneEdgeRole): InputPickGroup =>
+  role === "model" ? "model" : role === "text" ? "text" : "ref";
+export function outputPickGroup(
+  outputId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+): InputPickGroup {
+  const ins = edges
+    .filter((e) => e.to === outputId)
+    .map((e) => ({ e, c: cardsById.get(e.from) }))
+    .filter((x): x is { e: SceneEdge; c: SceneCard } => !!x.c);
+  if (!ins.length) return "none";
+  const src = sortByOrder(ins)[0].c; // INPUT 이 실제로 쓰는 대표 소스(resolveInputSourceId 와 같은 순서)
+  if (src.kind === "input" && !resolveInputSourceId(src.id, cardsById, edges)) return "none";
+  const probe: SceneCard = { id: "\u0000pick-probe", kind: "generation", x: 0, y: 0 };
+  const map = new Map(cardsById).set(probe.id, probe);
+  return pickGroupOfRole(resolveEdgeRole({ id: probe.id, from: src.id, to: probe.id }, map, {}, edges));
+}
+
+// 이 INPUT 이 생성 카드의 어느 칸에 이어져 있나 — 출력 목록을 그 무리로만 거른다. 생성 카드에 안 이었으면 빈 집합(거르지 않음).
+//  출력을 못 푸는 INPUT 의 선은 놓은 칸(role)이 있을 때만 센다(없으면 칸을 알 수 없다).
+export function inputPickLanes(
+  inputId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+): Set<InputPickGroup> {
+  const resolved = !!resolveInputSourceId(inputId, cardsById, edges);
+  const lanes = new Set<InputPickGroup>();
+  for (const e of edges) {
+    if (e.from !== inputId || cardsById.get(e.to)?.kind !== "generation") continue;
+    if (!resolved && !e.role) continue;
+    lanes.add(pickGroupOfRole(resolveEdgeRole(e, cardsById, {}, edges)));
+  }
+  return lanes;
 }
 
 type TraceRect = { x: number; y: number; w: number; h: number };

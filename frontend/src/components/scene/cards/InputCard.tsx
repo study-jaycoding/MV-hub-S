@@ -1,7 +1,8 @@
 // Input(무선 수신) 카드 본문 — SceneBoard 렌더 분할(R2). 셸은 부모 소유, Fragment 만 반환(규칙은 OutputCard 참고).
 import type React from "react";
 import type { SceneCard, SceneEdge } from "../../../lib/scenes";
-import { resolveInputSourceId } from "../../../lib/sceneEdges";
+import { inputPickLanes, outputPickGroup, resolveInputSourceId } from "../../../lib/sceneEdges";
+import { InputChannelPicker } from "./InputChannelPicker";
 
 export function InputCard({
   card,
@@ -44,18 +45,17 @@ export function InputCard({
       </div>
       {sel && (
         <div className="scene-portedit" onMouseDown={(e) => e.stopPropagation()}>
-          <select
-            className="scene-portedit-sel"
-            value={chOk ? card.channel : ""}
-            onChange={(e) => setNodeChannel(card.id, e.target.value)}
-          >
-            <option value="">출력 선택…</option>
-            {outputs.map((o) => (
-              <option key={o.id} value={o.id}>
-                {(o.text || "").trim() || "(이름없음)"}
-              </option>
-            ))}
-          </select>
+          {/* 출력 고르기 — 종류별 무리·검색·이어진 칸에 맞는 것만(Jay 2026-10-29) */}
+          <InputChannelPicker
+            items={outputs.map((o) => ({
+              id: o.id,
+              name: (o.text || "").trim() || "(이름 없음)",
+              group: outputPickGroup(o.id, cardsById, edges),
+            }))}
+            value={chOk ? card.channel! : ""}
+            lanes={inputPickLanes(card.id, cardsById, edges)}
+            onPick={(id) => setNodeChannel(card.id, id)}
+          />
         </div>
       )}
       <span

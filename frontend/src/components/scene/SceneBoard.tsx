@@ -67,6 +67,7 @@ import {
   comfyTextDriveKeys,
   edgePathXY,
   rectOutsideView,
+  resolveInputSourceId,
   viewDirectionArrow,
   wireTracePairs,
   wireTracePath,
@@ -1377,7 +1378,16 @@ export function SceneBoard({
 
   // ── S4: 출력 포트 드래그 → 입력 포트에 놓으면 연결 · 엣지 클릭으로 해제 ──
   // 여러 연결을 한 번에 추가(중복·자기연결 제외). 다중 레퍼런스 일괄 연결·c 자동연결에서 재사용.
-  const addEdges = (pairs: Array<[string, string]>) => { commitDocument({ type: "connectCards", pairs }); };
+  const addEdges = (pairs: Array<[string, string]>, role?: SceneEdgeRole) => { commitDocument({ type: "connectCards", pairs, role }); };
+  // 생성 카드에 놓은 칸 — 칸 점 위면 그 점, 아니면 놓은 높이에 가장 가까운 모델·레퍼런스·텍스트 점(세트 칸은 Set 노드 전용).
+  //  출력을 아직 못 푸는 INPUT 을 미리 이을 때만 쓰인다(edits 가 그 선에만 붙인다).
+  const laneFromDrop = (toCard: SceneCard, el: HTMLElement | null, y: number): SceneEdgeRole => {
+    const hit = el?.closest<HTMLElement>(".scene-port.in[data-role]")?.dataset.role;
+    if (hit === "model" || hit === "ref" || hit === "text") return hit;
+    const mid = toCard.y + heightOf(toCard) / 2;
+    const gap = (lane: ScenePortLane) => Math.abs(mid + laneDelta(lane, toCard) - y);
+    return (["model", "ref", "text"] as const).reduce((best, lane) => (gap(lane) < gap(best) ? lane : best));
+  };
   const removeEdge = (id: string) => removeEdges([id]);
   // 여러 연결을 한 번에 끊기(가위 드래그) — 실제로 사라지는 게 있을 때만 반영/저장.
   const removeEdges = (ids: string[]) => { commitDocument({ type: "disconnectEdges", edgeIds: ids }); };
@@ -1414,7 +1424,10 @@ export function SceneBoard({
         const f = cardsRef.current.find((c) => c.id === id);
         return f && canConnect(f, toCard, byId, edgesRef.current);
       });
-      if (froms.length) addEdges(froms.map((f) => [f, toId] as [string, string]));
+      const role = srcKind === "input" && toCard.kind === "generation"
+        ? laneFromDrop(toCard, el, toCanvas(ev.clientX, ev.clientY).y)
+        : undefined;
+      if (froms.length) addEdges(froms.map((f) => [f, toId] as [string, string]), role);
     };
     beginDrag(move, up, () => setTempWire(null)); // blur: 유효 드롭 좌표 없음 → 연결 안 만들고 임시선만 제거
   };
@@ -2373,6 +2386,10 @@ export function SceneBoard({
   const cardById = (id: string) => cardsById.get(id);
   // INPUT·OUTPUT 하나만 골랐을 때 그 무선 짝 — 빨간 화살표·화면 밖 꼬리표(Jay 2026-10-29). 고른 동안만, 그리기만 한다.
   const wireTrace = selected.size === 1 ? wireTracePairs([...selected][0], cards, cardsById) : [];
+  // 출력을 아직 못 푸는 INPUT — 그 선은 미리 이은 선(회색 점선, 아무것도 전하지 않음)으로 그린다
+  const pendingInputs = new Set(
+    cards.filter((c) => c.kind === "input" && !resolveInputSourceId(c.id, cardsById, edges)).map((c) => c.id),
+  );
 
   // 상류 comfy 가 'running' 인 생성카드 집합 — 어느 버튼(생성카드 Generate / comfy 노드 실행)으로 돌리든
   //  컨피가 도는 동안 그 다운스트림 생성카드가 '생성중(회색)'으로 보이게 comfy 상태에서 파생한다.
@@ -3112,6 +3129,7 @@ export function SceneBoard({
                             ? " ref"
                             : "") + " onsel"
                 : " idle") +
+              (pendingInputs.has(e.from) ? " pending" : "") +
               (edgesToCut.has(e.id) ? " cut" : ""); // 가위가 지나간 선 = 빨강 예고
             const { x1, y1, x2, y2 } = edgeEnds(e, a, b);
             // 연결선 컬링 — 양 끝점 bbox 가 확장뷰포트 밖이면 곡선 전체가 밖(제어점이 bbox 내라 보장) → 안 그림.
