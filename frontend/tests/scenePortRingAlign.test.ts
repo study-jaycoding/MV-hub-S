@@ -38,8 +38,26 @@ it("카드 테두리 두께는 늘 --bw 로 정한다 — 숫자로 바로 쓰�
       : [],
   );
   expect(bad).toEqual([]);
-  const base = rules.find((r) => r.selectors.includes(".scene-card"));
-  expect(base?.decls).toContainEqual(["--bw", "0px"]); // 테두리 없는 카드(Comfy 등)의 기본값
+});
+
+it("노드 틀 통일(Jay 2026-10-29) — 모든 노드 3px · 평소 자기 색 35% · 고르면 같은 3px 불투명(바깥 링 없음) · 방금 생성도 불투명", () => {
+  const one = (selector: string) => rules.find((r) => r.selectors.length === 1 && r.selectors[0] === selector)?.decls ?? [];
+  const own = "var(--pc, var(--accent))";
+  expect(one(".scene-card")).toEqual(expect.arrayContaining([
+    ["--bw", "3px"],
+    ["border", `var(--bw) solid color-mix(in srgb, ${own} 35%, transparent)`],
+  ]));
+  expect(one(".scene-card.sel")).toContainEqual(["border-color", own]);
+  expect(one(".scene-card.sel").some(([p]) => p === "box-shadow")).toBe(false); // 바깥 링을 되살리지 않는다
+  expect(one(".scene-card.glow")).toContainEqual(["border-color", own]);
+  // 종류별 규칙은 고유색(--pc)만 정하고 틀 색을 따로 칠하지 않는다(빨강 = 서버에 없음·텍스트 편집 중 숨김만 예외)
+  const KINDS = /\.scene-card-(ref|gen|text|set|model|list|view|render|comfy|input|output)(?![\w-])/;
+  const painted = rules.flatMap((r) =>
+    r.selectors.some((s) => isCard(s) && KINDS.test(subjectOf(s)) && !/off-server|data-text-editing/.test(s))
+      ? r.decls.filter(([p]) => p === "border-color").map(([p, v]) => `${r.selectors.join(", ")} { ${p}: ${v} }`)
+      : [],
+  );
+  expect(painted).toEqual([]);
 });
 
 it("고리 자리 = 점 간격(PORT_GAP) + 고리 반지름 + 카드 테두리 — 다른 규칙이 고리를 옆으로 옮기지 않는다", () => {
