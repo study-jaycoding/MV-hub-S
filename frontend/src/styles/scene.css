@@ -215,10 +215,11 @@
 }
 
 /* ── 카드 그룹(Ctrl+G) — 멤버 바운딩박스 테두리 + 헤더(이름·접기). 컨테이너는 클릭 통과, 헤더만 잡힘 ── */
-/* 평소 틀 = 3px 실선 그룹 색 35%(Jay 2026-10-30 — 노드 틀과 같은 규칙. 전엔 2px 점선 + 색 있는 그룹만 은은한 빛). 색 없는 그룹은 면과 같은 강조색. */
+/* 평소 = 선·빛 없이 면(그룹 색 13%)만, 고르면 밝힌 선 2px + 빛 + 면 20%(Jay 2026-10-30 — 전엔 2px 점선 + 은은한 빛).
+   2px 자리는 평소에도 투명으로 남긴다 — 고를 때 머리줄·안쪽 자리가 움직이지 않게. 색 없는 그룹은 면과 같은 강조색. */
 .scene-group {
   position: absolute; z-index: 0; pointer-events: none;
-  border: 3px solid color-mix(in srgb, var(--gc, var(--accent)) 35%, transparent); border-radius: 12px;
+  border: 2px solid transparent; border-radius: 12px;
   background: color-mix(in srgb, var(--gc, var(--accent)) 13%, transparent);
 }
 /* 선택 강조 = 그룹 자기 색이 '한 단계 밝아진다'. 강조색으로 덮으면 빨강·파랑·초록 그룹을
@@ -231,7 +232,7 @@
   border-color: var(--g-lit);
   /* 면도 같이 살짝 밝아져야 '켜졌다'는 느낌이 난다(안 고름 13% → 고름 20%) */
   background: color-mix(in srgb, var(--g-base) 20%, transparent);
-  /* 바깥 링 2px 는 뺐다(Jay 2026-10-30) — 밝힌 3px 선 + 빛만 */
+  /* 바깥 링은 뺐다(Jay 2026-10-30) — 밝힌 2px 선 + 빛만 */
   box-shadow: 0 0 22px color-mix(in srgb, var(--g-lit) 48%, transparent);
 }
 /* 형광 — 흰색을 섞으면 파스텔로 바래서 '켜진' 느낌이 안 난다.
@@ -242,11 +243,10 @@
   }
 }
 .scene-group.selected .scene-group-hd {
-  border-bottom-color: var(--g-lit);
   background: color-mix(in srgb, var(--g-lit) 26%, rgba(20, 22, 26, 0.84));
 }
 .scene-group.collapsed {
-  pointer-events: auto; /* 틀은 펼친 그룹과 같은 3px 그룹 색 35% */
+  pointer-events: auto; /* 틀은 펼친 그룹과 같다(평소 없음 · 고르면 밝힌 2px) */
   background: rgba(20, 22, 26, 0.92); border-radius: 10px; overflow: hidden;
 }
 .scene-group.collapsed.selected { border-color: var(--g-lit); }
@@ -255,8 +255,8 @@
   display: flex; align-items: center; gap: 6px; padding: 0 8px; cursor: grab;
   font-size: 12px; font-weight: 700; color: var(--text);
   background: color-mix(in srgb, var(--gc, transparent) 36%, rgba(20, 22, 26, 0.72));
-  border-bottom: 1px solid var(--gc, var(--border2));
-  border-radius: 9px 9px 0 0; /* 그룹 모서리 12px − 틀 3px — 안쪽 곡선에 맞춘다 */
+  /* 아래 색 줄은 없앴다(Jay 2026-10-30) */
+  border-radius: 10px 10px 0 0; /* 그룹 모서리 12px − 틀 2px — 안쪽 곡선에 맞춘다 */
 }
 .scene-group.collapsed .scene-group-hd { border-bottom: 0; background: transparent; }
 .scene-group.collapsed.selected .scene-group-hd {
