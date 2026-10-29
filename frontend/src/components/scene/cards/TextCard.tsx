@@ -213,11 +213,13 @@ export function TextCard({
     if (el.getBoundingClientRect().top < limit) setPickPos({ ...pickPos, below: true });
   }, [pickPos]);
   // 쓰는 동안(큰 편집 창·@ 목록이 카드 밖으로 뜬다) 카드를 다른 카드·연결 끝 점 층 위로(InputChannelPicker 와 같은 표시 — scene.css)
+  //  + data-text-editing: 카드 자체 테두리·선택 빛을 숨겨 노드가 커진 것처럼(Jay 10-29 — 창 위로 튀어나와 두 겹처럼 보였다)
   useEffect(() => {
     const cardEl = editRef.current?.closest(".scene-card");
     if (!editing || !cardEl) return;
     cardEl.setAttribute("data-pop-open", "");
-    return () => cardEl.removeAttribute("data-pop-open");
+    cardEl.setAttribute("data-text-editing", "");
+    return () => { cardEl.removeAttribute("data-pop-open"); cardEl.removeAttribute("data-text-editing"); };
   }, [editing]);
 
   // 칸이 바뀐 뒤 — 알약 감싸기(조합 중이 아니면, 치는 중인 토큰은 글자로) · 글 저장 · 캐럿 기억 · @ 감지
@@ -277,7 +279,7 @@ export function TextCard({
         </div>
       </div>
       {editing && (
-        // 큰 편집 창(Jay 2026-10-29 시안 B) — 쓰는 동안 노드 위에 노드 폭의 1.6배로 떠서 쓴다(그 아래 보기는 흐리게). 노드 크기·연결선은 그대로.
+        // 큰 편집 창(Jay 2026-10-29 시안 B) — 쓰는 동안 노드 위에 노드 폭의 1.6배로 떠서 쓴다(그 아래 노드는 숨겨 노드가 커진 것처럼). 노드 크기·연결선은 그대로.
         //  ★보기 칸과 다른 요소다 — 같은 div 를 다시 쓰면 편집칸에 손으로 넣은 글·알약(React 밖)이 남은 채 보기 내용이 덧붙어
         //   글이 두 번 보였다(Jay 2026-10-29 화면).
         <div className="scene-textfloat" onMouseDown={(e) => e.stopPropagation()}>

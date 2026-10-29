@@ -522,17 +522,20 @@
 .scene-textedit[data-empty]::before { content: attr(data-placeholder); color: #666; pointer-events: none; }
 .scene-textedit .scene-inlinetok { cursor: pointer; user-select: none; -webkit-user-select: none; }
 /* 큰 편집 창(Jay 2026-10-29 시안 B) — 쓰는 동안 노드 위에 노드 폭의 1.6배로 가운데 맞춰 뜬다. 높이는 글만큼(노드보다 작지 않게,
-   화면 높이 60% 를 넘으면 안에서 스크롤). 카드 안에 그려 캔버스 확대·축소를 따른다. 그 아래 보기는 흐리게.
-   윗변은 노드 윗변에 맞춰 위의 '텍스트' 이름표를 가리지 않는다. */
+   화면 높이 60% 를 넘으면 안에서 스크롤). 카드 안에 그려 캔버스 확대·축소를 따른다.
+   노드가 커진 것처럼(Jay 10-29 text_grow) — 쓰는 동안 카드 자체 테두리·선택 빛·바탕·보기 글을 숨기고, 창은 테두리 바깥선(-2px)부터
+   덮는다(전엔 테두리가 창 위로 튀어나와 두 겹처럼 보였다). '텍스트' 이름표는 커진 창의 왼쪽 끝으로. */
+.scene-card.scene-card-text[data-text-editing] { border-color: transparent; box-shadow: none; background: transparent; }
+.scene-card.scene-card-text[data-text-editing] .scene-card-hd-float { left: -30%; }
 .scene-textfloat {
-  position: absolute; z-index: 20; left: -30%; top: 0; width: 160%; min-height: calc(100% + 20px);
+  position: absolute; z-index: 20; left: -30%; top: -2px; width: 160%; min-height: calc(100% + 20px);
   display: flex; flex-direction: column; border-radius: 12px; background: #000; cursor: default;
   box-shadow: 0 0 0 3px var(--accent), 0 16px 40px rgba(0, 0, 0, 0.7);
 }
 .scene-textfloat .scene-textedit {
   flex: 1; max-height: 60vh; border-radius: 12px; padding: 12px 12px 30px; font-size: 13px;
 }
-.scene-textview-inline.is-editing { opacity: 0.35; }
+.scene-textview-inline.is-editing { visibility: hidden; }
 /* 텍스트 보기(비편집) — @토큰을 인라인 썸네일 알약으로. 클릭하면 편집 textarea 로 전환. */
 .scene-textview-inline {
   flex: 1; width: 100%; box-sizing: border-box; cursor: grab;
