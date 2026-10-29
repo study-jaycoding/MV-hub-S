@@ -272,7 +272,7 @@ export function TextCard({
           {shownText ? (
             renderInline(shownText)
           ) : (
-            <span className="scene-textnode-ph2">텍스트 입력...</span>
+            <span className="scene-textnode-ph2">텍스트 입력</span>
           )}
         </div>
       </div>
@@ -290,7 +290,7 @@ export function TextCard({
             role="textbox"
             aria-multiline="true"
             aria-label="텍스트"
-            data-placeholder="텍스트 입력..."
+            data-placeholder="텍스트 입력"
             spellCheck={false}
             onMouseDown={(e) => e.stopPropagation()}
             onInput={syncEditor}
