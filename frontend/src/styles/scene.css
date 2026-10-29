@@ -1150,6 +1150,11 @@
 .scene-port.in::before { right: -20px; }
 .scene-port.out { right: -34px; cursor: crosshair; }
 .scene-port.in { left: -34px; }
+/* 테두리가 없는 카드(결과가 든 생성 카드·Comfy)는 위치 기준(테두리 안쪽)이 2px 바깥이라 고리가 점보다 2px 밖에 섰다(Jay 2026-10-29). */
+.scene-card.has-node > .scene-port.out,
+.scene-card-comfy > .scene-port.out { right: -32px; }
+.scene-card.has-node > .scene-port.in,
+.scene-card-comfy > .scene-port.in { left: -32px; }
 /* 노드 종류별 포트 색(--pc) — 선택 시 포트가 그 노드 고유색으로 채워진다. 테두리(선택 링)는 라임 유지. */
 .scene-card-gen { --pc: var(--accent); }
 .scene-card-model { --pc: #ffb84d; }
