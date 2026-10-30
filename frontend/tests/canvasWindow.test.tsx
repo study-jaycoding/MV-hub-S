@@ -72,6 +72,22 @@ describe("캔버스 탭 휠 클릭 → 새 창", () => {
     expect(onOpenCanvas).toHaveBeenCalledTimes(1);
   });
 
+  it("탭 글자 옆 겹친 두 창은 캔버스가 떠 있을 때만", () => {
+    const bar = (canvasFloating: boolean) => (
+      <TopBar filters={{ tab: "my" } as never} onTab={noop} onSearch={noop} onWorkspaceSwitched={noop}
+        workspaceContext={{ scope: "personal", id: null, name: null } as never} onWorkspaceContextChange={noop} onImported={noop}
+        onOpenAssets={noop} onOpenCanvas={noop} canvasFloating={canvasFloating} onOpenAdmin={noop} hasUnreadComments={false}
+        onOpenNotificationComment={noop} onNotificationsChanged={noop} />
+    );
+    act(() => root.render(bar(false)));
+    expect(canvasTab().querySelector(".tab-float-ic")).toBeNull();
+    act(() => root.render(bar(true)));
+    expect(canvasTab().querySelector("svg.tab-float-ic")).not.toBeNull();
+    expect(canvasTab().title).toBe(t("캔버스가 별도 창에 떠 있습니다"));
+    act(() => root.render(bar(false))); // 창을 끄면 사라진다
+    expect(canvasTab().querySelector(".tab-float-ic")).toBeNull();
+  });
+
   it("Assets 처럼 이름 붙은 팝업 창으로 열고, 떠 있으면 다시 열지 않고 앞으로 · 그 창 안에서는 제 창을 다시 읽지 않는다", () => {
     const popup = { closed: false, focus: vi.fn(), close: vi.fn(() => { popup.closed = true; }), addEventListener: vi.fn() };
     const open = vi.spyOn(window, "open").mockImplementation((() => popup) as never);
@@ -117,5 +133,94 @@ describe("캔버스 탭 휠 클릭 → 새 창", () => {
     act(() => root.render(<Probe />));
     expect(latest!.filters.tab).toBe("my");
     expect(JSON.parse(mainData[FILTERS_KEY])).toMatchObject({ tab: "my", __v: "2" });
+  });
+});
+
+// 캔버스 창이 떠 있는가(2026-10-30, docs/status/캔버스_떠있는창_2026-10-30.md) — 창끼리 BroadcastChannel 로 안다.
+// 창마다 모듈이 따로라 vi.resetModules 로 새 창(또는 새로 고친 창)의 모듈을 흉내 낸다.
+describe("캔버스 창이 떠 있음", () => {
+  const CHANNEL = "mvhub-canvas-window";
+  const sleep = (ms: number) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
+  async function until(check: () => boolean) {
+    for (let waited = 0; !check(); waited += 10) {
+      if (waited > 2000) throw new Error("기다린 값이 오지 않았다");
+      await sleep(10);
+    }
+  }
+  async function mainWindow() {
+    vi.resetModules();
+    const mod = await import("../src/lib/popupWindows");
+    const seen = { floating: false };
+    function Probe() {
+      seen.floating = mod.useCanvasFloating();
+      return null;
+    }
+    act(() => root.render(<Probe />));
+    return { mod, seen };
+  }
+
+  it("메인 창을 새로 고친 뒤에도 물어서 안다 · 창이 닫혔다고 알리면 0.3초 뒤 캔버스가 돌아온다", async () => {
+    const canvasSide = new BroadcastChannel(CHANNEL); // 이미 떠 있는 캔버스 창
+    canvasSide.onmessage = (event) => { if (event.data === "ping") canvasSide.postMessage("open"); };
+    try {
+      const { seen } = await mainWindow();
+      await until(() => seen.floating);
+      canvasSide.postMessage("closed");
+      await sleep(60);
+      expect(seen.floating).toBe(true); // 새로 고침일 수도 있어 바로 내리지 않는다
+      await until(() => !seen.floating);
+    } finally {
+      canvasSide.close();
+    }
+  });
+
+  it("이 창이 연 창은 여는 순간 떠 있음 · 그 창이 살아 있으면(새로 고침) 'closed' 에도 그대로 · 참조를 잃은 뒤 다시 열면 그 창을 다시 읽지 않는다", async () => {
+    const other = new BroadcastChannel(CHANNEL);
+    try {
+      const { mod, seen } = await mainWindow();
+      const popup = { closed: false, focus: vi.fn(), close: vi.fn(), addEventListener: vi.fn(), location: { href: "http://localhost/?embed=canvas&v=1" } };
+      const open = vi.spyOn(window, "open").mockImplementation((() => popup) as never);
+      act(() => mod.openEmbedWindow(mod.EMBED_MODES.canvas));
+      expect(seen.floating).toBe(true);
+
+      other.postMessage("closed"); // 캔버스 창을 새로 고쳤다
+      await sleep(450);
+      expect(seen.floating).toBe(true);
+      popup.closed = true; // 이번엔 닫았다
+      other.postMessage("closed");
+      await until(() => !seen.floating);
+
+      other.postMessage("open"); // 메인 창을 새로 고친 뒤처럼 — 떠 있다는 것만 알고 그 창의 참조는 없다(위 참조는 닫힘)
+      await until(() => seen.floating);
+      const live = { closed: false, focus: vi.fn(), addEventListener: vi.fn(), location: { href: "http://localhost/?embed=canvas&v=1" } };
+      open.mockImplementation((() => live) as never);
+      act(() => mod.openEmbedWindow(mod.EMBED_MODES.canvas));
+      expect(open.mock.calls.at(-1)?.[0]).toBe(""); // 빈 주소 — 같은 이름의 창만 잡는다
+      expect(live.location.href).toBe("http://localhost/?embed=canvas&v=1"); // 다시 읽지 않았다
+      expect(live.focus).toHaveBeenCalled();
+    } finally {
+      other.close();
+    }
+  });
+
+  // 캔버스 창 쪽 — 이 시험의 채널·pagehide 듣기는 남으므로 맨 끝에 둔다(뒤 시험의 ping 에 답하지 않게)
+  it("캔버스 창은 켜질 때·물으면 'open', 닫히거나 새로 고칠 때 'closed' 를 알린다", async () => {
+    vi.resetModules();
+    const mod = await import("../src/lib/popupWindows");
+    const heard: unknown[] = [];
+    const listener = new BroadcastChannel(CHANNEL);
+    listener.onmessage = (event) => heard.push(event.data);
+    try {
+      mod.announceCanvasWindow();
+      await until(() => heard.includes("open"));
+      heard.length = 0;
+      listener.postMessage("ping");
+      await until(() => heard.includes("open"));
+      heard.length = 0;
+      window.dispatchEvent(new Event("pagehide"));
+      await until(() => heard.includes("closed"));
+    } finally {
+      listener.close();
+    }
   });
 });

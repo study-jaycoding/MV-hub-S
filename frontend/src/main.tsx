@@ -2,7 +2,7 @@ import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
 import { PromptProvider } from "./lib/prompt";
 import { installFileDropGuard } from "./lib/media";
-import { EMBED_MODES, isCanvasWindow } from "./lib/popupWindows";
+import { announceCanvasWindow, EMBED_MODES, isCanvasWindow } from "./lib/popupWindows";
 import { applyAccent, applyReduceMotion, loadAccent, loadLang, loadReduceMotion } from "./lib/theme";
 import { bootSceneStore, readLegacyScenesRaw } from "./lib/sceneBoot";
 import { installApiGate } from "./lib/http";
@@ -108,8 +108,12 @@ if (cleanFeed) {
   installPopupLogoutWatch();
   render(<ManageWindow />);
 } else {
-  // 캔버스 탭을 휠 클릭해 연 창(EMBED_MODES.canvas)도 여기 — 앱 그대로다. 제목만 달리 둔다: 허브가 별도 창을 제목으로 찾아 올린다(lib/popupWindows)
-  if (isCanvasWindow()) document.title = `${document.title} — 캔버스`;
+  // 캔버스 탭을 휠 클릭해 연 창(EMBED_MODES.canvas)도 여기 — 앱 그대로다(캔버스 탭에선 머리줄만 뺀다, App). 제목을 달리 둔다: 허브가 별도 창을
+  //  제목으로 찾아 올린다. 떠 있다고 메인 창에 알린다 — 메인 창은 그동안 캔버스 자리를 비운다(lib/popupWindows)
+  if (isCanvasWindow()) {
+    document.title = `${document.title} — 캔버스`;
+    announceCanvasWindow();
+  }
   // ★순서를 강제한다: 저장소 열기·이관 완료 → App 마운트 → (App 안에서) 백업 미러.
   //  App 의 effect 로 미루면 늦다 — 첫 렌더에서 이미 씬 목록을 읽는다(useSceneCoordination).
   void bootSceneStore().then((result) => {

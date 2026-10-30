@@ -23,8 +23,8 @@ import {
 } from "./components/SpotlightPrompt";
 import { ThumbnailGrid } from "./components/ThumbnailGrid";
 import { ensureTeamBase } from "./lib/teamSeen";
-import { EMBED_MODES, openEmbedWindow } from "./lib/popupWindows";
-import { TopBar } from "./components/TopBar";
+import { EMBED_MODES, isCanvasWindow, openEmbedWindow, useCanvasFloating } from "./lib/popupWindows";
+import { CanvasFloatIcon, TopBar } from "./components/TopBar";
 const McpConnection = lazy(() => import("./components/mcp/McpConnection").then((m) => ({ default: m.McpConnection })));
 import { SceneBar } from "./components/scene/SceneBar";
 import { SceneBoardBoundary } from "./components/scene/SceneBoardBoundary";
@@ -243,6 +243,8 @@ export default function App() {
   const { flash, toast } = useAppToast();
   // 앱 창 X 닫기는 확인 없이 조용히 닫힌다(Jay 결정 — 크롬 기본 확인창 디자인을 못 바꾸므로 제거).
   // 확인이 필요한 종료는 Host 콘솔의 '앱 종료' 버튼(우리 디자인 확인창) 경로가 담당한다.
+  // 캔버스 탭을 휠 클릭해 띄운 창이 떠 있다(Jay 2026-10-30) — 그동안 이 창의 캔버스 자리는 알림만 보이고 씬은 저장본을 따른다
+  const canvasFloating = useCanvasFloating();
   // Canvas 씬(빈 캔버스) 상태·CRUD 는 useSceneCoordination 훅으로 추출. S1: 프로젝트 무관 전역(projectId=null).
   //  flash 전달 — 다른 탭이 이 씬을 바꾸면(멀티탭) 비파괴 알림용.
   const {
@@ -252,7 +254,7 @@ export default function App() {
     removeSceneById,
     canvasDocument, writeBoardSnapshot, refreshSceneById, reorderScenes, setSceneWorkspace, backupOnly, importBackupScenes,
     sceneSaveFailing, sceneBackupSkippedIds,
-  } = useSceneCoordination(flash);
+  } = useSceneCoordination(flash, canvasFloating);
   // 위에서 고른 워크스페이스가 바뀌면 탭에 공간이 없는 씬의 참조를 새 공간으로 한 번 묻는다(2026-10-01 점검 R2-2).
   //  ★선택 저장 effect(위 190행) 뒤에 둔다 — 묻는 쪽이 저장된 선택을 읽는다(앞에 두면 옛 공간으로 묻는다).
   useRelinkOnWorkspaceChange(`${workspaceContext.scope}:${workspaceContext.id ?? ""}`, relinkSceneRefsNow);
@@ -1655,7 +1657,9 @@ export default function App() {
   // 캔버스 폴더 창이 떠 있는가 — 아래 canvasPeek 와 같은 조건(folderSel 은 아래 훅이라 같은 식으로 직접 본다).
   //  떠 있는 동안 하단 프롬프트·레퍼런스 칸·선택 막대는 그 창(폴더 = 라이브러리 공간)의 것이다: 뒤 캔버스 카드에 묶지 않고, 그 사이의
   //  생성은 그 카드에 붙지 않는다. 닫으면 보던 카드로 돌아간다(SpotlightPrompt 가 씬 ↔ 라이브러리 초안을 각자 보관·복원 — Jay 2026-10-22).
-  const canvasPeekOpen = !editOpen && filters.tab === "compose" && folderPeek && !!activeScene
+  // 캔버스가 별도 창에 떠 있는 동안 이 창의 캔버스 탭 자리 — 회색 아이콘과 글씨만, 프롬프트·폴더 창도 비킨다(Jay 2026-10-30)
+  const canvasAway = canvasFloating && !editOpen && filters.tab === "compose";
+  const canvasPeekOpen = !editOpen && filters.tab === "compose" && folderPeek && !!activeScene && !canvasAway
     && !!filters.project_id && filters.project_id !== "none" && !!filters.folder_path;
   // ── Canvas 씬 모드 ── 구성 탭에서 씬 생성 카드 1개를 선택하면 하단 프롬프트가 그 카드에 바인딩된다.
   const sceneMode = filters.tab === "compose" && !!activeScene && !!sceneBinding && !canvasPeekOpen;
@@ -2426,7 +2430,8 @@ export default function App() {
 
   return (
     <div className="app">
-      <TopBar
+      {/* 캔버스 창(휠 클릭으로 띄운 창)은 캔버스 탭에 있는 동안 머리줄이 없다(Jay 2026-10-30) — 다른 탭으로 넘어가면(라이브러리에서 찾기 등) 다시 나와 갇히지 않는다 */}
+      {!(isCanvasWindow() && !editOpen && filters.tab === "compose") && <TopBar
         filters={filters}
         searchResetKey={JSON.stringify([followRevision, storedTab, libraryTabs.active, libraryAuthKey, teamScopeKey, filters.project_id, filters.folder_path, filters.deleted_only])}
         onTab={(tab) => {
@@ -2468,6 +2473,7 @@ export default function App() {
           if (activeScene) flushScenePending(activeScene.id);
           openEmbedWindow(EMBED_MODES.canvas);
         }}
+        canvasFloating={canvasFloating}
         onOpenMcp={() => { setMcpLoaded(true); setMcpOpen(true); }}
         onOpenManage={canOpenManage ? openManageWindow : undefined}
         onOpenAdmin={openAdmin}
@@ -2480,7 +2486,7 @@ export default function App() {
         onOpenNotificationComment={openComment}
         onNotificationsChanged={() => void reload(true, true, "check")}
         inert={behindInert}
-      />
+      />}
       {mcpLoaded && <Suspense fallback={null}><McpConnection
         open={mcpOpen}
         onClose={() => setMcpOpen(false)}
@@ -2532,6 +2538,11 @@ export default function App() {
               }}
             />
           </Suspense>
+        ) : canvasAway ? (
+          <div className="canvas-away" role="status">
+            <CanvasFloatIcon />
+            <span>{t("캔버스가 별도 창에 떠 있습니다")}</span>
+          </div>
         ) : filters.tab === "compose" ? (
           <>
             {showFilters && (
@@ -2895,7 +2906,7 @@ export default function App() {
           프롬프트를 숨기면 그 안의 오류 문구도 같이 숨으므로(왜 생성이 안 되는지 알 수 없게 된다 — 레퍼런스 번호 오류 등) 같은 묶음의
           위 칸에 대신 띄운다 — 둘을 한 세로 묶음에 두어 서로 겹치지 않는다(Codex 설계 검토). 오류가 풀리면 저절로 사라진다.
           편집 탭에는 프롬프트도 선택 막대도 없다(편집 탭 병합). */}
-      {!promptVisible && !editOpen && (promptError || (selectionBar && !listPeek && !(filters.tab === "compose" && !!activeScene))) && (
+      {!promptVisible && !editOpen && !canvasAway && (promptError || (selectionBar && !listPeek && !(filters.tab === "compose" && !!activeScene))) && (
         <div className="dock-float">
           {promptError && (
             <div className="sl-error-float" role="status">
@@ -2913,8 +2924,8 @@ export default function App() {
       <div>
         <SpotlightPrompt
           ref={spotlightPromptRef}
-          visible={promptVisible && !editOpen} // 편집 탭에는 프롬프트가 없다(상태줄은 남는다)
-          onTogglePrompt={editOpen ? undefined : () => setPromptVisible(!promptVisible)}
+          visible={promptVisible && !editOpen && !canvasAway} // 편집 탭·떠 있는 캔버스의 자리에는 프롬프트가 없다(상태줄은 남는다)
+          onTogglePrompt={editOpen || canvasAway ? undefined : () => setPromptVisible(!promptVisible)}
           // 폴더 창(캔버스·목록 탭)이 뜬 동안 상태 줄은 키보드로도 닿지 않는다 — 마우스는 app-shell.css 가 막는다(규칙 16)
           statusInert={peekOpen}
           expanded={composerExpanded || sceneMode}

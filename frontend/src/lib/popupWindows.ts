@@ -46,10 +46,18 @@ export function openEmbedWindow(mode: EmbedMode): void {
   const url = `/?embed=${mode}&v=${Date.now()}`;
   const opts = WINDOW_OPTIONS[mode];
   if (window.name === opts.name) return; // 이 창이 그 창이다 — 같은 이름으로 열면 제 창을 다시 읽는다
+  // 떠 있는 캔버스 창의 참조를 잃었다(이 창을 새로 고침) — 주소를 주면 그 창을 다시 읽으니 빈 주소로 그 창만 잡는다
+  const reacquire = mode === EMBED_MODES.canvas && canvasFloating;
   // window.open 이 이미 url 로 내비게이션한다 — location.href 재대입은 같은 페이지를 두 번
   // 로드시켜(번들 재평가 + 부팅 API 세트 2회) 창 열기를 늦추던 원인이라 제거.
-  const w = window.open(url, opts.name, opts.features);
+  const w = window.open(reacquire ? "" : url, opts.name, opts.features);
+  try {
+    if (reacquire && w && w.location.href === "about:blank") w.location.href = url; // 사실은 닫혀 있었다 — 새 빈 창에 한 번만 싣는다
+  } catch {
+    /* same-origin defensive guard */
+  }
   openWindows[mode] = w;
+  if (mode === EMBED_MODES.canvas && w) setCanvasFloating(true); // 창이 켜져 알리기 전에도 이 창의 캔버스는 바로 비킨다
   if (w) followAppFocus(w);
   refreshOpen();
   try {
@@ -150,4 +158,62 @@ export function closeEmbedWindow(mode: EmbedMode): void {
 
 export function useEmbedWindowOpen(mode: EmbedMode): boolean {
   return useSyncExternalStore(subscribeOpen, () => !!lastOpen[mode]); // 확인해 둔 값 — 그리는 도중 .closed 가 바뀌어도 한 번의 그리기 안에서는 같다
+}
+
+// 캔버스 창이 떠 있는가(Jay 2026-10-30, docs/status/캔버스_떠있는창_2026-10-30.md) — 떠 있는 동안 메인 창의 캔버스 자리는 알림만 보이고
+// 탭 옆에 표시가 붙는다. 창 참조로는 메인 창을 새로 고치면 모르므로(위 shortcut) 캔버스 창이 스스로 알린다:
+// 켜질 때·물으면 "open", 닫히거나 새로 고칠 때(pagehide) "closed". 메인 창은 켜질 때 한 번 묻는다.
+const CANVAS_CHANNEL = "mvhub-canvas-window";
+const RELOAD_GRACE_MS = 300; // "closed" 뒤 이 창이 연 창이 아직 살아 있으면 새로 고침이다 — 닫힘이 .closed 에 비치기를 기다리는 틈
+
+export function announceCanvasWindow(): void {
+  if (typeof BroadcastChannel === "undefined") return;
+  const channel = new BroadcastChannel(CANVAS_CHANNEL);
+  channel.onmessage = (event) => {
+    if (event.data === "ping") channel.postMessage("open");
+  };
+  channel.postMessage("open");
+  window.addEventListener("pagehide", () => channel.postMessage("closed"));
+}
+
+let canvasFloating = false;
+const floatingListeners = new Set<() => void>();
+let floatingChannel: BroadcastChannel | null = null;
+let closedTimer: ReturnType<typeof setTimeout> | undefined;
+
+function setCanvasFloating(next: boolean): void {
+  clearTimeout(closedTimer);
+  if (next === canvasFloating) return;
+  canvasFloating = next;
+  floatingListeners.forEach((listener) => listener());
+}
+
+function onCanvasMessage(event: MessageEvent): void {
+  if (event.data === "open") setCanvasFloating(true);
+  else if (event.data === "closed") {
+    clearTimeout(closedTimer);
+    // 참조가 없으면(이 창을 새로 고친 뒤) 닫힌 것으로 본다 — 새로 고침이었다면 그 창이 켜지며 "open" 으로 다시 띄운다
+    closedTimer = setTimeout(() => {
+      if (!isEmbedWindowOpen(EMBED_MODES.canvas)) setCanvasFloating(false);
+    }, RELOAD_GRACE_MS);
+  }
+}
+
+function subscribeCanvasFloating(listener: () => void): () => void {
+  floatingListeners.add(listener);
+  if (!floatingChannel && typeof BroadcastChannel !== "undefined" && !isCanvasWindow()) {
+    floatingChannel = new BroadcastChannel(CANVAS_CHANNEL);
+    floatingChannel.onmessage = onCanvasMessage;
+    floatingChannel.postMessage("ping"); // 이 창이 켜지기 전부터 떠 있던 캔버스 창
+  }
+  return () => {
+    floatingListeners.delete(listener);
+    if (floatingListeners.size || !floatingChannel) return;
+    floatingChannel.close();
+    floatingChannel = null;
+  };
+}
+
+export function useCanvasFloating(): boolean {
+  return useSyncExternalStore(subscribeCanvasFloating, () => canvasFloating);
 }

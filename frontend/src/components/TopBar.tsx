@@ -24,6 +24,7 @@ interface Props {
   onImported: (msg: string) => void; // (서버 모드 미사용 — App 호환)
   onOpenAssets: () => void;
   onOpenCanvas?: () => void; // 캔버스 탭 휠 클릭 → 캔버스를 새 창으로(Assets 같은 별도 창)
+  canvasFloating?: boolean; // 그 창이 떠 있다 — 탭 글자 옆에 겹친 두 창(Jay 2026-10-30)
   onOpenMcp?: () => void;
   onOpenManage?: () => void; // PM 대시보드(분리형) — 별도 창. 플래그 off 면 미전달(버튼 숨김)
   onOpenAdmin: () => void; // 좌측 상단 로고 클릭 → 관리자 창(로드맵 §4-5)
@@ -51,6 +52,7 @@ export function TopBar({
   onImported,
   onOpenAssets,
   onOpenCanvas,
+  canvasFloating,
   onOpenMcp,
   onOpenManage,
   onOpenAdmin,
@@ -109,9 +111,10 @@ export function TopBar({
           className={!editOpen && filters.tab === "compose" ? "on" : ""}
           onClick={() => pickTab("compose")}
           onAuxClick={(event) => { if (event.button === 1 && onOpenCanvas) { event.preventDefault(); onOpenCanvas(); } }}
-          title={t("캔버스 — 씬 캔버스 · 히스토리 뷰")}
+          title={canvasFloating ? t("캔버스가 별도 창에 떠 있습니다") : t("캔버스 — 씬 캔버스 · 히스토리 뷰")}
         >
           {t("캔버스")}
+          {canvasFloating && <CanvasFloatIcon className="tab-float-ic" />}
         </button>
       </nav>
 
@@ -191,6 +194,17 @@ export function TopBar({
         onOpenManage={onOpenManage}
       />
     </header>
+  );
+}
+
+// 겹친 두 창 — 캔버스가 별도 창에 떠 있다(Jay 2026-10-30 시안 A). 탭 옆과 메인 창의 캔버스 자리(App)가 같이 쓴다. 색은 글자를 따른다
+export function CanvasFloatIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="1.5" y="5.5" width="9" height="9" rx="1.6" />
+      <path d="M5.5 5.5V3.1a1.6 1.6 0 0 1 1.6-1.6h5.8a1.6 1.6 0 0 1 1.6 1.6v5.8a1.6 1.6 0 0 1-1.6 1.6h-2.4" />
+    </svg>
   );
 }
 

@@ -91,9 +91,24 @@ export function useRelinkOnWorkspaceChange(workspaceKey: string, relink: () => v
   }, [workspaceKey]);
 }
 
-export function useSceneCoordination(flash?: (msg: string) => void) {
+// followStore — 캔버스가 다른 창에 떠 있다(lib/popupWindows.useCanvasFloating). 이 창은 그동안 캔버스를 그리지도 고치지도 않으므로
+//  활성 씬도 저장본을 따른다: 지킬 편집이 없고, 지키면 떠 있는 창이 고칠 때마다 '다른 탭에서 변경' 알림이 뜨고 돌아왔을 때 낡은 씬을 그려
+//  다음 편집이 그 창의 작업을 덮는다(2026-10-30, docs/status/캔버스_떠있는창_2026-10-30.md).
+export function useSceneCoordination(flash?: (msg: string) => void, followStore = false) {
   const [scenes, setScenes] = useState<Scene[]>(() => listScenes(null));
   const [activeSceneId, setActiveSceneId] = useState<string | null>(() => getActiveSceneId(null));
+  const followStoreRef = useRef(followStore);
+  followStoreRef.current = followStore;
+  const followedRef = useRef(followStore);
+  useEffect(() => {
+    if (followStore) setScenes(listScenes(null)); // 따르기 시작 — 비키며 내보낸 입력까지 든 저장본으로
+    else if (followedRef.current) {
+      // 떠 있던 창이 닫혔다 — 저장본과 그 창이 마지막으로 연 씬으로 돌아온다(씬을 고를 때마다 '마지막 연 씬'에 적는다, selectScene)
+      setScenes(listScenes(null));
+      setActiveSceneId(getActiveSceneId(null));
+    }
+    followedRef.current = followStore;
+  }, [followStore]);
   // DB 백업에만 있고 이 브라우저엔 없는 씬 수 — 0 이면 '가져오기'를 아예 노출하지 않는다.
   const [backupOnly, setBackupOnly] = useState(0);
   const activeScene = scenes.find((s) => s.id === activeSceneId) || null;
@@ -219,6 +234,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
       recoverConflicts(); // 방금 보관된 충돌이 있으면 새 탭으로 살린다(끝나면 통지가 다시 와 목록에 나타난다)
       const latest = listScenes(null);
       setScenes((prev) => {
+        if (followStoreRef.current) return latest; // 캔버스가 다른 창에 떠 있다 — 지킬 내 편집이 없다(위 followStore)
         const activeId = activeSceneIdRef.current;
         const myActive = activeId ? prev.find((s) => s.id === activeId) : undefined;
         const latestActive = activeId ? latest.find((s) => s.id === activeId) : undefined;
