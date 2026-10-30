@@ -12,6 +12,7 @@ const noop = () => {};
 const css = (name: string) => readFileSync(new NodeURL(`../src/styles/${name}.css`, import.meta.url), "utf8");
 const generationsCss = css("generations");
 const resolveCss = css("resolve-library");
+const assetsCss = css("assets");
 const allCss = css("base") + generationsCss + resolveCss + css("history");
 const props = (layout: "grid" | "list" = "grid"): ComponentProps<typeof GenerationCard> => ({
   gen: { id: "gold", prompt: "test", shared: true, is_final: true, is_mine: true, status: "done",
@@ -58,9 +59,14 @@ it.each(["grid", "list"] as const)("%s: gold star is centered, and all content s
 it("selection reveals one frame surface without a second stroke; focus brightens the card's own border, Resolve glow remains", () => {
   expect(generationsCss).not.toContain(".card.selected::after");
   expect(generationsCss).toContain("clip-path: inset(2px round 11px)");
-  // 포커스는 다른 색 링을 두르지 않는다(종전: 흰 링 + 라임 링) — 자기 상태색 테두리가 밝아지고 같은 색 1px 링만(2026-09-21 Jay).
+  // 포커스는 다른 색 링을 두르지 않는다(종전: 흰 링 + 라임 링) — 같은 상태색 그대로 더 굵다(2026-10-30 Jay: 밝은 색·1px 링 없음, 기준 카드 5px).
   expect(generationsCss).not.toContain("0 0 0 2px #fff, 0 0 0 4px var(--accent)");
-  expect(generationsCss).toContain(".gen-cell.focused .card, .gen-cell.focused .card.selected:hover { background: var(--st-hi); box-shadow: 0 0 0 1px var(--st-ring); }");
+  expect(generationsCss).not.toMatch(/--st-hi|--st-ring/);
+  expect(generationsCss).toContain(".gen-cell.focused .card.selected > .card-clip { clip-path: inset(4px round 9px); }"); // 고르고 기준 = 5px
+  expect(generationsCss).toContain(".gen-cell.focused .card:not(.selected) > .card-clip { clip-path: inset(1px round 12px); }"); // 고르지 않은 기준 = 2px
+  expect(assetsCss).toContain("border: 3px solid var(--accent)"); // Assets 칸 고름 3px
+  expect(assetsCss).toContain(".asset-cell.selected.focused::after { border-width: 5px; }");
+  expect(assetsCss).not.toContain("color-mix(in srgb, var(--accent) 55%, #fff)"); // 밝은 라임 없음
   expect(resolveCss).toContain("inset 0 0 0 2px #ff304f, 0 0 0 2px #ff304f, 0 0 18px 5px rgba(255, 48, 79, 0.72)");
 });
 
@@ -107,9 +113,14 @@ it.each(["grid", "list"] as const)("%s: gold star is centered, and all content s
 it("selection reveals one frame surface without a second stroke; focus brightens the card's own border, Resolve glow remains", () => {
   expect(generationsCss).not.toContain(".card.selected::after");
   expect(generationsCss).toContain("clip-path: inset(2px round 11px)");
-  // 포커스는 다른 색 링을 두르지 않는다(종전: 흰 링 + 라임 링) — 자기 상태색 테두리가 밝아지고 같은 색 1px 링만(2026-09-21 Jay).
+  // 포커스는 다른 색 링을 두르지 않는다(종전: 흰 링 + 라임 링) — 같은 상태색 그대로 더 굵다(2026-10-30 Jay: 밝은 색·1px 링 없음, 기준 카드 5px).
   expect(generationsCss).not.toContain("0 0 0 2px #fff, 0 0 0 4px var(--accent)");
-  expect(generationsCss).toContain(".gen-cell.focused .card, .gen-cell.focused .card.selected:hover { background: var(--st-hi); box-shadow: 0 0 0 1px var(--st-ring); }");
+  expect(generationsCss).not.toMatch(/--st-hi|--st-ring/);
+  expect(generationsCss).toContain(".gen-cell.focused .card.selected > .card-clip { clip-path: inset(4px round 9px); }"); // 고르고 기준 = 5px
+  expect(generationsCss).toContain(".gen-cell.focused .card:not(.selected) > .card-clip { clip-path: inset(1px round 12px); }"); // 고르지 않은 기준 = 2px
+  expect(assetsCss).toContain("border: 3px solid var(--accent)"); // Assets 칸 고름 3px
+  expect(assetsCss).toContain(".asset-cell.selected.focused::after { border-width: 5px; }");
+  expect(assetsCss).not.toContain("color-mix(in srgb, var(--accent) 55%, #fff)"); // 밝은 라임 없음
   expect(resolveCss).toContain("inset 0 0 0 2px #ff304f, 0 0 0 2px #ff304f, 0 0 18px 5px rgba(255, 48, 79, 0.72)");
 });
 
@@ -123,10 +134,12 @@ it.each(["grid", "list"] as const)("%s: selection keeps frame padding and conten
     (parseFloat(style.getPropertyValue(`padding-${side.toLowerCase()}`)) || 0));
   render(false);
   const original = getComputedStyle(host.querySelector(".card")!);
-  expect(getComputedStyle(host.querySelector(".card-clip")!).clipPath).toBe("inset(0 round 13px)");
+  // 고르지 않은 기준 카드(포커스) = 1px 여백 + 1px 깎기 = 2px(2026-10-30 Jay: 마지막에 누른 카드는 더 굵게 — 고르고 기준은 5px)
+  expect(getComputedStyle(host.querySelector(".card-clip")!).clipPath).toBe("inset(1px round 12px)");
   const originalInsets = contentInsets(original);
   expect(originalInsets).toEqual([1, 1, 1, 1]);
   render(true);
+  expect(getComputedStyle(host.querySelector(".card-clip")!).clipPath).toBe("inset(4px round 9px)"); // 고르고 기준 = 5px
   const selected = getComputedStyle(host.querySelector(".card")!);
   expect(selected.borderWidth).toBe("0px");
   expect(selected.padding).toBe("1px");

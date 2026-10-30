@@ -718,18 +718,17 @@
   contain-intrinsic-size: auto 240px;
 }
 /* 고른 카드 — 생성물 카드(워크스페이스 탭)와 **같은 방식·같은 색**(Jay 2026-09-28).
-   생성물 카드는 카드 배경(--st-sel)을 두고 안쪽을 3px 깎아(.card-clip) 4px 프레임을 드러낸다.
-   에셋 칸에는 그 안쪽 칸(.card-clip)이 없으므로, 같은 모양을 그림 위에 겹쳐 그린다 —
-   바깥 반경 12px · 테두리 4px → 안쪽 반경 8px 로 생성물 카드(14/4/10)와 같은 비례다.
-   ★포커스는 라임 링을 두르지 않고 **자기 프레임이 더 밝아진다**(생성물 --st-hi 와 같은 규칙,
-   2026-09-21 Jay 확정). 전에는 focused 의 box-shadow 가 selected 를 덮어써 라임만 보였다. */
+   생성물 카드는 카드 배경(--st-sel)을 두고 안쪽을 깎아(.card-clip) 3px 프레임을 드러낸다.
+   에셋 칸에는 그 안쪽 칸(.card-clip)이 없으므로, 같은 모양을 그림 위에 겹쳐 그린다(바깥 반경 12px).
+   ★마지막에 누른 칸(포커스)은 같은 라임 그대로 **더 굵다**(2026-10-30 Jay — 밝은 라임 없음, 생성물 카드와 같은 규칙):
+   고름 3px · 고르고 기준 5px · 고르지 않은 기준 2px. 전에는 focused 의 box-shadow 가 selected 를 덮어써 라임만 보였다. */
 .asset-cell.selected::after,
 .asset-cell.focused::after {
   content: ""; position: absolute; inset: 0; z-index: 5; pointer-events: none;
-  border: 4px solid var(--accent); border-radius: 12px; /* 색은 라임(Jay 2026-09-28) */
+  border: 3px solid var(--accent); border-radius: 12px; /* 색은 라임(Jay 2026-09-28) */
 }
-/* 포커스 = 자기 프레임이 **더 밝아진다**(생성물 카드의 --st-hi 와 같은 식). */
-.asset-cell.focused::after { border-color: color-mix(in srgb, var(--accent) 55%, #fff); }
+.asset-cell.focused::after { border-width: 2px; }
+.asset-cell.selected.focused::after { border-width: 5px; }
 
 /* 드래그 마퀴(선택 사각형) */
 .assets-marquee {
