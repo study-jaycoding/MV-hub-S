@@ -170,8 +170,11 @@ export function adoptSceneHistory(
   const fp = shown ? snapFingerprint(shown) : target.snapFp;
   if (fp !== null && fp !== candidate.snapFp) return "mismatch";
   if (!boards.every((board) => board.adopt(candidate.history))) return "stale";
-  if (gate.kind === "handoff" && fp === null && store.has(sceneId)) pendingHandoffs.set(sceneId, candidate.history); // 확인 전 — 있던 기록을 지킨다(위)
-  else {
+  if (gate.kind === "handoff" && fp === null) {
+    // 확인 전 — 있던 기록 유무와 상관없이 보관한다: 늦은 부팅 복원이 덮어도 그 창의 늦은 저장이 닿으면 이어진다(4차 P2). 있던 기록이 없으면 바로도 쓴다
+    pendingHandoffs.set(sceneId, candidate.history);
+    if (!store.has(sceneId)) saveSceneHistory(sceneId, candidate.history);
+  } else {
     if (gate.kind === "handoff") pendingHandoffs.delete(sceneId); // 확인된 인계가 바꿨다(부팅 복원은 보관분을 두고 간다 — 늦은 저장이 닿으면 그것이 이어진다)
     saveSceneHistory(sceneId, candidate.history);
   }
