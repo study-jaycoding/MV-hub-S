@@ -3718,6 +3718,8 @@ export function SceneBoard({
                 불러오기
               </button>
             )}
+            {/* 파일 단추(저장·불러오기)와 레퍼런스 찾기를 가르는 선(Jay 2026-10-30 B) */}
+            {onFindRefs && (onSaveScene || onLoadSceneFile) && <span className="scene-io-sep" aria-hidden="true" />}
             {onFindRefs && (
               <button
                 className="scene-io-btn"
@@ -3728,7 +3730,7 @@ export function SceneBoard({
                 }
                 onClick={onFindClick}
               >
-                {finding ? `◌ 레퍼런스 ${finding.count}개 찾는 중… · 대기 중단` : "레퍼런스 찾기"}
+                {finding ? `◌ 레퍼런스 ${finding.count}개 찾는 중 · 대기 중단` : "레퍼런스 찾기"}
               </button>
             )}
           </div>

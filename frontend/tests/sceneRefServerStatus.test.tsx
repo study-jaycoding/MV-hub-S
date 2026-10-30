@@ -253,12 +253,13 @@ it("'레퍼런스 찾기' 단추 — 이 씬으로 찾기를 부르고, 도는 �
   });
   const button = () => [...host.querySelectorAll<HTMLButtonElement>(".scene-io-btn")].at(-1)!;
   expect(button().textContent).toBe("레퍼런스 찾기");
+  expect(host.querySelector(".scene-io-sep")).toBeNull(); // 앞에 파일 단추가 없으면 가를 선도 없다
 
   await act(async () => button().click());
   expect(onFindRefs).toHaveBeenCalledTimes(1);
   expect(onFindRefs.mock.calls[0][0]).toBe("find-scene");
   const signal = onFindRefs.mock.calls[0][1];
-  expect(button().textContent).toBe("◌ 레퍼런스 2개 찾는 중… · 대기 중단"); // 같은 토큰은 한 번만 센다
+  expect(button().textContent).toBe("◌ 레퍼런스 2개 찾는 중 · 대기 중단"); // 같은 토큰은 한 번만 센다(글 끝·중간 말줄임표 없음 — Jay 2026-10-30)
   expect(host.querySelector(".scene-io-panel")!.classList.contains("io-hidden")).toBe(false); // 도는 동안 숨지 않는다
 
   await act(async () => button().click()); // 대기 중단
@@ -267,6 +268,15 @@ it("'레퍼런스 찾기' 단추 — 이 씬으로 찾기를 부르고, 도는 �
 
   await act(async () => finish());
   expect(button().textContent).toBe("레퍼런스 찾기");
+});
+
+it("씬 패널 — 저장·불러오기 다음, 레퍼런스 찾기 바로 앞에 가르는 선(Jay 2026-10-30)", async () => {
+  const scene = refScene("sep-scene", "ws-f", [{ id: "r1", refs: [ref("asset:Q|b.png", "b.png")] }]);
+  await act(async () => {
+    root.render(<SceneBoard scene={scene} onChange={noop} onSaveScene={noop} onLoadSceneFile={noop} onFindRefs={vi.fn(async () => {})} />);
+  });
+  const kids = [...host.querySelector(".scene-io-btns")!.children].map((el) => (el.classList.contains("scene-io-sep") ? "|" : el.textContent));
+  expect(kids).toEqual(["저장", "불러오기", "|", "레퍼런스 찾기"]);
 });
 
 it("씬 전환 첫 렌더에는 핸들이 아직 옛 씬을 말한다 — 새 씬 id 로 온 복구 답이 옛 카드를 새 씬에 쓰지 않게(Codex)", async () => {
