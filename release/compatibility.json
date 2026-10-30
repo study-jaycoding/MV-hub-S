@@ -17,6 +17,7 @@
     "content_share_commands",
     "content_asset_sync",
     "content_asset_destination",
+    "content_comfy_canvas_runs",
     "content_transfer",
     "trash_transfer",
     "trash",

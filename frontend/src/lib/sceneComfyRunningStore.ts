@@ -8,6 +8,16 @@ import { comfyCardRuntime } from "./comfyRunState";
 import type { Scene } from "./scenes";
 
 const running = new Map<string, number>(); // cardId → 중첩 실행 카운트(같은 카드 여러 번 on 대비)
+// 이 창의 예약/전송(응답 대기 포함)이 끝나기 전에는 not_found로 정리하지 않는다.
+const activeAttempts = new Set<string>();
+export function beginComfyAttempt(account: string, attemptId: string): () => void {
+  const key = JSON.stringify([account, attemptId]);
+  activeAttempts.add(key);
+  return () => { activeAttempts.delete(key); };
+}
+export function isComfyAttemptActive(account: string, attemptId: string): boolean {
+  return activeAttempts.has(JSON.stringify([account, attemptId]));
+}
 // 다른 창(메인 창 ↔ 휠 클릭으로 띄운 캔버스 창)에서 돌고 있는 실행 — 창마다 마지막으로 알린 목록(Jay 2026-10-30, lib/popupWindows 의 실시간 나눔).
 //  띄우기 전에 건 실행은 건 창이 끝까지 돌리므로, 이것이 없으면 떠 있는 창에 '생성중'이 안 보여 다시 눌러 두 번 실행됐다.
 const remote = new Map<string, Set<string>>();

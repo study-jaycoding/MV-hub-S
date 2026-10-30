@@ -20,6 +20,7 @@ import {
 import type { ComfyOutputsById } from "./sceneEdges";
 import type { SceneCard, SceneComfyCfg, SceneEdge } from "./scenes";
 import { assetIdentity } from "../shared/contracts/assets";
+import { beginComfyAttempt } from "./sceneComfyRunningStore";
 
 export interface SceneComfyConfigSnapshot {
   name?: string;
@@ -222,39 +223,45 @@ export async function executeSceneComfy(
   }
   assertDurableCurrent();
   let submission: ComfyCanvasSubmission | undefined;
-  if (canvas && target && fingerprints) {
-    const origin = await deps.origin();
-    assertDurableCurrent();
-    const result = await canvas.document.reserveComfyAttempt({ ...target, originHubId: origin.hub_id, originDeviceId: origin.device_id }, {
-      ...fingerprints, cardId: options.cardId, attemptId: crypto.randomUUID(), runGroupId: canvas.runGroupId, copyIndex: canvas.copyIndex,
-    });
-    if (result.status !== "reserved") throw new SceneComfyReservationError(result.status);
-    assertDurableCurrent();
-    const attempt = result.attempt;
-    const owns = () => {
-      const saved = canvas.document.snapshot(target, true);
-      const owner = saved?.comfyCardRuns?.[attempt.cardId];
-      const mark = saved?.comfyRuns?.find(run => run.attemptId === attempt.attemptId);
-      const fp = saved && comfySceneFingerprints(saved, attempt.cardId);
-      return current() && !!mark && mark.localState !== "applied" && mark.runGroupId === attempt.runGroupId
-        && mark.cardId === attempt.cardId && mark.copyIndex === attempt.copyIndex
-        && mark.originHubId === attempt.originHubId && mark.originDeviceId === attempt.originDeviceId
-        && mark.groupSeq === attempt.groupSeq && mark.configFp === attempt.configFp && mark.inputFp === attempt.inputFp
-        && fp?.configFp === attempt.configFp && fp.inputFp === attempt.inputFp
-        && owner?.groupId === attempt.runGroupId && owner.groupSeq === attempt.groupSeq;
-    };
-    if (!owns()) throw new SceneComfyRunSupersededError();
-    submission = { canvas_run: { attempt_id: attempt.attemptId, run_group_id: attempt.runGroupId, group_seq: attempt.groupSeq,
-      copy_index: attempt.copyIndex, scene_id: target.sceneId, card_id: attempt.cardId, config_fp: attempt.configFp, input_fp: attempt.inputFp },
-      save_meta: { name: options.configSnapshot?.name || card?.comfyCfg?.name || "Comfy" },
-      isCurrent: () => { try { assertDurableCurrent(); return current(); } catch { return false; } } };
-    // 접수 시도 기록도 서버 요청 전에 확정한다. 제출 여부가 불명확하면 복구 조회만 하고 재생성하지 않는다.
-    const submitted = canvas.document.commit(target, { type: "submitComfy", attemptId: attempt.attemptId, canWrite: current });
-    if (!submitted.queued || !await submitted.confirmed) throw new SceneComfyReservationError("storage_failed");
-    assertDurableCurrent();
-    if (!owns()) throw new SceneComfyRunSupersededError();
-  }
+  let attemptId: string | undefined;
+  let releaseAttempt: (() => void) | undefined;
+  let runStarted = false;
   try {
+    if (canvas && target && fingerprints) {
+      const origin = await deps.origin();
+      assertDurableCurrent();
+      attemptId = crypto.randomUUID();
+      releaseAttempt = beginComfyAttempt(accountNamespace, attemptId);
+      const result = await canvas.document.reserveComfyAttempt({ ...target, originHubId: origin.hub_id, originDeviceId: origin.device_id }, {
+        ...fingerprints, cardId: options.cardId, attemptId, runGroupId: canvas.runGroupId, copyIndex: canvas.copyIndex,
+      });
+      if (result.status !== "reserved") throw new SceneComfyReservationError(result.status);
+      assertDurableCurrent();
+      const attempt = result.attempt;
+      const owns = () => {
+        const saved = canvas.document.snapshot(target, true);
+        const owner = saved?.comfyCardRuns?.[attempt.cardId];
+        const mark = saved?.comfyRuns?.find(run => run.attemptId === attempt.attemptId);
+        const fp = saved && comfySceneFingerprints(saved, attempt.cardId);
+        return current() && !!mark && mark.localState !== "applied" && mark.runGroupId === attempt.runGroupId
+          && mark.cardId === attempt.cardId && mark.copyIndex === attempt.copyIndex
+          && mark.originHubId === attempt.originHubId && mark.originDeviceId === attempt.originDeviceId
+          && mark.groupSeq === attempt.groupSeq && mark.configFp === attempt.configFp && mark.inputFp === attempt.inputFp
+          && fp?.configFp === attempt.configFp && fp.inputFp === attempt.inputFp
+          && owner?.groupId === attempt.runGroupId && owner.groupSeq === attempt.groupSeq;
+      };
+      if (!owns()) throw new SceneComfyRunSupersededError();
+      submission = { canvas_run: { attempt_id: attempt.attemptId, run_group_id: attempt.runGroupId, group_seq: attempt.groupSeq,
+        copy_index: attempt.copyIndex, scene_id: target.sceneId, card_id: attempt.cardId, config_fp: attempt.configFp, input_fp: attempt.inputFp },
+        save_meta: { name: options.configSnapshot?.name || card?.comfyCfg?.name || "Comfy" },
+        isCurrent: () => { try { assertDurableCurrent(); return current(); } catch { return false; } } };
+      // 접수 시도 기록도 서버 요청 전에 확정한다. 제출 여부가 불명확하면 복구 조회만 하고 재생성하지 않는다.
+      const submitted = canvas.document.commit(target, { type: "submitComfy", attemptId: attempt.attemptId, canWrite: current });
+      if (!submitted.queued || !await submitted.confirmed) throw new SceneComfyReservationError("storage_failed");
+      assertDurableCurrent();
+      if (!owns()) throw new SceneComfyRunSupersededError();
+    }
+      runStarted = true;
     const result = submission ? await deps.run(content, paramValues, media, options.projectId, submission) : options.projectId
       ? await deps.run(content, paramValues, media, options.projectId)
       : await deps.run(content, paramValues, media);
@@ -269,9 +276,20 @@ export async function executeSceneComfy(
     }
     return { outputs: result.outputs, inputSnapshot, superseded, ...(submission ? { serverManaged: true } : {}) };
   } catch (error) {
+    if (!runStarted && canvas && target && attemptId) {
+      // 창을 넘기거나 입력이 바뀌어도, 전송하지 않은 자기 예약만 취소한다. 계정/연결은 여전히 고정한다.
+      const canCleanup = () => accountNamespace === getAccountNamespace() && connection === getConnectionKey() && token === getAuthToken();
+      const attempt = canCleanup() && canvas.document.snapshot(target)?.comfyRuns?.find(run => run.attemptId === attemptId);
+      if (attempt) {
+        try { await canvas.document.commit(target, { type: "discardUnsubmittedComfy", attempt, canWrite: canCleanup }).confirmed; }
+        catch { /* 저장 불가 시 다음 복구 주기의 not_found 확인으로 정리한다. */ }
+      }
+    }
     if (error instanceof ComfyUnresolvedRunError) throw error;
     // 실패 응답도 입력 교체 뒤 현재 카드에 표시되면 안 된다. 교체가 아니면 원래 오류를 보존한다.
     assertPreparedInputsCurrent(options, baseParams, prepared);
     throw error;
+  } finally {
+    releaseAttempt?.();
   }
 }

@@ -7,6 +7,11 @@ import { COMFY_CANVAS_RUNS_FEATURE, hubHasFeature } from "./hubFeatures";
 import { getApiPause, getAuthToken } from "./http";
 import { isCanvasFloating } from "./popupWindows";
 import { listScenes, type Scene } from "./scenes";
+import { isComfyAttemptActive } from "./sceneComfyRunningStore";
+
+// 다른 창이 닫히며 보낸 요청이 늦게 접수될 여유를 두고, 서로 다른 조회에서 두 번 확인한다.
+const NOT_FOUND_GRACE_MS = 30_000;
+type MissingObservation = { since: number; attempt: string };
 
 const listeners = new Set<() => void>();
 export function notifyCanvasComfyRuns(): void { listeners.forEach(listener => listener()); }
@@ -21,9 +26,13 @@ export async function recoverCanvasComfyRuns(options: {
   canWrite: () => boolean;
   scenes?: () => Scene[];
   api?: Pick<typeof comfyApi, "canvasOrigin" | "resolveCanvasRuns" | "ackCanvasRun">;
+  missingObservations?: Map<string, MissingObservation>;
+  now?: () => number;
 }): Promise<void> {
   const api = options.api || comfyApi;
   const scenes = options.scenes || (() => listScenes(null));
+  const missing = options.missingObservations || new Map<string, MissingObservation>();
+  const now = options.now || Date.now;
   const accountNamespace = getAccountNamespace(), connection = getConnectionKey(), token = getAuthToken();
   const current = () => options.canWrite() && accountNamespace === getAccountNamespace()
     && connection === getConnectionKey() && token === getAuthToken() && !getApiPause() && !isCanvasFloating();
@@ -44,15 +53,37 @@ export async function recoverCanvasComfyRuns(options: {
         origin: { hub_id: run.originHubId, device_id: run.originDeviceId },
       } }).confirmed;
     }
-    const ids = (snapshot()?.comfyRuns || []).filter(own).map(run => run.attemptId);
+    const observationKey = (id: string) => JSON.stringify([accountNamespace, connection, origin, scene.id, id]);
+    const ids = (snapshot()?.comfyRuns || []).filter(own).filter(run => {
+      if (!isComfyAttemptActive(accountNamespace, run.attemptId)) return true;
+      missing.delete(observationKey(run.attemptId));
+      return false;
+    }).map(run => run.attemptId);
     for (let offset = 0; offset < ids.length; offset += 100) {
       if (!current()) return;
       const resolutions = await api.resolveCanvasRuns(ids.slice(offset, offset + 100));
       if (!current()) return;
+      const seen = new Set<string>();
       for (const resolution of resolutions.runs) {
         if (!current()) return;
         if (resolution.origin.hub_id !== origin.hub_id || resolution.origin.device_id !== origin.device_id
-          || !ids.includes(resolution.attempt_id)) continue;
+          || !ids.includes(resolution.attempt_id) || seen.has(resolution.attempt_id)) continue;
+        seen.add(resolution.attempt_id);
+        const key = observationKey(resolution.attempt_id);
+        if (isComfyAttemptActive(accountNamespace, resolution.attempt_id)) { missing.delete(key); continue; }
+        if (resolution.state === "not_found") {
+          const attempt = snapshot()?.comfyRuns?.find(run => run.attemptId === resolution.attempt_id);
+          if (!attempt || attempt.localState === "applied" || attempt.receipt) { missing.delete(key); continue; }
+          const fingerprint = JSON.stringify(attempt);
+          const previous = missing.get(key);
+          if (previous?.attempt === fingerprint && now() - previous.since >= NOT_FOUND_GRACE_MS) {
+            const cleanup = options.canvasDocument.commit(target, { type: "discardUnsubmittedComfy", attempt,
+              canWrite: () => current() && !isComfyAttemptActive(accountNamespace, attempt.attemptId) });
+            if (cleanup.queued && await cleanup.confirmed) missing.delete(key);
+            continue;
+          }
+          if (!previous || previous.attempt !== fingerprint) missing.set(key, { since: now(), attempt: fingerprint });
+        } else missing.delete(key);
         const write = options.canvasDocument.commit(target, { type: "resolveComfy", resolution, canWrite: current });
         if (!write.queued || !await write.confirmed || !current()) continue;
         const run = snapshot()?.comfyRuns?.find(item => item.attemptId === resolution.attempt_id);
@@ -80,12 +111,13 @@ export function useCanvasComfyRuns({ authReady, authKey = "", canvasDocument }: 
   const scope = useRef(authKey); scope.current = authKey;
   useEffect(() => {
     let disposed = false, running = false;
+    const missingObservations = new Map<string, MissingObservation>();
     const current = () => !disposed && ready.current && scope.current === authKey && hubHasFeature(COMFY_CANVAS_RUNS_FEATURE)
       && document.visibilityState !== "hidden" && !isCanvasFloating();
     const tick = async () => {
       if (running || !current()) return;
       running = true;
-      try { await recoverCanvasComfyRuns({ canvasDocument, canWrite: current }); }
+      try { await recoverCanvasComfyRuns({ canvasDocument, canWrite: current, missingObservations }); }
       catch { /* 일시 연결 실패로 실행 기록을 지우지 않는다. */ }
       finally { running = false; }
     };

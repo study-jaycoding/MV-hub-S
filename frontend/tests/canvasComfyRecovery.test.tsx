@@ -13,6 +13,7 @@ import { delaySceneStoreWritesForTest, failSceneStoreWritesForTest, settleSceneS
 import { setHubFeatures } from "../src/lib/hubFeatures";
 import { useSceneComfyExecution } from "../src/lib/useSceneComfyExecution";
 import { useCanvasSession } from "../src/features/canvas/useCanvasSession";
+import { beginComfyAttempt } from "../src/lib/sceneComfyRunningStore";
 
 const windowState = vi.hoisted(() => ({ floating: false }));
 vi.mock("../src/lib/popupWindows", async original => ({
@@ -22,6 +23,8 @@ const origin = { hub_id: "hub", device_id: "pc" };
 let scene: Scene;
 let root: Root | undefined;
 let host: HTMLDivElement | undefined;
+let missingObservations: NonNullable<Parameters<typeof recoverCanvasComfyRuns>[0]["missingObservations"]>;
+let clock: number;
 const port = () => createCanvasDocumentPort({ flushPending: () => {} });
 const resolution = (copy = 0, patch: Partial<ComfyCanvasResolution> = {}): ComfyCanvasResolution => ({
   attempt_id: `a${copy}`, state: "saved", result_revision: 3, origin,
@@ -37,9 +40,10 @@ function fakeApi(responses = [resolution()]) {
   };
 }
 const run = (api = fakeApi(), document = port(), canWrite = () => true) =>
-  recoverCanvasComfyRuns({ canvasDocument: document, api, canWrite });
+  recoverCanvasComfyRuns({ canvasDocument: document, api, canWrite, missingObservations, now: () => clock });
 
 beforeEach(async () => {
+  missingObservations = new Map(); clock = 0;
   setAccountScope(""); setConnectionKey("local"); windowState.floating = false;
   setHubFeatures(["comfy_canvas_runs_v1"]);
   vi.stubGlobal("fetch", vi.fn(() => { throw new Error("real API forbidden"); }));
@@ -155,9 +159,79 @@ it("다른 원본은 조회·삭제하지 않고 원래 PC 안내를 남긴다",
 });
 
 it.each(["needs_collect", "not_found", "failed", "dismissed"] as const)("%s 응답은 생성중을 영구히 남기지 않는다", async state => {
-  await run(fakeApi([resolution(0, { state, outputs: [] })]));
+  const api = fakeApi([resolution(0, { state, outputs: [] })]);
+  await run(api);
   expect(comfyCardRuntime(currentScene(), "c")?.status).not.toBe("running");
   expect(currentScene().comfyRuns?.length).toBe(state === "needs_collect" || state === "not_found" ? 1 : 0);
+  if (state === "not_found") {
+    clock = 30_000;
+    await run(api);
+    expect(currentScene().comfyRuns).toEqual([]);
+    expect(comfyCardRuntime(currentScene(), "c")?.status).toBe("failed");
+    expect(api.ackCanvasRun).not.toHaveBeenCalled();
+  }
+});
+
+it("미접수는 중복 응답이나 짧은 간격으로 정리하지 않고 30초 뒤 재확인한다", async () => {
+  const missing = resolution(0, { state: "not_found", outputs: [] });
+  const api = fakeApi([missing, missing]);
+  await run(api);
+  clock = 29_999; await run(api);
+  expect(currentScene().comfyRuns).toHaveLength(1);
+  clock = 30_000; await run(api);
+  expect(listPersistedScenes(null)[0].comfyRuns).toEqual([]);
+  const reserved = await port().reserveComfyAttempt({ ...target(), originHubId: "hub", originDeviceId: "pc" }, {
+    ...comfySceneFingerprints(currentScene(), "c")!, cardId: "c", attemptId: "next", runGroupId: "next", copyIndex: 0,
+  });
+  expect(reserved.status).toBe("reserved");
+});
+
+it("전송·응답 대기 중 attempt는 보호하고 전송이 끝난 뒤부터 유예 시간을 다시 잰다", async () => {
+  const api = fakeApi([resolution(0, { state: "not_found", outputs: [] })]);
+  await run(api);
+  const finish = beginComfyAttempt(getAccountNamespace(), "a0");
+  try {
+    clock = 60_000; await run(api);
+    expect(api.resolveCanvasRuns).toHaveBeenCalledOnce();
+    expect(currentScene().comfyRuns).toHaveLength(1);
+  } finally { finish(); }
+  await run(api);
+  expect(currentScene().comfyRuns).toHaveLength(1);
+  clock = 90_000; await run(api);
+  expect(currentScene().comfyRuns).toEqual([]);
+});
+
+it("닫힌 창의 요청이 유예 중 늦게 접수되면 항목을 남기고 결과를 연결한다", async () => {
+  const api = fakeApi([resolution(0, { state: "not_found", outputs: [] })]);
+  await run(api);
+  clock = 29_999;
+  api.resolveCanvasRuns.mockResolvedValue({ runs: [resolution(0, { state: "running", outputs: [] })] });
+  await run(api);
+  expect(comfyCardRuntime(currentScene(), "c")?.status).toBe("running");
+  clock = 31_000;
+  api.resolveCanvasRuns.mockResolvedValue({ runs: [resolution()] });
+  await run(api);
+  expect(currentScene().cards[0].genId).toBe("g0");
+});
+
+it("조회 중 실행기가 활성화되면 이미 받은 not_found로도 정리하지 않는다", async () => {
+  const api = fakeApi([resolution(0, { state: "not_found", outputs: [] })]);
+  await run(api); clock = 30_000;
+  let finish = () => {};
+  api.resolveCanvasRuns.mockImplementation(async () => {
+    finish = beginComfyAttempt(getAccountNamespace(), "a0");
+    return { runs: [resolution(0, { state: "not_found", outputs: [] })] };
+  });
+  try { await run(api); expect(currentScene().comfyRuns).toHaveLength(1); }
+  finally { finish(); }
+});
+
+it("적용 영수증이 있는 항목은 not_found를 반복해도 지우지 않는다", async () => {
+  const api = fakeApi(); api.ackCanvasRun.mockRejectedValue(new Error("lost"));
+  await run(api);
+  api.resolveCanvasRuns.mockResolvedValue({ runs: [resolution(0, { state: "not_found", outputs: [] })] });
+  await run(api); clock = 60_000; await run(api);
+  expect(currentScene().comfyRuns![0].localState).toBe("applied");
 });
 
 it("미회수 뒤 서버 회수 완료를 다시 조회하면 같은 카드로 정산된다", async () => {
@@ -191,10 +265,12 @@ it("2.5초 복구 주기: 숨은 창과 떠 있는 동안 메인 창은 쉬고 �
   expect(api.resolveCanvasRuns).toHaveBeenCalledTimes(2);
 });
 
-it.each(["direct", "plan"])("진행 중 묶음이 있으면 %s 진입점도 새 요청을 내지 않는다", async entry => {
+it.each([["direct", false], ["plan", false], ["direct", true], ["plan", true]] as const)("%s 진입점: 다른 원본=%s인 항목만 새 요청을 막지 않는다", async (entry, foreign) => {
+  if (foreign) scene.comfyRuns![0].originDeviceId = "another-pc";
   scene.cards.push({ id: "out", kind: "generation", x: 200, y: 0 }); scene.edges = [{ from: "c", to: "out" }];
   saveScenes(null, [scene]); await settleSceneStoreForTest();
-  const submit = vi.spyOn(comfyApi, "run");
+  vi.spyOn(comfyApi, "canvasOrigin").mockResolvedValue(origin);
+  const submit = vi.spyOn(comfyApi, "run").mockResolvedValue({ outputs: [{ kind: "text", text: "ok" }], prompt_id: "p" });
   let execution!: ReturnType<typeof useSceneComfyExecution>;
   const documentPort = port();
   function Screen() {
@@ -206,8 +282,8 @@ it.each(["direct", "plan"])("진행 중 묶음이 있으면 %s 진입점도 새 
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
   await act(async () => root!.render(<Screen />));
   await act(async () => { if (entry === "direct") await execution.runComfy("c"); else await execution.orchestrateGenerate("out"); });
-  expect(submit).not.toHaveBeenCalled();
-  expect(currentScene().comfyRuns).toEqual(scene.comfyRuns);
+  expect(submit).toHaveBeenCalledTimes(foreign ? 1 : 0);
+  expect(currentScene().comfyRuns).toContainEqual(scene.comfyRuns![0]);
 });
 
 it.each([false, true])("체인 중간 종료=%s: 접수된 단계는 서버 정산, 미제출 단계는 시작하지 않는다", async close => {

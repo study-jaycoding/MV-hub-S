@@ -12,6 +12,7 @@ import { delaySceneStoreWritesForTest, failSceneStoreWritesForTest, settleSceneS
 import { getAccountNamespace, setAccountScope } from "../src/lib/accountScope";
 import { setHubFeatures } from "../src/lib/hubFeatures";
 import { comfySceneFingerprints } from "../src/lib/sceneComfyInputs";
+import { isComfyAttemptActive } from "../src/lib/sceneComfyRunningStore";
 
 afterEach(async () => {
   failSceneStoreWritesForTest(false); delaySceneStoreWritesForTest(0); await settleSceneStoreForTest();
@@ -80,6 +81,33 @@ describe("영속 Comfy 제출", () => {
     }
     await expect(executeSceneComfy(f.options, { run: f.run, origin: f.origin })).rejects.toThrow();
     expect(f.run).not.toHaveBeenCalled();
+    expect(listPersistedScenes(null)[0].comfyRuns || []).toEqual([]);
+  });
+  it.each(["window", "submit-storage"])("예약 후 %s 실패는 보내지 않은 자기 항목을 정리한다", async failure => {
+    const f = await fixture(); let current = true;
+    const reserve = f.document.reserveComfyAttempt;
+    f.document.reserveComfyAttempt = async (...args) => {
+      const result = await reserve(...args);
+      if (failure === "window") current = false;
+      return result;
+    };
+    const commit = f.document.commit;
+    f.document.commit = (target, command) => command.type === "submitComfy" && failure === "submit-storage"
+      ? { queued: false, confirmed: Promise.resolve(false) } : commit(target, command);
+    await expect(executeSceneComfy({ ...f.options, isRunCurrent: () => current }, { run: f.run, origin: f.origin })).rejects.toThrow();
+    expect(f.run).not.toHaveBeenCalled();
+    expect(listPersistedScenes(null)[0].comfyRuns).toEqual([]);
+  });
+  it("전송 응답 대기까지 attempt를 보호하고, 응답 유실은 예약을 즉시 지우지 않는다", async () => {
+    const f = await fixture(); let attemptId = "";
+    const run = vi.fn(async (...args: Parameters<typeof import("../src/lib/comfyApi").comfyApi.run>) => {
+      attemptId = args[4]!.canvas_run.attempt_id;
+      expect(isComfyAttemptActive(getAccountNamespace(), attemptId)).toBe(true);
+      throw new Error("response lost");
+    });
+    await expect(executeSceneComfy(f.options, { run, origin: f.origin })).rejects.toThrow("response lost");
+    expect(isComfyAttemptActive(getAccountNamespace(), attemptId)).toBe(false);
+    expect(listPersistedScenes(null)[0].comfyRuns![0].attemptId).toBe(attemptId);
   });
   it("옛 허브에서는 원본 조회·예약 없이 예전 /run 인자를 유지한다", async () => {
     const f = await fixture(); setHubFeatures([]);
@@ -99,6 +127,7 @@ describe("영속 Comfy 제출", () => {
     };
     await expect(executeSceneComfy(f.options, { run: f.run, origin: f.origin })).rejects.toBeInstanceOf(SceneComfyRunSupersededError);
     expect(f.run).not.toHaveBeenCalled();
+    expect(listPersistedScenes(null)[0].comfyRuns).toEqual([]);
   });
 });
 

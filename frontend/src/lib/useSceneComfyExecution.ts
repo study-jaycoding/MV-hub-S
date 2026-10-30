@@ -5,7 +5,7 @@ import { useRef, useState } from "react";
 import type { MutableRefObject } from "react";
 import type { Generation } from "../types";
 import { computeMaxParallel, createBatchTracker, createLimiter, type StepOutcome } from "./comfyRunState";
-import { ComfyUnresolvedRunError, type ComfyOutput } from "./comfyApi";
+import { comfyApi, ComfyUnresolvedRunError, type ComfyOutput } from "./comfyApi";
 import {
   executeSceneComfy,
   isSceneComfyConfigCurrent,
@@ -15,7 +15,8 @@ import {
   type SceneComfyExecutionResult,
   type SceneComfyRunInputSnapshot,
 } from "./sceneComfyExecutor";
-import { getAccountNamespace } from "./accountScope";
+import { getAccountNamespace, getConnectionKey } from "./accountScope";
+import { getAuthToken } from "./http";
 import { COMFY_CANVAS_RUNS_FEATURE, hubHasFeature } from "./hubFeatures";
 import { isCanvasFloating } from "./popupWindows";
 import { notifyCanvasComfyRuns } from "./useCanvasComfyRuns";
@@ -156,8 +157,20 @@ export function useSceneComfyExecution({
   const refParentsRef = useRef(refParents);
   refParentsRef.current = refParents;
   const readScene = () => canvasDocument?.snapshot({ accountNamespace: getAccountNamespace(), sceneId: sceneIdRef.current });
-  const conflicts = (ids: string[]) => hubHasFeature(COMFY_CANVAS_RUNS_FEATURE)
-    && readScene()?.comfyRuns?.some(run => ids.includes(run.cardId) && run.localState !== "applied");
+  const conflictNotice = async (ids: string[]): Promise<string | null> => {
+    if (!readScene()?.comfyRuns?.some(run => ids.includes(run.cardId) && run.localState !== "applied")) return null;
+    const account = getAccountNamespace(), sceneId = sceneIdRef.current, connection = getConnectionKey(), token = getAuthToken();
+    try {
+      const origin = await comfyApi.canvasOrigin();
+      if (account !== getAccountNamespace() || sceneId !== sceneIdRef.current || connection !== getConnectionKey()
+        || token !== getAuthToken() || isCanvasFloating() || !isDocumentCurrent())
+        return "Comfy 실행 대상이 변경되어 제출하지 않았습니다.";
+      return readScene()?.comfyRuns?.some(run => ids.includes(run.cardId) && run.localState !== "applied"
+        && run.originHubId === origin.hub_id && run.originDeviceId === origin.device_id) ? COMFY_CONFLICT_MESSAGE : null;
+    } catch {
+      return "Comfy 실행 정보를 확인하지 못했습니다. 잠시 후 다시 실행하세요.";
+    }
+  };
   const newGroup = (cardId: string) => {
     const before = readScene()?.comfyCardRuns?.[cardId]?.groupId;
     const runGroupId = crypto.randomUUID();
@@ -295,8 +308,11 @@ export function useSceneComfyExecution({
   const runComfy = async (cardId: string): Promise<boolean> => {
     if (!isDocumentCurrent()) return false;
     flushPending();
-    if (conflicts([cardId])) { flashMsg(COMFY_CONFLICT_MESSAGE); return false; }
     const serverManaged = hubHasFeature(COMFY_CANVAS_RUNS_FEATURE);
+    if (serverManaged) {
+      const notice = await conflictNotice([cardId]);
+      if (notice) { flashMsg(notice); return false; }
+    }
     const group = serverManaged ? newGroup(cardId) : undefined;
     const card = cardsRef.current.find((candidate) => candidate.id === cardId);
     if (!card?.comfyCfg?.content) return false;
@@ -454,8 +470,11 @@ export function useSceneComfyExecution({
     isPlanCurrent: () => boolean,
   ): Promise<{ runs: SceneGenerationRun[]; aborted: boolean }> => {
     flushPending();
-    if (conflicts(plan.comfyIds)) { flashMsg(COMFY_CONFLICT_MESSAGE); return { runs: [], aborted: true }; }
     const serverManaged = hubHasFeature(COMFY_CANVAS_RUNS_FEATURE);
+    if (serverManaged) {
+      const notice = await conflictNotice(plan.comfyIds);
+      if (notice) { flashMsg(notice); return { runs: [], aborted: true }; }
+    }
     const groups = new Map(serverManaged ? plan.comfyIds.map(id => [id, newGroup(id)] as const) : []);
     if (plan.comfyIds.some((id) => isWorkflowLoading?.(id))) {
       flashMsg(WORKFLOW_LOADING_MESSAGE); // 배치도 시작하지 않는다 — 옛 설정을 잡아 돌리게 된다(28회차 ③)

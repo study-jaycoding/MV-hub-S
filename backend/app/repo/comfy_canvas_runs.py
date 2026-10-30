@@ -116,19 +116,35 @@ def record_context(attempt_id: str, context: dict) -> None:
 
 
 def record_outputs(attempt_id: str, outputs: list[dict], *, enumerated: bool) -> None:
-    with get_connection() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        row = _read(conn, attempt_id)
-        if not row or row["state"] in ("linked", "dismissed"):
-            return
-        changed = bool(enumerated and not row["outputs_enumerated"])
+    def pending(row):
         previous = {out["output_key"]: out for out in row["outputs"]}
+        changed = []
         for item in outputs:
             old = previous.get(item["output_key"])
             if old and old.get("generation_id"):
                 continue  # Includes deleted generations; never resurrect them.
             if old and old["state"] == "ready" and item["state"] in ("pending", "unavailable"):
                 continue  # A stale journal cannot erase a durable download receipt.
+            if (old and all(old.get(key) == item.get(key) for key in ("state", "kind", "text"))
+                    and old["metadata"] == item.get("metadata", {})):
+                continue
+            changed.append(item)
+        return changed
+
+    with get_connection() as conn:
+        row = _read(conn, attempt_id)
+        if not row or row["state"] in ("linked", "dismissed"):
+            return
+        if not (enumerated and not row["outputs_enumerated"]) and not pending(row):
+            return
+        conn.execute("BEGIN IMMEDIATE")
+        row = _read(conn, attempt_id)
+        if not row or row["state"] in ("linked", "dismissed"):
+            return
+        changed = bool(enumerated and not row["outputs_enumerated"])
+        previous = {out["output_key"]: out for out in row["outputs"]}
+        for item in pending(row):
+            old = previous.get(item["output_key"])
             metadata = json.dumps(item.get("metadata", {}), ensure_ascii=False)
             changed |= not old or any(old.get(key) != item.get(key) for key in ("state", "kind", "text"))
             conn.execute("""INSERT INTO comfy_canvas_output(attempt_id,output_key,kind,text,state,metadata_json)
@@ -160,20 +176,34 @@ def link_output(conn, attempt_id: str, output_key: str, generation_id: str) -> N
                  (time.time(), attempt_id))
 
 
+def _settlement(conn, row: dict, fallback: str) -> tuple[str, list[str]]:
+    if row["state"] in ("linked", "dismissed"):
+        return row["state"], []
+    deleted = []
+    for output in row["outputs"]:
+        if output.get("generation_id") and output["state"] != "deleted":
+            gen = conn.execute("SELECT deleted_at FROM generation WHERE id=?", (output["generation_id"],)).fetchone()
+            if gen is None or gen[0]:
+                deleted.append(output["output_key"])
+    # An enumerated empty result cannot be collected or saved later.
+    state = "failed" if row["outputs_enumerated"] and not row["outputs"] else (
+        "saved" if isRunFullySaved(row["outputs_enumerated"], row["outputs"]) else fallback)
+    return state, deleted
+
+
 def settle(attempt_id: str, fallback: str = "needs_collect") -> dict:
     with get_connection() as conn:
+        row = _read(conn, attempt_id)
+        state, deleted = _settlement(conn, row, fallback)
+        if state == row["state"] and not deleted:
+            return row  # Frequent reconciliation must not acquire a write lock for a no-op.
         conn.execute("BEGIN IMMEDIATE")
         row = _read(conn, attempt_id)
-        if row["state"] not in ("linked", "dismissed"):
-            for output in row["outputs"]:
-                if output.get("generation_id") and output["state"] != "deleted":
-                    gen = conn.execute("SELECT deleted_at FROM generation WHERE id=?", (output["generation_id"],)).fetchone()
-                    if gen is None or gen[0]:
-                        conn.execute("UPDATE comfy_canvas_output SET state='deleted' WHERE attempt_id=? AND output_key=?",
-                                     (attempt_id, output["output_key"]))
-                        conn.execute("UPDATE comfy_canvas_run SET result_revision=result_revision+1 WHERE attempt_id=?", (attempt_id,))
-                        output["state"] = "deleted"
-            _state(conn, row, "saved" if isRunFullySaved(row["outputs_enumerated"], row["outputs"]) else fallback)
+        state, deleted = _settlement(conn, row, fallback)
+        for key in deleted:
+            conn.execute("UPDATE comfy_canvas_output SET state='deleted' WHERE attempt_id=? AND output_key=?", (attempt_id, key))
+            conn.execute("UPDATE comfy_canvas_run SET result_revision=result_revision+1 WHERE attempt_id=?", (attempt_id,))
+        _state(conn, row, state)
         return _read(conn, attempt_id)
 
 

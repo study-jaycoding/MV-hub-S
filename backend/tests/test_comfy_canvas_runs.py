@@ -1,5 +1,6 @@
 """Canvas admission/completion/recovery with real SQLite and a fake provider."""
 import json
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
@@ -161,6 +162,103 @@ def test_ack_pending_does_not_consume_journal_capacity(h, monkeypatch):
     start(h, second)
     h.drain()
     assert resolve(h, second)["state"] == "saved"
+
+
+@pytest.mark.parametrize("cause", ["scheme", "dns", "connect_refused", "tls_cert", "remote_failure"])
+def test_confirmed_failure_releases_journal_before_browser_ack(h, monkeypatch, cause):
+    monkeypatch.setattr(journal, "CAP", 1)
+    for _ in range(3):
+        h.successful()
+        if cause == "remote_failure":
+            h.mocks["cloud_job_status"].return_value = "failed"
+        else:
+            h.mocks["submit"].side_effect = comfy.comfy_client.ComfyError("synthetic", cause_kind=cause)
+        attempt = descriptor()
+        start(h, attempt)
+        h.drain()
+        assert runs.get(attempt["attempt_id"])["state"] == "failed"
+        assert not h.rows()
+        result = resolve(h, attempt)
+        ack = comfy.CanvasAckReq(attempt_id=attempt["attempt_id"], result_revision=result["result_revision"], disposition="attached")
+        assert comfy.ack_canvas_run(ack, h.request())["state"] == "linked"
+        assert comfy.ack_canvas_run(ack, h.request())["state"] == "linked"
+    h.successful()
+    h.start()  # The legacy admission path also has its capacity back.
+    h.drain()
+    assert h.mocks["submit"].call_count == 4
+
+
+def test_unknown_submission_retains_journal_and_capacity_limit(h, monkeypatch):
+    monkeypatch.setattr(journal, "CAP", 1)
+    h.mocks["submit"].side_effect = comfy.comfy_client.ComfyError("lost response", cause_kind="timeout")
+    attempt = descriptor()
+    start(h, attempt)
+    h.drain()
+    assert resolve(h, attempt)["state"] == "unknown"
+    assert len(h.rows()) == 1
+    second = descriptor()
+    start(h, second)
+    h.drain()
+    assert resolve(h, second)["state"] == "failed"
+    assert len(h.rows()) == 1
+    assert h.mocks["submit"].call_count == 1
+
+
+def test_enumerated_empty_success_is_failed_and_releases_journal(h):
+    h.successful(0)
+    attempt = descriptor()
+    start(h, attempt)
+    h.drain()
+    result = resolve(h, attempt)
+    assert result["state"] == "failed"
+    assert result["outputs"] == []
+    assert not h.rows()
+    assert comfy.ack_canvas_run(comfy.CanvasAckReq(attempt_id=attempt["attempt_id"],
+        result_revision=result["result_revision"], disposition="attached"), h.request())["state"] == "linked"
+
+
+def test_restart_retries_failed_journal_cleanup_without_reading_secrets(h, monkeypatch):
+    h.mocks["submit"].side_effect = comfy.comfy_client.ComfyError("refused", cause_kind="connect_refused")
+    attempt = descriptor()
+    start(h, attempt)
+    with monkeypatch.context() as patch:
+        patch.setattr(comfy, "_ack_canvas_journal", lambda *_: None)
+        h.drain()
+    assert h.rows()
+    restart(h)
+    with monkeypatch.context() as patch:
+        patch.setattr(comfy, "_raw_settings", lambda: pytest.fail("local reconciliation must not read keys"))
+        comfy.recover_interrupted_run_jobs()
+    assert not h.rows()
+    assert resolve(h, attempt)["state"] == "failed"
+
+
+@pytest.mark.parametrize("outcome", ["saved", "needs_collect", "unknown", "failed", "empty"])
+def test_unchanged_reconciliation_does_not_acquire_sql_write_lock(h, monkeypatch, outcome):
+    h.successful(0 if outcome == "empty" else 1)
+    if outcome == "needs_collect":
+        h.mocks["download_view"].side_effect = comfy.comfy_client.ComfyError("gone", status_code=410)
+    elif outcome in ("unknown", "failed"):
+        h.mocks["submit"].side_effect = comfy.comfy_client.ComfyError("synthetic", cause_kind="timeout" if outcome == "unknown" else "connect_refused")
+    attempt = descriptor()
+    start(h, attempt)
+    h.drain()
+    before = resolve(h, attempt)
+    statements = []
+    original = runs.get_connection
+
+    @contextmanager
+    def traced():
+        with original() as conn:
+            conn.set_trace_callback(statements.append)
+            try:
+                yield conn
+            finally:
+                conn.set_trace_callback(None)
+
+    monkeypatch.setattr(runs, "get_connection", traced)
+    assert resolve(h, attempt) == before
+    assert not [sql for sql in statements if sql.upper().startswith(("BEGIN IMMEDIATE", "UPDATE", "INSERT", "DELETE"))]
 
 
 def test_other_account_or_device_cannot_resolve_or_ack(h, monkeypatch):

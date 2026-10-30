@@ -21,6 +21,7 @@ export type CanvasCommand =
   | { type: "resolveComfy"; resolution: ComfyCanvasResolution; canWrite: () => boolean }
   | { type: "ackComfy"; receipt: ComfyApplicationReceipt; canWrite: () => boolean }
   | { type: "submitComfy"; attemptId: string; canWrite: () => boolean }
+  | { type: "discardUnsubmittedComfy"; attempt: ComfyCanvasRun; canWrite: () => boolean }
   | { type: "reserveGeneration"; links: CanvasGenerationLink[]; createdAt: number }
   | { type: "settleGeneration" | "discardGeneration"; cardId: string; generationId: string }
   | { type: "reconcileGenerations"; links: ResolvedCanvasGenerationLink[]; now: number }
@@ -53,7 +54,8 @@ function reservation(scene: Scene | undefined, target: ComfyAttemptTarget, prepa
     return { result: same && existing.localState !== "applied"
       ? { status: "reserved", attempt: existing, groupSeq: existing.groupSeq } : { status: "stale" } };
   }
-  if (scene.comfyRuns?.some(run => run.cardId === prepared.cardId && run.runGroupId !== prepared.runGroupId && run.localState !== "applied"))
+  if (scene.comfyRuns?.some(run => run.cardId === prepared.cardId && run.runGroupId !== prepared.runGroupId && run.localState !== "applied"
+    && run.originHubId === target.originHubId && run.originDeviceId === target.originDeviceId))
     return { result: { status: "conflict" } };
   const owner = scene.comfyCardRuns?.[prepared.cardId];
   // 처리된 옛 groupId를 다시 써서 새 묶음을 앞지르지 않는다.
@@ -93,6 +95,17 @@ export async function reserveComfyAttempt(target: ComfyAttemptTarget, prepared: 
 export function changeCanvas(scene: Scene, command: CanvasCommand): Scene | null {
   let cards = scene.cards;
   switch (command.type) {
+    case "discardUnsubmittedComfy": {
+      if (!command.canWrite()) return null;
+      const run = scene.comfyRuns?.find(item => item.attemptId === command.attempt.attemptId);
+      if (!run || run.localState === "applied" || run.receipt || JSON.stringify(run) !== JSON.stringify(command.attempt)) return scene;
+      const remaining = scene.comfyRuns!.filter(item => item !== run);
+      const owner = scene.comfyCardRuns?.[run.cardId];
+      const settle = owner?.groupId === run.runGroupId && owner.groupSeq === run.groupSeq
+        && !remaining.some(item => item.cardId === run.cardId && item.runGroupId === run.runGroupId && item.localState !== "applied");
+      return { ...scene, comfyRuns: remaining, ...(settle ? { comfyCardRuns: { ...scene.comfyCardRuns,
+        [run.cardId]: { ...owner, settledState: owner.representative ? "done" : "failed" } } } : {}) };
+    }
     case "resolveComfy": return command.canWrite() ? applyComfyResolution(scene, command.resolution).scene : null;
     case "ackComfy": {
       if (!command.canWrite()) return null;
@@ -164,7 +177,7 @@ export function createCanvasDocumentPort(adapter: {
     let executionOnly = true;
     const result = confirmSceneWrite(() => {
       if (command.type === "editCardPrompt") return adapter.editPrompt?.(target.sceneId, command.cardId, command.prompt) ?? false;
-      if (command.type === "resolveComfy" || command.type === "ackComfy" || command.type === "submitComfy") {
+      if (command.type === "resolveComfy" || command.type === "ackComfy" || command.type === "submitComfy" || command.type === "discardUnsubmittedComfy") {
         if (!command.canWrite()) return false;
         const before = snapshot(target);
         if (!before) return false;

@@ -214,7 +214,7 @@ def _reconcile_canvas_runs(identity: _ComfyIdentity) -> None:
             if not run["outputs"] and (journal.get("terminal_kind") == "failure" or journal.get("phase") == "not_submitted"):
                 fallback = "failed"
         settled = canvas_runs.settle(run["attempt_id"], fallback)
-        if settled["state"] == "saved":
+        if settled["state"] in ("saved", "failed"):
             _ack_canvas_journal(settled, identity)
 
 
@@ -228,7 +228,8 @@ def _ack_canvas_journal(run: dict, identity: _ComfyIdentity) -> None:
                     for item in row.get("outputs", []):
                         if item["rel"] in linked:
                             item["acked"] = True
-            if canvas_runs.isRunFullySaved(run["outputs_enumerated"], run["outputs"]):
+            if (canvas_runs.isRunFullySaved(run["outputs_enumerated"], run["outputs"])
+                    or (run["state"] in ("failed", "linked") and not run["outputs"])):
                 rows[:] = [row for row in rows if not (row["job_id"] == run["job_id"] and row.get("owner") == identity.owner)]
     except Exception:
         log.warning("comfy 캔버스 저장 확인 기록 실패 (출력 연결 보존)")
@@ -326,6 +327,7 @@ def ack_canvas_run(req: CanvasAckReq, request: Request):
                                           device_id=identity.device_id, result_revision=req.result_revision, disposition=req.disposition)
         except canvas_runs.CanvasRunConflict as error:
             raise HTTPException(409, str(error)) from error
+        _ack_canvas_journal(run, identity)
         return canvas_runs.resolution(run)
 
 
@@ -662,12 +664,12 @@ def recover_interrupted_run_jobs() -> None:
         with active_account.pinned_account_scope(pin):
             candidates = run_journal.bootstrap(owner, AUTH_ENABLED)
             device = worker_backup.device_identity()["device_id"]
-            settings = _raw_settings()
-            identity = _ComfyIdentity(pin, owner, pin[1], device, "", settings, AUTH_ENABLED)
+            identity = _ComfyIdentity(pin, owner, pin[1], device, "", {}, AUTH_ENABLED)
             _reconcile_canvas_runs(identity)
             # AUTH on boot에는 요청 세션 owner가 없다. 다른 사용자 원격 자원에 접근하지 않는다.
             if AUTH_ENABLED or not EXTERNAL_RECOVERY_ENABLED or not candidates:
                 return
+            settings = _raw_settings()
             fingerprint = _target_fingerprint(settings)
             target = comfy_client.make_target(settings)
             for row in candidates:
@@ -1515,10 +1517,11 @@ def _mark_run_failure(job_id: str, code: int, detail: Any) -> None:
         try:
             if run["outputs"]:
                 _save_canvas_run(run, job["identity"], job.get("save_request"))
-            canvas_runs.settle(run["attempt_id"], fallback)
+            settled = canvas_runs.settle(run["attempt_id"], fallback)
         except Exception:
-            canvas_runs.settle(run["attempt_id"], fallback)
+            settled = canvas_runs.settle(run["attempt_id"], fallback)
             log.warning("comfy 캔버스 부분 저장 보류 job_id=%s", job_id)
+        _ack_canvas_journal(settled, job["identity"])
     _fail_run_job(job_id, code, detail)
 
 
