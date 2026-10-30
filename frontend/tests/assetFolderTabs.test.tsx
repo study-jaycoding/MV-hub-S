@@ -565,6 +565,29 @@ it("assets → CH는 폴더 카드, 말단은 파일, 전체 버튼은 하위 �
   expect(host.querySelectorAll(".assets-folder-card")).toHaveLength(0);
 });
 
+// 어셋 Masonry(Jay 2026-10-30) — 파일 격자의 보기 창 Layout 에 Masonry · 칸 = 줄 높이 × 그림 비율 · 썸네일이 뜨면 잰 비율로 다시 짬.
+//  폴더 카드 보기 창에는 Masonry 가 없다. 줄 계산은 tests/assetMasonry.test.tsx
+it("파일 격자 보기 창의 Masonry — 칸이 비율대로 · 썸네일이 뜨면 다시 짬 · 폴더 카드 보기에는 없다", async () => {
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(400);
+  vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => { cb(0); return 1; });
+  await mount();
+  expect(await readView(() => [...host.querySelectorAll(".vp-pop .vp-item")].map((el) => el.textContent).slice(0, 2))).toEqual(["Square", "List"]); // 폴더 카드 보기
+  await doubleClick(card("assets/CH"));
+  await doubleClick(card("assets/CH/매튜")); // 파일 둘(a.png · b.png)
+  await pressView("Masonry");
+  const cells = () => [...host.querySelectorAll<HTMLElement>(".asset-vrow-masonry .asset-cell")].map((cell) => [cell.style.width, cell.style.height]);
+  expect(cells()).toEqual([["170px", "170px"], ["170px", "170px"]]); // 재기 전 = 정사각(1) · 둘이 340+4 < 400 — 끝난 줄은 목표 높이
+  expect(host.querySelector(".asset-cell")!.classList.contains("masonry")).toBe(true);
+  // a.png 썸네일이 2:1 로 떴다 — 2×170 + 170 + 4 ≥ 400 → 꽉 찬 줄로 다시 짠다
+  const img = host.querySelector<HTMLImageElement>('.asset-cell[data-idx="0"] img')!;
+  Object.defineProperties(img, { naturalWidth: { value: 400 }, naturalHeight: { value: 200 } });
+  await act(async () => { img.dispatchEvent(new Event("load")); });
+  await settle();
+  const h = 396 / 3;
+  expect(cells()).toEqual([[`${h * 2}px`, `${h}px`], [`${h}px`, `${h}px`]]);
+  vi.restoreAllMocks();
+});
+
 it("미들클릭은 새 탭만 추가하며 현재 검색·보기·스크롤과 기존 배경 탭을 보존한다", async () => {
   await mount();
   await doubleClick(card("assets/CH"));

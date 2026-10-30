@@ -49,6 +49,8 @@ export function AssetsCrumbBar({
   sortDir,
   onSortField,
   onSortDir,
+  masonry,
+  onSetMasonry,
 }: {
   tagPanelOpen: boolean;
   allTags: string[];
@@ -89,6 +91,8 @@ export function AssetsCrumbBar({
   sortDir: AssetSortDir;
   onSortField: (field: AssetSortField) => void;
   onSortDir: (dir: AssetSortDir) => void;
+  masonry?: boolean; // 보기 창 Layout 의 Masonry — onSetMasonry 를 준 때만(파일 격자, Jay 2026-10-30)
+  onSetMasonry?: (on: boolean) => void;
 }) {
   const t = useT();
   // 미디어 타입 4점 슬라이더 — 메인 라이브러리 툴바(생성탭)와 동일 UI·동일 위치(좌측).
@@ -203,7 +207,7 @@ export function AssetsCrumbBar({
             C
           </button>
           {/* 보기·정렬 단추 창 — S·T·C 묶음 끝에 [세로선 + 보기][정렬](둘 다 상자 없는 아이콘, Jay 2026-10-30). 보기 창은 워크스페이스와 같은 부품
-              (Layout = Square · List — 어셋 격자에는 Masonry 계산이 없다) */}
+              (Layout = Square · Masonry · List — 폴더 카드 보기에는 Masonry 가 없다) */}
           <ViewControls
             fitContain={fit === "contain"}
             onToggleFit={onToggleFit}
@@ -217,6 +221,8 @@ export function AssetsCrumbBar({
             onSelectLayout={onSelectLayout}
             onToggleGroupByDate={onToggleGroupByDate}
             viewMenu
+            masonry={masonry}
+            onSetMasonry={onSetMasonry}
             t={t}
           />
           <AssetSortMenu

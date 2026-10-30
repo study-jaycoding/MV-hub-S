@@ -6,7 +6,8 @@ import type { AssetNode } from "../types";
 
 export type AssetVirtualRow =
   | { type: "header"; key: string; dayKey: string; label: string }
-  | { type: "cards"; key: string; idxs: number[] };
+  // height·widths = Masonry 줄만(그 줄의 칸 높이와 칸마다의 폭, px)
+  | { type: "cards"; key: string; idxs: number[]; height?: number; widths?: number[] };
 
 export interface AssetGridRowModel {
   rows: AssetVirtualRow[]; // 렌더 순서열(헤더 + 카드 행)
@@ -14,12 +15,23 @@ export interface AssetGridRowModel {
   posByIdx: { navRow: number; col: number }[]; // files[i] → 카드 격자 위치
   rowIndexOfNavRow: number[]; // navRow → rows[] 인덱스(virtua scrollToIndex 용)
   dateGroups: Map<string, { label: string; idxs: number[] }>; // 날짜별 그룹(헤더 체크박스용)
+  navCenters?: number[][]; // Masonry 만 — 칸 가운데의 가로 자리(위·아래 키 = 가장 가까운 칸, lib/gridVirtualRows navigateGrid)
+}
+
+// Masonry(Jay 2026-10-30) — 생성 그리드(lib/gridVirtualRows JustifyOptions)와 같은 줄 맞춤: 목표 높이로 쌓다가 폭을 넘기면 끊고
+//  줄 폭이 꽉 차게 높이를 줄인다(목표 이하). 날짜가 바뀌거나 끝나 꽉 차지 않은 줄은 목표 높이 그대로.
+export interface AssetJustifyOptions {
+  width: number;
+  targetHeight: number;
+  gap: number;
+  ratioOf: (file: AssetNode) => number; // 가로 ÷ 세로
 }
 
 export function buildAssetRows(
   files: AssetNode[],
   columns: number,
   groupByDate: boolean,
+  justify?: AssetJustifyOptions, // 주면 Masonry 줄(columns 는 안 쓴다)
 ): AssetGridRowModel {
   const cols = Math.max(1, columns);
   const rows: AssetVirtualRow[] = [];
@@ -27,17 +39,28 @@ export function buildAssetRows(
   const posByIdx: { navRow: number; col: number }[] = new Array(files.length);
   const rowIndexOfNavRow: number[] = [];
   const dateGroups = new Map<string, { label: string; idxs: number[] }>();
+  const navCenters: number[][] | undefined = justify ? [] : undefined;
 
   let cur: number[] = []; // 현재 카드 행에 쌓이는 files 인덱스
+  let ratios: number[] = []; // Masonry — cur 의 그림 비율
+  let ratioSum = 0;
   let lastDay: string | null = null;
 
-  const flush = () => {
+  const flush = (full = false) => {
     if (!cur.length) return;
     const navRow = navGrid.length;
     rowIndexOfNavRow.push(rows.length);
-    rows.push({ type: "cards", key: `c${navRow}`, idxs: cur });
+    if (justify) {
+      const height = full ? Math.max(1, (justify.width - justify.gap * (cur.length - 1)) / ratioSum) : justify.targetHeight;
+      const widths = ratios.map((ratio) => ratio * height);
+      let x = 0;
+      navCenters!.push(widths.map((width) => { const center = x + width / 2; x += width + justify.gap; return center; }));
+      rows.push({ type: "cards", key: `c${navRow}`, idxs: cur, height, widths });
+    } else rows.push({ type: "cards", key: `c${navRow}`, idxs: cur });
     navGrid.push(cur);
     cur = [];
+    ratios = [];
+    ratioSum = 0;
   };
 
   for (let i = 0; i < files.length; i++) {
@@ -55,10 +78,16 @@ export function buildAssetRows(
         rows.push({ type: "header", key: `h${key}`, dayKey: key, label });
       }
     }
-    if (cur.length >= cols) flush();
+    if (!justify && cur.length >= cols) flush();
     posByIdx[i] = { navRow: navGrid.length, col: cur.length };
     cur.push(i);
+    if (justify) {
+      const ratio = justify.ratioOf(files[i]);
+      ratios.push(ratio);
+      ratioSum += ratio;
+      if (ratioSum * justify.targetHeight + justify.gap * (cur.length - 1) >= justify.width) flush(true);
+    }
   }
   flush();
-  return { rows, navGrid, posByIdx, rowIndexOfNavRow, dateGroups };
+  return { rows, navGrid, posByIdx, rowIndexOfNavRow, dateGroups, ...(navCenters ? { navCenters } : {}) };
 }
