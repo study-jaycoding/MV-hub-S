@@ -38,6 +38,8 @@ export const AssetCell = memo(function AssetCell({
   onInfo,
   onExportDrag,
   onCopyFiles,
+  boxW,
+  boxH,
 }: {
   project: string;
   node: AssetNode;
@@ -68,6 +70,9 @@ export const AssetCell = memo(function AssetCell({
   // 다중 선택 복사 → 선택한 원본 이미지들을 OS 클립보드(파일 목록)에 올림(부모가 선택 전체를 앎)
   //  돌려주는 값 = 올리려던 수와 실제로 올라간 수(서버가 상한·미디어 아님으로 덜 올릴 수 있다)
   onCopyFiles?: (path: string) => Promise<{ asked: number; copied: number }>;
+  // Masonry 칸 크기(px, Jay 2026-10-30) — 주면 그 크기 칸에 그림이 남은 높이를 채운다(아래 색 막대·태그 편집은 그 밑). 숫자 둘로(memo 유지)
+  boxW?: number;
+  boxH?: number;
 }) {
   const t = useT();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -77,10 +82,11 @@ export const AssetCell = memo(function AssetCell({
   const isVideo = node.type === "video";
   const isAudio = node.type === "audio";
   const isList = layout === "list";
+  const masonry = !isList && boxW !== undefined && boxH !== undefined;
   // 썸네일 요청 폭 버킷 — 셀 표시폭(≈180~200*scale)×DPR 이 256 이하면 256, 아니면 512. 1x 디스플레이·
-  // 작은 줌에선 512 가 과해 256 으로 디코딩 메모리 1/4. 레티나·큰 줌에선 512 유지(화질 무손실).
+  // 작은 줌에선 512 가 과해 256 으로 디코딩 메모리 1/4. 레티나·큰 줌에선 512 유지(화질 무손실). Masonry 는 넓은 칸이 있어 512.
   const _dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
-  const thumbPx = Math.round((isList ? 200 : 180) * scale) * _dpr <= 256 ? 256 : 512;
+  const thumbPx = masonry || Math.round((isList ? 200 : 180) * scale) * _dpr > 256 ? 512 : 256;
   // 이미지는 리사이즈 썸네일로(풀해상도 디코딩 렉 방지). 영상/오디오는 원본 사용.
   // node.version(수정시각 나노초+크기)을 붙여 원본이 같은 이름으로 바뀌면 새 썸네일을 불러온다.
   const imgSrc = node.type === "image" ? api.assetThumbUrl(project, node.path, thumbPx, node.version) : url;
@@ -113,9 +119,10 @@ export const AssetCell = memo(function AssetCell({
   // list: 행 높이를 슬라이더로 고정(메인 라이브러리식) → 썸네일이 행 높이를 꽉 채우는 정사각.
   // grid: padding-bottom 트릭으로 정사각.
   const rowH = Math.round(200 * scale); // 리스트 행 높이(=썸네일 한 변)
-  const cellStyle: React.CSSProperties | undefined = isList ? { height: rowH } : undefined;
+  const cellStyle: React.CSSProperties | undefined = isList ? { height: rowH } : masonry ? { width: boxW, height: boxH } : undefined;
   const mediaStyle: React.CSSProperties = isList
     ? { width: rowH, height: "100%" } // 셀 높이(rowH)를 꽉 채우는 정사각
+    : masonry ? { position: "relative" } // 칸(.asset-cell.masonry — 세로 flex)의 남은 높이를 채운다(assets.css)
     : { position: "relative", width: "100%", height: 0, paddingBottom: "100%", boxSizing: "content-box" };
   const fillStyle: React.CSSProperties = isList
     ? { width: "100%", height: "100%", objectFit: fit }
@@ -371,6 +378,7 @@ export const AssetCell = memo(function AssetCell({
       className={
         "asset-cell" +
         (isList ? " list" : "") +
+        (masonry ? " masonry" : "") +
         (selected ? " selected" : "") +
         (focused ? " focused" : "") +
         (deactivated ? " deactivated" : "")

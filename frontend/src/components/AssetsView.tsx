@@ -8,7 +8,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { Virtualizer, type VirtualizerHandle } from "virtua";
 import { api } from "../api";
 import { DRAG_TYPES } from "../lib/dragTypes";
-import { computeGridColumns, navigateGrid } from "../lib/gridVirtualRows";
+import { computeGridColumns, gridContentWidth, navigateGrid } from "../lib/gridVirtualRows";
 import { buildAssetRows, type AssetVirtualRow } from "../lib/assetVirtualRows";
 import { useT } from "../lib/i18n";
 import { computeMarquee, marqueeHits } from "../lib/marquee";
@@ -166,7 +166,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     scale: Number(LS.get("folderScale", "1")) || 1,
     fill: LS.get("folderFit", "cover") !== "contain",
   });
-  const { layout, setLayout, groupByDate, setGroupByDate, scale, setScale, folders: folderMode, setFolders: setFolderMode } = fileView;
+  const { layout, setLayout, groupByDate, setGroupByDate, scale, setScale, folders: folderMode, setFolders: setFolderMode, masonry, setMasonry } = fileView;
   const { scale: folderScale, setScale: setFolderScale } = folderView;
   const fit = fileView.fill ? "cover" : "contain";
   const folderFit = folderView.fill ? "cover" : "contain";
@@ -385,23 +385,62 @@ export function AssetsView({ onInfo, onPreview }: Props) {
 
   // ── 가상 스크롤(virtua) — 화면에 보이는 셀만 마운트(메모리). 생성 그리드와 동일 패턴. ──
   const isList = layout === "list";
+  const masonryOn = masonry && !isList && !showFolders; // Masonry(그림 비율 줄, Jay 2026-10-30) — 파일 격자만(폴더 카드·리스트는 그대로)
   const vRef = useRef<VirtualizerHandle>(null);
   const [columns, setColumns] = useState(1);
+  const [contentWidth, setContentWidth] = useState(0); // Masonry 줄 폭 — Masonry 일 때만 잰다
   useLayoutEffect(() => {
     const el = gridRef.current;
     if (!el || isList) {
       setColumns(1);
       return;
     }
-    const measure = () => setColumns(computeGridColumns(el, Math.round(180 * scale), 12)); // gap 12 = .asset-vrow-grid
+    const measure = () => {
+      setColumns(computeGridColumns(el, Math.round(180 * scale), 12)); // gap 12 = .asset-vrow-grid
+      if (masonryOn) setContentWidth(gridContentWidth(el));
+    };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [scale, isList, files.length, showFolders]);
+  }, [scale, isList, files.length, showFolders, masonryOn]);
+  // 썸네일이 뜨면 그림 비율을 잰다(Masonry 만 — 어셋 파일에는 비율 정보가 없다). 여러 장이 떠도 한 프레임에 한 번 다시 짠다.
+  const [ratioVersion, setRatioVersion] = useState(0);
+  useEffect(() => {
+    const el = gridRef.current;
+    if (!masonryOn || !el) return;
+    let frame = 0;
+    const take = (media: EventTarget | null) => {
+      const [w, h] = media instanceof HTMLImageElement ? [media.naturalWidth, media.naturalHeight]
+        : media instanceof HTMLVideoElement ? [media.videoWidth, media.videoHeight] : [0, 0];
+      const idx = w && h ? Number((media as Element).closest(".asset-cell")?.getAttribute("data-idx")) : NaN;
+      const file = Number.isInteger(idx) ? files[idx] : undefined;
+      if (!file) return;
+      const key = `${project}|${file.path}`;
+      if (Math.abs((measuredAssetRatios.get(key) ?? 0) - w / h) < 0.01) return;
+      measuredAssetRatios.set(key, w / h);
+      if (!frame) frame = requestAnimationFrame(() => { frame = 0; setRatioVersion((v) => v + 1); });
+    };
+    const onLoad = (e: Event) => take(e.target);
+    el.querySelectorAll("img, video").forEach(take); // 이 효과보다 먼저 뜬 것(캐시)
+    el.addEventListener("load", onLoad, true); // load·loadedmetadata 는 올라오지 않는다 — 잡기 단계로
+    el.addEventListener("loadedmetadata", onLoad, true);
+    return () => {
+      el.removeEventListener("load", onLoad, true);
+      el.removeEventListener("loadedmetadata", onLoad, true);
+      cancelAnimationFrame(frame);
+    };
+  }, [masonryOn, files, project]);
+  const masonryRowHeight = Math.round(MASONRY_ROW_HEIGHT * scale);
   const rowModel = useMemo(
-    () => buildAssetRows(files, isList ? 1 : columns, groupByDate),
-    [files, isList, columns, groupByDate],
+    () => buildAssetRows(files, isList ? 1 : columns, groupByDate,
+      masonryOn && contentWidth > 0 ? {
+        width: contentWidth, targetHeight: masonryRowHeight, gap: MASONRY_GAP,
+        // 오디오는 음표 칸(정사각) · 재기 전 1 · 0.25~4 로 묶는다
+        ratioOf: (file) => file.type === "audio" ? 1 : Math.max(0.25, Math.min(4, measuredAssetRatios.get(`${project}|${file.path}`) ?? 1)),
+      } : undefined),
+    // ratioVersion = 잰 비율이 늘었다(모듈 값)
+    [files, isList, columns, groupByDate, masonryOn, contentWidth, masonryRowHeight, project, ratioVersion],
   );
 
   useAssetSelectionPersistence({
@@ -679,7 +718,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       const nxt =
         focusIdx < 0
           ? 0
-          : navigateGrid({ navGrid: rowModel.navGrid, posByGen: rowModel.posByIdx }, cur, e.key);
+          : navigateGrid({ navGrid: rowModel.navGrid, posByGen: rowModel.posByIdx, navCenters: rowModel.navCenters }, cur, e.key);
       if (nxt == null) return;
       setFocusIdx(nxt);
       if (e.shiftKey) setSelected((prev) => new Set([...prev, cur, nxt]));
@@ -848,12 +887,14 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   // 다중선택 태그 편집 활성(편집 카드가 선택에 포함 + 2개 이상) — 선택된 비포커스 카드에 스트립 표시.
   const tagEditingMulti = tagEditPath != null && selected.size > 1 && selPaths().includes(tagEditPath);
   // 카드 셀은 virtua 가 렌더하는 '보이는 행' 안에서만 생성한다(오프스크린은 마운트 안 됨=메모리 절감).
-  const renderAssetCell = (idx: number) => {
+  const renderAssetCell = (idx: number, boxW?: number, boxH?: number) => {
     const f = files[idx];
     if (!f) return null;
     return (
       <AssetCell
         key={f.path}
+        boxW={boxW}
+        boxH={boxH}
         project={project}
         node={f}
         folderLabel={assetFolderLabel(f.path, dir)}
@@ -909,10 +950,11 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     return (
       <div
         key={row.key}
-        className={isList ? "asset-vrow-list" : "asset-vrow-grid"}
-        style={isList ? undefined : { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+        className={isList ? "asset-vrow-list" : row.widths ? "asset-vrow-masonry" : "asset-vrow-grid"}
+        style={isList || row.widths ? undefined : { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
       >
-        {row.idxs.map(renderAssetCell)}
+        {/* Masonry — 칸 = 그 줄 높이 × 그림 비율(lib/assetVirtualRows) */}
+        {row.idxs.map((idx, index) => renderAssetCell(idx, row.widths?.[index], row.widths ? row.height : undefined))}
       </div>
     );
   };
@@ -1100,6 +1142,9 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             layout={showFolders ? (folderLayout === "table" ? "list" : folderLayout) : layout}
             groupByDate={showFolders ? folderLayout === "table" : groupByDate}
             onSelectLayout={showFolders ? setFolderLayout : setLayout}
+            // Masonry 는 파일 격자만 — 폴더 카드 보기 창에는 없다
+            masonry={masonry}
+            onSetMasonry={showFolders ? undefined : setMasonry}
             onToggleGroupByDate={() => showFolders
               ? setFolderLayout((value) => value === "list" ? "table" : value === "table" ? "list" : value)
               : setGroupByDate((v) => !v)}
@@ -1174,6 +1219,13 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     </div>
   );
 }
+
+// Masonry 줄 — 목표 높이(배율 1) · 칸 사이(워크스페이스 ThumbnailGrid 와 같은 값)
+const MASONRY_ROW_HEIGHT = 170;
+const MASONRY_GAP = 4;
+// 썸네일이 뜰 때 잰 그림 비율(`프로젝트|경로` → 가로 ÷ 세로) — 폴더를 옮겨 다녀도 다시 재지 않게 모듈에 둔다.
+//  shortcut: 지우지 않고 쌓인다(경로 하나에 숫자 하나 — 수천 장이어도 작다). 수십만 장을 다루게 되면 그때 덜어 낸다.
+const measuredAssetRatios = new Map<string, number>();
 
 /** 그 경로의 파일이 지금 목록의 몇 번째인가(없으면 -1). */
 /** 파일 격자가 초점 잃은 키로 받는 키 — Backspace 는 창의 '상위 폴더로' 처리 몫이다(폴더 보기 AssetFolderGrid 도 같은 규칙). */
