@@ -7,10 +7,7 @@
 //  5px 임계 전에는 클릭이고, 드래그가 끝나면 그 뒤에 합성되는 click/dblclick 을 한 번 삼킨다 —
 //  안 그러면 순서만 바꾸려다 씬이 열리고 워크스페이스까지 바뀐다(코덱스 P1).
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { useModalFocus } from "../../lib/keyGate";
 import type { Scene } from "../../lib/scenes";
-import { useEscapeClose } from "../../lib/useEscapeClose";
 import {
   dropIndexAt,
   normalizeSceneWorkspace,
@@ -23,6 +20,7 @@ import {
   type SceneWorkspace,
 } from "../../lib/sceneWorkspace";
 import { cachedWorkspaceOptions } from "../../lib/workspaceOptionsCache";
+import { HostConfirm } from "../common/HostConfirm";
 import { WorkspaceMark } from "../common/WorkspaceMark";
 import { SceneWorkspaceMenu, type SceneMenuTarget } from "./SceneWorkspaceMenu";
 import type { WorkspaceContext } from "../../types";
@@ -67,44 +65,14 @@ function BackupSkippedBadge({ name }: { name: string }) {
   );
 }
 
-// 씬 삭제 확인 — 브라우저 기본 확인창 대신 앱 확인창('MV Hub 종료'와 같은 모양, Jay 2026-10-22 B안). × 는 탭 닫기가 아니라 저장된
-//  카드·연결까지 지우는 삭제라 문구도 삭제로 쓴다. 삭제 단추에 초점 — Enter 가 삭제를 누른다(window.confirm 의 확인 자리). Esc = 취소.
-//  창 밖 누름은 투명한 막이 받아 취소로 닫는다 — 막이 없으면 뒤의 + ·탭 단추가 눌리고 초점이 그리로 옮겨 Enter 가 그것을 눌렀다(Codex R2).
+// 씬 삭제 확인 — 앱 확인창(common/HostConfirm). × 는 탭 닫기가 아니라 저장된 카드·연결까지 지우는 삭제라 문구도 삭제로 쓴다.
 function SceneDeleteConfirm({ name, onConfirm, onCancel }: { name: string; onConfirm: () => void; onCancel: () => void }) {
-  useEscapeClose(onCancel); // 떠 있는 동안 뒤 화면(캔버스)의 단축키도 쉰다
-  const boxRef = useRef<HTMLDivElement>(null);
-  useModalFocus(boxRef);
-  return createPortal(
-    <>
-    <div
-      className="scene-del-catcher"
-      onMouseDown={(event) => {
-        event.preventDefault(); // 초점을 옮기지 않는다
-        onCancel();
-      }}
-    />
-    <div ref={boxRef} className="manage-float host-exit-confirm" role="alertdialog" aria-modal="true" aria-label="씬 삭제">
-      <header className="admin-head">
-        <span className="admin-title">🗑 씬 삭제</span>
-      </header>
-      <div className="admin-body">
-        <p className="host-exit-text">
-          '{name}' 씬을 삭제할까요?
-          <br />
-          이 씬의 카드·연결이 모두 사라집니다.
-        </p>
-        <div className="host-exit-actions">
-          <button type="button" className="settings-action danger" autoFocus onClick={onConfirm}>
-            삭제
-          </button>
-          <button type="button" className="settings-action ghost" onClick={onCancel}>
-            취소
-          </button>
-        </div>
-      </div>
-    </div>
-    </>,
-    document.body,
+  return (
+    <HostConfirm label="씬 삭제" title="🗑 씬 삭제" confirmLabel="삭제" onConfirm={onConfirm} onCancel={onCancel}>
+      '{name}' 씬을 삭제할까요?
+      <br />
+      이 씬의 카드·연결이 모두 사라집니다.
+    </HostConfirm>
   );
 }
 

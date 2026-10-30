@@ -646,7 +646,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `admin/ProjectRenderTree.tsx`(29줄) | 프로젝트 렌더 폴더 트리 표시 | 〃 |
 | `LoginScreen.tsx`(92줄) / `ServerLoginScreen.tsx`(230줄) | 로컬 AUTH 로그인 / 팀 서버 로그인·가입 | 각 컴포넌트 |
 
-#### 공용 부품(`common/`, 12파일)
+#### 공용 부품(`common/`, 13파일)
 
 | 파일 | 한 줄 책임 | 쓰는 곳 수(실측) |
 |---|---|---:|
@@ -654,8 +654,9 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `FolderTreeView.tsx`(248줄) | 공통 폴더 트리(재귀 행·드롭·우클릭) | 8 |
 | `CommentPanel.tsx`(301줄) | 코멘트 패널 UI(에셋·생성 공용) | 4 |
 | `TagFilterPanel.tsx`(204줄) | 태그 필터 플로팅 패널 | 4 |
-| `LibraryWorkspaceFilter.tsx`(241줄) | 워크스페이스 칩 필터 | 3 |
-| `ViewControls.tsx`(106줄) | 크기 슬라이더 + 리스트/그리드 토글 | 4 |
+| `LibraryWorkspaceFilter.tsx`(약 280줄) | 워크스페이스 칩 + 필터 단추 창(Workspaces 옆 목록 · Hide failed · Activity 실패·차단 정리 — 2026-10-30) | 3 |
+| `ViewControls.tsx`(약 190줄) | 크기 슬라이더 + 리스트/그리드 토글. `onSetMasonry` 를 받은 툴바(라이브러리)는 보기 단추 하나 + 보기 창(Layout·Split by date·Fill·Card size — 2026-10-30) | 4 |
+| `HostConfirm.tsx`(50줄) | 앱 확인 창(브라우저 confirm 대신 — 'MV Hub 종료' 모양 · 확인 단추 초점 · Esc·바깥 = 취소). 씬 삭제·실패·차단 정리 | 2 |
 | `ColorFilterDots.tsx`(69줄) | 색 점 필터 + 색 상수표 | 7 |
 | `WorkspaceMark.tsx`(49줄) | 워크스페이스 색 표식(id 해시 색상) | 4 |
 | `InlinePromptRefs.tsx`(70줄) | 프롬프트의 `@소스`를 썸네일 칩으로 | 3 |

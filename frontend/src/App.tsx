@@ -124,6 +124,7 @@ import {
   canFinalizeGeneration,
   expandDisabledGenerationIds,
   filterDisabledGenerations,
+  isFailedGeneration,
 } from "./lib/generationDisplay";
 import { useDisabledFolders } from "./lib/useDisabledFolders";
 import { useGradeStep } from "./lib/useGradeStep";
@@ -1322,11 +1323,15 @@ export default function App() {
     () => expandDisabledGenerationIds(visibleGens, disabledGen, disabledFolders),
     [visibleGens, disabledGen, disabledFolders],
   );
+  // 필터 창의 Hide failed(Jay 2026-10-30) — 실패·차단 카드를 격자에서만 숨긴다(지우지 않음). '실패' = 서버 정리·숫자와 같은 기준
+  //  (완료·대기·진행 중이 아닌 것 — backend delete_failed_orphans). 이 브라우저에 기억한다.
+  const [hideFailed, setHideFailed] = useState(() => LS.get("hideFailed", "0") === "1");
+  useEffect(() => LS.set("hideFailed", hideFailed ? "1" : "0"), [hideFailed]);
   // memo — App 은 진행률·토스트 등으로 자주 리렌더되므로 매번 전량 filter 하지 않게.
-  const gridGens = useMemo(
-    () => [...comfyPlaceholders, ...filterDisabledGenerations(visibleGens, effectiveDisabled, grayOn)],
-    [comfyPlaceholders, visibleGens, effectiveDisabled, grayOn],
-  );
+  const gridGens = useMemo(() => {
+    const shown = filterDisabledGenerations(visibleGens, effectiveDisabled, grayOn);
+    return [...comfyPlaceholders, ...(hideFailed ? shown.filter((g) => !isFailedGeneration(g)) : shown)];
+  }, [comfyPlaceholders, visibleGens, effectiveDisabled, grayOn, hideFailed]);
   // 격자 자리를 비우는 동안 — 묶음 답을 모르거나, 낱장이 될 자리인데 먼저 보일 것이 없다(위 '폴더를 옮기는 동안').
   const cutPending = cutLoading || (narrowing && !cutMode && gridGens.length === 0);
   // 회색 숨김을 켜면 가려지는 카드는 선택에서 뺀다(29회차 Jay "검색과 같게" — 보이는 것만 남긴다). 숨김은 gridGens 만 줄이고 gens 는 그대로라
@@ -1337,6 +1342,12 @@ export default function App() {
     setGrayOn(next);
     if (next && selected.size) setSelected((prev) => withoutHidden(prev, effectiveDisabled));
   };
+  // Hide failed 도 회색 숨김처럼 — 켜면 가려지는 카드는 선택에서 뺀다
+  const toggleHideFailed = () => {
+    const next = !hideFailed;
+    setHideFailed(next);
+    if (next && selected.size) setSelected((prev) => withoutHidden(prev, new Set(visibleGens.filter(isFailedGeneration).map((g) => g.id))));
+  };
   // 회색/휴지통 공간 필터가 페이지를 전부 가리면(빈 그리드) ThumbnailGrid 가 센티넬을 못 그려
   // onLoadMore 가 영영 안 불린다 → 뒤 페이지의 활성 항목이 사라진 것처럼 보임. hasMore 인 한
   // 활성 항목이 나오거나 끝날 때까지 다음 페이지를 자동으로 당긴다(필터·페이지네이션 분리).
@@ -1346,7 +1357,7 @@ export default function App() {
   const scopedTrash = !!filters.deleted_only && hasWorkspaceFilter(genQuery);
   useEffect(() => { grayAutoLoadCountRef.current = 0; }, [serverFilterKey, workspaceScopeKey, libraryAuthKey]);
   useEffect(() => {
-    if ((!grayOn && !scopedTrash) || gridGens.length > 0) {
+    if ((!grayOn && !hideFailed && !scopedTrash) || gridGens.length > 0) {
       grayAutoLoadCountRef.current = 0;
       return;
     }
@@ -1354,7 +1365,7 @@ export default function App() {
       grayAutoLoadCountRef.current += 1;
       loadMore();
     }
-  }, [grayOn, scopedTrash, gridGens.length, canLoadMore, loading, loadingMore, loadMore, workspaceScopeKey]);
+  }, [grayOn, hideFailed, scopedTrash, gridGens.length, canLoadMore, loading, loadingMore, loadMore, workspaceScopeKey]);
 
   // 미확인 코멘트 여부·내 실패 수는 서버 stats 에서 계산한다(전량 로드 대체).
   const hasAnyUnread = stats.has_unread;
@@ -1414,7 +1425,6 @@ export default function App() {
   } = useGenerationTrashActions({
       bumpBoard,
       clearSelect,
-      failedCount,
       flash,
       reload,
       selected,
@@ -2272,6 +2282,8 @@ export default function App() {
       loading={loading}
       failedCount={failedCount}
       onClearFailed={clearFailed}
+      hideFailed={hideFailed}
+      onToggleHideFailed={toggleHideFailed}
       colorDots={COLOR_DOTS}
       colorFilter={colorFilter}
       onToggleColor={toggleColorFilter}

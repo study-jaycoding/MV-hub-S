@@ -11,6 +11,7 @@ import { MEDIA_FILTER_OPTIONS } from "../lib/mediaTypes";
 import { makeStore } from "../lib/storage";
 import { useFloatingPanel } from "../lib/useFloatingPanel";
 import { ColorFilterDots } from "./common/ColorFilterDots";
+import { HostConfirm } from "./common/HostConfirm";
 import { LibraryWorkspaceFilter, type WorkspaceFilterProps } from "./common/LibraryWorkspaceFilter";
 import { SidebarEdgeToggle } from "./common/SidebarEdgeToggle";
 import { TagFilterPanel } from "./common/TagFilterPanel";
@@ -45,8 +46,10 @@ interface Props {
     pending?: { top: boolean }; // 묶음 답을 기다리는 중 — 낱장 숫자 대신 '컷 · 불러오는 중…'
   };
   loading: boolean;
-  failedCount: number; // 실패 항목 수(>0 이면 '실패 정리' 노출)
-  onClearFailed: () => void;
+  failedCount: number; // 실패 항목 수 — 필터 창의 Activity(워크스페이스 필터가 있는 툴바) · 없으면 >0 일 때 빨간 '실패 정리' 단추
+  onClearFailed: () => void; // 정리 실행 — 묻는 것은 이 툴바의 앱 확인 창(HostConfirm)
+  hideFailed?: boolean; // 필터 창 Hide failed — 실패·차단 카드를 격자에서 숨긴다
+  onToggleHideFailed?: () => void;
   // 워크스페이스로 걸러 보기 — 회색 dot 왼쪽에 [칩][버튼]. **주지 않으면 안 그린다**:
   //  구성 보드 툴바는 워크스페이스 조건이 배선돼 있지 않아(App.tsx 의 보드 배선) 눌러도 무동작이다.
   workspaceFilter?: WorkspaceFilterProps;
@@ -106,6 +109,8 @@ export function LibraryToolbar({
   loading,
   failedCount,
   onClearFailed,
+  hideFailed = false,
+  onToggleHideFailed,
   workspaceFilter,
   colorDots,
   colorFilter,
@@ -135,6 +140,7 @@ export function LibraryToolbar({
   showFilterToggle,
 }: Props) {
   const t = useT();
+  const [confirmClear, setConfirmClear] = useState(false); // 실패·차단 정리 확인 창
   const [reviewMenuOpen, setReviewMenuOpen] = useState(false);
   const reviewMenuRef = useRef<HTMLDivElement>(null);
   useEscapeClose(() => setReviewMenuOpen(false), reviewMenuOpen, true, true); // 메뉴만 닫는다 — 뒤의 선택·폴더 창은 그대로
@@ -209,6 +215,26 @@ export function LibraryToolbar({
       onEnd();
     };
   }, [tagPanelOpen]);
+  const viewControls = (
+    <ViewControls
+      fitContain={!fill}
+      onToggleFit={onToggleFill}
+      scale={onZoomValue ? (zoomValue ?? 1) : scale}
+      onScale={(v) => (onZoomValue ? onZoomValue(v) : onScale(v))}
+      scaleMin={onZoomValue ? 0.3 : 0.7}
+      scaleMax={onZoomValue ? 2.5 : 1.7}
+      sizeTitle={onZoomValue ? "화면 확대/축소" : "카드 크기"}
+      layout={layout}
+      groupByDate={groupByDate}
+      onSelectLayout={onLayout}
+      onToggleGroupByDate={onToggleGroupByDate}
+      showLayout={!boardMode}
+      masonry={masonry}
+      onSetMasonry={boardMode ? undefined : onSetMasonry}
+      zoomControl={sceneZoom}
+      t={t}
+    />
+  );
   return (
     <div className="lib-toolbar" ref={barRef} data-float-owner={floatId}>
       {/* 필터 사이드바 여닫기 — 줄 흐름 밖, 사이드바 끝선 위의 손잡이(시안 C). 캔버스는 폴더 사이드바가 있어 표시. */}
@@ -274,20 +300,33 @@ export function LibraryToolbar({
           </button>
         </span>
       )}
-      {failedCount > 0 && (
+      {/* 필터 창이 있는 툴바는 그 창의 Activity 로 옮겼다(Jay 2026-10-30) — 없는 툴바(캔버스·구성 보드)만 이 단추 */}
+      {!(workspaceFilter && onToggleHideFailed) && failedCount > 0 && (
         <button
           className="lib-clear-failed"
           title="실패·NSFW 차단 등 비정상 생성물을 휴지통으로 (복구 가능 · 힉스필드 원본엔 영향 없음)"
-          onClick={onClearFailed}
+          onClick={() => setConfirmClear(true)}
         >
           실패·차단 정리 ({failedCount})
         </button>
+      )}
+      {confirmClear && (
+        <HostConfirm label={t("실패·차단 정리")} title={`🗑 ${t("실패·차단 정리")}`} confirmLabel={t("정리")} cancelLabel={t("취소")}
+          onConfirm={() => { setConfirmClear(false); onClearFailed(); }} onCancel={() => setConfirmClear(false)}>
+          {t("실패·차단된 생성물 {n}건을 휴지통으로 보낼까요?").replace("{n}", String(failedCount))}
+          <br />
+          {t("휴지통 보기에서 되살릴 수 있고, 힉스필드 원본은 그대로입니다.")}
+        </HostConfirm>
       )}
 
       <div className="lib-tools">
         {/* 인스턴트 필터: 골드(최종만) · 컬러 dot · S(팀 공유만) · T(태그) · C(코멘트) */}
         <div className="assets-filters">
-          {workspaceFilter && <LibraryWorkspaceFilter {...workspaceFilter} />}
+          {workspaceFilter && (
+            <LibraryWorkspaceFilter {...workspaceFilter} activity={onToggleHideFailed ? {
+              hideFailed, onToggleHideFailed, failedCount, onClearFailed: () => setConfirmClear(true),
+            } : undefined} />
+          )}
           <ColorFilterDots
             colorDots={colorDots}
             activeColors={colorFilter}
@@ -360,26 +399,10 @@ export function LibraryToolbar({
             </div>,
             document.body,
           )}
+          {/* 보기 단추(창)는 S·T·C 와 같은 묶음에 붙인다 — 따로 두면 툴바 간격(10+12px)만큼 떨어져 보였다(Jay 2026-10-30) */}
+          {!boardMode && onSetMasonry && viewControls}
         </div>
-
-        <ViewControls
-          fitContain={!fill}
-          onToggleFit={onToggleFill}
-          scale={onZoomValue ? (zoomValue ?? 1) : scale}
-          onScale={(v) => (onZoomValue ? onZoomValue(v) : onScale(v))}
-          scaleMin={onZoomValue ? 0.3 : 0.7}
-          scaleMax={onZoomValue ? 2.5 : 1.7}
-          sizeTitle={onZoomValue ? "화면 확대/축소" : "카드 크기"}
-          layout={layout}
-          groupByDate={groupByDate}
-          onSelectLayout={onLayout}
-          onToggleGroupByDate={onToggleGroupByDate}
-          showLayout={!boardMode}
-          masonry={masonry}
-          onSetMasonry={boardMode ? undefined : onSetMasonry}
-          zoomControl={sceneZoom}
-          t={t}
-        />
+        {(boardMode || !onSetMasonry) && viewControls}
       </div>
     </div>
   );

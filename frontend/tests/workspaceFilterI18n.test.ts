@@ -20,6 +20,12 @@ const WORKSPACE_FILTER = [
   "불러오는 중…",
   "목록을 못 받았습니다 — 다시 시도",
   "속한 팀 워크스페이스가 없습니다.",
+  // 필터 창(Jay 2026-10-30) — Workspaces·Hide failed·Activity 는 힉스필드처럼 영어 그대로
+  "필터 — Workspaces · Hide failed · 실패·차단 정리",
+  "실패·차단 정리",
+  "실패·차단된 생성물 {n}건을 휴지통으로 보낼까요?",
+  "휴지통 보기에서 되살릴 수 있고, 힉스필드 원본은 그대로입니다.",
+  "정리",
 ];
 const REF_ROLE_MENU = [
   "레퍼런스 역할",

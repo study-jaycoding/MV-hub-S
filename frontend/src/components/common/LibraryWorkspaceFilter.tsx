@@ -1,4 +1,6 @@
 // 워크스페이스로 걸러 보기 — 툴바의 회색 dot 왼쪽에 [칩…][버튼] 으로 붙는다(Jay 2026-09-14).
+//  버튼을 누르면 **필터 창**(Jay 2026-10-30 — 힉스필드 필터 창처럼): Filter[Workspaces › · Hide failed] · Activity[실패·차단 정리].
+//  Workspaces 는 올리거나 누르면 옆(왼쪽)으로 목록 — 안 고른 공간 = 회색 · 고른 공간 = 공간 색 글자 + 라임 이름(✓ 없음).
 //
 // ★왜 새로 만드나: 전역태그 블록에도 워크스페이스 침이 있지만, 거기는 `#+` 로 **먼저 등록해야**
 //  누를 수 있다. 여기서는 등록 없이 내 워크스페이스 전부에서 바로 고른다(힉스필드와 같은 방식).
@@ -13,7 +15,7 @@
 //  옮기면 필터 결과도 따라 움직인다(backend `generations_query.py` 의 workspace_id 조건).
 //
 // 목록·로딩·실패는 컨테이너 훅(useWorkspaceFilterOptions)이 들고 있고 이 컴포넌트는 그리기만 한다.
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 
 import { useT } from "../../lib/i18n";
 import { useEscapeClose } from "../../lib/useEscapeClose";
@@ -42,6 +44,22 @@ export interface WorkspaceFilterProps {
   };
 }
 
+/** 필터 창 아래칸 — 툴바가 준다(Hide failed 는 격자 보기 설정, 정리는 확인 창을 툴바가 띄운다). */
+export interface FilterActivity {
+  hideFailed: boolean;
+  onToggleHideFailed: () => void;
+  failedCount: number;
+  onClearFailed: () => void; // 확인 창 열기(정리 자체가 아니다)
+}
+
+const icon = (body: ReactNode, strokeWidth = 1.8) => (
+  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{body}</svg>
+);
+const WORKSPACES_ICON = icon(<><rect x="3" y="4" width="8" height="16" rx="1.5" /><path d="M11 9h8.5a1.5 1.5 0 0 1 1.5 1.5V20H11" /><path d="M6 8h2M6 12h2M6 16h2M15 13h2M15 17h2" /></>);
+const HIDE_ICON = icon(<><path d="M3 3l18 18" /><path d="M10.6 5.1A9.8 9.8 0 0 1 12 5c5 0 8.5 4.5 9.5 7a13 13 0 0 1-2.9 4M6.2 6.6C4.3 8 3 10 2.5 12c1 2.5 4.5 7 9.5 7 1.8 0 3.3-.5 4.6-1.3" /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" /></>);
+const CLEAR_ICON = icon(<><path d="M14.5 3.5l6 6" /><path d="M17.5 6.5l-6.8 6.8" /><path d="M10.7 13.3 4 20l3.5.5L9 19l1 2 2-1.5 1.2 1.5 1.3-2.2c.6-2.4-.5-4.8-3.8-5.5Z" /></>);
+const CHEVRON = icon(<path d="M9 6l6 6-6 6" />, 2.2);
+
 export function LibraryWorkspaceFilter({
   value,
   options,
@@ -51,15 +69,17 @@ export function LibraryWorkspaceFilter({
   onToggle,
   onClear,
   follow,
-}: WorkspaceFilterProps) {
+  activity,
+}: WorkspaceFilterProps & { activity?: FilterActivity }) {
   const [open, setOpen] = useState(false);
+  const [wsOpen, setWsOpen] = useState(false); // Workspaces 옆 목록
   const wrapRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const closeMenu = useCallback(() => setOpen(false), []);
+  const closeMenu = useCallback(() => { setOpen(false); setWsOpen(false); }, []);
   const closeMenuOnEscape = useCallback(() => {
-    setOpen(false);
+    closeMenu();
     buttonRef.current?.focus();
-  }, []);
+  }, [closeMenu]);
   useOutsideMouseDown(wrapRef, closeMenu, open, undefined, true); // Tab 으로 빠져나가도 닫는다(규칙 58) — 단추가 wrapRef 안이라 Esc 의 초점 복귀는 '안'이다
   // 메뉴만 닫고 카드 선택은 유지 — 라이브러리 전역 Esc 보다 캡처 단계에서 먼저 처리한다.
   useEscapeClose(closeMenuOnEscape, open, true, true);
@@ -73,6 +93,45 @@ export function LibraryWorkspaceFilter({
   const hidden = value.length - shown.length;
   // 목록에 없는데 골라져 있는 공간 — 메뉴에도 넣어야 `+N` 에 가려진 것을 풀 수 있다.
   const orphans = value.filter((id) => !options.some((option) => option.id === id));
+  const toggleOpen = () => {
+    if (open) return closeMenu();
+    setOpen(true);
+    if (!follow) onOpen();
+  };
+
+  // 필터 창 — Workspaces 줄의 옆 목록(list)·끝 표시(end)만 공유&리뷰와 다르다
+  const pop = (list: ReactNode, end: ReactNode) => (
+    <div className="vp-pop filter-pop" role="menu" aria-label={t("워크스페이스로 걸러 보기")}>
+      <div className="vp-head">Filter</div>
+      {/* 옆 목록은 이 줄의 자식 — 줄에서 목록으로 마우스를 옮겨도 닫히지 않는다(사이 6px 는 목록의 안쪽 여백) */}
+      <div className="filter-ws" onMouseEnter={() => setWsOpen(true)} onMouseLeave={() => setWsOpen(false)}>
+        <button type="button" className={"vp-item" + (wsOpen ? " hov" : "")} aria-haspopup="menu" aria-expanded={wsOpen}
+          onClick={() => setWsOpen((v) => !v)}>
+          <span className="vp-ic">{WORKSPACES_ICON}</span>
+          Workspaces
+          <span className="vp-end">{end}{CHEVRON}</span>
+        </button>
+        {wsOpen && <div className="filter-fly">{list}</div>}
+      </div>
+      {activity && (
+        <>
+          <button type="button" role="menuitemcheckbox" aria-checked={activity.hideFailed} className="vp-item" onClick={activity.onToggleHideFailed}>
+            <span className="vp-ic">{HIDE_ICON}</span>
+            Hide failed
+            <span className={"vp-sw" + (activity.hideFailed ? " on" : "")} aria-hidden="true" />
+          </button>
+          <div className="vp-sep" />
+          <div className="vp-head">Activity</div>
+          <button type="button" className="vp-item warn" disabled={activity.failedCount <= 0}
+            onClick={() => { closeMenu(); activity.onClearFailed(); }}>
+            <span className="vp-ic">{CLEAR_ICON}</span>
+            {t("실패·차단 정리")}
+            <span className="vp-end"><span className="vp-cnt">{activity.failedCount}</span></span>
+          </button>
+        </>
+      )}
+    </div>
+  );
 
   if (follow) {
     const auto = follow.mode === "auto";
@@ -81,7 +140,7 @@ export function LibraryWorkspaceFilter({
     const title = `${t("워크스페이스로 걸러 보기")} — ${name} · ${modeLabel}`;
     const chooseMode = (mode: "auto" | "all") => {
       follow.onChange(mode);
-      setOpen(false);
+      closeMenu();
       buttonRef.current?.focus();
     };
 
@@ -96,14 +155,14 @@ export function LibraryWorkspaceFilter({
           aria-haspopup="menu"
           aria-expanded={open}
           aria-busy={auto && !!follow.pending}
-          onClick={() => setOpen((previous) => !previous)}
+          onClick={toggleOpen}
         >
           <span className="lib-ws-follow-mark" aria-hidden="true">W</span>
           <span className="lib-ws-follow-name">{name}</span>
           <span className="lib-ws-follow-mode">· {modeLabel}</span>
           <span className="lib-ws-follow-caret" aria-hidden="true">▾</span>
         </button>
-        {open && (
+        {open && pop(
           <div className="lib-ws-menu lib-ws-follow-menu" role="menu" aria-label={t("워크스페이스로 걸러 보기")}>
             <button
               type="button"
@@ -113,7 +172,6 @@ export function LibraryWorkspaceFilter({
               onClick={() => chooseMode("auto")}
             >
               <span className="lib-ws-item-name">{t("현재 워크스페이스 따라가기")}</span>
-              {auto && <span className="lib-ws-check" aria-hidden="true">✓</span>}
             </button>
             <button
               type="button"
@@ -123,14 +181,14 @@ export function LibraryWorkspaceFilter({
               onClick={() => chooseMode("all")}
             >
               <span className="lib-ws-item-name">{t("전체 보기")}</span>
-              {!auto && <span className="lib-ws-check" aria-hidden="true">✓</span>}
             </button>
             <div className="lib-ws-note lib-ws-follow-note">
               {t("워크스페이스 변경 시 자동 적용으로 돌아갑니다.")}
               <br />
               {t("소속 미확인 생성물은 전체 보기에서 확인할 수 있습니다.")}
             </div>
-          </div>
+          </div>,
+          modeLabel,
         )}
       </div>
     );
@@ -166,13 +224,10 @@ export function LibraryWorkspaceFilter({
         <button
           ref={buttonRef}
           className={"af-btn lib-ws-btn" + (value.length ? " on" : "")}
-          title={t("워크스페이스로 걸러 보기")}
+          title={t(activity ? "필터 — Workspaces · Hide failed · 실패·차단 정리" : "워크스페이스로 걸러 보기")}
           aria-haspopup="menu"
           aria-expanded={open}
-          onClick={() => {
-            setOpen((v) => !v);
-            if (!open) onOpen();
-          }}
+          onClick={toggleOpen}
         >
           <svg
             viewBox="0 0 24 24"
@@ -188,7 +243,7 @@ export function LibraryWorkspaceFilter({
           </svg>
           {value.length > 0 && <span className="lib-ws-count">{value.length}</span>}
         </button>
-        {open && (
+        {open && pop(
           <div className="lib-ws-menu" role="menu">
             <button
               type="button"
@@ -197,7 +252,7 @@ export function LibraryWorkspaceFilter({
               className={"lib-ws-item" + (value.length ? "" : " on")}
               onClick={() => {
                 onClear();
-                setOpen(false);
+                closeMenu();
               }}
             >
               <span className="lib-ws-all">All</span>
@@ -216,11 +271,6 @@ export function LibraryWorkspaceFilter({
                 >
                   <WorkspaceMark label={labels.get(option.id) ?? option.name} id={option.id} />
                   <span className="lib-ws-item-name">{labels.get(option.id) ?? option.name}</span>
-                  {on && (
-                    <span className="lib-ws-check" aria-hidden="true">
-                      ✓
-                    </span>
-                  )}
                 </button>
               );
             })}
@@ -233,7 +283,8 @@ export function LibraryWorkspaceFilter({
             {!loading && !failed && !options.length && !orphans.length && (
               <div className="lib-ws-note">{t("속한 팀 워크스페이스가 없습니다.")}</div>
             )}
-          </div>
+          </div>,
+          value.length > 0 ? <span className="vp-cnt">{value.length}</span> : null,
         )}
       </div>
     </>

@@ -268,6 +268,11 @@ export function hasActiveGenerationJob(gens: Generation[]): boolean {
   return gens.some((g) => g.status === "pending" || g.status === "running");
 }
 
+// 실패·차단 = 완료·대기·진행 중이 아닌 것(서버 정리·실패 숫자와 같은 기준 — backend delete_failed_orphans) · 필터 창 Hide failed 가 숨긴다
+export function isFailedGeneration(g: Pick<Generation, "status">): boolean {
+  return g.status !== "done" && g.status !== "pending" && g.status !== "running";
+}
+
 export function filterDisabledGenerations(
   gens: Generation[],
   disabledIds: Set<string>,
