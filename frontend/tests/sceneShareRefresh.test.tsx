@@ -50,8 +50,8 @@ async function mountAndConfirm() {
     [...host.querySelectorAll<HTMLButtonElement>(".linb-ov-top button")].find(el => el.textContent === "S")!.click();
   });
   await act(async () => vi.advanceTimersByTimeAsync(230));
-  const yes = [...host.querySelectorAll<HTMLButtonElement>("button")].find(el => el.textContent === "Yes");
-  expect(yes).toBeDefined(); await act(async () => yes!.click());
+  const share = document.body.querySelector<HTMLButtonElement>(".s-pick .review-shared");
+  expect(share).toBeTruthy(); await act(async () => share!.click());
   expect(onPublish).toHaveBeenCalledTimes(1);
 }
 async function changeScope(kind: string) {
