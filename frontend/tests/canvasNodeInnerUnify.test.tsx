@@ -1,5 +1,5 @@
 // 캔버스 노드 안쪽 통일(Jay 2026-10-30, 최종 모의 그림 '네모 칩') — 레퍼런스 이름표는 위에 뜨는 이름표(이미지·영상·오디오) ·
-// 노드 안 알약은 모서리 5px 네모 칩 · 상태는 칩 없이 글만(앞 '●' 없음) · Comfy 값 줄 = 모델 노드 줄 · 이어보기 표시는 앞 '▶' 없이 한 줄.
+// 노드 안 알약은 칩(모서리 8px — 같은 날 5 → 8, 떠 있는 이름표와 같은 값) · 상태는 칩 없이 글만(앞 '●' 없음) · Comfy 값 줄 = 모델 노드 줄 · 이어보기 표시는 앞 '▶' 없이 한 줄.
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { URL as NodeURL } from "node:url"; // jsdom 이 전역 URL 을 바꿔 둔다 — 파일 주소는 node 의 URL 로
@@ -20,11 +20,13 @@ const css = readFileSync(new NodeURL("../src/styles/scene.css", import.meta.url)
 const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sels: m[1].split(",").map((s) => s.trim()), body: m[2] }));
 const decl = (sel: string) => rules.filter((r) => r.sels.includes(sel)).map((r) => r.body).join(";");
 
-it("노드 안 알약은 모서리 5px 네모 칩 · 렌더 개수·INPUT/OUTPUT 이름은 높이 20", () => {
-  for (const sel of [".scene-multi-badge", ".scene-listrow-badge", ".scene-portnode-val", ".scene-setnode-pill", ".scene-setnode-tag", ".scene-viewseq-badge"]) {
-    expect(decl(sel), sel).toMatch(/border-radius: 5px/);
-    expect(decl(sel), sel).not.toMatch(/border-radius: 999px/);
+it("노드 안 알약은 모서리 8px 칩(Comfy 단추·값 칸도) · 렌더 개수·INPUT/OUTPUT 이름은 높이 20", () => {
+  for (const sel of [".scene-multi-badge", ".scene-listrow-badge", ".scene-portnode-val", ".scene-setnode-pill", ".scene-setnode-tag", ".scene-viewseq-badge", ".scene-comfynode-act", '.scene-comfynode-param input[type="number"]']) {
+    expect(decl(sel), sel).toMatch(/border-radius: 8px/);
+    expect(decl(sel), sel).not.toMatch(/border-radius: (5|999)px/);
   }
+  // 그대로 두는 것(Jay) — 텍스트 복사 단추·텍스트 노드 @ 번호 칩은 5px
+  for (const sel of [".scene-copy-btn", ".scene-inlinetok"]) expect(decl(sel), sel).toMatch(/border-radius: 5px/);
   for (const sel of [".scene-listrow-badge", ".scene-portnode-val"]) expect(decl(sel), sel).toMatch(/height: 20px/);
   expect(decl(".scene-multi-badge")).toMatch(/padding: 3px 11px/); // 생성 개수 크기는 그대로(Jay)
 });
@@ -50,13 +52,13 @@ it("Comfy 값 줄 = 모델 노드 줄(이름 회색 · 값 오른쪽 · 칸 테�
   expect(decl(".scene-card-ref .scene-card-hd")).toBe(""); // 그림 위에 얹던 옛 이름표 규칙은 없다
 });
 
-it("캔버스 탭 줄·씬 패널도 네모 칩(안 B) — 탭·＋·알림 단추·씬 패널 단추 5px · 씬 패널 8px · Assets 폴더 탭(같은 부품)은 그대로 8px", () => {
-  for (const sel of [".scene-bar .scene-tab-wrap", ".scene-add", ".scene-restore", ".scene-io-btn"]) {
-    expect(decl(sel), sel).toMatch(/border-radius: 5px/);
-    expect(decl(sel), sel).not.toMatch(/border-radius: (8|999)px/);
+it("캔버스 탭 줄·씬 패널도 같은 칩 모서리 8px — 탭(Assets 폴더 탭과 같은 틀)·＋·알림 단추·씬 패널 단추 · 씬 패널 틀", () => {
+  for (const sel of [".scene-tab-wrap", ".scene-add", ".scene-restore", ".scene-io-btn", ".scene-io-panel"]) {
+    expect(decl(sel), sel).toMatch(/border-radius: 8px/);
+    expect(decl(sel), sel).not.toMatch(/border-radius: (5|999)px/);
   }
-  expect(decl(".scene-io-panel")).toMatch(/border-radius: 8px/);
-  expect(decl(".scene-tab-wrap")).toMatch(/border-radius: 8px/);
+  // 캔버스 탭 줄만 따로 깎는 규칙은 없다 — FolderTabs 도 .scene-bar 틀이라 따로 깎으면 Assets 폴더 탭까지 같이 바뀐다
+  expect(decl(".scene-bar .scene-tab-wrap")).toBe("");
 });
 
 it("SET 폴더·태그 칸 아이콘 자리는 같은 폭 — 📁·# 뒤 글이 같은 자리에서 시작한다", () => {
