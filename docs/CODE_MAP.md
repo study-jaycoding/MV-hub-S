@@ -613,8 +613,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `generation/GenerationCardStatusBar.tsx`(154줄) | 카드 하단 S/T/C 상태줄 + 태그 에디터 호스팅 | 〃 |
 | `generation/GenerationCardIcons.tsx`(57줄) | 카드용 SVG 4종 | `ModelIcon` 외 |
 | `generation/GenerationThumbOverlay.tsx`(122줄) | 썸네일 호버 오버레이(정보·미리보기·다운로드) | 〃 |
-| `generation/GenerationConfirmOverlay.tsx`(33줄) | 공유/최종 확인 오버레이 | 〃 |
-| `generation/GenerationReviewOverlay.tsx`(48줄) | 검토(공유/보류/반려) 확인 오버레이 | 〃 |
+| `generation/GenerationReviewOverlay.tsx`(약 85줄) | S 선택 창 — 공유 탭 3칸(해제·보류·최종) · 워크스페이스·캔버스 2칸(`lib/generationReview.ts` `workspaceReviewOptions`) + Yes/No 단계 | 〃 |
 | `generation/ConfirmQuestion.tsx`(25줄) | 생성물 확인용 Yes/No 조각(중복 제출 방지 포함). 확인 UI 는 이것 말고도 `admin-confirm-*`·`GradeStepModal` 계보가 있다(§5-e) | 〃 |
 | `TagEditor.tsx`(335줄) | 인라인 태그 에디터(칩·전역 태그·다중선택 적용 — 다중 선택에는 이 카드가 이미 가진 태그도 넘긴다) | `TagEditor` |
 | `GradeStepModal.tsx`(37줄) | 등급 S 다중선택 확인 모달 | `GradeStepModal` |
