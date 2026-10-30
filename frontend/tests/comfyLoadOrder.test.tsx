@@ -264,11 +264,11 @@ it("캔버스의 Comfy 카드 — 같은 카드에 잇달아 넣은 워크플로
 });
 
 // 28회차(Jay 결정 — "…중" 표시): JSON 을 놓거나 ↻ 를 누른 뒤 응답(Comfy 서버 조회, 최대 30초)까지 카드가 그대로라 또 눌렀다.
-it("캔버스의 Comfy 카드 — 워크플로를 읽는 동안 본문 위에 '워크플로 읽는 중…' 덮개가 있고 ↻ 가 잠긴다(새 파일은 계속 받는다), 끝나면(성공·실패) 걷힌다", async () => {
+it("캔버스의 Comfy 카드 — 워크플로를 읽는 동안 본문 위에 '워크플로 읽는 중' 덮개가 있고 ↻ 가 잠긴다(새 파일은 계속 받는다), 끝나면(성공·실패) 걷힌다", async () => {
   const card = await board();
   const busy = () => host.querySelector(".scene-comfynode-busy");
   await dropFile(card.zone(), "first"); // parses[0] — 빈 카드에도 덮개
-  expect(busy()?.textContent).toContain("워크플로 읽는 중…");
+  expect(busy()?.querySelector("b")?.textContent).toBe("워크플로 읽는 중"); // 화면 글 끝 말줄임표 없음(Jay 2026-10-29)
   await finish(0, 2);
   expect(busy()).toBeNull();
   expect(cardButton("현재 워크플로우 다시 읽기").disabled).toBe(false);

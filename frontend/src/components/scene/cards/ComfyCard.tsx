@@ -183,6 +183,7 @@ export function ComfyCard({
         {!cfg?.content ? (
           <div
             className="scene-comfynode-empty"
+            title={"ComfyUI 워크플로 넣기\nExport(API) .json 을 끌어 놓거나 불러오기"}
             onDragOver={(e) => e.preventDefault()}
             onDrop={async (e) => {
               const f = e.dataTransfer.files?.[0];
@@ -193,8 +194,8 @@ export function ComfyCard({
               await actions.applyComfyApi(card.id, f);
             }}
           >
-            <span>API를 넣어주세요</span>
-            <small>.json 드롭 또는 아래 버튼</small>
+            {/* 빈 노드 = 생성 카드의 빈 자리처럼 로고만 흐리게(Jay 2026-10-30 안 B) — 안내는 설명창(title)으로 */}
+            <img src={comfyLogo} alt="" className="scene-comfynode-empty-logo" draggable={false} />
             {/* API 넣기 전에는 파라미터가 없으므로 P(파라미터 선택) 버튼을 두지 않는다. */}
             {/* API 를 불러오면(로드된 상태) 그때 P 버튼이 나타나 파라미터를 고른다. */}
             <button
@@ -507,7 +508,7 @@ export function ComfyCard({
           // 워크플로를 읽는 중(28회차, Jay 결정) — 본문 위의 반투명 덮개. 클릭은 먹지 않는다(styles/scene.css pointer-events:none) — 잠그는 것은 ↻·실행뿐.
           <div className="scene-comfynode-busy" role="status" aria-live="polite">
             <i className="busy-ring lg" aria-hidden="true" />
-            <b>워크플로 읽는 중…</b>
+            <b>워크플로 읽는 중</b>
             <small>노드 정보를 확인합니다 · 최대 30초</small>
           </div>
         )}

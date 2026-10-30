@@ -385,12 +385,12 @@
    보므로 켜진 칸 위 휠은 그대로 칸을 스크롤한다. 막대는 숨긴다(켤 때 막대 폭만큼 글이 다시 줄바꿈되는 들썩임 방지).
    한 장 레퍼런스(.single)는 원래 overflow:visible 이라 뺀다. */
 .scene-card :is(.scene-card-body:not(.single), .scene-textview-inline, .scene-modelnode-body, .scene-listrows,
-  .scene-listthumbs, .scene-viewtext, .scene-comfynode-body, .scene-comfynode-err, .scene-comfynode-outtext-body) {
+  .scene-listthumbs, .scene-viewtext, .scene-comfynode-body, .scene-comfynode-err, .scene-comfynode-outtext-body, .scene-setnode-body) {
   overflow: hidden; scrollbar-width: none;
 }
 .scene-card:is(:hover, :focus-within) :is(.scene-card-body:not(.single), .scene-textview-inline,
   .scene-modelnode-body, .scene-listrows, .scene-listthumbs, .scene-viewtext, .scene-comfynode-body,
-  .scene-comfynode-err, .scene-comfynode-outtext-body) {
+  .scene-comfynode-err, .scene-comfynode-outtext-body, .scene-setnode-body) {
   overflow: auto;
 }
 /* 멀리서 볼 때 단순화(툴바 25% 이하, Jay 2026-09-29 시안 승인) — 이 배율에서는 읽을 수 없는 작은 조각(연결 동그라미·
@@ -575,45 +575,62 @@
 .scene-card.sel .scene-copy-btn { display: flex; }
 .scene-copy-btn:hover { background: rgba(0, 0, 0, 0.8); }
 
-/* ── Set 노드 — 생성 카드에 폴더·자동 태그를 전달 ── */
-.scene-card-set { background: #080a07; --pc: #e8c341; } /* 포트·틀 = 세트 레인 금색 */
-.scene-card-hd.set { background: color-mix(in srgb, var(--pc) 12%, transparent); } /* 글자 = 기본 이름표의 자기 색(금색) */
-.scene-setnode { background: #090b08; }
+/* ── Set 노드 — 생성 카드에 폴더·자동 태그를 전달. 모양 = INPUT·OUTPUT 처럼 맨 위 자기 색 막대(검은 글자) + 자기 색으로 물든 몸통 +
+   값은 알약(Jay 2026-10-30 안 B). 몸통은 모델 노드처럼 넘치면 스크롤 칸이고, 태그를 다 치면 SceneBoard 가 넘친 만큼 카드를 늘린다. ── */
+.scene-card-set {
+  --pc: #e8c341; /* 포트·틀·막대 = 세트 레인 금색 */
+  background: color-mix(in srgb, var(--pc) 15%, #0c0d11); border-radius: 14px;
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+.scene-card-set .scene-card-inner { border-radius: 12px; } /* 틀 2px 안쪽 = 14 − 2 — 막대 모서리가 틀에 붙는다 */
+.scene-card-hd.setbar {
+  color: #06101f; background: var(--pc); font-weight: 900; font-size: 11px; letter-spacing: 0.1em; border-bottom: 0;
+}
+.scene-setnode-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 7px; padding: 8px 9px; }
 .scene-setnode-label {
-  display: block; color: #9ca486; font-size: 9px; font-weight: 800; letter-spacing: 0.06em;
-  text-transform: uppercase; margin-bottom: 5px;
+  display: block; color: color-mix(in srgb, var(--pc) 70%, #9ca486); font-size: 9px; font-weight: 800; letter-spacing: 0.06em;
+  text-transform: uppercase; margin-bottom: 3px;
 }
-.scene-setnode-folder {
-  flex: 1 1 50%; min-height: 0; box-sizing: border-box; padding: 9px;
-  border-bottom: 1px solid var(--border2); transition: background 0.12s, box-shadow 0.12s;
+.scene-setnode-folder, .scene-setnode-tags { flex: none; min-width: 0; }
+/* 알약 — INPUT·OUTPUT 값 알약과 같은 모양(자기 색 22% + 자기 색 선). 비면 점선, 폴더를 끌어 오면 실선으로 밝힌다 */
+.scene-setnode-pill {
+  display: flex; align-items: center; gap: 5px; min-width: 0; width: 100%; height: 24px; box-sizing: border-box; padding: 0 4px 0 10px;
+  border-radius: 999px; border: 1px solid var(--pc); background: color-mix(in srgb, var(--pc) 22%, transparent);
+  color: var(--text); font-family: inherit; font-size: 11px; font-weight: 700; white-space: nowrap;
 }
-.scene-setnode-folder.drag-over {
-  background: color-mix(in srgb, var(--pc) 13%, transparent); box-shadow: inset 0 0 0 1px var(--pc); /* 세트 자기 색(금색) */
+.scene-setnode-pill.ph {
+  padding-right: 10px; border-style: dashed; border-color: color-mix(in srgb, var(--pc) 55%, transparent);
+  background: transparent; color: var(--muted); font-weight: 600; cursor: pointer;
 }
-.scene-setnode-folder-empty {
-  height: calc(100% - 18px); min-height: 34px; display: grid; place-items: center;
-  border: 1px dashed #48502f; border-radius: 7px; color: #6f765e; font-size: 10px;
+.scene-setnode-folder .scene-setnode-pill.ph { cursor: default; }
+.scene-setnode-folder.drag-over .scene-setnode-pill.ph {
+  border-style: solid; border-color: var(--pc); background: color-mix(in srgb, var(--pc) 16%, transparent); color: var(--text); /* 세트 자기 색(금색) */
 }
-.scene-setnode-folder-value {
-  display: flex; align-items: center; gap: 6px; min-width: 0; height: calc(100% - 18px);
-  color: #dfe8bd; font-size: 10px;
+.scene-setnode-pill.edit {
+  padding: 0 10px; outline: 0; background: #0c0d11; font-weight: 600; cursor: text;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--pc) 25%, transparent);
 }
-.scene-setnode-folder-icon { flex: none; font-size: 13px; }
-.scene-setnode-folder-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scene-setnode-pill.edit::placeholder { color: var(--muted); }
+.scene-setnode-icon { flex: none; opacity: 0.85; }
+/* 넘치는 경로는 '…' 대신 끝을 흐리게(Jay — 화면 글 끝 말줄임표 금지) · 전체 경로는 설명창 */
+.scene-setnode-folder-text {
+  flex: 1; min-width: 0; overflow: hidden; white-space: nowrap;
+  -webkit-mask-image: linear-gradient(90deg, #000 78%, transparent); mask-image: linear-gradient(90deg, #000 78%, transparent);
+}
 .scene-setnode-clear {
-  flex: none; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 5px;
+  flex: none; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 999px;
   background: transparent; color: #8f9582; cursor: pointer;
 }
 .scene-setnode-clear:hover { background: rgba(242, 119, 124, 0.18); color: #f2777c; }
-.scene-setnode-tags {
-  flex: 1 1 50%; min-height: 0; display: flex; flex-direction: column; box-sizing: border-box; padding: 8px 9px;
+/* 태그 = 한 개씩 알약, 넘치면 줄을 바꾼다. 누르면 한 줄 글칸(.scene-setnode-pill.edit)이 된다 */
+.scene-setnode-tagview { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; cursor: pointer; outline: 0; border-radius: 12px; }
+.scene-setnode-tagview:focus-visible { box-shadow: 0 0 0 2px color-mix(in srgb, var(--pc) 45%, transparent); }
+.scene-setnode-tag {
+  display: inline-flex; align-items: center; max-width: 100%; height: 20px; box-sizing: border-box; padding: 0 8px; border-radius: 999px;
+  border: 1px solid var(--pc); background: color-mix(in srgb, var(--pc) 22%, transparent);
+  color: var(--text); font-size: 11px; font-weight: 700; white-space: nowrap; overflow: hidden;
 }
-.scene-setnode-tags textarea {
-  flex: 1; min-height: 0; width: 100%; box-sizing: border-box; resize: none; border: 0; outline: 0;
-  background: transparent; color: #fff; font-family: inherit; font-size: 11px; line-height: 1.4;
-  padding: 0; overflow-y: auto;
-}
-.scene-setnode-tags textarea::placeholder { color: #5f6455; }
+.scene-setnode-tag i { font-style: normal; color: color-mix(in srgb, var(--pc) 80%, #fff); margin-right: 1px; }
 
 /* ── 모델 노드 — 주황 계열, 설정 정보 표시 ── */
 .scene-card-hd.model { color: #ffb84d; background: rgba(255, 150, 50, 0.10); }
@@ -886,12 +903,12 @@
 /* ── Comfy 노드 ── */
 .scene-card-hd.comfy { color: #4dd6c4; background: rgba(60, 210, 190, 0.12); }
 .scene-comfynode { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; } /* relative — 아래 .scene-comfynode-busy 덮개의 기준 */
+/* 빈 노드 — 생성 카드의 빈 로고처럼 Comfy 로고를 회색 16% + 불러오기 단추(Jay 2026-10-30 안 B, 전엔 점선 칸 + 안내 두 줄) */
 .scene-comfynode-empty {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 4px; text-align: center; color: var(--muted); font-size: 12px;
-  border: 1px dashed var(--border2); border-radius: 8px; margin: 6px; padding: 8px;
+  gap: 12px; margin: 6px; padding: 8px;
 }
-.scene-comfynode-empty small { font-size: 10px; opacity: 0.7; }
+.scene-comfynode-empty-logo { width: 62%; height: auto; opacity: 0.16; filter: grayscale(1) brightness(1.7); pointer-events: none; user-select: none; } /* 글자 로고라 생성 카드(42%)보다 넓게 */
 .scene-comfynode-body {
   flex: 1 1 0; min-height: 0; padding: 6px 8px;
   display: flex; flex-direction: column; gap: 6px;

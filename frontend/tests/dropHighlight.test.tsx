@@ -87,7 +87,7 @@ it("사이드바 '미분류' 줄: 그 위에서 끌기를 취소하면 강조가
 it("캔버스 Set 노드의 폴더 칸: 그 위에서 끌기를 취소하면 강조가 꺼진다", async () => {
   const card = { id: "s1", kind: "set", x: 0, y: 0 } as SceneCard;
   await act(async () => {
-    root.render(<SetCard card={card} setFolder={noop} setTagsText={noop} flushPending={noop} onOutPortDown={noop} onResizeDown={noop} />);
+    root.render(<SetCard card={card} setFolder={noop} setTagsText={noop} flushPending={noop} requestFit={noop} onOutPortDown={noop} onResizeDown={noop} />);
   });
   await cancelOver(() => host.querySelector(".scene-setnode-folder")!, "drag-over", [DRAG_TYPES.folder]);
 });

@@ -232,7 +232,7 @@ it("머리글·모델·Set 카드: 받은 값이 그대로면 다시 그려지�
       <HeadCard card={headCard} sel={false} editing={false} colorPopId={null} setEditTextId={noop} setColorPopId={noop}
         setNodeText={noop} setNodeFontSize={noop} setNodeColor={noop} flushPending={noop} />
       <ModelCard card={model} onOutPortDown={noop} onResizeDown={noop} />
-      <SetCard card={set} setFolder={noop} setTagsText={noop} flushPending={noop} onOutPortDown={noop} onResizeDown={noop} />
+      <SetCard card={set} setFolder={noop} setTagsText={noop} flushPending={noop} requestFit={noop} onOutPortDown={noop} onResizeDown={noop} />
     </>
   ));
   const again = await renderedDuring(() => rerenderParent());

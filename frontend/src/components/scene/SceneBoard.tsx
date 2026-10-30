@@ -1067,19 +1067,26 @@ export function SceneBoard({
   flushPendingRef.current = flushPending;
   const canvasTargetRef = useRef(canvasSession.target);
   canvasTargetRef.current = canvasSession.target;
-  // 모델 설정을 저장하면 설정 줄이 모두 보이게 카드를 늘린다(Jay 2026-10-22) — 새 설정이 그려진 뒤 넘친 만큼 잰다. 줄이지는 않는다.
+  // 입력이 바뀌면 입력이 모두 보이게 카드를 늘린다 — 모델 설정 저장(Jay 2026-10-22), Comfy 워크플로 넣기·파라미터 창 저장,
+  //  SET 태그 입력 마침(Jay 2026-10-30). 새 내용이 그려진 뒤 본문이 넘친 만큼 잰다. 줄이지는 않고, 사용자가 정한 높이는 다음 입력 변경 때까지 그대로다.
   //  useLayoutEffect 금지: 그 단계에서 늘리면 뒤이어 도는 씬 수신(useCanvasSession — App 이 돌려준 '설정만 바뀐' 씬)이
   //  늘린 카드를 남의 변경으로 보고 되돌린다. 위 canvasSession 의 수신 effect 뒤에 돌도록 여기(그 아래)의 useEffect 로 둔다.
-  const fitModelIdRef = useRef<string | null>(null);
+  //  fitTick — SET 은 카드 값이 그대로인 채(태그는 치는 동안 이미 저장됐다) 글칸이 알약으로 바뀌므로 cards 만으로는 다시 돌지 않는다.
+  const fitCardIdRef = useRef<string | null>(null);
+  const [fitTick, setFitTick] = useState(0);
+  const requestFit = (cardId: string) => {
+    fitCardIdRef.current = cardId;
+    setFitTick((n) => n + 1);
+  };
   useEffect(() => {
-    const id = fitModelIdRef.current;
+    const id = fitCardIdRef.current;
     if (!id) return;
-    fitModelIdRef.current = null;
+    fitCardIdRef.current = null;
     const el = cardEls.current[id];
-    const body = el?.querySelector<HTMLElement>(".scene-modelnode-body");
+    const body = el?.querySelector<HTMLElement>(".scene-modelnode-body, .scene-comfynode-body, .scene-setnode-body");
     const extra = body ? body.scrollHeight - body.clientHeight : 0;
     if (el && extra > 0) commitDocument({ type: "fitCardHeight", cardId: id, h: el.offsetHeight + extra });
-  }, [cards]);
+  }, [cards, fitTick]);
   // 보드를 통째로 끄는 동안 캔버스 층에만 밀어 둔 이동량의 손잡이(lib/useSceneCardMove 의 빠른 길). 좌표가 필요한 자리 —
   //  저장 확정(아래 flushPending)·단축키 직전 — 에서 settle 로 먼저 좌표에 넣고, 씬 전환으로 끌기를 버릴 때 drop 한다.
 
@@ -1560,6 +1567,7 @@ export function SceneBoard({
         name: file.name.replace(/\.json$/i, ""), content, nodeCount: res.node_count,
       } })) return false;
       comfyLoads.applied.set(key, seq);
+      requestFit(cardId); // 새 워크플로의 줄이 모두 보이게
       return true;
     } catch (reason) {
       // 읽기·파싱 실패 — 기존 워크플로우 그대로 둔다(교체 취소). 그 사실을 알린다(조작 규칙 41): 전엔 아무 반응이 없어, 새 파일이
@@ -2745,6 +2753,7 @@ export function SceneBoard({
     setNodeColor,
     setNodeSetFolder,
     setNodeSetTagsText,
+    requestFit,
     setCardBatch,
     orchestrateGenerate,
     openCanvasRecovery,
@@ -3358,6 +3367,7 @@ export function SceneBoard({
                   setFolder={cardFns.setNodeSetFolder}
                   setTagsText={cardFns.setNodeSetTagsText}
                   flushPending={cardFns.flushPending}
+                  requestFit={cardFns.requestFit}
                   onOutPortDown={cardFns.onOutPortDown}
                   onResizeDown={onResizeDown}
                 />
@@ -3796,7 +3806,7 @@ export function SceneBoard({
               initial={c.modelCfg}
               onClose={() => setModelModalId(null)}
               onSave={(cfg) => {
-                if (commitDocument({ type: "saveModelConfig", cardId: modelModalId, config: cfg })) fitModelIdRef.current = modelModalId;
+                if (commitDocument({ type: "saveModelConfig", cardId: modelModalId, config: cfg })) requestFit(modelModalId);
               }}
             />
           );
@@ -3814,7 +3824,7 @@ export function SceneBoard({
               onClose={() => setComfyModalId(null)}
               onSave={(cfg) => {
                 comfyLoads.applied.set(comfyLoadKey(scene.id, comfyModalId), ++comfyLoads.next); // 창에서 확정한 것이 최신이다 — 아직 파싱 중인 앞선 불러오기가 이것을 덮지 않는다
-                commitDocument({ type: "saveComfyConfig", cardId: comfyModalId, cfg });
+                if (commitDocument({ type: "saveComfyConfig", cardId: comfyModalId, cfg })) requestFit(comfyModalId); // 고른 파라미터가 모두 보이게
               }}
             />
           );

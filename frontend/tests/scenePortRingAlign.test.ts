@@ -73,7 +73,7 @@ it("노드 틀 통일(Jay 2026-10-29, 10-30 2px) — 모든 노드 2px · 평소
   expect([...one(".scene-group-hd"), ...one(".scene-group.selected .scene-group-hd")].filter(([p]) => p.startsWith("border-bottom"))).toEqual([]);
   expect(one(".scene-group-count")).toContainEqual(["background", "var(--gc, var(--accent))"]);
   // 노드 안 강조(이름표·끌어 놓기·고른 줄·배지·체크·Comfy 단추 올림)도 자기 색 — 라임(--accent)으로 박지 않는다(Jay 2026-10-30)
-  for (const sel of [".scene-card-hd", ".scene-card-hd.set", ".scene-setnode-folder.drag-over", ".scene-listrow.selrow", ".scene-listrow-badge", ".scene-listrow-check", ".scene-comfynode-act:hover"]) {
+  for (const sel of [".scene-card-hd", ".scene-card-hd.setbar", ".scene-setnode-folder.drag-over .scene-setnode-pill.ph", ".scene-listrow.selrow", ".scene-listrow-badge", ".scene-listrow-check", ".scene-comfynode-act:hover"]) {
     expect(one(sel).some(([, v]) => v.includes("var(--pc")), sel).toBe(true);
     expect(one(sel).filter(([, v]) => /--accent(?!-ink)/.test(v.replaceAll("var(--pc, var(--accent))", ""))), sel).toEqual([]);
   }
