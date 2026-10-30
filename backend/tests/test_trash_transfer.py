@@ -116,7 +116,8 @@ from app.services import trash_transfer as t
 t.checkpoint = lambda phase: os._exit(73) if phase == sys.argv[2] else None
 getattr(trash, sys.argv[3])('g1')
 """
-    result = subprocess.run([sys.executable, "-c", script, str(enabled_db), phase, action], env=dict(os.environ), timeout=20)
+    # python -c 는 현재 폴더만 모듈 경로에 넣는다 — pytest 의 pythonpath 는 자식에게 안 간다.
+    result = subprocess.run([sys.executable, "-c", script, str(enabled_db), phase, action], cwd=config.BACKEND_DIR, env=dict(os.environ), timeout=20)
     assert result.returncode == 73
     db.init_db()
     assert counts() == expected
@@ -274,7 +275,7 @@ def test_legacy_content_cannot_be_paired_with_enabled_trash(enabled_db, tmp_path
 
 
 def test_checkpoint_import_does_not_load_runtime_config():
-    result = subprocess.run([sys.executable, '-c', "import sys; from app.services.backup_verify import create_database_set_snapshot; assert 'app.config' not in sys.modules"], timeout=20)
+    result = subprocess.run([sys.executable, '-c', "import sys; from app.services.backup_verify import create_database_set_snapshot; assert 'app.config' not in sys.modules"], cwd=config.BACKEND_DIR, timeout=20)
     assert result.returncode == 0
 
 
