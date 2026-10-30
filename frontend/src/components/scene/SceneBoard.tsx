@@ -149,6 +149,7 @@ import {
   type CardHistoryLink,
 } from "../../lib/canvasDetached";
 import type { SceneModelCfg } from "../../lib/scenes";
+import { canvasHandoffSelection, markCanvasHandoffSelectionUsed, type CanvasSelection } from "../../lib/popupWindows";
 import type { SceneGenerationAssignment } from "../../lib/sceneGenerationInputs";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import { displayThumb, thumbOf } from "../../lib/media";
@@ -380,6 +381,7 @@ interface Props {
     zoomFit: () => void; // 툴바 '맞춤' — f 키와 동일(선택 있으면 선택 중심, 없으면 전체)
     zoomStep: (dir: 1 | -1) => void; // 툴바 −/+ — 화면 중앙 기준 한 단계 확대/축소
     closeVariants: () => void; // '생성 결과' 창 닫기 — 캔버스 '폴더 보기' 창을 열 때(두 창을 겹쳐 두지 않는다)
+    selection: () => CanvasSelection; // 지금 고른 카드·그룹 — 휠 클릭으로 여는 캔버스 창에 넘긴다
   } | null>;
   // 생성 카드 아래 'Generate' 툴바 — 즉시 생성(하단 프롬프트 submit 재사용). 배치수는 노드별(card.batchCount)로 관리.
   onGenerateCard?: (
@@ -549,8 +551,13 @@ export function SceneBoard({
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null); // 이름 편집 중인 그룹
   const [colorPopId, setColorPopId] = useState<string | null>(null); // 색 팔레트 팝오버가 열린 그룹
   const [ejectedIds, setEjectedIds] = useState<Set<string>>(new Set()); // 드래그 중 속도로 그룹에서 튕겨낸 카드 — 이탈해도 박스 크기 유지
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set());
+  // 휠 클릭으로 연 캔버스 창은 메인 창에서 고른 카드·그룹으로 시작한다 — 처음 그릴 때 한 번만, 이 씬에 있는 것만(lib/popupWindows).
+  //  생성 카드 한 장이면 아래 바인딩 effect 가 프롬프트 창도 그 카드에 잇는다
+  const [selected, setSelected] = useState<Set<string>>(() =>
+    new Set(canvasHandoffSelection(scene.id)?.cardIds.filter((id) => scene.cards.some((card) => card.id === id))));
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(() =>
+    new Set(canvasHandoffSelection(scene.id)?.groupIds.filter((id) => (scene.groups || []).some((group) => group.id === id))));
+  useEffect(markCanvasHandoffSelectionUsed, []);
   // 방금 생성된 카드 — 라임 glow 로 '방금 만들어짐'을 직관 표시. '방금 완료' 판정은 모듈 store 로 분리해
   //  탭 전환(SceneBoard 언마운트)에도 유지된다(App watcher 가 탭 무관 폴링). glowVer 로 store 변경 시 리렌더.
   useSyncExternalStore(subscribeRecentDone, getRecentDoneVersion, getRecentDoneVersion);
@@ -1946,6 +1953,7 @@ export function SceneBoard({
         zoomFit: () => { if (!switchingRef.current) frameView(); },
         zoomStep: (dir) => { if (!switchingRef.current) stepZoom(dir); },
         closeVariants: () => setCardMenu(null),
+        selection: () => ({ sceneId: cardsSceneId, cardIds: [...selected], groupIds: [...selectedGroupIds] }),
       };
     return () => {
       if (actionRef) actionRef.current = null;

@@ -152,14 +152,26 @@ describe("캔버스 창에 넘기는 화면 값", () => {
 
   it("캔버스 창만 한 번 읽고 지운다 · 옵션은 글자·숫자·참거짓만 · 메인 창은 읽지도 지우지도 않는다", async () => {
     const main = await fresh();
-    main.leaveCanvasHandoff({ promptVisible: false, batchCount: 3, prompt: { type: "video", model: "m1", params: { ratio: "16:9", n: 2, on: true, bad: { x: 1 } as never } } });
+    main.leaveCanvasHandoff({
+      promptVisible: false, batchCount: 3, prompt: { type: "video", model: "m1", params: { ratio: "16:9", n: 2, on: true, bad: { x: 1 } as never } },
+      selection: { sceneId: "s1", cardIds: ["c1", "c2"], groupIds: ["g1"] },
+    });
     expect(main.takeCanvasHandoff()).toBeNull(); // window.name 이 비었다 = 메인 창
+    expect(main.canvasHandoffSelection("s1")).toBeNull();
     expect(localStorage.getItem(KEY)).not.toBeNull();
 
     window.name = "contenthub-canvas";
     const canvas = await fresh();
     const taken = canvas.takeCanvasHandoff();
-    expect(taken).toEqual({ promptVisible: false, batchCount: 3, prompt: { type: "video", model: "m1", params: { ratio: "16:9", n: 2, on: true } } });
+    expect(taken).toEqual({
+      promptVisible: false, batchCount: 3, prompt: { type: "video", model: "m1", params: { ratio: "16:9", n: 2, on: true } },
+      selection: { sceneId: "s1", cardIds: ["c1", "c2"], groupIds: ["g1"] },
+    });
+    // 선택은 그 씬에만, 처음 그린 뒤 '썼다' 표시하면 다시 주지 않는다(SceneBoard 를 다시 그릴 때 되살아나지 않게)
+    expect(canvas.canvasHandoffSelection("other")).toBeNull();
+    expect(canvas.canvasHandoffSelection("s1")).toEqual({ sceneId: "s1", cardIds: ["c1", "c2"], groupIds: ["g1"] });
+    canvas.markCanvasHandoffSelectionUsed();
+    expect(canvas.canvasHandoffSelection("s1")).toBeNull();
     expect(localStorage.getItem(KEY)).toBeNull();
     expect(canvas.takeCanvasHandoff()).toBe(taken); // 여러 훅이 같은 값을 읽는다
   });
@@ -171,8 +183,10 @@ describe("캔버스 창에 넘기는 화면 값", () => {
     expect(localStorage.getItem(KEY)).toBeNull();
     localStorage.setItem(KEY, JSON.stringify({ promptVisible: "no", batchCount: 2, at: Date.now() }));
     expect((await fresh()).takeCanvasHandoff()).toBeNull();
-    localStorage.setItem(KEY, JSON.stringify({ promptVisible: true, batchCount: 1, prompt: { type: "3d", model: "m" }, at: Date.now() }));
-    expect((await fresh()).takeCanvasHandoff()).toEqual({ promptVisible: true, batchCount: 1, prompt: null }); // 모르는 종류의 모델은 버린다
+    localStorage.setItem(KEY, JSON.stringify({ promptVisible: true, batchCount: 1, prompt: { type: "3d", model: "m" },
+      selection: { sceneId: "s1", cardIds: ["c1", 7], groupIds: [] }, at: Date.now() }));
+    // 모르는 종류의 모델·글자가 아닌 id 가 섞인 선택은 버린다
+    expect((await fresh()).takeCanvasHandoff()).toEqual({ promptVisible: true, batchCount: 1, prompt: null, selection: null });
   });
 
   it("캔버스 창의 프롬프트 창은 메인 창에서 숨겼으면 숨긴 채로 시작한다 — 넘긴 값이 없으면 지금처럼 보인다", async () => {

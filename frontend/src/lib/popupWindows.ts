@@ -223,10 +223,16 @@ export function useCanvasFloating(): boolean {
 
 // 새로 여는 캔버스 창이 메인 창에서 보던 그대로 시작하게(Jay 2026-10-30, docs/status/캔버스_창_보던값_2026-10-30.md) — 브라우저에 저장되지
 // 않는 화면 값만 여는 순간 넘긴다(도구줄·사이드바·씬 등은 이미 저장돼 같다). 캔버스 창이 처음 그릴 때 한 번 읽고 지운다.
+export interface CanvasSelection {
+  sceneId: string;
+  cardIds: string[];
+  groupIds: string[];
+}
 export interface CanvasHandoff {
   promptVisible: boolean; // Ctrl+K 로 숨긴 프롬프트 창(usePromptDock)
   batchCount: number;
   prompt: SceneModelCfg | null; // 하단에 보이던 종류·모델·옵션(SpotlightPrompt.currentModel)
+  selection: CanvasSelection | null; // 고른 카드·그룹(SceneBoard 손잡이의 selection) — Jay 2026-10-30 "선택도 넘긴다"
 }
 const HANDOFF_TTL_MS = 60_000; // 열다 만 창의 값이 나중에 연 창에 붙지 않게
 const PROMPT_TYPES = new Set(["image", "video", "audio"]);
@@ -248,6 +254,17 @@ function handoffPrompt(value: unknown): SceneModelCfg | null {
   return { type, model, params: Object.fromEntries(kept) };
 }
 
+const handoffIds = (value: unknown): string[] | null =>
+  Array.isArray(value) && value.every((id) => typeof id === "string") ? (value as string[]) : null;
+
+function handoffSelection(value: unknown): CanvasSelection | null {
+  if (!value || typeof value !== "object") return null;
+  const { sceneId, cardIds, groupIds } = value as CanvasSelection;
+  const cards = handoffIds(cardIds);
+  const groups = handoffIds(groupIds);
+  return typeof sceneId === "string" && sceneId && cards && groups ? { sceneId, cardIds: cards, groupIds: groups } : null;
+}
+
 let handoffTaken: CanvasHandoff | null | undefined;
 
 export function takeCanvasHandoff(): CanvasHandoff | null {
@@ -260,10 +277,26 @@ export function takeCanvasHandoff(): CanvasHandoff | null {
     const value = raw ? (JSON.parse(raw) as Partial<CanvasHandoff> & { at?: unknown }) : null;
     if (value && typeof value.at === "number" && Math.abs(Date.now() - value.at) < HANDOFF_TTL_MS
       && typeof value.promptVisible === "boolean" && Number.isInteger(value.batchCount) && (value.batchCount as number) >= 1) {
-      handoffTaken = { promptVisible: value.promptVisible, batchCount: value.batchCount as number, prompt: handoffPrompt(value.prompt) };
+      handoffTaken = {
+        promptVisible: value.promptVisible, batchCount: value.batchCount as number,
+        prompt: handoffPrompt(value.prompt), selection: handoffSelection(value.selection),
+      };
     }
   } catch {
     /* 손상 — 처음 값으로 */
   }
   return handoffTaken;
+}
+
+// 넘긴 선택은 그 씬을 처음 그릴 때 한 번만 쓴다(SceneBoard) — 다른 탭에 갔다 오거나 씬을 바꿔 다시 그릴 때 옛 선택이 되살아나지 않게,
+// 처음 그린 뒤 '썼다'고 표시한다. 처음 값 함수에서 바로 지우지 않는 것은 StrictMode 의 두 번 그리기가 같은 값을 받게 하려는 것.
+let handoffSelectionUsed = false;
+
+export function canvasHandoffSelection(sceneId: string): CanvasSelection | null {
+  const selection = handoffSelectionUsed ? null : takeCanvasHandoff()?.selection ?? null;
+  return selection?.sceneId === sceneId ? selection : null;
+}
+
+export function markCanvasHandoffSelectionUsed(): void {
+  handoffSelectionUsed = true;
 }

@@ -2473,7 +2473,10 @@ export default function App() {
           if (activeScene) flushScenePending(activeScene.id);
           // 새 창이 보던 그대로 시작하게 저장 안 되는 화면 값을 넘긴다(lib/popupWindows) — 이미 떠 있으면 앞으로 가져올 뿐이라 넘기지 않는다
           if (!canvasFloating) {
-            leaveCanvasHandoff({ promptVisible, batchCount, prompt: spotlightPromptRef.current?.currentModel() ?? null });
+            leaveCanvasHandoff({
+              promptVisible, batchCount, prompt: spotlightPromptRef.current?.currentModel() ?? null,
+              selection: sceneActionRef.current?.selection() ?? null, // 고른 카드·그룹(Jay "선택도 넘긴다")
+            });
           }
           openEmbedWindow(EMBED_MODES.canvas);
         }}
