@@ -23,7 +23,7 @@ import {
 } from "./components/SpotlightPrompt";
 import { ThumbnailGrid } from "./components/ThumbnailGrid";
 import { ensureTeamBase } from "./lib/teamSeen";
-import { EMBED_MODES, isCanvasWindow, openEmbedWindow, useCanvasFloating } from "./lib/popupWindows";
+import { EMBED_MODES, isCanvasWindow, leaveCanvasHandoff, openEmbedWindow, takeCanvasHandoff, useCanvasFloating } from "./lib/popupWindows";
 import { CanvasFloatIcon, TopBar } from "./components/TopBar";
 const McpConnection = lazy(() => import("./components/mcp/McpConnection").then((m) => ({ default: m.McpConnection })));
 import { SceneBar } from "./components/scene/SceneBar";
@@ -390,7 +390,7 @@ export default function App() {
   const sceneBoardCoveredIds = filters.tab === "compose" && activeScene && !editOpen ? glowCandidateIds : [];
   useSceneCompletionWatcher(glowCandidateIds, { coveredIds: sceneBoardCoveredIds });
   // 배치수(한 번에 N장)를 App 이 보유 — 하단 프롬프트와 '카드 아래 Generate 버튼'이 공유. submit 은 ref 로 노출.
-  const [batchCount, setBatchCount] = useState(1);
+  const [batchCount, setBatchCount] = useState(() => takeCanvasHandoff()?.batchCount ?? 1); // 휠 클릭으로 연 캔버스 창은 메인 창의 개수로
   // 프롬프트가 지금 보여주는 오류 — Ctrl+K 로 프롬프트를 숨겼을 때 하단 중앙에 대신 띄운다.
   const [promptError, setPromptError] = useState<string | null>(null);
   const spotlightPromptRef = useRef<SpotlightPromptHandle>(null);
@@ -2471,6 +2471,10 @@ export default function App() {
         onOpenCanvas={() => {
           // 새 창은 저장소에서 씬을 읽는다 — 아직 입력 대기 중인 글을 먼저 내보내 그 창이 낡은 씬으로 시작하지 않게
           if (activeScene) flushScenePending(activeScene.id);
+          // 새 창이 보던 그대로 시작하게 저장 안 되는 화면 값을 넘긴다(lib/popupWindows) — 이미 떠 있으면 앞으로 가져올 뿐이라 넘기지 않는다
+          if (!canvasFloating) {
+            leaveCanvasHandoff({ promptVisible, batchCount, prompt: spotlightPromptRef.current?.currentModel() ?? null });
+          }
           openEmbedWindow(EMBED_MODES.canvas);
         }}
         canvasFloating={canvasFloating}

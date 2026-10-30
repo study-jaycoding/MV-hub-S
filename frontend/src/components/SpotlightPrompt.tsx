@@ -56,6 +56,7 @@ import {
 import type { ChipRef, HistEntry, PromptPart } from "../lib/promptEditor";
 import { copyText, flashMsg } from "../lib/flash";
 import { libraryDraftKey, readLibraryDraft, writeLibraryDraft, type LibraryPromptDraft } from "../lib/libraryPromptDraft";
+import { takeCanvasHandoff } from "../lib/popupWindows";
 import { dataTransferHasFiles, displayRefThumb, filesFromDataTransfer } from "../lib/media";
 import {
   emptySeedanceTokenRoles,
@@ -230,11 +231,14 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   // 보이스 체인지·번역의 견적 문맥 — 넣은 영상에서 실제로 읽은 길이(아래 트레이 effect 가 채운다).
   const [costContext, setCostContext] = useState<VideoCostContext | null>(null);
   const [videoLengthFailed, setVideoLengthFailed] = useState(false);
+  // 휠 클릭으로 연 캔버스 창은 메인 창 하단에 보이던 종류·모델·옵션으로 시작한다 — 복원은 초기값 길로(useModels 의 policy.initial*)
+  const [handoff] = useState(() => takeCanvasHandoff()?.prompt ?? null);
   const { type, setType, model, setModel, markModelSelection, modelPickedByUser, firstAllowed,
           currentModel: readSelectedModel, loadedParams, tunable, constraints, typeModels, modelName,
           optionValues, setOptionValues, setOpt, cost, costLoading, paramsModel, paramsLoading,
           pendingOptsRef, setOpenRef, params: schemaParams, selectedBlocked, typeFullyBlocked } =
-    useModels((msg) => setError(msg), { allowed: modelPolicy.allowed, ready: modelPolicy.status !== "loading", costPrompt, costContext });
+    useModels((msg) => setError(msg), { allowed: modelPolicy.allowed, ready: modelPolicy.status !== "loading", costPrompt, costContext,
+      initialType: handoff?.type as "image" | "video" | "audio" | undefined, initialModel: handoff?.model, initialOpts: handoff?.params });
   // Audio 의 일(TTS·Voice Change·Translate)은 모델에서 나온다 — 재사용·복원이 모델만 돌려줘도 같은 일로 돌아온다.
   const audioTask = audioTaskOf(model);
   // 보이스 체인지·번역은 영상 1개가 입력이라 레퍼런스 칸을 늘 쓴다(접혀 있어도 칸으로 — 인라인 칩으로 가지 않게).

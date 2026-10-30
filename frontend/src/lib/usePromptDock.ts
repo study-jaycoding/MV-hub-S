@@ -1,6 +1,7 @@
 import { backgroundKeysBlocked, isTypingTarget } from "./keyGate";
 import { useEffect, useState, type MutableRefObject } from "react";
 import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
+import { takeCanvasHandoff } from "./popupWindows";
 import { getBinding, matchShortcut } from "./shortcuts";
 import type { Store } from "./storage";
 import { useCustomEvent } from "./useCustomEvent";
@@ -14,7 +15,8 @@ interface UsePromptDockResult {
 
 // inactiveRef — 프롬프트 도크가 화면에 없는 동안(편집 탭)에는 표시/숨김 단축키를 듣지 않는다.
 export function usePromptDock(store: Store, inactiveRef?: MutableRefObject<boolean>): UsePromptDockResult {
-  const [promptVisible, setPromptVisibleState] = useState(true);
+  // 휠 클릭으로 연 캔버스 창은 메인 창에서 숨겼으면 숨긴 채로 시작한다(lib/popupWindows 의 넘긴 값)
+  const [promptVisible, setPromptVisibleState] = useState(() => takeCanvasHandoff()?.promptVisible ?? true);
   const [composerExpanded, setComposerExpanded] = useState(
     () => store.get("composerExpanded", "0") === "1",
   );

@@ -140,6 +140,62 @@ describe("캔버스 탭 휠 클릭 → 새 창", () => {
   });
 });
 
+// 새로 여는 캔버스 창이 메인 창에서 보던 그대로(2026-10-30, docs/status/캔버스_창_보던값_2026-10-30.md) — 저장 안 되는 화면 값을 여는 순간
+// 한 칸에 넘기고 캔버스 창이 처음 그릴 때 한 번 읽는다. 창마다 모듈이 따로라 vi.resetModules 로 새 창을 흉내 낸다.
+describe("캔버스 창에 넘기는 화면 값", () => {
+  const KEY = "mvhub.canvasHandoff";
+  const fresh = async () => {
+    vi.resetModules();
+    return import("../src/lib/popupWindows");
+  };
+  afterEach(() => localStorage.removeItem(KEY));
+
+  it("캔버스 창만 한 번 읽고 지운다 · 옵션은 글자·숫자·참거짓만 · 메인 창은 읽지도 지우지도 않는다", async () => {
+    const main = await fresh();
+    main.leaveCanvasHandoff({ promptVisible: false, batchCount: 3, prompt: { type: "video", model: "m1", params: { ratio: "16:9", n: 2, on: true, bad: { x: 1 } as never } } });
+    expect(main.takeCanvasHandoff()).toBeNull(); // window.name 이 비었다 = 메인 창
+    expect(localStorage.getItem(KEY)).not.toBeNull();
+
+    window.name = "contenthub-canvas";
+    const canvas = await fresh();
+    const taken = canvas.takeCanvasHandoff();
+    expect(taken).toEqual({ promptVisible: false, batchCount: 3, prompt: { type: "video", model: "m1", params: { ratio: "16:9", n: 2, on: true } } });
+    expect(localStorage.getItem(KEY)).toBeNull();
+    expect(canvas.takeCanvasHandoff()).toBe(taken); // 여러 훅이 같은 값을 읽는다
+  });
+
+  it("60초 지난 값·모양이 틀린 값은 버린다 — 처음 값으로 뜬다", async () => {
+    window.name = "contenthub-canvas";
+    localStorage.setItem(KEY, JSON.stringify({ promptVisible: false, batchCount: 2, prompt: null, at: Date.now() - 61_000 }));
+    expect((await fresh()).takeCanvasHandoff()).toBeNull();
+    expect(localStorage.getItem(KEY)).toBeNull();
+    localStorage.setItem(KEY, JSON.stringify({ promptVisible: "no", batchCount: 2, at: Date.now() }));
+    expect((await fresh()).takeCanvasHandoff()).toBeNull();
+    localStorage.setItem(KEY, JSON.stringify({ promptVisible: true, batchCount: 1, prompt: { type: "3d", model: "m" }, at: Date.now() }));
+    expect((await fresh()).takeCanvasHandoff()).toEqual({ promptVisible: true, batchCount: 1, prompt: null }); // 모르는 종류의 모델은 버린다
+  });
+
+  it("캔버스 창의 프롬프트 창은 메인 창에서 숨겼으면 숨긴 채로 시작한다 — 넘긴 값이 없으면 지금처럼 보인다", async () => {
+    window.name = "contenthub-canvas";
+    const probe = async () => {
+      vi.resetModules();
+      const { usePromptDock } = await import("../src/lib/usePromptDock");
+      const seen = { visible: true };
+      function Probe() {
+        seen.visible = usePromptDock(fakeStore({})).promptVisible;
+        return null;
+      }
+      act(() => root.render(<Probe />));
+      act(() => root.unmount());
+      root = createRoot(host);
+      return seen.visible;
+    };
+    localStorage.setItem(KEY, JSON.stringify({ promptVisible: false, batchCount: 1, prompt: null, at: Date.now() }));
+    expect(await probe()).toBe(false);
+    expect(await probe()).toBe(true); // 한 번 읽었으니 다음 창(새로 고침)은 처음 값
+  });
+});
+
 // 캔버스 창이 떠 있는가(2026-10-30, docs/status/캔버스_떠있는창_2026-10-30.md) — 창끼리 BroadcastChannel 로 안다.
 // 창마다 모듈이 따로라 vi.resetModules 로 새 창(또는 새로 고친 창)의 모듈을 흉내 낸다.
 describe("캔버스 창이 떠 있음", () => {

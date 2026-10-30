@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { jsonFetch } from "./http";
+import type { SceneModelCfg } from "./scenes";
+import { STORAGE_KEYS } from "./storageKeys";
 
 export const EMBED_MODES = {
   assets: "assets",
@@ -217,4 +219,51 @@ function subscribeCanvasFloating(listener: () => void): () => void {
 
 export function useCanvasFloating(): boolean {
   return useSyncExternalStore(subscribeCanvasFloating, () => canvasFloating);
+}
+
+// 새로 여는 캔버스 창이 메인 창에서 보던 그대로 시작하게(Jay 2026-10-30, docs/status/캔버스_창_보던값_2026-10-30.md) — 브라우저에 저장되지
+// 않는 화면 값만 여는 순간 넘긴다(도구줄·사이드바·씬 등은 이미 저장돼 같다). 캔버스 창이 처음 그릴 때 한 번 읽고 지운다.
+export interface CanvasHandoff {
+  promptVisible: boolean; // Ctrl+K 로 숨긴 프롬프트 창(usePromptDock)
+  batchCount: number;
+  prompt: SceneModelCfg | null; // 하단에 보이던 종류·모델·옵션(SpotlightPrompt.currentModel)
+}
+const HANDOFF_TTL_MS = 60_000; // 열다 만 창의 값이 나중에 연 창에 붙지 않게
+const PROMPT_TYPES = new Set(["image", "video", "audio"]);
+
+export function leaveCanvasHandoff(handoff: CanvasHandoff): void {
+  try {
+    localStorage.setItem(STORAGE_KEYS.canvasHandoff, JSON.stringify({ ...handoff, at: Date.now() }));
+  } catch {
+    /* 저장소가 막혔다 — 새 창은 처음 값으로 뜬다 */
+  }
+}
+
+function handoffPrompt(value: unknown): SceneModelCfg | null {
+  if (!value || typeof value !== "object") return null;
+  const { type, model, params } = value as SceneModelCfg;
+  if (typeof type !== "string" || !PROMPT_TYPES.has(type) || typeof model !== "string" || !model) return null;
+  const kept = Object.entries(params && typeof params === "object" ? params : {})
+    .filter(([, v]) => typeof v === "string" || typeof v === "number" || typeof v === "boolean");
+  return { type, model, params: Object.fromEntries(kept) };
+}
+
+let handoffTaken: CanvasHandoff | null | undefined;
+
+export function takeCanvasHandoff(): CanvasHandoff | null {
+  if (handoffTaken !== undefined) return handoffTaken; // 여러 훅이 같은 값을 읽는다 — 저장소는 처음 한 번만
+  handoffTaken = null;
+  if (!isCanvasWindow()) return null; // 메인 창은 읽지도 지우지도 않는다
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.canvasHandoff);
+    localStorage.removeItem(STORAGE_KEYS.canvasHandoff);
+    const value = raw ? (JSON.parse(raw) as Partial<CanvasHandoff> & { at?: unknown }) : null;
+    if (value && typeof value.at === "number" && Math.abs(Date.now() - value.at) < HANDOFF_TTL_MS
+      && typeof value.promptVisible === "boolean" && Number.isInteger(value.batchCount) && (value.batchCount as number) >= 1) {
+      handoffTaken = { promptVisible: value.promptVisible, batchCount: value.batchCount as number, prompt: handoffPrompt(value.prompt) };
+    }
+  } catch {
+    /* 손상 — 처음 값으로 */
+  }
+  return handoffTaken;
 }

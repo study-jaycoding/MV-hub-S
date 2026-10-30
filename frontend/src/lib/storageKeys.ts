@@ -21,6 +21,8 @@ export const STORAGE_KEYS = {
 
   // 로컬 허브에서 로그아웃한 시각 — 같은 브라우저의 다른 탭이 storage 알림으로 듣는 신호(Jay 결정 4B). 값 자체는 쓰지 않는다.
   hubLogoutAt: "mvhub.hubLogoutAt",
+  // 휠 클릭으로 새로 여는 캔버스 창에 넘기는 화면 값(lib/popupWindows) — 그 창이 처음 그릴 때 한 번 읽고 지운다
+  canvasHandoff: "mvhub.canvasHandoff",
   historyPos: "ch.history.pos",
   historyPosLegacy: "ch.lineage.pos",
   historyView: "ch.history.view",
