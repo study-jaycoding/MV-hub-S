@@ -2614,6 +2614,9 @@ export default function App() {
               loading={loading}
               failedCount={failedCount}
               onClearFailed={clearFailed}
+              // 씬 캔버스 단추 창의 Hide failed(라이브러리와 같은 값 — 캔버스에서는 실패 노드를 흐리게)
+              hideFailed={hideFailed}
+              onToggleHideFailed={toggleHideFailed}
               colorDots={COLOR_DOTS}
               colorFilter={colorFilter}
               onToggleColor={toggleColorFilter}
@@ -2635,15 +2638,8 @@ export default function App() {
               onToggleTagPanel={toggleTagPanel}
               zoomValue={boardStats.zoomPct / 100}
               onZoomValue={(v) => boardControl.current?.zoomTo(v)}
-              // 씬(캔버스) 활성 시 슬라이더(히스토리 보드 배선이라 무동작)를 [맞춤][−][%][+]로 교체
-              sceneZoom={
-                activeScene
-                  ? {
-                      onFit: () => sceneActionRef.current?.zoomFit(),
-                      onStep: (dir) => sceneActionRef.current?.zoomStep(dir),
-                    }
-                  : undefined
-              }
+              // 씬(캔버스) 활성 시 슬라이더(히스토리 보드 배선이라 무동작)를 뺀다 — 캔버스 줌은 네비게이터 위 막대(SceneMinimap, Jay 2026-10-30)
+              sceneCanvas={!!activeScene}
               boardMode
               showFilterToggle
             />
@@ -2776,6 +2772,7 @@ export default function App() {
                 reviewFilter={reviewFilter}
                 commentOnly={commentOnly}
                 finalOnly={finalOnly}
+                hideFailed={hideFailed}
                 // 사이드바에서 폴더를 선택(project_id+folder_path)했을 때만 그 폴더 밖 카드를 딤.
                 // 프로젝트/라이브러리 선택(folder_path 없음)이면 null → 딤 해제. (memo=folderSel)
                 folderSel={folderSel}

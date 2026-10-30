@@ -1,6 +1,7 @@
 // 캔버스의 툴바 필터·폴더 선택 판정 — 한 기준을 두 곳이 쓴다.
 //  · 캔버스 노드(HistoryBoardNode): 안 맞으면 흐리게.
 //  · '생성 결과' 창(SceneBoard): 필터에 안 맞으면 걸러 내고, 고른 폴더 밖이면 흐리게.
+import { isFailedGeneration } from "./generationDisplay";
 import { matchesReviewFilter, type ReviewFilter } from "./generationReview";
 import type { MediaFilter } from "./mediaTypes";
 import type { Generation } from "../types";
@@ -13,10 +14,12 @@ export interface BoardFilters {
   reviewFilter?: ReviewFilter;
   commentOnly: boolean;
   finalOnly: boolean;
+  hideFailed?: boolean; // 필터 단추 창 Hide failed(라이브러리와 같은 값) — 실패·차단 생성물이 빠진다
 }
 
 export function matchesBoardFilters(generation: Generation, filters: BoardFilters): boolean {
-  const { typeFilter, colorFilter, tagFilter, sharedOnly, reviewFilter = "shared", commentOnly, finalOnly } = filters;
+  const { typeFilter, colorFilter, tagFilter, sharedOnly, reviewFilter = "shared", commentOnly, finalOnly, hideFailed } = filters;
+  if (hideFailed && isFailedGeneration(generation)) return false;
   if (typeFilter !== "all" && generation.assets[0]?.type !== typeFilter) return false;
   if (colorFilter && colorFilter.size > 0 && !(generation.color && colorFilter.has(generation.color))) return false;
   if (tagFilter && tagFilter.size > 0 && !generation.tags.some((tag) => tagFilter.has(tag))) return false;

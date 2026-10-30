@@ -2,8 +2,8 @@ import { useCallback, useRef, useState, type CSSProperties } from "react";
 import { dropFocusAfterPress } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
-import { useSceneZoomPct } from "../../lib/sceneZoomStore";
-import { FitIcon, GridIcon, ListIcon, StepIcon } from "./ViewIcons";
+import { CLEAR_FAILED_ICON, HIDE_FAILED_ICON, type FilterActivity } from "./LibraryWorkspaceFilter";
+import { FitIcon, GridIcon, ListIcon } from "./ViewIcons";
 
 type LayoutMode = "grid" | "list";
 
@@ -13,11 +13,6 @@ const MasonryIcon = () => (
     <rect x="2" y="4" width="11" height="7" rx="1.5" /><rect x="15" y="4" width="7" height="7" rx="1.5" /><rect x="2" y="13" width="6" height="7" rx="1.5" /><rect x="10" y="13" width="12" height="7" rx="1.5" />
   </svg>
 );
-
-// 씬 확대 % — 휠 확대 때 이 글자만 다시 그린다(App·툴바는 그대로).
-function SceneZoomPct() {
-  return <span className="zc-pct">{useSceneZoomPct()}%</span>;
-}
 
 interface Props {
   fitContain: boolean;
@@ -32,52 +27,64 @@ interface Props {
   onSelectLayout: (layout: LayoutMode) => void;
   onToggleGroupByDate: () => void;
   showLayout?: boolean;
-  // 카드 Layout(Square · Masonry) — onSetMasonry 를 주면 단추 넷 대신 **보기 단추 하나**(누르면 보기 창, Jay 2026-10-30). 안 주면 옛 단추 그대로(Assets·보드).
+  // 카드 Layout(Square · Masonry) — onSetMasonry 를 주면 단추 넷 대신 **보기 단추 하나**(누르면 보기 창, Jay 2026-10-30). 안 주면 옛 단추 그대로(Resolve·보드).
   masonry?: boolean;
   onSetMasonry?: (on: boolean) => void;
-  // 씬 캔버스 줌 — 있으면 슬라이더 대신 [맞춤][−][%][+] 클러스터를 그린다.
-  zoomControl?: { onFit: () => void; onStep: (dir: 1 | -1) => void };
+  // Masonry 없이 보기 창만(어셋 탭 — 어셋 격자에는 Masonry 계산이 없다, Jay 2026-10-30)
+  viewMenu?: boolean;
+  // 씬 캔버스 단추 창 — Fill · Hide failed · Activity(실패·차단 정리), Jay 2026-10-30. 주면 □ 대신 이 단추 하나
+  canvas?: FilterActivity;
+  // 씬 캔버스 — 크기 슬라이더 자리를 비운다(캔버스 줌 [− 비율 +] 은 캔버스의 네비게이터 위 막대, Jay 2026-10-30 — 전엔 여기 [맞춤][−][%][+]).
+  hideSize?: boolean;
   t?: (text: string) => string;
 }
 
 const SIZE_STEP = 0.05; // 크기 조절 단위 — 눈금도 이 간격(70~170% = 21눈금)
 
-// 보기 창(Jay 2026-10-30 — 힉스필드 Layout 창처럼, A안 · ✓ 없음 · 21눈금 · Fill · 설명 글 없음). 고르면 바로 바뀌고 창은 열린 채 —
-//  바깥 누름·Esc 로 닫는다. Split by date = 옛 '리스트/그리드 한 번 더'의 날짜별 구분 · Fill = 옛 꽉 채우기(전체 보기의 반대).
-function ViewMenu({ fitContain, onToggleFit, scale, onScale, scaleMin, scaleMax, sizeTitle, layout, groupByDate, onSelectLayout,
-  onToggleGroupByDate, masonry = false, onSetMasonry, t = (text) => text }: Props & { onSetMasonry: (on: boolean) => void }) {
+// 단추 창의 열고 닫기 — 바깥 누름·Esc 로 닫는다(Esc 는 창만 — 뒤 카드의 선택은 그대로)
+function usePop() {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const close = useCallback(() => setOpen(false), []);
   useOutsideMouseDown(wrapRef, close, open, undefined, true);
-  useEscapeClose(close, open, true, true); // Esc 는 창만 닫는다(뒤 카드의 선택은 그대로)
-  const current = layout === "list" ? "list" : masonry ? "masonry" : "square";
+  useEscapeClose(close, open, true, true);
+  return { open, setOpen, close, wrapRef };
+}
+
+// 단추 — S·T·C 와 같은 크기, 상자 없는 아이콘(앞의 세로선은 CSS — .assets-filters > .vp-wrap) · 연 동안 = 옅은 라임
+function PopButton({ open, onClick, title, children }: { open: boolean; onClick: () => void; title: string; children: React.ReactNode }) {
+  return (
+    <button type="button" className={"af-btn vp-btn" + (open ? " open" : "")} aria-haspopup="menu" aria-expanded={open} title={title} onClick={onClick}>
+      {children}
+    </button>
+  );
+}
+
+// 보기 창(Jay 2026-10-30 — 힉스필드 Layout 창처럼, A안 · ✓ 없음 · 21눈금 · Fill · 설명 글 없음). 고르면 바로 바뀌고 창은 열린 채 —
+//  바깥 누름·Esc 로 닫는다. Split by date = 옛 '리스트/그리드 한 번 더'의 날짜별 구분 · Fill = 옛 꽉 채우기(전체 보기의 반대).
+//  onSetMasonry 가 없으면(어셋) Layout 은 Square · List 만.
+function ViewMenu({ fitContain, onToggleFit, scale, onScale, scaleMin, scaleMax, sizeTitle, layout, groupByDate, onSelectLayout,
+  onToggleGroupByDate, masonry = false, onSetMasonry, t = (text) => text }: Props) {
+  const { open, setOpen, wrapRef } = usePop();
+  const current = layout === "list" ? "list" : masonry && onSetMasonry ? "masonry" : "square";
   const pick = (key: typeof current) => {
     if (key === "list") return onSelectLayout("list");
     onSelectLayout("grid");
-    onSetMasonry(key === "masonry");
+    onSetMasonry?.(key === "masonry");
   };
   const ticks = Math.round((scaleMax - scaleMin) / SIZE_STEP) + 1;
   const base = Math.round((1 - scaleMin) / SIZE_STEP); // 100% 눈금
-  const LAYOUTS = [
+  const LAYOUTS = ([
     { key: "square", label: "Square", icon: <GridIcon /> },
     { key: "masonry", label: "Masonry", icon: <MasonryIcon /> },
     { key: "list", label: "List", icon: <ListIcon /> },
-  ] as const;
+  ] as const).filter((item) => item.key !== "masonry" || onSetMasonry);
   const fillOff = current === "masonry"; // Masonry 는 원래 안 잘린다
   return (
     <div className="vp-wrap" ref={wrapRef}>
-      {/* S·T·C·필터 단추와 같은 상자 단추(Jay 2026-10-30 "동떨어져 보이고 크기가 다르다") — 연 동안 = 라임 테두리 */}
-      <button
-        type="button"
-        className={"af-btn vp-btn" + (open ? " open" : "")}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title={`${t("보기")} — Layout · Split by date · Fill · Card size`}
-        onClick={() => setOpen((v) => !v)}
-      >
+      <PopButton open={open} onClick={() => setOpen((v) => !v)} title={`${t("보기")} — Layout · Split by date · Fill · Card size`}>
         {LAYOUTS.find((item) => item.key === current)!.icon}
-      </button>
+      </PopButton>
       {open && (
         <div className="vp-pop" role="menu" aria-label={t("보기")}>
           <div className="vp-head">Layout</div>
@@ -123,6 +130,40 @@ function ViewMenu({ fitContain, onToggleFit, scale, onScale, scaleMin, scaleMax,
   );
 }
 
+// 씬 캔버스 단추 창(Jay 2026-10-30) — Fill · Hide failed · Activity(실패·차단 정리 → 툴바의 앱 확인 창). 워크스페이스와 같은 자리·모양이라
+//  툴바의 S·T·C 가 탭을 옮겨도 그 자리에 있다(전엔 □ 가 묶음 밖에 따로 있어 5px 어긋났다).
+function CanvasMenu({ fitContain, onToggleFit, canvas, t = (text) => text }: Props & { canvas: FilterActivity }) {
+  const { open, setOpen, close, wrapRef } = usePop();
+  return (
+    <div className="vp-wrap" ref={wrapRef}>
+      <PopButton open={open} onClick={() => setOpen((v) => !v)} title={`${t("보기")} — Fill · Hide failed · ${t("실패·차단 정리")}`}>
+        <GridIcon />
+      </PopButton>
+      {open && (
+        <div className="vp-pop" role="menu" aria-label={t("보기")}>
+          <button type="button" role="menuitemcheckbox" aria-checked={!fitContain} className="vp-item" onClick={onToggleFit}>
+            Fill
+            <span className={"vp-sw" + (fitContain ? "" : " on")} aria-hidden="true" />
+          </button>
+          <div className="vp-sep" />
+          <button type="button" role="menuitemcheckbox" aria-checked={canvas.hideFailed} className="vp-item" onClick={canvas.onToggleHideFailed}>
+            <span className="vp-ic">{HIDE_FAILED_ICON}</span>
+            Hide failed
+            <span className={"vp-sw" + (canvas.hideFailed ? " on" : "")} aria-hidden="true" />
+          </button>
+          <div className="vp-sep" />
+          <div className="vp-head">Activity</div>
+          <button type="button" className="vp-item warn" disabled={canvas.failedCount <= 0} onClick={() => { close(); canvas.onClearFailed(); }}>
+            <span className="vp-ic">{CLEAR_FAILED_ICON}</span>
+            {t("실패·차단 정리")}
+            <span className="vp-end"><span className="vp-cnt">{canvas.failedCount}</span></span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ViewControls(props: Props) {
   const {
     fitContain,
@@ -138,10 +179,13 @@ export function ViewControls(props: Props) {
     onToggleGroupByDate,
     showLayout = true,
     onSetMasonry,
-    zoomControl,
+    viewMenu = false,
+    canvas,
+    hideSize = false,
     t = (text) => text,
   } = props;
-  if (onSetMasonry) return <ViewMenu {...props} onSetMasonry={onSetMasonry} />;
+  if (canvas) return <CanvasMenu {...props} canvas={canvas} />;
+  if (onSetMasonry || viewMenu) return <ViewMenu {...props} />;
   // 툴팁은 항상 뷰 이름(그리드/리스트)만 — 날짜 구분 상태와 무관(라이브러리·에셋 공통).
   const layoutTitle = (mode: LayoutMode) => t(mode === "list" ? "리스트" : "그리드");
 
@@ -158,26 +202,7 @@ export function ViewControls(props: Props) {
       >
         <FitIcon filled={!fitContain} />
       </button>
-      {zoomControl ? (
-        <div className="zoom-cluster">
-          <button
-            className="zc-fit"
-            onClick={zoomControl.onFit}
-            title={t("전체가 보이게 맞춤 — 선택이 있으면 선택 중심 (단축키 f)")}
-          >
-            Fit
-          </button>
-          <div className="zc-group">
-            <button onClick={() => zoomControl.onStep(-1)} title={t("축소")}>
-              <StepIcon size={8} stroke={2} />
-            </button>
-            <SceneZoomPct />
-            <button onClick={() => zoomControl.onStep(1)} title={t("확대")}>
-              <StepIcon plus size={8} stroke={2} />
-            </button>
-          </div>
-        </div>
-      ) : (
+      {!hideSize && (
         <div className="size-slider" title={sizeTitle}>
           <input
             type="range"

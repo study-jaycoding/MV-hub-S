@@ -437,6 +437,7 @@ interface Props {
   reviewFilter?: "shared" | "held";
   commentOnly?: boolean;
   finalOnly?: boolean;
+  hideFailed?: boolean; // 필터 단추 창 Hide failed(라이브러리와 같은 값) — 실패 노드는 흐리게, '생성 결과' 창에서는 걸러 낸다
   // 사이드바에서 선택한 폴더 — 그 폴더(하위 포함) 밖 완성카드를 딤 처리(어떤 게 들어갔는지 표시).
   folderSel?: { projectId: string; path: string } | null;
   // 태그 편집(라이브러리와 공용 — 태그는 생성물 레코드에 저장되어 뷰 간 자동 공유).
@@ -518,6 +519,7 @@ export function SceneBoard({
   reviewFilter = "shared",
   commentOnly = false,
   finalOnly = false,
+  hideFailed = false,
   folderSel,
   onSetTags,
   onSetAutoTags,
@@ -781,7 +783,7 @@ export function SceneBoard({
       return Number.isNaN(t) ? 0 : t;
     };
     const ids = variantIds(card);
-    const filters = { typeFilter, colorFilter, tagFilter, sharedOnly, reviewFilter, commentOnly, finalOnly };
+    const filters = { typeFilter, colorFilter, tagFilter, sharedOnly, reviewFilter, commentOnly, finalOnly, hideFailed };
     const shown = ids
       .map((id) => ownEntry(genData, id))
       .filter((g): g is Generation => !!g && !g.deleted)
@@ -795,7 +797,7 @@ export function SceneBoard({
     const dimIds = new Set(shown.filter((g) => !inBoardFolder(g, folderSel)).map((g) => g.id));
     return { card, total: ids.length, shown, shownIds, selectable, dimIds };
   }, [cardMenu, cards, genData, resolveHighlightedIds, disabledIds, grayOn, folderSel,
-    typeFilter, colorFilter, tagFilter, sharedOnly, reviewFilter, commentOnly, finalOnly]);
+    typeFilter, colorFilter, tagFilter, sharedOnly, reviewFilter, commentOnly, finalOnly, hideFailed]);
   const variantViewRef = useRef(variantView);
   variantViewRef.current = variantView;
   // 가려진 카드는 선택에서도 뺀다(다시 보이게 됐을 때 '고른 적 없는데 골라져 있는' 일이 없게).
@@ -1943,6 +1945,12 @@ export function SceneBoard({
   useEffect(() => () => onSelGensRef.current?.([]), []); // 언마운트 → 선택바 비우기
   // 명령형 핸들 바인딩은 렌더 중 write(비순수) 대신 커밋 후 useLayoutEffect 에서(refs 라 항상 최신).
   //  언마운트(탭 이탈·씬 언마운트) 시 핸들을 비워 옛 SceneBoard 클로저/refs 가 App 에 붙잡히지 않게 한다.
+  // 화면 맞춤·한 단계 확대 — 네비게이터 위 줌 막대(Jay 2026-10-30 — 전엔 툴바)와 actionRef 가 같이 쓴다.
+  //  씬을 바꾸는 틈에는 받지 않는다 — 떠난 씬의 카드로 잰 화면이 새 씬에 남는다
+  const guardedZoom = {
+    onFit: () => { if (!switchingRef.current) frameView(); },
+    onStep: (dir: 1 | -1) => { if (!switchingRef.current) stepZoom(dir); },
+  };
   useLayoutEffect(() => {
     if (actionRef)
       actionRef.current = {
@@ -1954,9 +1962,8 @@ export function SceneBoard({
         setCardRefs,
         flushPending,
         applyAssetRelink,
-        // 툴바의 화면 조작도 씬을 바꾸는 틈에는 받지 않는다 — 떠난 씬의 카드로 잰 화면이 새 씬에 남는다
-        zoomFit: () => { if (!switchingRef.current) frameView(); },
-        zoomStep: (dir) => { if (!switchingRef.current) stepZoom(dir); },
+        zoomFit: guardedZoom.onFit,
+        zoomStep: guardedZoom.onStep,
         closeVariants: () => setCardMenu(null),
         selection: () => ({ sceneId: cardsSceneId, cardIds: [...selected], groupIds: [...selectedGroupIds] }),
       };
@@ -3556,6 +3563,7 @@ export function SceneBoard({
                     reviewFilter,
                     commentOnly,
                     finalOnly,
+                    hideFailed,
                     folderSel,
                     sConfirm,
                     canFinalize,
@@ -3665,6 +3673,7 @@ export function SceneBoard({
           zoomRef={zoomRef}
           updateRef={mmUpdateRef}
           onNavigate={navigateTo}
+          zoom={guardedZoom}
         />
       )}
 

@@ -29,6 +29,7 @@ export type HistPass = {
   reviewFilter?: React.ComponentProps<typeof HistoryBoardNode>["reviewFilter"];
   commentOnly: React.ComponentProps<typeof HistoryBoardNode>["commentOnly"];
   finalOnly: React.ComponentProps<typeof HistoryBoardNode>["finalOnly"];
+  hideFailed?: boolean; // 필터 단추 창 Hide failed — 이 카드의 실패 칸만 흐리게(완료 노드 HBN 은 실패가 아니라 넘기지 않는다)
   folderSel: React.ComponentProps<typeof HistoryBoardNode>["folderSel"];
   sConfirm: { id: string; kind: "share" | "final" } | null;
   // 참조 그대로 통과. boolean 계산은 각 카드에서 — HBN은 primitive만 받아 memo를 유지한다.
@@ -181,7 +182,7 @@ export const GenerationCard = memo(function GenerationCard({
                 const st = String(g?.status) === "error" ? "failed" : String(g?.status);
                 return (
                   <div
-                    className={"scene-card-genbody scene-genfail status-" + st}
+                    className={"scene-card-genbody scene-genfail status-" + st + (hist.hideFailed ? " dimmed" : "")}
                     title={g ? (
                       // 원인을 분류한 때는 첫 줄이 '문제: 설명' — 못 한 때는 보이는 상태 글을 첫 줄로(설명 창의 빨간 상태 줄)
                       (generationIssueFor(st, g.error, g.execution_phase) ? "" : generationStatusLabelFor(st, g.error, g.execution_phase) + "\n") +

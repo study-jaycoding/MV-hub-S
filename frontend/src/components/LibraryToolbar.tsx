@@ -79,8 +79,7 @@ interface Props {
   // 휠로 확대/축소하면 zoomValue 가 갱신돼 슬라이더가 따라 움직인다. 별도 숫자 표시는 없음.
   zoomValue?: number; // 현재 보드 줌(0.3~2.5)
   onZoomValue?: (v: number) => void; // 슬라이더 드래그 → 보드 줌 설정
-  // 씬 캔버스 전용: 슬라이더 대신 [맞춤][−][%][+] 클러스터(씬 카메라에 직접 배선).
-  sceneZoom?: { onFit: () => void; onStep: (dir: 1 | -1) => void };
+  sceneCanvas?: boolean; // 씬 캔버스가 떠 있다 — 크기 슬라이더 자리를 비운다(캔버스 줌은 네비게이터 위 막대, Jay 2026-10-30)
   // 그래프 보드(히스토리/구성) 모드 — 의미 없는 컨트롤(리스트/그리드 토글 등)을 숨긴다.
   boardMode?: boolean;
   // 보드 모드라도 필터 사이드바 손잡이를 보인다 — 캔버스는 폴더 사이드바가 있어 열고닫아야 함.
@@ -135,7 +134,7 @@ export function LibraryToolbar({
   onToggleTagPanel,
   zoomValue,
   onZoomValue,
-  sceneZoom,
+  sceneCanvas = false,
   boardMode = false,
   showFilterToggle,
 }: Props) {
@@ -215,6 +214,13 @@ export function LibraryToolbar({
       onEnd();
     };
   }, [tagPanelOpen]);
+  // 단추 창을 S·T·C 묶음 끝에 붙이는 툴바 — 라이브러리(보기 창) · 씬 캔버스(Fill · Hide failed · Activity, Jay 2026-10-30). 그 밖(히스토리 보기)은 옛 단추가 묶음 밖에
+  const canvasMenu = sceneCanvas && onToggleHideFailed
+    ? { hideFailed, onToggleHideFailed, failedCount, onClearFailed: () => setConfirmClear(true) }
+    : undefined;
+  const menuInFilters = (!boardMode && !!onSetMasonry) || !!canvasMenu;
+  // 실패·차단 정리를 단추 창의 Activity 로 옮긴 툴바(필터 창 · 씬 캔버스 창)는 빨간 단추가 없다
+  const clearInMenu = (!!workspaceFilter && !!onToggleHideFailed) || !!canvasMenu;
   const viewControls = (
     <ViewControls
       fitContain={!fill}
@@ -231,7 +237,8 @@ export function LibraryToolbar({
       showLayout={!boardMode}
       masonry={masonry}
       onSetMasonry={boardMode ? undefined : onSetMasonry}
-      zoomControl={sceneZoom}
+      hideSize={sceneCanvas}
+      canvas={canvasMenu}
       t={t}
     />
   );
@@ -301,7 +308,7 @@ export function LibraryToolbar({
         </span>
       )}
       {/* 필터 창이 있는 툴바는 그 창의 Activity 로 옮겼다(Jay 2026-10-30) — 없는 툴바(캔버스·구성 보드)만 이 단추 */}
-      {!(workspaceFilter && onToggleHideFailed) && failedCount > 0 && (
+      {!clearInMenu && failedCount > 0 && (
         <button
           className="lib-clear-failed"
           title="실패·NSFW 차단 등 비정상 생성물을 휴지통으로 (복구 가능 · 힉스필드 원본엔 영향 없음)"
@@ -400,9 +407,9 @@ export function LibraryToolbar({
             document.body,
           )}
           {/* 보기 단추(창)는 S·T·C 와 같은 묶음에 붙인다 — 따로 두면 툴바 간격(10+12px)만큼 떨어져 보였다(Jay 2026-10-30) */}
-          {!boardMode && onSetMasonry && viewControls}
+          {menuInFilters && viewControls}
         </div>
-        {(boardMode || !onSetMasonry) && viewControls}
+        {!menuInFilters && viewControls}
       </div>
     </div>
   );

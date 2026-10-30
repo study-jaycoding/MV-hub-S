@@ -202,29 +202,31 @@ export function AssetsCrumbBar({
           >
             C
           </button>
+          {/* 보기·정렬 단추 창 — S·T·C 묶음 끝에 [세로선 + 보기][정렬](둘 다 상자 없는 아이콘, Jay 2026-10-30). 보기 창은 워크스페이스와 같은 부품
+              (Layout = Square · List — 어셋 격자에는 Masonry 계산이 없다) */}
+          <ViewControls
+            fitContain={fit === "contain"}
+            onToggleFit={onToggleFit}
+            scale={scale}
+            onScale={onScale}
+            scaleMin={0.7}
+            scaleMax={1.7}
+            sizeTitle="크기"
+            layout={layout}
+            groupByDate={groupByDate}
+            onSelectLayout={onSelectLayout}
+            onToggleGroupByDate={onToggleGroupByDate}
+            viewMenu
+            t={t}
+          />
+          <AssetSortMenu
+            field={sortField}
+            dir={sortDir}
+            onField={onSortField}
+            onDir={onSortDir}
+            viewStyle
+          />
         </div>
-
-        <ViewControls
-          fitContain={fit === "contain"}
-          onToggleFit={onToggleFit}
-          scale={scale}
-          onScale={onScale}
-          scaleMin={0.7}
-          scaleMax={1.7}
-          sizeTitle="크기"
-          layout={layout}
-          groupByDate={groupByDate}
-          onSelectLayout={onSelectLayout}
-          onToggleGroupByDate={onToggleGroupByDate}
-          t={t}
-        />
-
-        <AssetSortMenu
-          field={sortField}
-          dir={sortDir}
-          onField={onSortField}
-          onDir={onSortDir}
-        />
       </div>
     </div>
   );
