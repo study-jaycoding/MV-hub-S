@@ -607,7 +607,8 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--pc) 25%, transparent);
 }
 .scene-setnode-pill.edit::placeholder { color: var(--muted); }
-.scene-setnode-icon { flex: none; opacity: 0.85; }
+/* 아이콘 자리 = 같은 폭 — 📁 가 # 보다 넓어 태그 칸 글이 9px 왼쪽에서 시작했다(Jay 2026-10-30) */
+.scene-setnode-icon { flex: none; width: 14px; display: inline-flex; justify-content: center; opacity: 0.85; }
 /* 넘치는 경로는 '…' 대신 끝을 흐리게(Jay — 화면 글 끝 말줄임표 금지) · 전체 경로는 설명창 */
 .scene-setnode-folder-text {
   flex: 1; min-width: 0; overflow: hidden; white-space: nowrap;

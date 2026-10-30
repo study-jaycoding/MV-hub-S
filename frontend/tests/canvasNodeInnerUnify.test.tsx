@@ -59,6 +59,10 @@ it("캔버스 탭 줄·씬 패널도 네모 칩(안 B) — 탭·＋·알림 단�
   expect(decl(".scene-tab-wrap")).toMatch(/border-radius: 8px/);
 });
 
+it("SET 폴더·태그 칸 아이콘 자리는 같은 폭 — 📁·# 뒤 글이 같은 자리에서 시작한다", () => {
+  expect(decl(".scene-setnode-icon")).toMatch(/flex: none; width: 14px; display: inline-flex; justify-content: center/);
+});
+
 let host: HTMLDivElement;
 let root: Root;
 const noop = () => {};
