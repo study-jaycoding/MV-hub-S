@@ -64,20 +64,36 @@ const doubleClick = async (el: Element) => {
   await act(async () => el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
   await settle();
 };
+// 어셋 보기 창(Jay 2026-10-30) — 옛 [□][크기][리스트][그리드] 단추가 툴바의 보기 단추 창(Layout · Split by date · Fill · Card size)으로 들어갔다
+//  창이 떠 있는 동안은 뒤 화면의 키(Backspace 폴더 이동 등)가 쉰다 — 사람이 그러듯 보고·누른 뒤 닫는다(Esc).
+const viewPop = async () => { if (!host.querySelector(".vp-wrap:not(.vp-sort) > .vp-pop")) await click(host.querySelector(".vp-wrap:not(.vp-sort) > .vp-btn")!); };
+const closeView = async () => {
+  if (!host.querySelector(".vp-wrap:not(.vp-sort) > .vp-pop")) return;
+  await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+  await settle();
+};
+const viewItem = (name: string) => [...host.querySelectorAll<HTMLButtonElement>(".vp-wrap:not(.vp-sort) > .vp-pop .vp-item")].find((el) => el.textContent === name)!;
+const readView = async <T,>(read: () => T) => { await viewPop(); const value = read(); await closeView(); return value; };
+const pressView = async (name: string) => { await viewPop(); await click(viewItem(name)); await closeView(); };
+const pressList = async () => { await viewPop(); await click(viewItem("List").getAttribute("aria-checked") === "true" ? viewItem("Split by date") : viewItem("List")); await closeView(); };
+const contained = () => readView(() => viewItem("Fill").getAttribute("aria-checked") === "false"); // 옛 □ 켜짐 = 전체 보기(블랙바)
+const listGrouped = () => readView(() => viewItem("List").getAttribute("aria-checked") === "true" && viewItem("Split by date").getAttribute("aria-checked") === "true");
+const sizeValue = () => readView(() => host.querySelector<HTMLInputElement>('.vp-size input[type="range"]')!.value);
+const sizeInput = async () => { await viewPop(); return host.querySelector<HTMLInputElement>('.vp-size input[type="range"]')!; };
 
 it("폴더와 전체 보기의 레이아웃·맞춤을 따로 기억한다", async () => {
   await mount();
-  await click(host.querySelector('[title="리스트"]')!);
-  await click(host.querySelector('.fit-toggle')!);
+  await pressView("List");
+  await pressView("Fill");
   expect(host.querySelector('.assets-folder-grid.list')).not.toBeNull();
   expect(localStorage.getItem("ch.assets.folderFit")).toBe("contain");
   const whole = [...host.querySelectorAll('.lib-cut-seg button')].find((el) => el.textContent === "전체")!;
   await click(whole);
-  expect(host.querySelector('[title="그리드"]')?.classList.contains("on")).toBe(true);
-  expect(host.querySelector('.fit-toggle')?.classList.contains("on")).toBe(false);
+  expect(await readView(() => viewItem("Square").getAttribute("aria-checked"))).toBe("true");
+  expect(await contained()).toBe(false);
   await click([...host.querySelectorAll('.lib-cut-seg button')].find((el) => el.textContent === "폴더")!);
   expect(host.querySelector('.assets-folder-grid.list')).not.toBeNull();
-  expect(host.querySelector('.fit-toggle')?.classList.contains("on")).toBe(true);
+  expect(await contained()).toBe(true);
 });
 
 it("전체 파일 보기의 모양·날짜 구분·크기는 다른 폴더를 방문해도 그 자리에서 복원된다", async () => {
@@ -89,19 +105,19 @@ it("전체 파일 보기의 모양·날짜 구분·크기는 다른 폴더를 �
   }));
   await mount();
   expect(host.querySelector(".assets-list")).not.toBeNull();
-  expect(host.querySelector('[title="리스트"]')?.classList.contains("grouped")).toBe(true);
-  expect(host.querySelector<HTMLInputElement>('.size-slider input[type="range"]')?.value).toBe("0.8");
-  expect(host.querySelector(".fit-toggle")?.classList.contains("on")).toBe(true);
+  expect(await listGrouped()).toBe(true);
+  expect(await sizeValue()).toBe("0.8");
+  expect(await contained()).toBe(true);
   const child = [...host.querySelectorAll(".folder-tree-row")].find((row) => row.getAttribute("title")?.startsWith("assets/CH"))!;
   await click(child);
   expect(host.querySelector(".assets-masonry")).not.toBeNull();
-  expect(host.querySelector<HTMLInputElement>('.size-slider input[type="range"]')?.value).toBe("1.6");
-  expect(host.querySelector(".fit-toggle")?.classList.contains("on")).toBe(false);
+  expect(await sizeValue()).toBe("1.6");
+  expect(await contained()).toBe(false);
   await backspace();
   expect(host.querySelector(".assets-list")).not.toBeNull();
-  expect(host.querySelector('[title="리스트"]')?.classList.contains("grouped")).toBe(true);
-  expect(host.querySelector<HTMLInputElement>('.size-slider input[type="range"]')?.value).toBe("0.8");
-  expect(host.querySelector(".fit-toggle")?.classList.contains("on")).toBe(true);
+  expect(await listGrouped()).toBe(true);
+  expect(await sizeValue()).toBe("0.8");
+  expect(await contained()).toBe(true);
 });
 
 it("폴더 리스트 크기 슬라이더가 공통 배율을 바꾸고 직계 파일도 같은 행 모양을 쓴다", async () => {
@@ -115,7 +131,7 @@ it("폴더 리스트 크기 슬라이더가 공통 배율을 바꾸고 직계 �
   const direct = host.querySelector('[data-file-path="assets/direct.png"]')!;
   expect(direct.classList.contains("assets-folder-card")).toBe(true);
   expect(direct.querySelector(".assets-folder-info strong")?.textContent).toBe("direct.png");
-  const input = host.querySelector<HTMLInputElement>('.size-slider input[type="range"]')!;
+  const input = await sizeInput();
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "1.7");
     input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -668,9 +684,7 @@ it("전체 보기에서 하위 폴더 이름표가 상시 보이고 폴더 이�
   expect(image.closest(".asset-cell")!.classList.contains("selected")).toBe(true);
   await backspace();
   expect(labels()).toEqual(["미아", "미아 / facial / v01"]);
-  const list = host.querySelector('[title="리스트"]');
-  expect(list).not.toBeNull();
-  await click(list!);
+  await pressList();
   expect(host.querySelectorAll(".asset-cell.list")).toHaveLength(2);
   expect(labels()).toEqual(["미아", "미아 / facial / v01"]);
 });

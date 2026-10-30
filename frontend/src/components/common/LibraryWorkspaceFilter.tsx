@@ -56,8 +56,9 @@ const icon = (body: ReactNode, strokeWidth = 1.8) => (
   <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{body}</svg>
 );
 const WORKSPACES_ICON = icon(<><rect x="3" y="4" width="8" height="16" rx="1.5" /><path d="M11 9h8.5a1.5 1.5 0 0 1 1.5 1.5V20H11" /><path d="M6 8h2M6 12h2M6 16h2M15 13h2M15 17h2" /></>);
-const HIDE_ICON = icon(<><path d="M3 3l18 18" /><path d="M10.6 5.1A9.8 9.8 0 0 1 12 5c5 0 8.5 4.5 9.5 7a13 13 0 0 1-2.9 4M6.2 6.6C4.3 8 3 10 2.5 12c1 2.5 4.5 7 9.5 7 1.8 0 3.3-.5 4.6-1.3" /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" /></>);
-const CLEAR_ICON = icon(<><path d="M14.5 3.5l6 6" /><path d="M17.5 6.5l-6.8 6.8" /><path d="M10.7 13.3 4 20l3.5.5L9 19l1 2 2-1.5 1.2 1.5 1.3-2.2c.6-2.4-.5-4.8-3.8-5.5Z" /></>);
+// Hide failed · 실패·차단 정리 아이콘 — 캔버스 단추 창(ViewControls)도 같이 쓴다
+export const HIDE_FAILED_ICON = icon(<><path d="M3 3l18 18" /><path d="M10.6 5.1A9.8 9.8 0 0 1 12 5c5 0 8.5 4.5 9.5 7a13 13 0 0 1-2.9 4M6.2 6.6C4.3 8 3 10 2.5 12c1 2.5 4.5 7 9.5 7 1.8 0 3.3-.5 4.6-1.3" /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" /></>);
+export const CLEAR_FAILED_ICON = icon(<><path d="M14.5 3.5l6 6" /><path d="M17.5 6.5l-6.8 6.8" /><path d="M10.7 13.3 4 20l3.5.5L9 19l1 2 2-1.5 1.2 1.5 1.3-2.2c.6-2.4-.5-4.8-3.8-5.5Z" /></>);
 const CHEVRON = icon(<path d="M9 6l6 6-6 6" />, 2.2);
 
 export function LibraryWorkspaceFilter({
@@ -116,7 +117,7 @@ export function LibraryWorkspaceFilter({
       {activity && (
         <>
           <button type="button" role="menuitemcheckbox" aria-checked={activity.hideFailed} className="vp-item" onClick={activity.onToggleHideFailed}>
-            <span className="vp-ic">{HIDE_ICON}</span>
+            <span className="vp-ic">{HIDE_FAILED_ICON}</span>
             Hide failed
             <span className={"vp-sw" + (activity.hideFailed ? " on" : "")} aria-hidden="true" />
           </button>
@@ -124,7 +125,7 @@ export function LibraryWorkspaceFilter({
           <div className="vp-head">Activity</div>
           <button type="button" className="vp-item warn" disabled={activity.failedCount <= 0}
             onClick={() => { closeMenu(); activity.onClearFailed(); }}>
-            <span className="vp-ic">{CLEAR_ICON}</span>
+            <span className="vp-ic">{CLEAR_FAILED_ICON}</span>
             {t("실패·차단 정리")}
             <span className="vp-end"><span className="vp-cnt">{activity.failedCount}</span></span>
           </button>

@@ -53,15 +53,33 @@ const click = async (el: Element) => { await act(async () => el.dispatchEvent(ne
 const fire = async (el: Element, event: Event) => { await act(async () => el.dispatchEvent(event)); await settle(); };
 const mount = async () => { await act(async () => root.render(<AssetsView onInfo={() => {}} onPreview={() => {}} />)); await settle(); };
 const tab = (name: string) => [...host.querySelectorAll('[role="tab"]')].find((el) => el.querySelector(".scene-tab-name")?.textContent === name)!;
-const listButton = () => host.querySelector('[title="리스트"]')!;
+// 어셋 보기 창(Jay 2026-10-30) — 옛 [□][크기][리스트][그리드] 단추가 툴바의 보기 단추 창(Layout · Split by date · Fill · Card size)으로 들어갔다.
+//  옛 '리스트 단추'는 처음 = 리스트, 리스트에서 한 번 더 = 날짜별 구분이었다 — 같은 뜻으로 누른다(pressList).
+//  창이 떠 있는 동안은 뒤 화면의 키(Backspace 폴더 이동 등)가 쉰다 — 사람이 그러듯 보고·누른 뒤 닫는다(Esc).
+const viewPop = async () => { if (!host.querySelector(".vp-wrap:not(.vp-sort) > .vp-pop")) await click(host.querySelector(".vp-wrap:not(.vp-sort) > .vp-btn")!); };
+const closeView = async () => {
+  if (!host.querySelector(".vp-wrap:not(.vp-sort) > .vp-pop")) return;
+  await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+  await settle();
+};
+const viewItem = (name: string) => [...host.querySelectorAll<HTMLButtonElement>(".vp-wrap:not(.vp-sort) > .vp-pop .vp-item")].find((el) => el.textContent === name)!;
+const readView = async <T,>(read: () => T) => { await viewPop(); const value = read(); await closeView(); return value; };
+const pressView = async (name: string) => { await viewPop(); await click(viewItem(name)); await closeView(); };
+const pressList = async () => { await viewPop(); await click(viewItem("List").getAttribute("aria-checked") === "true" ? viewItem("Split by date") : viewItem("List")); await closeView(); };
+const pressGrid = () => pressView("Square");
+const pressFit = () => pressView("Fill");
+const contained = () => readView(() => viewItem("Fill").getAttribute("aria-checked") === "false"); // 옛 □ 켜짐 = 전체 보기(블랙바)
+const listGrouped = () => readView(() => viewItem("List").getAttribute("aria-checked") === "true" && viewItem("Split by date").getAttribute("aria-checked") === "true");
+const sizeInput = async () => { await viewPop(); return host.querySelector<HTMLInputElement>('.vp-size input[type="range"]')!; };
 const folderModeButton = (name: string) => [...host.querySelectorAll(".lib-cut-seg button")].find((el) => el.textContent === name)!;
 const setSize = async (value: string) => {
-  const input = host.querySelector<HTMLInputElement>('.size-slider input[type="range"]')!;
+  const input = await sizeInput();
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await settle();
+  await closeView();
 };
 
 // 표는 폴더 격자의 한 보기다 — 선택·키는 AssetFolderGrid 가 쥐고 넘긴다(10-22 어셋 키보드). 앱처럼 그 길로 그린다.
@@ -151,16 +169,16 @@ it("표의 원본 경로는 클릭/Enter로 한 번씩 열고 행의 진입·미
 
 it("폴더 리스트를 다시 누르면 표로 바뀌고 다시 누르면 리스트로 돌아가며 저장한다", async () => {
   await mount();
-  await click(listButton());
+  await pressList();
   expect(host.querySelector(".assets-folder-grid.list")).not.toBeNull();
-  await click(listButton());
+  await pressList();
   expect(host.querySelector(".assets-folder-table table")).not.toBeNull();
-  expect(listButton().classList.contains("grouped")).toBe(true);
+  expect(await listGrouped()).toBe(true);
   expect(localStorage.getItem("ch.assets.folderLayout")).toBe("table");
-  await click(listButton());
+  await pressList();
   expect(host.querySelector(".assets-folder-grid.list")).not.toBeNull();
   expect(host.querySelector(".assets-folder-table")).toBeNull();
-  await click(listButton());
+  await pressList();
   await act(async () => root.render(null));
   await mount();
   expect(host.querySelector(".assets-folder-table table")).not.toBeNull();
@@ -177,9 +195,9 @@ it("표/리스트·크기·맞춤·스크롤을 폴더 탭별로 복원한다", 
   expect(host.querySelector<HTMLDivElement>(".assets-folder-table")!.scrollTop).toBe(140);
   await click(tab("CH"));
   expect(tab("CH").getAttribute("aria-selected")).toBe("true");
-  await click(listButton());
-  await click(host.querySelector(".fit-toggle")!);
-  const slider = host.querySelector<HTMLInputElement>('.size-slider input[type="range"]')!;
+  await pressList();
+  await pressFit();
+  const slider = await sizeInput();
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(slider, "1.4");
     slider.dispatchEvent(new Event("input", { bubbles: true }));
@@ -199,7 +217,7 @@ it("표/리스트·크기·맞춤·스크롤을 폴더 탭별로 복원한다", 
   const list = host.querySelector<HTMLDivElement>(".assets-folder-grid.list")!;
   expect(list.style.getPropertyValue("--ep-scale")).toBe("1.4");
   expect(list.scrollTop).toBe(70);
-  expect(host.querySelector(".fit-toggle")?.classList.contains("on")).toBe(false);
+  expect(await contained()).toBe(false);
   await click(host.querySelector('[aria-label="CH 탭 닫기"]')!);
   await click(tab("assets"));
   expect(host.querySelector<HTMLDivElement>(".assets-folder-table")!.scrollTop).toBe(140);
@@ -209,16 +227,16 @@ it("폴더 표 전환은 파일 전체 모드의 날짜 구분과 레이아웃�
   localStorage.setItem("ch.assets.folderLayout", "table");
   await mount();
   await click(folderModeButton("전체"));
-  await click(listButton());
-  await click(listButton());
-  expect(listButton().classList.contains("grouped")).toBe(true);
+  await pressList();
+  await pressList();
+  expect(await listGrouped()).toBe(true);
   expect(localStorage.getItem("ch.assets.groupByDate")).toBe("1");
   await click(folderModeButton("폴더"));
   expect(host.querySelector(".assets-folder-table")).not.toBeNull();
-  await click(listButton());
+  await pressList();
   expect(localStorage.getItem("ch.assets.groupByDate")).toBe("1");
   await click(folderModeButton("전체"));
-  expect(listButton().classList.contains("grouped")).toBe(true);
+  expect(await listGrouped()).toBe(true);
   expect(localStorage.getItem("ch.assets.layout")).toBe("list");
 });
 
@@ -230,17 +248,17 @@ it("혼합 폴더의 명시 보기와 크기는 경로 이동·Backspace·기존
   await mount();
   expect(folderModeButton("전체").classList.contains("on")).toBe(true);
   await click(folderModeButton("폴더"));
-  await click(listButton()); await click(listButton()); await setSize("0.8");
-  await click(host.querySelector(".fit-toggle")!);
+  await pressList(); await pressList(); await setSize("0.8");
+  await pressFit();
   await fire(host.querySelector('[data-folder-path="assets/CH"]')!, new MouseEvent("dblclick", { bubbles: true }));
   expect(folderModeButton("전체").classList.contains("on")).toBe(true);
   await click(folderModeButton("폴더"));
-  await click(host.querySelector('[title="그리드"]')!); await setSize("1.4");
-  await click(host.querySelector(".fit-toggle")!);
+  await pressGrid(); await setSize("1.4");
+  await pressFit();
   await fire(document.body, new KeyboardEvent("keydown", { key: "Backspace", bubbles: true, cancelable: true }));
   let table = host.querySelector<HTMLDivElement>(".assets-folder-table")!;
   expect(table).not.toBeNull(); expect(table.style.getPropertyValue("--ep-scale")).toBe("0.8");
-  expect(host.querySelector(".fit-toggle")?.classList.contains("on")).toBe(true);
+  expect(await contained()).toBe(true);
   await fire(host.querySelector('[data-folder-path="assets/CH"]')!, new MouseEvent("auxclick", { bubbles: true, button: 1 }));
   expect(tab("CH").getAttribute("aria-selected")).toBe("false");
   await click(tab("CH"));
@@ -248,7 +266,7 @@ it("혼합 폴더의 명시 보기와 크기는 경로 이동·Backspace·기존
   const grid = host.querySelector<HTMLDivElement>(".assets-folder-grid")!;
   expect(grid.classList.contains("table")).toBe(false);
   expect(grid.style.getPropertyValue("--ep-scale")).toBe("1.4");
-  expect(host.querySelector(".fit-toggle")?.classList.contains("on")).toBe(false);
+  expect(await contained()).toBe(false);
   await click(tab("assets"));
   table = host.querySelector<HTMLDivElement>(".assets-folder-table")!;
   expect(table.style.getPropertyValue("--ep-scale")).toBe("0.8");
@@ -280,7 +298,7 @@ it("폴더 보기는 계정·워크스페이스·프로젝트를 경로와 함�
     expect(grid.classList.contains("table")).toBe(scope.layout === "list" && scope.group);
     expect(grid.classList.contains("list")).toBe(scope.layout === "list" && !scope.group);
     expect(grid.style.getPropertyValue("--ep-scale")).toBe(String(scope.scale));
-    expect(host.querySelector(".fit-toggle")?.classList.contains("on")).toBe(!scope.fill);
+    expect(await contained()).toBe(!scope.fill);
   }
   const kept = JSON.parse(localStorage.getItem("ch.assets.folder.placeViews")!);
   for (const scope of scopes) expect(kept[key(scope)]).toEqual(saved[key(scope)]);

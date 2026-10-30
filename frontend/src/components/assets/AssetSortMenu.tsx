@@ -40,12 +40,15 @@ export function AssetSortMenu<F extends string = AssetSortField>({
   fields = FIELDS as unknown as { key: F; label: string }[],
   onField,
   onDir,
+  viewStyle = false,
 }: {
   field: F;
   dir: AssetSortDir;
   fields?: { key: F; label: string }[];
   onField: (f: F) => void;
   onDir: (d: AssetSortDir) => void;
+  // 보기 단추와 같은 모양(상자 없는 아이콘 + 같은 단추 창, 고른 것 라임 바탕 · ● 없음) — 어셋 탭 툴바(Jay 2026-10-30). Resolve 프로젝트 목록은 옛 모양
+  viewStyle?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -66,6 +69,32 @@ export function AssetSortMenu<F extends string = AssetSortField>({
   );
 
   const fieldLabel = fields.find((f) => f.key === field)?.label ?? "정렬";
+  const title = `정렬: ${fieldLabel} · ${dir === "asc" ? "오름차순" : "내림차순"}`;
+
+  if (viewStyle) {
+    const item = (on: boolean, label: string, onClick: () => void, key: string) => (
+      <button type="button" key={key} role="menuitemradio" aria-checked={on} className={"vp-item" + (on ? " sel" : "")} onClick={onClick}>
+        {label}
+      </button>
+    );
+    return (
+      <div className="vp-wrap vp-sort" ref={ref}>
+        <button ref={buttonRef} type="button" className={"af-btn vp-btn" + (open ? " open" : "")} title={title}
+          aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+          <SortIcon />
+        </button>
+        {open && (
+          <div className="vp-pop vp-sort-pop" role="menu" aria-label="Sort">
+            <div className="vp-head">Sort</div>
+            {fields.map((f) => item(field === f.key, f.label, () => onField(f.key), f.key))}
+            <div className="vp-sep" />
+            {item(dir === "asc", "오름차순", () => onDir("asc"), "asc")}
+            {item(dir === "desc", "내림차순", () => onDir("desc"), "desc")}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="asset-sort" ref={ref}>
@@ -73,7 +102,7 @@ export function AssetSortMenu<F extends string = AssetSortField>({
         ref={buttonRef}
         type="button"
         className={"af-btn asort-btn" + (open ? " on" : "")}
-        title={`정렬: ${fieldLabel} · ${dir === "asc" ? "오름차순" : "내림차순"}`}
+        title={title}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}

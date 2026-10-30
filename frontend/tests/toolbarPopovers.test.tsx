@@ -209,7 +209,85 @@ describe("필터 단추 창 · 실패·차단 정리(LibraryToolbar)", () => {
   });
 });
 
+describe("캔버스 툴바 단추 창 · 어셋 [보기][정렬] (Jay 2026-10-30)", () => {
+  const noop = () => {};
+  const toolbar = (over: Record<string, unknown> = {}) => ({
+    typeFilter: "all" as const, onTypeFilter: noop, scale: 1, onScale: noop, fill: true, onToggleFill: noop, layout: "grid" as const, onLayout: noop,
+    groupByDate: false, onToggleGroupByDate: noop, filtersOpen: true, onToggleFilters: noop, count: 0, loading: false, failedCount: 6, onClearFailed: noop,
+    colorDots: [], colorFilter: new Set<string>(), onToggleColor: noop, sharedOnly: false, onToggleShared: noop, commentOnly: false, onToggleComment: noop,
+    hasUnread: false, tags: [], tagFilter: new Set<string>(), onSelectTag: noop, onDeleteTag: noop, onClearTags: noop, tagPanelOpen: false, onToggleTagPanel: noop,
+    ...over,
+  });
+  const draw = (over: Record<string, unknown> = {}) => act(() => root.render(<LibraryToolbar {...toolbar(over)} />));
+  const rows = () => [...document.querySelectorAll<HTMLButtonElement>(".vp-pop .vp-item")];
+
+  it("씬 캔버스 — □·빨간 단추 없이 S·T·C 묶음 끝 단추 · 창 = Fill · Hide failed · Activity(정리 → 확인 창)", () => {
+    const onToggleHideFailed = vi.fn(), onToggleFill = vi.fn(), onClearFailed = vi.fn();
+    draw({ boardMode: true, sceneCanvas: true, hideFailed: false, onToggleHideFailed, onToggleFill, onClearFailed });
+    expect([one(".fit-toggle"), one(".lib-clear-failed"), one(".size-slider")]).toEqual([null, null, null]);
+    expect(one(".assets-filters")!.lastElementChild!.className).toBe("vp-wrap"); // 워크스페이스와 같은 자리
+    click(one(".vp-btn"));
+    expect(rows().map((el) => [el.textContent, el.getAttribute("aria-checked")])).toEqual([["Fill", "true"], ["Hide failed", "false"], ["실패·차단 정리6", null]]);
+    click(rows()[0]);
+    click(rows()[1]);
+    expect([onToggleFill.mock.calls.length, onToggleHideFailed.mock.calls.length]).toEqual([1, 1]);
+    click(rows()[2]);
+    expect(one(".vp-pop")).toBeNull();
+    click(one(".host-exit-confirm .settings-action.danger"));
+    expect(onClearFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it("히스토리 보기(씬 없음) 툴바는 그대로 — □ + 크기 · 빨간 단추", () => {
+    draw({ boardMode: true, onToggleHideFailed: noop });
+    expect([!!one(".lib-tools > .fit-toggle"), !!one(".size-slider"), !!one(".lib-clear-failed"), one(".vp-wrap")]).toEqual([true, true, true, null]);
+  });
+
+  it("어셋 보기 창 — Layout 은 Square · List(Masonry 없음) · 나머지는 워크스페이스와 같다", () => {
+    const onSelectLayout = vi.fn();
+    act(() => root.render(
+      <ViewControls fitContain={false} onToggleFit={noop} scale={1} onScale={noop} scaleMin={0.7} scaleMax={1.7} sizeTitle="크기"
+        layout="grid" groupByDate={false} onSelectLayout={onSelectLayout} onToggleGroupByDate={noop} viewMenu />,
+    ));
+    click(one(".vp-btn"));
+    expect(rows().map((el) => el.textContent)).toEqual(["Square", "List", "Split by date", "Fill"]);
+    click(rows()[1]);
+    expect(onSelectLayout).toHaveBeenCalledWith("list");
+    expect(document.querySelectorAll(".vp-ticks i")).toHaveLength(21);
+  });
+
+  it("어셋 정렬 단추 — 보기 단추 모양 · 창에서 고르면 알리고 열린 채(고른 것 라임 · ● 없음) · Resolve 목록용 옛 모양은 그대로", async () => {
+    const { AssetSortMenu } = await import("../src/components/assets/AssetSortMenu");
+    const onField = vi.fn(), onDir = vi.fn();
+    act(() => root.render(<div className="assets-filters"><AssetSortMenu field="date" dir="desc" onField={onField} onDir={onDir} viewStyle /></div>));
+    expect(one(".vp-sort > .vp-btn")!.className).toBe("af-btn vp-btn");
+    click(one(".vp-sort > .vp-btn"));
+    expect(rows().map((el) => [el.textContent, el.classList.contains("sel")])).toEqual([
+      ["이름", false], ["날짜", true], ["유형", false], ["오름차순", false], ["내림차순", true],
+    ]);
+    expect(document.body.textContent).not.toContain("●");
+    click(rows()[0]);
+    click(rows()[3]);
+    expect([onField.mock.calls, onDir.mock.calls, !!one(".vp-pop")]).toEqual([[["name"]], [["asc"]], true]);
+    act(() => root.render(<AssetSortMenu field="date" dir="desc" onField={onField} onDir={onDir} />));
+    expect([!!one(".asort-btn"), one(".vp-sort")]).toEqual([true, null]);
+  });
+
+  it("New 노드는 빗금 없이 카드 바탕 · Hide failed 의 캔버스 실패 칸 흐림 — CSS", () => {
+    const css = readFileSync(new NodeURL("../src/styles/scene.css", import.meta.url), "utf8");
+    expect(css).toContain(".scene-card-genbody.scene-genempty { background: none; }"); // 빗금 규칙(.scene-card-genbody — 파일 뒤쪽)을 두 클래스로 이긴다
+    expect(css).toContain(".scene-genfail.dimmed { opacity: 0.12; }");
+  });
+});
+
 describe("실패·차단 판정(Hide failed)", () => {
+  it("캔버스 판정(matchesBoardFilters) — Hide failed 면 실패·차단 생성물이 빠진다(노드 흐림 · '생성 결과' 창에서 걸러 냄)", async () => {
+    const { matchesBoardFilters } = await import("../src/lib/boardFilters");
+    const gen = (status: string) => ({ status, assets: [{ type: "image" }], tags: [], comment_count: 0, is_final: false }) as never;
+    const base = { typeFilter: "all" as const, sharedOnly: false, commentOnly: false, finalOnly: false };
+    expect([matchesBoardFilters(gen("failed"), base), matchesBoardFilters(gen("failed"), { ...base, hideFailed: true }), matchesBoardFilters(gen("done"), { ...base, hideFailed: true })])
+      .toEqual([true, false, true]);
+  });
+
   it("완료·대기·진행 중이 아닌 것 = 실패·차단(서버 정리 기준과 같다)", () => {
     expect(["done", "pending", "running", "failed", "nsfw", "blocked", "cancelled"].map((status) => isFailedGeneration({ status } as never)))
       .toEqual([false, false, false, true, true, true, true]);

@@ -659,6 +659,12 @@
 /* 보기 단추 — S·T·C 와 같은 크기(.af-btn 26×24)이되 **상자 없이 아이콘만**, 앞에 가는 세로선(Jay 2026-10-30 — 다른 기능으로 보이게.
    선은 캔버스 파일 단추와 레퍼런스 찾기 사이 선 .scene-io-sep 와 같은 밝기). 마우스 올림 = 옅은 회색 바탕 · 연 동안 = 옅은 라임 바탕 + 라임 아이콘 */
 .assets-filters > .vp-wrap { margin-left: 3px; padding-left: 10px; border-left: 1px solid rgba(255, 255, 255, 0.22); }
+/* 어셋 탭 [보기][정렬] — 선은 첫 단추 앞에만 · 어셋 툴바의 .af-btn 바탕 규칙(assets.css)을 이긴다 */
+.assets-filters > .vp-wrap + .vp-wrap { margin-left: 0; padding-left: 0; border-left: 0; }
+.assets-tools .af-btn.vp-btn { background: transparent; border-color: transparent; color: var(--muted2); }
+.assets-tools .af-btn.vp-btn:hover { background: rgba(255,255,255,0.07); color: var(--text); }
+.assets-tools .af-btn.vp-btn.open { background: rgba(var(--accent-rgb),0.12); color: var(--accent); }
+.vp-pop.vp-sort-pop { width: 180px; }
 .af-btn.vp-btn { width: 26px; min-width: 26px; padding: 0; display: inline-grid; place-items: center; background: transparent; border-color: transparent; }
 .af-btn.vp-btn:hover { background: rgba(255,255,255,0.07); }
 .af-btn.vp-btn svg { display: block; }

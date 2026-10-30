@@ -1022,7 +1022,13 @@
 }
 /* 아직 생성물이 없는 생성 카드 — 같은 로고를 멈춘 채·회색 16%(Jay 2026-10-30 안 B, 전엔 'New' 글자).
    크기는 카드를 따른다("창 크기에 맞게") — 본문의 70% 상자 안에 비율을 지켜 가운데(가로·세로 중 짧은 쪽에 맞춘다) */
+/* 결과가 없는 New 노드 — 빗금 없이 카드 바탕(#0c0d11) 그대로 = 빈 Comfy 노드와 같은 바탕(Jay 2026-10-30). 생성 중·실패·삭제됨 칸의 빗금은 그대로.
+   빗금(.scene-card-genbody)이 이 파일 뒤쪽에 있어 두 클래스로 이긴다 */
 .scene-genempty { position: relative; }
+.scene-card-genbody.scene-genempty { background: none; }
+/* Hide failed(필터 단추 창) — 캔버스에서는 실패·차단 칸을 흐리게(다른 캔버스 필터의 흐림 .linb-node.dimmed 와 같은 값 · 노드는 그대로) */
+.scene-genfail.dimmed { opacity: 0.12; }
+.scene-genfail.dimmed:hover { opacity: 0.6; }
 .scene-genempty-logo {
   position: absolute; inset: 0; margin: auto; width: 70%; height: 70%; object-fit: contain;
   opacity: 0.16; filter: grayscale(1) brightness(1.7); pointer-events: none; user-select: none;
