@@ -966,6 +966,33 @@
 }
 /* 아직 생성물이 없는 생성 카드 — 같은 로고를 작게·멈춘 채·회색 16%(Jay 2026-10-30 안 B, 전엔 'New' 글자) */
 .scene-genempty-logo { width: 42%; height: auto; opacity: 0.16; filter: grayscale(1) brightness(1.7); pointer-events: none; user-select: none; }
+/* 노드 설명 창(Jay 2026-10-30 B안, components/scene/NodeTip.tsx) — 화면 맨 위(body)에 그린다. 누를 수 없다(마우스는 노드로) */
+.node-tip {
+  position: fixed; z-index: 10000; pointer-events: none; max-width: 320px; box-sizing: border-box;
+  background: #14161a; border: 1px solid #2f333b; border-radius: 9px; box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55);
+  padding: 8px 11px; font-size: 12px; line-height: 1.5; color: #c9ced6; white-space: normal; overflow-wrap: anywhere;
+}
+.node-tip-head { font-size: 12.5px; font-weight: 800; color: #eef0f3; }
+.node-tip-status { display: flex; align-items: center; gap: 6px; font-weight: 700; }
+.node-tip-head + .node-tip-status { margin-top: 4px; }
+.node-tip-status i { width: 7px; height: 7px; border-radius: 50%; flex: none; background: #9aa0aa; }
+.node-tip.tone-bad .node-tip-status { color: #ff8f8f; }
+.node-tip.tone-bad .node-tip-status i { background: #ff6b6b; }
+.node-tip.tone-warn .node-tip-status { color: #f5c26b; }
+.node-tip.tone-warn .node-tip-status i { background: #f5a524; }
+.node-tip-detail { color: #a9afb9; margin-top: 2px; }
+.node-tip-fix { display: flex; gap: 6px; align-items: baseline; margin-top: 6px; }
+.node-tip-fix b { flex: none; font-size: 10.5px; font-weight: 800; color: #0b0c10; background: #c9ced6; border-radius: 4px; padding: 0 5px; }
+.node-tip-note { color: #8a909a; font-size: 11.5px; margin-top: 4px; }
+.node-tip-rows { display: grid; grid-template-columns: auto 1fr; gap: 1px 10px; margin-top: 6px; font-size: 11.5px; }
+.node-tip-rows > span:nth-child(odd) { color: #8a909a; }
+.node-tip-rows:first-child { margin-top: 0; }
+.node-tip-keys { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 7px; padding-top: 6px; border-top: 1px solid #23262e; color: #9aa0aa; font-size: 11px; }
+.node-tip-keys:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.node-tip-keys kbd {
+  font: inherit; font-size: 10.5px; font-weight: 700; color: #d7dae0; background: #23262e;
+  border: 1px solid #343842; border-radius: 4px; padding: 0 5px; margin-right: 3px;
+}
 /* 생성물이 휴지통으로 간 카드 — 지운 그림 아이콘(Jay 2026-10-30, 전엔 '삭제됨' 글자). 뜻은 title 설명 */
 .scene-gendeleted { color: #6b7180; }
 .scene-gendeleted svg { width: 34px; height: 34px; }

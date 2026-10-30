@@ -252,7 +252,7 @@ export function ComfyCard({
                 </button>
                 <button
                   className="scene-comfynode-act"
-                  title={loadingWorkflow ? "워크플로 읽는 중…" : "현재 워크플로우 다시 읽기(노드수 갱신·상태 리셋)"}
+                  title={loadingWorkflow ? "워크플로 읽는 중" : "현재 워크플로우 다시 읽기\n노드 수 갱신·상태 초기화"}
                   disabled={loadingWorkflow} // 응답 전의 다시 누름(28회차) — 같은 내용을 두 번 읽는다
                   onMouseDown={stop}
                   onClick={(e) => {
@@ -569,13 +569,13 @@ export function ComfyCard({
       <span
         className={"scene-port in" + (hasTextParam ? " lane-ref" : "")}
         style={hasTextParam ? { top: `calc(50% + ${laneDelta("ref", card)}px)` } : undefined}
-        title="레퍼런스·생성물·리스트 연결 → 타입별로 LoadImage/LoadVideo 에 자동 주입"
+        title={"레퍼런스 입력\n레퍼런스·생성물·리스트를 이으면 종류별로 LoadImage·LoadVideo 에 자동으로 넣는다"}
       />
       {hasTextParam && (
         <span
           className="scene-port in lane-text"
           style={{ top: `calc(50% + ${laneDelta("text", card)}px)` }}
-          title="텍스트 연결 → 노출된 text 파라미터에 자동 입력(연결 중엔 입력칸 비활성)"
+          title={"텍스트 입력\n이으면 노출된 text 파라미터에 자동으로 넣는다(이어진 동안 입력칸 잠김)"}
         />
       )}
       <span
@@ -583,16 +583,16 @@ export function ComfyCard({
         onMouseDown={(e) => actions.onOutPortDown(e, card.id)}
         title={
           outLane === "text"
-            ? "텍스트 출력 — 드래그해 연결"
+            ? "텍스트 출력\n드래그 = 연결"
             : outLane === "ref"
-              ? "이미지·영상 출력 — 드래그해 연결"
-              : "드래그해 다른 노드에 연결"
+              ? "이미지·영상 출력\n드래그 = 연결"
+              : "Comfy 출력\n드래그 = 다른 노드에 연결"
         }
       />
       <span
         className="scene-resize"
         onMouseDown={(e) => actions.onResizeDown(e, card.id)}
-        title="드래그해 크기 조절"
+        title="드래그 = 크기 조절"
       />
       {/* 마지막으로 크게 열어본 카드 — 저장은 getNodePreview 로 같이 되므로 표시도 같아야 한다 */}
       {lastViewed && <LastViewedBadge />}

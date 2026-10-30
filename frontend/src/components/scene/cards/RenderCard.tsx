@@ -86,7 +86,7 @@ export function RenderCard({
                   >
                     <span
                       className="scene-listrow-grip"
-                      title="드래그해 순서 변경"
+                      title="드래그 = 순서 바꾸기"
                       onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
                       onClick={(e) => e.stopPropagation()}
                     >
@@ -96,14 +96,14 @@ export function RenderCard({
                       type="checkbox"
                       className="scene-listrow-check"
                       checked={!unchecked.has(cid)}
-                      title={unchecked.has(cid) ? "체크(렌더 대상)" : "체크 해제(렌더 제외)"}
+                      title={unchecked.has(cid) ? "렌더에서 빠짐\n클릭 = 렌더 대상으로" : "렌더 대상\n클릭 = 렌더에서 빼기"}
                       onMouseDown={(e) => e.stopPropagation()}
                       onClick={(e) => e.stopPropagation()}
                       onChange={() => toggleRenderCheck(card.id, cid)}
                     />
                     <span
                       className="scene-listrow-view"
-                      title={gen?.assets?.[0] ? "클릭해 크게 보기" : undefined}
+                      title={gen?.assets?.[0] ? "클릭 = 크게 보기" : undefined}
                       onMouseDown={(e) => e.stopPropagation()}
                       onClick={(e) => {
                         const a = gen?.assets?.[0];
@@ -120,7 +120,7 @@ export function RenderCard({
                     </span>
                     <span
                       className="scene-listrow-count"
-                      title={n > 0 ? "클릭해 이 카드의 생성 결과 모두 보기" : undefined}
+                      title={n > 0 ? "클릭 = 이 카드의 생성 결과 모두 보기" : undefined}
                       onMouseDown={(e) => e.stopPropagation()}
                       onClick={(e) => {
                         if (n <= 0) return;
@@ -170,7 +170,7 @@ export function RenderCard({
           </button>
           <button
             className="scene-cardgen-go"
-            title="연결된 comfy 를 먼저 실행하고, 체크된 생성 카드를 각자 생성(모델 노드 없으면 하단 프롬프트 모델)"
+            title={"렌더\n연결된 Comfy 를 먼저 실행하고, 체크된 생성 카드를 각자 생성\n모델 노드가 없으면 아래 프롬프트의 모델로"}
             disabled={!renderCount}
             onClick={(e) => {
               e.stopPropagation();
@@ -181,16 +181,16 @@ export function RenderCard({
           </button>
         </div>
       )}
-      <span className="scene-port in" title="생성 카드를 연결해 모음" />
+      <span className="scene-port in" title={"렌더 입력\n생성 카드를 이어 모은다"} />
       <span
         className="scene-port out"
         onMouseDown={(e) => onOutPortDown(e, card.id)}
-        title="드래그해 미리보기(View)에 연결 — 담긴 생성물들을 재생"
+        title={"렌더 출력\n드래그 = 미리보기(View)에 연결 — 담긴 생성물을 차례로 재생"}
       />
       <span
         className="scene-resize"
         onMouseDown={(e) => onResizeDown(e, card.id)}
-        title="드래그해 크기 조절"
+        title="드래그 = 크기 조절"
       />
     </>
   );

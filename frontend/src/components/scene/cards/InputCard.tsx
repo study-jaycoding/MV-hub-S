@@ -60,7 +60,7 @@ export function InputCard({
       <span
         className="scene-port out"
         onMouseDown={(e) => onOutPortDown(e, card.id)}
-        title="드래그해 원하는 곳에 연결(고른 출력의 소스처럼 동작)"
+        title={"입력 노드 출력\n드래그 = 원하는 곳에 연결\n고른 출력의 소스처럼 동작한다"}
       />
     </>
   );

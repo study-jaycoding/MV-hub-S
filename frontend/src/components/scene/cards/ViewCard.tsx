@@ -71,11 +71,11 @@ export function ViewCard({
           </button>
         ) : null}
       </div>
-      <span className="scene-port in" title="생성 카드 / 텍스트 / 리스트 / Comfy 결과를 연결" />
+      <span className="scene-port in" title={"미리보기 입력\n생성 카드·텍스트·리스트·Comfy 결과를 잇는다"} />
       <span
         className="scene-resize"
         onMouseDown={(e) => onResizeDown(e, card.id)}
-        title="드래그해 크기 조절"
+        title="드래그 = 크기 조절"
       />
     </>
   );

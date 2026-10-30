@@ -66,15 +66,17 @@ export const ReferenceCard = memo(function ReferenceCard({
               <div
                 className="scene-refthumb"
                 key={i}
+                // 줄마다 한 가지 — 이름 · 상태 · 해결 · 덧말 · 조작(캔버스의 설명 창 NodeTip 이 이 줄로 나눠 그린다, Jay 2026-10-30)
                 title={
                   (r.name || `레퍼런스 ${i + 1}`) +
                   (missing
-                    ? " · 서버에 없음 · 미들클릭=정보"
+                    ? "\n서버에 없음\n휠클릭 = 정보"
                     : held
-                      ? ` · ${held.title}${held.detail ? ` — ${held.detail}` : ""} · ${held.fix}` +
-                        `${held.more ? ` · ${held.more}` : ""} · 미들클릭=정보`
-                      : " · 더블클릭=큰 화면 · 미들클릭=정보")
+                      ? `\n${held.title}${held.detail ? ` — ${held.detail}` : ""}\n해결: ${held.fix}` +
+                        `${held.more ? `\n${held.more}` : ""}\n휠클릭 = 정보`
+                      : "\n더블클릭 = 큰 화면 · 휠클릭 = 정보")
                 }
+                data-tip-tone={missing ? "bad" : held ? (held.copy ? "warn" : "bad") : undefined}
                 onMouseDown={(e) => {
                   if (e.button === 1) e.preventDefault(); // 휠클릭 자동스크롤 방지(정보는 auxclick 에서)
                 }}
@@ -216,7 +218,8 @@ export const ReferenceCard = memo(function ReferenceCard({
                     className="scene-ref-offmark"
                     role="img"
                     aria-label="서버에 없음"
-                    title="서버에 없음 — 이 PC 에만 있어 다른 사람에게는 안 보입니다"
+                    title={"이 PC 에만 있음\n서버에 없음 — 다른 사람에게는 안 보입니다"}
+                    data-tip-tone="warn"
                   >
                     <CloudOffIcon />
                   </span>
@@ -229,7 +232,7 @@ export const ReferenceCard = memo(function ReferenceCard({
       <span
         className="scene-port out"
         onMouseDown={(e) => onOutPortDown(e, card.id)}
-        title="드래그해 생성 카드에 연결"
+        title={"레퍼런스 출력\n드래그 = 생성 카드에 연결"}
       />
     </>
   );

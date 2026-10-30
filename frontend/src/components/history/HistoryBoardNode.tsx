@@ -116,7 +116,8 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
         (dimmed ? " dimmed" : "")
       }
       style={{ left: x, top: y, width, height }}
-      title={`${generation.prompt.slice(0, 80)}\n클릭=선택 · 드래그=위치 이동(다중선택 시 함께) · 배경 드래그=복수 선택 · 더블클릭=미리보기 · 휠클릭=정보 · d=비활성 · l=자동 정렬`}
+      // 줄마다 한 가지 — 프롬프트(“ 로 묶어 설명 창이 나누지 않게) · 조작 키 두 줄(캔버스 설명 창 NodeTip, Jay 2026-10-30)
+      title={`“${generation.prompt.slice(0, 80)}”\n클릭 = 선택 · 드래그 = 옮기기(여럿 골랐으면 함께) · 더블클릭 = 미리보기\n휠클릭 = 정보 · D = 비활성 · L = 자동 정렬 · 배경 드래그 = 여러 개 고르기`}
       onMouseEnter={(e) => {
         const video = e.currentTarget.querySelector("video") as HTMLVideoElement | null;
         if (video) {

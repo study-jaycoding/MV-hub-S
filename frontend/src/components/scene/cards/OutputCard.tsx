@@ -47,7 +47,7 @@ export function OutputCard({
           />
         </div>
       )}
-      <span className="scene-port in" title="발행할 소스(모델/텍스트/레퍼런스/생성물/리스트)를 연결" />
+      <span className="scene-port in" title={"출력 노드 입력\n내보낼 소스(모델·텍스트·레퍼런스·생성물·리스트)를 잇는다"} />
     </>
   );
 }

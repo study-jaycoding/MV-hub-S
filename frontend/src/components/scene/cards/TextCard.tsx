@@ -408,7 +408,7 @@ export function TextCard({
       )}
       <button
         className="scene-copy-btn"
-        title="텍스트 전체 복사(연결 입력 + 편집 텍스트)"
+        title={"텍스트 전체 복사\n연결 입력 + 편집 텍스트"}
         onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation();
@@ -421,17 +421,17 @@ export function TextCard({
       </button>
       <span
         className="scene-port in"
-        title="레퍼런스(→@토큰) + 텍스트(comfy 결과·텍스트 노드) 연결"
+        title={"텍스트 입력\n레퍼런스(@토큰)·텍스트(Comfy 결과·텍스트 노드)를 잇는다"}
       />
       <span
         className="scene-port out"
         onMouseDown={(e) => onOutPortDown(e, card.id)}
-        title="드래그해 생성 카드 텍스트 입력에 연결(보라)"
+        title={"텍스트 출력\n드래그 = 생성 카드 텍스트 입력에 연결"}
       />
       <span
         className="scene-resize"
         onMouseDown={(e) => onResizeDown(e, card.id)}
-        title="드래그해 크기 조절"
+        title="드래그 = 크기 조절"
       />
     </>
   );

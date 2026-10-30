@@ -110,7 +110,7 @@ export function ListCard({
                     >
                       <span
                         className="scene-listrow-grip"
-                        title="드래그해 순서 변경"
+                        title="드래그 = 순서 바꾸기"
                         onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
                         onClick={(e) => e.stopPropagation()}
                       >
@@ -139,7 +139,7 @@ export function ListCard({
                   >
                     <span
                       className="scene-listrow-grip"
-                      title="드래그해 순서 변경"
+                      title="드래그 = 순서 바꾸기"
                       onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
                       onClick={(e) => e.stopPropagation()}
                     >
@@ -147,7 +147,7 @@ export function ListCard({
                     </span>
                     <span
                       className="scene-listrow-view"
-                      title={gen?.assets?.[0] ? "클릭해 크게 보기" : undefined}
+                      title={gen?.assets?.[0] ? "클릭 = 크게 보기" : undefined}
                       onMouseDown={(e) => e.stopPropagation()}
                       onClick={(e) => {
                         const a = gen?.assets?.[0];
@@ -164,7 +164,7 @@ export function ListCard({
                     </span>
                     <span
                       className="scene-listrow-count"
-                      title={n > 0 ? "클릭해 이 카드의 생성 결과 모두 보기" : undefined}
+                      title={n > 0 ? "클릭 = 이 카드의 생성 결과 모두 보기" : undefined}
                       onMouseDown={(e) => e.stopPropagation()}
                       onClick={(e) => {
                         if (n <= 0) return;
@@ -196,7 +196,7 @@ export function ListCard({
                   >
                     <span
                       className="scene-listrow-grip"
-                      title="드래그해 순서 변경"
+                      title="드래그 = 순서 바꾸기"
                       onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
                       onClick={(e) => e.stopPropagation()}
                     >
@@ -224,7 +224,7 @@ export function ListCard({
                       key={cid}
                       className={"scene-listthumb" + (reorderFrom === cid ? " reordering" : "")}
                       data-reid={cid}
-                      title={`${i + 1}번 (생성물) — 드래그해 이 리스트의 순서 변경`}
+                      title={`${i + 1}번 · 생성물\n드래그 = 순서 바꾸기`}
                       onMouseDown={(e) => startReorder(e, card.id, cid, "h")}
                     >
                       {genKind === "audio" ? (
@@ -254,10 +254,11 @@ export function ListCard({
                     className={"scene-listthumb" + (reorderFrom === cid ? " reordering" : "")}
                     data-reid={cid}
                     title={
-                      `${i + 1}번 (레퍼런스 ${refs.length}장)` +
-                      (anyHeld ? " · 연결 안 된 레퍼런스 있음" : flagged ? " · 서버에 없는 레퍼런스 있음" : "") +
-                      " — 드래그해 이 리스트의 순서 변경"
+                      `${i + 1}번 · 레퍼런스 ${refs.length}장` +
+                      (anyHeld ? "\n연결 안 된 레퍼런스 있음" : flagged ? "\n서버에 없는 레퍼런스 있음" : "") +
+                      "\n드래그 = 순서 바꾸기"
                     }
+                    data-tip-tone={anyHeld || flagged ? "bad" : undefined}
                     onMouseDown={(e) => startReorder(e, card.id, cid, "h")}
                   >
                     {first === "missing" || first === "held" ? (
@@ -283,11 +284,12 @@ export function ListCard({
                         aria-label="서버에 없음"
                         title={
                           first === "local"
-                            ? "서버에 없음 — 이 PC 에만 있어 다른 사람에게는 안 보입니다"
+                            ? "이 PC 에만 있음\n서버에 없음 — 다른 사람에게는 안 보입니다"
                             : anyHeld
-                              ? "이 카드의 레퍼런스 중 연결 안 된 것이 있습니다"
-                              : "이 카드의 레퍼런스 중 서버에 없는 것이 있습니다"
+                              ? "이 카드의 레퍼런스\n연결 안 된 것이 있습니다"
+                              : "이 카드의 레퍼런스\n서버에 없는 것이 있습니다"
                         }
+                        data-tip-tone={first === "local" ? "warn" : "bad"}
                       >
                         {anyHeld && first !== "local" ? <LinkOffIcon /> : <CloudOffIcon />}
                       </span>
@@ -327,16 +329,16 @@ export function ListCard({
           @
         </button>
       )}
-      <span className="scene-port in" title="생성/텍스트/레퍼런스 카드를 연결해 모음" />
+      <span className="scene-port in" title={"리스트 입력\n생성·텍스트·레퍼런스 카드를 이어 모은다"} />
       <span
         className="scene-port out"
         onMouseDown={(e) => onOutPortDown(e, card.id)}
-        title="드래그해 View(재생) 또는 생성 카드에 연결"
+        title={"리스트 출력\n드래그 = View(재생)·생성 카드에 연결"}
       />
       <span
         className="scene-resize"
         onMouseDown={(e) => onResizeDown(e, card.id)}
-        title="드래그해 크기 조절"
+        title="드래그 = 크기 조절"
       />
     </>
   );

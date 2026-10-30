@@ -40,7 +40,8 @@ export const ModelCard = memo(function ModelCard({
               {blocked && (
                 <div
                   className="scene-modelnode-blocked"
-                  title={`${policy.groupName ? `'${policy.groupName}' 그룹` : "이 그룹"}에서 쓸 수 없는 모델 — 더블클릭해 다른 모델을 고르세요`}
+                  title={`사용 불가\n${policy.groupName ? `'${policy.groupName}' 그룹` : "이 그룹"}에서 쓸 수 없는 모델\n더블클릭 = 다른 모델 고르기`}
+                  data-tip-tone="bad"
                 >
                   사용 불가
                 </div>
@@ -69,12 +70,12 @@ export const ModelCard = memo(function ModelCard({
       <span
         className="scene-port out"
         onMouseDown={(e) => onOutPortDown(e, card.id)}
-        title="드래그해 생성 카드 모델 입력에 연결(주황)"
+        title={"모델 출력\n드래그 = 생성 카드 모델 입력에 연결"}
       />
       <span
         className="scene-resize"
         onMouseDown={(e) => onResizeDown(e, card.id)}
-        title="드래그해 크기 조절"
+        title="드래그 = 크기 조절"
       />
     </>
   );

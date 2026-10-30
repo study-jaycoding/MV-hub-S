@@ -107,6 +107,7 @@ import {
 import { useT } from "../../lib/i18n";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
 import { SceneMinimap } from "./SceneMinimap";
+import { NodeTip } from "./NodeTip";
 import { SceneVariantPopup, type VariantDraftControls, type VariantResolveControls } from "./SceneVariantPopup";
 import { SceneModelModal } from "./SceneModelModal";
 import { SceneComfyModal } from "./SceneComfyModal";
@@ -3622,6 +3623,8 @@ export function SceneBoard({
         </svg>
       </div>
 
+      {/* 노드 설명 창 — 노드 안 요소의 설명(title)을 앱 모양 창으로(Jay 2026-10-30 B안) */}
+      <NodeTip rootRef={scrollRef} />
       {/* Ctrl+K 로 프롬프트를 숨겼을 때 — 멀티선택 액션바를 캔버스 상단 중앙(씬 패널·미니맵과 같은 줄)에 얹는다. */}
       {topCenterOverlay && (
         <div className="scene-topbar-overlay" onMouseDown={(e) => e.stopPropagation()}>

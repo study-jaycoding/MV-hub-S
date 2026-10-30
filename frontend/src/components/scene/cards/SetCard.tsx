@@ -91,12 +91,12 @@ export const SetCard = memo(function SetCard({
       <span
         className="scene-port out lane-set"
         onMouseDown={(e) => onOutPortDown(e, card.id)}
-        title="드래그해 생성 카드 세트 입력(폴더·태그)에 연결"
+        title={"세트 출력\n드래그 = 생성 카드 세트 입력(폴더·태그)에 연결"}
       />
       <span
         className="scene-resize"
         onMouseDown={(e) => onResizeDown(e, card.id)}
-        title="드래그해 크기 조절"
+        title="드래그 = 크기 조절"
       />
     </>
   );

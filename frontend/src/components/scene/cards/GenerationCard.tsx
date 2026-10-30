@@ -7,7 +7,7 @@ import type { SceneCard, SceneEdgeRole, ScenePortLane } from "../../../lib/scene
 import { cardBatch, variantIds } from "../../../lib/scenes";
 import type { Generation, InfoTarget, PreviewTarget } from "../../../types";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../../lib/workspaceCommand";
-import { generationStatusLabelFor, generationStatusTitle } from "../../../lib/generationDisplay";
+import { generationIssueFor, generationStatusLabelFor, generationStatusTitle } from "../../../lib/generationDisplay";
 import { folderChipLabel } from "../../../lib/folderLabel";
 import { useT } from "../../../lib/i18n";
 import { HistoryBoardNode } from "../../history/HistoryBoardNode";
@@ -182,9 +182,12 @@ export const GenerationCard = memo(function GenerationCard({
                 return (
                   <div
                     className={"scene-card-genbody scene-genfail status-" + st}
-                    title={g ? generationStatusTitle(
-                      st, g.error, g.execution_phase, g.provider_status, g.last_checked_at, g.next_check_at,
-                    ) : undefined}
+                    title={g ? (
+                      // 원인을 분류한 때는 첫 줄이 '문제: 설명' — 못 한 때는 보이는 상태 글을 첫 줄로(설명 창의 빨간 상태 줄)
+                      (generationIssueFor(st, g.error, g.execution_phase) ? "" : generationStatusLabelFor(st, g.error, g.execution_phase) + "\n") +
+                      (generationStatusTitle(st, g.error, g.execution_phase, g.provider_status, g.last_checked_at, g.next_check_at) ?? "")
+                    ).trim() : undefined}
+                    data-tip-tone="bad"
                     onMouseDown={(e) => e.button === 1 && e.preventDefault()} // 휠클릭 자동스크롤 방지
                     onAuxClick={(e) => {
                       if (e.button === 1 && g && hist.onInfo) {
@@ -273,12 +276,12 @@ export const GenerationCard = memo(function GenerationCard({
       <span
         className="scene-port out"
         onMouseDown={(e) => actions.onOutPortDown(e, card.id)}
-        title="드래그해 다른 생성 카드에 연결"
+        title={"생성 출력\n드래그 = 다른 생성 카드에 연결"}
       />
       <span
         className="scene-resize"
         onMouseDown={(e) => actions.onResizeDown(e, card.id)}
-        title="드래그해 카드 크기 조절"
+        title="드래그 = 크기 조절"
       />
       {/* 이 카드만 선택했을 때 카드 아래 Generate 툴바 — 연결된 모델·레퍼런스·텍스트로 바로 생성(하단 프롬프트 재사용). */}
       {selectedOnly && sel && actions.showGenerateBar && (
@@ -308,7 +311,7 @@ export const GenerationCard = memo(function GenerationCard({
           </button>
           <button
             className="scene-cardgen-go"
-            title="연결된 comfy 가 있으면 먼저 실행하고, 모델·레퍼런스·텍스트로 생성"
+            title={"Generate\n연결된 Comfy 가 있으면 먼저 실행하고, 모델·레퍼런스·텍스트로 생성"}
             onClick={(e) => {
               e.stopPropagation();
               void actions.orchestrateGenerate(card.id);
