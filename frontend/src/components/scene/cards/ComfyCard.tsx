@@ -345,7 +345,6 @@ export function ComfyCard({
                         sConfirm={hist.sConfirm?.id === repGen.id ? hist.sConfirm : null}
                         mayFinalize={hist.canFinalize ? hist.canFinalize(repGen) : true}
                         onSClick={hist.onSClick}
-                        onSDouble={hist.onSDouble}
                         onSConfirmYes={hist.onSConfirmYes}
                         onSConfirmNo={hist.onSConfirmNo}
                         onPreview={getNodePreview(card.id)}

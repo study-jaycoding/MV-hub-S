@@ -445,7 +445,6 @@ const EN: Record<string, string> = {
   "보류할까요?": "Put on hold?",
   "최종(골드)으로 지정할까요?": "Mark as final (gold)?",
   "공유 하시겠습니까?": "Share this result?",
-  "최종 지정을 해제할까요?": "Remove final status?",
   "단계 올리기": "Raise grade",
   "단계 내리기": "Lower grade",
   "단계 올리기 (일반·보류→공유, 공유→최종)": "Raise grade (Unshared/On hold→Shared, Shared→Final)",
@@ -488,22 +487,6 @@ const EN: Record<string, string> = {
     "Stopped: {error} ({count} remaining — run again to resume sharing)",
   "최종(골드)": "Final (gold)",
   "팀 공유됨": "Shared with the team",
-  "최종(골드) — 더블클릭=최종 해제 (공유 잠금)": "Final (gold) — double-click to remove final status (sharing locked)",
-  "팀 공유됨 · 클릭=공유 해제 · 더블클릭=최종 지정(Supervisor)":
-    "Shared with the team · click to unshare · double-click to mark as final (Supervisor)",
-  "팀 공유 (클릭) · 최종 지정은 공유 후 더블클릭":
-    "Click to share with the team · once shared, double-click to mark as final",
-  "클릭=공유 해제 · 더블클릭=최종 지정 (Supervisor)": "Click to unshare · double-click to mark as final (Supervisor)",
-  "더블클릭=최종 지정(Supervisor)": "Double-click to mark as final (Supervisor)",
-  "최종(골드) · 더블클릭=최종 해제": "Final (gold) · double-click to remove final status",
-  "팀 공유됨 · 클릭=공유 해제 · 더블클릭=최종 지정": "Shared with the team · click to unshare · double-click to mark as final",
-  "팀 공유 (클릭) · 공유 후 더블클릭=최종 지정":
-    "Click to share with the team · once shared, double-click to mark as final",
-  "최종(골드) — 더블클릭=최종 해제": "Final (gold) — double-click to remove final status",
-  "팀 공유됨 · 클릭=해제 · 더블클릭=최종": "Shared with the team · click to unshare · double-click to mark as final",
-  "팀 공유 (클릭) · 최종은 공유 후 더블클릭":
-    "Click to share with the team · once shared, double-click to mark as final",
-  "더블클릭=최종 지정 (Supervisor)": "Double-click to mark as final (Supervisor)",
   "클릭하여 공유 상태 변경": "Click to change review status",
   "바꿀 수 있는 항목이 없습니다.": "No eligible items to change.",
   "이 결과물을 어떻게 할까요?": "What would you like to do with this result?",

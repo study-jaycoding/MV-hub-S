@@ -169,16 +169,14 @@ describe("R7 계보 보드의 Esc", () => {
     expect(host.querySelector<HTMLElement>(".linb-canvas")?.style.transform ?? "").toContain("scale(1.1");
   });
 
-  // 10회차(Codex 검토): 보드는 S 의 단일/더블 가르기(220ms)를 모든 카드가 같이 쓴다 — 앞 카드의 대기 중에 누른 다른 카드의 S 가
-  //  버려지고 앞 카드의 확인만 뒤늦게 떴다.
-  it("한 카드의 S 를 누르고 곧바로(220ms 안) 다른 카드의 S 를 누르면 나중 카드의 확인이 뜬다", async () => {
+  // 선택 창은 기다림 없이 바로 뜨고(Jay 2026-10-30) 보드에 하나만 열린다 — 앞 카드의 S 뒤에 곧바로 다른 카드의 S 를 눌러도 나중 카드의 창이 남는다.
+  it("한 카드의 S 를 누르고 곧바로 다른 카드의 S 를 누르면 나중 카드의 창만 남는다", () => {
     mount();
     const sOf = (id: string) => [...node(id).querySelectorAll<HTMLButtonElement>(".linb-ov-btn")].find((button) => button.textContent === "S")!;
     const confirmOn = () => [...host.querySelectorAll<HTMLElement>(".linb-node")].filter((el) => el.querySelector(".sconfirm")).map((el) => el.dataset.id);
     act(() => { sOf("a").click(); });
+    expect(confirmOn()).toEqual(["a"]);
     act(() => { sOf("b").click(); });
-    expect(confirmOn()).toEqual([]); // 아직 더블클릭을 기다리는 중
-    await act(async () => { await new Promise((done) => setTimeout(done, 260)); });
     expect(confirmOn()).toEqual(["b"]);
   });
 });

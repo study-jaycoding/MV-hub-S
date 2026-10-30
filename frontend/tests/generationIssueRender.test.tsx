@@ -76,7 +76,7 @@ function historyProps(gen: Generation): ComponentProps<typeof HistoryBoardNode> 
     generation: gen, x: 0, y: 0, width: 180, height: 180, isRoot: false, isSelected: false,
     onLine: false, offLine: false, fill: true, disabled: false, typeFilter: "all",
     sharedOnly: false, commentOnly: false, finalOnly: false, sConfirm: null,
-    onSClick: noop, onSDouble: noop, onSConfirmYes: noop, onSConfirmNo: noop,
+    onSClick: noop, onSConfirmYes: noop, onSConfirmNo: noop,
     onPreview: noop, onInfo: noop, onRegenerate: noop,
   };
 }
@@ -88,7 +88,7 @@ function canvasProps(gen: Generation): ComponentProps<typeof CanvasGenerationCar
     fill: true, selectedOnly: false, laneDelta: () => 0, getNodePreview: () => noop,
     hist: {
       disabledIds: new Set(), typeFilter: "all", sharedOnly: false, commentOnly: false,
-      finalOnly: false, sConfirm: null, onSClick: noop, onSDouble: noop, onSConfirmYes: noop,
+      finalOnly: false, sConfirm: null, onSClick: noop, onSConfirmYes: noop,
       onSConfirmNo: noop,
     },
     actions: {

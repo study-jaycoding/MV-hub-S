@@ -6,14 +6,14 @@ import { thumbOf } from "../../lib/media";
 import { generationStatusLabelFor, generationStatusTitle } from "../../lib/generationDisplay";
 import { useT } from "../../lib/i18n";
 import { inBoardFolder, matchesBoardFilters } from "../../lib/boardFilters";
-import { canShowShareAction, type ReviewFilter } from "../../lib/generationReview";
+import { canOpenWorkspaceReview, canShowShareAction, reviewState, workspaceReviewAllowed, workspaceReviewOptions, type ReviewAction, type ReviewFilter } from "../../lib/generationReview";
 import type { Generation, InfoTarget, PreviewTarget } from "../../types";
 import { MediaThumbnail } from "../MediaThumbnail";
-import { GenerationConfirmOverlay } from "../generation/GenerationConfirmOverlay";
+import { GenerationReviewOverlay } from "../generation/GenerationReviewOverlay";
 import { InfoIcon } from "../common/ViewIcons";
 import { isDraftGeneration } from "../../lib/seedanceDraft";
 
-type SConfirm = { id: string; kind: "share" | "final" } | null;
+type SConfirm = { id: string } | null;
 
 interface Props {
   generation: Generation;
@@ -40,8 +40,7 @@ interface Props {
   sConfirm: SConfirm;
   mayFinalize?: boolean;
   onSClick: (generation: Generation) => void;
-  onSDouble: (generation: Generation) => void;
-  onSConfirmYes: (generation: Generation) => void;
+  onSConfirmYes: (generation: Generation, action: ReviewAction) => void;
   onSConfirmNo: () => void;
   onPreview: (target: PreviewTarget) => void;
   onInfo: (target: InfoTarget) => void;
@@ -75,7 +74,6 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
   sConfirm,
   mayFinalize = true,
   onSClick,
-  onSDouble,
   onSConfirmYes,
   onSConfirmNo,
   onPreview,
@@ -206,21 +204,13 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
                 (generation.shared ? " on" : "") +
                 (generation.is_final ? " final" : generation.is_held ? " held" : "")
               }
-              title={t(
-                generation.is_final
-                  ? "최종(골드) · 더블클릭=최종 해제"
-                  : generation.shared
-                    ? "팀 공유됨 · 클릭=공유 해제 · 더블클릭=최종 지정"
-                    : "팀 공유 (클릭) · 공유 후 더블클릭=최종 지정"
-              )}
+              title={t(canOpenWorkspaceReview(generation, mayFinalize) ? "클릭하여 공유 상태 변경"
+                : generation.is_final ? "최종(골드)" : generation.is_held ? "보류" : "팀 공유됨")}
               onClick={(e) => {
                 e.stopPropagation();
                 onSClick(generation);
               }}
-              onDoubleClick={(e) => {
-                e.stopPropagation();
-                onSDouble(generation);
-              }}
+              onDoubleClick={(e) => e.stopPropagation()} // 노드의 더블클릭(미리보기)으로 새지 않게
             >
               {generation.is_final ? "★" : "S"}
             </button>
@@ -316,8 +306,8 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
         </div>
       </div>
       {sConfirm?.id === generation.id && (
-        <GenerationConfirmOverlay mode={sConfirm.kind} shared={generation.shared} isFinal={!!generation.is_final}
-          onYes={() => onSConfirmYes(generation)} onNo={onSConfirmNo} />
+        <GenerationReviewOverlay state={reviewState(generation)} options={workspaceReviewOptions(generation)}
+          allowed={workspaceReviewAllowed(mayFinalize)} onAction={(action) => onSConfirmYes(generation, action)} onCancel={onSConfirmNo} />
       )}
     </div>
   );

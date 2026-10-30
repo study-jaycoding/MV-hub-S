@@ -41,7 +41,6 @@ import { CutReel } from "../src/components/CutReel";
 import { PartialEditModal } from "../src/components/edit/PartialEditModal";
 import { FloatingPrompt } from "../src/components/FloatingPrompt";
 import { ConfirmQuestion } from "../src/components/generation/ConfirmQuestion";
-import { GenerationConfirmOverlay } from "../src/components/generation/GenerationConfirmOverlay";
 import { GenerationReviewOverlay } from "../src/components/generation/GenerationReviewOverlay";
 import { GradeStepModal } from "../src/components/GradeStepModal";
 import { InfoPopup } from "../src/components/InfoPopup";
@@ -504,7 +503,7 @@ describe("카드의 확인 덮개(S)", () => {
   const no = () => host.querySelector<HTMLElement>(".cs-final-no")!;
 
   it("뜨면 No 에 초점 · Tab 은 Yes ↔ No 만 돈다 · 걷히면 연 단추로 돌아간다", () => {
-    const view = (open: boolean) => page(open ? <GenerationConfirmOverlay mode="share" shared isFinal={false} onYes={noop} onNo={noop} /> : null);
+    const view = (open: boolean) => page(open ? <ConfirmQuestion question="q" onYes={noop} onNo={noop} /> : null);
     act(() => root.render(view(false)));
     focus("opener");
     act(() => root.render(view(true)));
@@ -521,7 +520,7 @@ describe("카드의 확인 덮개(S)", () => {
   });
 
   it("앱 루트와 같은 StrictMode(effect 가 두 번 돈다)에서도 걷히면 연 단추로 돌아간다", () => {
-    const view = (open: boolean) => <StrictMode>{page(open ? <GenerationConfirmOverlay mode="share" shared isFinal={false} onYes={noop} onNo={noop} /> : null)}</StrictMode>;
+    const view = (open: boolean) => <StrictMode>{page(open ? <ConfirmQuestion question="q" onYes={noop} onNo={noop} /> : null)}</StrictMode>;
     act(() => root.render(view(false)));
     focus("opener");
     act(() => root.render(view(true)));
@@ -534,7 +533,7 @@ describe("카드의 확인 덮개(S)", () => {
     const view = (open: boolean) => (
       <>
         <input id="typing" />
-        {open && <GenerationConfirmOverlay mode="share" shared isFinal={false} onYes={noop} onNo={noop} />}
+        {open && <ConfirmQuestion question="q" onYes={noop} onNo={noop} />}
       </>
     );
     act(() => root.render(view(false)));
@@ -593,7 +592,7 @@ describe("카드의 확인 덮개(S)", () => {
   });
 
   it("걷히는 사이 다른 곳으로 간 초점은 뺏지 않는다(바깥을 눌러 닫음)", () => {
-    const view = (open: boolean) => page(open ? <GenerationConfirmOverlay mode="share" shared isFinal={false} onYes={noop} onNo={noop} /> : null);
+    const view = (open: boolean) => page(open ? <ConfirmQuestion question="q" onYes={noop} onNo={noop} /> : null);
     act(() => root.render(view(false)));
     focus("opener");
     act(() => root.render(view(true)));
@@ -609,8 +608,9 @@ describe("카드의 확인 덮개(S)", () => {
     clickCard("g1");
     const s = cell("g1").querySelector<HTMLElement>(".card-sf")!;
     press(s);
-    act(() => { vi.advanceTimersByTime(300); }); // 한 번 누름과 두 번 누름을 가르는 기다림
     expect(host.querySelector(".sconfirm")).not.toBeNull();
+    expect(active()).toBe(host.querySelector(".review-panel")); // 선택 창은 기다림 없이 바로 뜬다(Jay 2026-10-30)
+    act(() => host.querySelector<HTMLButtonElement>(".review-option")!.click());
     expect(active()).toBe(no());
     // 격자는 위에 뜬 것이 있으면 Space 의 기본 동작을 막는다(뒤 목록 스크롤) — 덮개의 단추에서 난 Space 는 거기까지 가지 않는다
     expect(key(" ").defaultPrevented).toBe(false);

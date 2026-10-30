@@ -31,7 +31,7 @@ const gen = (over: Partial<Generation> = {}): Generation =>
 const hist = (over: Partial<HistPass> = {}): HistPass => ({
   disabledIds: new Set(), typeFilter: "all", colorFilter: new Set(), tagFilter: new Set(),
   sharedOnly: false, commentOnly: false, finalOnly: false, folderSel: null, sConfirm: null,
-  onSClick: noop, onSDouble: noop, onSConfirmYes: noop, onSConfirmNo: noop, ...over,
+  onSClick: noop, onSConfirmYes: noop, onSConfirmNo: noop, ...over,
 });
 const cardProps = (g: Generation, over: Partial<ComponentProps<typeof CanvasGenerationCard>> = {}): ComponentProps<typeof CanvasGenerationCard> => ({
   card: { id: "c1", kind: "generation", genId: g.id, x: 0, y: 0 }, sel: false, g, showNode: g.status === "done", waiting: false,

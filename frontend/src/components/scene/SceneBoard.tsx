@@ -26,6 +26,7 @@ import { api } from "../../api";
 import type { CanvasDocumentPort } from "../../features/canvas/api";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../lib/workspaceCommand";
 import { inBoardFolder, matchesBoardFilters } from "../../lib/boardFilters";
+import type { ReviewAction } from "../../lib/generationReview";
 import type { GradeMode } from "../../lib/gradeStep";
 import {
   assetVersionsSnapshot,
@@ -355,6 +356,7 @@ interface Props {
   onUnpublish?: (g: Generation) => void;
   onFinalize?: (g: Generation) => void;
   onUnfinalize?: (g: Generation) => void;
+  onReview?: (g: Generation, action: ReviewAction) => void; // 최종 → 해제(한 번에)
   canFinalize?: (g: Generation) => boolean;
   // 다중 결과 팝업의 액션바(라이브러리와 동일) — 선택 변형들에 대해 위임.
   projects?: Project[];
@@ -487,6 +489,7 @@ export function SceneBoard({
   onUnpublish,
   onFinalize,
   onUnfinalize,
+  onReview,
   canFinalize,
   projects,
   onVariantShare,
@@ -1143,10 +1146,10 @@ export function SceneBoard({
   useEffect(() => () => onBindingRef.current?.(null), []); // 언마운트(탭·씬 이탈) → 바인딩 해제
 
   const { tagEditCardId, setTagEditCardId, tagEditNodeGenId, setTagEditNodeGenId, applyCardTags, applyCardAutoTags,
-    applyCardWorkspace, variantWorkspace, bulkVariantTags, variantShare, sConfirm, setSConfirm, onNodeSClick, onNodeSDouble,
+    applyCardWorkspace, variantWorkspace, bulkVariantTags, variantShare, sConfirm, setSConfirm, onNodeSClick,
     onNodeSConfirmYes, onNodeSConfirmNo, onNodeTag, editSelectedTag } = useSceneCardLibraryActions({
     cardsRef, selectedRef, genDataRef, setGenData, refreshGenerationAfter, variantTargetIds,
-    onSetTags, onSetAutoTags, onWorkspaceCommand, onPublish, onUnpublish, onFinalize, onUnfinalize, canFinalize,
+    onSetTags, onSetAutoTags, onWorkspaceCommand, onPublish, onUnpublish, onFinalize, onUnfinalize, onReview, canFinalize,
   });
   // 폴더 이름표가 붙은 카드의 우클릭 = 그 폴더의 '폴더 보기' 창(Jay 2026-10-15 — 라이브러리 카드의 우클릭과 같은 뜻). 브라우저 메뉴는 노드가 막는다.
   //  위에 뜬 메뉴·창을 닫는 우클릭은 열지 않는다(lib/keyGate 의 contextMenuCovered — 라이브러리 격자와 같은 규칙). 안정 참조라 노드의 memo 를 깨지 않는다.
@@ -3489,7 +3492,6 @@ export function SceneBoard({
                     sConfirm,
                     canFinalize,
                     onSClick: onNodeSClick,
-                    onSDouble: onNodeSDouble,
                     onSConfirmYes: onNodeSConfirmYes,
                     onSConfirmNo: onNodeSConfirmNo,
                     onInfo,
@@ -3568,7 +3570,6 @@ export function SceneBoard({
                     sConfirm,
                     canFinalize,
                     onSClick: onNodeSClick,
-                    onSDouble: onNodeSDouble,
                     onSConfirmYes: onNodeSConfirmYes,
                     onSConfirmNo: onNodeSConfirmNo,
                     onInfo,

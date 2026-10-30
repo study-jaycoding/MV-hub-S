@@ -199,7 +199,7 @@ it("카드의 S 로 공유하면 씬의 사본에 바로 보이고 App 의 공�
   await openWindow([gen("a", 0), gen("b", 1)], { onPublish });
   expect(cell("a").querySelector(".card-sf.on")).toBeNull();
   act(() => { cell("a").querySelector(".card-sf")!.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })); });
-  await wait(300);
+  act(() => cell("a").querySelector<HTMLButtonElement>(".review-shared")!.click());
   const yes = cell("a").querySelector<HTMLButtonElement>(".cs-final-yes");
   expect(yes, "공유 확인").toBeTruthy();
   act(() => yes!.click());

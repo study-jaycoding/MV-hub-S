@@ -2730,6 +2730,7 @@ export default function App() {
                 onUnpublish={onUnpublish}
                 onFinalize={onFinalize}
                 onUnfinalize={onUnfinalize}
+                onReview={onReview}
                 canFinalize={canFinalize}
                 projects={projects}
                 onVariantShare={boardShare}
@@ -2823,6 +2824,7 @@ export default function App() {
               onUnpublish={onUnpublish}
               onFinalize={onFinalize}
               onUnfinalize={onUnfinalize}
+              onReview={onReview}
               canFinalize={canFinalize}
               onSelectionChange={setBoardSelected}
               onStats={setBoardStats}

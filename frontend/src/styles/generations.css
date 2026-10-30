@@ -437,8 +437,8 @@
 .review-panel { display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; min-width: 0;
   max-height: 100%; overflow-y: auto; }
 .review-panel.review-menu { height: 100%; }
-/* 메뉴만 남은 높이를 3등분한다. 확인 단계는 질문과 가로 1:1 버튼을 카드 중앙에 유지한다. */
-.review-options { display: grid; grid-template-rows: repeat(3, minmax(30px, 1fr)); flex: 1 0 auto; gap: 4px; width: 100%; }
+/* 메뉴만 남은 높이를 항목 수대로 나눈다(공유 탭 3칸 · 워크스페이스·캔버스 2칸). 확인 단계는 질문과 가로 1:1 버튼을 카드 중앙에 유지한다. */
+.review-options { display: grid; grid-auto-rows: minmax(30px, 1fr); flex: 1 0 auto; gap: 4px; width: 100%; }
 .review-option { display: flex; align-items: center; justify-content: flex-start; min-width: 0;
   box-sizing: border-box; min-height: 30px; padding: 3px 8px; border: 1px solid var(--border2); border-radius: 8px; }
 .review-option-name { display: inline-flex; align-items: center; gap: 7px; min-width: 0; font-size: 12px; font-weight: 700; white-space: nowrap; }
@@ -463,6 +463,15 @@
 .review-final { background: rgba(232,182,44,0.10); border-color: #e8b62c; color: #e8b62c; }
 .review-final .review-option-icon { background: #e8b62c; color: #2a1d00; }
 .review-panel button:disabled { opacity: 0.4; cursor: not-allowed; }
+/* 좁은 칸(Masonry 를 가장 작게 한 9:16 — 카드 폭 약 67px) — 그대로면 글자와 No 가 잘린다. 아이콘을 빼고 글자만, Yes/No 는 여백 없이(Jay 2026-10-30).
+   71px = 판 안쪽 폭. 아이콘 21 + 사이 7 + 글자 24 + 양쪽 여백 16 + 테두리 2 */
+@container (max-width: 71px) {
+  .review-option-icon { display: none; }
+  .review-option { justify-content: center; padding: 3px; }
+  .review-confirm .cs-final-q { font-size: 11px; line-height: 1.25; }
+  .review-confirm .cs-final-actions { gap: 4px; }
+  .review-confirm .cs-final-actions button { min-width: 0; padding: 0; }
+}
 
 /* 인라인 태그 입력 */
 .cs-tag-input {

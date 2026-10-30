@@ -35,7 +35,7 @@ function card(kind: "generation" | "comfy", generation: Generation): SceneCard {
 function hist(canFinalize?: HistPass["canFinalize"]): HistPass {
   return { disabledIds: new Set(), typeFilter: "all", colorFilter: new Set(), tagFilter: new Set(),
     sharedOnly: false, commentOnly: false, finalOnly: false, folderSel: null, sConfirm: null,
-    onSClick: vi.fn(), onSDouble: vi.fn(), onSConfirmYes: noop, onSConfirmNo: noop,
+    onSClick: vi.fn(), onSConfirmYes: noop, onSConfirmNo: noop,
     ...(canFinalize ? { canFinalize } : {}),
   };
 }

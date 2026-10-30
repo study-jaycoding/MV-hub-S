@@ -7,6 +7,7 @@ import type { CSSProperties, Dispatch, ReactNode, SetStateAction } from "react";
 import type { SceneCard } from "../../lib/scenes";
 import { variantIds } from "../../lib/scenes";
 import type { Generation, InfoTarget, PreviewTarget, Project } from "../../types";
+import type { ReviewAction } from "../../lib/generationReview";
 import type { GradeMode } from "../../lib/gradeStep";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../lib/workspaceCommand";
 import { DRAG_TYPES } from "../../lib/dragTypes";
@@ -87,6 +88,7 @@ export function SceneVariantPopup({
     onUnpublish: (g: Generation) => void;
     onFinalize: (g: Generation) => void;
     onUnfinalize: (g: Generation) => void;
+    onReview: (g: Generation, action: ReviewAction) => void;
   };
   actions: {
     setCardMenu: Dispatch<SetStateAction<string | null>>;
@@ -298,6 +300,7 @@ export function SceneVariantPopup({
           onUnpublish={gen.onUnpublish}
           onFinalize={gen.onFinalize}
           onUnfinalize={gen.onUnfinalize}
+          onReview={gen.onReview}
           canFinalize={gen.canFinalize}
           onImport={noop}
           onRestore={noop}

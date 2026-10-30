@@ -150,7 +150,7 @@ it.each(["grid", "list"] as const)("%s: selection keeps frame padding and conten
   expect(contentInsets(getComputedStyle(host.querySelector(".card")!))).toEqual(originalInsets);
 });
 
-it("review menu fills the card with three equal rows and no size cap", () => {
+it("review menu fills the card with equal rows per option and no size cap", () => {
   act(() => root.render(<><style>{allCss}</style><GenerationCard {...props()} /></>));
   act(() => host.querySelector<HTMLButtonElement>(".card-sf")!.click());
   expect(getComputedStyle(host.querySelector(".review-option")!).minHeight).toBe("30px");
@@ -162,7 +162,7 @@ it("review menu fills the card with three equal rows and no size cap", () => {
   expect(getComputedStyle(host.querySelector(".review-panel")!).height).toBe("100%");
   const optionsStyle = getComputedStyle(host.querySelector(".review-options")!);
   expect(optionsStyle.display).toBe("grid");
-  expect(optionsStyle.gridTemplateRows).toBe("repeat(3, minmax(30px, 1fr))");
+  expect(optionsStyle.getPropertyValue("grid-auto-rows")).toBe("minmax(30px, 1fr)");
   expect(optionsStyle.flexGrow).toBe("1");
   expect(generationsCss).toContain("container-type: inline-size");
   // 긴 리스트에서 폭만으로 글자를 키우면 3행이 카드 높이를 넘어간다. 짧은 변을 사용한다.

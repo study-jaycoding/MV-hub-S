@@ -31,11 +31,10 @@ export type HistPass = {
   finalOnly: React.ComponentProps<typeof HistoryBoardNode>["finalOnly"];
   hideFailed?: boolean; // 필터 단추 창 Hide failed — 이 카드의 실패 칸만 흐리게(완료 노드 HBN 은 실패가 아니라 넘기지 않는다)
   folderSel: React.ComponentProps<typeof HistoryBoardNode>["folderSel"];
-  sConfirm: { id: string; kind: "share" | "final" } | null;
+  sConfirm: { id: string } | null;
   // 참조 그대로 통과. boolean 계산은 각 카드에서 — HBN은 primitive만 받아 memo를 유지한다.
   canFinalize?: (g: Generation) => boolean;
   onSClick: React.ComponentProps<typeof HistoryBoardNode>["onSClick"];
-  onSDouble: React.ComponentProps<typeof HistoryBoardNode>["onSDouble"];
   onSConfirmYes: React.ComponentProps<typeof HistoryBoardNode>["onSConfirmYes"];
   onSConfirmNo: React.ComponentProps<typeof HistoryBoardNode>["onSConfirmNo"];
   onInfo?: (t: InfoTarget) => void;
@@ -155,7 +154,6 @@ export const GenerationCard = memo(function GenerationCard({
           sConfirm={hist.sConfirm?.id === g.id ? hist.sConfirm : null}
           mayFinalize={hist.canFinalize ? hist.canFinalize(g) : true}
           onSClick={hist.onSClick}
-          onSDouble={hist.onSDouble}
           onSConfirmYes={hist.onSConfirmYes}
           onSConfirmNo={hist.onSConfirmNo}
           onPreview={getNodePreview(card.id)}

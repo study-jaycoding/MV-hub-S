@@ -1,8 +1,8 @@
 import { useCallback, useRef, useState, type MutableRefObject } from "react";
 import type { Generation } from "../types";
+import { applyWorkspaceReview, canOpenWorkspaceReview, type ReviewAction } from "./generationReview";
 import { variantIds, type SceneCard } from "./scenes";
 import { ownEntry } from "./ownEntry";
-import { useClickSeparation } from "./useClickSeparation";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "./workspaceCommand";
 import type { SceneGenDataApi, useSceneGenData } from "./useSceneGenData";
 
@@ -19,6 +19,7 @@ interface Options {
   onUnpublish?: (g: Generation) => void;
   onFinalize?: (g: Generation) => void;
   onUnfinalize?: (g: Generation) => void;
+  onReview?: (g: Generation, action: ReviewAction) => void;
   canFinalize?: (g: Generation) => boolean;
   onWorkspaceCommand?: (
     g: Generation,
@@ -28,7 +29,7 @@ interface Options {
   ) => Promise<boolean>;
 }
 export function useSceneCardLibraryActions({ cardsRef, selectedRef, genDataRef, setGenData, refreshGenerationAfter, variantTargetIds,
-  onSetTags, onSetAutoTags, onWorkspaceCommand, onPublish, onUnpublish, onFinalize, onUnfinalize, canFinalize }: Options) {
+  onSetTags, onSetAutoTags, onWorkspaceCommand, onPublish, onUnpublish, onFinalize, onUnfinalize, onReview, canFinalize }: Options) {
   const onSetTagsRef = useRef(onSetTags);
   onSetTagsRef.current = onSetTags;
   const [tagEditCardId, setTagEditCardId] = useState<string | null>(null); // 태그 편집 팝업이 열린 카드 id(같은 생성물이 여러 카드여도 하나만)
@@ -97,8 +98,9 @@ export function useSceneCardLibraryActions({ cardsRef, selectedRef, genDataRef, 
       else applyCardAutoTags(g, next);
     }
   };
-  // '생성 결과' 창 카드의 공유·최종 — 카드(라이브러리 부품)가 확인을 받은 뒤 부른다. 씬은 자체 사본을 쓰므로 먼저 뒤집어 보이고,
-  //  App 핸들러(서버 쓰기)가 끝난 뒤 서버 값으로 다시 맞춘다(아래 onNodeSConfirmYes 와 같은 순서).
+  // 캔버스 노드·'생성 결과' 창 카드의 공유·최종 — 확인을 받은 뒤 부른다. 씬은 자체 genData 사본을 쓰므로 App 핸들러(서버 반영)만으론
+  //  카드가 즉시 안 바뀐다 → 낙관적으로 먼저 뒤집어 보이고, 핸들러가 끝난 뒤 재조회해 서버 확정값으로 맞춘다 — 고정 지연이면 느린
+  //  네트워크에서 쓰기 전 옛 값을 덮어써 카드가 되돌아갈 수 있어, 반드시 핸들러 완료 후에 조회한다.
   const variantShareAct = (g: Generation, patch: Partial<Generation>, act?: (g: Generation) => void) => {
     setGenData((prev) => (prev[g.id] ? { ...prev, [g.id]: { ...prev[g.id], ...patch } } : prev));
     refreshGenerationAfter(g.id, Promise.resolve(act?.(g)));
@@ -106,70 +108,25 @@ export function useSceneCardLibraryActions({ cardsRef, selectedRef, genDataRef, 
   const variantShare = {
     onPublish: (g: Generation) => variantShareAct(g, { shared: true }, onPublish),
     onUnpublish: (g: Generation) => variantShareAct(g, { shared: false, is_held: false }, onUnpublish),
-    onFinalize: (g: Generation) => variantShareAct(g, { is_final: true, shared: true, is_held: false }, onFinalize),
+    onFinalize: (g: Generation) => variantShareAct(g, { is_final: true, shared: true, is_held: false }, onFinalize), // 최종 지정은 공유·보류 해제를 함께
     onUnfinalize: (g: Generation) => variantShareAct(g, { is_final: false, is_held: false }, onUnfinalize),
+    // 이 길은 최종 → 해제 하나뿐이다(lib/generationReview applyWorkspaceReview)
+    onReview: (g: Generation, action: ReviewAction) =>
+      variantShareAct(g, { shared: false, is_final: false, is_held: false }, (target) => onReview?.(target, action)),
   };
 
-  // ── 생성 결과 카드의 S(공유/최종) 확인 로직 — 히스토리 보드와 동일(단일클릭=공유, 더블=최종) ──
-  const [sConfirm, setSConfirm] = useState<{ id: string; kind: "share" | "final" } | null>(null);
-  const sClick = useClickSeparation(220);
-  const cbRef = useRef({ sClick, canFinalize, onPublish, onUnpublish, onFinalize, onUnfinalize });
-  cbRef.current = { sClick, canFinalize, onPublish, onUnpublish, onFinalize, onUnfinalize };
-  const sConfirmRef = useRef(sConfirm);
-  sConfirmRef.current = sConfirm;
+  // ── 생성 결과 카드의 S 선택 창 — 히스토리 보드와 같다 ──
+  const [sConfirm, setSConfirm] = useState<{ id: string } | null>(null);
+  const cbRef = useRef({ canFinalize, variantShare });
+  cbRef.current = { canFinalize, variantShare };
   const onNodeSClick = useCallback((g: Generation) => {
-    // 공유/해제=본인 것. 추가로 슈퍼바이저는 남의 '공유된' 카드를 해제할 수 있다(B안).
-    const may = cbRef.current.canFinalize ? cbRef.current.canFinalize(g) : true;
-    if (!g.is_mine && !(g.shared && may)) return;
-    cbRef.current.sClick.onClick(() => {
-      if (g.is_final) return; // 최종은 공유 잠금 — 해제는 더블클릭으로만
-      setSConfirm({ id: g.id, kind: "share" });
-    }, g.id);
+    const { canFinalize } = cbRef.current;
+    if (canOpenWorkspaceReview(g, canFinalize ? canFinalize(g) : true)) setSConfirm({ id: g.id });
   }, []);
-  const onNodeSDouble = useCallback((g: Generation) => {
-    const { sClick, canFinalize, onPublish } = cbRef.current;
-    sClick.onDouble(() => {
-      const may = canFinalize ? canFinalize(g) : true;
-      if (!may) {
-        if (g.is_mine && !g.shared && !g.is_final) onPublish?.(g);
-        return;
-      }
-      if (g.shared || g.is_final) setSConfirm({ id: g.id, kind: "final" });
-      else onPublish?.(g);
-    });
-  }, []);
-  const onNodeSConfirmYes = useCallback((g: Generation) => {
-    const c = sConfirmRef.current;
+  const onNodeSConfirmYes = useCallback((g: Generation, action: ReviewAction) => {
     setSConfirm(null);
-    if (!c) return;
-    const { onFinalize, onUnfinalize, onPublish, onUnpublish } = cbRef.current;
-    // 씬은 자체 genData 캐시를 쓰므로 App 핸들러(서버 반영)만으론 카드가 즉시 안 바뀐다.
-    // → 낙관적으로 로컬 캐시를 먼저 뒤집어 즉시 반영하고, 잠시 뒤 서버값으로 재확정한다.
-    const patch = (p: Partial<Generation>) =>
-      setGenData((prev) => (prev[g.id] ? { ...prev, [g.id]: { ...prev[g.id], ...p } } : prev));
-    let act: ((g: Generation) => void) | undefined;
-    if (c.kind === "final") {
-      if (g.is_final) {
-        patch({ is_final: false, is_held: false });
-        act = onUnfinalize;
-      } else {
-        patch({ is_final: true, shared: true, is_held: false }); // 최종 지정은 공유·보류 해제를 함께
-        act = onFinalize;
-      }
-    } else {
-      if (g.shared) {
-        patch({ shared: false, is_held: false });
-        act = onUnpublish;
-      } else {
-        patch({ shared: true });
-        act = onPublish;
-      }
-    }
-    // App 핸들러(서버 쓰기)가 끝난 뒤 재조회해 서버 확정값으로 맞춘다 — 고정 지연이면 느린 네트워크에서
-    // 쓰기 전 옛 값을 덮어써 카드가 되돌아갈 수 있어, 반드시 핸들러 완료 후에 조회한다.
-    const settled = Promise.resolve(act?.(g));
-    refreshGenerationAfter(g.id, settled);
-  }, [refreshGenerationAfter]);
+    applyWorkspaceReview(g, action, cbRef.current.variantShare);
+  }, []);
   const onNodeSConfirmNo = useCallback(() => setSConfirm(null), []);
   // T(태그) — 이 생성물이 얹힌 캔버스 카드를 찾아 그 카드의 태그 편집 팝업을 연다(# 키와 동일 경로).
   // 안정 참조(useCallback)라 HistoryBoardNode 의 memo 를 깨지 않는다.
@@ -200,6 +157,6 @@ export function useSceneCardLibraryActions({ cardsRef, selectedRef, genDataRef, 
   };
 
   return { tagEditCardId, setTagEditCardId, tagEditNodeGenId, setTagEditNodeGenId, applyCardTags, applyCardAutoTags,
-    applyCardWorkspace, variantWorkspace, bulkVariantTags, variantShare, sConfirm, setSConfirm, onNodeSClick, onNodeSDouble,
+    applyCardWorkspace, variantWorkspace, bulkVariantTags, variantShare, sConfirm, setSConfirm, onNodeSClick,
     onNodeSConfirmYes, onNodeSConfirmNo, onNodeTag, editSelectedTag };
 }

@@ -17,7 +17,7 @@ const gen = (patch: Partial<Generation> = {}) => ({ id: "g", prompt: "test", sta
 function props(generation: Generation): ComponentProps<typeof HistoryBoardNode> {
   return { generation, x: 0, y: 0, width: 180, height: 180, isRoot: false, isSelected: false,
     onLine: false, offLine: false, fill: true, disabled: false, typeFilter: "all", sharedOnly: false,
-    commentOnly: false, finalOnly: false, sConfirm: null, onSClick: vi.fn(), onSDouble: vi.fn(),
+    commentOnly: false, finalOnly: false, sConfirm: null, onSClick: vi.fn(),
     onSConfirmYes: noop, onSConfirmNo: noop, onPreview: noop, onInfo: noop, onRegenerate: noop };
 }
 beforeEach(() => {

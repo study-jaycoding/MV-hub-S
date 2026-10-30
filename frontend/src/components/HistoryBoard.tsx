@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { loadJSON, saveJSON } from "../lib/storage";
 import { STORAGE_KEYS } from "../lib/storageKeys";
-import { useClickSeparation } from "../lib/useClickSeparation";
+import { applyWorkspaceReview, canOpenWorkspaceReview, type ReviewAction } from "../lib/generationReview";
 import { swallowPanAuxClick } from "../lib/useSceneCardMove";
 import { useCustomEvent } from "../lib/useCustomEvent";
 import { useDebouncedCallback } from "../lib/useDebouncedCallback";
@@ -58,6 +58,7 @@ export function HistoryBoard({
   onUnpublish,
   onFinalize,
   onUnfinalize,
+  onReview,
   canFinalize,
   onSelectionChange,
   onStats,
@@ -80,8 +81,9 @@ export function HistoryBoard({
   onRegenerate: (g: Generation) => void;
   onPublish: (g: Generation) => void;
   onUnpublish: (g: Generation) => void;
-  onFinalize: (g: Generation) => void; // v02 CMS: 최종(골드) 지정 — S 더블클릭
+  onFinalize: (g: Generation) => void; // v02 CMS: 최종(골드) 지정
   onUnfinalize: (g: Generation) => void; // 최종 해제
+  onReview?: (g: Generation, action: ReviewAction) => void; // 최종 → 해제(한 번에)
   canFinalize?: (g: Generation) => boolean; // 최종 가능 판정(그 프로젝트의 supervisor · 전역 관리자, 프로젝트 미배정이면 본인 — PM 은 아니다)
   // 선택 노드(Generation[])를 App에 통지 — 생성 시 부모(파생) + 프롬프트 위 선택바 렌더용.
   onSelectionChange?: (gens: Generation[]) => void;
@@ -107,44 +109,19 @@ export function HistoryBoard({
   const { manualPos, setManualPos } = useHistoryManualPositions(graph, arrangeSignal);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
-  // S 버튼 확인 플로팅(공유/해제 단일클릭 · 최종 더블클릭) — 보드 단위 1개만 열림.
-  const [sConfirm, setSConfirm] = useState<{ id: string; kind: "share" | "final" } | null>(null);
-  const sClick = useClickSeparation(220); // 단일(공유)/더블(최종) 분리
+  // S 버튼 선택 창(공유·해제·최종) — 보드 단위 1개만 열림.
+  const [sConfirm, setSConfirm] = useState<{ id: string } | null>(null);
   // 노드에 넘기는 S 핸들러를 안정 참조로 고정(빈 deps useCallback, 최신 값은 ref 로 읽음) —
   // HistoryBoardNode(memo)가 마퀴 드래그(setSelected 매 프레임) 중 불필요하게 재렌더되지 않게.
-  const cbRef = useRef({ sClick, canFinalize, onPublish, onUnpublish, onFinalize, onUnfinalize });
-  cbRef.current = { sClick, canFinalize, onPublish, onUnpublish, onFinalize, onUnfinalize };
-  const sConfirmRef = useRef(sConfirm);
-  sConfirmRef.current = sConfirm;
+  const cbRef = useRef({ canFinalize, onPublish, onUnpublish, onFinalize, onUnfinalize, onReview });
+  cbRef.current = { canFinalize, onPublish, onUnpublish, onFinalize, onUnfinalize, onReview };
   const onNodeSClick = useCallback((g: Generation) => {
-    // 공유/해제=본인 것. 추가로 슈퍼바이저는 남의 '공유된' 카드를 해제할 수 있다(B안).
-    const may = cbRef.current.canFinalize ? cbRef.current.canFinalize(g) : true;
-    if (!g.is_mine && !(g.shared && may)) return;
-    cbRef.current.sClick.onClick(() => {
-      if (g.is_final) return; // 최종(골드)은 공유 잠금 — 해제는 더블클릭으로만
-      setSConfirm({ id: g.id, kind: "share" });
-    }, g.id);
+    const { canFinalize } = cbRef.current;
+    if (canOpenWorkspaceReview(g, canFinalize ? canFinalize(g) : true)) setSConfirm({ id: g.id });
   }, []);
-  const onNodeSDouble = useCallback((g: Generation) => {
-    const { sClick, canFinalize, onPublish } = cbRef.current;
-    sClick.onDouble(() => {
-      const may = canFinalize ? canFinalize(g) : true;
-      if (!may) {
-        if (g.is_mine && !g.shared && !g.is_final) onPublish(g); // 권한 없으면 공유만
-        return;
-      }
-      // 최종 지정/해제는 공유(S 활성) 상태에서만. 비활성이면 더블클릭은 공유만 켠다.
-      if (g.shared || g.is_final) setSConfirm({ id: g.id, kind: "final" });
-      else onPublish(g);
-    });
-  }, []);
-  const onNodeSConfirmYes = useCallback((g: Generation) => {
-    const c = sConfirmRef.current;
+  const onNodeSConfirmYes = useCallback((g: Generation, action: ReviewAction) => {
     setSConfirm(null);
-    if (!c) return;
-    const { onFinalize, onUnfinalize, onPublish, onUnpublish } = cbRef.current;
-    if (c.kind === "final") g.is_final ? onUnfinalize(g) : onFinalize(g);
-    else g.shared ? onUnpublish(g) : onPublish(g);
+    applyWorkspaceReview(g, action, cbRef.current);
   }, []);
   const onNodeSConfirmNo = useCallback(() => setSConfirm(null), []);
 
@@ -639,7 +616,6 @@ export function HistoryBoard({
                   sConfirm={sConfirm?.id === g.id ? sConfirm : null}
                   mayFinalize={canFinalize ? canFinalize(g) : true}
                   onSClick={onNodeSClick}
-                  onSDouble={onNodeSDouble}
                   onSConfirmYes={onNodeSConfirmYes}
                   onSConfirmNo={onNodeSConfirmNo}
                   onPreview={onPreview}

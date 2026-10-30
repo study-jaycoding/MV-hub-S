@@ -95,8 +95,8 @@ it("arrow tooltips translate and retain the requested held transitions", () => {
 });
 
 it("single-card questions share the existing translation dictionary", () => {
-  expect(["공유 하시겠습니까?", "공유 해제 할까요?", "최종(골드)으로 지정할까요?", "최종 지정을 해제할까요?"].map(t))
-    .toEqual(["Share this result?", "Remove sharing?", "Mark as final (gold)?", "Remove final status?"]);
+  expect(["공유 하시겠습니까?", "공유 해제 할까요?", "최종(골드)으로 지정할까요?", "공유로 복귀할까요?"].map(t))
+    .toEqual(["Share this result?", "Remove sharing?", "Mark as final (gold)?", "Return to shared?"]);
 });
 
 it("mirror notices translate only for opted-in callers", () => {
@@ -360,13 +360,7 @@ it("folder sharing translates UI while preserving folder names and raw server de
 });
 
 it.each([
-  "최종(골드)", "팀 공유됨", "최종(골드) — 더블클릭=최종 해제 (공유 잠금)",
-  "팀 공유됨 · 클릭=공유 해제 · 더블클릭=최종 지정(Supervisor)",
-  "팀 공유 (클릭) · 최종 지정은 공유 후 더블클릭", "클릭=공유 해제 · 더블클릭=최종 지정 (Supervisor)",
-  "더블클릭=최종 지정(Supervisor)", "최종(골드) · 더블클릭=최종 해제",
-  "팀 공유됨 · 클릭=공유 해제 · 더블클릭=최종 지정", "팀 공유 (클릭) · 공유 후 더블클릭=최종 지정",
-  "최종(골드) — 더블클릭=최종 해제", "팀 공유됨 · 클릭=해제 · 더블클릭=최종",
-  "팀 공유 (클릭) · 최종은 공유 후 더블클릭", "더블클릭=최종 지정 (Supervisor)",
+  "최종(골드)", "팀 공유됨", "보류", "클릭하여 공유 상태 변경",
 ])("translates the existing S tooltip: %s", (tooltip) => {
   expect(t(tooltip)).not.toMatch(/[가-힣]/);
 });

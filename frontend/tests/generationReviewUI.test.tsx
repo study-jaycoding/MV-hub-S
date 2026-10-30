@@ -39,10 +39,62 @@ it("open review menu never lets a double event run a bulk grade action behind it
   expect(host.querySelectorAll(".review-option")).toHaveLength(3);
 });
 
-it.each(["single", "double"] as const)("Workspace %s keeps the existing confirmation flow", (kind) => {
+// 워크스페이스 S 선택 창(Jay 2026-10-30): 한 번 누르면 바로 창 · 고르면 Yes 뒤에 쓰던 처리가 불린다. 기록 = docs/status/워크스페이스_S_선택창_2026-10-30.md
+const workspaceOptions = () => [...host.querySelectorAll(".review-option")].map((button) => button.textContent!.slice(1));
+it.each([
+  ["일반", { shared: false }, ["공유", "해제"], ".review-shared", "공유 하시겠습니까?", "onPublish"],
+  ["쉐어", {}, ["최종", "해제"], ".review-final", "최종(골드)으로 지정할까요?", "onFinalize"],
+  ["쉐어", {}, ["최종", "해제"], ".review-unshared", "공유 해제 할까요?", "onUnpublish"],
+  ["보류", { is_held: true }, ["최종", "해제"], ".review-final", "최종(골드)으로 지정할까요?", "onFinalize"],
+  ["최종", { is_final: true }, ["공유", "해제"], ".review-shared", "공유로 복귀할까요?", "onUnfinalize"],
+] as const)("워크스페이스 %s 카드: 창 → 고름 → Yes 뒤에만 바뀐다", (_name, over, options, pick, question, handler) => {
+  const p = { ...props(gen(over)), tab: "my" as const, onPublish: vi.fn(), onUnfinalize: vi.fn() };
+  act(() => root.render(<GenerationCard {...p} />));
+  click(".card-sf");
+  expect(workspaceOptions()).toEqual(options);
+  click(pick);
+  expect(host.querySelector(".cs-final-q")?.textContent).toBe(question);
+  expect(p[handler]).not.toHaveBeenCalled();
+  click(".cs-final-yes");
+  expect(p[handler]).toHaveBeenCalledExactlyOnceWith(p.gen);
+  expect(host.querySelector(".review-confirm")).toBeNull();
+});
+
+it("워크스페이스 최종 카드의 [해제]는 공유 탭과 같은 전환 한 번이다 — 최종 풀기와 공유 해제를 나누어 부르지 않는다", () => {
+  const p = { ...props(gen({ is_final: true })), tab: "my" as const, onReview: vi.fn(), onUnfinalize: vi.fn() };
+  act(() => root.render(<GenerationCard {...p} />));
+  click(".card-sf"); click(".review-unshared"); click(".cs-final-yes");
+  expect(p.onReview).toHaveBeenCalledExactlyOnceWith(p.gen, "unshared");
+  expect(p.onUnfinalize).not.toHaveBeenCalled(); expect(p.onUnpublish).not.toHaveBeenCalled();
+});
+
+it("워크스페이스 일반 카드의 [해제]는 바뀔 것이 없어 묻지 않고 닫는다", () => {
+  const p = { ...props(gen({ shared: false })), tab: "my" as const, onPublish: vi.fn() };
+  act(() => root.render(<GenerationCard {...p} />));
+  click(".card-sf"); click(".review-unshared");
+  expect(host.querySelector(".review-confirm")).toBeNull();
+  expect(p.onPublish).not.toHaveBeenCalled(); expect(p.onUnpublish).not.toHaveBeenCalled();
+});
+
+it("워크스페이스: 최종 권한이 없으면 [최종]이 흐리고 공유 해제는 된다 · 바꿀 수 없는 카드는 눌러도 무반응", () => {
+  const p = { ...props(), tab: "my" as const, canFinalize: () => false };
+  act(() => root.render(<GenerationCard {...p} />));
+  click(".card-sf");
+  expect(host.querySelector<HTMLButtonElement>(".review-final")!.disabled).toBe(true);
+  expect(host.querySelector<HTMLButtonElement>(".review-unshared")!.disabled).toBe(false);
+  act(() => root.unmount()); root = createRoot(host);
+  // 내 최종 카드라도 권한이 없으면 읽기 전용 표식이고, 남의 보류 카드도 마찬가지다
+  for (const over of [{ is_final: true }, { is_held: true, is_mine: false }]) {
+    act(() => root.render(<GenerationCard {...p} gen={gen(over)} />));
+    click(".card-sf");
+    expect(host.querySelector(".review-confirm")).toBeNull();
+  }
+});
+
+it.each(["single", "double"] as const)("워크스페이스 여러 장 S 는 등급 단계 그대로다 — 창을 열지 않는다(%s)", (kind) => {
   vi.useFakeTimers();
-  const p = props();
-  act(() => root.render(<GenerationCard {...p} tab="my" />));
+  const p = { ...props(), tab: "my" as const, selected: true, selectedCount: 3, onBulkGradeStep: vi.fn() };
+  act(() => root.render(<GenerationCard {...p} />));
   const button = host.querySelector(".card-sf")!;
   act(() => button.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
   if (kind === "double") {
@@ -54,12 +106,21 @@ it.each(["single", "double"] as const)("Workspace %s keeps the existing confirma
   }
   act(() => vi.advanceTimersByTime(220));
   expect(host.querySelector(".review-confirm")).toBeNull();
-  expect(host.querySelector(".cs-final-q")?.textContent).toBe(kind === "single"
-    ? "공유 해제 할까요?" : "최종(골드)으로 지정할까요?");
-  expect(p.onUnpublish).not.toHaveBeenCalled(); expect(p.onFinalize).not.toHaveBeenCalled();
-  click(".cs-final-yes");
-  expect(kind === "single" ? p.onUnpublish : p.onFinalize).toHaveBeenCalledExactlyOnceWith(p.gen);
-  expect(kind === "single" ? p.onFinalize : p.onUnpublish).not.toHaveBeenCalled();
+  expect(p.onBulkGradeStep).toHaveBeenCalledExactlyOnceWith(kind);
+});
+
+it("워크스페이스: S 더블클릭의 두 번째 클릭이 열린 창의 항목을 누르지 않는다", () => {
+  let now = 1000;
+  vi.spyOn(performance, "now").mockImplementation(() => now);
+  const p = { ...props(gen({ shared: false })), tab: "my" as const };
+  act(() => root.render(<GenerationCard {...p} />));
+  click(".card-sf");
+  now += 100;
+  act(() => host.querySelector(".review-shared")!.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 2 })));
+  expect(workspaceOptions()).toEqual(["공유", "해제"]); // 아직 고르는 단계
+  now += 200;
+  act(() => host.querySelector(".review-shared")!.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
+  expect(host.querySelector(".cs-final-q")?.textContent).toBe("공유 하시겠습니까?");
 });
 
 it.each(["grid", "list"] as const)("%s: rapid second pointer click stays in review menu until an intentional choice", (layout) => {
@@ -301,7 +362,7 @@ it("history/canvas shared node uses held badge and selected review mode", () => 
   act(() => root.render(<HistoryBoardNode generation={gen({ is_held: true })} x={0} y={0} width={180} height={180}
     isRoot={false} isSelected={false} onLine={false} offLine={false} fill disabled={false} typeFilter="all"
     sharedOnly reviewFilter="shared" commentOnly={false} finalOnly={false} sConfirm={null}
-    onSClick={noop} onSDouble={noop} onSConfirmYes={noop} onSConfirmNo={noop} onPreview={noop} onInfo={noop} onRegenerate={noop} />));
+    onSClick={noop} onSConfirmYes={noop} onSConfirmNo={noop} onPreview={noop} onInfo={noop} onRegenerate={noop} />));
   expect(host.querySelector(".linb-sf.held")?.textContent).toBe("S");
   expect(host.querySelector(".linb-node.dimmed")).not.toBeNull();
 });

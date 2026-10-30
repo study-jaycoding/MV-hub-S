@@ -73,7 +73,7 @@ it("a real canvas generation card keeps its thumbnail once loaded", () => {
     assets: [{ type: "image", file_path: "/media/g1.png" }], references: [], tags: [], auto_tags: [] } as unknown as Generation;
   act(() => root.render(<HistoryBoardNode generation={gen} x={0} y={0} width={180} height={180} isRoot={false} isSelected={false} onLine={false}
     offLine={false} fill disabled={false} typeFilter="all" sharedOnly={false} commentOnly={false} finalOnly={false} sConfirm={null}
-    onSClick={noop} onSDouble={noop} onSConfirmYes={noop} onSConfirmNo={noop} onPreview={noop} onInfo={noop} onRegenerate={noop} />));
+    onSClick={noop} onSConfirmYes={noop} onSConfirmNo={noop} onPreview={noop} onInfo={noop} onRegenerate={noop} />));
   const img = host.querySelector("img")!;
   load(img);
   expect(keptThumbSources()).toEqual([img.getAttribute("src")]);

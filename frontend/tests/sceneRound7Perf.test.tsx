@@ -173,7 +173,7 @@ it("레퍼런스 카드: 받은 값이 그대로면 다시 그려지지 않는�
 it("생성 카드: 묶음 객체(hist·actions·tagEdit)는 걸음마다 새로 와도 안의 값이 그대로면 다시 그려지지 않는다 — 안의 값 하나라도 바뀌면 다시 그린다", async () => {
   const hist: HistPass = {
     disabledIds: new Set(), typeFilter: "all", colorFilter: new Set(), tagFilter: new Set(), sharedOnly: false, commentOnly: false,
-    finalOnly: false, folderSel: null, sConfirm: null, onSClick: noop, onSDouble: noop, onSConfirmYes: noop, onSConfirmNo: noop,
+    finalOnly: false, folderSel: null, sConfirm: null, onSClick: noop, onSConfirmYes: noop, onSConfirmNo: noop,
   };
   const actions: ComponentProps<typeof GenerationCard>["actions"] = {
     setCardMenu: noop, setCardBatch: noop, orchestrateGenerate: async () => {}, showGenerateBar: true, onOutPortDown: noop, onResizeDown: noop,
@@ -199,7 +199,7 @@ it("생성 카드: 묶음 객체(hist·actions·tagEdit)는 걸음마다 새로 
   const changes: (typeof patch)[] = [
     { sel: true }, // 고른 카드 — Generate 막대가 뜬다
     { sel: true, actions: { showGenerateBar: false } },
-    { hist: { sConfirm: { id: "x", kind: "share" } } },
+    { hist: { sConfirm: { id: "x" } } },
     { hist: { disabledIds: new Set(["x"]) } },
     { hist: { onSClick: () => {} } }, // 함수가 바뀌면 다시 그린다(낡은 함수를 쥐고 있지 않게)
     { tagEdit: { active: true } },
@@ -657,8 +657,8 @@ it("공유 확인 — S 를 누르면 그 결과 노드에 확인이 뜨고, 아
   await mountBoard();
   const share = [...boardCard("g1").querySelectorAll<HTMLElement>(".linb-ov-top .linb-ov-btn")].find((button) => button.textContent?.trim() === "S")!;
   await tap(share);
-  await act(async () => { await new Promise((done) => setTimeout(done, 280)); }); // 한 번 누름과 두 번 누름을 가르는 시간(220ms)
   expect(inCard("g1", ".sconfirm")).not.toBeNull();
+  await tap(inCard("g1", ".sconfirm .review-option:not(.review-unshared)")!);
   await tap(inCard("g1", ".sconfirm .cs-final-no")!);
   expect(inCard("g1", ".sconfirm")).toBeNull();
 });
