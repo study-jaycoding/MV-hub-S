@@ -903,12 +903,16 @@
 /* ── Comfy 노드 ── */
 .scene-card-hd.comfy { color: #4dd6c4; background: rgba(60, 210, 190, 0.12); }
 .scene-comfynode { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; } /* relative — 아래 .scene-comfynode-busy 덮개의 기준 */
-/* 빈 노드 — 생성 카드의 빈 로고처럼 Comfy 로고를 회색 16% + 불러오기 단추(Jay 2026-10-30 안 B, 전엔 점선 칸 + 안내 두 줄) */
+/* 빈 노드 — 생성 카드의 빈 로고처럼 Comfy 로고를 회색 16% + API 단추(Jay 2026-10-30 안 B, 전엔 점선 칸 + 안내 두 줄) */
 .scene-comfynode-empty {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 12px; margin: 6px; padding: 8px;
 }
-.scene-comfynode-empty-logo { width: 62%; height: auto; opacity: 0.16; filter: grayscale(1) brightness(1.7); pointer-events: none; user-select: none; } /* 글자 로고라 생성 카드(42%)보다 넓게 */
+/* 로고는 카드 크기를 따른다(Jay 2026-10-30 "창 크기에 맞게") — 폭 82%, 낮은 카드에서는 본문 높이의 55% 까지(비율 유지) */
+.scene-comfynode-empty-logo {
+  width: 82%; height: auto; max-height: 55%; min-height: 0; object-fit: contain;
+  opacity: 0.16; filter: grayscale(1) brightness(1.7); pointer-events: none; user-select: none;
+}
 .scene-comfynode-body {
   flex: 1 1 0; min-height: 0; padding: 6px 8px;
   display: flex; flex-direction: column; gap: 6px;
@@ -983,8 +987,13 @@
   width: 60%; max-width: 170px; height: auto;
   animation: comfy-loading-pulse 1.4s steps(4) infinite;
 }
-/* 아직 생성물이 없는 생성 카드 — 같은 로고를 작게·멈춘 채·회색 16%(Jay 2026-10-30 안 B, 전엔 'New' 글자) */
-.scene-genempty-logo { width: 42%; height: auto; opacity: 0.16; filter: grayscale(1) brightness(1.7); pointer-events: none; user-select: none; }
+/* 아직 생성물이 없는 생성 카드 — 같은 로고를 멈춘 채·회색 16%(Jay 2026-10-30 안 B, 전엔 'New' 글자).
+   크기는 카드를 따른다("창 크기에 맞게") — 본문의 70% 상자 안에 비율을 지켜 가운데(가로·세로 중 짧은 쪽에 맞춘다) */
+.scene-genempty { position: relative; }
+.scene-genempty-logo {
+  position: absolute; inset: 0; margin: auto; width: 70%; height: 70%; object-fit: contain;
+  opacity: 0.16; filter: grayscale(1) brightness(1.7); pointer-events: none; user-select: none;
+}
 /* 노드 설명 창(Jay 2026-10-30 B안, components/scene/NodeTip.tsx) — 화면 맨 위(body)에 그린다. 누를 수 없다(마우스는 노드로) */
 .node-tip {
   position: fixed; z-index: 10000; pointer-events: none; max-width: 320px; box-sizing: border-box;

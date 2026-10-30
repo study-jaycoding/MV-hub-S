@@ -122,11 +122,11 @@ it("SET — 넉넉한 카드는 줄이지 않고, 사용자가 줄인 높이는 
   expect(cardEl("s").style.height).toBe("80px");
 });
 
-it("Comfy — 빈 노드는 로고와 불러오기만(안내 글 없음) · 파라미터 창에서 고른 줄이 넘치면 모두 보이게 늘어난다", async () => {
+it("Comfy — 빈 노드는 로고와 API 단추만(안내 글 없음) · 파라미터 창에서 고른 줄이 넘치면 모두 보이게 늘어난다", async () => {
   await open({ id: "e", kind: "comfy", x: 400, y: 0, w: 210, h: 190, comfyCfg: { status: "idle" } });
   const empty = cardEl("e").querySelector(".scene-comfynode-empty")!;
   expect(empty.querySelector("img.scene-comfynode-empty-logo")).not.toBeNull();
-  expect(empty.textContent).toBe("📂 불러오기");
+  expect(empty.textContent).toBe("📂 API"); // 단추 이름 = API(Jay 2026-10-30)
   await act(async () => { root.unmount(); });
   root = createRoot(host);
   const base: SceneComfyCfg = { name: "wf", content: "{}", nodeCount: 3, params: [], paramValues: {}, paramExposed: [], status: "idle" };

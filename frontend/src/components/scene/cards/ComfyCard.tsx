@@ -207,7 +207,7 @@ export function ComfyCard({
                 actions.pickComfyFile(card.id);
               }}
             >
-              📂 불러오기
+              📂 API
             </button>
           </div>
         ) : (
