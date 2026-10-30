@@ -21,7 +21,7 @@ const scene = (cards: object[], extra: object = {}) => ({ id: "s1", name: "s1", 
 const AFTER = [card("c1", 50)];
 const history = () => ({ undo: [snap(card("c1", 0))], redo: [], lastCommit: snap(...AFTER) });
 
-function fakeBackend(plan: Persist["planUndoPut"]) {
+function fakeBackend(plan: Persist["planUndoPut"], nextGeneration: Persist["nextDeleteGeneration"]) {
   const slots = new Map<string, UndoSlot>();
   const gens = new Map<string, number>();
   const puts: UndoSlot[] = [];
@@ -40,9 +40,14 @@ function fakeBackend(plan: Persist["planUndoPut"]) {
     },
     async get(key) { return slots.has(key) ? structuredClone(slots.get(key)!) : null; },
     async generation(account, sceneId) { return gens.get(gk(account, sceneId)) ?? 0; },
+    async generations(account) {
+      return Object.fromEntries([...gens].filter(([key]) => key.startsWith(`${account}|`)).map(([key, value]) => [key.slice(account.length + 1), value]));
+    },
     async forget(account, sceneId, generation) {
-      gens.set(gk(account, sceneId), Math.max(gens.get(gk(account, sceneId)) ?? 0, generation));
+      const next = nextGeneration(gens.get(gk(account, sceneId)) ?? 0, generation);
+      gens.set(gk(account, sceneId), next);
       for (const [key, slot] of slots) if (slot.account === account && slot.sceneId === sceneId) { total -= slot.size; slots.delete(key); }
+      return next;
     },
     async prune(before) {
       for (const [key, slot] of slots) if (slot.savedAt < before) { total -= slot.size; slots.delete(key); }
@@ -55,7 +60,7 @@ let fake: ReturnType<typeof fakeBackend>;
 async function pageLoad(cards: object[] = AFTER, extra: object = {}): Promise<{ persist: Persist; undo: Undo; boot: Boot }> {
   vi.resetModules();
   const persist = await import("../src/lib/sceneUndoPersistence");
-  fake ??= fakeBackend(persist.planUndoPut);
+  fake ??= fakeBackend(persist.planUndoPut, persist.nextDeleteGeneration);
   persist.setUndoBackend(fake.backend);
   const { initSceneStore } = await import("../src/lib/sceneStore");
   let mark: Parameters<typeof initSceneStore>[1] = null;
@@ -224,6 +229,44 @@ describe("삭제·포인터·실패", () => {
     expect(undo.loadSceneHistory("s1")).toBeUndefined();
   });
 
+  it("전에 지운 적 있는 씬을 세대를 모르는 다른 창이 지워도 세대가 반드시 올라가, 삭제 전에 예약한 쓰기를 막는다(리뷰 P1)", async () => {
+    const { persist, boot } = await pageLoad();
+    fake.gens.set("local|s1", 1); // 지웠다 되살린 씬
+    await boot.restoreUndoHistories(); // 이 창은 세대 1 을 안다
+    const late = deferred();
+    persist.scheduleUndoCheckpoint("s1", history(), 1, late.receipt); // 세대 1 로 예약
+    expect(await fake.backend.forget("local", "s1", 1)).toBe(2); // 세대를 모르던(0) 다른 창의 삭제 — 1 을 넘겨도 2 로
+    late.resolve(true);
+    await settle();
+    await settle();
+    expect(fake.puts).toEqual([]);
+    expect(persist.nextDeleteGeneration(5, 1)).toBe(6);
+    expect(persist.nextDeleteGeneration(0, 3)).toBe(3);
+  });
+
+  it("지웠다 되살린 씬을 포인터 없는 새 탭에서 처음 고쳐도 그 기록이 남는다 — 부팅 때 세대를 읽어 둔다(리뷰 P2)", async () => {
+    let tab = await pageLoad();
+    fake.gens.set("local|s1", 1);
+    await tab.boot.restoreUndoHistories();
+    tab.persist.scheduleUndoCheckpoint("s1", history(), 1, OK);
+    await until(() => fake.puts.length === 1);
+    expect(fake.puts[0].deleteGeneration).toBe(1);
+    tab = await pageLoad();
+    await tab.boot.restoreUndoHistories();
+    expect(tab.undo.loadSceneHistory("s1")).toEqual(history());
+  });
+
+  it("예약 뒤 기록 안쪽(카드)이 그 자리에서 바뀌어도 예약 때 모습을 쓴다(리뷰 P2)", async () => {
+    const { persist } = await pageLoad();
+    const h = history();
+    const later = deferred();
+    persist.scheduleUndoCheckpoint("s1", h, 1, later.receipt);
+    (h.undo[0] as { cards: { x: number }[] }).cards[0].x = 999;
+    later.resolve(true);
+    await until(() => fake.puts.length === 1);
+    expect((fake.puts[0].history.undo[0] as { cards: { x: number }[] }).cards[0].x).toBe(0);
+  });
+
   it("다른 계정의 슬롯은 들이지 않는다", async () => {
     const first = await pageLoad();
     first.persist.scheduleUndoCheckpoint("s1", history(), 1, OK);
@@ -264,6 +307,33 @@ describe("들이는 규칙 — 부팅 복원과 창 인계(adoptSceneHistory)", 
     expect(undo.adoptSceneHistory(target, candidate(undo), { ...handoff(undo), handoffId: "other-window" })).toBe("stale");
     expect(undo.adoptSceneHistory(target, { ...candidate(undo), account: "acct:bob" }, handoff(undo))).toBe("mismatch");
     expect(undo.loadSceneHistory("s1")).toBeUndefined();
+  });
+
+  it("보드 없이 받은 인계가 저장본과 다르면 확인 전이라 부팅 복원이 바꾸고, 저장본과 같으면 인계가 우선이다(리뷰 P2)", async () => {
+    let { undo, persist } = await pageLoad();
+    const saved = { ...target, snapFp: persist.savedSceneFingerprint("s1") };
+    const old = { undo: [snap(card("c1", -5))], redo: [], lastCommit: snap(card("c1", -1)) }; // 저장본과 다른(낡은) 인계
+    expect(undo.adoptSceneHistory(target, candidate(undo, old), handoff(undo))).toBe("adopted");
+    expect(undo.adoptSceneHistory(saved, candidate(undo), boot(undo))).toBe("adopted");
+    expect(undo.loadSceneHistory("s1")).toEqual(history());
+
+    ({ undo, persist } = await pageLoad());
+    const fresh = { ...history(), redo: [snap(card("c1", 7))] }; // 저장본과 같은 인계
+    expect(undo.adoptSceneHistory(target, candidate(undo, fresh), handoff(undo))).toBe("adopted");
+    expect(undo.adoptSceneHistory({ ...target, snapFp: persist.savedSceneFingerprint("s1") }, candidate(undo), boot(undo))).toBe("stale");
+    expect(undo.loadSceneHistory("s1")).toEqual(fresh);
+  });
+
+  it("빈 기록 인계·옛 판 배열 인계는 받지 않는다 — 빈 인계 뒤의 정상 복원이 막히지 않는다(리뷰 P1·P2)", async () => {
+    const { undo, persist } = await pageLoad();
+    const popup = await import("../src/lib/popupWindows");
+    popup.shareCanvasMemory();
+    const port = (window as unknown as Record<string, { load: (memory: object) => void }>).__mvhubCanvasMemory;
+    port.load({ sceneHistories: [["s1", history()]] }); // 옛 판 배열 — 보낸 계정·인계를 알 수 없다
+    expect(undo.loadSceneHistory("s1")).toBeUndefined();
+    port.load({ sceneHistories: { account: "local", handoffId: popup.canvasHandoffId(), entries: [["s1", { undo: [], redo: [], lastCommit: snap(...AFTER) }]] } });
+    expect(undo.loadSceneHistory("s1")).toBeUndefined();
+    expect(undo.adoptSceneHistory({ ...target, snapFp: persist.savedSceneFingerprint("s1") }, candidate(undo), boot(undo))).toBe("adopted");
   });
 
   it("열린 보드가 편집 전 빈 기록이면 늦은 복원이 그 보드의 스택을 바꾸고, 보드의 모습과 지문이 다르면 받지 않는다", async () => {

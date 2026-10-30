@@ -34,14 +34,20 @@ export interface SceneWriteReceipt {
   readonly confirmed: Promise<boolean>;
 }
 export type UndoPutResult = "ok" | "deleted" | "full" | "failed";
-/** 저장 칸. 한 호출이 한 트랜잭션이다 — put 은 삭제 세대 확인·용량 검사(합계 − 기존 + 새)·슬롯과 합계 갱신을 한 번에. */
+/** 저장 칸. 한 호출이 한 트랜잭션이다 — put 은 삭제 세대 확인·용량 검사(합계 − 기존 + 새)·슬롯과 합계 갱신을 한 번에.
+ *  forget 은 세대를 nextDeleteGeneration 으로 올리고 그 씬의 슬롯을 지운 뒤 확정한 세대를 돌려준다(못 하면 null). */
 export interface UndoBackend {
   put(slot: UndoSlot, budget: number): Promise<UndoPutResult>;
   get(key: string): Promise<UndoSlot | null>;
   generation(account: string, sceneId: string): Promise<number>;
-  forget(account: string, sceneId: string, generation: number): Promise<void>;
+  generations(account: string): Promise<Record<string, number>>;
+  forget(account: string, sceneId: string, generation: number): Promise<number | null>;
   prune(savedBefore: number): Promise<void>;
 }
+
+/** 삭제 뒤의 세대 — 저장된 세대보다 **반드시 크게**. 요청한 값만 쓰면 세대를 모르는(또는 늦게 안) 창의 삭제가 세대를 못 올려,
+ *  삭제 전에 예약한 다른 창의 쓰기가 통과했다(B 독립 리뷰 P1). */
+export const nextDeleteGeneration = (stored: number, requested: number): number => Math.max(stored + 1, requested);
 
 /** put 한 번의 판정 — 삭제 세대가 다르면 deleted, 교체 후 합계(합계 − 기존 + 새)가 상한을 넘고 커지는 쓰기면 full(같거나 작은 갱신은 받는다). */
 export function planUndoPut(
@@ -203,20 +209,42 @@ function indexedDbBackend(): UndoBackend {
         return 0;
       }
     },
+    async generations(account) {
+      const conn = await db();
+      if (!conn) return {};
+      try {
+        const prefix = genKey(account, "").slice(0, -2); // '["gen","<account>","' — 그 계정의 세대 열쇠만
+        const out: Record<string, number> = {};
+        await new Promise<void>((resolve, reject) => {
+          const req = conn.transaction(META).objectStore(META).openCursor(IDBKeyRange.bound(prefix, prefix + "￿"));
+          req.onsuccess = () => {
+            const cursor = req.result;
+            if (!cursor) return resolve();
+            out[(JSON.parse(String(cursor.key)) as string[])[2]] = cursor.value as number;
+            cursor.continue();
+          };
+          req.onerror = () => reject(req.error);
+        });
+        return out;
+      } catch {
+        return {};
+      }
+    },
     async forget(account, sceneId, generation) {
       const conn = await db();
-      if (!conn) return;
+      if (!conn) return null;
       try {
         const tx = conn.transaction([SLOTS, META], "readwrite");
         const meta = tx.objectStore(META);
         const stored = ((await request(meta.get(genKey(account, sceneId)))) as number | undefined) ?? 0;
-        meta.put(Math.max(stored, generation), genKey(account, sceneId));
+        const next = nextDeleteGeneration(stored, generation);
+        meta.put(next, genKey(account, sceneId));
         const freed = await deleteMatching(tx.objectStore(SLOTS).index(SCENE).openCursor(IDBKeyRange.only([account, sceneId])));
         const total = ((await request(meta.get(TOTAL))) as number | undefined) ?? 0;
         meta.put(Math.max(0, total - freed), TOTAL);
-        await finished(tx);
+        return (await finished(tx)) ? next : null;
       } catch {
-        /* 못 지운 슬롯은 세대가 달라 쓰이지 않고, 7일 뒤 정리된다 */
+        return null; // 못 지운 슬롯은 이 창의 세대가 이미 올라 쓰이지 않고, 7일 뒤 정리된다
       }
     },
     async prune(savedBefore) {
@@ -266,7 +294,7 @@ interface Reservation {
 const generations = new Map<string, number>(); // 이 창이 아는 삭제 세대 — 예약 때 고정하고, 쓰기 직전(트랜잭션 안)·포인터 게시 직전에 다시 본다
 const lanes = new Map<string, { next: Reservation | null }>(); // 슬롯마다 진행 하나(이 맵에 있음)·최신 대기 하나(next)
 
-/** 편집·Undo·Redo·파생 저장 뒤에 부른다. 기록은 지금 모습으로 복제해 둔다(스택은 그 자리에서 바뀐다). */
+/** 편집·Undo·Redo·파생 저장 뒤에 부른다. 기록은 예약 때 모습으로 통째로 복제해 둔다(스택은 그 자리에서 바뀐다 — 안쪽 객체까지, B 리뷰 P2). */
 export function scheduleUndoCheckpoint(sceneId: string, history: SceneHistory, historyRevision: number, receipt: SceneWriteReceipt): void {
   // 빈 기록은 쓰지 않는다 — 부팅 직후의 파생 저장이 빈 기록으로 포인터를 옮기면, 아직 들이지 못한 지난 기록을 잃는다(Codex 5차)
   if (!history.undo.length && !history.redo.length) return;
@@ -274,9 +302,9 @@ export function scheduleUndoCheckpoint(sceneId: string, history: SceneHistory, h
   const key = sceneKey(account, sceneId);
   const reservation: Reservation = {
     account, sceneId, historyRevision, receipt,
-    deleteGeneration: generations.get(key) ?? 0,
+    deleteGeneration: generations.get(key) ?? 0, // 부팅 때 그 계정의 세대를 모두 읽어 둔다(readUndoSlots) — 기록에 없는 씬은 0
     snapFp: snapFingerprint(history.lastCommit),
-    history: { undo: [...history.undo], redo: [...history.redo], lastCommit: history.lastCommit },
+    history: structuredClone({ undo: history.undo, redo: history.redo, lastCommit: history.lastCommit }), // 공유 객체는 복제 안에서도 공유(크기 그대로)
   };
   const lane = lanes.get(key);
   if (lane) lane.next = reservation; // 진행 중이면 대기만 최신으로 바꾼다
@@ -323,14 +351,17 @@ async function write(reservation: Reservation): Promise<void> {
   }
 }
 
-/** 씬을 지웠다 — 세대를 올려 대기 쓰기와 그 완료의 포인터 게시를 모두 무효로 하고, 그 씬의 슬롯을 지운다. */
+/** 씬을 지웠다 — 세대를 올려 대기 쓰기와 그 완료의 포인터 게시를 모두 무효로 하고, 그 씬의 슬롯을 지운다.
+ *  이 창의 세대는 바로 올리고(이 창의 대기 쓰기 무효), 칸이 확정한 세대(저장된 것보다 반드시 큼)로 다시 맞춘다. */
 export function forgetSceneUndo(sceneId: string): void {
   const account = getAccountNamespace();
   const key = sceneKey(account, sceneId);
   const generation = (generations.get(key) ?? 0) + 1;
   generations.set(key, generation);
   writePointer(key, null);
-  void currentBackend().forget(account, sceneId, generation);
+  void currentBackend().forget(account, sceneId, generation).then((stored) => {
+    if (stored !== null) generations.set(key, Math.max(generations.get(key) ?? 0, stored));
+  });
 }
 
 // 저장소(sceneUndoStore)의 사건 — 씬 기록 지움 = 씬 삭제, 창 인계로 받은 기록 = 이 창의 슬롯에 남긴다(돌려받은 뒤 새로 고쳐도 이어지게).
@@ -341,12 +372,17 @@ onSceneHistoryEvent((event) => {
 });
 
 // ── 부팅 읽기 ─────────────────────────────────────────────────────────────────
-/** 이 탭의 포인터가 가리키는 슬롯(지금 계정 것, 7일 안, 지운 씬 아님). 남의 슬롯일 수 있다 — 읽기만 한다. 무엇이 실패해도 빈 목록. */
+/** 이 탭의 포인터가 가리키는 슬롯(지금 계정 것, 7일 안, 지운 씬 아님). 남의 슬롯일 수 있다 — 읽기만 한다. 무엇이 실패해도 빈 목록.
+ *  그 계정의 삭제 세대도 모두 읽어 둔다 — 지웠다 되살린 씬을 포인터 없는 새 탭에서 처음 고쳐도 그 예약이 맞는 세대로 써진다(B 리뷰 P2). */
 export async function readUndoSlots(): Promise<UndoSlot[]> {
   const account = getAccountNamespace();
   const now = Date.now();
   const out: UndoSlot[] = [];
   try {
+    for (const [sceneId, generation] of Object.entries(await currentBackend().generations(account))) {
+      const key = sceneKey(account, sceneId);
+      generations.set(key, Math.max(generations.get(key) ?? 0, generation));
+    }
     for (const [scene, key] of Object.entries(readPointers())) {
       const slot = await currentBackend().get(key);
       if (!slot || sceneKey(slot.account, slot.sceneId) !== scene || slot.account !== account || now - slot.savedAt > UNDO_KEEP_MS) continue;
