@@ -95,7 +95,22 @@ const DB_NAME = "mvhub-undo";
 const SLOTS = "slots";
 const META = "meta"; // "total" → 논리 크기 합계, ["gen", account, sceneId] → 삭제 세대
 const TOTAL = "total";
+const SAVED_AT = "savedAt"; // 슬롯 색인 — 마지막 저장 시각
+const SCENE = "scene"; // 슬롯 색인 — [account, sceneId]
 const genKey = (account: string, sceneId: string) => JSON.stringify(["gen", account, sceneId]);
+
+// 색인 커서로 고른 슬롯을 지우고 지운 크기 합을 돌려준다(같은 트랜잭션 안 — 콜백에서 바로 다음으로 넘겨 트랜잭션이 닫히지 않게).
+const deleteMatching = (req: IDBRequest<IDBCursorWithValue | null>) => new Promise<number>((resolve, reject) => {
+  let freed = 0;
+  req.onsuccess = () => {
+    const cursor = req.result;
+    if (!cursor) return resolve(freed);
+    freed += (cursor.value as UndoSlot).size || 0;
+    cursor.delete();
+    cursor.continue();
+  };
+  req.onerror = () => reject(req.error);
+});
 
 function openUndoDb(): Promise<IDBDatabase | null> {
   return new Promise((resolve) => {
@@ -109,7 +124,12 @@ function openUndoDb(): Promise<IDBDatabase | null> {
       const req = indexedDB.open(DB_NAME, 1);
       req.onupgradeneeded = () => {
         const db = req.result;
-        if (!db.objectStoreNames.contains(SLOTS)) db.createObjectStore(SLOTS, { keyPath: "key" });
+        if (!db.objectStoreNames.contains(SLOTS)) {
+          // 정리·삭제가 기록 본문(최대 상한만큼)을 다 읽지 않게 — 지울 것만 색인으로 찾는다
+          const slots = db.createObjectStore(SLOTS, { keyPath: "key" });
+          slots.createIndex(SAVED_AT, "savedAt");
+          slots.createIndex(SCENE, ["account", "sceneId"]);
+        }
         if (!db.objectStoreNames.contains(META)) db.createObjectStore(META);
       };
       req.onsuccess = () => {
@@ -191,13 +211,7 @@ function indexedDbBackend(): UndoBackend {
         const meta = tx.objectStore(META);
         const stored = ((await request(meta.get(genKey(account, sceneId)))) as number | undefined) ?? 0;
         meta.put(Math.max(stored, generation), genKey(account, sceneId));
-        let freed = 0;
-        const all = (await request(tx.objectStore(SLOTS).getAll())) as UndoSlot[];
-        for (const slot of all) {
-          if (slot.account !== account || slot.sceneId !== sceneId) continue;
-          freed += slot.size;
-          tx.objectStore(SLOTS).delete(slot.key);
-        }
+        const freed = await deleteMatching(tx.objectStore(SLOTS).index(SCENE).openCursor(IDBKeyRange.only([account, sceneId])));
         const total = ((await request(meta.get(TOTAL))) as number | undefined) ?? 0;
         meta.put(Math.max(0, total - freed), TOTAL);
         await finished(tx);
@@ -210,13 +224,11 @@ function indexedDbBackend(): UndoBackend {
       if (!conn) return;
       try {
         const tx = conn.transaction([SLOTS, META], "readwrite");
-        const all = (await request(tx.objectStore(SLOTS).getAll())) as UndoSlot[];
-        let total = 0;
-        for (const slot of all) {
-          if (slot.savedAt < savedBefore) tx.objectStore(SLOTS).delete(slot.key);
-          else total += slot.size;
+        const freed = await deleteMatching(tx.objectStore(SLOTS).index(SAVED_AT).openCursor(IDBKeyRange.upperBound(savedBefore, true)));
+        if (freed) {
+          const total = ((await request(tx.objectStore(META).get(TOTAL))) as number | undefined) ?? 0;
+          tx.objectStore(META).put(Math.max(0, total - freed), TOTAL);
         }
-        tx.objectStore(META).put(total, TOTAL); // 합계도 실제 남은 슬롯으로 다시 맞춘다
         await finished(tx);
       } catch {
         /* 다음 부팅에 다시 */
