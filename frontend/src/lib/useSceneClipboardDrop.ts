@@ -26,6 +26,7 @@ import { uid, type SceneCard, type SceneEdge, type SceneRef } from "./scenes";
 import type { useCanvasSession } from "../features/canvas/api";
 import { assetIdentityForProject, type AssetImportTarget } from "../shared/contracts/assets";
 import { captureOperationContext, isOperationContextCurrent } from "../app/operationContext";
+import { registerCanvasMemory } from "./popupWindows";
 
 type ClipboardDocument = Pick<ReturnType<typeof useCanvasSession>, "target" | "addReferences" | "pasteNodes">;
 
@@ -85,6 +86,17 @@ let sceneClipboardSnapshot: SceneClipboard | null = null;
 // 사용자가 그 사이 외부에서 다른 것을 복사한 것이므로 옛 노드 스냅샷을 붙이지 않는다.
 // null = 표식 기록 실패(클립보드 권한 등) — 그땐 기존 이미지 지문 휴리스틱만 쓴다.
 let sceneClipboardMarker: string | null = null;
+// 휠 클릭으로 띄운 캔버스 창과 메인 창이 복사한 노드를 주고받는다(lib/popupWindows — 켤 때 받고 닫을 때 돌려준다). 표식도 함께 —
+//  시스템 클립보드는 두 창이 같이 쓰므로, 받은 창에서도 '그 사이 다른 것을 복사했나' 판정이 그대로 맞는다.
+registerCanvasMemory("sceneClipboard", {
+  save: () => ({ snapshot: sceneClipboardSnapshot, marker: sceneClipboardMarker }),
+  load: (value) => {
+    const handed = value as { snapshot?: SceneClipboard | null; marker?: unknown } | null;
+    if (!handed || !Array.isArray(handed.snapshot?.cards)) return; // 저쪽에서 복사한 것이 없다 — 이 창의 것을 둔다
+    sceneClipboardSnapshot = handed.snapshot ?? null;
+    sceneClipboardMarker = typeof handed.marker === "string" ? handed.marker : null;
+  },
+});
 
 // 올리기에 실패한 자리 표시의 글 — 카드 자리에 남는다(토스트는 곧 사라진다).
 const IMPORT_FAILED = "넣지 못했습니다 — 다시 놓아 주세요";

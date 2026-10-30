@@ -6,6 +6,7 @@ import { getAccountNamespace } from "./accountScope";
 import { getAuthToken, jsonBody, jsonFetch } from "./http";
 import { listPersistedScenes, listScenes, type Scene, type SceneCard } from "./scenes";
 import { sceneStoreReady } from "./sceneStore";
+import { isCanvasFloating } from "./popupWindows";
 import { sceneMatchesWorkspace } from "./sceneWorkspace";
 
 export interface McpCanvasTask {
@@ -72,7 +73,8 @@ export function useMcpCanvasTasks(props: CanvasPorts & { authReady: boolean; aut
     const poll = async () => {
       let failed = false;
       try {
-        if (!sceneStoreReady() || !fresh()) return;
+        // 캔버스가 다른 창에 떠 있으면 그 창이 받아 붙인다 — 여기서 붙이면 그 창이 모른 채 덮고, 처리 기록이 남아 다시 붙지 않는다
+        if (!sceneStoreReady() || !fresh() || isCanvasFloating()) return;
         const query = new URLSearchParams({ workspace_scope: props.workspace.scope });
         if (props.workspace.id) query.set("workspace_id", props.workspace.id);
         const result = await jsonFetch<{ tasks: McpCanvasTask[] }>(`/api/mcp/v2/app/canvas-tasks?${query}`, { headers: { "X-MVHub-Tab": tab }, signal: abort.signal });

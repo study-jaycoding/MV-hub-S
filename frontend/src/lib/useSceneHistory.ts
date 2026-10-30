@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import {
   preserveRepresentatives,
@@ -10,6 +10,7 @@ import {
 } from "./scenes";
 import {
   loadSceneHistory,
+  registerLiveSceneHistory,
   sameSnap,
   saveSceneHistory as saveStoredSceneHistory,
   type SceneCardRemoval,
@@ -115,6 +116,9 @@ export function useSceneHistory({
       lastCommit: lastCommitRef.current,
     });
   };
+
+  // 휠 클릭으로 띄운 캔버스 창이 닫히며 메인 창에 기록을 돌려줄 때 — 열린 보드의 지금 기록을 먼저 store 에 남긴다(sceneUndoStore)
+  useEffect(() => registerLiveSceneHistory(() => persistSceneHistory(sceneIdRef.current)), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const restoreSceneHistory = (targetSceneId: string, incoming: SceneSnap) => {
     const stored = loadSceneHistory(targetSceneId);

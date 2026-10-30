@@ -5,6 +5,7 @@
 // 공개 setter 모양은 보존하되 수동 변경만 revision에 기록해 자동 따라가기 응답과 구분한다.
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -17,7 +18,7 @@ import type { Filters, GenQuery, WorkspaceContext } from "../types";
 import { sharedWorkspaceFilter, workspaceViewKey, type SharedWorkspaceMode } from "./libraryWorkspaceScope";
 import type { MediaFilter } from "./mediaTypes";
 import { buildGenerationQuery } from "./appGenerationQuery";
-import { isCanvasWindow } from "./popupWindows";
+import { isCanvasWindow, useCanvasFloating } from "./popupWindows";
 import {
   FILTER_AUTO_TAGS_KEY,
   FILTERS_FORMAT_KEY,
@@ -267,7 +268,7 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext, teamP
   const [sharedOnly, setSharedOnly, setSharedOnlyAutomatic] = useManualState(
     () => LS.get("sharedOnly", "0") === "1", bumpViewFilter,
   );
-  const [reviewFilter, setReviewFilter] = useManualState<"shared" | "held">(
+  const [reviewFilter, setReviewFilter, setReviewFilterAutomatic] = useManualState<"shared" | "held">(
     () => LS.get("reviewFilter", "shared") === "held" ? "held" : "shared", bumpViewFilter,
   );
   const [tagFilter, setTagFilter, setTagFilterAutomatic] = useManualState<Set<string>>(
@@ -467,6 +468,59 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext, teamP
     pending: !workspaceQueryReady,
     onChange: setSharedWorkspaceMode,
   } : undefined;
+
+  // 캔버스가 휠 클릭으로 띄운 창에 떠 있는 동안(캔버스 창은 늘) 다른 창이 바꾼 보기 설정·생성 폴더·자동 태그를 따라간다 — 한 창으로 쓸 때처럼
+  //  캔버스와 라이브러리가 같은 값을 쓴다(Jay 2026-10-30 "똑같이", docs/status/캔버스_두창_함께쓰기_2026-10-30.md). 저장은 이미 하나라 다시 읽기만 한다.
+  //  보던 자리(filtersV2 — 탭·프로젝트·폴더)는 따라가지 않는다: 메인 창에서 폴더를 옮길 때마다 캔버스 창이 폴더 창을 열게 된다.
+  //  자동 setter 라 선택·수동 횟수를 건드리지 않고, 같은 값이면 바꾸지 않아 두 창이 서로 되쓰지 않는다(같은 값 저장은 알림이 없다).
+  const canvasFloating = useCanvasFloating();
+  const shareSettings = isCanvasWindow() || canvasFloating;
+  const sharedRef = useRef({ colorFilter, tagFilter, armedFolder });
+  sharedRef.current = { colorFilter, tagFilter, armedFolder };
+  useEffect(() => {
+    if (!shareSettings) return;
+    const names = ["typeFilter", "scale", "fill", "showFilters", "colorFilter", "sharedOnly", "reviewFilter", "commentOnly",
+      "finalOnly", "grayOn", "tagFilter", "armedAutoTags", FILTER_AUTO_TAGS_KEY, "armedFolder", GENERATION_SCOPE_KEY];
+    const sameSet = (a: Set<string>, b: Set<string>) => a.size === b.size && [...a].every((value) => b.has(value));
+    const onStorage = (event: StorageEvent) => {
+      if (!event.key || !names.some((name) => event.key!.endsWith(name))) return;
+      setTypeFilterAutomatic((LS.get("typeFilter", "all") as MediaFilter) || "all");
+      const savedScale = Number(LS.get("scale", "1"));
+      setScale(Number.isFinite(savedScale) && savedScale > 0 ? Math.min(1.7, Math.max(0.7, savedScale)) : 1);
+      setFill(LS.get("fill", "1") !== "0");
+      setShowFilters(LS.get("showFilters", "1") !== "0");
+      setSharedOnlyAutomatic(LS.get("sharedOnly", "0") === "1");
+      setReviewFilterAutomatic(LS.get("reviewFilter", "shared") === "held" ? "held" : "shared");
+      setCommentOnlyAutomatic(LS.get("commentOnly", "0") === "1");
+      setFinalOnlyAutomatic(LS.get("finalOnly", "0") === "1");
+      setGrayOnAutomatic(LS.get("grayOn", "0") === "1");
+      const colors = LS.loadSet("colorFilter");
+      if (!sameSet(colors, sharedRef.current.colorFilter)) setColorFilterAutomatic(colors);
+      const tags = LS.loadSet("tagFilter");
+      if (!sameSet(tags, sharedRef.current.tagFilter)) setTagFilterAutomatic(tags);
+      const armedTags = LS.loadSet("armedAutoTags");
+      if (!sameSet(armedTags, armedAutoTagsRef.current)) {
+        armedAutoTagsRef.current = armedTags;
+        rawSetArmedAutoTags(armedTags);
+      }
+      const filterTags = restoreFilterAutoTags(LS, armedTags);
+      if (!sameSet(filterTags, filterAutoTagsRef.current)) {
+        filterAutoTagsRef.current = filterTags;
+        rawSetFilterAutoTags(filterTags);
+      }
+      const folder = LS.loadJSON<{ projectId: string; path: string }>("armedFolder") ?? null;
+      const current = sharedRef.current.armedFolder;
+      if (folder?.projectId !== current?.projectId || folder?.path !== current?.path) setArmedFolder(folder);
+      const scope = restoreGenerationScope(LS, filtersRef.current);
+      if (!sameGenerationScope(scope, generationScopeRef.current)) {
+        generationScopeRef.current = scope;
+        rawSetGenerationScope(scope);
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [LS, shareSettings, setColorFilterAutomatic, setCommentOnlyAutomatic, setFinalOnlyAutomatic, setGrayOnAutomatic,
+    setReviewFilterAutomatic, setSharedOnlyAutomatic, setTagFilterAutomatic, setTypeFilterAutomatic]);
 
   useLibraryPersistence({
     armedAutoTags,

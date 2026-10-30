@@ -10,6 +10,7 @@ import {
   type CanvasGenerationLink, type CanvasGenerationTarget,
 } from "./canvasGenerationRecovery";
 import { seedPending } from "./sceneRecentDoneStore";
+import { isCanvasFloating } from "./popupWindows";
 
 interface Args {
   authReady: boolean;
@@ -35,6 +36,7 @@ export function useCanvasGenerationLinks({ authReady, scenes, canvasDocument, se
     fixedLinks?: CanvasGenerationLink[],
   ): Promise<CanvasGenerationLink[]> => {
     if (fixedLinks && (fixedLinks.length !== cardIds.length || fixedLinks.some((link, index) => link.scene_id !== sceneId || link.card_id !== cardIds[index]))) return [];
+    if (isCanvasFloating()) return []; // 캔버스가 다른 창에 떠 있다 — 씬은 그 창만 쓴다(그 창에서 생성한다)
     const links = fixedLinks ?? cardIds.flatMap((cardId) =>
       createCanvasGenerationLinks({ sceneId, cardId }, 1),
     );
@@ -87,10 +89,13 @@ export function useCanvasGenerationLinks({ authReady, scenes, canvasDocument, se
         : [generation, ...previous],
     );
     seedPending([generation.id]);
+    // 띄우기 전에 낸 생성의 결과 — 캔버스가 다른 창에 떠 있으면 그 창의 복구(아래 recover)가 카드에 붙인다. 여기서 쓰면 그 창이 모른 채 덮는다
+    if (isCanvasFloating()) return;
     const receipt = canvasDocument.commit(canvasTarget(link.scene_id), { type: "settleGeneration", cardId: link.card_id, generationId: generation.id });
     if (!receipt.queued && listScenes(null).some(scene => scene.id === link.scene_id)) throw new Error("캔버스 생성 결과를 저장하지 못했습니다.");
   }, [canvasDocument, setGens]);
   const discardCanvasGeneration = useCallback((link: CanvasGenerationLink) => {
+    if (isCanvasFloating()) return; // 떠 있는 창의 복구가 2분 뒤 서버에 닿지 않은 표식을 걷는다
     canvasDocument.commit(canvasTarget(link.scene_id), { type: "discardGeneration", cardId: link.card_id, generationId: link.generation_id });
   }, [canvasDocument]);
 
@@ -123,7 +128,8 @@ export function useCanvasGenerationLinks({ authReady, scenes, canvasDocument, se
       // useSyncStatus 참고). ★탭이 아니라 '창이 보이는가'로만 쉰다: 이건 표시용 조회가 아니라
       // 생성 시도 이어붙이기라 캔버스 탭 밖에서도 돌아야 한다.
       // 체인이 끊기지 않게 다음 차례는 그대로 예약하고, 복귀 시엔 아래 리스너가 즉시 당겨온다.
-      if (document.visibilityState === "hidden") {
+      // 캔버스가 다른 창에 떠 있는 동안도 쉰다 — 그 창이 같은 복구를 돌고, 두 창이 같은 씬에 쓰면 그 창이 모른 채 덮는다
+      if (document.visibilityState === "hidden" || isCanvasFloating()) {
         if (alive) timer = window.setTimeout(recover, 2500);
         return;
       }

@@ -29,11 +29,30 @@ vi.mock("../src/lib/sceneBackup", () => ({
   getSceneBackupSkippedIds: () => EMPTY_SKIPPED,
   subscribeSceneBackupForked: () => () => {},
 }));
+// 카드 소속 합치기·레퍼런스 복구가 떠 있는 동안 씬을 쓰지 않는지 본다(2026-10-30 두 창 함께 쓰기 ①) — 듣는 함수를 붙잡고 쓰기 함수를 센다
+const background = vi.hoisted(() => ({
+  cardLinksLoaded: null as null | (() => void),
+  restoreCardLinks: vi.fn(() => false),
+  relink: vi.fn(async () => 0),
+  sync: vi.fn(async () => {}),
+}));
 vi.mock("../src/lib/sceneCardLinks", () => ({
   initSceneCardLinks: () => {},
   mergeCardLinksIntoScenes: () => null,
   serverCardLinks: () => [],
-  subscribeCardLinksLoaded: () => () => {},
+  subscribeCardLinksLoaded: (listener: () => void) => {
+    background.cardLinksLoaded = listener;
+    return () => {};
+  },
+}));
+vi.mock("../src/features/canvas/api", async (original) => ({
+  ...await original<typeof import("../src/features/canvas/api")>(),
+  restoreCanvasCardLinks: background.restoreCardLinks,
+}));
+vi.mock("../src/lib/sceneAssetRelink", async (original) => ({
+  ...await original<typeof import("../src/lib/sceneAssetRelink")>(),
+  relinkSceneAssetRefs: background.relink,
+  syncSceneAssetReferences: background.sync,
 }));
 
 const BUCKET = "local::_none";
@@ -120,4 +139,24 @@ it("떠 있던 창이 닫히면 그 창이 마지막으로 연 씬과 저장본�
   expect(coordination!.activeScene?.name).toBe("떠 있는 창에서 고친 둘째");
   await renameInOtherWindow("s2", "돌아온 뒤 다른 창이 또 고침"); // 돌아온 뒤에는 다시 내 활성 씬을 지킨다
   expect(coordination!.activeScene?.name).toBe("떠 있는 창에서 고친 둘째");
+});
+
+it("떠 있는 동안 레퍼런스 복구·카드 소속 합치기가 씬을 쓰지 않는다 — 돌아오면 다시 한다(두 창 함께 쓰기 ①)", async () => {
+  let mark: Parameters<typeof initSceneStore>[1] = null;
+  await initSceneStore(() => ({ [BUCKET]: [mk("s1")] }), mark, (next) => { mark = next; return true; });
+  background.relink.mockClear();
+  background.sync.mockClear();
+  background.restoreCardLinks.mockClear();
+  await act(async () => root.render(<Screen follow={true} />)); // 캔버스가 떠 있는 채로 메인 창을 켰다(새로 고침)
+  await settle();
+  expect(background.relink).not.toHaveBeenCalled(); // 앱 시작 복구
+  expect(background.sync).not.toHaveBeenCalled(); // 5초 주기의 첫 회
+  act(() => background.cardLinksLoaded?.());
+  expect(background.restoreCardLinks).not.toHaveBeenCalled();
+
+  await follow(false); // 캔버스 창을 닫았다
+  act(() => background.cardLinksLoaded?.());
+  expect(background.restoreCardLinks).toHaveBeenCalled();
+  await act(async () => { await coordination!.relinkSceneRefsNow(); });
+  expect(background.relink).toHaveBeenCalled();
 });

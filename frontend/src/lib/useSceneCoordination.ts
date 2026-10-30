@@ -179,6 +179,7 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
     // 카드 소속 합치기 — DB 가 아는 소속을 화면 씬에 반영한다(다른 브라우저에서 담은 결과가 보이게).
     //  바뀐 게 없으면 merge 가 null 을 주므로 저장→알림 고리가 돌지 않는다.
     const unsubscribeLinks = subscribeCardLinksLoaded(() => {
+      if (followStoreRef.current) return; // 캔버스가 다른 창에 떠 있다 — 씬은 그 창만 쓴다(그 창도 같은 합치기를 한다)
       // ★병합 전에 활성 캔버스의 디바운스 저장을 먼저 확정한다 — listScenes()는 저장본이라,
       //  막 입력한 텍스트/파라미터가 아직 디바운스 중이면 그걸 지운 옛 상태로 병합·저장해
       //  입력이 유실된다(적대 리뷰 P2). flush 가 저장본을 최신으로 만든 뒤 병합한다.
@@ -314,8 +315,9 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
   };
   // 자산 자동 복구 — 네 계기(앱 시작·씬 불러오기·드롭 뒤·백업 가져오기)가 모두 이 하나로 부른다(2026-09-29).
   //  판정이 저장되지 않은 참조와 방금 들어온 것만 묻는다(Jay "2 새 안") — 켤 때마다 NAS 를 다시 훑지 않는다.
-  const relinkAssets = (announce: boolean): Promise<void> =>
-    relinkSceneAssetRefs(relinkHooks).then((changed) => {
+  const relinkAssets = (announce: boolean): Promise<void> => followStoreRef.current
+    ? Promise.resolve() // 캔버스가 다른 창에 떠 있다 — 씬은 그 창만 쓴다(그 창도 같은 복구를 한다)
+    : relinkSceneAssetRefs(relinkHooks).then((changed) => {
       if (announce && changed) flashRef.current?.(`씬 그림 ${changed}개를 프로젝트 폴더의 원본으로 다시 이었습니다.`);
     });
   const syncHooksRef = useRef(relinkHooks);
@@ -324,7 +326,8 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     const check = async () => {
-      try { await syncSceneAssetReferences(syncHooksRef.current, () => !stopped); } catch { /* 로컬 작업은 계속하고 다음 주기에 재시도한다. */ }
+      // 캔버스가 다른 창에 떠 있는 동안은 쉰다 — 그 창이 같은 일을 하고, 두 창이 같은 씬에 쓰면 그 창이 모른 채 덮는다
+      try { if (!followStoreRef.current) await syncSceneAssetReferences(syncHooksRef.current, () => !stopped); } catch { /* 로컬 작업은 계속하고 다음 주기에 재시도한다. */ }
       if (!stopped) timer = setTimeout(check, 5000);
     };
     void check();

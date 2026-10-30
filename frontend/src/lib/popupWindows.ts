@@ -170,13 +170,17 @@ const CANVAS_CHANNEL = "mvhub-canvas-window";
 const RELOAD_GRACE_MS = 300; // "closed" 뒤 이 창이 연 창이 아직 살아 있으면 새로 고침이다 — 닫힘이 .closed 에 비치기를 기다리는 틈
 
 export function announceCanvasWindow(): void {
+  adoptOpenerCanvasMemory(); // 메인 창이 살아 있는 켜질 때 받아 둔다 — 각 저장소가 등록할 때 꺼내 간다(아래)
   if (typeof BroadcastChannel === "undefined") return;
   const channel = new BroadcastChannel(CANVAS_CHANNEL);
   channel.onmessage = (event) => {
     if (event.data === "ping") channel.postMessage("open");
   };
   channel.postMessage("open");
-  window.addEventListener("pagehide", () => channel.postMessage("closed"));
+  window.addEventListener("pagehide", () => {
+    returnCanvasMemory(); // 'closed' 보다 먼저 — 메인 창이 캔버스를 다시 그리기 전에 되돌리기 기록을 받아 두게
+    channel.postMessage("closed");
+  });
 }
 
 let canvasFloating = false;
@@ -219,6 +223,106 @@ function subscribeCanvasFloating(listener: () => void): () => void {
 
 export function useCanvasFloating(): boolean {
   return useSyncExternalStore(subscribeCanvasFloating, () => canvasFloating);
+}
+
+/** 지금 이 창의 캔버스가 다른 창에 떠 있나 — 화면이 아닌 배경 작업(씬 쓰기)이 쉴지 볼 때. 캔버스 창에서는 늘 거짓. */
+export function isCanvasFloating(): boolean {
+  return canvasFloating;
+}
+
+// 창 메모리에만 있는 캔버스 상태(되돌리기 기록·복사한 노드)를 메인 창 ↔ 캔버스 창이 주고받는다(Jay 2026-10-30 "원래 캔버스처럼",
+// docs/status/캔버스_두창_함께쓰기_2026-10-30.md). 캔버스 창이 켜질 때 자기를 연 창(window.opener)의 손잡이로 받아 오고, 닫히거나 새로 고칠 때
+// 돌려준다 — 여는 창이 하나로 정해져 답이 갈리지 않고, 닫는 순간에도 동기 호출이라 유실이 없다. 각 저장소가 이름을 붙여 등록한다.
+export interface CanvasMemoryPart {
+  save: () => unknown;
+  load: (value: unknown) => void;
+  flush?: () => void; // 내보내기 전에 열린 화면의 값을 저장소에 남긴다(열린 보드의 되돌리기 기록)
+}
+type CanvasMemoryPort = { save: () => Record<string, unknown>; load: (memory: Record<string, unknown>) => void };
+const MEMORY_PORT = "__mvhubCanvasMemory";
+const memoryParts = new Map<string, CanvasMemoryPart>();
+let openerMemory: Record<string, unknown> | null = null;
+
+export function registerCanvasMemory(name: string, part: CanvasMemoryPart): void {
+  memoryParts.set(name, part);
+  if (openerMemory && name in openerMemory) {
+    const handed = openerMemory[name];
+    delete openerMemory[name];
+    part.load(handed);
+  }
+}
+
+function saveCanvasMemory(): Record<string, unknown> {
+  memoryParts.forEach((part) => part.flush?.());
+  return Object.fromEntries([...memoryParts].map(([name, part]) => [name, part.save()]));
+}
+
+/** 메인 창 — 캔버스 창이 window.opener 로 부를 손잡이를 단다. 받은 값은 이 창의 것으로 복제해 둔다(닫히는 창의 객체를 붙들지 않게). */
+export function shareCanvasMemory(): void {
+  const port: CanvasMemoryPort = {
+    save: saveCanvasMemory,
+    load: (memory) => {
+      for (const [name, value] of Object.entries(structuredClone(memory))) memoryParts.get(name)?.load(value);
+    },
+  };
+  (window as unknown as Record<string, CanvasMemoryPort>)[MEMORY_PORT] = port;
+}
+
+function openerPort(): CanvasMemoryPort | null {
+  try {
+    return (window.opener as Record<string, CanvasMemoryPort | undefined> | null)?.[MEMORY_PORT] ?? null;
+  } catch {
+    return null; // 연 창이 닫혔거나 다른 출처
+  }
+}
+
+function adoptOpenerCanvasMemory(): void {
+  try {
+    const port = openerPort();
+    if (port) openerMemory = structuredClone(port.save());
+  } catch {
+    /* 연 창이 없다 — 빈 기록으로 시작한다 */
+  }
+}
+
+function returnCanvasMemory(): void {
+  try {
+    openerPort()?.load(saveCanvasMemory());
+  } catch {
+    /* 연 창이 이미 닫혔다 */
+  }
+}
+
+// 창끼리 실시간으로 나누는 작은 상태(Comfy '생성중') — 창마다 자기 몫을 알리고, 닫히면(pagehide) 그 창 몫을 지운다. 새로 등록한 창은 한 번 묻는다.
+const LIVE_CHANNEL = "mvhub-window-live";
+const WINDOW_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+export interface WindowLivePart {
+  read: () => unknown; // 이 창의 지금 몫
+  apply: (sender: string, value: unknown) => void; // 다른 창의 몫 — value 가 undefined 면 그 창이 닫혔다
+}
+const liveParts = new Map<string, WindowLivePart>();
+let liveChannel: BroadcastChannel | null = null;
+
+function postLive(name: string, value: unknown): void {
+  liveChannel?.postMessage({ type: "live", name, sender: WINDOW_ID, value });
+}
+
+/** 등록하고, 이 창의 몫이 바뀌었을 때 부를 알림 함수를 돌려준다. */
+export function shareWindowLive(name: string, part: WindowLivePart): () => void {
+  liveParts.set(name, part);
+  if (!liveChannel && typeof BroadcastChannel !== "undefined") {
+    liveChannel = new BroadcastChannel(LIVE_CHANNEL);
+    liveChannel.onmessage = (event) => {
+      const message = event.data as { type?: string; name?: string; sender?: string; value?: unknown } | null;
+      if (!message?.sender || message.sender === WINDOW_ID) return;
+      if (message.type === "ask") liveParts.forEach((each, partName) => postLive(partName, each.read()));
+      else if (message.type === "live" && message.name) liveParts.get(message.name)?.apply(message.sender, message.value);
+      else if (message.type === "gone") liveParts.forEach((each) => each.apply(message.sender!, undefined));
+    };
+    window.addEventListener("pagehide", () => liveChannel?.postMessage({ type: "gone", sender: WINDOW_ID }));
+  }
+  liveChannel?.postMessage({ type: "ask", sender: WINDOW_ID });
+  return () => postLive(name, part.read());
 }
 
 // 새로 여는 캔버스 창이 메인 창에서 보던 그대로 시작하게(Jay 2026-10-30, docs/status/캔버스_창_보던값_2026-10-30.md) — 브라우저에 저장되지

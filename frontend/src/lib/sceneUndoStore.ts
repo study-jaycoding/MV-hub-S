@@ -3,6 +3,7 @@
 //  시엔 의도적으로 리셋됐다 → 탭을 오가면 되돌리기가 사라졌다(사용자 보고). genData 캐시(sceneGenDataStore)와
 //  같은 '언마운트 생존' 패턴. LRU 상한 + 씬 삭제 정리로 메모리 무한 증가를 막는다.
 import type { SceneCard, SceneEdge, SceneGroup } from "./scenes";
+import { registerCanvasMemory } from "./popupWindows";
 
 // 한 undo 엔트리에서 '앞으로' 진행하는 전이가 명시적으로 제거한 카드 소속(comfy 워크플로 교체 등).
 // undo(역방향)는 이걸 부활시키고, redo(정방향)는 다시 제거한다 — "스냅샷에 있으니 부활" 추론은
@@ -58,6 +59,33 @@ export function clearSceneHistory(sceneId: string): void {
   store.delete(sceneId);
   tombstones.add(sceneId); // 뒤따르는 언마운트 저장을 1회 무시하게
 }
+
+// 열린 보드의 지금 기록을 store 에 남기는 함수(useSceneHistory 가 등록) — 보드는 언마운트할 때만 남기므로, 창을 닫으며 넘길 때 먼저 부른다.
+const liveFlushers = new Set<() => void>();
+export function registerLiveSceneHistory(flush: () => void): () => void {
+  liveFlushers.add(flush);
+  return () => {
+    liveFlushers.delete(flush);
+  };
+}
+
+// 휠 클릭으로 띄운 캔버스 창과 메인 창이 되돌리기 기록을 주고받는다(lib/popupWindows — 켤 때 받고 닫을 때 돌려준다). 받은 기록도 이어 쓰는
+//  규칙은 그대로다 — lastCommit 이 지금 씬과 같을 때만(useSceneHistory), 어긋나면 버린다.
+const isSnap = (value: unknown): value is SceneSnap =>
+  !!value && typeof value === "object" && Array.isArray((value as SceneSnap).cards) && Array.isArray((value as SceneSnap).edges);
+const isHistory = (value: unknown): value is SceneHistory =>
+  !!value && typeof value === "object" && Array.isArray((value as SceneHistory).undo) && Array.isArray((value as SceneHistory).redo)
+  && isSnap((value as SceneHistory).lastCommit);
+registerCanvasMemory("sceneHistories", {
+  flush: () => liveFlushers.forEach((flush) => flush()),
+  save: () => [...store.entries()],
+  load: (value) => {
+    if (!Array.isArray(value)) return;
+    for (const entry of value) {
+      if (Array.isArray(entry) && typeof entry[0] === "string" && isHistory(entry[1])) saveSceneHistory(entry[0], entry[1]);
+    }
+  },
+});
 
 // 씬 스냅샷의 지문 — 복원한 히스토리(lastCommit)가 현재 씬 props 와 이어지는지 판정용. 전체 스냅샷을 비교한다.
 //  왜 전체인가: 정상(탭 왕복)이면 lastCommit 과 현재 씬은 항상 '같은 최신값'(persist→onChange 로 동기)이라 전체
