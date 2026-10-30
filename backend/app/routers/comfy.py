@@ -27,7 +27,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .. import active_account, rbac, repo
 from ..emailnorm import norm_email
@@ -51,6 +51,9 @@ from ..services.release_update import update_in_progress
 from ..services.request_guards import require_loopback_request
 from ..services.path_safety import safe_join
 from ..services.media_types import asset_content_type
+from ..services.auth import hub_id
+from ..repo import comfy_canvas_runs as canvas_runs
+from ..usecases import comfy_save
 
 log = logging.getLogger("comfy")
 
@@ -131,6 +134,33 @@ class _ComfyIdentity:
     server_origin: str = ""
 
 
+class CanvasRunDescriptor(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    attempt_id: uuid.UUID
+    run_group_id: uuid.UUID
+    group_seq: int = Field(ge=0, strict=True)
+    copy_index: int = Field(ge=0, strict=True)
+    scene_id: str = Field(min_length=1, max_length=200)
+    card_id: str = Field(min_length=1, max_length=200)
+    config_fp: str = Field(min_length=1, max_length=256)
+    input_fp: str = Field(min_length=1, max_length=256)
+
+
+class CanvasSaveMeta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: Optional[str] = Field(default=None, max_length=500)
+
+
+class CanvasResolveReq(BaseModel):
+    attempt_ids: list[uuid.UUID] = Field(max_length=200)
+
+
+class CanvasAckReq(BaseModel):
+    attempt_id: uuid.UUID
+    result_revision: int = Field(ge=0, strict=True)
+    disposition: canvas_runs.Disposition
+
+
 @contextmanager
 def _comfy_request_scope(request: Request):
     # 신원 조회도 반드시 먼저 캡처한 DB pin 아래에서. transition lock은 느린 I/O 전에 해제된다.
@@ -154,7 +184,149 @@ def _comfy_request_scope(request: Request):
             run_journal.bootstrap(owner, AUTH_ENABLED)
         except Exception as error:
             raise HTTPException(409, "Comfy 실행 기록을 확인할 수 없어 작업을 진행할 수 없습니다") from error
+        _reconcile_canvas_runs(identity)
         yield identity
+
+
+def _reconcile_canvas_runs(identity: _ComfyIdentity) -> None:
+    pending = canvas_runs.unsettled(identity.owner)
+    if not pending:
+        return
+    jobs = _run_job_snapshot()
+    rows = {row["job_id"]: row for row in run_journal.read(identity.owner, identity.auth_enabled)}
+    origin = hub_id()
+    for run in pending:
+        if run["device_id"] != identity.device_id or run["hub_id"] != origin:
+            continue
+        journal = rows.get(run["job_id"], {})
+        if any(jobs.get(key) in (_RUN_PENDING, _RUN_RUNNING)
+               for key in (run["job_id"], journal.get("collect_job_id"))):
+            continue
+        if journal.get("outputs_enumerated"):
+            canvas_runs.record_outputs(run["attempt_id"], _canvas_media_outputs(journal.get("outputs", [])), enumerated=True)
+            run = canvas_runs.get(run["attempt_id"])
+        if not run["context"].get("execution_snapshot") and journal.get("execution_snapshot"):
+            canvas_runs.record_context(run["attempt_id"], comfy_save.durable_context(journal))
+        # Local reconciliation only: never submit again or guess remote completion.
+        fallback = run["state"]
+        if fallback in ("accepted", "running", "saving"):
+            fallback = "needs_collect" if journal.get("prompt_id") or run["outputs"] else "unknown"
+            if not run["outputs"] and (journal.get("terminal_kind") == "failure" or journal.get("phase") == "not_submitted"):
+                fallback = "failed"
+        settled = canvas_runs.settle(run["attempt_id"], fallback)
+        if settled["state"] == "saved":
+            _ack_canvas_journal(settled, identity)
+
+
+def _ack_canvas_journal(run: dict, identity: _ComfyIdentity) -> None:
+    """Generation/link commits precede journal ACK; a failed ACK is safely replayable."""
+    linked = {out["output_key"] for out in run["outputs"] if out.get("generation_id")}
+    try:
+        with run_journal.edit(identity.owner, identity.auth_enabled) as rows:
+            for row in rows:
+                if row["job_id"] == run["job_id"] and row.get("owner") == identity.owner:
+                    for item in row.get("outputs", []):
+                        if item["rel"] in linked:
+                            item["acked"] = True
+            if canvas_runs.isRunFullySaved(run["outputs_enumerated"], run["outputs"]):
+                rows[:] = [row for row in rows if not (row["job_id"] == run["job_id"] and row.get("owner") == identity.owner)]
+    except Exception:
+        log.warning("comfy 캔버스 저장 확인 기록 실패 (출력 연결 보존)")
+
+
+def _save_canvas_run(run: dict, identity: _ComfyIdentity, request: Optional[Request]) -> dict:
+    if run["state"] in ("linked", "dismissed"):
+        return run
+    if run["state"] == "saved":
+        settled = canvas_runs.settle(run["attempt_id"])
+        _ack_canvas_journal(settled, identity)
+        return settled
+    record = run["context"]
+    pid = record.get("asset_project_id")
+    if identity.auth_enabled and pid:
+        if request is None:
+            raise HTTPException(403, "프로젝트 저장 권한을 확인할 수 없습니다")
+        require_project_role(request, pid, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER, read_only=True)
+    sources = [item["source_gen_id"] for item in record.get("input_evidence", []) if item.get("source_gen_id")]
+    source_gens = repo.get_generations_batch(sources) if sources else {}
+    member_projects = batch_view_member_projects(request, source_gens.values()) if request else None
+
+    def can_view_source(gid):
+        gen = source_gens.get(gid)
+        return bool(gen) and (not identity.auth_enabled or (request is not None and can_view_generation_with_member_projects(request, gen, member_projects)))
+
+    canvas_runs.set_state(run["attempt_id"], "saving")
+    try:
+        for item in run["outputs"]:
+            if item["kind"] == "text" or item.get("generation_id") or item["state"] != "ready":
+                continue
+            output = item["metadata"]
+            url = "/media/" + output["rel"]
+            _preflight_local_output(url, identity.scope)
+            comfy_save.save_output(
+                url=url, kind=item["kind"], record=record, output=output,
+                creator_uid=identity.creator_uid, prompt="Comfy 출력", params={}, references=[],
+                project_id=pid, folder_path=None, can_view_source=can_view_source,
+                archive_output=lambda url, kind, project, expected: _archive_output(
+                    url, kind, identity, project_id=project,
+                    server_origin=record.get("asset_server_origin", ""), expected=expected),
+                canvas_attempt_id=run["attempt_id"], canvas_output_key=item["output_key"],
+            )
+    finally:
+        settled = canvas_runs.settle(run["attempt_id"])
+        _ack_canvas_journal(settled, identity)
+    return settled
+
+
+def _canvas_job(job_id: str):
+    with _RUN_JOBS_LOCK:
+        job = dict(_RUN_JOBS.get(job_id) or {})
+    attempt_id = job.get("canvas_attempt_id") or (job.get("journal_record") or {}).get("canvas_attempt_id")
+    return (canvas_runs.get(attempt_id), job) if attempt_id else (None, job)
+
+
+def _record_canvas_outputs(job_id: str, manifest: list, texts: Optional[list[str]] = None) -> None:
+    run, _ = _canvas_job(job_id)
+    if run is None:
+        return
+    outputs = _canvas_media_outputs(manifest)
+    outputs.extend({"output_key": "text:" + hashlib.sha256(text.encode()).hexdigest(), "kind": "text", "text": text, "state": "text"}
+                   for text in texts or [])
+    canvas_runs.record_outputs(run["attempt_id"], outputs, enumerated=True)
+
+
+def _canvas_media_outputs(manifest: list) -> list[dict]:
+    return [{"output_key": item["rel"], "kind": item["kind"], "metadata": item,
+             "state": "unavailable" if item.get("unavailable") else "ready" if item.get("downloaded") else "pending"}
+            for item in manifest]
+
+
+@router.post("/canvas-runs/resolve")
+def resolve_canvas_runs(req: CanvasResolveReq, request: Request):
+    with _comfy_request_scope(request) as identity:
+        origin = {"hub_id": hub_id(), "device_id": identity.device_id}
+        results = []
+        for attempt_id in req.attempt_ids:
+            run = canvas_runs.get(str(attempt_id))
+            if run is None or run["owner"] != identity.owner:
+                results.append({"attempt_id": str(attempt_id), "state": "not_found", "result_revision": 0, "outputs": [], "origin": origin})
+            elif run["hub_id"] != origin["hub_id"] or run["device_id"] != identity.device_id:
+                results.append({"attempt_id": str(attempt_id), "state": "origin_mismatch", "result_revision": run["result_revision"], "outputs": [],
+                                "origin": {"hub_id": run["hub_id"], "device_id": run["device_id"]}})
+            else:
+                results.append(canvas_runs.resolution(run))
+        return {"runs": results}
+
+
+@router.post("/canvas-runs/ack")
+def ack_canvas_run(req: CanvasAckReq, request: Request):
+    with _comfy_request_scope(request) as identity:
+        try:
+            run = canvas_runs.acknowledge(str(req.attempt_id), owner=identity.owner, hub_id=hub_id(),
+                                          device_id=identity.device_id, result_revision=req.result_revision, disposition=req.disposition)
+        except canvas_runs.CanvasRunConflict as error:
+            raise HTTPException(409, str(error)) from error
+        return canvas_runs.resolution(run)
 
 
 def _target_fingerprint(settings: dict) -> str:
@@ -402,6 +574,8 @@ def _forget_inflight_run(job_id: str) -> None:
         record = copy.deepcopy(job["journal_record"])
         identity = job["identity"]
         expected_phase = job.get("journal_persisted_phase", record.get("phase"))
+    if record.get("canvas_attempt_id"):
+        return  # Durable output receipts, not terminal memory, decide canvas cleanup.
     disposable = (record.get("phase") == "not_submitted" or record.get("terminal_kind") == "failure"
                   or (record.get("text_only") and record.get("outputs_enumerated")
                       and record.get("media_output_count") == 0))
@@ -487,11 +661,13 @@ def recover_interrupted_run_jobs() -> None:
     try:
         with active_account.pinned_account_scope(pin):
             candidates = run_journal.bootstrap(owner, AUTH_ENABLED)
+            device = worker_backup.device_identity()["device_id"]
+            settings = _raw_settings()
+            identity = _ComfyIdentity(pin, owner, pin[1], device, "", settings, AUTH_ENABLED)
+            _reconcile_canvas_runs(identity)
             # AUTH on boot에는 요청 세션 owner가 없다. 다른 사용자 원격 자원에 접근하지 않는다.
             if AUTH_ENABLED or not EXTERNAL_RECOVERY_ENABLED or not candidates:
                 return
-            device = worker_backup.device_identity()["device_id"]
-            settings = _raw_settings()
             fingerprint = _target_fingerprint(settings)
             target = comfy_client.make_target(settings)
             for row in candidates:
@@ -1183,11 +1359,20 @@ def _collect_run_outputs(job_id: str, target: dict, entry: dict, wf: Optional[di
     # 전체 출력 집합을 먼저 기록한다. 전체 manifest를 보존하며 개수/바이트 임의 절단은 없다.
     _patch_run_record(job_id, outputs=manifest, outputs_enumerated=True,
                       media_output_count=len(manifest), text_only=False)
+    canvas_run, _ = _canvas_job(job_id)
+    early_texts = []
+    if canvas_run:
+        early_texts = list(dict.fromkeys(text.strip() for text in comfy_client.collect_texts(entry) if text.strip()))
+        _record_canvas_outputs(job_id, manifest, early_texts)
+        if wf is not None:
+            early_texts = list(dict.fromkeys([*early_texts, *(text.strip() for text in _read_saved_texts(target, wf) if text.strip())]))
+            _record_canvas_outputs(job_id, manifest, early_texts)
+    linked_keys = {out["output_key"] for out in canvas_run["outputs"] if out.get("generation_id")} if canvas_run else set()
     for item in manifest:
         if time.monotonic() >= deadline:
             raise comfy_client.ComfyError("결과 회수 시간 예산을 초과했습니다", cause_kind="timeout")
         rel = item["rel"]
-        if item.get("unavailable"):
+        if item.get("unavailable") or rel in linked_keys:
             continue
         dst = MEDIA_DIR / rel
         # 전체 파일 스캔/출력 추측은 하지 않는다. 이미 계획된 정확한 경로의 replace→flag 창만 회수.
@@ -1203,6 +1388,7 @@ def _collect_run_outputs(job_id: str, target: dict, entry: dict, wf: Optional[di
                 else:
                     _patch_run_record(job_id, outputs=manifest, last_status_code=error.status_code,
                                       last_error_class="download_failed")
+                    _record_canvas_outputs(job_id, manifest)
                     raise
         if item.get("downloaded"):
             evidence = _archive_output(
@@ -1213,10 +1399,11 @@ def _collect_run_outputs(job_id: str, target: dict, entry: dict, wf: Optional[di
                 item.update(asset_content_id=evidence["asset_content_id"], sha256=evidence["sha256"],
                             bytes=evidence["bytes"], snapshot_url=evidence["file_path"])
         _patch_run_record(job_id, outputs=manifest)
+        _record_canvas_outputs(job_id, manifest)
     results = [{"kind": item["kind"], "url": f"/media/{item['rel']}"}
                for item in manifest if item.get("downloaded")]
-    texts = list(comfy_client.collect_texts(entry))
-    if wf is not None:
+    texts = early_texts if canvas_run else list(comfy_client.collect_texts(entry))
+    if wf is not None and not canvas_run:
         texts.extend(_read_saved_texts(target, wf))
     seen = set()
     for text in texts:
@@ -1262,6 +1449,8 @@ def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
                       execution_snapshot=provenance.execution_snapshot(copy.deepcopy(wf)),
                       asset_project_id=job.get("asset_project_id"),
                       asset_server_origin=job.get("asset_server_origin", ""))
+        if job.get("canvas_attempt_id"):
+            record.update(canvas_attempt_id=job["canvas_attempt_id"], save_meta=job.get("save_meta", {}))
     known_slots = {(item["slot"]["node_id"], item["slot"]["field"]) for item in record["input_evidence"]}
     slots = comfy_workflow.detect_slots(wf, set())
     record["comfy_unverified_input_slots"] = [
@@ -1269,6 +1458,9 @@ def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
         for kind, group in (("image", slots["image_slots"]), ("video", slots["video_slots"])) for slot in group
         if (slot["node_id"], slot["field"]) not in known_slots
     ]
+    if record.get("canvas_attempt_id"):
+        canvas_runs.record_context(record["canvas_attempt_id"], comfy_save.durable_context(record))
+        canvas_runs.set_state(record["canvas_attempt_id"], "running")
     try:
         run_journal.admit(record, identity.auth_enabled)  # cap 최종 판정도 실제 제출 직전 같은 원자 구간.
     except run_journal.JournalFull as error:
@@ -1315,6 +1507,18 @@ def _mark_run_failure(job_id: str, code: int, detail: Any) -> None:
         if record.get("terminal_kind") == "success":
             phase = "collected" if run_journal.all_downloaded(record) else "result_pending"
         _patch_run_record(job_id, phase=phase)
+    run, job = _canvas_job(job_id)
+    if run:
+        fallback = "needs_collect" if record.get("prompt_id") or run["outputs"] else "unknown"
+        if not record or record.get("phase") == "not_submitted" or record.get("terminal_kind") == "failure":
+            fallback = "needs_collect" if run["outputs"] else "failed"
+        try:
+            if run["outputs"]:
+                _save_canvas_run(run, job["identity"], job.get("save_request"))
+            canvas_runs.settle(run["attempt_id"], fallback)
+        except Exception:
+            canvas_runs.settle(run["attempt_id"], fallback)
+            log.warning("comfy 캔버스 부분 저장 보류 job_id=%s", job_id)
     _fail_run_job(job_id, code, detail)
 
 
@@ -1327,6 +1531,10 @@ def _execute_run_worker(job_id: str, settings: dict, action, uploads: list[_Medi
         _update_run_job(job_id, state=_RUN_RUNNING)
         try:
             result = action()
+            run, job = _canvas_job(job_id)
+            if run:
+                settled = _save_canvas_run(run, job["identity"], job.get("save_request"))
+                result.update(canvas_runs.resolution(settled))
         except HTTPException as e:
             if cancel_on_failure:
                 _cancel_failed_run(settings, job_id, "worker failure")
@@ -1357,6 +1565,8 @@ def run(
     media: list[UploadFile] = File(default=[]),
     run_key: Annotated[str, Form()] = "",  # 함수를 직접 부르는 호출(시험)에서도 기본값이 빈 글이 되게 Annotated 로
     project_id: Annotated[str, Form()] = "",
+    canvas_run: Annotated[str, Form()] = "",
+    save_meta: Annotated[str, Form()] = "",
 ):
     """Comfy 노드 실행 '시작' — 실제 제출/폴링/다운로드는 백그라운드 스레드에서 처리하고 즉시 job_id 반환.
     (긴 HTTP 연결을 붙잡지 않아 배치 병렬 시 연결 끊김='Failed to fetch' 오판을 없앤다.)
@@ -1376,7 +1586,15 @@ def run(
         pid = (project_id or "").strip() or None
         if pid and AUTH_ENABLED:
             require_project_role(request, pid, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER)
-        return _start_run(content, param_values, media_meta, media, identity, run_key, pid)
+        descriptor = metadata = None
+        if canvas_run:
+            try:
+                descriptor = CanvasRunDescriptor.model_validate_json(canvas_run).model_dump(mode="json")
+                metadata = CanvasSaveMeta.model_validate_json(save_meta or "{}").model_dump(mode="json")
+            except ValidationError:
+                raise HTTPException(422, "canvas_run 또는 save_meta 형식이 아닙니다") from None
+        return _start_run(content, param_values, media_meta, media, identity, run_key, pid,
+                          descriptor, metadata, request)
 
 
 def _run_fingerprint(content: str, param_values: str, media_meta: str, uploads: list[_MediaUpload]) -> str:
@@ -1393,7 +1611,8 @@ def _run_fingerprint(content: str, param_values: str, media_meta: str, uploads: 
     return digest.hexdigest()
 
 
-def _start_run(content: str, param_values: str, media_meta: str, media: list[UploadFile], identity: _ComfyIdentity, run_key: str = "", project_id: Optional[str] = None):
+def _start_run(content: str, param_values: str, media_meta: str, media: list[UploadFile], identity: _ComfyIdentity, run_key: str = "", project_id: Optional[str] = None,
+               canvas_run: Optional[dict] = None, save_meta: Optional[dict] = None, request: Optional[Request] = None):
     try:
         wf = json.loads(content)
         pvals = json.loads(param_values or "{}")
@@ -1412,18 +1631,34 @@ def _start_run(content: str, param_values: str, media_meta: str, media: list[Upl
     # 준비 중인 잡도 업데이트의 활동 집계에 먼저 등록한다. checking 기록과 경합하면
     # 준비 뒤 재검사에서 거부하고, 등록이 먼저 보이면 업데이트 쪽이 busy로 중단한다.
     settings = identity.settings
-    if len(run_journal.read(identity.owner, identity.auth_enabled)) >= run_journal.CAP:
+    if not canvas_run and len(run_journal.read(identity.owner, identity.auth_enabled)) >= run_journal.CAP:
         raise HTTPException(409, "미해결 Comfy 실행 기록이 가득 찼습니다. 설정에서 확인·정리한 뒤 실행하세요")
     job_id = _create_run_job()
     _update_run_job(job_id, identity=identity, owner=identity.owner,
-                    asset_project_id=project_id, asset_server_origin=identity.server_origin)
+                    asset_project_id=project_id, asset_server_origin=identity.server_origin,
+                    canvas_attempt_id=canvas_run["attempt_id"] if canvas_run else None,
+                    save_meta=save_meta or {},
+                    save_request=Request({**request.scope, "state": copy.deepcopy(request.scope.get("state", {}))}) if request else None)
     uploads: list[_MediaUpload] = []
     try:
         # UploadFile은 응답 후 닫히므로 제한 복사하고 스레드에는 경로만 넘긴다.
         uploads = _stage_media_uploads(media_files)
         if update_in_progress():
             raise HTTPException(409, "업데이트 중이거나 상태를 확인할 수 없어 새 Comfy 작업을 시작할 수 없습니다. 프로그램을 다시 실행한 뒤에도 계속되면 관리자에게 문의하세요")
-        if run_key:
+        if canvas_run:
+            fingerprint = _run_fingerprint(content, param_values, media_meta + "\0" + (project_id or "") + "\0" + json.dumps(save_meta or {}, sort_keys=True), uploads)
+            verdict, known = canvas_runs.claim(
+                canvas_run, owner=identity.owner, hub_id=hub_id(), device_id=identity.device_id,
+                job_id=job_id, request_fp=fingerprint,
+                context={"save_meta": save_meta or {}, "asset_project_id": project_id, "asset_server_origin": identity.server_origin},
+            )
+            if verdict == "conflict":
+                raise HTTPException(409, "같은 attempt에 다른 내용 또는 소유자가 왔습니다")
+            if verdict == "same":
+                _cleanup_media_uploads(uploads)
+                _discard_run_job(job_id)
+                return {"job_id": known}
+        elif run_key:
             # 준비 중 잡을 먼저 등록한 뒤(업데이트가 유휴로 오판하지 않게) 접수 장부에 적는다 — 장부를 못 적으면 실행하지 않는다(Codex D7).
             try:
                 verdict, known = comfy_run_keys.claim(identity.owner, run_key, _run_fingerprint(content, param_values, media_meta + "\0" + (project_id or ""), uploads), job_id)
@@ -1454,6 +1689,8 @@ def _start_run(content: str, param_values: str, media_meta: str, media: list[Upl
         thread.start()
     except Exception as e:  # noqa: BLE001 - 스레드 생성의 OS 오류도 같은 정리 경계를 적용한다.
         _cleanup_media_uploads(uploads)
+        if canvas_run:
+            canvas_runs.set_state(canvas_run["attempt_id"], "failed")
         _fail_run_job(job_id, 500, f"Comfy 작업 스레드를 시작하지 못했습니다: {e}")
         raise HTTPException(500, f"Comfy 작업 스레드를 시작하지 못했습니다: {e}")
     return {"job_id": job_id}
@@ -1511,6 +1748,14 @@ def list_unresolved_runs(request: Request):
     with _comfy_request_scope(request) as identity:
         jobs = _run_job_snapshot()  # 원장 lock을 잡은 상태에서 실행 lock을 획득하지 않는다.
         rows = [row for row in run_journal.read(identity.owner, identity.auth_enabled) if row.get("owner") == identity.owner]
+        known = {row["job_id"] for row in rows}
+        for run in canvas_runs.unsettled(identity.owner):
+            if run["job_id"] not in known and run["state"] not in ("saved",):
+                rows.append({"job_id": run["job_id"], "owner": run["owner"], "device_id": run["device_id"],
+                             "phase": run["state"], "canvas_attempt_id": run["attempt_id"],
+                             "outputs_enumerated": run["outputs_enumerated"],
+                             "outputs": [out["metadata"] for out in run["outputs"] if out["kind"] != "text"],
+                             "created_at": run["created_at"], "updated_at": run["updated_at"]})
         fingerprint = _target_fingerprint(identity.settings)
         public = []
         for row in rows:
@@ -1529,6 +1774,9 @@ def list_unresolved_runs(request: Request):
                 can_resave=bool(not incomplete and device_matches and any(out.get("downloaded") and not out.get("acked") for out in row.get("outputs") or [])),
                 can_dismiss=jobs.get(row.get("collect_job_id")) not in (_RUN_PENDING, _RUN_RUNNING),
             )
+            if row.get("canvas_attempt_id"):
+                item["attempt_id"] = row["canvas_attempt_id"]
+                item["can_dismiss"] = item["can_dismiss"] and jobs.get(row["job_id"]) not in (_RUN_PENDING, _RUN_RUNNING)
             public.append(item)
         return {"cap": run_journal.CAP, "used": len(rows), "runs": public}
 
@@ -1596,6 +1844,9 @@ def collect_unresolved_run(job_id: str, request: Request):
     with _comfy_request_scope(request) as identity:
         rows = run_journal.read(identity.owner, identity.auth_enabled)
         row = _owned_record(rows, job_id, identity.owner)
+        canvas = canvas_runs.by_job(job_id, identity.owner)
+        if canvas and (canvas["state"] in ("linked", "dismissed") or canvas["hub_id"] != hub_id()):
+            raise HTTPException(409, "이미 정리됐거나 다른 허브의 실행입니다")
         expected = _claim_token(row)
         if row.get("evidence_incomplete") or not row.get("prompt_id"):
             raise HTTPException(409, "이 기록은 자동으로 회수할 수 없습니다. 원격 기록을 직접 확인하세요")
@@ -1604,7 +1855,9 @@ def collect_unresolved_run(job_id: str, request: Request):
         if row.get("target_fp") != _target_fingerprint(identity.settings):
             raise HTTPException(403, "연결 대상 또는 자격정보가 바뀌어 결과를 회수할 수 없습니다")
         collect_id = _create_run_job()
-        _update_run_job(collect_id, identity=identity, owner=identity.owner)
+        _update_run_job(collect_id, identity=identity, owner=identity.owner,
+                        canvas_attempt_id=canvas["attempt_id"] if canvas else None,
+                        save_request=Request({**request.scope, "state": copy.deepcopy(request.scope.get("state", {}))}))
         try:
             if update_in_progress():
                 raise HTTPException(409, "업데이트 중이거나 상태를 확인할 수 없어 결과 회수를 시작할 수 없습니다")
@@ -1652,11 +1905,22 @@ def dismiss_unresolved_runs(req: DismissRunsReq, request: Request):
                     for job_id in selected}
         jobs = _run_job_snapshot()
         with run_journal.edit(identity.owner, identity.auth_enabled) as rows:
+            canvas_selected = {job_id: canvas_runs.by_job(job_id, identity.owner) for job_id in selected}
             for job_id in selected:
+                canvas = canvas_selected[job_id]
+                if canvas and (canvas["device_id"] != identity.device_id or canvas["hub_id"] != hub_id()):
+                    raise HTTPException(403, "다른 허브 또는 PC의 실행은 정리할 수 없습니다")
+                if canvas and jobs.get(job_id) in (_RUN_PENDING, _RUN_RUNNING):
+                    raise HTTPException(409, "진행 중인 실행 기록은 정리할 수 없습니다")
+                if canvas and expected[job_id] is None:
+                    continue
                 row = _owned_record(rows, job_id, identity.owner)
                 if (_claim_token(row) != expected[job_id]
                         or jobs.get(row.get("collect_job_id")) in (_RUN_PENDING, _RUN_RUNNING)):
                     raise HTTPException(409, "진행 중인 실행 기록은 정리할 수 없습니다")
+            for canvas in canvas_selected.values():
+                if canvas:
+                    canvas_runs.set_state(canvas["attempt_id"], "dismissed")
             rows[:] = [row for row in rows if row["job_id"] not in selected]
         return {"dismissed": len(selected)}
 
@@ -1714,6 +1978,9 @@ def _ack_saved_outputs(identity: _ComfyIdentity, saved: list[dict], expected: di
         with run_journal.edit(identity.owner, identity.auth_enabled) as rows:
             kept = []
             for row in rows:
+                if row.get("canvas_attempt_id"):
+                    kept.append(row)
+                    continue
                 token = expected.get(row["job_id"])
                 current_token = (row.get("collect_job_id"), row.get("collect_seq", 0), row.get("phase"))
                 if row.get("owner") != identity.owner or token != current_token:
@@ -1805,53 +2072,40 @@ def _save_to_library_pinned(req: SaveToLibraryReq, request: Request, identity: _
         )
 
     saved: list[dict[str, Any]] = []
+    handled_canvas: dict[str, dict] = {}
     try:
         for o in req.outputs:
             if o.kind not in ("image", "video"):
                 continue
+            match = _OUTPUT_REL.fullmatch(o.url.removeprefix("/media/"))
+            canvas = canvas_runs.by_job(match.group(2), identity.owner) if match else None
+            if canvas:
+                if canvas["device_id"] != identity.device_id or canvas["hub_id"] != hub_id():
+                    raise HTTPException(403, "다른 허브 또는 PC의 실행입니다")
+                if canvas["attempt_id"] not in handled_canvas:
+                    handled_canvas[canvas["attempt_id"]] = _save_canvas_run(canvas, identity, request)
+                settled = handled_canvas[canvas["attempt_id"]]
+                output = next((item for item in settled["outputs"] if item["output_key"] == o.url.removeprefix("/media/")), None)
+                if output and output.get("generation_id"):
+                    saved.append({"url": o.url, "generation_id": output["generation_id"], "existed": True})
+                continue
             row, output = by_output.get(o.url, ({}, {}))
             actual_kind = output.get("kind") or _media_kind(o.url) or o.kind
-            snapshot = row.get("execution_snapshot")
-            actual_prompt, actual_params, actual_refs = prompt, params, ref_dicts
             actual_project = row.get("asset_project_id") or pid
             if AUTH_ENABLED and actual_project and actual_project != pid:
                 require_project_role(request, actual_project, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER, read_only=True)
-            if isinstance(snapshot, dict):
-                # 결과를 저장할 때 바뀐 폼이 실제 실행의 프롬프트·슬롯을 덮어쓰지 못한다.
-                actual_prompt = snapshot.get("prompt") or "Comfy 출력"
-                actual_params = dict(snapshot.get("params") or {})
-                actual_params["comfy_workflow"] = snapshot.get("workflow")
-                actual_params["comfy_unverified_input_slots"] = row.get("comfy_unverified_input_slots", [])
-                actual_params["comfy_input_provenance"] = [
-                    {key: value for key, value in item.items() if key not in ("path", "server_location")}
-                    for item in sorted(row.get("input_evidence", []), key=lambda item: item["position"])
-                ]
-                actual_refs = []
-                for item in sorted(row.get("input_evidence", []), key=lambda item: item["position"]):
-                    sgid = item.get("source_gen_id")
-                    source_gen = source_gens.get(sgid) if sgid else None
-                    if sgid and (not source_gen or not can_view_generation_with_member_projects(request, source_gen, member_projects)):
-                        sgid = None
-                    actual_refs.append({
-                        "file_path": item["file_path"], "type": item["type"], "name": item["name"],
-                        "role": item.get("role"), "source_url": item["file_path"], "source_gen_id": sgid,
-                        "_submitted_sha": item["sha256"], "_submitted_bytes": item["bytes"],
-                    })
-            evidence = _archive_output(
-                o.url, actual_kind, identity, project_id=actual_project,
-                server_origin=row.get("asset_server_origin") or shared_connection.base_url(), expected=output,
+            item = comfy_save.save_output(
+                url=o.url, kind=actual_kind, record=row, output=output,
+                creator_uid=creator_uid, prompt=prompt, params=params, references=ref_dicts,
+                project_id=actual_project, folder_path=req.folder_path,
+                can_view_source=lambda sgid: bool(source_gens.get(sgid)) and can_view_generation_with_member_projects(request, source_gens[sgid], member_projects),
+                archive_output=lambda url, kind, project, expected: _archive_output(
+                    url, kind, identity, project_id=project,
+                    server_origin=row.get("asset_server_origin") or shared_connection.base_url(), expected=expected),
             )
-            # 기존 generation의 권한/멱등/별도 트랜잭션 계약은 그대로다.
-            gid, existed = repo.create_comfy_generation(
-                worker_id=DEFAULT_WORKER_ID, creator_uid=creator_uid, prompt=actual_prompt,
-                display_prompt=None, params=actual_params, kind=actual_kind, file_path=o.url,
-                thumbnail_path=None, references=actual_refs, project_id=actual_project, folder_path=req.folder_path,
-                output_sha=evidence["sha256"] if evidence else None,
-                output_bytes=evidence["bytes"] if evidence else None,
-            )
-            saved.append({"url": o.url, "generation_id": gid, "existed": existed})
-            if not existed and req.elapsed_seconds is not None:
-                _pm(lambda _m, g=gid: _m.record_elapsed(g, req.elapsed_seconds))
+            saved.append(item)
+            if not item["existed"] and req.elapsed_seconds is not None:
+                _pm(lambda _m, g=item["generation_id"]: _m.record_elapsed(g, req.elapsed_seconds))
     finally:
         _ack_saved_outputs(identity, saved, expected)
     return {"saved": saved}

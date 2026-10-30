@@ -14,6 +14,18 @@ import {
 } from "../src/lib/sceneInteractions";
 import type { SceneCard, SceneEdge } from "../src/lib/scenes";
 
+it("붙여넣기는 새 카드 ID에 옛 Comfy 실행 소유를 넘기지 않는다", () => {
+  const source: SceneCard = { id: "source", kind: "comfy", x: 0, y: 0,
+    comfyCfg: { content: "{}", runId: 10, status: "running", outputs: [{ kind: "text", text: "old" }] } };
+  const clipboard = { ...copySceneSelection([source], [], [source.id]), comfyRuns: [{ attemptId: "old" }], comfyCardRuns: { source: { groupId: "g" } } };
+  const result = pasteSceneClipboard([], [], clipboard, () => "new");
+  expect(result.cards[0]).toMatchObject({ id: "new", comfyCfg: { content: "{}", status: "idle", outputs: [] } });
+  expect(result.cards[0].comfyCfg?.runId).toBeUndefined();
+  expect(result.nextClipboard).not.toHaveProperty("comfyRuns");
+  expect(result.nextClipboard).not.toHaveProperty("comfyCardRuns");
+  expect(source.comfyCfg?.runId).toBe(10);
+});
+
 const card = (
   id: string,
   kind: SceneCard["kind"],

@@ -131,7 +131,8 @@ import {
 } from "../../lib/sceneAssetRelink";
 import { copyText, flashMsg } from "../../lib/flash";
 import { notifyPeekDropAdded } from "../../lib/peekDragOut";
-import { gatherCanvasReferences, useCanvasSession, type CanvasInputCommand, type CanvasGroupResizeHandle } from "../../features/canvas/api";
+import { gatherCanvasReferences, useCanvasSession, type CanvasInputCommand, type CanvasGroupResizeHandle, type CanvasWriteReceipt } from "../../features/canvas/api";
+import { comfyCardRuntime, projectComfyCard } from "../../lib/comfyRunState";
 import { useSceneKeyboardShortcuts } from "../../lib/useSceneKeyboardShortcuts";
 import { isSceneTextEntryTarget, sceneEscapeTarget } from "../../lib/sceneKeyboard";
 import { SCENE_NODE_CATALOG } from "../../lib/sceneNodeCatalog";
@@ -319,7 +320,7 @@ interface Props {
   scene: Scene;
   authKey?: string;
   authReady?: boolean;
-  onChange: (snapshot: { cards: SceneCard[]; edges: SceneEdge[]; groups?: SceneGroup[] }) => void;
+  onChange: (snapshot: { cards: SceneCard[]; edges: SceneEdge[]; groups?: SceneGroup[] }) => CanvasWriteReceipt | void;
   // 좌상단 패널 — 현재 씬을 텍스트 파일로 저장 / 파일에서 새 탭으로 불러오기.
   //  · onSaveScene 은 저장 시점의 '라이브 카메라'를 받아 debounce 로 지연된 stale 카메라 대신 최신을 쓴다.
   onSaveScene?: (camera?: { z: number; x: number; y: number }) => void;
@@ -2413,7 +2414,7 @@ export function SceneBoard({
   //  (running comfy 가 없으면 조기 반환 — 매 렌더 계획수립 비용 회피.)
   const genWaitingFromComfy = useMemo(() => {
     const runningComfy = new Set(
-      cards.filter((c) => c.kind === "comfy" && c.comfyCfg?.status === "running").map((c) => c.id),
+      cards.filter((c) => c.kind === "comfy" && projectComfyCard(c, scene).comfyCfg?.status === "running").map((c) => c.id),
     );
     const out = new Set<string>();
     if (!runningComfy.size) return out;
@@ -2424,7 +2425,7 @@ export function SceneBoard({
       if (plan.comfyIds.some((id) => runningComfy.has(id))) out.add(c.id);
     }
     return out;
-  }, [cards, edges, cardsById]);
+  }, [cards, edges, cardsById, scene.comfyRuns, scene.comfyCardRuns]);
 
   // 다중선택 '미디어 비교' 대상 — 레퍼런스처럼 비생성 카드가 섞였을 때 이미지·영상을 나란히 보기(영상은 동시재생).
   //  전부 생성카드면 여기선 null → App 상단 선택바가 기존 생성 비교(CompareModal)로 처리한다(생성정보 포함).
@@ -3453,7 +3454,8 @@ export function SceneBoard({
                 />
               ) : card.kind === "comfy" ? (
                 <ComfyCard
-                  card={card}
+                  card={projectComfyCard(card, scene)}
+                  runtimeRunning={comfyCardRuntime(scene, card.id)?.status === "running" ? true : scene.comfyCardRuns?.[card.id] ? false : undefined}
                   sel={sel}
                   fill={fill}
                   width={widthOf(card)}

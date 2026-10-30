@@ -15,6 +15,7 @@ import { relinkCards, type RelinkTarget } from "./assetRefs";
 import { applyCanvasComfyCommand, isCanvasComfyCommand, type CanvasComfyCommand } from "./comfyCommands";
 import { CARD_W, CARD_H } from "../../lib/sceneDerive";
 import type { SceneCard } from "../../lib/scenes";
+import type { SceneSnap } from "../../lib/sceneUndoStore";
 import { createCanvasGestures, type CanvasGestureActive } from "./gestures";
 
 let lastOpenEpoch = 0;
@@ -22,14 +23,16 @@ let lastOpenEpoch = 0;
 export type CanvasInputCommand = CanvasEditCommand | CanvasComfyCommand;
 
 // 기존 history/input 엔진은 이 세션의 내부다. 화면의 좌표/선택/패널 상태는 Board에 남긴다.
-export function useCanvasSession(options: Parameters<typeof useSceneHistory>[0] & {
+export function useCanvasSession(options: Omit<Parameters<typeof useSceneHistory>[0], "onChange"> & {
+  onChange: (snapshot: SceneSnap) => CanvasWriteReceipt | void;
   layerMoveRef: MutableRefObject<SceneLayerMove | null>;
   generationDataRef?: { readonly current: Readonly<Record<string, Generation>> };
   cardSize?: (card: SceneCard) => { w: number; h: number };
   sourceScene?: Scene;
   onReceiveScene?: (sceneId: string, switched: boolean, replaced: boolean) => void;
 }) {
-  const history = useSceneHistory(options);
+  // 값 반환을 버리는 래퍼를 두지 않는다. B의 history가 이 편집의 영수증을 그대로 받는다.
+  const history = useSceneHistory({ ...options, onChange: snapshot => options.onChange(snapshot) });
   const input = useSceneInputCommit({ ...options, switchingRef: options.frozenRef,
     persist: history.persist, hasUncommittedSnapshot: history.hasUncommittedSnapshot, canPersist: () => current() });
   const account = getAccountNamespace();

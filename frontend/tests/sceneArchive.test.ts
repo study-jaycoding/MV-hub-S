@@ -13,6 +13,7 @@ import {
   exportSceneArchiveText,
   importSceneArchiveText,
   parseSceneArchive,
+  mergeArchiveBucket,
 } from "../src/lib/sceneArchive";
 import {
   absorbLegacyScenes,
@@ -33,11 +34,29 @@ import {
   recoverSceneConflicts,
   saveScenes,
   updateScene,
+  importScene,
+  mergeScenesFromBackup,
   type Scene,
   type ScenesByProject,
 } from "../src/lib/scenes";
 import { saveString } from "../src/lib/storage";
 import { STORAGE_KEYS } from "../src/lib/storageKeys";
+import type { ComfyCanvasRun } from "../src/lib/comfyRunState";
+
+it("가져오기·백업 복원·새 ID 사본은 실행 목록과 묶음 소유를 받지 않는다", async () => {
+  const run: ComfyCanvasRun = { version: 1, attemptId: "a", runGroupId: "g", groupSeq: 1, copyIndex: 0, cardId: "c",
+    originHubId: "h", originDeviceId: "d", localState: "submitted", configFp: "c", inputFp: "i" };
+  const incoming: Scene = { ...mk("source"), comfyRuns: [run], comfyCardRuns: { c: { groupId: "g", groupSeq: 1 } } };
+  const archive = mergeArchiveBucket([mk("source", "different")], [incoming]).next[1];
+  const imported = importScene(null, incoming)!;
+  const backup = mergeScenesFromBackup(null, [{ ...incoming, id: "backup" }]).added[0];
+  const parsed = parseSceneArchive(JSON.stringify({ format: SCENE_ARCHIVE_FORMAT, schemaVersion: 1, buckets: { [BUCKET]: [incoming] }, conflicts: [] }));
+  for (const copy of [archive, imported, backup, parsed.buckets[BUCKET][0]]) {
+    expect(copy).not.toHaveProperty("comfyRuns"); expect(copy).not.toHaveProperty("comfyCardRuns");
+  }
+  expect(incoming.comfyRuns).toEqual([run]);
+  await settleSceneStoreForTest();
+});
 
 function storageMock(): Storage {
   const store: Record<string, string> = {};
@@ -308,12 +327,14 @@ describe("옛 판 창과 엇갈린 씬을 새 탭으로 살린다", () => {
     await boot(mk("s1", "원래"), mk("s2"));
     updateScene(null, "s1", { name: "이 창에서 고침" });
     await settleSceneStoreForTest();
-    await absorbLegacyScenes(legacy(mk("s1", "옛 창에서 고침"), mk("s2")));
+    await absorbLegacyScenes(legacy({ ...mk("s1", "옛 창에서 고침"), comfyRuns: [], comfyCardRuns: { c: { groupId: "g", groupSeq: 1 } } }, mk("s2")));
     expect(hasSceneConflicts()).toBe(true);
     expect(names(listScenes(null))).toEqual(["이 창에서 고침", "s2"]); // 자동으로 덮지 않았다
 
     expect(await recoverSceneConflicts()).toEqual({ copied: 1, refreshed: 0, keptMine: 0 });
     expect(names(listScenes(null))).toEqual(["이 창에서 고침", "s2", `${MARK}옛 창에서 고침`]);
+    expect(listScenes(null)[2]).not.toHaveProperty("comfyRuns");
+    expect(listScenes(null)[2]).not.toHaveProperty("comfyCardRuns");
     expect(names(listPersistedScenes(null))).toEqual(names(listScenes(null)));
     expect(hasSceneConflicts()).toBe(false);
     expect(sceneStoreConflicts()).toEqual([]);

@@ -360,7 +360,7 @@ function clearPastedResults(card: SceneCard): SceneCard {
       genIds: [],
       pendingGenerationAttempts: [],
       status: "empty",
-      comfyCfg: cfg ? { ...cfg, outputs: [], output: null, status: "idle", error: null } : cfg,
+      comfyCfg: cfg ? { ...cfg, runId: undefined, outputs: [], output: null, status: "idle", error: null } : cfg,
     };
   }
   if (card.kind !== "generation") return card;
@@ -469,7 +469,8 @@ export function pasteSceneClipboard(
     edges: [...currentEdges, ...internalEdges, ...sharedInputEdges],
     pastedCardIds: new Set(remappedCards.map((card) => card.id)),
     nextClipboard: {
-      ...clipboard,
+      edges: clipboard.edges,
+      inEdges: clipboard.inEdges,
       cards: clipboard.cards.map((card) => ({
         ...card,
         x: card.x + shift,

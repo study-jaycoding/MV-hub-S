@@ -6,6 +6,37 @@ import { useCanvasSession } from "../src/features/canvas/useCanvasSession";
 import type { SceneCard, SceneEdge, SceneGroup } from "../src/lib/scenes";
 import type { SceneLayerMove } from "../src/lib/useSceneCardMove";
 import { clearSceneHistory } from "../src/lib/sceneUndoStore";
+import type { SceneSnap } from "../src/lib/sceneUndoStore";
+import type { CanvasWriteReceipt } from "../src/features/canvas/session";
+import { canvasTarget } from "../src/features/canvas/session";
+import { saveScenes, writeSceneSnapshot } from "../src/lib/scenes";
+import { settleSceneStoreForTest } from "../src/lib/sceneStore";
+
+const historyInput = vi.hoisted(() => ({ onChange: null as null | ((snapshot: SceneSnap) => CanvasWriteReceipt | void) }));
+vi.mock("../src/lib/useSceneHistory", async original => {
+  const actual = await original<typeof import("../src/lib/useSceneHistory")>();
+  return { ...actual, useSceneHistory: (options: Parameters<typeof actual.useSceneHistory>[0]) => {
+    historyInput.onChange = options.onChange;
+    return actual.useSceneHistory(options);
+  } };
+});
+
+it("세션이 history에 넘긴 onChange는 그 스냅샷의 영수증을 그대로 반환한다", async () => {
+  saveScenes(null, [{ id: "session-a", name: "a", cards: initial, edges: [], created_at: 1 }]);
+  await settleSceneStoreForTest();
+  changed.mockImplementation((snapshot: SceneSnap) => writeSceneSnapshot(canvasTarget("session-a"), snapshot));
+  try {
+    show("session-a");
+    const one = { cards: [{ ...initial[0], prompt: "one" }], edges: [], groups: [] };
+    const two = { ...one, cards: [{ ...initial[0], prompt: "two" }] };
+    const first = historyInput.onChange!(one)!;
+    const second = historyInput.onChange!(two)!;
+    expect(first).toBe(changed.mock.results[0].value);
+    expect(second).toBe(changed.mock.results[1].value);
+    expect(await first.confirmed).toBe(false);
+    expect(await second.confirmed).toBe(true);
+  } finally { changed.mockReset(); }
+});
 
 let root: Root, host: HTMLDivElement;
 let session: ReturnType<typeof useCanvasSession>;

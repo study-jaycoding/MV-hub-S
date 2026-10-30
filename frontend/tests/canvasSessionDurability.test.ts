@@ -2,10 +2,36 @@
 // 실제 sceneStore 연산/확정 큐를 사용한다. IndexedDB 없는 jsdom의 메모리 IO 경로이며 브라우저 실측은 아니다.
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { canvasTarget, createCanvasDocumentPort, type CanvasCommand } from "../src/features/canvas/api";
-import { listPersistedScenes, listScenes, saveScenes, updateScene, type Scene } from "../src/lib/scenes";
+import { listPersistedScenes, listScenes, saveScenes, updateScene, writeSceneSnapshot, type Scene } from "../src/lib/scenes";
 import { delaySceneStoreWritesForTest, failSceneStoreWritesForTest, settleSceneStoreForTest } from "../src/lib/sceneStore";
 
 const initial: Scene = { id: "scene", name: "Scene", created_at: 1, cards: [{ id: "card", kind: "generation", x: 0, y: 0, prompt: "before" }], edges: [] };
+
+it("합쳐진 연속 저장은 최종 스냅샷의 영수증만 성공한다", async () => {
+  delaySceneStoreWritesForTest(20);
+  const snap = (prompt: string) => ({ cards: [{ ...initial.cards[0], prompt }], edges: [], groups: [] });
+  const first = writeSceneSnapshot(canvasTarget("scene"), snap("one"));
+  const last = writeSceneSnapshot(canvasTarget("scene"), snap("two"));
+  expect(first.queued && last.queued).toBe(true);
+  expect(await first.confirmed).toBe(false); expect(await last.confirmed).toBe(true);
+  expect(listPersistedScenes(null)[0].cards[0].prompt).toBe("two");
+});
+it("늦은 저장의 영수증은 접수 시 복제한 스냅샷에 묶이고 뒤 편집과 섞이지 않는다", async () => {
+  delaySceneStoreWritesForTest(20);
+  const snap = { cards: [{ ...initial.cards[0], prompt: "captured" }], edges: [], groups: [] };
+  const receipt = writeSceneSnapshot(canvasTarget("scene"), snap);
+  snap.cards[0].prompt = "mutated-after-call";
+  expect(await receipt.confirmed).toBe(true);
+  expect(listPersistedScenes(null)[0].cards[0].prompt).toBe("captured");
+  const next = writeSceneSnapshot(canvasTarget("scene"), snap);
+  expect(await next.confirmed).toBe(true);
+  expect(listPersistedScenes(null)[0].cards[0].prompt).toBe("mutated-after-call");
+});
+it("접수 실패와 실제 저장 실패는 그 편집의 영수증에서 실패한다", async () => {
+  expect(await writeSceneSnapshot(canvasTarget("missing"), initial).confirmed).toBe(false);
+  failSceneStoreWritesForTest(true);
+  expect(await writeSceneSnapshot(canvasTarget("scene"), { ...initial, cards: [] }).confirmed).toBe(false);
+});
 beforeEach(async () => {
   localStorage.clear(); sessionStorage.clear();
   saveScenes(null, [initial]); await settleSceneStoreForTest();

@@ -19,7 +19,9 @@ import {
   subscribeSceneSaveState,
   updateScenesWith,
   updateScene,
+  writeSceneSnapshot,
 } from "./scenes";
+import { sameSceneContent } from "./sceneAbsorb";
 import {
   findSceneAssetRefs,
   findSummaryText,
@@ -69,7 +71,7 @@ export function mergePatchedSceneList(
   const merged = latest.map((scene) => {
     if (scene.id !== activeSceneId) return scene;
     found = true;
-    return inMemoryActive;
+    return { ...inMemoryActive, comfyRuns: scene.comfyRuns, comfyCardRuns: scene.comfyCardRuns };
   });
   if (found) return merged;
   // 다른 탭이 활성 씬을 삭제한 순간 백그라운드 결과가 도착해도, 기존 비파괴 정책처럼 화면은 유지한다.
@@ -247,9 +249,9 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
         }
         // 활성 씬은 내 것 유지(편집 보존), 나머지는 최신으로.
         const merged = myActive
-          ? latest.map((s) => (s.id === activeId ? myActive : s))
+          ? latest.map((s) => (s.id === activeId ? { ...myActive, comfyRuns: s.comfyRuns, comfyCardRuns: s.comfyCardRuns } : s))
           : latest;
-        if (myActive && latestActive && JSON.stringify(latestActive) !== JSON.stringify(myActive)) {
+        if (myActive && latestActive && !sameSceneContent(latestActive, myActive)) {
           notify("다른 탭에서 이 씬이 변경됐습니다 — 새로고침하면 반영됩니다.");
         }
         return merged;
@@ -455,10 +457,9 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
     editPrompt: (sceneId, cardId, prompt) => sceneActionRef.current?.sceneId === sceneId
       ? sceneActionRef.current.commitDocument({ type: "editCardPrompt", cardId, prompt }) : false,
   }), [flushScenePending, patchSceneById]);
-  // 세션이 확정한 Board 투영은 조립부에서 기존 writer로 큐에 넣는다. 바깥 flush 안에 새 capture를 중첩하지 않는다.
+  // captureSceneOps는 중첩된 capture에도 같은 연산의 완료를 전달한다.
   const writeBoardSnapshot = useCallback((target: CanvasTarget, snapshot: Pick<Scene, "cards" | "edges" | "groups">) =>
-    target.accountNamespace === getAccountNamespace() && patchSceneById(target.sceneId,
-      { cards: snapshot.cards, edges: snapshot.edges, groups: snapshot.groups }), [patchSceneById]);
+    writeSceneSnapshot(target, snapshot, patchSceneById), [patchSceneById]);
   const refreshSceneById = useCallback((sceneId: string) => {
     setScenes((previous) => mergePatchedSceneList(previous, listScenes(null), activeSceneIdRef.current, sceneId));
   }, []);

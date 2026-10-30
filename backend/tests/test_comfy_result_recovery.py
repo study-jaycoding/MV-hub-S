@@ -14,6 +14,45 @@ import pytest
 
 from app.routers import comfy
 from app.services import comfy_client
+from test_comfy_run_journal import h  # noqa: F401
+
+
+def test_canvas_restart_after_generation_commit_before_completion_record(h):
+    from app import repo
+    from app.repo import comfy_canvas_runs as runs
+    from test_comfy_canvas_runs import descriptor, start, restart, resolve
+
+    attempt = descriptor()
+    start(h, attempt)
+    runs.record_outputs(attempt["attempt_id"], [{"output_key": "output", "kind": "image", "state": "ready"}], enumerated=True)
+    runs.set_state(attempt["attempt_id"], "saving")
+    gid, _ = repo.create_comfy_generation(
+        worker_id="me", creator_uid="me", prompt="actual", display_prompt=None, params={}, kind="image",
+        file_path="/media/comfy/restart.png", thumbnail_path=None,
+        canvas_attempt_id=attempt["attempt_id"], canvas_output_key="output")
+    restart(h)
+    result = resolve(h, attempt)
+    assert result["state"] == "saved" and result["outputs"][0]["generation_id"] == gid
+    h.mocks["submit"].assert_not_called()
+
+
+@pytest.mark.parametrize("output", [
+    {"kind": "image", "state": "unavailable"},
+    {"kind": "image", "state": "unavailable", "generation_id": "old"},
+    {"kind": "image", "state": "ready"},
+    {"kind": "text", "state": "pending", "text": "unconfirmed"},
+])
+def test_canvas_fully_saved_rejects_unreceived_or_uncommitted_outputs(output):
+    from app.repo.comfy_canvas_runs import isRunFullySaved
+    assert not isRunFullySaved(True, [{"kind": "text", "state": "text", "text": "kept"}, output])
+
+
+def test_canvas_fully_saved_requires_enumeration_and_accepts_deleted_and_text():
+    from app.repo.comfy_canvas_runs import isRunFullySaved
+    outputs = [{"kind": "image", "state": "deleted", "generation_id": "kept-link"},
+               {"kind": "text", "state": "text", "text": "kept"}]
+    assert isRunFullySaved(True, outputs)
+    assert not isRunFullySaved(False, outputs)
 
 
 @pytest.fixture

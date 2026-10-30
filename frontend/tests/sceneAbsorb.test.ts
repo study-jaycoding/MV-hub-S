@@ -3,6 +3,20 @@
 import { describe, expect, it } from "vitest";
 import { planAbsorption } from "../src/lib/sceneAbsorb";
 import type { Scene, ScenesByProject } from "../src/lib/scenes";
+import type { ComfyCanvasRun } from "../src/lib/comfyRunState";
+
+it("실행 기록은 편집 비교에서 빼고 옛 편집 채택 때 attempt 합집합과 최신 groupSeq를 보존한다", () => {
+  const base = scene("s");
+  const run = (attemptId: string, groupSeq: number): ComfyCanvasRun => ({ version: 1, originHubId: "h", originDeviceId: "d", attemptId,
+    runGroupId: `g${groupSeq}`, groupSeq, copyIndex: 0, cardId: "c", configFp: "c", inputFp: "i", localState: "submitted" });
+  const current = { ...base, comfyRuns: [run("now", 3)], comfyCardRuns: { c: { groupId: "g3", groupSeq: 3 } } };
+  const old = { ...base, name: "old edit", comfyRuns: [run("old", 1)], comfyCardRuns: { c: { groupId: "g1", groupSeq: 1 } } };
+  expect(planAbsorption(bucket(base), bucket(current), bucket(base)).changed).toBe(false);
+  const plan = planAbsorption(bucket(base), bucket(current), bucket(old));
+  expect(plan.conflicts).toEqual([]); expect(plan.next.acct[0].name).toBe("old edit");
+  expect(plan.next.acct[0].comfyRuns?.map(run => run.attemptId).sort()).toEqual(["now", "old"]);
+  expect(plan.next.acct[0].comfyCardRuns).toEqual(current.comfyCardRuns);
+});
 
 const scene = (id: string, name = id): Scene => ({ id, name, cards: [], edges: [], created_at: 1 });
 const bucket = (...scenes: Scene[]): ScenesByProject => ({ acct: scenes });

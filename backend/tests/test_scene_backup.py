@@ -103,7 +103,8 @@ class SceneBackupTests(unittest.TestCase):
 
     def test_base_mismatch_keeps_row_and_stores_copy_once(self):
         repo.sync_scene_backups("u1", "", [{"id": "s1", "data": _scene("s1", "새 창 12장")}], [])
-        old = json.dumps({"id": "s1", "name": "옛 창", "cards": [{"id": "c1", "genIds": ["g1"], "pendingGenerationAttempts": [{"attemptId": "a"}]}], "edges": [], "created_at": 1})
+        old = json.dumps({"id": "s1", "name": "옛 창", "cards": [{"id": "c1", "genIds": ["g1"], "pendingGenerationAttempts": [{"attemptId": "a"}]}], "edges": [], "created_at": 1,
+                          "comfyRuns": [{"attemptId": "comfy-a"}], "comfyCardRuns": {"c1": {"groupId": "comfy-g", "groupSeq": 1}}})
         r = repo.sync_scene_backups("u1", "", [{"id": "s1", "data": old, "base_hash": "옛 판"}], [])
         res = r["results"][0]
         self.assertEqual(res["status"], "copied")
@@ -112,6 +113,8 @@ class SceneBackupTests(unittest.TestCase):
         copy = self._data_of(res["target_id"])
         self.assertEqual((copy["id"], copy["name"], copy["backupForkOf"]["id"]), (res["target_id"], "옛 창 (옛 창 사본)", "s1"))
         self.assertEqual(copy["cards"][0], {"id": "c1", "genIds": ["g1"]})  # 진행 중 생성 표식만 뺀다
+        self.assertNotIn("comfyRuns", copy)
+        self.assertNotIn("comfyCardRuns", copy)
         self.assertEqual(res["hash"], self._hash_of(res["target_id"]))
         again = repo.sync_scene_backups("u1", "", [{"id": "s1", "data": old, "base_hash": "옛 판"}], [])["results"][0]  # 응답을 잃고 다시
         self.assertEqual(again["target_id"], res["target_id"])

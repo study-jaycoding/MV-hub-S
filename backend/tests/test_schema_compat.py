@@ -333,7 +333,7 @@ def test_runtime_init_registers_core_without_enabling_pm(tmp_path):
     path = tmp_path / "runtime.db"
     db.init_db(path)
     first = compat.inspect_database(path, "content")
-    assert first.components == ("content_asset_destination", "content_asset_sync", "content_core", "content_share_commands")
+    assert first.components == ("content_asset_destination", "content_asset_sync", "content_comfy_canvas_runs", "content_core", "content_share_commands")
     db.init_db(path)
     assert compat.inspect_database(path, "content") == first
     with connect(path) as conn:
@@ -390,7 +390,7 @@ def test_failed_legacy_migration_never_records_baseline_and_can_resume(content, 
     assert compat.inspect_database(content, "content").status == "unversioned"
     monkeypatch.setattr(db.db_migrations, "_migrate", migrate)
     db.init_db(content)
-    assert compat.inspect_database(content, "content").components == ("content_asset_destination", "content_asset_sync", "content_core", "content_share_commands")
+    assert compat.inspect_database(content, "content").components == ("content_asset_destination", "content_asset_sync", "content_comfy_canvas_runs", "content_core", "content_share_commands")
 
 
 def test_runtime_pm_component_joins_and_rolls_back_with_caller(content, monkeypatch):

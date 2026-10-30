@@ -93,6 +93,13 @@ class Baseline:
 
 
 BASELINES = MappingProxyType({
+    "content_comfy_canvas_runs": Baseline("content", "content_comfy_canvas_runs.v1", (
+        ("comfy_canvas_run", ("attempt_id", "owner", "hub_id", "device_id", "job_id", "request_fp",
+         "run_group_id", "group_seq", "copy_index", "scene_id", "card_id", "config_fp", "input_fp",
+         "state", "result_revision", "disposition", "outputs_enumerated", "context_json", "created_at", "updated_at")),
+        ("comfy_canvas_output", ("attempt_id", "output_key", "kind", "text", "generation_id", "state", "metadata_json")),
+    ), primary_keys=(("comfy_canvas_run", ("attempt_id",)), ("comfy_canvas_output", ("attempt_id", "output_key"))),
+       unique_keys=(("comfy_canvas_run", ("job_id",)),)),
     "content_asset_destination": Baseline("content", "content_asset_destination.v1", (
         ("asset_destination_outbox", ("sync_id", "asset_content_id", "local_location_id",
          "owner_uid", "account_key", "server_origin", "project_name", "project_id",

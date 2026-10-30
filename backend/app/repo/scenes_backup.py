@@ -70,6 +70,8 @@ def _fork_copy(sid: str, parsed: dict[str, Any], incoming_hash: str, salt: str =
     새 id 에서는 생성 복구가 씬 id 불일치로 결과를 카드에서 지운다(canvasGenerationRecovery). 결과 id(genIds)는 남긴다."""
     target = _fork_target(sid, incoming_hash, salt)
     copy = dict(parsed)
+    copy.pop("comfyRuns", None)
+    copy.pop("comfyCardRuns", None)
     copy["id"] = target
     copy["name"] = f"{parsed.get('name') or '씬'} (옛 창 사본)"
     copy["backupForkOf"] = {"id": sid, "sum": incoming_hash}

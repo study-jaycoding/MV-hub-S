@@ -1,5 +1,7 @@
 import type { MutableRefObject } from "react";
-import { variantIds, type SceneCard, type SceneComfyCfg } from "../../lib/scenes";
+import { variantIds, type Scene, type SceneCard, type SceneComfyCfg } from "../../lib/scenes";
+import { comfySceneFingerprints } from "../../lib/sceneComfyInputs";
+import type { ComfyApplicationReceipt, ComfyCanvasResolution } from "../../lib/comfyRunState";
 import { markCardGenerationsRemoved } from "../../lib/sceneCardLinks";
 import { settleCanvasGenerationAttempt } from "../../lib/canvasGenerationRecovery";
 import { ownEntry } from "../../lib/ownEntry";
@@ -7,6 +9,55 @@ import type { useSceneInputCommit } from "../../lib/useSceneInputCommit";
 import type { useSceneHistory } from "../../lib/useSceneHistory";
 
 export type ComfyConfigEdit = Pick<SceneComfyCfg, "name" | "content" | "nodeCount" | "paramExposed" | "paramValues" | "params">;
+
+/** 즉시 응답과 재시작 복구가 공유하는 반영. 저장/ACK는 호출자가 영수증과 함께 확정한다. */
+export function applyComfyResolution(scene: Scene, resolution: ComfyCanvasResolution): { scene: Scene; receipt: ComfyApplicationReceipt | null } {
+  const run = scene.comfyRuns?.find(item => item.attemptId === resolution.attempt_id);
+  if (!run || run.originHubId !== resolution.origin.hub_id || run.originDeviceId !== resolution.origin.device_id)
+    return { scene, receipt: null };
+  if (run.receipt && run.receipt.resultRevision >= resolution.result_revision)
+    return { scene, receipt: run.receipt.resultRevision === resolution.result_revision ? run.receipt : null };
+  if (!["saved", "failed", "dismissed", "linked"].includes(resolution.state)) return { scene, receipt: null };
+  if (resolution.state === "linked") {
+    if (!resolution.disposition) return { scene, receipt: null };
+    const receipt = { attemptId: run.attemptId, resultRevision: resolution.result_revision, disposition: resolution.disposition };
+    return { scene: { ...scene, comfyRuns: scene.comfyRuns!.map(item => item === run ? { ...item, localState: "applied", receipt } : item) }, receipt };
+  }
+  const card = scene.cards.find(item => item.id === run.cardId && item.kind === "comfy");
+  const fp = card && comfySceneFingerprints(scene, card.id);
+  const owner = scene.comfyCardRuns?.[run.cardId];
+  const matches = fp && fp.configFp === run.configFp && fp.inputFp === run.inputFp
+    && owner?.groupId === run.runGroupId && owner.groupSeq === run.groupSeq;
+  const disposition = !card ? "card_missing" : !matches ? "superseded" : resolution.disposition || "attached";
+  const receipt: ComfyApplicationReceipt = { attemptId: run.attemptId, resultRevision: resolution.result_revision, disposition };
+  let next: Scene = { ...scene, comfyRuns: scene.comfyRuns!.map(item => item === run ? { ...item, localState: "applied", receipt } : item) };
+  if (disposition !== "attached" || !card || !owner) return { scene: next, receipt };
+
+  const outputs = resolution.outputs.filter(output => output.state !== "deleted" && output.state !== "unavailable"
+    && (output.generation_id || (output.kind === "text" && output.text !== undefined)));
+  // 사용자가 지운 출력도 서버에서는 성공한 copy다. 다시 연결하지 않되 대표의 순서는 지킨다.
+  const successful = resolution.state === "saved" && resolution.outputs.length > 0;
+  const representative = successful && (owner.representative?.groupId !== run.runGroupId
+    || run.copyIndex > owner.representative.copyIndex
+    || (run.copyIndex === owner.representative.copyIndex && run.attemptId === owner.representative.attemptId));
+  const ids = outputs.flatMap(output => output.generation_id ? [output.generation_id] : []);
+  const deletedIds = new Set(resolution.outputs.filter(output => output.state === "deleted").map(output => output.generation_id));
+  const genIds = [...new Set([...variantIds(card), ...ids])].filter(id => !deletedIds.has(id));
+  if (outputs.length || representative) {
+    const updated = { ...card, genIds,
+      ...(representative ? { genId: ids[ids.length - 1] || null,
+        comfyCfg: { ...card.comfyCfg, output: null, outputs: outputs.map(output => ({ kind: output.kind,
+          ...(output.text !== undefined ? { text: output.text } : {}),
+          ...(output.generation_id ? { saved_generation_id: output.generation_id } : {}) })) } } : {}) };
+    next = { ...next, cards: scene.cards.map(item => item === card ? updated : item) };
+  }
+  const current = { ...owner, ...(representative ? { representative: { groupId: run.runGroupId, copyIndex: run.copyIndex, attemptId: run.attemptId } } : {}) };
+  const pending = next.comfyRuns!.some(item => item.cardId === card.id && item.runGroupId === run.runGroupId
+    && item.groupSeq === run.groupSeq && item.localState !== "applied");
+  next = { ...next, comfyCardRuns: { ...scene.comfyCardRuns, [card.id]: { ...current,
+    ...(pending ? {} : { settledState: current.representative ? "done" : resolution.state === "dismissed" ? "idle" : "failed" }) } } };
+  return { scene: next, receipt };
+}
 export type ComfyRuntimeUpdate = Pick<SceneComfyCfg, "runId" | "status" | "error" | "output" | "outputs">;
 export type CanvasComfyCommand =
   | { type: "editComfyParam"; cardId: string; key: string; value: string | number | boolean }

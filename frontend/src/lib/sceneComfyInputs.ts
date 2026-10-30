@@ -14,6 +14,9 @@ import { refMediaType, refMediaSrc, mediaFileName } from "./sceneMedia";
 import { variantIds, type SceneCard, type SceneEdge, type SceneRef } from "./scenes";
 import type { Generation } from "../types";
 import { assetIdentity, type AssetReferenceIdentity } from "../shared/contracts/assets";
+import { sha256Js } from "./editShare";
+import type { ComfyCardRuns } from "./comfyRunState";
+import type { Scene } from "./scenes";
 
 export interface ComfyMediaInput extends AssetReferenceIdentity {
   type: "image" | "video";
@@ -67,6 +70,7 @@ function inputGraphFingerprint(
   edges: SceneEdge[],
   drivenParamValues: Record<string, string | number | boolean>,
   textParamKeys: string[],
+  cardRuns?: ComfyCardRuns,
 ): string {
   const byId = new Map(cards.map((card) => [card.id, card] as const));
   const relevantIds = new Set<string>([cardId]);
@@ -116,7 +120,7 @@ function inputGraphFingerprint(
           kind: card.kind,
           content: card.comfyCfg?.content || "",
           paramValues: stableParamValues(card.comfyCfg?.paramValues || {}),
-          executionId: card.comfyCfg?.runId || null,
+          executionId: id === cardId ? null : cardRuns ? cardRuns[id]?.groupId || null : card.comfyCfg?.runId || null,
         };
       if (card.kind === "text" || card.kind === "output")
         return { id, kind: card.kind, text: card.text || "" };
@@ -266,6 +270,7 @@ export function prepareSceneComfyInputs(
   genData: Record<string, Generation>,
   refParents: Record<string, string[]>,
   overlay?: ComfyOutputsById,
+  cardRuns?: ComfyCardRuns,
 ): PreparedSceneComfyInputs {
   const card = cards.find((candidate) => candidate.id === cardId);
   const drivenParamValues = driveTextParams(
@@ -289,6 +294,22 @@ export function prepareSceneComfyInputs(
       edges,
       copiedParamValues,
       textParamKeys,
+      cardRuns,
     ),
   };
+}
+
+/** 저장된 편집 설정/입력만으로 다시 계산한다. 자기 실행 상태와 출력 URL은 지문에 넣지 않는다. */
+export function comfySceneFingerprints(scene: Scene, cardId: string): { configFp: string; inputFp: string } | null {
+  const card = scene.cards.find(item => item.id === cardId && item.kind === "comfy");
+  if (!card?.comfyCfg) return null;
+  const cfg = card.comfyCfg;
+  const config = { name: cfg.name, content: cfg.content, nodeCount: cfg.nodeCount,
+    paramExposed: cfg.paramExposed, paramValues: stableParamValues(cfg.paramValues || {}), params: cfg.params };
+  // URL 해소/파일 수집은 여기서 하지 않는다. 저장소 연산과 복구 판정은 문서만 읽는 순수 계산이다.
+  const values = driveTextParams(cardId, cfg.paramValues || {}, cfg.params, scene.cards, scene.edges, {});
+  const input = inputGraphFingerprint(cardId, scene.cards, scene.edges, values,
+    [...comfyTextDriveKeys(cfg.params, cfg.content)], scene.comfyCardRuns || {});
+  const hash = (value: string) => sha256Js(new TextEncoder().encode(value));
+  return { configFp: hash(JSON.stringify(config)), inputFp: hash(input) };
 }

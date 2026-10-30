@@ -37,6 +37,7 @@ import {
   type Scene,
 } from "./scenes";
 import { subscribeSceneStoreExternal } from "./sceneStore";
+import { withoutComfyRuns } from "./comfyRunState";
 
 const API = "/api/scenes/backup";
 const DEBOUNCE_MS = 2000;
@@ -152,7 +153,7 @@ function forkText(text: string, forkId: string, originalId: string, sum: string)
   try {
     const scene = JSON.parse(text) as Scene & { backupForkOf?: unknown };
     return JSON.stringify({
-      ...scene,
+      ...withoutComfyRuns(scene),
       id: forkId,
       name: `${scene.name || "씬"} (옛 창 사본)`,
       backupForkOf: { id: originalId, sum },

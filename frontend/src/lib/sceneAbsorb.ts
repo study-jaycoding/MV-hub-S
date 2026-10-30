@@ -16,6 +16,7 @@
 //
 // IDB·DOM 에 의존하지 않는 순수 계산이다(sceneDragSession 과 같은 방식) — 시험 대상.
 import type { Scene, ScenesByProject } from "./scenes";
+import { mergeComfyRuns, withoutComfyRuns } from "./comfyRunState";
 
 /** 자동으로 정할 수 없어 사람이 골라야 하는 한 건. mine=새 저장소, theirs=옛 저장소. null=없음(삭제). */
 export interface SceneAbsorbConflict {
@@ -51,7 +52,7 @@ function stableText(value: unknown): string {
 }
 
 function sceneText(scene: Scene): string {
-  return stableText(scene);
+  return stableText(withoutComfyRuns(scene));
 }
 
 /** 두 씬의 내용이 같은가 — 키 순서·undefined 필드에 흔들리지 않는다. */
@@ -62,7 +63,7 @@ export const sameSceneContent = (a: Scene, b: Scene): boolean => sceneText(a) ==
  * 한 벌 더 들고 있지 않고 판정하려고 쓴다(scenes.recoverSceneConflicts).
  */
 export function sceneBodySum(scene: Scene): string {
-  const text = stableText({ ...scene, id: "", name: "", recoveredFrom: undefined });
+  const text = stableText({ ...withoutComfyRuns(scene), id: "", name: "", recoveredFrom: undefined });
   let hash = 0x811c9dc5;
   for (let i = 0; i < text.length; i += 1) {
     hash ^= text.charCodeAt(i);
@@ -150,7 +151,7 @@ export function planAbsorption(
         // 옛 쪽만 바뀌었다 — 그 변경을 적용한다. lt 가 없으면 '옛 쪽에서 지웠다'는 뜻이다.
         const theirs = sceneAt(l, bucket, id);
         if (theirs) {
-          kept.set(id, theirs);
+          kept.set(id, { ...theirs, ...mergeComfyRuns(sceneAt(n, bucket, id), theirs) });
           adopted += 1;
         } else {
           removed += 1;

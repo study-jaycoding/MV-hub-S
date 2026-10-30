@@ -178,3 +178,71 @@ class ComfySaveRouteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_canvas_generation_and_output_link_are_one_transaction(h, monkeypatch):
+    import pytest
+    from app.repo import comfy_canvas_runs as runs
+    from app import db, repo
+    from test_comfy_canvas_runs import descriptor, start
+
+    attempt = descriptor()
+    start(h, attempt)
+    runs.record_outputs(attempt["attempt_id"], [{"output_key": "output", "kind": "image", "state": "ready"}], enumerated=True)
+    original = runs.link_output
+
+    def fail_link(*args):
+        original(*args)
+        raise RuntimeError("synthetic crash after link before commit")
+
+    values = dict(worker_id="me", creator_uid="me", prompt="actual", display_prompt=None,
+                  params={}, kind="image", file_path="/media/comfy/atomic.png", thumbnail_path=None,
+                  canvas_attempt_id=attempt["attempt_id"], canvas_output_key="output")
+    monkeypatch.setattr(runs, "link_output", fail_link)
+    with pytest.raises(RuntimeError):
+        repo.create_comfy_generation(**values)
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM generation").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM asset").fetchone()[0] == 0
+    assert runs.get(attempt["attempt_id"])["outputs"][0]["generation_id"] is None
+    monkeypatch.setattr(runs, "link_output", original)
+    first, existed = repo.create_comfy_generation(**values)
+    assert not existed
+    again, existed = repo.create_comfy_generation(**values)
+    assert existed and first == again
+
+
+def test_canvas_actual_transcoded_input_and_redacted_snapshot_are_saved(h, monkeypatch):
+    import hashlib
+    import io
+    import json
+    from unittest.mock import Mock
+    from fastapi import UploadFile
+    from app import repo
+    from app.routers import comfy
+    from app.repo import comfy_canvas_runs as runs
+    from test_comfy_canvas_runs import descriptor, resolve, start
+
+    h.successful()
+    converted = h.tmp / "converted.mp4"
+    converted.write_bytes(b"actual-converted-input")
+    monkeypatch.setattr(comfy.video_convert, "to_cloud_mp4_path", lambda _: converted)
+    monkeypatch.setattr(comfy.comfy_client, "upload_file", Mock(return_value="submitted.mp4"))
+    workflow = {"1": {"class_type": "VHS_LoadVideo", "inputs": {"video": "old.mov"}},
+                "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "old", "api_key": "synthetic-private"}}}
+    attempt = descriptor()
+    start(h, attempt, content=json.dumps(workflow), param_values='{"2|text":"actually submitted"}',
+          media_meta='[{"type":"video"}]', media=[UploadFile(io.BytesIO(b"original"), filename="original.mov")])
+    h.drain()
+    result = resolve(h, attempt)
+    assert result["state"] == "saved"
+    generation = repo.get_generation(result["outputs"][0]["generation_id"])
+    assert generation["prompt"] == "actually submitted"
+    assert generation["params"]["workflow_name"] == "test workflow"
+    evidence = generation["params"]["comfy_input_provenance"][0]
+    assert evidence["sha256"] == hashlib.sha256(b"actual-converted-input").hexdigest()
+    assert "path" not in evidence and "server_location" not in evidence
+    assert "synthetic-private" not in json.dumps(runs.get(attempt["attempt_id"])["context"])
+
+
+from test_comfy_run_journal import h  # noqa: E402,F401 - existing isolated fake-provider fixture

@@ -469,7 +469,7 @@ describe("sceneBackup — 판(1A)", () => {
     const { scenes, backup, settle } = await boot();
     const forked: string[][] = [];
     backup.subscribeSceneBackupForked((names) => forked.push(names));
-    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "고친 옛 창"))]);
+    scenes.saveScenes(null, [{ ...JSON.parse(sceneJson("s1", "고친 옛 창")), comfyRuns: [{ attemptId: "a" }], comfyCardRuns: { c: { groupId: "g", groupSeq: 1 } } }]);
     await settle();
     localStorage.setItem(ledgerKey("s1"), JSON.stringify({ b: "옛-판" }));
     getMeta = () => Promise.resolve({ items: [{ id: "s1", data_hash: "새-창" }] });
@@ -488,6 +488,9 @@ describe("sceneBackup — 판(1A)", () => {
     const next = putBody(puts()[1]).upserts[0];
     expect(next).toMatchObject({ id: "bk_copy", base_hash: "사본-판" });
     expect(JSON.parse(next.data)).toMatchObject({ id: "bk_copy", name: "더 고침 (옛 창 사본)", backupForkOf: { id: "s1" } });
+    expect(JSON.parse(next.data)).not.toHaveProperty("comfyRuns");
+    expect(JSON.parse(next.data)).not.toHaveProperty("comfyCardRuns");
+    expect(scenes.listScenes(null)[0]).toHaveProperty("comfyRuns");
 
     scenes.saveScenes(null, []);
     await settle();

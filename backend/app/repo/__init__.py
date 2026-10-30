@@ -28,6 +28,7 @@ from .history import *  # noqa: F401,F403  (가계 조회 get_history/graph — 
 from .generation_sync import *  # noqa: F401,F403  (CLI 결과 단건/배치 적재·known job 경계)
 from .history_import_audit import *  # noqa: F401,F403  (과거 이력 gap·자동 보충 감사 상태)
 from .generations import *  # noqa: F401,F403
+from . import comfy_canvas_runs
 from .generations_query import *  # noqa: F401,F403  (조회/직렬화 — generations 에서 분리, leaf)
 from .facets import *  # noqa: F401,F403  (generations 에서 분리 — get_facets)
 from .sources import *  # noqa: F401,F403  (generations 뒤 — search_sources 가 _attach_children import)

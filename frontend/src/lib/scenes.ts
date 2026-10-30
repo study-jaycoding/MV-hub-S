@@ -7,6 +7,9 @@ import { STORAGE_KEYS } from "./storageKeys";
 import { getAccountNamespace } from "./accountScope";
 import type { AssetReferenceIdentity } from "../shared/contracts/assets";
 import { sceneBodySum } from "./sceneAbsorb";
+import { normalizeForUndo, withoutComfyRuns, type ComfyCanvasRun, type ComfyCardRuns } from "./comfyRunState";
+import type { SceneSnap } from "./sceneUndoStore";
+import type { CanvasTarget, CanvasWriteReceipt } from "../features/canvas/api";
 import { holdUnload } from "./unloadGuard";
 import {
   applySceneOp,
@@ -174,10 +177,31 @@ export interface Scene {
   recoveredFrom?: { id: string; sum: string };
   created_at: number;
   mcpAttachmentReceipts?: string[]; // 저장 확인 응답이 유실돼도 삭제한 카드를 다시 붙이지 않는 처리 기록.
+  comfyRuns?: ComfyCanvasRun[]; // 실행과 적용 영수증 — 카드 Undo 밖.
+  comfyCardRuns?: ComfyCardRuns; // ACK 뒤에도 남는 현재 묶음·대표.
 }
 
 // 계정×프로젝트 버킷 → 그 버킷의 씬 목록. 저장소 계층(sceneStore·sceneAbsorb)이 같은 모양을 쓴다.
 export type ScenesByProject = Record<string, Scene[]>;
+
+/** 그 편집의 저장 영수증. 합쳐진 다른 편집의 성공을 이 스냅샷의 성공으로 읽지 않는다. */
+export function writeSceneSnapshot(
+  target: CanvasTarget,
+  snapshot: Pick<Scene, "cards" | "edges" | "groups">,
+  write: (sceneId: string, value: Pick<Scene, "cards" | "edges" | "groups">) => boolean = (id, value) => updateScene(null, id, value).ok,
+): CanvasWriteReceipt {
+  const { accountNamespace, sceneId } = target;
+  if (accountNamespace !== getAccountNamespace()) return { queued: false, confirmed: Promise.resolve(false) };
+  const value = frozen({ cards: snapshot.cards, edges: snapshot.edges, groups: snapshot.groups || [] });
+  const text = (snap: SceneSnap) => JSON.stringify(normalizeForUndo(snap));
+  const expected = text(value);
+  const result = confirmSceneWrite(() => write(sceneId, value));
+  return { queued: result.value, confirmed: result.confirmed.then(ok => {
+    if (!result.value || !ok || accountNamespace !== getAccountNamespace()) return false;
+    const saved = listPersistedScenes(null).find(scene => scene.id === sceneId);
+    return !!saved && text({ cards: saved.cards, edges: saved.edges, groups: saved.groups || [] }) === expected;
+  }) };
+}
 
 // 씬 저장 버킷 키. ★계정별 네임스페이스 — 팀 서버에서 한 브라우저를 여러 계정이 써도 안 섞이게,
 //  계정 전환 시 서로 지워지지 않게. 인증 계정을 탭별 sessionStorage 에 고정해 다른 탭의 로그인으로
@@ -459,7 +483,7 @@ export function mergeScenesFromBackup(
   incoming: Scene[],
 ): { ok: boolean; added: Scene[] } {
   const key = keyOf(projectId); // ★접수 시점의 계정으로 고정
-  const list = frozen(incoming);
+  const list = frozen(incoming.map(withoutComfyRuns));
   const out = commit((all) => {
     const local = all[key] || [];
     const localIds = new Set(local.map((s) => s.id));
@@ -565,7 +589,7 @@ export function hasSceneConflicts(): boolean {
 export function recoverSceneConflicts(): Promise<{ copied: number; refreshed: number; keptMine: number } | null> {
   return settleConflictsAsCopies(keyOf(null), (scenes, theirs) => {
     const copy: Scene = {
-      ...theirs,
+      ...withoutComfyRuns(theirs),
       id: uid(),
       name: `${CONFLICT_COPY_PREFIX}${theirs.name}`,
       recoveredFrom: { id: theirs.id, sum: sceneBodySum(theirs) },

@@ -12,6 +12,87 @@ import { setAccountScope } from "../src/lib/accountScope";
 import { useSceneComfyExecution } from "../src/lib/useSceneComfyExecution";
 import { useSceneCardRecovery } from "../src/lib/useSceneCardRecovery";
 import type { Generation } from "../src/types";
+import { applyComfyResolution } from "../src/features/canvas/comfyCommands";
+import { comfySceneFingerprints } from "../src/lib/sceneComfyInputs";
+import { comfyCardRuntime, type ComfyCanvasResolution } from "../src/lib/comfyRunState";
+import type { Scene } from "../src/lib/scenes";
+
+function durableScene(): Scene {
+  const scene: Scene = { id: "durable", name: "durable", cards: [{ id: "c", kind: "comfy", x: 0, y: 0, comfyCfg: { content: "{}" } }], edges: [], created_at: 1,
+    comfyCardRuns: { c: { groupId: "g", groupSeq: 2 } } };
+  scene.comfyRuns = [0, 1, 2].map(copyIndex => ({ version: 1, attemptId: `a${copyIndex}`, runGroupId: "g", groupSeq: 2, copyIndex, cardId: "c",
+    originHubId: "h", originDeviceId: "d", localState: "submitted", ...comfySceneFingerprints(scene, "c")! }));
+  return scene;
+}
+function resolved(copy: number, patch: Partial<ComfyCanvasResolution> = {}): ComfyCanvasResolution {
+  return { attempt_id: `a${copy}`, state: "saved", result_revision: 3, origin: { hub_id: "h", device_id: "d" },
+    outputs: [{ output_key: "text:0", kind: "text", text: `copy-${copy}`, state: "text" },
+      { output_key: "image:0", kind: "image", generation_id: `gen-${copy}`, state: "saved" }], ...patch };
+}
+it("역순 완료·ACK 정리·재부팅 뒤 작은 copy는 큰 copy 대표를 바꾸지 않는다", () => {
+  let scene = applyComfyResolution(durableScene(), resolved(2)).scene;
+  scene = JSON.parse(JSON.stringify({ ...scene, comfyRuns: scene.comfyRuns!.filter(run => run.attemptId !== "a2") }));
+  scene = applyComfyResolution(scene, resolved(0)).scene;
+  scene = applyComfyResolution(scene, resolved(1)).scene;
+  expect(scene.cards[0].genId).toBe("gen-2");
+  expect(scene.cards[0].genIds).toEqual(["gen-2", "gen-0", "gen-1"]);
+  expect(scene.cards[0].comfyCfg?.outputs?.[0].text).toBe("copy-2");
+  expect(comfyCardRuntime(scene, "c")).toMatchObject({ status: "done", representative: { copyIndex: 2 } });
+  expect(scene.cards[0].comfyCfg).not.toHaveProperty("status");
+});
+it.each(["config", "input", "old-group"])("%s 변경 뒤 옛 결과는 superseded 영수증만 남긴다", reason => {
+  const scene = durableScene();
+  if (reason === "config") scene.cards[0].comfyCfg!.content = "changed";
+  if (reason === "input") { scene.cards.push({ id: "text", kind: "text", x: 0, y: 0, text: "new" }); scene.edges.push({ id: "e", from: "text", to: "c", role: "text" }); }
+  if (reason === "old-group") scene.comfyCardRuns!.c = { groupId: "new", groupSeq: 3, settledState: "done" };
+  const result = applyComfyResolution(scene, resolved(0));
+  expect(result.receipt).toEqual({ attemptId: "a0", resultRevision: 3, disposition: "superseded" });
+  expect(result.scene.cards).toBe(scene.cards);
+  expect(result.scene.comfyCardRuns).toBe(scene.comfyCardRuns);
+});
+it("카드 삭제는 card_missing이고 같은 영수증을 다시 적용해도 문서를 바꾸지 않는다", () => {
+  const first = applyComfyResolution({ ...durableScene(), cards: [] }, resolved(0));
+  expect(first.receipt?.disposition).toBe("card_missing");
+  const second = applyComfyResolution(first.scene, resolved(0));
+  expect(second.scene).toBe(first.scene); expect(second.receipt).toBe(first.receipt);
+});
+it("진행 중·다른 원본·옛 revision은 적용/ACK 영수증을 만들지 않는다", () => {
+  const scene = durableScene();
+  expect(applyComfyResolution(scene, resolved(0, { state: "needs_collect" })).receipt).toBeNull();
+  expect(applyComfyResolution(scene, resolved(0, { origin: { hub_id: "other", device_id: "d" } })).receipt).toBeNull();
+  const first = applyComfyResolution(scene, resolved(0));
+  expect(applyComfyResolution(first.scene, resolved(0)).scene).toBe(first.scene);
+  expect(applyComfyResolution(first.scene, resolved(0, { result_revision: 2 })).receipt).toBeNull();
+});
+it("서버가 이미 linked로 확인한 영수증은 카드 삭제 뒤에도 같은 disposition을 유지한다", () => {
+  const scene = { ...durableScene(), cards: [] };
+  const result = applyComfyResolution(scene, resolved(0, { state: "linked", disposition: "attached" }));
+  expect(result.receipt).toEqual({ attemptId: "a0", resultRevision: 3, disposition: "attached" });
+  expect(result.scene.cards).toBe(scene.cards);
+});
+it.each(["text", "deleted"])("큰 copy가 %s 출력이어도 작은 media copy를 대표로 되살리지 않는다", kind => {
+  let scene = applyComfyResolution(durableScene(), resolved(0)).scene;
+  const outputs: ComfyCanvasResolution["outputs"] = kind === "text"
+    ? [{ output_key: "text:0", kind: "text", text: "new text", state: "text" }]
+    : [{ output_key: "image:0", kind: "image", generation_id: "deleted-gen", state: "deleted" }];
+  scene = applyComfyResolution(scene, resolved(2, { outputs })).scene;
+  scene = applyComfyResolution(scene, resolved(1)).scene;
+  expect(scene.comfyCardRuns!.c.representative?.copyIndex).toBe(2);
+  expect(scene.cards[0].genId).toBeNull();
+  expect(scene.cards[0].genIds).not.toContain("deleted-gen");
+  expect(scene.cards[0].comfyCfg?.outputs).toEqual(kind === "text" ? [{ kind: "text", text: "new text" }] : []);
+});
+it("지문은 자기 실행 소유를 빼고 상류 묶음의 영속 ID를 비교한다", () => {
+  const scene = durableScene(); const before = comfySceneFingerprints(scene, "c");
+  scene.cards[0].comfyCfg!.runId = 999; scene.comfyCardRuns!.c.groupId = "self-changed";
+  expect(comfySceneFingerprints(scene, "c")).toEqual(before);
+  scene.cards.push({ id: "up", kind: "comfy", x: 0, y: 0, comfyCfg: { content: "{}" } });
+  scene.edges = [{ id: "edge", from: "up", to: "c", role: "ref" }];
+  scene.comfyCardRuns!.up = { groupId: "up1", groupSeq: 1 };
+  const upstream = comfySceneFingerprints(scene, "c");
+  scene.comfyCardRuns!.up = { groupId: "up2", groupSeq: 2 };
+  expect(comfySceneFingerprints(scene, "c")?.inputFp).not.toBe(upstream?.inputFp);
+});
 
 const linkState = vi.hoisted(() => ({ rows: [] as { scene_id: string; card_id: string; generation_id: string; removed_at: string | null }[] }));
 const apiRun = vi.hoisted(() => vi.fn());

@@ -118,6 +118,8 @@ def create_comfy_generation(
     workspace: Optional[dict[str, Any]] = None,
     output_sha: Optional[str] = None,
     output_bytes: Optional[int] = None,
+    canvas_attempt_id: Optional[str] = None,
+    canvas_output_key: Optional[str] = None,
 ) -> tuple[str, bool]:
     """캔버스 Comfy 노드 출력 1개를 라이브러리 generation(+asset)으로 물질화. (gen_id, existed) 반환.
 
@@ -135,6 +137,12 @@ def create_comfy_generation(
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            if canvas_attempt_id is not None:
+                from . import comfy_canvas_runs
+                linked = comfy_canvas_runs.linked_output(conn, canvas_attempt_id, canvas_output_key)
+                if linked:
+                    conn.execute("COMMIT")
+                    return linked, True
             # 같은 트랜잭션 안에서 중복 검사(레이스 차단). 있으면 그 gen 재사용.
             dedup_where = "a.file_path=? AND g.generator='comfy' AND g.deleted_at IS NULL"
             dedup_args: list[Any] = [file_path]
@@ -147,6 +155,8 @@ def create_comfy_generation(
                 dedup_args,
             ).fetchone()
             if dup:
+                if canvas_attempt_id is not None:
+                    comfy_canvas_runs.link_output(conn, canvas_attempt_id, canvas_output_key, dup["id"])
                 conn.execute("COMMIT")
                 return dup["id"], True
             conn.execute(
@@ -199,6 +209,8 @@ def create_comfy_generation(
                     src_gen_ids.add(sgid)
             for sgid in src_gen_ids:
                 _record_history(conn, sgid, gen_id, "reference")
+            if canvas_attempt_id is not None:
+                comfy_canvas_runs.link_output(conn, canvas_attempt_id, canvas_output_key, gen_id)
             conn.execute("COMMIT")
             return gen_id, False
         except Exception:

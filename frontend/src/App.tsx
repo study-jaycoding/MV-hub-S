@@ -44,7 +44,7 @@ import {
 } from "./components/app/SelectionActionBar";
 import { KEY_COLORS } from "./lib/appConstants";
 import { useCanvasGenerationLinks } from "./lib/useCanvasGenerationLinks";
-import { canvasTarget } from "./features/canvas/api";
+import { canvasTarget, type CanvasWriteReceipt } from "./features/canvas/api";
 import { useSceneGenerationSubmission } from "./lib/useSceneGenerationSubmission";
 import { useMcpCanvasTasks } from "./lib/mcpCanvasTasks";
 import { folderPeekQuery, generationQueryKey } from "./lib/appGenerationQuery";
@@ -2670,7 +2670,7 @@ export default function App() {
                 authKey={libraryAuthKey}
                 authReady={authReady}
                 scene={activeScene}
-                onChange={(snapshot) => writeBoardSnapshot(canvasTarget(activeScene.id), snapshot)}
+                      onChange={(snapshot): CanvasWriteReceipt => writeBoardSnapshot(canvasTarget(activeScene.id), snapshot)}
                 // Ctrl+K 로 프롬프트 숨김 시 멀티선택 액션바를 캔버스 상단 중앙(씬 패널·미니맵 줄)에 얹는다.
                 topCenterOverlay={!promptVisible ? selectionBar : undefined}
                 onSaveScene={handleSaveScene}

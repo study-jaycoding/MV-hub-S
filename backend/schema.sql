@@ -850,3 +850,37 @@ CREATE TABLE IF NOT EXISTS mcp_canvas_task (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(plan_id,scene_id)
 );
+-- Canvas receipts outlive the recovery journal and deleted generations.
+CREATE TABLE IF NOT EXISTS comfy_canvas_run (
+    attempt_id TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    hub_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    job_id TEXT NOT NULL UNIQUE,
+    request_fp TEXT NOT NULL,
+    run_group_id TEXT NOT NULL,
+    group_seq INTEGER NOT NULL,
+    copy_index INTEGER NOT NULL,
+    scene_id TEXT NOT NULL,
+    card_id TEXT NOT NULL,
+    config_fp TEXT NOT NULL,
+    input_fp TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'accepted',
+    result_revision INTEGER NOT NULL DEFAULT 0,
+    disposition TEXT,
+    outputs_enumerated INTEGER NOT NULL DEFAULT 0,
+    context_json TEXT NOT NULL DEFAULT '{}',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_comfy_canvas_owner_state ON comfy_canvas_run(owner, state);
+CREATE TABLE IF NOT EXISTS comfy_canvas_output (
+    attempt_id TEXT NOT NULL REFERENCES comfy_canvas_run(attempt_id),
+    output_key TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    text TEXT,
+    generation_id TEXT,
+    state TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (attempt_id, output_key)
+);

@@ -4,6 +4,8 @@
 //  언마운트되면 사라져, 재마운트 시 '생성중'이 안 보이고 이전 결과가 보였다(사용자 보고 #2).
 //  → 인스턴스 밖 모듈 store 에 기록하면 탭을 오가도 실행중 표시가 살아있다. (glow 의 sceneRecentDoneStore 와 동형)
 import { shareWindowLive } from "./popupWindows";
+import { comfyCardRuntime } from "./comfyRunState";
+import type { Scene } from "./scenes";
 
 const running = new Map<string, number>(); // cardId → 중첩 실행 카운트(같은 카드 여러 번 on 대비)
 // 다른 창(메인 창 ↔ 휠 클릭으로 띄운 캔버스 창)에서 돌고 있는 실행 — 창마다 마지막으로 알린 목록(Jay 2026-10-30, lib/popupWindows 의 실시간 나눔).
@@ -51,7 +53,9 @@ export function setComfyRunning(ids: string[], on: boolean): void {
   announce?.();
 }
 
-export function isComfyRunning(id: string): boolean {
+export function isComfyRunning(id: string, scene?: Pick<Scene, "comfyRuns" | "comfyCardRuns">): boolean {
+  const runtime = scene && comfyCardRuntime(scene, id);
+  if (runtime) return runtime.status === "running";
   return (running.get(id) || 0) > 0 || [...remote.values()].some((ids) => ids.has(id));
 }
 

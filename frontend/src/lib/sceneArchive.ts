@@ -138,7 +138,8 @@ export function mergeArchiveBucket(local: Scene[], incoming: Scene[]): SceneBuck
   const extra: Scene[] = [];
   let added = 0;
   let recovered = 0;
-  for (const scene of incoming) {
+  for (const original of incoming) {
+    const { comfyRuns: _runs, comfyCardRuns: _owners, ...scene } = original;
     const mine = byId.get(scene.id);
     if (!mine) {
       extra.push(scene);

@@ -12,6 +12,31 @@ import {
   type SceneComfyRunInputSnapshot,
 } from "../src/lib/sceneComfyExecutor";
 import type { SceneCard } from "../src/lib/scenes";
+import { preserveRepresentatives } from "../src/lib/scenes";
+import { normalizeForUndo, comfyCardRuntime } from "../src/lib/comfyRunState";
+import type { Scene } from "../src/lib/scenes";
+
+it("실행 중 Undo 스냅샷은 소유/상태를 되돌리지 않고 결과/대표/전이 정보를 보존한다", () => {
+  const old: SceneCard = { id: "c", kind: "comfy", x: 0, y: 0, status: "running", genId: "old", genIds: ["old", "new"],
+    comfyCfg: { content: "{}", runId: 1, status: "running", error: "old error", outputs: [{ kind: "text", text: "result" }] } };
+  const snap = { cards: [old], edges: [], groups: [], addedForward: [{ cardId: "c", genIds: ["new"] }] };
+  const normalized = normalizeForUndo(snap);
+  expect(normalized.cards[0].comfyCfg).toEqual({ content: "{}", outputs: [{ kind: "text", text: "result" }] });
+  expect(normalized.cards[0].status).toBeUndefined();
+  expect(normalized.cards[0].genId).toBe("old");
+  expect(normalized.addedForward).toBe(snap.addedForward);
+  expect(normalizeForUndo(normalized)).toBe(normalized);
+  expect(old.comfyCfg?.runId).toBe(1);
+  const current: Scene = { id: "s", name: "s", cards: [old], edges: [], created_at: 1,
+    comfyCardRuns: { c: { groupId: "new-group", groupSeq: 5 } },
+    comfyRuns: [{ version: 1, attemptId: "new", runGroupId: "new-group", groupSeq: 5, copyIndex: 0, cardId: "c",
+      originHubId: "h", originDeviceId: "d", localState: "submitted", configFp: "c", inputFp: "i" }] };
+  const undone = { ...current, ...normalized };
+  expect(comfyCardRuntime(undone, "c")).toMatchObject({ groupId: "new-group", groupSeq: 5, status: "running" });
+  const now = [{ ...old, genId: "new" }];
+  expect(preserveRepresentatives(normalized.cards, now)[0].genId).toBe("new");
+  expect(preserveRepresentatives([{ ...normalized.cards[0], comfyCfg: { content: "different" } }], now)[0].genId).toBe("old");
+});
 
 const config: SceneComfyConfigSnapshot = {
   name: "시작 시 워크플로우",

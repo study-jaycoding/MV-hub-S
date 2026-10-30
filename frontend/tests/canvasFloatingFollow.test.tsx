@@ -14,6 +14,32 @@ import {
   writeSceneStoreAsOtherWindowForTest,
 } from "../src/lib/sceneStore";
 import { useSceneCoordination } from "../src/lib/useSceneCoordination";
+import { isComfyRunning, setComfyRunning } from "../src/lib/sceneComfyRunningStore";
+import type { ComfyCanvasRun } from "../src/lib/comfyRunState";
+
+it.each([false, true])("떠 있음=%s: 실행 필드만 바뀌어도 최신 상태를 받고 ACK로 지운 실행을 되살리지 않는다", async floating => {
+  await open(mk("s1")); await follow(floating);
+  const run: ComfyCanvasRun = { version: 1, attemptId: "a", runGroupId: "g", groupSeq: 1, copyIndex: 0, cardId: "c",
+    originHubId: "h", originDeviceId: "d", configFp: "c", inputFp: "i", localState: "submitted" };
+  const receive = async (runs: ComfyCanvasRun[]) => {
+    writeSceneStoreAsOtherWindowForTest(all => {
+      all[BUCKET] = all[BUCKET].map(scene => ({ ...scene, comfyRuns: runs, comfyCardRuns: { c: { groupId: "g", groupSeq: 1, settledState: "done" } } }));
+    });
+    await act(async () => { await refreshSceneStoreForTest(); }); await settle();
+  };
+  await receive([run]);
+  expect(coordination!.activeScene!.comfyRuns).toEqual([run]);
+  expect(isComfyRunning("c", coordination!.activeScene!)).toBe(true);
+  await receive([]);
+  setComfyRunning(["c"], true); // 뒤늦은 옛 메모리 신호는 처리된 영속 실행을 부활시키지 않는다.
+  try {
+    expect(isComfyRunning("c", coordination!.activeScene!)).toBe(false);
+    if (floating) await follow(false);
+    expect(coordination!.activeScene!.comfyRuns).toEqual([]);
+    expect(coordination!.activeScene!.comfyCardRuns?.c.groupSeq).toBe(1);
+    expect(changedNotices()).toEqual([]);
+  } finally { setComfyRunning(["c"], false); }
+});
 
 vi.mock("../src/api", () => ({
   api: { locateAssets: async (tokens: string[]) => ({ fixed: [], unresolved: [], missing: [], local: [], open: tokens }) },

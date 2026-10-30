@@ -11,6 +11,8 @@ import {
 import { applyRelink, type RelinkTarget } from "./assetRefs";
 import { sameSceneContent } from "../../lib/sceneAbsorb";
 import { mergeCardLinksIntoScenes, type CardLink } from "../../lib/sceneCardLinks";
+import { comfySceneFingerprints } from "../../lib/sceneComfyInputs";
+import type { ComfyAttemptTarget, ComfyCanvasRun, PreparedComfyAttempt, ReserveResult } from "../../lib/comfyRunState";
 
 // 영속 대상은 열린 화면의 세대와 별개다. 다른 씬을 보고 있어도 원래 씬에 정산할 수 있다.
 export interface CanvasTarget { readonly accountNamespace: string; readonly sceneId: string }
@@ -34,6 +36,54 @@ export interface CanvasDocumentPort {
 export const canvasTarget = (sceneId: string): CanvasTarget => Object.freeze({ accountNamespace: getAccountNamespace(), sceneId });
 const authorized = (target: CanvasTarget) => target.accountNamespace === getAccountNamespace();
 const stopped = (): CanvasWriteReceipt => ({ queued: false, confirmed: Promise.resolve(false) });
+
+function reservation(scene: Scene | undefined, target: ComfyAttemptTarget, prepared: PreparedComfyAttempt): { result: ReserveResult; scene?: Scene } {
+  const fingerprints = scene && comfySceneFingerprints(scene, prepared.cardId);
+  if (!scene || !fingerprints || fingerprints.configFp !== prepared.configFp || fingerprints.inputFp !== prepared.inputFp)
+    return { result: { status: "stale" } };
+  const existing = scene.comfyRuns?.find(run => run.attemptId === prepared.attemptId);
+  if (existing) {
+    const same = existing.originHubId === target.originHubId && existing.originDeviceId === target.originDeviceId
+      && (Object.keys(prepared) as (keyof PreparedComfyAttempt)[]).every(key => existing[key] === prepared[key]);
+    return { result: same && existing.localState !== "applied"
+      ? { status: "reserved", attempt: existing, groupSeq: existing.groupSeq } : { status: "stale" } };
+  }
+  if (scene.comfyRuns?.some(run => run.cardId === prepared.cardId && run.runGroupId !== prepared.runGroupId && run.localState !== "applied"))
+    return { result: { status: "conflict" } };
+  const owner = scene.comfyCardRuns?.[prepared.cardId];
+  // 처리된 옛 groupId를 다시 써서 새 묶음을 앞지르지 않는다.
+  if (owner?.groupId !== prepared.runGroupId && scene.comfyRuns?.some(run => run.runGroupId === prepared.runGroupId && run.cardId === prepared.cardId))
+    return { result: { status: "stale" } };
+  const groupSeq = owner?.groupId === prepared.runGroupId ? owner.groupSeq : (owner?.groupSeq || 0) + 1;
+  const attempt: ComfyCanvasRun = { ...prepared, version: 1, originHubId: target.originHubId,
+    originDeviceId: target.originDeviceId, groupSeq, localState: "reserved" };
+  return { result: { status: "reserved", attempt, groupSeq }, scene: { ...scene,
+    comfyRuns: [...(scene.comfyRuns || []), attempt], comfyCardRuns: { ...scene.comfyCardRuns,
+      [prepared.cardId]: owner?.groupId === prepared.runGroupId ? owner : { groupId: prepared.runGroupId, groupSeq } } } };
+}
+
+/** groupSeq는 최신 문서 위 연산에서 배정한다. 큐 성공 뒤에도 실제 attempt/소유권을 확인한다. */
+export async function reserveComfyAttempt(target: ComfyAttemptTarget, prepared: PreparedComfyAttempt): Promise<ReserveResult> {
+  target = Object.freeze({ ...target });
+  prepared = Object.freeze({ ...prepared });
+  if (!authorized(target) || !target.originHubId || !target.originDeviceId || !prepared.attemptId || !prepared.runGroupId
+    || !Number.isSafeInteger(prepared.copyIndex) || prepared.copyIndex < 0) return { status: "stale" };
+  const initial = reservation(listScenes(null).find(scene => scene.id === target.sceneId), target, prepared);
+  if (initial.result.status !== "reserved") return initial.result;
+  const write = confirmSceneWrite(() => updateScenesWith(null, scenes => {
+    const decision = reservation(scenes.find(scene => scene.id === target.sceneId), target, prepared);
+    return decision.scene ? scenes.map(scene => scene.id === target.sceneId ? decision.scene! : scene) : null;
+  }));
+  if (!write.value || !await write.confirmed) return { status: "storage_failed" };
+  if (!authorized(target)) return { status: "stale" };
+  const persisted = listPersistedScenes(null).find(scene => scene.id === target.sceneId);
+  const final = reservation(persisted, target, prepared).result;
+  if (final.status !== "reserved") return final;
+  const attempt = persisted?.comfyRuns?.find(run => run.attemptId === prepared.attemptId);
+  const owner = persisted?.comfyCardRuns?.[prepared.cardId];
+  if (!attempt || owner?.groupId !== attempt.runGroupId || owner.groupSeq !== attempt.groupSeq) return { status: "stale" };
+  return { status: "reserved", attempt, groupSeq: attempt.groupSeq };
+}
 
 export function changeCanvas(scene: Scene, command: CanvasCommand): Scene | null {
   let cards = scene.cards;

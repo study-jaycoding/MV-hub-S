@@ -12,6 +12,25 @@ import sqlite3
 _PROJECT_ACTIVE_NAME_INDEX = "idx_project_active_name"
 
 
+def _migrate_comfy_canvas_runs(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS comfy_canvas_run (
+        attempt_id TEXT PRIMARY KEY, owner TEXT NOT NULL, hub_id TEXT NOT NULL,
+        device_id TEXT NOT NULL, job_id TEXT NOT NULL UNIQUE, request_fp TEXT NOT NULL,
+        run_group_id TEXT NOT NULL, group_seq INTEGER NOT NULL, copy_index INTEGER NOT NULL,
+        scene_id TEXT NOT NULL, card_id TEXT NOT NULL, config_fp TEXT NOT NULL, input_fp TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'accepted', result_revision INTEGER NOT NULL DEFAULT 0,
+        disposition TEXT, outputs_enumerated INTEGER NOT NULL DEFAULT 0,
+        context_json TEXT NOT NULL DEFAULT '{}', created_at REAL NOT NULL, updated_at REAL NOT NULL
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_comfy_canvas_owner_state ON comfy_canvas_run(owner,state)")
+    # No generation FK: moving a generation to trash must not erase its receipt.
+    conn.execute("""CREATE TABLE IF NOT EXISTS comfy_canvas_output (
+        attempt_id TEXT NOT NULL REFERENCES comfy_canvas_run(attempt_id), output_key TEXT NOT NULL,
+        kind TEXT NOT NULL, text TEXT, generation_id TEXT, state TEXT NOT NULL,
+        metadata_json TEXT NOT NULL DEFAULT '{}', PRIMARY KEY (attempt_id,output_key)
+    )""")
+
+
 def _migrate_share_state_intent(conn: sqlite3.Connection) -> None:
     """공유 서버 권위 상태를 로컬 미러로 수렴시키는 write-ahead 원장을 보장한다."""
     conn.execute(
@@ -836,6 +855,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "WHERE c.created_at <= rd.read_at"
         )
     _migrate_fts(conn)
+    _migrate_comfy_canvas_runs(conn)
 
 
 def _migrate_rbac(conn: sqlite3.Connection, cr_cols: set) -> None:

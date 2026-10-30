@@ -20,6 +20,67 @@ import {
   writeScenesStore,
 } from "../src/lib/sceneStore";
 import type { Scene } from "../src/lib/scenes";
+import { listPersistedScenes, saveScenes, updateScene } from "../src/lib/scenes";
+import { reserveComfyAttempt } from "../src/features/canvas/session";
+import { comfySceneFingerprints } from "../src/lib/sceneComfyInputs";
+import { getAccountNamespace } from "../src/lib/accountScope";
+
+describe("Comfy 실행 예약 연산", () => {
+  afterEach(async () => { failSceneStoreWritesForTest(false); delaySceneStoreWritesForTest(0); await settleSceneStoreForTest(); });
+  async function fixture() {
+    const value: Scene = { id: "canvas", name: "canvas", created_at: 1, edges: [], cards: [
+      { id: "c", kind: "comfy", x: 0, y: 0, comfyCfg: { content: "{}", paramValues: { seed: 1 } } },
+    ] };
+    saveScenes(null, [value]); await settleSceneStoreForTest();
+    const target = { accountNamespace: getAccountNamespace(), originHubId: "h", originDeviceId: "d", sceneId: value.id };
+    const prepared = { cardId: "c", attemptId: "a", runGroupId: "g", copyIndex: 0, ...comfySceneFingerprints(value, "c")! };
+    return { value, target, prepared };
+  }
+  it("두 창이 같은 저장본을 보고 예약해도 최신 문서에서 하나만 수락한다", async () => {
+    const { value, target, prepared } = await fixture();
+    delaySceneStoreWritesForTest(20);
+    const pending = reserveComfyAttempt(target, prepared);
+    // 다른 창이 먼저 확정. 이 창의 optimistic 예약은 실제 저장 때 다시 평가된다.
+    writeSceneStoreAsOtherWindowForTest(all => {
+      all[`${target.accountNamespace}::_none`] = [{ ...value,
+        comfyRuns: [{ ...prepared, attemptId: "other", runGroupId: "other-group", groupSeq: 1,
+          version: 1, originHubId: "h", originDeviceId: "d", localState: "reserved" }],
+        comfyCardRuns: { c: { groupId: "other-group", groupSeq: 1 } } }];
+    });
+    expect(await pending).toEqual({ status: "conflict" });
+    expect(listPersistedScenes(null)[0].comfyRuns?.map(run => run.attemptId)).toEqual(["other"]);
+  });
+  it("동시에 다른 묶음을 요청하면 한 예약만 성공한다", async () => {
+    const { target, prepared } = await fixture();
+    const results = await Promise.all([reserveComfyAttempt(target, prepared),
+      reserveComfyAttempt(target, { ...prepared, attemptId: "b", runGroupId: "b" })]);
+    expect(results.map(result => result.status)).toEqual(["reserved", "conflict"]);
+  });
+  it("저장 실패는 reserved가 아니다", async () => {
+    const { target, prepared } = await fixture(); failSceneStoreWritesForTest(true);
+    expect(await reserveComfyAttempt(target, prepared)).toEqual({ status: "storage_failed" });
+    expect(listPersistedScenes(null)[0].comfyRuns).toBeUndefined();
+  });
+  it("대기 중 입력 지문이 바뀌면 큐 성공이어도 stale이다", async () => {
+    const { value, target, prepared } = await fixture(); delaySceneStoreWritesForTest(20);
+    const pending = reserveComfyAttempt(target, prepared);
+    writeSceneStoreAsOtherWindowForTest(all => {
+      all[`${target.accountNamespace}::_none`] = [{ ...value, cards: [{ ...value.cards[0], comfyCfg: { content: "changed" } }] }];
+    });
+    expect(await pending).toEqual({ status: "stale" });
+    expect(listPersistedScenes(null)[0].comfyRuns).toBeUndefined();
+  });
+  it("같은 묶음의 copy는 번호를 유지하고 ACK 뒤 새 묶음은 groupSeq가 증가한다", async () => {
+    const { target, prepared } = await fixture();
+    const first = await reserveComfyAttempt(target, prepared);
+    const copy = await reserveComfyAttempt(target, { ...prepared, attemptId: "copy", copyIndex: 1 });
+    expect(first).toMatchObject({ status: "reserved", groupSeq: 1 });
+    expect(copy).toMatchObject({ status: "reserved", groupSeq: 1 });
+    updateScene(null, "canvas", { comfyRuns: [] }); await settleSceneStoreForTest();
+    expect(await reserveComfyAttempt(target, { ...prepared, attemptId: "new", runGroupId: "new" }))
+      .toMatchObject({ status: "reserved", groupSeq: 2, attempt: { groupSeq: 2 } });
+  });
+});
 
 const scene = (id: string, name = id): Scene => ({ id, name, cards: [], edges: [], created_at: 1 });
 const names = (list: Scene[]) => list.map((s) => s.name);
