@@ -351,6 +351,34 @@ describe("들이는 규칙 — 부팅 복원과 창 인계(adoptSceneHistory)", 
     expect(undo.takeSceneHistory("s1", snap(...AFTER))).toEqual(fresh);
   });
 
+  it("떠 있던 창의 마지막 저장이 늦게 닿아도 보관한 인계를 버리지 않고, 닿을 때 채택해 새로 고쳐도 남게 다시 쓴다(리뷰 3차 P2)", async () => {
+    const S0 = [card("c1", 0)];
+    let { undo, persist } = await pageLoad(S0); // 저장본은 아직 S0
+    const scenes = await import("../src/lib/scenes");
+    const h0 = { undo: [snap(card("c1", -10))], redo: [], lastCommit: snap(...S0) };
+    expect(undo.adoptSceneHistory({ ...target, snapFp: persist.savedSceneFingerprint("s1") }, candidate(undo, h0), boot(undo))).toBe("adopted");
+    undo.adoptSceneHistory(target, candidate(undo), handoff(undo)); // 돌아온 인계(마지막 모습 S1=AFTER) — 그 저장은 아직 안 닿았다
+    expect(undo.takeSceneHistory("s1", snap(...S0))).toEqual(h0); // S0 로 보드가 열린다 — 보관분은 두고 간다
+    await settle();
+    expect(fake.puts).toEqual([]); // 도착 때의 예약은 저장본이 S0 라 안 썼다
+    expect(await scenes.writeSceneSnapshot({ accountNamespace: "local", sceneId: "s1" }, snap(...AFTER)).confirmed).toBe(true); // 늦은 저장이 닿았다
+    expect(undo.takePendingHandoff("s1", snap(...AFTER))).toEqual(history()); // 보드가 S1 을 받는다 — 그 인계로
+    await until(() => fake.puts.length === 1);
+    ({ undo } = await pageLoad(AFTER)); // 추가 편집 없이 새로 고침
+    const { restoreUndoHistories } = await import("../src/lib/sceneBoot");
+    await restoreUndoHistories();
+    expect(undo.loadSceneHistory("s1")).toEqual(history());
+  });
+
+  it("보관한 확인 전 인계는 이 창에서 고치면 버린다", async () => {
+    const { undo, persist } = await pageLoad();
+    undo.adoptSceneHistory({ ...target, snapFp: persist.savedSceneFingerprint("s1") }, candidate(undo), boot(undo));
+    const fresh = { ...history(), redo: [snap(card("c1", 9))] };
+    undo.adoptSceneHistory(target, candidate(undo, fresh), handoff(undo));
+    undo.noteLocalSceneEdit("s1");
+    expect(undo.takePendingHandoff("s1", snap(...AFTER))).toBeUndefined();
+  });
+
   it("인계 중에 이 창이 씬을 지웠으면(같은 id 로 되살려도) 그 뒤 돌아온 삭제 전 인계를 받지 않는다(리뷰 2차 P1)", async () => {
     const { undo } = await pageLoad();
     const popup = await import("../src/lib/popupWindows");

@@ -13,6 +13,7 @@ import {
   noteLocalSceneEdit,
   registerLiveSceneHistory,
   saveSceneHistory as saveStoredSceneHistory,
+  takePendingHandoff,
   takeSceneHistory,
   type SceneCardRemoval,
   type SceneHistory,
@@ -120,6 +121,13 @@ export function useSceneHistory({
 
   const syncCommitBaseline = (snapshot: SceneSnap) => {
     lastCommitRef.current = snapshot;
+    // 받은 씬이 보관해 둔 확인 전 인계와 이어지면(떠 있던 창의 마지막 저장이 늦게 닿았다) 그 기록으로 — 씬을 바꾸는 틈·끄는 중엔 두고 간다(B 리뷰 3차)
+    if (frozenRef.current || gestureRef.current) return;
+    const handed = takePendingHandoff(sceneIdRef.current, snapshot);
+    if (handed) {
+      undoStackRef.current = [...handed.undo];
+      redoStackRef.current = [...handed.redo];
+    }
   };
 
   const resetUndoHistory = () => {

@@ -66,18 +66,25 @@ export function clearSceneHistory(sceneId: string): void {
   historyListeners.forEach((listener) => listener({ type: "cleared", sceneId }));
 }
 
-// 보드 없이 받은 '확인 전' 인계 — 있던 기록을 바로 덮지 않고 따로 둔다. 보드가 열릴 때(takeSceneHistory) 지금 씬과 맞는 쪽을 쓴다:
-//  확인 전 인계가 낡았으면 그 전의 정상 기록(부팅 복원 등)을 잃지 않게(B 독립 리뷰 2차 P2).
+// 보드 없이 받은 '확인 전' 인계 — 있던 기록을 바로 덮지 않고 따로 둔다. 지금 씬과 이어질 때(보드가 열릴 때·그 창의 늦은 마지막 저장이 닿을 때) 그것을 쓴다:
+//  확인 전 인계가 낡았으면 그 전의 정상 기록(부팅 복원 등)을 잃지 않게(B 독립 리뷰 2차 P2). 한 시점에 안 맞는다고 버리지 않는다 — 버리는 것은
+//  삭제·이 창의 편집·다른 인계로 바뀔 때뿐이다(3차 P2).
 const pendingHandoffs = new Map<string, SceneHistory>();
+
+/** 확인 전 인계가 지금 씬(current)과 이어지면 그 기록을 확정해 돌려준다 — 새로 고쳐도 남게 다시 예약한다(handedOff, 3차 P2). */
+export function takePendingHandoff(sceneId: string, current: SceneSnap): SceneHistory | undefined {
+  const pending = pendingHandoffs.get(sceneId);
+  if (!pending || !sameSnap(pending.lastCommit, current)) return undefined;
+  pendingHandoffs.delete(sceneId);
+  saveSceneHistory(sceneId, pending);
+  historyListeners.forEach((listener) => listener({ type: "handedOff", sceneId, history: pending }));
+  return pending;
+}
 
 /** 보드가 열리거나 씬을 바꿔 받을 때 — 지금 씬(current)과 이어지는 기록. 확인 전 인계가 맞으면 그것(더 새 창의 기록)을, 아니면 있던 기록을. */
 export function takeSceneHistory(sceneId: string, current: SceneSnap): SceneHistory | undefined {
-  const pending = pendingHandoffs.get(sceneId);
-  pendingHandoffs.delete(sceneId);
-  if (pending && sameSnap(pending.lastCommit, current)) {
-    saveSceneHistory(sceneId, pending);
-    return pending;
-  }
+  const handed = takePendingHandoff(sceneId, current);
+  if (handed) return handed;
   const stored = store.get(sceneId);
   return stored && sameSnap(stored.lastCommit, current) ? stored : undefined;
 }
@@ -112,6 +119,7 @@ export function registerLiveSceneHistory(board: LiveSceneHistory): () => void {
 const localRevisions = new Map<string, number>();
 export function noteLocalSceneEdit(sceneId: string): void {
   localRevisions.set(sceneId, localSceneRevision(sceneId) + 1);
+  pendingHandoffs.delete(sceneId); // 이 창에서 고쳤다 — 확인 전 인계는 더 이어질 수 없다
 }
 export function localSceneRevision(sceneId: string): number {
   return localRevisions.get(sceneId) ?? 0;
@@ -164,7 +172,7 @@ export function adoptSceneHistory(
   if (!boards.every((board) => board.adopt(candidate.history))) return "stale";
   if (gate.kind === "handoff" && fp === null && store.has(sceneId)) pendingHandoffs.set(sceneId, candidate.history); // 확인 전 — 있던 기록을 지킨다(위)
   else {
-    pendingHandoffs.delete(sceneId);
+    if (gate.kind === "handoff") pendingHandoffs.delete(sceneId); // 확인된 인계가 바꿨다(부팅 복원은 보관분을 두고 간다 — 늦은 저장이 닿으면 그것이 이어진다)
     saveSceneHistory(sceneId, candidate.history);
   }
   adoptEpoch += 1;
