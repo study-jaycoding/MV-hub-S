@@ -50,3 +50,10 @@ export function parentFolder(path: string): string {
   const cut = path.lastIndexOf("/");
   return cut < 0 ? "" : path.slice(0, cut);
 }
+
+// from 에서 위의 to 로 왔을 때 지나온 폴더(to 바로 아래) — to 의 폴더 카드 중 방금 있던 곳. 위로 온 것이 아니면 null.
+export function passedFolder(from: string, to: string): string | null {
+  if (from === to || !folderUnder(from, to)) return null;
+  const end = from.indexOf("/", to ? to.length + 1 : 0);
+  return end < 0 ? from : from.slice(0, end);
+}

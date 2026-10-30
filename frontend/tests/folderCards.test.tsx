@@ -15,7 +15,7 @@ vi.mock("../src/lib/modelCatalog", () => ({
 }));
 
 import { FolderCardGrid } from "../src/components/FolderCardGrid";
-import { folderCardsPlace, folderCardsScope, hasFindFilters, parentFolder, singleTeamWorkspace, type FolderCardsScope } from "../src/lib/folderCards";
+import { folderCardsPlace, folderCardsScope, hasFindFilters, parentFolder, passedFolder, singleTeamWorkspace, type FolderCardsScope } from "../src/lib/folderCards";
 import { HttpError } from "../src/lib/http";
 import { forgetFolderCards, prefetchFolderCards, useFolderCards, useSameQueryRevision, type FolderCardsOutcome } from "../src/lib/useFolderCards";
 import { LIBRARY_LIST_TIMEOUT_MS } from "../src/lib/libraryRequestTimeout";
@@ -69,6 +69,13 @@ it("묶어 보일 자리 — 찾는 조건이 켜져 있어도 자리는 그대�
     { workspace_ids: ["ws-1", "ws-2"] }, { workspace_scope: "personal" },
   ];
   for (const change of noPlace) expect([change, folderCardsPlace({ ...base, ...change })]).toEqual([change, null]);
+});
+
+it("뒤로 온 자리의 지나온 폴더 — 그 자리 바로 아래 칸이고, 위로 온 것이 아니면 없다", () => {
+  expect([passedFolder("e035/C0010", "e035"), passedFolder("e035/C0010/takeB", "e035"), passedFolder("e035/C0010", "")]).toEqual(["e035/C0010", "e035/C0010", "e035"]);
+  for (const [from, to] of [["e035", "e035"], ["", ""], ["e035", "e035/C0010"], ["e0355/C0010", "e035"], ["e036/C0010", "e035"]]) {
+    expect([from, to, passedFolder(from, to)]).toEqual([from, to, null]);
+  }
 });
 
 it("부모 폴더와 팀 공간 하나", () => {

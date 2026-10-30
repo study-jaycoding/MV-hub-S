@@ -341,6 +341,9 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   //  고침)에 저장된 자리로 되돌리면, 방금 스크롤한 것(저장은 150ms 뒤다)이 옛 자리로 튄다.
   //  격자가 내려갔다 다시 그려지면(빈 폴더를 거쳐 돌아옴) 새 격자는 맨 위다 — 그때는 다시 맞춘다.
   const scrollRestored = useRef({ key: "", filled: false });
+  // Backspace 로 돌아온 폴더(Jay 2026-10-30) — 그 자리의 폴더 격자가 이 카드를 고른 채 서고, 아래 복원 뒤에 보이게 한 다음 비운다.
+  const [backTo, setBackTo] = useState<{ key: string; path: string } | null>(null);
+  const folderGridKey = `${project}|${dir}`;
   useEffect(() => {
     const el = gridRef.current;
     if (!el) {
@@ -353,6 +356,10 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     const s = LS.loadJSON<{ key: string; top: number }>("scroll");
     el.scrollTop = pendingTabScroll.current ?? (s && s.key === scrollKey ? s.top || 0 : 0);
     pendingTabScroll.current = null;
+    if (backTo?.key === folderGridKey) {
+      [...el.querySelectorAll<HTMLElement>("[data-folder-path]")].find((card) => card.getAttribute("data-folder-path") === backTo.path)?.scrollIntoView?.({ block: "nearest" });
+      setBackTo(null);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scrollKey, folderTabs.active, files.length]);
 
@@ -822,8 +829,9 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   }, !showFolders);
 
   const enterFolder = useCallback((path: string) => {
-    if (!canLeaveCommentRef.current()) return;
+    if (!canLeaveCommentRef.current()) return false;
     setCommentPath(null); setTagEditPath(null); setQuery(""); setDir(path);
+    return true;
   }, []);
 
   useEffect(() => {
@@ -832,12 +840,14 @@ export function AssetsView({ onInfo, onPreview }: Props) {
         || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.repeat || e.isComposing
         || isTypingTarget(e.target) || backgroundKeysBlocked() || !dir) return;
       e.preventDefault();
-      enterFolder(dir.replace(/\\/g, "/").split("/").filter(Boolean).slice(0, -1).join("/"));
+      const parts = dir.replace(/\\/g, "/").split("/").filter(Boolean);
+      const up = parts.slice(0, -1).join("/");
+      if (enterFolder(up)) setBackTo({ key: `${project}|${up}`, path: parts.join("/") });
     };
     // 폴더 카드가 사라져 초점이 BODY에 남거나 빈 폴더여도 같은 이동 키를 받는다.
     window.addEventListener("keydown", onBackspace);
     return () => window.removeEventListener("keydown", onBackspace);
-  }, [dir, enterFolder]);
+  }, [dir, enterFolder, project]);
 
   // 초점 잃은 키(BODY·툴바 단추)도 파일 격자가 받는다(Jay 10-22 — 워크스페이스·공유처럼). 받은 키는 '처리됨'으로 표시되므로 거르는 것이 중요하다:
   //  같은 ref 를 폴더 보기(AssetFolderGrid — 자기 키 처리)도 쓰므로 파일 격자일 때만, Backspace 는 위의 window 처리(상위 폴더로) 몫이라 뺀다.
@@ -1181,8 +1191,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
           {isResolveLibraryRoot && !loading ? (
             <ResolveProjectBrowser key={`${project}\u0000${dir}`} project={project} dir={dir} />
           ) : showFolders ? (
-            <AssetFolderGrid key={`${project}|${dir}`} project={project} groups={visibleGroups}
-              directFiles={folderGroups.directFiles}
+            <AssetFolderGrid key={folderGridKey} project={project} groups={visibleGroups}
+              directFiles={folderGroups.directFiles} initialSelected={backTo?.key === folderGridKey ? backTo.path : null}
               scale={folderScale} fit={folderFit} layout={folderLayout} lastViewedPath={lastViewed.startsWith(`${project}|`) ? lastViewed.slice(project.length + 1) : undefined} scrollRef={gridRef} onScroll={onContentScroll}
               onEnter={enterFolder} onOpenTab={folderTabs.open} onPreview={openPreview} />
           ) : files.length === 0 && !loading ? (

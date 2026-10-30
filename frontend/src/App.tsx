@@ -146,7 +146,7 @@ import type {
 import type { EditCardMenu, EditCutFolder } from "./components/timeline/EditTab";
 import { api } from "./api";
 import { FolderCardGrid } from "./components/FolderCardGrid";
-import { folderCardsPlace, folderUnder, hasFindFilters, parentFolder, singleTeamWorkspace, type FolderCardsScope } from "./lib/folderCards";
+import { folderCardsPlace, folderUnder, hasFindFilters, parentFolder, passedFolder, singleTeamWorkspace, type FolderCardsScope } from "./lib/folderCards";
 import { fillFolderCards, groupGenerations, lacksCounts } from "./lib/folderCardsLocal";
 import { FETCH_ALL_MAX } from "./lib/fetchAllGenerations";
 import { useLocalFolderCards } from "./lib/useLocalFolderCards";
@@ -810,8 +810,21 @@ export default function App() {
     setReelModeState(mode);
   }, []);
   const cutScopeKey = cutCards && cutScope ? JSON.stringify([cutScope.projectId, cutScope.parent, cutScope.workspaceId ?? null]) : null;
+  // 뒤로(Backspace·브라우저 뒤로) 온 자리 — 그 자리의 묶음이 서면(응답 뒤일 수 있다) 지나온 폴더 카드를 고르고 보이게 한다. 어셋 탭과 같은 규칙(Jay 2026-10-30).
+  const cutBackRef = useRef<{ key: string; path: string } | null>(null);
+  const noteCutBack = (to: string | undefined) => {
+    const path = passedFolder(filters.folder_path?.replace(/\\/g, "/") ?? "", to ?? "");
+    cutBackRef.current = path ? { key: JSON.stringify([cutScope?.projectId, to ?? "", cutScope?.workspaceId ?? null]), path } : null;
+  };
   useLayoutEffect(() => {
-    setCutSel(new Set());
+    const back = cutBackRef.current;
+    if (!back || back.key !== cutScopeKey) {
+      setCutSel(new Set());
+      return;
+    }
+    cutBackRef.current = null;
+    setCutSel(new Set([back.path]));
+    [...document.querySelectorAll<HTMLElement>("main.main .cut-card[data-path]")].find((card) => card.dataset.path === back.path)?.scrollIntoView?.({ block: "nearest" });
   }, [cutScopeKey]);
   const selectedCuts = useMemo(
     () => (cutCards ? cutCards.folders.filter((folder) => cutSel.has(folder.path)) : []),
@@ -1452,7 +1465,10 @@ export default function App() {
     setBoardArrange,
     setFilters,
     currentLocation,
-    restoreLocation,
+    restoreLocation: (location, adopt) => {
+      if (adopt) noteCutBack(location.folder_path);
+      restoreLocation(location, adopt);
+    },
     locationCtxFor,
     setEditOpen,
   });
@@ -1491,6 +1507,7 @@ export default function App() {
       markKeyHandled(event);
       const path = filters.folder_path ? parentFolder(filters.folder_path.replace(/\\/g, "/")) : "";
       pushLocationRef.current = true;
+      noteCutBack(path);
       patch({ project_id: filters.folder_path ? filters.project_id : undefined, folder_path: path || undefined, search: undefined });
       adoptShownLocation();
       clearSelect();

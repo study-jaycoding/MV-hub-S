@@ -22,6 +22,7 @@ export interface AssetFolderGridProps {
   fit: "cover" | "contain";
   layout: AssetFolderLayout;
   lastViewedPath?: string;
+  initialSelected?: string | null; // 처음 고른 카드 — 뒤로 돌아온 폴더(격자는 폴더마다 새로 선다)
   scrollRef: RefObject<HTMLDivElement>;
   onScroll: UIEventHandler<HTMLDivElement>;
   onEnter: (path: string) => void;
@@ -48,9 +49,9 @@ function columnsOf(grid: HTMLElement): number {
 }
 
 export function AssetFolderGrid(props: AssetFolderGridProps) {
-  const { project, groups, directFiles, scale, fit, layout, lastViewedPath, scrollRef, onScroll, onEnter, onOpenTab, onPreview } = props;
+  const { project, groups, directFiles, scale, fit, layout, lastViewedPath, initialSelected, scrollRef, onScroll, onEnter, onOpenTab, onPreview } = props;
   const t = useT();
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(initialSelected ?? null);
   // 키보드(Jay 10-22 — 워크스페이스·공유처럼): 방향키 = 옆·위아래 카드를 고르고 초점도 옮긴다 · Enter = 고른 폴더로 들어가기/파일 크게 보기 ·
   //  Esc = 고른 것 풀기. 초점이 BODY·툴바에 있어도 받는다(useLooseKeys). 카드 안 단추에 초점이 있으면 Enter·Space 는 그 단추의 키다.
   const items = [...groups.map(({ folder }) => ({ path: folder.path, file: null as AssetNode | null })),

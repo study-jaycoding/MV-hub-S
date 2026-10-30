@@ -3084,3 +3084,40 @@ it.each((["my", "team"] as const).flatMap((tab) => (["body", "toolbar", "folder"
   expect(librarySnapshot!.filters.project_id).toBeUndefined();
   expect(press().defaultPrevented).toBe(false);
 });
+
+it("공유 탭: Backspace·브라우저 뒤로 오면 지나온 폴더 카드가 골라져 보인다 — 묶음 응답이 늦어도, 사이드바로 온 것은 고르지 않는다(Jay 2026-10-30)", { timeout: 20_000 }, async () => {
+  let release!: () => void;
+  const late = new Promise<void>((done) => { release = done; });
+  const answer = byParent(() => false);
+  const folderCards = vi.fn(async (project: string, parent: string) => {
+    if (parent === "episode") await late; // 컷 화면의 묶음은 뒤로 온 뒤에 답한다
+    return answer(project, parent);
+  });
+  const revealed = () => vi.mocked(Element.prototype.scrollIntoView).mock.contexts.map((el) => (el as HTMLElement).dataset.path).filter(Boolean);
+  const picked = () => [...document.querySelectorAll<HTMLElement>('main.main .cut-card[aria-pressed="true"]')].map((tile) => tile.dataset.path);
+  const back = async () => { act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace", bubbles: true, cancelable: true })); }); await settle(); };
+  const go = async (state: unknown) => { act(() => window.dispatchEvent(new PopStateEvent("popstate", { state }))); await settle(); };
+  const toFolder = async (folder_path: string) => { act(() => sidebarSnapshot!.onChange({ project_id: "resolve-project", folder_path })); await settle(); };
+  await mountTeamFolder({ folderCards }, { folder_path: "episode/shot" });
+  const cutEntry = window.history.state;
+
+  await back();
+  expect(librarySnapshot!.filters.folder_path).toBe("episode");
+  expect(cutGrid()).toBeNull(); // 아직 답을 모른다
+  await act(async () => { release(); }); await settle();
+  expect(picked()).toEqual(["episode/shot"]);
+  expect(revealed()).toEqual(["episode/shot"]);
+  const episodeEntry = window.history.state;
+
+  await back(); // 프로젝트 맨 위 — 에피소드 카드
+  expect(picked()).toEqual(["episode"]);
+  await go(cutEntry); // 앞으로 내려가는 것은 고르지 않는다
+  expect(cutGrid()).toBeNull();
+  await go(episodeEntry); // 브라우저 뒤로도 같다
+  expect(picked()).toEqual(["episode/shot"]);
+
+  await toFolder("episode/shot");
+  await toFolder("episode"); // 사이드바로 위에 왔다
+  expect(cutGrid()).not.toBeNull();
+  expect(picked()).toEqual([]);
+});

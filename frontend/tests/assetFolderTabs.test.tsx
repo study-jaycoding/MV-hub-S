@@ -539,6 +539,47 @@ it("Backspace 이동도 보내지 않은 코멘트를 버릴지 확인하고 취
   } finally { confirm.mockRestore(); }
 });
 
+const chosenFolders = () => [...host.querySelectorAll(".assets-folder-card.sel")].map((el) => el.getAttribute("data-folder-path"));
+
+it("Backspace 로 돌아오면 들어갔던 폴더 카드가 골라져 보이고 키가 거기서 이어진다 — 들어갈 때는 고르지 않는다(Jay 2026-10-30)", async () => {
+  const revealed: (string | null)[] = [];
+  Element.prototype.scrollIntoView = function (this: Element) { revealed.push(this.getAttribute("data-folder-path")); };
+  try {
+    await mount();
+    await doubleClick(card("assets/CH"));
+    expect(chosenFolders()).toEqual([]);
+    await doubleClick(card("assets/CH/매튜"));
+    await backspace();
+    expect(chosenFolders()).toEqual(["assets/CH/매튜"]);
+    expect(revealed).toEqual(["assets/CH/매튜"]);
+    await backspace();
+    expect(chosenFolders()).toEqual(["assets/CH"]);
+    await act(async () => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }))); await settle();
+    expect(localStorage.getItem("ch.assets.dir")).toBe("assets/CH");
+    expect(chosenFolders()).toEqual([]);
+  } finally { delete (Element.prototype as Partial<Element>).scrollIntoView; }
+});
+
+it("취소한 Backspace 는 표식을 남기지 않고, 트리로 위 폴더에 온 것은 고르지 않는다", async () => {
+  await mount(); await doubleClick(card("assets/CH")); await doubleClick(card("assets/CH/매튜"));
+  await click(host.querySelector('.asset-cell button[title^="코멘트"]')!);
+  const input = host.querySelector<HTMLInputElement>('input[name="c"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "작성 중");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  input.blur();
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  try {
+    await backspace();
+    expect(localStorage.getItem("ch.assets.dir")).toBe("assets/CH/매튜");
+    confirm.mockReturnValue(true);
+    await click(Array.from(host.querySelectorAll(".folder-tree-row")).find((el) => el.getAttribute("title")?.startsWith("assets/CH"))!);
+    expect(localStorage.getItem("ch.assets.dir")).toBe("assets/CH");
+    expect(chosenFolders()).toEqual([]);
+  } finally { confirm.mockRestore(); }
+});
+
 it("직계 폴더에 하위 파일을 모으되 경로 경계·직접 파일·필터 결과를 보존한다", () => {
   const mixedTree = [folder("assets", [...tree[0].children!, file("assets/direct.png")]), tree[1]];
   const grouped = assetFolderGroups(mixedTree, "assets", flattenFiles(mixedTree), "P");
