@@ -50,6 +50,7 @@ export function openEmbedWindow(mode: EmbedMode): void {
   if (window.name === opts.name) return; // 이 창이 그 창이다 — 같은 이름으로 열면 제 창을 다시 읽는다
   // 떠 있는 캔버스 창의 참조를 잃었다(이 창을 새로 고침) — 주소를 주면 그 창을 다시 읽으니 빈 주소로 그 창만 잡는다
   const reacquire = mode === EMBED_MODES.canvas && canvasFloating;
+  if (mode === EMBED_MODES.canvas && !reacquire) beginCanvasHandoff(); // 열기 전에 — 새 창은 이 창의 sessionStorage 를 복사해 같은 인계 번호를 본다
   // window.open 이 이미 url 로 내비게이션한다 — location.href 재대입은 같은 페이지를 두 번
   // 로드시켜(번들 재평가 + 부팅 API 세트 2회) 창 열기를 늦추던 원인이라 제거.
   const w = window.open(reacquire ? "" : url, opts.name, opts.features);
@@ -237,19 +238,42 @@ export interface CanvasMemoryPart {
   save: () => unknown;
   load: (value: unknown) => void;
   flush?: () => void; // 내보내기 전에 열린 화면의 값을 저장소에 남긴다(열린 보드의 되돌리기 기록)
+  begin?: () => void; // 이 창이 캔버스 창을 새로 열 때(인계 시작) — 돌려받을 때 견줄 기준을 잡는다
 }
 type CanvasMemoryPort = { save: () => Record<string, unknown>; load: (memory: Record<string, unknown>) => void };
 const MEMORY_PORT = "__mvhubCanvasMemory";
 const memoryParts = new Map<string, CanvasMemoryPart>();
 let openerMemory: Record<string, unknown> | null = null;
 
+// 인계 번호 — 메인 창이 캔버스 창을 새로 열 때마다 정한다. sessionStorage 라 메인 창을 새로 고쳐도 남고, 새 창은 열 때 복사본을 받아
+//  같은 번호를 본다. 돌려받은 기록은 이 번호가 맞을 때만 들인다(sceneUndoStore.adoptSceneHistory).
+const HANDOFF_KEY = "mvhub.canvasMemoryHandoff";
+export function canvasHandoffId(): string | null {
+  try {
+    return sessionStorage.getItem(HANDOFF_KEY);
+  } catch {
+    return null;
+  }
+}
+function beginCanvasHandoff(): void {
+  try {
+    sessionStorage.setItem(HANDOFF_KEY, `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
+  } catch {
+    /* sessionStorage 를 못 쓰면 번호 없이(null) 맞춰 본다 */
+  }
+  memoryParts.forEach((part) => part.begin?.());
+}
+
+function deliverOpenerMemory(name: string, part: CanvasMemoryPart): void {
+  if (!openerMemory || !(name in openerMemory)) return;
+  const handed = openerMemory[name];
+  delete openerMemory[name];
+  part.load(handed);
+}
+
 export function registerCanvasMemory(name: string, part: CanvasMemoryPart): void {
   memoryParts.set(name, part);
-  if (openerMemory && name in openerMemory) {
-    const handed = openerMemory[name];
-    delete openerMemory[name];
-    part.load(handed);
-  }
+  deliverOpenerMemory(name, part);
 }
 
 function saveCanvasMemory(): Record<string, unknown> {
@@ -283,6 +307,7 @@ function adoptOpenerCanvasMemory(): void {
   } catch {
     /* 연 창이 없다 — 빈 기록으로 시작한다 */
   }
+  memoryParts.forEach((part, name) => deliverOpenerMemory(name, part)); // 이미 등록한 저장소(부팅 모듈이 먼저 불러온 것)도 받는다
 }
 
 function returnCanvasMemory(): void {

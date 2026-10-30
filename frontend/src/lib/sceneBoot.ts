@@ -14,6 +14,9 @@ import {
 import { adoptLegacyBucket, type ScenesByProject } from "./scenes";
 import { loadJSON, loadString, saveString } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
+import { getAccountNamespace } from "./accountScope";
+import { adoptSceneHistory, historyReadEpoch } from "./sceneUndoStore";
+import { readUndoSlots, savedSceneFingerprint } from "./sceneUndoPersistence";
 
 const readLegacy = (): ScenesByProject | null =>
   loadJSON<ScenesByProject>(STORAGE_KEYS.scenes) ?? null;
@@ -174,6 +177,30 @@ async function openSceneStore(): Promise<SceneStoreInit> {
   await adoptLegacyBucket(null);
   watchLegacyWrites();
   return result;
+}
+
+/**
+ * 새로 고치기 전의 되돌리기 기록을 들인다(docs/status/캔버스_한계_B_되돌리기보존_2026-10-30.md). 씬 저장소가 열린 **뒤에** 부른다 — 지문을 저장본과 견준다.
+ * 화면을 오래 막지 않는다: waitMs 안에 못 끝나면 먼저 띄우고, 늦게 끝난 읽기는 부팅 복원 규칙(그사이 이 창 편집·창 인계가 없을 때만)으로 들인다.
+ * 이 창이 인계로 이미 받은 씬(떠 있는 캔버스 창)은 인계가 우선이다.
+ */
+export function restoreUndoHistories(waitMs = 1500): Promise<void> {
+  const readEpoch = historyReadEpoch();
+  const account = getAccountNamespace();
+  const read = readUndoSlots().then((slots) => {
+    for (const slot of slots) {
+      const snapFp = savedSceneFingerprint(slot.sceneId);
+      if (snapFp === null) continue; // 지금 없는 씬
+      adoptSceneHistory(
+        { account, sceneId: slot.sceneId, snapFp },
+        { account: slot.account, sceneId: slot.sceneId, snapFp: slot.snapFp, history: slot.history },
+        { kind: "bootstrap", readEpoch, expectedLocalRevision: 0 }, // 부팅 — 아직 이 창에서 편집이 없다
+      );
+    }
+  }).catch(() => {
+    /* 기록 없이 시작 */
+  });
+  return Promise.race([read, new Promise<void>((resolve) => setTimeout(resolve, waitMs))]);
 }
 
 let watching = false;

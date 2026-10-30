@@ -10,6 +10,8 @@ import {
 } from "./scenes";
 import {
   loadSceneHistory,
+  localSceneRevision,
+  noteLocalSceneEdit,
   registerLiveSceneHistory,
   sameSnap,
   saveSceneHistory as saveStoredSceneHistory,
@@ -17,6 +19,8 @@ import {
   type SceneHistory,
   type SceneSnap,
 } from "./sceneUndoStore";
+import { scheduleUndoCheckpoint, type SceneWriteReceipt } from "./sceneUndoPersistence";
+import { normalizeForUndo } from "./comfyRunState";
 import {
   markCardGenerationsRemoved,
   mergeCardLinksIntoScenes,
@@ -36,7 +40,8 @@ interface UseSceneHistoryOptions {
   setEdges: Dispatch<SetStateAction<SceneEdge[]>>;
   setGroups: Dispatch<SetStateAction<SceneGroup[]>>;
   clearSelection: () => void;
-  onChange: (snapshot: SceneSnap) => void;
+  // 그 저장의 영수증을 돌려주면 새로 고쳐도 남는 기록(sceneUndoPersistence)을 그 저장이 확정된 뒤에 남긴다. 없으면 남기지 않는다.
+  onChange: (snapshot: SceneSnap) => SceneWriteReceipt | void;
   // 씬을 바꾸는 틈(SceneBoard 의 switchingRef) — 손에 든 카드가 떠난 씬의 것인 동안은 저장도 되돌리기도 받지 않는다.
   //  받으면 떠난 씬의 카드가 부모의 '지금 활성 씬'(새 씬)에 쓰이고, 새 씬의 되돌리기 기록에 떠난 씬의 모습이 쌓인다.
   frozenRef: MutableRefObject<boolean>;
@@ -67,6 +72,24 @@ const sameValue = (a: unknown, b: unknown): boolean => {
 };
 const sameSnapshotByValue = (a: SceneSnap, b: SceneSnap) =>
   sameValue(a.cards, b.cards) && sameValue(a.edges, b.edges) && sameValue(a.groups, b.groups);
+
+// Comfy 실행 표식(카드 status·comfyCfg 의 runId·status·error)은 되돌리기 밖이다(설계 §9.1) — 복원한 카드(normalizeForUndo 로 표식을 뺀 것)에
+//  지금 카드의 표식을 입힌다. 실행 중 Ctrl+Z 가 '생성중'을 지우거나 끝난 표식을 되살리지 않게. 지금 없는 카드는 표식 없이 둔다.
+const keepRunMarks = (cards: SceneCard[], current: SceneCard[]): SceneCard[] => {
+  const now = new Map(current.map((card) => [card.id, card]));
+  return cards.map((card) => {
+    const live = now.get(card.id);
+    if (card.kind !== "comfy" || live?.kind !== "comfy") return card;
+    const marks = Object.fromEntries((["runId", "status", "error"] as const)
+      .flatMap((key) => (live.comfyCfg?.[key] === undefined ? [] : [[key, live.comfyCfg[key]]])));
+    if (live.status === undefined && !Object.keys(marks).length) return card;
+    return {
+      ...card,
+      ...(live.status === undefined ? {} : { status: live.status }),
+      comfyCfg: card.comfyCfg && Object.keys(marks).length ? { ...card.comfyCfg, ...marks } : card.comfyCfg,
+    };
+  });
+};
 
 // SceneBoard의 화면 상태는 건드리지 않고, 저장 커밋과 undo/redo 스택만 소유한다.
 export function useSceneHistory({
@@ -117,8 +140,25 @@ export function useSceneHistory({
     });
   };
 
-  // 휠 클릭으로 띄운 캔버스 창이 닫히며 메인 창에 기록을 돌려줄 때 — 열린 보드의 지금 기록을 먼저 store 에 남긴다(sceneUndoStore)
-  useEffect(() => registerLiveSceneHistory(() => persistSceneHistory(sceneIdRef.current)), []); // eslint-disable-line react-hooks/exhaustive-deps
+  // 저장을 내보낸 뒤 — 그 저장의 영수증이 오면 지금 기록을 새로 고쳐도 남게 예약한다(확정·지문 대조는 sceneUndoPersistence)
+  const checkpoint = (receipt: SceneWriteReceipt | void) => {
+    if (receipt) scheduleUndoCheckpoint(sceneIdRef.current, { undo: undoStackRef.current, redo: redoStackRef.current, lastCommit: lastCommitRef.current },
+      localSceneRevision(sceneIdRef.current), receipt);
+  };
+
+  // 열린 보드를 store 에 알린다(sceneUndoStore) — flush: 창을 닫으며 기록을 넘길 때·받은 기록과 견줄 때 지금 기록을 먼저 남긴다.
+  //  adopt: 받아들인 기록(늦게 끝난 부팅 복원·창 인계)으로 스택만 바꾼다. lastCommit 은 지문이 같으니 지금 것을 둔다 — 화면 값과 같은 객체여야
+  //  '안 바뀐 저장' 판정(hasUncommittedSnapshot)이 맞다. 씬을 바꾸는 틈·끄는 중에는 받지 않는다.
+  useEffect(() => registerLiveSceneHistory({
+    sceneId: () => sceneIdRef.current,
+    flush: () => persistSceneHistory(sceneIdRef.current),
+    adopt: (history) => {
+      if (frozenRef.current || gestureRef.current) return false;
+      undoStackRef.current = [...history.undo];
+      redoStackRef.current = [...history.redo];
+      return true;
+    },
+  }), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const restoreSceneHistory = (targetSceneId: string, incoming: SceneSnap) => {
     const stored = loadSceneHistory(targetSceneId);
@@ -242,9 +282,10 @@ export function useSceneHistory({
         }
       }
       // 버리는 저장이 쌓을 단계가 없으면(끄는 중의 사용자 저장이 없었고 파생 저장만 좌표를 옮겨 놓았다) 다시 하기도 그대로 둔다.
+      noteLocalSceneEdit(sceneIdRef.current);
     }
     lastCommitRef.current = next;
-    onChangeRef.current(next);
+    checkpoint(onChangeRef.current(next));
     if (opts?.undo === false) persistSceneHistory(sceneIdRef.current);
   };
 
@@ -252,7 +293,7 @@ export function useSceneHistory({
     if (frozenRef.current) return;
     const settled = { ...snapshot, cards: settleComfyRunning(snapshot.cards) };
     lastCommitRef.current = settled;
-    onChangeRef.current(settled);
+    checkpoint(onChangeRef.current(settled));
     persistSceneHistory(sceneIdRef.current);
   };
 
@@ -263,8 +304,8 @@ export function useSceneHistory({
     snapshot: SceneSnap,
     transition?: { revive?: SceneCardRemoval[]; remove?: SceneCardRemoval[] },
   ) => {
-    // 결과 대표 선택은 편집 이력과 별개이므로 현재 화면 값을 유지한다.
-    const restoredCards = preserveRepresentatives(snapshot.cards, cardsRef.current);
+    // 결과 대표 선택은 편집 이력과 별개이므로 현재 화면 값을 유지한다. Comfy 실행 표식도 지금 값 그대로(위 keepRunMarks).
+    const restoredCards = keepRunMarks(preserveRepresentatives(normalizeForUndo(snapshot).cards, cardsRef.current), cardsRef.current);
     const sceneIdNow = sceneIdRef.current;
     // ① 전이 의도를 먼저 기록한다(검증 P1 — "스냅샷에 있으니 부활" 추론 금지, 전이 메타만).
     //    · undo(역방향): 그 커밋이 제거했던 소속을 명시적으로 부활
@@ -292,7 +333,9 @@ export function useSceneHistory({
       ...stateOnly,
       cards: merged ? (merged[0].cards as SceneCard[]) : restoredCards,
     };
-    lastCommitRef.current = restored;
+    // 화면에는 지금 실행 표식을 그대로, 저장·기준점(lastCommit)에는 persist 처럼 완료/대기만 남긴다(실행 중 표시는 화면 전용). 실행 중인 카드가 없으면 같은 객체다.
+    const committed = { ...restored, cards: settleComfyRunning(restored.cards) };
+    lastCommitRef.current = committed;
     cardsRef.current = restored.cards;
     edgesRef.current = restored.edges;
     groupsRef.current = restored.groups;
@@ -300,7 +343,8 @@ export function useSceneHistory({
     setEdges(restored.edges);
     setGroups(restored.groups);
     clearSelection();
-    onChangeRef.current(restored);
+    noteLocalSceneEdit(sceneIdNow);
+    checkpoint(onChangeRef.current(committed));
   };
 
   // 자동으로 누적된 생성 결과를 과거 스냅샷에도 반영해 undo 시 결과가 사라지지 않게 한다.

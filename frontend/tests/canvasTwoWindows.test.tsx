@@ -212,8 +212,11 @@ describe("②④ 되돌리기 기록·복사한 노드를 주고받는다", () =
     expect(canvasUndo.loadSceneHistory("s1")).toEqual({ undo: [snap("a")], redo: [], lastCommit: snap("b") });
 
     // 캔버스 창에서 고쳤다 — 열린 보드는 기록을 언마운트 때만 store 에 남긴다(그래서 닫을 때 먼저 남긴다)
-    canvasUndo.registerLiveSceneHistory(() =>
-      canvasUndo.saveSceneHistory("s1", { undo: [snap("a"), snap("b")], redo: [], lastCommit: snap("c") }));
+    canvasUndo.registerLiveSceneHistory({
+      sceneId: () => "s1",
+      flush: () => canvasUndo.saveSceneHistory("s1", { undo: [snap("a"), snap("b")], redo: [], lastCommit: snap("c") }),
+      adopt: () => true,
+    });
     port.load({ sceneClipboard: { snapshot: { cards: [{ id: "stale" }], edges: [], inEdges: [] }, marker: "m0" } }); // 메인 창 쪽은 옛것이라 치고
     const heard: unknown[] = [];
     const listener = new BroadcastChannel("mvhub-canvas-window");
