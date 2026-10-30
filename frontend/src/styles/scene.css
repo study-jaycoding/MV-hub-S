@@ -207,7 +207,7 @@
 .scene-minimap-card.k-output,
 .scene-minimap-card.k-input { background: #7f8a9c; }
 .scene-minimap-card.k-head { background: #e8c341; }
-.scene-minimap-card.k-render { background: #ffb454; }
+.scene-minimap-card.k-render { background: #4dd6c4; } /* 렌더 노드 자기 색과 같게(Jay 2026-10-30) */
 .scene-minimap-card.sel { background: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 /* 현재 보는 영역 박스 */
 .scene-minimap-view {
@@ -809,7 +809,7 @@
 .scene-view-play:disabled { opacity: 0.4; cursor: default; }
 
 /* ── 렌더(배치) 노드 — 연결된 생성 카드들을 한 번에 생성 ── */
-.scene-card-hd.render { color: #ffb454; background: rgba(255, 180, 84, 0.10); }
+.scene-card-hd.render { color: var(--pc); } /* 자기 색(청록) — 바탕은 떠 있는 이름표 규칙 하나로 */
 
 /* 노드 제목 — 카드 위쪽에 '떠 있는' 라벨(inner 밖 카드 직속이라 안 잘림). 자리를 차지하지 않아 밀어냄이 없고,
    기본 숨김 → 카드 선택 시에만 표시. 글씨색은 노드별 색 유지, 배경 = 어두운 알약에 자기 색 12% 를 섞어 모든 노드가 같은 모양
@@ -902,7 +902,7 @@
 .sl-rows .sl-voice-pop .sl-dd-scroll { max-height: clamp(140px, calc(50vh - 210px), 320px); }
 
 /* ── Comfy 노드 ── */
-.scene-card-hd.comfy { color: #4dd6c4; } /* 바탕은 위 떠 있는 이름표 규칙 하나로(모든 노드 같은 알약) */
+.scene-card-hd.comfy { color: var(--pc); } /* 자기 색(라임) — 바탕은 위 떠 있는 이름표 규칙 하나로(모든 노드 같은 알약) */
 .scene-comfynode { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; } /* relative — 아래 .scene-comfynode-busy 덮개의 기준 */
 /* 빈 노드 — 생성 카드의 빈 로고처럼 Comfy 로고를 회색 16% + API 단추(Jay 2026-10-30 안 B, 전엔 점선 칸 + 안내 두 줄) */
 .scene-comfynode-empty {
@@ -961,11 +961,11 @@
   font-size: 10px; color: #ff8f8f; white-space: pre-wrap; word-break: break-word;
   max-height: 120px; user-select: text; cursor: text;
 }
-.scene-comfynode-inputs { font-size: 10px; color: #4dd6c4; letter-spacing: 0.02em; }
+.scene-comfynode-inputs { font-size: 10px; color: var(--pc); letter-spacing: 0.02em; } /* Comfy 자기 색 */
 .scene-comfynode-status { font-size: 11px; font-weight: 700; letter-spacing: 0.02em; text-align: center; }
 .scene-comfynode-status.s-idle { color: var(--muted); }
 .scene-comfynode-status.s-running { color: var(--accent); }
-.scene-comfynode-status.s-done { color: #4dd6c4; }
+.scene-comfynode-status.s-done { color: var(--pc); } /* Comfy 자기 색 */
 .scene-comfynode-status.s-failed { color: #ff8f8f; }
 .scene-comfynode-outputs { display: flex; flex-direction: column; gap: 6px; }
 /* 실행 중 미디어 영역 — 어두운 배경에 Comfy 로고를 은은히 펄스(작업 중 표시) */
@@ -1207,8 +1207,8 @@
 .scene-port.in { left: calc(0px - var(--port-gap) - var(--ring) / 2 - var(--bw, 0px)); }
 /* 노드 종류별 고유색(--pc) — 포트 고리와 노드 틀(평소 35% · 고르면 불투명, 위 .scene-card 절)이 이 색이다. */
 .scene-card-gen { --pc: var(--accent); }
-.scene-card-comfy { --pc: #4dd6c4; } /* 이름표 색 — 전엔 고유색이 없어 라임으로 대체됐다(Jay 2026-10-29 통일안) */
-.scene-card-render { --pc: #ffb454; } /* 이름표 색 — 위와 같음 */
+.scene-card-comfy { --pc: var(--accent); } /* 생성(New) 노드와 같은 라임(Jay 2026-10-30, 전엔 청록 #4dd6c4) */
+.scene-card-render { --pc: #4dd6c4; } /* 전의 Comfy 청록을 물려받는다(Jay 2026-10-30, 전엔 주황 #ffb454) */
 .scene-card-model { --pc: #ffb84d; }
 .scene-card-text { --pc: #b57aff; }
 .scene-card-ref { --pc: #7fa9ff; }
