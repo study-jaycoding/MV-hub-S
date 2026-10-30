@@ -601,22 +601,21 @@ describe("카드의 확인 덮개(S)", () => {
     expect(active()).toBe(el("bar"));
   });
 
-  it("격자의 카드에서: 마우스로 S 를 누르면 덮개의 No 에 초점이 가고, Space 는 그 단추의 것이다. 닫으면 S 로 돌아가되 '마우스로 누른 단추'로 남는다", () => {
+  it("격자의 카드에서: 마우스로 S 를 누르면 창에 초점이 가고, Space 는 항목의 것이다. 닫으면 S 로 돌아가되 '마우스로 누른 단추'로 남는다", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     act(() => root.render(<GridScreen />));
     flushFrames();
     clickCard("g1");
     const s = cell("g1").querySelector<HTMLElement>(".card-sf")!;
     press(s);
-    expect(host.querySelector(".sconfirm")).not.toBeNull();
-    expect(active()).toBe(host.querySelector(".review-panel")); // 선택 창은 기다림 없이 바로 뜬다(Jay 2026-10-30)
-    act(() => host.querySelector<HTMLButtonElement>(".review-option")!.click());
-    expect(active()).toBe(no());
-    // 격자는 위에 뜬 것이 있으면 Space 의 기본 동작을 막는다(뒤 목록 스크롤) — 덮개의 단추에서 난 Space 는 거기까지 가지 않는다
+    const panel = document.querySelector<HTMLElement>(".s-pick")!; // 선택 창은 기다림 없이 바로 뜬다(Jay 2026-10-30)
+    expect(active()).toBe(panel);
+    act(() => panel.querySelector<HTMLElement>(".s-pick-item")!.focus());
+    // 격자는 위에 뜬 것이 있으면 Space 의 기본 동작을 막는다(뒤 목록 스크롤) — 창의 항목에서 난 Space 는 거기까지 가지 않는다
     expect(key(" ").defaultPrevented).toBe(false);
     expect(key("Enter").defaultPrevented).toBe(false);
-    press(no());
-    expect(host.querySelector(".sconfirm")).toBeNull();
+    act(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(document.querySelector(".s-pick")).toBeNull();
     expect(active()).toBe(s);
     expect(focusCameByTab()).toBe(false);
     expect(key(" ").defaultPrevented).toBe(true); // 마우스로 눌러 남은 초점 — Space 는 격자의 것(S 를 또 누르지 않는다)

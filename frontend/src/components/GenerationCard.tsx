@@ -28,6 +28,8 @@ import {
 } from "../lib/generationDisplay";
 import { InlinePromptRefs, hasInlinePromptRefs } from "./common/InlinePromptRefs";
 import { GenerationReviewOverlay } from "./generation/GenerationReviewOverlay";
+import { ReviewPicker } from "./generation/ReviewPicker";
+import { FinalStar } from "./generation/reviewOptions";
 import { applyWorkspaceReview, canOpenWorkspaceReview, canShowShareAction, reviewTargets, reviewState, workspaceReviewAllowed, workspaceReviewOptions, type ReviewAction } from "../lib/generationReview";
 import { GenerationCardStatusBar } from "./generation/GenerationCardStatusBar";
 import { ClockIcon, FrameIcon, GemIcon, ModelIcon } from "./generation/GenerationCardIcons";
@@ -216,14 +218,21 @@ function GenerationCardImpl({
   const isMultiGrade = selected && (selectedCount ?? 1) > 1 && !!onBulkGradeStep;
   // 최종(골드) 지정/해제는 그 프로젝트의 supervisor 와 전역 관리자만(PM 은 아니다).
   const mayFinalize = canFinalize ? canFinalize(gen) : true;
-  const teamMenu = tab === "team" && (gen.shared || isMultiGrade); // 공유 탭 3칸 창. 그 밖은 워크스페이스 2칸 창(lib/generationReview)
+  const teamMenu = tab === "team" && (gen.shared || isMultiGrade); // 공유 탭 항목(지금 상태를 뺀 나머지). 그 밖은 워크스페이스 항목(lib/generationReview)
+  const bulkMenu = teamMenu && isMultiGrade; // 공유 탭 여러 장 — 한꺼번에 바뀌어 카드 안 창 + Yes/No 를 유지한다
   const canOpenMenu = teamMenu || canOpenWorkspaceReview(gen, mayFinalize);
-  const onSClick = () => {
+  const sButtonRef = useRef<HTMLButtonElement>(null);
+  const picking = confirmReview && !bulkMenu; // S 옆에 창이 떠 있다 — 이 카드만 흐려진다
+  const onSClick = (clickCount: number) => {
+    if (confirmReview) {
+      if (clickCount <= 1) setConfirmReview(false); // 열린 창은 S 를 다시 눌러 닫는다. 더블클릭의 둘째 클릭은 열린 채로 둔다
+      return;
+    }
     if (isMultiGrade && !teamMenu) {
       sClick.onClick(() => onBulkGradeStep!("single"));
       return;
     }
-    if (canOpenMenu) setConfirmReview(true); // 메뉴 → 명시적 Yes 확인 뒤에만 변경.
+    if (canOpenMenu) setConfirmReview(true);
   };
   const onSDouble = () => {
     // 더블클릭은 여러 장 고른 워크스페이스에만 있다. 메뉴가 열리면 가림 배치와 무관하게 명시적 확인만 허용한다.
@@ -459,24 +468,20 @@ function GenerationCardImpl({
       <div className="card-tl">
         {showSF && (
           <button
+            ref={sButtonRef}
             className={"card-sf" + (gen.shared ? " on" : "") + (gen.is_final ? " final" : gen.is_held ? " held" : "")}
             title={t(canOpenMenu ? "클릭하여 공유 상태 변경" : gen.is_final ? "최종(골드)" : gen.is_held ? "보류" : "팀 공유됨")}
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
-              onSClick();
+              onSClick(e.detail);
             }}
             onDoubleClick={(e) => {
               e.stopPropagation();
               onSDouble();
             }}
           >
-            {gen.is_final ? (
-              // 글꼴의 ★는 기준선 여백 때문에 아래로 치우친다. 도형 경계를 viewBox에 맞춰 중앙에 둔다.
-              <svg className="card-final-star" viewBox="2 0 96 91" aria-hidden="true" focusable="false">
-                <polygon points="50,0 61,35 98,35 68,57 79,91 50,70 21,91 32,57 2,35 39,35" />
-              </svg>
-            ) : "S"}
+            {gen.is_final ? <FinalStar /> : "S"}
           </button>
         )}
         <button
@@ -590,13 +595,15 @@ function GenerationCardImpl({
     />
   );
 
-  // 공유/최종 선택 — 카드 '전체'를 덮는 오버레이(보드 노드와 같은 창).
-  const cardConfirm = confirmReview && (
-    <GenerationReviewOverlay state={reviewState(gen)} count={isMultiGrade ? selectedCount : 1}
-      options={teamMenu ? undefined : workspaceReviewOptions(gen)}
+  // 공유/최종 선택 — S 옆에 뜨는 창(보드 노드와 같은 창). 공유 탭 여러 장만 카드를 덮는 창.
+  const cardConfirm = confirmReview && (bulkMenu ? (
+    <GenerationReviewOverlay state={reviewState(gen)} count={selectedCount}
+      allowed={reviewAllowed} onAction={onReviewAction} onCancel={() => setConfirmReview(false)} />
+  ) : (
+    <ReviewPicker anchorRef={sButtonRef} state={reviewState(gen)} options={teamMenu ? undefined : workspaceReviewOptions(gen)}
       allowed={teamMenu ? reviewAllowed : workspaceReviewAllowed(mayFinalize)}
       onAction={onReviewAction} onCancel={() => setConfirmReview(false)} />
-  );
+  ));
 
   // ── 리스트 모드 ──
   if (isList) {
@@ -614,6 +621,7 @@ function GenerationCardImpl({
           (fill ? "" : " contain") +
           (dimmed ? " folder-dim" : "") +
           (selected ? " selected" : "") +
+          (picking ? " s-picking" : "") +
           (resolveHighlighted ? " resolve-highlighted" : "") +
           (gen.is_final ? " final" : "") +
           (stateClass ? " st-" + stateClass : "") +
@@ -740,6 +748,7 @@ function GenerationCardImpl({
         (fill ? "" : " contain") +
         (dimmed ? " folder-dim" : "") +
         (selected ? " selected" : "") +
+        (picking ? " s-picking" : "") +
         (resolveHighlighted ? " resolve-highlighted" : "") +
         (gen.is_final ? " final" : "") +
         (stateClass ? " st-" + stateClass : "") +

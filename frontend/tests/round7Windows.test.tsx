@@ -173,7 +173,7 @@ describe("R7 계보 보드의 Esc", () => {
   it("한 카드의 S 를 누르고 곧바로 다른 카드의 S 를 누르면 나중 카드의 창만 남는다", () => {
     mount();
     const sOf = (id: string) => [...node(id).querySelectorAll<HTMLButtonElement>(".linb-ov-btn")].find((button) => button.textContent === "S")!;
-    const confirmOn = () => [...host.querySelectorAll<HTMLElement>(".linb-node")].filter((el) => el.querySelector(".sconfirm")).map((el) => el.dataset.id);
+    const confirmOn = () => [...host.querySelectorAll<HTMLElement>(".linb-node.s-picking")].map((el) => el.dataset.id);
     act(() => { sOf("a").click(); });
     expect(confirmOn()).toEqual(["a"]);
     act(() => { sOf("b").click(); });

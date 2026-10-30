@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useRef } from "react";
 import { APP_EVENTS, dispatchAppEvent } from "../../lib/appEvents";
 import { DRAG_TYPES } from "../../lib/dragTypes";
 import { downloadGeneration, downloadName } from "../../lib/download";
@@ -9,7 +9,8 @@ import { inBoardFolder, matchesBoardFilters } from "../../lib/boardFilters";
 import { canOpenWorkspaceReview, canShowShareAction, reviewState, workspaceReviewAllowed, workspaceReviewOptions, type ReviewAction, type ReviewFilter } from "../../lib/generationReview";
 import type { Generation, InfoTarget, PreviewTarget } from "../../types";
 import { MediaThumbnail } from "../MediaThumbnail";
-import { GenerationReviewOverlay } from "../generation/GenerationReviewOverlay";
+import { ReviewPicker } from "../generation/ReviewPicker";
+import { FinalStar } from "../generation/reviewOptions";
 import { InfoIcon } from "../common/ViewIcons";
 import { isDraftGeneration } from "../../lib/seedanceDraft";
 
@@ -88,6 +89,8 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
   // 대체 S/★ 버튼이 없는 읽기 전용 배지는 호버 중에도 남기고, T/C 버튼 자리를 비킨다.
   const showShareAction = generation.status === "done" && canShowShareAction(generation, mayFinalize);
   const sfReadonly = (generation.shared || generation.is_final) && !showShareAction;
+  const sButtonRef = useRef<HTMLButtonElement>(null);
+  const picking = sConfirm?.id === generation.id; // S 옆에 창이 떠 있다 — 이 노드만 흐려진다
   const asset = generation.assets[0];
   const thumb = thumbOf(generation);
   // 판정은 lib/boardFilters — '생성 결과' 창도 같은 기준을 쓴다(창은 필터에 안 맞으면 걸러 내고, 폴더 밖이면 흐리게).
@@ -111,7 +114,8 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
         (!generation.shared && !generation.is_mine ? " unshared" : "") +
         (offLine ? " offline" : "") +
         (fill ? "" : " fit-contain") +
-        (dimmed ? " dimmed" : "")
+        (dimmed ? " dimmed" : "") +
+        (picking ? " s-picking" : "")
       }
       style={{ left: x, top: y, width, height }}
       // 줄마다 한 가지 — 프롬프트(“ 로 묶어 설명 창이 나누지 않게) · 조작 키 두 줄(캔버스 설명 창 NodeTip, Jay 2026-10-30)
@@ -176,7 +180,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
           className={"linb-sf" + (generation.is_final ? " final" : generation.is_held ? " shared held" : " shared")}
           title={t(generation.is_final ? "최종(골드)" : generation.is_held ? "보류" : "팀 공유됨")}
         >
-          {generation.is_final ? "★" : "S"}
+          {generation.is_final ? <FinalStar /> : "S"}
         </span>
       )}
       {(generation.color || generation.is_final) && (
@@ -199,8 +203,9 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
         <div className="linb-ov-top">
           {showShareAction && (
             <button
+              ref={sButtonRef}
               className={
-                "linb-ov-btn" +
+                "linb-ov-btn s-anchor" +
                 (generation.shared ? " on" : "") +
                 (generation.is_final ? " final" : generation.is_held ? " held" : "")
               }
@@ -208,11 +213,11 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
                 : generation.is_final ? "최종(골드)" : generation.is_held ? "보류" : "팀 공유됨")}
               onClick={(e) => {
                 e.stopPropagation();
-                onSClick(generation);
+                if (e.detail <= 1) onSClick(generation); // 더블클릭의 둘째 클릭은 열린 창을 닫지 않는다
               }}
               onDoubleClick={(e) => e.stopPropagation()} // 노드의 더블클릭(미리보기)으로 새지 않게
             >
-              {generation.is_final ? "★" : "S"}
+              {generation.is_final ? <FinalStar /> : "S"}
             </button>
           )}
           {onTag && (
@@ -305,8 +310,8 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
           </button>
         </div>
       </div>
-      {sConfirm?.id === generation.id && (
-        <GenerationReviewOverlay state={reviewState(generation)} options={workspaceReviewOptions(generation)}
+      {picking && (
+        <ReviewPicker anchorRef={sButtonRef} state={reviewState(generation)} options={workspaceReviewOptions(generation)}
           allowed={workspaceReviewAllowed(mayFinalize)} onAction={(action) => onSConfirmYes(generation, action)} onCancel={onSConfirmNo} />
       )}
     </div>

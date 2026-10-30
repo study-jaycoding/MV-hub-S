@@ -39,40 +39,43 @@ it("open review menu never lets a double event run a bulk grade action behind it
   expect(host.querySelectorAll(".review-option")).toHaveLength(3);
 });
 
-// 워크스페이스 S 선택 창(Jay 2026-10-30): 한 번 누르면 바로 창 · 고르면 Yes 뒤에 쓰던 처리가 불린다. 기록 = docs/status/워크스페이스_S_선택창_2026-10-30.md
-const workspaceOptions = () => [...host.querySelectorAll(".review-option")].map((button) => button.textContent!.slice(1));
+// S 선택 창(Jay 2026-10-30): S 옆에 뜨고 누르면 바로 바뀐다. 기록 = docs/status/S_선택창_떠있는창_2026-10-30.md
+//  창은 body 로 뜬다 — host 가 아니라 document 에서 찾는다.
+const picker = () => document.querySelector(".s-pick");
+const pickerItems = () => [...document.querySelectorAll(".s-pick-item")].map((button) => button.textContent);
+const pick = (selector: string) => act(() => document.querySelector<HTMLButtonElement>(`.s-pick ${selector}`)!.click());
 it.each([
-  ["일반", { shared: false }, ["공유", "해제"], ".review-shared", "공유 하시겠습니까?", "onPublish"],
-  ["쉐어", {}, ["최종", "해제"], ".review-final", "최종(골드)으로 지정할까요?", "onFinalize"],
-  ["쉐어", {}, ["최종", "해제"], ".review-unshared", "공유 해제 할까요?", "onUnpublish"],
-  ["보류", { is_held: true }, ["최종", "해제"], ".review-final", "최종(골드)으로 지정할까요?", "onFinalize"],
-  ["최종", { is_final: true }, ["공유", "해제"], ".review-shared", "공유로 복귀할까요?", "onUnfinalize"],
-] as const)("워크스페이스 %s 카드: 창 → 고름 → Yes 뒤에만 바뀐다", (_name, over, options, pick, question, handler) => {
+  ["일반", { shared: false }, ["S공유", "해제"], ".review-shared", "onPublish"],
+  ["쉐어", {}, ["최종", "해제"], ".review-final", "onFinalize"],
+  ["쉐어", {}, ["최종", "해제"], ".review-unshared", "onUnpublish"],
+  ["보류", { is_held: true }, ["최종", "해제"], ".review-final", "onFinalize"],
+  ["최종", { is_final: true }, ["S공유", "해제"], ".review-shared", "onUnfinalize"],
+] as const)("워크스페이스 %s 카드: 창을 열고 누르면 바로 쓰던 처리가 불린다", (_name, over, options, item, handler) => {
   const p = { ...props(gen(over)), tab: "my" as const, onPublish: vi.fn(), onUnfinalize: vi.fn() };
   act(() => root.render(<GenerationCard {...p} />));
   click(".card-sf");
-  expect(workspaceOptions()).toEqual(options);
-  click(pick);
-  expect(host.querySelector(".cs-final-q")?.textContent).toBe(question);
+  expect(pickerItems()).toEqual(options);
+  expect(host.querySelector(".card")!.classList.contains("s-picking")).toBe(true); // 고른 카드만 흐려진다
   expect(p[handler]).not.toHaveBeenCalled();
-  click(".cs-final-yes");
+  pick(item);
   expect(p[handler]).toHaveBeenCalledExactlyOnceWith(p.gen);
-  expect(host.querySelector(".review-confirm")).toBeNull();
+  expect(picker()).toBeNull();
+  expect(host.querySelector(".card")!.classList.contains("s-picking")).toBe(false);
 });
 
 it("워크스페이스 최종 카드의 [해제]는 공유 탭과 같은 전환 한 번이다 — 최종 풀기와 공유 해제를 나누어 부르지 않는다", () => {
   const p = { ...props(gen({ is_final: true })), tab: "my" as const, onReview: vi.fn(), onUnfinalize: vi.fn() };
   act(() => root.render(<GenerationCard {...p} />));
-  click(".card-sf"); click(".review-unshared"); click(".cs-final-yes");
+  click(".card-sf"); pick(".review-unshared");
   expect(p.onReview).toHaveBeenCalledExactlyOnceWith(p.gen, "unshared");
   expect(p.onUnfinalize).not.toHaveBeenCalled(); expect(p.onUnpublish).not.toHaveBeenCalled();
 });
 
-it("워크스페이스 일반 카드의 [해제]는 바뀔 것이 없어 묻지 않고 닫는다", () => {
+it("워크스페이스 일반 카드의 [해제]는 바뀔 것이 없어 닫기만 한다", () => {
   const p = { ...props(gen({ shared: false })), tab: "my" as const, onPublish: vi.fn() };
   act(() => root.render(<GenerationCard {...p} />));
-  click(".card-sf"); click(".review-unshared");
-  expect(host.querySelector(".review-confirm")).toBeNull();
+  click(".card-sf"); pick(".review-unshared");
+  expect(picker()).toBeNull();
   expect(p.onPublish).not.toHaveBeenCalled(); expect(p.onUnpublish).not.toHaveBeenCalled();
 });
 
@@ -80,15 +83,39 @@ it("워크스페이스: 최종 권한이 없으면 [최종]이 흐리고 공유 
   const p = { ...props(), tab: "my" as const, canFinalize: () => false };
   act(() => root.render(<GenerationCard {...p} />));
   click(".card-sf");
-  expect(host.querySelector<HTMLButtonElement>(".review-final")!.disabled).toBe(true);
-  expect(host.querySelector<HTMLButtonElement>(".review-unshared")!.disabled).toBe(false);
+  expect(document.querySelector<HTMLButtonElement>(".s-pick .review-final")!.disabled).toBe(true);
+  expect(document.querySelector<HTMLButtonElement>(".s-pick .review-unshared")!.disabled).toBe(false);
   act(() => root.unmount()); root = createRoot(host);
   // 내 최종 카드라도 권한이 없으면 읽기 전용 표식이고, 남의 보류 카드도 마찬가지다
   for (const over of [{ is_final: true }, { is_held: true, is_mine: false }]) {
     act(() => root.render(<GenerationCard {...p} gen={gen(over)} />));
     click(".card-sf");
-    expect(host.querySelector(".review-confirm")).toBeNull();
+    expect(picker()).toBeNull();
   }
+});
+
+it("S 를 다시 누르면 닫히고, 더블클릭의 둘째 클릭은 열린 채로 둔다 · S 를 누르는 것은 바깥 누름이 아니다", () => {
+  const p = { ...props(gen({ shared: false })), tab: "my" as const };
+  act(() => root.render(<GenerationCard {...p} />));
+  const s = host.querySelector(".card-sf")!;
+  const clickS = (detail: number) => act(() => { s.dispatchEvent(new MouseEvent("click", { bubbles: true, detail })); });
+  clickS(1);
+  expect(picker()).not.toBeNull();
+  clickS(2);
+  expect(picker()).not.toBeNull();
+  act(() => { s.dispatchEvent(new Event("pointerdown", { bubbles: true })); });
+  expect(picker()).not.toBeNull();
+  clickS(1);
+  expect(picker()).toBeNull();
+});
+
+it.each(["scroll", "wheel", "resize"])("뒤가 움직이면(%s) 창을 닫는다 — S 에서 떨어져 보이지 않게", (type) => {
+  const p = { ...props(gen({ shared: false })), tab: "my" as const, onPublish: vi.fn() };
+  act(() => root.render(<GenerationCard {...p} />));
+  click(".card-sf");
+  act(() => { window.dispatchEvent(new Event(type)); });
+  expect(picker()).toBeNull();
+  expect(p.onPublish).not.toHaveBeenCalled();
 });
 
 it.each(["single", "double"] as const)("워크스페이스 여러 장 S 는 등급 단계 그대로다 — 창을 열지 않는다(%s)", (kind) => {
@@ -109,19 +136,9 @@ it.each(["single", "double"] as const)("워크스페이스 여러 장 S 는 등�
   expect(p.onBulkGradeStep).toHaveBeenCalledExactlyOnceWith(kind);
 });
 
-it("워크스페이스: S 더블클릭의 두 번째 클릭이 열린 창의 항목을 누르지 않는다", () => {
-  let now = 1000;
-  vi.spyOn(performance, "now").mockImplementation(() => now);
-  const p = { ...props(gen({ shared: false })), tab: "my" as const };
-  act(() => root.render(<GenerationCard {...p} />));
-  click(".card-sf");
-  now += 100;
-  act(() => host.querySelector(".review-shared")!.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 2 })));
-  expect(workspaceOptions()).toEqual(["공유", "해제"]); // 아직 고르는 단계
-  now += 200;
-  act(() => host.querySelector(".review-shared")!.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
-  expect(host.querySelector(".cs-final-q")?.textContent).toBe("공유 하시겠습니까?");
-});
+// 공유 탭 여러 장은 카드를 덮는 창 + Yes/No 그대로다(한꺼번에 바뀌므로).
+const bulkProps = () => ({ ...props(), selected: true, selectedCount: 3, onBulkGradeStep: vi.fn(), onBulkReview: vi.fn(),
+  bulkReviewAllowed: { unshared: true, shared: true, held: true, final: true } });
 
 it.each(["grid", "list"] as const)("%s: rapid second pointer click stays in review menu until an intentional choice", (layout) => {
   let now = 1000;
@@ -130,7 +147,7 @@ it.each(["grid", "list"] as const)("%s: rapid second pointer click stays in revi
     host.querySelector(selector)!.dispatchEvent(new MouseEvent("click", { bubbles: true, detail }));
   });
   try {
-    const p = props();
+    const p = bulkProps();
     act(() => root.render(<GenerationCard {...p} layout={layout} />));
     pointerClick(".card-sf");
     expect(host.querySelectorAll(".review-option")).toHaveLength(3);
@@ -140,15 +157,15 @@ it.each(["grid", "list"] as const)("%s: rapid second pointer click stays in revi
       expect(host.querySelectorAll(".review-option")).toHaveLength(3);
       expect(host.querySelector(".cs-final-q")).toBeNull();
     }
-    expect(p.onReview).not.toHaveBeenCalled();
+    expect(p.onBulkReview).not.toHaveBeenCalled();
     expect(p.onUnpublish).not.toHaveBeenCalled();
     expect(p.onFinalize).not.toHaveBeenCalled();
     now = 1220;
     pointerClick(".review-held");
     expect(host.querySelector(".cs-final-q")?.textContent).toBe("보류할까요?");
-    expect(p.onReview).not.toHaveBeenCalled();
+    expect(p.onBulkReview).not.toHaveBeenCalled();
     pointerClick(".cs-final-yes");
-    expect(p.onReview).toHaveBeenCalledExactlyOnceWith(p.gen, "held");
+    expect(p.onBulkReview).toHaveBeenCalledExactlyOnceWith("held");
   } finally { clock.mockRestore(); }
 });
 
@@ -156,7 +173,7 @@ it("review keyboard activation is immediate and Escape/reopen restarts only the 
   let now = 1000;
   const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
   try {
-    const p = props();
+    const p = bulkProps();
     act(() => root.render(<GenerationCard {...p} />));
     click(".card-sf");
     // Keyboard/programmatic activation has detail=0, so it must not inherit pointer suppression.
@@ -169,7 +186,7 @@ it("review keyboard activation is immediate and Escape/reopen restarts only the 
     act(() => host.querySelector(".review-held")!.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
     expect(host.querySelector(".cs-final-q")).toBeNull();
     click(".review-held"); click(".cs-final-yes");
-    expect(p.onReview).toHaveBeenCalledExactlyOnceWith(p.gen, "held");
+    expect(p.onBulkReview).toHaveBeenCalledExactlyOnceWith("held");
     expect(p.onFinalize).not.toHaveBeenCalled();
   } finally { clock.mockRestore(); }
 });
@@ -205,19 +222,17 @@ beforeEach(() => {
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); setLang("ko"); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
-it.each(["grid", "list"] as const)("%s: shared S opens immediate menu then Yes/No; No exits without mutation", (layout) => {
+it.each(["grid", "list"] as const)("%s: shared S opens the picker beside it; picking applies at once; Escape exits without mutation", (layout) => {
   const p = props();
   act(() => root.render(<GenerationCard {...p} layout={layout} />));
   click(".card-sf");
-  expect([...host.querySelectorAll(".review-option-name")].map((button) => button.textContent)).toEqual(["−해제", "S보류", "★최종"]);
-  expect(host.querySelector(".review-cancel")).toBeNull();
-  click(".review-unshared");
-  expect(host.querySelector(".cs-final-q")?.textContent).toBe("공유 해제 할까요?");
-  expect(p.onReview).not.toHaveBeenCalled();
-  click(".cs-final-no");
-  expect(host.querySelector('[role="dialog"]')).toBeNull();
+  expect(pickerItems()).toEqual(["해제", "S보류", "최종"]);
+  expect(host.querySelector(".sconfirm")).toBeNull(); // 카드를 덮지 않는다
+  expect(document.querySelector(".cs-final-yes")).toBeNull(); // 묻지 않는다
+  act(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  expect(picker()).toBeNull();
   expect(p.onUnpublish).not.toHaveBeenCalled(); expect(p.onReview).not.toHaveBeenCalled();
-  click(".card-sf"); click(".review-held"); click(".cs-final-yes");
+  click(".card-sf"); pick(".review-held");
   expect(p.onReview).toHaveBeenCalledWith(p.gen, "held"); expect(p.onUnpublish).not.toHaveBeenCalled();
 });
 
@@ -245,9 +260,9 @@ it("held shows a red S, return/finalize use exact actions", () => {
   expect(host.querySelector(".card-sf.held")?.textContent).toBe("S");
   expect(host.querySelector(".card")?.classList.contains("held")).toBe(false);
   click(".card-sf");
-  expect([...host.querySelectorAll(".review-option-name")].map((button) => button.textContent)).toEqual(["−해제", "S공유", "★최종"]);
-  click(".review-shared"); click(".cs-final-yes"); expect(p.onReview).toHaveBeenCalledWith(p.gen, "shared");
-  click(".card-sf"); click(".review-final"); click(".cs-final-yes"); expect(p.onReview).toHaveBeenCalledWith(p.gen, "final");
+  expect(pickerItems()).toEqual(["해제", "S공유", "최종"]);
+  pick(".review-shared"); expect(p.onReview).toHaveBeenCalledWith(p.gen, "shared");
+  click(".card-sf"); pick(".review-final"); expect(p.onReview).toHaveBeenCalledWith(p.gen, "final");
 });
 
 it("multi-selection S never runs unpublish and uses actual allowed operations", () => {
@@ -265,23 +280,21 @@ it("permission denied disables review actions; gold opens all three alternatives
   vi.useFakeTimers();
   const p = props(gen({ is_held: true, is_mine: false }));
   act(() => root.render(<GenerationCard {...p} canFinalize={() => false} />)); click(".card-sf");
-  expect(host.querySelector<HTMLButtonElement>(".review-shared")!.disabled).toBe(true);
-  expect(host.querySelector<HTMLButtonElement>(".review-final")!.disabled).toBe(true);
+  expect(document.querySelector<HTMLButtonElement>(".s-pick .review-shared")!.disabled).toBe(true);
+  expect(document.querySelector<HTMLButtonElement>(".s-pick .review-final")!.disabled).toBe(true);
+  act(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
   const finalProps = props(gen({ is_final: true }));
   act(() => root.render(<GenerationCard {...finalProps} />)); click(".card-sf");
-  expect([...host.querySelectorAll(".review-option-name")].map((button) => button.textContent)).toEqual(["−해제", "S공유", "S보류"]);
-  click(".review-held"); expect(finalProps.onReview).not.toHaveBeenCalled();
-  click(".cs-final-yes"); expect(finalProps.onReview).toHaveBeenCalledWith(finalProps.gen, "held");
+  expect(pickerItems()).toEqual(["해제", "S공유", "S보류"]);
+  expect(finalProps.onReview).not.toHaveBeenCalled();
+  pick(".review-held"); expect(finalProps.onReview).toHaveBeenCalledWith(finalProps.gen, "held");
   expect(finalProps.onUnfinalize).not.toHaveBeenCalled();
 });
 
 it("English review labels use the i18n dictionary", () => {
   setLang("en"); act(() => root.render(<GenerationCard {...props(gen({ is_held: true }))} />)); click(".card-sf");
-  expect(host.querySelector('[role="dialog"]')?.getAttribute("aria-label")).toBe("What would you like to do with this result?");
-  expect(host.querySelector(".review-shared .review-option-label")?.textContent).toBe("Shared");
-  expect(host.querySelector(".review-option-detail")).toBeNull();
-  click(".review-shared"); expect(host.textContent).toContain("Return to shared?");
-  expect(host.querySelector(".cs-final-no")?.textContent).toBe("No");
+  expect(picker()?.getAttribute("aria-label")).toBe("What would you like to do with this result?");
+  expect(pickerItems()).toEqual(["Unshare", "SShared", "Final"]);
 });
 
 // 50회차(Codex 검토): 팀 탭에 새 카드가 들어와 행이 바뀌면 격자가 카드를 다시 만들어 열어 둔 등급 메뉴가 사라졌다.
@@ -289,21 +302,25 @@ it("an open review menu survives the card being rebuilt in another row, but not 
   const p = props();
   await act(async () => root.render(<div key="row0"><GenerationCard {...p} /></div>));
   click(".card-sf");
-  expect(host.querySelectorAll(".review-option")).toHaveLength(3);
+  expect(pickerItems()).toHaveLength(3);
   await act(async () => root.render(<div key="row1"><GenerationCard {...p} /></div>)); // 다른 행 — 카드가 새로 만들어진다
-  expect(host.querySelectorAll(".review-option")).toHaveLength(3);
+  expect(pickerItems()).toHaveLength(3);
   await act(async () => root.render(<div />)); // 스크롤로 사라졌다
   await act(async () => root.render(<div key="row1"><GenerationCard {...p} /></div>)); // 돌아왔다 — 저절로 열려 있지 않다
-  expect(host.querySelector(".review-option")).toBeNull();
+  expect(picker()).toBeNull();
 });
 
-it("outside click and Escape close both selection and confirmation without changing data", () => {
+it("outside click and Escape close the picker and the bulk confirmation without changing data", () => {
   const p = props(); act(() => root.render(<GenerationCard {...p} />));
+  click(".card-sf"); act(() => document.body.dispatchEvent(new Event("pointerdown", { bubbles: true })));
+  expect(picker()).toBeNull();
+  const bulk = bulkProps(); act(() => root.render(<GenerationCard {...bulk} />));
   click(".card-sf"); act(() => document.body.dispatchEvent(new Event("pointerdown", { bubbles: true })));
   expect(host.querySelector(".review-confirm")).toBeNull();
   click(".card-sf"); click(".review-held");
   act(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
-  expect(host.querySelector(".review-confirm")).toBeNull(); expect(p.onReview).not.toHaveBeenCalled();
+  expect(host.querySelector(".review-confirm")).toBeNull();
+  expect(p.onReview).not.toHaveBeenCalled(); expect(bulk.onBulkReview).not.toHaveBeenCalled();
 });
 
 it("Yes repeated before rerender emits one transition and compact menu stays within its panel", () => {

@@ -117,7 +117,8 @@ export function HistoryBoard({
   cbRef.current = { canFinalize, onPublish, onUnpublish, onFinalize, onUnfinalize, onReview };
   const onNodeSClick = useCallback((g: Generation) => {
     const { canFinalize } = cbRef.current;
-    if (canOpenWorkspaceReview(g, canFinalize ? canFinalize(g) : true)) setSConfirm({ id: g.id });
+    if (!canOpenWorkspaceReview(g, canFinalize ? canFinalize(g) : true)) return;
+    setSConfirm((open) => (open?.id === g.id ? null : { id: g.id })); // 열린 창은 S 를 다시 눌러 닫는다
   }, []);
   const onNodeSConfirmYes = useCallback((g: Generation, action: ReviewAction) => {
     setSConfirm(null);

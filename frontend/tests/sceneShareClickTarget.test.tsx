@@ -46,7 +46,7 @@ it("한 카드의 S 를 누르고 곧바로 다른 카드의 S 를 누르면 나
   });
   const card = (id: string) => host.querySelector<HTMLElement>(`.scene-card[data-id="${id}"]`)!;
   const sOf = (id: string) => [...card(id).querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "S")!;
-  const confirmOn = () => [...host.querySelectorAll<HTMLElement>(".scene-card")].filter((el) => el.querySelector(".sconfirm")).map((el) => el.dataset.id);
+  const confirmOn = () => [...host.querySelectorAll<HTMLElement>(".scene-card")].filter((el) => el.querySelector(".s-picking")).map((el) => el.dataset.id);
   expect([!!sOf("c1"), !!sOf("c2")]).toEqual([true, true]);
   act(() => { sOf("c1").click(); });
   expect(confirmOn()).toEqual(["c1"]);

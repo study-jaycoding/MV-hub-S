@@ -25,19 +25,18 @@ afterEach(() => { act(() => root.unmount()); host.remove(); setLang("ko"); vi.un
 const pick = (action: ReviewAction) => act(() => host.querySelector<HTMLButtonElement>(`.review-${action}`)!.click());
 
 it.each([
-  ["unshared", ["shared", "unshared"], "shared", "Share this result?"],
-  ["shared", ["final", "unshared"], "unshared", "Remove sharing?"],
-  ["shared", ["final", "unshared"], "final", "Mark as final (gold)?"],
-  ["final", ["shared", "unshared"], "shared", "Return to shared?"],
-] as const)("%s card asks a translated question after picking (options %j → %s)", (state, options, action, question) => {
-  act(() => root.render(<GenerationReviewOverlay state={state} options={[...options]} allowed={allowed} onAction={noop} onCancel={noop}/>));
+  ["shared", "unshared", "Remove sharing?"],
+  ["shared", "final", "Mark as final (gold)?"],
+  ["final", "shared", "Return to shared?"],
+] as const)("bulk %s menu asks a translated question after picking %s", (state, action, question) => {
+  act(() => root.render(<GenerationReviewOverlay state={state} count={3} allowed={allowed} onAction={noop} onCancel={noop}/>));
   pick(action);
   expect(host.querySelector(".cs-final-q")?.textContent).toBe(question);
 });
 
 it("an open confirmation updates language and only submits once", () => {
   const yes = vi.fn();
-  act(() => root.render(<GenerationReviewOverlay state="shared" options={["final", "unshared"]} allowed={allowed} onAction={yes} onCancel={noop}/>));
+  act(() => root.render(<GenerationReviewOverlay state="shared" count={3} allowed={allowed} onAction={yes} onCancel={noop}/>));
   pick("unshared");
   expect(host.textContent).toContain("Remove sharing?");
   act(() => setLang("ko")); expect(host.textContent).toContain("공유 해제 할까요?");
@@ -48,7 +47,7 @@ it("an open confirmation updates language and only submits once", () => {
 
 it.each(["no", "outside", "escape"])("confirmation cancels via %s without mutation", (method) => {
   const no = vi.fn(), yes = vi.fn();
-  act(() => root.render(<GenerationReviewOverlay state="shared" options={["final", "unshared"]} allowed={allowed} onAction={yes} onCancel={no}/>));
+  act(() => root.render(<GenerationReviewOverlay state="shared" count={3} allowed={allowed} onAction={yes} onCancel={no}/>));
   pick("unshared");
   act(() => {
     if (method === "no") host.querySelector<HTMLButtonElement>(".cs-final-no")!.click();
@@ -64,10 +63,9 @@ it("history/canvas uses the same picker and hands back the generation with the p
     isSelected={false} onLine={false} offLine={false} fill disabled={false} typeFilter="all" sharedOnly={false}
     commentOnly={false} finalOnly={false} sConfirm={{id:g.id}} onSClick={noop}
     onSConfirmYes={yes} onSConfirmNo={no} onPreview={noop} onInfo={noop} onRegenerate={noop}/>));
-  expect([...host.querySelectorAll(".review-option")].map((button) => button.textContent)).toEqual(["★Final", "−Unshare"]);
-  pick("unshared");
-  expect(host.querySelector(".cs-final-q")?.textContent).toBe("Remove sharing?");
-  act(() => host.querySelector<HTMLButtonElement>(".cs-final-yes")!.click());
+  expect([...document.querySelectorAll(".s-pick-item")].map((button) => button.textContent)).toEqual(["Final", "Unshare"]);
+  expect(host.querySelector(".linb-node")!.classList.contains("s-picking")).toBe(true);
+  act(() => document.querySelector<HTMLButtonElement>(".s-pick .review-unshared")!.click());
   expect(yes).toHaveBeenCalledExactlyOnceWith(g, "unshared"); expect(no).not.toHaveBeenCalled();
 });
 

@@ -275,7 +275,9 @@
   color: #2a1d00; border-color: #ffd966; font-size: 16px; opacity: 1; pointer-events: auto;
   box-shadow: 0 0 0 1px #ffd966, 0 0 10px rgba(245,197,66,0.55);
 }
-.card-final-star { display: block; width: 1em; height: 1em; flex: none; fill: currentColor; }
+/* 별은 무게가 아래에 있어 도형 경계로 가운데에 두면 처져 보인다 — 조금 올린다(16px 에서 -0.5, 실측) */
+.card-final-star { display: block; width: 1em; height: 1em; flex: none; fill: currentColor; transform: translateY(-0.03em); }
+.review-bar { display: block; width: 1em; height: 1em; flex: none; fill: currentColor; }
 /* 공유 탭(Jay 2026-10-30) — 여기 카드는 당연히 공유라 S 는 마우스를 올렸을 때만(최종 ★·보류 표는 그대로, 초점이 닿으면 보인다 — 조작 규칙 51).
    호버·선택 때 뜨는 ⓘ 가 작업자 이름표를 덮으므로 그때는 이름표를 숨긴다. 편집 탭 카드는 .gen-cell 밖이라 그대로. */
 .gen-cell.team .card:not(:hover) .card-sf.on:not(.held):not(.final):not(:focus) { opacity: 0; }
@@ -463,6 +465,32 @@
 .review-final { background: rgba(232,182,44,0.10); border-color: #e8b62c; color: #e8b62c; }
 .review-final .review-option-icon { background: #e8b62c; color: #2a1d00; }
 .review-panel button:disabled { opacity: 0.4; cursor: not-allowed; }
+/* S 선택 창(ReviewPicker, Jay 2026-10-30) — 칸 크기와 상관없이 같은 모양 · 판 없이 색 칸만 · 폭은 가장 긴 글자에 맞춘다(최소 78 — 영어는 늘어난다).
+   body 에 뜬다(z = 앱 확인창 340 아래). 자리는 S 의 실제 위치로 정한다. */
+.s-pick { position: fixed; z-index: 330; display: flex; flex-direction: column; gap: 4px; width: max-content; outline: none; }
+.s-pick-item {
+  display: flex; align-items: center; gap: 6px; box-sizing: border-box; min-width: 78px; height: 42px; padding: 0 14px;
+  border: 0; border-radius: 12px; font-size: 13px; font-weight: 800; line-height: 1; cursor: pointer;
+  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.6);
+}
+.s-pick-item:hover:not(:disabled), .s-pick-item:focus-visible { filter: brightness(1.12); }
+.s-pick-item:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+.s-pick-item:disabled { opacity: 0.4; cursor: not-allowed; }
+.s-pick .review-shared { background: var(--accent); color: var(--accent-ink); }
+.s-pick .review-held { background: #c9384a; color: #fff; }
+.s-pick .review-final { background: #e8b62c; color: #2a1d00; }
+.s-pick .review-unshared { background: #686c75; color: #fff; }
+/* 기호 칸은 줄마다 같은 폭 — 위아래 칸의 기호·글자 줄이 맞는다 */
+.s-pick-icon { display: flex; align-items: center; justify-content: center; flex: none; width: 18px; height: 22px; font-size: 22px; }
+.s-pick-icon .card-final-star, .s-pick-icon .review-bar { width: 18px; height: 18px; }
+@supports (text-box: trim-both cap alphabetic) {
+  .s-pick .review-shared .s-pick-icon, .s-pick .review-held .s-pick-icon { display: inline-block; align-content: center; text-align: center; text-box: trim-both cap alphabetic; }
+}
+/* 창이 떠 있는 카드만 흐려지고 S 는 또렷하게 남는다 */
+.card.s-picking .card-thumb img, .card.s-picking .card-thumb video, .card.s-picking .card-bottom, .card.s-picking .creator-badge { filter: blur(3px) brightness(0.5); }
+.card.s-picking .card-colorbar { filter: brightness(0.55); }
+.card.s-picking .thumb-overlay, .card.s-picking .card-cm, .card.s-picking .card-drag-grip { opacity: 0 !important; pointer-events: none; }
+.card.s-picking .card-sf { opacity: 1 !important; pointer-events: auto; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.8); }
 /* 좁은 칸(Masonry 를 가장 작게 한 9:16 — 카드 폭 약 67px) — 그대로면 글자와 No 가 잘린다. 아이콘을 빼고 글자만, Yes/No 는 여백 없이(Jay 2026-10-30).
    71px = 판 안쪽 폭. 아이콘 21 + 사이 7 + 글자 24 + 양쪽 여백 16 + 테두리 2 */
 @container (max-width: 71px) {

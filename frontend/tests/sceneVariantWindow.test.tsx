@@ -199,10 +199,7 @@ it("카드의 S 로 공유하면 씬의 사본에 바로 보이고 App 의 공�
   await openWindow([gen("a", 0), gen("b", 1)], { onPublish });
   expect(cell("a").querySelector(".card-sf.on")).toBeNull();
   act(() => { cell("a").querySelector(".card-sf")!.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })); });
-  act(() => cell("a").querySelector<HTMLButtonElement>(".review-shared")!.click());
-  const yes = cell("a").querySelector<HTMLButtonElement>(".cs-final-yes");
-  expect(yes, "공유 확인").toBeTruthy();
-  act(() => yes!.click());
+  act(() => document.querySelector<HTMLButtonElement>(".s-pick .review-shared")!.click());
   expect(onPublish).toHaveBeenCalledTimes(1);
   expect((onPublish.mock.calls[0][0] as Generation).id).toBe("a");
   expect(cell("a").querySelector(".card-sf.on")).toBeTruthy(); // 서버 답을 기다리지 않고 바로

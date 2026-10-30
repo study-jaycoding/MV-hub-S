@@ -844,11 +844,10 @@ it("풀 카드의 호버 단추 — S·T·C·ⓘ 는 앱의 동작을 부르고,
   expect([...card().querySelectorAll(".card-tl button")].map((item) => item.textContent)).toEqual(["S", "T", "C"]);
   expect([part(".ov-info"), part('.ov-icon[title="다운로드"]')].every(Boolean)).toBe(true);
 
-  // S = 공유 & 리뷰의 검토 메뉴 → 보류 → 예
+  // S = 공유 & 리뷰의 선택 창 → 보류 → 바로 적용
   fire(part(".card-sf"), "mousedown");
   act(() => part(".card-sf").click());
-  act(() => part(".review-held").click());
-  act(() => part(".cs-final-yes").click());
+  act(() => document.querySelector<HTMLElement>(".s-pick .review-held")!.click());
   expect(cardActions.onReview.mock.calls.map(([g, action]) => [g.id, action])).toEqual([["a", "held"]]);
   // C = 코멘트 창 · ⓘ = 정보 창
   act(() => part(".card-tl .card-cm:last-child").click());
@@ -961,26 +960,25 @@ it("풀 카드: 태그 입력 중 편집기 안의 × 는 그 태그를 뗀다 �
     .toEqual([[["컷2"]], true]);
   act(() => { part(".cs-tag-input").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
 
-  // S → 보류 → 확인판 위 휠 클릭: 메뉴 없음 · 확인판은 그대로
+  // S 선택 창 위 휠 클릭: 메뉴 없음 · 창은 그대로(창은 body 에 뜨지만 React 트리로는 카드 안이다)
+  const held = () => document.querySelector<HTMLElement>(".s-pick .review-held")!;
   fire(part(".card-sf"), "mousedown");
   act(() => part(".card-sf").click());
-  act(() => part(".review-held").click());
-  wheelClick(part(".cs-final-yes"));
+  wheelClick(held());
   expect(menu()).toBeNull();
-  act(() => part(".cs-final-yes").click());
+  act(() => held().click());
   expect(cardActions.onReview.mock.calls.map(([g, action]) => [g.id, action])).toEqual([["a", "held"]]);
-  // 겹친 누름(Codex 재검토): 가리지 않은 곳에서 왼쪽을 쥔 채 확인판을 열고 그 위에서 휠을 더 눌렀다 뗐다 — 새 pointerdown 없이
+  // 겹친 누름(Codex 재검토): 가리지 않은 곳에서 왼쪽을 쥔 채 창을 열고 그 위에서 휠을 더 눌렀다 뗐다 — 새 pointerdown 없이
   //  pointermove(button 1)만 온다. 그것도 그 누름의 가림으로 적는다(휠을 떼는 pointermove 는 덮지 않는다)
   fire(document.body, "pointerdown", { button: 0, buttons: 1 });
   fire(part(".card-sf"), "mousedown");
   act(() => part(".card-sf").click());
-  act(() => part(".review-held").click());
-  fire(part(".cs-final-yes"), "pointermove", { button: 1, buttons: 5 });
-  fire(part(".cs-final-yes"), "pointermove", { button: 1, buttons: 1 });
-  fire(part(".cs-final-yes"), "auxclick", { button: 1, buttons: 1 });
+  fire(held(), "pointermove", { button: 1, buttons: 5 });
+  fire(held(), "pointermove", { button: 1, buttons: 1 });
+  fire(held(), "auxclick", { button: 1, buttons: 1 });
   expect(menu()).toBeNull();
   fire(document.body, "pointerup", { button: 0, buttons: 0 });
-  act(() => part(".cs-final-yes").click());
+  act(() => held().click());
   expect(cardActions.onReview.mock.calls.length).toBe(2);
 
   // 떠 있는 메뉴를 닫는 휠 클릭은 다른 카드의 메뉴를 열지 않는다 — 다음 휠 클릭은 연다

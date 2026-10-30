@@ -444,7 +444,6 @@ const EN: Record<string, string> = {
   "공유로 복귀할까요?": "Return to shared?",
   "보류할까요?": "Put on hold?",
   "최종(골드)으로 지정할까요?": "Mark as final (gold)?",
-  "공유 하시겠습니까?": "Share this result?",
   "단계 올리기": "Raise grade",
   "단계 내리기": "Lower grade",
   "단계 올리기 (일반·보류→공유, 공유→최종)": "Raise grade (Unshared/On hold→Shared, Shared→Final)",

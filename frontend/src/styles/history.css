@@ -172,6 +172,11 @@
   background: linear-gradient(rgba(0,0,0,0.35), transparent 30%, transparent 60%, rgba(0,0,0,0.55));
 }
 .linb-node:hover .linb-ov, .linb-ov:focus-within { opacity: 1; } /* Tab 으로 안의 단추에 닿으면 보인다(조작 규칙 51 — 그리드 .thumb-overlay 와 같이) */
+/* S 선택 창이 떠 있는 노드만 흐려지고 S 는 또렷하게 남는다(그리드 .card.s-picking 과 같이). 마우스를 치워도 S 가 보이게 호버 층을 켜고 S 만 남긴다 */
+.linb-node.s-picking > img, .linb-node.s-picking > video, .linb-node.s-picking .card-bottom { filter: blur(3px) brightness(0.5); }
+.linb-node.s-picking .linb-ov { opacity: 1; background: none; }
+.linb-node.s-picking .linb-ov-btn:not(.s-anchor), .linb-node.s-picking .linb-ov-bot, .linb-node.s-picking .linb-sf { visibility: hidden; }
+.linb-node.s-picking .linb-ov-btn.s-anchor { pointer-events: auto; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.8); }
 .linb-ov-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 5px; }
 .linb-ov-bot { display: flex; gap: 4px; justify-content: center; flex-wrap: wrap; }
 .linb-ov-drag { cursor: grab; }

@@ -653,14 +653,15 @@ it("툴바 필터 — 조건에 안 맞는 결과 노드가 흐려지고, 풀면
   expect(node().classList.contains("dimmed")).toBe(false);
 });
 
-it("공유 확인 — S 를 누르면 그 결과 노드에 확인이 뜨고, 아니오로 닫힌다", async () => {
+it("공유 선택 창 — S 를 누르면 그 결과 노드 옆에 창이 뜨고, S 를 다시 누르면 닫힌다", async () => {
   await mountBoard();
   const share = [...boardCard("g1").querySelectorAll<HTMLElement>(".linb-ov-top .linb-ov-btn")].find((button) => button.textContent?.trim() === "S")!;
   await tap(share);
-  expect(inCard("g1", ".sconfirm")).not.toBeNull();
-  await tap(inCard("g1", ".sconfirm .review-option:not(.review-unshared)")!);
-  await tap(inCard("g1", ".sconfirm .cs-final-no")!);
-  expect(inCard("g1", ".sconfirm")).toBeNull();
+  expect(inCard("g1", ".linb-node.s-picking")).not.toBeNull();
+  expect(document.querySelector(".s-pick")).not.toBeNull();
+  await tap(share);
+  expect(inCard("g1", ".linb-node.s-picking")).toBeNull();
+  expect(document.querySelector(".s-pick")).toBeNull();
 });
 
 it("마지막으로 본 표시 — 크게 열어 본 카드에 표시가 달리고, 다른 카드를 열면 옮겨 간다", async () => {

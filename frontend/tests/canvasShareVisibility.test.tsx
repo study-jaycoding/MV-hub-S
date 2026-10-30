@@ -66,7 +66,7 @@ function wrapper(kind: "generation" | "comfy", g: Generation, h: HistPass) {
 }
 function shareActions() {
   return [...host.querySelectorAll<HTMLButtonElement>(".linb-ov-top button")]
-    .filter(el => el.textContent === "S" || el.textContent === "★");
+    .filter(el => el.textContent === "S" || el.querySelector(".card-final-star"));
 }
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);

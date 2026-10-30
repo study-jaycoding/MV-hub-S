@@ -95,8 +95,8 @@ it("arrow tooltips translate and retain the requested held transitions", () => {
 });
 
 it("single-card questions share the existing translation dictionary", () => {
-  expect(["공유 하시겠습니까?", "공유 해제 할까요?", "최종(골드)으로 지정할까요?", "공유로 복귀할까요?"].map(t))
-    .toEqual(["Share this result?", "Remove sharing?", "Mark as final (gold)?", "Return to shared?"]);
+  expect(["공유 해제 할까요?", "최종(골드)으로 지정할까요?", "공유로 복귀할까요?"].map(t))
+    .toEqual(["Remove sharing?", "Mark as final (gold)?", "Return to shared?"]);
 });
 
 it("mirror notices translate only for opted-in callers", () => {

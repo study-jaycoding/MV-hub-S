@@ -31,7 +31,7 @@ const cases = ["unshared", "shared", "held", "final"].flatMap(state => [false, t
 it.each(cases)("$state mine=$mine may=$may: action visibility preserves the separate status badge", ({ state, mine, may }) => {
   const p = props(gen({ is_mine: mine, shared: state !== "unshared", is_held: state === "held", is_final: state === "final" }));
   act(() => root.render(<HistoryBoardNode {...p} {...{ mayFinalize: may }} />));
-  const button = [...host.querySelectorAll<HTMLButtonElement>(".linb-ov-top button")].find(el => ["S", "★"].includes(el.textContent || ""));
+  const button = [...host.querySelectorAll<HTMLButtonElement>(".linb-ov-top button")].find(el => el.textContent === "S" || el.querySelector(".card-final-star"));
   const expected = mine || state === "held" || state === "final" || (state === "shared" && may);
   expect(!!button).toBe(expected);
   expect(!!host.querySelector(".linb-sf")).toBe(state !== "unshared");

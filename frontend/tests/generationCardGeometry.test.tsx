@@ -46,7 +46,8 @@ it.each(["grid", "list"] as const)("%s: gold star is centered, and all content s
     Math.max(...points.map(([x]) => x)), Math.max(...points.map(([, y]) => y))]).toEqual([2, 0, 98, 91]);
   expect(icon.getAttribute("viewBox")).toBe("2 0 96 91");
   act(() => button.click());
-  expect(getComputedStyle(host.querySelector(".card-clip > .sconfirm")!).borderRadius).toBe("0");
+  expect(document.querySelector(".s-pick")).not.toBeNull(); // 창은 body 에 뜬다 — 카드 안에 아무것도 더하지 않는다
+  expect(host.querySelector(".sconfirm")).toBeNull();
   expect(getComputedStyle(host.querySelector(".card")!).borderRadius).toBe("14px");
   expect(getComputedStyle(host.querySelector(".card")!).overflow).toBe("visible");
   expect(host.querySelector(".card")!.children).toHaveLength(1);
@@ -100,7 +101,8 @@ it.each(["grid", "list"] as const)("%s: gold star is centered, and all content s
     Math.max(...points.map(([x]) => x)), Math.max(...points.map(([, y]) => y))]).toEqual([2, 0, 98, 91]);
   expect(icon.getAttribute("viewBox")).toBe("2 0 96 91");
   act(() => button.click());
-  expect(getComputedStyle(host.querySelector(".card-clip > .sconfirm")!).borderRadius).toBe("0");
+  expect(document.querySelector(".s-pick")).not.toBeNull(); // 창은 body 에 뜬다 — 카드 안에 아무것도 더하지 않는다
+  expect(host.querySelector(".sconfirm")).toBeNull();
   expect(getComputedStyle(host.querySelector(".card")!).borderRadius).toBe("14px");
   expect(getComputedStyle(host.querySelector(".card")!).overflow).toBe("visible");
   expect(host.querySelector(".card")!.children).toHaveLength(1);
@@ -150,8 +152,10 @@ it.each(["grid", "list"] as const)("%s: selection keeps frame padding and conten
   expect(contentInsets(getComputedStyle(host.querySelector(".card")!))).toEqual(originalInsets);
 });
 
+const bulk = { selectedCount: 3, onBulkGradeStep: noop, bulkReviewAllowed: { unshared: true, shared: true, held: true, final: true } };
+
 it("review menu fills the card with equal rows per option and no size cap", () => {
-  act(() => root.render(<><style>{allCss}</style><GenerationCard {...props()} /></>));
+  act(() => root.render(<><style>{allCss}</style><GenerationCard {...props()} {...bulk} /></>));
   act(() => host.querySelector<HTMLButtonElement>(".card-sf")!.click());
   expect(getComputedStyle(host.querySelector(".review-option")!).minHeight).toBe("30px");
   expect(getComputedStyle(host.querySelector(".review-option-name")!).fontSize).toBe("12px");
@@ -175,7 +179,7 @@ it("review menu fills the card with equal rows per option and no size cap", () =
 });
 
 it("confirmation uses the full panel width with equal Yes/No buttons, without the menu's full height", () => {
-  act(() => root.render(<><style>{allCss}</style><GenerationCard {...props()} /></>));
+  act(() => root.render(<><style>{allCss}</style><GenerationCard {...props()} {...bulk} /></>));
   act(() => host.querySelector<HTMLButtonElement>(".card-sf")!.click());
   act(() => host.querySelector<HTMLButtonElement>(".review-unshared")!.click());
   expect(host.querySelector(".review-menu")).toBeNull();
