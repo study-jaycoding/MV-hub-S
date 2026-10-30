@@ -59,8 +59,27 @@ export function loadSceneHistory(sceneId: string): SceneHistory | undefined {
 
 export function clearSceneHistory(sceneId: string): void {
   store.delete(sceneId);
+  pendingHandoffs.delete(sceneId);
   tombstones.add(sceneId); // 뒤따르는 언마운트 저장을 1회 무시하게
+  // 씬 삭제도 이 창의 변경으로 센다 — 진행 중인 인계·부팅 읽기가 삭제 전 기록을 (같은 id 로 되살린 씬에) 들이지 못하게(B 독립 리뷰 2차 P1)
+  noteLocalSceneEdit(sceneId);
   historyListeners.forEach((listener) => listener({ type: "cleared", sceneId }));
+}
+
+// 보드 없이 받은 '확인 전' 인계 — 있던 기록을 바로 덮지 않고 따로 둔다. 보드가 열릴 때(takeSceneHistory) 지금 씬과 맞는 쪽을 쓴다:
+//  확인 전 인계가 낡았으면 그 전의 정상 기록(부팅 복원 등)을 잃지 않게(B 독립 리뷰 2차 P2).
+const pendingHandoffs = new Map<string, SceneHistory>();
+
+/** 보드가 열리거나 씬을 바꿔 받을 때 — 지금 씬(current)과 이어지는 기록. 확인 전 인계가 맞으면 그것(더 새 창의 기록)을, 아니면 있던 기록을. */
+export function takeSceneHistory(sceneId: string, current: SceneSnap): SceneHistory | undefined {
+  const pending = pendingHandoffs.get(sceneId);
+  pendingHandoffs.delete(sceneId);
+  if (pending && sameSnap(pending.lastCommit, current)) {
+    saveSceneHistory(sceneId, pending);
+    return pending;
+  }
+  const stored = store.get(sceneId);
+  return stored && sameSnap(stored.lastCommit, current) ? stored : undefined;
 }
 
 // 기록이 바뀐 사건 — 새로 고쳐도 남기는 저장(sceneUndoPersistence)이 듣는다. 이 모듈이 그쪽을 import 하지 않게(순환) 알림으로 잇는다.
@@ -143,7 +162,11 @@ export function adoptSceneHistory(
   const fp = shown ? snapFingerprint(shown) : target.snapFp;
   if (fp !== null && fp !== candidate.snapFp) return "mismatch";
   if (!boards.every((board) => board.adopt(candidate.history))) return "stale";
-  saveSceneHistory(sceneId, candidate.history);
+  if (gate.kind === "handoff" && fp === null && store.has(sceneId)) pendingHandoffs.set(sceneId, candidate.history); // 확인 전 — 있던 기록을 지킨다(위)
+  else {
+    pendingHandoffs.delete(sceneId);
+    saveSceneHistory(sceneId, candidate.history);
+  }
   adoptEpoch += 1;
   if (gate.kind === "handoff") {
     handoffAdopted.set(sceneId, candidate.snapFp);

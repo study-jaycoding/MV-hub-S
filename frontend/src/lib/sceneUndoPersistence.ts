@@ -345,7 +345,9 @@ async function write(reservation: Reservation): Promise<void> {
       generations.set(key, Math.max(generations.get(key) ?? 0, stored));
       return;
     }
-    if (result === "ok" && live() && readPointers()[key] !== slot.key) writePointer(key, slot.key);
+    // 포인터 게시 직전에 칸의 세대를 다시 본다 — 쓰기가 커밋된 뒤 다른 창이 이 씬을 지웠으면 게시하지 않는다(B 독립 리뷰 2차 P2)
+    if (result === "ok" && live() && readPointers()[key] !== slot.key
+      && (await currentBackend().generation(account, sceneId)) === deleteGeneration && live()) writePointer(key, slot.key);
   } catch {
     /* 기록 없이 진행 */
   }

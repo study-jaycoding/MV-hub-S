@@ -217,6 +217,21 @@ describe("삭제·포인터·실패", () => {
     expect(Object.values(pointers())).toEqual([fake.puts[1].key]);
   });
 
+  it("쓰기가 커밋된 뒤 다른 창이 그 씬을 지웠으면 늦은 완료가 포인터를 게시하지 않는다(리뷰 2차 P2)", async () => {
+    const { persist } = await pageLoad();
+    const real = fake.backend;
+    persist.setUndoBackend({ ...real, put: async (slot, budget) => {
+      const result = await real.put(slot, budget);
+      await real.forget("local", "s1", 1); // 커밋 직후 다른 창의 삭제가 커밋됐다
+      return result;
+    } });
+    persist.scheduleUndoCheckpoint("s1", history(), 1, OK);
+    await until(() => fake.puts.length === 1);
+    await settle();
+    await settle();
+    expect(pointers()).toEqual({});
+  });
+
   it("칸을 못 열거나 읽기가 멈춰도 부팅한다 — 기다리는 시간을 넘으면 기록 없이 띄운다", async () => {
     const { persist, undo, boot } = await pageLoad();
     sessionStorage.setItem(POINTERS, JSON.stringify({ [JSON.stringify(["local", "s1"])]: "x" }));
@@ -295,7 +310,7 @@ describe("들이는 규칙 — 부팅 복원과 창 인계(adoptSceneHistory)", 
     ({ undo } = await pageLoad());
     expect(undo.adoptSceneHistory(target, candidate(undo), boot(undo))).toBe("adopted");
     expect(undo.adoptSceneHistory(target, candidate(undo, fromHandoff), handoff(undo))).toBe("adopted");
-    expect(undo.loadSceneHistory("s1")).toEqual(fromHandoff);
+    expect(undo.takeSceneHistory("s1", snap(...AFTER))).toEqual(fromHandoff); // 보드가 열릴 때 지금 씬과 맞는 인계로 바꾼다
   });
 
   it("읽기·인계를 시작한 뒤 이 창에서 편집했으면 받지 않는다 — 인계 번호가 다르면 받지 않는다", async () => {
@@ -322,6 +337,33 @@ describe("들이는 규칙 — 부팅 복원과 창 인계(adoptSceneHistory)", 
     expect(undo.adoptSceneHistory(target, candidate(undo, fresh), handoff(undo))).toBe("adopted");
     expect(undo.adoptSceneHistory({ ...target, snapFp: persist.savedSceneFingerprint("s1") }, candidate(undo), boot(undo))).toBe("stale");
     expect(undo.loadSceneHistory("s1")).toEqual(fresh);
+  });
+
+  it("부팅 복원 뒤 보드 없이 온 낡은 인계는 그 기록을 덮지 않고, 보드가 열릴 때 지금 씬과 맞는 쪽을 쓴다(리뷰 2차 P2)", async () => {
+    const { undo, persist } = await pageLoad();
+    expect(undo.adoptSceneHistory({ ...target, snapFp: persist.savedSceneFingerprint("s1") }, candidate(undo), boot(undo))).toBe("adopted");
+    const stale = { undo: [snap(card("c1", -5))], redo: [], lastCommit: snap(card("c1", -1)) };
+    undo.adoptSceneHistory(target, candidate(undo, stale), handoff(undo));
+    expect(undo.loadSceneHistory("s1")).toEqual(history());
+    expect(undo.takeSceneHistory("s1", snap(...AFTER))).toEqual(history());
+    const fresh = { ...history(), redo: [snap(card("c1", 9))] }; // 지금 씬과 맞는 인계는 보드가 열릴 때 그것을 쓴다(더 새 창의 기록)
+    undo.adoptSceneHistory(target, candidate(undo, fresh), handoff(undo));
+    expect(undo.takeSceneHistory("s1", snap(...AFTER))).toEqual(fresh);
+  });
+
+  it("인계 중에 이 창이 씬을 지웠으면(같은 id 로 되살려도) 그 뒤 돌아온 삭제 전 인계를 받지 않는다(리뷰 2차 P1)", async () => {
+    const { undo } = await pageLoad();
+    const popup = await import("../src/lib/popupWindows");
+    popup.shareCanvasMemory();
+    vi.spyOn(window, "open").mockImplementation((() => ({ closed: false, focus: vi.fn(), addEventListener: vi.fn() })) as never);
+    popup.openEmbedWindow(popup.EMBED_MODES.canvas);
+    undo.clearSceneHistory("s1"); // 삭제(그 뒤 같은 id 로 되살렸다고 치자 — 저장본은 그대로)
+    const port = (window as unknown as Record<string, { load: (memory: object) => void }>).__mvhubCanvasMemory;
+    port.load({ sceneHistories: { account: "local", handoffId: popup.canvasHandoffId(), entries: [["s1", history()]] } });
+    expect(undo.loadSceneHistory("s1")).toBeUndefined();
+    expect(undo.takeSceneHistory("s1", snap(...AFTER))).toBeUndefined();
+    await settle();
+    expect(fake.puts).toEqual([]);
   });
 
   it("빈 기록 인계·옛 판 배열 인계는 받지 않는다 — 빈 인계 뒤의 정상 복원이 막히지 않는다(리뷰 P1·P2)", async () => {
