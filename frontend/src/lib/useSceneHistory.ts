@@ -9,12 +9,11 @@ import {
   type SceneGroup,
 } from "./scenes";
 import {
-  loadSceneHistory,
   localSceneRevision,
   noteLocalSceneEdit,
   registerLiveSceneHistory,
-  sameSnap,
   saveSceneHistory as saveStoredSceneHistory,
+  takeSceneHistory,
   type SceneCardRemoval,
   type SceneHistory,
   type SceneSnap,
@@ -112,11 +111,7 @@ export function useSceneHistory({
   // 저장된 최근 커밋과 현재 씬이 이어질 때만 기존 스택을 복원한다.
   const bootHistoryRef = useRef<SceneHistory | null>(null);
   if (bootHistoryRef.current === null) {
-    const stored = loadSceneHistory(sceneId);
-    bootHistoryRef.current =
-      stored && sameSnap(stored.lastCommit, initialSnapshot)
-        ? stored
-        : { undo: [], redo: [], lastCommit: initialSnapshot };
+    bootHistoryRef.current = takeSceneHistory(sceneId, initialSnapshot) ?? { undo: [], redo: [], lastCommit: initialSnapshot };
   }
 
   const undoStackRef = useRef(bootHistoryRef.current.undo);
@@ -161,8 +156,8 @@ export function useSceneHistory({
   }), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const restoreSceneHistory = (targetSceneId: string, incoming: SceneSnap) => {
-    const stored = loadSceneHistory(targetSceneId);
-    if (stored && sameSnap(stored.lastCommit, incoming)) {
+    const stored = takeSceneHistory(targetSceneId, incoming);
+    if (stored) {
       undoStackRef.current = stored.undo;
       redoStackRef.current = stored.redo;
       lastCommitRef.current = stored.lastCommit;

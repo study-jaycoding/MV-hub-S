@@ -59,8 +59,27 @@ export function loadSceneHistory(sceneId: string): SceneHistory | undefined {
 
 export function clearSceneHistory(sceneId: string): void {
   store.delete(sceneId);
+  pendingHandoffs.delete(sceneId);
   tombstones.add(sceneId); // 뒤따르는 언마운트 저장을 1회 무시하게
+  // 씬 삭제도 이 창의 변경으로 센다 — 진행 중인 인계·부팅 읽기가 삭제 전 기록을 (같은 id 로 되살린 씬에) 들이지 못하게(B 독립 리뷰 2차 P1)
+  noteLocalSceneEdit(sceneId);
   historyListeners.forEach((listener) => listener({ type: "cleared", sceneId }));
+}
+
+// 보드 없이 받은 '확인 전' 인계 — 있던 기록을 바로 덮지 않고 따로 둔다. 보드가 열릴 때(takeSceneHistory) 지금 씬과 맞는 쪽을 쓴다:
+//  확인 전 인계가 낡았으면 그 전의 정상 기록(부팅 복원 등)을 잃지 않게(B 독립 리뷰 2차 P2).
+const pendingHandoffs = new Map<string, SceneHistory>();
+
+/** 보드가 열리거나 씬을 바꿔 받을 때 — 지금 씬(current)과 이어지는 기록. 확인 전 인계가 맞으면 그것(더 새 창의 기록)을, 아니면 있던 기록을. */
+export function takeSceneHistory(sceneId: string, current: SceneSnap): SceneHistory | undefined {
+  const pending = pendingHandoffs.get(sceneId);
+  pendingHandoffs.delete(sceneId);
+  if (pending && sameSnap(pending.lastCommit, current)) {
+    saveSceneHistory(sceneId, pending);
+    return pending;
+  }
+  const stored = store.get(sceneId);
+  return stored && sameSnap(stored.lastCommit, current) ? stored : undefined;
 }
 
 // 기록이 바뀐 사건 — 새로 고쳐도 남기는 저장(sceneUndoPersistence)이 듣는다. 이 모듈이 그쪽을 import 하지 않게(순환) 알림으로 잇는다.
@@ -99,9 +118,11 @@ export function localSceneRevision(sceneId: string): number {
 }
 
 // 받은 기록을 들이는 규칙(설계 §9.5·§9.8) — 부팅 복원(bootstrap)과 창 인계(handoff)를 나눈다. 공통: 계정·씬이 같고 지문(snapFp)이 지금 씬과 같다.
-//  · 부팅 복원: 읽기 시작 뒤 이 창 편집이 없고, 인계로 받은 기록이 없을 때만(인계가 늘 우선 — 늦게 끝난 읽기가 덮지 않는다). 처음 만든 빈 기록은 '채택'이 아니다.
+//  · 부팅 복원: 읽기 시작 뒤 이 창 편집이 없고, 저장본과 맞는 인계 기록이 없을 때만(그런 인계가 우선 — 늦게 끝난 읽기가 덮지 않는다). 처음 만든 빈 기록은 '채택'이 아니다.
 //  · 창 인계: 지금 진행 중인 인계(popupWindows 의 인계 번호)와 맞고, 받는 창이 인계 뒤 따로 편집하지 않았으면 있던 기록도 바꾼다.
 //  지문은 열린 보드가 있으면 그 보드의 지금 기록과, 없으면 target.snapFp(저장본)와 견준다 — null 이면 보드가 열릴 때 useSceneHistory 가 견준다.
+//  ★보드 없이 받은 인계는 확인 전이다(창을 닫는 순간엔 그 창의 마지막 저장이 아직 저장본에 안 닿았을 수 있어 그때 견주면 맞는 인계를 버린다) —
+//   그래서 인계의 우선은 그 지문이 부팅 복원의 저장본 지문과 같을 때만 준다. 다르면 부팅 복원이 바꿀 수 있다(B 독립 리뷰 P2).
 export interface HistoryTarget {
   account: string;
   sceneId: string;
@@ -117,7 +138,7 @@ export type HistoryAdoptionGate =
   | { kind: "bootstrap"; readEpoch: number; expectedLocalRevision: number }
   | { kind: "handoff"; handoffId: string | null; expectedLocalRevision: number };
 let adoptEpoch = 0;
-const handoffAdopted = new Set<string>();
+const handoffAdopted = new Map<string, string>(); // 씬 → 인계로 받은 기록의 지문
 const bootstrapEpochs = new Map<string, number>();
 /** 부팅 읽기를 시작할 때 받아 둔다 — 그 뒤 더 새 읽기가 먼저 들인 기록을 늦은 읽기가 덮지 않게. */
 export const historyReadEpoch = (): number => adoptEpoch;
@@ -131,20 +152,29 @@ export function adoptSceneHistory(
   if (!isHistory(candidate.history) || candidate.sceneId !== sceneId || candidate.account !== target.account
     || target.account !== getAccountNamespace()) return "mismatch";
   if (localSceneRevision(sceneId) !== gate.expectedLocalRevision) return "stale";
+  const handedFp = handoffAdopted.get(sceneId);
   if (gate.kind === "handoff" ? gate.handoffId !== canvasHandoffId()
-    : handoffAdopted.has(sceneId) || (bootstrapEpochs.get(sceneId) ?? -1) > gate.readEpoch) return "stale";
+    : (handedFp !== undefined && (target.snapFp === null || handedFp === target.snapFp))
+      || (bootstrapEpochs.get(sceneId) ?? -1) > gate.readEpoch) return "stale";
   const boards = [...liveBoards].filter((board) => board.sceneId() === sceneId);
   boards.forEach((board) => board.flush());
   const shown = boards.length ? store.get(sceneId)?.lastCommit : undefined;
   const fp = shown ? snapFingerprint(shown) : target.snapFp;
   if (fp !== null && fp !== candidate.snapFp) return "mismatch";
   if (!boards.every((board) => board.adopt(candidate.history))) return "stale";
-  saveSceneHistory(sceneId, candidate.history);
+  if (gate.kind === "handoff" && fp === null && store.has(sceneId)) pendingHandoffs.set(sceneId, candidate.history); // 확인 전 — 있던 기록을 지킨다(위)
+  else {
+    pendingHandoffs.delete(sceneId);
+    saveSceneHistory(sceneId, candidate.history);
+  }
   adoptEpoch += 1;
   if (gate.kind === "handoff") {
-    handoffAdopted.add(sceneId);
+    handoffAdopted.set(sceneId, candidate.snapFp);
     historyListeners.forEach((listener) => listener({ type: "handedOff", sceneId, history: candidate.history }));
-  } else bootstrapEpochs.set(sceneId, adoptEpoch);
+  } else {
+    handoffAdopted.delete(sceneId); // 저장본과 맞는 부팅 복원이 확인 전 인계를 바꿨다
+    bootstrapEpochs.set(sceneId, adoptEpoch);
+  }
   return "adopted";
 }
 
@@ -164,15 +194,14 @@ registerCanvasMemory("sceneHistories", {
   },
   save: () => ({ account: getAccountNamespace(), handoffId: canvasHandoffId(), entries: [...store.entries()] }),
   load: (value) => {
-    // 배열 = 인계 번호를 모르는 옛 판 창 — 이 창의 지금 인계로 본다(같은 창에서 연 짝이다)
-    const payload = Array.isArray(value)
-      ? { account: getAccountNamespace(), handoffId: canvasHandoffId(), entries: value as unknown[] }
-      : (value as { account?: unknown; handoffId?: unknown; entries?: unknown } | null);
+    // 옛 판 창이 보내는 배열은 받지 않는다 — 보낸 계정·인계 번호를 확인할 수 없다(받는 쪽 값을 붙이면 다른 계정의 기록도 통과했다, B 독립 리뷰 P1)
+    const payload = Array.isArray(value) ? null : (value as { account?: unknown; handoffId?: unknown; entries?: unknown } | null);
     if (!payload || typeof payload.account !== "string" || !Array.isArray(payload.entries)) return;
     const handoffId = typeof payload.handoffId === "string" ? payload.handoffId : null;
     for (const entry of payload.entries) {
       if (!Array.isArray(entry) || typeof entry[0] !== "string" || !isHistory(entry[1])) continue;
       const [sceneId, history] = entry as [string, SceneHistory];
+      if (!history.undo.length && !history.redo.length) continue; // 빈 초기 기록은 인계가 아니다 — 받으면 뒤에 올 정상 복원을 막는다(B 리뷰 P2)
       adoptSceneHistory(
         { account: getAccountNamespace(), sceneId, snapFp: null },
         { account: payload.account, sceneId, snapFp: snapFingerprint(history.lastCommit), history },

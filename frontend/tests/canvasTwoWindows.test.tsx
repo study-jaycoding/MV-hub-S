@@ -225,7 +225,8 @@ describe("②④ 되돌리기 기록·복사한 노드를 주고받는다", () =
       window.dispatchEvent(new Event("pagehide")); // 캔버스 창을 닫았다
       // 돌려주기는 동기다 — 'closed' 알림이 닿기 전에 이미 메인 창 store 에 있다
       expect(heard).toEqual([]);
-      expect(mainUndo.loadSceneHistory("s1")).toEqual({ undo: [snap("a"), snap("b")], redo: [], lastCommit: snap("c") });
+      // 메인 창에 있던 기록은 덮지 않고, 보드가 열릴 때 지금 씬(c)과 이어지는 쪽 — 돌려받은 기록 — 을 쓴다
+      expect(mainUndo.takeSceneHistory("s1", snap("c"))).toEqual({ undo: [snap("a"), snap("b")], redo: [], lastCommit: snap("c") });
       expect(port.save().sceneClipboard).toEqual({ snapshot: { cards: [{ id: "copied" }], edges: [], inEdges: [] }, marker: "m1" });
       await until(() => heard.includes("closed"));
     } finally {
