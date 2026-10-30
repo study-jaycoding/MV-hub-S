@@ -4,6 +4,8 @@
 //  · 필터 단추(LibraryWorkspaceFilter) — Filter[Workspaces › · Hide failed] · Activity[실패·차단 정리 → 앱 확인 창(HostConfirm)]
 //  · 받지 않은 툴바(Assets·캔버스·구성 보드)는 옛 단추 그대로 — 빨간 '실패·차단 정리'도 그쪽에만 남고 같은 확인 창을 띄운다
 import { act } from "react";
+import { readFileSync } from "node:fs";
+import { URL as NodeURL } from "node:url";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LibraryToolbar } from "../src/components/LibraryToolbar";
@@ -176,6 +178,19 @@ describe("필터 단추 창 · 실패·차단 정리(LibraryToolbar)", () => {
     expect(one(".assets-filters")!.lastElementChild!.className).toBe("vp-wrap");
     draw({ boardMode: true, onSetMasonry: noop });
     expect([one(".vp-wrap"), one(".assets-filters .fit-toggle"), !!one(".lib-tools > .fit-toggle")]).toEqual([null, null, true]);
+  });
+
+  it("보기 단추는 상자 없이 아이콘만 + 앞에 가는 세로선(S·T·C 와 다른 기능으로) — CSS", () => {
+    const css = readFileSync(new NodeURL("../src/styles/generations.css", import.meta.url), "utf8");
+    expect(css).toMatch(/\.af-btn\.vp-btn \{[^}]*background: transparent; border-color: transparent;/);
+    expect(css).toMatch(/\.assets-filters > \.vp-wrap \{[^}]*border-left: 1px solid/);
+  });
+
+  it("씬 캔버스 툴바는 크기 슬라이더·줌 묶음 없이 □ 만(줌은 네비게이터 위) — 히스토리 보드는 슬라이더 그대로", () => {
+    draw({ boardMode: true, sceneCanvas: true });
+    expect([!!one(".lib-tools > .fit-toggle"), one(".size-slider"), one(".zoom-cluster")]).toEqual([true, null, null]);
+    draw({ boardMode: true });
+    expect(!!one(".size-slider")).toBe(true);
   });
 
   it("정리할 것이 없으면 Activity 줄은 눌리지 않는다", () => {

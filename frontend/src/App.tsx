@@ -2633,15 +2633,8 @@ export default function App() {
               onToggleTagPanel={toggleTagPanel}
               zoomValue={boardStats.zoomPct / 100}
               onZoomValue={(v) => boardControl.current?.zoomTo(v)}
-              // 씬(캔버스) 활성 시 슬라이더(히스토리 보드 배선이라 무동작)를 [맞춤][−][%][+]로 교체
-              sceneZoom={
-                activeScene
-                  ? {
-                      onFit: () => sceneActionRef.current?.zoomFit(),
-                      onStep: (dir) => sceneActionRef.current?.zoomStep(dir),
-                    }
-                  : undefined
-              }
+              // 씬(캔버스) 활성 시 슬라이더(히스토리 보드 배선이라 무동작)를 뺀다 — 캔버스 줌은 네비게이터 위 막대(SceneMinimap, Jay 2026-10-30)
+              sceneCanvas={!!activeScene}
               boardMode
               showFilterToggle
             />

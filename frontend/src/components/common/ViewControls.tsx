@@ -2,8 +2,7 @@ import { useCallback, useRef, useState, type CSSProperties } from "react";
 import { dropFocusAfterPress } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
-import { useSceneZoomPct } from "../../lib/sceneZoomStore";
-import { FitIcon, GridIcon, ListIcon, StepIcon } from "./ViewIcons";
+import { FitIcon, GridIcon, ListIcon } from "./ViewIcons";
 
 type LayoutMode = "grid" | "list";
 
@@ -13,11 +12,6 @@ const MasonryIcon = () => (
     <rect x="2" y="4" width="11" height="7" rx="1.5" /><rect x="15" y="4" width="7" height="7" rx="1.5" /><rect x="2" y="13" width="6" height="7" rx="1.5" /><rect x="10" y="13" width="12" height="7" rx="1.5" />
   </svg>
 );
-
-// 씬 확대 % — 휠 확대 때 이 글자만 다시 그린다(App·툴바는 그대로).
-function SceneZoomPct() {
-  return <span className="zc-pct">{useSceneZoomPct()}%</span>;
-}
 
 interface Props {
   fitContain: boolean;
@@ -35,8 +29,8 @@ interface Props {
   // 카드 Layout(Square · Masonry) — onSetMasonry 를 주면 단추 넷 대신 **보기 단추 하나**(누르면 보기 창, Jay 2026-10-30). 안 주면 옛 단추 그대로(Assets·보드).
   masonry?: boolean;
   onSetMasonry?: (on: boolean) => void;
-  // 씬 캔버스 줌 — 있으면 슬라이더 대신 [맞춤][−][%][+] 클러스터를 그린다.
-  zoomControl?: { onFit: () => void; onStep: (dir: 1 | -1) => void };
+  // 씬 캔버스 — 크기 슬라이더 자리를 비운다(캔버스 줌 [− 비율 +] 은 캔버스의 네비게이터 위 막대, Jay 2026-10-30 — 전엔 여기 [맞춤][−][%][+]).
+  hideSize?: boolean;
   t?: (text: string) => string;
 }
 
@@ -138,7 +132,7 @@ export function ViewControls(props: Props) {
     onToggleGroupByDate,
     showLayout = true,
     onSetMasonry,
-    zoomControl,
+    hideSize = false,
     t = (text) => text,
   } = props;
   if (onSetMasonry) return <ViewMenu {...props} onSetMasonry={onSetMasonry} />;
@@ -158,26 +152,7 @@ export function ViewControls(props: Props) {
       >
         <FitIcon filled={!fitContain} />
       </button>
-      {zoomControl ? (
-        <div className="zoom-cluster">
-          <button
-            className="zc-fit"
-            onClick={zoomControl.onFit}
-            title={t("전체가 보이게 맞춤 — 선택이 있으면 선택 중심 (단축키 f)")}
-          >
-            Fit
-          </button>
-          <div className="zc-group">
-            <button onClick={() => zoomControl.onStep(-1)} title={t("축소")}>
-              <StepIcon size={8} stroke={2} />
-            </button>
-            <SceneZoomPct />
-            <button onClick={() => zoomControl.onStep(1)} title={t("확대")}>
-              <StepIcon plus size={8} stroke={2} />
-            </button>
-          </div>
-        </div>
-      ) : (
+      {!hideSize && (
         <div className="size-slider" title={sizeTitle}>
           <input
             type="range"

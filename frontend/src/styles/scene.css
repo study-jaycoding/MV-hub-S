@@ -109,7 +109,7 @@
    장치·크기 측정에 손대지 않는다(70회차). visibility·pointer-events 가 아니라 opacity·덮개다 — 둘은 자식에게 물려져 켜고 끌 때 캔버스
    아래 전부의 스타일을 다시 계산했다(70회차 재실측: 처음 여는 씬 긴 작업 108 → 145ms). */
 .scene-board[data-switching] .scene-canvas,
-.scene-board[data-switching] .scene-minimap { opacity: 0; }
+.scene-board[data-switching] .scene-minimap, .scene-board[data-switching] .scene-minimap-zoom { opacity: 0; }
 /* 틈 동안 캔버스 아래의 그리기·배치를 건너뛴다 — 새 씬 카메라는 이미 들어와 있어(useSceneViewport 의 sceneId effect) 떠난 씬의 카드가
    다른 자리에 놓이고, 화면 밖 lazy 그림(큰 씬에서 12~40장)이 깨어나 받아졌다. 73회차 격리 실측(n=10): 떠날 때 그 요청 12→0 · 새 씬 카드
    첫 프레임 219→193ms · 누름→그림 80→64ms · 카드 rect·미니맵·썸네일 쥐기는 그대로. 틈에 캔버스 아래 크기를 읽으면 강제 배치가 된다
@@ -197,6 +197,28 @@
   border-radius: 6px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
   cursor: pointer; overflow: hidden; backdrop-filter: blur(2px);
 }
+/* 미니맵 위에 붙은 줌 막대 [− 비율 +](Jay 2026-10-30 — 툴바에서 옮김 · A안 붙임). 같은 폭, 위 모서리만 둥글게 — 미니맵은 그 아래로 내려
+   위 테두리가 둘 사이 선이 된다. 미니맵과 같이 보이고 숨는다(SceneMinimap update). 비율에 올리면 'Fit'(라임) · 누르면 맞춤 */
+.scene-minimap.has-zoom { top: 36px; border-radius: 0 0 6px 6px; border-top-color: var(--border); }
+.scene-minimap-zoom {
+  position: absolute; top: 10px; right: 10px; z-index: 20; height: 26px; align-items: stretch; overflow: hidden;
+  background: rgba(10, 14, 20, 0.82); border: 1px solid var(--border2); border-bottom: 0; border-radius: 6px 6px 0 0;
+  backdrop-filter: blur(2px);
+}
+.scene-minimap-zoom button {
+  flex: none; width: 30px; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent;
+  color: var(--muted2); display: grid; place-items: center; cursor: pointer; font: inherit;
+}
+.scene-minimap-zoom button:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
+.scene-minimap-zoom button:active { transform: none; }
+.scene-minimap-zoom .scene-minimap-fit {
+  flex: 1; width: auto; font-size: 12px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums;
+  border-left: 1px solid var(--border); border-right: 1px solid var(--border);
+}
+.scene-minimap-fitword { display: none; }
+.scene-minimap-zoom .scene-minimap-fit:hover { color: var(--accent); background: rgba(var(--accent-rgb), 0.12); }
+.scene-minimap-fit:hover .scene-minimap-pct { display: none; }
+.scene-minimap-fit:hover .scene-minimap-fitword { display: inline; }
 /* 미니맵 카드 — 종류별 색(캔버스 노드 색과 맞춰 직관성↑). 선택은 라임으로 덮어쓴다. */
 .scene-minimap-card { position: absolute; border-radius: 1px; background: #40557d; }
 .scene-minimap-card.k-reference { background: #7fa9ff; }

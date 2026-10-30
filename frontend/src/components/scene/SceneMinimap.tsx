@@ -5,8 +5,10 @@
 //       부모의 applyTransform 이 매 팬/줌마다 이 update() 를 호출한다(updateRef 로 연결).
 import { useEffect, useLayoutEffect, useRef } from "react";
 import type { MutableRefObject, RefObject } from "react";
+import { useSceneZoomPct } from "../../lib/sceneZoomStore";
 import { minimapViewBox } from "../../lib/sceneViewport";
 import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../../lib/windowDrag";
+import { StepIcon } from "../common/ViewIcons";
 
 export interface MinimapBox {
   id: string;
@@ -26,6 +28,12 @@ export interface MinimapBounds {
 const MM_MAX_W = 180; // 미니맵 최대 폭(px)
 const MM_MAX_H = 130; // 미니맵 최대 높이(px)
 const MM_PAD = 60; // 콘텐츠 주변 여백(캔버스 좌표)
+const MM_ZOOM_MIN_W = 132; // 줌 막대가 들어가는 최소 폭 — 더 좁은 미니맵은 이만큼 넓히고 카드를 가운데에 둔다
+
+// 줌 막대의 비율 — 휠 확대 때 이 글자만 다시 그린다(미니맵·보드는 그대로)
+function ZoomPct() {
+  return <>{useSceneZoomPct()}%</>;
+}
 
 interface Props {
   boxes: MinimapBox[];
@@ -38,6 +46,8 @@ interface Props {
   updateRef: MutableRefObject<(() => void) | null>;
   // 미니맵의 한 지점(캔버스 좌표)을 화면 중앙으로. commit=드래그 종료 시 카메라 저장.
   onNavigate: (worldX: number, worldY: number, commit: boolean) => void;
+  // 미니맵 위에 붙는 줌 막대 [− 비율 +](Jay 2026-10-30 — 툴바에서 옮김). 비율에 올리면 'Fit' · 누르면 맞춤. 미니맵과 같이 보이고 숨는다.
+  zoom?: { onFit: () => void; onStep: (dir: 1 | -1) => void };
 }
 
 export function SceneMinimap({
@@ -49,9 +59,11 @@ export function SceneMinimap({
   zoomRef,
   updateRef,
   onNavigate,
+  zoom,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<HTMLDivElement>(null);
+  const zoomBarRef = useRef<HTMLDivElement>(null);
   const dragCleanupRef = useRef<(() => void) | null>(null);
   // 드래그 중 언마운트(씬 전환·카드 삭제로 미니맵 사라짐)돼도 window 리스너가 남지 않게 정리.
   useEffect(() => () => dragCleanupRef.current?.(), []);
@@ -64,6 +76,9 @@ export function SceneMinimap({
   const scale = Math.min(MM_MAX_W / worldW, MM_MAX_H / worldH);
   const mmW = Math.max(40, worldW * scale);
   const mmH = Math.max(30, worldH * scale);
+  // 줌 막대가 붙으면 그 폭에 맞춘다 — 넓힌 만큼 카드·보는 영역·누른 자리 환산을 가운데로 민다(offX)
+  const boxW = zoom ? Math.max(mmW, MM_ZOOM_MIN_W) : mmW;
+  const offX = (boxW - mmW) / 2;
 
   // 보드(뷰포트) 크기 — 크기 감시가 알려 준 값을 기억한다. update() 에서 clientWidth 를 읽으면 렌더마다(아래 layout effect) 막 붙은
   //  카드 전부의 배치를 그 자리에서 강제로 계산했다(70회차 격리 실측: 세션 첫 씬 열기 긴 작업 108ms 중 이 함수 자기 시간 65ms).
@@ -110,6 +125,9 @@ export function SceneMinimap({
       sx0 < -eps || sy0 < -eps || sx1 > vp.width + eps || sy1 > vp.height + eps;
     const display = offscreen ? "block" : "none";
     if (wrap.style.display !== display) wrap.style.display = display;
+    const bar = zoomBarRef.current; // 줌 막대 — 미니맵이 없으면 같이 숨는다(Jay 2026-10-30)
+    const barDisplay = offscreen ? "flex" : "none";
+    if (bar && bar.style.display !== barDisplay) bar.style.display = barDisplay;
     // 현재 보는 영역(뷰포트)을 월드로 환산 → 미니맵 좌표. 미니맵 박스 안으로 자르고 정수 px 로(minimapViewBox) —
     //  바뀐 값만 쓴다. 소수 px 로 걸음마다 쓰면 25% 이하에서 미니맵을 매번 다시 칠했다.
     const vwl = -pan.x / z;
@@ -117,7 +135,7 @@ export function SceneMinimap({
     const left = (vwl - wMinX) * scale;
     const top = (vwt - wMinY) * scale;
     const box = minimapViewBox(left, top, left + (vp.width / z) * scale, top + (vp.height / z) * scale, mmW, mmH);
-    const transform = `translate(${box.x}px, ${box.y}px)`;
+    const transform = `translate(${box.x + offX}px, ${box.y}px)`;
     if (view.style.transform !== transform) view.style.transform = transform;
     const width = box.w + "px";
     const height = box.h + "px";
@@ -144,7 +162,7 @@ export function SceneMinimap({
     //   좌표가 튀지 않게. 미니맵은 고정 위치라 드래그 내내 이 rect 로 변환해도 정확하다.
     const rect = wrap.getBoundingClientRect();
     const at = (clientX: number, clientY: number) => ({
-      wx: wMinX + (clientX - rect.left) / scale,
+      wx: wMinX + (clientX - rect.left - offX) / scale,
       wy: wMinY + (clientY - rect.top) / scale,
     });
     const start = at(e.clientX, e.clientY);
@@ -180,28 +198,46 @@ export function SceneMinimap({
   };
 
   return (
-    <div
-      className="scene-minimap"
-      ref={wrapRef}
-      style={{ width: mmW, height: mmH, display: "none" }}
-      onMouseDown={onDown}
-      title="네비게이터 — 클릭·드래그로 이동"
-    >
-      {boxes.map((b) => (
-        <div
-          key={b.id}
-          className={
-            "scene-minimap-card k-" + b.kind + (selected.has(b.id) ? " sel" : "")
-          }
-          style={{
-            left: (b.x - wMinX) * scale,
-            top: (b.y - wMinY) * scale,
-            width: Math.max(2, b.w * scale),
-            height: Math.max(2, b.h * scale),
-          }}
-        />
-      ))}
-      <div className="scene-minimap-view" ref={viewRef} />
-    </div>
+    <>
+      {zoom && (
+        // 누름은 보드(범위 선택·팬)와 미니맵 이동으로 보내지 않고, 초점도 옮기지 않는다(보드 단축키가 그대로 듣게)
+        <div className="scene-minimap-zoom" ref={zoomBarRef} style={{ width: boxW, display: "none" }}
+          onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }}>
+          <button type="button" title="축소" aria-label="축소" onClick={() => zoom.onStep(-1)}>
+            <StepIcon size={8} stroke={2} />
+          </button>
+          <button type="button" className="scene-minimap-fit" title="전체가 보이게 맞춤 — 선택이 있으면 선택 중심 (단축키 f)" onClick={zoom.onFit}>
+            <span className="scene-minimap-pct"><ZoomPct /></span>
+            <span className="scene-minimap-fitword">Fit</span>
+          </button>
+          <button type="button" title="확대" aria-label="확대" onClick={() => zoom.onStep(1)}>
+            <StepIcon plus size={8} stroke={2} />
+          </button>
+        </div>
+      )}
+      <div
+        className={"scene-minimap" + (zoom ? " has-zoom" : "")}
+        ref={wrapRef}
+        style={{ width: boxW, height: mmH, display: "none" }}
+        onMouseDown={onDown}
+        title="네비게이터 — 클릭·드래그로 이동"
+      >
+        {boxes.map((b) => (
+          <div
+            key={b.id}
+            className={
+              "scene-minimap-card k-" + b.kind + (selected.has(b.id) ? " sel" : "")
+            }
+            style={{
+              left: (b.x - wMinX) * scale + offX,
+              top: (b.y - wMinY) * scale,
+              width: Math.max(2, b.w * scale),
+              height: Math.max(2, b.h * scale),
+            }}
+          />
+        ))}
+        <div className="scene-minimap-view" ref={viewRef} />
+      </div>
+    </>
   );
 }

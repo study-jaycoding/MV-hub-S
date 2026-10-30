@@ -622,30 +622,7 @@
 .lib-expand.on { color: #fff; }
 .lib-expand svg { display: block; }
 
-/* 캔버스 줌 클러스터 — [맞춤] [− % +] (씬 캔버스에서 무동작 슬라이더를 대체) */
-.zoom-cluster { display: flex; align-items: center; gap: 6px; }
-.zoom-cluster button {
-  border: 1px solid var(--border); background: transparent; color: var(--text);
-  cursor: pointer; font-size: 12px; padding: 3px 10px; border-radius: 8px;
-}
-.zoom-cluster button:hover { border-color: var(--accent); }
-.zoom-cluster .zc-group {
-  display: flex; align-items: center;
-  border: 1px solid var(--border); border-radius: 8px;
-}
-/* −/+ 는 SVG(StepIcon 8px) — 글자는 1.5px 아래였다(2026-09-22 실측). 크기는 글자 때(24x22) 그대로 고정. */
-.zoom-cluster .zc-group button {
-  width: 24px; height: 22px; padding: 0; border: none; border-radius: 0;
-  display: inline-flex; align-items: center; justify-content: center;
-}
-/* "Fit" 글자는 기준선 탓에 0.7px 아래였다 — S/T/C 와 같은 처방. 높이는 지금 그대로 24px. */
-@supports (text-box: trim-both cap alphabetic) {
-  .zoom-cluster .zc-fit { height: 24px; display: inline-block; align-content: center; text-box: trim-both cap alphabetic; }
-}
-.zoom-cluster .zc-pct {
-  min-width: 42px; text-align: center; font-size: 12px; color: var(--text);
-  font-variant-numeric: tabular-nums;
-}
+/* (캔버스 줌 [맞춤][− % +] 은 툴바에서 캔버스 네비게이터 위 막대로 옮겼다 — scene.css .scene-minimap-zoom, Jay 2026-10-30) */
 .size-slider { display: flex; align-items: center; gap: 7px; }
 /* 구성탭: 크기 슬라이더 옆 화면 줌%(클릭=초기화) */
 .size-slider input[type="range"] {
@@ -679,10 +656,13 @@
 /* ── 툴바 단추 창(Jay 2026-10-30) — 보기 단추(ViewControls: Layout·Split by date·Fill·Card size)와 필터 단추(LibraryWorkspaceFilter:
    Workspaces·Hide failed·Activity)가 같은 부품. 색·테두리·그림자 = Assets 정렬 메뉴(.asort-menu). 고른 줄 = 라임 글자 + 옅은 라임 바탕(✓ 없음). */
 .vp-wrap { position: relative; display: inline-flex; flex: none; }
-/* 보기 단추 = S·T·C 와 같은 상자(.af-btn 26×24) · 연 동안 = 필터 단추가 켜졌을 때처럼 옅은 라임 */
-.af-btn.vp-btn { width: 26px; min-width: 26px; padding: 0; display: inline-grid; place-items: center; }
+/* 보기 단추 — S·T·C 와 같은 크기(.af-btn 26×24)이되 **상자 없이 아이콘만**, 앞에 가는 세로선(Jay 2026-10-30 — 다른 기능으로 보이게.
+   선은 캔버스 파일 단추와 레퍼런스 찾기 사이 선 .scene-io-sep 와 같은 밝기). 마우스 올림 = 옅은 회색 바탕 · 연 동안 = 옅은 라임 바탕 + 라임 아이콘 */
+.assets-filters > .vp-wrap { margin-left: 3px; padding-left: 10px; border-left: 1px solid rgba(255, 255, 255, 0.22); }
+.af-btn.vp-btn { width: 26px; min-width: 26px; padding: 0; display: inline-grid; place-items: center; background: transparent; border-color: transparent; }
+.af-btn.vp-btn:hover { background: rgba(255,255,255,0.07); }
 .af-btn.vp-btn svg { display: block; }
-.af-btn.vp-btn.open { color: var(--accent); background: rgba(var(--accent-rgb),0.14); border-color: var(--accent); }
+.af-btn.vp-btn.open { color: var(--accent); background: rgba(var(--accent-rgb),0.12); border-color: transparent; }
 .vp-pop {
   position: absolute; top: calc(100% + 6px); right: 0; z-index: 90; width: 236px; padding: 6px;
   display: flex; flex-direction: column; gap: 1px;

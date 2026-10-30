@@ -1938,6 +1938,12 @@ export function SceneBoard({
   useEffect(() => () => onSelGensRef.current?.([]), []); // 언마운트 → 선택바 비우기
   // 명령형 핸들 바인딩은 렌더 중 write(비순수) 대신 커밋 후 useLayoutEffect 에서(refs 라 항상 최신).
   //  언마운트(탭 이탈·씬 언마운트) 시 핸들을 비워 옛 SceneBoard 클로저/refs 가 App 에 붙잡히지 않게 한다.
+  // 화면 맞춤·한 단계 확대 — 네비게이터 위 줌 막대(Jay 2026-10-30 — 전엔 툴바)와 actionRef 가 같이 쓴다.
+  //  씬을 바꾸는 틈에는 받지 않는다 — 떠난 씬의 카드로 잰 화면이 새 씬에 남는다
+  const guardedZoom = {
+    onFit: () => { if (!switchingRef.current) frameView(); },
+    onStep: (dir: 1 | -1) => { if (!switchingRef.current) stepZoom(dir); },
+  };
   useLayoutEffect(() => {
     if (actionRef)
       actionRef.current = {
@@ -1949,9 +1955,8 @@ export function SceneBoard({
         setCardRefs,
         flushPending,
         applyAssetRelink,
-        // 툴바의 화면 조작도 씬을 바꾸는 틈에는 받지 않는다 — 떠난 씬의 카드로 잰 화면이 새 씬에 남는다
-        zoomFit: () => { if (!switchingRef.current) frameView(); },
-        zoomStep: (dir) => { if (!switchingRef.current) stepZoom(dir); },
+        zoomFit: guardedZoom.onFit,
+        zoomStep: guardedZoom.onStep,
         closeVariants: () => setCardMenu(null),
         selection: () => ({ sceneId: cardsSceneId, cardIds: [...selected], groupIds: [...selectedGroupIds] }),
       };
@@ -3659,6 +3664,7 @@ export function SceneBoard({
           zoomRef={zoomRef}
           updateRef={mmUpdateRef}
           onNavigate={navigateTo}
+          zoom={guardedZoom}
         />
       )}
 
