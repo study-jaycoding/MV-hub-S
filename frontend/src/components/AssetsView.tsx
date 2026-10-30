@@ -29,7 +29,7 @@ import { AssetsCrumbBar } from "./assets/AssetsCrumbBar";
 import { AssetsSidebar } from "./assets/AssetsSidebar";
 import { AssetFolderGrid } from "./assets/AssetFolderGrid";
 import { AssetFolderTabs } from "./assets/AssetFolderTabs";
-import { assetFolderGroups } from "./assets/assetFolderGroups";
+import { assetFolderGroups, FOLDER_SORT_FIELDS } from "./assets/assetFolderGroups";
 import { useAssetFolderTabs, type AssetFolderLayout } from "./assets/useAssetFolderTabs";
 import { MountManager } from "./assets/MountManager";
 import { nativeDragBrowserSupported, setSingleFileDrag, startNativeAssetDrag } from "./assets/exportDrag";
@@ -194,6 +194,11 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   const [sortDir, setSortDir] = useState<AssetSortDir>(() =>
     LS.get("sortDir", "desc") === "asc" ? "asc" : "desc",
   );
+  // 폴더 카드 정렬은 파일 정렬과 따로 기억한다 — 기본이 이름순이라 고르기 전엔 폴더 자리가 그대로다(Jay 2026-10-30)
+  const [folderSortField, setFolderSortField] = useState<AssetSortField>(() => LS.get("folderSortField", "name") === "date" ? "date" : "name");
+  const [folderSortDir, setFolderSortDir] = useState<AssetSortDir>(() => LS.get("folderSortDir", "asc") === "desc" ? "desc" : "asc");
+  useEffect(() => LS.set("folderSortField", folderSortField), [folderSortField]);
+  useEffect(() => LS.set("folderSortDir", folderSortDir), [folderSortDir]);
   const metaRef = useRef(meta);
   metaRef.current = meta;
   const [tagEditPath, setTagEditPath] = useState<string | null>(null); // 인라인 태그 입력 중인 파일
@@ -267,7 +272,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       setSelected(new Set()); setFocusIdx(-1);
     },
   });
-  const scrollKey = `${place}|${folderMode}|${folderModePath ?? ""}|${folderMode ? folderLayout : layout}|${query}|${typeFilter ?? ""}|${sortField}|${sortDir}`;
+  const scrollKey = `${place}|${folderMode}|${folderModePath ?? ""}|${folderMode ? folderLayout : layout}|${query}|${typeFilter ?? ""}|${sortField}|${sortDir}|${folderSortField}|${folderSortDir}`;
 
   useAssetViewPersistence({
     activeColors,
@@ -320,7 +325,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       typeFilter,
     });
 
-  const folderGroups = useMemo(() => assetFolderGroups(displayTree, dir, files, project), [displayTree, dir, files, project]);
+  const folderGroups = useMemo(() => assetFolderGroups(displayTree, dir, files, project, { field: folderSortField, dir: folderSortDir }),
+    [displayTree, dir, files, project, folderSortField, folderSortDir]);
   const canShowFolders = folderGroups.groups.length > 0 && !isResolveLibraryRoot;
   const rememberedFolderMode = parsePlaceViews(LS.loadJSON(PLACE_VIEWS_KEY))[place]?.folders;
   // 혼합 폴더의 기본은 전체지만, 사용자가 누른 폴더 보기는 현재 경로에서 우선한다.
@@ -1158,10 +1164,11 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             onToggleGroupByDate={() => showFolders
               ? setFolderLayout((value) => value === "list" ? "table" : value === "table" ? "list" : value)
               : setGroupByDate((v) => !v)}
-            sortField={sortField}
-            sortDir={sortDir}
-            onSortField={setSortField}
-            onSortDir={setSortDir}
+            sortField={showFolders ? folderSortField : sortField}
+            sortDir={showFolders ? folderSortDir : sortDir}
+            sortFields={showFolders ? FOLDER_SORT_FIELDS : undefined}
+            onSortField={showFolders ? setFolderSortField : setSortField}
+            onSortDir={showFolders ? setFolderSortDir : setSortDir}
           />}
 
           <AssetFolderTabs tabs={folderTabs.tabs} active={folderTabs.active} project={project}

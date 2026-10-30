@@ -34,7 +34,7 @@ function _byName(a: AssetNode, b: AssetNode): number {
   return _nameCollator.compare(a.name, b.name);
 }
 
-function compareAssetsBy(
+export function compareAssetsBy(
   a: AssetNode,
   b: AssetNode,
   field: AssetSortField,

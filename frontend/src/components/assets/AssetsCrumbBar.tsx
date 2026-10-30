@@ -47,6 +47,7 @@ export function AssetsCrumbBar({
   onToggleGroupByDate,
   sortField,
   sortDir,
+  sortFields,
   onSortField,
   onSortDir,
   masonry,
@@ -89,6 +90,7 @@ export function AssetsCrumbBar({
   onToggleGroupByDate: () => void;
   sortField: AssetSortField;
   sortDir: AssetSortDir;
+  sortFields?: { key: AssetSortField; label: string }[]; // 없으면 파일 기준(이름·날짜·유형)
   onSortField: (field: AssetSortField) => void;
   onSortDir: (dir: AssetSortDir) => void;
   masonry?: boolean; // 보기 창 Layout 의 Masonry — onSetMasonry 를 준 때만(파일 격자, Jay 2026-10-30)
@@ -228,6 +230,7 @@ export function AssetsCrumbBar({
           <AssetSortMenu
             field={sortField}
             dir={sortDir}
+            fields={sortFields}
             onField={onSortField}
             onDir={onSortDir}
             viewStyle

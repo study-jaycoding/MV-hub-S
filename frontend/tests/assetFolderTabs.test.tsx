@@ -227,6 +227,67 @@ it("폴더 카드에 기존 큰 분류명과 실제 직계 폴더·미디어 개
   expect(card("assets/BG/바닷속").getAttribute('aria-pressed')).toBe("true");
 });
 
+const dated = (path: string, mtime: number): AssetNode => ({ ...file(path), mtime });
+const names = (items: { folder: AssetNode }[]) => items.map((item) => item.folder.name);
+
+it("폴더 정렬: 날짜는 안에 든 가장 최근 파일 · 약속된 순서는 이름 오름차순에서만 · 번호는 2 다음 10 · 작은 폴더 줄과 직접 파일도 같이(Jay 2026-10-30)", () => {
+  const sub = [folder("assets/CH/s10", [dated("assets/CH/s10/a.png", 5)]), folder("assets/CH/s2", [dated("assets/CH/s2/a.png", 9)])];
+  const nodes = [folder("assets", [
+    folder("assets/CH", sub), folder("assets/CLIP", [dated("assets/CLIP/a.png", 1)]),
+    folder("assets/PR", [dated("assets/PR/a.png", 3)]), folder("assets/Reference", [dated("assets/Reference/a.png", 7)]),
+    folder("assets/빈폴더", []), dated("assets/b.png", 2), dated("assets/a.png", 4),
+  ])];
+  const of = (field: "name" | "date", dir: "asc" | "desc", project = "P") =>
+    assetFolderGroups(nodes, "assets", flattenFiles(nodes), project, { field, dir });
+  expect(names(of("name", "asc").groups)).toEqual(["CH", "CLIP", "PR", "Reference", "빈폴더"]);
+  expect(names(of("name", "desc").groups)).toEqual(["빈폴더", "Reference", "PR", "CLIP", "CH"]);
+  expect(names(of("date", "desc").groups)).toEqual(["CH", "Reference", "PR", "CLIP", "빈폴더"]);
+  expect(names(of("date", "asc").groups)).toEqual(["빈폴더", "CLIP", "PR", "Reference", "CH"]);
+  // 맨 아래 폴더(뻘뻘뻘 CLIP)는 이름 오름차순에서만 끝으로 간다
+  expect(names(of("name", "asc", "뻘뻘뻘").groups)).toEqual(["CH", "PR", "Reference", "빈폴더", "CLIP"]);
+  expect(names(of("date", "desc", "뻘뻘뻘").groups)).toEqual(["CH", "Reference", "PR", "CLIP", "빈폴더"]);
+  expect(of("name", "asc").groups[0].children.map((child) => child.folder.name)).toEqual(["s2", "s10"]);
+  expect(of("date", "desc").groups[0].children.map((child) => child.folder.name)).toEqual(["s2", "s10"]);
+  expect(of("date", "asc").groups[4].children.map((child) => child.folder.name)).toEqual(["s10", "s2"]);
+  expect(of("name", "asc").directFiles.map((node) => node.name)).toEqual(["a.png", "b.png"]);
+  expect(of("date", "asc").directFiles.map((node) => node.name)).toEqual(["b.png", "a.png"]);
+});
+
+it("폴더 화면의 [정렬] 창은 이름·날짜뿐이고 카드 순서를 바꾸며 파일 정렬과 따로 기억한다(Jay 2026-10-30)", async () => {
+  mocks.assetTree.mockResolvedValue({ children: [folder("assets", [
+    folder("assets/BG", [dated("assets/BG/old.png", 1)]), folder("assets/CH", [dated("assets/CH/new.png", 9)]),
+  ])] });
+  await mount();
+  const order = () => [...host.querySelectorAll("[data-folder-path]")].map((el) => el.getAttribute("data-folder-path"));
+  const sortItems = () => [...host.querySelectorAll<HTMLButtonElement>(".vp-sort .vp-item")];
+  const sortItem = (name: string) => sortItems().find((el) => el.textContent === name)!;
+  const chosen = () => sortItems().filter((el) => el.classList.contains("sel")).map((el) => el.textContent);
+  await click(host.querySelector(".vp-sort .vp-btn")!);
+  expect(sortItems().map((el) => el.textContent)).toEqual(["이름", "날짜", "오름차순", "내림차순"]);
+  expect(chosen()).toEqual(["이름", "오름차순"]);
+  expect(order()).toEqual(["assets/BG", "assets/CH"]);
+  await click(sortItem("날짜"));
+  expect(order()).toEqual(["assets/BG", "assets/CH"]); // 날짜 오름차순 = 오래된 폴더 먼저
+  await click(sortItem("내림차순"));
+  expect(order()).toEqual(["assets/CH", "assets/BG"]);
+  expect(localStorage.getItem("ch.assets.folderSortField")).toBe("date");
+  expect(localStorage.getItem("ch.assets.folderSortDir")).toBe("desc");
+  expect(localStorage.getItem("ch.assets.sortField")).toBe("date"); // 파일 정렬은 기본값 그대로
+  expect(localStorage.getItem("ch.assets.sortDir")).toBe("desc");
+  await click(sortItem("이름"));
+  expect(order()).toEqual(["assets/CH", "assets/BG"]); // 이름 내림차순
+  // 전체(파일) 화면으로 가면 파일 정렬이 보이고, 돌아오면 폴더 정렬이 그대로다
+  await click([...host.querySelectorAll(".lib-cut-seg button")].find((el) => el.textContent === "전체")!);
+  expect(sortItems().map((el) => el.textContent)).toEqual(["이름", "날짜", "유형", "오름차순", "내림차순"]);
+  expect(chosen()).toEqual(["날짜", "내림차순"]);
+  await click(sortItem("오름차순"));
+  expect(localStorage.getItem("ch.assets.sortDir")).toBe("asc");
+  expect(localStorage.getItem("ch.assets.folderSortDir")).toBe("desc");
+  await click([...host.querySelectorAll(".lib-cut-seg button")].find((el) => el.textContent === "폴더")!);
+  expect(chosen()).toEqual(["이름", "내림차순"]);
+  expect(order()).toEqual(["assets/CH", "assets/BG"]);
+});
+
 it("분류는 Assets·제작 분류를 하위까지 유지하고 다른 등록 폴더를 Assets로 바꾸지 않는다", () => {
   const roots = [folder("assets", []), folder("assets/BG/바닷속", []), folder("assets/CH/미아/facial", []),
     folder("assets/PR/배", []), folder("assets/CLIP/e003", []), folder("assets/custom/source", []),
@@ -332,6 +393,7 @@ it("폴더 카드는 클릭으로 선택하고 더블클릭·Enter로 열며 미
 // Jay 10-22: 공유 탭 컷 카드처럼 폴더 보기도 방향키로 옮겨 고르고 Enter 로 연다 — 초점이 BODY 에 있어도.
 it("폴더 보기 — 방향키로 카드를 옮겨 고르고(초점도) Enter 로 들어가며 Esc 로 푼다", async () => {
   mocks.assetTree.mockResolvedValue({ children: [folder("assets", tree[0].children!.filter((node) => node.type === "dir"))] });
+  localStorage.setItem("ch.assets.folderSortDir", "desc"); // 이름 내림차순 = CH, BG
   await mount();
   // 브라우저처럼 초점이 놓인 요소에 보낸다(처음엔 BODY — 초점 잃은 키)
   const key = async (init: KeyboardEventInit) => {
