@@ -12,6 +12,12 @@
 .gen-grid.gen-grid-virtual { display: block; padding: 0 16px; }
 .gen-grid-virtual.as-list { padding: 0 14px; }
 .gen-vrow-grid { display: grid; gap: 12px; padding-bottom: 12px; } /* 반응형 컬럼은 인라인 style */
+/* Masonry(그림 비율 줄, Jay 2026-10-30) — 칸 폭·높이는 인라인(줄 높이 × 그림 비율, lib/gridVirtualRows). 간격 4 · 모서리 8.
+   줄어들 수 있게(shrink 1) — 소수 폭을 더한 줄이 1px 안쪽에서 넘치면 고르게 줄인다. 썸네일은 카드의 남은 높이를 채운다(아래 색 막대가 있으면 그만큼 낮다). */
+.gen-vrow-masonry { display: flex; gap: 4px; padding-bottom: 4px; }
+.gen-vrow-masonry > .gen-cell { flex: 0 1 auto; min-width: 0; }
+.gen-grid .gen-vrow-masonry .card.card-grid { height: 100%; border-radius: 8px; }
+.gen-grid .gen-vrow-masonry .card.card-grid > .card-clip > .card-thumb { flex: 1 1 auto; aspect-ratio: auto; }
 .gen-vrow-list { padding-bottom: 6px; }
 .gen-grid-tail { height: 124px; } /* 하단 프롬프트 독 여백(옛 컨테이너 하단 padding 대체) */
 /* 상단 여백(옛 컨테이너 상단 padding 대체) — 높이는 Virtualizer startMargin(14/10)과 반드시 일치 */
@@ -670,6 +676,15 @@
 }
 .fit-toggle:hover { color: var(--text); }
 .fit-toggle.on { background: rgba(255,255,255,0.09); color: #fff; }
+/* 전체 보기 단추 우클릭 = Layout 메뉴(Square · Masonry) — Assets 정렬 메뉴(.asort-menu)와 같은 부품. 가로 자리는 창 안에 들게 ViewControls 가 정한다. */
+.fit-wrap { position: relative; display: inline-flex; }
+.asort-menu.layout-menu { right: auto; left: -8px; }
+.layout-menu-head { padding: 3px 9px 4px; font-size: 11px; font-weight: 800; letter-spacing: .04em; color: var(--muted); }
+.layout-menu-ic { flex: none; width: 18px; height: 18px; display: grid; place-items: center; color: var(--muted); }
+.asort-item.sel .layout-menu-ic { color: var(--accent); }
+.layout-menu-tx { display: flex; flex-direction: column; gap: 1px; }
+.layout-menu-tx small { font-size: 11px; font-weight: 500; color: var(--muted); }
+.layout-menu-hint { padding: 4px 9px 3px; font-size: 11px; color: var(--muted); white-space: nowrap; }
 
 .layout-toggle { display: flex; gap: 2px; }
 .layout-toggle button {
@@ -876,6 +891,11 @@
 .gen-cell.focused .card.selected > .card-clip { clip-path: inset(4px round 9px); }
 .gen-cell.focused .card:not(.selected) { background: var(--st-sel); }
 .gen-cell.focused .card:not(.selected) > .card-clip { clip-path: inset(1px round 12px); }
+/* Masonry 카드(바깥 반경 8) — 같은 굵기(1·3·5·2px), 안쪽 반경만 8 에 맞춘다 */
+.gen-vrow-masonry .card > .card-clip { clip-path: inset(0 round 7px); }
+.gen-vrow-masonry .card.selected > .card-clip { clip-path: inset(2px round 5px); }
+.gen-vrow-masonry .gen-cell.focused .card.selected > .card-clip { clip-path: inset(4px round 3px); }
+.gen-vrow-masonry .gen-cell.focused .card:not(.selected) > .card-clip { clip-path: inset(1px round 6px); }
 
 /* 팀 탭 '새로 들어옴' — 라임 링 + **멈춰 있는** 글로우(캔버스 방금생성 glow 와 같은 색).
    기준선 = 공유&리뷰 탭 마지막 방문 시각. 카드를 클릭해 확인할 때까지 남는다(lib/teamSeen.ts).

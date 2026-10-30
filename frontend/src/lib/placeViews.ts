@@ -13,6 +13,7 @@ export interface PlaceView {
   scale?: number;
   fill?: boolean;
   folders?: boolean;
+  masonry?: boolean; // 카드 보기 Layout — true = Masonry(그림 비율 줄), 없거나 false = Square
 }
 export type PlaceViews = Readonly<Record<string, PlaceView>>;
 
@@ -37,6 +38,7 @@ export function parsePlaceViews(raw: unknown): PlaceViews {
       ...(typeof view.scale === "number" && Number.isFinite(view.scale) ? { scale: Math.max(0.7, Math.min(1.7, view.scale)) } : {}),
       ...(typeof view.fill === "boolean" ? { fill: view.fill } : {}),
       ...(typeof view.folders === "boolean" ? { folders: view.folders } : {}),
+      ...(typeof view.masonry === "boolean" ? { masonry: view.masonry } : {}),
     };
   }
   return views;

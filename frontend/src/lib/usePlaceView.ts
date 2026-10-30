@@ -43,6 +43,7 @@ export function usePlaceView(store: Store, place: string, defaults?: Partial<Pla
   const scale = current.scale ?? 1;
   const fill = current.fill ?? true;
   const folders = current.folders ?? true;
+  const masonry = current.masonry ?? false;
   const now = useRef({ place, view: current });
   now.current = { place, view: current };
 
@@ -84,6 +85,7 @@ export function usePlaceView(store: Store, place: string, defaults?: Partial<Pla
   const setFolders = useCallback<Dispatch<SetStateAction<boolean>>>((action) => {
     pin(now.current.place, { folders: typeof action === "function" ? action(now.current.view.folders ?? true) : action });
   }, [pin]);
+  const setMasonry = useCallback((next: boolean) => pin(now.current.place, { masonry: next }), [pin]);
 
   // 자리를 옮긴 뒤: 적혀 있던 자리면 그 모양이 '방금 보던 모양'이 되고(다음에 처음 들어가는 폴더가 물려받는다), 처음 본 자리면 지금 보이는
   //  모양(= 방금 보던 것)을 그 자리 것으로 적는다 — 나중에 다른 폴더에서 모양을 바꿔도 이 자리는 본 그대로다.
@@ -99,5 +101,5 @@ export function usePlaceView(store: Store, place: string, defaults?: Partial<Pla
   useEffect(() => store.set("layout", layout), [layout, store]);
   useEffect(() => store.set("groupByDate", groupByDate ? "1" : "0"), [groupByDate, store]);
 
-  return { layout, setLayout, groupByDate, setGroupByDate, scale, setScale, fill, setFill, folders, setFolders };
+  return { layout, setLayout, groupByDate, setGroupByDate, scale, setScale, fill, setFill, folders, setFolders, masonry, setMasonry };
 }

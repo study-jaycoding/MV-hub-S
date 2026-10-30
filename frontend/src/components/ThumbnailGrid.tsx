@@ -14,7 +14,9 @@ import {
 import {
   buildGridRows,
   computeGridColumns,
+  gridContentWidth,
   navigateGrid,
+  paramAspectRatio,
   type VirtualRow,
 } from "../lib/gridVirtualRows";
 import { useT } from "../lib/i18n";
@@ -43,6 +45,7 @@ interface Props {
   scale: number; // 카드 크기 배율 (그리드 모드)
   fill: boolean; // 썸네일 cover(꽉) ↔ contain(비율)
   layout: "grid" | "list";
+  masonry?: boolean; // 카드 보기 Layout — Masonry(그림 비율 줄). 리스트에는 없다
   groupByDate: boolean; // 그리드에서 힉스필드 날짜별 섹션 구분
   selectedIds: Set<string>;
   resolveHighlightedIds?: ReadonlySet<string>; // 확인 표시 전용 — 일괄 작업 선택/Last viewed와 분리
@@ -103,6 +106,16 @@ interface Props {
   onRetryLoad?: () => void; // 로드 실패 시 "다시 시도"
 }
 
+// Masonry 줄 — 목표 높이(배율 1) · 카드 사이(모의 그림 그대로, Jay 2026-10-30 "이대로 만들어")
+const MASONRY_ROW_HEIGHT = 170;
+const MASONRY_GAP = 4;
+// 썸네일이 뜰 때 잰 그림 비율(생성 id → 가로 ÷ 세로) — 생성 설정에 비율이 없을 때(auto·가져온 것) 쓴다. 화면을 옮겨도 다시 재지 않게 모듈에 둔다.
+//  shortcut: 지우지 않고 쌓인다(id 하나에 숫자 하나 — 수천 장이어도 작다). 목록이 수십만이 되면 그때 덜어 낸다.
+const measuredRatios = new Map<string, number>();
+const masonryRatioOf = (g: Generation) =>
+  g.assets[0]?.type === "audio" ? 1
+    : Math.max(0.25, Math.min(4, paramAspectRatio(g.params) ?? measuredRatios.get(g.id) ?? 1));
+
 export function ThumbnailGrid(props: Props) {
   const { generations, scale, layout, groupByDate, selectedIds } = props;
   const resolveScrollGuardRef = useRef(false);
@@ -136,6 +149,7 @@ export function ThumbnailGrid(props: Props) {
       resolveScrollKey !== handledResolveScrollRef.current;
   }, [resolveScrollKey, props.resetKey]);
   const isList = layout === "list";
+  const masonry = !!props.masonry && !isList;
   const t = useT();
   // 팀 탭 '새로 들어옴'(확인 전 글로우) — 카드 클릭으로 확인되면 스토어가 bump → 그 카드만 글로우 해제.
   const teamSeenVer = useSyncExternalStore(subscribeTeamSeen, getTeamSeenVersion);
@@ -167,6 +181,7 @@ export function ThumbnailGrid(props: Props) {
   // hasRows 를 의존성에 포함: 로딩(빈 상태)엔 .gen-grid 가 없어 측정 불가 → 데이터 도착해 그리드가
   // 실제로 마운트될 때 재측정해야 함(안 그러면 컬럼 1 로 고정됨). useLayoutEffect = 첫 페인트 전 측정.
   const [columns, setColumns] = useState(1);
+  const [contentWidth, setContentWidth] = useState(0); // Masonry 줄 폭 — Masonry 일 때만 잰다(Square 는 창 크기를 바꿔도 열 수가 같으면 다시 그리지 않게)
   const hasRows = generations.length > 0;
   useLayoutEffect(() => {
     const el = gridRef.current;
@@ -174,17 +189,52 @@ export function ThumbnailGrid(props: Props) {
       setColumns(1);
       return;
     }
-    const measure = () => setColumns(computeGridColumns(el, Math.round(180 * scale), 12)); // gap 12 = .gen-vrow-grid
+    const measure = () => {
+      setColumns(computeGridColumns(el, Math.round(180 * scale), 12)); // gap 12 = .gen-vrow-grid
+      if (masonry) setContentWidth(gridContentWidth(el));
+    };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [scale, isList, hasRows]);
+  }, [scale, isList, hasRows, masonry]);
+
+  // 썸네일이 뜨면 그 비율을 잰다(Masonry 만) — 생성 설정에 비율이 없는 카드만 줄을 다시 짠다(있으면 그 값이 앞선다). 한 화면에 여러 장이 떠도 한 번에.
+  const [ratioVersion, setRatioVersion] = useState(0);
+  const generationsRef = useRef(generations);
+  generationsRef.current = generations;
+  useEffect(() => {
+    const el = gridRef.current;
+    if (!masonry || !el) return;
+    let frame = 0;
+    const take = (media: EventTarget | null) => {
+      const [w, h] = media instanceof HTMLImageElement ? [media.naturalWidth, media.naturalHeight]
+        : media instanceof HTMLVideoElement ? [media.videoWidth, media.videoHeight] : [0, 0];
+      const id = w && h ? (media as Element).closest(".gen-cell")?.getAttribute("data-id") : null;
+      if (!id || Math.abs((measuredRatios.get(id) ?? 0) - w / h) < 0.01) return;
+      measuredRatios.set(id, w / h);
+      if (paramAspectRatio(generationsRef.current.find((g) => g.id === id)?.params) !== null) return;
+      if (!frame) frame = requestAnimationFrame(() => { frame = 0; setRatioVersion((v) => v + 1); });
+    };
+    const onLoad = (e: Event) => take(e.target);
+    // 이 효과보다 먼저 뜬 것(캐시)도 잰다 — load 는 붙기 전에 지나갔다
+    el.querySelectorAll("img, video").forEach(take);
+    el.addEventListener("load", onLoad, true); // load·loadedmetadata 는 올라오지 않는다 — 잡기 단계로 듣는다
+    el.addEventListener("loadedmetadata", onLoad, true);
+    return () => {
+      el.removeEventListener("load", onLoad, true);
+      el.removeEventListener("loadedmetadata", onLoad, true);
+      cancelAnimationFrame(frame);
+    };
+  }, [masonry, hasRows]);
 
   // 가상 행 모델(헤더 행 + 카드 행) — virtua 가 이 rows 를 행 단위로 가상화한다(뷰포트+오버스캔만 마운트).
+  const masonryRowHeight = Math.round(MASONRY_ROW_HEIGHT * scale);
   const rowModel = useMemo(
-    () => buildGridRows(generations, isList ? 1 : columns, groupByDate),
-    [generations, isList, columns, groupByDate],
+    () => buildGridRows(generations, isList ? 1 : columns, groupByDate, undefined,
+      masonry && contentWidth > 0 ? { width: contentWidth, targetHeight: masonryRowHeight, gap: MASONRY_GAP, ratioOf: masonryRatioOf } : undefined),
+    // ratioVersion = 잰 비율이 늘었다(masonryRatioOf 가 읽는 모듈 값)
+    [generations, isList, columns, groupByDate, masonry, contentWidth, masonryRowHeight, ratioVersion],
   );
 
   // 썸네일 요청 폭 버킷 — 카드 표시폭(≈180*scale)×DPR 이 256 이하면 256, 아니면 512. 1x 디스플레이·
@@ -193,9 +243,9 @@ export function ThumbnailGrid(props: Props) {
   //  숫자라 바뀔 때만 다시 그린다. 51회차: 옛 배율에 머물러 큰 배율 화면에서 256 을 계속 받았다).
   const dpr = useSyncExternalStore(subscribeDevicePixelRatio, () => getDevicePixelRatio() || 1, () => 1);
   const thumbSize = useMemo(() => {
-    if (isList) return 512; // 리스트는 행이 커질 수 있어 안전하게 원해상도
+    if (isList || masonry) return 512; // 리스트는 행이 커질 수 있어 안전하게 원해상도 · Masonry 는 넓은 그림이 카드 폭(180)보다 훨씬 넓다
     return Math.round(180 * scale) * dpr <= 256 ? 256 : 512;
-  }, [isList, scale, dpr]);
+  }, [isList, masonry, scale, dpr]);
 
   // 첫 쪽 적용 뒤 추가 응답이 버려지면 새 scroll 이벤트가 없어도 바닥 근처에서 이어 받는다.
   // 같은 목록에서는 최초 요청 + 재시도 한 번만: 응답 폐기는 재개하되 오류로 끝없이 재시도하지 않는다.
@@ -857,10 +907,10 @@ export function ThumbnailGrid(props: Props) {
     return (
       <div
         key={row.key}
-        className={isList ? "gen-vrow-list" : "gen-vrow-grid"}
-        style={isList ? undefined : { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+        className={isList ? "gen-vrow-list" : row.widths ? "gen-vrow-masonry" : "gen-vrow-grid"}
+        style={isList || row.widths ? undefined : { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
       >
-        {row.items.map((g) => (
+        {row.items.map((g, index) => (
           <div
             className={
               "gen-cell" +
@@ -871,7 +921,9 @@ export function ThumbnailGrid(props: Props) {
             }
             data-id={g.id}
             key={g.id}
-            style={isList ? { height: Math.round(300 * scale) } : undefined}
+            style={isList ? { height: Math.round(300 * scale) }
+              // Masonry — 칸 = 그 줄 높이 × 그림 비율(머리 칸이 있으면 그만큼 더 높다 — .gen-cell.has-head)
+              : row.widths ? { width: row.widths[index], height: row.height! + (props.cellHeader ? 35 : 0) } : undefined}
           >
             {props.cellHeader && <div className="gen-cell-head">{props.cellHeader(g)}</div>}
             {renderGenerationCard(g, isList ? "list" : "grid")}
@@ -919,7 +971,7 @@ export function ThumbnailGrid(props: Props) {
           ref={vRef}
           scrollRef={gridRef}
           data={rowModel.rows}
-          itemSize={isList ? Math.round(300 * scale) : Math.round(180 * scale) + 12}
+          itemSize={isList ? Math.round(300 * scale) : masonry ? masonryRowHeight + MASONRY_GAP : Math.round(180 * scale) + 12}
           bufferSize={400}
           startMargin={isList ? 10 : 14}
           keepMounted={keepMounted}

@@ -56,7 +56,7 @@ export function SceneVariantPopup({
   disabledIds: Set<string>;
   projects: Project[];
   autoTagOptions: string[];
-  view: { scale: number; layout: "grid" | "list"; groupByDate: boolean; fill: boolean }; // 라이브러리와 같은 보기 설정
+  view: { scale: number; layout: "grid" | "list"; groupByDate: boolean; fill: boolean; masonry?: boolean }; // 라이브러리와 같은 보기 설정
   toolbar?: ReactNode; // 라이브러리 툴바(App 이 이 창의 건수로 만들어 준다)
   // 창의 선택 상태 — 소유는 SceneBoard(전역 단축키·다빈치 선택이 거기 있다), 여기는 읽기+setter 호출만.
   ui: {
@@ -265,6 +265,7 @@ export function SceneVariantPopup({
           scale={view.scale}
           fill={view.fill}
           layout={view.layout}
+          masonry={view.masonry}
           groupByDate={view.groupByDate}
           selectedIds={ui.selectedIds}
           resolveHighlightedIds={ui.resolveHighlightedIds}

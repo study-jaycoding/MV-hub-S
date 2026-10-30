@@ -25,6 +25,8 @@ interface Props {
   onScale: (v: number) => void;
   fill: boolean;
   onToggleFill: () => void;
+  masonry?: boolean; // 카드 Layout — onSetMasonry 를 준 툴바만 전체 보기 단추 우클릭에 메뉴(캔버스 보드 툴바는 주지 않는다)
+  onSetMasonry?: (on: boolean) => void;
   layout: "grid" | "list";
   onLayout: (l: "grid" | "list") => void;
   groupByDate: boolean; // 그리드 날짜별 구분 모드
@@ -90,6 +92,8 @@ export function LibraryToolbar({
   onScale,
   fill,
   onToggleFill,
+  masonry,
+  onSetMasonry,
   layout,
   onLayout,
   groupByDate,
@@ -371,6 +375,8 @@ export function LibraryToolbar({
           onSelectLayout={onLayout}
           onToggleGroupByDate={onToggleGroupByDate}
           showLayout={!boardMode}
+          masonry={masonry}
+          onSetMasonry={boardMode ? undefined : onSetMasonry}
           zoomControl={sceneZoom}
           t={t}
         />

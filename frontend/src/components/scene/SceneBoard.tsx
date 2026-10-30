@@ -450,7 +450,7 @@ interface Props {
   onOpenComments?: (g: Generation) => void; // C → 공유 코멘트 스레드 패널 열기(생성탭 카드와 동일)
   onOpenFolder?: (g: Generation) => void; // 폴더 이름표가 붙은 생성 카드의 우클릭 → 그 폴더의 '폴더 보기' 창(App)
   // ── '생성 결과' 창(라이브러리와 같은 격자·툴바, Jay 2026-10-07) ──
-  libraryView?: { scale: number; layout: "grid" | "list"; groupByDate: boolean }; // 카드 크기·레이아웃·날짜 구분(라이브러리와 공유하는 보기 설정)
+  libraryView?: { scale: number; layout: "grid" | "list"; groupByDate: boolean; masonry?: boolean }; // 카드 크기·레이아웃·날짜 구분·Layout(라이브러리와 공유하는 보기 설정)
   renderVariantToolbar?: (count: number) => ReactNode; // 창의 툴바 — 라이브러리 툴바를 이 창의 건수로
   onVariantGradeStep?: (gens: Generation[], mode: GradeMode) => void; // 여러 장을 고르고 S — 고른 전체에 등급 규칙(App 의 확인 모달)
   escBlocked?: boolean; // 위에 뜬 창(정보)이 Esc 를 받는 중 — 씬은 그 Esc 를 처리하지 않는다
@@ -3912,6 +3912,7 @@ export function SceneBoard({
             scale: libraryView?.scale ?? 1,
             layout: libraryView?.layout ?? "grid",
             groupByDate: libraryView?.groupByDate ?? false,
+            masonry: libraryView?.masonry ?? false,
             fill,
           }}
           toolbar={renderVariantToolbar?.(variantView.shown.length)}

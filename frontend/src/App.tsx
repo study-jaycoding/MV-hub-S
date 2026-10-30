@@ -528,7 +528,7 @@ export default function App() {
   //  보는 폴더다: 창 안에서 바꾼 모양은 그 폴더 것으로 적히고, 닫으면 뒤 화면은 제 모양 그대로다(뒤 폴더에 적히지 않는다 — Codex 코드 리뷰).
   //  창이 없을 때의 자리는 **저장된 탭**의 것이다 — 편집 탭이 연 창이 무효가 된 렌더(창은 닫혔는데 teamPeek 는 아직 참)에서는 filters.tab 이
   //  공유 & 리뷰라, 보지도 않은 공유 탭 자리에 모양이 적혔다(Codex 코드 리뷰).
-  const { layout, setLayout, groupByDate, setGroupByDate, scale, setScale, fill, setFill,
+  const { layout, setLayout, groupByDate, setGroupByDate, scale, setScale, fill, setFill, masonry, setMasonry,
     folders: cutView, setFolders: setCutViewState } = usePlaceView(LS, placeViewKey(
     listPeek ? { tab: filters.tab, project_id: listPeek.projectId ?? undefined, folder_path: listPeek.path } : { ...filters, tab: storedTab },
   ), { scale: legacyScale, fill: legacyFill, folders: LS.get("cutView", "1") === "1" });
@@ -2254,6 +2254,8 @@ export default function App() {
       onScale={setScale}
       fill={fill}
       onToggleFill={() => setFill((v) => !v)}
+      masonry={masonry}
+      onSetMasonry={setMasonry}
       layout={layout}
       onLayout={setLayout}
       groupByDate={groupByDate}
@@ -2310,6 +2312,7 @@ export default function App() {
           scale={scale}
           fill={fill}
           layout={layout}
+          masonry={masonry}
           groupByDate={groupByDate}
           selectedIds={selected}
           // 창을 닫은 직후 옛 사본을 보이는 동안은 고를 수 없다 — 새 목록이 올 때까지(보통 0.5초 미만) 보이기만 한다.
@@ -2767,7 +2770,7 @@ export default function App() {
                 onWorkspaceCommand={onCanvasWorkspaceCommand}
                 onOpenComments={(g) => openComment(g.id)}
                 // '생성 결과' 창 — 라이브러리와 같은 보기 설정·툴바(건수만 그 창의 것으로). 공간 필터·실패 정리는 목록의 것이라 뺀다.
-                libraryView={{ scale, layout, groupByDate }}
+                libraryView={{ scale, layout, groupByDate, masonry }}
                 renderVariantToolbar={(count) =>
                   cloneElement(libraryToolbar, {
                     count, countMore: false, loading: false, workspaceFilter: undefined, failedCount: 0, showFilterToggle: false,
