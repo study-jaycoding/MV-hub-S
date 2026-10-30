@@ -43,7 +43,7 @@ export function ViewCard({
             // 연결된 텍스트의 실제 내용을 표시(개수 대신).
             <div className="scene-viewtext">{texts.join("\n\n")}</div>
           ) : (
-            <div className="scene-viewnode-empty">생성물/텍스트를 연결</div>
+            <div className="scene-viewnode-empty">생성물/텍스트 연결</div>
           )}
         </div>
         {/* 연결이 있을 때만 버튼 노출 — 영상=재생, 텍스트=텍스트 보기, 아무것도 없으면 버튼 없음. */}

@@ -54,10 +54,11 @@ const newCard = (id: string, kind: SceneCardKind, position: { x: number; y: numb
   const base = { id, ...position, kind };
   switch (kind) {
     case "text": case "output": return { ...base, text: "" };
-    case "set": return { ...base, w: 160, h: 136, setCfg: { tagsText: "" } };
+    case "set": return { ...base, w: 152, h: 130, setCfg: { tagsText: "" } }; // 모델·리스트 등 기본 노드와 같은 크기(Jay 2026-10-30, 전엔 160×136)
     case "head": return { ...base, text: "제목", color: "#e8c341", fontSize: 32 };
-    case "comfy": return { ...base, w: 210, h: 190, comfyCfg: { status: "idle", paramExposed: [], paramValues: {}, params: [] } };
-    case "reference": case "generation": return { ...base, kind: "generation", status: "empty", refs: [], genId: null };
+    // 새 생성·Comfy 카드의 처음 크기 = 180×150(Jay 2026-10-30 안 B). Comfy 는 파라미터를 고르면 넘친 만큼 저절로 늘어난다(SceneBoard requestFit).
+    case "comfy": return { ...base, w: 180, h: 150, comfyCfg: { status: "idle", paramExposed: [], paramValues: {}, params: [] } };
+    case "reference": case "generation": return { ...base, kind: "generation", w: 180, h: 150, status: "empty", refs: [], genId: null };
     default: return base;
   }
 };

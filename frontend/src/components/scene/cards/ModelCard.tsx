@@ -63,7 +63,7 @@ export const ModelCard = memo(function ModelCard({
           </div>
         ) : (
           <div className="scene-modelnode-body">
-            <div className="scene-modelnode-empty">더블클릭해 모델 설정</div>
+            <div className="scene-modelnode-empty">모델 설정</div>
           </div>
         )}
       </div>

@@ -139,7 +139,7 @@ export function RenderCard({
               })}
             </div>
           ) : (
-            "생성 카드를 연결"
+            "생성 노드 연결"
           )}
         </div>
       </div>
