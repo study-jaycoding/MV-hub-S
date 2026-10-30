@@ -370,6 +370,24 @@ describe("들이는 규칙 — 부팅 복원과 창 인계(adoptSceneHistory)", 
     expect(undo.loadSceneHistory("s1")).toEqual(history());
   });
 
+  it("빈 메모리에 먼저 온 확인 전 인계도 보관한다 — 늦은 부팅 복원이 덮어도 늦은 저장이 닿으면 이어지고 새로 고쳐도 남는다(리뷰 4차 P2)", async () => {
+    const S0 = [card("c1", 0)];
+    let { undo, persist } = await pageLoad(S0);
+    const scenes = await import("../src/lib/scenes");
+    const gate = boot(undo); // 부팅 읽기를 시작했다
+    undo.adoptSceneHistory(target, candidate(undo), handoff(undo)); // 빈 메모리에 인계(S1)가 먼저
+    const h0 = { undo: [snap(card("c1", -10))], redo: [], lastCommit: snap(...S0) };
+    expect(undo.adoptSceneHistory({ ...target, snapFp: persist.savedSceneFingerprint("s1") }, candidate(undo, h0), gate)).toBe("adopted"); // 늦은 부팅 복원(S0)
+    expect(undo.loadSceneHistory("s1")).toEqual(h0);
+    expect(await scenes.writeSceneSnapshot({ accountNamespace: "local", sceneId: "s1" }, snap(...AFTER)).confirmed).toBe(true);
+    expect(undo.takePendingHandoff("s1", snap(...AFTER))).toEqual(history());
+    await until(() => fake.puts.length === 1);
+    ({ undo } = await pageLoad(AFTER));
+    const { restoreUndoHistories } = await import("../src/lib/sceneBoot");
+    await restoreUndoHistories();
+    expect(undo.loadSceneHistory("s1")).toEqual(history());
+  });
+
   it("보관한 확인 전 인계는 이 창에서 고치면 버린다", async () => {
     const { undo, persist } = await pageLoad();
     undo.adoptSceneHistory({ ...target, snapFp: persist.savedSceneFingerprint("s1") }, candidate(undo), boot(undo));
