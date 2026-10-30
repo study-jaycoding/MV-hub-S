@@ -966,6 +966,9 @@
 }
 /* 아직 생성물이 없는 생성 카드 — 같은 로고를 작게·멈춘 채·회색 16%(Jay 2026-10-30 안 B, 전엔 'New' 글자) */
 .scene-genempty-logo { width: 42%; height: auto; opacity: 0.16; filter: grayscale(1) brightness(1.7); pointer-events: none; user-select: none; }
+/* 생성물이 휴지통으로 간 카드 — 지운 그림 아이콘(Jay 2026-10-30, 전엔 '삭제됨' 글자). 뜻은 title 설명 */
+.scene-gendeleted { color: #6b7180; }
+.scene-gendeleted svg { width: 34px; height: 34px; }
 @media (prefers-reduced-motion: reduce) { .scene-genloading-logo { animation: none; opacity: 0.85; } }
 .reduce-motion .scene-genloading-logo { animation: none; opacity: 0.85; }
 .scene-comfynode-genwrap {

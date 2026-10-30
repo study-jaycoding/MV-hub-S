@@ -11,7 +11,7 @@ import { generationStatusLabelFor, generationStatusTitle } from "../../../lib/ge
 import { folderChipLabel } from "../../../lib/folderLabel";
 import { useT } from "../../../lib/i18n";
 import { HistoryBoardNode } from "../../history/HistoryBoardNode";
-import { StepIcon } from "../../common/ViewIcons";
+import { ImageOffIcon, StepIcon } from "../../common/ViewIcons";
 import { LastViewedBadge } from "../LastViewedBadge";
 import { TagEditor } from "../../TagEditor";
 import higgsfieldLogo from "../../../assets/higgsfield-logo.svg";
@@ -170,8 +170,10 @@ export const GenerationCard = memo(function GenerationCard({
         <div className="scene-card-inner">
           {card.genId ? (
             genMissing ? (
-              // 외부에서 삭제(휴지통)된 생성물 — 무한 'Generating' 대신 명시.
-              <div className="scene-card-genbody">{t("삭제됨")}</div>
+              // 외부에서 삭제(휴지통)된 생성물 — 무한 'Generating' 대신 명시. 글자 대신 지운 그림 아이콘(Jay 2026-10-30), 뜻은 설명·화면 읽기 이름으로.
+              <div className="scene-card-genbody scene-gendeleted" title={t("삭제됨")} role="img" aria-label={t("삭제됨")}>
+                <ImageOffIcon />
+              </div>
             ) : String(g?.status) === "failed" || String(g?.status) === "nsfw" || String(g?.status) === "error" ? (
               // 실패·NSFW 차단 — 라이브러리(My Work) 그리드와 동일한 경고 비주얼(빨강+⚠+라벨).
               //  생성 정보는 done 카드와 동일하게 '미들클릭'으로 연다(별도 ⓘ 배지 없음).

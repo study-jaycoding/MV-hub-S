@@ -387,6 +387,19 @@ it("아직 생성물이 없는 생성 카드는 'New' 글자 대신 흐린 로�
   expect(body.textContent).toBe("");
 });
 
+it("생성물이 휴지통으로 간 생성 카드는 '삭제됨' 글자 대신 지운 그림 아이콘 — 뜻은 설명·화면 읽기 이름(Jay 2026-10-30)", async () => {
+  setGens({});
+  fixture.data = { ...fixture.data, missingIds: new Set(["genGone"]) } as unknown as SceneGenDataApi;
+  const scene = { id: "S", name: "S", created_at: 0, groups: [], edges: [], cards: [{ id: "g1", kind: "generation", x: 0, y: 0, genId: "genGone", genIds: ["genGone"] }] };
+  await act(async () => { root.render(<SceneBoard scene={scene as never} onChange={noop} />); });
+  const body = boardCard("g1").querySelector(".scene-card-genbody")!;
+  expect(body.classList.contains("scene-gendeleted")).toBe(true);
+  expect(body.querySelector("svg")).not.toBeNull();
+  expect(body.textContent).toBe("");
+  expect(body.getAttribute("title")).toBe("삭제됨");
+  expect(body.getAttribute("aria-label")).toBe("삭제됨");
+});
+
 it("선이 닿은 포트를 카드 틀에 적는다 — 선 없는 포트만 작은 빈 원으로 보이게(CSS 가 data-linked 를 읽는다, Jay 2026-10-29 A안)", async () => {
   setGens({});
   const scene = {

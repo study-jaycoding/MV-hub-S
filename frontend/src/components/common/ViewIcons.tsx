@@ -178,6 +178,26 @@ export function LinkOffIcon() {
   );
 }
 
+// 지운 그림 — 그림 틀 + 사선(생성물이 휴지통으로 간 생성 카드, Jay 2026-10-30). 크기는 쓰는 곳의 CSS 가 정한다.
+export function ImageOffIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <circle cx="9" cy="9" r="2" />
+      <path d="m21 15-5-5L5 21" />
+      <path d="M2 2l20 20" />
+    </svg>
+  );
+}
+
 // 사본 — 겹친 두 장(서버에 같은 이름이 있는 사본 레퍼런스, 2026-09-30)
 export function CopyIcon() {
   return (
