@@ -4,7 +4,7 @@ import { PromptProvider } from "./lib/prompt";
 import { installFileDropGuard } from "./lib/media";
 import { announceCanvasWindow, EMBED_MODES, isCanvasWindow, shareCanvasMemory } from "./lib/popupWindows";
 import { applyAccent, applyReduceMotion, loadAccent, loadLang, loadReduceMotion } from "./lib/theme";
-import { bootSceneStore, readLegacyScenesRaw } from "./lib/sceneBoot";
+import { bootSceneStore, readLegacyScenesRaw, restoreUndoHistories } from "./lib/sceneBoot";
 import { installApiGate } from "./lib/http";
 import { installPopupLogoutWatch } from "./lib/otherTabLogout";
 import "./styles.css";
@@ -116,8 +116,9 @@ if (cleanFeed) {
   } else shareCanvasMemory(); // 이 창이 연 캔버스 창이 창 메모리를 받아 가고 돌려줄 손잡이(lib/popupWindows)
   // ★순서를 강제한다: 저장소 열기·이관 완료 → App 마운트 → (App 안에서) 백업 미러.
   //  App 의 effect 로 미루면 늦다 — 첫 렌더에서 이미 씬 목록을 읽는다(useSceneCoordination).
-  void bootSceneStore().then((result) => {
-    if (result.kind === "failed") renderStoreError(result.error);
-    else render(<App />);
+  void bootSceneStore().then(async (result) => {
+    if (result.kind === "failed") return renderStoreError(result.error);
+    await restoreUndoHistories(); // 새로 고치기 전의 되돌리기 기록 — 보드가 처음 열릴 때 바로 쓰게(늦으면 기다리지 않고 띄운다)
+    render(<App />);
   });
 }
