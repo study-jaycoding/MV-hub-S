@@ -539,6 +539,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `scene/SceneBar.tsx`(286줄) | 씬 탭 바 — 전환·추가·이름변경·삭제·드래그 순서변경·우클릭 메뉴 | `SceneBar` |
 | `scene/SceneMinimap.tsx`(184줄) | 우상단 네비게이터 — 카드 축소도·뷰포트 박스, 클릭/드래그 이동 | `SceneMinimap` |
 | `scene/sceneColors.ts`(10줄) | `CARD_W/CARD_H`·`GROUP_COLORS` 상수(순환 import 회피용 분리) | 상수 3개 |
+| `scene/NodeTip.tsx` | 캔버스 노드 설명 창 — 노드(.scene-card) 안 요소의 title 을 기본 말풍선 대신 앱 모양 창으로(제목·상태·해결·라벨값·조작 키, 글의 줄 규칙으로 나눔). 올려 둔 동안만 title 을 떼어 둔다 | `NodeTip`, `parseNodeTip()` · 모양은 `scene.css` `.node-tip` |
 | `scene/LastViewedBadge.tsx`(26줄) | "Last viewed" 어두운 칩(라임 글자+눈) 1개 — 생성·공유·캔버스·결과 모아보기·어셋 탭이 모두 이것(모양은 `scene.css`, 어셋 칸 호버·작은 칸 눈만은 `assets.css`) | `LastViewedBadge()` |
 
 #### 카드 본문(`scene/cards/`, 12파일 — 셸은 SceneBoard 소유)
