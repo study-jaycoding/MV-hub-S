@@ -915,6 +915,7 @@ export function ThumbnailGrid(props: Props) {
             className={
               "gen-cell" +
               (isList ? " list" : "") +
+              (props.tab === "team" ? " team" : "") + // 공유 탭 표시 규칙(generations.css). 편집 탭 카드도 tab="team" 이라 카드가 아니라 칸에 단다
               (g.id === focusGenId ? " focused" : "") +
               (props.disabledIds?.has(g.id) ? " deactivated" : "") +
               (props.cellHeader ? " has-head" : "")

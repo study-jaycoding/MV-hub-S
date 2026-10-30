@@ -276,6 +276,10 @@
   box-shadow: 0 0 0 1px #ffd966, 0 0 10px rgba(245,197,66,0.55);
 }
 .card-final-star { display: block; width: 1em; height: 1em; flex: none; fill: currentColor; }
+/* 공유 탭(Jay 2026-10-30) — 여기 카드는 당연히 공유라 S 는 마우스를 올렸을 때만(최종 ★·보류 표는 그대로, 초점이 닿으면 보인다 — 조작 규칙 51).
+   호버·선택 때 뜨는 ⓘ 가 작업자 이름표를 덮으므로 그때는 이름표를 숨긴다. 편집 탭 카드는 .gen-cell 밖이라 그대로. */
+.gen-cell.team .card:not(:hover) .card-sf.on:not(.held):not(.final):not(:focus) { opacity: 0; }
+.gen-cell.team .card-thumb:hover .creator-badge, .gen-cell.team .card.selected .creator-badge, .gen-cell.team .card-thumb:focus-within .creator-badge { display: none; }
 /* C 미확인 코멘트(호박색) — 확인 전까지 항상 표시. 읽으면 has_unread=false 라 다시 호버 전용. */
 .card-cm.alert {
   background: #f5a623; color: #2a1500; border-color: #ffc04d; opacity: 1; pointer-events: auto;
