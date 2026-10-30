@@ -620,13 +620,11 @@
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--border);
   border-radius: 50%;
-  color: var(--text);
+  color: var(--muted); /* 선 그림 = 탭 글자와 같은 색 — 평소 회색, 마우스를 올리면 밝게(Jay 2026-10-30) */
 }
-.top-ic-btn:hover { border-color: var(--border2); }
+.top-ic-btn:hover { border-color: var(--border2); color: var(--text); }
 .top-ic-btn .top-ic-line, .top-ic-btn.lit .top-ic-lit { display: block; }
 .top-ic-btn .top-ic-lit, .top-ic-btn.lit .top-ic-line { display: none; }
-.top-ic-line { opacity: 0.85; }
-.top-ic-btn:hover .top-ic-line { opacity: 1; }
 /* 셋을 바탕이 이어진 한 캡슐로(시안 G3, Jay 2026-10-26). 칸 사이 테두리는 아예 없앤다 — 투명 테두리로 두면 모서리 이음에 홈이 생긴다.
    안 칸 36 · 양 끝 칸 37(바깥 테두리 1 포함) → 그림 칸은 모두 36 이라 20·22 그림이 정수 자리(8·7)에 놓이고 간격이 같다. 하나뿐이면 동그라미 그대로. */
 .top-ic-group { display: flex; flex: none; }

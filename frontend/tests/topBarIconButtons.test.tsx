@@ -2,6 +2,8 @@
 // 머리줄 아이콘 단추(Jay 2026-10-26) — 편집을 가운데 탭 줄에서 빼서 Assets 왼쪽에 두고, 편집·Assets·관리는 글자 없는 아이콘 단추.
 //  켜짐(.lit — 선 그림 대신 투톤 그림): 편집 = 편집 탭이 열린 동안 · Assets·관리 = 그 별도 창이 떠 있는 동안. 라임 테두리(.on)는 없다.
 //  켜진 단추를 다시 누르면 닫는다: 편집 = 밑의 탭을 누른 것과 같게 떠남 · 창 = 닫음.
+import { readFileSync } from "node:fs";
+import { URL as NodeURL } from "node:url";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -51,6 +53,15 @@ const bell = () => host.querySelector<HTMLButtonElement>(".topbar .top-ic-group 
 const lit = () => iconButtons().map((b) => b.classList.contains("lit"));
 
 describe("머리줄 아이콘 단추", () => {
+  it("선 그림 색은 탭 글자와 같다 — 평소 회색(--muted) · 마우스를 올리면 밝게(--text), 따로 흐리게 하지 않는다", () => {
+    const css = readFileSync(new NodeURL("../src/styles/app-shell.css", import.meta.url), "utf8");
+    expect(css).toMatch(/\.tabs button \{[^}]*color: var\(--muted\)/);
+    expect(css).toContain(".tabs button:hover { color: var(--text); }");
+    expect(css).toMatch(/\.top-ic-btn \{[^}]*\n {2}color: var\(--muted\)/);
+    expect(css).toMatch(/\.top-ic-btn:hover \{[^}]*[ ]color: var\(--text\)/);
+    expect(css).not.toMatch(/\.top-ic-line \{[^}]*opacity/);
+  });
+
   it("가운데 탭 줄에 편집이 없고, 검색 뒤에 편집·Assets·관리 순서의 글자 없는 아이콘 단추가 있다 — 누르면 제 일을 한다", () => {
     const onOpenEdit = vi.fn(), onOpenAssets = vi.fn(), onOpenManage = vi.fn();
     act(() => root.render(bar({ onOpenEdit, onOpenAssets, onOpenManage })));
