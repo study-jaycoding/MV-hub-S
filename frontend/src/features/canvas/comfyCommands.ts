@@ -17,6 +17,18 @@ export function applyComfyResolution(scene: Scene, resolution: ComfyCanvasResolu
     return { scene, receipt: null };
   if (run.receipt && run.receipt.resultRevision >= resolution.result_revision)
     return { scene, receipt: run.receipt.resultRevision === resolution.result_revision ? run.receipt : null };
+  if (["accepted", "running", "saving"].includes(resolution.state)) {
+    const owner = scene.comfyCardRuns?.[run.cardId];
+    if (owner?.groupId === run.runGroupId && owner.groupSeq === run.groupSeq && owner.settledState === "not_found")
+      return { scene: { ...scene, comfyCardRuns: { ...scene.comfyCardRuns, [run.cardId]: { ...owner, settledState: undefined } } }, receipt: null };
+  }
+  if (["needs_collect", "not_found", "origin_mismatch"].includes(resolution.state)) {
+    const owner = scene.comfyCardRuns?.[run.cardId];
+    if (!owner || owner.groupId !== run.runGroupId || owner.groupSeq !== run.groupSeq || owner.settledState === resolution.state)
+      return { scene, receipt: null };
+    return { scene: { ...scene, comfyCardRuns: { ...scene.comfyCardRuns, [run.cardId]: { ...owner,
+      settledState: resolution.state as "needs_collect" | "not_found" | "origin_mismatch" } } }, receipt: null };
+  }
   if (!["saved", "failed", "dismissed", "linked"].includes(resolution.state)) return { scene, receipt: null };
   if (resolution.state === "linked") {
     if (!resolution.disposition) return { scene, receipt: null };
@@ -55,7 +67,7 @@ export function applyComfyResolution(scene: Scene, resolution: ComfyCanvasResolu
   const pending = next.comfyRuns!.some(item => item.cardId === card.id && item.runGroupId === run.runGroupId
     && item.groupSeq === run.groupSeq && item.localState !== "applied");
   next = { ...next, comfyCardRuns: { ...scene.comfyCardRuns, [card.id]: { ...current,
-    ...(pending ? {} : { settledState: current.representative ? "done" : resolution.state === "dismissed" ? "idle" : "failed" }) } } };
+    ...(pending ? {} : { settledState: current.representative ? "done" : resolution.state === "dismissed" ? "dismissed" : "failed" }) } } };
   return { scene: next, receipt };
 }
 export type ComfyRuntimeUpdate = Pick<SceneComfyCfg, "runId" | "status" | "error" | "output" | "outputs">;

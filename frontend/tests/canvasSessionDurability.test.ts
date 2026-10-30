@@ -4,8 +4,31 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import { canvasTarget, createCanvasDocumentPort, type CanvasCommand } from "../src/features/canvas/api";
 import { listPersistedScenes, listScenes, saveScenes, updateScene, writeSceneSnapshot, type Scene } from "../src/lib/scenes";
 import { delaySceneStoreWritesForTest, failSceneStoreWritesForTest, settleSceneStoreForTest } from "../src/lib/sceneStore";
+import { comfySceneFingerprints } from "../src/lib/sceneComfyInputs";
+import { mergePatchedSceneList } from "../src/lib/useSceneCoordination";
 
 const initial: Scene = { id: "scene", name: "Scene", created_at: 1, cards: [{ id: "card", kind: "generation", x: 0, y: 0, prompt: "before" }], edges: [] };
+
+it("Comfy 예약·늦은 확정 통지는 표시 중인 카드 사본을 다시 전달하지 않는다", async () => {
+  const scene: Scene = { ...initial, cards: [{ id: "c", kind: "comfy", x: 0, y: 0, comfyCfg: { content: "{}" } }] };
+  saveScenes(null, [scene]); await settleSceneStoreForTest();
+  let display = scene;
+  const documentPort = createCanvasDocumentPort({ flushPending: () => {}, changed: (id, executionOnly) => {
+    display = mergePatchedSceneList([display], listScenes(null), scene.id, executionOnly ? null : id)[0];
+  } });
+  const target = { ...canvasTarget(scene.id), originHubId: "h", originDeviceId: "d" };
+  await documentPort.reserveComfyAttempt(target, { attemptId: "a", runGroupId: "g", copyIndex: 0, cardId: "c", ...comfySceneFingerprints(scene, "c")! });
+  expect(display.cards).toBe(scene.cards);
+  delaySceneStoreWritesForTest(20);
+  const receipt = documentPort.commit(target, { type: "resolveComfy", canWrite: () => true, resolution: {
+    attempt_id: "a", result_revision: 1, state: "saved", origin: { hub_id: "h", device_id: "d" },
+    outputs: [{ output_key: "t", kind: "text", text: "done", state: "text" }],
+  } });
+  const delivered = display.cards;
+  expect(delivered[0].comfyCfg?.outputs?.[0].text).toBe("done");
+  await receipt.confirmed;
+  expect(display.cards).toBe(delivered); // Board가 그 사이 친 입력을 덮을 새 카드 사본이 없다.
+});
 
 it("합쳐진 연속 저장은 최종 스냅샷의 영수증만 성공한다", async () => {
   delaySceneStoreWritesForTest(20);

@@ -1,8 +1,16 @@
-import { ApiPausedError, authFormHeaders, HttpError, jsonBody, jsonFetch, NO_RESPONSE_MESSAGE, throwHttpError } from "./http";
+import { ApiPausedError, authFormHeaders, getAuthToken, HttpError, jsonBody, jsonFetch, NO_RESPONSE_MESSAGE, throwHttpError } from "./http";
 import { t } from "./i18n";
-import { getAccountNamespace } from "./accountScope";
-import { EXPECT_ACCOUNT_HEADER, hubHasFeature, REQUEST_RETRY_FEATURE } from "./hubFeatures";
+import { getAccountNamespace, getConnectionKey } from "./accountScope";
+import { COMFY_CANVAS_RUNS_FEATURE, EXPECT_ACCOUNT_HEADER, hubHasFeature, REQUEST_RETRY_FEATURE } from "./hubFeatures";
 import type { AssetReferenceIdentity } from "../shared/contracts/assets";
+import type { ComfyCanvasAck, ComfyCanvasResolution, ComfyCanvasResolveResponse } from "./comfyRunState";
+
+export interface ComfyCanvasSubmission {
+  canvas_run: { attempt_id: string; run_group_id: string; group_seq: number; copy_index: number;
+    scene_id: string; card_id: string; config_fp: string; input_fp: string };
+  save_meta: { name: string };
+  isCurrent: () => boolean;
+}
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const RUN_POLL_MS = 1500; // /run_status 폴링 간격
@@ -115,10 +123,11 @@ export class ComfyUnresolvedRunError extends HttpError {
   }
 }
 
-async function waitForRun(jobId: string): Promise<ComfyRunResult> {
+async function waitForRun(jobId: string, isCurrent?: () => boolean): Promise<ComfyRunResult> {
   let netFails = 0;
   for (;;) {
     await sleep(RUN_POLL_MS);
+    if (isCurrent && !isCurrent()) throw new DOMException("실행 확인을 다른 창에 넘겼습니다", "AbortError");
     let data: ComfyRunResult & { state?: string };
     try {
       const url = `/api/comfy/run_status?job_id=${encodeURIComponent(jobId)}`;
@@ -147,6 +156,19 @@ async function waitForRun(jobId: string): Promise<ComfyRunResult> {
 }
 
 export const comfyApi = {
+  resolveCanvasRuns: (attemptIds: string[]) => jsonFetch<ComfyCanvasResolveResponse>("/api/comfy/canvas-runs/resolve", {
+    method: "POST", body: jsonBody({ attempt_ids: attemptIds }), headers: { [EXPECT_ACCOUNT_HEADER]: getAccountNamespace() },
+  }),
+  ackCanvasRun: (receipt: ComfyCanvasAck) => jsonFetch<ComfyCanvasResolution>("/api/comfy/canvas-runs/ack", {
+    method: "POST", body: jsonBody(receipt), headers: { [EXPECT_ACCOUNT_HEADER]: getAccountNamespace() },
+  }),
+  // 없는 UUID 조회도 현재 허브/기기를 돌려준다. 별도 원본 식별 API나 로컬 추정값을 만들지 않는다.
+  canvasOrigin: async () => {
+    const { runs } = await comfyApi.resolveCanvasRuns([crypto.randomUUID()]);
+    const origin = runs[0]?.origin;
+    if (!origin?.hub_id || !origin.device_id) throw new Error("Comfy 실행 원본을 확인하지 못했습니다");
+    return origin;
+  },
   settings: () => jsonFetch<ComfySettings>("/api/comfy/settings"),
   setSettings: (patch: Partial<Omit<ComfySettings, "has_api_key">>) =>
     jsonFetch<ComfySettings>("/api/comfy/settings", { method: "PUT", body: jsonBody(patch) }),
@@ -161,8 +183,11 @@ export const comfyApi = {
     jsonFetch<ComfySaveResult>("/api/comfy/save-to-library", { method: "POST", body: jsonBody(payload) }),
   unresolvedRuns: () => jsonFetch<{ cap: number; used: number; runs: ComfyUnresolvedRun[] }>("/api/comfy/unresolved-runs"),
   collectRun: async (jobId: string): Promise<ComfyRunResult> => {
+    const account = getAccountNamespace(), connection = getConnectionKey(), token = getAuthToken();
+    const current = hubHasFeature(COMFY_CANVAS_RUNS_FEATURE)
+      ? () => account === getAccountNamespace() && connection === getConnectionKey() && token === getAuthToken() : undefined;
     const accepted = await jsonFetch<{ job_id: string }>(`/api/comfy/unresolved-runs/${encodeURIComponent(jobId)}/collect`, { method: "POST" });
-    return waitForRun(accepted.job_id);
+    return waitForRun(accepted.job_id, current);
   },
   dismissRuns: (jobIds: string[]) => jsonFetch<{ dismissed: number }>("/api/comfy/unresolved-runs/dismiss", {
     method: "POST", body: jsonBody({ job_ids: jobIds, acknowledged: true }),
@@ -176,6 +201,7 @@ export const comfyApi = {
     paramValues?: Record<string, string | number | boolean>,
     media?: ComfyRunMedia[],
     projectId?: string,
+    canvas?: ComfyCanvasSubmission,
   ): Promise<ComfyRunResult> => {
     const fd = new FormData();
     fd.append("content", content);
@@ -183,13 +209,20 @@ export const comfyApi = {
     fd.append("media_meta", JSON.stringify((media ?? []).map((m) => ({ type: m.type,
       source_url: m.source_url, source_gen_id: m.source_gen_id, role: m.role, asset_content_id: m.asset_content_id }))));
     if (projectId) fd.append("project_id", projectId);
+    if (canvas) {
+      fd.append("canvas_run", JSON.stringify(canvas.canvas_run));
+      fd.append("save_meta", JSON.stringify(canvas.save_meta));
+    }
     for (const m of media ?? []) fd.append("media", m.blob, m.name);
     // 요청표(run_key) — 허브가 재전송 계약을 알릴 때만. 답을 받지 못하면(전송 TypeError·본문 끊김) 1초 뒤 **같은 키·같은 FormData** 로
     //  한 번 더 보낸다 — 허브가 같은 요청이면 처음 잡을 돌려준다(Comfy Cloud 두 번 과금 방지, Jay 결정 2A). 옛 허브엔 지금처럼 한 번만.
-    const retry = hubHasFeature(REQUEST_RETRY_FEATURE) && typeof crypto?.randomUUID === "function";
-    if (retry) fd.append("run_key", crypto.randomUUID());
+    const retry = !!canvas || (hubHasFeature(REQUEST_RETRY_FEATURE) && typeof crypto?.randomUUID === "function");
+    if (retry) fd.append("run_key", canvas?.canvas_run.attempt_id || crypto.randomUUID());
+    const account = getAccountNamespace(), connection = getConnectionKey();
+    const isCurrent = () => account === getAccountNamespace() && connection === getConnectionKey() && (!canvas || canvas.isCurrent());
     const headers = { ...authFormHeaders(), ...(retry ? { [EXPECT_ACCOUNT_HEADER]: getAccountNamespace() } : {}) };
     const send = async () => {
+      if (canvas && !isCurrent()) throw new DOMException("실행 대상이 변경되었습니다", "AbortError");
       const res = await fetch("/api/comfy/run", { method: "POST", body: fd, headers });
       if (!res.ok) await throwHttpError(res, "/api/comfy/run");
       return (await res.json()) as ComfyRunResult & { job_id?: string };
@@ -213,6 +246,6 @@ export const comfyApi = {
     const job_id = first.job_id;
     if (!job_id) throw new Error("실행 작업 ID를 받지 못했습니다");
 
-    return waitForRun(job_id);
+    return waitForRun(job_id, canvas ? isCurrent : undefined);
   },
 };

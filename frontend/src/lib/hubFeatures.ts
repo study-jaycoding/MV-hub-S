@@ -9,5 +9,6 @@ export function setHubFeatures(list: unknown): void {
 export const hubHasFeature = (name: string): boolean => features.has(name);
 
 export const REQUEST_RETRY_FEATURE = "request_retry_v1";
+export const COMFY_CANVAS_RUNS_FEATURE = "comfy_canvas_runs_v1";
 /** 이 탭의 계정 범위(`acct:<email>` | `local`) — 허브가 그사이 다른 계정으로 바뀌었으면 실행 전에 거절한다(backend deps.expected_account_differs). */
 export const EXPECT_ACCOUNT_HEADER = "X-MVHub-Expect-Account";

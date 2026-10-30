@@ -3,7 +3,6 @@
 import { ownEntry } from "./ownEntry";
 import {
   collectListInputs,
-  comfyOutputMedia,
   incomingTextOf,
   comfyTextDriveKeys,
   resolveEdgeRole,
@@ -203,24 +202,32 @@ export function gatherComfyMedia(
     const type = a?.type === "video" ? "video" : "image";
     out.push({ ...assetIdentity(a!), type, url, name: mediaFileName(url, type, out.length + 1), source_gen_id: gid });
   };
+  const pushComfy = (card: SceneCard) => {
+    const outputs = overlay ? overlay[card.id] || [] : card.comfyCfg?.outputs || [];
+    for (const output of outputs) {
+      if (output.kind !== "image" && output.kind !== "video") continue;
+      const gid = "saved_generation_id" in output ? output.saved_generation_id : undefined;
+      const asset = typeof gid === "string" ? ownEntry(genData, gid)?.assets?.[0] : undefined;
+      const raw = asset?.asset_content_id ? asset.file_path : asset?.source_url || asset?.file_path;
+      const url = output.url || (raw ? refMediaSrc({ file_path: raw, type: output.kind }) : undefined);
+      if (url) out.push({ ...(asset ? assetIdentity(asset) : {}), type: output.kind, url,
+        name: mediaFileName(url, output.kind, out.length + 1), source_gen_id: typeof gid === "string" ? gid : undefined });
+    }
+  };
   for (const s of srcs) {
     if (s.kind === "reference") (s.refs || []).forEach(pushRef);
     else if (s.kind === "generation") pushGen(s);
     else if (s.kind === "comfy")
       // 상류 comfy 의 이미지/영상 출력물을 입력으로(comfy→comfy 체인). overlay 가 있으면 이 짝(복사본)의 결과를 읽는다.
-      for (const m of comfyOutputMedia(s, overlay))
-        out.push({ type: m.kind, url: m.url, name: mediaFileName(m.url, m.kind, out.length + 1) });
+      pushComfy(s);
     else if (s.kind === "list") {
       const li = collectListInputs(s.id, cardsById, resolved, overlay);
       // list 안의 생성물 항목 — comfy 는 실행 출력(overlay/결과)을 직접 미디어로(라이브러리 저장 전에도 동작), 그 밖은 결과물.
       const pushGenItem = (gc?: SceneCard) => {
         if (gc?.kind === "comfy") {
-          const media = comfyOutputMedia(gc, overlay);
-          if (media.length) {
-            for (const m of media)
-              out.push({ type: m.kind, url: m.url, name: mediaFileName(m.url, m.kind, out.length + 1) });
-            return;
-          }
+          const before = out.length;
+          pushComfy(gc);
+          if (out.length > before || overlay) return;
         }
         pushGen(gc);
       };
@@ -292,7 +299,7 @@ export function prepareSceneComfyInputs(
       cardId,
       cards,
       edges,
-      copiedParamValues,
+      cardRuns ? baseParams : copiedParamValues,
       textParamKeys,
       cardRuns,
     ),
@@ -307,7 +314,9 @@ export function comfySceneFingerprints(scene: Scene, cardId: string): { configFp
   const config = { name: cfg.name, content: cfg.content, nodeCount: cfg.nodeCount,
     paramExposed: cfg.paramExposed, paramValues: stableParamValues(cfg.paramValues || {}), params: cfg.params };
   // URL 해소/파일 수집은 여기서 하지 않는다. 저장소 연산과 복구 판정은 문서만 읽는 순수 계산이다.
-  const values = driveTextParams(cardId, cfg.paramValues || {}, cfg.params, scene.cards, scene.edges, {});
+  // 연결 텍스트는 그래프의 편집 값으로, 상류 Comfy 출력은 묶음 소유로 식별한다.
+  // 같은 상류 묶음의 copy/대표 출력이 바뀌어도 후속 실행을 스스로 무효화하지 않는다.
+  const values = cfg.paramValues || {};
   const input = inputGraphFingerprint(cardId, scene.cards, scene.edges, values,
     [...comfyTextDriveKeys(cfg.params, cfg.content)], scene.comfyCardRuns || {});
   const hash = (value: string) => sha256Js(new TextEncoder().encode(value));

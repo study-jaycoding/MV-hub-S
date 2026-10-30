@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { APP_EVENTS } from "./appEvents";
 import { comfyApi, type ComfyUnresolvedRun } from "./comfyApi";
+import { COMFY_CANVAS_RUNS_FEATURE, hubHasFeature } from "./hubFeatures";
+import { notifyCanvasComfyRuns } from "./useCanvasComfyRuns";
+import { getAccountNamespace, getConnectionKey } from "./accountScope";
+import { listScenes } from "./scenes";
 
 // 카드 수명과 무관한 설정 목록. 서버 원장이 정답이며 새 생성 요청은 이 훅에서 호출하지 않는다.
 export function useComfyUnresolvedRuns() {
   const [runs, setRuns] = useState<ComfyUnresolvedRun[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [foreignCount, setForeignCount] = useState(0);
   const epoch = useRef(0);
   const requestSeq = useRef(0);
   const occupied = useRef(false);
@@ -14,11 +19,20 @@ export function useComfyUnresolvedRuns() {
   const refresh = useCallback(async () => {
     const current = epoch.current;
     const seq = ++requestSeq.current;
+    const account = getAccountNamespace(), connection = getConnectionKey();
+    const valid = () => current === epoch.current && seq === requestSeq.current
+      && account === getAccountNamespace() && connection === getConnectionKey();
     try {
       const result = await comfyApi.unresolvedRuns();
-      if (current === epoch.current && seq === requestSeq.current) { setRuns(result.runs); setError(""); }
+      if (!valid()) return;
+      setRuns(result.runs); setError("");
+      if (hubHasFeature(COMFY_CANVAS_RUNS_FEATURE) && listScenes(null).some(scene => scene.comfyRuns?.length)) {
+        const origin = await comfyApi.canvasOrigin();
+        if (valid()) setForeignCount(listScenes(null).flatMap(scene => scene.comfyRuns || [])
+          .filter(run => run.originHubId !== origin.hub_id || run.originDeviceId !== origin.device_id).length);
+      } else setForeignCount(0);
     } catch (reason) {
-      if (current === epoch.current && seq === requestSeq.current) setError(reason instanceof Error ? reason.message : String(reason));
+      if (valid()) setError(reason instanceof Error ? reason.message : String(reason));
     }
   }, []);
 
@@ -30,6 +44,7 @@ export function useComfyUnresolvedRuns() {
       setRuns([]);
       setBusy(false);
       setError("");
+      setForeignCount(0);
       void refresh();
     };
     window.addEventListener(APP_EVENTS.accountUpdated, reset);
@@ -48,6 +63,8 @@ export function useComfyUnresolvedRuns() {
     try { await action(); }
     catch (reason) { failure = reason instanceof Error ? reason.message : String(reason); }
     finally {
+      // collect의 임시 job은 폴링용이다. 카드 정산은 원래 attempt를 다시 조회한다.
+      if (hubHasFeature(COMFY_CANVAS_RUNS_FEATURE)) notifyCanvasComfyRuns();
       if (current === epoch.current) {
         await refresh();
         if (current === epoch.current) {
@@ -60,7 +77,7 @@ export function useComfyUnresolvedRuns() {
   };
 
   return {
-    runs, busy, error, refresh,
+    runs, busy, error, foreignCount, refresh,
     collect: (run: ComfyUnresolvedRun) => act(() => comfyApi.collectRun(run.job_id)),
     resave: (run: ComfyUnresolvedRun) => act(() => comfyApi.saveToLibrary({
       outputs: run.outputs.filter((output) => output.downloaded && !output.acked)

@@ -1,6 +1,19 @@
 // comfy 실행 판정 상태기계 특성화 (R1) — 버그 3건의 재발 지점을 테스트로 고정.
 import { describe, it, expect } from "vitest";
-import { computeMaxParallel, createLimiter, createBatchTracker } from "../src/lib/comfyRunState";
+import { computeMaxParallel, createLimiter, createBatchTracker, comfyCardRuntime, projectComfyCard } from "../src/lib/comfyRunState";
+import type { Scene } from "../src/lib/scenes";
+
+it.each(["needs_collect", "failed", "dismissed", "not_found", "origin_mismatch"] as const)("%s는 원본 카드에 쓰지 않고 복구 안내를 표시한다", state => {
+  const card = { id: "c", kind: "comfy" as const, x: 0, y: 0, comfyCfg: { content: "{}", status: "running" as const, runId: 33 } };
+  const scene: Scene = { id: "s", name: "s", created_at: 1, cards: [card], edges: [],
+    comfyCardRuns: { c: { groupId: "g", groupSeq: 1, settledState: state } },
+    comfyRuns: [{ version: 1, attemptId: "a", runGroupId: "g", groupSeq: 1, copyIndex: 0, cardId: "c",
+      originHubId: "h", originDeviceId: "d", configFp: "c", inputFp: "i", localState: "submitted" }] };
+  expect(comfyCardRuntime(scene, "c")).toMatchObject({ status: "failed" });
+  const projected = projectComfyCard(card, scene);
+  expect(projected.comfyCfg!.error).toBeTruthy(); expect(projected.comfyCfg!.runId).toBeUndefined();
+  expect(card.comfyCfg).toEqual({ content: "{}", status: "running", runId: 33 });
+});
 
 describe("computeMaxParallel", () => {
   it("단일 comfy batch N → N 병렬, comfy N개 batch 1 → N 병렬", () => {

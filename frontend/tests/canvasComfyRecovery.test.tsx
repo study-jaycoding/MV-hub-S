@@ -1,0 +1,303 @@
+// @vitest-environment jsdom
+import { act, useRef, useState } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { createCanvasDocumentPort } from "../src/features/canvas/session";
+import { recoverCanvasComfyRuns, useCanvasComfyRuns, notifyCanvasComfyRuns } from "../src/lib/useCanvasComfyRuns";
+import { getAccountNamespace, setAccountScope, setConnectionKey } from "../src/lib/accountScope";
+import { comfyApi } from "../src/lib/comfyApi";
+import { comfyCardRuntime, type ComfyCanvasResolution } from "../src/lib/comfyRunState";
+import { comfySceneFingerprints } from "../src/lib/sceneComfyInputs";
+import { saveScenes, listScenes, listPersistedScenes, updateScene, writeSceneSnapshot, type Scene, type SceneGroup } from "../src/lib/scenes";
+import { delaySceneStoreWritesForTest, failSceneStoreWritesForTest, settleSceneStoreForTest } from "../src/lib/sceneStore";
+import { setHubFeatures } from "../src/lib/hubFeatures";
+import { useSceneComfyExecution } from "../src/lib/useSceneComfyExecution";
+import { useCanvasSession } from "../src/features/canvas/useCanvasSession";
+
+const windowState = vi.hoisted(() => ({ floating: false }));
+vi.mock("../src/lib/popupWindows", async original => ({
+  ...await original<typeof import("../src/lib/popupWindows")>(), isCanvasFloating: () => windowState.floating,
+}));
+const origin = { hub_id: "hub", device_id: "pc" };
+let scene: Scene;
+let root: Root | undefined;
+let host: HTMLDivElement | undefined;
+const port = () => createCanvasDocumentPort({ flushPending: () => {} });
+const resolution = (copy = 0, patch: Partial<ComfyCanvasResolution> = {}): ComfyCanvasResolution => ({
+  attempt_id: `a${copy}`, state: "saved", result_revision: 3, origin,
+  outputs: [{ output_key: "out", kind: "image", generation_id: `g${copy}`, state: "saved" }], ...patch,
+});
+const target = () => ({ accountNamespace: getAccountNamespace(), sceneId: scene.id });
+const currentScene = () => listScenes(null).find(item => item.id === scene.id)!;
+function fakeApi(responses = [resolution()]) {
+  return {
+    canvasOrigin: vi.fn(async () => origin),
+    resolveCanvasRuns: vi.fn(async () => ({ runs: responses })),
+    ackCanvasRun: vi.fn(async request => ({ ...resolution(), ...request, state: "linked" as const, outputs: [] })),
+  };
+}
+const run = (api = fakeApi(), document = port(), canWrite = () => true) =>
+  recoverCanvasComfyRuns({ canvasDocument: document, api, canWrite });
+
+beforeEach(async () => {
+  setAccountScope(""); setConnectionKey("local"); windowState.floating = false;
+  setHubFeatures(["comfy_canvas_runs_v1"]);
+  vi.stubGlobal("fetch", vi.fn(() => { throw new Error("real API forbidden"); }));
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  scene = { id: "background", name: "background", created_at: 1, edges: [], cards: [
+    { id: "c", kind: "comfy", x: 0, y: 0, comfyCfg: { content: "{}" } },
+  ], comfyCardRuns: { c: { groupId: "group", groupSeq: 1 } } };
+  scene.comfyRuns = [{ version: 1, attemptId: "a0", cardId: "c", copyIndex: 0, runGroupId: "group", groupSeq: 1,
+    originHubId: "hub", originDeviceId: "pc", localState: "submitted", ...comfySceneFingerprints(scene, "c")! }];
+  saveScenes(null, [scene]); await settleSceneStoreForTest();
+});
+afterEach(async () => {
+  if (root) await act(async () => root!.unmount()); root = undefined; host?.remove();
+  vi.useRealTimers(); failSceneStoreWritesForTest(false); delaySceneStoreWritesForTest(0); await settleSceneStoreForTest();
+  setHubFeatures([]); setAccountScope(""); setConnectionKey(""); windowState.floating = false;
+  vi.restoreAllMocks(); vi.unstubAllGlobals();
+});
+
+it("보드 없이 카드 반영+applied를 한 번에 확정한 뒤 ACK하고 일치 항목만 지운다", async () => {
+  const api = fakeApi();
+  api.ackCanvasRun.mockImplementation(async request => {
+    const saved = listPersistedScenes(null)[0];
+    expect(saved.cards[0].genId).toBe("g0");
+    expect(saved.comfyRuns![0]).toMatchObject({ localState: "applied", receipt: { attemptId: "a0", resultRevision: 3, disposition: "attached" } });
+    return { ...resolution(), ...request, state: "linked", outputs: [] };
+  });
+  await run(api);
+  expect(currentScene().comfyRuns).toEqual([]);
+  expect(currentScene().comfyCardRuns!.c.representative?.attemptId).toBe("a0");
+  expect(api.ackCanvasRun).toHaveBeenCalledOnce();
+});
+
+it("ACK 응답 유실과 재시작 후 linked 중복 응답은 같은 영수증을 재전송하고 결과를 중복하지 않는다", async () => {
+  const api = fakeApi([resolution(), resolution()]);
+  api.ackCanvasRun.mockRejectedValue(new TypeError("lost ACK"));
+  await run(api);
+  expect(currentScene().comfyRuns![0].localState).toBe("applied");
+  expect(currentScene().cards[0].genIds).toEqual(["g0"]);
+  const saved = JSON.parse(JSON.stringify(currentScene())); saveScenes(null, [saved]); await settleSceneStoreForTest();
+  const restarted = fakeApi([resolution(0, { state: "linked", disposition: "attached", outputs: [] })]);
+  await run(restarted);
+  expect(restarted.ackCanvasRun.mock.calls[0][0]).toEqual(api.ackCanvasRun.mock.calls[0][0]);
+  expect(currentScene().comfyRuns).toEqual([]);
+  expect(currentScene().cards[0].genIds).toEqual(["g0"]);
+});
+
+it.each(["write-failed", "receipt-missing"])("저장 확인 실패(%s)는 ACK를 금지한다", async failure => {
+  const api = fakeApi(), document = port();
+  if (failure === "write-failed") failSceneStoreWritesForTest(true);
+  else {
+    const snapshot = document.snapshot;
+    document.snapshot = (at, persisted) => persisted ? { ...scene, comfyRuns: [] } : snapshot(at, persisted);
+  }
+  await run(api, document);
+  expect(api.ackCanvasRun).not.toHaveBeenCalled();
+});
+
+it("ACK 대기 중 새 revision 영수증이 생기면 옛 ACK가 그 항목을 지우지 않는다", async () => {
+  const api = fakeApi();
+  api.ackCanvasRun.mockImplementation(async request => {
+    updateScene(null, scene.id, { comfyRuns: currentScene().comfyRuns!.map(item => ({ ...item,
+      receipt: { ...item.receipt!, resultRevision: 4 } })) });
+    await settleSceneStoreForTest();
+    return { ...resolution(), ...request, state: "linked", outputs: [] };
+  });
+  await run(api);
+  expect(currentScene().comfyRuns![0].receipt?.resultRevision).toBe(4);
+});
+
+it("큰 copy ACK·삭제·재시작 뒤 작은 copy가 와도 대표를 되돌리지 않는다", async () => {
+  updateScene(null, scene.id, { comfyRuns: [scene.comfyRuns![0], { ...scene.comfyRuns![0], attemptId: "a2", copyIndex: 2 }] });
+  await settleSceneStoreForTest();
+  await run(fakeApi([resolution(2)]));
+  saveScenes(null, JSON.parse(JSON.stringify(listPersistedScenes(null)))); await settleSceneStoreForTest();
+  await run();
+  expect(currentScene().cards[0].genId).toBe("g2");
+  expect(currentScene().comfyCardRuns!.c.representative?.copyIndex).toBe(2);
+});
+
+it.each(["handoff", "account", "connection"])("조회 중 %s 변경은 반영과 ACK를 멈춘다", async change => {
+  const api = fakeApi(), document = port();
+  const commit = vi.spyOn(document, "commit");
+  api.resolveCanvasRuns.mockImplementation(async () => {
+    if (change === "handoff") windowState.floating = true;
+    if (change === "account") setAccountScope("other");
+    if (change === "connection") setConnectionKey("other");
+    return { runs: [resolution()] };
+  });
+  await run(api, document);
+  expect(commit).not.toHaveBeenCalled(); expect(api.ackCanvasRun).not.toHaveBeenCalled();
+});
+
+it("반영 저장을 기다리는 사이 창을 넘기면 ACK와 추가 쓰기를 하지 않는다", async () => {
+  const api = fakeApi(), documentPort = port();
+  delaySceneStoreWritesForTest(30);
+  const committed = vi.spyOn(documentPort, "commit");
+  const pending = run(api, documentPort);
+  await vi.waitFor(() => expect(committed).toHaveBeenCalledOnce(), { interval: 1 });
+  windowState.floating = true;
+  await pending;
+  expect(api.ackCanvasRun).not.toHaveBeenCalled();
+  expect(committed).toHaveBeenCalledOnce();
+  expect(listPersistedScenes(null)[0].cards[0].genId).toBeUndefined();
+});
+
+it("다른 원본은 조회·삭제하지 않고 원래 PC 안내를 남긴다", async () => {
+  updateScene(null, scene.id, { comfyRuns: [{ ...scene.comfyRuns![0], originDeviceId: "another-pc" }] });
+  await settleSceneStoreForTest();
+  const api = fakeApi(); await run(api);
+  expect(api.resolveCanvasRuns).not.toHaveBeenCalled(); expect(api.ackCanvasRun).not.toHaveBeenCalled();
+  expect(currentScene().comfyRuns).toHaveLength(1);
+  expect(comfyCardRuntime(currentScene(), "c")).toMatchObject({ status: "failed", message: "원래 PC 에서 확인 필요" });
+});
+
+it.each(["needs_collect", "not_found", "failed", "dismissed"] as const)("%s 응답은 생성중을 영구히 남기지 않는다", async state => {
+  await run(fakeApi([resolution(0, { state, outputs: [] })]));
+  expect(comfyCardRuntime(currentScene(), "c")?.status).not.toBe("running");
+  expect(currentScene().comfyRuns?.length).toBe(state === "needs_collect" || state === "not_found" ? 1 : 0);
+});
+
+it("미회수 뒤 서버 회수 완료를 다시 조회하면 같은 카드로 정산된다", async () => {
+  await run(fakeApi([resolution(0, { state: "needs_collect", outputs: [] })]));
+  await run();
+  expect(currentScene().cards[0].genId).toBe("g0");
+  expect(comfyCardRuntime(currentScene(), "c")?.status).toBe("done");
+});
+
+it("2.5초 복구 주기: 숨은 창과 떠 있는 동안 메인 창은 쉬고 다시 깨어난다", async () => {
+  vi.useFakeTimers();
+  const api = fakeApi([resolution(0, { state: "running", outputs: [] })]);
+  vi.spyOn(comfyApi, "canvasOrigin").mockImplementation(api.canvasOrigin);
+  vi.spyOn(comfyApi, "resolveCanvasRuns").mockImplementation(api.resolveCanvasRuns);
+  const documentPort = port();
+  function Screen() { useCanvasComfyRuns({ authReady: true, canvasDocument: documentPort }); return null; }
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  windowState.floating = true;
+  await act(async () => { root!.render(<Screen />); await vi.advanceTimersByTimeAsync(5000); });
+  expect(api.canvasOrigin).not.toHaveBeenCalled();
+  windowState.floating = false;
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+  await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+  expect(api.canvasOrigin).not.toHaveBeenCalled();
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  await act(async () => { notifyCanvasComfyRuns(); await vi.advanceTimersByTimeAsync(0); });
+  expect(api.resolveCanvasRuns).toHaveBeenCalledOnce();
+  await act(async () => { await vi.advanceTimersByTimeAsync(2499); });
+  expect(api.resolveCanvasRuns).toHaveBeenCalledOnce();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+  expect(api.resolveCanvasRuns).toHaveBeenCalledTimes(2);
+});
+
+it.each(["direct", "plan"])("진행 중 묶음이 있으면 %s 진입점도 새 요청을 내지 않는다", async entry => {
+  scene.cards.push({ id: "out", kind: "generation", x: 200, y: 0 }); scene.edges = [{ from: "c", to: "out" }];
+  saveScenes(null, [scene]); await settleSceneStoreForTest();
+  const submit = vi.spyOn(comfyApi, "run");
+  let execution!: ReturnType<typeof useSceneComfyExecution>;
+  const documentPort = port();
+  function Screen() {
+    execution = useSceneComfyExecution({ sceneIdRef: { current: scene.id }, cardsRef: { current: scene.cards }, edgesRef: { current: scene.edges },
+      genDataRef: { current: {} }, refParents: {}, flushPending: () => {}, commitDocument: vi.fn(), isDocumentCurrent: () => true,
+      canvasDocument: documentPort, saveComfyToLibrary: vi.fn() });
+    return null;
+  }
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  await act(async () => root!.render(<Screen />));
+  await act(async () => { if (entry === "direct") await execution.runComfy("c"); else await execution.orchestrateGenerate("out"); });
+  expect(submit).not.toHaveBeenCalled();
+  expect(currentScene().comfyRuns).toEqual(scene.comfyRuns);
+});
+
+it.each([false, true])("체인 중간 종료=%s: 접수된 단계는 서버 정산, 미제출 단계는 시작하지 않는다", async close => {
+  scene = { ...scene, comfyRuns: [], comfyCardRuns: {}, cards: [...scene.cards,
+    { id: "second", kind: "comfy", x: 100, y: 0, comfyCfg: { content: "{}" } },
+    { id: "out", kind: "generation", x: 200, y: 0 }], edges: [{ from: "c", to: "second" }, { from: "second", to: "out" }] };
+  saveScenes(null, [scene]); await settleSceneStoreForTest();
+  let alive = true, execution!: ReturnType<typeof useSceneComfyExecution>;
+  let complete!: (result: Awaited<ReturnType<typeof comfyApi.run>>) => void;
+  const submit = vi.spyOn(comfyApi, "run").mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }))
+    .mockResolvedValue({ outputs: [{ kind: "text", text: "second" }], prompt_id: "p2" });
+  vi.spyOn(comfyApi, "canvasOrigin").mockResolvedValue(origin);
+  const save = vi.fn(), render = vi.fn(), commit = vi.fn(); const documentPort = port();
+  function Screen() {
+    execution = useSceneComfyExecution({ sceneIdRef: { current: scene.id }, cardsRef: { current: scene.cards }, edgesRef: { current: scene.edges },
+      genDataRef: { current: {} }, refParents: {}, flushPending: () => {}, commitDocument: commit, isDocumentCurrent: () => alive,
+      canvasDocument: documentPort, saveComfyToLibrary: save, onRenderCardRuns: render });
+    return null;
+  }
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  await act(async () => root!.render(<Screen />));
+  let pending!: Promise<void>;
+  await act(async () => { pending = execution.orchestrateGenerate("out"); await vi.waitFor(() => expect(submit).toHaveBeenCalledOnce()); });
+  if (close) alive = false;
+  await act(async () => { complete({ outputs: [{ kind: "text", text: "first" }], prompt_id: "p1" }); await pending; });
+  expect(submit).toHaveBeenCalledTimes(close ? 1 : 2);
+  expect(render).toHaveBeenCalledTimes(close ? 0 : 1);
+  expect(save).not.toHaveBeenCalled(); expect(commit).not.toHaveBeenCalled();
+  const attempts = currentScene().comfyRuns!;
+  expect(attempts.map(item => item.cardId)).toEqual(close ? ["c"] : ["c", "second"]);
+  const api = fakeApi(attempts.map(item => resolution(0, { attempt_id: item.attemptId })));
+  await run(api);
+  expect(currentScene().cards[0].genId).toBe("g0");
+  expect(currentScene().comfyRuns).toEqual([]);
+});
+
+it.each(["image", "text"] as const)("열린 보드로 복구된 %s 결과는 기존 편집을 Undo해도 보존한다", async kind => {
+  scene.cards.push({ id: "other", kind: "generation", x: 100, y: 0, prompt: "before" });
+  saveScenes(null, [scene]); await settleSceneStoreForTest();
+  let session!: ReturnType<typeof useCanvasSession>;
+  let received!: (scene: Scene) => void;
+  let readCards!: () => Scene["cards"];
+  function Screen() {
+    const [source, setSource] = useState(scene); received = setSource;
+    const [cards, setCards] = useState(scene.cards), [edges, setEdges] = useState(scene.edges), [groups, setGroups] = useState<SceneGroup[]>([]);
+    const cardsRef = useRef(cards); cardsRef.current = cards;
+    const edgesRef = useRef(edges); edgesRef.current = edges;
+    const groupsRef = useRef(groups); groupsRef.current = groups;
+    session = useCanvasSession({ sceneId: scene.id, sourceScene: source, initialSnapshot: { cards: scene.cards, edges: scene.edges, groups: [] },
+      cardsRef, edgesRef, groupsRef, setCards, setEdges, setGroups, sceneIdRef: useRef(scene.id), frozenRef: useRef(false),
+      layerMoveRef: useRef(null), clearSelection: () => {}, onChange: snapshot => writeSceneSnapshot(target(), snapshot) });
+    readCards = () => cardsRef.current;
+    return null;
+  }
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  await act(async () => root!.render(<Screen />));
+  await act(async () => { session.commit({ type: "editCardPrompt", cardId: "other", prompt: "after" }); session.flush(); await settleSceneStoreForTest(); });
+  const documentPort = createCanvasDocumentPort({ flushPending: () => { session.flush(); }, changed: () => received(currentScene()) });
+  const api = fakeApi([resolution(0, kind === "text" ? { outputs: [{ output_key: "text", kind: "text", text: "preserved", state: "text" }] } : {})]);
+  await act(async () => { await run(api, documentPort); });
+  if (kind === "image") expect(readCards()[0].genId).toBe("g0");
+  await act(async () => { session.undo(); await settleSceneStoreForTest(); });
+  expect(readCards()[1].prompt).toBe("before");
+  if (kind === "image") expect(readCards()[0].genIds).toContain("g0");
+  else expect(readCards()[0].comfyCfg?.outputs).toEqual([{ kind: "text", text: "preserved" }]);
+});
+
+it("배치 일부만 실패해도 성공 copy는 정산하고 미회수 copy만 남긴다", async () => {
+  scene = { ...scene, comfyRuns: [], comfyCardRuns: {}, cards: [{ ...scene.cards[0], batchCount: 2 }] };
+  saveScenes(null, [scene]); await settleSceneStoreForTest();
+  const submit = vi.spyOn(comfyApi, "run").mockRejectedValueOnce(new Error("partial failure"))
+    .mockResolvedValue({ outputs: [{ kind: "text", text: "done" }], prompt_id: "p" });
+  vi.spyOn(comfyApi, "canvasOrigin").mockResolvedValue(origin);
+  const save = vi.fn(), documentPort = port(); let execution!: ReturnType<typeof useSceneComfyExecution>;
+  function Screen() {
+    execution = useSceneComfyExecution({ sceneIdRef: { current: scene.id }, cardsRef: { current: scene.cards }, edgesRef: { current: [] },
+      genDataRef: { current: {} }, refParents: {}, flushPending: () => {}, commitDocument: vi.fn(), isDocumentCurrent: () => true,
+      canvasDocument: documentPort, saveComfyToLibrary: save });
+    return null;
+  }
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  await act(async () => root!.render(<Screen />));
+  await act(async () => { expect(await execution.runComfy("c")).toBe(false); });
+  const attempts = currentScene().comfyRuns!;
+  expect(attempts).toHaveLength(2);
+  const api = fakeApi(attempts.map(item => resolution(item.copyIndex, { attempt_id: item.attemptId,
+    ...(item.copyIndex === 0 ? { state: "needs_collect", outputs: [] } : {}) })));
+  await run(api);
+  expect(submit).toHaveBeenCalledTimes(2); expect(save).not.toHaveBeenCalled();
+  expect(currentScene().comfyRuns).toHaveLength(1);
+  expect(currentScene().cards[0].genId).toBe("g1");
+  expect(comfyCardRuntime(currentScene(), "c")?.settledState).toBe("needs_collect");
+});

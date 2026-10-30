@@ -54,6 +54,11 @@ import type { CanvasSelection } from "./popupWindows";
 import { STORAGE_KEYS } from "./storageKeys";
 import type { Generation } from "../types";
 
+function withComfyState(memory: Scene, latest: Scene): Scene {
+  return memory.comfyRuns === latest.comfyRuns && memory.comfyCardRuns === latest.comfyCardRuns
+    ? memory : { ...memory, comfyRuns: latest.comfyRuns, comfyCardRuns: latest.comfyCardRuns };
+}
+
 // 백그라운드 씬의 비동기 결과가 도착해도, 현재 씬의 아직 디바운스 저장 전인 입력은 React 메모리에서
 // 보존한다. target 씬만 최신 저장본으로 교체하고 나머지는 최신 목록을 사용한다.
 // patchedSceneId=null 은 '내용을 고친 씬이 없다'(순서만 바뀜) — 활성 씬을 **항상** 보호한다.
@@ -71,7 +76,7 @@ export function mergePatchedSceneList(
   const merged = latest.map((scene) => {
     if (scene.id !== activeSceneId) return scene;
     found = true;
-    return { ...inMemoryActive, comfyRuns: scene.comfyRuns, comfyCardRuns: scene.comfyCardRuns };
+    return withComfyState(inMemoryActive, scene);
   });
   if (found) return merged;
   // 다른 탭이 활성 씬을 삭제한 순간 백그라운드 결과가 도착해도, 기존 비파괴 정책처럼 화면은 유지한다.
@@ -249,7 +254,7 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
         }
         // 활성 씬은 내 것 유지(편집 보존), 나머지는 최신으로.
         const merged = myActive
-          ? latest.map((s) => (s.id === activeId ? { ...myActive, comfyRuns: s.comfyRuns, comfyCardRuns: s.comfyCardRuns } : s))
+          ? latest.map((s) => (s.id === activeId ? withComfyState(myActive, s) : s))
           : latest;
         if (myActive && latestActive && !sameSceneContent(latestActive, myActive)) {
           notify("다른 탭에서 이 씬이 변경됐습니다 — 새로고침하면 반영됩니다.");
@@ -454,6 +459,8 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
     return result.ok;
   }, []);
   const canvasDocument = useMemo(() => createCanvasDocumentPort({ flushPending: flushScenePending, write: patchSceneById,
+    changed: (sceneId, executionOnly) => setScenes(previous =>
+      mergePatchedSceneList(previous, listScenes(null), activeSceneIdRef.current, executionOnly ? null : sceneId)),
     editPrompt: (sceneId, cardId, prompt) => sceneActionRef.current?.sceneId === sceneId
       ? sceneActionRef.current.commitDocument({ type: "editCardPrompt", cardId, prompt }) : false,
   }), [flushScenePending, patchSceneById]);

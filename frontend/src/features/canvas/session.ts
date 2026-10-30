@@ -12,11 +12,15 @@ import { applyRelink, type RelinkTarget } from "./assetRefs";
 import { sameSceneContent } from "../../lib/sceneAbsorb";
 import { mergeCardLinksIntoScenes, type CardLink } from "../../lib/sceneCardLinks";
 import { comfySceneFingerprints } from "../../lib/sceneComfyInputs";
-import type { ComfyAttemptTarget, ComfyCanvasRun, PreparedComfyAttempt, ReserveResult } from "../../lib/comfyRunState";
+import type { ComfyApplicationReceipt, ComfyAttemptTarget, ComfyCanvasResolution, ComfyCanvasRun, PreparedComfyAttempt, ReserveResult } from "../../lib/comfyRunState";
+import { applyComfyResolution } from "./comfyCommands";
 
 // 영속 대상은 열린 화면의 세대와 별개다. 다른 씬을 보고 있어도 원래 씬에 정산할 수 있다.
 export interface CanvasTarget { readonly accountNamespace: string; readonly sceneId: string }
 export type CanvasCommand =
+  | { type: "resolveComfy"; resolution: ComfyCanvasResolution; canWrite: () => boolean }
+  | { type: "ackComfy"; receipt: ComfyApplicationReceipt; canWrite: () => boolean }
+  | { type: "submitComfy"; attemptId: string; canWrite: () => boolean }
   | { type: "reserveGeneration"; links: CanvasGenerationLink[]; createdAt: number }
   | { type: "settleGeneration" | "discardGeneration"; cardId: string; generationId: string }
   | { type: "reconcileGenerations"; links: ResolvedCanvasGenerationLink[]; now: number }
@@ -31,6 +35,7 @@ export interface CanvasDocumentPort {
   snapshot(target: CanvasTarget, persisted?: boolean): Scene | undefined;
   commit(target: CanvasTarget, command: CanvasCommand): CanvasWriteReceipt;
   flush(target: CanvasTarget): CanvasWriteReceipt;
+  reserveComfyAttempt(target: ComfyAttemptTarget, prepared: PreparedComfyAttempt): Promise<ReserveResult>;
 }
 
 export const canvasTarget = (sceneId: string): CanvasTarget => Object.freeze({ accountNamespace: getAccountNamespace(), sceneId });
@@ -88,6 +93,18 @@ export async function reserveComfyAttempt(target: ComfyAttemptTarget, prepared: 
 export function changeCanvas(scene: Scene, command: CanvasCommand): Scene | null {
   let cards = scene.cards;
   switch (command.type) {
+    case "resolveComfy": return command.canWrite() ? applyComfyResolution(scene, command.resolution).scene : null;
+    case "ackComfy": {
+      if (!command.canWrite()) return null;
+      const runs = scene.comfyRuns?.filter(run => run.attemptId !== command.receipt.attemptId
+        || run.receipt?.resultRevision !== command.receipt.resultRevision || run.receipt?.disposition !== command.receipt.disposition);
+      return runs?.length === scene.comfyRuns?.length ? scene : { ...scene, comfyRuns: runs };
+    }
+    case "submitComfy": {
+      if (!command.canWrite()) return null;
+      return { ...scene, comfyRuns: scene.comfyRuns?.map(run => run.attemptId === command.attemptId && run.localState === "reserved"
+        ? { ...run, localState: "submitted" } : run) };
+    }
     case "editCardPrompt": return null; // 사용자 입력은 열린 Board의 세션만 받는다.
     case "recordCamera": return { ...scene, camera: command.camera };
     case "reserveGeneration":
@@ -127,6 +144,7 @@ export function createCanvasDocumentPort(adapter: {
   flushPending: (sceneId: string) => void;
   write?: (sceneId: string, value: Pick<Scene, "cards" | "edges" | "groups" | "mcpAttachmentReceipts" | "camera">) => boolean;
   editPrompt?: (sceneId: string, cardId: string, prompt: string) => boolean;
+  changed?: (sceneId: string, executionOnly: boolean) => void;
 }): CanvasDocumentPort {
   const snapshot = (target: CanvasTarget, persisted = false) => authorized(target)
     ? (persisted ? listPersistedScenes(null) : listScenes(null)).find(scene => scene.id === target.sceneId) : undefined;
@@ -136,10 +154,34 @@ export function createCanvasDocumentPort(adapter: {
     return { queued: result.value, confirmed: result.confirmed.then(ok => result.value && ok && authorized(target)
       && JSON.stringify(snapshot(target, true)) === JSON.stringify(snapshot(target))) };
   };
-  return { snapshot, flush, commit(target, command) {
+  return { snapshot, flush, async reserveComfyAttempt(target, prepared) {
+    const result = await reserveComfyAttempt(target, prepared);
+    if (authorized(target)) adapter.changed?.(target.sceneId, true);
+    return result;
+  }, commit(target, command) {
     if (!authorized(target)) return stopped();
+    let wroteComfy = false;
+    let executionOnly = true;
     const result = confirmSceneWrite(() => {
       if (command.type === "editCardPrompt") return adapter.editPrompt?.(target.sceneId, command.cardId, command.prompt) ?? false;
+      if (command.type === "resolveComfy" || command.type === "ackComfy" || command.type === "submitComfy") {
+        if (!command.canWrite()) return false;
+        const before = snapshot(target);
+        if (!before) return false;
+        const preview = changeCanvas(before, command);
+        if (preview === before) return true;
+        executionOnly = !preview || preview.cards === before.cards;
+        adapter.flushPending(target.sceneId);
+        if (!authorized(target) || !command.canWrite()) return false;
+        wroteComfy = true;
+        return updateScenesWith(null, scenes => {
+          if (!authorized(target) || !command.canWrite()) return null;
+          const fresh = scenes.find(scene => scene.id === target.sceneId);
+          if (!fresh) return null;
+          const settled = changeCanvas(fresh, command);
+          return settled && settled !== fresh ? scenes.map(scene => scene.id === target.sceneId ? settled : scene) : null;
+        });
+      }
       // 백그라운드 재시도에서 실제 변경이 없으면 열린 보드의 입력 디바운스를 깨우지 않는다.
       if (command.type === "reconcileGenerations" || command.type === "discardGeneration" || command.type === "settleGeneration") {
         const before = snapshot(target);
@@ -162,7 +204,13 @@ export function createCanvasDocumentPort(adapter: {
         return settled && settled !== fresh ? scenes.map(scene => scene.id === target.sceneId ? settled : scene) : null;
       });
     });
-    return { queued: result.value, confirmed: result.confirmed.then(ok => result.value && ok && authorized(target)) };
+    // 보통 문서 편집과 같이 working 반영을 즉시 전달한다. 저장 대기 뒤 카드 사본을 다시
+    // 전달하면 그동안 Board에서 친 미저장 입력을 덮으므로, 확정 통지는 실행 필드만 보낸다.
+    if (wroteComfy && result.value && authorized(target)) adapter.changed?.(target.sceneId, executionOnly);
+    return { queued: result.value, confirmed: result.confirmed.then(ok => {
+      if (wroteComfy && ok && authorized(target)) adapter.changed?.(target.sceneId, true);
+      return result.value && ok && authorized(target);
+    }) };
   } };
 }
 

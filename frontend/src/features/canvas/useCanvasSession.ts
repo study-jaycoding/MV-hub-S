@@ -115,6 +115,16 @@ export function useCanvasSession(options: Omit<Parameters<typeof useSceneHistory
       history.restoreSceneHistory(source.id, incoming);
     }
     const replaced = !switched && (incoming.cards !== options.cardsRef.current || incoming.edges !== options.edgesRef.current || incoming.groups !== options.groupsRef.current);
+    if (!switched && source.comfyCardRuns) {
+      for (const card of incoming.cards) {
+        const previous = options.cardsRef.current.find(item => item.id === card.id);
+        if (card.kind === "comfy" && source.comfyCardRuns[card.id]?.representative
+          && previous?.comfyCfg?.content === card.comfyCfg?.content
+          && (JSON.stringify(previous?.genIds) !== JSON.stringify(card.genIds)
+            || JSON.stringify(previous?.comfyCfg?.outputs) !== JSON.stringify(card.comfyCfg?.outputs)))
+          history.propagateGenIdsToHistory(card.id, card);
+      }
+    }
     if (switched || incoming.cards !== options.cardsRef.current) options.setCards(incoming.cards);
     if (switched || incoming.edges !== options.edgesRef.current) options.setEdges(incoming.edges);
     if (switched || incoming.groups !== options.groupsRef.current) options.setGroups(incoming.groups);

@@ -1,4 +1,4 @@
-import type { CanvasComfyCommand, ComfyRuntimeUpdate } from "../features/canvas/api";
+import type { CanvasComfyCommand, ComfyRuntimeUpdate, CanvasDocumentPort } from "../features/canvas/api";
 export { doneOutputsPatch } from "../features/canvas/api";
 import type { SaveComfyOptions, SaveComfyResult } from "./sceneComfyLibrary";
 import { useRef, useState } from "react";
@@ -10,10 +10,15 @@ import {
   executeSceneComfy,
   isSceneComfyConfigCurrent,
   SceneComfyRunSupersededError,
+  COMFY_CONFLICT_MESSAGE,
   type SceneComfyConfigSnapshot,
   type SceneComfyExecutionResult,
   type SceneComfyRunInputSnapshot,
 } from "./sceneComfyExecutor";
+import { getAccountNamespace } from "./accountScope";
+import { COMFY_CANVAS_RUNS_FEATURE, hubHasFeature } from "./hubFeatures";
+import { isCanvasFloating } from "./popupWindows";
+import { notifyCanvasComfyRuns } from "./useCanvasComfyRuns";
 import {
   prepareSceneComfyInputs,
   samePreparedSceneComfyInputs,
@@ -86,6 +91,7 @@ export function comfySaveNotice(failed: boolean, supersededSaved: boolean, lead?
 }
 
 interface UseSceneComfyExecutionOptions {
+  canvasDocument?: CanvasDocumentPort;
   projectId?: string;
   sceneIdRef: MutableRefObject<string>;
   cardsRef: MutableRefObject<SceneCard[]>;
@@ -123,6 +129,7 @@ interface UseSceneComfyExecutionOptions {
 // SceneBoard의 Comfy 실행 수명주기 전용 훅.
 // 그래프 상태는 ref로 읽고, 저장은 주입받은 기존 커밋 경계를 통해서만 수행한다.
 export function useSceneComfyExecution({
+  canvasDocument,
   projectId,
   sceneIdRef,
   cardsRef,
@@ -148,6 +155,17 @@ export function useSceneComfyExecution({
   const runOwnersRef = useRef<Map<string, number>>(new Map());
   const refParentsRef = useRef(refParents);
   refParentsRef.current = refParents;
+  const readScene = () => canvasDocument?.snapshot({ accountNamespace: getAccountNamespace(), sceneId: sceneIdRef.current });
+  const conflicts = (ids: string[]) => hubHasFeature(COMFY_CANVAS_RUNS_FEATURE)
+    && readScene()?.comfyRuns?.some(run => ids.includes(run.cardId) && run.localState !== "applied");
+  const newGroup = (cardId: string) => {
+    const before = readScene()?.comfyCardRuns?.[cardId]?.groupId;
+    const runGroupId = crypto.randomUUID();
+    return { runGroupId, current: () => {
+      const group = readScene()?.comfyCardRuns?.[cardId]?.groupId;
+      return group === before || group === runGroupId;
+    } };
+  };
 
   const notifyComfyRunning = () => {
     if (!onComfyRunningChange) return;
@@ -206,6 +224,7 @@ export function useSceneComfyExecution({
     varySeed: boolean,
     configSnapshot?: SceneComfyConfigSnapshot,
     isRunCurrent?: () => boolean,
+    group?: { runGroupId: string; copyIndex: number; current: () => boolean },
   ): Promise<SceneComfyExecutionResult> => {
     const inputsById = new Map(cardsRef.current.map(card => [card.id, card]));
     const destination = collectSceneGenerationAssignment(cardId, inputsById, resolvePortEdges(inputsById, edgesRef.current));
@@ -219,11 +238,13 @@ export function useSceneComfyExecution({
       overlay,
       varySeed,
       configSnapshot,
+      ...(group && canvasDocument ? { canvas: { sceneId: sceneIdRef.current, runGroupId: group.runGroupId,
+        copyIndex: group.copyIndex, document: canvasDocument } } : {}),
       getLiveCards: () => cardsRef.current,
       getLiveEdges: () => edgesRef.current,
       getLiveGenData: () => genDataRef.current,
       getLiveRefParents: () => refParentsRef.current,
-      isRunCurrent: () => isDocumentCurrent() && (isRunCurrent ? isRunCurrent()
+      isRunCurrent: () => isDocumentCurrent() && (!group || (group.current() && !isCanvasFloating())) && (isRunCurrent ? isRunCurrent()
         : !configSnapshot || isSceneComfyConfigCurrent(cardsRef.current, cardId, configSnapshot)),
     });
     return execution;
@@ -246,6 +267,7 @@ export function useSceneComfyExecution({
         genDataRef.current,
         refParentsRef.current,
         overlay,
+        hubHasFeature(COMFY_CANVAS_RUNS_FEATURE) ? readScene()?.comfyCardRuns || {} : undefined,
       ),
     );
 
@@ -273,6 +295,9 @@ export function useSceneComfyExecution({
   const runComfy = async (cardId: string): Promise<boolean> => {
     if (!isDocumentCurrent()) return false;
     flushPending();
+    if (conflicts([cardId])) { flashMsg(COMFY_CONFLICT_MESSAGE); return false; }
+    const serverManaged = hubHasFeature(COMFY_CANVAS_RUNS_FEATURE);
+    const group = serverManaged ? newGroup(cardId) : undefined;
     const card = cardsRef.current.find((candidate) => candidate.id === cardId);
     if (!card?.comfyCfg?.content) return false;
     if (isWorkflowLoading?.(cardId)) {
@@ -293,14 +318,14 @@ export function useSceneComfyExecution({
     const isRunCurrent = () =>
       isDocumentCurrent() && sceneIdRef.current === sceneId &&
       isSceneComfyConfigCurrent(cardsRef.current, cardId, configSnapshot);
-    const runId = claimComfyRun(sceneId, cardId);
-    if (!commitDocument({ type: "updateComfyRuntime", cardId, patch: { runId, status: "running", error: null } })) {
+    const runId = serverManaged ? 0 : claimComfyRun(sceneId, cardId);
+    if (!serverManaged && !commitDocument({ type: "updateComfyRuntime", cardId, patch: { runId, status: "running", error: null } })) {
       releaseComfyRun(sceneId, cardId, runId); return false;
     }
     markComfyRunning([cardId], true);
     try {
       const settledSets = await Promise.allSettled(
-        Array.from({ length: batch }, async () => {
+        Array.from({ length: batch }, async (_, copyIndex) => {
           const startedAt = Date.now();
           const execution = await runComfyRaw(
             cardId,
@@ -308,6 +333,7 @@ export function useSceneComfyExecution({
             batch > 1,
             configSnapshot,
             isRunCurrent,
+            group && { ...group, copyIndex },
           );
           return { ...execution, elapsed: (Date.now() - startedAt) / 1000 };
         }),
@@ -318,7 +344,7 @@ export function useSceneComfyExecution({
         )
         .map((result) => result.value);
       const saveResult = await saveCompletedComfyResults(
-        sets.map((result) => {
+        sets.filter(result => !result.serverManaged).map((result) => {
           const inputStillCurrent = () =>
             !result.superseded &&
             isRunCurrent() &&
@@ -343,6 +369,10 @@ export function useSceneComfyExecution({
       const rejected = settledSets.find(
         (result): result is PromiseRejectedResult => result.status === "rejected",
       );
+      if (serverManaged) {
+        if (rejected) flashMsg(rejected.reason instanceof Error ? rejected.reason.message : "Comfy 실행을 마치지 못했습니다");
+        return !rejected && isRunCurrent() && sets.every(result => !result.superseded);
+      }
       const inputsStillCurrent =
         isRunCurrent() &&
         sets.every(
@@ -378,6 +408,7 @@ export function useSceneComfyExecution({
         error: null,
       });
     } catch (error) {
+      if (serverManaged) { flashMsg(error instanceof Error ? error.message : "Comfy 실행 실패"); return false; }
       // 교체된 실행은 소유 중인 옛 running만 idle로 돌리고, 새 실행 상태는 건드리지 않는다.
       if (error instanceof SceneComfyRunSupersededError || !isRunCurrent())
         patchComfyRunIfOwner(sceneId, cardId, runId, { status: "idle", error: null });
@@ -388,6 +419,7 @@ export function useSceneComfyExecution({
         });
       return false;
     } finally {
+      if (serverManaged) notifyCanvasComfyRuns();
       markComfyRunning([cardId], false);
       releaseComfyRun(sceneId, cardId, runId);
     }
@@ -422,6 +454,9 @@ export function useSceneComfyExecution({
     isPlanCurrent: () => boolean,
   ): Promise<{ runs: SceneGenerationRun[]; aborted: boolean }> => {
     flushPending();
+    if (conflicts(plan.comfyIds)) { flashMsg(COMFY_CONFLICT_MESSAGE); return { runs: [], aborted: true }; }
+    const serverManaged = hubHasFeature(COMFY_CANVAS_RUNS_FEATURE);
+    const groups = new Map(serverManaged ? plan.comfyIds.map(id => [id, newGroup(id)] as const) : []);
     if (plan.comfyIds.some((id) => isWorkflowLoading?.(id))) {
       flashMsg(WORKFLOW_LOADING_MESSAGE); // 배치도 시작하지 않는다 — 옛 설정을 잡아 돌리게 된다(28회차 ③)
       return { runs: [], aborted: true };
@@ -448,11 +483,11 @@ export function useSceneComfyExecution({
     }
 
     const runIds = new Map<string, number>(
-      plan.comfyIds.map((id) => [id, claimComfyRun(sceneId, id)]),
+      serverManaged ? [] : plan.comfyIds.map((id) => [id, claimComfyRun(sceneId, id)]),
     );
 
     if (plan.comfyIds.length) {
-      if (!commitDocument({ type: "showComfyRunning", runs: [...runIds].map(([cardId, runId]) => ({ cardId, runId })) })) {
+      if (!serverManaged && !commitDocument({ type: "showComfyRunning", runs: [...runIds].map(([cardId, runId]) => ({ cardId, runId })) })) {
         runIds.forEach((runId, id) => releaseComfyRun(sceneId, id, runId));
         return { runs: [], aborted: true };
       }
@@ -538,6 +573,7 @@ export function useSceneComfyExecution({
                     varySeed,
                     configSnapshots.get(step.id),
                     () => executionStillCurrent() && isConfigCurrent(step.id),
+                    groups.has(step.id) ? { ...groups.get(step.id)!, copyIndex } : undefined,
                   ),
             );
             overlay[step.id] = execution.outputs;
@@ -627,7 +663,7 @@ export function useSceneComfyExecution({
       !arePlanConfigsCurrent() ||
       !areAllInputsCurrent();
     const saveResult = await saveCompletedComfyResults(
-      plan.comfyIds.flatMap((comfyId) =>
+      (serverManaged ? [] : plan.comfyIds).flatMap((comfyId) =>
         copies.flatMap((copy) => {
           const outputs = copy.overlay[comfyId];
           const inputSnapshot = copy.inputSnapshots[comfyId];
@@ -665,6 +701,11 @@ export function useSceneComfyExecution({
     const saveNotice = comfySaveNotice(!!saveResult.failed, wasSuperseded && !!saveResult.saved);
     if (saveNotice) flashMsg(saveNotice);
     for (const id of plan.comfyIds) releaseRunning(id);
+    if (serverManaged) {
+      const failed = [...finalized.values()].find(result => result.firstError);
+      if (failed) flashMsg(failed.firstError!);
+      notifyCanvasComfyRuns();
+    }
     // 실행 소유자만 최종 상태를 정산한다. 중간에 새 실행이 시작되면 runId가 달라져 이 블록은 아무것도 못 바꾼다.
     for (const id of plan.comfyIds) {
       const runId = runIds.get(id);

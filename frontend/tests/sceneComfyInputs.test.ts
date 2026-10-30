@@ -6,8 +6,41 @@ import {
   hasTextConnection,
   prepareSceneComfyInputs,
   samePreparedSceneComfyInputs,
+  comfySceneFingerprints,
 } from "../src/lib/sceneComfyInputs";
-import type { SceneCard } from "../src/lib/scenes";
+import type { SceneCard, Scene } from "../src/lib/scenes";
+import type { Generation } from "../src/types";
+
+it("문서 입력 지문은 seed·연결 텍스트·상류 묶음을 구분하고 자기 묶음과 같은 묶음 copy 출력은 제외한다", () => {
+  const scene: Scene = { id: "s", name: "s", created_at: 1, cards: [
+    { id: "c", kind: "comfy", x: 0, y: 0, comfyCfg: { content: "{}", paramValues: { seed: 1, "1|text": "manual" },
+      params: [{ key: "1|text", type: "text", label: "Text" }] } },
+    { id: "up", kind: "comfy", x: 0, y: 0, comfyCfg: { content: "{}", outputs: [{ kind: "text", text: "copy0" }] } },
+    { id: "t", kind: "text", x: 0, y: 0, text: "prompt" },
+  ], edges: [{ from: "up", to: "c", role: "text" }, { from: "t", to: "c", role: "text" }],
+    comfyCardRuns: { c: { groupId: "self", groupSeq: 1 }, up: { groupId: "up1", groupSeq: 1 } } };
+  const first = comfySceneFingerprints(scene, "c")!;
+  scene.comfyCardRuns!.c = { groupId: "self2", groupSeq: 2 };
+  scene.cards[1].comfyCfg!.outputs = [{ kind: "text", text: "copy2" }];
+  expect(comfySceneFingerprints(scene, "c")).toEqual(first);
+  scene.cards[0].comfyCfg!.paramValues!.seed = 2;
+  expect(comfySceneFingerprints(scene, "c")!.inputFp).not.toBe(first.inputFp);
+  scene.cards[0].comfyCfg!.paramValues!.seed = 1;
+  scene.cards[2].text = "changed";
+  expect(comfySceneFingerprints(scene, "c")!.inputFp).not.toBe(first.inputFp);
+  scene.cards[2].text = "prompt";
+  scene.comfyCardRuns!.up.groupId = "up2";
+  expect(comfySceneFingerprints(scene, "c")!.inputFp).not.toBe(first.inputFp);
+});
+
+it("복구된 상류의 generation 참조를 입력 미디어로 읽고 copy overlay에는 섞지 않는다", () => {
+  const up = { id: "up", kind: "comfy", x: 0, y: 0, comfyCfg: { outputs: [{ kind: "image", saved_generation_id: "saved" }] } } as SceneCard;
+  const target = { id: "c", kind: "comfy", x: 1, y: 0 } as SceneCard;
+  const gens = { saved: { assets: [{ type: "image", file_path: "/media/saved.png" }] } as Generation };
+  const edges = [{ from: "up", to: "c" }];
+  expect(gatherComfyMedia("c", [up, target], edges, gens)).toMatchObject([{ source_gen_id: "saved", url: "/media/saved.png" }]);
+  expect(gatherComfyMedia("c", [up, target], edges, gens, {})).toEqual([]);
+});
 
 const comfy = (id: string, o: Partial<SceneCard> = {}): SceneCard => ({ id, kind: "comfy", x: 0, y: 0, ...o }) as SceneCard;
 

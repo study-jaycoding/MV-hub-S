@@ -23,6 +23,7 @@ import {
 } from "react";
 import type { CSSProperties, MutableRefObject, ReactNode } from "react";
 import { api } from "../../api";
+import type { CanvasDocumentPort } from "../../features/canvas/api";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../lib/workspaceCommand";
 import { inBoardFolder, matchesBoardFilters } from "../../lib/boardFilters";
 import type { GradeMode } from "../../lib/gradeStep";
@@ -318,6 +319,7 @@ type CompareMediaItem = { url: string; name: string; type: "image" | "video"; fa
 
 interface Props {
   scene: Scene;
+  comfyDocument?: CanvasDocumentPort;
   authKey?: string;
   authReady?: boolean;
   onChange: (snapshot: { cards: SceneCard[]; edges: SceneEdge[]; groups?: SceneGroup[] }) => CanvasWriteReceipt | void;
@@ -461,6 +463,7 @@ interface Props {
 
 export function SceneBoard({
   scene,
+  comfyDocument,
   authKey = "",
   authReady = true,
   onChange,
@@ -1641,6 +1644,7 @@ export function SceneBoard({
     orchestrateGenerate,
     orchestrateRender,
   } = useSceneComfyExecution({
+    canvasDocument: comfyDocument,
     projectId: folderSel?.projectId,
     isDocumentCurrent: () => canvasSession.snapshot() !== undefined && isOperationContextCurrent(comfyOperation),
     sceneIdRef,

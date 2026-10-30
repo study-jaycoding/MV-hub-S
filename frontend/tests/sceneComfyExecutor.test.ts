@@ -1,10 +1,106 @@
-import { describe, expect, it, vi } from "vitest";
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   executeSceneComfy,
   isSceneComfyConfigCurrent,
   SceneComfyRunSupersededError,
 } from "../src/lib/sceneComfyExecutor";
 import type { SceneCard, SceneEdge } from "../src/lib/scenes";
+import { saveScenes, listPersistedScenes, updateScene, type Scene } from "../src/lib/scenes";
+import { createCanvasDocumentPort } from "../src/features/canvas/session";
+import { delaySceneStoreWritesForTest, failSceneStoreWritesForTest, settleSceneStoreForTest, writeSceneStoreAsOtherWindowForTest } from "../src/lib/sceneStore";
+import { getAccountNamespace, setAccountScope } from "../src/lib/accountScope";
+import { setHubFeatures } from "../src/lib/hubFeatures";
+import { comfySceneFingerprints } from "../src/lib/sceneComfyInputs";
+
+afterEach(async () => {
+  failSceneStoreWritesForTest(false); delaySceneStoreWritesForTest(0); await settleSceneStoreForTest();
+  setHubFeatures([]); setAccountScope("");
+});
+
+describe("영속 Comfy 제출", () => {
+  async function fixture() {
+    setHubFeatures(["comfy_canvas_runs_v1"]);
+    const scene: Scene = { id: "s", name: "s", cards: [comfyCard()], edges: [], created_at: 1 };
+    saveScenes(null, [scene]); await settleSceneStoreForTest();
+    const document = createCanvasDocumentPort({ flushPending: () => {} });
+    const run = vi.fn(async () => ({ outputs: [], prompt_id: "p" }));
+    const origin = vi.fn(async () => ({ hub_id: "h", device_id: "d" }));
+    const options = { cardId: "comfy", cards: scene.cards, edges: [], genData: {}, refParents: {}, varySeed: false,
+      canvas: { sceneId: "s", runGroupId: crypto.randomUUID(), copyIndex: 0, document } };
+    return { scene, document, run, origin, options };
+  }
+  it("콜백과 예약 저장이 확정되기 전에는 /run을 보내지 않는다", async () => {
+    const f = await fixture();
+    let release!: () => void;
+    const onRunPrepared = vi.fn(() => new Promise<void>(resolve => { release = resolve; }));
+    const pending = executeSceneComfy({ ...f.options, onRunPrepared }, { run: f.run, origin: f.origin });
+    expect(f.run).not.toHaveBeenCalled(); expect(f.origin).not.toHaveBeenCalled();
+    delaySceneStoreWritesForTest(40); release();
+    await vi.waitFor(() => expect(f.origin).toHaveBeenCalledOnce());
+    expect(f.run).not.toHaveBeenCalled();
+    const result = await pending;
+    expect(result.serverManaged).toBe(true);
+    const submitted = f.run.mock.calls[0] as unknown as Parameters<typeof import("../src/lib/comfyApi").comfyApi.run>;
+    const mark = listPersistedScenes(null)[0].comfyRuns![0];
+    expect(mark.localState).toBe("submitted");
+    expect(submitted[4]?.canvas_run).toMatchObject({ attempt_id: mark.attemptId, run_group_id: mark.runGroupId,
+      group_seq: mark.groupSeq, copy_index: 0, scene_id: "s", card_id: "comfy", config_fp: mark.configFp, input_fp: mark.inputFp });
+  });
+  it.each(["input", "account", "window"])("콜백 대기 중 %s 변경은 예약·제출을 막는다", async changed => {
+    const f = await fixture(); let current = true; let release!: () => void;
+    const pending = executeSceneComfy({ ...f.options, isRunCurrent: () => current,
+      onRunPrepared: () => new Promise<void>(resolve => { release = resolve; }) }, { run: f.run, origin: f.origin });
+    const rejected = expect(pending).rejects.toBeInstanceOf(SceneComfyRunSupersededError);
+    if (changed === "input") f.scene.cards[0].comfyCfg!.paramValues = { prompt: "edited" };
+    else if (changed === "account") setAccountScope("different");
+    else current = false;
+    release(); await rejected;
+    expect(f.run).not.toHaveBeenCalled(); expect(f.origin).not.toHaveBeenCalled();
+  });
+  it("예약 연산은 큐에 들어갔지만 다른 창이 이겼으면 /run은 없다", async () => {
+    const f = await fixture(); delaySceneStoreWritesForTest(30);
+    const pending = executeSceneComfy(f.options, { run: f.run, origin: f.origin });
+    const rejected = expect(pending).rejects.toMatchObject({ status: "conflict" });
+    await vi.waitFor(() => expect(f.origin).toHaveBeenCalled());
+    writeSceneStoreAsOtherWindowForTest(all => {
+      all[`${getAccountNamespace()}::_none`] = [{ ...f.scene,
+        comfyRuns: [{ version: 1, attemptId: "other", runGroupId: "other", groupSeq: 1, copyIndex: 0, cardId: "comfy",
+          originHubId: "h", originDeviceId: "d", localState: "submitted", ...comfySceneFingerprints(f.scene, "comfy")! }],
+        comfyCardRuns: { comfy: { groupId: "other", groupSeq: 1 } } }];
+    });
+    await rejected; expect(f.run).not.toHaveBeenCalled();
+  });
+  it.each(["storage_failed", "missing-owner"])("%s이면 성공 모양의 예약에도 제출하지 않는다", async reason => {
+    const f = await fixture();
+    if (reason === "storage_failed") failSceneStoreWritesForTest(true);
+    else {
+      const read = f.document.snapshot;
+      f.document.snapshot = (target, persisted) => persisted ? { ...f.scene, comfyRuns: [] } : read(target, persisted);
+    }
+    await expect(executeSceneComfy(f.options, { run: f.run, origin: f.origin })).rejects.toThrow();
+    expect(f.run).not.toHaveBeenCalled();
+  });
+  it("옛 허브에서는 원본 조회·예약 없이 예전 /run 인자를 유지한다", async () => {
+    const f = await fixture(); setHubFeatures([]);
+    const reserve = vi.spyOn(f.document, "reserveComfyAttempt");
+    await executeSceneComfy({ ...f.options, canvas: undefined }, { run: f.run, origin: f.origin });
+    expect(reserve).not.toHaveBeenCalled(); expect(f.origin).not.toHaveBeenCalled();
+    expect(f.run).toHaveBeenCalledExactlyOnceWith("workflow", { prompt: "hello" }, []);
+  });
+  it("예약 후 확정 문서의 입력이 바뀌면 attempt가 남아 있어도 제출하지 않는다", async () => {
+    const f = await fixture();
+    const reserve = f.document.reserveComfyAttempt;
+    f.document.reserveComfyAttempt = async (...args) => {
+      const reserved = await reserve(...args);
+      updateScene(null, "s", { cards: [comfyCard({ comfyCfg: { content: "changed" } })] });
+      await settleSceneStoreForTest();
+      return reserved;
+    };
+    await expect(executeSceneComfy(f.options, { run: f.run, origin: f.origin })).rejects.toBeInstanceOf(SceneComfyRunSupersededError);
+    expect(f.run).not.toHaveBeenCalled();
+  });
+});
 
 const comfyCard = (overrides: Partial<SceneCard> = {}): SceneCard =>
   ({

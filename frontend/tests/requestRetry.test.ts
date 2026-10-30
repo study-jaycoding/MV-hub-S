@@ -31,6 +31,31 @@ const settle = async <T,>(promise: Promise<T>) => {
   return result;
 };
 
+it("캔버스 실행은 같은 attempt 열쇠·canvas_run·save_meta로 재전송한다", async () => {
+  setHubFeatures(["comfy_canvas_runs_v1"]);
+  fetchMock.mockImplementationOnce(lost).mockResolvedValueOnce(ok({ outputs: [], prompt_id: "p" }));
+  const canvas_run = { attempt_id: "fixed-attempt", run_group_id: "group", group_seq: 2, copy_index: 1,
+    scene_id: "s", card_id: "c", config_fp: "config", input_fp: "input" };
+  const save_meta = { name: "workflow" };
+  await settle(comfyApi.run("workflow", {}, [], undefined, { canvas_run, save_meta, isCurrent: () => true }));
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  const first = fetchMock.mock.calls[0][1], second = fetchMock.mock.calls[1][1];
+  expect(second.body).toBe(first.body);
+  expect(first.body.get("run_key")).toBe("fixed-attempt");
+  expect(JSON.parse(first.body.get("canvas_run"))).toEqual(canvas_run);
+  expect(JSON.parse(first.body.get("save_meta"))).toEqual(save_meta);
+});
+
+it("캔버스 실행 첫 응답 유실 뒤 창 인계가 시작되면 재전송을 멈춘다", async () => {
+  let current = true;
+  fetchMock.mockImplementationOnce(() => { current = false; return lost(); });
+  const pending = comfyApi.run("workflow", {}, [], undefined, { save_meta: { name: "test" }, isCurrent: () => current,
+    canvas_run: { attempt_id: "attempt", run_group_id: "group", group_seq: 1, copy_index: 0,
+      scene_id: "s", card_id: "c", config_fp: "c", input_fp: "i" } });
+  const result = await settle(pending);
+  expect(result).toHaveProperty("error"); expect(fetchMock).toHaveBeenCalledOnce();
+});
+
 describe("전송 층 재전송(jsonFetch retryNoResponse)", () => {
   it("답이 없으면 1초 뒤 같은 헤더·같은 본문으로 한 번 더 — 두 번째 답을 쓴다", async () => {
     fetchMock.mockImplementationOnce(lost).mockResolvedValueOnce(ok({ id: "g1" }));

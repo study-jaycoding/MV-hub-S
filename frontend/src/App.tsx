@@ -44,6 +44,7 @@ import {
 } from "./components/app/SelectionActionBar";
 import { KEY_COLORS } from "./lib/appConstants";
 import { useCanvasGenerationLinks } from "./lib/useCanvasGenerationLinks";
+import { useCanvasComfyRuns } from "./lib/useCanvasComfyRuns";
 import { canvasTarget, type CanvasWriteReceipt } from "./features/canvas/api";
 import { useSceneGenerationSubmission } from "./lib/useSceneGenerationSubmission";
 import { useMcpCanvasTasks } from "./lib/mcpCanvasTasks";
@@ -858,6 +859,7 @@ export default function App() {
   );
   const { prepareCanvasGenerationBatch, prepareCanvasGeneration, confirmCanvasGeneration, settleCanvasGeneration, discardCanvasGeneration } =
     useCanvasGenerationLinks({ authReady, scenes, canvasDocument, setGens });
+  useCanvasComfyRuns({ authReady, authKey: libraryAuthKey, canvasDocument });
   const selectedGenerations = useMemo(() => generationsByIds(gens, selected), [gens, selected]);
   // 목록에서 사라진 카드는 선택에서도 뺀다(조작 규칙 42). 선택은 id 집합이라, 다른 폴더로 담거나 다른 창에서 지우거나 자동 새로고침으로
   //  목록에서 빠진 카드가 그대로 남았다 — 남은 카드를 더 골라 지우면 보이지 않는 그 카드까지 지워졌다(삭제·복원·담기·색·d 는 선택 id 를
@@ -2667,6 +2669,7 @@ export default function App() {
                 </div>
               }>
               <SceneBoard
+                comfyDocument={canvasDocument}
                 authKey={libraryAuthKey}
                 authReady={authReady}
                 scene={activeScene}

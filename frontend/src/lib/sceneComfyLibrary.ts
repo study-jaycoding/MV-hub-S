@@ -38,6 +38,8 @@ interface SceneComfyLibraryOptions {
 export async function saveSceneComfyToLibrary(cardId: string, opts: SaveComfyOptions | undefined, {
   sceneIdRef, cardsRef, edgesRef, genDataRef, refParents, commitDocument, isOperationCurrent,
 }: SceneComfyLibraryOptions): Promise<SaveComfyResult> {
+  // 실행 시작 때 고정한 계약을 사용한다. 중간에 허브 기능 표시가 바뀌어도 서버 저장을 중복하지 않는다.
+  if (opts?.inputSnapshot?.serverManaged) return { saved: 0, failed: 0 };
   const silent = opts?.silent;
   const sid = sceneIdRef.current; // 저장 대기 중 씬 전환 시 다른 씬 카드에 반영 안 함
   const card = cardsRef.current.find((c) => c.id === cardId);

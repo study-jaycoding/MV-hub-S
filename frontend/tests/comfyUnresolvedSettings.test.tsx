@@ -10,6 +10,13 @@ import { getLang, setLang } from "../src/lib/i18n";
 import { executeSceneComfy } from "../src/lib/sceneComfyExecutor";
 import type { SceneCard } from "../src/lib/scenes";
 import { useComfyUnresolvedRuns } from "../src/lib/useComfyUnresolvedRuns";
+import { useCanvasComfyRuns } from "../src/lib/useCanvasComfyRuns";
+import { createCanvasDocumentPort } from "../src/features/canvas/session";
+import { listScenes, saveScenes, type Scene } from "../src/lib/scenes";
+import { settleSceneStoreForTest } from "../src/lib/sceneStore";
+import { setHubFeatures } from "../src/lib/hubFeatures";
+import { comfySceneFingerprints } from "../src/lib/sceneComfyInputs";
+import type { ComfyCanvasResolution } from "../src/lib/comfyRunState";
 
 // 이 훅의 useState setter 호출 자체를 계측한다. unmount 뒤 React가 삼키는 것과 구분한다.
 const setterTrace = vi.hoisted(() => ({ enabled: false, calls: 0 }));
@@ -36,9 +43,46 @@ beforeEach(() => {
 afterEach(() => {
   act(() => { root.unmount(); setLang(oldLang); }); host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals();
   setterTrace.enabled = false;
+  setHubFeatures([]);
 });
 const render = async () => { await act(async () => root.render(<ComfyUnresolvedRunsSection />)); };
 const button = (text: string) => [...host.querySelectorAll("button")].find((item) => item.textContent?.includes(text))!;
+
+it.each(["collect", "resave", "dismiss"])("새 허브 %s 뒤 원래 attempt를 재조회하여 카드에 정산한다", async action => {
+  setHubFeatures(["comfy_canvas_runs_v1"]); act(() => setLang("ko"));
+  const scene: Scene = { id: "scene", name: "scene", created_at: 1, edges: [], cards: [
+    { id: "c", kind: "comfy", x: 0, y: 0, comfyCfg: { content: "{}" } },
+  ], comfyCardRuns: { c: { groupId: "group", groupSeq: 1 } } };
+  scene.comfyRuns = [{ version: 1, attemptId: "original-attempt", runGroupId: "group", groupSeq: 1, copyIndex: 0, cardId: "c",
+    originHubId: "hub", originDeviceId: "pc", localState: "submitted", ...comfySceneFingerprints(scene, "c")! }];
+  saveScenes(null, [scene]); await settleSceneStoreForTest();
+  let state: ComfyCanvasResolution["state"] = "needs_collect";
+  vi.spyOn(comfyApi, "canvasOrigin").mockResolvedValue({ hub_id: "hub", device_id: "pc" });
+  const resolve = vi.spyOn(comfyApi, "resolveCanvasRuns").mockImplementation(async () => ({ runs: [{
+    attempt_id: "original-attempt", state, result_revision: state === "needs_collect" ? 1 : 2,
+    outputs: state === "saved" ? [{ output_key: "one", kind: "image", generation_id: "saved-gen", state: "saved" }] : [],
+    origin: { hub_id: "hub", device_id: "pc" },
+  }] }));
+  vi.spyOn(comfyApi, "ackCanvasRun").mockImplementation(async request => ({ ...request, state: "linked", outputs: [],
+    origin: { hub_id: "hub", device_id: "pc" } }));
+  vi.spyOn(comfyApi, "unresolvedRuns").mockImplementation(async () => ({ cap: 200, used: state === "needs_collect" ? 1 : 0,
+    runs: state !== "needs_collect" ? [] : [record({ job_id: "original-job", phase: "collected", can_collect: action === "collect",
+      can_resave: action === "resave", outputs: [{ url: "/media/comfy/one.png", kind: "image", name: "one", downloaded: true, acked: false, unavailable: null }] })] }));
+  const collect = vi.spyOn(comfyApi, "collectRun").mockImplementation(async () => { state = "saved"; return { outputs: [], prompt_id: "original-prompt" }; });
+  const resave = vi.spyOn(comfyApi, "saveToLibrary").mockImplementation(async () => { state = "saved"; return { saved: [] }; });
+  const dismiss = vi.spyOn(comfyApi, "dismissRuns").mockImplementation(async () => { state = "dismissed"; return { dismissed: 1 }; });
+  const documentPort = createCanvasDocumentPort({ flushPending: () => {} });
+  function Screen() { useCanvasComfyRuns({ authReady: true, canvasDocument: documentPort }); return <ComfyUnresolvedRunsSection />; }
+  await act(async () => root.render(<Screen />));
+  if (action === "dismiss") await act(async () => host.querySelector<HTMLInputElement>("input[type=checkbox]")!.click());
+  await act(async () => { button(action === "collect" ? "결과 회수 ·" : action === "resave" ? "내 작업에 저장 ·" : "기록 정리").click(); });
+  await vi.waitFor(() => expect(listScenes(null)[0].comfyRuns).toEqual([]));
+  expect(resolve.mock.calls.every(([ids]) => ids.includes("original-attempt"))).toBe(true);
+  expect(listScenes(null)[0].cards[0].genId).toBe(action === "dismiss" ? undefined : "saved-gen");
+  if (action === "collect") expect(collect).toHaveBeenCalledExactlyOnceWith("original-job");
+  if (action === "resave") expect(resave).toHaveBeenCalledOnce();
+  if (action === "dismiss") expect(dismiss).toHaveBeenCalledExactlyOnceWith(["original-job"]);
+});
 
 it.each(["en", "ko"] as const)("%s unknown has no collect/submit and requires explicit dismiss confirmation", async (lang) => {
   act(() => setLang(lang));

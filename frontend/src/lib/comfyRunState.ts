@@ -39,7 +39,7 @@ export interface ComfyCardRun {
   groupId: string;
   groupSeq: number;
   representative?: { groupId: string; copyIndex: number; attemptId: string };
-  settledState?: "idle" | "done" | "failed";
+  settledState?: "idle" | "done" | "failed" | "needs_collect" | "dismissed" | "not_found" | "origin_mismatch";
 }
 export type ComfyCardRuns = Record<string, ComfyCardRun>;
 // HTTP 필드 이름은 백엔드 계약 그대로. 로컬 영수증과 바꾸는 곳은 반영 함수 하나다.
@@ -113,19 +113,25 @@ export function mergeComfyRuns(current: Scene | null, incoming: Scene): Pick<Sce
   return { comfyRuns: runs.size ? [...runs.values()] : current.comfyRuns, comfyCardRuns: Object.keys(cards).length ? cards : current.comfyCardRuns };
 }
 
-export function comfyCardRuntime(scene: Pick<Scene, "comfyRuns" | "comfyCardRuns">, cardId: string): (ComfyCardRun & { status: "idle" | "running" | "done" | "failed" }) | undefined {
+export function comfyCardRuntime(scene: Pick<Scene, "comfyRuns" | "comfyCardRuns">, cardId: string): (ComfyCardRun & { status: "idle" | "running" | "done" | "failed"; message?: string }) | undefined {
   const owner = scene.comfyCardRuns?.[cardId];
   if (!owner) return undefined;
   const pending = scene.comfyRuns?.some(run => run.cardId === cardId && run.runGroupId === owner.groupId
     && run.groupSeq === owner.groupSeq && run.localState !== "applied");
-  return { ...owner, status: pending ? "running" : owner.settledState || (owner.representative ? "done" : "idle") };
+  const message = owner.settledState === "origin_mismatch" ? "원래 PC 에서 확인 필요"
+    : owner.settledState === "not_found" ? "실행 접수 여부를 확인하지 못했습니다. 다시 생성하기 전에 확인하세요."
+    : owner.settledState === "needs_collect" ? "설정의 Comfy 미회수 실행에서 확인하세요."
+    : owner.settledState === "dismissed" ? "미회수 실행을 정리했습니다."
+    : owner.settledState === "failed" ? "Comfy 실행이 실패했습니다." : undefined;
+  return { ...owner, status: message ? "failed" : pending ? "running"
+    : owner.settledState === "done" || owner.representative ? "done" : "idle", message };
 }
 
 export function projectComfyCard(card: SceneCard, scene: Pick<Scene, "comfyRuns" | "comfyCardRuns">): SceneCard {
   const runtime = card.kind === "comfy" ? comfyCardRuntime(scene, card.id) : undefined;
   if (!runtime) return card;
   const { runId: _runId, error: _error, ...cfg } = card.comfyCfg || {};
-  return { ...card, comfyCfg: { ...cfg, status: runtime.status } };
+  return { ...card, comfyCfg: { ...cfg, status: runtime.status, error: runtime.message } };
 }
 
 export type StepOutcome<TOut> =
