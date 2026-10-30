@@ -1,5 +1,5 @@
 // 공통 폴더 트리 뷰 — 생성탭/어셋탭/관리자창이 같은 시각 언어를 공유한다.
-import { useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { DRAG_TYPES } from "../../lib/dragTypes";
 import { useDragEndReset } from "../../lib/useDragEndReset";
 import { useT } from "../../lib/i18n";
@@ -18,6 +18,18 @@ const SIDE_MARK_TITLE = {
 export function SideMark({ kind }: { kind: "see" | "gen" }) {
   const t = useT();
   return <span className={"side-mark " + kind} title={t(SIDE_MARK_TITLE[kind])}>{t(kind === "see" ? "보는 중" : "생성")}</span>;
+}
+
+/** 하위 폴더가 있는 줄의 진행 링 — 내용이 있는 하위 폴더 비율. 펴고 접는 자리이기도 하다(화살표 대신, Jay 2026-10-30). */
+function FolderRing({ done, total }: { done: number; total: number }) {
+  return (
+    <svg viewBox="0 0 14 14" aria-hidden="true">
+      <circle className="track" cx="7" cy="7" r="5.2" />
+      {done > 0 && (
+        <circle className="done" cx="7" cy="7" r="5.2" pathLength={total} strokeDasharray={`${done} ${total}`} transform="rotate(-90 7 7)" />
+      )}
+    </svg>
+  );
 }
 
 export interface FolderTreeItem {
@@ -140,6 +152,7 @@ function FolderTreeRow({
   const seeing = seePath === node.path;
   const disabled = isDisabled ? isDisabled(node.path) : false;
   const count = node.count || 0;
+  const filledChildren = children.filter((child) => (child.count || 0) > 0).length;
   // 배지에는 생성물 수만 둔다(좁은 사이드바). 폴더의 실제 파일 수는 호버 설명에 덧붙여,
   // '폴더엔 파일이 있는데 카탈로그엔 없다'를 확인할 수 있게 한다.
   const fileCount = node.fileCount ?? null;
@@ -177,6 +190,9 @@ function FolderTreeRow({
         className={
           "folder-tree-row" +
           (depth === 0 ? " root" : "") +
+          (hasChildren ? " branch" : "") +
+          (hasChildren && open ? " open" : "") +
+          (count > 0 ? " has" : "") +
           (selected ? " selected" : "") +
           (viewedPath === node.path ? " viewed-resolve" : "") +
           (seeing ? " see-here" : "") +
@@ -184,7 +200,8 @@ function FolderTreeRow({
           (node.virtual ? " virtual" : "") +
           (dropOver ? " drop-over" : "")
         }
-        style={{ paddingLeft: 6 + depth * 14 }}
+        // 들여쓰기는 인라인으로 — 줄이 button 이라 담기 메뉴 같은 곳의 'button' 규칙이 padding 을 덮어쓴다.
+        style={{ "--tree-depth": depth, paddingLeft: `calc(var(--tree-base, 6px) + ${depth * 14}px)` } as CSSProperties}
         data-resolve-viewed={viewedPath === node.path || undefined}
         title={
           (node.virtual
@@ -260,16 +277,20 @@ function FolderTreeRow({
         }
         {...dropProps}
       >
-        <span
-          className={"folder-tree-caret" + (canToggle ? "" : " hidden")}
-          onClick={(e) => {
-            e.stopPropagation();
-            if (hasChildren && onToggle) onToggle(node.path);
-          }}
-        >
-          {canToggle ? (open ? "▾" : "▸") : ""}
-        </span>
-        <span className="folder-tree-icon" />
+        {hasChildren ? (
+          <span
+            className={"folder-tree-ring" + (canToggle ? " toggle" : "")}
+            title={`${canToggle ? (open ? "접기 · " : "펴기 · ") : ""}내용 있는 하위 폴더 ${filledChildren} / ${children.length}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (onToggle) onToggle(node.path);
+            }}
+          >
+            <FolderRing done={filledChildren} total={children.length} />
+          </span>
+        ) : (
+          <span className="folder-tree-dot" />
+        )}
         <span className="folder-tree-name">{node.name}</span>
         {seeing && <SideMark kind="see" />}
         {selected && markSelected && <SideMark kind="gen" />}
@@ -278,35 +299,35 @@ function FolderTreeRow({
             +{node.newCount}
           </span>
         )}
-        {node.count !== null && (node.reviewCounts !== undefined ?
-          <FolderReviewCount counts={node.reviewCounts} total={count} /> : (
-          <span className={"folder-tree-count" + (count > 0 ? "" : " zero")}>
-            {count > 0 ? count : "-"}
-          </span>
-        ))}
+        {count > 0 && (node.reviewCounts !== undefined ?
+          <FolderReviewCount counts={node.reviewCounts} total={count} /> :
+          <span className="folder-tree-count">{count}</span>
+        )}
       </button>
-      {hasChildren &&
-        open &&
-        children.map((child) => (
-          <FolderTreeRow
-            key={child.path || child.name}
-            node={child}
-            depth={depth + 1}
-            selectedPath={selectedPath}
-            viewedPath={viewedPath}
-            seePath={seePath}
-            markSelected={markSelected}
-            expanded={expanded}
-            onToggle={onToggle}
-            onSelect={onSelect}
-          onOpenTab={onOpenTab}
-            onDropFolder={onDropFolder}
-            onDragFolder={onDragFolder}
-            isDisabled={isDisabled}
-            onRowKeyDown={onRowKeyDown}
-            onContextMenu={onContextMenu}
-          />
-        ))}
+      {hasChildren && open && (
+        <div className="folder-tree-children" style={{ "--tree-depth": depth } as CSSProperties}>
+          {children.map((child) => (
+            <FolderTreeRow
+              key={child.path || child.name}
+              node={child}
+              depth={depth + 1}
+              selectedPath={selectedPath}
+              viewedPath={viewedPath}
+              seePath={seePath}
+              markSelected={markSelected}
+              expanded={expanded}
+              onToggle={onToggle}
+              onSelect={onSelect}
+              onOpenTab={onOpenTab}
+              onDropFolder={onDropFolder}
+              onDragFolder={onDragFolder}
+              isDisabled={isDisabled}
+              onRowKeyDown={onRowKeyDown}
+              onContextMenu={onContextMenu}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

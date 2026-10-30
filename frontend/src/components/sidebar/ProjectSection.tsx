@@ -60,6 +60,8 @@ import {
 } from "../../lib/projectFolderTree";
 import type { FolderReviewCounts, Project, ProjectFolderState } from "../../types";
 import { FolderTreeView, SideMark, type FolderTreeItem } from "../common/FolderTreeView";
+import { LibraryIcon, TrashIcon, UnsortedIcon } from "../common/ViewIcons";
+import { WorkspaceMark } from "../common/WorkspaceMark";
 
 function SidebarFolderTree({
   state,
@@ -620,6 +622,7 @@ export function ProjectSection({
             }
             onClick={() => onFilter(undefined)}
           >
+            <span className="proj-ico"><LibraryIcon /></span>
             <span className="proj-name">{tr("라이브러리")}</span>
             {split && !activeId && <SideMark kind="see" />}
             {split && !genProject && <SideMark kind="gen" />}
@@ -658,6 +661,7 @@ export function ProjectSection({
                 : undefined
             }
           >
+            <span className="proj-ico"><UnsortedIcon /></span>
             <span className="proj-name">{tr("미분류")}</span>
             {split && activeId === "none" && <SideMark kind="see" />}
             {split && genProject === "none" && <SideMark kind="gen" />}
@@ -673,6 +677,7 @@ export function ProjectSection({
             onClick={onViewDeleted}
             title="지운 것만 보기 — 힉스필드 원본엔 영향 없음(우리 카탈로그 휴지통)"
           >
+            <span className="proj-ico"><TrashIcon /></span>
             <span className="proj-name">{tr("휴지통")}</span>
           </button>
         </div>
@@ -719,6 +724,7 @@ export function ProjectSection({
                   tabIndex={0}
                   className={
                     "proj-row" +
+                    (hasTree ? (isCollapsed ? " closed" : " open") : " flat") +
                     (projectActive ? " on" : "") +
                     (viewedProjectId === project.id && !viewedPath ? " viewed-resolve" : "") +
                     // 이 프로젝트가 활성이면서 그 안의 폴더를 무장하지 않았을 때만 프로젝트 행이 빨강
@@ -781,30 +787,24 @@ export function ProjectSection({
                     setOverIdx(null);
                   }}
                 >
-                  {/* 접기 토글 — 폴더 트리가 있는 프로젝트만. 없는 프로젝트는 자리만 맞춘다. */}
-                  {hasTree ? (
-                    <button
-                      className="proj-fold"
-                      title={isCollapsed ? "폴더 펼치기" : "폴더 접기"}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleCollapsed(project.id);
-                      }}
-                    >
-                      {isCollapsed ? "▸" : "▾"}
-                    </button>
-                  ) : (
-                    <span className="proj-fold ghost" />
-                  )}
-                  <span
-                    className="proj-drag-handle"
-                    title="드래그해서 순서 변경"
+                  {/* 글자 마크 하나가 두 일을 맡는다(Jay 2026-10-30 — 화살표·⠿ 자리가 없다): 누르면 폴더 접기, 누른 채 끌면 순서 바꾸기.
+                      폴더 트리가 없는 프로젝트는 접을 것이 없어 누르면 줄을 누른 것과 같다. */}
+                  <button
+                    type="button"
+                    className="proj-mark"
+                    title={hasTree ? `${isCollapsed ? "누르면 폴더 펼치기" : "누르면 폴더 접기"} · 끌면 순서 변경` : "끌면 순서 변경"}
+                    aria-label={hasTree ? (isCollapsed ? "폴더 펼치기" : "폴더 접기") : project.name}
+                    aria-expanded={hasTree ? !isCollapsed : undefined}
                     onMouseDown={() => setDragArmed(true)}
                     onMouseUp={() => setDragArmed(false)}
-                    onClick={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      if (!hasTree) return;
+                      e.stopPropagation();
+                      toggleCollapsed(project.id);
+                    }}
                   >
-                    ⠿
-                  </span>
+                    <WorkspaceMark label={project.name} id={project.id} />
+                  </button>
                   <span className="proj-name">{project.name}</span>
                   {split && projectActive && !seeFolder && <SideMark kind="see" />}
                   {split && !genFolder && genProject === project.id && <SideMark kind="gen" />}
@@ -884,6 +884,7 @@ export function ProjectSection({
             <div className="proj-tree-wrap" data-project-id={viewedFolder.projectId}
               title="다빈치 확인 위치 — 생성 워크스페이스와 목적지는 변경하지 않습니다">
               <div className="proj-row viewed-resolve">
+                <WorkspaceMark label={viewedFolder.projectName || "다빈치 확인 프로젝트"} id={viewedFolder.projectId} />
                 <span className="proj-name">{viewedFolder.projectName || "다빈치 확인 프로젝트"}</span>
               </div>
               {viewedPath && <div className="side-folder-note resolve-viewed-path" data-resolve-viewed="true">📁 {viewedPath}</div>}
@@ -909,6 +910,7 @@ export function ProjectSection({
                   onClick={() => onFilter(project.id)} // 다시 눌러도 그 프로젝트(일반 줄과 같다 — Codex 코드 리뷰)
                     title={project.name}
                   >
+                    <WorkspaceMark label={project.name} id={project.id} />
                     <span className="proj-name">{project.name}</span>
                     {split && activeId === project.id && <SideMark kind="see" />}
                     {split && genProject === project.id && <SideMark kind="gen" />}

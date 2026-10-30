@@ -124,14 +124,14 @@ it("프로젝트 줄의 Enter·Space 는 길게 눌러도 한 번만 고르고, 
   expect(press(" ")).toBe(true);
   expect(press(" ", true)).toBe(true); // 길게 눌린 Space — 고르지는 않아도 목록이 스크롤되면 안 된다
   expect(onFilter).toHaveBeenCalledTimes(2);
-  // 줄 안의 접기 단추에서 올라온 키는 그 단추의 것이다 — 줄이 막으면 단추가 안 눌리고, 받으면 접으면서 프로젝트까지 골라진다
-  const fold = row.querySelector<HTMLElement>("button.proj-fold")!;
+  // 줄 안의 글자 마크에서 올라온 키는 그 단추의 것이다 — 줄이 막으면 단추가 안 눌리고, 받으면 접으면서 프로젝트까지 골라진다
+  const fold = row.querySelector<HTMLElement>("button.proj-mark")!;
   expect(press("Enter", false, fold)).toBe(false);
   expect(press(" ", false, fold)).toBe(false);
   expect(onFilter).toHaveBeenCalledTimes(2);
 });
 
-// 12회차(조작 규칙 39): ⠿ 를 누르는 동안만 줄이 draggable 이다. 누른 채 손잡이 밖에서 떼거나 창을 떠나면 그 표식이 남아,
+// 12회차(조작 규칙 39): 손잡이(지금은 글자 마크)를 누르는 동안만 줄이 draggable 이다. 누른 채 손잡이 밖에서 떼거나 창을 떠나면 그 표식이 남아,
 //  그 뒤로는 줄의 이름을 끌어도 순서가 바뀌어 저장됐다(관리자 창의 프로젝트 표·서브스페이스 표도 같은 훅을 쓴다 — tests/reentryGuards).
 it("프로젝트 순서 손잡이 — 손잡이 밖에서 떼거나 누른 채 창을 떠나면 줄이 끌리는 채로 남지 않는다", async () => {
   mocks.links.mockResolvedValue({ links: {} });
@@ -139,7 +139,7 @@ it("프로젝트 순서 손잡이 — 손잡이 밖에서 떼거나 누른 채 �
     unassignedCount={0} archivedCount={0} deletedOnly={false} tab="my" activeId={undefined}
     onFilter={vi.fn()} onViewDeleted={vi.fn()} />));
   const row = host.querySelector<HTMLElement>('.proj-row[title="Held Project"]')!;
-  const press = () => act(() => { row.querySelector(".proj-drag-handle")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
+  const press = () => act(() => { row.querySelector(".proj-mark")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
   press();
   expect(row.draggable).toBe(true);
   act(() => { document.body.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); }); // 손잡이 밖에서 뗌
@@ -162,7 +162,7 @@ it("프로젝트 순서 — 저장에 실패하면 끌기 전 순서로 되돌�
     const names = () => [...host.querySelectorAll<HTMLElement>(".proj-row")].map((row) => row.title).filter((title) => /^[ABC]$/.test(title));
     const row = (name: string) => host.querySelector<HTMLElement>(`.proj-row[title="${name}"]`)!;
     const drag = async (from: string, to: string) => {
-      await act(async () => { row(from).querySelector(".proj-drag-handle")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
+      await act(async () => { row(from).querySelector(".proj-mark")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
       await act(async () => { row(from).dispatchEvent(Object.assign(new Event("dragstart", { bubbles: true }), { dataTransfer: {} })); });
       await act(async () => { row(to).dispatchEvent(Object.assign(new Event("drop", { bubbles: true, cancelable: true }), { dataTransfer: {} })); });
     };
@@ -208,7 +208,7 @@ it("프로젝트 순서 — 끄는 사이 목록의 순서가 바뀌어도 잡�
   const names = () => [...host.querySelectorAll<HTMLElement>(".proj-row")].map((row) => row.title).filter((title) => /^[ABC]$/.test(title));
   const row = (name: string) => host.querySelector<HTMLElement>(`.proj-row[title="${name}"]`)!;
   const grab = async (name: string) => {
-    await act(async () => { row(name).querySelector(".proj-drag-handle")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
+    await act(async () => { row(name).querySelector(".proj-mark")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
     await act(async () => { row(name).dispatchEvent(Object.assign(new Event("dragstart", { bubbles: true }), { dataTransfer: {} })); });
   };
   const dropOn = (name: string) => act(async () => { row(name).dispatchEvent(Object.assign(new Event("drop", { bubbles: true, cancelable: true }), { dataTransfer: {} })); });
@@ -249,7 +249,7 @@ it("접어 둔 프로젝트 — 다른 창이 그사이 접은 프로젝트를 �
     unassignedCount={0} archivedCount={0} deletedOnly={false} tab="my" activeId={undefined} onFilter={vi.fn()} onViewDeleted={vi.fn()} />));
   await act(async () => {});
   const stored = () => (JSON.parse(localStorage.getItem("ch.collapsedProjects") ?? "[]") as string[]).sort();
-  const fold = (name: string) => act(async () => { host.querySelector<HTMLElement>(`.proj-row[title="${name}"] button.proj-fold`)!.click(); });
+  const fold = (name: string) => act(async () => { host.querySelector<HTMLElement>(`.proj-row[title="${name}"] button.proj-mark`)!.click(); });
   await fold("A");
   expect(stored()).toEqual(["A"]);
   localStorage.setItem("ch.collapsedProjects", JSON.stringify(["A", "다른 창이 접은 프로젝트"]));

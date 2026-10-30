@@ -257,6 +257,35 @@ export function CanvasIcon() {
   );
 }
 
+// 사이드바 위쪽 세 줄(라이브러리 · 미분류 · 휴지통) — 14px 칸, 선은 폴더 트리의 링보다 얇게
+const SIDE_ROW_ICON = { ...TOGGLE_ICON, width: 14, height: 14, strokeWidth: 1.75, "aria-hidden": true };
+export function LibraryIcon() {
+  return (
+    <svg {...SIDE_ROW_ICON}>
+      <rect x="3" y="3" width="7.5" height="7.5" rx="1.8" />
+      <rect x="13.5" y="3" width="7.5" height="7.5" rx="1.8" />
+      <rect x="3" y="13.5" width="7.5" height="7.5" rx="1.8" />
+      <rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.8" />
+    </svg>
+  );
+}
+export function UnsortedIcon() {
+  return (
+    <svg {...SIDE_ROW_ICON}>
+      <path d="M3 14 5.4 5.4A2 2 0 0 1 7.3 4h9.4a2 2 0 0 1 1.9 1.4L21 14v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      <path d="M3 14h4.8l1.4 2.4h5.6l1.4-2.4H21" />
+    </svg>
+  );
+}
+export function TrashIcon() {
+  return (
+    <svg {...SIDE_ROW_ICON}>
+      <path d="M4 6.5h16M9.5 6.5V4.8c0-.7.6-1.3 1.3-1.3h2.4c.7 0 1.3.6 1.3 1.3v1.7" />
+      <path d="M6 6.5l.9 12.6c.1 1 .9 1.9 2 1.9h6.2c1.1 0 1.9-.9 2-1.9L18 6.5" />
+    </svg>
+  );
+}
+
 // 확인 중 — 열린 원(돌지 않는다: 가만히 둔 탭의 CPU 를 쓰지 않게)
 export function PendingIcon() {
   return (

@@ -10,6 +10,7 @@ import { useT } from "../../lib/i18n";
 import type { EditTree } from "../../lib/useEditSequence";
 import { ColorFilterDots } from "../common/ColorFilterDots";
 import { FolderTreeView } from "../common/FolderTreeView";
+import { WorkspaceMark } from "../common/WorkspaceMark";
 import { ResizableSidebar } from "../common/ResizableSidebar";
 import type { PoolCreator } from "./EditPool";
 import { EditFolderMenu } from "./EditTrackMenu";
@@ -130,11 +131,10 @@ export function EditSidebar({
                     <div key={project.id} className={"proj-tree-wrap" + (open ? " on" : "")}>
                       <button
                         type="button"
-                        className={"proj-row" + (open ? " on" : "")}
+                        className={"proj-row" + (open ? " open on" : " closed")}
                         onClick={() => onOpenProject(open ? null : project.id)}
                       >
-                        <span className="proj-fold">{open ? "▾" : "▸"}</span>
-                        <span className="proj-drag-handle" />
+                        <WorkspaceMark label={project.name} id={project.id} />
                         <span className="proj-name">{project.name}</span>
                         {(freshByProject[project.id] || 0) > 0 && (
                           <span className="proj-newcount" title={t("마지막 확인 이후 새로 공유됨")}>

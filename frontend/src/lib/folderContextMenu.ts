@@ -65,7 +65,7 @@ export function folderMenuLabel(kind: FolderMenuKind): string {
   return FOLDER_MENU_LABELS[kind];
 }
 
-// 트리 깊이 → 색조. FolderTreeView 의 .folder-tree-row.root(하늘색) / :not(.root)(라임)와 같은 기준.
+// 트리 깊이 → 색조: 맨 위 단계 = 하늘색, 그 아래 = 라임. 예전 폴더 아이콘의 색에서 왔고, 아이콘이 없어진 뒤에도 메뉴 색은 유지한다(Jay 2026-10-30).
 export function folderTone(depth: number): "root" | "child" {
   return depth <= 0 ? "root" : "child";
 }

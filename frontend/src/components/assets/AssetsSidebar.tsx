@@ -42,8 +42,6 @@ export function AssetsSidebar({
         onMouseDown={(e) => { if (e.button === 1 && onOpenTab) e.preventDefault(); }}
         onAuxClick={(e) => { if (e.button === 1 && onOpenTab) { e.preventDefault(); onOpenTab(""); } }}
       >
-        <span className="folder-tree-caret hidden" />
-        <span className="folder-tree-icon" />
         <span className="folder-tree-name">{project || "…"}</span>
       </button>
       {loading ? (
