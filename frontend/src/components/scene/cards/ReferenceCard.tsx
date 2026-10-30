@@ -50,9 +50,10 @@ export const ReferenceCard = memo(function ReferenceCard({
   const single = (card.refs?.length ?? 0) <= 1;
   return (
     <>
+      {/* 이름표 = 다른 노드처럼 카드 위에 뜬다(고를 때만, Jay 2026-10-30) — 그림 위 작은 글은 그림에 묻혔다 */}
+      <div className="scene-card-hd scene-card-hd-float">{refTypeLabel(card.refs)}</div>
       {/* 내부 래퍼만 클리핑(둥근 모서리) — 포트는 이 밖이라 잡기 영역이 안 잘린다 */}
       <div className="scene-card-inner">
-        <div className="scene-card-hd">{refTypeLabel(card.refs)}</div>
         <div className={"scene-card-body" + (single ? " single" : "") + (fill ? "" : " fit-contain")}>
           {(card.refs || []).map((r, i) => {
             const isVid = refMediaType(r) === "video";

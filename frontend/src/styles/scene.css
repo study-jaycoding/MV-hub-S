@@ -411,15 +411,9 @@
 .scene-card-ref.off-server:hover,
 .scene-card-list.off-server:hover { border-color: color-mix(in srgb, #ff6b6b 65%, transparent); }
 .scene-card.sel.off-server { border-color: #ff6b6b; }
-/* 레퍼런스 헤더(이미지/비디오/오디오 라벨) — 기본 숨김, 카드 선택 시에만 '배경색 없이 글씨만' 오버레이로
-   표시. 헤더를 흐름에서 빼 미디어가 카드를 꽉 채운다(헤더가 이미지 일부를 가리거나 밀어내지 않음). */
+/* 레퍼런스 이름표(이미지/영상/오디오)는 2026-10-30 부터 다른 노드처럼 카드 위에 뜨는 이름표(.scene-card-hd-float, 고를 때만)다
+   — 전엔 그림 위에 글씨만 얹어 그림에 묻혔다(Jay). 미디어는 그대로 카드를 꽉 채운다. */
 .scene-card-ref .scene-card-inner { position: relative; }
-.scene-card-ref .scene-card-hd {
-  position: absolute; top: 0; left: 0; right: 0; z-index: 3;
-  background: transparent; border-bottom: 0; pointer-events: none;
-  opacity: 0; transition: opacity 0.1s; text-shadow: 0 1px 4px rgba(0, 0, 0, 0.95);
-}
-.scene-card-ref.sel .scene-card-hd { opacity: 1; }
 .scene-card-hd {
   flex: none; font-size: 10px; font-weight: 800; letter-spacing: 0.03em; color: var(--pc, var(--accent)); /* 이름표 = 노드 자기 색(Jay 2026-10-30) */
   padding: 3px 7px; background: color-mix(in srgb, var(--pc, var(--accent)) 10%, transparent); border-bottom: 1px solid var(--border2);
@@ -592,10 +586,10 @@
   text-transform: uppercase; margin-bottom: 3px;
 }
 .scene-setnode-folder, .scene-setnode-tags { flex: none; min-width: 0; }
-/* 알약 — INPUT·OUTPUT 값 알약과 같은 모양(자기 색 22% + 자기 색 선). 비면 점선, 폴더를 끌어 오면 실선으로 밝힌다 */
+/* 칩 — INPUT·OUTPUT 값 칩과 같은 모양(자기 색 22% + 자기 색 선 · 모서리 5 = 노드 안 네모 칩, Jay 2026-10-30). 비면 점선, 폴더를 끌어 오면 실선으로 밝힌다 */
 .scene-setnode-pill {
   display: flex; align-items: center; gap: 5px; min-width: 0; width: 100%; height: 24px; box-sizing: border-box; padding: 0 4px 0 10px;
-  border-radius: 999px; border: 1px solid var(--pc); background: color-mix(in srgb, var(--pc) 22%, transparent);
+  border-radius: 5px; border: 1px solid var(--pc); background: color-mix(in srgb, var(--pc) 22%, transparent);
   color: var(--text); font-family: inherit; font-size: 11px; font-weight: 700; white-space: nowrap;
 }
 .scene-setnode-pill.ph {
@@ -622,11 +616,11 @@
   background: transparent; color: #8f9582; cursor: pointer;
 }
 .scene-setnode-clear:hover { background: rgba(242, 119, 124, 0.18); color: #f2777c; }
-/* 태그 = 한 개씩 알약, 넘치면 줄을 바꾼다. 누르면 한 줄 글칸(.scene-setnode-pill.edit)이 된다 */
-.scene-setnode-tagview { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; cursor: pointer; outline: 0; border-radius: 12px; }
+/* 태그 = 한 개씩 칩, 넘치면 줄을 바꾼다. 누르면 한 줄 글칸(.scene-setnode-pill.edit)이 된다 */
+.scene-setnode-tagview { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; cursor: pointer; outline: 0; border-radius: 6px; }
 .scene-setnode-tagview:focus-visible { box-shadow: 0 0 0 2px color-mix(in srgb, var(--pc) 45%, transparent); }
 .scene-setnode-tag {
-  display: inline-flex; align-items: center; max-width: 100%; height: 20px; box-sizing: border-box; padding: 0 8px; border-radius: 999px;
+  display: inline-flex; align-items: center; max-width: 100%; height: 20px; box-sizing: border-box; padding: 0 8px; border-radius: 5px;
   border: 1px solid var(--pc); background: color-mix(in srgb, var(--pc) 22%, transparent);
   color: var(--text); font-size: 11px; font-weight: 700; white-space: nowrap; overflow: hidden;
 }
@@ -713,10 +707,10 @@
   flex: none; width: 24px; height: 24px; border-radius: 4px; overflow: hidden;
   object-fit: cover; background: #05060a; display: block;
 }
-/* 생성 개수 배지(카드 다중결과 배지와 같은 라임 알약) — 검은 글씨(라임 배경) */
+/* 생성 개수 배지(카드 다중결과 배지와 같은 네모 칩, Jay 2026-10-30) — 검은 글씨(자기 색 바탕) · 높이 20 */
 .scene-listrow-badge {
-  display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px;
-  background: var(--pc); color: var(--accent-ink); font-weight: 800; font-size: 10.5px; line-height: 1.6;
+  display: inline-flex; align-items: center; gap: 4px; height: 20px; box-sizing: border-box; padding: 0 8px; border-radius: 5px;
+  background: var(--pc); color: var(--accent-ink); font-weight: 800; font-size: 11px; line-height: 1;
 }
 .scene-listrow-empty { font-size: 10.5px; color: var(--muted); }
 /* 렌더 행 체크박스(그립 옆, 왼쪽) — 체크된 카드만 Render 대상 */
@@ -791,9 +785,12 @@
 .scene-viewseq { flex: 1; min-height: 0; position: relative; border-radius: 8px; overflow: hidden; background: #05060a; cursor: pointer; }
 .scene-viewseq video, .scene-viewseq img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .scene-viewseq-ph { width: 100%; height: 100%; background: repeating-linear-gradient(45deg, #15171d, #15171d 6px, #0f1116 6px, #0f1116 12px); }
+/* '이어보기' 표시 — left:50% 로 놓은 절대 위치 상자는 쓸 수 있는 폭이 카드의 반이라 짧은 글도 단어 중간에서 꺾였다('2개 이|어보기').
+   글 폭만큼 잡고(보통 한 줄), 카드가 아주 좁을 때만 단어 사이에서 꺾는다(Jay 2026-10-30) */
 .scene-viewseq-badge {
   position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); pointer-events: none;
-  background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 10px; font-weight: 700; padding: 2px 9px; border-radius: 999px;
+  width: max-content; max-width: calc(100% - 12px); box-sizing: border-box; word-break: keep-all; text-align: center;
+  background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 10px; font-weight: 700; padding: 2px 9px; border-radius: 5px;
 }
 /* 연결된 텍스트 실제 내용 */
 .scene-viewtext {
@@ -937,22 +934,32 @@
   border-radius: 5px; padding: 1px 6px; font-size: 10px; font-weight: 700; cursor: pointer; line-height: 1.5;
 }
 .scene-comfynode-act:hover { border-color: var(--pc); color: var(--pc); } /* Comfy 자기 색(청록) */
-.scene-comfynode-params { display: flex; flex-direction: column; gap: 4px; }
-.scene-comfynode-param { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+/* 값 줄 = 모델 노드 줄처럼(Jay 2026-10-30): 이름 회색 · 값 오른쪽 · 줄 사이 얇은 선 · 칸 테두리는 올리거나 누를 때만 · 체크 = 자기 색 */
+.scene-comfynode-params { display: flex; flex-direction: column; gap: 0; }
+.scene-comfynode-param {
+  display: flex; align-items: center; gap: 6px; min-height: 22px; font-size: 10.5px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
 .scene-comfynode-param label {
-  flex: 1; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  flex: 1; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .scene-comfynode-param input[type="text"],
 .scene-comfynode-param input[type="number"],
 .scene-comfynode-param select {
-  width: 78px; background: #1b1e24; border: 1px solid var(--border2); color: var(--text);
-  border-radius: 5px; padding: 2px 5px; font-size: 11px;
+  width: 78px; background: transparent; border: 1px solid transparent; color: var(--text); text-align: right;
+  border-radius: 5px; padding: 1px 6px; font-size: 10.5px;
 }
+.scene-comfynode-param input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
+.scene-comfynode-param input[type="number"]::-webkit-inner-spin-button,
+.scene-comfynode-param input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.scene-comfynode-param :is(input[type="text"], input[type="number"], select):hover { border-color: var(--border2); }
+.scene-comfynode-param :is(input[type="text"], input[type="number"], select):focus { border-color: var(--pc); background: #1b1e24; outline: 0; }
+.scene-comfynode-param input[type="checkbox"] { width: 15px; height: 15px; margin: 0 6px 0 0; accent-color: var(--pc); }
 /* 텍스트 연결로 구동 중인 입력칸 — 비활성(회색) + 보라 테두리로 '연결됨'을 표시. */
 .scene-comfynode-param input.driven {
   background: #14161b; border-color: #8b7bff; color: var(--muted); cursor: not-allowed; opacity: 0.85;
 }
-.scene-comfynode-preview { border-radius: 6px; overflow: hidden; background: #0c0e12; }
+.scene-comfynode-preview { border-radius: 8px; overflow: hidden; background: #05060a; } /* 미리보기 노드 그림 칸과 같게 */
 .scene-comfynode-preview img,
 .scene-comfynode-preview video { display: block; width: 100%; max-height: 120px; object-fit: contain; }
 .scene-comfynode-errwrap { position: relative; }
@@ -962,7 +969,8 @@
   max-height: 120px; user-select: text; cursor: text;
 }
 .scene-comfynode-inputs { font-size: 10px; color: var(--pc); letter-spacing: 0.02em; } /* Comfy 자기 색 */
-.scene-comfynode-status { font-size: 11px; font-weight: 700; letter-spacing: 0.02em; text-align: center; }
+/* 상태 = 글만(생성 카드 '생성 중'·'실패' 와 같은 11px 굵게, Jay 2026-10-30) · 색은 상태색 */
+.scene-comfynode-status { font-size: 11px; font-weight: 800; letter-spacing: 0.02em; text-align: center; }
 .scene-comfynode-status.s-idle { color: var(--muted); }
 .scene-comfynode-status.s-running { color: var(--accent); }
 .scene-comfynode-status.s-done { color: var(--pc); } /* Comfy 자기 색 */
@@ -1093,6 +1101,8 @@
 }
 /* 생성중 웨이브 색을 라이브러리와 동일하게 — running=앰버(currentColor 상속). */
 .scene-card-genbody.status-running { color: #E7A93C; }
+/* 노드 안 상태 글(생성 중·실패·Comfy 상태) = 같은 11px 굵게 · 칩 모양 없이 글만(Jay 2026-10-30). 라이브러리 카드의 글은 그대로 */
+.scene-card .gen-generating-label, .scene-genfail-label { font-size: 11px; font-weight: 800; letter-spacing: 0.02em; opacity: 1; }
 /* 실패·NSFW 차단 — 라이브러리(My Work) 그리드와 동일한 경고 비주얼(어두운 빨강 + ⚠ + 라벨). 정보는 미들클릭. */
 .scene-card-genbody.scene-genfail {
   flex-direction: column; gap: 6px; padding: 8px; text-align: center;
@@ -1293,7 +1303,7 @@
    bottom:calc(100%+4px) = 카드 상단에서 4px 위. 항상 표시(클릭=팝업). z-index 는 노드 오버레이보다 위. */
 .scene-multi-badge {
   position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%); z-index: 12;
-  display: inline-flex; align-items: center; gap: 4px; padding: 3px 11px; border-radius: 999px;
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 11px; border-radius: 5px; /* 노드 안 네모 칩과 같은 모서리(Jay 2026-10-30) */
   font-size: 12px; font-weight: 800; line-height: 1.5; cursor: pointer;
   background: var(--accent); color: var(--accent-ink); border: 1px solid rgba(0, 0, 0, 0.25);
   box-shadow: 0 1px 5px rgba(0, 0, 0, 0.45);
@@ -1380,11 +1390,11 @@
 .scene-portnode-body {
   flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 6px 8px; min-width: 0;
 }
-/* 본문 = 입력된 값(채널 이름) 라벨(알약). Output=왼쪽(입력 포트 쪽)·Input=오른쪽(출력 포트 쪽)으로 흐름 방향 직관화. */
+/* 본문 = 입력된 값(채널 이름) 라벨(네모 칩 · 높이 20, Jay 2026-10-30). Output=왼쪽(입력 포트 쪽)·Input=오른쪽(출력 포트 쪽)으로 흐름 방향 직관화. */
 .scene-portnode-val {
-  display: inline-flex; align-items: center; max-width: 100%;
-  padding: 3px 10px; border-radius: 999px;
-  font-size: 13px; font-weight: 800; color: var(--text);
+  display: inline-flex; align-items: center; max-width: 100%; height: 20px; box-sizing: border-box;
+  padding: 0 9px; border-radius: 5px;
+  font-size: 12px; font-weight: 800; color: var(--text);
   background: color-mix(in srgb, var(--oc) 22%, transparent); border: 1px solid var(--oc);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }

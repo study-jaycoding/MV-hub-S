@@ -481,7 +481,7 @@ export function ComfyCard({
               </div>
             ) : (
               <div className={"scene-comfynode-status s-" + (st || "idle")}>
-                ● {st === "done" ? t("완료") : st === "failed" ? t("실패") : t("대기")}
+                {st === "done" ? t("완료") : st === "failed" ? t("실패") : t("대기")}
               </div>
             )}
             {st === "failed" && cfg.error && (

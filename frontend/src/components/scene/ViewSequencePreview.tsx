@@ -66,7 +66,7 @@ export function ViewSequencePreview({ clips }: { clips: TimelineClip[] }) {
         <div className="scene-viewseq-ph" />
       )}
       {!hover && clips.length > 1 && (
-        <span className="scene-viewseq-badge">▶ {clips.length}개 이어보기</span>
+        <span className="scene-viewseq-badge">{clips.length}개 이어보기</span>
       )}
     </div>
   );

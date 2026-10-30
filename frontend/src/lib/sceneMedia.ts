@@ -12,11 +12,11 @@ export function refThumbSrc(r: SceneRef): string | undefined {
   return displayRefThumb(r, 256);
 }
 
-// 레퍼런스 카드 헤더 라벨 — 숫자 대신 어떤 레퍼런스인지(이미지/비디오/오디오)를 표시. 여러 장이면 뒤에 개수.
+// 레퍼런스 카드 이름표 — 숫자 대신 어떤 레퍼런스인지(이미지/영상/오디오)를 표시. 여러 장이면 뒤에 개수.
 export function refTypeLabel(refs?: SceneRef[]): string {
   if (!refs || !refs.length) return "레퍼런스";
   const t = refs[0].type;
-  const label = t === "video" ? "비디오" : t === "audio" ? "오디오" : "이미지";
+  const label = t === "video" ? "영상" : t === "audio" ? "오디오" : "이미지";
   return refs.length > 1 ? `${label} ${refs.length}` : label;
 }
 
