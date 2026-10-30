@@ -10,7 +10,7 @@
 - `로컬 예외 · 핸들러가 _proxy 호출` 은 핸들러 **본문이 `_proxy` 를 직접 참조**할 때만 붙는다(팀 탭 등에서 핸들러가 골라서 위임). 헬퍼·usecase 를 거쳐 위임하면 안 보이므로, 이 표시가 없다고 위임이 없다는 뜻은 아니다.
 - `Depends` 칸은 라우터·데코레이터·핸들러 인자에 직접 적힌 것만이다. 인증 미들웨어와 핸들러 본문의 권한 검사는 안 나온다.
 
-전체 405개.
+전체 407개.
 
 ## `backend/app/main.py` — 11개
 
@@ -161,10 +161,12 @@
 | `GET` | `/api/clean-feed/status` | `status` | 로컬 예외 | — |
 | `WEBSOCKET` | `/ws/clean-feed` | `feed_ws` | 해당 없음 | — |
 
-## `backend/app/routers/comfy.py` — 12개
+## `backend/app/routers/comfy.py` — 14개
 
 | 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
 | --- | --- | --- | --- | --- |
+| `POST` | `/api/comfy/canvas-runs/ack` | `ack_canvas_run` | 로컬 예외 | `_require_local_comfy` |
+| `POST` | `/api/comfy/canvas-runs/resolve` | `resolve_canvas_runs` | 로컬 예외 | `_require_local_comfy` |
 | `GET` | `/api/comfy/health` | `health` | 로컬 예외 | `_require_local_comfy` |
 | `GET` | `/api/comfy/inputs/{scope}/{filename}` | `input_file` | 로컬 예외 | `_require_local_comfy` |
 | `POST` | `/api/comfy/parse` | `parse` | 로컬 예외 | `_require_local_comfy` |

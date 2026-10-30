@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-10-29
+updated: 2026-10-30
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -243,6 +243,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `generation_personal_meta.py`(175줄) | 색·태그 배치 저장(로컬/팀 shadow 분리) | `set_tags_batch`·`set_colors_batch` | `routers/generation.py` |
 | `hf_missing.py`(129줄) | HF 원본 누락분 휴지통 이동 흐름 | `trash_missing_generations` | `routers/generation.py` |
 | `generation_locate.py`(118줄) | 선택 생성물의 현재 라이브러리 위치 해석(읽기 전용) | `locate_generations` | `routers/library.py` |
+| `comfy_save.py`(67줄) | Comfy 결과 '내 작업' 저장 공통 문맥 — 서버 실행 스냅샷 우선·비밀값 제거(캔버스 실행 마무리·회수·재저장이 같은 길) | `durable_context`·`save_output` | `routers/comfy.py` |
 
 ### 2.4 repo (`backend/app/repo/`, 46파일 — `__init__.py` 는 `from .X import *` 전량 re-export 파사드)
 
@@ -308,6 +309,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `generation_views.py` | 121 | "마지막으로 크게 본" 개인 표시 | `repo.record_generation_view` |
 | `folder_cover.py` | 150 | 폴더 카드 집계(한 번 훑어 하위 폴더별 건수·최신·대표 유효성)와 대표 저장(`folder_cover`). 범위는 `projects._folder_counts_where`(사이드바 숫자와 같은 조건) + 폴더 접두(목록과 같은 LIKE 이스케이프) + 팀 공간 하나. 카드의 표지는 목록 행에서 화면이 쓰는 칸만(`_COVER_FIELDS` — 프런트 `types.FolderCover` 와 같은 목록), 미리보기(컷 띠·생성물 띠)는 목록 행을 읽지 않고 첫 에셋만(`_first_assets`) | `repo.folder_cards`·`set_folder_cover` |
 | `scene_cards.py` | 140 | 캔버스 카드 ↔ 생성물 소속 사실 | `repo.list_scene_card_links` |
+| `comfy_canvas_runs.py` | 206 | 캔버스 Comfy 실행(attempt) 접수·출력 연결(생성물과 같은 트랜잭션)·완료 판정(`isRunFullySaved`)·resolve/ACK 영수증(docs/status/캔버스_한계_A_Comfy마무리_2026-10-30.md) | `repo.comfy_canvas_runs.claim`·`settle`·`acknowledge`·`resolution` |
 | `scenes_backup.py` | 130 | 캔버스 씬(브라우저 IndexedDB)의 DB 미러 | `repo.list_scene_backups` |
 | `edit_docs.py` | 160 | 개인 타임라인 백업 최신본 버전 비교·충돌 사본·복원 직전 원문 트랜잭션 보존 | `repo.get_edit_backup`·`save_edit_backup`·`restore_edit_backup` |
 
@@ -904,7 +906,8 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `sceneAssetRelink.ts` | api+store | 옛 로컬 에셋 참조를 프로젝트 원본으로 재연결하고 씬 저장 갱신 · 서버 판정 기억(계정별 localStorage — 판정 받은 참조는 다음 실행에 NAS 를 다시 안 훑음) · '레퍼런스 찾기' 단추(이 씬만·render 포함)와 자동 복구를 한 줄로 · 판정 보류의 이유(held)·판정 못 끝냄(세션만)·판정 전 구별(카드 빨간 테두리 표시, ASSET_REGISTRY §5) · 탭 공간이 없으면 선택 워크스페이스로 묻기 |
 | `sceneBackup.ts` | api+store | 씬 확정본 → DB 단방향 미러·복구 · 서버 상한(5MiB)을 넘는 씬만 전송에서 제외 |
 | `sceneCardLinks.ts` | api+store | 카드 소속(담긴 생성물) 로컬 DB 기록·서버 병합 |
-| `sceneUndoStore.ts` | store | 씬별 undo/redo 히스토리(언마운트 생존) |
+| `sceneUndoStore.ts` | store | 씬별 undo/redo 히스토리(언마운트 생존) · 받은 기록 채택 규칙(부팅 복원·창 인계, `adoptSceneHistory`) |
+| `sceneUndoPersistence.ts` | 저장 | 되돌리기 기록을 새로 고쳐도 남게 — 별도 IndexedDB(`mvhub-undo`)의 페이지별 슬롯·탭별 포인터(sessionStorage)·삭제 세대·7일 보존·용량 상한(docs/status/캔버스_한계_B_되돌리기보존_2026-10-30.md) |
 | `sceneGenDataStore.ts` | store | genId → 생성물 캐시(언마운트 생존) |
 | `sceneRecentDoneStore.ts` | store | '방금 생성됨' glow 상태(언마운트 생존, 버전 구독) |
 | `sceneZoomStore.ts` | store | 캔버스 확대 % — 툴바 % 글자만 구독(휠마다 App 전체 재렌더 방지) |
@@ -970,6 +973,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `sceneComfyRunningStore.ts` | store | Comfy '생성중' 표시(언마운트 생존, 버전 구독) |
 | `comfyRunState.ts` | 순수 | 배치 실행 판정 상태기계·동시성 리미터 |
 | `useComfyUnresolvedRuns.ts` | 훅 | 미회수 실행 목록 조회·해제 |
+| `useCanvasComfyRuns.ts` | 훅 | 캔버스 Comfy 실행 복구 주기 — 씬의 `comfyRuns` 를 resolve → 반영+applied 한 번 저장 → 확인 → ACK(보드 없이도, 쓰는 창만) |
 | `sceneGenerationInputs.ts` | 순수 | 캔버스 생성 요청 재료 + 실행 중 변경 감지 지문 |
 | `sceneGenerationSubmission.ts` | 순수 | 캔버스 생성 배치 제출 경계(작업·씬 격리) |
 
