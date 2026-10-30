@@ -4,6 +4,7 @@ import { jsonFetch } from "./http";
 export const EMBED_MODES = {
   assets: "assets",
   manage: "manage",
+  canvas: "canvas", // 앱 전체를 캔버스 탭으로 — 씬을 쓰므로 main.tsx 가 보통 앱처럼 저장소를 부팅해 띄운다
 } as const;
 
 type EmbedMode = (typeof EMBED_MODES)[keyof typeof EMBED_MODES];
@@ -17,7 +18,16 @@ const WINDOW_OPTIONS: Record<EmbedMode, { name: string; features: string }> = {
     name: "contenthub-manage",
     features: "popup=yes,width=1180,height=820,left=120,top=60",
   },
+  canvas: {
+    name: "contenthub-canvas",
+    features: "popup=yes,width=1440,height=900,left=100,top=40",
+  },
 };
+
+// 캔버스 탭을 휠 클릭해 연 창인가 — 창 이름은 새로 고쳐도 남는다
+export function isCanvasWindow(): boolean {
+  return window.name === WINDOW_OPTIONS.canvas.name;
+}
 
 // 열어둔 창 참조를 기억 → 같은 버튼을 다시 누르면 그 창을 맨 앞으로 올린다(닫지 않음).
 // 닫기는 창의 X 버튼으로. 사용자가 창을 직접 닫으면 .closed 가 true 라 다음 클릭에서 새로 연다.
@@ -35,6 +45,7 @@ export function openEmbedWindow(mode: EmbedMode): void {
   }
   const url = `/?embed=${mode}&v=${Date.now()}`;
   const opts = WINDOW_OPTIONS[mode];
+  if (window.name === opts.name) return; // 이 창이 그 창이다 — 같은 이름으로 열면 제 창을 다시 읽는다
   // window.open 이 이미 url 로 내비게이션한다 — location.href 재대입은 같은 페이지를 두 번
   // 로드시켜(번들 재평가 + 부팅 API 세트 2회) 창 열기를 늦추던 원인이라 제거.
   const w = window.open(url, opts.name, opts.features);

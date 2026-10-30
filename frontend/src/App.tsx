@@ -23,6 +23,7 @@ import {
 } from "./components/SpotlightPrompt";
 import { ThumbnailGrid } from "./components/ThumbnailGrid";
 import { ensureTeamBase } from "./lib/teamSeen";
+import { EMBED_MODES, openEmbedWindow } from "./lib/popupWindows";
 import { TopBar } from "./components/TopBar";
 const McpConnection = lazy(() => import("./components/mcp/McpConnection").then((m) => ({ default: m.McpConnection })));
 import { SceneBar } from "./components/scene/SceneBar";
@@ -2462,6 +2463,11 @@ export default function App() {
           flash(msg);
         }}
         onOpenAssets={openAssetsWindow}
+        onOpenCanvas={() => {
+          // 새 창은 저장소에서 씬을 읽는다 — 아직 입력 대기 중인 글을 먼저 내보내 그 창이 낡은 씬으로 시작하지 않게
+          if (activeScene) flushScenePending(activeScene.id);
+          openEmbedWindow(EMBED_MODES.canvas);
+        }}
         onOpenMcp={() => { setMcpLoaded(true); setMcpOpen(true); }}
         onOpenManage={canOpenManage ? openManageWindow : undefined}
         onOpenAdmin={openAdmin}

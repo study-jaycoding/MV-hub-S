@@ -17,6 +17,7 @@ import type { Filters, GenQuery, WorkspaceContext } from "../types";
 import { sharedWorkspaceFilter, workspaceViewKey, type SharedWorkspaceMode } from "./libraryWorkspaceScope";
 import type { MediaFilter } from "./mediaTypes";
 import { buildGenerationQuery } from "./appGenerationQuery";
+import { isCanvasWindow } from "./popupWindows";
 import {
   FILTER_AUTO_TAGS_KEY,
   FILTERS_FORMAT_KEY,
@@ -168,7 +169,10 @@ export function useLibraryFilters(LS: Store, workspace?: WorkspaceContext, teamP
   const [workspaceChips, setWorkspaceChips] = useState<WorkspaceChip[]>(
     () => LS.loadJSON<WorkspaceChip[]>("workspaceChips") ?? [],
   );
-  const [storedFilters, rawSetFilters] = useState<Filters>(() => restoreFilters(LS));
+  // 캔버스 탭을 휠 클릭해 연 창은 캔버스로 시작한다(저장된 탭과 무관 — 그 창은 탭을 저장하지도 않는다, useLibraryPersistence)
+  const [storedFilters, rawSetFilters] = useState<Filters>(
+    () => (isCanvasWindow() ? { ...restoreFilters(LS), tab: "compose" } : restoreFilters(LS)),
+  );
   const workspaceKey = workspace ? workspaceViewKey(workspace) : "";
   // 전체 보기는 이번 공간에서만 유효하다. 영속화하지 않으므로 재실행도 자동 모드다.
   //  시작 키 = 저장된 선택이 지금 공간의 자동 범위에서 고른 것이면 지금 공간(그대로 되살린다), 아니면 ""(아래에서 공간이 바뀐

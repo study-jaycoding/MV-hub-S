@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import type { MediaFilter } from "./mediaTypes";
+import { isCanvasWindow } from "./popupWindows";
 import type { Store } from "./storage";
 import type { Filters, GenQuery } from "../types";
 
@@ -81,12 +82,12 @@ export function useLibraryPersistence({
   typeFilter,
   viewKey = "",
 }: UseLibraryPersistenceArgs) {
-  useEffect(
-    () => store.setJSON(FILTERS_KEY, {
+  useEffect(() => {
+    if (isCanvasWindow()) return; // 캔버스 창(휠 클릭으로 연 창)의 탭이 메인 창이 다시 켤 때의 탭을 바꾸지 않게
+    store.setJSON(FILTERS_KEY, {
       ...filters, [FILTERS_FORMAT_KEY]: FILTERS_FORMAT, ...(viewKey ? { [FILTERS_VIEW_KEY]: viewKey } : {}),
-    }),
-    [filters, store, viewKey],
-  );
+    });
+  }, [filters, store, viewKey]);
   useEffect(() => store.set("typeFilter", typeFilter), [store, typeFilter]);
   useEffect(() => store.set("scale", String(scale)), [scale, store]);
   useEffect(() => store.set("fill", fill ? "1" : "0"), [fill, store]);
