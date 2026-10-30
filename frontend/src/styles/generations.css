@@ -676,15 +676,76 @@
 }
 .fit-toggle:hover { color: var(--text); }
 .fit-toggle.on { background: rgba(255,255,255,0.09); color: #fff; }
-/* 전체 보기 단추 우클릭 = Layout 메뉴(Square · Masonry) — Assets 정렬 메뉴(.asort-menu)와 같은 부품. 가로 자리는 창 안에 들게 ViewControls 가 정한다. */
-.fit-wrap { position: relative; display: inline-flex; }
-.asort-menu.layout-menu { right: auto; left: -8px; }
-.layout-menu-head { padding: 3px 9px 4px; font-size: 11px; font-weight: 800; letter-spacing: .04em; color: var(--muted); }
-.layout-menu-ic { flex: none; width: 18px; height: 18px; display: grid; place-items: center; color: var(--muted); }
-.asort-item.sel .layout-menu-ic { color: var(--accent); }
-.layout-menu-tx { display: flex; flex-direction: column; gap: 1px; }
-.layout-menu-tx small { font-size: 11px; font-weight: 500; color: var(--muted); }
-.layout-menu-hint { padding: 4px 9px 3px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+/* ── 툴바 단추 창(Jay 2026-10-30) — 보기 단추(ViewControls: Layout·Split by date·Fill·Card size)와 필터 단추(LibraryWorkspaceFilter:
+   Workspaces·Hide failed·Activity)가 같은 부품. 색·테두리·그림자 = Assets 정렬 메뉴(.asort-menu). 고른 줄 = 라임 글자 + 옅은 라임 바탕(✓ 없음). */
+.vp-wrap { position: relative; display: inline-flex; flex: none; }
+/* 보기 단추 = S·T·C 와 같은 상자(.af-btn 26×24) · 연 동안 = 필터 단추가 켜졌을 때처럼 옅은 라임 */
+.af-btn.vp-btn { width: 26px; min-width: 26px; padding: 0; display: inline-grid; place-items: center; }
+.af-btn.vp-btn svg { display: block; }
+.af-btn.vp-btn.open { color: var(--accent); background: rgba(var(--accent-rgb),0.14); border-color: var(--accent); }
+.vp-pop {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 90; width: 236px; padding: 6px;
+  display: flex; flex-direction: column; gap: 1px;
+  background: var(--glass, #1b1d21); border: 1px solid var(--border2); border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(0,0,0,0.5); backdrop-filter: blur(20px) saturate(1.2);
+}
+.vp-head { display: flex; padding: 5px 9px 4px; font-size: 11px; font-weight: 800; letter-spacing: .04em; color: var(--muted); }
+.vp-val { margin-left: auto; color: var(--text); letter-spacing: 0; font-variant-numeric: tabular-nums; }
+/* 전역 button 모양(여백·테두리·누를 때 움직임)을 덮는다 */
+.vp-pop .vp-item {
+  display: flex; align-items: center; gap: 10px; width: 100%; margin: 0; padding: 7px 9px;
+  border: 0; border-radius: 7px; background: transparent; color: var(--text);
+  font: inherit; font-size: 13px; font-weight: 700; text-align: left; white-space: nowrap; cursor: pointer;
+}
+.vp-pop .vp-item:hover:not(:disabled), .vp-pop .vp-item.hov { background: rgba(255,255,255,0.08); }
+.vp-pop .vp-item:active { transform: none; }
+.vp-pop .vp-item.sel { color: var(--accent); background: rgba(var(--accent-rgb), 0.08); }
+.vp-pop .vp-item:disabled { opacity: .42; cursor: default; }
+.vp-ic { flex: none; width: 18px; height: 18px; display: grid; place-items: center; color: var(--muted); }
+.vp-item.sel .vp-ic { color: var(--accent); }
+.vp-end { margin-left: auto; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.vp-cnt {
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 6px; display: inline-grid; place-items: center;
+  font-size: 11px; font-weight: 800; background: rgba(var(--accent-rgb), .16); color: var(--accent);
+}
+.vp-pop .vp-item.warn, .vp-item.warn .vp-ic { color: #ff9b9b; }
+.vp-item.warn .vp-cnt { background: rgba(255,107,107,0.16); color: #ff9b9b; }
+.vp-sep { height: 1px; margin: 4px 3px; background: var(--border); }
+/* 켜기/끄기 — 관리 창 크레딧 스위치(.credit-switch)와 같은 모양, 켜짐 색만 라임 */
+.vp-sw { margin-left: auto; flex: none; width: 36px; height: 20px; border-radius: 999px; background: #3a3d44; position: relative; }
+.vp-sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
+.vp-sw.on { background: var(--accent); }
+.vp-sw.on::after { left: 18px; }
+/* 크기 조절바(A안) — 상자 자체가 조절바. 슬라이더(입력)는 좌우 10px 안쪽에 깔고 손잡이는 3px 흰 세로 막대 → 손잡이 가운데가 가는 길 = 상자 안쪽 11.5px.
+   채움(--pct = 0~1)·눈금이 같은 길을 쓴다. 숫자 줄은 없다(지금 값은 머리의 %). */
+.vp-size {
+  position: relative; height: 32px; margin: 0 6px 4px; border-radius: 8px; overflow: hidden;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--border);
+}
+.vp-size:hover { background: rgba(255,255,255,0.07); }
+.vp-size:focus-within { border-color: var(--border2); }
+.vp-fill { position: absolute; left: 0; top: 0; bottom: 0; width: calc(11.5px + (100% - 23px) * var(--pct, 0)); background: rgba(255,255,255,0.09); pointer-events: none; }
+.vp-ticks { position: absolute; left: 11.5px; right: 11.5px; top: 50%; height: 10px; transform: translateY(-50%); display: flex; align-items: center; justify-content: space-between; pointer-events: none; }
+.vp-ticks i { flex: none; width: 1px; height: 6px; background: rgba(255,255,255,0.20); }
+.vp-ticks i.major { height: 10px; background: rgba(255,255,255,0.40); }
+.vp-size input[type="range"] {
+  position: absolute; left: 10px; top: 0; width: calc(100% - 20px); height: 100%; margin: 0; padding: 0;
+  -webkit-appearance: none; appearance: none; background: transparent; outline: none; cursor: pointer;
+}
+.vp-size input[type="range"]::-webkit-slider-runnable-track { height: 100%; background: transparent; border: 0; }
+.vp-size input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; width: 3px; height: 18px; margin-top: 6px; border: 0; border-radius: 2px;
+  background: #e9e9ef; box-shadow: 0 0 0 3px rgba(0,0,0,0.25);
+}
+.vp-size input[type="range"]::-moz-range-track { height: 100%; background: transparent; border: 0; }
+.vp-size input[type="range"]::-moz-range-thumb { width: 3px; height: 18px; border: 0; border-radius: 2px; background: #e9e9ef; box-shadow: 0 0 0 3px rgba(0,0,0,0.25); }
+/* 필터 창의 Workspaces 옆 목록(.lib-ws-menu 그대로) — 창 왼쪽으로 펼친다. 사이 6px 는 목록의 안쪽 여백이라 마우스를 옮겨도 닫히지 않는다.
+   안 고른 공간 = 회색(글자 표·이름) · 고른 공간 = 공간 색 글자 표 + 라임 이름(.lib-ws-item.on — assets.css) */
+.filter-ws { position: relative; }
+.filter-fly { position: absolute; right: 100%; top: -7px; z-index: 91; padding-right: 6px; }
+.filter-fly .lib-ws-menu { position: static; box-shadow: 0 10px 28px rgba(0,0,0,0.5); }
+.filter-fly .lib-ws-item:not(.on) .ws-mark-box { background: rgba(255,255,255,0.07); color: #6f7480; }
+.filter-fly .lib-ws-item:not(.on) .lib-ws-item-name, .filter-fly .lib-ws-item:not(.on) .lib-ws-all { color: #7d828c; }
 
 .layout-toggle { display: flex; gap: 2px; }
 .layout-toggle button {

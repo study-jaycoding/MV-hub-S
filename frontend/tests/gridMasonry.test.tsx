@@ -2,11 +2,11 @@
 // 워크스페이스 그리드 Layout: Square · Masonry(Jay 2026-10-30 — "이 전체 보기에서 마우스 우클릭을 하면 지금처럼 스퀘어로 카드가 보이던지
 //  이미지2처럼 보이던지 정하는게 나오면 좋겠다" → 모의 그림 → "이대로 만들어"). 기록: docs/status/그리드_Masonry_2026-10-30.md
 //  · 줄 계산(lib/gridVirtualRows) — 폭을 넘기는 순간 줄을 끊고 꽉 차게 높이를 줄인다 · 끝난 줄은 목표 높이 · 위아래 = 가로로 가장 가까운 카드
-//  · 전체 보기 단추 우클릭 = Layout 메뉴(ViewControls) · 자리마다 기억(placeViews) · 격자(ThumbnailGrid)가 칸을 비율대로 그리고 잰 비율로 다시 짠다
+//  · 자리마다 기억(placeViews) · 격자(ThumbnailGrid)가 칸을 비율대로 그리고 잰 비율로 다시 짠다
+//  · Layout 을 고르는 곳 = 툴바 보기 단추 창(tests/toolbarPopovers.test.tsx — 처음의 '전체 보기 단추 우클릭 메뉴'를 같은 날 대신했다)
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ViewControls } from "../src/components/common/ViewControls";
 import { ThumbnailGrid } from "../src/components/ThumbnailGrid";
 import { buildGridRows, navigateGrid, paramAspectRatio, type JustifyOptions } from "../src/lib/gridVirtualRows";
 import { parsePlaceViews, withPlaceView } from "../src/lib/placeViews";
@@ -119,43 +119,6 @@ afterEach(() => {
   vi.unstubAllGlobals(); vi.restoreAllMocks();
 });
 const flushFrames = () => act(() => { const pending = [...frames.values()]; frames.clear(); pending.forEach((callback) => callback(0)); });
-
-describe("전체 보기 단추 우클릭 = Layout 메뉴(ViewControls)", () => {
-  const draw = (onSetMasonry?: (on: boolean) => void, masonry = false) => act(() => root.render(
-    <ViewControls fitContain={false} onToggleFit={() => {}} scale={1} onScale={() => {}} scaleMin={0.7} scaleMax={1.7} sizeTitle="카드 크기"
-      layout="grid" groupByDate={false} onSelectLayout={() => {}} onToggleGroupByDate={() => {}} masonry={masonry} onSetMasonry={onSetMasonry} />,
-  ));
-  const rightClick = () => {
-    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
-    act(() => { host.querySelector(".fit-toggle")!.dispatchEvent(event); });
-    return event;
-  };
-  const items = () => [...host.querySelectorAll<HTMLElement>(".layout-menu .asort-item")];
-
-  it("우클릭에 뜨고(브라우저 메뉴는 막는다) 지금 것이 ● · 고르면 알리고 닫힌다 · 왼쪽 클릭은 그대로", () => {
-    const picked: boolean[] = [];
-    draw((on) => picked.push(on));
-    expect(rightClick().defaultPrevented).toBe(true);
-    expect(host.querySelector(".layout-menu-head")?.textContent).toBe("Layout");
-    expect(items().map((item) => [item.textContent, item.classList.contains("sel")])).toEqual([
-      ["●Square정사각 카드", true], ["Masonry그림 비율 그대로 · 줄마다 꽉 채움", false],
-    ]);
-    expect(host.querySelector(".layout-menu-hint")?.textContent).toBe("왼쪽 클릭 = 전체 보기 ↔ 꽉 채우기(Square 일 때)");
-    act(() => items()[1].click());
-    expect([picked, host.querySelector(".layout-menu")]).toEqual([[true], null]);
-    draw((on) => picked.push(on), true);
-    rightClick();
-    expect(items()[1].classList.contains("sel")).toBe(true);
-    act(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
-    expect(host.querySelector(".layout-menu")).toBeNull(); // Esc 는 메뉴만 닫는다
-  });
-
-  it("메뉴를 받지 않은 툴바(캔버스 보드)는 우클릭에 아무것도 없다", () => {
-    draw(undefined);
-    expect(rightClick().defaultPrevented).toBe(false);
-    expect([host.querySelector(".layout-menu"), host.querySelector(".fit-wrap")]).toEqual([null, null]);
-  });
-});
 
 describe("격자(ThumbnailGrid) — Masonry 칸", () => {
   const noop = () => {};

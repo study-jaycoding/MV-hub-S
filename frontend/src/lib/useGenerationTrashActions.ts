@@ -15,7 +15,6 @@ import {
 interface UseGenerationTrashActionsArgs {
   bumpBoard: () => void;
   clearSelect: () => void;
-  failedCount: number;
   flash: (message: string) => void;
   reload: () => Promise<void>;
   selected: Set<string>;
@@ -25,21 +24,13 @@ interface UseGenerationTrashActionsArgs {
 export function useGenerationTrashActions({
   bumpBoard,
   clearSelect,
-  failedCount,
   flash,
   reload,
   selected,
   setBoardSelected,
 }: UseGenerationTrashActionsArgs) {
+  // 묻는 것은 툴바의 앱 확인 창(LibraryToolbar → common/HostConfirm, Jay 2026-10-30) — 여기서는 확인이 끝난 뒤 바로 정리한다.
   const clearFailed = async () => {
-    if (
-      !window.confirm(
-        `실패·차단된 생성물 ${failedCount}건을 모두 휴지통으로 보낼까요?\n` +
-          `(실패·NSFW 차단 등 — 화면에서 치워지되 '휴지통 보기'에서 복원 가능, 힉스필드 원본엔 영향 없음)`,
-      )
-    ) {
-      return;
-    }
     try {
       const r = await api.clearFailed();
       flash(`${r.removed}건을 휴지통으로 보냈습니다.`);

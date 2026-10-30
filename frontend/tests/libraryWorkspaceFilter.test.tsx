@@ -197,10 +197,11 @@ function render(props: Partial<Parameters<typeof LibraryWorkspaceFilter>[0]> = {
   return { onToggle, onClear };
 }
 
-const openMenu = () =>
-  act(() => {
-    host.querySelector<HTMLButtonElement>(".lib-ws-btn")!.click();
-  });
+// 단추 → 필터 창 → Workspaces 줄 → 옆 목록(Jay 2026-10-30 — 목록은 필터 창의 Workspaces 옆으로 옮겼다)
+const openMenu = () => {
+  act(() => host.querySelector<HTMLButtonElement>(".lib-ws-btn")!.click());
+  act(() => host.querySelector<HTMLButtonElement>(".filter-ws > .vp-item")!.click());
+};
 
 const items = () => Array.from(host.querySelectorAll<HTMLButtonElement>(".lib-ws-item"));
 const itemNamed = (text: string) => items().find((el) => el.textContent?.includes(text))!;
@@ -228,12 +229,13 @@ describe("워크스페이스 필터 — 여러 개를 고른다", () => {
     expect(onToggle).toHaveBeenCalledWith("ws-1");
   });
 
-  it("고른 항목에 체크 표시가 붙는다", () => {
+  it("고른 항목은 라임(on) — 체크 표시는 없다(Jay 2026-10-30 · 안 고른 것은 회색)", () => {
     render({ value: ["ws-2"] });
     openMenu();
     expect(itemNamed("MILLION VOLT").getAttribute("aria-checked")).toBe("true");
     expect(itemNamed("뻘뻘뻘").getAttribute("aria-checked")).toBe("false");
-    expect(itemNamed("MILLION VOLT").querySelector(".lib-ws-check")).not.toBeNull();
+    expect([itemNamed("MILLION VOLT").classList.contains("on"), itemNamed("뻘뻘뻘").classList.contains("on")]).toEqual([true, false]);
+    expect(host.querySelector(".lib-ws-check")).toBeNull();
   });
 
   it("'전체' 는 모두 해제하고 메뉴를 닫는다", () => {

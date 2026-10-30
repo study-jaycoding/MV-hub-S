@@ -866,6 +866,11 @@ const EN: Record<string, string> = {
   "그리드": "Grid",
   // 워크스페이스 필터(라이브러리 툴바) — 공간 이름은 사용자 자료라 번역하지 않는다.
   "워크스페이스로 걸러 보기": "Filter by workspace",
+  "필터 — Workspaces · Hide failed · 실패·차단 정리": "Filter — Workspaces · Hide failed · Clear failed",
+  "실패·차단 정리": "Clear failed & blocked",
+  "실패·차단된 생성물 {n}건을 휴지통으로 보낼까요?": "Move {n} failed or blocked items to the trash?",
+  "휴지통 보기에서 되살릴 수 있고, 힉스필드 원본은 그대로입니다.": "You can restore them from the trash view. Originals on Higgsfield stay as they are.",
+  "정리": "Clear",
   "현재 워크스페이스 따라가기": "Follow current workspace",
   "워크스페이스 변경 시 자동 적용으로 돌아갑니다.": "Switching workspaces restores automatic filtering.",
   "전체 보기": "Show all",
