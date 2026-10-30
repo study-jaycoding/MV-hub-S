@@ -50,6 +50,15 @@ it("Comfy 값 줄 = 모델 노드 줄(이름 회색 · 값 오른쪽 · 칸 테�
   expect(decl(".scene-card-ref .scene-card-hd")).toBe(""); // 그림 위에 얹던 옛 이름표 규칙은 없다
 });
 
+it("캔버스 탭 줄·씬 패널도 네모 칩(안 B) — 탭·＋·알림 단추·씬 패널 단추 5px · 씬 패널 8px · Assets 폴더 탭(같은 부품)은 그대로 8px", () => {
+  for (const sel of [".scene-bar .scene-tab-wrap", ".scene-add", ".scene-restore", ".scene-io-btn"]) {
+    expect(decl(sel), sel).toMatch(/border-radius: 5px/);
+    expect(decl(sel), sel).not.toMatch(/border-radius: (8|999)px/);
+  }
+  expect(decl(".scene-io-panel")).toMatch(/border-radius: 8px/);
+  expect(decl(".scene-tab-wrap")).toMatch(/border-radius: 8px/);
+});
+
 let host: HTMLDivElement;
 let root: Root;
 const noop = () => {};
@@ -66,12 +75,13 @@ beforeEach(() => {
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-it("레퍼런스 이름표는 카드 위에 뜨는 이름표(이미지·영상·오디오) · Comfy 상태 글 앞 '●' 없음", async () => {
+it("레퍼런스 이름표는 카드 위에 뜨는 이름표(이미지·영상·오디오) · Comfy 상태 글 앞 '●' 없음 · OUTPUT 빈 글 '소스 연결'", async () => {
   const ref = (id: string, type: string, name: string): SceneCard => ({ id, kind: "reference", x: 0, y: 0, refs: [{ file_path: `asset:p|${name}`, type, name }] });
   const cards: SceneCard[] = [
     ref("ri", "image", "a.png"), ref("rv", "video", "b.mp4"), ref("ra", "audio", "c.mp3"),
     { id: "rm", kind: "reference", x: 0, y: 0, refs: [{ file_path: "asset:p|d.mp4", type: "video", name: "d.mp4" }, { file_path: "asset:p|e.mp4", type: "video", name: "e.mp4" }] },
     { id: "c", kind: "comfy", x: 400, y: 0, comfyCfg: { content: "{}", status: "done" } },
+    { id: "o", kind: "output", x: 700, y: 0 },
   ];
   await act(async () => {
     root.render(<SceneBoard scene={{ id: "inner", name: "S", created_at: 0, edges: [], cards } as Scene} onChange={noop} />);
@@ -81,6 +91,7 @@ it("레퍼런스 이름표는 카드 위에 뜨는 이름표(이미지·영상·
   expect(["ri", "rv", "ra", "rm"].map(tag)).toEqual(["이미지", "영상", "오디오", "영상 2"]);
   expect(card("ri").querySelector(".scene-card-inner .scene-card-hd")).toBeNull(); // 그림 위에는 없다
   expect(card("c").querySelector(".scene-comfynode-status")?.textContent).toBe("완료");
+  expect(card("o").querySelector(".scene-portnode-valph")?.textContent).toBe("소스 연결"); // 소스 없는 OUTPUT 빈 글(Jay 2026-10-30)
 });
 
 it("미리보기 '이어보기' 글 앞에 '▶' 가 없다", () => {

@@ -31,7 +31,7 @@ export function OutputCard({
           {/* 본문 = 입력된 값(채널 이름)만. 이름 입력은 선택 시 카드 아래 툴바에서. */}
           <div className="scene-portnode-val">
             {(card.text || "").trim() || (
-              <span className="scene-portnode-valph">{src ? "채널 이름" : "소스를 연결"}</span>
+              <span className="scene-portnode-valph">{src ? "채널 이름" : "소스 연결"}</span>
             )}
           </div>
         </div>
