@@ -55,7 +55,7 @@ function fakeStore(data: Record<string, string>): Store {
 }
 
 describe("캔버스 탭 휠 클릭 → 새 창", () => {
-  it("휠 클릭은 새 창만 열고 탭을 바꾸지 않는다 · 왼쪽 클릭은 지금처럼 탭만 · 오른쪽 단추는 아무 일 없음", () => {
+  it("휠 클릭은 새 창만 열고 탭을 바꾸지 않는다 · 왼쪽 클릭은 지금처럼 탭만 · 오른쪽 단추는 아무 일 없음", async () => {
     const onTab = vi.fn(), onOpenCanvas = vi.fn();
     act(() => root.render(
       <TopBar filters={{ tab: "my" } as never} onTab={onTab} onSearch={noop} onWorkspaceSwitched={noop}
@@ -64,8 +64,12 @@ describe("캔버스 탭 휠 클릭 → 새 창", () => {
         onOpenNotificationComment={noop} onNotificationsChanged={noop} />,
     ));
     wheelClick(canvasTab());
+    // 휠 클릭 처리 안에서 열면 크롬이 새 탭으로 연다(실측) — 처리가 끝난 뒤에 연다
+    expect(onOpenCanvas).not.toHaveBeenCalled();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect([onOpenCanvas.mock.calls.length, onTab.mock.calls.length]).toEqual([1, 0]);
     wheelClick(canvasTab(), 2);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(onOpenCanvas).toHaveBeenCalledTimes(1);
     act(() => canvasTab().click());
     expect(onTab).toHaveBeenCalledWith("compose");
@@ -200,6 +204,27 @@ describe("캔버스 창이 떠 있음", () => {
       expect(live.focus).toHaveBeenCalled();
     } finally {
       other.close();
+    }
+  });
+
+  it("이 창이 연 캔버스 창이 닫히면 'closed' 신호가 없어도 캔버스가 돌아온다(머리줄 단추의 창 확인)", async () => {
+    const { mod, seen } = await mainWindow();
+    const popup = { closed: false, focus: vi.fn(), close: vi.fn(), addEventListener: vi.fn(), location: { href: "http://localhost/?embed=canvas&v=1" } };
+    vi.spyOn(window, "open").mockImplementation((() => popup) as never);
+    function Watch() {
+      mod.useEmbedWindowOpen(mod.EMBED_MODES.assets); // 머리줄이 하는 것 — 창이 떠 있는 동안 0.5초마다 .closed 를 본다
+      return null;
+    }
+    const watchHost = document.createElement("div");
+    const watchRoot = createRoot(watchHost);
+    act(() => watchRoot.render(<Watch />));
+    try {
+      act(() => mod.openEmbedWindow(mod.EMBED_MODES.canvas));
+      expect(seen.floating).toBe(true);
+      popup.closed = true; // 신호 없이 사라졌다(비정상 종료 등)
+      await until(() => !seen.floating);
+    } finally {
+      act(() => watchRoot.unmount());
     }
   });
 

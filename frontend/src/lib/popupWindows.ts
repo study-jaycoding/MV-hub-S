@@ -125,6 +125,7 @@ function refreshOpen(): void {
   for (const mode of Object.values(EMBED_MODES)) {
     const open = isEmbedWindowOpen(mode);
     if (open !== !!lastOpen[mode]) changed = true;
+    if (mode === EMBED_MODES.canvas && !open && lastOpen[mode]) setCanvasFloating(false); // 이 창이 연 캔버스 창이 닫혔다 — 'closed' 신호를 못 받았어도
     lastOpen[mode] = open;
     if (open) anyOpen = true;
   }

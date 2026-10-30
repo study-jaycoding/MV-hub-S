@@ -110,7 +110,8 @@ export function TopBar({
         <button
           className={!editOpen && filters.tab === "compose" ? "on" : ""}
           onClick={() => pickTab("compose")}
-          onAuxClick={(event) => { if (event.button === 1 && onOpenCanvas) { event.preventDefault(); onOpenCanvas(); } }}
+          // 휠 클릭 처리 안에서 창을 열면 크롬이 팝업 설정을 무시하고 같은 창의 새 탭으로 연다(실측) — 처리가 끝난 직후로 미룬다
+          onAuxClick={(event) => { if (event.button === 1 && onOpenCanvas) { event.preventDefault(); setTimeout(onOpenCanvas, 0); } }}
           title={canvasFloating ? t("캔버스가 별도 창에 떠 있습니다") : t("캔버스 — 씬 캔버스 · 히스토리 뷰")}
         >
           {t("캔버스")}
