@@ -3,34 +3,46 @@
 .proj-tree-wrap { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .proj-tree-wrap.on { padding-bottom: 3px; }
 .proj-row {
-  flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  flex: 1; display: flex; align-items: center; gap: 6px;
   min-width: 0; background: transparent; border: none; cursor: pointer; text-align: left;
   /* 우 8px 는 폴더 행과 같아 숫자(개수) 오른끝이 같은 세로선에 선다. */
   padding: 5px 8px 5px 6px; border-radius: 7px; color: var(--muted2); font-size: 12px;
 }
 .proj-row:hover { background: rgba(255,255,255,0.06); }
-/* 위쪽 세 줄(라이브러리·미분류·휴지통) — 앞에 선 아이콘 */
-.project-shortcuts .proj-row { padding-top: 6px; padding-bottom: 6px; color: #b4b9c2; }
+/* 위쪽 세 줄(라이브러리·미분류·휴지통) — 앞에 선 아이콘. 평소 기울임(Jay 2026-10-31) */
+.project-shortcuts .proj-row { min-height: 26px; gap: 8px; padding-top: 0; padding-bottom: 0; color: #b4b9c2; }
+.project-shortcuts .proj-name { font-style: italic; }
 .proj-ico {
   flex: none; display: inline-flex; align-items: center; justify-content: center;
   width: 14px; height: 14px; color: var(--muted);
 }
 .proj-row.sel-target .proj-ico { color: #fff; }
 /* 프로젝트 줄 = 글자 마크 + 이름. 접힘 회색 · 펼침 밝게 · 폴더가 없어 펼칠 것이 없으면 그 중간(Jay 2026-10-30). */
-.proj-tree-wrap > .proj-row { gap: 8px; padding-top: 6px; padding-bottom: 6px; font-size: 13px; font-weight: 600; }
+.proj-tree-wrap > .proj-row { gap: 8px; min-height: 36px; padding-top: 0; padding-bottom: 0; font-size: 17px; font-weight: 700; }
 .proj-row.closed { color: #7d828c; }
 .proj-row.open { color: #f1f3f5; }
 .proj-row.flat { color: #b4b9c2; }
 .proj-row.on { background: transparent; color: var(--text); font-weight: 700; }
 .proj-row.on:hover { background: transparent; }
-.proj-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.proj-count { font-size: 11px; color: var(--muted2); flex: none; }
+/* 이름 뒤에 표시 아이콘이 붙고 개수·+N 은 오른끝에 선다 */
+.proj-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; min-width: 0; }
+.proj-count { font-size: 11px; color: var(--muted2); flex: none; margin-left: auto; }
 .proj-row.on .proj-count { color: var(--muted); }
-/* 현재 선택 = 실제 생성 목적지. 폴더 빨강과 같은 언어로 위쪽 행(라이브러리/미분류/휴지통/프로젝트)도
-   빨강+흰글씨로 표시 — 한 번에 한 곳만 뜬다(폴더 무장 중이면 프로젝트 행엔 안 뜸). .on 뒤에 두어 덮음. */
-.proj-row.sel-target { background: rgba(255,79,138,0.13); color: #fff; font-weight: 700; }
-.proj-row.sel-target:hover { background: rgba(255,79,138,0.2); }
-.proj-row.sel-target .proj-count { color: #fff; }
+/* 위쪽 세 줄의 고른 줄 — 분홍 바탕 + 흰 글자 + 바른 글자 + 1.5px, 줄 높이는 그대로. 휴지통만 글자·아이콘 빨강. 폴더 줄의 생성 라임과는 다른 색이다(Jay 2026-10-31). .on 뒤에 두어 덮음. */
+.proj-row.sel-target { background: rgba(255,79,138,0.2); color: #fff; font-weight: 700; font-size: 13.5px; }
+.proj-row.sel-target:hover { background: rgba(255,79,138,0.26); }
+.proj-row.sel-target .proj-name { font-style: normal; }
+.proj-row.sel-target .proj-count { color: #ffd6e5; }
+.proj-trash.sel-target, .proj-trash.sel-target .proj-ico { color: #ff304f; }
+/* 줄 표시 색 — 생성 라임·보기 파랑·다빈치 빨강(Jay 2026-10-31). 프로젝트 줄·폴더 줄·막대가 같이 쓴다. */
+.st-gen { --st: var(--accent-rgb); }
+.st-see { --st: 96, 165, 250; }
+.st-dv { --st: 255, 48, 79; }
+/* 표시가 있는 프로젝트 줄 — 폴더 없이 프로젝트가 그 자리일 때. 아이콘은 이름 뒤. */
+.proj-row.state { background: rgba(var(--st),0.13); color: rgb(var(--st)); }
+.proj-row.state:hover { background: rgba(var(--st),0.2); }
+.proj-row.state .proj-count { color: #fff; }
+.proj-tree-wrap > .proj-row.state { font-size: 18px; }
 /* 프로젝트 폴더를 내리는 동안 현재 프로젝트 이름은 목록 맨 위에 남는다.
    다음 프로젝트가 올라오면 자연스럽게 기존 헤더를 밀어내고 그 자리를 이어받는다. */
 .project-tree-scroll .proj-tree-wrap > .proj-row {
@@ -40,11 +52,11 @@
 .project-tree-scroll .proj-tree-wrap > .proj-row:hover {
   background: #181a1e;
 }
-.project-tree-scroll .proj-tree-wrap > .proj-row.sel-target {
-  background: rgba(255,79,138,0.13);
+.project-tree-scroll .proj-tree-wrap > .proj-row.state {
+  background: linear-gradient(rgba(var(--st),0.13) 0 0), #0e0f11; /* 맨 위에 붙어도 내린 폴더가 비치지 않게 */
 }
-.project-tree-scroll .proj-tree-wrap > .proj-row.sel-target:hover {
-  background: rgba(255,79,138,0.2);
+.project-tree-scroll .proj-tree-wrap > .proj-row.state:hover {
+  background: linear-gradient(rgba(var(--st),0.2) 0 0), #0e0f11;
 }
 /* 프로젝트 글자 마크 — 누르면 폴더 접기, 누른 채 끌면 순서 변경(ProjectSection). 전역 button 의 패딩·배경을 지운다. */
 .proj-mark {
@@ -72,22 +84,21 @@
 }
 .proj-archived-head:hover { color: var(--text); }
 
-/* 폴더 트리 — 화살표·폴더 아이콘 대신 앞쪽 링·점과 세로 깊이선(Jay 2026-10-30). 줄의 깊이는 --tree-depth, 맨 위 단계의 자리는 --tree-base.
-   사이드바 계열은 프로젝트 마크 가운데에서 내려오는 선(왼쪽 14px) 자리만큼 안쪽에서 시작한다. */
+/* 폴더 트리(Jay 2026-10-31) — 앞 칸 = 아래 단계 수만큼 막대, 열린 폴더 아래 라임 세로선, 표시가 있는 줄은 색 바탕·아이콘·연결선.
+   줄의 깊이는 --tree-depth, 단계마다 10px. 맨 위 단계는 들여쓰기가 없어 막대가 프로젝트 마크 밑, 이름이 프로젝트 이름 밑에 선다. */
 .folder-tree {
-  --tree-base: 6px;
+  --tree-mask: #0e0f11; /* 연결선 뒤의 라임 선을 가리는 색 = 트리 바탕. 바탕이 다른 자리는 따로 준다 */
   position: relative;
-  display: flex; flex-direction: column; gap: 1px;
+  display: flex; flex-direction: column;
   margin: 0 0 5px 0; min-width: 0;
 }
-.folder-tree.sidebar-folder-tree { --tree-base: 22px; }
-.folder-tree.sidebar-folder-tree::before,
-.folder-tree-children::before {
-  content: ""; position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(255,255,255,0.09);
-}
-.folder-tree.sidebar-folder-tree::before { left: 14px; }
+.assets-tree .folder-tree { --tree-mask: var(--bg); }
+.proj-folder-panel .folder-tree { --tree-mask: var(--panel); }
 .folder-tree-children { position: relative; }
-.folder-tree-children::before { left: calc(var(--tree-base) + var(--tree-depth) * 14px + 6px); bottom: 3px; }
+.folder-tree-children::before {
+  content: ""; position: absolute; z-index: 1; top: 0; bottom: 3px; width: 2px; border-radius: 2px;
+  left: calc(13.5px + var(--tree-depth) * 10px); background: rgba(var(--accent-rgb),0.3);
+}
 .folder-tree.scroll-15 {
   max-height: calc((25px + 1px) * 15);
   overflow-x: hidden;
@@ -105,113 +116,111 @@
 .folder-tree-node { min-width: 0; }
 .folder-tree-row {
   position: relative;
-  width: 100%; height: 22px;
-  display: flex; align-items: center; gap: 6px;
+  width: 100%;
+  display: flex; align-items: center; gap: 10px;
   border: 0; border-radius: 7px;
-  background: transparent; color: var(--muted);
-  cursor: pointer; text-align: left; font-size: 11.5px; font-variant-numeric: tabular-nums;
+  background: transparent; color: #6f747e;
+  cursor: pointer; text-align: left; font-variant-numeric: tabular-nums;
   font-family: inherit;
   /* 전역 button 기본 padding(6px 12px)이 남아 개수 숫자가 프로젝트 행과 어긋나던 것 정리 —
      우 8px 로 프로젝트 행(.proj-row)과 같은 오른끝. 좌는 깊이 인라인 스타일이 정한다. */
   padding-top: 0; padding-bottom: 0; padding-right: 8px;
 }
-.folder-tree-row.has { color: #d3d6dc; }
-/* 하위 폴더가 있는 줄 — 접힘 회색 · 펼침 밝게(Jay 2026-10-30) */
-.folder-tree-row.branch { height: 26px; font-size: 12px; color: #7d828c; }
-.folder-tree-row.branch.open { color: #f1f3f5; font-weight: 600; }
+/* 글자 크기별 줄 높이 — --bar 는 세로 막대 길이 */
+.folder-tree-row.fs15 { height: 30px; font-size: 15px; --bar: 17px; }
+.folder-tree-row.fs13 { height: 26px; font-size: 13px; --bar: 15px; }
+.folder-tree-row.fs11 { height: 23px; font-size: 11px; --bar: 13px; margin-bottom: 1px; }
+/* 생성물이 있으면 밝게 — 접힘·펼침과 무관(Jay 2026-10-31) */
+.folder-tree-row.has { color: #eceef1; }
 .folder-tree-row:hover { background: rgba(255,255,255,0.06); }
+/* 표시가 있는 줄 — 색 바탕은 줄 자기 들여쓰기부터, 이름은 그 색으로 굵게 + 1px, 숫자는 흰색. 줄 높이는 그대로. */
+.folder-tree-row.state { color: #fff; font-weight: 700; }
+.folder-tree-row.state:hover:not(.drop-over) { background: transparent; }
+.folder-tree-row.state::before {
+  content: ""; position: absolute; top: 0; bottom: 0; right: 0; border-radius: 7px; background: rgba(var(--st),0.13);
+  left: calc(11.5px + var(--tree-depth) * 10px);
+}
+/* 하위 있는 폴더는 앞 칸에 막대가 남아 바탕이 막대 앞에서 시작한다 */
+.folder-tree-row.state.branch::before { left: calc(4px + var(--tree-depth) * 10px); }
+.folder-tree-row.state > * { position: relative; z-index: 1; }
+.folder-tree-row.state .folder-tree-name { color: rgb(var(--st)); }
+.folder-tree-row.state.fs15 .folder-tree-name { font-size: 16px; }
+.folder-tree-row.state.fs13 .folder-tree-name { font-size: 14px; }
+.folder-tree-row.state.fs11 .folder-tree-name { font-size: 12px; }
+/* 고른 줄 연결 — 뒤의 라임 선은 그 자리만 가려 가로선 아래로 세로선이 없고, 선 전체는 한 덩어리로 60% (RowLink) */
+.folder-tree-row.state > .folder-tree-mask,
+.folder-tree-row.state > .folder-tree-link { position: absolute; pointer-events: none; }
+.folder-tree-row.state > .folder-tree-mask { width: 2px; bottom: -1px; background: var(--tree-mask); }
+.folder-tree-row.state > .folder-tree-link { inset: 0; opacity: 0.6; z-index: 2; }
+.folder-tree-link .hline { position: absolute; left: 13.5px; top: 50%; height: 2px; transform: translateY(-50%); border-radius: 1px; background: rgb(var(--st)); }
+.folder-tree-link .vline { position: absolute; width: 2px; bottom: calc(50% - 1px); border-radius: 1px; background: rgb(var(--st)); }
 /* 카드를 드래그해 올렸을 때 드롭 타깃 폴더 강조 */
 .folder-tree-row.drop-over {
   background: rgba(198,255,0,0.22);
   outline: 1px dashed var(--accent, #c6ff00); outline-offset: -1px;
 }
-/* 무장 폴더(=생성 목적지) — 줄 높이·글자 크기는 그대로, 그 줄의 깊이선 칸이 분홍 막대가 된다. */
-.folder-tree-row.selected {
-  background: rgba(255,79,138,0.13);
-  color: #fff; font-weight: 600;
-}
-.folder-tree-row.selected::before {
-  content: ""; position: absolute; top: 3px; bottom: 3px; width: 2px; border-radius: 2px; background: #ff4f8a;
-  left: calc(var(--tree-base, 6px) + (var(--tree-depth, 0) - 1) * 14px + 6px);
-}
-/* 맨 위 단계 위로는 깊이선이 없다 — 사이드바 계열만 프로젝트 선이 있다 */
-.folder-tree:not(.sidebar-folder-tree) .folder-tree-row.root.selected::before { display: none; }
 /* 폴더 단위 비활성(생략) — d 로 토글. 회색+취소선으로 '이 폴더는 뺐다'를 표시. */
 .folder-tree-row.disabled { opacity: 0.4; }
 .folder-tree-row.disabled .folder-tree-name { text-decoration: line-through; }
-/* 진행 링 — 내용 있는 하위 폴더 비율. 누르면 펴고 접는다(펴고 접기가 없는 트리에서는 표시만). 접히면 흐리게. */
-.folder-tree-ring { position: relative; flex: none; width: 14px; height: 14px; }
-.folder-tree-ring svg { position: relative; display: block; width: 14px; height: 14px; }
-.folder-tree-ring circle { fill: none; stroke-width: 2; stroke-linecap: round; }
-.folder-tree-ring .track { stroke: rgba(255,255,255,0.13); }
-.folder-tree-ring .done { stroke: var(--accent); }
-.folder-tree-row.branch:not(.open) .folder-tree-ring svg { opacity: 0.6; }
-.folder-tree-ring.toggle:hover::before {
+/* 앞 칸 14px — 하위 없는 폴더도 비워 둬서 형제 줄의 이름이 나란히 선다. 고른 줄의 아이콘은 색 바탕 왼쪽과 이름의 가운데로 옮긴다. */
+.folder-tree-slot { position: relative; flex: none; display: flex; align-items: center; justify-content: center; width: 14px; height: 14px; }
+.folder-tree-slot > .side-mark { transform: translateX(7px); }
+/* 막대 — 수 = 아래 단계 수. 누르면 펴고 접는다(펴고 접기가 없는 트리에서는 표시만). 펼침 세로·접힘 가로, 색은 그 칸의 st- 를 따르고 없으면 회색. */
+.folder-tree-bars { gap: 1.2px; }
+.folder-tree-bars i { display: block; width: 2px; height: var(--bar); border-radius: 1px; background: #9aa0aa; }
+.folder-tree-bars[class*="st-"] i { background: rgb(var(--st)); }
+.folder-tree-row:not(.open) .folder-tree-bars { flex-direction: column; gap: 2px; }
+.folder-tree-row:not(.open) .folder-tree-bars i { width: 13px; height: 2px; }
+.folder-tree-bars.toggle:hover::before {
   content: ""; position: absolute; inset: -4px; border-radius: 50%; background: rgba(255,255,255,0.12);
 }
-/* 하위 폴더가 없는 줄의 점 — 채움 = 결과 있음, 빈 원 = 없음. 링과 같은 14px 칸이라 형제 줄의 이름이 나란히 선다. */
-.folder-tree-dot { position: relative; flex: none; width: 14px; height: 14px; }
-.folder-tree-dot::before {
-  content: ""; position: absolute; left: 3px; top: 3px; width: 8px; height: 8px; border-radius: 50%;
-  box-shadow: inset 0 0 0 1.2px #464b55;
+/* 가상 폴더 — 팀 데이터의 folder_path지만 내 디스크엔 없는 논리 폴더. 회색 글자 + 이름 뒤 '폴더 없음' 표, 긴 이름은 이름이 먼저 잘린다. */
+.folder-tree-row.virtual:not(.state) .folder-tree-name { color: #9aa0aa; }
+.folder-tree-nodisk {
+  flex: none; margin-left: -4px; padding: 0 4px; border-radius: 4px;
+  font-size: 10px; font-weight: 700; line-height: 14px; color: #d3d6dc; background: #2c3036;
 }
-.folder-tree-row.has .folder-tree-dot::before { background: var(--accent); box-shadow: none; }
-.folder-tree-row.selected .folder-tree-dot::before { background: #ff4f8a; box-shadow: 0 0 0 3px rgba(255,79,138,0.25); }
-/* 가상 폴더 — 팀 데이터의 folder_path지만 내 디스크엔 없는 논리 폴더. 점선 점 + 이탤릭으로 구분. */
-.folder-tree .folder-tree-row.virtual .folder-tree-name { font-style: italic; color: var(--muted); }
-.folder-tree .folder-tree-row.virtual .folder-tree-dot::before {
-  background: none; box-shadow: none; border: 1px dashed var(--muted);
-}
+/* 이름 뒤에 아이콘·표가 붙고, 빈 칸이 개수를 오른끝으로 민다. 빈 칸 앞 간격은 하나만 둔다. */
 .folder-tree-name {
-  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.folder-tree-fill { flex: 1; margin-left: -10px; }
 .folder-tree-count {
   min-width: 24px; text-align: right; color: var(--muted2); font-size: 11px; flex: none;
 }
+.folder-tree-count:not(.folder-review-count) { color: #c9cdd4; font-weight: 700; }
 .folder-review-count { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .folder-review-final, .folder-review-held { font-size: 0.9em; font-weight: 400; }
 .folder-review-final { color: #e8b62c; }
 .folder-review-held { color: #ef7d8c; }
 .folder-review-total { font-weight: 700; color: var(--muted); }
 .folder-tree-row.has .folder-review-total { color: #c9cdd4; }
-.folder-tree-row.branch .folder-review-total { color: var(--muted); }
-.folder-tree-row.branch.open .folder-review-total { color: #c9cdd4; }
 /* 확인 전 신규 공유 개수(팀 탭) — 총 개수 왼쪽에 라임으로 '+N' (폴더 행/프로젝트·미분류 행 공용) */
 .folder-tree-newcount {
   flex: none; color: var(--accent); font-size: 11px; font-weight: 800; margin-right: 2px;
 }
 .proj-newcount {
-  flex: none; color: var(--accent); font-size: 11px; font-weight: 800; margin-right: 4px;
+  flex: none; color: var(--accent); font-size: 11px; font-weight: 800; margin-left: auto; margin-right: 4px;
 }
-.folder-tree-row.selected .folder-tree-count,
-.folder-tree-row.selected .folder-tree-count .folder-review-total { color: #fff; }
+.proj-newcount + .proj-count { margin-left: 0; }
+.folder-tree-row.state .folder-tree-count,
+.folder-tree-row.state .folder-tree-count .folder-review-total { color: #fff; }
 
-/* 보는 자리 ≠ 생성 위치일 때만(Jay 2026-10-15 8A, 판정은 ProjectSection) — 보는 줄은 라임 테두리+'보는 중', 분홍 줄엔 '생성'.
-   다빈치 확인 위치(.viewed-resolve, 빨강)와 겹치면 그쪽 테두리를 둔다. 값은 승인된 그림 그대로. */
-.proj-row.see-here:not(.viewed-resolve),
-.folder-tree-row.see-here:not(.viewed-resolve) { box-shadow: inset 0 0 0 1.5px var(--accent); }
-.proj-row.see-here,
-.folder-tree-row.see-here { color: var(--text); }
-.side-mark {
-  flex: none; font-size: 10px; font-weight: 700; font-style: normal; line-height: 15px;
-  padding: 0 5px; border-radius: 4px; color: #16181c;
-}
-.side-mark.gen { background: #ef7d8c; }
-.side-mark.see { background: var(--accent); }
+/* 표시 아이콘 — 원 없이 13px, 색은 줄 색이 아니라 제 색이다(다빈치가 겹쳐도 앞 칸 아이콘은 제 색을 지킨다). */
+.side-mark { flex: none; display: inline-flex; width: 13px; height: 13px; }
+.side-mark svg { display: block; width: 13px; height: 13px; }
+.side-mark.gen { color: var(--accent); }
+.side-mark.see { color: #60a5fa; }
+.side-mark.dv { color: #ff304f; }
 
 .assets-root-row {
   margin-bottom: 4px;
-  height: 26px; color: var(--text); font-size: 12px;
-  /* 트리 폴더 행(맨 위 단계 왼쪽 6px)과 같은 들여쓰기 — 프로젝트 루트는 이름만(Jay)이라 이름이 아래 링의 왼쪽 선에 선다. */
-  padding: 0 6px;
+  /* 프로젝트 줄과 같은 크기 — 아래 폴더 15·13·11 의 윗 단계다 */
+  height: 36px; color: var(--text); font-size: 17px; font-weight: 700;
+  /* 트리 폴더 행(맨 위 단계 왼쪽 8px)과 같은 들여쓰기 — 프로젝트 루트는 이름만(Jay)이라 이름이 아래 막대의 왼쪽 선에 선다. */
+  padding: 0 8px;
 }
-.assets-root-row.selected {
-  background: transparent;
-  color: var(--text);
-  font-weight: 700;
-}
-.assets-root-row.selected::before { display: none; }
-.assets-root-row.selected:hover { background: rgba(255,255,255,0.06); }
+.assets-root-row.selected { color: #60a5fa; }
 .side-folder-note {
   padding: 4px 8px 5px 22px;
   color: var(--muted); font-size: 11px; line-height: 1.35;

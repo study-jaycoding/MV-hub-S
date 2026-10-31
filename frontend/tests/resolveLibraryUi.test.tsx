@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ThumbnailGrid } from "../src/components/ThumbnailGrid";
 import { ProjectSection } from "../src/components/sidebar/ProjectSection";
+import { loadProjectFolderExpansion, saveProjectFolderExpansion } from "../src/lib/projectFolderTree";
 import type { Generation, Project, ProjectFolderState } from "../src/types";
 
 const mocks = vi.hoisted(() => ({
@@ -340,6 +341,60 @@ it("닫힌 프로젝트·조상 폴더를 조회용으로 펼치고 생성 목�
   await act(async () => (host.querySelector(".folder-tree-row.viewed-resolve") as HTMLElement).click());
   expect(onArm).toHaveBeenCalledWith("view-project", "parent/target");
   expect(mocks.saveFolder).toHaveBeenCalledWith("view-project", "parent/target");
+});
+
+// Jay 2026-10-31 — 전엔 펴기만 해서 다빈치가 지나간 폴더가 계속 펴져 있었고, 다른 폴더를 토글할 때 그 펼침까지 저장됐다.
+it("다빈치가 펴 준 폴더·프로젝트는 잠시뿐이다 — 옮기거나 끝나면 원래대로 접히고 저장되지 않으며, 그사이 내가 접을 수 있다", async () => {
+  const state = {
+    project_id: "view-project", root_path: "test", selected_path: "",
+    tree: { path: "", name: "render", children: [
+      { path: "mine", name: "mine", children: [{ path: "mine/a", name: "a" }] },
+      { path: "first", name: "first", children: [{ path: "first/x", name: "x" }] },
+      { path: "second", name: "second", children: [{ path: "second/y", name: "y" }] },
+    ] },
+  } as ProjectFolderState;
+  mocks.links.mockResolvedValue({ links: { "view-project": state } });
+  mocks.folder.mockResolvedValue(state);
+  localStorage.setItem("ch.collapsedProjects", JSON.stringify(["view-project"]));
+  saveProjectFolderExpansion({ "view-project": new Set(["mine"]) }); // 내가 직접 펴 둔 폴더
+  const show = (path?: string, nonce = 1) => act(async () => root.render(<ProjectSection
+    projects={[{ id: "view-project", name: "Project", count: 2 } as Project]}
+    unassignedCount={0} archivedCount={0} deletedOnly={false}
+    viewedFolder={path ? { projectId: "view-project", path, nonce } : null}
+    onFilter={noop} onViewDeleted={noop}
+  />));
+  const names = () => [...host.querySelectorAll(".folder-tree-name")].map((el) => el.textContent);
+  const bar = (name: string) => [...host.querySelectorAll(".folder-tree-row")]
+    .find((row) => row.querySelector(".folder-tree-name")?.textContent === name)!.querySelector<HTMLElement>(".folder-tree-bars")!;
+  const saved = () => [...loadProjectFolderExpansion()["view-project"]];
+  const collapsedProjects = () => JSON.parse(localStorage.getItem("ch.collapsedProjects")!);
+
+  await show("first/x");
+  expect(names()).toEqual(["mine", "a", "first", "x", "second"]);
+  await show("second/y"); // 다빈치가 옮기면 앞 폴더는 다시 접힌다
+  expect(names()).toEqual(["mine", "a", "first", "second", "y"]);
+
+  await act(async () => bar("second").click()); // 잠시 펴진 것은 내가 접을 수 있고 저장할 것이 없다
+  expect(names()).toEqual(["mine", "a", "first", "second"]);
+  expect(saved()).toEqual(["mine"]);
+  await show("second/y", 2); // 다빈치가 다시 가리키면 또 펴진다
+  expect(names()).toEqual(["mine", "a", "first", "second", "y"]);
+  await act(async () => bar("mine").click()); // 다른 폴더를 토글해도 잠시 펴진 것은 저장되지 않는다
+  expect(names()).toEqual(["mine", "first", "second", "y"]);
+  expect(saved()).toEqual([]);
+  await act(async () => bar("mine").click());
+  expect(saved()).toEqual(["mine"]);
+
+  await act(async () => host.querySelector<HTMLElement>(".proj-mark")!.click()); // 잠시 펴진 프로젝트도 접을 수 있다 — 저장된 접힘은 그대로
+  expect(names()).toEqual([]);
+  expect(collapsedProjects()).toEqual(["view-project"]);
+  await show("second/y", 3);
+  expect(names()).toEqual(["mine", "a", "first", "second", "y"]);
+
+  await show(undefined); // 다빈치가 끝나면 프로젝트까지 접어 둔 그대로
+  expect(names()).toEqual([]);
+  expect(collapsedProjects()).toEqual(["view-project"]);
+  expect(saved()).toEqual(["mine"]);
 });
 
 it("폴더 트리가 없어도 읽기 전용 경로를 안전하게 표시한다", async () => {

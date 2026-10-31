@@ -2198,7 +2198,7 @@ it("풀 머리줄의 끝선 손잡이로 왼쪽 폴더 목록을 여닫는다 �
 
   // 닫았다 열어도 목록은 닫기 전 그대로다 — 접어 둔 폴더가 다시 펼쳐지지 않는다(없앴다 새로 그리면 고른 시퀀스까지 다시 펼친다, Codex 코드 리뷰)
   const names = () => [...document.querySelectorAll(".ed-side .folder-tree-name")].map((el) => el.textContent);
-  const caret = () => document.querySelector<HTMLElement>(".ed-side .folder-tree-row.root .folder-tree-ring")!;
+  const caret = () => document.querySelector<HTMLElement>(".ed-side .folder-tree-row.root .folder-tree-bars")!;
   act(() => toggle().click());
   expect(names()).toEqual(["e070", "c1", "c2", "c3"]);
   act(() => caret().click());

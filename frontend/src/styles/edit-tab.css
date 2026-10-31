@@ -7,9 +7,6 @@
 .ed-right { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .ed-top { flex: 1; min-height: 0; display: flex; }
 
-/* 왼쪽 폴더 목록 — 재생헤드가 있는 컷은 라임으로(다빈치 확인 표시의 빨간 테두리는 여기서 쓰지 않는다). */
-.ed-side .project-tree-scroll .viewed-resolve { box-shadow: none; background: rgba(var(--accent-rgb), 0.08); }
-.ed-side .folder-tree.sidebar-folder-tree .folder-tree-row.viewed-resolve .folder-tree-name { color: var(--accent); font-weight: 700; }
 .ed-link {
   background: none; border: 0; padding: 0; border-radius: 0; font-size: inherit;
   color: var(--accent); text-decoration: underline; text-underline-offset: 2px;

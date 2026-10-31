@@ -72,7 +72,6 @@ function SidebarFolderTree({
   selectedPath,
   viewedPath,
   seePath,
-  markSelected,
   expanded,
   onToggle,
   onSelect,
@@ -93,7 +92,6 @@ function SidebarFolderTree({
   selectedPath?: string;
   viewedPath?: string;
   seePath?: string;
-  markSelected?: boolean;
   expanded: Set<string>;
   onToggle: (path: string) => void;
   onSelect: (path: string) => void;
@@ -140,7 +138,7 @@ function SidebarFolderTree({
         selectedPath={selectedPath || ""}
         viewedPath={viewedPath}
         seePath={seePath}
-        markSelected={markSelected}
+        genRows
         expanded={expanded}
         onToggle={onToggle}
         onSelect={onSelect}
@@ -194,9 +192,9 @@ export function ProjectSection({
   countQueryReady?: boolean;
   deletedOnly: boolean;
   viewPath?: string; // 목록이 보는 폴더(filters.folder_path) — activeId 와 합쳐 '보는 자리'
-  // 생성 요청이 쓰는 프로젝트(App 의 generationScope) — '보는 중'·'생성' 판정용. 없으면 두 표시를 그리지 않는다.
+  // 생성 요청이 쓰는 프로젝트(App 의 generationScope) — 생성 표시를 여기에 맞춘다. 없으면 보는 자리를 따르고 보기 표시를 그리지 않는다.
   generationScope?: { project_id?: string };
-  // 실제 생성 목적지(무장 폴더). 폴더 트리의 빨간 하이라이트를 이것에 연동 — 서버 selected_path 아님.
+  // 실제 생성 목적지(무장 폴더). 폴더 트리의 라임 줄을 이것에 연동 — 서버 selected_path 아님.
   armedFolder?: { projectId: string; path: string } | null;
   viewedFolder?: { projectId: string; projectName?: string; path: string; nonce: number } | null;
   onFilter: (projectId?: string) => void;
@@ -214,15 +212,18 @@ export function ProjectSection({
   onFolderAction?: (kind: FolderMenuKind, projectId: string, path: string, name: string) => void | Promise<void>;
 }) {
   const tr = useT();
-  // 보는 자리(목록 필터)와 생성 위치가 갈렸나(Jay 2026-10-15 8A) — 앱을 새로 켜면 둘이 다를 수 있다. 갈렸을 때만 보는 줄에 라임 테두리+'보는 중',
-  //  실제 생성 목적지 줄에 '생성'. 같으면 지금처럼 아무 표시 없다. 생성 위치는 고치지 않는다(켤 때 맞추기 = B안, 고르지 않음).
+  // 보는 자리(목록 필터)와 생성 위치가 갈렸나(Jay 2026-10-15 8A) — 앱을 새로 켜면 둘이 다를 수 있다. 갈렸을 때만 보는 줄에 파랑 '보기'가 따로 뜨고,
+  //  같으면 생성 줄 하나다. 생성 위치는 고치지 않는다(켤 때 맞추기 = B안, 고르지 않음).
   //  목적지는 생성 요청과 같은 규칙으로 정한다(프로젝트 = generationScope, 폴더 = 그 프로젝트의 무장 폴더만 — App·useSpotlightSubmit).
-  //  분홍(sel-target)은 보는 프로젝트를 따르는 옛 규칙 그대로라, 다빈치 따라가기로 다른 프로젝트를 볼 때 분홍과 '생성'이 다른 줄일 수 있다(Codex 리뷰 P2).
-  //  휴지통 보기는 생성 목적지가 아니다.
+  //  라임은 이 목적지에만 뜬다(Jay 2026-10-31) — 다빈치 따라가기로 다른 프로젝트를 봐도 옮겨 가지 않는다. 휴지통 보기는 생성 목적지가 아니다.
   const seeFolder = activeId && activeId !== "none" ? viewPath || undefined : undefined;
   const genProject = generationScope?.project_id;
   const genFolder = armedFolder && armedFolder.projectId === genProject ? armedFolder.path : undefined;
   const split = !!generationScope && !deletedOnly && (genProject !== activeId || genFolder !== seeFolder);
+  // 목적지를 모르는 호출자는 옛 규칙 — 무장 폴더, 없으면 보는 프로젝트.
+  const genFolderIn = (projectId: string) =>
+    generationScope ? (genProject === projectId ? genFolder : undefined)
+    : armedFolder?.projectId === projectId ? armedFolder.path : undefined;
   const disabledFolders = useDisabledFolders(); // 폴더 단위 비활성(생략) — d 로 토글, 회색 표시
   // 폴더 우클릭 메뉴 — body 포털·고정 위치(사이드바 overflow 에 잘리지 않게). 행 밖에 그려 드래그·클릭과 분리.
   //  닫기: Esc(캡처·소비 — 폴더 행이 keydown 전파를 막아 기본 훅엔 안 닿는다), 바깥 mousedown, 드래그 시작, 탭 전환.
@@ -291,7 +292,12 @@ export function ProjectSection({
   const [collapsed, setCollapsed] = useState<Set<string>>(
     () => new Set(loadJSON<string[]>("ch.collapsedProjects") || []),
   );
+  // 다빈치가 잠시 펴 준 곳 — 저장하는 펼침과 따로 둔다. 다빈치가 옮기거나 끝나면 지워져 원래대로 접힌다(Jay 2026-10-31). 그사이 내가 접으면 여기서 뺀다.
+  const [viewedOpen, setViewedOpen] = useState<{ projectId: string; project: boolean; folders: Set<string> } | null>(null);
   const toggleCollapsed = (pid: string) => {
+    const auto = viewedOpen?.projectId === pid && viewedOpen.project;
+    if (auto) setViewedOpen((cur) => cur && { ...cur, project: false });
+    if (auto && collapsed.has(pid)) return; // 저장된 접힘 그대로다
     setCollapsed((prev) => {
       const next = new Set(prev);
       if (next.has(pid)) next.delete(pid);
@@ -345,22 +351,16 @@ export function ProjectSection({
   const viewedProjectId = viewedFolder?.projectId;
   const viewedPath = viewedFolder ? normalizeFolderPath(viewedFolder.path) : undefined;
   useEffect(() => {
-    if (!viewedProjectId) return;
+    if (!viewedProjectId) {
+      setViewedOpen(null);
+      return;
+    }
     // 확인 위치를 열어도 다음 생성 폴더와 서버 selected_path는 절대 변경하지 않는다.
-    setCollapsed((previous) => {
-      if (!previous.has(viewedProjectId)) return previous;
-      const next = new Set(previous);
-      next.delete(viewedProjectId);
-      return next;
-    });
-    setExpandedFolders((previous) => {
-      const expanded = new Set(previous[viewedProjectId] || []);
-      const segments = (viewedPath || "").split("/").filter(Boolean);
-      // 숨겨지지 않는 루트 노드(path="")도 조상일 수 있다.
-      expanded.add("");
-      for (let depth = 1; depth < segments.length; depth += 1) expanded.add(segments.slice(0, depth).join("/"));
-      return { ...previous, [viewedProjectId]: expanded };
-    });
+    const segments = (viewedPath || "").split("/").filter(Boolean);
+    // 숨겨지지 않는 루트 노드(path="")도 조상일 수 있다.
+    const folders = new Set([""]);
+    for (let depth = 1; depth < segments.length; depth += 1) folders.add(segments.slice(0, depth).join("/"));
+    setViewedOpen({ projectId: viewedProjectId, project: true, folders });
   }, [viewedProjectId, viewedPath, viewedFolder?.nonce]);
   useEffect(() => {
     if (!viewedProjectId) return;
@@ -384,7 +384,7 @@ export function ProjectSection({
       else if (row.bottom > bounds.bottom) container.scrollTop += row.bottom - bounds.bottom;
     });
     return () => cancelAnimationFrame(frame);
-  }, [viewedProjectId, viewedPath, viewedFolder?.nonce, folders, collapsed, expandedFolders, folderCounts]);
+  }, [viewedProjectId, viewedPath, viewedFolder?.nonce, folders, collapsed, expandedFolders, viewedOpen, folderCounts]);
   const projectKey = projects.map((project) => project.id).join("|");
 
   const seedProjectExpansion = (pid: string, state: ProjectFolderState) => {
@@ -581,14 +581,33 @@ export function ProjectSection({
   };
 
   const toggleProjectFolderNode = (pid: string, path: string) => {
+    const auto = viewedOpen?.projectId === pid && viewedOpen.folders.has(path);
+    if (auto) setViewedOpen((cur) => cur && { ...cur, folders: new Set([...cur.folders].filter((item) => item !== path)) });
     setExpandedFolders((prev) => {
       const cur = new Set(prev[pid] || []);
       if (cur.has(path)) cur.delete(path);
+      else if (auto) return prev; // 잠시 펴진 것을 접었을 뿐 — 저장할 것이 없다
       else cur.add(path);
       const next = { ...prev, [pid]: cur };
       saveProjectFolderExpansion(next);
       return next;
     });
+  };
+
+  // 프로젝트 줄의 표시 — 폴더 없이 프로젝트가 그 자리일 때만. 색은 다빈치 → 생성 → 보기 순, 아이콘은 이름 뒤다(Jay 2026-10-31).
+  const projectMarks = (projectId: string, seeing: boolean) => {
+    const gen = generationScope ? genProject === projectId && !genFolder : seeing && armedFolder?.projectId !== projectId;
+    const see = split && seeing && !seeFolder;
+    const viewed = viewedProjectId === projectId && !viewedPath;
+    const tone = viewed ? "dv" : gen ? "gen" : see ? "see" : undefined;
+    return {
+      className: tone ? ` state st-${tone}` : "",
+      marks: <>
+        {gen && <SideMark kind="gen" />}
+        {see && <SideMark kind="see" />}
+        {viewed && <SideMark kind="dv" />}
+      </>,
+    };
   };
 
   const [unassignOver, setUnassignOver] = useState(false); // 카드를 '미분류'로 드래그 중 강조
@@ -617,9 +636,7 @@ export function ProjectSection({
       <section className="project-shortcuts">
         <div className="proj-list">
           <button
-            className={
-              "proj-row" + (!activeId && !deletedOnly ? " on sel-target" : "") + (split && !activeId ? " see-here" : "")
-            }
+            className={"proj-row" + (!activeId && !deletedOnly ? " on sel-target" : "")}
             onClick={() => onFilter(undefined)}
           >
             <span className="proj-ico"><LibraryIcon /></span>
@@ -631,7 +648,6 @@ export function ProjectSection({
             className={
               "proj-row proj-unassigned" +
               (activeId === "none" && !deletedOnly ? " on sel-target" : "") +
-              (split && activeId === "none" ? " see-here" : "") +
               (unassignOver ? " drop-over" : "")
             }
             onClick={() => onFilter("none")} // 다시 눌러도 미분류(프로젝트 줄과 같다 — 해제는 '라이브러리' 줄)
@@ -716,7 +732,9 @@ export function ProjectSection({
             // 로딩 초반에 토글이 ghost 로 렌더돼 정렬·기능이 흔들린다 — 실제 트리 존재를 함께 본다.
             const hasTree =
               !!folders[project.id]?.tree || linkedFolderIds.includes(project.id);
-            const isCollapsed = collapsed.has(project.id);
+            const autoOpen = viewedOpen?.projectId === project.id ? viewedOpen : undefined;
+            const isCollapsed = collapsed.has(project.id) && !autoOpen?.project;
+            const { className: markClass, marks } = projectMarks(project.id, projectActive);
             return (
               <div key={project.id} data-project-id={project.id} className={"proj-tree-wrap" + (projectActive ? " on" : "")}>
                 <div
@@ -727,10 +745,7 @@ export function ProjectSection({
                     (hasTree ? (isCollapsed ? " closed" : " open") : " flat") +
                     (projectActive ? " on" : "") +
                     (viewedProjectId === project.id && !viewedPath ? " viewed-resolve" : "") +
-                    // 이 프로젝트가 활성이면서 그 안의 폴더를 무장하지 않았을 때만 프로젝트 행이 빨강
-                    // (=프로젝트 루트가 목적지). 폴더 무장 중이면 빨강은 그 폴더에만.
-                    (projectActive && armedFolder?.projectId !== project.id ? " sel-target" : "") +
-                    (split && projectActive && !seeFolder ? " see-here" : "") +
+                    markClass +
                     (dragId === project.id ? " row-dragging" : "") +
                     (overIdx === index && dragId !== project.id ? " row-dragover" : "")
                   }
@@ -806,8 +821,7 @@ export function ProjectSection({
                     <WorkspaceMark label={project.name} id={project.id} />
                   </button>
                   <span className="proj-name">{project.name}</span>
-                  {split && projectActive && !seeFolder && <SideMark kind="see" />}
-                  {split && !genFolder && genProject === project.id && <SideMark kind="gen" />}
+                  {marks}
                   {(fresh?.byProject[project.id] || 0) > 0 && (
                     <span className="proj-newcount" title="마지막 확인 이후 새로 공유됨">
                       +{fresh!.byProject[project.id]}
@@ -822,14 +836,13 @@ export function ProjectSection({
                     counts={folderCounts?.[project.id]}
                     reviewCounts={showReviewCounts && tab === "team" ? folderReviewCounts?.[project.id] ?? null : undefined}
                     newCounts={fresh?.folderByProject[project.id]}
-                    // 무장 폴더가 이 프로젝트일 때만 빨간 하이라이트. 아니면 없음(=기본 라이브러리로 생성).
-                    selectedPath={
-                      armedFolder?.projectId === project.id ? armedFolder.path : ""
-                    }
+                    // 생성 폴더가 이 프로젝트일 때만 라임 줄. 아니면 없음.
+                    selectedPath={genFolderIn(project.id) || ""}
                     viewedPath={viewedProjectId === project.id ? viewedPath : undefined}
                     seePath={split && projectActive ? seeFolder : undefined}
-                    markSelected={split && !!genFolder && genProject === project.id}
-                    expanded={expandedFolders[project.id] || new Set()}
+                    expanded={autoOpen
+                      ? new Set([...(expandedFolders[project.id] || []), ...autoOpen.folders])
+                      : expandedFolders[project.id] || new Set()}
                     onToggle={(path) => toggleProjectFolderNode(project.id, path)}
                     onSelect={(path) => selectFolder(project.id, path)}
                     onOpenTab={onOpenFolderTab ? (path) => onOpenFolderTab(project.id, path, project.name) : undefined}
@@ -883,9 +896,10 @@ export function ProjectSection({
           {viewedFolder && !order.some((project) => project.id === viewedFolder.projectId) && (
             <div className="proj-tree-wrap" data-project-id={viewedFolder.projectId}
               title="다빈치 확인 위치 — 생성 워크스페이스와 목적지는 변경하지 않습니다">
-              <div className="proj-row viewed-resolve">
+              <div className="proj-row viewed-resolve state st-dv">
                 <WorkspaceMark label={viewedFolder.projectName || "다빈치 확인 프로젝트"} id={viewedFolder.projectId} />
                 <span className="proj-name">{viewedFolder.projectName || "다빈치 확인 프로젝트"}</span>
+                <SideMark kind="dv" />
               </div>
               {viewedPath && <div className="side-folder-note resolve-viewed-path" data-resolve-viewed="true">📁 {viewedPath}</div>}
             </div>
@@ -900,11 +914,12 @@ export function ProjectSection({
                 {showArchived ? "▾" : "▸"} {tr("보관함")} ({archivedCount})
               </button>
               {showArchived &&
-                archived.map((project) => (
+                archived.map((project) => {
+                  const { className: markClass, marks } = projectMarks(project.id, activeId === project.id);
+                  return (
                   <button
                     key={project.id}
-                    className={"proj-row archived" + (activeId === project.id ? " on sel-target" : "") +
-                      (split && activeId === project.id ? " see-here" : "")}
+                    className={"proj-row archived" + (activeId === project.id ? " on" : "") + markClass}
                     onMouseDown={(event) => { if (onOpenFolderTab && event.button === 1) event.preventDefault(); }}
                   onAuxClick={(event) => { if (onOpenFolderTab && event.button === 1) { event.preventDefault(); onOpenFolderTab(project.id, "", project.name); } }}
                   onClick={() => onFilter(project.id)} // 다시 눌러도 그 프로젝트(일반 줄과 같다 — Codex 코드 리뷰)
@@ -912,11 +927,11 @@ export function ProjectSection({
                   >
                     <WorkspaceMark label={project.name} id={project.id} />
                     <span className="proj-name">{project.name}</span>
-                    {split && activeId === project.id && <SideMark kind="see" />}
-                    {split && genProject === project.id && <SideMark kind="gen" />}
+                    {marks}
                     <span className="proj-count">{creatorUid ? currentCountSnapshot?.projectCounts?.[project.id] ?? "—" : project.count}</span>
                   </button>
-                ))}
+                  );
+                })}
             </div>
           )}
         </div>

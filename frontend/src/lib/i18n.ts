@@ -833,7 +833,7 @@ const EN: Record<string, string> = {
   "지운 것만 보기": "Trash only",
   "미분류": "Unsorted",
   "없음": "None",
-  "보는 중": "Viewing", // 보는 자리 ≠ 생성 위치일 때의 사이드바 표
+  "폴더 없음": "No folder", // 기록에만 있고 디스크에 없는 폴더의 표
   "생성": "Gen here",
   "지금 목록이 보는 폴더": "The folder the list is showing",
   "새 생성이 들어갈 기본 위치 — 재생성은 원본 폴더로, 씬의 Set 에 이어 만든 것은 그 Set 의 폴더로 갑니다":
