@@ -89,6 +89,9 @@ DB 미러는 같은 자리에 기억된 JSON 글자를 그대로 쓴다(`listPer
 8. DB 미러·복구 판정·계정 귀속은 확정본 기준이다(`listPersistedScenes`·`hasPersistedSceneBucket`). 옛 계정 없는
    버킷(`_none`)의 귀속은 확정된 뒤에만 화면에 보인다.
 9. 실패한 저장의 결과는 확정본이 되지 않는다. 씬·순서·버전·메타는 한 트랜잭션에서 전부 되거나 전부 안 된다.
+10. 캔버스가 분리 창에 떠 있는 동안 씬은 그 창만 쓴다. 원래 창의 일반 쓰기는 `applySceneOp` 가 거절한다(`paused` — 저장 실패가 아니라 알리지 않는다).
+    닫는 창의 인계(`adoptCanvasSceneWrites`)만 받는다. 입구를 지나지 않는 쓰기는 호출부가 막는다 — 전체 가져오기는 단추를 막고, 옛 저장소 흡수·충돌 정리는 그 창이 하며 충돌 정리는 풀린 뒤 다시 돈다.
+    기록 [한곳 쓰기](status/캔버스_분리창_한곳쓰기_2026-10-31.md).
 
 ## 옛 저장소에서 옮기기
 
@@ -127,6 +130,9 @@ DB 미러는 같은 자리에 기억된 JSON 글자를 그대로 쓴다(`listPer
   중이면, 또는 pagehide 가 `persisted` 면 넘기지 않고 그 창이 직접 쓴다(끝난다는 보장은 없다). 메인 창은 저장소를 다시 읽는 데 성공한
   뒤에 캔버스를 돌려받는다 — 실패하면 다시 읽는다. 저장이 막힌 동안은 '떠 있음' 자리에 [전체 내보내기] 안내가 뜬다.
   기록 [닫는 순간](status/캔버스_닫는순간_2026-10-31.md).
+- **캔버스 창을 띄울 때·새로 고칠 때**: 띄울 때는 밀린 입력과 저장 중인 쓰기가 모두 확정된 뒤에 연다(`settleSceneWrites`, 3초 안에 안 끝나면 열지 않고 알린다). 새로 고친 창은
+  메인 창이 넘겨받은 쓰기가 끝난 뒤에 저장소를 연다(`openerSceneWritesSettled`) — 끝내 확정하지 못하면 스스로 닫고 메인 창이 돌려받는다. 메인 창은 창이 쥔 잠금
+  (`mvhub-canvas-window`)으로 신호 없이 끝난 창과 새로 고침 전부터 떠 있던 창을 안다. 잠금은 생존 확인일 뿐 편집 권한이 아니다.
 - **DB 백업에서 빠지는 씬**: 서버는 씬 1개가 UTF-8 5MiB 를 넘으면 요청 전체를 거절한다. 넘는 씬만 전송에서 빼고
   알린다(올린 것으로 적지 않고 서버의 옛 사본도 지우지 않는다. 작아지면 다시 올린다).
 
@@ -145,7 +151,8 @@ DB 미러는 같은 자리에 기억된 JSON 글자를 그대로 쓴다(`listPer
   `sceneStore.test.ts`(이관 표식·충돌 보존), `sceneAbsorb.test.ts`, `sceneArchive.test.ts`,
   `sceneMigrationInfo.test.tsx`, `sceneSaveStateRender.test.tsx`(실제 훅·탭 줄), `sceneInputPersist.test.tsx`(실제
   SceneBoard), `sceneUnsafeIds.test.tsx`·`sceneUnsafeIdsLive.test.tsx`(실제 SceneBoard·실제 생성물 훅),
-  `sceneBackup.test.ts`(상한 격리), `sceneUpdateReturn.test.ts`, `canvasWindowClose.test.tsx`(떠 있는 창을 닫는 순간).
+  `sceneBackup.test.ts`(상한 격리), `sceneUpdateReturn.test.ts`, `canvasWindowClose.test.tsx`(떠 있는 창을 닫는 순간),
+  `canvasOneWriter.test.tsx`(떠 있는 동안 한곳 쓰기·열기·새로 고침·창 생존).
 - 브라우저 실측(진짜 Chrome·실제 IndexedDB): `frontend/measure/storeProbe.ts` 를 `npx vite build --config
   measure/vite.probe.config.ts` 로 빌드해 `measure-dist` 를 띄우고 `tools/browser_measure/cdp.py` 로 연다. 같은 출처의
   iframe 이 '다른 창' 노릇을 한다(앱처럼 `subscribeSceneStoreExternal` 을 해야 다른 창의 저장 통지를 받는다).
