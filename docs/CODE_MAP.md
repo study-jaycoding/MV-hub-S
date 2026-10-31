@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-10-31
+updated: 2026-11-01
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -1394,6 +1394,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 - **로깅 경로가 둘이다(services).** 구조화 `log_event`(10개 파일)와 맨 `print()`(`asset_watcher`·`syncer`·`backup`·`thumbs`). `print` 중 일부(`resolve_probe`·`resolve_import_worker`·`resolve_selection_worker`·`server_relocation`·`read_utf8_sig_first_line`)는 **자식 프로세스의 IPC 채널**이라 로거로 바꾸면 안 된다 — 그 구별이 코드에서 바로 안 보인다.
 - **Canvas 저장 모드와 Undo는 세션 내부 계약이다.** 2026-10-18 보완 전에는 화면·gesture에 직접 `persist()`가 흩어져 있었다. 현재 UI는 의미 명령과 대상 세대에 묶인 geometry handle을 사용하고, `useSceneInputCommit.applyCards`의4모드와 history의 discard/전이메타는 feature 내부에서만 선택한다. 새 화면에서 raw 엔진이나 전체 사본 교체를 다시 공개하지 않는다. 전체 후보 검증 상태는 구조 개편 정본 §20을 확인한다.
 - **"파이썬 실행파일 찾기"가 스크립트마다 3가지 변종(4단계/3단계/2단계)으로 8개 이상 파일에 흩어져 있다**(`run_py.bat`·`MV_agent.bat`·`MV_watchdog.bat`·`MV_server.bat`·`test_push-db.bat`·`test_pull-db.bat`·`tools/update_git_worker.bat` 등). 새 후보 경로를 넣으려면 이 파일들을 다 찾아 고쳐야 한다.
+- **새 DB 이름표를 `schema_migrations` 에 기록하는 일은 배포 계약이다.** 서버 `update_git` 은 서버 루트의 옛 검사기로 후보가 만든 DB 를 검사하고(`qualify_release_artifact._compatibility` → `load_inspector(ROOT)`), 되돌릴 때는 옛 판이 DB 를 연다. 옛 검사기는 모르는 표·칸은 허용하지만 모르는 migration 은 `unknown_migration` 으로 거부한다. 게이트와 시험은 새 검사기로 돌아 이걸 못 잡는다(2026-10-31 배포 검토 실측). 그래서 `content_comfy_canvas_runs` 는 표만 만들고 `validate_baseline` 으로 구조만 확인한다. 서버 루트 검사 도구를 갱신하는 길이 생기기 전에는 새 이름을 기록하지 않는다 — `test_baseline_names_stay_within_public_release` 가 고정 목록으로 막는다.
 - **캔버스 선택을 읽는 길이 둘이다 — React 상태(`selected`·`selectedRef`)와 화면의 `.scene-card.sel`·그룹 `.selected`.** 범위 선택을 끄는 동안에는 `SceneBoard.paintMarqueePreview` 가 화면 표시만 직접 바꾸고 상태는 손을 뗄 때 바뀌므로 둘이 다르다(2026-09-30). 선택이 필요한 코드는 상태를 읽고, 화면의 `.sel` 로 판단하지 않는다.
 
 ---
