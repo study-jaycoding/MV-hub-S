@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-10-30
+updated: 2026-10-31
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -943,6 +943,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 |---|---|---|
 | `useSceneCoordination.ts` | 훅 | 씬 목록·CRUD·백업·소속 병합 배선(App.tsx 추출) |
 | `useCanvasGenerationLinks.ts` | 훅 | 생성 위치 표식 저장 확정·정착·폐기·미결 연결 복구. App의 제출/입력 조립 도우미와 함께 사용 |
+| `useCanvasPromptReturn.ts` | 훅 | 떠 있는 캔버스 창의 프롬프트 값(종류·모델·옵션·개수·숨김·카드 없는 글)을 닫을 때 메인 창으로 돌려준다. 여는 방향은 `popupWindows` 의 인계 칸 |
 | `useSceneGenerationSubmission.ts` | 훅 | 씬 생성·재생성의 정책 확인·클릭 시 입력·중복 가드·제출·실패 정산. 성공 결과 연결은 기존 연결 훅 재사용 |
 | `useSceneCardRecovery.ts` | 훅 | 카드 복구 후보·기록 페이지·본문 조회·선택 연결. 씬/창 순번 확인과 기존 카드 저장 관문 사용 |
 | `useSceneCardLibraryActions.ts` | 훅 | 캔버스 생성물의 태그·공간·공유·최종 조작과 S 키 확인 |
@@ -1073,7 +1074,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `compareDiff.ts` | 순수 | 비교 모달의 프롬프트·파라미터 차이 계산 |
 | `compareWindow.ts` | 순수 | 비교 창 이동·크기·뷰포트 맞춤 |
 | `synchronizedVideos.ts` | 브라우저 | 비교 영상 재생·탐색 동기화 바인더 |
-| `popupWindows.ts` | 브라우저 | 임베드 창(에셋·관리) `window.open()`·재활성화 · 앱(앱 창·별도 창)을 떠났다 앱 창으로 돌아오면 허브에 별도 창 올리기(`/api/app-windows/raise`) |
+| `popupWindows.ts` | 브라우저 | 임베드 창(에셋·관리) `window.open()`·재활성화 · 앱(앱 창·별도 창)을 떠났다 앱 창으로 돌아오면 허브에 별도 창 올리기(`/api/app-windows/raise`) · 떠 있는 캔버스 창의 신호·창 메모리 주고받기·닫힌 뒤 저장본을 다시 읽고 돌려주기 |
 | `historyGraphLayout.ts` | 순수 | 계보 보드 노드 배치·간선·하이라이트 추적 |
 | `useHistoryBoardState.ts` | 훅 | 계보 보드 상태(App.tsx 추출) |
 | `appWindow.ts` | 브라우저+저장 | 앱 전용 창(`?appwin=1`) 감지 |

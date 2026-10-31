@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-14
+updated: 2026-10-31
 status: active
 ---
 
@@ -120,6 +120,13 @@ DB 미러는 같은 자리에 기억된 JSON 글자를 그대로 쓴다(`listPer
   씬만 더하고, 같은 씬인데 내용이 다르면 `[사본] 이름` 탭으로 따로 둔다. 같은 파일을 두 번 가져와도 또 생기지 않는다).
   파일 형식 `mvhub-scenes-full` v1. 그 아래 한 줄에 "지금 캔버스 N개 · 옮길 때: …"(위 진단 기록).
 - 입력 저장은 400ms 디바운스에 **최대 대기 2초**(계속 쳐도 2초 안에 한 번 내보낸다), 창이 가려질 때 바로 내보낸다.
+- **떠 있는 캔버스 창을 닫을 때**: 닫히는 페이지의 쓰기는 끝난다는 보장이 없다. 그래서 그 창은 pagehide 에서 끌기와 밀린 입력을
+  확정한 뒤, 미확정 변경을 씬 단위로 `window.opener` 손잡이에 넘기고 메인 창이 자기 연산으로 잇는다
+  (`sceneStore.unconfirmedSceneWrites` → `scenes.adoptCanvasSceneWrites`). 버킷을 통째로 넘기지 않는다 — 고친 씬은 대상이 남아
+  있을 때만 바꾸고 새 씬은 없으면 더하며 이미 있으면 바꾼다(먼저 출발한 쓰기가 앞 내용까지만 닿은 경우). 받았다고 답하면 넘긴 연산은 그 창에서 재생하지 않는다. 메인 창이 부팅 중이거나 닫히는
+  중이면, 또는 pagehide 가 `persisted` 면 넘기지 않고 그 창이 직접 쓴다(끝난다는 보장은 없다). 메인 창은 저장소를 다시 읽는 데 성공한
+  뒤에 캔버스를 돌려받는다 — 실패하면 다시 읽는다. 저장이 막힌 동안은 '떠 있음' 자리에 [전체 내보내기] 안내가 뜬다.
+  기록 [닫는 순간](status/캔버스_닫는순간_2026-10-31.md).
 - **DB 백업에서 빠지는 씬**: 서버는 씬 1개가 UTF-8 5MiB 를 넘으면 요청 전체를 거절한다. 넘는 씬만 전송에서 빼고
   알린다(올린 것으로 적지 않고 서버의 옛 사본도 지우지 않는다. 작아지면 다시 올린다).
 
@@ -138,7 +145,7 @@ DB 미러는 같은 자리에 기억된 JSON 글자를 그대로 쓴다(`listPer
   `sceneStore.test.ts`(이관 표식·충돌 보존), `sceneAbsorb.test.ts`, `sceneArchive.test.ts`,
   `sceneMigrationInfo.test.tsx`, `sceneSaveStateRender.test.tsx`(실제 훅·탭 줄), `sceneInputPersist.test.tsx`(실제
   SceneBoard), `sceneUnsafeIds.test.tsx`·`sceneUnsafeIdsLive.test.tsx`(실제 SceneBoard·실제 생성물 훅),
-  `sceneBackup.test.ts`(상한 격리), `sceneUpdateReturn.test.ts`.
+  `sceneBackup.test.ts`(상한 격리), `sceneUpdateReturn.test.ts`, `canvasWindowClose.test.tsx`(떠 있는 창을 닫는 순간).
 - 브라우저 실측(진짜 Chrome·실제 IndexedDB): `frontend/measure/storeProbe.ts` 를 `npx vite build --config
   measure/vite.probe.config.ts` 로 빌드해 `measure-dist` 를 띄우고 `tools/browser_measure/cdp.py` 로 연다. 같은 출처의
   iframe 이 '다른 창' 노릇을 한다(앱처럼 `subscribeSceneStoreExternal` 을 해야 다른 창의 저장 통지를 받는다).
