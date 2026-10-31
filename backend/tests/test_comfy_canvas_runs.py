@@ -426,3 +426,94 @@ def test_detail_missing_keeps_unreceived_output_and_preserved_text(h):
     assert any(out["state"] == "unavailable" for out in result["outputs"])
     assert any(out.get("text") == "kept text" for out in result["outputs"])
     assert h.rows() and h.mocks["submit"].call_count == 1
+
+
+def _answer(mock, value):
+    mock.side_effect = value if isinstance(value, Exception) else None
+    mock.return_value = value
+
+
+MISSING_DETAILS = [comfy.comfy_client.ComfyError("missing detail", status_code=404),
+                   comfy.comfy_client.ComfyError("gone", status_code=410),
+                   None, {}, {"status": "done"}, {"outputs": None}, {"outputs": []}]
+
+
+def _lost_first_detail(h):
+    """원격은 성공했는데 첫 상세 조회가 실패해 출력 목록을 못 남긴 실행."""
+    entry = h.successful()
+    h.mocks["cloud_job_detail"].side_effect = comfy.comfy_client.ComfyError("gone", status_code=410)
+    return entry
+
+
+@pytest.mark.parametrize("missing", MISSING_DETAILS)
+def test_missing_detail_before_any_listing_stays_collectable(h, missing):
+    entry = _lost_first_detail(h)
+    attempt = descriptor()
+    job = start(h, attempt)
+    h.drain()
+    restart(h)
+    _answer(h.mocks["cloud_job_detail"], missing)
+    comfy.collect_unresolved_run(job, h.request())
+    h.drain()
+    assert resolve(h, attempt)["state"] == "needs_collect"
+    row = next(item for item in h.rows() if item["job_id"] == job)
+    assert row["prompt_id"] and not row.get("outputs_enumerated") and row["last_error_class"] == "detail_failed"
+    restart(h)
+    _answer(h.mocks["cloud_job_detail"], entry)
+    comfy.collect_unresolved_run(job, h.request())
+    h.drain()
+    assert resolve(h, attempt)["state"] == "saved"
+    assert h.mocks["submit"].call_count == 1
+
+
+def test_plain_run_with_missing_detail_stays_in_unresolved_list_and_collects_later(h):
+    entry = _lost_first_detail(h)
+    job = h.start()
+    h.drain()
+    restart(h)
+    comfy.collect_unresolved_run(job, h.request())
+    h.drain()
+    listed = comfy.list_unresolved_runs(h.request())["runs"]
+    assert [item["job_id"] for item in listed] == [job] and listed[0]["can_collect"]
+    restart(h)
+    _answer(h.mocks["cloud_job_detail"], entry)
+    comfy.collect_unresolved_run(job, h.request())
+    h.drain()
+    assert not [item for item in h.rows() if item["job_id"] == job and not item.get("outputs_enumerated")]
+    assert h.mocks["submit"].call_count == 1
+
+
+def test_local_history_without_outputs_is_not_an_empty_result(h):
+    """로컬은 상태를 본 응답을 그대로 쓴다 — 받자마자 같은 검사를 지나야 한다."""
+    h.settings["comfy_target"] = "local"
+    entry = h.successful()
+    h.mocks["get_history"].side_effect = comfy.comfy_client.ComfyError("lost", cause_kind="transport")
+    attempt = descriptor()
+    job = start(h, attempt)
+    h.drain()
+    assert resolve(h, attempt)["state"] == "needs_collect"
+    restart(h)
+    _answer(h.mocks["get_history"], {"status": {"completed": True}})
+    comfy.collect_unresolved_run(job, h.request())
+    h.drain()
+    assert resolve(h, attempt)["state"] == "needs_collect"
+    assert next(item for item in h.rows() if item["job_id"] == job)["last_error_class"] == "detail_failed"
+    restart(h)
+    _answer(h.mocks["get_history"], {"status": {"completed": True}, **entry})
+    comfy.collect_unresolved_run(job, h.request())
+    h.drain()
+    assert resolve(h, attempt)["state"] == "saved"
+    assert h.mocks["submit"].call_count == 1
+
+
+def test_detail_that_really_has_no_outputs_is_still_failed(h):
+    _lost_first_detail(h)
+    attempt = descriptor()
+    job = start(h, attempt)
+    h.drain()
+    restart(h)
+    _answer(h.mocks["cloud_job_detail"], {"outputs": {}})
+    comfy.collect_unresolved_run(job, h.request())
+    h.drain()
+    assert resolve(h, attempt)["state"] == "failed"
+    assert not [item for item in h.rows() if item["job_id"] == job]

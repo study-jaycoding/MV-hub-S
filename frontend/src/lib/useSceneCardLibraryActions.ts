@@ -110,9 +110,9 @@ export function useSceneCardLibraryActions({ cardsRef, selectedRef, genDataRef, 
     onUnpublish: (g: Generation) => variantShareAct(g, { shared: false, is_held: false }, onUnpublish),
     onFinalize: (g: Generation) => variantShareAct(g, { is_final: true, shared: true, is_held: false }, onFinalize), // 최종 지정은 공유·보류 해제를 함께
     onUnfinalize: (g: Generation) => variantShareAct(g, { is_final: false, is_held: false }, onUnfinalize),
-    // 이 길은 최종 → 해제 하나뿐이다(lib/generationReview applyWorkspaceReview)
+    // 이 길은 최종 → 공유·해제뿐이다(lib/generationReview applyWorkspaceReview)
     onReview: (g: Generation, action: ReviewAction) =>
-      variantShareAct(g, { shared: false, is_final: false, is_held: false }, (target) => onReview?.(target, action)),
+      variantShareAct(g, { shared: action === "shared", is_final: false, is_held: false }, (target) => onReview?.(target, action)),
   };
 
   // ── 생성 결과 카드의 S 선택 창 — 히스토리 보드와 같다 ──

@@ -34,11 +34,15 @@ export interface WorkspaceReviewHandlers {
   onReview?: (generation: Generation, action: ReviewAction) => void;
 }
 
-// 쓰던 공유·최종 처리로 보낸다. 최종 → 해제만 공유 탭과 같은 전환이다 — 최종 풀기와 공유 해제를 나누어 부르면 중간 상태가 남는다.
+// 쓰던 공유·최종 처리로 보낸다. 최종 → 공유·해제는 공유 탭과 같은 전환이다 — 최종 풀기와 공유 해제를 나누어 부르면 중간 상태가 남고,
+//  최종 풀기(onUnfinalize)는 보류였던 카드를 보류로 돌린다. 공유 행이 없는 옛 최종 카드는 전환 대상이 아니라 최종 풀기로 간다.
 export function applyWorkspaceReview(generation: Generation, action: ReviewAction, handlers: WorkspaceReviewHandlers) {
   if (action === "final") handlers.onFinalize(generation);
-  else if (action === "shared") (generation.is_final ? handlers.onUnfinalize : handlers.onPublish)(generation);
-  else if (generation.is_final) handlers.onReview?.(generation, "unshared");
+  else if (action === "shared") {
+    if (!generation.is_final) handlers.onPublish(generation);
+    else if (generation.shared && handlers.onReview) handlers.onReview(generation, "shared");
+    else handlers.onUnfinalize(generation);
+  } else if (generation.is_final) handlers.onReview?.(generation, "unshared");
   else handlers.onUnpublish(generation);
 }
 

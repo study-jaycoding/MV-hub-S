@@ -43,6 +43,33 @@ describe("wrapTextTokens", () => {
     expect(editorText(el)).toBe("@image1 과 <<<image1>>>, @simage1 @eimage2 @video1 @audio1 @image9 me@x");
     expect(el.querySelector("[data-tok]")!.getAttribute("contenteditable")).toBe("false");
   });
+  it("편집칸 안에 고른 글이 있으면 치는 중에는 알약으로 바꾸지 않아 선택이 그대로다 — 칸을 떠날 때는 바꾼다", () => {
+    editor("@image1 바꿀 글");
+    const text = el.firstChild!;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    wrapTextTokens(el, refs, true);
+    expect(pills()).toEqual([]);
+    expect(el.firstChild).toBe(text);
+    expect(window.getSelection()!.toString()).toBe("@image1 바꿀 글");
+    wrapTextTokens(el, refs, false);
+    expect(pills().map(([, t]) => t)).toEqual(["@image1"]);
+  });
+  it("칸 밖의 선택은 변환을 막지 않는다", () => {
+    editor("@image1 글");
+    const outside = document.createElement("p");
+    outside.textContent = "밖";
+    document.body.append(outside);
+    const range = document.createRange();
+    range.selectNodeContents(outside);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    wrapTextTokens(el, refs, true);
+    expect(pills().map(([, t]) => t)).toEqual(["@image1"]);
+    outside.remove();
+  });
   it("캐럿이 걸친 토큰(끝 경계 포함)은 치는 중이라 글자로 두고, 캐럿은 같은 글자 자리로 돌아온다", () => {
     editor("@image1 그리고 @image2");
     caretAt(el.firstChild!, "@image1 그리고 @image2".length);

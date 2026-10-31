@@ -295,9 +295,10 @@ const generations = new Map<string, number>(); // 이 창이 아는 삭제 세�
 const lanes = new Map<string, { next: Reservation | null }>(); // 슬롯마다 진행 하나(이 맵에 있음)·최신 대기 하나(next)
 
 /** 편집·Undo·Redo·파생 저장 뒤에 부른다. 기록은 예약 때 모습으로 통째로 복제해 둔다(스택은 그 자리에서 바뀐다 — 안쪽 객체까지, B 리뷰 P2). */
-export function scheduleUndoCheckpoint(sceneId: string, history: SceneHistory, historyRevision: number, receipt: SceneWriteReceipt): void {
-  // 빈 기록은 쓰지 않는다 — 부팅 직후의 파생 저장이 빈 기록으로 포인터를 옮기면, 아직 들이지 못한 지난 기록을 잃는다(Codex 5차)
-  if (!history.undo.length && !history.redo.length) return;
+export function scheduleUndoCheckpoint(sceneId: string, history: SceneHistory, historyRevision: number, receipt: SceneWriteReceipt, keepEmpty = false): void {
+  // 빈 기록은 쓰지 않는다 — 부팅 직후의 파생 저장이 빈 기록으로 포인터를 옮기면, 아직 들이지 못한 지난 기록을 잃는다(Codex 5차).
+  //  keepEmpty: 사람이 끌기를 버려 기록을 비운 경우 — 이때는 옛 기록을 밀어내야 걷은 단계가 새로 고침 뒤 살아나지 않는다.
+  if (!keepEmpty && !history.undo.length && !history.redo.length) return;
   const account = getAccountNamespace();
   const key = sceneKey(account, sceneId);
   const reservation: Reservation = {

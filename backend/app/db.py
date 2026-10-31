@@ -547,7 +547,8 @@ def init_db(db_path: Path | None = None) -> Path:
         # Existing migrations may have committed earlier steps. Only register
         # their validated result; do not claim the whole legacy path is atomic.
         schema_compat.record_baseline(conn, "content_core")
-        schema_compat.record_baseline(conn, "content_comfy_canvas_runs")
+        # 구조만 본다 — 이름표를 남기면 서버·되돌리기의 옛 검사기가 모르는 이름이라 막는다(docs/CODE_MAP.md §5).
+        schema_compat.validate_baseline(conn, "content_comfy_canvas_runs")
         from . import db_share_commands
         db_share_commands.migrate(conn)
         conn.execute("INSERT INTO app_setting(key,value) VALUES('share_db_generation',?) ON CONFLICT(key) DO NOTHING",

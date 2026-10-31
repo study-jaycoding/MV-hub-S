@@ -116,6 +116,18 @@ describe("슬롯에 쓰고 새로 고친 뒤 들인다", () => {
     expect(pointers()).toEqual({});
   });
 
+  it("끌기를 버려 기록을 비운 예약(keepEmpty)은 빈 기록으로 옛 기록을 밀어낸다", async () => {
+    const first = await pageLoad();
+    first.persist.scheduleUndoCheckpoint("s1", history(), 1, OK);
+    await until(() => fake.puts.length === 1);
+    first.persist.scheduleUndoCheckpoint("s1", { undo: [], redo: [], lastCommit: snap(...AFTER) }, 2, OK, true);
+    await until(() => fake.puts.length === 2);
+
+    const second = await pageLoad();
+    await second.boot.restoreUndoHistories();
+    expect(second.undo.loadSceneHistory("s1")?.undo ?? []).toEqual([]);
+  });
+
   it("진행 하나·최신 대기 하나 — 진행 중에 낸 예약은 마지막 것만 쓰고, 예약 뒤 스택이 바뀌어도 예약 때 모습을 쓴다", async () => {
     const { persist } = await pageLoad();
     const first = deferred();

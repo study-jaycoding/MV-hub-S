@@ -68,6 +68,8 @@ export function buildTextTokenPill(info: TextTokenInfo, thumb: string | undefine
 //  캐럿은 같은 글자 자리로 되돌린다. 감쌀 것이 없으면 DOM 을 건드리지 않는다(캐럿·되돌리기 안정).
 export function wrapTextTokens(editor: HTMLElement, refs: ReadonlyMap<string, string | undefined>, protectCaret: boolean): void {
   const sel = window.getSelection();
+  // 고른 글이 있으면 미룬다 — 글자 칸을 알약으로 바꾸면 선택이 무너져 다음 입력이 고른 글을 덮어쓰지 못한다
+  if (protectCaret && sel?.rangeCount && !sel.isCollapsed && editor.contains(sel.anchorNode)) return;
   const anchor = sel && sel.rangeCount && sel.isCollapsed ? sel.anchorNode : null;
   const caretNode = protectCaret && anchor?.nodeType === Node.TEXT_NODE && editor.contains(anchor) ? (anchor as Text) : null;
   const caretOffset = caretNode ? sel!.anchorOffset : -1;

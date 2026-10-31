@@ -49,7 +49,7 @@ it.each([
   ["쉐어", {}, ["최종", "해제"], ".review-final", "onFinalize"],
   ["쉐어", {}, ["최종", "해제"], ".review-unshared", "onUnpublish"],
   ["보류", { is_held: true }, ["최종", "해제"], ".review-final", "onFinalize"],
-  ["최종", { is_final: true }, ["S공유", "해제"], ".review-shared", "onUnfinalize"],
+  ["공유 행 없는 옛 최종", { is_final: true, shared: false }, ["S공유", "해제"], ".review-shared", "onUnfinalize"],
 ] as const)("워크스페이스 %s 카드: 창을 열고 누르면 바로 쓰던 처리가 불린다", (_name, over, options, item, handler) => {
   const p = { ...props(gen(over)), tab: "my" as const, onPublish: vi.fn(), onUnfinalize: vi.fn() };
   act(() => root.render(<GenerationCard {...p} />));
@@ -69,6 +69,14 @@ it("워크스페이스 최종 카드의 [해제]는 공유 탭과 같은 전환 
   click(".card-sf"); pick(".review-unshared");
   expect(p.onReview).toHaveBeenCalledExactlyOnceWith(p.gen, "unshared");
   expect(p.onUnfinalize).not.toHaveBeenCalled(); expect(p.onUnpublish).not.toHaveBeenCalled();
+});
+
+it("워크스페이스 최종 카드의 [공유]는 공유 탭과 같은 전환이다 — 최종 풀기는 보류였던 카드를 보류로 돌린다", () => {
+  const p = { ...props(gen({ is_final: true })), tab: "my" as const, onReview: vi.fn(), onUnfinalize: vi.fn() };
+  act(() => root.render(<GenerationCard {...p} />));
+  click(".card-sf"); pick(".review-shared");
+  expect(p.onReview).toHaveBeenCalledExactlyOnceWith(p.gen, "shared");
+  expect(p.onUnfinalize).not.toHaveBeenCalled();
 });
 
 it("워크스페이스 일반 카드의 [해제]는 바뀔 것이 없어 닫기만 한다", () => {

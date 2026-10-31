@@ -19,6 +19,9 @@ export function parseSceneSetTags(raw: string | undefined): string[] {
   return found;
 }
 
+// 한 줄 입력칸은 줄바꿈을 지워 태그를 합친다 — 줄바꿈으로 저장된 옛 값은 쉼표로 보여 준다(고치기 전까지 저장값은 그대로).
+export const sceneSetTagsLine = (raw: string): string => raw.replace(/\s*[\r\n]+\s*/g, ", ");
+
 function normalizeFolder(value: unknown): SceneSetFolder | null {
   if (!value || typeof value !== "object") return null;
   const source = value as Partial<SceneSetFolder>;

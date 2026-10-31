@@ -83,7 +83,7 @@ function describe_canvas() {
     ["일반 → 공유", gen(), "shared", "onPublish", { shared: true }],
     ["쉐어 → 해제", gen({ shared: true, is_held: true }), "unshared", "onUnpublish", { shared: false, is_held: false }],
     ["쉐어 → 최종", gen({ shared: true, is_held: true }), "final", "onFinalize", { is_final: true, shared: true, is_held: false }],
-    ["최종 → 공유", gen({ shared: true, is_final: true }), "shared", "onUnfinalize", { is_final: false, shared: true }],
+    ["공유 행 없는 옛 최종 → 공유", gen({ shared: false, is_final: true }), "shared", "onUnfinalize", { is_final: false, is_held: false }],
   ] as const)("캔버스 %s: 먼저 뒤집어 보이고 쓰던 처리가 끝나면 다시 맞춘다", (_name, start, action, handler, expected) => {
     const { spies, refresh, actions, data } = setup(start);
     act(() => actions().onNodeSClick(start));
@@ -92,6 +92,16 @@ function describe_canvas() {
     expect(actions().sConfirm).toBeNull();
     expect(spies[handler]).toHaveBeenCalledExactlyOnceWith(start);
     expect(data()).toMatchObject(expected);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("캔버스 최종 → 공유도 한 번의 전환이다 — 공유로 보이고 보류로 돌아가지 않는다", () => {
+    const start = gen({ shared: true, is_final: true });
+    const { spies, refresh, actions, data } = setup(start);
+    act(() => actions().onNodeSConfirmYes(start, "shared"));
+    expect(spies.onReview).toHaveBeenCalledExactlyOnceWith(start, "shared");
+    expect(spies.onUnfinalize).not.toHaveBeenCalled();
+    expect(data()).toMatchObject({ shared: true, is_final: false, is_held: false });
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 

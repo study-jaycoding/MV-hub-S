@@ -1,6 +1,6 @@
 import { memo, useState, type DragEvent, type MouseEvent } from "react";
 import { DRAG_TYPES } from "../../../lib/dragTypes";
-import { parseSceneFolderDrag, parseSceneSetTags } from "../../../lib/sceneSet";
+import { parseSceneFolderDrag, parseSceneSetTags, sceneSetTagsLine } from "../../../lib/sceneSet";
 import type { SceneCard, SceneSetFolder } from "../../../lib/scenes";
 import { useDragEndReset } from "../../../lib/useDragEndReset";
 
@@ -97,7 +97,7 @@ export const SetCard = memo(function SetCard({
             {editingTags ? (
               <input
                 className="scene-setnode-pill edit"
-                value={tagsText}
+                value={sceneSetTagsLine(tagsText)}
                 placeholder="#태그1, #태그2"
                 spellCheck={false}
                 autoFocus

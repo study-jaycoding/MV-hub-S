@@ -1830,9 +1830,14 @@ def _collect_existing_run(job_id: str, identity: _ComfyIdentity) -> dict:
         except comfy_client.ComfyError as error:
             if error.status_code not in (404, 410):
                 raise
-            _patch_run_record(job_id, last_status_code=error.status_code, last_error_class="detail_failed")
-            entry = {"outputs": {}}  # manifest에 이미 받은 항목/미수신 근거를 보존한다.
-    return _collect_run_outputs(job_id, target, entry or {"outputs": {}})
+            _patch_run_record(job_id, last_status_code=error.status_code)
+    if not isinstance(entry, dict) or not isinstance(entry.get("outputs"), dict):
+        _patch_run_record(job_id, last_error_class="detail_failed")
+        if not row.get("outputs_enumerated"):
+            # 상세를 못 읽은 것은 '출력 없음'이 아니다 — 빈 결과로 확정하면 prompt_id 가 든 저널이 지워져 회수 길이 끊긴다.
+            raise comfy_client.ComfyError("원격 결과 상세를 읽지 못했습니다", cause_kind="detail_missing")
+        entry = {"outputs": {}}  # manifest에 이미 받은 항목/미수신 근거를 보존한다.
+    return _collect_run_outputs(job_id, target, entry)
 
 
 def _collect_run_worker(job_id: str, identity: _ComfyIdentity) -> None:

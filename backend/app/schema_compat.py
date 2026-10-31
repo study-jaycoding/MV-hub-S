@@ -93,6 +93,7 @@ class Baseline:
 
 
 BASELINES = MappingProxyType({
+    # init_db 는 이 이름을 기록하지 않고 구조만 확인한다(db.py). 이미 그 줄이 든 dev DB 를 읽으려고 남겨 둔다.
     "content_comfy_canvas_runs": Baseline("content", "content_comfy_canvas_runs.v1", (
         ("comfy_canvas_run", ("attempt_id", "owner", "hub_id", "device_id", "job_id", "request_fp",
          "run_group_id", "group_seq", "copy_index", "scene_id", "card_id", "config_fp", "input_fp",

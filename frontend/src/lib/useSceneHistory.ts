@@ -144,9 +144,11 @@ export function useSceneHistory({
   };
 
   // 저장을 내보낸 뒤 — 그 저장의 영수증이 오면 지금 기록을 새로 고쳐도 남게 예약한다(확정·지문 대조는 sceneUndoPersistence)
-  const checkpoint = (receipt: SceneWriteReceipt | void) => {
-    if (receipt) scheduleUndoCheckpoint(sceneIdRef.current, { undo: undoStackRef.current, redo: redoStackRef.current, lastCommit: lastCommitRef.current },
-      localSceneRevision(sceneIdRef.current), receipt);
+  const checkpoint = (receipt: SceneWriteReceipt | void, keepEmpty = false) => {
+    if (!receipt) return;
+    if (gestureRef.current) gestureRef.current.receipt = receipt; // 묶음이 끝나며 기록이 또 바뀌면 이 영수증으로 다시 남긴다(endGesture)
+    scheduleUndoCheckpoint(sceneIdRef.current, { undo: undoStackRef.current, redo: redoStackRef.current, lastCommit: lastCommitRef.current },
+      localSceneRevision(sceneIdRef.current), receipt, keepEmpty);
   };
 
   // 열린 보드를 store 에 알린다(sceneUndoStore) — flush: 창을 닫으며 기록을 넘길 때·받은 기록과 견줄 때 지금 기록을 먼저 남긴다.
@@ -197,17 +199,22 @@ export function useSceneHistory({
   //  · dirty: 이 묶음이 단계를 쌓았거나 합쳤다 — 다시 하기 비우기·기록 상한(200) 정리는 묶음이 **끝날 때** 한다(아래 endGesture). 끌기를 버리면(Esc, 아래
   //    persist 의 discard) 그 단계를 걷고 dirty 를 내려 다시 하기 기록이 그대로 남는다. 보관본을 두지 않는다 — 끄는 중의 전파(propagate…)가 redo 스택을
   //    새 배열로 바꾸면 보관본은 낡는다(Codex 2차 리뷰 P2). 끄는 중에는 Ctrl+Z·Ctrl+Shift+Z 를 받지 않으니(SceneBoard moveHeldRef) 미뤄도 안전하다.
-  const gestureRef = useRef<{ depth: number; rewind?: (snapshot: SceneSnap) => SceneSnap; dirty: boolean } | null>(null);
+  //  · receipt·dropped: 끝날 때 기록이 달라지면(아래 endGesture) 묶음 안 저장이 남긴 보존 기록이 낡는다 — 버린 다시 하기 갈래가 새로 고침 뒤 되살아났다(A-04).
+  const gestureRef = useRef<{ depth: number; rewind?: (snapshot: SceneSnap) => SceneSnap; dirty: boolean; dropped?: boolean; receipt?: SceneWriteReceipt } | null>(null);
   const beginGesture = (rewind?: (snapshot: SceneSnap) => SceneSnap) => {
     gestureRef.current = { depth: -1, rewind, dirty: false };
   };
   const endGesture = () => {
     const gesture = gestureRef.current;
     gestureRef.current = null;
-    if (!gesture?.dirty) return;
-    redoStackRef.current = [];
-    const stack = undoStackRef.current;
-    while (stack.length > 200) stack.shift(); // 상한 정리도 여기서 — 묶음 중에 밀어내면 버린 끌기가 가장 오래된 단계를 잃는다(Codex 2차 리뷰 P3)
+    if (!gesture) return;
+    const stale = gesture.dropped || (gesture.dirty && (redoStackRef.current.length > 0 || undoStackRef.current.length > 200));
+    if (gesture.dirty) {
+      redoStackRef.current = [];
+      const stack = undoStackRef.current;
+      while (stack.length > 200) stack.shift(); // 상한 정리도 여기서 — 묶음 중에 밀어내면 버린 끌기가 가장 오래된 단계를 잃는다(Codex 2차 리뷰 P3)
+    }
+    if (stale) checkpoint(gesture.receipt, true);
   };
 
   const persist = (
@@ -243,6 +250,7 @@ export function useSceneHistory({
         stack.pop();
         gesture.depth = -1;
         gesture.dirty = false;
+        gesture.dropped = true;
       }
     }
     // 바뀐 것이 없는 사용자 저장은 받지 않는다(조작 규칙 44) — 같은 이름으로 끝낸 그룹 이름·최솟값에서 한 번 더 누른 글씨 크기·같은 색
