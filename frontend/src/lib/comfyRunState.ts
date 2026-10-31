@@ -52,7 +52,7 @@ export interface ComfyCanvasOutput {
 }
 export interface ComfyCanvasResolution {
   attempt_id: string;
-  state: "accepted" | "running" | "saving" | "needs_collect" | "saved" | "failed" | "dismissed" | "linked" | "not_found" | "origin_mismatch";
+  state: "accepted" | "running" | "saving" | "needs_collect" | "saved" | "failed" | "dismissed" | "linked" | "not_found" | "unknown" | "origin_mismatch";
   result_revision: number;
   outputs: ComfyCanvasOutput[];
   disposition?: ComfyDisposition;

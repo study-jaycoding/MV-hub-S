@@ -381,8 +381,8 @@ setSceneFlushListener((ok) => {
 // **순수**해야 한다: id·시각·계정 키·입력은 밖에서 고정해 넣고, 버킷은 새 배열로 갈아 끼운다.
 function commit<T, P = never>(
   mutate: (all: ScenesByProject) => { write: boolean; value: T },
-  options?: { confirmedOnly?: boolean; merge?: SceneOpMerge<P> },
-): { ok: boolean; value: T } {
+  options?: { confirmedOnly?: boolean; merge?: SceneOpMerge<P>; handover?: boolean },
+): { ok: boolean; value: T; paused?: boolean } {
   const result = applySceneOp(mutate, options);
   // 정상 저장도 확정 전에는 메모리에만 있다. 실패 경고와 별도로 닫기·새로고침을 보호한다.
   holdUnload("scene-save:pending", sceneStoreHasPending());
@@ -524,7 +524,7 @@ export function createScene(projectId: string | null, name?: string): Scene | nu
 //  · missing: 대상 씬이 없어 바뀐 것이 없다(다른 창이 먼저 지움).
 //  종전에는 둘 다 '성공'으로 보여, 없는 씬에 쓴 편집이 저장된 것처럼 보였다.
 //  (저장소 **확정** 실패는 여기로 오지 않는다 — 뒤따르는 일이라 subscribeSceneSaveState 가 알린다.)
-export type SceneWriteFailure = "storage" | "missing";
+export type SceneWriteFailure = "storage" | "missing" | "paused"; // paused = 캔버스가 다른 창에 떠 있다 — 저장 실패가 아니라 알리지 않는다
 export type SceneWriteResult =
   | { ok: true; scenes: Scene[] }
   | { ok: false; reason: SceneWriteFailure };
@@ -562,7 +562,7 @@ export function updateScene(
     },
   });
   if (!out.value) return { ok: false, reason: "missing" };
-  if (!out.ok) return { ok: false, reason: "storage" };
+  if (!out.ok) return { ok: false, reason: out.paused ? "paused" : "storage" };
   return {
     ok: true,
     scenes: readWorkingBucket(key).map((s) => (s.id === sceneId ? { ...s, ...patch } : s)),
@@ -638,7 +638,7 @@ export function adoptCanvasSceneWrites(writes: SceneHandover[]): boolean {
       all[bucket] = next;
     }
     return { write: true, value: undefined };
-  }).ok;
+  }, { handover: true }).ok; // 닫히는 창의 변경 — 떠 있음이 아직 풀리기 전이어도 받는다
 }
 
 // ─────────────────────────────────────────────────────────────────────────

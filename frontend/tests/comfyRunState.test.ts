@@ -15,6 +15,13 @@ it.each(["needs_collect", "failed", "dismissed", "not_found", "origin_mismatch"]
   expect(card.comfyCfg).toEqual({ content: "{}", status: "running", runId: 33 });
 });
 
+it("접수 여부 안내는 기록이 남아 있어도 실행 중이 아니다", () => {
+  const scene = { comfyCardRuns: { c: { groupId: "g", groupSeq: 1, settledState: "not_found" as const } },
+    comfyRuns: [{ version: 1 as const, attemptId: "a", runGroupId: "g", groupSeq: 1, copyIndex: 0, cardId: "c",
+      originHubId: "h", originDeviceId: "d", configFp: "c", inputFp: "i", localState: "submitted" as const }] };
+  expect(comfyCardRuntime(scene, "c")).toMatchObject({ status: "failed", message: "실행 접수 여부를 확인하지 못했습니다. 다시 생성하기 전에 확인하세요." });
+});
+
 describe("computeMaxParallel", () => {
   it("단일 comfy batch N → N 병렬, comfy N개 batch 1 → N 병렬", () => {
     expect(computeMaxParallel(4, 1)).toBe(4);

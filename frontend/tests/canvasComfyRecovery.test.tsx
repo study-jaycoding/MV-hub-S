@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCanvasDocumentPort } from "../src/features/canvas/session";
 import { recoverCanvasComfyRuns, useCanvasComfyRuns, notifyCanvasComfyRuns } from "../src/lib/useCanvasComfyRuns";
 import { getAccountNamespace, setAccountScope, setConnectionKey } from "../src/lib/accountScope";
@@ -13,7 +13,7 @@ import { delaySceneStoreWritesForTest, failSceneStoreWritesForTest, settleSceneS
 import { setHubFeatures } from "../src/lib/hubFeatures";
 import { useSceneComfyExecution } from "../src/lib/useSceneComfyExecution";
 import { useCanvasSession } from "../src/features/canvas/useCanvasSession";
-import { beginComfyAttempt } from "../src/lib/sceneComfyRunningStore";
+import { beginComfyAttempt, setComfyRunning as setStoredComfyRunning } from "../src/lib/sceneComfyRunningStore";
 
 const windowState = vi.hoisted(() => ({ floating: false }));
 vi.mock("../src/lib/popupWindows", async original => ({
@@ -166,13 +166,170 @@ it.each(["needs_collect", "not_found", "failed", "dismissed"] as const)("%s 응�
   if (state === "not_found") {
     clock = 30_000;
     await run(api);
-    expect(currentScene().comfyRuns).toEqual([]);
     expect(comfyCardRuntime(currentScene(), "c")?.status).toBe("failed");
     expect(api.ackCanvasRun).not.toHaveBeenCalled();
   }
 });
 
+// 예약만 하고 전송을 시작하지 않은 기록 — 시간이 지나면 정리해도 되는 유일한 기록이다.
+async function onlyReserved() {
+  updateScene(null, scene.id, { comfyRuns: currentScene().comfyRuns!.map(item => ({ ...item, localState: "reserved" as const })) });
+  await settleSceneStoreForTest();
+}
+
+it("전송한 기록은 not_found 가 오래 반복돼도 지우지 않고 안내를 남기며, 뒤늦게 접수되면 안내가 풀리고 결과가 붙는다", async () => {
+  const missing = resolution(0, { state: "not_found", outputs: [] });
+  const api = fakeApi([missing]);
+  await run(api);
+  clock = 30_000; await run(api);
+  clock = 600_000; await run(api);
+  expect(currentScene().comfyRuns).toHaveLength(1);
+  expect(comfyCardRuntime(currentScene(), "c")).toMatchObject({ status: "failed", message: "실행 접수 여부를 확인하지 못했습니다. 다시 생성하기 전에 확인하세요." });
+  api.resolveCanvasRuns.mockResolvedValue({ runs: [resolution(0, { state: "accepted", outputs: [] })] });
+  await run(api);
+  expect(comfyCardRuntime(currentScene(), "c")?.status).toBe("running");
+  api.resolveCanvasRuns.mockResolvedValue({ runs: [resolution()] });
+  await run(api);
+  expect(currentScene().cards[0].genId).toBe("g0");
+});
+
+it("서버가 접수 여부를 모르는(unknown) 실행도 같은 안내로 멈추고 지우지 않는다", async () => {
+  const api = fakeApi([resolution(0, { state: "unknown", outputs: [] })]);
+  await run(api); clock = 60_000; await run(api);
+  expect(currentScene().comfyRuns).toHaveLength(1);
+  expect(comfyCardRuntime(currentScene(), "c")).toMatchObject({ status: "failed", message: "실행 접수 여부를 확인하지 못했습니다. 다시 생성하기 전에 확인하세요." });
+});
+
+describe("접수 여부를 모르는 기록의 사람 정리", () => {
+  let execution: ReturnType<typeof useSceneComfyExecution>;
+  async function screen(canvasDocument = port()) {
+    function Screen() {
+      execution = useSceneComfyExecution({ sceneIdRef: { current: scene.id }, cardsRef: { current: scene.cards }, edgesRef: { current: scene.edges },
+        genDataRef: { current: {} }, refParents: {}, flushPending: () => {}, commitDocument: vi.fn(), isDocumentCurrent: () => true,
+        canvasDocument, saveComfyToLibrary: vi.fn() });
+      return null;
+    }
+    host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+    await act(async () => root!.render(<Screen />));
+  }
+  function serverSays(states: ComfyCanvasResolution["state"][]) {
+    vi.spyOn(comfyApi, "canvasOrigin").mockResolvedValue(origin);
+    return vi.spyOn(comfyApi, "resolveCanvasRuns").mockResolvedValue({ runs: states.map((state, copy) => resolution(copy, { state, outputs: [] })) });
+  }
+  const submit = () => vi.spyOn(comfyApi, "run").mockResolvedValue({ outputs: [{ kind: "text", text: "ok" }], prompt_id: "p" });
+
+  beforeEach(async () => { await run(fakeApi([resolution(0, { state: "not_found", outputs: [] })])); });
+
+  it.each(["not_found", "unknown"] as const)("서버도 %s 이고 수락하면 기록을 지우고 실행한다", async state => {
+    serverSays([state]); const confirm = vi.spyOn(window, "confirm").mockReturnValue(true); const send = submit();
+    await screen();
+    await act(async () => { await execution.runComfy("c"); });
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(send).toHaveBeenCalledOnce();
+    expect(currentScene().comfyRuns!.some(item => item.attemptId === "a0")).toBe(false);
+  });
+
+  it("취소하면 지우지 않고 실행하지 않는다", async () => {
+    serverSays(["not_found"]); vi.spyOn(window, "confirm").mockReturnValue(false); const send = submit();
+    await screen();
+    await act(async () => { await execution.runComfy("c"); });
+    expect(send).not.toHaveBeenCalled();
+    expect(currentScene().comfyRuns).toHaveLength(1);
+  });
+
+  it("복사본 하나라도 서버에 살아 있으면 묻지도 지우지도 않는다", async () => {
+    updateScene(null, scene.id, { comfyRuns: [...currentScene().comfyRuns!, { ...scene.comfyRuns![0], attemptId: "a1", copyIndex: 1 }] });
+    await settleSceneStoreForTest();
+    serverSays(["not_found", "running"]); const confirm = vi.spyOn(window, "confirm").mockReturnValue(true); const send = submit();
+    await screen();
+    await act(async () => { await execution.runComfy("c"); });
+    expect(confirm).not.toHaveBeenCalled(); expect(send).not.toHaveBeenCalled();
+    expect(currentScene().comfyRuns).toHaveLength(2);
+  });
+
+  it("다시 묻기가 실패하거나 다른 창에서 돌고 있으면 지우지 않는다", async () => {
+    const resolve = serverSays(["not_found"]); const confirm = vi.spyOn(window, "confirm").mockReturnValue(true); const send = submit();
+    resolve.mockRejectedValueOnce(new Error("끊김"));
+    await screen();
+    await act(async () => { await execution.runComfy("c"); });
+    setStoredComfyRunning(["c"], true);
+    try { await act(async () => { await execution.runComfy("c"); }); } finally { setStoredComfyRunning(["c"], false); }
+    expect(confirm).not.toHaveBeenCalled(); expect(send).not.toHaveBeenCalled();
+    expect(currentScene().comfyRuns).toHaveLength(1);
+  });
+
+  it("서버에 묻는 사이 실행이 시작되면 묻지도 지우지도 않는다", async () => {
+    const resolve = serverSays(["not_found"]); const confirm = vi.spyOn(window, "confirm").mockReturnValue(true); const send = submit();
+    resolve.mockImplementationOnce(async () => {
+      setStoredComfyRunning(["c"], true); // 조회가 끝나기 전에 다른 창이 그 카드를 돌린다
+      return { runs: [resolution(0, { state: "not_found", outputs: [] })] };
+    });
+    await screen();
+    try { await act(async () => { await execution.runComfy("c"); }); } finally { setStoredComfyRunning(["c"], false); }
+    expect(confirm).not.toHaveBeenCalled(); expect(send).not.toHaveBeenCalled();
+    expect(currentScene().comfyRuns).toHaveLength(1);
+  });
+
+  it("확인 창에 답하는 사이 실행이 시작되면 지우지 않는다", async () => {
+    serverSays(["not_found"]); const send = submit();
+    const confirm = vi.spyOn(window, "confirm").mockImplementation(() => { setStoredComfyRunning(["c"], true); return true; });
+    await screen();
+    try { await act(async () => { await execution.runComfy("c"); }); } finally { setStoredComfyRunning(["c"], false); }
+    expect(confirm).toHaveBeenCalledOnce(); expect(send).not.toHaveBeenCalled();
+    expect(currentScene().comfyRuns).toHaveLength(1);
+  });
+
+  it("같은 카드에 다른 PC 의 시도가 섞여 있으면 묻지도 지우지도 않는다", async () => {
+    updateScene(null, scene.id, { comfyRuns: [...currentScene().comfyRuns!, { ...scene.comfyRuns![0], attemptId: "a1", copyIndex: 1, originDeviceId: "another-pc" }] });
+    await settleSceneStoreForTest();
+    const resolve = serverSays(["not_found", "not_found"]); const confirm = vi.spyOn(window, "confirm").mockReturnValue(true); const send = submit();
+    await screen();
+    await act(async () => { await execution.runComfy("c"); });
+    expect(resolve).not.toHaveBeenCalled(); expect(confirm).not.toHaveBeenCalled(); expect(send).not.toHaveBeenCalled();
+    expect(currentScene().comfyRuns).toHaveLength(2);
+  });
+
+  it("서버에 묻는 사이 같은 카드에 다른 PC 의 시도가 들어오면 묻지도 지우지도 않는다", async () => {
+    const resolve = serverSays(["not_found"]); const confirm = vi.spyOn(window, "confirm").mockReturnValue(true); const send = submit();
+    resolve.mockImplementationOnce(async () => {
+      updateScene(null, scene.id, { comfyRuns: [...currentScene().comfyRuns!, { ...scene.comfyRuns![0], attemptId: "a1", copyIndex: 1, originDeviceId: "another-pc" }] });
+      return { runs: [resolution(0, { state: "not_found", outputs: [] })] };
+    });
+    await screen();
+    await act(async () => { await execution.runComfy("c"); });
+    expect(confirm).not.toHaveBeenCalled(); expect(send).not.toHaveBeenCalled();
+    expect(currentScene().comfyRuns).toHaveLength(2);
+  });
+
+  it("옛 편집 채택으로 다른 묶음이 섞여도 끝까지 지우고 실행한다 — 현재 묶음이 먼저 있어도", async () => {
+    updateScene(null, scene.id, { comfyRuns: [...currentScene().comfyRuns!, { ...scene.comfyRuns![0], attemptId: "a1", runGroupId: "older" }] });
+    await settleSceneStoreForTest();
+    serverSays(["not_found", "not_found"]); const confirm = vi.spyOn(window, "confirm").mockReturnValue(true); const send = submit();
+    await screen();
+    await act(async () => { await execution.runComfy("c"); });
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(send).toHaveBeenCalledOnce();
+    expect(currentScene().comfyRuns!.some(item => ["a0", "a1"].includes(item.attemptId))).toBe(false);
+  });
+
+  it("기록을 지우는 사이 남은 복사본의 접수가 확인되면 그 기록은 지우지 않는다", async () => {
+    updateScene(null, scene.id, { comfyRuns: [...currentScene().comfyRuns!, { ...scene.comfyRuns![0], attemptId: "a1", copyIndex: 1 }] });
+    await settleSceneStoreForTest();
+    serverSays(["not_found", "not_found"]); vi.spyOn(window, "confirm").mockReturnValue(true); const send = submit();
+    const document = port();
+    await screen({ ...document, commit: (where, command) => {
+      const write = document.commit(where, command);
+      updateScene(null, scene.id, { comfyCardRuns: { c: { groupId: "group", groupSeq: 1 } } }); // 복구 응답이 접수를 반영해 안내가 풀렸다
+      return write;
+    } });
+    await act(async () => { await execution.runComfy("c"); });
+    expect(send).not.toHaveBeenCalled();
+    expect(currentScene().comfyRuns!.map(item => item.attemptId)).toEqual(["a1"]);
+  });
+});
+
 it("미접수는 중복 응답이나 짧은 간격으로 정리하지 않고 30초 뒤 재확인한다", async () => {
+  await onlyReserved();
   const missing = resolution(0, { state: "not_found", outputs: [] });
   const api = fakeApi([missing, missing]);
   await run(api);
@@ -187,6 +344,7 @@ it("미접수는 중복 응답이나 짧은 간격으로 정리하지 않고 30�
 });
 
 it("전송·응답 대기 중 attempt는 보호하고 전송이 끝난 뒤부터 유예 시간을 다시 잰다", async () => {
+  await onlyReserved();
   const api = fakeApi([resolution(0, { state: "not_found", outputs: [] })]);
   await run(api);
   const finish = beginComfyAttempt(getAccountNamespace(), "a0");
@@ -215,6 +373,7 @@ it("닫힌 창의 요청이 유예 중 늦게 접수되면 항목을 남기고 �
 });
 
 it("조회 중 실행기가 활성화되면 이미 받은 not_found로도 정리하지 않는다", async () => {
+  await onlyReserved();
   const api = fakeApi([resolution(0, { state: "not_found", outputs: [] })]);
   await run(api); clock = 30_000;
   let finish = () => {};

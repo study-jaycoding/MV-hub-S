@@ -84,9 +84,8 @@ function noteBlur(): void {
   lastBlurAt = Date.now();
 }
 
-function raisePopups(): void {
-  if (Date.now() - lastBlurAt < INSIDE_MS) return; // 별도 창 → 이 창(앱 안)
-  const titles = Object.values(openWindows).flatMap((w) => {
+function raiseWindows(windows: Array<Window | null | undefined>): void {
+  const titles = windows.flatMap((w) => {
     try {
       return w && !w.closed && w.document.title ? [w.document.title] : [];
     } catch {
@@ -96,6 +95,22 @@ function raisePopups(): void {
   if (!titles.length) return;
   void jsonFetch("/api/app-windows/raise", { method: "POST", body: JSON.stringify({ main: document.title, titles }) })
     .catch(() => {}); // 못 올려도(허브가 옛 판·윈도우가 아님) 지금처럼 그대로
+}
+
+function raisePopups(): void {
+  if (Date.now() - lastBlurAt < INSIDE_MS) return; // 별도 창 → 이 창(앱 안)
+  raiseWindows(Object.values(openWindows));
+}
+
+/** 떠 있는 캔버스 창을 앞으로 — 이 창에서 못 하는 일을 그 창에서 하도록 안내할 때. 창 참조가 없으면(이 창을 새로 고친 뒤) 안내만 남는다. */
+export function bringCanvasForward(): void {
+  const w = openWindows[EMBED_MODES.canvas];
+  try {
+    w?.focus();
+  } catch {
+    /* same-origin defensive guard */
+  }
+  raiseWindows([w]);
 }
 
 function followAppFocus(w: Window): void {
@@ -172,9 +187,14 @@ export function useEmbedWindowOpen(mode: EmbedMode): boolean {
 // 켜질 때·물으면 "open", 닫히거나 새로 고칠 때(pagehide) "closed". 메인 창은 켜질 때 한 번 묻는다.
 const CANVAS_CHANNEL = "mvhub-canvas-window";
 const RELOAD_GRACE_MS = 300; // "closed" 뒤 이 창이 연 창이 아직 살아 있으면 새로 고침이다 — 닫힘이 .closed 에 비치기를 기다리는 틈
+// 캔버스 창이 평생 쥐는 잠금 — 창이 어떻게 끝나든 브라우저가 풀어 주고, 가려지거나 얼어도 풀리지 않는다(2026-10-31 실측). 창이 끝났을 수 있다는
+// 신호로만 쓴다: 편집 권한을 주고받지 않는다(docs/status/캔버스_분리창_한곳쓰기_2026-10-31.md). 보안 문맥이 아닌 주소에는 API 가 없다 — 그때는 신호로만 안다.
+const CANVAS_LOCK = "mvhub-canvas-window";
+const canvasLocks = (): LockManager | undefined => (typeof navigator === "undefined" ? undefined : navigator.locks);
 
 export function announceCanvasWindow(): void {
   adoptOpenerCanvasMemory(); // 메인 창이 살아 있는 켜질 때 받아 둔다 — 각 저장소가 등록할 때 꺼내 간다(아래)
+  void canvasLocks()?.request(CANVAS_LOCK, () => new Promise<void>(() => {})).catch(() => {});
   if (typeof BroadcastChannel === "undefined") return;
   const channel = new BroadcastChannel(CANVAS_CHANNEL);
   channel.onmessage = (event) => {
@@ -236,8 +256,23 @@ function waitCanvasReturn(): void {
   // 참조가 없으면(이 창을 새로 고친 뒤) 닫힌 것으로 본다 — 새로 고침이었다면 그 창이 켜지며 "open" 으로 다시 띄운다
   closedTimer = setTimeout(() => {
     closedTimer = undefined;
-    if (!isEmbedWindowOpen(EMBED_MODES.canvas)) void returnCanvas();
+    void settleCanvasReturn();
   }, RELOAD_GRACE_MS);
+}
+
+// 잠금을 쥔 문서가 있으면 창은 살아 있다 — 돌려받지 않고 다시 기다린다. 새로 고친 창의 "open" 이 옛 문서의 잠금 해제보다 먼저 올 수 있어,
+// 늦게 온 해제를 닫힘으로 믿으면 두 창이 함께 쓴다(2026-10-31 Codex 실측).
+async function settleCanvasReturn(): Promise<void> {
+  const turn = returnTurn; // 묻는 사이 "open" 이 오면 이 판단은 낡았다 — "open" 은 다시 오지 않으니 여기서 돌려받으면 두 창이 쓴다
+  let held = false;
+  try {
+    held = !!(await canvasLocks()?.query())?.held?.some((lock) => lock.name === CANVAS_LOCK);
+  } catch {
+    /* 잠금을 못 읽었다 — 지금처럼 신호로 안다 */
+  }
+  if (turn !== returnTurn || !canvasFloating || returnReading || closedTimer !== undefined) return;
+  if (held) watchCanvasWindow();
+  else if (!isEmbedWindowOpen(EMBED_MODES.canvas)) void returnCanvas();
 }
 
 function onCanvasMessage(event: MessageEvent): void {
@@ -247,7 +282,35 @@ function onCanvasMessage(event: MessageEvent): void {
       lastOpen[EMBED_MODES.canvas] = false; // .closed 확인이 그 창이 닫혔다고 다시 풀지 않게
     }
     setCanvasFloating(true);
+    watchCanvasWindow();
   } else if (event.data === "closed") waitCanvasReturn();
+}
+
+let watchingCanvas = false;
+
+// 창이 쥔 잠금을 기다린다 — 받으면 창이 끝났거나 새로 고침이다. 곧바로 풀고 닫힘 신호와 같은 길을 탄다(새로 고침이면 새 문서의 "open" 이 다시 건다).
+function watchCanvasWindow(): void {
+  const locks = canvasLocks();
+  if (!locks || watchingCanvas) return;
+  watchingCanvas = true;
+  void locks.request(CANVAS_LOCK, () => {
+    watchingCanvas = false;
+    waitCanvasReturn();
+  }).catch(() => {
+    watchingCanvas = false;
+  });
+}
+
+/** 메인 창 부팅 — 첫 그리기 전에 떠 있는 창을 안다. 모른 채 그리면 그사이 배경 작업이 씬을 쓴다. 찾지 못하면 "open" 이 곧 알린다. */
+export async function findFloatingCanvas(): Promise<void> {
+  try {
+    const state = await canvasLocks()?.query();
+    if (!state?.held?.some((lock) => lock.name === CANVAS_LOCK)) return;
+    setCanvasFloating(true);
+    watchCanvasWindow();
+  } catch {
+    /* 잠금을 못 읽었다 — 지금처럼 신호로 안다 */
+  }
 }
 
 /** 떠 있는 창이 살아 있다고 볼 수 있나 — 닫혀 돌아오는 중이면 아니다(새로 여는 길로 간다). 참조가 없으면 신호로만 안다. */
@@ -290,7 +353,11 @@ export interface CanvasMemoryPart {
   durable?: boolean; // 받는 창이 끝까지 써야 하는 칸 — 받는 창이 닫히는 중이거나 보내는 문서가 돌아올 수 있으면 넘기지 않는다
   accepted?: () => void; // 보낸 쪽 — 받는 창이 true 로 답했다
 }
-type CanvasMemoryPort = { save: () => Record<string, unknown>; load: (memory: Record<string, unknown>) => string[] | void };
+type CanvasMemoryPort = {
+  save: () => Record<string, unknown>;
+  load: (memory: Record<string, unknown>) => string[] | void;
+  settled: () => Promise<boolean>; // 넘겨받은 쓰기까지 저장소에 확정됐나 — 새로 고친 캔버스 창이 읽기 전에 묻는다
+};
 const MEMORY_PORT = "__mvhubCanvasMemory";
 const memoryParts = new Map<string, CanvasMemoryPart>();
 let openerMemory: Record<string, unknown> | null = null;
@@ -356,7 +423,7 @@ function saveCanvasMemory(): Record<string, unknown> {
 }
 
 /** 메인 창 — 캔버스 창이 window.opener 로 부를 손잡이를 단다. 받은 값은 이 창의 것으로 복제해 둔다(닫히는 창의 객체를 붙들지 않게). */
-export function shareCanvasMemory(): void {
+export function shareCanvasMemory(settled: () => Promise<boolean> = () => Promise.resolve(true)): void {
   let leaving = false; // 이 창도 닫히는 중 — durable 칸을 받아도 끝까지 쓰지 못한다
   window.addEventListener("pagehide", () => {
     leaving = true;
@@ -366,6 +433,7 @@ export function shareCanvasMemory(): void {
   });
   const port: CanvasMemoryPort = {
     save: saveCanvasMemory,
+    settled,
     load: (memory) => {
       const taken: string[] = [];
       const copied = structuredClone(memory);
@@ -384,6 +452,30 @@ function openerPort(): CanvasMemoryPort | null {
     return (window.opener as Record<string, CanvasMemoryPort | undefined> | null)?.[MEMORY_PORT] ?? null;
   } catch {
     return null; // 연 창이 닫혔거나 다른 출처
+  }
+}
+
+const OPENER_SETTLE_WAIT_MS = 12_000; // 메인 창 쪽 기다림(10초)보다 길게 — 메인 창이 답을 못 할 때만 여기서 끝난다
+
+/**
+ * 캔버스 창 — 저장소를 열기 전에 메인 창이 넘겨받은 쓰기가 끝나기를 기다린다. 새로 고친 문서가 그 저장보다 먼저 읽으면 뒤늦은 저장이 새 편집을 덮는다.
+ * false = 메인 창이 끝내 확정하지 못했다(이 창이 물러나 메인 창이 돌려받는다). 메인 창이 없거나 답이 없으면 그대로 간다.
+ */
+export async function openerSceneWritesSettled(): Promise<boolean> {
+  const port = openerPort();
+  if (!port) return true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      port.settled(),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(true), OPENER_SETTLE_WAIT_MS);
+      }),
+    ]);
+  } catch {
+    return true;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

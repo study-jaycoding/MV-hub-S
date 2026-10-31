@@ -99,6 +99,13 @@ export const sceneStoreConflicts = (): SceneAbsorbConflict[] => conflictList;
 /** 아직 저장소에 확정되지 않은 변경이 있는가(화면의 '저장 안 됨' 표시용). */
 export const sceneStoreHasPending = (): boolean => pending.length > 0;
 
+// 캔버스가 다른 창에 떠 있는 동안 이 창은 씬을 쓰지 않는다 — 씬은 그 창만 쓴다(docs/status/캔버스_분리창_한곳쓰기_2026-10-31.md).
+// 판단은 sceneBoot 가 달아 준다(이 모듈은 창을 모른다).
+let writesPaused: () => boolean = () => false;
+export function setSceneWriteGate(paused: () => boolean): void {
+  writesPaused = paused;
+}
+
 // ── IndexedDB 얇은 어댑터 ────────────────────────────────────────────────────
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -576,19 +583,20 @@ let captureFailed: boolean[] = [];
  */
 export function applySceneOp<T, P = never>(
   mutate: (all: ScenesByProject) => SceneMutation<T>,
-  options: { confirmedOnly?: boolean; merge?: SceneOpMerge<P> } = {},
-): { ok: boolean; value: T } {
+  options: { confirmedOnly?: boolean; merge?: SceneOpMerge<P>; handover?: boolean } = {},
+): { ok: boolean; value: T; paused?: boolean } {
   ensureMemoryStoreOutsideBrowser();
   const { merge } = options;
   const last = pending[pending.length - 1];
   // 바로 앞 연산이 같은 대상이고 아직 저장으로 떠나지 않았으면 거기에 합친다.
   const host = merge && last?.absorb && last.slot === merge.slot && !last.flying && !options.confirmedOnly ? last : null;
+  const paused = !options.handover && writesPaused(); // 닫히는 창이 넘긴 변경(handover)만 받는다 — 이미 출발한 응답도 여기서 막힌다
   // 저장소 연결이 잠깐 끊긴 것(다시 열 수 있다)은 거절 사유가 아니다 — 연산은 받아 두고 저장이 다시 시도한다.
-  const refused = !ready || (!host && pending.length >= PENDING_MAX);
+  const refused = !ready || paused || (!host && pending.length >= PENDING_MAX);
   if (refused) {
     captureFailed = captureFailed.map(() => true);
-    if (ready) flushListener?.(false); // 상한 — '저장 안 됨'을 다시 알린다(조용히 버리지 않는다)
-    return { ok: false, value: mutate({ ...working }).value };
+    if (ready && !paused) flushListener?.(false); // 상한 — '저장 안 됨'을 다시 알린다(조용히 버리지 않는다)
+    return { ok: false, paused, value: mutate({ ...working }).value };
   }
   const draft: ScenesByProject = { ...working };
   const outcome = mutate(draft);
@@ -1155,6 +1163,32 @@ function refreshFromStore(): Promise<boolean> {
 /** 지금 접수돼 있는 연산을 바로 확정하러 보낸다(창이 가려질 때 등). 확정을 기다리지는 않는다. */
 export function flushSceneStoreNow(): void {
   if (pending.length) void runStoreTx();
+}
+
+/**
+ * 밀린 입력을 내보내고(flush) 접수된 연산이 모두 확정될 때까지 기다린다 — 밀린 연산이 없음을 본 그 자리에서 onSettled 를 부른다(await 뒤로 미루면 그 틈에 쓰기가 끼어든다).
+ * 저장이 실패하거나 waitMs 안에 안 끝나면 false — 연산은 그대로 남아 저장소가 다시 시도한다.
+ */
+export async function settleSceneWrites(waitMs: number, flush: () => void = () => {}, onSettled: () => void = () => {}): Promise<boolean> {
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    flush();
+    if (!pending.length) {
+      onSettled();
+      return true;
+    }
+    const left = deadline - Date.now();
+    if (left <= 0) return false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finished = await Promise.race([
+      runStoreTx(),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), left);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (!finished) return false;
+  }
 }
 
 /** 저장소를 지금 다시 읽는다 — 떠 있던 캔버스 창이 닫힌 뒤 메인 창이 낡은 씬을 그리지 않게(lib/popupWindows). false = 읽지 못했다. */

@@ -515,6 +515,8 @@ const EN: Record<string, string> = {
   "캔버스": "Canvas",
   "캔버스 — 씬 캔버스 · 히스토리 뷰": "Canvas — scene canvas & History view",
   "캔버스가 별도 창에 떠 있습니다": "Canvas is open in a separate window",
+  "이전 Comfy 실행이 접수됐는지 확인하지 못했습니다. 기록을 지우고 다시 실행할까요? 접수된 실행이면 두 번 실행될 수 있습니다.":
+    "Could not confirm whether the earlier Comfy run was accepted. Clear the record and run again? If it was accepted, it may run twice.",
   "저장이 막혀 있습니다 — 설정의 [전체 내보내기]로 작업을 받아 두세요": "Saving is blocked — use Export all in Settings to keep your work",
   "히스토리 보기": "History view",
   "관리자 — 멤버 등급·프로젝트 관리": "Admin — roles & projects",

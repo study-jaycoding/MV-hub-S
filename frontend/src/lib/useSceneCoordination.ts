@@ -114,8 +114,10 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
       // 떠 있던 창이 닫혔다 — 저장본과 그 창이 마지막으로 연 씬으로 돌아온다(씬을 고를 때마다 '마지막 연 씬'에 적는다, selectScene)
       setScenes(listScenes(null));
       setActiveSceneId(getActiveSceneId(null));
+      recoverConflicts(); // 떠 있는 동안 미룬 정리(아래)
     }
     followedRef.current = followStore;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- recoverConflicts 는 아래에서 만드는 안정 콜백이다
   }, [followStore]);
   // DB 백업에만 있고 이 브라우저엔 없는 씬 수 — 0 이면 '가져오기'를 아예 노출하지 않는다.
   const [backupOnly, setBackupOnly] = useState(0);
@@ -156,7 +158,7 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
   // 통지가 오고(아래 applyExternal), 앱을 켤 때 이미 보관돼 있던 것은 첫 effect 가 한다.
   const recoveringConflictsRef = useRef(false);
   const recoverConflicts = useCallback(() => {
-    if (recoveringConflictsRef.current || !hasSceneConflicts()) return;
+    if (followStoreRef.current || recoveringConflictsRef.current || !hasSceneConflicts()) return; // 캔버스가 떠 있으면 그 창이 한다 — 이 창은 씬을 쓰지 않는다
     recoveringConflictsRef.current = true;
     void recoverSceneConflicts()
       .then((out) => {
@@ -348,6 +350,7 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
       () => flashRef.current?.("레퍼런스를 찾지 못했습니다 — 서버에 닿지 않습니다. 잠시 뒤 다시 눌러 주세요."),
     );
   const selectScene = (id: string | null) => {
+    if (followStoreRef.current) return; // 캔버스가 다른 창에 떠 있다 — '마지막 연 씬'은 두 창이 함께 쓴다, 그 창이 정한다
     // ★씬을 바꾸기 전에 SceneBoard 의 밀린 입력 저장을 확정 — 그때는 activeScene 이 아직 옛 씬이라 정확히
     //  저장된다. add/import/delete 도 모두 이 selectScene 을 거치므로 전환 경로 전체가 여기서 커버된다.
     sceneActionRef.current?.flushPending();

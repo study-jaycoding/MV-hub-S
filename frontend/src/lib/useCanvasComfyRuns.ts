@@ -74,15 +74,18 @@ export async function recoverCanvasComfyRuns(options: {
         if (resolution.state === "not_found") {
           const attempt = snapshot()?.comfyRuns?.find(run => run.attemptId === resolution.attempt_id);
           if (!attempt || attempt.localState === "applied" || attempt.receipt) { missing.delete(key); continue; }
-          const fingerprint = JSON.stringify(attempt);
-          const previous = missing.get(key);
-          if (previous?.attempt === fingerprint && now() - previous.since >= NOT_FOUND_GRACE_MS) {
-            const cleanup = options.canvasDocument.commit(target, { type: "discardUnsubmittedComfy", attempt,
-              canWrite: () => current() && !isComfyAttemptActive(accountNamespace, attempt.attemptId) });
-            if (cleanup.queued && await cleanup.confirmed) missing.delete(key);
-            continue;
-          }
-          if (!previous || previous.attempt !== fingerprint) missing.set(key, { since: now(), attempt: fingerprint });
+          // 전송을 시작한 기록은 시간만으로 지우지 않는다 — 서버의 not_found 는 입력을 복사 중일 수 있어 미접수의 증명이 아니다. 카드 안내로 남기고 사람이 다시 실행할 때 정리한다.
+          if (attempt.localState === "reserved") {
+            const fingerprint = JSON.stringify(attempt);
+            const previous = missing.get(key);
+            if (previous?.attempt === fingerprint && now() - previous.since >= NOT_FOUND_GRACE_MS) {
+              const cleanup = options.canvasDocument.commit(target, { type: "discardUnsubmittedComfy", attempt,
+                canWrite: () => current() && !isComfyAttemptActive(accountNamespace, attempt.attemptId) });
+              if (cleanup.queued && await cleanup.confirmed) missing.delete(key);
+              continue;
+            }
+            if (!previous || previous.attempt !== fingerprint) missing.set(key, { since: now(), attempt: fingerprint });
+          } else missing.delete(key);
         } else missing.delete(key);
         const write = options.canvasDocument.commit(target, { type: "resolveComfy", resolution, canWrite: current });
         if (!write.queued || !await write.confirmed || !current()) continue;

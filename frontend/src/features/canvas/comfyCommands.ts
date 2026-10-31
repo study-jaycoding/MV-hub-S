@@ -22,12 +22,13 @@ export function applyComfyResolution(scene: Scene, resolution: ComfyCanvasResolu
     if (owner?.groupId === run.runGroupId && owner.groupSeq === run.groupSeq && owner.settledState === "not_found")
       return { scene: { ...scene, comfyCardRuns: { ...scene.comfyCardRuns, [run.cardId]: { ...owner, settledState: undefined } } }, receipt: null };
   }
-  if (["needs_collect", "not_found", "origin_mismatch"].includes(resolution.state)) {
+  if (["needs_collect", "not_found", "unknown", "origin_mismatch"].includes(resolution.state)) {
     const owner = scene.comfyCardRuns?.[run.cardId];
-    if (!owner || owner.groupId !== run.runGroupId || owner.groupSeq !== run.groupSeq || owner.settledState === resolution.state)
+    // unknown = 서버도 접수 여부를 모른다 — 카드에는 not_found 와 같은 안내('접수 여부를 확인하지 못했습니다')
+    const settled = (resolution.state === "unknown" ? "not_found" : resolution.state) as "needs_collect" | "not_found" | "origin_mismatch";
+    if (!owner || owner.groupId !== run.runGroupId || owner.groupSeq !== run.groupSeq || owner.settledState === settled)
       return { scene, receipt: null };
-    return { scene: { ...scene, comfyCardRuns: { ...scene.comfyCardRuns, [run.cardId]: { ...owner,
-      settledState: resolution.state as "needs_collect" | "not_found" | "origin_mismatch" } } }, receipt: null };
+    return { scene: { ...scene, comfyCardRuns: { ...scene.comfyCardRuns, [run.cardId]: { ...owner, settledState: settled } } }, receipt: null };
   }
   if (!["saved", "failed", "dismissed", "linked"].includes(resolution.state)) return { scene, receipt: null };
   if (resolution.state === "linked") {

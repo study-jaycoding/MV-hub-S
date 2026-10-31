@@ -11,6 +11,7 @@ import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useT } from "../../lib/i18n";
 import { modelBlockMessage } from "../../lib/modelPolicy";
+import { isCanvasFloating } from "../../lib/popupWindows";
 import { sameSceneContent } from "../../lib/sceneAbsorb";
 import { listPersistedScenes, listScenes, type Scene } from "../../lib/scenes";
 import { captureMcpContext, mcpProjects, prepareMcpPlan, sendMcpReply, summarizeMcpContext, versionMcpReferences, type McpContext, type McpReply } from "../../lib/mcpContext";
@@ -333,6 +334,7 @@ export function McpConnection(props: McpConnectionProps) {
     try {
       await executeMcpPlan(initial, {
         check: async () => {
+          if (isCanvasFloating()) throw new Error("캔버스가 별도 창에 떠 있어 실행하지 않았습니다. 창을 닫은 뒤 다시 실행하세요."); // 이 창은 씬을 쓰지 않는다 — 카드만 남기 전에 멈춘다
           await call(connection, "/app/check");
           if (!context.current || context.current.id !== initial.plan.context_id || await mcpSceneHash(await readScene()) !== initial.plan.scene_hash) throw new Error("계획 작성 뒤 캔버스가 바뀌었거나 연결이 새로 시작되었습니다. 새 계획이 필요합니다.");
           for (const item of initial.plan.items) {

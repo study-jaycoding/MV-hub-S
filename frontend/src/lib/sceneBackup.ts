@@ -382,10 +382,11 @@ function ensureInit(scope: string): Promise<InitResult> {
     const { value: merged, confirmed } = confirmSceneWrite(() => restoreCanvasDocuments(scope, scenes));
     const added = merged.added;
     if (!added.length) return "clean"; // 가져올 게 없다
+    if (!merged.ok) return "retry"; // 쓰기가 접수되지 않았다(떠 있는 동안·저장소 상한) — 복구했다고 알리지 않는다
     restoreSubs.forEach((f) => f()); // 화면 값에는 이미 들어갔다 — 열린 캔버스가 즉시 목록을 다시 읽게
     // ★저장소에 **확정된 뒤에만** 복구했다고 보고한다 — 확정 못 한 채 '복구됨'이면 다음 sync 가 빈
     //  확정본을 기준으로 서버 백업을 지운다(코덱스 P0).
-    if (!merged.ok || !(await confirmed)) return "retry";
+    if (!(await confirmed)) return "retry";
     for (const s of added) lastPushed.set(s.id, JSON.stringify(s)); // 복구 에코 방지(서버가 이미 아는 것만)
     adoptReceivedRows(scope, items, new Set(added.map((s) => s.id)));
     return "restored";
@@ -768,7 +769,7 @@ async function runImport(): Promise<number> {
   const added = merged.added;
   if (!added.length) return 0;
   if (!merged.ok || !(await confirmed)) {
-    restoreSubs.forEach((f) => f()); // 화면 값에는 들어갔다 — 목록은 맞춰 준다
+    if (merged.ok) restoreSubs.forEach((f) => f()); // 화면 값에는 들어갔다 — 목록은 맞춰 준다
     throw new Error("가져온 씬을 저장소에 확정하지 못했습니다 — 잠시 뒤 자동으로 다시 시도합니다");
   }
   for (const s of added) lastPushed.set(s.id, JSON.stringify(s)); // 방금 가져온 것 = 서버에 이미 있음

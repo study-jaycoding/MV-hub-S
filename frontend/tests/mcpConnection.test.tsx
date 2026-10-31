@@ -8,7 +8,8 @@ import type { Generation } from "../src/types";
 import type { Scene } from "../src/lib/scenes";
 import type { McpPlanBody, McpPlanRecord } from "../src/lib/mcpPlans";
 
-const io = vi.hoisted(() => ({ http: vi.fn(), scenes: vi.fn(), confirm: vi.fn() }));
+const io = vi.hoisted(() => ({ http: vi.fn(), scenes: vi.fn(), confirm: vi.fn(), floating: false }));
+vi.mock("../src/lib/popupWindows", async (original) => ({ ...await original<typeof import("../src/lib/popupWindows")>(), isCanvasFloating: () => io.floating }));
 vi.mock("../src/lib/http", async (original) => ({ ...await original<typeof import("../src/lib/http")>(), jsonFetch: io.http }));
 vi.mock("../src/lib/scenes", async (original) => ({
   ...await original<typeof import("../src/lib/scenes")>(),
@@ -74,6 +75,7 @@ async function prepare(count = 1) {
 
 beforeEach(async () => {
   vi.resetAllMocks();
+  io.floating = false;
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("crypto", (await vi.importActual<{ webcrypto: Crypto }>("node:crypto")).webcrypto);
   scene = { id: "scene", name: "Scene", created_at: 1, cards: [], edges: [] };
@@ -143,6 +145,16 @@ it("한 번 연결한 뒤 앱 승인 클릭 없이 카드·연결·제출·상�
   expect(await command("get_plan", plan)).toMatchObject({ result: { status: "submitted", execution: { running: false, error: null }, items: [{ state: "submitted", generation_status: "pending" }] } });
   expect((await command("execute_generation_plan", plan)).error).toContain("반복하지 말고");
   expect(api.prepareCreate).toHaveBeenCalledTimes(1);
+});
+
+it("캔버스가 별도 창에 떠 있으면 승인 전에 멈춰 카드·연결·제출이 남지 않고 까닭을 알린다", async () => {
+  await pair();
+  const plan = await prepare();
+  io.floating = true;
+  await command("execute_generation_plan", plan);
+  await until(() => !!host.textContent?.includes("캔버스가 별도 창에 떠 있어 실행하지 않았습니다"));
+  expect(events).toEqual([]);
+  expect(api.prepareCreate).not.toHaveBeenCalled();
 });
 
 it("카드 반영 오류는 서버 제출 성공으로 기록하고 MCP와 화면에 별도로 알린다", async () => {

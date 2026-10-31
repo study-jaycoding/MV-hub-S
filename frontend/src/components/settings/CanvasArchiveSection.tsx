@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useCanvasFloating } from "../../lib/popupWindows";
 import { describeSceneMigration, downloadSceneArchive, importSceneArchiveText } from "../../lib/sceneArchive";
 import { readSceneMigrationInfo, sceneStoreReady, type SceneMigrationInfo } from "../../lib/sceneStore";
 import { isSceneSaveFailing, listScenes, subscribeSceneSaveState } from "../../lib/scenes";
@@ -10,6 +11,7 @@ export function CanvasArchiveSection() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [failing, setFailing] = useState(isSceneSaveFailing);
+  const floating = useCanvasFloating(); // 캔버스가 다른 창에 떠 있는 동안 씬은 그 창만 쓴다 — 가져오기는 저장 입구를 지나지 않아 여기서 막는다
   // 옛 저장 칸에서 옮길 때의 기록 — undefined = 읽는 중, null = 기록 없음.
   const [migration, setMigration] = useState<SceneMigrationInfo | null | undefined>(undefined);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -56,7 +58,7 @@ export function CanvasArchiveSection() {
         <button className="settings-action" onClick={exportAll} disabled={busy}>
           ⤓ 전체 내보내기
         </button>
-        <button className="settings-action" onClick={() => fileRef.current?.click()} disabled={busy}>
+        <button className="settings-action" onClick={() => fileRef.current?.click()} disabled={busy || floating}>
           ⤒ 전체 가져오기
         </button>
       </div>
@@ -77,7 +79,9 @@ export function CanvasArchiveSection() {
           msg ||
           (failing
             ? "⚠ 지금 캔버스가 저장되지 않고 있습니다 — 내보내 두세요."
-            : "이 PC 의 모든 캔버스를 파일 하나로 내려받거나, 그 파일에서 다시 가져옵니다.")
+            : floating
+              ? "캔버스가 별도 창에 떠 있는 동안은 가져올 수 없습니다. 창을 닫은 뒤 가져오세요."
+              : "이 PC 의 모든 캔버스를 파일 하나로 내려받거나, 그 파일에서 다시 가져옵니다.")
         }
       >
         <p>내보낸 파일에는 아직 저장되지 않은 편집까지 들어갑니다. 그림·영상 파일은 들어가지 않습니다(참조만).</p>

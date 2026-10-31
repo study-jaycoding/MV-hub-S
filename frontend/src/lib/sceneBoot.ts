@@ -8,6 +8,7 @@ import {
   flushSceneStoreNow,
   initSceneStore,
   markSceneWritesHanded,
+  setSceneWriteGate,
   unconfirmedSceneWrites,
   type LegacyDiagnosis,
   type LegacyMark,
@@ -20,7 +21,10 @@ import { STORAGE_KEYS } from "./storageKeys";
 import { getAccountNamespace } from "./accountScope";
 import { adoptSceneHistory, historyReadEpoch } from "./sceneUndoStore";
 import { readUndoSlots, savedSceneFingerprint } from "./sceneUndoPersistence";
-import { isCanvasWindow, registerCanvasMemory } from "./popupWindows";
+import { isCanvasFloating, isCanvasWindow, registerCanvasMemory } from "./popupWindows";
+
+// 캔버스가 다른 창에 떠 있는 동안 이 창은 씬을 쓰지 않는다 — 조작은 그 창에서만 되고 씬도 그 창만 쓴다.
+setSceneWriteGate(isCanvasFloating);
 
 // 닫히는 캔버스 창의 미확정 변경을 메인 창이 이어 쓴다(sceneStore 의 '닫히는 창의 넘겨주기'). 메인 창이 받지 못하면 그 창이 지금처럼 직접 쓴다.
 registerCanvasMemory("sceneWrites", {
@@ -223,7 +227,7 @@ function watchLegacyWrites(): void {
   // 옛 판 창이 localStorage 에 쓰면 이 창에 storage 이벤트가 온다(같은 창의 쓰기에는 안 온다).
   // 흡수를 못 하거나 놓쳐도 다음 부팅의 재대조가 따라잡으므로, 여기서는 최선 노력이면 된다.
   window.addEventListener("storage", (event) => {
-    if (event.key !== STORAGE_KEYS.scenes) return;
+    if (event.key !== STORAGE_KEYS.scenes || isCanvasFloating()) return; // 떠 있으면 그 창이 흡수한다 — 이 창은 씬을 쓰지 않는다
     const legacy = readLegacy();
     if (legacy) void absorbLegacyScenes(legacy);
   });

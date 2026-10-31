@@ -23,7 +23,8 @@ import {
 } from "./components/SpotlightPrompt";
 import { ThumbnailGrid } from "./components/ThumbnailGrid";
 import { ensureTeamBase } from "./lib/teamSeen";
-import { canvasWindowLive, EMBED_MODES, isCanvasWindow, leaveCanvasHandoff, openEmbedWindow, takeCanvasHandoff, useCanvasFloating } from "./lib/popupWindows";
+import { bringCanvasForward, canvasWindowLive, EMBED_MODES, isCanvasFloating, isCanvasWindow, leaveCanvasHandoff, openEmbedWindow, takeCanvasHandoff, useCanvasFloating } from "./lib/popupWindows";
+import { settleSceneWrites } from "./lib/sceneStore";
 import { canvasPromptDraft, useCanvasPromptReturn } from "./lib/useCanvasPromptReturn";
 import { CanvasFloatIcon, TopBar } from "./components/TopBar";
 const McpConnection = lazy(() => import("./components/mcp/McpConnection").then((m) => ({ default: m.McpConnection })));
@@ -1624,15 +1625,23 @@ export default function App() {
       openPopup,
       followEnabled: resolveSelectionFollow,
     });
-    if (openPopup) {
+    if (openPopup && !canvasFloating) { // 캔버스가 떠 있으면 그 창이 따라간다 — 이 창은 보던 탭을 떠나지 않는다
       if (filters.tab !== "compose") navTab("compose");
       if (activeSceneId !== targetScene.id) selectSceneWithWorkspace(targetScene.id);
     }
   });
+  // 캔버스가 다른 창에 떠 있는 동안 이 창은 씬을 열거나 옮기지 않는다 — 그 창에서 하도록 알리고 앞으로 가져온다.
+  const canvasIsElsewhere = () => {
+    if (!isCanvasFloating()) return false;
+    flash("캔버스가 별도 창에 떠 있습니다 — 그 창에서 열어 주세요.");
+    bringCanvasForward();
+    return true;
+  };
   // 히스토리 버튼 → 그 생성물 recipe(어떻게 만들었나)를 새 씬 탭으로 연다(편집·재생성 가능). 팀 결과물도 동일.
   // history 없이도 연다 — 파일 드롭 복원처럼 계보 조회가 실패해도 레시피 본체(레퍼런스·모델·
   // 프롬프트)는 생성물 자체에 있어 그릴 수 있다(buildRecipeScene 이 null 을 허용).
   const openRecipe = (g: Generation, history: History | null) => {
+    if (canvasIsElsewhere()) return;
     importSceneSnapshot(buildRecipeScene(g, history));
     setSceneBinding(null);
     setSceneSelGens([]);
@@ -1923,14 +1932,42 @@ export default function App() {
   // ★씬 탭 바에서 고정 '히스토리' 탭이 빠져 이 버튼들이 유일한 진입로다 — 활성 씬을 내려놓아야
   //   (activeScene null) 캔버스 대신 트리가 실제로 렌더된다. 돌아갈 땐 씬 탭을 클릭.
   const onOpenInBoard = (g: Generation) => {
+    if (canvasIsElsewhere()) return;
     selectScene(null);
     enterBoard(g.id);
   };
 
   // 미리보기(크게 보기) '구성에서 보기' → 구성탭 계보 트리(위와 동일).
   const onOpenInBoardFromPreview = (genId: string) => {
+    if (canvasIsElsewhere()) return;
     selectScene(null);
     enterBoard(genId);
+  };
+
+  // 캔버스 탭 휠 클릭 → 캔버스를 새 창으로. 새 창은 저장소에서 씬을 읽으므로 밀린 입력과 저장 중인 쓰기가 모두 확정된 뒤에 연다
+  //  (평소에는 밀린 것이 없어 곧바로 열린다). 끝나지 않으면 열지 않는다 — 저장이 막힌 채 띄우면 창마다 카드가 달라진다.
+  const openingCanvasRef = useRef(false);
+  const canvasViewRef = useRef({ promptVisible, batchCount, sceneId: activeScene?.id ?? null }); // 저장을 기다리는 동안 바뀐 값도 넘기게
+  canvasViewRef.current = { promptVisible, batchCount, sceneId: activeScene?.id ?? null };
+  const openCanvasWindow = async () => {
+    if (canvasWindowLive()) return openEmbedWindow(EMBED_MODES.canvas); // 이미 떠 있다 — 앞으로 가져올 뿐
+    if (openingCanvasRef.current) return;
+    openingCanvasRef.current = true;
+    try {
+      const settled = await settleSceneWrites(3000, () => sceneActionRef.current?.flushPending(), () => {
+        const { sceneId, ...view } = canvasViewRef.current;
+        // 새 창이 보던 그대로 시작하게 저장 안 되는 화면 값을 넘긴다(lib/popupWindows)
+        leaveCanvasHandoff({
+          ...view, prompt: spotlightPromptRef.current?.shownModel() ?? null,
+          promptDraft: canvasPromptDraft(spotlightPromptRef.current, sceneId),
+          selection: sceneActionRef.current?.selection() ?? null, // 고른 카드·그룹(Jay "선택도 넘긴다")
+        });
+        openEmbedWindow(EMBED_MODES.canvas);
+      });
+      if (!settled) flash("캔버스 저장이 끝나지 않아 창을 띄우지 않았습니다. 잠시 뒤 다시 시도해 주세요.");
+    } finally {
+      openingCanvasRef.current = false;
+    }
   };
 
   const onLogout = async () => {
@@ -2507,19 +2544,7 @@ export default function App() {
           flash(msg);
         }}
         onOpenAssets={openAssetsWindow}
-        onOpenCanvas={() => {
-          // 새 창은 저장소에서 씬을 읽는다 — 아직 입력 대기 중인 글을 먼저 내보내 그 창이 낡은 씬으로 시작하지 않게
-          if (activeScene) flushScenePending(activeScene.id);
-          // 새 창이 보던 그대로 시작하게 저장 안 되는 화면 값을 넘긴다(lib/popupWindows) — 이미 떠 있으면 앞으로 가져올 뿐이라 넘기지 않는다
-          if (!canvasWindowLive()) {
-            leaveCanvasHandoff({
-              promptVisible, batchCount, prompt: spotlightPromptRef.current?.shownModel() ?? null,
-              promptDraft: canvasPromptDraft(spotlightPromptRef.current, activeScene?.id ?? null),
-              selection: sceneActionRef.current?.selection() ?? null, // 고른 카드·그룹(Jay "선택도 넘긴다")
-            });
-          }
-          openEmbedWindow(EMBED_MODES.canvas);
-        }}
+        onOpenCanvas={() => void openCanvasWindow()}
         canvasFloating={canvasFloating}
         onOpenMcp={() => { setMcpLoaded(true); setMcpOpen(true); }}
         onOpenManage={canOpenManage ? openManageWindow : undefined}

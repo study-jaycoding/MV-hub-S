@@ -4,7 +4,7 @@ import type { SaveComfyOptions, SaveComfyResult } from "./sceneComfyLibrary";
 import { useRef, useState } from "react";
 import type { MutableRefObject } from "react";
 import type { Generation } from "../types";
-import { computeMaxParallel, createBatchTracker, createLimiter, type StepOutcome } from "./comfyRunState";
+import { computeMaxParallel, createBatchTracker, createLimiter, type ComfyCanvasRun, type StepOutcome } from "./comfyRunState";
 import { comfyApi, ComfyUnresolvedRunError, type ComfyOutput } from "./comfyApi";
 import {
   executeSceneComfy,
@@ -40,8 +40,9 @@ import {
   isSceneGenerationInputSnapshotCurrent,
   type SceneGenerationAssignment,
 } from "./sceneGenerationInputs";
-import { setComfyRunning as setStoredComfyRunning } from "./sceneComfyRunningStore";
+import { isComfyAttemptActive, isComfyRunning, setComfyRunning as setStoredComfyRunning } from "./sceneComfyRunningStore";
 import { flashMsg } from "./flash";
+import { t } from "./i18n";
 import {
   cardBatch,
   type SceneCard,
@@ -160,16 +161,50 @@ export function useSceneComfyExecution({
   const conflictNotice = async (ids: string[]): Promise<string | null> => {
     if (!readScene()?.comfyRuns?.some(run => ids.includes(run.cardId) && run.localState !== "applied")) return null;
     const account = getAccountNamespace(), sceneId = sceneIdRef.current, connection = getConnectionKey(), token = getAuthToken();
+    const current = () => account === getAccountNamespace() && sceneId === sceneIdRef.current && connection === getConnectionKey()
+      && token === getAuthToken() && !isCanvasFloating() && isDocumentCurrent();
     try {
       const origin = await comfyApi.canvasOrigin();
-      if (account !== getAccountNamespace() || sceneId !== sceneIdRef.current || connection !== getConnectionKey()
-        || token !== getAuthToken() || isCanvasFloating() || !isDocumentCurrent())
-        return "Comfy 실행 대상이 변경되어 제출하지 않았습니다.";
-      return readScene()?.comfyRuns?.some(run => ids.includes(run.cardId) && run.localState !== "applied"
-        && run.originHubId === origin.hub_id && run.originDeviceId === origin.device_id) ? COMFY_CONFLICT_MESSAGE : null;
+      if (!current()) return "Comfy 실행 대상이 변경되어 제출하지 않았습니다.";
+      const blocking = readScene()?.comfyRuns?.filter(run => ids.includes(run.cardId) && run.localState !== "applied"
+        && run.originHubId === origin.hub_id && run.originDeviceId === origin.device_id) || [];
+      return !blocking.length || await clearUnconfirmedRuns(blocking, account, current) ? null : COMFY_CONFLICT_MESSAGE;
     } catch {
       return "Comfy 실행 정보를 확인하지 못했습니다. 잠시 후 다시 실행하세요.";
     }
+  };
+  // 전송했지만 접수 여부를 모르는 기록은 저절로 지우지 않아 카드가 막힌다 — 사람이 다시 실행할 때 확인을 받고 지운다. 안내는 카드에 하나지만 복사본은 여럿이라,
+  //  지우기 직전에 서버에 다시 물어 전부 없을 때만 묻는다. 하나라도 살아 있거나 어느 창에서 돌고 있으면 지우지 않는다(그 결과가 카드에 못 붙고 다시 실행으로 두 번 돈다).
+  //  서버에 묻거나 지우는 사이 상황이 바뀔 수 있어, 묻기 전·확인 창 직전·기록 하나를 지울 때마다 다시 본다.
+  const clearUnconfirmedRuns = async (blocking: ComfyCanvasRun[], account: string, current: () => boolean): Promise<boolean> => {
+    const sceneId = sceneIdRef.current;
+    const idle = () => !blocking.some(run => isComfyAttemptActive(account, run.attemptId) || isComfyRunning(run.cardId));
+    // 남은 기록이 그대로이고 그 카드에 다른 미적용 시도가 없을 때만 — 다른 PC 의 시도는 여기서 확인할 수 없다
+    const clearable = (rest: ComfyCanvasRun[]) => {
+      const scene = readScene();
+      const unapplied = scene?.comfyRuns?.filter(run => rest.some(item => item.cardId === run.cardId) && run.localState !== "applied") || [];
+      return current() && idle() && unapplied.length === rest.length && rest.every(run => {
+        const now = unapplied.find(item => item.attemptId === run.attemptId);
+        return now?.localState === "submitted" && !now.receipt && scene?.comfyCardRuns?.[run.cardId]?.settledState === "not_found";
+      });
+    };
+    if (!clearable(blocking)) return false;
+    const { runs } = await comfyApi.resolveCanvasRuns(blocking.map(run => run.attemptId));
+    const states = new Map(runs.map(item => [item.attempt_id, item.state]));
+    if (!clearable(blocking) || !blocking.every(run => ["not_found", "unknown"].includes(states.get(run.attemptId) || ""))) return false;
+    if (!window.confirm(t("이전 Comfy 실행이 접수됐는지 확인하지 못했습니다. 기록을 지우고 다시 실행할까요? 접수된 실행이면 두 번 실행될 수 있습니다."))) return false;
+    const canWrite = () => current() && idle();
+    // 카드의 현재 묶음을 마지막에 지운다 — 그 묶음이 비면 접수 안내가 풀려 나머지를 못 지운다(옛 편집 채택으로 묶음이 섞일 수 있다)
+    const latestGroup = (run: ComfyCanvasRun) => readScene()?.comfyCardRuns?.[run.cardId]?.groupId === run.runGroupId ? 1 : 0;
+    const ordered = [...blocking].sort((a, b) => latestGroup(a) - latestGroup(b));
+    for (const [index, run] of ordered.entries()) {
+      if (!clearable(ordered.slice(index))) return false;
+      const attempt = readScene()?.comfyRuns?.find(item => item.attemptId === run.attemptId);
+      if (!attempt || !canvasDocument) return false;
+      const cleanup = canvasDocument.commit({ accountNamespace: account, sceneId }, { type: "discardUnsubmittedComfy", attempt, canWrite });
+      if (!cleanup.queued || !await cleanup.confirmed) return false;
+    }
+    return !readScene()?.comfyRuns?.some(run => blocking.some(item => item.attemptId === run.attemptId));
   };
   const newGroup = (cardId: string) => {
     const before = readScene()?.comfyCardRuns?.[cardId]?.groupId;
