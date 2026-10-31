@@ -87,6 +87,8 @@ interface PendingOp {
   absorb?: (patch: unknown) => void;
   /** 저장으로 떠났다 — 이 뒤로는 합치지 않는다(이미 계산해 쓴 뒤에 합치면 그 입력이 사라진다). */
   flying?: boolean;
+  /** 메인 창이 넘겨받았다(markSceneWritesHanded) — 이미 출발한 실행도 재생하지 않는다. */
+  handed?: boolean;
 }
 let pending: PendingOp[] = [];
 
@@ -423,6 +425,7 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
           const base = scenes ?? confirmed;
           live = { ...base };
           for (const op of batch) {
+            if (op.handed) continue;
             try {
               op.mutate(live);
             } catch (error) {
@@ -1152,6 +1155,55 @@ function refreshFromStore(): Promise<boolean> {
 /** 지금 접수돼 있는 연산을 바로 확정하러 보낸다(창이 가려질 때 등). 확정을 기다리지는 않는다. */
 export function flushSceneStoreNow(): void {
   if (pending.length) void runStoreTx();
+}
+
+/** 저장소를 지금 다시 읽는다 — 떠 있던 캔버스 창이 닫힌 뒤 메인 창이 낡은 씬을 그리지 않게(lib/popupWindows). false = 읽지 못했다. */
+export function refreshSceneStore(): Promise<boolean> {
+  return refreshFromStore();
+}
+
+// ── 닫히는 창의 넘겨주기 ─────────────────────────────────────────────────────────
+// 닫히는 페이지의 쓰기는 끝난다는 보장이 없다(앞 트랜잭션을 기다리는 쓰기는 출발하지 못하고, 트랜잭션도 메타를 읽은 뒤에야 put 한다).
+// 그래서 캔버스 창은 닫힐 때 미확정 변경을 동기 호출로 메인 창에 넘긴다(docs/status/캔버스_닫는순간_2026-10-31.md).
+export interface SceneHandover {
+  bucket: string;
+  created: Scene[];
+  changed: Scene[];
+  removed: string[];
+  order: string[] | null; // 씬 순서가 달라졌을 때만 — 늘 보내면 다른 창이 바꾼 순서를 되돌린다
+}
+
+/** 확정본 위에 밀린 연산을 재생한 결과와 확정본의 차이. 씬 단위다 — 버킷 통째로 넘기면 다른 창이 확정한 변경을 지운다(위 PENDING_MAX 주석). */
+export function unconfirmedSceneWrites(): SceneHandover[] {
+  const next: ScenesByProject = { ...confirmed };
+  for (const op of pending) {
+    if (op.confirmedOnly) continue; // 저장소 내용을 보고 정하는 연산(계정 귀속) — 씬 차이로 바꾸면 그 조건이 사라진다. 이 창에 남아 직접 쓰인다
+    try {
+      op.mutate(next);
+    } catch {
+      // 재생할 수 없는 연산 — 확정 때도 버려진다.
+    }
+  }
+  return Object.entries(next).flatMap(([bucket, after]) => {
+    const before = confirmed[bucket];
+    if (after === before) return [];
+    const was = new Map((before || []).map((scene) => [scene.id, scene]));
+    const fresh = after.filter((scene) => was.get(scene.id) !== scene);
+    const ids = new Set(after.map((scene) => scene.id));
+    const removed = [...was.keys()].filter((id) => !ids.has(id));
+    const order = before && sameIds(before, after) ? null : after.map((scene) => scene.id);
+    if (!fresh.length && !removed.length && !order) return [];
+    return [{ bucket, created: fresh.filter((scene) => !was.has(scene.id)), changed: fresh.filter((scene) => was.has(scene.id)), removed, order }];
+  });
+}
+
+/** 메인 창이 받았다 — 넘긴 연산은 이 창에서 더 쓰지 않는다. 표시는 연산마다 달려, 이미 출발한 실행의 재생도 건너뛴다(runStoreTx). */
+export function markSceneWritesHanded(): void {
+  pending = pending.filter((op) => {
+    if (op.confirmedOnly) return true;
+    op.handed = true;
+    return false;
+  });
 }
 
 // ── 시험 전용 ────────────────────────────────────────────────────────────────

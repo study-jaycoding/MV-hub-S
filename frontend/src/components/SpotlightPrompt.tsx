@@ -56,7 +56,7 @@ import {
 import type { ChipRef, HistEntry, PromptPart } from "../lib/promptEditor";
 import { copyText, flashMsg } from "../lib/flash";
 import { libraryDraftKey, readLibraryDraft, writeLibraryDraft, type LibraryPromptDraft } from "../lib/libraryPromptDraft";
-import { takeCanvasHandoff } from "../lib/popupWindows";
+import { takeCanvasHandoff, type CanvasPromptDraft } from "../lib/popupWindows";
 import { dataTransferHasFiles, displayRefThumb, filesFromDataTransfer } from "../lib/media";
 import {
   emptySeedanceTokenRoles,
@@ -176,6 +176,8 @@ interface Props {
   onCanvasBatchCreated?: (created: Generation[]) => void;
 }
 
+const CANVAS_RETURN_TTL_MS = 10_000; // 돌려받은 캔버스 프롬프트 값이 묶임을 기다리는 시간 — 메인 창이 그 씬으로 돌아오는 데 쓰는 틈이다
+
 export interface SpotlightPromptHandle {
   submit: (
     batch?: number,
@@ -185,6 +187,10 @@ export interface SpotlightPromptHandle {
   // 하단에 지금 보이는 모델·옵션 스냅샷 — 캔버스 렌더가 모델 노드 없는 생성카드에 쓰는 폴백.
   // submit 과 같은 게이트(모델 없음·옵션 로딩 중·옵션이 아직 이전 모델 것)면 null.
   currentModel: () => SceneModelCfg | null;
+  // 캔버스 창 왕복(lib/useCanvasPromptReturn) — 지금 고른 종류·모델(옵션을 읽는 중이면 옵션 없이) · 카드를 안 고른 캔버스의 글 · 돌려받은 값 놓기.
+  shownModel: () => SceneModelCfg | null;
+  canvasDraft: () => string;
+  adoptCanvasPrompt: (returned: CanvasPromptDraft & { model: SceneModelCfg | null }) => void;
   // 씬 일괄 생성 오류도 내부 setError → onErrorChange 통로로 표시한다.
   reportError: (message: string | null) => void;
 }
@@ -750,6 +756,28 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bindingKey, bindingModelKey]);
+  // 캔버스 창 왕복으로 받은 모델·글 — 그 씬의 카드 없는 묶임이 될 때 함께 놓는다. 위 두 effect 뒤라 편집기 비우기·라이브러리 모델 보관이 먼저 끝난다(그래서 라이브러리
+  //  값이 오염되지 않는다). 같은 키로 돌아오면 묶임 effect 가 다시 돌지 않으므로 returnedTurn 으로도 돈다. 끝내 안 맞으면 나중에 옛 글이 나오지 않게 버린다.
+  const [handedDraft] = useState(() => takeCanvasHandoff()?.promptDraft ?? null);
+  const returnedRef = useRef(handedDraft?.draft ? { ...handedDraft, model: null as SceneModelCfg | null, at: Date.now() } : null);
+  const [returnedTurn, setReturnedTurn] = useState(0);
+  useEffect(() => {
+    const returned = returnedRef.current;
+    const ed = editorRef.current;
+    if (!returned || !ed || returned.key !== bindingKey) return;
+    returnedRef.current = null;
+    if (Date.now() - returned.at > CANVAS_RETURN_TTL_MS) return;
+    const handed = returned.model;
+    // 옵션 없이 온 같은 모델 — 옵션을 읽는 중에 닫았다. 지금 옵션을 기본값으로 되돌리지 않는다
+    if (handed?.model && (handed.model !== model || Object.keys(handed.params ?? {}).length))
+      applyModelCfg(handed.type as "image" | "video" | "audio", handed.model, handed.params ?? {});
+    restoreParts(ed, draftParse(returned.draft));
+    lastPromptFpRef.current = JSON.stringify(serializeParts(ed));
+    scheduleLiveWrap();
+    updatePlaceholder();
+    bumpPromptTick();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bindingKey, returnedTurn]);
   // 씬/라이브러리 옵션 복원 effect 뒤에 둔다. 함수형 갱신으로 방금 복원된 edit/extension을 보존한다.
   useEffect(() => {
     if (model !== "seedance_2_5" || paramsLoading || paramsModel !== model || readSelectedModel() !== model) return;
@@ -1417,7 +1445,15 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       params: { ...optionValues },
     };
   }, [type, model, paramsLoading, paramsModel, typeModels, optionValues]);
-  useImperativeHandle(ref, () => ({ submit, currentModel, reportError: setError }), [submit, currentModel]);
+  useImperativeHandle(ref, () => ({
+    submit, currentModel, reportError: setError,
+    shownModel: () => (model ? { type, model, params: !paramsLoading && paramsModel === model ? { ...optionValues } : {} } : null),
+    canvasDraft: () => (bindingPromptKey === "none" && editorRef.current ? JSON.stringify(serializeParts(editorRef.current)) : ""),
+    adoptCanvasPrompt: (returned) => {
+      returnedRef.current = { ...returned, at: Date.now() };
+      setReturnedTurn((turn) => turn + 1);
+    },
+  }));
 
   // 드롭다운(model/ratio) Esc 닫기 — 맨 위 겹으로(lib/useEscapeClose): 같은 Esc 가 뒤 화면의 선택까지 풀지 않고, 떠 있는 동안 뒤 단축키도
   //  쉰다. 도크는 숨겨도 마운트돼 있으므로 **숨기면 닫는다** — 열림이 남으면 보이지 않는 겹이 키를 다 막고 다른 곳의 첫 Esc 를 삼킨다

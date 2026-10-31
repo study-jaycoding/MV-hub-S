@@ -515,6 +515,7 @@ const EN: Record<string, string> = {
   "캔버스": "Canvas",
   "캔버스 — 씬 캔버스 · 히스토리 뷰": "Canvas — scene canvas & History view",
   "캔버스가 별도 창에 떠 있습니다": "Canvas is open in a separate window",
+  "저장이 막혀 있습니다 — 설정의 [전체 내보내기]로 작업을 받아 두세요": "Saving is blocked — use Export all in Settings to keep your work",
   "히스토리 보기": "History view",
   "관리자 — 멤버 등급·프로젝트 관리": "Admin — roles & projects",
   "Assets (구성) — 별도 창": "Assets — separate window",

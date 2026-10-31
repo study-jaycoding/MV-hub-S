@@ -2,9 +2,10 @@ import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
 import { PromptProvider } from "./lib/prompt";
 import { installFileDropGuard } from "./lib/media";
-import { announceCanvasWindow, EMBED_MODES, isCanvasWindow, shareCanvasMemory } from "./lib/popupWindows";
+import { announceCanvasWindow, EMBED_MODES, isCanvasWindow, setCanvasReturnRead, shareCanvasMemory } from "./lib/popupWindows";
 import { applyAccent, applyReduceMotion, loadAccent, loadLang, loadReduceMotion } from "./lib/theme";
 import { bootSceneStore, readLegacyScenesRaw, restoreUndoHistories } from "./lib/sceneBoot";
+import { refreshSceneStore } from "./lib/sceneStore";
 import { installApiGate } from "./lib/http";
 import { installPopupLogoutWatch } from "./lib/otherTabLogout";
 import "./styles.css";
@@ -113,7 +114,10 @@ if (cleanFeed) {
   if (isCanvasWindow()) {
     document.title = `${document.title} — 캔버스`;
     announceCanvasWindow(); // 메인 창의 되돌리기 기록·복사한 노드도 이때 받아 온다
-  } else shareCanvasMemory(); // 이 창이 연 캔버스 창이 창 메모리를 받아 가고 돌려줄 손잡이(lib/popupWindows)
+  } else {
+    shareCanvasMemory(); // 이 창이 연 캔버스 창이 창 메모리를 받아 가고 돌려줄 손잡이(lib/popupWindows)
+    setCanvasReturnRead(refreshSceneStore); // 그 창이 닫히면 저장본을 다시 읽은 뒤에 캔버스를 돌려준다
+  }
   // ★순서를 강제한다: 저장소 열기·이관 완료 → App 마운트 → (App 안에서) 백업 미러.
   //  App 의 effect 로 미루면 늦다 — 첫 렌더에서 이미 씬 목록을 읽는다(useSceneCoordination).
   void bootSceneStore().then(async (result) => {

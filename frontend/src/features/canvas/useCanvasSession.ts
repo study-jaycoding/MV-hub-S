@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type MutableRefObject } from "react";
 import { getAccountNamespace } from "../../lib/accountScope";
 import { uid, settleComfyRunning, type Scene, type SceneRef } from "../../lib/scenes";
+import { onCanvasMemoryReturn } from "../../lib/popupWindows";
 import { isComfyRunning } from "../../lib/sceneComfyRunningStore";
 import { freezeLegacyCollectorOrder } from "../../lib/sceneEdges";
 import { appendSceneReferenceCards, pasteSceneClipboard, type SceneClipboard } from "../../lib/sceneInteractions";
@@ -88,11 +89,19 @@ export function useCanvasSession(options: Omit<Parameters<typeof useSceneHistory
     gestureActiveRef.current = null;
     mounted.current = false;
   };
-  const lifecycle = useRef({ flush, dispose }); lifecycle.current = { flush, dispose };
+  // 캔버스 창이 값을 돌려주기 전에 — 끌기 끝맺음 → 밀린 입력 확정. 그래야 돌려준 되돌리기·다시 실행 기록과 넘긴 씬이 서로 맞다.
+  const settle = () => {
+    if (!current()) return;
+    gestureActiveRef.current?.finish();
+    input.flushPending();
+    history.endGesture();
+  };
+  const lifecycle = useRef({ flush, dispose, settle }); lifecycle.current = { flush, dispose, settle };
   useLayoutEffect(() => {
     mounted.current = true;
     return () => lifecycle.current.dispose();
   }, []);
+  useEffect(() => onCanvasMemoryReturn(() => lifecycle.current.settle()), []);
   useEffect(() => {
     const hide = () => { lifecycle.current.flush(); };
     const visibility = () => { if (document.visibilityState === "hidden") hide(); };

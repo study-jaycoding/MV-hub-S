@@ -242,8 +242,9 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
     const applyExternal = () => {
       recoverConflicts(); // 방금 보관된 충돌이 있으면 새 탭으로 살린다(끝나면 통지가 다시 와 목록에 나타난다)
       const latest = listScenes(null);
+      const following = followStoreRef.current; // 받은 때의 값 — 아래 함수는 그릴 때 돌아, 그새 떠 있음이 풀리면 낡은 씬을 지키고 알림을 띄운다
       setScenes((prev) => {
-        if (followStoreRef.current) return latest; // 캔버스가 다른 창에 떠 있다 — 지킬 내 편집이 없다(위 followStore)
+        if (following) return latest; // 캔버스가 다른 창에 떠 있다 — 지킬 내 편집이 없다(위 followStore)
         const activeId = activeSceneIdRef.current;
         const myActive = activeId ? prev.find((s) => s.id === activeId) : undefined;
         const latestActive = activeId ? latest.find((s) => s.id === activeId) : undefined;

@@ -7,16 +7,28 @@ import {
   absorbLegacyScenes,
   flushSceneStoreNow,
   initSceneStore,
+  markSceneWritesHanded,
+  unconfirmedSceneWrites,
   type LegacyDiagnosis,
   type LegacyMark,
+  type SceneHandover,
   type SceneStoreInit,
 } from "./sceneStore";
-import { adoptLegacyBucket, type ScenesByProject } from "./scenes";
+import { adoptCanvasSceneWrites, adoptLegacyBucket, type ScenesByProject } from "./scenes";
 import { loadJSON, loadString, saveString } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 import { getAccountNamespace } from "./accountScope";
 import { adoptSceneHistory, historyReadEpoch } from "./sceneUndoStore";
 import { readUndoSlots, savedSceneFingerprint } from "./sceneUndoPersistence";
+import { isCanvasWindow, registerCanvasMemory } from "./popupWindows";
+
+// 닫히는 캔버스 창의 미확정 변경을 메인 창이 이어 쓴다(sceneStore 의 '닫히는 창의 넘겨주기'). 메인 창이 받지 못하면 그 창이 지금처럼 직접 쓴다.
+registerCanvasMemory("sceneWrites", {
+  durable: true,
+  save: () => (isCanvasWindow() ? unconfirmedSceneWrites() : null),
+  load: (value) => Array.isArray(value) && value.length > 0 && adoptCanvasSceneWrites(value as SceneHandover[]),
+  accepted: markSceneWritesHanded,
+});
 
 const readLegacy = (): ScenesByProject | null =>
   loadJSON<ScenesByProject>(STORAGE_KEYS.scenes) ?? null;

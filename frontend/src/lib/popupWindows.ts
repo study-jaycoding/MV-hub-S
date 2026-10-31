@@ -49,7 +49,7 @@ export function openEmbedWindow(mode: EmbedMode): void {
   const opts = WINDOW_OPTIONS[mode];
   if (window.name === opts.name) return; // 이 창이 그 창이다 — 같은 이름으로 열면 제 창을 다시 읽는다
   // 떠 있는 캔버스 창의 참조를 잃었다(이 창을 새로 고침) — 주소를 주면 그 창을 다시 읽으니 빈 주소로 그 창만 잡는다
-  const reacquire = mode === EMBED_MODES.canvas && canvasFloating;
+  const reacquire = mode === EMBED_MODES.canvas && canvasWindowLive();
   if (mode === EMBED_MODES.canvas && !reacquire) beginCanvasHandoff(); // 열기 전에 — 새 창은 이 창의 sessionStorage 를 복사해 같은 인계 번호를 본다
   // window.open 이 이미 url 로 내비게이션한다 — location.href 재대입은 같은 페이지를 두 번
   // 로드시켜(번들 재평가 + 부팅 API 세트 2회) 창 열기를 늦추던 원인이라 제거.
@@ -128,7 +128,10 @@ function refreshOpen(): void {
   for (const mode of Object.values(EMBED_MODES)) {
     const open = isEmbedWindowOpen(mode);
     if (open !== !!lastOpen[mode]) changed = true;
-    if (mode === EMBED_MODES.canvas && !open && lastOpen[mode]) setCanvasFloating(false); // 이 창이 연 캔버스 창이 닫혔다 — 'closed' 신호를 못 받았어도
+    if (mode === EMBED_MODES.canvas && !open && lastOpen[mode]) { // 이 창이 연 캔버스 창이 닫혔다 — 'closed' 신호를 못 받았어도
+      if (canvasReturnRead) waitCanvasReturn();
+      else setCanvasFloating(false);
+    }
     lastOpen[mode] = open;
     if (open) anyOpen = true;
   }
@@ -178,8 +181,8 @@ export function announceCanvasWindow(): void {
     if (event.data === "ping") channel.postMessage("open");
   };
   channel.postMessage("open");
-  window.addEventListener("pagehide", () => {
-    returnCanvasMemory(); // 'closed' 보다 먼저 — 메인 창이 캔버스를 다시 그리기 전에 되돌리기 기록을 받아 두게
+  window.addEventListener("pagehide", (event) => {
+    returnCanvasMemory(event.persisted); // 'closed' 보다 먼저 — 메인 창이 캔버스를 다시 그리기 전에 되돌리기 기록을 받아 두게
     channel.postMessage("closed");
   });
 }
@@ -188,23 +191,68 @@ let canvasFloating = false;
 const floatingListeners = new Set<() => void>();
 let floatingChannel: BroadcastChannel | null = null;
 let closedTimer: ReturnType<typeof setTimeout> | undefined;
+// 떠 있던 창이 닫힌 뒤 캔버스를 돌려주기 전의 읽기(저장소 다시 읽기) — 닫는 창의 마지막 알림은 오지 않을 수 있어, 그대로 돌려주면 메인 창이 낡은 씬을
+//  그리고 다음 저장이 그 글을 덮는다(2026-10-31 실측, docs/status/캔버스_닫는순간_2026-10-31.md). 떠 있는 동안은 저장본을 그대로 받으므로 풀기 전에 읽는다.
+let canvasReturnRead: (() => Promise<boolean>) | null = null;
+let returnTurn = 0; // 돌려주기 시도 번호 — "open"·다시 열기가 오면 바뀌어, 진행 중인 읽기가 끝나도 풀지 않는다
+let returnReading = false;
+const RETURN_RETRY_MS = 1_000;
+const RETURN_RETRY_MAX_MS = 30_000;
+
+/** 메인 창 — 캔버스를 돌려주기 전에 부를 읽기를 단다. 없으면(분리 창·시험) 곧바로 푼다. */
+export function setCanvasReturnRead(read: () => Promise<boolean>): void {
+  canvasReturnRead = read;
+}
 
 function setCanvasFloating(next: boolean): void {
   clearTimeout(closedTimer);
+  closedTimer = undefined;
+  returnTurn += 1;
+  returnReading = false;
   if (next === canvasFloating) return;
   canvasFloating = next;
   floatingListeners.forEach((listener) => listener());
 }
 
-function onCanvasMessage(event: MessageEvent): void {
-  if (event.data === "open") setCanvasFloating(true);
-  else if (event.data === "closed") {
-    clearTimeout(closedTimer);
-    // 참조가 없으면(이 창을 새로 고친 뒤) 닫힌 것으로 본다 — 새로 고침이었다면 그 창이 켜지며 "open" 으로 다시 띄운다
-    closedTimer = setTimeout(() => {
-      if (!isEmbedWindowOpen(EMBED_MODES.canvas)) setCanvasFloating(false);
-    }, RELOAD_GRACE_MS);
+// 읽기에 성공해야 푼다 — 실패한 채 풀면 낡은 보드가 열려 같은 소실이 난다. 낡은 보드를 여는 것보다 '떠 있음'이 남는 쪽이 안전하다.
+// shortcut: 끝나지 않는 읽기(실패가 아니라 멈춤)는 다시 읽지 못해 떠 있음이 남는다 — 데이터는 안전하다. 실제로 겪으면 읽기에 제한 시간을 둔다.
+async function returnCanvas(): Promise<void> {
+  const read = canvasReturnRead;
+  if (!read) return setCanvasFloating(false);
+  const turn = returnTurn;
+  returnReading = true;
+  for (let wait = RETURN_RETRY_MS; turn === returnTurn; wait = Math.min(wait * 2, RETURN_RETRY_MAX_MS)) {
+    if (await read().catch(() => false)) {
+      if (turn === returnTurn) setCanvasFloating(false);
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, wait));
   }
+}
+
+// 닫힘 신호와 .closed 가 둘 다 와도 읽기는 한 번이다. 틈을 두는 까닭은 새로 고침과 가르고, 닫기 직전의 'saved' 가 닿을 시간을 주려는 것.
+function waitCanvasReturn(): void {
+  if (!canvasFloating || returnReading || closedTimer !== undefined) return;
+  // 참조가 없으면(이 창을 새로 고친 뒤) 닫힌 것으로 본다 — 새로 고침이었다면 그 창이 켜지며 "open" 으로 다시 띄운다
+  closedTimer = setTimeout(() => {
+    closedTimer = undefined;
+    if (!isEmbedWindowOpen(EMBED_MODES.canvas)) void returnCanvas();
+  }, RELOAD_GRACE_MS);
+}
+
+function onCanvasMessage(event: MessageEvent): void {
+  if (event.data === "open") {
+    if (openWindows[EMBED_MODES.canvas]?.closed) { // 닫힌 창의 참조 — 지금 떠 있는 창은 이 창이 연 그 창이 아니다
+      openWindows[EMBED_MODES.canvas] = null;
+      lastOpen[EMBED_MODES.canvas] = false; // .closed 확인이 그 창이 닫혔다고 다시 풀지 않게
+    }
+    setCanvasFloating(true);
+  } else if (event.data === "closed") waitCanvasReturn();
+}
+
+/** 떠 있는 창이 살아 있다고 볼 수 있나 — 닫혀 돌아오는 중이면 아니다(새로 여는 길로 간다). 참조가 없으면 신호로만 안다. */
+export function canvasWindowLive(): boolean {
+  return canvasFloating && !openWindows[EMBED_MODES.canvas]?.closed;
 }
 
 function subscribeCanvasFloating(listener: () => void): () => void {
@@ -236,14 +284,25 @@ export function isCanvasFloating(): boolean {
 // 돌려준다 — 여는 창이 하나로 정해져 답이 갈리지 않고, 닫는 순간에도 동기 호출이라 유실이 없다. 각 저장소가 이름을 붙여 등록한다.
 export interface CanvasMemoryPart {
   save: () => unknown;
-  load: (value: unknown) => void;
+  load: (value: unknown) => boolean | void; // true = 받아서 이제 이 창의 책임이다(durable 칸)
   flush?: () => void; // 내보내기 전에 열린 화면의 값을 저장소에 남긴다(열린 보드의 되돌리기 기록)
   begin?: () => void; // 이 창이 캔버스 창을 새로 열 때(인계 시작) — 돌려받을 때 견줄 기준을 잡는다
+  durable?: boolean; // 받는 창이 끝까지 써야 하는 칸 — 받는 창이 닫히는 중이거나 보내는 문서가 돌아올 수 있으면 넘기지 않는다
+  accepted?: () => void; // 보낸 쪽 — 받는 창이 true 로 답했다
 }
-type CanvasMemoryPort = { save: () => Record<string, unknown>; load: (memory: Record<string, unknown>) => void };
+type CanvasMemoryPort = { save: () => Record<string, unknown>; load: (memory: Record<string, unknown>) => string[] | void };
 const MEMORY_PORT = "__mvhubCanvasMemory";
 const memoryParts = new Map<string, CanvasMemoryPart>();
 let openerMemory: Record<string, unknown> | null = null;
+const beforeMemoryReturn = new Set<() => void>();
+
+/** 캔버스 창 — 값을 돌려주기 전에 부를 확정(열린 보드의 끌기·밀린 입력). pagehide 듣기는 등록 순서대로 돌아 돌려주기가 보드의 듣기보다 먼저다. */
+export function onCanvasMemoryReturn(settle: () => void): () => void {
+  beforeMemoryReturn.add(settle);
+  return () => {
+    beforeMemoryReturn.delete(settle);
+  };
+}
 
 // 인계 번호 — 메인 창이 캔버스 창을 새로 열 때마다 정한다. sessionStorage 라 메인 창을 새로 고쳐도 남고, 새 창은 열 때 복사본을 받아
 //  같은 번호를 본다. 돌려받은 기록은 이 번호가 맞을 때만 들인다(sceneUndoStore.adoptSceneHistory).
@@ -276,17 +335,45 @@ export function registerCanvasMemory(name: string, part: CanvasMemoryPart): void
   deliverOpenerMemory(name, part);
 }
 
+// 칸마다 따로 — 한 칸이 던져도 나머지(특히 씬 변경)는 넘어가야 한다
+function eachMemoryPart(run: (part: CanvasMemoryPart, name: string) => void): void {
+  memoryParts.forEach((part, name) => {
+    try {
+      run(part, name);
+    } catch {
+      /* 이 칸만 빠진다 */
+    }
+  });
+}
+
 function saveCanvasMemory(): Record<string, unknown> {
-  memoryParts.forEach((part) => part.flush?.());
-  return Object.fromEntries([...memoryParts].map(([name, part]) => [name, part.save()]));
+  eachMemoryPart((part) => part.flush?.());
+  const memory: Record<string, unknown> = {};
+  eachMemoryPart((part, name) => {
+    memory[name] = part.save();
+  });
+  return memory;
 }
 
 /** 메인 창 — 캔버스 창이 window.opener 로 부를 손잡이를 단다. 받은 값은 이 창의 것으로 복제해 둔다(닫히는 창의 객체를 붙들지 않게). */
 export function shareCanvasMemory(): void {
+  let leaving = false; // 이 창도 닫히는 중 — durable 칸을 받아도 끝까지 쓰지 못한다
+  window.addEventListener("pagehide", () => {
+    leaving = true;
+  });
+  window.addEventListener("pageshow", () => {
+    leaving = false;
+  });
   const port: CanvasMemoryPort = {
     save: saveCanvasMemory,
     load: (memory) => {
-      for (const [name, value] of Object.entries(structuredClone(memory))) memoryParts.get(name)?.load(value);
+      const taken: string[] = [];
+      const copied = structuredClone(memory);
+      eachMemoryPart((part, name) => {
+        if (!(name in copied) || (leaving && part.durable)) return;
+        if (part.load(copied[name]) === true) taken.push(name);
+      });
+      return taken;
     },
   };
   (window as unknown as Record<string, CanvasMemoryPort>)[MEMORY_PORT] = port;
@@ -310,9 +397,21 @@ function adoptOpenerCanvasMemory(): void {
   memoryParts.forEach((part, name) => deliverOpenerMemory(name, part)); // 이미 등록한 저장소(부팅 모듈이 먼저 불러온 것)도 받는다
 }
 
-function returnCanvasMemory(): void {
+function returnCanvasMemory(persisted: boolean): void {
+  beforeMemoryReturn.forEach((settle) => {
+    try {
+      settle();
+    } catch {
+      /* 확정에 실패해도 나머지는 돌려준다 */
+    }
+  });
+  const memory = saveCanvasMemory(); // 연 창이 없어도 부른다 — 인계 칸에 다시 남기는 칸이 있다
+  if (persisted) memoryParts.forEach((part, name) => {
+    if (part.durable) delete memory[name]; // 문서가 돌아올 수 있다 — 넘기면 메인 창의 늦은 쓰기가 돌아온 문서의 새 편집을 덮는다
+  });
   try {
-    openerPort()?.load(saveCanvasMemory());
+    const taken = openerPort()?.load(memory);
+    if (taken) for (const name of taken) memoryParts.get(name)?.accepted?.();
   } catch {
     /* 연 창이 이미 닫혔다 */
   }
@@ -357,10 +456,15 @@ export interface CanvasSelection {
   cardIds: string[];
   groupIds: string[];
 }
+export interface CanvasPromptDraft {
+  key: string; // 이 글이 놓일 묶임 — '씬 id:none'
+  draft: string; // 글 조각 JSON(인라인 칩 포함), 빈 글이면 ""
+}
 export interface CanvasHandoff {
   promptVisible: boolean; // Ctrl+K 로 숨긴 프롬프트 창(usePromptDock)
   batchCount: number;
-  prompt: SceneModelCfg | null; // 하단에 보이던 종류·모델·옵션(SpotlightPrompt.currentModel)
+  prompt: SceneModelCfg | null; // 하단에 보이던 종류·모델·옵션(SpotlightPrompt.shownModel)
+  promptDraft: CanvasPromptDraft | null; // 카드를 안 고른 캔버스의 프롬프트 글 — 저장되지 않는 값이라 창을 따라다닌다
   selection: CanvasSelection | null; // 고른 카드·그룹(SceneBoard 손잡이의 selection) — Jay 2026-10-30 "선택도 넘긴다"
 }
 const HANDOFF_TTL_MS = 60_000; // 열다 만 창의 값이 나중에 연 창에 붙지 않게
@@ -386,6 +490,12 @@ function handoffPrompt(value: unknown): SceneModelCfg | null {
 const handoffIds = (value: unknown): string[] | null =>
   Array.isArray(value) && value.every((id) => typeof id === "string") ? (value as string[]) : null;
 
+function handoffDraft(value: unknown): CanvasPromptDraft | null {
+  if (!value || typeof value !== "object") return null;
+  const { key, draft } = value as CanvasPromptDraft;
+  return typeof key === "string" && key && typeof draft === "string" ? { key, draft } : null;
+}
+
 function handoffSelection(value: unknown): CanvasSelection | null {
   if (!value || typeof value !== "object") return null;
   const { sceneId, cardIds, groupIds } = value as CanvasSelection;
@@ -408,7 +518,7 @@ export function takeCanvasHandoff(): CanvasHandoff | null {
       && typeof value.promptVisible === "boolean" && Number.isInteger(value.batchCount) && (value.batchCount as number) >= 1) {
       handoffTaken = {
         promptVisible: value.promptVisible, batchCount: value.batchCount as number,
-        prompt: handoffPrompt(value.prompt), selection: handoffSelection(value.selection),
+        prompt: handoffPrompt(value.prompt), promptDraft: handoffDraft(value.promptDraft), selection: handoffSelection(value.selection),
       };
     }
   } catch {

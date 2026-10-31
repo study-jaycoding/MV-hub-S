@@ -21,9 +21,11 @@ import {
   readWorkingBucket,
   sceneStoreConflicts,
   sceneStoreHasPending,
+  sceneStoreReady,
   setSceneFlushListener,
   settleConflictsAsCopies,
   workingBucketLength,
+  type SceneHandover,
   type SceneOpMerge,
 } from "./sceneStore";
 
@@ -609,6 +611,32 @@ export function deleteScene(projectId: string | null, sceneId: string): boolean 
   const key = keyOf(projectId); // ★접수 시점의 계정으로 고정
   return commit((all) => {
     all[key] = (all[key] || []).filter((s) => s.id !== sceneId);
+    return { write: true, value: undefined };
+  }).ok;
+}
+
+/**
+ * 닫히는 캔버스 창이 넘긴 미확정 변경을 이 창의 연산으로 잇는다(sceneStore 의 '닫히는 창의 넘겨주기'). 반환 = 받았나 — 저장소 준비 전이면 받지 않는다:
+ * 들고 있다가 늦게 쓰면 그 창이 이미 쓴 뒤의 더 새 편집을 덮는다.
+ * 넘긴 값이 있으면 늘 연산이 된다 — 이 창의 작업본이 아직 모르는 씬일 수 있어, 대상 판단은 재생 때 저장소 내용 위에서 한다.
+ * 고친 씬은 남아 있을 때만 바꾼다(다른 창이 지웠으면 되살리지 않는다). 새 씬은 없으면 더하고 이미 있으면 바꾼다 — 먼저 출발한 쓰기가 앞 내용까지만 닿은
+ * 것이고, 넘긴 값은 그 연산까지 재생한 결과라 더 새롭다.
+ */
+export function adoptCanvasSceneWrites(writes: SceneHandover[]): boolean {
+  if (!sceneStoreReady()) return false;
+  return commit((all) => {
+    for (const { bucket, created, changed, removed, order } of writes) {
+      if (!all[bucket] && !created.length) continue;
+      const fixed = new Map([...changed, ...created].map((scene) => [scene.id, scene]));
+      const kept = (all[bucket] || []).filter((scene) => !removed.includes(scene.id)).map((scene) => fixed.get(scene.id) ?? scene);
+      const known = new Set(kept.map((scene) => scene.id));
+      const next = [...kept, ...created.filter((scene) => !known.has(scene.id))];
+      if (order) {
+        const rank = new Map(order.map((id, index) => [id, index]));
+        next.sort((a, b) => (rank.get(a.id) ?? order.length) - (rank.get(b.id) ?? order.length));
+      }
+      all[bucket] = next;
+    }
     return { write: true, value: undefined };
   }).ok;
 }

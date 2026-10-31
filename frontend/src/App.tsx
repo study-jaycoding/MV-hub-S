@@ -23,7 +23,8 @@ import {
 } from "./components/SpotlightPrompt";
 import { ThumbnailGrid } from "./components/ThumbnailGrid";
 import { ensureTeamBase } from "./lib/teamSeen";
-import { EMBED_MODES, isCanvasWindow, leaveCanvasHandoff, openEmbedWindow, takeCanvasHandoff, useCanvasFloating } from "./lib/popupWindows";
+import { canvasWindowLive, EMBED_MODES, isCanvasWindow, leaveCanvasHandoff, openEmbedWindow, takeCanvasHandoff, useCanvasFloating } from "./lib/popupWindows";
+import { canvasPromptDraft, useCanvasPromptReturn } from "./lib/useCanvasPromptReturn";
 import { CanvasFloatIcon, TopBar } from "./components/TopBar";
 const McpConnection = lazy(() => import("./components/mcp/McpConnection").then((m) => ({ default: m.McpConnection })));
 import { SceneBar } from "./components/scene/SceneBar";
@@ -1688,6 +1689,10 @@ export default function App() {
   //  생성은 그 카드에 붙지 않는다. 닫으면 보던 카드로 돌아간다(SpotlightPrompt 가 씬 ↔ 라이브러리 초안을 각자 보관·복원 — Jay 2026-10-22).
   // 캔버스가 별도 창에 떠 있는 동안 이 창의 캔버스 탭 자리 — 회색 아이콘과 글씨만, 프롬프트·폴더 창도 비킨다(Jay 2026-10-30)
   const canvasAway = canvasFloating && !editOpen && filters.tab === "compose";
+  useCanvasPromptReturn({
+    floating: canvasFloating, atCanvas: !editOpen && filters.tab === "compose", sceneId: activeScene?.id ?? null,
+    promptVisible, batchCount, setPromptVisible, setBatchCount, prompt: spotlightPromptRef,
+  });
   const canvasPeekOpen = !editOpen && filters.tab === "compose" && folderPeek && !!activeScene && !canvasAway
     && !!filters.project_id && filters.project_id !== "none" && !!filters.folder_path;
   // ── Canvas 씬 모드 ── 구성 탭에서 씬 생성 카드 1개를 선택하면 하단 프롬프트가 그 카드에 바인딩된다.
@@ -2506,9 +2511,10 @@ export default function App() {
           // 새 창은 저장소에서 씬을 읽는다 — 아직 입력 대기 중인 글을 먼저 내보내 그 창이 낡은 씬으로 시작하지 않게
           if (activeScene) flushScenePending(activeScene.id);
           // 새 창이 보던 그대로 시작하게 저장 안 되는 화면 값을 넘긴다(lib/popupWindows) — 이미 떠 있으면 앞으로 가져올 뿐이라 넘기지 않는다
-          if (!canvasFloating) {
+          if (!canvasWindowLive()) {
             leaveCanvasHandoff({
-              promptVisible, batchCount, prompt: spotlightPromptRef.current?.currentModel() ?? null,
+              promptVisible, batchCount, prompt: spotlightPromptRef.current?.shownModel() ?? null,
+              promptDraft: canvasPromptDraft(spotlightPromptRef.current, activeScene?.id ?? null),
               selection: sceneActionRef.current?.selection() ?? null, // 고른 카드·그룹(Jay "선택도 넘긴다")
             });
           }
@@ -2583,6 +2589,7 @@ export default function App() {
           <div className="canvas-away" role="status">
             <CanvasFloatIcon />
             <span>{t("캔버스가 별도 창에 떠 있습니다")}</span>
+            {sceneSaveFailing && <span>{t("저장이 막혀 있습니다 — 설정의 [전체 내보내기]로 작업을 받아 두세요")}</span>}
           </div>
         ) : filters.tab === "compose" ? (
           <>
