@@ -22,6 +22,13 @@ it("접수 여부 안내는 기록이 남아 있어도 실행 중이 아니다",
   expect(comfyCardRuntime(scene, "c")).toMatchObject({ status: "failed", message: "실행 접수 여부를 확인하지 못했습니다. 다시 생성하기 전에 확인하세요." });
 });
 
+it("실패 카드는 Comfy 가 알려 준 사유를 먼저 보이고, 없으면 일반 문구다 · 실패가 아니면 쓰지 않는다", () => {
+  const scene = (settledState: "failed" | "done", failureMessage?: string) => ({ comfyCardRuns: { c: { groupId: "g", groupSeq: 1, settledState, failureMessage } } });
+  expect(comfyCardRuntime(scene("failed", "없는 노드 NoSuchNode"), "c")).toMatchObject({ status: "failed", message: "없는 노드 NoSuchNode" });
+  expect(comfyCardRuntime(scene("failed"), "c")).toMatchObject({ status: "failed", message: "Comfy 실행이 실패했습니다." });
+  expect(comfyCardRuntime(scene("done", "지난 오류"), "c")).toMatchObject({ status: "done", message: undefined });
+});
+
 describe("computeMaxParallel", () => {
   it("단일 comfy batch N → N 병렬, comfy N개 batch 1 → N 병렬", () => {
     expect(computeMaxParallel(4, 1)).toBe(4);

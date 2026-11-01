@@ -167,10 +167,7 @@ def _without_server(value: dict, key: str, name: str = "mvhub") -> dict:
     return result
 
 
-def update_codex(text: str, entry: dict, setup: dict, name: str = "mvhub") -> str:
-    before = tomllib.loads(text)
-    if not _known_entry(before.get("mcp_servers", {}).get(name), setup):
-        raise ValueError("다른 mvhub 등록이 있습니다. 기존 등록을 확인한 뒤 수동으로 연결하세요.")
+def _toml_without_server(text: str, name: str) -> str:
     lines = text.splitlines(keepends=True)
     remove = set()
     in_target = False
@@ -184,7 +181,14 @@ def update_codex(text: str, entry: dict, setup: dict, name: str = "mvhub") -> st
                 pass
         if in_target:
             remove.add(index)
-    result = "".join(line for index, line in enumerate(lines) if index not in remove).rstrip() + "\n\n" + _toml_entry(entry, name)
+    return "".join(line for index, line in enumerate(lines) if index not in remove).rstrip()
+
+
+def update_codex(text: str, entry: dict, setup: dict, name: str = "mvhub") -> str:
+    before = tomllib.loads(text)
+    if not _known_entry(before.get("mcp_servers", {}).get(name), setup):
+        raise ValueError("다른 mvhub 등록이 있습니다. 기존 등록을 확인한 뒤 수동으로 연결하세요.")
+    result = _toml_without_server(text, name) + "\n\n" + _toml_entry(entry, name)
     after = tomllib.loads(result)
     if _without_server(before, "mcp_servers", name) != _without_server(after, "mcp_servers", name):
         raise ValueError("기존 설정을 보존할 수 없어 자동 등록을 중단했습니다.")
@@ -211,6 +215,24 @@ def update_claude(text: str, entry: dict, setup: dict, name: str = "mvhub") -> s
 
 def update_claude_desktop(text: str, entry: dict, setup: dict, name: str = "mvhub") -> str:
     return _update_mcp_json(text, entry, setup, name)  # 데스크톱 형식은 command·args 만(type 없음)
+
+
+def drop_old_dev_entry(text: str, client: str, setup: dict) -> str:
+    """소스 실행이 mvhub-test 로 옮겨 오기 전에 mvhub 로 남긴 등록 — 프로필이 회수돼 어차피 깨진다. 같은 파이썬·어댑터를 가리킬 때만 지운다(설치본 등록은 경로가 달라 남는다)."""
+    if client == "codex":
+        before = tomllib.loads(text)
+        old = before.get("mcp_servers", {}).get("mvhub")
+        if old is None or not _known_entry(old, setup):
+            return text
+        result = _toml_without_server(text, "mvhub") + "\n"
+        if _without_server(before, "mcp_servers") != _without_server(tomllib.loads(result), "mcp_servers"):
+            raise ValueError("기존 설정을 보존할 수 없어 자동 등록을 중단했습니다.")
+        return result
+    before = json.loads(text)
+    old = before.get("mcpServers", {}).get("mvhub")
+    if old is None or not _known_entry(old, setup):
+        return text
+    return json.dumps(_without_server(before, "mcpServers"), ensure_ascii=False, indent=2) + "\n"
 
 
 def remove_profiles(hub_id: str, client_ids: list[str], *, local_appdata: Path | None = None) -> int:
@@ -288,6 +310,8 @@ def configure_client(client: str, setup: dict, credential: dict, *, home: Path |
             text = previous.decode("utf-8-sig") if previous else ""
             update = {"codex": update_codex, "claude": update_claude, "claude_desktop": update_claude_desktop}[client]
             updated = update(text, entry, setup, name)
+            if name != "mvhub":
+                updated = drop_old_dev_entry(updated, client, setup)
         except (ValueError, UnicodeError, AttributeError):
             return {"client": client, "status": "manual", "message": "기존 mvhub 설정과 충돌하거나 형식을 확인하지 못했습니다. 설정을 확인한 뒤 아래 내용을 수동 등록하세요.", "config": config}
         if previous is not None:

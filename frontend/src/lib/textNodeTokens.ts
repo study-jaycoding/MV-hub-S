@@ -33,10 +33,15 @@ function textOf(node: Node): string {
   return out;
 }
 
-// 편집칸(또는 그 일부를 떠 낸 조각)의 글. 다 지우면 크롬이 남기는 <br> 하나는 빈 글이다.
-export function editorText(root: Node): string {
+function childrenText(root: Node): string {
   let out = "";
   root.childNodes.forEach((child) => { out += textOf(child); });
+  return out;
+}
+
+// 편집칸의 글. 다 지우면 크롬이 남기는 <br> 하나는 빈 글이다.
+export function editorText(root: Node): string {
+  const out = childrenText(root);
   return out === "\n" ? "" : out;
 }
 
@@ -64,17 +69,44 @@ export function buildTextTokenPill(info: TextTokenInfo, thumb: string | undefine
   return el;
 }
 
+// 이 조각 뒤로 이어진 글 조각들의 글
+function textAfter(node: Text): string {
+  let out = "";
+  for (let next = node.nextSibling; next?.nodeType === Node.TEXT_NODE; next = next.nextSibling) out += (next as Text).data;
+  return out;
+}
+
+// 두 글의 경계에 토큰이 걸치는가
+function tokenAcross(left: string, right: string): boolean {
+  const re = new RegExp(TEXT_TOKEN_SRC, "gi");
+  const joined = left + right;
+  for (let m = re.exec(joined); m; m = re.exec(joined)) {
+    if (m.index < left.length && m.index + m[0].length > left.length) return true;
+  }
+  return false;
+}
+
 // 붙여 넣은 글자·푼 알약은 따로 된 Text 노드다 — 이어 보지 않으면 @image1+2 가 저장(@image12)과 다른 알약이 된다. 캐럿이 합쳐진 노드를 따라오지 못했으면 글자 자리로 되돌린다.
+//  ★토큰이 걸친 두 조각만 합친다 — 칸 전체를 normalize 하면 브라우저 되돌리기 기록이 가리키는 조각이 사라져, 글 중간 줄바꿈 뒤 Ctrl+Z 가 글을 통째로 지운다(2026-11-01 실제 크롬).
 function mergeSplitText(editor: HTMLElement): void {
-  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
-  let split = false;
-  for (let node = walker.nextNode(); node && !split; node = walker.nextNode()) split = node.nextSibling?.nodeType === Node.TEXT_NODE;
-  if (!split) return;
   const sel = window.getSelection();
-  const at = sel?.isCollapsed && sel.anchorNode?.nodeType === Node.TEXT_NODE ? caretTextOffset(editor) : null; // 요소 경계의 캐럿은 합쳐도 그대로다
-  editor.normalize();
+  let at: number | null | undefined; // 합치기 전의 글자 자리 — 합칠 때만 잰다
+  let inText = false;
+  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+    for (let next = node.nextSibling; next?.nodeType === Node.TEXT_NODE && tokenAcross(node.data, textAfter(node)); next = node.nextSibling) {
+      if (at === undefined) {
+        at = sel?.isCollapsed ? caretTextOffset(editor) : null;
+        inText = sel?.anchorNode?.nodeType === Node.TEXT_NODE;
+      }
+      node.appendData((next as Text).data);
+      next.remove();
+    }
+  }
+  if (at == null) return;
   const anchor = sel?.anchorNode;
-  if (at !== null && !(anchor?.isConnected && anchor.nodeType === Node.TEXT_NODE)) placeCaretAtTextOffset(editor, at);
+  // 글자 자리가 밀렸거나, 글 조각에 있던 캐럿이 지운 조각과 함께 사라졌을 때만 되돌린다 — 요소 경계의 캐럿은 그 자리에 둔다
+  if (caretTextOffset(editor) !== at || (inText && !(anchor?.isConnected && anchor.nodeType === Node.TEXT_NODE))) placeCaretAtTextOffset(editor, at);
 }
 
 // 이어진 번호(refs 에 있는 열쇠)만 알약으로 감싼다. protectCaret 이면 캐럿이 걸친 토큰(경계 포함)은 치는 중이라 글자로 두고,
@@ -142,7 +174,7 @@ export function caretTextOffset(editor: HTMLElement): number | null {
   const before = document.createRange();
   before.selectNodeContents(editor);
   before.setEnd(r.startContainer, r.startOffset);
-  return editorText(before.cloneContents()).length;
+  return childrenText(before.cloneContents()).length; // 빈 칸 처리를 하지 않는다 — 앞쪽 빈 줄의 캐럿이 첫 줄로 간다
 }
 
 // 글자 위치에 캐럿을 둔다 — 알약 안쪽이면 그 알약 뒤로. 넘치면 끝.

@@ -35,7 +35,51 @@ export function isCanvasWindow(): boolean {
 // 닫기는 창의 X 버튼으로. 사용자가 창을 직접 닫으면 .closed 가 true 라 다음 클릭에서 새로 연다.
 const openWindows: Partial<Record<EmbedMode, Window | null>> = {};
 
-export function openEmbedWindow(mode: EmbedMode): void {
+// 이 창이 연 적 없는 캔버스 창을 다시 잡았는데 빈 창이 왔다 — 사실은 닫혀 있거나, 이름으로 닿지 않는 다른 메인 창의 창이다. 잠금으로 가른다.
+//  두 창이 함께 쓰지 않는 쪽을 택한다: 쥔 곳이 있거나 읽지 못했으면 빈 창을 닫고 안내만 한다.
+async function settleBlankCanvasWindow(w: Window, url: string, onElsewhere?: () => void): Promise<void> {
+  let held = true;
+  try {
+    held = !!(await canvasLocks()?.query())?.held?.some((lock) => lock.name === CANVAS_LOCK);
+  } catch {
+    /* 잠금을 못 읽었다 */
+  }
+  if (held) {
+    w.close();
+    onElsewhere?.();
+    return;
+  }
+  if (w.closed) return;
+  try {
+    w.location.href = url;
+  } catch {
+    /* same-origin defensive guard */
+  }
+  trackEmbedWindow(EMBED_MODES.canvas, w);
+}
+
+function isBlankWindow(w: Window): boolean {
+  try {
+    return w.location.href === "about:blank";
+  } catch {
+    return false; // 다른 문서면 빈 창이 아니다
+  }
+}
+
+function trackEmbedWindow(mode: EmbedMode, w: Window | null): void {
+  openWindows[mode] = w;
+  if (mode === EMBED_MODES.canvas && w) setCanvasFloating(true); // 창이 켜져 알리기 전에도 이 창의 캔버스는 바로 비킨다
+  if (w) followAppFocus(w);
+  refreshOpen();
+  try {
+    w?.focus();
+  } catch {
+    /* same-origin defensive guard */
+  }
+}
+
+// onElsewhere = 캔버스 창이 이미 다른 메인 창에 떠 있어 열지 않았을 때
+export function openEmbedWindow(mode: EmbedMode, onElsewhere?: () => void): void {
   if (mode === EMBED_MODES.canvas && !canFloatCanvas()) return;
   const existing = openWindows[mode];
   if (existing && !existing.closed) {
@@ -55,20 +99,8 @@ export function openEmbedWindow(mode: EmbedMode): void {
   // window.open 이 이미 url 로 내비게이션한다 — location.href 재대입은 같은 페이지를 두 번
   // 로드시켜(번들 재평가 + 부팅 API 세트 2회) 창 열기를 늦추던 원인이라 제거.
   const w = window.open(reacquire ? "" : url, opts.name, opts.features);
-  try {
-    if (reacquire && w && w.location.href === "about:blank") w.location.href = url; // 사실은 닫혀 있었다 — 새 빈 창에 한 번만 싣는다
-  } catch {
-    /* same-origin defensive guard */
-  }
-  openWindows[mode] = w;
-  if (mode === EMBED_MODES.canvas && w) setCanvasFloating(true); // 창이 켜져 알리기 전에도 이 창의 캔버스는 바로 비킨다
-  if (w) followAppFocus(w);
-  refreshOpen();
-  try {
-    w?.focus();
-  } catch {
-    /* same-origin defensive guard */
-  }
+  if (reacquire && w && isBlankWindow(w)) void settleBlankCanvasWindow(w, url, onElsewhere);
+  else trackEmbedWindow(mode, w);
 }
 
 // 앱(이 창·별도 창)을 떠났다가 이 창으로 돌아오면 떠 있는 별도 창을 이 창 위로 올린다 — 초점은 이 창에 그대로(Jay 2026-10-26,
@@ -203,9 +235,28 @@ export function retireCanvasWindow(): boolean {
   return true;
 }
 
+const CLAIM_WAIT_MS = 3000; // 새로 고침이면 옛 문서가 곧 푼다. 메인들의 감시 요청은 받자마자 끝난다
+
+/** 캔버스 창 — 저장소를 열기 전에 잠금을 받는다. 시간 안에 못 받으면 다른 캔버스 창이 있거나 확인할 수 없는 것이다: 열지 않고 물러난다(이미 쥔 창이 얼어 있어도 창은 하나로 남는다). */
+export function claimCanvasWindow(): Promise<boolean> {
+  const locks = canvasLocks();
+  if (!locks) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const giveUp = new AbortController();
+    const timer = setTimeout(() => giveUp.abort(), CLAIM_WAIT_MS);
+    void locks.request(CANVAS_LOCK, { signal: giveUp.signal }, () => {
+      clearTimeout(timer);
+      resolve(true);
+      return new Promise<void>(() => {}); // 평생 쥔다 — 창이 어떻게 끝나든 브라우저가 풀어 준다
+    }).catch(() => {
+      clearTimeout(timer);
+      resolve(false);
+    });
+  });
+}
+
 export function announceCanvasWindow(): void {
   adoptOpenerCanvasMemory(); // 메인 창이 살아 있는 켜질 때 받아 둔다 — 각 저장소가 등록할 때 꺼내 간다(아래)
-  void canvasLocks()?.request(CANVAS_LOCK, () => new Promise<void>(() => {})).catch(() => {});
   if (typeof BroadcastChannel === "undefined") return;
   const channel = new BroadcastChannel(CANVAS_CHANNEL);
   channel.onmessage = (event) => {
@@ -289,8 +340,10 @@ async function settleCanvasReturn(): Promise<void> {
     /* 잠금을 못 읽었다 — 지금처럼 신호로 안다 */
   }
   if (turn !== returnTurn || !canvasFloating || returnReading || closedTimer !== undefined) return;
-  if (held) watchCanvasWindow();
-  else if (!isEmbedWindowOpen(EMBED_MODES.canvas)) void returnCanvas();
+  if (held) {
+    if (openWindows[EMBED_MODES.canvas]?.closed) openWindows[EMBED_MODES.canvas] = null; // 이 창이 연 창은 물러났고 다른 창이 떠 있다 — 다음 휠 클릭이 그 창을 확인하게
+    watchCanvasWindow();
+  } else if (!isEmbedWindowOpen(EMBED_MODES.canvas)) void returnCanvas();
 }
 
 function onCanvasMessage(event: MessageEvent): void {

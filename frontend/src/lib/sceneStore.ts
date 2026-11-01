@@ -942,7 +942,8 @@ export async function initSceneStore(
     ready = true;
     pending = [];
     confirmedVersion = -1; // 첫 트랜잭션이 반드시 '바깥 변화'로 보고 working 을 계산하게
-    const absorbed = await absorbInTx(legacy);
+    // 쓰기가 멈춘 동안(캔버스가 다른 창에 떠 있다)은 읽기만 한다 — 옛 저장소 흡수는 그 창이 한다. 이 창의 낡은 원문이 그 창이 흡수한 것을 되돌리지 않게
+    const absorbed = await absorbInTx(writesPaused() ? null : legacy);
     if (absorbed === false) return failed("저장소를 열었지만 첫 정리에 실패했습니다");
     return { kind: "ready", migrated, absorbed };
   } catch (error) {

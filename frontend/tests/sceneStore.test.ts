@@ -1,13 +1,14 @@
 // 씬 저장소(IndexedDB 계층)의 계약 — 이관 표식과 충돌 보존.
 // 진짜 IndexedDB 는 jsdom 에 없어 메모리 대체 경로로 돈다. 실제 IDB 동작은 frontend/measure 의
 // 브라우저 실측이 따로 확인한다(이관·용량·지연·흡수).
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   absorbLegacyScenes,
   initSceneStore,
   readScenesCache,
   resetSceneStoreForTest,
   sceneStoreConflicts,
+  setSceneWriteGate,
   writeScenesStore,
   type LegacyMark,
 } from "../src/lib/sceneStore";
@@ -104,5 +105,42 @@ describe("씬 저장소 — 충돌 보존", () => {
     expect(again.kind).toBe("ready");
     expect(sceneStoreConflicts()).toHaveLength(1);
     expect(readScenesCache().acct[0].name).toBe("내 수정"); // 자동으로 덮지 않는다
+  });
+});
+
+describe("씬 저장소 — 다른 창에 캔버스가 떠 있는 동안의 부팅", () => {
+  beforeEach(() => resetSceneStoreForTest());
+  afterEach(() => setSceneWriteGate(() => false));
+
+  // 떠 있는 창이 옛 저장소를 이미 흡수했는데, 이 창이 부팅에서 먼저 읽어 둔 낡은 원문을 흡수하면 그 내용을 되돌린다.
+  it("쓰기가 멈춘 동안은 옛 저장소를 흡수하지 않고 기준·충돌도 그대로다", async () => {
+    const mark = markStore();
+    await initSceneStore(() => bucket(scene("s1", "원래")), mark.read(), mark.write);
+    const absorbed = await absorbLegacyScenes(bucket(scene("s1", "떠 있는 창이 흡수한 글")));
+    expect(absorbed?.changed).toBe(true);
+    setSceneWriteGate(() => true);
+    const again = await initSceneStore(() => bucket(scene("s1", "원래")), mark.read(), mark.write);
+    expect(again.kind === "ready" && again.absorbed).toBeNull();
+    expect(readScenesCache().acct[0].name).toBe("떠 있는 창이 흡수한 글");
+    expect(sceneStoreConflicts()).toEqual([]);
+    setSceneWriteGate(() => false);
+    await absorbLegacyScenes(bucket(scene("s1", "떠 있는 창이 흡수한 글"))); // 기준이 그대로라 옛 저장소 변경은 나중에도 따라잡는다
+    expect(sceneStoreConflicts()).toEqual([]);
+  });
+
+  it("멈추지 않았으면 부팅 때 그대로 흡수한다", async () => {
+    const mark = markStore();
+    await initSceneStore(() => bucket(scene("s1", "원래")), mark.read(), mark.write);
+    const again = await initSceneStore(() => bucket(scene("s1", "옛 창 수정")), mark.read(), mark.write);
+    expect(again.kind === "ready" && again.absorbed?.changed).toBe(true);
+    expect(readScenesCache().acct[0].name).toBe("옛 창 수정");
+  });
+
+  it("첫 이관은 쓰기가 멈춰 있어도 그대로 옮긴다", async () => {
+    setSceneWriteGate(() => true);
+    const mark = markStore();
+    const first = await initSceneStore(() => bucket(scene("s1")), mark.read(), mark.write);
+    expect(first.kind === "ready" && first.migrated).toBe(true);
+    expect(readScenesCache().acct.map((s) => s.id)).toEqual(["s1"]);
   });
 });

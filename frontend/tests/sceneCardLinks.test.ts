@@ -364,6 +364,21 @@ describe("mergeCardLinksIntoScenes (씬 열 때 합치기)", () => {
     expect(out?.[0].cards[0].genIds).toEqual(["g1"]);
   });
 
+  it("서버가 뺀 생성물의 Comfy 출력도 함께 뗀다 — 남으면 지운 결과가 View·입력에 남는다", () => {
+    const outputs = [{ kind: "image", url: "/media/a.png", saved_generation_id: "g1" }, { kind: "image", url: "/media/b.png", saved_generation_id: "g2" }, { kind: "text", text: "글" }];
+    const comfy = (genIds: string[], list = outputs) => ({ id: "c1", kind: "comfy", genIds, genId: genIds[genIds.length - 1], comfyCfg: { content: "{}", outputs: list } });
+    const out = merge([scene("s1", [comfy(["g1", "g2"])])], [link("s1", "c1", "g2", "2026-08-18 00:00:00")]);
+    const card = out?.[0].cards[0] as ReturnType<typeof comfy>;
+    expect(card.genIds).toEqual(["g1"]);
+    expect(card.comfyCfg.outputs).toEqual([outputs[0], outputs[2]]);
+    expect(card.comfyCfg.content).toBe("{}");
+    // 목록은 이미 비었는데 출력만 남은 카드 — 옛 합치기가 남긴 것도 뗀다
+    const leftover = merge([scene("s1", [comfy(["g1"])])], [link("s1", "c1", "g2", "2026-08-18 00:00:00")]);
+    expect((leftover?.[0].cards[0] as ReturnType<typeof comfy>).comfyCfg.outputs).toEqual([outputs[0], outputs[2]]);
+    // 뗀 뒤에는 바뀔 것이 없어 저장 고리가 돌지 않는다
+    expect(merge(out as never, [link("s1", "c1", "g2", "2026-08-18 00:00:00")])).toBeNull();
+  });
+
   it("★바뀐 게 없으면 null — 저장→알림→합치기 고리를 끊는다", () => {
     expect(
       merge([scene("s1", [{ id: "c1", kind: "generation", genIds: ["g1"] }])], [link("s1", "c1", "g1")]),

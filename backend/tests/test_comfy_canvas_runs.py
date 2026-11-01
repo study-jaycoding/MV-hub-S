@@ -2,6 +2,7 @@
 import json
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from unittest.mock import Mock
 from uuid import uuid4
 
@@ -798,3 +799,202 @@ def test_detail_that_really_has_no_outputs_is_still_failed(h):
     h.drain()
     assert resolve(h, attempt)["state"] == "failed"
     assert not [item for item in h.rows() if item["job_id"] == job]
+
+
+def _stamped(text, modified_at, margin=0.05):
+    data = comfy.comfy_client.StampedBytes(text)
+    data.modified_at, data.margin = modified_at, margin
+    return data
+
+
+def _finished(entry, seconds):
+    entry["status"] = {"messages": [["execution_start", {"timestamp": 0}], ["execution_success", {"timestamp": int(seconds * 1000)}]]}
+    return entry
+
+
+def test_text_file_changed_after_the_run_is_another_run_and_says_so(h, monkeypatch):
+    _finished(h.successful(0), 1000.2)
+    monkeypatch.setattr(comfy.comfy_client, "view_bytes", Mock(return_value=_stamped(b"other run", 1000.7)))  # 같은 초 안의 덮어쓰기
+    attempt = descriptor()
+    start(h, attempt, content=SAVE_TEXT)
+    h.drain()
+    result = resolve(h, attempt)
+    assert result["state"] == "failed" and not result["outputs"] and "덮어써" in result["message"]
+    assert not h.rows()  # 다시 읽어도 이 실행의 글자는 없다 — 못 읽은 것과 다르다
+
+
+def test_image_stays_when_its_text_file_was_overwritten(h, monkeypatch):
+    _finished(h.successful(), 1000.2)
+    monkeypatch.setattr(comfy.comfy_client, "view_bytes", Mock(return_value=_stamped(b"other run", 1000.7)))
+    attempt = descriptor()
+    start(h, attempt, content=IMAGE_AND_TEXT)
+    h.drain()
+    result = resolve(h, attempt)
+    assert result["state"] == "saved" and len(_of(result, "image")) == 1 and not _of(result, "text")
+
+
+@pytest.mark.parametrize("stamp,margin,kept", [
+    (1000.2, 0.05, True),  # 끝 시각 그대로
+    (999.0, 0.05, True),  # 캐시 실행은 파일을 다시 쓰지 않아 더 이르다
+    (1000.24, 0.05, True),  # 여유 안 — 한계로 기록했다
+    (1000.3, 0.05, False),
+    (1002.1, 2.0, True),  # Last-Modified 는 초로 올림된다
+    (1002.3, 2.0, False),
+    (None, 0.0, True),  # 시각을 모르면 판정하지 않는다
+])
+def test_text_file_time_against_the_end_of_the_run(h, monkeypatch, stamp, margin, kept):
+    _finished(h.successful(0), 1000.2)
+    monkeypatch.setattr(comfy.comfy_client, "view_bytes", Mock(return_value=_stamped(b"text", stamp, margin)))
+    attempt = descriptor()
+    start(h, attempt, content=SAVE_TEXT)
+    h.drain()
+    assert [out["text"] for out in _of(resolve(h, attempt), "text")] == (["text"] if kept else [])
+
+
+def test_collect_later_does_not_attach_text_of_another_run(h, monkeypatch):
+    _finished(h.successful(0), 1000.2)
+    view = Mock(side_effect=comfy.comfy_client.ComfyError("busy", status_code=503))
+    monkeypatch.setattr(comfy.comfy_client, "view_bytes", view)
+    attempt = descriptor()
+    job = start(h, attempt, content=SAVE_TEXT)
+    h.drain()
+    assert resolve(h, attempt)["state"] == "needs_collect"
+    restart(h)
+    view.side_effect = None
+    view.return_value = _stamped(b"other run", 2000.0)
+    comfy.collect_unresolved_run(job, h.request())
+    h.drain()
+    result = resolve(h, attempt)
+    assert result["state"] == "failed" and not result["outputs"]
+
+
+def test_no_end_time_reads_the_file_as_before(h, monkeypatch):
+    h.successful(0)
+    monkeypatch.setattr(comfy.comfy_client, "view_bytes", Mock(return_value=_stamped(b"text", 9e9)))
+    attempt = descriptor()
+    start(h, attempt, content=SAVE_TEXT)
+    h.drain()
+    assert [out["text"] for out in _of(resolve(h, attempt), "text")] == ["text"]
+
+
+@pytest.mark.parametrize("messages,expected", [
+    ([["execution_success", {"timestamp": 1500}]], 1.5),
+    ([["execution_error", {"timestamp": 2000}]], 2.0),
+    ([["execution_start", {"timestamp": 1}], ["execution_interrupted", {"timestamp": 3000}]], 3.0),
+    ([["execution_start", {"timestamp": 1}]], None),
+    ([["execution_success", {}]], None),
+    ("broken", None),
+])
+def test_finished_at_reads_history_messages(messages, expected):
+    assert comfy.comfy_client.finished_at({"status": {"messages": messages}}) == expected
+
+
+@pytest.mark.parametrize("entry", [{}, {"status": "completed"}, {"status": None}, {"status": {}}])
+def test_finished_at_without_local_history_status(entry):
+    assert comfy.comfy_client.finished_at(entry) is None  # Cloud 상세의 status 는 글자다
+
+
+@pytest.mark.parametrize("headers,expected", [
+    ({"ETag": '"18e3e3991f03c4cc-c"', "Last-Modified": "Sun, 01 Nov 2026 10:02:04 GMT"}, (1793527323.4134315, 0.05)),  # 실제 ComfyUI 응답
+    ({"Last-Modified": "Sun, 01 Nov 2026 10:02:04 GMT"}, (1793527324.0, 2.0)),
+    ({"ETag": '"abc-12"', "Last-Modified": "Sun, 01 Nov 2026 10:02:04 GMT"}, (1793527324.0, 2.0)),  # 나노초 시각이 아닌 ETag
+    ({"ETag": '"d41d8cd98f00b204e9800998ecf8427e"'}, (None, 0.0)),
+    ({"Last-Modified": "not a date"}, (None, 0.0)),
+    ({}, (None, 0.0)),
+])
+def test_file_stamp_from_view_headers(headers, expected):
+    assert comfy.comfy_client._file_stamp(headers) == pytest.approx(expected) if expected[0] else comfy.comfy_client._file_stamp(headers) == expected
+
+
+@pytest.mark.parametrize("status", [400, 401, 402, 403, 404, 413, 429])
+def test_refused_submission_is_failed_with_its_reason_and_leaves_no_journal(h, status):
+    h.successful(0)
+    h.mocks["submit"].side_effect = comfy.comfy_client.ComfyError(f"ComfyUI 오류 (HTTP {status}): 없는 노드", status_code=status)
+    attempt = descriptor()
+    start(h, attempt)
+    h.drain()
+    result = resolve(h, attempt)
+    assert result["state"] == "failed" and "없는 노드" in result["message"]
+    assert not h.rows()
+
+
+@pytest.mark.parametrize("error", [
+    comfy.comfy_client.ComfyError("timeout", status_code=408),
+    comfy.comfy_client.ComfyError("broken", status_code=500),
+    comfy.comfy_client.ComfyError("broken", status_code=502),
+    comfy.comfy_client.ComfyError("lost", cause_kind="timeout"),
+])
+def test_submission_that_may_have_been_accepted_stays_unknown(h, error):
+    h.successful(0)
+    h.mocks["submit"].side_effect = error
+    attempt = descriptor()
+    start(h, attempt)
+    h.drain()
+    result = resolve(h, attempt)
+    assert result["state"] == "unknown" and "message" not in result
+    assert h.rows()[0]["phase"] == "unknown"
+
+
+def test_failure_reason_is_cut_and_only_on_failed(h):
+    h.successful(0)
+    h.mocks["submit"].side_effect = comfy.comfy_client.ComfyError("가" * 900, status_code=400)
+    attempt = descriptor()
+    start(h, attempt)
+    h.drain()
+    assert len(resolve(h, attempt)["message"]) == 500
+    done = descriptor()
+    h.successful()
+    h.mocks["submit"].side_effect = None
+    start(h, done)
+    h.drain()
+    assert "message" not in resolve(h, done)
+
+
+def test_failure_reason_write_error_does_not_stop_settling(h, monkeypatch):
+    h.successful(0)
+    h.mocks["submit"].side_effect = comfy.comfy_client.ComfyError("refused", status_code=400)
+    monkeypatch.setattr(comfy.canvas_runs, "record_context", Mock(side_effect=OSError("database is locked")))
+    attempt = descriptor()
+    job = start(h, attempt)
+    h.drain()
+    assert resolve(h, attempt)["state"] == "failed" and "message" not in resolve(h, attempt)
+    assert comfy._RUN_JOBS[job]["state"] == comfy._RUN_FAILED
+
+
+def _elapsed_recorder(monkeypatch):
+    recorded = []
+    monkeypatch.setattr(comfy, "_pm", lambda action: action(SimpleNamespace(record_elapsed=lambda gen, seconds: recorded.append((gen, seconds)))))
+    return recorded
+
+
+def test_auto_saved_output_records_elapsed_once(h, monkeypatch):
+    recorded = _elapsed_recorder(monkeypatch)
+    h.successful()
+    attempt = descriptor()
+    start(h, attempt)
+    h.drain()
+    gen = _of(resolve(h, attempt), "image")[0]["generation_id"]
+    assert [item[0] for item in recorded] == [gen] and recorded[0][1] >= 0
+    comfy._save_canvas_run(runs.get(attempt["attempt_id"]), SimpleNamespace(), None)  # 다시 저장해도 더 쌓이지 않는다
+    assert len(recorded) == 1
+
+
+def test_output_already_saved_does_not_record_elapsed_again(h, monkeypatch):
+    recorded = _elapsed_recorder(monkeypatch)
+    h.successful()
+    save = comfy.comfy_save.save_output
+    monkeypatch.setattr(comfy.comfy_save, "save_output", lambda **kw: {**save(**kw), "existed": True})
+    attempt = descriptor()
+    start(h, attempt)
+    h.drain()
+    assert _of(resolve(h, attempt), "image") and not recorded
+
+
+def test_collect_without_measured_time_records_no_elapsed(h, monkeypatch):
+    recorded = _elapsed_recorder(monkeypatch)
+    h.successful()
+    monkeypatch.setattr(comfy, "_note_canvas_context", Mock())  # 재시작으로 값을 못 남긴 실행
+    attempt = descriptor()
+    start(h, attempt)
+    h.drain()
+    assert _of(resolve(h, attempt), "image") and not recorded

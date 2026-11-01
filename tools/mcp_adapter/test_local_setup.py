@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from local_setup import configure_client, read_profile, remove_profiles, server_name, update_codex, update_claude, _atomic
+from local_setup import configure_client, drop_old_dev_entry, read_profile, remove_profiles, server_name, update_codex, update_claude, _atomic
 
 
 class SetupTests(unittest.TestCase):
@@ -141,6 +141,36 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(updated["mcpServers"]["mvhub-test"], {"type": "stdio", **self.entry})
         with self.assertRaises(ValueError):  # 다른 실행 파일이 그 이름을 쓰면 바꾸지 않는다
             update_claude(json.dumps({"mcpServers": {"mvhub-test": installed}}), self.entry, dev, "mvhub-test")
+
+    def test_dev_reregister_drops_only_the_old_entry_of_this_source_install(self):
+        dev = {**self.setup, "release": False}
+        same = {"command": str(self.python), "args": self.entry["args"]}
+        elsewhere = {"command": "C:/installed/python.exe", "args": ["C:/installed/server.py"]}
+        settings = lambda old: json.dumps({"keep": 1, "mcpServers": {"mvhub": old, "mvhub-test": same, "other": elsewhere}})
+        updated = json.loads(drop_old_dev_entry(settings({"type": "stdio", **same}), "claude", dev))
+        self.assertEqual(sorted(updated["mcpServers"]), ["mvhub-test", "other"])
+        self.assertEqual(updated["keep"], 1)
+        for kept in (elsewhere, {"type": "http", "url": "http://127.0.0.1:8016"}, {**same, "url": "http://127.0.0.1:8016"}):  # 설치본·직접 넣은 등록
+            self.assertEqual(drop_old_dev_entry(settings(kept), "claude_desktop", dev), settings(kept))
+        none = json.dumps({"mcpServers": {"mvhub-test": same}})
+        self.assertEqual(drop_old_dev_entry(none, "claude", dev), none)
+        toml = lambda old: ("# 내 설정\nmodel = \"x\"\n\n[mcp_servers.mvhub]\ncommand = " + json.dumps(old["command"]) + "\nargs = " + json.dumps(old["args"])
+                            + "\n\n[mcp_servers.mvhub.env]\nKEEP = \"1\"\n\n[mcp_servers.other]\ncommand = \"x\"\nargs = []\n")
+        removed = drop_old_dev_entry(toml(same), "codex", dev)
+        self.assertIn("# 내 설정", removed)
+        self.assertEqual(tomllib.loads(removed), {"model": "x", "mcp_servers": {"other": {"command": "x", "args": []}}})
+        self.assertEqual(drop_old_dev_entry(toml(elsewhere), "codex", dev), toml(elsewhere))
+        self.assertEqual(drop_old_dev_entry("model = \"x\"\n", "codex", dev), "model = \"x\"\n")
+
+    @unittest.skipUnless(os.name == "nt", "Windows DPAPI")
+    def test_dev_registration_replaces_its_old_mvhub_entry(self):
+        home, local = self.root / "home", self.root / "local"
+        claude = home / ".claude.json"
+        claude.parent.mkdir(parents=True)
+        claude.write_text(json.dumps({"mcpServers": {"mvhub": {"type": "stdio", "command": str(self.python), "args": self.entry["args"]}}}), encoding="utf-8")
+        result = configure_client("claude", {**self.setup, "release": False}, self.credential, home=home, local_appdata=local)
+        self.assertEqual(result["status"], "configured")
+        self.assertEqual(list(json.loads(claude.read_text(encoding="utf-8"))["mcpServers"]), ["mvhub-test"])
 
     @unittest.skipUnless(os.name == "nt", "Windows DPAPI")
     def test_dev_app_registers_under_mvhub_test_without_touching_installed_entry(self):

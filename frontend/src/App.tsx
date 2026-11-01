@@ -1949,13 +1949,17 @@ export default function App() {
   const openingCanvasRef = useRef(false);
   const canvasViewRef = useRef({ promptVisible, batchCount, sceneId: activeScene?.id ?? null }); // 저장을 기다리는 동안 바뀐 값도 넘기게
   canvasViewRef.current = { promptVisible, batchCount, sceneId: activeScene?.id ?? null };
+  const canvasElsewhere = () => flash("캔버스가 다른 창에 이미 떠 있습니다. 그 창에서 작업해 주세요.");
+  const CHAIN_RUNNING_NOTICE = "연결 생성이 끝난 뒤 다시 띄워 주세요.";
   const openCanvasWindow = async () => {
     if (!canFloatCanvas()) return flash("이 주소에서는 캔버스를 별도 창으로 띄울 수 없습니다. 앱 주소로 열어 주세요.");
-    if (canvasWindowLive()) return openEmbedWindow(EMBED_MODES.canvas); // 이미 떠 있다 — 앞으로 가져올 뿐
+    if (canvasWindowLive()) return openEmbedWindow(EMBED_MODES.canvas, canvasElsewhere); // 이미 떠 있다 — 앞으로 가져올 뿐
     if (openingCanvasRef.current) return;
+    if (sceneActionRef.current?.comfyPlanRunning()) return flash(CHAIN_RUNNING_NOTICE); // 떠나면 메인 창이 뒤 단계를 이어 가지 못한다
     openingCanvasRef.current = true;
     try {
       const settled = await settleSceneWrites(3000, () => sceneActionRef.current?.flushPending(), () => {
+        if (sceneActionRef.current?.comfyPlanRunning()) return flash(CHAIN_RUNNING_NOTICE); // 저장을 기다리는 사이 시작했다
         const { sceneId, ...view } = canvasViewRef.current;
         // 새 창이 보던 그대로 시작하게 저장 안 되는 화면 값을 넘긴다(lib/popupWindows)
         leaveCanvasHandoff({
@@ -1963,7 +1967,7 @@ export default function App() {
           promptDraft: canvasPromptDraft(spotlightPromptRef.current, sceneId),
           selection: sceneActionRef.current?.selection() ?? null, // 고른 카드·그룹(Jay "선택도 넘긴다")
         });
-        openEmbedWindow(EMBED_MODES.canvas);
+        openEmbedWindow(EMBED_MODES.canvas, canvasElsewhere);
       });
       if (!settled) flash("캔버스 저장이 끝나지 않아 창을 띄우지 않았습니다. 잠시 뒤 다시 시도해 주세요.");
     } finally {

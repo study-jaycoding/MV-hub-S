@@ -929,5 +929,6 @@ export function useSceneComfyExecution({
     runComfy,
     orchestrateGenerate,
     orchestrateRender,
+    comfyPlanRunning: () => orchestratingRef.current,
   };
 }

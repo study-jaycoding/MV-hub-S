@@ -40,6 +40,15 @@ it("역순 완료·ACK 정리·재부팅 뒤 작은 copy는 큰 copy 대표를 �
   expect(comfyCardRuntime(scene, "c")).toMatchObject({ status: "done", representative: { copyIndex: 2 } });
   expect(scene.cards[0].comfyCfg).not.toHaveProperty("status");
 });
+it("실패 사유가 카드 소유자에 남아 표시되고 다음 실행의 소유자에는 없다 · 다른 복사본이 성공하면 완료다", () => {
+  const failed = (copy: number) => resolved(copy, { state: "failed", outputs: [], message: "ComfyUI 오류: 없는 노드" });
+  let scene = applyComfyResolution({ ...durableScene(), comfyRuns: durableScene().comfyRuns!.slice(0, 1) }, failed(0)).scene;
+  expect(scene.comfyCardRuns!.c).toMatchObject({ settledState: "failed", failureMessage: "ComfyUI 오류: 없는 노드" });
+  expect(comfyCardRuntime(scene, "c")).toMatchObject({ status: "failed", message: "ComfyUI 오류: 없는 노드" });
+  scene = applyComfyResolution(applyComfyResolution(durableScene(), failed(0)).scene, resolved(1)).scene;
+  scene = applyComfyResolution(scene, failed(2)).scene;
+  expect(comfyCardRuntime(scene, "c")).toMatchObject({ status: "done", message: undefined });
+});
 it.each(["config", "input", "old-group"])("%s 변경 뒤 옛 결과는 superseded 영수증만 남긴다", reason => {
   const scene = durableScene();
   if (reason === "config") scene.cards[0].comfyCfg!.content = "changed";
@@ -171,11 +180,14 @@ it.each([false, true])("Comfy 뒤 후속 생성은 시작 세션 commit 수락 �
   let release!: (result: Awaited<ReturnType<typeof comfyApi.run>>) => void;
   const run = apiRun.mockImplementation(() => new Promise(resolve => { release = resolve; }));
   let pending!: Promise<void>;
+  expect(execution.comfyPlanRunning()).toBe(false);
   await act(async () => { pending = execution.orchestrateGenerate("other"); });
   expect(run).toHaveBeenCalledTimes(1);
+  expect(execution.comfyPlanRunning()).toBe(true); // 이 동안 캔버스를 다른 창으로 넘기지 않는다
   if (change) { show("comfy-session-b"); show(); }
   await act(async () => { release({ outputs: [{ kind: "image", url: "/run.png" }], prompt_id: "run" }); await pending; });
   expect(renderRuns).toHaveBeenCalledTimes(change ? 0 : 1);
+  expect(execution.comfyPlanRunning()).toBe(false); // 끝나면 다시 띄울 수 있다
 });
 
 it.each(["current", "reopen", "account", "unmount"])("중간 Comfy 응답 뒤 다음 외부 실행 전에 시작 문서 세대를 확인한다(%s)", async change => {

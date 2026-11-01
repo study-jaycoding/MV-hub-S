@@ -27,6 +27,7 @@ class CanvasResolution(TypedDict):
     outputs: list[CanvasOutput]
     disposition: NotRequired[Disposition]
     origin: dict[str, str]
+    message: NotRequired[str]  # failed 일 때 실패 사유 — 카드에 남는다
 
 
 class CanvasRunConflict(ValueError):
@@ -240,4 +241,7 @@ def resolution(row: dict) -> CanvasResolution:
     }
     if row.get("disposition"):
         result["disposition"] = row["disposition"]
+    message = row["context"].get("failure_message") if row["state"] == "failed" else None
+    if message:
+        result["message"] = message
     return result

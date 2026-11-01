@@ -389,6 +389,7 @@ interface Props {
     zoomStep: (dir: 1 | -1) => void; // 툴바 −/+ — 화면 중앙 기준 한 단계 확대/축소
     closeVariants: () => void; // '생성 결과' 창 닫기 — 캔버스 '폴더 보기' 창을 열 때(두 창을 겹쳐 두지 않는다)
     selection: () => CanvasSelection; // 지금 고른 카드·그룹 — 휠 클릭으로 여는 캔버스 창에 넘긴다
+    comfyPlanRunning: () => boolean; // Comfy 를 앞세운 연결 생성이 도는 중 — 이 창이 뒤 단계를 이어 가야 해 캔버스를 다른 창으로 못 넘긴다
   } | null>;
   // 생성 카드 아래 'Generate' 툴바 — 즉시 생성(하단 프롬프트 submit 재사용). 배치수는 노드별(card.batchCount)로 관리.
   onGenerateCard?: (
@@ -1650,6 +1651,7 @@ export function SceneBoard({
     runComfy,
     orchestrateGenerate,
     orchestrateRender,
+    comfyPlanRunning,
   } = useSceneComfyExecution({
     canvasDocument: comfyDocument,
     projectId: folderSel?.projectId,
@@ -1971,6 +1973,7 @@ export function SceneBoard({
         zoomStep: guardedZoom.onStep,
         closeVariants: () => setCardMenu(null),
         selection: () => ({ sceneId: cardsSceneId, cardIds: [...selected], groupIds: [...selectedGroupIds] }),
+        comfyPlanRunning,
       };
     return () => {
       if (actionRef) actionRef.current = null;

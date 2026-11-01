@@ -1,5 +1,5 @@
 import type { MutableRefObject } from "react";
-import { variantIds, type Scene, type SceneCard, type SceneComfyCfg } from "../../lib/scenes";
+import { updateScenesWith, variantIds, type Scene, type SceneCard, type SceneComfyCfg } from "../../lib/scenes";
 import { comfySceneFingerprints } from "../../lib/sceneComfyInputs";
 import type { ComfyApplicationReceipt, ComfyCanvasResolution } from "../../lib/comfyRunState";
 import { markCardGenerationsRemoved } from "../../lib/sceneCardLinks";
@@ -69,6 +69,7 @@ export function applyComfyResolution(scene: Scene, resolution: ComfyCanvasResolu
   const pending = next.comfyRuns!.some(item => item.cardId === card.id && item.runGroupId === run.runGroupId
     && item.groupSeq === run.groupSeq && item.localState !== "applied");
   next = { ...next, comfyCardRuns: { ...scene.comfyCardRuns, [card.id]: { ...current,
+    ...(resolution.message ? { failureMessage: resolution.message } : {}),
     ...(pending ? {} : { settledState: current.representative ? "done" : resolution.state === "dismissed" ? "dismissed" : "failed" }) } } };
   return { scene: next, receipt };
 }
@@ -101,6 +102,17 @@ export function doneOutputsPatch(currentOutputs: SceneComfyCfg["outputs"], lates
   const mediaUrls = latestOutputs.filter(o => (o.kind === "image" || o.kind === "video") && o.url).map(o => o.url);
   const currentUrls = new Set((currentOutputs || []).map(o => o.url).filter(Boolean));
   return mediaUrls.length > 0 && mediaUrls.every(url => currentUrls.has(url)) ? {} : { outputs: latestOutputs, output: null };
+}
+
+// 워크플로를 바꾸면 지난 워크플로의 구체적인 오류를 카드에 남기지 않는다. 소유자는 씬에 있어 카드 명령 밖에서 쓴다.
+function forgetComfyFailure(sceneId: string, cardId: string): void {
+  updateScenesWith(null, scenes => {
+    const scene = scenes.find(item => item.id === sceneId);
+    const owner = scene?.comfyCardRuns?.[cardId];
+    if (!owner?.failureMessage) return null;
+    const { failureMessage: _gone, ...kept } = owner;
+    return scenes.map(item => item === scene ? { ...item, comfyCardRuns: { ...item.comfyCardRuns, [cardId]: kept } } : item);
+  });
 }
 
 // 세션의 target 검사 뒤에만 호출한다. 소비자는 저장 방식이나 전체 카드 사본을 넘기지 않는다.
@@ -157,6 +169,7 @@ export function applyCanvasComfyCommand(command: CanvasComfyCommand, { sceneId, 
         removedForward = genIds.length ? [{ cardId: card.id, genIds }] : [];
         if (genIds.length) void markCardGenerationsRemoved(sceneId, card.id, genIds);
         next = { ...next, genId: null, genIds: [], comfyCfg: { ...next.comfyCfg, outputs: [], output: null, status: "idle", error: null } };
+        forgetComfyFailure(sceneId, card.id);
       }
       mode = "persistUser";
       break;

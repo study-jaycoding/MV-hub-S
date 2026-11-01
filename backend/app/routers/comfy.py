@@ -267,7 +267,7 @@ def _save_canvas_run(run: dict, identity: _ComfyIdentity, request: Optional[Requ
             output = item["metadata"]
             url = "/media/" + output["rel"]
             _preflight_local_output(url, identity.scope)
-            comfy_save.save_output(
+            saved = comfy_save.save_output(
                 url=url, kind=item["kind"], record=record, output=output,
                 creator_uid=identity.creator_uid, prompt="Comfy 출력", params={}, references=[],
                 project_id=pid, folder_path=None, can_view_source=can_view_source,
@@ -276,10 +276,21 @@ def _save_canvas_run(run: dict, identity: _ComfyIdentity, request: Optional[Requ
                     server_origin=record.get("asset_server_origin", ""), expected=expected),
                 canvas_attempt_id=run["attempt_id"], canvas_output_key=item["output_key"],
             )
+            elapsed = record.get("elapsed_seconds")
+            if elapsed is not None and not saved["existed"]:
+                _pm(lambda _m, g=saved["generation_id"]: _m.record_elapsed(g, elapsed))
     finally:
         settled = canvas_runs.settle(run["attempt_id"])
         _ack_canvas_journal(settled, identity)
     return settled
+
+
+def _note_canvas_context(attempt_id: str, **fields) -> None:
+    """실행의 곁 정보(실패 사유·소요 시간) — 못 남겨도 실행과 정산은 그대로 간다."""
+    try:
+        canvas_runs.record_context(attempt_id, fields)
+    except Exception:
+        log.warning("comfy 캔버스 실행 정보를 남기지 못함 fields=%s", list(fields))
 
 
 def _canvas_job(job_id: str):
@@ -1329,11 +1340,13 @@ def _saved_text_params(wf: dict) -> list[dict]:
     return found
 
 
-def _read_saved_texts(target: dict, wf: dict, retry=None) -> tuple[list[str], bool]:
+def _read_saved_texts(target: dict, wf: dict, retry=None, finished: Optional[float] = None) -> tuple[list[str], bool, bool]:
     """파일 글자를 /view 로 읽어 내용 반환. 둘째 값 = 나중에 읽힐 수 있는데 못 읽은 파일이 있다.
-    retry = 캔버스 실행만 준다(비캔버스는 한 번만 읽는다)."""
+    셋째 값 = 실행이 끝난 뒤에 바뀐 파일을 버렸다 — 파일 이름이 고정이라 다른 실행이 덮어쓴 것이다. 다시 읽어도 이 실행의 글자는 없다.
+    retry = 캔버스 실행만 준다(비캔버스는 한 번만 읽는다). finished = 실행이 끝난 시각(초), 모르면 판정하지 않는다."""
     out: list[str] = []
     missed = False
+    overwritten = False
     for params in _saved_text_params(wf):
         try:
             data = retry(lambda: comfy_client.view_bytes(target, params)) if retry else comfy_client.view_bytes(target, params)
@@ -1341,9 +1354,14 @@ def _read_saved_texts(target: dict, wf: dict, retry=None) -> tuple[list[str], bo
         except comfy_client.ComfyError as error:
             missed = missed or not _text_file_missing(error)
             continue
+        stamp = getattr(data, "modified_at", None)
+        if finished is not None and stamp is not None and stamp > finished + data.margin:
+            overwritten = True
+            log.warning("comfy 글자 파일이 실행 뒤에 바뀌어 읽지 않음 file=%s", params["filename"])
+            continue
         if txt:
             out.append(txt)
-    return out, missed
+    return out, missed, overwritten
 
 
 def _collect_run_outputs(job_id: str, target: dict, entry: dict, wf: Optional[dict] = None) -> dict:
@@ -1384,13 +1402,15 @@ def _collect_run_outputs(job_id: str, target: dict, entry: dict, wf: Optional[di
                       media_output_count=len(manifest), text_only=False, text_files_unread=unread)
     early_texts = []
     missed = unread and wf is None  # 워크플로를 잃은 재회수는 글자를 읽을 길이 없다 — 끝났다고 보지 않는다
+    finished = comfy_client.finished_at(entry)
+    overwritten = False
     if canvas_run:
         early_texts = list(dict.fromkeys(text.strip() for text in comfy_client.collect_texts(entry) if text.strip()))
         known = bool(manifest or early_texts)
         if known:  # 파일을 읽고 내려받기 전에 남긴다. 아는 것이 없으면 남기지 않는다 — 빈 목록은 곧 '빈 결과 확정'이다
             _record_canvas_outputs(job_id, manifest, early_texts, enumerated=not unread)
         if wf is not None:
-            saved, missed = _read_saved_texts(target, wf, lambda action: _retry_result(action, job_id, deadline))
+            saved, missed, overwritten = _read_saved_texts(target, wf, lambda action: _retry_result(action, job_id, deadline), finished)
             early_texts = list(dict.fromkeys([*early_texts, *(text.strip() for text in saved if text.strip())]))
         if wf is not None or not known:
             _record_canvas_outputs(job_id, manifest, early_texts, enumerated=not missed)
@@ -1435,7 +1455,8 @@ def _collect_run_outputs(job_id: str, target: dict, entry: dict, wf: Optional[di
                for item in manifest if item.get("downloaded")]
     texts = early_texts if canvas_run else list(comfy_client.collect_texts(entry))
     if wf is not None and not canvas_run:
-        texts.extend(_read_saved_texts(target, wf)[0])
+        saved, _, overwritten = _read_saved_texts(target, wf, finished=finished)
+        texts.extend(saved)
     seen = set()
     for text in texts:
         text = text.strip()
@@ -1446,7 +1467,8 @@ def _collect_run_outputs(job_id: str, target: dict, entry: dict, wf: Optional[di
     _patch_run_record(job_id, outputs=manifest, phase="collected" if complete else "result_pending",
                       text_only=not manifest and bool(seen))
     if not results:
-        raise comfy_client.ComfyError("실행은 끝났지만 아직 회수할 출력물이 없습니다", cause_kind="detail_failed")
+        raise comfy_client.ComfyError("같은 글자 파일을 다른 실행이 덮어써 이 실행의 글자를 읽지 못했습니다" if overwritten
+                                      else "실행은 끝났지만 아직 회수할 출력물이 없습니다", cause_kind="detail_failed")
     return {"outputs": results, "prompt_id": prompt_id}
 
 
@@ -1504,9 +1526,14 @@ def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
         _track_inflight_run(job_id, prompt_id, tgt_kind)
         log.info("comfy submit ok target=%s prompt_id=%s", tgt_kind, prompt_id)  # api_key 는 절대 안 찍음
         entry = _wait(target, prompt_id, job_id)
+        run, _ = _canvas_job(job_id)
+        if run:
+            _note_canvas_context(run["attempt_id"], elapsed_seconds=time.time() - run["created_at"])
     except comfy_client.ComfyError as e:
         if not prompt_id:
-            _patch_run_record(job_id, phase="not_submitted" if e.cause_kind in ("scheme", "dns", "connect_refused", "tls_cert") else "unknown",
+            # 4xx = Comfy 가 받기를 거절했다(없는 노드 등). 408·5xx·전송 오류는 받았을 수 있어 모른다고 둔다
+            refused = e.status_code is not None and 400 <= e.status_code < 500 and e.status_code != 408
+            _patch_run_record(job_id, phase="not_submitted" if refused or e.cause_kind in ("scheme", "dns", "connect_refused", "tls_cert") else "unknown",
                               last_status_code=e.status_code, last_error_class=e.cause_kind)
         if prompt_id:
             _cancel_remote_run(target, prompt_id, "run failure", job_id)
@@ -1540,6 +1567,7 @@ def _mark_run_failure(job_id: str, code: int, detail: Any) -> None:
         _patch_run_record(job_id, phase=phase)
     run, job = _canvas_job(job_id)
     if run:
+        _note_canvas_context(run["attempt_id"], failure_message=str(detail)[:500])
         fallback = "needs_collect" if record.get("prompt_id") or run["outputs"] else "unknown"
         if not record or record.get("phase") == "not_submitted" or record.get("terminal_kind") == "failure":
             fallback = "needs_collect" if run["outputs"] else "failed"

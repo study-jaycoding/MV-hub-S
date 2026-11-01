@@ -143,6 +143,61 @@ describe("wrapTextTokens", () => {
     wrapTextTokens(el, refs, true);
     expect(el.childNodes).toHaveLength(2);
   });
+  it("토큰이 걸치지 않은 조각은 합치지 않는다 — 합치면 글 중간 줄바꿈 뒤 Ctrl+Z 가 글을 통째로 지운다(실제 크롬)", () => {
+    editor("");
+    const parts = [document.createTextNode("abc"), document.createTextNode("\n"), document.createTextNode("def")];
+    el.append(...parts);
+    wrapTextTokens(el, refs, true);
+    expect([...el.childNodes]).toEqual(parts);
+  });
+  it("토큰이 걸친 조각만 합치고 다른 조각은 그대로 둔다", () => {
+    editor("");
+    const first = document.createTextNode("줄\n");
+    const line = document.createTextNode("끝");
+    const left = document.createTextNode("@image1");
+    el.append(first, line, left, document.createTextNode("2"));
+    wrapTextTokens(el, refs, false);
+    expect([...el.childNodes].slice(0, 2)).toEqual([first, line]);
+    expect(left.data).toBe("@image12");
+    expect(el.childNodes).toHaveLength(3);
+    expect(editorText(el)).toBe("줄\n끝@image12");
+  });
+  it.each([[["@ima", "ge1", "2"]], [["@im", "a", "ge12"]], [["@", "i", "m", "age12"]]])("토큰이 여러 조각에 걸쳐도 저장 글과 같은 번호로 본다 %j", (pieces) => {
+    editor("");
+    el.append(...pieces.map((piece) => document.createTextNode(piece)));
+    const refsWith12 = new Map([...refs, ["@image12", undefined]]);
+    wrapTextTokens(el, refsWith12, false);
+    expect(pills().map(([, t]) => t)).toEqual(["@image12"]);
+    expect(editorText(el)).toBe("@image12");
+  });
+  it("세 조각의 가운데 조각에 있던 캐럿도 그 글자 자리에 남는다", () => {
+    editor("");
+    const middle = document.createTextNode("ag");
+    el.append(document.createTextNode("@im"), middle, document.createTextNode("e12"));
+    caretAt(middle, 1);
+    wrapTextTokens(el, new Map(), true);
+    expect(editorText(el)).toBe("@image12");
+    expect(caretTextOffset(el)).toBe(4);
+  });
+  it("두 조각 사이(요소 경계)의 캐럿은 합쳐도 그 글자 자리에 남는다", () => {
+    editor("");
+    el.append(document.createTextNode("@image1"), document.createTextNode("2"));
+    const r = document.createRange();
+    r.setStart(el, 1);
+    r.collapse(true);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(r);
+    wrapTextTokens(el, new Map(), true);
+    expect(editorText(el)).toBe("@image12");
+    expect(caretTextOffset(el)).toBe("@image1".length);
+  });
+  it("토큰이 조각 경계 양쪽에 있으면 합쳐서 하나의 토큰으로 본다", () => {
+    editor("");
+    el.append(document.createTextNode("<<<ima"), document.createTextNode("ge1>>> 끝"));
+    wrapTextTokens(el, refs, false);
+    expect(pills().map(([, t]) => t)).toEqual(["<<<image1>>>"]);
+    expect(editorText(el)).toBe("<<<image1>>> 끝");
+  });
   it("감쌀 것이 없으면 DOM 을 건드리지 않는다 · 이미 감싼 알약은 다시 감싸지 않는다", () => {
     editor("그냥 글 @image9");
     const before = el.firstChild;
@@ -157,6 +212,15 @@ describe("wrapTextTokens", () => {
 });
 
 describe("캐럿·글 꺼내기", () => {
+  it("앞쪽 빈 줄의 캐럿은 첫 줄로 가지 않는다 · 칸 전체가 <br> 하나면 빈 글이다", () => {
+    editor("\nABC");
+    placeCaretAtTextOffset(el, 1);
+    expect(caretTextOffset(el)).toBe(1);
+    expect(editorText(el)).toBe("\nABC");
+    editor("");
+    el.innerHTML = "<br>";
+    expect(editorText(el)).toBe("");
+  });
   it("글자 위치 왕복 — 알약 안쪽이면 그 알약 뒤 · 넘치면 끝 · 다 지운 뒤의 <br> 하나는 빈 글", () => {
     editor("가 @image1 나");
     wrapTextTokens(el, refs, false);

@@ -40,6 +40,7 @@ export interface ComfyCardRun {
   groupSeq: number;
   representative?: { groupId: string; copyIndex: number; attemptId: string };
   settledState?: "idle" | "done" | "failed" | "needs_collect" | "dismissed" | "not_found" | "origin_mismatch";
+  failureMessage?: string; // Comfy 가 알려 준 실패 사유 — 카드에 그대로 보인다. 다시 실행하면 소유자와 함께 새로 시작한다
 }
 export type ComfyCardRuns = Record<string, ComfyCardRun>;
 // HTTP 필드 이름은 백엔드 계약 그대로. 로컬 영수증과 바꾸는 곳은 반영 함수 하나다.
@@ -58,6 +59,7 @@ export interface ComfyCanvasResolution {
   outputs: ComfyCanvasOutput[];
   disposition?: ComfyDisposition;
   origin: { hub_id: string; device_id: string };
+  message?: string; // state 가 failed 일 때 실패 사유
 }
 export interface ComfyCanvasResolveRequest { attempt_ids: string[] }
 export interface ComfyCanvasResolveResponse { runs: ComfyCanvasResolution[] }
@@ -123,7 +125,7 @@ export function comfyCardRuntime(scene: Pick<Scene, "comfyRuns" | "comfyCardRuns
     : owner.settledState === "not_found" ? "실행 접수 여부를 확인하지 못했습니다. 다시 생성하기 전에 확인하세요."
     : owner.settledState === "needs_collect" ? "설정의 Comfy 미회수 실행에서 확인하세요."
     : owner.settledState === "dismissed" ? "미회수 실행을 정리했습니다."
-    : owner.settledState === "failed" ? "Comfy 실행이 실패했습니다." : undefined;
+    : owner.settledState === "failed" ? owner.failureMessage || "Comfy 실행이 실패했습니다." : undefined;
   return { ...owner, status: message ? "failed" : pending ? "running"
     : owner.settledState === "done" || owner.representative ? "done" : "idle", message };
 }

@@ -23,6 +23,7 @@ import urllib.request
 import uuid
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from .net_guard import assert_public_http_url, guarded_opener, BlockedURLError
@@ -407,6 +408,18 @@ def get_history(target: dict, prompt_id: str) -> dict | None:
     return (data or {}).get(prompt_id)
 
 
+def finished_at(entry: dict) -> float | None:
+    """실행이 끝난 시각(초) — history 의 status.messages. 없으면(Cloud·옛 기록) None."""
+    status = entry.get("status")
+    messages = status.get("messages") if isinstance(status, dict) else None
+    for message in reversed(messages if isinstance(messages, list) else []):
+        if (isinstance(message, (list, tuple)) and len(message) == 2 and isinstance(message[1], dict)
+                and message[0] in ("execution_success", "execution_error", "execution_interrupted")):
+            stamp = message[1].get("timestamp")
+            return stamp / 1000 if isinstance(stamp, (int, float)) else None
+    return None
+
+
 def history_error(entry: dict) -> str | None:
     status = entry.get("status") or {}
     if status.get("status_str") == "error":
@@ -569,12 +582,35 @@ def _open_view_stream(target: dict, params: dict):
         response.close()
 
 
+class StampedBytes(bytes):
+    """/view 본문 + 파일이 마지막으로 바뀐 시각(초). 시각을 모르면 None, margin = 그 시각의 오차 여유(초)."""
+    modified_at: float | None = None
+    margin: float = 0.0
+
+
+_ETAG_MTIME_RE = re.compile(r'"?([0-9a-f]+)-[0-9a-f]+"?')
+
+
+def _file_stamp(headers) -> tuple[float | None, float]:
+    """aiohttp 의 ETag 는 <mtime_ns 16진수>-<크기 16진수> — 실제 파일의 st_mtime_ns 와 같다(ComfyUI 0.38 실측). 없으면 초로 올림된 Last-Modified."""
+    match = _ETAG_MTIME_RE.fullmatch(headers.get("ETag") or "")
+    nanoseconds = int(match.group(1), 16) if match else 0
+    if 10 ** 18 <= nanoseconds < 4 * 10 ** 18:  # 나노초 시각이 아닌 ETag 를 시각으로 믿지 않는다
+        return nanoseconds / 1e9, 0.05
+    try:
+        return parsedate_to_datetime(headers.get("Last-Modified") or "").timestamp(), 2.0
+    except (TypeError, ValueError):
+        return None, 0.0
+
+
 def view_bytes(target: dict, params: dict) -> bytes:
     """/view 로 파일 바이트를 받아 반환 — SaveText 등 소형 사용처 전용(전체 메모리 적재).
-    대형 출력 파일 저장은 download_view(스트리밍)를 쓴다."""
+    대형 출력 파일 저장은 download_view(스트리밍)를 쓴다. 파일 시각은 StampedBytes 에 실린다."""
     with _open_view_stream(target, params) as stream:
         try:
-            return stream.read()
+            data = StampedBytes(stream.read())
+            data.modified_at, data.margin = _file_stamp(getattr(stream, "headers", None) or {})
+            return data
         except (
             urllib.error.URLError,
             TimeoutError,

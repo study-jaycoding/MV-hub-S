@@ -11,7 +11,6 @@ import { collectListInputs, effectiveTextOf } from "../../../lib/sceneEdges";
 import { refThumbSrc } from "../../../lib/sceneMedia";
 import { hideBrokenImg, showLoadedImg, thumbOf } from "../../../lib/media";
 import { copyText } from "../../../lib/flash";
-import { insertTextAtCaret } from "../../../lib/promptEditor";
 import {
   TEXT_TOKEN_SRC,
   buildTextTokenPill,
@@ -22,6 +21,10 @@ import {
   textTokenInfo,
   wrapTextTokens,
 } from "../../../lib/textNodeTokens";
+import { breakTextTyping, recordTextEdit, redoTextEdit, startTextHistory, undoTextEdit, type TextEditHistory } from "../../../lib/textEditHistory";
+
+// 앞뒤 입력과 묶지 않는 변경 — 되돌리면 이것만 돌아간다
+const SEPARATE_INPUTS = new Set(["insertParagraph", "insertLineBreak", "insertFromPaste", "insertFromDrop", "deleteByCut"]);
 
 export function TextCard({
   card,
@@ -139,6 +142,7 @@ export function TextCard({
   //  치는 중인 토큰(캐럿이 걸친 것)은 글자로 두고 캐럿이 떠나면 알약 · 알약을 누르면 글자로 풀려 번호를 고친다.
   const editRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
+  const historyRef = useRef<TextEditHistory | null>(null); // 편집칸의 되돌리기 기록 — 열 때 새로 시작한다(lib/textEditHistory)
   const markEmpty = (el: HTMLElement) => el.toggleAttribute("data-empty", !editorText(el));
   // 밖에서 글이 바뀌면(처음 열 때·되돌리기·들어온 글 채택) 칸을 맞춘다 — 직접 친 글은 꺼낸 글과 같아 건드리지 않는다.
   useLayoutEffect(() => {
@@ -148,6 +152,7 @@ export function TextCard({
     if (editorText(el) !== value) {
       el.textContent = value;
       wrapTextTokens(el, thumbByLabel, false);
+      if (historyRef.current) historyRef.current = startTextHistory({ text: value, caret: value.length }); // 바뀐 글이 새 기준이다 — 지난 기록으로 덮지 않게
     }
     markEmpty(el);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -160,6 +165,8 @@ export function TextCard({
     const len = editorText(el).length;
     const saved = caretPosRef.current.get(card.id);
     placeCaretAtTextOffset(el, saved != null ? Math.min(saved, len) : len);
+    historyRef.current = startTextHistory({ text: editorText(el), caret: caretTextOffset(el) ?? len });
+    return () => { historyRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editing]);
 
@@ -222,8 +229,8 @@ export function TextCard({
     return () => { cardEl.removeAttribute("data-pop-open"); cardEl.removeAttribute("data-text-editing"); };
   }, [editing]);
 
-  // 칸이 바뀐 뒤 — 알약 감싸기(조합 중이 아니면, 치는 중인 토큰은 글자로) · 글 저장 · 캐럿 기억 · @ 감지
-  const syncEditor = () => {
+  // 칸이 바뀐 뒤 — 알약 감싸기(조합 중이 아니면, 치는 중인 토큰은 글자로) · 글 저장 · 캐럿 기억 · @ 감지 · 되돌리기 기록(조합이 끝난 뒤에 한 번)
+  const syncEditor = (alone = false) => {
     const el = editRef.current;
     if (!el) return;
     if (!composingRef.current) wrapTextTokens(el, thumbByLabel, true);
@@ -232,27 +239,60 @@ export function TextCard({
     if (value !== (card.text || "")) setNodeText(card.id, value);
     const off = caretTextOffset(el);
     if (off != null) caretPosRef.current.set(card.id, off);
+    if (historyRef.current && !composingRef.current) recordTextEdit(historyRef.current, { text: value, caret: off ?? value.length }, performance.now(), alone);
     detectMention(el);
   };
+  // 되돌리기·다시 실행 — 칸을 글자로 채우고 캐럿을 둔 뒤 평소 길(syncEditor)로 보낸다: 치는 중인 토큰 보호·저장·@ 판정이 입력 때와 같다
+  const stepHistory = (move: typeof undoTextEdit) => {
+    const el = editRef.current;
+    const to = historyRef.current && move(historyRef.current);
+    if (!el || !to) return;
+    el.textContent = to.text;
+    placeCaretAtTextOffset(el, to.caret);
+    syncEditor();
+  };
+  const stepHistoryRef = useRef(stepHistory);
+  stepHistoryRef.current = stepHistory;
+  // 브라우저 기록이 칸을 건드리지 못하게 한다 — 우클릭 메뉴의 되돌리기·조합 중 Ctrl+Z 처럼 keydown 을 거치지 않고 오는 길. React 의 onBeforeInput 은 inputType 을 주지 않는다.
+  useEffect(() => {
+    const el = editRef.current;
+    if (!editing || !el) return;
+    const onBeforeInput = (event: InputEvent) => {
+      if (event.inputType !== "historyUndo" && event.inputType !== "historyRedo") return;
+      event.preventDefault();
+      if (!composingRef.current) stepHistoryRef.current(event.inputType === "historyUndo" ? undoTextEdit : redoTextEdit);
+    };
+    el.addEventListener("beforeinput", onBeforeInput);
+    return () => el.removeEventListener("beforeinput", onBeforeInput);
+  }, [editing]);
   const choosePick = (label: string) => {
     const el = editRef.current;
     const node = mentionNodeRef.current;
     if (!el || !node || !mention || !el.contains(node)) return;
     const end = Math.min(node.length, mention.start + 1 + mention.query.length);
-    const tail = node.splitText(mention.start); // "@query…" 부터 떼어 낸다
-    tail.deleteData(0, end - mention.start);
-    const info = textTokenInfo(new RegExp(TEXT_TOKEN_SRC, "i").exec(label)!);
-    const space = document.createTextNode(" ");
-    node.after(buildTextTokenPill(info, thumbByLabel.get(info.key)), space);
     const sel = window.getSelection();
     const r = document.createRange();
-    r.setStart(space, 1);
-    r.collapse(true);
+    r.setStart(node, mention.start);
+    r.setEnd(node, end);
     sel?.removeAllRanges();
     sel?.addRange(r);
     mentionNodeRef.current = null;
     setMention(null);
-    syncEditor();
+    if (historyRef.current) breakTextTyping(historyRef.current); // 고르기는 치던 글과 따로 한 걸음이다
+    // "@query" 를 고른 글자로 바꾼다 — 입력 이벤트로 저장되고 알약은 syncEditor 가 감싼다
+    if (!document.execCommand?.("insertText", false, `${label} `)) {
+      const tail = node.splitText(mention.start); // "@query…" 부터 떼어 낸다
+      tail.deleteData(0, end - mention.start);
+      const info = textTokenInfo(new RegExp(TEXT_TOKEN_SRC, "i").exec(label)!);
+      const space = document.createTextNode(" ");
+      node.after(buildTextTokenPill(info, thumbByLabel.get(info.key)), space);
+      r.setStart(space, 1);
+      r.collapse(true);
+      sel?.removeAllRanges();
+      sel?.addRange(r);
+    }
+    syncEditor(true);
+    if (historyRef.current) breakTextTyping(historyRef.current); // 바로 이어 친 글이 고르기에 묶이지 않게 — 편집 명령의 입력 이벤트가 이미 위에서 기록했다
   };
   return (
     <>
@@ -286,7 +326,7 @@ export function TextCard({
           <div
             ref={editRef}
             className="scene-textnode scene-textedit"
-            contentEditable
+            contentEditable="plaintext-only" // 붙여넣기·줄바꿈을 브라우저에 맡겨 서식 없는 글로 받고 Ctrl+Z 기록을 지킨다
             suppressContentEditableWarning
             tabIndex={0}
             role="textbox"
@@ -295,7 +335,7 @@ export function TextCard({
             data-placeholder="텍스트 입력"
             spellCheck={false}
             onMouseDown={(e) => e.stopPropagation()}
-            onInput={syncEditor}
+            onInput={(e) => syncEditor(SEPARATE_INPUTS.has((e.nativeEvent as InputEvent).inputType))}
             onKeyUp={(e) => { if (!(showPick && ["ArrowUp", "ArrowDown", "Enter", "Tab"].includes(e.key))) syncEditor(); }}
             onClick={(e) => {
               // 알약을 누르면 글자로 풀어 번호를 고친다(캐럿이 떠나면 다시 알약 — 생성창 프롬프트와 같다)
@@ -321,13 +361,14 @@ export function TextCard({
             }}
             onCompositionStart={() => { composingRef.current = true; }}
             onCompositionEnd={() => { composingRef.current = false; syncEditor(); }}
-            onPaste={(e) => {
-              e.preventDefault(); // 서식 없는 글만 — 붙여 넣은 HTML 이 칸 안에 남지 않게
-              insertTextAtCaret(e.currentTarget, e.clipboardData.getData("text/plain"));
-              syncEditor();
-            }}
             onKeyDown={(e) => {
               if (e.nativeEvent.isComposing || e.keyCode === 229) return; // 한글 조합 중 Enter 는 글자 확정
+              const letter = e.key.toLowerCase();
+              if ((e.ctrlKey || e.metaKey) && !e.altKey && (letter === "z" || letter === "y")) {
+                e.preventDefault();
+                stepHistory(letter === "y" || e.shiftKey ? redoTextEdit : undoTextEdit);
+                return;
+              }
               if (showPick && picks.length) {
                 if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                   e.preventDefault();
@@ -341,12 +382,6 @@ export function TextCard({
                   choosePick(picks[at].label);
                   return;
                 }
-              }
-              if (e.key === "Enter") {
-                e.preventDefault(); // 줄바꿈은 글자로(칸 안에 <div> 가 생기지 않게)
-                insertTextAtCaret(e.currentTarget, "\n");
-                syncEditor();
-                return;
               }
               // Esc = 편집 끝(제목 카드와 같다 — 전엔 다른 곳을 눌러야만 끝났다). 같은 Esc 가 보드의 선택까지 풀지 않게 여기서 멈춘다.
               //  @ 목록이 떠 있으면 목록만 닫는다.

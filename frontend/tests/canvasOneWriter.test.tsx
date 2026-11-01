@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 // 캔버스가 분리 창에 떠 있는 동안 씬은 그 창만 쓴다(2026-10-31, docs/status/캔버스_분리창_한곳쓰기_2026-10-31.md) — 쓰기 입구 · 열기 전 확정 · 새로 고침 ·
 // 원래 창의 사람 동작 · 창 생존(Web Lock). 창마다 모듈이 따로라 vi.resetModules 로 새 창을 흉내 낸다.
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -48,6 +50,7 @@ async function openStore(scenes: object[]) {
 function fakeLocks() {
   const held: { name: string; finish: () => void }[] = [];
   const queue: { name: string; run: () => unknown; done: (value: unknown) => void }[] = [];
+  type Options = { signal?: AbortSignal };
   const pump = () => {
     for (const next of [...queue]) { // 이름마다 따로 줄을 선다
       if (held.some((lock) => lock.name === next.name) || !queue.includes(next)) continue;
@@ -66,7 +69,17 @@ function fakeLocks() {
   const locks = {
     held, queue,
     query: async () => ({ held: held.map(({ name }) => ({ name })), pending: queue.map(({ name }) => ({ name })) }),
-    request: (name: string, run: () => unknown) => new Promise((done) => { queue.push({ name, run, done }); pump(); }),
+    request: (name: string, second: Options | (() => unknown), third?: () => unknown) => new Promise((done, fail) => {
+      const run = (third ?? second) as () => unknown;
+      const entry = { name, run, done };
+      (third ? (second as Options).signal : undefined)?.addEventListener("abort", () => {
+        if (!queue.includes(entry)) return;
+        queue.splice(queue.indexOf(entry), 1);
+        fail(new DOMException("aborted", "AbortError"));
+      });
+      queue.push(entry);
+      pump();
+    }),
   };
   Object.defineProperty(navigator, "locks", { configurable: true, value: locks });
   return locks;
@@ -537,6 +550,29 @@ describe("새로 고침 — 넘겨받은 쓰기가 끝난 뒤에 읽는다", () 
   });
 });
 
+describe("Comfy 실패 사유", () => {
+  const comfyCard = { id: "k", kind: "comfy", x: 0, y: 0, comfyCfg: { content: "{}" } };
+  const failed = { groupId: "g", groupSeq: 1, settledState: "failed", failureMessage: "없는 노드" };
+  const replaceWorkflow = async (type: "replaceComfyWorkflow" | "refreshComfyMetadata") => {
+    const { store, data } = await openStore([{ id: "s", name: "s", created_at: 1, edges: [], cards: [comfyCard], comfyCardRuns: { k: failed } }]);
+    const { applyCanvasComfyCommand } = await import("../src/features/canvas/comfyCommands");
+    const command = type === "replaceComfyWorkflow"
+      ? { type, cardId: "k", workflow: { name: "새것", content: "{\"1\":{}}", nodeCount: 1 } } as const
+      : { type, cardId: "k", expectedContent: "{}", nodeCount: 1 } as const;
+    applyCanvasComfyCommand(command, { sceneId: "s", cardsRef: { current: [comfyCard] }, input: { applyCards: vi.fn() }, history: { propagateGenIdsToHistory: vi.fn() } } as never);
+    await store.settleSceneStoreForTest();
+    return data.listScenes(null)[0].comfyCardRuns!.k;
+  };
+
+  it("워크플로를 바꾸면 지난 워크플로의 구체적 오류를 지운다 · 실패 상태는 그대로다", async () => {
+    expect(await replaceWorkflow("replaceComfyWorkflow")).toEqual({ groupId: "g", groupSeq: 1, settledState: "failed" });
+  });
+
+  it("같은 워크플로를 다시 읽는 것만으로는 지우지 않는다", async () => {
+    expect((await replaceWorkflow("refreshComfyMetadata")).failureMessage).toBe("없는 노드");
+  });
+});
+
 describe("창 생존 — Web Lock", () => {
   async function mainWindow(read: () => Promise<boolean> = async () => true) {
     vi.resetModules();
@@ -557,14 +593,168 @@ describe("창 생존 — Web Lock", () => {
     return { end: () => end() };
   };
 
-  it("캔버스 창은 켜지면서 잠금을 쥔다", async () => {
-    const locks = fakeLocks();
+  const canvasWindowModule = async () => {
     vi.resetModules();
     window.name = "contenthub-canvas";
-    const popup = await import("../src/lib/popupWindows");
-    popup.announceCanvasWindow();
+    return import("../src/lib/popupWindows");
+  };
+
+  it("캔버스 창은 저장소를 열기 전에 잠금을 받아 평생 쥔다", async () => {
+    const locks = fakeLocks();
+    const popup = await canvasWindowModule();
+    await expect(popup.claimCanvasWindow()).resolves.toBe(true);
     await sleep(0);
     expect(locks.held.map(({ name }) => name)).toEqual([LOCK]);
+  });
+
+  it("새로 고친 창 — 옛 문서가 곧 풀면 받는다", async () => {
+    const locks = fakeLocks();
+    const old = holdLikeCanvasWindow(locks);
+    await sleep(0);
+    const popup = await canvasWindowModule();
+    const claim = popup.claimCanvasWindow();
+    await sleep(0);
+    old.end();
+    await expect(claim).resolves.toBe(true);
+  });
+
+  it("다른 캔버스 창이 살아 있으면 시간 안에 못 받고, 기다리던 요청도 거둔다 — 늦게 받아 저장소를 여는 일이 없다", async () => {
+    const locks = fakeLocks();
+    const first = holdLikeCanvasWindow(locks);
+    await sleep(0);
+    const popup = await canvasWindowModule();
+    vi.useFakeTimers();
+    const claim = popup.claimCanvasWindow();
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(locks.queue).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(claim).resolves.toBe(false);
+    expect(locks.queue).toHaveLength(0);
+    vi.useRealTimers();
+    first.end();
+    await sleep(0);
+    expect(locks.held).toEqual([]);
+  });
+
+  it("잠금 API 가 없으면 지금처럼 간다(그런 주소의 창은 retireCanvasWindow 가 물러나게 한다)", async () => {
+    const popup = await canvasWindowModule();
+    await expect(popup.claimCanvasWindow()).resolves.toBe(true);
+  });
+
+  it("main.tsx — 잠금을 받기 전에는 알리지도 저장소를 열지도 않는다 · App — 연결 생성 중에는 새로 띄우지 않고 떠 있는 창은 그대로 앞으로 가져온다", () => {
+    const main = readFileSync(resolve(process.cwd(), "src/main.tsx"), "utf8");
+    expect(main.indexOf("await claimCanvasWindow()")).toBeGreaterThan(0);
+    expect(main.indexOf("await claimCanvasWindow()")).toBeLessThan(main.indexOf("announceCanvasWindow();"));
+    expect(main.indexOf("announceCanvasWindow();")).toBeLessThan(main.indexOf("await bootSceneStore()"));
+    const app = readFileSync(resolve(process.cwd(), "src/App.tsx"), "utf8");
+    const live = app.indexOf("if (canvasWindowLive()) return openEmbedWindow(EMBED_MODES.canvas, canvasElsewhere)");
+    const plan = app.indexOf("if (sceneActionRef.current?.comfyPlanRunning()) return flash(");
+    expect(live).toBeGreaterThan(0);
+    expect(plan).toBeGreaterThan(live);
+    expect(plan).toBeLessThan(app.indexOf("openingCanvasRef.current = true"));
+    expect(app.match(/openEmbedWindow\(EMBED_MODES\.canvas, canvasElsewhere\)/g)).toHaveLength(2);
+    const settled = app.indexOf("await settleSceneWrites(3000"); // 저장을 기다리는 사이 시작한 연결 생성도 창을 열기 직전에 다시 본다
+    const again = app.indexOf("if (sceneActionRef.current?.comfyPlanRunning()) return flash(", settled);
+    expect(again).toBeGreaterThan(settled);
+    expect(again).toBeLessThan(app.indexOf("leaveCanvasHandoff({"));
+  });
+
+  describe("이 창이 잡지 못한 창을 다시 잡을 때", () => {
+    const blankWindow = (href = "about:blank") => {
+      const win = { closed: false, close: vi.fn(() => { win.closed = true; }), focus: vi.fn(), addEventListener: vi.fn(), location: { href } };
+      return win;
+    };
+    async function floatingElsewhere() {
+      const locks = fakeLocks();
+      holdLikeCanvasWindow(locks);
+      const main = await mainWindow();
+      const other = new BroadcastChannel(CHANNEL);
+      other.postMessage("open");
+      await act(async () => { await sleep(20); });
+      expect(main.popup.isCanvasFloating()).toBe(true);
+      return { locks, ...main, finish: () => { other.close(); main.stop(); } };
+    }
+
+    it("잠금을 다른 창이 쥐고 있으면 빈 창을 닫고 안내만 한다 — 싣지 않아 분리 창이 둘 뜨지 않는다", async () => {
+      const { popup, finish } = await floatingElsewhere();
+      const win = blankWindow();
+      const open = vi.spyOn(window, "open").mockReturnValue(win as unknown as Window);
+      const elsewhere = vi.fn();
+      popup.openEmbedWindow(popup.EMBED_MODES.canvas, elsewhere);
+      await act(async () => { await sleep(0); });
+      expect(open.mock.calls[0][0]).toBe("");
+      expect(win.close).toHaveBeenCalledOnce();
+      expect(elsewhere).toHaveBeenCalledOnce();
+      expect(win.location.href).toBe("about:blank");
+      expect(win.addEventListener).not.toHaveBeenCalled(); // 판정 전에는 이 창의 창으로 받아들이지 않는다
+      popup.openEmbedWindow(popup.EMBED_MODES.canvas, elsewhere);
+      expect(open).toHaveBeenCalledTimes(2); // 닫은 창을 등록하지 않았다 — 다음 휠 클릭도 다시 확인한다
+      await act(async () => { await sleep(0); });
+      finish();
+    });
+
+    it("잠금을 읽지 못해도 두 창을 만들지 않는 쪽으로 닫는다", async () => {
+      const { popup, locks, finish } = await floatingElsewhere();
+      locks.query = async () => { throw new Error("읽지 못함"); };
+      const win = blankWindow();
+      vi.spyOn(window, "open").mockReturnValue(win as unknown as Window);
+      const elsewhere = vi.fn();
+      popup.openEmbedWindow(popup.EMBED_MODES.canvas, elsewhere);
+      await act(async () => { await sleep(0); });
+      expect(win.close).toHaveBeenCalledOnce();
+      expect(elsewhere).toHaveBeenCalledOnce();
+      finish();
+    });
+
+    it("쥔 곳이 없으면 사실은 닫혀 있던 것이다 — 그 창에 한 번만 싣고 안내하지 않는다", async () => {
+      const { popup, locks, finish } = await floatingElsewhere();
+      locks.query = async () => ({ held: [], pending: [] });
+      const win = blankWindow();
+      const open = vi.spyOn(window, "open").mockReturnValue(win as unknown as Window);
+      const elsewhere = vi.fn();
+      popup.openEmbedWindow(popup.EMBED_MODES.canvas, elsewhere);
+      await act(async () => { await sleep(0); });
+      expect(win.location.href).toMatch(/embed=canvas/);
+      expect(win.close).not.toHaveBeenCalled();
+      expect(elsewhere).not.toHaveBeenCalled();
+      popup.openEmbedWindow(popup.EMBED_MODES.canvas, elsewhere);
+      expect(open).toHaveBeenCalledOnce(); // 이제 이 창이 아는 창이다 — 앞으로 가져올 뿐
+      finish();
+    });
+
+    it("살아 있는 창을 다시 잡으면 앞으로 가져올 뿐이다", async () => {
+      const { popup, finish } = await floatingElsewhere();
+      const win = blankWindow("http://127.0.0.1/?embed=canvas&v=1");
+      vi.spyOn(window, "open").mockReturnValue(win as unknown as Window);
+      const elsewhere = vi.fn();
+      popup.openEmbedWindow(popup.EMBED_MODES.canvas, elsewhere);
+      expect(win.focus).toHaveBeenCalled();
+      expect(win.close).not.toHaveBeenCalled();
+      expect(elsewhere).not.toHaveBeenCalled();
+      finish();
+    });
+
+    it("이 창이 연 창이 물러났는데 다른 창이 떠 있으면 낡은 참조를 비워 다음 휠 클릭이 그 창을 확인한다", async () => {
+      const { popup, finish } = await floatingElsewhere();
+      const mine = blankWindow("http://127.0.0.1/?embed=canvas&v=2");
+      const open = vi.spyOn(window, "open").mockReturnValue(mine as unknown as Window);
+      popup.openEmbedWindow(popup.EMBED_MODES.canvas);
+      mine.closed = true;
+      const other = new BroadcastChannel(CHANNEL);
+      other.postMessage("closed");
+      await act(async () => { await sleep(400); });
+      expect(popup.isCanvasFloating()).toBe(true);
+      expect(popup.canvasWindowLive()).toBe(true);
+      const blank = blankWindow();
+      open.mockReturnValue(blank as unknown as Window);
+      const elsewhere = vi.fn();
+      popup.openEmbedWindow(popup.EMBED_MODES.canvas, elsewhere);
+      await act(async () => { await sleep(0); });
+      expect(open.mock.calls[1][0]).toBe("");
+      expect(elsewhere).toHaveBeenCalledOnce();
+      other.close();
+      finish();
+    });
   });
 
   it("'open' 을 받으면 잠금을 기다리고(한 번만), 창이 끝나면 신호 없이도 캔버스가 돌아온다", async () => {

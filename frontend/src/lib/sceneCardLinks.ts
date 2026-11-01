@@ -285,7 +285,7 @@ export function subscribeCardLinksLoaded(fn: () => void): () => void {
  * 변경 없으면 원본 배열·객체를 그대로 재사용한다(React 참조 비교로 불필요한 재렌더 방지).
  */
 export function mergeCardLinksIntoScenes<
-  S extends { id: string; cards: { id: string; kind: string; genId?: string | null; genIds?: string[] }[] },
+  S extends { id: string; cards: { id: string; kind: string; genId?: string | null; genIds?: string[]; comfyCfg?: { outputs?: { saved_generation_id?: string }[] } }[] },
 >(scenes: S[], links: CardLink[]): S[] | null {
   if (!links.length) return null;
   const byCard = new Map<string, CardLink[]>();
@@ -311,12 +311,16 @@ export function mergeCardLinksIntoScenes<
       }
       const sameOrder =
         merged.length === local.length && merged.every((id, i) => id === local[i]);
-      if (sameOrder) return card;
+      // 저장 뒤에도 주소가 남는 Comfy 출력 — 같이 떼지 않으면 지운 결과가 View·입력에 남는다(scenes.withoutVariants 와 같은 규칙)
+      const outputs = card.comfyCfg?.outputs;
+      const kept = outputs?.filter((output) => !output.saved_generation_id || !removed.has(output.saved_generation_id));
+      const outputsGone = !!outputs && kept!.length !== outputs.length;
+      if (sameOrder && !outputsGone) return card;
       sceneTouched = true;
       // 대표가 빠졌으면 남은 것 중 마지막(가장 최근에 담긴 것)으로 — 빈 카드로 보이지 않게.
       const genId =
         card.genId && !removed.has(card.genId) ? card.genId : merged[merged.length - 1] ?? null;
-      return { ...card, genIds: merged, genId };
+      return { ...card, genIds: merged, genId, ...(outputsGone ? { comfyCfg: { ...card.comfyCfg, outputs: kept } } : {}) };
     });
     if (!sceneTouched) return scene;
     touched = true;

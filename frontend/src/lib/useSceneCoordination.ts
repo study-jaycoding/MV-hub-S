@@ -296,6 +296,7 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
     zoomStep: (dir: 1 | -1) => void; // 툴바 −/+ 한 단계 확대/축소
     closeVariants: () => void; // '생성 결과' 창 닫기 — '폴더 보기' 창을 열 때
     selection: () => CanvasSelection; // 지금 고른 카드·그룹 — 휠 클릭으로 여는 캔버스 창에 넘긴다(lib/popupWindows)
+    comfyPlanRunning: () => boolean; // Comfy 를 앞세운 연결 생성이 도는 중 — 캔버스를 다른 창으로 못 넘긴다
   } | null>(null);
   // 비동기 결과가 현재 씬에 합쳐지기 직전, 아직 SceneBoard 메모리에만 있는 입력을 먼저 저장한다.
   // patchSceneById 안에서 자동 호출하면 flush→onChange→patch 재귀가 되므로 명시 관문으로 분리한다.
