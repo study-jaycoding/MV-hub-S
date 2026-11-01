@@ -7,11 +7,12 @@ import { createPortal } from "react-dom";
 import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 
-export function HostConfirm({ label, title, confirmLabel, cancelLabel = "취소", children, onConfirm, onCancel }: {
+export function HostConfirm({ label, title, confirmLabel, cancelLabel = "취소", danger = true, children, onConfirm, onCancel }: {
   label: string; // 보조 기술이 읽는 창 이름
   title: ReactNode;
   confirmLabel: string;
   cancelLabel?: string;
+  danger?: boolean; // 지우는 확인은 빨강(기본) · 그 밖의 확인은 보통 단추
   children: ReactNode; // 본문(묻는 말)
   onConfirm: () => void;
   onCancel: () => void;
@@ -35,7 +36,7 @@ export function HostConfirm({ label, title, confirmLabel, cancelLabel = "취소"
         <div className="admin-body">
           <p className="host-exit-text">{children}</p>
           <div className="host-exit-actions">
-            <button type="button" className="settings-action danger" autoFocus onClick={onConfirm}>
+            <button type="button" className={"settings-action" + (danger ? " danger" : "")} autoFocus onClick={onConfirm}>
               {confirmLabel}
             </button>
             <button type="button" className="settings-action ghost" onClick={onCancel}>

@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "../api";
 import { accountAtRequest, globalRoleSaves, rebaseRoles, sameRoles } from "../lib/saveQueue";
+import { AdminIcon } from "./admin/AdminParts";
 import { ApprovalTab, type AdminConfirmState } from "./admin/ApprovalTab";
 import { AssetRegistryTab } from "./admin/AssetRegistryTab";
 import { MemberRolesTab } from "./admin/MemberRolesTab";
@@ -175,7 +176,7 @@ export function AdminWindow({
   //  백엔드 라우트는 옛 앱·되돌리기용으로 둔다).
   const tabDefs: { key: AdminTab; label: string; visible: boolean }[] = [
     { key: "approve", label: "승인", visible: hasGlobalCap(viewerRoles, "approve_signup") },
-    { key: "roles", label: "멤버 · 전역 역할", visible: hasGlobalCap(viewerRoles, "grant_global") },
+    { key: "roles", label: "멤버", visible: hasGlobalCap(viewerRoles, "grant_global") },
     // 프로젝트 관리(2026-10-02 대시보드 오버레이에서 옮김) — 위 canManageProjects 기준.
     { key: "projects", label: "프로젝트", visible: canManageProjects },
     // 에셋 리스트(옛 이름 '에셋 대장', 2026-09-30) — 공유 서버 운영(system) 권한만. 훑기는 NAS 를 오래 읽는다.
@@ -187,6 +188,8 @@ export function AdminWindow({
   const [tab, setTab] = useState<AdminTab>("approve");
   // 선택 탭이 권한 변화로 사라지면 첫 가용 탭으로 폴백(빈 화면 방지).
   const activeTab = visibleTabs.some((t) => t.key === tab) ? tab : visibleTabs[0]?.key;
+  // 왼쪽 메뉴의 승인 대기 수 — 숨긴 계정은 세지 않는다('숨긴 계정 보기'를 켜도 같은 수).
+  const pendingCount = visibleAccounts.filter((a) => a.status === "pending" && !a.hidden).length;
 
   // 가장 나중에 보낸 조회의 응답만 받는다(조작 규칙 40) — '숨긴 계정 보기'를 켰다 바로 끄면 두 조회가 나가고, 늦게 온 쪽이 이겨
   //  체크는 꺼졌는데 숨긴 계정이 보였다(반대도). 승인·숨김을 바꾼 뒤의 재조회는 **지금의** 체크로 묻는다(요청을 보낼 때의 체크가 아니라).
@@ -303,8 +306,8 @@ export function AdminWindow({
   return (
     <>
       <div className="admin-backdrop" onMouseDown={() => { if (!projectDialogOpen) onClose(); }} />
-      {/* 프로젝트 탭은 옛 프로젝트 관리 창 폭(760px)으로 넓힌다 — 👥 멤버 칸이 열리면 CSS 가 더 넓힌다 */}
-      <div ref={windowRef} className={"admin-window" + (activeTab === "projects" ? " wide" : "")} role="dialog" aria-label="관리자">
+      {/* 탭을 바꿔도 창 크기는 그대로다(Jay 2026-11-02 B안) — 메뉴가 없는 사람(탭 하나)은 본문만 */}
+      <div ref={windowRef} className={"admin-window" + (visibleTabs.length > 1 ? "" : " no-nav")} role="dialog" aria-label="관리자">
         <header className="admin-head">
           <span className="admin-title">⬡ 관리자</span>
           {localOnlyServerControls && isPermanentAdmin && (
@@ -316,8 +319,9 @@ export function AdminWindow({
                 ? `슈퍼 관리자 ${remainingLabel} 남음 — 클릭해 해제`
                 : "슈퍼 관리자 — 내 비밀번호로 10분 권한 요청"
             }
+            aria-label="슈퍼 관리자"
           >
-            🔑
+            <AdminIcon name="key" />
           </button>
           )}
           <button className="assets-x" onClick={onClose} title="닫기">
@@ -366,15 +370,22 @@ export function AdminWindow({
 
         {visibleTabs.length > 1 && (
           <div className="admin-tabs">
-            {visibleTabs.map((tdef) => (
-              <button
-                key={tdef.key}
-                className={"admin-tab" + (activeTab === tdef.key ? " on" : "")}
-                onClick={() => setTab(tdef.key)}
-              >
-                {tdef.label}
-              </button>
-            ))}
+            {visibleTabs.map((tdef) => {
+              const count = tdef.key === "approve" ? pendingCount : 0;
+              return (
+                <button
+                  key={tdef.key}
+                  className={"admin-tab" + (activeTab === tdef.key ? " on" : "")}
+                  onClick={() => setTab(tdef.key)}
+                  aria-current={activeTab === tdef.key ? "page" : undefined}
+                  aria-label={count ? `${tdef.label} · 대기 ${count}명` : undefined}
+                  data-count={count || undefined}
+                >
+                  <AdminIcon name={tdef.key} size={17} />
+                  {tdef.label}
+                </button>
+              );
+            })}
           </div>
         )}
 

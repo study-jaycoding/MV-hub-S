@@ -209,7 +209,7 @@ it("관리자 창: 코드가 온 뒤에는 본문 안의 것부터 닫는다 —
   key("Escape");
   expect(q(".admin-elev")).toBeNull();
   expect(closed.admin).not.toHaveBeenCalled();
-  m.act(() => [...document.querySelectorAll<HTMLButtonElement>(".admin-tab")].find((button) => button.textContent === "멤버 · 전역 역할")!.click());
+  m.act(() => [...document.querySelectorAll<HTMLButtonElement>(".admin-tab")].find((button) => button.textContent === "멤버")!.click());
   const search = q(".member-search input")!;
   m.act(() => search.focus());
   key("Escape");

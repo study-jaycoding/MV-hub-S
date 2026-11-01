@@ -14,6 +14,7 @@ import {
   type RegistrySchedule,
   type ScheduleKind,
 } from "../../lib/assetRegistryApi";
+import { AdminPageHead } from "./AdminParts";
 
 const KINDS: [ScheduleKind, string][] = [["off", "끔"], ["month", "매월"], ["week", "매주"], ["day", "매일"]];
 const WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]; // 서버와 같이 월=0
@@ -58,62 +59,64 @@ function ScheduleRow({ status, onSaved }: { status: AssetRegistryStatus; onSaved
   };
   const mark = status.schedule_mark;
   return (
-    <>
-      <h4>자동 훑기</h4>
-      <div className="admin-schedule-row">
-        <div className="acct-status-seg admin-mode-seg" role="group" aria-label="자동 훑기">
-          {KINDS.map(([kind, label]) => (
-            <button key={kind} className={"acct-seg" + (value.kind === kind ? " on" : "")} aria-pressed={value.kind === kind}
-              disabled={busy} onClick={() => edit({ kind })}>
-              {label}
-            </button>
-          ))}
+    <div className="admin-set-row">
+      <div className="admin-set-label">자동 훑기</div>
+      <div>
+        <div className="admin-schedule-row">
+          <div className="acct-status-seg admin-mode-seg" role="group" aria-label="자동 훑기">
+            {KINDS.map(([kind, label]) => (
+              <button key={kind} className={"acct-seg" + (value.kind === kind ? " on" : "")} aria-pressed={value.kind === kind}
+                disabled={busy} onClick={() => edit({ kind })}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {value.kind === "month" && (
+            <select className="admin-schedule-select" disabled={busy} aria-label="날짜" value={value.day} onChange={(e) => edit({ day: Number(e.target.value) })}>
+              {Array.from({ length: 28 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1}일</option>)}
+            </select>
+          )}
+          {value.kind === "week" && (
+            <select className="admin-schedule-select" disabled={busy} aria-label="요일" value={value.weekday} onChange={(e) => edit({ weekday: Number(e.target.value) })}>
+              {WEEKDAYS.map((d, i) => <option key={d} value={i}>{d}요일</option>)}
+            </select>
+          )}
+          {value.kind !== "off" && (
+            <>
+              <select className="admin-schedule-select" disabled={busy} aria-label="오전 오후" value={pm ? "pm" : "am"}
+                onChange={(e) => edit({ hour: (value.hour % 12) + (e.target.value === "pm" ? 12 : 0) })}>
+                <option value="am">오전</option>
+                <option value="pm">오후</option>
+              </select>
+              <select className="admin-schedule-select" disabled={busy} aria-label="시" value={value.hour % 12 || 12}
+                onChange={(e) => edit({ hour: (Number(e.target.value) % 12) + (pm ? 12 : 0) })}>
+                {Array.from({ length: 12 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1}시</option>)}
+              </select>
+            </>
+          )}
+          <button className="admin-mini-btn" disabled={!dirty || busy} onClick={() => void save()}>
+            {busy ? "저장 중…" : "저장"}
+          </button>
         </div>
-        {value.kind === "month" && (
-          <select className="admin-schedule-select" disabled={busy} aria-label="날짜" value={value.day} onChange={(e) => edit({ day: Number(e.target.value) })}>
-            {Array.from({ length: 28 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1}일</option>)}
-          </select>
-        )}
-        {value.kind === "week" && (
-          <select className="admin-schedule-select" disabled={busy} aria-label="요일" value={value.weekday} onChange={(e) => edit({ weekday: Number(e.target.value) })}>
-            {WEEKDAYS.map((d, i) => <option key={d} value={i}>{d}요일</option>)}
-          </select>
-        )}
-        {value.kind !== "off" && (
-          <>
-            <select className="admin-schedule-select" disabled={busy} aria-label="오전 오후" value={pm ? "pm" : "am"}
-              onChange={(e) => edit({ hour: (value.hour % 12) + (e.target.value === "pm" ? 12 : 0) })}>
-              <option value="am">오전</option>
-              <option value="pm">오후</option>
-            </select>
-            <select className="admin-schedule-select" disabled={busy} aria-label="시" value={value.hour % 12 || 12}
-              onChange={(e) => edit({ hour: (Number(e.target.value) % 12) + (pm ? 12 : 0) })}>
-              {Array.from({ length: 12 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1}시</option>)}
-            </select>
-          </>
-        )}
-        <button className="admin-mini-btn" disabled={!dirty || busy} onClick={() => void save()}>
-          {busy ? "저장 중…" : "저장"}
-        </button>
+        <div className="admin-note-sub">
+          {!dirty && status.next_run_at && <><span className="admin-schedule-next">다음 자동 훑기 · {kstText(status.next_run_at)}</span><br /></>}
+          {status.mode === "local"
+            ? "그 시간(2분 안)에 앱이 켜져 있는 관리자 PC 한 대가 훑습니다. 모두 꺼져 있으면 그 회차는 건너뜁니다."
+            : "그 시간에 공유 서버가 훑습니다. 서버가 꺼져 있던 회차는 건너뜁니다."}
+          {mark?.slot && (
+            <><br />마지막 자동 훑기 · {kstText(mark.slot)} · {mark.runner === "server" ? "서버" : `PC ${(mark.runner || "").replace(/^pc:/, "")}`}
+              {mark.state === "not_started" ? " · 시작 못 함(다른 훑기 중 등)" : ""}</>
+          )}
+        </div>
       </div>
-      <div className="admin-note-sub">
-        {!dirty && status.next_run_at && <><span className="admin-schedule-next">다음 자동 훑기 · {kstText(status.next_run_at)}</span><br /></>}
-        {status.mode === "local"
-          ? "그 시간(2분 안)에 앱이 켜져 있는 관리자 PC 한 대가 훑습니다. 모두 꺼져 있으면 그 회차는 건너뜁니다(관리자 PC 앱도 새 판이어야 합니다)."
-          : "그 시간에 공유 서버가 훑습니다. 서버가 꺼져 있던 회차는 건너뜁니다."}{" "}
-        자동 훑기는 사람이 쓰는 NAS 를 덜 붙잡게 더 천천히(초당 5MB) 읽습니다.
-        {mark?.slot && (
-          <><br />마지막 자동 훑기 · {kstText(mark.slot)} · {mark.runner === "server" ? "서버" : `PC ${(mark.runner || "").replace(/^pc:/, "")}`}
-            {mark.state === "not_started" ? " · 시작 못 함(다른 훑기 중 등)" : ""}</>
-        )}
-      </div>
-    </>
+    </div>
   );
 }
 
 const ROOT_UNREADABLE = "루트 폴더를 열 수 없음"; // 훑기 자식이 루트를 못 열 때 남기는 원인(asset_registry_scan)
 
 const STATE_LABEL: Record<string, string> = { ok: "완료", partial: "일부 대기", failed: "실패", aborted: "멈춤" };
+const STATE_TONE: Record<string, string> = { ok: " ok", partial: " wait", failed: " bad", aborted: " bad" };
 
 function size(bytes: number): string {
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
@@ -213,7 +216,9 @@ export function AssetRegistryTab() {
     return (
       <tr key={p.project_id}>
         <td>{p.name || p.project_id}</td>
-        <td title={p.note || undefined}>{STATE_LABEL[p.state] || p.state}</td>
+        <td title={p.note || undefined}>
+          <span className={"admin-tag" + (STATE_TONE[p.state] || "")}>{STATE_LABEL[p.state] || p.state}</span>
+        </td>
         <td>{p.files.toLocaleString()}</td>
         <td>
           {(count.present || 0).toLocaleString()}
@@ -222,9 +227,9 @@ export function AssetRegistryTab() {
         <td>
           {p.hashed.toLocaleString()} · {size(p.hashed_bytes)}
         </td>
-        <td>
+        <td title={waiting ? `큰 파일 ${waiting}개 수동 대기` : undefined}>
           {p.undetermined + p.pending ? `${p.undetermined} · ${p.pending}` : "—"}
-          {waiting ? ` (큰 파일 ${waiting} 수동 대기)` : ""}
+          {waiting ? ` · 큰 파일 ${waiting}` : ""}
         </td>
         <td>{duration(p.elapsed_ms)}</td>
         <td>{when(p.finished_at)}</td>
@@ -245,10 +250,34 @@ export function AssetRegistryTab() {
   const helperReady = mode !== "local" || !!helper?.available;
   return (
     <section className="admin-section">
-      <div className="admin-note-sub">
-        공유 서버가 PM 프로젝트 폴더의 그림마다 번호를 붙여, 이름을 바꾸거나 옮겨도 캔버스 레퍼런스가 따라가게 합니다.
-        첫 전체 훑기는 NAS 를 천천히(초당 8MB) 읽어 약 30분 걸리고, 그 뒤로는 바뀐 파일만 읽어 보통 1분 안팎입니다.
-      </div>
+      <AdminPageHead
+        title="에셋 리스트"
+        desc="프로젝트 폴더의 그림마다 번호를 붙여, 이름을 바꾸거나 옮겨도 캔버스 레퍼런스가 따라가게 합니다."
+      >
+        {status?.enabled && mode && idle && (
+          !helperReady ? (
+            <span className="admin-note-sub">공유 서버에 로그인한 앱에서만 이 PC 로 훑을 수 있습니다.</span>
+          ) : confirming ? (
+            <>
+              <span className="admin-note-sub">{mode === "server" ? "NAS 를 오래 읽습니다." : "이 PC 로 NAS 를 오래 읽습니다."} 시작할까요?</span>
+              <button className="admin-add" onClick={() => void start(mode)}>
+                시작
+              </button>
+              <button className="admin-mini-btn" onClick={() => setConfirming(false)}>
+                취소
+              </button>
+            </>
+          ) : (
+            <button
+              className="admin-add"
+              title="첫 전체 훑기는 NAS 를 천천히 읽어 약 30분 걸리고, 그 뒤로는 바뀐 파일만 읽어 보통 1분 안팎입니다"
+              onClick={() => setConfirming(true)}
+            >
+              지금 훑기
+            </button>
+          )
+        )}
+      </AdminPageHead>
       {!status ? (
         <div className="admin-empty">읽는 중…</div>
       ) : !status.enabled ? (
@@ -259,34 +288,65 @@ export function AssetRegistryTab() {
         <div className="admin-empty">공유 서버 업데이트가 필요합니다(훑는 곳 선택을 모르는 서버).</div>
       ) : (
         <>
-          <h4>훑는 곳</h4>
-          <div className="admin-mode-row">
-            <div className="acct-status-seg admin-mode-seg" role="group" aria-label="훑는 곳">
-              {(["server", "local"] as const).map((m) => (
-                <button
-                  key={m}
-                  className={"acct-seg" + (mode === m ? " on" : "")}
-                  aria-pressed={mode === m}
-                  disabled={!idle}
-                  title={idle ? undefined : "훑는 중에는 바꿀 수 없습니다"}
-                  onClick={() => mode !== m && void changeMode(m)}
-                >
-                  {m === "server" ? "서버" : "로컬 · 이 PC"}
-                </button>
-              ))}
+          <div className="admin-set">
+            <div className="admin-set-row">
+              <div className="admin-set-label">훑는 곳</div>
+              <div>
+                <div className="acct-status-seg admin-mode-seg" role="group" aria-label="훑는 곳">
+                  {(["server", "local"] as const).map((m) => (
+                    <button
+                      key={m}
+                      className={"acct-seg" + (mode === m ? " on" : "")}
+                      aria-pressed={mode === m}
+                      disabled={!idle}
+                      title={idle ? undefined : "훑는 중에는 바꿀 수 없습니다"}
+                      onClick={() => mode !== m && void changeMode(m)}
+                    >
+                      {m === "server" ? "서버" : "로컬 · 이 PC"}
+                    </button>
+                  ))}
+                </div>
+                <div className="admin-note-sub">
+                  {mode === "server"
+                    ? "공유 서버가 NAS 를 직접 읽습니다."
+                    : "이 PC 가 자기 NAS 연결(Z: · X:)로 읽어 서버에 올립니다. 끝날 때까지 앱을 켜 둡니다(첫 훑기 약 30분). 서버는 스스로 훑지 않습니다."}
+                  {" "}서버에 저장되어 관리자 모두 같게 적용됩니다.
+                </div>
+              </div>
             </div>
-            <span className="admin-mode-saved">서버에 저장 — 관리자 모두 같게</span>
+            {status.schedule ? (
+              <ScheduleRow status={status} onSaved={(text) => { setMsg(text); void load(); }} />
+            ) : (
+              <div className="admin-set-row">
+                <div className="admin-set-label">자동 훑기</div>
+                <div className="admin-note-sub">자동 훑기 시간은 공유 서버를 업데이트하면 정할 수 있습니다.</div>
+              </div>
+            )}
+            <div className="admin-set-row">
+              <div className="admin-set-label">상태</div>
+              <div>
+                <div className="admin-note-sub">
+                  {status.running
+                    ? `훑는 중: ${status.current.name || status.current.project_id || ""} (${status.current.phase === "large" ? "큰 파일" : "목록·지문"})`
+                    : status.lease
+                      ? `도우미 PC 가 훑는 중: ${status.lease.name || status.lease.project_id}`
+                      : `쉬는 중 · 자동 ${status.schedule ? scheduleText(status.schedule) : "없음(수동만)"}`}
+                </div>
+                {helper?.running && (
+                  <div className="admin-note-sub">이 PC 에서 훑는 중: {helper.current.name || helper.current.project_id || "준비 중"}</div>
+                )}
+                {helper?.abort && <div className="admin-act-msg">이 PC 훑기를 멈췄습니다 — {helper.abort}</div>}
+                {!helper?.running && (helper?.results.length || 0) > 0 && (
+                  <div className="admin-note-sub">
+                    이 PC 의 마지막 훑기:{" "}
+                    {helper!.results
+                      .map((r) => `${r.name || r.project_id} ${STATE_LABEL[r.state] || r.state}${r.note ? `(${r.note})` : ""}`)
+                      .join(" · ")}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
-          <div className="admin-note-sub">
-            {mode === "server"
-              ? "공유 서버가 NAS 를 직접 읽습니다."
-              : "이 PC 가 자기 NAS 연결(Z: · X:)로 읽어 서버에 올립니다. 끝날 때까지 앱을 켜 둡니다(첫 훑기 약 30분). 서버는 스스로 훑지 않습니다."}
-          </div>
-          {status.schedule ? (
-            <ScheduleRow status={status} onSaved={(text) => { setMsg(text); void load(); }} />
-          ) : (
-            <div className="admin-note-sub">자동 훑기 시간은 공유 서버를 업데이트하면 정할 수 있습니다.</div>
-          )}
           {rootFail.length > 0 && (
             <div className="admin-registry-warn">
               <b>서버가 NAS 를 열지 못했습니다</b>({names(rootFail, false)} — {ROOT_UNREADABLE}). 서버 계정에 NAS 권한이
@@ -294,50 +354,9 @@ export function AssetRegistryTab() {
             </div>
           )}
           {otherFail.length > 0 && <div className="admin-registry-warn">서버 훑기 실패 — {names(otherFail, true)}</div>}
-          <h4>상태</h4>
-          <div className="admin-note-sub">
-            {status.running
-              ? `훑는 중: ${status.current.name || status.current.project_id || ""} (${status.current.phase === "large" ? "큰 파일" : "목록·지문"})`
-              : status.lease
-                ? `도우미 PC 가 훑는 중: ${status.lease.name || status.lease.project_id}`
-                : `쉬는 중 · 자동 ${status.schedule ? scheduleText(status.schedule) : "없음(수동만)"}`}
-          </div>
-          {helper?.running && (
-            <div className="admin-note-sub">이 PC 에서 훑는 중: {helper.current.name || helper.current.project_id || "준비 중"}</div>
-          )}
-          {helper?.abort && <div className="admin-act-msg">이 PC 훑기를 멈췄습니다 — {helper.abort}</div>}
-          {!helper?.running && (helper?.results.length || 0) > 0 && (
-            <div className="admin-note-sub">
-              이 PC 의 마지막 훑기:{" "}
-              {helper!.results
-                .map((r) => `${r.name || r.project_id} ${STATE_LABEL[r.state] || r.state}${r.note ? `(${r.note})` : ""}`)
-                .join(" · ")}
-            </div>
-          )}
         </>
       )}
       {msg && <div className="admin-act-msg">{msg}</div>}
-      {status?.enabled && mode && idle && (
-        <div className="admin-acct-actions">
-          {!helperReady ? (
-            <span className="admin-note-sub">공유 서버에 로그인한 앱에서만 이 PC 로 훑을 수 있습니다.</span>
-          ) : confirming ? (
-            <>
-              <span>{mode === "server" ? "NAS 를 오래 읽습니다." : "이 PC 로 NAS 를 오래 읽습니다."} 시작할까요?</span>
-              <button className="admin-mini-btn" onClick={() => void start(mode)}>
-                시작
-              </button>
-              <button className="admin-mini-btn" onClick={() => setConfirming(false)}>
-                취소
-              </button>
-            </>
-          ) : (
-            <button className="admin-mini-btn" onClick={() => setConfirming(true)}>
-              지금 훑기
-            </button>
-          )}
-        </div>
-      )}
       {status && status.projects.length > 0 && (
         <div className="admin-registry-wrap">
           <table className="admin-table admin-registry">

@@ -1,4 +1,5 @@
 import type { Account } from "../../types";
+import { AdminPageHead, AdminPerson } from "./AdminParts";
 
 export type AdminConfirmState =
   | { kind: "reset" | "hide" | "unhide"; email: string; name: string }
@@ -25,25 +26,23 @@ export function ApprovalTab({
 }) {
   return (
     <section className="admin-section">
-      <div className="admin-note-sub">
-        가입 신청을 승인/거부하고 로그인 계정의 전역 역할을 부여합니다(Admin 전용).
-      </div>
-      <h4>승인 절차</h4>
-      <label className="admin-hidden-toggle">
-        <input
-          type="checkbox"
-          checked={showHidden}
-          onChange={(e) => setShowHidden(e.target.checked)}
-        />
-        숨긴 계정 보기
-      </label>
+      <AdminPageHead title="승인" desc="가입 신청을 승인하거나 막고, 계정을 관리합니다.">
+        <label className="admin-hidden-toggle">
+          <input
+            type="checkbox"
+            checked={showHidden}
+            onChange={(e) => setShowHidden(e.target.checked)}
+          />
+          숨긴 계정 보기
+        </label>
+      </AdminPageHead>
       {actMsg && <div className="admin-act-msg">{actMsg}</div>}
       {accounts.length === 0 && <div className="admin-empty">계정 없음</div>}
       <table className="admin-table">
         <thead>
           <tr>
             <th>계정</th>
-            <th className="th-center">상태 (클릭하여 변경)</th>
+            <th className="th-center">상태</th>
             <th className="th-right">관리</th>
           </tr>
         </thead>
@@ -51,12 +50,7 @@ export function ApprovalTab({
           {accounts.map((account) => (
             <tr key={account.email} className={account.hidden ? "admin-row-hidden" : ""}>
               <td>
-                <div className="admin-member">
-                  <span className="admin-mname">{account.name || account.email}</span>
-                  <span className="admin-muid" title={account.email}>
-                    {account.email}
-                  </span>
-                </div>
+                <AdminPerson name={account.name || account.email} sub={account.email} />
               </td>
               <td className="td-center">
                 <div className="acct-status-seg">
@@ -113,9 +107,6 @@ export function ApprovalTab({
           ))}
         </tbody>
       </table>
-      <div className="admin-note-sub">
-        전역 역할은 <b>멤버 · 전역 역할</b> 탭에서 부여합니다.
-      </div>
 
       {confirm && (
         <div className="admin-confirm-backdrop" onMouseDown={() => setConfirm(null)}>

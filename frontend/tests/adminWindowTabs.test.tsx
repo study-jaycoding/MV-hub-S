@@ -86,7 +86,42 @@ const pressEscape = async () => {
 
 it("관리자에게 탭이 정해진 순서로 보인다 — '공유 서버' 탭은 서버 관리 창으로 옮겨 없앴다(2단계)", async () => {
   await mount();
-  expect(tabLabels()).toEqual(["승인", "멤버 · 전역 역할", "프로젝트", "에셋 리스트", "업데이트"]);
+  expect(tabLabels()).toEqual(["승인", "멤버", "프로젝트", "에셋 리스트", "업데이트"]);
+});
+
+it("왼쪽 메뉴의 승인에 대기 수를 보인다 — 숨긴 계정은 세지 않고, 대기가 없으면 표시도 없다", async () => {
+  mocks.listAccounts.mockResolvedValue([
+    { email: "a@mv.com", name: "A", status: "pending" },
+    { email: "b@mv.com", name: "B", status: "pending" },
+    { email: "c@mv.com", name: "C", status: "pending", hidden: true },
+    { email: "d@mv.com", name: "D", status: "approved" },
+  ]);
+  await mount();
+  const approve = () => host.querySelector<HTMLButtonElement>(".admin-tab")!;
+  expect(approve().dataset.count).toBe("2");
+  expect(approve().getAttribute("aria-label")).toBe("승인 · 대기 2명");
+  expect(tabLabels()[0]).toBe("승인"); // 탭 글자는 그대로다
+  mocks.listAccounts.mockResolvedValue([{ email: "d@mv.com", name: "D", status: "approved" }]);
+  await act(async () => { root.unmount(); });
+  root = createRoot(host);
+  await mount();
+  expect(approve().dataset.count).toBeUndefined();
+});
+
+it("탭의 첫 줄 제목은 탭 이름과 같다", async () => {
+  await mount();
+  for (const label of ["승인", "멤버", "프로젝트", "업데이트"]) {
+    await clickTab(label);
+    expect(host.querySelector(".admin-page h3")!.textContent).toBe(label);
+  }
+});
+
+it("탭이 하나뿐이면 왼쪽 메뉴 없이 본문만 보인다", async () => {
+  mocks.sharedServerStatus.mockResolvedValue({ url: null, server_name: "", is_admin: false, elevated: false, elevated_as: null, super_admin_expires_at: null });
+  mocks.members.mockResolvedValue([{ uid: "user_pd", name: "PD", email: "jay@mv.com", global_roles: ["product_manager"] }]);
+  await mount();
+  expect(host.querySelector(".admin-tabs")).toBeNull();
+  expect(host.querySelector(".admin-window")!.classList.contains("no-nav")).toBe(true);
 });
 
 it("'업데이트' 탭은 열 때 읽고, 팀 배포 단추 없이 [이 PC에 먼저 설치]만 둔다(팀 배포는 서버 관리 창 [릴리스])", async () => {
@@ -94,7 +129,6 @@ it("'업데이트' 탭은 열 때 읽고, 팀 배포 단추 없이 [이 PC에 �
   expect(mocks.adminList).not.toHaveBeenCalled();
   await clickTab("업데이트");
   expect(mocks.adminList).toHaveBeenCalledTimes(1);
-  expect(host.textContent).toContain("업데이트 관리");
   expect(host.textContent).toContain("서버 관리 창 [릴리스]");
   expect(mocks.packages).toHaveBeenCalledTimes(1);
   expect(host.textContent).toContain("v2026.10.03-1420");
@@ -104,16 +138,15 @@ it("'업데이트' 탭은 열 때 읽고, 팀 배포 단추 없이 [이 PC에 �
   expect(labels).toEqual(["이 PC에 먼저 설치"]);
 });
 
-it("프로젝트 탭은 창을 넓히고 프로젝트 목록을 창 안에 그린다(옛 오버레이 없음)", async () => {
+it("탭을 바꿔도 창 틀은 그대로이고 프로젝트 목록은 창 안에 그린다(옛 오버레이 없음)", async () => {
   await mount();
   const win = host.querySelector(".admin-window")!;
-  expect(win.classList.contains("wide")).toBe(false);
   await clickTab("프로젝트");
-  expect(win.classList.contains("wide")).toBe(true);
+  expect(win.className).toBe("admin-window");
   expect(win.textContent).toContain("뻘뻘뻘");
   expect(host.querySelector(".manage-proj-overlay")).toBeNull();
   await clickTab("업데이트");
-  expect(win.classList.contains("wide")).toBe(false);
+  expect(win.className).toBe("admin-window");
 });
 
 it("프로젝트 대화상자가 열려 있으면 Esc 는 대화상자만 닫고, 다음 Esc 에 관리자 창이 닫힌다", async () => {
@@ -139,7 +172,7 @@ it("전역 역할 — 한 멤버를 저장하는 동안에는 모든 멤버의 �
   let finish!: (value: unknown) => void;
   mocks.setMemberGlobalRoles.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
   await mount();
-  await clickTab("멤버 · 전역 역할");
+  await clickTab("멤버");
   const chips = () => [...host.querySelectorAll<HTMLButtonElement>(".admin-table .role-chip")];
   const rowChips = (email: string) =>
     [...[...host.querySelectorAll("tr")].find((row) => row.textContent?.includes(email))!.querySelectorAll<HTMLButtonElement>(".role-chip")];
@@ -227,7 +260,7 @@ it("역할 저장은 화면의 목록이 아니라 서버의 지금 값에 '바�
   mocks.members.mockResolvedValueOnce(stale).mockResolvedValue(fresh);
   mocks.setMemberGlobalRoles.mockImplementation(async (_uid: string, roles: string[]) => [stale[0], { ...stale[1], global_roles: roles }]);
   await mount();
-  await clickTab("멤버 · 전역 역할");
+  await clickTab("멤버");
   const globalChips = () => [...[...host.querySelectorAll("tr")].find((row) => row.textContent?.includes("b@mv.com"))!.querySelectorAll<HTMLButtonElement>(".role-chip")];
   const lit = (chips: HTMLButtonElement[]) => chips.filter((button) => button.classList.contains("on")).map((button) => button.textContent);
   expect(lit(globalChips())).toEqual([]);
@@ -273,7 +306,7 @@ it("지금 값을 읽는 사이에 계정이 바뀌면 그 역할 저장은 보�
   let finishRead!: (value: unknown) => void;
   mocks.members.mockResolvedValueOnce(list).mockReturnValueOnce(new Promise((resolve) => { finishRead = resolve; }));
   await mount();
-  await clickTab("멤버 · 전역 역할");
+  await clickTab("멤버");
   const chips = () => [...[...host.querySelectorAll("tr")].find((row) => row.textContent?.includes("b@mv.com"))!.querySelectorAll<HTMLButtonElement>(".role-chip")];
   await act(async () => { chips().find((button) => button.textContent === "Member")!.click(); });
   try {
@@ -381,7 +414,7 @@ it("프로젝트 설정 창 — ✎ 의 조회가 도는 동안 그 줄의 ✎ �
   await settle();
   expect(hint()).toBeNull();
   expect(settings()[0].disabled).toBe(false);
-  expect(settings()[0].textContent).toBe("✎");
+  expect(settings()[0].querySelector(".busy-ring")).toBeNull();
   await act(async () => { settings()[0].click(); });
   expect(hint()).toBe("설정 불러오는 중…");
   await act(async () => { waiting.p({}); });
@@ -594,10 +627,16 @@ it("프로젝트 보관·삭제 — 실패하면 알리고 목록은 다시 읽�
   await act(async () => { host.querySelector<HTMLButtonElement>(".admin-pact-archive")!.click(); });
   await settle();
   expect(mocks.updateProject).toHaveBeenCalledExactlyOnceWith("p", { archived: true });
-  expect(host.querySelectorAll(".admin-note-sub")[1].textContent).toBe("보관하지 못했습니다. 권한이 없습니다");
-  vi.stubGlobal("confirm", vi.fn(() => true));
+  expect(host.querySelector(".admin-note-sub")!.textContent).toBe("보관하지 못했습니다. 권한이 없습니다");
+  const clickDelete = async () => { await act(async () => { host.querySelector<HTMLButtonElement>('.admin-pactions button[title="삭제"]')!.click(); }); };
+  await clickDelete();
+  expect(document.querySelector(".host-exit-confirm")!.textContent).toContain("프로젝트 '뻘뻘뻘' 을(를) 삭제합니다");
+  await act(async () => { document.querySelector<HTMLButtonElement>(".host-exit-confirm .ghost")!.click(); });
+  expect(document.querySelector(".host-exit-confirm")).toBeNull();
+  expect(mocks.deleteProject).not.toHaveBeenCalled(); // 취소하면 아무것도 안 한다
   mocks.deleteProject.mockRejectedValueOnce(new Error("500: boom"));
-  await act(async () => { host.querySelector<HTMLButtonElement>('.admin-pactions button[title="삭제"]')!.click(); });
+  await clickDelete();
+  await act(async () => { document.querySelector<HTMLButtonElement>(".host-exit-confirm .danger")!.click(); });
   await settle();
   expect(host.textContent).toContain("'뻘뻘뻘' 을(를) 삭제하지 못했습니다. boom");
   expect(projectNames()).toEqual(["뻘뻘뻘"]);

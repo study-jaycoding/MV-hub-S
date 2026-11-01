@@ -39,11 +39,9 @@ const release = (extra: Partial<LatestReleaseMetadata> = {}): LatestReleaseMetad
 });
 const notFound = () => new HttpError(404, "404", "업데이트 항목이 없습니다");
 
-let host: HTMLDivElement, root: Root, confirm: ReturnType<typeof vi.fn>;
+let host: HTMLDivElement, root: Root;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  confirm = vi.fn(() => true);
-  vi.stubGlobal("confirm", confirm);
   Object.values(mocks).forEach((mock) => mock.mockReset());
   mocks.packages.mockResolvedValue([CAND, LIVE, OLD, ...OLDER].map(pkg));
   mocks.adminList.mockResolvedValue([liveNotice]);
@@ -67,6 +65,10 @@ const button = (scope: Element, label: string) =>
 const click = async (scope: Element, label: string) => {
   await act(async () => { button(scope, label)!.click(); });
   await settle();
+};
+const install = async () => {
+  await click(row(CAND), "이 PC에 먼저 설치");
+  await click(document.querySelector(".host-exit-confirm")!, "설치"); // 앱 확인 창 — body 에 뜬다
 };
 
 it("NAS 의 모든 판이 줄로 — 6개를 넘으면 [더 보기], 배포 중·새 후보는 꼬리표", async () => {
@@ -135,11 +137,14 @@ it("새 후보는 [이 PC에 먼저 설치] — 취소하면 아무것도 안 �
   mocks.startCandidate.mockResolvedValue({ state: "starting", accepted: true });
   await mount();
   expect(button(row(LIVE), "이 PC에 먼저 설치")).toBeUndefined(); // 팀 배포 중인 판에는 없다
-  confirm.mockReturnValueOnce(false);
   await click(row(CAND), "이 PC에 먼저 설치");
-  expect(String(confirm.mock.calls[0][0])).toContain("팀원 PC 는 바뀌지 않습니다");
+  const dialog = document.querySelector(".host-exit-confirm")!;
+  expect(dialog.textContent).toContain("팀원 PC 는 바뀌지 않습니다");
+  expect(dialog.querySelector(".danger")).toBeNull(); // 지우는 확인이 아니다
+  await click(dialog, "취소");
+  expect(document.querySelector(".host-exit-confirm")).toBeNull();
   expect(mocks.startCandidate).not.toHaveBeenCalled();
-  await click(row(CAND), "이 PC에 먼저 설치");
+  await install();
   expect(mocks.register).toHaveBeenCalledWith(expect.objectContaining({ sha256: SHA.cand }));
   expect(mocks.startCandidate).toHaveBeenCalledWith(`n-${CAND}`, SHA.cand);
   expect(host.textContent).toContain("이 PC 에 설치하기 시작했습니다");
@@ -153,7 +158,7 @@ it("이미 등록된 후보는 다시 등록하지 않는다(서버 시각 보�
   });
   mocks.startCandidate.mockResolvedValue({ state: "starting", accepted: true });
   await mount();
-  await click(row(CAND), "이 PC에 먼저 설치");
+  await install();
   expect(mocks.register).not.toHaveBeenCalled();
   expect(mocks.startCandidate).toHaveBeenCalledWith(`n-${CAND}`, SHA.cand);
 });
@@ -161,7 +166,7 @@ it("이미 등록된 후보는 다시 등록하지 않는다(서버 시각 보�
 it("옛 서버(단건 조회 없음)면 등록하지 않고 업데이트 안내", async () => {
   mocks.adminItem.mockRejectedValue(new HttpError(404, "404", "Not Found"));
   await mount();
-  await click(row(CAND), "이 PC에 먼저 설치");
+  await install();
   expect(mocks.register).not.toHaveBeenCalled();
   expect(mocks.startCandidate).not.toHaveBeenCalled();
   expect(host.textContent).toContain("공유 서버를 업데이트한 뒤");

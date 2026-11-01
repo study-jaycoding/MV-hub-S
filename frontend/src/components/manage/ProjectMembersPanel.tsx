@@ -7,7 +7,9 @@ import type {
 } from "../../types";
 import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
+import { AdminIcon } from "../admin/AdminParts";
 import { memberRoleRank, ProjectRolePicker } from "../admin/RolePickers";
+import { CloseIcon } from "../common/ViewIcons";
 
 type MemberCandidate = Member | WorkspaceMemberCandidate;
 
@@ -121,13 +123,12 @@ export function ProjectMembersPanel({
     <aside className="project-members-panel" aria-label={`${project.name} 프로젝트 멤버`}>
       <header className="project-members-head">
         <div>
-          <span className="project-members-icon">👥</span>
           <span>
             <strong>멤버</strong>
             <small>{project.name}</small>
           </span>
         </div>
-        <button type="button" onClick={onClose} aria-label="멤버 패널 닫기">✕</button>
+        <button type="button" onClick={onClose} aria-label="멤버 패널 닫기"><CloseIcon size={16} /></button>
       </header>
 
       <button
@@ -163,7 +164,7 @@ export function ProjectMembersPanel({
                   onClick={() => void onRemove(member.uid)}
                   disabled={busy}
                 >
-                  ✕
+                  <CloseIcon size={16} />
                 </button>
               </div>
               <ProjectRolePicker
@@ -193,13 +194,12 @@ export function ProjectMembersPanel({
               disabled={adding}
               aria-label="멤버 추가 닫기"
             >
-              ✕
+              <CloseIcon size={16} />
             </button>
-            <div className="project-member-add-symbol">👥</div>
             <h3>멤버 추가</h3>
             <p>{project.workspace_name || "전체 멤버"}에서 프로젝트 멤버를 선택하세요.</p>
             <label className="project-member-add-search">
-              <span>⌕</span>
+              <AdminIcon name="search" size={15} />
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}

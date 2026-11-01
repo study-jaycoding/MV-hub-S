@@ -86,7 +86,7 @@ const type = (input: HTMLInputElement, value: string) => {
 
 it("멤버 검색칸의 Esc 는 칸을 벗어나기만 한다 — 검색어는 남고, 한 번 더 누르면 창이 닫힌다", async () => {
   const onClose = await mount();
-  await clickTab("멤버 · 전역 역할");
+  await clickTab("멤버");
   const search = host.querySelector<HTMLInputElement>(".member-search input")!;
   type(search, "jay");
   await pressEscape();
@@ -138,7 +138,7 @@ it("멤버 칸이 열린 채 🔑 확인을 띄우면 Esc 는 앞의 확인 창�
 
 it("글 칸 밖(단추·빈 곳)의 Esc 는 전처럼 바로 창을 닫는다", async () => {
   const onClose = await mount();
-  await clickTab("멤버 · 전역 역할");
+  await clickTab("멤버");
   act(() => host.querySelector<HTMLButtonElement>(".role-chip")!.focus());
   await pressEscape();
   expect(onClose).toHaveBeenCalledTimes(1);

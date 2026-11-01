@@ -14,6 +14,8 @@ import {
   type ReleaseUpdateStatus,
 } from "../../lib/releaseUpdate";
 import { updateNoticeApi, type UpdateNotice } from "../../lib/updateNotices";
+import { HostConfirm } from "../common/HostConfirm";
+import { AdminPageHead } from "./AdminParts";
 
 const errText = (error: unknown) =>
   error instanceof HttpError ? error.detail : String(error).replace(/^Error:\s*\d+:\s*/, "");
@@ -41,6 +43,7 @@ export function UpdateNoticesSection() {
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState("");
   const [showAll, setShowAll] = useState(false);
+  const [askInstall, setAskInstall] = useState<ReleasePackage | null>(null); // 먼저 설치를 묻는 줄 — 브라우저 기본 확인창 대신 앱 확인 창
 
   const load = async (refreshPc = false) => {
     void getReleaseUpdateStatus(refreshPc).then(setThisPc, () => setThisPc(null));
@@ -128,13 +131,8 @@ export function UpdateNoticesSection() {
   const thisPcHas = (row: ReleasePackage) => thisPc?.current_version === row.version;
   const preinstall = (row: ReleasePackage) => {
     const release = candidateFields();
+    setAskInstall(null);
     if (!release) return;
-    const again = thisPcHas(row);
-    if (!window.confirm(
-      `v${row.version} 을(를) 이 PC 에만 ${again ? "다시" : "먼저"} 설치합니다.\n`
-      + "팀 배포는 서버 관리 창 [릴리스]에서 따로 합니다(이 설치로 팀원 PC 는 바뀌지 않습니다).\n"
-      + "설치 중 프로그램이 다시 시작됩니다. 계속할까요?",
-    )) return;
     void run(`preinstall:${row.file}`, async () => {
       const item = await ensureNotice(release);
       await startCandidateUpdate(item.id, release.sha256);
@@ -149,11 +147,10 @@ export function UpdateNoticesSection() {
 
   return (
     <section className="admin-section">
-      <h4>업데이트 관리</h4>
-      <div className="admin-note-sub">
-        팀 배포·재공지·해제는 <b>서버 관리 창 [릴리스]</b>에서 합니다. 여기서는 새 후보를 <b>이 PC 에만 먼저</b> 깔아 볼 수 있습니다
-        (팀원에게 알리지 않음).
-      </div>
+      <AdminPageHead
+        title="업데이트"
+        desc="팀 배포는 서버 관리 창 [릴리스]에서 합니다. 여기서는 새 후보를 이 PC 에만 먼저 깔아 봅니다(팀원에게 알리지 않음)."
+      />
       {overviewError && <div className="admin-update-warn">릴리스 폴더를 읽지 못했습니다 — {overviewError}</div>}
       {packagesError && <div className="admin-update-warn">판 목록을 읽지 못했습니다 — {packagesError}</div>}
       {noticeError && <div className="admin-update-warn">공유 서버의 알림 목록을 읽지 못했습니다 — {noticeError}</div>}
@@ -181,7 +178,7 @@ export function UpdateNoticesSection() {
             && Boolean(pubVersion) && row.version > pubVersion;
           const rowBusy = busy.endsWith(`:${row.file}`) ? busy.split(":")[0] : "";
           return (
-            <div className={"admin-update-row" + (waiting ? " warn" : live ? " live" : candidate ? " cand" : "")} key={row.file}>
+            <div className="admin-update-row" key={row.file}>
               <span className="admin-update-file" title={row.file}>
                 <b>
                   v{row.version}
@@ -206,7 +203,7 @@ export function UpdateNoticesSection() {
                   <button
                     className="settings-action ghost"
                     disabled={!!busy}
-                    onClick={() => preinstall(row)}
+                    onClick={() => setAskInstall(row)}
                     title="팀원에게 알리기 전에 이 PC 에서 먼저 확인합니다(팀 배포는 바뀌지 않음)"
                   >
                     {rowBusy === "preinstall" ? "설치 시작 중…" : thisPcHas(row) ? "이 PC에 다시 설치" : "이 PC에 먼저 설치"}
@@ -228,6 +225,22 @@ export function UpdateNoticesSection() {
         <p style={{ marginTop: 8, fontSize: 12, color: "var(--muted)" }}>
           {msg}
         </p>
+      )}
+      {askInstall && (
+        <HostConfirm
+          label="이 PC 에 설치"
+          title="이 PC 에 설치"
+          confirmLabel="설치"
+          danger={false}
+          onConfirm={() => preinstall(askInstall)}
+          onCancel={() => setAskInstall(null)}
+        >
+          v{askInstall.version} 을(를) 이 PC 에만 {thisPcHas(askInstall) ? "다시" : "먼저"} 설치합니다.
+          <br />
+          팀 배포는 서버 관리 창 [릴리스]에서 따로 합니다(이 설치로 팀원 PC 는 바뀌지 않습니다).
+          <br />
+          설치 중 프로그램이 다시 시작됩니다.
+        </HostConfirm>
       )}
     </section>
   );

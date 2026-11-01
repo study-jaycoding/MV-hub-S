@@ -27,7 +27,9 @@ import { useHandleRelease } from "../../lib/useDragEndReset";
 import { accountAtRequest, projectMemberSaves, rebaseRoles, sameRoles } from "../../lib/saveQueue";
 import { useManageCaps } from "../../lib/useManageCaps";
 import { workspaceCommandLabels } from "../../lib/workspaceCommand";
+import { AdminIcon, AdminPageHead } from "../admin/AdminParts";
 import { ProjectRenderTree } from "../admin/ProjectRenderTree";
+import { HostConfirm } from "../common/HostConfirm";
 import { ProjectMembersPanel } from "./ProjectMembersPanel";
 import { ProjectPlanningFields } from "./ProjectPlanningDialog";
 import { CreditPlanFields } from "./CreditPlanFields";
@@ -524,8 +526,9 @@ export function ProjectManagerPanel({
       orderSavingRef.current = false;
     }
   };
+  const [deleteTarget, setDeleteTarget] = useState<Project | null>(null); // 삭제를 묻는 프로젝트 — 브라우저 기본 확인창 대신 앱 확인 창
   const deleteProject = async (p: Project) => {
-    if (!window.confirm(`프로젝트 '${p.name}' 삭제? 결과물은 미분류로 돌아갑니다.`)) return;
+    setDeleteTarget(null);
     try {
       await api.deleteProject(p.id);
     } catch (reason) {
@@ -543,26 +546,30 @@ export function ProjectManagerPanel({
       : visibleMembers
     : undefined;
 
-  // 👥 멤버 칸이 열리면(members-open) 관리자 창이 CSS(:has)로 더 넓어진다 — admin-auth-compare.css .admin-window.wide
+  // 멤버 칸이 열리면(members-open) 창 크기는 그대로 두고 표의 역할 인원·생성물 칸을 접는다 — admin-auth-compare.css
   return (
     <>
         <div className={`project-admin-layout${activeMembersProject ? " members-open" : ""}`}>
           <div className="project-admin-list">
             <section className="admin-section">
-          <h4 className="admin-sec-head">
-            프로젝트 생성
+          <AdminPageHead title="프로젝트" desc="프로젝트를 만들고 멤버에게 프로젝트 역할을 줍니다.">
             {caps.createProject && (
               <button className="admin-add" onClick={createProject}>
                 + 새 프로젝트
               </button>
             )}
-          </h4>
-          <div className="admin-note-sub">
-            프로젝트를 만들고, 👥 로 멤버에게 프로젝트 역할(작업·검수)을 부여합니다 (Product Manager 전용).
-          </div>
+          </AdminPageHead>
           {actMsg && <div className="admin-note-sub">{actMsg}</div>}
           {projects.length === 0 && <div className="admin-empty">없음</div>}
           <table className="admin-table">
+            <thead>
+              <tr>
+                <th>프로젝트</th>
+                <th className="proj-col-roles">역할 인원</th>
+                <th className="admin-num proj-col-count">생성물</th>
+                <th aria-label="관리" />
+              </tr>
+            </thead>
             <tbody>
               {projects.map((p, idx) => (
                 <Fragment key={p.id}>
@@ -614,10 +621,7 @@ export function ProjectManagerPanel({
                         </span>
                       )}
                     </td>
-                    <td className="admin-count proj-count-cell">
-                      <span className="proj-gencount" title="생성물 수(프로젝트 전체)">
-                        {p.total ?? p.count}
-                      </span>
+                    <td className="proj-col-roles">
                       <span className="proj-rolecount" title="멤버 역할 인원(복수 역할은 각각 셈)">
                         {(() => {
                           const rc = projRoleCounts(p.id);
@@ -625,14 +629,18 @@ export function ProjectManagerPanel({
                         })()}
                       </span>
                     </td>
+                    <td className="admin-count admin-num proj-col-count" title="생성물 수(프로젝트 전체)">
+                      {(p.total ?? p.count)?.toLocaleString()}
+                    </td>
                     <td className="admin-pactions">
                       {caps.grantRole && (
                         <button
                           className={activeMembersProjectId === p.id ? "on" : ""}
                           onClick={() => void toggleProjectMembers(p.id)}
                           title="멤버 역할 부여(작업·검수)"
+                          aria-label="멤버 역할 부여"
                         >
-                          👥
+                          <AdminIcon name="roles" />
                         </button>
                       )}
                       <button
@@ -644,19 +652,21 @@ export function ProjectManagerPanel({
                             ? "Render 폴더 구조 보기"
                             : "이름 변경에서 렌더 폴더 경로를 먼저 지정하세요"
                         }
+                        aria-label="Render 폴더 구조 보기"
                       >
-                        🗂
+                        <AdminIcon name="folder" />
                       </button>
                       {caps.createProject && (
                         <>
                           <button
                             onClick={() => renameProject(p)}
                             title="프로젝트 설정"
+                            aria-label="프로젝트 설정"
                             disabled={settingsLoadingId === p.id}
                             aria-busy={settingsLoadingId === p.id || undefined}
                             className={settingsLoadingId === p.id ? "on" : ""}
                           >
-                            {settingsLoadingId === p.id ? <i className="busy-ring" aria-hidden="true" /> : "✎"}
+                            {settingsLoadingId === p.id ? <i className="busy-ring" aria-hidden="true" /> : <AdminIcon name="pencil" />}
                           </button>
                           {settingsLoadingId === p.id && (
                             <span className="admin-pact-hint" role="status">설정 불러오는 중…</span>
@@ -665,11 +675,12 @@ export function ProjectManagerPanel({
                             className="admin-pact-archive"
                             onClick={() => toggleArchive(p)}
                             title={p.archived ? "보관 해제 — 메인으로 되돌림" : "보관 — 메인에서 숨김(데이터 보존)"}
+                            aria-label={p.archived ? "보관 해제" : "보관"}
                           >
-                            {p.archived ? "📂" : "📦"}
+                            <AdminIcon name={p.archived ? "restore" : "archive"} />
                           </button>
-                          <button onClick={() => deleteProject(p)} title="삭제">
-                            ✕
+                          <button onClick={() => setDeleteTarget(p)} title="삭제" aria-label="삭제">
+                            <AdminIcon name="trash" />
                           </button>
                         </>
                       )}
@@ -677,7 +688,7 @@ export function ProjectManagerPanel({
                   </tr>
                   {openFolderTrees.has(p.id) && projFolders[p.id]?.root_path && (
                     <tr className="proj-folder-row">
-                      <td colSpan={3}>
+                      <td colSpan={4}>
                         <ProjectRenderTree
                           state={projFolders[p.id]}
                           loading={folderLoading[p.id]}
@@ -808,7 +819,7 @@ export function ProjectManagerPanel({
                     )}
                   </div>
                   <div className="admin-note-sub project-auto-member-note">
-                    프로젝트를 저장하면 계정 연결이 끝난 워크스페이스 멤버가 기본 역할로 자동 등록됩니다. 역할은 생성 후 👥에서 조정할 수 있습니다.
+                    프로젝트를 저장하면 계정 연결이 끝난 워크스페이스 멤버가 기본 역할로 자동 등록됩니다. 역할은 생성 후 멤버 칸에서 조정할 수 있습니다.
                   </div>
                 </div>
               )}
@@ -849,6 +860,17 @@ export function ProjectManagerPanel({
             </div>
             </div>
           </div>
+        )}
+        {deleteTarget && (
+          <HostConfirm
+            label="프로젝트 삭제"
+            title="프로젝트 삭제"
+            confirmLabel="삭제"
+            onConfirm={() => void deleteProject(deleteTarget)}
+            onCancel={() => setDeleteTarget(null)}
+          >
+            프로젝트 '{deleteTarget.name}' 을(를) 삭제합니다. 결과물은 미분류로 돌아갑니다.
+          </HostConfirm>
         )}
         {conflict.dialog}
     </>

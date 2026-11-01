@@ -37,7 +37,7 @@
 .manage-head h1 { font-size: 20px; font-weight: 800; margin: 0; }
 /* 프로젝트 관리 패널(관리자 창 '프로젝트' 탭) — 👥 멤버 칸이 열리면 오른쪽 열 */
 .project-admin-layout { display: grid; grid-template-columns: minmax(0,1fr); }
-.project-admin-layout.members-open { grid-template-columns: minmax(570px,1fr) 350px; gap: 18px; }
+.project-admin-layout.members-open { grid-template-columns: minmax(0,1fr) 306px; gap: 16px; }
 .project-admin-list { min-width: 0; }
 @media (max-width: 920px) {
   .project-admin-layout.members-open { grid-template-columns: 1fr; }
