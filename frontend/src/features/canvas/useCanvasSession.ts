@@ -143,7 +143,9 @@ export function useCanvasSession(options: Omit<Parameters<typeof useSceneHistory
       options.groupsRef.current = incoming.groups;
     }
     options.onReceiveScene?.(source.id, switched, replaced);
+    const received = replaced && history.differsFromCommit(incoming); // replaced 는 참조 비교다 — 값이 같으면 기록 전체를 복제하지 않는다
     history.syncCommitBaseline(incoming);
+    if (received) history.checkpointReceived();
     // scene 속성의 실제 수신에만 반응한다. 내부 편집은 이 경로로 덮어쓰지 않는다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source?.id, source?.cards, source?.edges, source?.groups]);

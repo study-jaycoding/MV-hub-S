@@ -86,8 +86,11 @@ beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
   fake = undefined as never;
+  // 잠금이 없는 주소에서는 캔버스 창을 띄우지 않는다
+  Object.defineProperty(navigator, "locks", { configurable: true, value: { request: () => new Promise(() => {}), query: async () => ({ held: [], pending: [] }) } });
 });
 afterEach(() => {
+  Reflect.deleteProperty(navigator, "locks");
   vi.restoreAllMocks();
 });
 

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../src/api";
-import { reviewTargets, matchesReviewFilter } from "../src/lib/generationReview";
+import { applyWorkspaceReview, reviewTargets, matchesReviewFilter } from "../src/lib/generationReview";
 import { computeGradeStep, describeGradeStep } from "../src/lib/gradeStep";
 import type { Generation } from "../src/types";
 
@@ -89,6 +89,23 @@ describe("review targets", () => {
     expect(reviewTargets(all, "shared", allowed)).toEqual([held, final]);
     expect(reviewTargets(all, "final", allowed)).toEqual([shared, held]);
     expect(reviewTargets(all, "unshared", allowed)).toEqual([shared, held, final]);
+  });
+  it("공유 행 없는 옛 최종 카드는 공유·해제·보류 대상이다 — 권한 없는·삭제된·미완료 카드는 아니다", () => {
+    const legacy = generation({ id: "legacy", shared: false, is_final: true });
+    for (const action of ["shared", "unshared", "held"] as const) {
+      expect(reviewTargets([legacy], action, () => true)).toEqual([legacy]);
+      expect(reviewTargets([legacy], action, () => false)).toEqual([]);
+      expect(reviewTargets([{ ...legacy, deleted: true }], action, () => true)).toEqual([]);
+      expect(reviewTargets([{ ...legacy, status: "running" }], action, () => true)).toEqual([]);
+    }
+    expect(reviewTargets([legacy], "final", () => true)).toEqual([]);
+    expect(reviewTargets([generation({ shared: false })], "unshared", () => true)).toEqual([]);
+  });
+  it("onReview 가 없는 호출부는 최종 카드의 공유를 지금처럼 최종 풀기로 보낸다", () => {
+    const legacy = generation({ shared: false, is_final: true });
+    const handlers = { onPublish: vi.fn(), onUnpublish: vi.fn(), onFinalize: vi.fn(), onUnfinalize: vi.fn() };
+    applyWorkspaceReview(legacy, "shared", handlers);
+    expect(handlers.onUnfinalize).toHaveBeenCalledExactlyOnceWith(legacy);
   });
   it("shared and held filters both exclude final", () => {
     expect([shared, held, final].filter((g) => matchesReviewFilter(g, "shared"))).toEqual([shared]);

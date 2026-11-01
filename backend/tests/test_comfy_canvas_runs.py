@@ -2,6 +2,7 @@
 import json
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
@@ -464,6 +465,113 @@ def test_missing_detail_before_any_listing_stays_collectable(h, missing):
     h.drain()
     assert resolve(h, attempt)["state"] == "saved"
     assert h.mocks["submit"].call_count == 1
+
+
+def test_run_status_keeps_media_urls_for_the_next_node(h):
+    """캔버스 실행도 결과의 outputs 는 {kind,url,text} 다 — 뒤 노드가 이 url 로 입력을 만든다. 영수증은 resolve 로 받는다."""
+    entry = h.successful(2)
+    entry["outputs"]["2"] = {"text": ["next node text"]}
+    attempt = descriptor()
+    job = start(h, attempt)
+    h.drain()
+    status = comfy.run_status(job, h.request())
+    media = [out for out in status["outputs"] if out["kind"] == "image"]
+    assert len(media) == 2 and all(out["url"].startswith("/media/comfy/") for out in media)
+    assert {"kind": "text", "text": "next node text"} in status["outputs"]
+    resolved = resolve(h, attempt)
+    assert status["attempt_id"] == attempt["attempt_id"] and status["state"] == "saved"
+    assert status["result_revision"] == resolved["result_revision"] and status["origin"] == resolved["origin"]
+    assert all("output_key" in out for out in resolved["outputs"])
+
+
+SAVE_TEXT = '{"1":{"class_type":"SaveText","inputs":{"file":"out.txt"}}}'
+
+
+def _stop_before_text_record(h, monkeypatch, attempt):
+    """저널에 빈 목록을 남긴 뒤 글자를 기록하기 전에 멈춘 실행."""
+    entry = h.successful(0)
+    entry["outputs"]["1"] = {"text": ["only in history"]}
+    job = start(h, attempt)
+
+    def stop(*_args, **_kwargs):
+        raise OSError("synthetic stop")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(comfy, "_record_canvas_outputs", stop)
+        h.drain()
+    restart(h)
+    return job, entry
+
+
+def test_stop_before_text_record_stays_collectable_and_keeps_journal(h, monkeypatch):
+    attempt = descriptor()
+    job, _ = _stop_before_text_record(h, monkeypatch, attempt)
+    assert resolve(h, attempt)["state"] == "needs_collect"
+    row = next(item for item in h.rows() if item["job_id"] == job)
+    assert row["outputs_enumerated"] and row["prompt_id"] and not row["outputs"]
+    comfy.collect_unresolved_run(job, h.request())
+    h.drain()
+    result = resolve(h, attempt)
+    assert result["state"] == "saved" and result["outputs"][0]["text"] == "only in history"
+    assert h.mocks["submit"].call_count == 1
+
+
+def test_detail_gone_after_stop_before_text_record_does_not_confirm_empty(h, monkeypatch):
+    attempt = descriptor()
+    job, entry = _stop_before_text_record(h, monkeypatch, attempt)
+    restart(h)
+    _answer(h.mocks["cloud_job_detail"], comfy.comfy_client.ComfyError("missing detail", status_code=404))
+    comfy.collect_unresolved_run(job, h.request())
+    h.drain()
+    assert resolve(h, attempt)["state"] == "needs_collect"
+    assert any(item["job_id"] == job for item in h.rows())
+
+
+def test_journal_with_media_still_moves_to_canvas_record(h, monkeypatch):
+    h.successful()
+    attempt = descriptor()
+    start(h, attempt)
+
+    def fail_outputs(*_args, **_kwargs):
+        raise OSError("synthetic disk failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runs, "record_outputs", fail_outputs)
+        h.drain()
+    restart(h)
+    result = resolve(h, attempt)
+    assert result["state"] == "needs_collect" and [out["kind"] for out in result["outputs"]] == ["image"]
+
+
+@pytest.mark.parametrize("failure", [comfy.comfy_client.ComfyError("busy", status_code=503), OSError("synthetic stop")])
+def test_saved_text_read_failure_is_not_empty_and_collect_reads_it_again(h, monkeypatch, failure):
+    h.successful(0)
+    view = Mock(side_effect=failure)
+    monkeypatch.setattr(comfy.comfy_client, "view_bytes", view)
+    attempt = descriptor()
+    job = start(h, attempt, content=SAVE_TEXT)
+    h.drain()
+    assert resolve(h, attempt)["state"] == "needs_collect"
+    assert any(item["job_id"] == job for item in h.rows())
+    restart(h)
+    view.side_effect = None
+    view.return_value = b"from file"
+    comfy.collect_unresolved_run(job, h.request())
+    h.drain()
+    result = resolve(h, attempt)
+    assert result["state"] == "saved" and result["outputs"][0]["text"] == "from file"
+    assert h.mocks["submit"].call_count == 1
+
+
+@pytest.mark.parametrize("status", [404, 410])
+def test_saved_text_file_gone_with_nothing_else_is_failed(h, monkeypatch, status):
+    h.successful(0)
+    monkeypatch.setattr(comfy.comfy_client, "view_bytes", Mock(side_effect=comfy.comfy_client.ComfyError("gone", status_code=status)))
+    attempt = descriptor()
+    start(h, attempt, content=SAVE_TEXT)
+    h.drain()
+    assert resolve(h, attempt)["state"] == "failed"
+    assert not h.rows()
 
 
 def test_plain_run_with_missing_detail_stays_in_unresolved_list_and_collects_later(h):

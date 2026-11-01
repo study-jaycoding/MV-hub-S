@@ -48,9 +48,12 @@ beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   localStorage.clear();
   sessionStorage.clear();
+  // 잠금이 없는 주소에서는 캔버스 창을 띄우지 않는다 — 이 시험의 창은 잠금이 풀리는 일이 없다
+  Object.defineProperty(navigator, "locks", { configurable: true, value: { request: () => new Promise(() => {}), query: async () => ({ held: [], pending: [] }) } });
 });
 afterEach(() => {
   window.name = "";
+  Reflect.deleteProperty(navigator, "locks");
   vi.restoreAllMocks();
   vi.useRealTimers();
 });

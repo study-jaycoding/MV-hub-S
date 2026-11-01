@@ -23,7 +23,7 @@ import {
 } from "./components/SpotlightPrompt";
 import { ThumbnailGrid } from "./components/ThumbnailGrid";
 import { ensureTeamBase } from "./lib/teamSeen";
-import { bringCanvasForward, canvasWindowLive, EMBED_MODES, isCanvasFloating, isCanvasWindow, leaveCanvasHandoff, openEmbedWindow, takeCanvasHandoff, useCanvasFloating } from "./lib/popupWindows";
+import { bringCanvasForward, canFloatCanvas, canvasWindowLive, EMBED_MODES, isCanvasFloating, isCanvasWindow, leaveCanvasHandoff, openEmbedWindow, takeCanvasHandoff, useCanvasFloating } from "./lib/popupWindows";
 import { settleSceneWrites } from "./lib/sceneStore";
 import { canvasPromptDraft, useCanvasPromptReturn } from "./lib/useCanvasPromptReturn";
 import { CanvasFloatIcon, TopBar } from "./components/TopBar";
@@ -1950,6 +1950,7 @@ export default function App() {
   const canvasViewRef = useRef({ promptVisible, batchCount, sceneId: activeScene?.id ?? null }); // 저장을 기다리는 동안 바뀐 값도 넘기게
   canvasViewRef.current = { promptVisible, batchCount, sceneId: activeScene?.id ?? null };
   const openCanvasWindow = async () => {
+    if (!canFloatCanvas()) return flash("이 주소에서는 캔버스를 별도 창으로 띄울 수 없습니다. 앱 주소로 열어 주세요.");
     if (canvasWindowLive()) return openEmbedWindow(EMBED_MODES.canvas); // 이미 떠 있다 — 앞으로 가져올 뿐
     if (openingCanvasRef.current) return;
     openingCanvasRef.current = true;

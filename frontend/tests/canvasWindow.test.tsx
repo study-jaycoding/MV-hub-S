@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 // 캔버스 탭 휠 클릭 → 캔버스를 새 창으로(2026-10-30, docs/status/캔버스_탭_새창_2026-10-30.md). Assets 창과 같은 openEmbedWindow 로
 //  앱 전체를 이름 붙은 팝업 창에 띄우고, 그 창은 캔버스 탭으로 시작한다(창 이름으로 안다). 왼쪽 클릭은 지금처럼 탭만 바꾼다.
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,7 +19,7 @@ vi.mock("../src/lib/updateNoticeApi", () => ({ updateNoticeApi: { list: vi.fn(()
 
 import { TopBar } from "../src/components/TopBar";
 import { t } from "../src/lib/i18n";
-import { closeEmbedWindow, EMBED_MODES, isCanvasWindow, openEmbedWindow } from "../src/lib/popupWindows";
+import { closeEmbedWindow, EMBED_MODES, isCanvasWindow, openEmbedWindow, retireCanvasWindow } from "../src/lib/popupWindows";
 import type { Store } from "../src/lib/storage";
 import { useLibraryFilters } from "../src/lib/useLibraryFilters";
 import { FILTERS_KEY } from "../src/lib/useLibraryPersistence";
@@ -31,11 +33,14 @@ beforeEach(() => {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
+  // 잠금이 없는 주소에서는 캔버스 창을 띄우지 않는다(아래 시험) — 이 시험의 창은 잠금이 풀리는 일이 없다
+  Object.defineProperty(navigator, "locks", { configurable: true, value: { request: () => new Promise(() => {}), query: async () => ({ held: [], pending: [] }) } });
 });
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
   window.name = "";
+  Reflect.deleteProperty(navigator, "locks");
   vi.restoreAllMocks();
 });
 
@@ -90,6 +95,35 @@ describe("캔버스 탭 휠 클릭 → 새 창", () => {
     expect(canvasTab().title).toBe(t("캔버스가 별도 창에 떠 있습니다"));
     act(() => root.render(bar(false))); // 창을 끄면 사라진다
     expect(canvasTab().querySelector(".tab-float-ic")).toBeNull();
+  });
+
+  it("잠금이 없는 주소에서는 캔버스 창을 열지 않는다 — 창의 끝을 확인할 근거가 없다 · Assets 창은 그대로", () => {
+    Reflect.deleteProperty(navigator, "locks");
+    const popup = { closed: false, focus: vi.fn(), close: vi.fn(() => { popup.closed = true; }), addEventListener: vi.fn() };
+    const open = vi.spyOn(window, "open").mockImplementation((() => popup) as never);
+    openEmbedWindow(EMBED_MODES.canvas);
+    expect(open).not.toHaveBeenCalled();
+    openEmbedWindow(EMBED_MODES.assets);
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open.mock.calls[0][1]).toBe("contenthub-assets");
+    closeEmbedWindow(EMBED_MODES.assets);
+  });
+
+  it("잠금이 없는 주소에 남은 캔버스 창은 알리기 전에 물러나고 저장소를 열지 않는다(main.tsx)", () => {
+    Reflect.deleteProperty(navigator, "locks");
+    const close = vi.spyOn(window, "close").mockImplementation(() => {});
+    expect(retireCanvasWindow()).toBe(true);
+    expect(close).toHaveBeenCalledOnce();
+    Object.defineProperty(navigator, "locks", { configurable: true, value: { request: () => new Promise(() => {}), query: async () => ({ held: [], pending: [] }) } });
+    expect(retireCanvasWindow()).toBe(false);
+    expect(close).toHaveBeenCalledOnce();
+    // 분기 자체 — 물러나는 판단이 announce·저장소 부팅보다 앞에 있다. main.tsx 는 불러오는 순간 앱을 띄워 파일로 본다
+    const main = readFileSync(resolve(process.cwd(), "src/main.tsx"), "utf8");
+    const retire = main.indexOf("isCanvasWindow() && retireCanvasWindow()");
+    expect(retire).toBeGreaterThan(0);
+    expect(retire).toBeLessThan(main.indexOf("announceCanvasWindow();"));
+    expect(retire).toBeLessThan(main.indexOf("await bootSceneStore()"));
+    expect(readFileSync(resolve(process.cwd(), "src/App.tsx"), "utf8")).toMatch(/const openCanvasWindow = async \(\) => \{\s+if \(!canFloatCanvas\(\)\) return flash\(/);
   });
 
   it("Assets 처럼 이름 붙은 팝업 창으로 열고, 떠 있으면 다시 열지 않고 앞으로 · 그 창 안에서는 제 창을 다시 읽지 않는다", () => {

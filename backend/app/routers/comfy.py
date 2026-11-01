@@ -202,8 +202,10 @@ def _reconcile_canvas_runs(identity: _ComfyIdentity) -> None:
         if any(jobs.get(key) in (_RUN_PENDING, _RUN_RUNNING)
                for key in (run["job_id"], journal.get("collect_job_id"))):
             continue
-        if journal.get("outputs_enumerated"):
-            canvas_runs.record_outputs(run["attempt_id"], _canvas_media_outputs(journal.get("outputs", [])), enumerated=True)
+        # 빈 목록은 옮기지 않는다 — 글자를 기록하기 전에 멈춘 실행과 진짜 빈 결과를 저널만으로 가를 수 없고, 옮기면 failed 로 굳어 저널이 지워진다.
+        media = _canvas_media_outputs(journal.get("outputs", []))
+        if journal.get("outputs_enumerated") and media:
+            canvas_runs.record_outputs(run["attempt_id"], media, enumerated=True)
             run = canvas_runs.get(run["attempt_id"])
         if not run["context"].get("execution_snapshot") and journal.get("execution_snapshot"):
             canvas_runs.record_context(run["attempt_id"], comfy_save.durable_context(journal))
@@ -1296,10 +1298,12 @@ def _inject_media_files(
             "image_slots": len(slots["image_slots"]), "video_slots": len(slots["video_slots"])}
 
 
-def _read_saved_texts(target: dict, wf: dict) -> list[str]:
+def _read_saved_texts(target: dict, wf: dict) -> tuple[list[str], bool]:
     """SaveText 계열 노드가 쓴 파일을 /view 로 읽어 내용 반환(ShowText 가 히스토리에 안 실리는 경우 보완).
-    append(누적) 모드 파일은 과거 실행분이 쌓여 이번 실행만 못 뽑으므로 건너뛴다 — overwrite 로 쓰게 유도."""
+    append(누적) 모드 파일은 과거 실행분이 쌓여 이번 실행만 못 뽑으므로 건너뛴다 — overwrite 로 쓰게 유도.
+    둘째 값 = 일시 오류로 못 읽은 파일이 있다(404·410 은 파일이 없는 것이라 세지 않는다)."""
     out: list[str] = []
+    missed = False
     for node in wf.values():
         if not isinstance(node, dict):
             continue
@@ -1320,11 +1324,12 @@ def _read_saved_texts(target: dict, wf: dict) -> list[str]:
             data = comfy_client.view_bytes(
                 target, {"filename": base or rel, "subfolder": sub, "type": typ})
             txt = data.decode("utf-8", "replace").strip()
-        except comfy_client.ComfyError:
+        except comfy_client.ComfyError as error:
+            missed = missed or error.status_code not in (404, 410)
             continue
         if txt:
             out.append(txt)
-    return out
+    return out, missed
 
 
 def _collect_run_outputs(job_id: str, target: dict, entry: dict, wf: Optional[dict] = None) -> dict:
@@ -1365,9 +1370,15 @@ def _collect_run_outputs(job_id: str, target: dict, entry: dict, wf: Optional[di
     early_texts = []
     if canvas_run:
         early_texts = list(dict.fromkeys(text.strip() for text in comfy_client.collect_texts(entry) if text.strip()))
-        _record_canvas_outputs(job_id, manifest, early_texts)
+        known = bool(manifest or early_texts)
+        if known:  # 파일을 읽고 내려받기 전에 남긴다. 아는 것이 없으면 남기지 않는다 — 빈 목록은 곧 '빈 결과 확정'이다
+            _record_canvas_outputs(job_id, manifest, early_texts)
         if wf is not None:
-            early_texts = list(dict.fromkeys([*early_texts, *(text.strip() for text in _read_saved_texts(target, wf) if text.strip())]))
+            saved, missed = _read_saved_texts(target, wf)
+            early_texts = list(dict.fromkeys([*early_texts, *(text.strip() for text in saved if text.strip())]))
+            if missed and not manifest and not early_texts:
+                raise comfy_client.ComfyError("저장된 글자 파일을 읽지 못했습니다", cause_kind="detail_failed")
+        if wf is not None or not known:
             _record_canvas_outputs(job_id, manifest, early_texts)
     linked_keys = {out["output_key"] for out in canvas_run["outputs"] if out.get("generation_id")} if canvas_run else set()
     for item in manifest:
@@ -1406,7 +1417,7 @@ def _collect_run_outputs(job_id: str, target: dict, entry: dict, wf: Optional[di
                for item in manifest if item.get("downloaded")]
     texts = early_texts if canvas_run else list(comfy_client.collect_texts(entry))
     if wf is not None and not canvas_run:
-        texts.extend(_read_saved_texts(target, wf))
+        texts.extend(_read_saved_texts(target, wf)[0])
     seen = set()
     for text in texts:
         text = text.strip()
@@ -1537,7 +1548,8 @@ def _execute_run_worker(job_id: str, settings: dict, action, uploads: list[_Medi
             run, job = _canvas_job(job_id)
             if run:
                 settled = _save_canvas_run(run, job["identity"], job.get("save_request"))
-                result.update(canvas_runs.resolution(settled))
+                # outputs 는 다음 노드가 입력으로 읽는 {kind,url,text} 그대로 둔다. 저장 영수증은 /canvas-runs/resolve 로 받는다
+                result.update({**canvas_runs.resolution(settled), "outputs": result["outputs"]})
         except HTTPException as e:
             if cancel_on_failure:
                 _cancel_failed_run(settings, job_id, "worker failure")
@@ -1833,11 +1845,11 @@ def _collect_existing_run(job_id: str, identity: _ComfyIdentity) -> dict:
             _patch_run_record(job_id, last_status_code=error.status_code)
     if not isinstance(entry, dict) or not isinstance(entry.get("outputs"), dict):
         _patch_run_record(job_id, last_error_class="detail_failed")
-        if not row.get("outputs_enumerated"):
+        if not row.get("outputs"):
             # 상세를 못 읽은 것은 '출력 없음'이 아니다 — 빈 결과로 확정하면 prompt_id 가 든 저널이 지워져 회수 길이 끊긴다.
             raise comfy_client.ComfyError("원격 결과 상세를 읽지 못했습니다", cause_kind="detail_missing")
         entry = {"outputs": {}}  # manifest에 이미 받은 항목/미수신 근거를 보존한다.
-    return _collect_run_outputs(job_id, target, entry)
+    return _collect_run_outputs(job_id, target, entry, (row.get("execution_snapshot") or {}).get("workflow"))
 
 
 def _collect_run_worker(job_id: str, identity: _ComfyIdentity) -> None:

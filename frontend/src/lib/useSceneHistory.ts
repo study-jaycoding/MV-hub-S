@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import {
+  pendingSceneWritesConfirmed,
   preserveRepresentatives,
   settleComfyRunning,
   variantIds,
@@ -12,6 +13,7 @@ import {
   localSceneRevision,
   noteLocalSceneEdit,
   registerLiveSceneHistory,
+  sameSnap,
   saveSceneHistory as saveStoredSceneHistory,
   takePendingHandoff,
   takeSceneHistory,
@@ -151,6 +153,16 @@ export function useSceneHistory({
       localSceneRevision(sceneIdRef.current), receipt, keepEmpty);
   };
 
+  // 저장으로 내보내지 않은 값을 받았다(Comfy 결과·다른 창의 저장) — 기준점이 바뀌어 보존 기록의 지문이 어긋나므로, 그대로 두면 다음 부팅이 기록을 통째로 거절한다.
+  //  같은 창의 Comfy 결과는 저장 확정 전에 화면이 먼저 받으므로 영수증은 그 순간 밀린 연산의 확정이다.
+  const differsFromCommit = (snapshot: SceneSnap) => !sameSnap(lastCommitRef.current, snapshot);
+  const pendingReceipt = (): SceneWriteReceipt => ({ confirmed: pendingSceneWritesConfirmed() });
+  const checkpointReceived = () => {
+    if (frozenRef.current) return;
+    if (gestureRef.current) gestureRef.current.received = true; // 움직이지 않고 놓으면 저장이 없어 끝날 때가 아니면 남길 곳이 없다
+    else checkpoint(pendingReceipt());
+  };
+
   // 열린 보드를 store 에 알린다(sceneUndoStore) — flush: 창을 닫으며 기록을 넘길 때·받은 기록과 견줄 때 지금 기록을 먼저 남긴다.
   //  adopt: 받아들인 기록(늦게 끝난 부팅 복원·창 인계)으로 스택만 바꾼다. lastCommit 은 지문이 같으니 지금 것을 둔다 — 화면 값과 같은 객체여야
   //  '안 바뀐 저장' 판정(hasUncommittedSnapshot)이 맞다. 씬을 바꾸는 틈·끄는 중에는 받지 않는다.
@@ -200,7 +212,8 @@ export function useSceneHistory({
   //    persist 의 discard) 그 단계를 걷고 dirty 를 내려 다시 하기 기록이 그대로 남는다. 보관본을 두지 않는다 — 끄는 중의 전파(propagate…)가 redo 스택을
   //    새 배열로 바꾸면 보관본은 낡는다(Codex 2차 리뷰 P2). 끄는 중에는 Ctrl+Z·Ctrl+Shift+Z 를 받지 않으니(SceneBoard moveHeldRef) 미뤄도 안전하다.
   //  · receipt·dropped: 끝날 때 기록이 달라지면(아래 endGesture) 묶음 안 저장이 남긴 보존 기록이 낡는다 — 버린 다시 하기 갈래가 새로 고침 뒤 되살아났다(A-04).
-  const gestureRef = useRef<{ depth: number; rewind?: (snapshot: SceneSnap) => SceneSnap; dirty: boolean; dropped?: boolean; receipt?: SceneWriteReceipt } | null>(null);
+  //  · received: 끄는 중에 받은 값(checkpointReceived) — 끝날 때 남긴다.
+  const gestureRef = useRef<{ depth: number; rewind?: (snapshot: SceneSnap) => SceneSnap; dirty: boolean; dropped?: boolean; receipt?: SceneWriteReceipt; received?: boolean } | null>(null);
   const beginGesture = (rewind?: (snapshot: SceneSnap) => SceneSnap) => {
     gestureRef.current = { depth: -1, rewind, dirty: false };
   };
@@ -214,7 +227,9 @@ export function useSceneHistory({
       const stack = undoStackRef.current;
       while (stack.length > 200) stack.shift(); // 상한 정리도 여기서 — 묶음 중에 밀어내면 버린 끌기가 가장 오래된 단계를 잃는다(Codex 2차 리뷰 P3)
     }
-    if (stale) checkpoint(gesture.receipt, true);
+    const receipt = gesture.received ? pendingReceipt() : gesture.receipt;
+    if (stale) checkpoint(receipt, true);
+    else if (gesture.received) checkpoint(receipt);
   };
 
   const persist = (
@@ -441,6 +456,8 @@ export function useSceneHistory({
   return {
     persist,
     syncCommitBaseline,
+    differsFromCommit,
+    checkpointReceived,
     persistSceneHistory,
     restoreSceneHistory,
     commitDerivedState,

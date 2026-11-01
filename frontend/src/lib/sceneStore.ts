@@ -29,7 +29,7 @@
 //    일부러 업데이트 대상 밖에서 돈다), 지우면 살아남은 옛 창이 깨진다. 대신 그 변경을 흡수한다(sceneAbsorb).
 //  · 이관 표식을 바깥(옛 저장소·쿠키)에도 둔다 — IDB 안에만 두면 IDB 가 통째로 사라졌을 때 표식도
 //    함께 사라져, 낡은 옛 저장소를 '처음 이관'으로 착각해 최신인 양 되살린다.
-import { planAbsorption, type SceneAbsorbConflict, type SceneAbsorbPlan } from "./sceneAbsorb";
+import { planAbsorption, sameSceneContent, type SceneAbsorbConflict, type SceneAbsorbPlan } from "./sceneAbsorb";
 import type { Scene, ScenesByProject } from "./scenes";
 
 const DB_NAME = "mvhub-scenes";
@@ -89,6 +89,12 @@ interface PendingOp {
   flying?: boolean;
   /** 메인 창이 넘겨받았다(markSceneWritesHanded) — 이미 출발한 실행도 재생하지 않는다. */
   handed?: boolean;
+  /** 닫히는 창이 넘긴 변경 — 떠 있는 동안에도 저장한다. */
+  handover?: boolean;
+  /** 캔버스가 다른 창에 떴다 — 재생하지 않고 충돌 목록으로 옮긴다(setAsidePendingWrites). 떠 있음이 끝나도 남는다. */
+  aside?: boolean;
+  /** 실제로 확정되거나 넘겨질 때만 끝나는 대기 — waiters 와 달리 일시 실패에는 답하지 않는다(pendingSceneWritesConfirmed). */
+  durable?: Array<(ok: boolean) => void>;
 }
 let pending: PendingOp[] = [];
 
@@ -104,6 +110,50 @@ export const sceneStoreHasPending = (): boolean => pending.length > 0;
 let writesPaused: () => boolean = () => false;
 export function setSceneWriteGate(paused: () => boolean): void {
   writesPaused = paused;
+}
+
+// 표시된 연산이 저장소 내용을 어떻게 바꾸려 했나 — 그 차이를 충돌로. 내용이 같은 씬은 뺀다(같은 사본 탭이 생기지 않게).
+function setAsideConflicts(base: ScenesByProject, ops: PendingOp[]): SceneAbsorbConflict[] {
+  const theirs: ScenesByProject = { ...base };
+  for (const op of ops) {
+    try {
+      op.mutate(theirs);
+    } catch {
+      // 재생할 수 없는 연산 — 저장 때도 버려진다.
+    }
+  }
+  return Object.entries(theirs).flatMap(([bucket, after]) => {
+    const was = new Map((base[bucket] || []).map((scene) => [scene.id, scene]));
+    const ids = new Set(after.map((scene) => scene.id));
+    const changed = after.flatMap((scene): SceneAbsorbConflict[] => {
+      const mine = was.get(scene.id);
+      return mine && (mine === scene || sameSceneContent(mine, scene)) ? [] : [{ bucket, sceneId: scene.id, mine: mine ?? null, theirs: scene }];
+    });
+    const removed = [...was.values()].filter((scene) => !ids.has(scene.id)).map((scene): SceneAbsorbConflict => ({ bucket, sceneId: scene.id, mine: scene, theirs: null }));
+    return [...changed, ...removed];
+  });
+}
+
+/**
+ * 캔버스가 다른 창에 떴다는 것을 안 그 자리에서 부른다. 밀린 연산은 카드 배열을 통째로 재생해 그 창의 편집을 덮으므로, 표시만 남겨 다시는 재생하지 않고
+ * 충돌 목록으로 옮겨 '[옛 창]' 사본으로 살린다(docs/CANVAS_SCENE_STORAGE.md). 큐에 밀린 저장이 떠 있음이 끝난 뒤에 출발해도 표시가 막는다.
+ */
+export function setAsidePendingWrites(): void {
+  const found = pending.filter((op) => !op.handover && !op.confirmedOnly && !op.aside);
+  if (!found.length) return;
+  for (const op of found) op.aside = true;
+  rebaseWorking();
+  externalSubs.forEach((fn) => fn());
+  void runStoreTx();
+}
+
+/**
+ * 지금 밀린 씬 연산이 확정되면 끝난다 — 화면이 저장 확정보다 먼저 받은 씬(같은 창의 Comfy 결과)을 되돌리기 기록이 기다린다. 옮길 연산은 기다리지 않는다.
+ * 일시 실패로 끝내지 않는다: 그 씬은 재시도가 성공해도 화면에 다시 오지 않아, 여기서 끝내면 기록을 남길 기회가 없다.
+ */
+export function pendingSceneWritesConfirmed(): Promise<boolean> {
+  const waits = pending.filter((op) => !op.aside).map((op) => new Promise<boolean>((resolve) => (op.durable ??= []).push(resolve)));
+  return Promise.all(waits).then((all) => all.every(Boolean));
 }
 
 // ── IndexedDB 얇은 어댑터 ────────────────────────────────────────────────────
@@ -417,10 +467,13 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
     let external = false;
     let wrote = false;
     let stepOut: TxStepResult = { changed: false, entries: [] };
+    let moved: PendingOp[] = []; // 이번 트랜잭션에서 충돌로 옮긴 연산 — 표시는 재생을 정한 뒤에 붙을 수 있어 따로 본다
+    let movedConflicts: SceneAbsorbConflict[] = [];
+    let storedConflicts: SceneAbsorbConflict[] = [];
     try {
       if (!(await ensureDb())) throw new Error("scene store not open");
       await storeTx(
-        [K_VERSION, K_LAYOUT, ...extraReads],
+        [...new Set([K_VERSION, K_LAYOUT, K_CONFLICTS, ...extraReads])],
         // 버전이 내가 아는 것과 다르면 다른 창이 썼다 — 그때만 씬 전체를 읽는다. 같으면 메모리의 확정본이 곧
         // 저장소 내용이라 다시 읽을 필요가 없다(평소 저장이 전체 크기에 매이지 않는 까닭). 연결이 끊겼다 이어진
         // 뒤에는 버전이 같아 보여도 읽는다(baselineStale).
@@ -431,8 +484,13 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
           external = scenes !== null;
           const base = scenes ?? confirmed;
           live = { ...base };
+          moved = batch.filter((op) => op.aside && !op.handed);
+          movedConflicts = moved.length ? setAsideConflicts(base, moved) : [];
+          // step 앞에서 메타에 더한다 — step 이 충돌을 쓰면(흡수·정리) 이 값 위에서 쓴다. 같은 씬의 옛 충돌을 덮지 않게 뒤에 붙인다.
+          storedConflicts = [...((meta[K_CONFLICTS] as SceneAbsorbConflict[] | undefined) ?? []), ...movedConflicts];
+          if (moved.length) meta[K_CONFLICTS] = storedConflicts;
           for (const op of batch) {
-            if (op.handed) continue;
+            if (op.handed || op.aside) continue;
             try {
               op.mutate(live);
             } catch (error) {
@@ -450,7 +508,12 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
           if (touched) liveVersion += 1; // 씬이 실제로 바뀌었을 때만 — 다른 창이 다시 읽을 까닭이 생겼다
           if (wrote) lastWriteForTest = { puts: write.puts.map(([key]) => key), deletes: write.deletes };
           return {
-            puts: [...write.puts, ...(touched ? ([[K_VERSION, liveVersion]] as Entries) : []), ...stepOut.entries],
+            puts: [
+              ...write.puts,
+              ...(touched ? ([[K_VERSION, liveVersion]] as Entries) : []),
+              ...stepOut.entries,
+              ...(movedConflicts.length && !stepOut.entries.some(([key]) => key === K_CONFLICTS) ? ([[K_CONFLICTS, storedConflicts]] as Entries) : []),
+            ],
             deletes: write.deletes,
           };
         },
@@ -461,7 +524,7 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
       for (const op of batch) {
         op.flying = false; // 쓰이지 않았다 — 다음 입력을 다시 합칠 수 있다
         op.poisoned = false; // 이번 재생의 판정은 버린다 — 다음 시도가 그때의 내용으로 다시 본다
-        op.waiters.splice(0).forEach((fn) => fn(false));
+        if (!op.aside) op.waiters.splice(0).forEach((fn) => fn(false)); // 표시된 연산은 충돌로 옮겨 저장된 뒤에 답한다
       }
       flushListener?.(false);
       scheduleRetry();
@@ -477,19 +540,21 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
       clearTimeout(retryTimer);
       retryTimer = undefined;
     }
+    if (movedConflicts.length) conflictList = storedConflicts;
+    for (const op of moved) op.poisoned = true; // 기다리던 쪽에는 '저장되지 않았다' — 재생을 정한 뒤 표시가 붙은 연산은 저장됐다
     after?.();
     // working = confirmed + 남은 pending. 내 묶음만 확정됐고 바깥 변화가 없으면 내용이 같아 다시 계산할
     // 필요가 없다(종전 working = 옛 confirmed + 묶음 + 나머지). 바깥 변화·step·확정 전용 연산이 있었으면
     // 다시 계산하고 화면에 알린다. 버린 연산이 있을 때도 — 화면 값에는 그 연산이 남아 있어서, 그대로 두면
-    // 저장소에 없는 편집을 화면이 계속 보여 준다.
-    const dropped = batch.some((op) => op.poisoned);
+    // 저장소에 없는 편집을 화면이 계속 보여 준다. 표시된 연산은 표시할 때 화면 값에서 빠졌으니 저장됐으면 다시 넣는다.
+    const dropped = batch.some((op) => op.poisoned || op.aside);
     if (external || stepOut.changed || hadConfirmedOnly || dropped) {
       rebaseWorking();
       externalSubs.forEach((fn) => fn());
     } else if (stepOut.notify) {
       externalSubs.forEach((fn) => fn());
     }
-    for (const op of batch) op.waiters.splice(0).forEach((fn) => fn(!op.poisoned));
+    for (const op of batch) [...op.waiters.splice(0), ...(op.durable?.splice(0) ?? [])].forEach((fn) => fn(!op.poisoned));
     if (wrote || stepOut.notify) {
       if (wrote) flushListener?.(true);
       announceWrite();
@@ -502,7 +567,7 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
 function rebaseWorking(): void {
   const next: ScenesByProject = { ...confirmed };
   for (const op of pending) {
-    if (op.confirmedOnly) continue;
+    if (op.confirmedOnly || op.aside) continue; // 표시된 연산이 화면 값에 남으면 그 위의 다음 저장이 숨은 옛 편집을 되살린다
     try {
       op.mutate(next);
     } catch {
@@ -589,7 +654,7 @@ export function applySceneOp<T, P = never>(
   const { merge } = options;
   const last = pending[pending.length - 1];
   // 바로 앞 연산이 같은 대상이고 아직 저장으로 떠나지 않았으면 거기에 합친다.
-  const host = merge && last?.absorb && last.slot === merge.slot && !last.flying && !options.confirmedOnly ? last : null;
+  const host = merge && last?.absorb && last.slot === merge.slot && !last.flying && !last.aside && !last.handover === !options.handover && !options.confirmedOnly ? last : null;
   const paused = !options.handover && writesPaused(); // 닫히는 창이 넘긴 변경(handover)만 받는다 — 이미 출발한 응답도 여기서 막힌다
   // 저장소 연결이 잠깐 끊긴 것(다시 열 수 있다)은 거절 사유가 아니다 — 연산은 받아 두고 저장이 다시 시도한다.
   const refused = !ready || paused || (!host && pending.length >= PENDING_MAX);
@@ -613,6 +678,7 @@ export function applySceneOp<T, P = never>(
     let patch = merge.patch;
     op = {
       confirmedOnly: Boolean(options.confirmedOnly),
+      handover: options.handover,
       waiters: [],
       mutate: (all) => merge.replay(all, patch),
       slot: merge.slot,
@@ -624,6 +690,7 @@ export function applySceneOp<T, P = never>(
   } else {
     op = {
       confirmedOnly: Boolean(options.confirmedOnly),
+      handover: options.handover,
       waiters: [],
       mutate: (all) => {
         mutate(all);
@@ -1016,6 +1083,7 @@ export interface SceneStoreDump {
  */
 export function dumpSceneStore(): Promise<SceneStoreDump> {
   return enqueueTx(async () => {
+    const aside = pending.filter((op) => op.aside); // 아직 충돌로 옮기지 못한 연산 — 씬에 재생하지 않고 충돌로 싣는다
     try {
       if (!(await ensureDb())) throw new Error("scene store not open");
       const { meta, scenes } = await readStore([K_CONFLICTS, K_LAYOUT], () => true);
@@ -1024,6 +1092,7 @@ export function dumpSceneStore(): Promise<SceneStoreDump> {
       assertKnownLayout(meta);
       const buckets: ScenesByProject = { ...scenes };
       for (const op of pending) {
+        if (op.aside) continue;
         try {
           op.mutate(buckets);
         } catch {
@@ -1032,10 +1101,10 @@ export function dumpSceneStore(): Promise<SceneStoreDump> {
       }
       return {
         buckets,
-        conflicts: (meta[K_CONFLICTS] as SceneAbsorbConflict[] | undefined) ?? [],
+        conflicts: [...((meta[K_CONFLICTS] as SceneAbsorbConflict[] | undefined) ?? []), ...setAsideConflicts(scenes ?? {}, aside)],
       };
     } catch {
-      return { buckets: cloneStored(working), conflicts: cloneStored(conflictList) };
+      return { buckets: cloneStored(working), conflicts: cloneStored([...conflictList, ...setAsideConflicts(confirmed, aside)]) };
     }
   });
 }
@@ -1236,6 +1305,7 @@ export function markSceneWritesHanded(): void {
   pending = pending.filter((op) => {
     if (op.confirmedOnly) return true;
     op.handed = true;
+    op.durable?.splice(0).forEach((fn) => fn(false));
     return false;
   });
 }

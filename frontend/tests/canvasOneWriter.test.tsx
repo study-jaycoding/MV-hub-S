@@ -49,8 +49,9 @@ function fakeLocks() {
   const held: { name: string; finish: () => void }[] = [];
   const queue: { name: string; run: () => unknown; done: (value: unknown) => void }[] = [];
   const pump = () => {
-    while (queue.length && !held.some((lock) => lock.name === queue[0].name)) {
-      const next = queue.shift()!;
+    for (const next of [...queue]) { // 이름마다 따로 줄을 선다
+      if (held.some((lock) => lock.name === next.name) || !queue.includes(next)) continue;
+      queue.splice(queue.indexOf(next), 1);
       const lock = { name: next.name, finish: () => {} };
       held.push(lock);
       const release = () => {
@@ -183,6 +184,211 @@ describe("쓰기 입구 — 떠 있는 동안 원래 창은 씬을 쓰지 않는
     expect(main.data.adoptCanvasSceneWrites(structuredClone(writes))).toBe(true);
     await main.store.settleSceneStoreForTest();
     expect(textOf(main.data.listPersistedScenes(null)[0])).toBe("새 글");
+  });
+});
+
+describe("다른 창에 밀린 쓰기 — 떠 있음을 안 순간 재생을 멈추고 사본으로 살린다", () => {
+  const stored = (data: Awaited<ReturnType<typeof openStore>>["data"]) => textOf(data.listPersistedScenes(null)[0]);
+  // 저장이 막혀 밀린 편집을 든 창
+  async function behind(text = "이 창 편집") {
+    const opened = await openStore([scene("a", "저장본")]);
+    let floating = false;
+    opened.store.setSceneWriteGate(() => floating);
+    opened.store.failSceneStoreWritesForTest(true);
+    const receipt = opened.store.captureSceneOps(() => opened.data.updateScene(null, "a", { cards: textCard(text) }));
+    await opened.store.settleSceneWrites(50);
+    expect(opened.store.sceneStoreHasPending()).toBe(true);
+    return { ...opened, receipt, float: (on: boolean) => { floating = on; } };
+  }
+
+  it("표시한 연산은 씬에 쓰지 않고 충돌로 옮긴다 — 떠 있는 창의 편집이 남고 이 창의 편집은 theirs 로 남으며 기다리던 쪽은 실패를 받는다", async () => {
+    const { store, data, receipt, float } = await behind();
+    float(true);
+    store.setAsidePendingWrites();
+    expect(textOf(data.listScenes(null)[0])).toBe("저장본"); // 표시한 그 자리에서 화면 값에서 빠진다
+    store.writeSceneStoreAsOtherWindowForTest((all) => { all[BUCKET] = [scene("a", "떠 있는 창 편집")]; });
+    store.failSceneStoreWritesForTest(false);
+    await store.settleSceneStoreForTest();
+    expect(store.sceneStoreHasPending()).toBe(false);
+    expect(stored(data)).toBe("떠 있는 창 편집");
+    expect(store.lastSceneStoreWriteForTest().scenes).toEqual([]);
+    const [conflict] = store.sceneStoreConflicts();
+    expect(conflict).toMatchObject({ bucket: BUCKET, sceneId: "a" });
+    expect(textOf(conflict.mine as never)).toBe("떠 있는 창 편집");
+    expect(textOf(conflict.theirs as never)).toBe("이 창 편집");
+    await expect(receipt.confirmed).resolves.toBe(false);
+  });
+
+  it("충돌 저장이 막힌 동안에는 기다리던 쪽에 답하지 않고, 저장된 뒤에 실패를 돌려준다", async () => {
+    const { store, data } = await openStore([scene("a", "저장본")]);
+    store.failSceneStoreWritesForTest(true);
+    const receipt = store.captureSceneOps(() => data.updateScene(null, "a", { cards: textCard("이 창 편집") }));
+    store.setAsidePendingWrites();
+    let answered = false;
+    void receipt.confirmed.then(() => { answered = true; });
+    await store.settleSceneWrites(50);
+    await sleep(0);
+    expect(store.sceneStoreHasPending()).toBe(true);
+    expect(answered).toBe(false);
+    store.failSceneStoreWritesForTest(false);
+    await store.settleSceneStoreForTest();
+    await expect(receipt.confirmed).resolves.toBe(false);
+    expect(textOf(store.sceneStoreConflicts()[0].theirs as never)).toBe("이 창 편집");
+  });
+
+  it("저장이 막혀 다음 시도가 떠 있음이 끝난 뒤에 와도 재생하지 않고, 그 뒤 새 편집은 합쳐지지 않고 정상 저장되며 숨은 옛 편집을 되살리지 않는다", async () => {
+    const { store, data, float } = await behind();
+    float(true);
+    store.setAsidePendingWrites();
+    await store.settleSceneWrites(50); // 충돌 저장도 막혔다 — 표시와 연산이 남는다
+    expect(store.sceneStoreHasPending()).toBe(true);
+    float(false);
+    expect(data.updateScene(null, "a", { name: "돌아온 뒤 이름" }).ok).toBe(true);
+    store.failSceneStoreWritesForTest(false);
+    await store.settleSceneStoreForTest();
+    await store.settleSceneStoreForTest();
+    const saved = data.listPersistedScenes(null)[0];
+    expect(saved.name).toBe("돌아온 뒤 이름");
+    expect(textOf(saved)).toBe("저장본");
+    expect(textOf(store.sceneStoreConflicts()[0].theirs as never)).toBe("이 창 편집");
+    expect(store.sceneStoreConflicts()[0].theirs?.name).toBe("a"); // 새 편집이 옛 연산에 합쳐지지 않았다
+  });
+
+  it("큐가 밀려 떠 있음이 끝난 뒤에 출발한 저장도 표시를 보고 재생하지 않는다", async () => {
+    const { store, data } = await openStore([scene("a", "저장본")]);
+    store.delaySceneStoreWritesForTest(30);
+    data.updateScene(null, "a", { cards: textCard("밀린 편집") });
+    await sleep(5);
+    let floating = true;
+    store.setSceneWriteGate(() => floating);
+    store.setAsidePendingWrites();
+    floating = false;
+    store.delaySceneStoreWritesForTest(0);
+    await sleep(50);
+    await store.settleSceneStoreForTest();
+    expect(stored(data)).toBe("저장본");
+    expect(textOf(store.sceneStoreConflicts()[0].theirs as never)).toBe("밀린 편집");
+  });
+
+  it("재생을 정한 뒤 표시가 붙은 연산은 저장된 것으로 끝나고 화면 값이 저장본과 맞는다", async () => {
+    const { store, data } = await openStore([scene("a", "저장본")]);
+    let armed = false;
+    const receipt = store.captureSceneOps(() => store.applySceneOp((all) => {
+      if (armed) {
+        armed = false;
+        store.setAsidePendingWrites(); // 트랜잭션이 재생하는 그 사이에 창이 떴다
+      }
+      all[BUCKET] = [scene("a", "재생된 편집")] as never;
+      return { write: true, value: null };
+    }));
+    armed = true;
+    await expect(receipt.confirmed).resolves.toBe(true);
+    await store.settleSceneStoreForTest();
+    expect(stored(data)).toBe("재생된 편집");
+    expect(textOf(data.listScenes(null)[0])).toBe("재생된 편집");
+    expect(store.sceneStoreConflicts()).toEqual([]);
+  });
+
+  it("닫는 창이 넘긴 연산과 confirmedOnly 연산은 표시하지 않는다 · 일반 연산과 합쳐지지 않는다", async () => {
+    const { store, data, float } = await behind();
+    float(true);
+    store.failSceneStoreWritesForTest(false);
+    expect(data.adoptCanvasSceneWrites([{ bucket: BUCKET, created: [], changed: [{ ...(scene("a", "넘긴 글") as object) } as never], removed: [], order: null }])).toBe(true);
+    const account = store.captureSceneOps(() => store.applySceneOp((all) => { all[BUCKET] = (all[BUCKET] || []).map((item) => ({ ...item, name: "귀속" })); return { write: true, value: null }; }, { confirmedOnly: true, handover: true }));
+    store.setAsidePendingWrites();
+    await store.settleSceneStoreForTest();
+    expect(stored(data)).toBe("넘긴 글");
+    expect(data.listPersistedScenes(null)[0].name).toBe("귀속");
+    await expect(account.confirmed).resolves.toBe(true);
+    expect(store.sceneStoreConflicts().map((item) => textOf(item.theirs as never))).toEqual(["이 창 편집"]);
+  });
+
+  it("내용이 같은 씬은 충돌이 되지 않고, 지운 씬은 theirs=null 이며 다른 충돌을 지우지 않는다", async () => {
+    const { store, data } = await openStore([scene("a", "가"), scene("b", "나")]);
+    await store.absorbLegacyScenes({ [BUCKET]: [scene("a", "가"), scene("b", "나")] });
+    await store.absorbLegacyScenes({ [BUCKET]: [{ ...(scene("a", "가") as object), name: "옛 창" } as never, scene("b", "나")] });
+    data.updateScene(null, "a", { name: "이 창" });
+    await store.settleSceneStoreForTest();
+    await store.absorbLegacyScenes({ [BUCKET]: [{ ...(scene("a", "가") as object), name: "옛 창 또" } as never, scene("b", "나")] });
+    const kept = store.sceneStoreConflicts().length;
+    expect(kept).toBeGreaterThan(0);
+    store.failSceneStoreWritesForTest(true);
+    data.updateScene(null, "a", { name: "이 창" }); // 저장본과 같은 내용
+    data.deleteScene(null, "b");
+    await store.settleSceneWrites(50);
+    store.failSceneStoreWritesForTest(false);
+    store.setSceneWriteGate(() => true);
+    store.setAsidePendingWrites();
+    await store.settleSceneStoreForTest();
+    const added = store.sceneStoreConflicts().slice(kept);
+    expect(added.map(({ sceneId, theirs }) => [sceneId, theirs])).toEqual([["b", null]]);
+    expect(store.sceneStoreConflicts()).toHaveLength(kept + 1);
+    expect(data.listPersistedScenes(null).map((item) => item.id)).toEqual(["a", "b"]);
+  });
+
+  it("같은 씬의 충돌 둘은 복구 뒤 사본 둘로 남는다 — 손대지 않은 옛 사본이 있어도 · 원래 씬은 그대로", async () => {
+    const { store, data, float } = await behind("첫 편집");
+    float(true);
+    store.setAsidePendingWrites();
+    store.failSceneStoreWritesForTest(false);
+    await store.settleSceneStoreForTest();
+    float(false);
+    expect((await data.recoverSceneConflicts())?.copied).toBe(1);
+    await store.settleSceneStoreForTest();
+    for (const text of ["둘째 편집", "셋째 편집"]) {
+      float(false);
+      store.failSceneStoreWritesForTest(true);
+      data.updateScene(null, "a", { cards: textCard(text) });
+      await store.settleSceneWrites(50);
+      float(true);
+      store.setAsidePendingWrites();
+      store.failSceneStoreWritesForTest(false);
+      await store.settleSceneStoreForTest();
+    }
+    expect(store.sceneStoreConflicts()).toHaveLength(2);
+    float(false);
+    await data.recoverSceneConflicts();
+    await store.settleSceneStoreForTest();
+    const scenes = data.listPersistedScenes(null);
+    expect(scenes.find((item) => item.id === "a") && textOf(scenes.find((item) => item.id === "a"))).toBe("저장본");
+    expect(scenes.filter((item) => item.id !== "a").map(textOf).sort()).toEqual(["둘째 편집", "셋째 편집"]);
+  });
+
+  it("전체 내보내기는 표시된 연산을 씬에 재생하지 않고 충돌로 싣는다 — 저장소를 못 읽어도", async () => {
+    const { store, float } = await behind();
+    float(true);
+    store.setAsidePendingWrites();
+    await store.settleSceneWrites(50);
+    const dump = await store.dumpSceneStore();
+    expect(textOf(dump.buckets[BUCKET][0])).toBe("저장본");
+    expect(dump.conflicts.map((item) => textOf(item.theirs as never))).toEqual(["이 창 편집"]);
+    store.replaceSceneStoreForTest({ other: [] });
+    store.replaceSceneStoreForTest(null); // 알아보지 못하는 저장소 — 읽기 실패 경로
+    const blind = await store.dumpSceneStore();
+    expect(textOf(blind.buckets[BUCKET][0])).toBe("저장본");
+    expect(blind.conflicts.map((item) => textOf(item.theirs as never))).toEqual(["이 창 편집"]);
+  });
+
+  it("떠 있지 않으면 재시도는 지금처럼 재생한다 · 밀린 것이 없으면 아무 일도 없다", async () => {
+    const { store, data } = await behind();
+    store.failSceneStoreWritesForTest(false);
+    await store.settleSceneStoreForTest();
+    expect(stored(data)).toBe("이 창 편집");
+    store.setAsidePendingWrites();
+    await store.settleSceneStoreForTest();
+    expect(store.sceneStoreConflicts()).toEqual([]);
+  });
+
+  it("창이 떴다는 것을 안 그 자리에서 메인 창의 걸이가 불린다 — 떠 있음이 풀릴 때는 부르지 않는다", async () => {
+    vi.resetModules();
+    const popup = await import("../src/lib/popupWindows");
+    const started = vi.fn();
+    popup.setCanvasFloatStart(started);
+    fakeLocks();
+    vi.spyOn(window, "open").mockReturnValue({ closed: false, focus: () => {}, addEventListener: () => {} } as unknown as Window);
+    popup.openEmbedWindow(popup.EMBED_MODES.canvas);
+    expect(popup.isCanvasFloating()).toBe(true);
+    expect(started).toHaveBeenCalledOnce();
   });
 });
 
@@ -466,6 +672,188 @@ describe("창 생존 — Web Lock", () => {
     } finally {
       other.close();
       stop();
+    }
+  });
+});
+
+describe("창끼리 나누는 실행 표시 — 창마다 쥐는 잠금", () => {
+  const lockOf = (id: string) => `mvhub-window-live-${id}`;
+  // 받는 창 — 이 문서가 받은 다른 창의 몫을 그대로 들고 있다
+  async function receiver() {
+    vi.resetModules();
+    const popup = await import("../src/lib/popupWindows");
+    const got = new Map<string, unknown>();
+    popup.shareWindowLive("comfyRunning", {
+      read: () => [],
+      apply: (sender, value) => { if (value === undefined) got.delete(sender); else got.set(sender, value); },
+    });
+    await sleep(0);
+    return got;
+  }
+  const hold = (locks: ReturnType<typeof fakeLocks>, id: string) => {
+    let end: () => void = () => {};
+    void locks.request(lockOf(id), () => new Promise<void>((resolve) => { end = resolve; }));
+    return { end: () => end() };
+  };
+  const tellLive = (channel: BroadcastChannel, sender: string, value: unknown) => channel.postMessage({ type: "live", name: "comfyRunning", sender, value });
+
+  it("pagehide 없이 끝난 창의 몫만 지우고, 늦게 닿은 알림으로 되살아나지 않는다 · 살아 있는 창의 몫은 남는다", async () => {
+    const locks = fakeLocks();
+    const dead = hold(locks, "dead");
+    hold(locks, "alive");
+    const got = await receiver();
+    const other = new BroadcastChannel("mvhub-window-live");
+    try {
+      tellLive(other, "dead", ["c1"]);
+      tellLive(other, "alive", ["c2"]);
+      await sleep(10);
+      expect([...got.keys()]).toEqual(["dead", "alive"]);
+      dead.end();
+      await sleep(10);
+      expect([...got.keys()]).toEqual(["alive"]);
+      tellLive(other, "dead", ["c1"]); // 끝나기 전에 보낸 마지막 알림이 늦게 닿았다
+      await sleep(10);
+      expect([...got.keys()]).toEqual(["alive"]);
+    } finally {
+      other.close();
+    }
+  });
+
+  it("잠금을 쥐기 전에는 알리지 않고, 쥔 직후 지금 몫을 알린다", async () => {
+    const grants: (() => void)[] = [];
+    Object.defineProperty(navigator, "locks", { configurable: true, value: {
+      query: async () => ({ held: [], pending: [] }),
+      request: (_name: string, run: () => unknown) => new Promise((done) => {
+        grants.push(() => { void Promise.resolve().then(run).then(done); });
+      }),
+    } });
+    const seen: unknown[] = [];
+    const other = new BroadcastChannel("mvhub-window-live");
+    other.onmessage = (event) => { if (event.data.type === "live" && JSON.stringify(event.data.value) === '["c1"]') seen.push(event.data.value); }; // 앞 시험의 모듈도 답한다
+    try {
+      vi.resetModules();
+      const popup = await import("../src/lib/popupWindows");
+      const announce = popup.shareWindowLive("comfyRunning", { read: () => ["c1"], apply: () => {} });
+      announce();
+      await sleep(10);
+      expect(grants.length).toBeGreaterThan(0);
+      expect(seen).toEqual([]);
+      grants[0](); // 맨 먼저 청한 것이 자기 잠금이다
+      await sleep(10);
+      expect(seen).toEqual([["c1"]]);
+    } finally {
+      other.close();
+    }
+  });
+
+  it("자기 잠금을 못 쥐면 알리지 않는다 — 받는 창이 빈 잠금을 얻어 살아 있는 창을 끝났다고 보지 않게", async () => {
+    Object.defineProperty(navigator, "locks", { configurable: true, value: { query: async () => ({ held: [], pending: [] }), request: () => Promise.reject(new Error("막힘")) } });
+    const seen: unknown[] = [];
+    const other = new BroadcastChannel("mvhub-window-live");
+    other.onmessage = (event) => { if (event.data.type === "live" && JSON.stringify(event.data.value) === '["못 쥠"]') seen.push(event.data.value); }; // 앞 시험의 모듈도 답한다
+    try {
+      vi.resetModules();
+      const popup = await import("../src/lib/popupWindows");
+      popup.shareWindowLive("comfyRunning", { read: () => ["못 쥠"], apply: () => {} })();
+      await sleep(10);
+      expect(seen).toEqual([]);
+    } finally {
+      other.close();
+    }
+  });
+
+  it("돌아온 문서의 옛 잠금 요청이 늦게 얻어져도 새 잠금의 해제 손잡이를 덮지 않고 바로 놓인다", async () => {
+    const grants: { name: string; grant: () => void; done: Promise<unknown> }[] = [];
+    Object.defineProperty(navigator, "locks", { configurable: true, value: {
+      query: async () => ({ held: [], pending: [] }),
+      request: (name: string, run: () => unknown) => {
+        let grant!: () => void;
+        const done = new Promise((resolve) => { grant = () => { void Promise.resolve().then(run).then(resolve); }; });
+        grants.push({ name, grant, done });
+        return done;
+      },
+    } });
+    const seen: { sender: string; value: unknown }[] = [];
+    const other = new BroadcastChannel("mvhub-window-live");
+    other.onmessage = (event) => { if (event.data.type === "live" && JSON.stringify(event.data.value) === '["늦게"]') seen.push(event.data); }; // 앞 시험의 모듈도 답한다
+    try {
+      vi.resetModules();
+      const popup = await import("../src/lib/popupWindows");
+      const announce = popup.shareWindowLive("comfyRunning", { read: () => ["늦게"], apply: () => {} });
+      announce();
+      await sleep(10);
+      const before = grants.length;
+      const first = grants[0]; // 맨 먼저 청한 것이 자기 잠금이다 — 아직 못 얻었다
+      window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+      await sleep(10);
+      grants.slice(before).forEach(({ grant }) => grant()); // 앞 시험의 모듈도 돌아오며 청한다 — 다 내주고 내 알림으로 내 잠금을 찾는다
+      await sleep(10);
+      const senders = () => [...new Set(seen.map(({ sender }) => sender))];
+      expect(senders()).toHaveLength(1);
+      const second = grants.find(({ name }) => name === lockOf(senders()[0]))!;
+      expect(second).not.toBe(first);
+      first.grant();
+      await expect(first.done).resolves.toBeUndefined(); // 옛 요청은 얻는 대로 놓인다
+      await sleep(10);
+      expect(senders()).toHaveLength(1); // 옛 요청이 얻어져도 알리지 않는다
+      window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true })); // 다음 복귀 — 지금 잠금을 놓는다
+      await expect(second.done).resolves.toBeUndefined();
+    } finally {
+      other.close();
+    }
+  });
+
+  it("잠금 요청이 실패해도 끝으로 보지 않고, 잠금 API 가 없어도 지금처럼 나눈다", async () => {
+    Object.defineProperty(navigator, "locks", { configurable: true, value: { query: async () => ({ held: [], pending: [] }), request: () => Promise.reject(new Error("막힘")) } });
+    const refused = await receiver();
+    const other = new BroadcastChannel("mvhub-window-live");
+    try {
+      tellLive(other, "s", ["c1"]);
+      await sleep(10);
+      expect(refused.get("s")).toEqual(["c1"]);
+      Reflect.deleteProperty(navigator, "locks");
+      const plain = await receiver();
+      tellLive(other, "t", ["c2"]);
+      await sleep(10);
+      expect(plain.get("t")).toEqual(["c2"]);
+      other.postMessage({ type: "gone", sender: "t" });
+      await sleep(10);
+      expect(plain.has("t")).toBe(false);
+    } finally {
+      other.close();
+    }
+  });
+
+  it("bfcache 에서 돌아온 문서는 새 id 로 다시 알리고, 멈춘 동안 끝난 다른 창도 다시 감시해 지운다", async () => {
+    const locks = fakeLocks();
+    const seen: { sender: string; value: unknown }[] = [];
+    const other = new BroadcastChannel("mvhub-window-live");
+    other.onmessage = (event) => { if (event.data.type === "live" && JSON.stringify(event.data.value) === '["mine"]') seen.push(event.data); }; // 앞 시험의 모듈도 답한다
+    try {
+      const away = hold(locks, "gone-while-away");
+      vi.resetModules();
+      const popup = await import("../src/lib/popupWindows");
+      const got = new Map<string, unknown>();
+      const announce = popup.shareWindowLive("comfyRunning", { read: () => ["mine"], apply: (sender, value) => { if (value === undefined) got.delete(sender); else got.set(sender, value); } });
+      announce();
+      await sleep(10);
+      tellLive(other, "gone-while-away", ["c1"]);
+      await sleep(10);
+      expect(got.has("gone-while-away")).toBe(true);
+      const first = seen[0].sender;
+      // 멈춘 동안 감시가 끊겼다 — 대기 줄에서 지운다
+      locks.queue.splice(0);
+      window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+      await sleep(10);
+      expect(seen.at(-1)?.sender).not.toBe(first);
+      expect(seen.at(-1)?.value).toEqual(["mine"]);
+      expect(locks.held.map(({ name }) => name)).toEqual(expect.arrayContaining([lockOf(seen.at(-1)!.sender)]));
+      expect(locks.held.map(({ name }) => name)).not.toContain(lockOf(first));
+      away.end();
+      await sleep(10);
+      expect(got.has("gone-while-away")).toBe(false); // 답을 기다리지 않고 다시 건 감시가 지운다
+    } finally {
+      other.close();
     }
   });
 });

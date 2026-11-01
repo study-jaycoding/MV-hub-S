@@ -42,6 +42,14 @@ it("복구된 상류의 generation 참조를 입력 미디어로 읽고 copy ove
   expect(gatherComfyMedia("c", [up, target], edges, gens, {})).toEqual([]);
 });
 
+it("앞 노드의 실행 결과(서버 run_status 의 {kind,url})가 뒤 노드 입력이 된다 — 영수증 모양이면 입력이 비었다(최종 검토 C-05)", () => {
+  const up = { id: "up", kind: "comfy", x: 0, y: 0 } as SceneCard;
+  const target = { id: "c", kind: "comfy", x: 1, y: 0 } as SceneCard;
+  const edges = [{ from: "up", to: "c" }];
+  const media = gatherComfyMedia("c", [up, target], edges, {}, { up: [{ kind: "image", url: "/media/comfy/a.png" }, { kind: "text", text: "글" }] });
+  expect(media).toMatchObject([{ type: "image", url: "/media/comfy/a.png" }]);
+});
+
 const comfy = (id: string, o: Partial<SceneCard> = {}): SceneCard => ({ id, kind: "comfy", x: 0, y: 0, ...o }) as SceneCard;
 
 describe("sceneComfyInputs", () => {

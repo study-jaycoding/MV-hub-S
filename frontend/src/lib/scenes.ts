@@ -29,6 +29,8 @@ import {
   type SceneOpMerge,
 } from "./sceneStore";
 
+export { pendingSceneWritesConfirmed } from "./sceneStore";
+
 export type SceneCardKind =
   | "reference"
   | "generation"
@@ -589,6 +591,7 @@ export function hasSceneConflicts(): boolean {
  *          keptMine = 옛 창이 지웠지만 이 창 것을 그대로 둔 수. 실패면 null(충돌은 남아 다음에 다시 한다).
  */
 export function recoverSceneConflicts(): Promise<{ copied: number; refreshed: number; keptMine: number } | null> {
+  const used = new Set<string>(); // 이번 복구에서 만들거나 갈아 끼운 탭 — 같은 씬 충돌이 둘이면 앞 것을 덮지 않게
   return settleConflictsAsCopies(keyOf(null), (scenes, theirs) => {
     const copy: Scene = {
       ...withoutComfyRuns(theirs),
@@ -599,8 +602,9 @@ export function recoverSceneConflicts(): Promise<{ copied: number; refreshed: nu
     // 같은 씬의 사본이 이미 있고 **만든 뒤 손대지 않았으면** 그 탭을 최신으로 갈아 끼운다 — 옛 창이 그 씬을
     // 계속 고치는 동안 탭(과 저장소)이 끝없이 늘지 않게. 손댄 사본은 건드리지 않고 새로 더한다(잃는 것이 없게).
     const at = scenes.findIndex(
-      (s) => s.recoveredFrom?.id === theirs.id && sceneBodySum(s) === s.recoveredFrom.sum,
+      (s) => !used.has(s.id) && s.recoveredFrom?.id === theirs.id && sceneBodySum(s) === s.recoveredFrom.sum,
     );
+    used.add(at < 0 ? copy.id : scenes[at].id);
     if (at < 0) return [...scenes, copy];
     return scenes.map((s, i) => (i === at ? { ...copy, id: s.id, name: s.name } : s)); // 탭 id·이름은 그대로
   });

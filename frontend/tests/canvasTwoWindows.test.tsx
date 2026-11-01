@@ -29,11 +29,22 @@ beforeEach(() => {
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
+  // 잠금이 없는 주소에서는 캔버스 창을 띄우지 않는다 — 이 시험의 창은 잠금이 풀리는 일이 없다. 창마다의 잠금은 먼저 청한 쪽이 쥔다(쥔 뒤에만 실행 표시를 나눈다)
+  const held = new Set<string>();
+  Object.defineProperty(navigator, "locks", { configurable: true, value: {
+    query: async () => ({ held: [], pending: [] }),
+    request: (name: string, run: () => unknown) => {
+      if (name === "mvhub-canvas-window" || held.has(name)) return new Promise(() => {});
+      held.add(name);
+      return Promise.resolve().then(run);
+    },
+  } });
 });
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
   window.name = "";
+  Reflect.deleteProperty(navigator, "locks");
   vi.restoreAllMocks();
 });
 

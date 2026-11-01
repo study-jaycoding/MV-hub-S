@@ -2,10 +2,10 @@ import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
 import { PromptProvider } from "./lib/prompt";
 import { installFileDropGuard } from "./lib/media";
-import { announceCanvasWindow, EMBED_MODES, findFloatingCanvas, isCanvasWindow, openerSceneWritesSettled, setCanvasReturnRead, shareCanvasMemory } from "./lib/popupWindows";
+import { announceCanvasWindow, EMBED_MODES, findFloatingCanvas, isCanvasWindow, openerSceneWritesSettled, retireCanvasWindow, setCanvasFloatStart, setCanvasReturnRead, shareCanvasMemory } from "./lib/popupWindows";
 import { applyAccent, applyReduceMotion, loadAccent, loadLang, loadReduceMotion } from "./lib/theme";
 import { bootSceneStore, readLegacyScenesRaw, restoreUndoHistories } from "./lib/sceneBoot";
-import { refreshSceneStore, settleSceneWrites } from "./lib/sceneStore";
+import { refreshSceneStore, setAsidePendingWrites, settleSceneWrites } from "./lib/sceneStore";
 import { installApiGate } from "./lib/http";
 import { installPopupLogoutWatch } from "./lib/otherTabLogout";
 import "./styles.css";
@@ -108,6 +108,8 @@ if (cleanFeed) {
 } else if (embed === EMBED_MODES.manage) {
   installPopupLogoutWatch();
   render(<ManageWindow />);
+} else if (isCanvasWindow() && retireCanvasWindow()) {
+  // 잠금이 없는 주소에 남은 캔버스 창 — 알리지도 저장소를 열지도 않고 물러난다(lib/popupWindows). 메인 창이 떠 있음으로 바뀌지 않게 announce 앞이다.
 } else {
   // 캔버스 탭을 휠 클릭해 연 창(EMBED_MODES.canvas)도 여기 — 앱 그대로다(캔버스 탭에선 머리줄만 뺀다, App). 제목을 달리 둔다: 허브가 별도 창을
   //  제목으로 찾아 올린다. 떠 있다고 메인 창에 알린다 — 메인 창은 그동안 캔버스 자리를 비운다(lib/popupWindows)
@@ -117,6 +119,7 @@ if (cleanFeed) {
   } else {
     shareCanvasMemory(() => settleSceneWrites(10_000)); // 이 창이 연 캔버스 창이 창 메모리를 받아 가고 돌려줄 손잡이(lib/popupWindows)
     setCanvasReturnRead(refreshSceneStore); // 그 창이 닫히면 저장본을 다시 읽은 뒤에 캔버스를 돌려준다
+    setCanvasFloatStart(setAsidePendingWrites); // 다른 창에 떴다 — 이 창에 밀린 쓰기가 그 창의 편집을 덮지 않게
   }
   // ★순서를 강제한다: (떠 있는 창 알기) → 저장소 열기·이관 완료 → App 마운트 → (App 안에서) 백업 미러.
   //  App 의 effect 로 미루면 늦다 — 첫 렌더에서 이미 씬 목록을 읽는다(useSceneCoordination).

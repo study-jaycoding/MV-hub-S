@@ -36,6 +36,7 @@ export function isCanvasWindow(): boolean {
 const openWindows: Partial<Record<EmbedMode, Window | null>> = {};
 
 export function openEmbedWindow(mode: EmbedMode): void {
+  if (mode === EMBED_MODES.canvas && !canFloatCanvas()) return;
   const existing = openWindows[mode];
   if (existing && !existing.closed) {
     try {
@@ -192,6 +193,16 @@ const RELOAD_GRACE_MS = 300; // "closed" 뒤 이 창이 연 창이 아직 살아
 const CANVAS_LOCK = "mvhub-canvas-window";
 const canvasLocks = (): LockManager | undefined => (typeof navigator === "undefined" ? undefined : navigator.locks);
 
+/** 이 주소에서 캔버스를 별도 창으로 띄울 수 있나 — 잠금이 없으면 창의 끝을 확인할 근거가 없다. 무응답으로 돌려받으면 얼어 있던 창이 깨어나 두 창이 함께 쓴다. */
+export const canFloatCanvas = (): boolean => !!canvasLocks();
+
+/** 잠금이 없는 주소에 남은 캔버스 창(이 규칙 전부터 떠 있던 창의 새로 고침) — 알리기 전에 물러난다. 닫지 못해도 저장소를 열지 않아 쓰지 않는다. */
+export function retireCanvasWindow(): boolean {
+  if (canFloatCanvas()) return false;
+  window.close();
+  return true;
+}
+
 export function announceCanvasWindow(): void {
   adoptOpenerCanvasMemory(); // 메인 창이 살아 있는 켜질 때 받아 둔다 — 각 저장소가 등록할 때 꺼내 간다(아래)
   void canvasLocks()?.request(CANVAS_LOCK, () => new Promise<void>(() => {})).catch(() => {});
@@ -224,6 +235,12 @@ export function setCanvasReturnRead(read: () => Promise<boolean>): void {
   canvasReturnRead = read;
 }
 
+let canvasFloatStart: (() => void) | null = null;
+/** 메인 창 — 캔버스가 다른 창에 떴다는 것을 안 그 자리에서 부를 일을 단다(밀린 씬 쓰기 치우기, sceneStore). 그 뒤로 미루면 큐가 밀린 사이 떠 있음이 끝나 옛 연산이 재생된다. */
+export function setCanvasFloatStart(run: () => void): void {
+  canvasFloatStart = run;
+}
+
 function setCanvasFloating(next: boolean): void {
   clearTimeout(closedTimer);
   closedTimer = undefined;
@@ -231,6 +248,7 @@ function setCanvasFloating(next: boolean): void {
   returnReading = false;
   if (next === canvasFloating) return;
   canvasFloating = next;
+  if (next) canvasFloatStart?.();
   floatingListeners.forEach((listener) => listener());
 }
 
@@ -510,17 +528,54 @@ function returnCanvasMemory(persisted: boolean): void {
 }
 
 // 창끼리 실시간으로 나누는 작은 상태(Comfy '생성중') — 창마다 자기 몫을 알리고, 닫히면(pagehide) 그 창 몫을 지운다. 새로 등록한 창은 한 번 묻는다.
+// pagehide 없이 끝난 창(강제 종료)은 창마다 평생 쥐는 잠금으로 안다 — 받는 창이 그 잠금을 기다리다 얻으면 끝난 것이다. 쥔 뒤에만 알린다: 잠금 요청과
+// BroadcastChannel 은 순서가 보장되지 않아, 먼저 알리면 받는 창이 먼저 잡아 살아 있는 창을 끝났다고 본다. 잠금이 없는 주소에서는 지금처럼 pagehide 로만 안다.
 const LIVE_CHANNEL = "mvhub-window-live";
-const WINDOW_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+const newWindowId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+let windowId = newWindowId();
 export interface WindowLivePart {
   read: () => unknown; // 이 창의 지금 몫
   apply: (sender: string, value: unknown) => void; // 다른 창의 몫 — value 가 undefined 면 그 창이 닫혔다
 }
 const liveParts = new Map<string, WindowLivePart>();
 let liveChannel: BroadcastChannel | null = null;
+let liveHeld: Promise<void> = Promise.resolve();
+let releaseLive: () => void = () => {};
+const heardWindows = new Set<string>(); // 잠금을 기다리는 다른 창
+const endedWindows = new Set<string>(); // 끝난 창 — 늦게 닿은 알림으로 표시가 되살아나지 않게
+let watchTurn = 0; // 돌아온 문서가 감시를 새로 걸면 바뀐다 — 옛 감시의 늦은 콜백은 무시한다
+const liveLock = (id: string) => `mvhub-window-live-${id}`;
+
+function holdLiveLock(): void {
+  const locks = canvasLocks();
+  if (!locks) return;
+  releaseLive();
+  const id = windowId;
+  // 못 쥐면 알리지 않는다 — 아무도 쥐지 않은 잠금은 받는 창이 곧바로 얻어 살아 있는 창을 끝났다고 본다. 돌아온 문서의 옛 요청은 얻는 대로 놓는다.
+  liveHeld = new Promise((held) => {
+    void locks.request(liveLock(id), () => (id !== windowId ? undefined : new Promise<void>((release) => {
+      releaseLive = release;
+      held();
+    }))).catch(() => {});
+  });
+}
+
+function endLiveWindow(sender: string): void {
+  endedWindows.add(sender);
+  heardWindows.delete(sender);
+  liveParts.forEach((each) => each.apply(sender, undefined));
+}
+
+function watchLiveWindow(sender: string): void {
+  const turn = watchTurn;
+  // 요청 실패는 끝이 아니다 — 그 창은 지금처럼 pagehide 로만 안다.
+  void canvasLocks()?.request(liveLock(sender), () => {
+    if (turn === watchTurn && !endedWindows.has(sender)) endLiveWindow(sender);
+  }).catch(() => {});
+}
 
 function postLive(name: string, value: unknown): void {
-  liveChannel?.postMessage({ type: "live", name, sender: WINDOW_ID, value });
+  void liveHeld.then(() => liveChannel?.postMessage({ type: "live", name, sender: windowId, value }));
 }
 
 /** 등록하고, 이 창의 몫이 바뀌었을 때 부를 알림 함수를 돌려준다. */
@@ -530,14 +585,31 @@ export function shareWindowLive(name: string, part: WindowLivePart): () => void 
     liveChannel = new BroadcastChannel(LIVE_CHANNEL);
     liveChannel.onmessage = (event) => {
       const message = event.data as { type?: string; name?: string; sender?: string; value?: unknown } | null;
-      if (!message?.sender || message.sender === WINDOW_ID) return;
+      if (!message?.sender || message.sender === windowId || endedWindows.has(message.sender)) return;
       if (message.type === "ask") liveParts.forEach((each, partName) => postLive(partName, each.read()));
-      else if (message.type === "live" && message.name) liveParts.get(message.name)?.apply(message.sender, message.value);
-      else if (message.type === "gone") liveParts.forEach((each) => each.apply(message.sender!, undefined));
+      else if (message.type === "live" && message.name) {
+        if (!heardWindows.has(message.sender)) {
+          heardWindows.add(message.sender);
+          watchLiveWindow(message.sender);
+        }
+        liveParts.get(message.name)?.apply(message.sender, message.value);
+      } else if (message.type === "gone") endLiveWindow(message.sender);
     };
-    window.addEventListener("pagehide", () => liveChannel?.postMessage({ type: "gone", sender: WINDOW_ID }));
+    holdLiveLock();
+    window.addEventListener("pagehide", () => liveChannel?.postMessage({ type: "gone", sender: windowId }));
+    // 뒤로 가기 저장(bfcache)에서 돌아온 문서 — 떠나며 끝났다고 알렸고 잠금과 감시도 끊겼을 수 있다(브라우저마다 다르다). 새 창으로 다시 시작한다.
+    //  아는 창은 답을 기다리지 않고 다시 감시한다 — 멈춘 동안 끝난 창은 답하지 않는다.
+    window.addEventListener("pageshow", (event) => {
+      if (!event.persisted) return;
+      windowId = newWindowId();
+      holdLiveLock();
+      watchTurn += 1;
+      heardWindows.forEach(watchLiveWindow);
+      liveChannel?.postMessage({ type: "ask", sender: windowId });
+      liveParts.forEach((each, partName) => postLive(partName, each.read()));
+    });
   }
-  liveChannel?.postMessage({ type: "ask", sender: WINDOW_ID });
+  liveChannel?.postMessage({ type: "ask", sender: windowId });
   return () => postLive(name, part.read());
 }
 
