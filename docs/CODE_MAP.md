@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-11-01
+updated: 2026-11-02
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -40,6 +40,7 @@ updated: 2026-11-01
 | 타임라인 명령·세션 | `frontend/src/features/timeline/session.ts`: 문서 세대·명시 명령·닫기 전 수신 길이 flush. 외부는 feature의 `api.ts`; 기존 CAS/Undo 저장 엔진 유지 |
 | 공유 상태 명령 | `backend/app/usecases/share.py`(트랜잭션·권한·CAS·receipt), `backend/app/repo/share_commands.py`(원장 SQL), `backend/app/services/share_commands.py`(원격 capability/고정 재전송), `backend/app/routers/_share_authority.py`(HTTP 권한 어댑터), `backend/app/db_share_commands.py`(content v2 적용). 기존 share/publish 라우터가 입구 |
 | 자료 내용 ID·로컬 우선 자동 보관 | `backend/app/db_asset_sync.py`(추가 스키마), `backend/app/repo/asset_sync.py`(내용·위치·영속 대기열), `backend/app/services/asset_sync.py`(바이트 검증·전송), `backend/app/routers/asset_sync.py`(권한·스트리밍 API), `frontend/src/shared/contracts/assets.ts`(공유 자료 계약). 기존 캡처·반입 입구와 캔버스 공개 포트를 재사용 |
+| 전송 줄 보충·이동 입구 | `backend/app/services/asset_backfill.py`(옛 결과·서버에서 옮겨진 공유물의 줄을 일꾼이 잇는다), `backend/app/routers/_delivery.py`(허브가 서버·로컬을 바꾸기 전에 보는 입구), `backend/app/repo/asset_sync.py`(줄 만들기·전달 판정·전송 상태). 줄은 `queue_moved_outputs` 로만 만든다 |
 | 자료 위치 읽기·타 PC 캐시 | `backend/app/repo/asset_locations.py`(owner/project/CID에 맞는 ready 위치의 배치 읽기 투영), `backend/app/shared_server_config.py`(순환 없는 서버 기본값), `backend/app/services/asset_sync_cache.py`(권한 확인 후 계정·서버별 검증 캐시와 동시 다운로드 합치기). 실행 payload와 DB 원출처는 바꾸지 않음 |
 | 폴더 드롭의 로컬 우선 보관 | `backend/app/db_asset_destination.py`(지정 폴더용 별도 대기열), `backend/app/services/asset_destination.py`(등록 루트·권한 재확인 후 비덮어쓰기 전송), `frontend/src/components/assets/useAssetDropImport.ts`(로컬 저장 응답·보관 완료 목록 갱신), `frontend/src/components/assets/LocalImportCards.tsx`(실제 imports 원본으로 즉시 미리보기·참조 사용). 캡처의 imp_cap 목적지와 구분 |
 | 생성 결과와 실제 참조 원본 묶음 | `backend/app/services/asset_bundle.py`(내용 ID·해시 확인 후 ZIP/manifest), `frontend/src/lib/generationBundle.ts`(계정 문맥을 고정한 다운로드), `frontend/src/components/GenerationBundleButton.tsx`(누락 경고·명시적인 부분 다운로드), `backend/app/routers/asset_sync.py`(기존 조회 권한 적용) |
