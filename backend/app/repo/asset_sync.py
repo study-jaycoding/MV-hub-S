@@ -83,6 +83,19 @@ def status_rows(conn, owner_uid, project_id=None):
              'target_project_id':r['project_id'],'server_file_path':(json.loads(r['receipt_json']).get('file_path') if r['receipt_json'] else None)} for r in rows]
 
 
+def queue_moved_outputs(conn, generation_ids, project_id):
+    """프로젝트로 옮긴 결과의 로컬 파일을 그 프로젝트로 보낸다 — 전송 줄은 프로젝트마다 따로라 잇지 않으면 다른 PC 가 파일을 못 받는다.
+    http 주소가 있는 결과는 옮겨도 그 주소로 받을 수 있어 건드리지 않는다. Caller owns the transaction."""
+    placeholders = ','.join('?' for _ in generation_ids)
+    conn.execute(
+        "INSERT OR IGNORE INTO asset_sync_outbox(sync_id,asset_content_id,local_location_id,owner_uid,project_id,account_key,server_origin,state,updated_at) "
+        "SELECT lower(hex(randomblob(16))),o.asset_content_id,o.local_location_id,o.owner_uid,?,o.account_key,o.server_origin,'queued',? "
+        "FROM generation g JOIN asset a ON a.generation_id=g.id "
+        "JOIN asset_sync_outbox o ON o.asset_content_id=a.asset_content_id AND o.owner_uid=g.creator_uid "
+        f"WHERE g.id IN ({placeholders}) AND g.deleted_at IS NULL AND a.file_path NOT LIKE 'http%' AND o.state<>'deleted'",
+        (project_id, time.time(), *generation_ids))
+
+
 def generation_output_intent(conn, generation_id, *, deleted):
     """Only an explicit trash/restore operation changes automatic result recovery intent."""
     rows = conn.execute(

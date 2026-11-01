@@ -495,3 +495,124 @@ def test_extensionless_canonical_download_preserves_supported_media(content_type
         downloaded = agent._download_ref('http://hub', 'fake-token', 'http://hub/api/asset-sync/files/' + 'a' * 32, '')
     assert downloaded and downloaded.endswith(extension)
     Path(downloaded).unlink()
+
+
+def _local_output(name, *, project=None, file_path=None, owner='user_a'):
+    """이 PC 에만 파일이 있는 결과 하나와 그 전송 줄을 만든다."""
+    gid = 'g-' + name
+    repo.create_local_generation({'model': 'comfy', 'prompt': 'p'}, 'me', generation_id=gid)
+    with db.get_connection() as conn:
+        conn.execute("UPDATE generation SET status='done', creator_uid='user_a', project_id=? WHERE id=?", (project, gid))
+        cid = asset_sync.register_local(conn, path=f'C:/media/{name}.png', file_path=f'/media/comfy/{name}.png',
+            digest=hashlib.sha256(name.encode()).hexdigest(), size=4, media_type='image', owner_uid=owner,
+            project_id=project, server_origin='http://server', account_key='acct')['asset_content_id']
+        conn.execute("INSERT INTO asset(id,generation_id,type,file_path,asset_content_id) VALUES(?,?,'image',?,?)",
+                     ('a-' + name, gid, file_path or f'/media/comfy/{name}.png', cid))
+    return gid, cid
+
+
+def _lines(cid):
+    with db.get_connection() as conn:
+        return {row['project_id']: dict(row) for row in conn.execute('SELECT * FROM asset_sync_outbox WHERE asset_content_id=?', (cid,))}
+
+
+def test_moving_a_local_output_into_a_project_queues_it(content):
+    project = projects.create_project('Move', created_by='user_a')['id']
+    gid, cid = _local_output('first')
+    assert repo.assign_to_project([gid], project) == 1
+    lines = _lines(cid)
+    assert set(lines) == {'', project}
+    assert lines['']['state'] == 'project_required' and lines[project]['state'] == 'queued'
+    for key in ('local_location_id', 'owner_uid', 'account_key', 'server_origin'):
+        assert lines[project][key] == lines[''][key]
+    with db.get_connection() as conn:
+        assert asset_sync.claim(conn, 'user_a', 'http://server', 'acct')['project_id'] == project
+
+
+def test_moving_between_projects_keeps_the_old_line_and_repeats_once(content):
+    first = projects.create_project('First', created_by='user_a')['id']
+    second = projects.create_project('Second', created_by='user_a')['id']
+    gid, cid = _local_output('between', project=first)
+    with db.get_connection() as conn:
+        conn.execute("UPDATE asset_sync_outbox SET state='ready',receipt_json='{}'")
+    repo.assign_to_project([gid], second)
+    repo.assign_to_project([gid], second)
+    lines = _lines(cid)
+    assert set(lines) == {first, second}
+    assert lines[first]['state'] == 'ready' and lines[second]['state'] == 'queued'
+
+
+def test_moving_again_fills_the_line_an_older_move_left_out(content):
+    project = projects.create_project('Older', created_by='user_a')['id']
+    gid, cid = _local_output('older')
+    with db.get_connection() as conn:
+        conn.execute('UPDATE generation SET project_id=? WHERE id=?', (project, gid))
+    repo.assign_to_project([gid], project)
+    assert _lines(cid)[project]['state'] == 'queued'
+
+
+@pytest.mark.parametrize('case', ['http', 'trash', 'other_owner', 'deleted_line', 'unassign', 'check_only'])
+def test_moves_that_must_not_queue(content, case):
+    project = projects.create_project('None', created_by='user_a')['id']
+    gid, cid = _local_output(case, file_path='https://cdn.example/x.png' if case == 'http' else None,
+                             owner='user_b' if case == 'other_owner' else 'user_a')
+    with db.get_connection() as conn:
+        if case == 'trash':
+            conn.execute("UPDATE generation SET deleted_at='2026-11-01 00:00:00' WHERE id=?", (gid,))
+        if case == 'deleted_line':
+            conn.execute("UPDATE asset_sync_outbox SET state='deleted'")
+    if case == 'unassign':
+        repo.assign_to_project([gid], None)
+    else:
+        repo.assign_to_project([gid], project, check_only=case == 'check_only')
+    assert set(_lines(cid)) == {''}
+
+
+def test_a_failed_move_leaves_no_line(content):
+    project = projects.create_project('Rolled', created_by='user_a')['id']
+    gid, cid = _local_output('rolled')
+    with patch('app.config.MANAGE_ENABLED', True), \
+            patch('app.repo.manage_telemetry.mark_telemetry_dirty_in_connection', side_effect=RuntimeError('boom')), \
+            pytest.raises(RuntimeError):
+        repo.assign_to_project([gid], project)
+    assert set(_lines(cid)) == {''}
+    assert repo.get_generation(gid)['project_id'] is None
+
+
+TEAM = {'id': 'ws1', 'name': 'Team'}
+
+
+def _team_project(name='Only', workspace_id='ws1'):
+    return projects.create_project(name, created_by='user_a', workspace={'scope': 'team', 'id': workspace_id, 'name': 'Team'})['id']
+
+
+def test_workspace_tag_that_sets_the_project_queues_it(content):
+    project = _team_project()
+    gid, cid = _local_output('tag')
+    repo.set_generation_workspace_batch([gid], 'assign', TEAM)
+    assert repo.get_generation(gid)['project_id'] == project
+    assert _lines(cid)[project]['state'] == 'queued'
+
+
+@pytest.mark.parametrize('case', ['keep', 'clear', 'remove'])
+def test_workspace_tag_that_does_not_set_a_project_does_not_queue(content, case):
+    project = _team_project()
+    if case == 'clear':
+        _team_project('Second')  # 프로젝트가 둘이면 어느 쪽인지 몰라 고르지 않는다
+    other = _team_project('Elsewhere', 'ws2') if case == 'clear' else None
+    gid, cid = _local_output(case)
+    with db.get_connection() as conn:
+        conn.execute("UPDATE generation SET project_id=?, workspace_scope='team', workspace_id=?, workspace_name=? WHERE id=?",
+                     (other or project, 'ws2' if other else 'ws1', 'Old name' if case == 'keep' else 'Team', gid))  # 이름만 달라도 keep 이 바뀐 행에 든다
+    repo.set_generation_workspace_batch([gid], 'remove' if case == 'remove' else 'assign', TEAM)
+    assert set(_lines(cid)) == {''}
+
+
+def test_workspace_tag_refused_for_a_final_leaves_no_line(content):
+    _team_project()
+    gid, cid = _local_output('final')
+    with db.get_connection() as conn:
+        conn.execute('UPDATE generation SET is_final=1 WHERE id=?', (gid,))
+    with pytest.raises(repo.FinalMoveDenied):
+        repo.set_generation_workspace_batch([gid], 'assign', TEAM, final_actor=repo.FinalMoveActor(uid='user_c', admin=False))
+    assert set(_lines(cid)) == {''}

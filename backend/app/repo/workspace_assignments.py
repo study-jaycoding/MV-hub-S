@@ -12,6 +12,7 @@ from typing import Any, Optional
 from ..db import get_connection
 from ..emailnorm import norm_email
 from ..task_activity import task_activity_now, task_location_key
+from .asset_sync import queue_moved_outputs
 from .final_moves import FinalMoveActor, check_final_moves
 
 
@@ -315,6 +316,9 @@ def set_generation_workspace_batch(
             ).fetchone())
             if task_location_key(row) != task_location_key(updated):
                 conn.execute("UPDATE generation SET task_activity_at=? WHERE id=?", (stamp, row["id"]))
+        moved = [str(row["id"]) for row in plan["changed"] if row.get("project_action") == "set"]
+        if moved:
+            queue_moved_outputs(conn, moved, assigned_project["id"])
         # 변경과 큐 기록을 함께 커밋한다. 이름만 변경된 경우에도 메타는 전송하되 활동은 보존한다.
         mark_telemetry_dirty_in_connection(conn, [str(row["id"]) for row in plan["changed"]])
     return plan

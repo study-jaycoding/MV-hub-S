@@ -18,6 +18,7 @@ from ..task_activity import task_activity_now, task_location_key
 from ..workspace_context import workspace_columns
 from ._common import clean_folder_path as _clean_folder_path, new_id
 from ._visibility import team_generation_visibility_clause
+from .asset_sync import queue_moved_outputs
 from .console_guard import guard_project_change
 from .final_moves import FinalMoveActor, check_final_moves
 
@@ -651,6 +652,8 @@ def assign_to_project(
                 (*[updated[key] for key in fields], activity, row["id"]),
             )
             dirty_ids.append(row["id"])
+        if project_id is not None and rows:
+            queue_moved_outputs(conn, [row["id"] for row in rows], project_id)
         if MANAGE_ENABLED:
             # 요청이 job_id 앵커여도 outbox에는 반드시 정식 로컬 id를 넣는다.
             mark_telemetry_dirty_in_connection(conn, dirty_ids)
