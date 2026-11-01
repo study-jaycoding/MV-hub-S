@@ -140,6 +140,7 @@ import { comfyCardRuntime, projectComfyCard } from "../../lib/comfyRunState";
 import { useSceneKeyboardShortcuts } from "../../lib/useSceneKeyboardShortcuts";
 import { isSceneTextEntryTarget, sceneEscapeTarget } from "../../lib/sceneKeyboard";
 import { SCENE_NODE_CATALOG } from "../../lib/sceneNodeCatalog";
+import { SceneNodeIcon } from "./SceneNodeIcon";
 import { useSceneDragSession } from "../../lib/useSceneDragSession";
 import type { SceneLayerMove } from "../../lib/useSceneCardMove";
 import { useSceneViewport } from "../../lib/useSceneViewport";
@@ -3816,7 +3817,10 @@ export function SceneBoard({
                   run();
                 }}
               >
-                <span className="scene-nodepick-name">{label}</span>
+                <span className="scene-nodepick-lead">
+                  <span className={"scene-nodepick-tile k-" + kind}><SceneNodeIcon kind={kind} size={14} /></span>
+                  <span className="scene-nodepick-name">{label}</span>
+                </span>
                 <span className="scene-nodepick-key">{key}</span>
               </button>
               );

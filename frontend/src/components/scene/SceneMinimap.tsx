@@ -1,5 +1,6 @@
 // 캔버스 우측 상단 네비게이터(미니맵) — 카드가 화면 밖으로 벗어나면 표시.
 //  · 노드 배치(레퍼런스=파랑/생성=회색/선택=라임)와 현재 보는 영역(뷰포트 박스)을 축소해서 보여준다.
+//  · 칸이 충분히 크면 칸 안에 종류 아이콘, 작으면 색만(Jay 2026-11-02).
 //  · 클릭/드래그로 그 위치로 화면 이동.
 // 성능: 팬/줌은 부모가 리렌더 없이 처리하므로, 뷰포트 박스·표시여부는 update() 로 DOM 을 직접 갱신하고
 //       부모의 applyTransform 이 매 팬/줌마다 이 update() 를 호출한다(updateRef 로 연결).
@@ -7,8 +8,10 @@ import { useEffect, useLayoutEffect, useRef } from "react";
 import type { MutableRefObject, RefObject } from "react";
 import { useSceneZoomPct } from "../../lib/sceneZoomStore";
 import { minimapViewBox } from "../../lib/sceneViewport";
+import type { SceneCardKind } from "../../lib/scenes";
 import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../../lib/windowDrag";
 import { StepIcon } from "../common/ViewIcons";
+import { SceneNodeIcon } from "./SceneNodeIcon";
 
 export interface MinimapBox {
   id: string;
@@ -16,7 +19,7 @@ export interface MinimapBox {
   y: number;
   w: number;
   h: number;
-  kind: string;
+  kind: SceneCardKind;
 }
 export interface MinimapBounds {
   minX: number;
@@ -29,6 +32,8 @@ const MM_MAX_W = 180; // 미니맵 최대 폭(px)
 const MM_MAX_H = 130; // 미니맵 최대 높이(px)
 const MM_PAD = 60; // 콘텐츠 주변 여백(캔버스 좌표)
 const MM_ZOOM_MIN_W = 132; // 줌 막대가 들어가는 최소 폭 — 더 좁은 미니맵은 이만큼 넓히고 카드를 가운데에 둔다
+const MM_ICON_MIN = 10; // 칸의 짧은 쪽이 이보다 작으면 아이콘 없이 색만(px, 더 작으면 100% 화면에서 읽히지 않는다)
+const MM_ICON_MAX = 14; // 칸이 커져도 아이콘은 이 크기까지
 
 // 줌 막대의 비율 — 휠 확대 때 이 글자만 다시 그린다(미니맵·보드는 그대로)
 function ZoomPct() {
@@ -222,20 +227,29 @@ export function SceneMinimap({
         onMouseDown={onDown}
         title="네비게이터 — 클릭·드래그로 이동"
       >
-        {boxes.map((b) => (
-          <div
-            key={b.id}
-            className={
-              "scene-minimap-card k-" + b.kind + (selected.has(b.id) ? " sel" : "")
-            }
-            style={{
-              left: (b.x - wMinX) * scale + offX,
-              top: (b.y - wMinY) * scale,
-              width: Math.max(2, b.w * scale),
-              height: Math.max(2, b.h * scale),
-            }}
-          />
-        ))}
+        {boxes.map((b) => {
+          const width = Math.max(2, b.w * scale);
+          const height = Math.max(2, b.h * scale);
+          const short = Math.min(width, height);
+          // 짝수 크기라야 칸 가운데서 반 픽셀 치우치지 않는다
+          const iconSize = Math.min(MM_ICON_MAX, Math.floor(short / 2) * 2);
+          return (
+            <div
+              key={b.id}
+              className={
+                "scene-minimap-card k-" + b.kind + (selected.has(b.id) ? " sel" : "")
+              }
+              style={{
+                left: (b.x - wMinX) * scale + offX,
+                top: (b.y - wMinY) * scale,
+                width,
+                height,
+              }}
+            >
+              {short >= MM_ICON_MIN && <SceneNodeIcon kind={b.kind} size={iconSize} stroke={iconSize <= 10 ? 3 : 2.6} />}
+            </div>
+          );
+        })}
         <div className="scene-minimap-view" ref={viewRef} />
       </div>
     </>

@@ -82,3 +82,19 @@ it("좁은 미니맵은 132px 로 넓히고 카드·보는 영역을 가운데�
   draw({ maxX: 300, maxY: 3000, boxes });
   expect([bar(), map().style.width, map().classList.contains("has-zoom")]).toEqual([null, `${mmW}px`, false]);
 });
+
+it("칸의 짧은 쪽이 10px 이상이면 칸 안에 아이콘, 작으면 색만 — 칸 크기 계산은 그대로(Jay 2026-11-02)", () => {
+  // 폭 = 60+2400+60 = 2520 → 배율 = 180/2520 = 1/14 : 154 → 11px · 126 → 9px
+  const boxes = [
+    { id: "text", x: 0, y: 0, w: 280, h: 154, kind: "text" },
+    { id: "new", x: 400, y: 0, w: 280, h: 154, kind: "generation" },
+    { id: "comfy", x: 800, y: 0, w: 280, h: 154, kind: "comfy" },
+    { id: "small", x: 1200, y: 0, w: 280, h: 126, kind: "text" },
+  ];
+  draw({ maxX: 2400, maxY: 1000, boxes });
+  const cells = [...host.querySelectorAll<HTMLElement>(".scene-minimap-card")];
+  expect(cells.map((cell) => cell.childElementCount)).toEqual([1, 1, 1, 0]);
+  expect(cells.map((cell) => parseFloat(cell.style.height))).toEqual([11, 11, 11, 9].map((px) => expect.closeTo(px)));
+  expect(cells[0].querySelector("svg")!.getAttribute("width")).toBe("10"); // 칸 11px 에는 짝수 10px
+  expect(cells[1].querySelector<HTMLElement>(".scene-node-logo")!.style.width).toBe("10px"); // New = 로고
+});

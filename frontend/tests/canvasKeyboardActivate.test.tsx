@@ -119,6 +119,7 @@ it("Tab 노드 선택기: Tab 으로 닿은 항목에서 Enter 를 누르면 그
   act(() => { board().dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true })); });
   const items = [...view.container.querySelectorAll<HTMLElement>(".scene-nodepick-item")];
   expect(items.length).toBeGreaterThan(1);
+  expect(items.filter((item) => item.querySelector(".scene-nodepick-tile svg, .scene-nodepick-tile .scene-node-logo")).length).toBe(items.length); // 항목마다 종류 아이콘
   const textItem = items.find((item) => item.querySelector(".scene-nodepick-key")?.textContent?.toLowerCase() === "t") ?? items[0];
   const before = view.container.querySelectorAll(".scene-card").length;
 

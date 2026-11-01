@@ -219,19 +219,20 @@
 .scene-minimap-zoom .scene-minimap-fit:hover { color: var(--accent); background: rgba(var(--accent-rgb), 0.12); }
 .scene-minimap-fit:hover .scene-minimap-pct { display: none; }
 .scene-minimap-fit:hover .scene-minimap-fitword { display: inline; }
-/* 미니맵 카드 — 종류별 색(캔버스 노드 색과 맞춰 직관성↑). 선택은 라임으로 덮어쓴다. */
-.scene-minimap-card { position: absolute; border-radius: 1px; background: #40557d; }
-.scene-minimap-card.k-reference { background: #7fa9ff; }
+/* 미니맵 카드 — 종류별 색(캔버스 노드 색과 맞춰 직관성↑). 선택은 라임으로 덮어쓴다. 글자색 = 칸이 충분히 클 때 들어가는 아이콘 색(SceneMinimap). */
+.scene-minimap-card { position: absolute; display: grid; place-items: center; overflow: hidden; border-radius: 1px; background: #40557d; color: #dfe6f2; }
+.scene-minimap-card.k-reference { background: #7fa9ff; color: #0b0d12; }
 .scene-minimap-card.k-generation { background: #40557d; }
-.scene-minimap-card.k-model { background: #ffb84d; }
-.scene-minimap-card.k-text { background: #b57aff; }
-.scene-minimap-card.k-list { background: var(--accent); }
-.scene-minimap-card.k-view { background: #61eaff; }
+.scene-minimap-card.k-model { background: #ffb84d; color: #0b0d12; }
+.scene-minimap-card.k-text { background: #b57aff; color: #0b0d12; }
+.scene-minimap-card.k-list { background: var(--accent); color: var(--accent-ink); }
+.scene-minimap-card.k-view { background: #61eaff; color: #0b0d12; }
 .scene-minimap-card.k-output,
-.scene-minimap-card.k-input { background: #7f8a9c; }
-.scene-minimap-card.k-head { background: #e8c341; }
-.scene-minimap-card.k-render { background: #4dd6c4; } /* 렌더 노드 자기 색과 같게(Jay 2026-10-30) */
-.scene-minimap-card.sel { background: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.scene-minimap-card.k-input { background: #7f8a9c; color: #0b0d12; }
+.scene-minimap-card.k-set,
+.scene-minimap-card.k-head { background: #e8c341; color: #0b0d12; }
+.scene-minimap-card.k-render { background: #4dd6c4; color: #0b0d12; } /* 렌더 노드 자기 색과 같게(Jay 2026-10-30) */
+.scene-minimap-card.sel { background: var(--accent); color: var(--accent-ink); box-shadow: 0 0 0 1px var(--accent); }
 /* 현재 보는 영역 박스 */
 .scene-minimap-view {
   /* 위치는 SceneMinimap 이 transform 으로 옮긴다(팬마다 left/top 을 쓰면 다시 칠한다). */
@@ -862,6 +863,25 @@
 .scene-nodepick-key {
   flex: none; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center;
   font-size: 10px; font-weight: 700; color: var(--muted); border: 1px solid var(--border2); border-radius: 4px;
+}
+.scene-nodepick-lead { display: inline-flex; align-items: center; gap: 8px; }
+/* 종류 색 칸(Jay 2026-11-02 C안) — 색 = 노드 틀 색(아래 --pc 절) · 높이 18 = 단축키 칸이라 메뉴 높이는 그대로 */
+.scene-nodepick-tile {
+  flex: none; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 5px;
+  background: var(--accent); color: var(--accent-ink);
+}
+.scene-nodepick-tile.k-model { background: #ffb84d; color: #0b0d12; }
+.scene-nodepick-tile.k-text { background: #b57aff; color: #0b0d12; }
+.scene-nodepick-tile.k-set,
+.scene-nodepick-tile.k-head { background: #e8c341; color: #0b0d12; }
+.scene-nodepick-tile.k-render { background: #4dd6c4; color: #0b0d12; }
+.scene-nodepick-tile.k-view { background: #61eaff; color: #0b0d12; }
+.scene-nodepick-tile.k-input,
+.scene-nodepick-tile.k-output { background: #8aa0bf; color: #0b0d12; }
+/* New 아이콘 = 힉스필드 로고 — 칸 색에 맞게 칠하려고 마스크로 쓴다. 111% = 그림 파일의 빈 여백을 뺀 크기 */
+.scene-node-logo {
+  display: block; flex: none; background: currentColor;
+  -webkit-mask: url("../assets/higgsfield-logo.svg") center / 111% no-repeat; mask: url("../assets/higgsfield-logo.svg") center / 111% no-repeat;
 }
 
 /* ── 모델 노드 설정 모달 ── */
