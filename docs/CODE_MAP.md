@@ -540,7 +540,8 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `scene/SceneRecoveryPanel.tsx` | 카드 생성물 복구 후보·페이지·선택 표시 | 조회·연결은 `useSceneCardRecovery.ts` |
 | `scene/SceneBoardBoundary.tsx` | 지연 로딩·렌더 실패를 캔버스 영역 안에 가두고 수동 새로고침 안내 표시 | `App.tsx`가 `lazy`·`Suspense`와 함께 조립. 바깥 탭·도구 막대 유지 |
 | `scene/SceneBar.tsx`(286줄) | 씬 탭 바 — 전환·추가·이름변경·삭제·드래그 순서변경·우클릭 메뉴 | `SceneBar` |
-| `scene/SceneMinimap.tsx`(184줄) | 우상단 네비게이터 — 카드 축소도·뷰포트 박스, 클릭/드래그 이동 | `SceneMinimap` |
+| `scene/SceneMinimap.tsx`(184줄) | 우상단 네비게이터 — 카드 축소도·뷰포트 박스, 클릭/드래그 이동 · 칸이 10px 이상이면 칸 안에 종류 아이콘 | `SceneMinimap` |
+| `scene/SceneNodeIcon.tsx` | 노드 종류 아이콘 — Tab 메뉴 색 칸과 네비게이터 칸이 같이 쓴다. 색은 currentColor, New 로고는 `scene.css` `.scene-node-logo` 마스크 | `SceneNodeIcon` |
 | `scene/sceneColors.ts`(10줄) | `CARD_W/CARD_H`·`GROUP_COLORS` 상수(순환 import 회피용 분리) | 상수 3개 |
 | `scene/NodeTip.tsx` | 캔버스 노드 설명 창 — 노드(.scene-card) 안 요소의 title 을 기본 말풍선 대신 앱 모양 창으로(제목·상태·해결·라벨값·조작 키, 글의 줄 규칙으로 나눔). 올려 둔 동안만 title 을 떼어 둔다 | `NodeTip`, `parseNodeTip()` · 모양은 `scene.css` `.node-tip` |
 | `scene/LastViewedBadge.tsx`(26줄) | "Last viewed" 어두운 칩(라임 글자+눈) 1개 — 생성·공유·캔버스·결과 모아보기·어셋 탭이 모두 이것(모양은 `scene.css`, 어셋 칸 호버·작은 칸 눈만은 `assets.css`) | `LastViewedBadge()` |
