@@ -20,6 +20,7 @@ from app.services import asset_sync as sync
 from app.models import PendingRequestOut
 from app.usecases.gen_requests import GenRequestCommand, repair_canvas_generation_links, submit_gen_request
 from app.routers import asset_sync as sync_api
+from app.shared_server_config import K_URL
 from fastapi import HTTPException
 
 
@@ -516,7 +517,14 @@ def _lines(cid):
         return {row['project_id']: dict(row) for row in conn.execute('SELECT * FROM asset_sync_outbox WHERE asset_content_id=?', (cid,))}
 
 
-def test_moving_a_local_output_into_a_project_queues_it(content):
+@pytest.fixture
+def destination(monkeypatch):
+    """줄의 목적지는 지금 계정·서버다."""
+    monkeypatch.setattr('app.active_account.account_key', lambda: 'acct')
+    repo.set_setting(K_URL, 'http://server')
+
+
+def test_moving_a_local_output_into_a_project_queues_it(content, destination):
     project = projects.create_project('Move', created_by='user_a')['id']
     gid, cid = _local_output('first')
     assert repo.assign_to_project([gid], project) == 1
@@ -527,6 +535,68 @@ def test_moving_a_local_output_into_a_project_queues_it(content):
         assert lines[project][key] == lines[''][key]
     with db.get_connection() as conn:
         assert asset_sync.claim(conn, 'user_a', 'http://server', 'acct')['project_id'] == project
+
+
+def test_the_line_goes_to_the_current_server_not_an_old_one(content, monkeypatch):
+    monkeypatch.setattr('app.active_account.account_key', lambda: 'now')
+    repo.set_setting(K_URL, 'http://new-server/')
+    project = projects.create_project('Origin', created_by='user_a')['id']
+    gid, cid = _local_output('origin')  # 줄은 옛 서버·옛 계정으로 있다
+    repo.assign_to_project([gid], project)
+    with db.get_connection() as conn:
+        rows = conn.execute('SELECT server_origin,account_key FROM asset_sync_outbox WHERE project_id=?', (project,)).fetchall()
+    assert [tuple(row) for row in rows] == [('http://new-server', 'now')]
+
+
+def _input_of(gid, name, *, file_path=None, content_id=True, owner='user_a', **extra):
+    """gid 의 입력 하나 — 이 PC 보관본까지."""
+    with db.get_connection() as conn:
+        cid = None
+        if content_id:
+            cid = asset_sync.register_local(conn, path=f'C:/media/{name}.png', file_path=f'/api/comfy/inputs/s/{name}.png',
+                digest=hashlib.sha256(name.encode()).hexdigest(), size=4, media_type='image', owner_uid=owner,
+                project_id=None, server_origin='http://server', account_key='acct')['asset_content_id']
+        columns = {'id': 'r-' + name, 'type': 'image', 'file_path': file_path or f'/api/comfy/inputs/s/{name}.png', 'asset_content_id': cid, **extra}
+        conn.execute(f"INSERT INTO reference({','.join(columns)}) VALUES({','.join('?' for _ in columns)})", tuple(columns.values()))
+        conn.execute('INSERT INTO gen_reference(generation_id,reference_id) VALUES(?,?)', (gid, 'r-' + name))
+    return cid
+
+
+@pytest.mark.parametrize('case', ['local', 'asset_sync'])
+def test_moving_a_result_brings_its_input(content, destination, case):
+    project = projects.create_project('Input', created_by='user_a')['id']
+    gid, _ = _local_output('with-input-' + case)
+    token = 'asset-sync:' + 'b' * 32 if case == 'asset_sync' else None  # 옛 프로젝트 위치에 있어도 새 프로젝트 사람은 그 권한이 없다
+    cid = _input_of(gid, 'input-' + case, file_path=token)
+    repo.assign_to_project([gid], project)
+    assert _lines(cid)[project]['state'] == 'queued'
+
+
+@pytest.mark.parametrize('extra', [{'source_url': 'https://cdn.example/i.png'}, {'share_url': 'https://cdn.example/i.png'}])
+def test_an_input_with_a_remote_address_stays(content, destination, extra):
+    project = projects.create_project('Remote', created_by='user_a')['id']
+    gid, _ = _local_output('remote-input')
+    cid = _input_of(gid, 'remote', **extra)
+    repo.assign_to_project([gid], project)
+    assert set(_lines(cid)) == {''}
+
+
+def test_a_cached_output_with_a_remote_source_stays(content, destination):
+    project = projects.create_project('Cached', created_by='user_a')['id']
+    gid, cid = _local_output('cached')
+    with db.get_connection() as conn:
+        conn.execute("UPDATE asset SET source_url='https://cdn.example/x.png' WHERE generation_id=?", (gid,))
+    repo.assign_to_project([gid], project)
+    assert set(_lines(cid)) == {''}
+
+
+def test_without_a_local_copy_there_is_nothing_to_send(content, destination):
+    project = projects.create_project('Gone', created_by='user_a')['id']
+    gid, cid = _local_output('gone')
+    with db.get_connection() as conn:
+        conn.execute("UPDATE asset_location SET state='missing' WHERE asset_content_id=?", (cid,))
+    repo.assign_to_project([gid], project)
+    assert set(_lines(cid)) == {''}
 
 
 def test_moving_between_projects_keeps_the_old_line_and_repeats_once(content):

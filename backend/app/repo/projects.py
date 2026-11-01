@@ -18,7 +18,7 @@ from ..task_activity import task_activity_now, task_location_key
 from ..workspace_context import workspace_columns
 from ._common import clean_folder_path as _clean_folder_path, new_id
 from ._visibility import team_generation_visibility_clause
-from .asset_sync import queue_moved_outputs
+from .asset_sync import UndeliverableMove, queue_moved_outputs, undeliverable_generations
 from .console_guard import guard_project_change
 from .final_moves import FinalMoveActor, check_final_moves
 
@@ -555,9 +555,11 @@ def assign_to_project(
     resume_work: bool = False,
     final_actor: Optional[FinalMoveActor] = None,
     check_only: bool = False,
+    check_delivery: bool = False,
 ) -> int:
     """결과물들을 프로젝트에 귀속(또는 project_id=None 으로 미분류 해제). 변경 행수 반환.
     final_actor(공유 서버의 요청자) — 최종본의 프로젝트가 바뀌면 양쪽 검수자만(하나라도 걸리면 아무것도 안 바꾸고 FinalMoveDenied, Jay 결정 3A).
+    check_delivery(공유 서버) — 파일을 보낼 사람이 없는 이동이 하나라도 있으면 아무것도 안 바꾸고 UndeliverableMove.
     check_only — 같은 검증만 하고 바꾸지 않는다(로컬 허브가 서버에 먼저 보내기 전에 '로컬에서는 막힐 선택'을 가려낸다, Codex 3A 리뷰).
     project_id 가 실재하는지 검증(없으면 ValueError).
     account_uid 지정(AUTH on)이면 내 생성물만 이동 — 공유 DB 에서 추측한 남의 id 로 남의 작업물을
@@ -621,6 +623,9 @@ def assign_to_project(
             params,
         ).fetchall()
         check_final_moves(conn, final_actor, ((bool(r["is_final"]), r["project_id"], project_id) for r in rows))
+        if check_delivery and project_id is not None and undeliverable_generations(
+                conn, [r["id"] for r in rows if r["project_id"] != project_id], project_id):
+            raise UndeliverableMove()
         if check_only:
             conn.execute("ROLLBACK")  # 검증만 — 아무것도 쓰지 않았다
             return 0

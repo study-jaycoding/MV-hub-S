@@ -405,12 +405,64 @@ function subscribeCanvasFloating(listener: () => void): () => void {
 }
 
 export function useCanvasFloating(): boolean {
-  return useSyncExternalStore(subscribeCanvasFloating, () => canvasFloating);
+  return useSyncExternalStore(subscribeCanvasFloating, isCanvasFloating);
 }
 
-/** 지금 이 창의 캔버스가 다른 창에 떠 있나 — 화면이 아닌 배경 작업(씬 쓰기)이 쉴지 볼 때. 캔버스 창에서는 늘 거짓. */
+/** 지금 이 창의 캔버스가 다른 창에 있나(떠 있거나 다른 메인 탭이 쓰고 있다) — 화면이 아닌 배경 작업(씬 쓰기)이 쉴지 볼 때. 캔버스 창에서는 늘 거짓. */
 export function isCanvasFloating(): boolean {
-  return canvasFloating;
+  return canvasFloating || canvasFollower;
+}
+
+// 씬을 쓰는 메인 탭은 하나다(docs/status/배포전_남은제한_해결_2026-11-02.md) — 둘째 탭은 떠 있는 캔버스를 둔 메인 창과 같은 상태로 쉰다(쓰기 멈춤·저장본 따르기·보드 없음).
+// 탭이 넘어가는 때는 쥔 문서가 끝날 때뿐이라 살아 있는 탭 사이의 인계가 없다. 잠금은 편집 권한이 아니라 '어느 문서가 쓰나'의 표식이다.
+const WRITER_LOCK = "mvhub-scene-writer";
+const WRITER_WAIT_MS = 500; // 새로 고침의 새 문서가 옛 문서의 해제보다 먼저 올 수 있다 — 탭 하나인데 안내가 비치지 않게 잠깐 기다린다
+export const CANVAS_OTHER_TAB = "캔버스는 다른 탭에서 열려 있습니다. 그 탭을 닫으면 여기서 이어집니다";
+let canvasFollower = false;
+let promoteRead: (() => Promise<boolean>) | null = null;
+
+/** 메인 창 — 쓰는 탭이 되기 전에 부를 읽기(저장소 다시 읽기). 성공해야 쓰기가 풀린다. */
+export function setSceneWriterRead(read: () => Promise<boolean>): void {
+  promoteRead = read;
+}
+
+/** 이 탭이 다른 탭에 캔버스를 내주고 쉬는 중인가 — 안내 글자를 고를 때. */
+export const isCanvasFollower = (): boolean => canvasFollower;
+
+export function useCanvasFollower(): boolean {
+  return useSyncExternalStore(subscribeCanvasFloating, () => canvasFollower);
+}
+
+async function promoteToWriter(): Promise<void> {
+  for (let wait = RETURN_RETRY_MS; ; wait = Math.min(wait * 2, RETURN_RETRY_MAX_MS)) { // 실패한 채 풀면 낡은 보드가 열려 같은 소실이 난다(returnCanvas 와 같은 규칙)
+    if (!promoteRead || (await promoteRead().catch(() => false))) break;
+    await new Promise((resolve) => setTimeout(resolve, wait));
+  }
+  canvasFollower = false;
+  floatingListeners.forEach((listener) => listener());
+}
+
+/** 메인 창 부팅 — 첫 그리기 전에 쓰는 탭인지 정한다. 평생 쥐는 잠금이라 잠금의 Promise 는 기다리지 않는다(기다리면 첫 화면이 안 뜬다). */
+export function claimSceneWriter(): Promise<void> {
+  const locks = canvasLocks();
+  if (!locks) return Promise.resolve();
+  return new Promise((resolve) => {
+    let waited = false;
+    const timer = setTimeout(() => {
+      waited = true;
+      canvasFollower = true;
+      resolve();
+    }, WRITER_WAIT_MS);
+    void locks.request(WRITER_LOCK, () => {
+      clearTimeout(timer);
+      if (waited) void promoteToWriter();
+      else resolve();
+      return new Promise<void>(() => {}); // 평생 쥔다 — 문서가 어떻게 끝나든 브라우저가 풀어 준다
+    }).catch(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
 }
 
 // 창 메모리에만 있는 캔버스 상태(되돌리기 기록·복사한 노드)를 메인 창 ↔ 캔버스 창이 주고받는다(Jay 2026-10-30 "원래 캔버스처럼",
@@ -507,6 +559,7 @@ export function shareCanvasMemory(settled: () => Promise<boolean> = () => Promis
     settled,
     load: (memory) => {
       const taken: string[] = [];
+      if (canvasFollower) return taken; // 쉬는 탭은 아무것도 받지 않는다 — 받으면 인계 예외로 저장소를 써 쓰는 탭의 편집을 덮는다. 그 창이 직접 쓴다
       const copied = structuredClone(memory);
       eachMemoryPart((part, name) => {
         if (!(name in copied) || (leaving && part.durable)) return;

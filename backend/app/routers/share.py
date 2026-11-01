@@ -32,6 +32,7 @@ from ..deps import (
     require_view_generation,
 )
 from ..models import ShareCommandIn, FinalReviewIn, GenerationOut, IntentOutcomesIn, PublishIn
+from ..repo.share import SHARE_PROJECT_REQUIRED, ShareProjectRequired
 from ..services.async_tools import to_thread_non_abandon
 from ..services.event_journal import journal_audit_event
 from ..services.media_preservation import preserve_generation_now
@@ -434,7 +435,10 @@ def publish(gen_id: str, body: PublishIn, request: Request, expected_revision: A
     # 프론트는 이 필드를 보내지 않으므로 동작 변화 없음(필드는 하위호환용으로만 남김).
     shared_by = actor_id(request)
     was_shared = bool(gen.get("shared"))
-    repo.publish(gen_id, shared_by, body.visibility)
+    try:
+        repo.publish(gen_id, shared_by, body.visibility)
+    except ShareProjectRequired:
+        raise HTTPException(status_code=409, detail=SHARE_PROJECT_REQUIRED) from None
     if MEDIA_PRESERVATION_ENABLED:
         repo.request_media_preservation(gen_id, "shared")
     _touch_telemetry(gen_id)
@@ -692,6 +696,8 @@ def finalize(gen_id: str, request: Request, background: BackgroundTasks, expecte
         )
     except repo.FinalProjectChanged:
         raise HTTPException(status_code=409, detail=_FINAL_PROJECT_CHANGED) from None
+    except ShareProjectRequired:
+        raise HTTPException(status_code=409, detail=SHARE_PROJECT_REQUIRED) from None
     _touch_telemetry(gen_id)
     journal_audit_event(
         "generation.finalized",
@@ -853,6 +859,8 @@ def final_review(gen_id: str, body: FinalReviewIn, request: Request, expected_re
         )
     except repo.FinalProjectChanged:
         raise HTTPException(409, _FINAL_PROJECT_CHANGED) from None
+    except ShareProjectRequired:
+        raise HTTPException(409, SHARE_PROJECT_REQUIRED) from None
     except repo.GenerationHoldStateError as exc:
         messages = {
             "not_found": "generation 없음", "not_done": "완료된 생성물만 상태를 변경할 수 있습니다",

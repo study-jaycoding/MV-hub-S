@@ -12,7 +12,7 @@ from typing import Any, Optional
 from ..db import get_connection
 from ..emailnorm import norm_email
 from ..task_activity import task_activity_now, task_location_key
-from .asset_sync import queue_moved_outputs
+from .asset_sync import UndeliverableMove, queue_moved_outputs, undeliverable_generations
 from .final_moves import FinalMoveActor, check_final_moves
 
 
@@ -255,9 +255,11 @@ def set_generation_workspace_batch(
     workspace: dict[str, str],
     owner_uid: Optional[str] = None,
     final_actor: Optional[FinalMoveActor] = None,
+    check_delivery: bool = False,
 ) -> dict[str, Any]:
     """전체 검증과 귀속 변경을 한 쓰기 트랜잭션으로 수행한다.
-    final_actor — 프로젝트가 바뀌는 최종본은 양쪽 검수자만(걸리면 아무것도 안 바꾸고 FinalMoveDenied, Jay 결정 3A)."""
+    final_actor — 프로젝트가 바뀌는 최종본은 양쪽 검수자만(걸리면 아무것도 안 바꾸고 FinalMoveDenied, Jay 결정 3A).
+    check_delivery(공유 서버) — 파일을 보낼 사람이 없는 프로젝트 이동이 있으면 아무것도 안 바꾸고 UndeliverableMove."""
     from .manage_schema import ensure_manage_schema
     from .manage_telemetry import mark_telemetry_dirty_in_connection
 
@@ -271,6 +273,9 @@ def set_generation_workspace_batch(
             (bool(row.get("is_final")), row.get("project_id"), next_project[row["project_action"]])
             for row in plan["changed"] if row.get("project_action") in next_project
         ))
+        moved = [str(row["id"]) for row in plan["changed"] if row.get("project_action") == "set"]
+        if check_delivery and moved and undeliverable_generations(conn, moved, assigned_project["id"]):
+            raise UndeliverableMove()
         stamp = task_activity_now()
         for row in plan["changed"]:
             action = row.get("project_action", "keep")
@@ -316,7 +321,6 @@ def set_generation_workspace_batch(
             ).fetchone())
             if task_location_key(row) != task_location_key(updated):
                 conn.execute("UPDATE generation SET task_activity_at=? WHERE id=?", (stamp, row["id"]))
-        moved = [str(row["id"]) for row in plan["changed"] if row.get("project_action") == "set"]
         if moved:
             queue_moved_outputs(conn, moved, assigned_project["id"])
         # 변경과 큐 기록을 함께 커밋한다. 이름만 변경된 경우에도 메타는 전송하되 활동은 보존한다.

@@ -23,7 +23,7 @@ import {
 } from "./components/SpotlightPrompt";
 import { ThumbnailGrid } from "./components/ThumbnailGrid";
 import { ensureTeamBase } from "./lib/teamSeen";
-import { bringCanvasForward, canFloatCanvas, canvasWindowLive, EMBED_MODES, isCanvasFloating, isCanvasWindow, leaveCanvasHandoff, openEmbedWindow, takeCanvasHandoff, useCanvasFloating } from "./lib/popupWindows";
+import { bringCanvasForward, CANVAS_OTHER_TAB, canFloatCanvas, canvasWindowLive, EMBED_MODES, isCanvasFloating, isCanvasFollower, isCanvasWindow, leaveCanvasHandoff, openEmbedWindow, takeCanvasHandoff, useCanvasFloating, useCanvasFollower } from "./lib/popupWindows";
 import { settleSceneWrites } from "./lib/sceneStore";
 import { canvasPromptDraft, useCanvasPromptReturn } from "./lib/useCanvasPromptReturn";
 import { CanvasFloatIcon, TopBar } from "./components/TopBar";
@@ -249,6 +249,7 @@ export default function App() {
   // 확인이 필요한 종료는 Host 콘솔의 '앱 종료' 버튼(우리 디자인 확인창) 경로가 담당한다.
   // 캔버스 탭을 휠 클릭해 띄운 창이 떠 있다(Jay 2026-10-30) — 그동안 이 창의 캔버스 자리는 알림만 보이고 씬은 저장본을 따른다
   const canvasFloating = useCanvasFloating();
+  const canvasOtherTab = useCanvasFollower(); // 그중 다른 메인 탭이 쓰는 경우 — 안내 글자만 다르다
   // Canvas 씬(빈 캔버스) 상태·CRUD 는 useSceneCoordination 훅으로 추출. S1: 프로젝트 무관 전역(projectId=null).
   //  flash 전달 — 다른 탭이 이 씬을 바꾸면(멀티탭) 비파괴 알림용.
   const {
@@ -1633,6 +1634,10 @@ export default function App() {
   // 캔버스가 다른 창에 떠 있는 동안 이 창은 씬을 열거나 옮기지 않는다 — 그 창에서 하도록 알리고 앞으로 가져온다.
   const canvasIsElsewhere = () => {
     if (!isCanvasFloating()) return false;
+    if (isCanvasFollower()) {
+      flash(CANVAS_OTHER_TAB);
+      return true;
+    }
     flash("캔버스가 별도 창에 떠 있습니다 — 그 창에서 열어 주세요.");
     bringCanvasForward();
     return true;
@@ -1953,6 +1958,7 @@ export default function App() {
   const CHAIN_RUNNING_NOTICE = "연결 생성이 끝난 뒤 다시 띄워 주세요.";
   const openCanvasWindow = async () => {
     if (!canFloatCanvas()) return flash("이 주소에서는 캔버스를 별도 창으로 띄울 수 없습니다. 앱 주소로 열어 주세요.");
+    if (isCanvasFollower()) return flash(CANVAS_OTHER_TAB); // 쉬는 탭은 띄우지 않는다 — 씬은 쓰는 탭이 쓴다
     if (canvasWindowLive()) return openEmbedWindow(EMBED_MODES.canvas, canvasElsewhere); // 이미 떠 있다 — 앞으로 가져올 뿐
     if (openingCanvasRef.current) return;
     if (sceneActionRef.current?.comfyPlanRunning()) return flash(CHAIN_RUNNING_NOTICE); // 떠나면 메인 창이 뒤 단계를 이어 가지 못한다
@@ -2551,6 +2557,7 @@ export default function App() {
         onOpenAssets={openAssetsWindow}
         onOpenCanvas={() => void openCanvasWindow()}
         canvasFloating={canvasFloating}
+        canvasOtherTab={canvasOtherTab}
         onOpenMcp={() => { setMcpLoaded(true); setMcpOpen(true); }}
         onOpenManage={canOpenManage ? openManageWindow : undefined}
         onOpenAdmin={openAdmin}
@@ -2618,7 +2625,7 @@ export default function App() {
         ) : canvasAway ? (
           <div className="canvas-away" role="status">
             <CanvasFloatIcon />
-            <span>{t("캔버스가 별도 창에 떠 있습니다")}</span>
+            <span>{t(canvasOtherTab ? CANVAS_OTHER_TAB : "캔버스가 별도 창에 떠 있습니다")}</span>
             {sceneSaveFailing && <span>{t("저장이 막혀 있습니다 — 설정의 [전체 내보내기]로 작업을 받아 두세요")}</span>}
           </div>
         ) : filters.tab === "compose" ? (

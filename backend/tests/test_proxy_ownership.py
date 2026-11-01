@@ -39,6 +39,7 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/asset-registry/schedule/claim",
         "/api/asset-registry/status",
         "/api/asset-registry/usage/{registry_asset_id}",
+        "/api/asset-sync/link-output",
         "/api/asset-sync/prepare",
         "/api/asset-sync/resolve",
         "/api/asset-sync/verify",

@@ -15,7 +15,7 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
 from .. import active_account, config, db, rbac
-from ..deps import actor_id, require_project_role
+from ..deps import account_author_uids, actor_id, require_project_role
 from ..repo import asset_sync as ledger
 from ..services import asset_io, asset_sync as sync, asset_sync_cache
 from ..services import shared_connection
@@ -119,6 +119,30 @@ capture_local_operation=sync.capture_local_operation
 
 def _translate(exc):
     raise HTTPException(status_code=409,detail=str(exc)) from exc
+
+
+class LinkOutputIn(BaseModel):
+    anchor: str = Field(min_length=1,max_length=200)
+    asset_content_id: str = Field(pattern='^sha256:[a-f0-9]{64}$')
+    file_path: str = Field(min_length=1,max_length=2048)
+
+
+@router.post('/link-output')
+def link_output(body: LinkOutputIn, request: Request):
+    """옛 공유 행의 빈 내용 ID 를 채운다 — 재공유로 채우면 로컬의 낡은 위치가 서버 이동을 덮는다. 내 행의 빈 칸만, 서버 위치가 있을 때만."""
+    account=getattr(request.state,'account',None)
+    if not account:
+        raise HTTPException(status_code=401,detail='asset_login_required')
+    with db.get_connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            return ledger.link_output(conn,body.anchor,body.asset_content_id,body.file_path,account_author_uids(account))
+        except PermissionError as exc:
+            raise HTTPException(status_code=403,detail=str(exc)) from exc
+        except LookupError as exc:
+            raise HTTPException(status_code=404,detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409,detail=str(exc)) from exc
 
 
 @router.post('/verify')
@@ -296,9 +320,11 @@ def location_info(location_id: str,request: Request):
 @local_router.get('/status')
 def local_status(request: Request,project_id: str | None=None):
     from ..services import asset_destination
+    owner=_local_owner(request)
     with db.get_connection() as conn:
-        return {'items':ledger.status_rows(conn,_local_owner(request),project_id),
-                'destinations': asset_destination.status(conn, _local_owner(request))}
+        return {'items':ledger.status_rows(conn,owner,project_id),
+                'destinations': asset_destination.status(conn, owner),
+                'summary': ledger.transfer_summary(conn,owner,active_account.account_key() or '',_proxy.base_url())}
 
 
 @local_router.post('/resolve')
@@ -448,5 +474,5 @@ async def _local_ingest(request,file,original_file_path,target_project_id,target
 @local_router.post('/retry')
 def retry(request: Request):
     with db.get_connection() as conn:
-        conn.execute("UPDATE asset_sync_outbox SET state='queued',next_retry_at=0 WHERE owner_uid=? AND state IN ('retrying','recovery_required')",(_local_owner(request),))
+        ledger.retry_failed(conn,_local_owner(request),active_account.account_key() or '',_proxy.base_url())
     return local_status(request)

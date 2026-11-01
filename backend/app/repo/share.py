@@ -6,11 +6,13 @@ import json
 import sqlite3
 from typing import Any, Iterable, Optional
 
+from .. import config
 from ..config import DEFAULT_WORKER_ID
 from ..db import get_connection
 from ..task_activity import merge_task_activity_location
 from . import generation_sync, identity, tags
 from .asset_locations import project_generation_locations
+from .asset_sync import undeliverable_generations
 from .generation_references import _reference_copy_positions
 from .final_moves import FinalMoveActor, FinalMoveDenied, FinalProjectChanged, check_final_moves
 from ._common import (
@@ -18,8 +20,29 @@ from ._common import (
     BUNDLE_VERSION,
     _remote_url,
     clean_folder_path,
+    local_only_url,
     new_id,
 )
+
+SHARE_PROJECT_REQUIRED = "프로젝트가 없는 로컬 결과는 공유할 수 없습니다. 프로젝트를 정한 뒤 다시 공유해 주세요."
+
+
+class ShareProjectRequired(Exception):
+    def __init__(self):
+        super().__init__(SHARE_PROJECT_REQUIRED)
+
+
+def _require_share_project(conn, gen_id: str) -> None:
+    """공유 서버에서 새로 공유되는 순간의 판정 — 프로젝트가 없으면 파일을 올릴 곳이 없어 받는 쪽이 못 연다.
+    이미 공유된 행의 갱신은 막지 않는다. 단독 모드는 파일이 같은 PC 라 막지 않는다. Caller owns the transaction."""
+    if not config.AUTH_ENABLED or conn.execute("SELECT 1 FROM share WHERE generation_id=?", (gen_id,)).fetchone():
+        return
+    row = conn.execute(
+        "SELECT g.project_id, a.file_path, a.source_url FROM generation g JOIN asset a ON a.generation_id=g.id WHERE g.id=?",
+        (gen_id,),
+    ).fetchone()
+    if row and not row["project_id"] and local_only_url(row["file_path"], row["source_url"]):
+        raise ShareProjectRequired()
 
 
 # ── 공유 / 가져오기 (Phase 5, 로컬) ──────────────────────────────────────
@@ -28,6 +51,7 @@ def publish(gen_id: str, shared_by: str, visibility: str = "team") -> str:
     # 두 요청이 같은 gen 을 동시에 보고 share 를 2개 만들 수 있었다). 삽입 후 실제 행 id 를 되읽어,
     # 내가 넣었든 남이 먼저 넣었든 항상 하나의 share id 를 돌려준다.
     with get_connection() as conn:
+        _require_share_project(conn, gen_id)
         sid = new_id()
         conn.execute(
             "INSERT INTO share(id, generation_id, shared_by, visibility) VALUES(?,?,?,?) "
@@ -177,6 +201,7 @@ def _finalize_generation_with_share(
         ).fetchone()
     )
     if not was_shared:
+        _require_share_project(conn, gen_id)
         conn.execute(
             "INSERT INTO share(id, generation_id, shared_by, visibility) "
             "VALUES(?,?,?,?) ON CONFLICT(generation_id) DO NOTHING",
@@ -230,6 +255,7 @@ def _transition_final_review(
         conn.execute("DELETE FROM share WHERE generation_id=?", (gen_id,))
     else:
         # 레거시 드리프트(is_final=1, share 없음)도 검수 권한 안에서 보강한다.
+        _require_share_project(conn, gen_id)
         conn.execute(
             "INSERT INTO share(id, generation_id, shared_by, visibility) "
             "VALUES(?,?,?, 'team') ON CONFLICT(generation_id) DO NOTHING",
@@ -745,9 +771,22 @@ def _import_bundle_item(conn,
                 task_activity_at=None,
             )
         merged = merge_task_activity_location(dict(existing) if existing else None, incoming)
+        target_project = merged.get("project_id")
+        refused = False
+        if author_uids is not None:
+            # 파일을 못 받을 공유·이동은 입구에서 되돌린다 — 판정 신원은 번들의 작성자 주장이 아니라 인증 계정이다
+            new_share = not conn.execute("SELECT 1 FROM share WHERE generation_id=?", (gid,)).fetchone()
+            asset = item.get("asset") or {}
+            refused = (
+                (new_share and not target_project and local_only_url(asset.get("file_path"), None))
+                or bool(target_project and target_project != (existing["project_id"] if existing else None)
+                        and undeliverable_generations(conn, [gid], target_project, uploader_uids=author_uids if is_owner else ()))
+            )
         try:
             check_final_moves(conn, final_actor, [(is_final, current["project_id"], merged.get("project_id"))])
         except FinalMoveDenied:
+            refused = True
+        if refused:
             conn.execute("ROLLBACK TO share_bundle_item")
             conn.execute("RELEASE share_bundle_item")  # 사실·오버레이까지 이 항목 전체를 되돌린다(다른 항목은 계속 받는다)
             return "blocked"

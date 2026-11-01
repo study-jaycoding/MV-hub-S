@@ -515,6 +515,13 @@ const EN: Record<string, string> = {
   "캔버스": "Canvas",
   "캔버스 — 씬 캔버스 · 히스토리 뷰": "Canvas — scene canvas & History view",
   "캔버스가 별도 창에 떠 있습니다": "Canvas is open in a separate window",
+  "캔버스는 다른 탭에서 열려 있습니다. 그 탭을 닫으면 여기서 이어집니다": "Canvas is open in another tab. Close that tab to continue here",
+  "다시 시도하지 못했습니다.": "Could not retry.",
+  "자료 전송": "File transfer",
+  "대기 {n}": "{n} waiting",
+  "실패 {n}": "{n} failed",
+  "확인 필요 {n}": "{n} need attention",
+  "프로젝트 역할이나 저장 위치가 없어 보내지 못한 파일입니다. 구성원과 프로젝트 저장 위치를 확인해 주세요.": "These files could not be sent because of a missing project role or storage location. Check the members and the project storage location.",
   "이전 Comfy 실행이 접수됐는지 확인하지 못했습니다. 기록을 지우고 다시 실행할까요? 접수된 실행이면 두 번 실행될 수 있습니다.":
     "Could not confirm whether the earlier Comfy run was accepted. Clear the record and run again? If it was accepted, it may run twice.",
   "저장이 막혀 있습니다 — 설정의 [전체 내보내기]로 작업을 받아 두세요": "Saving is blocked — use Export all in Settings to keep your work",

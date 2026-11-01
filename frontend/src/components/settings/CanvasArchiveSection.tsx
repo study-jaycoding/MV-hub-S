@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useCanvasFloating } from "../../lib/popupWindows";
+import { CANVAS_OTHER_TAB, useCanvasFloating, useCanvasFollower } from "../../lib/popupWindows";
 import { describeSceneMigration, downloadSceneArchive, importSceneArchiveText } from "../../lib/sceneArchive";
 import { readSceneMigrationInfo, sceneStoreReady, type SceneMigrationInfo } from "../../lib/sceneStore";
 import { isSceneSaveFailing, listScenes, subscribeSceneSaveState } from "../../lib/scenes";
@@ -12,6 +12,7 @@ export function CanvasArchiveSection() {
   const [msg, setMsg] = useState("");
   const [failing, setFailing] = useState(isSceneSaveFailing);
   const floating = useCanvasFloating(); // 캔버스가 다른 창에 떠 있는 동안 씬은 그 창만 쓴다 — 가져오기는 저장 입구를 지나지 않아 여기서 막는다
+  const otherTab = useCanvasFollower();
   // 옛 저장 칸에서 옮길 때의 기록 — undefined = 읽는 중, null = 기록 없음.
   const [migration, setMigration] = useState<SceneMigrationInfo | null | undefined>(undefined);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -80,7 +81,7 @@ export function CanvasArchiveSection() {
           (failing
             ? "⚠ 지금 캔버스가 저장되지 않고 있습니다 — 내보내 두세요."
             : floating
-              ? "캔버스가 별도 창에 떠 있는 동안은 가져올 수 없습니다. 창을 닫은 뒤 가져오세요."
+              ? otherTab ? `${CANVAS_OTHER_TAB} — 그 뒤에 가져오세요.` : "캔버스가 별도 창에 떠 있는 동안은 가져올 수 없습니다. 창을 닫은 뒤 가져오세요."
               : "이 PC 의 모든 캔버스를 파일 하나로 내려받거나, 그 파일에서 다시 가져옵니다.")
         }
       >

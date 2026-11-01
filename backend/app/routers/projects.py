@@ -10,7 +10,9 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from . import _proxy
+from ._delivery import require_hub_delivery
 from .. import active_account, rbac, repo
+from ..repo.asset_sync import UndeliverableMove
 from ..deps import (
     account_actor_uid,
     account_global_roles,
@@ -472,6 +474,8 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
             except Exception:  # noqa: BLE001
                 pass
         _require_assign_target(request, body.project_id)
+        if tab != "team":
+            require_hub_delivery(body.generation_ids, body.project_id)
         # 이동 양방향 동기(#2 Phase3): 내 작업에서 옮길 것 가운데 이미 공유된 것은 **서버 먼저** 옮긴다(Jay 결정 3A·C11) — 최종본 이동은
         #  서버가 양쪽 검수자를 보고 403 으로 거절할 수 있고, 로컬의 최종 표식은 늦거나 틀릴 수 있다. 403 이면 로컬도 바꾸지 않는다.
         #  서버 미연결·그 밖의 실패는 지금처럼 로컬만 반영한다(team_synced=False — 추후 재동기).
@@ -522,6 +526,7 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
                     folder_path=body.folder_path,
                     resume_work=body.resume_work,
                     final_actor=final_move_actor(request),
+                    check_delivery=AUTH_ENABLED,
                 )
             else:
                 # 내 작업: AUTH on 이면 내 생성물만 귀속(남의 작업물 이동 차단). 단독/AUTH off 는 None → 제약 없음.
@@ -530,8 +535,9 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
                     account_uid=account_scope_uid(request), folder_path=body.folder_path,
                     resume_work=body.resume_work,
                     final_actor=final_move_actor(request),
+                    check_delivery=AUTH_ENABLED,
                 )
-        except repo.FinalMoveDenied as e:
+        except (repo.FinalMoveDenied, UndeliverableMove) as e:
             raise HTTPException(status_code=403, detail=str(e))
         except Exception as e:  # noqa: BLE001 — 서버가 이미 옮겼으면 어떤 로컬 실패든 '서버만 옮겨짐'으로 알린다(Codex 3A 재검토 P2 — DB 잠금 등)
             if server_moved:

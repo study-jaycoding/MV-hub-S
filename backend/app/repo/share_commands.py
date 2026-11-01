@@ -42,6 +42,7 @@ def complete(conn, actor, command, digest, result):
 def apply(conn, gen, command, actor, finalizer):
     kind, params, gid = command["command_kind"], command["parameters"], gen["id"]
     if kind == "publish":
+        share._require_share_project(conn, gid)
         conn.execute("INSERT INTO share(id,generation_id,shared_by,visibility) VALUES(?,?,?,?) ON CONFLICT(generation_id) DO NOTHING",
                      (share.new_id(), gid, actor, params.get("visibility", "team")))
     elif kind == "unpublish":

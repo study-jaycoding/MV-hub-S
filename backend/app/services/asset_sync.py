@@ -9,6 +9,7 @@ import re
 import sqlite3
 import time
 import unicodedata
+import urllib.error
 import urllib.request
 import uuid
 from contextlib import suppress
@@ -299,6 +300,20 @@ def _upload(origin, token, ticket, row):
             return json.loads(response.read(1024*1024))
 
 
+def _transfer_error(exc):
+    """전송 오류 코드 — 다시 시도로 못 고치는 것(역할·저장 위치 없음)은 설정 화면이 가려 볼 수 있게 따로 남긴다."""
+    if isinstance(exc,SyncError):
+        return str(exc)
+    if isinstance(exc,urllib.error.HTTPError):
+        if exc.code == 403:
+            return 'asset_project_forbidden'
+        with suppress(Exception):
+            detail = json.loads(exc.read(64*1024)).get('detail')
+            if detail in ledger.STUCK_ERRORS:
+                return detail
+    return 'asset_transfer_failed'
+
+
 def process_one():
     # Capture account and DB epoch before any IO; account switches cannot settle into the new account.
     with db.pinned_share_operation():
@@ -341,7 +356,7 @@ def process_one():
             receipt['server_origin'] = origin
         except Exception as exc:
             receipt = None
-            error = str(exc) if isinstance(exc,SyncError) else 'asset_transfer_failed'
+            error = _transfer_error(exc)
         # Reject stale auth/connection and DB replacement, even if the remote call completed.
         if shared_connection.base_url() != origin or shared_connection.token() != token:
             receipt, error = None,'asset_connection_changed'
@@ -406,6 +421,15 @@ def verify_one():
         return True
 
 
+async def run_backfill():
+    """줄 보충은 전송과 따로 돈다 — 큰 파일 복사·느린 서버가 이미 있는 줄의 전송을 막지 않게."""
+    from . import asset_backfill
+    while True:
+        with suppress(Exception):
+            await to_thread_non_abandon(asset_backfill.tick)
+        await asyncio.sleep(5)
+
+
 async def run_worker():
     from . import asset_destination
     while True:
@@ -421,18 +445,22 @@ async def run_worker():
 
 
 _task = None
+_backfill_task = None
 
 
 def start():
-    global _task
+    global _task,_backfill_task
     if not config.READ_ONLY and os.getenv('CONTENT_HUB_NO_PROXY','0') != '1' and _task is None:
         _task = asyncio.create_task(run_worker(),name='asset-sync-worker')
+        if not config.AUTH_ENABLED:
+            _backfill_task = asyncio.create_task(run_backfill(),name='asset-sync-backfill')
 
 
 async def stop():
-    global _task
-    task, _task = _task,None
-    if task:
+    global _task,_backfill_task
+    tasks = [task for task in (_task,_backfill_task) if task]
+    _task = _backfill_task = None
+    for task in tasks:
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task

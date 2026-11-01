@@ -41,6 +41,7 @@ export type UndoPutResult = "ok" | "deleted" | "full" | "failed";
 export interface UndoBackend {
   put(slot: UndoSlot, budget: number): Promise<UndoPutResult>;
   get(key: string): Promise<UndoSlot | null>;
+  latest(account: string): Promise<UndoSlot[]>; // 그 계정의 슬롯 전부 — 다른 탭이 남긴 것까지
   generation(account: string, sceneId: string): Promise<number>;
   generations(account: string): Promise<Record<string, number>>;
   forget(account: string, sceneId: string, generation: number): Promise<number | null>;
@@ -200,6 +201,16 @@ function indexedDbBackend(): UndoBackend {
         return ((await request(conn.transaction(SLOTS).objectStore(SLOTS).get(key))) as UndoSlot | undefined) ?? null;
       } catch {
         return null;
+      }
+    },
+    async latest(account) {
+      const conn = await db();
+      if (!conn) return [];
+      try {
+        const range = IDBKeyRange.bound([account], [account, String.fromCharCode(0xffff)]);
+        return (await request(conn.transaction(SLOTS).objectStore(SLOTS).index(SCENE).getAll(range))) as UndoSlot[];
+      } catch {
+        return [];
       }
     },
     async generation(account, sceneId) {
@@ -400,4 +411,27 @@ export async function readUndoSlots(): Promise<UndoSlot[]> {
     /* 기록 없이 시작 */
   }
   return out;
+}
+
+/** 쓰던 탭이 끝나 이 탭이 이어 쓸 때 — 포인터는 탭마다라 그 탭이 남긴 슬롯은 계정 전체에서 찾는다(씬마다 가장 새것). 들인 슬롯을 포인터에도 적어 첫 편집 전 새로 고침에도 남게 한다. */
+export async function readLatestUndoSlots(): Promise<UndoSlot[]> {
+  const account = getAccountNamespace();
+  const now = Date.now();
+  const newest = new Map<string, UndoSlot>();
+  try {
+    const stored = await currentBackend().generations(account);
+    for (const [sceneId, generation] of Object.entries(stored)) {
+      const key = sceneKey(account, sceneId);
+      generations.set(key, Math.max(generations.get(key) ?? 0, generation));
+    }
+    for (const slot of await currentBackend().latest(account)) {
+      if (now - slot.savedAt > UNDO_KEEP_MS || slot.deleteGeneration !== (stored[slot.sceneId] ?? 0)) continue;
+      const seen = newest.get(slot.sceneId);
+      if (!seen || slot.savedAt > seen.savedAt) newest.set(slot.sceneId, slot);
+    }
+  } catch {
+    return []; // 기록 없이 시작 — 부팅과 같다
+  }
+  for (const slot of newest.values()) writePointer(sceneKey(account, slot.sceneId), slot.key);
+  return [...newest.values()];
 }

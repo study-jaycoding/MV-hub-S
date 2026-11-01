@@ -19,6 +19,18 @@ import { getAccountNamespace } from "./accountScope";
 import { EXPECT_ACCOUNT_HEADER } from "./hubFeatures";
 import type { AssetImportTarget, AssetReferenceIdentity, AssetSyncReceipt } from "../shared/contracts/assets";
 
+/** 지금 서버·계정의 전송 상태 — needs_check 는 다시 시도로 못 고친다(역할·저장 위치가 있어야 끝난다). */
+export interface AssetTransferSummary {
+  waiting: number;
+  failed: number;
+  needs_check: number;
+}
+export interface AssetSyncStatus {
+  items: AssetSyncReceipt[];
+  destinations?: { sync_id: string; state: string; project_name: string; last_error_code?: string | null }[];
+  summary?: AssetTransferSummary; // 옛 허브에는 없다
+}
+
 export interface ImportedAsset extends AssetReferenceIdentity {
   project: string; path: string; name: string; type: string;
   reused?: boolean; sha256?: string; bytes?: number; discard_token?: string; sync_state?: string;
@@ -301,9 +313,8 @@ export const assetsApi = {
     }>;
   },
 
-  assetSyncStatus: () => jsonFetch<{ items: AssetSyncReceipt[]; destinations?: {
-    sync_id: string; state: string; project_name: string; last_error_code?: string | null;
-  }[] }>("/api/local-asset-sync/status"),
+  assetSyncStatus: () => jsonFetch<AssetSyncStatus>("/api/local-asset-sync/status"),
+  retryAssetSync: () => jsonFetch<AssetSyncStatus>("/api/local-asset-sync/retry", { method: "POST" }),
   registerAssetReference: (file_path: string, target: AssetImportTarget, expected_asset_content_id?: string) =>
     jsonFetch<ImportedAsset>("/api/local-asset-sync/register", {
       method: "POST", body: jsonBody({ file_path, ...target, expected_asset_content_id }),

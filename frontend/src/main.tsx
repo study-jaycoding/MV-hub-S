@@ -2,7 +2,7 @@ import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
 import { PromptProvider } from "./lib/prompt";
 import { installFileDropGuard } from "./lib/media";
-import { announceCanvasWindow, claimCanvasWindow, EMBED_MODES, findFloatingCanvas, isCanvasWindow, openerSceneWritesSettled, retireCanvasWindow, setCanvasFloatStart, setCanvasReturnRead, shareCanvasMemory } from "./lib/popupWindows";
+import { announceCanvasWindow, claimCanvasWindow, claimSceneWriter, EMBED_MODES, findFloatingCanvas, isCanvasWindow, openerSceneWritesSettled, retireCanvasWindow, setCanvasFloatStart, setCanvasReturnRead, setSceneWriterRead, shareCanvasMemory } from "./lib/popupWindows";
 import { applyAccent, applyReduceMotion, loadAccent, loadLang, loadReduceMotion } from "./lib/theme";
 import { bootSceneStore, readLegacyScenesRaw, restoreUndoHistories } from "./lib/sceneBoot";
 import { refreshSceneStore, setAsidePendingWrites, settleSceneWrites } from "./lib/sceneStore";
@@ -119,6 +119,11 @@ if (cleanFeed) {
     shareCanvasMemory(() => settleSceneWrites(10_000)); // 이 창이 연 캔버스 창이 창 메모리를 받아 가고 돌려줄 손잡이(lib/popupWindows)
     setCanvasReturnRead(refreshSceneStore); // 그 창이 닫히면 저장본을 다시 읽은 뒤에 캔버스를 돌려준다
     setCanvasFloatStart(setAsidePendingWrites); // 다른 창에 떴다 — 이 창에 밀린 쓰기가 그 창의 편집을 덮지 않게
+    setSceneWriterRead(async () => { // 쓰던 탭이 끝났다 — 저장본을 읽어야 쓰기가 풀린다. 되돌리기 기록은 못 읽어도 부팅처럼 기록 없이 연다
+      const read = await refreshSceneStore();
+      if (read) await restoreUndoHistories(1500, true);
+      return read;
+    });
   }
   // ★순서를 강제한다: (떠 있는 창 알기) → 저장소 열기·이관 완료 → App 마운트 → (App 안에서) 백업 미러.
   //  App 의 effect 로 미루면 늦다 — 첫 렌더에서 이미 씬 목록을 읽는다(useSceneCoordination).
@@ -132,7 +137,7 @@ if (cleanFeed) {
     announceCanvasWindow(); // 메인 창의 되돌리기 기록·복사한 노드도 이때 받아 온다
     return openerSceneWritesSettled();
   };
-  const ready = isCanvasWindow() ? claimThenSettle() : findFloatingCanvas().then(() => true);
+  const ready = isCanvasWindow() ? claimThenSettle() : Promise.all([claimSceneWriter(), findFloatingCanvas()]).then(() => true);
   void ready.then(async (go) => {
     if (!go) return window.close(); // 넘긴 내용을 메인 창이 쥐고 있다 — 이 창이 물러나면 메인 창이 저장 뒤 돌려받는다
     const result = await bootSceneStore();

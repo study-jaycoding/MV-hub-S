@@ -3,7 +3,7 @@ import json
 import copy
 from ..db import get_connection
 from ..repo import share_commands as commands
-from ..repo.share import FinalGenerationUnpublishError, GenerationHoldStateError
+from ..repo.share import FinalGenerationUnpublishError, GenerationHoldStateError, ShareProjectRequired
 
 
 class ShareCommandError(ValueError):
@@ -71,7 +71,7 @@ def execute(load_actor, command, publication=None):
                     actor.final_actor, author_uids, validate_target=validate_target)
                 if import_result in {"blocked", "skipped"}:
                     raise ShareCommandError("publish_blocked")
-        except (FinalGenerationUnpublishError, GenerationHoldStateError) as exc:
+        except (FinalGenerationUnpublishError, GenerationHoldStateError, ShareProjectRequired) as exc:
             raise ShareCommandError(str(exc)) from exc
         result = commands.public_state(commands.state(conn, gen["id"]))
         if import_result is not None:

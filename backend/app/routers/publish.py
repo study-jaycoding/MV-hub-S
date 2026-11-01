@@ -34,6 +34,7 @@ from ._telemetry import touch_generation_telemetry
 from ..deps import account_author_uids, actor_id, current_account, final_move_actor, require_edit_generation
 from ..emailnorm import norm_email
 from ..repo import identity
+from ..repo.share import SHARE_PROJECT_REQUIRED, ShareProjectRequired
 from ..services import agent_signals, net_guard, server_relocation
 from ..services.request_guards import require_loopback_browser_request
 from ..services.event_journal import journal_audit_event
@@ -1326,9 +1327,9 @@ def publish_bundle_to_server(
         if blocked:
             out["blocked"] = blocked
             out["message"] = (
-                # 막는 까닭은 둘 — 원 작성자만 발행 · 최종본의 프로젝트 변경은 양쪽 검수자만(3A, 80회차 섞임 실측)
-                f"{blocked}건은 서버가 반영하지 않았습니다(작성자가 다른 항목의 재공유, 또는 검수자만 옮길 수 있는 최종본의 "
-                "프로젝트 변경) — "
+                # 막는 까닭 — 원 작성자만 발행 · 최종본의 프로젝트 변경은 양쪽 검수자만(3A, 80회차 섞임 실측) · 파일을 못 받는 공유
+                f"{blocked}건은 서버가 반영하지 않았습니다(프로젝트가 없는 로컬 결과, 작성자가 구성원이 아닌 프로젝트의 로컬 결과, "
+                "작성자가 다른 항목의 재공유, 또는 검수자만 옮길 수 있는 최종본의 프로젝트 변경) — "
                 "공유 표시를 남기지 않았습니다."
             )
         return PublishBundleResult(out, refs_by_anchor, remote_accepted)
@@ -1346,6 +1347,7 @@ def publish_to_shared(body: PublishToSharedIn, request: Request):
     with _pinned_account_scope():
         if not _proxy.proxying():
             published = 0
+            blocked = 0
             # 상한 없는 gen_ids 의 단건 get_generation N회 → snapshot 배치 1회(R7 2-F).
             # 권한 검사·항목별 repo.publish 순서·published 집계는 종전 그대로(중복 id 는
             # dedupe 로 1회만 집계 — 종전에도 두 번째는 shared=True 로 걸러졌다).
@@ -1361,10 +1363,17 @@ def publish_to_shared(body: PublishToSharedIn, request: Request):
                     require_edit_generation(request, gen)  # 본인(또는 admin)만 — 남의 작업 공유 차단
                 except HTTPException:
                     continue  # 권한 없는 항목은 건너뜀(벌크 전체를 막지 않음)
-                repo.publish(gid, actor_id(request), "team")
+                try:
+                    repo.publish(gid, actor_id(request), "team")
+                except ShareProjectRequired:
+                    blocked += 1  # 항목별 저장이라 앞 항목은 이미 공유됐다 — 끊지 않고 그 항목만 건너뛴다
+                    continue
                 _touch_telemetry(gid)
                 published += 1
-            return {"ok": True, "published": published, "remote": {}}
+            out = {"ok": True, "published": published, "remote": {}}
+            if blocked:
+                out.update(blocked=blocked, message=f"{blocked}건: {SHARE_PROJECT_REQUIRED}")
+            return out
         r = publish_bundle_to_server(body.gen_ids)
         return {"ok": True, **r}
 

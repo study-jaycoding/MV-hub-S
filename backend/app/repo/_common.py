@@ -113,3 +113,9 @@ def _remote_url(file_path: Optional[str], source_url: Optional[str]) -> Optional
     if file_path and file_path.startswith("http"):
         return file_path
     return source_url or file_path
+
+
+def local_only_url(file_path: Optional[str], source_url: Optional[str]) -> bool:
+    """공유 주소가 원격도 서버 보관 위치도 아니다 — 파일이 올라가지 않으면 받는 쪽이 열 길이 없다."""
+    url = _remote_url(file_path, source_url)
+    return bool(url) and not url.startswith(("http://", "https://", "asset-sync:"))

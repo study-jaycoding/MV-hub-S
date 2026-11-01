@@ -19,8 +19,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from . import _proxy, _telemetry
+from ._delivery import require_hub_delivery
 from ..services.async_tools import to_thread_non_abandon
 from .. import active_account, rbac, repo
+from ..repo.asset_sync import UndeliverableMove
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MEDIA_PRESERVATION_ENABLED
 from ..deps import (
     account_global_roles,
@@ -630,6 +632,13 @@ def set_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Re
         except repo.WorkspaceAssignmentError as exc:
             raise _workspace_assignment_error(exc)
 
+        # 서버를 먼저 바꾸므로 여기서 본다 — 로컬에서 막히면 서버만 옮겨진 채 남는다.
+        assigned_project = preview.get("assigned_project")
+        if assigned_project:
+            require_hub_delivery(
+                [str(row["id"]) for row in preview["changed"] if row.get("project_action") == "set"],
+                assigned_project["id"],
+            )
         # 공유된 내 카드는 팀 탭의 서버 복사본도 같은 값이어야 한다. 변경 여부와 관계없이 선택된
         # 공유본 전부를 보내 재시도만으로 불일치가 수렴하게 한다(서버 연산은 멱등).
         shared_server_ids: list[str] = []
@@ -667,8 +676,9 @@ def set_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Re
                 workspace,
                 owner_uid=mutation_owner_uid,
                 final_actor=final_move_actor(request),  # 프로젝트가 바뀌는 최종본은 양쪽 검수자만(Jay 결정 3A)
+                check_delivery=AUTH_ENABLED,
             )
-        except repo.FinalMoveDenied as exc:
+        except (repo.FinalMoveDenied, UndeliverableMove) as exc:
             raise HTTPException(status_code=403, detail=str(exc))
         except repo.WorkspaceAssignmentError as exc:
             logger.error(

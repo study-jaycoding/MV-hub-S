@@ -6,7 +6,7 @@ import { api } from "../api";
 import type { Filters, WorkspaceContext } from "../types";
 import type { ProviderIdentity } from "../lib/accountIdentity";
 import { useT } from "../lib/i18n";
-import { closeEmbedWindow, EMBED_MODES, useEmbedWindowOpen } from "../lib/popupWindows";
+import { CANVAS_OTHER_TAB, closeEmbedWindow, EMBED_MODES, useEmbedWindowOpen } from "../lib/popupWindows";
 import { AccountMenu } from "./AccountMenu";
 import { NotificationCenter } from "./NotificationCenter";
 import { SearchBox } from "./SearchBox";
@@ -25,6 +25,7 @@ interface Props {
   onOpenAssets: () => void;
   onOpenCanvas?: () => void; // 캔버스 탭 휠 클릭 → 캔버스를 새 창으로(Assets 같은 별도 창)
   canvasFloating?: boolean; // 그 창이 떠 있다 — 탭 글자 옆에 겹친 두 창(Jay 2026-10-30)
+  canvasOtherTab?: boolean; // 떠 있는 창이 아니라 다른 메인 탭이 쓴다 — 설명 글자만 다르다
   onOpenMcp?: () => void;
   onOpenManage?: () => void; // PM 대시보드(분리형) — 별도 창. 플래그 off 면 미전달(버튼 숨김)
   onOpenAdmin: () => void; // 좌측 상단 로고 클릭 → 관리자 창(로드맵 §4-5)
@@ -53,6 +54,7 @@ export function TopBar({
   onOpenAssets,
   onOpenCanvas,
   canvasFloating,
+  canvasOtherTab,
   onOpenMcp,
   onOpenManage,
   onOpenAdmin,
@@ -112,7 +114,7 @@ export function TopBar({
           onClick={() => pickTab("compose")}
           // 휠 클릭 처리 안에서 창을 열면 크롬이 팝업 설정을 무시하고 같은 창의 새 탭으로 연다(실측) — 처리가 끝난 직후로 미룬다
           onAuxClick={(event) => { if (event.button === 1 && onOpenCanvas) { event.preventDefault(); setTimeout(onOpenCanvas, 0); } }}
-          title={canvasFloating ? t("캔버스가 별도 창에 떠 있습니다") : t("캔버스 — 씬 캔버스 · 히스토리 뷰")}
+          title={canvasFloating ? t(canvasOtherTab ? CANVAS_OTHER_TAB : "캔버스가 별도 창에 떠 있습니다") : t("캔버스 — 씬 캔버스 · 히스토리 뷰")}
         >
           {t("캔버스")}
           {canvasFloating && <CanvasFloatIcon className="tab-float-ic" />}

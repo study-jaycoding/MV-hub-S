@@ -1,9 +1,10 @@
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import { api } from "../../api";
 import { ACCENT_PRESETS, type Lang } from "../../lib/theme";
 import { fsaSupported } from "../../lib/downloadDir";
 import { fmtBackupWhen } from "../../lib/format";
 import { useT } from "../../lib/i18n";
-import type { BackupContinuityStatus, ServerBackupVersion } from "../../lib/assetsApi";
+import type { AssetTransferSummary, BackupContinuityStatus, ServerBackupVersion } from "../../lib/assetsApi";
 import {
   startResolvePythonInstall,
   type ResolveConnectionStatus,
@@ -19,6 +20,50 @@ import {
 import { SettingsDescription } from "./SettingsDescription";
 import { API_PAUSED_MESSAGE, getApiPause, subscribeApiPause } from "../../lib/http";
 import { flashMsg } from "../../lib/flash";
+
+// 공유 서버로 가지 못한 파일 — 다른 PC 에서만 깨져 보이므로 작성자가 알 곳이 여기뿐이다. 보낼 것이 없으면 줄이 없다.
+export function AssetTransferLine() {
+  const t = useT();
+  const [summary, setSummary] = useState<AssetTransferSummary | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    api.assetSyncStatus().then((status) => {
+      if (alive) setSummary(status.summary ?? null);
+    }).catch(() => undefined); // 옛 허브·허브 없음 — 줄을 그리지 않는다
+    return () => {
+      alive = false;
+    };
+  }, []);
+  if (!summary || !(summary.waiting || summary.failed || summary.needs_check)) return null;
+  const retry = async () => {
+    setBusy(true);
+    try {
+      setSummary((await api.retryAssetSync()).summary ?? null);
+    } catch {
+      flashMsg(t("다시 시도하지 못했습니다."));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const parts = [
+    summary.waiting ? t("대기 {n}").replace("{n}", String(summary.waiting)) : "",
+    summary.failed ? t("실패 {n}").replace("{n}", String(summary.failed)) : "",
+    summary.needs_check ? t("확인 필요 {n}").replace("{n}", String(summary.needs_check)) : "",
+  ].filter(Boolean);
+  return (
+    <div className="settings-row" aria-live="polite">
+      <span title={summary.needs_check ? t("프로젝트 역할이나 저장 위치가 없어 보내지 못한 파일입니다. 구성원과 프로젝트 저장 위치를 확인해 주세요.") : undefined}>
+        {t("자료 전송")} · {parts.join(" · ")}
+      </span>
+      {summary.failed > 0 && (
+        <button className="settings-action ghost" onClick={retry} disabled={busy}>
+          {t("다시 시도")}
+        </button>
+      )}
+    </div>
+  );
+}
 
 export function AppearanceSettingsSection({
   accent,
@@ -206,6 +251,7 @@ export function MetadataContinuitySection({
   return (
     <section className="settings-section">
       <h4>{t("메타데이터")}</h4>
+      <AssetTransferLine />
       <div className="settings-row">
         <button
           className="settings-action metadata-sync-primary"

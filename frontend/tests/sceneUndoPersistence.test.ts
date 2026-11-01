@@ -39,6 +39,7 @@ function fakeBackend(plan: Persist["planUndoPut"], nextGeneration: Persist["next
       return decided.result;
     },
     async get(key) { return slots.has(key) ? structuredClone(slots.get(key)!) : null; },
+    async latest(account) { return structuredClone([...slots.values()].filter((slot) => slot.account === account)); },
     async generation(account, sceneId) { return gens.get(gk(account, sceneId)) ?? 0; },
     async generations(account) {
       return Object.fromEntries([...gens].filter(([key]) => key.startsWith(`${account}|`)).map(([key, value]) => [key.slice(account.length + 1), value]));
@@ -104,6 +105,41 @@ describe("슬롯에 쓰고 새로 고친 뒤 들인다", () => {
     const second = await pageLoad();
     await second.boot.restoreUndoHistories();
     expect(second.undo.loadSceneHistory("s1")).toEqual(history());
+  });
+
+  it("쓰던 탭이 끝나 이어 쓰면 그 탭이 남긴 기록을 찾아 들이고 포인터에도 적는다 — 평소 부팅은 남의 탭 슬롯을 보지 않는다", async () => {
+    const writer = await pageLoad();
+    writer.persist.scheduleUndoCheckpoint("s1", history(), 1, OK);
+    await until(() => fake.puts.length === 1);
+    sessionStorage.clear(); // 다른 탭에는 그 포인터가 없다
+
+    const follower = await pageLoad();
+    await follower.boot.restoreUndoHistories();
+    expect(follower.undo.loadSceneHistory("s1")).toBeUndefined();
+
+    await follower.boot.restoreUndoHistories(1500, true);
+    expect(follower.undo.loadSceneHistory("s1")).toEqual(history());
+    expect(Object.values(pointers())).toEqual([fake.puts[0].key]);
+  });
+
+  it("이어 쓸 때 씬마다 가장 새 기록을 고르고, 지운 씬·오래된 슬롯은 들이지 않으며, 못 읽으면 기록 없이 연다", async () => {
+    const { persist, undo, boot } = await pageLoad();
+    const slot = (key: string, savedAt: number, marker: number, deleteGeneration = 0) => ({
+      key, writerId: key, account: "local", sceneId: "s1", deleteGeneration, historyRevision: 1, snapFp: persist.savedSceneFingerprint("s1")!,
+      history: { ...history(), undo: [snap(card("c1", marker))] }, savedAt, size: 1,
+    }) as UndoSlot;
+    const now = Date.now();
+    fake.slots.set("old", slot("old", now - 1000, 1));
+    fake.slots.set("new", slot("new", now - 10, 2));
+    fake.slots.set("gone", slot("gone", now, 3, 9)); // 지워진 세대
+    fake.slots.set("stale", slot("stale", now - persist.UNDO_KEEP_MS - 1000, 4));
+    const picked = await persist.readLatestUndoSlots();
+    expect(picked.map(({ key }) => key)).toEqual(["new"]);
+
+    persist.setUndoBackend({ ...fake.backend, latest: () => Promise.reject(new Error("blocked")) });
+    expect(await persist.readLatestUndoSlots()).toEqual([]);
+    await boot.restoreUndoHistories(1500, true);
+    expect(undo.loadSceneHistory("s1")).toBeUndefined();
   });
 
   it("영수증이 확정되지 않았거나·지문이 저장본과 다르거나·빈 기록이면 쓰지 않는다", async () => {

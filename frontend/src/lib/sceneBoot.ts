@@ -20,7 +20,7 @@ import { loadJSON, loadString, saveString } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 import { getAccountNamespace } from "./accountScope";
 import { adoptSceneHistory, historyReadEpoch } from "./sceneUndoStore";
-import { readUndoSlots, savedSceneFingerprint } from "./sceneUndoPersistence";
+import { readLatestUndoSlots, readUndoSlots, savedSceneFingerprint } from "./sceneUndoPersistence";
 import { isCanvasFloating, isCanvasWindow, registerCanvasMemory } from "./popupWindows";
 
 // 캔버스가 다른 창에 떠 있는 동안 이 창은 씬을 쓰지 않는다 — 조작은 그 창에서만 되고 씬도 그 창만 쓴다.
@@ -199,11 +199,12 @@ async function openSceneStore(): Promise<SceneStoreInit> {
  * 새로 고치기 전의 되돌리기 기록을 들인다(docs/status/캔버스_한계_B_되돌리기보존_2026-10-30.md). 씬 저장소가 열린 **뒤에** 부른다 — 지문을 저장본과 견준다.
  * 화면을 오래 막지 않는다: waitMs 안에 못 끝나면 먼저 띄우고, 늦게 끝난 읽기는 부팅 복원 규칙(그사이 이 창 편집·창 인계가 없을 때만)으로 들인다.
  * 이 창이 인계로 이미 받은 씬(떠 있는 캔버스 창)은 인계가 우선이다.
+ * anyTab — 쓰던 탭이 끝나 이 탭이 이어 쓸 때: 그 탭이 남긴 기록까지 찾는다(포인터는 탭마다다).
  */
-export function restoreUndoHistories(waitMs = 1500): Promise<void> {
+export function restoreUndoHistories(waitMs = 1500, anyTab = false): Promise<void> {
   const readEpoch = historyReadEpoch();
   const account = getAccountNamespace();
-  const read = readUndoSlots().then((slots) => {
+  const read = (anyTab ? readLatestUndoSlots() : readUndoSlots()).then((slots) => {
     for (const slot of slots) {
       const snapFp = savedSceneFingerprint(slot.sceneId);
       if (snapFp === null) continue; // 지금 없는 씬
