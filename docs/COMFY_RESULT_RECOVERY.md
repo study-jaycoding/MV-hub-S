@@ -5,7 +5,7 @@ tags:
   - mvhub
   - mvhub/복구
 status: active
-updated: 2026-09-18
+updated: 2026-11-01
 ---
 
 # Comfy 접수 불명·결과 회수 계약
@@ -70,7 +70,8 @@ DB 전체 미해결 실행은 **200개**까지다. 초과 시 새 submit을409�
 |---|---|
 | submitting | 제출 직전 근거. 재시작하면unknown |
 | 유효한 prompt ID | running, 동일 작업 추적 |
-| 제출 응답3xx·비2xx·깨진2xx·전송 후 단절 | unknown, 자동 재제출/취소0 |
+| 제출 응답 4xx(408 제외) | not_submitted. Comfy 가 받기를 거절한 것이다(없는 노드·잘못된 입력 등). 캔버스 실행은 failed 로 정산되고 저널이 지워지며 실패 사유가 카드에 남는다 |
+| 제출 응답3xx·408·5xx·깨진2xx·전송 후 단절 | unknown, 자동 재제출/취소0 |
 | 전송 전임이 분명한 URL 스킴·DNS·연결거절·인증서 검증 실패 | not_submitted, 잃을 결과가 없는 기록 정리 가능 |
 | 원격 성공 관측 | 메모리에 먼저 기록, 결과 상세/파일 회수 실패는result_pending |
 | collecting | 명시 결과 회수 중. collect job ID·단조 순번·phase로 쓰기 권한 대조 |
@@ -87,6 +88,10 @@ URLError 내부의 명확한 원인에 한정한다. 일반 SSL 오류·reset·t
 상세 조회·다운로드의 일시 오류는 최초1회와 추가3회, 대기2/4/8초로 제한한다.
 408/429/5xx·일시 연결/시간 초과가 대상이며 인증·영구 오류는 즉시 멈춘다.
 404/410 결과 없음은 받은 파일과 미회수 근거를 보존한다. 회수 경로는 submit을 호출하지 않는다.
+
+SaveText 계열은 파일 이름이 고정이라 다른 실행이 덮어쓸 수 있다. `/view` 의 ETag(`<mtime_ns 16진수>-<크기 16진수>`, 실제 파일 st_mtime_ns 와 일치 — ComfyUI 0.38 실측)나
+Last-Modified(초로 올림됨)로 파일 시각을 얻어, 실행 끝 시각(history `status.messages` 의 timestamp)보다 뒤면 그 글자를 버린다. 다시 읽어도 이 실행의 글자는 없으므로 못 읽은 것(`text_files_unread`)과 다르다.
+글자만 내는 실행은 사유를 남기고 실패하고, 미디어가 있으면 미디어만 저장한다. 시각을 모르면 지금처럼 읽는다. 한계: ETag 는 여유 0.05초, Last-Modified 는 2초 안의 덮어쓰기를 가리지 못한다 · 파일 시계와 Comfy 시계가 다른 환경(출력 폴더가 시계 다른 NAS)은 정상 글자를 버릴 수 있다(사용 여부 미확인).
 
 출력 주소는 `comfy/<owner+device scope16>-<원래 job32>-<출력 digest16>.<ext>`다.
 다운로드 전 **전체 출력 목록**을 원장에 반영하며 파일은 고유 `.part`에 받은 뒤 원자 교체한다.
