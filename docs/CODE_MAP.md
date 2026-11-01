@@ -621,7 +621,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `GradeStepModal.tsx`(37줄) | 등급 S 다중선택 확인 모달 | `GradeStepModal` |
 | `GenCommentPanel.tsx`(123줄) | 생성물 코멘트 패널(seq 가드 보유 — §6 계약) | `GenCommentPanel` |
 
-#### 계정·알림·설정·관리자 창(최상위 + `settings/` + `admin/`, 17파일)
+#### 계정·알림·설정·관리자 창(최상위 + `settings/` + `admin/`, 18파일)
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
@@ -638,7 +638,8 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `settings/CanvasArchiveSection.tsx`(80줄) | 설정 '캔버스 자료' — 캔버스 전체 내보내기·가져오기 단추와 저장 실패 안내 | 〃 |
 | `ShortcutsWindow.tsx`(131줄) | 단축키 재지정 창 | `ShortcutsWindow` |
 | `timeline/EditShortcutsWindow.tsx` | 편집 탭 단축키 창(막대의 H) — 동작마다 칸 둘·휠 칸 받기·× 비우기·↺. 규칙은 `lib/editShortcuts.ts` | `EditShortcutsWindow` |
-| `AdminWindow.tsx`(약 430줄) | 관리자 창(탭 호스트: 승인·멤버·업데이트·프로젝트·에셋 리스트) + 권한 상승 확인(공유 서버 탭은 2026-10-25 삭제 — 서버 관리 창으로) | `AdminWindow` |
+| `AdminWindow.tsx`(약 440줄) | 관리자 창(왼쪽 메뉴 + 고정 크기: 승인·멤버·프로젝트·에셋 리스트·업데이트 + 승인 대기 수) + 권한 상승 확인(공유 서버 탭은 2026-10-25 삭제 — 서버 관리 창으로) | `AdminWindow` |
+| `admin/AdminParts.tsx` | 관리자 창 공용 부품 — 탭 첫 줄·사람 한 줄·선 아이콘(프로젝트 패널도 쓴다) | `AdminPageHead`·`AdminPerson`·`AdminIcon` |
 | `admin/ApprovalTab.tsx`(143줄) | 계정 승인·숨김·비번 초기화 표 | 〃 |
 | `admin/MemberRolesTab.tsx`(82줄) | 전역 역할 표 | 〃 |
 | `admin/AssetRegistryTab.tsx`(약 330줄) | 에셋 리스트(옛 '에셋 대장') — 훑는 곳·자동 훑기 시간(끔·매월·매주·매일)·프로젝트별 마지막 훑기 상태 표 + [지금 훑기](한 번 더 확인). 영구 관리자(system)만 |
@@ -657,7 +658,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `TagFilterPanel.tsx`(204줄) | 태그 필터 플로팅 패널 | 4 |
 | `LibraryWorkspaceFilter.tsx`(약 280줄) | 워크스페이스 칩 + 필터 단추 창(Workspaces 옆 목록 · Hide failed · Activity 실패·차단 정리 — 2026-10-30) | 3 |
 | `ViewControls.tsx`(약 190줄) | 크기 슬라이더 + 리스트/그리드 토글. `onSetMasonry` 를 받은 툴바(라이브러리)는 보기 단추 하나 + 보기 창(Layout·Split by date·Fill·Card size — 2026-10-30) | 4 |
-| `HostConfirm.tsx`(50줄) | 앱 확인 창(브라우저 confirm 대신 — 'MV Hub 종료' 모양 · 확인 단추 초점 · Esc·바깥 = 취소). 씬 삭제·실패·차단 정리 | 2 |
+| `HostConfirm.tsx`(50줄) | 앱 확인 창(브라우저 confirm 대신 — 'MV Hub 종료' 모양 · 확인 단추 초점 · Esc·바깥 = 취소). 씬 삭제·실패·차단 정리·프로젝트 삭제·이 PC에 먼저 설치 | 4 |
 | `ColorFilterDots.tsx`(69줄) | 색 점 필터 + 색 상수표 | 7 |
 | `WorkspaceMark.tsx`(49줄) | 워크스페이스 색 표식(id 해시 색상) | 4 |
 | `InlinePromptRefs.tsx`(70줄) | 프롬프트의 `@소스`를 썸네일 칩으로 | 3 |
