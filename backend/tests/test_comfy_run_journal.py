@@ -401,6 +401,16 @@ def test_boot_phase_requires_complete_nonempty_manifest(h, phase, terminal, coun
     assert all(mock.call_count == 0 for mock in h.mocks.values())
 
 
+def test_boot_keeps_a_run_whose_text_files_are_unread_collectable(h):
+    """미디어를 다 받아도 글자가 남았으면 collected 가 아니다 — collected 는 재회수를 막는다. text_only 정리도 이 행을 지우지 않는다."""
+    common = {"owner": "a@example.invalid", "terminal_kind": "success", "outputs_enumerated": True, "text_files_unread": True}
+    repo.set_setting(journal.KEY, json.dumps({"v": 1, "legacy_imported": True, "runs": [
+        {**common, "job_id": "media", "phase": "collecting", "media_output_count": 1, "outputs": [{"downloaded": True}]},
+        {**common, "job_id": "text", "phase": "collecting", "media_output_count": 0, "outputs": [], "text_only": True},
+    ]}))
+    assert {row["job_id"]: row["phase"] for row in journal.read("a@example.invalid", False)} == {"media": "result_pending", "text": "result_pending"}
+
+
 @pytest.mark.parametrize("gate", [[True], [False, True]])
 def test_collect_rechecks_update_gate_without_provider_or_claim(h, monkeypatch, gate):
     h.successful()

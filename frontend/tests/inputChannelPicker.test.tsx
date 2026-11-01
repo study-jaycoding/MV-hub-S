@@ -116,6 +116,23 @@ describe("InputChannelPicker", () => {
     type("zzz");
     expect(host.querySelector(".scene-portpick-empty")!.textContent).toBe('"zzz" 에 맞는 출력이 없습니다');
   });
+  it.each([
+    ["isComposing", { isComposing: true }],
+    ["keyCode 229", { keyCode: 229 }],
+  ])("한글 조합 중(%s)의 Enter·방향키·Esc 는 처리하지 않고 캔버스로도 새지 않는다", (_name, composing) => {
+    const onPick = mount(); open(); type("ref");
+    const seen = vi.fn();
+    document.addEventListener("keydown", seen);
+    const press = (k: string) => act(() => { input().dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...composing })); });
+    press("ArrowDown"); press("Enter"); press("Escape");
+    expect(onPick).not.toHaveBeenCalled();
+    expect(input().value).toBe("ref");
+    expect(host.querySelector(".scene-portpick-pop")).not.toBeNull();
+    expect(seen).not.toHaveBeenCalled();
+    key("Enter");
+    expect(onPick).toHaveBeenCalledTimes(1);
+    document.removeEventListener("keydown", seen);
+  });
   it("↑↓·Enter 로 고르고, Esc 는 친 글 → 닫기 순", () => {
     const onPick = mount(); open();
     key("ArrowDown"); key("ArrowDown"); key("Enter");

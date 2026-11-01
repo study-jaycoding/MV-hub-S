@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type MutableR
 import { getAccountNamespace } from "../../lib/accountScope";
 import { uid, settleComfyRunning, type Scene, type SceneRef } from "../../lib/scenes";
 import { onCanvasMemoryReturn } from "../../lib/popupWindows";
-import { isComfyRunning } from "../../lib/sceneComfyRunningStore";
+import { comfyRunningIn } from "../../lib/sceneComfyRunningStore";
 import { freezeLegacyCollectorOrder } from "../../lib/sceneEdges";
 import { appendSceneReferenceCards, pasteSceneClipboard, type SceneClipboard } from "../../lib/sceneInteractions";
 import { useSceneHistory } from "../../lib/useSceneHistory";
@@ -69,8 +69,8 @@ export function useCanvasSession(options: Omit<Parameters<typeof useSceneHistory
       const edit = applyCanvasEdit(snapshot(), command, generations());
       if (!edit) return false;
       reflect(edit.snapshot);
+      if (command.type === "removeCardVariants") history.pruneGenIdsFromHistory(command.cardId, new Set(command.removedIds)); // 저장보다 먼저 — 저장이 기록을 복제해 보존 슬롯에 예약한다
       input.applyCards(edit.snapshot.cards, edit.policy === "deferred" ? "deferUser" : edit.policy === "derived" ? "persistDerived" : "persistUser");
-      if (command.type === "removeCardVariants") history.pruneGenIdsFromHistory(command.cardId, new Set(command.removedIds));
     }
     return true;
   }, [target, input.applyCards, history.propagateGenIdsToHistory]);
@@ -112,7 +112,7 @@ export function useCanvasSession(options: Omit<Parameters<typeof useSceneHistory
   const source = options.sourceScene;
   useEffect(() => {
     if (!source) return;
-    const cards = settleComfyRunning(source.cards, isComfyRunning);
+    const cards = settleComfyRunning(source.cards, comfyRunningIn(getAccountNamespace(), source.id));
     const incoming = { cards, edges: freezeLegacyCollectorOrder(cards, source.edges), groups: source.groups || [] };
     const switched = options.sceneIdRef.current !== source.id;
     if (switched) {

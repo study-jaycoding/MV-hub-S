@@ -152,7 +152,11 @@ export function setAsidePendingWrites(): void {
  * 일시 실패로 끝내지 않는다: 그 씬은 재시도가 성공해도 화면에 다시 오지 않아, 여기서 끝내면 기록을 남길 기회가 없다.
  */
 export function pendingSceneWritesConfirmed(): Promise<boolean> {
-  const waits = pending.filter((op) => !op.aside).map((op) => new Promise<boolean>((resolve) => (op.durable ??= []).push(resolve)));
+  return durableWait(pending.filter((op) => !op.aside));
+}
+
+function durableWait(ops: PendingOp[]): Promise<boolean> {
+  const waits = ops.map((op) => new Promise<boolean>((resolve) => (op.durable ??= []).push(resolve)));
   return Promise.all(waits).then((all) => all.every(Boolean));
 }
 
@@ -708,8 +712,9 @@ export function applySceneOp<T, P = never>(
  * 내구성이 필요한 흐름(생성 제출 전 표식·백업 복구 보고·판정 기억)만 쓴다 — 전역 '큐가 비었나'가 아니라
  * **그 작업의 연산**만 본다(계속 편집해 큐가 안 비어도 기다림이 끝난다).
  * false = 이번 시도에 확정되지 못했다(연산은 pending 에 남아 다시 시도된다).
+ * settled 는 재시도까지 기다린다 — 실제로 저장되면 true, 버려지거나 넘겨지면 false. 되돌리기 보존이 쓴다(그 씬은 재시도가 성공해도 화면에 다시 오지 않는다).
  */
-export function captureSceneOps<T>(run: () => T): { value: T; confirmed: Promise<boolean> } {
+export function captureSceneOps<T>(run: () => T): { value: T; confirmed: Promise<boolean>; settled: Promise<boolean> } {
   captureStack.push([]);
   captureFailed.push(false);
   let value: T;
@@ -721,9 +726,9 @@ export function captureSceneOps<T>(run: () => T): { value: T; confirmed: Promise
     ops = captureStack.pop() ?? [];
     failed = captureFailed.pop() ?? false;
   }
-  if (failed) return { value, confirmed: Promise.resolve(false) };
+  if (failed) return { value, confirmed: Promise.resolve(false), settled: Promise.resolve(false) };
   const waits = ops.map((op) => new Promise<boolean>((resolve) => op.waiters.push(resolve)));
-  return { value, confirmed: Promise.all(waits).then((results) => results.every(Boolean)) };
+  return { value, confirmed: Promise.all(waits).then((results) => results.every(Boolean)), settled: durableWait(ops) };
 }
 
 // ── 읽기(동기) ───────────────────────────────────────────────────────────────────

@@ -405,7 +405,8 @@ def test_http_contract_accepts_multipart_and_returns_fixed_receipt_shape(h):
         h.drain()
         resolved = client.post("/api/comfy/canvas-runs/resolve", json={"attempt_ids": [attempt["attempt_id"]]}).json()["runs"][0]
         assert set(resolved) == {"attempt_id", "state", "result_revision", "outputs", "origin"}
-        assert set(resolved["outputs"][0]) == {"output_key", "kind", "generation_id", "state"}
+        assert set(resolved["outputs"][0]) == {"output_key", "kind", "generation_id", "state", "url"}
+        assert resolved["outputs"][0]["url"] == "/media/" + resolved["outputs"][0]["output_key"]
         ack = client.post("/api/comfy/canvas-runs/ack", json={"attempt_id": attempt["attempt_id"],
                           "result_revision": resolved["result_revision"], "disposition": "superseded"})
         assert ack.status_code == 200 and ack.json()["state"] == "linked"
@@ -572,6 +573,178 @@ def test_saved_text_file_gone_with_nothing_else_is_failed(h, monkeypatch, status
     h.drain()
     assert resolve(h, attempt)["state"] == "failed"
     assert not h.rows()
+
+
+IMAGE_AND_TEXT = '{"1":{"class_type":"SaveImage","inputs":{}},"2":{"class_type":"SaveText","inputs":{"file":"out.txt"}}}'
+TWO_TEXTS = '{"1":{"class_type":"SaveText","inputs":{"file":"a.txt"}},"2":{"class_type":"SaveText","inputs":{"file":"b.txt"}}}'
+
+
+def _listed(h, job):
+    return next(item for item in comfy.list_unresolved_runs(h.request())["runs"] if item["job_id"] == job)
+
+
+def _of(result, kind):
+    return [out for out in result["outputs"] if out["kind"] == kind]
+
+
+@pytest.mark.parametrize("failure", [
+    comfy.comfy_client.ComfyError("busy", status_code=503),
+    comfy.comfy_client.ComfyError("cut off", cause_kind="tls_cert"),
+    comfy.comfy_client.ComfyError("denied", True, status_code=401),
+])
+def test_media_with_unread_text_stays_collectable_and_collect_finishes_it(h, monkeypatch, failure):
+    h.successful()
+    view = Mock(side_effect=failure)
+    monkeypatch.setattr(comfy.comfy_client, "view_bytes", view)
+    attempt = descriptor()
+    job = start(h, attempt, content=IMAGE_AND_TEXT)
+    h.drain()
+    with pytest.raises(HTTPException):
+        comfy.run_status(job, h.request())  # 일부만 받은 결과로 뒤 노드가 돌지 않는다
+    result = resolve(h, attempt)
+    assert result["state"] == "needs_collect"
+    image = _of(result, "image")[0]
+    assert image["state"] == "saved" and image["generation_id"] and image["url"].startswith("/media/comfy/")
+    row = next(item for item in h.rows() if item["job_id"] == job)
+    assert row["phase"] == "result_pending" and row["text_files_unread"]
+    assert _listed(h, job)["can_collect"]
+    restart(h)
+    assert resolve(h, attempt)["state"] == "needs_collect"  # 조정·부팅 복원도 saved 로 바꾸지 않는다
+    assert _listed(h, job)["can_collect"]
+    view.side_effect = None
+    view.return_value = b"from file"
+    comfy.collect_unresolved_run(job, h.request())
+    h.drain()
+    result = resolve(h, attempt)
+    assert result["state"] == "saved"
+    assert _of(result, "text")[0]["text"] == "from file"
+    assert [out["generation_id"] for out in _of(result, "image")] == [image["generation_id"]]  # 미디어를 두 번 저장하지 않는다
+    assert h.mocks["submit"].call_count == 1 and not h.rows()
+
+
+def test_one_unread_file_of_a_text_only_run_survives_restart_and_collect(h, monkeypatch):
+    h.successful(0)
+    files = {"a.txt": b"first"}
+
+    def view(_target, params):
+        if params["filename"] not in files:
+            raise comfy.comfy_client.ComfyError("busy", status_code=503)
+        return files[params["filename"]]
+
+    monkeypatch.setattr(comfy.comfy_client, "view_bytes", view)
+    attempt = descriptor()
+    job = start(h, attempt, content=TWO_TEXTS)
+    h.drain()
+    result = resolve(h, attempt)
+    assert result["state"] == "needs_collect" and [out["text"] for out in _of(result, "text")] == ["first"]
+    restart(h)
+    assert resolve(h, attempt)["state"] == "needs_collect"
+    assert _listed(h, job)["can_collect"]  # 부팅 정리가 prompt_id 든 저널을 지우지 않았다
+    files["b.txt"] = b"second"
+    comfy.collect_unresolved_run(job, h.request())
+    h.drain()
+    result = resolve(h, attempt)
+    assert result["state"] == "saved" and sorted(out["text"] for out in _of(result, "text")) == ["first", "second"]
+    assert not h.rows()
+
+
+def test_collect_without_workflow_does_not_clear_unread_text(h, monkeypatch):
+    h.successful()
+    monkeypatch.setattr(comfy.comfy_client, "view_bytes", Mock(side_effect=comfy.comfy_client.ComfyError("busy", status_code=503)))
+    attempt = descriptor()
+    job = start(h, attempt, content=IMAGE_AND_TEXT)
+    h.drain()
+    state = json.loads(repo.get_setting(journal.KEY))
+    next(item for item in state["runs"] if item["job_id"] == job)["execution_snapshot"].pop("workflow")
+    repo.set_setting(journal.KEY, json.dumps(state))
+    restart(h)
+    comfy.collect_unresolved_run(job, h.request())
+    h.drain()
+    assert resolve(h, attempt)["state"] == "needs_collect"
+    row = next(item for item in h.rows() if item["job_id"] == job)
+    assert row["text_files_unread"] and row["phase"] == "result_pending"
+
+
+def test_saved_text_read_is_retried_before_it_counts_as_unread(h, monkeypatch):
+    h.successful()
+    view = Mock(side_effect=[comfy.comfy_client.ComfyError("busy", status_code=503), b"from file"])
+    monkeypatch.setattr(comfy.comfy_client, "view_bytes", view)
+    attempt = descriptor()
+    job = start(h, attempt, content=IMAGE_AND_TEXT)
+    h.drain()
+    assert comfy.run_status(job, h.request())["state"] == "saved"
+    assert view.call_count == 2 and _of(resolve(h, attempt), "text")[0]["text"] == "from file"
+    assert not h.rows()
+
+
+@pytest.mark.parametrize("status", [400, 404, 410])
+def test_missing_text_file_finishes_with_the_media(h, monkeypatch, status):
+    h.successful()
+    monkeypatch.setattr(comfy.comfy_client, "view_bytes", Mock(side_effect=comfy.comfy_client.ComfyError("gone", status_code=status)))
+    attempt = descriptor()
+    start(h, attempt, content=IMAGE_AND_TEXT)
+    h.drain()
+    result = resolve(h, attempt)
+    assert result["state"] == "saved" and [out["kind"] for out in result["outputs"]] == ["image"]
+    assert not h.rows()
+
+
+def test_stop_before_read_text_is_recorded_keeps_the_flag_and_the_journal(h, monkeypatch):
+    h.successful()
+    monkeypatch.setattr(comfy.comfy_client, "view_bytes", Mock(return_value=b"from file"))
+    attempt = descriptor()
+    job = start(h, attempt, content=IMAGE_AND_TEXT)
+    real = runs.record_outputs
+    calls = []
+
+    def fail_second(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:
+            raise OSError("synthetic stop")
+        return real(*args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runs, "record_outputs", fail_second)
+        h.drain()
+    assert next(item for item in h.rows() if item["job_id"] == job)["text_files_unread"]
+    restart(h)
+    assert resolve(h, attempt)["state"] == "needs_collect"
+    comfy.collect_unresolved_run(job, h.request())
+    h.drain()
+    result = resolve(h, attempt)
+    assert result["state"] == "saved" and _of(result, "text")[0]["text"] == "from file" and len(_of(result, "image")) == 1
+
+
+def test_dismiss_is_the_way_out_of_a_text_that_never_reads(h, monkeypatch):
+    h.successful()
+    monkeypatch.setattr(comfy.comfy_client, "view_bytes", Mock(side_effect=comfy.comfy_client.ComfyError("busy", status_code=503)))
+    attempt = descriptor()
+    job = start(h, attempt, content=IMAGE_AND_TEXT)
+    h.drain()
+    assert _listed(h, job)["can_dismiss"]
+    comfy.dismiss_unresolved_runs(comfy.DismissRunsReq(job_ids=[job], acknowledged=True), h.request())
+    result = resolve(h, attempt)
+    assert result["state"] == "dismissed" and _of(result, "image")[0]["generation_id"]
+    assert not h.rows()
+
+
+def test_plain_run_reads_saved_text_once_and_still_finishes(h, monkeypatch):
+    h.successful()
+    view = Mock(side_effect=comfy.comfy_client.ComfyError("busy", status_code=503))
+    monkeypatch.setattr(comfy.comfy_client, "view_bytes", view)
+    job = comfy.run(request=h.request(), content=IMAGE_AND_TEXT, param_values="{}", media_meta="[]", media=[])["job_id"]
+    h.drain()
+    assert view.call_count == 1
+    assert [out["kind"] for out in comfy.run_status(job, h.request())["outputs"]] == ["image"]
+
+
+def test_resolve_gives_a_url_only_to_media_that_arrived():
+    def row(state, kind="image", key="comfy/a.png"):
+        return {"output_key": key, "kind": kind, "state": state, "metadata": {}}
+
+    outputs = [row("saved"), row("ready"), row("pending"), row("unavailable"), row("deleted"), row("text", "text", "text:abc")]
+    resolved = runs.resolution({"attempt_id": "a", "state": "saved", "result_revision": 1, "hub_id": "h", "device_id": "d", "outputs": outputs})
+    assert [out.get("url") for out in resolved["outputs"]] == ["/media/comfy/a.png", "/media/comfy/a.png", None, None, None, None]
 
 
 def test_plain_run_with_missing_detail_stays_in_unresolved_list_and_collects_later(h):

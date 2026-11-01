@@ -29,16 +29,16 @@ it.each([false, true])("떠 있음=%s: 실행 필드만 바뀌어도 최신 상�
   };
   await receive([run]);
   expect(coordination!.activeScene!.comfyRuns).toEqual([run]);
-  expect(isComfyRunning("c", coordination!.activeScene!)).toBe(true);
+  expect(isComfyRunning("c", "", coordination!.activeScene!)).toBe(true);
   await receive([]);
-  setComfyRunning(["c"], true); // 뒤늦은 옛 메모리 신호는 처리된 영속 실행을 부활시키지 않는다.
+  setComfyRunning(["c"], true, ""); // 뒤늦은 옛 메모리 신호는 처리된 영속 실행을 부활시키지 않는다.
   try {
-    expect(isComfyRunning("c", coordination!.activeScene!)).toBe(false);
+    expect(isComfyRunning("c", "", coordination!.activeScene!)).toBe(false);
     if (floating) await follow(false);
     expect(coordination!.activeScene!.comfyRuns).toEqual([]);
     expect(coordination!.activeScene!.comfyCardRuns?.c.groupSeq).toBe(1);
     expect(changedNotices()).toEqual([]);
-  } finally { setComfyRunning(["c"], false); }
+  } finally { setComfyRunning(["c"], false, ""); }
 });
 
 vi.mock("../src/api", () => ({

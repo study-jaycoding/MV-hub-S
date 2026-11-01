@@ -64,12 +64,27 @@ export function buildTextTokenPill(info: TextTokenInfo, thumb: string | undefine
   return el;
 }
 
+// 붙여 넣은 글자·푼 알약은 따로 된 Text 노드다 — 이어 보지 않으면 @image1+2 가 저장(@image12)과 다른 알약이 된다. 캐럿이 합쳐진 노드를 따라오지 못했으면 글자 자리로 되돌린다.
+function mergeSplitText(editor: HTMLElement): void {
+  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+  let split = false;
+  for (let node = walker.nextNode(); node && !split; node = walker.nextNode()) split = node.nextSibling?.nodeType === Node.TEXT_NODE;
+  if (!split) return;
+  const sel = window.getSelection();
+  const at = sel?.isCollapsed && sel.anchorNode?.nodeType === Node.TEXT_NODE ? caretTextOffset(editor) : null; // 요소 경계의 캐럿은 합쳐도 그대로다
+  editor.normalize();
+  const anchor = sel?.anchorNode;
+  if (at !== null && !(anchor?.isConnected && anchor.nodeType === Node.TEXT_NODE)) placeCaretAtTextOffset(editor, at);
+}
+
 // 이어진 번호(refs 에 있는 열쇠)만 알약으로 감싼다. protectCaret 이면 캐럿이 걸친 토큰(경계 포함)은 치는 중이라 글자로 두고,
 //  캐럿은 같은 글자 자리로 되돌린다. 감쌀 것이 없으면 DOM 을 건드리지 않는다(캐럿·되돌리기 안정).
 export function wrapTextTokens(editor: HTMLElement, refs: ReadonlyMap<string, string | undefined>, protectCaret: boolean): void {
   const sel = window.getSelection();
   // 고른 글이 있으면 미룬다 — 글자 칸을 알약으로 바꾸면 선택이 무너져 다음 입력이 고른 글을 덮어쓰지 못한다
   if (protectCaret && sel?.rangeCount && !sel.isCollapsed && editor.contains(sel.anchorNode)) return;
+  // 캐럿이 든 빈 Text 는 합치면 사라져 캐럿 보호가 풀린다
+  if (!(sel?.isCollapsed && sel.anchorNode?.nodeType === Node.TEXT_NODE && !(sel.anchorNode as Text).length)) mergeSplitText(editor);
   const anchor = sel && sel.rangeCount && sel.isCollapsed ? sel.anchorNode : null;
   const caretNode = protectCaret && anchor?.nodeType === Node.TEXT_NODE && editor.contains(anchor) ? (anchor as Text) : null;
   const caretOffset = caretNode ? sel!.anchorOffset : -1;

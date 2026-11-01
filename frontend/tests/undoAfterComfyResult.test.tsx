@@ -157,6 +157,61 @@ it("저장이 잠깐 실패했다가 다시 시도로 성공하면 기록을 쓴
   expect((await reloadAdopts(saved))?.lastCommit.cards[0].text).toBe("결과");
 });
 
+it("일반 편집의 첫 저장이 실패하고 재시도로 저장되면 더 고치지 않고 새로 고쳐도 기록이 채택된다", async () => {
+  const { page, board } = await editedBoard();
+  const before = [...slots.values()][0].snapFp;
+  page.store.failSceneStoreWritesForTest(true);
+  await act(async () => { board.session().commit({ type: "editCardPrompt", cardId: "c", prompt: "다시" }); board.session().flush(); });
+  await page.store.settleSceneWrites(20);
+  await settle();
+  expect([...slots.values()][0].snapFp).toBe(before); // 저장이 실패하는 동안에는 쓰지 않는다
+  page.store.failSceneStoreWritesForTest(false);
+  await page.store.settleSceneStoreForTest();
+  await settle();
+  const saved = page.data.listPersistedScenes(null)[0].cards;
+  expect(saved[0].prompt).toBe("다시");
+  if (root) act(() => root!.unmount());
+  root = null;
+  const history = await reloadAdopts(saved);
+  expect(history?.undo).toHaveLength(2);
+  expect(history?.lastCommit.cards[0].prompt).toBe("다시");
+});
+
+it("앞 예약이 기다리는 사이의 다음 편집이 저장되면 최신 기록이 쓰인다", async () => {
+  const { page, board } = await editedBoard();
+  page.store.failSceneStoreWritesForTest(true);
+  await act(async () => { board.session().commit({ type: "editCardPrompt", cardId: "c", prompt: "둘째" }); board.session().flush(); });
+  await page.store.settleSceneWrites(20);
+  await act(async () => { board.session().commit({ type: "editCardPrompt", cardId: "c", prompt: "셋째" }); board.session().flush(); });
+  page.store.failSceneStoreWritesForTest(false);
+  await page.store.settleSceneStoreForTest();
+  await settle();
+  await settle();
+  const saved = page.data.listPersistedScenes(null)[0].cards;
+  expect(saved[0].prompt).toBe("셋째");
+  if (root) act(() => root!.unmount());
+  root = null;
+  expect((await reloadAdopts(saved))?.lastCommit.cards[0].prompt).toBe("셋째");
+});
+
+it("카드에서 지운 결과는 보존 슬롯의 옛 단계에서도 빠져 새로 고친 뒤 되돌려도 돌아오지 않는다", async () => {
+  const outputs = [{ kind: "image", url: "/media/comfy/a.png", saved_generation_id: "g1" }, { kind: "image", url: "/media/comfy/b.png", saved_generation_id: "g2" }];
+  const page = await pageLoad([card("c", 0, { kind: "comfy", genIds: ["g1", "g2"], genId: "g2", comfyCfg: { name: "wf", content: "{}", outputs } })]);
+  const board = await mount(page);
+  await act(async () => { board.session().commit({ type: "editCardPrompt", cardId: "c", prompt: "after" }); board.session().flush(); await page.store.settleSceneStoreForTest(); });
+  await settle();
+  await act(async () => { board.session().commit({ type: "removeCardVariants", cardId: "c", removedIds: ["g1"] }); board.session().flush(); await page.store.settleSceneStoreForTest(); });
+  await settle();
+  const saved = page.data.listPersistedScenes(null)[0].cards;
+  expect(saved[0].comfyCfg?.outputs).toEqual([outputs[1]]);
+  if (root) act(() => root!.unmount());
+  root = null;
+  const history = await reloadAdopts(saved);
+  expect(history?.undo).toHaveLength(1);
+  expect(history?.undo[0].cards[0].comfyCfg?.outputs).toEqual([outputs[1]]);
+  expect(history?.undo[0].cards[0].genIds).toEqual(["g2"]);
+});
+
 it("값이 같은 새 객체를 받으면 예약하지 않는다", async () => {
   const { page, board } = await editedBoard();
   const before = [...slots.values()][0].savedAt;

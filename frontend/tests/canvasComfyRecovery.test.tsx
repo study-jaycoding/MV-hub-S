@@ -13,7 +13,7 @@ import { delaySceneStoreWritesForTest, failSceneStoreWritesForTest, settleSceneS
 import { setHubFeatures } from "../src/lib/hubFeatures";
 import { useSceneComfyExecution } from "../src/lib/useSceneComfyExecution";
 import { useCanvasSession } from "../src/features/canvas/useCanvasSession";
-import { beginComfyAttempt, setComfyRunning as setStoredComfyRunning } from "../src/lib/sceneComfyRunningStore";
+import { beginComfyAttempt, comfyRunningScope, setComfyRunning as setStoredComfyRunning, subscribeComfyRunning } from "../src/lib/sceneComfyRunningStore";
 
 const windowState = vi.hoisted(() => ({ floating: false }));
 vi.mock("../src/lib/popupWindows", async original => ({
@@ -252,8 +252,8 @@ describe("접수 여부를 모르는 기록의 사람 정리", () => {
     resolve.mockRejectedValueOnce(new Error("끊김"));
     await screen();
     await act(async () => { await execution.runComfy("c"); });
-    setStoredComfyRunning(["c"], true);
-    try { await act(async () => { await execution.runComfy("c"); }); } finally { setStoredComfyRunning(["c"], false); }
+    setStoredComfyRunning(["c"], true, "");
+    try { await act(async () => { await execution.runComfy("c"); }); } finally { setStoredComfyRunning(["c"], false, ""); }
     expect(confirm).not.toHaveBeenCalled(); expect(send).not.toHaveBeenCalled();
     expect(currentScene().comfyRuns).toHaveLength(1);
   });
@@ -261,20 +261,45 @@ describe("접수 여부를 모르는 기록의 사람 정리", () => {
   it("서버에 묻는 사이 실행이 시작되면 묻지도 지우지도 않는다", async () => {
     const resolve = serverSays(["not_found"]); const confirm = vi.spyOn(window, "confirm").mockReturnValue(true); const send = submit();
     resolve.mockImplementationOnce(async () => {
-      setStoredComfyRunning(["c"], true); // 조회가 끝나기 전에 다른 창이 그 카드를 돌린다
+      setStoredComfyRunning(["c"], true, ""); // 조회가 끝나기 전에 다른 창이 그 카드를 돌린다
       return { runs: [resolution(0, { state: "not_found", outputs: [] })] };
     });
     await screen();
-    try { await act(async () => { await execution.runComfy("c"); }); } finally { setStoredComfyRunning(["c"], false); }
+    try { await act(async () => { await execution.runComfy("c"); }); } finally { setStoredComfyRunning(["c"], false, ""); }
     expect(confirm).not.toHaveBeenCalled(); expect(send).not.toHaveBeenCalled();
+    expect(currentScene().comfyRuns).toHaveLength(1);
+  });
+
+  it("다른 창이 이 씬에서 돌리는 실행이면 지우지 않고, 다른 씬의 같은 카드 id 는 막지 않는다", async () => {
+    serverSays(["not_found"]); const confirm = vi.spyOn(window, "confirm").mockReturnValue(false); const send = submit();
+    await screen();
+    const stop = subscribeComfyRunning(() => {});
+    const other = new BroadcastChannel("mvhub-window-live");
+    const tell = async (sceneId: string) => {
+      other.postMessage({ type: "live", name: "comfyRunning", sender: "other-window", value: [`${comfyRunningScope(getAccountNamespace(), sceneId)}\nc`] });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    };
+    try {
+      await tell(scene.id);
+      await act(async () => { await execution.runComfy("c"); });
+      expect(confirm).not.toHaveBeenCalled();
+      await tell("복제한 씬");
+      await act(async () => { await execution.runComfy("c"); });
+      expect(confirm).toHaveBeenCalledOnce(); // 다른 씬의 실행은 이 카드를 막지 않는다
+    } finally {
+      other.postMessage({ type: "gone", sender: "other-window" });
+      other.close();
+      stop();
+    }
+    expect(send).not.toHaveBeenCalled();
     expect(currentScene().comfyRuns).toHaveLength(1);
   });
 
   it("확인 창에 답하는 사이 실행이 시작되면 지우지 않는다", async () => {
     serverSays(["not_found"]); const send = submit();
-    const confirm = vi.spyOn(window, "confirm").mockImplementation(() => { setStoredComfyRunning(["c"], true); return true; });
+    const confirm = vi.spyOn(window, "confirm").mockImplementation(() => { setStoredComfyRunning(["c"], true, ""); return true; });
     await screen();
-    try { await act(async () => { await execution.runComfy("c"); }); } finally { setStoredComfyRunning(["c"], false); }
+    try { await act(async () => { await execution.runComfy("c"); }); } finally { setStoredComfyRunning(["c"], false, ""); }
     expect(confirm).toHaveBeenCalledOnce(); expect(send).not.toHaveBeenCalled();
     expect(currentScene().comfyRuns).toHaveLength(1);
   });

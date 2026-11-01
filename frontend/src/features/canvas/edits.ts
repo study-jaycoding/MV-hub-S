@@ -1,5 +1,5 @@
 import {
-  sceneRefFingerprint, uid, variantIds,
+  sceneRefFingerprint, uid, withoutVariants,
   type SceneCard, type SceneCardKind, type SceneEdge, type SceneEdgeRole, type SceneGroup,
   type SceneModelCfg, type SceneRef, type SceneSetFolder,
 } from "../../lib/scenes";
@@ -206,9 +206,8 @@ export function applyCanvasEdit(
     case "removeCardVariants": {
       const removed = new Set(command.removedIds);
       if (!removed.size || !patchCard(command.cardId, card => {
-        const genIds = variantIds(card).filter(id => !removed.has(id));
-        const genId = card.genId && !removed.has(card.genId) ? card.genId : genIds[0] ?? null;
-        return { ...card, genIds, genId, status: genIds.length ? card.status : "empty" };
+        const next = withoutVariants(card, removed);
+        return { ...next, status: next.genIds?.length ? card.status : "empty" };
       })) return null;
       policy = "derived"; break;
     }

@@ -204,7 +204,7 @@ export function writeSceneSnapshot(
     if (!result.value || !ok || accountNamespace !== getAccountNamespace()) return false;
     const saved = listPersistedScenes(null).find(scene => scene.id === sceneId);
     return !!saved && text({ cards: saved.cards, edges: saved.edges, groups: saved.groups || [] }) === expected;
-  }) };
+  }), settled: result.settled.then(ok => ok && result.value && accountNamespace === getAccountNamespace()) }; // 값은 되돌리기 보존이 지문으로 본다 — 여기서 대조하면 저장이 막힌 동안 편집마다 씬 글자를 쥐고 있게 된다
 }
 
 // 씬 저장 버킷 키. ★계정별 네임스페이스 — 팀 서버에서 한 브라우저를 여러 계정이 써도 안 섞이게,
@@ -254,6 +254,14 @@ export function variantIds(card: Pick<SceneCard, "genIds" | "genId">): string[] 
   for (const id of card.genIds || []) if (id && !out.includes(id)) out.push(id);
   if (card.genId && !out.includes(card.genId)) out.push(card.genId);
   return out;
+}
+
+/** 카드에서 생성물을 뗀다 — 저장 뒤에도 주소가 남는 Comfy 출력도 같이 지운다. 남으면 지운 결과가 표시·입력으로 되살아난다. */
+export function withoutVariants(card: SceneCard, removed: Set<string>): SceneCard {
+  const genIds = variantIds(card).filter((id) => !removed.has(id));
+  const genId = card.genId && !removed.has(card.genId) ? card.genId : genIds[0] ?? null;
+  const outputs = card.comfyCfg?.outputs?.filter((output) => !output.saved_generation_id || !removed.has(output.saved_generation_id));
+  return { ...card, genIds, genId, ...(outputs ? { comfyCfg: { ...card.comfyCfg, outputs } } : {}) };
 }
 
 // undo/redo 복원 시 '사용자가 고른 현재 대표(genId)'는 유지 — 대표 선택은 되돌리기 대상에서 제외(사용자 요구).

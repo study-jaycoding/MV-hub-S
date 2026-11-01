@@ -7,7 +7,7 @@
 //  · 무엇이 실패해도(열기·차단·시간 초과·용량) 기록 없이 진행한다 — 부팅·편집을 막지 않는다.
 import { getAccountNamespace } from "./accountScope";
 import { listPersistedScenes, settleComfyRunning } from "./scenes";
-import { isComfyRunning } from "./sceneComfyRunningStore";
+import { comfyRunningIn } from "./sceneComfyRunningStore";
 import { freezeLegacyCollectorOrder } from "./sceneEdges";
 import { onSceneHistoryEvent, snapFingerprint, type SceneHistory } from "./sceneUndoStore";
 
@@ -32,6 +32,8 @@ export interface UndoSlot {
 /** 그 편집을 담은 씬 저장의 영수증 — features/canvas 의 CanvasWriteReceipt 와 같은 모양(경계 규칙상 여기서 import 하지 않는다). */
 export interface SceneWriteReceipt {
   readonly confirmed: Promise<boolean>;
+  /** 재시도까지 포함해 실제로 저장됐는가 — confirmed 는 이번 시도만 본다. */
+  readonly settled?: Promise<boolean>;
 }
 export type UndoPutResult = "ok" | "deleted" | "full" | "failed";
 /** 저장 칸. 한 호출이 한 트랜잭션이다 — put 은 삭제 세대 확인·용량 검사(합계 − 기존 + 새)·슬롯과 합계 갱신을 한 번에.
@@ -277,7 +279,7 @@ export function setUndoBackend(next: UndoBackend | null): void {
 export function savedSceneFingerprint(sceneId: string): string | null {
   const scene = listPersistedScenes(null).find((item) => item.id === sceneId);
   if (!scene) return null;
-  const cards = settleComfyRunning(scene.cards, isComfyRunning);
+  const cards = settleComfyRunning(scene.cards, comfyRunningIn(getAccountNamespace(), sceneId));
   return snapFingerprint({ cards, edges: freezeLegacyCollectorOrder(cards, scene.edges), groups: scene.groups || [] });
 }
 
@@ -331,7 +333,7 @@ async function write(reservation: Reservation): Promise<void> {
   const key = sceneKey(account, sceneId);
   const live = () => account === getAccountNamespace() && (generations.get(key) ?? 0) === deleteGeneration;
   try {
-    if (!(await reservation.receipt.confirmed) || !live()) return;
+    if (!(await (reservation.receipt.settled ?? reservation.receipt.confirmed)) || !live()) return;
     if (savedSceneFingerprint(sceneId) !== reservation.snapFp) return; // 그 뒤 편집이 또 저장됐다 — 대기 중인 더 새 예약이 쓴다
     const slot: UndoSlot = {
       key: slotKey(account, sceneId), writerId, account, sceneId, deleteGeneration,

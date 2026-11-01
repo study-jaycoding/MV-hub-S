@@ -320,6 +320,18 @@ export function comfyOutputMedia(
   return comfyOutputMediaFrom(outputsOf(card, overlay));
 }
 
+// View 직접 연결이 읽는 출력. url 없이 저장된 출력(주소를 남기기 전 dev 가 저장한 것)은 생성물 자료로 풀고, 자료가 없으면 건너뛴다.
+export function comfyViewMedia(
+  card: SceneCard,
+  filePathOf: (generationId: string) => string | undefined,
+): { url: string; kind: "image" | "video" }[] {
+  return (card.comfyCfg?.outputs || []).flatMap((output) => {
+    if (output.kind !== "image" && output.kind !== "video") return [];
+    const url = output.url || (output.saved_generation_id ? filePathOf(output.saved_generation_id) : undefined);
+    return url ? [{ url, kind: output.kind }] : [];
+  });
+}
+
 // 워크플로우가 '선언한' 출력 종류 — 저장(Save/Show) 노드의 class_type 으로 판정한다.
 //  · 실행 전에도, 그리고 이전 워크플로우의 stale 런타임 출력에 속지 않고 정확히 판단하기 위함.
 //  · SaveImage/SaveVideo/VideoCombine/SaveAnimated… → media, SaveText/ShowText → text.

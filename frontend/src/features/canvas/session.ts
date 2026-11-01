@@ -31,7 +31,7 @@ export type CanvasCommand =
   | { type: "recordCamera"; camera: Scene["camera"] }
   | { type: "linkCardResults"; cardId: string; generationIds: string[] };
 
-export interface CanvasWriteReceipt { readonly queued: boolean; readonly confirmed: Promise<boolean> }
+export interface CanvasWriteReceipt { readonly queued: boolean; readonly confirmed: Promise<boolean>; readonly settled?: Promise<boolean> }
 export interface CanvasDocumentPort {
   snapshot(target: CanvasTarget, persisted?: boolean): Scene | undefined;
   commit(target: CanvasTarget, command: CanvasCommand): CanvasWriteReceipt;

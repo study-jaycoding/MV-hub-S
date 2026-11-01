@@ -60,6 +60,7 @@ export function applyComfyResolution(scene: Scene, resolution: ComfyCanvasResolu
     const updated = { ...card, genIds,
       ...(representative ? { genId: ids[ids.length - 1] || null,
         comfyCfg: { ...card.comfyCfg, output: null, outputs: outputs.map(output => ({ kind: output.kind,
+          ...(output.url ? { url: output.url } : {}),
           ...(output.text !== undefined ? { text: output.text } : {}),
           ...(output.generation_id ? { saved_generation_id: output.generation_id } : {}) })) } } : {}) };
     next = { ...next, cards: scene.cards.map(item => item === card ? updated : item) };

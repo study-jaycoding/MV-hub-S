@@ -70,6 +70,7 @@ export function ComfyCard({
   width,
   runningLocal,
   runtimeRunning,
+  runningScope,
   loadingWorkflow,
   laneDelta,
   getNodePreview,
@@ -85,6 +86,7 @@ export function ComfyCard({
   width: number; // widthOf(card)
   runningLocal: boolean; // 부모 메모리 실행 집합(runningComfyIds)에 있는지
   runtimeRunning?: boolean; // 영속 묶음이 있으면 옛 창의 메모리 표식보다 우선한다.
+  runningScope: string; // 다른 창의 실행을 맞춰 볼 계정·씬(comfyRunningScope)
   loadingWorkflow: boolean; // 워크플로를 읽는 중(JSON 놓기·↻ — SceneBoard 의 comfyBusy): 본문 위에 덮개, ↻·실행 잠금
   laneDelta: (lane: "model" | "ref" | "text", card: SceneCard) => number; // 카드별 레인 목록·높이로 대칭 배치(SceneBoard 소유)
   getNodePreview: (cardId: string) => (p: PreviewTarget) => void;
@@ -134,7 +136,7 @@ export function ComfyCard({
   const st = cfg?.status;
   // 실행 중 판정 — 모듈 store(탭 전환 생존) 이거나 status 이거나 메모리 running 집합.
   //  배치/오케 경로는 status 를 persist 안 하므로 store(#2)·메모리로 유지된다.
-  const isRunning = runtimeRunning ?? (isComfyRunning(card.id) || runningLocal || st === "running");
+  const isRunning = runtimeRunning ?? (isComfyRunning(card.id, runningScope) || runningLocal || st === "running");
   const params = cfg?.params || [];
   const values = cfg?.paramValues || {};
   const stop = (e: React.SyntheticEvent) => e.stopPropagation();

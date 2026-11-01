@@ -103,6 +103,16 @@ export const SetCard = memo(function SetCard({
                 autoFocus
                 onMouseDown={(e) => e.stopPropagation()}
                 onChange={(e) => setTagsText(card.id, e.target.value)}
+                onPaste={(e) => {
+                  const text = e.clipboardData.getData("text/plain");
+                  if (!/[\r\n]/.test(text)) return;
+                  e.preventDefault(); // 한 줄 칸은 줄바꿈을 지워 태그가 합쳐진다 — 쉼표로 바꿔 넣는다
+                  const line = sceneSetTagsLine(text);
+                  if (document.execCommand("insertText", false, line)) return; // 입력 이벤트가 저장하고 Ctrl+Z 기록에도 남는다
+                  const el = e.currentTarget;
+                  el.setRangeText(line, el.selectionStart ?? el.value.length, el.selectionEnd ?? el.value.length, "end");
+                  setTagsText(card.id, el.value);
+                }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") e.currentTarget.blur();
                 }}

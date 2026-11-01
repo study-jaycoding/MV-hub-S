@@ -52,6 +52,7 @@ def all_downloaded(row: dict[str, Any]) -> bool:
     outputs = row.get("outputs") or []
     count = row.get("media_output_count")
     return bool(row.get("outputs_enumerated") and isinstance(count, int) and count > 0
+                and not row.get("text_files_unread")  # 글자가 남았으면 회수가 끝나지 않았다 — collected 는 재회수를 막는다
                 and len(outputs) == count and all(item.get("downloaded") for item in outputs))
 
 
@@ -102,7 +103,8 @@ def _bootstrap_locked(owner: str, auth_enabled: bool) -> tuple[dict[str, Any], l
     eligible = []
     value["runs"] = [row for row in value["runs"] if not (
         row.get("terminal_kind") == "success" and row.get("outputs_enumerated")
-        and row.get("text_only") and row.get("media_output_count") == 0 and not row.get("outputs"))]
+        and row.get("text_only") and not row.get("text_files_unread")
+        and row.get("media_output_count") == 0 and not row.get("outputs"))]
     for row in value["runs"]:
         if row.get("phase") == "running" and not row.get("terminal_kind"):
             eligible.append(copy.deepcopy(row))

@@ -180,20 +180,59 @@ describe("③ Comfy '생성중'을 창끼리 나눈다", () => {
   it("다른 창의 실행이 이 창에도 '생성중'이고, 그 창이 끝내거나 닫히면 지워진다 — 자기 몫은 그대로", async () => {
     vi.resetModules();
     const main = await import("../src/lib/sceneComfyRunningStore");
-    main.setComfyRunning(["c1"], true); // 띄우기 전에 메인 창에서 건 실행
+    const scope = main.comfyRunningScope("a@example.invalid", "s1");
+    main.setComfyRunning(["c1"], true, scope); // 띄우기 전에 메인 창에서 건 실행
     vi.resetModules();
     const canvas = await import("../src/lib/sceneComfyRunningStore");
     const stop = canvas.subscribeComfyRunning(() => {}); // 캔버스 창 보드가 본다 — 처음 등록할 때 묻는다
-    await until(() => canvas.isComfyRunning("c1"));
-    main.setComfyRunning(["c1"], false);
-    await until(() => !canvas.isComfyRunning("c1"));
-    main.setComfyRunning(["c2"], true);
-    canvas.setComfyRunning(["mine"], true);
-    await until(() => canvas.isComfyRunning("c2") && main.isComfyRunning("mine"));
+    await until(() => canvas.isComfyRunning("c1", scope));
+    main.setComfyRunning(["c1"], false, scope);
+    await until(() => !canvas.isComfyRunning("c1", scope));
+    main.setComfyRunning(["c2"], true, scope);
+    canvas.setComfyRunning(["mine"], true, scope);
+    await until(() => canvas.isComfyRunning("c2", scope) && main.isComfyRunning("mine", scope));
     window.dispatchEvent(new Event("pagehide")); // 창이 닫힌 것처럼 — 두 모듈 모두 'gone' 을 보낸다
-    await until(() => !canvas.isComfyRunning("c2") && !main.isComfyRunning("mine"));
-    expect(canvas.isComfyRunning("mine")).toBe(true);
-    expect(main.isComfyRunning("c2")).toBe(true);
+    await until(() => !canvas.isComfyRunning("c2", scope) && !main.isComfyRunning("mine", scope));
+    expect(canvas.isComfyRunning("mine", scope)).toBe(true);
+    expect(main.isComfyRunning("c2", scope)).toBe(true);
+    stop();
+  });
+
+  it("다른 씬·다른 계정의 같은 카드 id 는 다른 창의 실행으로 보지 않는다 — 씬을 복제해도 카드 id 는 그대로다", async () => {
+    vi.resetModules();
+    const main = await import("../src/lib/sceneComfyRunningStore");
+    vi.resetModules();
+    const other = await import("../src/lib/sceneComfyRunningStore");
+    const stop = other.subscribeComfyRunning(() => {});
+    const scope = main.comfyRunningScope("a@example.invalid", "s1");
+    main.setComfyRunning(["same"], true, scope);
+    await until(() => other.isComfyRunning("same", scope));
+    expect(other.isComfyRunning("same", main.comfyRunningScope("a@example.invalid", "복제 씬"))).toBe(false);
+    expect(other.isComfyRunning("same", main.comfyRunningScope("b@example.invalid", "s1"))).toBe(false);
+    main.setComfyRunning(["same"], false, scope);
+    await until(() => !other.isComfyRunning("same", scope));
+    stop();
+  });
+
+  it("겹친 실행 — 같은 범위는 마지막이 끝나야 꺼지고, 다른 범위는 역순으로 끝나도 남은 범위만 켜져 있다", async () => {
+    vi.resetModules();
+    const main = await import("../src/lib/sceneComfyRunningStore");
+    vi.resetModules();
+    const other = await import("../src/lib/sceneComfyRunningStore");
+    const stop = other.subscribeComfyRunning(() => {});
+    const a = main.comfyRunningScope("x", "A"), b = main.comfyRunningScope("x", "B");
+    main.setComfyRunning(["c"], true, a);
+    main.setComfyRunning(["c"], true, a);
+    main.setComfyRunning(["c"], true, b);
+    await until(() => other.isComfyRunning("c", a) && other.isComfyRunning("c", b));
+    main.setComfyRunning(["c"], false, b); // 나중에 건 쪽이 먼저 끝난다
+    await until(() => !other.isComfyRunning("c", b));
+    expect(other.isComfyRunning("c", a)).toBe(true);
+    main.setComfyRunning(["c"], false, a);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(other.isComfyRunning("c", a)).toBe(true); // 같은 범위가 하나 남았다
+    main.setComfyRunning(["c"], false, a);
+    await until(() => !other.isComfyRunning("c", a));
     stop();
   });
 });

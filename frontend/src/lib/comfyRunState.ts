@@ -48,6 +48,7 @@ export interface ComfyCanvasOutput {
   kind: "image" | "video" | "text";
   text?: string;
   generation_id?: string;
+  url?: string;
   state: string;
 }
 export interface ComfyCanvasResolution {

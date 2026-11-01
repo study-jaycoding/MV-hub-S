@@ -80,6 +80,69 @@ describe("wrapTextTokens", () => {
     expect(pills().map(([, t]) => t)).toEqual(["@image1", "@image2"]);
     expect(editorText(el)).toBe("@image1 그리고 @image2");
   });
+  it("따로 된 Text 노드는 이어 본다 — 푼 알약 끝에 붙여 넣은 숫자가 옛 번호 알약으로 돌아가지 않는다", () => {
+    editor("");
+    el.append(document.createTextNode("@image1"), document.createTextNode("2"));
+    wrapTextTokens(el, refs, false);
+    expect(pills().map(([, t]) => t)).toEqual([]); // @image12 는 없는 번호다
+    expect(editorText(el)).toBe("@image12");
+    expect(el.childNodes).toHaveLength(1);
+    editor("");
+    el.append(document.createTextNode("@ima"), document.createTextNode("ge1"));
+    wrapTextTokens(el, refs, false);
+    expect(pills().map(([, t]) => t)).toEqual(["@image1"]);
+  });
+  it("칸 안 요소에 든 따로 된 Text 노드도 이어 본다", () => {
+    editor("");
+    const line = document.createElement("div");
+    line.append(document.createTextNode("@image1"), document.createTextNode("2"));
+    el.append(line);
+    wrapTextTokens(el, refs, false);
+    expect(pills()).toEqual([]);
+    expect(editorText(el)).toBe("@image12");
+  });
+  it("요소 경계에 있던 캐럿은 합쳐도 그 자리에 남는다", () => {
+    editor("");
+    const line = document.createElement("div");
+    line.append(document.createTextNode("@image1"), document.createTextNode("2"));
+    el.append(document.createTextNode("앞"), line);
+    caretAt(line, 0);
+    wrapTextTokens(el, refs, true);
+    expect(window.getSelection()!.anchorNode).toBe(line);
+    expect(editorText(el)).toBe("앞@image12");
+  });
+  it("이어진 Text 노드에 캐럿이 있어도 토큰 보호와 캐럿 자리가 이어진다", () => {
+    editor("");
+    const pasted = document.createTextNode("2");
+    el.append(document.createTextNode("@image"), pasted);
+    caretAt(pasted, 1);
+    wrapTextTokens(el, new Map([["@image2", undefined]]), true);
+    expect(pills()).toEqual([]); // 치는 중 — 글자로 둔다
+    expect(caretTextOffset(el)).toBe("@image2".length);
+    wrapTextTokens(el, new Map([["@image2", undefined]]), false);
+    expect(pills().map(([, t]) => t)).toEqual(["@image2"]);
+  });
+  it("캐럿이 빈 Text 노드에 있으면 합치지 않아 캐럿이 그 자리에 남는다", () => {
+    editor("");
+    const empty = document.createTextNode("");
+    el.append(document.createTextNode("@image1"), empty);
+    caretAt(empty, 0);
+    wrapTextTokens(el, refs, true);
+    expect(window.getSelection()!.anchorNode).toBe(empty);
+    expect(empty.isConnected).toBe(true);
+  });
+  it("고른 글이 있어 미루면 합치지도 않는다", () => {
+    editor("");
+    const a = document.createTextNode("@image1");
+    el.append(a, document.createTextNode("2"));
+    const r = document.createRange();
+    r.setStart(a, 0);
+    r.setEnd(a, 3);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(r);
+    wrapTextTokens(el, refs, true);
+    expect(el.childNodes).toHaveLength(2);
+  });
   it("감쌀 것이 없으면 DOM 을 건드리지 않는다 · 이미 감싼 알약은 다시 감싸지 않는다", () => {
     editor("그냥 글 @image9");
     const before = el.firstChild;

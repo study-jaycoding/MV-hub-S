@@ -236,6 +236,44 @@ describe("다른 창에 밀린 쓰기 — 떠 있음을 안 순간 재생을 멈
     expect(textOf(store.sceneStoreConflicts()[0].theirs as never)).toBe("이 창 편집");
   });
 
+  it("settled — 일시 실패에는 끝나지 않고 재시도가 성공하면 true, confirmed 는 이번 시도에 false 다", async () => {
+    const { store, data } = await openStore([scene("a", "저장본")]);
+    store.failSceneStoreWritesForTest(true);
+    const receipt = store.captureSceneOps(() => data.updateScene(null, "a", { cards: textCard("편집") }));
+    let settled: boolean | null = null;
+    void receipt.settled.then((ok) => { settled = ok; });
+    await store.settleSceneWrites(50);
+    await expect(receipt.confirmed).resolves.toBe(false);
+    await sleep(0);
+    expect(settled).toBeNull();
+    store.failSceneStoreWritesForTest(false);
+    await store.settleSceneStoreForTest();
+    await expect(receipt.settled).resolves.toBe(true);
+  });
+
+  it("settled — 접수 거절은 바로 false, 연산이 없으면 바로 true, 충돌로 옮긴 연산은 저장 뒤 false", async () => {
+    const { store, data, float } = await behind();
+    float(true);
+    const refused = store.captureSceneOps(() => data.updateScene(null, "a", { name: "거절" }));
+    await expect(refused.settled).resolves.toBe(false);
+    await expect(store.captureSceneOps(() => true).settled).resolves.toBe(true);
+    float(false);
+    store.failSceneStoreWritesForTest(true);
+    const moved = store.captureSceneOps(() => data.updateScene(null, "a", { name: "옮길 편집" }));
+    store.setAsidePendingWrites();
+    store.failSceneStoreWritesForTest(false);
+    await store.settleSceneStoreForTest();
+    await expect(moved.settled).resolves.toBe(false);
+  });
+
+  it("settled — 메인 창에 넘긴 연산은 false 로 끝나 줄이 막히지 않는다", async () => {
+    const { store, data } = await openStore([scene("a", "저장본")]);
+    store.failSceneStoreWritesForTest(true);
+    const handed = store.captureSceneOps(() => data.updateScene(null, "a", { cards: textCard("넘긴 편집") }));
+    store.markSceneWritesHanded();
+    await expect(handed.settled).resolves.toBe(false);
+  });
+
   it("저장이 막혀 다음 시도가 떠 있음이 끝난 뒤에 와도 재생하지 않고, 그 뒤 새 편집은 합쳐지지 않고 정상 저장되며 숨은 옛 편집을 되살리지 않는다", async () => {
     const { store, data, float } = await behind();
     float(true);

@@ -62,7 +62,7 @@ import {
   collectRenderGenCardIds,
   collectViewGenCardIds,
   collectViewTexts,
-  comfyOutputMedia,
+  comfyViewMedia,
   computeBridgeEdges,
   buildGenerationExecutionPlan,
   type SceneGenerationRun,
@@ -94,8 +94,10 @@ import {
 } from "../../lib/sceneInteractions";
 import { sceneGroupControlTargetIds } from "../../lib/sceneGroupSelection";
 import { useOutsideDragSelect } from "../../lib/useOutsideDragSelect";
+import { getAccountNamespace } from "../../lib/accountScope";
 import {
-  isComfyRunning,
+  comfyRunningIn,
+  comfyRunningScope,
   subscribeComfyRunning,
   getComfyRunningVersion,
 } from "../../lib/sceneComfyRunningStore";
@@ -537,7 +539,7 @@ export function SceneBoard({
 }: Props) {
   const t = useT(); // 언어(한/영) — View 노드 헤더 등 라벨 치환. 언어 변경 시 즉시 리렌더.
   // 최초 마운트에도 박제된 running 을 치유해 시작(effect 전 첫 페인트에 '생성중' 잔상 방지).
-  const [cards, setCardsNow] = useState<SceneCard[]>(() => settleComfyRunning(scene.cards, isComfyRunning));
+  const [cards, setCardsNow] = useState<SceneCard[]>(() => settleComfyRunning(scene.cards, comfyRunningIn(getAccountNamespace(), scene.id)));
   const sceneIdRef = useRef(scene.id);
   // 이 렌더의 cards 가 속한 씬. **카드와 같은 갱신으로** 바뀐다(씬 동기화 effect 가 카드와 함께 넣는다) — sceneIdRef 로 읽지 않는다.
   //  effect 는 돌았고(sceneIdRef·저장 기준이 새 씬) 카드 갱신은 아직 밀려 있는 사이에 다른 동기 렌더(Ctrl+K 등)가 끼면, ref 로 읽은
@@ -1056,7 +1058,7 @@ export function SceneBoard({
     },
     sceneId: scene.id,
     initialSnapshot: {
-      cards: settleComfyRunning(scene.cards, isComfyRunning),
+      cards: settleComfyRunning(scene.cards, comfyRunningIn(getAccountNamespace(), scene.id)),
       edges,
       groups: scene.groups || [],
     },
@@ -1817,7 +1819,7 @@ export function SceneBoard({
       .filter((c): c is SceneCard => c?.kind === "comfy")
       .sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x));
     for (const c of comfySrcs)
-      for (const m of comfyOutputMedia(c))
+      for (const m of comfyViewMedia(c, (id) => ownEntry(genDataRef.current, id)?.assets?.[0]?.file_path))
         clips.push({ url: m.url, type: m.kind, name: c.comfyCfg?.name || "Comfy 결과", thumb: m.url });
     return clips;
   };
@@ -3470,6 +3472,7 @@ export function SceneBoard({
                 <ComfyCard
                   card={projectComfyCard(card, scene)}
                   runtimeRunning={comfyCardRuntime(scene, card.id)?.status === "running" ? true : scene.comfyCardRuns?.[card.id] ? false : undefined}
+                  runningScope={comfyRunningScope(getAccountNamespace(), scene.id)}
                   sel={sel}
                   fill={fill}
                   width={widthOf(card)}

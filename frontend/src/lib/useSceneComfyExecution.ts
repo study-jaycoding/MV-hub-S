@@ -40,7 +40,7 @@ import {
   isSceneGenerationInputSnapshotCurrent,
   type SceneGenerationAssignment,
 } from "./sceneGenerationInputs";
-import { isComfyAttemptActive, isComfyRunning, setComfyRunning as setStoredComfyRunning } from "./sceneComfyRunningStore";
+import { comfyRunningScope, isComfyAttemptActive, isComfyRunning, setComfyRunning as setStoredComfyRunning } from "./sceneComfyRunningStore";
 import { flashMsg } from "./flash";
 import { t } from "./i18n";
 import {
@@ -178,7 +178,8 @@ export function useSceneComfyExecution({
   //  서버에 묻거나 지우는 사이 상황이 바뀔 수 있어, 묻기 전·확인 창 직전·기록 하나를 지울 때마다 다시 본다.
   const clearUnconfirmedRuns = async (blocking: ComfyCanvasRun[], account: string, current: () => boolean): Promise<boolean> => {
     const sceneId = sceneIdRef.current;
-    const idle = () => !blocking.some(run => isComfyAttemptActive(account, run.attemptId) || isComfyRunning(run.cardId));
+    const scope = comfyRunningScope(account, sceneId);
+    const idle = () => !blocking.some(run => isComfyAttemptActive(account, run.attemptId) || isComfyRunning(run.cardId, scope));
     // 남은 기록이 그대로이고 그 카드에 다른 미적용 시도가 없을 때만 — 다른 PC 의 시도는 여기서 확인할 수 없다
     const clearable = (rest: ComfyCanvasRun[]) => {
       const scene = readScene();
@@ -229,7 +230,7 @@ export function useSceneComfyExecution({
   };
 
   // count 방식이라 직접 실행과 렌더 실행이 겹쳐도 마지막 실행이 끝날 때 표시가 꺼진다.
-  const markComfyRunning = (ids: string[], on: boolean) => {
+  const markComfyRunning = (ids: string[], on: boolean, scope: string) => {
     const next = new Map(runningComfyRef.current);
     for (const id of ids) {
       const count = (next.get(id) || 0) + (on ? 1 : -1);
@@ -238,7 +239,7 @@ export function useSceneComfyExecution({
     }
     runningComfyRef.current = next;
     setRunningComfyIds(next);
-    setStoredComfyRunning(ids, on);
+    setStoredComfyRunning(ids, on, scope);
     notifyComfyRunning();
   };
 
@@ -357,6 +358,7 @@ export function useSceneComfyExecution({
     }
     const batch = cardBatch(card);
     const sceneId = sceneIdRef.current;
+    const runningScope = comfyRunningScope(getAccountNamespace(), sceneId);
     const configSnapshot: SceneComfyConfigSnapshot = {
       name: card.comfyCfg.name,
       content: card.comfyCfg.content,
@@ -373,7 +375,7 @@ export function useSceneComfyExecution({
     if (!serverManaged && !commitDocument({ type: "updateComfyRuntime", cardId, patch: { runId, status: "running", error: null } })) {
       releaseComfyRun(sceneId, cardId, runId); return false;
     }
-    markComfyRunning([cardId], true);
+    markComfyRunning([cardId], true, runningScope);
     try {
       const settledSets = await Promise.allSettled(
         Array.from({ length: batch }, async (_, copyIndex) => {
@@ -471,7 +473,7 @@ export function useSceneComfyExecution({
       return false;
     } finally {
       if (serverManaged) notifyCanvasComfyRuns();
-      markComfyRunning([cardId], false);
+      markComfyRunning([cardId], false, runningScope);
       releaseComfyRun(sceneId, cardId, runId);
     }
   };
@@ -539,13 +541,14 @@ export function useSceneComfyExecution({
     const runIds = new Map<string, number>(
       serverManaged ? [] : plan.comfyIds.map((id) => [id, claimComfyRun(sceneId, id)]),
     );
+    const runningScope = comfyRunningScope(getAccountNamespace(), sceneId);
 
     if (plan.comfyIds.length) {
       if (!serverManaged && !commitDocument({ type: "showComfyRunning", runs: [...runIds].map(([cardId, runId]) => ({ cardId, runId })) })) {
         runIds.forEach((runId, id) => releaseComfyRun(sceneId, id, runId));
         return { runs: [], aborted: true };
       }
-      markComfyRunning(plan.comfyIds, true);
+      markComfyRunning(plan.comfyIds, true, runningScope);
     }
 
     const varySeed = batch > 1;
@@ -561,7 +564,7 @@ export function useSceneComfyExecution({
       { outputs: ComfyOutput[] | null; failCount: number; firstError?: string }
     >();
     const releaseRunning = (id: string) => {
-      if (tracker.releaseOnce(id)) markComfyRunning([id], false);
+      if (tracker.releaseOnce(id)) markComfyRunning([id], false, runningScope);
     };
     const noteStepSettled = (
       id: string,

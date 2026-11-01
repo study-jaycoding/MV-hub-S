@@ -203,8 +203,9 @@ def _reconcile_canvas_runs(identity: _ComfyIdentity) -> None:
                for key in (run["job_id"], journal.get("collect_job_id"))):
             continue
         # 빈 목록은 옮기지 않는다 — 글자를 기록하기 전에 멈춘 실행과 진짜 빈 결과를 저널만으로 가를 수 없고, 옮기면 failed 로 굳어 저널이 지워진다.
+        #  글자 파일을 다 읽지 못한 실행도 옮기지 않는다 — 저널의 열거 완료는 미디어 목록만 뜻하고, 옮기면 글자 없이 saved 가 된다.
         media = _canvas_media_outputs(journal.get("outputs", []))
-        if journal.get("outputs_enumerated") and media:
+        if journal.get("outputs_enumerated") and media and not journal.get("text_files_unread"):
             canvas_runs.record_outputs(run["attempt_id"], media, enumerated=True)
             run = canvas_runs.get(run["attempt_id"])
         if not run["context"].get("execution_snapshot") and journal.get("execution_snapshot"):
@@ -288,14 +289,14 @@ def _canvas_job(job_id: str):
     return (canvas_runs.get(attempt_id), job) if attempt_id else (None, job)
 
 
-def _record_canvas_outputs(job_id: str, manifest: list, texts: Optional[list[str]] = None) -> None:
+def _record_canvas_outputs(job_id: str, manifest: list, texts: Optional[list[str]] = None, *, enumerated: bool) -> None:
     run, _ = _canvas_job(job_id)
     if run is None:
         return
     outputs = _canvas_media_outputs(manifest)
     outputs.extend({"output_key": "text:" + hashlib.sha256(text.encode()).hexdigest(), "kind": "text", "text": text, "state": "text"}
                    for text in texts or [])
-    canvas_runs.record_outputs(run["attempt_id"], outputs, enumerated=True)
+    canvas_runs.record_outputs(run["attempt_id"], outputs, enumerated=enumerated)
 
 
 def _canvas_media_outputs(manifest: list) -> list[dict]:
@@ -1298,12 +1299,16 @@ def _inject_media_files(
             "image_slots": len(slots["image_slots"]), "video_slots": len(slots["video_slots"])}
 
 
-def _read_saved_texts(target: dict, wf: dict) -> tuple[list[str], bool]:
-    """SaveText 계열 노드가 쓴 파일을 /view 로 읽어 내용 반환(ShowText 가 히스토리에 안 실리는 경우 보완).
-    append(누적) 모드 파일은 과거 실행분이 쌓여 이번 실행만 못 뽑으므로 건너뛴다 — overwrite 로 쓰게 유도.
-    둘째 값 = 일시 오류로 못 읽은 파일이 있다(404·410 은 파일이 없는 것이라 세지 않는다)."""
-    out: list[str] = []
-    missed = False
+def _text_file_missing(error: comfy_client.ComfyError) -> bool:
+    """파일이 없다는 응답인가 — 상태 코드가 있는 4xx 만(인증·408·429 제외). 그 밖은 나중에 읽힐 수 있다."""
+    status = error.status_code
+    return status is not None and 400 <= status < 500 and status not in (408, 429) and not error.auth_error
+
+
+def _saved_text_params(wf: dict) -> list[dict]:
+    """SaveText 계열 노드가 쓴 파일의 /view 인자(ShowText 가 히스토리에 안 실리는 경우 보완).
+    append(누적) 모드 파일은 과거 실행분이 쌓여 이번 실행만 못 뽑으므로 건너뛴다 — overwrite 로 쓰게 유도."""
+    found: list[dict] = []
     for node in wf.values():
         if not isinstance(node, dict):
             continue
@@ -1320,12 +1325,21 @@ def _read_saved_texts(target: dict, wf: dict) -> tuple[list[str], bool]:
         typ = root if root in ("input", "output", "temp") else "output"
         rel = fname.replace("\\", "/")
         sub, _, base = rel.rpartition("/")
+        found.append({"filename": base or rel, "subfolder": sub, "type": typ})
+    return found
+
+
+def _read_saved_texts(target: dict, wf: dict, retry=None) -> tuple[list[str], bool]:
+    """파일 글자를 /view 로 읽어 내용 반환. 둘째 값 = 나중에 읽힐 수 있는데 못 읽은 파일이 있다.
+    retry = 캔버스 실행만 준다(비캔버스는 한 번만 읽는다)."""
+    out: list[str] = []
+    missed = False
+    for params in _saved_text_params(wf):
         try:
-            data = comfy_client.view_bytes(
-                target, {"filename": base or rel, "subfolder": sub, "type": typ})
+            data = retry(lambda: comfy_client.view_bytes(target, params)) if retry else comfy_client.view_bytes(target, params)
             txt = data.decode("utf-8", "replace").strip()
         except comfy_client.ComfyError as error:
-            missed = missed or error.status_code not in (404, 410)
+            missed = missed or not _text_file_missing(error)
             continue
         if txt:
             out.append(txt)
@@ -1364,22 +1378,24 @@ def _collect_run_outputs(job_id: str, target: dict, entry: dict, wf: Optional[di
         if item["rel"] not in remote and not item.get("downloaded"):
             item["unavailable"] = "detail_missing"
     # 전체 출력 집합을 먼저 기록한다. 전체 manifest를 보존하며 개수/바이트 임의 절단은 없다.
-    _patch_run_record(job_id, outputs=manifest, outputs_enumerated=True,
-                      media_output_count=len(manifest), text_only=False)
     canvas_run, _ = _canvas_job(job_id)
+    unread = bool(canvas_run and (record.get("text_files_unread") or (wf and _saved_text_params(wf))))
+    _patch_run_record(job_id, outputs=manifest, outputs_enumerated=True,
+                      media_output_count=len(manifest), text_only=False, text_files_unread=unread)
     early_texts = []
+    missed = unread and wf is None  # 워크플로를 잃은 재회수는 글자를 읽을 길이 없다 — 끝났다고 보지 않는다
     if canvas_run:
         early_texts = list(dict.fromkeys(text.strip() for text in comfy_client.collect_texts(entry) if text.strip()))
         known = bool(manifest or early_texts)
         if known:  # 파일을 읽고 내려받기 전에 남긴다. 아는 것이 없으면 남기지 않는다 — 빈 목록은 곧 '빈 결과 확정'이다
-            _record_canvas_outputs(job_id, manifest, early_texts)
+            _record_canvas_outputs(job_id, manifest, early_texts, enumerated=not unread)
         if wf is not None:
-            saved, missed = _read_saved_texts(target, wf)
+            saved, missed = _read_saved_texts(target, wf, lambda action: _retry_result(action, job_id, deadline))
             early_texts = list(dict.fromkeys([*early_texts, *(text.strip() for text in saved if text.strip())]))
-            if missed and not manifest and not early_texts:
-                raise comfy_client.ComfyError("저장된 글자 파일을 읽지 못했습니다", cause_kind="detail_failed")
         if wf is not None or not known:
-            _record_canvas_outputs(job_id, manifest, early_texts)
+            _record_canvas_outputs(job_id, manifest, early_texts, enumerated=not missed)
+        if unread and not missed:  # 글자를 기록한 뒤에 끈다 — 먼저 끄면 그 사이 중단이 글자 없는 saved 가 된다
+            _patch_run_record(job_id, text_files_unread=False)
     linked_keys = {out["output_key"] for out in canvas_run["outputs"] if out.get("generation_id")} if canvas_run else set()
     for item in manifest:
         if time.monotonic() >= deadline:
@@ -1401,7 +1417,7 @@ def _collect_run_outputs(job_id: str, target: dict, entry: dict, wf: Optional[di
                 else:
                     _patch_run_record(job_id, outputs=manifest, last_status_code=error.status_code,
                                       last_error_class="download_failed")
-                    _record_canvas_outputs(job_id, manifest)
+                    _record_canvas_outputs(job_id, manifest, enumerated=not missed)
                     raise
         if item.get("downloaded"):
             evidence = _archive_output(
@@ -1412,7 +1428,9 @@ def _collect_run_outputs(job_id: str, target: dict, entry: dict, wf: Optional[di
                 item.update(asset_content_id=evidence["asset_content_id"], sha256=evidence["sha256"],
                             bytes=evidence["bytes"], snapshot_url=evidence["file_path"])
         _patch_run_record(job_id, outputs=manifest)
-        _record_canvas_outputs(job_id, manifest)
+        _record_canvas_outputs(job_id, manifest, enumerated=not missed)
+    if missed:  # 받은 미디어는 끝까지 받아 두고 실패로 끝낸다 — 정상 응답이면 뒤 노드가 빠진 글자로 조용히 돈다
+        raise comfy_client.ComfyError("저장된 글자 파일을 읽지 못했습니다", cause_kind="detail_failed")
     results = [{"kind": item["kind"], "url": f"/media/{item['rel']}"}
                for item in manifest if item.get("downloaded")]
     texts = early_texts if canvas_run else list(comfy_client.collect_texts(entry))

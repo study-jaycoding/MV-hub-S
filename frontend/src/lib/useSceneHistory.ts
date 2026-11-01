@@ -5,6 +5,7 @@ import {
   preserveRepresentatives,
   settleComfyRunning,
   variantIds,
+  withoutVariants,
   type SceneCard,
   type SceneEdge,
   type SceneGroup,
@@ -416,12 +417,7 @@ export function useSceneHistory({
 
   const pruneGenIdsFromHistory = (cardId: string, removed: Set<string>) => {
     if (frozenRef.current) return;
-    const patchCard = (card: SceneCard): SceneCard => {
-      if (card.id !== cardId) return card;
-      const genIds = variantIds(card).filter((id) => !removed.has(id));
-      const genId = card.genId && !removed.has(card.genId) ? card.genId : genIds[0] ?? null;
-      return { ...card, genIds, genId };
-    };
+    const patchCard = (card: SceneCard): SceneCard => (card.id === cardId ? withoutVariants(card, removed) : card);
     const patchSnapshot = (snapshot: SceneSnap): SceneSnap => ({
       ...snapshot,
       cards: snapshot.cards.map(patchCard),

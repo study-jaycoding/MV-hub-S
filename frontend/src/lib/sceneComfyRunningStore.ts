@@ -21,6 +21,10 @@ export function isComfyAttemptActive(account: string, attemptId: string): boolea
 // 다른 창(메인 창 ↔ 휠 클릭으로 띄운 캔버스 창)에서 돌고 있는 실행 — 창마다 마지막으로 알린 목록(Jay 2026-10-30, lib/popupWindows 의 실시간 나눔).
 //  띄우기 전에 건 실행은 건 창이 끝까지 돌리므로, 이것이 없으면 떠 있는 창에 '생성중'이 안 보여 다시 눌러 두 번 실행됐다.
 const remote = new Map<string, Set<string>>();
+// 창 사이로는 계정·씬까지 묶어 나눈다 — 카드 id 는 씬 가져오기로 복제되어 다른 씬·다른 계정 창에도 같은 id 가 있다. 범위는 실행을 시작할 때 잡아 켤 때·끌 때 같은 값을 넘긴다(그 사이 씬이 바뀔 수 있다).
+const shared = new Map<string, number>(); // 범위+카드 → 중첩 실행 카운트
+const sharedKey = (scope: string, id: string) => `${scope}\n${id}`;
+export const comfyRunningScope = (account: string, sceneId: string): string => JSON.stringify([account, sceneId]);
 let version = 0;
 const listeners = new Set<() => void>();
 let announce: (() => void) | null = null;
@@ -33,7 +37,7 @@ function emit(): void {
 function shareAcrossWindows(): void {
   if (announce) return;
   announce = shareWindowLive("comfyRunning", {
-    read: () => [...running.keys()],
+    read: () => [...shared.keys()],
     apply: (sender, value) => {
       const ids = Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
       if (ids.length) remote.set(sender, new Set(ids));
@@ -44,18 +48,17 @@ function shareAcrossWindows(): void {
 }
 
 // markComfyRunning 이 호출 — on=true 진입 시 +1, 완료/실패 finally 에서 -1. 0 이하면 제거.
-export function setComfyRunning(ids: string[], on: boolean): void {
+export function setComfyRunning(ids: string[], on: boolean, scope: string): void {
+  const count = (counts: Map<string, number>, key: string): boolean => {
+    const next = (counts.get(key) || 0) + (on ? 1 : -1);
+    if (next > 0) counts.set(key, next);
+    else if (!counts.delete(key)) return false;
+    return true;
+  };
   let changed = false;
   for (const id of ids) {
-    const cur = running.get(id) || 0;
-    const next = cur + (on ? 1 : -1);
-    if (next > 0) {
-      if (cur !== next) changed = true;
-      running.set(id, next);
-    } else if (running.has(id)) {
-      running.delete(id);
-      changed = true;
-    }
+    if (count(running, id)) changed = true;
+    count(shared, sharedKey(scope, id));
   }
   if (!changed) return;
   emit();
@@ -63,11 +66,18 @@ export function setComfyRunning(ids: string[], on: boolean): void {
   announce?.();
 }
 
-export function isComfyRunning(id: string, scene?: Pick<Scene, "comfyRuns" | "comfyCardRuns">): boolean {
+export function isComfyRunning(id: string, scope: string, scene?: Pick<Scene, "comfyRuns" | "comfyCardRuns">): boolean {
   const runtime = scene && comfyCardRuntime(scene, id);
   if (runtime) return runtime.status === "running";
-  return (running.get(id) || 0) > 0 || [...remote.values()].some((ids) => ids.has(id));
+  const key = sharedKey(scope, id);
+  return (running.get(id) || 0) > 0 || [...remote.values()].some((ids) => ids.has(key));
 }
+
+/** settleComfyRunning 의 keep — 그 씬에서 지금 도는 카드인가. */
+export const comfyRunningIn = (account: string, sceneId: string) => {
+  const scope = comfyRunningScope(account, sceneId);
+  return (id: string): boolean => isComfyRunning(id, scope);
+};
 
 export function subscribeComfyRunning(cb: () => void): () => void {
   shareAcrossWindows(); // 보는 창도 다른 창의 실행을 받는다 — 처음 등록할 때 다른 창들에 묻는다

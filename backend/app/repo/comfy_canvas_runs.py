@@ -17,6 +17,7 @@ class CanvasOutput(TypedDict):
     state: str
     text: NotRequired[str]
     generation_id: NotRequired[str]
+    url: NotRequired[str]
 
 
 class CanvasResolution(TypedDict):
@@ -224,11 +225,17 @@ def acknowledge(attempt_id: str, *, owner: str, hub_id: str, device_id: str,
         return _read(conn, attempt_id)
 
 
+def _resolved_output(out: dict) -> CanvasOutput:
+    output = {key: out[key] for key in ("output_key", "kind", "text", "generation_id", "state") if out.get(key) is not None}
+    if out["kind"] != "text" and out["state"] in ("ready", "saved"):
+        output["url"] = "/media/" + out["output_key"]  # 카드에 그대로 남는다 — 공개판 앱·View 는 이 주소로 읽는다
+    return output
+
+
 def resolution(row: dict) -> CanvasResolution:
     result: CanvasResolution = {
         "attempt_id": row["attempt_id"], "state": row["state"], "result_revision": row["result_revision"],
-        "outputs": [{key: out[key] for key in ("output_key", "kind", "text", "generation_id", "state") if out.get(key) is not None}
-                    for out in row["outputs"]],
+        "outputs": [_resolved_output(out) for out in row["outputs"]],
         "origin": {"hub_id": row["hub_id"], "device_id": row["device_id"]},
     }
     if row.get("disposition"):

@@ -85,6 +85,7 @@ export function InputChannelPicker({
   };
   const onKey = (e: KeyboardEvent<HTMLInputElement>) => {
     e.stopPropagation(); // 친 글자·Esc 가 캔버스 단축키(선택 풀기 등)로 가지 않게
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return; // 한글 조합 중 Enter 는 글자 확정이다
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
       if (flat.length) setActiveId(flat[(at + (e.key === "ArrowDown" ? 1 : flat.length - 1)) % flat.length].id);
