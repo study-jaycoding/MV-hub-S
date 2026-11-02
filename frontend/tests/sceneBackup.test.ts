@@ -62,7 +62,8 @@ function sceneJson(id: string, name = "씬") {
   return JSON.stringify({ id, name, cards: [], edges: [], created_at: 1 });
 }
 
-describe("sceneBackup (DB 미러·복구)", () => {
+// 첫 시험은 모듈을 처음 불러오느라 혼자 4~5초 걸린다 — 기본 5초 시한이면 전체 실행 부하에 따라 떨어지고, 남은 타이머가 다음 시험까지 떨군다.
+describe("sceneBackup (DB 미러·복구)", { timeout: 20_000 }, () => {
   beforeEach(async () => {
     vi.useFakeTimers();
     calls = [];
