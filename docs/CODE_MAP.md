@@ -1412,7 +1412,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 - **새 DB 이름표를 `schema_migrations` 에 기록하는 일은 배포 계약이다.** 서버 `update_git` 은 서버 루트의 옛 검사기로 후보가 만든 DB 를 검사하고(`qualify_release_artifact._compatibility` → `load_inspector(ROOT)`), 되돌릴 때는 옛 판이 DB 를 연다. 옛 검사기는 모르는 표·칸은 허용하지만 모르는 migration 은 `unknown_migration` 으로 거부한다. 게이트와 시험은 새 검사기로 돌아 이걸 못 잡는다(2026-10-31 배포 검토 실측). 그래서 `content_comfy_canvas_runs` 는 표만 만들고 `validate_baseline` 으로 구조만 확인한다. 서버 루트 검사 도구를 갱신하는 길이 생기기 전에는 새 이름을 기록하지 않는다 — `test_baseline_names_stay_within_public_release` 가 고정 목록으로 막는다.
 - **캔버스 선택을 읽는 길이 둘이다 — React 상태(`selected`·`selectedRef`)와 화면의 `.scene-card.sel`·그룹 `.selected`.** 범위 선택을 끄는 동안에는 `SceneBoard.paintMarqueePreview` 가 화면 표시만 직접 바꾸고 상태는 손을 뗄 때 바뀌므로 둘이 다르다(2026-09-30). 선택이 필요한 코드는 상태를 읽고, 화면의 `.sel` 로 판단하지 않는다.
 - **수동 보관 `scene_keep`와 자동 미러 `scene_backup`은 다른 권위다.** `/api/scene-keeps`는 로컬 예외이지만 핸들러가 서버로 중계한다. `scene_keep_v1`은 AUTH off에서만 추가하고 기존 기능 표식은 유지한다. 일반 목록·상세에는 봉투의 작성자 정보가 없고, envelope 경로는 로컬 허브 화면에 열지 않는다.
-- **보관본의 생성물 id와 batch 응답 본문 id가 다를 수 있다.** 봉투의 `scene_ids`가 원래 참조를 보존한다. restore는 삭제 확인→job의 유일한 완료 행→같은 id의 완료 행→남의 서버 결과 제외→원래 id 삽입 순서다. 반환한 `rejected`는 새 탭 카드의 id를 지우는 신호이며, `id_map`에 없는 정상 원격 id를 지우는 신호가 아니다. `attach_trash`는 쓰기 트랜잭션 전에, 서버 요청은 DB 연결 밖에서 한다.
+- **보관본의 생성물 id와 batch 응답 본문 id가 다를 수 있다.** 봉투의 `scene_ids`가 원래 참조를 보존한다. restore는 휴지통 결과를 항목마다 판정해 `restore_from_trash`로 꺼낸 뒤, 삭제 이동 확인→job의 유일한 완료 행→같은 id의 완료 행→남의 서버 결과 제외→원래 id 삽입 순서다. 휴지통에 같은 id 행이나 실패로 확정되지 않은 같은 job 행이 있으면 봉투로 넣지 않는다. 반환한 `rejected`는 새 탭 카드의 id를 지우는 신호이며, `id_map`에 없는 정상 원격 id를 지우는 신호가 아니다. `attach_trash`는 쓰기 트랜잭션 전에, 서버 요청은 DB 연결 밖에서 한다.
 
 ---
 
